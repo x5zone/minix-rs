@@ -1,7 +1,7 @@
 # 08-stage-is 文档重组计划（plan.md）
 
 > **状态**: 定稿（2026-08-16 首版 + 深度 review + minix3 源码回归 review，见 §7）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/08-stage-is/`
+> **范围**: `rewrite-notes/08-stage-is/`
 > **目标**: 以 **IS server 启动顺序为主线**定义 IS 全部文档；功能键按压→转储输出数据流为次主线；最终覆盖 Minix3 IS server（`servers/is/`，8 个 .c，1151 行）+ 协议面（`com.h`/`ipc.h`/`keymap.h`/`sysutil.h`/`sysinfo.h` + `libsys` 客户端）+ 跨服务数据面（kernel `sys_getinfo`/`DIAGCTL`/kerninfo、PM/VFS/RS/DS `getsysinfo`、VM `vm_info`）全部语义，支撑 IS server 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/` 与 `07-stage-ds/`（同流程先例）、`minix3/minix/servers/is/`（ground truth）、`os/servers/is/`（Rust 实现，当前为 stub）
 

@@ -174,7 +174,7 @@ Ok——RS 的 step0-4 全过；kc 流水里出现 step3/step4 的调用；RS �
 
 ## §6 记录格式（两份，缺一即返工）
 
-### 6.1 WORKLOG（`notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md`，每 Task 一节，追加）
+### 6.1 WORKLOG（`rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md`，每 Task 一节，追加）
 
 ```markdown
 ## Task A — <标题>（YYYY-MM-DD）
@@ -246,7 +246,7 @@ grep -v "vs0x" /home/xzhao/github/minix-rs/tmp/nk4a/serial_<RUN>.log | tail -60
 objdump -d /home/xzhao/github/minix-rs/os/target/image/x86_64/staging/EFI/minix/modules/rs | grep -B8 "<地址>:"
 
 # 5) 归档证据（*.log 被 gitignore，需 -f）
-git add -f notes/rewrite/fork-syscall-rewrite/evidence/<目录名>/ && git commit -m "..."
+git add -f rewrite-notes/evidence/<目录名>/ && git commit -m "..."
 ```
 
 ## §8 标准取证循环（每个新断点都走这一套）

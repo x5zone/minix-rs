@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = glm
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/09-stage-init
+target_dir(关注的工作目录) = rewrite-notes/09-stage-init
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = d6ecd22cae78345e746c82ad7cbe3c1612c151c2
 
@@ -15,7 +15,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ## 0. 元数据
 
-- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/09-stage-init/`。
+- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/09-stage-init/`。
 - **结论先行**：本 stage 的 15 篇文档（00~14 + 99）**全部为 2026-09-18 新写成稿**——code-excellence 首轮扫描 + 修复迭代轮（todo 23 条闭单 Fix #1~#20）+ 审计轮（P2-5 文档 drift 闭环、Gate E 全量对账"声称但代码缺失：无"、ALL DOCS COMPLETE）之后刚落定。因此本蓝图的操作集是三个已审 stage 中**最窄**的一档：**"保编号、修锚点、追基线"**：
   1. **保编号**——01 入口 → 02 状态机骨架 → 03 日志 → 04~06 启动三站 → 07/08 会话模型 → 09~11 稳态与关停 → 12~14 系统交互 → 99，编号即状态机推进序，满足四条硬标准（§9 G3/G4）；外部引用全为目录级（37 处）、篇内互引 ≈68 处、代码注释 0 处——重排零收益；
   2. **修锚点**——**全部 15 篇存在系统性锚点缺陷**："（LNN，工具生成）"形态的锚点**行号全部正确**（K&R 声明行约定，glm 逐条验证 22 个全 OK）但**符号名全部错误**（如 `init.c:make_utmpx（L229）` 实为 `main`、`init.c:setsecuritylevel（L624）` 实为 `transition`、`init.c:death（L1703）` 实为 `mfs_dev`）——这是本 stage 与 06/08 两个姊妹 stage 同源的工具产物缺陷，本 stage 因每篇定位行/参见行都带该形态而最密集；

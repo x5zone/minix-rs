@@ -2,7 +2,7 @@
 
 > 评审对象：busy-billing agent 在 `940ad8363..cd22e2e68`（nk4a-agent-wip 分支钉存）的全部改动。
 > 评审执行：独立新会话（zcode/GLM），只读 + 验证实跑，零代码修改。
-> 证据目录：`notes/rewrite/fork-syscall-rewrite/evidence/20260921-2320/`（99 个 /tmp 日志 + tip 冒烟实录）。
+> 证据目录：`rewrite-notes/evidence/20260921-2320/`（99 个 /tmp 日志 + tip 冒烟实录）。
 > 保全分支：`nk4a-agent-wip` @ cd22e2e68（含其全部工作 + 停止令落盘 + 交接文档）。
 
 ---

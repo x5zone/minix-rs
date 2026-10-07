@@ -2,7 +2,7 @@
 
 //! Compression and archiving core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/11-compress-archive.md`:
+//! Covers `rewrite-notes/18-stage-commands/11-compress-archive.md`:
 //! the transfer codecs (`minix3/usr.bin/uuencode/uuencode.c` 202 lines with
 //! `encode` and `base64_encode`), the Lempel-Ziv family
 //! (`minix3/minix/commands/compress/compress.c` 1618 lines: "Modified

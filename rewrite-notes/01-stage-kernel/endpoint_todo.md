@@ -438,8 +438,8 @@ slot_id = 独立的 slot identifier（不放在 endpoint_t 中）
 
 ### 10.4 与本文档强相关的可信源链接（minix-rs 仓库内）
 
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md` §2.0 第三层（讨论 256 限制的当前章节）
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-todo.md`（06 的设计历史）
+- `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md` §2.0 第三层（讨论 256 限制的当前章节）
+- `rewrite-notes/01-stage-kernel/06-todo.md`（06 的设计历史）
 - `minix3/minix/include/minix/endpoint.h`（endpoint_t 定义源头）
 - `minix3/minix/include/minix/com.h`（MAX_NR_TASKS 定义）
 - `minix3/minix/include/minix/sys_config.h`（NR_PROCS 默认值）
@@ -458,7 +458,7 @@ slot_id = 独立的 slot identifier（不放在 endpoint_t 中）
 
 ### 11.2 文档目录
 
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`（本文档所在 stage）
+- `rewrite-notes/01-stage-kernel/`（本文档所在 stage）
   - `06-proc-init-boot-proc.md`（讨论 256 限制的当前文档）
   - `06-todo.md`（06 的设计 / 重构 TODO）
   - `12-ipc-core.md`（IPC 协议细节，待讨论后可能更新）

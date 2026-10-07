@@ -3,7 +3,7 @@
 > **分类**: 阶段 2 — 访问控制与物理内存（物理内存锚点）
 > **源码**: `minix3/minix/servers/vm/alloc.c`（548 行）；`minix3/minix/servers/vm/utility.c:get_mem_chunks`（`get_mem_chunks`）；`minix3/minix/servers/vm/main.c:init_vm`（`init_vm` 调用点）；`minix3/minix/include/minix/type.h:memory`（`struct memory`）；`minix3/minix/include/minix/param.h:MAXMEMMAP`（`MAXMEMMAP`/`kinfo.memmap`）；`minix3/minix/servers/vm/vm.h:PAF_CLEAR,62`（`PAF_*`/`NO_MEM`）；`minix3/minix/include/minix/const.h:CLICK_SIZE`（click 宏）
 > **Rust 模块**: `os/servers/vm/src/phys_mem/`（`mod.rs`/`types.rs`/`alloc_trait.rs`/`bitmap_alloc.rs`/`buddy_alloc.rs`/`segment_tree_alloc.rs`/`stats.rs`/`allocator_tests.rs`）+ `os/servers/vm/src/boot.rs` + `os/servers/vm/src/global.rs` + `os/servers/vm/src/vm_server.rs:fn new_inner（L230，工具生成）,505-600` + `os/servers/vm/src/query.rs:fn handle_info（L296，工具生成）`
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`（启动主线）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（Direct Map `A-1` 概念，`PAF_CLEAR` 清零机制的前置）
+> **前置**: `rewrite-notes/02-stage-vm/00-vm-overview.md`（启动主线）、`rewrite-notes/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`rewrite-notes/02-stage-vm/07-pagetable-struct.md`（Direct Map `A-1` 概念，`PAF_CLEAR` 清零机制的前置）
 > **说明**: 物理内存分配的语义模块：**内存清单获取 / 分配器初始化 / 任意大小连续块分配与释放 / 记账与诊断 / 保留队列机制**。**不覆盖**：`vm_allocpage` 页分配与保留页池消费（`06-page-allocator`）、元数据搬迁 `relocate`（`10-vm-relocation`）、块缓存回收 `cache_freepages`（`24-page-cache`；Rust 侧回收已由 `PageCache::free_pages` + 主循环 `alloc_cycle` 落地，allocator 侧同步重试钩子按 V11/T17 判定删除）。
 
 ---
@@ -613,13 +613,13 @@ main.c:498-520  boot 进程 exec_bootproc + free_mem ← 01/06
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md` — 启动主线图与文档导航
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` — `init_vm` 调用点、`mem_add_total_pages` 调用上下文
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md` — `vm_allocpage` 页分配、保留页池消费、`alloc_cycle` 补充体
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md` — Direct Map（A-1）、`PAF_CLEAR` 清零的映射前提
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/10-vm-relocation.md` — 元数据搬迁 `relocate`、静态 → 动态分配转换
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/24-page-cache.md` — `cache_freepages` 块缓存回收（DEFERRED 项）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/26-vm-queries.md` — `VM_INFO` 查询（`query.rs` 接线面）
+- `rewrite-notes/02-stage-vm/00-vm-overview.md` — 启动主线图与文档导航
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` — `init_vm` 调用点、`mem_add_total_pages` 调用上下文
+- `rewrite-notes/02-stage-vm/06-page-allocator.md` — `vm_allocpage` 页分配、保留页池消费、`alloc_cycle` 补充体
+- `rewrite-notes/02-stage-vm/07-pagetable-struct.md` — Direct Map（A-1）、`PAF_CLEAR` 清零的映射前提
+- `rewrite-notes/02-stage-vm/10-vm-relocation.md` — 元数据搬迁 `relocate`、静态 → 动态分配转换
+- `rewrite-notes/02-stage-vm/24-page-cache.md` — `cache_freepages` 块缓存回收（DEFERRED 项）
+- `rewrite-notes/02-stage-vm/26-vm-queries.md` — `VM_INFO` 查询（`query.rs` 接线面）
 - `minix3/minix/servers/vm/alloc.c`、`minix3/minix/servers/vm/utility.c` — C 源码（ground truth）
 - `os/servers/vm/src/phys_mem/`、`os/servers/vm/src/boot.rs`、`os/servers/vm/src/global.rs` — Rust 实现
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/04-physical-memory.md` — 旧主线素材（素材，非正式引用源）
+- `rewrite-notes/02-stage-vm/draft/04-physical-memory.md` — 旧主线素材（素材，非正式引用源）

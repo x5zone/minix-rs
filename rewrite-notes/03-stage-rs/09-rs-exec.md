@@ -3,7 +3,7 @@
 > **分类**: 阶段 4 — 服务创建与配置（从槽位到运行进程的第二步：二进制）
 > **源码**: `minix3/minix/servers/rs/exec.c`（165 行，`srv_execve`—21、`do_exec`—62、`exec_restart`—121、`read_seg`—143）、`minix3/minix/servers/rs/manager.c:rproc（L1354，工具生成）`（`share_exec`—1357、`read_exec`—1372、`free_exec`—1424）、`minix3/minix/servers/rs/manager.c:create_service`（`create_service` 的 exec 调用点）、`minix3/minix/servers/rs/manager.c:rs_start（L1629，工具生成）`（`edit_slot` 的 `RSS_COPY`/`RSS_REUSE` 分支）、`minix3/minix/lib/libexec/exec_elf.c`（`libexec_load_elf`）、`minix3/minix/lib/libc/sys/stack_utils.c`（`minix_stack_params`/`minix_stack_fill`）
 > **Rust 模块**: `os/servers/rs/src/exec.rs`（`validate_image`/`share_exec`/`has_shared_exec`/`free_exec`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`RSS_COPY`/`RSS_REUSE` 输入、`r_argv` 来源）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`SF_USE_COPY`/`SF_NEED_COPY` 标志、`ServiceSlot.exec` 字段）
+> **前置**: `rewrite-notes/03-stage-rs/08-rs-slot-config.md`（`RSS_COPY`/`RSS_REUSE` 输入、`r_argv` 来源）、`rewrite-notes/03-stage-rs/02-rs-process-table.md`（`SF_USE_COPY`/`SF_NEED_COPY` 标志、`ServiceSlot.exec` 字段）
 > **说明**: 服务的二进制映像由 RS 亲自加载：它要么从命令路径 `stat`/`open`/`read` 进内存（`read_exec`），要么复用另一槽的共享副本（`share_exec`），随后 `srv_execve` 把映像 exec 进已 fork 的子进程（10 的创建路径调用）。本文档建模内存副本的**生命周期与共享语义**（ARCH A-5），并固化 `srv_execve` 全链的外部契约（ARCH A-8，接线在 19）。
 
 ---
@@ -310,10 +310,10 @@ exec.rs
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md` — `RSS_COPY`/`RSS_REUSE` 输入（§2.4）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` — `create_service` 消费 exec 面（§2.5 调用点）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` — `SF_USE_COPY`/`SF_NEED_COPY` 标志（§2.4）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` — sys_datacopy / PM_EXEC_RESTART / minix_stack_* 契约
+- `rewrite-notes/03-stage-rs/08-rs-slot-config.md` — `RSS_COPY`/`RSS_REUSE` 输入（§2.4）
+- `rewrite-notes/03-stage-rs/10-rs-service-create.md` — `create_service` 消费 exec 面（§2.5 调用点）
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` — `SF_USE_COPY`/`SF_NEED_COPY` 标志（§2.4）
+- `rewrite-notes/03-stage-rs/19-rs-external-interfaces.md` — sys_datacopy / PM_EXEC_RESTART / minix_stack_* 契约
 - `os/libs/minix-elf/src/lib.rs` — `parse_ehdr`/`segment_iter`/`entry_point`（A-8 完整解析）
 - `minix3/minix/servers/rs/exec.c`、`minix3/minix/servers/rs/manager.c:rproc（L1354，工具生成）` — ground truth
 - `minix3/minix/lib/libexec/exec_elf.c` — `libexec_load_elf` 校验链

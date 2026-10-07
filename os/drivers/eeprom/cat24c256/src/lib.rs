@@ -4,7 +4,7 @@
 //! (505 lines). This crate owns the slicing half (read and write
 //! splits, address width); the service binary owns bus traffic. See
 //! document `24-misc-drivers.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

@@ -9,7 +9,7 @@
 
 - **执行者**：qwen
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/12-stage-input/`
+- **目标目录**：`rewrite-notes/12-stage-input/`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`40dfbbeb9`
 

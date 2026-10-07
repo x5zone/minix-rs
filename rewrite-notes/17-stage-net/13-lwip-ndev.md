@@ -3,7 +3,7 @@
 > **分类**：轻量协议栈服务接口面第 1 篇，覆盖网络设备驱动消费侧的槽位数量、队列深度保证、活动判断、配置与收发规则
 > **源码**：`minix3/minix/net/lwip/ndev.c`（1019 行）、对外接口 `minix3/minix/net/lwip/ndev.h`（33 行）
 > **Rust 模块**：`os/net/lwip/src/ndev.rs`（槽位上限、队列保证、活动判断、容量与钳制函数）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`（服务启动链与主循环，理解消费侧在主循环中的分发位置）、`../16-stage-drivers/03-netdriver-framework.md`（网络驱动框架，驱动面的对称契约）
+> **前置依赖**：`rewrite-notes/17-stage-net/03-lwip-main-init.md`（服务启动链与主循环，理解消费侧在主循环中的分发位置）、`../16-stage-drivers/03-netdriver-framework.md`（网络驱动框架，驱动面的对称契约）
 >
 > **本篇不覆盖的内容**：
 > - 网络设备驱动面的协议实现（在第 16 阶段第 03 篇，本文只定义消费侧的槽位与队列边界）
@@ -161,9 +161,9 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`：服务启动链与主循环，消费侧的分发位置。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/14-lwip-ifdev.md`：接口对象，消费侧的下一站。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/03-lwip-main-init.md`：服务启动链与主循环，消费侧的分发位置。
+- `rewrite-notes/17-stage-net/14-lwip-ifdev.md`：接口对象，消费侧的下一站。
 - `../16-stage-drivers/03-netdriver-framework.md`：网络驱动框架，驱动面的对称契约。
 - `os/net/lwip/src/ndev.rs`：槽位上限、队列保证与活动判断的实现。
 - `minix3/minix/net/lwip/ndev.c`：消费侧的原始实现（1019 行）。

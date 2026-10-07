@@ -8,7 +8,7 @@
 //! crate owns the pure policy half (density table, error budget);
 //! the service binary owns FDC port traffic, seeks, and interrupts.
 //! See document `17-storage-misc-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

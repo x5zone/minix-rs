@@ -3,8 +3,8 @@
 > **【结案更新 2026-10-05 深夜，先读本条再看正文】** 本文件写作时的两大阻塞**均已定案修复**，三终目标**全部达成**：③ riscv 全量门 `RESULT: PASS (36/36: 34 passed + 2 skipped, 0 failed/broken)`（§续-384）。问题甲（第五节）＝PM 退出链 DumpCore 载荷信号号恒 0 → VFS 拒服务 → 错误回复被续-149 臂吞掉 → sys_clear 永不执行；修＝`exit_proc` 增加 sig_status 参数（§续-383）。t_strerror 写 VA=0 ＝出生 stub 不设线程指针、errno 的 TLS 写落地址 0；修＝`tp = __tls_base`（startup-minix.c riscv 臂，§续-384）——它已从问题乙样本集**移出**。仍未结的：问题乙本体（剪字符串、NUL 盖内核打印缓冲等原始脸谱的写者未现场抓获）、诊断码族滚除（T8）、α-2（VFS 错误回复不被 PM 认出）。细读 WORKLOG 顶部状态块与 §续-383/§续-384 两节；本文其余部分作为机制背景与作废结论清单**仍然有效**。
 
 > 把本文件整段作为新会话的开场任务说明。它是**入口**，不是全部。
-> 取证流水在 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（顶部"当前状态"块是最新前沿，文末各节是逐轮过程）。
-> 机制与证据形状的独立审查在 `notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`（含排除手段的分辨力边界、九类候选排序、实验设计、验收判据）。
+> 取证流水在 `rewrite-notes/coordination/NK4C-WORKLOG.md`（顶部"当前状态"块是最新前沿，文末各节是逐轮过程）。
+> 机制与证据形状的独立审查在 `rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`（含排除手段的分辨力边界、九类候选排序、实验设计、验收判据）。
 > 三份文档冲突时**以 WORKLOG 为准**；再冲突时以 `minix3/` 目录里的 C 原始源码为准（它是本项目的真源）。
 > 本任务的总目标见第一节，**尚未完成**；接手者不要把它当成"已经修好、只差收尾"。（2026-10-05 注：此句已被上方结案更新取代。）
 
@@ -132,7 +132,7 @@
 5. **文档文风**：技术博客式，禁止黑话/缩写/文言文/开发文档味；事实断言必须带符号或来源锚点，行号只能由工具派生；给不出证据写"待验证"。提交前跑 `tools/doc-style-lint.sh --diff`，必须零错误。
 6. **并发边界**：目前有另一个会话在同步两份案卷文档（`NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`、`NK4C-BUG-RISCV64-TRANSIENT-PTE.md`），它们出现在 `git status` 里**不是你的脏文件，不要 add、不要改**。只 `git add` 自己动过的文件。
 7. **收尾**：QEMU 进程清零（注意 `pkill` 的模式会匹配到自己的命令行，用精确进程号）、被跟踪文件树干净。
-8. 探针与诊断代码都标"用后即滚"，结案时随诊断标记族一并清除；结构性旧债登记在 `notes/rewrite/fork-syscall-rewrite/STRUCTURAL-DEBT-REGISTER-20260930.md`（含 `os/arch/src/riscv64/paging.rs:switch` 这个零调用方的陷阱死代码、走表测试夹具里的三处恒零表达式、兼容层供给日志的模板写位错位）。
+8. 探针与诊断代码都标"用后即滚"，结案时随诊断标记族一并清除；结构性旧债登记在 `rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20260930.md`（含 `os/arch/src/riscv64/paging.rs:switch` 这个零调用方的陷阱死代码、走表测试夹具里的三处恒零表达式、兼容层供给日志的模板写位错位）。
 
 ---
 

@@ -4,7 +4,7 @@
 
 ```text
 your_name(AI agent name) = qwen
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/16-stage-drivers
+target_dir(关注的工作目录) = rewrite-notes/16-stage-drivers
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 任务 = R 相·重建蓝图：输出 doc_rerank_qwen.md，不改任何正文。
 约束遵守声明：未读取 doc_rerank_deepseek.md / doc_rerank_glm.md（仅按文件名排除）；

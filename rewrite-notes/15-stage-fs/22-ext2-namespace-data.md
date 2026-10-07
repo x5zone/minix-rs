@@ -3,7 +3,7 @@
 > **分类**：磁盘变体·名字数据（磁盘主线第 2 篇，变体差异展开）
 > **源码**：`minix3/minix/fs/ext2/path.c`（三百一十四行）、`open.c`（二百八十五行）、`link.c`（六百五十六行）、`read.c`（五百五十七行）、`write.c`（三百七十六行）、`protect.c`（五十七行）、`stadir.c`（七十三行）、`time.c`（五十二行）、`utility.c`（二百零四行）、`inode.c`（四百二十行）
 > **Rust 模块**：`os/fs/ext2/src/dir.rs`（变长目录项），`os/fs/ext2/src/inode.rs`（一百二十八字节记录），`os/fs/ext2/src/mapping.rs`（三级间接分解）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/21-ext2-init-mount.md`（分配器，本篇消费），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/11-mfs-path.md`（定长目录项对照），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/14-mfs-read.md`（两级间接对照）
+> **前置**：`rewrite-notes/15-stage-fs/21-ext2-init-mount.md`（分配器，本篇消费），`rewrite-notes/15-stage-fs/11-mfs-path.md`（定长目录项对照），`rewrite-notes/15-stage-fs/14-mfs-read.md`（两级间接对照）
 > **说明**：与参考实现相同的名字语义，不同的目录项形状、索引节点形状、间接级数。本篇只讲三个形状，第 21 篇讲分配，两篇合起来变体完整。
 
 > **本章不讲什么**：
@@ -165,10 +165,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/21-ext2-init-mount.md`：分配器（形状的块号来源）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/11-mfs-path.md`：定长项对照。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/14-mfs-read.md`：两级间接对照。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/21-ext2-init-mount.md`：分配器（形状的块号来源）。
+- `rewrite-notes/15-stage-fs/11-mfs-path.md`：定长项对照。
+- `rewrite-notes/15-stage-fs/14-mfs-read.md`：两级间接对照。
 - `os/fs/ext2/src/dir.rs`：目录项的实现。
 - `os/fs/ext2/src/inode.rs`：记录的实现。
 - `os/fs/ext2/src/mapping.rs`：分解的实现。

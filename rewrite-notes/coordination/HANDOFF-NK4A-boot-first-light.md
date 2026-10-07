@@ -18,7 +18,7 @@
 
 minix-rs = Minix3 内核模块的 Rust 语义重写（Rewrite not Translate；x86_64/aarch64/riscv64，no_std）。
 总目标：三架构 QEMU 启动 minix-rs 并跑通 18-stage-commands。账本：
-`notes/rewrite/fork-syscall-rewrite/new_edge{1,2,3,4}.md`（edge1=内核/arch/boot、edge2=共享库/驱动、
+`rewrite-notes/new_edge{1,2,3,4}.md`（edge1=内核/arch/boot、edge2=共享库/驱动、
 edge3=服务器/FS/命令、edge4=编排/认领板）。FIXLOG：`.review/zcode/edge{1,2,3}/FIXLOG.md`（只写增量）。
 
 ## 二、上一棒已交付（全部在 rewrite 主线，无需重做）

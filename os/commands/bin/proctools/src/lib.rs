@@ -2,7 +2,7 @@
 
 //! Process and session information core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/12-process-tools.md`:
+//! Covers `rewrite-notes/18-stage-commands/12-process-tools.md`:
 //! the process tools (`minix3/bin/ps/ps.c` with its keyword table in
 //! `keyword.c`, `minix3/bin/kill/kill.c` with `signame_to_signum` at line
 //! 188 over the system signal names) and the session face (`utmp` records

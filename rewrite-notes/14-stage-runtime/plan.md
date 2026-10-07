@@ -1,7 +1,7 @@
 # 14-stage-runtime 文档重组计划（plan.md）
 
 > **状态**: 生效中（2026-08-16 首版，深度 review + minix3 源码回归 review 后定稿）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+> **范围**: `rewrite-notes/14-stage-runtime/`
 > **目标**: 以**进程运行时生命周期为主线**重组 userland runtime 全部文档；syscall 封装按服务分组为次主线；最终覆盖 Minix3 userland runtime 全部语义，支撑 `os/libs/minix-rt` + `os/libs/minix-sys` 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/plan.md`（plan 结构参照）、`minix3/lib/csu/` + `minix3/minix/lib/libc/` + `minix3/minix/lib/libminc/` + `minix3/minix/lib/libsys/`（ground truth）、`os/libs/minix-rt/` + `os/libs/minix-sys/` + `os/libs/minix-types/`（Rust 实现）
 

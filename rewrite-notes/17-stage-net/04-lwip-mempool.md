@@ -3,7 +3,7 @@
 > **分类**：资源第 1 篇（五百一十二一切，池空报无缓冲，链工具只定算法）
 > **源码**：`minix3/minix/net/lwip/mempool.c`（八百二十一行的定制池实现）、`minix3/minix/net/lwip/pchain.c`（一百五十四行的链工具）、`minix3/minix/lib/liblwip/lib/lwipopts.h`（第四十九行缓冲尺寸，第二十九行到第八十一行池开关）
 > **Rust 模块**：`os/net/lwip/src/mempool.rs`（分片尺寸、统计、slab 增长池、帧链）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`（轻量骨架，内存池初始化是第四步）
+> **前置**：`rewrite-notes/17-stage-net/03-lwip-main-init.md`（轻量骨架，内存池初始化是第四步）
 > **说明**：内存池是资源赛道的第一篇：标准池关掉不用，定制池五百一十二一切，池空了上层报无缓冲。本篇讲分片尺寸与耗尽映射，不讲协议栈内部缓冲语义。池存储与链流量在服务层，本库只定尺寸与映射。
 
 > **本篇不讲什么**：
@@ -174,10 +174,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`：轻量骨架（内存池是第四步）。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/05-lwip-util-addr.md`：公共工具（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/24-liblwip-port.md`：第三方栈（池开关的另一面，待写）。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/03-lwip-main-init.md`：轻量骨架（内存池是第四步）。
+- `rewrite-notes/17-stage-net/05-lwip-util-addr.md`：公共工具（下一篇，待写）。
+- `rewrite-notes/17-stage-net/24-liblwip-port.md`：第三方栈（池开关的另一面，待写）。
 - `os/net/lwip/src/mempool.rs`：分片尺寸与统计的实现。
 - `minix3/minix/net/lwip/mempool.c`：定制池的原始实现（八百二十一行）。
 - `minix3/minix/net/lwip/pchain.c`：链工具的原始实现（一百五十四行）。

@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = muse
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/01-stage-kernel
+target_dir(关注的工作目录) = rewrite-notes/01-stage-kernel
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 任务 = R 相·重建蓝图：output target_dir/doc_rerank_muse.md, modify no body text.
@@ -32,7 +32,7 @@ tables below); a rebuild whose cost is not visible is not started.
 
 ## 0. Metadata
 
-- Executor: muse. Date (UTC): 2026-09-19. Target: `notes/rewrite/fork-syscall-rewrite/01-stage-kernel`.
+- Executor: muse. Date (UTC): 2026-09-19. Target: `rewrite-notes/01-stage-kernel`.
 - Repo root: `/home/xzhao/github/minix-rs`. Commit: `338c7a301163b9ce4b1b5cc4ce2a6a354cfaa680`.
 - Scope: numbered docs `00`–`33` + `99-global-concepts.md` are IN SCOPE as knowledge
   sources. Reference material (NOT rebuilt, read as evidence): `todo.md` (V13),
@@ -70,7 +70,7 @@ tables below); a rebuild whose cost is not visible is not started.
   clock,irq_manager,misc,grant,stacktrace,debug}.rs` and `os/boot-shim/src/*`,
   boundary `fork-syscall-rewrite/00-master-plan/README.md` + `edge_todo.md`.
 - Commands run (read-only) with key outputs:
-  - `wc -l notes/rewrite/fork-syscall-rewrite/01-stage-kernel/*.md` → 44,418 total
+  - `wc -l rewrite-notes/01-stage-kernel/*.md` → 44,418 total
     incl. other-AI products; in-scope numbered docs ≈ 30 docs, ≈ 24,000 lines.
   - `ls minix3/minix/kernel/` → 34 entries incl. `system/` (38 `do_*.c`),
     `arch/{i386,earm}`; core `.c` ≈ 5,900 lines + headers ≈ 1,000 lines.

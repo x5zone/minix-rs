@@ -1,7 +1,7 @@
 //! Minix-RS Reincarnation Server — entry point.
 //!
 //! C: `main()` — `minix3/minix/servers/rs/main.c:38-131`.
-//! See `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`.
+//! See `rewrite-notes/03-stage-rs/01-rs-boot-init.md`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

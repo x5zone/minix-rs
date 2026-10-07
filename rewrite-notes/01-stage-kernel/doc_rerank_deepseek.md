@@ -9,7 +9,7 @@
 |------|-----|
 | 执行者 | deepseek |
 | 日期 | 2026-09-19 |
-| 目标目录 | `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/` |
+| 目标目录 | `rewrite-notes/01-stage-kernel/` |
 | 仓库根目录 | `/home/xzhao/github/minix-rs` |
 | 当前提交号 | `e5b9cd70061bba3ee512f1b6ca44498090f0b0eb`（2026-09-19） |
 | 交付物 | 本文件（唯一落盘产物） |
@@ -488,7 +488,7 @@ C 真序抽样核对（15 条锚点逐条 `sed -n` 验证，全部命中）：`p
 
 | 编号 | 名称 | 类型 | 来源 | 现有位置 | 锚点 | 读者收益 |
 |------|------|------|------|---------|------|---------|
-| K-193 | endpoint 是通信标识符 | 概念 | 存量 | **99 §1.1**、17 §D2 | `endpoint.h`、`notes/rewrite/concepts/endpoint.md` | 理解 IPC 寻址 |
+| K-193 | endpoint 是通信标识符 | 概念 | 存量 | **99 §1.1**、17 §D2 | `endpoint.h`、`rewrite-notes/concepts/endpoint.md` | 理解 IPC 寻址 |
 | K-194 | endpoint 编码布局（generation 高 15 位 + slot 低 15 位 + 负任务区） | 数据结构 | 存量 | **99 §1.2** | `endpoint.h:45-69`、`os/libs/minix-types/src/types/endpoint.rs` | 能手工编码端点 |
 | K-195 | generation 的防陈旧语义与验证条件 | 机制 | 存量 | **99 §1.3-1.4**、17 §1.2 | `system/do_fork.c:59,69-72`、`proc.c:133` | 理解槽位复用的安全 |
 | K-196 | 特殊 endpoint（ANY/NONE/SELF/ANY_USR/ANY_SYS/ANY_TSK） | 数据结构 | 存量 | **99 §1.3**、23 §2.7 | `endpoint.h:54-57`、`ipc_filter.h:24-28` | 看懂通配语义 |

@@ -3,7 +3,7 @@
 > **分类**：框架层第 1 篇（锚点文档）
 > **源码**：`minix3/minix/lib/libfsdriver/fsdriver.c`、`minix3/minix/lib/libfsdriver/table.c`、`minix3/minix/include/minix/vfsif.h`、`minix3/minix/include/minix/fsdriver.h`
 > **Rust 模块**：`os/libs/minix-fs/src/protocol.rs`、`os/libs/minix-fs/src/driver.rs`
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`（主线与阶段划分）、虚拟文件系统服务侧的主循环（`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/` 目录下的主循环文档）
+> **前置**：`rewrite-notes/15-stage-fs/plan.md`（主线与阶段划分）、虚拟文件系统服务侧的主循环（`rewrite-notes/05-stage-vfs/` 目录下的主循环文档）
 > **说明**：文件服务器如何被驱动、请求如何被分类与分发、挂载状态如何流转、服务器何时退出。本文档只讲骨架：单个请求内部的翻译细节在 `02-fsdriver-call.md`，数据复制与目录项组装在 `03-fsdriver-utility.md`。
 
 > **本章不讲什么**：
@@ -346,10 +346,10 @@ C 用三个独立变量记录挂载状态，理论上可以出现"已挂载为�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/02-fsdriver-call.md`：三十一个适配器的逐个展开。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/03-fsdriver-utility.md`：授权复制、名字校验、目录项编码、路径查找。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/15-stage-fs/02-fsdriver-call.md`：三十一个适配器的逐个展开。
+- `rewrite-notes/15-stage-fs/03-fsdriver-utility.md`：授权复制、名字校验、目录项编码、路径查找。
+- `rewrite-notes/15-stage-fs/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/libs/minix-fs/src/protocol.rs`：请求编号、事务编号、标志、节点描述的实现。
 - `os/libs/minix-fs/src/driver.rs`：驱动 trait、挂载状态、分发规则、空服务器的实现。
 - `minix3/minix/lib/libfsdriver/fsdriver.c`：主循环与分发的原始实现（九十七行）。

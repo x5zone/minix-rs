@@ -325,7 +325,7 @@ Summary: Total docs 31 / Complete 26 / missing outline 2 / outline-review 2 / de
 
 gate-evidence-A:
 $ python3 tools/coverage-extract/coverage-extract.py vm \
-    notes/rewrite/fork-syscall-rewrite/02-stage-vm \
+    rewrite-notes/02-stage-vm \
     --rust-dir os --c-dir minix3/minix/servers/vm \
     --semantic-map tools/coverage-extract/vm-semantic-map.json \
     --output .review/claude/vm/v12/SYMBOLS.md
@@ -406,4 +406,4 @@ gate-evidence-关键论断复核（防转述失真，主 agent 亲自 grep/读�
 
 - 第一轮至第六轮全部条目与修复记录：[`archive/todo-V11-archive-2026-09-08.md`](archive/todo-V11-archive-2026-09-08.md)
 - 本轮 SYMBOLS 全量清单：`.review/claude/vm/v12/SYMBOLS.md`（中间产物，正式引用以本文件 §17.1 汇总为准）
-- 跨 stage 条目唯一入口：`notes/rewrite/fork-syscall-rewrite/edge_todo.md`（§17.4 三条增补）
+- 跨 stage 条目唯一入口：`rewrite-notes/coordination/edge_todo.md`（§17.4 三条增补）

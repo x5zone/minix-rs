@@ -3,7 +3,7 @@
 > **分类**：启动关键第 4 篇（内核黑板报的读者，诊断总线）
 > **源码**：`minix3/minix/drivers/system/log/log.c`（三百六十行，环与挂钩）、`minix3/minix/drivers/system/log/log.h`（环定义与五万容量）、`minix3/minix/drivers/system/log/diag.c`（五十四行，内核消息捕获）、`minix3/minix/drivers/system/log/liveupdate.c`（九十九行，热升级钩子）、`minix3/minix/include/minix/com.h`（第九百四十九行到第九百五十二行，选择位）
 > **Rust 模块**：`os/drivers/system/log/src/ring.rs`（环形缓冲算法）、`os/drivers/system/log/src/device.rs`（挂起读与选择取消）、`os/drivers/system/log/src/diag.rs`（内核消息增量）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架，本篇是挂起读的重用户）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/06-tty-driver.md`（内核消息的另一个读者）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/07-pty-driver.md`（另一只环）
+> **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（字符框架，本篇是挂起读的重用户）、`rewrite-notes/16-stage-drivers/06-tty-driver.md`（内核消息的另一个读者）、`rewrite-notes/16-stage-drivers/07-pty-driver.md`（另一只环）
 > **说明**：日志驱动是全系统的诊断总线：内核的打印、服务的报错，全汇到它的五万字节环里，等管理员来读。它平时没人理，出事时人人找它。本篇讲这只环的全部语义：写盖旧货、读挂起等货、取消配对、选择三位、内核消息增量、热升级钩子。
 
 > **本篇不讲什么**：
@@ -236,12 +236,12 @@ C 的写尾巴是一条直线语句：先复活挂起读，再发迟通知、清
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：字符框架（挂起读的框架）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/06-tty-driver.md`：终端驱动（黑板报的另一个读者）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/07-pty-driver.md`：伪终端（另一只环）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/09-random-driver.md`：随机数驱动（系统服务批，待写）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符框架（挂起读的框架）。
+- `rewrite-notes/16-stage-drivers/06-tty-driver.md`：终端驱动（黑板报的另一个读者）。
+- `rewrite-notes/16-stage-drivers/07-pty-driver.md`：伪终端（另一只环）。
+- `rewrite-notes/16-stage-drivers/09-random-driver.md`：随机数驱动（系统服务批，待写）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/system/log/src/ring.rs`：环形缓冲算法的实现。
 - `os/drivers/system/log/src/device.rs`：挂起读与选择取消的实现。
 - `os/drivers/system/log/src/diag.rs`：内核消息增量的实现。

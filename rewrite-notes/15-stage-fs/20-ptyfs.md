@@ -3,7 +3,7 @@
 > **分类**：变体内容·终端树（虚拟树主线第 3 篇，系统启动后由运行服务加载）
 > **源码**：`minix3/minix/fs/ptyfs/ptyfs.c`（全部四百三十四行），`minix3/minix/fs/ptyfs/node.c`（全部八十四行），`minix3/minix/fs/ptyfs/node.h`（全部二十行）
 > **Rust 模块**：`os/fs/ptyfs/src/lib.rs`（查找、枚举、状态、控制），`os/fs/ptyfs/src/table.rs`（节点表），`os/fs/ptyfs/src/names.rs`（名字双向转换）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`（主循环与回调表），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/02-fsdriver-call.md`（请求适配语义）
+> **前置**：`rewrite-notes/15-stage-fs/01-fsdriver-task.md`（主循环与回调表），`rewrite-notes/15-stage-fs/02-fsdriver-call.md`（请求适配语义）
 > **说明**：终端从设备节点如何变成文件：驱动发控制消息增删节点，服务把节点编上数字名字，应用按数字打开。本篇不讲终端驱动，只讲这棵数字名字的树。
 
 > **本章不讲什么**：
@@ -179,11 +179,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`：主循环与回调表（本篇的调用方）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/18-vtreefs.md`：框架（同组对照，本篇不用）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/19-procfs.md`：进程树（同组上一篇）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/21-ext2-init-mount.md`：磁盘变体（下一阶段入口）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/01-fsdriver-task.md`：主循环与回调表（本篇的调用方）。
+- `rewrite-notes/15-stage-fs/18-vtreefs.md`：框架（同组对照，本篇不用）。
+- `rewrite-notes/15-stage-fs/19-procfs.md`：进程树（同组上一篇）。
+- `rewrite-notes/15-stage-fs/21-ext2-init-mount.md`：磁盘变体（下一阶段入口）。
 - `os/fs/ptyfs/src/lib.rs`：查找枚举状态控制的实现。
 - `os/fs/ptyfs/src/table.rs`：节点表的实现。
 - `os/fs/ptyfs/src/names.rs`：名字转换的实现。

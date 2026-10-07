@@ -1,7 +1,7 @@
 # NK4-C 接续 PROMPT（2026-10-05b · 污染写者收窄末段交接版）
 
 > 把本文件整段作为新会话的开场任务说明。它是**入口**，不是全部——取证流水在
-> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（前沿=§续-369），
+> `rewrite-notes/coordination/NK4C-WORKLOG.md`（前沿=§续-369），
 > 独立审查文档=**`NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`**（同目录，GPT 审查：
 > 排除分辨力边界/结构性事实/实验设计/验收判据——**新会话必读**，本文不重复）。
 > 三份文档冲突时以 WORKLOG 为准。

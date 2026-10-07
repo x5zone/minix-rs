@@ -1,7 +1,7 @@
 //! Minix-RS data store — entry point.
 //!
 //! C: `main()` — `minix3/minix/servers/ds/main.c:28-88`.
-//! See `notes/rewrite/fork-syscall-rewrite/07-stage-ds/01-ds-init-main.md`.
+//! See `rewrite-notes/07-stage-ds/01-ds-init-main.md`.
 
 // 按目标分形态（init 先例，`os/commands/sbin/init/src/main.rs:27-35`）：
 // 宿主与测试构建保持 std 形态——rustc 对 hosted target 一律传 Scrt1.o

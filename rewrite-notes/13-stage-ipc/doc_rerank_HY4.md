@@ -22,7 +22,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 |---|---|
 | 执行者 | HY4 |
 | 日期 | 2026-09-19 |
-| 目标目录 | `notes/rewrite/fork-syscall-rewrite/13-stage-ipc/` |
+| 目标目录 | `rewrite-notes/13-stage-ipc/` |
 | 仓库根 | `/home/xzhao/github/minix-rs` |
 | 当前提交 | `ebc8ae72b`（`git rev-parse --short HEAD`） |
 | Ground truth | `minix3/minix/servers/ipc/`（main.c 284 + sem.c 888 + shm.c 469 + utility.c 49 = 1690 行；另 inc.h 66、ipc.conf 18、Makefile 14） |

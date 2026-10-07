@@ -2,7 +2,7 @@
 
 ## 0. Metadata
 
-- Executor: muse. Date: 2026-09-20. Target: `notes/rewrite/fork-syscall-rewrite/18-stage-commands/`.
+- Executor: muse. Date: 2026-09-20. Target: `rewrite-notes/18-stage-commands/`.
   Repo root: `/home/xzhao/github/minix-rs`. HEAD at blueprint time: `25303385e`
   (prior session commit `a0a5b87bc`; tree has uncommitted modifications under `os/`).
 - Task: R-phase rebuild blueprint. Deliverable: this file only. No body text modified.

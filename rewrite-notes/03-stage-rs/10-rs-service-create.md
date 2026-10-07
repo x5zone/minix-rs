@@ -3,7 +3,7 @@
 > **分类**: 阶段 4 — 服务创建与配置（从槽位到运行进程的第四步：创建）
 > **源码**: `minix3/minix/servers/rs/manager.c`（`create_service`—531、`clone_service`—713、`activate_service`—1013、`get_service_instances`—1334、`clone_slot`—1800、`swap_slot_pointer`—1856、`swap_slot`—1870）、`minix3/minix/lib/libsys/srv_fork.c`（`PM_SRV_FORK`）、`minix3/minix/include/minix/com.h:VM_RS_MEMCTL`（`VM_RS_MEM_*`）、`minix3/minix/include/minix/priv.h`（`ROOT_SYS_PROC`/`VM_SYS_PROC`/`DYN_PRIV_ID`/`LU_SYS_PROC`/`RST_SYS_PROC`）
 > **Rust 模块**: `os/servers/rs/src/service_create.rs`（`check_create_preconditions`/`mark_child_created`/`rebuild_args`/`clone_slot`/`link_replica`/`activate_service`/`swap_index`/`swap_slot`）+ `os/servers/rs/src/boot.rs`（`KernelApi` 扩展 + `VmRsMemReq`）+ `os/servers/rs/src/process_table.rs`（`swap_rows`/`set_endpoint_index`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（槽位配置）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/09-rs-exec.md`（`read_exec`/`srv_execve`/`free_exec`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`alloc_slot`/`free_slot`/`rproc_ptr`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md`（priv 结构 + `sys_privctl` 操作面）
+> **前置**: `rewrite-notes/03-stage-rs/08-rs-slot-config.md`（槽位配置）、`rewrite-notes/03-stage-rs/09-rs-exec.md`（`read_exec`/`srv_execve`/`free_exec`）、`rewrite-notes/03-stage-rs/02-rs-process-table.md`（`alloc_slot`/`free_slot`/`rproc_ptr`）、`rewrite-notes/03-stage-rs/03-rs-privilege.md`（priv 结构 + `sys_privctl` 操作面）
 > **说明**: 服务的"诞生"是 RS 的一次 11 步编排：fork 出子进程后，把 priv、调度器、可执行映像、VM 权限依次就位。本文档固化编排的顺序语义与失败回滚的挂接点，并把 `clone_slot`（副本槽）与 `swap_slot`（槽交换）两个被 15/16 复用的纯原语建模为 Rust 值语义（ARCH A-3）。
 
 ---
@@ -297,11 +297,11 @@ pub fn swap_index(v: &mut Option<SlotId>, src: SlotId, dst: SlotId) {
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/09-rs-exec.md` —— `read_exec`/`srv_execve`/`free_exec` 调用点的 exec 面契约
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md` —— `alloc_slot`/`init_slot` 输入
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `alloc_slot` 不置 IN_USE 语义、`rproc_ptr`（ARCH A-4）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md` —— priv 结构 + `SYS_PRIV_SET_SYS`/`UPDATE_SYS` 操作面
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `cleanup_service`/`free_slot`/`kill_service` 回滚机制
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `swap_slot` 的 RUPDATE_ITER 消费点
+- `rewrite-notes/03-stage-rs/09-rs-exec.md` —— `read_exec`/`srv_execve`/`free_exec` 调用点的 exec 面契约
+- `rewrite-notes/03-stage-rs/08-rs-slot-config.md` —— `alloc_slot`/`init_slot` 输入
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` —— `alloc_slot` 不置 IN_USE 语义、`rproc_ptr`（ARCH A-4）
+- `rewrite-notes/03-stage-rs/03-rs-privilege.md` —— priv 结构 + `SYS_PRIV_SET_SYS`/`UPDATE_SYS` 操作面
+- `rewrite-notes/03-stage-rs/15-rs-terminate-restart.md` —— `cleanup_service`/`free_slot`/`kill_service` 回滚机制
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— `swap_slot` 的 RUPDATE_ITER 消费点
 - `minix3/minix/servers/rs/manager.c:create_service,1013-1026,1334-1352,1800-1932` —— ground truth
 - `minix3/minix/lib/libsys/srv_fork.c` —— `PM_SRV_FORK` 消息面（A-1）

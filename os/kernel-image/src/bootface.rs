@@ -1,6 +1,6 @@
 //! NK4-C 续-88 甲案（riscv64 装机面）：kernel-image 自当引导体。
 //!
-//! 裁决源：`notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT.md` 阶段
+//! 裁决源：`rewrite-notes/coordination/NK4C-OPENING-PROMPT.md` 阶段
 //! 3.1——「kernel-image riscv64 接 a1 DTB → 解 memmap + 模块装载源 + .bss
 //! 清零 → 调 arch_boot（过 validate 真门槛）」。本模块是那条裁决的 Rust 面
 //! 落地（`.bss` 清零在 `main.rs` 的入口 asm；甲案三件缺件的另外两半都在

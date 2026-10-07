@@ -3,7 +3,7 @@
 > **分类**: 全局基建（链接进每个用户态服务进程的框架库，本 stage 作为该框架的唯一权威讲述点）
 > **源码**: `minix3/minix/lib/libsys/sef.c`（`sef_startup`、`sef_receive_status`、`sef_self`、`sef_cancel`、`sef_exit`、`sef_munmap`、`sef_getrndseed`）、`minix3/minix/lib/libsys/sef_init.c`（`process_init`、`do_sef_rs_init`、`do_sef_init_request`、四个 init 注册器、`sef_cb_init_*` 预定义回调族、`sef_cb_init_response_rs_reply`、`sef_cb_init_response_rs_asyn_once`）、`minix3/minix/lib/libsys/sef_ping.c`（`do_sef_ping_request`、`sef_cb_ping_reply_pong`）、`minix3/minix/lib/libsys/sef_signal.c`（`do_sef_signal_request`、`process_sigmgr_signals`、`process_sigmgr_self_signals`）、`minix3/minix/lib/libsys/sef_liveupdate.c`（`do_sef_lu_request`、`do_sef_lu_before_receive`、`sef_lu_ready`、`sef_lu_state_change`）、`minix3/minix/lib/libsys/sef_st.c`（`do_sef_st_before_receive`、`sef_st_state_transfer`、`sef_copy_state_region`）、`minix3/minix/lib/libsys/sef_fi.c`（`do_sef_fi_request`）、`minix3/minix/lib/libsys/sef_gcov.c`（`do_sef_gcov_request`）、`minix3/minix/include/minix/sef.h`（`SEF_INIT_FRESH`、`SEF_LU_STATE_NULL`、`IS_SEF_INIT_REQUEST` 等全部约定）
 > **Rust 实现**: `os/libs/minix-sef/src/lib.rs`, `os/servers/rs/src/sef.rs`, `os/servers/rs/src/lib.rs`, `os/servers/is/src/sef.rs`, `os/servers/devman/src/hooks.rs`, `os/servers/vm/src/vm_server.rs`, `os/servers/vfs/src/main_loop.rs`, `os/servers/mib/src/server.rs`, `os/servers/sched/src/kernel_api/transport.rs`, `os/servers/devman/src/ipc/minix.rs`, `os/servers/pm/src/init.rs`, `os/servers/ipc-server/src/server.rs`, `os/fs/fs-rt/src/ipc.rs`, `os/fs/fs-rt/src/transport.rs`, `os/libs/minix-driver-rt/src/transport.rs`, `os/net/lwip/src/server.rs`, `os/net/uds/src/server.rs`
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/00-rs-overview.md`（RS 是谁、boot 排第几）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（主循环的收信形状）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md`（握手协议的另一半：RS 侧）
+> **前置**: `rewrite-notes/03-stage-rs/00-rs-overview.md`（RS 是谁、boot 排第几）、`rewrite-notes/03-stage-rs/06-rs-main-loop.md`（主循环的收信形状）、`rewrite-notes/03-stage-rs/12-rs-init-run.md`（握手协议的另一半：RS 侧）
 > **说明**: 一个服务进程从"刚被装载"到"能接客"，中间隔着一条由框架库守住的门。本文档讲这条门：出生时它替服务跟 RS 说话，稳态时它替服务筛掉不该进业务代码的消息。
 
 ---
@@ -33,7 +33,7 @@ RS 把一个服务的二进制装载进内存、给它建好地址空间、让�
 > - RS 自己被重启、被更新时走的特殊路径 → `18-rs-self-lifecycle.md`
 > - `SEF_INIT_*` / `SEF_LU_*` 这些常量在 Rust 侧的唯一定义位置 → `99-rs-global-concepts.md`
 > - `sys_whoami` / `sys_getksig` / `vm_memctl` 这些调用本身的签名与线格式 → `19-rs-external-interfaces.md`
-> - 某个具体服务注册了哪几个回调、每个回调里做了什么 → 各服务文档的首章（例如 `notes/rewrite/fork-syscall-rewrite/04-stage-pm/01-pm-init-main.md`）
+> - 某个具体服务注册了哪几个回调、每个回调里做了什么 → 各服务文档的首章（例如 `rewrite-notes/04-stage-pm/01-pm-init-main.md`）
 
 ### 1.2 它是什么：一个库，不是一个服务
 
@@ -161,7 +161,7 @@ SEF 回答的是三个问题：什么时候能接客（出生握手）、接客�
 | `copy_flags` | `int` | 状态搬移的寻址方式（`SEF_COPY_DEST_OFFSET` 等） | 框架在状态搬移中回填 |
 | `prepare_state` | `int` | 热更新准备阶段状态 | RS |
 
-按 LP64（x86-64）对齐推导这个结构体的尺寸：5 个 4 字节字段占 0–19，指针要求 8 字节对齐故插入 4 字节填充，三个 8 字节量（两个指针 + 一个 `size_t`）占 24–47，最后 2 个 `int` 占 48–55，**总计 56 字节**。同一份定义在 32 位下是 40 字节（无填充、指针 4 字节）。这就是本重写项目里"结构体按 64 位重排"的判例之一（同类判断见 `notes/rewrite/fork-syscall-rewrite/03-stage-rs/17-rs-state-data.md`）。
+按 LP64（x86-64）对齐推导这个结构体的尺寸：5 个 4 字节字段占 0–19，指针要求 8 字节对齐故插入 4 字节填充，三个 8 字节量（两个指针 + 一个 `size_t`）占 24–47，最后 2 个 `int` 占 48–55，**总计 56 字节**。同一份定义在 32 位下是 40 字节（无填充、指针 4 字节）。这就是本重写项目里"结构体按 64 位重排"的判例之一（同类判断见 `rewrite-notes/03-stage-rs/17-rs-state-data.md`）。
 
 这些字段全部住在**栈**上：`do_sef_init_request` 在函数体开头声明 `sef_init_info_t info` 并 `memset` 清零，然后把消息里的值逐个搬进去，再把 `&info` 交给 `process_init`（`sef_init.c:do_sef_init_request`）。函数返回后这块栈就失效——所以初始化回调如果想留住 `info` 里的任何指针（例如 `init_buff_start`），必须在回调内用完。
 
@@ -205,7 +205,7 @@ SEF 回答的是三个问题：什么时候能接客（出生握手）、接客�
 
 `sef_init.c:process_init` 是出生握手的心脏。无论是 RS 自造参数（§2.3.2）、还是主循环前收到的出生请求（§2.3.1 第 3 条路），最终都汇到这一个函数。它的动作顺序是硬编码的，每一段都有"必须在此时"的理由。
 
-**第一段：撤除 IPC 过滤。** 内核侧这一请求的处理是 `clear_ipc_filters(caller)`（`minix3/minix/kernel/system/do_statectl.c` 的 `SYS_STATE_CLEAR_IPC_FILTERS` 分支，L42，工具生成；请求号定义在 `minix3/minix/include/minix/com.h:SYS_STATE_CLEAR_IPC_FILTERS`）。过滤器的语义是"只放行匹配项，其余收不到"，挂着它就收不到全量业务消息。谁会给一个进程装过滤器？当前源码里加白名单的调用方有 VM（`minix3/minix/servers/vm/main.c:666`，在自己的初始化里加）、RS（`minix3/minix/servers/rs/utility.c:266`，带超时的接收，注释自述"假设 RS 此前没挂过过滤器"）以及热更新时的过滤规则搬移（`sef_liveupdate.c:336`）。于是这一步的确定作用是：**从上一世（重启或热更新回滚）继承下来的过滤规则，在新世出生时被无条件清干净**。"新进程从创建到出生之间是否已被装了过滤器"此处不下结论——需核对 RS 与 VM 的装载路径（归 `notes/rewrite/fork-syscall-rewrite/03-stage-rs/05-rs-ipc-sendmask.md`）[待验证]。
+**第一段：撤除 IPC 过滤。** 内核侧这一请求的处理是 `clear_ipc_filters(caller)`（`minix3/minix/kernel/system/do_statectl.c` 的 `SYS_STATE_CLEAR_IPC_FILTERS` 分支，L42，工具生成；请求号定义在 `minix3/minix/include/minix/com.h:SYS_STATE_CLEAR_IPC_FILTERS`）。过滤器的语义是"只放行匹配项，其余收不到"，挂着它就收不到全量业务消息。谁会给一个进程装过滤器？当前源码里加白名单的调用方有 VM（`minix3/minix/servers/vm/main.c:666`，在自己的初始化里加）、RS（`minix3/minix/servers/rs/utility.c:266`，带超时的接收，注释自述"假设 RS 此前没挂过过滤器"）以及热更新时的过滤规则搬移（`sef_liveupdate.c:336`）。于是这一步的确定作用是：**从上一世（重启或热更新回滚）继承下来的过滤规则，在新世出生时被无条件清干净**。"新进程从创建到出生之间是否已被装了过滤器"此处不下结论——需核对 RS 与 VM 的装载路径（归 `rewrite-notes/03-stage-rs/05-rs-ipc-sendmask.md`）[待验证]。
 
 **第二段：建一个覆盖全地址空间的只读授权，并且要求它的编号必须是 0。** `cpf_grant_direct(sef_self_endpoint, 0, ULONG_MAX, CPF_READ)` 把"我自己的整个地址空间、允许别人只读"登记成一个授权项（`sef_init.c:process_init`）。要求编号等于 `SEF_STATE_TRANSFER_GID`（值 0，`sef.h:SEF_STATE_TRANSFER_GID`）的原因在授权表的分配策略里：这张表是**每个进程自己内存里的一条数组**（实现 `safecopies.c:cpf_grant_direct`），空闲槽串成按编号升序的链表，源码注释把这条约定直接写了出来——"升序加序号清零，是为了让第一个被分配的授权项编号为 0"（`safecopies.c:cpf_prealloc`）。所这个断言实际在检查一件更脆的事：**我是本进程里第一个创建授权项的人**。若某个服务的构造函数（比 `sef_local_startup` 更早跑）已经建过授权项，0 号被占，服务会在出生时直接 panic。这是一条真实存在的隐式契约，重写侧若要用同一约定必须显式建模（见 §3.6）。
 
@@ -250,7 +250,7 @@ int sef_cb_init_response_rs_asyn_once(message *m_ptr) {
 int sef_cb_init_response_null(message *UNUSED(m_ptr)) { return ENOSYS; }
 ```
 
-`ipc_sendrec` 是"发送并等回复"的合成调用：本进程发出后停在回复相位，直到 RS 处理完并回应。这正是 §1.1 那个矛盾的另一面——**出生回报是一次请求-应答，不是一条通知**。如果这里退化成单向 `ipc_send`，RS 的回应就成了没人认领的消息，会被当成新请求处理，进而产生"回声投回 RS"的错乱；本重写项目实现这条腿时踩过的具体坑与取证记录见 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 的 B9 / B9b 两节；C 真值是确定的：默认腿必须是 sendrec。
+`ipc_sendrec` 是"发送并等回复"的合成调用：本进程发出后停在回复相位，直到 RS 处理完并回应。这正是 §1.1 那个矛盾的另一面——**出生回报是一次请求-应答，不是一条通知**。如果这里退化成单向 `ipc_send`，RS 的回应就成了没人认领的消息，会被当成新请求处理，进而产生"回声投回 RS"的错乱；本重写项目实现这条腿时踩过的具体坑与取证记录见 `rewrite-notes/coordination/NK4C-WORKLOG.md` 的 B9 / B9b 两节；C 真值是确定的：默认腿必须是 sendrec。
 
 第二条腿是给 VM 的：`sef_cb_init_response_rs_asyn_once` 首条回报异步发送、之后自动改回默认腿。VM 在 `sef_local_startup` 里按 `__vm_init_fresh` 条件登记它（`minix3/minix/servers/vm/main.c:219-240`）。
 
@@ -299,7 +299,7 @@ void sef_cb_ping_reply_pong(endpoint_t source) {
 }
 ```
 
-默认回调就是"回一条通知给发探针的人"，另一个现成答案 `sef_cb_ping_reply_null` 什么都不做——登记它等于自愿让 RS 以为自己死了。这一对是框架里少见的"默认即正确、显式登记才是选择"的臂。RS 多久探一次、探不到怎么处置，归 `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md`。
+默认回调就是"回一条通知给发探针的人"，另一个现成答案 `sef_cb_ping_reply_null` 什么都不做——登记它等于自愿让 RS 以为自己死了。这一对是框架里少见的"默认即正确、显式登记才是选择"的臂。RS 多久探一次、探不到怎么处置，归 `rewrite-notes/03-stage-rs/07-rs-period-heartbeat.md`。
 
 判据汇总表（§1.4 第 4 条的展开）：
 
@@ -337,9 +337,9 @@ void sef_cb_ping_reply_pong(endpoint_t source) {
   }
 ```
 
-三点性质：① 只有信号管理器进程会调用 `sys_getksig`，别的进程没有代理权；② `sys_endksig(target)` 是"投递完成"的确认，若回调中途发现目标死了（`EDEADEPT`）就**不发这个确认**，信号留在内核等下次；③ 外层 `while(TRUE)` 会一直抽干内核里的待处理信号才回到收信循环——所以一次通知可能引发多轮代理。谁充当信号管理器、PM 在这条链上的分工归 `notes/rewrite/fork-syscall-rewrite/04-stage-pm/13-signal-flow.md`；本框架只负责"抽干并回调"。
+三点性质：① 只有信号管理器进程会调用 `sys_getksig`，别的进程没有代理权；② `sys_endksig(target)` 是"投递完成"的确认，若回调中途发现目标死了（`EDEADEPT`）就**不发这个确认**，信号留在内核等下次；③ 外层 `while(TRUE)` 会一直抽干内核里的待处理信号才回到收信循环——所以一次通知可能引发多轮代理。谁充当信号管理器、PM 在这条链上的分工归 `rewrite-notes/04-stage-pm/13-signal-flow.md`；本框架只负责"抽干并回调"。
 
-库给的现成处理回调有三个极端：`sef_cb_signal_handler_null`（什么都不做）、`sef_cb_signal_handler_term`（只认 `SIGTERM`，收到就 `sef_exit(1)`，其它忽略）、`sef_cb_signal_handler_posix_default`（把可忽略的 `SIGCHLD`/`SIGWINCH`/`SIGCONT`/`SIGTSTP`/`SIGTTIN`/`SIGTTOU` 放过、其余一律终止，但**内核信号不放**，判据 `IS_SIGK`，`minix3/sys/sys/signal.h:IS_SIGK`）——因为内核信号（如 `SIGKMEM`）不是要杀你，而是通知你有事发生（VM 就靠它触发内存回收，见 `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`）。
+库给的现成处理回调有三个极端：`sef_cb_signal_handler_null`（什么都不做）、`sef_cb_signal_handler_term`（只认 `SIGTERM`，收到就 `sef_exit(1)`，其它忽略）、`sef_cb_signal_handler_posix_default`（把可忽略的 `SIGCHLD`/`SIGWINCH`/`SIGCONT`/`SIGTSTP`/`SIGTTIN`/`SIGTTOU` 放过、其余一律终止，但**内核信号不放**，判据 `IS_SIGK`，`minix3/sys/sys/signal.h:IS_SIGK`）——因为内核信号（如 `SIGKMEM`）不是要杀你，而是通知你有事发生（VM 就靠它触发内存回收，见 `rewrite-notes/02-stage-vm/01-vm-init-main.md`）。
 
 #### 2.3.9 热更新的库侧半：一问一答之外还有"每轮自问"
 
@@ -474,7 +474,7 @@ IPC 动词靠注入而非直调：`os/libs/minix-sef/src/lib.rs:SefIpc` 只要 `
 
 C 的六条腿里，重写侧只做了 init / ping / signal 三条。理由不是工作量，而是依赖：
 
-- 热更新与状态搬移臂（§2.3.9、§2.3.10）依赖本项目的 `live-update` 战役（RS 侧开关已建模为 cargo feature，归 `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`），库内提前实现会得到一堆永不被调用的分支（死代码）。
+- 热更新与状态搬移臂（§2.3.9、§2.3.10）依赖本项目的 `live-update` 战役（RS 侧开关已建模为 cargo feature，归 `rewrite-notes/03-stage-rs/16-rs-live-update.md`），库内提前实现会得到一堆永不被调用的分支（死代码）。
 - 覆盖统计臂依赖内核的 `USE_COVERAGE` 编译配置，本重写项目的测试策略不走代码覆盖率采集。
 - 故障注入臂依赖 RS 侧的 `RS_FI_CRASH` 发起方与内核的受控崩溃语义（§2.3.4 的 `sef_controlled_crash`）。
 
@@ -522,7 +522,7 @@ C 的 `sef_signal.c:do_sef_signal_request` 对内核通知要遍历 `SIGK_FIRST.
 | `sef.c:263-270` 落到 `default` 后 `break` 返回 | `lib.rs:sef_receive_status` 末尾的 `SefEvent::Call(m_type)` | 同 |
 | `sef_init.c:process_init` 尾部的回报构造 | `lib.rs:sef_init_reply` | 部分：构造了 `m_type` 与 result，未构造 `m_source`（§3.6 T6） |
 
-还有一个形状上的选择值得注意：返回值类型 `os/libs/minix-sef/src/lib.rs:SefReceive` 把"来源 + 消息 + 状态字 + 分类结论"打包返回，而 C 把来源与状态字写回调用方给的指针。后者的代价是调用方必须自己记住去看 `status`，前者把"分类结论"这个信息并入了类型——服务写 `match recv.event` 而不是 `if is_ipc_notify(status) && m_source == RS`。这不是风格差异：前者让"漏看状态字"这类错误在编译期就不可能出现（本项目的 VM 服务器曾因误把通知当业务请求处理踩过同类问题，归 `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`）。
+还有一个形状上的选择值得注意：返回值类型 `os/libs/minix-sef/src/lib.rs:SefReceive` 把"来源 + 消息 + 状态字 + 分类结论"打包返回，而 C 把来源与状态字写回调用方给的指针。后者的代价是调用方必须自己记住去看 `status`，前者把"分类结论"这个信息并入了类型——服务写 `match recv.event` 而不是 `if is_ipc_notify(status) && m_source == RS`。这不是风格差异：前者让"漏看状态字"这类错误在编译期就不可能出现（本项目的 VM 服务器曾因误把通知当业务请求处理踩过同类问题，归 `rewrite-notes/02-stage-vm/15-ipc-dispatch.md`）。
 
 ### 4.2 真实消费点清单
 
@@ -623,8 +623,8 @@ loop {
 1. **出生应答的发送原语形状**（推自 §2.3.5 与 §3.6 T7）：断言出生回报走的是"发送并等回复"而不是单向发；反面例子是只返 `Ok(())` 而不校验消息体与目标端点，那种断言永真，测不出退化。
 2. **信号集解析**（推自 §3.5 与 T1）：已补——给定一个带 `SIGKMEM` 与 `SIGKSIG` 的通知，服务能分别得到两个信号号（`test_notify_sigset_walks_kernel_signals_ascending` 钉升序与号码本身），低字位不算内核信号、空位图只走一次兜底也各有测试；管理器形的号码直通与“不拦截 init 及以上端点”同样已钉。剩余缺口：`SIGKSIG` 触发的代理循环（`sys_getksig`/`sys_endksig` 三段循环）仍无对位物，以及 §3.5 第一条差异——实机通知位图因 `SigSet` 仍为 64 位而恒空，展开分支目下只在宿主可驱动。
 3. **`Init` 与 `Call` 不串台**（推自 §3.2 的上浮决策）：同一条 `RS_INIT` 不应同时被当成业务请求处理；需要一个跨服务回归（选一个真实消费方，如 `os/servers/mib/src/server.rs:run_once`）而不是只在库里测。
-4. **异步腿的一次性语义**（推自 §2.3.5 第二条腿与 VM）：首条回报异步、后续回到阻塞；重写侧目前只 VM 带这个豁免，回归面应限定在 VM（归 `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`）。
-5. **从信号回调里退出主循环**（推自 §2.3.6 第 1 点的 `sef_cancel`）：重写侧仍无 `sef_cancel` 等价物（库层没有「本轮不想再收」的入口），但服务侧的形状已有实例：IS 把回调里的决定当成 `LifecycleAction` 一步步传上主循环——回调置位、`step()` 提前返回、`run()` 才真的 `exit(0)`（`os/servers/is/src/lib.rs:step`/`run`，归 `notes/rewrite/fork-syscall-rewrite/08-stage-is/01-is-init-main.md` §2.8）。这带着一个必须记下的偏离：C 是在 `sef_receive_status` 内部直接 `exit(0)`，那一帧永不返回调用方；本树的 `receive` 已经返回了那一帧（携带信号的 `SYSTEM` 通知），服务必须在分派**之前**先看退出位——IS 的测试钉住了这一点（那一帧不产生回复也不产生非法请求告警）。该未定计已由 PD-27 定案并落地（§续-428）：库层返 `EINTR`（`SefCancel` 令牌，循环顶检查），uds/lwip/fs-rt/ipc/IS 五服务已接「收到中断→检查退出标志→退出」的同拍形状。ipc 与 RS 已按同族形状落地（ipc：回调报三态 `SignalStep`、主循环持退出权，§续-424；RS：`get_work` 吞信号帧后在交还前应用判定，§续-425），三实例形状一致——决定不能走返回值，只能由回调把状态带上主循环。
+4. **异步腿的一次性语义**（推自 §2.3.5 第二条腿与 VM）：首条回报异步、后续回到阻塞；重写侧目前只 VM 带这个豁免，回归面应限定在 VM（归 `rewrite-notes/02-stage-vm/01-vm-init-main.md`）。
+5. **从信号回调里退出主循环**（推自 §2.3.6 第 1 点的 `sef_cancel`）：重写侧仍无 `sef_cancel` 等价物（库层没有「本轮不想再收」的入口），但服务侧的形状已有实例：IS 把回调里的决定当成 `LifecycleAction` 一步步传上主循环——回调置位、`step()` 提前返回、`run()` 才真的 `exit(0)`（`os/servers/is/src/lib.rs:step`/`run`，归 `rewrite-notes/08-stage-is/01-is-init-main.md` §2.8）。这带着一个必须记下的偏离：C 是在 `sef_receive_status` 内部直接 `exit(0)`，那一帧永不返回调用方；本树的 `receive` 已经返回了那一帧（携带信号的 `SYSTEM` 通知），服务必须在分派**之前**先看退出位——IS 的测试钉住了这一点（那一帧不产生回复也不产生非法请求告警）。该未定计已由 PD-27 定案并落地（§续-428）：库层返 `EINTR`（`SefCancel` 令牌，循环顶检查），uds/lwip/fs-rt/ipc/IS 五服务已接「收到中断→检查退出标志→退出」的同拍形状。ipc 与 RS 已按同族形状落地（ipc：回调报三态 `SignalStep`、主循环持退出权，§续-424；RS：`get_work` 吞信号帧后在交还前应用判定，§续-425），三实例形状一致——决定不能走返回值，只能由回调把状态带上主循环。
 6. **未建模四类拦截的回归哨兵**（推自 §3.4）：当 `live-update` 战役开工时，至少要先补一个"收到 `RS_LU_PREPARE` 当前会落到 `Call` 分派表"的当前行为断言，否则将来改造时说不清"之前是怎么表现"的（这类断言只锁当前行为，不为缺失功能开证）。
 
 ### 5.3 三套 trait 的逐方法同构表（PD-25 的交付物）
@@ -647,18 +647,18 @@ C 的回调注册面是 `sef.h` 的 `sef_cb_*` 函数指针族；重写侧它分
 
 ## 6. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/00-rs-overview.md` —— RS 全局心智模型与机制归属导航
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md` —— RS 自己的 `sef_local_startup` 与四步 boot（本档的上游调用点）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md` —— 主循环收信形状（理解"门口拦截"的前置）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` —— 探针与心跳的发起侧
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md` —— 出生握手的 RS 侧半
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`、`…/17-rs-state-data.md`、`…/18-rs-self-lifecycle.md` —— 热更新的状态机、数据形状、RS 自身路径
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` —— libsys 动词签名面
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/99-rs-global-concepts.md` —— `SEF_*` 常量的权威定义位置
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` —— VM 的异步豁免与 `SIGKMEM` 使用方
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/01-pm-init-main.md` —— PM 视角的注册表与 `process_init` 路径
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/13-signal-flow.md` —— 信号在 PM/内核/信号管理器之间的完整流向
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/` 与 `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/` —— 八个文件系统二进制与驱动框架的事件循环
+- `rewrite-notes/03-stage-rs/00-rs-overview.md` —— RS 全局心智模型与机制归属导航
+- `rewrite-notes/03-stage-rs/01-rs-boot-init.md` —— RS 自己的 `sef_local_startup` 与四步 boot（本档的上游调用点）
+- `rewrite-notes/03-stage-rs/06-rs-main-loop.md` —— 主循环收信形状（理解"门口拦截"的前置）
+- `rewrite-notes/03-stage-rs/07-rs-period-heartbeat.md` —— 探针与心跳的发起侧
+- `rewrite-notes/03-stage-rs/12-rs-init-run.md` —— 出生握手的 RS 侧半
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md`、`…/17-rs-state-data.md`、`…/18-rs-self-lifecycle.md` —— 热更新的状态机、数据形状、RS 自身路径
+- `rewrite-notes/03-stage-rs/19-rs-external-interfaces.md` —— libsys 动词签名面
+- `rewrite-notes/03-stage-rs/99-rs-global-concepts.md` —— `SEF_*` 常量的权威定义位置
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` —— VM 的异步豁免与 `SIGKMEM` 使用方
+- `rewrite-notes/04-stage-pm/01-pm-init-main.md` —— PM 视角的注册表与 `process_init` 路径
+- `rewrite-notes/04-stage-pm/13-signal-flow.md` —— 信号在 PM/内核/信号管理器之间的完整流向
+- `rewrite-notes/15-stage-fs/` 与 `rewrite-notes/16-stage-drivers/` —— 八个文件系统二进制与驱动框架的事件循环
 
 ---
 

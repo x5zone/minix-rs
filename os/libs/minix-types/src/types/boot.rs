@@ -136,7 +136,7 @@ impl HandoffModule {
 ///   page fault on the very first user stack access no matter what the
 ///   page tables contain; in-guest software page-table walks do not check
 ///   canonicality, so nothing on the guest side notices. History and full
-///   evidence: `notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md`.
+///   evidence: `rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md`.
 ///
 /// This is the single authority: the boot shims publish it as
 /// `KernelInfo::user_sp` and the exec path uses it as the boot-contract
@@ -152,7 +152,7 @@ pub const USER_STACK_TOP: u64 = if cfg!(target_arch = "riscv64") {
 /// One past the last valid user virtual address — the user-half limit.
 ///
 /// Derivation per architecture (T13 地址常量审计 R1：
-/// `notes/rewrite/fork-syscall-rewrite/ADDRESS-CONSTANT-AUDIT.md` §1/§3):
+/// `rewrite-notes/coordination/ADDRESS-CONSTANT-AUDIT.md` §1/§3):
 ///
 /// - x86_64 (four-level paging, LA57 absent): the user half is
 ///   `[0, 2^47)`; `2^47` is the PML4[256] kernel-half base. A canonical

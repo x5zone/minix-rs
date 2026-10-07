@@ -144,6 +144,6 @@ C 语言的边界函数把相等判断写在函数体内，Rust 实现把第 06 
 - `minix3/minix/include/minix/com.h`：调用号的原始定义。
 - `minix3/minix/include/minix/ipc.h`：载荷布局的原始定义。
 - `minix3/sys/sys/mman.h`：保护位与标志的原始定义。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/06-allocator.md`：前置篇，边界规则是本篇的消费对象。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/11-misc-syscalls.md`：后一篇，杂项调用组。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/06-allocator.md`：前置篇，边界规则是本篇的消费对象。
+- `rewrite-notes/14-stage-runtime/11-misc-syscalls.md`：后一篇，杂项调用组。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

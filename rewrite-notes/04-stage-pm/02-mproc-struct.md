@@ -712,11 +712,11 @@ C 的 `*rmc = *rmp` 是全量复制后修正（minix3/minix/servers/pm/forkexit.
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/plan.md` §2/§3.4/§4（A-1/A-2/A-11）/§5.3/§7.3
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/01-pm-init-main.md` §2.4 第 1 步（mproc 表初始化）与 §3.8（Redox/Linux 对照风格）
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/draft/mproc-design.md`（旧主线素材，本档已按新主线重写）
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md`（boot image 与四表）
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/19-syscall-signal.md`（内核信号路径）
+- `rewrite-notes/04-stage-pm/plan.md` §2/§3.4/§4（A-1/A-2/A-11）/§5.3/§7.3
+- `rewrite-notes/04-stage-pm/01-pm-init-main.md` §2.4 第 1 步（mproc 表初始化）与 §3.8（Redox/Linux 对照风格）
+- `rewrite-notes/04-stage-pm/draft/mproc-design.md`（旧主线素材，本档已按新主线重写）
+- `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md`（boot image 与四表）
+- `rewrite-notes/01-stage-kernel/19-syscall-signal.md`（内核信号路径）
 - `minix3/minix/servers/pm/mproc.h`、`main.c`、`forkexit.c`、`signal.c`、`exec.c`、`const.h`（ground truth）
 - `minix3/sys/sys/sigtypes.h`、`minix3/sys/sys/signal.h`（sigset_t/sigaction 定义）
 - `os/servers/pm/src/mproc/`（Rust 实现）

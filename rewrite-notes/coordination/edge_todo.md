@@ -730,7 +730,7 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ## E-DMCLIENT minix-devman-client 孤儿 crate 处置：与 minix-sys 客户端职责重叠（11-stage-devman 首轮架构审查登记，2026-09-15）
 
-**问题**：`os/libs/minix-devman-client/`（3 文件 395 行，6 测试）在仓库里没有消费者：workspace 成员注册（os/Cargo.toml:194）之外，无任何 Cargo.toml 依赖它，无任何 .rs 引用其符号（grep 全仓实测）。它声称的职责是"驱动侧设备记账 + USB 跟踪 + 序列化尺寸"（device.rs:1-8、usb.rs:1-8），但 doc 10/11 钦定的正式实现在 `minix-sys/src/devman_client.rs`（encode_device 字节兼容 serialize_dev + ClientTransport + handle_msg）与 `usb_model.rs`（UsbDevice/属性生成/add_usb/remove_usb）——两侧存在概念级重叠（device.rs `Registry`/`DeviceRecord` vs devman_client `ClientDevice`；usb.rs `UsbDevice`/`UsbTracker` vs usb_model `UsbDevice`；device.rs `serialized_size` vs encode_device 整体编码），且孤儿侧功能是子集（无 wire 编码、无 IPC）。唯一的外部引用是 16-stage-drivers 的评审文档 `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/12-gpio-devman.md:200` 把它列为测试目标（`cargo test -p minix-driver-gpio -p minix-devman-client --lib`），但 gpio 驱动 crate（os/drivers/system/gpio）的 Cargo.toml 并不依赖它——连带 gpio 的 lib.rs:5-6 文档注释字面写的"see the `minix-devman` crate"指向的是 **server crate 的包名**（驱动依赖服务器 crate 是分层违例），实际意图应是 minix-sys 的 devman_client 模块；引用关系三方（孤儿 crate、server 包名、正式客户端模块）纠缠不清。
+**问题**：`os/libs/minix-devman-client/`（3 文件 395 行，6 测试）在仓库里没有消费者：workspace 成员注册（os/Cargo.toml:194）之外，无任何 Cargo.toml 依赖它，无任何 .rs 引用其符号（grep 全仓实测）。它声称的职责是"驱动侧设备记账 + USB 跟踪 + 序列化尺寸"（device.rs:1-8、usb.rs:1-8），但 doc 10/11 钦定的正式实现在 `minix-sys/src/devman_client.rs`（encode_device 字节兼容 serialize_dev + ClientTransport + handle_msg）与 `usb_model.rs`（UsbDevice/属性生成/add_usb/remove_usb）——两侧存在概念级重叠（device.rs `Registry`/`DeviceRecord` vs devman_client `ClientDevice`；usb.rs `UsbDevice`/`UsbTracker` vs usb_model `UsbDevice`；device.rs `serialized_size` vs encode_device 整体编码），且孤儿侧功能是子集（无 wire 编码、无 IPC）。唯一的外部引用是 16-stage-drivers 的评审文档 `rewrite-notes/16-stage-drivers/12-gpio-devman.md:200` 把它列为测试目标（`cargo test -p minix-driver-gpio -p minix-devman-client --lib`），但 gpio 驱动 crate（os/drivers/system/gpio）的 Cargo.toml 并不依赖它——连带 gpio 的 lib.rs:5-6 文档注释字面写的"see the `minix-devman` crate"指向的是 **server crate 的包名**（驱动依赖服务器 crate 是分层违例），实际意图应是 minix-sys 的 devman_client 模块；引用关系三方（孤儿 crate、server 包名、正式客户端模块）纠缠不清。
 
 **影响**：第二真相源存活——未来驱动作者搜"devman client"会先撞到孤儿 crate，按它记账（handle 复用语义与 devman 服务端的 dev_id 单调不复用**直接矛盾**：device.rs:101-111 的 `add` 复用已删 handle，而服务端 device_tree.rs:155 的 id 永不复用），写出的驱动注册逻辑与真实协议不符。
 
@@ -1165,8 +1165,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ### D. 仓级 / 杂项
 
-- notes/TODO.md：文件拆分整理尾项（improve_minix.md 删除或合并确认）
-- OQ：notes/study + notes/rewrite/archive_bak 是否正式收纳（33841ca07
+- rewrite-notes/misc/legacy-notes-todo.md：文件拆分整理尾项（improve_minix.md 删除或合并确认）
+- OQ：study-notes + rewrite-notes/archive/legacy-fork-bak 是否正式收纳（33841ca07
   分流时上交，.gitignore 已防复发，磁盘保留中）
 - OQ-N3 尾项：NS7/video-text/T4（见既有登记）
 

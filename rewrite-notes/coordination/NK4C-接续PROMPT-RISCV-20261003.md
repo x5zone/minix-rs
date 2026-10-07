@@ -1,7 +1,7 @@
 # NK4-C 接续 PROMPT（2026-10-03 · riscv 优先版）
 
 > 把本文件整段作为新会话的开场任务说明。它是**入口**，不是全部——真正的取证细节在
-> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=§续-279n/-b）。
+> `rewrite-notes/coordination/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=§续-279n/-b）。
 > 本 Prompt 与前作 `NK4C-接续PROMPT-20261003.md` 的关系：**前作的解锁条件 3（范围裁决：转推 aarch64）
 > 已被执行完毕并大获全收**；本版本把主攻方向切回 **(A) riscv**，并携带 aarch64 战役期间新增的
 > 资产、教训与台账。三终目标不变、`/goal` 永续持续推进，**riscv 最先**。
@@ -90,7 +90,7 @@ Kernel=SMP+BKL，用户服务器单线程事件循环）。三条终目标：
   不被掩盖；stall 判定与 2 无结果行案对账一致），全绿条件=D1 口径+D3b。
 - 回归基线：host 4 包集 0 failed、VM host 535/0、check-layout all PASS、x86 smoke PASS、
   aarch64 bootmarks rc=0、双 arch 18/18 链面零警告（§续-279n-b 复验）。
-- **工作区注记**：`notes/rewrite/fork-syscall-rewrite/03-stage-rs/{00-rs-overview,doc_rerank_qwen}.md`
+- **工作区注记**：`rewrite-notes/03-stage-rs/{00-rs-overview,doc_rerank_qwen}.md`
   有两处**非本会话所改**的脏文件（21→22 篇文档计数），留给用户/RS 文档线处置，**勿顺手 commit**。
 
 ---

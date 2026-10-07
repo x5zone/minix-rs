@@ -3,7 +3,7 @@
 > **分类**：轻量协议栈服务接口面第 2 篇，覆盖接口操作表、硬件地址列表、环回接口的传输单元与数量边界
 > **源码**：`minix3/minix/net/lwip/ifdev.c`（1064 行）、对象布局 `minix3/minix/net/lwip/ifdev.h`（155 行）、环回实例 `minix3/minix/net/lwip/loopif.c`（420 行）
 > **Rust 模块**：`os/net/lwip/src/ifdev.rs`（操作表计数、硬件列表规则、环回边界函数）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/13-lwip-ndev.md`（网络设备消费侧，槽位活动是接口创建的前提）
+> **前置依赖**：`rewrite-notes/17-stage-net/13-lwip-ndev.md`（网络设备消费侧，槽位活动是接口创建的前提）
 >
 > **本篇不覆盖的内容**：
 > - 以太网接口的具体实现（在第 15 篇，本文只定义通用操作表的形状）
@@ -137,10 +137,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/13-lwip-ndev.md`：网络设备消费侧，接口创建的前提。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/15-lwip-ethif.md`：以太网实例，通用表的具体填充。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/16-lwip-ifaddr.md`：接口地址管理，地址字段的归属。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/13-lwip-ndev.md`：网络设备消费侧，接口创建的前提。
+- `rewrite-notes/17-stage-net/15-lwip-ethif.md`：以太网实例，通用表的具体填充。
+- `rewrite-notes/17-stage-net/16-lwip-ifaddr.md`：接口地址管理，地址字段的归属。
 - `os/net/lwip/src/ifdev.rs`：操作表计数、硬件列表与环回边界的实现。
 - `minix3/minix/net/lwip/ifdev.c`：接口对象的原始实现（1064 行）。
 - `minix3/minix/net/lwip/ifdev.h`：对象布局的原始定义（155 行）。

@@ -4,7 +4,7 @@
 
 - **执行者**：qwen（R 相 · 重建蓝图）
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/11-stage-devman/`
+- **目标目录**：`rewrite-notes/11-stage-devman/`
 - **仓库根**：`/home/xzhao/github/minix-rs`，当前提交 `606e97607`
 - **任务规格**：`AI-chats/doc-rerank-R-prompt.md`；用户补充三-note：①单篇行数上限是软的（一个概念写到 3000 行可接受，但一般控制长度利于阅读）；②旧文档数量不是限制；③旧文档可能含错误或大量未经人工审阅的内容，真相源是 minix3 C + Rust 代码，必要时可重建。
 

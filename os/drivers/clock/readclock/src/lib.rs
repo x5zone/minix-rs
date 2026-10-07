@@ -7,7 +7,7 @@
 //! and the policy (protocol decoding, conversions, permission gates);
 //! the service binary owns the transport (copies, grants, chip access).
 //! See document `10-readclock-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

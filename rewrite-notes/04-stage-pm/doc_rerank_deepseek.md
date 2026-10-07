@@ -4,7 +4,7 @@
 
 ```text
 your_name(AI agent name) = deepseek
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/04-stage-pm
+target_dir(关注的工作目录) = rewrite-notes/04-stage-pm
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = 7bc7f0c219c4a1bca7845ffe109af0efb680f06c（2026-09-19）
 任务 = R 相·重建蓝图：只产出本文件，不改任何正文。

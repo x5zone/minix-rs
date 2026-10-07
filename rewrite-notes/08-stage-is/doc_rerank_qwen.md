@@ -5,7 +5,7 @@
 ```text
 执行者   = qwen
 日期     = 2026-09-19
-目标目录 = notes/rewrite/fork-syscall-rewrite/08-stage-is/
+目标目录 = rewrite-notes/08-stage-is/
 仓库根   = /home/xzhao/github/minix-rs
 当前提交 = 40dfbbeb9（2026-09-19，git log -1 实测）
 任务     = R 相·重建蓝图：只产出本文件，不改任何正文。

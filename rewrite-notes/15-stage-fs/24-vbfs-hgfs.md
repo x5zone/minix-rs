@@ -3,7 +3,7 @@
 > **分类**：桥接变体·宿主共享（桥接主线单篇，后置，阶段收官篇）
 > **源码**：`minix3/minix/lib/libsffs/`（全部十五个源文件）：`main.c`（五十九行）、`mount.c`（八十九行）、`lookup.c`（一百五十行）、`verify.c`（一百一十八行）、`path.c`（一百零八行）、`name.c`（五十二行）、`handle.c`（七十七行）、`dentry.c`（一百八十三行）、`inode.c`（二百九十二行）、`link.c`（三百六十六行）、`read.c`（一百七十三行）、`stat.c`（一百七十六行）、`write.c`（一百三十一行）、`misc.c`、`table.c`（二十八行）；`minix3/minix/fs/vbfs/vbfs.c`（一百四十一行）；`minix3/minix/fs/hgfs/hgfs.c`（一百零六行）
 > **Rust 模块**：`os/libs/minix-sffs/src/`（框架：`params.rs`、`path.rs`、`name.rs`、`verify.rs`、`handles.rs`），`os/fs/vbfs/src/lib.rs`（装配），`os/fs/hgfs/src/lib.rs`（装配）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`（主循环与回调表），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/18-vtreefs.md`（框架对照：树在客侧与树在宿侧的两种框架）
+> **前置**：`rewrite-notes/15-stage-fs/01-fsdriver-task.md`（主循环与回调表），`rewrite-notes/15-stage-fs/18-vtreefs.md`（框架对照：树在客侧与树在宿侧的两种框架）
 > **说明**：宿主的文件进客系统：框架在客侧搭名字树，宿主表管 round trip round trip，每次用前先验鲜，句柄懒开静关，两个桥挂两套选项。本篇是十五加二共十七个源文件的完整语义，阶段收官。
 
 > **本章不讲什么**：
@@ -202,10 +202,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`：主循环与回调表（框架的调用方）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/18-vtreefs.md`：框架对照（树在客侧与树在宿侧）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/99-global-concepts.md`：全局概念（阶段阖卷）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/01-fsdriver-task.md`：主循环与回调表（框架的调用方）。
+- `rewrite-notes/15-stage-fs/18-vtreefs.md`：框架对照（树在客侧与树在宿侧）。
+- `rewrite-notes/15-stage-fs/99-global-concepts.md`：全局概念（阶段阖卷）。
 - `os/libs/minix-sffs/src/`：框架的实现。
 - `os/fs/vbfs/src/lib.rs`：虚拟机桥的实现。
 - `os/fs/hgfs/src/lib.rs`：vmware 桥的实现。

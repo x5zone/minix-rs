@@ -1,7 +1,7 @@
 # 10-stage-mib 文档重组计划（plan.md）
 
 > **状态**: 定稿（2026-08-16 首版 + 深度 review + minix3 源码回归 review，见 §7）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/10-stage-mib/`
+> **范围**: `rewrite-notes/10-stage-mib/`
 > **目标**: 以 **MIB server 启动顺序为主线**定义 MIB 全部文档；`sysctl(2)` 调用旅程为次主线；最终覆盖 Minix3 MIB server（`servers/mib/`，8 个 .c，4990 行）+ 协议面（`com.h`/`ipc.h`/`sysctl.h` 两层）+ 客户端契约（`libc` sysctl(3) 系列 + `libsys/rmib.c`）+ 外部消费者（ProcFS/IPC/LWIP/UDS）全部语义，支撑 MIB server 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/`/`07-stage-ds/`（同流程先例）、`minix3/minix/servers/mib/`（ground truth）、`os/servers/mib/`（Rust 实现：判定层 7187 行已落地，执行半待建，见 todo.md）
 

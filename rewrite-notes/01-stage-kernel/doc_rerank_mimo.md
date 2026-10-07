@@ -20,7 +20,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ## 0. 元数据
 
-- 执行者：mimo；日期：2026-09-23；目标目录：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`
+- 执行者：mimo；日期：2026-09-23；目标目录：`rewrite-notes/01-stage-kernel/`
 - 仓库根：`/home/xzhao/github/minix-rs`；当前提交：`28a916f86f1231c631aed91ef93bc3e14fcfc8fa`（后续复跑 `git log -1` 时以 `45c0682f92569d65e26721edcdfdc409a1d0977d` 亦可见——工作区在取证期间有新提交，本报告锚点均为文件:符号级，不依赖行号快照）
 
 ### 0.1 审查范围
@@ -998,7 +998,7 @@ $ 前向引用扫描（旧目录）                                  # 旧目录
 
 ```bash
 # 1) 文档间链接（339 处，旧目录内）
-rg -n '\[[0-9]{2}-[a-z0-9_-]+\.md\]' notes/rewrite/fork-syscall-rewrite/01-stage-kernel/ -g '!doc_rerank*'
+rg -n '\[[0-9]{2}-[a-z0-9_-]+\.md\]' rewrite-notes/01-stage-kernel/ -g '!doc_rerank*'
 # 2) os/ 代码注释（226 处命中本 stage 文件名；全仓 NN-title 模式 865 处含他 stage）
 rg -n '[0-9]{2}-(boot-shim|higher-half|kmain|platform|clock-interrupt|proc-init|cross-space|system-init|vm-boot|switch-to-user|scheduling|ipc-core|syscall-dispatch|exception|clock-timer|smp|syscall-process|syscall-copy|syscall-signal|syscall-device|syscall-clock|privilege|ipc-filter|misc-unported|watchdog|kernel-utility|usermapped|kernel-debug|kernel-profile|fpu|stack-tracing|syscall-caller|kernel-overview)[a-z-]*\.md' os/
 # 3) 跨 stage notes 引用（219 处）

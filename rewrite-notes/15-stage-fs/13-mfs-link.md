@@ -3,7 +3,7 @@
 > **分类**：参考实现·命名空间变更与截断释放（磁盘主线第 7 篇）
 > **源码**：`minix3/minix/fs/mfs/link.c`（全部六百三十八行）
 > **Rust 模块**：`os/fs/mfs/src/link.rs`（链接创建、文件删除、目录删除、符号链接读取、释放计划与截断决策）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`（内存索引节点的获取与释放），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/11-mfs-path.md`（目录内容的查找、进入与删除），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/12-mfs-open.md`（新文件的创建，本篇是创建的对称操作）
+> **前置**：`rewrite-notes/15-stage-fs/09-mfs-inode.md`（内存索引节点的获取与释放），`rewrite-notes/15-stage-fs/11-mfs-path.md`（目录内容的查找、进入与删除），`rewrite-notes/15-stage-fs/12-mfs-open.md`（新文件的创建，本篇是创建的对称操作）
 > **说明**：一个名字如何指向一个已经存在的文件，一个名字如何从目录里面消失，一个文件如何改名，以及文件中间的一段字节如何被挖空。本篇把判断逻辑与存储操作分开：判断放在本篇的纯计算计划里面，真正的写盘操作交给第 15 篇的写路径执行。
 
 > **本章不讲什么**：
@@ -231,11 +231,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`：索引节点的获取与释放（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/11-mfs-path.md`：目录的进入与删除（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/12-mfs-open.md`：新文件的创建（本篇的对称篇）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/14-mfs-read.md`：读路径与块号翻译（释放位置的依据）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/15-mfs-write.md`：写路径与释放执行（本篇计划的执行方）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/09-mfs-inode.md`：索引节点的获取与释放（本篇消费）。
+- `rewrite-notes/15-stage-fs/11-mfs-path.md`：目录的进入与删除（本篇消费）。
+- `rewrite-notes/15-stage-fs/12-mfs-open.md`：新文件的创建（本篇的对称篇）。
+- `rewrite-notes/15-stage-fs/14-mfs-read.md`：读路径与块号翻译（释放位置的依据）。
+- `rewrite-notes/15-stage-fs/15-mfs-write.md`：写路径与释放执行（本篇计划的执行方）。
 - `os/fs/mfs/src/link.rs`：链接与释放的实现。
 - `minix3/minix/fs/mfs/link.c`：链接与释放的原始实现（六百三十八行）。

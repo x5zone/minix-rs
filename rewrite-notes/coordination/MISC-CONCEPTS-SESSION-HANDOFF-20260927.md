@@ -6,11 +6,11 @@
 
 ## 1. 任务定义（常设任务）
 
-用户指令："从 FIXLOG、WORKLOG、REVIEW 账本等文件中扫描并发现模式，萃取值得记录的知识点（易错点、重点、方法论），写入 `notes/rewrite/fork-syscall-rewrite/misc_concepts.md`（01-stage-kernel 同层级）。"——代码在迭代、日志在追加，故为**增量式常设任务**：每次执行时只扫基线之后的变化，续作节点由用户以"知识点扫描"类指令触发。
+用户指令："从 FIXLOG、WORKLOG、REVIEW 账本等文件中扫描并发现模式，萃取值得记录的知识点（易错点、重点、方法论），写入 `rewrite-notes/misc/misc_concepts.md`（01-stage-kernel 同层级）。"——代码在迭代、日志在追加，故为**增量式常设任务**：每次执行时只扫基线之后的变化，续作节点由用户以"知识点扫描"类指令触发。
 
 ## 2. 交付物现状
 
-- 文件：`notes/rewrite/fork-syscall-rewrite/misc_concepts.md`——**81 条 / 约 660 行**，六章结构（1 构建与工具链 / 2 真机调试与取证 / 3 内核与架构易错点 / 4 测试与防回归 / 5 流程与协作纪律 / 6 知识库指南针）。
+- 文件：`rewrite-notes/misc/misc_concepts.md`——**81 条 / 约 660 行**，六章结构（1 构建与工具链 / 2 真机调试与取证 / 3 内核与架构易错点 / 4 测试与防回归 / 5 流程与协作纪律 / 6 知识库指南针）。
 - 每条三段式：机制/根因 → 正确做法 → `> 来源：` 锚点行；头部 `创建`/`重写` 元数据行记录各轮增量。
 - 质量门：`bash tools/doc-style-lint.sh <该文件>` 退出码 0（每轮写入后必跑）；禁词 grep 电池（SL-3/5/7 族）全过。
 - 入库 commit：c63d4ae6d（80 条入库）、82c12c4b8（并行线追加 5.19 多模式 grep 负结论纪律）。
@@ -48,8 +48,8 @@
 
 ## 5. 续作协议（增量扫描七步）
 
-1. **定基线**：`stat -c '%y' notes/rewrite/fork-syscall-rewrite/misc_concepts.md`（或看头部最后一行 `重写` 的日期）。
-2. **增量侦察**：`git log --since=<基线> --oneline` 按目录分布；`find notes/rewrite .review .zcode -name '*.md' -newer <基线>` 找变化文件；区分大增量/小增量/零变化，**零变化不重扫**。并行会话可能已推进仓库（本轮就遇到），以 git 现场为准。
+1. **定基线**：`stat -c '%y' rewrite-notes/misc/misc_concepts.md`（或看头部最后一行 `重写` 的日期）。
+2. **增量侦察**：`git log --since=<基线> --oneline` 按目录分布；`find rewrite-notes .review .zcode -name '*.md' -newer <基线>` 找变化文件；区分大增量/小增量/零变化，**零变化不重扫**。并行会话可能已推进仓库（本轮就遇到），以 git 现场为准。
 3. **并行萃取**：发 3 个 Explore agent（read-only）分片；大文件先 `grep -n '^## \|^### '` 建节清单，再用"教训|根因|更正|翻案|误诊|证伪|自检|定性|陷阱|假说|撤回|判别|防回归"定位高密度节精读，流水账跳过。统一 schema：`### 标题（一句话断言式）/ 分类 / 机制根因 / 正确做法 / 来源锚点 / 密度评级`。agent 可能报"user concurrency limit exceeded"——逐个重发即可。
 4. **锚点验证**：所有代码锚点（path:符号）与文档节名逐个 grep 实证后才写入；查不到的改描述性引用或标注。
 5. **去重合并**：新证据充实旧条 → 就地扩展（正文+来源行）；全新主题 → 追加新条（**编号顺延现章内编号，不重排不插号**）；确认与既有条目重复 → 只报不写。
@@ -96,8 +96,8 @@
 【任务】minix-rs 仓库"知识点扫描"线——新机续作
 
 你在 minix-rs 仓库（Minix3 内核 Rust 重写项目，路径按实际挂载）。此前会话建立了实操知识点汇总库
-notes/rewrite/fork-syscall-rewrite/misc_concepts.md（81 条，doc-style-lint 零命中），
-并留下完整交接档案 notes/rewrite/fork-syscall-rewrite/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md。
+rewrite-notes/misc/misc_concepts.md（81 条，doc-style-lint 零命中），
+并留下完整交接档案 rewrite-notes/coordination/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md。
 
 第 0 步：读交接档案全文（任务定义、源地图、续作协议、硬约束、待扫增量清单都在里面），不要重新侦察。
 第 1 步：按档案 §7 待扫增量清单开始增量扫描（基线 = misc_concepts.md 头部最后一行"重写"的日期）。

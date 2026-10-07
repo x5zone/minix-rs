@@ -3,7 +3,7 @@
 > **分类**: 阶段 2 — 权限与隔离（boot Step 1 的 IPC 掩码机制）
 > **源码**: `minix3/minix/servers/rs/manager.c:rproc（L2112，工具生成）`（`get_next_name`/`add_forward_ipc`/`add_backward_ipc`/`init_privs`）、`minix3/minix/servers/rs/utility.c:fill_send_mask`（`fill_send_mask` 原语，定义在 03）、`minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L272，工具生成）`（boot Step 1 的 ALL_M 快捷路径）、`minix3/minix/include/minix/rs.h:RSS_IPC_ALL`（`RSS_IPC_ALL`/`RSS_IPC_ALL_SYS`）、`minix3/minix/include/minix/priv.h:ALL_M,67-69`（`ALL_M`/`SRV_M`/`USR_M`）、`minix3/minix/servers/rs/manager.c:edit_slot`（`edit_slot` 拷入 `r_ipc_list`，归属 08）
 > **Rust 模块**: `os/servers/rs/src/ipc_mask.rs`（`IpcListIterator`/`add_forward_ipc`/`add_backward_ipc`/`init_privs`/`update_ipc_mask`）、`os/servers/rs/src/process_table.rs`（`iter_in_use`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（boot Step 1）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`ipc_list` 字段归属、表迭代）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md`（`Privilege::ipc_to`/`SysMap`/`fill_send_mask` 定义、`USER_PRIV_ID`）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/23-ipc-filter.md`（内核 send mask 强制语义）
+> **前置**: `rewrite-notes/03-stage-rs/01-rs-boot-init.md`（boot Step 1）、`rewrite-notes/03-stage-rs/02-rs-process-table.md`（`ipc_list` 字段归属、表迭代）、`rewrite-notes/03-stage-rs/03-rs-privilege.md`（`Privilege::ipc_to`/`SysMap`/`fill_send_mask` 定义、`USER_PRIV_ID`）、`rewrite-notes/01-stage-kernel/23-ipc-filter.md`（内核 send mask 强制语义）
 > **说明**: 服务的 `s_ipc_to` 是内核 priv 结构里"允许发往哪些 priv id"的 64 位位图（03 §1.2）。本文档回答两条计算路径：boot Step 1 的**全置快捷路径**（`fill_send_mask(..., ALL_M)`）与动态服务的 **r_ipc_list 解析路径**（`init_privs` → `add_forward_ipc` + `add_backward_ipc`）。后者是 RS 对"服务间消息可达性"的唯一精确配置点，也是 04 的"谁控制谁"之外的另一半隔离语义。
 
 ---
@@ -405,12 +405,12 @@ tty（priv id 10）/vm（priv id 13）两槽的表，纯数据驱动，不依赖
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md` — boot Step 1 时序
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` — `ipc_list` 字段、`RProcTable`/`iter_in_use`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md` — `Privilege::ipc_to`/`SysMap`/`fill_send_mask` 定义、boot 全置路径、privctl 提交
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md` — 并行的隔离面（谁控制谁）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md` — `r_ipc_list` 拷贝（edit_slot，minix3/minix/servers/rs/manager.c:rs_start（L1476，工具生成））与 `init_privs` 调用点（minix3/minix/servers/rs/manager.c:rs_start（L1700，工具生成））
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md` — `do_edit` 重新计算掩码（request.c:348）
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/23-ipc-filter.md` — 内核 send mask 强制与对称性检查
+- `rewrite-notes/03-stage-rs/01-rs-boot-init.md` — boot Step 1 时序
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` — `ipc_list` 字段、`RProcTable`/`iter_in_use`
+- `rewrite-notes/03-stage-rs/03-rs-privilege.md` — `Privilege::ipc_to`/`SysMap`/`fill_send_mask` 定义、boot 全置路径、privctl 提交
+- `rewrite-notes/03-stage-rs/04-rs-access-control.md` — 并行的隔离面（谁控制谁）
+- `rewrite-notes/03-stage-rs/08-rs-slot-config.md` — `r_ipc_list` 拷贝（edit_slot，minix3/minix/servers/rs/manager.c:rs_start（L1476，工具生成））与 `init_privs` 调用点（minix3/minix/servers/rs/manager.c:rs_start（L1700，工具生成））
+- `rewrite-notes/03-stage-rs/13-rs-control-requests.md` — `do_edit` 重新计算掩码（request.c:348）
+- `rewrite-notes/01-stage-kernel/23-ipc-filter.md` — 内核 send mask 强制与对称性检查
 - `minix3/minix/servers/rs/manager.c:rproc（L2112，工具生成）`、`utility.c:82-95`、`main.c:272-273`、`include/minix/rs.h:29-30`、`include/minix/priv.h:18,67-69`、`servers/rs/type.h:105` — ground truth
 - `os/servers/rs/src/ipc_mask.rs`、`os/servers/rs/src/process_table.rs` — Rust 实现

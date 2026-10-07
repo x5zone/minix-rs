@@ -27,7 +27,7 @@
 
 #### 📁 文件命名与存储
 
-- **存储位置**：`notes/study/vm/archive/` 目录
+- **存储位置**：`study-notes/vm/archive/` 目录
 - **命名规则**：`tmp_<原文件名>.md`
 - **示例**：
   - `servers/vm/main.c` → `archive/tmp_main.c.md`

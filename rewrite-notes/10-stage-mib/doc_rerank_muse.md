@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = muse
-target_dir(Attention working directory) = notes/rewrite/fork-syscall-rewrite/10-stage-mib
+target_dir(Attention working directory) = rewrite-notes/10-stage-mib
 repo_root = /home/xzhao/github/minix-rs
 commit = 3849cc792 (docs(edge3): S12 follow-up; verified 2026-09-20 by `git log --oneline -3`)
 task = R-phase rebuild blueprint: output target_dir/doc_rerank_muse.md, touch no prose files.
@@ -53,7 +53,7 @@ doc_language = This blueprint is written in English (per muse special requiremen
 ### 0.3 Commands run (evidence excerpts)
 
 ```bash
-wc -l notes/rewrite/fork-syscall-rewrite/10-stage-mib/*.md   # 24 docs: 82–247 lines each (§0.4)
+wc -l rewrite-notes/10-stage-mib/*.md   # 24 docs: 82–247 lines each (§0.4)
 wc -l minix3/minix/servers/mib/*.c *.h                        # 4990 C + 390 h (§1)
 git rev-parse --short HEAD                                    # 3849cc792
 sed -n '52,64p' minix3/minix/kernel/table.c                   # MIB slot after TTY, before VM

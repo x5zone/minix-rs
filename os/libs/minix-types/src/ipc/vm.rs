@@ -657,7 +657,7 @@ pub struct VmRegionInfo {
 /// it inline. The transport encoding of the array is `DEFERRED` —
 /// M1's 3-pointer + 3-int slot set carries only `count`/`next` in
 /// the kernel reply path. See
-/// `notes/rewrite/fork-syscall-rewrite/02-stage-vm/26-vm-queries.md`
+/// `rewrite-notes/02-stage-vm/26-vm-queries.md`
 /// §3.7 ("transport 缺口") for the explicit gap contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmReply {

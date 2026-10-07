@@ -2,7 +2,7 @@
 
 //! Partition and format core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/15-partition-format.md`:
+//! Covers `rewrite-notes/18-stage-commands/15-partition-format.md`:
 //! the partition table layout (`minix3/sys/sys/bootblock.h`: table at
 //! offset 446, magic `0xAA55` at 510, four 16 byte entries, active flag
 //! `0x80`, Minix types `0x80`/`0x81`), read and rewritten by

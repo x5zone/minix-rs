@@ -3,7 +3,7 @@
 > **分类**：套接字协议族用户数据报协议模块，覆盖协议号检查、发送标志与长度检查、组播默认配置、输入转发、选项设置
 > **源码**：`minix3/minix/net/lwip/udpsock.c`（997 行）
 > **Rust 模块**：`os/net/lwip/src/udpsock.rs`（协议号判断、发送标志判断、载荷边界判断、组播默认值）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层，创建与缓冲区语义）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/07-lwip-pktsock.md`（数据包共享层，容量门与默认表）
+> **前置依赖**：`rewrite-notes/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层，创建与缓冲区语义）、`rewrite-notes/17-stage-net/07-lwip-pktsock.md`（数据包共享层，容量门与默认表）
 >
 > **本篇不覆盖的内容**：
 > - 组播成员的加入与离开管理（在第 12 篇，本文只说明新建套接字的组播默认配置）
@@ -169,10 +169,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，创建与缓冲区语义。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/07-lwip-pktsock.md`：数据包共享层，容量门与默认表。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/10-lwip-rawsock.md`：原始套接字，共用规则的对照。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/12-lwip-mcast.md`：组播成员管理，选项的委托目标。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，创建与缓冲区语义。
+- `rewrite-notes/17-stage-net/07-lwip-pktsock.md`：数据包共享层，容量门与默认表。
+- `rewrite-notes/17-stage-net/10-lwip-rawsock.md`：原始套接字，共用规则的对照。
+- `rewrite-notes/17-stage-net/12-lwip-mcast.md`：组播成员管理，选项的委托目标。
 - `os/net/lwip/src/udpsock.rs`：协议号、发送检查与组播默认值的实现。
 - `minix3/minix/net/lwip/udpsock.c`：用户数据报协议的原始实现（997 行）。

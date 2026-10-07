@@ -647,8 +647,8 @@ ABI 层：EndpointRaw(i32) —— 完全对齐 Minix3
 
 ## 相关文档
 
-- [系统核心概念 README](../../../concepts/README.md) - 概念文档总览
-- [Endpoint 协议详解](../../../concepts/endpoint.md) - 完整的协议规范
+- [系统核心概念 README](../../concepts/README.md) - 概念文档总览
+- [Endpoint 协议详解](../../concepts/endpoint.md) - 完整的协议规范
 - [Endpoint Redesign 方案](../../../redesign/endpoint_redesign.md) - 类型驱动的现代设计
 
 ---

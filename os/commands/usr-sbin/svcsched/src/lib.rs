@@ -2,7 +2,7 @@
 
 //! Service management and scheduling core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/02-service-scheduler.md`:
+//! Covers `rewrite-notes/18-stage-commands/02-service-scheduler.md`:
 //! the client side of service control (`service` shell script in
 //! `minix3/usr.sbin/service/service`, the `svrctl` low level interface in
 //! `minix3/minix/commands/svrctl/svrctl.c`) and the time based schedulers

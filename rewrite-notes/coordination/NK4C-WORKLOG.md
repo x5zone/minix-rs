@@ -476,7 +476,7 @@
 >
 > **（历史·§1.120续-75（2026-09-30·新机首跑·**riscv64 IPC 桥 + park 机制全量落地（迁移件 §4.B 六步 + A.7 三件套）·生产码成修·验证链全绿·CodeReview 无 BLOCKER**）**：按 NK4C-MIGRATION-20260930.md §4.B decision-complete 配方实施：①arch riscv user leg park 决策 ABI（`DispatchFn→u64`、PARK_NONE/PARK_RESCHEDULE、`riscv64_resched_entry`+注册式 thunk，asm 尾声 `beqz a0`→弹 34 槽帧→`la t0`+`jr t0`（S3：非 `j`，避 R_RISCV_JAL ±1MiB 跨节悬崖））；②A.7 三件套全闭：`init`/`init_ap` `base==0` throwaway 哨兵 + no_mangle `KERNEL_TRAP_STACK_BASE` 格 + `restore_to_user` sret 前重固定 sscratch（借 a4，后续从 gp_regs 取回用户值）+ **kernel 腿尾声按 SPP 重锚 stvec**（新发现缺口：S 返回后 stvec 留 user leg → 下一个 S timer 走 sscratch 交换毁内存）；③`riscv64_ipc_dispatch_body`（镜像 aarch64：BKL 继承断言→存帧 FullContext→from_raw 预解码 EBADCALL 早退→p_defer/p_delivermsg_vir→copy_msg_from_user EFAULT+SIGSEGV→dispatch_ipc_entry→finish_ipc_door→reply_code 写 a0+`sync_status_register_to_frame` 回灌 A1→PARK_NONE，NoReply→PARK_RESCHEDULE）；④kernel_call 腿迁 `reply_wire()`（F10b/C2 尾账）+ VmSuspend 停车臂；⑤minix-sys 六原语+query_kerninfo+commit_message 门控放宽含 riscv64；新 riscv `save_frame_to_context`/`sync_status_register_to_frame`（槽位映射表+4 判别测试）+`set_secondary_ipc_return` A1 车道覆写（W2 同形）。**CodeReview 无 BLOCKER**，3 SHOULD-FIX+4 NIT 全采纳（测试断言 mapped==30 错不变量→实为 29 live+1 Reserved padding；user 腿中断臂补 scause-code 门防 SSI/SEI 误账；j→la+jr；单格依据改单 hart/注释事实修正×2；去 as u64 冗余 cast）。**验证链全绿**：host 827/0·569·workspace clippy Δ0(441=441、kernel 126=126)·rustfmt 新增漂移 0（反降 trap_dispatch 36→35、ipc 12→9）·riscv 生产配方 build+link 零新告警·**x86 真机 -smp4 标准启动器 3 轮 marker=2/panic=0/pfVM=0/vec6=0 不回归**·**riscv kernel-image OpenSBI 冒烟 A1/A2/A3 PASS（新机型示）**。新机环境自检：rust stable+nightly、三 QEMU、minix3 724MB 在位、OVMF/AAVMF 全；**缺 u-boot-qemu/u-boot-tools（sudo 需密码待用户补装）**。⚠ 三目标不缩小：①x86✅、**riscv 桥已接但 marker 未达**（后继阻塞登记：A.8 缺页腿 riscv 未接（ForwardToVm/cause_signal 为 x86 专属）+ KernelUserCopy 丙案（SUM 丙，roadmap 3.2）+ 装机面 boot-shim/OpenSBI 交接 + DTB 实解析）；aarch64❌（模式① OOM）；②x86 核心✅；③未动。续-76 入口＝riscv 真机可达性推（优先丙案+缺页腿评估）或转 aarch64 H7。详文见文末 §1.120续-75。
 >
-> **（历史·§1.120续-74（2026-09-30·**电脑迁移前小节点·纯取证/核实轮·无生产码改**）**：用户更换电脑，本轮把全部状态沉淀到新建迁移交接件 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（含新机开场 prompt·权威快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。核实：HEAD=`beda55e02`（续-73）tracked 净；**破除 RESUME-PROMPT §3.1 过时叙述**——dm_coverage source-4 早在续-51 commit `b09665415` 提交，接手者勿重补其验证链；host 基线复核全绿（minix-kernel 827/0·arch+boot+types 569）。**目标② x86 核心达成坐实**：`tmp/nk4a/nk73b-r1.serial` 行 7526 marker 之后 `ls /bin`→`cat/echo/ls/sh`、`cat /etc/rc`→全文⇒**echo/ls/cat 三核心命令端到端全通（走真实 VFS IPC 腿）**。两大剩余前沿已深度分析：**aarch64 模式① OOM**（七假设全证伪→收敛 H7 纯数据流·rust-objdump 反查标量 store 源 GPR 生产者）；**riscv64 IPC 桥**（真正工作量＝架构级：riscv user leg asm epilogue 无条件 sret、`DispatchFn` 返回 unit、无 aarch64 PARK_RESCHEDULE 挂起-重调度机制⇒阻塞 IPC 不可实现；六步 decision-complete 配方见迁移件 §4.B，**riscv 纯实现无 Heisenbug、建议优先**）。三目标不缩小（① x86✅/aarch64❌/riscv❌·② x86 核心✅·③❌）。新机见迁移件 §8 prompt 直接续跑。详文见文末 §1.120续-74。
+> **（历史·§1.120续-74（2026-09-30·**电脑迁移前小节点·纯取证/核实轮·无生产码改**）**：用户更换电脑，本轮把全部状态沉淀到新建迁移交接件 `rewrite-notes/coordination/NK4C-MIGRATION-20260930.md`（含新机开场 prompt·权威快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。核实：HEAD=`beda55e02`（续-73）tracked 净；**破除 RESUME-PROMPT §3.1 过时叙述**——dm_coverage source-4 早在续-51 commit `b09665415` 提交，接手者勿重补其验证链；host 基线复核全绿（minix-kernel 827/0·arch+boot+types 569）。**目标② x86 核心达成坐实**：`tmp/nk4a/nk73b-r1.serial` 行 7526 marker 之后 `ls /bin`→`cat/echo/ls/sh`、`cat /etc/rc`→全文⇒**echo/ls/cat 三核心命令端到端全通（走真实 VFS IPC 腿）**。两大剩余前沿已深度分析：**aarch64 模式① OOM**（七假设全证伪→收敛 H7 纯数据流·rust-objdump 反查标量 store 源 GPR 生产者）；**riscv64 IPC 桥**（真正工作量＝架构级：riscv user leg asm epilogue 无条件 sret、`DispatchFn` 返回 unit、无 aarch64 PARK_RESCHEDULE 挂起-重调度机制⇒阻塞 IPC 不可实现；六步 decision-complete 配方见迁移件 §4.B，**riscv 纯实现无 Heisenbug、建议优先**）。三目标不缩小（① x86✅/aarch64❌/riscv❌·② x86 核心✅·③❌）。新机见迁移件 §8 prompt 直接续跑。详文见文末 §1.120续-74。
 >
 > **（历史·§1.120续-73（2026-09-30·**突破：x86_64 标准 `-smp4` 启动器首次稳定达 rc marker**·续-72 崩溃消除后新阻塞「INIT 被 schedctl 分到 AP 饿死死锁」已成修**）：续-72 消除 AP tick 腐蚀后 `-smp4` boot 死锁——wait-graph 真机探针坐实 `nr=0xb`(INIT) `rts=0x0 run=1 cpu=0x1`＝INIT runnable 却被分到 AP(CPU1)，而 AP 的 LAPIC timer 被 idle() 掩蔽且本 port 缺 C `proc.c:1647`「enqueue 到 idle CPU→smp_schedule 唤醒 IPI」臂＋`context_stop_idle`(arch_clock.c:351-369) 唤醒后清 idle+重装 timer 半→INIT 永无人调度→死锁(sa-call=8/marker=0)。坐实 `cpu=1` 唯一来源＝用户态 SCHED 服务经 SYS_SCHEDULE/SYS_SCHEDCTL 调 `sched_proc`（port 内 sched_enqueue 全程用进程 `p_sched.cpu`、fork 继承、`SchedFields::new` 默认 0，无其它写非 0 路径）。曾试 arm#2（`sched_enqueue_with` 加唤醒 IPI）→boot 由 5113 推至 6862（INIT 跑起来）但 **AP 主动跑用户进程复现 VM 跨 CPU 服务腐蚀崩溃**（pagefault-for-VM + #UD rip0x1004 flood）→判定净负已回滚。**修复＝过渡守卫（CONTRACT arm#3）**：`sched_proc` 内 `clamp_cpu_to_bsp` 在 AP 唤醒三件套接线前把 SYS_SCHEDCTL/SYS_SCHEDULE 请求的 cpu 一律钳到 BSP（对位 C non-SMP 忽略 cpu 参数·进程留 BSP·`None` 保留 keep-current），使续-72 静默 AP 调度成立。**验证链全绿**：host minix-kernel 827/0（+1 `test_clamp_cpu_to_bsp` 单测）·569✓·clippy Δ0(136=136)·rustfmt Δ0(sched.rs/lib.rs stash 同上下文)·镜像 `--release` EXIT=0·**真机 `-smp4` 标准启动器 marker=2×3轮 panic=0/pfVM=0/vec6=0（目标① x86 里程碑·标准启动器首次稳定达 marker）**+`-smp1` marker=2 不回归·CodeReview 无 BLOCKER（4 项建议已采纳：抽纯函数+单测/CONTRACT arm#3 标注落地/rustdoc 过渡偏离段/注释对账两腿与 C non-SMP）。⚠ **真 SMP（让 AP 安全跑用户进程）仍是未还前沿＝需补 context_stop_idle + 唤醒臂 + 根治跨 CPU VM 腐蚀（续-57~72 十六轮硬骨头）**，届时移除本钳制；三目标不缩小：目标① x86 达成→剩 aarch64 模式① OOM/riscv IPC 桥；目标② 18-stage/③ minix3 tests 待推进。续-74 入口＝趁 x86 boot 稳定推进目标② 命令面（18-stage echo/ls/cat）或转 aarch64/riscv。详文见文末 §1.120续-73。
 >
@@ -2468,7 +2468,7 @@ PM 给 init 槽回了 pid≠1。PM `credentials.rs:133-136` GetPid 直返 `table
 
 **新前沿 B12**：init 到达 `imain-3 console` 后，`ensure_console` 的 `stat("/dev/console")` 挂起（VFS→MFS 路由或 MFS 服务 stat 请求阻塞）。尾部为 `pick->0x4` SCHED 心跳循环（其他进程全部阻塞）。候选原因：① VFS→MFS stat 请求路由；② MFS 服务 stat 但 read_block 阻塞；③ mount 时序（imgrd 是否真在 imain-3 前挂上）。下一 agent 入口：DebugAgent 诊断 `stat("/dev/console")` 阻塞链。
 
-**本 commit 文件清单**：`os/fs/mfs/build.rs`（新建）、`os/fs/mfs/src/main.rs`、`os/fs/fs-rt/src/source.rs`、`os/xtask/src/image.rs`、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
+**本 commit 文件清单**：`os/fs/mfs/build.rs`（新建）、`os/fs/mfs/src/main.rs`、`os/fs/fs-rt/src/source.rs`、`os/xtask/src/image.rs`、`rewrite-notes/coordination/NK4C-WORKLOG.md`。
 
 ---
 
@@ -2560,7 +2560,7 @@ PM 给 init 槽回了 pid≠1。PM `credentials.rs:133-136` GetPid 直返 `table
 - 排除候选空间从 7 项缩到 3 项（A/B/C），A 概率最高且验证成本最低
 - 真机证据：serial_b12f2（21578 行）imain-0..6 + SingleUser + rc marker=0 稳定复现
 
-- **本 commit 文件清单**：`os/fs/mfs/src/server.rs`（新增测试）、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
+- **本 commit 文件清单**：`os/fs/mfs/src/server.rs`（新增测试）、`rewrite-notes/coordination/NK4C-WORKLOG.md`。
 
 ## 1.23 B13 Bug2(EIO) 根因锁定：VFS DIRECT grant 表被内核读到陈旧快照 → copy_from EPERM → wire decode EIO（2026-09-25，宿主复现测试 + 已入仓 `nk4a: vg` 探针取证，纯诊断未改代码）
 
@@ -4178,13 +4178,13 @@ rc marker 仍未达；本单元代码已提交。
 ## §1.76（B42 侦察·只读）活锁双方定位 = RS(slot2)↔VM(slot8)，但 `0x227980` 真实 flags 静态不可判——须真机探针
 
 **先处理一条外部只读诊断报告（side-thread 转发）**：三条经核全部对**当前码**闭环，不复处理——
-- 诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）：报告推荐的修法**正是已落地实现**。[smp.rs:1219-1252](../../../os/kernel/src/smp.rs) 现为 `static BKL: AtomicIsize = AtomicIsize::new(BKL_FREE)`（`-1`=空闲 / `>=0`=持有 CPU id），acquire 单条 `compare_exchange`、release 单条 `store`，注释原文即在描述报告所指的“两步 store 中间态致中断 handler 误判非继承→同 CPU 自旋死锁”窗口。§1.52 commit 917de5e83 已合入。
+- 诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）：报告推荐的修法**正是已落地实现**。[smp.rs:1219-1252](../../os/kernel/src/smp.rs) 现为 `static BKL: AtomicIsize = AtomicIsize::new(BKL_FREE)`（`-1`=空闲 / `>=0`=持有 CPU id），acquire 单条 `compare_exchange`、release 单条 `store`，注释原文即在描述报告所指的“两步 store 中间态致中断 handler 误判非继承→同 CPU 自旋死锁”窗口。§1.52 commit 917de5e83 已合入。
 - 诊断二（B27 birth 期页表 walk 缺 VMINHIBIT + 两次同址 leaf PTE 采样配方）：报告自陈“非新的独立 bug 定案，是把‘VM 并发改页表’假设收紧”。该假设家族已 §1.51 泛化证伪、真根因链改判至 §1.70（`cross_space` 逐连续段 walk 目标页表，commit 6b667e430）+ §1.74/§1.75（present-but-NX 修复）。配方针对的病灶已被处理。
 - 诊断三（`syscall_process.rs` 未提交）：当前工作树跟踪文件净，无该改动。
 
-**B42 活锁双方**：`grep BOOT_MODULE_PROC_NRS` 于 [proc.rs:111-124](../../../os/kernel/src/proc.rs) 实锤——boot server 保留 C `com.h` 固定号（PM=0/VFS=1/**RS=2**/MEM=3/SCHED=4/TTY=5/DS=6/MIB=7/**VM=8**/PFS=9/MFS=10/INIT=11）。故 `fa=0x227980` 的 pick slot `0x2↔0x8` 乒乓 = **RS↔VM**。`0x227980` 落在 base `0x200000` 镜像内偏移 ~0x27980（各 boot 模块同基址，`readelf` 已核）。
+**B42 活锁双方**：`grep BOOT_MODULE_PROC_NRS` 于 [proc.rs:111-124](../../os/kernel/src/proc.rs) 实锤——boot server 保留 C `com.h` 固定号（PM=0/VFS=1/**RS=2**/MEM=3/SCHED=4/TTY=5/DS=6/MIB=7/**VM=8**/PFS=9/MFS=10/INIT=11）。故 `fa=0x227980` 的 pick slot `0x2↔0x8` 乒乓 = **RS↔VM**。`0x227980` 落在 base `0x200000` 镜像内偏移 ~0x27980（各 boot 模块同基址，`readelf` 已核）。
 
-**关键嫌疑（静态未证，须探针区分）**：B41 修复命中 `exec_worker.rs:928 PROT_RWX → mmap.rs:102 to_vr_flags 消费 PROT_EXEC` 这条**动态 exec 腿**。但 **RS 等 boot server 的初始地址空间并非由 `exec_worker→to_vr_flags` 装配**——boot 镜像腿在 [misc.rs](../../../os/kernel/src/misc.rs) 的 `p_seg.phys_root` 装配带 + [vm_handoff.rs](../../../os/kernel/src/vm_handoff.rs)（首次 boot-image load 前后帧池发布），是否经 `to_vr_flags` 组 EXECUTABLE 静态未定位到确证点（`rs.rs:545` 命中的是 heap/prealloc 匿名数据腿，`READ|WRITE` 无 EXEC 属正确，非文本腿）。
+**关键嫌疑（静态未证，须探针区分）**：B41 修复命中 `exec_worker.rs:928 PROT_RWX → mmap.rs:102 to_vr_flags 消费 PROT_EXEC` 这条**动态 exec 腿**。但 **RS 等 boot server 的初始地址空间并非由 `exec_worker→to_vr_flags` 装配**——boot 镜像腿在 [misc.rs](../../os/kernel/src/misc.rs) 的 `p_seg.phys_root` 装配带 + [vm_handoff.rs](../../os/kernel/src/vm_handoff.rs)（首次 boot-image load 前后帧池发布），是否经 `to_vr_flags` 组 EXECUTABLE 静态未定位到确证点（`rs.rs:545` 命中的是 heap/prealloc 匿名数据腿，`READ|WRITE` 无 EXEC 属正确，非文本腿）。
 
 **为何不能只靠静态收口**：现有诊断探针 `fl=0x41b` 读的是**固定 probe 地址**（非 `0x227980`），`0x227980` 在 RS live 页表里的真实 flags **未知**。故 B42 与 B41 是否同因（boot 腿同缺 EXECUTABLE）无法静态判定。
 
@@ -4201,7 +4201,7 @@ rc marker 仍未达；本单元代码已提交。
 
 **探针**（复用 committed 基线里的 `vmpt2bf` 遗留探针，把地址从失效的 `0x203bf0` 改到当前 `0x227980`，并加打 `is_page_writable`/`is_executable`；`-smp 1` 单核确定性台 bn60b=712332 行，探针跑完 `git checkout` 回滚、工作树净）：
 
-**决定性读数**：`nk4a: vmpt2bf off=0x980 ptroot=0x319e000 wr=false exec=false`——VM 侧处理 RS（ep=2）在 `0x227980`（region.vaddr=`0x227000` + offset `0x980`）缺页时，该 region **`exec=false` 且 `wr=false`**（read_only、无 EXECUTABLE）。`sync_slot_pte`（[cow_exec_pf.rs:129-135](../../../os/servers/vm/src/cow_exec_pf.rs)）遂组 `PageFlags::read_only()`（非可写→read_only）且不加 EXECUTABLE（exec=false）→ PTE **present 但 NX** → 取指恒 #PF 活锁（`227980` 命中 71287 次）。签名全净（`kernel panic=0 / pf-exit noaddr=0 / vm-pf err=0 / OOM=0`）——**非回归，纯 B41 同型病灶换到更深阶段**。
+**决定性读数**：`nk4a: vmpt2bf off=0x980 ptroot=0x319e000 wr=false exec=false`——VM 侧处理 RS（ep=2）在 `0x227980`（region.vaddr=`0x227000` + offset `0x980`）缺页时，该 region **`exec=false` 且 `wr=false`**（read_only、无 EXECUTABLE）。`sync_slot_pte`（[cow_exec_pf.rs:129-135](../../os/servers/vm/src/cow_exec_pf.rs)）遂组 `PageFlags::read_only()`（非可写→read_only）且不加 EXECUTABLE（exec=false）→ PTE **present 但 NX** → 取指恒 #PF 活锁（`227980` 命中 71287 次）。签名全净（`kernel panic=0 / pf-exit noaddr=0 / vm-pf err=0 / OOM=0`）——**非回归，纯 B41 同型病灶换到更深阶段**。
 
 **定性（坐实 §1.76 假设 (a)）**：B42 ＝ **B41 的 present-but-NX 同型缺陷，发生在 boot-server 文本腿**。B41 只修了动态 `exec_worker.rs:928 PROT_RWX → mmap.rs to_vr_flags 消费 PROT_EXEC` 这条腿；但承载 RS 文本 `0x227000` 的 region **从未承接 PROT_EXEC**（`is_executable()==false`），故 sync_slot_pte 依旧产 NX。`ptroot=0x319e000`（VM 侧 RS 页表根）；内核 `sa0-2 root=` 探针本轮未打出（`picked` 为 slot 索引非 ProcNr，格式待查），(b) 页表实例≠CR3 尚未完全排除，但 `exec=false` 已足以单独致活锁，先修 (a)。
 
@@ -4237,7 +4237,7 @@ rc marker 仍未达；本单元代码已提交。
 
 ## §1.79（B43 侦察·只读+真机 bn61 定量·未改码）实锤＝动态 exec 腿 `ps_str` 走 `i32`（LP64 截断）+ PM `as u64` 符号扩展 → 子 RBX 悬空指针 noaddr SIGSEGV
 
-**先处置本轮再次转发的 side-thread 只读诊断报告**（与 §1.76 同一份）：三条经核对**全部对当前码闭环，不复处理**——诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）＝报告推荐修法正是 §1.52 commit 917de5e83 已落地实现（[smp.rs:1219-1252](../../../os/kernel/src/smp.rs) 现 `static BKL: AtomicIsize`，`-1`=空闲/`>=0`=持有 CPU）；诊断二（B27 birth 期页表 walk 缺 VMINHIBIT + 两次同址 leaf PTE 采样配方）＝报告自陈“非新 bug 定案”，该假设家族已 §1.51 泛化证伪、真根因改判 §1.70（`cross_space` 逐段 walk，commit 6b667e430）+ §1.74/§1.75（present-but-NX）；诊断三（`syscall_process.rs` 未提交）＝本轮 `git status` 复核工作树跟踪净、无该改动。
+**先处置本轮再次转发的 side-thread 只读诊断报告**（与 §1.76 同一份）：三条经核对**全部对当前码闭环，不复处理**——诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）＝报告推荐修法正是 §1.52 commit 917de5e83 已落地实现（[smp.rs:1219-1252](../../os/kernel/src/smp.rs) 现 `static BKL: AtomicIsize`，`-1`=空闲/`>=0`=持有 CPU）；诊断二（B27 birth 期页表 walk 缺 VMINHIBIT + 两次同址 leaf PTE 采样配方）＝报告自陈“非新 bug 定案”，该假设家族已 §1.51 泛化证伪、真根因改判 §1.70（`cross_space` 逐段 walk，commit 6b667e430）+ §1.74/§1.75（present-but-NX）；诊断三（`syscall_process.rs` 未提交）＝本轮 `git status` 复核工作树跟踪净、无该改动。
 
 **修正旧登记**：§1.78 顶部把 B43 猜为“PM↔VFS 乒乓收尸活锁（B31/B36 家族重现）”。真机 bn61 定量证伪该“活锁”框架——`pf-exit noaddr` 仅 **2 次**、`csig sig=0xb`(SIGSEGV) 仅 **2 次**、`init-state Runcom` 仅 **1 轮**（非 15 轮循环）、`kernel panic=0`。是**一次干净的两击 SIGSEGV 杀死 init 的 fork 子（ProcNr 0xc）**，尾部 `rip=0x204b32` 只是 PM 复位后 idle，非乒乓活锁。
 
@@ -4250,15 +4250,15 @@ nk4a: csig tgt=0xc sig=0xb (SIGSEGV)  ×2 → 子死
 ```
 对照** boot 服务器（同一探针，struct_c20/c21 历史）**：`stack=0x00007fffffffea78 ps_str=0x00007fffffffefe0`（**高 16 位=0x0000_7fff**，合法 47 位用户地址）。二者低位 `...efe0` **完全相同**，唯动态腿高 32 位从 `0x00007fff` 变 `0xffffffff`。
 
-**机制（读码坐实·算术自洽）**：`0xffffffffffffefe0` = `sign_extend_i32_to_u64(0xffffefe0)` = `(-0x1020) as u64`。合法 ps_strings `0x0000_7fff_ffff_efe0`（47 位）→ 截断入 `i32`（丢高 17 位）= `0xffff_efe0`（i32 视作 **-0x1020**）→ PM [ipc/vfs.rs:544](../../../os/servers/pm/src/ipc/vfs.rs) `VirBytes(args.newps_str as u64)` 对负 i32 **符号扩展** = `0xffff_ffff_ffff_efe0`。内核 `dispatch_exec` 把该 `ps_str` 种进子进程 **saved RBX**（ps_strings ABI，[arch/x86_64/boot.rs:143](../../../os/arch/src/x86_64/boot.rs) `rbx: entry.ps_strings`）→ 子从入口 `0x20ef60`（crt0/`_start`）首条读 `[RBX+8]=0xffffffffffffefe8` → 无映射 → `pf-exit noaddr` → SIGSEGV。与 §749「exec 时 ps_str 非零但进程读 ps_strings 崩」旧线索同脉，本单元首次钉死为 **i32 截断+符号扩展**。
+**机制（读码坐实·算术自洽）**：`0xffffffffffffefe0` = `sign_extend_i32_to_u64(0xffffefe0)` = `(-0x1020) as u64`。合法 ps_strings `0x0000_7fff_ffff_efe0`（47 位）→ 截断入 `i32`（丢高 17 位）= `0xffff_efe0`（i32 视作 **-0x1020**）→ PM [ipc/vfs.rs:544](../../os/servers/pm/src/ipc/vfs.rs) `VirBytes(args.newps_str as u64)` 对负 i32 **符号扩展** = `0xffff_ffff_ffff_efe0`。内核 `dispatch_exec` 把该 `ps_str` 种进子进程 **saved RBX**（ps_strings ABI，[arch/x86_64/boot.rs:143](../../os/arch/src/x86_64/boot.rs) `rbx: entry.ps_strings`）→ 子从入口 `0x20ef60`（crt0/`_start`）首条读 `[RBX+8]=0xffffffffffffefe8` → 无映射 → `pf-exit noaddr` → SIGSEGV。与 §749「exec 时 ps_str 非零但进程读 ps_strings 崩」旧线索同脉，本单元首次钉死为 **i32 截断+符号扩展**。
 
 **病灶=仅动态 VFS `do_exec` 腿用 `i32` 承载 `ps_str`**（LP64 未加宽的 32 位遗留，B37b「phdr 界留 SECTOR_SIZE」同族）。全链 `i32` 站点：
-- [minix-types/src/ipc/vfs.rs:363](../../../os/libs/minix-types/src/ipc/vfs.rs) `VfsCall::Exec { ps_str: i32 }` → encode `m7i5`（offset16·4字节·装不下 64 位指针）/ decode 同；
+- [minix-types/src/ipc/vfs.rs:363](../../os/libs/minix-types/src/ipc/vfs.rs) `VfsCall::Exec { ps_str: i32 }` → encode `m7i5`（offset16·4字节·装不下 64 位指针）/ decode 同；
 - 同文件 `VfsReply::Exec { newps_str: i32 }` → `m7i5`；
-- [vfs/src/exec_worker.rs:140/157](../../../os/servers/vfs/src/exec_worker.rs) `ExecRequest.ps_str: i32` / `ExecLoaded.newps_str: i32`，L515 `newps_str: req.ps_str` 原样带过；
-- PM [exec.rs / ipc/vfs.rs:72](../../../os/servers/pm/src/ipc/vfs.rs) `ExecRestartArgs.newps_str: i32` + `as u64` 符号扩展。
+- [vfs/src/exec_worker.rs:140/157](../../os/servers/vfs/src/exec_worker.rs) `ExecRequest.ps_str: i32` / `ExecLoaded.newps_str: i32`，L515 `newps_str: req.ps_str` 原样带过；
+- PM [exec.rs / ipc/vfs.rs:72](../../os/servers/pm/src/ipc/vfs.rs) `ExecRestartArgs.newps_str: i32` + `as u64` 符号扩展。
 
-**对照正确腿（证明修法方向成立）**：① boot 腿 [vm_server.rs:1044](../../../os/servers/vm/src/vm_server.rs) `sys_exec(endpoint, entry, vsp, 0, filled.ps_str)` 全程原生 `u64`（无 i32 往返）→ boot 全对；② RS→PM 腿 [minix-sys/src/pm.rs:800](../../../os/libs/minix-sys/src/pm.rs) `exec_restart_via(ps_str: u64)` → `MessRsPmExecRestart { ps_str: u64 }` 亦 u64 无损。**唯 VFS `do_exec` 消息腿是 i32**——路径不对称。
+**对照正确腿（证明修法方向成立）**：① boot 腿 [vm_server.rs:1044](../../os/servers/vm/src/vm_server.rs) `sys_exec(endpoint, entry, vsp, 0, filled.ps_str)` 全程原生 `u64`（无 i32 往返）→ boot 全对；② RS→PM 腿 [minix-sys/src/pm.rs:800](../../os/libs/minix-sys/src/pm.rs) `exec_restart_via(ps_str: u64)` → `MessRsPmExecRestart { ps_str: u64 }` 亦 u64 无损。**唯 VFS `do_exec` 消息腿是 i32**——路径不对称。
 
 **C ground truth**：i386 时代 `VFS_PM_PS_STR`/`VFS_PM_NEWPS_STR` 存 `m7_i5`（32 位指针装得下），`do_execrestart` 直接 `(char *)msg->VFS_PM_NEWPS_STR` 无损；x86-64 LP64 下用户栈/ps_strings 在 `0x0000_7fff_ffff_xxxx`（47 位），`m7_i5` 4 字节必截断——移植未随之加宽。内核 `sys_exec` 形参本已是 `u64`（`ps_str` payload 对内核透明），故此修复**非内核 ABI/[ARCH] 三处一致契约变更**（无需停点问用户），仅内部 Rust IPC 消息枚举字段加宽。
 
@@ -4483,7 +4483,7 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 
 **机制闭环**：既然同 VA → 同 pfn → 同一物理帧，子读到与父不同的字节只可能是——**该共享帧在 fork 后被父写改**（子探针时已晚）。而 `do_fork` 全程只对**子**跑 `setup_cow_for_all_regions`（`vmproc_handle.rs:512`，将子页标 COW）+ `child.write_page_table_mappings`（子 PTE 因 `is_page_writable` 对 refcount==2 返 false 而建为只读），**从不降级父已运行页表里那些共享帧 PTE 的可写位**（`fork_region` L144 `dst.set_writable(false)` 只作用于子 dst region）。⇒ 父保留可写 PTE 直指共享帧，父 fork 后继续 shell 循环、释放/复用 command 堆缓冲时**直接写入共享帧、永不触发父侧 COW**，子（尚未被调度、持同一帧）读到父的新/部分写内容。完美解释全部证据：同 VA 同 pfn、父探针时（fork 刚返回、尚未复用）= "echo"、子稍后被调度时 = "e535"（父下一轮复用同缓冲写的残留）。单核调度下父先跑完一轮再切子，时序吻合。
 
-**C ground truth 对质（实锤）**：设计文档 `notes/study/vm/vm-region-management.md` COW 状态转换图（L963）明写：状态 2 fork 后共享 `phys_block refcount:2 / 页表: 只读（两个进程都是）`；状态 3「进程 A 写入时」才 COW 拿私有帧。即 **C 在 fork 时把父、子双方 PTE 都置只读**。本仓 Rust `do_fork` 只保护了子、漏了父 ⇒ **内部 COW 语义未对齐 C 的正确性 bug**（非外部契约/[ARCH] 变更，无需用户裁决）。
+**C ground truth 对质（实锤）**：设计文档 `study-notes/vm/vm-region-management.md` COW 状态转换图（L963）明写：状态 2 fork 后共享 `phys_block refcount:2 / 页表: 只读（两个进程都是）`；状态 3「进程 A 写入时」才 COW 拿私有帧。即 **C 在 fork 时把父、子双方 PTE 都置只读**。本仓 Rust `do_fork` 只保护了子、漏了父 ⇒ **内部 COW 语义未对齐 C 的正确性 bug**（非外部契约/[ARCH] 变更，无需用户裁决）。
 
 **下单元＝r5 修复**（frontier 收敛到具体改码）：
 - 在 `do_fork` 建完子页表后，对**父**的页表中本次被共享（refcount>1）的页 PTE 清除可写位（降级为只读），并刷父 TLB 对应页——使父下次写触发父侧 COW（与子对称）。需先读码确认：(a) 写页表 API（`PageTable` 的 update_flags/remap）对父 root 的可用腿；(b) TLB 失效腿（父为当前阻塞的 fork 发起者，VM 代其处理时父不在跑，修改其页表安全）；(c) `setup_cow_for_all_regions` 是否应同时作用于父（而非仅子）。
@@ -5106,7 +5106,7 @@ VFS 侧本轮被逐环证据**完全洗清**：路径遍历 → FS 往返 → �
 
 ### 起手：先修 commit hygiene（上一轮遗留）
 
-上一轮 §1.104 提交 `05024b964` 误将 8 个文件一起提交——因为 `migrate_notes_plan/*.md`（6 个）+ `misc_concepts.md` 在会话开始即预暂存于 index（A 状态、非本 agent 产物），`git add WORKLOG.md` 后 `git commit` 把 index 里全部暂存文件一并纳入，违反「只 add 明确文件路径」约束。本轮第一步：`git reset --soft HEAD~1` 回退（不动工作树/index 内容），改用 `git commit -F <msg> -- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（pathspec 形式仅提交 WORKLOG），使 7 个非本 agent 文件退回预暂存 A 状态、不进入本 agent 提交。新提交 `1841af3d5`（1 file changed, 41 insertions(+), 1 deletion(-)）。
+上一轮 §1.104 提交 `05024b964` 误将 8 个文件一起提交——因为 `migrate_notes_plan/*.md`（6 个）+ `misc_concepts.md` 在会话开始即预暂存于 index（A 状态、非本 agent 产物），`git add WORKLOG.md` 后 `git commit` 把 index 里全部暂存文件一并纳入，违反「只 add 明确文件路径」约束。本轮第一步：`git reset --soft HEAD~1` 回退（不动工作树/index 内容），改用 `git commit -F <msg> -- rewrite-notes/coordination/NK4C-WORKLOG.md`（pathspec 形式仅提交 WORKLOG），使 7 个非本 agent 文件退回预暂存 A 状态、不进入本 agent 提交。新提交 `1841af3d5`（1 file changed, 41 insertions(+), 1 deletion(-)）。
 
 ### 静态定位根因（不靠探针，直接读代码）
 
@@ -5696,7 +5696,7 @@ aarch64 尾态稳定为 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12 sys=y`（sysca
 - **债①【双 boot 形态并存的维护面风险】**：同一份 `minix_kernel` crate 现存**三种进入形态**——(a) x86_64 内联（kernel 以 rlib 链进 boot-shim PE、进程内 `arch_boot`/`kmain`）；(b) aarch64 跨镜像（standalone `kernel.elf` + `BootHandoff`，入口 `os/kernel/src/lib.rs::bootstrap_to_kernel_image`，`#[cfg(all(not(feature="mock"),target_arch="aarch64"))]`＝lib.rs:258-259）；(c) riscv64 内联 + 镜像仅契约位产出（装机属 M4.3）。`os/boot-shim/src/main.rs:82` 注释原话「x86_64 / riscv64 keep the inlined arch_boot path」。**后果**：每条 boot 腿改动（handoff 契约、bump 游标接续、高半映射）需在两种形态各自过真机签名，维护面 ×2；公共 boot 逻辑（`build_bootstrap_root_and_enable`，lib.rs:265 调用）虽已抽共享 helper，但两形态各自 `.bss` 副本陷阱（§1.115 增量 2 `set_current_root_phys` 教训）在 x86 腿不存在、属**隐性分叉**。登记为结构债，不判修。
 - **债②【x86_64 是否迁移方案 A 的待裁决议项（挂 OQ）】**：aarch64 走独立 ELF 是因 §1.114 真硬件差异（TTBR0/TTBR1 双根、内联形态从未进 TTBR1）；x86_64 今天免疫靠 CR3 单根 + `inherit_supervisor_half` 拷 PML4 高半 + global 页强制继承。目前**无 pain point 驱动 x86 迁移**，但长期双形态是显式代价。建议口径（侧线程观点，供用户或后续裁决）：**riscv64 同构接入先行**（前沿计划已含「随后同构推 riscv64」）——**但按 riscv 甲案（kernel-image 自当引导体、不经 `BootHandoff` 跨镜像交接，见 `riscv-reviewlog.md §D.2`）riscv 落地只验证「kernel-image 自引导」这一第三形态、不构成 `BootHandoff` 的第二消费者**；**x86_64 迁移挂 OQ**、等真正的 `BootHandoff` 消费方出现（度量启动 / reboot 复用 / 内联形态再暴露 bug）再议；**不建议为统一而预防性重构**。
 
-> **riscv 前置对账就绪 = `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md`**（侧线程静态扫描产出：A 段按 boot 阶段排的 riscv64 接入验收清单 A.0→A.13、B 段设计决策对比表 D1–D7、C 段 x86/aarch64 已付学费→riscv 同型位点坑对账、D 段 WORKLOG 结构债深度分析 D.0→D.14（第 1–6 轮逐轮累加：第 3 轮 D.1–D.9 8 笔债基线、第 4 轮补账债⑨–⑫（PAF_CLEAR/缓存维护/代刷腿翻案/吞错家族）、第 5 轮外部复核修正债⑩＋新立债⑬ bump 池无回收·kerninfo 责任移交、第 6 轮债⑫逐点处置表 31 站/13 文件（乙 7＋维持 23＋甲 1）且 **§D 结构债扫描线按停止规则收敛**；每债 ≥3 方案五参照系对照＋修复批次矩阵·裁决前分析零代码改动）、E 段用户预裁决记录 E.1–E.3（第 6 轮收敛后经用户授权由旁支会话代录、不经扫描轮：E.1 债② x86 迁移方案 A **半预裁**＝aarch64 方案 A 稳定 ≥10 真机轮次且 x86 无在途 boot 战役时授权直接立项迁移评估·终裁仍报用户；E.2 债① 三 boot 形态并存 **顺序预裁**＝riscv 甲案收口前不启动统一、收口后单独立项不搭车；E.3 B-D1 riscv 终态选型 **显式不预裁**＝依赖真机数据、与 E.2 终局裁决合并一次咨询。章头三纪律：预裁非终裁／与 §D 裁决归属冲突以 E 章为准、仅本章条目下补勘误不回改 §D 正文／E 章修订撤销须用户本人同意，扫描线与主线程均无权单方面改））。**侧线程另交三项移交待主线程下次触碰相应正文时一次性收口**：①NK4C-WORKLOG §1.115「债②」口径与 riscv 甲案（kernel-image 自引导、不经 BootHandoff 跨镜像交接）冲突→建议改述并加反向引用本文件 §D.2；②§1.111「未接线已知缺口」措辞→按本文件 §D.12 修正（vmctl FlushTlb/InvlPg 内核腿三架构已实现、缺口是 V13-P2-1 刷新依据在 VmDm 通道不成立）；③misc_concepts.md 教训条「多模式 grep 负结论需按模式拆分计数、禁出自 head 截断输出」（见 §D.11 自审）。**系必要非充分条件，不替代真机判据；D1–D7 决策点与 D 节各「裁决归属」条目待用户/主线程拍板后方可实施**。未来任何 riscv 轮的「前沿起点」段先查此清单对应阶段再开工——判「已就绪」的阶段可跳过探索直接真机对账，判「有缺口/需真机」的按清单索引进场。
+> **riscv 前置对账就绪 = `rewrite-notes/coordination/riscv-reviewlog.md`**（侧线程静态扫描产出：A 段按 boot 阶段排的 riscv64 接入验收清单 A.0→A.13、B 段设计决策对比表 D1–D7、C 段 x86/aarch64 已付学费→riscv 同型位点坑对账、D 段 WORKLOG 结构债深度分析 D.0→D.14（第 1–6 轮逐轮累加：第 3 轮 D.1–D.9 8 笔债基线、第 4 轮补账债⑨–⑫（PAF_CLEAR/缓存维护/代刷腿翻案/吞错家族）、第 5 轮外部复核修正债⑩＋新立债⑬ bump 池无回收·kerninfo 责任移交、第 6 轮债⑫逐点处置表 31 站/13 文件（乙 7＋维持 23＋甲 1）且 **§D 结构债扫描线按停止规则收敛**；每债 ≥3 方案五参照系对照＋修复批次矩阵·裁决前分析零代码改动）、E 段用户预裁决记录 E.1–E.3（第 6 轮收敛后经用户授权由旁支会话代录、不经扫描轮：E.1 债② x86 迁移方案 A **半预裁**＝aarch64 方案 A 稳定 ≥10 真机轮次且 x86 无在途 boot 战役时授权直接立项迁移评估·终裁仍报用户；E.2 债① 三 boot 形态并存 **顺序预裁**＝riscv 甲案收口前不启动统一、收口后单独立项不搭车；E.3 B-D1 riscv 终态选型 **显式不预裁**＝依赖真机数据、与 E.2 终局裁决合并一次咨询。章头三纪律：预裁非终裁／与 §D 裁决归属冲突以 E 章为准、仅本章条目下补勘误不回改 §D 正文／E 章修订撤销须用户本人同意，扫描线与主线程均无权单方面改））。**侧线程另交三项移交待主线程下次触碰相应正文时一次性收口**：①NK4C-WORKLOG §1.115「债②」口径与 riscv 甲案（kernel-image 自引导、不经 BootHandoff 跨镜像交接）冲突→建议改述并加反向引用本文件 §D.2；②§1.111「未接线已知缺口」措辞→按本文件 §D.12 修正（vmctl FlushTlb/InvlPg 内核腿三架构已实现、缺口是 V13-P2-1 刷新依据在 VmDm 通道不成立）；③misc_concepts.md 教训条「多模式 grep 负结论需按模式拆分计数、禁出自 head 截断输出」（见 §D.11 自审）。**系必要非充分条件，不替代真机判据；D1–D7 决策点与 D 节各「裁决归属」条目待用户/主线程拍板后方可实施**。未来任何 riscv 轮的「前沿起点」段先查此清单对应阶段再开工——判「已就绪」的阶段可跳过探索直接真机对账，判「有缺口/需真机」的按清单索引进场。
 
 ---
 
@@ -7250,7 +7250,7 @@ release init ELF 仅 321 符号（`nm` 已验·finish_grow@0x220d58→minix_rt::
 
 ### GLM5.3 接手任务
 **目标**：修模式②让 aarch64 打出 `minix-rs rc: minimal boot script marker` + x86 不回归。
-**起点**：读 `tmp/nk4a/nk4c35-pt-bind-wip.patch` + 本节分析 + `notes/rewrite/fork-syscall-rewrite/NK4C-GLM53-PROMPT.md`。
+**起点**：读 `tmp/nk4a/nk4c35-pt-bind-wip.patch` + 本节分析 + `rewrite-notes/coordination/NK4C-GLM53-PROMPT.md`。
 **主要问题句**：`handle_procctl_clear` 末尾调 `sys_vmctl_set_addrspace` 后，新页表根是否已包含内核态映射？若否，应在何处确保补映射？
 
 ### 纪律
@@ -7706,7 +7706,7 @@ dm_coverage 9/9（含新 2）；`cargo test -p minix-kernel` 833 项（825+8 ign
 - **次轮**（审追加改动）结论 **PASSED**·0 Critical/0 Warning·1 CONSIDER（已采纳）。
 
 ### E. 提交与判据
-含代码改的 commit 走 CodeReview 后方提交：`git add os/kernel/src/dm_coverage.rs notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径·不用 `-A`·不动 `AI-chats/daily.todo.md`）。提交后 HEAD 前进，续-50 的 NOT-WIRED 状态结束。
+含代码改的 commit 走 CodeReview 后方提交：`git add os/kernel/src/dm_coverage.rs rewrite-notes/coordination/NK4C-WORKLOG.md`（明确路径·不用 `-A`·不动 `AI-chats/daily.todo.md`）。提交后 HEAD 前进，续-50 的 NOT-WIRED 状态结束。
 
 ### F. 新停点（续-52 入口）
 目标① 三架构仍全部未达 marker。头号腿＝**用户栈/首进程页表映射**（x86 `rip 0x7ffffffe2f88` err `0x11` ↔ riscv `scause=0xd stval=0x3ffffe2fbc` 同源）：birth s3 → 首次切入用户态前谁负责映 user stack，对照 C `minix3/minix/kernel/` 的 `copyall`/`fkinit` 与 VM 侧 map 时序（锤点自行 grep）。并行：x86 vector 13 需 ≥3 轮 HEAD-only 对照才能落「预存」定论；aarch64 模式①（g14 H7 数据流）与 riscv IPC 桥另开。⚠ 三目标不缩小。
@@ -7738,7 +7738,7 @@ dm_coverage 9/9（含新 2）；`cargo test -p minix-kernel` 833 项（825+8 ign
 - **riscv `scause=0xd stval=0x3ffffe2fbc`**：riscv 走单 hart 且 source-4 零信号（opensbi reserved_regions=&[]）。若其在用户栈 VA 真崩，则与 x86 SMP **不同源**，属映射腿本身，必须单独坐实，不得因 x86 侧证伪而一并撤销。本轮未复跑 riscv/aarch64（只动 x86）。
 
 ### F. 提交与续-53 入口
-- 本轮 WORKLOG 无生产码改 ⇒ 免 CodeReview（与续-50/51 惯例一致）；`git add notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径）。
+- 本轮 WORKLOG 无生产码改 ⇒ 免 CodeReview（与续-50/51 惯例一致）；`git add rewrite-notes/coordination/NK4C-WORKLOG.md`（明确路径）。
 - 续-53 入口：(甲) 降探针噪声或加 per-cpu 串口缓冲取 clean -smp4 主故障帧；(乙) 追 IPC reply 唤醒/进程迁移是否绕过 trap 入口直恢复（对照 C schedutil.c `pick_runnable` + arch_system.c 恢复门）；(丙) 独立复核 riscv 单 hart 用户栈 VA 是否真崩。⚠ 三目标不缩小。
 
 ---
@@ -7767,7 +7767,7 @@ dm_coverage 9/9（含新 2）；`cargo test -p minix-kernel` 833 项（825+8 ign
 ⇒ 因 §3.5.3 是被人为 frozen 的设计决定，选哪条属**架构裁决级决策**，已向用户上报（本 commit 仅 WORKLOG·无生产码改）。
 
 ### E. 本 commit
-`git add notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径·无生产码改⇒免 CodeReview）。续-54 待用户选型后实施 per-CPU Q（或排除过滤）+ 验证链（host 826+569 只增不减 / clippy / nightly rustfmt / -smp4 真机 ≥3 轮不出双派签名且出 marker）。
+`git add rewrite-notes/coordination/NK4C-WORKLOG.md`（明确路径·无生产码改⇒免 CodeReview）。续-54 待用户选型后实施 per-CPU Q（或排除过滤）+ 验证链（host 826+569 只增不减 / clippy / nightly rustfmt / -smp4 真机 ≥3 轮不出双派签名且出 marker）。
 
 
 ---
@@ -8171,7 +8171,7 @@ r5: root=0x6658000 ripf=0x7e45000 rspf=0x51fc000 aliases=0 hits=0 vmrootsites=5
 IRQ-iret / 调度器恢复 / cross_space_copy / crash-time 帧别名(窄窗) / C-TLB 同根跳过——五枚均阴性。**内核侧寄存器恢复、跨空间拷贝、写腿 root 解析、TLB 刷新四大族已排除**。当前头号候选：**VM 帧分配/映射的 double-allocation**（用户态 vm 服务器或 sys_physvm map 腿将同一帧回给两个用途）。
 
 ### 续-63 入口
-- (甲) 审 [os/servers/vm/src/alloc_page.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/alloc_page.rs) + `phys_mem/allocator.rs` BitmapAllocator 的 alloc/free：是否可能返回已被映射的帧（free list 与 live mapping 不同步 / 释放未先 unmap / 并发下同一帧两次分配）；对照 study 笔记 [notes/study/vm/vm-memory-allocator.md](file:///home/xzhao/github/minix-rs/notes/study/vm/vm-memory-allocator.md)。
+- (甲) 审 [os/servers/vm/src/alloc_page.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/alloc_page.rs) + `phys_mem/allocator.rs` BitmapAllocator 的 alloc/free：是否可能返回已被映射的帧（free list 与 live mapping 不同步 / 释放未先 unmap / 并发下同一帧两次分配）；对照 study 笔记 [study-notes/vm/vm-memory-allocator.md](file:///home/xzhao/github/minix-rs/study-notes/vm/vm-memory-allocator.md)。
 - (乙) 若走别名路线：全量重扫（text 至 0x244be8、栈窗口放大至整个栈区）而非 ±16 页，坐实/彻底证伪帧重叠。
 - (丙) 候选 B 残留非守卫直写腿：对位 C `sys_physvm` set/clear 路径。
 
@@ -8610,7 +8610,7 @@ CPU1 的 LAPIC timer 被续-72 `idle()` 掩蔽，而本 port **缺** C 的 AP �
   六步配方（改 asm 决策分支 + 镜像 `aarch64_ipc_dispatch_body` + 修 reply_wire + 放宽 ipc.rs 门控
   + U-Boot/OpenSBI 启动面）。**riscv 纯实现无 Heisenbug，建议优先**（最快把目标① 推到 2/3）。
 
-**交付**：新建 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（迁移交接件·含新机
+**交付**：新建 `rewrite-notes/coordination/NK4C-MIGRATION-20260930.md`（迁移交接件·含新机
 开场 prompt·权威状态快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。WORKLOG 顶部🛑前沿滚至
 续-74。本轮**无生产码改·WORKLOG+doc only（免 CodeReview）·commit 用明确路径**·目标不缩小（①
 x86✅/aarch64❌/riscv❌·②x86 核心✅·③❌）。新机见迁移件 §8 prompt 直接续跑。
@@ -9258,7 +9258,7 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 ## §R3.1 评审线交接待办（滚动认领·非本轮强做，来源＝独立增量评审线程 R3.1）
 
-> 来源报告：`notes/rewrite/fork-syscall-rewrite/NK4C-REVIEW-REPORT-R31-20260930.md`
+> 来源报告：`rewrite-notes/coordination/NK4C-REVIEW-REPORT-R31-20260930.md`
 > §6.2 登记待办表（154–162 行）+ §7.3 R3 遗留销账（114 行）。评审范围
 > `956e4a57f..4e3cab8d5`（145 笔），结论 **零 P0 / 零 P1-正确性 / 零违规**
 > （深审 27 笔：19 PASS + 8 PASS-with-NIT + 0 FAIL）。下列全部 P2/NIT，
@@ -9277,7 +9277,7 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 | F4 | P2-hygiene | kernel-image 交付边界节未更新三架构状态 + `[ARCH: boot-handoff]` 字面标注缺 | os/kernel-image/src/main.rs:17-23 | **合进续-88/89 装机面那次改动顺带补**（该文件正在改） |
 | F5 | P2-doc | 锚点行号偏移 ×3：07c9e6649 schedule.c:60-67→44-47；7a89f2b72 memory.c:606-607→607-608；58c0a51d3 region.c:646→645（结论均不受影响） | 各 commit message/doc | 登记备改，碰到对应文档时校 |
 | F6 | P2-test | 接线类修复测试缺口：e55057d1c（send_work 排水接线无回归测试）、cd613370d（service_pm 阻塞 send 行为翻转零测试 + 该笔自曝 x86 约 1/4 run 未达 marker 未深挖）、2113be7fc（trap 点物化屏障 host 结构性不可测） | 各 commit | 重写到相关域时补测；**cd613370d「未深挖」值得单独跟一条**（可能是又一 marker 阻塞） |
-| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 `evidence/`，偏离 `notes/rewrite/fork-syscall-rewrite/evidence/` 约定 | evidence/20260930-c64-pattern-gate/ | 下次整理证据目录时归位 |
+| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 `evidence/`，偏离 `rewrite-notes/evidence/` 约定 | evidence/20260930-c64-pattern-gate/ | 下次整理证据目录时归位 |
 | F8 | P2-hygiene | 7ccaf77e9 的 test-riscv64-uboot.sh 依赖预检漏 fdisk（无 fdisk 宿主应 SKIP 却 FAIL）+ dd count=28671 魔数无注释 | os/qemu-tests/test-riscv64-uboot.sh:31-34 | 续-89 装机腿碰这脚本时一起修 |
 
 **R3 遗留（§7.3 仍开、报告建议补编号，用户提示为 F9/F10）**：
@@ -9301,7 +9301,7 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 ## §结构债台账（SD-1…SD-33，Revision 2）·滚动认领·非本轮强做
 
-> **权威全量以文件为准**：`notes/rewrite/fork-syscall-rewrite/STRUCTURAL-DEBT-REGISTER-20260930.md`
+> **权威全量以文件为准**：`rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20260930.md`
 > （1405 行，Rev 2，2026-10-01）。来源＝结构债扫描线（结构/设计债 + 每条 ≥2 方案择优，**区别于**
 > 评审线 R3.1 的正确性/P2 待办 F1–F10，那批另行入账）。**全 33 项 + 排期以该文件 §5.1 批次表为索引，
 > 本节只登记总指针与几项时效高的省力条目示例，不复制正文、不靠二手摘要。** 台账与扫描线并发维护
@@ -11419,7 +11419,7 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 - **静态 refute “驱逐越界/发错根”两候选**：`os/servers/vm/src/page_cache.rs:379 free_pages` 只驱逐 `refcount==1`（仅缓存引用）页，与 C `cache.c:288-305` 一致，且有 `test_free_pages_skips_mapped_frames` 守→**无“驱逐仍被引用帧”静态错**；`sas-send`（vm_server.rs:785）日志证明每个已知 ep 发的 root 均与记账一致（§续-249）→**A2“发/存错根”对已知 ep 不成立**。两者叠加 ⇒ (A) 强指 **A1 真瞬态**（需插件才能坐实写者）。
 - **动态定谳外部依赖坐实**：`find /usr -name qemu-plugin.h` 无命中、`/usr/lib/qemu/plugins` 不存在 ⇒ QEMU mem-write 插件需装外部包（本会话无法装，不联网）。**(A) 的根因确认在此工具链被外部依赖卡住**（非难度，是硬缺件）。
-- **经验沉淀落地**：新增 `notes/rewrite/fork-syscall-rewrite/riscv瞬态页表崩溃取证方法论.md`（commit 9efc752bf，164 行，计划 Step8）：四条可迁移知识（Direct Map 不可跨态直接访问 / 停机借内核 DM 活体读 / QEMU riscv 硬件写观察点不可用 / 海森堡布局敏感）+ PTE 对齐不变量防御断言思路。doc-style-lint 0 error。
+- **经验沉淀落地**：新增 `rewrite-notes/coordination/riscv瞬态页表崩溃取证方法论.md`（commit 9efc752bf，164 行，计划 Step8）：四条可迁移知识（Direct Map 不可跨态直接访问 / 停机借内核 DM 活体读 / QEMU riscv 硬件写观察点不可用 / 海森堡布局敏感）+ PTE 对齐不变量防御断言思路。doc-style-lint 0 error。
 - **并行不受 (A) 阻的推进面**（下轮）：目标② aarch64 命令面（已 marker，可跑 aarch64 验证）、目标③ 构建面（不启 qemu）。(A) 一旦用户装 qemu-plugin.h 即可走插件定坐实写者→成修→marker。
 
 ### 纪律
@@ -12892,7 +12892,7 @@ if (masked_msbs != 0 && masked_msbs != mask) return TRANSLATE_FAIL;
 
 **编号对账**：开工时主线程在制 §续-340 未提交（git status 证），取 341；写本条前重查，主线程已提交 340/340b/交接 prompt（f26726061），341 无撞号。本任务即交接 prompt 开放项清单里的「T13 地址语义清扫」。
 
-**交付物**：`notes/rewrite/fork-syscall-rewrite/ADDRESS-CONSTANT-AUDIT.md`（三架构判据表/扫描方法/发现清单/豁免清单/覆盖率对账/修复排序）+ `tools/address-constant-scan.py`（可复跑扫描器，字节级读取防 ugrep 吞输出）。生产代码零改动（`git diff HEAD --stat -- os/` 为空）。
+**交付物**：`rewrite-notes/coordination/ADDRESS-CONSTANT-AUDIT.md`（三架构判据表/扫描方法/发现清单/豁免清单/覆盖率对账/修复排序）+ `tools/address-constant-scan.py`（可复跑扫描器，字节级读取防 ugrep 吞输出）。生产代码零改动（`git diff HEAD --stat -- os/` 为空）。
 
 **判据表锚点（全部第一手取证）**：x86-64 四级（`pte.rs` PML4_ENTRIES=512 + 全仓 LA57 零命中；QEMU `target/i386/monitor.c:39` addr_canonical 按 CR4.LA57 分支；违规真机 #GP 非 #PF，QEMU TCG 数据通路不模拟——translate.c 规范性零命中）；aarch64 边界可编程（`os/arch/src/arm64/paging.rs:543-560` enable() 实写 T0SZ=16/T1SZ=16 ⇒ 用户半区 2^48、TTBR1 基址 0xFFFF_0000_0000_0000；QEMU `target/arm/ptw.c:1687`「The gap between the two regions is a Translation fault」）；riscv Sv39（QEMU `cpu_helper.c:896-898` masked_msbs 门 + `tlb.rs` SV39_MODE=8）。SDM 精确节号一处 [待验证]（卷册级已给）。
 
@@ -13568,7 +13568,7 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 ## §续-386 三架构齐平专项开工（TODO-3ARCH-PARITY-20261006）：P-ALL-09 + P-X86-04 + P-A64-02 三件静态可定案项落地
 
-**本轮性质**：接手 `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`（另一会话的纯静态扫描产物，23 条 P-* 待办 + 10 条排除清单）。按其 §二排序从第一档与第四档小件做起：凡是「需上机定案」「需人裁决」的条目（P-X86-01 方案取舍、P-A64RV-01 SMP 系列、P-ALL-02 硬件错页地址来源）本轮不上手、不代决。
+**本轮性质**：接手 `rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md`（另一会话的纯静态扫描产物，23 条 P-* 待办 + 10 条排除清单）。按其 §二排序从第一档与第四档小件做起：凡是「需上机定案」「需人裁决」的条目（P-X86-01 方案取舍、P-A64RV-01 SMP 系列、P-ALL-02 硬件错页地址来源）本轮不上手、不代决。
 
 **P-ALL-09（SD-28，门面吞构建失败）**：`os/qemu-tests/run_all.sh` 的构建循环用 `|| echo "(build failed)"` 吞退出码，且运行段「binary not found」臂连 SKIP 都不计数——构建坏了整表照绿。修：新增 `build_pkg` 帮助函数（失败记 BUILD_FAIL 计数与 FAILED_PKGS 清单）、缺二进制臂用 `pkg_build_failed` 关联归因（构建失败所致计 FAIL，包本不在清单维持 SKIP）、汇总行加 build failures 栏、退出码 `FAIL>0 || BUILD_FAIL>0` 都非零。bash -n 语法过；真实触发路径留给下次 CI 自然验证（改动本身不跑测试，只改计数与退出语义）。
 
@@ -13902,7 +13902,7 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 - `os/kernel/src/ipc.rs`：唯一写点 `build_notify_message` 改经 `sigset_from_u64`，并在 SYSTEM 臂注写「内核 `SigSet` 仍是 64 位，位 70..73 要等其本身拓宽才住进 `bits[2]`」。
 - `os/fs/fs-rt/src/ipc.rs`＋`transport.rs`：位图读改走 `Message::notify_sigset()`（消掉一处 `unsafe`），`Receipt::Signal { pending }` 仍取低 64 位并写明内核信号族在此窗口之上；`SignalDecision` 文档两条缺口按 E-2/E-4 重写。
 - 顺手清：`message.rs:4008` 的 `test_sched_message_layouts` 缺 `#[test]` 属性（编译器的 `is never used` 告警暴露＝一条从不运行的假测试），补属性后 minix-types lib 测试 319→320。同族残留登记：`test_nreqs_and_is_fs_rq_gate` 同样缺属性、`types/sysctl_abi.rs:569` 的未用导入——非本笔靶，列后续。
-- 台账入库：`notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`（417 行）随本笔 `git add`。§续-407 已把它当判据引用却长期未跟踪＝引用完整性缺口；入库前 `tools/doc-style-lint.sh <该文件>` 实测 error 级 0 命中。
+- 台账入库：`rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md`（417 行）随本笔 `git add`。§续-407 已把它当判据引用却长期未跟踪＝引用完整性缺口；入库前 `tools/doc-style-lint.sh <该文件>` 实测 error 级 0 命中。
 
 ④诚实边界（本笔不宣称的任何事）：**运行时行为零变化**——派发侧（notify 位集展开、管理器臂拦截）全在下一笔，本笔只把「线形与号码」备好；载荷拓宽后内核写侧仍只产低两字，故真机上 71..74 位仍不会出现，位宽拓宽（`SigSet(u64)`→128 位，牵动 GET_PROCTAB/GET_PRIVTAB/notify/GETKSIG 与 PM 镜像）仍是已登记的跨层项，不在本笔偷跑；`Message` 结构是 Rust 侧内部线形（`notify.rs` 头注既有定夺：不与 C 追求字节级兼容），本笔选择 16 字节只为给内核信号位落脚，不宣称跨语言 ABI。
 
@@ -13969,7 +13969,7 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 
 按「C 是否注册 handler」分档（证据＝`grep -rn sef_setcb_signal_handler minix3/minix`）：C 注册而我方闭包为空或粗形状的＝IS、uds、lwip(netdriver 族)、fs-rt 四兄弟（mfs/pfs/ptyfs 在 C 各注册：`fs/mfs/main.c:38`、`fs/pfs/pfs.c:416`、`fs/ptyfs/ptyfs.c:407`）、VM（已有真 handler，只差按号分派）；C 未注册⇒空即忠实的＝sched、mib、vfs、devman（其自有钩子是本项目额外层）。这五分法就是 T2 的靶单与判据来源。
 
-④文档与代码同步（T1 收口必做）：`notes/rewrite/fork-syscall-rewrite/03-stage-rs/20-rs-sef-framework.md` 三处——§3.5 标题从「只上浮类型，不解析信号集」改为「两条臂与一条唤醒兜底」并写清两项残差（实机位图恒空的根因链与兜底的行为保持理由）；§3.6 的 T1 行改「已收＋余项清单」、T2 行换成上表的实测分档；§4.1 差异表把信号臂一行改成两形都解析（并修掉 `sef.c:222-238` 这个错锚）；§5 计数口径 8→13 且 §5.1 表补五条新测试各钉哪条分支；§5.2 第 2 项标注已补与仍缺的两件。台账 `TODO-3ARCH-PARITY-20261006.md` 的 P-ALL-08 条目加「落地进度」一行（T6/T7/T1 已结、T2/T3 未动、T4 待人裁决、T5 交代码卓越度），并注明 T1 的「收」不含生产可达性（位宽余项）。
+④文档与代码同步（T1 收口必做）：`rewrite-notes/03-stage-rs/20-rs-sef-framework.md` 三处——§3.5 标题从「只上浮类型，不解析信号集」改为「两条臂与一条唤醒兜底」并写清两项残差（实机位图恒空的根因链与兜底的行为保持理由）；§3.6 的 T1 行改「已收＋余项清单」、T2 行换成上表的实测分档；§4.1 差异表把信号臂一行改成两形都解析（并修掉 `sef.c:222-238` 这个错锚）；§5 计数口径 8→13 且 §5.1 表补五条新测试各钉哪条分支；§5.2 第 2 项标注已补与仍缺的两件。台账 `TODO-3ARCH-PARITY-20261006.md` 的 P-ALL-08 条目加「落地进度」一行（T6/T7/T1 已结、T2/T3 未动、T4 待人裁决、T5 交代码卓越度），并注明 T1 的「收」不含生产可达性（位宽余项）。
 
 ⑤诚实边界与残余：RS 的 `signal_manager` 仍**无生产调用者**（`grep -n "signal_manager(" os/servers/rs/src/` 只命中测试），所以本笔的补号是「发方形状正确化」，端到端可达性要等 RS 的 sigmgr 拉取环或 PM 批次 H；`SIGKSIG`/`SIGKSIGSM` 的代理循环仍未建模（`sys_getksig`/`sys_endksig` 封装与 PM 侧循环虽在，SEF 层没有对位物，见 §续-412 ① E-3）；notify 展开在生产仍不可达（内核 `SigSet` 位宽）。
 
@@ -14079,7 +14079,7 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 
 ⑨本笔的回归评审回执（当场清两件）：评审无阻断级问题（C 锚点逐条、抽取等价性、三态与刷盘落位、穷尽性与破坏面、死面归零五项均经独立机器复核通过，另对六处实现做了负控：删 `run()` 里的 `synchronized()` 只让刷盘那把变红、给普通 `Cancelled` 加上 `synchronized()` 只让「不该刷」那把变红、删库的空位图兜底一次红三把、三家 `signal_action` 的 SIGTERM 翻成 `Ignore` 各红一把、mfs 判定翻成 `Terminate` 红 `test_signal_decision`——即本笔的六把新测试全部有鉴别力，抽取出的 `dispatch_kernel_notify` 也被既有测试真实钉住而非永真）。两条低危当场清掉：一、⑧ 里那句「位移量恰好等于新增函数的行数」归因不准（387→404 是 +17，而新函数本身 +28，另有臂改调的 −11），已按各 hunk 净增改写；二、`sigset_to_u64` 删掉后那枚桥测试的名字仍叫 `test_sigset_u64_bridge_round_trips_low_half`，可它已经不做往返（断言改成逐字分解），当场更名 `test_sigset_from_u64_fills_the_low_two_words_only`（`grep -rn` 确认全仓仅此一处引用，没有文档锁这个名字）。复验：docker 实跑 `cargo test -q -j 1 -p minix-types --lib` 仍 320/0（改名不动计数）；该文件 `rustfmt --edition 2024 --check` 现已零漂移——顺手带正了本笔之前就存在的那一处数组字面量注释对齐（它从 §续-412 起就在，与本笔无关，但既然今天跑到了就清零）；`bash tools/doc-style-lint.sh --diff` error 级 0 命中；本回执纯文档与测试命名、零生产语义，故不重跑真机门（三把门的读数已在 ⑧ 记账）。评审同时诚实声明它未复跑真机门，只核到宿主与静态面——与我方 ⑧ 的记录互补，不冲突。
 
-⑩本会话在此收口（应用户「选择最近的合适结束点停止」的指令）：§续-411 到 §续-422 十二节全部入库，每节都有对应的提交与一次针对该提交的回归评审（提交号见 `NK4C-接续PROMPT-20261006r.md` 第 3 节的对照表）。收口前复验三件：`git status --porcelain` 无跟踪文件改动、`ps -eo comm | grep -c "^qemu-system"` 为 0、临时 worktree 已卸除；交接件已撰写为 `notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261006r.md`（你在接什么／必读三件／增量对照／十一条纪律／机制地图／按序队列／工具配方／诚实边界／何时该停），接手者只需读顶块与该件即可接续。队列里明确留给下一步的是 T2 收尾半格（sched/mib/vfs/pm 的「C 未注册即忠实」明证化、ipc 单独对照）、T3 的 `process_init` 六段勘察，以及一次性呈报的裁决清单（含 `devman` 自有钩子接或删、`P-ALL-12` 的三案、`P-ALL-08-T4`/`T5`、`P-ALL-03`、`P-X86-01`、`P-ALL-02`、`P-A64-03`）。
+⑩本会话在此收口（应用户「选择最近的合适结束点停止」的指令）：§续-411 到 §续-422 十二节全部入库，每节都有对应的提交与一次针对该提交的回归评审（提交号见 `NK4C-接续PROMPT-20261006r.md` 第 3 节的对照表）。收口前复验三件：`git status --porcelain` 无跟踪文件改动、`ps -eo comm | grep -c "^qemu-system"` 为 0、临时 worktree 已卸除；交接件已撰写为 `rewrite-notes/coordination/NK4C-接续PROMPT-20261006r.md`（你在接什么／必读三件／增量对照／十一条纪律／机制地图／按序队列／工具配方／诚实边界／何时该停），接手者只需读顶块与该件即可接续。队列里明确留给下一步的是 T2 收尾半格（sched/mib/vfs/pm 的「C 未注册即忠实」明证化、ipc 单独对照）、T3 的 `process_init` 六段勘察，以及一次性呈报的裁决清单（含 `devman` 自有钩子接或删、`P-ALL-12` 的三案、`P-ALL-08-T4`/`T5`、`P-ALL-03`、`P-X86-01`、`P-ALL-02`、`P-A64-03`）。
 
 ## §续-423 P-ALL-08 T2 收尾笔一（五站空闭包明证化）：把「C 未注册即忠实」从口述变成带锚事实，顺带抓出顶块的一处假陈述——RS 在 C 里注册了自己的 handler，「收尾半格」实为两真站＋五明证站
 

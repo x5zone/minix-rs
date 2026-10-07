@@ -140,7 +140,7 @@ aarch64 单进程启动（`-smp` 任意，`-smp 1` 也复现）跑到最后阶�
 - `0x7ffffffe25c0`＝出现在崩溃里的 poison 值，形态是一个 INIT 栈区地址（`0x7ffffffe2`
   区），被当成容量/长度；子自身栈在更低的 `0x7ffffffc6` 区。
 - "rc marker"＝启动成功判据字符串 `minix-rs rc: minimal boot script marker`。
-- 完整取证历史在 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`
+- 完整取证历史在 `rewrite-notes/coordination/NK4C-WORKLOG.md`
   §1.120 续-22 至 续-33（本文件是其"已收敛结论 + 待查候选"的压缩版）。
 
 ---

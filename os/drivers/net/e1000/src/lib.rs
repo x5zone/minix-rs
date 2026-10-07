@@ -7,7 +7,7 @@
 //! through `netdriver_task` (`e1000.c:55-61`). This crate owns the
 //! ring half (counts, wrap); the service binary owns register
 //! traffic. See document `23-net-driver-variants.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

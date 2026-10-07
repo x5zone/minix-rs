@@ -18,7 +18,7 @@
 //! exception/interrupt vectors and `configure_syscall()` for syscall
 //! entry — it never writes IDT entries or MSRs directly.
 //!
-//! See `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`
+//! See `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`
 //! §1.3 (跨特权级的统一流程) for the OS-level trap flow these mechanisms
 //! implement.
 //!

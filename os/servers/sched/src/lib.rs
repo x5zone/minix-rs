@@ -5,7 +5,7 @@
 //! The user-space side of Minix3's two-layer scheduling model: the kernel
 //! preempts and accounts, SCHED decides who runs next. This crate opens
 //! with the startup skeleton documented in
-//! `notes/rewrite/fork-syscall-rewrite/06-stage-sched/01-sched-init-main.md`:
+//! `rewrite-notes/06-stage-sched/01-sched-init-main.md`:
 //!
 //! - [`sef`] — the two init names, the machine news, the fresh-boot token.
 //! - [`dispatch`] — the five letters, the notify door, the reply rule.

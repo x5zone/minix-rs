@@ -200,3 +200,125 @@ R14（redesign 其余文件走默认桶）命中 0，说明 12 篇全部进了�
 | 旧树可完全清空 | 目标仍在 `notes/` 下的条目 0 ✓ |
 | 每条目带 kind 与 rule 列 | `git-mv`/`mv-ignored`/`mv-untracked` 三态与基线 git_status 列一一对应 ✓ |
 | 文风门 | 两份新文档 `doc-style-lint` error 级 0 ✓ |
+
+---
+
+## Phase 2 · 结构移动（纯移动，零内容改动）
+
+### 动作 2.1 移动单元归并与干跑
+
+`move-notes.py` 把 2428 条映射归并成 25 个目录单元（2323 件）+ 105 个单文件单元，
+每个单元先断言「源存在、目标不存在」，再执行同文件系统改名（`shutil.move` 走 `rename(2)`，
+1.3G 的 `evidence/` 也是秒级，全程不复制）。干跑先验一遍断言，未落任何目录。
+
+### 动作 2.2 执行与门 M1
+
+```bash
+DRY_RUN=0 python3 tmp/pre-migrate-snapshot-20261007/move-notes.py
+```
+
+门 M1 用的是逐条比对（比多重集更强）：按映射表把每条 `旧路径的迁前 sha256` 与 `新路径的当前 sha256` 对上，
+**2428/2428 一致**，目标缺失 0、内容不一致 0，哈希多重集相等。
+
+### 动作 2.3 执行期抓到一处六份方案都没预见的静默退跟踪
+
+`mv` + `git add` 让 **108 个「已跟踪但命中 `.gitignore`」的文件**（106 个 `*.log` + 2 个 `*.out`）
+只入删除、不入新增——旧路径从索引里消失，新路径因命中忽略规则不会被加入，
+等于迁移顺手把它们退出了版本管理，而 `git status` 不会报错。
+`git diff --cached --name-status` 当时的形态是 994 个 R + 108 个 D（R+D=1102 恰好等于基线跟踪数，
+所以数量核对发现不了，只有看「为什么有 D」才暴露）。
+
+修法：按映射表取这 108 个条目的新路径，`git add -f` 逐个补回索引。
+复核后 `git ls-files rewrite-notes redesign-notes study-notes | wc -l` = **1102** = 基线跟踪数，
+`git diff --cached -M --name-status` = **1102 条 R100**，无 A/D 混杂。
+
+六份方案都写「用 `git mv` 保历史」，本次是 `mv` + `add -f`（因为树内混着被忽略的 `.design` 与日志，
+`git mv` 对整目录的移动语义在不同 git 版本上不一致）。最终索引状态与 `git mv` 等价，差异如实记录。
+
+### 动作 2.4 拦住一次「代用户提交」的越界
+
+`git add -A` 把你未提交的 `TODO-3ARCH-PARITY-20261006.md` 的 6 增 2 删一并带进暂存区
+（`git diff --cached` 里它显示成 R092 而非 R100，是唯一的非纯改名条目，因此被发现）。
+处置：`git update-index --cacheinfo 100644,<HEAD 的 blob beb452f4e>,<新路径>` 把索引退回原内容，
+工作树不动。提交后该文件在 `git status` 里仍是 ` M`（你的改动完好），门 M1 的 2428/2428 也仍然成立。
+
+### Phase 2 验收
+
+| 判据 | 结果 |
+|---|---|
+| 提交形态 = 纯改名 | `1102 files changed, 0 insertions(+), 0 deletions(-)` ✓ |
+| 内容零改动 | 门 M1 逐条 sha256 一致 2428/2428 ✓ |
+| 跟踪数守恒 | 新树 `git ls-files` = 1102 = 基线 ✓ |
+| 旧树清空 | `notes/` 不存在 ✓ |
+| 无嵌套错误 | 无 `rewrite-notes/evidence/evidence` 形态；新树 2425 + `.review` 归档 3 = 2428 ✓ |
+| 在制内容未被代提交 | 台账索引 = HEAD blob，工作树仍 6/2 ✓ |
+
+---
+
+## Phase 3 · 引用重写（必改域路径前缀 + 相对链接重定基）
+
+### 动作 3.1 范围与冻结（用户裁决）
+
+必改域：三棵树内部的 `.md`/`.txt`、`os/` 的 `.rs`/`.toml`/`.md`（注释与文档字符串）。
+树内三个历史区**不改写内容**（用户裁决）：`rewrite-notes/evidence/`（取证日志）、
+任何 `.design/`（设计快照）、`rewrite-notes/archive/legacy-fork-bak/`（fork 时代备份）——
+实测这三区里有 68 个文件、424 处旧路径，保留原文就是「当时文档写在哪」的历史事实，与 `.review/` 同理。
+冻结区只冻结「文件内容」，指向它们的链接照样重定基。
+
+### 动作 3.2 路径前缀重写（`rewrite-refs.py`）
+
+规则 135 条 = 单文件例外 108 + 目录前缀 24 + 树根裸名兜底 3，按旧路径长度降序应用
+（qwen 的顺序纪律：短前缀先吃长前缀会留下 `rewrite-notes/fork-syscall-rewrite/` 这种半截残留）。
+
+结果：413 个文件、1508 处替换。三条硬约束都做了机器核验：
+
+| 约束 | 核验命令 | 结果 |
+|---|---|---|
+| 不增删行（锚点基线行号继续有效） | `git diff --numstat` 逐文件比 +/− | 非对称文件数 **0**（唯一例外是你在制的台账，那 6/2 是你的改动） |
+| 不刷行尾（本仓有 CRLF 文件史） | 与 tar 基线对读同一文件的 CR 行数 | 两边都是 0，字节级替换天然不动行尾 |
+| 不误伤代码 | `git diff -U0 -- os/ \| grep '^+' \| grep -vP '^\+\s*(//\|/\*\|\*\|#)'` | 仅 1 行，是 `minix-types/README.md` 的 markdown 列表项；88 个 `.rs` 全部落在注释内 |
+
+裸名提及（不带路径形态的 `fork-syscall-rewrite`）**不自动改**，出清单交人工判定：
+实测 73 行，抽样确认全是历史叙述（如 `00-master-plan/README.md:5` 讲「本目录的文档主线已调整」、
+`doc_rerank_HY4.md:98` 引用旧树名做统计口径）。按裁决保留原文，清单留在
+`tmp/pre-migrate-snapshot-20261007/bare-mentions.txt` 供审阅方逐条复核。
+
+### 动作 3.3 相对链接重定基（`relink.py`，两轮才做对）
+
+**第一轮漏了一类，被 门 M3 抓出来。** 第一版只处理「旧目标是被搬走的那个文件」的情形；
+门 M3 实跑出 **16 条迁移自己引入的新断链**，全是第二类：链接目标本来指向仓库根的 `os/`、`minix3/`
+（位置没变，但树从 4 层搬到 2 层，`../../../os/...` 的层数就不够了）。补规则后第二轮再修 20 条。
+
+两轮合计 138 处重定基，典型形态：
+
+```
+rewrite-notes/00-master-plan/README.md      ../README.md                →  ../misc/legacy-fork-syscall-index.md
+rewrite-notes/02-stage-vm/draft/00-vm-overview.md  ../../../concepts/README.md  →  ../../concepts/README.md
+redesign-notes/README.md                    architecture-changes.md     →  architecture/architecture-changes.md
+rewrite-notes/coordination/NK4C-WORKLOG.md  ../../../os/kernel/src/proc.rs  →  ../../os/kernel/src/proc.rs
+```
+
+第一条是本次最危险的形态：**链接文本没变、仍然可解析，但解析到了另一个文件**
+（`../README.md` 在新树里指向重写后的新索引，而不是被归档改名的旧索引）。断链检查抓不到它，
+只有按映射表反查目标才能发现——这也是为什么必须用脚本按合同重算而不是「数一下断链条数」。
+
+### 动作 3.4 三道门
+
+| 门 | 判据 | 结果 |
+|---|---|---|
+| 门 M2 零残留 | 必改域内 `notes/rewrite`、`notes/study`、`notes/redesign` 命中文件数 | **0 / 0 / 0** ✓ |
+| 冻结区未被误改 | 三区旧路径命中文件数应与基线测量一致 | `.design` 56、`evidence` 4、`legacy-fork-bak` 8（= 实测值）✓ |
+| 门 M3 断链只减不增 | 基线逐条映射进新坐标后与迁移后集合对读 | 基线 288 条 → 迁移后 257 条；**新增 0**；消失 31 条全部可解释（深度变浅后反而解析成功，或重定基指向正确目标）✓ |
+
+### Phase 3 遗留（如实登记，不顺手修）
+
+- 旧阶段编号引用（`01-stage-pm`、`03-stage-kernel`、`04-stage-vfs`、`05-stage-sched`）与迁移前就坏的
+  相对链接照原样保留，前缀替换后它们仍指向不存在的目录（迁移前也一样）。这是用户裁决第「不顺手修」条，
+  属迁移后的独立任务。
+- `os/libs/minix-types/README.md:125` 指向的 `fork-syscall-plan.md` 迁移前就不存在
+  （`find` 只在 `archive/legacy-fork-bak/` 里找到 `fork-syscall-plan-part1.md`/`-part3.md`/`-backup.md`），
+  机械前缀替换把它写成了 `rewrite-notes/fork-syscall-plan.md`，仍是悬空。后继文档建议判定为
+  `rewrite-notes/00-master-plan/01-project-overview.md`（现行总览），已登记进 Phase 7 的 MIGRATION.md 待人裁决。
+- 406→503 条「迁移前即悬空」的链接清单在 `tmp/pre-migrate-snapshot-20261007/relink-report.tsv`。
+  两轮之间数字变大不是回归：第二轮把「指向仓库根真实文件」的那一类从"无法解析"改判为"可重定基"，
+  剩下的才留在悬空桶里。

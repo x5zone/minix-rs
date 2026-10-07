@@ -3,7 +3,7 @@
 > **分类**：用户态应用二进制接口第 1 篇，覆盖 15 个调用、类型标志映射、旧式回退规则
 > **源码**：`minix3/minix/lib/libc/sys/socket.c` 等 15 个文件（共 3173 行）
 > **Rust 模块**：`os/libs/minix-sys/src/socket.rs`（调用清单、标志映射、回退判断）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/05-lwip-util-addr.md`（系统调用机制的概念背景）、`../05-stage-vfs/24-socket.md`（虚拟文件系统侧的套接字服务端）
+> **前置依赖**：`rewrite-notes/17-stage-net/05-lwip-util-addr.md`（系统调用机制的概念背景）、`../05-stage-vfs/24-socket.md`（虚拟文件系统侧的套接字服务端）
 >
 > **本篇不覆盖的内容**：
 > - 虚拟文件系统侧的套接字服务端（在第 05 阶段，本文只说明用户态如何发起请求）
@@ -135,8 +135,8 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
 - `../05-stage-vfs/24-socket.md`：虚拟文件系统侧的套接字服务端。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`：轻量协议栈分配入口，服务端的接收方。
+- `rewrite-notes/17-stage-net/03-lwip-main-init.md`：轻量协议栈分配入口，服务端的接收方。
 - `os/libs/minix-sys/src/socket.rs`：调用清单、标志映射与回退判断的实现。
 - `minix3/minix/lib/libc/sys/socket.c`：主路径与回退的原始位置（第 44 行到第 241 行）。

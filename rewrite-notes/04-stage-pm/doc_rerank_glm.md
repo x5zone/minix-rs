@@ -16,7 +16,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 - **执行者**: glm
 - **日期**: 2026-09-19
-- **目标目录**: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/`
+- **目标目录**: `rewrite-notes/04-stage-pm/`
 - **仓库根目录**: `/home/xzhao/github/minix-rs`
 - **当前提交号**: `4a8bc90bd`（分支 `rewrite`，2026-09-19 05:24 +0800；工作树中 `os/servers/pm/` 无未提交变更，`git status --short os/servers/pm/` 输出为空）
 - **执行模型**: GLM（bigmodel），独立 bagging 执行，未读取其它 AI 的同类产物
@@ -27,7 +27,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 **属于参考材料（只取料，不参与编号体系）**: `plan.md`（文档重组计划，446 行）、`todo.md`（三轮架构审查与接线台账，590 行）、`draft/`（旧 fork 主线素材 8 篇，已声明停止维护）。
 
-**范围外**: 其它 stage 目录（01-stage-kernel、02-stage-vm、03-stage-rs、05-stage-vfs、06-stage-sched 等）的正文；`minix3/` 内核侧 `sys_*` 系统任务实现；`os/libs/minix-types`、`os/libs/minix-sys` 的内部实现（只取 PM 消费的接口面）；`notes/study/pm/` 早期笔记。
+**范围外**: 其它 stage 目录（01-stage-kernel、02-stage-vm、03-stage-rs、05-stage-vfs、06-stage-sched 等）的正文；`minix3/` 内核侧 `sys_*` 系统任务实现；`os/libs/minix-types`、`os/libs/minix-sys` 的内部实现（只取 PM 消费的接口面）；`study-notes/pm/` 早期笔记。
 
 ### 0.2 读取清单
 
@@ -57,7 +57,7 @@ grep -n "PmCall::SysUname\|PmCall::GetPriority\|PmCall::SetPriority\|PmCall::Get
 grep -rn "0[0-9]-pm-\|0[0-9]-mproc\|04-ipc\|05-vfs-inter\|06-event-sub\|..." os/servers/pm/src --include="*.rs"
 #   30+ 处，热点文件: mproc/mproc.rs、ipc/{calls,dispatcher,vfs}.rs、mproc/{table,pid_gen,context,trace}.rs、main.rs
 # 跨 stage 引用
-grep -rn "04-stage-pm/[0-9][0-9]-" --include="*.md" notes/rewrite/fork-syscall-rewrite/ | grep -v "^.../04-stage-pm/" | wc -l
+grep -rn "04-stage-pm/[0-9][0-9]-" --include="*.md" rewrite-notes/ | grep -v "^.../04-stage-pm/" | wc -l
 #   31 处（05-stage-vfs 14、06-stage-sched 10、02-stage-vm 2、edge_todo 1、其余零星）
 git log --oneline -12 -- os/servers/pm/   # S1–S11 批次接线 + D-29 + decode 单点化等 12 个近期提交
 ```
@@ -774,7 +774,7 @@ git log --oneline -12 -- os/servers/pm/   # S1–S11 批次接线 + D-29 + decod
 
 - **受影响引用总数**: 文档内互引约 53 行 + 代码注释约 10 处 + 跨 stage 约 10~15 处（31 处中编号不变者免修）≈ **75±10 处**。
 - **热点文件**: 文档侧 06/07/09/10/13/15/17/20（引用旧 04/05/01 密集）；代码侧 `ipc/dispatcher.rs`、`ipc/vfs.rs`、`mproc/mproc.rs`。
-- **建议批量修改方式**: (1) 先落新文件（B 相重建），旧文件整体归档；(2) 用 `rg -l '0[1456]-[a-z-]+\.md|99-global-concepts' notes/rewrite/fork-syscall-rewrite/ os/servers/pm/src` 生成受影响清单；(3) 按上表映射脚本化替换后逐处人工复核上下文（替换词可能是正文叙述而非引用）；(4) 跨 stage 引用单独一轮处理并在两 stage 的 todo.md 记账。
+- **建议批量修改方式**: (1) 先落新文件（B 相重建），旧文件整体归档；(2) 用 `rg -l '0[1456]-[a-z-]+\.md|99-global-concepts' rewrite-notes/ os/servers/pm/src` 生成受影响清单；(3) 按上表映射脚本化替换后逐处人工复核上下文（替换词可能是正文叙述而非引用）；(4) 跨 stage 引用单独一轮处理并在两 stage 的 todo.md 记账。
 - **成本判断**: 约 75 处机械替换 + 合并篇的步骤重编号，属于一次性可控成本；不重建的替代成本是长期维持"路线与编号矛盾 + 实施现状失真"双缺陷。
 
 ---

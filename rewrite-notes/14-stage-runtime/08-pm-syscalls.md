@@ -152,6 +152,6 @@ C 语言的执行函数把算栈、腾地方、填字段、调协议、还地方
 - `minix3/minix/lib/libsys/srv_kill.c`：服务停止的原始实现。
 - `minix3/minix/lib/libsys/taskcall.c`：服务端协议的原始实现。
 - `minix3/minix/include/minix/callnr.h`：调用号的原始定义。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/05-syscall-mechanism.md`：前置篇，协议是全部封装的地基。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/09-vfs-syscalls.md`：后一篇，文件系统调用组。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/05-syscall-mechanism.md`：前置篇，协议是全部封装的地基。
+- `rewrite-notes/14-stage-runtime/09-vfs-syscalls.md`：后一篇，文件系统调用组。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

@@ -14,7 +14,7 @@
 ③迁移前完成小节点终止，写本交接文件 + 恢复 prompt。
 
 **已交付物**：`tools/pattern-gate.sh`（15 项机械检查 P1-P15）+ `tools/pattern-gate-baseline.txt`
-（存量豁免）+ `notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md`（模式目录 +
+（存量豁免）+ `rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md`（模式目录 +
 §7/§8 增量节）+ `evidence/2026092{3,7}-c6{1,2,3}-pattern-gate/`（判别证据）。**全部已入 git。**
 
 ## 2. 三轮交付记录（commit 均已合入 rewrite）
@@ -79,7 +79,7 @@ C-NN zcode-glm → cd .wt/ 专属树 → 登记 §2 一行并 commit → 树内�
 3. **变异脚本的还原用备份/还原，禁 `git checkout -- <file>`**——会冲掉自己未提交的在制（P15 假 FAIL
    一次）。
 4. `git add -f` 才能 add evidence 的 *.log（.gitignore 有 `*.log`）；`*.log` 忽略规则同时是 F4 家族防线。
-5. 文风门：notes/rewrite 正文**行内日期**（SL-4）与裸「模式 N」术语（SL-7）都是 error——报告引用既有
+5. 文风门：rewrite-notes 正文**行内日期**（SL-4）与裸「模式 N」术语（SL-7）都是 error——报告引用既有
    模式用「名称+编号」形态，日期用 commit 截断面替代。
 6. P12 启发式（asm/rdmsr 需邻近 target_arch 门）已修正为「排除注释行 + 窗口 12 行」，仍有残余误报
    空间——FAIL 先人工复核再进基线。

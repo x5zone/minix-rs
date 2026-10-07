@@ -115,6 +115,6 @@ C 版本的路由 switch 藏在查询函数体内，测试路由必须跑传输�
 - `minix3/minix/include/minix/com.h`：端点与请求基址的原始定义。
 - `minix3/minix/include/minix/callnr.h`：调用号的原始定义。
 - `minix3/minix/include/minix/ipc.h`：载荷布局的原始定义。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/11-misc-syscalls.md`：前一篇，杂项调用组。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/13-constants-abi.md`：后一篇，常量对账。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/11-misc-syscalls.md`：前一篇，杂项调用组。
+- `rewrite-notes/14-stage-runtime/13-constants-abi.md`：后一篇，常量对账。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

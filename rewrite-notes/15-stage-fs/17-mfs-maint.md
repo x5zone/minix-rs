@@ -3,7 +3,7 @@
 > **分类**：参考实现·维护面（磁盘主线第 11 篇，参考实现收官篇）
 > **源码**：`minix3/minix/fs/mfs/misc.c`（全部二十三行），`minix3/minix/fs/mfs/stats.c`（全部八十九行），`minix3/minix/fs/mfs/const.h`（全部六十八行），`minix3/minix/fs/mfs/clean.h`（全部十四行），`minix3/minix/fs/mfs/glo.h`（全部二十二行）
 > **Rust 模块**：`os/fs/mfs/src/maint.rs`（同步执行、空闲统计、脏标记守卫）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`（超级块与位图），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`（索引节点的脏标记与写回），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/16-mfs-metadata.md`（卷状态对空闲统计的消费）
+> **前置**：`rewrite-notes/15-stage-fs/08-mfs-super.md`（超级块与位图），`rewrite-notes/15-stage-fs/09-mfs-inode.md`（索引节点的脏标记与写回），`rewrite-notes/15-stage-fs/16-mfs-metadata.md`（卷状态对空闲统计的消费）
 > **说明**：内存里攒下的脏东西按什么顺序落盘，位图里还剩多少空位如何数清，散落在五个头文件里的常量到底谁是权威，脏标记在只读盘上出现意味着什么。本篇是参考实现的收官篇，读完之后磁盘文件系统的全部语义拼完整了。
 
 > **本章不讲什么**：
@@ -181,11 +181,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`：超级块与位图（统计的位图来源）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`：索引节点的脏标记与写回（同步的写回对象）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/16-mfs-metadata.md`：卷状态（统计的消费方）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/18-vtreefs.md`：虚拟树框架（下一阶段入口）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/08-mfs-super.md`：超级块与位图（统计的位图来源）。
+- `rewrite-notes/15-stage-fs/09-mfs-inode.md`：索引节点的脏标记与写回（同步的写回对象）。
+- `rewrite-notes/15-stage-fs/16-mfs-metadata.md`：卷状态（统计的消费方）。
+- `rewrite-notes/15-stage-fs/18-vtreefs.md`：虚拟树框架（下一阶段入口）。
 - `os/fs/mfs/src/maint.rs`：维护面的实现。
 - `minix3/minix/fs/mfs/misc.c`：同步的原始实现（二十三行）。
 - `minix3/minix/fs/mfs/stats.c`：统计的原始实现（八十九行）。

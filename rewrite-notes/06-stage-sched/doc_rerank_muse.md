@@ -4,7 +4,7 @@
 
 - Executor: `muse`
 - Date: 2026-09-20 (UTC)
-- Target directory: `notes/rewrite/fork-syscall-rewrite/06-stage-sched/`
+- Target directory: `rewrite-notes/06-stage-sched/`
 - Repository root: `/home/xzhao/github/minix-rs`
 - Current commit: `7fe0df839` (measured with `git rev-parse --short HEAD` on 2026-09-20)
 - Task: Phase R (rebuild blueprint). Output is `target_dir/doc_rerank_muse.md`. No body text is modified.
@@ -43,7 +43,7 @@ Out of scope: everything outside this directory except as cited boundary contrac
 1. All 16 docs above: full header declarations read (table 0.1); body sampled section-by-section for the knowledge pool (Chap. 1 headers, §1.x concept claims, boundary lists, and every C anchor cited).
 2. C ground truth, full read: `minix3/minix/servers/sched/main.c` (137), `schedule.c` (369), `utility.c` (74), `schedproc.h` (39), `sched.h` (18), `proto.h` (21); total 658 lines. Counterpart files: `minix3/minix/include/minix/com.h:801-807` (SCHEDULING_*), `com.h:449` (SCHEDCTL_FLAG_KERNEL), `include/minix/config.h:66-77` (queue constants), `include/minix/ipc.h:1428-1445,1819-1828,1904-1913` (wire structs), `lib/libsys/sched_start.c` (76), `lib/libsys/sched_stop.c` (29), `servers/pm/schedule.c` (94), `servers/rs/utility.c:364-384` (sched_init_proc), `kernel/system/do_schedctl.c` (49), `kernel/system/do_schedule.c` (31), `kernel/system.c:sched_proc`, `kernel/proc.c:1860-1910` (notify_scheduler/proc_no_time).
 3. Rust implementation entries (read, not authoritative for order): `os/servers/sched/src/` — 19 files, 4,707 lines total (measured `wc -l` over `src/*.rs` + `src/**/*.rs` on 2026-09-20): `main.rs`, `server.rs` (1,187), `sef.rs`, `dispatch.rs`, `schedproc.rs`, `table.rs`, `valid.rs`, `priority.rs`, `scheduling/{start,stop,noquantum,nice}.rs`, `kernel_api/{schedule,schedctl,transport}.rs`, `cpu.rs`, `balancer.rs`, `client.rs`, `lib.rs`.
-4. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage table row 06, boot two-layer semantics), `edge_todo.md` (E-SCHEDNICED, E-PREEMPTFLAG, E-SCHEDSMP, E-MINTYPES-SYS, E8, E5(e)), this stage `plan.md` + `todo.md`.
+4. Boundary materials: `rewrite-notes/00-master-plan/README.md` (stage table row 06, boot two-layer semantics), `edge_todo.md` (E-SCHEDNICED, E-PREEMPTFLAG, E-SCHEDSMP, E-MINTYPES-SYS, E8, E5(e)), this stage `plan.md` + `todo.md`.
 5. Neighbor stage overview: `05-stage-vfs/00-vfs-overview.md` (header + startup-chain shape, confirms no concept overlap: VFS boot chain vs SCHED policy server are disjoint) and `04-stage-pm/16-scheduling.md` exists as the declared owner of the PM nice user surface.
 6. Style example: `01-stage-kernel/06-todo.md` exists in `01-stage-kernel/` listing; only its contract-writing pattern (what / not-what / deferred-to / acceptance) is borrowed, none of its conclusions.
 
@@ -51,7 +51,7 @@ Out of scope: everything outside this directory except as cited boundary contrac
 
 ```bash
 git rev-parse --short HEAD                                   # 7fe0df839
-wc -l notes/rewrite/fork-syscall-rewrite/06-stage-sched/*.md # §0.1 line counts
+wc -l rewrite-notes/06-stage-sched/*.md # §0.1 line counts
 ls minix3/minix/servers/sched/                               # Makefile main.c proto.h sched.h schedproc.h schedule.c utility.c
 ls -R os/servers/sched/src/ ; wc -l os/servers/sched/src/*.rs os/servers/sched/src/**/*.rs  # 19 files, 4707
 grep -n 'SCHEDULING_BASE|...' include/minix/com.h            # com.h:801 base 0xF00, :803-807 five requests

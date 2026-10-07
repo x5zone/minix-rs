@@ -2,7 +2,7 @@
 
 //! Regular expressions and text search core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/08-grep-sed.md`:
+//! Covers `rewrite-notes/18-stage-commands/08-grep-sed.md`:
 //! the pattern face shared by `grep` (`minix3/minix/usr.bin/grep/`, built on
 //! the POSIX `regcomp`/`regexec` interface) and `sed`
 //! (`minix3/usr.bin/sed/compile.c` for parsing, `process.c` for running).

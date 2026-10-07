@@ -3,7 +3,7 @@
 > **分类**：套接字协议族原始套接字模块，覆盖协议号范围、特权门禁、头部包含标志、控制报文校验和规则、发送检查
 > **源码**：`minix3/minix/net/lwip/rawsock.c`（1341 行）、创建门禁 `minix3/minix/net/lwip/lwip.c`（第 152 行到第 188 行）
 > **Rust 模块**：`os/net/lwip/src/rawsock.rs`（协议范围判断、特权规则、校验和规则、发送检查）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/07-lwip-pktsock.md`（数据包共享层）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/09-lwip-udpsock.md`（用户数据报协议，共用规则对照）
+> **前置依赖**：`rewrite-notes/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层）、`rewrite-notes/17-stage-net/07-lwip-pktsock.md`（数据包共享层）、`rewrite-notes/17-stage-net/09-lwip-udpsock.md`（用户数据报协议，共用规则对照）
 >
 > **本篇不覆盖的内容**：
 > - 控制报文协议本身的语义细节（在第 24 篇第三方协议栈，本文只说明原始套接字何时要求校验和）
@@ -163,10 +163,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/07-lwip-pktsock.md`：数据包共享层，输入与容量语义。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/09-lwip-udpsock.md`：用户数据报协议，共用规则对照。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/11-lwip-lnksock.md`：链路层套接字，更窄的创建规则。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/07-lwip-pktsock.md`：数据包共享层，输入与容量语义。
+- `rewrite-notes/17-stage-net/09-lwip-udpsock.md`：用户数据报协议，共用规则对照。
+- `rewrite-notes/17-stage-net/11-lwip-lnksock.md`：链路层套接字，更窄的创建规则。
 - `os/net/lwip/src/rawsock.rs`：协议范围、特权规则与校验和规则的实现。
 - `minix3/minix/net/lwip/rawsock.c`：原始套接字的原始实现（1341 行）。
 - `minix3/minix/net/lwip/lwip.c`：分配器门禁的原始位置（第 152 行到第 188 行）。

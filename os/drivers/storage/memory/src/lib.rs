@@ -6,7 +6,7 @@
 //! ([`service::MemoryService`]); the service *binary* owns the runtime shell
 //! (announce, birth handshake, real transport, physical mapping). See
 //! document `05-memory-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! The driver serves both faces with one receive loop: block requests go
 //! to the block framework, everything else to the character framework

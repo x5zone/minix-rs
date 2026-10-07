@@ -235,7 +235,7 @@ non-SMP `system.c:686-689` 在 `#ifdef CONFIG_SMP` 内忽略 cpu 参数）。CON
 | 冒烟 gate | `os/qemu-tests/test-cmd-smoke.sh`（-smp1，stage4 等 marker） |
 | rc 脚本（echo/ls/cat） | `os/etc/rc` |
 | 命令 bin | `os/commands/bin/fileops/src/bin/{echo,ls,cat}.rs` + `proctools`/`shell`/`termctl`/`sysinfo`/`editor`/`diskimg` |
-| riscv 接入验收全清单 | `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A |
+| riscv 接入验收全清单 | `rewrite-notes/coordination/riscv-reviewlog.md` §A |
 
 ---
 
@@ -256,7 +256,7 @@ non-SMP `system.c:686-689` 在 `#ifdef CONFIG_SMP` 内忽略 cpu 参数）。CON
 
 ```text
 你是 NK4-C「清零者」永续自主任务 agent（新电脑·无缝续跑）。先读
-notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md（本机迁移交接件·权威状态），
+rewrite-notes/coordination/NK4C-MIGRATION-20260930.md（本机迁移交接件·权威状态），
 再读同目录 NK4C-WORKLOG.md 顶部🛑前沿段。RESUME-PROMPT.md 的 §3 frontier 已过时（dm_coverage
 source-4 早在续-51 commit `b09665415` 提交，勿再补其验证链）。
 
@@ -296,5 +296,5 @@ cargo 命令须 cd os**。
     `ls /bin`→`cat/echo/ls/sh`、`cat /etc/rc`→全文，echo/ls/cat 三命令端到端全通；
   - 深度分析 riscv64 IPC 桥 gap（§4.B）与 aarch64 OOM H7 方向（§4.A），给出 decision-complete
     续跑配方。
-- 迁移交接件落盘 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（本文件），
+- 迁移交接件落盘 `rewrite-notes/coordination/NK4C-MIGRATION-20260930.md`（本文件），
   随主仓 git-tracked，新机 clone 即在。

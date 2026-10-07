@@ -14,7 +14,7 @@
 >
 > 承诺三件事：**自包含**（读完不需要再翻别的文档就能明白现场与证据形状）、**可复核**（每条事实断言都带文件与符号锚点，或取证存档路径；所有位运算与计数都由脚本算出，标注为「工具生成」）、**诚实**（哪些已坐实、哪些只有支持但未坐实、哪些结论的证据基础其实不成立，分开写清楚）。
 >
-> 与既有文档的分工：`notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md` 追的是「走页表时读到一个不存在的物理帧」这条旧线，其头号症状（反复启动的进程陷在同一个地址上故障）已经定案并修复；逐轮取证流水（哪次点火、串口多少行）记在 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。本文只提炼机制、证据形状与判据边界，不重复时间线。**如果本文与 WORKLOG 冲突，以 WORKLOG 为准。**
+> 与既有文档的分工：`rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md` 追的是「走页表时读到一个不存在的物理帧」这条旧线，其头号症状（反复启动的进程陷在同一个地址上故障）已经定案并修复；逐轮取证流水（哪次点火、串口多少行）记在 `rewrite-notes/coordination/NK4C-WORKLOG.md`。本文只提炼机制、证据形状与判据边界，不重复时间线。**如果本文与 WORKLOG 冲突，以 WORKLOG 为准。**
 >
 > 文中以「取证记录 §续-NNN」形式出现的编号是来源锚点，指向 WORKLOG 里对应小节。
 
@@ -695,7 +695,7 @@ print('Sv39 用户地址上界 2^38 =',2**38)"
 | 内存类型的改尺寸能力（一处仍未与 C 对齐的登记项，见 A.2） | `os/servers/vm/src/memtype.rs:MemType::supports_resize`；C 对位 `minix3/minix/servers/vm/mem_anon_contig.c:anon_contig_resize`、`mem_cache.c:cache_resize` |
 | 测试套件清单与门判据 | `os/qemu-tests/test-atf-riscv64.sh`、`os/qemu-tests/test-atf-aarch64.sh`、`os/xtask/src/image.rs:ATF_BOOT_LEG_READY`、清单文件 `os/target/image/aarch64/atf-plan.txt` |
 | 裸机对账与真机存档 | `tmp/nk4a/tmemcpy_bisect/`（脚本与参考态：`check_bare.c`、`check_bare_v2.c`…`v4.c`、`reference_baremetal.txt`、`bare_1.txt`…`bare_3.txt`、`boot_probe.sh`；真机存档：`machine_run1.log` 271 252 字节、`machine_run2.log` 282 374 字节、`machine_v1.log` 271 240 字节（打印量较小的探针形态一路跑完的那次）、`machine_t64.log` 1 502 271 字节（全量逐字节对账且结果正确的那次）、四份 245 699 字节停滞存档见 4.1.1；同一时刻的双快照目录 `machine/ram_T1.bin` 与 `ram_T2.bin` 各 536 870 912 字节（即 512 兆字节 客机内存）；以上均为本地取证产物，不入仓库） |
-| 逐轮取证流水 | `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` §续-342 … §续-419 |
+| 逐轮取证流水 | `rewrite-notes/coordination/NK4C-WORKLOG.md` §续-342 … §续-419 |
 | §1.1 两条定谳的锚点（确定性根因，与本案无关） | 线程指针初始化：`tools/atf-c-compat/startup-minix.c` 的 riscv 臂 `_start`（工具派生行号 L162-L163），以及 64 位 ARM 臂那条「标签写在地址对齐之前会取到垃圾线程指针」的真机取证注记（同文件 L137-L141）。停摆修复：`os/servers/pm/src/exit.rs:exit_proc` 的终止状态参数（工具派生行号 L338、L342，填进通知在 L446）；上游 C 真源 `minix3/minix/servers/pm/signal.c:sig_proc_exit`（L552） |
 | 进入计数遥测（3.8 的装置） | **已随诊断码族滚除，代码里已不存在**（取证记录 §续-385）。当时的实施位置：`os/kernel/src/trap_dispatch.rs` 的 `NK4C_LEG_COUNTS` 数组与七个命名槽位、`os/kernel/src/syscall.rs` 的 `nk4c_legs_report` 读数行。要重现那些读数需先把探针加回 |
 | 三处同形缺陷与它们的宿主钉住测试（6.1 表） | 两条陷入路径的汇编入口 `os/arch/src/riscv64/trap_stub.rs:riscv64_kernel_trap_vector`（L252）与 `riscv64_user_trap_vector`（L363）；返回路径 `os/arch/src/riscv64/trap_return.rs:restore_to_user`（L117）；形状判定 `os/arch/tests/riscv64_trap_leg_shape.rs`；返回腿的次序与位定义 `os/arch/tests/riscv64_return_leg_pin.rs` |

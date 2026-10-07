@@ -509,7 +509,7 @@ pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, addr: V
 
 `getsysinfo` 的 `SI_PROC_TAB` 全表泄露需 `effuid==0` 的 `Perm` 门与 `svrctl` 的 `PMGETPARAM` 三级查找共享 `find_param` 的 `KVP` 线性——二者在 `monitor_params` 的 `KVP` 线性 + `local_overrides[2]` Tiny 表中闭合。
 
-阅读顺序提示：若想先理解“内核侧 `sys_times` 如何拉取 `p_utime`”，下一站 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-syscall-clock.md`（`sys_times` 的 `p_user_time/p_sys_time`）；若想理解“`vm_getrusage` 如何填 `ru_maxrss`”，下一站 `notes/rewrite/fork-syscall-rewrite/02-stage-vm/20-vm-exit.md`（`vm_getrusage` 的地址空间扩展）。
+阅读顺序提示：若想先理解“内核侧 `sys_times` 如何拉取 `p_utime`”，下一站 `rewrite-notes/01-stage-kernel/21-syscall-clock.md`（`sys_times` 的 `p_user_time/p_sys_time`）；若想理解“`vm_getrusage` 如何填 `ru_maxrss`”，下一站 `rewrite-notes/02-stage-vm/20-vm-exit.md`（`vm_getrusage` 的地址空间扩展）。
 
 ---
 
@@ -517,7 +517,7 @@ pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, addr: V
 
 - C 源（ground truth）：`minix3/minix/servers/pm/misc.c` 全文（`72-100` `do_sysuname` + `108-144` `do_getsysinfo` + `149-164` `do_getprocnr` + `169-193` `do_getepinfo` + `198-233` `do_reboot` + `291-395` `do_svrctl` + `400-447` `do_getrusage`）、`minix3/minix/servers/pm/profile.c:do_sprofile`（`do_sprofile` 的 `SPROFILE` 条件）、`minix3/minix/servers/pm/mcontext.c:do_setmcontext/23`（`do_set/getmcontext` 的 `sys_*mcontext` 透传）、`minix3/minix/servers/pm/utility.c:find_param`（`find_param` 的 `KVP` 线性）、`minix3/minix/servers/pm/utility.c:mproc（L144，工具生成）`（`set_rusage_times` 的 `ticks*1e6/hz`）、`minix3/minix/include/minix/callnr.h:PM_SETGID`（`PM_SYSUNAME 25/.../SPROF 39`）、`minix3/minix/include/minix/ipc.h:469`（`MessLcPm*` 联合体）、`minix3/minix/include/minix/com.h: VFS_PM_REBOOT`（`VFS_PM_REBOOT`）、`minix3/sys/sys/sysinfo.h: SI_PROC_TAB 0`（`SI_*`）、`minix3/sys/sys/reboot.h: RB_*`（`RB_POWERDOWN`）
 - PM 阶段文档：01-pm-init-main.md（`monitor_params` 的 `KVP` 线性串与 `uts_val` 的 `OS_*` 单一真相）、03-mproc-table.md（`find_proc/pm_isokendpt` 的 `IN_USE` 扫描）、04-ipc-dispatch.md（`call_vec` 的 `PmCall` 分发与 `ReplyIntent` 同步/永不回复边界）、10-pm-wait.md（`mp_child_utime` 的 `rusage` 累计）、11-signal-core.md（`check_sig` 的 `SIGKILL` 广播）、14-itimer.md（`HZ` 的 `ticks*1e6/hz` 分解）
-- 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-syscall-clock.md`（`sys_times` 的 `p_user_time/p_sys_time`）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/31-fpu-context-switching.md`（`sys_get/setmcontext` 的 `mcontext_t` 句柄）
+- 内核接口：`rewrite-notes/01-stage-kernel/21-syscall-clock.md`（`sys_times` 的 `p_user_time/p_sys_time`）、`rewrite-notes/01-stage-kernel/31-fpu-context-switching.md`（`sys_get/setmcontext` 的 `mcontext_t` 句柄）
 - 阶段内顺序：19-time.md（`sys_times` 的 `hz` 显式参来源）→ **本章（20）** → 99-global-concepts.md（`SI_*` 常量与 `utsname` 的 `OS_*` 单一真相的全局收敛）
 - OS 模式参考：Linux `uname/sysinfo/reboot/getrusage`（`kernel/sys.c: SYSCALL_DEFINE` + `fs/proc`）、Redox `Scheme` 的 `sys:uname`（`kernel/scheme: sys`）、`seL4` `DebugDumpScheduler`（见 §1.7）
 - Rust 实现：`os/servers/pm/src/misc.rs`（`UtsField/SysInfoWhat/EpInfo/RebootCtl/ParamStore/RusageWho/rusage_from_ticks` 的 10+ 杂项）、`os/libs/minix-types/src/types/clock.rs`（`Clock=i64, Time=i64` 的 `A-11` 64 位）、`os/libs/minix-types/src/ipc/pm.rs`（`PM_SYSUNAME` 等常量）

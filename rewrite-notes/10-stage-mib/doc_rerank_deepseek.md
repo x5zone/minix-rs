@@ -2,7 +2,7 @@
 
 ## 0. 元数据
 
-- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/10-stage-mib/`
+- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/10-stage-mib/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`；当前提交号：`6965e6885`（工作树有未提交修改，数据以工作树实测为准）
 - 交付物：本文件。除本文件外不修改、不重命名、不移动、不删除任何文件；未提交任何变更。
 - 本轮修订（2026-09-19）：补 §8 两张迁移表、§5 二十四篇契约知识点清单、§7 逐项展开；订正 §9.3 契约计数。同轮加修：§2.4 统计摘要与 §9.1/§9.3 的知识点计数按 §2.2 池表实测重算（实测 187 条，旧文写 212 条）。
@@ -1098,15 +1098,15 @@ $ awk '/^### 2\.2/,/^### 2\.3/' doc_rerank_deepseek.md | awk -F'|' '/^\| K-/{gsu
 - 为什么重要：三组数字互相矛盾，读者无法判断哪一个是当前真相；测试总数是文档与代码对账的第一道入口，错一个数会连带动摇读者对整篇的信任。
 - 原料在哪里：`rg -c '#\[test\]' os/servers/mib/src --glob '*.rs'` 逐文件求和得 152；分模块实测为 `io/copy.rs` 10、`io/relay.rs` 5、`tree/dynamic.rs` 8、`tree/version.rs` 3、`query.rs` 5、`describe.rs` 2、`auth.rs` 5、`remote.rs` 3、`tree/mount.rs` 4、`proc/tables.rs` 7、`proc/lwp.rs` 7、`proc/proc2.rs` 7、`proc/proc_args.rs` 3、`proc/minix_proc.rs` 3、`subtree/kern.rs` 3、`subtree/vm.rs` 3、`subtree/hw.rs` 2、`subtree/minix.rs` 2、`walker.rs` 10、`server.rs` 12、`dispatch.rs` 8。C 侧行为基线另有 `minix3/minix/tests/test87.c`（3662 行）、`minix3/minix/tests/rmibtest/rmibtest.c`（267 行）、`minix3/tests/kernel/t_sysctl.c`（74 行）三件。
 - 归哪一篇：各篇测试小节按模块重列自己的数；99 汇总总基线（K-248）。
-- 验收标准：`rg -n '94 passed|101 passed|107 passed' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md` 无输出（当前 19 篇共 19 处）；各篇的模块数与分文件实测一致，总数为 152。
+- 验收标准：`rg -n '94 passed|101 passed|107 passed' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md` 无输出（当前 19 篇共 19 处）；各篇的模块数与分文件实测一致，总数为 152。
 
 ### 7.2 G-02 占位锚系统性错位
 
 - 主题：多篇文档头块与符号表里的 `符号名（L行号，工具生成）` 占位锚。
 - 为什么重要：占位锚是"待重钉"的标记，混在正式文档里读者无法区分已核对与未核对。实测确有错位：`proc.c:1177` 落在返回类型行，函数头 `mib_minix_proc_list` 在 `proc.c:1178`；`proc.c:600` 落在 `static void` 行，`mib_kern_lwp` 实际在 `proc.c:510`；`proc.c:918` 落在返回类型行，`mib_kern_proc_args` 在 `proc.c:919`；`tree.c:1543` 落在返回类型行，`mib_mount` 在 `tree.c:1544`；`tree.c:1476` 落在注释块首行，`mib_tree_recurse` 在 `tree.c:1480`。
-- 原料在哪里：`rg -c '工具生成' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md` 合计 112 处，分布在 18 篇（13 篇 20 处、06 篇 15 处、08 与 22 篇各 12 处、11 篇 10 处、12 与 14 篇各 9 处、04 篇 5 处、02 篇 4 处、17 篇 3 处，其余各 1 至 2 处）；12 篇的核心符号表整表漂移，是单点最重的一处。
+- 原料在哪里：`rg -c '工具生成' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md` 合计 112 处，分布在 18 篇（13 篇 20 处、06 篇 15 处、08 与 22 篇各 12 处、11 篇 10 处、12 与 14 篇各 9 处、04 篇 5 处、02 篇 4 处、17 篇 3 处，其余各 1 至 2 处）；12 篇的核心符号表整表漂移，是单点最重的一处。
 - 归哪一篇：全篇各自重钉；12 篇的核心符号表整表重钉。
-- 验收标准：`rg -c '工具生成' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md` 全为 0；重钉的行号以 `rg -n '^函数名' 目标.c` 命中的函数头行为准。
+- 验收标准：`rg -c '工具生成' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md` 全为 0；重钉的行号以 `rg -n '^函数名' 目标.c` 命中的函数头行为准。
 
 ### 7.3 G-03 15 篇静态树数字与 SECRET 接线
 
@@ -1417,19 +1417,19 @@ $ awk '/^### 2\.2/,/^### 2\.3/' doc_rerank_deepseek.md | awk -F'|' '/^\| K-/{gsu
 
 | 旧引用 | 新目标 | 验证方式 |
 |--------|--------|----------|
-| `04` 篇两处、`08` 篇一处、`13` 篇一处指向 `15 §4.4` 的 arena 承诺引用 | 编号未变，无需硬改；15 篇 §4.4 重写后仍承担"竞技场承诺单一真值" | `rg -n '15 §4\.4' notes/rewrite/fork-syscall-rewrite/10-stage-mib/0[48]-mib-*.md notes/rewrite/fork-syscall-rewrite/10-stage-mib/13-mib-*.md`（4 行） |
-| `17` 篇两处指向 `16` 篇与 `16 §2.1` 的引用 | 编号未变，无需硬改 | `rg -c '见 16' notes/rewrite/fork-syscall-rewrite/10-stage-mib/17-mib-proc-lwp.md`（2） |
-| `05` 篇指向 `10` 篇、`12` 篇指向 `06` 篇、`01` 篇指向 `04` 篇、`02` 篇指向 `01 §2.2`、`04` 篇指向 `01` 篇 | 编号未变，无需硬改 | `rg -n -e '见 10' -e '见 06' -e '见 04' -e '见 01 §2\.2' -e '同 01' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md`（5 行） |
-| 各篇裸篇号引用（例如"11 篇同规则共一条实现"） | 编号未变，无需硬改 | `rg --count-matches -o '[0-9]{2} ?篇' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md`（8 个文件，合计 19） |
-| 各篇指向 `../0N-stage-*/NN-*.md` 的跨 stage 引用 | 编号未变，无需硬改 | `rg -c '\.\./0[0-9]-stage-' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md`（5 个文件，合计 8） |
-| `00` 篇 §2/§3 的越界细节（启动时序与路径图详述） | 改指主家 `01-mib-init-main.md` 与 `10-mib-dispatch.md` | `rg -n '§3\.6' notes/rewrite/fork-syscall-rewrite/10-stage-mib/doc_rerank_deepseek.md`（越界表四行 O-01/O-04/O-07/O-08） |
+| `04` 篇两处、`08` 篇一处、`13` 篇一处指向 `15 §4.4` 的 arena 承诺引用 | 编号未变，无需硬改；15 篇 §4.4 重写后仍承担"竞技场承诺单一真值" | `rg -n '15 §4\.4' rewrite-notes/10-stage-mib/0[48]-mib-*.md rewrite-notes/10-stage-mib/13-mib-*.md`（4 行） |
+| `17` 篇两处指向 `16` 篇与 `16 §2.1` 的引用 | 编号未变，无需硬改 | `rg -c '见 16' rewrite-notes/10-stage-mib/17-mib-proc-lwp.md`（2） |
+| `05` 篇指向 `10` 篇、`12` 篇指向 `06` 篇、`01` 篇指向 `04` 篇、`02` 篇指向 `01 §2.2`、`04` 篇指向 `01` 篇 | 编号未变，无需硬改 | `rg -n -e '见 10' -e '见 06' -e '见 04' -e '见 01 §2\.2' -e '同 01' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md`（5 行） |
+| 各篇裸篇号引用（例如"11 篇同规则共一条实现"） | 编号未变，无需硬改 | `rg --count-matches -o '[0-9]{2} ?篇' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md`（8 个文件，合计 19） |
+| 各篇指向 `../0N-stage-*/NN-*.md` 的跨 stage 引用 | 编号未变，无需硬改 | `rg -c '\.\./0[0-9]-stage-' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md`（5 个文件，合计 8） |
+| `00` 篇 §2/§3 的越界细节（启动时序与路径图详述） | 改指主家 `01-mib-init-main.md` 与 `10-mib-dispatch.md` | `rg -n '§3\.6' rewrite-notes/10-stage-mib/doc_rerank_deepseek.md`（越界表四行 O-01/O-04/O-07/O-08） |
 | `12` 篇 §2.4 的 `ERESTART` 续走细节 | 改指主家 `10-mib-dispatch.md` | 同上；续走判定在 10 篇的判决层 |
 | `21` 篇 §2.4 的服务侧走树细节 | 改指主家 `10-mib-dispatch.md` 与 `11-mib-query-describe.md` | 同上 |
 | `22` 篇 §2.3 的读写镜像细节 | 改指主家 `06-mib-copy-io.md` | 同上 |
-| 各篇"工具生成"占位锚（18 篇共 112 处） | 按实测重钉为真实函数名与函数头行号 | `rg -c '工具生成' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md`（18 个文件，合计 112；重钉后应为 0） |
+| 各篇"工具生成"占位锚（18 篇共 112 处） | 按实测重钉为真实函数名与函数头行号 | `rg -c '工具生成' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md`（18 个文件，合计 112；重钉后应为 0） |
 | `99` 篇 §2 的 `ipc/message.rs:3014-3196` 与 `:3784` | `os/libs/minix-types/src/ipc/message.rs:3177`（`MessLcMibSysctl`）至 `:3357`（`MessMibLsysInfo` 收尾）与 `:3981-3986`（六条尺寸断言，测试函数在 `:3979`） | `rg -n -e 'pub struct MessLcMibSysctl' -e 'pub struct MessMibLsysInfo' -e 'fn test_mib_wire_layouts' os/libs/minix-types/src/ipc/message.rs`（3 行：3177、3342、3979） |
 | `99` 篇 §2 与 `02` 篇对 `minix-types` 常量位置的引用 | `os/libs/minix-types/src/types/sysctl.rs:28`（`CREATE_BASE`）与 `:225`（`SYSCTL_NODE_FN`） | `rg -n -e 'SYSCTL_NODE_FN' -e 'CREATE_BASE' os/libs/minix-types/src/types/sysctl.rs`（6 行） |
-| `plan.md` 与 `todo.md` 里的旧状态（"执行半待建"与"94 → 101 → 107"快照） | 由 B 相按实测同步 | `rg -n '94 → 101 → 107' notes/rewrite/fork-syscall-rewrite/10-stage-mib/plan.md`（1 行）；`rg -n '94/101/107' notes/rewrite/fork-syscall-rewrite/10-stage-mib/todo.md`（1 行） |
+| `plan.md` 与 `todo.md` 里的旧状态（"执行半待建"与"94 → 101 → 107"快照） | 由 B 相按实测同步 | `rg -n '94 → 101 → 107' rewrite-notes/10-stage-mib/plan.md`（1 行）；`rg -n '94/101/107' rewrite-notes/10-stage-mib/todo.md`（1 行） |
 | Rust 侧 `os/servers/mib/src` 下的文档文件名引用 | 编号与文件名均未变，无需硬改 | `rg --count-matches -o '[0-9]{2}-mib-[a-z-]+\.md' os/servers/mib/src`（36 个文件，合计 42） |
 | Rust 侧 `os/servers/mib/src` 下的文档小节引用（如 `06 §1.3`、`01 §2.4`、`15 §4.4`） | 编号未变，无需硬改；但 `15 §4.4` 一处指向被重写的节，须在重写后回核 | `rg -n -e '\b[01][0-9] §[0-9]' -e '\b2[0-2] §[0-9]' os/servers/mib/src`（11 行） |
 | `minix-sys` 与 `minix-types` 侧的文档文件名引用 | 编号未变，无需硬改 | `rg --count-matches -o '[0-9]{2}-mib-[a-z-]+\.md' os/libs/minix-sys/src`（2 个文件，合计 3）；`rg --count-matches -o '[0-9]{2}-mib-[a-z-]+\.md' os/libs/minix-types/src`（4 个文件，合计 6） |

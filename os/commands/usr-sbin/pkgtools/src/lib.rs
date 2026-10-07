@@ -2,7 +2,7 @@
 
 //! Package management and build helper core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/21-package-tools.md`:
+//! Covers `rewrite-notes/18-stage-commands/21-package-tools.md`:
 //! package set installation (`minix3/minix/commands/pkgin_sets/pkgin_sets.sh`
 //! with the core, development, and extras sets, `minix3/minix/commands/pkgin_cd/pkgin_cd.sh`
 //! with the compact disc repository path `packages/{release}/{arch}/All` and the

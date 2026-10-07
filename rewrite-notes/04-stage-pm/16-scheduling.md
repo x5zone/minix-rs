@@ -13,7 +13,7 @@
 **目标读者**：已理解 `ProcTable` 的 `IN_USE && !PRIV_PROC` 扫描（01）、`call_vec` 的 `PM_GETPRIORITY/SETPRIORITY` 分发（04）、`mproc` 的 `nice/scheduler` 二元（02）的开发者；知道 `PRIO_MIN -20..PRIO_MAX 20` 与 `MAX_USER_Q 0..MIN_USER_Q 15` 的值域。
 
 > **本章不讲什么**：
-> - 内核调度器就绪队列与 `do_schedule`（`kernel/proc.c:schedule` 的 `pick_proc`）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/11-scheduling-primitives.md`
+> - 内核调度器就绪队列与 `do_schedule`（`kernel/proc.c:schedule` 的 `pick_proc`）—— `rewrite-notes/01-stage-kernel/11-scheduling-primitives.md`
 > - SCHED 服务实现（`sched_start/sched_inherit/sched_stop` 的队列管理、`sched_set_nice` 的 `maxprio` 传播）—— `06-stage-sched`（`servers/sched`）
 > - VFS 侧 `VFS_PM_FORK` 的 `NEW_PARENT` 语义（`05` 已覆盖 `NEW_PARENT` 的 `reply_to_new_parent`）
 >
@@ -398,7 +398,7 @@ pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, wh
 
 `nice_to_priority` 的 `MAX + (nice-MIN)*16/41` 与 `get_nice_value` 的 `(queue-USER_Q)*41/16` 互逆但因截断非完全双射（`init.rs:817` 测试 `MAX→-17` 与 `MIN→20` 的端点截断）使 `nice 0→queue 7→nice 0` 可逆而 `nice 1→queue 7→nice 0` 的量化误差为 `16:41` 非整数比的固有。
 
-阅读顺序提示：若想先理解“内核调度器就绪队列与 `do_schedule`”，下一站 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/11-scheduling-primitives.md`（`kernel/proc.c:schedule` 的 `pick_proc`）；若想理解“`SCHED` 服务实现”，下一站 `06-stage-sched`（`servers/sched` 的 `sched_start/sched_set_nice` 队列管理）。
+阅读顺序提示：若想先理解“内核调度器就绪队列与 `do_schedule`”，下一站 `rewrite-notes/01-stage-kernel/11-scheduling-primitives.md`（`kernel/proc.c:schedule` 的 `pick_proc`）；若想理解“`SCHED` 服务实现”，下一站 `06-stage-sched`（`servers/sched` 的 `sched_start/sched_set_nice` 队列管理）。
 
 ---
 

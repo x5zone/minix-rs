@@ -32,7 +32,7 @@ MIB 的现状是"语义库完备、服务器不存在"：22 篇文档声称的�
 cargo test -p minix-mib --lib   # test result: ok. 107 passed; 0 failed
 cargo clippy -p minix-mib       # minix-mib 本体 5 条告警（未用 import P_SINTR@proc2.rs:17 与 proc_args.rs:14、empty-line-after-doc、collapsible-if ×2；minix-sys 依赖的 5 条已登记 E-MINSYS-HYGIENE）→ 归 P3-2 清零
 bash tools/design-coverage-check.sh fork-syscall-rewrite   # 10-stage-mib 无缺失行
-python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscall-rewrite/10-stage-mib \
+python3 tools/coverage-extract/coverage-extract.py mib rewrite-notes/10-stage-mib \
   --c-dir minix3/minix/servers/mib --rust-dir os/servers/mib/src   # 见 §1 Gate A
 ```
 
@@ -285,7 +285,7 @@ python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscal
 
 **发现 ✅**，两个候选（同型 ≥2 例，可提案）：
 
-1. **承诺时点漂移（Promised-Landing Drift）候选**：同一承诺在多篇文档里的兑现时点各自演化且互相矛盾（arena：04:82/08:82 说"13 落地时"、13:112 说"15 统一建"、15:136-138 说"15 之后独立任务"）。与模式 70 CTOS（跨轮状态陈旧）同族但是**文档间**漂移。检查命令：`rg -n "arena.*(13|15)" notes/rewrite/fork-syscall-rewrite/10-stage-mib/0{4,8}-*.md 1{3,5}-*.md`。建议规则：承诺兑现时点必须单一真值（一处声明 + 他处引用），跨文档承诺在接收方文档落地时回写来源方。
+1. **承诺时点漂移（Promised-Landing Drift）候选**：同一承诺在多篇文档里的兑现时点各自演化且互相矛盾（arena：04:82/08:82 说"13 落地时"、13:112 说"15 统一建"、15:136-138 说"15 之后独立任务"）。与模式 70 CTOS（跨轮状态陈旧）同族但是**文档间**漂移。检查命令：`rg -n "arena.*(13|15)" rewrite-notes/10-stage-mib/0{4,8}-*.md 1{3,5}-*.md`。建议规则：承诺兑现时点必须单一真值（一处声明 + 他处引用），跨文档承诺在接收方文档落地时回写来源方。
 2. **消费声称失真（Claimed-Reuse Drift）候选**：文档声称"复用 X 模块"但代码零引用（13-stage-ipc/03 篇三处声称复用 `minix-sys::rmib::MountTable`，`os/servers/ipc-server/src/mib_tree.rs:16` 注释声称、:18 实际 import 无）。与模式 76（跨文档归属漂移）同族但方向相反（声称了不存在的依赖）。检查命令：对文档每处"复用 `X`"grep `use X` 于声称的 crate。
 
 ### §7.2 Gate 证据

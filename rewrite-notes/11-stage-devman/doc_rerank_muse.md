@@ -13,7 +13,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 ```
 
 > This blueprint is a self-contained, executable rebuild specification for
-> `notes/rewrite/fork-syscall-rewrite/11-stage-devman/`. Phase B can take each
+> `rewrite-notes/11-stage-devman/`. Phase B can take each
 > new chapter's contract (§5) and write the body without further triage.
 > All factual claims carry anchors. Judgments without anchors are explicitly
 > marked as speculation or to-be-verified.
@@ -28,11 +28,11 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 ## 0. Metadata
 
 - Executor: muse. Date (UTC): 2026-09-19. Target directory:
-  `notes/rewrite/fork-syscall-rewrite/11-stage-devman/`.
+  `rewrite-notes/11-stage-devman/`.
   Repository root: `/home/xzhao/github/minix-rs`.
   Current commit: `046edcf86` (`git rev-parse --short HEAD`, verified 2026-09-19).
 - Deliverable: this file only —
-  `notes/rewrite/fork-syscall-rewrite/11-stage-devman/doc_rerank_muse.md`.
+  `rewrite-notes/11-stage-devman/doc_rerank_muse.md`.
   No body text of any existing document was modified, renamed, moved, or deleted.
 - Scope decision (what counts as a document, what is reference material,
   what is out of scope):
@@ -87,7 +87,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
     transport) and `usb_model.rs` (USB modeling); `os/libs/minix-types/src/
     types/com.rs` (DEVMAN constants block).
   - Boundary material:
-    `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage
+    `rewrite-notes/00-master-plan/README.md` (stage
     table: devman = RS-loaded runtime service, not in boot_image; causal chain
     kernel → VM → RS → rest); `edge_todo.md` devman entries (E-DMWIRE,
     E-DMCLIENT closed, E-REQWIRE/E-ISWIRE/E-DSWIRE increments, E5(h) lifecycle
@@ -99,7 +99,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
     only — §§1-2, 6-10 skimmed; no content borrowed).
 - Commands used and key evidence excerpts:
   - `git rev-parse --short HEAD` → `046edcf86`.
-  - `wc -l notes/rewrite/fork-syscall-rewrite/11-stage-devman/*.md` →
+  - `wc -l rewrite-notes/11-stage-devman/*.md` →
     per-document line counts cited above; `plan.md` 482, `todo.md` 203.
   - `ls minix3/minix/servers/devman/ minix3/minix/lib/libdevman/
     minix3/minix/commands/devmand/` → file inventories cited above.
@@ -114,7 +114,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
     os/libs/minix-sys/src/usb_model.rs
     os/libs/minix-types/src/types/com.rs` → 22 files carry doc-code anchors
     (one `//!` header each; hooks.rs and vtreefs/inode.rs carry 2 each).
-  - `rg -l "devm-|11-stage-devman" notes/rewrite/fork-syscall-rewrite/
+  - `rg -l "devm-|11-stage-devman" rewrite-notes/
     --glob '!*11-stage-devman*'` → external referrers: `edge_todo.md`,
     `edge3.md`, `00-master-plan/README.md`, `08-stage-is/draft/README.md`,
     `09-stage-init/draft/README.md`, `12-stage-input/plan.md`,

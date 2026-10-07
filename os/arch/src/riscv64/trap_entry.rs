@@ -42,7 +42,7 @@
 //! Minix-RS uses direct mode for simplicity (one entry point, one
 //! dispatch table). Vectored mode would marginally speed up interrupts
 //! at the cost of a larger vector table. See
-//! `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`
+//! `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`
 //! §1.3 (跨特权级的统一流程) for the OS-level trap flow.
 
 use crate::trap_entry::{TrapEntryArch, InterruptVector};

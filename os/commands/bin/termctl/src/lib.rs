@@ -2,7 +2,7 @@
 
 //! Terminal control core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/13-terminal-termios.md`:
+//! Covers `rewrite-notes/18-stage-commands/13-terminal-termios.md`:
 //! the control command (`minix3/bin/stty/` with control characters in
 //! `cchar.c`, flag tables in `modes.c`, speed handling through
 //! `cfsetospeed` in `stty.c:137` and `key.c:258`, reporting in

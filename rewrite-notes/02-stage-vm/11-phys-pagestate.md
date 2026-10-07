@@ -3,7 +3,7 @@
 > **分类**: 阶段 5 — 地址空间数据结构（物理页状态面）
 > **源码**: `minix3/minix/servers/vm/pb.c`（168 行：`pb_new` :32 / `pb_free` :54 / `pb_link` :61 / `pb_reference` :73 / `pb_unreferenced` :96 / `mem_cow` :136）+ `minix3/minix/servers/vm/region.h`（`struct phys_block` :23 / `PBF_INCACHE` :35）+ `minix3/minix/servers/vm/phys_region.h`（`struct phys_region` :9-24）+ `minix3/minix/servers/vm/region.c`（`physblock_get` :60 / `physblock_set` :72 / `map_sanitycheck` :168-250）
 > **Rust 模块**: `os/servers/vm/src/region/page_state.rs`（`PageFrames`/`PageState`/`PageSlot`/`PageFlags`/`PfnAllocator`）+ `os/servers/vm/src/region/mod.rs`（re-export）+ `os/servers/vm/src/sanity.rs`（`verify_refcounts` :54）+ `os/servers/vm/src/page_cache.rs`（`addcache`/`rmcache` 消费）+ `os/servers/vm/src/fork.rs`/`cow_exec_pf.rs`（CoW 消费）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（裸物理页分配）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/10-vm-relocation.md`（自举终点，元数据稳态化）
+> **前置**: `rewrite-notes/02-stage-vm/05-physical-memory.md`（裸物理页分配）、`rewrite-notes/02-stage-vm/10-vm-relocation.md`（自举终点，元数据稳态化）
 > **说明**: 物理页状态语义模块：**Minix3 的 `phys_block`/`phys_region` 两层对象（引用计数 + 反向引用链表 + PBF_* 标志）→ minix-rs 的 PFN 索引全局数组（`PageFrames`）**。**不覆盖**：CoW 分裂机制细节（17）、页缓存持有面（24）、vir_region 槽位挂接（13）、memtype 回调族（12）。
 
 ---
@@ -502,12 +502,12 @@ pub fn verify_refcounts(
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/plan.md`（§3.4 边界、§5.3 契约）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（裸物理页分配）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/10-vm-relocation.md`（自举终点）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/12-memtype.md`（memtype 回调族，下一阶段）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md`（vir_region 槽位挂接）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md`（CoW 分裂）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/10-phys-pagestate.md`（素材）
+- `rewrite-notes/02-stage-vm/plan.md`（§3.4 边界、§5.3 契约）
+- `rewrite-notes/02-stage-vm/05-physical-memory.md`（裸物理页分配）
+- `rewrite-notes/02-stage-vm/10-vm-relocation.md`（自举终点）
+- `rewrite-notes/02-stage-vm/12-memtype.md`（memtype 回调族，下一阶段）
+- `rewrite-notes/02-stage-vm/13-region-mapping.md`（vir_region 槽位挂接）
+- `rewrite-notes/02-stage-vm/17-cow-mechanism.md`（CoW 分裂）
+- `rewrite-notes/02-stage-vm/draft/10-phys-pagestate.md`（素材）
 - `os/servers/vm/src/region/page_state.rs`、`sanity.rs`、`page_cache.rs`、`fork.rs`
 - `minix3/minix/servers/vm/pb.c`、`region.h`、`phys_region.h`、`region.c`

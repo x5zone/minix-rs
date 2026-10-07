@@ -5,8 +5,8 @@
 >
 > **本文状态：已结案（历史案卷）。** 本文追的 rc 循环症状已按根因定案并关闭（§续-338，详 §10.11：非规范用户虚拟地址在页表遍历开始之前就被硬件拒收）；它当初门住的三个目标已全部开放，riscv64 启动、命令面与测试套件上机腿均已落地。第 1–9 章保留原始叙事（含逐条推翻过程，那是本文最有教学价值的部分），第 10 章是穷举终态与定案，**第 11 章是结案陈词：逐条交代当时立下的待办清单去哪了**。
 >
-> **一条必须说清的边界：本案的“某个具体缺陷”关完了，“那类机制”没关。** 本文标题所述的原机制——走页表时得出不该出现的物理地址——在新的开放缺陷里重新成了头号候选之一（取证记录 §续-366、§续-367）。那条线以及仍未结的残余项已全部迁到 `notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`，不要从本文拿机制结论去查那个新缺陷。
-> 逐轮的取证流水（哪天跑了哪个脚本、串口输出多少行）记在 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`，本文不重复那份流水的时间线，只提炼其中的机制、判据与结论。
+> **一条必须说清的边界：本案的“某个具体缺陷”关完了，“那类机制”没关。** 本文标题所述的原机制——走页表时得出不该出现的物理地址——在新的开放缺陷里重新成了头号候选之一（取证记录 §续-366、§续-367）。那条线以及仍未结的残余项已全部迁到 `rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`，不要从本文拿机制结论去查那个新缺陷。
+> 逐轮的取证流水（哪天跑了哪个脚本、串口输出多少行）记在 `rewrite-notes/coordination/NK4C-WORKLOG.md`，本文不重复那份流水的时间线，只提炼其中的机制、判据与结论。
 >
 > **⚠ 2026-10-04 更新（§续-338）**：rc 反复 store fault 的真根因＝**栈顶地址 `0x7fff_ffff_f000` 超出 Sv39 上限（≥2^38），是 CPU 架构上无法翻译的非规范地址**——与页表、root、sfence 都无关。修复后 riscv64 首次打出 `minix-rs rc: minimal boot script marker`。请直接读 §10.11，再回看 10.5/10.8 的旧结论修正。
 >
@@ -703,7 +703,7 @@ timeout -s INT 8 qemu-system-riscv64 -machine virt -m 16 -display none \
 | T10 | 区分走表用的虚拟地址与最终被访问的地址是不是同一件事 | **作废** | 同 T1 |
 | T11 | 补插件的覆盖盲区（内核经内核直映射窗写入未列入清单的帧看不见） | **迁移** | 新案卷以全量快照取代事件拦截，天然覆盖内核侧 |
 | T12 | 把插件时间线实测到的表帧地址与槽号回填进候选槽表（含 510 还是 511 格之争） | **作废** | 旧靶作废后无回填对象；该格号争议随取证记录 §续-275 的重定性一并撤销（教训保留：当初正文把未实测的格号当事实写，后来降级为待实测——这条已进方法论） |
-| T13 | 同类地址语义常量全库清扫 | **部分完成**（余下转入技术债） | 审计交付（`notes/rewrite/fork-syscall-rewrite/ADDRESS-CONSTANT-AUDIT.md`，13 项发现，取证记录 §续-341）；第一、二项修复已落地（`os/libs/minix-types/src/types/boot.rs` 的栈顶与用户半区上限双权威 + 编译期不变式；`os/servers/vm/src/mmap.rs:MMAP_TOP` 改为从用户半区上限导出并断言，工具生成行号 L217-L226；§续-344、§续-345）；第三项小口径已落；第四、五项（探针滚除车、分架构断言钳位）与一处陷阱死代码（取证记录 §续-367 登记的零调用方切换入口）**仍开放** |
+| T13 | 同类地址语义常量全库清扫 | **部分完成**（余下转入技术债） | 审计交付（`rewrite-notes/coordination/ADDRESS-CONSTANT-AUDIT.md`，13 项发现，取证记录 §续-341）；第一、二项修复已落地（`os/libs/minix-types/src/types/boot.rs` 的栈顶与用户半区上限双权威 + 编译期不变式；`os/servers/vm/src/mmap.rs:MMAP_TOP` 改为从用户半区上限导出并断言，工具生成行号 L217-L226；§续-344、§续-345）；第三项小口径已落；第四、五项（探针滚除车、分架构断言钳位）与一处陷阱死代码（取证记录 §续-367 登记的零调用方切换入口）**仍开放** |
 
 ### 11.3 §10.10 那张优先级表的归宿
 
@@ -763,7 +763,7 @@ timeout -s INT 8 qemu-system-riscv64 -machine virt -m 16 -display none \
 | 插件 | `watch_store_plugin.c` / `.build.sh` / `riscv_plugin_run.sh` | 已按本机 8.2.2 头文件适配、编译通过、并实跑产出事件时间线（`tmp/nk4a/gh105-plugin.out`、`gh108-plugin.out`、`gh109-plugin.out`）——这些产物比本文的任何描述更新得快，引用前先核对它们 |
 | 接口事实源 | 本机 QEMU 8.2.2 源码 `plugins/api.c:qemu_plugin_outs`、`plugins/loader.c:plugin_add`、`plugins/qemu-plugins.symbols` | 输出需 `-d plugin`；`arg=` 改写规则；导出符号共 43 个 |
 
-**逐轮流水与决策记录**：`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（本文不复制其时间线）。
+**逐轮流水与决策记录**：`rewrite-notes/coordination/NK4C-WORKLOG.md`（本文不复制其时间线）。
 
 ## 附录 B 数值速查
 

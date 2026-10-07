@@ -4,7 +4,7 @@
 //!
 //! Userspace debug-dump aggregator: idle until a TTY function-key
 //! notification arrives, then dispatches to the owning dump routine.
-//! Documented in `notes/rewrite/fork-syscall-rewrite/08-stage-is/
+//! Documented in `rewrite-notes/08-stage-is/
 //! 01-is-init-main.md`.
 //!
 //! Execution model: single-threaded event loop (user-space server —

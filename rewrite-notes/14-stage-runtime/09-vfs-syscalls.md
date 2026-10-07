@@ -168,6 +168,6 @@ C 语言的散列校验和拼装、调用混在一个函数里，测试校验逻
 - `minix3/minix/include/minix/callnr.h`：调用号的原始定义。
 - `minix3/sys/sys/stat.h`：`struct stat` 字段的原始定义。
 - `minix3/minix/include/minix/ipc.h`：载荷布局的原始定义。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/08-pm-syscalls.md`：前一篇，进程管理调用组。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/10-vm-syscalls.md`：后一篇，虚拟内存调用组（待改写）。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/08-pm-syscalls.md`：前一篇，进程管理调用组。
+- `rewrite-notes/14-stage-runtime/10-vm-syscalls.md`：后一篇，虚拟内存调用组（待改写）。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

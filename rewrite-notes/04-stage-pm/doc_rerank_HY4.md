@@ -85,7 +85,7 @@ grep -n 'PmCall::'  os/servers/pm/src/ipc/calls.rs         # Rust 侧 1..=47 全
 
 # 3) 覆盖率（C 符号面）
 python3 tools/coverage-extract/coverage-extract.py pm \
-  notes/rewrite/fork-syscall-rewrite/04-stage-pm \
+  rewrite-notes/04-stage-pm \
   --rust-dir os --c-dir minix3/minix/servers/pm \
   --semantic-map tools/coverage-extract/pm-semantic-map.json
 # → Total C symbols: 109 (71 funcs, 38 macros)

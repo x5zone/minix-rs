@@ -298,8 +298,8 @@ libs/
 - [Rust for Linux](https://rust-for-linux.com/)
 - [Writing an OS in Rust](https://os.phil-opp.com/)
 - [seL4 Formal Verification](https://sel4.systems/)
-- `notes/rewrite/rewrite.md` - 重构设计思路
-- `notes/rewrite/rewrite-strategy.md` - 重写策略（语义冻结）
+- `rewrite-notes/misc/rewrite.md` - 重构设计思路
+- `rewrite-notes/misc/rewrite-strategy.md` - 重写策略（语义冻结）
 
 ---
 

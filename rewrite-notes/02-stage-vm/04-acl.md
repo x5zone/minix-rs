@@ -3,7 +3,7 @@
 > **分类**: 阶段 2 — 访问控制与物理内存（ACL 锚点）
 > **源码**: `minix3/minix/servers/vm/acl.c`（129 行，5 个非 static 函数）；`minix3/minix/servers/vm/vmproc.h:vmproc（L23，工具生成）`（`vm_acl` 字段）；`minix3/minix/include/minix/com.h:VM_RQ_BASE/769-770`（调用号与掩码宽度）；`minix3/minix/include/minix/bitmap.h:BITCHUNK_BITS`（位图宏）；`minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS`（`_NR_SYS_PROCS`）
 > **Rust 模块**: `os/servers/vm/src/acl.rs`（`AclMask`/`AclState`）+ `os/servers/vm/src/vmproc/vmproc.rs:struct VmProc（L31，工具生成）`（`vm_acl` 字段）+ `os/servers/vm/src/vmproc/vmproc_handle.rs:fn acl（L236，工具生成）/328-333`（typestate 方法族）+ 消费方 `os/servers/vm/src/vm_server.rs:fn init_vm_slot（L562，工具生成）/621-634`、`os/servers/vm/src/rs.rs:const NOMMAP（L115，工具生成）`、`os/servers/vm/src/fork.rs:fn do_fork（L215，工具生成）`
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`acl_init` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/02-vmproc-struct.md`（PCB 与生命周期）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/03-vmproc-table.md`（身份验证）
+> **前置**: `rewrite-notes/02-stage-vm/01-vm-init-main.md`（`acl_init` 调用点）、`rewrite-notes/02-stage-vm/02-vmproc-struct.md`（PCB 与生命周期）、`rewrite-notes/02-stage-vm/03-vmproc-table.md`（身份验证）
 > **说明**: ACL 的语义模块：**初始化 / 检查 / 设置 / fork 派生 / 清除** + 位图语义 + DEFAULT/SYSTEM 分层。**不覆盖**：dispatch 中 `acl_check` 的接线（15-ipc-dispatch）、fork 全流程（18）、退出流程（22）、RS Live Update（25）、RS 握手（01 的 §2.4）。
 
 ---
@@ -600,10 +600,10 @@ active.set_acl(acl);
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/plan.md` §2（04 职责）、§3.4（边界表）、§4（ARCH A-11）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` §2.2（`acl_init` 在 init_vm 中的位置）、§2.4（RS 握手）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/02-vmproc-struct.md`（PCB 与生命周期状态机）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/03-vmproc-table.md` §1.4（身份门禁 vs 权限门禁的分工）
+- `rewrite-notes/02-stage-vm/plan.md` §2（04 职责）、§3.4（边界表）、§4（ARCH A-11）
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` §2.2（`acl_init` 在 init_vm 中的位置）、§2.4（RS 握手）
+- `rewrite-notes/02-stage-vm/02-vmproc-struct.md`（PCB 与生命周期状态机）
+- `rewrite-notes/02-stage-vm/03-vmproc-table.md` §1.4（身份门禁 vs 权限门禁的分工）
 - `minix3/minix/servers/vm/acl.c`（ground truth）
 - `os/servers/vm/src/acl.rs`（Rust 实现）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/03-acl.md`（素材）
+- `rewrite-notes/02-stage-vm/draft/03-acl.md`（素材）

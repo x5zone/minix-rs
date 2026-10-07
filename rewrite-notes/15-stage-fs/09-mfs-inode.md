@@ -3,7 +3,7 @@
 > **分类**：参考实现·核心数据结构（磁盘主线第 3 篇）
 > **源码**：`minix3/minix/fs/mfs/inode.c`（全部四百六十四行）、`minix3/minix/fs/mfs/inode.h`（全部七十二行）、`minix3/minix/fs/mfs/type.h`（磁盘格式，二十一行）
 > **Rust 模块**：`os/fs/mfs/src/inode.rs`（表、哈希、生命周期、磁盘转换）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`（初装另两步的归属）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`（位图与区号）
+> **前置**：`rewrite-notes/15-stage-fs/07-mfs-init-main.md`（初装另两步的归属）、`rewrite-notes/15-stage-fs/08-mfs-super.md`（位图与区号）
 > **说明**：文件的内存化身：五百一十二槽位、一百二十八桶哈希、借还计数、磁盘六十四字节格式转换、懒时间。
 
 > **本章不讲什么**：
@@ -225,10 +225,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`：初装另两步的归属。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`：位图与区号。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/10-mfs-mount.md`：挂载纵贯（本篇表的使用方）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/07-mfs-init-main.md`：初装另两步的归属。
+- `rewrite-notes/15-stage-fs/08-mfs-super.md`：位图与区号。
+- `rewrite-notes/15-stage-fs/10-mfs-mount.md`：挂载纵贯（本篇表的使用方）。
 - `os/fs/mfs/src/inode.rs`：索引节点表的实现。
 - `minix3/minix/fs/mfs/inode.c`：索引节点表的原始实现（四百六十四行）。
 - `minix3/minix/fs/mfs/inode.h`：内存结构的原始定义（七十二行）。

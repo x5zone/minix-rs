@@ -285,7 +285,7 @@
 
 **证据**：
 - 现有 bin 65 个（本次实测 `os/commands/**/src/bin/*.rs` 计数 105 项含 `[[bin]]` 声明，去重后的命令名集合与 plan §5.2 对账命中 65 个）。
-- plan.md §5.2（`notes/rewrite/fork-syscall-rewrite/18-stage-commands/plan.md:253-380`）列了约 327 个命令名，**261 个没有 bin**；其中首当其冲的是 `sh`、`cat`、`ls`、`cp`、`mv`、`rm`、`mkdir`、`pwd`、`test`、`chmod`、`ps`、`mount`、`date`、`sleep`。
+- plan.md §5.2（`rewrite-notes/18-stage-commands/plan.md:253-380`）列了约 327 个命令名，**261 个没有 bin**；其中首当其冲的是 `sh`、`cat`、`ls`、`cp`、`mv`、`rm`、`mkdir`、`pwd`、`test`、`chmod`、`ps`、`mount`、`date`、`sleep`。
 - `sh` 的执行器缺口在文档里已经点名：`18-stage-commands/todo.md`（批次二十六）列出三件前置——运行时 `execve` 面挂 C-21、`pipe2` 走 `VFS_PIPE2`、`F_DUPFD` 常量组。
 - 账本登记：edge3.md S35（🔴 长尾批次）、S36（Requires 回填）。
 
@@ -415,7 +415,7 @@
 
 ## §8 本次扫描的方法与范围（供复核）
 
-**扫描范围**：`os/`（kernel、arch、plat、boot-shim、servers×11、libs、fs、net、drivers×57、commands×24、qemu-tests、xtask）+ `notes/rewrite/fork-syscall-rewrite/` 的账本（edge1/2/3/4、edge_todo、18-stage todo/plan、16-stage todo）+ `minix3/` 对照（`servers/rs/main.c`、`lib/libsys/sef*.c`、`releasetools/image.functions`、`servers/vfs/main.c`、`drivers/tty/tty/arch/i386/console.c`）。
+**扫描范围**：`os/`（kernel、arch、plat、boot-shim、servers×11、libs、fs、net、drivers×57、commands×24、qemu-tests、xtask）+ `rewrite-notes/` 的账本（edge1/2/3/4、edge_todo、18-stage todo/plan、16-stage todo）+ `minix3/` 对照（`servers/rs/main.c`、`lib/libsys/sef*.c`、`releasetools/image.functions`、`servers/vfs/main.c`、`drivers/tty/tty/arch/i386/console.c`）。
 
 **实测命令（择要）**：
 - `cargo check -p minix-pm --lib --target x86_64-unknown-none -j 1` → 1103 errors（lib 无 `no_std`）。

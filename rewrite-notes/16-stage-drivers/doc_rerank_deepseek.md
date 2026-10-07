@@ -124,8 +124,8 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 **阶段边界材料**：
 
-- `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md`：阶段划分（16 号 = drivers）
-- `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（1095 行，42 条）：本 stage 登记 3 条（`E-DEVWIRE` `:965`、`E-SDEVOWN` `:983`、`E-DMABUF` `:1001`），另有 4 条涉本 stage（`E-DMCLIENT` `:728`、`E-CDRCONV` `:772`、`E-PCKBDREG` `:806`、`E-DMWIRE` `:705`）
+- `rewrite-notes/00-master-plan/README.md`：阶段划分（16 号 = drivers）
+- `rewrite-notes/coordination/edge_todo.md`（1095 行，42 条）：本 stage 登记 3 条（`E-DEVWIRE` `:965`、`E-SDEVOWN` `:983`、`E-DMABUF` `:1001`），另有 4 条涉本 stage（`E-DMCLIENT` `:728`、`E-CDRCONV` `:772`、`E-PCKBDREG` `:806`、`E-DMWIRE` `:705`）
 - `16-stage-drivers/plan.md`（433 行）、`16-stage-drivers/todo.md`（160 行）
 - 前一 stage：`15-stage-fs/00-fs-overview.md`（已讲完 FS 子系统；本 stage 的 `libbdev` 是它的上游）
 
@@ -3953,7 +3953,7 @@ $ grep -nE "^[a-z_]+[A-Za-z0-9_ ]*\**[a-z_0-9]+\(" <file>  # Python 脚本批量
 
 **结论：本蓝图已完成**。
 
-**交付物**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/doc_rerank_deepseek.md`（本文件）。
+**交付物**：`rewrite-notes/16-stage-drivers/doc_rerank_deepseek.md`（本文件）。
 
 **九道自检门全部通过**（G1–G9）。
 

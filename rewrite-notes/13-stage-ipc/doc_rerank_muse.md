@@ -2,7 +2,7 @@
 
 ## 0. Metadata
 
-- Executor: muse. Date: 2026-09-20. Target: `notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`.
+- Executor: muse. Date: 2026-09-20. Target: `rewrite-notes/13-stage-ipc/`.
   Repo root: `/home/xzhao/github/minix-rs`. HEAD at blueprint time: `d6323548`
   (re-verified; earlier in-session observation `a9e61a9d4` moved during parallel lanes).
 - Task = Phase R (rebuild blueprint): emit `target_dir/doc_rerank_muse.md` only.
@@ -76,7 +76,7 @@ N=new (from C/non-C/Rust, added by §3).
 | ID | Name | Type | Src | Stock location | Anchor | Reader benefit: answers… |
 |----|------|------|-----|----------------|--------|--------------------------|
 | K-001 | IPC server = user-space SysV object manager | C | S | 00 §1, README | `servers/ipc/` (4 .c, 1690+66+18 lines) | What lives here vs in the kernel? |
-| K-002 | kernel-IPC vs server boundary (send/receive/notify excluded) | C | S | 00 §1, README, plan §1.4 | `01-stage-kernel/12-ipc-core.md`, `notes/rewrite/ipc-sendrec.md` | Which "IPC" does this stage (not) cover? |
+| K-002 | kernel-IPC vs server boundary (send/receive/notify excluded) | C | S | 00 §1, README, plan §1.4 | `01-stage-kernel/12-ipc-core.md`, `rewrite-notes/misc/ipc-sendrec.md` | Which "IPC" does this stage (not) cover? |
 | K-003 | RS runtime loading + boot-image absence | M | S | 00 §1, 01 §2.6, draft | `kernel/table.c` (no ipc entry); `ipc.conf` | When is this server born? |
 | K-004 | SEF 3-callback startup (fresh=restart, signal) | M | S | 01 §§1.3/2.2 | `main.c:124-142` | What runs before the first message? |
 | K-005 | 5-branch main loop (notify/PROC_EVENT/MIB/dispatch/tail-sweep) | M | S | 01 §§1.3–1.4/2.3 | `main.c:227-280` | Where does my request go? |
@@ -217,7 +217,7 @@ Fast path (fix a bug in one handler): 00 map → 01 branch locating → 02 field
 ### 00-overview
 -定位: the only page a newcomer must read; answers "what/where/map" in under 5 minutes.
 -讲什么: K-001, K-002, K-003 (pointer), main-thread figure (T-01→T-14 compressed), journey-thread figure, doc map table with thread positions, Rust-status pointer (K-048 one line + test count), boundary list.
--不讲什么: any mechanism (→01–11); any value table (→99); kernel primitives (→`01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`); MIB internals (→`10-stage-mib`).
+-不讲什么: any mechanism (→01–11); any value table (→99); kernel primitives (→`01-stage-kernel/12-ipc-core.md` + `rewrite-notes/misc/ipc-sendrec.md`); MIB internals (→`10-stage-mib`).
 -前置: none. -后置: all (map target).
 -事实底线: `servers/ipc/` totals (`main.c:284, sem.c:888, shm.c:469, utility.c:49`); `ipc.conf`; `kernel/table.c` absence; `ipc-server/` test totals (todo.md R1).
 -知识点: K-001, K-002, K-003, K-048 (pointer depth only).

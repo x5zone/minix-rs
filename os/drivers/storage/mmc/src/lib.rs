@@ -9,7 +9,7 @@
 //! `omap_mmc.h`. This crate owns the card-facing order (which command
 //! comes next); the service binary owns host registers and data port
 //! traffic. See document `17-storage-misc-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

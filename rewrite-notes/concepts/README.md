@@ -1,6 +1,6 @@
 # Concepts: 系统核心概念
 
-> **位置**: `notes/rewrite/concepts/`  
+> **位置**: `rewrite-notes/concepts/`  
 > **说明**: 存放跨服务、跨层级的系统核心概念文档
 
 ---

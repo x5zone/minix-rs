@@ -1,7 +1,7 @@
 # 13-stage-ipc 文档重组计划（plan.md）
 
 > **状态**: 定稿（2026-08-16 首版 + 深度 review + minix3 源码回归 review，见 §7）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`
+> **范围**: `rewrite-notes/13-stage-ipc/`
 > **目标**: 以 **IPC server 启动顺序为主线**定义 IPC 全部文档；SysV IPC 调用旅程为次主线；最终覆盖 Minix3 IPC server（`servers/ipc/`，4 个 .c，1690 行）全部语义，支撑 IPC server 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/` + `03-stage-rs/` + `10-stage-mib/`（同流程先例）、`minix3/minix/servers/ipc/`（ground truth）、`os/servers/ipc-server/`（Rust 实现：判定层 + 服务层已落地，2026-09-16 时点单元 100 + 集成 4 测试全过；生产传输接线挂 E-IPCWIRE）
 
@@ -13,7 +13,7 @@
 
 `13-stage-ipc/` 目录自 2026-08-14 补建以来仅有**占位 README**（已移入 `draft/`），没有任何正式文档。与它的服务语义不匹配：
 
-1. **概念边界易混淆**——"IPC"在 Minix3 中分两层：**kernel IPC 机制**（`kernel/proc.c` 的 send/receive/notify 原语，见 `01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`）与**用户态 IPC server**（本 stage：SysV 信号量 + 共享内存的对象管理服务）。README 已声明该边界，正式文档必须继承并展开。
+1. **概念边界易混淆**——"IPC"在 Minix3 中分两层：**kernel IPC 机制**（`kernel/proc.c` 的 send/receive/notify 原语，见 `01-stage-kernel/12-ipc-core.md` + `rewrite-notes/misc/ipc-sendrec.md`）与**用户态 IPC server**（本 stage：SysV 信号量 + 共享内存的对象管理服务）。README 已声明该边界，正式文档必须继承并展开。
 2. **语义复杂度中等但依赖面广**——`servers/ipc/` 共 1690 行 C（4 个 .c），但跨服务依赖 6 个方向：PM（进程事件）、VM（内存映射/引用计数）、MIB（远程子树注册）、RS（加载/SEF 生命周期）、kernel（sys_datacopy）、libc（调用方）；且 `os/libs/minix-types/` **尚无 IPC 消息类型**、`os/libs/minix-sys/` 仍是 stub，Rust 侧几乎全部待建（2026-09-16 注：这两条已解除——七个 `MessLcIpc*` 结构与语义层类型在 minix-types 落地，minix-sys 的 vircopy/VM/凭证 wrapper 落地；Rust 侧现状见 §3.5 与 todo.md）。
 3. **与 02-stage-vm 的差异**——02-stage-vm 有旧 fork 主线文档可迁移；13-stage-ipc **无旧文档可迁移**（只有占位 README）。因此本计划从零定义文档集，`draft/` 仅保留占位素材；覆盖契约（§5）是后续写作的**唯一权威基线**，必须一次到位（同 03-stage-rs / 10-stage-mib 先例）。
 
@@ -74,7 +74,7 @@ IPC server 的全部工作本质是 **SysV IPC 对象（信号量集合/共享�
 
 | 层 | 内容 | 归属 |
 |----|------|------|
-| **kernel IPC 机制** | SEND/RECEIVE/NOTIFY/SENDREC 原语、阻塞/唤醒、死锁检测、通知位图 | `01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`（SENDREC 原子性）——**本 stage 不覆盖** |
+| **kernel IPC 机制** | SEND/RECEIVE/NOTIFY/SENDREC 原语、阻塞/唤醒、死锁检测、通知位图 | `01-stage-kernel/12-ipc-core.md` + `rewrite-notes/misc/ipc-sendrec.md`（SENDREC 原子性）——**本 stage 不覆盖** |
 | **IPC server** | SysV 信号量（semget/semctl/semop）与共享内存（shmget/shmat/shmdt/shmctl）对象管理，运行在用户态、通过 kernel IPC 收发消息 | 本 stage（00~10） |
 
 命名澄清：Rust crate 名为 `ipc-server`（`os/servers/ipc-server/`，避免与 kernel ipc 概念混淆，README 已声明）。

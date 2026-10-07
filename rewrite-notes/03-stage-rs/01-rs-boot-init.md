@@ -3,7 +3,7 @@
 > **分类**: 阶段 1 — 启动入口与初始化骨架（导航骨架文档）
 > **源码**: `minix3/minix/servers/rs/main.c`（834 行）、`minix3/minix/servers/rs/table.c`（50 行）；SEF 库位于 `minix3/minix/lib/libsys/sef*.c`
 > **Rust 模块**: `os/servers/rs/src/main.rs`、`os/servers/rs/src/lib.rs`（含 `table`/`boot`/`sef`/`dispatch` 子模块）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/00-rs-overview.md`、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/09-vm-boot-protocol.md`（boot 链）
+> **前置**: `rewrite-notes/03-stage-rs/00-rs-overview.md`、`rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md`（boot 链）
 > **说明**: RS 进程从 `main()` 入口（`main.c:38`）经 `sef_local_startup()` 回调注册、`sef_cb_init_fresh()` 四步 boot（`main.c:158`）到主循环 dispatch 入口的全部启动链。本文档是阶段 1~7 全部文档的导航锚点：按 boot 顺序映射 02~18 的机制归属，但**不展开任何机制**（见 §2.2 前向引用豁免）。
 
 ---
@@ -1034,11 +1034,11 @@ impl RsServer {
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/00-rs-overview.md` — RS 总览与启动主线图
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/plan.md` §1.2/§3.1/§4 A-7/A-11/A-13/§5.3 — 本文档的写作契约与覆盖基线
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` — 同流程先例（VM 启动链，BootParams/占位注入策略）
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/09-vm-boot-protocol.md` — 内核侧 boot 链（RS 启动的前置）
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/22-privilege.md`、`23-ipc-filter.md` — kernel 侧 priv/IPC filter 语义（Step 1 的 `sys_privctl`/send mask 依赖）
+- `rewrite-notes/03-stage-rs/00-rs-overview.md` — RS 总览与启动主线图
+- `rewrite-notes/03-stage-rs/plan.md` §1.2/§3.1/§4 A-7/A-11/A-13/§5.3 — 本文档的写作契约与覆盖基线
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` — 同流程先例（VM 启动链，BootParams/占位注入策略）
+- `rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md` — 内核侧 boot 链（RS 启动的前置）
+- `rewrite-notes/01-stage-kernel/22-privilege.md`、`23-ipc-filter.md` — kernel 侧 priv/IPC filter 语义（Step 1 的 `sys_privctl`/send mask 依赖）
 - `minix3/minix/servers/rs/main.c` — 本文档 ground truth
 - `minix3/minix/servers/rs/table.c` — boot 三表 ground truth
 - `minix3/minix/include/minix/sef.h` — SEF 回调/类型定义（`SEF_INIT_*`/`sef_init_info_t`）

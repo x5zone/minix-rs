@@ -18,7 +18,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 - **执行日期**：2026-09-19
 - **当前提交**：`2d9d1f0aa`（`git rev-parse --short HEAD`，2026-09-19 实测）
-- **目标目录绝对路径**：`/home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/02-stage-vm`
+- **目标目录绝对路径**：`/home/xzhao/github/minix-rs/rewrite-notes/02-stage-vm`
 - **本产物**：只写 `doc_rerank_HY4.md` 一个文件；未修改、未移动、未删除任何现有文件。
 
 ### 0.2 审查范围
@@ -72,7 +72,7 @@ rs.c 391  slaballoc.c 528  utility.c 494  vfs.c 143
 
 ```bash
 # 目录与规模
-$ wc -l notes/rewrite/fork-syscall-rewrite/02-stage-vm/*.md | tail -1
+$ wc -l rewrite-notes/02-stage-vm/*.md | tail -1
   15270 total                       # 28 篇编号文档
 $ ls minix3/minix/servers/vm/*.c | wc -l
   24
@@ -105,8 +105,8 @@ $ grep -rho "02-stage-vm/[0-9][0-9]-[a-z-]*\.md" --include="*.md" notes/ | sort 
   13 02-stage-vm/00-vm-overview.md
 $ grep -rn "02-stage-vm" --include="*.rs" os/ | wc -l
   14
-$ grep -rn "02-stage-vm" --include="*.md" notes/rewrite/fork-syscall-rewrite/ \
-    | grep -v "^notes/rewrite/fork-syscall-rewrite/02-stage-vm/" | wc -l
+$ grep -rn "02-stage-vm" --include="*.md" rewrite-notes/ \
+    | grep -v "^rewrite-notes/02-stage-vm/" | wc -l
   491
 ```
 
@@ -1469,7 +1469,7 @@ $ grep -rn "02-stage-vm" --include="*.md" notes/rewrite/fork-syscall-rewrite/ \
 **B. 目录外引用（`02-stage-vm/NN-*.md` 形式的绝对路径引用）**
 
 - 全仓 29 个命中串、总计约 300 次（按 §0.4 的 `uniq -c` 逐串求和，含目录内自身引用）；
-- **跨 stage 引用共 491 行**（`grep -rn "02-stage-vm" notes/rewrite/fork-syscall-rewrite/ | grep -v 本目录`），分布在至少 5 个目录：`16-stage-drivers/plan.md`、`16-stage-drivers/08-log-driver.md`、`16-stage-drivers/05-memory-driver.md`、`07-stage-ds/plan.md`、`01-stage-kernel/*`；
+- **跨 stage 引用共 491 行**（`grep -rn "02-stage-vm" rewrite-notes/ | grep -v 本目录`），分布在至少 5 个目录：`16-stage-drivers/plan.md`、`16-stage-drivers/08-log-driver.md`、`16-stage-drivers/05-memory-driver.md`、`07-stage-ds/plan.md`、`01-stage-kernel/*`；
 - 迁移方式：脚本批量替换 `02-stage-vm/NN-<old>.md` → `02-stage-vm/NN-<new>.md`，替换表即 §8.1 的"旧位置 → 新位置"列；
 - 验证方式：`rg -n "02-stage-vm/[0-9][0-9]-" notes/ | rg -v "<new-name>"` 应为零命中（新名集合见 §4.1）。
 

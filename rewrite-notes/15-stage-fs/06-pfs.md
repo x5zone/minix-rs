@@ -3,7 +3,7 @@
 > **分类**：变体·启动第一个挂载（最小完整服务器样例）
 > **源码**：`minix3/minix/fs/pfs/pfs.c`（全部四百五十一行）
 > **Rust 模块**：`os/fs/pfs/src/lib.rs`（服务器逻辑）、`os/fs/pfs/src/main.rs`（进程入口，运行时接线待服务阶段）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`（分发与挂载门禁）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/02-fsdriver-call.md`（九个回调的到达路径）
+> **前置**：`rewrite-notes/15-stage-fs/01-fsdriver-task.md`（分发与挂载门禁）、`rewrite-notes/15-stage-fs/02-fsdriver-call.md`（九个回调的到达路径）
 > **说明**：启动时第一个挂载的文件系统：五百一十二节点表、管道读写、克隆设备、无根挂载。
 
 > **本章不讲什么**：
@@ -231,9 +231,9 @@ C 用分配的三万多字节堆缓冲。Rust 用变长数组，分配时预留�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分（管道前移第 06 的理由）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/02-fsdriver-call.md`：九个回调的到达路径。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`：参考实现的启动。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分（管道前移第 06 的理由）。
+- `rewrite-notes/15-stage-fs/02-fsdriver-call.md`：九个回调的到达路径。
+- `rewrite-notes/15-stage-fs/07-mfs-init-main.md`：参考实现的启动。
 - `os/fs/pfs/src/lib.rs`：管道服务器的实现。
 - `os/fs/pfs/src/main.rs`：进程入口。
 - `minix3/minix/fs/pfs/pfs.c`：管道服务器的原始实现（四百五十一行）。

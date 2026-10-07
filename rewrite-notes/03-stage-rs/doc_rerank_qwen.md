@@ -7,7 +7,7 @@
 
 - **执行者**：qwen
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/03-stage-rs`
+- **目标目录**：`rewrite-notes/03-stage-rs`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`561cf097b`
 - **修订记录（本轮，用户裁决）**：GAP-2 **SEF 框架归属改判**——原判属 `14-stage-runtime`，现取证该 stage 未讲框架本体（`14-stage-runtime/plan.md:231` 把 `sef*.c` 列入排除表，同文件 `:277` 又判给不存在的 "minix-sef stage"，00–13/99 无一讲述），故按 §9 待裁决问题 2 预留的 fallback 分支改判为**本 stage 尾部新增 `20-rs-sef-framework.md`**（尾附编号，不顺移 00–19/99，§4.1 成本裁决不破）。同步点：§2.8 K-125、§2.10、§3.2 GAP-2、§4.1、§4.2、§4.3、§5（00/01/12/18 四篇契约 + 新增 20 契约）、§7（前言例外 + GAP-2 行 + 新增 GAP-5）、§8.1、§8.2、§9。仍为 R 相产物：**未改任何正式篇章正文**。
@@ -265,7 +265,7 @@
 | 编号 | 缺口主题 | 证据 | 建议 | 落实 |
 |------|---------|------|------|------|
 | GAP-1 | "update-in-progress 全局状态门控"（`RUPDATE_IS_UPDATING`）被 04/07 前向引用（`04` 声明引用 `const.h:RUPDATE_IS_UPDATING`，`07` 引用 `update_period`），但完整解释迟至 16 | 04/07 头前置 + 正文引用 16 | 把"**存在一个 update 进行中标志位、置位期间对外请求返回 EBUSY / 心跳走 update_period 例外**"这一状态语义在 **02（数据底座，r_flags/update 状态位）**首次讲完整；16 只展开状态机 | 新增 K-018 |
-| GAP-2 | SEF 框架作为 RS 前置概念无独立归属，分散在 01 §1.3/§2.2 + 12 + 18 + 19 | K-125 分散；**本轮取证补充**：`wc -l minix3/minix/lib/libsys/sef*.c` = 2210 行（9 个 `.c`）；`grep SEF notes/rewrite/fork-syscall-rewrite/14-stage-runtime/[0-9]*.md` 只命中 `plan.md` 的排除/映射行，正式篇章 0 讲述；`os/libs/minix-sef/src/lib.rs`（438 行）只实现 `sef_receive_status` 拦截核心 + ping 应答 | **改判：归本 stage 尾部新增 `20-rs-sef-framework.md`**（原判 `14-stage-runtime` 不成立——该 stage 实测未讲，见 §0 修订记录）。改判的两条 RS 侧正当理由：①RS 是**唯一注册全部 7 个回调**的服务（`main.c:136-152`）；②SEF 库内部**专门为 RS 开分支**（`ROOT_SYS_PROC` → `do_sef_rs_init`，sef.c:107-114），且 init/LU/ping 三条腿的对端都是 RS（sef.c:127、sef_init.c:463/477、sef.c:189、sef_liveupdate.c:559）。01 §1.3/§2.2 收缩为"RS 注册了哪些回调 + 为什么全量"，框架本体归 20 | 边界决策**就地改判**（不重编号，见 §4.1 例外）；跨 stage 简述化登记为 GAP-5 后续批次 |
+| GAP-2 | SEF 框架作为 RS 前置概念无独立归属，分散在 01 §1.3/§2.2 + 12 + 18 + 19 | K-125 分散；**本轮取证补充**：`wc -l minix3/minix/lib/libsys/sef*.c` = 2210 行（9 个 `.c`）；`grep SEF rewrite-notes/14-stage-runtime/[0-9]*.md` 只命中 `plan.md` 的排除/映射行，正式篇章 0 讲述；`os/libs/minix-sef/src/lib.rs`（438 行）只实现 `sef_receive_status` 拦截核心 + ping 应答 | **改判：归本 stage 尾部新增 `20-rs-sef-framework.md`**（原判 `14-stage-runtime` 不成立——该 stage 实测未讲，见 §0 修订记录）。改判的两条 RS 侧正当理由：①RS 是**唯一注册全部 7 个回调**的服务（`main.c:136-152`）；②SEF 库内部**专门为 RS 开分支**（`ROOT_SYS_PROC` → `do_sef_rs_init`，sef.c:107-114），且 init/LU/ping 三条腿的对端都是 RS（sef.c:127、sef_init.c:463/477、sef.c:189、sef_liveupdate.c:559）。01 §1.3/§2.2 收缩为"RS 注册了哪些回调 + 为什么全量"，框架本体归 20 | 边界决策**就地改判**（不重编号，见 §4.1 例外）；跨 stage 简述化登记为 GAP-5 后续批次 |
 | GAP-3 | Makefile / 构建-工具链在正式文档无一句交代（仅 `plan §5.4` WONTFIX） | `servers/rs/Makefile` | 在 `00` 覆盖契约末尾一句"构建系统（Makefile/bsd.own.mk）非语义，WONTFIX；`live-update` 见 A-11/01"，不建篇 | 归 00 声明 |
 | GAP-4 | RS 测试基建（`testutil.rs` + in-module `#[cfg(test)]`，无独立 tests/）在文档中散落各篇 §5，无统一说明"本 stage 测试形态" | `ls os/servers/rs/tests` 空、`testutil.rs` 存在 | 在 `00` 新增"测试形态"小节：本 stage 全部为 crate 内单测 + `testutil` 夹具，集成走链归 E9 联调；不散建篇 | 归 00 声明 |
 
@@ -439,7 +439,7 @@
   2. `sef_startup()` 状态机：`sys_whoami` 取自身身份（sef.c:78-82）→ `ROOT_SYS_PROC` 特例走 `do_sef_rs_init`（sef.c:109-114）→ 其余服务 `ipc_receive(RS_PROC_NR)` 并**丢弃上一世残留杂消息**直到 init 请求抵达（sef.c:120-131；判据 `IS_SEF_INIT_REQUEST` 要求 `m_type==RS_INIT && m_source==RS_PROC_NR`，sef.h:31-34）→ `do_sef_init_request`（sef.c:134）。
   3. `sef_receive_status()` 四类拦截（sef.c:150-260）：**INIT** / **PING**（来源 `RS_PROC_NR` → sef.c:189-190，pong `ipc_notify(source)` 后吞掉：sef_ping.c:21-38,60-63 + sef.c:208-216）/ **LU** / **SIGNAL**（来源 `SYSTEM` → sef.c:186-187，`sys_getksig`/`sys_endksig`：sef_signal.c:36,60）。只有普通消息才回到调用者手里——这就是"服务门口看见的消息已被框筛过"的根源（与 06 主循环、跨 stage 的 `02-sched-message-surface.md §D10` 同一回事）。
   4. 回调注册全集：init 三型（`SEF_INIT_FRESH/LU/RESTART`，sef.h:93-95）+ init_response + lu_response/lu_state_save + ping_reply + signal_handler/signal_manager + state transfer；预定义族 `SEF_CB_*`（sef.h:80-91，含 `SEF_CB_INIT_RESTART_STATEFUL`、`SEF_CB_INIT_RESPONSE_DEFAULT`）。
-  5. **出生回报三形态**：默认阻塞 `ipc_sendrec(RS_PROC_NR)`（sef_init.c:458-466）/ VM 的一次性异步 `asynsend3(RS_PROC_NR, m, AMF_NOREPLY)`（sef_init.c:471-483，避开 boot 期缺页互等）/ null；并对本项目已做过的相关缺陷记由（send 与 sendrec 之分导致野消息与 `receive` 回 EIO，见 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` B9/B9b 节）。
+  5. **出生回报三形态**：默认阻塞 `ipc_sendrec(RS_PROC_NR)`（sef_init.c:458-466）/ VM 的一次性异步 `asynsend3(RS_PROC_NR, m, AMF_NOREPLY)`（sef_init.c:471-483，避开 boot 期缺页互等）/ null；并对本项目已做过的相关缺陷记由（send 与 sendrec 之分导致野消息与 `receive` 回 EIO，见 `rewrite-notes/coordination/NK4C-WORKLOG.md` B9/B9b 节）。
   6. LU 与 State Transfer 家族**概览**：只讲库侧有几条腿、`SEF_LU_STATE_*` 从哪来（sef.h）；控制流一律回指 **16/17/18**，不重述状态机。
   7. **Rust 侧现状对账**：`os/libs/minix-sef/src/lib.rs`（438 行）只实现拦截核心（对位 sef.c:149-260）+ ping 应答；`sef_startup`/`process_init` 在各服务简化为显式握手（如 `os/servers/pm/src/init.rs` 与 VM 的 `rs_handshake`），回调集改为 trait 方法（A-7，K-136）；消费方已有 13 个 crate（`grep -rn minix-sef os/**/Cargo.toml` 实测）。
   8. 术语纪律：Rewrite（协议保持外部行为）与"框架消除"（Rust 侧不建同名库壳）分开标注，不混为 Refactor。
@@ -448,7 +448,7 @@
 - **后置**：无（本 stage 内为叶子篇）；**被外部消费 stage 反向引用**（GAP-5 批次）。
 - **事实底线**：`sef.h:1,31-34,80-95`、`sef.c:68-145,150-260`、`sef_init.c:458-483`、`sef_ping.c:21-63`、`sef_signal.c:36-117`、`sef_liveupdate.c:559`、`servers/rs/main.c:136-152`、`include/minix/com.h:50,61`（`SYSTEM`=-2、`RS_PROC_NR`=2）、`include/minix/type.h:22`（`endpoint_t` 为 `int`，4 字节）。
 - **知识点清单**：K-125（主讲述点）；跨引 K-005（01 注册表）、K-065（12 自模拟 ready）、K-105（18 restart/LU）、K-122（99 标志权威位）、K-136（A-7 SEF → minix-rs 抽象）。
-- **验收标准**：① 01 与 20 一分为二不重叠——01 只答"RS 注册哪 7 个、为何全量"，20 只答"框架怎么调它们、对端是谁、拦了什么"；② 四类拦截的每一条判据均可 `grep` 到 C 锚点；③ 分账行数与 `wc -l minix3/minix/lib/libsys/sef*.c` 一致；④ 全篇不出现"本服务初始化做了什么"（那是各机制篇的活）；⑤ GAP-5 落地后，`grep -rn "SEF" notes/rewrite/fork-syscall-rewrite/*/01-*.md` 命中处均为简述 + 指向本篇的绝对路径链接；⑥ 本篇无对 `.design/` / `doc_rerank_*` 的引用（AGENTS.md 隐藏目录约定）。
+- **验收标准**：① 01 与 20 一分为二不重叠——01 只答"RS 注册哪 7 个、为何全量"，20 只答"框架怎么调它们、对端是谁、拦了什么"；② 四类拦截的每一条判据均可 `grep` 到 C 锚点；③ 分账行数与 `wc -l minix3/minix/lib/libsys/sef*.c` 一致；④ 全篇不出现"本服务初始化做了什么"（那是各机制篇的活）；⑤ GAP-5 落地后，`grep -rn "SEF" rewrite-notes/*/01-*.md` 命中处均为简述 + 指向本篇的绝对路径链接；⑥ 本篇无对 `.design/` / `doc_rerank_*` 的引用（AGENTS.md 隐藏目录约定）。
 - **已知错位与缓解**（不代用户决断，仅登记）：`minix-sef` 这个 crate 物理上住在 `os/libs/`（属 14-stage-runtime 的 crate 家族），而权威文档定在本 stage——形成"代码在 libs/minix-sef、主叙述在 03-stage-rs/20"的错配。缓解：本篇定位已写为"协议与框架本体的唯一权威讲述点（含 C 库侧 + Rust crate 现状对账）"；并在 GAP-5 批次里把 `14-stage-runtime/plan.md:277` 的 "minix-sef stage" 幻影归属改判为指向本篇（**本轮未动该文件**）。
 
 ---
@@ -505,7 +505,7 @@
 | 章节简写引用（`NN §`） | 44 | 同上，仅迁移条目涉及的小节号变化 | 抽查迁移点 §号有效 |
 | 代码注释引用（`os/servers/rs/src/*.rs`） | 134 | 保留；**修 1 处 stale**（`trap_api.rs:373` `10-rs-service-convert.md`→`10-rs-service-create.md`） | `grep -rE '10-rs-service-convert'` 归零 |
 | 外部 stage 引用（07-ds/14-runtime/01-kernel/edge_*） | 多处 | 编号不变 → **零改**；若引用被迁小节，随锚点迁移表更新 | 跨目录 `grep -rl 03-stage-rs` 复核 |
-| **后续批次（GAP-5）**：跨 stage 的 `01-*-init-main.md` SEF 简述化 | 实测 `SEF`/`sef_` 命中量（只计编号正式篇）：02-vm 161 / 04-pm 96 / 05-vfs 93 / 08-is 71 / 06-sched 38 / 11-devman 33 / 07-ds 30 / 13-ipc 22 / 12-input 14 / 10-mib 13 / 15-fs 12 / 16-drivers 11 / 17-net 9 / 09-init 3；**01-stage-kernel 正式篇 0 命中（无需处理）** | 框架原理段改为"一句简述 + 绝对路径外链 `notes/rewrite/fork-syscall-rewrite/03-stage-rs/20-rs-sef-framework.md`"，各篇保留本地注册差异表；`14-stage-runtime/plan.md:277` 的 "minix-sef stage" 幻影归属同批改判 | 20 落盘后逐 stage 复扫 `grep -c SEF` + 链接可达性检查；不得引用 `.design/` 或 `doc_rerank_*` |
+| **后续批次（GAP-5）**：跨 stage 的 `01-*-init-main.md` SEF 简述化 | 实测 `SEF`/`sef_` 命中量（只计编号正式篇）：02-vm 161 / 04-pm 96 / 05-vfs 93 / 08-is 71 / 06-sched 38 / 11-devman 33 / 07-ds 30 / 13-ipc 22 / 12-input 14 / 10-mib 13 / 15-fs 12 / 16-drivers 11 / 17-net 9 / 09-init 3；**01-stage-kernel 正式篇 0 命中（无需处理）** | 框架原理段改为"一句简述 + 绝对路径外链 `rewrite-notes/03-stage-rs/20-rs-sef-framework.md`"，各篇保留本地注册差异表；`14-stage-runtime/plan.md:277` 的 "minix-sef stage" 幻影归属同批改判 | 20 落盘后逐 stage 复扫 `grep -c SEF` + 链接可达性检查；不得引用 `.design/` 或 `doc_rerank_*` |
 
 ### 8.3 断链成本摘要
 

@@ -4,7 +4,7 @@
 
 - **执行者**：qwen
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/17-stage-net`
+- **目标目录**：`rewrite-notes/17-stage-net`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`4c99bc2`（`git rev-parse HEAD` = `4c99bc2e785fa23ad3586b0267d561005fa0e409`）
 - **交付物**：本文件；不改任何正文，不重命名/移动/删除任何现有文件。

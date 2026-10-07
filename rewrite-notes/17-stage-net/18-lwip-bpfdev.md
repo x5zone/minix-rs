@@ -3,7 +3,7 @@
 > **分类**：轻量协议栈服务接口面第 6 篇，覆盖捕获缓冲区边界、过滤程序限制、版本检查、单进程假设
 > **源码**：`minix3/minix/net/lwip/bpfdev.c`（1365 行）、过滤器 `minix3/minix/net/lwip/bpf_filter.c`（561 行，参考系统移植）
 > **Rust 模块**：`os/net/lwip/src/bpfdev.rs`（缓冲区钳制、指令数判断、版本判断）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/02-sockevent-framework.md`（套接字事件的选择语义）、`../16-stage-drivers/01-chardriver-framework.md`（字符设备框架，消费侧对称契约）
+> **前置依赖**：`rewrite-notes/17-stage-net/02-sockevent-framework.md`（套接字事件的选择语义）、`../16-stage-drivers/01-chardriver-framework.md`（字符设备框架，消费侧对称契约）
 >
 > **本篇不覆盖的内容**：
 > - 网卡驱动的实现（在第 16 阶段，本文只说明捕获设备如何从接口接收数据包副本）
@@ -138,8 +138,8 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/02-sockevent-framework.md`：套接字事件的选择语义。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/02-sockevent-framework.md`：套接字事件的选择语义。
 - `../16-stage-drivers/01-chardriver-framework.md`：字符设备框架，消费侧的对称契约。
 - `os/net/lwip/src/bpfdev.rs`：缓冲区钳制与过滤边界的实现。
 - `minix3/minix/net/lwip/bpfdev.c`：捕获设备的原始实现（1365 行）。

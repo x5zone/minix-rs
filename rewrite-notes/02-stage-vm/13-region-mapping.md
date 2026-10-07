@@ -3,7 +3,7 @@
 > **分类**: 阶段 5 — 地址空间数据结构（框架层）
 > **源码**: `minix3/minix/servers/vm/region.c`（1555 行）+ `minix3/minix/servers/vm/region.h`（`vir_region` 结构 :37-65、VR_* 标志 :69-78）+ `minix3/minix/servers/vm/phys_region.h`（`phys_region` 结构 :8-21）
 > **Rust 模块**: `os/servers/vm/src/region/region_map.rs`（533 行：`RegionMap` :39 / `SearchType` :19 / `find_slot` :157）+ `os/servers/vm/src/region/vir_region.rs`（522 行：`VrFlags` :17-42 / `VrParam` :44 / `VirRegion` :57 / `split` :272 / `free_range` :336）+ `os/servers/vm/src/region/mod.rs`（199 行：`free_region_pages` :23 / `map_pin_memory` :128）+ 消费模块（`os/servers/vm/src/fork.rs` `handle_memory_once` :33 / `fork_region` :92、`os/servers/vm/src/munmap.rs` :155-192、`os/servers/vm/src/brk.rs` :106/:109）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/11-phys-pagestate.md`（phys_block/phys_region 生命周期 + PageFrames refcount）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/12-memtype.md`（memtype 策略层）
+> **前置**: `rewrite-notes/02-stage-vm/11-phys-pagestate.md`（phys_block/phys_region 生命周期 + PageFrames refcount）、`rewrite-notes/02-stage-vm/12-memtype.md`（memtype 策略层）
 > **说明**: 区域映射**框架层**语义模块：**Minix3 region.c 的 22 个框架函数（建/查/填/复制/扩/缩/释放/工具）→ minix-rs 的 `RegionMap`（BTreeMap）+ `VirRegion`（Vec<PageSlot>）+ 分散到消费模块的顶层函数**。12 管"做什么"（memtype 策略），本文档管"何时调用"（框架流程）。**不覆盖**：查找语义（14）、页错误状态机消费（16）、CoW 分裂（17）、fork 全流程（18）、munmap 服务（21）、RS Live Update（25）、查询（26）。
 
 ---
@@ -583,14 +583,14 @@ $ cargo test -p minix-vm --lib map_pin_memory → 2 passed
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/11-phys-pagestate.md` — phys_block/phys_region 生命周期 + PageFrames（本文件前置）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/12-memtype.md` — memtype 策略层（框架调用点引用）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/14-region-lookup.md` — 区域查找语义（BTreeMap/AVL）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/16-pagefault.md` — 页错误状态机（消费 map_pf）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md` — CoW 分裂（消费 refcount/needs_cow）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/18-vm-fork.md` — fork 全流程（消费 map_proc_copy）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/21-vm-munmap.md` — munmap（消费 split + free）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/25-rs-services.md` — RS Live Update（消费 map_pin_memory/lookup_type）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/26-vm-queries.md` — 查询（消费 map_lookup）
+- `rewrite-notes/02-stage-vm/11-phys-pagestate.md` — phys_block/phys_region 生命周期 + PageFrames（本文件前置）
+- `rewrite-notes/02-stage-vm/12-memtype.md` — memtype 策略层（框架调用点引用）
+- `rewrite-notes/02-stage-vm/14-region-lookup.md` — 区域查找语义（BTreeMap/AVL）
+- `rewrite-notes/02-stage-vm/16-pagefault.md` — 页错误状态机（消费 map_pf）
+- `rewrite-notes/02-stage-vm/17-cow-mechanism.md` — CoW 分裂（消费 refcount/needs_cow）
+- `rewrite-notes/02-stage-vm/18-vm-fork.md` — fork 全流程（消费 map_proc_copy）
+- `rewrite-notes/02-stage-vm/21-vm-munmap.md` — munmap（消费 split + free）
+- `rewrite-notes/02-stage-vm/25-rs-services.md` — RS Live Update（消费 map_pin_memory/lookup_type）
+- `rewrite-notes/02-stage-vm/26-vm-queries.md` — 查询（消费 map_lookup）
 - `minix3/minix/servers/vm/region.c`、`minix3/minix/servers/vm/region.h`、`minix3/minix/servers/vm/phys_region.h` — C ground truth
 - `os/servers/vm/src/region/region_map.rs`、`os/servers/vm/src/region/vir_region.rs`、`os/servers/vm/src/region/mod.rs` — Rust 实现

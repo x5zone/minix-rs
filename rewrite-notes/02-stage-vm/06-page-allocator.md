@@ -3,7 +3,7 @@
 > **分类**: 阶段 3 — 页与页表（页分配锚点）
 > **源码**: `minix3/minix/servers/vm/pagetable.c:_SYSTEM（L34，工具生成）`（`vm_*` 自用页函数族 + `findhole`）；`minix3/minix/servers/vm/alloc.c:RESERVEDMAGIC`（`reservedqueue_*` + `alloc_cycle` + `missing_spares`）；`minix3/minix/servers/vm/main.c:main（L112，工具生成）,745-746`（主循环调用点）；`minix3/minix/servers/vm/pagetable.c:pt_init,1311-1345`（`pt_init` 备用页建立与替换）
 > **Rust 模块**: `os/servers/vm/src/alloc_page.rs`（`VmPageAllocator` + `vm_pt_alloc`）+ `os/servers/vm/src/global.rs:fn test_free_list_alignment_variants（L356，工具生成）`（`page_alloc_mut`）+ `os/servers/vm/src/vm_server.rs:54-70,102-107,416-428`（压力计数 + 注册 + 主循环钩子）+ `os/servers/vm/src/direct_map.rs`（A-1 基础）+ `os/servers/vm/src/heap_arena.rs:fn mapped_bytes（L88，工具生成）`（消费方）+ `os/servers/vm/src/pagetable/vm_self_map.rs:fn query（L127，工具生成）`（`vm_self_query`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（物理分配器 `alloc_mem/free_mem`）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（Direct Map `[ARCH: A-1]` 的页表侧承接）
+> **前置**: `rewrite-notes/02-stage-vm/05-physical-memory.md`（物理分配器 `alloc_mem/free_mem`）、`rewrite-notes/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`rewrite-notes/02-stage-vm/07-pagetable-struct.md`（Direct Map `[ARCH: A-1]` 的页表侧承接）
 > **说明**: VM 自身页分配语义模块：**`vm_allocpage/vm_allocpages/vm_mappages/vm_freepages`（自用页分配/映射/释放）、`vm_pagelock/vm_addrok`（写保护/校验）、备用页池消费方（`vm_getsparepage` 路径、`alloc_cycle` 主循环接线、`missing_spares` 记账）、`get_vm_self_pages`（自用页计数）**。**V12-P2-4 注记（2026-09-09）**：Rust 侧的 `missing_spares`/`mark_alloc_failure`/`alloc_cycle` 主循环链已删除——spare-pool/reservedqueue 机制被 Direct Map 结构性消除（[ARCH: A-1]，§3.3），该链亦无生产写入点；分配路径的回收重试由 `alloc_pfn_reclaiming`（V11/T30）承接。本篇保留的 C 侧机制分析不受影响。**不覆盖**：物理分配器本体（05）、`pt_t` 结构与 Direct Map 双视图（07）、pt 操作 `pt_writemap` 等（08）、slab/HeapArena 消费流程（09）、页缓存回收 `cache_freepages`（24）。
 
 ---
@@ -540,15 +540,15 @@ create_default_allocator()          // 物理分配器（bitmap，A-5）
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md` — 启动主线图与文档导航
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` — `init_vm` 调用点、VM 自身 libc 接口边界
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md` — 物理分配器、保留队列机制（C 侧）、`alloc_cycle` DEFERRED 移交
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md` — Direct Map 双视图（A-1）、`vm_self_map`
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md` — `pt_writemap` 等操作（`vm_pagelock/vm_addrok` 语义承接）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/09-slab-allocator.md` — HeapArena 消费 `alloc_page`、MEMPROTECT（D6 移交）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/24-page-cache.md` — `cache_freepages` 回收（`alloc_cycle` 补充体 DEFERRED 落点）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/26-vm-queries.md` — `VM_GETRUSAGE`（`self_page_count` 接线）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/plan.md` — §2 阶段总览、§3.4 边界表、§4 A-1、§7.3 保留页池决策
+- `rewrite-notes/02-stage-vm/00-vm-overview.md` — 启动主线图与文档导航
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` — `init_vm` 调用点、VM 自身 libc 接口边界
+- `rewrite-notes/02-stage-vm/05-physical-memory.md` — 物理分配器、保留队列机制（C 侧）、`alloc_cycle` DEFERRED 移交
+- `rewrite-notes/02-stage-vm/07-pagetable-struct.md` — Direct Map 双视图（A-1）、`vm_self_map`
+- `rewrite-notes/02-stage-vm/08-pagetable-ops.md` — `pt_writemap` 等操作（`vm_pagelock/vm_addrok` 语义承接）
+- `rewrite-notes/02-stage-vm/09-slab-allocator.md` — HeapArena 消费 `alloc_page`、MEMPROTECT（D6 移交）
+- `rewrite-notes/02-stage-vm/24-page-cache.md` — `cache_freepages` 回收（`alloc_cycle` 补充体 DEFERRED 落点）
+- `rewrite-notes/02-stage-vm/26-vm-queries.md` — `VM_GETRUSAGE`（`self_page_count` 接线）
+- `rewrite-notes/02-stage-vm/plan.md` — §2 阶段总览、§3.4 边界表、§4 A-1、§7.3 保留页池决策
 - `minix3/minix/servers/vm/pagetable.c`、`minix3/minix/servers/vm/alloc.c`、`minix3/minix/servers/vm/main.c` — C 源码（ground truth）
 - `os/servers/vm/src/alloc_page.rs`、`os/servers/vm/src/global.rs`、`os/servers/vm/src/vm_server.rs` — Rust 实现
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/05-vm-allocpage.md` — 旧主线素材（素材，非正式引用源）
+- `rewrite-notes/02-stage-vm/draft/05-vm-allocpage.md` — 旧主线素材（素材，非正式引用源）

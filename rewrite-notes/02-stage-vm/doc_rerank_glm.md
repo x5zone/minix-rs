@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = glm
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/02-stage-vm
+target_dir(关注的工作目录) = rewrite-notes/02-stage-vm
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 任务 = R 相·重建蓝图：输出 02-stage-vm/doc_rerank_glm.md，不改任何正文。
@@ -32,7 +32,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 |----|-----|
 | 执行者 | glm |
 | 日期 | 2026-09-19 |
-| 目标目录 | `notes/rewrite/fork-syscall-rewrite/02-stage-vm/` |
+| 目标目录 | `rewrite-notes/02-stage-vm/` |
 | 仓库根目录 | `/home/xzhao/github/minix-rs` |
 | 当前提交号 | `b5bdfd88e935c73c85bc2904213a963bbc86774a`（2026-09-19 04:38 +0800，branch `rewrite`） |
 | 交付物 | 本文件（唯一落盘产物，`_glm` 后缀） |
@@ -53,7 +53,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 1. **目标目录全部文档**：27+1 篇的头部声明（分类/源码/Rust 模块/前置/说明/不覆盖）全部读完；`00-vm-overview.md`、`99-global-concepts.md`、`plan.md`、`todo.md` 全文精读；其余正文按章节骨架与知识点抽样精读。
 2. **Minix3 C 源码全量**：`minix3/minix/servers/vm/` 24 个 .c + 头文件（11,466 行）。`main.c`（768 行）全文精读；`pagefaults.c:handle_pagefault`（:76-158）、`fork.c:do_fork`（:32-115）一手核对；其余文件以逐文件清单核对（§0.4）+ 各篇头部已验证锚点为据。
 3. **非 C 制品**：`arch/earm/vm.lds`（链接脚本）、`arch/i386/pagetable.h` 与 `arch/earm/pagetable.h`（架构页表宏）、`Makefile.inc` ×3（构建）、`minix3/minix/include/minix/com.h`（调用号族）、`ipc.h`（消息结构）、`endpoint.h`（endpoint 代际编码）、`vfsif.h`（transid）、`minix/rs.h`（rprocpub）、libc 封装（`lib/libsys/vm_exit.c`、`vm_procctl.c`、`vm_info.c`、`libc/sys/brk.c`、`libc/sys/mmap.c`）、Rust 侧测试基建（`TestIpcTransport`/`SimPaging`/`MockGateway`/`allocator_tests`）。
-4. **阶段边界材料**：`notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md`（阶段划分与启动因果链）、`edge_todo.md`（E1/E2/E4/E5/E-VFSWIRE/E-RSWIRE/E-VMTLB/E-ISWIRE/E-DMABUF 等 VM 相关条目，2026-09-16 全量对账）、本目录 `plan.md`/`todo.md`（含 WONTFIX 与 defer 清单）。
+4. **阶段边界材料**：`rewrite-notes/00-master-plan/README.md`（阶段划分与启动因果链）、`edge_todo.md`（E1/E2/E4/E5/E-VFSWIRE/E-RSWIRE/E-VMTLB/E-ISWIRE/E-DMABUF 等 VM 相关条目，2026-09-16 全量对账）、本目录 `plan.md`/`todo.md`（含 WONTFIX 与 defer 清单）。
 5. **前一 stage overview**：`01-stage-kernel/00-kernel-overview.md` 全文——已讲过不许重复展开的：boot 链与 `09-vm-boot-protocol`（VM boot 协议内核侧）、调度与 IPC 原语、syscall 分发、异常转发、`sys_vmctl` 内核实现、FPU。
 6. **Rust 实现入口**：`os/servers/vm/src/`（33 个顶层模块 + ipc/region/vmproc/phys_mem/pagetable 五个子目录，30,973 行）；`os/servers/vm/src/main.rs`（`read_boot_params` 消费 `VmBootHandoff`）；`os/servers/vm/src/dma.rs`（E-DMABUF 契约实现，C 无对应）；`os/libs/minix-types`（wire 单源）。
 7. **写法范例**：`01-stage-kernel/06-todo.md`——只学其"新文档契约"写法（讲什么/不讲什么/边界矩阵/目标结构/验收标准），不搬内容。
@@ -64,11 +64,11 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 $ git rev-parse HEAD && git log -1 --format='%ci'
 b5bdfd88e935c73c85bc2904213a963bbc86774a / 2026-09-19 04:38:44 +0800
 
-$ ls notes/rewrite/fork-syscall-rewrite/02-stage-vm/
+$ ls rewrite-notes/02-stage-vm/
 → 00~26 + 99 共 28 篇正式文档；plan.md 443 行；todo.md 510 行；
   checklist.md 867 行；draft/、archive/、.design/(禁引)
 
-$ wc -l notes/rewrite/fork-syscall-rewrite/02-stage-vm/[0-9]*.md
+$ wc -l rewrite-notes/02-stage-vm/[0-9]*.md
 → 正式文档合计 17,344 行（不含 plan/todo/checklist）；最大 08（1098 行），
   最小 99（74 行）
 
@@ -1340,8 +1340,8 @@ STEP1="14-region-lookup:13-region-ledger 15-ipc-dispatch:14-ipc-dispatch \
 # 推荐两阶段：先全部加后缀 .tmpnew，再统一改回 .md。
 
 # 范围（按序）：
-# 1) notes/rewrite/fork-syscall-rewrite/02-stage-vm/[0-9]*.md + plan.md + todo.md + checklist.md
-# 2) notes/rewrite/fork-syscall-rewrite/其它 stage（97 处跨 stage）
+# 1) rewrite-notes/02-stage-vm/[0-9]*.md + plan.md + todo.md + checklist.md
+# 2) rewrite-notes/其它 stage（97 处跨 stage）
 # 3) os/servers/vm/src 与 os/libs（11 处代码注释 + 失效旧名 5 处）
 # 4) 验证：grep 零残留 + cargo test -p minix-vm --lib 三矩阵全绿 + clippy 对账
 ```

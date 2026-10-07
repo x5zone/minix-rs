@@ -2,7 +2,7 @@
 
 //! Terminal control games core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/23-terminal-games.md`:
+//! Covers `rewrite-notes/18-stage-commands/23-terminal-games.md`:
 //! falling blocks (`minix3/games/tetris/shapes.c` with the neighbor offsets
 //! near lines 46 to 53, the fit test near line 82, placement near line 97,
 //! and the board size `B_COLS 12` by `B_ROWS 23` in `tetris.h` near lines 54

@@ -4,7 +4,7 @@
 
 - Executor: muse
 - Date: 2026-09-19 (UTC)
-- Target dir: notes/rewrite/fork-syscall-rewrite/03-stage-rs/
+- Target dir: rewrite-notes/03-stage-rs/
 - Repo root: /home/xzhao/github/minix-rs
 - Commit: 232e571ded9af1039e68c2c3dc1caa525b24f4b2
 - Task: R-phase reconstruction blueprint. Output only this file. No body text modified.

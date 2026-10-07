@@ -3,7 +3,7 @@
 > **分类**：系统服务第 1 篇（熵池加密钥流，单次设备）
 > **源码**：`minix3/minix/drivers/system/random/main.c`（二百六十八行，设备挂钩与采集定时）、`minix3/minix/drivers/system/random/random.c`（二百三十七行，熵池与密钥流）、`minix3/minix/drivers/system/random/random.h`（熵源定义）、`minix3/minix/drivers/system/random/aes/`（分组密码实现，见第 2.8 节）、`minix3/minix/include/minix/type.h`（第一百八十二行到第一百九十三行，熵源数量与样本结构）
 > **Rust 模块**：`os/drivers/system/random/src/pool.rs`（熵池与重播计划）、`os/drivers/system/random/src/core.rs`（密钥流核心）、`os/drivers/system/random/src/device.rs`（单设备与轮询）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架）
+> **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（字符框架）
 > **说明**：随机数驱动是全系统唯一的熵源：密钥、会话标识、地址随机化全找它要。本篇讲它的三层结构：熵池层收噪声，密钥流层产字节，设备层定阻塞语义。注意一个事实核查结论：本驱动只有一个次设备（随机设备零号），没有独立的不阻塞设备（调用方要不等就先轮询），计划 stub 里的双设备写法以源码为准纠正。
 
 > **本篇不讲什么**：
@@ -225,10 +225,10 @@ Redox 的随机方案是直接读内核随机源，没有用户态熵池层。Mi
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：字符框架（本篇挂靠的框架）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/10-readclock-driver.md`：时钟驱动（下一篇）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符框架（本篇挂靠的框架）。
+- `rewrite-notes/16-stage-drivers/10-readclock-driver.md`：时钟驱动（下一篇）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/system/random/src/pool.rs`：熵池与重播计划的实现。
 - `os/drivers/system/random/src/core.rs`：密钥流核心的实现。
 - `os/drivers/system/random/src/device.rs`：单设备与轮询的实现。

@@ -3,7 +3,7 @@
 ### Review Scope
 - **Mode**: code review (all 6 stages)
 - **Target**: `os/servers/pm/`, `os/servers/vm/`, `os/kernel/`, `os/servers/vfs/`, `os/servers/sched/`, `os/libs/minix-types/`, `os/tests/`
-- **Same-dir docs**: `notes/rewrite/fork-syscall-rewrite/01-stage-pm/` through `06-stage-integration/`
+- **Same-dir docs**: `rewrite-notes/01-stage-pm/` through `06-stage-integration/`
 - **Loaded Skills**: `review-code-skill`, `review-patterns-skill`
 
 ### 0. Time Budget

@@ -2,7 +2,7 @@
 
 //! Device nodes and system databases core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/04-device-database.md`:
+//! Covers `rewrite-notes/18-stage-commands/04-device-database.md`:
 //! static device node creation (`MAKEDEV.sh` in
 //! `minix3/minix/commands/MAKEDEV/`, `mknod` in `minix3/sbin/mknod/`),
 //! the device database builder (`dev_mkdb` in `minix3/usr.sbin/dev_mkdb/`),

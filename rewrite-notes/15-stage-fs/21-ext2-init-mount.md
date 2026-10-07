@@ -3,7 +3,7 @@
 > **分类**：磁盘变体·启动与分配（磁盘主线第 1 篇，变体差异展开）
 > **源码**：`minix3/minix/fs/ext2/main.c`（一百一十一行）、`table.c`（四十七行）、`mount.c`（二百二十一行）、`super.c`（四百五十九行）、`balloc.c`（三百六十二行）、`ialloc.c`（四百七十六行）、`misc.c`（三十五行）
 > **Rust 模块**：`os/fs/ext2/src/superblock.rs`（校验与几何），`os/fs/ext2/src/placement.rs`（旧名 `alloc.rs`，组选择与窗口，见第 4.3 节）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`（启动链形状），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`（超级块校验思想），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/04-block-cache.md`（块缓存接口）
+> **前置**：`rewrite-notes/15-stage-fs/07-mfs-init-main.md`（启动链形状），`rewrite-notes/15-stage-fs/08-mfs-super.md`（超级块校验思想），`rewrite-notes/15-stage-fs/04-block-cache.md`（块缓存接口）
 > **说明**：与参考实现相同的请求语义，不同的磁盘格式：块组、组描述符、两种分配器、四组挂载选项。本篇只讲启动挂载与分配，第 22 篇讲名字与数据，两篇合起来是完整的磁盘变体。
 
 > **本章不讲什么**：
@@ -184,10 +184,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`：启动链形状（本篇对照）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`：校验思想（本篇对照）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/22-ext2-namespace-data.md`：名字与数据（分配的消费方）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/07-mfs-init-main.md`：启动链形状（本篇对照）。
+- `rewrite-notes/15-stage-fs/08-mfs-super.md`：校验思想（本篇对照）。
+- `rewrite-notes/15-stage-fs/22-ext2-namespace-data.md`：名字与数据（分配的消费方）。
 - `os/fs/ext2/src/superblock.rs`：校验与几何的实现。
 - `os/fs/ext2/src/placement.rs`：放置与窗口的实现。
 - `minix3/minix/fs/ext2/main.c`：启动的原始实现（一百一十一行）。

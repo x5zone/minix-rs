@@ -3,7 +3,7 @@
 > **分类**：存储第 1 篇（虚拟机与宿主机的环形契约）
 > **源码**：`minix3/minix/lib/libvirtio/virtio.c`（九百一十三行，建设备、协商、队列、踢与中断）、`minix3/minix/lib/libvirtio/virtio_ring.h`（环布局，源自 Linux 头）、`minix3/minix/include/minix/virtio.h`（约一百二十行，操作表与状态字节）
 > **Rust 模块**：`os/libs/minix-virtio/src/ring.rs`（环索引算法）、`os/libs/minix-virtio/src/features.rs`（特性协商）、`os/libs/minix-virtio/src/device.rs`（生命周期与踢策略）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`（块框架，虚拟块是其消费者之一）
+> **前置**：`rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`（块框架，虚拟块是其消费者之一）
 > **说明**：虚拟队列是虚拟机与宿主机之间的传菜口：客户机把请求链进环，踢一脚门铃，宿主机做完把完成链进另一环，中断通知客户机。本篇讲这套契约的三件套：环布局、特性协商、设备生命周期。端口读写、内存映射、中断注册全在服务层，本库只定顺序与算法。
 
 > **本篇不讲什么**：
@@ -193,10 +193,10 @@ Minix3 的虚拟队列就是这家店。描述符表是菜单（地址、长度�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`：块框架（虚拟块挂靠的框架）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/15-virtio-blk-driver.md`：虚拟块设备（首个房客）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`：块框架（虚拟块挂靠的框架）。
+- `rewrite-notes/16-stage-drivers/15-virtio-blk-driver.md`：虚拟块设备（首个房客）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/libs/minix-virtio/src/ring.rs`：环索引算法的实现。
 - `os/libs/minix-virtio/src/features.rs`：特性协商的实现。
 - `os/libs/minix-virtio/src/device.rs`：生命周期与踢策略的实现。

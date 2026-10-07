@@ -62,6 +62,6 @@ init 起，/etc/rc 放开其余驱动（RS 运行时加载）：
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：覆盖契约与架构清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：请求常量全集。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：框架第一篇。
+- `rewrite-notes/16-stage-drivers/plan.md`：覆盖契约与架构清单。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：请求常量全集。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：框架第一篇。

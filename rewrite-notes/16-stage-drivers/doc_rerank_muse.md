@@ -5,7 +5,7 @@
 > ```text
 > your_name(AI agent name) = muse
 > target_dir(working directory) = 16-stage-drivers
->   (full path: notes/rewrite/fork-syscall-rewrite/16-stage-drivers/)
+>   (full path: rewrite-notes/16-stage-drivers/)
 > repo_root(repository root) = /home/xzhao/github/minix-rs
 > Task = R-phase rebuild blueprint: produce target_dir/doc_rerank_muse.md only.
 >   No body text is modified. Besides C sources, this blueprint also reads: all

@@ -19,7 +19,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 - **执行者**：qwen
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/04-stage-pm/`
+- **目标目录**：`rewrite-notes/04-stage-pm/`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`561cf097b`
 

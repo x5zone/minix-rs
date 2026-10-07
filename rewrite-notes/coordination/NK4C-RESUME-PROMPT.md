@@ -25,7 +25,7 @@
 2. 18-stage 命令面在 OS 上跑通（echo/ls/cat 为核心）；
 3. minix3 的 `tests/` 在机器上跑起来。
 
-**当前所处位置**（2026-09-29 更新）：**续-50 实施轮因 turn 预算耗尽交接**（HEAD `8f6cb996e`·详见顶部🛑 banner 与 §3）。**终目标① 进度 = x86_64 单核手改命令下 marker 曾✅（§1.119续-7）/ 标准 xtask 启动器（-smp4）下未稳：boot DM 栈洞已击穿、新阻塞腿＝用户栈缺页（§3.2）/ aarch64 模式① 未克（§3.0）/ riscv64 未启动真机**（接入验收清单：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A）。之后再按 §5 推进命令面 → W^X → ABI 清单 → 测试上机 → 收尾清账。
+**当前所处位置**（2026-09-29 更新）：**续-50 实施轮因 turn 预算耗尽交接**（HEAD `8f6cb996e`·详见顶部🛑 banner 与 §3）。**终目标① 进度 = x86_64 单核手改命令下 marker 曾✅（§1.119续-7）/ 标准 xtask 启动器（-smp4）下未稳：boot DM 栈洞已击穿、新阻塞腿＝用户栈缺页（§3.2）/ aarch64 模式① 未克（§3.0）/ riscv64 未启动真机**（接入验收清单：`rewrite-notes/coordination/riscv-reviewlog.md` §A）。之后再按 §5 推进命令面 → W^X → ABI 清单 → 测试上机 → 收尾清账。
 
 **这是长程任务**：你会连续修很多 bug、做很多轮真机复跑，**不要做一步就停下来汇报**。用户会在需要时手动让你收尾，届时才由上一手 agent 接手。你的职责是：**让工作始终可接手**（每次 commit + 写报告）。
 
@@ -57,13 +57,13 @@
 cd /home/xzhao/github/minix-rs && git log --oneline -12 && git status --short | grep -v '^??'
 
 # ② 读 WORKLOG 的「当前状态」段（约 60 行，一屏读完）——这是权威状态
-sed -n '1,70p' notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md
+sed -n '1,70p' rewrite-notes/coordination/NK4C-WORKLOG.md
 
 # ③ 读 WORKLOG 最后 2 节（上一手的最后结论与下一步配方）
-tail -120 notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md
+tail -120 rewrite-notes/coordination/NK4C-WORKLOG.md
 
 # ④ 只读你当前要做的那个单元的路线图行（不要通读整个 §6）
-sed -n '/^## 6/,/^## 7/p' notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT.md | head -25
+sed -n '/^## 6/,/^## 7/p' rewrite-notes/coordination/NK4C-OPENING-PROMPT.md | head -25
 ```
 
 **读完必须能回答**：当前 frontier 是哪个编号？上一步的结论是什么？下一轮的第一个动作是什么？
@@ -92,7 +92,7 @@ sed -n '/^## 6/,/^## 7/p' notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT
    - host：`cargo test -p minix-kernel -p minix-arch -p minix-boot -p minix-types`（基线 825+309·只增不减）+ clippy 零新告警 + nightly rustfmt 零新增漂移（§8.4）；
    - x86 总 ≥6 轮（已跑 4：nk50-x86-r1..r4·原崩态 −0xfc84/CR2=rsp+0x2c0 零出现）再 ≥2 轮；判据：`tr -d '\0' < serial | grep -c 'minimal boot script'`；r4 已达 `birth s3 runtime ok` 全程无 panic；
    - aarch64/riscv 镜像各 ≥2 轮不回归（establish_boot_dm 三架构共用）；
-3. 全链绿 → 派 CodeReview 子代理 → 通过才 `git add os/kernel/src/dm_coverage.rs notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 提交（WORKLOG 顶部前沿同步滚动）；不绿则按取证轮处置（不臆造、不硬提）。
+3. 全链绿 → 派 CodeReview 子代理 → 通过才 `git add os/kernel/src/dm_coverage.rs rewrite-notes/coordination/NK4C-WORKLOG.md` 提交（WORKLOG 顶部前沿同步滚动）；不绿则按取证轮处置（不臆造、不硬提）。
 
 ### 3.2 下一层阻塞项（r3 型新腿·坐实后再修）
 
@@ -402,7 +402,7 @@ cargo run -q -p xtask -- qemu --arch aarch64
 3. minix3 的 tests/ 上机跑起来。
 难/多轮失败/工作量超预期/连续崩都不是收尾理由。只在三种情况停下问用户：架构裁决级决策 / 破坏性操作 / 终目标三条全满足。
 硬约束：中文回复；绝不动 AI-chats/daily.todo.md；禁 git add -A / git add .（只 add 明确文件路径）；Ground Truth 优先链：Minix3 C 源 > design doc > Rust 码；每轮验证链：host 测试基线只增不减（minix-kernel 825 / arch+boot+types 309）/ clippy 零新告警 / nightly rustfmt 零新增漂移 / 镜像重建+真机签名一致；含代码更改的 commit 必走 CodeReview；WORKLOG 更新（顶部前沿+文末新节）+ commit；探针纪律：用后即滚、缺页 handler 内严禁页表 walk；code-excellence 全程；镜像构建必须 --release；未坐实不成修、不臆造未验证生产改。
-接手入口（先读后干）：notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md ——先执行其 §2 开工仪式，再从 §3.1 开始（工作树有一笔未提交的 DM source-4 改动·第一动作是补完它的验证链而非重写它）。**§3.1 只是第一个动作，不是任务边界；任务边界是上面三条终目标**。每轮交付后立即自行开下一轮：定性→定位（C 锚点）→修→验证链→报告→commit→下一个停点；禁止以「完成一个探测轮/取证轮」为交付停止，禁止把目标改写成更小 subset。若用户提「GLM 已修复可 review」：先按交接件 §3/续-48 A 配方核查全 ref，无新 commit 则诚实上报继续真前沿，不编造 review。
+接手入口（先读后干）：rewrite-notes/coordination/NK4C-RESUME-PROMPT.md ——先执行其 §2 开工仪式，再从 §3.1 开始（工作树有一笔未提交的 DM source-4 改动·第一动作是补完它的验证链而非重写它）。**§3.1 只是第一个动作，不是任务边界；任务边界是上面三条终目标**。每轮交付后立即自行开下一轮：定性→定位（C 锚点）→修→验证链→报告→commit→下一个停点；禁止以「完成一个探测轮/取证轮」为交付停止，禁止把目标改写成更小 subset。若用户提「GLM 已修复可 review」：先按交接件 §3/续-48 A 配方核查全 ref，无新 commit 则诚实上报继续真前沿，不编造 review。
 立即开始，不要写计划不要询问。
 /goal 按需调用 /debug skill，每个含代码更改的 commit 都需调用 /code-review，全程注意 /code-excellence，注意代码质量和品质。
 ```

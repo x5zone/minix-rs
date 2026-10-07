@@ -3,7 +3,7 @@
 > **分类**：轻量协议栈服务路由面第 1 篇，覆盖前缀树位运算、路由管理、协议栈路由覆盖与网关钩子
 > **源码**：`minix3/minix/net/lwip/rttree.c`（744 行）、`minix3/minix/net/lwip/route.c`（1654 行）
 > **Rust 模块**：`os/net/lwip/src/route.rs`（位映射函数、前缀合法性函数）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`（服务启动链，路由初始化位置）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/24-liblwip-port.md`（第三方协议栈，钩子面的对照）
+> **前置依赖**：`rewrite-notes/17-stage-net/03-lwip-main-init.md`（服务启动链，路由初始化位置）、`rewrite-notes/17-stage-net/24-liblwip-port.md`（第三方协议栈，钩子面的对照）
 >
 > **本篇不覆盖的内容**：
 > - 路由套接字的消息格式（在第 20 篇，本文只说明路由表如何被管理）
@@ -136,10 +136,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`：服务启动链，路由初始化位置。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/20-lwip-rtsock.md`：路由套接字，表的消息出口。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/24-liblwip-port.md`：第三方协议栈，钩子面的对照。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/03-lwip-main-init.md`：服务启动链，路由初始化位置。
+- `rewrite-notes/17-stage-net/20-lwip-rtsock.md`：路由套接字，表的消息出口。
+- `rewrite-notes/17-stage-net/24-liblwip-port.md`：第三方协议栈，钩子面的对照。
 - `os/net/lwip/src/route.rs`：位映射与前缀合法性的实现。
 - `minix3/minix/net/lwip/rttree.c`：前缀树的原始实现（744 行）。
 - `minix3/minix/net/lwip/route.c`：路由管理的原始实现（1654 行）。

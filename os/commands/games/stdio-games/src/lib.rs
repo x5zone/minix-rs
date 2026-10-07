@@ -2,7 +2,7 @@
 
 //! Pure standard input and output games core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/22-stdio-games.md`:
+//! Covers `rewrite-notes/18-stage-commands/22-stdio-games.md`:
 //! number factoring (`minix3/games/factor/factor.c` with the factor printing
 //! function near line 184, the large number path near line 110, and the usage
 //! line `factor [value ...]` near line 268), prime generation

@@ -3,7 +3,7 @@
 > **分类**：轻量协议栈服务接口面第 5 篇，覆盖回环默认配置、控制操作族分发、Minix 扩展请求
 > **源码**：`minix3/minix/net/lwip/ifconf.c`（930 行）、Minix 扩展定义 `minix3/minix/include/minix/if.h`（第 39 行到第 49 行）
 > **Rust 模块**：`os/net/lwip/src/ifconf.rs`（回环默认值、请求族枚举、扩展请求判断）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/16-lwip-ifaddr.md`（接口地址管理，地址语义的归属）
+> **前置依赖**：`rewrite-notes/17-stage-net/16-lwip-ifaddr.md`（接口地址管理，地址语义的归属）
 >
 > **本篇不覆盖的内容**：
 > - 地址的增删查语义（在第 16 篇，本文只说明配置入口如何分发到地址模块）
@@ -136,9 +136,9 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/16-lwip-ifaddr.md`：接口地址管理，地址语义的归属。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/18-lwip-bpfdev.md`：包捕获设备，控制分发的对照。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/16-lwip-ifaddr.md`：接口地址管理，地址语义的归属。
+- `rewrite-notes/17-stage-net/18-lwip-bpfdev.md`：包捕获设备，控制分发的对照。
 - `os/net/lwip/src/ifconf.rs`：回环默认值与请求族的实现。
 - `minix3/minix/net/lwip/ifconf.c`：接口配置的原始实现（930 行）。
 - `minix3/minix/include/minix/if.h`：扩展定义的原始位置（第 39 行到第 49 行）。

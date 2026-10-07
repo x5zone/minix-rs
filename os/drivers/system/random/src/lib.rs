@@ -6,7 +6,7 @@
 //! (see [`pool::PoolHash`] and [`core::BlockCipher`]); production wires
 //! the platform primitives, tests use the folding doubles. See document
 //! `09-random-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Only one minor exists (`/dev/random`): there is no separate
 //! unblocking device in this driver. Single-threaded event loop: one

@@ -2,7 +2,7 @@
 
 //! Mount and filesystem check core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/14-mount-fsck.md`:
+//! Covers `rewrite-notes/18-stage-commands/14-mount-fsck.md`:
 //! the mount command face (`minix3/minix/commands/mount/mount.c`: type and
 //! option flags at lines 41 to 60, usage at lines 17 and 168; unmount in
 //! `minix3/minix/commands/umount/umount.c`), the filesystem table (six

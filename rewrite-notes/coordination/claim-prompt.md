@@ -5,12 +5,12 @@
 
 ---
 
-你在 `/home/xzhao/github/minix-rs` 工作——这是 Minix3 内核模块的 Rust 语义重写（**Rewrite not Translate**：保持外部行为，内部用 Rust 类型系统重表达；x86-64/riscv64/aarch64，no_std）。总目标：**三架构 QEMU 启动 minix-rs 并运行 18-stage-commands 全部程序**。工作条目按线分账于 `notes/rewrite/fork-syscall-rewrite/new_edge1-4.md`（edge1=内核/arch、edge2=共享库/驱动、edge3=服务器/FS/命令、edge4=编排台）。可能有其他 AI 正在对同一份文件并发工作，以下纪律全部硬性。
+你在 `/home/xzhao/github/minix-rs` 工作——这是 Minix3 内核模块的 Rust 语义重写（**Rewrite not Translate**：保持外部行为，内部用 Rust 类型系统重表达；x86-64/riscv64/aarch64，no_std）。总目标：**三架构 QEMU 启动 minix-rs 并运行 18-stage-commands 全部程序**。工作条目按线分账于 `rewrite-notes/new_edge1-4.md`（edge1=内核/arch、edge2=共享库/驱动、edge3=服务器/FS/命令、edge4=编排台）。可能有其他 AI 正在对同一份文件并发工作，以下纪律全部硬性。
 
 ## 0. 开工前必读（按序读完才许动手）
 1. `CLAUDE.md`（项目规范）与 `AGENTS.md`（若有，你的工具入口）
 2. `.claude/rules/review-core.md` + `review-process.md` + `fix-guard.md`
-3. `notes/rewrite/fork-syscall-rewrite/new_edge4.md` §1（并发/领取/构建规则）与 §6（OQ 队列——你不得代决的事项）
+3. `rewrite-notes/coordination/new_edge4.md` §1（并发/领取/构建规则）与 §6（OQ 队列——你不得代决的事项）
 4. 你被指派线的 `new_edgeX.md` 全文（所有权清单 + 条目表 + 状态列 + 已闭单勿领）
 5. 所领条目的权威描述（`edge_todo.md` 2026-09-20 节的 E- 条目 / 对应 stage todo）
 

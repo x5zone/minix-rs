@@ -4,7 +4,7 @@
 
 - **执行者**：qwen
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/18-stage-commands/`
+- **目标目录**：`rewrite-notes/18-stage-commands/`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`4c99bc2e7`（`git rev-parse --short HEAD`）
 

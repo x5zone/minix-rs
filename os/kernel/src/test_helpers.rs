@@ -1,7 +1,7 @@
 //! Test-only fixtures for B-class kernel state objects.
 //!
 //! `KProcess` and `KPriv` implement defensive `Drop` (design:
-//! `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/panic-in-drop.md` §1
+//! `rewrite-notes/01-stage-kernel/panic-in-drop.md` §1
 //! three-way classification): destroying an *occupied* slot via Rust's
 //! implicit destruction semantics is a kernel-invariant violation, so
 //! dropping an occupied slot panics.

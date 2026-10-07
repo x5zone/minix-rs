@@ -37,7 +37,7 @@
 - `cargo test -p minix-is`：**86 passed / 0 failed**（与 10 篇 §5.3 声称一致）。
 - `cargo clippy -p minix-is --all-targets`：本 crate **0 条告警**（全链 6 条告警全部来自依赖 crate minix-types 1 条 + minix-sys 5 条，已有 edge E-MINSYS-HYGIENE 收口，不属本阶段）。
 - Gate E 抽验 5/5：`test_step_tty_notify_dispatches_and_suppresses`（lib.rs:322）、`test_dispatch_visits_matches_in_table_order_without_break`（dispatch.rs:329）、`test_startup_registers_fkey_map`（lib.rs:399）、`test_cursor_pages_22_skips_free_abort_replays`（dump_ds.rs:191）、`test_fold_absorb_and_flush`（dump_vm.rs:219）全部 grep 实测命中。
-- Gate A：`python3 tools/coverage-extract/coverage-extract.py is notes/rewrite/fork-syscall-rewrite/08-stage-is --rust-dir os --c-dir minix3/minix/servers/is --semantic-map tools/coverage-extract/is-semantic-map.json --output .review/claude/08-stage-is/SYMBOLS.md` → 30 个 C 符号，文档覆盖 28/30（93.3%），Rust 名称匹配 8/30（26.7%，映射缺失所致，语义判定见 §1.2）；SYMBOLS.md 已落盘 `.review/claude/08-stage-is/SYMBOLS.md`。
+- Gate A：`python3 tools/coverage-extract/coverage-extract.py is rewrite-notes/08-stage-is --rust-dir os --c-dir minix3/minix/servers/is --semantic-map tools/coverage-extract/is-semantic-map.json --output .review/claude/08-stage-is/SYMBOLS.md` → 30 个 C 符号，文档覆盖 28/30（93.3%），Rust 名称匹配 8/30（26.7%，映射缺失所致，语义判定见 §1.2）；SYMBOLS.md 已落盘 `.review/claude/08-stage-is/SYMBOLS.md`。
 - Step 0 预检：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 08-stage-is` → 01~10 三快照全齐 PASS；00/99 缺 outline/outline-review/design 各三件（H.1+H.6 FAIL×2，入 V1-P3-3，不阻断本轮）。
 
 ---
@@ -126,7 +126,7 @@ C 侧全集 = `servers/is/` 8 个 .c 的 33 个函数定义（plan §7.1 计数�
 **问题**：01 篇 §4.1 写「`lib.rs` 头部与 RS 对齐（`#![cfg_attr(not(test), no_std)]` + `extern crate alloc`，`os/servers/rs/src/lib.rs:1-29` 同款）」（`01-is-init-main.md:563`），但实际 `os/servers/is/src/lib.rs` 没有 `extern crate alloc`（grep 实测零命中），全 crate 零分配（全部定长栈数组）。
 **影响**：文档描述了一个不存在的依赖事实；后续按文档接线的人可能引入不必要的 alloc。
 **建议**：修文档：该句改为「no_std 门同款，且本 crate 无 `extern crate alloc`——全部逻辑零分配（03 篇 §3.3「回调式零分配」的实现面兑现）」。否决反向修代码（补 alloc）：现状更优，V1-P1-2 方案③ 的否决理由也依赖这一点。
-**验证**：`rg -n "extern crate alloc" notes/rewrite/fork-syscall-rewrite/08-stage-is/01-is-init-main.md` 修后不再声称 IS 有 alloc。
+**验证**：`rg -n "extern crate alloc" rewrite-notes/08-stage-is/01-is-init-main.md` 修后不再声称 IS 有 alloc。
 
 ### V1-P3-5 五个分页游标类型并存（审查结论：维持）
 **问题**：`PageCursor`（dump_kernel.rs:239，先比较 `>=22`）、`PmCursor`（dump_pm.rs:99，候选断 `>22`）、`VfsCursor`（dump_vfs.rs:156，与 PmCursor 逐行同构）、`DsCursor`（dump_ds.rs:103，条件界 + 早返重放）、`BatchCursor`+`FoldState`（dump_vm.rs:101/162，双游标）五种分页状态机并存。`VfsCursor` 与 `PmCursor` 的重复已在注释里声明是有意的（dump_vfs.rs:152-154：「06 is CONVERGED and its `Pm`-prefixed name would lie here. Logic intentionally duplicated」）。

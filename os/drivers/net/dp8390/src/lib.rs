@@ -8,7 +8,7 @@
 //! (`dp8390.c:117-121`). This crate owns the cursor half (page wrap,
 //! length guard); the service binary owns register traffic. See
 //! document `22-net-driver-reference.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

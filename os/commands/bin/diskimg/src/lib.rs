@@ -2,7 +2,7 @@
 
 //! Disk image and media core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/16-image-media.md`:
+//! Covers `rewrite-notes/18-stage-commands/16-image-media.md`:
 //! block copying (`minix3/bin/dd/`: operands in `args.c` lines 105 to 121,
 //! conversions in `conv.c`), optical media (`writeisofs`, `isoread` with
 //! the `CD001` identifier at `isoread.c:41`, `vol`, `eject`, `cdprobe`),

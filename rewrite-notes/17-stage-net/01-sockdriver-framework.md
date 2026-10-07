@@ -3,7 +3,7 @@
 > **分类**：框架第 1 篇（十七请求六回复，可挂起才等，拷贝只定方向）
 > **源码**：`minix3/minix/lib/libsockdriver/sockdriver.c`（一千一百五十行的框架实现）、`minix3/minix/include/minix/sockdriver.h`（一百七十二行的回调表与辅助声明）、`minix3/minix/include/minix/com.h` 第一千零三十七行到第一千零七十八行（请求与回复常量）、`minix3/minix/include/minix/ipc.h` 第二千二百六十行到第二千三百三十八行（七种请求布局）与第一千零三行到第一千零四十七行（五种回复布局）
 > **Rust 模块**：`os/libs/minix-sockdriver/src/sdev.rs`（请求回复编号与可挂起表）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/00-net-overview.md`（网络子系统全景，本框架在其中的位置）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/22-sdev.md`（虚拟文件系统客户端侧，与本篇对称）
+> **前置**：`rewrite-notes/17-stage-net/00-net-overview.md`（网络子系统全景，本框架在其中的位置）、`rewrite-notes/05-stage-vfs/22-sdev.md`（虚拟文件系统客户端侧，与本篇对称）
 > **说明**：套接字驱动框架是两个网络服务的共同骨架：请求怎么编号、哪个能等、数据怎么拷。本篇讲编号、挂起规则、拷贝方向。对象管理与续作语义在下一篇，消息发送流量在服务层，本库只定编号与规则。
 
 > **本篇不讲什么**：
@@ -187,10 +187,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/02-sockevent-framework.md`：事件框架（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/05-stage-vfs/22-sdev.md`：虚拟文件系统客户端侧（与本篇对称）。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/99-net-global-concepts.md`：全局概念（常量全集，待写）。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/02-sockevent-framework.md`：事件框架（下一篇，待写）。
+- `rewrite-notes/05-stage-vfs/22-sdev.md`：虚拟文件系统客户端侧（与本篇对称）。
+- `rewrite-notes/17-stage-net/99-net-global-concepts.md`：全局概念（常量全集，待写）。
 - `os/libs/minix-sockdriver/src/sdev.rs`：请求回复编号与可挂起表的实现（E-SDEVOWN 单点，原 netdriver 副本已收敛）。
 - `os/libs/minix-netdriver/src/sockid.rs`：套接字标识命名空间（类基值、下标字段、安全解码）的实现。
 - `minix3/minix/lib/libsockdriver/sockdriver.c`：框架的原始实现（一千一百五十行）。

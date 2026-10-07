@@ -168,6 +168,6 @@ C 语言的进程字符串描述结构用有符号整数存放个数，理论上
 - `minix3/minix/lib/libc/sys/stack_utils.c`：栈镜像计算和填充的原始实现，含栈布局注释图。
 - `minix3/sys/sys/exec.h`：进程字符串描述结构的原始定义。
 - `minix3/minix/include/minix/param.h`：内核启动参数结构的历史遗留栈顶字段。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/02-crt0-start.md`：下一篇，程序入口与静态链接启动。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/03-runtime-init.md`：下下篇，运行时初始化与通信向量表安装。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/02-crt0-start.md`：下一篇，程序入口与静态链接启动。
+- `rewrite-notes/14-stage-runtime/03-runtime-init.md`：下下篇，运行时初始化与通信向量表安装。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

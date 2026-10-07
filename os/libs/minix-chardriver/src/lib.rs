@@ -10,7 +10,7 @@
 //! [`driver::CharDriver`], and send the reply. This crate renders that
 //! skeleton in Rust, organized so each module matches one part of document
 //! `01-chardriver-framework.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`:
+//! `rewrite-notes/16-stage-drivers/`:
 //!
 //! - [`protocol`] — request numbers, reply shapes, minor-device tracking
 //!   (document sections 1 and 2).

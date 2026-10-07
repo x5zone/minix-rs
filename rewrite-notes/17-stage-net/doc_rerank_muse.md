@@ -2,7 +2,7 @@
 
 ## 0. Metadata
 
-- Executor: muse. Date: 2026-09-19 (UTC). Target directory: `notes/rewrite/fork-syscall-rewrite/17-stage-net/`. Repo root: `/home/xzhao/github/minix-rs`.
+- Executor: muse. Date: 2026-09-19 (UTC). Target directory: `rewrite-notes/17-stage-net/`. Repo root: `/home/xzhao/github/minix-rs`.
 - Current commit at inspection time: `873ac6fe5` (`git log --oneline -3` shows `873ac6fe5`, `2621513b8`, `9cb608cc0`; the working tree also contains unrelated uncommitted modifications under `os/libs/minix-types/`, `os/servers/mib/`, `os/servers/vfs/` — all outside this stage and untouched by this report).
 - Task: R-phase reconstruction blueprint. Output: this file only (`target_dir/doc_rerank_muse.md`). No body text of any existing document was modified, renamed, moved, or deleted.
 - Constraints observed: `.design/` and `tmp_design_and_todo/` were never read nor cited; no other AI's `doc_rerank_*` product was opened or copied. Disclosure: while running a workspace-wide filename/keyword grep for `minix-sockdriver`, two lines of another blueprint's filename-bearing output scrolled through the tool result. Those lines were not opened, not followed, and none of their judgments are used here. Every conclusion below is derived from first-hand `rg`/`sed`/`wc`/`ls` evidence quoted with anchors. All output prose in this report is English, per the muse special requirement.
@@ -11,11 +11,11 @@
   1. All 27 in-scope documents: full header declarations (`> **分类** / 源码 / Rust 模块 / 前置 / 不讲什么 / 只回答一个问题`) for every file, plus full-body reads of `00`, `01`, `02`, `03`, `99`, `25`, and targeted section reads of `04`–`24` for the knowledge pool.
   2. Minix3 C sources in full file-list form: `minix3/minix/net/lwip/` (27 `.c`), `minix3/minix/net/uds/` (3 `.c`), `minix3/minix/lib/libsockdriver/sockdriver.c`, `minix3/minix/lib/libsockevent/` (2 `.c`), `minix3/minix/lib/liblwip/` (`lib/` glue + `patches/` + `dist/src/` subset), `minix3/minix/lib/libc/sys/` socket family (16 `.c`), plus headers `com.h`, `ipc.h`, `sockdriver.h`, `sockevent.h`, `lwip.h`, `uds.h`, `ifdev.h`, `netdriver.h`, `minix/if.h`, `rmib.h`.
   3. Rust entries: `os/net/lwip/src/` (24 files), `os/net/uds/src/` (5 files), `os/libs/minix-sockdriver/src/` (3 files), `os/libs/minix-netdriver/src/` (7 files), `os/libs/minix-sys/src/socket.rs`.
-  4. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage table, line 35), `notes/rewrite/fork-syscall-rewrite/edge_todo.md` (E-SDEVOWN, E-DEVWIRE, E-NETSTART, E-RMIBWIRE), `17-stage-net/plan.md`, `17-stage-net/todo.md`.
+  4. Boundary materials: `rewrite-notes/00-master-plan/README.md` (stage table, line 35), `rewrite-notes/coordination/edge_todo.md` (E-SDEVOWN, E-DEVWIRE, E-NETSTART, E-RMIBWIRE), `17-stage-net/plan.md`, `17-stage-net/todo.md`.
   5. Previous stage overview: `16-stage-drivers/00-drivers-overview.md` (consumes NDEV driver side; net is its consumer).
   6. Style example: `01-stage-kernel/06-todo.md` (818 lines) — used only as a format model for per-document contracts (what / not-what / handed-to / acceptance), none of its content is reused.
 - Commands used and key outputs (evidence excerpts; full outputs are reproducible by re-running):
-  - `wc -l notes/rewrite/fork-syscall-rewrite/17-stage-net/*.md` → 27 in-scope docs, 116–256 lines each (total ~4400 lines excluding other-AI blueprints); `plan.md` 460 lines; `todo.md` 78 lines.
+  - `wc -l rewrite-notes/17-stage-net/*.md` → 27 in-scope docs, 116–256 lines each (total ~4400 lines excluding other-AI blueprints); `plan.md` 460 lines; `todo.md` 78 lines.
   - `wc -l minix3/minix/net/lwip/*.c minix3/minix/net/uds/*.c` → 27 lwIP-server files + 3 UDS files, 27883 lines combined (see §1 for the per-file table).
   - `rg -n "main|startup|^init|alloc_socket|sef_" minix3/minix/net/lwip/lwip.c` → `alloc_socket` :152, `init` :196, `startup` :270, `sef_startup()` :287, `main` :294.
   - `sed -n '196,382p' minix3/minix/net/lwip/lwip.c` → full 17-step `init()` chain + 4-way `main()` dispatch (transcribed in §1).
@@ -636,7 +636,7 @@ Format per contract: positioning, takes (pool IDs), not-takes (with handoff), pr
 
 - Intra-stage doc cross-refs: `rg -c "17-stage-net/[0-9]"` hits per doc range 2–5, ≈ 90 hits across 26 docs → each hit rewritten to the §7.1 target (one `sed` per old number + manual check of surrounding sentence for split docs 05/11).
 - Code-comment refs: 5 hits (`os/net/uds/src/lib.rs:7` → old-22 = N23; `os/net/lwip/src/{main,lib}.rs` + `os/net/uds/src/main.rs` stage-level refs stay valid; `os/libs/minix-netdriver/src/lib.rs:23` stage-level, stays valid). Only the `22-uds-io.md` filename hit needs a rename edit; the rest are stage-level and unaffected.
-- Inbound refs from other stages (VFS/MIB/drivers/commands docs citing `17-stage-net/NN-…`): B phase runs `rg -l "17-stage-net/0[1-9]|17-stage-net/1[0-9]|17-stage-net/2[0-5]" notes/rewrite/` outside this dir and rewrites targets per §7.1. (Not run in R to avoid cross-AI working-tree interference; the command is specified here so B needs no judgment.)
+- Inbound refs from other stages (VFS/MIB/drivers/commands docs citing `17-stage-net/NN-…`): B phase runs `rg -l "17-stage-net/0[1-9]|17-stage-net/1[0-9]|17-stage-net/2[0-5]" rewrite-notes/` outside this dir and rewrites targets per §7.1. (Not run in R to avoid cross-AI working-tree interference; the command is specified here so B needs no judgment.)
 - Breakage summary: ≈ 90 intra-stage + ≈ 5 code-comment + inbound-TBD (single grep) hits; hotspots are the prereq headers of N07–N11 (old 06–10) and the N99 value-index citations. Batch method: numeric `sed` rename per §7.1 map, then targeted hand-fix of the old-05/old-11 split references (enumerated in §7.2). No dangling reference may survive: B-phase acceptance is `rg "17-stage-net/(0[1-9]|1[0-9]|2[0-5])-"` returning only `archive/` hits.
 
 ## 8. Verification & Self-Check Gates

@@ -143,4 +143,4 @@ RS (root sysproc)  ← 也是 boot 成员，镜像同样由 VM 装载，不是�
 
 ## 顶层 README.md 状态（defer）
 
-> **注意**：上级目录 [`fork-syscall-rewrite/README.md`](../README.md) 同样基于旧主线编写，列出的目录结构（`01-stage-pm`、`03-stage-kernel` 等）、阶段映射、项目进度表均已过时，**暂不修改**（defer）。新主线目录结构以本文档"新目录结构"章节为准。
+> **注意**：上级目录 [`fork-syscall-rewrite/README.md`](../misc/legacy-fork-syscall-index.md) 同样基于旧主线编写，列出的目录结构（`01-stage-pm`、`03-stage-kernel` 等）、阶段映射、项目进度表均已过时，**暂不修改**（defer）。新主线目录结构以本文档"新目录结构"章节为准。

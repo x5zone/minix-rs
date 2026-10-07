@@ -4,7 +4,7 @@
 
 ```text
 your_name(AI agent name) = muse
-target_dir(concerned working directory) = notes/rewrite/fork-syscall-rewrite/09-stage-init
+target_dir(concerned working directory) = rewrite-notes/09-stage-init
 repo_root(repository root) = /home/xzhao/github/minix-rs
 
 Task = Phase R: rebuild blueprint. Output target_dir/doc_rerank_muse.md. Modify no body text.
@@ -30,7 +30,7 @@ the old prose.
 
 ## 0. Metadata
 
-- Executor: muse. Date (UTC): 2026-09-20. Target: `notes/rewrite/fork-syscall-rewrite/09-stage-init`.
+- Executor: muse. Date (UTC): 2026-09-20. Target: `rewrite-notes/09-stage-init`.
 - Commit: `ca49a1a7914fdf1f7c29a77479e5c1312b40d970` (from `git rev-parse HEAD`).
 - Stage type判定: **startup-chain type** (see §1, last paragraph). The whole stage is one linear
   boot state machine plus its supporting data structures; there is no event-loop service,
@@ -105,7 +105,7 @@ Header dependencies of init.c (non-init files that carry init-visible semantics)
 
 ### 0.4 Boundary material
 
-- `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (95 lines): stage table row
+- `rewrite-notes/00-master-plan/README.md` (95 lines): stage table row
   `09 → 09-stage-init → INIT → user-space init, starts login/user processes (boot_image last
   item, table.c:64)`; boot two-layer semantics note (registration order vs execution order);
   directory numbering follows execution + reading order.

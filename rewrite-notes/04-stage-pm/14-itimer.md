@@ -13,8 +13,8 @@
 **目标读者**：已理解 `check_sig` 的 `SIGALRM` 生产（11 `cause_sigalrm` 路径）与 `ProcTable` 的 `MinixTimer` 槽位（02）、`CLOCK` 通知的 `is_ipc_notify` 分发（04）的开发者；知道 `Timeval { tv_sec, tv_usec }` 与 `Itimerval { it_value, it_interval }` 的 POSIX 定义（`sys/time.h`）。
 
 > **本章不讲什么**：
-> - 内核 `minix_timer_t` 队列与 `TMRDIFF_MAX` 时序（`set_timer/expire_timers/tmr_exp_time/getticks/sys_vtimer` 的 `kernel/timers.c` 队列管理）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`
-> - `CLOCK` 时钟源与 `system_hz` 的获取（`sys_hz`/`system_hz` 的 `libsys` 路径）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`
+> - 内核 `minix_timer_t` 队列与 `TMRDIFF_MAX` 时序（`set_timer/expire_timers/tmr_exp_time/getticks/sys_vtimer` 的 `kernel/timers.c` 队列管理）—— `rewrite-notes/01-stage-kernel/15-clock-timer.md`
+> - `CLOCK` 时钟源与 `system_hz` 的获取（`sys_hz`/`system_hz` 的 `libsys` 路径）—— `rewrite-notes/01-stage-kernel/21-clock-device.md`
 > - 信号的 `ignore/mask/caught` 投递细节与 `PROC_STOPPED/DELAY_CALL` 的延迟恢复—— `11-signal-core.md` / `12-signal-handlers.md` / `13-signal-flow.md`
 >
 > 本章只回答一个问题：**PM 如何为“一段时间后发 `SIGALRM`，若有区间则周期重设”的 `itimer` 语义建立 `timeval↔ticks` 的无溢出、向上取整的变换，并以 `ALARM_ON` 的 `Option` 状态与 `REAL`/`VIRTUAL` 双后端与 `CLOCK` 驱动完成到期→投递→重设的闭环**。
@@ -532,7 +532,7 @@ if msg.m_source == Endpoint::CLOCK {
 
 `cause_sigalrm` 的 `interval>0?set:clear` 周期分支与 `set_alarm` 的 `Option` 唯一真源，使 `REAL` 的 `it_interval` 驱动周期（`itimer(2)` 的 `it_interval` 非零时周期）；`VIRTUAL` 的 `interval` 经 `check_vtimer` 驱动周期，二者皆“区间非零则重设，否则清”。
 
-阅读顺序提示：若想先理解“内核计时到期如何发信号”，下一站 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`set_timer/expire_timers` 的 `minix_timer_t` 队列与 `TMRDIFF_MAX`）；若想理解“信号到达后如何重检”，下一站 `13-signal-flow.md` 的 `check_pending` 与 `restart_sigs`。
+阅读顺序提示：若想先理解“内核计时到期如何发信号”，下一站 `rewrite-notes/01-stage-kernel/15-clock-timer.md`（`set_timer/expire_timers` 的 `minix_timer_t` 队列与 `TMRDIFF_MAX`）；若想理解“信号到达后如何重检”，下一站 `13-signal-flow.md` 的 `check_pending` 与 `restart_sigs`。
 
 ---
 
@@ -540,7 +540,7 @@ if msg.m_source == Endpoint::CLOCK {
 
 - C 源（ground truth）：`minix3/minix/servers/pm/alarm.c` 全文（`33-65` `ticks_from_timeval` 等）、`minix3/minix/servers/pm/mproc.h:sigaction（L62，工具生成）`（`mp_timer/mp_interval[3]`）+ `minix3/minix/servers/pm/mproc.h:ALARM_ON`（`ALARM_ON`）、`minix3/minix/servers/pm/main.c:main（L65，工具生成）`（`CLOCK notify → expire_timers`）、`minix3/minix/include/sys/time.h:ITIMER_*`（`REAL/VIRTUAL/PROF`）、`minix3/minix/include/minix/com.h:VT_VIRTUAL`（`VT_VIRTUAL/VT_PROF`）、`minix3/sys/sys/signal.h:14`（`SIGALRM 14`）
 - PM 阶段文档：11-signal-core.md（`check_sig` 的 `SIGALRM` 投递与 `SIGVTALRM` 的 `check_vtimer` 重启）、02-mproc-struct.md（`MinixTimer/intervals/ALARM_ON` 三件套）、04-ipc-dispatch.md（`is_ipc_notify` 的 CLOCK 分发）、13-signal-flow.md（`check_pending` 的 `pending&!mask` 重检与 `PROC_STOPPED` 的 break）
-- 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`set_timer/expire_timers/tmr_exp_time/getticks/sys_vtimer` 的 `minix_timer_t` 队列与 `TMRDIFF_MAX`）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`（`CLOCK` 时钟源与 `system_hz`）
+- 内核接口：`rewrite-notes/01-stage-kernel/15-clock-timer.md`（`set_timer/expire_timers/tmr_exp_time/getticks/sys_vtimer` 的 `minix_timer_t` 队列与 `TMRDIFF_MAX`）、`rewrite-notes/01-stage-kernel/21-clock-device.md`（`CLOCK` 时钟源与 `system_hz`）
 - 阶段内顺序：11/12/13 → **本章（14）** → 15（`TAINTED` 与 `credentials` 的信号边界）→ 16（`sched_stop` 的直毁，绕过本章的 `ALARM_ON`）
 - OS 模式参考：Linux `setitimer`/`hrtimer` + `CLOCK_REALTIME/VIRTUAL`、`Redox TimeScheme` + `Timeout` 队列、`seL4` 周期 `Notification`（见 §1.7）
 - Rust 实现：`os/servers/pm/src/mproc/mproc.rs`（`MinixTimer/intervals` 的 `Option` 唯一真源）、`os/servers/pm/src/timer.rs`（`TicksConv`/`ItimerWhich`/`do_itimer`/`set_alarm`/`cause_sigalrm`/`handle_clock_notify`）

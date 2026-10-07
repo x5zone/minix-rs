@@ -3,7 +3,7 @@
 > **分类**: 阶段 1 — 启动入口与进程模型（进程模型锚点）
 > **源码**: `minix3/minix/servers/vm/vmproc.h`（结构 + `VMF_*` 宏）；配套行为分布在 `main.c:262-285/458-462/498-520/577-579`、`exit.c:25-107`、`region.c:85-90/391/402`、`utility.c:455-457`、`minix3/minix/servers/vm/pagefaults.c:handle_pagefault（L136，工具生成）`、`fork.c:67/83`
 > **Rust 模块**: `os/servers/vm/src/vmproc/`（`vmproc.rs` / `flags.rs` / `vmproc_handle.rs` / `mod.rs`）+ `os/servers/vm/src/vm_server.rs`（`init_proc` 族）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`memset(vmproc)` 与 `init_proc(VM_PROC_NR)` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`
+> **前置**: `rewrite-notes/02-stage-vm/01-vm-init-main.md`（`memset(vmproc)` 与 `init_proc(VM_PROC_NR)` 调用点）、`rewrite-notes/02-stage-vm/00-vm-overview.md`
 > **说明**: VM 进程控制块（PCB）`struct vmproc` 的全部字段语义、`VMF_*` 正交状态标志、生命周期状态机（空闲→活跃→退出中→空闲），以及 `init_proc()` 槽位激活语义。进程表管理（`vmproc[VMP_NR]` 全局表、`vm_isokendpt`、`VMP_EXECTMP`）在 `03-vmproc-table.md`。
 
 ---
@@ -545,4 +545,4 @@ else
 - `minix3/minix/servers/vm/acl.c:FIRST_SYS_ACL（L20，工具生成）` — vm_acl 语义（NO_ACL/USER_ACL/acl_fork）
 - `os/servers/vm/src/vmproc/vmproc.rs`、`flags.rs`、`vmproc_handle.rs`、`mod.rs` — Rust 实现
 - `os/servers/vm/src/vm_server.rs:fn new_inner（L293，工具生成）` — init_proc 族
-- 素材：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/01-vmproc-struct.md`（旧编号素材）
+- 素材：`rewrite-notes/02-stage-vm/draft/01-vmproc-struct.md`（旧编号素材）

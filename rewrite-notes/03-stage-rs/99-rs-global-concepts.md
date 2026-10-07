@@ -231,9 +231,9 @@ RS 是**单线程事件循环**（AGENTS.md 执行模型），内核交互面收
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/00-rs-overview.md` —— 导航枢纽
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` —— 消息槽类型化（ARCH A-2）、VM_RS_MEM_* 落地
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— SEF_LU_*/SEF_LU_STATE_* 消费
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/17-rs-state-data.md` —— IPCF_*/ANY_* 消费
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— r_flags/RupdateFlags 消费
+- `rewrite-notes/03-stage-rs/00-rs-overview.md` —— 导航枢纽
+- `rewrite-notes/03-stage-rs/19-rs-external-interfaces.md` —— 消息槽类型化（ARCH A-2）、VM_RS_MEM_* 落地
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— SEF_LU_*/SEF_LU_STATE_* 消费
+- `rewrite-notes/03-stage-rs/17-rs-state-data.md` —— IPCF_*/ANY_* 消费
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` —— r_flags/RupdateFlags 消费
 - `minix3/minix/servers/rs/const.h`、`error.c`、`include/minix/com.h:342-353,442-446,463-492`、`rs.h`、`sef.h`、`ipc_filter.h` —— ground truth

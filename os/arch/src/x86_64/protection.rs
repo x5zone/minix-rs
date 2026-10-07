@@ -5,7 +5,7 @@
 //!
 //! # x86-64 specific: GDT/TSS in long mode
 //!
-//! See `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`
+//! See `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`
 //! §1.7 ("x86 为什么还保留 GDT") for the architectural rationale of why
 //! GDT/TSS are still required in 64-bit long mode: the TSS descriptor
 //! must be referenced via a GDT entry (an ISA constraint), so GDT cannot

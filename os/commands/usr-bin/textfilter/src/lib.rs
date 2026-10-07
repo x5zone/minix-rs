@@ -2,7 +2,7 @@
 
 //! Text filtering and data processing core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/07-text-filter.md`:
+//! Covers `rewrite-notes/18-stage-commands/07-text-filter.md`:
 //! the line oriented tools in `minix3/usr.bin/` (`head`, `tail`, `sort`,
 //! `uniq`, `wc`, `cut`, `tr`, `expand`, `fold`, `rev`, `seq`, `tee`, ...).
 //! Every tool here reads lines and writes lines; the only thing that

@@ -4,7 +4,7 @@
 
 - **执行者**: glm
 - **日期**: 2026-09-19
-- **目标目录**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/`
+- **目标目录**: `rewrite-notes/03-stage-rs/`
 - **仓库根目录**: `/home/xzhao/github/minix-rs`
 - **当前提交号**: `124d52c48506bb0172665d9de6fea328189972f8`(docs(edge3): live_update 两效果勾账)
 - **任务**: R 相·重建蓝图。只产出本文件,不改任何正文。B 相按本蓝图逐篇重建,旧文档归档不删,锚点全部迁移。

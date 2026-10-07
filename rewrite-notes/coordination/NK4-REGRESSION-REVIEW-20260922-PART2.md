@@ -37,7 +37,7 @@
 | commit | 定性 | 复核要点 |
 |--------|------|----------|
 | 9f16c6470 载体架构门（F1） | 可信 | 与 ab79b40ba 同类问题的第一次修复；worktree 基线对照方法论扎实 |
-| 33841ca07 落盘分流（F4） | 可信 | 384/158 分流账目清晰；**OQ 仍未决**：notes/study+archive_bak 收纳待用户（登记在案） |
+| 33841ca07 落盘分流（F4） | 可信 | 384/158 分流账目清晰；**OQ 仍未决**：study-notes+archive_bak 收纳待用户（登记在案） |
 | 9764d4c7e F0 GS.BASE | **优秀** | 新鲜眼复核通过：删选择子恢复的依据（MSR-owned + load_with_tss 先例）站得住；三点采样探针把"从未编程 vs 中途被清"判别开；x86 专属文件（trap_return.rs）无需跨架构门 |
 | 91961877b do_exec 非致命 | 可信 | C do_exec.c:37-42 对位（名字拷贝失败非致命） |
 | e4eefb386 填充链五闭合 | **优秀** | 六缺陷一 commit（当时已自评"应拆"，FIXLOG 如实）——单项质量高、commit 粒度纪律违例已登记 |
@@ -97,7 +97,7 @@ rbx；内核侧 rbx 三身份各用途的转换点均有明确 owner。**闭合*
 - **OQ-1**（上交用户）：CI 加 aarch64/riscv64 常驻 check 门（结构性消灭
   「公共路径 x86 取证打断跨架构编译」事故类；已发生两次，人工纪律两次
   失守）。建议归属 qemu-tests.yml 或独立 workflow，验证命令现成。
-- **OQ-2**（沿用登记，仍未决）：notes/study + archive_bak 是否正式收纳
+- **OQ-2**（沿用登记，仍未决）：study-notes + archive_bak 是否正式收纳
   （33841ca07 分流时上交，待用户）。
 - **F8**（沿用登记）：assert_bootstrap_outside_memmap 只护 root+bump，
   kernel 段/模块段两笔 belt-and-braces 断言未做。

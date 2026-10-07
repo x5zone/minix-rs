@@ -3,7 +3,7 @@
 > **分类**: 阶段 3 — 页与页表（结构锚点）
 > **源码**: `minix3/minix/servers/vm/pt.h:11-25`（`pt_t`）；`minix3/minix/servers/vm/arch/i386/pagetable.h`（`ARCH_VM_*` 宏族）；`minix3/minix/servers/vm/arch/earm/pagetable.h`（earm 变体）；`minix3/minix/include/arch/i386/include/vm.h:I386_PAGE_SIZE`（PTE 位布局）；`minix3/minix/servers/vm/pagetable.c:pt_init`（`pt_init` 结构面）+ `:112`（`static_sparepagedirs`）+ `:1358-1435`（`pt_bind` 结构语义）+ `:1442-1489`（`pt_mapkernel` 结构语义）
 > **Rust 模块**: `os/servers/vm/src/pagetable/mod.rs`（`PageTable` 别名 + `page_align`）+ `os/servers/vm/src/direct_map.rs`（VM 侧 Direct Map 双向转换）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（VM 自身页表接口：`VmSelfPageTable::adopt` + `init_vm_self_pt`）+ `os/arch/src/arch/direct_map.rs`（`DirectMapArch` trait + 三架构实现）+ `os/arch/src/arch/paging.rs`（`Paging` trait + `PageFlags`）+ `os/arch/src/arch/dm_coverage.rs`（`DmCoverageArch` + `establish_dm_range` 覆盖建立驱动）+ `os/kernel/src/dm_coverage.rs`（`establish_boot_dm`：kernel boot 期双窗口覆盖建立）+ `os/arch/src/x86_64/paging.rs`（4 级 walk）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（物理分配器）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（页分配 + Direct Map 概念首次引入）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）
+> **前置**: `rewrite-notes/02-stage-vm/05-physical-memory.md`（物理分配器）、`rewrite-notes/02-stage-vm/06-page-allocator.md`（页分配 + Direct Map 概念首次引入）、`rewrite-notes/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）
 > **说明**: 页表**结构**语义模块：**`pt_t` 结构、`ARCH_VM_*` 宏族、Direct Map 双视图（[ARCH: A-1]）、VM 自映射页表（[ARCH: A-9]）、页表层级（[ARCH: A-2]）、地址空间宽度（[ARCH: A-6]）、多架构 trait（[ARCH: A-10]）、`pt_init` 结构面**。**不覆盖**：pt 操作（`pt_new`/`pt_bind`/`pt_copy`/`pt_mapkernel`/`pt_writemap` 逐函数语义 → 08）、页分配（06）、物理分配器（05）。
 
 ---
@@ -630,13 +630,13 @@ fn pd_index(vaddr: u64) -> usize { ((vaddr >> PD_SHIFT) & 0x1FF) as usize }     
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md` — 页分配 + Direct Map 概念首次引入（§1.5）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md` — 页表操作（下一篇）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` — `init_vm`/`pt_init` 调用点
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md` — 物理分配器
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/09-slab-allocator.md` — HeapArena 消费 `vm_self_mappages`（09）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/02-vmproc-struct.md` — `VmProc::vm_pt` 存储
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/07-cross-space-init.md` — Direct Map 双窗口论证（kernel 侧）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/06-pagetable-struct.md` — 旧主线素材（素材）
+- `rewrite-notes/02-stage-vm/06-page-allocator.md` — 页分配 + Direct Map 概念首次引入（§1.5）
+- `rewrite-notes/02-stage-vm/08-pagetable-ops.md` — 页表操作（下一篇）
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` — `init_vm`/`pt_init` 调用点
+- `rewrite-notes/02-stage-vm/05-physical-memory.md` — 物理分配器
+- `rewrite-notes/02-stage-vm/09-slab-allocator.md` — HeapArena 消费 `vm_self_mappages`（09）
+- `rewrite-notes/02-stage-vm/02-vmproc-struct.md` — `VmProc::vm_pt` 存储
+- `rewrite-notes/01-stage-kernel/07-cross-space-init.md` — Direct Map 双窗口论证（kernel 侧）
+- `rewrite-notes/02-stage-vm/draft/06-pagetable-struct.md` — 旧主线素材（素材）
 - `minix3/minix/servers/vm/pt.h`、`minix3/minix/servers/vm/arch/i386/pagetable.h`、`minix3/minix/servers/vm/arch/earm/pagetable.h`、`minix3/minix/servers/vm/pagetable.c` — C 源码（ground truth）
 - `os/servers/vm/src/pagetable/mod.rs`、`os/servers/vm/src/direct_map.rs`、`os/servers/vm/src/pagetable/vm_self_map.rs`、`os/arch/src/arch/direct_map.rs`、`os/arch/src/arch/paging.rs`、`os/arch/src/x86_64/paging.rs` — Rust 实现

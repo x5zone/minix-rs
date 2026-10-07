@@ -217,7 +217,7 @@ pub fn dispatch_clear(bkl_section: &BklSection<'_>, nr: ProcNr) {
   - `os/kernel/src/test_helpers.rs` —— 三层豁免夹具 + 构造函数
   - 16 个测试源文件的局部表/局部进程构造点统一迁移到夹具
   - `os/kernel/tests/boot_integration.rs` —— `ManuallyDrop` 显式豁免
-  - `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md` §3.1.1 —— 资源所有权模型同步
+  - `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md` §3.1.1 —— 资源所有权模型同步
 - **验证**：`cargo test`（os/ workspace）全绿；kernel 615 单测 + 2 集成，含新增的 4 个 Drop 行为测试。
 - **后续候选**（同类 B 类对象，未定时间表）：`AddressSpace`、IPC filter pool、Scheduler entity 可复用同一模式（判定如何影响还需要独立设计，不默认套用）。
 - **设计文档**：本文件作为"为什么这样做 + 完整设计来源"的权威记录，独立持久化。

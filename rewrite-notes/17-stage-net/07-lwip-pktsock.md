@@ -3,7 +3,7 @@
 > **分类**：套接字协议族共享层，覆盖用户数据报协议与原始套接字共用的创建转发、接收容量门、默认缓冲区、头部标志
 > **源码**：`minix3/minix/net/lwip/pktsock.c`（1236 行）、数据报默认数值 `minix3/minix/net/lwip/udpsock.c`（第 27 行到第 34 行）、原始默认数值 `minix3/minix/net/lwip/rawsock.c`（第 48 行到第 55 行）、头部标志 `minix3/minix/net/lwip/pktsock.c`（第 38 行到第 40 行）
 > **Rust 模块**：`os/net/lwip/src/pktsock.rs`（默认尺寸常量、容量门函数、头部标志常量、区间判断函数）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层，创建与缓冲区语义）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/05-lwip-util-addr.md`（公共工具，池切片尺寸对照）
+> **前置依赖**：`rewrite-notes/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层，创建与缓冲区语义）、`rewrite-notes/17-stage-net/05-lwip-util-addr.md`（公共工具，池切片尺寸对照）
 >
 > **本篇不覆盖的内容**：
 > - 互联网协议选项的具体语义（在第 06 篇，本文只使用选项限制表的数值结果）
@@ -174,10 +174,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，创建与缓冲区语义。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/08-lwip-tcpsock.md`：传输控制协议，共享层的主要使用方之一。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/09-lwip-udpsock.md`：用户数据报协议，共享层的另一使用方。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，创建与缓冲区语义。
+- `rewrite-notes/17-stage-net/08-lwip-tcpsock.md`：传输控制协议，共享层的主要使用方之一。
+- `rewrite-notes/17-stage-net/09-lwip-udpsock.md`：用户数据报协议，共享层的另一使用方。
 - `os/net/lwip/src/pktsock.rs`：默认尺寸、容量门与标志的实现。
 - `minix3/minix/net/lwip/pktsock.c`：数据包共享的原始实现（1236 行）。
 - `minix3/minix/net/lwip/udpsock.c`：数据报默认数值的原始定义（第 27 行到第 34 行）。

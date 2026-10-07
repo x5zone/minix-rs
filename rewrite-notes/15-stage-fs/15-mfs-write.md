@@ -3,7 +3,7 @@
 > **分类**：参考实现·数据通路写侧（磁盘主线第 9 篇）
 > **源码**：`minix3/minix/fs/mfs/write.c`（全部三百一十九行），`minix3/minix/fs/mfs/read.c` 写半部（`read.c:48-61` 与 `read.c:89-111`）
 > **Rust 模块**：`os/fs/mfs/src/write.rs`（映射写入、块保障、文件写入、截断执行）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/14-mfs-read.md`（块号翻译规则，本篇复用），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/13-mfs-link.md`（释放计划与截断决策，本篇执行），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`（存储区分配策略，本篇消费）
+> **前置**：`rewrite-notes/15-stage-fs/14-mfs-read.md`（块号翻译规则，本篇复用），`rewrite-notes/15-stage-fs/13-mfs-link.md`（释放计划与截断决策，本篇执行），`rewrite-notes/15-stage-fs/07-mfs-init-main.md`（存储区分配策略，本篇消费）
 > **说明**：缺失的块如何长出来，间接块如何一级一级建起来，删掉的块如何一级一级收回去，文件长度如何变化。本篇是第 14 篇的镜像篇：翻译规则相同，遇到空洞时的动作相反。
 
 > **本章不讲什么**：
@@ -202,10 +202,10 @@ Rust 实现不复制这个空函数，扩大的尾巴不清零，因为空洞读
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/14-mfs-read.md`：读路径与翻译规则（本篇的镜像篇）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/13-mfs-link.md`：释放计划与截断决策（本篇的执行依据）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`：区分配策略（本篇消费）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/14-mfs-read.md`：读路径与翻译规则（本篇的镜像篇）。
+- `rewrite-notes/15-stage-fs/13-mfs-link.md`：释放计划与截断决策（本篇的执行依据）。
+- `rewrite-notes/15-stage-fs/07-mfs-init-main.md`：区分配策略（本篇消费）。
 - `os/fs/mfs/src/write.rs`：写路径的实现。
 - `minix3/minix/fs/mfs/write.c`：写路径的原始实现（三百一十九行）。
 - `minix3/minix/fs/mfs/read.c`：写半部的原始实现（读写主函数）。

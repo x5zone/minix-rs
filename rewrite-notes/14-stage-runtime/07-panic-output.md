@@ -143,6 +143,6 @@ Rust 有一条硬性约束：整个进程镜像里 `#[panic_handler]` 只允许�
 - `minix3/minix/lib/libc/gen/itoa.c`：数字转换的原始实现（含五位局限）。
 - `minix3/minix/lib/libc/gen/stderr.c`：标准错误输出的原始实现。
 - `minix3/minix/include/minix/com.h`：缓冲常量与操作码的原始定义。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/05-syscall-mechanism.md`：前置篇，协议是诊断消息的搬运方式。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/08-pm-syscalls.md`：后一篇，进程管理调用组。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/05-syscall-mechanism.md`：前置篇，协议是诊断消息的搬运方式。
+- `rewrite-notes/14-stage-runtime/08-pm-syscalls.md`：后一篇，进程管理调用组。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

@@ -27,7 +27,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 |---|---|
 | 执行者 | HY4 |
 | 日期 | 2026-09-19 |
-| 目标目录 | `notes/rewrite/fork-syscall-rewrite/10-stage-mib/` |
+| 目标目录 | `rewrite-notes/10-stage-mib/` |
 | 仓库根 | `/home/xzhao/github/minix-rs` |
 | 当前提交 | `ebc8ae72b`（`git log --oneline -1` 实测，2026-09-19 采样） |
 | 报告性质 | R 相·重建蓝图（不改任何正文） |
@@ -60,7 +60,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ```bash
 # 文档体量（3372 行 / 24 篇）
-wc -l notes/rewrite/fork-syscall-rewrite/10-stage-mib/*.md
+wc -l rewrite-notes/10-stage-mib/*.md
 # 00:108 01:229 02:247 03:196 04:153 05:122 06:163 07:149 08:165 09:154
 # 10:174 11:157 12:206 13:185 14:167 15:168 16:167 17:220 18:165 19:152
 # 20:141 21:100 22:140 99:82
@@ -100,7 +100,7 @@ wc -l os/servers/mib/src/server.rs os/servers/mib/src/walker.rs \
       os/servers/mib/src/tree/arena.rs os/servers/mib/src/transport.rs os/servers/mib/src/heap.rs
 # 876 + 1125 + 611 + 469 + 190 = 3271
 grep -rn "server.rs\|walker.rs\|arena.rs\|transport.rs\|heap.rs" \
-  notes/rewrite/fork-syscall-rewrite/10-stage-mib/0*.md 1*.md 2*.md 99*.md | grep -v doc_rerank | wc -l
+  rewrite-notes/10-stage-mib/0*.md 1*.md 2*.md 99*.md | grep -v doc_rerank | wc -l
 # → 极稀疏：仅 10 篇一句 "P1-2 补记"、04/08/13/15 四处 arena 指针、06/07 各一句 P1-4 补记
 
 # A-4 尾随结构已钉但文档未记（新增知识点来源）
@@ -112,11 +112,11 @@ grep -n "^pub struct" os/libs/minix-types/src/types/ps_strings.rs   # PsStrings 
 
 # 引用关系（断链成本统计）
 grep -rn "10-stage-mib/[0-9]" --include=*.md . | grep -v doc_rerank \
-  | grep -v "^./notes/rewrite/fork-syscall-rewrite/10-stage-mib/" | wc -l   # → 100
+  | grep -v "^./rewrite-notes/10-stage-mib/" | wc -l   # → 100
 #   其中 .review/ 历史记录 93 处、13-stage-ipc 活跃文档 7 处
 grep -rn "10-stage-mib" os/ --include=*.rs | wc -l                          # → 5
 grep -rno "[0-9][0-9]-mib-[a-z0-9-]*\.md" \
-  notes/rewrite/fork-syscall-rewrite/10-stage-mib/*.md | awk -F: '{print $NF}' \
+  rewrite-notes/10-stage-mib/*.md | awk -F: '{print $NF}' \
   | sort | uniq -c | sort -rn                                               # 目录内 171 处
 ```
 

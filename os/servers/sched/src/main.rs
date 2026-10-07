@@ -1,7 +1,7 @@
 //! Minix-RS scheduler — entry point.
 //!
 //! C: `main()` — `minix3/minix/servers/sched/main.c:22-96`.
-//! See `notes/rewrite/fork-syscall-rewrite/06-stage-sched/01-sched-init-main.md`
+//! See `rewrite-notes/06-stage-sched/01-sched-init-main.md`
 //! (the startup order) and `02-sched-message-surface.md` (the loop's turn).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]

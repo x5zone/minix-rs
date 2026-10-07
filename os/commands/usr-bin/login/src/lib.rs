@@ -2,7 +2,7 @@
 
 //! Login chain and password database core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/03-login-passwd.md`:
+//! Covers `rewrite-notes/18-stage-commands/03-login-passwd.md`:
 //! the terminal login chain (`getty` in `minix3/libexec/getty/main.c`,
 //! `login` in `minix3/usr.bin/login/login.c`), the terminal line table
 //! (`minix3/etc/ttys`), the terminal capability table

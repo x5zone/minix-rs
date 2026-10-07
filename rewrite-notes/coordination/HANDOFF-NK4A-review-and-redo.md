@@ -9,7 +9,7 @@
 ## §0 开局必读（按序）
 
 1. `CLAUDE.md` + `.claude/rules/review-core.md` + `review-process.md` + `fix-guard.md`
-2. `notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-boot-first-light.md`
+2. `rewrite-notes/coordination/HANDOFF-NK4A-boot-first-light.md`
    （上一棒交接：任务定义、已修三坑、路标体系、构建陷阱）
 3. 本文件全文。
 4. `bash tools/claim.sh list` + `git worktree list` + `pgrep -f qemu-system`
@@ -91,14 +91,14 @@ ABI 变更是否所有构造/消费点一致、847 行新机制的容量与碎�
 1. **保全分支**：`git branch nk4a-agent-wip`（钉在它的最终 tip 上——此后
    无论 reset 还是改写，它的全部工作永可追溯）。
 2. **证据归档**：把 `/tmp` 下它的最新串口/冒烟日志（`ls -lat /tmp/*.log |
-   head` 按时间挑）复制到 `notes/rewrite/fork-syscall-rewrite/evidence/`
+   head` 按时间挑）复制到 `rewrite-notes/evidence/`
    （新建目录），文件名带采集时间。这些是易失证据。
 3. **它 tip 上的冒烟实测**：跑一次
    `SMOKE_SKIP_BOOT=0 bash os/qemu-tests/test-cmd-smoke.sh`，完整记录
    exit code + 串口到达序列。这是"它的聚合产物到底处于什么状态"的客观
    庭证——无论它自己的文档怎么说。若它有未提交工作区改动：先原样提交到
    保全分支（`git stash` 或直接 commit 到 nk4a-agent-wip），不留脏状态。
-4. 若存在 `notes/rewrite/fork-syscall-rewrite/NK4A-HANDOFF-STATUS.md`
+4. 若存在 `rewrite-notes/coordination/NK4A-HANDOFF-STATUS.md`
    （前一道停止令要求它写的）：读一遍当**地图**用——但按用户裁决，它的
    自述**仅供参考、不可信**：上下文只有 200k 的模型在多轮迭代后会对
    "当初为什么这么写"失忆甚至混淆，文档与代码矛盾处一律以代码为准，
@@ -203,7 +203,7 @@ reset 重做）。用户裁决后才进 Phase 4。
 
 ## §8 交付物清单
 
-1. `notes/rewrite/fork-syscall-rewrite/NK4A-REVIEW-REPORT.md`（§6 报告）。
+1. `rewrite-notes/coordination/NK4A-REVIEW-REPORT.md`（§6 报告）。
 2. 保全分支 `nk4a-agent-wip`（永删不得）。
 3. 逐 commit 定性表 + V1-V7 结果（贴给用户）。
 4. （若执行 Phase 4）重做 commit 序列 + 翻绿证据 + 账本/FIXLOG 更新。

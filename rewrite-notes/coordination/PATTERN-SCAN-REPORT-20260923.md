@@ -1,8 +1,8 @@
 # PATTERN-SCAN-REPORT-20260923 — 历史日志模式挖掘与回归检查（C-61）
 
 > **任务**：用户指令「从 FIXLOG、WORKLOG 等历史 LOG 中扫描并发掘模式，扫描得到测试，避免以后再出现类似的问题」。
-> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../../tools/pattern-gate.sh)（13 项机械检查）+
-> [`tools/pattern-gate-baseline.txt`](../../../tools/pattern-gate-baseline.txt)（存量豁免）。
+> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../tools/pattern-gate.sh)（13 项机械检查）+
+> [`tools/pattern-gate-baseline.txt`](../../tools/pattern-gate-baseline.txt)（存量豁免）。
 > 判别证据：`evidence/20260923-c61-pattern-gate/`（selftest 18 例正反矩阵 + 真树变异负例 6 组 + 全量运行实录）。
 > **更正纪律**：本档断言全部可用所引条目标题 grep 复位；引用 FIXLOG 用「线 + 条目标题」定位（裸行号会漂移，
 > 即 review-patterns 所称「代码注释行号漂移」一类），引用代码用符号名。发现写错就地追加更正节，不改写原条目。
@@ -21,8 +21,8 @@
 | `.review/zcode/edge3/FIXLOG_archive.md` | 3659 行 | 定向精读：流程事故段（#3222 事故两起、#233 流程教训）+ P0 代表条目 |
 | `.review/zcode/edge3/FIXLOG.raw-20260920.bak` | 68552 行 | 不通读；与 archive 做 sort -u 差异核查——仅 8 行重复拼接伪影，**无独有内容丢失** |
 | `.review/zcode/edge4/FIXLOG.md` | 128 行 | 全文精读 |
-| `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
-| `notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
+| `rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
+| `rewrite-notes/coordination/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
 | `NK4A-REVIEW-REPORT.md`、`NK4-REGRESSION-REVIEW-20260922{,-PART2}.md` | 定向提取 | 评审归纳节（危险面、可沉淀资产、OQ-1 建议） |
 | `new_edge1-4.md`、`edge_todo.md` | 定向提取 | §1 协作规则 + §2 认领板 C-XX 登记行教训 + 账本行判例 |
 | `NK4A-TODO.md` §5/§9、`NK4B-TODO.md` §8、`NK4B-OPENING-PROMPT.md` | 定向提取 | 铁律条款 |
@@ -296,8 +296,8 @@ selftest 18/18 全绿；真树变异 6 组（P3/P4/P5/P6/P7 注入真实违规�
 selftest 24 例（+P14×2/P15×2）正反矩阵全绿；真树变异：P14 新增裸 set 即 FAIL、P15 gitignore 删条目即 FAIL、还原复绿；full 模式 PASS=11 FAIL=0 SKIP=1（worktree）/ 主树合并后终验。**过程事故如实记**：变异还原用 `git checkout -- .gitignore` 把自己未提交的 gitignore 条目一并冲掉（P15 假 FAIL 一次）——变异脚本的还原必须用「改前备份/改后还原」，对未提交在制禁 checkout（D2 模式第 N 次现世，本次受害者是检查者自己）。# PATTERN-SCAN-REPORT-20260923 — 历史日志模式挖掘与回归检查（C-61）
 
 > **任务**：用户指令「从 FIXLOG、WORKLOG 等历史 LOG 中扫描并发掘模式，扫描得到测试，避免以后再出现类似的问题」。
-> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../../tools/pattern-gate.sh)（13 项机械检查）+
-> [`tools/pattern-gate-baseline.txt`](../../../tools/pattern-gate-baseline.txt)（存量豁免）。
+> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../tools/pattern-gate.sh)（13 项机械检查）+
+> [`tools/pattern-gate-baseline.txt`](../../tools/pattern-gate-baseline.txt)（存量豁免）。
 > 判别证据：`evidence/20260923-c61-pattern-gate/`（selftest 18 例正反矩阵 + 真树变异负例 6 组 + 全量运行实录）。
 > **更正纪律**：本档断言全部可用所引条目标题 grep 复位；引用 FIXLOG 用「线 + 条目标题」定位（裸行号会漂移，
 > 即 review-patterns 所称「代码注释行号漂移」一类），引用代码用符号名。发现写错就地追加更正节，不改写原条目。
@@ -316,8 +316,8 @@ selftest 24 例（+P14×2/P15×2）正反矩阵全绿；真树变异：P14 新�
 | `.review/zcode/edge3/FIXLOG_archive.md` | 3659 行 | 定向精读：流程事故段（#3222 事故两起、#233 流程教训）+ P0 代表条目 |
 | `.review/zcode/edge3/FIXLOG.raw-20260920.bak` | 68552 行 | 不通读；与 archive 做 sort -u 差异核查——仅 8 行重复拼接伪影，**无独有内容丢失** |
 | `.review/zcode/edge4/FIXLOG.md` | 128 行 | 全文精读 |
-| `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
-| `notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
+| `rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
+| `rewrite-notes/coordination/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
 | `NK4A-REVIEW-REPORT.md`、`NK4-REGRESSION-REVIEW-20260922{,-PART2}.md` | 定向提取 | 评审归纳节（危险面、可沉淀资产、OQ-1 建议） |
 | `new_edge1-4.md`、`edge_todo.md` | 定向提取 | §1 协作规则 + §2 认领板 C-XX 登记行教训 + 账本行判例 |
 | `NK4A-TODO.md` §5/§9、`NK4B-TODO.md` §8、`NK4B-OPENING-PROMPT.md` | 定向提取 | 铁律条款 |

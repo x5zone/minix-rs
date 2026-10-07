@@ -3,7 +3,7 @@
 > **分类**: 阶段 1 — 启动与进程模型（锚点文档）
 > **源码**: `minix3/minix/servers/pm/main.c`（main/sef_local_startup/sef_cb_init_fresh/reply/get_nice_value/handle_vfs_reply）、`minix3/minix/servers/pm/schedule.c:sched_init（L36，工具生成）`（sched_init 调用点）、`minix3/minix/lib/libsys/sef.c` + `sef_init.c`（SEF 框架）
 > **Rust 模块**: `os/servers/pm/src/main.rs`、`os/servers/pm/src/init.rs`（`PmServer`/`BootParams`/`VfsPmInit`）、`os/servers/pm/src/ipc/transport.rs`（`IpcTransport`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/00-pm-overview.md`、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md`（boot image 来源）
+> **前置**: `rewrite-notes/04-stage-pm/00-pm-overview.md`、`rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md`（boot image 来源）
 > **说明**: PM 从 `main()` 入口到进入主循环之前的全部启动链：SEF 回调注册、`sef_cb_init_fresh` 八步初始化、boot image 填充（INIT + 系统进程）、VFS_PM_INIT 进程表同步、`system_hz`、`sched_init` 调用点。主循环分发细节在 `04-ipc-dispatch.md`。
 
 ---
@@ -598,11 +598,11 @@ server.run();                              // 主循环（主体归 04）
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/plan.md` — §2（文档编号）/§3.4（边界表）/§4（ARCH 清单）/§5.3（函数归属）/§7.3（SUSPEND 契约）
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/00-pm-overview.md` — PM 总览与文档导航
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md` — boot image 的来源与内核侧实例化
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/19-syscall-signal.md` — 内核信号路径（signal_manager 回调的对接）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` — VM 启动链范本（SEF/启动契约/rs_handshake 同型设计）
+- `rewrite-notes/04-stage-pm/plan.md` — §2（文档编号）/§3.4（边界表）/§4（ARCH 清单）/§5.3（函数归属）/§7.3（SUSPEND 契约）
+- `rewrite-notes/04-stage-pm/00-pm-overview.md` — PM 总览与文档导航
+- `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md` — boot image 的来源与内核侧实例化
+- `rewrite-notes/01-stage-kernel/19-syscall-signal.md` — 内核信号路径（signal_manager 回调的对接）
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` — VM 启动链范本（SEF/启动契约/rs_handshake 同型设计）
 - `minix3/minix/servers/pm/main.c` — 本档 ground truth
 - `minix3/minix/servers/pm/schedule.c` — sched_init（调用点）
 - `os/servers/pm/src/init.rs` — Rust 实现

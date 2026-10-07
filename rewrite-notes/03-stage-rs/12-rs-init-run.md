@@ -3,7 +3,7 @@
 > **分类**: 阶段 4 — 服务创建与配置（从槽位到运行进程的第六步：运行）
 > **源码**: `minix3/minix/servers/rs/manager.c`（`end_srv_init`—328、`run_service`—923、`start_service`—950）、`minix3/minix/servers/rs/utility.c:init_service`（`init_service`）、`minix3/minix/servers/rs/request.c:do_init_ready`（`do_init_ready`）、`minix3/minix/servers/rs/request.c:do_upd_ready`（`do_upd_ready`）、`minix3/minix/servers/rs/main.c:sef_cb_init_response`（`sef_cb_init_response`/`sef_cb_lu_response`）、`minix3/minix/servers/rs/main.c:catch_boot_init_ready`（`catch_boot_init_ready`）、`minix3/minix/include/minix/ipc.h:1855-1866`（`mess_rs_init`）、`minix3/minix/include/minix/sef.h:SEF_INIT_FRESH`（`SEF_INIT_*`）
 > **Rust 模块**: `os/servers/rs/src/ready.rs`（`init_flags`/`init_message`/`do_init_ready`/`ReadyOutcome`/`do_upd_ready`/`UpdReadyOutcome`/`end_srv_init`/`should_reply_ready`/`normalize_init_response`/`normalize_lu_response`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md`（创建）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/11-rs-publish.md`（发布）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（`reply`/`late_reply` 原语）
+> **前置**: `rewrite-notes/03-stage-rs/10-rs-service-create.md`（创建）、`rewrite-notes/03-stage-rs/11-rs-publish.md`（发布）、`rewrite-notes/03-stage-rs/06-rs-main-loop.md`（`reply`/`late_reply` 原语）
 > **说明**: 创建（10）+ 发布（11）之后，服务是"活着但还没初始化"的进程。启动协议 = RS 发 `RS_INIT` 消息 → 服务自己初始化 → 回 ready → RS 收尾。**同一套协议在 boot 与运行时各用一次**：boot 的 Step 2/3 用 `catch_boot_init_ready` 同步阻塞捕获；运行时由主循环的 `RS_INIT`/`RS_LU_PREPARE` 分支异步分派到 `do_init_ready`/`do_upd_ready`。
 
 ---
@@ -282,10 +282,10 @@ pub enum ReadyOutcome {
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md` —— `reply`/`late_reply`/`EDONTREPLY` 原语（ready 处理的载体）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` —— `init_service` 设置的 `r_check_tm = alive_tm + 1` 的消费点
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `crash_service`/`kill_service`/`cleanup_service` 机制
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `do_upd_ready`/`rupdate_upd_move`/`end_update` 机制
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md` —— boot Step 2/3 锚点与 `rproctab_gid` 创建点
+- `rewrite-notes/03-stage-rs/06-rs-main-loop.md` —— `reply`/`late_reply`/`EDONTREPLY` 原语（ready 处理的载体）
+- `rewrite-notes/03-stage-rs/07-rs-period-heartbeat.md` —— `init_service` 设置的 `r_check_tm = alive_tm + 1` 的消费点
+- `rewrite-notes/03-stage-rs/15-rs-terminate-restart.md` —— `crash_service`/`kill_service`/`cleanup_service` 机制
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— `do_upd_ready`/`rupdate_upd_move`/`end_update` 机制
+- `rewrite-notes/03-stage-rs/01-rs-boot-init.md` —— boot Step 2/3 锚点与 `rproctab_gid` 创建点
 - `minix3/minix/servers/rs/manager.c:end_srv_init,923-982`、`utility.c:18-68`、`request.c:462-533,890-942`、`main.c:591-626,784-825` —— ground truth
 - `minix3/minix/include/minix/ipc.h:1855-1866` —— `mess_rs_init`

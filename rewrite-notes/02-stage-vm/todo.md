@@ -255,7 +255,7 @@ $ bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm
   → 26 篇三件套全 PASS；00/99 缺 outline+outline-review+design（CRITICAL ×2）→ G-V12-12 维持
 
 gate-evidence-A:
-$ python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall-rewrite/02-stage-vm \
+$ python3 tools/coverage-extract/coverage-extract.py vm rewrite-notes/02-stage-vm \
     --rust-dir os --c-dir minix3/minix/servers/vm \
     --semantic-map tools/coverage-extract/vm-semantic-map.json \
     --output .review/claude/vm/v13/SYMBOLS.md
@@ -507,4 +507,4 @@ gate-evidence-关键论断复核（主 agent 亲自 grep/sed，防转述失真�
 - 第一轮至第六轮全部条目与修复记录：[`archive/todo-V11-archive-2026-09-08.md`](archive/todo-V11-archive-2026-09-08.md)
 - 第七轮 V12 全卷（含 Fix #59–#62 修复记录原文）：[`archive/todo-V12-archive-2026-09-09.md`](archive/todo-V12-archive-2026-09-09.md)
 - 本轮 SYMBOLS 全量清单：`.review/claude/vm/v13/SYMBOLS.md`（中间产物，正式引用以本文件 §18.1/§1 汇总为准）
-- 跨 stage 条目唯一入口：`notes/rewrite/fork-syscall-rewrite/edge_todo.md`（§18.4 两条增补；§19 V14-P2-1 为 VM 侧活指针，联动 E-ISWIRE / E1 / E5）
+- 跨 stage 条目唯一入口：`rewrite-notes/coordination/edge_todo.md`（§18.4 两条增补；§19 V14-P2-1 为 VM 侧活指针，联动 E-ISWIRE / E1 / E5）

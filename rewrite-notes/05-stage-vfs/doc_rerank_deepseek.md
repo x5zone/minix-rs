@@ -4,7 +4,7 @@
 
 - 执行者：deepseek（AI agent 名称，用于本目录产物后缀）
 - 日期：2026-09-19
-- 目标目录：`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/`
+- 目标目录：`rewrite-notes/05-stage-vfs/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`
 - 当前提交号：`6965e6885`（`git log --oneline -1`）；工作树另有未提交修改与未跟踪文件，本报告的数据以工作树实测为准，并在每处标注命令。
 - 交付物：本文件。除本文件外不修改、不重命名、不移动、不删除任何文件；未提交任何变更。
@@ -77,7 +77,7 @@ $ grep -rn '05-stage-vfs' os/ tools/ --include='*.rs' --include='*.toml' --inclu
 4（os/servers/vfs/src/worker.rs:236、os/servers/pm/src/exit.rs:405、
    os/libs/minix-types/src/ipc/fs_driver.rs:11、os/libs/minix-types/src/ipc/vfs.rs:107）
 
-$ grep -rhoE "[0-9]{2}-[a-z0-9-]+\.md" notes/rewrite/fork-syscall-rewrite/05-stage-vfs/*.md | wc -l
+$ grep -rhoE "[0-9]{2}-[a-z0-9-]+\.md" rewrite-notes/05-stage-vfs/*.md | wc -l
 765（stage 内文档互引计数，用于 §8 断链成本）
 
 $ sed -n '15,20p' minix3/minix/servers/rs/table.c

@@ -1,6 +1,6 @@
 # todo-N1-archive：17-stage-net 架构扫描轮（N1 轮）正文归档
 
-> 归档日期：2026-09-17。来源：`notes/rewrite/fork-syscall-rewrite/17-stage-net/todo.md`（14/14 闭环后正文迁此）。
+> 归档日期：2026-09-17。来源：`rewrite-notes/17-stage-net/todo.md`（14/14 闭环后正文迁此）。
 > 修复过程：R0-R15 共 11 个提交（栈选型/sockid/续延机器/双服务循环/缓冲池/重复收敛/死代码/勘误/位标类型/恒真测试/依赖闭环），全部走 todo-fix 三步 + 回归 review。
 > 检索权威：Fix 记录与判定过程以本文件为据；速览与索引在主文件。
 

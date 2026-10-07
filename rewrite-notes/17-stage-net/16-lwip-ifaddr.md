@@ -3,7 +3,7 @@
 > **分类**：轻量协议栈服务接口面第 4 篇，覆盖版本 6 地址标志、选择偏好顺序、地址字段归属边界
 > **源码**：`minix3/minix/net/lwip/ifaddr.c`（2224 行）、标志定义 `minix3/minix/net/lwip/ifaddr.h`（第 5 行到第 7 行）
 > **Rust 模块**：`os/net/lwip/src/ifaddr.rs`（标志常量、成员测试、选择偏好函数）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/14-lwip-ifdev.md`（接口对象模型）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/15-lwip-ethif.md`（以太网实例）
+> **前置依赖**：`rewrite-notes/17-stage-net/14-lwip-ifdev.md`（接口对象模型）、`rewrite-notes/17-stage-net/15-lwip-ethif.md`（以太网实例）
 >
 > **本篇不覆盖的内容**：
 > - 地址列表的存储、重复检测与路由更新（需要接口表与协议栈，保留在服务主程序，本文只说明标志含义与选择顺序）
@@ -135,10 +135,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/05-lwip-util-addr.md`：地址策略表，标签距离的来源。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/14-lwip-ifdev.md`：接口对象模型，地址字段的归属。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/17-lwip-ifconf.md`：接口配置，下一阶段入口。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/05-lwip-util-addr.md`：地址策略表，标签距离的来源。
+- `rewrite-notes/17-stage-net/14-lwip-ifdev.md`：接口对象模型，地址字段的归属。
+- `rewrite-notes/17-stage-net/17-lwip-ifconf.md`：接口配置，下一阶段入口。
 - `os/net/lwip/src/ifaddr.rs`：标志常量与选择顺序的实现。
 - `minix3/minix/net/lwip/ifaddr.c`：接口地址管理的原始实现（2224 行）。
 - `minix3/minix/net/lwip/ifaddr.h`：标志定义的原始位置（第 5 行到第 7 行）。

@@ -3,7 +3,7 @@
 > **分类**：服务骨架（十三步上楼，四路分岔口，建户按域分）
 > **源码**：`minix3/minix/net/lwip/lwip.c`（三百八十二行的启动链与主循环）、`minix3/minix/net/lwip/mibtree.c`（一百四十一行的管理树注册）
 > **Rust 模块**：`os/net/lwip/src/startup.rs`（启动阶段机与分发道路）、`os/net/lwip/src/server.rs`（主循环、传输接缝、道路分发）、`os/libs/minix-netdriver/src/service.rs`（两服务共用的到达分类器）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/01-sockdriver-framework.md`（套接字框架，十七请求）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/02-sockevent-framework.md`（事件框架，对象与续作）
+> **前置**：`rewrite-notes/17-stage-net/01-sockdriver-framework.md`（套接字框架，十七请求）、`rewrite-notes/17-stage-net/02-sockevent-framework.md`（事件框架，对象与续作）
 > **说明**：轻量骨架是两框架第一次完整消费：启动链十三步一步登天，主循环四路分岔各走各。本篇讲上楼顺序与分岔口，不讲各房间内部。各模块实现与消息流量在服务层，本库只定顺序与道路。
 
 > **本篇不讲什么**：
@@ -183,11 +183,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/01-sockdriver-framework.md`：套接字框架（编号与挂起规则）。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/02-sockevent-framework.md`：事件框架（对象与续作）。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/04-lwip-mempool.md`：内存池（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/99-net-global-concepts.md`：全局概念（常量全集，待写）。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/01-sockdriver-framework.md`：套接字框架（编号与挂起规则）。
+- `rewrite-notes/17-stage-net/02-sockevent-framework.md`：事件框架（对象与续作）。
+- `rewrite-notes/17-stage-net/04-lwip-mempool.md`：内存池（下一篇，待写）。
+- `rewrite-notes/17-stage-net/99-net-global-concepts.md`：全局概念（常量全集，待写）。
 - `os/net/lwip/src/startup.rs`：启动阶段机与分发道路的实现。
 - `minix3/minix/net/lwip/lwip.c`：启动链与主循环的原始实现（三百八十二行）。
 - `minix3/minix/net/lwip/mibtree.c`：管理树注册的原始实现（一百四十一行）。

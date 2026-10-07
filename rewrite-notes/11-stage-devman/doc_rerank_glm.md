@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = glm
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/11-stage-devman
+target_dir(关注的工作目录) = rewrite-notes/11-stage-devman
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = d6ecd22cae78345e746c82ad7cbe3c1612c151c2
 
@@ -15,7 +15,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ## 0. 元数据
 
-- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/11-stage-devman/`。
+- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/11-stage-devman/`。
 - **结论先行**：本 stage 的 15 篇文档（00~13 + 99）是四个已审 stage（06-sched / 08-is / 09-init / 本 stage）中**维护得最好的一套**——2026-09-04 全部成文并 CONVERGED，2026-09-15 首轮架构审查的 10 条 stage 内条目**当日全部闭环**（Fix #1~#10，净删约 600 行、unsafe 归零），且 **Fix 的演化注记已回写进 01/02/04/05/06/07/08/09 各篇正文**（如 04 §2.4 的 DM-P1-4 预算前缀账、01 §3.1 的钩子退役史）。实测 `cargo test -p minix-devman` **80 passed / 0 failed**，clippy 本体 0 告警。因此本蓝图的操作集是**"保编号、清失效行、追基线"**：
   1. **保编号**——编号即"启动链 + 设备生命周期旅程"双主线（plan §1.2/§1.3），四条硬标准满足（§9 G3/G4）；篇内互引 ≈120 处、外部 14 个文件 40+ 处、代码注释 3 处（minix-types/com.rs→05 篇、minix-sys/lib.rs→10/11 篇）全以现有文件名为锚；
   2. **清失效行**——唯一实质缺陷：**01 与 06 两篇的 §5 测试表各含已退役测试的失效行**（`first_guard_fires_once` 随 DM-P1-3 退役、`register_resolves_index`/`dispatch_end_to_end` 随 DM-P1-5 退役，`rg` 代码零命中），且 01 缺新增的 `test_devman_sef_production_hooks` 行——这是 Gate E"声称但代码缺失"的违例（2026-09-18 刷新轮漏清）；

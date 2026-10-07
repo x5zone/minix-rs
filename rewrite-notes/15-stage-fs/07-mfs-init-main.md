@@ -3,7 +3,7 @@
 > **分类**：参考实现·启动与挂载（磁盘主线第 1 篇）
 > **源码**：`minix3/minix/fs/mfs/main.c`（全部一百零二行）、`minix3/minix/fs/mfs/table.c`（全部四十五行）、`minix3/minix/fs/mfs/cache.c`（全部一百零九行）
 > **Rust 模块**：`os/fs/mfs/src/startup.rs`（初装与信号）、`os/fs/mfs/src/table.rs`（接线表）、`os/fs/mfs/src/mfs_cache.rs`（拿块与区分配）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`（主循环）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/04-block-cache.md`（缓存）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/05-block-io.md`（块传输）
+> **前置**：`rewrite-notes/15-stage-fs/01-fsdriver-task.md`（主循环）、`rewrite-notes/15-stage-fs/04-block-cache.md`（缓存）、`rewrite-notes/15-stage-fs/05-block-io.md`（块传输）
 > **说明**：磁盘文件系统如何从空进程变成就绪服务器：初装四步、信号语义、三十一接线、拿块包装、区分配策略。
 
 > **本章不讲什么**：
@@ -223,10 +223,10 @@ C 初装四步，Rust 初装两步（开关、建池），索引表清零与缓�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/05-block-io.md`：块传输（接线表五通路的归属）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`：超级块与位图（区分配机制的归属）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`：索引节点（初装另两步的归属）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/05-block-io.md`：块传输（接线表五通路的归属）。
+- `rewrite-notes/15-stage-fs/08-mfs-super.md`：超级块与位图（区分配机制的归属）。
+- `rewrite-notes/15-stage-fs/09-mfs-inode.md`：索引节点（初装另两步的归属）。
 - `os/fs/mfs/src/startup.rs`：初装与信号的实现。
 - `os/fs/mfs/src/table.rs`：接线表的实现。
 - `os/fs/mfs/src/mfs_cache.rs`：缓存包装的实现。

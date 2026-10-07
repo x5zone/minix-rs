@@ -152,6 +152,6 @@ C 语言的汇编函数直接执行陷入指令，单元测试没法在不启动
 - `minix3/minix/lib/libc/arch/i386/sys/ipc_minix_kerninfo.S`：内核信息查询陷入的原始实现。
 - `minix3/minix/include/minix/ipc.h`：批量槽位类型与标志的原始定义。
 - `minix3/minix/lib/libsys/asynsend.c`：批量表格管理的原始实现。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/03-runtime-init.md`：前一篇，向量表的安装。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/05-syscall-mechanism.md`：后一篇，消息协议与重试退避。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/03-runtime-init.md`：前一篇，向量表的安装。
+- `rewrite-notes/14-stage-runtime/05-syscall-mechanism.md`：后一篇，消息协议与重试退避。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

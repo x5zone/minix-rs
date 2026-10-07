@@ -8,7 +8,7 @@
 > 方法：整体分层分析（全局状态 → 主循环/分发 → 各子系统 → 模块），结合 Redox 实现与 Rust/OS 社区最佳实践。
 > 定位：本文档是新增的架构改进建议清单，**不同于** `draft/TODO.md`（旧 fork 主线 TODO 存档）。
 > 状态（2026-08-17 更新）：**P0-1 / P1-1 / V9-P0-1 / V9-P1-1 / V9-P3-1 / V10-P0-1 / V10-P0-2 / V10-P1-1 / V10-P1-2 / V10-P1-3 / V10-P2-1 / V10-P2-2 / V10-P2-4 已修复**（见 §8 + §10 + §13 修复记录）；V10-P2-3 与 P1-2/P1-3/P1-4/P2-\*/V9-P2-\*/V9-P3-2 为架构演进建议（DEFERRED/可选，依赖 kernel IPC 落地或需专项规划），供后续阶段参考。
-> 状态（2026-09-06 更新，V11 轮，见 §14）：V11 轮审查完成后即进入**逐条修复 campaign**（顺序表：`notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0；修复记录：§15）。**重要更正**：P1-3 与 P1-2 的"依赖 kernel IPC 落地"依据已失效——内核侧 IPC 核心已实现（`os/kernel/src/ipc.rs`），VmContext 收敛与 transport 落地均已解除阻塞（见 §14.2 复核表与 V11-P1-1/V11-P1-2）。本轮无新增 P0；新发现 3 项 P1、8 项 P2、1 项 P3，缺口登记 G-V11-1..6。已修复：**V11-P2-6**（见 §15 Fix #19）。
+> 状态（2026-09-06 更新，V11 轮，见 §14）：V11 轮审查完成后即进入**逐条修复 campaign**（顺序表：`rewrite-notes/coordination/edge_todo.md` §0；修复记录：§15）。**重要更正**：P1-3 与 P1-2 的"依赖 kernel IPC 落地"依据已失效——内核侧 IPC 核心已实现（`os/kernel/src/ipc.rs`），VmContext 收敛与 transport 落地均已解除阻塞（见 §14.2 复核表与 V11-P1-1/V11-P1-2）。本轮无新增 P0；新发现 3 项 P1、8 项 P2、1 项 P3，缺口登记 G-V11-1..6。已修复：**V11-P2-6**（见 §15 Fix #19）。
 
 ---
 
@@ -811,7 +811,7 @@ paging 是逐页 fault 时分配（page_fault_handler → Grant → Provider 分
 #### 14.1.1 coverage-extract 重跑与 C 符号判定
 
 ```
-$ python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall-rewrite/02-stage-vm \
+$ python3 tools/coverage-extract/coverage-extract.py vm rewrite-notes/02-stage-vm \
     --rust-dir os --c-dir minix3/minix/servers/vm \
     --semantic-map tools/coverage-extract/vm-semantic-map.json \
     --output .review/claude/vm/v11/SYMBOLS.md
@@ -1119,13 +1119,13 @@ Coverage Summary for vm:
 
 ## 15. 第五轮修复记录（2026-09-06 起，V11 条目逐条闭环）
 
-> 执行方式：02-stage-vm TODO 实施 campaign（顺序表见 `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0，跨 stage 条目登记于同文件 E1-E5）。
+> 执行方式：02-stage-vm TODO 实施 campaign（顺序表见 `rewrite-notes/coordination/edge_todo.md` §0，跨 stage 条目登记于同文件 E1-E5）。
 > 每条遵循：fix-guard（读目标行 ±5 + grep 现状）→ 设计对比（≥2 方案，对照 C/Redox/Linux）→ 代码+文档+测试一并改 → 回归（`cargo test -p minix-vm --lib` 基线 448 不回退 + clippy --all-features + 受影响 Gate）→ 单条单 commit。
 > 通电口径：依赖共享 trap 层（minix-sys）的条目，VM 侧逻辑完备 + mock 测试即标 ✅，真实通电挂 edge E1/E2。
 
 ### ✅ Fix #19: V11-P2-6 — 文档测试名对账 + 15-ipc-dispatch.md §5 行号/计数全量刷新
 
-- **File**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`（§5.1 两张表、§5.3 行号、§5.4 统计块）
+- **File**: `rewrite-notes/02-stage-vm/15-ipc-dispatch.md`（§5.1 两张表、§5.3 行号、§5.4 统计块）
 - **Before**: 4 个测试名与代码不符（`..._returns_invalid_address` 实为 `..._returns_einval`；`rejects_no_active_request`/`rejects_negative_reqid` 实为 `..._returns_error` 后缀；setcache 行的 `zero_dev_and_ino` 无对应测试）；§5.1 全部行号较代码漂移约 12-110 行；§5.4 声称 441 passed / clippy 0 warnings
 - **After**: 4 名修正为实际名；setcache 行补 NO_DEV 守卫归属说明（由 `page_cache::tests::test_addcache_rejects_no_device` :522 覆盖，dispatcher 层不重复）；dispatcher 13 行 / vm_server 11 行行号逐一按 `grep -n "fn test_"` 刷新；补录 `test_decode_rs_memctl_unknown_req_einval / all_valid_codes`（:2121/:2131）；§5.4 更新为 448 passed（2026-09-06）+ clippy 1/7 warning 回归事实（指向 V11-P2-3）
 - **Verified**: 刷新后表中 36 个测试名逐一 `grep -c "fn {name}("` 全部恰好 1 次命中；旧名 4 个在文档中 0 残留；`cargo test -p minix-vm --lib` → 448 passed / 0 failed
@@ -1149,7 +1149,7 @@ Coverage Summary for vm:
 
 ### ✅ Fix #22: V11-P1-3 — 删 `DefaultAllocator` 双真相源 + 组合 feature 语义测试 + cfg 重构
 
-- **Files**: `os/servers/vm/src/phys_mem/mod.rs`（删 `DefaultAllocator` 别名四个 cfg 分支 :107-125，替换为指向单一权威的注释）、`os/servers/vm/src/vm_server.rs`（`choose_allocator_type` 文档重写 + **cfg 重构**：segment-tree 判定前置、buddy 块加 `not(feature = "segment_tree_alloc")` 守卫——任何 feature 组合下函数体都无不可达代码，all-features 的 unreachable 警告随之消失；新增 3 个按 feature 组合门控的选择语义测试）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（§3.3 选择路径段补组合语义 + 别名删除说明 + 行号刷新）
+- **Files**: `os/servers/vm/src/phys_mem/mod.rs`（删 `DefaultAllocator` 别名四个 cfg 分支 :107-125，替换为指向单一权威的注释）、`os/servers/vm/src/vm_server.rs`（`choose_allocator_type` 文档重写 + **cfg 重构**：segment-tree 判定前置、buddy 块加 `not(feature = "segment_tree_alloc")` 守卫——任何 feature 组合下函数体都无不可达代码，all-features 的 unreachable 警告随之消失；新增 3 个按 feature 组合门控的选择语义测试）、`rewrite-notes/02-stage-vm/05-physical-memory.md`（§3.3 选择路径段补组合语义 + 别名删除说明 + 行号刷新）
 - **Before**: mod.rs 别名注释宣称 "buddy > segment-tree > bitmap"，与 `choose_allocator_type` 的实际选择（segment-tree 直接胜出）方向相反；all-features 下 `vm_server.rs:301` unreachable expression 警告
 - **After**: 后端选择单一真相源 = `choose_allocator_type`（文档显式声明组合语义）+ 05 §3.3；三组合测试定格语义（无 feature→Bitmap / 仅 buddy→阈值判定 / segment-tree→直接胜出含双 feature 场景）
 - **Verified**: `rg "DefaultAllocator" os/servers/vm/src` → 0；`cargo test -p minix-vm --lib` 四矩阵 **449 / 464 / 449 / 465 passed**（每矩阵 +1 个新门控测试）；clippy minix-vm 默认与 all-features 均 **0 warnings**；`cargo check -p minix-vm --all-features` 通过
@@ -1238,7 +1238,7 @@ Coverage Summary for vm:
 
 ### ✅ Fix #31: T17 — bitmap `cache_freepages` no-op 钩子删除（V11/T17 判定：语义已被双层覆盖）
 
-- **Files**: `os/servers/vm/src/phys_mem/bitmap_alloc.rs`（删 55 行蓝图文档 + no-op `cache_freepages` + `alloc_mem` 内的恒零重试环 + `test_cache_freepages_returns_zero` no-op pin 测试；代之 10 行架构注记）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（5 处 DEFERRED 表述同步为已落地/判定状态）
+- **Files**: `os/servers/vm/src/phys_mem/bitmap_alloc.rs`（删 55 行蓝图文档 + no-op `cache_freepages` + `alloc_mem` 内的恒零重试环 + `test_cache_freepages_returns_zero` no-op pin 测试；代之 10 行架构注记）、`rewrite-notes/02-stage-vm/05-physical-memory.md`（5 处 DEFERRED 表述同步为已落地/判定状态）
 - **Ground Truth 判定**：C `cache_freepages` 的"回收单引用缓存页"语义已由 `PageCache::free_pages`（走 lru_oldest + refcount==1 + rmcache，page_cache.rs:375——正是 C cache.c:288-305 的对应物）实现，并由主循环压力钩子 `alloc_cycle` 批量调用；C 的"alloc_mem 内同步重试"在 minix-rs 对应"异步回收 + 下次分配重试"（偏差已登记）。allocator 内部 freed-page LIFO 在 `alloc_mem` 中本被优先消费——耗尽时 no-op 钩子恒返 0，重试环是死代码
 - **Verified**: `rg "cache_freepages" os/servers/vm/src` 仅剩 C 映射标签注释（page_cache.rs/vm_server.rs，语义正确）；四矩阵 452/467/466/452 passed（-1 no-op pin 测试）；四组合 clippy `^servers/` 0
 - **Docs**: 05-physical-memory.md 5 处；bitmap_alloc.rs 架构注记
@@ -1265,7 +1265,7 @@ Coverage Summary for vm:
 
 ### ✅ Fix #25: T19 — exec_newmem / DMA 三条 parity 处置（删孤儿 stub，不实现）
 
-- **Files**: `os/servers/vm/src/ipc/dispatcher.rs`（删 `dispatch_exec_newmem` 孤儿 stub 及 60 行架构注记，代之 10 行 parity 定论注记；干线 DMA 注释改为 parity 措辞；`VmExecNewmemIn` 导入移除）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`（§4.1 表两行合并 + §4.5 重写）
+- **Files**: `os/servers/vm/src/ipc/dispatcher.rs`（删 `dispatch_exec_newmem` 孤儿 stub 及 60 行架构注记，代之 10 行 parity 定论注记；干线 DMA 注释改为 parity 措辞；`VmExecNewmemIn` 导入移除）、`rewrite-notes/02-stage-vm/15-ipc-dispatch.md`（§4.1 表两行合并 + §4.5 重写）
 - **Ground Truth 判定**：C 的 com.h 定义了 VM_EXEC_NEWMEM(+3) 与 VM_ADDDMA/DELDMA/GETDMA(+12/13/14) 号值，但 main.c:508-538 的 CALLMAP **均未注册** handler——`vmc_func == NULL` → main.c:139/165 回 ENOSYS。minix-rs 同样不路由 → `_` 臂 ENOSYS：**可观察行为一致，属 parity 而非缺口**。V10-P2-1/V14.2 中"DEFERRED 待接线"的定性据此更正为"已核实 parity，处置完毕"
 - **Verified**: `rg "dispatch_exec_newmem|VmExecNewmemIn" os/servers/vm/src` → 0（minix-types 契约类型与 `VmReply::ExecNewmem` 穷尽匹配臂按 wire 层完整性保留）；`cargo test -p minix-vm --lib` → 449 passed
 - **Docs**: 15-ipc-dispatch.md §4.1/§4.5
@@ -1321,7 +1321,7 @@ Coverage Summary for vm:
 
 ## 16. 第六轮修复记录（2026-09-07 起，T24+ 收尾 campaign）
 
-> 执行方式：延续 §15 的逐条闭环模式，顺序表在 `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0（T24-T36）。
+> 执行方式：延续 §15 的逐条闭环模式，顺序表在 `rewrite-notes/coordination/edge_todo.md` §0（T24-T36）。
 > 本轮范围：V11 后残留的 open 项收尾——残留标注清理、判定闭合批次、以及本轮盘点新登记的 3 个缺口（T27/T28/T29，见 §16.1）。
 > 新基线（2026-09-07 实测）：默认 **472 passed** / segment_tree **489 passed** / buddy **472 passed**，全部 0 failed。
 

@@ -1,7 +1,7 @@
 # 08-stage-is Document Rebuild Blueprint (muse)
 
 > `your_name(AI agent name) = muse`
-> `target_dir = notes/rewrite/fork-syscall-rewrite/08-stage-is`
+> `target_dir = rewrite-notes/08-stage-is`
 > `repo_root = /home/xzhao/github/minix-rs`
 > Task = R-phase rebuild blueprint: produce `target_dir/doc_rerank_muse.md`; modify no body text.
 > Constraint = no citation of `.design/` or `tmp_design_and_todo/`; every landed artifact carries the `_muse` suffix; no reading or copying of other AIs' `doc_rerank_*` products.
@@ -19,7 +19,7 @@
 
 ## 0. Metadata
 
-- Executor: `muse`. Date: 2026-09-20 (UTC). Target: `notes/rewrite/fork-syscall-rewrite/08-stage-is/`.
+- Executor: `muse`. Date: 2026-09-20 (UTC). Target: `rewrite-notes/08-stage-is/`.
   Repo HEAD at generation time: `e67086298` (verified with `git rev-parse --short HEAD`; an earlier
   probe in the same session returned `41000abfc`, so B-phase must re-verify HEAD before writing).
 - Task type: service event-loop stage (IS = Information Server, the debug-dump aggregator user-space
@@ -53,12 +53,12 @@
      (`acquire.rs` 1523, `dispatch.rs` 419, `dump_ds.rs` 277, `dump_kernel.rs` 963,
      `dump_pm.rs` 346, `dump_rs.rs` 202, `dump_vfs.rs` 375, `dump_vm.rs` 483, `lib.rs` 747,
      `main.rs` 35, `sef.rs` 368, `state.rs` 51, `tty_fkey.rs` 477).
-  5. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage order and
-     two-level boot semantics), `notes/rewrite/fork-syscall-rewrite/edge_todo.md` (E-ISWIRE, E-ISPROD,
+  5. Boundary materials: `rewrite-notes/00-master-plan/README.md` (stage order and
+     two-level boot semantics), `rewrite-notes/coordination/edge_todo.md` (E-ISWIRE, E-ISPROD,
      E-ISKMESS, E-ISBOOT pointers), `01-stage-kernel/06-todo.md` (contract-writing style example only —
      its outline-per-document task-book form is imitated, none of its content is reused).
 - Commands executed and key outputs (evidence excerpts):
-  - `wc -l notes/rewrite/fork-syscall-rewrite/08-stage-is/*.md` → 12 docs, 3475 lines of numbered-doc
+  - `wc -l rewrite-notes/08-stage-is/*.md` → 12 docs, 3475 lines of numbered-doc
     body (excl. plan/todo/rerank products); thinnest 99:58 and 00:60, densest 01:707.
   - `wc -l minix3/minix/servers/is/*` → 1254 lines total, 1151 in `.c` (matches plan §1 claim).
   - `rg -n "IS_PROC_NR" minix3/minix` → zero hits (A-9 holds: no fixed endpoint).
@@ -787,7 +787,7 @@ operation (reasons: Section 4.5).
 | R-19 | In-stage prose pointers (01→02/03, 02→03, 03→05–10, 04→05–10 routing, 05→06/09, 06→07/08/09, 09→10, all→99) ≈ 40 pointers | Current section numbers | Section 8.1's held-stable numbers (§2.3, §4.1, §2.4-paging, §2.3-taxonomy) or the recorded new targets | B-phase checklist: `rg "§[0-9]" 08-stage-is/0*.md 08-stage-is/99*.md` resolved one by one. |
 | R-20 | `plan.md` ↔ docs ("See also" both directions, ~6 links) | Current §§ | C-14 holds plan's cited numbers stable | Re-read plan §8 "See also" at B-phase end. |
 | R-21 | `todo.md` Fix #1–#8 doc-sync notes (01 §3/§4.2/§5.2, 02 §4.3, 04 §3/§4/§5, 03/05–10 §3 notes) | Pre-rebuild text | Absorbed as primary text (notes removed) | Each B-phase commit deletes its note line; `rg "V1.*(update|note)" 08-stage-is/0*.md` must empty (except todo.md history, which stays). |
-| R-22 | Cross-stage inbound pointers to 08-stage-is (edge_todo E-IS* entries; 07-stage-ds/04-stage-pm/03-stage-rs todos; master README stage table) | Current 08 numbers/titles | Unchanged numbers + unchanged titles → no migration needed | Titles frozen by Section 4.1 precisely to zero this cost; verify with `rg -l "08-stage-is" notes/rewrite/ \| wc -l` before/after (expect equal, minus archived draft pointer). |
+| R-22 | Cross-stage inbound pointers to 08-stage-is (edge_todo E-IS* entries; 07-stage-ds/04-stage-pm/03-stage-rs todos; master README stage table) | Current 08 numbers/titles | Unchanged numbers + unchanged titles → no migration needed | Titles frozen by Section 4.1 precisely to zero this cost; verify with `rg -l "08-stage-is" rewrite-notes/ \| wc -l` before/after (expect equal, minus archived draft pointer). |
 | R-23 | "86 passed" test-count claims in 10 documents' §5 | Stale count | Then-current count + named tests (G-03 duty) | `rg -n "86 passed" 08-stage-is/0*.md 08-stage-is/99*.md` must return ∅ after B-phase. |
 
 ### 8.3 Breakage-cost summary
@@ -830,6 +830,6 @@ operation (reasons: Section 4.5).
 
 ---
 
-*End of blueprint. Single landed file: `notes/rewrite/fork-syscall-rewrite/08-stage-is/doc_rerank_muse.md`
+*End of blueprint. Single landed file: `rewrite-notes/08-stage-is/doc_rerank_muse.md`
 (this file). No body text modified. No `.design/` or `tmp_design_and_todo/` cited. No other AI's
 `doc_rerank_*` product read. Written in English per the muse requirement.*

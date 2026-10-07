@@ -4,7 +4,7 @@
 
 - 执行者：glm
 - 日期：2026-09-19
-- 目标目录：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`
+- 目标目录：`rewrite-notes/01-stage-kernel/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`
 - 当前提交号：`8e979d11925ddb9625b461760eb30e44f255ab42`（2026-09-19）
 - 任务：R 相·重建蓝图。只产出本文件，不修改任何正文。
@@ -53,7 +53,7 @@
 
 - `wc -l *.md`：34 篇编号文档 + 参考材料共约 37,007 行；最长旧 05 = 2263 行、旧 01 = 2019 行。
 - `grep -oh "\b[0-9]\{2\}-[a-z0-9-]*\.md" [0-9]*.md 99*.md | sort | uniq -c`：目录内编号文档名引用共 **1093 处**（热点：16-smp.md 75、14-exception-interrupt.md 67、11-scheduling-primitives.md 60、25-misc-unported.md 59、06-proc-init-boot-proc.md 58）。
-- `grep -roh "01-stage-kernel/...\.md" notes/rewrite/fork-syscall-rewrite/ --include="*.md"`：其它 stage 引入本目录共 **303 处**（热点：00-overview 35、06 33、18-syscall-copy 29、19-syscall-signal 19、11 19）。
+- `grep -roh "01-stage-kernel/...\.md" rewrite-notes/ --include="*.md"`：其它 stage 引入本目录共 **303 处**（热点：00-overview 35、06 33、18-syscall-copy 29、19-syscall-signal 19、11 19）。
 - 代码注释引用（`os/kernel/src`、`os/arch/src`、`os/boot-shim/src`、`os/libs/minix-platform/src`）：约 **200 处**（热点：06-proc-init-boot-proc.md 58、05-clock-interrupt-init.md 17、16-smp.md 15、04-platform-discovery.md 15、02-higher-half-kernel.md 15）。
 - C 函数地图：`grep -n "^[a-zA-Z_].*(" proc.c system.c clock.c interrupt.c smp.c` 与 `main.c` 全文精读（522 行）、`table.c` 全文（66 行）、`pg_utils.c`/`pre_init.c` 函数锚点、`mpx.S` 入口锚点。
 - `ls os/qemu-tests/test-kernels/kernel/bootstrap/`：31 个测试内核（单架构 13 个 + 三架构族 6 组 × 3）。
@@ -485,7 +485,7 @@
 - 不讲什么：跨空间拷贝的调用面（→22）；VMSUSPEND 协议（→29）；VM 侧页表管理（→02-stage-vm）。
 - 前置：02、07。
 - 后置：09（memory_init 的 DM 就绪检查）、22（拷贝原语的翻译底座）、29（协议）。
-- 事实底线：`arch/i386/protect.c:370-377`、`arch/i386/memory.c:707-717`；`os/kernel/src/dm_coverage.rs`；`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md` §3.2（redesign 依据，允许引用正式文档）。
+- 事实底线：`arch/i386/protect.c:370-377`、`arch/i386/memory.c:707-717`；`os/kernel/src/dm_coverage.rs`；`rewrite-notes/02-stage-vm/07-pagetable-struct.md` §3.2（redesign 依据，允许引用正式文档）。
 - 知识点清单：K-090~K-095（存量：旧 07；新增：K-093 的 dm_coverage 半，锚点 dm_coverage.rs 与 edge_todo E8 四处根因记录）。验收：读者能解释"64 位下为什么不再需要 createpde"，并手算一个 PA 的 DM 别名地址；能说明 E8 下溢 bug 的形状（root 高于 bump 时前裁剪回绕）。
 
 ### 09-system-init-boot-finish

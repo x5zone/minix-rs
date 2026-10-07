@@ -3,7 +3,7 @@
 > **分类**: 阶段 6 — Live Update（RS 自身特例）
 > **源码**: `minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L436，工具生成）`（boot 自升级 + `sef_cb_init_restart`/`sef_cb_init_lu`）、`minix3/minix/servers/rs/update.c:srv_update`（`srv_update`/`update_service`/`rollback_service`）、`minix3/minix/servers/rs/utility.c:update_sig_mgrs`（`update_sig_mgrs`）、`minix3/minix/servers/rs/manager.c:clone_service（L760，工具生成）`（`clone_service` 的 RS 备份信号管理器）、`minix3/minix/servers/rs/const.h:RS_INITIALIZING,79-80,105-115`、`minix3/minix/include/minix/rs.h:SF_VM_UPDATE`、`minix3/minix/include/minix/const.h:ROOT_SYS_PROC,154`
 > **Rust 模块**: `os/servers/rs/src/self_lifecycle.rs`（`SelfUpgradeRole`/`self_upgrade_role`/`SwapFlag`/`should_pre_swap`/`rollback_swap_flag`/`SrvUpdateAction`/`srv_update_action`/`should_end_update_on_restart`/`lu_init_invariants`/`is_rs_restart_replica`/`SigMgrUpdate`/`sig_mgr_updates`/`rollback_needs_vm_update`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（SEF 回调注册、boot 锚点）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`（update 状态机）
+> **前置**: `rewrite-notes/03-stage-rs/01-rs-boot-init.md`（SEF 回调注册、boot 锚点）、`rewrite-notes/03-stage-rs/16-rs-live-update.md`（update 状态机）
 > **说明**: 本文档是 RS **自身**的生命周期特例：SEF provider 的自举（restart/LU init 回调）、boot 自升级流程、RS 的 rollback 特例与备份信号管理器。它依赖 19（`srv_fork`/`vm_update`/`sys_whoami` 等外部契约）、16（`end_update`/update 状态机）、12（`init_service`）——本文档只落地**角色分派、分支判定与断言**（`self_lifecycle.rs`）。
 
 ---
@@ -243,12 +243,12 @@ RS 自身生命周期是 LU 机制图的"自指环"：
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md` —— SEF 回调注册表（ARCH A-7）、boot 锚点
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `update_service`/`rollback_service` 通用路径、`end_update`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md` —— `init_service`/`SEF_INIT_*`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/17-rs-state-data.md` —— `cpf_reload`/grants 生命周期
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` —— `clone_slot`/`swap_slot`/`activate_service`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` —— `srv_fork`/`vm_update`/`sys_whoami`/`sys_privctl` 契约
+- `rewrite-notes/03-stage-rs/01-rs-boot-init.md` —— SEF 回调注册表（ARCH A-7）、boot 锚点
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— `update_service`/`rollback_service` 通用路径、`end_update`
+- `rewrite-notes/03-stage-rs/12-rs-init-run.md` —— `init_service`/`SEF_INIT_*`
+- `rewrite-notes/03-stage-rs/17-rs-state-data.md` —— `cpf_reload`/grants 生命周期
+- `rewrite-notes/03-stage-rs/10-rs-service-create.md` —— `clone_slot`/`swap_slot`/`activate_service`
+- `rewrite-notes/03-stage-rs/19-rs-external-interfaces.md` —— `srv_fork`/`vm_update`/`sys_whoami`/`sys_privctl` 契约
 - `minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L436，工具生成）`、`update.c:230-366`、`utility.c:387-412`、`minix3/minix/servers/rs/manager.c:clone_service（L760，工具生成）`、`const.h:34-35,79-80,105-115`、`include/minix/rs.h:197-198`、`include/minix/const.h:151,154` —— ground truth
 
 ---

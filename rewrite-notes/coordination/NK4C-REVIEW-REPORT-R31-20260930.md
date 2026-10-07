@@ -157,7 +157,7 @@
 | F4 | P2-hygiene | R3 待办③持续：kernel-image 交付边界节未更新三架构状态 + `[ARCH: boot-handoff]` 字面标注缺 | os/kernel-image/src/main.rs:17-23 |
 | F5 | P2-doc | 锚点行号偏移 ×3（07c9e6649 / 7a89f2b72 / 58c0a51d3，见 §四.3） | 各 commit |
 | F6 | P2-test | 接线类修复测试缺口：e55057d1c（排水接线无测试）、cd613370d（send_reply PM 腿翻转零测试 + x86 1/4 run 未达 marker 未追）、2113be7fc（host 结构性不可测） | 各 commit |
-| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 evidence/，偏离 notes/rewrite/fork-syscall-rewrite/evidence/ 约定 | evidence/20260930-c64-pattern-gate/ |
+| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 evidence/，偏离 rewrite-notes/evidence/ 约定 | evidence/20260930-c64-pattern-gate/ |
 | F8 | P2-hygiene | 7ccaf77e9 依赖预检漏 fdisk（FAIL 应为 SKIP）+ dd count=28671 魔数无解释 | os/qemu-tests/test-riscv64-uboot.sh:31-34 |
 | NIT | — | 07c9e6649 魔数 208；2113be7fc read_volatile 触 padding 形式 UB + 逐点手工屏障脆弱性（OQ：是否改 asm memory clobber）；4cb8db458 缺 false-skip 回归针；58c0a51d3 host 无字节级清零验证；5730112ce sched_idx release 静默回退；cd613370d 单线程停摆面（注释已自证） | 见 §二 |
 

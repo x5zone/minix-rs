@@ -136,6 +136,6 @@ Redox 的做法和这个思路是一致的：Redox 的内存管理同样把页�
 - `minix3/minix/lib/libc/sys/sbrk.c`：相对移动的原始实现。
 - `minix3/lib/libc/stdlib/malloc.c`：NetBSD 分配器两条路的原始实现。
 - `minix3/minix/include/minix/com.h`：堆调整调用号的原始定义。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/05-syscall-mechanism.md`：前一篇，请求协议是堆调整消息的搬运方式。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/10-vm-syscalls.md`：堆调整消息的封装归属（待改写）。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/05-syscall-mechanism.md`：前一篇，请求协议是堆调整消息的搬运方式。
+- `rewrite-notes/14-stage-runtime/10-vm-syscalls.md`：堆调整消息的封装归属（待改写）。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

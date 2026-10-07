@@ -70,7 +70,7 @@ C 用掩码加差值解出家族内编号；Rust 每族一个枚举（`CdevReque
 
 - `minix3/minix/include/minix/com.h`：C 侧单一权威（全部行号锚点的出处）。
 - `minix3/minix/include/minix/driver.h`：通用驱动模型与打开设备表宽。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：字符家族用法。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`：块家族用法。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/03-netdriver-framework.md`：网络家族用法。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符家族用法。
+- `rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`：块家族用法。
+- `rewrite-notes/16-stage-drivers/03-netdriver-framework.md`：网络家族用法。
 - edge `E-DEVWIRE`：常量单一来源的收敛执行条目。

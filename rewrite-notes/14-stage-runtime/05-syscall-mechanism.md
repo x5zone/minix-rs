@@ -136,6 +136,6 @@ C 语言的重试循环直接调用延迟函数，测试没法在不等待真实
 - `minix3/minix/include/minix/ipc.h`：分界值与消息布局的原始定义。
 - `minix3/sys/sys/errno.h`：没准备好编号的原始定义。
 - `minix3/minix/lib/libsys/tickdelay.c`：延迟等待的原始实现。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/04-ipc-primitives.md`：前一篇，通信原语与陷入约定。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/06-allocator.md`：后一篇，堆管理与平板分配。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/04-ipc-primitives.md`：前一篇，通信原语与陷入约定。
+- `rewrite-notes/14-stage-runtime/06-allocator.md`：后一篇，堆管理与平板分配。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

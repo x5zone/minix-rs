@@ -3,7 +3,7 @@
 > **分类**: 阶段 3 — 主循环与监控（心跳状态机）
 > **源码**: `minix3/minix/servers/rs/request.c:do_period`（`do_period`）、`request.c:1051-1090`（`do_sigchld`）、`minix3/minix/servers/rs/update.c:update_period`（`update_period`）、`minix3/minix/servers/rs/const.h:RS_NOPINGREPLY,34-35,39,48-51,58,110,114-115`（标志与常量）
 > **Rust 模块**: `os/servers/rs/src/monitor.rs`（`period_decision`/`effective_period`/`has_update_timed_out`/`sigchld_cleanup`/`PeriodAction`/常量族）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`r_period`/`r_backoff`/`r_stop_tm`/`r_alive_tm`/`r_check_tm` 字段）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（主循环 ClockNotify 分支）
+> **前置**: `rewrite-notes/03-stage-rs/02-rs-process-table.md`（`r_period`/`r_backoff`/`r_stop_tm`/`r_alive_tm`/`r_check_tm` 字段）、`rewrite-notes/03-stage-rs/06-rs-main-loop.md`（主循环 ClockNotify 分支）
 > **说明**: RS 是微内核里唯一"看门狗"：内核不管服务死没死，RS 靠**心跳协议**发现故障并触发恢复。本文档建模 `do_period` 的三分支状态机（backoff 复活 / SIGTERM→SIGKILL / ping 超时 crash）、free pass 例外、`do_sigchld` 的子进程清理与 `update_period` 的 update 准备超时。
 
 ---
@@ -340,12 +340,12 @@ monitor.rs
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` — 周期/心跳字段与 `lookup_*`/`instances_of`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md` — ClockNotify 分支、心跳时间戳写入、SIGCHLD 入口
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md` — `r_period` 配置来源
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` — `clone_service`（rs_idle_period 补 replica）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md` — `stop_service` 设置 `r_stop_tm`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` — restart/crash/cleanup 机制
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` — `end_update`/`rupdate_clear_upds`/`update_period` 消费点
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` — 周期/心跳字段与 `lookup_*`/`instances_of`
+- `rewrite-notes/03-stage-rs/06-rs-main-loop.md` — ClockNotify 分支、心跳时间戳写入、SIGCHLD 入口
+- `rewrite-notes/03-stage-rs/08-rs-slot-config.md` — `r_period` 配置来源
+- `rewrite-notes/03-stage-rs/10-rs-service-create.md` — `clone_service`（rs_idle_period 补 replica）
+- `rewrite-notes/03-stage-rs/13-rs-control-requests.md` — `stop_service` 设置 `r_stop_tm`
+- `rewrite-notes/03-stage-rs/15-rs-terminate-restart.md` — restart/crash/cleanup 机制
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` — `end_update`/`rupdate_clear_upds`/`update_period` 消费点
 - `minix3/minix/servers/rs/request.c:do_period`、`update.c:371-396`、`const.h:31,34-35,39,48-51,58,110,114-116` — ground truth
 - `os/servers/rs/src/monitor.rs` — Rust 实现

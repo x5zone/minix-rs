@@ -30,11 +30,11 @@
 
 | 顺序 | 路径 | 读什么 |
 |------|------|--------|
-| 1 | `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` | **你的记忆文件**——已含"当前状态 + 交接来源 + 1.2→1.7 全部记录"（Task C 已修复，当前 frontier = 阶段 1.3 的 449-livelock）。先通读 |
-| 2 | `notes/rewrite/fork-syscall-rewrite/NK4C-REVIEW-REPORT-20260923.md` | 上一轮评审报告：全量提交评审结论、进度口径重列（按计划编号）、下一步建议 |
+| 1 | `rewrite-notes/coordination/NK4C-WORKLOG.md` | **你的记忆文件**——已含"当前状态 + 交接来源 + 1.2→1.7 全部记录"（Task C 已修复，当前 frontier = 阶段 1.3 的 449-livelock）。先通读 |
+| 2 | `rewrite-notes/coordination/NK4C-REVIEW-REPORT-20260923.md` | 上一轮评审报告：全量提交评审结论、进度口径重列（按计划编号）、下一步建议 |
 | 3 | `.review/zcode/edge1/FIXLOG.md` **尾部 300 行** | 迭代 27-33 取证细节（`.review/` 被 gitignore，**只在本地**，不可提交；换工作树会丢，所以 WORKLOG 里有副本） |
-| 4 | `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §A（约 1133-1145 行） | 里程碑状态登记表（你每完成一项要更新它） |
-| 5 | `notes/rewrite/fork-syscall-rewrite/NK4A-HANDOFF-STATUS.md` §1.3/§7 | 架构背景（VM handoff、boot 序） |
+| 4 | `rewrite-notes/coordination/edge_todo.md` §A（约 1133-1145 行） | 里程碑状态登记表（你每完成一项要更新它） |
+| 5 | `rewrite-notes/coordination/NK4A-HANDOFF-STATUS.md` §1.3/§7 | 架构背景（VM handoff、boot 序） |
 | 6 | `os/kernel/src/syscall.rs` 的 `kernel_call_finish_ipc_door` / `kernel_call_finish_holding_bkl` | Task C 修复的门纪律实现（理解 IPC 腿与 SYSCALL 腿的 finish 分叉） |
 | 7 | `os/kernel/src/vm.rs` 的 `cross_space_copy/memset/write` | 内核跨空间写三核心（已布防 `kdst` 探针） |
 
@@ -162,7 +162,7 @@ boot 推进到第 **449** 轮缺页服务后完全停摆（150s vs 60s 字节级
 
 ### 5.1 WORKLOG（你的记忆与交接载体）
 
-`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（**git-tracked**，随 commit 一起提交）。
+`rewrite-notes/coordination/NK4C-WORKLOG.md`（**git-tracked**，随 commit 一起提交）。
 
 **每次 commit 前**：
 1. 更新顶部"当前状态"（阶段 / 已修复 / 已排除 / 下一步 / 阻塞）；

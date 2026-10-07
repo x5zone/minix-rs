@@ -8,7 +8,7 @@
 //! the virtual file system service, translate it into a callback, send the
 //! reply. The C code shares that skeleton through two libraries; this crate
 //! is their Rust rendering, organized so each module matches one design
-//! document in `notes/rewrite/fork-syscall-rewrite/15-stage-fs/`:
+//! document in `rewrite-notes/15-stage-fs/`:
 //!
 //! - [`protocol`] — request numbers, transaction identifiers, flags
 //!   (document 01).

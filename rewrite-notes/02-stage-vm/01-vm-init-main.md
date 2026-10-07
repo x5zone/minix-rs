@@ -3,7 +3,7 @@
 > **分类**: 阶段 1 — 启动入口与进程模型（锚点文档）
 > **源码**: `minix3/minix/servers/vm/main.c`（`get_mem_chunks` 定义于 `minix3/minix/servers/vm/utility.c:get_mem_chunks`，`mem_add_total_pages`/`mem_init` 定义于 `minix3/minix/servers/vm/alloc.c`；SEF 库位于 `minix3/minix/lib/libsys/sef*.c`）
 > **Rust 模块**: `os/servers/vm/src/main.rs`、`os/servers/vm/src/boot.rs`、`os/servers/vm/src/global.rs`、`os/servers/vm/src/vm_server.rs`（`VmServer::new_with_boot_params`/`init`/`run`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/09-vm-boot-protocol.md`
+> **前置**: `rewrite-notes/02-stage-vm/00-vm-overview.md`、`rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md`
 > **说明**: VM 进程从 `main()` 入口到进入主循环之前的全部启动链：`is_first_time()` 门控、`init_vm()` 各步骤、SEF 生命周期、boot 进程地址空间、`map_service`、VM 自身内存边界。主循环消息分发细节在 `15-ipc-dispatch.md`。
 
 ---
@@ -821,10 +821,10 @@ pub fn init(&mut self) {
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md` — VM 总览与启动主线图
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/plan.md` §1.2 — 启动时序主线
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/09-vm-boot-protocol.md` — 内核侧 VMCTL 协议（`VMCTL_BOOTINHIBIT_CLEAR` 等）
+- `rewrite-notes/02-stage-vm/00-vm-overview.md` — VM 总览与启动主线图
+- `rewrite-notes/02-stage-vm/plan.md` §1.2 — 启动时序主线
+- `rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md` — 内核侧 VMCTL 协议（`VMCTL_BOOTINHIBIT_CLEAR` 等）
 - `minix3/minix/servers/vm/main.c` — 本文档 ground truth
 - `minix3/minix/lib/libsys/sef.c`、`sef_init.c` — SEF 框架实现
 - `minix3/minix/servers/vm/utility.c:mmap` — VM 自身 libc 接口
-- 素材：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/26-vm-init-main.md`（旧编号素材）
+- 素材：`rewrite-notes/02-stage-vm/draft/26-vm-init-main.md`（旧编号素材）

@@ -3,7 +3,7 @@
 > **分类**：参考实现·启动与挂载（磁盘主线第 4 篇，本轮完整实现）
 > **源码**：`minix3/minix/fs/mfs/mount.c`（全部一百七十三行）
 > **Rust 模块**：`os/fs/mfs/src/mount.rs`（挂载、卸载、挂载点检查、位图计数、超级块写回）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`（接线表三行翻通）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`（解析与位图）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`（表的获取释放）
+> **前置**：`rewrite-notes/15-stage-fs/07-mfs-init-main.md`（接线表三行翻通）、`rewrite-notes/15-stage-fs/08-mfs-super.md`（解析与位图）、`rewrite-notes/15-stage-fs/09-mfs-inode.md`（表的获取释放）
 > **说明**：真镜像挂载、干净卸载、挂载点检查的完整纵贯：从零号块到根节点，从脏标记到干净落盘。
 
 > **本章不讲什么**：
@@ -178,10 +178,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`：解析与位图（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`：表的获取释放（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/11-mfs-path.md`：查路。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/12-mfs-open.md`：开张。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/08-mfs-super.md`：解析与位图（本篇消费）。
+- `rewrite-notes/15-stage-fs/09-mfs-inode.md`：表的获取释放（本篇消费）。
+- `rewrite-notes/15-stage-fs/11-mfs-path.md`：查路。
+- `rewrite-notes/15-stage-fs/12-mfs-open.md`：开张。
 - `os/fs/mfs/src/mount.rs`：挂载纵贯的实现。
 - `minix3/minix/fs/mfs/mount.c`：挂载的原始实现（一百七十三行）。

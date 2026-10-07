@@ -3,7 +3,7 @@
 > **分类**：框架层第 3 篇（网卡的主循环、收发队列与端口辅助）
 > **源码**：`minix3/minix/lib/libnetdriver/netdriver.c`（九百九十三行，框架、收发队列、状态上报）、`minix3/minix/lib/libnetdriver/portio.c`（一百九十三行，端口输入输出辅助）、`minix3/minix/include/minix/netdriver.h`（回调表定义）、`minix3/minix/include/minix/com.h`（第一千零八十五行到第一千一百四十四行，网络请求常量、配置子类型、模式位、能力位、标志位、链路状态）、`minix3/minix/include/minix/config.h`（第一百零二行到第一百零四行，名字与地址与向量尺寸）
 > **Rust 模块**：`os/libs/minix-netdriver/src/protocol.rs`（请求编号、模式、能力、地址、队列界限）、`os/libs/minix-netdriver/src/portio.rs`（端口访问抽象）、`os/libs/minix-netdriver/src/driver.rs`（驱动行为定义与路由规则）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（单线程事件循环、故障即停，本篇复用）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`（有界队列的准入策略思想）
+> **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（单线程事件循环、故障即停，本篇复用）、`rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`（有界队列的准入策略思想）
 > **说明**：网络驱动管的是网卡：收包、发包、链路状态、组播设置、统计计数。与字符和块驱动最大的不同是对话的对方变了：字符和块的上游是虚拟文件系统服务，网络的上游是传输控制协议与网际协议服务（后文简称协议栈）。本篇只讲框架：六种网络请求、十二个回调、收发队列、状态上报、端口辅助。具体的网卡驱动（参考网卡、虚拟网卡、其余十二种变体）在第二十二篇与第二十三篇展开，协议栈本身在第十七阶段展开。
 
 > **本篇不讲什么**：
@@ -234,10 +234,10 @@ Minix3 的网络框架就是这座塔台。协议栈是航空公司：它把要�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：字符驱动框架（单线程与故障即停同形）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/22-net-driver-reference.md`：参考网卡与虚拟网卡（本框架的消费者）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符驱动框架（单线程与故障即停同形）。
+- `rewrite-notes/16-stage-drivers/22-net-driver-reference.md`：参考网卡与虚拟网卡（本框架的消费者）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/libs/minix-netdriver/src/protocol.rs`：请求编号、模式、能力、地址、队列界限的实现。
 - `os/libs/minix-netdriver/src/portio.rs`：端口访问抽象的实现。
 - `os/libs/minix-netdriver/src/driver.rs`：驱动行为定义、路由规则、服务器状态机的实现。

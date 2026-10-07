@@ -1,7 +1,7 @@
 //! Minix-RS Information Server — entry point.
 //!
 //! C: `main()` — `minix3/minix/servers/is/main.c:31-71`.
-//! See `notes/rewrite/fork-syscall-rewrite/08-stage-is/01-is-init-main.md`.
+//! See `rewrite-notes/08-stage-is/01-is-init-main.md`.
 
 // In test builds, use the system allocator (the crate is no_std in
 // production; the test harness allocates before main() runs).

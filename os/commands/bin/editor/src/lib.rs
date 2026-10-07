@@ -2,7 +2,7 @@
 
 //! Line editor core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/09-editors.md`:
+//! Covers `rewrite-notes/18-stage-commands/09-editors.md`:
 //! the line editor (`minix3/bin/ed/`: addresses in `main.c` at
 //! `extract_addr_range` line 285 and `next_addr` line 314, commands in
 //! `exec_command` line 465 with cases from line 481, line operations at

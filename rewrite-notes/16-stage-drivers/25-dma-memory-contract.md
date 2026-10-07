@@ -71,4 +71,4 @@ virtio 库经 `hal.rs` 以别名再导出消费这份契约：公开路径保持
 - `os/libs/minix-virtio/src/hal.rs`：消费侧的别名再导出与替身测试。
 - `os/libs/minix-types/src/types/address.rs`：翻译方向上使用的 `VirBytes`/`PhysBytes` 地址类型。
 - `minix3/minix/drivers/lib/libvirtio/virtio.c`：C 侧 `alloc_contig` 用法的原始位置（约第 319 行）。
-- edge 条目 E-DMABUF（`notes/rewrite/fork-syscall-rewrite/edge_todo.md`）：物理分配器契约的登记处与实现方排期。
+- edge 条目 E-DMABUF（`rewrite-notes/coordination/edge_todo.md`）：物理分配器契约的登记处与实现方排期。

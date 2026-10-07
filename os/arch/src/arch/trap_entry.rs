@@ -49,7 +49,7 @@
 //!
 //! # Design rationale in design doc
 //!
-//! See `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`:
+//! See `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`:
 //! - §3.1 (Two-trait split) — why `TrapEntryArch` is separate from
 //!   `ProtectionArch` (entry mechanism vs access control are different
 //!   concerns with different init order)

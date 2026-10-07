@@ -127,7 +127,7 @@ Sv39 用户限界 0x0000_0040_0000_0000（user_copy_range 已按 arch 分界）�
 
 ## §7 记录格式（与 NK4A 相同，两份缺一即返工）
 
-### 7.1 WORKLOG（`notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md`，每 Task/Milestone 一节）
+### 7.1 WORKLOG（`rewrite-notes/coordination/NK4B-WORKLOG.md`，每 Task/Milestone 一节）
 
 ```markdown
 ## <Task/Milestone ID> — <标题>（YYYY-MM-DD）

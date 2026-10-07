@@ -3,7 +3,7 @@
 > **分类**：套接字协议族公共层，覆盖互联网协议第 4 版与第 6 版套接字的创建、地址种类判断、源地址与目的地址校验、选项设置与读取
 > **源码**：`minix3/minix/net/lwip/ipsock.c`（761 行）、共享套接字布局 `minix3/minix/net/lwip/ipsock.h`（第 1 行到第 60 行）
 > **Rust 模块**：`os/net/lwip/src/ipsock.rs`（地址种类枚举、选项边界检查、缓冲区区间检查、版本 6 独占标志变更规则）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/05-lwip-util-addr.md`（公共工具，地址解析校验与选择策略）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/07-lwip-pktsock.md`（数据包共享层，发送与接收缓冲区的具体数值对照）
+> **前置依赖**：`rewrite-notes/17-stage-net/05-lwip-util-addr.md`（公共工具，地址解析校验与选择策略）、`rewrite-notes/17-stage-net/07-lwip-pktsock.md`（数据包共享层，发送与接收缓冲区的具体数值对照）
 >
 > **本篇不覆盖的内容**：
 > - 传输控制协议、用户数据报协议、原始套接字的具体协议语义（分别在第 08 篇到第 10 篇，本文只定义三者共用的创建、选项与地址校验框架）
@@ -190,10 +190,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/05-lwip-util-addr.md`：公共工具，地址解析校验与选择策略。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/07-lwip-pktsock.md`：数据包共享层，公共层的第一次大规模复用。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/08-lwip-tcpsock.md`：传输控制协议，公共层的另一路消费。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/05-lwip-util-addr.md`：公共工具，地址解析校验与选择策略。
+- `rewrite-notes/17-stage-net/07-lwip-pktsock.md`：数据包共享层，公共层的第一次大规模复用。
+- `rewrite-notes/17-stage-net/08-lwip-tcpsock.md`：传输控制协议，公共层的另一路消费。
 - `os/net/lwip/src/ipsock.rs`：地址种类与选项边界的实现。
 - `minix3/minix/net/lwip/ipsock.c`：互联网协议公共层的原始实现（761 行）。
 - `minix3/minix/net/lwip/ipsock.h`：共享套接字布局的原始定义。

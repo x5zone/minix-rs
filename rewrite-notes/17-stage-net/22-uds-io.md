@@ -3,7 +3,7 @@
 > **分类**：本地域套接字服务第 2 篇，覆盖接收环形缓冲、段类型、附带数据上限、类型边界语义
 > **源码**：`minix3/minix/net/uds/io.c`（1803 行）、尺寸定义 `minix3/minix/net/uds/uds.h`（第 33 行到第 36 行，头部长度 `io.c` 第 70 行）
 > **Rust 模块**：`os/net/uds/src/io.rs`（环形推进、段类型、上限函数）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/21-uds-core.md`（服务核心，对象与状态定义）
+> **前置依赖**：`rewrite-notes/17-stage-net/21-uds-core.md`（服务核心，对象与状态定义）
 >
 > **本篇不覆盖的内容**：
 > - 连接状态机的流转（在第 21 篇，本文只说明数据按状态如何解释）
@@ -142,8 +142,8 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/21-uds-core.md`：服务核心，对象与状态定义。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/21-uds-core.md`：服务核心，对象与状态定义。
 - `os/net/uds/src/io.rs`：环形算术、段类型与上限的实现。
 - `minix3/minix/net/uds/io.c`：数据面的原始实现（1803 行）。
 - `minix3/minix/net/uds/uds.h`：尺寸定义的原始位置（第 33 行到第 36 行）。

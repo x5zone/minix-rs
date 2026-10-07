@@ -9,7 +9,7 @@
 //! half (checksum kinds, group layout, mirror health); the service
 //! binary owns digest math and lower-driver traffic. See document
 //! `17-storage-misc-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

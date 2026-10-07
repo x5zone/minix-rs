@@ -4,7 +4,7 @@
 
 ```text
 your_name(AI agent name) = muse
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/04-stage-pm
+target_dir(关注的工作目录) = rewrite-notes/04-stage-pm
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 commit = 2c45b606c (git rev-parse --short HEAD, 2026-09-19)
 date = 2026-09-19 (UTC)

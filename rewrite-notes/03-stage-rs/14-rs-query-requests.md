@@ -3,7 +3,7 @@
 > **分类**: 阶段 4 — 服务生命周期（观测面）
 > **源码**: `minix3/minix/servers/rs/request.c`（`do_getsysinfo`—1095、`do_lookup`—1144、`do_sysctl`—1181、`do_fi`—1229）、`minix3/minix/servers/rs/utility.c:fi_service,142-222,485-546`（`fi_service`/`srv_to_string_gen`/`srv_upd_to_string`/`print_services_status`/`print_update_status`）
 > **Rust 模块**: `os/servers/rs/src/query.rs`（`GetsysinfoTable`/`getsysinfo_table`/`NAME_BUF_LEN`/`lookup_name_len`/`SysctlAction`/`classify_sysctl` + `SI_*` 常量；`RS_SYSCTL_*`/`RS_FI_CRASH` 子功能号消费 `os/libs/minix-types/src/ipc/rs.rs` 的单一定义）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`lookup_slot_by_label`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`copy_label`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（`EDONTREPLY`/`rs_asynsend`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`（`start_update_prepare`/`abort_update_proc`）
+> **前置**: `rewrite-notes/03-stage-rs/02-rs-process-table.md`（`lookup_slot_by_label`）、`rewrite-notes/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）、`rewrite-notes/03-stage-rs/08-rs-slot-config.md`（`copy_label`）、`rewrite-notes/03-stage-rs/06-rs-main-loop.md`（`EDONTREPLY`/`rs_asynsend`）、`rewrite-notes/03-stage-rs/16-rs-live-update.md`（`start_update_prepare`/`abort_update_proc`）
 > **说明**: 本文档是 RS 的**只读观测面**：13 回答了"如何操作服务的生命周期"，本文档回答"如何**看**服务的状态、导出进程表、触发故障注入"。四个 handler 中，`do_lookup`/`do_getsysinfo` 不改变任何槽位，`do_sysctl` 的 `UPD_*` 子功能委托 16，`do_fi` 是唯一的"注入"入口（把服务搞崩，然后交给 15 恢复）。
 
 ---
@@ -231,13 +231,13 @@ minix-types（`cargo test -p minix-types`）：
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `lookup_slot_by_label`、`RProcTable`、`UpdateChain` 数据形状
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md` —— `check_call_permission`（`rp=NULL` 时仅 root）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md` —— `copy_label`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md` —— 控制面（`mark_late_reply` 原语同源）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `start_update_prepare`/`abort_update_proc`/rpupd 链（`UPD_*` 委托）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `RS_FI` 触发后的恢复路径
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md` —— `EDONTREPLY`/`rs_asynsend`/分发表
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` —— `lookup_slot_by_label`、`RProcTable`、`UpdateChain` 数据形状
+- `rewrite-notes/03-stage-rs/04-rs-access-control.md` —— `check_call_permission`（`rp=NULL` 时仅 root）
+- `rewrite-notes/03-stage-rs/08-rs-slot-config.md` —— `copy_label`
+- `rewrite-notes/03-stage-rs/13-rs-control-requests.md` —— 控制面（`mark_late_reply` 原语同源）
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— `start_update_prepare`/`abort_update_proc`/rpupd 链（`UPD_*` 委托）
+- `rewrite-notes/03-stage-rs/15-rs-terminate-restart.md` —— `RS_FI` 触发后的恢复路径
+- `rewrite-notes/03-stage-rs/06-rs-main-loop.md` —— `EDONTREPLY`/`rs_asynsend`/分发表
 - `minix3/minix/servers/rs/request.c:do_getsysinfo`、`utility.c:69-80,142-222,485-546` —— ground truth
 - `minix3/minix/include/minix/sysinfo.h:SI_PROC_TAB,15-16` —— `SI_*` 常量
 - `minix3/minix/include/minix/com.h:RS_SYSCTL_SRV_STATUS,597,607` —— `RS_SYSCTL_*`/`RS_FI_CRASH`/`COMMON_REQ_FI_CTL`

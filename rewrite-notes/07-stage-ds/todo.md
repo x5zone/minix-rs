@@ -125,7 +125,7 @@
 
 **问题**：plan.md 三处与 2026-09-14 实况脱节（Step 0.7 staleness 复核结论）：(1) A-1「minix-types 尚无 DsReq/DsReply 类型，需新增」（plan.md:88、:175）**已解决**——MessDsReq/MessDsReply 在 minix-types/src/ipc/message.rs:1448/:1481（repr(C) + 56 字节布局断言 message.rs:3746），常量与 DsFlags 也在（com.rs:118-133、:191-232）；真正的余部是 SI_DATA_STORE 与 NOTIFY_MESSAGE 两个常量（已增补进 edge E-MINTYPES-SYS）。(2) A-8「当前 minix-sys 是 stub，sendrec/notify 为 todo!()」（plan.md:182）半过时——minix-sys 现有 13 模块 6284 行、零 todo!()，真实缺口是**没有 ds.rs**（E-DSWIRE）。(3) §3.5 测试基线「当前为 stub（lib.rs: pub fn init() {}……无任何测试）」（plan.md:165，另 :6 与 :332 的「当前为 stub」字样）已失真——实际 18 文件 3572 行、89 声明测试（81 在跑，差额即 P1-1）。
 **建议**：一次批次更新 plan.md §2 表 02/12 行、§4 的 A-1/A-8 行、§3.5、§8 参见——A-1 改「已解决（message.rs:1448/:1481）+ 余部 SI_DATA_STORE/NOTIFY_MESSAGE 挂 E-MINTYPES-SYS」，A-8 改「minix-sys 非 stub；缺 ds.rs 客户端模块 → E-DSWIRE」，§3.5 改现状基线；06-ds-boot-mapping.md 之外各篇提及 A-1 的同步（grep "A-1" 命中 11 篇 :69 的「A-1 余部」表述随 E-MINTYPES-SYS 落地时更新）。
-**验证**：`rg -n "当前为 stub|尚无 DsReq|是 stub" notes/rewrite/fork-syscall-rewrite/07-stage-ds/plan.md` 修后零命中。
+**验证**：`rg -n "当前为 stub|尚无 DsReq|是 stub" rewrite-notes/07-stage-ds/plan.md` 修后零命中。
 
 ### P2-2 A-3 堆策略决策（与 P1-4(c) 同轮定案）
 
@@ -149,7 +149,7 @@
 
 **问题**：C 的 do_delete 对 label 级联受害条目只做 `update_subscribers + flags = 0`（store.c:624-631），**不 free 其 STR/MEM 堆体**——C 源码 bug（内存泄漏）；受害者本体走 :635 的 free。Rust 的 apply_delete 对级联受害者同样交还堆描述符（delete.rs:174-183 take_heap_buffer），是超集修复。按模式 78（MINIX3 BUG 未标注），这个「比 C 严/比 C 对」必须在两处留字据，否则覆盖率对账时会误判 Rust 多做了事。
 **建议**：delete.rs 级联分支补一行 MINIX3 BUG 注释（引 store.c:624-631 泄漏点）+ 09 篇 §3 对应行补标注。
-**验证**：`rg -n "MINIX3 BUG" os/servers/ds/src/delete.rs notes/rewrite/fork-syscall-rewrite/07-stage-ds/09-ds-delete.md` 命中。
+**验证**：`rg -n "MINIX3 BUG" os/servers/ds/src/delete.rs rewrite-notes/07-stage-ds/09-ds-delete.md` 命中。
 
 ### P3-3 boot.rs 的「§4.3」引用漂移
 
@@ -326,7 +326,7 @@ bin/lib 双目标 + 判定层 16 模块的形状健康，单线程事件循环�
 
 ### ✅ Fix #6: P2-1 + P3-3 — plan.md staleness 入档批 + boot.rs 引用漂移（2026-09-15）
 
-- **File**: `notes/rewrite/fork-syscall-rewrite/07-stage-ds/plan.md`（§对照、§3.5、§4 A-1/A-2/A-4/A-5/A-8/A-10 六行、§8）+ `os/servers/ds/src/boot.rs:91`
+- **File**: `rewrite-notes/07-stage-ds/plan.md`（§对照、§3.5、§4 A-1/A-2/A-4/A-5/A-8/A-10 六行、§8）+ `os/servers/ds/src/boot.rs:91`
 - **Before/After**：
   - §3.5 基线「当前为 stub……无任何测试」→ 2026-09-15 复测口径（18 文件 / 99 passed / clippy 0 / fmt 0，权威指针指 todo §0）；
   - A-1 → **已解决**（message.rs 镜像 + com.rs 常量；余部 SI_DATA_STORE/NOTIFY_MESSAGE 挂 E-MINTYPES-SYS）；A-2 → **已解决**（方案 b：`pattern.rs::EreMatcher`，[ARCH] 三处）；A-4/A-5 → **已解决**（Option 表 + newtype 槽 / Bitmap 复用）；A-8 → 描述修正（minix-sys 非 stub、缺 ds.rs、死依赖）+ 归属改 **edge E-DSWIRE**；A-10 → **已解决（兼容案）**；§对照与 §8 的「当前 stub」字样清除；

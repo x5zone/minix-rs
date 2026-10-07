@@ -2,7 +2,7 @@
 
 //! Shell command language core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/05-shell-family.md`:
+//! Covers `rewrite-notes/18-stage-commands/05-shell-family.md`:
 //! the Almquist shell command language (`minix3/bin/sh/`: grammar in
 //! `parser.c`, evaluation in `eval.c`, expansion in `expand.c`, redirection
 //! in `redir.c`, job control in `jobs.c`, startup in `main.c`), the startup

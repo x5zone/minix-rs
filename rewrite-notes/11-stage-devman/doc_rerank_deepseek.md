@@ -2,7 +2,7 @@
 
 ## 0. 元数据
 
-- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/11-stage-devman/`
+- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/11-stage-devman/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`；当前提交号：`6965e6885`（工作树有未提交修改，数据以工作树实测为准）
 - 交付物：本文件。除本文件外不修改、不重命名、不移动、不删除任何文件；未提交任何变更。
 - 本轮修订（2026-09-19）：补 §8 两张迁移表、§5 十五篇契约知识点清单、§7 逐项展开；订正 §2.4 统计摘要与 §9.3 契约计数。
@@ -721,7 +721,7 @@ $ git log --oneline -1 → 6965e6885
 
 不新建篇章。缺口落位一句话版：G-01 测试基线→各篇+99；G-02 共享 crate→02/99；G-03 退役残渣→七篇+99；G-04 占位锚→全篇；G-05 C 锚→各篇；G-06 panic 计数→10；G-07 OQ-3→13；G-08 编号→03；G-09 矛盾→各篇；G-10 ARCH 状态→99。
 
-下面把每一项展开：为什么重要、原料在哪里、归哪一篇、验收标准。7.2 再补 §3.6 那十个非 C 主题的落位，它们不算缺口，但同样是重建时不能漏的题目。本节不留悬空项，每一条都给出归属篇与可执行的验收命令。表中命令的工作目录是仓库根 `/home/xzhao/github/minix-rs`，文档类命令追加 `notes/rewrite/fork-syscall-rewrite/11-stage-devman/` 前缀。
+下面把每一项展开：为什么重要、原料在哪里、归哪一篇、验收标准。7.2 再补 §3.6 那十个非 C 主题的落位，它们不算缺口，但同样是重建时不能漏的题目。本节不留悬空项，每一条都给出归属篇与可执行的验收命令。表中命令的工作目录是仓库根 `/home/xzhao/github/minix-rs`，文档类命令追加 `rewrite-notes/11-stage-devman/` 前缀。
 
 ### 7.1 覆盖缺口逐项展开（G-01…G-10）
 
@@ -734,7 +734,7 @@ $ git log --oneline -1 → 6965e6885
 | G-05 | C 锚点行号漂移（四个 C 文件） | 行号是这套文档给读者的主要可核查线索，漂移的行号会让读者按错误位置去读 C 源码，进而怀疑整篇结论。 | 文档侧 C 锚引用实测 59 处：03 篇 11、07 篇 10、05 篇 8、04 篇 7、08 篇 6、06 篇 5、10 篇 5、11 篇 4、00/01/02 各 1。修订目标值见 §8.4 清单：`device.c` 事件生产者 91/124、`char buf[12]` 78/111、`default_file_stat` 26-32、`DEVMAN_DEVICE_ID` 270、`do_del_device` 485-520、`BOUND→ZOMBIE` 446-448；`generic.c` serializer 70-73/74-77/84-91/85；`devmand/main.c` 匹配 250-251/254-255、`read_hex_uint` 565-587、缺文件 579、`path[0]=0` 810、`#if 0` 853-870、major 函数 592-606/611-627、轮询 memset 888、guard 890-894、RS 侧 printf 901/909；`usb.c` 回调 200-206/208-214、ADD 失败 234-236/265-267、接口 parent 251、属性函数 23-39。 | 各篇（§6 OP-05） | 每处行号引用都重新打开对应 C 文件核对一次（`sed -n '<起>,<止>p' <文件>` 的输出与文档描述一致），核对记录写进各篇 fix-status；本蓝图 §8.4 的目标值已按上表抽验，B 相成稿时逐条复验。 |
 | G-06 | 10 篇 §1 的 panic 计数（5→8） | panic 计数是"客户端库会直接终止进程"这件事的量化证据，数字错了，读者对失效模式严重程度的判断会跟着错。 | `rg -n -e panic -e abort minix3/minix/lib/libdevman/generic.c` 实测 8 行，行号 110、125、129、134、165、169、174、196；旧值写在 `10-libdevman-client.md` §1。 | 10（K-112） | 10 篇给出的处数与实测 8 处一致，且每处附一句触发条件（内存不足、通信失败、回复非法、调用失败、名字服务失败）。 |
 | G-07 | 13 §4 的 OQ-3 行过期 | 文档一边把空白名判定列为未决问题、一边代码已经实现，读者会按"待实现"去设计行为，得到与代码不一致的结论。 | `rg -n 'add_whitespace_name_is_einval' os/servers/devman/src` → `os/servers/devman/src/add_device.rs:314`；`13-devmand-consumer.md:106` 与 `13-devmand-consumer.md:112` 已写"已决"，`13-devmand-consumer.md:124` 仍标"待决"。 | 13（K-147） | 13 §4 的对照表里不再有"待决"字样，已决行附实现符号 `add_whitespace_name_is_einval`，并与 07 篇的空白名判定（K-087）互相引用。 |
-| G-08 | 03 §2.7 编号失序 | 小节编号顺序断裂会让按"见 §2.7"翻页的读者落在错误位置，也破坏"编号即阅读顺序"的约定。 | `rg -n '^### 2\.[0-9]' notes/rewrite/fork-syscall-rewrite/11-stage-devman/03-devm-structs.md` 实测顺序为 2.1（33 行）、2.2（49 行）、2.3（56 行）、2.7（63 行）、2.4（67 行）、2.5（85 行）、2.6（89 行）。 | 03（§6 OP-07） | 重排后同一条命令的行号递增方向与编号递增方向一致；篇内所有"见 §2.x"引用按新编号回填。 |
+| G-08 | 03 §2.7 编号失序 | 小节编号顺序断裂会让按"见 §2.7"翻页的读者落在错误位置，也破坏"编号即阅读顺序"的约定。 | `rg -n '^### 2\.[0-9]' rewrite-notes/11-stage-devman/03-devm-structs.md` 实测顺序为 2.1（33 行）、2.2（49 行）、2.3（56 行）、2.7（63 行）、2.4（67 行）、2.5（85 行）、2.6（89 行）。 | 03（§6 OP-07） | 重排后同一条命令的行号递增方向与编号递增方向一致；篇内所有"见 §2.x"引用按新编号回填。 |
 | G-09 | 07/08/09 正文"(+N 测试)"与 §5 表矛盾 | 同一篇里正文与表格给出不同的测试条数，读者不知道以哪个为准，审阅者也无法据此判断覆盖度。 | 实测 `rg -c '#\[test\]' os/servers/devman/src -g '*.rs'` → add_device 6、del_device 6、bind 4、server 7；文档侧旧值：`07-devm-add-device.md:118`（+5）、`08-devm-del-device.md:110`（+4）、`09-devm-bind-unbind.md:92`（+4，与实测一致）、`09-devm-bind-unbind.md:93`（+6，实测 server 7）。 | 07/08/09（§6 OP-08） | 三篇正文的括号计数与 §5 表、与 `rg -c '#\[test\]'` 实测三处对齐；不一致处按实测改写。 |
 | G-10 | ARCH 状态与跨服务矩阵收口 | 架构演进决策散在 00 与 99 两处互为索引，读者拿不到"这项决策现在处于什么状态"，也无法判断某篇的写法是不是最终口径。 | 00 篇的 A-1…A-10 总表在 `00-devm-overview.md:90-96`；99 篇的索引一行在 `99-devm-global-concepts.md:75-77`；决策明细在 plan §4。 | 99（K-159 与 K-160） | 99 增一张状态表，逐项给出 A-N 的决策、落点篇目与状态（已落、部分、待评估三档）；00 只留索引，不重复明细。 |
 
@@ -884,7 +884,7 @@ $ git log --oneline -1 → 6965e6885
 
 ### 8.2 引用迁移表
 
-表列：旧引用｜新目标｜验证方式。把命令行里的 `<15 篇路径>` 替换成下面列出的 15 个文件后即可直接复制运行（工作目录为仓库根）；`<15 篇路径>` 展开为 `notes/rewrite/fork-syscall-rewrite/11-stage-devman/[01][0-9]-*.md 与 notes/rewrite/fork-syscall-rewrite/11-stage-devman/99-devm-global-concepts.md`（共 15 个文件）。
+表列：旧引用｜新目标｜验证方式。把命令行里的 `<15 篇路径>` 替换成下面列出的 15 个文件后即可直接复制运行（工作目录为仓库根）；`<15 篇路径>` 展开为 `rewrite-notes/11-stage-devman/[01][0-9]-*.md 与 rewrite-notes/11-stage-devman/99-devm-global-concepts.md`（共 15 个文件）。
 
 | 旧引用 | 新目标 | 验证方式 |
 |---|---|---|
@@ -896,7 +896,7 @@ $ git log --oneline -1 → 6965e6885
 | 退役机制标识符（FsHooks、ReadHookFn、FirstGuard、read_fn、cookie、FileEntry），9 篇 40 行 | 逐行判定：历史说明保留，现行时态改写为现状 | `rg -c -e FsHooks -e ReadHookFn -e FirstGuard -e read_fn -e cookie -e FileEntry <15 篇路径>` → 00 篇 3、01 篇 15、02 篇 3、03 篇 3、04 篇 5、06 篇 8、08 篇 1、09 篇 1、99 篇 1 |
 | 测试基线三口径字面量，7 处 | 编号未变，数字改：统一为实测 86 passed | `rg -n -e '77 passed' -e '78 passed' -e '79 passed' <15 篇路径>` → 12 篇 141 行、99 篇 81 行、01 篇 390 行、05 篇 180 行、07 篇 154 行、08 篇 150 行、09 篇 129 行；`cd os` 后 `cargo test -p minix-devman` → 86 passed |
 | 四个 C 文件的锚点引用（device.c、generic.c、usb.c、devmand/main.c），合计 59 处 | 编号未变（C 文件不受本文档重建影响）；行号按 §8.4 修正 | `rg --count-matches -e 'device\.c:[0-9]+' -e 'generic\.c:[0-9]+' -e 'usb\.c:[0-9]+' -e 'devmand/main\.c:[0-9]+' <15 篇路径>` → 合计 59 处（03 篇 11、07 篇 10、05 篇 8、04 篇 7、08 篇 6、06 篇 5、10 篇 5、11 篇 4、00 篇 1、01 篇 1、02 篇 1） |
-| `03-devm-structs.md` 的篇内节号引用（形如"见 §2.7"） | 编号未变，无需硬改；小节归位后按新节号回填 | `rg -n '^### 2\.[0-9]' notes/rewrite/fork-syscall-rewrite/11-stage-devman/03-devm-structs.md` → 7 行，顺序为 2.1、2.2、2.3、2.7、2.4、2.5、2.6（失序证据） |
+| `03-devm-structs.md` 的篇内节号引用（形如"见 §2.7"） | 编号未变，无需硬改；小节归位后按新节号回填 | `rg -n '^### 2\.[0-9]' rewrite-notes/11-stage-devman/03-devm-structs.md` → 7 行，顺序为 2.1、2.2、2.3、2.7、2.4、2.5、2.6（失序证据） |
 
 ### 8.3 断链成本摘要
 

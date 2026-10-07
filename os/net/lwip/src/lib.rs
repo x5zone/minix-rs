@@ -8,7 +8,7 @@
 //! each slice is); the service binary owns message traffic and pool
 //! storage. See documents `03-lwip-main-init.md` and
 //! `04-lwip-mempool.md` in
-//! `notes/rewrite/fork-syscall-rewrite/17-stage-net/`.
+//! `rewrite-notes/17-stage-net/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

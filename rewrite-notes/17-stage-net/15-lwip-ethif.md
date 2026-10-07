@@ -3,7 +3,7 @@
 > **分类**：轻量协议栈服务接口面第 3 篇，覆盖以太网介质上的传输单元、组播上限与发送保留规则
 > **源码**：`minix3/minix/net/lwip/ethif.c`（1718 行）
 > **Rust 模块**：`os/net/lwip/src/ethif.rs`（传输单元判断、组播长度判断、保留数常量）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/13-lwip-ndev.md`（网络设备消费侧）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/14-lwip-ifdev.md`（接口对象模型，操作表顺序）
+> **前置依赖**：`rewrite-notes/17-stage-net/13-lwip-ndev.md`（网络设备消费侧）、`rewrite-notes/17-stage-net/14-lwip-ifdev.md`（接口对象模型，操作表顺序）
 >
 > **本篇不覆盖的内容**：
 > - 接口通用层的注册与轮询（在第 14 篇，本文只说明以太网实例如何填充通用表）
@@ -131,8 +131,8 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/14-lwip-ifdev.md`：接口对象模型，通用表的形状。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/16-lwip-ifaddr.md`：接口地址管理，地址字段的归属。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/14-lwip-ifdev.md`：接口对象模型，通用表的形状。
+- `rewrite-notes/17-stage-net/16-lwip-ifaddr.md`：接口地址管理，地址字段的归属。
 - `os/net/lwip/src/ethif.rs`：传输单元、组播上限与发送保留的实现。
 - `minix3/minix/net/lwip/ethif.c`：以太网实例的原始实现（1718 行）。

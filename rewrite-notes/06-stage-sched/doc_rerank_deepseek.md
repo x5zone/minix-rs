@@ -2,7 +2,7 @@
 
 ## 0. 元数据
 
-- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/06-stage-sched/`
+- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/06-stage-sched/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`；当前提交号：`6965e6885`（工作树有未提交修改，数据以工作树实测为准）
 - 交付物：本文件。除本文件外不修改、不重命名、不移动、不删除任何文件；未提交任何变更。
 - 本轮修订（2026-09-19）：补 §8 锚点迁移表与引用迁移表、§5 十六篇契约知识点清单、§7 逐项展开；订正 §9.3 契约计数。（同日补记：§2.4 统计摘要与 §9.1 覆盖率计数按池表实测值重算，知识点总数由 111 条订正为 109 条。）
@@ -313,7 +313,7 @@ $ git log --oneline -1 → 6965e6885
 
 ### 2.4 统计摘要
 
-- 知识点总数：**109 条**。这个数字就是池表的行数：按篇分布为 00 篇 5 条、01 篇 6 条、02 篇 8 条、03 篇 7 条、04 篇 6 条、05 篇 8 条、06 篇 8 条、07 篇 6 条、08 篇 5 条、09 篇 6 条、10 篇 6 条、11 篇 6 条、12 篇 7 条、13 篇 8 条、14 篇 8 条、99 篇 9 条，合计 109 条；池内 K 编号无重复、无缺号。核验命令（在 `notes/rewrite/fork-syscall-rewrite/` 下执行）：`awk '/^### 2\.2/,/^### 2\.3/' 06-stage-sched/doc_rerank_deepseek.md | grep -c '^| K-'`，实测输出 `109`。上一版本节写"111 条"，与池表实际行数不符，本轮按实测订正。
+- 知识点总数：**109 条**。这个数字就是池表的行数：按篇分布为 00 篇 5 条、01 篇 6 条、02 篇 8 条、03 篇 7 条、04 篇 6 条、05 篇 8 条、06 篇 8 条、07 篇 6 条、08 篇 5 条、09 篇 6 条、10 篇 6 条、11 篇 6 条、12 篇 7 条、13 篇 8 条、14 篇 8 条、99 篇 9 条，合计 109 条；池内 K 编号无重复、无缺号。核验命令（在 `rewrite-notes/` 下执行）：`awk '/^### 2\.2/,/^### 2\.3/' 06-stage-sched/doc_rerank_deepseek.md | grep -c '^| K-'`，实测输出 `109`。上一版本节写"111 条"，与池表实际行数不符，本轮按实测订正。
 - 类型分布（按池表"类型"列逐行统计）：概念 11、机制 31、数据结构 18、接口与协议 10、约束与不变量 16、架构演进 18、工具工程 4、测试性质 1，合计 109。上一版写的"概念 12、机制 38、数据结构 18、接口与协议 15、约束与不变量 14、架构演进 8、工具工程 4、测试性质 1"同样与实测不符，本轮一并订正。
 - 来源分布：存量 103 条（其中 3 条标注"存量（纠错）"：K-034 `time_slice` 单位、K-050 队列范围、K-065 重试终止性），新增 6 条（K-074 stop 偏离、K-136 PM 接线现状、K-146 RS 接线现状、K-156 ARCH 状态、K-157 测试现状、K-158 偏离台账）；存量与新增相加等于总数 109 条。
 - 类型分布与来源分布的核验命令（同一目录下执行，按未转义的竖线切列后统计第 3 列与第 4 列）：
@@ -948,14 +948,14 @@ $ git log --oneline -1 → 6965e6885
 
 ### 8.2 引用迁移表
 
-说明：引用分两类——编号引用（stage 内互引、代码注释、跨 stage 文档）与内容引用（旧文把越界内容写在自己篇里、读者被引去别处）。编号引用因为 §4.0 的"不重编号"裁决一律不需要硬改，表里如实写"编号未变，无需硬改"并给出核验命令；内容引用要改指新主家，验证方式写成"重建后应变成什么样"。所有命令都在 `notes/rewrite/fork-syscall-rewrite/` 下执行，仓库根相关的命令已单独标注。
+说明：引用分两类——编号引用（stage 内互引、代码注释、跨 stage 文档）与内容引用（旧文把越界内容写在自己篇里、读者被引去别处）。编号引用因为 §4.0 的"不重编号"裁决一律不需要硬改，表里如实写"编号未变，无需硬改"并给出核验命令；内容引用要改指新主家，验证方式写成"重建后应变成什么样"。所有命令都在 `rewrite-notes/` 下执行，仓库根相关的命令已单独标注。
 
 | 旧引用 | 新目标 | 验证方式 |
 |--------|--------|----------|
 | Rust 代码注释里的完整路径引用（`os/servers/sched/src/lib.rs:8`、`os/servers/sched/src/main.rs:4`、`os/servers/rs/src/boot.rs:123`） | 编号未变，无需硬改 | 在仓库根执行 `rg -n '06-stage-sched' os/`，实测 3 处命中，重建后应命中同一批文件 |
 | Rust 代码注释里的裸文件名引用（`os/servers/sched/src/` 下 12 处，如 `dispatch.rs:5` → `02-sched-message-surface.md`、`priority.rs:7` → `05-priority-timeslice-model.md`、`scheduling/start.rs:5` → `06-start-scheduling.md`） | 编号未变，无需硬改 | 在仓库根执行 `rg -n '0[0-9]-(sched\|priority\|start\|stop\|noquantum\|schedule\|pick\|balance)-[a-z-]+\.md' os/servers/sched/src/`，实测 12 处命中 |
 | Rust 代码行内归属注释（`os/servers/sched/src/main.rs:44,52` 的 `owned by …`） | 编号未变，无需硬改 | 在仓库根执行 `rg -n 'owned by' os/servers/sched/src/`，实测 2 处命中 |
-| stage 内互引（旧文的"前置阅读／阶段文档／阅读顺序提示"块，涉及 15 篇共 87 处） | 编号未变，无需硬改 | 在 `notes/rewrite/fork-syscall-rewrite/` 下执行 `rg -c '0[0-9]-(sched\|priority\|start\|stop\|noquantum\|schedule\|pick\|balance)' 06-stage-sched/[0-9]*.md`，实测 15 篇共 87 处 |
+| stage 内互引（旧文的"前置阅读／阶段文档／阅读顺序提示"块，涉及 15 篇共 87 处） | 编号未变，无需硬改 | 在 `rewrite-notes/` 下执行 `rg -c '0[0-9]-(sched\|priority\|start\|stop\|noquantum\|schedule\|pick\|balance)' 06-stage-sched/[0-9]*.md`，实测 15 篇共 87 处 |
 | 跨 stage 引用（`00-master-plan/README.md`、`edge1.md`／`edge3.md`／`edge_todo.md`、`03-stage-rs` 与 `04-stage-pm` 的文档、`06-stage-sched/todo.md` 与 `plan.md` 等） | 编号未变，无需硬改；只有测试口径随 OP-06 同步 | 在同一目录下执行 `rg -l '06-stage-sched' ../.. --glob '!doc_rerank_*'`，实测 13 个文件命中 |
 | 05 §2.5 引的内核 `sched_proc` 校验细节 | 09 §3 闸门分工与 12 §2 分工声明；05 只留 `niced` 的含义 | `rg -c 'system\.c' 06-stage-sched/05-priority-timeslice-model.md`，实测当前 7 处展开，重建后应只剩"归谁管"的引用句 |
 | 06 §2.7 引的 `pick_cpu` 规则 | 10 §1 三条规则；06 只留调用点 | `rg -c 'pick_cpu' 06-stage-sched/06-start-scheduling.md`，实测当前 5 处，重建后应降为调用点级 |

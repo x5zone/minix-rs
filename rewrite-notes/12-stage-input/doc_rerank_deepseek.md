@@ -2,7 +2,7 @@
 
 ## 0. 元数据
 
-- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/12-stage-input/`
+- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/12-stage-input/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`；当前提交号：`6965e6885`（工作树有未提交修改，数据以工作树实测为准）
 - 交付物：本文件。除本文件外不修改、不重命名、不移动、不删除任何文件；未提交任何变更。
 - 本轮修订（2026-09-19）：补 §8 两张迁移表、§5 十六篇契约知识点清单、§7 逐项展开。
@@ -44,7 +44,7 @@ $ git log --oneline -1 → 6965e6885
 python3 - <<'EOF'
 import re
 from collections import Counter
-lines = open('notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md', encoding='utf-8').read().split('\n')
+lines = open('rewrite-notes/12-stage-input/doc_rerank_deepseek.md', encoding='utf-8').read().split('\n')
 def find(p):
     return next(i for i, l in enumerate(lines) if re.match(p, l))
 s2, s3 = find(r'^## 2\.'), find(r'^## 3\.')
@@ -309,7 +309,7 @@ EOF
 
 ### 2.4 统计摘要
 
-- 重算命令：`awk '/^## 2\./,/^## 3\./' notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md | grep -c '^| K-'` 输出 101（必须先切 §2 区段：十六篇的 §5 清单同样有以 `| K-` 起头的行，全文件直数会得到 202）；类型分布与存量、新增条数用脚本按「类型」列与「来源」列切列计数，脚本见 §0.4。
+- 重算命令：`awk '/^## 2\./,/^## 3\./' rewrite-notes/12-stage-input/doc_rerank_deepseek.md | grep -c '^| K-'` 输出 101（必须先切 §2 区段：十六篇的 §5 清单同样有以 `| K-` 起头的行，全文件直数会得到 202）；类型分布与存量、新增条数用脚本按「类型」列与「来源」列切列计数，脚本见 §0.4。
 - 知识点总数：**101 条**（唯一编号 101 个，无重复编号）。
 - 类型分布：机制 39、架构演进 14、协议 10、数据结构 9、设计 9、概念 3、工具工程 3、接口与协议 3、边界 3、约束与不变量 2、接口 2、测试性质 2、入口 1、陷阱 1。合计 101。
 - 来源分布：存量 94 条（其中「存量（纠错）」3 条，即 K-006/K-094/K-150）、新增 7 条（其中「新增（纠错）」5 条）。
@@ -767,7 +767,7 @@ EOF
 - 为什么重要：虚构符号属 P0-fact；读者按名字检索只能得到空结果，进而怀疑整篇的可信度。
 - 原料：`os/libs/minix-chardriver/src/driver.rs` 与 `protocol.rs` 的实际符号集（例如 `protocol.rs:257` 的 `CDEV_REPLY_BASE` 断言）；`rg -n 'may_park' os/` 实测零命中。
 - 归哪一篇：02。
-- 验收标准：02 内每个 Rust 符号名都能在 `os/libs/minix-chardriver/src/` 或 `os/servers/input/src/` 中检索到；`rg -n 'may_park' os/ notes/rewrite/fork-syscall-rewrite/12-stage-input/` 无输出。
+- 验收标准：02 内每个 Rust 符号名都能在 `os/libs/minix-chardriver/src/` 或 `os/servers/input/src/` 中检索到；`rg -n 'may_park' os/ rewrite-notes/12-stage-input/` 无输出。
 
 **7.4 G-04 三常量复述不实**
 - 主题：04 §2.6 与 §4.5 讲 `INPUT_DEV_KBD`、`INPUT_DEV_MOUSE`、`INVALID_INPUT_ID` 时指错了文件。
@@ -802,14 +802,14 @@ EOF
 - 为什么重要：正式文档引用隐藏中间产物属 P0-process；这类目录不入版本控制，读者打开文档时拿不到依据。
 - 原料：改指正式锚——`minix3/minix/servers/input/input.c:107-125`（关闭路径的 C 事实）与 `os/servers/input/src/handlers.rs`（close-cleanup 的 Rust 符号）。
 - 归哪一篇：06。
-- 验收标准：`rg -n '\.design/' notes/rewrite/fork-syscall-rewrite/12-stage-input/*.md`（排除本蓝图自身）无输出。
+- 验收标准：`rg -n '\.design/' rewrite-notes/12-stage-input/*.md`（排除本蓝图自身）无输出。
 
 **7.9 G-09 review 中间产物引用（scan/Gate B）**
 - 主题：07 §3.3、08 §3.4、10 §4.1 引用 scan 与 Gate B 等 review 中间产物。
 - 为什么重要：review 产物按工具与会话隔离存放，跨会话不可寻址，引用即断链；同时违反锚点纪律。
 - 原料：改指实测符号——`os/servers/input/src/handlers.rs`、`eventbuf.rs`、`setleds.rs` 三文件内的实际符号。
 - 归哪一篇：07、08、10 三篇。
-- 验收标准：`rg -n 'Gate B|scan\.md' notes/rewrite/fork-syscall-rewrite/12-stage-input/*.md`（排除本蓝图自身）无输出。
+- 验收标准：`rg -n 'Gate B|scan\.md' rewrite-notes/12-stage-input/*.md`（排除本蓝图自身）无输出。
 
 **7.10 G-10 serve.rs 零提及**
 - 主题：十六篇没有一篇提到 `os/servers/input/src/serve.rs`（实测 329 行、两个测试）。
@@ -1016,21 +1016,21 @@ EOF
 
 | 旧引用 | 新目标 | 验证方式 |
 |---|---|---|
-| 十六篇之间的篇号互引（00 指向 09、13 指向 10 等） | 编号未变，无需硬改 | `rg -c '^### [0-9]{2}-' notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md` 输出 16；`rg -o '^### [0-9]{2}' <同文件> \| sort \| tr '\n' ' '` 输出篇号序列 00 到 14 加 99；`ls notes/rewrite/fork-syscall-rewrite/12-stage-input/[0-9][0-9]-*.md \| wc -l` 输出 16 |
-| 篇内知识点编号引用（§2 池编号到 §5 清单编号） | 编号未变，无需硬改 | `rg -o 'K-[0-9]{3}' notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md \| sort -u \| wc -l` 输出 101，与 `awk '/^## 2\./,/^## 3\./' <同文件> \| grep -c '^\| K-'` 的 101 相等；双向差集校验脚本见 8.3 末尾 |
-| 「工具生成」占位锚（01/03/05/06/07/08/09/10/11/12/14 共十一篇） | 实测 C 区间与 Rust 符号 | `rg -n '工具生成' notes/rewrite/fork-syscall-rewrite/12-stage-input/[0-9][0-9]-*.md` 重建后无输出；每个 Rust 符号用 `rg -n '<符号>' os/servers/input/src/` 复核 |
+| 十六篇之间的篇号互引（00 指向 09、13 指向 10 等） | 编号未变，无需硬改 | `rg -c '^### [0-9]{2}-' rewrite-notes/12-stage-input/doc_rerank_deepseek.md` 输出 16；`rg -o '^### [0-9]{2}' <同文件> \| sort \| tr '\n' ' '` 输出篇号序列 00 到 14 加 99；`ls rewrite-notes/12-stage-input/[0-9][0-9]-*.md \| wc -l` 输出 16 |
+| 篇内知识点编号引用（§2 池编号到 §5 清单编号） | 编号未变，无需硬改 | `rg -o 'K-[0-9]{3}' rewrite-notes/12-stage-input/doc_rerank_deepseek.md \| sort -u \| wc -l` 输出 101，与 `awk '/^## 2\./,/^## 3\./' <同文件> \| grep -c '^\| K-'` 的 101 相等；双向差集校验脚本见 8.3 末尾 |
+| 「工具生成」占位锚（01/03/05/06/07/08/09/10/11/12/14 共十一篇） | 实测 C 区间与 Rust 符号 | `rg -n '工具生成' rewrite-notes/12-stage-input/[0-9][0-9]-*.md` 重建后无输出；每个 Rust 符号用 `rg -n '<符号>' os/servers/input/src/` 复核 |
 | `input.c` 启动三段行号（init / startup / main） | `input.c:646-680`、`input.c:685-691`、`input.c:696-704` | `sed -n '646p;685p;696p' minix3/minix/servers/input/input.c` 分别输出 `static int`、`static void`、`int`，其下一行即函数名 |
 | `input.c` 的 `input_other` 区间 | `input.c:608-641` | `grep -n 'input_other' minix3/minix/servers/input/input.c` 定位函数起始行，与文档区间首行一致 |
 | `ipc.h` 的载荷区间 | 配置载荷 `ipc.h:232-259`；事件载荷 `ipc.h:990-1001`（结构体自 992 行起） | `sed -n '992p' minix3/minix/include/minix/ipc.h` 输出 `typedef struct {` |
 | `framework.rs` 的指向 | `os/libs/minix-chardriver/src/driver.rs` 与 `protocol.rs` | `ls os/servers/input/src/` 应为十三文件且无 framework.rs；`ls os/libs/minix-chardriver/src/` 应含 driver.rs 与 protocol.rs |
-| `may_park` 等虚构符号 | 按实测符号重写（`driver.rs` 与 `protocol.rs` 内的真实名字） | `rg -n 'may_park' os/ notes/rewrite/fork-syscall-rewrite/12-stage-input/` 无输出 |
+| `may_park` 等虚构符号 | 按实测符号重写（`driver.rs` 与 `protocol.rs` 内的真实名字） | `rg -n 'may_park' os/ rewrite-notes/12-stage-input/` 无输出 |
 | 各篇 §5 的 86/98 双值 | 逐模块实测（合计 91） | `grep -c '#\[test\]' os/servers/input/src/*.rs` 与各篇 §5 逐模块对照 |
-| 06 §3.2 的 `.design/` 引用 | 删除，改指 `input.c:107-125` 与 `os/servers/input/src/handlers.rs` | `rg -n '\.design/' notes/rewrite/fork-syscall-rewrite/12-stage-input/[0-9][0-9]-*.md` 无输出 |
-| 07 §3.3、08 §3.4、10 §4.1 的 scan/Gate B 引用 | 删除，改指实测符号 | `rg -n 'Gate B\|scan\.md' notes/rewrite/fork-syscall-rewrite/12-stage-input/[0-9][0-9]-*.md` 无输出 |
+| 06 §3.2 的 `.design/` 引用 | 删除，改指 `input.c:107-125` 与 `os/servers/input/src/handlers.rs` | `rg -n '\.design/' rewrite-notes/12-stage-input/[0-9][0-9]-*.md` 无输出 |
+| 07 §3.3、08 §3.4、10 §4.1 的 scan/Gate B 引用 | 删除，改指实测符号 | `rg -n 'Gate B\|scan\.md' rewrite-notes/12-stage-input/[0-9][0-9]-*.md` 无输出 |
 | 99 §2 末注的 CDEV_REPLY_BASE 错值警告 | 撤单，只留"已修 0x480"一行 | `sed -n '25p' os/libs/minix-types/src/types/device.rs` 输出 0x480；`sed -n '257p' os/libs/minix-chardriver/src/protocol.rs` 输出断言行 |
 | 04 §2.6/§4.5 对三常量定义处的指向 | `os/libs/minix-types/src/ipc/input.rs:164-175` | `rg -n 'INPUT_DEV_KBD\|INPUT_DEV_MOUSE\|INVALID_INPUT_ID' os/libs/minix-types/src/ipc/input.rs` 命中三条定义 |
 | 00 头部的源码规模数字（旧文 759 行） | 749 行（`input.c` 704 行加 `input.h` 45 行） | `wc -l minix3/minix/servers/input/input.c minix3/minix/servers/input/input.h` 输出 704 与 45 |
-| 计划侧旧状态（plan.md 与 todo.md 的阶段口径） | 由 B 相重建时同步为新现状 | B 相完成后 `rg -n 'framework\.rs\|86\|98' notes/rewrite/fork-syscall-rewrite/12-stage-input/plan.md notes/rewrite/fork-syscall-rewrite/12-stage-input/todo.md` 的命中项逐条对照 §6 变更表 |
+| 计划侧旧状态（plan.md 与 todo.md 的阶段口径） | 由 B 相重建时同步为新现状 | B 相完成后 `rg -n 'framework\.rs\|86\|98' rewrite-notes/12-stage-input/plan.md rewrite-notes/12-stage-input/todo.md` 的命中项逐条对照 §6 变更表 |
 
 ### 8.3 断链成本摘要
 
@@ -1045,7 +1045,7 @@ EOF
 ```bash
 python3 - <<'EOF'
 import re
-lines = open('notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md', encoding='utf-8').read().split('\n')
+lines = open('rewrite-notes/12-stage-input/doc_rerank_deepseek.md', encoding='utf-8').read().split('\n')
 def find(p):
     return next(i for i, l in enumerate(lines) if re.match(p, l))
 s2, s3, s5, s6 = find(r'^## 2\.'), find(r'^## 3\.'), find(r'^## 5\.'), find(r'^## 6\.')

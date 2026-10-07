@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = glm
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/16-stage-drivers
+target_dir(关注的工作目录) = rewrite-notes/16-stage-drivers
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = d6ecd22cae78345e746c82ad7cbe3c1612c151c2
 
@@ -15,7 +15,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ## 0. 元数据
 
-- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`。
+- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/16-stage-drivers/`。
 - **结论先行**：本 stage 的 26 篇文档（00~25 + 99）全部为成稿——2026-09-05 首批写成，2026-09-17 全量代码扫描后 **G5 把 00/99 展开定稿并补齐快照**，此后 R1 扫描的 P0/P1/P2 正确性条目（F/B/S/V/N 四族）与 G 系查漏 **当日全部闭环**，且每条的文档同步都随代码提交落地（todo 各条"执行记录"均带"doc NN §x 同步"）。A1（`minix-driver-rt` 统一运行时）、A3（三框架状态机收敛 `driver-rt::core`）、A5（virtio 环/CBW-CSC/USB 槽位线格式下沉库内）三个架构决定均已落地。当前实测：**九框架库 141 测试 + 驱动 crate 362 测试 ≈ 503 全绿**，clippy 本体 0 告警。操作集为**"保编号、清 G7 尾差、补 edge 指针与基线口径"**：
   1. **保编号**——编号即"框架→boot 关键→系统服务→输入→存储→USB→显示音频→网络→杂项"九层语义序（plan §1.2），四条硬标准满足（§9 G3/G4）；篇内互引 ≈80 处、外部 10+ 文件 60+ 处（17-net/18-commands/15-fs 的 plan 高频引用），全以现有文件名为锚；
   2. **清尾差**——todo **G7 清单（文档覆盖声明过宽）经逐项核对已大体执行**（doc 11 可见性模型改写、doc 12 E-DMCLIENT 横幅、doc 15 V2 偏差表述、doc 17 MirrorState、doc 24 离线优先、plan fb mmap 勘误回改——本次 grep/sed 全部核实到位），**仅剩零星**：25 篇无状态行、24 篇"十六进制十"等中文数词锚点需复核、07§2.2 的 fbd 行（V6 注记"[待验证]"）需终验；

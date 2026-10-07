@@ -3,7 +3,7 @@
 > **分类**: 阶段 7 — IPC 服务（进程生命周期）
 > **源码**: `minix3/minix/servers/vm/mmap.c`（573 行：`map_perm_check` :284-307 / `do_map_phys` :310-363 / `munmap_vm_lin` :488-510 / `do_munmap` :512-573）+ `region.c`（`map_subfree` :527-565 / `map_free` :568-585 / `map_free_proc` :589-612 / `map_lookup` :616-641 / `map_unmap_region` :1065-1147 / `split_region` :1150-1220 / `map_unmap_range` :1222-1294）+ `mem_directphys.c`（全 79 行：`mem_type_directphys` :28-35 / `phys_pt_flags` :37-43 / `phys_unreference` :45-48 / `phys_pagefault` :50-61 / `phys_writable` :63-67 / `phys_setphys` :69-72 / `phys_copy` :74-78）+ `pb.c`（`pb_unreferenced` :96-134）+ `mem_file.c`（`mappedfile_delete` :280-287）+ `fdref.c`（`fdref_deref` :116-154）+ `main.c`（CALLMAP :538-540/:564）+ `minix3/minix/include/minix/ipc.h`（`mess_lc_vm_shm_unmap` :936-940 / `mess_lsys_vm_map_phys` :1504-1510 / `mess_lsys_vm_unmap_phys` :1522-1526）+ `minix3/minix/include/minix/com.h`（`VM_MUNMAP` :649 / `VMUM_ADDR`/`VMUM_LEN` :650-651 / `VM_MAP_PHYS` :677 / `VM_UNMAP_PHYS` :679 / `VM_SHM_UNMAP` :718）+ `minix3/minix/lib/libc/sys/mmap.c`（`munmap` :76-85）
 > **Rust 模块**: `os/servers/vm/src/munmap.rs`（`MunmapError` :27-38 / `MunmapOutcome` :46-51 / `roundup_page` :98-100 / `handle_munmap` :102-158 / `munmap_vm_lin` :160-171 / `unmap_range` :173-297 / tests :300-818）+ `os/servers/vm/src/map_phys.rs`（`MapPhysError` :32-40 / `handle_map_phys` :48-101 / `map_perm_check` :104-121 / tests :123-180）+ `os/servers/vm/src/region/mod.rs`（`free_region_pages` :23-81）+ `os/servers/vm/src/region/vir_region.rs`（`split` :279-350 / `free_range` :352-368）+ `os/servers/vm/src/memtype.rs`（`DirectPhysical` :339-418）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_munmap` :142-162 / `dispatch_unmap_phys` :164-184 / `dispatch_shm_unmap` :186-204 / `dispatch_map_phys` :433-445 / 主循环分支 :1038/:1043/:1157 / 错误映射 :1243-1253）+ `os/libs/minix-types/src/ipc/vm.rs`（`VmMunmapIn::decode_message` :791-812 / `VmUnmapPhysIn::decode_message` :309-331 / `VmShmUnmapIn::decode_message` :333-351）+ `os/libs/minix-types/src/ipc/message.rs`（`MessLsysVmUnmapPhys` :1744-1762 / `MessLcVmShmUnmap` :1773-1791）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md`（区域结构 + `map_unmap_*` 的底层区域操作）+ `20-vm-mmap.md`（mmap 建立——munmap 的镜像）+ `15-ipc-dispatch.md`（主循环分发与 SUSPEND）+ `12-memtype.md`（directphys 回调族）
+> **前置**: `rewrite-notes/02-stage-vm/13-region-mapping.md`（区域结构 + `map_unmap_*` 的底层区域操作）+ `20-vm-mmap.md`（mmap 建立——munmap 的镜像）+ `15-ipc-dispatch.md`（主循环分发与 SUSPEND）+ `12-memtype.md`（directphys 回调族）
 > **说明**: 本文档管 **映射拆除服务**——VM 如何响应 `VM_MUNMAP`/`VM_UNMAP_PHYS`/`VM_SHM_UNMAP`（`do_munmap` 统一处理）与物理映射 `VM_MAP_PHYS`（`do_map_phys`）：入口解析（target/长度）→ 范围拆除（`map_unmap_range` 四情形 + `map_unmap_region` 三情形）→ 物理页引用解除（`pb_unreferenced`）→ 数据结构回收（`map_free`/fdref）。**不覆盖**：mmap 建立（20）、exit 全区域释放 `map_free_proc`（22）、fdref 表与 VFS 对话（23）、页缓存交互（24）、`do_get_phys`/`do_get_refcount`（26）。
 
 ---
@@ -677,13 +677,13 @@ unmap_range(addr, length):
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md`——区域结构与 `map_unmap_*` 底层操作（四情形的落点）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/20-vm-mmap.md`——mmap 建立（munmap 的镜像，map_phys 移交确认）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`——主循环分发与 `VmReply::Suspend` 语义
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/12-memtype.md`——directphys/shared/mappedfile 回调族（ev_unreference/ev_split/ev_lowshrink）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/11-phys-pagestate.md`——refcount 语义与物理页生命周期
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/22-vm-exit.md`——进程退出全区域释放（`map_free_proc`）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/23-vfs-interaction.md`——fdref 表与 VFS 异步对话（PendingFdClose 归属）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/24-page-cache.md`——页缓存（cache 区域拆除交互）
+- `rewrite-notes/02-stage-vm/13-region-mapping.md`——区域结构与 `map_unmap_*` 底层操作（四情形的落点）
+- `rewrite-notes/02-stage-vm/20-vm-mmap.md`——mmap 建立（munmap 的镜像，map_phys 移交确认）
+- `rewrite-notes/02-stage-vm/15-ipc-dispatch.md`——主循环分发与 `VmReply::Suspend` 语义
+- `rewrite-notes/02-stage-vm/12-memtype.md`——directphys/shared/mappedfile 回调族（ev_unreference/ev_split/ev_lowshrink）
+- `rewrite-notes/02-stage-vm/11-phys-pagestate.md`——refcount 语义与物理页生命周期
+- `rewrite-notes/02-stage-vm/22-vm-exit.md`——进程退出全区域释放（`map_free_proc`）
+- `rewrite-notes/02-stage-vm/23-vfs-interaction.md`——fdref 表与 VFS 异步对话（PendingFdClose 归属）
+- `rewrite-notes/02-stage-vm/24-page-cache.md`——页缓存（cache 区域拆除交互）
 - `os/servers/vm/src/munmap.rs`、`os/servers/vm/src/map_phys.rs`——Rust 实现
 - `minix3/minix/servers/vm/mmap.c`、`region.c`、`mem_directphys.c`——C 真相源

@@ -3,7 +3,7 @@
 > **分类**: 全局基建（内核启动阶段 D）
 > **源码**: `minix3/minix/kernel/arch/i386/protect.c` · `minix3/minix/kernel/arch/i386/pg_utils.c` · `minix3/minix/kernel/arch/i386/memory.c`
 > **说明**: 内核如何获得"看"别的进程地址空间的能力——Minix3 用 32 位临时窗口（freepdes/ptproc），minix-rs 用 64 位 direct_map 重新表达。
-> **Redesign 依据**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md` §3.2（direct_map 设计）、`02-stage-vm/08-pagetable-ops.md` §3.4（map_kernel 职责简化）
+> **Redesign 依据**: `rewrite-notes/02-stage-vm/07-pagetable-struct.md` §3.2（direct_map 设计）、`02-stage-vm/08-pagetable-ops.md` §3.4（map_kernel 职责简化）
 
 ---
 

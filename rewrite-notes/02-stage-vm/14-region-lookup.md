@@ -3,7 +3,7 @@
 > **分类**: 阶段 5 — 地址空间数据结构（索引面）
 > **源码**: `minix3/minix/servers/vm/cavl_if.h`（接口：`avl_search_type` :25-33 / `region_avl` :67-73 / `region_iter` :158-175 / `AVL_IMPL_*` :194-211）+ `minix3/minix/servers/vm/cavl_impl.h`（1208 行实现：`init` :178 / `balance` :195 / `insert` :321 / `search` :456 / `remove` :545 / `start_iter` :979 / `incr_iter` :1100）+ `minix3/minix/servers/vm/regionavl_defs.h`（宏实例化）+ `minix3/minix/servers/vm/regionavl.c`（编译单元）+ `minix3/minix/servers/vm/unavl.h`（宏清理）+ `minix3/minix/servers/vm/region.c`（`region_find_slot_range` :302 / `region_find_slot` :399）
 > **Rust 模块**: `os/servers/vm/src/region/region_map.rs`（533 行：`SearchType` :19 / `RegionMap` :39 / `search` :77 / `find` :58 / `find_slot` :157 / `insert` :219 / `iter` :246）+ 消费接线 `os/servers/vm/src/vmproc/vmproc_handle.rs`（`regions` :457 / `regions_mut` :469）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md`（区域生命周期 + RegionMap 操作面）
+> **前置**: `rewrite-notes/02-stage-vm/13-region-mapping.md`（区域生命周期 + RegionMap 操作面）
 > **说明**: 区域**索引面**语义模块：**Minix3 的 Walt Karas AVL 宏模板（cavl_if/cavl_impl × regionavl_defs 实例化）→ minix-rs 的 `BTreeMap<VirBytes, VirRegion>` 封装（RegionMap）**——ARCH A-4。13 管"区域生命周期操作"，本文档管"有序索引的查找语义"。**不覆盖**：区域生命周期（13）、查询服务（26）、RS 热更新（25）、mmap/munmap 服务（20/21）。
 
 ---
@@ -515,14 +515,14 @@ $ cargo clippy -p minix-vm --lib → 0 warnings
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md` — 区域生命周期 + RegionMap 操作面（本文件前置）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/16-pagefault.md` — 页错误状态机（消费 find/map_lookup）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md` — CoW 分裂（消费地址解析）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/18-vm-fork.md` — fork（消费 search_least/greatest 等价）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/20-vm-mmap.md` — mmap（消费 find_slot）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/21-vm-munmap.md` — munmap（消费 find_overlap/insert）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/25-rs-services.md` — RS 热更新（接线 region_search 族）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/26-vm-queries.md` — 查询（消费 map_lookup）
+- `rewrite-notes/02-stage-vm/13-region-mapping.md` — 区域生命周期 + RegionMap 操作面（本文件前置）
+- `rewrite-notes/02-stage-vm/16-pagefault.md` — 页错误状态机（消费 find/map_lookup）
+- `rewrite-notes/02-stage-vm/17-cow-mechanism.md` — CoW 分裂（消费地址解析）
+- `rewrite-notes/02-stage-vm/18-vm-fork.md` — fork（消费 search_least/greatest 等价）
+- `rewrite-notes/02-stage-vm/20-vm-mmap.md` — mmap（消费 find_slot）
+- `rewrite-notes/02-stage-vm/21-vm-munmap.md` — munmap（消费 find_overlap/insert）
+- `rewrite-notes/02-stage-vm/25-rs-services.md` — RS 热更新（接线 region_search 族）
+- `rewrite-notes/02-stage-vm/26-vm-queries.md` — 查询（消费 map_lookup）
 - `minix3/minix/servers/vm/cavl_if.h`、`minix3/minix/servers/vm/cavl_impl.h`、`minix3/minix/servers/vm/regionavl_defs.h`、`minix3/minix/servers/vm/unavl.h`、`minix3/minix/servers/vm/regionavl.c` — C AVL 实现
 - `minix3/minix/servers/vm/region.c`（`region_find_slot_range` :302 / `region_find_slot` :399）— 空槽查找
 - `os/servers/vm/src/region/region_map.rs` — Rust 实现

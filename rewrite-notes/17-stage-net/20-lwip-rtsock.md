@@ -3,7 +3,7 @@
 > **分类**：轻量协议栈服务路由面第 2 篇，覆盖路由消息版本检查、发送长度限制、接收区间、地址结构隔离规则
 > **源码**：`minix3/minix/net/lwip/rtsock.c`（1912 行）
 > **Rust 模块**：`os/net/lwip/src/rtsock.rs`（发送边界、接收区间、版本判断）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/19-lwip-route.md`（路由表与覆盖，表的内部语义）
+> **前置依赖**：`rewrite-notes/17-stage-net/19-lwip-route.md`（路由表与覆盖，表的内部语义）
 >
 > **本篇不覆盖的内容**：
 > - 路由表内部的增删改查（在第 19 篇，本文只说明套接字如何把表变化翻译成消息）
@@ -166,8 +166,8 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/19-lwip-route.md`：路由表与覆盖，表的内部语义。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/21-uds-core.md`：用户数据报服务核心，下一阶段入口。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/19-lwip-route.md`：路由表与覆盖，表的内部语义。
+- `rewrite-notes/17-stage-net/21-uds-core.md`：用户数据报服务核心，下一阶段入口。
 - `os/net/lwip/src/rtsock.rs`：发送边界、接收区间与版本判断的实现。
 - `minix3/minix/net/lwip/rtsock.c`：路由套接字的原始实现（1912 行）。

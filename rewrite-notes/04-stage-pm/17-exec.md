@@ -16,7 +16,7 @@
 > - VFS 可执行加载/解释器 `#!` 与 `read_header`（`libexec` 的 `PTRSIZE` 的 `argv/envp` 栈帧构造）—— `05-stage-vfs`（`VFS` 侧 `exec` 的 `read_header` 与 `vm` 的 `mmap`）
 > - VM 内存重映射与 `vm_willexit`（`vm` 的 `mmap` 与 `vm_exit` 族）—— `02-stage-vm/18-vm-fork` 的 `vm_exit` 族
 > - 信号重置的接收方语义（`12` 的 `caught→DFL` 已述，`11` 的 `SIG_IGN` 保留）—— `12-signal-handlers.md`
-> - 内核 `sys_exec` 的 `proc` 表 `p_reg` 重置（`p_reg` 的 `SP/PC` 重置）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/19-syscall-signal` 的 `sys_exec` 与 `19` 的 `m_context`
+> - 内核 `sys_exec` 的 `proc` 表 `p_reg` 重置（`p_reg` 的 `SP/PC` 重置）—— `rewrite-notes/01-stage-kernel/19-syscall-signal` 的 `sys_exec` 与 `19` 的 `m_context`
 >
 > 本章只回答一个问题：**PM 如何为“`execve` 的权限判断在 VFS，凭证与 `TAINTED` 更新在 PM，半初始化态以 `PARTIAL_EXEC` 哨兵区分成功与 `SIGKILL` 自毁，且旧捕获处理器在新镜像中无意义而需重置，且调试器的 `SIGTRAP` 需先于 `sys_exec`”的三段式在 `VFS` 异步中建立 `ExecState::Partial` 哨兵**。
 

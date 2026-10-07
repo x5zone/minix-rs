@@ -7,7 +7,7 @@
 //! - `minix3/minix/include/minix/com.h:597-619` — `PROC_EVENT` 族
 //! - `minix3/minix/include/minix/syslib.h:289-293` — `PROC_EVENT_EXIT/SIGNAL`
 //!
-//! 设计契约见 `notes/rewrite/fork-syscall-rewrite/04-stage-pm/.design/06-design.v1.md`（D1–D8）。
+//! 设计契约见 `rewrite-notes/04-stage-pm/.design/06-design.v1.md`（D1–D8）。
 //!
 //! # 单线程模型
 //!

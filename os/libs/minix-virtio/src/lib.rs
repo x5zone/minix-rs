@@ -5,7 +5,7 @@
 //! arithmetic, the negotiation, and the setup order; the service crates
 //! own ports, memory maps, and interrupts. See document
 //! `14-virtio-framework.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! No threads here: the C indirect-descriptor thread pools are a
 //! performance optimization for multi-threaded drivers, and this

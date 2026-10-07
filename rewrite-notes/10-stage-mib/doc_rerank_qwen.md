@@ -4,7 +4,7 @@
 
 - **执行者**：qwen
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/10-stage-mib/`
+- **目标目录**：`rewrite-notes/10-stage-mib/`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`606e97607`
 - **bagging 隔离声明**：本蓝图独立产出。未读取、未参考 `doc_rerank_deepseek.md`、`doc_rerank_glm.md`（同目录已存在，属其它 AI 产物）；未引用 `.design/` 与 `tmp_design_and_todo/`。所有落盘产物带 `_qwen` 后缀。

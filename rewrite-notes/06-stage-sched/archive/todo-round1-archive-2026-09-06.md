@@ -133,7 +133,7 @@
 **建议**：
 1. **首选**：修正两处表述为「init 的临时值（数字与 CPU）全部被后续步骤覆盖，最终 CPU 一律由 `pick_cpu` 决定（`schedule.c:226`），init 没有任何特例残留」，并顺带补一句多核路径的行为。Ground Truth 链是 C 源 > 文档 > 代码，`schedule.c:226` 的无条件覆盖是原文事实。
 2. **次选**：若想保留「BSP 起步」的叙述（毕竟单核下结果等价），必须显式限定为「单核机器上的巧合等价，多核下 init 与普通进程同样参与负载选择」。
-**验证**：`rg -n "lasting" os/servers/sched/src/scheduling/start.rs`；`rg -n "真正起作用" notes/rewrite/fork-syscall-rewrite/06-stage-sched/06-start-scheduling.md`。
+**验证**：`rg -n "lasting" os/servers/sched/src/scheduling/start.rs`；`rg -n "真正起作用" rewrite-notes/06-stage-sched/06-start-scheduling.md`。
 
 ### P2-2 14 篇（RS 交互）的 Rust 实现归属未声明
 

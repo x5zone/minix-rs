@@ -10,7 +10,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 日期 = 2026-09-19
 ```
 
-**审查范围**：`notes/rewrite/fork-syscall-rewrite/13-stage-ipc/` 编号文档 12 篇（00~10、99）+ `plan.md` + `todo.md` + `README.md` + `draft/`。`doc_rerank_deepseek.md` / `doc_rerank_glm.md` / `archive/` 为其他 AI 产物与历史归档，不读取不引用。
+**审查范围**：`rewrite-notes/13-stage-ipc/` 编号文档 12 篇（00~10、99）+ `plan.md` + `todo.md` + `README.md` + `draft/`。`doc_rerank_deepseek.md` / `doc_rerank_glm.md` / `archive/` 为其他 AI 产物与历史归档，不读取不引用。
 
 **读取清单**：
 - 文档：00~10 + 99 共 12 篇正文（头部声明全读，正文按需精读）

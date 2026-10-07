@@ -3,7 +3,7 @@
 > **分类**：套接字协议族链路层模块，覆盖链路层套接字创建规则、地址尺寸规则、地址解析与链路层路由数据的职责划分
 > **源码**：`minix3/minix/net/lwip/lnksock.c`（77 行）、`minix3/minix/net/lwip/lldata.c`（584 行）、地址布局 `minix3/minix/net/lwip/lwip.h`（第 26 行到第 47 行）
 > **Rust 模块**：`os/net/lwip/src/lnksock.rs`（类型与协议判断、容量判断、地址长度判断）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层，创建语义对照）
+> **前置依赖**：`rewrite-notes/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层，创建语义对照）
 >
 > **本篇不覆盖的内容**：
 > - 以太网接口的具体实现（在第 15 篇，本文只说明链路层套接字为何不需要关心接口实现）
@@ -155,10 +155,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，创建语义对照。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/12-lwip-mcast.md`：组播成员管理，容量思想的对照。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/15-lwip-ethif.md`：以太网接口，链路层的消费方。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，创建语义对照。
+- `rewrite-notes/17-stage-net/12-lwip-mcast.md`：组播成员管理，容量思想的对照。
+- `rewrite-notes/17-stage-net/15-lwip-ethif.md`：以太网接口，链路层的消费方。
 - `os/net/lwip/src/lnksock.rs`：类型、协议、容量与长度判断的实现。
 - `minix3/minix/net/lwip/lnksock.c`：链路层套接字的原始实现（77 行）。
 - `minix3/minix/net/lwip/lldata.c`：链路层路由数据的原始实现（584 行）。

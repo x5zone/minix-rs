@@ -4,7 +4,7 @@
 
 ```text
 your_name(AI agent name) = deepseek
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/03-stage-rs
+target_dir(关注的工作目录) = rewrite-notes/03-stage-rs
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = 7bc7f0c219c4a1bca7845ffe109af0efb680f06c（2026-09-19）
 任务 = R 相·重建蓝图：只产出本文件，不改任何正文。
@@ -1768,7 +1768,7 @@ RS 与普通事件循环服务的关键差别是**它自己也在 boot 链里**�
 ```bash
 # 在仓库根执行；先 dry-run 统计，再正式替换
 # 1) 文件名引用（文档 + Rust 注释）
-rg -l '01-rs-boot-init\.md'   --glob '!notes/rewrite/fork-syscall-rewrite/03-stage-rs/archive/**' | \
+rg -l '01-rs-boot-init\.md'   --glob '!rewrite-notes/03-stage-rs/archive/**' | \
   xargs sed -i 's/01-rs-boot-init\.md/09-rs-boot-init.md/g'
 # ……对 §8.2.1 表内 20 条逐一执行（建议写成映射文件循环）
 # 2) 目录前缀（若引用带路径）

@@ -3,7 +3,7 @@
 > **分类**: 阶段 5 — 终止与恢复（生命周期状态机的终局处理）
 > **源码**: `minix3/minix/servers/rs/manager.c`（`kill_service_debug`—360、`crash_service_debug`—380、`cleanup_service_debug`—405、`detach_service_debug`—497、`reincarnate_service`—1033、`terminate_service`—1055、`run_script`—1185、`restart_service`—1246、`get_service_instances`—1334）、`minix3/minix/servers/rs/proto.h:kill_service`（`_debug` 宏）、`minix3/minix/servers/rs/const.h:MAX_DET_RESTART,50-51`
 > **Rust 模块**: `os/servers/rs/src/recovery.rs`（`TerminateAction`/`TerminateDecision`/`terminate_decision`/`compute_backoff`/`script_reason`/`late_reply_result`/`CleanupDecision`/`cleanup_decision`/`MAX_DET_RESTART`/`BACKOFF_BITS`/`MAX_BACKOFF`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md`（`run_service`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md`（`clone_service`/`update_service`/`swap_slot`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/11-rs-publish.md`（`unpublish_service`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（`late_reply`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`（`end_update`/`abort_update_proc`）
+> **前置**: `rewrite-notes/03-stage-rs/12-rs-init-run.md`（`run_service`）、`rewrite-notes/03-stage-rs/10-rs-service-create.md`（`clone_service`/`update_service`/`swap_slot`）、`rewrite-notes/03-stage-rs/11-rs-publish.md`（`unpublish_service`）、`rewrite-notes/03-stage-rs/06-rs-main-loop.md`（`late_reply`）、`rewrite-notes/03-stage-rs/16-rs-live-update.md`（`end_update`/`abort_update_proc`）
 > **说明**: 本文档是**终止与恢复状态机**：13 的控制请求把服务推入停止路径，07 的心跳超时/SIGKILL 升级也汇聚到这里。`terminate_service`（minix3/minix/servers/rs/manager.c:terminate_service）是 RS 最密集的决策树之一——它决定一个死掉的服务是回滚、清理、刷新、backoff 重试还是直接重启。本文档同时绘制**终止/恢复状态机图**（plan §1.3 次主线的终局段）。
 
 ---
@@ -256,13 +256,13 @@ C 的决策树靠**内联置位 + fall-through**（init 失败分支置 `RS_REFR
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md` —— `stop_service`/`RS_DOWN`/`RS_REFRESH`/`RS_RESTART` 入口
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` —— `r_stop_tm`/SIGKILL 升级、`RS_NOPINGREPLY`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `end_update`/`abort_update_proc`/`SRV_IS_UPD_SCHEDULED`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` —— `clone_service`/`update_service`/`swap_slot`/`clone_slot`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md` —— `run_service`/`start_service`/`SEF_INIT_RESTART`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/11-rs-publish.md` —— `unpublish_service`/`ds_publish_label`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/14-rs-query-requests.md` —— `RS_FI` 故障注入触发源
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/18-rs-self-lifecycle.md` —— RS 自身死亡/rollback 特例
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `ServiceInstances` 迭代器（ARCH A-3）
+- `rewrite-notes/03-stage-rs/13-rs-control-requests.md` —— `stop_service`/`RS_DOWN`/`RS_REFRESH`/`RS_RESTART` 入口
+- `rewrite-notes/03-stage-rs/07-rs-period-heartbeat.md` —— `r_stop_tm`/SIGKILL 升级、`RS_NOPINGREPLY`
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— `end_update`/`abort_update_proc`/`SRV_IS_UPD_SCHEDULED`
+- `rewrite-notes/03-stage-rs/10-rs-service-create.md` —— `clone_service`/`update_service`/`swap_slot`/`clone_slot`
+- `rewrite-notes/03-stage-rs/12-rs-init-run.md` —— `run_service`/`start_service`/`SEF_INIT_RESTART`
+- `rewrite-notes/03-stage-rs/11-rs-publish.md` —— `unpublish_service`/`ds_publish_label`
+- `rewrite-notes/03-stage-rs/14-rs-query-requests.md` —— `RS_FI` 故障注入触发源
+- `rewrite-notes/03-stage-rs/18-rs-self-lifecycle.md` —— RS 自身死亡/rollback 特例
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` —— `ServiceInstances` 迭代器（ARCH A-3）
 - `minix3/minix/servers/rs/manager.c:kill_service_debug,1033-1052,1055-1180,1185-1243,1246-1298,1334-1352`、`proto.h:44-59`、`const.h:25,50-51,114,120` —— ground truth

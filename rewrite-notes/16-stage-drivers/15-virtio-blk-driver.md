@@ -3,7 +3,7 @@
 > **分类**：存储第 2 篇（框架首个完整房客，三段链）
 > **源码**：`minix3/minix/drivers/storage/virtio_blk/virtio_blk.c`（七百五十四行，请求组装、状态翻译、分区几何、控制）、`minix3/minix/drivers/storage/virtio_blk/virtio_blk.h`（请求头与配置结构）
 > **Rust 模块**：`os/drivers/storage/virtio_blk/src/request.rs`（请求规划与状态翻译）、`os/drivers/storage/virtio_blk/src/geometry.rs`（驱动几何与打开计数）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/14-virtio-framework.md`（环契约）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`（块框架，本篇挂靠其传输回调）
+> **前置**：`rewrite-notes/16-stage-drivers/14-virtio-framework.md`（环契约）、`rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`（块框架，本篇挂靠其传输回调）
 > **说明**：虚拟块设备是虚拟队列框架的第一个完整房客：读请求编三段链（头、数据、状态），扇区对齐，状态码翻译，单盘单分区。本篇讲链怎么编：方向定类型，位置定扇区，向量定段数，状态定错码。
 
 > **本篇不讲什么**：
@@ -170,11 +170,11 @@ Minix3 的虚拟块请求就是这三件套。方向定类型（读 `VIRTIO_BLK_
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/14-virtio-framework.md`：虚拟队列框架（环契约）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`：块框架（传输回调挂靠）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/16-ahci-ata-driver.md`：真盘驱动（下一篇）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/14-virtio-framework.md`：虚拟队列框架（环契约）。
+- `rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`：块框架（传输回调挂靠）。
+- `rewrite-notes/16-stage-drivers/16-ahci-ata-driver.md`：真盘驱动（下一篇）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/storage/virtio_blk/src/request.rs`：请求规划与状态翻译的实现。
 - `os/drivers/storage/virtio_blk/src/geometry.rs`：驱动几何与打开计数的实现。
 - `minix3/minix/drivers/storage/virtio_blk/virtio_blk.c`：请求组装的原始实现（七百五十四行）。

@@ -496,7 +496,7 @@ pub fn do_set(table: &mut ProcTable, caller: UserSlot, op: SetOp, copier: &mut d
 
 - C 源（ground truth）：`minix3/minix/servers/pm/getset.c` 全文（`18-89` `do_get` + `95-223` `do_set`）、`minix3/minix/servers/pm/mproc.h:sigaction（L40，工具生成）`（三元组 + `mp_ngroups/sgroups`）+ `minix3/minix/servers/pm/mproc.h:TAINTED`（`TAINTED`）、`minix3/minix/include/minix/com.h:VFS_PM_SETUID`（`VFS_PM_SETUID 1` 等）+ `minix3/minix/include/minix/ipc.h:469`（`mess_lc_pm_*`）、`minix3/sys/sys/limits.h:GID_MAX`（`0xFFFFFFFF`）
 - PM 阶段文档：02-mproc-struct.md（`Credentials` 三元与 `TAINTED`）、05-vfs-interaction.md（`tell_vfs` 的 `NotIdle` 守卫与 `handle_vfs_reply` 的 `Set*` 分支）、04-ipc-dispatch.md（`ReplyIntent::ReplyLater`）、17-exec.md（`setuid` 位染污）、11-signal-core.md（`SUPER_USER` 四重）、16-scheduling.md（`nice` 的 `eff` 判据）
-- 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`sys_datacopy` 的 `vir_bytes` 真实传输，`libsys` 路径）
+- 内核接口：`rewrite-notes/01-stage-kernel/15-clock-timer.md`（`sys_datacopy` 的 `vir_bytes` 真实传输，`libsys` 路径）
 - 阶段内顺序：02/05 → **本章（15）** → 17（`TAINTED` 染污）→ 16（`nice` 的 `SUPER_USER` 同源）→ 15 的 `GETSID` `find_proc` 消费方 `18`（`do_trace` 的 `find_proc` 同 `p?find_proc(p):who_p`）
 - OS 模式参考：Linux `cred` 四元 + `capabilities`（`kernel/cred.c` + `capability.h`）、Redox `Context::uid` 的 `RwLock`（`kernel/context`）、`seL4` `CNode` capability 纯化（见 §1.7）
 - Rust 实现：`os/servers/pm/src/mproc/credentials.rs`（`Credentials::set_*` 三元）、`os/servers/pm/src/credentials.rs`（`GetOp/SetOp` + `do_get/do_set` + `CopyGroups/VfsForwarder`）、`os/libs/minix-types/src/ipc/message.rs`（`MessLcPm*` 联合体）

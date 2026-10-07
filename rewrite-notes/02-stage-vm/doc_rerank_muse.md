@@ -4,7 +4,7 @@
 
 ```text
 your_name(AI agent name) = muse
-target_dir(concerned working directory) = notes/rewrite/fork-syscall-rewrite/02-stage-vm
+target_dir(concerned working directory) = rewrite-notes/02-stage-vm
 repo_root(repository root) = /home/xzhao/github/minix-rs
 
 Task = R-phase reconstruction blueprint: output target_dir/doc_rerank_muse.md, modify no body text.
@@ -34,7 +34,7 @@ ground truth is minix3 C source plus Rust code, not the old prose.
 - Repo HEAD observed: `3a996d170` (`git log --oneline -3`: 3a996d170 docs(edge3);
   9e1bb978b feat(init); 338c7a301 refactor(init)).
 - Deliverable: this file only:
-  `notes/rewrite/fork-syscall-rewrite/02-stage-vm/doc_rerank_muse.md`.
+  `rewrite-notes/02-stage-vm/doc_rerank_muse.md`.
   No body text was modified. No file was renamed, moved, or deleted.
 - Other-AI products (`doc_rerank_deepseek.md`, `doc_rerank_glm.md`,
   `doc_rerank_qwen.md`, `doc_rerank_HY4.md`) were NOT read. Their byte sizes were
@@ -122,7 +122,7 @@ boundary) and `00-master-plan/README.md` (stage partition + boot causal chain).
 ### 0.3 Commands and key outputs (evidence excerpts)
 
 ```text
-$ ls notes/rewrite/fork-syscall-rewrite/02-stage-vm/*.md | xargs wc -l
+$ ls rewrite-notes/02-stage-vm/*.md | xargs wc -l
 -> 28 formal docs, 100-1098 lines each (table in §0.1); 08 longest (1098),
    01 second (830). No doc exceeds the 3000-line soft single-concept ceiling.
 
@@ -173,7 +173,7 @@ $ ls minix3/minix/servers/vm/arch/{earm,i386}/; cat Makefile (VM)
 -> arch/earm/{Makefile.inc,pagetable.h,vm.lds}; arch/i386/{Makefile.inc,
    pagetable.h}; top Makefile exists; no Makefile.inc at top level.
 
-$ rg -c "02-stage-vm|01-vm|15-ipc" notes/rewrite/fork-syscall-rewrite/02-stage-vm/*.md
+$ rg -c "02-stage-vm|01-vm|15-ipc" rewrite-notes/02-stage-vm/*.md
 -> every formal doc carries 2-12 self cross-references; heaviest: 01 (12),
    20 (11), 06 (11), 21 (10), 13/14/15/04 (10 each). Dense mesh: moving one
    doc disturbs ~10 neighbours on average.
@@ -1154,12 +1154,12 @@ Each §3.2 gap lands as follows with原料 (source excerpts) and acceptance:
   start. Hot files by current self-count: 01 (12), 20 (11), 06 (11), 21 (10),
   13/14/15/04 (10 each). Every moved row above generates 2-5 retargets;
   mechanical check: `rg -n "21-vm-munmap|20-vm-mmap|04-acl|15-ipc-dispatch|
-  13-region-mapping|05-physical-memory|01-vm-init-main" notes/rewrite/
+  13-region-mapping|05-physical-memory|01-vm-init-main" rewrite-notes/
   fork-syscall-rewrite/02-stage-vm/*.md` must show zero stale section numbers
   after B-phase.
 - Kernel-side refs: `01-stage-kernel` prose references to VM docs (plan §3.3
   rule: `../01-stage-kernel/NN-*.md` both directions). Check: `rg -n
-  "02-stage-vm" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/*.md` and
+  "02-stage-vm" rewrite-notes/01-stage-kernel/*.md` and
   retarget any moved-section citations (only C-01/C-07..C-09 produce moves).
 - Code-comment refs: `rg -n "02-stage-vm|15-ipc-dispatch|05-physical-memory|
   22-vm-exit|plan\.md|todo\.md" os/servers/vm/src` enumerated the live set

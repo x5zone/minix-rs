@@ -2,7 +2,7 @@
 
 //! Text games core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/24-text-games.md`:
+//! Covers `rewrite-notes/18-stage-commands/24-text-games.md`:
 //! cave adventure (`minix3/games/adventure/hdr.h` with the vocabulary limit
 //! `HTSIZE 512` near line 78, object descriptions near line 101, initial
 //! object placement near line 116; movement in `vocab.c` near line 72),

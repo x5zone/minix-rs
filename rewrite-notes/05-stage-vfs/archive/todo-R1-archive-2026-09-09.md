@@ -258,7 +258,7 @@ C-10 表所列"单线程下有意删除"的 C 函数（进程锁族、check_*_lo
 
 ```
 $ python3 tools/coverage-extract/coverage-extract.py vfs \
-    notes/rewrite/fork-syscall-rewrite/05-stage-vfs \
+    rewrite-notes/05-stage-vfs \
     --rust-dir os --c-dir minix3/minix/servers/vfs \
     --semantic-map tools/coverage-extract/vfs-semantic-map.json \
     --output .review/claude/vfs/scans/SYMBOLS.md

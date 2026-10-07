@@ -6,7 +6,7 @@
 //! crate) and `ptyfs.c` (112 lines, filesystem sidecar). The slave side
 //! reuses the terminal line policy; this crate owns the pair layer. See
 //! document `07-pty-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

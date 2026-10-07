@@ -39,7 +39,7 @@
 //!
 //! # Design rationale in design doc
 //!
-//! See `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md`:
+//! See `rewrite-notes/03-stage-kernel/03-kmain-cstart.md`:
 //! - §3.1 (Two-trait split) — why `ProtectionArch` and `TrapEntryArch` are
 //!   separate traits
 //! - §3.2 (PrivilegeLevel as associated type) — why privilege encoding is

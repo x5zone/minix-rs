@@ -1,7 +1,7 @@
 # 16-stage-drivers 文档重组计划（plan.md）
 
 > **状态**: 生效中（2026-08-16 首版，深度 review + minix3 源码回归 review 后定稿）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`
+> **范围**: `rewrite-notes/16-stage-drivers/`
 > **目标**: 以 **驱动子系统语义为主线**重组 drivers 全部文档；CDEV/BDEV/NDEV/RTCDEV/USB_RQ 请求协议为次主线；最终覆盖 Minix3 驱动子系统全部语义（libchardriver + libblockdriver + libnetdriver + libbdev + libvirtio + libusb + 5 个次要框架库 + 57 个 driver server），支撑 `os/drivers/*`（57 crate）+ `os/libs/minix-{chardriver,blockdriver,netdriver,bdev,virtio,usb}` 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/plan.md` + `14-stage-runtime/plan.md` + `15-stage-fs/plan.md`（plan 结构参照；14/15 为非 server 主线重定义先例）、`minix3/minix/drivers/`（290 个 .c / 155087 行）+ `minix3/minix/lib/lib{chardriver,blockdriver,netdriver,bdev,virtio,usb,audiodriver,i2cdriver,inputdriver,sockdriver,devman}/` + `minix3/minix/include/minix/com.h` + `include/minix/*driver.h` + `driver.h` + `partition.h`（ground truth）、`os/drivers/*`（57 stub crate）+ `os/libs/minix-*`（Rust 实现）
 

@@ -4,7 +4,7 @@
 
 ```text
 your_name(AI agent name) = muse
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/05-stage-vfs/
+target_dir(关注的工作目录) = rewrite-notes/05-stage-vfs/
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 commit = 9ae17ca54 (docs(edge3): S41 follow-up; git log --oneline -1, verified 2026-09-20)
 date = 2026-09-20 (UTC)
@@ -70,11 +70,11 @@ $ grep -cE '^\s*CALL\(' minix3/minix/servers/vfs/table.c → 64
 $ grep -c '#define REQ_' minix3/minix/include/minix/vfsif.h → 33 (incl. dead REQ_GETNODE)
 $ wc -l os/servers/vfs/src/*.rs os/servers/vfs/src/ipc/*.rs | tail -1
 48181 total
-$ grep -rhoE "[0-9]{2}-[a-z0-9-]+\.md" notes/rewrite/fork-syscall-rewrite/05-stage-vfs/*.md | wc -l
+$ grep -rhoE "[0-9]{2}-[a-z0-9-]+\.md" rewrite-notes/05-stage-vfs/*.md | wc -l
 1142  (inter-doc filename references; hotspot table in §8.3)
 $ grep -rn "stage-vfs" os/servers/vfs/src/ | wc -l
 1  (worker.rs:808 only; broad code-comment cross-ref cleanup already landed)
-$ grep -rn "18-syscall-copy" notes/rewrite/fork-syscall-rewrite/05-stage-vfs/*.md | wc -l
+$ grep -rn "18-syscall-copy" rewrite-notes/05-stage-vfs/*.md | wc -l
 35  (stale references to a non-existent doc; triage in §8.4)
 $ git log --oneline -1
 9ae17ca54 docs(edge3): S41 行随动 ——卡N 00/99 骨架清零八篇

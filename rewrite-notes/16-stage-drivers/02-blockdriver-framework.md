@@ -3,7 +3,7 @@
 > **分类**：框架层第 2 篇（磁盘与块设备的主循环、分区与几何）
 > **源码**：`minix3/minix/lib/libblockdriver/driver.c`（四百六十二行，单线程主循环）、`minix3/minix/lib/libblockdriver/driver_mt.c`（五百八十一行，多线程主循环）、`minix3/minix/lib/libblockdriver/driver_st.c`（九十四行，队列式主循环）、`minix3/minix/lib/libblockdriver/drvlib.c`（二百三十四行，分区表解析）、`minix3/minix/lib/libblockdriver/mq.c`（一百零八行，每设备消息队列）、`minix3/minix/lib/libblockdriver/trace.c`（二百八十四行，块级追踪）、`minix3/minix/lib/libblockdriver/liveupdate.c`（九十四行，热升级钩子）、`minix3/minix/include/minix/blockdriver.h`（回调表与扇区常量）、`minix3/minix/include/minix/com.h`（第九百六十三行到第九百八十七行，块请求常量与标志）
 > **Rust 模块**：`os/libs/minix-blockdriver/src/protocol.rs`（请求编号、扇区常量、分区范围、等待队列）、`os/libs/minix-blockdriver/src/driver.rs`（驱动行为定义与路由规则）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架的路由、重启门、故障即停思想，本篇多处复用不再重复证明）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`（主线与阶段划分）
+> **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（字符框架的路由、重启门、故障即停思想，本篇多处复用不再重复证明）、`rewrite-notes/16-stage-drivers/plan.md`（主线与阶段划分）
 > **说明**：块驱动管的是磁盘这类按块读写的设备：硬盘、光盘、内存盘、回环设备。字符驱动一次读写若干字节，位置可以任意；块驱动一次读写若干扇区，位置与长度都要和扇区对齐，还要处理分区表。本篇只讲框架共享的部分：七种块请求、十一个回调、分区解析、几何上报、消息队列、追踪与热升级钩子。具体的存储驱动（内存盘、虚拟块设备、高级主控接口、其他杂项）在第五批第五篇到第十七篇展开，块设备的调用方（客户端库）在下一篇 `04-bdev-client.md` 展开。
 
 > **本篇不讲什么**：
@@ -243,11 +243,11 @@ C 语言四个数据请求 funnel 进一个传输回调，Rust 用一个方法�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：字符驱动框架（路由与重启门同形）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/04-bdev-client.md`：块设备客户端库（本篇的镜像篇）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/15-virtio-blk-driver.md`：虚拟块设备（本框架的消费者之一）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符驱动框架（路由与重启门同形）。
+- `rewrite-notes/16-stage-drivers/04-bdev-client.md`：块设备客户端库（本篇的镜像篇）。
+- `rewrite-notes/16-stage-drivers/15-virtio-blk-driver.md`：虚拟块设备（本框架的消费者之一）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/libs/minix-blockdriver/src/protocol.rs`：请求编号、扇区常量、分区范围、等待队列的实现。
 - `os/libs/minix-blockdriver/src/driver.rs`：驱动行为定义、路由规则、服务器状态机的实现。
 - `minix3/minix/lib/libblockdriver/driver.c`：单线程主循环的原始实现（四百六十二行）。

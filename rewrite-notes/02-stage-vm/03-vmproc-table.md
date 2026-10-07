@@ -3,7 +3,7 @@
 > **分类**: 阶段 1 — 启动入口与进程模型（进程表锚点）
 > **源码**: `minix3/minix/servers/vm/glo.h:VMP_EXECTMP`（表定义）；`minix3/minix/servers/vm/utility.c:vm_isokendpt`（`vm_isokendpt`）、`utility.c:186-219`（`swap_proc_slot`）；`minix3/minix/servers/vm/main.c:main（L131，工具生成）/457-462`（主循环验证 + 表初始化）；`minix3/minix/include/minix/endpoint.h:_ENDPOINT_GENERATION_SHIFT`（endpoint 编码）
 > **Rust 模块**: `os/servers/vm/src/vmproc/table.rs`（进程表 + `swap_slots` 表级交换，V11/T13）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/02-vmproc-struct.md`（PCB 结构与状态机）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/00-vm-overview.md`
+> **前置**: `rewrite-notes/02-stage-vm/02-vmproc-struct.md`（PCB 结构与状态机）、`rewrite-notes/02-stage-vm/01-vm-init-main.md`（`init_vm` 调用点）、`rewrite-notes/02-stage-vm/00-vm-overview.md`
 > **说明**: 进程表 `vmproc[VMP_NR]` 的集合级语义：表如何初始化、slot 如何分配/查找/遍历、`vm_isokendpt` 如何把 endpoint 翻译成槽号、`VMP_EXECTMP` 保留槽的诚实定位。**不覆盖**：`struct vmproc` 的字段细节与 typestate 状态机（02）、ACL（04）、页表（07/08）、fork 全流程（18）、RS Live Update 流程（25）。
 
 ---
@@ -441,4 +441,4 @@ pub(crate) fn vm_isokendpt(&self, endpoint: Endpoint) -> Result<UserSlot, Endpoi
 - `os/servers/vm/src/vmproc/table.rs` — Rust 进程表实现（14 测试）
 - `os/servers/vm/src/vmproc/vmproc_handle.rs:const PAGE_SIZE（L620，工具生成）` — `ActiveProc::swap_proc_slot`（02 文档 §4.3）
 - `os/servers/vm/src/vm_server.rs:fn relocate（L416，工具生成）` — 主循环 caller 验证
-- 素材：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/02-vmproc-table.md`（旧 fork 主线素材：地址稳定性论证/选型对比/测试维度）
+- 素材：`rewrite-notes/02-stage-vm/draft/02-vmproc-table.md`（旧 fork 主线素材：地址稳定性论证/选型对比/测试维度）

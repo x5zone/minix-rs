@@ -1,6 +1,6 @@
 //! PM 主循环三路分发（C: `main.c:84-103`）。
 //!
-//! 文档: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/04-ipc-dispatch.md`。
+//! 文档: `rewrite-notes/04-stage-pm/04-ipc-dispatch.md`。
 //!
 //! # 与 C 的对应
 //!

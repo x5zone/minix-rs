@@ -13,7 +13,7 @@
 3. **共享文件串行化**：以下文件任何线的修改都先在 §2 认领板登记一句话（避免同时编辑冲突）：
    - `os/Cargo.toml`（workspace 成员/依赖表；Cargo.lock 随动，机械冲突自行 rebase）
    - `os/qemu-tests/run_all.sh`（测试矩阵；目录内新增独立测试内核文件不需要登记）
-   - `notes/rewrite/fork-syscall-rewrite/edge_todo.md` 与 `00-master-plan/`
+   - `rewrite-notes/coordination/edge_todo.md` 与 `00-master-plan/`
    - `tools/`（守卫脚本、coverage-extract）
 4. **进度记账**：每条完成后在本线 edgeX.md 状态列标 ✅ + 日期 + commit；解锁了其他线条目的，同时到 §3 状态板把对应行勾掉。**禁止直接回写 edge_todo.md / 各 stage todo.md**——那是当年为避免并发修改冲突才设立的单一入口，现在由 edge4 在里程碑节点（§8）批量收敛回写。
 5. **回归纪律**：每条修完跑 `cargo test -p <触碰 crate>`；每收工跑一次本线所辖 crate 的全量回归；**测试内存铁律：`ulimit -v 3G` + `cargo test -j 1`**（防 WSL 宿主崩溃）。不整仓 `cargo fmt`（工具链漂移会污染 diff），只对新增代码手工保格式。clippy 对账：触碰 crate 的告警数不得高于既有基线。
@@ -64,7 +64,7 @@
 | 日期 | 线 | 文件 | 意图 | 销账 |
 |---|---|---|---|---|
 | 2026-09-18 | edge1 | `os/qemu-tests/run_all.sh` | K12：test-user-trap / test-rt-birth 纳入一键回归（特殊协议脚本区 + user-trap 入构建清单；rt-birth 内核因 `include_bytes!(env!)` 由其脚本自建，不入普通构建清单） | ✅ 同日 |
-| 2026-09-18 | edge1 | `notes/rewrite/fork-syscall-rewrite/00-master-plan/` | K15：15-todo-fixes.md 阶段 2/3 状态对账回写（❌→✅ + 实际落地对账节；阶段 4/5/6 待 edge3 结论传递） | ✅ 同日 |
+| 2026-09-18 | edge1 | `rewrite-notes/00-master-plan/` | K15：15-todo-fixes.md 阶段 2/3 状态对账回写（❌→✅ + 实际落地对账节；阶段 4/5/6 待 edge3 结论传递） | ✅ 同日 |
 | 2026-09-18 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K10：新增 test-smp-ipi-riscv64 carrier | 部分——Cargo.toml 成员已加（carrier 不入 run_all 矩阵：SSIE 回路未绿，见 edge1 K10 🔄 注记；绿后再接 run_all） |
 | 2026-09-18 | edge1 | `tools/` | K16：新增 `tools/review-line-check.sh`（文档行号锚点批量反向核查：行存在性 + 当行内容回显） | ✅ 同日 |
 | 2026-09-18 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K17：test-paging-faultloop（E5(d) 缺页完整回路载体）入 workspace 成员 + x86_64 构建清单 + 特殊协议脚本区（gdbstub 邮箱断言，test-user-trap 同款） | ✅ 同日（真机 PASS 后接线完成并验证） |

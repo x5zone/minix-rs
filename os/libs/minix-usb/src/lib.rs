@@ -7,7 +7,7 @@
 //! bookkeeping half (which request block is in flight); endpoint
 //! traffic stays in the service binary. See document
 //! `18-usb-framework.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 #![no_std]
 
 extern crate alloc;

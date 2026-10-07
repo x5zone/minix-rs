@@ -1,7 +1,7 @@
 # 07-stage-ds 文档重组计划（plan.md）
 
 > **状态**: 定稿（2026-08-16 首版 + 深度 review + minix3 源码回归 review，见 §7）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/07-stage-ds/`
+> **范围**: `rewrite-notes/07-stage-ds/`
 > **目标**: 以 **DS server 启动顺序为主线**定义 DS 全部文档；发布/订阅数据流为次主线；最终覆盖 Minix3 DS server（`servers/ds/`，2 个 .c，811 行）+ 协议面（`com.h`/`ipc.h`/`ds.h`/`sysinfo.h`）+ 客户端契约（`libsys/ds.c`，219 行）全部语义，支撑 DS server 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/` 与 `03-stage-rs/`（同流程先例）、`minix3/minix/servers/ds/`（ground truth）、`os/servers/ds/`（Rust 实现，判定层 18 文件已成形——2026-09-15 状态，见 07-stage-ds/todo.md）
 

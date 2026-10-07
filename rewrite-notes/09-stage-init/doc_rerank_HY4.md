@@ -22,7 +22,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 |---|---|
 | 执行者 | HY4 |
 | 日期 | 2026-09-19 |
-| 目标目录 | `notes/rewrite/fork-syscall-rewrite/09-stage-init/` |
+| 目标目录 | `rewrite-notes/09-stage-init/` |
 | 仓库根 | `/home/xzhao/github/minix-rs` |
 | 当前提交 | `ebc8ae72b3a7c8cc1a7bb9ac1eecff218401c626`（branch `rewrite`） |
 

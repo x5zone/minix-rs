@@ -3,7 +3,7 @@
 > **分类**：参考实现·核心数据结构（磁盘主线第 2 篇）
 > **源码**：`minix3/minix/fs/mfs/super.c`（全部三百六十五行）、`minix3/minix/fs/mfs/super.h`（全部七十八行）、`minix3/minix/fs/mfs/const.h`（全部六十七行，超级块相关部分）
 > **Rust 模块**：`os/fs/mfs/src/superblock.rs`（磁盘格式、校验、位图）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`（区分配策略调用位图的位置）
+> **前置**：`rewrite-notes/15-stage-fs/07-mfs-init-main.md`（区分配策略调用位图的位置）
 > **说明**：磁盘的身份证：三十一字节磁盘格式、三魔数门卫、块大小五连验、首区计算、几何检查、强制标志、位图分配释放。
 
 > **本章不讲什么**：
@@ -219,10 +219,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`：区分配策略（位图的调用方）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`：内存索引节点。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/10-mfs-mount.md`：挂载流程（解析的调用方）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/07-mfs-init-main.md`：区分配策略（位图的调用方）。
+- `rewrite-notes/15-stage-fs/09-mfs-inode.md`：内存索引节点。
+- `rewrite-notes/15-stage-fs/10-mfs-mount.md`：挂载流程（解析的调用方）。
 - `os/fs/mfs/src/superblock.rs`：超级块的实现。
 - `minix3/minix/fs/mfs/super.c`：超级块逻辑的原始实现（三百六十五行）。
 - `minix3/minix/fs/mfs/super.h`：布局的原始定义（七十八行）。

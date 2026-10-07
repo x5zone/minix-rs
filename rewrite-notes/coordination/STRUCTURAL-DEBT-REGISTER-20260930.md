@@ -85,7 +85,7 @@ riscv64 has its boot leg landing but its raw IPC leg still answers `-ENOSYS`.
 **Why a structural-debt register.** The line's logs record two kinds of findings: one-off correctness bugs
 (routed to fix rounds) and *structural debt* — design-level deficiencies that keep generating bugs or
 maintenance cost and whose remedy is a design decision rather than a patch. The line already maintains a
-deep structural-debt analysis for thirteen debts (`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md`
+deep structural-debt analysis for thirteen debts (`rewrite-notes/coordination/riscv-reviewlog.md`
 chapter D, "债①–⑬", declared converged 2026-09-27). This register (a) refreshes those thirteen against
 the current code, (b) adds the debts recorded in other ledgers that never made it into chapter D, and
 (c) adds debts that are visible in the logs and code but were never formally registered anywhere.
@@ -118,7 +118,7 @@ messages on this branch (the highest density of "trap pinned here" and root-caus
 length); `.review/{claude,codex,trae}/…/STATE.md` (per-tool review states — only the `zcode` tool's
 FIXLOGs were in this corpus); `.zcode/plans/`; `tools/pattern-gate.sh` + its baseline file
 (institutionalized bug patterns); `os/tests/` (one integration file per cross-server contract — a map of
-the composition seams); and the per-stage design documents under `notes/rewrite/` (each stage's
+the composition seams); and the per-stage design documents under `rewrite-notes/` (each stage's
 `.design/` folder).
 
 ---
@@ -1312,7 +1312,7 @@ can weigh in:
 
 ## Appendix A — Corpus scanned
 
-Register sources (all under `notes/rewrite/fork-syscall-rewrite/` unless noted): `riscv-reviewlog.md`,
+Register sources (all under `rewrite-notes/` unless noted): `riscv-reviewlog.md`,
 `NK4C-WORKLOG.md`, `NK4B-WORKLOG.md`, `NK4A-QWEN-WORKLOG.md`, `misc_concepts.md`,
 `PATTERN-SCAN-REPORT-20260923.md`, `trap-boundary-message-materialization.md`,
 `NK4C-AARCH64-EXEC-REBIND-LIVELOCK.md`, `NK4C-BUG-AARCH64-VEC-CAP.md`, `NK4C-BUG-AARCH64-VEC-CAP-GLM.md`,

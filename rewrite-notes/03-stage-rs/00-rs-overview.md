@@ -346,12 +346,12 @@ Minix3 的可靠性模型：**系统服务崩溃不应导致整个系统崩溃**
 
 ## 8. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/plan.md` — 文档重组计划（§1.2 启动主线 / §1.3 次主线 / §2 编号 / §3.3 引用规则 / §4 ARCH / §5 覆盖契约 / §7 review 记录）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/draft/README.md` — 占位素材（早期理解，非 ground truth）
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/00-kernel-overview.md` — 讲述结构参照（§3 组织原则）
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/09-vm-boot-protocol.md` — boot 链（VM 解除抑制）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/plan.md` — 同流程先例（§1.2 主线组织）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/25-rs-services.md` — VM 侧 RS 服务（双向核对）
+- `rewrite-notes/03-stage-rs/plan.md` — 文档重组计划（§1.2 启动主线 / §1.3 次主线 / §2 编号 / §3.3 引用规则 / §4 ARCH / §5 覆盖契约 / §7 review 记录）
+- `rewrite-notes/03-stage-rs/draft/README.md` — 占位素材（早期理解，非 ground truth）
+- `rewrite-notes/01-stage-kernel/00-kernel-overview.md` — 讲述结构参照（§3 组织原则）
+- `rewrite-notes/01-stage-kernel/09-vm-boot-protocol.md` — boot 链（VM 解除抑制）
+- `rewrite-notes/02-stage-vm/plan.md` — 同流程先例（§1.2 主线组织）
+- `rewrite-notes/02-stage-vm/25-rs-services.md` — VM 侧 RS 服务（双向核对）
 - `minix3/minix/servers/rs/` — C 源码（ground truth）
 - `minix3/minix/include/minix/{com,rs,sef,ipc_filter}.h` — 协议定义
 - `os/servers/rs/` — Rust 实现

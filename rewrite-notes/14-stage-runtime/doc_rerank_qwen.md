@@ -4,7 +4,7 @@
 
 - **执行者**：qwen
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+- **目标目录**：`rewrite-notes/14-stage-runtime/`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`068c27c61`
 - **模式**：R 相·重建蓝图（只出蓝图，不改任何正文；不读其它 AI 的 `doc_rerank_*`）

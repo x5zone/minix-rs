@@ -3,7 +3,7 @@
 > **分类**: 阶段 4 — 服务创建与配置（从槽位到运行进程的第五步：发布）
 > **源码**: `minix3/minix/servers/rs/manager.c`（`publish_service`—787、`unpublish_service`—864）、`minix3/minix/lib/libsys/mapdriver.c`（`mapdriver`）、`minix3/minix/include/minix/ipc.h:1473`（`mess_lsys_vfs_mapdriver`）、`minix3/minix/include/minix/com.h:DEVMAN_BIND`（`DEVMAN_BIND`/`DEVMAN_UNBIND`）、`minix3/minix/include/minix/rs.h:rs_pci`（`rs_pci`）、`minix3/minix/include/minix/const.h:NO_DEV`（`NO_DEV`）
 > **Rust 模块**: `os/servers/rs/src/publish.rs`（`should_map_driver`/`should_set_pci_acl`/`should_bind_devman`/`unpublish_result`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md`（创建完成）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`dev_nr`/`devman_id` 字段语义）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/09-rs-exec.md`（`setuid(0)` hack 的第一次出现）
+> **前置**: `rewrite-notes/03-stage-rs/10-rs-service-create.md`（创建完成）、`rewrite-notes/03-stage-rs/02-rs-process-table.md`（`dev_nr`/`devman_id` 字段语义）、`rewrite-notes/03-stage-rs/09-rs-exec.md`（`setuid(0)` hack 的第一次出现）
 > **说明**: 创建（10）之后，服务有了进程但**别人还找不到它**。发布 = 把服务写进三个"目录"：DS 的 label→endpoint 映射（全局查找）、VFS 的驱动表（`mapdriver`）、devman 的设备绑定；PCI 服务还有第四个（PCI ACL）。撤销是发布的逆操作，但语义上更宽松（best-effort）。本文档建模四个"是否发布"判定谓词与撤销的错误聚合——全部纯函数。
 
 ---
@@ -163,10 +163,10 @@ plan §5.4 明确 `USE_PCI` 条件编译段 defer：minix-rs 没有 PCI 驱动�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` —— `setuid(0)` hack 的第一次出现（minix3/minix/servers/rs/manager.c:rproc（L656，工具生成））与第二次（minix3/minix/servers/rs/manager.c:rproc（L818，工具生成））的同一外部时序约束
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `dev_nr`/`nr_domain`/`devman_id` 字段与 `NO_DEV = 0` 事实
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `kill_service`（发布失败）与 `detach_service`（降权重发布）的机制
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— 新实例发布后旧实例撤销的顺序
+- `rewrite-notes/03-stage-rs/10-rs-service-create.md` —— `setuid(0)` hack 的第一次出现（minix3/minix/servers/rs/manager.c:rproc（L656，工具生成））与第二次（minix3/minix/servers/rs/manager.c:rproc（L818，工具生成））的同一外部时序约束
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` —— `dev_nr`/`nr_domain`/`devman_id` 字段与 `NO_DEV = 0` 事实
+- `rewrite-notes/03-stage-rs/15-rs-terminate-restart.md` —— `kill_service`（发布失败）与 `detach_service`（降权重发布）的机制
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— 新实例发布后旧实例撤销的顺序
 - `minix3/minix/servers/rs/manager.c:publish_service` —— ground truth
 - `minix3/minix/include/minix/ipc.h:1473` —— `mess_lsys_vfs_mapdriver` 消息槽
 - `minix3/minix/include/minix/com.h:DEVMAN_BIND` —— `DEVMAN_BIND`/`DEVMAN_UNBIND`

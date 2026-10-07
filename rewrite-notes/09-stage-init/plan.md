@@ -1,7 +1,7 @@
 # 09-stage-init 文档重组计划（plan.md）
 
 > **状态**: 定稿（2026-08-16 首版；深度 review + minix3 源码回归 review 后定稿，见 §7）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/09-stage-init/`
+> **范围**: `rewrite-notes/09-stage-init/`
 > **目标**: 以 **init 状态机启动顺序为主线**重组 init 全部语义文档；最终覆盖 Minix3 init 全部语义，支撑 init 的 Rust 重写（`os/commands/sbin/init/`，crate `minix-init`：2026-09-18 起状态机实体与主循环已接线，live 半等 E-INITSYS）
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`minix3/sbin/init/`（ground truth）、`os/commands/sbin/init/`（Rust 实现）
 

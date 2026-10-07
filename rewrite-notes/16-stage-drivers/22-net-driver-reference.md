@@ -3,7 +3,7 @@
 > **分类**：网络第 1 篇（老芯片管页，新网卡管队列，收发包只定顺序）
 > **源码**：`minix3/minix/drivers/net/dp8390/dp8390.c`（九百九十八行的参考实现）与 `dp8390.h`（二百五十六行的页几何与队列结构）与四份板级文件（`3c503.c` 一百九十二行、`ne2000.c` 三百二十行、`rtl8029.c` 三百一十四行、`wdeth.c` 三百五十八行）、`minix3/minix/drivers/net/virtio_net/virtio_net.c`（四百四十六行的虚拟网卡）与 `virtio_net.h`（一百七十二行的配置结构）、`minix3/minix/include/minix/netdriver.h`（七十五行的驱动表定义，第二十三行到第四十行）
 > **Rust 模块**：`os/drivers/net/dp8390/src/ring.rs`（接收页游标）、`os/drivers/net/virtio_net/src/queues.rs`（队列分工与补充规则）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/03-netdriver-framework.md`（网络框架，两实现挂靠的框架）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/14-virtio-framework.md`（虚拟队列框架，虚拟网卡消费的框架）
+> **前置**：`rewrite-notes/16-stage-drivers/03-netdriver-framework.md`（网络框架，两实现挂靠的框架）、`rewrite-notes/16-stage-drivers/14-virtio-framework.md`（虚拟队列框架，虚拟网卡消费的框架）
 > **说明**：网卡参考是网络框架第一次完整消费：老芯片讲页怎么走，新网卡讲队列怎么分。本篇讲页游标与队列分工，不重复讲网络框架。寄存器读写与队列流量在服务层，本库只定顺序与分工。
 
 > **本篇不讲什么**：
@@ -188,11 +188,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/03-netdriver-framework.md`：网络框架（两实现挂靠的框架）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/14-virtio-framework.md`：虚拟队列框架（虚拟网卡消费的框架）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/23-net-driver-variants.md`：网卡变体（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/03-netdriver-framework.md`：网络框架（两实现挂靠的框架）。
+- `rewrite-notes/16-stage-drivers/14-virtio-framework.md`：虚拟队列框架（虚拟网卡消费的框架）。
+- `rewrite-notes/16-stage-drivers/23-net-driver-variants.md`：网卡变体（下一篇，待写）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/net/dp8390/src/ring.rs`：接收页游标的实现。
 - `os/drivers/net/virtio_net/src/queues.rs`：队列分工与补充规则的实现。
 - `minix3/minix/drivers/net/dp8390/dp8390.c`：参考实现的原始实现（九百九十八行）。

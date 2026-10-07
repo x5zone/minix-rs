@@ -2,7 +2,7 @@
 
 ## 0. 元数据
 
-- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/14-stage-runtime/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`；当前提交号：`6965e6885`（工作树有未提交修改，数据以工作树实测为准）
 - 交付物：本文件。除本文件外不修改、不重命名、不移动、不删除任何文件；未提交任何变更。
 - 本轮修订（2026-09-19）：补 §8 两张迁移表、§5 十五篇契约知识点清单、§7 逐项展开；订正 §9.3 契约计数与契约要素标签；重算 §2.4 统计摘要。
@@ -676,9 +676,9 @@ $ awk '/^## 2\./,/^## 3\./' doc_rerank_deepseek.md | grep -E '^\| K-' | awk -F'|
 **G-02 "待改写"标记残留**
 - 主题：03、06、09、13 四篇的尾章与文末清单里留着"（待改写）"字样。
 - 为什么重要：状态标记过期会让读者以为后一篇尚未成稿，与本篇"请继续阅读第 NN 篇"的推荐自相矛盾。
-- 原料：`03-runtime-init.md:147`、`06-allocator.md:126,140`、`09-vfs-syscalls.md:147,172`、`13-constants-abi.md:94,109`；本轮复核 `rg -c '待改写' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/[0-9][0-9]-*.md` 共 7 处（旧稿写 6 处）。
+- 原料：`03-runtime-init.md:147`、`06-allocator.md:126,140`、`09-vfs-syscalls.md:147,172`、`13-constants-abi.md:94,109`；本轮复核 `rg -c '待改写' rewrite-notes/14-stage-runtime/[0-9][0-9]-*.md` 共 7 处（旧稿写 6 处）。
 - 归属：四篇原地删除；"后一篇是否成稿"这一状态改由各篇 §5 的 Rust 现状栏目承担，不再写进正文。
-- 验收：重建后 `rg -n '待改写' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/[0-9][0-9]-*.md` 无输出。
+- 验收：重建后 `rg -n '待改写' rewrite-notes/14-stage-runtime/[0-9][0-9]-*.md` 无输出。
 
 **G-03 路径内联 40 与 32 三处冲突**
 - 主题：同一件事实在三处写法不同，05 篇写 40 字节内联，09 篇写由 40 收缩为 32，99 篇写待裁决。
@@ -692,14 +692,14 @@ $ awk '/^## 2\./,/^## 3\./' doc_rerank_deepseek.md | grep -E '^\| K-' | awk -F'|
 - 为什么重要：跨篇指代是读者跳读的唯一线索，指错会把读者送到无关篇章，也掩盖真正的依赖对象。
 - 原料：`07-panic-output.md:82`。
 - 归属：07 篇 §3.4 原地改为第 03 篇与 PmServer，并在句末点明依赖方向。
-- 验收：`rg -n '第 09 篇' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/07-panic-output.md` 不再命中 init 语境，同段出现"第 03 篇"或"PmServer"。
+- 验收：`rg -n '第 09 篇' rewrite-notes/14-stage-runtime/07-panic-output.md` 不再命中 init 语境，同段出现"第 03 篇"或"PmServer"。
 
 **G-05 00 Ch2 终局编号错**
 - 主题：00 篇把生命周期主线的终局标成"（13 + exit）"，把常量审计篇当成了收尾篇。
 - 为什么重要：总览的路线图是全阶段的第一张地图，终点标错会让读者误以为调用组之后还有退出语义要讲。
 - 原料：`00-runtime-overview.md:12,38,48`。
 - 归属：00 篇原地改为"（07 + exit）"：诊断输出之后由 `_exit` 收尾，13 与 99 是审计与收口，不在主线上。
-- 验收：`rg -n '终局' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/00-runtime-overview.md` 的命中行不再出现 13 与 exit 并列的写法。
+- 验收：`rg -n '终局' rewrite-notes/14-stage-runtime/00-runtime-overview.md` 的命中行不再出现 13 与 exit 并列的写法。
 
 **G-06 Rust 虚构符号**
 - 主题：02、04、06、07 四篇的 §3 到 §4 引用了实现里不存在的符号（旧稿举 `ALLOWED_CALLERS`、`Wake`、`stat_sequence` 为例）。
@@ -741,14 +741,14 @@ $ awk '/^## 2\./,/^## 3\./' doc_rerank_deepseek.md | grep -E '^\| K-' | awk -F'|
 - 为什么重要：它是运行时 crate 的兄弟（服务端框架），读者读到时需要一句话知道它在哪里、为什么不在本阶段展开，否则会误以为文档漏掉了一个模块。
 - 原料：`os/libs/minix-sef/src/lib.rs`（323 行、4 个 `#[test]`）。
 - 归属：00 篇与 03 篇各加一句交叉引用（说明它是服务端框架、归后续阶段），不立篇、不新增文件。
-- 验收：`rg -n 'minix-sef' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/00-runtime-overview.md notes/rewrite/fork-syscall-rewrite/14-stage-runtime/03-runtime-init.md` 各命中至少一次，且本目录不新增 minix-sef 篇。
+- 验收：`rg -n 'minix-sef' rewrite-notes/14-stage-runtime/00-runtime-overview.md rewrite-notes/14-stage-runtime/03-runtime-init.md` 各命中至少一次，且本目录不新增 minix-sef 篇。
 
 **G-12 07 篇术语与实现不符**
 - 主题：07 篇 §3.3 把输出端称作"旋转输出端"，与 Rust 实现的 `SpinSink` 对不上。
 - 为什么重要：术语是读者在代码里搜索的钥匙，"旋转"搜不到 `SpinSink`，抽象与实现的对应关系就断了。
 - 原料：`07-panic-output.md:72`；Rust 侧 `os/libs/minix-rt/src/diag.rs` 的 `DiagnosticSink`、`SpinSink`、`CaptureSink` 三个符号。
 - 归属：07 篇 §3.3 改为"原地打转的输出端（`SpinSink`）"，另一种实现明确写成 `CaptureSink`。
-- 验收：07 篇不再出现"旋转输出端"字样；`rg -n 'SpinSink|CaptureSink' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/07-panic-output.md` 命中。
+- 验收：07 篇不再出现"旋转输出端"字样；`rg -n 'SpinSink|CaptureSink' rewrite-notes/14-stage-runtime/07-panic-output.md` 命中。
 
 ### 7.2 非 C 主题逐项落实（§3.6 的十项）
 
@@ -940,10 +940,10 @@ $ awk '/^## 2\./,/^## 3\./' doc_rerank_deepseek.md | grep -E '^\| K-' | awk -F'|
 
 | 旧引用 | 新目标 | 验证方式 |
 |--------|--------|----------|
-| 篇间互引「第 NN 篇」（十五篇之间） | 编号未变，无需硬改 | `rg -c '第 [0-9]{2} 篇' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/[0-9][0-9]-*.md` |
-| 07 §3.4 的"第 09 篇的 init" | 第 03 篇与 PmServer | `rg -n '第 09 篇' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/07-panic-output.md` |
-| 00 §2 的终局"（13 + exit）" | "（07 + exit）" | `rg -n '终局' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/00-runtime-overview.md` |
-| 00 §2 的 `qemu-tests/test-rt-birth.sh` | `os/qemu-tests/test-rt-birth.sh` | `rg -n 'qemu-tests/test-rt-birth.sh' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/00-runtime-overview.md` |
+| 篇间互引「第 NN 篇」（十五篇之间） | 编号未变，无需硬改 | `rg -c '第 [0-9]{2} 篇' rewrite-notes/14-stage-runtime/[0-9][0-9]-*.md` |
+| 07 §3.4 的"第 09 篇的 init" | 第 03 篇与 PmServer | `rg -n '第 09 篇' rewrite-notes/14-stage-runtime/07-panic-output.md` |
+| 00 §2 的终局"（13 + exit）" | "（07 + exit）" | `rg -n '终局' rewrite-notes/14-stage-runtime/00-runtime-overview.md` |
+| 00 §2 的 `qemu-tests/test-rt-birth.sh` | `os/qemu-tests/test-rt-birth.sh` | `rg -n 'qemu-tests/test-rt-birth.sh' rewrite-notes/14-stage-runtime/00-runtime-overview.md` |
 | `type.h` kuserinfo 205-212（结构体与宏混写） | `type.h:205-208`（结构体）与 `type.h:211-212`（`KUSERINFO_HAS_FIELD`） | `sed -n '205,208p;211,212p' minix3/minix/include/minix/type.h` |
 | `type.h` kerninfo 214-244 | `type.h:214-247`（结构体到 244，KIF 宏在 246-247，魔数 `KERNINFO_MAGIC` 在 229） | `sed -n '214p;229p;244p;246,247p' minix3/minix/include/minix/type.h` |
 | `exec.h` ps_strings 104-116（旧文）与 110-115（§2 K-014 旧口径） | `exec.h:111-116`（结构体首尾，四个字段在 112-115） | `sed -n '111,116p' minix3/sys/sys/exec.h` |
@@ -956,7 +956,7 @@ $ awk '/^## 2\./,/^## 3\./' doc_rerank_deepseek.md | grep -E '^\| K-' | awk -F'|
 | 路径内联 40（05 §2.2 引 `ipc.h:14`） | Rust 侧 32 字节含结尾零字节加 `ENAMETOOLONG`；C 侧 40 作为加固偏差记录 | `rg -n 'ENAMETOOLONG' os/libs/minix-sys/src/vfs.rs` |
 | 各篇 §3 到 §4 的 Rust 符号引用（含虚构名） | 实测符号，例如 `ValidatedKernInfo`、`PageSupplier`、`SlabAllocator`、`StackParams`、`stack_fill`、`SpinSink` | `rg -n 'pub struct ValidatedKernInfo' os/libs/minix-rt/src/handoff.rs`（其余符号把结构体名换成 `PageSupplier`、`SlabAllocator`、`StackParams`、`SpinSink` 逐条跑；函数 `stack_fill` 用 `rg -n 'pub fn stack_fill' os/libs/minix-sys/src/stack.rs`） |
 | 各篇 §5 的测试检索口径（关键词检索） | 编号未变，无需硬改；全阶段统一按 `#[test]` 或函数名检索 | `rg -c '#\[test\]' os/libs/minix-rt/src/*.rs` |
-| `plan.md` 与 `todo.md` 的旧状态描述 | 以重建后的十五篇为准，执行阶段同步（本蓝图不改这两份文件） | `rg -c '14-stage-runtime' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md notes/rewrite/fork-syscall-rewrite/14-stage-runtime/todo.md` |
+| `plan.md` 与 `todo.md` 的旧状态描述 | 以重建后的十五篇为准，执行阶段同步（本蓝图不改这两份文件） | `rg -c '14-stage-runtime' rewrite-notes/14-stage-runtime/plan.md rewrite-notes/14-stage-runtime/todo.md` |
 
 ### 8.3 断链成本摘要
 

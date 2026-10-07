@@ -1,7 +1,7 @@
 //! Minix-RS input server — entry point.
 //!
 //! C: `main()` — `minix3/minix/servers/input/input.c:696-704`.
-//! See `notes/rewrite/fork-syscall-rewrite/12-stage-input/01-input-init-main.md`.
+//! See `rewrite-notes/12-stage-input/01-input-init-main.md`.
 //!
 //! The binary does three things, in order: register the fresh-boot callback
 //! ([`minix_input::init::startup_registration`]), run the four-step init

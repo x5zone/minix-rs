@@ -5,7 +5,7 @@
 //! event loop — one message at a time, no locks.
 //!
 //! C: `minix3/minix/servers/ipc/` (main.c, sem.c, shm.c, utility.c).
-//! Documents: `notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`.
+//! Documents: `rewrite-notes/13-stage-ipc/`.
 //!
 //! Production builds are `no_std`. Only `core`, `alloc`, and the
 //! `minix-types` / `minix-sys` protocol crates are available; `std` enters

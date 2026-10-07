@@ -1,7 +1,7 @@
 # 12-stage-input 文档重组计划（plan.md）
 
 > **状态**: 定稿（2026-08-16 首版 + 深度 review + minix3 源码回归 review，见 §7）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/12-stage-input/`
+> **范围**: `rewrite-notes/12-stage-input/`
 > **目标**: 以 **INPUT server 启动顺序为主线**定义 INPUT 全部文档；一次输入事件旅程与驱动生命周期为次主线；最终覆盖 Minix3 input server（`servers/input/`，1 个 .c + 1 个 .h，759 行）+ 运行框架（`lib/libchardriver/`，600 行，input 使用面）+ 协议面（`com.h`/`ipc.h`/`minix/input.h`）+ 客户端库（`lib/libinputdriver/`，206 行）+ 外部消费者（TTY/pckbd/DS）全部语义，支撑 input server 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/`/`07-stage-ds/`/`11-stage-devman/`（同流程先例）、`minix3/minix/servers/input/`（ground truth）、`os/servers/input/`（Rust 实现，当前为 stub）
 

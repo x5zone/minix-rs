@@ -3,7 +3,7 @@
 > **分类**：套接字协议族组播模块，覆盖全局与每套接字上限、加入与离开规则、接口移除清理、与底层组成员结构的映射关系
 > **源码**：`minix3/minix/net/lwip/mcast.c`（283 行）、尺寸定义 `minix3/minix/lib/liblwip/lib/lwipopts.h`（第 208 行到第 213 行，第 535 行到第 541 行）
 > **Rust 模块**：`os/net/lwip/src/mcast.rs`（上限常量、加入早期检查）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层）
+> **前置依赖**：`rewrite-notes/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层）
 >
 > **本篇不覆盖的内容**：
 > - 互联网组管理协议与组播侦听发现协议本身的实现（在第 24 篇第三方协议栈，本文只说明服务何时调用加入与离开）
@@ -166,10 +166,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，选项分发语义。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/09-lwip-udpsock.md`：用户数据报协议，组播选项的使用方。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/13-lwip-ndev.md`：网络设备消费侧，下一阶段入口。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，选项分发语义。
+- `rewrite-notes/17-stage-net/09-lwip-udpsock.md`：用户数据报协议，组播选项的使用方。
+- `rewrite-notes/17-stage-net/13-lwip-ndev.md`：网络设备消费侧，下一阶段入口。
 - `os/net/lwip/src/mcast.rs`：上限常量与加入早期检查的实现。
 - `minix3/minix/net/lwip/mcast.c`：组播成员管理的原始实现（283 行）。
 - `minix3/minix/lib/liblwip/lib/lwipopts.h`：上限定义的原始位置（第 208 行到第 213 行，第 535 行到第 541 行）。

@@ -13,7 +13,7 @@
 **目标读者**：已理解 `ProcTable` 的 `system_hz` 显式参（01 的 `TicksConv { hz }`）、`CLOCK` 的 `is_ipc_notify` 非时间但 `expire_timers` 的 `ticks` 驱动（04）、`SUPER_USER 0` 的 `is_superuser` 一处谓词（15）的开发者；知道 `timespec { tv_sec, tv_nsec }` 与 `clockid_t` 的 `CLOCK_REALTIME 0/MONOTONIC 3` 定义（`sys/time.h:283/288`）。
 
 > **本章不讲什么**：
-> - 内核 `do_settime` 的 `now==0→adjtime_delta` 渐变与 `boottime<=sec` 的 `set_boottime` 分支（`kernel/system/do_settime.c:25-52` `set_realtime/set_boottime/adjtime_delta`）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`
+> - 内核 `do_settime` 的 `now==0→adjtime_delta` 渐变与 `boottime<=sec` 的 `set_boottime` 分支（`kernel/system/do_settime.c:25-52` `set_realtime/set_boottime/adjtime_delta`）—— `rewrite-notes/01-stage-kernel/21-clock-device.md`
 > - 内核 `do_stime` 的 `set_boottime` 最终落点（`kernel/system/do_stime.c:17` `set_boottime(boot_time)`）—— 同上
 > - `clock` 中断的 `timer_int_handler` 的 `uptime/realtime` 双增与 `adjtime_delta` 隔拍（`kernel/clock.c:timer_int_handler` `kclockinfo.uptime++` 与 `adjtime_delta` 的 `uptime&0x1` 隔拍）
 > - `system_hz` 的 `DEFAULT_HZ` 初始化（`kernel/clock.c:init_clock` `env_get("hz") → kclockinfo.hz`）
@@ -454,7 +454,7 @@ pub fn do_settime(table: &ProcTable, caller: UserSlot, req: TimeRequest, ctl: &m
 
 `CLOCK_MONOTONIC` 的“不可设置”与 `REALTIME` 的“可设置”对偶，使 `date -s` 的 `clock_settime(REALTIME)` 可改 `boottime/realtime` 而 `CLOCK_MONOTONIC` 的 `uptime` 始终单增——`Monotonic` 的 `EINVAL` 不变式在 `ClockId::Monotonic→Err(Inval)` 一处显式。
 
-阅读顺序提示：若想先理解“内核侧 `settime` 如何改 `boottime/realtime`”，下一站 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`（`kernel/system/do_settime.c:29-52` 的 `adjtime_delta/set_boottime/set_realtime`）；若想理解“定时器如何用 `ticks` 定周期”，下一站 `14-itimer.md` 的 `set_alarm(ticks)` 的 `ticks` 周期。
+阅读顺序提示：若想先理解“内核侧 `settime` 如何改 `boottime/realtime`”，下一站 `rewrite-notes/01-stage-kernel/21-clock-device.md`（`kernel/system/do_settime.c:29-52` 的 `adjtime_delta/set_boottime/set_realtime`）；若想理解“定时器如何用 `ticks` 定周期”，下一站 `14-itimer.md` 的 `set_alarm(ticks)` 的 `ticks` 周期。
 
 ---
 
@@ -462,7 +462,7 @@ pub fn do_settime(table: &ProcTable, caller: UserSlot, req: TimeRequest, ctl: &m
 
 - C 源（ground truth）：`minix3/minix/servers/pm/time.c` 全文（`22-47` `do_gettime` + `53-65` `do_getres` + `71-88` `do_settime` + `94-104` `do_time` + `110-131` `do_stime`）、`minix3/minix/include/minix/ipc.h:469`（`mess_lc_pm_time/mess_pm_lc_time` 的 `sec/clk_id/now/nsec` 四参 + `sec/nsec` 双参）、`minix3/minix/include/minix/callnr.h:PM_GETTIMEOFDAY/46-48`（`PM_GETTIMEOFDAY 28/STIME 7/CLOCK_GETRES 33/CLOCK_GETTIME 34/CLOCK_SETTIME 35`）、`minix3/sys/sys/time.h:CLOCK_REALTIME/288`（`CLOCK_REALTIME 0/MONOTONIC 3`）、`minix3/minix/lib/libsys/getuptime.c:getuptime`（`kclockinfo三值`）、`minix3/minix/lib/libsys/clock_time.c:clock_time`（`boottime+realtime/hz` 的 `40000*25000` 分叉）
 - PM 阶段文档：01-pm-init-main.md（`system_hz=sys_hz()` 的 `HertzProvider`）、04-ipc-dispatch.md（`ReplyIntent::Reply` 的同步回复）、14-itimer.md（`TicksConv { hz }` 的 `%hz*US/hz` 与 `decompose_clock` 同型）、02-mproc-struct.md（`Clock/Time=i64` 的 `A-11` 64 位）、15-credentials.md（`SUPER_USER` 门与 `TAINTED` 不经本章）
-- 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`（`kclockinfo.{uptime,realtime,boottime}` 的三值与 `do_settime` 的 `adjtime_delta` 渐变）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`kclockinfo.hz/system_hz` 的 `DEFAULT_HZ`）
+- 内核接口：`rewrite-notes/01-stage-kernel/21-clock-device.md`（`kclockinfo.{uptime,realtime,boottime}` 的三值与 `do_settime` 的 `adjtime_delta` 渐变）、`rewrite-notes/01-stage-kernel/15-clock-timer.md`（`kclockinfo.hz/system_hz` 的 `DEFAULT_HZ`）
 - 阶段内顺序：01/04 → **本章（19）** → 20（`do_sysuname/do_getsysinfo` 的 `SI_*` 不经 `clock`，但 `SI_PROC_TAB` 的 `do_getsysinfo` 的 `boottime` 来自本章 `getuptime` 同源）→ 14（`ticks` 定时器无 `boottime`，本章 `REAL` 有 `boottime` 的对照）
 - OS 模式参考：Linux `clock_gettime` 的 `CLOCK_REALTIME/MONOTONIC` + `clock_settime` 的 `MONOTONIC→EINVAL`（`kernel/time/time.c`）、Redox `TimeScheme` + `Instant::now()`（`kernel/time/time.rs`）、`seL4` `BenchmarkGetTime` 的 `ticks` 单调（见 §1.7）
 - Rust 实现：`os/servers/pm/src/time.rs`（`ClockId/Timespec/TimeRequest + decompose_clock/clock_resolution + ClockSource/BootTimeCtl/SetTimeCtl/ClockTime + do_time/do_stime/do_gettime/do_getres/do_settime` 的五调用）、`os/libs/minix-types/src/types/clock.rs`（`Clock=i64, Time=i64` 的 `A-11` 64 位）、`os/libs/minix-types/src/ipc/pm.rs`（`CLOCK_REALTIME/MONOTONIC` 的 `ClockId` 枚举与 `Timespec` 类型）

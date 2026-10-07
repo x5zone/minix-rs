@@ -104,7 +104,7 @@
 ## 5. 关键文件地图（新机速查）
 
 ```
-notes/rewrite/fork-syscall-rewrite/
+rewrite-notes/
   NK4C-MIGRATION-20260930.md          ← 主线权威交接（续跑 agent 著；§末主线开场 prompt）
   NK4C-REVIEWER-SESSION-RECORD-20260930.md ← 本文件（评审线 + 环境清单 + R3.1 协议）
   NK4C-NEW-MACHINE-OPENING-PROMPT.txt ← 新机统一开场 prompt（用户另存文本文件用）
@@ -130,9 +130,9 @@ notes/rewrite/fork-syscall-rewrite/
 
 ```text
 读三份文件按序恢复工作：
-1. notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md（主线权威状态：三终目标进度/两大前沿配方/主线开场 prompt）
-2. notes/rewrite/fork-syscall-rewrite/NK4C-REVIEWER-SESSION-RECORD-20260930.md（评审线 R3 状态、R3.1 增量协议、新机环境搭建清单）
-3. notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md 顶部「当前状态」
+1. rewrite-notes/coordination/NK4C-MIGRATION-20260930.md（主线权威状态：三终目标进度/两大前沿配方/主线开场 prompt）
+2. rewrite-notes/coordination/NK4C-REVIEWER-SESSION-RECORD-20260930.md（评审线 R3 状态、R3.1 增量协议、新机环境搭建清单）
+3. rewrite-notes/coordination/NK4C-WORKLOG.md 顶部「当前状态」
 
 背景：minix-rs（Minix3 内核 Rust 重写）NK4-C 长程任务跨机器迁移续跑。三条终目标：
 ①三架构各自 boot 打印 rc marker（x86_64 已达成 -smp4 稳定；aarch64 卡 H7 数据流间歇 OOM；

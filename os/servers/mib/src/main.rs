@@ -1,7 +1,7 @@
 //! Minix-RS MIB — entry point.
 //!
 //! C: `main()` — `minix3/minix/servers/mib/main.c:433-492`.
-//! See `notes/rewrite/fork-syscall-rewrite/10-stage-mib/01-mib-init-main.md`.
+//! See `rewrite-notes/10-stage-mib/01-mib-init-main.md`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

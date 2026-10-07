@@ -8,7 +8,7 @@
 //! crate owns the numbers and the policy (state machines, queue rules);
 //! the service binary owns the transport (port reads and writes,
 //! blocking sends, timer setup). See document `13-pckbd-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

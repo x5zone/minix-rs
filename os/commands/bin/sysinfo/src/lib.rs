@@ -2,7 +2,7 @@
 
 //! System information and Minix specific tools core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/20-minix-system.md`:
+//! Covers `rewrite-notes/18-stage-commands/20-minix-system.md`:
 //! version display (`minix3/minix/commands/version/version.sh`, prints the
 //! contents of the version file), hardware clock handling
 //! (`minix3/minix/commands/readclock/readclock.c`, read with

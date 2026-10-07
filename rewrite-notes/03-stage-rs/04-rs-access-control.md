@@ -3,7 +3,7 @@
 > **分类**: 阶段 2 — 权限与隔离（boot Step 1 的机制之一：请求入口授权）
 > **源码**: `minix3/minix/servers/rs/manager.c:caller_is_root`（`caller_is_root`/`caller_can_control`/`check_call_permission`）、`minix3/minix/servers/rs/request.c`（11 个调用点）、`minix3/minix/lib/libsys/getepinfo.c:getnuid`（`getnuid`）、`minix3/minix/servers/rs/const.h:RUPDATE_IS_UPDATING`（`RUPDATE_IS_UPDATING`）、`minix3/minix/include/minix/com.h:RS_RQ_BASE`（RS_* 消息常量）
 > **Rust 模块**: `os/servers/rs/src/access.rs`（`caller_is_root`/`caller_can_control`/`check_call_permission`）、`os/servers/rs/src/boot.rs`（`KernelApi::getnuid`）、`os/libs/minix-types/src/ipc/rs.rs`（RS_* 常量模块，ARCH A-2 第一步）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（主循环分类）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`r_flags`/`sys_flags`/`r_control` 字段归属、endpoint 索引）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md`（`s_flags & SYS_PROC` 判定、privctl 操作面）
+> **前置**: `rewrite-notes/03-stage-rs/01-rs-boot-init.md`（主循环分类）、`rewrite-notes/03-stage-rs/02-rs-process-table.md`（`r_flags`/`sys_flags`/`r_control` 字段归属、endpoint 索引）、`rewrite-notes/03-stage-rs/03-rs-privilege.md`（`s_flags & SYS_PROC` 判定、privctl 操作面）
 > **说明**: 内核 priv 表管"服务能做什么"（03），RS 的访问控制管"谁有资格命令 RS"。每个 `RS_*` 控制请求在分派前先过 `check_call_permission`：root 或隔离策略（`r_control` 列表）二选一授权，再按目标槽状态应用五条规则。本文档建模两级授权模型、目标槽规则、11 个调用点、`getnuid` 外部依赖与 `RUPDATE_IS_UPDATING` 的消费规则。
 
 ---
@@ -384,13 +384,13 @@ access.rs
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md` — 主循环分类与 boot 时序
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` — `RFlags`/`SysFlags`/`r_control` 字段、endpoint 索引（ARCH A-4）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md` — `SYS_PROC` 位、privctl 操作面
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/05-rs-ipc-sendmask.md` — boot Step 1 的 IPC 掩码机制
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md` — `r_control` 填充（check_request/init_slot）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md`、`14-rs-query-requests.md`、`16-rs-live-update.md` — 被本入口保护的 handler
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/99-rs-global-concepts.md` — RS_* 消息常量全表
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` — `getnuid`（PM_GETEPINFO）消息契约
+- `rewrite-notes/03-stage-rs/01-rs-boot-init.md` — 主循环分类与 boot 时序
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` — `RFlags`/`SysFlags`/`r_control` 字段、endpoint 索引（ARCH A-4）
+- `rewrite-notes/03-stage-rs/03-rs-privilege.md` — `SYS_PROC` 位、privctl 操作面
+- `rewrite-notes/03-stage-rs/05-rs-ipc-sendmask.md` — boot Step 1 的 IPC 掩码机制
+- `rewrite-notes/03-stage-rs/08-rs-slot-config.md` — `r_control` 填充（check_request/init_slot）
+- `rewrite-notes/03-stage-rs/13-rs-control-requests.md`、`14-rs-query-requests.md`、`16-rs-live-update.md` — 被本入口保护的 handler
+- `rewrite-notes/03-stage-rs/99-rs-global-concepts.md` — RS_* 消息常量全表
+- `rewrite-notes/03-stage-rs/19-rs-external-interfaces.md` — `getnuid`（PM_GETEPINFO）消息契约
 - `minix3/minix/servers/rs/manager.c:caller_is_root`、`request.c`、`lib/libsys/getepinfo.c:35-44`、`servers/rs/const.h:105`、`include/minix/com.h:463-492` — ground truth
 - `os/servers/rs/src/access.rs`、`os/libs/minix-types/src/ipc/rs.rs` — Rust 实现

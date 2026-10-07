@@ -1,7 +1,7 @@
 # NK4-A 停止令交接文档（2026-09-21）
 
 > 基线：`940ad8363`（接手前最后 commit）。本文档覆盖 `940ad8363..f1041b3f1` 共 7 个 commit。
-> 任务来源：`notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-boot-first-light.md` 任务1（首亮翻绿）。
+> 任务来源：`rewrite-notes/coordination/HANDOFF-NK4A-boot-first-light.md` 任务1（首亮翻绿）。
 > 翻绿判据：串口出现 `minix-rs rc: minimal boot script marker`（`os/etc/rc:10`）。**未达成。**
 
 ---

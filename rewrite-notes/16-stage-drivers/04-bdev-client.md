@@ -3,7 +3,7 @@
 > **分类**：框架层第 4 篇（块协议的调用方：虚拟文件系统服务与文件服务器如何用块驱动）
 > **源码**：`minix3/minix/lib/libbdev/bdev.c`（六百四十二行，同步与异步传输入口）、`minix3/minix/lib/libbdev/call.c`（一百一十八行，调用槽管理）、`minix3/minix/lib/libbdev/driver.c`（一百二十二行，驱动端点表）、`minix3/minix/lib/libbdev/ipc.c`（三百四十六行，发送路径、异步回复分发、等待）、`minix3/minix/lib/libbdev/minor.c`（一百三十六行，打开引用计数）、`minix3/minix/include/minix/bdev.h`（公开接口：同步六函数、异步六函数、等待、分发、刷新）、`minix3/minix/lib/libbdev/const.h`（调用上限、同步标识、重试预算）、`minix3/minix/lib/libbdev/type.h`（调用槽结构）
 > **Rust 模块**：`os/libs/minix-bdev/src/transport.rs`（消息传输抽象与测试替身）、`os/libs/minix-bdev/src/client.rs`（驱动表、打开计数、同步调用、异步调用表）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`（驱动侧的七种请求与默认行为，本篇是其镜像）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（单线程事件循环假设）
+> **前置**：`rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`（驱动侧的七种请求与默认行为，本篇是其镜像）、`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（单线程事件循环假设）
 > **说明**：前三篇讲的都是驱动侧：请求来了如何服务。本篇讲调用方：虚拟文件系统服务与文件服务器想读写磁盘时，如何找到驱动、如何发请求、如何等回复、驱动重启了如何恢复。块驱动框架与客户端库构成块语义的完整闭环：驱动侧管服务，客户端管调用，两边的请求编号必须对上（本篇的实现里自带断言，框架侧改编号客户端侧测试立刻变红）。
 
 > **本篇不讲什么**：
@@ -236,10 +236,10 @@ C 语言直接调内核消息原语发消息，这让库函数在没有内核的
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`：块驱动框架（本篇的镜像篇）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/05-memory-driver.md`：内存驱动（框架的第一个消费者，待写）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`：块驱动框架（本篇的镜像篇）。
+- `rewrite-notes/16-stage-drivers/05-memory-driver.md`：内存驱动（框架的第一个消费者，待写）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/libs/minix-bdev/src/transport.rs`：消息传输抽象与测试替身的实现。
 - `os/libs/minix-bdev/src/client.rs`：驱动表、打开计数、同步调用、异步调用表的实现。
 - `minix3/minix/lib/libbdev/bdev.c`：同步与异步传输入口的原始实现（六百四十二行）。

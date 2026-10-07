@@ -1,7 +1,7 @@
 # 15-stage-fs 文档重组计划（plan.md）
 
 > **状态**: 生效中（2026-08-16 首版，深度 review + minix3 源码回归 review 后定稿）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/15-stage-fs/`
+> **范围**: `rewrite-notes/15-stage-fs/`
 > **目标**: 以 **FS 子系统语义为主线**重组 FS 全部文档；VFS→FS 请求协议为次主线；最终覆盖 Minix3 FS 子系统全部语义（libfsdriver + libminixfs + libvtreefs + libsffs + 8 个 FS server），支撑 `os/fs/*`（8 crate）+ `os/libs/minix-fs` 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/plan.md` + `14-stage-runtime/plan.md`（plan 结构参照；14 为非 server 主线重定义先例）、`minix3/minix/fs/` + `minix3/minix/lib/libfsdriver/` + `minix3/minix/lib/libminixfs/` + `minix3/minix/lib/libvtreefs/` + `minix3/minix/lib/libsffs/`（ground truth）、`os/fs/*` + `os/libs/minix-fs/`（Rust 实现）
 

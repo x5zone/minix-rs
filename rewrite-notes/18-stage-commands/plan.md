@@ -1,7 +1,7 @@
 # 18-stage-commands 文档重组计划（plan.md）
 
 > **状态**: 生效中（2026-08-16 首版，深度 review + minix3 源码回归 review 后定稿）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/18-stage-commands/`
+> **范围**: `rewrite-notes/18-stage-commands/`
 > **目标**: 以**用户系统交付因果链为主线**（boot → init → rc → 服务 → 登录 → shell → 命令使用）重组 commands 全部文档；命令**功能域语义分组**为次主线；最终覆盖 Minix3 命令与系统配置层全部语义（bin + sbin + usr.bin + usr.sbin + minix/commands + minix/usr.bin + games + /etc + getty/login），支撑 `os/commands/*`（24 个域 crate）+ `os/etc/` 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/plan.md` + `14-stage-runtime/plan.md` + `15-stage-fs/plan.md` + `16-stage-drivers/plan.md` + `17-stage-net/plan.md`（plan 结构参照；14/15/16/17 为非 server 主线重定义先例）、`minix3/bin/` + `minix3/sbin/` + `minix3/usr.bin/` + `minix3/usr.sbin/` + `minix3/minix/commands/` + `minix3/minix/usr.bin/` + `minix3/games/` + `minix3/etc/` + `minix3/libexec/getty/`（ground truth）、`os/commands/*` + `os/etc/`（Rust 实现）
 

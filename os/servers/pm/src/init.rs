@@ -3,7 +3,7 @@
 //! C 对应: `minix3/minix/servers/pm/main.c:131-244`（main / sef_local_startup /
 //!         sef_cb_init_fresh）+ `minix3/minix/servers/pm/schedule.c:36-69`
 //!         （sched_init 调用点）。
-//! 文档: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/01-pm-init-main.md`
+//! 文档: `rewrite-notes/04-stage-pm/01-pm-init-main.md`
 //!
 //! 主循环（run）细节见 04-ipc-dispatch.md；VFS 异步回复状态机见
 //! 05-vfs-interaction.md；调度协议见 16-scheduling.md。
@@ -233,7 +233,7 @@ pub struct PmServer<T: IpcTransport = KernelIpcTransport> {
     table: ProcTable,
     /// 进程事件注册表（`event.c:60-67` `subs/nsubs/nested` 聚合，ARCH A-3）。
     ///
-    /// 文档：`notes/rewrite/fork-syscall-rewrite/04-stage-pm/06-event-subscription.md`。
+    /// 文档：`rewrite-notes/04-stage-pm/06-event-subscription.md`。
     event_registry: EventRegistry,
     /// 内核调用出口（SYS_CLEAR 等，2026-09-06 D-18 接线；pre-E1 诚实回 -EIO）。
     kern: Box<dyn crate::exit::KernelGateway>,

@@ -2,7 +2,7 @@
 
 ## 0. 元数据
 
-- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`
+- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/13-stage-ipc/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`；当前提交号：`6965e6885`（工作树有未提交修改，数据以工作树实测为准）
 - 交付物：本文件。除本文件外不修改、不重命名、不移动、不删除任何文件；未提交任何变更。
 - 本轮修订（2026-09-19）：补 §8 两张迁移表、§5 十二篇契约知识点清单、§7 逐项展开；订正 §9.3 契约计数、§2.4 知识点统计（96 改为 81）。第二次补做：订正 §2 池里两条指向不存在文件的 Rust 锚点（K-024 的 `ipc_server.rs:615-631` 改为 `server.rs:194`（`IpcServer`）；K-026 的 `ipc_server.rs:392-412` 与 `service.rs:445` 改为实测的 `service.rs:517-518`（`operation_count > SEMOPM` → `E2BIG`）与 `sem/op.rs:100`）。
@@ -886,8 +886,8 @@ $ git log --oneline -1 → 6965e6885
 
 | 旧引用 | 新目标 | 验证方式 |
 |--------|--------|----------|
-| 12 篇编号本身（00 到 10 加 99） | 编号未变，无需硬改 | `ls -1 /home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/13-stage-ipc/*-ipc-*.md` |
-| stage 内互引（例如 09 篇引 01、05、06、08） | 编号未变，无需硬改；只需核篇名仍在 | `rg -n -o '0[0-9]-ipc-[a-z-]+\.md' /home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/13-stage-ipc/0[0-9]-*.md` |
+| 12 篇编号本身（00 到 10 加 99） | 编号未变，无需硬改 | `ls -1 /home/xzhao/github/minix-rs/rewrite-notes/13-stage-ipc/*-ipc-*.md` |
+| stage 内互引（例如 09 篇引 01、05、06、08） | 编号未变，无需硬改；只需核篇名仍在 | `rg -n -o '0[0-9]-ipc-[a-z-]+\.md' /home/xzhao/github/minix-rs/rewrite-notes/13-stage-ipc/0[0-9]-*.md` |
 | main.c:12-20（call_vec 分发表） | 编号与行号都未变，无需硬改 | `rg -n 'call_vec' /home/xzhao/github/minix-rs/minix3/minix/servers/ipc/main.c` |
 | main.c:123-136（sef_local_startup） | 编号未变，无需硬改；函数定义在第 124 行、调用在第 224 行 | `rg -n 'sef_local_startup' /home/xzhao/github/minix-rs/minix3/minix/servers/ipc/main.c` |
 | ipc.h:364-422（七消息结构） | 编号与行号都未变，无需硬改 | `rg -n 'mess_lc_ipc_' /home/xzhao/github/minix-rs/minix3/minix/include/minix/ipc.h` |
@@ -903,7 +903,7 @@ $ git log --oneline -1 → 6965e6885
 | rmib.c:889/934/1037 | 补全为 minix3/minix/lib/libsys/rmib.c，行号未变 | `rg -n -e 'rmib_register' -e 'rmib_deregister' -e 'rmib_process' /home/xzhao/github/minix-rs/minix3/minix/lib/libsys/rmib.c` |
 | rg "fn test_"（失效的检索命令） | 改为按 #[test] 或按测试函数名检索 | `rg -n 'fn test_' /home/xzhao/github/minix-rs/os/servers/ipc-server/src` |
 | ipc_server.rs:615-631、ipc_server.rs:392-412 | 该文件不存在；按 server.rs 的 IpcServer 与 service.rs:517-518 的 E2BIG 门改写 | `rg -n 'ipc_server\.rs' /home/xzhao/github/minix-rs/os/servers/ipc-server/src` |
-| plan.md 与 todo.md 的 B 相状态 | 改为引用本篇蓝图与实测锚点，不再引旧状态 | `rg -n -e 'plan\.md' -e 'todo\.md' /home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/13-stage-ipc/0[0-9]-*.md` |
+| plan.md 与 todo.md 的 B 相状态 | 改为引用本篇蓝图与实测锚点，不再引旧状态 | `rg -n -e 'plan\.md' -e 'todo\.md' /home/xzhao/github/minix-rs/rewrite-notes/13-stage-ipc/0[0-9]-*.md` |
 
 **8.3 断链成本摘要**：编号变化 0（12 篇编号与顺序不动）。锚点迁移表登记 82 行，其中存量知识点 68 行、变更表驱动 14 行；引用迁移表登记 18 行，其中 10 行编号与行号都未变、无需硬改，3 行只需补全路径（sysctl.h、mmap.c、rmib.c），5 行需要改写（fill_weninfo 真名、errno 值与行号混用、ipc_server.rs 不存在、rg "fn test_" 失效、plan.md 与 todo.md 的旧状态引用）。内容口径修正 14 处（§6 的 OP-01 到 OP-14）；卫生清理覆盖 10 篇计数、8 处虚构符号、5 处事实错（EDONTREPLY、SHM_RND、shmatt_t、VM 动词数、调用点数）。热点是 02、03、06、08、09、99 六篇，改动都要双向核对引用它的段落。
 

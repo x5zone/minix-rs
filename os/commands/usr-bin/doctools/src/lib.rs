@@ -2,7 +2,7 @@
 
 //! Documentation and manual page core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/10-doc-man-tools.md`:
+//! Covers `rewrite-notes/18-stage-commands/10-doc-man-tools.md`:
 //! the manual system (`minix3/usr.bin/man/man.c` 1088 lines with
 //! configuration in `manconf.c` 272 lines, the live `minix3/etc/man.conf`,
 //! the `whatis` database built by `minix3/libexec/makewhatis/makewhatis.c`

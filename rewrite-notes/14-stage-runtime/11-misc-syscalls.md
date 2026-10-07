@@ -133,6 +133,6 @@ C 语言的直读函数直接解引用内核信息页指针，测试需要映射
 - `minix3/minix/lib/libsys/getuptime.c`：三元组直读的原始实现。
 - `minix3/minix/lib/libsys/clock_time.c`：挂钟换算的原始实现。
 - `minix3/minix/lib/libc/gen/read_tsc_64.c`：计数拼接的原始实现。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/10-vm-syscalls.md`：前一篇，虚拟内存调用组。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/12-rs-query.md`：后一篇，服务发现。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/10-vm-syscalls.md`：前一篇，虚拟内存调用组。
+- `rewrite-notes/14-stage-runtime/12-rs-query.md`：后一篇，服务发现。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

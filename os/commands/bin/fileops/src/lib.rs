@@ -2,7 +2,7 @@
 
 //! File operation command core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/06-file-ops.md`:
+//! Covers `rewrite-notes/18-stage-commands/06-file-ops.md`:
 //! the thirty file manipulation commands (`minix3/bin/` fifteen,
 //! `minix3/usr.bin/` fifteen, `usr.sbin` three, `minix/commands` one).
 //! The commands themselves split into two halves: deciding (which bits,

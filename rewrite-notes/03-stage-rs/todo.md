@@ -241,9 +241,9 @@ pinning 落地 minix-types；测试 304→327（minix-rs）、175→189（minix-
 ### 6.0 预检与基线（gate 证据）
 
 ```
-$ ls notes/rewrite/fork-syscall-rewrite/03-stage-rs/.design/ | grep -c "outline.v"     # 21
-$ ls notes/rewrite/fork-syscall-rewrite/03-stage-rs/.design/ | grep -c "outline-review.v" # 21
-$ ls notes/rewrite/fork-syscall-rewrite/03-stage-rs/.design/ | grep -c "design.v"      # 21
+$ ls rewrite-notes/03-stage-rs/.design/ | grep -c "outline.v"     # 21
+$ ls rewrite-notes/03-stage-rs/.design/ | grep -c "outline-review.v" # 21
+$ ls rewrite-notes/03-stage-rs/.design/ | grep -c "design.v"      # 21
 $ bash tools/design-coverage-check.sh fork-syscall-rewrite/03-stage-rs                 # ALL DOCS COMPLETE
 $ cargo test -p minix-rs      # 327 passed / 0 failed
 $ cargo test -p minix-types   # 189 passed / 0 failed

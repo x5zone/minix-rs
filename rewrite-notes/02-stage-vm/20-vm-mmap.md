@@ -3,7 +3,7 @@
 > **分类**: 阶段 7 — IPC 服务（进程生命周期）
 > **源码**: `minix3/minix/servers/vm/mmap.c`（573 行：`mmap_region` :36-83 / `mmap_file` :84-132 / `do_vfs_mmap` :135-158 / `mmap_file_cont` :160-190 / `do_mmap` :200-269 / `map_perm_check` :284-307 / `do_map_phys` :310-363 / `do_remap` :366-435）+ `region.c`（`region_find_slot_range` :302-394 / `region_find_slot` :399-416 / `map_page_region` :463-510）+ `mem_file.c`（`mappedfile_setfile` :191-246）+ `mem_shared.c`（`shared_setsource` :167-205）+ `vfs.c`（`vfs_request`/`do_vfs_reply`）+ `minix3/minix/lib/libc/sys/mmap.c`（`minix_mmap_for`/`minix_vfs_mmap`/`vm_remap`/`vm_remap_ro`）+ `minix3/sys/sys/mman.h`（`MAP_*`/`PROT_*` :62-124）+ `minix3/minix/include/minix/ipc.h`（`mess_mmap` :1582-1592 / `mess_vm_vfs_mmap` :2369-2380 / `mess_lsys_vm_map_phys` :1504-1510 / `mess_lsys_vm_vmremap` :1537-1545）+ `minix3/minix/include/minix/com.h`（`VM_MMAP`/`VM_VFS_MMAP`/`VM_REMAP`/`VM_REMAP_RO`/`VM_MAP_PHYS`/`VMVFSREQ_FDLOOKUP` :702）
 > **Rust 模块**: `os/servers/vm/src/mmap.rs`（`MmapFlags`/`ProtFlags` :56-133 / `FILEMAP_ENABLED` :137-146 / `MmapError` :158-174 / `MmapResult` :188-190 / `MMAP_BASE`/`MMAP_TOP` :203-204 / `mmap_region` :226-265 / `handle_mmap` :268-387 / `FileMapParams` :389-412 / `mmap_file` :414-473 / `handle_vfs_mmap` :475-523 / `mmap_file_cont` :525-567）+ `os/servers/vm/src/map_phys.rs`（`handle_map_phys` :48-104 / `map_perm_check` :106-122）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_mmap` :396-409 / `dispatch_vfs_mmap` :411-425 / `dispatch_map_phys` :427-437 / 主循环分支 :1030/:1034/:1044/:1153 / 错误映射 :1240-1268 / `dispatch_remap_impl` :1347-1449）+ `os/servers/vm/src/vfs_queue.rs`（`VfsRequestState::FdLookup` :29-33 / `request` :107-118 / `handle_reply` :126-148）+ `os/libs/minix-types/src/ipc/vm.rs`（`VmMmapIn` :212-222 / `VmMapPhysIn` :236-244 / `VmVfsMmapIn` :259-270 / `VmRemapIn` :490-504 / `decode_message` 四件套 :837-1011）+ `os/libs/minix-types/src/ipc/message.rs`（union :134-140 / `MessMmap` :1559-1605 / `MessVmVfsMmap` :1607-1656 / `MessLsysVmMapPhys` :1658-1694 / `MessLsysVmVmremap` :1696-1733）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md`（区域结构 + map_page_region 语义）+ `14-region-lookup.md`（AVL/BTreeMap 查找）+ `15-ipc-dispatch.md`（主循环分发与回复）+ `19-vm-brk.md`（堆顶调整，mmap 区间的下界参考）+ `12-memtype.md`（六种 memtype 回调族）
+> **前置**: `rewrite-notes/02-stage-vm/13-region-mapping.md`（区域结构 + map_page_region 语义）+ `14-region-lookup.md`（AVL/BTreeMap 查找）+ `15-ipc-dispatch.md`（主循环分发与回复）+ `19-vm-brk.md`（堆顶调整，mmap 区间的下界参考）+ `12-memtype.md`（六种 memtype 回调族）
 > **说明**: 本文档管 **mmap 服务**——VM 如何响应 `VM_MMAP`/`VM_VFS_MMAP`/`VM_REMAP`/`VM_REMAP_RO`/`VM_MAP_PHYS`：调用者验证（execpriv 分级）→ 地址空间分配（`mmap_region` 三路解析）→ 匿名/文件分流（同步匿名 / VFS 异步文件）→ 辅助路径（物理映射 / 共享区域 remap）。**不覆盖**：munmap（21）、页缓存（24）、VFS 异步对话基础设施（23）、`do_get_phys`/`do_get_refcount`（26 queries）。
 
 ---
@@ -461,14 +461,14 @@ mmap_file_cont(server, reply, state)                           :525
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md`——区域结构与 `map_page_region` 语义（mmap_region 的落点）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/14-region-lookup.md`——`find_slot`/`find_overlap` 查找语义（地址解析的索引面）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`——主循环分发与 `VmReply::Suspend` 语义
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/19-vm-brk.md`——堆顶调整（mmap 区间与堆的边界）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/12-memtype.md`——六种 memtype 回调族（anon/mappedfile/directphys/shared）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/16-pagefault.md`——惰性页分配与缺页状态机（匿名映射的物理页来源）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/21-vm-munmap.md`——释放路径（映射的生命周期终点）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/23-vfs-interaction.md`——VFS 异步对话与 fdref（文件映射的基础设施）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/24-page-cache.md`——页缓存（文件映射缺页的缓存层）
+- `rewrite-notes/02-stage-vm/13-region-mapping.md`——区域结构与 `map_page_region` 语义（mmap_region 的落点）
+- `rewrite-notes/02-stage-vm/14-region-lookup.md`——`find_slot`/`find_overlap` 查找语义（地址解析的索引面）
+- `rewrite-notes/02-stage-vm/15-ipc-dispatch.md`——主循环分发与 `VmReply::Suspend` 语义
+- `rewrite-notes/02-stage-vm/19-vm-brk.md`——堆顶调整（mmap 区间与堆的边界）
+- `rewrite-notes/02-stage-vm/12-memtype.md`——六种 memtype 回调族（anon/mappedfile/directphys/shared）
+- `rewrite-notes/02-stage-vm/16-pagefault.md`——惰性页分配与缺页状态机（匿名映射的物理页来源）
+- `rewrite-notes/02-stage-vm/21-vm-munmap.md`——释放路径（映射的生命周期终点）
+- `rewrite-notes/02-stage-vm/23-vfs-interaction.md`——VFS 异步对话与 fdref（文件映射的基础设施）
+- `rewrite-notes/02-stage-vm/24-page-cache.md`——页缓存（文件映射缺页的缓存层）
 - `os/servers/vm/src/mmap.rs`、`os/servers/vm/src/map_phys.rs`——Rust 实现
 - `minix3/minix/servers/vm/mmap.c`——C 真相源（573 行）

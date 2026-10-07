@@ -3,7 +3,7 @@
 > **分类**: 阶段 1 — 启动入口与初始化骨架（boot Step 1 的 slot 建立底座）
 > **源码**: `minix3/minix/servers/rs/type.h`（112 行）、`minix3/minix/servers/rs/glo.h`（58 行）、`minix3/minix/servers/rs/const.h`（123 行）、`minix3/minix/servers/rs/manager.c:rproc`（槽位管理原语）、`minix3/minix/servers/rs/utility.c:rs_isokendpt`（`rs_isokendpt`）、`minix3/minix/servers/rs/manager.c:get_service_instances`（`get_service_instances`）、`minix3/minix/include/minix/rs.h`（`rprocpub`/`SF_*`）、`minix3/minix/include/minix/sef.h`（`sef_init_info_t`）
 > **Rust 模块**: `os/servers/rs/src/service_slot.rs`、`os/servers/rs/src/process_table.rs`（新建）；`os/servers/rs/src/boot.rs`（接线）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/00-rs-overview.md`、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（boot 骨架，本文档是 Step 1 建立 slot 的数据底座）
+> **前置**: `rewrite-notes/03-stage-rs/00-rs-overview.md`、`rewrite-notes/03-stage-rs/01-rs-boot-init.md`（boot 骨架，本文档是 Step 1 建立 slot 的数据底座）
 > **说明**: 本文档是 RS 的数据底座：系统服务登记表（`rproc`/`rprocpub`/`rproc_ptr`）的完整字段模型、16 位 `r_flags` 与 13 位 `sys_flags` 全表、槽位管理原语（5 个 `lookup_slot_by_*`/`alloc_slot`/`free_slot`/`rs_isokendpt`）、ARCH A-3（裸指针四链 → 索引链）与 A-4（`rproc_ptr` → 数组索引）。**本文档只建立数据结构与槽位原语**；每个字段的机制语义（何时写入、何时读取、状态如何迁移）属于各自的机制文档。
 
 ---

@@ -3,7 +3,7 @@
 > **分类**: 阶段 2 — 权限与隔离（boot Step 1 的权限机制）
 > **源码**: `minix3/minix/kernel/priv.h`（struct priv）、`minix3/minix/include/minix/priv.h`（静态 id/默认宏）、`minix3/minix/include/minix/const.h:SERBAUDVARNAME（L142，工具生成）`（s_flags 位）、`minix3/minix/include/minix/com.h:SYS_PRIV_ALLOW`（SYS_PRIV_* 操作码）、`minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L240，工具生成）`（boot Step 1）、`minix3/minix/servers/rs/utility.c:fill_send_mask,364-422`（fill_*/sched_init_proc/update_sig_mgrs）、`minix3/minix/kernel/system/do_privctl.c`（privctl 内核侧语义）、`minix3/minix/lib/libsys/sys_privctl.c`、`minix3/minix/lib/libsys/sched_start.c`（外部调用面）
 > **Rust 模块**: `os/servers/rs/src/privilege.rs`（`Privilege`/`PrivFlags`/`TrapMask`/`CallMask`/`SysMap`/`PrivCtlOp`/`srv_or_usr`/`from_calls`）、`os/servers/rs/src/sched.rs`（`sched_init_proc`）、`boot.rs` 接线（KernelApi::privctl/getpriv/sched_init_proc）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（boot 时序）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（r_priv 字段归属）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/22-privilege.md`（kernel 侧 priv 语义）
+> **前置**: `rewrite-notes/03-stage-rs/01-rs-boot-init.md`（boot 时序）、`rewrite-notes/03-stage-rs/02-rs-process-table.md`（r_priv 字段归属）、`rewrite-notes/01-stage-kernel/22-privilege.md`（kernel 侧 priv 语义）
 > **说明**: RS 是内核 priv 结构的管理者：boot Step 1 为每个 boot 服务构造 `struct priv`（权限结构），经 `sys_privctl(SYS_PRIV_SET_SYS)` 设置到内核、`sys_getpriv` 同步回本地；运行时经 `SYS_PRIV_UPDATE_SYS` 更新（信号管理器/编辑）、`ALLOW/DISALLOW/YIELD` 门控运行、`SET_USER` 降权、`CLEAR_IPC_REFS` 清理。本文档建模 priv 结构、boot 初始化流程、privctl 全操作面、调度初始化与信号管理器更新原语。
 
 ---
@@ -693,11 +693,11 @@ fn sched_init_proc(&mut self, cfg: &SchedulerConfig) -> Result<Endpoint, Errno>;
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md` — boot 时序（Step 1/2 锚点）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` — r_priv/vm_call_mask 字段归属
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/05-rs-ipc-sendmask.md` — send mask 组合语义（fill_send_mask 的消费方）
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/22-privilege.md` — kernel 侧 priv 表与 privctl 实现
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` — sys_privctl/sys_getpriv/sched_start 签名契约
+- `rewrite-notes/03-stage-rs/01-rs-boot-init.md` — boot 时序（Step 1/2 锚点）
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` — r_priv/vm_call_mask 字段归属
+- `rewrite-notes/03-stage-rs/05-rs-ipc-sendmask.md` — send mask 组合语义（fill_send_mask 的消费方）
+- `rewrite-notes/01-stage-kernel/22-privilege.md` — kernel 侧 priv 表与 privctl 实现
+- `rewrite-notes/03-stage-rs/19-rs-external-interfaces.md` — sys_privctl/sys_getpriv/sched_start 签名契约
 - `minix3/minix/kernel/priv.h`、`minix3/minix/include/minix/priv.h` — priv 结构与默认宏
 - `minix3/minix/include/minix/const.h:SERBAUDVARNAME（L142，工具生成）`、`minix3/minix/include/minix/com.h:SYS_PRIV_ALLOW` — 标志位与操作码
 - `minix3/minix/servers/rs/main.c:sef_cb_init_fresh（L240，工具生成）`、`utility.c:82-141,364-422` — boot Step 1 与原语

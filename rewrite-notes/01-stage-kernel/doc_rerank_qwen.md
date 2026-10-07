@@ -4,7 +4,7 @@
 
 ```text
 your_name(AI agent name) = qwen
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/01-stage-kernel
+target_dir(关注的工作目录) = rewrite-notes/01-stage-kernel
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = 79d9d1944（2026-09-19，docs(edge3): S12 行随动）
 任务 = R 相·重建蓝图：输出 target_dir/doc_rerank_qwen.md，不改任何正文
@@ -56,7 +56,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
   stage 合计 223 处（口径差异：一行可含多处；见 §8.3）。热点：`06-proc-init-boot-proc.md` 58 处、
   `04-platform-discovery.md` 20、`05-clock-interrupt-init.md` 19、`16-smp.md` 15、
   `02-higher-half-kernel.md` 12、`11-scheduling-primitives.md` 10、`14-exception-interrupt.md` 9。
-- 文档互引统计（`grep -rE "<docname>\.md" notes/rewrite/fork-syscall-rewrite --include='*.md'`，
+- 文档互引统计（`grep -rE "<docname>\.md" rewrite-notes --include='*.md'`，
   已排除 `doc_rerank_*` 与自引用）：详见 §8.2 引用迁移表。
 - C 函数定位（`grep -nE '函数定义模式'`）：全部真序锚点见 §1 表，逐条实测。
 - 覆盖探针（`grep -rl <符号> [0-9]*.md`）：`vm_handoff`、`breakpoints`、`direct_tty`、`io_inb`、
@@ -1234,7 +1234,7 @@ io_inb/inw/inl/outb/outw/outl.S（仅在 20 的 PortIo 讨论中间接出现）�
 
 ### 8.2 文档侧引用迁移表（实测，含热点）
 
-测量口径：`grep -rE "<旧文件名>" notes/rewrite/fork-syscall-rewrite --include='*.md'`，
+测量口径：`grep -rE "<旧文件名>" rewrite-notes --include='*.md'`，
 排除自引用与 `doc_rerank_*`；计数单位=命中行。全 notes/ 树中指向本 stage 旧文件名的引用
 经实测 **0 处**在 fork-syscall-rewrite 之外（范围封闭，迁移影响面仅限本树 + `os/` 代码注释）。
 

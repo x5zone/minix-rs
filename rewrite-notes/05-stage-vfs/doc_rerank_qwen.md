@@ -4,7 +4,7 @@
 
 - **执行者**：qwen
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/`
+- **目标目录**：`rewrite-notes/05-stage-vfs/`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`c83461b05`
 - **任务**：R 相·重建蓝图。只产出蓝图，不改任何正文。

@@ -691,12 +691,12 @@ pub fn get_free_pid(&self, table: &ProcTable) -> Pid {
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/plan.md` §2/§3.4/§4（A-3/A-11）/§5.3/§7.3
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/01-pm-init-main.md` §2.4 第 5 步（boot image 填充）与 §3.8（Redox/Linux 对照风格）
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/02-mproc-struct.md` §4.2（Process 四层映射）与 §4.3（不变量）
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/04-ipc-dispatch.md`（主循环 pm_isokendpt 消费，后续）
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/07-pm-fork.md`（槽位/PID 分配链，后续）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/03-vmproc-table.md` §3.1（VmProcTable 同型对照）
+- `rewrite-notes/04-stage-pm/plan.md` §2/§3.4/§4（A-3/A-11）/§5.3/§7.3
+- `rewrite-notes/04-stage-pm/01-pm-init-main.md` §2.4 第 5 步（boot image 填充）与 §3.8（Redox/Linux 对照风格）
+- `rewrite-notes/04-stage-pm/02-mproc-struct.md` §4.2（Process 四层映射）与 §4.3（不变量）
+- `rewrite-notes/04-stage-pm/04-ipc-dispatch.md`（主循环 pm_isokendpt 消费，后续）
+- `rewrite-notes/04-stage-pm/07-pm-fork.md`（槽位/PID 分配链，后续）
+- `rewrite-notes/02-stage-vm/03-vmproc-table.md` §3.1（VmProcTable 同型对照）
 - `minix3/minix/servers/pm/{glo.h, utility.c, const.h, forkexit.c}`（ground truth）
 - `minix3/minix/kernel/system/do_fork.c:do_fork（L69，工具生成）`（generation 归属）
 - `minix3/minix/include/minix/endpoint.h`（endpoint 格式与 generation 语义）

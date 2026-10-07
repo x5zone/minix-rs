@@ -3,7 +3,7 @@
 > **分类**：通用串行总线第 2 篇（批量传输跑包，集线器看端口，包编号第一次完整消费）
 > **源码**：`minix3/minix/drivers/usb/usb_storage/usb_storage.c`（一千八百零六行的海量存储驱动）、`minix3/minix/drivers/usb/usb_storage/scsi.c`（二百八十八行的小型计算机接口命令封装）与 `scsi.h`（一百三十八行的命令定义）、`minix3/minix/drivers/usb/usb_storage/bulk.c`（三十九行的包头包尾构造）与 `bulk.h`（五十二行的包签名定义）、`minix3/minix/drivers/usb/usb_hub/usb_hub.c`（九百三十七行的集线器驱动）、两处各一份 `urb_helper.c`（各一百一十一行的端点配置与阻塞提交）
 > **Rust 模块**：`os/drivers/usb/usb_storage/src/cbw.rs`（包头包尾与标签配对）、`os/drivers/usb/usb_hub/src/ports.rs`（端口看法与复位预算）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/18-usb-framework.md`（请求包编号与枚举顺序，本篇第一次完整消费）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`（块框架，海量存储挂靠的框架）
+> **前置**：`rewrite-notes/16-stage-drivers/18-usb-framework.md`（请求包编号与枚举顺序，本篇第一次完整消费）、`rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`（块框架，海量存储挂靠的框架）
 > **说明**：海量存储是请求包赛道第一次完整消费：小型计算机接口命令装进批量包发出去，状态包回来验标签。集线器反过来：它不传数据，只看端口（谁来了谁走了谁坏了）。包流量与控制流量在服务层，本库只定包格式与端口看法。
 
 > **本篇不讲什么**：
@@ -193,11 +193,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/18-usb-framework.md`：通用串行总线框架（包编号与枚举顺序）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`：块框架（海量存储挂靠的框架）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/20-fb-driver.md`：帧缓冲驱动（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/18-usb-framework.md`：通用串行总线框架（包编号与枚举顺序）。
+- `rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`：块框架（海量存储挂靠的框架）。
+- `rewrite-notes/16-stage-drivers/20-fb-driver.md`：帧缓冲驱动（下一篇，待写）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/usb/usb_storage/src/cbw.rs`：包头包尾与标签配对的实现。
 - `os/drivers/usb/usb_hub/src/ports.rs`：端口看法与复位预算的实现。
 - `minix3/minix/drivers/usb/usb_storage/usb_storage.c`：海量存储的原始实现（一千八百零六行）。

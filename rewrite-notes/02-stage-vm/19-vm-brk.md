@@ -3,7 +3,7 @@
 > **分类**: 阶段 7 — IPC 服务（进程生命周期）
 > **源码**: `minix3/minix/servers/vm/break.c`（`do_brk` :44-57 / `real_brk` :62-69）+ `minix3/minix/servers/vm/region.c`（`map_region_extend_upto_v` :1002-1060）+ `minix3/minix/servers/vm/mem_anon.c`（`anon_resize` :115-130）+ `minix3/minix/lib/libc/sys/brk.c`（libc 封装 :24-34）+ `minix3/minix/include/minix/com.h`（`VM_BRK` :636）+ `minix3/minix/include/minix/ipc.h`（`mess_lc_vm_brk` :918-926）
 > **Rust 模块**: `os/servers/vm/src/brk.rs`（`handle_brk` :62-83 / `grow_heap` :85-126 / `shrink_heap` :128-204 / `BrkError` :37-41）+ `os/servers/vm/src/ipc/dispatcher.rs`（`dispatch_brk` :123-137 / 主循环 VM_BRK 分支 :1038-1039 / 错误映射 :1218-1225）+ `os/servers/vm/src/vm_server.rs`（`handle_brk` :1214-1218）+ `os/libs/minix-types/src/ipc/vm.rs`（`VmBrkIn` :190-193 / `VmBrkOut` :197-199 / `decode_message` :699-720 / `EncodeToM1` :722-727）+ `os/libs/minix-types/src/ipc/message.rs`（`m_lc_vm_brk` union :132 / `MessLcVmBrk` :1522-1536）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md`（区域结构 + extend/split）+ `14-region-lookup.md`（AVL/BTreeMap 查找语义）+ `15-ipc-dispatch.md`（主循环分发与回复）+ `05-physical-memory.md`（物理页分配/释放）
+> **前置**: `rewrite-notes/02-stage-vm/13-region-mapping.md`（区域结构 + extend/split）+ `14-region-lookup.md`（AVL/BTreeMap 查找语义）+ `15-ipc-dispatch.md`（主循环分发与回复）+ `05-physical-memory.md`（物理页分配/释放）
 > **说明**: 本文档管 **brk 服务**——VM 如何响应 `VM_BRK` 请求扩展/收缩堆区域：调用者验证 → 三态编排（grow/shrink/no-change）→ 区域扩展（惰性页分配）或收缩（真正释放物理页）→ 回复。**不覆盖**：用户态 malloc/sbrk 分配器（libc 上层）、栈增长（`STACK_CHANGED` 标志在 break.c:38-39 声明但 do_brk 不处理）、`map_page_region` 通用映射（13 范围）。
 
 ---
@@ -556,11 +556,11 @@ $ cargo check -p minix-vm → Finished（110 warnings pre-existing，无 error�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md` — 区域结构（VirRegion::extend/split/free_range）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/14-region-lookup.md` — AVL_LESS ↔ BTreeMap 查找语义
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md` — 主循环分发与回复编码
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/16-pagefault.md` — 惰性页分配（缺页触发）与 wire-format 修复先例
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md` — 两阶段释放原语（unmap_page/ev_unreference/free_pfn）
+- `rewrite-notes/02-stage-vm/13-region-mapping.md` — 区域结构（VirRegion::extend/split/free_range）
+- `rewrite-notes/02-stage-vm/14-region-lookup.md` — AVL_LESS ↔ BTreeMap 查找语义
+- `rewrite-notes/02-stage-vm/15-ipc-dispatch.md` — 主循环分发与回复编码
+- `rewrite-notes/02-stage-vm/16-pagefault.md` — 惰性页分配（缺页触发）与 wire-format 修复先例
+- `rewrite-notes/02-stage-vm/17-cow-mechanism.md` — 两阶段释放原语（unmap_page/ev_unreference/free_pfn）
 - `minix3/minix/servers/vm/break.c`（:44-69）— do_brk/real_brk
 - `minix3/minix/servers/vm/region.c`（:1002-1060）— map_region_extend_upto_v
 - `minix3/minix/servers/vm/mem_anon.c`（:115-130）、`minix3/minix/servers/vm/memtype.h`（:21）

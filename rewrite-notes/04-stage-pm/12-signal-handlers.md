@@ -15,7 +15,7 @@
 > **本章不讲什么**：
 > - 信号的生成与广播（`check_sig` 的四态 `pid`、`process_ksig` 的 `EDEADEPT` 双检、`sig_proc_exit` 的 `core_sset`）—— `11-signal-core.md`
 > - 停止/延迟/恢复的 `PROC_STOPPED`/`DELAY_CALL`/`UNPAUSED`/`restart_sigs`（`stop_proc`/`try_resume_proc`/`unpause`/`check_pending`/`restart_sigs` 的详述）—— `13-signal-flow.md`；本章只到它们的**调用点**
-> - 内核 `sigframe` 的栈推送与 `sigcontext` 恢复（`sys_sigsend`/`sys_sigreturn` 的内核侧实现）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/19-syscall-signal.md`
+> - 内核 `sigframe` 的栈推送与 `sigcontext` 恢复（`sys_sigsend`/`sys_sigreturn` 的内核侧实现）—— `rewrite-notes/01-stage-kernel/19-syscall-signal.md`
 >
 > 本章只回答一个问题：**PM 如何为“将来某个信号到达时进程该做什么”建立契约，并以掩码控制该契约何时生效，最终把契约翻译成内核可执行的栈帧**。
 
@@ -613,7 +613,7 @@ pub fn sig_send(table: &mut ProcTable, target: UserSlot, signo: i32, k: &mut dyn
 
 VFS 解暂停路径（`05-vfs-interaction.md` 的 `VFS_PM_UNPAUSE_REPLY → UNPAUSED → publish_event → resume_event → restart_sigs → check_pending → sig_send`）与本章的 `catch` 分支的 `unpause` 在 13 闭环——本章的 `sig_send` 已把 `sm_mask` 的 `mask2` 分支与 `SA_*` 语义锁定，13 再补 `VFS_CALL|EVENT_CALL` 挂起与 `PROC_STOPPED` 的延续。
 
-阅读顺序提示：若想先理解“信号安装后如何被投递”，下一站 `13-signal-flow.md`；若想理解“信号处理器如何被内核执行”，下一站 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/19-syscall-signal.md`（内核 `sys_sigsend` 的 `sigframe` 推送与 `sys_sigreturn` 的 `sigcontext` 恢复）。
+阅读顺序提示：若想先理解“信号安装后如何被投递”，下一站 `13-signal-flow.md`；若想理解“信号处理器如何被内核执行”，下一站 `rewrite-notes/01-stage-kernel/19-syscall-signal.md`（内核 `sys_sigsend` 的 `sigframe` 推送与 `sys_sigreturn` 的 `sigcontext` 恢复）。
 
 ---
 
@@ -621,7 +621,7 @@ VFS 解暂停路径（`05-vfs-interaction.md` 的 `VFS_PM_UNPAUSE_REPLY → UNPA
 
 - C 源（ground truth）：`minix3/minix/servers/pm/signal.c:do_sigaction`（`do_sigaction`/`do_sigpending`/`do_sigprocmask`/`do_sigsuspend`/`do_sigreturn`）、`minix3/minix/servers/pm/signal.c:sig_send`（`sig_send`）、`minix3/minix/servers/pm/mproc.h:sigaction（L52，工具生成）`（信号位图与动作表）、`minix3/minix/include/minix/ipc.h:532-551`（`mess_lc_pm_sig`/`mess_lc_pm_sigset`）、`minix3/minix/include/minix/type.h:sigmsg（L73，工具生成）`（`sigmsg`）、`minix3/sys/sys/signal.h:SIG_DFL`（`SIG_DFL/IGN`/`SA_*`/`_NSIG`/`SIGKILL/STOP`）
 - PM 阶段文档：11-signal-core.md（`sig_proc` 的 `ignore/catch/mask/pending` 消费与 `unpause` 调用点）、02-mproc-struct.md（`SignalState` 四位图与 `SigAction` 堆分配）、04-ipc-dispatch.md（`ReplyIntent::ReplyLater` 的 `SUSPEND` 三子类与 `EINTR` 中断）、13-signal-flow.md（`check_pending`/`restart_sigs`/`stop_proc`/`try_resume_proc`/`unpause` 的停止/延迟/恢复，本文只到调用点）、01-pm-init-main.md（`core_sset`/`ign_sset`/`noign_sset` 的初始化）、09-pm-exit.md（`sig_proc_exit` 的 `exit_proc` 终止）
-- 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/19-syscall-signal.md`（`sys_sigsend`/`sys_sigreturn`/`sys_delay_stop`/`sys_resume`/`sigframe`/`sigcontext`）
+- 内核接口：`rewrite-notes/01-stage-kernel/19-syscall-signal.md`（`sys_sigsend`/`sys_sigreturn`/`sys_delay_stop`/`sys_resume`/`sigframe`/`sigcontext`）
 - 阶段内顺序：11 → **本章（12）** → 13 → 14 → 15 → 16（`sched_stop` 的直毁与 `SIGKILL` 保护）→ 17（`exec` 的 `pending` 清理与 `caught` 重置）→ 18（`trace_stop` 的 `TRACE_STOPPED`）
 - OS 模式参考：Linux `sigaction`/`sigqueue`/`sigprocmask`（`kernel/signal.c` 与 `include/uapi/asm-generic/signal.h`）、Redox `SigAction`/`SigQueue`（`common/src/signal.rs` 与 `kernel/src/signal.rs`）、`seL4 Notification`（用户态能力替代信号，见 `01-stage-kernel` 对比）
 - Rust 实现：`os/servers/pm/src/mproc/signal.rs`（`SignalState` 位图与 `SigAction`）、`os/servers/pm/src/signal_handlers.rs`（5 个 handler + `sig_send` 翻译）、`os/libs/minix-types/src/ipc/message.rs`（消息联合体与 `SigMsg`）

@@ -594,7 +594,7 @@ fn test_mmap_basic() {
 /// 2. 系统进程的启动初始化链接
 ///
 /// 这两种语义并不等价。
-/// 详见 notes/redesign/process-model.md 中的分离方案。
+/// 详见 redesign-notes/process-model.md 中的分离方案。
 parent: Pid,
 
 /// HACK (继承自 Minix3):
@@ -644,9 +644,9 @@ enum ProcState {
 - [Rust for Linux](https://rust-for-linux.com/)
 - [Writing an OS in Rust](https://os.phil-opp.com/)
 - [seL4 Formal Verification](https://sel4.systems/)
-- `notes/rewrite/rewrite.md` - 重构设计思路
-- `notes/rewrite/rewrite-strategy.md` - 重写策略（语义冻结）
-- `notes/rewrite/vertical-slice-strategy.md` - 纵向切片策略
+- `rewrite-notes/misc/rewrite.md` - 重构设计思路
+- `rewrite-notes/misc/rewrite-strategy.md` - 重写策略（语义冻结）
+- `rewrite-notes/misc/vertical-slice-strategy.md` - 纵向切片策略
 
 ---
 

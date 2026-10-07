@@ -3,7 +3,7 @@
 > **分类**: 阶段 4 — 自举的堆与元数据（堆分配面）
 > **源码**: `minix3/minix/servers/vm/slaballoc.c`（528 行：`SLABSIZES` :29 / `ITEMSPERPAGE` :31 / `ELBITS` :33 / `BITPAT` :34 / `BITEL` :35 / `GETBIT` :69 / `SETBIT` :70 / `CLEARBIT` :71 / `OBJALIGN` :73 / `MINSIZE` :75 / `MAXSIZE` :76 / `USEELEMENTS` :77 / `struct sdh` :96 / `DATABYTES` :111 / `MAGIC1` :113 / `MAGIC2` :114 / `JUNK` :115 / `NOJUNK` :116 / `struct slabdata` :118 / `slabs[]` :125 / `GETSLAB` :130 / `ADDHEAD` :140 / `UNLINKNODE` :151 / `newslabdata` :159 / `checklist` :194 / `slab_sanitycheck` :229 / `slabsane_f` :240 / `slaballoc` :259 / `objstats` :344 / `slabfree` :406 / `slablock` :464 / `slabunlock` :483 / `slabstats` :504）+ `minix3/minix/servers/vm/proto.h:SLABALLOC`（`SLABALLOC`/`SLABFREE` 宏）+ `minix3/minix/servers/vm/vm.h:MEMPROTECT`（MEMPROTECT）+ `minix3/minix/servers/vm/vm.h:VMP_SLAB`（VMP_SLAB）+ `minix3/minix/servers/vm/pagetable.c:vm_pagelock`（`vm_pagelock`）
 > **Rust 模块**: `os/servers/vm/src/heap_arena.rs`（`HeapArena` + `HeapArenaError`）+ `os/servers/vm/src/global.rs`（`VmAllocator` free-list + `#[global_allocator]` + `PAGE_ALLOC_PTR`）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（`vm_self_mappages`/`vm_self_unmap`）+ `os/servers/vm/src/direct_map.rs`（`VM_HEAP_BASE`/`VM_HEAP_SIZE`/`VM_HEAP_LIMIT`）+ `os/servers/vm/src/vm_server.rs`（接线）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（`VmPageAllocator` 给堆供物理页）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md`（`vm_self_mappages`/`vm_self_unmap` 操作面）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm` 时序 + `__minix_init` 分界线）
+> **前置**: `rewrite-notes/02-stage-vm/06-page-allocator.md`（`VmPageAllocator` 给堆供物理页）、`rewrite-notes/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）、`rewrite-notes/02-stage-vm/08-pagetable-ops.md`（`vm_self_mappages`/`vm_self_unmap` 操作面）、`rewrite-notes/02-stage-vm/01-vm-init-main.md`（`init_vm` 时序 + `__minix_init` 分界线）
 > **说明**: 内核堆分配语义模块：**Minix3 的 slab 尺寸分类分配器（slaballoc.c 全量）、`SLABALLOC`/`SLABFREE` 类型化宏、MEMPROTECT 调试写保护、slabstats 统计**。**不覆盖**：物理页分配器（06）、页表结构/操作（07/08）、元数据搬迁（10）、内存占用统计（26）。
 
 ---
@@ -671,14 +671,14 @@ VmServer::init()
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md` — 物理页分配器（`VmPageAllocator` 给堆供页，上一篇）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md` — 页表结构、Direct Map、VM 自身页表（`init_vm_self_pt`）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md` — 页表操作面（`vm_self_mappages`/`vm_self_unmap`/`WMF_WRITEFLAGSONLY`，HeapArena 消费）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` — `init_vm` 时序 + `__minix_init` 分界线
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/10-vm-relocation.md` — 元数据搬迁（下一篇，HeapArena VA 区间重定位）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/26-vm-queries.md` — 内存占用统计（slabstats 语义归此处）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/plan.md` — §3.4（09 边界）/§5.3（09 契约）/§7.3（ARCH A-3）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/08-slab-allocator.md` — 旧主线素材（素材，§3.1-§3.6 历史背景分析可参考；§3.7 早期"专用 Slab 设计草案"已否决——不采用）
+- `rewrite-notes/02-stage-vm/06-page-allocator.md` — 物理页分配器（`VmPageAllocator` 给堆供页，上一篇）
+- `rewrite-notes/02-stage-vm/07-pagetable-struct.md` — 页表结构、Direct Map、VM 自身页表（`init_vm_self_pt`）
+- `rewrite-notes/02-stage-vm/08-pagetable-ops.md` — 页表操作面（`vm_self_mappages`/`vm_self_unmap`/`WMF_WRITEFLAGSONLY`，HeapArena 消费）
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` — `init_vm` 时序 + `__minix_init` 分界线
+- `rewrite-notes/02-stage-vm/10-vm-relocation.md` — 元数据搬迁（下一篇，HeapArena VA 区间重定位）
+- `rewrite-notes/02-stage-vm/26-vm-queries.md` — 内存占用统计（slabstats 语义归此处）
+- `rewrite-notes/02-stage-vm/plan.md` — §3.4（09 边界）/§5.3（09 契约）/§7.3（ARCH A-3）
+- `rewrite-notes/02-stage-vm/draft/08-slab-allocator.md` — 旧主线素材（素材，§3.1-§3.6 历史背景分析可参考；§3.7 早期"专用 Slab 设计草案"已否决——不采用）
 - `minix3/minix/servers/vm/slaballoc.c`、`minix3/minix/servers/vm/proto.h`、`minix3/minix/servers/vm/vm.h`、`minix3/minix/servers/vm/pagetable.c`、`minix3/minix/servers/vm/main.c`、`minix3/minix/servers/vm/init.c` — C 源码（ground truth）
 - `os/servers/vm/src/heap_arena.rs`、`os/servers/vm/src/global.rs`、`os/servers/vm/src/pagetable/vm_self_map.rs`、`os/servers/vm/src/direct_map.rs`、`os/servers/vm/src/vm_server.rs` — Rust 实现
 - `os/arch/src/arch/direct_map.rs` — `VM_HEAP_BASE`/`VM_HEAP_SIZE` 架构常量（x86-64 0xC0000000 / 64MB）

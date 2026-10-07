@@ -4,7 +4,7 @@
 > **源码**: `minix3/minix/servers/vm/main.c`（`vm_calls` :47-51 / `CALLNUMBER` :53-59 / 主循环 :112-192 / `CALLMAP` 注册 :522-580）+ `minix3/minix/include/minix/com.h`（`VM_RQ_BASE` :627 / `VM_*` 请求码 :630-773 / `NR_VM_CALLS` :769 / `VM_BASIC_CALLS` :778-780 / `SUSPEND` :1151）+ `minix3/minix/include/minix/vfsif.h`（`TRNS_GET_ID` :79 / `TRNS_ADD_ID` :80 / `TRNS_DEL_ID` :81）+ `minix3/minix/include/minix/ipcconst.h`（`IPC_FLG_MSG_FROM_KERNEL` :28 / `IPC_STATUS_FLAGS_TEST` :34）
 > **Rust 模块**: `os/servers/vm/src/ipc/dispatcher.rs`（2155 行：`MessageDispatcher` :99 / `VfsReplyResult` :60 / `DispatchResult` :72 / `dispatch_by_number` :1032）+ `os/servers/vm/src/ipc/transport.rs`（404 行：`IpcStatus` :46 / `IpcTransport` :117 / `KernelIpcTransport` :147 / `TestIpcTransport` :215）+ `os/servers/vm/src/vm_server.rs`（`run` :588 / `run_once` :623 / `dispatch_on_msg` :786 / `rs_handshake` :890 / `handle_vfs_transid` :931 / `reply_to_errno` :1233 / `encode_reply_data` :1280）
 > **V12-P2-1（2026-09-09）**：`dispatch_mapcache`/`setcache`/`forgetcache`/`clearcache` 及 `unmap_region_pages` 已迁 `os/servers/vm/src/ipc/cache_handlers.rs`（本篇行号锚点为迁移前时点）；reply 编码（`VmReplyForIpc`/`reply_to_errno`/`encode_reply_data`）迁 `os/servers/vm/src/ipc/encode.rs`。
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（启动链锚点）+ `02~14` 全部就绪（进程表/ACL/物理内存/页表/区域）
+> **前置**: `rewrite-notes/02-stage-vm/01-vm-init-main.md`（启动链锚点）+ `02~14` 全部就绪（进程表/ACL/物理内存/页表/区域）
 > **说明**: VM 的**运行时心跳**——主循环如何收消息、按五优先级分发、用 `SUSPEND` 协议管理延迟回复、路由 VFS 事务、过滤内核通知、接线 `acl_check`。01 管"进入主循环之前"，本文档管"进入主循环之后"。**不覆盖**：各 handler 实现（16~26）、ACL 数据结构（04）、`do_procctl` 细节（22）、VFS 请求队列（23）、SEF 生命周期细节（01）。
 
 ---
@@ -728,11 +728,11 @@ $ cargo check -p minix-vm → Finished（无 error）
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` — 启动链与 SEF（主循环前置；CALLMAP 注册位置 main.c:522-580）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/04-acl.md` — ACL 三态与权限位（acl_check 接线）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/03-vmproc-table.md` — vm_isokendpt / caller 槽验证
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/16-pagefault.md` — P3 分支 handler
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md`、`18-vm-fork.md`、`19-vm-brk.md`、`20-vm-mmap.md`、`21-vm-munmap.md`、`22-vm-exit.md`、`23-vfs-interaction.md`、`24-page-cache.md`、`25-rs-services.md`、`26-vm-queries.md` — P4 分支各 handler
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` — 启动链与 SEF（主循环前置；CALLMAP 注册位置 main.c:522-580）
+- `rewrite-notes/02-stage-vm/04-acl.md` — ACL 三态与权限位（acl_check 接线）
+- `rewrite-notes/02-stage-vm/03-vmproc-table.md` — vm_isokendpt / caller 槽验证
+- `rewrite-notes/02-stage-vm/16-pagefault.md` — P3 分支 handler
+- `rewrite-notes/02-stage-vm/17-cow-mechanism.md`、`18-vm-fork.md`、`19-vm-brk.md`、`20-vm-mmap.md`、`21-vm-munmap.md`、`22-vm-exit.md`、`23-vfs-interaction.md`、`24-page-cache.md`、`25-rs-services.md`、`26-vm-queries.md` — P4 分支各 handler
 - `minix3/minix/servers/vm/main.c`（`vm_calls` :47-51 / 主循环 :112-192 / `CALLMAP` :522-580）— C 主循环
 - `minix3/minix/include/minix/com.h`（`VM_RQ_BASE` :627 / `VM_*` :630-773 / `SUSPEND` :1151）— 请求码与 SUSPEND
 - `minix3/minix/include/minix/vfsif.h`（:79-81）、`minix3/minix/include/minix/ipcconst.h`（:28/:34）— transid 与 IPC 状态宏

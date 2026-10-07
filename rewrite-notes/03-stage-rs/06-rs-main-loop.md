@@ -3,7 +3,7 @@
 > **分类**: 阶段 3 — 主循环与监控（RS 运行时心脏）
 > **源码**: `minix3/minix/servers/rs/main.c:main`（`main()`）、`minix3/minix/servers/rs/utility.c:rs_asynsend`（`rs_asynsend`）、`utility.c:309-341`（`reply`/`late_reply`）、`utility.c:351-359`（`rs_isokendpt`）、`utility.c:424-479`（`rs_is_idle`/`rs_idle_period`）、`servers/rs/const.h:45,49`（`RS_SRV_IS_IDLE`/`RS_DELTA_T`）、`main.c:631-704`（signal 回调）、`sys/sys/errno.h:199`（`EDONTREPLY`）
 > **Rust 模块**: `os/servers/rs/src/dispatch.rs`（`IpcStatus`/`DispatchKind`/`classify`/`DispatchResult`/`dispatch_request`）、`os/libs/minix-types/src/types/errno.rs`（`EDONTREPLY`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`（启动链）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`rs_isokendpt`、`RS_DEAD`/`RS_ACTIVE` 位）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md`（handler 第一行）
+> **前置**: `rewrite-notes/03-stage-rs/01-rs-boot-init.md`（启动链）、`rewrite-notes/03-stage-rs/02-rs-process-table.md`（`rs_isokendpt`、`RS_DEAD`/`RS_ACTIVE` 位）、`rewrite-notes/03-stage-rs/04-rs-access-control.md`（handler 第一行）
 > **说明**: boot 完成后（01 的 4 步 + `sys_setalarm`），RS 进入 `main()` 的 while 死循环。主循环由三活动构成（取活/干活/回活），四类消息在分派前分类。本文档是运行时骨架：只定义分类、回复协议与空闲期后台任务，各 handler 机制一律移交（07/12~16）。
 
 ---
@@ -394,14 +394,14 @@ dispatch.rs
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md` — 启动链与 SEF 注册
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` — `rs_isokendpt`、`RS_DEAD`/`RS_ACTIVE`/`RS_LATEREPLY` 位
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md` — handler 第一行权限检查
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` — do_period/心跳/do_sigchld
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md`、`16-rs-live-update.md` — ready 消息
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md`、`14-rs-query-requests.md` — 请求 handler
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` — cleanup_service/terminate_service
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/18-rs-self-lifecycle.md` — signal 回调细节
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` — reply/rs_asynsend 接线
+- `rewrite-notes/03-stage-rs/01-rs-boot-init.md` — 启动链与 SEF 注册
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` — `rs_isokendpt`、`RS_DEAD`/`RS_ACTIVE`/`RS_LATEREPLY` 位
+- `rewrite-notes/03-stage-rs/04-rs-access-control.md` — handler 第一行权限检查
+- `rewrite-notes/03-stage-rs/07-rs-period-heartbeat.md` — do_period/心跳/do_sigchld
+- `rewrite-notes/03-stage-rs/12-rs-init-run.md`、`16-rs-live-update.md` — ready 消息
+- `rewrite-notes/03-stage-rs/13-rs-control-requests.md`、`14-rs-query-requests.md` — 请求 handler
+- `rewrite-notes/03-stage-rs/15-rs-terminate-restart.md` — cleanup_service/terminate_service
+- `rewrite-notes/03-stage-rs/18-rs-self-lifecycle.md` — signal 回调细节
+- `rewrite-notes/03-stage-rs/19-rs-external-interfaces.md` — reply/rs_asynsend 接线
 - `minix3/minix/servers/rs/main.c:main`、`utility.c:223-233,309-359,424-479`、`const.h:45,49`、`sys/sys/errno.h:199` — ground truth
 - `os/servers/rs/src/dispatch.rs`、`os/libs/minix-types/src/types/errno.rs` — Rust 实现

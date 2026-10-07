@@ -57,7 +57,7 @@ NK4A 群四份（riscv 零命中，仅存档参照）。`.zcode` 侧：
    kernel-image 自当引导体、**不经 BootHandoff 跨镜像交接**，甲案落地不构成第二消费
    者。改述建议：「riscv 甲案落地可验证『kernel-image 自引导』这一第三形态，
    BootHandoff 的第二消费者仍等 x86 迁移或其它消费方」，并加反向引用
-   `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md §D.2`。
+   `rewrite-notes/coordination/riscv-reviewlog.md §D.2`。
 2. **NK4C-WORKLOG §1.111 的「未接线已知缺口」措辞**：第 4 轮债⑪（本文件 §D.12）
    翻案钉死——vmctl FlushTlb/InvlPg 内核腿三架构已实现（FIX-24，
    `syscall.rs:2555-2592`），VM 侧零调用者是有意设计（V13-P2-1），真实缺口是
@@ -72,7 +72,7 @@ NK4A 群四份（riscv 零命中，仅存档参照）。`.zcode` 侧：
 负结论必须按模式拆分计数，且禁止出自被 `head` 截断的输出」——第 4 轮债⑩「全仓
 fence.i 零命中」误判的完整因果（未锚定 `dc `/`ic ` 模式命中 2960 行子串噪声、
 `head -8` 截断、截断处未验证即下负结论、复核时才由外部发现反例）。候选归属文件：
-`notes/rewrite/fork-syscall-rewrite/misc_concepts.md`。
+`rewrite-notes/misc/misc_concepts.md`。
 
 下一轮建议入口：按 §A.7（park 与栈模型，最高优先缺口）与 §A.5（帧池页表通道 sfence）准备
 修复排期清单；B 表待用户裁决后把选定方案展开成实施配方。第 2 轮修正：D1/D7 的裁决项

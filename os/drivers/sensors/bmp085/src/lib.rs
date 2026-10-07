@@ -4,7 +4,7 @@
 //! (583 lines). This crate owns the math half (temperature from
 //! calibration plus raw reading); the service binary owns bus
 //! traffic. See document `24-misc-drivers.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

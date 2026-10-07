@@ -13,7 +13,7 @@
 **目标读者**：已理解 `guardianship` 的 `Normal/Traced` 双态（02）、`wait_test` 的 `TRACE_STOPPED` 分支与 `W_STOPCODE` 的 `0x7f` 截断（10）、`sig_proc` 的 `TRACE` 先行 `sigtrace` 位图（11）的开发者。
 
 > **本章不讲什么**：
-> - 内核 `sys_trace` 实现（`T_STOP/GET/SET` 寄存器/内存拷贝）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel` 的 `kernel/system/do_trace.c`
+> - 内核 `sys_trace` 实现（`T_STOP/GET/SET` 寄存器/内存拷贝）—— `rewrite-notes/01-stage-kernel` 的 `kernel/system/do_trace.c`
 > - `tracer_died` 的 `TRACER_DEATH` 消费（`TRACED` 转 `Zombie→ToldParent` 的 `minix3/minix/servers/pm/forkexit.c:tracer_died`）—— `09-pm-exit.md`
 > - `wait4` 的 `tracer` 分支 `tell_tracer`（`W_STOPCODE` 的 `0x7f` 截断与 `wait_test` 的 `TRACE_STOPPED` 分支）—— `10-pm-wait.md` 已覆盖
 >

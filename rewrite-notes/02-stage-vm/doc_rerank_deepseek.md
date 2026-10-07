@@ -8,7 +8,7 @@
 - 执行者：deepseek
 - 日期：2026-09-19
 - 本轮修订（2026-09-19，补做轮）：订正 §9.2 自检门 G7 的契约计数（26→27，§4/§5 均为 27 篇）；订正 `phys_region.h:8-24` 两处锚点为 `8-21`（该头文件共 23 行，`struct phys_region` 定义在 8–21 行）。
-- 目标目录：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/`
+- 目标目录：`rewrite-notes/02-stage-vm/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`
 - 当前提交号：`124d52c48506bb0172665d9de6fea328189972f8`（工作区另有与本任务无关的未提交改动，未触碰）
 - 交付物：本文件 `02-stage-vm/doc_rerank_deepseek.md`（唯一落盘产物；执行过程未写入其它文件）

@@ -4,7 +4,7 @@
 
 - Executor: muse
 - Date (UTC): 2026-09-19
-- Target directory: `notes/rewrite/fork-syscall-rewrite/15-stage-fs/`
+- Target directory: `rewrite-notes/15-stage-fs/`
 - Repository root: `/home/xzhao/github/minix-rs`
 - Commit: `5548a942b2986c76471b80f8d873742a2f28f5f4` (`git rev-parse HEAD`; log head `5548a942b docs(edge3): S33 ...`)
 - Task: R-phase rebuild blueprint. Output is `target_dir/doc_rerank_muse.md`. No body text modified.
@@ -34,14 +34,14 @@ Out of scope: other stage directories; `os/` code outside the FS stage list in �
    - `minix3/minix/fs/isofs/`: 12 `.c` file list + `table.c` full read (read-only subset with two `#if 0` peek gaps).
    - `minix3/minix/fs/procfs/`, `ptyfs/`, `vbfs/vbfs.c` (141), `hgfs/hgfs.c` (106): file lists + table/entry sampling.
 3. Non-C build/boot artifacts: `minix3/minix/fs/Makefile` (SUBDIR list: mfs+pfs always; ext2/isofs/procfs/ptyfs + hgfs/vbfs on i386 non-image-only), `minix3/minix/servers/vfs/main.c:477-516` (`mount_pfs`, `mount_fs(DEV_IMGRD,...,MFS_PROC_NR,...)`), `minix3/minix/kernel/table.c:62-63` (PFS/MFS boot_image slots).
-4. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (§ stage table + boot two-layer semantics), `notes/rewrite/fork-syscall-rewrite/edge_todo.md` (E-FSRUNTIME/E-FSBDEV/E-FSVMCACHE/E-FSCMDS registration, 2026-09-16 entry), target `plan.md` (full read, §§1-5; §4 ARCH table is design-time candidate list), target `todo.md` (V1 architecture review front matter + coverage matrices §§2.1-2.6 sampled), `draft/README.md` (placeholder scope).
+4. Boundary materials: `rewrite-notes/00-master-plan/README.md` (§ stage table + boot two-layer semantics), `rewrite-notes/coordination/edge_todo.md` (E-FSRUNTIME/E-FSBDEV/E-FSVMCACHE/E-FSCMDS registration, 2026-09-16 entry), target `plan.md` (full read, §§1-5; §4 ARCH table is design-time candidate list), target `todo.md` (V1 architecture review front matter + coverage matrices §§2.1-2.6 sampled), `draft/README.md` (placeholder scope).
 5. Previous stage `14-stage-runtime/00-runtime-overview.md` (runtime-is-library thesis, lifecycle mainline, ARCH A-2): confirms FS stage must not re-explain crt0/allocator/syscall wrapping; first FS document starts at "a born user process that serves VFS requests".
 6. Rust implementation entries: `os/libs/minix-fs/src/lib.rs` (module→document map, full), `protocol.rs`/`driver.rs`/`call.rs`/`data.rs`/`dentry.rs`/`lookup.rs`/`cache.rs`/`vm_cache.rs`/`bio.rs`/`bdev_bridge.rs`/`task.rs`/`memfs.rs` (symbol-level `grep pub`), `os/fs/mfs/src/` (18 modules incl. `server.rs` 1527 lines, `second_level.rs`, `dir_io.rs`, `startup.rs` — none in old doc map), `os/fs/fs-rt/src/` (`lib.rs` 38, `wire.rs` 657, `transport.rs` 459, `ipc.rs` 228, `source.rs` 47 — no owning document), `os/fs/{pfs,procfs,ptyfs,ext2,isofs,vbfs,hgfs}/src/`, `os/libs/minix-vtreefs/src/` (`tree.rs` 1073 + `driver.rs` 475 — `driver.rs` not in old doc map), `os/libs/minix-sffs/src/` (5 modules vs C 15 files).
 7. Style example `01-stage-kernel/06-todo.md` §§1-3 only (how a contract states what/why/boundary/acceptance; no content borrowed).
 
 ### 0.3 Commands and key outputs (evidence excerpts)
 
-- `wc -l notes/rewrite/fork-syscall-rewrite/15-stage-fs/*.md | sort -n`: 26 docs, 62 (`99`) .. 358 (`01`) lines; total 12471 incl. plan/todo. Byte sizes 3.8K (`99`) .. 36K (`01`). Mean density ~100 bytes/line: dense exposition, not long-form. No document approaches the 3000-line soft cap; length pressure is absent, compression pressure is present (§3).
+- `wc -l rewrite-notes/15-stage-fs/*.md | sort -n`: 26 docs, 62 (`99`) .. 358 (`01`) lines; total 12471 incl. plan/todo. Byte sizes 3.8K (`99`) .. 36K (`01`). Mean density ~100 bytes/line: dense exposition, not long-form. No document approaches the 3000-line soft cap; length pressure is absent, compression pressure is present (§3).
 - `ls minix3/minix/fs/`: `ext2 hgfs isofs mfs pfs procfs ptyfs vbfs` (+ `Makefile`, `Makefile.inc`). `libfsdriver`: 6 `.c` + `fsdriver.h`. `libminixfs`: `bio.c cache.c inc.h`. `libvtreefs`: 10 `.c`. `libsffs`: 15 `.c`.
 - `cat minix3/minix/include/minix/vfsif.h`: 33 `REQ_*` (`FS_BASE+1..33`), `NREQS 34`, `TRNS_GET_ID/ADD_ID/DEL_ID`, `IS_FS_RQ (((type)&~0xff)==FS_BASE)`, `-301/-302/-303`, `RES_THREADED/HASPEEK/64BIT`, `REQ_RDONLY/ISROOT`, `PATH_RET_SYMLINK/GET_UCRED`, `vfs_ucred_t`.
 - `cat minix3/minix/lib/libfsdriver/fsdriver.c`: `fsdriver_process` (notify-or-non-VFS → `fdr_other`, no reply; else `mounted || READSUPER` gate → `call_nr-=FS_BASE` → `callvec` or `ENOSYS`; reply `TRNS_ADD_ID(r,transid)`; `fdr_postcall`), `fsdriver_terminate` (`running=FALSE; sef_cancel`), `fsdriver_task` (`while(running||mounted) sef_receive_status(ANY)` → `fsdriver_process(...,FALSE)`).

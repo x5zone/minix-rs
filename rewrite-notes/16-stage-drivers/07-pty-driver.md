@@ -3,7 +3,7 @@
 > **分类**：启动关键第 3 篇（主从对，无硬件，远程登录的管道）
 > **源码**：`minix3/minix/drivers/tty/pty/pty.c`（八百六十行，主端与对管理）、`minix3/minix/drivers/tty/pty/tty.c`（一千三百二十行，从端行规则，与终端同源）、`minix3/minix/drivers/tty/pty/ptyfs.c`（一百一十二行，文件系统侧车）、`minix3/minix/include/minix/com.h`（第九百零一行到第九百零二行，从节点增删请求号）、`minix3/minix/include/minix/config.h`（第四十六行，对数三十二）
 > **Rust 模块**：`os/drivers/tty/pty/src/pair.rs`（对状态与开关规则）、`os/drivers/tty/pty/src/buffer.rs`（输出环与包模式）、`os/drivers/tty/pty/src/select.rs`（主端就绪判断）、`os/drivers/tty/pty/src/ptyfs.rs`（文件系统侧车抽象）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/06-tty-driver.md`（从端就是一台终端机）
+> **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（字符框架）、`rewrite-notes/16-stage-drivers/06-tty-driver.md`（从端就是一台终端机）
 > **说明**：伪终端是没有硬件的终端：主端连着远程登录服务这样的程序，从端跑着壳，壳的输入输出全经过主端。本篇讲主端与对管理：三十二对的状态机、主端挂钩、输出环、包模式、选择语义、文件系统侧车。从端的行规则与终端驱动共用，不在本篇重复。
 
 > **本篇不讲什么**：
@@ -236,11 +236,11 @@ Unix98 从节点住在伪终端文件系统里，驱动管增删，文件系统�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：字符框架（主端请求入口）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/06-tty-driver.md`：终端驱动（从端逻辑）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/08-log-driver.md`：日志驱动（另一只环）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符框架（主端请求入口）。
+- `rewrite-notes/16-stage-drivers/06-tty-driver.md`：终端驱动（从端逻辑）。
+- `rewrite-notes/16-stage-drivers/08-log-driver.md`：日志驱动（另一只环）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/tty/pty/src/pair.rs`：对状态与开关规则的实现。
 - `os/drivers/tty/pty/src/buffer.rs`：输出环与包模式的实现。
 - `os/drivers/tty/pty/src/select.rs`：主端就绪判断的实现。

@@ -157,7 +157,7 @@ pub fn perform_taskcall(
 
 这个缺陷不是一眼看出来的。它被十七个取证/修复轮次层层剥开，每一轮都用真机
 证据杀死一个假根因，同时又给下一轮留下一个更精确的疑点。完整记录在
-`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（§1.119续-7 至 §1.120续-22）。
+`rewrite-notes/coordination/NK4C-WORKLOG.md`（§1.119续-7 至 §1.120续-22）。
 这里提取对读者有价值的脉络。
 
 ### 4.1 第一层假象：错误码与"消息没送到"

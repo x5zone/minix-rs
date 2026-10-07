@@ -202,8 +202,8 @@ I-11（BIOS legacy 范围声明非缺口）、I-12（RAII 拒绝维持，B1 承�
 ### 7.7 跨阶段转移清单（原 §H 结论，均已落地）
 
 页表页分配器 VM 接入 + minix-vm clippy → 02-stage-vm；init/load 测试 + init_ap + QEMU GDB CI +
-ptproc per-CPU → 16-smp（=本表 D-40/T-2~T-5）；C-D-1~5 → notes/TODO.md（其中 C-D-5 已随 D3 闭合）；
-QEMU E2E → notes/TODO.md QEMU backlog。原始 18 节全文见 git `97df4e58d^`。
+ptproc per-CPU → 16-smp（=本表 D-40/T-2~T-5）；C-D-1~5 → rewrite-notes/misc/legacy-notes-todo.md（其中 C-D-5 已随 D3 闭合）；
+QEMU E2E → rewrite-notes/misc/legacy-notes-todo.md QEMU backlog。原始 18 节全文见 git `97df4e58d^`。
 
 ## 8. GPT 评论分析结论（原 §18.5/§19/§20，压缩为结论）
 

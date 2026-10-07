@@ -2651,7 +2651,7 @@ os/servers/pm/src/
 ### 12.2 参考文档
 
 - Minix3 源码：`minix/servers/pm/mproc.h`
-- 状态分析：`notes/rewrite/fork-syscall-rewrite/mp-flags-analysis.md`
+- 状态分析：`rewrite-notes/mp-flags-analysis.md`
 
 ---
 

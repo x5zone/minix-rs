@@ -17,7 +17,7 @@
 > - `sigaction` 族安装与 `sig_send` 的 `sigmsg` 翻译（`SA_NODEFER/RESETHAND`/`without_unkillable`）—— `12-signal-handlers.md`；本章只到 `sig_send` 的 `PostAction` 分支点
 > - `VFS` 协议状态机（`VFS_PM_*` 的 11 种回复与 `NEW_PARENT`/`UNPAUSED` 语义）—— `05-vfs-interaction.md`；本章只到 `restart_sigs` 调用点
 > - 事件订阅串行化（`subs[NR_SUBS]` 的 `waiting` 计数与 `resume_event` 串行推进）—— `06-event-subscription.md`
-> - 内核 `sys_delay_stop/sys_resume` 的 `EBUSY` 时序与 `sigframe` 推送（`do_delay_stop` 的 `SENDING` 检查）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`
+> - 内核 `sys_delay_stop/sys_resume` 的 `EBUSY` 时序与 `sigframe` 推送（`do_delay_stop` 的 `SENDING` 检查）—— `rewrite-notes/01-stage-kernel/15-clock-timer.md`
 >
 > 本章只回答一个问题：**当信号在进程仍在内核发送消息（mid-send）或阻塞在 `VFS`/`WAIT`/`sigsuspend` 时，PM 如何保证“先把进程停下来，再把已解除阻塞的 `pending` 逐个投递，`VFS` 回复后再续”，且 `SIGSNDELAY` 的到来使延迟的停止最终兑现**。
 
@@ -457,7 +457,7 @@ pub fn handle_sigsn_delay(table: &mut ProcTable, slot: usize, k: &mut dyn Kernel
 
 `check_pending` 为 12 的 `Block/Unblock/SetMask/sigsuspend/sigreturn` 的 `needs_check` 前置，是 11 的 `SIGSNDELAY` 延迟兑现的 `~DELAY→check` 续——本章锁定 `PROC_STOPPED` 的双用途不与 `DELAY_CALL` 混淆，14 的 `SIGALRM` 经 `kill→sig_proc→pending` 的重检即可复用同一路径。
 
-阅读顺序提示：若想先理解“VFS 回复后如何善后”，下一站 `05-vfs-interaction.md` 的 `handle_vfs_reply` 尾部；若想理解“内核延迟停止的 EBUSY 时序”，下一站 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`sys_delay_stop` 的 `SENDING` 检查与 `sys_resume` 的唤醒）。
+阅读顺序提示：若想先理解“VFS 回复后如何善后”，下一站 `05-vfs-interaction.md` 的 `handle_vfs_reply` 尾部；若想理解“内核延迟停止的 EBUSY 时序”，下一站 `rewrite-notes/01-stage-kernel/15-clock-timer.md`（`sys_delay_stop` 的 `SENDING` 检查与 `sys_resume` 的唤醒）。
 
 ---
 
@@ -465,7 +465,7 @@ pub fn handle_sigsn_delay(table: &mut ProcTable, slot: usize, k: &mut dyn Kernel
 
 - C 源（ground truth）：`minix3/minix/servers/pm/signal.c:stop_proc`（`stop_proc`/`try_resume_proc`）、`minix3/minix/servers/pm/signal.c:process（L651，工具生成）`（`check_pending`/`restart_sigs`/`unpause`）、`minix3/minix/servers/pm/signal.c:process_ksig（L344，工具生成）`（`process_ksig` 尾部 `SIGSNDELAY`）、`minix3/minix/servers/pm/mproc.h:IN_USE`（`PROC_STOPPED` 等 7 个 `mp_flags`）、`minix3/minix/include/minix/com.h:DS_RQ_BASE`（`VFS_PM_UNPAUSE`）、`minix3/sys/sys/signal.h:SIGSNDELAY`（`SIGSNDELAY`）
 - PM 阶段文档：11-signal-core.md（`sig_proc` 的 `VFS|EVENT` 挂点与 `process_ksig` 的 `SIGSNDELAY` 分支）、12-signal-handlers.md（`sig_send` 的 `sigmsg` 四步与 `sigsuspend` 的 `mask2` 配对、`without_unkillable`）、05-vfs-interaction.md（`handle_vfs_reply` 的 `restart_sigs` 调用点与两处 `publish_event` 提前 return）、06-event-subscription.md（`EVENT_CALL` 的 `resume_event` 尾部分派）、02-mproc-struct.md（`BlockState` 三元与 `IpcBlockReason::DelayedSignal`）、04-ipc-dispatch.md（`ReplyIntent::ReplyLater` 的 `SUSPEND` 与 `EINTR` 中断）
-- 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`sys_delay_stop/sys_resume` 的 `EBUSY` 时序与 `SENDING` 检查）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/19-syscall-signal.md`（`sys_sigsend`/`sys_sigreturn` 的 `sigframe` 与 `sys_kill` 的信号投递）
+- 内核接口：`rewrite-notes/01-stage-kernel/15-clock-timer.md`（`sys_delay_stop/sys_resume` 的 `EBUSY` 时序与 `SENDING` 检查）、`rewrite-notes/01-stage-kernel/19-syscall-signal.md`（`sys_sigsend`/`sys_sigreturn` 的 `sigframe` 与 `sys_kill` 的信号投递）
 - 阶段内顺序：11 → 12 → **本章（13）** → 14（`SIGALRM` 的 `ALARM_ON` 与 `check_pending` 的 `pending&!mask` 重检复用）→ 15（`TAINTED` 与 `credentials` 的信号边界）→ 16（`sched_stop` 的直毁，绕过本章的 `PROC_STOPPED`）
 - OS 模式参考：Linux `TASK_INTERRUPTIBLE`/`signal_pending`/`recalc_sigpending`、`FreeBSD msleep(PCATCH)`、`Redox Context::blocked/SigQueue`、`seL4 Notification`（见 §1.7）
 - Rust 实现：`os/servers/pm/src/mproc/block.rs`（`BlockState::can_resume`/`stopped` 双用途）、`os/servers/pm/src/mproc/signal.rs`（`SignalState::next_unblocked/take_pending`）、`os/servers/pm/src/signal_flow.rs`（`MayDelay`/`stop_proc`/`try_resume_proc`/`unpause`/`check_pending`/`restart_sigs`/`handle_sigsn_delay`）

@@ -4,7 +4,7 @@
 
 - **执行者**：qwen
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/09-stage-init/`
+- **目标目录**：`rewrite-notes/09-stage-init/`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`40dfbbeb91fca33079791190b577145b828797c6`
 - **阶段类型判定**：**启动链型 + 状态机型混合**（见 §1）。init 是 boot 链路终点的用户态进程，`main()` 是线性出生流程，之后进入 `transition()` 状态机主循环。按 §9「启动链型」处理：以启动/运行时序为骨架，非启动路径（sysctl 交互、utmp 账本、对外契约）归入支线组。

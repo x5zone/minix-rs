@@ -3,7 +3,7 @@
 > **分类**：通用串行总线第 1 篇（请求包编号与枚举顺序，包格式只定编号）
 > **源码**：`minix3/minix/lib/libusb/usb.c`（二百五十五行的客户端库）、`minix3/minix/drivers/usb/usbd/base/usbd.c`（一百八十四行的守护启动）、`minix3/minix/drivers/usb/usbd/hcd/hcd.c`（一千三百一十四行的通用枚举与传输状态机）、`minix3/minix/drivers/usb/usbd/hcd/hcd_common.c`（七百六十一行的设备管理）、`minix3/minix/drivers/usb/usbd/hcd/hcd_ddekit.c`（四百八十四行的设备套件桥接）、`minix3/minix/drivers/usb/usbd/hcd/hcd_schedule.c`（三百零五行的请求包调度）、`minix3/minix/drivers/usb/usbd/hcd/musb/musb_core.c`（九百四十八行的控制器核心）与 `musb_am335x.c`（七百六十三行的芯片初始化）、`minix3/minix/include/minix/com.h` 第八百一十三行到第八百四十行（请求常量与消息字段）、`minix3/minix/include/minix/usb.h`（一百五十八行的请求包结构）
 > **Rust 模块**：`os/drivers/usb/usbd/src/protocol.rs`（请求编号与解码）、`os/drivers/usb/usbd/src/enumerate.rs`（枚举顺序）、`os/libs/minix-usb/src/urb.rs`（请求包跟踪）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/00-drivers-overview.md`（驱动子系统全景，本框架在其中的位置）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/04-bdev-client.md`（块设备客户端库，客户端库思想对照）
+> **前置**：`rewrite-notes/16-stage-drivers/00-drivers-overview.md`（驱动子系统全景，本框架在其中的位置）、`rewrite-notes/16-stage-drivers/04-bdev-client.md`（块设备客户端库，客户端库思想对照）
 > **说明**：通用串行总线框架是请求包赛道：驱动与主机守护之间不读写扇区，只交换编号的包。本篇讲包编号是什么、设备上电先说什么后说什么。控制器寄存器与数据包流量在服务层，本库只定编号与顺序。
 
 > **本篇不讲什么**：
@@ -194,11 +194,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/17-storage-misc-driver.md`：存储杂项（上一篇，代理思想对照）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/04-bdev-client.md`：块设备客户端库（客户端库思想对照）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/19-usb-storage-hub.md`：海量存储与集线器（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/17-storage-misc-driver.md`：存储杂项（上一篇，代理思想对照）。
+- `rewrite-notes/16-stage-drivers/04-bdev-client.md`：块设备客户端库（客户端库思想对照）。
+- `rewrite-notes/16-stage-drivers/19-usb-storage-hub.md`：海量存储与集线器（下一篇，待写）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/usb/usbd/src/protocol.rs`：请求编号与解码的实现。
 - `os/drivers/usb/usbd/src/enumerate.rs`：枚举顺序的实现。
 - `os/libs/minix-usb/src/urb.rs`：请求包跟踪的实现。

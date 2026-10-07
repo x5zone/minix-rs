@@ -102,8 +102,8 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 **阶段边界材料**：
 
-- `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md`：阶段划分（15 号 = FS）、boot 两层语义（登记顺序 vs 执行顺序）
-- `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（1095 行，42 条）：本 stage 登记 4 条（`E-FSRUNTIME` `:897`、`E-FSBDEV` `:914`、`E-FSVMCACHE` `:931`、`E-FSCMDS` `:948`）
+- `rewrite-notes/00-master-plan/README.md`：阶段划分（15 号 = FS）、boot 两层语义（登记顺序 vs 执行顺序）
+- `rewrite-notes/coordination/edge_todo.md`（1095 行，42 条）：本 stage 登记 4 条（`E-FSRUNTIME` `:897`、`E-FSBDEV` `:914`、`E-FSVMCACHE` `:931`、`E-FSCMDS` `:948`）
 - `15-stage-fs/plan.md`（396 行）、`15-stage-fs/todo.md`（265 行）
 - 前一 stage：`05-stage-vfs/00-vfs-overview.md`（已讲完 VFS 主循环、33 个 REQ 的 VFS 侧包装、挂载链 VFS 半、路径多组件解析、管道 VFS 侧、设备映射）
 
@@ -128,7 +128,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ```text
 # 文档行数
-$ wc -l notes/rewrite/fork-syscall-rewrite/15-stage-fs/*.md
+$ wc -l rewrite-notes/15-stage-fs/*.md
   21 00-fs-overview.md / 358 01-fsdriver-task.md / 284 02-fsdriver-call.md
   249 03-fsdriver-utility.md / 310 04-block-cache.md / 220 05-block-io.md
   239 06-pfs.md / 235 07-mfs-init-main.md / 229 08-mfs-super.md
@@ -4403,7 +4403,7 @@ $ cat minix3/minix/fs/vbfs/Makefile
 2. **一篇拆多篇的（4 篇）**：`01 → {01, 02, 03}`、`03 → {03, 04}`、`04 → {06, 07}`、`08 → {12, 13}`、`13 → {18, 19}`——**不可批量替换**，须逐处读引用句判断。共约 47 处（14 + 5 + 8 + 11 + 4）。
 3. **多篇合并的（2 处）**：`21 → 27`、`22 → 27`——批量替换（两篇都指向新 27）。
 4. **新增篇章的引用**：新 30–35 与 99 的引用不存在于旧文档（旧文档零处引用它们），无需迁移。
-5. **验证方式**：迁移后跑 `grep -rho "15-stage-fs/[0-9][0-9]-[a-z0-9-]*\.md" notes/rewrite/fork-syscall-rewrite/15-stage-fs/*.md | sort -u`，确认输出中的每个文件名都在新目录中存在。
+5. **验证方式**：迁移后跑 `grep -rho "15-stage-fs/[0-9][0-9]-[a-z0-9-]*\.md" rewrite-notes/15-stage-fs/*.md | sort -u`，确认输出中的每个文件名都在新目录中存在。
 
 **断链风险等级**：
 
@@ -4594,7 +4594,7 @@ $ cat minix3/minix/fs/vbfs/Makefile
 
 **结论：本蓝图已完成**。
 
-**交付物**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/doc_rerank_deepseek.md`（本文件）。
+**交付物**：`rewrite-notes/15-stage-fs/doc_rerank_deepseek.md`（本文件）。
 
 **九道自检门全部通过**（G1–G9）。
 

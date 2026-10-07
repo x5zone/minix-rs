@@ -4,7 +4,7 @@
 
 - **执行者**：glm
 - **日期**：2026-09-19
-- **目标目录**：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+- **目标目录**：`rewrite-notes/14-stage-runtime/`
 - **仓库根目录**：`/home/xzhao/github/minix-rs`
 - **当前提交号**：`a4afb7ffbf5d06658c167a21ea27625897e6625a`（2026-09-19）
 - **任务**：R 相·重建蓝图。只产出本文件，不修改任何正文。多 AI bagging：未读取任何其它 AI 的 `doc_rerank_*` 产物（仅统计其对本目录的引用计数）；未读取 `.design/` 与 `tmp_design_and_todo/`。

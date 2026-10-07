@@ -3,7 +3,7 @@
 > **分类**: 阶段 6 — 页错误与运行时机制（CoW 机制）
 > **源码**: `minix3/minix/servers/vm/pb.c`（168 行：`pb_new` :32-52 / `pb_free` :54-59 / `pb_link` :61-71 / `pb_reference` :73-91 / `pb_unreferenced` :96-134 / `mem_cow` :136-168）+ `minix3/minix/servers/vm/mem_anon.c`（`mem_type_anon` :33-46 / `anon_unreference` :56-62 / `anon_pagefault` :64-97 / `anon_writable` :105-113）+ `minix3/minix/servers/vm/region.c`（`pr_writable` :130-134 / `map_ph_writept` :257-295 / `map_writept` :906 / `map_copy_region` :820-849）+ `minix3/minix/servers/vm/mem_file.c`（`mappedfile_writable` :173-177 / `cow_block` :59-77）+ `minix3/minix/servers/vm/mem_shared.c`（`shared_pagefault` :122 / `shared_writable` :161）
 > **Rust 模块**: `os/servers/vm/src/fork.rs`（`fork_region` :92-140）+ `os/servers/vm/src/region/vir_region.rs`（`prepare_cow` :256-270 / `needs_cow` :230-239 / `map_page` :163-176 / `unmap_page` :189-211 / `is_writable` :143-145）+ `os/servers/vm/src/region/page_state.rs`（`PageFlags::COW` :35 / `PageState` :41-48）+ `os/servers/vm/src/vmproc/vmproc_handle.rs`（`setup_cow_for_all_regions` :488-495 / `write_page_table_mappings` :505-542）+ `os/servers/vm/src/memtype.rs`（writable 回调族）+ `os/servers/vm/src/cow_exec_pf.rs`（`cow_resolve_core` :85-128）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/11-phys-pagestate.md`（物理页引用计数）+ `12-memtype.md`（`writable`/`ev_copy`/`ev_reference` 回调语义）+ `16-pagefault.md`（页错误状态机如何消费 CoW）
+> **前置**: `rewrite-notes/02-stage-vm/11-phys-pagestate.md`（物理页引用计数）+ `12-memtype.md`（`writable`/`ev_copy`/`ev_reference` 回调语义）+ `16-pagefault.md`（页错误状态机如何消费 CoW）
 > **说明**: 本文档管 **CoW 机制本身**——共享如何建立（refcount++）、写保护如何设置（PTE 只读）、首次写入如何分裂（`mem_cow`）、分裂后所有权如何转移。**不覆盖**：页错误状态机（16）、fork 全流程（18，含 `map_proc_copy`/`do_fork`）、file-backed `cow_block` 的 VFS 交互（23）。
 
 ---
@@ -464,11 +464,11 @@ $ cargo check -p minix-vm → Finished（110 warnings pre-existing，无 error�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/11-phys-pagestate.md` — 物理页引用计数（refcount 语义与 pb.c 原语）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/12-memtype.md` — `writable`/`ev_copy`/`ev_reference`/`ev_unreference` 回调签名
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/16-pagefault.md` — 页错误状态机消费 `NeedCow → cow_resolve`
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/18-vm-fork.md` — fork 建立共享（`fork_region` 调用方）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/23-vfs-interaction.md` — file-backed `cow_block`
+- `rewrite-notes/02-stage-vm/11-phys-pagestate.md` — 物理页引用计数（refcount 语义与 pb.c 原语）
+- `rewrite-notes/02-stage-vm/12-memtype.md` — `writable`/`ev_copy`/`ev_reference`/`ev_unreference` 回调签名
+- `rewrite-notes/02-stage-vm/16-pagefault.md` — 页错误状态机消费 `NeedCow → cow_resolve`
+- `rewrite-notes/02-stage-vm/18-vm-fork.md` — fork 建立共享（`fork_region` 调用方）
+- `rewrite-notes/02-stage-vm/23-vfs-interaction.md` — file-backed `cow_block`
 - `minix3/minix/servers/vm/pb.c`（:32-52/:54-59/:61-71/:73-91/:96-134/:136-168）— 引用计数原语与 mem_cow
 - `minix3/minix/servers/vm/mem_anon.c`（:33-46/:56-62/:64-97/:105-113）— 匿名内存 CoW
 - `minix3/minix/servers/vm/region.c`（:130-134/:257-295/:820-849/:906/:995-996）— 写保护与 fork 复制

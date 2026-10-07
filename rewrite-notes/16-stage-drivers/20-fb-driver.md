@@ -3,7 +3,7 @@
 > **分类**：显示第 1 篇（字符设备看显存，开机关logo，显示器信息另读）
 > **源码**：`minix3/minix/drivers/video/fb/fb.c`（四百零四行的通用层）、`minix3/minix/drivers/video/fb/fb_edid.c`（一百八十七行的显示器信息读取）与 `fb_edid.h`（十二行的两个函数声明）、`minix3/minix/drivers/video/fb/arch/earm/fb_arch.c`（四百零八行的硬件层，唯一的后端）、`minix3/minix/drivers/video/fb/logos.h`（三千零五十四行的开机标识位图）、`minix3/minix/include/sys/ioc_fb.h`（第十一行到第十四行的四个输入输出控制请求）
 > **Rust 模块**：`os/drivers/video/fb/src/mode.rs`（模式选择）、`os/drivers/video/fb/src/display.rs`（打开计数与截断）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架，本驱动挂靠的框架）、虚拟内存阶段的映射机制（物理映射接口的语义来源）
+> **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（字符框架，本驱动挂靠的框架）、虚拟内存阶段的映射机制（物理映射接口的语义来源）
 > **说明**：帧缓冲是字符设备，不是内存映射设备：用户进程靠读写与四个输入输出控制请求看显存，没有映射回调。本篇讲五个回调怎么做、显示器信息怎么读、模式怎么选。寄存器写入与拷贝流量在服务层，本库只定选择与计数。
 
 > **本篇不讲什么**：
@@ -198,11 +198,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：字符框架（本驱动挂靠的框架）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/19-usb-storage-hub.md`：海量存储与集线器（上一篇，配对思想对照）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/21-audio-drivers.md`：音频驱动（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符框架（本驱动挂靠的框架）。
+- `rewrite-notes/16-stage-drivers/19-usb-storage-hub.md`：海量存储与集线器（上一篇，配对思想对照）。
+- `rewrite-notes/16-stage-drivers/21-audio-drivers.md`：音频驱动（下一篇，待写）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/video/fb/src/mode.rs`：模式选择的实现。
 - `os/drivers/video/fb/src/display.rs`：打开计数与截断的实现。
 - `minix3/minix/drivers/video/fb/fb.c`：通用层的原始实现（四百零四行）。

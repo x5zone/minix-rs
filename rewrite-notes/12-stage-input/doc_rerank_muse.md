@@ -4,7 +4,7 @@
 
 - Executor: muse
 - Date: 2026-09-19 (UTC)
-- Target directory: `notes/rewrite/fork-syscall-rewrite/12-stage-input/`
+- Target directory: `rewrite-notes/12-stage-input/`
 - Repository root: `/home/xzhao/github/minix-rs`
 - Current commit: `8410fd767e4afa81a5acc43e700ae2743b83fefe`
 - Task: Phase R (rebuild blueprint). Output is `target_dir/doc_rerank_muse.md`. No body text modified.
@@ -27,7 +27,7 @@ Out of scope: `.design/` and `tmp_design_and_todo/` (never referenced, per proje
 - C ground truth: `minix3/minix/servers/input/input.c` (704 lines, all 20 functions + `devs[]` + `input_tab` + 3 macros read in full), `input.h` (45 lines, full), `minix3/minix/lib/libinputdriver/inputdriver.c` (206 lines, full), `minix3/minix/lib/libchardriver/chardriver.c` (600 lines, input-used surface: task/process/announce/reply paths + CDEV table comment), protocol headers `minix/include/minix/input.h` (333 lines, event format + codes), `inputdriver.h` (24 lines), `chardriver.h` (36 lines), `com.h:877-893` + `919-937` + `963` (message + CDEV + BDEV bases), `ipc.h:232-259, 990-1001, 2434-2436, 2517` (four payload structs + union), `dmap.h:78` (INPUT_MAJOR=64), `sys/kbdio.h` + `sys/sys/ttycom.h:174` (KIOCSLEDS), `etc/system.conf:400-403` (service input), `MAKEDEV.sh:330-343` (node table).
 - Neighbor C: `drivers/tty/tty/arch/i386/keyboard.c` (`do_input:124-176`, `set_leds:369-384`, `do_fkey_ctl:427-527`, `func_key:532-570`, `debug_fkeys:78,206`), `drivers/tty/tty/tty.c:205-213` (dispatch incl. `TTY_FKEY_CONTROL`), `drivers/hid/pckbd/pckbd.c` (lib-use surface: announce:465-487, kbd/aux event reports:365,394,407, leds:418-431, intr/alarm:434-463, task loop:500-504).
 - Rust ground truth: `os/servers/input/src/` all 15 files (connect, dispatcher, effects, error, eventbuf, fkey, handlers, init, lib, main, produce, serve, setleds, structs + line counts in §3), `os/libs/minix-types/src/ipc/input.rs` (569), `input_event.rs` (429), `key_codes.rs` (939), `os/libs/minix-sys/src/inputdriver.rs` (512), `os/libs/minix-chardriver` (`driver.rs` + `protocol.rs`, consumer authority).
-- Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage map), `../edge_todo.md` (E-INWIRE, E-CDRCONV, E-TTYEVENT, E-PCKBDREG), `../11-stage-devman/00-devm-overview.md` (previous stage: what RS-load-group/chardriver-shared-framework concepts already exist), `../16-stage-drivers/plan.md` + `06-tty-driver.md` + `13-pckbd-driver.md` (neighbor implementation ownership), `minix3/minix/kernel/table.c` (input absent from boot image, verified by `rg -i input` → no output).
+- Boundary materials: `rewrite-notes/00-master-plan/README.md` (stage map), `../edge_todo.md` (E-INWIRE, E-CDRCONV, E-TTYEVENT, E-PCKBDREG), `../11-stage-devman/00-devm-overview.md` (previous stage: what RS-load-group/chardriver-shared-framework concepts already exist), `../16-stage-drivers/plan.md` + `06-tty-driver.md` + `13-pckbd-driver.md` (neighbor implementation ownership), `minix3/minix/kernel/table.c` (input absent from boot image, verified by `rg -i input` → no output).
 - Commands run (read-only): `ls`, `wc -l`, `sed -n`, `grep -n`, `git log --oneline -- <path>`, `grep -rhoE` for cross-reference census (restricted to non-`doc_rerank` files after one initial over-broad invocation whose `doc_rerank` hits were discarded unread).
 
 ### 0.3 Document census (number, title, lines, declared not-covered)

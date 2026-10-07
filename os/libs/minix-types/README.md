@@ -122,4 +122,4 @@ fn send_message(target: Endpoint, msg: Message) {
 ## 参考
 
 - Minix3 源码： `include/minix/`
-- 架构设计： `notes/rewrite/fork-syscall-rewrite/fork-syscall-plan.md`
+- 架构设计： `rewrite-notes/fork-syscall-plan.md`

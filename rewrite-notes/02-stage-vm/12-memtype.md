@@ -3,7 +3,7 @@
 > **分类**: 阶段 5 — 地址空间数据结构（内存语义面）
 > **源码**: `minix3/minix/servers/vm/memtype.h`（`mem_type_t` 15 字段）+ `minix3/minix/servers/vm/mem_anon.c`（151 行，`mem_type_anon` :34）+ `minix3/minix/servers/vm/mem_directphys.c`（79 行，`mem_type_directphys` :28 / `phys_setphys` :69）+ `minix3/minix/servers/vm/mem_shared.c`（211 行，`mem_type_shared` :28 / `shared_setsource` :167）+ `minix3/minix/servers/vm/mem_anon_contig.c`（132 行，`mem_type_anon_contig` :24）+ `minix3/minix/servers/vm/mem_cache.c`（324 行，`mem_type_cache` :39）+ `minix3/minix/servers/vm/mem_file.c`（287 行，`mem_type_mappedfile` :30）
 > **Rust 模块**: `os/servers/vm/src/memtype.rs`（1366 行：`trait MemType` :10 / `AnonymousMemory` :165 / `DirectPhysical` :296 / `SharedMemory` :391 / `ContiguousAnonymous` :566 / `CacheMemory` :754 / `MappedFile` :871 / `MemTypeError` :125 / `PagefaultResult` :152）+ `os/servers/vm/src/region/page_state.rs`（`PageSlot.memtype` 挂载）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（`alloc_mem` 供页分配）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/11-phys-pagestate.md`（phys_block/phys_region 生命周期 + refcount）
+> **前置**: `rewrite-notes/02-stage-vm/05-physical-memory.md`（`alloc_mem` 供页分配）、`rewrite-notes/02-stage-vm/11-phys-pagestate.md`（phys_block/phys_region 生命周期 + refcount）
 > **说明**: 内存类型系统语义模块：**Minix3 的 `mem_type_t` 函数指针表（name + 14 回调）× 6 类内存实例 → minix-rs 的 `trait MemType`（15 方法 + 默认实现）× 6 个 unit struct**。**不覆盖**：区域框架层调用点（13）、页错误状态机消费（16）、CoW 分裂细节（17）、文件/缓存语义详述（23/24）。
 
 ---
@@ -526,13 +526,13 @@ pub(crate) enum PageSlot {                                /* 11 定义（2026-08
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/plan.md`（§3.4 边界、§5.3 契约）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/11-phys-pagestate.md`（phys_block/phys_region + refcount）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md`（框架调用点）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/16-pagefault.md`（页错误状态机）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md`（CoW 分裂）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/23-vfs-interaction.md`（mappedfile 详述）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/24-page-cache.md`（cache 详述）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/12-memtype.md`（素材）
+- `rewrite-notes/02-stage-vm/plan.md`（§3.4 边界、§5.3 契约）
+- `rewrite-notes/02-stage-vm/11-phys-pagestate.md`（phys_block/phys_region + refcount）
+- `rewrite-notes/02-stage-vm/13-region-mapping.md`（框架调用点）
+- `rewrite-notes/02-stage-vm/16-pagefault.md`（页错误状态机）
+- `rewrite-notes/02-stage-vm/17-cow-mechanism.md`（CoW 分裂）
+- `rewrite-notes/02-stage-vm/23-vfs-interaction.md`（mappedfile 详述）
+- `rewrite-notes/02-stage-vm/24-page-cache.md`（cache 详述）
+- `rewrite-notes/02-stage-vm/draft/12-memtype.md`（素材）
 - `os/servers/vm/src/memtype.rs`、`region/page_state.rs`
 - `minix3/minix/servers/vm/memtype.h`、`mem_anon.c`、`mem_directphys.c`、`mem_shared.c`、`mem_anon_contig.c`、`mem_cache.c`、`mem_file.c`

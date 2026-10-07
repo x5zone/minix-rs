@@ -6,7 +6,7 @@
 > 范围：`os/servers/input/src/`（13 文件 4641 行）、`os/libs/minix-sys/src/inputdriver.rs`（486 行）、`os/libs/minix-types/src/ipc/input.rs`（529 行）及 `message.rs` 的 input 联合体成员（message.rs:248-255）。邻接只读（所有权在 16-stage-drivers，只登记移交，不当场处置）：`os/drivers/hid/pckbd`、`os/drivers/tty/tty`、`os/libs/minix-chardriver`。
 > 方法：三层对账（C 语义 → 决策核心 → 可运行实体）+ 分层设计审视（整体 → crate 边界 → trait/模块 → 函数），对照 Minix3 C 源（ground truth）、Redox 的中断分发 → `ps2d` → `inputd` 分层（[This Month in Redox 2026-01](https://www.redox-os.org/news/this-month-260131/)、[System Components](https://redox-os-redox.mintlify.app/architecture/components)）、Linux 的 serio → input core → evdev 分层（[内核输入子系统文档](https://www.kernel.org/doc/html/v4.16/input/input.html)）、Rust 社区实践（纯函数决策核 + 效应输出、`embedded-hal` 式硬件 trait 边界）。
 > 定位：查漏补缺与架构改进建议清单。**本清单不修正确性 bug**——正确性问题登记后交 `full-review` / `todo-fix` 处置（卓越建立在正确之上）。
-> 跨 stage 条目不在此展开，登记于 [`../edge_todo.md`](../edge_todo.md)：E-INWIRE（传输接线）、E-CDRCONV（框架收敛 + minix-chardriver 常量错值）、E-TTYEVENT（TTY 消费侧）、E-PCKBDREG（pckbd 移交）。
+> 跨 stage 条目不在此展开，登记于 [`../edge_todo.md`](../coordination/edge_todo.md)：E-INWIRE（传输接线）、E-CDRCONV（框架收敛 + minix-chardriver 常量错值）、E-TTYEVENT（TTY 消费侧）、E-PCKBDREG（pckbd 移交）。
 > 本文件为首轮新建（此前 12-stage-input 目录无 todo.md），无历史条目需要清理。
 
 ---

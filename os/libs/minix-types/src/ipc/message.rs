@@ -4319,7 +4319,7 @@ mod signal_request_accessor_tests {
 /// which is what makes the union 72 and the whole message 80. The two
 /// assertions below pin today's truth; the shape violation itself is
 /// tracked as `P-ALL-12` in
-/// `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`
+/// `rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md`
 /// (C pins every payload member at 56 bytes via `_ASSERT_MSG_SIZE`).
 
 // P-ALL-12 / PD-20 定稿形态：全成员严格相等 56（C ipc.h 每个载荷成员的

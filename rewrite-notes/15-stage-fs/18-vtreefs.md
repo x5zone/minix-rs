@@ -3,7 +3,7 @@
 > **分类**：变体框架·虚拟树（虚拟树主线第 1 篇，进程服务与设备管理的前置）
 > **源码**：`minix3/minix/lib/libvtreefs/`（全部十个源文件与四个头文件，共约三千五百行）：`vtreefs.c`（一百一十行）、`inode.c`（六百二十六行）、`table.c`（二十四行）、`path.c`（五十九行）、`link.c`（一百二十九行）、`mount.c`（五十六行）、`stadir.c`（一百二十二行）、`file.c`（二百九十五行）、`extra.c`（五十六行）、`sdbm.c`（三十行）
 > **Rust 模块**：`os/libs/minix-vtreefs/src/lib.rs`（常量与重导出），`os/libs/minix-vtreefs/src/tree.rs`（树存储、查找、枚举、分发）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`（主循环与回调表），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/02-fsdriver-call.md`（请求适配语义）
+> **前置**：`rewrite-notes/15-stage-fs/01-fsdriver-task.md`（主循环与回调表），`rewrite-notes/15-stage-fs/02-fsdriver-call.md`（请求适配语义）
 > **说明**：没有磁盘的文件系统如何工作：树在内存里，内容由回调函数现场生成，框架管树与分发，服务只填内容。本篇讲框架，第 19 篇讲第一个内容，设备管理阶段讲第二个内容。
 
 > **本章不讲什么**：
@@ -229,9 +229,9 @@ sdbm 哈希是公开域算法：初值零，逐字节折入，字节加左移六
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`：主循环与回调表（框架的调用方）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/19-procfs.md`：进程信息（框架的第一个内容）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/01-fsdriver-task.md`：主循环与回调表（框架的调用方）。
+- `rewrite-notes/15-stage-fs/19-procfs.md`：进程信息（框架的第一个内容）。
 - `os/libs/minix-vtreefs/src/lib.rs`：常量的实现。
 - `os/libs/minix-vtreefs/src/tree.rs`：树与分发的实现。
 - `minix3/minix/lib/libvtreefs/`：框架的原始实现（十源四头）。

@@ -11,9 +11,9 @@ NK4-A（x86_64 生产启动链）的执行阶段；你接手后续弧线 **NK4-B
 
 ## 0. 开局动作（按序，缺一不可）
 
-1. 读 `notes/rewrite/fork-syscall-rewrite/NK4B-TODO.md` 全文（本弧线的
+1. 读 `rewrite-notes/coordination/NK4B-TODO.md` 全文（本弧线的
    任务书：Phase/Milestone 分解、判据、已知架构事实、记录格式、铁律）。
-2. 读 `notes/rewrite/fork-syscall-rewrite/NK4A-TODO.md` 的 §5（13 条技术
+2. 读 `rewrite-notes/coordination/NK4A-TODO.md` 的 §5（13 条技术
    陷阱）、§6（记录格式）、§7（常用命令）、§8（取证循环）——全部继续
    有效。
 3. 读 `.review/zcode/edge1/FIXLOG.md` 最后 300 行（前人修复链与记录
@@ -21,7 +21,7 @@ NK4-A（x86_64 生产启动链）的执行阶段；你接手后续弧线 **NK4-B
 4. **P0 核账**（NK4B-TODO §1，强制）：git 现场抄录 → 宿主六包计数实测 →
    x86_64 冒烟实跑记录（exit code + 串口到达序列）→ 前棒 WORKLOG/FIXLOG
    的事实提炼（**只记事实，不写评价**）→ 判定 P1 是否跳过。
-5. 在 `notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md` 写会话开场，
+5. 在 `rewrite-notes/coordination/NK4B-WORKLOG.md` 写会话开场，
    然后按核账结果进入 P1 或 P2。
 
 ## 1. 总目标与停止点

@@ -3,7 +3,7 @@
 > **分类**：框架层第 2 篇
 > **源码**：`minix3/minix/lib/libfsdriver/call.c`（全部一千零一十三行）
 > **Rust 模块**：`os/libs/minix-fs/src/call.rs`
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`（分发骨架与挂载门禁）
+> **前置**：`rewrite-notes/15-stage-fs/01-fsdriver-task.md`（分发骨架与挂载门禁）
 > **说明**：分发查表之后，每个请求如何被翻译成一次服务器调用。本篇覆盖全部三十一个适配函数，一个不漏。
 
 > **本章不讲什么**：
@@ -277,8 +277,8 @@ C 的状态适配器预填设备号与节点号，因为它手里有库内全局
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分与分组依据。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`：分发骨架、挂载门禁、能力位含义。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/03-fsdriver-utility.md`：数据通道、名字获取、目录项、查找。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分与分组依据。
+- `rewrite-notes/15-stage-fs/01-fsdriver-task.md`：分发骨架、挂载门禁、能力位含义。
+- `rewrite-notes/15-stage-fs/03-fsdriver-utility.md`：数据通道、名字获取、目录项、查找。
 - `os/libs/minix-fs/src/call.rs`：三十一个适配器的实现（八百三十四行）。
 - `minix3/minix/lib/libfsdriver/call.c`：适配器的原始实现（一千零一十三行）。

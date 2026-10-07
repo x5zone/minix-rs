@@ -2181,7 +2181,7 @@ $ 本目录内 plan.md 33 处、todo.md 16 处
 |---|---|---|---|
 | `# 依据: 18-stage-commands/99-global-concepts.md §1` | `tools/check-command-boundary.sh:3` | 改指新 03 §1 | `bash tools/check-command-boundary.sh` 仍输出 OK |
 | `18-stage-commands/99-global-concepts.md` 或 `06-file-ops.md` 的路径引用 | `os/Cargo.toml` 的注释（1 处） | 按映射替换 | `rg -n '18-stage-commands' os/Cargo.toml` |
-| `18-stage-commands/todo.md` 引用 | `prompt/todo_plan.md` 3 处、`edge_todo.md` 3 处、`edge3.md` 3 处 | 不改（todo.md 原地保留）；但其中引用具体篇号的位置需替换 | `rg -n '18-stage-commands/[0-9]{2}-' prompt/ notes/rewrite/fork-syscall-rewrite/edge*.md` 逐个核对 |
+| `18-stage-commands/todo.md` 引用 | `prompt/todo_plan.md` 3 处、`edge_todo.md` 3 处、`edge3.md` 3 处 | 不改（todo.md 原地保留）；但其中引用具体篇号的位置需替换 | `rg -n '18-stage-commands/[0-9]{2}-' prompt/ rewrite-notes/edge*.md` 逐个核对 |
 
 ### 8.3 断链成本摘要
 

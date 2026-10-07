@@ -11,7 +11,7 @@
 
 ## 0. 开局动作（按序，缺一不可）
 
-1. 读 `notes/rewrite/fork-syscall-rewrite/NK4A-TODO.md` 全文（任务书：
+1. 读 `rewrite-notes/coordination/NK4A-TODO.md` 全文（任务书：
    状态快照、精确前沿、任务分解 A-E、技术陷阱、记录格式、常用命令、
    禁止事项）。它引用的 FIXLOG 路径与命令都可直接使用。
 2. 读 `.review/zcode/edge1/FIXLOG.md` 的最后 300 行（「Fix #9 迭代8-18
@@ -23,7 +23,7 @@
    git log --oneline -3     # 应看到 4a6570d7f 或更新
    git status --short       # AI-chats/daily.todo.md 与 tmp/nk4a/vars.fd 的改动是既有的，勿动
    ```
-4. 在 `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` 顶部
+4. 在 `rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md` 顶部
    写一段会话开场（日期、你从哪个 commit 开始），然后进入 Task A。
 
 ## 1. 总目标与停止点
@@ -117,7 +117,7 @@ pkill -f '[q]emu-system'
 - [ ] FIXLOG 每个修复一条，含「测试（防回归）」小节；
 - [ ] 所有 commit 在 rewrite 分支本地（未 push）；
 - [ ] 真机证据 serial 日志已归档：
-      `git add -f notes/rewrite/fork-syscall-rewrite/evidence/<目录>/`
+      `git add -f rewrite-notes/evidence/<目录>/`
       （*.log 被忽略必须 -f），commit 信息说明对应轮次；
 - [ ] 最终汇报：以 Task 粒度列出 状态/根因/修法/commit/证据行，
       含未决问题与下一步建议。

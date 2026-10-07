@@ -17,7 +17,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 - **日期**：2026-09-19
 - **当前提交**：`ebc8ae72b`（`git log --oneline -1`，工作区有未提交改动，与 devman 无关）
-- **目标对象**：`notes/rewrite/fork-syscall-rewrite/11-stage-devman/`
+- **目标对象**：`rewrite-notes/11-stage-devman/`
 
 ### 0.2 审查范围
 
@@ -84,7 +84,7 @@ sed -n '24,40p' minix3/minix/commands/devmand/usb_scan.l  # char → BLOCK_DEV�
 
 ```bash
 grep -rn "11-stage-devman" --include=*.md --include=*.rs . \
-  | grep -v "^./notes/rewrite/fork-syscall-rewrite/11-stage-devman/" \
+  | grep -v "^./rewrite-notes/11-stage-devman/" \
   | grep -v "^./.review/" | grep -v "doc_rerank_"            # 46 行（md）+ 5 行（代码注释）
 grep -rn "doc 0\?[0-9]\+" os/servers/devman/src/              # 19 行（crate 内文档名引用）
 ```

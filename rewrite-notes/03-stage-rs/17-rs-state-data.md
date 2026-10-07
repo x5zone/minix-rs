@@ -3,7 +3,7 @@
 > **分类**: 阶段 6 — Live Update（状态数据迁移）
 > **源码**: `minix3/minix/servers/rs/manager.c:init_state_data`（`init_state_data`）、`minix3/minix/servers/rs/request.c:do_update（L805，工具生成）`（`do_update` 的 state data/grants 调用点）、`minix3/minix/servers/rs/update.c:rupdate_upd_clear`（`rupdate_upd_clear` 的 revoke）、`minix3/minix/servers/rs/type.h:rprocupd`（`struct rprocupd`）、`minix3/minix/include/minix/rs.h:RS_MAX_LABEL_LEN,88-100`（`rs_ipc_filter_el`/`rs_state_data`）、`minix3/minix/include/minix/ipc_filter.h`（`IPCF_*`/`ANY_*`）、`minix3/minix/include/minix/sef.h:SEF_LU_STATE_NULL`（`SEF_LU_STATE_*`）
 > **Rust 模块**: `os/servers/rs/src/state_data.rs`（`IpcfFlags`/`SourceIpcFilterEl`/`IpcFilterEl`/`validate_state_data_size`/`validate_eval`/`num_ipc_filter_blocks`/`ipcf_els_buff_size`/`parse_label`/`parse_filter_el`/`vm_fallback_entry`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`（prepare 阶段调用点）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`rprocupd` 数据形状）
+> **前置**: `rewrite-notes/03-stage-rs/16-rs-live-update.md`（prepare 阶段调用点）、`rewrite-notes/03-stage-rs/02-rs-process-table.md`（`rprocupd` 数据形状）
 > **说明**: 本文档是 LU 状态迁移机制：prepare 阶段把旧实例的"状态"（eval 表达式 / IPC filter 表 / 自定义数据）复制给新实例。它依赖 19（`ds_retrieve_label_endpt`/`cpf_*`/`sys_datacopy` 外部契约）与 18（RS 自升级的 `cpf_reload`）——本文档只落地**数据形状、纯校验与 label 解析**（`state_data.rs`）。
 
 ---
@@ -244,9 +244,9 @@ pub const IPCF_EL_SIZE: usize = 12;              // sizeof(ipc_filter_el_t)
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `do_update` 调用点（request.c:814）、rpupd 链、prepare 阶段
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `UpdateChain`/`rprocupd` 数据形状
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` —— `ds_retrieve_label_endpt`/`cpf_*`/`sys_datacopy` 契约
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/18-rs-self-lifecycle.md` —— RS 自升级 `cpf_reload`/rollback 特例
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/23-ipc-filter.md` —— IPC filter 内核机制
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— `do_update` 调用点（request.c:814）、rpupd 链、prepare 阶段
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` —— `UpdateChain`/`rprocupd` 数据形状
+- `rewrite-notes/03-stage-rs/19-rs-external-interfaces.md` —— `ds_retrieve_label_endpt`/`cpf_*`/`sys_datacopy` 契约
+- `rewrite-notes/03-stage-rs/18-rs-self-lifecycle.md` —— RS 自升级 `cpf_reload`/rollback 特例
+- `rewrite-notes/01-stage-kernel/23-ipc-filter.md` —— IPC filter 内核机制
 - `minix3/minix/servers/rs/manager.c:init_state_data`、`request.c:805-844`、`update.c:135-163`、`include/minix/rs.h:58-59,88-100`、`include/minix/ipc_filter.h`、`include/minix/sef.h:213-232`、`include/minix/com.h:736` —— ground truth

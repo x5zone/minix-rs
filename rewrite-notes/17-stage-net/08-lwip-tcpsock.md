@@ -3,7 +3,7 @@
 > **分类**：套接字协议族传输控制协议模块，覆盖连接进度标志、发送与接收缓冲区边界、管道破裂规则、关闭条件、初始序列号生成原理
 > **源码**：`minix3/minix/net/lwip/tcpsock.c`（2793 行）、连接标志布局 `minix3/minix/net/lwip/ipsock.h`（第 29 行到第 33 行）、初始序列号生成 `minix3/minix/net/lwip/tcpisn.c`（203 行）
 > **Rust 模块**：`os/net/lwip/src/tcpsock.rs`（连接标志枚举、发送与接收边界、管道破裂判断、关闭条件）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层，创建与缓冲区语义）、`notes/rewrite/fork-syscall-rewrite/17-stage-net/07-lwip-pktsock.md`（数据包共享层，容量门对照）
+> **前置依赖**：`rewrite-notes/17-stage-net/06-lwip-ipsock.md`（互联网协议公共层，创建与缓冲区语义）、`rewrite-notes/17-stage-net/07-lwip-pktsock.md`（数据包共享层，容量门对照）
 >
 > **本篇不覆盖的内容**：
 > - 轻量协议栈内部的传输控制协议状态机（在第 24 篇第三方协议栈，本文只定义服务侧关心的五个进度标志）
@@ -179,10 +179,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，创建与缓冲区语义。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/07-lwip-pktsock.md`：数据包共享层，容量门对照。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/09-lwip-udpsock.md`：用户数据报协议，无连接的对照。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，创建与缓冲区语义。
+- `rewrite-notes/17-stage-net/07-lwip-pktsock.md`：数据包共享层，容量门对照。
+- `rewrite-notes/17-stage-net/09-lwip-udpsock.md`：用户数据报协议，无连接的对照。
 - `os/net/lwip/src/tcpsock.rs`：连接标志、缓冲区边界与管道规则的实现。
 - `minix3/minix/net/lwip/tcpsock.c`：传输控制协议的原始实现（2793 行）。
 - `minix3/minix/net/lwip/tcpisn.c`：初始序列号的原始实现（203 行）。

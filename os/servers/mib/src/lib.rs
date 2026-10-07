@@ -5,7 +5,7 @@
 //! The user-space side of Minix3's sysctl tree: userland names a node,
 //! MIB resolves it to data. This crate opens with the startup skeleton
 //! documented in
-//! `notes/rewrite/fork-syscall-rewrite/10-stage-mib/01-mib-init-main.md`:
+//! `rewrite-notes/10-stage-mib/01-mib-init-main.md`:
 //!
 //! - [`dispatch`] — the three letters, the two refusals, the reply rule,
 //!   and the sysctl decode verdicts (which path, what the reply carries).

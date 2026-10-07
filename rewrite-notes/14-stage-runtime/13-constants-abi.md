@@ -105,6 +105,6 @@
 - `minix3/minix/include/minix/callnr.h`：调用号的原始定义。
 - `minix3/minix/include/minix/com.h`：端点号的原始定义。
 - `minix3/sys/sys/termios.h`：终端常量的原始位置（登记）。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/12-rs-query.md`：前一篇，服务发现。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/99-global-concepts.md`：后一篇，全局概念（待改写）。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/12-rs-query.md`：前一篇，服务发现。
+- `rewrite-notes/14-stage-runtime/99-global-concepts.md`：后一篇，全局概念（待改写）。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

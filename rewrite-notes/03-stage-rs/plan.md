@@ -1,7 +1,7 @@
 # 03-stage-rs 文档重组计划（plan.md）
 
 > **状态**: **定稿**（2026-08-15 首版 + 深度 review + minix3 源码回归 review，见 §7）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/`
+> **范围**: `rewrite-notes/03-stage-rs/`
 > **目标**: 以 **RS server 启动顺序为主线**定义 RS 全部文档；服务生命周期为次主线；最终覆盖 Minix3 RS server（`servers/rs/`，8 个 .c，6307 行）全部语义，支撑 RS server 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/`（同流程先例）、`minix3/minix/servers/rs/`（ground truth）、`os/servers/rs/`（Rust 实现，当前为空壳 stub）
 

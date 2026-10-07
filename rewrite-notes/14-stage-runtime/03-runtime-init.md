@@ -142,7 +142,7 @@ Rust 实现保留这个契约，但把"清零"表达成一个可诊断的状态�
 - `minix3/lib/libc/gen/getprogname.c`：程序短名读函数的原始实现。
 - `minix3/lib/libc/gen/setprogname.c`：程序短名写函数被禁用的原始实现。
 - `minix3/minix/lib/libc/sys/environ.c`：环境哨兵值的原始定义。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/01-kernel-handoff.md`：前一篇，内核交付与初始栈。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/02-crt0-start.md`：前一篇，程序入口与静态链接启动。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/04-ipc-primitives.md`：后一篇，通信原语与陷阱指令（待改写）。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/01-kernel-handoff.md`：前一篇，内核交付与初始栈。
+- `rewrite-notes/14-stage-runtime/02-crt0-start.md`：前一篇，程序入口与静态链接启动。
+- `rewrite-notes/14-stage-runtime/04-ipc-primitives.md`：后一篇，通信原语与陷阱指令（待改写）。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

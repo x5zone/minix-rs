@@ -3,7 +3,7 @@
 > **分类**: 阶段 6 — 主循环与运行时机制（页错误）
 > **源码**: `minix3/minix/servers/vm/pagefaults.c`（418 行：`pf_state` :33-37 / `hm_state` :39-49 / `pf_errstr` :59-70 / `handle_pagefault` :76-158 / `pf_cont` :161-168 / `handle_memory_continue` :170-196 / `handle_memory_final` :198-235 / `do_pagefaults` :240-243 / `handle_memory_once` :245-252 / `handle_memory_start` :254-289 / `do_memory` :294-334 / `handle_memory_step` :336-417）+ `minix3/minix/servers/vm/region.c`（`map_pf` :664-754 / `map_handle_memory` :756-774 / `map_lookup` :616-641）+ `minix3/minix/servers/vm/main.c`（主循环 P3 :153-164 / `SIGKMEM` 信号 :731-750）
 > **Rust 模块**: `os/servers/vm/src/cow_exec_pf.rs`（366 行：`handle_pagefault` :19 / `alloc_and_map` :54 / `cow_resolve` :72 / `cow_resolve_core` :85 / `copy_page_content` :190 / `cow_resolve_region` :216 / `PagefaultAction` :236 / `CowError` :245）+ `os/servers/vm/src/vm_server.rs`（`dispatch_pagefault` :742-771 / 主循环 P3 :577-585）+ `os/servers/vm/src/fork.rs`（`handle_memory_once` :33-85）+ `os/servers/vm/src/memtype.rs`（`PagefaultResult` :152-158 / `AnonymousMemory::ev_pagefault` :220-256 / `MappedFile::ev_pagefault` :904-935）+ `os/libs/minix-types/src/ipc/vm.rs`（`VM_PAGEFAULT` :149 / `VmPagefaultIn` :373-377 / `decode_message` :379-398）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md`（`map_pf`/`map_handle_memory` 的区域-物理侧桥接）+ `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`（主循环 P3 分发与 SUSPEND 协议）+ `12-memtype.md`（`ev_pagefault` 回调语义）
+> **前置**: `rewrite-notes/02-stage-vm/13-region-mapping.md`（`map_pf`/`map_handle_memory` 的区域-物理侧桥接）+ `rewrite-notes/02-stage-vm/15-ipc-dispatch.md`（主循环 P3 分发与 SUSPEND 协议）+ `12-memtype.md`（`ev_pagefault` 回调语义）
 > **说明**: 页错误处理是 VM 的**中断入口**——CPU 缺页异常被内核转发为 `VM_PAGEFAULT` 消息（被动路径），内核自身的内存访问保障请求经 `SIGKMEM` 信号触发 `do_memory`（主动路径），两条路径最终汇合在 `map_pf`。本文档管**状态机与协议**（验证 → 区域查找 → 权限检查 → memtype 分发 → 异步恢复）；**不覆盖**：CoW 分裂机制本身（17）、VFS 请求队列与 fdref（23）、页缓存（24）、mmap 建立（20）。
 
 ---
@@ -603,13 +603,13 @@ $ cargo check -p minix-vm → Finished（无 error）
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/13-region-mapping.md` — `map_pf`/`map_handle_memory`/`map_lookup`（两条路径的汇合点）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md` — 主循环 P3 分发、SUSPEND 协议、`IpcStatus::is_from_kernel`/`is_notify` 位语义
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/12-memtype.md` — `ev_pagefault`/`writable` 回调语义与 6 类 memtype
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/17-cow-mechanism.md` — CoW 分裂机制（`mem_cow`/引用计数）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/18-vm-fork.md` — `handle_memory_once` 的 fork 调用方
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/23-vfs-interaction.md`、`24-page-cache.md` — VFS 回调与页缓存（SUSPEND 恢复闭环）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/11-phys-pagestate.md` — 物理页引用计数（`unmap_page` + `ev_unreference` + `free_pfn` 两阶段释放）
+- `rewrite-notes/02-stage-vm/13-region-mapping.md` — `map_pf`/`map_handle_memory`/`map_lookup`（两条路径的汇合点）
+- `rewrite-notes/02-stage-vm/15-ipc-dispatch.md` — 主循环 P3 分发、SUSPEND 协议、`IpcStatus::is_from_kernel`/`is_notify` 位语义
+- `rewrite-notes/02-stage-vm/12-memtype.md` — `ev_pagefault`/`writable` 回调语义与 6 类 memtype
+- `rewrite-notes/02-stage-vm/17-cow-mechanism.md` — CoW 分裂机制（`mem_cow`/引用计数）
+- `rewrite-notes/02-stage-vm/18-vm-fork.md` — `handle_memory_once` 的 fork 调用方
+- `rewrite-notes/02-stage-vm/23-vfs-interaction.md`、`24-page-cache.md` — VFS 回调与页缓存（SUSPEND 恢复闭环）
+- `rewrite-notes/02-stage-vm/11-phys-pagestate.md` — 物理页引用计数（`unmap_page` + `ev_unreference` + `free_pfn` 两阶段释放）
 - `minix3/minix/servers/vm/pagefaults.c`（:33-49/:59-70/:76-158/:161-168/:170-235/:240-252/:254-289/:294-334/:336-417）— C 页错误处理
 - `minix3/minix/servers/vm/region.c`（`map_pf` :664-754 / `map_handle_memory` :756-774 / `map_lookup` :616-641）— C 汇合点
 - `minix3/minix/servers/vm/main.c`（:153-164 / :731-750）— P3 分发与 SIGKMEM

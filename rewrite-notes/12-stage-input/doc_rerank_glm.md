@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = glm
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/12-stage-input
+target_dir(关注的工作目录) = rewrite-notes/12-stage-input
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = d6ecd22cae78345e746c82ad7cbe3c1612c151c2
 
@@ -15,7 +15,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ## 0. 元数据
 
-- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/12-stage-input/`。
+- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/12-stage-input/`。
 - **结论先行**：本 stage 的 16 篇文档（00~14 + 99）全部为成稿（01~14 于 2026-09-04/05 写成并 CONVERGED；00/99 于 2026-09-15 按 IN-D2 补齐；各篇再经 09-18 刷新），首轮架构审查的 13 条 IN-* 条目当日全部闭环（R1~R12），且 Fix 演化注记已大量回写正文（01§4.5 的 dispatcher、07§4.4 的规划/推进两段式、09§4.3 的 wake_on_event 组合等）。实测 `cargo test -p minix-input` **91 passed / 0 failed**，clippy 本体 0 告警。操作集为**"保编号、追基线、清漂移"**：
   1. **保编号**——编号即"启动链 + 事件旅程/驱动生命周期双次主线"（plan §1.2/§1.3），四条硬标准满足（§9 G3/G4）；篇内互引 ≈150 处、外部 10 文件 20+ 处、代码注释 2 处全以现有文件名为锚；
   2. **追基线**——**9 篇 §5 头部写"当前全 crate 共 98 个测试"**（01/02/03/06/07/08/09/10/11），实测 **91**（今日 E-CDRCONV 把 framework.rs 判定核迁入 minix-chardriver 后测试面变化；此前 86→98 的两轮漂移 IN-D1 只修到 86 口径）；各篇 §5.1 的"其余分属"分布块整体过时；

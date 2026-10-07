@@ -27,7 +27,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 |----|----|
 | 执行者 | HY4 |
 | 日期 | 2026-09-19 |
-| 目标目录 | `notes/rewrite/fork-syscall-rewrite/05-stage-vfs/` |
+| 目标目录 | `rewrite-notes/05-stage-vfs/` |
 | 仓库根 | `/home/xzhao/github/minix-rs` |
 | 当前提交 | `2d9d1f0aa`（branch `rewrite`） |
 | C 真源 | `minix3/minix/servers/vfs/`（33 个 `.c` + 15 个本地 `.h`，`.c` 合计 16,742 行；含 `.h` 17,742 行） |
@@ -1272,7 +1272,7 @@ $ grep -ln "servers/vfs/README" 05-stage-vfs/*.md  → 0 命中（官方文档�
 |---------|------|---------|---------|
 | stage 内文档 → 文档引用（`NN-xxx.md` 形态） | **902 处** | 按 §8.1 的旧→新映射做**全目录正则批量替换**：先把旧编号换成一个唯一占位（如 `__NEW_09__`），再统一落成新编号，避免 09→04 与 04→09 的链式污染 | 替换后 `grep -rEo "\b[0-9]{2}-[a-z0-9-]+\.md" 05-stage-vfs/*.md` 逐个校验目标文件存在 |
 | Rust 代码注释 → 文档引用 | **86 处**，分布在 **25 个 `.rs` 文件** | 同样两阶段替换；每个文件的模块头 scope note（如 `socket.rs:19-23`）需人工复核一句，因为 scope note 里的"归 XX 篇"是语义声明不是纯链接 | `grep -rEn "[0-9]{2}-[a-z0-9-]+\.md" os/servers/vfs/src --include=*.rs` + `cargo check` 不受影响（注释） |
-| stage 外 → 05 的文档引用 | 指向具体编号文档 **45 处**（热点：`22-sdev.md` 6、`14-filedes.md` 6、`18-mount.md` 4、`00-vfs-overview.md` 4、`13-path-lookup.md` 3、`02-fproc-struct.md` 3）；另有 `../05-stage-vfs` 目录级引用 25 处 | 目录级引用不动（目录名不变）；编号级引用按 §8.1 替换 | `grep -rEo "05-stage-vfs/[0-9]{2}-[a-z0-9-]+\.md" notes/rewrite/fork-syscall-rewrite --include=*.md \| grep -v "^05-stage-vfs"` 逐个校验 |
+| stage 外 → 05 的文档引用 | 指向具体编号文档 **45 处**（热点：`22-sdev.md` 6、`14-filedes.md` 6、`18-mount.md` 4、`00-vfs-overview.md` 4、`13-path-lookup.md` 3、`02-fproc-struct.md` 3）；另有 `../05-stage-vfs` 目录级引用 25 处 | 目录级引用不动（目录名不变）；编号级引用按 §8.1 替换 | `grep -rEo "05-stage-vfs/[0-9]{2}-[a-z0-9-]+\.md" rewrite-notes --include=*.md \| grep -v "^05-stage-vfs"` 逐个校验 |
 | `plan.md`/`todo.md` 内的编号引用 | 大量（plan.md §2 表 33 行、todo.md 各 Fix 条目） | **建议不动**：它们是历史记录，改了会让修复台账与历史不符。改为在两文件头部加一行"本文档的编号指旧编号，映射见 `doc_rerank_*.md` 的共识蓝图" | 人工加一行声明即可 |
 | `.design/` 快照内引用 | 31×3 份快照 | 本蓝图不引用 `.design/`；B 相处理时按同样的两阶段替换 | 不在 R 相范围 |
 

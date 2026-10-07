@@ -13,7 +13,7 @@
 //! them. This crate owns the numbering and ordering halves; the
 //! service binary owns packet traffic and controller registers. See
 //! document `18-usb-framework.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

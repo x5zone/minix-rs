@@ -2,7 +2,7 @@
 
 > **产出者**：qwen（本次扫描由 qwen 独立完成）
 > **日期**：2026-09-20
-> **目标**：三架构（x86-64 / aarch64 / riscv64）QEMU 环境启动 minix-rs，运行 `notes/rewrite/fork-syscall-rewrite/18-stage-commands/` 覆盖的全部命令程序。
+> **目标**：三架构（x86-64 / aarch64 / riscv64）QEMU 环境启动 minix-rs，运行 `rewrite-notes/18-stage-commands/` 覆盖的全部命令程序。
 > **隔离声明**：本文与所有中间结果均带 `_qwen` 后缀，与另一 AI 的产出（同目录下已有 `new_todo_deepseek.md`、`new_todo_glm.md`，qwen 未读取、未参考，保证两路独立）互不覆盖。任何 qwen 产出的计划、报告、验证日志一律以 `_qwen` 结尾。
 > **定位**：本文只做"扫描 + 登记待继续实现的逻辑"，不改生产代码。逐条实现走 `todo-fix`（一次一条）。
 > **优先级口径（用户明确要求）**：**先确保有，再确保好**。P0 = 让系统能真启动、命令能真在目标机上跑起来的关键路径缺口；P1 = 把"少数命令能跑"扩到"全部命令能跑"的覆盖长尾；P2 = 第二优先级，非 rewrite 的 translate 味道与代码缺陷（项目目标始终是 rewrite 而非 translate）。

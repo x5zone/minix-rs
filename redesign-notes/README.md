@@ -18,11 +18,11 @@
 
 | 文档 | 主题 | 关键内容 |
 |------|------|----------|
-| [architecture-changes.md](architecture-changes.md) | 架构变更探索 | Trusted Core Servers 内核态化、LPE Core 策略、AI 驱动调度 |
-| [semantic-modules.md](semantic-modules.md) | 语义模块设计 | 模块依赖图、调度核心、IPC 模块抽象 |
-| [ipc-improve.md](ipc-improve.md) | IPC 设计改进 | BKL 反思、L4 对比、Cache 污染分析 |
-| [improve_minix.md](improve_minix.md) | 架构改进思考（原始） | 现代硬件挑战、架构改进方向 |
-| [improve_minix_refactored.md](improve_minix_refactored.md) | 架构改进思考（重构版） | 同上，结构优化版本 |
+| [architecture-changes.md](architecture/architecture-changes.md) | 架构变更探索 | Trusted Core Servers 内核态化、LPE Core 策略、AI 驱动调度 |
+| [semantic-modules.md](architecture/semantic-modules.md) | 语义模块设计 | 模块依赖图、调度核心、IPC 模块抽象 |
+| [ipc-improve.md](ipc/ipc-improve.md) | IPC 设计改进 | BKL 反思、L4 对比、Cache 污染分析 |
+| [improve_minix.md](architecture/improve_minix.md) | 架构改进思考（原始） | 现代硬件挑战、架构改进方向 |
+| [improve_minix_refactored.md](architecture/improve_minix_refactored.md) | 架构改进思考（重构版） | 同上，结构优化版本 |
 
 > **注意**：`improve_minix.md` 和 `improve_minix_refactored.md` 已被拆分到 `architecture-changes.md`（redesign）、`modern-hardware-and-rust.md`（rewrite）和 `learning-path.md`（study）。原始文件保留作为参考。
 

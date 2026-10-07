@@ -1,7 +1,7 @@
 # 18-stage-commands 实施规格缺口 TODO
 
 > 来源：2026-09-17 设计讨论。讨论从"命令如何获得标准库支持"出发，逐层确认了三件事：POSIX 规定的是接口契约而不是系统调用清单；Minix3 的库分层是 `minix3/lib/libc/`（C 库）与 `minix3/minix/lib/libsys/`（消息层）两个目录；Redox 用 relibc（Rust 写的 C 标准库 + POSIX）承接 Rust std 的调用。讨论结论随后与 18-stage-commands 现有文档逐条对账。
-> 范围：`notes/rewrite/fork-syscall-rewrite/18-stage-commands/`。本文只登记文档缺口与修复去向，不修改生产代码。
+> 范围：`rewrite-notes/18-stage-commands/`。本文只登记文档缺口与修复去向，不修改生产代码。
 > 定位：`plan.md` 管覆盖契约（哪些命令、哪些 C 源、归哪一篇），本文管实施规格（命令依赖谁、需要哪些 API、行为以什么为准）。两者互补，不重复。
 > 状态（2026-09-17）：P0 一项、P1 两项、跨阶段挂账一项。三项契约正文已落入 `99-global-concepts.md`（§1 分层契约、§2 行为判定基准、§3 Requires 列）；命令文档回填与 14-stage-runtime 侧措辞修正待后续轮次。
 

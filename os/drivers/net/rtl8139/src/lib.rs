@@ -7,7 +7,7 @@
 //! (`rtl8139.c:118-123`). This crate owns the cursor half (slot
 //! rotation, ring wrap); the service binary owns register traffic.
 //! See document `23-net-driver-variants.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

@@ -3,7 +3,7 @@
 > **分类**：网络服务基础工具模块，覆盖错误转换、特权检查、时间换算、地址校验与地址选择策略
 > **源码**：`minix3/minix/net/lwip/util.c`（251 行）、`minix3/minix/net/lwip/addr.c`（699 行）、`minix3/minix/net/lwip/addrpol.c`（143 行），以及地址尺寸上限定义 `minix3/minix/include/minix/sockdriver.h:SOCKADDR_MAX` 和地址联合体定义 `minix3/minix/net/lwip/lwip.h:sockaddr_dlx`
 > **Rust 模块**：`os/net/lwip/src/util.rs`（错误映射、特权判断、时间换算、输出合并检查）、`os/net/lwip/src/addr.rs`（地址尺寸上限、选择策略表、作用域排序、网络掩码工具）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`（轻量协议栈服务的启动链与主循环，理解工具函数被哪些阶段调用）
+> **前置依赖**：`rewrite-notes/17-stage-net/03-lwip-main-init.md`（轻量协议栈服务的启动链与主循环，理解工具函数被哪些阶段调用）
 >
 > **本篇不覆盖的内容**：
 > - 各个套接字协议模块如何调用这些工具（调用点分布在第 06 篇到第 12 篇，以及第 21 篇到第 22 篇，本文只定义工具本身的行为与边界）
@@ -242,10 +242,10 @@ C 语言的掩码回填在缓冲区不足或前缀越界时触发断言崩溃，
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`：服务启动链与主循环，工具函数的调用位置。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，工具的第一次大规模消费。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/99-net-global-concepts.md`：全局常量汇总，错误编号与地址上限的集中位置。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/03-lwip-main-init.md`：服务启动链与主循环，工具函数的调用位置。
+- `rewrite-notes/17-stage-net/06-lwip-ipsock.md`：互联网协议公共层，工具的第一次大规模消费。
+- `rewrite-notes/17-stage-net/99-net-global-concepts.md`：全局常量汇总，错误编号与地址上限的集中位置。
 - `os/net/lwip/src/util.rs`：错误映射、特权判断、时间换算与合并检查的实现。
 - `os/net/lwip/src/addr.rs`：地址尺寸上限、策略表、作用域排序与掩码工具的实现。
 - `minix3/minix/net/lwip/util.c`：工具函数的原始实现（251 行）。

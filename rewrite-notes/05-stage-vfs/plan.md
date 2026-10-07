@@ -1,7 +1,7 @@
 # 05-stage-vfs 文档重组计划（plan.md）
 
 > **状态**: 生效中（2026-08-16 首版，深度 review + minix3 源码回归 review 后定稿）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/05-stage-vfs/`
+> **范围**: `rewrite-notes/05-stage-vfs/`
 > **目标**: 以 **VFS server 启动顺序为主线**重组 VFS 全部文档；`fork` 系统调用降为次主线；最终覆盖 Minix3 VFS server 全部语义（33 个 .c + 15 个本地 .h，16,735 行 C，64 个 VFS 调用 + 12 个 VFS_PM 请求 + 35 个 REQ_ 协议面），支撑 VFS server 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`02-stage-vm/plan.md` + `04-stage-pm/plan.md`（同型重组范本）、`minix3/minix/servers/vfs/`（ground truth）、`os/servers/vfs/src/`（Rust 实现）
 

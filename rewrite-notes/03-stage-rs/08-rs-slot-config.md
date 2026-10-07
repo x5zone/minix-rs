@@ -3,7 +3,7 @@
 > **分类**: 阶段 4 — 服务创建与配置（配置落地）
 > **源码**: `minix3/minix/servers/rs/request.c:check_request`（`check_request`）、`minix3/minix/servers/rs/manager.c:copy_rs_start`（`copy_rs_start`/`copy_label`）、`minix3/minix/servers/rs/manager.c:edit_slot`（`edit_slot`）、`minix3/minix/servers/rs/manager.c:init_slot`（`init_slot`）、`minix3/minix/servers/rs/manager.c:build_cmd_dep`（`build_cmd_dep`）、`minix3/minix/servers/rs/manager.c:inherit_service_defaults`（`inherit_service_defaults`）、`minix3/minix/include/minix/rs.h:SERVICE_UID（L24，工具生成）,104-151`（`RSS_*` 与 `struct rs_start`）
 > **Rust 模块**: `os/servers/rs/src/slot.rs`（`RsStart`/`RssFlags`/`check_request`/`build_cmd_dep`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（槽位字段）、`03-rs-privilege.md`（`r_priv` 字段）、`05-rs-ipc-sendmask.md`（`init_privs` 调用点）、`07-rs-period-heartbeat.md`（`r_period` 消费）
+> **前置**: `rewrite-notes/03-stage-rs/02-rs-process-table.md`（槽位字段）、`03-rs-privilege.md`（`r_priv` 字段）、`05-rs-ipc-sendmask.md`（`init_privs` 调用点）、`07-rs-period-heartbeat.md`（`r_period` 消费）
 > **说明**: 服务配置从"用户请求的参数"（`rs_start`）到"RS 表内的槽位状态"的落地。`RS_UP`/`RS_EDIT` 都走同一套配置管线：`check_request`（参数校验）→ `copy_rs_start`（拷入）→ `init_slot`/`edit_slot`（字段落地）。本文档是服务生命周期**创建路径的第一站**——槽位配置正确，后续 exec（09）/创建（10）/发布（11）才有输入。
 
 ---
@@ -475,13 +475,13 @@ slot.rs
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` — 槽位字段与四链
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/03-rs-privilege.md` — `r_priv` 字段、CHECK_IRQ/CHECK_IO_PORT、DSRV_* 默认
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/05-rs-ipc-sendmask.md` — `init_privs` 调用点（minix3/minix/servers/rs/manager.c:rs_start（L1700，工具生成））
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` — `r_period` 消费
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/09-rs-exec.md` — read_exec/share_exec/free_exec
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` — inherit_service_defaults 消费方
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/13-rs-control-requests.md` — do_up/do_edit 入口
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` — sys_datacopy 接线
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` — 槽位字段与四链
+- `rewrite-notes/03-stage-rs/03-rs-privilege.md` — `r_priv` 字段、CHECK_IRQ/CHECK_IO_PORT、DSRV_* 默认
+- `rewrite-notes/03-stage-rs/05-rs-ipc-sendmask.md` — `init_privs` 调用点（minix3/minix/servers/rs/manager.c:rs_start（L1700，工具生成））
+- `rewrite-notes/03-stage-rs/07-rs-period-heartbeat.md` — `r_period` 消费
+- `rewrite-notes/03-stage-rs/09-rs-exec.md` — read_exec/share_exec/free_exec
+- `rewrite-notes/03-stage-rs/10-rs-service-create.md` — inherit_service_defaults 消费方
+- `rewrite-notes/03-stage-rs/13-rs-control-requests.md` — do_up/do_edit 入口
+- `rewrite-notes/03-stage-rs/19-rs-external-interfaces.md` — sys_datacopy 接线
 - `minix3/minix/servers/rs/request.c:check_request`、`minix3/minix/servers/rs/manager.c:copy_rs_start,289-323,1303-1329,1460-1703`、`include/minix/rs.h:24-52,104-151` — ground truth
 - `os/servers/rs/src/slot.rs` — Rust 实现

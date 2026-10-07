@@ -3,7 +3,7 @@
 > **分类**：系统服务第 2 篇（硬件时钟三操作，转发模式）
 > **源码**：`minix3/minix/drivers/clock/readclock/readclock.c`（一百九十一行，协议循环与十进制换算）、`minix3/minix/drivers/clock/readclock/forward.c`（一百二十行，转发到芯片驱动）、`minix3/minix/drivers/clock/readclock/readclock.h`（时钟操作表）、`minix3/minix/drivers/clock/readclock/arch/`（两种架构时钟，见第 2.7 节）、`minix3/minix/include/minix/com.h`（第九百九十五 行到第一千零十二行，实时钟协议常量）
 > **Rust 模块**：`os/drivers/clock/readclock/src/protocol.rs`（协议编号与时间形状）、`os/drivers/clock/readclock/src/clock.rs`（十进制换算与时钟抽象）、`os/drivers/clock/readclock/src/device.rs`（权限分诊）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（本篇不走字符框架，走专有协议，见第 1.2 节）
+> **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（本篇不走字符框架，走专有协议，见第 1.2 节）
 > **说明**：实时时钟是断电也走的硬件钟，开机对时、定时关机全靠它。本篇讲它的三操作协议：读、写、断电，外加转发模式（时钟嵌在多功能芯片里时转交芯片驱动）。权限门是本篇的重点：读人人可读，写要超级用户，断电只要电源管理。
 
 > **本篇不讲什么**：
@@ -213,11 +213,11 @@ Minix3 的实时时钟驱动就是这块挂钟。读操作（`RTCDEV_GET_TIME`�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：字符框架（本篇不走，对照用）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/09-random-driver.md`：随机数驱动（单设备小驱动对照）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/11-pci-driver.md`：总线驱动（下一篇）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符框架（本篇不走，对照用）。
+- `rewrite-notes/16-stage-drivers/09-random-driver.md`：随机数驱动（单设备小驱动对照）。
+- `rewrite-notes/16-stage-drivers/11-pci-driver.md`：总线驱动（下一篇）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/clock/readclock/src/protocol.rs`：协议编号与时间形状的实现。
 - `os/drivers/clock/readclock/src/clock.rs`：十进制换算与时钟抽象的实现。
 - `os/drivers/clock/readclock/src/device.rs`：权限分诊的实现。

@@ -217,10 +217,10 @@ C 的 `message` 联合体按 `m_type` 选择子格式；Rust 用**语义层 stru
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/99-rs-global-concepts.md` —— RS_* 消息类型/RSS_*/SF_*/SEF_* 标志词典
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `vm_update`/`rs_receive_ticks`/`sys_update` 调用点
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/17-rs-state-data.md` —— `ds_retrieve_label_endpt`/`sys_datacopy`/cpf grants
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/18-rs-self-lifecycle.md` —— `srv_fork`/`sys_whoami`/`sys_privctl`/`vm_update` 特例
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/09-rs-exec.md` —— libexec/minix_stack（ARCH A-8）
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/11-rs-publish.md` —— mapdriver/PCI/devman
+- `rewrite-notes/03-stage-rs/99-rs-global-concepts.md` —— RS_* 消息类型/RSS_*/SF_*/SEF_* 标志词典
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— `vm_update`/`rs_receive_ticks`/`sys_update` 调用点
+- `rewrite-notes/03-stage-rs/17-rs-state-data.md` —— `ds_retrieve_label_endpt`/`sys_datacopy`/cpf grants
+- `rewrite-notes/03-stage-rs/18-rs-self-lifecycle.md` —— `srv_fork`/`sys_whoami`/`sys_privctl`/`vm_update` 特例
+- `rewrite-notes/03-stage-rs/09-rs-exec.md` —— libexec/minix_stack（ARCH A-8）
+- `rewrite-notes/03-stage-rs/11-rs-publish.md` —— mapdriver/PCI/devman
 - `minix3/minix/lib/libsys/*`、`include/minix/ipc.h:1048-1072,1420-1428,1466-1474,1858-1906`、`include/minix/com.h:627,736,741-745` —— ground truth

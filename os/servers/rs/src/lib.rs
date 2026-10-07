@@ -10,7 +10,7 @@
 //! # Scope
 //!
 //! The current implementation covers the boot/init skeleton documented in
-//! `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md`:
+//! `rewrite-notes/03-stage-rs/01-rs-boot-init.md`:
 //!
 //! - [`table`] — the boot image priv/sys/dev tables (ARCH A-13 static tables).
 //! - [`boot`] — the 4-step boot state machine (`sef_cb_init_fresh`) + the

@@ -3,7 +3,7 @@
 > **分类**：参考实现·命名空间（磁盘主线第 5 篇）
 > **源码**：`minix3/minix/fs/mfs/path.c`（全部二百四十一行）、`minix3/minix/fs/mfs/mfsdir.h`（全部二十行）
 > **Rust 模块**：`os/fs/mfs/src/dir.rs`（目录项编解码、四模式漫步、单步查找）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`（槽位的获取）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/03-fsdriver-utility.md`（框架查找漫步的三岔路）
+> **前置**：`rewrite-notes/15-stage-fs/09-mfs-inode.md`（槽位的获取）、`rewrite-notes/15-stage-fs/03-fsdriver-utility.md`（框架查找漫步的三岔路）
 > **说明**：目录里找名字：六十四字节目录项、四模式一 walk、单步查找、空名与删后目录规则。
 
 > **本章不讲什么**：
@@ -162,10 +162,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/03-fsdriver-utility.md`：框架漫步（单步的调用方）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`：槽位的获取（单步的调用方）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/12-mfs-open.md`：开张（进入删除的调用方）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/03-fsdriver-utility.md`：框架漫步（单步的调用方）。
+- `rewrite-notes/15-stage-fs/09-mfs-inode.md`：槽位的获取（单步的调用方）。
+- `rewrite-notes/15-stage-fs/12-mfs-open.md`：开张（进入删除的调用方）。
 - `os/fs/mfs/src/dir.rs`：目录漫步的实现。
 - `minix3/minix/fs/mfs/path.c`：查路的原始实现（二百四十一行）。
 - `minix3/minix/fs/mfs/mfsdir.h`：目录项的原始定义（二十行）。

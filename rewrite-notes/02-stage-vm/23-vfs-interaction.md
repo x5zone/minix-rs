@@ -528,4 +528,4 @@ dispatch_pagefault（vm_server.rs:986）
 - `22-vm-exit.md` §释放链——退出路径的 fdref 暂存（23 的 FDCLOSE 入口之一）
 - `24-page-cache.md` —— 页缓存（本文档的缓存命中路径的完整实现，下一篇）
 - `99-global-concepts.md` —— endpoint/常量表
-- 素材：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/23-vfs-interaction.md`（1494 行，历史设计素材）
+- 素材：`rewrite-notes/02-stage-vm/draft/23-vfs-interaction.md`（1494 行，历史设计素材）

@@ -1,6 +1,6 @@
 //! PM 调用分发表（C: `table.c:call_vec` + `callnr.h` 47 个调用号）。
 //!
-//! 文档: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/04-ipc-dispatch.md`。
+//! 文档: `rewrite-notes/04-stage-pm/04-ipc-dispatch.md`。
 //!
 //! # 与 C 的对应
 //!

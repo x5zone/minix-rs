@@ -3,7 +3,7 @@
 > **分类**：启动关键第 1 篇（双面设备，启动映像成员）
 > **源码**：`minix3/minix/drivers/storage/memory/memory.c`（五百九十九行）、`minix3/minix/include/minix/dmap.h`（第八十五行到第九十二行，设备号定义）、`minix3/minix/include/sys/ioc_memory.h`（内存盘控制码定义）
 > **Rust 模块**：`os/drivers/storage/memory/src/device.rs`（设备号、几何表、打开计数、扩容策略）、`os/drivers/storage/memory/src/transfer.rs`（传输规划、页窗口、映射抽象）、`os/drivers/storage/memory/src/char_face.rs`（字符面框架适配）、`os/drivers/storage/memory/src/block_face.rs`（块面框架适配）、`os/drivers/storage/memory/src/service.rs`（双面消息泵：按块请求谓词分诊、逐请求规划与回复）、`os/drivers/storage/memory/src/main.rs`（进程壳：宣告两面、出生握手、进入事件循环）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`（块框架）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/04-bdev-client.md`（调用方视角）
+> **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（字符框架）、`rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`（块框架）、`rewrite-notes/16-stage-drivers/04-bdev-client.md`（调用方视角）
 > **说明**：内存驱动是启动映像里仅有的两个驱动之一（另一个是终端驱动），也是全系统唯一同时服务字符与块两种请求的驱动。它管七个固定设备加六个内存盘：绝对内存、内核内存、空洞、零源、启动设备、映像盘，外加六个可扩容的内存盘。本篇讲这个双面驱动的全部语义：两张回调表、主循环如何分诊、每个设备的读写行为、内存盘扩容控制。
 
 > **本篇不讲什么**：
@@ -289,11 +289,11 @@ Redox 没有直接对应的驱动：它的零源与空洞是方案（scheme）�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`：字符框架（分诊的目标之一）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`：块框架（分诊的目标之二）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/06-tty-driver.md`：终端驱动（双面之后的重字符用户）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符框架（分诊的目标之一）。
+- `rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`：块框架（分诊的目标之二）。
+- `rewrite-notes/16-stage-drivers/06-tty-driver.md`：终端驱动（双面之后的重字符用户）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/storage/memory/src/device.rs`：设备号、几何表、打开计数、扩容策略的实现。
 - `os/drivers/storage/memory/src/transfer.rs`：传输规划、页窗口、映射抽象的实现。
 - `minix3/minix/drivers/storage/memory/memory.c`：双面驱动的原始实现（五百九十九行）。

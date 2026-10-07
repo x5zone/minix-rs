@@ -8,7 +8,7 @@
 //! [`config::ConfigSpace`]; this crate owns the numbers and the policy
 //! (protocol decoding, visibility, duplicate refusal). See document
 //! `11-pci-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

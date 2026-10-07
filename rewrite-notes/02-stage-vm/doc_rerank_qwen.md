@@ -8,7 +8,7 @@
 |----|----|
 | 执行者 | qwen |
 | 日期 | 2026-09-19 |
-| 目标目录 | `notes/rewrite/fork-syscall-rewrite/02-stage-vm` |
+| 目标目录 | `rewrite-notes/02-stage-vm` |
 | 仓库根 | `/home/xzhao/github/minix-rs` |
 | 当前提交号 | `561cf097b`（2026-09-19 21:12:30 +0800） |
 | 交付物 | 仅本文件 `doc_rerank_qwen.md`（不改任何正文） |

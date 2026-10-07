@@ -2,7 +2,7 @@
 
 > **本文档用途**：这是一份**自包含的重构需求说明**，供多个 AI（Trae Code、Claude、GPT 网页版等）或人类审阅 / 执行。读者可能**无法访问本仓库的代码与上下文**，因此本文档把背景、前因、方案、验收标准全部写入正文。审阅者 / 执行者应以本文档为唯一依据，必要时再对照仓库源码。
 >
-> **目标文件**：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md`（下文简称「06」）
+> **目标文件**：`rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md`（下文简称「06」）
 >
 > **状态**：v2.1 **定稿**（2026-08-29 GPT 终审通过：「可以定稿，开始执行，不要再继续设计层面迭代」；执行注意事项见 §8 开头，执行顺序三阶段见文末摘要第 9 条）
 >
@@ -39,7 +39,7 @@
 项目的关键约束（与本文档强相关）：
 - **`#![no_std]` + boot 期无堆**：内核代码除 `#[cfg(test)]` 外不依赖标准库；且 kernel **boot 阶段堆分配器尚未建立**（注意：`no_std` ≠ 没有 allocator——no_std 环境可以自带分配器，这里的原因是 boot 期未建立），因此核心表必须用固定容量静态存储（`static [T; N]`）而不是 `Vec` / `Box`。这是本文档方案的核心动因之一，完整三层因果链见 §10.5。
 - **执行模型分层**：用户态服务器是单线程事件循环；**内核是 SMP + BKL（Big Kernel Lock）**，跨 CPU 共享数据需要 `Atomic` / 锁，进程表的 `p_rts_flags` 在 Rust 侧是 `AtomicU32`。
-- **文档体系**：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/` 下按「阶段 + 功能」组织 32+ 篇概念文档，每篇对应一组 Minix3 内核 C 源码 / Rust 实现。用**启动主线**串联整个内核启动流程（阶段 A–F）。
+- **文档体系**：`rewrite-notes/01-stage-kernel/` 下按「阶段 + 功能」组织 32+ 篇概念文档，每篇对应一组 Minix3 内核 C 源码 / Rust 实现。用**启动主线**串联整个内核启动流程（阶段 A–F）。
 
 ---
 

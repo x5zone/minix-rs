@@ -3,7 +3,7 @@
 > **分类**: 阶段 2 — 主循环与异步协议（锚点文档）
 > **源码**: `minix3/minix/servers/pm/main.c`（main 主循环 / reply / calls_stats）、`minix3/minix/servers/pm/table.c`（call_vec）、`minix3/minix/include/minix/callnr.h`（47 个调用号）、`minix3/minix/include/minix/com.h`（IS_VFS_PM_RS / PROC_EVENT_REPLY / SUSPEND / is_ipc_notify）、`minix3/minix/include/minix/ipcconst.h`（IPC_STATUS_CALL）
 > **Rust 模块**: `os/servers/pm/src/ipc/transport.rs`（`IpcTransport::receive` / `IpcStatus`）、`os/servers/pm/src/ipc/calls.rs`（`PmCall` / `dispatch_pm_call`）、`os/servers/pm/src/ipc/dispatcher.rs`（`ReplyIntent` / `dispatch_message`）、`os/servers/pm/src/init.rs`（`PmServer::run` / `run_once` / `reply` / `RunStep`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/01-pm-init-main.md`（启动链进入主循环）、`02-mproc-struct.md`（mproc 结构）、`03-mproc-table.md`（pm_isokendpt 调用点）
+> **前置**: `rewrite-notes/04-stage-pm/01-pm-init-main.md`（启动链进入主循环）、`02-mproc-struct.md`（mproc 结构）、`03-mproc-table.md`（pm_isokendpt 调用点）
 > **说明**: PM 主循环的完整语义：收消息、CLOCK notify 跳过、caller 验证、EXITING 丢弃、三路分发（VFS 回复 / 事件回复 / PM 调用）、SUSPEND 回复模型、reply()、47 调用分发表、调用统计。VFS 回复状态机（05）、事件订阅（06）只在本档建钩子。
 
 ---
@@ -634,7 +634,7 @@ fn reply(&mut self, slot: UserSlot, result: i32) {
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/plan.md` §1.2（主循环时序图）、§3.4（边界表）、§4（A-3~A-6）、§5.3（函数归属）、§7.3（SUSPEND 语义契约）
+- `rewrite-notes/04-stage-pm/plan.md` §1.2（主循环时序图）、§3.4（边界表）、§4（A-3~A-6）、§5.3（函数归属）、§7.3（SUSPEND 语义契约）
 - `01-pm-init-main.md` — 启动链进入主循环（main.c:49-56 → sef_local_startup → init_fresh）
 - `03-mproc-table.md` — `pm_isokendpt`（本档调用点）、`UserSlot`
 - `05-vfs-interaction.md` — VFS 异步回复状态机（第一路）

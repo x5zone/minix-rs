@@ -28,7 +28,7 @@
 
 ## 1. Step 0 预检与 Gate 证据
 
-- **Step 0 硬阻断预检**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/.design/` 下 24 组 `NN-outline.v1.md` + `NN-outline-review.v1.md` + `NN-design.v1.md` 齐备（各 24 个）；`bash tools/design-coverage-check.sh fork-syscall-rewrite/15-stage-fs` 输出 `ALL DOCS COMPLETE`，退出码 0。Gate H.6 / H.1 通过。
+- **Step 0 硬阻断预检**：`rewrite-notes/15-stage-fs/.design/` 下 24 组 `NN-outline.v1.md` + `NN-outline-review.v1.md` + `NN-design.v1.md` 齐备（各 24 个）；`bash tools/design-coverage-check.sh fork-syscall-rewrite/15-stage-fs` 输出 `ALL DOCS COMPLETE`，退出码 0。Gate H.6 / H.1 通过。
 - **基线**：`cargo test -p minix-fs -p minix-fs-mfs -p minix-fs-pfs -p minix-fs-procfs -p minix-fs-ptyfs -p minix-fs-ext2 -p minix-fs-isofs -p minix-fs-vbfs -p minix-fs-hgfs -p minix-vtreefs -p minix-sffs` 全绿，合计 289 passed（明细：mfs 98、minix-fs 90、ext2 25、procfs 17、pfs 12、sffs 12、ptyfs 11、vtreefs 11、isofs 9、vbfs 2、hgfs 2）。scope 内 `grep -rn "unsafe "` 命中 0。
 - **Gate D（trait 实现普查）**：`FsDriver` 有 2 个生产行为不同的实现（`PfsServer`，os/fs/pfs/src/lib.rs:274；`MemFileServer`，os/libs/minix-fs/src/memfs.rs:170），通过。`BlockSource`、`SecondLevelCache`、`DeviceInfo`、`DataBackend` 各只有 1 个生产实现（其余为测试替身）：第二实现分别归属块设备轨道与 VM 轨道（bio.rs:12-16、cache.rs:15-22 有书面归属），按模式 80 记 P2 观察（第 3.3 节 V1-P2-8 与 edge 条目），不判死代码。
 - **translate 防线（模式 16/17/65）**：分发用 enum + match（call_table 的 C 函数指针表在 os/libs/minix-fs/src/driver.rs:8-9 有书面替换声明）、错误走 `Errno` + 每模块错误 enum、无 `static mut`、scope 内 unsafe 为 0。判定通过。

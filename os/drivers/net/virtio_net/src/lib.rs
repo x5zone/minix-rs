@@ -7,7 +7,7 @@
 //! (`virtio_net.c:438-443`). This crate owns the discipline half
 //! (which queue does what, when to refill); the service binary owns
 //! queue traffic. See document `22-net-driver-reference.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

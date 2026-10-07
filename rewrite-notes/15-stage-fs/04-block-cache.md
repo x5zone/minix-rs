@@ -3,7 +3,7 @@
 > **分类**：框架层第 4 篇
 > **源码**：`minix3/minix/lib/libminixfs/cache.c`（全部一千三百二十一行）、`minix3/minix/lib/libminixfs/inc.h`（十行）、`minix3/minix/include/minix/libminixfs.h`（六十五行，缓冲头与取值模式）
 > **Rust 模块**：`os/libs/minix-fs/src/cache.rs`（缓存本体）、`os/libs/minix-fs/src/vm_cache.rs`（二级缓存：旗标字、块标签、页内存、四个线上调用）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`（单线程假设：缓存无锁的根因）
+> **前置**：`rewrite-notes/15-stage-fs/01-fsdriver-task.md`（单线程假设：缓存无锁的根因）
 > **说明**：磁盘块在内存里的家：哈希索引、最近最少使用淘汰、引用计数 pin 住、脏块写回、预读、容量启发式，以及把同一批页与内存服务器共享的二级缓存。
 
 > **本章不讲什么**：
@@ -296,10 +296,10 @@ C 的启发式自己查虚拟内存统计。Rust 把输入（已用、总量、�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`：单线程假设。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/02-fsdriver-call.md`：同步与刷块适配器的调用位置。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/05-block-io.md`：块输入输出（本篇的下游）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/01-fsdriver-task.md`：单线程假设。
+- `rewrite-notes/15-stage-fs/02-fsdriver-call.md`：同步与刷块适配器的调用位置。
+- `rewrite-notes/15-stage-fs/05-block-io.md`：块输入输出（本篇的下游）。
 - `os/libs/minix-fs/src/cache.rs`：块缓存的实现。
 - `os/libs/minix-fs/src/vm_cache.rs`：二级缓存的实现（旗标字、块标签、页内存、策略层与线材接口）。
 - `os/fs/mfs/src/second_level.rs`：服务进程那一侧的二级缓存（线材的真货与运行时的开/关选择）。

@@ -3,7 +3,7 @@
 > **分类**：框架层第 3 篇
 > **源码**：`minix3/minix/lib/libfsdriver/utility.c`（一百零五行）、`minix3/minix/lib/libfsdriver/dentry.c`（九十九行）、`minix3/minix/lib/libfsdriver/lookup.c`（三百三十三行）
 > **Rust 模块**：`os/libs/minix-fs/src/data.rs`、`os/libs/minix-fs/src/dentry.rs`、`os/libs/minix-fs/src/lookup.rs`
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`（分发骨架）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/02-fsdriver-call.md`（适配器调用这些辅助函数的位置）
+> **前置**：`rewrite-notes/15-stage-fs/01-fsdriver-task.md`（分发骨架）、`rewrite-notes/15-stage-fs/02-fsdriver-call.md`（适配器调用这些辅助函数的位置）
 > **说明**：字节如何在保护边界两边搬运，名字如何从不可信输入变成可用字符串，目录列表如何分段组装，长路径如何一步一步走完。
 
 > **本章不讲什么**：
@@ -235,10 +235,10 @@ Rust 的查找循环分成只读的解析相与行动相：解析相从工作缓
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md`：分发骨架与特殊码含义。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/02-fsdriver-call.md`：调用这些辅助函数的位置（名字获取、读目录、查找）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/04-block-cache.md`：块缓存。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/01-fsdriver-task.md`：分发骨架与特殊码含义。
+- `rewrite-notes/15-stage-fs/02-fsdriver-call.md`：调用这些辅助函数的位置（名字获取、读目录、查找）。
+- `rewrite-notes/15-stage-fs/04-block-cache.md`：块缓存。
 - `os/libs/minix-fs/src/data.rs`：数据通道与名字获取的实现。
 - `os/libs/minix-fs/src/dentry.rs`：目录项编码器的实现。
 - `os/libs/minix-fs/src/lookup.rs`：路径查找的实现。

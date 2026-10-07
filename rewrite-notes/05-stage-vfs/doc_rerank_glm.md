@@ -5,7 +5,7 @@
 ```text
 执行者 = glm
 日期 = 2026-09-19
-目标目录 = notes/rewrite/fork-syscall-rewrite/05-stage-vfs/
+目标目录 = rewrite-notes/05-stage-vfs/
 仓库根目录 = /home/xzhao/github/minix-rs
 当前提交号 = 2696568b710ecbf7102b1f3a35fc3a8db2ab5590（feat(pm): S8 首片——mcontext 族两调用接线）
 阶段类型判定 = 服务事件循环型（第九部分分类），兼有"系统调用集合型"的并行体特征；

@@ -4,11 +4,11 @@
 
 - Executor: muse (AI agent name = muse)
 - Date: 2026-09-20
-- Target directory: `notes/rewrite/fork-syscall-rewrite/07-stage-ds`
+- Target directory: `rewrite-notes/07-stage-ds`
 - Repository root: `/home/xzhao/github/minix-rs`
 - HEAD commit at survey time: `81699c841` ("feat(commands): S35 batch 21")
 - Task: R-phase rebuild blueprint. Output is ONLY this file:
-  `notes/rewrite/fork-syscall-rewrite/07-stage-ds/doc_rerank_muse.md`.
+  `rewrite-notes/07-stage-ds/doc_rerank_muse.md`.
   No body text was modified, renamed, moved, or deleted.
 - Language: English (per muse special requirement).
 

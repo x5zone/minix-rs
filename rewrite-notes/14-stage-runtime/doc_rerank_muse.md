@@ -4,7 +4,7 @@
 
 - Executor: muse
 - Date: 2026-09-19
-- Target directory: `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+- Target directory: `rewrite-notes/14-stage-runtime/`
 - Repository root: `/home/xzhao/github/minix-rs`
 - Current commit: `bcfa02514` (short hash, verified via `git rev-parse --short HEAD` on 2026-09-19)
 - Task: R-phase rebuild blueprint. Output is `target_dir/doc_rerank_muse.md`. No body text is modified.
@@ -47,13 +47,13 @@ do/` material (not referenced, per project rule); other stages' docs except as b
 3. `todo.md` §§0–2 (V1 findings, coverage matrices PM/VFS/VM/misc/RS/constants) plus fix records for V1-P0-1..V1-P1-4.
 4. C ground truth (spot-verified, not fully re-read): `minix3/lib/csu/arch/x86_64/crt0.S` (:44-49 six-instruction entry), `minix3/lib/csu/common/crt0-common.c` (:144-192 `___start`), `minix3/minix/lib/libc/sys/init.c` (:8 constructor, :20-26 init with non-fatal NULL fallback), `minix3/minix/lib/libc/sys/syscall.c` (:9 `_syscall`), `minix3/minix/lib/libsys/kernel_call.c` (:7 `_kernel_call`), `minix3/minix/include/minix/type.h` (:214-244 kerninfo, :229 magic), `minix3/minix/lib/libc/arch/i386/sys/_ipc.S` (six ENTRY points), `minix3/minix/lib/libc/sys/stack_utils.c` (:66 STACK_MIN_SZ).
 5. Rust entries: `os/libs/minix-rt/src/` (6 files, lib.rs 348 lines), `os/libs/minix-sys/src/` core domain files (`ipc.rs` 926, `syscall.rs` 1893, `pm.rs` 1153, `vfs.rs` 1155, `vm.rs` 1341, `misc.rs` 531, `rs.rs` 452, `stack.rs` 372, `grant.rs` 347, `arch_trap.rs` 246 lines), `os/libs/minix-types/src/` (errno/kerninfo/ipc wire families).
-6. Boundary materials: `notes/rewrite/fork-syscall-rewrite/edge_todo.md` header (E-MINTYPES-RUNTIME, E-MINSYS-SCOPE, E-CMDSYSFACE, E-INITSYS, E-SYSCALL-SIGN registrations), `draft/README.md` (placeholder scope), `13-stage-ipc/00-ipc-overview.md` header (previous-stage boundary: SysV IPC objects live in ipc-server, not here).
+6. Boundary materials: `rewrite-notes/coordination/edge_todo.md` header (E-MINTYPES-RUNTIME, E-MINSYS-SCOPE, E-CMDSYSFACE, E-INITSYS, E-SYSCALL-SIGN registrations), `draft/README.md` (placeholder scope), `13-stage-ipc/00-ipc-overview.md` header (previous-stage boundary: SysV IPC objects live in ipc-server, not here).
 7. Non-C artifacts: `minix3/lib/csu/` layout (Makefile, arch/x86_64, common), `minix3/minix/lib/libc/arch/` (i386 + arm), libc/sys file count (133 .c, verified via `ls | wc -l`), libsys file count (116 .c), libminc file list.
 
 ### 0.3 Commands used and key outputs (evidence excerpts)
 
 ```bash
-wc -l notes/rewrite/fork-syscall-rewrite/14-stage-runtime/0*.md 1*.md 99*.md
+wc -l rewrite-notes/14-stage-runtime/0*.md 1*.md 99*.md
 # 15 docs, 2043 lines total; thinnest 99 (70), thickest 01/09 (173)
 ls minix3/minix/lib/libc/sys/*.c | wc -l          # 133 (matches plan §5.1)
 ls minix3/minix/lib/libsys/*.c | wc -l            # 116 (shared+server subset)

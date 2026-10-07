@@ -2,7 +2,7 @@
 
 //! Network configuration and diagnostics core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/18-network-config.md`:
+//! Covers `rewrite-notes/18-stage-commands/18-network-config.md`:
 //! interface configuration (`minix3/sbin/ifconfig/ifconfig.c`, interface flags
 //! read with `SIOCGIFFLAGS` near line 1050 and written with `SIOCSIFFLAGS`
 //! near line 1059, maximum transmission unit written with `SIOCSIFMTU` near

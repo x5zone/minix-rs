@@ -148,6 +148,6 @@ C 入口阶段的失败只有一种处理：`_FATAL` 宏输出错误并退出（
 - `minix3/minix/lib/libc/sys/environ.c`：环境哨兵值的原始定义和注释。
 - `minix3/lib/libc/misc/initfini.c`：C 语言库初始化函数的原始实现，含单次标志和各子系统初始化顺序。
 - `minix3/sys/sys/exec.h`：进程字符串描述结构的原始定义。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/01-kernel-handoff.md`：前一篇，内核交付与初始栈。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/03-runtime-init.md`：后一篇，运行时初始化与通信向量表安装。
-- `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。
+- `rewrite-notes/14-stage-runtime/01-kernel-handoff.md`：前一篇，内核交付与初始栈。
+- `rewrite-notes/14-stage-runtime/03-runtime-init.md`：后一篇，运行时初始化与通信向量表安装。
+- `rewrite-notes/14-stage-runtime/plan.md`：本阶段的文档重组计划、架构演进清单和覆盖契约。

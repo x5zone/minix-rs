@@ -377,7 +377,7 @@ VM 维护以下跨组件共享的全局变量：
 
 - [01-vmproc-struct.md](01-vmproc-struct.md) — 进程结构体（入口点）
 - [26-vm-init-main.md](26-vm-init-main.md) — 所有零件怎么组装启动（终结点）
-- [系统核心概念](../../../concepts/README.md) — Endpoint、IPC 等全局概念
+- [系统核心概念](../../concepts/README.md) — Endpoint、IPC 等全局概念
 
 ---
 

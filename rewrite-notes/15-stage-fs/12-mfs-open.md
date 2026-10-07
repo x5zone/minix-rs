@@ -3,7 +3,7 @@
 > **分类**：参考实现·命名空间（磁盘主线第 6 篇）
 > **源码**：`minix3/minix/fs/mfs/open.c`（全部二百七十行）
 > **Rust 模块**：`os/fs/mfs/src/open.rs`（新节点、创建四件套、寻位标记）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`（分配与回收号）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/11-mfs-path.md`（进入与删除）、`notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`（区分配策略）
+> **前置**：`rewrite-notes/15-stage-fs/09-mfs-inode.md`（分配与回收号）、`rewrite-notes/15-stage-fs/11-mfs-path.md`（进入与删除）、`rewrite-notes/15-stage-fs/07-mfs-init-main.md`（区分配策略）
 > **说明**：新文件诞生的四重奏：查空、分配、落盘、进入，以及各自的回滚舞步。
 
 > **本章不讲什么**：
@@ -167,10 +167,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`：分配与回收号（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/11-mfs-path.md`：进入与删除（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/07-mfs-init-main.md`：区分配策略（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/13-mfs-link.md`：链接与删除（本篇的对称篇）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/09-mfs-inode.md`：分配与回收号（本篇消费）。
+- `rewrite-notes/15-stage-fs/11-mfs-path.md`：进入与删除（本篇消费）。
+- `rewrite-notes/15-stage-fs/07-mfs-init-main.md`：区分配策略（本篇消费）。
+- `rewrite-notes/15-stage-fs/13-mfs-link.md`：链接与删除（本篇的对称篇）。
 - `os/fs/mfs/src/open.rs`：创建的实现。
 - `minix3/minix/fs/mfs/open.c`：创建的原始实现（二百七十行）。

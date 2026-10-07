@@ -241,8 +241,8 @@ $ docker exec minix-rs-qemu-10.0.13 qemu-system-riscv64 --version   # 期望 10.
 
 ## 8. 相关文档
 
-- 缺陷 (A) 的实验记录与分析：`notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md`（先读第 10 章）
-- 取证流水账：`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`
-- 取证方法论：`notes/rewrite/fork-syscall-rewrite/riscv瞬态页表崩溃取证方法论.md`
-- 换机迁移交接：`notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`
+- 缺陷 (A) 的实验记录与分析：`rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md`（先读第 10 章）
+- 取证流水账：`rewrite-notes/coordination/NK4C-WORKLOG.md`
+- 取证方法论：`rewrite-notes/coordination/riscv瞬态页表崩溃取证方法论.md`
+- 换机迁移交接：`rewrite-notes/coordination/NK4C-MIGRATION-20260930.md`
 - 取证脚本与工具：`tmp/nk4a/riscv_halt_dump.sh`、`tmp/nk4a/riscv_halt_dump_bios.sh`、`tmp/nk4a/matrix_judge.py`

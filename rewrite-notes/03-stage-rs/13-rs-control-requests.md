@@ -3,7 +3,7 @@
 > **分类**: 阶段 4 — 服务生命周期（控制面）
 > **源码**: `minix3/minix/servers/rs/request.c`（`do_up`—15、`do_down`—111、`do_restart`—160、`do_clone`—208、`do_unclone`—253、`do_edit`—298、`do_refresh`—390、`do_shutdown`—431）、`minix3/minix/servers/rs/manager.c:stop_service`（`stop_service`）
 > **Rust 模块**: `os/servers/rs/src/request.rs`（`up_init_flags`/`check_duplicates`/`mark_late_reply`/`StopSignal`/`stop_service`/`shutdown_apply`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`copy_rs_start`/`check_request`/`init_slot`/`edit_slot`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md`（`clone_service`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md`（`start_service`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（`RS_LATEREPLY`）
+> **前置**: `rewrite-notes/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）、`rewrite-notes/03-stage-rs/08-rs-slot-config.md`（`copy_rs_start`/`check_request`/`init_slot`/`edit_slot`）、`rewrite-notes/03-stage-rs/10-rs-service-create.md`（`clone_service`）、`rewrite-notes/03-stage-rs/12-rs-init-run.md`（`start_service`）、`rewrite-notes/03-stage-rs/06-rs-main-loop.md`（`RS_LATEREPLY`）
 > **说明**: 本文档是 RS 的**控制面分派层**：主循环（06）把 `RS_UP/DOWN/RESTART/CLONE/UNCLONE/EDIT/REFRESH/SHUTDOWN` 八类消息分派到对应 handler（`RS_UPDATE` 归 16）。每个 handler 都是"校验 → 调机制"的薄层；机制本身（创建/发布/运行/清理/更新）在 10/11/12/15/16。同时本文档绘制**服务生命周期次主线路径图**（plan §1.3）。
 
 ---
@@ -281,11 +281,11 @@ C 的八个 handler 重复"copy → lookup → 权限 → 动作"。Rust 侧不�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md` —— 全部 handler 的权限门
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md` —— `copy_rs_start`/`copy_label`/`init_slot`/`edit_slot`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md` —— `start_service`/`end_srv_init`/`late_reply` 消费点
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` —— `r_stop_tm` 与 SIGKILL 升级
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `cleanup_service`/`restart_service`/`crash_service`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md` —— `RS_UPDATE`/`do_upd_ready`
+- `rewrite-notes/03-stage-rs/04-rs-access-control.md` —— 全部 handler 的权限门
+- `rewrite-notes/03-stage-rs/08-rs-slot-config.md` —— `copy_rs_start`/`copy_label`/`init_slot`/`edit_slot`
+- `rewrite-notes/03-stage-rs/12-rs-init-run.md` —— `start_service`/`end_srv_init`/`late_reply` 消费点
+- `rewrite-notes/03-stage-rs/07-rs-period-heartbeat.md` —— `r_stop_tm` 与 SIGKILL 升级
+- `rewrite-notes/03-stage-rs/15-rs-terminate-restart.md` —— `cleanup_service`/`restart_service`/`crash_service`
+- `rewrite-notes/03-stage-rs/16-rs-live-update.md` —— `RS_UPDATE`/`do_upd_ready`
 - `minix3/minix/servers/rs/request.c:do_up`、`minix3/minix/servers/rs/manager.c:stop_service` —— ground truth
 - `minix3/minix/include/minix/sef.h:SEF_INIT_CRASH` —— `SEF_INIT_*` 调试标志

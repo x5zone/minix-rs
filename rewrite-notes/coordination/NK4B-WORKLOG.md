@@ -23,7 +23,7 @@
   （分支 `rewrite`，未 push）。
 - 工作树既有未提交项（非本会话产物，不动）：`AI-chats/daily.todo.md`、
   `tmp/nk4a/vars.fd`（QEMU 持久变量，陷阱 §5.13）、未跟踪
-  `notes/rewrite/archive_bak/`、`notes/study/`。
+  `rewrite-notes/archive/legacy-fork-bak/`、`study-notes/`。
 - 起跑前 `pgrep -f '[q]emu-system'` → 无残留。
 - 本会话按 P0 → P1 → P2 → P3(aarch64 M3.1-M3.6) → P4(riscv64) →
   P5 → P6 顺序推进；上下文逼近耗尽时优先把记录写完。
@@ -56,8 +56,8 @@ e4c6e8224 chore(edge1,nk4a): 迭代11-18 串口证据归档 + RS step2 槽缺失
 $ git status --short
  M AI-chats/daily.todo.md
  M tmp/nk4a/vars.fd
-?? notes/rewrite/archive_bak/
-?? notes/study/
+?? rewrite-notes/archive/legacy-fork-bak/
+?? study-notes/
 
 $ git branch --show-current
 rewrite
@@ -1352,8 +1352,8 @@ nk4a: pick->0x0000000000000008
    `8c7c53ae5` 2026-09-22，KCALL_RESUME 重派臂）。这解释了 **2026-09-19**
    那批「真机四载体全 PASS」记录为什么到今天变成 FAIL——登记处在三处：
    `.review/claude/fork-syscall-rewrite/edge1-kfix.md:403`（K20 收口节，
-   明写 `test-rt-birth-riscv64 PASS`）、`notes/rewrite/fork-syscall-rewrite/edge1.md:33`
-   （K20 行同一句）、`notes/rewrite/fork-syscall-rewrite/edge4.md:72`
+   明写 `test-rt-birth-riscv64 PASS`）、`rewrite-notes/coordination/edge1.md:33`
+   （K20 行同一句）、`rewrite-notes/coordination/edge4.md:72`
    （K12b 接线行，「同日真机 PASS 3/3」）。结论不是有人改坏了 riscv64，而是
    09-20/09-22 的周期记账给调度路径新增了对 CLOCK_STATE 的硬依赖，
    而 riscv64/aarch64 载体的初始化序列没有跟着补。
@@ -1398,7 +1398,7 @@ ELF，必须由载体脚本第 35/38 行导出该变量。带上就构建成功�
 
 ### 登记（只记不改）
 
-正文文档 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/33-syscall-caller-api.md:205-208`
+正文文档 `rewrite-notes/01-stage-kernel/33-syscall-caller-api.md:205-208`
 那张「真机验证」表到今天已与现实不符：四行里三行（`test-rt-birth` x86-64、
 `test-rt-birth-riscv64`、`test-rt-birth-aarch64`）仍写 PASS，而本节实测三条
 全部失败、各卡一处（见上表与事实三）。我不就地改它——那是 K20 战役的正文

@@ -10,7 +10,7 @@
 
 IPC server 是 System V 信号量（semget/semctl/semop）与共享内存（shmget/shmat/shmdt/shmctl）的**用户态对象管理服务**：集合表、段表、权限、等待队列、引用计数都住在它的地址空间里，内核不掺和任何一份 SysV 语义。应用程序的 semop(2) 一路走 libc 与消息传输入口，最终变成一条发到本服务的消息；本服务查表、算权限、改状态，再决定"立即回信"还是"挂起等条件"。这个定位与 Redox 把 POSIX 设施推向用户态守护进程的路线同构——对象管理与策略在用户态，内核只保留收发原语。
 
-**与内核 IPC 机制的边界**：send/receive/notify 这些原语本身是 `../01-stage-kernel/12-ipc-core.md` 与 `notes/rewrite/ipc-sendrec.md` 的话题，本 stage 只做原语之上的对象管理。crate 名叫 `ipc-server`，正是为了不和内核 IPC 撞名。
+**与内核 IPC 机制的边界**：send/receive/notify 这些原语本身是 `../01-stage-kernel/12-ipc-core.md` 与 `rewrite-notes/misc/ipc-sendrec.md` 的话题，本 stage 只做原语之上的对象管理。crate 名叫 `ipc-server`，正是为了不和内核 IPC 撞名。
 
 **在系统里的位置**：不在 boot_image（`kernel/table.c` 没有 ipc 条目），由 RS 运行时按 `ipc.conf` 声明的特权面加载——它能 UMAP/VIRCOPY，能收若干端点消息，VM 给了它 REMAP/GETPHYS/GETREF 四样访存动词。
 

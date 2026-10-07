@@ -10,7 +10,7 @@
 //! the four ioctl requests. This crate owns the choice and counting
 //! halves; the service binary owns register writes and copy traffic.
 //! See document `20-fb-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

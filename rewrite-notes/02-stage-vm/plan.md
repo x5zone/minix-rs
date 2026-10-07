@@ -1,7 +1,7 @@
 # 02-stage-vm 文档重组计划（plan.md）
 
 > **状态**: 生效中（2026-08-15 首版，深度 review + minix3 源码回归 review 后定稿）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/`
+> **范围**: `rewrite-notes/02-stage-vm/`
 > **目标**: 以 **VM server 启动顺序为主线**重组 VM 全部文档；`fork` 系统调用降为次主线；最终覆盖 Minix3 VM server 全部语义，支撑 VM server 的彻底 Rust 重写
 > **对照**: `01-stage-kernel/`（讲述结构参照）、`minix3/minix/servers/vm/`（ground truth）、`os/servers/vm/src/`（Rust 实现）
 

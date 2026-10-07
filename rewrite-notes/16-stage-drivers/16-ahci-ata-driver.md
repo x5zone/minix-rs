@@ -3,7 +3,7 @@
 > **分类**：存储第 3 篇（真硬件两兄弟，端口命令表对控制器命令）
 > **源码**：`minix3/minix/drivers/storage/ahci/ahci.c`（二千七百三十四行，端口、命令表、散集表、中断、超时）、`minix3/minix/drivers/storage/ahci/ahci.h`（帧布局与端口寄存器）、`minix3/minix/drivers/storage/at_wini/at_wini.c`（二千二百四十三行，控制器、直接存取、复位）、`minix3/minix/drivers/storage/at_wini/at_wini.h`（端口号与状态位）、`minix3/minix/drivers/storage/at_wini/liveupdate.c`（七十六行，热升级钩子）
 > **Rust 模块**：`os/drivers/storage/ahci/src/port.rs`（端口状态机）、`os/drivers/storage/ahci/src/identify.rs`（识别数据解析）、`os/drivers/storage/at_wini/src/controller.rs`（控制器阶段）、`os/drivers/storage/at_wini/src/dma.rs`（直接存取策略）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`（块框架，两驱动都挂靠）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/15-virtio-blk-driver.md`（编链思想对照）
+> **前置**：`rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`（块框架，两驱动都挂靠）、`rewrite-notes/16-stage-drivers/15-virtio-blk-driver.md`（编链思想对照）
 > **说明**：高级主控接口与并行接口是真盘的两兄弟：一个新（串行，端口命令表），一个老（并行，控制器命令）。本篇讲两兄弟的共同点（命令槽、超时复位、识别容量）与不同点（帧结构对端口命令、散集表对直接存取）。寄存器细节在服务层，本库只定顺序与算法。
 
 > **本篇不讲什么**：
@@ -207,11 +207,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/15-virtio-blk-driver.md`：虚拟块设备（编链思想对照）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`：块框架（两驱动挂靠的框架）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/17-storage-misc-driver.md`：存储杂项（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/15-virtio-blk-driver.md`：虚拟块设备（编链思想对照）。
+- `rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`：块框架（两驱动挂靠的框架）。
+- `rewrite-notes/16-stage-drivers/17-storage-misc-driver.md`：存储杂项（下一篇，待写）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/storage/ahci/src/port.rs`：端口状态机的实现。
 - `os/drivers/storage/ahci/src/identify.rs`：识别数据解析的实现。
 - `os/drivers/storage/at_wini/src/controller.rs`：控制器阶段的实现。

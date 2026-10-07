@@ -4,7 +4,7 @@
 
 - 执行者：deepseek（AI agent 名称，产物后缀）
 - 日期：2026-09-19
-- 目标目录：`notes/rewrite/fork-syscall-rewrite/07-stage-ds/`
+- 目标目录：`rewrite-notes/07-stage-ds/`
 - 仓库根目录：`/home/xzhao/github/minix-rs`
 - 当前提交号：`6965e6885`（`git log --oneline -1`）；工作树另有未提交修改，本报告数据以工作树实测为准。
 - 交付物：本文件。除本文件外不修改、不重命名、不移动、不删除任何文件；未提交任何变更。

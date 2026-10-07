@@ -1,9 +1,9 @@
 # 04-stage-pm 文档重组计划（plan.md）
 
 > **状态**: 生效中（2026-08-16 首版，深度 review + minix3 源码回归 review 后定稿）
-> **范围**: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/`
+> **范围**: `rewrite-notes/04-stage-pm/`
 > **目标**: 以 **PM server 启动顺序为主线**重组 PM 全部文档；`fork` 系统调用降为次主线；最终覆盖 Minix3 PM server 全部语义（15 个 .c + 6 个 .h，~4,747 行 C，47 个 PM 调用），支撑 PM server 的彻底 Rust 重写
-> **对照**: `01-stage-kernel/`（讲述结构参照）、`minix3/minix/servers/pm/`（ground truth）、`os/servers/pm/src/`（Rust 实现）、`notes/study/pm/`（早期学习笔记，素材）
+> **对照**: `01-stage-kernel/`（讲述结构参照）、`minix3/minix/servers/pm/`（ground truth）、`os/servers/pm/src/`（Rust 实现）、`study-notes/pm/`（早期学习笔记，素材）
 
 ---
 
@@ -441,6 +441,6 @@ enum ReplyIntent { Reply(i32), ReplyLater, NoReply }  // ReplyLater 对应 SUSPE
 - `../01-stage-kernel/19-syscall-signal.md` — 内核信号路径（PM 信号文档交叉参照）
 - `../02-stage-vm/plan.md` — 同型重组范本（plan 结构/ARCH 清单/覆盖契约模式）
 - `../00-master-plan/05-phase1-pm-guide.md` — 早期 PM 实现指南（素材）
-- `notes/study/pm/` — 早期 PM 学习笔记（素材）
+- `study-notes/pm/` — 早期 PM 学习笔记（素材）
 - `minix3/minix/servers/pm/` — C 源码（ground truth）
 - `os/servers/pm/src/` — Rust 实现

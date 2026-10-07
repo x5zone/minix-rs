@@ -3,7 +3,7 @@
 > **分类**：参考实现·元数据服务（磁盘主线第 10 篇）
 > **源码**：`minix3/minix/fs/mfs/protect.c`（全部五十八行），`minix3/minix/fs/mfs/stadir.c`（全部一百零四行），`minix3/minix/fs/mfs/time.c`（全部四十九行），`minix3/minix/fs/mfs/utility.c`（全部三十六行）
 > **Rust 模块**：`os/fs/mfs/src/meta.rs`（权限修改、属主修改、时间设置、文件状态、卷状态、字节序转换）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`（内存索引节点的字段与懒时间），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`（超级块的字段与位图），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/10-mfs-mount.md`（只读挂载的语义）
+> **前置**：`rewrite-notes/15-stage-fs/09-mfs-inode.md`（内存索引节点的字段与懒时间），`rewrite-notes/15-stage-fs/08-mfs-super.md`（超级块的字段与位图），`rewrite-notes/15-stage-fs/10-mfs-mount.md`（只读挂载的语义）
 > **说明**：不碰数据块、只碰索引节点字段的六组操作：改权限、改属主、设时间、查文件状态、查文件系统状态、字节序转换。本篇是参考实现里面最短的一组，但每个函数都藏着一个值得讲的细节。
 
 > **本章不讲什么**：
@@ -198,11 +198,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`：索引节点的字段与懒时间（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/08-mfs-super.md`：超级块的字段与位图（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/10-mfs-mount.md`：只读挂载的语义（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/17-mfs-maint.md`：同步与统计（本篇的收尾篇）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/09-mfs-inode.md`：索引节点的字段与懒时间（本篇消费）。
+- `rewrite-notes/15-stage-fs/08-mfs-super.md`：超级块的字段与位图（本篇消费）。
+- `rewrite-notes/15-stage-fs/10-mfs-mount.md`：只读挂载的语义（本篇消费）。
+- `rewrite-notes/15-stage-fs/17-mfs-maint.md`：同步与统计（本篇的收尾篇）。
 - `os/fs/mfs/src/meta.rs`：元数据的实现。
 - `minix3/minix/fs/mfs/protect.c`：权限的原始实现（五十八行）。
 - `minix3/minix/fs/mfs/stadir.c`：状态的原始实现（一百零四行）。

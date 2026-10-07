@@ -6,7 +6,7 @@
 //! This crate owns the rate policy half (bounds, channel routing);
 //! the service binary owns codec writes and converter traffic. See
 //! document `21-audio-drivers.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

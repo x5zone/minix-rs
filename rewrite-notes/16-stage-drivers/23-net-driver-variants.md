@@ -3,7 +3,7 @@
 > **分类**：网络第 2 篇（十二家环不同，中轴不变，差异只列不同）
 > **源码**：`minix3/minix/drivers/net/e1000/e1000.c`（九百一十八行）与 `e1000.h`（环数量）与 `e1000_hw.h`（描述符布局）、`minix3/minix/drivers/net/rtl8139/rtl8139.c`（一千五百三十行）与 `rtl8139.h`（槽数与环游标）、`minix3/minix/drivers/net/lance/lance.c`（八百九十五 行）与其余九目录（见第 2.6 节矩阵）
 > **Rust 模块**：`os/drivers/net/e1000/src/desc.rs`（描述符环）、`os/drivers/net/rtl8139/src/txrx.rs`（发送槽与接收绕回）、`os/drivers/net/lance/src/ring.rs`（小环与芯片身份）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/22-net-driver-reference.md`（参考实现，十三成员对照基准）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/03-netdriver-framework.md`（网络框架）
+> **前置**：`rewrite-notes/16-stage-drivers/22-net-driver-reference.md`（参考实现，十三成员对照基准）、`rewrite-notes/16-stage-drivers/03-netdriver-framework.md`（网络框架）
 > **说明**：十二变体是同一中轴的十二种环：初始化收发的中轴不变，环大小、槽数、探测方式各不同。本篇讲三家详例加九家矩阵，不重复讲参考语义。寄存器读写在服务层，本库只定环与身份。
 
 > **本篇不讲什么**：
@@ -195,11 +195,11 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/22-net-driver-reference.md`：网卡参考（页游标与队列分工）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/03-netdriver-framework.md`：网络框架（十二变体挂靠的框架）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/24-misc-drivers.md`：杂项驱动（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/22-net-driver-reference.md`：网卡参考（页游标与队列分工）。
+- `rewrite-notes/16-stage-drivers/03-netdriver-framework.md`：网络框架（十二变体挂靠的框架）。
+- `rewrite-notes/16-stage-drivers/24-misc-drivers.md`：杂项驱动（下一篇，待写）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/net/e1000/src/desc.rs`：描述符环的实现。
 - `os/drivers/net/rtl8139/src/txrx.rs`：发送槽与接收绕回的实现。
 - `os/drivers/net/lance/src/ring.rs`：小环与芯片身份的实现。

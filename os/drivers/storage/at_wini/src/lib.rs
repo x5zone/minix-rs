@@ -6,7 +6,7 @@
 //! and the direct-access arm policy; the service binary owns ports,
 //! interrupts, timeouts, and data movement. See document
 //! `16-ahci-ata-driver.md` in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`.
+//! `rewrite-notes/16-stage-drivers/`.
 //!
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.

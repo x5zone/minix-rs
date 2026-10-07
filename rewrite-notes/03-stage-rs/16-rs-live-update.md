@@ -3,7 +3,7 @@
 > **分类**: 阶段 6 — Live Update（RS 最复杂状态机）
 > **源码**: `minix3/minix/servers/rs/update.c`（1011 行：`rupdate_clear_upds`—7、`rupdate_add_upd`—23、`rupdate_set_new_upd_flags`—88、`rupdate_upd_init`—121、`rupdate_upd_clear`—135、`rupdate_upd_move`—164、`srv_update`—230、`update_service`—262、`rollback_service`—330、`update_period`—371、`start_update_prepare`—401、`start_update_prepare_next`—467、`start_update`—532、`start_srv_update`—621、`complete_srv_update`—657、`abort_update_proc`—707、`end_update_curr`—744、`end_update_before_prepare`—763、`end_update_prepare_done`—780、`end_update_initializing`—795、`end_update_rev_iter`—816、`end_update_debug`—865、`end_srv_update`—932）、`minix3/minix/servers/rs/request.c:do_update`（`do_update`）、`minix3/minix/servers/rs/const.h:RS_DEFAULT_PREPARE_MAXTIME,75-76,83,114-120`、`minix3/minix/include/minix/sef.h:SEF_LU_SELF`
 > **Rust 模块**: `os/servers/rs/src/live_update.rs`（`LuFlags`/`UpdatePhase`/`update_phase`/`SEF_LU_STATE_*`/`resolve_prepare_maxtime`/`lu_flags_from_rss`/`vm_default_prealloc`/`validate_update_request`/`UpdateEntry`/`UpdateChain`/`EndUpdateRole`/`end_update_role`/`AbortAction`/`abort_action`/`end_srv_reply_flag`）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md`（`UpdateChain` 数据形状）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md`（`clone_service`/`update_service`/`swap_slot`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md`（`init_slot`/`inherit_service_defaults`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md`（`run_service`/`end_srv_init`）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）
+> **前置**: `rewrite-notes/03-stage-rs/02-rs-process-table.md`（`UpdateChain` 数据形状）、`rewrite-notes/03-stage-rs/10-rs-service-create.md`（`clone_service`/`update_service`/`swap_slot`）、`rewrite-notes/03-stage-rs/08-rs-slot-config.md`（`init_slot`/`inherit_service_defaults`）、`rewrite-notes/03-stage-rs/12-rs-init-run.md`（`run_service`/`end_srv_init`）、`rewrite-notes/03-stage-rs/04-rs-access-control.md`（`check_call_permission`）
 > **说明**: 本文档是 Live Update 全状态机：`RS_UPDATE`（13 之后的第 16 篇）触发，`prepare → update → init → end/rollback` 四阶段。它依赖 17（state data）、18（RS 自身特例）、19（SEF/VM 契约）——本文档只落地**状态机本体**与**纯切片**（`live_update.rs`）。
 
 ---
@@ -300,13 +300,13 @@ Live Update 是 RS 机制图的"环"：
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/02-rs-process-table.md` —— `UpdateChain`/`RupdateFlags` 数据形状
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/10-rs-service-create.md` —— `clone_service`/`update_service`/`swap_slot`/`activate_service`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/08-rs-slot-config.md` —— `init_slot`/`inherit_service_defaults`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md` —— `run_service`/`end_srv_init`/`do_upd_ready`/`SEF_INIT_LU`
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/15-rs-terminate-restart.md` —— `terminate_service` 的 abort 调用点
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/17-rs-state-data.md` —— `init_state_data`/cpf grants
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/18-rs-self-lifecycle.md` —— RS 自身 LU/rollback 特例
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` —— `update_period`/超时
-- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/14-rs-query-requests.md` —— `RS_SYSCTL_UPD_*` 控制入口
+- `rewrite-notes/03-stage-rs/02-rs-process-table.md` —— `UpdateChain`/`RupdateFlags` 数据形状
+- `rewrite-notes/03-stage-rs/10-rs-service-create.md` —— `clone_service`/`update_service`/`swap_slot`/`activate_service`
+- `rewrite-notes/03-stage-rs/08-rs-slot-config.md` —— `init_slot`/`inherit_service_defaults`
+- `rewrite-notes/03-stage-rs/12-rs-init-run.md` —— `run_service`/`end_srv_init`/`do_upd_ready`/`SEF_INIT_LU`
+- `rewrite-notes/03-stage-rs/15-rs-terminate-restart.md` —— `terminate_service` 的 abort 调用点
+- `rewrite-notes/03-stage-rs/17-rs-state-data.md` —— `init_state_data`/cpf grants
+- `rewrite-notes/03-stage-rs/18-rs-self-lifecycle.md` —— RS 自身 LU/rollback 特例
+- `rewrite-notes/03-stage-rs/07-rs-period-heartbeat.md` —— `update_period`/超时
+- `rewrite-notes/03-stage-rs/14-rs-query-requests.md` —— `RS_SYSCTL_UPD_*` 控制入口
 - `minix3/minix/servers/rs/update.c`（1011 行）、`request.c:534-889`、`const.h:58,75-76,83,105-120`、`include/minix/sef.h:235-242` —— ground truth

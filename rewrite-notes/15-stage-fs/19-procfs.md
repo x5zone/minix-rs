@@ -3,7 +3,7 @@
 > **分类**：变体内容·进程展示（虚拟树主线第 2 篇，系统启动后由运行服务加载）
 > **源码**：`minix3/minix/fs/procfs/`（全部八个源文件）：`main.c`（九十三行）、`root.c`（二百二十七行）、`tree.c`（四百六十二行）、`pid.c`（二百三十行）、`service.c`（三百四十八行，服务子目录）、`cpuinfo.c`（一百五十三个，x86 处理器文件）、`buf.c`（一百二十五行）、`util.c`（六十五分钟载算法）
 > **Rust 模块**：`os/fs/procfs/src/lib.rs`（装配与常量），`os/fs/procfs/src/buf.rs`（输出暂存），`os/fs/procfs/src/pid.rs`（槽位算术与两遍刷新），`os/fs/procfs/src/content.rs`（内容生成）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/18-vtreefs.md`（树、钩子、枚举、读写循环，本篇全部消费）
+> **前置**：`rewrite-notes/15-stage-fs/18-vtreefs.md`（树、钩子、枚举、读写循环，本篇全部消费）
 > **说明**：进程信息如何变成文件：静态树在启动时长好，进程目录在每次查找枚举时两遍刷新，文件内容在每次读时现场生成。本篇讲内容，第 18 篇讲框架，两篇合起来是一个完整的虚拟文件系统。
 
 > **本章不讲什么**：
@@ -204,9 +204,9 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/18-vtreefs.md`：框架（本篇消费）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/20-ptyfs.md`：终端树（同组下一篇）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/18-vtreefs.md`：框架（本篇消费）。
+- `rewrite-notes/15-stage-fs/20-ptyfs.md`：终端树（同组下一篇）。
 - `os/fs/procfs/src/buf.rs`：暂存的实现。
 - `os/fs/procfs/src/pid.rs`：槽位与刷新的实现。
 - `os/fs/procfs/src/content.rs`：内容生成的实现。

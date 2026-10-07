@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = glm
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/13-stage-ipc
+target_dir(关注的工作目录) = rewrite-notes/13-stage-ipc
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = d6ecd22cae78345e746c82ad7cbe3c1612c151c2
 
@@ -15,7 +15,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ## 0. 元数据
 
-- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`。
+- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/13-stage-ipc/`。
 - **结论先行**：本 stage 的 11 篇文档（00~10 + 99）是六个已审 stage（06/08/09/11/12/13）中**状态最好的一套**——01~10 于 2026-09-05 写成并全部 CONVERGED，00/99 于 2026-09-16 随实施轮定稿（IPC-D-4），todo R1 的 20 条全部闭环（15 提交，测试 83→104），**实测基线与 todo 完全一致（单元 100 + 集成 4 = 104 passed，零漂移）**，clippy 本体 0 告警。本 stage 还是唯一**正文零"（LNN，工具生成）"锚点**的一套——全部锚点是朴素 `file:line` 形态且抽验全命中。因此本蓝图的操作集是六轮中最窄的一档：**"保编号、补注记、极轻修正"**：
   1. **保编号**——编号即"启动链 + SysV 调用旅程"双主线（plan §1.2/§1.3），四条硬标准满足（§9 G3/G4）；篇内互引 ≈95 处、外部 6 文件 15+ 处，全以现有文件名为锚；
   2. **补注记**——13/14 前后仅有的两处轻缺口：07§3 一处外文残留（俄语"езда"）；E-IPCWIRE/E-RMIBWIRE 的状态指针在 00/03 已有但 99 未汇总；

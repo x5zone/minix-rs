@@ -75,7 +75,7 @@ WIP 做了：
 ## 6. 必读清单（定向读·控制上下文）
 
 1. `tmp/nk4a/nk4c35-pt-bind-wip.patch` — WIP 全量。
-2. `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 文末 **§1.120续-34 / 续-34b / 续-35 交接节**（顶部「当前状态」有导读）。
+2. `rewrite-notes/coordination/NK4C-WORKLOG.md` 文末 **§1.120续-34 / 续-34b / 续-35 交接节**（顶部「当前状态」有导读）。
 3. C 对位：MINIX3 `exit.c:137`（`pt_bind`）、`pagetable.c`（i386 共享 kernel PDE）。
 4. 旁证：`os/servers/vm/src/fork.rs:395-401`、`os/servers/vm/src/vm_server.rs:774-794`。
 5. 换根本体：`os/servers/vm/src/exit.rs`（`handle_procctl_clear`）、`os/servers/vm/src/vmproc/vmproc_handle.rs:349`（`init_page_table`·test/非test 分支）。

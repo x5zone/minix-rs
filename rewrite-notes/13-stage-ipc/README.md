@@ -7,7 +7,7 @@
 
 ## 概念边界
 
-**IPC server ≠ kernel IPC 机制**：本 stage 是 SysV 信号量（semget/semctl/semop）与共享内存（shmget/shmat/shmdt/shmctl）的**用户态对象管理服务**；kernel 内 send/receive/notify 原语见 `01-stage-kernel/12-ipc-core.md` 与 `notes/rewrite/ipc-sendrec.md`（不属本 stage）。
+**IPC server ≠ kernel IPC 机制**：本 stage 是 SysV 信号量（semget/semctl/semop）与共享内存（shmget/shmat/shmdt/shmctl）的**用户态对象管理服务**；kernel 内 send/receive/notify 原语见 `01-stage-kernel/12-ipc-core.md` 与 `rewrite-notes/misc/ipc-sendrec.md`（不属本 stage）。
 
 ## 文档清单（12 篇）
 

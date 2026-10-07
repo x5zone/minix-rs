@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = glm
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/08-stage-is
+target_dir(关注的工作目录) = rewrite-notes/08-stage-is
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = d6ecd22cae78345e746c82ad7cbe3c1612c151c2
 
@@ -15,7 +15,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ## 0. 元数据
 
-- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/08-stage-is/`。
+- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/08-stage-is/`。
 - **结论先行**：本 stage 的 11 篇文档（00~10 + 99）**全部为成稿**——01~10 于 2026-09-04 按 plan §6 路线写成并全部 CONVERGED，00/99 于 2026-09-15 V1 执行轮成文（todo.md Fix #8），各篇已带"V1 执行轮更新"注记；代码侧 5689 行、115 个测试全绿。因此本蓝图的操作集是**"保编号、修漂移、补薄点"**：
   1. **保编号**——00~10+99 的编号顺序即"启动→协议→分派→数据面→六转储域→收口"，满足四条硬标准（§9 G3/G4），且篇间互引、外部引用、代码注释全部以现有文件名为锚，重排/重编号零收益；
   2. **修漂移**——最大的一处：**E-ISPROD kernel 半已于 2026-09-16 落地（commits 7d89ec114、987773bb3，快照权威上收 minix-types 方案 A），04/05 两篇文档未回写**（快照类型名 `*Snap` → minix-types `*Struct`、编码器入参 `i16` → `u32`、`KProcSnap` 等五个类型已删除），其次为测试基线漂移链（正文 ≤86 / todo 106 / 实测 **115**）与 04 篇一处 GET_MACHINE 内部措辞矛盾；

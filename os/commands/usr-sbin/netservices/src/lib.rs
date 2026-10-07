@@ -2,7 +2,7 @@
 
 //! Network services and daemons core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/19-network-services.md`:
+//! Covers `rewrite-notes/18-stage-commands/19-network-services.md`:
 //! the superserver (`minix3/usr.sbin/inetd/inetd.c`, at most `OPEN_MAX 64`
 //! served sockets near line 276, at most `MAXARGV 20` server arguments near
 //! line 306, built-in echo, discard, daytime, and character generation

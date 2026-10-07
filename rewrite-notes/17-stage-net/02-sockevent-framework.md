@@ -3,7 +3,7 @@
 > **分类**：框架第 2 篇（对象进哈希，事件进队列，挂起有续作）
 > **源码**：`minix3/minix/lib/libsockevent/sockevent.c`（二千五百九十行的事件实现）、`minix3/minix/lib/libsockevent/sockevent_proc.c`（五十二行的续作池）、`minix3/minix/include/minix/sockevent.h`（一百二十行的对象与回调定义）
 > **Rust 模块**：`os/libs/minix-netdriver/src/sockevent.rs`（事件掩码、标志、哈希槽）、`os/libs/minix-netdriver/src/socktable.rs`（对象表、续延、选择登记、定时器、事件泵）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/01-sockdriver-framework.md`（套接字框架，十七请求与挂起规则）
+> **前置**：`rewrite-notes/17-stage-net/01-sockdriver-framework.md`（套接字框架，十七请求与挂起规则）
 > **说明**：事件框架是编号框架第一次完整消费：请求落地成对象，事件进队列，挂起有续延。本篇讲对象、哈希、续延、选择、定时器，以及把这一切串起来的事件泵。协议族实现与消息流量仍在服务层，本库管记账与唤醒。
 
 > **本篇不讲什么**：
@@ -191,10 +191,10 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/01-sockdriver-framework.md`：套接字框架（编号与挂起规则）。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`：轻量骨架（下一篇，待写）。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/99-net-global-concepts.md`：全局概念（常量全集，待写）。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/01-sockdriver-framework.md`：套接字框架（编号与挂起规则）。
+- `rewrite-notes/17-stage-net/03-lwip-main-init.md`：轻量骨架（下一篇，待写）。
+- `rewrite-notes/17-stage-net/99-net-global-concepts.md`：全局概念（常量全集，待写）。
 - `os/libs/minix-netdriver/src/sockevent.rs`：事件掩码标志哈希槽的实现。
 - `os/libs/minix-netdriver/src/socktable.rs`：对象表、续延、选择登记、定时器与事件泵的实现。
 - `minix3/minix/lib/libsockevent/sockevent.c`：事件框架的原始实现（二千五百九十行）。

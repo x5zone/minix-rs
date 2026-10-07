@@ -495,7 +495,7 @@ let cap: Capability<VmObject> = ...;
 
 ### 9.4 完整参考
 
-详细的 Redesign 方案见 [endpoint_redesign.md](../../redesign/endpoint_redesign.md)，包含：
+详细的 Redesign 方案见 [endpoint_redesign.md](../../redesign-notes/ipc/endpoint_redesign.md)，包含：
 - 完整的类型层次设计
 - `ProcessEndpoint` / `KernelTask` / `SpecialEndpoint` 分离
 - Capability 系统的自然延伸
@@ -929,4 +929,4 @@ SELF 提供了一种简洁的"自引用"机制，避免了进程需要查询自�
 
 ---
 
-*参见: [系统核心概念 README](./README.md) | [Endpoint Redesign 方案](../../redesign/endpoint_redesign.md)*
+*参见: [系统核心概念 README](./README.md) | [Endpoint Redesign 方案](../../redesign-notes/ipc/endpoint_redesign.md)*

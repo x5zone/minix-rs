@@ -5,7 +5,7 @@
 ```text
 执行者     = qwen
 日期       = 2026-09-19
-目标目录   = notes/rewrite/fork-syscall-rewrite/06-stage-sched/
+目标目录   = rewrite-notes/06-stage-sched/
 仓库根目录 = /home/xzhao/github/minix-rs
 当前提交号 = 606e97607（git rev-parse --short=9 HEAD）
 任务       = R 相·重建蓝图：只产出本文件，不改任何正文。

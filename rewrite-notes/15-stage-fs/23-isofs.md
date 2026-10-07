@@ -3,7 +3,7 @@
 > **分类**：磁盘变体·只读光盘（光盘主线单篇，后置）
 > **源码**：`minix3/minix/fs/isofs/`（全部十二个源文件）：`main.c`（六十五行）、`mount.c`（六十六行）、`super.c`（一百二十一行）、`inode.c`（四百九十二行）、`path.c`（七十六行）、`read.c`（一百零五行）、`stadir.c`（二十七行）、`link.c`（二十四行）、`table.c`（三十二行）、`utility.c`（八十行）、`susp.c`（一百三十二行）、`susp_rock_ridge.c`（二百八十九行）
 > **Rust 模块**：`os/fs/isofs/src/volume.rs`（卷发现），`os/fs/isofs/src/record.rs`（记录与区间），`os/fs/isofs/src/rockridge.rs`（系统使用尾），`os/fs/isofs/src/lib.rs`（选项与读钳制）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/04-block-cache.md`（块获取），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/14-mfs-read.md`（分块循环对照）
+> **前置**：`rewrite-notes/15-stage-fs/04-block-cache.md`（块获取），`rewrite-notes/15-stage-fs/14-mfs-read.md`（分块循环对照）
 > **说明**：没有分配、没有写入、没有链接的光盘：卷描述符扫描发现卷，目录记录解码建树， Rock Ridge 补 Unix 个性。本篇是十二个源文件的完整语义，回调表只有只读子集。
 
 > **本章不讲什么**：
@@ -189,9 +189,9 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/14-mfs-read.md`：分块循环对照。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/24-vbfs-hgfs.md`：桥接（下一阶段入口）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/14-mfs-read.md`：分块循环对照。
+- `rewrite-notes/15-stage-fs/24-vbfs-hgfs.md`：桥接（下一阶段入口）。
 - `os/fs/isofs/src/volume.rs`：卷发现的实现。
 - `os/fs/isofs/src/record.rs`：记录与区间的实现。
 - `os/fs/isofs/src/rockridge.rs`：尾巴的实现。

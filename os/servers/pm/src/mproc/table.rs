@@ -2,7 +2,7 @@
 //!
 //! C 对应: `minix3/minix/servers/pm/{glo.h, utility.c, forkexit.c}` + 内核
 //! generation 语义（`minix3/minix/kernel/system/do_fork.c:69-72`）。
-//! 文档: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/03-mproc-table.md`
+//! 文档: `rewrite-notes/04-stage-pm/03-mproc-table.md`
 //!
 //! # 表的三层身份
 //!

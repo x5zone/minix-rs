@@ -3,7 +3,7 @@
 > **分类**：参考实现·数据通路读侧（磁盘主线第 8 篇）
 > **源码**：`minix3/minix/fs/mfs/read.c`（全部五百五十六行）
 > **Rust 模块**：`os/fs/mfs/src/read.rs`（块号翻译、文件读取、预读策略、目录内容枚举）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`（内存索引节点的查找），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/11-mfs-path.md`（目录项的字节排列），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/04-block-cache.md`（块缓存的获取与预取），`notes/rewrite/fork-syscall-rewrite/15-stage-fs/03-fsdriver-utility.md`（目录项输出的组装）
+> **前置**：`rewrite-notes/15-stage-fs/09-mfs-inode.md`（内存索引节点的查找），`rewrite-notes/15-stage-fs/11-mfs-path.md`（目录项的字节排列），`rewrite-notes/15-stage-fs/04-block-cache.md`（块缓存的获取与预取），`rewrite-notes/15-stage-fs/03-fsdriver-utility.md`（目录项输出的组装）
 > **说明**：文件里面的第几个字节住在磁盘哪个块上，读不到块时为什么返回零，顺序读为什么越读越快，目录内容如何分批报给调用方。本篇只讲读取，写入在第 15 篇，写入与读取共用同一套块号翻译规则。
 
 > **本章不讲什么**：
@@ -234,11 +234,11 @@ MFS 在接线表里把窥视入口接到读写路径本身（`table.c:20` `.fdr_
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/09-mfs-inode.md`：槽位的查找（读取的调用方）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/04-block-cache.md`：块的获取与预取（读取的下层）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/11-mfs-path.md`：目录项的字节排列（枚举的数据来源）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/13-mfs-link.md`：释放计划（翻译规则的另一个消费方）。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/15-mfs-write.md`：写路径（本篇的镜像篇）。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/09-mfs-inode.md`：槽位的查找（读取的调用方）。
+- `rewrite-notes/15-stage-fs/04-block-cache.md`：块的获取与预取（读取的下层）。
+- `rewrite-notes/15-stage-fs/11-mfs-path.md`：目录项的字节排列（枚举的数据来源）。
+- `rewrite-notes/15-stage-fs/13-mfs-link.md`：释放计划（翻译规则的另一个消费方）。
+- `rewrite-notes/15-stage-fs/15-mfs-write.md`：写路径（本篇的镜像篇）。
 - `os/fs/mfs/src/read.rs`：读取路径的实现。
 - `minix3/minix/fs/mfs/read.c`：读取路径的原始实现（五百五十六行）。

@@ -3,7 +3,7 @@
 > **分类**: 阶段 3 — 页与页表（操作面）
 > **源码**: `minix3/minix/servers/vm/pagetable.c`（`pt_ptalloc` :494 / `pt_ptalloc_in_range` :545 / `ptestr` :587 / `pt_map_in_range` :631 / `pt_ptmap` :685 / `pt_clearmapcache` :751 / `pt_writable` :761 / `pt_writemap` :784 / `pt_checkrange` :943 / `pt_new` :990 / `freepde` :1028 / `pt_allocate_kernel_mapped_pagetables` :1035 / `pt_copy` :1069 / `pt_bind` :1358 / `pt_free` :1427 / `pt_mapkernel` :1442）+ `minix3/minix/servers/vm/vm.h:VMP_CATEGORIES（L55，工具生成）`（WMF 宏族 + `MAP_NONE`）
 > **Rust 模块**: `os/arch/src/arch/paging.rs`（`Paging` trait 操作面 + `clone_range` + `map_kernel`）+ `os/arch/src/x86_64/paging.rs`（`walk_alloc` + `write_pte_dm` 逐条 invlpg）+ `os/servers/vm/src/vmproc/vmproc_handle.rs`（`init_page_table`/`free_page_table`/`write_page_table_mappings`）+ `os/servers/vm/src/pagetable/vm_self_map.rs`（`VmSelfPageTable::adopt` A1 adoption）+ 消费方 `fork.rs`/`exit.rs`/`munmap.rs`/`heap_arena.rs`
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（页表结构、Direct Map、`Paging` trait 结构）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（页分配 + `vm_pt_alloc` 供给页表页）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`（`init_vm`/`pt_init` 调用点）
+> **前置**: `rewrite-notes/02-stage-vm/07-pagetable-struct.md`（页表结构、Direct Map、`Paging` trait 结构）、`rewrite-notes/02-stage-vm/06-page-allocator.md`（页分配 + `vm_pt_alloc` 供给页表页）、`rewrite-notes/02-stage-vm/01-vm-init-main.md`（`init_vm`/`pt_init` 调用点）
 > **说明**: 页表**操作**语义模块：**生命周期（`pt_new`/`pt_free`/`pt_bind`）、映射写入（`pt_writemap` + WMF 标志族）、页表页按需分配（`pt_ptalloc`/`pt_ptalloc_in_range`）、跨页表复制（`pt_copy`/`pt_map_in_range`/`pt_ptmap`）、查询校验（`pt_checkrange`/`pt_writable`）、内核协作（`pt_mapkernel`/`pt_clearmapcache`/`pt_allocate_kernel_mapped_pagetables`）**。**不覆盖**：页表结构（07）、页分配（06）、fork/mmap/pagefault/exit/LU 服务流程（18/20/21/16/22/25）。
 
 ---
@@ -1086,13 +1086,13 @@ C 序列以 `pt_bind` 收尾（exit.c:137）——其内容是 `sys_vmctl_set_ad
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md` — 页表结构、Direct Map、`Paging` trait 结构（上一篇）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md` — 页分配 + `vm_pt_alloc` 供给页表页（`walk_alloc` 依赖）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/09-slab-allocator.md` — HeapArena 消费 `vm_self_mappages`/`vm_self_unmap`（下一篇）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/18-vm-fork.md`、`22-vm-exit.md`、`21-vm-munmap.md`、`25-rs-services.md` — 页表操作的消费方（fork/exit/munmap/LU）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` — `init_vm`/`pt_init` 调用点
-- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/07-cross-space-init.md` — Direct Map 双窗口论证（kernel 侧）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/07-pagetable-ops.md` — 旧主线素材（素材，含附录 A createpde/freepde 历史意义）
+- `rewrite-notes/02-stage-vm/07-pagetable-struct.md` — 页表结构、Direct Map、`Paging` trait 结构（上一篇）
+- `rewrite-notes/02-stage-vm/06-page-allocator.md` — 页分配 + `vm_pt_alloc` 供给页表页（`walk_alloc` 依赖）
+- `rewrite-notes/02-stage-vm/09-slab-allocator.md` — HeapArena 消费 `vm_self_mappages`/`vm_self_unmap`（下一篇）
+- `rewrite-notes/02-stage-vm/18-vm-fork.md`、`22-vm-exit.md`、`21-vm-munmap.md`、`25-rs-services.md` — 页表操作的消费方（fork/exit/munmap/LU）
+- `rewrite-notes/02-stage-vm/01-vm-init-main.md` — `init_vm`/`pt_init` 调用点
+- `rewrite-notes/01-stage-kernel/07-cross-space-init.md` — Direct Map 双窗口论证（kernel 侧）
+- `rewrite-notes/02-stage-vm/draft/07-pagetable-ops.md` — 旧主线素材（素材，含附录 A createpde/freepde 历史意义）
 - `minix3/minix/servers/vm/pagetable.c`、`minix3/minix/servers/vm/vm.h`、`minix3/minix/servers/vm/region.c`、`minix3/minix/servers/vm/fork.c`、`minix3/minix/servers/vm/exit.c`、`minix3/minix/servers/vm/rs.c`、`minix3/minix/servers/vm/utility.c`、`minix3/minix/servers/vm/mmap.c`、`minix3/minix/servers/vm/main.c`、`minix3/minix/servers/vm/pagefaults.c` — C 源码（ground truth）
 - `os/arch/src/arch/paging.rs`、`os/arch/src/x86_64/paging.rs`、`os/arch/src/arm64/paging.rs`、`os/arch/src/riscv64/paging.rs` — Rust 实现（trait 操作面 + 三架构 walk）
 - `os/servers/vm/src/vmproc/vmproc_handle.rs`、`os/servers/vm/src/fork.rs`、`os/servers/vm/src/exit.rs`、`os/servers/vm/src/munmap.rs`、`os/servers/vm/src/heap_arena.rs`、`os/servers/vm/src/pagetable/mod.rs`、`os/servers/vm/src/pagetable/vm_self_map.rs` — Rust 实现（VM 侧）

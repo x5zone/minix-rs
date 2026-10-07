@@ -4,7 +4,7 @@
 > [ARCH: 字符框架判定核单点] 判定核（分类、重启门卫、回信纪律）以本篇对应的 `minix-chardriver` 为单一权威；input 服务器原独立副本（`framework.rs`）已收敛为其消费者（edge E-CDRCONV，12-stage/02 同步标注）。
 > **源码**：`minix3/minix/lib/libchardriver/chardriver.c`（六百行）、`minix3/minix/include/minix/chardriver.h`（回调表定义）、`minix3/minix/include/minix/com.h`（第九百一十九行到第九百五十六行，字符请求常量）、`minix3/minix/include/minix/driver.h`（第四十一行，同时打开设备上限）
 > **Rust 模块**：`os/libs/minix-chardriver/src/protocol.rs`（请求编号与打开集合）、`os/libs/minix-chardriver/src/driver.rs`（驱动行为定义与路由规则）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`（主线与阶段划分，特别是第一章第一节的框架前置思想）
+> **前置**：`rewrite-notes/16-stage-drivers/plan.md`（主线与阶段划分，特别是第一章第一节的框架前置思想）
 > **说明**：字符驱动是操作系统里最常见的驱动形态：键盘、串口、终端、日志、随机数发生器，全部走这条路。本文档只讲框架本身，也就是每个字符驱动共享的那一部分：主循环长什么样、七种请求各自携带什么、十个回调函数各自在什么时候被调用、不回复的分支有哪些。具体的驱动实现（内存驱动、终端驱动、伪终端、日志驱动）在第五到第八篇展开。
 
 > **本篇不讲什么**：
@@ -283,10 +283,10 @@ C 语言的标识是裸的无符号整数，在回复里原样带回。Rust 把�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`：块驱动框架（本篇的兄弟篇，路由与重启门同形）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/05-memory-driver.md`：内存驱动（本框架的第一个消费者）。
-- `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
+- `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`：块驱动框架（本篇的兄弟篇，路由与重启门同形）。
+- `rewrite-notes/16-stage-drivers/05-memory-driver.md`：内存驱动（本框架的第一个消费者）。
+- `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/libs/minix-chardriver/src/protocol.rs`：请求编号、打开集合、默认码的实现。
 - `os/libs/minix-chardriver/src/driver.rs`：驱动行为定义、路由规则、服务器状态机的实现。
 - `minix3/minix/lib/libchardriver/chardriver.c`：主循环与分发的原始实现（六百行）。

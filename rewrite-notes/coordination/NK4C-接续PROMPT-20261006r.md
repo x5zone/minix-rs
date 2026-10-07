@@ -12,15 +12,15 @@
 **已完成**：T1（信号请求的双形态解析）全收；T2（各服务接住信号接得多深）已开四站——IS、VM、uds／lwip、`minix-fs-rt` 家族。
 **未完成**：T2 收尾半格、T3（`process_init` 的六段动作落点）、T4（四类拦截，待人裁决）、T5（三套 trait 收敛，交代码卓越度）、T6／T7 已结、`P-ALL-12`（消息联合体超尺寸，已定案未修）。
 
-接手第一件事：读 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 的顶部状态块（第 13 行起，最新前沿＝§续-422），再读 §续-411 到 §续-422 十二节正文；然后按第 6 节的队列动手。
+接手第一件事：读 `rewrite-notes/coordination/NK4C-WORKLOG.md` 的顶部状态块（第 13 行起，最新前沿＝§续-422），再读 §续-411 到 §续-422 十二节正文；然后按第 6 节的队列动手。
 
 ## 2. 接手必读三件
 
 | 件 | 路径 | 读什么 |
 |---|---|---|
-| 工作日志 | `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` | 顶部「当前状态」块＝最新态；§续-411..422＝本任务线的全部取证与踩坑 |
-| 平台账 | `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md` | `P-ALL-08` 条目的「落地进度」行（T1/T2 现在到底做到哪一步、通电前置红线）、`P-ALL-12`、`P-ALL-03`、`P-X86-01`、`P-ALL-02`、`P-A64-03` |
-| 设计文档 | `notes/rewrite/fork-syscall-rewrite/03-stage-rs/20-rs-sef-framework.md` | §3.5（两条臂与一条唤醒兜底）、§3.6 的 T1–T7 表、§5（测试计数与待补测试） |
+| 工作日志 | `rewrite-notes/coordination/NK4C-WORKLOG.md` | 顶部「当前状态」块＝最新态；§续-411..422＝本任务线的全部取证与踩坑 |
+| 平台账 | `rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md` | `P-ALL-08` 条目的「落地进度」行（T1/T2 现在到底做到哪一步、通电前置红线）、`P-ALL-12`、`P-ALL-03`、`P-X86-01`、`P-ALL-02`、`P-A64-03` |
+| 设计文档 | `rewrite-notes/03-stage-rs/20-rs-sef-framework.md` | §3.5（两条臂与一条唤醒兜底）、§3.6 的 T1–T7 表、§5（测试计数与待补测试） |
 
 ## 3. 增量对照表（一节 WORKLOG ＝ 一次提交 ＝ 一次自评审）
 

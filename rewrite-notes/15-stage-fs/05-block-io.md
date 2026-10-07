@@ -3,7 +3,7 @@
 > **分类**：框架层第 5 篇
 > **源码**：`minix3/minix/lib/libminixfs/bio.c`（全部二百六十三行）
 > **Rust 模块**：`os/libs/minix-fs/src/bio.rs`（传输、预取、驱动绑定、内存盘）
-> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/04-block-cache.md`（缓存的拿取、释放、脏标记、刷盘、失效、预读上限）
+> **前置**：`rewrite-notes/15-stage-fs/04-block-cache.md`（缓存的拿取、释放、脏标记、刷盘、失效、预读上限）
 > **说明**：字节范围如何在设备与调用者之间搬运：分区裁剪、逐块行走、读预取、整块覆写免读、刷后失效。
 
 > **本章不讲什么**：
@@ -210,9 +210,9 @@ C 的部分块拿取让槽位有大有小，命中比较要核对字节数（大
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/04-block-cache.md`：缓存的拿取释放与刷盘失效。
-- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/06-pfs.md`：第一个完整服务器。
+- `rewrite-notes/15-stage-fs/plan.md`：阶段划分。
+- `rewrite-notes/15-stage-fs/04-block-cache.md`：缓存的拿取释放与刷盘失效。
+- `rewrite-notes/15-stage-fs/06-pfs.md`：第一个完整服务器。
 - `os/libs/minix-fs/src/bio.rs`：块传输的实现。
 - `os/libs/minix-fs/src/bdev_bridge.rs`：真块驱动桥接的实现（`BlockSource`+`DeviceInfo` 的客户端实现）。
 - `os/libs/minix-fs/src/cache.rs`：缓存的实现（传输的地基）。

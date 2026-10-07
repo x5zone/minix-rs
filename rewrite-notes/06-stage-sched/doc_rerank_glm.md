@@ -2,7 +2,7 @@
 
 ```text
 your_name(AI agent name) = glm
-target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/06-stage-sched
+target_dir(关注的工作目录) = rewrite-notes/06-stage-sched
 repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 当前提交号 = d6ecd22cae78345e746c82ad7cbe3c1612c151c2
 
@@ -15,7 +15,7 @@ repo_root(仓库根目录) = /home/xzhao/github/minix-rs
 
 ## 0. 元数据
 
-- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/06-stage-sched/`。
+- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/06-stage-sched/`。
 - **结论先行**：本 stage 的 01~14 篇是 2026-09-03 按启动序主线全量重写、2026-09-04 通过 full-review 收敛（P0=0，见 plan.md §6.1/§7.1）的成稿，且本次对照 C 源码逐锚点抽查后事实面基本扎实。因此本蓝图的操作集是**"保编号、修事实、补两头"**：
   1. **补两头**——`00-sched-overview.md` 与 `99-global-concepts.md` 仍是 20 行占位骨架（plan §6.1 标 pending），按本蓝图契约全文重写；
   2. **修事实**——12 篇 §1.2 有一处 p_scheduler 生命周期断言与 C 源码不符（§3 缺口表 G-6）；三个已闭环 edge 条目（E-MINTYPES-SYS、E-SCHEDNICED、E-PREEMPTFLAG live 半）尚未回写正文（G-3/G-4/G-5）；全篇测试基线漂移（正文写 59/79，实测 81，G-7）；
@@ -128,7 +128,7 @@ grep -rn 'p_scheduler =' minix3/minix/kernel/ minix3/minix/servers/
 #     kernel/system/do_update.c:252、pm 侧 5 处均为 mp_scheduler（另一张表）
 #   → servers/sched/schedule.c 零命中：SCHED 侧 do_stop_scheduling 不写 p_scheduler
 # 外部引用扫描
-rg -c '06-stage-sched' notes/rewrite/fork-syscall-rewrite --glob '!06-stage-sched/**'
+rg -c '06-stage-sched' rewrite-notes --glob '!06-stage-sched/**'
 # 内部互引计数（每篇被引次数）
 rg -c "\`NN-*.md\`" 06-stage-sched/*.md
 # 错误码值

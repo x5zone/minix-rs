@@ -103,7 +103,7 @@ errno：115 = 115 与 C `sys/sys/errno.h` 一比一对齐（`minix-types/src/typ
 
 #### V1-P0-2（P0-design-missing）10 篇对 plan.md §5.1 契约漏 VM 客户端库四文件族——✅ 已修复 2026-09-16（Fix #7/#8/#9：文档清单 + 七个 wrapper 落地；vm_info 暂缓已论证）
 
-**契约**：plan.md §5.1（plan.md:229）将 `vm_info.c`、`vm_procctl.c`、`vm_cache.c`、`vm_getrusage.c` 明确映射到 10 篇（"VM 客户端库·用户态 ABI 子集"）。**文档现状**：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/10-vm-syscalls.md` 对 cache/info/procctl/rusage/willexit/unmap_phys 的 grep 为**零命中**（2026-09-16 实测）——四文件族连同 `VM_VFS_MMAP`、`VM_WILLEXIT` 均未进入文档清单，也无"有意排除"声明。**实现现状**：wire 半在 minix-types 已备（`VmProcctlIn` `minix-types/src/ipc/vm.rs:512`、`MessLsysVmInfo` :1673、`MessLsysVmRusage` :1693、`VM_GETRUSAGE` :132——VM 服务器分发端已在消费部分结构）；minix-sys 侧有常量无 wrapper（`vm.rs:49/:55/:67/:71`），cache 族（`com.h:682-691` 的 +26/27/28/29）连常量都无。
+**契约**：plan.md §5.1（plan.md:229）将 `vm_info.c`、`vm_procctl.c`、`vm_cache.c`、`vm_getrusage.c` 明确映射到 10 篇（"VM 客户端库·用户态 ABI 子集"）。**文档现状**：`rewrite-notes/14-stage-runtime/10-vm-syscalls.md` 对 cache/info/procctl/rusage/willexit/unmap_phys 的 grep 为**零命中**（2026-09-16 实测）——四文件族连同 `VM_VFS_MMAP`、`VM_WILLEXIT` 均未进入文档清单，也无"有意排除"声明。**实现现状**：wire 半在 minix-types 已备（`VmProcctlIn` `minix-types/src/ipc/vm.rs:512`、`MessLsysVmInfo` :1673、`MessLsysVmRusage` :1693、`VM_GETRUSAGE` :132——VM 服务器分发端已在消费部分结构）；minix-sys 侧有常量无 wrapper（`vm.rs:49/:55/:67/:71`），cache 族（`com.h:682-691` 的 +26/27/28/29）连常量都无。
 
 **后果**：消费方（FS 缓存客户端、getrusage 命令面、RS 的 vm_info 查询）无承载；且"文档已收敛"（CONVERGED）与"契约未覆盖"并存，后续按文档排期会永远跳过这四族。
 
@@ -371,5 +371,5 @@ Redox 对照（联网检索，2026-09-16）：
 ## 9. 存档指引
 
 - 本轮无历史轮次（V1 为首轮）。后续轮次按 V{N} 编号，满轮归档至 `archive/todo-V{N}-archive-日期.md`（对齐 `../02-stage-vm/todo.md` 先例）。
-- 跨 stage 条目的唯一入口是 [`../edge_todo.md`](../edge_todo.md)（E-MINTYPES-RUNTIME / E-MINSYS-SCOPE / E1 增补见彼处正文）；本文件条目修复时走 todo-fix 三段式（讲明白 → 多方案对比 → 实施）+ fix-guard + 文档-代码同步。
+- 跨 stage 条目的唯一入口是 [`../edge_todo.md`](../coordination/edge_todo.md)（E-MINTYPES-RUNTIME / E-MINSYS-SCOPE / E1 增补见彼处正文）；本文件条目修复时走 todo-fix 三段式（讲明白 → 多方案对比 → 实施）+ fix-guard + 文档-代码同步。
 - Review 中间产物（STATE.md 等）在 `.review/zcode/runtime/`（ZCode 工作区，与 codex/trae/claude 隔离）。

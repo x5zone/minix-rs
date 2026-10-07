@@ -3,7 +3,7 @@
 > **分类**：第三方协议栈架构决策文档，覆盖编译子集、关键选项、钩子清单、补丁清单、替代决策
 > **源码**：`minix3/minix/lib/liblwip/dist/src`（编译子集 68 个文件 58232 行）、胶水 `minix3/minix/lib/liblwip/lib/lwipopts.h` 与 `lwiphooks.h` 与 `arch/cc.h`、补丁 `minix3/minix/lib/liblwip/patches/`（4 个）
 > **Rust 模块**：`os/net/lwip/src/lwip_port.rs`（子集规模、关键选项、钩子清单、补丁清单）
-> **前置依赖**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`（轻量协议栈初始化调用面）
+> **前置依赖**：`rewrite-notes/17-stage-net/03-lwip-main-init.md`（轻量协议栈初始化调用面）
 >
 > **本篇不覆盖的内容**：
 > - Minix 侧各模块的实现（在第 03 篇到第 20 篇，本文只说明它们依赖的栈能力）
@@ -176,9 +176,9 @@
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/03-lwip-main-init.md`：轻量协议栈初始化调用面。
-- `notes/rewrite/fork-syscall-rewrite/17-stage-net/08-lwip-tcpsock.md`：传输控制协议，窗口与发送缓冲的消费方。
+- `rewrite-notes/17-stage-net/plan.md`：阶段划分、文档边界、架构演进清单。
+- `rewrite-notes/17-stage-net/03-lwip-main-init.md`：轻量协议栈初始化调用面。
+- `rewrite-notes/17-stage-net/08-lwip-tcpsock.md`：传输控制协议，窗口与发送缓冲的消费方。
 - `os/net/lwip/src/lwip_port.rs`：子集规模、选项、钩子与补丁的实现。
 - `minix3/minix/lib/liblwip/dist/src`：第三方代码目录。
 - `minix3/minix/lib/liblwip/lib/lwipopts.h`：胶水选项的原始位置。

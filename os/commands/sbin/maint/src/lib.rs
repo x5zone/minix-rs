@@ -2,7 +2,7 @@
 
 //! Backup and maintenance core for Minix-RS commands.
 //!
-//! Covers `notes/rewrite/fork-syscall-rewrite/18-stage-commands/17-backup-maintenance.md`:
+//! Covers `rewrite-notes/18-stage-commands/17-backup-maintenance.md`:
 //! directory backup (`minix3/minix/commands/backup/backup.c`, flags documented
 //! in the header comment, copy buffer `COPY_SIZE 4096`, at most `MAX_ENTRIES 512`
 //! entries per directory, at most `MAX_PATH 256` characters per path),

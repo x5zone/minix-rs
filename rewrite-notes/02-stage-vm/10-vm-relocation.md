@@ -3,7 +3,7 @@
 > **分类**: 阶段 4 — 自举的堆与元数据（自举终点）
 > **源码**: `minix3/minix/servers/vm/pagetable.c`（`pt_init` 搬迁段 :1311-1345 / `pt_init_done` :328 / spare page 池 :59-110、:1116-1162 / `vm_allocpages` :333-394 / `vm_freepages` :235-259 / `is_staticaddr` :85）+ `minix3/minix/servers/vm/alloc.c`（`reservedqueue_*` :60-237 / `missing_spares` :74 / `alloc_cycle` :227-237）+ `minix3/minix/servers/vm/utility.c`（`swap_proc_slot` :188 / `transfer_mmap_regions` :228 / `map_proc_dyn_data` :283 / `swap_proc_dyn_data` :312）+ `minix3/minix/servers/vm/region.c`（`map_setparent` :1535）+ `minix3/minix/servers/vm/main.c`（主循环 `alloc_cycle` 钩子 :118-119）
 > **Rust 模块**: `os/servers/vm/src/vm_server.rs`（`VmServer::relocate` :182 / `mark_alloc_failure` :396）+ `os/servers/vm/src/global.rs`（`heap_arena_grow` :481）+ `os/servers/vm/src/phys_mem/mod.rs`（`PhysAlloc`/`as_bitmap` :195）+ `os/servers/vm/src/phys_mem/bitmap_alloc.rs`（`metadata_pa_range` :110 / `available_regions` :464）+ `os/servers/vm/src/vmproc/table.rs`（`swap_slots`/`set_region_parent`，V11/T13）+ `os/servers/vm/src/rs.rs`（LU 支撑面已落地，V11/T12/T13）
-> **前置**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（物理页分配器）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（页分配器 + `missing_spares` 重解释）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md`（页表操作面）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/09-slab-allocator.md`（HeapArena）
+> **前置**: `rewrite-notes/02-stage-vm/05-physical-memory.md`（物理页分配器）、`rewrite-notes/02-stage-vm/06-page-allocator.md`（页分配器 + `missing_spares` 重解释）、`rewrite-notes/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）、`rewrite-notes/02-stage-vm/08-pagetable-ops.md`（页表操作面）、`rewrite-notes/02-stage-vm/09-slab-allocator.md`（HeapArena）
 > **说明**: VM 自举终点语义模块：**Minix3 的初始化数据搬迁（spare page 池 + 页表结构，minix3/minix/servers/vm/pagetable.c:pt_init（L1311，工具生成））+ Live Update 支撑面（swap_proc_slot / transfer_mmap_regions / map_proc_dyn_data / swap_proc_dyn_data / map_setparent）**。**不覆盖**：物理页分配器（05）、页分配器与保留页池（06）、页表结构/操作（07/08）、堆分配器（09）、RS Live Update 服务流程（25）。
 
 ---
@@ -658,12 +658,12 @@ C 对照：`pt_init()` 搬迁段（minix3/minix/servers/vm/pagetable.c:pt_init�
 
 ## 7. 参见
 
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/plan.md`（§3.4 边界、§5.3 契约、§4 A-1/A-5）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（bitmap 分配器 + BumpBuf）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/06-page-allocator.md`（页分配器 + missing_spares 重解释 + ARCH A-1）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/08-pagetable-ops.md`（vm_self_mappages 操作面）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/09-slab-allocator.md`（HeapArena + VmAllocator）
-- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/09-vm-relocation.md`（素材）
+- `rewrite-notes/02-stage-vm/plan.md`（§3.4 边界、§5.3 契约、§4 A-1/A-5）
+- `rewrite-notes/02-stage-vm/05-physical-memory.md`（bitmap 分配器 + BumpBuf）
+- `rewrite-notes/02-stage-vm/06-page-allocator.md`（页分配器 + missing_spares 重解释 + ARCH A-1）
+- `rewrite-notes/02-stage-vm/07-pagetable-struct.md`（页表结构 + Direct Map）
+- `rewrite-notes/02-stage-vm/08-pagetable-ops.md`（vm_self_mappages 操作面）
+- `rewrite-notes/02-stage-vm/09-slab-allocator.md`（HeapArena + VmAllocator）
+- `rewrite-notes/02-stage-vm/draft/09-vm-relocation.md`（素材）
 - `os/servers/vm/src/vm_server.rs`、`global.rs`、`phys_mem/mod.rs`、`phys_mem/bitmap_alloc.rs`、`vmproc/vmproc_handle.rs`、`rs.rs`
 - `minix3/minix/servers/vm/pagetable.c`、`alloc.c`、`utility.c`、`region.c`、`main.c`

@@ -4,7 +4,7 @@
 只讨论**怎么观察**一个特殊的崩溃：它的坏数据在你停机查看时已经消失，只在你不去偷看它的时候才
 出现。每条结论都带命令或源码位置作为凭据，读者可以复跑验证。
 
-缺陷 (A) 的现象（锚点：`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 顶部、串口日志
+缺陷 (A) 的现象（锚点：`rewrite-notes/coordination/NK4C-WORKLOG.md` 顶部、串口日志
 `tmp/nk4a/gh92f2.serial` 第 19681 行）：riscv64 启动过程中，虚拟内存服务器进程（VM，跑在用户态）
 在遍历页表时崩溃，串口打印
 
@@ -157,7 +157,7 @@ match channel {
 先装上对应开发包才能编译插件。这一步依赖外部安装，是 (A) 当前受阻的真正原因。
 
 ## 参考锚点
-- 症状与状态：`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（§续-216 到 §续-249）
+- 症状与状态：`rewrite-notes/coordination/NK4C-WORKLOG.md`（§续-216 到 §续-249）
 - 崩溃读指令：`os/arch/src/riscv64/paging.rs:307`（`walk_read`）、`:259`（`write_pte_dm`）
 - 直接映射基址：`os/arch/src/arch/direct_map.rs:148-149`
 - 停机 panic 处：`os/kernel/src/trap_dispatch.rs:1991`
