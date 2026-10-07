@@ -1,3 +1,0 @@
-edge3: old_lines=119 new_lines=119 line-common-ratio=0.681
-README: old_lines=97 new_lines=70 line-common-ratio=0.144
-new_edge3(git 判 64% R): old_lines=69 new_lines=69 line-common-ratio=0.841

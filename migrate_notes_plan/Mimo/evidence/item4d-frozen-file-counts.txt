@@ -1,5 +1,0 @@
-== 冻结区含旧路径的文件数（02-VERIFY 称 .design 56 个文件） ==
-evidence: 4
-legacy-fork-bak: 8
-.design: 56
-.design 文件总数: 1162

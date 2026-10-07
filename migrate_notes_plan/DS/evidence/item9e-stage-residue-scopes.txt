@@ -1,5 +1,0 @@
-A 三树，排除冻结区，出现次数: {'01-stage-pm': 28, '03-stage-kernel': 29, '04-stage-vfs': 7, '05-stage-sched': 7, 'deep-analysis/': 5}
-B 三树，全含，出现次数: {'01-stage-pm': 28, '03-stage-kernel': 76, '04-stage-vfs': 7, '05-stage-sched': 7, 'deep-analysis/': 5}
-C 三树，全含，按行计: {'01-stage-pm': 18, '03-stage-kernel': 72, '04-stage-vfs': 5, '05-stage-sched': 5, 'deep-analysis/': 4}
-D 三树，排除冻结区，按行计: {'01-stage-pm': 18, '03-stage-kernel': 25, '04-stage-vfs': 5, '05-stage-sched': 5, 'deep-analysis/': 4}
-E 三树，全含，仅 md，出现次数: {'01-stage-pm': 28, '03-stage-kernel': 72, '04-stage-vfs': 7, '05-stage-sched': 7, 'deep-analysis/': 5}

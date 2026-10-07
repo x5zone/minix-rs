@@ -1,3 +1,0 @@
-edge3: old=58412B new=58508B common=58388B ratio=0.998 (git 默认阈值 0.500)
-README: old=4081B new=4698B common=409B ratio=0.087 (git 默认阈值 0.500)
-new_edge3(对照,被判定为R): old=49750B new=49759B common=49726B ratio=0.999 (git 默认阈值 0.500)

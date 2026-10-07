@@ -1,6 +1,0 @@
-派生替换对 2440 组（目录级 + 文件级）
-差异文件 333 条；按 kind 分布：
-    Counter({'git-mv': 333})
-机械前缀替换可完全解释：180 条
-有残差：153 条
-残差明细已写入 evidence/item1d-residual-diffs.txt

@@ -1,5 +1,0 @@
-e90e4173d refactor(notes): 结构迁移——notes 三区搬到仓库根，剥除 fork-syscall-rewrite 包装层（纯移动，零内容改动）
-ad7a294c0 docs(01-stage): edge1 K16b——06-proc-init-boot-proc.md 瘦身 2030→1375 行（5 点处方落地，零知识损失）
-03e6bed78 docs(rules): prompt 改进计划第一批落地——D5 符号锚点迁移+H/A/B/D2 批
-7d8bb8fa1 docs(rs): I-14 B 层修复——09/16 前置声明对齐 kmain 实时序，三项核销确认
-2cc9c7e3f fix(smp): S-3c 三处固件 ABI 真 bug 修复 + 两架构 AP early stub 骨架

@@ -1,2 +1,0 @@
-✅ PASS notes-link-check 自测通过
-rc=0

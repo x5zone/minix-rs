@@ -1,7 +1,0 @@
-tar 文件条目 = 4183  目录条目 = 583
-manifest.notes.disk 2428 条，tar 缺失 0 []
-manifest.offtree 2530 条，tar 缺失 784
-  缺失按顶层目录: {'.claude': 1, '.qoderignore': 1, 'book': 43, 'os': 22, 'tmp': 409, 'tools': 308}
-  缺失样例: ['.claude/settings.local.json', '.qoderignore', 'book/book/.nojekyll', 'book/book/404.html', 'book/book/ayu-highlight-3fdfc3ac.css', 'book/book/book-a0b12cfe.js', 'book/book/book.toml', 'book/book/clipboard-1626706a.min.js', 'book/book/css/chrome-ae938929.css', 'book/book/css/general-2459343d.css']
-tar 中既不在 notes 清单也不在 offtree 清单的文件条目: 9
-  样例: ['AGENTS.md', 'CLAUDE.md', 'README.md', 'migrate_notes_plan/pre-migrate-20261007/broken-links.before.txt', 'migrate_notes_plan/pre-migrate-20261007/manifest.notes.disk.tsv', 'migrate_notes_plan/pre-migrate-20261007/manifest.offtree.tsv', 'migrate_notes_plan/pre-migrate-20261007/refs.before.counts.tsv', 'migrate_notes_plan/pre-migrate-20261007/snapshot.sha256', 'opencode.json']

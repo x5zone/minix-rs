@@ -1,2 +1,0 @@
-Review source, Trae adapters, Claude runtime references, and Codex adapters are consistent.
-rc=0

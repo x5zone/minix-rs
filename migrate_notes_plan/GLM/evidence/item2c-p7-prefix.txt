@@ -1,6 +1,0 @@
-## p7.c sha256 三方确认（sha256sum 工具直读）
-b8da7f7b72767f8d2de3320a9c177be4d2eee46824cd6c076b4cf4a28936dd7a  tools/atf-c-compat/probes/p7.c
-size=1155 mtime=2026-10-03 13:02:48.119560945 +0800
-
-## 00-SNAPSHOT.md §5.2 中 p7.c 的记录行
-169:| `tools/atf-c-compat/probes/p7.c` | 1155 | b8da7f7b726 | 探针夹具，与迁移无关 |

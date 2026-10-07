@@ -1,6 +1,0 @@
-   874 tools/anchor-suspect-baseline.txt
-  6609 tools/anchor-unresolved-baseline.txt
-  7483 total
-suspect old-path hits: 0
-unresolved old-path hits: 0
-373

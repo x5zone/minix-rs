@@ -1,9 +1,0 @@
---- 1) 直接跑二进制（cwd=os） ---
-
-running 14 tests
-rc=0
---- 2) 直接跑（cwd=该 crate 目录） ---
-/home/xzhao/github/minix-rs/os/libs/minix-driver-rt
-
-running 14 tests
-rc=0

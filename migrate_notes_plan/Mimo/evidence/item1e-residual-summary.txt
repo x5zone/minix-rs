@@ -1,4 +1,0 @@
-mechanically-explained files: 292
-files with residual edits: 41
-residual detail -> /home/xzhao/github/minix-rs/migrate_notes_plan/Mimo/evidence/item1e-residual.txt
-residual line kinds: {'+': 184, '-': 200}
