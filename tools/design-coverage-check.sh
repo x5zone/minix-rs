@@ -26,6 +26,20 @@
 
 set -euo pipefail
 
+case "${1:-}" in
+  -h|--help)
+    cat <<'HELP'
+用法：tools/design-coverage-check.sh {tree} [--stage <stage>]        # 按树汇总设计快照覆盖
+      tools/design-coverage-check.sh <stage 目录名>                   # 按阶段汇总（如 01-stage-kernel）
+
+  tree        rewrite | redesign | study（真源见 tools/notes-layout.conf）
+  --stage     限定单个阶段目录
+  退出码：0 全覆盖；1 存在缺失（只报告，不阻断）；2 用法错误
+  旧布局的 module 参数（如 fork-syscall-rewrite）已于 2026-10-07 随目录迁移退役。
+HELP
+    exit 0 ;;
+esac
+
 SCRIPT_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=notes-layout.conf
 source "$SCRIPT_SELF_DIR/notes-layout.conf"

@@ -299,7 +299,7 @@ pub struct FsHooks {
 
 C 的 `static int first` 守着 `devman_init_devices`：首个 mount 触发 `init_hook`，守卫保证树只建一次。Rust 初版把它翻成 `FirstGuard(bool)` 独立类型；DM-P1-3 之后连这个类型也不需要了——`Server` 的 `devices: Option<DeviceTree>` **本身就是守卫**：`None` 是"还没建"（等价 `first == 1`），建树后 `Some` 永不复位（等价 `first = 0`），unmount/remount 不动它——与 C 的 `static` 语义逐位对应。`ensure_devices()` 在首个成功 mount 后调用，初始化失败（ENOMEM）作为 mount 应答的错误上抛（A-7：C 同处 panic）。
 
-曾经配合 `init_hook` + `InitCtx::request_init` 的回调链（框架 mount 时调钩子、钩子置旗、装配读旗）随旗子一并退役：C 需要回调，是因为 libvtreefs 是**库**、不认识 devman；A-1 把 vtreefs 内联进 devman crate 之后库与服务之间的边界消失了，回调坍缩为直接调用，旗子成了没人读的死状态——这正是 FirstGuard 曾被观察为"死置"的根因（首轮架构审查 DM-P1-3）。单线程所以 `bool`/`Option` 都不需要 Atomic（用户态服务器执行模型，CLAUDE.md 执行模型节；VM 的 `global.rs` 对 BSS 单线程状态同款论证）。
+曾经配合 `init_hook` + `InitCtx::request_init` 的回调链（框架 mount 时调钩子、钩子置旗、装配读旗）随旗子一并退役：C 需要回调，是因为 libvtreefs 是**库**、不认识 devman；A-1 把 vtreefs 内联进 devman crate 之后库与服务之间的边界消失了，回调坍缩为直接调用，旗子成了没人读的死状态——这正是 FirstGuard 曾被观察为"死置"的根因（首轮架构审查发现的根因）。单线程所以 `bool`/`Option` 都不需要 Atomic（用户态服务器执行模型，AGENTS.md 执行模型节；VM 的 `global.rs` 对 BSS 单线程状态同款论证）。
 
 ### 3.3 `RootStat`：五行赋值 → 一次构造
 

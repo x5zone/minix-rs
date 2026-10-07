@@ -913,7 +913,7 @@ impl RsServer {
 }
 ```
 
-- **单线程模型**：RS 是用户态服务器（执行模型：单线程事件循环），`!Send`/`!Sync` 合理，无跨 CPU 共享（`CLAUDE.md` 执行模型约束）。`BootInit` 内用 `Vec`（alloc）而非 BSS 全局，避免 C 的 `rproc[]` 全局表带来的隐式依赖（A-3 关联）。
+- **单线程模型**：RS 是用户态服务器（执行模型：单线程事件循环），`!Send`/`!Sync` 合理，无跨 CPU 共享（`AGENTS.md` 执行模型约束）。`BootInit` 内用 `Vec`（alloc）而非 BSS 全局，避免 C 的 `rproc[]` 全局表带来的隐式依赖（A-3 关联）。
 - 模块划分理由：`table.rs`（数据）、`boot.rs`（启动编排）、`sef.rs`（注册表）、`dispatch.rs`（分类）各一个语义单元，与 plan §2 的 01 归属一致（Rust 模块列：`main.rs`、`lib.rs`——子模块均为 `lib.rs` 内部结构）。
 
 ### 4.3 `os/servers/rs/src/table.rs`（对应 §2.7，A-13）

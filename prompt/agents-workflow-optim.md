@@ -194,7 +194,7 @@ memset(vmproc, 0, sizeof(vmproc));                        /* 458 */
 
 1. 任何会话/脚本**不得向仓库根写任何产物**（log、bin、patch、临时 md 一律不行）。
 2. 落盘位置按用途进 `tmp/` 功能子目录（`tmp/log`、`tmp/bin`、`tmp/evidence`、`tmp/nk4a` 四个已预建，其余按需新建；写文件前先建目录，重定向不会自动创建父目录）：串口/运行日志 → `tmp/log/`；评审/工具运行证据 → `tmp/evidence/<日期-主题>/`（原顶层 `tmp/evidence/` 已并入此处，2026-10-07）；QEMU/DTB/内存转储等二进制产物 → `tmp/bin/`（2026-10-07 增，原堆积根目录的 5 个 .bin 已清）；NK4C 取证脚本与探针 → `tmp/nk4a/`；一次性脚本 → `tmp/` 平铺，用完即删。
-3. `tmp/` 已整域 `.gitignore`（2026-10-07 裁决），写入物永无入库风险；仓库根只允许存在配置与入口文档（`.gitignore`/`AGENTS.md`/`CLAUDE.md`/`README.md`/`LICENSE`/`opencode.json`/`.qoderignore`）。
+3. `tmp/` 已整域 `.gitignore`（2026-10-07 裁决），写入物永无入库风险；仓库根只允许存在配置与入口文档（`.gitignore`/`AGENTS.md`/`README.md`/`LICENSE`/`opencode.json`/`.qoderignore`）。
 
 ### 验收
 

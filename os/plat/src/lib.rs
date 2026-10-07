@@ -53,7 +53,7 @@ pub use port_io::PortIo;
 ///
 /// Per-architecture values and their hardware reasons live next to each
 /// architecture's interrupt controller driver; the cfg selection here is
-/// the sanctioned "define current" pattern (CLAUDE.md hardware-abstraction
+/// the sanctioned "define current" pattern (AGENTS.md hardware-abstraction
 /// rule): it picks a constant, it does not pick behavior.
 ///
 /// - x86_64: `0` — the 8254 PIT output is IOAPIC input 0

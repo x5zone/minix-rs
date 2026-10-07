@@ -4,12 +4,32 @@
 
 > **2026-10-07 变更**：仓库根的 `CLAUDE.md` 已退役，**`AGENTS.md` 是三端共用的唯一项目指令入口**。依据是 Claude Code 的默认加载模式 `claude-md-or-agents-md`（项目没有 `CLAUDE.md` 时改用 `AGENTS.md`，加载位置与方式完全等同）与发行物内的项目指令清单（含 `AGENTS.md`、`.claude/rules`）。原 `CLAUDE.md` 独有的「Doc Code Sync 七项」已并入 `prompt/review-rules/review-doc-checklist.md` §4；`.claude/rules/fix-guard.md` 已回填规范源 `prompt/review-rules/fix-guard.md`。取证见 `prompt/EXECUTION-LOG-workflow-optim.md`。
 
+## 审阅工作区与门的扫描域（多 agent 并行审计的硬约定）
+
+独立审计方在本目录下建 `prompt/<审计方名>/`（如 `DS/`、`glm/`、`Muse/`、`mimo/`）放报告与取证。
+这些目录**不入库**，因此：
+
+1. **门的扫描域 = 受版本管理的文件**（`tools/lint-review-rules.sh` 按 `git ls-files` 取清单）。
+   原因不是洁癖：审计产物里大量捕获门自己的输出，未跟踪文件参与判定时，命中清单会随轮次级联增长
+   ——三方审计在同一轮里全部撞上（清单从 3 处涨到 25 处，且互相引用对方的行号），
+   使「四门全绿才算改完」这条契约在审计窗口内必然假红。
+2. **捕获门输出要脱敏**：取证文件里若整段抄录门输出，请把命中行改写或截断（如把
+   `FAIL: L1 发现 N 处` 记成 `L1 报出若干命中`）。门是文本匹配的，抄一次就等于把问题复制一份。
+   本仓的门 L16 会在存在未跟踪审阅产物时打印提示，但**不因此变红**。
+3. **审计方的写入边界**：只写自己的 `prompt/<审计方名>/`；`prompt/` 其余路径、三端派生目录、
+   笔记树与 `os/` 均为只读。需要别人复核埋点时，把埋点方式与复原凭据（sha256）写进报告，
+   不要留下改动。
+4. **埋点必须断言落盘**：做反向验证时先断言"改动数 = 1"或事后 grep 确认，再跑门；
+   否则"门没响"分不清是门无效还是埋点根本没写进去（本仓与审计方都各踩过一次）。
+
+
 ## 目录结构
 
 ```
 prompt/
 ├── README.md                — 本文件
 ├── review-rules/            — 原始 Review 规则集（唯一真相源）
+│   ├── fix-guard.md              —  修复守则（原只在 .claude/rules/ 有副本，2026-10-07 回填为规范源）
 │   ├── review-cmds.md       —   任务命令规范（6 个独立 cmd：full-review/style-fix/code-excellence/test-audit/todo-fix/style-bible；Profile 对账 + scope 参数，2026-09-05）
 │   ├── review.md            —   Review 核心框架（原则、约束、优先级、输出模板、执行模型分层）
 │   ├── review-doc-checklist.md  —  文档检查清单（§1~§3，含 §2.0 Claims-Evidence）
@@ -21,7 +41,9 @@ prompt/
 │   ├── review-doc-excellence.md —  文档卓越性（§4.1叙事结构 + §4.2读者体验 + §4.3教学深度 + §4.4可维护性）
 │   └── review-code-excellence.md—  代码卓越性（§16 API设计 + §17表达力 + §18性能 + §19代码即文档 + §20可测试性 + §21测试质量）
 ├── skill/                   — Skill 适配层源文件（9 个领域 Skill + review-scan 编排器目录；同步至 Trae/Codex/Claude，review-scan 编排器见 .claude/.codex）
-│   ├── review-agent-ide.md      —  Trae 智能体精简版（9,328 字符，余量 672，见下方说明）
+│   ├── review-scan/                 —  编排器规范源（SKILL.md + checks/ 5 个分片，2026-10-07 收编）
+│   ├── cmds/                     —  6 个任务命令薄壳（full-review / style-fix / code-excellence / test-audit / todo-fix / style-bible）
+│   ├── review-agent-ide.md      —  Trae 智能体精简版（字符预算由 L15 把守，不在此抄数）
 │   ├── review-agent-trigger.md  —  触发器描述（何时调用 Agent，12 个示例覆盖 8 域 + 工作流评估/修复/快照补齐阶段）
 │   ├── review-doc-skill.md      —  文档 Review 技能（含 §2.0 Claims-Evidence）
 │   ├── review-code-skill.md     —  代码 Review 技能（含 §4.2 Kernel SMP/BKL 并发）
@@ -84,7 +106,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 3. **review-process.md** — 强制执行步骤，要求每个步骤必须产生可见中间产物（流程层）。含状态写入与收敛判断、Review Verification Protocol、§〇 执行模式选择（构造/快速/深度三模式）、Step 1.5 覆盖率穷举。
 4. **review-doc-checklist.md** — 文档维度的检查清单（文档维度层）。含 §2.0 Claims-Evidence Tracing（论文级文档质量方法论）。
 5. **review-code-checklist.md** — 代码维度的检查清单（代码维度层）。含 §4.2 内核 SMP/BKL 并发检查项。
-6. **review-patterns.md** — 常见错误模式汇总（错误模式层）。含 Kernel SMP 并发、测试、卓越性、叙事、Design-First 和流程漂移模式，共 85 个（82 个编号 1-60、63-84 + A/B/C 字母；61/62 已合并至 60 保留空号；79-83 为 2026-09-05 新增的架构抽象与锚点纪律模式，84 为 2026-09-18 H3 增补的未标注反模式示例模式）。
+6. **review-patterns.md** — 常见错误模式汇总（错误模式层）。含 Kernel SMP 并发、测试、卓越性、叙事、Design-First 和流程漂移模式（**条数与编号区间以该文件头部的索引行为唯一口径**，本处不抄数字；门 L5c 校验该索引行与实测编号数一致） + A/B/C 字母；61/62 已合并至 60 保留空号；79-83 为 2026-09-05 新增的架构抽象与锚点纪律模式，84 为 2026-09-18 H3 增补的未标注反模式示例模式）。
 7. **review-core-semantics.md** — 核心语义对齐。定义核心语义不变性原则，提供函数/IPC/生命周期行为契约表模板。
 8. **review-doc-excellence.md** — 文档卓越性。§4.1 叙事结构、§4.2 读者体验、§4.3 教学深度、§4.4 可维护性。
 9. **review-code-excellence.md** — 代码卓越性。§16 API 设计、§17 表达力、§18 性能、§19 代码即文档、§20 可测试性、§21 测试质量。
@@ -101,7 +123,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 
 | 项 | 限制 | 来源 | 当前文件 | 状态 |
 |---|------|------|---------|------|
-| **Agent Prompt（提示词）** | **硬上限 10,000 字符**（自动截断） | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/7571) | `review-agent-ide.md` | **9,328 字符（≈ 93.3%）✅ 达标，余量 672 字符**（2026-09-18 实测，模式 85 计数更新后） |
+| **Agent Prompt（提示词）** | **硬上限 10,000 字符**（超出自动截断） | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/7571) | `review-agent-ide.md` | **由 `tools/lint-review-rules.sh` 的 L15 判定**（本行不抄录实测字符数——抄一次就漂一次；实测方法：`wc -m < prompt/skill/review-agent-ide.md`） |
 | Rule（规则） | 硬上限 20,000 byte；建议 ≤ 10,000 字符；token 视角约 3,000 token | [Trae 官方 FAQ](https://forum.trae.cn/t/topic/52) | n/a（本目录无 Rule 文件） | — |
 | **Skill `name`** | ≤ **64 字符**，仅小写字母/数字/连字符（`-`），与父目录同名 | [Trae Skill 规范](https://docs.trae.ai/ide/best-practice-for-how-to-write-a-good-skill) | n/a（Trae Skill 命名规范） | — |
 | **Skill `description`** | ≤ **1024 字符**（硬限制），建议 ≤ 200 字符 | 同上 | n/a | — |
@@ -112,7 +134,7 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
 
 ### `review-agent-ide.md` 的 10,000 字限制说明
 
-- **当前 9,328 字符，达标且余量 672 字符**（硬上限 10,000 字符的 93.3%，2026-09-18 实测，模式 85 计数更新后）。**新增任何约束前必须先核对余量；超 10,000 字符必须触发规则精简**（候选：精简重复条目 / 下沉更多详情到 Skill）。
+- **字符预算由 `tools/lint-review-rules.sh` 的 L15 把守**：改完这个文件就跑门，超 10,000 直接红。本文件不再抄录实测字符数（旧文本抄过「9,328 / 余量 672」，实际早已变成别的值——抄一次漂一次）。**新增任何约束前必须先核对余量；超 10,000 字符必须触发规则精简**（候选：精简重复条目 / 下沉更多详情到 Skill）。
 - **结构**：Agent 作为**路由器**，详细知识下沉到 8 个 Skill：
   - Core Principles 保留最核心原则；
   - Output Template、Review Process、Phased Review 详情引用 `review-process-skill.md`；
@@ -159,7 +181,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 
 1. 在 Trae IDE 打开「智能体」配置面板（右上角 → 智能体 → 创建智能体）
 2. 将 `review-agent-ide.md` 的内容**完整复制粘贴**至"提示词（Prompt）"输入框
-   - ✅ **已达标**：9,328 字符 < 10,000 硬上限，可直接粘贴（余量 672，2026-09-18 实测）。
+   - ✅ **达标判定交给 L15**：改动 `review-agent-ide.md` 后跑 `tools/lint-review-rules.sh`，超预算即红（旧文本抄录过 9,328/余量 672，2026-09-18 实测）。
 3. 将 `review-agent-trigger.md` 的内容**完整复制粘贴**至"何时调用"输入框
 4. 启用所需 MCP 工具（建议启用：文件系统、终端、联网搜索）
 5. 在「规则与技能」面板，将 9 个领域 `review-*-skill.md` 各自作为 Skill 导入（注意 Trae 的 Skill 有 `name`/`description` 字段约束，见上表）
@@ -208,42 +230,42 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
   done
   ```
 
-**当前已同步的 9 个 Skill**（prompt → `.trae/skills/` + `.codex/skills/`，2026-08-15 复验，`generate-derived-skills.sh` 自动生成）：
-| Skill | prompt/skill/ 字符 | .trae/skills/ 字符 | .codex/skills/ 字符 | .trae diff | .codex diff\* |
-|-------|-------------------|-------------------|--------------------|-----------|--------------|
-| review-code-skill | 7,335 | 7,370 | 7,372 | +35 | +2 |
-| review-doc-skill | 24,768 | 24,992 | 24,994 | +224 | +2 |
-| review-patterns-skill | 39,338 | 39,425 | 39,427 | +87 | +2 |
-| review-process-skill | 65,677 | 65,925 | 65,654 | +248 | -271 |
-| review-core-semantics-skill | 8,464 | 8,486 | 8,488 | +22 | +2 |
-| review-coverage-skill | 11,082 | 11,170 | 11,142 | +88 | -28 |
-| review-excellence-skill | 9,220 | 9,320 | 9,322 | +100 | +2 |
-| review-implementation-skill | 5,713 | 5,735 | 5,737 | +22 | +2 |
-| review-socratic-skill | 5,696 | 5,705 | 5,707 | +9 | +2 |
+**9 个领域 Skill 与两份派生件的关系**：同步状态由命令判定，**不在此抄录字符数**——
+这张表历史上每次都随内容变化而失真（2026-10-08 独立审计实测最大偏差 −14%，例如表里曾写
+`review-process-skill` 65,677 字符而实测 56,756）。要知道现状就跑下面这条：
 
-\* `.codex` diff = codex 字符 − trae 字符；除 frontmatter 外还包含 Codex 的 `.review/codex`、无 agent、单 session 和引用路径适配（sed 规则化）。`.trae` diff = trae 字符 − prompt 字符，其中 frontmatter 去引号（-4）+ **markdown 链接路径适配**（同源链接在派生深度 3 下修正，差值随链接数变化）。共享规则内容仍由源文件约束，并由 `tools/check-review-rules.sh`（对源/派生统一归一化链接后再 diff）+ `tools/generate-derived-skills.sh --check` 校验。
+```bash
+tools/generate-derived-skills.sh --check          # 判定是否有漂移（退出码 0 = 无漂移）
+for n in review-code-skill review-doc-skill review-patterns-skill review-process-skill \
+         review-core-semantics-skill review-coverage-skill review-excellence-skill \
+         review-implementation-skill review-socratic-skill; do
+  printf '%-30s 源 %%-8s Trae %%-8s Codex %%s\n' "$n" \
+    "$(wc -c < prompt/skill/$n.md)" "$(wc -c < .trae/skills/$n/SKILL.md)" "$(wc -c < .codex/skills/$n/SKILL.md)"
+done
+```
 
-> **说明**：Trae 对单 Skill 文件无硬字符上限，仅 Agent Prompt ≤ 10,000。字符数随累积改进持续增长——review-process-skill 自 2026-07-16 方案 D 后 36,087 → **65,581**（Step 0.5.3 doc↔outline 对齐 + Gate H.6 + 后续 Step 1.0a-g 等）；review-doc-skill **24,461**、review-patterns-skill **37,942**。**字符数以 python3 `len(open(f,encoding='utf-8').read())` 实测为准（Unicode 字符数）；`wc -m` 在非 UTF-8 locale 下数字节，会高估含中文的文件，不可靠。表格值需随同步更新。**
->
-> 2026-06-22 新增 **review-implementation-skill**（由 06-design-final.md 实施过程沉淀），覆盖 design ↔ code 一致性 + §X self-review issues 追踪。详见 skill 文件 §Skill 输出模板 + §Gate D-Impl。
+> Trae 对单个 Skill 文件无硬上限，只有 Agent Prompt ≤ 10,000 字符这一条硬约束（实测值见上式，
+> 判定见 `tools/lint-review-rules.sh` 的 L15）。`.codex` 与 `.trae` 的差值除 frontmatter 外，
+> 还来自 Codex 侧的 `.review/codex` 路径、无 agent 后缀等运行时改写。
 
 ### 规则集与 Skill 的对应关系
 
-| 原始规则 | 转化产物 | 角色 | 当前字符 |
-|---------|---------|------|---------|
-| review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） | 9,328 ✅（余量 672，2026-09-18 实测） |
-| review.md | review-agent-trigger.md | Agent（触发器描述 + 12 个示例，覆盖 8 域 + 工作流评估/修复/快照补齐阶段） | 4,001 ✅ |
-| review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 24,461 |
-| review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） | 7,335 |
-| review-patterns.md | review-patterns-skill.md | Skill（86 个错误模式；Gate D 严格通过标准） | 见同步表实测 |
-| review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + 修复阶段 + STATE.md 三工具隔离 + Gate 证据 + Gate G/H 强制 + Gate 0 制品完整性 + L1/L2/L3 证据分级 + **方案 D outline 升格 + Step 0.5.3 doc↔outline 对齐 + Gate H.6 + Step 1.0a-g 等**） | 65,581 |
-| review-core-semantics.md | review-core-semantics-skill.md | Skill（行为契约表模板 + 8 字段 × 5 函数） | 8,464 |
-| review-doc-excellence.md + review-code-excellence.md | review-excellence-skill.md | Skill（文档§4.1-4.5 + 代码§16-21 卓越性） | 9,220 |
-| review-process.md §Step 1.5 | review-coverage-skill.md | Skill（机器穷举 + AI 语义判断 + doc-specific 覆盖率 + semantic-map + Gate A 强制运行规则 + gate-evidence-A 块模板） | 11,082 |
-| review.md（苏格拉底追问话术） | review-socratic-skill.md | Skill（13 场景追问话术模板） | 5,696 |
-| review-process.md §实施验证（2026-06-22 新增） | review-implementation-skill.md | Skill（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试边界） | 5,713 |
-| review-profiles.md | review-agent-ide.md（路由指令部分） | 并入 Agent | — |
-| ~~review-agent.md~~ | ~~已删除~~ | 原 8,847 字符完整版，STATE.md 格式已迁移至 review-process-skill.md | — |
+
+| 原始规则 | 转化产物 | 角色 |
+|---------|---------|------|
+| review.md | review-agent-ide.md | Agent（精简原则 + 路由 + 强制约束；详细知识下沉到 Skill） |
+| review.md | review-agent-trigger.md | Agent（触发器描述 + 12 个示例，覆盖 8 域 + 工作流评估/修复/快照补齐阶段） |
+| review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） |
+| review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） |
+| review-patterns.md | review-patterns-skill.md | Skill（86 个错误模式；Gate D 严格通过标准） |
+| review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + 修复阶段 + STATE.md 三工具隔离 + Gate 证据 + Gate G/H 强制 + Gate 0 制品完整性 + L1/L2/L3 证据分级 + **方案 D outline 升格 + Step 0.5.3 doc↔outline 对齐 + Gate H.6 + Step 1.0a-g 等**） |
+| review-core-semantics.md | review-core-semantics-skill.md | Skill（行为契约表模板 + 8 字段 × 5 函数） |
+| review-doc-excellence.md + review-code-excellence.md | review-excellence-skill.md | Skill（文档§4.1-4.5 + 代码§16-21 卓越性） |
+| review-process.md §Step 1.5 | review-coverage-skill.md | Skill（机器穷举 + AI 语义判断 + doc-specific 覆盖率 + semantic-map + Gate A 强制运行规则 + gate-evidence-A 块模板） |
+| review.md（苏格拉底追问话术） | review-socratic-skill.md | Skill（13 场景追问话术模板） |
+| review-process.md §实施验证（2026-06-22 新增） | review-implementation-skill.md | Skill（design ↔ code 一致性 + §X self-review 追踪 + 后向兼容重构 + 测试边界） |
+| review-profiles.md | review-agent-ide.md（路由指令部分） | 并入 Agent |
+| ~~review-agent.md~~ | ~~已删除~~ | 原 8,847 字符完整版，STATE.md 格式已迁移至 review-process-skill.md |
 
 ---
 
@@ -254,7 +276,6 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 - 加载位置：**项目根** + **`.claude/`** 目录
 - 加载机制：Claude Code 启动时自动读取
 - 不需要手工复制粘贴
-
 ### 项目根配置
 
 - **~~`CLAUDE.md`~~（已退役，见本节顶部说明）** — 原 Claude Code 的项目级 system prompt。现在由 `AGENTS.md` 承担同一角色。包含构建/测试命令、目录布局、执行模型分用户态/内核、编码约束（`no_std`、错误码映射 Minix3 errno、硬件抽象为 trait）、Ground Truth 优先级、文档结构（Ch1→Ch2→Ch3→Ch4+测试章节），以及 Review 系统的强制约束（Explicit Skill Invocation、Blocker Gates 证据、STATE.md 双路径、VERIFY-CHECK 强制）。

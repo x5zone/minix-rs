@@ -749,7 +749,7 @@
 8. ~~`fork_region` 返回 `Box<VirRegion>` 改为值~~ → **已修复 (2026-06-16)**: `fork_region` 返回 `VirRegion` 值类型, `fork_regions` 返回 `Vec<VirRegion>`, `free_forked_regions` 接受 `&mut [VirRegion]`, `do_fork` 中 `insert(*region)` 改为 `insert(region)`, 移除 `use alloc::boxed::Box` 导入。Rust 移动语义天然转移所有权, 无需额外堆分配
 9. ~~**死代码删除** (`region/phys_region.rs` 570 行, 死 trait 等)~~ → **已修复**: phys_region.rs 已删除, handle_signal/page_frames_mut/SIGKMEM 等已移除
 9. 行号引用校对 (D-05/D-06 等 12+ 处)
-10. Ch1&2 vs Ch3&4 一一映射表 (CLAUDE.md 要求)
+10. Ch1&2 vs Ch3&4 一一映射表 (AGENTS.md 要求)
 11. ~~**PageFlags 类型宽度统一** (u8 vs u16 矛盾)~~ → **误判**: 两者是不同类型 — `minix_arch::paging::PageFlags(u16)` 是硬件页表标志, `region::page_state::PageFlags(u8)` 是物理页状态标志, 不应统一
 
 ### 8.3 P2 — 优化 (8 项)

@@ -18,6 +18,9 @@ cd "$(git rev-parse --show-toplevel)"
 # 维护者明确「只搬路径、不代提交」的文件（notes 迁移期间登记）
 INFLIGHT=(
   "rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md"
+  # 2026-10-08 追加：结构债台账正被另一条会话重写（旧册改存根 + 新册未跟踪），
+  # 两处都不属于任何 review 批次的产出，批量 add 时必须排除。
+  "rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20260930.md"
 )
 
 if [[ "${1:-}" == "--list" ]]; then

@@ -130,6 +130,8 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 - **77 Code Comment Line Drift** (NEW 2026-07-31): 代码注释中引用 `file:line`（如 `// see proc_table.rs:129`）因代码增量而**漂移**（文件行号下移）。本次 08 doc review 发现 `os/kernel/src/lib.rs:1170/1181/1193` 3 处注释错位：`proc_table.rs:129` 实际 L276（+147，最大）/ `smp.rs:127-132` 实际 L200（+73）/ `smp.rs:80-145` 实际 L135（+55）。检查命令：`rg "see [a-z_/0-9]+\.rs:[0-9]+" os/ -t rust -n` + `sed -n "{line}p" {path}` 验证首行内容。修复策略：双修（修代码注释 root cause + 同步修所有复述的 doc）。详细规则见 `prompt/skill/review-patterns-skill.md §模式 77`（原 Step 1.0f，D5 收编后注释引用符号化）。首次发现：08-system-init-boot-finish review 2026-07-31（**根因是 lib.rs 代码注释错误，doc §4.6 复述了错误注释**）。
 - **78 CSBU** (C Source Bug Unlabeled, NEW 2026-08-14): Rust 修复了 Minix3 C 源码 bug，但代码注释未标注 `// MINIX3 BUG:`。维护者可能"修复"回 C 的 bug。判定标准：Rust 行为与 C 不一致（因 C 源码有 bug，非设计差异）+ 代码注释无 `// MINIX3 BUG:` + 文档 §2 对应位置无 bug 说明 → **P1**。检查命令：`rg "// MINIX3 BUG:" os/ --type rust -n`。正确示例：`// MINIX3 BUG: region.c:841-842 ignores ev_reference return value` + `// Rust fix: ev_copy returns Err(NotSupported)`。来源案例：region.c:841 ev_reference 忽略、enter_queue 写错进程、anon_pagefault 内存泄漏。详细规则见 `prompt/skill/review-patterns-skill.md §模式 78`。首次发现：2026-08-14 规则集优化（从 project_memory 沉淀的多个 C bug 修复案例抽象）。
 
+> **本清单是子集，不是全量模式库**：这里只列 Claude 会话高频要查的 48–78 一族，模式 79–85（架构抽象、锚点纪律、伪统一、未标注反模式示例）不在本文件里。全量权威清单在 `prompt/review-rules/review-patterns.md`；review 时需要其它族**必须调用 `review-patterns-skill`**，不得因为本文件里没有就当作该模式不存在。
+
 ## ⛔ Step 0 硬阻断（所有 review 模式强制，NEW 2026-07-16）
 
 > 每次 review 启动时**必须**执行：

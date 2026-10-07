@@ -482,7 +482,7 @@ GlobalAlloc::dealloc → 由（与 alloc 相同的）Layout 重建 FreeBlock{siz
   - `unregister_page_alloc()`（global.rs:481）：VmServer::drop 置 null。
   - `refill_arena`：读指针，null → 返回 false（`alloc` 返回 null）。
 - **行为契约**：注册必须先于首次分配（`VmServer::new`，os/servers/vm/src/vm_server.rs:struct VmContext（L92，工具生成））；`page_alloc_mut()` 对 null 指针 panic（fail-fast）；指针生命期 = VmServer 生命期 ≥ GLOBAL 生命期（SAFETY 注释链，global.rs）。
-- **执行模型**：VM 是用户态服务器单线程事件循环（CLAUDE.md Execution Model）——`AtomicPtr` + `AssumeSyncCell` 足够，无需 Mutex；与 kernel SMP 的 BKL 约束正交。
+- **执行模型**：VM 是用户态服务器单线程事件循环（AGENTS.md Execution Model）——`AtomicPtr` + `AssumeSyncCell` 足够，无需 Mutex；与 kernel SMP 的 BKL 约束正交。
 
 ### 3.7 语义差异清单（C ↔ Rust 诚实标注）
 
@@ -528,7 +528,7 @@ GlobalAlloc::dealloc → 由（与 alloc 相同的）Layout 重建 FreeBlock{siz
 1. **all-or-nothing 回滚**：grow 的失败路径完整回滚已映射页——不会留下"部分映射 + limit 未推进"的中间态（对应 C 侧 slaballoc 无失败中间态）。
 2. **无 `assert_eq!` 连续性检查**：grow 映射的物理页来自 `alloc_phys` 逐页分配（可碎片），VA 由 `old_limit + i*PAGE_SIZE` 计算——**VA 连续性由算术保证**，无需检查物理页连续性（物理页本来就不连续）。
 3. **shrink 的 `Err(_) => {}` 吞错**：`vm_self_unmap` 失败（本应已映射的页未映射）不阻断——推进 limit 仍正确（该页 VA 本来就没映射）；这是"容忍异常页表状态"的选择，硬化轮可改为 fail-fast。
-4. **`AssumeSyncCell` 而非 Mutex**：单线程 VM 事件循环（CLAUDE.md Execution Model），`limit` 读写无需锁。
+4. **`AssumeSyncCell` 而非 Mutex**：单线程 VM 事件循环（AGENTS.md Execution Model），`limit` 读写无需锁。
 5. **测试性**：`HeapArena::new()` const fn + 纯字段查询——常量边界测试（heap_arena.rs tests）零依赖可跑。
 
 ### 4.2 `VmAllocator`：free-list 分配器 + GlobalAlloc（global.rs）

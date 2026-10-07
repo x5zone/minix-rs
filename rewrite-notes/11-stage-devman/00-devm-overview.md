@@ -109,7 +109,7 @@ devman 的"全部语义"横跨四层——这是本 stage 篇幅最大的结构�
 ### 3.1 五条非 negotiable 原则
 
 1. **Rewrite 非 Translate**：外部行为等价，内部用 Rust 类型重表达（newtype 收窄整数、Option 消灭哨兵值、Result 替代 errno 传递、RAII 替代手动 free）。1:1 直译一经发现即 P0。
-2. **单线程事件循环**（CLAUDE.md 执行模型）：devman 是用户态服务器，`Cell`/`RefCell`/`Rc` 合理，不需要 `Arc`/`Mutex`；`bool` 守卫不需要 `AtomicBool`（01 FirstGuard 已示范）。
+2. **单线程事件循环**（AGENTS.md 执行模型）：devman 是用户态服务器，`Cell`/`RefCell`/`Rc` 合理，不需要 `Arc`/`Mutex`；`bool` 守卫不需要 `AtomicBool`（01 FirstGuard 已示范）。
 3. **`#![no_std]`**（测试除外）：生产代码只用 `core` + `alloc`。
 4. **错误码对齐 Minix3 errno**：复用 `minix_types::Errno`，不自创码；C 的 panic  speech 转显式 `Result`（A-7）。
 5. **硬件/框架 trait 化**：VTreeFS 侧能力经 trait 注入（02 决策 A-1 时定形状），OS 层不见裸指针穿越。

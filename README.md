@@ -19,7 +19,8 @@ under `minix3/` is the reference for every claim.
 - `book/` is the mdBook output area, generated from the note trees once content settles.
 - `tools/` contains the build, review, coverage, and anchor-checking scripts.
 - `prompt/` is the single source of truth for the review rule set; `.claude/`, `.trae/`, and
-  `.codex/` are derived adapters, and `CLAUDE.md` / `AGENTS.md` are the per-tool entry documents.
+  `.codex/` are derived adapters, and `AGENTS.md` is the single project instruction entry shared by
+  all three runtimes (`CLAUDE.md` was retired on 2026-10-07; see the note at the top of `AGENTS.md`).
 - `tmp/` is the scratch area and is not tracked by Git: forensic logs and run evidence
   (`tmp/evidence/`), QEMU images and memory dumps (`tmp/bin/`), serial logs (`tmp/log/`),
   pre-created empty by convention; anything else under `tmp/` is created on demand by its writer,
@@ -34,7 +35,7 @@ under `minix3/` is the reference for every claim.
    whose executable image. Only this README is maintained; the rest of that directory is
    planning-era archive (its own header says so).
 3. `rewrite-notes/RECONSTRUCTION-PRINCIPLES.md` — what may change and what must not.
-4. `CLAUDE.md` / `AGENTS.md` — the working rules for the review workflow (ground-truth priority
+4. `AGENTS.md` — the working rules for the review workflow (ground-truth priority
    chain, directory conventions, quality gates).
 
 ## License
