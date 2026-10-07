@@ -1,0 +1,77 @@
+name: rules-consistency
+
+# 工作流自检门常驻化。
+#
+# 为什么需要：改规则的人同时也是写规则的人，四条命令此前只靠自觉执行。本仓已出现过
+# 「源改了、派生副本没跟」「规则引用一个从未存在的脚本」「门把自己的历史输出当成新命中」
+# 三类缺陷，都需要一个不依赖记忆的兜底。
+#
+# 门禁本身也被测：`lint-review-rules.sh --self-test` 用夹具驱动同一套判据做正反向断言，
+# 因此「门恒绿」和「门恒红」都会让本工作流失败，而不是静默通过。
+#
+# 扫描域只含受版本管理的文件（`git ls-files`），所以独立审阅方写进 `prompt/<审计方>/`
+# 的报告与捕获的门输出不会参与判定——否则审计窗口期内必然假红。
+#
+# 不在此工作流里的：增量文风门（doc-style-lint --diff）。它需要与 base 提交比较，
+# 且笔记树的存量还在治理中，接入前需单独决定失败策略。
+
+on:
+  push:
+    paths:
+      - 'prompt/**'
+      - '.claude/**'
+      - '.codex/**'
+      - '.trae/**'
+      - '.agents/**'
+      - 'tools/**'
+      - 'AGENTS.md'
+      - 'opencode.json'
+      - '.github/workflows/rules-consistency.yml'
+  pull_request:
+    paths:
+      - 'prompt/**'
+      - '.claude/**'
+      - '.codex/**'
+      - '.trae/**'
+      - '.agents/**'
+      - 'tools/**'
+      - 'AGENTS.md'
+      - 'opencode.json'
+      - '.github/workflows/rules-consistency.yml'
+  workflow_dispatch:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 确认工具齐备（缺哪个就直接报错，不要让门静默跳过）
+        run: |
+          for t in git rg python3 awk sed grep; do
+            command -v "$t" >/dev/null 2>&1 || { echo "❌ 缺少必需工具：$t" >&2; exit 1; }
+          done
+          echo "工具 OK：$(git --version | head -1) / $(rg --version | head -1) / $(python3 --version)"
+
+      - name: 四道一致性门（源 → 三端派生）
+        run: |
+          echo '── 1/4 规则文本自检（L1-L17）──'
+          bash tools/lint-review-rules.sh
+          echo '── 2/4 规范源与运行时引用一致 ──'
+          bash tools/check-review-rules.sh
+          echo '── 3/4 派生件与源无漂移（含 review-scan 编排器 12 个文件）──'
+          bash tools/generate-derived-skills.sh --check
+          echo '── 4/4 Trae 适配逐文件对照 ──'
+          bash tools/diff-trae-skills.sh --only-diff
+
+      - name: 门自身的正反向断言
+        run: bash tools/lint-review-rules.sh --self-test
+
+      - name: 门禁工具自测（文风门 / 锚点门 / unsafe 审计 / 模式门 / 断链门）
+        run: |
+          bash tools/doc-style-lint.sh --self-test
+          bash tools/anchor-resolve.sh --self-test
+          bash tools/anchor-migrate.sh --self-test
+          bash tools/unsafe-audit.sh --self-test
+          bash tools/pattern-gate.sh --self-test
+          python3 tools/notes-link-check.py --self-test

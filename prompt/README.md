@@ -215,6 +215,25 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
   ```bash
   tools/check-review-rules.sh
   ```
+
+- **改完必须全绿的四道门**（顺序无关，任一失败就不算改完）：
+
+  ```bash
+  bash tools/lint-review-rules.sh && bash tools/check-review-rules.sh \
+    && bash tools/generate-derived-skills.sh --check && bash tools/diff-trae-skills.sh --only-diff
+  ```
+
+- **这四道门已进 CI 常驻**（`.github/workflows/rules-consistency.yml`，2026-10-08）：改动
+  `prompt/`、`.claude/`、`.codex/`、`.trae/`、`.agents/`、`tools/`、`AGENTS.md`、`opencode.json`
+  任一路径时自动跑，外加两件事——`tools/lint-review-rules.sh --self-test`（用夹具做正反向断言，
+  门恒绿或恒红都会失败）与六个门禁工具的 `--self-test`。此前这四条命令只靠自觉执行，
+  而本仓恰恰出现过「源改了派生没跟」与「规则引用不存在的脚本」两类静默缺陷。
+  **增量文风门（`tools/doc-style-lint.sh --diff`）有意没进 CI**：它需要与 base 提交比较，
+  且笔记树存量仍在治理中，接入时机单独决定。
+  门的扫描域只含受版本管理的文件，所以独立审阅方写进 `prompt/<审计方>/` 的报告不会参与判定。
+  上线前已在零未跟踪文件的干净 worktree 里逐字重放每个 `run` 块（13 项命令全部退出码 0），
+  并做了两个反向探针：改规范源不派生 → `--check` 退出码 1；规则里引入不存在的脚本名 → L10 退出码 1；
+  复原后两者均回到 0。
 - **⚠️ review-rules ↔ skill 一致性**（AI 回归检查）：
   `prompt/skill/` 是 `prompt/review-rules/` 的 skill 适配层（加 frontmatter + 触发条件 + 输出模板）。两者内容应一致但**不会自动同步**。修改 `review-rules/` 后，需 AI 检查 `skill/` 是否需要同步更新。`tools/check-review-rules.sh` 的 H3 计数检查能捕获结构性漂移（如整段缺失），但无法检测段落内文字漂移。
 - **验证命令**（复制后必跑）：
@@ -369,7 +388,7 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`），与 Claud
 | review-scan | 由 `prompt/skill/review-scan/` 派生（含 5 个 checks/） | 编排器（Phase 1-9），路径指向 Codex 制品和 `.codex/` Skill |
 | review-*-skill × 9 | `prompt/skill/` 派生 | 正文同源；Codex 仅精简 description，并适配状态/覆盖率路径 |
 
-**同步**：修改 `prompt/skill/*.md` 或 `.claude/skills/review-scan/` 后按上方适配命令更新派生文件，再运行 `tools/check-review-rules.sh`。**已落地验证**：2026-08-14 首次配置，10/10 frontmatter 合规（name=目录名 / desc ≤1024 / 双引号）。
+**同步**：只改规范源——`prompt/skill/*.md` 与 `prompt/skill/review-scan/`（编排器的源就在这里）。改完跑 `tools/generate-derived-skills.sh` 重新派生 `.trae/`、`.codex/`、`.claude/skills/review-scan/`，再跑 `tools/check-review-rules.sh`。**不要直接编辑派生件**：那等于把运行时端当源，正是这套机制此前出过的问题（详见 `AGENTS.md` 的一致性与门 L13/L17）。
 
 ---
 
