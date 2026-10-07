@@ -356,3 +356,62 @@ L11/L12 首跑即全绿（存量干净），说明它们不会变成噪音门。
 两条路：① 把 `review-scan/checks/*` 收编进 `prompt/skill/review-scan/` 作为源，再派生到 `.claude/`；
 ② 承认它是 Claude 专用的运行时编排层，在 `prompt/README.md` 与 `AGENTS.md` 里把它**明确列为例外**并规定
 「例外文件必须自带指路声明」（本轮已给它补上声明）。我倾向 ②（收编会把分片设计的收益抹掉），等你定。
+
+---
+
+## 八、review-scan 编排器收编进规范源（用户第 1 项的答复与实施）
+
+### 8.1 先回答"是不是 Claude 特有功能"
+
+查证的结论：**只有一个字段是 Claude 专有的** —— `.claude/skills/review-scan/SKILL.md` frontmatter 里的
+`allowed-tools: Read, Grep, Glob, Bash, Write`（限定该技能可使用的工具集）。其余内容（编排规则、5 个
+checks 分片、Gate 序列、证据格式）完全可移植，`.codex/skills/review-scan/` 就是同一套内容的另一份拷贝。
+所以按用户方向执行：吸收进规范源，三端从源派生。
+
+更要紧的事实是收编前的状态：`generate-derived-skills.sh` 第 26 行原文写着
+「9 个领域 Skill（review-scan 编排器由 `.claude/` 独立维护，不在此生成）」——即 **两份手抄件、零规范源**；
+`prompt/README.md` 的派生表里那一行还自我承认「AGENTS.md 声明派生自 prompt/，实际 review-scan 从 prompt/skill 演进」，
+名实不符是文档里公开承认的。这正是用户担心的可维护性问题：运行时端当了源。
+
+### 8.2 合并方法（不手抄，避免再引入一次漂移）
+
+写了一次性脚本做**自动合并**（用完即删）：把 `.claude` 与 `.codex` 两份先做路径归一
+（`.claude/`↔`.codex/`→`@@RT@@/`，`.review/claude`↔`.review/codex`→`@@REVDIR@@`），再用 difflib 逐行对齐：
+相同块原样进源，不同块写成 `<!-- @if:claude -->` / `<!-- @if:codex -->` 条件对。产出
+`prompt/skill/review-scan/`（6 个文件、2566 行、55 处条件块；其中 doc/code/excellence 三份两份手抄件完全一致，
+0 处条件）。差异分布：SKILL.md 10 处、checks/process.md 12 处、checks/patterns.md 5 处。
+
+派生侧新增 `render_scan()` + `generate_scan()`：按目标裁剪条件块、展开 token，并把结果写进
+`.claude/skills/review-scan/` 与 `.codex/skills/review-scan/`；`--check` 现在覆盖这 12 个派生文件。
+Trae 无编排器（走 `review-agent-ide` / `review-agent-trigger` 定义），保持不生成并在注释里写明。
+
+### 8.3 无损性验证（这一步不能省）
+
+| 验证 | 结果 |
+|---|---|
+| 重新派生后与收编前的两份手抄件比对 | **差异 0 行**（合并没丢内容，也没改语义） |
+| `generate-derived-skills.sh --check` | 绿（含 12 个 review-scan 派生文件） |
+| 反向埋点：手工往 `.codex` 派生件加内容 | `--check` 退出码 1（漂移被抓）；还原后复绿 |
+| `check-review-rules.sh` | 由「运行时层手工维护」改为**断言规范源 6 个文件齐备** |
+
+### 8.4 过程中被自家门抓到的两处（都是我的错，且门是对的）
+
+1. 条件块里保留 `@@REVDIR@@` token → L2（旧名活引用检查）报
+   `prompt/skill/review-scan/checks/patterns.md:450` 命中。根因是**条件块内容本就是目标专属的**，
+   那里放 token 毫无意义：`.review/claude/03-stage-kernel/…` 是一条真实的历史出处（该冻结目录至今存在），
+   被 token 化后两个运行时都会读到一条不存在的路径。修法：条件块内一律写实际路径，只有两边共享的行留 token
+   （共 32 行去 token）。修完 L2 归零、派生仍与手抄件零差异。
+2. 第一次建 frontmatter 时把行内 `<!-- @if -->` 少写闭合，且我用 `lstrip` 多加了一个空行 → 派生件多一行。
+   改为统一「标记独占一行」的单约定，并按真实副本重建头部；空行归一后差异回到 0。
+
+### 8.5 文档一致性同步
+
+`AGENTS.md` 一致性约定、`prompt/README.md` 的目录树行 / 派生关系表 / Codex 适配表三处均已改写：
+现在除 `.claude/rules/*` 三份运行时副本外，**全部**从 `prompt/` 派生，第四处手写规则的位置没有了。
+
+### 8.6 顺带更正我上一条回复里的两处范围错判
+
+- 「OS 语义层依赖射程需要可执行守卫，且要先裁 PD-33 豁免」——**这是代码线的事**。工作流侧的能力已经齐了
+  （§1.6 射程定义 + 三问 + 模式 85 的 grep 判据 + §16.7 强制栏）。本轮不造扫 `os/` 的守卫。
+- 「G2 落地要不要开批跑 cargo check」——**同样越界**（动的是配置与代码），已从待办建议里撤回，
+  它作为 todo_plan 的未落地项登记在案即可。

@@ -20,7 +20,7 @@ prompt/
 │   ├── review-core-semantics.md —  核心语义对齐（行为契约表 + IPC/生命周期契约模板）
 │   ├── review-doc-excellence.md —  文档卓越性（§4.1叙事结构 + §4.2读者体验 + §4.3教学深度 + §4.4可维护性）
 │   └── review-code-excellence.md—  代码卓越性（§16 API设计 + §17表达力 + §18性能 + §19代码即文档 + §20可测试性 + §21测试质量）
-├── skill/                   — Skill 适配层源文件（9 个领域 Skill；同步至 Trae/Codex，review-scan 编排器见 .claude/.codex）
+├── skill/                   — Skill 适配层源文件（9 个领域 Skill + review-scan 编排器目录；同步至 Trae/Codex/Claude，review-scan 编排器见 .claude/.codex）
 │   ├── review-agent-ide.md      —  Trae 智能体精简版（9,328 字符，余量 672，见下方说明）
 │   ├── review-agent-trigger.md  —  触发器描述（何时调用 Agent，12 个示例覆盖 8 域 + 工作流评估/修复/快照补齐阶段）
 │   ├── review-doc-skill.md      —  文档 Review 技能（含 §2.0 Claims-Evidence）
@@ -174,7 +174,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 |------|-----------|-----------------|------|
 | `.trae/skills/` | `review-{name}-skill.md` → `review-{name}-skill/SKILL.md` | `name`/`description` **不带引号**（Trae 标准格式）；**markdown 链接路径适配**（源 `prompt/skill/` 深度 2 → 派生深度 3，`../review-rules/` → `../../../prompt/review-rules/`、同目录 skill 链接 → `../{name}/SKILL.md`） | `prompt/skill/` |
 | `.codex/skills/` | `review-{name}-skill.md` → `review-{name}-skill/SKILL.md` | `name` 不带引号 + `description` **双引号包裹**（Codex 硬限制 ≤1024 字符，超长触发启动校验错误）；路径/状态段 + **markdown 链接路径适配**（同 .trae） | `prompt/skill/` + `.claude/skills/review-scan/` |
-| `.claude/skills/` | `review-scan/`（编排器 + 5 个 checks/） | 原样 | `.claude/` 独立维护（AGENTS.md 声明派生自 prompt/，实际 review-scan 从 prompt/skill 演进） |
+| `.claude/skills/review-scan/` 与 `.codex/skills/review-scan/` | `prompt/skill/review-scan/{SKILL.md,checks/*.md}` → 同名路径 | 由条件块裁剪：`<!-- @if:claude -->` 只进 Claude 份（含 `allowed-tools` 与三工具隔离措辞），`<!-- @if:codex -->` 只进 Codex 份；`@@RT@@`、`@@REVDIR@@` 按目标展开 | **源在 `prompt/skill/review-scan/`**（2026-10-07 收编；此前两份手抄、无源，README 曾自认「AGENTS.md 声明派生自 prompt/，实际…」名实不符） |
 
 - **自动生成命令**（推荐，从 `prompt/skill/` 一键生成 `.trae/` + `.codex/`）：
   ```bash
@@ -344,7 +344,7 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`），与 Claud
 
 | Skill | 来源 | 说明 |
 |-------|------|------|
-| review-scan | `.claude/skills/` 复制后适配（含 5 个 checks/） | 编排器（Phase 1-9），路径指向 Codex 制品和 `.codex/` Skill |
+| review-scan | 由 `prompt/skill/review-scan/` 派生（含 5 个 checks/） | 编排器（Phase 1-9），路径指向 Codex 制品和 `.codex/` Skill |
 | review-*-skill × 9 | `prompt/skill/` 派生 | 正文同源；Codex 仅精简 description，并适配状态/覆盖率路径 |
 
 **同步**：修改 `prompt/skill/*.md` 或 `.claude/skills/review-scan/` 后按上方适配命令更新派生文件，再运行 `tools/check-review-rules.sh`。**已落地验证**：2026-08-14 首次配置，10/10 frontmatter 合规（name=目录名 / desc ≤1024 / 双引号）。

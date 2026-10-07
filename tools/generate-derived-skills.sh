@@ -10,6 +10,8 @@
 # 派生关系：
 #   prompt/skill/{name}.md  →  .trae/skills/{name}/SKILL.md   (sed 去引号)
 #   prompt/skill/{name}.md  →  .codex/skills/{name}/SKILL.md  (sed 去引号 + 路径适配)
+#   prompt/skill/review-scan/{rel}  →  .claude|.codex/skills/review-scan/{rel}
+#       （条件块 @if:claude / @if:codex 按目标裁剪，@@RT@@ 与 @@REVDIR@@ 标记按目标展开）
 #
 # 注意：Codex 有少量上下文改写（如 bagging 说明）无法用 sed 机械替换，
 #       这些由 tools/check-review-rules.sh 的 H3 计数检查兜底。
@@ -23,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# 9 个领域 Skill（review-scan 编排器由 .claude/ 独立维护，不在此生成）
+# 9 个领域 Skill + review-scan 编排器（源在 prompt/skill/review-scan/，2026-10-07 收编）
 SKILLS=(
   review-code-skill
   review-doc-skill
@@ -47,6 +49,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ---- review-scan 编排器：多运行时同源派生（2026-10-07 收编进规范源）----
+# 源 = prompt/skill/review-scan/（SKILL.md + 5 个 checks/*.md），内含条件块与标记：
+#   <!-- @if:claude --> ... <!-- @endif -->   只进 .claude 派生件
+#   <!-- @if:codex -->  ... <!-- @endif -->   只进 .codex 派生件
+#   @@RT@@     → .claude / .codex（运行时目录前缀）
+#   @@REVDIR@@ → .review/claude / .review/codex（状态目录，三工具隔离）
+# 收编前的事实：编排器只存在于 .claude/ 与 .codex/ 两份手抄件、无规范源，本脚本原先还写着
+# 「review-scan 由 .claude/ 独立维护，不在此生成」——运行时端当了源，漂移无人守。
+SCAN_FILES=(SKILL.md checks/patterns.md checks/process.md checks/doc.md checks/code.md checks/excellence.md)
+
+render_scan() {  # render_scan <src> <which> → 渲染结果写标准输出
+  local src="$1" which="$2"
+  awk -v which="$which" '
+    /^<!--[[:space:]]*@if:/ {
+      line = $0
+      sub(/^<!--[[:space:]]*@if:[[:space:]]*/, "", line)
+      sub(/[[:space:]]*-->.*$/, "", line)
+      skip = (line != which) ? 1 : 0
+      next
+    }
+    /^<!--[[:space:]]*@endif[[:space:]]*-->/ { skip = 0; next }
+    skip { next }
+    { print }
+  ' "$src" | sed -e "s|@@REVDIR@@|.review/$which|g" -e "s|@@RT@@|.$which|g"
+}
 generate_trae() {
   local src="$1"
   local dst="$2"
@@ -200,6 +227,32 @@ main() {
       fi
     fi
   done
+
+
+  # ---- review-scan 编排器（.claude / .codex 两份派生件；Trae 不用编排器，走 review-agent-* 定义）----
+  if [[ "$TARGET" == "all" || "$TARGET" == "claude" || "$TARGET" == "codex" ]]; then
+    for which in claude codex; do
+      [[ "$TARGET" == "all" || "$TARGET" == "$which" ]] || continue
+      for rel in "${SCAN_FILES[@]}"; do
+        local srcf="prompt/skill/review-scan/$rel"
+        local dst=".${which}/skills/review-scan/$rel"
+        if [[ ! -f "$srcf" ]]; then
+          echo "  MISSING prompt/skill/review-scan/$rel （规范源缺文件）"; drift_count=$((drift_count + 1)); continue
+        fi
+        if [[ "$CHECK_ONLY" == "true" ]]; then
+          local tmp; tmp=$(mktemp)
+          render_scan "$srcf" "$which" > "$tmp"
+          if [[ -f "$dst" ]] && cmp -s "$tmp" "$dst"; then rm -f "$tmp"; else
+            report_drift "scan-$which/$rel" "$dst" "$tmp"; drift_count=$((drift_count + 1)); rm -f "$tmp"
+          fi
+        else
+          mkdir -p "$(dirname "$dst")"
+          render_scan "$srcf" "$which" > "$dst"
+          echo "  GEN   $which/skills/review-scan/$rel"
+        fi
+      done
+    done
+  fi
 
   echo ""
   if [[ "$CHECK_ONLY" == "true" ]]; then

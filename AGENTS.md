@@ -83,4 +83,4 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 
 技能清单（10 个）与调用时机见 `.codex/skills/`、`.claude/skills/`、`.trae/skills/`；源在 `prompt/skill/`。
 
-> **一致性约定**：`.trae/skills/` 与 `.codex/skills/` 由 `prompt/skill/` 经 `tools/generate-derived-skills.sh` 生成；`review-scan` 编排器与 `.claude/rules/*`、`fix-guard` 属手工同步。改完源必须跑：`tools/generate-derived-skills.sh` → `tools/check-review-rules.sh` → `tools/lint-review-rules.sh` → `tools/diff-trae-skills.sh --only-diff`，四条全绿才算改完。
+> **一致性约定**：`.trae/skills/`、`.codex/skills/` 与 `.claude/skills/review-scan/` 全部由 `prompt/skill/` 经 `tools/generate-derived-skills.sh` 生成（编排器源在 `prompt/skill/review-scan/`，运行时差异用 `<!-- @if:claude -->` / `<!-- @if:codex -->` 条件块表达，Claude 专有的 `allowed-tools` 字段只进 Claude 份）；只有 `.claude/rules/*` 三份运行时副本属手工同步。改完源必须跑：`tools/generate-derived-skills.sh` → `tools/check-review-rules.sh` → `tools/lint-review-rules.sh` → `tools/diff-trae-skills.sh --only-diff`，四条全绿才算改完。

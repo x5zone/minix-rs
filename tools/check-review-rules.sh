@@ -147,9 +147,13 @@ rg -q '9 个 grep 可验锚段' prompt/skill/review-process-skill.md \
 rg -q '\{tree\}/\{stage\}/\.design/' prompt/review-rules/review-process.md \
   || fail "source process rules do not use .design"
 
-# .claude layer validation (NEW 2026-08-15, meta-review F-B5-F14).
-# The .claude/.codex review-scan layers are manually maintained — this blocks
-# regressions like checks/code.md being overwritten with unrelated content.
+# .claude layer validation (NEW 2026-08-15, meta-review F-B5-F14; 2026-10-07 收编改造).
+# review-scan 不再是「手工维护的例外」：规范源在 prompt/skill/review-scan/，
+# .claude 与 .codex 两份由 tools/generate-derived-skills.sh 按条件块裁剪生成。
+# 下面除了存在性断言，还要求规范源六个文件齐备；派生一致性由 generate-derived-skills.sh --check 把关。
+for rel in SKILL.md checks/patterns.md checks/process.md checks/doc.md checks/code.md checks/excellence.md; do
+  [[ -f "prompt/skill/review-scan/$rel" ]] || fail "missing review-scan source: prompt/skill/review-scan/$rel"
+done
 for f in .claude/rules/review-core.md .claude/rules/review-process.md .claude/rules/fix-guard.md \
          .claude/skills/review-scan/SKILL.md .claude/skills/review-implementation-skill/SKILL.md; do
   [[ -f "$f" ]] || fail "missing .claude file: $f"
