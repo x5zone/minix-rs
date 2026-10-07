@@ -212,6 +212,7 @@ P2_TESTS=(
   test_process_init_lu_refusal_travels_to_the_reply     # NK4-C 993873745：LU 拒绝进回复
   test_process_init_filter_failure_fails_the_birth      # NK4-C 993873745：滤器失败致出生失败
   test_sys_statectl_encodes_request_address_length      # NK4-C 993873745：statectl 请求 wire 编码（地址/长度）
+  test_nreqs_and_is_fs_rq_gate                          # C-70：NREQS=34+is_fs_rq 门（0x600 化石基址事故 B1 族；补 #[test] 后入网）
 )
 check_p2() {
   local root="$1" missing=0 t hits

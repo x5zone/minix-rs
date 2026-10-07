@@ -12,8 +12,10 @@
 # 已知局限（有意的，基线收纳误报）：
 #   - 多行注释、宏展开内的 unsafe、字符串字面量里的 "unsafe" 均可能误报
 #   - 不追求零误报；误报通过基线收纳，不特判
-#   - --diff 的辩护判定需要前 5 行上下文：命中行会按工作树补读 CTX（因此对已提交的
-#     RANGE 跑 --diff 时，若那几行后来被改过，辩护可能读到新内容——与 --report 同一局限）
+#   - --diff 的辩护判定按「命中行所属快照」补前 5 行 CTX（C-70 修正）：单参 RANGE=工作树、
+#     双参 A..B=右端修订（git show）、--cached 流=索引；快照不可得时打 WARN 显式标记（不静默降级）。
+#     因此对历史 RANGE 的判定与运行时工作树状态无关，可复现（旧实现一律读工作树，
+#     同 RANGE 两日读数矛盾已在案）
 #
 # 用法：
 #   tools/unsafe-audit.sh --report                     # 全量统计 + 裸 unsafe 清单
@@ -118,36 +120,61 @@ collect_with_context() {
 
 collect() { # 输出 rg -n 风格流
   if [ "$MODE" = "diff" ]; then
-    # 只检查新增/修改行：git diff -U0 的 + 行，保留原行号
-    local tmp_hits; tmp_hits="$(mktemp)"
-    { git diff -U0 "$RANGE" -- 'os/**/*.rs'; git diff -U0 --cached -- 'os/**/*.rs'; } \
-    | awk '
+    # 只检查新增/修改行：git diff -U0 的 + 行，保留原行号。
+    # C-70 CTX 来源修正：辩护上下文必须读「命中行所属快照」——双参 RANGE 的新侧=右端修订
+    # （git show <rev>:<path>），--cached 流=索引（git show :<path>），单参 RANGE=工作树。
+    # 旧实现一律读工作树：对历史 RANGE 会拿到漂移后的内容（同 RANGE 两日读数矛盾已实证）；
+    # 来源不可得时打 WARN 显式标记，不静默降级。
+    local tmp_hits newrev="" wsrc="W"
+    tmp_hits="$(mktemp)"
+    if [[ "$RANGE" == *..* ]]; then newrev="${RANGE##*..}"; wsrc="R:$newrev"; fi
+    emit_hits() { # $1=来源标签 —— stdin: git diff -U0 流
+      awk -v tag="$1" '
         /^\+\+\+ b\// { file = substr($2, 3); next }
         /^@@ -[0-9]+(,[0-9]+)? \+([0-9]+)/ {
           h = $3; sub(/^\+/, "", h); split(h, hp, ","); ln = hp[1] + 0; next }
         /^\+/ && !/^\+\+\+/ {
           content = substr($0, 2)
-          if (content ~ /unsafe[[:space:]]*(\{|fn|impl|extern)/) print file ":" ln ":" content
+          if (content ~ /unsafe[[:space:]]*(\{|fn|impl|extern)/) print tag "\t" file ":" ln ":" content
           ln++
           next
         }
         /^[^-+ ]/ { next }
         /^ / { ln++ }
-      ' > "$tmp_hits"
+      '
+    }
+    { git diff -U0 "$RANGE" -- 'os/**/*.rs' | emit_hits "$wsrc"
+      git diff -U0 --cached -- 'os/**/*.rs' | emit_hits "I"; } > "$tmp_hits"
     # 为每条命中补前 5 行上下文（与 report 模式同一判定；不补则「辩护在上一行」的
     # 合法 union 读必被判裸——集中化访问器一类改动会被增量门假红）
+    local tag loc f rest l start end rev
     while IFS= read -r row; do
       [ -n "$row" ] || continue
-      f="${row%%:*}"; rest="${row#*:}"; l="${rest%%:*}"
-      [ -f "$f" ] || continue
+      tag="${row%%$'\t'*}"; loc="${row#*$'\t'}"
+      f="${loc%%:*}"; rest="${loc#*:}"; l="${rest%%:*}"
       start=$(( l > 5 ? l - 5 : 1 ))
       end=$(( l - 1 ))
-      if [ "$end" -ge "$start" ]; then
-        awk -v f="$f" -v s="$start" -v e="$end" \
-          'NR >= s && NR <= e { printf "CTX\t%s:%d\t%s\n", f, NR, $0 }' "$f"
-      fi
+      [ "$end" -ge "$start" ] || continue
+      case "$tag" in
+        W)
+          if [ -f "$f" ]; then
+            awk -v f="$f" -v s="$start" -v e="$end" \
+              'NR >= s && NR <= e { printf "CTX\t%s:%d\t%s\n", f, NR, $0 }' "$f"
+          else
+            echo "WARN: CTX 不可得（工作树无 $f）: $loc" >&2
+          fi ;;
+        I)
+          git show ":$f" 2>/dev/null | awk -v f="$f" -v s="$start" -v e="$end" \
+            'NR >= s && NR <= e { printf "CTX\t%s:%d\t%s\n", f, NR, $0 }' \
+            || echo "WARN: CTX 不可得（索引无 $f）: $loc" >&2 ;;
+        R:*)
+          rev="${tag#R:}"
+          git show "$rev:$f" 2>/dev/null | awk -v f="$f" -v s="$start" -v e="$end" \
+            'NR >= s && NR <= e { printf "CTX\t%s:%d\t%s\n", f, NR, $0 }' \
+            || echo "WARN: CTX 不可得（$rev 无 $f）: $loc" >&2 ;;
+      esac
     done < "$tmp_hits"
-    cat "$tmp_hits"
+    sed 's/^[^	]*	//' "$tmp_hits"
     rm -f "$tmp_hits"
   else
     # 收集 unsafe 行 + 其前 5 行上下文（辩护判定需要上下文行，但上下文行不计入 unsafe 统计）

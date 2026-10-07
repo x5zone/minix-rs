@@ -834,6 +834,9 @@ mod tests {
         assert!(is_fs_rq(trns_del_id(wire)));
     }
 
+    // C-70：补上遗漏的 #[test]（此前「挂名未注册测试」从不执行；C-68 登记的
+    // NK4-C 自登同族残留项，本线销账）
+    #[test]
     fn test_nreqs_and_is_fs_rq_gate() {
         assert_eq!(NREQS, 34); // vfsif.h:75
         assert!(is_fs_rq(FS_BASE));
