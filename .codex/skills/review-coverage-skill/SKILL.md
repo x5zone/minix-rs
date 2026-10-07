@@ -212,7 +212,7 @@ python3 tools/coverage-extract/coverage-extract.py kernel \
 
 ### Step 3: 更新 STATE.md
 
-将覆盖率结果写入工具对应的 `STATE.md`（双路径，互不共享）：
+将覆盖率结果写入本运行时的 `STATE.md`（`{tool}` 按规范源的运行时表取自己那一行）：
 - **Trae** → `.review/codex/{stage}/STATE.md`
 - **Claude** → `.review/claude/{stage}/STATE.md`
 

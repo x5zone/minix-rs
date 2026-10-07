@@ -164,9 +164,9 @@ description: "Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 S
     - **TODO 验证阶段**：按 TODO 数 × 5 分钟预估（含 grep 验证 + 误报否定 + 真实修复）
     - **review 阶段**：按文档行数查表（<500 行→15-30 min | 500-1000→30-60 | 1000-1500→60-90 | >1500→90-120）
     - 实际耗时与预估对比写入 scan.md，偏差 >50% 需说明原因（避免偷懒）
-- **读取状态（统一双路径，互不共享中间结果）**：
-  - **Trae IDE** → 读取 `.review/trae/{stage}/STATE.md`
-  - **Claude Code Runtime** → 读取 `.review/claude/{stage}/STATE.md`
+- **读取状态（按运行时隔离，互不共享中间结果）**：状态根目录 `.review/{tool}/{stage}/`，
+  `{tool}` 取自规范源 `prompt/review-rules/review-process.md` §Step 0 的**已登记运行时表**
+  （trae / claude / codex / zcode / qoder）。只读写自己那一行；派生副本不做运行时身份替换。
   - 两套工具各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。不跨工具互验；Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
   - 若同一工具下出现两份 STATE.md 且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
   - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py --state {state_path}`，校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。

@@ -395,10 +395,25 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
     - **TODO 验证阶段**：按 TODO 数 × 5 分钟预估（含 grep 验证 + 误报否定 + 真实修复）
     - **review 阶段**：按文档行数查表（<500 行→15-30 min | 500-1000→30-60 | 1000-1500→60-90 | >1500→90-120）
     - 实际耗时与预估对比写入 scan.md，偏差 >50% 需说明原因（避免偷懒）
-- **读取状态（统一双路径，互不共享中间结果）**：
-  - **Trae IDE** → 读取 `.review/trae/{stage}/STATE.md`（项目根 `.review/` 下）
-  - **Claude Code Runtime** → 读取 `.review/claude/{stage}/STATE.md`（项目根 `.review/` 下）
-  - 两套工具各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
+- **读取状态（按运行时隔离，互不共享中间结果）**：状态根目录是 `.review/{tool}/{stage}/`，
+  `{tool}` 只能取下表登记的运行时名。**只读写自己那一行**，不要替别的运行时写产物。
+  本表在派生进各运行时副本时**不做运行时身份替换**——每个会话按自己是什么工具去对号，
+  这样规范源与三端副本描述的是同一个事实（此前源里只列 Trae 与 Claude 两家，而 `.review/` 下
+  实际已有五家运行时目录，Codex 只存在于派生副本的措辞替换里）。
+
+
+| 运行时 | `{tool}` | 状态根目录 | 产物布局 |
+|---|---|---|---|
+| Trae IDE | `trae` | `.review/trae/` | 多 agent 袋装：`{stage}/scans/{doc-stem}-{agent}-scan.md` |
+| Claude Code | `claude` | `.review/claude/` | 单 session：`{stage}/{doc-stem}/scan.md` |
+| Codex CLI | `codex` | `.review/codex/` | 同 Claude（无 agent 后缀） |
+| ZCode | `zcode` | `.review/zcode/` | 同上 |
+| Qoder | `qoder` | `.review/qoder/` | 同上 |
+
+**接入新运行时的做法** = 往这张表加一行 + 沿用同一产物布局，不要另造一套状态结构。
+`.review/` 下另有按旧模块名命名的目录（如 `03-stage-kernel/`、`pm/`、`vm/`），那是目录迁移前的
+历史冻结区，不属于任何运行时，本表的读写规则不适用。
+  - 各运行时各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
   - 若同一工具下两份 STATE.md 同时存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
   - **`{stage}` 的确定**：取目标文档所在路径里笔记树根（`rewrite-notes/`、`redesign-notes/`、`study-notes/`）下的**第一级目录名**。例如 `rewrite-notes/01-stage-kernel/03-kmain-cstart.md` → `{stage}=01-stage-kernel`。它同时是评审状态目录的分组键（`.review/{tool}/{stage}/`）。旧布局在树根与阶段之间还有一个模块层目录（当时取值恒为 `fork-syscall-rewrite`），该层已于 2026-10-07 目录迁移退役，旧→新对照见 `rewrite-notes/MIGRATION.md`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）是**两个不同概念**，不得混用。
   - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py --state {state_path}` 校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
@@ -1649,9 +1664,8 @@ ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 > **目的**：将当前 phase 的验证结果持久化写入工具对应的路径，并判断是否收敛。
 
 **执行步骤**：
-1. 创建或更新工具对应的 `STATE.md`（双路径，互不共享）：
-   - Trae IDE → `.review/trae/{stage}/STATE.md`（项目根 `.review/` 下）
-   - Claude Code Runtime → `.review/claude/{stage}/STATE.md`（项目根 `.review/` 下）
+1. 创建或更新本运行时的 `STATE.md`（路径按 §Step 0 的运行时表取自己那一行，各运行时互不共享）：
+   `.review/{tool}/{stage}/STATE.md`
 2. 创建或更新 `SYMBOLS.md`（Step 1.5 产物）到对应路径
 3. **所有维度结果写入 scan.md 单文件**（NOT 10 个维度检查文件）。若用户显式指定输出位置（如交互式修复），双写到用户指定路径（被 review 文档同目录下 `{doc-stem}-trae-review.md` / `{doc-stem}-claude-report.md`）+ 工具默认路径（`scans/` 内）。双写校验见 Gate 0 Artifact Inventory。
 4. 将 scan.md 中**新发现 P0/P1/P2** 同步到 STATE.md 的 Open P0/P1/P2 列表；已修复问题移入 Closed Issues 段落。
@@ -1937,7 +1951,7 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 ### Step 7 产物：自检清单
 
 - [ ] Step 0 执行模式已声明 + 范围声明和时间预算已输出（或已说明省略）
-- [ ] Step 0 已读取正确的 STATE.md（Trae/Claude 双路径）
+- [ ] Step 0 已读取本运行时的 STATE.md（按 §Step 0 运行时表取 `{tool}`）
 - [ ] Step 1 源码文件清单已输出
 - [ ] Step 1.5 覆盖率穷举已输出（SYMBOLS.md + 缺口/ARCH 判定）〔构造/深度必做，快速跳过〕
 - [ ] **Gate 0**: 制品完整性（scan.md 含 9 个 grep 可验锚段 + 标准路径文件齐全）

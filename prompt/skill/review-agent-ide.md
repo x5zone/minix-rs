@@ -46,7 +46,7 @@ You are the Minix-RS Review Agent. Route review tasks to the correct Skills and 
 - `validation review`: doc(00) + code + patterns; resample 20%
 - **Default**: dir has `.rs` → ask if full; "check concepts" → partial(Ch1&2); else → doc.
 
-## State Management: Dual-Path (Trae vs Claude)
+## State Management: per-runtime isolation (本文件只列 Trae 与 Claude 的产物路径)
 **Trae IDE** (manual paste, multi-AI cross-review allowed):
 - State: `.review/trae/{stage}/STATE.md` (项目根 `.review/` 下)
 - Per-doc/cross-AI scans: `.review/trae/{stage}/scans/{doc-stem}-{agent}-scan.md`
@@ -60,7 +60,7 @@ You are the Minix-RS Review Agent. Route review tasks to the correct Skills and 
 - Verification: `.review/claude/{stage}/VERIFY-CHECK.md`
 - 最终报告（双写，可选）：`{tree}/{stage}/{doc-stem}-claude-report.md`
 
-**Rules**: 1. At Step 0 read the correct tool STATE.md. 2. Trae 与 Claude **绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）；Bagging 聚合只在 Trae 内。 3. Same-tool divergence → do not merge; log + ask user. 4. Each STATE.md tracks its own Open P0/P1/P2. 5. 推荐 `tools/review-init.sh trae {doc-path}` 自动建目录。
+**Rules**: 1. At Step 0 read the correct tool STATE.md. 2. 各运行时（`{tool}` 全集见 `prompt/review-rules/review-process.md` §Step 0 运行时表）**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）；Bagging 聚合只在 Trae 内。 3. Same-tool divergence → do not merge; log + ask user. 4. Each STATE.md tracks its own Open P0/P1/P2. 5. 推荐 `tools/review-init.sh trae {doc-path}` 自动建目录。
 
 ## Convergence and State Tracking
 Maintain state in the tool-specific STATE.md path above. Details: [process-skill](review-process-skill.md).

@@ -142,7 +142,8 @@ Review 规则集是项目在多轮迭代中积累的规则文档，定义了针�
   - 苏格拉底追问话术拆分到 `review-socratic-skill.md`。
 - **新增强制约束**：
   - **Explicit Skill Invocation**：必须通过 `Skill` tool 显式调用 Skill，禁止依赖隐式加载。
-  - **STATE.md 双路径**：Trae IDE 与 Claude Code Runtime 分别使用不同的 STATE.md 路径，互不覆盖。
+  - **STATE.md 按运行时隔离**：每个运行时用自己的 `.review/{tool}/{stage}/STATE.md`，互不覆盖；
+  `{tool}` 全集与各自产物布局见 `prompt/review-rules/review-process.md` §Step 0 的运行时表。
   - **Gate 证据规则**：每个 Blocker Gate 必须附带命令 + 输出片段证据。
   - **Gate D 严格通过**：PARTIAL/⚠️/部分通过 均视为 FAIL。
   - **VERIFY-CHECK.md 强制**：未完成独立验证不得标记 CONVERGED。
@@ -288,7 +289,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 ├── settings.local.json          — 本地权限配置（allow/deny 工具白名单）
 ├── rules/                       — 始终加载（always-on），占用 context 持续存在
 │   ├── review-core.md           —   执行模型 + ⛔ 禁止行为 + Ground Truth + 优先级 + 强制 Skill 调用 + 严格 Gate D
-│   ├── review-process.md        —   Step 0-7 强制流程 + STATE 双路径 + Gate 证据 + VERIFY-CHECK 强制
+│   ├── review-process.md        —   Step 0-7 强制流程 + STATE 按运行时隔离 + Gate 证据 + VERIFY-CHECK 强制
 │   └── fix-guard.md             —   安全修复规则
 └── skills/                      — 按需加载（on-demand），不占用 context
     ├── review-scan/             —   主 Skill（编排器，Phase 1-9）
@@ -297,13 +298,13 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
     │       ├── doc.md           —       文档检查（含禁止"未逐行验证"）
     │       ├── code.md          —       代码检查
     │       ├── patterns.md      —       错误模式（含 Gate D 严格通过标准）
-    │       ├── process.md       —       执行流程（含 STATE 双路径、VERIFY-CHECK 强制）
+    │       ├── process.md       —       执行流程（含 STATE 按运行时隔离、VERIFY-CHECK 强制）
     │       └── excellence.md    —       卓越性检查
     └── review-implementation-skill/ — 实施验证 skill（design ↔ code 一致性 + §X self-review 追踪，2026-06-22 加入）
 ```
 
 > 检查维度合并为 5 个领域文件，避免 attention decay 和过度拆解。
-> **注意**：`.claude/` 中的规则已与本轮修复同步，包含与 Trae Skill 相同的强制约束（Explicit Skill Invocation、双路径 STATE、Gate 证据、VERIFY-CHECK 强制、严格 Gate D、禁止"未逐行验证"、doc-specific 覆盖率）。
+> **注意**：`.claude/` 中的规则已与本轮修复同步，包含与 Trae Skill 相同的强制约束（Explicit Skill Invocation、STATE 按运行时隔离、Gate 证据、VERIFY-CHECK 强制、严格 Gate D、禁止"未逐行验证"、doc-specific 覆盖率）。
 
 ### 与 Trae 的关键差异
 
@@ -321,7 +322,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 ### `.claude/rules/*.md` 的 always-on 加载
 
 - **`review-core.md`** — 始终加载。定义执行模型分用户态/内核、⛔ 禁止行为（从记忆回答/跳过检查/猜测/无输出标记 ✅/后期 check decay）、Ground Truth、**Rewrite / Refactor (code + design) / Architectural Evolution** 三层术语、**P0 六分类（含 P0-design-deviation/missing/wrong/test-missing）**、**Design First 原则 + 优先级链 Minix3 > design > code > doc**、P0/P1/P2 优先级、**强制 Skill 显式调用**、**Gate D 严格通过标准**。
-- **`review-process.md`** — 始终加载。定义 Step 0-7 流程（Scope 声明 → C 源验证 → Diff 抽取 → Sanity Check → Precision Check → 状态写入 → VERIFY 独立验证），以及 **STATE.md 双路径**、**Gate 证据规则**、**VERIFY-CHECK.md 强制**。
+- **`review-process.md`** — 始终加载。定义 Step 0-7 流程（Scope 声明 → C 源验证 → Diff 抽取 → Sanity Check → Precision Check → 状态写入 → VERIFY 独立验证），以及 **STATE.md 按运行时隔离**、**Gate 证据规则**、**VERIFY-CHECK.md 强制**。
 - **`fix-guard.md`** — 始终加载。定义安全修复的 4 条强制要求（读 ±5 行上下文 / grep 确认当前状态 / 一次性应用一个 fix / 写 fix-status）。
 
 ### `.claude/skills/review-scan/` 的 on-demand 加载
@@ -330,7 +331,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 - **`checks/doc.md`** — 文档检查。覆盖 §2.0 Claims-Evidence、概念准确性、C 代码引用（**禁止"未逐行验证"**）、数据结构、doc-code 一致性、架构演进、跨引用、图示、C 源码覆盖、设计质量、链接验证、文档风格、skip 检查。
 - **`checks/code.md`** — 代码检查。覆盖 rewrite 质量、硬件抽象、trait 设计、类型安全、执行模型（含 SMP/BKL §4.2）、内存模型、模块设计、命名、测试、注释、64-bit、复杂度、no_std、设计-代码一致性、C-Rust 对齐、精度检查。
   - **`checks/patterns.md`** — 错误模式库。源规则共 86 个枚举模式，Claude 版按领域合并检查。含 **Gate D 严格通过标准**。
-- **`checks/process.md`** — 执行流程。含 §〇 三模式选择（构造/快速/深度）、**STATE.md 双路径**、**Gate 证据规则**、**VERIFY-CHECK.md 强制**、**P0/P1/P2 同步规则**。
+- **`checks/process.md`** — 执行流程。含 §〇 三模式选择（构造/快速/深度）、**STATE.md 按运行时隔离**、**Gate 证据规则**、**VERIFY-CHECK.md 强制**、**P0/P1/P2 同步规则**。
 - **`checks/excellence.md`** — 卓越性检查。文档 §4.1-4.5 + 代码 §16-21。
 
 ### Claude 配置的设计意图
