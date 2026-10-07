@@ -1564,7 +1564,7 @@ ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 > - "unsafe 审计"：`tools/unsafe-audit.sh --baseline tools/unsafe-baseline.txt --diff`（D2：新增裸 unsafe = 0 才通过；命令 / 裸 unsafe 总数 / 与基线差值 / 新增违规清单）
 > - "文档代码块审查"：文档 Rust 块四分类表（H3；doc-checklist §2.4k）
 
-**产物**：维度 × 文件 × 结论 × 证据 表 + `gate-evidence-code` 块（命令 / exit / stdout_key / artifact 路径 / date，格式见 todo_plan 0.5）；无发现也要写明"已检查、无发现"。发现的问题沿用既有 P0/P1/P2 判定（不新增 P0 分类）。
+**产物**：维度 × 文件 × 结论 × 证据 表 + `gate-evidence-code` 块（命令 / exit / stdout_key / artifact 路径 / date，格式见 `prompt/WORKFLOW-OPEN-ITEMS.md` F-A）；无发现也要写明"已检查、无发现"。发现的问题沿用既有 P0/P1/P2 判定（不新增 P0 分类）。
 
 ### Step 4: Cross-Document Check（跨文档联动）
 

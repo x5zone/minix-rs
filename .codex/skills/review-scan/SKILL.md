@@ -58,22 +58,22 @@ Missing this section → scan.md marked DRAFT.
 1. `ls $ARGUMENTS` — list all `.md` and `.rs` files in the target directory
 2. Output: "Found N .md files, M .rs files. Starting review."
 3. **Read correct STATE.md path** (tool-isolated; never share intermediate results between tools):
-   - **Codex CLI** → `.review/codex/$MODULE/STATE.md` (project root `.review/`)
+   - **Codex CLI** → `.review/codex/$STAGE/STATE.md` (project root `.review/`)
    - If the **same tool** has conflicting STATE.md copies, **do not auto-merge**. Log divergence in scan.md and ask user which is authoritative.
-   - `$MODULE` = first directory under `rewrite-notes/` in the target doc path. This is separate from the coverage script's `--module` argument (Minix3 module name); do not mix them.
+   - `$STAGE` = first directory under the notes tree root (`rewrite-notes/`/`redesign-notes/`/`study-notes/`) in the target doc path; also the state-directory grouping key (`.review/{tool}/{stage}/`). The old module layer between tree root and stage retired in the 2026-10-07 notes migration (see `rewrite-notes/MIGRATION.md`). `$STAGE` is separate from the coverage script's `--module` argument (Minix3 module name); do not mix them.
    - `$DOC_STEM` = target doc basename without extension. Codex has no bagging agent suffix.
    - Use `tools/review-init.sh codex {doc-path}` to auto-compute paths and mkdir.
 4. **⛔ Step 0 硬阻断预检（NEW 2026-07-16，所有 review 模式强制，模式 69 PSMD + 71 DOG 配套）**：
    - **必须跑 4 条 `ls`**（无论何种 review 模式）：
      ```bash
-     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-outline.v*.md
-     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-outline-review.v*.md
-     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-design.v*.md
-     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-design-final.v*.md  # bagging only
+     ls rewrite-notes/$STAGE/.design/$NN-outline.v*.md
+     ls rewrite-notes/$STAGE/.design/$NN-outline-review.v*.md
+     ls rewrite-notes/$STAGE/.design/$NN-design.v*.md
+     ls rewrite-notes/$STAGE/.design/$NN-design-final.v*.md  # bagging only
      ```
    - **必须跑工具扫描**：
      ```bash
-     tools/design-coverage-check.sh $MODULE --stage $STAGE
+     tools/design-coverage-check.sh $STAGE
      ```
    - **缺失判定 + 嵌入生成（2026-07-17）**：
      - `outline.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.2 嵌入生成**（不中断 review）
@@ -101,14 +101,14 @@ Execute the coverage-extract script to generate SYMBOLS.md. **Gate A evidence ru
 # Module-level
 python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
   --rust-dir os --c-dir $C_DIR \
-  --output .review/codex/$MODULE/scans/SYMBOLS.md
+  --output .review/codex/$STAGE/scans/SYMBOLS.md
 
 # Doc-specific review (recommended when user names one doc)
 python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
   --rust-dir os --c-dir $C_DIR \
   --doc-file $TARGET_DOC \
   --semantic-map tools/coverage-extract/$MINIX3_MODULE-semantic-map.json \
-   --output .review/codex/$MODULE/$DOC_STEM/SYMBOLS.md
+   --output .review/codex/$STAGE/$DOC_STEM/SYMBOLS.md
 ```
 - `--rust-dir os` scans the entire `os/` tree to avoid missing cross-crate symbols.
 - `--c-dir` must be `minix3/minix/servers/$MINIX3_MODULE` for server modules and `minix3/minix/kernel` for the kernel module.
@@ -297,8 +297,8 @@ Execute:
 
 After ALL checks are done, collect findings into:
 - File: tool-specific scan path
-  - Codex default: `.review/codex/$MODULE/$DOC_STEM/scan.md`
-  - If user explicitly requests another output location, **dual-write**: user-specified path + Codex default path (`rewrite-notes/$MODULE/$STAGE/$DOC_STEM-codex-report.md`).
+  - Codex default: `.review/codex/$STAGE/$DOC_STEM/scan.md`
+  - If user explicitly requests another output location, **dual-write**: user-specified path + Codex default path (`rewrite-notes/$STAGE/$DOC_STEM-codex-report.md`).
 - Format: Summary (P0=N, P1=M, P2=K) + per-domain findings + full progress checklist
 - **Must include**: Skill Invocation Log + Blocker Gates pass status WITH evidence + Artifact Inventory + Severity Reconciliation
 
@@ -307,13 +307,13 @@ After ALL checks are done, collect findings into:
 ## Phase 9: State Write & Convergence
 
 1. Create/update Codex-specific STATE.md (never share intermediate results with Trae or Claude):
-   - **Codex CLI** → `.review/codex/$MODULE/STATE.md`
+   - **Codex CLI** → `.review/codex/$STAGE/STATE.md`
 2. **Sync new P0/P1/P2** from scan.md into STATE.md Open lists; move fixed issues to Closed Issues with scan/date.
 3. Update `SYMBOLS.md` (Step 1.5 machine output) to matching path:
-    - Codex: `.review/codex/$MODULE/$DOC_STEM/SYMBOLS.md`
+    - Codex: `.review/codex/$STAGE/$DOC_STEM/SYMBOLS.md`
 4. **All dimension results → scan.md single file** (NOT 10 dimension check files). Dual-write if user explicitly specified output path.
 5. Generate VERIFY-CHECK.md **before declaring CONVERGED**:
-    - Codex: `.review/codex/$MODULE/VERIFY-CHECK.md`
+    - Codex: `.review/codex/$STAGE/VERIFY-CHECK.md`
 6. Output convergence assessment: CONVERGED / NOT_CONVERGED
 7. Output **Artifact Inventory** and **Severity Reconciliation** tables in scan.md (Gate 0 requirements).
 

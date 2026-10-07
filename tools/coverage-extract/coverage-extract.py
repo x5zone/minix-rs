@@ -444,10 +444,10 @@ def generate_symbols_md(module, c_symbols, rust_symbols, rust_qualified, doc_cov
         lines.append(f"> 限定文档: `{doc_file}`")
     if semantic_map_path:
         lines.append(f"> 语义映射表: `{semantic_map_path}`")
-> 
-> **覆盖率口径（两个数别混）**：`全模块口径` 分母是该 C 目录的全部符号、分子是**该阶段所有文档**的覆盖并集，
-> 用它衡量「这个模块还剩多少没写」；`语义域口径` 只算语义映射表登记的核心符号，用它衡量「本篇该讲的讲了没」。
-> 单篇文档的 `文档覆盖 %` 低不代表本篇漏写——本篇射程由语义域行与 §缺口 段判定。
+    lines.append(">")
+    lines.append("> **覆盖率口径（两个数别混）**：`全模块口径` 分母是该 C 目录的全部符号、分子是**该阶段所有文档**的覆盖并集，")
+    lines.append("> 用它衡量「这个模块还剩多少没写」；`语义域口径` 只算语义映射表登记的核心符号，用它衡量「本篇该讲的讲了没」。")
+    lines.append("> 单篇文档的 `文档覆盖 %` 低不代表本篇漏写——本篇射程由语义域行与 §缺口 段判定。")
     lines.append("")
     lines.append("## 覆盖率统计")
     lines.append("")

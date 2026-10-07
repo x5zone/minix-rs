@@ -67,15 +67,15 @@ Missing this section → scan.md marked DRAFT.
 2. Output: "Found N .md files, M .rs files. Starting review."
 <!-- @if:claude -->
 3. **Read correct STATE.md path** (tool-isolated; never share intermediate results between Trae and Claude):
-   - **Trae IDE** → `.review/trae/$MODULE/STATE.md` (project root `.review/`)
-   - **Claude Code Runtime** → `.review/claude/$MODULE/STATE.md` (project root `.review/`)
+   - **Trae IDE** → `.review/trae/$STAGE/STATE.md` (project root `.review/`)
+   - **Claude Code Runtime** → `.review/claude/$STAGE/STATE.md` (project root `.review/`)
 <!-- @endif -->
 <!-- @if:codex -->
 3. **Read correct STATE.md path** (tool-isolated; never share intermediate results between tools):
-   - **Codex CLI** → `.review/codex/$MODULE/STATE.md` (project root `.review/`)
+   - **Codex CLI** → `.review/codex/$STAGE/STATE.md` (project root `.review/`)
 <!-- @endif -->
    - If the **same tool** has conflicting STATE.md copies, **do not auto-merge**. Log divergence in scan.md and ask user which is authoritative.
-   - `$MODULE` = first directory under `rewrite-notes/` in the target doc path. This is separate from the coverage script's `--module` argument (Minix3 module name); do not mix them.
+   - `$STAGE` = first directory under the notes tree root (`rewrite-notes/`/`redesign-notes/`/`study-notes/`) in the target doc path; also the state-directory grouping key (`.review/{tool}/{stage}/`). The old module layer between tree root and stage retired in the 2026-10-07 notes migration (see `rewrite-notes/MIGRATION.md`). `$STAGE` is separate from the coverage script's `--module` argument (Minix3 module name); do not mix them.
 <!-- @if:claude -->
    - `$DOC_STEM` = target doc basename without extension; `$AGENT` = model id (Trae: glm/kimi/...; Claude: m3/...).
    - Use `tools/review-init.sh claude {doc-path}` to auto-compute paths and mkdir.
@@ -87,14 +87,14 @@ Missing this section → scan.md marked DRAFT.
 4. **⛔ Step 0 硬阻断预检（NEW 2026-07-16，所有 review 模式强制，模式 69 PSMD + 71 DOG 配套）**：
    - **必须跑 4 条 `ls`**（无论何种 review 模式）：
      ```bash
-     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-outline.v*.md
-     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-outline-review.v*.md
-     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-design.v*.md
-     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-design-final.v*.md  # bagging only
+     ls rewrite-notes/$STAGE/.design/$NN-outline.v*.md
+     ls rewrite-notes/$STAGE/.design/$NN-outline-review.v*.md
+     ls rewrite-notes/$STAGE/.design/$NN-design.v*.md
+     ls rewrite-notes/$STAGE/.design/$NN-design-final.v*.md  # bagging only
      ```
    - **必须跑工具扫描**：
      ```bash
-     tools/design-coverage-check.sh $MODULE --stage $STAGE
+     tools/design-coverage-check.sh $STAGE
      ```
    - **缺失判定 + 嵌入生成（2026-07-17）**：
      - `outline.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.2 嵌入生成**（不中断 review）
@@ -132,7 +132,7 @@ Execute the coverage-extract script to generate SYMBOLS.md. **Gate A evidence ru
 # Module-level
 python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
   --rust-dir os --c-dir $C_DIR \
-  --output @@REVDIR@@/$MODULE/scans/SYMBOLS.md
+  --output @@REVDIR@@/$STAGE/scans/SYMBOLS.md
 
 # Doc-specific review (recommended when user names one doc)
 python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
@@ -140,10 +140,10 @@ python3 tools/coverage-extract/coverage-extract.py $MINIX3_MODULE $DOC_DIR \
   --doc-file $TARGET_DOC \
   --semantic-map tools/coverage-extract/$MINIX3_MODULE-semantic-map.json \
 <!-- @if:claude -->
-  --output .review/claude/$MODULE/$DOC_STEM/SYMBOLS.md
+  --output .review/claude/$STAGE/$DOC_STEM/SYMBOLS.md
 <!-- @endif -->
 <!-- @if:codex -->
-   --output .review/codex/$MODULE/$DOC_STEM/SYMBOLS.md
+   --output .review/codex/$STAGE/$DOC_STEM/SYMBOLS.md
 <!-- @endif -->
 ```
 - `--rust-dir os` scans the entire `os/` tree to avoid missing cross-crate symbols.
@@ -334,13 +334,13 @@ Execute:
 After ALL checks are done, collect findings into:
 - File: tool-specific scan path
 <!-- @if:claude -->
-  - Claude default: `.review/claude/$MODULE/$DOC_STEM/scan.md`
-  - Trae default: `.review/trae/$MODULE/scans/$DOC_STEM-$AGENT-scan.md`
-  - If user explicitly requests another output location, **dual-write**: user-specified path + tool default path (Trae interactive fix doc: `rewrite-notes/$MODULE/$STAGE/$DOC_STEM-trae-review.md`; Claude report: `rewrite-notes/$MODULE/$STAGE/$DOC_STEM-claude-report.md`).
+  - Claude default: `.review/claude/$STAGE/$DOC_STEM/scan.md`
+  - Trae default: `.review/trae/$STAGE/scans/$DOC_STEM-$AGENT-scan.md`
+  - If user explicitly requests another output location, **dual-write**: user-specified path + tool default path (Trae interactive fix doc: `rewrite-notes/$STAGE/$DOC_STEM-trae-review.md`; Claude report: `rewrite-notes/$STAGE/$DOC_STEM-claude-report.md`).
 <!-- @endif -->
 <!-- @if:codex -->
-  - Codex default: `.review/codex/$MODULE/$DOC_STEM/scan.md`
-  - If user explicitly requests another output location, **dual-write**: user-specified path + Codex default path (`rewrite-notes/$MODULE/$STAGE/$DOC_STEM-codex-report.md`).
+  - Codex default: `.review/codex/$STAGE/$DOC_STEM/scan.md`
+  - If user explicitly requests another output location, **dual-write**: user-specified path + Codex default path (`rewrite-notes/$STAGE/$DOC_STEM-codex-report.md`).
 <!-- @endif -->
 - Format: Summary (P0=N, P1=M, P2=K) + per-domain findings + full progress checklist
 - **Must include**: Skill Invocation Log + Blocker Gates pass status WITH evidence + Artifact Inventory + Severity Reconciliation
@@ -351,30 +351,30 @@ After ALL checks are done, collect findings into:
 
 <!-- @if:claude -->
 1. Create/update tool-specific STATE.md (never share intermediate results between Trae and Claude):
-   - **Trae IDE** → `.review/trae/$MODULE/STATE.md`
-   - **Claude Code Runtime** → `.review/claude/$MODULE/STATE.md`
+   - **Trae IDE** → `.review/trae/$STAGE/STATE.md`
+   - **Claude Code Runtime** → `.review/claude/$STAGE/STATE.md`
 <!-- @endif -->
 <!-- @if:codex -->
 1. Create/update Codex-specific STATE.md (never share intermediate results with Trae or Claude):
-   - **Codex CLI** → `.review/codex/$MODULE/STATE.md`
+   - **Codex CLI** → `.review/codex/$STAGE/STATE.md`
 <!-- @endif -->
 2. **Sync new P0/P1/P2** from scan.md into STATE.md Open lists; move fixed issues to Closed Issues with scan/date.
 3. Update `SYMBOLS.md` (Step 1.5 machine output) to matching path:
 <!-- @if:claude -->
-   - Trae: `.review/trae/$MODULE/scans/$DOC_STEM-$AGENT-SYMBOLS.md`
-   - Claude: `.review/claude/$MODULE/$DOC_STEM/SYMBOLS.md`
+   - Trae: `.review/trae/$STAGE/scans/$DOC_STEM-$AGENT-SYMBOLS.md`
+   - Claude: `.review/claude/$STAGE/$DOC_STEM/SYMBOLS.md`
 <!-- @endif -->
 <!-- @if:codex -->
-    - Codex: `.review/codex/$MODULE/$DOC_STEM/SYMBOLS.md`
+    - Codex: `.review/codex/$STAGE/$DOC_STEM/SYMBOLS.md`
 <!-- @endif -->
 4. **All dimension results → scan.md single file** (NOT 10 dimension check files). Dual-write if user explicitly specified output path.
 5. Generate VERIFY-CHECK.md **before declaring CONVERGED**:
 <!-- @if:claude -->
-   - Trae: `.review/trae/$MODULE/VERIFY-CHECK.md`
-   - Claude: `.review/claude/$MODULE/VERIFY-CHECK.md`
+   - Trae: `.review/trae/$STAGE/VERIFY-CHECK.md`
+   - Claude: `.review/claude/$STAGE/VERIFY-CHECK.md`
 <!-- @endif -->
 <!-- @if:codex -->
-    - Codex: `.review/codex/$MODULE/VERIFY-CHECK.md`
+    - Codex: `.review/codex/$STAGE/VERIFY-CHECK.md`
 <!-- @endif -->
 6. Output convergence assessment: CONVERGED / NOT_CONVERGED
 7. Output **Artifact Inventory** and **Severity Reconciliation** tables in scan.md (Gate 0 requirements).

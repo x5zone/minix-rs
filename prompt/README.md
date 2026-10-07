@@ -2,7 +2,7 @@
 
 本目录包含 Minix-RS 项目的 Review 规则集及**三套** IDE/Runtime 适配产物，均由 `prompt/` 单一规则源派生：**Trae IDE**（手工复制粘贴 + `.trae/skills/`）、**Claude Code Runtime**（项目根 `AGENTS.md` + `.claude/` 自动加载）与 **Codex CLI**（项目根 `AGENTS.md` + `.codex/` 自动加载）。三者内容同源，仅适配各自工具的加载机制与字段限制（见下方各章节）。
 
-> **2026-10-07 变更**：仓库根的 `CLAUDE.md` 已退役，**`AGENTS.md` 是三端共用的唯一项目指令入口**。依据是 Claude Code 的默认加载模式 `claude-md-or-agents-md`（项目没有 `CLAUDE.md` 时改用 `AGENTS.md`，加载位置与方式完全等同）与发行物内的项目指令清单（含 `AGENTS.md`、`.claude/rules`）。原 `CLAUDE.md` 独有的「Doc Code Sync 七项」已并入 `prompt/review-rules/review-doc-checklist.md` §4；`.claude/rules/fix-guard.md` 已回填规范源 `prompt/review-rules/fix-guard.md`。取证见 `prompt/EXECUTION-LOG-workflow-optim.md`。
+> **2026-10-07 变更**：仓库根的 `CLAUDE.md` 已退役，**`AGENTS.md` 是三端共用的唯一项目指令入口**。依据是 Claude Code 的默认加载模式 `claude-md-or-agents-md`（项目没有 `CLAUDE.md` 时改用 `AGENTS.md`，加载位置与方式完全等同）与发行物内的项目指令清单（含 `AGENTS.md`、`.claude/rules`）。原 `CLAUDE.md` 独有的「Doc Code Sync 七项」已并入 `prompt/review-rules/review-doc-checklist.md` §4；`.claude/rules/fix-guard.md` 已回填规范源 `prompt/review-rules/fix-guard.md`。取证见 `prompt/WORKFLOW-OPEN-ITEMS.md`（裁决存档 R2）与 git 历史（原逐条取证日志 `prompt/EXECUTION-LOG-workflow-optim.md` 已归档，可 `git show` 回捞）。
 
 ## 第四类适配面：`.agents/skills/` 软链与新运行时接入
 

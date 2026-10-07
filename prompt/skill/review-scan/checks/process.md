@@ -230,10 +230,10 @@ Output: structure.md path + 12-section review table + **跨章节一致性矩阵
 
 ## Step 1.5: Coverage Enumeration — Gate A
 <!-- @if:claude -->
-Run coverage-extract.py with full args. `{minix3-module}` = Minix3 module name (vm/pm/kernel/...); `{stage}` = rewrite module name (first dir under `rewrite-notes/`). **Claude Code Runtime output paths are hardcoded to `.review/claude/` — do NOT use a `{tool}` variable.**
+Run coverage-extract.py with full args. `{minix3-module}` = Minix3 module name (vm/pm/kernel/...); `{stage}` = stage dir name (first dir under `rewrite-notes/`; the old module layer retired in the 2026-10-07 migration). **Claude Code Runtime output paths are hardcoded to `.review/claude/` — do NOT use a `{tool}` variable.**
 <!-- @endif -->
 <!-- @if:codex -->
-Run coverage-extract.py with full args. `{minix3-module}` = Minix3 module name (vm/pm/kernel/...); `{stage}` = rewrite module name (first dir under `rewrite-notes/`). **Codex output paths are hardcoded to `.review/codex/`; do not write to another tool's path.**
+Run coverage-extract.py with full args. `{minix3-module}` = Minix3 module name (vm/pm/kernel/...); `{stage}` = stage dir name (first dir under `rewrite-notes/`; the old module layer retired in the 2026-10-07 migration). **Codex output paths are hardcoded to `.review/codex/`; do not write to another tool's path.**
 <!-- @endif -->
 ```bash
 # Module-level (servers: vm / pm / vfs / rs / ds / inet ...)

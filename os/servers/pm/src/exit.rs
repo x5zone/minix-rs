@@ -315,11 +315,15 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
         // `sys_kill(mp->mp_endpoint, SIGKILL)`，返回值 C 不予检查——
         // 真正的终止由内核信号路径稍后经 process_ksig（11）回到 PM 完成。
         // 因此这里**不**调 exit_proc：违规进程在 PM 表中保持 Running，
-        // 等待 SIGKILL 的内核信号回环。
-        #[cfg(test)]
+        // 等待 SIGKILL 的内核信号回环。C 254-255 的 printf 是可观测
+        // 面的一部分（真机上运维可见），经 pm_diag! 走内核 diagctl 通道。
+        let name_raw = proc.identity.name;
+        let name_len = name_raw.iter().position(|&b| b == 0).unwrap_or(name_raw.len());
+        let name_str = core::str::from_utf8(&name_raw[..name_len]).unwrap_or("");
         pm_diag!(
-            "PM: system process {} tries to exit(), sending SIGKILL",
-            proc.endpoint().get()
+            "PM: system process {} ({}) tries to exit(), sending SIGKILL",
+            proc.endpoint().get(),
+            name_str
         );
         let _ = kern.sys_kill(proc.endpoint(), crate::signal::SIGKILL);
         return ReplyIntent::NoReply;
@@ -430,9 +434,17 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     const INIT_PROC_NR: usize = 11;
     const VFS_PROC_NR: i32 = 1;
     if proc_ep == Endpoint::from_generation_slot(0, INIT_PROC_NR as i32) || proc_nr == INIT_PROC_NR {
-        // INIT died — in C: printf + stacktrace + return (no VFS)
-        // For testability we just mark Exiting and return without VFS
-        table.procs[proc_nr].state.lifecycle = Lifecycle::Exiting { exit_code: status, sig_status: 0 };
+        // INIT died — C 336-341：printf + sys_diagctl_stacktrace + return
+        //（不走 VFS：VFS 侧无 INIT 的 fproc）。诊断行经 pm_diag! 抵达内核
+        // 控制台（D-31），栈回溯失败不阻断——C 就不检查返回值。
+        // 与 C 的差异：C 对 INIT 不改 mp_flags（表里留在运行态无人管），
+        // Rust 额外标 Exiting 使生命周期状态机可观测（见 09 文档差异表）。
+        pm_diag!(
+            "PM: INIT died with exit status {}; showing stacktrace",
+            status
+        );
+        let _ = kern.sys_diagctl_stacktrace(proc_ep);
+        table.procs[proc_nr].state.lifecycle = Lifecycle::Exiting { exit_code: status, sig_status };
         return;
     }
     if proc_ep.get() == VFS_PROC_NR {
@@ -595,14 +607,25 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
     }
 
     // 6. TRACE_EXIT → reply(tracer, OK) (459-464, 18-trace.md)
+    // C：`mproc[mp_tracer].mp_reply.m_pm_lc_ptrace.data = 0; reply(tracer, OK)`
+    // ——唤醒阻塞在 ptrace(T_EXIT) 上的 tracer，补完该调用的回复。
+    // Rust 对位：TRACE_EXIT 建模为 `TraceState::exit_pending`（mproc/trace.rs），
+    // 经 transport.send 直接异步回复（与 tell_tracer/tell_parent 同型）。
     {
-        let proc = &table.procs[slot.get()];
-        if proc.resources.flags.contains(crate::mproc::RemainingFlags::from_bits_truncate(0)) {
-            // TRACE_EXIT is in RemainingFlags? Actually TRACE_EXIT 0x08000 is not in RemainingFlags
-            // In Rust, TRACE_EXIT is in TraceState? We check via guardianship trace flag
+        if let Some(tracer_slot) = table.procs[slot.get()]
+            .state
+            .guardianship
+            .tracer()
+            && table.procs[slot.get()].state.trace.exit_pending
+        {
+            let tracer_ep = table.procs[tracer_slot.get()].endpoint();
+            let mut reply_msg = Message {
+                m_type: minix_types::OK,
+                ..Default::default()
+            };
+            reply_msg.m_u.m_pm_lc_ptrace.data = 0;
+            let _ = transport.send(tracer_ep, &reply_msg);
         }
-        // For 09, we check if trace flag indicates TRACE_EXIT — simplified as no-op
-        let _ = proc.state.trace.stopped;
     }
 
     // 7. TOLD_PARENT → cleanup (467-468) — parent already reaped
@@ -638,11 +661,15 @@ pub(crate) fn zombify<T: crate::ipc::IpcTransport + ?Sized>(
     if let Some(tracer_slot) = tracer
         && tracer_slot != parent {
             table.procs[slot.get()].state.lifecycle = Lifecycle::TraceZombie { exit_code, sig_status };
-            // Do not send SIGCHLD to tracer (forkexit.c:611-614)
-            if wait_test(table, tracer_slot, slot) {
-                tell_tracer(table, slot, transport);
+            // Do not send SIGCHLD signals to tracers (forkexit.c:611-614)
+            if !wait_test(table, tracer_slot, slot) {
+                // C 613-614：tracer 未在 wait → 直接 return，不通知真父——
+                // “先 tracer 后真父”的顺序由 tracer 收割后的后续链路维持
+                //（10 的 wait4 收割时再走 tell_tracer→check_parent）。
+                return;
             }
-            // check_parent will be called after tell_tracer or directly
+            tell_tracer(table, slot, transport);
+            // tracer 已收到死讯，真父接着处理（forkexit.c:623）
             check_parent(table, slot, false, transport, kern);
             return;
         }
@@ -709,11 +736,23 @@ pub fn tracer_died<T: crate::ipc::IpcTransport + ?Sized>(
         crate::mproc::Guardianship::Traced { parent, .. } => crate::mproc::Guardianship::Normal { parent },
         other => other,
     };
-    // TRACE_EXIT cleared (768-769)
-    // If !EXITING → SIGKILL cascade (775-777)
+    // TRACE_EXIT cleared (768-769)：`mp_flags &= ~TRACE_EXIT` 的 Rust 对位
+    // 是摘 `TraceState::exit_pending`——tracer 已死，无人再等 T_EXIT 回复。
+    table.procs[child_slot.get()].state.trace.exit_pending = false;
+    // If !EXITING → SIGKILL cascade (775-777)：tracer 在子进程还在跑/停着时
+    // 死了，状态不可知（C 注释 "we have no idea what state the child is
+    // in"），只能杀掉避免 trainwreck；可能引发级联退出（C 775-777）。
+    // C: `sig_proc(child, SIGKILL, TRUE /*trace*/, FALSE /*ksig*/)`。
     if !table.procs[child_slot.get()].state.lifecycle.is_exiting() {
-        // signal::sig_proc(SIGKILL) — deferred
-        let _ = child_slot;
+        let _ = crate::signal::sig_proc(
+            table,
+            child_slot,
+            crate::signal::SIGKILL,
+            true,
+            false,
+            kern,
+            transport,
+        );
         return;
     }
     // TRACE_ZOMBIE → ZOMBIE + check_parent (784-788)
@@ -925,11 +964,10 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
                 }
             }
         }
-        // If already ZOMBIE, check_parent for INIT
-        if matches!(
-            table.procs[idx].state.lifecycle,
-            Lifecycle::Zombie { .. } | Lifecycle::TraceZombie { .. }
-        ) {
+        // If already ZOMBIE, check_parent for INIT（C 406-407 仅检 `ZOMBIE` 位：
+        // TraceZombie 的孩子死父时不通知 INIT——它的死讯要先给 tracer，
+        // 由 tracer 收割后经 tell_tracer→check_parent 链路自行处理）。
+        if matches!(table.procs[idx].state.lifecycle, Lifecycle::Zombie { .. }) {
             check_parent(table, child_slot, true, transport, kern);
         }
     }
@@ -1290,5 +1328,129 @@ mod tests {
         // For !PRIV_PROC, sys_clear + vm_exit would be called (stubbed), and TOLD_PARENT → cleanup
         // So slot should be released
         assert!(!table.procs[5].is_in_use());
+    }
+
+    /// 回归保护（forkexit.c:613-614）：tracer 未在 wait 时 `zombify` 直接 return
+    ///（C forkexit.c:613-614），不得越过 tracer 先通知真父——真父的
+    /// SIGCHLD 必须保持未投递（mask 阻塞使投递可观察，D-28 手法）。
+    #[test]
+    fn test_zombify_tracer_not_waiting_defers_parent() {
+        let mut table = ProcTable::new();
+        running_proc(&mut table, 1, 100); // 真父：Running
+        running_proc(&mut table, 2, 101); // tracer：未在 wait
+        table.procs[1].resources.signals.mask = crate::init::sig_bit(crate::signal::SIGCHLD);
+        running_proc(&mut table, 5, 105);
+        table.procs[5].state.lifecycle = Lifecycle::Exiting { exit_code: 7, sig_status: 0 };
+        table.procs[5].state.guardianship = Guardianship::Traced {
+            parent: UserSlot::new(1),
+            tracer: UserSlot::new(2),
+            trace_options: crate::mproc::TraceOptions::empty(),
+        };
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        zombify(&mut table, UserSlot::new(5), &mut t, &mut kern);
+        assert!(matches!(table.procs[5].state.lifecycle, Lifecycle::TraceZombie { .. }));
+        assert_eq!(
+            table.procs[1].resources.signals.pending & crate::init::sig_bit(crate::signal::SIGCHLD),
+            0,
+            "真父不得在 tracer 之前收到死讯（C 613-614 先序）"
+        );
+        assert!(t.sent().is_empty(), "tracer 未等待时不应有任何异步回复发出");
+    }
+
+    /// 回归保护：`exit_restart` 步 6 对 TRACE_EXIT
+    ///（`TraceState::exit_pending`）回复 `reply(tracer, OK)` 且
+    /// `m_pm_lc_ptrace.data = 0`（C forkexit.c:459-464），唤醒阻塞在
+    /// ptrace(T_EXIT) 上的 tracer。
+    #[test]
+    fn test_exit_restart_trace_exit_replies_tracer() {
+        let mut table = ProcTable::new();
+        running_proc(&mut table, 1, 100); // 真父
+        running_proc(&mut table, 2, 101); // tracer
+        running_proc(&mut table, 5, 105);
+        table.procs[5].state.lifecycle = Lifecycle::ToldParent { exit_code: 0, sig_status: 0 };
+        table.procs[5].state.guardianship = Guardianship::Traced {
+            parent: UserSlot::new(1),
+            tracer: UserSlot::new(2),
+            trace_options: crate::mproc::TraceOptions::empty(),
+        };
+        table.procs[5].state.trace.exit_pending = true;
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        exit_restart(&mut table, UserSlot::new(5), &mut transport, &mut kern);
+        let tracer_ep = table.procs[2].identity.endpoint;
+        let reply = transport
+            .sent()
+            .iter()
+            .find(|(dst, _)| *dst == tracer_ep)
+            .expect("必须向 tracer 发出回复");
+        assert_eq!(reply.1.m_type, minix_types::OK, "C: reply(tracer, OK)");
+        // SAFETY: 读 Message 联合体成员 m_pm_lc_ptrace.data（i64）——所有成员
+        // 均初始化可读（发送前刚写入同一成员），与 trace.rs 测试同一手法。
+        assert_eq!(
+            unsafe { reply.1.m_u.m_pm_lc_ptrace.data },
+            0,
+            "C: m_pm_lc_ptrace.data = 0"
+        );
+    }
+
+    /// 回归保护（forkexit.c:775-777）：tracer 在子进程还在跑时死了 → SIGKILL
+    /// 级联（C forkexit.c:775-777）；同时 TRACE_EXIT 位被摘
+    ///（C 768-769）。子进程走默认处置终止（D-27 SIGHUP 测试同型观察）。
+    #[test]
+    fn test_tracer_died_kills_running_child() {
+        let mut table = ProcTable::new();
+        running_proc(&mut table, 1, 100); // 真父
+        running_proc(&mut table, 2, 101); // tracer（已死，由调用方语义保证）
+        running_proc(&mut table, 5, 105); // 被跟踪子：仍 Running
+        table.procs[5].state.guardianship = Guardianship::Traced {
+            parent: UserSlot::new(1),
+            tracer: UserSlot::new(2),
+            trace_options: crate::mproc::TraceOptions::empty(),
+        };
+        table.procs[5].state.trace.exit_pending = true;
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        tracer_died(&mut table, UserSlot::new(5), &mut t, &mut kern);
+        assert!(!table.procs[5].state.trace.exit_pending, "C 768-769：TRACE_EXIT 摘位");
+        assert_eq!(
+            table.procs[5].state.guardianship.tracer(),
+            None,
+            "tracer 死亡后监护回到 Normal"
+        );
+        assert!(
+            table.procs[5].is_exiting(),
+            "SIGKILL 默认处置必须终止还在运行的被跟踪子（C 775-777）"
+        );
+    }
+
+    /// 回归保护（forkexit.c:784-788）：tracer 死在子进程报死途中
+    ///（TRACE_ZOMBIE）→ 降为 ZOMBIE 并对真父重试 check_parent
+    ///（C 784-788），不得误发 SIGKILL。
+    #[test]
+    fn test_tracer_died_trace_zombie_becomes_zombie() {
+        let mut table = ProcTable::new();
+        running_proc(&mut table, 1, 100);
+        running_proc(&mut table, 2, 101);
+        running_proc(&mut table, 5, 105);
+        table.procs[1].resources.signals.mask = crate::init::sig_bit(crate::signal::SIGCHLD);
+        table.procs[5].state.lifecycle = Lifecycle::TraceZombie { exit_code: 3, sig_status: 0 };
+        table.procs[5].state.guardianship = Guardianship::Traced {
+            parent: UserSlot::new(1),
+            tracer: UserSlot::new(2),
+            trace_options: crate::mproc::TraceOptions::empty(),
+        };
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        tracer_died(&mut table, UserSlot::new(5), &mut t, &mut kern);
+        assert!(
+            matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { exit_code: 3, sig_status: 0 }),
+            "TRACE_ZOMBIE → ZOMBIE（C 784-788）"
+        );
+        assert_ne!(
+            table.procs[1].resources.signals.pending & crate::init::sig_bit(crate::signal::SIGCHLD),
+            0,
+            "降级后真父未等待 → SIGCHLD 重试投递"
+        );
     }
 }

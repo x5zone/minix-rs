@@ -5,7 +5,7 @@
 > `prompt/review-rules/review-patterns.md`；执行 review 时若需要 P0 必检清单或其它族的模式，
 > **必须另外调用 `review-patterns-skill`**，不能因为本文件里没有就当作该模式不存在。
 > 之所以分片：技能按领域拆开是为控上下文占用，代价就是这里天然是子集——所以指路必须写死在头部。
-> 三条副本的关系（谁跟谁同步）见 `prompt/EXECUTION-LOG-workflow-optim.md` 第七节与
+> 三条副本的关系（谁跟谁同步）见 `prompt/WORKFLOW-OPEN-ITEMS.md` F-B 与
 > `tools/lint-review-rules.sh` 的 L13。
 
 > 本文件合并原 patterns/ 下 3 个文件：doc-patterns.md、cross-patterns.md、code-patterns.md。

@@ -9,7 +9,7 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 > `CLAUDE.md` 已于 2026-10-07 退役：它的 323 行里唯一未见于规范源的是「Doc Code Sync 七项」，
 > 已并入 `prompt/review-rules/review-doc-checklist.md` §4；`.claude/rules/fix-guard.md` 的内容
 > 一直只在运行时端，已回填为规范源 `prompt/review-rules/fix-guard.md`。
-> 过程与取证见 `prompt/EXECUTION-LOG-workflow-optim.md`。
+> 过程与取证见 `prompt/WORKFLOW-OPEN-ITEMS.md`（裁决存档；逐条取证日志已归档于 git 历史）。
 
 ## 开工前必读（路由表）
 
@@ -50,7 +50,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 
 三棵笔记树于 2026-10-07 取代旧的 notes 伞目录，并剥掉 rewrite 分区下那层已废弃的模块目录：规范路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。旧→新逐文件对照见 `rewrite-notes/MIGRATION.md`。
 
-**中间产物目录约定**：`.design/`（每篇文档的可复用设计快照）与已废弃的 `tmp_design_and_todo/` 视为中间产物，**正式文档绝不引用**（引用即 P0-process-violation）；正式文档必须自包含，引用指向文档、代码、C 源的绝对路径。会话产物（日志、镜像、评审证据）一律进 `tmp/` 的功能子目录，仓库根不允许散落文件——细则见 `prompt/agents-workflow-optim.md`。
+**中间产物目录约定**：`.design/`（每篇文档的可复用设计快照）与已废弃的 `tmp_design_and_todo/` 视为中间产物，**正式文档绝不引用**（引用即 P0-process-violation）；正式文档必须自包含，引用指向文档、代码、C 源的绝对路径。会话产物（日志、镜像、评审证据）一律进 `tmp/` 的功能子目录，仓库根不允许散落文件——细则见 `prompt/WORKFLOW-OPEN-ITEMS.md` F-C。
 
 ## Key Constraints
 
