@@ -347,7 +347,7 @@ switch_to 进入用户态 VM/PM/init → ③ init `execve /etc/rc` → ④ rc ma
 5. **task1-close（不得跳过）**：路标大清除裁决（本 session 新增：`reslen/r0`、
    `reserved-big`、`memmaps conv=`、`ident-windows` 分因 marker、`probe text/stk/dm`、
    `cr3-done`、`pf#` 探针——全部是临时件）+ FIXLOG edge1 #9 续（fix27cde 全案 +
-   两条 [ARCH]）+ `cargo clippy` 全量对账（基线 `clippy_base.txt`）+ 宿主测试对账
+   两条 [ARCH]）+ `cargo clippy` 全量对账（基线 `tools/clippy_base.txt`）+ 宿主测试对账
    （基线 kernel 806 / arch 241）+ 分逻辑单元重提交。
 
 ---
