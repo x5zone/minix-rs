@@ -24,7 +24,7 @@
 #   P6  gate   CI 跨架构 build 门存在性（必须 build 不能 check；防删门）
 #   P7  gate+  退出码吞没（cargo/bash/sh ... || echo；基线外即 FAIL）
 #   P8  gate+  跟踪文件 CRLF 入库（*.ld/*.sh/*.rs；基线外即 FAIL）
-#   P9  gate   .gitignore 会话产物防线在位（.wt/、/tmp/*、!/tmp/nk4a/）
+#   P9  gate   .gitignore 会话产物防线在位（.wt/、/tmp/ 整域、/os/tmp/、/os/target_smp/）
 #   P10 report diff 新增 todo/new_todo 裸引 Fix #N（存量 500+ 不拦，只拦增量）
 #   P11 diff   新增行 C 锚点 file.c:NNN 存在性与落窗抽查
 #   P12 report 共享路径 asm/rdmsr 无架构门（M3.1 事故形态；基线对账）
@@ -32,11 +32,17 @@
 #   P14 gate+  RTS 裸 set/clear 绕过 rts_set/rts_unset（F10d 家族；基线对账）
 #   P15 gate   vendored 依赖源码防线（.dockercargo 跟踪 0 + gitignore 条目；d6f176451 事故）
 #   P16 gate   trap 腿消息物化调用在位（minix-sys commit_message_to_memory；§1.120续-22 事故）
-#   P17 report 构建缓存/取证产物跟踪防线（os/target_smp+os/tmp 跟踪计数；C-66 实测 145 文件）
+#   P17 gate   构建缓存/取证产物跟踪防线（os/target_smp+os/tmp 跟踪计数=0；C-66 事故，C-69 转强制）
 # 带 "+" 的检查基线豁免（tools/pattern-gate-baseline.txt，key=检查名|路径|cksum）。
 
 set -u
 export LC_ALL=C
+
+# C-69 迁移适配（2026-10-07 notes 三树迁移）：diff 范围从唯一路径真源取——旧写法把 pathspec
+# 钉在 notes 伞目录上，退役后命中 0 个文件、git 对混合 pathspec 中死项静默放行（exit 0），
+# 增量门对整个文档树失明（与 doc-style-lint 修过的「门静默失效」同形态，此处补齐）。
+# shellcheck source=notes-layout.conf
+source "$(cd "$(dirname "$0")" && pwd)/notes-layout.conf"
 
 BASELINE_REL="tools/pattern-gate-baseline.txt"
 RANGE="HEAD"
@@ -196,6 +202,16 @@ P2_TESTS=(
   test_get_work_notify_fallback_reaches_handler_once    # NK4-C get_work：notify 回退恰达 handler 一次
   test_init_proc_nr_matches_last_special                # NK4-C b2d2c68b4：init proc_nr 对齐末位特殊槽
   test_is_kernel_signal_window_bounds                   # NK4-C b2d2c68b4：内核信号窗口边界（挂归属判例）
+  test_every_union_member_is_exactly_56_bytes           # NK4-C 96293d84f：逐成员 56B 断言（总量 pin 对成员越界免疫的修复闭环）
+  test_manager_signal_with_cancel_returns_eintr         # NK4-C 53da928d9：cancel 路 EINTR（测试活锁暴露的 draining 门家族）
+  test_manager_sigterm_with_client_in_flight_drains_first  # NK4-C 53da928d9：in-flight 先排空的 draining 门
+  test_notify_signal_with_cancel_swallows_frame_and_returns_eintr  # NK4-C 53da928d9：notify 路 cancel 吞帧 EINTR
+  test_pre_cancelled_loop_returns_eintr_without_receiving  # NK4-C 53da928d9：预取消环不接收即返
+  test_manager_sigterm_latches_terminate_and_stops_loop # NK4-C f8afd07bb：SIGTERM 闩锁终止停环
+  test_process_init_fresh_clears_filters_and_builds_reply  # NK4-C 993873745：process_init 六段落点——fresh 清滤器
+  test_process_init_lu_refusal_travels_to_the_reply     # NK4-C 993873745：LU 拒绝进回复
+  test_process_init_filter_failure_fails_the_birth      # NK4-C 993873745：滤器失败致出生失败
+  test_sys_statectl_encodes_request_address_length      # NK4-C 993873745：statectl 请求 wire 编码（地址/长度）
 )
 check_p2() {
   local root="$1" missing=0 t hits
@@ -343,10 +359,13 @@ check_p8() {
 check_p9() {
   local root="$1" gi="$1/.gitignore" bad=0
   [ -f "$gi" ] || { skip P9 "无 .gitignore"; return 0; }
-  grep -q '^\.wt/' "$gi"       || { fail P9 ".gitignore 缺 .wt/（claim 工作树防线）"; bad=1; }
-  grep -q '^/tmp/\*' "$gi"     || { fail P9 ".gitignore 缺 /tmp/*（会话产物防线）"; bad=1; }
-  grep -q '^!/tmp/nk4a/' "$gi" || { fail P9 ".gitignore 缺 !/tmp/nk4a/（内核注释取证锚点例外）"; bad=1; }
-  [ "$bad" -eq 0 ] && ok P9 "会话产物防线三条规则在位"
+  grep -q '^\.wt/' "$gi"             || { fail P9 ".gitignore 缺 .wt/（claim 工作树防线）"; bad=1; }
+  # C-69 迁移适配：2026-10-07 裁决 tmp/ 整域豁免（原 !/tmp/nk4a/ 例外同步取消的定稿形态）；
+  # 同批新增 os/tmp 与 os/target_smp（145 工件事件的防复发条目）。
+  grep -q '^/tmp/$' "$gi"            || { fail P9 ".gitignore 缺 /tmp/（会话产物整域防线，2026-10-07 裁决形态）"; bad=1; }
+  grep -q '^/os/tmp/$' "$gi"         || { fail P9 ".gitignore 缺 /os/tmp/（145 工件防复发条目）"; bad=1; }
+  grep -q '^/os/target_smp/$' "$gi"  || { fail P9 ".gitignore 缺 /os/target_smp/（145 工件防复发条目）"; bad=1; }
+  [ "$bad" -eq 0 ] && ok P9 "会话产物防线四条规则在位（tmp 整域+os 两目录）"
   return 0
 }
 
@@ -355,8 +374,11 @@ check_p9() {
 #（edge3 Fix #126 教训）。存量 500+ 处为历史账本行只报告；--diff 拦新增。
 diff_added_lines() {
   local root="$1" range="$2"
-  { git -C "$root" diff -U0 "$range" -- os tools notes .github 2>/dev/null
-    git -C "$root" diff -U0 --cached -- os tools notes .github 2>/dev/null; } \
+  # C-69：文档树 scope 从唯一路径真源展开（退役后 notes/ 死路径曾致本门静默失明）
+  local trees="" t
+  for t in "${NOTES_TREES[@]}"; do trees="$trees $t"; done
+  { git -C "$root" diff -U0 "$range" -- os tools .github $trees 2>/dev/null
+    git -C "$root" diff -U0 --cached -- os tools .github $trees 2>/dev/null; } \
     | awk '/^\+\+\+ b\//{f=substr($0,7)} /^@@/{next} /^\+/{if (f != "") print f "\t" substr($0,2)}'
 }
 check_p10_diff() {
@@ -536,11 +558,10 @@ check_p16() {
   return 0
 }
 
-# --------------------------------------------------------------- P17 构建缓存/取证产物跟踪防线（report 式，不阻断）
-# 事故：C-66 实测 os/ 树内 147 个实验工件被跟踪（os/target_smp 122 个 cargo 缓存 + os/tmp 23 个
-# 取证串口 + 零引用 .bin）——文本残渣扫描（P15/.review 对账）对非文本工件形态全盲；586MB 串口
-# blob 入史阻断 push 为同族先例（new_laptop_migrate GIT取证会话记录）。清理归 NK4-C 收线批次，
-# 本检查 report 式给可见性，转强制门待清零后另行启用。
+# --------------------------------------------------------------- P17 构建缓存/取证产物跟踪防线（C-69 起强制）
+# 事故：C-66 实测 os/ 树内 147 个实验工件被跟踪（os/target_smp 122 + os/tmp 23 + 零引用 .bin）；
+# 586MB 串口 blob 入史阻断 push 为同族先例。C-69 对账：145 工件已清理 + .gitignore 新增
+# /os/tmp/ 与 /os/target_smp/ 防复发条目（P9 同批检查）⇒ 按 C-66 设计「清零后可转强制门」转正。
 check_p17() {
   local root="$1" n=0 m=0
   if ! git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
@@ -549,7 +570,11 @@ check_p17() {
   fi
   n=$(git -C "$root" ls-files 'os/target_smp/' 2>/dev/null | wc -l)
   m=$(git -C "$root" ls-files 'os/tmp/' 2>/dev/null | wc -l)
-  printf '[P17] REPORT 构建缓存/取证件跟踪防线: os/target_smp %s + os/tmp %s 个被跟踪文件（清理待 NK4-C 收线；本检查不阻断）\n' "$n" "$m"
+  if [ "$n" -gt 0 ] || [ "$m" -gt 0 ]; then
+    fail P17 "构建缓存/取证产物被跟踪: os/target_smp ${n} + os/tmp ${m}（git rm -r --cached + gitignore 防线；C-66 145 工件事故）"
+    return 0
+  fi
+  ok P17 "构建缓存/取证产物防线（跟踪 0 + 两目录 gitignore 条目）"
   return 0
 }
 
@@ -619,10 +644,10 @@ YAML
   out=$(collect_p7 "$F")
   st_expect "P7-detect" '|| echo "(build failed)"' "$out"
 
-  # --- P9 ---
-  printf '.wt/\n/tmp/*\n!/tmp/nk4a/\n' > "$F/.gitignore"
+  # --- P9（C-69 新规：tmp 整域 + os 两目录防复发条目）---
+  printf '.wt/\n/tmp/\n/os/tmp/\n/os/target_smp/\n' > "$F/.gitignore"
   out=$(check_p9 "$F"); st_expect "P9-ok" "[P9] PASS" "$out"
-  sed -i '/^!.\/tmp\/nk4a/d;/^!\/tmp\/nk4a/d' "$F/.gitignore"
+  printf '.wt/\n/tmp/\n/os/tmp/\n' > "$F/.gitignore"
   out=$(check_p9 "$F"); st_expect "P9-missing-rule" "[P9] FAIL" "$out"
 
   # --- P11 ---
