@@ -3,7 +3,11 @@
 #
 # 目标：把正式文档中的旧 `path:line` / `path:line-line` 锚点重写为符号锚点
 #   （`path:fn NAME`、`path:struct Name`、C `path:func`），消灭行号漂移这类机械噪声。
-#   行号只允许以工具派生后缀 `（Lnnn，工具生成）` 的形式保留在锚点内部。
+#   行号只允许以工具派生后缀 `（Lnnn，工具生成）` 的形式保留在锚点内部
+#   与文风门的关系（务必同步演进）：该后缀是 tools/doc-style-lint.sh 规则 SL-10 的**告警**对象而非违规——
+#   因为它目前仍写在正文锚点里，是读者噪声的候选。等「锚点底账抽取」落地（把坐标移入
+#   .review/{tool}/{stage}/{doc-stem}.anchors.md，格式见 prompt/skill/cmds/style-bible/SKILL.md 的
+#   硬裁决一节），本工具改为把后缀写进底账，SL-10 随即升为阻断。两处必须同批改，不许单动一边。。
 #
 # 迁移规则（与 anchor-resolve.sh 的解析语法一致）：
 #   - 目标行本身就是定义行 → `path:kind NAME`

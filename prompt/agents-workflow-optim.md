@@ -13,7 +13,16 @@
 
 ## 1. 状态与前置条件（阻塞项）
 
-- **状态：`BLOCKED`（前置未满足，禁止开工）**
+- **状态：`READY`（前置已满足，规则与门已具备，正文回炉待排期）**
+  - 解锁依据：notes 目录迁移各阶段验收门全部通过并收敛，三棵树路径稳定。
+  - **已落地的能力（2026-10-07）**：`prompt/skill/cmds/style-bible/SKILL.md` 的硬裁决与四类形态判定表、
+    `prompt/review-rules/review-doc-checklist.md` §3.95 的 review 动作项、
+    `tools/doc-style-lint.sh` 的 SL-9（新增行阻断）与 SL-10（告警），二者在代码围栏内同样生效；
+    锚点底账格式已定在 `.review/{tool}/{stage}/{doc-stem}.anchors.md`（用户裁决：只放 `.review`，
+    不入版本库；补偿是「移出与正文同一笔提交」，于是 git 历史永久保留原始坐标，底账丢失可重建）。
+  - **仍未做**：步骤 0 的跨文档调研清单与逐篇降噪实施（存量 774 篇实测 SL-9 命中 441 处、
+    SL-10 命中 3085 处；密度热区与本文 §2 的人工统计一致：`02-rs-process-table.md` 178 处、
+    `01-rs-boot-init.md` 109 处，对应当初的 158／107）。属另一批次，见 EXECUTION-LOG 第四节。
 - **阻塞项（唯一硬前置）**：本 TODO 必须等到 **`tmp/migrate_notes_plan/` 目录下的 notes 迁移计划全部执行完毕并稳定**之后，才允许解锁执行。
 - **为什么必须先迁移、后降噪**：
   1. notes 迁移会**重排目录结构**（去掉 `fork-syscall-rewrite/` 这一 `{module}` 层、把 `notes/rewrite/...` 提到顶层——见 `tmp/migrate_notes_plan/migrate_qwen.md` §1/§2）。若先动 `01-rs-boot-init.md` 这类文件做锚点降噪，紧接着它就要被 `git mv`，改动全冲在移动里、review 噪声翻倍。
@@ -113,7 +122,7 @@ memset(vmproc, 0, sizeof(vmproc));                        /* 458 */
 ## 6. 边界与注意
 
 1. **前置阻塞不可跳过**：`migrate_notes_plan` 未完工 → 本 TODO 保持 `BLOCKED`，不得提前动 notes（避免与目录 `git mv` 撞车、避免在会失效的路径上做无用功）。
-2. **`.review/` 当前未被 git 跟踪**（`migrate_qwen.md` 实测 `.gitignore`）：若锚点底账只放 `.review/`，它是本地/会话级、不随仓库走。需裁决：接受"审查辅助本就本地"→ 保持；若要版本化 → 另设一个被跟踪的锚点产物位（本 TODO 不擅断，列为决策点 D-anchor-persistence）。
+2. **`.review/` 未被 git 跟踪（已裁决）**：用户裁定底账只放 `.review/`，接受「审查辅助本就本地」。风险与补偿：底账随仓库走的能力为零，换机器即丢；因此规则要求**移出与正文修改同一笔提交**，git 历史里永久留有原始坐标，底账丢失可由历史重建（写进 style-bible 硬裁决的「不许越界」第二条与 doc-checklist §3.95）。原决策点 D-anchor-persistence 就此关闭。
 3. **搬位置、非砍可追溯**：反对的是 for-agent 噪声霸占读者版面，绝不删掉真源映射。
 4. 本会话顺带出现的"并发提交要现采 `git status`""智能问答↔智能体模式切换"等，是**另一类**流程问题，与本 TODO 主目标无关，不在此展开。
 

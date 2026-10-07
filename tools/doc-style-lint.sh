@@ -27,6 +27,14 @@
 #   SL-7  error   review 工具术语（scan.md/STATE.md/VERIFY-CHECK/Pattern #N/模式 N/Gate X/反查维度）
 #   SL-5b warning 最初/曾经/后来（合法的 C 历史叙述人工判断；仅 --strict 报告）
 #   SL-8  warning 裸优先级词 P0/P1/P2（仅 --strict 报告）
+#   SL-9  error   孤立坐标注释：/* 33 */、/* 455 — utility.c:44 */（括号内除数字与分隔符外无讲解）
+#   SL-10 warning 坐标与讲解同框 /* 16: 进程标志 */（建议拆出数字），以及正文里的工具派生行号提示
+#                 （L123，工具生成）（仅 --strict 报告；底账抽取工具落地后升为阻断，见 style-bible 硬裁决）
+#
+# SL-9 / SL-10 说明：这两条管「锚点受众分层」——坐标是审查看的，讲解是读者看的。
+# 与其它规则不同，它们**在代码围栏内也要查**（噪声主要就长在复刻代码块里），
+# 因此实现上放在围栏跳过逻辑之前执行；符号锚点 os/x.rs:fn name 与块级区间题注
+# （本节复刻 main.c:38-131）属合法形态，故意不在射程内。
 #
 # 实现约定与已知局限：
 #   - fenced 代码块（``` / ~~~）内不检查（全量模式）；--diff 行级模式无围栏上下文，新增代码行
@@ -102,6 +110,12 @@ BEGIN {
     linenr = NR
   } else {
     linenr = NR
+  }
+  # 坐标类规则在代码围栏内也要查（噪声主要长在复刻代码块里），故排在围栏跳过之前
+  match_one(raw, raw, "/\\*[[:space:]]*[0-9]{1,4}([[:space:]]*[-—–:：/][[:space:]]*([a-zA-Z_.]{1,24}:[0-9]{1,4})?[0-9]*)*[[:space:]]*\\*/", "SL-9", "孤立坐标注释（数字属审查锚点，应移入锚点底账）")
+  match_one(raw, raw, "/\\*[[:space:]]*[0-9]{1,4}[[:space:]]*[:：][[:space:]]*[^*]*\\*/", "SL-10", "坐标与讲解同框（讲解留下、数字移入底账）")
+  match_one(raw, raw, "（L[0-9]+，工具生成）", "SL-10", "工具派生行号提示占正文（应移入底账）")
+  if (diffmode != 1) {
     if (nfence == 0 && raw ~ /^[[:space:]]*(```|~~~)/) { nfence = 1; next }
     else if (nfence == 1) { if (raw ~ /^[[:space:]]*(```|~~~)/) nfence = 0; next }
   }
@@ -160,12 +174,26 @@ EOF
 交叉引用见 §3.2 与 15-clock-timer.md。
 EOF
 
+  # 锚点受众分层夹具：三类噪声 + 两类合法形态（后者绝不可被误报）
+  cat > "$ft/anchors.md" <<'EOF'
+EXTERN struct rproc rproc[NR_PROCS];                                /* 34 */
+get_mem_chunks(mem_chunks);    /* 455 — utility.c:44 */
+  unsigned fp_flags;               /* 16: 进程标志 */
+变量定义见 os/libs/minix-sef/src/lib.rs:fn sef_receive_status（L123，工具生成）。
+EOF
+
+  cat > "$ft/anchor-ok.md" <<'EOF'
+本节复刻 `rs/main.c:38-131` 的 dispatch 循环（块级区间题注，读者需要）。
+符号锚点 `os/kernel/src/clock.rs:fn clock_init` 不随代码漂移，属合法形态。
+讲解留在原位：`unsigned fp_flags;  /* 进程标志 */`
+EOF
+
   cat > "$ft/history.md" <<'EOF'
 Minix3 最初把进程表放在 BSS 段，后来 FS 也复用同一张表。
 EOF
 
   local out rc=0
-  out="$("$0" "$ft/bad.md" "$ft/clean.md" "$ft/history.md" 2>&1)" && rc=0 || rc=$?
+  out="$("$0" "$ft/bad.md" "$ft/clean.md" "$ft/history.md" "$ft/anchors.md" 2>&1)" && rc=0 || rc=$?
   if [ "$rc" -ne 1 ]; then
     echo "SELF-TEST FAIL: 含违规样例应 exit 1，实际 $rc" >&2
     echo "$out" >&2
@@ -181,7 +209,7 @@ EOF
     echo "$out" | grep "history.md:" >&2
     exit 1
   fi
-  for id in SL-1 SL-2 SL-3 SL-4 SL-5 SL-6 SL-7; do
+  for id in SL-1 SL-2 SL-3 SL-4 SL-5 SL-6 SL-7 SL-9; do
     echo "$out" | grep -q "\[$id\]" || { echo "SELF-TEST FAIL: $id 未命中" >&2; echo "$out" >&2; exit 1; }
   done
 
