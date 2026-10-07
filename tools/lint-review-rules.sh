@@ -76,9 +76,15 @@ for g in $gaps; do
 done
 [ "$l5b_ok" = "true" ] && ok "L5b 模式编号断裂仅限已记录的 61/62"
 total=$(echo "$nums" | sort -un | wc -l)
-expect=$(grep -oE "82 个编号模式" prompt/review-rules/review-patterns.md | head -1)
-if [ "$total" -eq 82 ] && [ -n "$expect" ]; then ok "L5c 编号模式总数 $total 与索引表宣称一致"; else
-  fail "L5c 编号模式总数($total) 与索引表宣称($expect)不一致——更新 review-patterns.md 头部索引与各处宣称"
+# 宣称的数字从索引行读出来，不写死在脚本里：新增模式时只需改文档，不必同时改代码。
+# grep 无命中时（宣称行被删或改写）必须显式报错，不能让 set -e 把整个脚本静默带走。
+expect=$(grep -oE "[0-9]+ 个编号模式" prompt/review-rules/review-patterns.md | head -1 || true)
+claim=$(printf '%s' "$expect" | grep -oE "^[0-9]+" || true)
+if [ -z "$claim" ]; then
+  fail "L5c 索引表缺少「N 个编号模式」宣称（实测编号模式 $total 个）——恢复 review-patterns.md 头部总量行"
+elif [ "$total" -eq "$claim" ]; then ok "L5c 编号模式总数 $total 与索引表宣称（$claim）一致"
+else
+  fail "L5c 编号模式总数($total) 与索引表宣称($claim)不一致——更新 review-patterns.md 头部索引与各处宣称"
 fi
 
 # L6. Gate 权威注册表完整性：10 个 Gate 必须都在 review-process.md 的注册表中各占一行

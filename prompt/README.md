@@ -14,7 +14,7 @@ prompt/
 │   ├── review.md            —   Review 核心框架（原则、约束、优先级、输出模板、执行模型分层）
 │   ├── review-doc-checklist.md  —  文档检查清单（§1~§3，含 §2.0 Claims-Evidence）
 │   ├── review-code-checklist.md —  代码检查清单（§1~§15，含 Kernel SMP/BKL 并发）
-│   ├── review-patterns.md       —  常见错误模式（85 个枚举模式，含文档/代码/测试/卓越性/流程/架构抽象与锚点纪律）
+│   ├── review-patterns.md       —  常见错误模式（86 个枚举模式，含文档/代码/测试/卓越性/流程/架构抽象与锚点纪律）
 │   ├── review-process.md        —  执行流程（§〇三模式 + Step 0~7 + 状态追踪 + 收敛判断）
 │   ├── review-profiles.md       —  任务组合配置（Profile A~P + R + AG，含分阶段 H~K + 卓越性 O + 覆盖率 P）
 │   ├── review-core-semantics.md —  核心语义对齐（行为契约表 + IPC/生命周期契约模板）
@@ -235,7 +235,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 | review.md | review-agent-trigger.md | Agent（触发器描述 + 12 个示例，覆盖 8 域 + 工作流评估/修复/快照补齐阶段） | 4,001 ✅ |
 | review-doc-checklist.md | review-doc-skill.md | Skill（§2.0 Claims-Evidence + §2.1-§2.11 + §3；强制逐行验证） | 24,461 |
 | review-code-checklist.md | review-code-skill.md | Skill（§1-§15 + Kernel SMP/BKL §4.2） | 7,335 |
-| review-patterns.md | review-patterns-skill.md | Skill（85 个错误模式；Gate D 严格通过标准） | 见同步表实测 |
+| review-patterns.md | review-patterns-skill.md | Skill（86 个错误模式；Gate D 严格通过标准） | 见同步表实测 |
 | review-process.md | review-process-skill.md | Skill（§〇三模式 + Step 0-7 + 修复阶段 + STATE.md 三工具隔离 + Gate 证据 + Gate G/H 强制 + Gate 0 制品完整性 + L1/L2/L3 证据分级 + **方案 D outline 升格 + Step 0.5.3 doc↔outline 对齐 + Gate H.6 + Step 1.0a-g 等**） | 65,581 |
 | review-core-semantics.md | review-core-semantics-skill.md | Skill（行为契约表模板 + 8 字段 × 5 函数） | 8,464 |
 | review-doc-excellence.md + review-code-excellence.md | review-excellence-skill.md | Skill（文档§4.1-4.5 + 代码§16-21 卓越性） | 9,220 |
@@ -308,7 +308,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 - **`SKILL.md`** — Orchestrator。YAML frontmatter 定义 `name`、`description`、`allowed-tools`。Phase 1-9 控制执行顺序：**Scope → Coverage Enumeration → Gap Scan → Doc Checks → Code Checks → Patterns → Excellence → Cross-doc → Report**。含 evidence 分级、"先读后判"强制规则、**Explicit Skill Invocation**、**STATE.md 双路径**、**scan.md 双写规则**。
 - **`checks/doc.md`** — 文档检查。覆盖 §2.0 Claims-Evidence、概念准确性、C 代码引用（**禁止"未逐行验证"**）、数据结构、doc-code 一致性、架构演进、跨引用、图示、C 源码覆盖、设计质量、链接验证、文档风格、skip 检查。
 - **`checks/code.md`** — 代码检查。覆盖 rewrite 质量、硬件抽象、trait 设计、类型安全、执行模型（含 SMP/BKL §4.2）、内存模型、模块设计、命名、测试、注释、64-bit、复杂度、no_std、设计-代码一致性、C-Rust 对齐、精度检查。
-  - **`checks/patterns.md`** — 错误模式库。源规则共 85 个枚举模式，Claude 版按领域合并检查。含 **Gate D 严格通过标准**。
+  - **`checks/patterns.md`** — 错误模式库。源规则共 86 个枚举模式，Claude 版按领域合并检查。含 **Gate D 严格通过标准**。
 - **`checks/process.md`** — 执行流程。含 §〇 三模式选择（构造/快速/深度）、**STATE.md 双路径**、**Gate 证据规则**、**VERIFY-CHECK.md 强制**、**P0/P1/P2 同步规则**。
 - **`checks/excellence.md`** — 卓越性检查。文档 §4.1-4.5 + 代码 §16-21。
 

@@ -1,6 +1,6 @@
 ---
 name: review-patterns-skill
-description: "Minix-RS Review 常见错误模式。包含 §0 P0 必检清单和 85 个枚举模式：文档、跨文档、代码、Kernel SMP、测试、卓越性、叙事概念、Design-First 与流程漂移模式，附验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。"
+description: "Minix-RS Review 常见错误模式。包含 §0 P0 必检清单和 86 个枚举模式：文档、跨文档、代码、Kernel SMP、测试、卓越性、叙事概念、Design-First 与流程漂移模式，附验证命令。当 Agent 在 Review 过程中需要对照检查典型错误时调用此 Skill。"
 ---
 
 # Minix-RS Review 常见错误模式
