@@ -1,6 +1,8 @@
 # TODO：正式文档"读者体验优先" + 技能"抽象语义而非描述机制"再强化 + 会话产物零根目录污染 + CLAUDE.md 去留
 
-> 类型：agents 工作流优化 TODO（现含四条：TODO-1 读者体验降噪；TODO-2 设计原则入技能；TODO-3 会话产物零根目录污染；TODO-4 CLAUDE.md 去留裁决，见文末）。模式：本文件是**待办计划**，不含对 `notes/` / `AGENTS.md` / `prompt/` 的任何实际改动。
+> 类型：agents 工作流优化 TODO（四条）。**当前状态**：TODO-2 与 TODO-4 已于 2026-10-07 实施完毕；
+> TODO-1 规则与门能力已落地、存量正文回炉待排期；TODO-3 会话产物落盘规则已生效并在收紧。
+> 本文件已从纯待办计划转为「待办 + 实施记录」混合体，实施细节见各节结果段与 `prompt/EXECUTION-LOG-workflow-optim.md`。
 > 触发源：TODO-1 = 2026-10-06 阅读 `03-stage-rs/01-rs-boot-init.md` 时，正文里过密的数字锚点严重拖累阅读体验。TODO-2 = 2026-10-07 「三架构待决项清单」六轮讨论中，网页端对设计原则的再表述比仓内现有规则更成文、更可判定（见 TODO-2 节）。TODO-3/TODO-4 = 2026-10-07 git 清理线根目录清场时登记（26 个会话期裸 log 污染根目录；用户提议评估删除 CLAUDE.md）。
 
 ---
@@ -165,6 +167,18 @@ memset(vmproc, 0, sizeof(vmproc));                        /* 458 */
 - **拦截回归门**：拿本次两个实例当回归样本——① aarch64 双根若被抽象成 `PageTableRoot{fn root()}` 式假单根，新规则应能在 review 中命中；② PD-18 式的「为未来预裁终局」应被同一规则的边界条拦截（反向误伤测试：规则不应判 PD-18 维持冻结为违规）。
 - **同步门**：`prompt/` 源变更后按既有命令同步 `.claude/` `.codex/` `.trae/` `.agents/` 派生副本，`tools/check-review-rules.sh` 通过。
 
+### 实施结果（2026-10-07，逐门实测）
+
+- **grep 门 通过**：`grep -c 公理 prompt/review-rules/review-core-semantics.md` 从 0 变为 10（§1.6 立条）；
+  模式 85 已入 `review-patterns.md` 并登记进 Pattern→Step 交叉引用表，两条验证命令可复跑。
+- **拦截回归门 通过**：正例（双页表根被抽成只返回单根、高半靠隐藏分支）与负例（只有单一使用者且注明
+  「等第二个真实实现出现再抽 trait」→ 不得判违规）都写进了模式 85 的回归样本表，规则不会再被念成教条。
+- **同步门 通过**：`generate-derived-skills.sh` 重派生 + `check-review-rules.sh` consistent +
+  `diff-trae-skills.sh --only-diff` 9/9；Trae agent 9289 字符，未越 10000 硬上限。
+- **落地清单**：`review-core-semantics.md §1.6`（四公理 + 三问 + 三条边界 + 依赖射程 + 豁免面登记）、
+  模式 85、`review-code-excellence.md §16.7`（跨架构比选强制栏）、`review-doc-checklist.md §3.9`
+  （文档叙述次序）、`review-code-checklist.md` 第 59 项措辞收窄、`code-excellence` 薄壳接入。
+
 ---
 
 ## TODO-3：会话产物零根目录污染（2026-10-07 git 清理线登记）
@@ -191,7 +205,16 @@ memset(vmproc, 0, sizeof(vmproc));                        /* 458 */
 
 ## TODO-4：CLAUDE.md 去留裁决（2026-10-07 git 清理线登记，依赖图已查清）
 
-> 状态：`BLOCKED`（唯一阻塞项 = 最新版 Claude Code 对 `AGENTS.md` 的原生加载行为未经实测）。触发源：用户提议 CLAUDE.md 使用低频、最新版 Claude 或可直接依赖 AGENTS.md，考虑删除。
+> 状态：`DONE`（2026-10-07 实测通过并已删除 CLAUDE.md）。触发源：用户提议 CLAUDE.md 使用低频、最新版 Claude 可直接依赖 AGENTS.md，考虑删除。
+>
+> **实测依据**（本仓用发行物字符串取证，可复跑 `grep -aoE ".{90}AGENTS\.md.{90}" ~/.local/share/claude/versions/2.1.292`）：
+> 项目指令加载清单 `vbt=[["CLAUDE.md"],["CLAUDE.local.md"],["AGENTS.md"],[".claude","CLAUDE.md"],[".claude","AGENTS.md"],[".claude","rules"]]`，
+> 默认模式 `claude-md-or-agents-md`：项目没有 CLAUDE.md 时改用 AGENTS.md，加载位置与方式完全等同。
+> 用户亦确认其本机最新版 Claude 符合该规则。
+>
+> **实施结果**：CLAUDE.md 独有内容（Doc Code Sync 七项）已并回 `review-doc-checklist.md §4`，
+> `.claude/rules/fix-guard.md` 已回填规范源，13 个入口/规则/工具文件的生效引用改写为指向 AGENTS.md，
+> AGENTS.md 升为三端唯一入口，CLAUDE.md 单独成 commit 删除。历史引用（案卷、.review、todo 当时点）按纪律保留。
 
 ### 依赖图（2026-10-07 `git grep -l 'CLAUDE\.md'` 实测）
 
