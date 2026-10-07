@@ -1,5 +1,0 @@
-0x000000000022fb52 in ?? ()
-No symbol table is loaded.  Use the "file" command.
-gdb_exec.txt:6: Error in sourced command file:
-Argument required (one or more breakpoint numbers).
-[Inferior 1 (process 1) detached]
