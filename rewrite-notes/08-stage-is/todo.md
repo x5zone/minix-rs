@@ -1,5 +1,8 @@
 # 08-stage-is Rust 实现架构级 Review TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：阶段内未闭合 0：残余为跨阶段传输族（输入服务的生产传输、系统信息生产者、启动链端到端）。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > 来源：2026-09-14 首轮架构级审查（cmd-04 形态，scope=stage，叠加 full-review 的 Gate A 覆盖率强制；本文档为首轮产物，无历史存档）。
 > 范围：一等对象 `os/servers/is/src/` 全部 Rust 代码（13 文件，约 3551 行，crate 名 `minix-is`，86 个单元测试）；取数协议面的对端（minix-types 常量、kernel `do_getinfo`、PM/VFS/RS/DS 的 `getsysinfo`、VM `vm_info` 的 producer 侧）为辅——对端发现按 edge 判定规则登记 `../edge_todo.md`。
 > 方法：先查漏补缺（Gate A coverage-extract + 「C 符号 ↔ 13 篇文档 ↔ Rust 文件」三向矩阵 + 常量对账），再按「组合层 → 服务器内部 → 内核接缝 → wire 层 → 测试」五层深审，对照 Redox（联网核实）/OS 理论/Rust 社区惯例。本轮只审查未修代码，修复走后续 todo-fix 单条执行。

@@ -1,5 +1,8 @@
 # 14-stage-runtime Rust 实现架构级 Review TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1 + 需真机 2：内核信息魔术失配的错误码选型需先对 C 行为裁决，不能凭齐平表象定案。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > 来源：2026-09-16 首轮架构级代码审查（V1 轮）。查漏补缺优先，其次整体/分层架构深审（code-excellence 口径：整体 → crate → 模块 → trait）。
 > 范围：`os/libs/minix-rt/src/`（3003 行，59 测试）+ `os/libs/minix-sys/src/` 域内文件（ipc/syscall/pm/vfs/vm/misc/rs/stack/grant/arch_trap + lib.rs）+ `os/libs/minix-types/src/` runtime 域（errno/kerninfo/com + ipc/{message,pm,vfs,vm,rs,kernel_call,notify}）。minix-sys 中归属其它 stage 的六个客户端模块（ds/devman_client/inputdriver/rmib/socket/usb_model，约 3108 行）只做 crate 级一致性扫描，细节归 07/10/11/12/16/17 各 stage 轨道。
 > 方法：调用号级全量对账（对照 `minix3/minix/include/minix/callnr.h`、`com.h` 与 plan.md §5.1/§5.2 覆盖契约）+ C 行为级对账（crt0/init/brk/kputc/panic 逐函数）+ Redox 对照（relibc 启动链、redox-syscall crate 组织，来源见 §7）+ 死代码扫描。

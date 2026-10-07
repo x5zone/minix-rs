@@ -1,5 +1,8 @@
 # 12-stage-input Rust 实现架构级 Review TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1：边界测试族缺口。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > **状态（2026-09-15）**：**13 条 IN-* 条目全部完成**（首轮审查同日完成实施）。轮次与提交：R1 `89e72b848`（IN-P1-3+IN-P2-1）、R2 `d6ce66e71`（IN-P1-2）、R3 `5a7e50a32`（IN-P2-3）、R4 `3133b18ae`（IN-P1-1）、R5 `dc5642a20`（IN-P2-2）、R6 `4b51515f3`（IN-D1）、R7 `ca7349f9b`（IN-D2）、R8 `dfc19a6c0`（IN-P3-1）、R9 `191ba3441`（IN-P3-2）、R10 `f73765d4d`（IN-P3-3）、R11 `00d30fc09`（IN-D3）、R12 `c5e9e6ab0`（IN-D4）。每条目正文保留"是什么/方案对比/修复记录"作为决策档案；edge 四条（E-INWIRE/E-CDRCONV/E-TTYEVENT/E-PCKBDREG）归并行 edge 线程，不在本清单。
 
 > 来源：2026-09-15 首轮架构审查（`code-excellence` + coverage 查漏补缺，双目标一次扫描）。

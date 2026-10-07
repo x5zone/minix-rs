@@ -1,5 +1,8 @@
 # 18-stage-commands 实施规格缺口 TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 2 + 占位 5：命令面尚未接真实系统调用返回，命令全集口径按 `OQ-N1` 以规划文件的实测三百二十八为准。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > 来源：2026-09-17 设计讨论。讨论从"命令如何获得标准库支持"出发，逐层确认了三件事：POSIX 规定的是接口契约而不是系统调用清单；Minix3 的库分层是 `minix3/lib/libc/`（C 库）与 `minix3/minix/lib/libsys/`（消息层）两个目录；Redox 用 relibc（Rust 写的 C 标准库 + POSIX）承接 Rust std 的调用。讨论结论随后与 18-stage-commands 现有文档逐条对账。
 > 范围：`rewrite-notes/18-stage-commands/`。本文只登记文档缺口与修复去向，不修改生产代码。
 > 定位：`plan.md` 管覆盖契约（哪些命令、哪些 C 源、归哪一篇），本文管实施规格（命令依赖谁、需要哪些 API、行为以什么为准）。两者互补，不重复。

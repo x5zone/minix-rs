@@ -1,5 +1,9 @@
 # SMP Bring-up 计划与设计（smp_todo.md）— 自包含版
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：主线 `S-0`—`S-13` 已封存（顶部为冻结横幅），本文件不再重开总体设计。
+> **账面滞后校正**：两处账面与代码不同步需按事实刷新：其一，次级核本地定时器（编号 `K6`）已落地——实现换了名字、向量从 C 的 `0xF0` 改成 `0xF1`（原号已被调度投递占用），按 C 名与旧向量号去查会得出假阴性；其二，`os/arch/src/riscv64/ap_early_entry.rs` 头部注释仍自称骨架，实际已是完成体。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > **═══ FROZEN — implementation starts at S-0 ═══**（2026-09-06，九轮外评 [smp_gpt.md/
 > smp_gpt_v2/v3 + 四轮对话框直传] 收敛，P0: 0，待改设计的 P1: 0；v9 三 nit 已清：
 > L2 解锁表述 / PLIC-IPI 术语边界 / consumer-side ordering barrier 更名）

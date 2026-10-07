@@ -1,5 +1,9 @@
 # 17-stage-net Rust 实现架构级 Review TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 3：套接字标识五类基值缺 Rust 侧权威、协议栈本体与传输未实现、缺设计条目。
+> **账面滞后校正**：网络字节序与套接字事件类型的两份手抄已裁决归共享类型库单点权威（`PD-13`），属执行未竟。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > 来源：2026-09-17 架构级代码扫描（code-excellence cmd + 查漏补缺优先，非逐函数审查）。
 > 范围：`os/net/lwip`（22 文件）+ `os/net/uds`（4 文件）+ `os/libs/minix-netdriver`（5 文件）+ `os/libs/minix-sys/src/socket.rs`（23-libc-socket）+ `os/drivers/net`（14 crate，仅边界轻扫）。与 17-stage-net 26 篇文档一一对应（00 篇导航表）。
 > 方法：分层分析（整体架构 → crate → 模块 → trait/函数），每层自问"如果今天重写会怎么设计"；对照 C 真值（`minix3/minix/net/lwip` 24,477 行、`liblwip` 编译子集 58,232 行、`net/uds` 3,660 行、`libsockdriver` 1,150 行、`libsockevent` 2,590 行、libc socket 3,173 行）+ Redox netstack/smolnetd + smoltcp 0.14 + Rust 社区实践（2026-09 联网核实）。

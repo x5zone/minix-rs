@@ -1,5 +1,8 @@
 # 09-stage-init Rust 实现架构级 Review TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1：崩溃处理器的提供形式（归编排线 `C-21`）；另有加密后端的余量。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > 来源：2026-09-17 第一轮扫描（code-excellence：查漏补缺先行 + 分层设计审视；对照 Redox init 与 nix WaitStatus）+ 2026-09-18 修复迭代轮。
 > 范围：`os/commands/sbin/init/src/`（18 模块，crate `minix-init`）；对照 ground truth `minix3/sbin/init/init.c`（1902 行）与 `minix3/lib/libc/gen/getttyent.c`。
 > 定位：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`（E-INITSYS）。

@@ -1,5 +1,8 @@
 # 15-stage-fs Rust 实现架构级 Review TODO（V1 轮）
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `partially fixed` 2：八个文件服务器入口未接事件循环（框架侧属本阶段，握手属跨阶段）。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > **来源**：V1 轮架构级审查（2026-09-16，code-excellence 口径：查漏补缺优先，其次整体/分层架构深审；叠加 cmd-20 四步：找遗漏、找改进、补覆盖、回归）。
 > **范围**：26 篇文档 `Rust 模块` 头声明的全部实现——`os/fs/`（8 crate）+ `os/libs/minix-fs` + `os/libs/minix-vtreefs` + `os/libs/minix-sffs`，共 20,876 行 Rust、289 个测试。C ground truth 为 `minix3/minix/fs/`（8 server）、`minix3/minix/lib/{libfsdriver,libminixfs,libvtreefs,libsffs}`、`minix3/minix/include/minix/{fsdriver.h,vfsif.h}`。
 > **定位**：本文件只登记发现与修复方向，不复写 plan.md；跨 stage 条目的唯一入口是 `../edge_todo.md`（本文件第 5 节只留指针）。本轮未修改任何生产代码；正确性缺陷只登记，修复走后续 todo-fix 单线程轮。

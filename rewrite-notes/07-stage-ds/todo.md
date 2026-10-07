@@ -1,5 +1,8 @@
 # 07-stage-ds Rust 实现架构级 Review TODO（第一轮）
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 2。标签发布与事件编码的纯逻辑已备，但无生产调用方（属接线而非缺实现）。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > 来源：2026-09-14 首轮架构级审查（cmd-04 主体 + full-review 的 coverage 强制方法查漏补缺）。本轮 scan-only，未改任何生产代码与测试。
 > 范围：`os/servers/ds/` 全部 Rust 代码（18 文件，3572 行，crate 名 `minix-ds`）+ 契约面 `os/libs/minix-types` DS 段（types/com.rs、ipc/message.rs）+ minix-sys 依赖形态；C ground truth `minix3/minix/servers/ds/`（main.c 132 + store.c 679）+ `minix3/minix/lib/libsys/ds.c`（219）+ `minix3/minix/tests/ds/`（347）。
 > 方法：先查漏补缺（C 22+4 符号 ↔ 13 篇文档 ↔ Rust 三向矩阵，coverage-extract 全量化重跑），再按「组合层 → 服务器内部 → 内核接缝 → wire 层 → 测试」五层深审，对照 Redox（联网核验情况见 §6，诚实标注）/OS 理论/Rust 社区惯例。设计基线 = 13 篇文档 + plan.md §5.3/§4（A-1..A-10）。

@@ -1,5 +1,7 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
+> **历史快照，不作现状来源**（标记于 `2026-10-08`）：本文件记录的是归档当轮的判定与读数，本轮尚未逐条复核；现状请以 ../../../coordination/TODO-LEDGER-OPEN.md（未完成）与 ../../../coordination/TODO-LEDGER-DONE.md（已完成与已定案）为准。
+
 > **状态（2026-09-16）**：首轮架构审查完成，实施轮进行中——已完成 7 条（IPC-P2-3、IPC-P2-2、IPC-P1-6+T-4、IPC-P1-2、IPC-P1-3、IPC-P1-4、IPC-P1-5），20 条全部处理完毕（19 条修复闭合 + IPC-D-4 的快照半属下轮 doc-review 流程件，正文已交付）。执行节奏：todo-fix 三段式，一次一条一提交。
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **范围**：`os/servers/ipc-server/` 全部 17 个文件（4945 行），延伸核对 `os/libs/minix-types/src/ipc/ipc_server.rs`、`os/libs/minix-types/src/ipc/event.rs`、`os/libs/minix-types/src/message.rs` 的 IPC 消息面与 `os/libs/minix-sys/` 的 IPC wrapper 面。Ground truth：`minix3/minix/servers/ipc/`（main.c 284 行、sem.c 888 行、shm.c 469 行、utility.c 49 行）。

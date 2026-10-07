@@ -1,5 +1,8 @@
 # 11-stage-devman Rust 实现架构级 Review TODO（第一轮）
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1：设备拥有权与生产四缺（服务端传输、请求分类器、装配半、客户端生产传输）。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > **来源**：2026-09-15 code-excellence 首轮架构审查（用户指令：查漏补缺优先，再做架构深审；scan-only 轮，未改任何生产代码）。
 > **范围**：一等对象 `os/servers/devman/src/`（18 文件 4694 行，78 个单元测试）；客户端面 `os/libs/minix-sys/src/devman_client.rs`（423 行）+ `usb_model.rs`（437 行）——审查时点的 `minix-devman-client` 孤儿 crate（3 文件 395 行，6 个测试）已于 2026-09-15 按 edge E-DMCLIENT 方案 A 删除；C ground truth `minix3/minix/servers/devman/`（4 .c + devman.h/devinfo.h 共 1013 行）与 `minix3/minix/lib/libdevman/`（generic.c 275 行 + usb.c 301 行）。libvtreefs 使用面（1642 行）经文档引用核对，未逐行重审（上轮 CONVERGED 覆盖）。
 > **方法**：三向对账（C ↔ 15 篇文档 ↔ Rust，缺生产件与缺语义分档）→ 四层深审（整体组合 → 模块边界 → trait seam → 函数与数据结构，每层回答"如果今天重写会怎么设计"）→ 对照 Redox（用户态驱动 + scheme + pcid，联网核验 2026-09-15）/ Linux 驱动核心（sysfs 属性 + uevent + udev）/ Rust 社区惯例，每项改进给出至少两个候选方案。

@@ -1,5 +1,8 @@
 # 16-stage-drivers TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 2 + `stopgap landed` 3：二十六个纯占位 crate、两套字符驱动收敛、死 crate 待删。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > **来源**：2026-09-17 全量代码扫描（code-excellence + 查漏补缺双目标）。范围：`os/drivers/*` 57 个 crate、`os/libs/minix-{chardriver,blockdriver,netdriver,bdev,virtio,usb}` 六个框架库、`os/libs/minix-sys` 中归属本 stage 的 `devman_client.rs`/`usb_model.rs`（`inputdriver.rs` 归属已在 edge E-PCKBDREG 议定）。方法：四批次并行深审（框架+boot 关键 / 系统服务+输入 / 存储+USB / 显示音频网络杂项），逐条对照 Minix3 C 源，另对照 Redox drivers 现状与 Rust 社区实践。
 > **门证据**：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 16-stage-drivers` 报告 00/99 两篇缺 `.design` 快照（见 G5）；`cargo test` 框架库 94 测试 + 驱动 crate 242 测试全绿；`tools/check-rs-unwired.sh` PASS。
 > **执行约定**：每条走 todo-fix 单线程（讲明白 → 多方案对比 → 实施），修前按 fix-guard 重读目标行，修后 `cargo test -p {crate}` + 文档同步。标 ✅ 的条目已完成；正确性修复只在本文件登记，执行时若发现新跨 stage 问题按约定追加进 `../../edge_todo.md`。

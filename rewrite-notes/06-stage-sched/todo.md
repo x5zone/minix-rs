@@ -1,5 +1,8 @@
 # 06-stage-sched Rust 实现架构级 Review TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：阶段内未闭合 0：本阶段评审项已全闭，残余全部压在跨阶段的端到端联调与调度服务缺席边界上。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > 来源：2026-09-06 第一轮（archive/todo-round1-archive-2026-09-06.md）+ 2026-09-09 第二轮 V2 轮与执行轮（archive/todo-V2-archive-2026-09-14.md，**Fix #5~#14 修复记录、§1 覆盖矩阵全文、§4 五层深审全文、§9/§10 执行轮总记以该存档为检索权威**；本主文件 2026-09-14 精简，已完成条目不再正文保留）。
 > 范围：一等对象 `os/servers/sched/src/` 全部 Rust 代码（19 文件，crate 名 `minix-sched`）；内核契约面与客户端面为辅（发现按 edge 判定规则登记 `../edge_todo.md`）。
 > 定位：不复写 plan.md；跨 stage 条目唯一入口是 `../edge_todo.md`，本文档只留双向指针。

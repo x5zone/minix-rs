@@ -3,6 +3,8 @@
 > 除本横幅外正文未做任何改动。
 # 02-stage-vm Rust 实现架构级 Review TODO
 
+> **历史快照，不作现状来源**（标记于 `2026-10-08`）：本文件记录的是归档当轮的判定与读数，本轮尚未逐条复核；现状请以 ../../../coordination/TODO-LEDGER-OPEN.md（未完成）与 ../../../coordination/TODO-LEDGER-DONE.md（已完成与已定案）为准。
+
 > 来源：2026-08-16 架构级代码审查（关注整体/分层架构，非逐函数审查）。
 > 范围：`os/servers/vm/src/` 全部 Rust 代码（与 02-stage-vm 文档对应的实现）。
 > 方法：整体分层分析（全局状态 → 主循环/分发 → 各子系统 → 模块），结合 Redox 实现与 Rust/OS 社区最佳实践。

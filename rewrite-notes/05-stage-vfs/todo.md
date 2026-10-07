@@ -1,5 +1,9 @@
 # 05-stage-vfs Rust 实现架构级 Review TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1，且是真缺口：六十四个请求臂的执行绑定层缺穷举分派（只有枚举标记，无按号到函数的绑定表）。
+> **账面滞后校正**：请求号双址的一处已归一（一处定义、另一处再导出）。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > 来源：2026-09-06 架构级代码审查（先查漏补缺，后整体/分层架构审视；非逐函数 review）。
 > 范围：`os/servers/vfs/` 全部 Rust 代码（33 个文件约 23000 行，与 05-stage-vfs 文档对应）；`os/fs/` 八个文件系统驱动 crate 与 `minix-types`/`minix-sys` 仅做接口对账。
 > 方法：覆盖率穷举（`tools/coverage-extract/coverage-extract.py` + `vfs-semantic-map.json`）→ P0 横切正确性扫描 → 四层架构审视（整体 → 模块边界 → 类型设计 → 函数/测试面），对照 Redox scheme 模型与 Rust/OS 社区实践。每条事实断言附 `file:line` 锚点。

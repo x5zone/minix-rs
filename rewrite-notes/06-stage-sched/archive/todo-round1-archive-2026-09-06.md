@@ -1,5 +1,7 @@
 # 06-stage-sched Rust 实现架构级 Review TODO
 
+> **历史快照，不作现状来源**（标记于 `2026-10-08`）：本文件记录的是归档当轮的判定与读数，本轮尚未逐条复核；现状请以 ../../../coordination/TODO-LEDGER-OPEN.md（未完成）与 ../../../coordination/TODO-LEDGER-DONE.md（已完成与已定案）为准。
+
 > 来源：2026-09-06 架构级代码审查（查漏补缺 + 整体分层审视，非逐函数审查）。
 > 范围：一等对象 `os/servers/sched/src/` 全部 Rust 代码（19 个文件，2848 行，crate 名 `minix-sched`）；内核契约面为辅（`os/kernel/src/proc_table.rs` 的调度包装与通知、`os/kernel/src/syscall.rs` 的 Schedule/Schedctl 入口、`os/kernel/src/sched.rs`、`os/libs/minix-types` 的消息与常量）。
 > 方法：三向覆盖矩阵（Minix3 C 源 ↔ 14 篇文档 ↔ Rust 实现）先行查漏补缺，再按「整体 → crate 结构 → 模块 → 类型与函数」四层审视，对照 Redox 实现、操作系统理论、Rust 社区惯例给出多方案建议。

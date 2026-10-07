@@ -1,5 +1,7 @@
 # 06-stage-sched Rust 实现架构级 Review TODO
 
+> **历史快照，不作现状来源**（标记于 `2026-10-08`）：本文件记录的是归档当轮的判定与读数，本轮尚未逐条复核；现状请以 ../../../coordination/TODO-LEDGER-OPEN.md（未完成）与 ../../../coordination/TODO-LEDGER-DONE.md（已完成与已定案）为准。
+
 > 来源：2026-09-06 第一轮架构级审查（archive/todo-round1-archive-2026-09-06.md，全文存档，含 Fix #1~#4 修复记录）+ 2026-09-09 第二轮（V2 轮，本文档主体）。
 > 范围：一等对象 `os/servers/sched/src/` 全部 Rust 代码（19 文件，约 4400 行，crate 名 `minix-sched`，79 测试）；内核契约面与客户端面为辅（发现按 edge 判定规则登记 `../edge_todo.md`）。
 > 方法：V2 轮 = cmd-04 第二遍。先查漏补缺（C 符号 ↔ 14 篇文档 ↔ Rust 三向矩阵复建 + 第一轮最大缺口「主循环」落地后的八条执行侧语义逐条对测试），再按「组合层 → 服务器内部 → 内核接缝 → wire 层 → 测试」五层深审，对照 Redox（联网核实）/OS 理论/Rust 社区惯例。本轮只审查未修代码。

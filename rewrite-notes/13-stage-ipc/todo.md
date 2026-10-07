@@ -1,5 +1,8 @@
 # 13-stage-ipc Rust 实现架构级 Review TODO
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：阶段内未闭合 0：第一轮二十条已全闭；残余为进程间通信服务端装配面（跨阶段）。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > **状态（2026-09-16）**：R1 实施轮完成——20 条全部处理完毕（19 条修复闭合 + IPC-D-4 的 .design 快照半归下轮 doc-review 流程件，正文已交付）。**本轮共 15 个提交，测试从 83 → 单元 100 + 集成 4（104 passed / 0 failed），clippy 本 crate 零告警。**
 > **来源**：13-stage-ipc 首轮代码扫描（查漏补缺 + 架构卓越度，2026-09-16）。入口：code-excellence（scope=dir）+ full-review 的 Gate A 覆盖穷举。
 > **归档**：各条目的完整正文（是什么/为何/方案对比/修复记录）在 [archive/todo-R1-archive-2026-09-16.md](./archive/todo-R1-archive-2026-09-16.md)，修复提交号以本表为检索权威。

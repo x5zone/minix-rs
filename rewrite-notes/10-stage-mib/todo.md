@@ -1,5 +1,8 @@
 # 10-stage-mib Rust 实现架构级 Review TODO（第一轮）
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1：交换格式的应用二进制接口待裁决（执行半已闭）。入口空转挂跨阶段的系统信息生产者条目。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > **来源**：2026-09-15 首轮架构审查（用户指令：查漏补缺优先，再做架构深审；scan-only 轮，未改任何生产代码）。
 > **范围**：一等对象 `os/servers/mib/src/`（35 文件 7187 行，107 个单元测试）；契约消费面 `minix-types`（`ipc/mib.rs` 405 行、`types/sysctl.rs` 949 行、`types/com.rs` MIB 号段、`ipc/message.rs` 六载荷）与 `minix-sys/src/rmib.rs`（259 行）；C ground truth `minix3/minix/servers/mib/`（8 个 .c 共 4990 行 + `mib.h` 390 行）与 `minix3/minix/lib/libsys/rmib.c`（1089 行）+ `rmib.h`（188 行）。libc sysctl 客户端为 A-10 外部契约，不在范围内。
 > **方法**：三向对账（C ↔ 24 篇文档 ↔ Rust，四档判定：已实现 / 判定半 / 缺口 / 排除）→ 五层深审（L0 组合层 → L1 服务器内部 → L2 内核接缝 → L3 wire → L4 测试五维）→ 对照 Redox / NetBSD sysctl(9) / OS 理论 / Rust 社区（联网核验 2026-09-15，见 §6）。

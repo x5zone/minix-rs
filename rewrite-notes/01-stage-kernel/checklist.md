@@ -1,5 +1,9 @@
 # Minix3 kernel/system → Rust 实现覆盖检查表
 
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：本清单的标注面需要整体复核：现算 `ENOSYS` 与推迟标记命中四十九行（全文六百零七行）。
+> **账面滞后校正**：本清单严重滞后于代码，**不可当现状来源**：跨空间拷贝已走直接映射校验、授权项校验已有生产调用方、消息环与诊断注册已实现。逐条凭据见 `../coordination/STAGE-KERNEL-FREEZE-READY-20261008.md` §2。
+> 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
+
 > 生成日期: 2026-06-13
 > 目标: 100% 覆盖 Minix3 kernel (`minix3/minix/kernel/*.c` + `system/do_*.c`) 所有公开符号
 > 范围: 41 个 `do_*.c` (实际 38 个 — `do_datacopy.c`/`do_sdevio.c`/`do_unused.c` 不存在; `do_schedule.c` 是内核内调用) + 20 个核心 .c/.h
