@@ -30,6 +30,13 @@ AI 回 `minix3/` 核对时给自己留的锚点；它们占住读者版面，却
 
 ### 锚点底账格式（`.review/{tool}/{stage}/{doc-stem}.anchors.md`）
 
+生成入口是现成的（此前本节只给格式、没指工具，导致要手工逐行抄）：
+
+```bash
+tools/anchor-resolve.sh --extract {doc}.md      # 输出「文档 TAB 行号 TAB 锚点」三列，直接喂给底账表格
+tools/anchor-resolve.sh --check {doc}.md        # 移出后复跑：resolved/zero-def/multi-def 计数必须不退化
+```
+
 评审中间产物，随 `.review/` 不入库；正式文档**不引用**它（隐藏目录约定）。每篇被降噪的文档一份：
 
 ```markdown

@@ -1,5 +1,6 @@
 # 08 — worker 池：`NR_WTHREADS=9` 真实线程到请求槽状态机的 `pending/busy/block_all` 与 `w_fp` 双向绑定
 
+> **Rust 实现**: `os/servers/vfs/src/worker.rs`（worker 池主体：`Worker` 结构、`pending/busy/block_all` 计数与 `w_fp` 双向绑定）、`os/servers/vfs/src/main_loop.rs`（主循环侧的挂起与恢复衔接）、`os/servers/vfs/src/fproc.rs`（`fproc` 的 `PENDING/PM_WORK` 标志与 `BlockedOn` 载荷）
 本文讲清 VFS 如何在 `NR_WTHREADS 9` 固定线程、`pending` 全局排队计数、`busy` 已绑定计数、`block_all` 初始化门控、`FP_PENDING/FP_PM_WORK` 的待处理标记、`FP_BLOCKED_ON_*` 的七态阻塞、以及 `w_fp ↔ fp_worker` 双向绑定的约束下，以 `worker_init` 的 `mthread_create×9 + cond/mutex` 初始化与 `worker_start` 的 `pending/active/normal/PM` 四象限判定及 `worker_allow` 的门控开关建立 `fproc → worker` 的可抢占分发，并以 `suspend/resume/wait/signal/stop` 的 `self/fp/err_code` 三件套保存与 `thread_cleanup` 的 `VMNT_CALLBACK` 回收为阻塞恢复提供可逆上下文。
 
 前置阅读：`02-fproc-struct.md`（`FProc.flags: PENDING/PM_WORK` 与 `BlockedOn` 七态）、`03-fproc-table.md`（`FProcTable::is_ok_endpoint` 三守卫与 `PID_FREE` 双哨兵）、`07-tll-lock.md`（`tll_lock` 的 `EBUSY → tll_append → worker_wait` 排队）。
@@ -62,13 +63,13 @@ worker_allow(TRUE);   // 522: 开门——drain pending
 
 ### 1.4 双向绑定：`w_fp ↔ fp_worker` 的可抢占关联
 
-`minix3/minix/servers/vfs/threads.h:worker_thread（L27，工具生成）` 的 `w_fp: fproc*` 与 `minix3/minix/servers/vfs/fproc.h:fp_popen` 的 `fp_worker: worker_thread*` 构成**双向指针绑定**——`worker_assign:138` 的 `rfp->fp_worker = worker; worker->w_fp = rfp; busy++` 与 `worker_main:283-286` 的 `fp->fp_worker = NULL; self->w_fp = NULL; busy--` 在 `busy` 计数两侧原子化。绑定失败的后果在 `worker_suspend:482` 的 `assert(self->w_fp == fp && fp->fp_worker == self)` 与 `worker_set_proc:598-606` 的 *incredibly ugly* 注释中显式：`reboot` 路径的 `fp == rfp ? return : panic(target not idle) → fp->fp_worker=NULL → fp=rfp → self->w_fp=rfp` 违反线程模型，仅 `reboot` 允许。
+`minix3/minix/servers/vfs/threads.h:worker_thread` 的 `w_fp: fproc*` 与 `minix3/minix/servers/vfs/fproc.h:fp_popen` 的 `fp_worker: worker_thread*` 构成**双向指针绑定**——`worker_assign:138` 的 `rfp->fp_worker = worker; worker->w_fp = rfp; busy++` 与 `worker_main:283-286` 的 `fp->fp_worker = NULL; self->w_fp = NULL; busy--` 在 `busy` 计数两侧原子化。绑定失败的后果在 `worker_suspend:482` 的 `assert(self->w_fp == fp && fp->fp_worker == self)` 与 `worker_set_proc:598-606` 的 *incredibly ugly* 注释中显式：`reboot` 路径的 `fp == rfp ? return : panic(target not idle) → fp->fp_worker=NULL → fp=rfp → self->w_fp=rfp` 违反线程模型，仅 `reboot` 允许。
 
 双向绑定的收益是“进程可用性”查询的 O(1)：`worker_can_start:295-325` 的 `is_pending/is_active/has_normal_work → !pending && !active → 可新起； has_normal_work → 不可多加； is_pending → 可加正常工作（待执行前）； else → 不可（PM 活跃）` 在 `main.c:104` 的 `ds_event` 分发中守门——`DS` 永不对 VFS 发 `VFS` 调用且无 `PM` 延期，故 `worker_can_start` 对 `DS` 安全（`main.c:102` 注释）。
 
 ### 1.5 挂起的协程语义：`suspend/resume` 的三件套与 `wait/signal` 的睡眠
 
-`worker_suspend:474-487` 的三件套（`self/fp/err_code`）保存与 `worker_resume:493-504` 的 `self = org_self; fp = self->w_fp; err_code = w_err_code` 恢复构成**协程上下文**：`lock_proc:528-541` 的 `mutex_trylock → 成功直返；失败 → suspend → mutex_lock → resume` 将 `fp_lock` 的互斥等待建模为协程挂起，而非条件变量的显式 `wait`。`worker_wait:510-520` 的 `suspend; sleep; resume; assert(w_next==NULL)` 则将 `tll_append:48-71` 的 `worker_wait` 阻塞显式为 `sleep + signal` 的条件变量等待——`minix3/minix/servers/vfs/tll.c:tll_unlock（L271，工具生成）` 的 `worker_wait` 在 `tll_lock` 层等待 `READSER→WRITE` 升级或 `WRITE` 独占，`pipe.c:suspend` 在 `pipe` 层等待读端/写端到达，二者合流于同一 `w_event` 队列（`minix3/minix/servers/vfs/tll.c:tll_unlock（L278，工具生成）` 的 `t_write/serial` 双队列头唤醒即信号此队列）。
+`worker_suspend:474-487` 的三件套（`self/fp/err_code`）保存与 `worker_resume:493-504` 的 `self = org_self; fp = self->w_fp; err_code = w_err_code` 恢复构成**协程上下文**：`lock_proc:528-541` 的 `mutex_trylock → 成功直返；失败 → suspend → mutex_lock → resume` 将 `fp_lock` 的互斥等待建模为协程挂起，而非条件变量的显式 `wait`。`worker_wait:510-520` 的 `suspend; sleep; resume; assert(w_next==NULL)` 则将 `tll_append:48-71` 的 `worker_wait` 阻塞显式为 `sleep + signal` 的条件变量等待——`minix3/minix/servers/vfs/tll.c:tll_unlock` 的 `worker_wait` 在 `tll_lock` 层等待 `READSER→WRITE` 升级或 `WRITE` 独占，`pipe.c:suspend` 在 `pipe` 层等待读端/写端到达，二者合流于同一 `w_event` 队列（`minix3/minix/servers/vfs/tll.c:tll_unlock` 的 `t_write/serial` 双队列头唤醒即信号此队列）。
 
 `worker_sleep:443-453` 的 `mutex_lock(w_event_mutex) → cond_wait → mutex_unlock → self=worker` 与 `worker_wake:459-468` 的 `mutex_lock → cond_signal → mutex_unlock` 则将 `sleep` 的“交出 `self` 全局”与 `wake` 的“置位计数”分化——`worker_yield:435` 的 `self=NULL` 同为交出。
 
@@ -90,7 +91,7 @@ worker 池是 `VFS` 的并发边界：9 固定真实线程以 `pending`（排队
 
 ### 2.1 类型与常量（`threads.h:1-38` / `const.h:9` / `glo.h:34/37`）
 
-`minix3/minix/servers/vfs/threads.h:thread_t（L4，工具生成）` 的 `thread_t/mutex_t/cond_t/attr_t` 映射 `mthread_*` 四宏（`5-8` `mutex_init/destroy/lock/trylock/unlock` + `10-19` `cond_init/destroy/wait/signal`）使 `worker.c` 的 `mutex_init(&wp->w_event_mutex)` 与 `cond_wait(&w_event, &w_event_mutex)` 在编译期等价 `mthread` 调用。`minix3/minix/servers/vfs/threads.h:worker_thread` 的 `struct worker_thread { w_tid, w_event_mutex, w_event, w_fp, w_m_in, w_m_out, w_err_code, w_sendrec, w_drv_sendrec, w_task, w_dmap, w_next }` 的 12 字段中 `w_next` 为 `tll.c:tll_append` 的双队列链指针（`minix3/minix/servers/vfs/tll.c:tll_append（L35，工具生成）` `w_next` 尾插），`w_dmap` 为 `bdev/cdev` 的设备映射缓存（`bdev.c:cdev.c` 的 `dmap` 域），`w_sendrec` 与 `w_drv_sendrec` 为 `FS` 与驱动两套 `sendrec` 缓存（`worker_stop:539-548` 的两分支 `if (w_drv_sendrec) … else if (w_sendrec) … else panic`）。`glo.h:34` 的 `EXTERN worker_thread *self` 为线程局部（TLS）指针（`worker_main:243` `self = (worker_thread *)arg` 存入，`worker_yield:437` `self=NULL` 交出），`37` 的 `workers[NR_WTHREADS]` 为全局固定槽数组（`const.h:9` `NR_WTHREADS 9` 与 `glo.h:37` `workers[NR_WTHREADS]` 同界）。
+`minix3/minix/servers/vfs/threads.h:thread_t` 的 `thread_t/mutex_t/cond_t/attr_t` 映射 `mthread_*` 四宏（`5-8` `mutex_init/destroy/lock/trylock/unlock` + `10-19` `cond_init/destroy/wait/signal`）使 `worker.c` 的 `mutex_init(&wp->w_event_mutex)` 与 `cond_wait(&w_event, &w_event_mutex)` 在编译期等价 `mthread` 调用。`minix3/minix/servers/vfs/threads.h:worker_thread` 的 `struct worker_thread { w_tid, w_event_mutex, w_event, w_fp, w_m_in, w_m_out, w_err_code, w_sendrec, w_drv_sendrec, w_task, w_dmap, w_next }` 的 12 字段中 `w_next` 为 `tll.c:tll_append` 的双队列链指针（`minix3/minix/servers/vfs/tll.c:tll_append` `w_next` 尾插），`w_dmap` 为 `bdev/cdev` 的设备映射缓存（`bdev.c` 与 `cdev.c` 各自的 `dmap` 域），`w_sendrec` 与 `w_drv_sendrec` 为 `FS` 与驱动两套 `sendrec` 缓存（`worker_stop:539-548` 的两分支 `if (w_drv_sendrec) … else if (w_sendrec) … else panic`）。`glo.h:34` 的 `EXTERN worker_thread *self` 为线程局部（TLS）指针（`worker_main:243` `self = (worker_thread *)arg` 存入，`worker_yield:437` `self=NULL` 交出），`37` 的 `workers[NR_WTHREADS]` 为全局固定槽数组（`const.h:9` `NR_WTHREADS 9` 与 `glo.h:37` `workers[NR_WTHREADS]` 同界）。
 
 ### 2.2 全局计数（`worker.c:9-12`）
 
@@ -98,15 +99,15 @@ worker 池是 `VFS` 的并发边界：9 固定真实线程以 `pending`（排队
 
 ### 2.3 `worker_init` 批量创建（`minix3/minix/servers/vfs/worker.c:worker_init`）
 
-`minix3/minix/servers/vfs/worker.c:worker_init（L33，工具生成）` 的 `mthread_attr_init(&tattr)` + `35` `setstacksize(TH_STACKSIZE)` 模板、`42-54` 的 `for (i=0..9: w_fp=NULL; w_next=NULL; w_task=NONE; mutex_init; cond_init; mthread_create(worker_main, wp))` 8 步、`57` 的 `worker_yield()` 交出构成创建时序。`33/35` 的 `panic("failed…")` 在 `sef_cb_init_fresh:444-445` 的 `worker_init` 调用中守门——启动失败即 `panic` 重启（`RS` 受控重启语义），与 `sys_hz` 的 `panic` 同型。
+`minix3/minix/servers/vfs/worker.c:worker_init` 的 `mthread_attr_init(&tattr)` + `35` `setstacksize(TH_STACKSIZE)` 模板、`42-54` 的 `for (i=0..9: w_fp=NULL; w_next=NULL; w_task=NONE; mutex_init; cond_init; mthread_create(worker_main, wp))` 8 步、`57` 的 `worker_yield()` 交出构成创建时序。`33/35` 的 `panic("failed…")` 在 `sef_cb_init_fresh:444-445` 的 `worker_init` 调用中守门——启动失败即 `panic` 重启（`RS` 受控重启语义），与 `sys_hz` 的 `panic` 同型。
 
 ### 2.4 `worker_cleanup` 逆向拆除（`minix3/minix/servers/vfs/worker.c:worker_cleanup`）
 
-`minix3/minix/servers/vfs/worker.c:worker_cleanup（L73，工具生成）` 的 `assert(worker_idle())`（`pending==0 && busy==0`）为活更新前置，`76-82` 的 `for (i: assert(w_fp==NULL); worker_wake)` 使 `worker_main:222` 的 `worker_sleep → self->w_fp == NULL → return FALSE → thread exit` 路径触发，`85` 的 `worker_yield` 使退出线程 `join` 前调度，`88-96` 的 `mthread_join + cond_destroy + mutex_destroy` 逆序拆除（与 `init` 的 `create` 顺序相反），`100` 的 `mthread_attr_destroy` 收尾，`103` 的 `memset(workers, 0)` 清零。`sef_cb_lu_prepare:312-324` 的 `!worker_idle → ENOTREADY` 与 `worker_cleanup` 在活更新的 `REQUEST_FREE/PROTOCOL_FREE` 状态中调用（`main.c:312-324`），与 `312-324` 的 `if (!worker_idle) break→ENOTREADY` 的“非空闲则阻塞更新”守门。
+`minix3/minix/servers/vfs/worker.c:worker_cleanup` 的 `assert(worker_idle())`（`pending==0 && busy==0`）为活更新前置，`76-82` 的 `for (i: assert(w_fp==NULL); worker_wake)` 使 `worker_main:222` 的 `worker_sleep → self->w_fp == NULL → return FALSE → thread exit` 路径触发，`85` 的 `worker_yield` 使退出线程 `join` 前调度，`88-96` 的 `mthread_join + cond_destroy + mutex_destroy` 逆序拆除（与 `init` 的 `create` 顺序相反），`100` 的 `mthread_attr_destroy` 收尾，`103` 的 `memset(workers, 0)` 清零。`sef_cb_lu_prepare:312-324` 的 `!worker_idle → ENOTREADY` 与 `worker_cleanup` 在活更新的 `REQUEST_FREE/PROTOCOL_FREE` 状态中调用（`main.c:312-324`），与 `312-324` 的 `if (!worker_idle) break→ENOTREADY` 的“非空闲则阻塞更新”守门。
 
 ### 2.5 `worker_idle / worker_available` 读视图（`minix3/minix/servers/vfs/worker.c:worker_idle`）
 
-`minix3/minix/servers/vfs/worker.c:worker_idle（L113，工具生成）` 的 `pending==0 && busy==0` 空闲与 `228-233` 的 `NR_WTHREADS - busy` 可用数构成读视图——`worker_available() > 1` 的“至少留一”在 `may_do_pending:156` 与 `can_start` 的调用点（`main.c:104` 的 `ds_event` 与 `handle_work:165` 的 `EAGAIN`）守门。
+`minix3/minix/servers/vfs/worker.c:worker_idle` 的 `pending==0 && busy==0` 空闲与 `228-233` 的 `NR_WTHREADS - busy` 可用数构成读视图——`worker_available() > 1` 的“至少留一”在 `may_do_pending:156` 与 `can_start` 的调用点（`main.c:104` 的 `ds_event` 与 `handle_work:165` 的 `EAGAIN`）守门。
 
 ### 2.6 `worker_assign / worker_try_activate / worker_start` 分发核（`minix3/minix/servers/vfs/worker.c:worker_assign`）
 
@@ -143,19 +144,19 @@ worker 池是 `VFS` 的并发边界：9 固定真实线程以 `pending`（排队
 
 ### 2.10 `thread_cleanup` 回收（`main.c:558-575`）
 
-`main.c:562-565` 的 `check_filp/vnode/vmnt_locks_by_me`（`LOCK_DEBUG`）与 `568-574` 的 `if (FP_SRV_PROC) { find_vmnt(fp_endpoint) → flags&=~VMNT_CALLBACK }` 的回调标志回收，使 `handle_work:170` 的 `VMNT_CALLBACK` 置位在 `worker_main:279` 的 `thread_cleanup` 解绑前清除。`LOCK_DEBUG` 计数在 `minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG（L72，工具生成）` 的 `fp_vp/vmnt_rdlocks` 与之互证。
+`main.c:562-565` 的 `check_filp/vnode/vmnt_locks_by_me`（`LOCK_DEBUG`）与 `568-574` 的 `if (FP_SRV_PROC) { find_vmnt(fp_endpoint) → flags&=~VMNT_CALLBACK }` 的回调标志回收，使 `handle_work:170` 的 `VMNT_CALLBACK` 置位在 `worker_main:279` 的 `thread_cleanup` 解绑前清除。`LOCK_DEBUG` 计数在 `minix3/minix/servers/vfs/fproc.h:LOCK_DEBUG` 的 `fp_vp/vmnt_rdlocks` 与之互证。
 
 ---
 
 ## 3 Rust 设计决策
 
-Rust 改写不是照抄 `minix3/minix/servers/vfs/worker.c:worker_assign（L139，工具生成）` 的 `w_fp = rfp` 裸指针赋值与 `cond_wait` 隐式调度，而是吸收 Redox/Linux 的异步执行模型后做取舍。以下决策对应 `.design/08-design.v1.md` D1-D6。
+Rust 改写不是照抄 `minix3/minix/servers/vfs/worker.c:worker_assign` 的 `w_fp = rfp` 裸指针赋值与 `cond_wait` 隐式调度，而是吸收 Redox/Linux 的异步执行模型后做取舍。以下决策对应 `.design/08-design.v1.md` D1-D6。
 
 ### D1 执行模型：真实线程 → 请求槽状态机
 
-- **C**：`mthread_create(worker_main) ×9` 真实线程（`minix3/minix/servers/vfs/worker.c:worker_init（L52，工具生成）`）+ `w_event_mutex/cond` 线程内同步（`minix3/minix/servers/vfs/threads.h:worker_thread（L25，工具生成）`）。
+- **C**：`mthread_create(worker_main) ×9` 真实线程（`minix3/minix/servers/vfs/worker.c:worker_init`）+ `w_event_mutex/cond` 线程内同步（`minix3/minix/servers/vfs/threads.h:worker_thread`）。
 - **Rust**：`WorkerPool { slots: [WorkerSlot; 9], pending: usize, busy: usize, allow: bool }` 的 9 固定请求槽；`WorkerSlot { state: WorkerState::Idle/Busy { slot, func }/WaitingForFs { task } /Suspended { saved } }` 的显式状态机；`busy = slots.iter().filter(|s| !Idle).count()` 的派生计数；`NR_WTHREADS 9` 常量保留。
-- **为什么**：真实线程的 `TH_STACKSIZE 28 KiB ×9 = 252 KiB` 栈在单线程事件循环（`ARCH A-1`）下为冗余；VFS 作为用户态服务器与 `PM` 同为单线程事件循环时，`ReplyIntent::ReplyLater`（`os/servers/vfs/src/main_loop.rs:fn lu_prepare（L118，工具生成）`）的 `SUSPEND` 建模已在 `17-pipe/23-select` 层显式，`worker` 的 `Busy` 仅为“已绑定但未回复”的 `w_fp` 语义，无需 `mthread` 调度器。
+- **为什么**：真实线程的 `TH_STACKSIZE 28 KiB ×9 = 252 KiB` 栈在单线程事件循环（`ARCH A-1`）下为冗余；VFS 作为用户态服务器与 `PM` 同为单线程事件循环时，`ReplyIntent::ReplyLater`（`os/servers/vfs/src/main_loop.rs:fn lu_prepare`）的 `SUSPEND` 建模已在 `17-pipe/23-select` 层显式，`worker` 的 `Busy` 仅为“已绑定但未回复”的 `w_fp` 语义，无需 `mthread` 调度器。
 - **备选**：保留 `std::thread::spawn×9` 真实线程；否决——`os` 的 `#![no_std]` 约束与 `WASM` 可移植性要求无 `std::thread`，且 `fproc` 的 `Rc` 引用在 `Send` 约束下需 `Arc+Mutex` 的 `SMP` 开销。
 
 ### D2 全局计数聚合：`pending/busy/block_all` → `WorkerPool` 字段
@@ -241,18 +242,18 @@ os/servers/vfs/src/
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
-| 空闲 `pending==0 && busy==0` | `WorkerPool::is_idle` | `pending==0 && busy==0` | `minix3/minix/servers/vfs/worker.c:worker_idle（L113，工具生成）` |
-| 可用 `NR - busy` | `available` | `NR_WTHREADS - busy` | `minix3/minix/servers/vfs/worker.c:worker_available（L233，工具生成）` |
-| 至少留一 `available>1` | `may_do_pending` | `available>1` | `minix3/minix/servers/vfs/worker.c:worker_may_do_pending（L156，工具生成）` |
-| 门控 `!allow → 仅 spare` | `try_activate` | `!block_all \|\| use_spare` | `minix3/minix/servers/vfs/worker.c:worker_try_activate（L349，工具生成）` |
-| 双向绑定 `w_fp ↔ fp_worker` | `assign/release` | `w_fp==slot && fp_worker==slot` | `minix3/minix/servers/vfs/worker.c:worker_assign（L138，工具生成）` |
-| 协程保存 `err_code` 往返 | `suspend/resume` | `saved_err ↔ err` | `minix3/minix/servers/vfs/worker.c:worker_thread（L485，工具生成）/504` |
+| 空闲 `pending==0 && busy==0` | `WorkerPool::is_idle` | `pending==0 && busy==0` | `minix3/minix/servers/vfs/worker.c:worker_idle` |
+| 可用 `NR - busy` | `available` | `NR_WTHREADS - busy` | `minix3/minix/servers/vfs/worker.c:worker_available` |
+| 至少留一 `available>1` | `may_do_pending` | `available>1` | `minix3/minix/servers/vfs/worker.c:worker_may_do_pending` |
+| 门控 `!allow → 仅 spare` | `try_activate` | `!block_all \|\| use_spare` | `minix3/minix/servers/vfs/worker.c:worker_try_activate` |
+| 双向绑定 `w_fp ↔ fp_worker` | `assign/release` | `w_fp==slot && fp_worker==slot` | `minix3/minix/servers/vfs/worker.c:worker_assign` |
+| 协程保存 `err_code` 往返 | `suspend/resume` | `saved_err ↔ err` | `minix3/minix/servers/vfs/worker.c:worker_thread/504` |
 
 ---
 
 ## 5 测试要点
 
-> 基线：`cargo test -p minix-vfs --lib` 截至 2026-09-03 为 **96 passed / 0 failed**（`fproc` 13 + `main_loop` 23 + `worker` 19 + `call_table` 6 + `filp` 7 + `vnode` 7 + `vmnt` 7 + `tll` 6 = 88 → `cargo test` 实测 96 的计口径以 `96 passed` 为准；`minix-types` 108 独立）。
+> 基线（实测口径，本文不抄录日期快照）：`cargo test -p minix-vfs --lib` 当前 **538 passed / 0 failed**；按文件计 `worker.rs` 19、`fproc.rs` 22、`main_loop.rs` 94、`filp.rs` 7、`call_table.rs` 4。复核：`grep -c '^\s*#\[test\]' os/servers/vfs/src/{worker,fproc,main_loop,filp,call_table}.rs`（旧文本记作 96 与 `main_loop` 23、`fproc` 13，已随测试增加而失真——这正是 Doc-Sync-7 要拦的偏差）
 > 本章直接影响 `8 → 19` 项新增（`is_idle/available/may_pending/allow/assign/can_start/start_pm/start_both_pending/suspend_resume/wait_signal/stop/stop_by_ep/steal/selector/cleanup/yield/error/slot`），`minix-vfs --lib` 总计 77 → 96（实测 96，doc 计数以 `cargo test` 输出为准）。
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
@@ -264,18 +265,18 @@ os/servers/vfs/src/
 | `test_worker_assign_busy` | `minix3/minix/servers/vfs/worker.c:worker_assign` | `w_fp==NULL→Busy + busy++` 绑定 | `worker.rs` |
 | `test_worker_can_start_pending` | `minix3/minix/servers/vfs/worker.c:worker_can_start` | `!pending&&!active→T; has_normal→F; pending→T` 的三路 | `worker.rs` |
 | `test_worker_start_pm_vs_normal` | `minix3/minix/servers/vfs/worker.c:worker_start` | `func NULL→PM_WORK` vs `func Some→fp_func` 双存储 + `already pending\|active` 的 Err | `worker.rs` |
-| `test_worker_start_both_pending_and_active` | `minix3/minix/servers/vfs/worker.c:worker_start（L382，工具生成）` | `pending&&active → BothPendingAndActive` 的 `panic→Err` | `worker.rs` |
+| `test_worker_start_both_pending_and_active` | `minix3/minix/servers/vfs/worker.c:worker_start` | `pending&&active → BothPendingAndActive` 的 `panic→Err` | `worker.rs` |
 | `test_worker_suspend_resume_token` | `minix3/minix/servers/vfs/worker.c:worker_thread` | `save err → restore(err)` 的协程往返 | `worker.rs` |
 | `test_worker_wait_is_suspend_plus_sleep` | `minix3/minix/servers/vfs/worker.c:worker_wait` | `wait → Suspended → signal → Busy` 状转 | `worker.rs` |
 | `test_worker_stop_injects_eio` | `minix3/minix/servers/vfs/worker.c:worker_stop` | `stop → EIO + wake` 的两套 `sendrec` 守卫 | `worker.rs` |
 | `test_worker_stop_by_endpoint` | `minix3/minix/servers/vfs/worker.c:worker_stop_by_endpt` | `task==ep → stop` 的端点级联 | `worker.rs` |
 | `test_worker_steal_context` | `minix3/minix/servers/vfs/worker.c:worker_set_proc` | `from→to` 的 `w_fp` 偷换的 `target idle` 守卫 | `worker.rs` |
-| `test_slot_selector_two_impls` | `minix3/minix/servers/vfs/worker.c:worker_assign（L128，工具生成）/331` | `FirstFit` 线性 vs `RoundRobin` 轮转的 `SlotSelector` 双实现差异 | `worker.rs` |
+| `test_slot_selector_two_impls` | `minix3/minix/servers/vfs/worker.c:worker_assign/331` | `FirstFit` 线性 vs `RoundRobin` 轮转的 `SlotSelector` 双实现差异 | `worker.rs` |
 | `test_worker_cleanup_requires_idle` | `minix3/minix/servers/vfs/worker.c:worker_cleanup` | `!idle → Err` 与 `idle → Ok` 的活更新守门 | `worker.rs` |
 | `test_worker_yield_is_noop` | `minix3/minix/servers/vfs/worker.c:worker_yield` | `yield_now` 在单线程事件循环下 `noop` | `worker.rs` |
-| `test_worker_trait_has_two_impls` | `minix3/minix/servers/vfs/worker.c:worker_assign（L128，工具生成）` | `SlotSelector` trait 双实现 `dyn` 分发 | `worker.rs` |
-| `test_worker_error_to_errno` | `minix3/minix/servers/vfs/worker.c:worker_start（L382，工具生成）` | `WorkerError → EINVAL/EBUSY/ENOSPC` 的 `to_errno` 映射 | `worker.rs` |
-| `test_worker_slot_new_and_release` | `minix3/minix/servers/vfs/worker.c:worker_init（L45，工具生成）/283` | `WorkerSlot::new → bind → release` 的 `Idle↔Busy` 往返 | `worker.rs` |
+| `test_worker_trait_has_two_impls` | `minix3/minix/servers/vfs/worker.c:worker_assign` | `SlotSelector` trait 双实现 `dyn` 分发 | `worker.rs` |
+| `test_worker_error_to_errno` | `minix3/minix/servers/vfs/worker.c:worker_start` | `WorkerError → EINVAL/EBUSY/ENOSPC` 的 `to_errno` 映射 | `worker.rs` |
+| `test_worker_slot_new_and_release` | `minix3/minix/servers/vfs/worker.c:worker_init/283` | `WorkerSlot::new → bind → release` 的 `Idle↔Busy` 往返 | `worker.rs` |
 
 测试策略：`WorkerPool` 的 `idle` 以 `new → idle` 零化样本覆盖；`may_do_pending` 以 `pending=1,busy=8→不可` 与 `busy=7→可` 的 spare 边界两样本覆盖；`allow` 以 `FALSE 时 dispatch→PENDING` 与 `TRUE 时 drain→Busy` 两样本覆盖；`start` 以 `pending+has_normal → Err` 与 `!pending&&!active → Ok assign` 两样本覆盖；`suspend/resume` 以 `Token` 的 `err` 往返样本覆盖；`stop` 以 `Task==NONE 时不注入` 的 `None` 守卫样本覆盖；`SlotSelector` 以 `FirstFit` 最低空闲 vs `RoundRobin` 轮转的 `0→3` 差异样本覆盖。
 
@@ -294,7 +295,7 @@ os/servers/vfs/src/
          └─► 10-pm-protocol: service_pm 的 12 个 VFS_PM_* 的 worker_start 双轨  （VFS_PM_FORK 的非 PM_WORK 与 VFS_PM_EXEC 的 PM_WORK 分化）
 ```
 
-`tll` 的 `EBUSY → tll_append → worker_wait` 阻塞在 `07` 显式，本章的 `worker_suspend` 在 `tll` 层等待 `READSER→WRITE` 升级；`pipe` 的 `suspend` 在 `17` 显式，本章的 `worker_wait` 在 `pipe` 层等待读端/写端到达——二者合流于同一 `w_event` 队列（`minix3/minix/servers/vfs/tll.c:tll_unlock（L278，工具生成）` 的 `write/serial` 双队列头唤醒即信号此队列）。
+`tll` 的 `EBUSY → tll_append → worker_wait` 阻塞在 `07` 显式，本章的 `worker_suspend` 在 `tll` 层等待 `READSER→WRITE` 升级；`pipe` 的 `suspend` 在 `17` 显式，本章的 `worker_wait` 在 `pipe` 层等待读端/写端到达——二者合流于同一 `w_event` 队列（`minix3/minix/servers/vfs/tll.c:tll_unlock` 的 `write/serial` 双队列头唤醒即信号此队列）。
 
 阅读顺序提示：若关心“分发如何被门控”，下一站 `09-main-loop.md`（`get_work` 的 `reviving` 优先与 `handle_work` 的 `use_spare`）；若关心“分发如何与 PM 延期交互”，下一站 `10-pm-protocol.md`（`worker_start` 的 `PM_WORK` 与 `service_pm_postponed` 的消费）。
 
@@ -302,7 +303,7 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/threads.h:1-38`（`worker_thread` 12 字段 / `mthread` 宏映射 / `INVALID_THREAD`）、`minix3/minix/servers/vfs/worker.c:1-607`（`pending/busy/block_all` 三全局 / `worker_init/cleanup/idle/available/may_do_pending/allow/assign/get_work/main/yield/sleep/wake/suspend/resume/wait/signal/stop/stop_by_endpt/get/set_proc` 22 函数 + `thread_cleanup`）、`minix3/minix/servers/vfs/glo.h:EXTERN（L22，工具生成）/34/37/41`（`fp/self/workers/err_code/ROOT_FS_E` / `who_p/fproc_addr/who_e/job_m_in` 宏）、`minix3/minix/servers/vfs/const.h:NR_WTHREADS`（`NR_WTHREADS 9` / `FP_BLOCKED_ON_*`）、`minix3/minix/servers/vfs/main.c:main（L68，工具生成）`（`worker_yield + send_work + get_work + IS_VFS_FS_TRANSID→do_reply + PM→service_pm + notify + IS_BDEV/CDEV/SDEV + handle_work` 五路分发）、`501-523`（`do_init_root` 的 `worker_allow(FALSE/TRUE)` 两阶段）、`558-575`（`thread_cleanup` 的 `VMNT_CALLBACK` 回收）、`528-553`（`lock_proc/unlock_proc` 的 `suspend→lock→resume` 协程）
+- C 源：`minix3/minix/servers/vfs/threads.h:1-38`（`worker_thread` 12 字段 / `mthread` 宏映射 / `INVALID_THREAD`）、`minix3/minix/servers/vfs/worker.c:1-607`（`pending/busy/block_all` 三全局 / `worker_init/cleanup/idle/available/may_do_pending/allow/assign/get_work/main/yield/sleep/wake/suspend/resume/wait/signal/stop/stop_by_endpt/get/set_proc` 22 函数 + `thread_cleanup`）、`minix3/minix/servers/vfs/glo.h:EXTERN/34/37/41`（`fp/self/workers/err_code/ROOT_FS_E` / `who_p/fproc_addr/who_e/job_m_in` 宏）、`minix3/minix/servers/vfs/const.h:NR_WTHREADS`（`NR_WTHREADS 9` / `FP_BLOCKED_ON_*`）、`minix3/minix/servers/vfs/main.c:main`（`worker_yield + send_work + get_work + IS_VFS_FS_TRANSID→do_reply + PM→service_pm + notify + IS_BDEV/CDEV/SDEV + handle_work` 五路分发）、`501-523`（`do_init_root` 的 `worker_allow(FALSE/TRUE)` 两阶段）、`558-575`（`thread_cleanup` 的 `VMNT_CALLBACK` 回收）、`528-553`（`lock_proc/unlock_proc` 的 `suspend→lock→resume` 协程）
 - 阶段文档：`02-fproc-struct.md`（`BlockedOn` 七态与 `FProc.flags: PENDING/PM_WORK`）、`03-fproc-table.md`（`isokendpt` 三守卫与 `PID_FREE/NONE` 双哨兵）、`07-tll-lock.md`（`tll` 的 `lock → EBUSY → append → wait` 排队）、`09-main-loop.md`（`get_work` 的 `reviving` 优先与 `do_work` 的 `SUSPEND`）、`10-pm-protocol.md`（`service_pm` 的 `worker_start(..., NULL)` 的 `PM_WORK` 延期）、`99-global-concepts.md`（`NR_WTHREADS` 常量与 `WorkerState` 术语）
 - Rust 实现：`os/servers/vfs/src/worker.rs:1`（`WorkerPool/WorkerSlot/WorkerState/WorkerFunc/SuspendToken`）、`os/servers/vfs/src/fproc.rs:1`（`FProc.flags` 的 `PENDING/PM_WORK` 二位 + `BlockedOn` 枚举）、`os/servers/vfs/src/main_loop.rs:1`（`VfsState.worker_pool` 聚合与 `BootPhase::Mounting` 的 `allow` 门控）
 - 内核侧：`../01-stage-kernel/06-proc-init-boot-proc.md`（`RS` 的 `boot image` 与 `NR_PROCS` 同界）、`../01-stage-kernel/16-smp.md`（`mthread` 的 `BKL` 假设与 `!Send` 单线程事件循环）

@@ -36,6 +36,17 @@
 # 带 "+" 的检查基线豁免（tools/pattern-gate-baseline.txt，key=检查名|路径|cksum）。
 
 set -u
+
+# 参数守卫（2026-10-08 全量 review 干跑发现）：未知旗标此前被静默忽略，调用者以为在跑增量门、
+# 实际跑的是全量检查（耗时数分钟）。宁可当场报错，也不给「看起来跑了、其实没跑」的门。
+case "${1:-}" in
+  ""|--full) : ;;
+  -h|--help)
+    printf '用法：tools/pattern-gate.sh [--full]\n本工具只做全量模式检查；按改动范围查模式请用 tools/doc-style-lint.sh --diff 或 tools/review-gate-check.sh\n'
+    exit 0 ;;
+  *) printf '未知参数：%s\n本工具只支持 --full（默认）。想按改动范围检查请用 tools/doc-style-lint.sh --diff\n' "$1" >&2
+     exit 2 ;;
+esac
 export LC_ALL=C
 
 # C-69 迁移适配（2026-10-07 notes 三树迁移）：diff 范围从唯一路径真源取——旧写法把 pathspec

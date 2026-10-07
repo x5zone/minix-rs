@@ -104,6 +104,12 @@ else
 fi
 # 历史 fallback：早期 session 用 VERIFY-CHECK-{NN}.md（带 doc 编号后缀）；canonical 是无后缀的 VERIFY-CHECK.md（与 review-init.sh / README 一致）。
 VERIFY_NN_FILE="${REVIEW_BASE}/VERIFY-CHECK-${NN}.md"
+# 文档级 VERIFY-CHECK 优先（2026-10-08 干跑发现的不一致）：claude/codex 布局把产物写在
+# .review/{tool}/{stage}/{doc-stem}/ 下（AGENTS.md 与 review-process.md 皆如此规定），
+# 而本检查器只认 stage 级单文件 —— stage 级同名文件在多篇 review 时会互相覆盖。
+if [[ -n "${DOC_DIR:-}" && -f "${DOC_DIR}/VERIFY-CHECK.md" ]]; then
+  VERIFY_FILE="${DOC_DIR}/VERIFY-CHECK.md"
+fi
 
 # design 目录路径：在三棵树里定位 <stage>/<doc-stem>.md，命中即取该 stage 的 .design/ 快照
 DESIGN_FILE=""

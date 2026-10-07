@@ -120,7 +120,17 @@ resolve_c() { # FILE NAME —— C 启发式（限定定义形态，排除注释
       }
       if (line ~ ("^(typedef[[:space:]]+)?(struct|enum|union)([^A-Za-z0-9_]|$)")) { print FNR; next }
       if (line ~ ("^[^[:space:]].*[^A-Za-z0-9_]" name "[[:space:]]*[(]") && line !~ /;[[:space:]]*$/) { print FNR; next }
-      if (line ~ ("^" name "[[:space:]]*[(]") && line !~ /;[[:space:]]*$/ && FNR < total && lines[FNR + 1] ~ /^[[:space:]]*[{]/) { print FNR; next }
+      if (line ~ ("^" name "[[:space:]]*[(]") && line !~ /;[[:space:]]*$/) {
+        # 跨行签名：Minix3 常见「返回类型单独一行 + NAME( 顶格 + 参数续行数行 + {」，
+        # 只看下一行会漏判（如 cdev.c 的 cdev_io：280 行签名、281 行参数续行、282 行才 {）。
+        # 往后最多看 6 行，遇到 { 即认定为定义；遇到 ; 或 } 则判为宏调用/非定义。
+        for (look = FNR + 1; look <= FNR + 6 && look <= total; look++) {
+          nl = lines[look]
+          if (nl ~ /^[[:space:]]*[{]/) { print FNR; break }
+          if (nl ~ /[;}][[:space:]]*$/) { break }
+        }
+      }
+      if (0) { print FNR; next }
     }
   ' "$file" "$file" | tr '
 ' ' '
@@ -250,7 +260,28 @@ EOF
     exit 1
   fi
 
-  echo "SELF-TEST PASS（resolved=5 含 fenced 排除, ZERO-DEF=1, MULTI-DEF=1, 无锚点=exit0）"
+    # ── 第四组：两类假 P0 的真实现场（2026-10-08 全量干跑发现）──
+  #   pipe.c 在 minix3 里有两份（libc/sys 与 servers/vfs），裸文件名曾被判「文件不存在」；
+  #   cdev.c 的 cdev_io 是跨行签名（返回类型独占一行 + 参数续行），曾被判「符号不存在」。
+  #   夹具直接指向真实 C 源，不造临时文件——因为 basename 索引只覆盖 minix3/ 与 os/。
+  cat > "$ft/f-realanchors.md" <<'EOF'
+裸文件名重名：`pipe.c:pipe_suspend` 应消歧到 servers/vfs 那份。
+跨行签名：`cdev.c:cdev_io` 应识别为定义。
+EOF
+  out4="$("$0" --check "$ft/f-realanchors.md" 2>&1 || true)"
+  if printf '%s' "$out4" | grep -q "pipe_suspend → ZERO-DEF"; then
+    echo "SELF-TEST FAIL: 裸文件名重名仍被判 ZERO-DEF（索引未收重名文件）" >&2
+    printf '%s
+' "$out4" | grep pipe_suspend >&2; exit 1
+  fi
+  if printf '%s' "$out4" | grep -q "cdev_io → ZERO-DEF"; then
+    echo "SELF-TEST FAIL: 跨行签名仍被判 ZERO-DEF（只看下一行）" >&2
+    printf '%s
+' "$out4" | grep cdev_io >&2; exit 1
+  fi
+  printf '%s' "$out4" | grep -q "pipe_suspend" || { echo "SELF-TEST FAIL: 夹具锚点未被抽取" >&2; exit 1; }
+
+echo "SELF-TEST PASS（resolved=5 含 fenced 排除, ZERO-DEF=1, MULTI-DEF=1, 无锚点=exit0; 另含跨行签名识别用例）"
   trap - EXIT
 }
 
@@ -261,8 +292,11 @@ if [ "$MODE" = "self-test" ]; then do_self_test; exit 0; fi
 
 # basename 索引（唯一名 → 全路径；重名不收录——与 anchor-migrate 同一唯一性守卫）
 IDXFILE="$(mktemp)"
+# 全量 basename 索引（不再只留全局唯一者）：重名文件交由下方按符号定义消歧。
+# 此前只收录唯一 basename，导致 minix3/minix/servers/vfs/pipe.c 这类重名文件被丢弃，
+# 裸文件名锚点直接掉进「文件不存在 → 按 P0-fact 处理」分支——歧义被当成不存在，是假 P0 制造机。
 find minix3 os -type f \( -name '*.rs' -o -name '*.c' -o -name '*.h' -o -name '*.S' -o -name '*.asm' -o -name '*.ld' \) 2>/dev/null \
-  | awk -F/ '{ bz=$NF; cnt[bz]++; if (cnt[bz] == 1) first[bz] = $0 } END { for (bz in cnt) if (cnt[bz] == 1) print bz "\t" first[bz] }' > "$IDXFILE"
+  | awk -F/ '{ print $NF "\t" $0 }' | sort > "$IDXFILE"
 
 grand_total=0; grand_resolved=0; grand_zero=0; grand_multi=0
 tmp_all="$(mktemp)"
@@ -296,21 +330,53 @@ while IFS=$'\t' read -r doc dline anchor; do
   esac
 
   file=""
+  resolve_note=""
   [ -f "$path" ] && file="$path"
   if [ -z "$file" ]; then
-    # 裸文件名回退：minix3/ + os/ 全树唯一 basename 索引
-    alt="$(awk -F'\t' -v b="$(printf '%s' "$path" | sed 's|.*/||')" '$1 == b { print $2 }' "$IDXFILE")"
-    if [ -n "$alt" ]; then
-      file="$alt"
-      # 后续定位输出用解析后的真实路径
-      clean="$(printf '%s' "$clean" | sed "s|^$path|$alt|")"
-      path="$alt"
-      rest="${clean#*:}"
-    else
+    # 裸文件名回退：按 basename 查全量索引；多命中时用「符号定义落在哪个文件」消歧
+    base="$(printf '%s' "$path" | sed 's|.*/||')"
+    cands="$(awk -F'\t' -v b="$base" '$1 == b { print $2 }' "$IDXFILE" | sort -u)"
+    ncand="$(printf '%s\n' "$cands" | grep -c . || true)"
+    if [ "${ncand:-0}" -eq 0 ]; then
       echo "$doc:$dline: $anchor → ZERO-DEF（文件不存在：$path）→ 按 P0-fact 处理"
       grand_zero=$((grand_zero + 1))
       continue
     fi
+    # 取锚点里的符号名（形如 fn X / struct X / 裸 C 名）用于消歧
+    sym="${rest#* }"; [ "$sym" = "$rest" ] && sym="$rest"
+    case "$rest" in
+      fn\ *|struct\ *|enum\ *|trait\ *|const\ *|static\ *|type\ *) sym="${rest#* }" ;;
+    esac
+    sym="$(printf '%s' "$sym" | grep -oE '^[A-Za-z_][A-Za-z0-9_]*' || true)"
+    if [ "$ncand" -eq 1 ]; then
+      file="$cands"
+      resolve_note="（裸文件名按全树唯一命中解析为 $file）"
+    else
+      hitfile=""; nhi=0
+      while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        case "$c" in
+          *.rs) h=""; [ -n "$sym" ] && h="$(resolve_rust_item "$c" "$(printf '%s' "${rest%% *}" | sed 's/^fn$/fn/')" "$sym" 2>/dev/null || true)" ;;
+          *)    h=""; [ -n "$sym" ] && h="$(resolve_c "$c" "$sym" 2>/dev/null || true)" ;;
+        esac
+        if [ -n "$h" ]; then hitfile="$c"; nhi=$((nhi + 1)); fi
+      done <<< "$cands"
+      if [ "$nhi" -eq 1 ]; then
+        file="$hitfile"
+        resolve_note="（$ncand 个同名文件，按符号 $sym 的定义唯一消歧到 $file）"
+      elif [ "$nhi" -gt 1 ]; then
+        echo "$doc:$dline: $anchor → MULTI-DEF（$ncand 个同名文件里 $nhi 个含该符号定义，锚点须写全路径消歧）→ 补限定"
+        grand_multi=$((grand_multi + 1))
+        continue
+      else
+        echo "$doc:$dline: $anchor → ZERO-DEF（$ncand 个同名文件里都没有符号 $sym 的定义）→ 按 P0-fact 处理"
+        grand_zero=$((grand_zero + 1))
+        continue
+      fi
+    fi
+    clean="$(printf '%s' "$clean" | sed "s|^$path|$file|")"
+    path="$file"
+    rest="${clean#*:}"
   fi
 
   result=""; label=""
