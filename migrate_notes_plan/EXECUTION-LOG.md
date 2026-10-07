@@ -530,3 +530,43 @@ git diff --stat notes/pre-migrate-20261007..notes/post-migrate-20261007 -- notes
 未做且已登记为独立任务的：旧阶段编号与迁移前既有断链（452 条基线，迁移后 257）；
 `fork-syscall-plan.md` 悬空引用的后继判定；`study-notes/` 精简；两个 `.backup` 合并；
 `evidence/` 1.2G 与 tar 卷的长期存放（建议复制到仓库外）。
+
+---
+
+## 收口后的两处自查补交（同一类根因：新文件与暂存清单没复查）
+
+### 补交一：`tools/notes-layout.conf` 漏入库（P0 级，已修）
+
+Phase 4 与 Phase 7 都用 `git add -u -- tools` 之类的**只更新已跟踪文件**的方式暂存，
+而 `tools/notes-layout.conf` 是本次新建的文件，一直没进过索引。后果不是「本机坏了」——本机一切正常——
+而是**新检出上六个工具全废**（`source` 一个不存在的文件，或在 `set -u` 下变量未定义），
+本次「工具链已适配」的结论只在当前工作树成立。
+
+补交提交 `964e3e28e`，并做了新检出的真实验证（不只是 `git ls-files` 看一眼）：
+
+```bash
+git worktree add --detach .wt/verify-layout HEAD
+cd .wt/verify-layout
+ls tools/notes-layout.conf                                    # 存在
+bash -c 'source tools/notes-layout.conf && echo ${NOTES_TREES[*]}'
+#   → rewrite-notes redesign-notes study-notes
+bash tools/design-coverage-check.sh 01-stage-kernel; echo $?  # rc=1（发现缺失＝业务结果，非 rc=2 用法错误）
+cd .. && git worktree remove --force .wt/verify-layout
+```
+
+（新检出的 `.design/` 被 gitignore 排除，所以覆盖率工具在那个树上必然报缺快照——
+rc=1 正是预期的业务结果，说明它确实找到了 `rewrite-notes/01-stage-kernel` 这棵树。）
+
+### tag 重打记录
+
+`notes/post-migrate-20261007` 第一次打在 `3ac2e12de`，因为上面这个漏项重打到 `964e3e28e`。
+两个提交都只在本地、未推送，重打不影响任何共享历史；原因写进了 tag 注释正文最后一条。
+
+### 根因与固化步骤
+
+两次失误（在制文件被代提交、新文件漏入库）同一个根因：**add 之后没复查暂存清单的构成**。
+固化成两条硬步骤，后续任何迁移类任务照抄：
+
+1. `git add` 之后立刻跑 `git diff --cached --name-only | grep -E '<他人 in-progress 路径>'`，期望 0 命中。
+2. 任何**新建**文件必须出现在 `git add` 的显式路径清单里，并在提交后跑一次
+   `git ls-files <新文件路径>` 确认已跟踪；交付前在临时 worktree 里做一次「新检出可用性」验证。
