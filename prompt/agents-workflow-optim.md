@@ -334,3 +334,26 @@ git commit ...
 
 未做的原因：这是横向铺开一类的规范新增，需要先在真文档上量一次存量命中数才能判断可行性，
 属于独立批次；本轮只登记，不半成品落地。
+
+---
+
+## TODO-6：`anchor-resolve.sh` 的 `impl 类型::方法` 限定名解析（状态 `TODO`，可复跑复现）
+
+全量干跑 `rewrite-notes/05-stage-vfs/08-worker-thread.md` 时发现（该篇 §3「为什么」段）：
+
+```bash
+bash tools/anchor-resolve.sh --check rewrite-notes/05-stage-vfs/08-worker-thread.md
+# ... main_loop.rs:impl VfsState::lu_prepare → MULTI-DEF（... 行 411,7504）→ 补 impl Type
+```
+
+- 报错里的 411 是 `impl VfsState {`、7504 是 `impl Default for VfsState {`，**都是 impl 声明行，不是 `fn` 行**；
+- 文件内 `fn lu_prepare` 只有两处：125（自由函数）与 917（`impl VfsState` 的方法）；
+- 用该脚本自身 `resolve_rust_method` 的逐行逻辑独立复现（同 typ、同 method），只命中 917 一处，即应为 resolved。
+
+所以 MULTI-DEF 的结论并非来自 `resolve_rust_method`，而是限定名在上游被分派到了按**类型名**查条目的分支。
+修法是让 `impl Type::method` 只走方法分支，并给 `--self-test` 加一条夹具：
+「一个类型两处 `impl`（含 `impl Default for T`）+ 方法只定义一次」必须判 resolved 而不是 multi-def。
+
+本轮不修的原因：这是解析分支的定位需要再读主流程分派代码（预算外），而**伪造绿灯更糟**——
+把文档锚点退回成歧义写法来消掉这条 MULTI-DEF 是我拒绝做的选项。已在该篇 scan.md 以
+`P1-toolImplQual` 挂为开放项，STATE.md 的 CONVERGED 结论明确排除该项（它不属本篇文档缺陷）。

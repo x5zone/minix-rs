@@ -85,6 +85,8 @@ worker_allow(TRUE);   // 522: 开门——drain pending
 
 worker 池是 `VFS` 的并发边界：9 固定真实线程以 `pending`（排队）、`busy`（已绑）、`block_all`（门控）的三计数决定 `may_do_pending` 的消费时机，以 `w_fp` 的 `busy++` 分配与 `NULL` 归还界定生命周期，以 `is_pending/is_active/has_normal|PM_work` 的四象限决定 `worker_start` 的 `try_activate` vs `pending` 分叉，以 `suspend/resume` 的 `self/fp/err_code` 协程与 `wait/signal` 的 `cond_wait/signal` 睡眠实现可逆阻塞。下一节以 `minix3/minix/servers/vfs/worker.c:worker_init` 全文为主线逐段核对。
 
+用一句白话收尾：三个计数各管一件事——`pending` 是「有多少活排在队里」，`busy` 是「有多少槽已被占住」，`block_all` 是「全局暂停闸门：置起时不再放新活上手，等在途的全部落下」，读者只需记住这三问即可复述本篇。
+
 ---
 
 ## 2 C 源码分析
@@ -156,7 +158,7 @@ Rust 改写不是照抄 `minix3/minix/servers/vfs/worker.c:worker_assign` 的 `w
 
 - **C**：`mthread_create(worker_main) ×9` 真实线程（`minix3/minix/servers/vfs/worker.c:worker_init`）+ `w_event_mutex/cond` 线程内同步（`minix3/minix/servers/vfs/threads.h:worker_thread`）。
 - **Rust**：`WorkerPool { slots: [WorkerSlot; 9], pending: usize, busy: usize, allow: bool }` 的 9 固定请求槽；`WorkerSlot { state: WorkerState::Idle/Busy { slot, func }/WaitingForFs { task } /Suspended { saved } }` 的显式状态机；`busy = slots.iter().filter(|s| !Idle).count()` 的派生计数；`NR_WTHREADS 9` 常量保留。
-- **为什么**：真实线程的 `TH_STACKSIZE 28 KiB ×9 = 252 KiB` 栈在单线程事件循环（`ARCH A-1`）下为冗余；VFS 作为用户态服务器与 `PM` 同为单线程事件循环时，`ReplyIntent::ReplyLater`（`os/servers/vfs/src/main_loop.rs:fn lu_prepare`）的 `SUSPEND` 建模已在 `17-pipe/23-select` 层显式，`worker` 的 `Busy` 仅为“已绑定但未回复”的 `w_fp` 语义，无需 `mthread` 调度器。
+- **为什么**：真实线程的 `TH_STACKSIZE 28 KiB ×9 = 252 KiB` 栈在单线程事件循环（`ARCH A-1`）下为冗余；VFS 作为用户态服务器与 `PM` 同为单线程事件循环时，`ReplyIntent::ReplyLater`（`os/servers/vfs/src/main_loop.rs:impl VfsState::lu_prepare`）的 `SUSPEND` 建模已在 `17-pipe/23-select` 层显式，`worker` 的 `Busy` 仅为“已绑定但未回复”的 `w_fp` 语义，无需 `mthread` 调度器。
 - **备选**：保留 `std::thread::spawn×9` 真实线程；否决——`os` 的 `#![no_std]` 约束与 `WASM` 可移植性要求无 `std::thread`，且 `fproc` 的 `Rc` 引用在 `Send` 约束下需 `Arc+Mutex` 的 `SMP` 开销。
 
 ### D2 全局计数聚合：`pending/busy/block_all` → `WorkerPool` 字段
@@ -229,13 +231,13 @@ os/servers/vfs/src/
 | `worker_try_activate` | `minix3/minix/servers/vfs/worker.c:worker_try_activate` | `WorkerPool::try_activate(slot, use_spare) -> Activate` | `needed<=avail && (allow\|\|spare) → assign else PENDING++` |
 | `worker_start` | `minix3/minix/servers/vfs/worker.c:worker_start` | `WorkerPool::start(slot, func, msg, spare, &mut FProc) -> Result` | 四象限 `panic→Err` + 双存储 + `!pending&&!active→try_activate` |
 | `worker_yield` | `minix3/minix/servers/vfs/worker.c:worker_yield` | `WorkerPool::yield_now(&mut self)` | `noop`（单线程下 `mthread_yield_all` 无语义） |
-| `worker_suspend` | `minix3/minix/servers/vfs/worker.c:worker_thread` | `WorkerPool::suspend(slot, err) -> SuspendToken` | `save err, state=Suspended` |
+| `worker_suspend` | `minix3/minix/servers/vfs/worker.c:worker_suspend` | `WorkerPool::suspend(slot, err) -> SuspendToken` | `save err, state=Suspended` |
 | `worker_resume` | `minix3/minix/servers/vfs/worker.c:worker_resume` | `WorkerPool::resume(token)` | `restore err, state=Busy` |
 | `worker_wait` | `minix3/minix/servers/vfs/worker.c:worker_wait` | `WorkerPool::wait(slot) -> SuspendToken` | `suspend → sleep` 合成 |
 | `worker_signal` | `minix3/minix/servers/vfs/worker.c:worker_signal` | `WorkerPool::signal(token)` | `wake Waiting` |
 | `worker_stop` | `minix3/minix/servers/vfs/worker.c:worker_stop` | `WorkerPool::stop(slot)` | `EIO 注入 + wake` |
 | `worker_stop_by_endpt` | `minix3/minix/servers/vfs/worker.c:worker_stop_by_endpt` | `WorkerPool::stop_by_endpoint(ep)` | `for slot: task==ep → stop` |
-| `worker_get` | `minix3/minix/servers/vfs/worker.c:worker_thread` | `WorkerPool::find_by_slot(slot)` | `Slot` 索引替代 `tid` |
+| `worker_get` | `minix3/minix/servers/vfs/worker.c:worker_get` | `WorkerPool::find_by_slot(slot)` | `Slot` 索引替代 `tid` |
 | `worker_set_proc` | `minix3/minix/servers/vfs/worker.c:worker_set_proc` | `WorkerPool::steal_context(from, to)` | `assert(target idle) → transfer w_fp` |
 
 ### 4.3 不变量
@@ -247,7 +249,7 @@ os/servers/vfs/src/
 | 至少留一 `available>1` | `may_do_pending` | `available>1` | `minix3/minix/servers/vfs/worker.c:worker_may_do_pending` |
 | 门控 `!allow → 仅 spare` | `try_activate` | `!block_all \|\| use_spare` | `minix3/minix/servers/vfs/worker.c:worker_try_activate` |
 | 双向绑定 `w_fp ↔ fp_worker` | `assign/release` | `w_fp==slot && fp_worker==slot` | `minix3/minix/servers/vfs/worker.c:worker_assign` |
-| 协程保存 `err_code` 往返 | `suspend/resume` | `saved_err ↔ err` | `minix3/minix/servers/vfs/worker.c:worker_thread/504` |
+| 协程保存 `err_code` 往返 | `suspend/resume` | `saved_err ↔ err` | `minix3/minix/servers/vfs/worker.c:worker_resume` |
 
 ---
 
@@ -266,7 +268,7 @@ os/servers/vfs/src/
 | `test_worker_can_start_pending` | `minix3/minix/servers/vfs/worker.c:worker_can_start` | `!pending&&!active→T; has_normal→F; pending→T` 的三路 | `worker.rs` |
 | `test_worker_start_pm_vs_normal` | `minix3/minix/servers/vfs/worker.c:worker_start` | `func NULL→PM_WORK` vs `func Some→fp_func` 双存储 + `already pending\|active` 的 Err | `worker.rs` |
 | `test_worker_start_both_pending_and_active` | `minix3/minix/servers/vfs/worker.c:worker_start` | `pending&&active → BothPendingAndActive` 的 `panic→Err` | `worker.rs` |
-| `test_worker_suspend_resume_token` | `minix3/minix/servers/vfs/worker.c:worker_thread` | `save err → restore(err)` 的协程往返 | `worker.rs` |
+| `test_worker_suspend_resume_token` | `minix3/minix/servers/vfs/worker.c:worker_resume` | `save err → restore(err)` 的协程往返 | `worker.rs` |
 | `test_worker_wait_is_suspend_plus_sleep` | `minix3/minix/servers/vfs/worker.c:worker_wait` | `wait → Suspended → signal → Busy` 状转 | `worker.rs` |
 | `test_worker_stop_injects_eio` | `minix3/minix/servers/vfs/worker.c:worker_stop` | `stop → EIO + wake` 的两套 `sendrec` 守卫 | `worker.rs` |
 | `test_worker_stop_by_endpoint` | `minix3/minix/servers/vfs/worker.c:worker_stop_by_endpt` | `task==ep → stop` 的端点级联 | `worker.rs` |

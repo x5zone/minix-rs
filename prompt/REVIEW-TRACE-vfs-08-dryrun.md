@@ -220,3 +220,31 @@ CI 四道门全绿、六个工具自测全 rc=0。
 至此可执行检查全部跑完。**共 14 条流程观察**：成立并修复 D1、D3–D12 共 11 条，
 误判撤回 D2 一条（我自己没读参数表就报缺陷，已在轨迹就地更正），
 不适配说明一条（`doc-snippet-extract` 对本篇无 Rust 代码块，输出为空属正常）。
+
+---
+
+## 十一、清掉 review 自身遗留的两条 P2（把干跑做到零开放发现）
+
+**A. 5 处锚点不是"需补限定"，而是指错了对象（我上轮判低了一档）**
+逐条回 C 源核对后：`worker_thread` 在 `worker.c` 里是**结构体类型名**；那几处命中的其实是
+`worker_suspend`（474 行）与 `worker_get`（572 行）的返回类型。按语义逐条改真名：
+
+| 文档位置 | 原锚点 | 依据 | 改为 |
+|---|---|---|---|
+| §4 表 `worker_suspend` 行 | `worker.c:worker_thread` | 该行讲保存 err 并挂起 → `worker.c:474 worker_suspend` | `worker.c:worker_suspend` |
+| §4 表 `worker_get` 行 | `worker.c:worker_thread` | 槽位索引查表 → `worker.c:572 worker_get` | `worker.c:worker_get` |
+| §4 协程往返行 | `worker.c:worker_thread/504` | 493-504 是 `worker_resume` 的 `self = org_self; err_code = self->w_err_code` | `worker.c:worker_resume` |
+| §5 测试表 | `worker.c:worker_thread` | 测的是 suspend→resume 往返，恢复侧 | `worker.c:worker_resume` |
+| §3 为什么段 | `main_loop.rs:fn lu_prepare` | 文件内有自由函数 125 与 `impl VfsState` 方法 917 两处同名 | `main_loop.rs:impl VfsState::lu_prepare` |
+
+`multi-def` 由 5 降到 1；`zero-def` 仍 0；`doc-style-lint` error 级 0；`review-line-check` 37 项仍全 OK。
+
+**B. D13（新发现，工具缺陷）**：剩下的那 1 处 `multi-def` 不是文档问题。
+按验证器自身的判定逻辑独立复现（同一 `typ=VfsState`、`method=lu_prepare`）只命中 **917 一行**；
+而 `anchor-resolve.sh` 报的是「行 411,7504」——**411 是 `impl VfsState {`、7504 是 `impl Default for VfsState {`**，
+都是 impl 声明行而非 `fn` 行。也就是说它对 `impl 类型::方法` 这种限定名走错了分支（或回落到了按类型名查条目）。
+处置：**不为了把灯改绿而回退文档表述**——文档现在写的是语义正确的限定名。登记为工具缺陷待修，
+并在 scan.md 的 Issue List 里以 `P1-toolImplQual` 记录（严重度 P1：它会误伤每一个正确使用限定名的锚点）。
+
+**C. 结构第 11 节的白话建议已采纳**：`block_all` 的门控含义在 §1 末补了一句白话解释
+（见文档 §1 结尾），使读者不回 §2 也能复述本篇主旨。
