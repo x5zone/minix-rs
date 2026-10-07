@@ -1,5 +1,5 @@
 # anchor-unresolved-baseline — tools/anchor-migrate.sh 无法机械恢复的旧行号锚点清单（D5，2026-09-18 生成）
-# 范围：notes/rewrite 正式编号文档（{NN}-*.md，排除 todo/checklist/.design/.review/draft/archive）
+# 范围：rewrite-notes 正式编号文档（{NN}-*.md，排除 todo/checklist/.design/.review/draft/archive）
 # 性质：卫生项——按 D5 条款批量清理，不进 P1/P2 计数、不进 weighted_new、不参与收敛判定
 # 格式：{token}（去重；出现次数见后缀 ×N）；每次由 --report 重新生成（覆盖，不追加）
 # 重生成：tools/anchor-migrate.sh --stats-only --report <tmp> $(见 todo_plan D5 段) 后按唯一 token 去重

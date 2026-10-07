@@ -333,7 +333,8 @@ rewrite-notes/coordination/NK4C-WORKLOG.md  ../../../os/kernel/src/proc.rs  → 
 六个脚本改为 `source` 该文件，不再各自写死目录名（用户裁决：要配置文件，不要写死）。
 
 **踩到的一次自伤**：该文件由工具写入时带上了 CRLF 行尾，被 bash `source` 时报
-`line 16: $'': command not found`，四个脚本同时失灵且报的是「配置文件语法错」而不是「路径找不到」。
+`line 16: $'
+': command not found`，四个脚本同时失灵且报的是「配置文件语法错」而不是「路径找不到」。
 处置：统一转成 LF（与本仓规范一致，抽样 `tools/doc-style-lint.sh`、`CLAUDE.md`、`prompt/review-rules/review-process.md`
 均为 LF）。同批把本会话早先写出的 `tools/notes-link-check.py`、`pre-migrate-20261007/00-SNAPSHOT.md`、
 `01-PATH-MAP.md` 三份也查出来是 CRLF 并转为 LF。教训：**新工具产出的文件要按仓库既有规范验一次行尾**，
@@ -413,3 +414,52 @@ POSIX sed 把 `{` 当区间表达式定界符，报 `Invalid content of \{\}`，
 | 工具在新布局上真能用 | review-init / review-gate-check / design-coverage-check / design-index-update / doc-style-lint / anchor-resolve / anchor-migrate / unsafe-audit 自测与真实调用 | 全部 exit 0 ✓ |
 | 门 M2 必改全域 | 全域 `notes/(rewrite\|study\|redesign)` 命中计数 | 三棵树、`os/`、`prompt/`、`.codex/`、`.trae/`、根 README 全 0；剩余 41 处全部是刻意保留项：`.claude/settings.local.json` 38（授权命令历史，按裁决冻结）+ `tools/notes-layout.conf`、`CLAUDE.md`、`AGENTS.md` 各 1（描述退役本身的句子）；`tools/anchor-*baseline.txt` 另计（Phase 5 处理）✓ |
 | 文风门 | `doc-style-lint.sh rewrite-notes/MIGRATION.md` | error 级 0 ✓ |
+
+---
+
+## Phase 5 · 两份锚点基线路径前缀替换
+
+六份方案在这里分两派：HY4 与 qwen 主张「重生成，不要 sed」（理由是行号与语义位置都会变），
+deepseek 主张「前缀替换 + 行数对账」。本次按用户裁决取后者，理由是可验证性更强：
+重生成会连带改变锚定符号集，把尚未复核的 868 处历史债标记一次性洗掉，
+而替换前后可以逐行对账；行号安全性由 Phase 3 的「单行内替换、行数不变」纪律保证。
+
+实测两派的前提都成立，但影响面比两份方案的说法都小：
+
+```
+tools/anchor-suspect-baseline.txt     874 行 → 874 行；替换 868 处；替换后旧路径残留 0
+tools/anchor-unresolved-baseline.txt  6609 行 → 6609 行；替换 1 处（只有第 2 行的范围注释含旧路径，
+                                       其余 token 本身是符号名不带路径）
+```
+
+替换同样走 Phase 1 的合同规则表（不是手写四条 sed），并且做完一条正向核对：
+把 suspect 清单里出现的文档路径逐条 `test -f`，**缺失 0**——
+这证明新路径确实指向迁移动过的文件，而不只是字符串换掉了。
+
+门 M7 卫生检查同时跑过：三棵新树无空目录，工作树残留只有用户在制文件与原有未跟踪件。
+
+## Phase 6 记录（编译与工具门，逐条证据见 02-VERIFY.md）
+
+Phase 6 的门禁证据单独落在 `migrate_notes_plan/pre-migrate-20261007/02-VERIFY.md`，
+本文只记过程与判断。
+
+### 门 M5 的两次埋点（这次迁移最关键的一门）
+
+六份方案里 HY4 单独强调：`doc-style-lint.sh` 与锚点基线属于**静默失效**——不报错，只是什么都不查。
+所以不能只看「门跑通了」，必须故意埋一个坏东西看它能不能抓到。
+
+| 埋点 | 做法 | 结果 |
+|---|---|---|
+| 断链 | 在 `rewrite-notes/01-stage-kernel/` 放一份临时文档，引用一个不存在的 `.md` | `notes-link-check.py` 抓到 1 条 ✓ |
+| 坏锚点 | 同一份临时文档里写 `os/kernel/src/lib.rs:fn probe_symbol_that_does_not_exist` | `anchor-resolve.sh --check` 报 ZERO-DEF 并 **exit 1** ✓（第一次测退出码时我用了管道，量到的是 `tail` 的状态；重测确认工具本身返回 1） |
+| 文风增量门 | 往 `rewrite-notes/misc/misc.md` 追加一行含裸日期与 `Gate X` 的文本，跑 `--diff` | 门的范围行打印「限 rewrite-notes redesign-notes study-notes」，并抓到 `SL-4` 与 `SL-7` 各一条 ✓（旧写法钉在 notes 前缀上时，这两条会静默漏过） |
+
+三份埋点文件验证后全部撤销：临时文档删除、`misc.md` 按备份逐字节复原，
+`git status` 回到埋点前的形态（只有基线两文件与用户在制件）。
+
+### 门 M6 的编译面
+
+`cargo check --workspace --tests`（os/ 工作区，本地 `-j 2`）exit 0，零 error。
+411 条 warning 全是死代码类告警，与迁移无因果：`os/` 的改动逐行核验只在注释与文档字符串内
+（Phase 3 的门已量过：非注释新增行仅 1 行，是 `minix-types/README.md` 的列表项）。
+为把这句话变成可核对的证据，另在迁移前 tag 的临时工作树上跑同一条命令做告警数对读，结果写进 02-VERIFY.md。
