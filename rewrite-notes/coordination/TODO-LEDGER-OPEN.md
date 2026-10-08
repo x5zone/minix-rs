@@ -119,7 +119,7 @@
 | 14 运行时 | [`todo.md`](../14-stage-runtime/todo.md) | `open` 1 + 真机 2 | 内核信息魔术失配的错误码选型（需对 C 行为裁决） |
 | 15 文件系统 | [`todo.md`](../15-stage-fs/todo.md) | `partially fixed` 2 | 八个文件服务器入口未接事件循环 |
 | 16 驱动 | [`todo.md`](../16-stage-drivers/todo.md) | `open` 2 + `stopgap landed` 3 | 二十六个纯占位 crate；两套字符驱动收敛 |
-| 17 网络 | [`todo.md`](../17-stage-net/todo.md) | `open` 3 | 套接字标识基值缺 Rust 侧权威；协议栈本体 |
+| 17 网络 | [`todo.md`](../17-stage-net/todo.md) | `open` 2 | 协议栈本体与传输未实现；缺设计条目。原记的第三项"套接字标识基值缺 Rust 侧权威"经现场核实为**账面滞后**（`os/libs/minix-netdriver/src/sockid.rs` 已于 `2026-09-17` 落地，`cargo test -p minix-netdriver --lib sockid` → 5 passed，`2026-10-09` 核）——本行旧计数未跟上，已同步 |
 | 18 命令 | [`todo.md`](../18-stage-commands/todo.md) | `open` 2 + 占位 5 | 命令面尚未接真实系统调用返回 |
 
 ## §7 测试与门面对账（账面数字与代码实测不符，或判据本身有问题）

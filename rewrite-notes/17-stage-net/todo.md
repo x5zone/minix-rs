@@ -1,6 +1,6 @@
 # 17-stage-net Rust 实现架构级 Review TODO
 
-> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 3：套接字标识五类基值缺 Rust 侧权威、协议栈本体与传输未实现、缺设计条目。
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`；`2026-10-09` 回勾）：未闭合 `open` 2：协议栈本体与传输未实现、缺设计条目。本行旧记的第三项"套接字标识五类基值缺 Rust 侧权威"（`N1-P1-1`）经现场核实为**账面滞后**——`os/libs/minix-netdriver/src/sockid.rs` 已落地（`2026-09-17`，与本文件 §0.3 同一条目行自洽），五个 `SOCKID_*` 基值逐个对 `minix3/minix/net/lwip/lwip.h:58-62` 有钉定测试，`cargo test -p minix-netdriver --lib sockid` → 5 passed/0 failed（核于 `2026-10-09`，快照见本轮提交）。§0.2 常量对账表里同一件事此前记的"❌ 计划外缺失"已同步回勾为 ✅。
 > **账面滞后校正**：网络字节序与套接字事件类型的两份手抄已裁决归共享类型库单点权威（`PD-13`），属执行未竟。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
@@ -35,7 +35,7 @@
 | 可挂起表（8 是 / 8 否，CANCEL=n/a 建模为否） | `sockdriver.c:8-26` | `sdev.rs:96-116` | ✅ |
 | SEV_* 0x01-0x20、SFL_* 0x01-0x10、hash `(id+(id>>16))%256` | `sockevent.h:7-19`、`sockevent.c:57` | `sockevent.rs:22-57` | ✅ |
 | NDEV 0x1A00/0x1A80 族、multicast fallback | `com.h:1085+` | `protocol.rs` + `driver.rs:412-414` | ✅（有 `test_request_indices_match_c_offsets` 锁定） |
-| sockid 五类基值 | `lwip.h:58-62` | **无对应 Rust 代码** | ❌ 计划外缺失（N1-P1-1） |
+| sockid 五类基值 | `lwip.h:58-62` | `minix-netdriver/src/sockid.rs` | ✅ 已落地（本行旧记"无对应 Rust 代码"属**账面滞后**，见 §0.3 对 `N1-P1-1` 的行；核于 `2026-10-09`，`cargo test -p minix-netdriver --lib sockid` → 5 passed/0 failed，五个 `SOCKID_*` 基值逐个对 `lwip.h:58-62` 有钉定测试） |
 | errno 双射（STACK_* → ERR_*，17 臂） | `liblwip util.c` | `lwip/src/util.rs:120-141` | ✅（测试锁定 wire 值） |
 | lwip 胶水契约（NO_SYS=1 / POOL=0 / MSS=1460 / WND=16384 / SND=11×MSS） | `lwipopts.h` | `lwip_port.rs:22-35` | ✅ |
 | uds 常量（256/64/0/32768/4096/5）与 hash `(dev^ino)%64` | `uds.h:15-36`、`uds.c:38-47` | `uds/src/core.rs:19-57`、`io.rs:18-25` | ✅ |
