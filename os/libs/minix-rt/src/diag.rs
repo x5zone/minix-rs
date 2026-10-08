@@ -388,9 +388,15 @@ pub fn format_panic_report(
         length: 0,
     };
     if let Some((file, line)) = location {
+        //[SD19-gate] ByteWriter::write_str 恒回 Ok(())（满则静默截断），此处丢弃可证明不失败的 fmt::Result
+        #[allow(clippy::let_underscore_must_use)]
         let _ = core::fmt::write(&mut writer, format_args!("{}:{}: ", file, line));
     }
+    //[SD19-gate] 同上：ByteWriter 不可败，丢弃的是恒 Ok 的 fmt::Result（非静默吞错）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = core::fmt::write(&mut writer, format_args!("{}", message));
+    //[SD19-gate] 同上；末尾换行写入也不可败，writer.length 紧随其后返回真实截断长
+    #[allow(clippy::let_underscore_must_use)]
     let _ = core::fmt::write(&mut writer, format_args!("\n"));
     writer.length
 }
