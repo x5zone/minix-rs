@@ -2362,7 +2362,7 @@ impl<'a> IpcEngine<'a> {
             // （cap 16，含错误臂）——RS_INIT 落 pending 位还是被错臂吞掉。
             #[cfg(not(feature = "mock"))]
             {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                 static SAENT_N: AtomicUsize = AtomicUsize::new(0);
                 if SAENT_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {

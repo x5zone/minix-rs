@@ -91,7 +91,7 @@ pub fn proc_stacktrace(rp: &KProcess) {
     // empty stack (no frames after the initial PC) still produces the
     // single-line output C produces. `walk_frames` always emits the
     // current PC first, so the header has no PC of its own.
-    use minix_plat::CurrentEarlyConsole as Console;
+    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
     Console::write_str(target_name);
     Console::write_str(" ");
     Console::write_hex(target_endpt.0 as u64);
@@ -188,7 +188,7 @@ fn kernel_direct_read_word() -> impl Fn(u64) -> Option<u64> {
 ///
 /// Same as [`proc_stacktrace`]: caller holds the BKL.
 pub fn util_stacktrace() {
-    use minix_plat::CurrentEarlyConsole as Console;
+    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
     // The walk helpers write through EarlyConsole; hosted tests must not
     // invoke this function (same gate as proc_stacktrace's tests).
     let Some(fp) = CurrentStacktraceArch::current_frame_pointer() else {

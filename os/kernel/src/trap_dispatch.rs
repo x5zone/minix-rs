@@ -228,7 +228,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static TICK1: AtomicUsize = AtomicUsize::new(0);
             if TICK1.fetch_add(1, AtomicOrd::Relaxed) == 0 {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
             }
         }
         crate::clock::local_tick(crate::current_cpu_id());
@@ -267,13 +267,13 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 if tick % 1000 == 0
                     && PMST_K.fetch_add(1, AtomicOrd::Relaxed) < 20
                 {
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 }
                 if tick > 5000
                     && nr.0 == 0
                     && PMST_N.fetch_add(1, AtomicOrd::Relaxed) < 2
                 {
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                     if let Some(p) = table.get(nr) {
                         crate::stacktrace::proc_stacktrace(p);
                     }
@@ -316,7 +316,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 if g % 1000 == 0
                     && GTICK_K.fetch_add(1, AtomicOrd::Relaxed) < 20
                 {
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 }
             }
             crate::clock::local_tick(crate::current_cpu_id());
@@ -344,7 +344,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                         && nr.0 == 0
                         && GST_N.fetch_add(1, AtomicOrd::Relaxed) < 2
                     {
-                        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                         if let Some(p) = table.get(nr) {
                             crate::stacktrace::proc_stacktrace(p);
                         }
@@ -380,7 +380,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         match crate::irq_manager::dispatch_hardware_irq(minix_plat::IrqVector::new(irq)) {
             Ok(()) => {}
             Err(crate::irq_manager::IrqError::Spurious(line)) => {
-                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+                use crate::kmess::{EarlyConsole, KernelConsole as Console};
                 Console::write_str("spurious irq ");
                 Console::write_hex(line.get() as u64);
                 Console::write_str("\n");
@@ -477,7 +477,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // Spurious NMI — C prints and returns (exception.c:191-194); the
         // stub's iretq resumes the interrupted context. No state mutated.
         ExceptionOutcome::SpuriousNmi => {
-            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+            use crate::kmess::{EarlyConsole, KernelConsole as Console};
             Console::write_str("got spurious NMI\n");
         }
         // Traced process entered the kernel (int-gate legs keep TF set) and
@@ -509,7 +509,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         ExceptionOutcome::KernelPanic(v) => {
             // Console diagnostics before dying: the panic handler cannot
             // render the formatted message (no fmt on early console).
-            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+            use crate::kmess::{EarlyConsole, KernelConsole as Console};
             Console::write_str("trap: vector ");
             Console::write_hex(v.get() as u64);
             Console::write_str(" err ");
@@ -538,7 +538,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             // VM's own user page fault — forwarding to VM would deadlock
             // on itself. C: pagefault() prints the frame summary and
             // panics ("pagefault in VM") — exception.c:101-118.
-            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+            use crate::kmess::{EarlyConsole, KernelConsole as Console};
             Console::write_str("pagefault for VM on cpu ");
             Console::write_hex(crate::current_cpu_id().raw() as u64);
             Console::write_str(" rip ");
@@ -601,7 +601,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             // vector became which signal is not otherwise observable on
             // real machine (the panic handler cannot render it).
             {
-                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+                use crate::kmess::{EarlyConsole, KernelConsole as Console};
                 Console::write_str("user exception: vector ");
                 Console::write_hex(vector as u64);
                 Console::write_str(" err ");
@@ -801,7 +801,7 @@ fn forward_pagefault_to_vm(
         if matches!(cur_nr.0, 1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11)
             && PFW_N.fetch_add(1, AtomicOrd::Relaxed) < 40
         {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
             match &outcome {
                 crate::ipc::IpcOutcome::Delivered => C0::write_str("D"),
                 crate::ipc::IpcOutcome::Blocked => C0::write_str("B"),
@@ -910,7 +910,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         static IPC_ENTRY: AtomicUsize = AtomicUsize::new(0);
         let n = IPC_ENTRY.fetch_add(1, AtomicOrd::Relaxed);
         if n < 16 {
-            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         }
     }
     if crate::ipc::IpcCall::from_raw(call_nr).is_none() {
@@ -974,10 +974,10 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             // 最坏量级不能拖穿复跑 timeout）。
             let xn = XIN.fetch_add(1, AtomicOrd::Relaxed);
             if xn == 512 {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
             }
             if xn < 512 {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
             }
         }
         #[cfg(not(feature = "mock"))]
@@ -994,8 +994,8 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         // rts，直接裁决「INIT 到底进没进过 int33、停车时消息指针是什么」。
         #[cfg(not(feature = "mock"))]
         if caller.p_endpoint.0 == 0xb {
+            use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
             static INIT33: AtomicUsize = AtomicUsize::new(0);
             if INIT33.fetch_add(1, AtomicOrd::Relaxed) < 48 {
             }
@@ -1037,7 +1037,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static I33N: AtomicUsize = AtomicUsize::new(0);
         if I33N.fetch_add(1, AtomicOrd::Relaxed) < 48 {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
         }
     }
     msg.m_type = call_nr;
@@ -1182,7 +1182,7 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                 // 判别"挂起后未入队/未通知"导致 VM 永不服务的死等。
                 #[cfg(not(feature = "mock"))]
                 {
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                     let (vmreq, state_pending) = table
                         .get(cur_nr)
                         .map(|p| {
@@ -1490,7 +1490,7 @@ unsafe fn riscv64_pagefault_body(
     // panic (exception.c:101-118), the same stop the x86/aarch64 legs
     // enforce.
     if cur_nr == crate::proc::proc_nr::VM_PROC_NR {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("pagefault for VM sepc ");
         Console::write_hex(frame.sepc);
         Console::write_str(" stval ");
@@ -1605,8 +1605,8 @@ unsafe fn riscv64_pagefault_body(
     // 封顶 32 防洪流。
     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
     {
+        use crate::kmess::{EarlyConsole as _, KernelConsole as P5Console};
         use core::sync::atomic::{AtomicUsize, Ordering as P5Ord};
-        use minix_plat::{CurrentEarlyConsole as P5Console, EarlyConsole as _};
         static P5_N: AtomicUsize = AtomicUsize::new(0);
         // §续-327 修正：只观测 rc(0xc) 的 fault（CAP=32 被早期 demand-fill
         // 吃光导致 rc 的 fault 未被观测——p5b 实证）。
@@ -1760,7 +1760,7 @@ fn riscv64_timer_arm() {
     match crate::irq_manager::dispatch_claimed_hardware_irq(minix_plat::TIMER_IRQ, None) {
         Ok(()) => {}
         Err(crate::irq_manager::IrqError::Spurious(irq)) => {
-            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+            use crate::kmess::{EarlyConsole, KernelConsole as Console};
             Console::write_str("spurious irq ");
             Console::write_hex(irq.get() as u64);
             Console::write_str("\n");
@@ -2000,8 +2000,8 @@ unsafe fn riscv64_ipc_dispatch_body(
                 // 定谳 VM IPC 拷贝为何 EFAULT。C-61 前不滚。
                 #[cfg(not(feature = "mock"))]
                 {
+                    use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
                     static IPE: AtomicUsize = AtomicUsize::new(0);
                     if IPE.fetch_add(1, AtomicOrd::Relaxed) < 16 {
                         let ep = table.get(cur_nr).map_or(0i32, |p| p.p_endpoint.0);
@@ -2181,7 +2181,7 @@ fn riscv64_diag_panic(
     scause: u64,
     origin: &str,
 ) -> ! {
-    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+    use crate::kmess::{EarlyConsole, KernelConsole as Console};
     let stval = riscv64_read_stval();
     Console::write_str(origin);
     Console::write_str(" scause=");
@@ -2247,7 +2247,7 @@ pub unsafe extern "C" fn aarch64_kernel_body(
                 match crate::irq_manager::dispatch_claimed_hardware_irq(irq, claimed) {
                     Ok(()) => {}
                     Err(crate::irq_manager::IrqError::Spurious(line)) => {
-                        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+                        use crate::kmess::{EarlyConsole, KernelConsole as Console};
                         Console::write_str("spurious irq ");
                         Console::write_hex(line.get() as u64);
                         Console::write_str("\n");
@@ -2642,7 +2642,7 @@ unsafe fn aarch64_pagefault_body(
             // VM's own fault cannot be forwarded to VM — C: "pagefault
             // in VM" panic (exception.c:101-118).
             if cur_nr == crate::proc::proc_nr::VM_PROC_NR {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 Console::write_str("pagefault for VM elr ");
                 Console::write_hex(frame.elr);
                 Console::write_str(" far ");
@@ -2672,7 +2672,7 @@ unsafe fn aarch64_pagefault_body(
                 static PFA_N: core::sync::atomic::AtomicUsize =
                     core::sync::atomic::AtomicUsize::new(0);
                 if PFA_N.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 40 {
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 }
             }
             if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, far, errcode) {
@@ -3035,7 +3035,7 @@ fn aarch64_diag_panic(
     frame: &minix_arch::arm64::trap_stub::AArch64TrapFrame,
     origin: &str,
 ) -> ! {
-    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+    use crate::kmess::{EarlyConsole, KernelConsole as Console};
     let far = aarch64_read_far();
     Console::write_str(origin);
     Console::write_str(" esr=");

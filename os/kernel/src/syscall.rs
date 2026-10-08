@@ -934,7 +934,7 @@ pub(crate) fn dispatch_ipc(
             // fail-fast 的错误类别定位。
             #[cfg(not(feature = "mock"))]
             {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                 static IPCERR_N: AtomicUsize = AtomicUsize::new(0);
                 if IPCERR_N.fetch_add(1, AtomicOrd::Relaxed) < 64
@@ -1626,7 +1626,7 @@ fn dispatch_privctl(
             if (1..=4).contains(&request)
                 && PCTL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 24
             {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
                 let fl = proc_table
                     .get(target_nr)
                     .map_or(0xFFFF_FFFF, |p| p.p_rts_flags.load());
@@ -1916,8 +1916,8 @@ fn privctl_set_sys(
             // RS 下发的 SRV_F(0x12) 是否真的落到 priv 槽）。
             #[cfg(not(feature = "mock"))]
             {
+                use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                 static SETSYS_N: AtomicUsize = AtomicUsize::new(0);
                 if SETSYS_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
                     if let Some(kp) = priv_table.get(actual_id) {
@@ -2930,8 +2930,8 @@ fn dispatch_diagctl(
         // C: do_diagctl.c:28-44 — data_copy from caller, then kputc each byte
         1 => {
             use crate::cross_space::data_copy_vmcheck;
+            use crate::kmess::{EarlyConsole, KernelConsole as Console};
             use crate::vm::{AddressRef, CrossSpaceResult};
-            use minix_arch::{CurrentEarlyConsole as Console, EarlyConsole};
             use minix_types::{Endpoint, VirBytes};
 
             /// Buffer too large. C: E2BIG = 7
@@ -3002,7 +3002,7 @@ fn dispatch_diagctl(
                     // ELF」时，内核侧重读 handoff 的 boot_procs 镜像首 16B
                     // ——证「RAM=有效 ELF vs VM 裸 DM 直读视图=垃圾」分歧。
                     if diagbuf[..len].windows(15).any(|w| w == b"not a valid ELF") {
-                        use minix_plat::{CurrentEarlyConsole as ElfConsole, EarlyConsole as _};
+                        use crate::kmess::{EarlyConsole as _, KernelConsole as ElfConsole};
                         const KDM: u64 = 0xFFFF_FFC0_4000_0000;
                         // 直接解析 boot 文件表（TABLE_PA=0x85000000，MNXBOOT1
                         // 格式=MAGIC u64+count u32+pad u32+16×(path[64]+pa
@@ -3536,8 +3536,8 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         #[cfg(not(feature = "mock"))]
         #[cfg(target_arch = "x86_64")]
         {
+            use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
             {
                 static SUS: AtomicUsize = AtomicUsize::new(0);
                 if SUS.fetch_add(1, AtomicOrd::Relaxed) < 48 {
@@ -3668,10 +3668,10 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                             // 8 对齐时会造未对齐引用并越出 reply 尾端）。
                             let tn = TXN.fetch_add(1, AtomicOrd::Relaxed);
                             if tn == 512 {
-                                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                                use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
                             }
                             if tn < 512 {
-                                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                                use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
                                 let rb = |o: usize| -> u64 {
                                     let base =
                                         &reply as *const minix_types::Message as *const u8;

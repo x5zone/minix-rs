@@ -811,7 +811,7 @@ impl SmpState {
         let n = self.cpus.iter().filter(|c| c.is_ready()).count() as u32;
         if n != self.ncpus {
             // C: printf("WARNING: only %d out of %d cpus booted\n", n, ncpus)
-            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+            use crate::kmess::{EarlyConsole, KernelConsole as Console};
             Console::write_str("WARNING: not all CPUs booted\n");
         }
 
@@ -1026,7 +1026,7 @@ pub fn smp_init() {
                     .wrapping_sub(tsc0)
                     > 20_000_000_000u64;
                 if uptime_elapsed || tsc_elapsed {
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+                    use crate::kmess::{EarlyConsole, KernelConsole as Console};
                     Console::write_str("WARNING: CPU ");
                     Console::write_hex(hw_id);
                     Console::write_str(" didn't boot in time — skipping\n");
@@ -1110,8 +1110,8 @@ pub fn smp_init() {
         // 节为 hvc）。conduit 回执一行（诊断资产，随门绿滚除）。
         let smc = platform_desc().psci_conduit() == Some(minix_platform::PsciConduit::Smc);
         minix_arch::arm64::smp::set_psci_conduit_smc(smc);
-        minix_plat::CurrentEarlyConsole::write_str("nk4c: psci conduit=");
-        minix_plat::CurrentEarlyConsole::write_str(if smc { "smc\n" } else { "hvc\n" });
+        crate::kmess::KernelConsole::write_str("nk4c: psci conduit=");
+        crate::kmess::KernelConsole::write_str(if smc { "smc\n" } else { "hvc\n" });
 
         // BSP 当前根（§3.2：交给 AP 的就是 BSP 正在用的这张表；aarch64
         // 桩把 TTBR0/TTBR1 钉同一根，与 paging.rs::enable 同约定）。
@@ -1159,19 +1159,17 @@ pub fn smp_init() {
                 spins += 1;
             }
             if arrived {
-                minix_plat::CurrentEarlyConsole::write_str("nk4c: ap-arrived cpu=");
+                crate::kmess::KernelConsole::write_str("nk4c: ap-arrived cpu=");
                 let mut hex = [0u8; 16];
                 let mut v = hw_id as u64;
                 for byte in hex.iter_mut().rev() {
                     *byte = b"0123456789abcdef"[(v & 0xf) as usize];
                     v >>= 4;
                 }
-                minix_plat::CurrentEarlyConsole::write_str(
-                    core::str::from_utf8(&hex).unwrap_or("?"),
-                );
-                minix_plat::CurrentEarlyConsole::write_str("\n");
+                crate::kmess::KernelConsole::write_str(core::str::from_utf8(&hex).unwrap_or("?"));
+                crate::kmess::KernelConsole::write_str("\n");
             } else {
-                minix_plat::CurrentEarlyConsole::write_str("nk4c: ap-timeout\n");
+                crate::kmess::KernelConsole::write_str("nk4c: ap-timeout\n");
             }
         }
     }
@@ -1263,19 +1261,17 @@ pub fn smp_init() {
                 spins += 1;
             }
             if arrived {
-                minix_plat::CurrentEarlyConsole::write_str("nk4c: ap-arrived hart=");
+                crate::kmess::KernelConsole::write_str("nk4c: ap-arrived hart=");
                 let mut hex = [0u8; 16];
                 let mut v = hw_id as u64;
                 for byte in hex.iter_mut().rev() {
                     *byte = b"0123456789abcdef"[(v & 0xf) as usize];
                     v >>= 4;
                 }
-                minix_plat::CurrentEarlyConsole::write_str(
-                    core::str::from_utf8(&hex).unwrap_or("?"),
-                );
-                minix_plat::CurrentEarlyConsole::write_str("\n");
+                crate::kmess::KernelConsole::write_str(core::str::from_utf8(&hex).unwrap_or("?"));
+                crate::kmess::KernelConsole::write_str("\n");
             } else {
-                minix_plat::CurrentEarlyConsole::write_str("nk4c: ap-timeout\n");
+                crate::kmess::KernelConsole::write_str("nk4c: ap-timeout\n");
             }
         }
     }

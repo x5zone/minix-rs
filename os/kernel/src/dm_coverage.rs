@@ -142,7 +142,7 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
     // 同一惯例），不带门 = 测试进程 SIGSEGV。
     #[cfg(not(feature = "mock"))]
     {
-        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
         if let Some((base, end)) = boot_alloc::boot_alloc_region() {
             C0::write_str(" bump=[");
             C0::write_hex(base);

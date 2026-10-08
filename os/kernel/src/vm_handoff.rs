@@ -280,7 +280,7 @@ pub fn classify(
     // 2026-09-21 栈取证），需要知道是 memmap 快照本来就小，还是扣减切多
     // 了。只打前 8 条，避免刷屏。
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: vm_handoff free n=");
         Console::write_hex(free_count as u64);
         Console::write_str(" deducted=");

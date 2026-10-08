@@ -307,7 +307,7 @@ pub(crate) fn cause_signal(
             // VM 死因的缺失拼图（异常臂不打印 stval）。
             #[cfg(not(test))]
             if sig_nr == crate::syscall_signal::SIGSEGV {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 match proc_table.get(target_nr) {
                     Some(p) => match p.p_fault_addr { Some(a) => Console::write_hex(a), None => Console::write_str("none2") },
                     None => Console::write_str("none"),
@@ -894,7 +894,7 @@ pub fn dispatch_sigreturn(
     // C: do_sigreturn.c:83 — warn on corrupt magic (still return OK)
     if !CurrentSignalContext::check_magic(&sctx) {
         // C: printf("kernel sigreturn: corrupt signal context\n")
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+        use crate::kmess::{EarlyConsole, KernelConsole as Console};
         Console::write_str("kernel sigreturn: corrupt signal context\n");
     }
 

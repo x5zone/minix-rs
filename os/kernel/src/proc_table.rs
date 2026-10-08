@@ -540,7 +540,7 @@ impl ProcessTable {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static RS_UNSET_N: AtomicUsize = AtomicUsize::new(0);
             if nr.0 == 2 && RS_UNSET_N.fetch_add(1, AtomicOrd::Relaxed) < 32 {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
                 let enq = !was_runnable && is_runnable;
                 let cpu = self.get(nr).map(|p| p.p_sched.cpu.load(Ordering::Acquire)).unwrap_or(0);
                 C0::write_str(" enq=");
@@ -1293,8 +1293,8 @@ impl ProcessTable {
                         #[cfg(not(feature = "mock"))]
                         #[cfg(target_arch = "x86_64")]
                         if r.p_delivermsg_vir.0 == 0 {
+                            use crate::kmess::{EarlyConsole as _, KernelConsole as C0};
                             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
                             static DM0: AtomicUsize = AtomicUsize::new(0);
                             if DM0.fetch_add(1, AtomicOrd::Relaxed) < 16 {
                             }
@@ -1348,8 +1348,8 @@ impl ProcessTable {
                             // EarlyConsole is production-only: hosted tests
                             // would hit UART port I/O without `iopl`
                             // (same gate as `proc_stacktrace` callers).
+                            use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                             use minix_arch::EarlyConsole as _;
-                            use minix_plat::CurrentEarlyConsole as Console;
                             Console::write_str("WARNING wrong user pointer 0x");
                             Console::write_hex(p.p_delivermsg_vir.0);
                             Console::write_str(" from process ");

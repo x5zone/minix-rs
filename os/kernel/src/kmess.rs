@@ -21,7 +21,12 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::globals::SyncUnsafeCell;
-use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+use minix_plat::CurrentEarlyConsole as Console;
+
+// 收口与 trait 必须同一来源：内核里那些 `use crate::kmess::{KernelConsole as
+// Console, EarlyConsole as _};` 的调用点靠这条 re-export 拿到 trait（否则每个
+// 文件要写两条 use，缩进与 rustfmt 打架）。trait 本体仍归 minix-plat。
+pub use minix_plat::EarlyConsole;
 
 /// Ring capacity. C: `_KMESS_BUF_SIZE 10000` — sys_config.h:22.
 pub const KMESS_BUF_SIZE: usize = 10000;
@@ -128,8 +133,31 @@ pub fn record_bytes(bytes: &[u8]) {
 /// to the real console. Recording and display are parallel, never
 /// alternative.
 pub fn console_write_str(s: &str) {
-    record_str(s);
-    Console::write_str(s);
+    // 统一走收口类型（下方 [`KernelConsole`]）：它只覆写 `write_byte`，
+    // 因此字符串路径上的转义（`\n` → `\r\n`）与十六进制路径上的展开
+    // 都被同一处记录——环里存的字节串与控制台看到的字节串同形。
+    <KernelConsole as EarlyConsole>::write_str(s);
+}
+
+/// 内核诊断的唯一收口（C: `kputc`，`minix3/minix/kernel/utility.c:55-90）。
+///
+/// **只覆写 `write_byte`** 是刻意的：`EarlyConsole` 的 `write_str`/`write_hex`
+/// 默认体最终逐字节走 `Self::write_byte`，所以在 `write_byte` 这一处记录就
+/// 等于「控制台上出现的每个字节都进环」——包括 `\n` 前插的 `\r` 与 `write_hex`
+/// 的展开。若在 `write_str` 里另记一次，环与控制台就会因转义而不同形（两个
+/// 真相）。E-ISKMESS 当时恢复了环却没接喂入者（台账 §8 那条），本类型就是
+/// 那个喂入者：内核里所有诊断打印的 `Console` 别名都指向它。
+pub struct KernelConsole;
+
+impl EarlyConsole for KernelConsole {
+    fn init() {
+        Console::init();
+    }
+
+    fn write_byte(byte: u8) {
+        record_bytes(core::slice::from_ref(&byte));
+        Console::write_byte(byte);
+    }
 }
 
 /// Snapshot the valid window in stream order into `dst`
@@ -260,5 +288,28 @@ mod tests {
     fn test_kmess_snapshot_size_constant() {
         assert_eq!(KMESS_SNAPSHOT_SIZE, 10008);
         assert_eq!(KMESS_BUF_SIZE, 10000); // sys_config.h:22
+    }
+
+    /// 喂入者不变量（台账 §8「消息环的字符写入口没有喂入者」的回归）。
+    ///
+    /// 收口类型只覆写 `write_byte`：`write_str`/`write_hex` 的默认体逐字节走
+    /// `Self::write_byte`，故「控制台看到的每个字节都进环」在一处成立（含
+    /// `\n` 前插的 `\r` 与十六进制展开）。在 `write_str` 里另记一次就会让
+    /// 环与控制台不同形（两个真相），故本钉同时禁止那种写法。
+    #[test]
+    fn test_kernel_console_is_the_single_choke_point() {
+        let src = include_str!("kmess.rs");
+        let at = src
+            .find("impl EarlyConsole for KernelConsole {")
+            .expect("收口类型的 impl 存在");
+        let body = &src[at..(src.len().min(at + 600))];
+        assert!(
+            body.contains("fn write_byte(") && body.contains("record_bytes("),
+            "收口必须在 write_byte 处记录；现体：\n{body}"
+        );
+        assert!(
+            !body.contains("fn write_str(") && !body.contains("fn write_hex("),
+            "不得在 write_str/write_hex 里另记一次（会与 `\\r` 转义不同形）；现体：\n{body}"
+        );
     }
 }

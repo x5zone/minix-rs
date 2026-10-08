@@ -21,9 +21,9 @@
 use crate::proc::{
     priority, CpuId, KProcess, MiscFlagsBits, ProcNr, RtsFlagsBits, NONE_PROC_NR,
 };
+use crate::kmess::{EarlyConsole, KernelConsole as Console};
 use crate::proc_table::{ProcessTable, PROC_TABLE_SIZE};
 use crate::smp::SmpState;
-use minix_arch::{CurrentEarlyConsole as Console, EarlyConsole};
 
 /// Maximum iteration count for queue walks (defense against cycles).
 ///
