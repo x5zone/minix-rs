@@ -247,10 +247,12 @@ pub trait BootShim {
 
 | 方案 | 内容 | 代价 | 取舍 |
 |---|---|---|---|
-| **trait（选用）** | 一个原语捆住"建映射/分根页/划 bump/退服务"四步 | 略多样板 | ✅ 类型安全（漏一步编译不过）、封装（不混用 UEFI/OpenSBI helper）、可注入 mock |
-| 一组自由函数 | 每个固件导出几个函数 | 编译器不强制凑齐 | ❌ 可能配了内存映射却忘了退服务 |
+| **trait（选用）** | 一个原语把交付面凝成一个 `prepare_boot(bump_pages) -> BootPrepareResult` | 略多样板 | ✅ 契约的**数据面**由类型强制：不交出 `KernelInfo`+`root_page`+`bump` 就编译不过；封装（不混用 UEFI/OpenSBI helper）；可注入 mock |
+| 一组自由函数 | 每个固件导出几个函数 | 调用方得自己拼 | ❌ 容易漏交某个字段、或混用两套 helper |
 
 选哪个固件实现由 Cargo feature gate 在编译期决定；OS 语义层只认 trait，不写 `#[cfg(target_arch)]`。这正是"抽象机制而非描述硬件"——OS 层要的是"准备好启动上下文"这个**机制**，不是"调用 EFI 服务表"这个**手段**。
+
+> **辨析（一句常见误读）：trait 并不能保证实现内部"把四步都做了"。** 它只保证：两个固件都得交出一个字段齐全的 `BootPrepareResult`（这是类型强制的）。至于"内存快照必须在 `ExitBootServices()` 之前取"这类**步序**，trait 管不到——它是靠 impl 内部约定 + 源码注释声明"must be called before exit_boot_services" + 测试去守的，不是编译器把关。把"接口统一"说成"类型系统保证流程完整"是越界；前者真、后者假。
 
 ### 3.3 两种交接形态：内存内联 与 跨镜像方案 A
 
@@ -371,6 +373,26 @@ boot-shim 这件事，三家**语义动作完全一致**——把散落在固件
 | `reserved_regions` | 非空（重定位恒等窗口） | 依固件 | 空切片 |
 
 > **本质语义是什么。** 上表里"双根 vs 单根""CR3 vs TTBR vs SATP""内联 vs 跨镜像"全是**硬件承载的形状**，不是 OS 语义。按跨架构四公理（`review-core-semantics.md` §1.6），OS 语义层只要求"每个进程有自己的地址翻译空间""交接是纯数据"——它压根不把"页表根的数量"当语义。aarch64 用两个根、x86-64 用一个根，都是同一 OS 语义的合法实现。所以 boot-shim 对内核暴露的接口（`BootShim` + `KernelInfo` + `arch_boot`）三家共用一份，差异关在各架构实现里，不泄漏到 OS 语义层。（三个早期控制台后端在 `platform.rs:ConsoleDesc` 的文档里列名——IsaSerialDesc / MmioSerialDesc / SbiConsoleDesc——实现各在 `minix-platform` 的 arch 子模块。）
+
+### 4.5 实地导览：从 `prepare_boot` 到 `kmain`，现在打开代码怎么顺
+
+前面是设计判断；这里给一条"顺着读当前实现"的路径（锚点真实，按序去仓库里找）：
+
+```
+UefiBootShim::prepare_boot / OpenSbiBootShim::prepare_boot   (boot-shim 侧入口)
+  ├─ 取内存映射 + 加载 kernel.elf/模块            (loader.rs / uefi_helpers.rs / opensbi_helpers.rs)
+  ├─ 构造 KernelInfo（含 reserved_regions）       (build_kernel_info)
+  └─ exit_boot_services() → 返回 BootPrepareResult   ← 退出固件服务（次序靠注释+测试守，非 trait）
+        ↓ 交回内核侧
+arch_boot(kernel_info, root_page)                (os/kernel/src/lib.rs:arch_boot)
+  ├─ store_kernel_info → .bss 全局副本            ← 避 caller-saved（§4.1）
+  ├─ arch_boot_impl → build_bootstrap_root_and_enable  (建恒等+内核高映射、开分页)
+  └─ [内联] jump_to_kmain ─ 或 ─ [跨镜像/方案A] bootstrap_to_kernel_image → _start (02-higher-half-kernel.md)
+        ↓
+      kmain → 03-kmain-cstart.md
+```
+
+拿到这篇后沿这条链从 `prepare_boot` 往下点，就能看到"为什么交接必须是纯数据"在每一步具体长什么样——而不是只读到结论。
 
 ---
 
