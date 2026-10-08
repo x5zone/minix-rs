@@ -149,3 +149,4 @@
 | 锚点底账里的行号大面积漂移 | `open` / `L1` | 工具派生行号提示在 `01-stage-kernel` 的复刻块里大面积失配，符号名不漂移 | `bash tools/anchor-resolve.sh --check rewrite-notes/01-stage-kernel/16-smp.md` |
 | 已删文件的引用残留在可再生的基线账目里 | `open` / `L1` | `tools/anchor-suspect-baseline-c.txt` 仍列本轮清理掉的案卷路径。该文件由另一条线程正在修改，本轮**不代跑再生**，交回锚点线 | `grep -c "coordination/" tools/anchor-suspect-baseline-c.txt` |
 | 阶段正式文档的数量口径不一致 | `open` / `L1` | `rewrite-notes/README.md` 记 38，本轮按编号文件实测 38，其中 `06-todo.md`、`07-paging_init_gpt.md`、`18-trap-bridge-design.md` 属待办与设计稿，正式文档为 35 篇 | `ls rewrite-notes/01-stage-kernel/[0-9]*.md \| wc -l` |
+| 过期注释：状态寄存器读回函数的英文段仍自称保存的 rbx（原无编号） | `closed` / `L1` | 英文段与下方已修正的中文 R10 段自相矛盾 | `grep -n "the IPC status register" os/arch/src/x86_64/trap_stub.rs` → 0 命中（英文残留段已删，`os/arch/src/x86_64/trap_stub.rs:577-583` 中文 R10 段独留）；`grep -n "saved RBX" os/arch/src/x86_64/trap_stub.rs` → 仅 `:951` 合法存活钉 1 处；`cargo test -p minix-arch` → 全绿 0 失败（`2026-10-08 @ a09b92e7a` 核实，落点见本轮提交） |

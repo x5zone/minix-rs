@@ -577,9 +577,6 @@ pub fn ipc_return_code(ctx: &super::boot::X86_64CpuContext) -> u64 {
     ctx.gp_regs[0]
 }
 
-/// Read back the saved RBX — the IPC status register (C ipcconst.h:10;
-/// `or_ipc_status_reg` OR-merges into it, the plain-RECEIVE prologue
-/// clears it — C proc.c:581). Same test seam as [`ipc_return_code`].
 /// Read back the saved IPC status register（NK4-C Task C A 案：R10，
 /// gp_regs[GP_R10=8]——C ipcconst.h:10 的 bx 车道迁移；`or_ipc_status_reg`
 /// OR-merges into it、plain-RECEIVE 序言清它——C proc.c:581）。同
