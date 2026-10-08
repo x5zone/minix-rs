@@ -113,7 +113,7 @@ sleep 3
 GDB_OUT="$(timeout 20 gdb -batch \
     -ex 'target remote :1234' \
     -ex 'set $mb = 0' \
-    -ex 'x/7gx 0x100010000' \
+    -ex 'x/8gx 0x100010000' \
     "$EFI" 2>/dev/null || true)"
 echo "$GDB_OUT" | tail -5
 
@@ -126,6 +126,12 @@ echo "$GDB_OUT" | grep -q "0x0000000000000064" || { pass=0; echo "FAIL: hz != 10
 # readable at CPL3 (KERNINFO_MAGIC at offset 0).
 echo "$GDB_OUT" | grep -q "0x0000000200000000" || { pass=0; echo "FAIL: kerninfo page VA != 0x2_0000_0000 (secondary return R10)"; }
 echo "$GDB_OUT" | grep -q "0x00000000fc3b84bf" || { pass=0; echo "FAIL: KERNINFO_MAGIC not readable from CPL3"; }
+# Lazy-FPU probe: mailbox[7] (+0x38) == 42 (0x2a) iff the kernel handled the
+# user-mode #NM (vector 7) raised by the first SSE instruction, restored the
+# FPU + CLTS, and re-executed cvtsi2sd/cvttsd2si through to the store. With
+# the FpuTrap acting arm absent the kernel panics on the trap and this slot
+# stays 0.
+echo "$GDB_OUT" | grep -q "0x000000000000002a" || { pass=0; echo "FAIL: FPU probe != 42 (user #NM lazy-FPU restore not verified)"; }
 
 if [ "$pass" -eq 1 ]; then
     echo "RESULT: PASS (E1 slice 5 trap round trip + E-KERNINFO publication verified)"

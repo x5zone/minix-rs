@@ -644,36 +644,64 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             // C: cause_sig returns → mpx.S `jmp switch_to_user`.
             crate::scheduler_loop(crate::current_cpu_id())
         }
-        other => {
-            // The only remaining outcome: user-mode #NM (vector 7) — the
-            // lazy-FPU restore stage (save owner / restore self / clts).
-            // Its acting stage lands with the FPU ownership wiring
-            // (X-8 / T5 wave, NK2-A ①); reaching it before that wave is a
-            // wiring gap, not recoverable state. Every other outcome has an
-            // acting arm above. Console diagnostics first: the panic
-            // handler cannot render the formatted message.
-            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-            Console::write_str("trap: vector ");
-            Console::write_hex(vector as u64);
-            Console::write_str(" err ");
-            Console::write_hex(frame.errcode);
-            Console::write_str(" rip ");
-            Console::write_hex(frame.rip);
-            Console::write_str(" cs ");
-            Console::write_hex(frame.cs);
-            Console::write_str(" rflags ");
-            Console::write_hex(frame.rflags);
-            Console::write_str(" rsp ");
-            Console::write_hex(frame.rsp);
-            Console::write_str(" ss ");
-            Console::write_hex(frame.ss);
-            Console::write_str("\n");
-            panic!(
-                "trap_dispatch: outcome {other:?} (FpuTrap) awaits the \
-                 lazy-FPU restore stage (registered gap, T5 wave) — \
-                 vector {vector:#04x} rip {:#x}",
-                frame.rip
-            )
+        // User-mode #NM (vector 7): the process touched FP while CR0.TS
+        // was set. C: `copr_not_available_handler()` — proc.c:1922-1957.
+        // Lazy-FPU restore acting half: hand the FPU to the trapping
+        // process and resume it so the faulting FP instruction re-executes.
+        // We do NOT schedule (C: "do not schedule!") — the trap stub's
+        // iretq resumes this same process directly from `frame`, and #NM is
+        // a fault so RIP still points at the FP instruction (no advance).
+        // Unlike the riscv64 sibling, x86's enable() (CLTS) is the CARRIER,
+        // not inert: CR0 is a live control register that iretq does NOT
+        // restore from the frame, so clearing TS here is what lets the
+        // re-executed FP instruction and the FXSAVE/FXRSTOR below go
+        // through. C runs `disable_fpu_exception()` (= CLTS — exception.c:
+        // 382-385) *before* any FP access, so the CLTS must precede the
+        // save/restore or those very instructions re-trap.
+        ExceptionOutcome::FpuTrap => {
+            let cur_fpu = cur_nr.expect("FpuTrap implies a user-origin #NM");
+            let table = crate::proc_table_with(&section);
+            use minix_arch::{CurrentFpuArch, FpuArch};
+            let fpu = CurrentFpuArch::default();
+            // C: disable_fpu_exception() — CLTS first, so FP is usable.
+            fpu.enable();
+            // C proc.c:1936-1942 — save the outgoing owner's FP state, but
+            // skip owners that never touched FP (their fpu_state is the
+            // zeroed default and saving would fabricate a live state).
+            let old_owner = smp.cpu_local(cpu).and_then(|l| l.fpu_owner);
+            // C proc.c:1938 — assert(*local_fpu_owner != p).
+            debug_assert!(
+                old_owner != Some(cur_fpu),
+                "x86_64 FPU trap: current process is already the FPU owner"
+            );
+            if let Some(owner_nr) = old_owner.filter(|&o| o != cur_fpu)
+                && table.get(owner_nr).is_some_and(|p| {
+                    p.p_misc_flags
+                        .is_set(crate::proc::MiscFlagsBits::EXT_REG_INITIALIZED)
+                })
+                && let Some(p) = table.get_mut(owner_nr)
+            {
+                // C proc.c:1936-1942 — save the outgoing owner's FP state,
+                // skipping owners that never touched FP (their fpu_state is
+                // the zeroed default and saving would fabricate a live state).
+                fpu.save(&mut p.fpu_state);
+            }
+            // C proc.c:1946 — restore the trapping process's state (the
+            // zeroed default is a valid FP state for a first-touch process).
+            if let Some(p) = table.get_mut(cur_fpu) {
+                fpu.restore(&p.fpu_state);
+                p.p_misc_flags
+                    .set(crate::proc::MiscFlagsBits::EXT_REG_INITIALIZED);
+            }
+            // C proc.c:1955 — ownership passes to the trapping process, so
+            // the next switch-out saves THIS process's state and re-arms TS.
+            if let Some(local) = smp.cpu_local_mut(cpu) {
+                local.fpu_owner = Some(cur_fpu);
+            }
+            // Fall through: the stub's iretq re-executes the FP instruction
+            // against the now-enabled FPU. The BKL section guard drops here
+            // (user-origin entry acquired it — the scheduling/resume path
+            // re-takes it, same as the sibling acting arms).
         }
     }
 }
