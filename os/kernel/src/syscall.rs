@@ -637,17 +637,6 @@ pub(crate) fn kernel_call_dispatch_inner(
         Ok(s) => s,
         Err(()) => return KcallResult::BadCall,
     };
-    // NK4-A C-3 迭代6 取证（task1-close 裁决删除）：内核调用流水（限 64
-    // 条）——定位 RS 用户态的循环点（哪个调用在反复挂起/重试）。
-    #[cfg(not(feature = "mock"))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static KCALL_LOG: AtomicUsize = AtomicUsize::new(0);
-        // 只记 RS(caller 2) 的调用——定位其用户态循环点。
-        if caller_nr.0 == 2 && KCALL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 48 {
-        }
-    }
-
     // C: `else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr))` — system.c:111
     // Check if the caller has permission to invoke this system call.
     // Processes without an assigned privilege (priv_id == None) are denied
@@ -1076,17 +1065,6 @@ fn dispatch_schedule(
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
-    // NK4-C 1.9 取证探针（task1-close 裁决删除）：SYS_SCHEDULE 全轨迹——
-    // s14b/c 尾态 RS runnable=yes queued=no 的「幽灵 CPU 队列」假设判别
-    // （p_sched.cpu 被迁到非 BSP 即成永不可挑）。
-    #[cfg(not(feature = "mock"))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static SCHED_N: AtomicUsize = AtomicUsize::new(0);
-        if SCHED_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
-        }
-    }
-
     // C: do_schedule.c:18-19 — `caller != p->p_scheduler` check.
     // In Rust: target.scheduler is Option<ProcNr>; None matches C's
     // `p_scheduler == NULL` (kernel default), which allows any caller.
@@ -1281,17 +1259,6 @@ pub(crate) fn clear_ipc_refs(
             continue;
         }
         if proc.blocked_on() == Some(target_ep) {
-            // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：裸清现场
-            // ——谁被清、目标端点、清前 flags。裸清不摘 caller_q、不入队
-            // （C clear_ipc = 摘链 + RTS_UNSET 入队半，system.c:601-605），
-            // 是幽灵队列条目的候选来源。
-            #[cfg(not(feature = "mock"))]
-            {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static CIR_N: AtomicUsize = AtomicUsize::new(0);
-                if CIR_N.fetch_add(1, AtomicOrd::Relaxed) < 24 {
-                }
-            }
             // C: clear_ipc(rp) — RTS_UNSET(rp, RTS_SENDING | RTS_RECEIVING)
             proc.p_rts_flags.clear(RtsFlagsBits::SENDING | RtsFlagsBits::RECEIVING);
             // C: rp->p_reg.retreg = caller_ret — see design gap note above.

@@ -444,16 +444,6 @@ impl ProcessTable {
             p.p_rts_flags.set(flags);
         }
         let is_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
-        // NK4-C 1.9 取证探针（task1-close 裁决删除）：RS 的 rts_set 全轨迹
-        // ——s14b/c 尾态 RS flags=0x0 runnable=yes queued=no（F10d 同族
-        // 未入队），本探针捕捉每次 RS 标志跃迁与入/出队判定。
-        #[cfg(not(feature = "mock"))]
-        {
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            static RS_SET_N: AtomicUsize = AtomicUsize::new(0);
-            if nr.0 == 2 && RS_SET_N.fetch_add(1, AtomicOrd::Relaxed) < 32 {
-            }
-        }
         if was_runnable && !is_runnable
             && self.is_in_scheduler(nr) {
                 // C uses `get_cpu_var(rp->p_cpu, run_q_head)` — the process's
