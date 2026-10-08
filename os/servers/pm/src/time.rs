@@ -18,16 +18,11 @@ pub const CLOCK_REALTIME: i32 = 0;
 /// `CLOCK_MONOTONIC` (`sys/time.h:288`, 3 not 1).
 pub const CLOCK_MONOTONIC: i32 = 3;
 
-/// `PM_GETTIMEOFDAY` (`callnr.h:41` `PM_BASE+28`).
-pub const PM_GETTIMEOFDAY: i32 = 28;
-/// `PM_STIME` (`callnr.h:20` `PM_BASE+7`).
-pub const PM_STIME: i32 = 7;
-/// `PM_CLOCK_GETRES` (`callnr.h:46`).
-pub const PM_CLOCK_GETRES: i32 = 33;
-/// `PM_CLOCK_GETTIME` (`callnr.h:47`).
-pub const PM_CLOCK_GETTIME: i32 = 34;
-/// `PM_CLOCK_SETTIME` (`callnr.h:48`).
-pub const PM_CLOCK_SETTIME: i32 = 35;
+/// `PM_*` 时间族调用号——minix-types 单一真源（[`PmCall`] 判别值派生）
+/// 的再导出，本 crate 不再手抄（PD-23 采甲；`misc.rs` 的 `SI_*` 同判例）。
+pub use minix_types::{
+    PM_CLOCK_GETRES, PM_CLOCK_GETTIME, PM_CLOCK_SETTIME, PM_GETTIMEOFDAY, PM_STIME,
+};
 
 /// `timespec` (`sys/timespec.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

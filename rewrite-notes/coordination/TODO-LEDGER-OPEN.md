@@ -39,7 +39,7 @@
 | 结案之后没有滚除的取证探针 | `stopgap landed` / `L1` | `P-ALL-04`、`SD-25`、`T8`；**三档归类规则已由 `PD-10` 裁决**（用后即滚 / 转正式机制 / 生产守卫） | 残余分布在 `os/kernel/src/*.rs`、`os/kernel-image/src/main.rs`、`os/libs/minix-rt/src/*`、`os/arch/src/*/smp.rs` | `grep -rn "用后即滚" os --include=*.rs \| wc -l` → **15 行 / 7 个文件**；`grep -rnE "nk4[ac]:" os --include=*.rs \| wc -l` → 15 行 | 按 `PD-10` 的三档逐站归类并滚除；污染案相关探针须等 `PD-16` 的结案条件。**注意：齐平清单记的"约 160 处 / 29 文件"是滚除大轮之前的读数，已过期** |
 | 大量用户态服务与驱动的入口仍停在空转占位，生产传输未通电 | `open` / `L1` | `P-ALL-07`、`SD-29`（三架构同等欠缺，属功能移植进度而非齐平差距） | 各 `main.rs`、`os/servers/is/` 的占位传输 | `grep -rln "loop {}" os --include=main.rs \| wc -l` → **55 个入口**；`grep -rn "UnimplementedTransport" os --include=*.rs \| wc -l` → 5（集中在输入服务） | 逐服务接线，见 §4 的传输族条目 |
 | 语义与上游 C 真源不一致的残余：正错误码经调用结果通道上线、未知虚存控制请求返回码与 C 不同 | `partially fixed` / `L2`（正负错误码与参数字段宽度两处已闭） | `P-ALL-05`、`SD-43`、评审编号 `F10`、`X-7`；**裁决 `PD-12` 采甲：本轮逐条对照 C 真源修尽，有意偏离必须三处一致标注** | `os/servers/pm/src/calls.rs`、`os/kernel/src/syscall.rs`、`os/kernel/src/arch/*/boot.rs` | 逐行读 `os/` 与 `minix3/` 对位函数比对，禁止用 grep 定案 | 需要对 C 真源的逐条判读，属人工裁决面（裁决已给方向，结论需逐臂对账） |
-| 用户态服务的框架语义补齐：信号代理循环、按号分派的消费方盘点等 | `partially fixed` / `L2` | `P-ALL-08`（子项 `T1`—`T7`） | `os/libs/minix-sef/src/lib.rs` | `wc -l os/libs/minix-sef/src/lib.rs` → 千行级框架核已就位 | 子项进度以齐平清单的落地段为准；逃生门缺失导致的死锁已在案 |
+| 用户态服务的框架语义补齐：信号代理循环、按号分派的消费方盘点等 | `partially fixed` / `L2` | `P-ALL-08`（子项 `T1`—`T7`） | `os/libs/minix-sef/src/lib.rs` | `wc -l os/libs/minix-sef/src/lib.rs` → 千行级框架核已就位 | 子项进度以齐平清单的落地段为准；逃生门已落地（`PD-27`，见 `TODO-LEDGER-DONE.md` §2），发方链通电余件仍挂 T2 |
 | 内核包的默认特性仍带替身特性，宿主与真机形态可能不是同一个二进制 | `open` / `L1` | `P-ALL-10`、`SD-30`、`SD-31`；**裁决 `PD-29` 采甲：从默认里摘掉**，硬序是先建持续集成双腿（`PD-30`）再摘默认 | `os/kernel/Cargo.toml` | `grep -n "^default" os/kernel/Cargo.toml` → `default = ["mock"]` | 先把构建特性分裂导致的崩溃查清，再按 `PD-29` 的次序摘除默认替身特性 |
 | 启动入口的多种形态并存，断言电池未补齐 | `open` / `L2` | `P-ALL-11`、`SD-1`—`SD-4`（`SD-2` 已裁决 `PD-07`） | 各架构链接脚本与 `os/kernel/src/arch/*` | 读 `STRUCTURAL-DEBT-REGISTER-20261008.md` §5.1 对应四行的下一步动作 | 补齐"三架构入口形态一致性"的断言集，并清扫地址常量残留 |
 
@@ -60,7 +60,6 @@
 | `SD-43` | `open` | 见 §2 的语义对真源条目 |
 | `SD-12` | `adjudicated`，执行未竟 | 运行期进程根的写执行互斥收紧已由 `PD-22` 裁决为三步；第一步文本段去写需要静态核验无运行期写入者 |
 | `SD-19` | `dropped-from-ledgers`，执行未竟 | 网络字节序与套接字事件的两处手抄按 `PD-13` 归共享类型库单点权威；从账本移出后债务仍在 |
-| 裁决已给但尚未动手的三个小项（原四项，`PD-04` 已执行） | `adjudicated`，执行未竟 | 按 `PD-26` 删除设备管理器从不被回调的自有信号钩子；按 `PD-27` 以被中断形态补上取消逃生门（发方链通电的硬前置）；按 `PD-23` 上移进程管理调用号枚举。已执行的 `PD-04`（删零调用缺页地址取值器 `last_fault_addr`）见 `TODO-LEDGER-DONE.md` §2 |
 
 ## §4 跨阶段联调条目（`edge_todo.md` 里仍未闭合的部分）
 

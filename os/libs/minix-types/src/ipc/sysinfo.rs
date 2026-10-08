@@ -17,7 +17,8 @@
 //! acquisition.md` §2 is the doc counterpart; 05~10 import from here.
 
 /// PM table request. C: `PM_GETSYSINFO (PM_BASE + 47)` — callnr.h:60.
-pub const PM_GETSYSINFO: i32 = 47;
+/// 值由 [`crate::ipc::pm::PmCall::GetSysInfo`] 判别值派生（PD-23 单一真源）。
+pub const PM_GETSYSINFO: i32 = crate::ipc::pm::PmCall::GetSysInfo as i32;
 
 /// VFS table request. C: `VFS_GETSYSINFO (VFS_BASE + 48)` — callnr.h:120.
 pub const VFS_GETSYSINFO: i32 = 0x100 + 48;

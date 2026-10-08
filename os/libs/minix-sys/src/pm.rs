@@ -44,69 +44,69 @@ pub const SIG_SETMASK: i32 = 3;
 /// Terminate the calling process.
 ///
 /// C: `PM_EXIT (PM_BASE + 1)` (`minix3/minix/include/minix/callnr.h:14`).
-pub const PM_CALL_EXIT: i32 = 1;
+pub const PM_CALL_EXIT: i32 = minix_types::PmCall::Exit as i32;
 /// Create a child process.
 ///
 /// C: `PM_FORK (PM_BASE + 2)` (`callnr.h:15`).
-pub const PM_CALL_FORK: i32 = 2;
+pub const PM_CALL_FORK: i32 = minix_types::PmCall::Fork as i32;
 /// Wait for a child process.
 ///
 /// C: `PM_WAIT4 (PM_BASE + 3)` (`callnr.h:16`).
-pub const PM_CALL_WAIT4: i32 = 3;
+pub const PM_CALL_WAIT4: i32 = minix_types::PmCall::Wait4 as i32;
 /// Ask for the caller's process identity.
 ///
 /// C: `PM_GETPID (PM_BASE + 4)` (`callnr.h:17`).
-pub const PM_CALL_GETPID: i32 = 4;
+pub const PM_CALL_GETPID: i32 = minix_types::PmCall::GetPid as i32;
 /// Send a signal to a process.
 ///
 /// C: `PM_KILL (PM_BASE + 11)` (`callnr.h:24`).
-pub const PM_CALL_KILL: i32 = 11;
+pub const PM_CALL_KILL: i32 = minix_types::PmCall::Kill as i32;
 /// Execute a new program image.
 ///
 /// C: `PM_EXEC (PM_BASE + 14)` (`callnr.h:27`).
-pub const PM_CALL_EXEC: i32 = 14;
+pub const PM_CALL_EXEC: i32 = minix_types::PmCall::Exec as i32;
 /// Set or read an interval timer.
 ///
 /// C: `PM_ITIMER (PM_BASE + 17)` (`callnr.h:30`).
-pub const PM_CALL_ITIMER: i32 = 17;
+pub const PM_CALL_ITIMER: i32 = minix_types::PmCall::Itimer as i32;
 /// Read the wall clock.
 ///
 /// C: `PM_GETTIMEOFDAY (PM_BASE + 28)` (`callnr.h:43`).
-pub const PM_CALL_GETTIMEOFDAY: i32 = 28;
+pub const PM_CALL_GETTIMEOFDAY: i32 = minix_types::PmCall::GetTimeOfDay as i32;
 /// Resource-usage snapshot for the caller or its reaped children.
 ///
 /// C: `PM_GETRUSAGE (PM_BASE + 36)` (`callnr.h:51`).
-pub const PM_CALL_GETRUSAGE: i32 = 36;
+pub const PM_CALL_GETRUSAGE: i32 = minix_types::PmCall::GetRUsage as i32;
 /// Start a system service (server-side call).
 ///
 /// C: `PM_SRV_FORK (PM_BASE + 41)` (`callnr.h:54`).
-pub const PM_CALL_SERVICE_FORK: i32 = 41;
+pub const PM_CALL_SERVICE_FORK: i32 = minix_types::PmCall::SrvFork as i32;
 /// E9 PmApi:PM_GETEPINFO(callnr.h:58,PM_BASE + 45)。
-pub const PM_CALL_GETEPINFO: i32 = 45;
+pub const PM_CALL_GETEPINFO: i32 = minix_types::PmCall::GetEpInfo as i32;
 /// C: `PM_GETUID (PM_BASE + 6)` (`callnr.h:20`) — 回复 m1i1=ruid、m1i2=euid。
-pub const PM_CALL_GETUID: i32 = 6;
+pub const PM_CALL_GETUID: i32 = minix_types::PmCall::GetUid as i32;
 /// C: `PM_SETSID (PM_BASE + 15)` (`callnr.h:29`) — 回复值即新会话 id。
-pub const PM_CALL_SETSID: i32 = 15;
+pub const PM_CALL_SETSID: i32 = minix_types::PmCall::SetSid as i32;
 /// C: `PM_SIGACTION (PM_BASE + 20)` (`callnr.h:33`).
-pub const PM_CALL_SIGACTION: i32 = 20;
+pub const PM_CALL_SIGACTION: i32 = minix_types::PmCall::SigAction as i32;
 /// C: `PM_SIGSUSPEND (PM_BASE + 21)` (`callnr.h:34`).
-pub const PM_CALL_SIGSUSPEND: i32 = 21;
+pub const PM_CALL_SIGSUSPEND: i32 = minix_types::PmCall::SigSuspend as i32;
 /// C: `PM_SIGPENDING (PM_BASE + 22)` (`callnr.h:35`).
-pub const PM_CALL_SIGPENDING: i32 = 22;
+pub const PM_CALL_SIGPENDING: i32 = minix_types::PmCall::SigPending as i32;
 /// C: `PM_SIGPROCMASK (PM_BASE + 23)` (`callnr.h:36`).
-pub const PM_CALL_SIGPROCMASK: i32 = 23;
+pub const PM_CALL_SIGPROCMASK: i32 = minix_types::PmCall::SigProcMask as i32;
 /// C: `PM_GETPRIORITY (PM_BASE + 26)` (`callnr.h:39`).
-pub const PM_CALL_GETPRIORITY: i32 = 26;
+pub const PM_CALL_GETPRIORITY: i32 = minix_types::PmCall::GetPriority as i32;
 /// C: `PM_SETPRIORITY (PM_BASE + 27)` (`callnr.h:40`).
-pub const PM_CALL_SETPRIORITY: i32 = 27;
+pub const PM_CALL_SETPRIORITY: i32 = minix_types::PmCall::SetPriority as i32;
 /// C: `PM_REBOOT (PM_BASE + 37)` (`callnr.h:50`).
-pub const PM_CALL_REBOOT: i32 = 37;
+pub const PM_CALL_REBOOT: i32 = minix_types::PmCall::Reboot as i32;
 /// E9 PmApi:PM_GETPROCNR(callnr.h:59,PM_BASE + 46)。
-pub const PM_CALL_GETPROCNR: i32 = 46;
+pub const PM_CALL_GETPROCNR: i32 = minix_types::PmCall::GetProcNr as i32;
 /// Stop a system service (server-side call).
 ///
 /// C: `PM_SRV_KILL (PM_BASE + 42)` (`callnr.h:55`).
-pub const PM_CALL_SERVICE_KILL: i32 = 42;
+pub const PM_CALL_SERVICE_KILL: i32 = minix_types::PmCall::SrvKill as i32;
 
 /// Highest signal number (exclusive upper bound for validation).
 ///

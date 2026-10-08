@@ -266,7 +266,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ### 4.4 分发与 `run_once` 接线（`os/servers/pm/src/ipc/calls.rs` + `init.rs`）
 
-- `PmCall::SrvFork=41`（`os/servers/pm/src/ipc/calls.rs:fn from_call_nr（L175，工具生成）`）`from_call_nr` 与 `table.c:23` 同注册；
+- `PmCall::SrvFork=41`（`os/libs/minix-types/src/ipc/pm.rs:fn from_call_nr`）`from_call_nr` 与 `table.c:23` 同注册；
 - `init.rs:PM_SRV_FORK` 拦截 `if m_type==41 { if parent_ep != RS → EPERM else do_srv_fork → Ok(pid)→Reply(pid) / Err→Reply(errno) }`（与 `PM_FORK` 的 `ReplyLater` 分支正交，`init.rs:332` 新增）；
 - `ipc/vfs.rs:298` 空分支 `SrvFork → {}` 已对齐 `main.c:398-401`。
 
