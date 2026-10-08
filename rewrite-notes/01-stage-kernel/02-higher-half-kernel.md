@@ -73,7 +73,7 @@ C 版链接脚本还留着 `.unpaged_text/data/bss` 段组。32 位的内核必�
 
 ### 2.2 head.S：从 pre_init 返回后，就那几行
 
-`minix3/minix/kernel/arch/i386/head.S` 在 `pre_init` 返回（分页已开、但 RIP/RSP 还在低地址）之后做四件事：
+`minix3/minix/kernel/arch/i386/head.S` 在 `pre_init` 返回（分页已开、但 RIP/RSP 还在低地址）之后做四件事（入口 `minix3/minix/kernel/arch/i386/head.S:multiboot_init`）：
 
 ```asm
         /* 分页已启用，但 RIP/RSP 仍在低地址 */
