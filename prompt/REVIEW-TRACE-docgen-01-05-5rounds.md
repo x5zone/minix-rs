@@ -12,3 +12,15 @@
 - 中产决策（trace 要求写选择）：**删除**旧快照路径（工作树本就没有），非"保留当证据"。
 
 <!-- 以下各轮 Round 1..5 由执行时逐轮追加 -->
+
+## Round 1 · num=01（boot-shim bootstrap）
+
+- **A 生成**：选题承上版（N01 边界，用户已确认）；1.3 资产对账收割 draft 漏收项（启动链路图/启动前状态表+认知减负 callout/诊断命令）；1.5 现推 outline.v3（含章型/代码放置/讲法资产 + 承载门预检）；正文 413 行、LF。
+- **Gate H**：工作树无 .design（gitignored）→ Step 0.3 就地现推 01-design/outline/outline-review.v1 → design-coverage-check PASS。
+- **E 提交**：五道文档门全绿（density --check / ref-check gawk / anchor 10/10 / doc-code-map 5/5 / style 0）+ sha256 绑定。doc commit `d9752796e`。
+- **C 对比（draft 2019/102 围栏 vs new 413/30 围栏；两侧承载门均 4 可判章）**：new 更守纪律（无 draft 手工行号/过程痕迹/UEFI 附录越界）。三分类：执行退化=§6.3 命令偏薄、可复制命令欠预期输出；有意不继承=draft §4 pt_alloc/direct_map/附录（越界，归后续篇）；**规则缺口(待裁决)**见下。
+- **F 回归（CodeReview 子代理，explicit_target）**：一致性≈100% PASS；锚点 10/10 + 手动补验 9 个结构/trait 锚 + 12 段节选逐行忠实 + 测试读数 minix-boot 17/boot-shim 14 精确对账；**逮到 1 个 P2**：§6.3 命令注释残留工单号 `fix27`（过程痕迹入正文）→ 已清 `b78f3780f`。
+- **D 改进（本轮暴露、待用户裁决的 2 条规则缺口）**：
+  1. `doc-style-lint` 只报 error 级，**不检测正文工单号/过程标记**（`fixNN`、`续-N`、`D-N①`、`首亮`、`（…现场）`）→ F 复核能兜但属人工；建议加 SL-11 窄模式 + 夹具（需权衡 FP）。
+  2. 承载门只数"承载章有无码/诊断章有无命令"，**测不出"码够不够、命令带不带预期输出"**（底线#8/#9 是纯人判项、无机器读数）→ 拟加"命令块须含预期输出行"的启发式读数（先 report 不阻断）。
+  - 本轮**未擅自改规范源**加门（避免五轮把规则加爆）；两条列为待裁决。
