@@ -18,7 +18,7 @@
 
 use core::cell::{Cell, RefCell};
 
-use minix_types::{ENOSYS, Endpoint, IpcCall, Message, ProcEventIn};
+use minix_types::{ENOSYS, Endpoint, IpcCall, Message, ProcEventIn, reply_status};
 
 use crate::dispatch::{
     Incoming, classify, proc_event_reply_type, should_reply, unknown_call_result,
@@ -471,9 +471,14 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
                 // C: if (r != SUSPEND) { m.m_type = r; ipc_sendnb(...); }
                 // — main.c:264-276. Other fields stay as the handler left
                 // them (the reply reuses the request buffer — main.c:269-272).
+                //
+                // F10 sign fold: C IPC server is built with `_SYSTEM` (inc.h:1),
+                // so handler errnos are already negative on the wire. Our Rust
+                // tree uses positive errno constants; `reply_status` folds once
+                // at the boundary (0 and already-negative values pass through).
                 if should_reply(result) {
                     let mut reply = msg;
-                    reply.m_type = result;
+                    reply.m_type = reply_status(result);
                     if self
                         .transport
                         .borrow_mut()
@@ -491,8 +496,9 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
             }
             Incoming::Unknown => {
                 // C: r = ENOSYS, then the normal reply path — main.c:260-276.
+                // F10: fold sign at boundary (C returns -ENOSYS via `_SYSTEM`).
                 let mut reply = msg;
-                reply.m_type = unknown_call_result();
+                reply.m_type = reply_status(unknown_call_result());
                 if self
                     .transport
                     .borrow_mut()
@@ -836,7 +842,8 @@ mod tests {
         assert_eq!(server.completed_cycles(), 1);
         let transport = server.transport.borrow();
         assert_eq!(transport.replies.len(), 1);
-        assert_eq!(transport.replies[0].1.m_type, ENOSYS);
+        assert_eq!(transport.replies[0].1.m_type, -ENOSYS);
+        // F10 sign fold: ENOSYS must appear as a negative value (C `_SYSTEM` wire convention).
     }
 
     #[test]
@@ -870,6 +877,29 @@ mod tests {
         assert_eq!(transport.replies[0].0, Endpoint(42));
         assert_eq!(transport.replies[0].1.m_type, 0);
         assert_eq!(server.completed_cycles(), 1);
+    }
+
+    #[test]
+    fn run_once_dispatch_folds_errno_sign() {
+        // F10 regression: C `_SYSTEM` means the handler returns negative errno;
+        // our Rust handler returns positive. The boundary must fold once so
+        // callers see the C convention (errno < 0 = error).
+        let mut transport = TestTransport::new();
+        transport.push(
+            request_msg(Endpoint(42), minix_types::IPC_SEMGET),
+            IpcStatus::request(),
+        );
+        let server = IpcServer::new(transport, RecordingHandler::new(minix_types::EINVAL));
+        server.init();
+        assert_eq!(server.run_once(), RunStep::Handled);
+        let transport = server.transport.borrow();
+        assert_eq!(transport.replies.len(), 1);
+        // EINVAL is positive 22 in our tree; the wire must carry -22 (C `\_SYSTEM` shape).
+        assert_eq!(
+            transport.replies[0].1.m_type,
+            -(minix_types::EINVAL),
+            "positive handler errno must fold to negative on the wire"
+        );
     }
 
     #[test]

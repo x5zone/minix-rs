@@ -175,6 +175,10 @@ fn semget_round_trip_through_public_api() {
     // A real request survives decode → dispatch → reply at the public
     // boundary: the handler sees the Semget call, the reply carries the
     // handler's code back to the requester, over the send_reply verb.
+    //
+    // F10: C `_SYSTEM` wire convention requires positive handler errnos to
+    // be folded to negative before they reach the caller. Handler `7` must
+    // appear as `-7` on the wire.
     let mut transport = ScriptedTransport::new();
     transport.push(semget_request(42), IpcStatus::request());
     let server = IpcServer::new(transport, CannedHandler::answering(7));
@@ -184,7 +188,10 @@ fn semget_round_trip_through_public_api() {
     assert_eq!(handler.calls, 1);
     assert_eq!(transport.outbound.len(), 1);
     assert_eq!(transport.outbound[0].dest, Endpoint(42));
-    assert_eq!(transport.outbound[0].msg.m_type, 7);
+    assert_eq!(
+        transport.outbound[0].msg.m_type, -7,
+        "F10: positive handler code must fold to negative on the wire"
+    );
     assert_eq!(transport.outbound[0].verb, "send_reply");
 }
 
