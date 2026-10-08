@@ -289,12 +289,6 @@ pub fn dispatch_exec(
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let exec_msg = unsafe { msg.m_u.m_lsys_krn_sys_exec };
     let endpt = exec_msg.endpt;
-    // C-3 F0 续修取证（task1-close 裁决删除）：RS 用户首指令 rip=0/rsp=0
-    // 全零 fault——本探针分辨"内核收到的 ip/stack 就是 0"（VM 侧问题）还是
-    // "收到真值但上下文没种上"（内核侧问题）。
-    #[cfg(not(feature = "mock"))]
-    {
-    }
 
     // C: do_exec.c:27,30 — isokendpt(endpt, &proc_nr)
     let target_endpoint = Endpoint(endpt);
@@ -409,19 +403,6 @@ pub fn dispatch_exec(
             // 的 memory.c:725）——exec 装新上下文同样必须种 style，
             // 否则被 exec 的进程首次调度撞返回门 panic。
             rp.set_boot_cpu_context(cpu_context);
-            // C-3 F0 续修取证（task1-close 裁决删除）：store 后读回——
-            // 区分"写入即零"（build/消息侧）与"槽错位/被覆盖"（恢复侧读零）。
-            // `probe_frame.rip`/`rsp` 是 x86 帧字段，按架构门编译（NK4-B M3.1）。
-            #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-            {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                let mut probe_frame =
-                    <CurrentCpuContextArch as CpuContextArch>::TrapFrame::default();
-                <CurrentCpuContextArch as CpuContextArch>::apply_to_trap_frame(
-                    &rp.cpu_context,
-                    &mut probe_frame,
-                );
-            }
         }
     }
 
