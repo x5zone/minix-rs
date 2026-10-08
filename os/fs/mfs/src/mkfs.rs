@@ -1057,7 +1057,9 @@ mod tests {
         let tty = DiskInode::from_bytes(&image[inode_at(4)..inode_at(4) + INODE_DISK_SIZE])
             .unwrap();
         assert_eq!(tty.mode, 0o020660);
-        assert_eq!(tty.zones[0], (4 << 8) | 0);
+        // major=4、minor=0 编码进区块号槽（`major<<8|minor`，
+        // C `proto.c` 的 dev_t 打包）；minor 为 0，不写恒真的 `| 0`。
+        assert_eq!(tty.zones[0], 4 << 8);
         assert_eq!(tty.size, 0);
 
         // 符号链接：目标字符串进数据区，尺寸为目标长度。
@@ -1115,7 +1117,7 @@ mod tests {
         let mut many = alloc::string::String::from("boot\n64 16\nd--755 0 0\n");
         use core::fmt::Write as _;
         for k in 0..70 {
-            let _ = write!(many, "f{k} ---644 0 0 /host/motd\n");
+            writeln!(many, "f{k} ---644 0 0 /host/motd").unwrap();
         }
         many.push('$');
         // 空内容文件不占区，让 inode 先耗尽。

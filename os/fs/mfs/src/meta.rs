@@ -412,7 +412,7 @@ fn release<S: BlockSource>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inode::{InodeIo, InodeTable, TYPE_DIRECTORY, TYPE_REGULAR};
+    use crate::inode::{InodeIo, InodeTable, TYPE_REGULAR};
     use crate::superblock::{Bitmap, Superblock};
     use minix_fs::bio::RamDisk;
     use minix_fs::cache::{BlockCache};

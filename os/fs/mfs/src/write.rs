@@ -553,7 +553,6 @@ mod tests {
         superblock: Superblock,
         params: MapParams,
         range: ZoneRange,
-        freed: Vec<u64>,
     }
 
     fn fixture() -> Fixture {
@@ -597,7 +596,6 @@ mod tests {
                 first: 4,
                 count: 64,
             },
-            freed: Vec::new(),
         }
     }
 

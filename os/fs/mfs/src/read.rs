@@ -530,7 +530,6 @@ mod tests {
         cache: BlockCache<CountingDisk, MfsSecondLevel>,
         superblock: Superblock,
         bitmap: Bitmap,
-        io: InodeIo,
     }
 
     /// RamDisk that counts storage reads (prefetch-bounded assertions).
@@ -603,7 +602,6 @@ mod tests {
             )
             .unwrap(),
             bitmap: Bitmap::new(65),
-            io: InodeIo::from_superblock(&superblock),
             superblock,
         }
     }

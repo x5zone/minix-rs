@@ -471,7 +471,7 @@ pub fn rename<S: BlockSource>(
     } else {
         new_dir_images
     };
-    let mut new_file = {
+    let new_file = {
         let dir = ctx.table.slot(new_dir);
         let (mode, nlinks, size) = (dir.mode, dir.nlinks, dir.size as u64);
         let mut found = 0u32;
@@ -494,97 +494,98 @@ pub fn rename<S: BlockSource>(
         }
     };
     // 新名字是挂载点：放掉试探引用，按忙回答（link.c:302-306）。
-    if let Some(slot) = new_file {
-        if ctx.table.slot(slot).mountpoint {
-            let io = ctx.io;
-            let _ = ctx.table.put(ctx.cache, slot, &io);
-            new_file = None;
-            return Err(LinkError::Busy);
-        }
+    // 立即 return，无需把 `new_file` 复位成 None（旧写法在这里多写一次
+    // 赋值，是 clippy `value_assigned_to_never_read` 报的死写）。
+    if let Some(slot) = new_file && ctx.table.slot(slot).mountpoint {
+        let io = ctx.io;
+        let _ = ctx.table.put(ctx.cache, slot, &io);
+        return Err(LinkError::Busy);
     }
     let odir = ctx.table.slot(old_file).mode as u32 & TYPE_MASK == TYPE_DIRECTORY;
     let old_number = child_number(ctx, old_file);
     let mut same = false;
     let mut error: Option<LinkError> = None;
 
-    if new_file.is_none() {
-        // 环走查（link.c:315-342）：目录搬家且父目录不同时，顺新父目录
-        // 的点点上走，撞见旧文件就是把目录搬进自己的子树。缺点点按最坏
-        // 情况处理（link.c:336-340）。
-        if odir && !same_pdir {
-            let mut current = new_dir_number;
-            loop {
-                if current == old_number {
-                    error = Some(LinkError::Invalid);
-                    break;
-                }
-                if current == ROOT_INODE_NUMBER {
-                    break;
-                }
-                let slot = ctx
-                    .table
-                    .get(ctx.cache, ctx.device, current, &ctx.io)
-                    .map_err(|_| LinkError::Invalid)?;
-                let (mode, nlinks, size, zones) = {
-                    let dir = ctx.table.slot(slot);
-                    (dir.mode, dir.nlinks, dir.size as u64, dir.zones)
-                };
-                let mut images = crate::dir_io::load_dir_blocks(
-                    ctx.cache,
-                    ctx.device,
-                    &zones,
-                    ctx.map,
-                    ctx.range,
-                    size,
-                    ctx.block_size,
-                )
-                .map_err(|_| LinkError::Io)?;
-                let _ = ctx.table.put(ctx.cache, slot, &ctx.io);
-                let mut found = 0u32;
-                match crate::dir::lookup_name(
-                    mode,
-                    nlinks,
-                    &mut images,
-                    ctx.block_size,
-                    size,
-                    b"..",
-                    &mut found,
-                ) {
-                    Ok(()) => current = found as u64,
-                    Err(_) => {
+    match new_file {
+        None => {
+            // 环走查（link.c:315-342）：目录搬家且父目录不同时，顺新父目录
+            // 的点点上走，撞见旧文件就是把目录搬进自己的子树。缺点点按最坏
+            // 情况处理（link.c:336-340）。
+            if odir && !same_pdir {
+                let mut current = new_dir_number;
+                loop {
+                    if current == old_number {
                         error = Some(LinkError::Invalid);
                         break;
                     }
-                }
-                if current == old_number {
-                    error = Some(LinkError::Invalid);
-                    break;
-                }
-                if current == ROOT_INODE_NUMBER {
-                    break;
+                    if current == ROOT_INODE_NUMBER {
+                        break;
+                    }
+                    let slot = ctx
+                        .table
+                        .get(ctx.cache, ctx.device, current, &ctx.io)
+                        .map_err(|_| LinkError::Invalid)?;
+                    let (mode, nlinks, size, zones) = {
+                        let dir = ctx.table.slot(slot);
+                        (dir.mode, dir.nlinks, dir.size as u64, dir.zones)
+                    };
+                    let mut images = crate::dir_io::load_dir_blocks(
+                        ctx.cache,
+                        ctx.device,
+                        &zones,
+                        ctx.map,
+                        ctx.range,
+                        size,
+                        ctx.block_size,
+                    )
+                    .map_err(|_| LinkError::Io)?;
+                    let _ = ctx.table.put(ctx.cache, slot, &ctx.io);
+                    let mut found = 0u32;
+                    match crate::dir::lookup_name(
+                        mode,
+                        nlinks,
+                        &mut images,
+                        ctx.block_size,
+                        size,
+                        b"..",
+                        &mut found,
+                    ) {
+                        Ok(()) => current = found as u64,
+                        Err(_) => {
+                            error = Some(LinkError::Invalid);
+                            break;
+                        }
+                    }
+                    if current == old_number {
+                        error = Some(LinkError::Invalid);
+                        break;
+                    }
+                    if current == ROOT_INODE_NUMBER {
+                        break;
+                    }
                 }
             }
+            // 目录搬家且新父目录链接到顶（link.c:346-349）。
+            if error.is_none()
+                && odir
+                && !same_pdir
+                && ctx.table.slot(new_dir).nlinks as u32 >= crate::inode::LINK_CEILING
+            {
+                error = Some(LinkError::LinkCeiling);
+            }
         }
-        // 目录搬家且新父目录链接到顶（link.c:346-349）。
-        if error.is_none()
-            && odir
-            && !same_pdir
-            && ctx.table.slot(new_dir).nlinks as u32 >= crate::inode::LINK_CEILING
-        {
-            error = Some(LinkError::LinkCeiling);
-        }
-    } else {
-        // 新名字存在（link.c:350-356）：同一文件记内部相同标记，类型
-        // 交错各报其错。
-        let slot = new_file.unwrap();
-        let new_number = child_number(ctx, slot);
-        let ndir = ctx.table.slot(slot).mode as u32 & TYPE_MASK == TYPE_DIRECTORY;
-        if old_number == new_number {
-            same = true;
-        } else if odir && !ndir {
-            error = Some(LinkError::NotDirectory);
-        } else if !odir && ndir {
-            error = Some(LinkError::IsDirectory);
+        Some(slot) => {
+            // 新名字存在（link.c:350-356）：同一文件记内部相同标记，类型
+            // 交错各报其错。
+            let new_number = child_number(ctx, slot);
+            let ndir = ctx.table.slot(slot).mode as u32 & TYPE_MASK == TYPE_DIRECTORY;
+            if old_number == new_number {
+                same = true;
+            } else if odir && !ndir {
+                error = Some(LinkError::NotDirectory);
+            } else if !odir && ndir {
+                error = Some(LinkError::IsDirectory);
+            }
         }
     }
 
@@ -1112,8 +1113,8 @@ impl LinkOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dir::{DirScan, SearchOutcome};
-    use crate::inode::{InodeTable, TYPE_SYMLINK};
+    use crate::dir::SearchOutcome;
+    use crate::inode::InodeTable;
     use crate::superblock::{Bitmap, Superblock};
     use minix_fs::bio::RamDisk;
     use minix_fs::cache::{BlockCache};
