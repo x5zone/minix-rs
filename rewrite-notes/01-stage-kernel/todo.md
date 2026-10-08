@@ -1,7 +1,7 @@
 # 01-stage-kernel TODO 总清单（V13，2026-09-09 压缩归档版）
 
 > **台账状态摘要**（对照代码逐条核实于 `2026-09`–`10` 本轮，快照 `9f752834c`，口径：全量）：`open` 3 ｜ `stopgap landed` 4 ｜ `partially fixed` 3 ｜ `adjudicated` 6 ｜ 需真机或需逐臂对 C 真源判读 2。
-> **本文件内部口径已发现自相矛盾并需按代码刷新**：§7.1 与 §10 仍把 `D-36`（多核初始化）、`D-37`（启动锁）、`D-38①`（异常入口取锁）列为开放并注"阻塞于多核"，`:185` 仍写调度循环为占位；而 §23/§24 与代码事实是四条均已闭合（`os/kernel/src/smp.rs:fn smp_init`、`os/kernel/src/lib.rs:fn scheduler_loop`、`os/arch/src/x86_64/protection.rs:fn init_ap`）。真正没做的是**次级核承载进程**，不能拿"多核未做"盖住四条已完成的账。逐条凭据见 `../coordination/STAGE-KERNEL-FREEZE-READY-20261008.md` §2。
+> **本文件内部口径的自相矛盾已按代码刷新（`2026-10-09` 回勾，claim/SK-FREEZE-REFRESH-qoder）**：§7.1、§10、§12.2/§12.3 曾把 `D-36`（多核初始化）、`D-37`（启动锁）、`D-38①`（异常入口取锁）列为开放并注"阻塞于多核"、把调度循环记为占位；§23/§24 与代码事实是四条均已闭合（`os/kernel/src/smp.rs:fn smp_init`、`os/kernel/src/lib.rs:fn scheduler_loop`、`os/arch/src/x86_64/protection.rs:fn init_ap`，逐条凭据见 `../coordination/STAGE-KERNEL-FREEZE-READY-20261008.md` §2 与其核实命令）。真正没做的是**次级核承载进程**（`TODO-LEDGER-OPEN.md` §1 钳位行），那是另一件事，不能用"多核未做"盖住四条已完成的账。
 > 另有 `T-10`（通用引导器对照腿）已按裁决 `PD-15` 放弃，不再属于"保持推迟"；`I-5`（物理机平台发现）与 `I-1`（内核独立镜像构建）维持不排期。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（§1 是内核与多核）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。
 
@@ -37,7 +37,7 @@
 | 2026-09-08 Phase 6 | 7 项 | T-1（10/10）、T-6（10 测试）、T-7（5/5）、T-12（5/5 + dispatch_clear 幂等修正）、T-9（3 测试）、T-11（runqueues_ok 集成）、T-5（QEMU CI workflow） |
 | 2026-09-07~08 §22 Phase 1/2 | 12 项 | V12-A1 trap_style（含 MINIX3 BUG 修复）、V12-B1 panic 审计、V12-A2/A3/A4、V12-B2（IoBatchBuf 对齐 UB 修复）、V12-B3（Message 72B 实测）、V12-B4、A1（assume_held + 24 处迁移）、A2（globals.rs）、B1（transfer API）、B-X 第一批、S-2b/S-3a/S-3b/S-3c |
 | 2026-09-09 D1/D2 + Phase 7 | 4 项 | D1/D2（Errno newtype + ToErrno，架构建议清零）、I-14（B 层完成）、I-3（核实闭合） |
-| 📌 保持 DEFERRED（依赖仍成立） | — | **I-1**（kernel ELF 构建无引导路径）、**I-5**（ACPI RSDP 无消费方）、**I-6**（bill_ptr+主循环，等 S-7/S-10）、**T-10**（U-Boot 工具链）、**profiling deferred 体**（等 S-8/S-9）；Edge 12 项全部阻塞于 SMP bring-up（§10） |
+| 📌 保持 DEFERRED（依赖仍成立） | — | **I-1**（kernel ELF 构建无引导路径）、**I-5**（ACPI RSDP 无消费方）、**T-10**（U-Boot 工具链，`PD-15` 已裁放弃）、**profiling deferred 体**（等 S-8/S-9）；Edge 表旧 12 项中 SMP 块的 `D-36`/`D-37`/`D-38①`/`D-39` 四条已于 S-4/S-5/S-7 收官时闭合（§23/§24 在案，`2026-10-09` 按代码回勾本行与 §7.1/§10——真正仍开的 SMP 残项是**次级核承载进程**，那是另一件事，不能用"多核未做"盖住四条已完成的账） |
 
 ## 0. 审查基线 — 已确认的良好架构（无需改动）
 
@@ -133,13 +133,13 @@ D-14（SIGKMESS 随 W-7 演进不可达）、D-24（VMSTYPE_MAP C 本身无此�
 消费方）、D-30（swap 链恒空前提；**后被 U-2 推翻改真实现**，见 §12 Phase 5）、D-34
 （mmap_size/mem_high_phys 无读者，write-only 状态不维护）、W-8 同 D-30。
 
-**⬜ 仍 open（全部阻塞于 SMP，与 §10 Edge 表同源）**：
+**✅ 旧"仍 open"表——`2026-10-09` 全部按代码回勾闭合（与 §10 Edge 表同源）**：
 
 | # | 项 | 依赖 |
 |---|-----|------|
-| D-36 | `smp_init`（ACPI/MADT 表解析 + `SmpArch::boot_ap`） | S-4/S-5 |
-| D-37 | `boot_lock`（smp.c:28） | 随 D-36 |
-| D-38① | exception_dispatcher::handle 需 bkl_lock（②③④ 已闭合：lib.rs 两处 + 2026-09-07 S-1 核实 resume 路径已覆盖） | S-9 |
+| D-36 | ~~`smp_init`（ACPI/MADT 表解析 + `SmpArch::boot_ap`）~~ ✅ S-5（`2026-09-15` 收官，见 §12.2；硬件清单实际走 KernelInfo+DTB 平台描述符而非 ACPI/MADT——I-5 自陈该设计走向，非缺口） | S-4/S-5 ✅ |
+| D-37 | ~~`boot_lock`（smp.c:28）~~ ✅ S-5（`os/kernel/src/smp.rs:855` 起的 boot_lock 单例与 AP finish handshake） | 随 D-36 ✅ |
+| D-38① | ~~exception_dispatcher::handle 需 bkl_lock~~ ✅（`os/kernel/src/trap_dispatch.rs:105` 入口 `bkl_lock_or_inherit()`，②③④ 早已闭合） | S-9 ✅ |
 | D-39 | ~~x86_64 `init_ap` panic 占位~~ ✅ S-4（2026-09-14 真实现：AP 侧装载 + GS/MSR；16 字节 TSS 描述符布局 bug 同步修复——见 smp_todo §22） | S-4 ✅ |
 | D-40 | ~~ptproc per-CPU（现由 `CURRENT_PTPROC_NR` 全局单核承担）~~ ✅ S-6.1（全局原子退役 → CpuLocal.ptproc；身份锚 gs:0x10） | S-6a ✅ |
 | D-41 | ~~`PLATFORM` AssumeSyncCell SMP 替换~~ ✅ S-6.2（Frozen<T> 冻结原语，minix-types；PLATFORM 已迁移） | S-6b ✅ |
@@ -187,7 +187,7 @@ I-11（BIOS legacy 范围声明非缺口）、I-12（RAII 拒绝维持，B1 承�
 |---|-----|------|
 | I-1 | kernel 独立 ELF 构建接入（build.rs + link.ld → xtask） | ⏸ 诚实 DEFERRED（2026-09-09）：三架构 link.ld 就绪（`os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld`）但 artifact 无引导路径——`KernelLoadResult.entry_point`（`os/boot-shim/src/loader.rs:66`）零消费者，boot-shim→kernel.elf 终局跳转未设计（入口 ABI：e_entry 处接收什么参数/寄存器态无定义）。解除前置：(a) 入口交接 ABI 设计；(b) boot-shim 终局跳转（S-4/S-8 相邻）；(c) bin 目标 + build.rs（先例：hello-boot-riscv64/build.rs）。单独做 (c) = 不可引导 artifact（frame.rs 先例） |
 | I-5 | ACPI RSDP 搜索与表解析 | ⏸ 诚实 DEFERRED（2026-09-09）：三家族 QEMU virt 均不依赖 ACPI（平台发现走 KernelInfo+DTB），内核无 RSDP 消费方；MADT 常量骨架在位（`os/arch/src/acpi.rs`）。解除条件：物理机 x86_64 支持（真实 MADT/HPET 消费方）时实现 RSDP 扫描（EBDA + 0xE0000-0xFFFFF） |
-| I-6 | `bill_ptr` 完整联动 + 真实调度主循环 | ⬜ open：调度循环仍为 placeholder（`os/kernel/src/lib.rs` kmain Phase 末段 `loop { spin_loop() }` 一带，V13 复核见 §23）；bill_ptr 调度期联动未接线。安全窗口在 S-7/S-10 后 |
+| I-6 | `bill_ptr` 完整联动 + 真实调度主循环 | ✅ 全条闭合（§23.3 ①②③ 于 `2026-09-15` 落地；旧记"调度循环为 placeholder"过期——`os/kernel/src/lib.rs:fn scheduler_loop` 为真实循环，kmain Phase F 直入（`lib.rs:3909`），`bill_ptr` 联动 `set_bill_to_idle`/`pick_and_bill` 到位；端到端实证 test-smp-aps（四核 idle/pick 多轮）+ test-smp-ipi。核实：`grep -n "fn scheduler_loop" os/kernel/src/lib.rs` |
 | I-13 | ~~`InterruptController` trait 拆分~~ ✅ 已闭合（2026-09-15，code-excellence 轮）：拆为 `InterruptRouter`（new/init/mask/unmask/mask_all，全局路由面）+ `PerCpuInterruptUnit`（claim/complete，去死参 irq，per-CPU 语义），IrqManager 约束 IC: Router + PerCpuUnit；GIC/PLIC 的 `claim → IrqVector` 返回值演进记 OQ-13a（随 per-CPU 分发 lane） | ✅ |
 | I-7 / I-9 / I-10 | MF_REPLY_PEND typestate / NonNull / PrivId newtype | ✅ 评估闭合（2026-09-08）：均维持现状——typestate 增益在持久化边界消失；`s_stack_guard` 是地址值无 deref 目标、filter 链本体未实现（虚构抽象不建）；PrivId newtype 需改 81 处构造点且无混用 bug 史例，**跟进顺序：D1 先例建立后批量评估**（若未来评估，从 I-10 重启） |
 | I-2 | `release[]`/`version[]` + MINIX_KERNINFO | ✅ 内核臂闭环（2026-09-16，edge E-KERNINFO，commit 207e30644）：minix-types kerninfo wire（88B MinixKerninfo/KuserInfo + OS_* 常量）+ `IpcCall::KernInfo=6` dispatch 臂（未发布→EBADCALL/已发布→二次返回通道 RBX + OK）+ `set_secondary_ipc_return`（C arch_system.c:184-186 等价物）；页映射初始化与用户态消费挂 E1 通电。**✅ 内核半闭环（2026-09-17，edge E-KERNINFO）**：`kerninfo::init_kerninfo`（kmain Phase B.5）构建内核镜像静态页（magic + kuserinfo=kui_size/user_sp，main.c:438-440 对应）→ 活动根 query 翻译 PA → `Paging::map` 用户只读映射到固定 `KERNINFO_USER_VA=0x2_0000_0000` → 发布 `MINIX_KERNINFO_USER`；同轮修复 `walk_alloc` 中间层不传播 USER 位的 arch 级缺陷（U/S 逐层 AND，CPL3 必 #PF——VmBootHandoff 同路径潜伏缺陷一并消除）；test-user-trap 真机验收：round-2 返回 OK + RBX=页 VA + CPL3 读到 KERNINFO_MAGIC，脚本五断言 PASS。用户态消费半（minix-rt query_kerninfo 翻转）仍挂 E1/T2 | ✅ |
@@ -256,10 +256,10 @@ D-58 方案 B 落地后关闭（2026-09-06）；D19-1（cause_signal 致命 SELF
 
 | ID | 项 | 阻塞 |
 |---|---|---|
-| D-36 | smp_init（ACPI/MADT + boot_ap） | S-4/S-5 |
-| D-37 | boot_lock | 随 D-36 |
-| D-38① | exception_dispatcher BKL | S-9 |
-| D-39 | x86_64 init_ap panic 占位 | S-4 |
+| D-36 | ~~smp_init（ACPI/MADT + boot_ap）~~ ✅ S-5（`2026-09-15`，见 §12.2；硬件清单走 KernelInfo+DTB 非 ACPI） | S-4/S-5 ✅ |
+| D-37 | ~~boot_lock~~ ✅ S-5（smp.rs boot_lock 单例 + AP finish handshake） | 随 D-36 ✅ |
+| D-38① | ~~exception_dispatcher BKL~~ ✅（trap_dispatch.rs 入口 `bkl_lock_or_inherit()`，与 §7.1 同形回勾） | S-9 ✅ |
+| D-39 | ~~x86_64 init_ap panic 占位~~ ✅ S-4（`2026-09-14` 真实现，见 §7.1/smp_todo §22） | S-4 ✅ |
 | D-40 | ~~ptproc per-CPU（CpuLocal）~~ ✅ S-6.1 | S-6a ✅ |
 | D-41 | ~~PLATFORM SMP 容器语义~~ ✅ S-6.2（Frozen<T>） | S-6b ✅ |
 | sched-1 | ~~per-CPU scheduler running 指针~~ ✅ S-6.3（冻结决策：队列共享+BKL；per-CPU 只 proc_ptr） | S-6c ✅ |
@@ -323,8 +323,8 @@ bug 修复）；**S-3d ✅（2026-09-14 第四会话收官：test-smp-ap-alive-m
 | S-4 | ✅ init_ap 真实现（2026-09-14——16 字节 TSS 描述符入 GDT + IST 栈 + GS 双 MSR + per-CPU SYSCALL MSR + L2 读回 PASS；x86 PIT 全局无 per-AP 时钟工作；见 smp_todo §22） | S-8 ✅（D-39 ✅） |
 | S-5 | ✅ smp_init 编排 + boot_lock（2026-09-15 全步收官——内核层 + 硬件 L4 四核全在线；含 PROTECTION/TRAP_ENTRY 驻留生命周期修复与三真 bug；见 smp_todo §23） | S-4 ✅ |
 | S-6a~d | ✅ per-CPU ptproc / PLATFORM 冻结语义 / 调度 running 指针 / tick 统计（2026-09-15 四件独立 commit；见 smp_todo §24） | S-5 ✅ |
-| S-7 | AP 主循环（与 BSP 同 BKL 所有权前置） | S-6 |
-| S-9 | 异常入口 BKL（D-38①） | S-8 |
+| S-7 | ✅ AP 主循环（共享 `scheduler_loop`，前置由 L5 测试覆盖——S-10/S-12 行早已引用 S-7 ✅，本行漏翻，`2026-10-09` 回勾） | S-6 ✅ |
+| S-9 | ✅ 异常入口 BKL（D-38①，`trap_dispatch.rs:105` 入口 `bkl_lock_or_inherit()`——§7.1 同条目已记闭合，本行漏翻，`2026-10-09` 回勾） | S-8 ✅ |
 | S-10 | ✅ IPI 往返（2026-09-15 test-smp-ipi PASS——0xF0 路由 + per-CPU LAPIC 使能 + load_ap；riscv SSIE 路径随 lane） | S-7 ✅ |
 | S-11 | ✅ shutdown(0)（2026-09-15 minix_shutdown 语义层 + 三架构后端 + isa-debug-exit 设备；test-smp-shutdown PASS） | S-10 ✅ |
 | S-12 | ✅ 测试债 + CI 化（T-2 hosted ≥7 行为测试/T-3 覆盖互查+assert/T-4 硬件路径验证/T-5 qemu-tests.yml + run_all 一键 27 测试） | S-7 ✅ |
@@ -332,7 +332,7 @@ bug 修复）；**S-3d ✅（2026-09-14 第四会话收官：test-smp-ap-alive-m
 
 ### 12.3 Phase 5/7 — 仍 open 的主线项
 
-- ⬜ **I-6** bill_ptr + 真实调度主循环（替换 placeholder；安全窗口 S-7/S-10 后）
+- ✅ **I-6** bill_ptr + 真实调度主循环——已全条闭合（§23.3 ①②③，旧记"替换 placeholder"系过期；核实：`grep -n "fn scheduler_loop" os/kernel/src/lib.rs`）
 - ⬜ **I-13** InterruptController trait 拆分（依赖 S-6）
 - 🔄 **profiling/sprofiling deferred 体**（misc.rs dispatch_sprofile 已全实现；剩余 = trap 入口接线
   传 PC，依赖 S-8/S-9；NMI 臂 ENOSYS 与 idle 轮询变体两处 documented 豁免）
