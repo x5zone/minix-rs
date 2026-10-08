@@ -544,15 +544,17 @@ phys_bytes pg_alloc_page(kinfo_t *cbi)
 
 其二，退回 `alloc_lowest` 的那一行：若 `lowest` 不为 0（例如引导器的内存表里最低的可用区间不是从 0 开始），`cut_memmap(cbi, lowest, len)` 变成用 `len`（一个长度）当结束地址，夹取之后 `substart >= subend`，每一次循环都 `continue`，函数**什么都不切**就返回。返回的地址会被 `copy_trampoline` 拷进 16 位启动代码；此后任意一次 `pg_alloc_page` 都可以把这段物理内存当成空闲页发出去（这段内存从头到尾没被标记为占用），辅助处理器启动到一半时它的启动代码被改成页表内容——症状是某个 AP 起不来或执行到随机地址，而不是"内存分配失败"。这也解释了为什么"看到'分配'两个字，要去确认它是否真的把那块内存从可用清单中除去了，而不是只看它返回了一个地址"
 
-#### 2.4.1 模块内存的三次归属变更
+#### 2.4.1 模块内存与 unpaged 段的归属变更
 
-`cut_memmap` 在 `pre_init` 里被调用时只是一次**临时**切除。同一段物理内存（启动模块的字节）在整个启动过程中会经历三次归属变更，每次由不同的代码做、理由也不同：
+`cut_memmap` 在 `pre_init` 里被调用时只是一次**临时**切除。启动过程中有三处把物理区间从可用记录里切掉或加回来的动作；它们同属"改同一份记录"这一族，但作用对象并不相同——前两处是**模块字节**，第三处是内核自己的 **unpaged 段**：
 
-| 次 | 时刻 | 谁做 | 动作 | 为什么 |
-|---|---|---|---|---|
-| 1 | `pre_init` → `get_parameters` | `cut_memmap`（本文 2.4） | 从可用记录里切掉 `[mod_start, mod_end)` | 这段内存里躺着模块的字节，页表页与内核数据不能分配到这里 |
-| 2 | 内核装载启动进程时（`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc`） | `add_memmap` + 清空模块描述符 | 把模块的字节段复制进目标地址空间后，把这段物理区间加回记录，并把 `mod_start`/`mod_end` 置 0 | 字节已经搬到别处，原地址可以复用；置 0 是"已回收"的标记 |
-| 3 | `kmain` 之后 | `add_memmap(bootstrap_start, bootstrap_len)` | 归还分页开启前使用的那一小段 | C 的 `unpaged` 段只在启动期需要（本文 §3.5） |
+| 次 | 对象 | 时刻 | 谁做 | 动作 | 为什么 |
+|---|---|---|---|---|---|
+| 1 | 模块字节 | `pre_init` → `get_parameters` | `cut_memmap`（本文 2.4） | 从可用记录里切掉 `[mod_start, mod_end)` | 这段内存里躺着模块的字节，页表页与内核数据不能分配到这里 |
+| 2 | 模块字节 | 内核装载启动进程时（`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc`） | `add_memmap` + 清空模块描述符 | 把模块的字节段复制进目标地址空间后，把这段物理区间加回记录，并把 `mod_start`/`mod_end` 置 0 | 字节已经搬到别处，原地址可以复用；置 0 是"已回收"的标记 |
+| 3 | unpaged 段 | `kmain` 之后 | `add_memmap(bootstrap_start, bootstrap_len)` | 归还分页开启前使用的那一小段 | C 的 `unpaged` 段只在启动期需要（本文 §3.5），与模块无关 |
+
+口径：**模块字节严格只有前两次**（一次切、一次还），第 3 次的对象是内核镜像里的 unpaged 段（链接脚本导出的 `_kern_unpaged_start/end`）。而且第 2 次只归还 VM 那一块——其余模块的字节区间在 C 里从头到尾都没有加回过（见下方第三点）。
 
 第 2 次的源码（本篇 §3.7 引用的扣除表把这条 C 对应关系**改述**过一行，不是逐字引用）：
 
@@ -577,6 +579,8 @@ phys_bytes pg_alloc_page(kinfo_t *cbi)
 - `add_memmap` 的实参是 `mod->mod_start` 与 `mod->mod_end - mod->mod_start`（起点与**长度**），与 2.4 里 `cut_memmap(cbi, lowest, len)` 那个把长度当结束地址的写法形成对照：同一个文件里的两组调用对"第二个参数是什么"并不一致，读的时候只能逐个核对被调函数的签名。
 - 置零发生在加回之后，且两个字段一起置 0。此后任何遍历 `module_list[]` 的代码都会看到一条"空模块"；这是"已回收"在数据结构里的表示（而不是另设一个布尔位）。
 - 这次回收只针对 VM 的模块（`vm_allocated_bytes` 紧跟着被记录），因为它的字节已经被复制进 VM 的地址空间。其余模块的回收时机由它们各自的装载决定。
+
+**第 2 次"不归还"的后果，落到具体对象**：被切掉的那段区间会永久停在"已切"形态——`kinfo.memmap[]` 里对应条目的 `mm_length` 保持 0（`cut_memmap` 清空后的样子），因此它既不会被任何遍历看到，也不会回到可用总量里。启动期的物理页分配器只有一个：`pg_alloc_page` 从最高条目往下扫，取第一个 `mm_length != 0` 的条目的最后一页，扫完一圈都没有可用条目时 `panic("can't find free memory")`（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page`）。所以"不归还"的显形形式是这个 panic，而它最先被谁碰到取决于谁先要新页：启动期要新页的入口是装载启动镜像的那条路径——`minix3/minix/kernel/arch/i386/protect.c:libexec_pg_alloc` 调 `pg_map(PG_ALLOCATEME, vaddr, vaddr+len, &kinfo)`，后者对每个虚拟页调一次 `pg_alloc_page`（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_map`）。需要说清的一点是：C 里**本来就只归还 VM 那一块**，其余 11 个模块的区间从不归还，启动照样完成——可见"不归还"的代价不是立刻坏，而是可用总量永久少掉那几段；它要显形，得等其余可用区间也被用尽，此时报错的是 `pg_alloc_page` 的 `can't find free memory`，而调用栈的顶端就是那一次启动镜像装载。
 
 第 2 次在新设计里的处理与这里不同（落点与理由见 §3.7 的扣除表）；第 3 次不存在，因为 `bootstrap_len` 恒为 0（§3.5）。
 
@@ -900,6 +904,8 @@ static phys_bytes createpde(
 链路是：内核要访问"另一个地址空间里的地址"（例如跨进程拷贝），而它只有一个当前生效的页目录；办法是在**当前页表**里临时占用一个空闲槽位，把对方那个地址对应的页目录项写进去，于是对方的一个 4MB 窗口在当前地址空间里可见；用完由调用方在下次切换时自然丢弃。`virtual_copy` 里两个方向各借一个槽位（`free_pde_idx` 为 0 与 1），写完调 `reload_cr3()` 刷新 TLB。另一个消费者在 VM 服务里（`minix3/minix/servers/vm/pagetable.c` 里对 `kernel_boot_info.freepde_start` 的取用），用途相同。
 
 这就把 `freepde_start` 从"一个返回值"变成了"一套借用机制"：它成立需要三个前提——当前页表里确实有连续的未用槽位、借来的窗口只在当前 `CR3` 下有效、借出者自己记账并保证归还。新设计为什么不再需要它，见 §3.8。
+
+**偏移一位的后果**：`pg_mapkernel` 的返回值如果是"最后一个已用槽位"而不是"第一个空闲槽位"，`memory_init` 的两行自增会把 `freepdes[0]` 设成内核映射占用的最后一个页目录下标（961 + k - 1），`freepdes[1]` 才落到真正的第一个空闲槽。`createpde` 对借来的槽只做两条范围检查（`free_pde_idx` 在 `nfreepdes` 之内、槽号在 1024 之内），不检查它"是否空闲"；而跨空间拷贝的第一个方向固定借 0 号槽（`createpde(srcproc, srclinaddr, &chunk, 0, &changed)` 在 `minix3/minix/kernel/arch/i386/memory.c:lin_lin_copy` 里，入口是 `minix3/minix/kernel/arch/i386/memory.c:virtual_copy_f`），`vm_memset` 也借 0 号槽（`minix3/minix/kernel/arch/i386/memory.c:vm_memset`）。于是第一次跨地址空间拷贝会把对方地址空间的 PDE 值写进 `p_cr3_v[961 + k - 1]`——那一条正是内核镜像最后一块 4MB 的映射；`reload_cr3()` 让这次改写立刻生效，内核在那个 4MB 窗口里的下一次访问就撞上它：对方该槽的条目若不存在（值为 0 或非 present），是一次内核态页错误；若存在，则是静默读到另一个进程的 4MB 内容（内核数据被换成了别人的字节，没有任何报错）。两条路径都由启动进程发起的系统调用进入，所以最早坏在 `memory_init` 之后第一次跨空间拷贝或清零上。
 
 **如果反过来想**（两处）：
 
@@ -1686,6 +1692,8 @@ C 的 `freepde_start` 是 2.6 末尾那条链的起点：`memory_init` 把它自
 ```
 
 保留下来的用处只有一处：把 C 的 `struct kinfo` 形状报给用户态时占住那个位置（`os/kernel/src/misc.rs` 的 `getinfo_kinfo` 用 `unwrap_or(0)` 把它填进返回结构）。这个出口也说明为什么要用 `Option` 而不是"随便算一个值"：`None` 是"没有这个值"，`Some(0)` 是"0 号槽位空闲"——后者会被下游当成有效索引使用。
+
+在 64 位侧，偏移一位的形态与 C 不同：这个字段的消费者只有 GET_KINFO 的报告（`os/kernel/src/misc.rs`），所以一个"最后一个已用槽位"的值不会造成取指失败，而是让用户态读到一个错的槽号——把它当成有效索引去用。这正是字段保留为 `Option` 并在没有真实计算者时取 `None` 的理由：`None` 与"算错一位的值"在类型上无法区分，只能靠"不猜"避免；C 侧那套机制里偏移一位的后果（改写内核映射、下一次访问页错误或静默读错）见 §2.6。
 
 对照表：
 
