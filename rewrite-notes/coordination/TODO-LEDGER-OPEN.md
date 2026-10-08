@@ -134,7 +134,7 @@
 | 地址常量清扫的十三条发现：修复轮已落注记，残余需要按工具复扫逐条判读 | `待验证` / `L1`（工具在，读数未判） | 出处 `ADDRESS-CONSTANT-AUDIT.md` 的 `A1`—`A13` 与修复轮注记 | `python3 tools/address-constant-scan.py os`（输出需按该审计的豁免清单过滤，否则会把测试夹具当违规） |
 | 跨架构常驻编译检查门未落地：同一类事故（公共路径的取证改动打断另两架构构建）已发生两次 | `open` / `L1`；**裁决 `PD-30` 采甲**（加任务：宿主默认形态测试 + 生产形态交叉编译两条腿），`PD-31` 定了静态检查的棘轮口径；现状是工作流只为两架构建生产形态 | 出处回归评审的 `OQ-1`；按 `PD-30` 加任务也是 `PD-29` 摘默认替身特性的前置 | `grep -n "cross-arch\|aarch64\|riscv64" .github/workflows/*.yml` |
 | 次级核定时器载体的真机断言缺失（见 §1 同条目） | `open` / `待验证` | 靠人读串口数字，不能进回归 | `grep -n "assert\|TEST_RESULT" os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps/src/main.rs` |
-| x86_64 架构初始化文件零测试 | `open` / `L1` | `grep -c "#\[test\]" os/arch/src/x86_64/arch_init.rs` → 0 | 与 §2 的门测可达化同批 |
+| x86_64 架构初始化文件零测试 | `closed` / `L1` | 已补 3 个 in-module 单测（arm64/riscv64 同文件仍零测试，留待后续） | `grep -c "#\[test\]" os/arch/src/x86_64/arch_init.rs` → 3（`os/arch/src/x86_64/arch_init.rs:66-99` `mod tests`：存址/默认空/重复 init）；`cargo test -p minix-arch --lib arch_init` → 3 通过 / 0 失败（`2026-10-08 @ 7fe6917f1` 核实，落点见本轮提交） |
 
 ## §8 滚除、卫生与文档重生成前置
 

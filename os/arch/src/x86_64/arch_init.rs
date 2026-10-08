@@ -61,3 +61,40 @@ impl ArchInit for X86_64ArchInit {
         // init_clock_and_interrupts before arch_init).
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // C: arch_init() takes the ACPI tables pointer from the platform
+    // descriptor (arch_system.c:246-288, acpi_init path).
+    #[test]
+    fn new_stores_acpi_tables_address() {
+        let desc = ArchMiscDesc {
+            acpi_tables: Some(0x1_0000),
+            ..Default::default()
+        };
+        let init = X86_64ArchInit::new(&desc);
+        assert_eq!(init.acpi_tables, Some(0x1_0000));
+    }
+
+    #[test]
+    fn new_defaults_to_no_acpi_tables() {
+        // QEMU virt fallback: no ACPI tables discovered.
+        let desc = ArchMiscDesc::default();
+        let init = X86_64ArchInit::new(&desc);
+        assert_eq!(init.acpi_tables, None);
+    }
+
+    #[test]
+    fn init_is_repeatable_noop() {
+        let desc = ArchMiscDesc {
+            acpi_tables: Some(0x2_0000),
+            ..Default::default()
+        };
+        let mut init = X86_64ArchInit::new(&desc);
+        init.init();
+        init.init();
+        assert_eq!(init.acpi_tables, Some(0x2_0000));
+    }
+}
