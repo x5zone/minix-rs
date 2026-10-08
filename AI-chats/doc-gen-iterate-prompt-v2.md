@@ -74,7 +74,9 @@ trace  = prompt/REVIEW-TRACE-docgen-01-05-5rounds-v2.md
 - **但先分消"形式化"与"欠构件"**（Round 1 教训）：如果丢失的根因是"先宣布后证明 + 元话语叙事 + 回指缺失"，那它**不是能逐条修补的缺陷**：重写章内交付顺序与句子（补回指、删元话语、结论后移），**但不改章级骨架**——骨架属规范源（`review-doc-checklist.md` §1–§4：概述/C 源码分析/Rust 设计决策/实现详解/测试/诊断）。就地堆文风修补只会把稿子磨得更漂亮、更不像书；而自创骨架会直接造成与规范源的冲突（两者在本轮都真实踩过）。
 
 ### E 提交 · 五道文档门全绿只是底线
-`anchor-resolve --check`、`doc-code-map --check`、`doc-style-lint --diff`（0 error）、`doc-ref-check`（`AWK=gawk`）、`doc-code-density --check`；sha256 绑定；逐路径点名、一逻辑单元一笔、不跳 hook。文档一笔、工作流改进一笔。
+`anchor-resolve --check`、`doc-code-map --check`、`doc-style-lint --diff`（0 error）、`doc-ref-check`（`AWK=gawk`）、`doc-code-density --check`；**另加元话语/比喻复扫 grep（命中即未修完，不得提交）**——Round 1–4 实际发生的事是：写了"禁元话语"的规则后仍在三篇里连着违规（"值得 X"、"地基"、"伸手"），说明光有规则不自查不够。sha256 绑定；逐路径点名、一逻辑单元一笔、不跳 hook。文档一笔、工作流改进一笔。
+
+**改文件前的一条硬规则**（Round 2、4 各踩过一次）：先 `git worktree list` 确认目标工作树仍在登记中——**已销账的 `.wt/<id>` 目录可能还留在磁盘上，写进去的改动不会进入任何分支**。
 
 ### F 回归复核 · 审自己的 commit（不许自证通过）
 - 派 **CodeReview 子代理**（`review_scope=explicit_target` 取本轮 commit）查事实/锚点/代码忠实/测试非虚构/命令可跑；

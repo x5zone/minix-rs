@@ -201,7 +201,7 @@ tree  = rewrite-notes
 
 - 全部 Gate 通过、P0 清零后，将本次所有改动（新文档 + 代码 + `draft/` 移动 + `.review` 外的产物）提交；正文降噪与锚点底账**同一笔提交**落地。
 - **受审正文与交付物绑定**（`review-process.md` 0.13，防"过了门的版本 ≠ 入库的版本"）：把 `sha256sum {num}-{topic}.md` 写进 `STATE.md`；提交前复算，与记录不一致（评审后正文被改过）→ **重跑承载门 + 文风门 + anchor 复解析**后再提交。`git diff --stat {doc}` 必须为空才允许收笔。
-- **提交前的增量门清单**（五条全绿才提交）：`tools/anchor-resolve.sh --check`、`tools/doc-code-map.sh --check`、`tools/doc-style-lint.sh --diff`（零 error）、`tools/doc-ref-check.sh`（需 `AWK=gawk`）、`tools/doc-code-density-check.sh --check`。
+- **提交前的增量门清单**（五条全绿才提交）：`tools/anchor-resolve.sh --check`、`tools/doc-code-map.sh --check`、`tools/doc-style-lint.sh --diff`（零 error）、`tools/doc-ref-check.sh`（需 `AWK=gawk`）、`tools/doc-code-density-check.sh --check`。**再加一条元话语与比喻的复扫（它是收笔判据，不是建议）**：`grep -nE '值得(单独|完整|注意|记下|说清|带走|想清)|就把人问住|结论有点意外|反直觉|唯一可能的|这不是偏好|地基|洁癖|老路|伸手' {doc}.md` 与 `grep -nE '梯子|脚下|交棒|盖章|账本|名片|送人' {doc}.md`——**命中即未修完**，逐条改平实陈述后再提交（机器门全绿不代替这一步）。
 - **人工修改回炉**：已评审文档若被人工改动超过阈值（建议 50 行以上，或触碰事实断言），触发轻量回炉：`anchor-resolve.sh --check` + `doc-style-lint.sh --diff` + 新增事实断抽样对账，产物进 `.review/`。不受门的修改与不受门的生成一样会产出超出真值的断言。
 - 提交信息按项目既有风格；**不跳过任何 hook**；如任一门 FAIL 或未确认，则**先回报、不提交**。
 
