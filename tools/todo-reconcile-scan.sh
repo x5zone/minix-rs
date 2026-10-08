@@ -51,7 +51,7 @@ drift=0
 
 printf '判据\t本次读数\t台账基线\t判定\n'
 
-n=$(rs "用后即滚");                     row "探针待滚除（行）" "$n" 15 "$(verdict "$n" 15)"
+n=$(rs "用后即滚");                     row "探针待滚除（行）" "$n" 13 "$(verdict "$n" 13)"
 n=$(rs -E "nk4[ac]:");                  row "探针命名族（行）" "$n" 15 "$(verdict "$n" 15)"
 n=$(grep -rn "todo!()\|unimplemented!()" os/kernel/src os/arch/src 2>/dev/null | wc -l | tr -d ' ')
                                         row "内核与架构层静默占位" "$n" 0 "$(verdict "$n" 0)"

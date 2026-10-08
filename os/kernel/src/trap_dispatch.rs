@@ -1681,41 +1681,11 @@ unsafe fn riscv64_pagefault_body(
         proc.trap_style = TrapStyle::FullContext;
     }
     let priv_table = unsafe { crate::priv_table_boot_unchecked() };
-    // §续-383 判别探针（用后即滚）：本案门内现场停在「VM 拒服务后没人解锁调用者」，
-    // 但拒服务发生在 VM 侧、内核这边的状态当时看不到。这里在**送进缺页挂起之前**
-    // 检查该进程是否已经挂着致命信号（`SIGNALED` / `SIG_PENDING`）：若是，则本次
-    // 挂起与终止在赛跑，且挂上之后只能等 VM 来清缺页位——这就是死锁的形状。
-    // 读数封顶：前两条 + 之后每逢 2 的幂一条（§续-361 插桩量教训）。
-    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static LETHAL_PF: AtomicUsize = AtomicUsize::new(0);
-        let (flagged, flags) = table
-            .get(cur_nr)
-            .map(|p| {
-                (
-                    p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::SIGNALED)
-                        || p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::SIG_PENDING),
-                    p.p_rts_flags.get().bits() as u64,
-                )
-            })
-            .unwrap_or((false, 0));
-        if flagged {
-            let n = LETHAL_PF.fetch_add(1, AtomicOrd::Relaxed);
-            if n < 2 || (n + 1).is_power_of_two() {
-            }
-        }
-    }
-    // §续-384 判别探针（用后即滚）：t_strerror 四案全部「写 VA=0」确定性死亡
-    // （§续-383 门读数），需要崩溃现场的 sepc/ra/sp 定位到指令。fa==0 的
-    // 用户缺页是稀有事件（现役套件只有本案），封顶 8 防意外洪流。
-    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static FA0_N: AtomicUsize = AtomicUsize::new(0);
-        if fault_addr == 0 && FA0_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-        }
-    }
+    // §续-383/§续-384 判别探针（用后即滚）已于本轮回勾滚除——两处此前已被掏空成
+    // 纯计数器自增 + 空 `if` 体（读数消费面早前就摘掉了，只剩自娱自乐的
+    // `LETHAL_PF`/`FA0_N` 静态计数无人读取），属 `§续-385`/`task1-close`
+    // 同族「空体残骸」，滚除零行为风险，与 PD-16 本体探针无关。真正仍依赖
+    // PD-16 结案才能滚的探针（krewalk/sfence-exec 等）仍在原处，未动。
     if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, fault_addr, errcode) {
         // C: panic("WARNING: pagefault: mini_send returned %d")
         panic!("pagefault: mini_send returned {e:?}");

@@ -146,7 +146,7 @@
 
 | 类别 | 判据命令（只读，可重跑） | 快照 `87784ca04` 上的读数 | 能定案到什么程度 |
 |---|---|---|---|
-| 结案后探针未滚除 | `grep -rn "用后即滚" os --include=*.rs \| wc -l`；`grep -rl "用后即滚" os --include=*.rs \| wc -l` | 14 行 / 7 个文件（原 15，`2b0deb62c` 滚 FTRAP_N 后现算 14；脚本基线待维护批） | 可定案（`L1`） |
+| 结案后探针未滚除 | `grep -rn "用后即滚" os --include=*.rs \| wc -l`；`grep -rl "用后即滚" os --include=*.rs \| wc -l` | 13 行 / 7 个文件（原 15、`2b0deb62c` 滚 FTRAP_N 后 14、本轮滚 `os/kernel/src/trap_dispatch.rs` 里两处空体残骸后现算 13；脚本基线同步从 15 改为 13） | 可定案（`L1`）；**行数不等于待滚量**——13 行中绝大多数是注释里提到这个纪律的历史说明（真实探针本体），并非每一行都能删；逐站分类见 `TODO-LEDGER-OPEN.md` §2 `P-ALL-04` 行 |
 | 探针命名族 | `grep -rnE "nk4[ac]:" os --include=*.rs \| wc -l` | 15 行 | 可定案；注意计数正则必须覆盖两个族，历史上因只搜 `nk4a:` 而漏 |
 | 生产码静默占位 | `grep -rn "todo!()\|unimplemented!()" os/kernel/src os/arch/src \| wc -l` | 0 | 可定案：**内核与架构层没有静默占位**，缺口以注释与显式停止形态存在，只能读码枚举 |
 | 服务入口未通电 | `grep -rln "loop {}" os --include=main.rs \| wc -l` | 55 | 可定案 |
