@@ -111,19 +111,26 @@ impl DriverTransport for KernelTransport {
     }
 
     fn publish_label(&mut self, label: &str) -> Result<(), i32> {
-        // C: `chardriver_announce` 的 DS 发布半（chardriver.c:99-127 →
-        // ds_publish_label）。DsClient 双载体参数化（ds.rs，T7 约束放宽）
-        // 后单一直传载体可直接装配：DS 对话 = int-33 IPC 腿，grant 生
-        // 命线 = SYSCALL 腿；宿主构建诚实 -EIO。grant 链（grant.rs
+        // C: `chardriver_announce` 的 DS 发布半（chardriver.c:99-127）。动词是
+        // **`ds_publish_u32(key, DS_DRIVER_UP, DSF_OVERWRITE)`**（chardriver.c:119），
+        // 不是发布 label：TYPE_LABEL 的发布权在 RS 一家（DS 的源闸
+        // store.c:302-304「Only RS can publish labels」写死 `m_source == RS_PROC_NR`），
+        // 驱动发 TYPE_LABEL 永远 EPERM——真机上这一条把 MEM/TTY 的 announce
+        // 直接打死（原误用 `publish_label` 被 DS 回复符号缺陷掩盖成假成功，
+        // 见台账 E-DSWIRE 的上机终态）。键名沿用调用方给的 `drv.chr.*`，
+        // C 则由 `ds_retrieve_label_name(sef_self())` 拼出（差量登记在台账）。
+        //
+        // DsClient 双载体装配（ds.rs，T7 约束放宽）：DS 对话 = int-33 IPC 腿，
+        // grant 生命线 = SYSCALL 腿；宿主构建诚实 -EIO。grant 链（grant.rs
         // register）上浮正 errno、taskcall 链上浮负状态——此处归一为本
         // trait 其余动词的负状态约定。
         let mut ds = DsClient::new(DirectTrapTransport, DirectKernelCallTransport, Endpoint::DS);
         let mut grants = minix_sys::grant::GrantTable::new();
-        ds.publish_label(
+        ds.publish_u32(
             &mut grants,
             label,
-            Endpoint::NONE,
-            minix_types::DsFlags::empty(),
+            minix_types::DS_DRIVER_UP as u32,
+            minix_types::DsFlags::OVERWRITE,
         )
         .map_err(|e| -(e.unsigned_abs() as i32))
     }

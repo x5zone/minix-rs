@@ -254,6 +254,31 @@ pub fn plan(
         ],
     );
 
+    // E5(f) 真机半的 DS 传输链载体（`qemu-tests/test-kernels/user/e5-ds`）。
+    // 与 sh/echo 同一条 freestanding 腿，但本包 `required-features =
+    // ["fw-user-none"]`（X-2/NK5 裸机隔离：宿主 --workspace --bins 跳过），
+    // 故 --target 与 --features 必须成对传——rt-birth/sysboot 的先例。
+    //
+    // 只给已开禁的架构装（[`E5_DS_READY`]，`ATF_BOOT_LEG_READY` 同款名单形）：
+    // 载体的第一条 taskcall 若撞上「DS 未在服务」会本征阻塞在 sendrec，装到
+    // 未验收的架构上会拖垮该架构既有冒烟门。rc 的 `/bin/e5-ds` 行不随名单
+    // 一开禁（未播种只多一行 "not found"），名单扩到三架构跟 E5-ARCH。
+    let e5_ds_ready = E5_DS_READY.contains(&arch.slug());
+    if e5_ds_ready {
+        cargo_release(
+            &mut actions,
+            "e5-ds 载体构建（imgrd /bin 播种，E5(f)）",
+            &[
+                "-p",
+                "e5-ds",
+                "--target",
+                arch.module_target(),
+                "--features",
+                "fw-user-none",
+            ],
+        );
+    }
+
     // 2. boot-shim（生产开关：关默认 feature，只开本架构的 uefi 特性）。
     cargo_release(
         &mut actions,
@@ -338,21 +363,26 @@ pub fn plan(
         atf_tests.iter().map(|(n, p)| (n.as_str(), p.as_str())).collect();
     // 根盘容量随套件存在性放大（无套件架构逐字节同旧，CodeReview 续-278）。
     let imgrd_blocks = if atf_tests.is_empty() { IMGRD_BLOCKS } else { IMGRD_BLOCKS_SUITE };
+    let mut bins: Vec<(&str, String)> = vec![
+        ("sh", bin_rel("sh")),
+        ("echo", bin_rel("echo")),
+        ("ls", bin_rel("ls")),
+        ("cat", bin_rel("cat")),
+    ];
+    if e5_ds_ready {
+        bins.push(("e5-ds", bin_rel("e5-ds")));
+    }
+    let bin_refs: Vec<(&str, &str)> = bins.iter().map(|(n, p)| (*n, p.as_str())).collect();
     actions.push(Action::Write {
         path: proto_path.clone(),
         bytes: generate_etc_proto(
             &layout.os_root.join("etc"),
-            &[
-                ("sh", &bin_rel("sh")),
-                ("echo", &bin_rel("echo")),
-                ("ls", &bin_rel("ls")),
-                ("cat", &bin_rel("cat")),
-            ],
+            &bin_refs,
             &atf_refs,
             rc_host,
             imgrd_blocks,
         )?,
-        note: "imgrd 原型文件（/etc 最小集 + /bin/{sh,echo,ls,cat} + /tests + /dev/console）",
+        note: "imgrd 原型文件（/etc 最小集 + /bin/{sh,echo,ls,cat[,e5-ds]} + /tests + /dev/console）",
     });
     actions.push(Action::Tool {
         program: layout
@@ -583,6 +613,13 @@ pub fn inject_rc_execs(rc_text: &str, exec_lines: &[String]) -> String {
 /// 无固定上限）。proto 头部与 mkfs 参数共用同一值（单点，不再两处手写）。
 pub const IMGRD_BLOCKS: u32 = 2048;
 pub const IMGRD_BLOCKS_SUITE: u32 = 4096;
+
+/// E5(f) 的 DS 传输链载体（`/bin/e5-ds`）已开禁的架构名单，形状同
+/// [`ATF_BOOT_LEG_READY`]。今天只放 x86_64：那是命令面/服务链唯一已过机验收
+/// 的一腿；载体的首条 taskcall 在「DS 未在服务」时会本征阻塞在 sendrec，
+/// 给未验收架构装上会拖垮该架构的既有冒烟门。扩到 aarch64/riscv64 跟
+/// E5-ARCH（台账 §5）的三架构复跑。
+const E5_DS_READY: &[&str] = &["x86_64"];
 
 /// 自定义出生腿（`-nostartfiles` + startup-minix.c）已放行的架构白名单。
 /// riscv64 于 §续-338（exec 栈顶 Sv39 规范地址修复）后与 aarch64 同形启用——
@@ -1006,8 +1043,8 @@ mod tests {
                 .iter()
                 .filter(|a| matches!(a, Action::Cargo { .. }))
                 .count()),
-            16,
-            "11 模块(不含 mfs) + sh/echo（minix-shell+minix-fileops 一步） + boot-shim + kernel-image + mkfs_mfs + mfs(B11 后构) = 16 步 cargo 构建"
+            17,
+            "11 模块(不含 mfs) + sh/echo（minix-shell+minix-fileops 一步） + e5-ds（E5(f) 载体一步） + boot-shim + kernel-image + mkfs_mfs + mfs(B11 后构) = 17 步 cargo 构建"
         );
         // 生产开关与 uefi 目标。
         assert!(text.contains("fw-x86-uefi") && text.contains("x86_64-unknown-uefi"));

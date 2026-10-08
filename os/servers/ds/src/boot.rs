@@ -79,6 +79,66 @@ fn copy_label(lane: &mut [u8; DS_MAX_KEYLEN], label: &[u8; RS_LABEL_LEN]) {
     lane[n] = 0;
 }
 
+/// RS label 约定期（`rs.h:58`：`RS_MAX_LABEL_LEN 16`）与本模块的 `RS_LABEL_LEN`
+/// 必须同值——两者是同一张表行的字段宽（行列解码的唯一真源在共享快照）。
+const _: () = assert!(RS_LABEL_LEN == minix_types::RS_MAX_LABEL_LEN);
+
+/// 公共表一行的字节宽。行形唯一真源是共享快照 `RprocpubSnap`
+/// （`[ARCH: A-4]` 单源纪律）——VM 的 RS_INIT 腿读同一张表用同一个行宽
+/// （`servers/vm/src/vm_server.rs:ipc_call_rs_init`），两处不得各自手拄。
+pub const RPROCTAB_ROW_BYTES: usize = core::mem::size_of::<minix_types::RprocpubSnap>();
+
+/// 冷启动一次拷贝的行数（C `store.c:263` 的
+/// `struct rprocpub rprocpub[NR_BOOT_PROCS]`）——引导表到此结束，
+/// 动态服务行的 label 由 RS 的 `publish_service`（manager.c:787-862）补。
+pub const RPROCTAB_ROWS: usize = minix_types::NR_BOOT_PROCS;
+
+/// 整表字节量（C 的 `sizeof(rprocpub)`，store.c:267-269 那一次 safecopyfrom 的量）。
+pub const RPROCTAB_BYTES: usize = RPROCTAB_ROWS * RPROCTAB_ROW_BYTES;
+
+impl BootService {
+    /// 空槽形状（解码输出缓冲的初值）。`in_use = false` 的行被
+    /// [`apply_boot_map`] 跳过，与 C 的 `if (rprocpub[i].in_use)` 同判据。
+    pub const VACANT: BootService = BootService {
+        in_use: false,
+        endpoint: Endpoint::NONE,
+        label: [0u8; RS_LABEL_LEN],
+    };
+}
+
+/// 把读回的 rprocpub 字节流转成 shadow 列表（逐行解行，C 的逐行结构读）。
+///
+/// 返回实际解码行数（受 `out` 容量与 `bytes` 长度双重限制）；调用方给
+/// [`RPROCTAB_ROWS`] 大小的数组，两处同源不会截断。
+pub fn decode_rproctab(bytes: &[u8], out: &mut [BootService]) -> usize {
+    let n = out.len().min(bytes.len() / RPROCTAB_ROW_BYTES);
+    for (i, slot) in out.iter_mut().enumerate().take(n) {
+        let row = &bytes[i * RPROCTAB_ROW_BYTES..][..RPROCTAB_ROW_BYTES];
+        // SAFETY(读取): 行是 `#[repr(C)]` POD 快照的字节镜像；
+        // `read_unaligned` 不假设缓冲对齐（授权拷贝落地的是字节流）。
+        // VM 读同一张表用同一手法。
+        let w: minix_types::RprocpubSnap =
+            unsafe { core::ptr::read_unaligned(row.as_ptr().cast()) };
+        *slot = BootService {
+            in_use: w.in_use != 0,
+            endpoint: Endpoint(w.endpoint),
+            label: w.label,
+        };
+    }
+    n
+}
+
+/// 冷启动 shadow 半的整拍：解码整表字节流→ reset →逐行植入。
+///
+/// 传输（把 RS 的授权内存搬回来）归调用方——本函数不碰 kernel（06 篇
+/// 分层：`boot.rs` 只拥有 shadow 动作）。C 对拷贝/植入失败 `panic`
+/// （store.c:269/:276），本树把 errno 上抛给出生协议（fail-closed）。
+pub fn plant_from_wire(store: &mut DsStore, subs: &mut DsSubs, bytes: &[u8]) -> Result<usize, i32> {
+    let mut services = [BootService::VACANT; RPROCTAB_ROWS];
+    let n = decode_rproctab(bytes, &mut services);
+    apply_boot_map(store, subs, &services[..n])
+}
+
 /// Shadow one boot service (`map_service`, `store.c:229-249`).
 ///
 /// Take a seat (full house reads `Err(ENOMEM)`, `store.c:235-237`),

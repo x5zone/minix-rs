@@ -59,7 +59,10 @@ pub trait DriverTransport {
     ///
     /// C: `chardriver_announce` publishes `drv.chr.<name>`
     /// (`chardriver.c:99`); the block and net families publish their own
-    /// prefixes. Failure is a startup failure — a driver nobody can find
+    /// prefixes. 动词是 `ds_publish_u32(key, DS_DRIVER_UP, DSF_OVERWRITE)`
+    /// （chardriver.c:119）——本方名说的是键名的角色（告知“这个 label 活了”），
+    /// 不是 DS 条目类型：TYPE_LABEL 只有 RS 能发（store.c:302-304）。
+    /// Failure is a startup failure — a driver nobody can find
     /// must not serve.
     fn publish_label(&mut self, label: &str) -> Result<(), i32>;
 

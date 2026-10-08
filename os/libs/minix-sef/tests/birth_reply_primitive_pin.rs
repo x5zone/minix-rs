@@ -65,7 +65,11 @@ const GENERAL_SERVICE_BIRTH_SITES: &[(&str, &str, &str, usize)] = &[
         "servers/ds/src/server.rs",
         "DS",
         "minix_sef::process_init(",
-        22,
+        // DS 的 Birth 臂在 `process_init` 与回报腿之间还夹着 fresh 锚点的
+        // shadow 半（经 rproctab grant 植入 label，C store.c:267-279），
+        // 窗口需跨过那段才能看到 `send_rec(caller, ..)`；本钉只校
+        // 「窗口内必须出现 send_rec」，放宽窗口不削弱判据。
+        38,
     ),
     (
         "servers/ipc-server/src/server.rs",
