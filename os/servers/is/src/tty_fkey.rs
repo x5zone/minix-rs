@@ -186,8 +186,9 @@ impl FkeyCtlTransport for SysFkeyCtl {
     }
 }
 
-/// Fail-closed transport until the `minix-sys` wiring lands (01 `sef.rs`
-/// `UnimplementedTransport` pattern).
+/// Fail-closed transport until the `minix-sys` wiring lands: every method
+/// panics with a pointer to the owning doc instead of silently succeeding
+/// (fail-closed T2 pattern; production binding is `SysFkeyCtl`).
 #[derive(Debug, Default)]
 pub struct UnimplementedFkeyCtl;
 

@@ -40,7 +40,6 @@ pub use dump_vfs::{VfsCursor, render_dtab, render_fproc};
 pub use dump_vm::{BatchCursor, FoldState, render_vm};
 pub use sef::{
     LifecycleAction, SefCallbacks, SefInitInfo, SefInitType, SefTransport, SIGTERM,
-    UnimplementedTransport,
 };
 pub use state::IsServerState;
 pub use tty_fkey::{

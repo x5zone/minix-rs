@@ -150,7 +150,7 @@
 | 探针命名族 | `grep -rnE "nk4[ac]:" os --include=*.rs \| wc -l` | 15 行 | 可定案；注意计数正则必须覆盖两个族，历史上因只搜 `nk4a:` 而漏 |
 | 生产码静默占位 | `grep -rn "todo!()\|unimplemented!()" os/kernel/src os/arch/src \| wc -l` | 0 | 可定案：**内核与架构层没有静默占位**，缺口以注释与显式停止形态存在，只能读码枚举 |
 | 服务入口未通电 | `grep -rln "loop {}" os --include=main.rs \| wc -l` | 55 | 可定案 |
-| 占位传输实现 | `grep -rn "UnimplementedTransport" os --include=*.rs \| wc -l` | 5 | 可定案 |
+| 占位传输实现 | `grep -rn "UnimplementedTransport" os --include=*.rs \| wc -l` | 0（原 5 全为 IS 被 `SysSefTransport` 取代的死桩，`2026-10-08` 移除；脚本基线待维护批）| 可定案；真·未通电信号看 `服务入口空转占位` 的 55 个 `loop {}` main |
 | 架构测试套件装配白名单 | `grep -n "ATF_BOOT_LEG_READY:" os/xtask/src/image.rs` | `["aarch64", "riscv64"]` | 可定案（x86_64 缺席是事实；能否跑绿需上机） |
 | 宿主不可达的门内测试数 | 逐目录 `grep -c "#\[test\]"` 相加：arm64、riscv64 的架构目录与平台目录 | 88（39 + 42 + 3 + 4） | 可定案；每轮须重算，账面写的是"约 90" |
 | 次级核入口体是否还是骨架 | `wc -l os/arch/src/{arm64,riscv64,x86_64}/ap_early_entry.rs` | 226 / 193 / 533 | 可定案（账面"41/40 行骨架"已过期） |
