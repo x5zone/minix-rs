@@ -59,7 +59,7 @@
 | `SD-40` | `open` | 被门控的诊断面需要结案批次命名 |
 | `SD-43` | `closed` | 本轮修复：新增 `MemType::rejects_in_place_resize` 谓词 + brk resize 腿 fail-closed，使 anon_contig/cache 的 brk 扩展按 C（region.c:1037 非 NULL→回调返 ENOMEM）失败而非静默 extend；铁证见 §2 P-ALL-05 行（minix-vm 541/0） |
 | `SD-12` | `adjudicated`，执行未竟 | 运行期进程根的写执行互斥收紧已由 `PD-22` 裁决为三步；第一步文本段去写需要静态核验无运行期写入者 |
-| `SD-19` | `open`，执行未竟 | 静默吞错家族——IPC 表面返回 `Result`、`let _ =` 是常见的掉空手法，候选修法是用 `clippy` 的 `let_underscore_must_use` restriction 把家族从"审查才能发现"变成"编译就能发现"（`PD-10` 探针治理与 `SD-40` 同窗）。本行旧描述（"网络字节序与套接字事件两处手抄"）把 `SD-19` 与无独立编号的另一话题张冠李戴，已按 `STRUCTURAL-DEBT-REGISTER-20261008.md` 对 `SD-19` 的原文定义纠正 |
+| `SD-19` | `partially fixed`，执行未竟 | 静默吞错家族——IPC 表面返回 `Result`、`let _ =` 是常见的掉空手法。本轮（`2026-10-09`）先落旗舰一个样本：`os/libs/minix-sys/src/lib.rs` 头部新增 `#![warn(clippy::let_underscore_must_use)]`（不升到 `deny`，零断面风险），把该 crate 从"需要人专门去审计才能发现"变成"每次 `cargo clippy` 自己就会报告"。可重跑核实命令：`cargo clippy -j 1 -p minix-sys --tests`（容器 `minix-ci:1.94`）→ 现算 `27` 处警告（`40→67` 总告警数，净增 27 全属新开的 lint、无其它无关告警）；逐条抽样人工核对已确认均为合法用途（如 `ds.rs` 多处引 C 真源 `ds.c:32`"revoke 无条件执行、不消费返回值"、`lib.rs:sync()` 引 `sync.c:12-17`"C 侧就丢弃返回值"、`pathconf` 引 `pathconf.c:37-45`"close 结果按 C 忽略"），非真 bug；新基线 27 个未加 `#[allow]` 标注属刻意的下一步（逐个加注释式 allow，把噪声收干，不本轮一次性干完）。本 crate 测试不受影响：`cargo test -p minix-sys` → `317 passed / 0 failed`（`2026-10-09 @ 7a79e2990`）。家族其余成员（`os/kernel/src/*`、各服务 crate）本轮未碰，仍属 open。本行旧描述（"网络字节序与套接字事件两处手抄"）把 `SD-19` 与无独立编号的另一话题张冠李戴，已按 `STRUCTURAL-DEBT-REGISTER-20261008.md` 对 `SD-19` 的原文定义纠正 |
 
 ## §4 跨阶段联调条目（`edge_todo.md` 里仍未闭合的部分）
 

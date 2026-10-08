@@ -34,6 +34,13 @@
 //! | `socket`         | `socket`  | 17-stage-net (23-libc-socket.md)           | — (policy only)    |
 
 #![no_std]
+// SD-19 静默吞错家族机械化门（本 crate 先行）：`ipc::IpcTransport`/各服务
+// wrapper 返回 `Result`，`let _ = ...` 是最常见的掉空手法。这个 restriction
+// lint 把家族从“需要人专门去审计才能发现”变成“每次 `cargo clippy` 自己就会
+// 报告”，与 `PATTERN-SCAN-REPORT-20260923.md` 的教训同族。基线（当前 27
+// 处警告，均已在现场逐条核对为“ C 对齐或测试夹具故意掉空”），
+// 新开一个未注释的 `let _ =` 会当场多报一条。
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 
