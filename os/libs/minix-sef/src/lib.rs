@@ -19,6 +19,10 @@
 //! MIB `sef_receive_status` shape).
 
 #![no_std]
+// SD-19 静默吞错家族机械化门（第五家 crate，与 minix-sys/rt/fs/kernel 同程序）：
+// SEF 框架里 `ipc.notify` 是 C 默认回调的发后即忘 pong，失败无回复可消费。今后
+// 无理由的新 `let _ =` 会当场多报一条。
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 
@@ -118,6 +122,8 @@ pub trait SefPingReply {
 
 /// Notify-based pong (the C default callback).
 pub fn pong_via_ipc(ipc: &mut impl SefIpc, source: Endpoint) {
+    //[SD19-gate] notify pong 发后即忘：C sef 默认回调即 fire-and-forget notify，无回复可消费
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ipc.notify(source);
 }
 
