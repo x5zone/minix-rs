@@ -6,9 +6,9 @@
 //! state become trait methods on the server instead of globals.
 //!
 //! The SEF *framework* (`sef_startup`, `sef_receive` internals) lives in
-//! `minix-sef` (currently a stub); this module only declares the surface IS
-//! consumes. Production wiring is a forward reference (see
-//! [`UnimplementedTransport`]).
+//! `minix-sef`; this module adapts it to the seam IS consumes. Production
+//! binding is [`SysSefTransport`] (below), which routes through `minix-sys`
+//!'s trap transport (hosted build returns EIO honestly until E1 真机通电).
 
 use minix_sys::ipc::IpcTransport as _;
 use core::fmt;
@@ -284,57 +284,6 @@ impl SefTransport for SysSefTransport {
 
     fn diag_out(&mut self) -> &mut dyn fmt::Write {
         &mut self.diag
-    }
-}
-
-/// Fail-closed transport until the `minix-sef`/`minix-sys` wiring lands.
-///
-/// Mirrors `os/servers/rs/src/boot.rs` (`UnimplementedKernelApi`): every
-/// method panics with a pointer to the owning doc instead of silently
-/// succeeding (fail-closed, T2 pattern).
-#[derive(Debug, Default)]
-pub struct UnimplementedTransport;
-
-impl SefTransport for UnimplementedTransport {
-    fn startup(&mut self) {
-        panic!("IS transport: sef_startup wiring pending (01-is-init-main.md §3 D2)");
-    }
-
-    fn receive(
-        &mut self,
-        _inbox: &mut Message,
-        _on_signal: &mut dyn FnMut(i32),
-        _cancel: &minix_sef::SefCancel,
-    ) -> Result<(Endpoint, i32), i32> {
-        panic!("IS transport: sef_receive wiring pending (01-is-init-main.md §3 D2)");
-    }
-
-    fn send(&mut self, _dest: Endpoint, _reply: &Message) -> Result<(), i32> {
-        panic!("IS transport: ipc_send wiring pending (01-is-init-main.md §3 D2)");
-    }
-
-    fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
-        panic!("IS transport: sys_statectl wiring pending (01-is-init-main.md §3 D2)");
-    }
-
-    fn send_rec(&mut self, _dest: Endpoint, _reply: &mut Message) -> Result<(), i32> {
-        panic!("IS transport: ipc_sendrec wiring pending (01-is-init-main.md §3 D2)");
-    }
-
-    fn warn_illegal(&mut self, _call_nr: i32, _sender: Endpoint) {
-        panic!("IS transport: diagnostic channel wiring pending ([ARCH: A-6])");
-    }
-
-    fn warn_fkey_events(&mut self, _status: i32) {
-        panic!("IS transport: diagnostic channel wiring pending ([ARCH: A-6])");
-    }
-
-    fn warn_fkey_ctl(&mut self, _status: i32) {
-        panic!("IS transport: diagnostic channel wiring pending ([ARCH: A-6])");
-    }
-
-    fn diag_out(&mut self) -> &mut dyn fmt::Write {
-        panic!("IS transport: diagnostic channel wiring pending ([ARCH: A-6])");
     }
 }
 
