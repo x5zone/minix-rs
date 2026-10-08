@@ -59,7 +59,7 @@
 | `SD-40` | `open` | 被门控的诊断面需要结案批次命名 |
 | `SD-43` | `closed` | 本轮修复：新增 `MemType::rejects_in_place_resize` 谓词 + brk resize 腿 fail-closed，使 anon_contig/cache 的 brk 扩展按 C（region.c:1037 非 NULL→回调返 ENOMEM）失败而非静默 extend；铁证见 §2 P-ALL-05 行（minix-vm 541/0） |
 | `SD-12` | `adjudicated`，执行未竟 | 运行期进程根的写执行互斥收紧已由 `PD-22` 裁决为三步；第一步文本段去写需要静态核验无运行期写入者 |
-| `SD-19` | `dropped-from-ledgers`，执行未竟 | 网络字节序与套接字事件的两处手抄按 `PD-13` 归共享类型库单点权威；从账本移出后债务仍在 |
+| `SD-19` | `open`，执行未竟 | 静默吞错家族——IPC 表面返回 `Result`、`let _ =` 是常见的掉空手法，候选修法是用 `clippy` 的 `let_underscore_must_use` restriction 把家族从"审查才能发现"变成"编译就能发现"（`PD-10` 探针治理与 `SD-40` 同窗）。本行旧描述（"网络字节序与套接字事件两处手抄"）把 `SD-19` 与无独立编号的另一话题张冠李戴，已按 `STRUCTURAL-DEBT-REGISTER-20261008.md` 对 `SD-19` 的原文定义纠正 |
 
 ## §4 跨阶段联调条目（`edge_todo.md` 里仍未闭合的部分）
 
