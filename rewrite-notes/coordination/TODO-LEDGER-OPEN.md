@@ -114,7 +114,7 @@
 | 09 初始化 | [`todo.md`](../09-stage-init/todo.md) | `open` 1 | 崩溃处理器的提供形式（归编排 `C-21`） |
 | 10 系统信息 | [`todo.md`](../10-stage-mib/todo.md) | `open` 1 | 交换格式的应用二进制接口待裁决 |
 | 11 设备管理 | [`todo.md`](../11-stage-devman/todo.md) | `open` 1 | 设备拥有权与生产四缺 |
-| 12 输入 | [`todo.md`](../12-stage-input/todo.md) | `open` 1 | 边界测试族缺口 |
+| 12 输入 | [`todo.md`](../12-stage-input/todo.md) | 阶段内 0（原记 `open` 1，属**账面滞后**：`IN-P3-2` 本体在 `2026-09-15` 已闭但本节摘要行未同步翻；`2026-10-09` 回勾）| 残余为跨阶段传输族（`E-INWIRE` 等） |
 | 13 进程间通信 | [`todo.md`](../13-stage-ipc/todo.md) | 阶段内 0 | 残余为 `E-IPCWIRE` 的装配面 |
 | 14 运行时 | [`todo.md`](../14-stage-runtime/todo.md) | `open` 1 + 真机 2 | 内核信息魔术失配的错误码选型（需对 C 行为裁决） |
 | 15 文件系统 | [`todo.md`](../15-stage-fs/todo.md) | `partially fixed` 2 | 八个文件服务器入口未接事件循环 |
