@@ -32,6 +32,7 @@
 | 进程间通信 KernInfo 注释过期自称保存的 rbx 已改 R10 调用者保存车道 | `closed` / `L1` | OPEN §8 卫生项（`SD-14`/`PD-17` 已闭，本轮只滚注释；`trap_stub.rs:580` 同车道英文残留行与 `ps_strings` 另约定未动，留待后续） | `os/kernel/src/ipc.rs:104-109` | `grep -rn "saved RBX" os/kernel/src/ipc.rs` → 0 命中；`cargo test -p minix-kernel --lib` → 829 通过 / 0 失败（`2026-10-08 @ c1cfb82db` 核实，落点见本轮提交） |
 | 状态寄存器读回函数过期英文段已删，中文 R10 段独留 | `closed` / `L1` | OPEN §8 卫生项（原无编号；上一轮 DONE 已记留待后续；本轮只删过期段，不增新断言） | `os/arch/src/x86_64/trap_stub.rs:577-583` | `grep -n "the IPC status register" os/arch/src/x86_64/trap_stub.rs` → 0 命中；`grep -n "saved RBX" os/arch/src/x86_64/trap_stub.rs` → 仅 `:951` 合法存活钉；`cargo test -p minix-arch` → 全绿 0 失败（`2026-10-08 @ a09b92e7a` 核实，落点见本轮提交） |
 | x86_64 架构初始化文件已补 3 个单测 | `closed` / `L1` | OPEN §7 测试门（生产代码零触碰，只增 `#[cfg(test)]`；arm64/riscv64 同文件仍零测试，留待后续） | `os/arch/src/x86_64/arch_init.rs:66-99` | `grep -c "#\[test\]" os/arch/src/x86_64/arch_init.rs` → 3；`cargo test -p minix-arch --lib arch_init` → 3 通过 / 0 失败，全量 lib 252 通过 / 0 失败（`2026-10-08 @ 7fe6917f1` 核实，落点见本轮提交） |
+| aarch64 架构初始化接线已钉宿主形状测试 | `closed` / `L1` | OPEN §8 卫生项（原无编号；门内模块宿主不可编译故用 `include_str!` 钉，生产代码零触碰；riscv64 同文件仍零测试，留待后续） | `os/arch/tests/arm64_arch_init_pin.rs` | `cargo test -p minix-arch --test arm64_arch_init_pin` → 3 通过 / 0 失败；`--test arch_gated_audit` → 2/2 通过；全量套件 0 失败（`2026-10-08 @ d85888054` 核实，落点见本轮提交） |
 
 ## §2 已裁决（人或既有设计已经替本轮做过选择）
 
