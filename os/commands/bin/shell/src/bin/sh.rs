@@ -53,7 +53,6 @@ use minix_shell::exec_frame::{stack_fill, stack_params};
 use minix_shell::expand::{expand_word, Environ};
 use minix_shell::lexer::split_words;
 use minix_shell::redir::{parse_redir, RedirOp, Redirection};
-use minix_sys::ipc::{DirectTrapTransport, IpcTransport as _};
 use minix_sys::{dup2, exec, fork, pipe2, waitpid};
 use support::{args, emit, envs, terminate, warn};
 
@@ -445,7 +444,7 @@ fn apply_redirs(redirects: &[Redirection<'_>]) -> Result<(), minix_sys::Errno> {
     const O_APPEND: i32 = 0x0000_0008; // fcntl.h:76
     const O_CREAT: i32 = 0x0000_0200; // fcntl.h:96
     const O_TRUNC: i32 = 0x0000_0400; // fcntl.h:100
-    use minix_types::types::errno as e;
+    use minix_sys::errno as e;
     for red in redirects {
         let outcome = match red.op {
             RedirOp::DuplicateWrite | RedirOp::DuplicateRead => {
@@ -509,14 +508,14 @@ fn child_exec(stage: &[String], redirects: &[Redirection<'_>], env: &RealEnv) ->
     }
     for candidate in &candidates {
         let code = exec_candidate(candidate, &argv, env);
-        if code == minix_types::types::errno::ENOENT
-            || code == minix_types::types::errno::ENOTDIR
+        if code == minix_sys::errno::ENOENT
+            || code == minix_sys::errno::ENOTDIR
         {
             continue;
         }
-        let text = if code == minix_types::types::errno::EACCES {
+        let text = if code == minix_sys::errno::EACCES {
             "Permission denied"
-        } else if code == minix_types::types::errno::ENOEXEC {
+        } else if code == minix_sys::errno::ENOEXEC {
             "Exec format error"
         } else {
             "cannot execute"
@@ -548,10 +547,10 @@ fn exec_candidate(candidate: &str, argv: &[&str], env: &RealEnv) -> i32 {
     };
     let stack_top = match new_image_stack_top() {
         Some(top) => top,
-        None => return minix_types::types::errno::EIO,
+        None => return minix_sys::errno::EIO,
     };
     let Some(vsp) = stack_top.checked_sub(frame_size as u64) else {
-        return minix_types::types::errno::E2BIG;
+        return minix_sys::errno::E2BIG;
     };
 
     let mut frame = vec![0u8; frame_size];
@@ -571,30 +570,11 @@ fn exec_candidate(candidate: &str, argv: &[&str], env: &RealEnv) -> i32 {
 
 
 /// The initial stack pointer the kernel will give the new image (C:
-/// `minix_get_user_sp`, `kernel_utils.c:40-49` — the kerninfo page query;
-/// the init `execve.rs` precedent verbatim, hosted builds get the honest
-/// EIO fallback). `None` maps to EIO at the call site.
+/// `minix_get_user_sp`, `kernel_utils.c:40-49`) — reached through the
+/// `minix-sys` top level, not by reopening the info page here (18-stage
+/// layering rule; see `minix_sys::user_stack_top` for the shared
+/// implementation and the honest EIO fallback on hosted builds).
+/// `None` maps to EIO at the call site.
 fn new_image_stack_top() -> Option<u64> {
-    let page = DirectTrapTransport.query_kerninfo_page().ok()?;
-    if page == 0 {
-        return None;
-    }
-    // SAFETY: the kernel published and user-mapped this page before handing
-    // out its address (the boot handoff owns the mapping); user mode treats
-    // it as read-only. Zero returned above, so the pointer is the kernel's.
-    let info = unsafe { &*(page as *const minix_types::types::MinixKerninfo) };
-    if info.kuserinfo == 0 {
-        return None;
-    }
-    // SAFETY: same kernel-published page family; `kuserinfo` points at the
-    // leading `KuserInfo`, and the size field gates the field read exactly
-    // as KUSERINFO_HAS_FIELD does in C (`minix3/minix/include/minix/type.h:
-    // 210-211`).
-    let user = unsafe { &*(info.kuserinfo as *const minix_types::types::KuserInfo) };
-    const FIELD_OFFSET: u64 = 8; // offsetof(KuserInfo, kui_user_sp)
-    const FIELD_SIZE: u64 = 8;
-    if user.kui_size < FIELD_OFFSET + FIELD_SIZE {
-        return None;
-    }
-    Some(user.kui_user_sp)
+    minix_sys::user_stack_top().ok()
 }

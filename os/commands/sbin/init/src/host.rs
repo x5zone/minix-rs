@@ -27,7 +27,6 @@ use crate::session::ParsedCommand;
 use crate::state_machine::sig;
 use crate::state_machine::HandlerKind;
 use crate::wait::{from_raw, WaitStatus};
-use minix_sys::ipc::{DirectTrapTransport, IpcTransport};
 use minix_sys::{self, Errno, Pid};
 use minix_sys::pm::SigActionWire;
 
@@ -216,23 +215,20 @@ impl MinixSysHost {
         0
     }
 
-    /// One sigaction round trip over `transport`: handler address in,
-    /// sigreturn stub in the `ret` lane (C: `sigaction.c:15-19`). A
-    /// free-standing associated function so tests can drive the same
-    /// wire through a canned transport instead of the direct trap.
-    fn send_sigaction(
-        transport: &impl IpcTransport,
-        signum: i32,
-        handler: usize,
-        sigreturn: u64,
-    ) -> Result<(), Errno> {
+    /// One sigaction round trip: handler address in, sigreturn stub in
+    /// the `ret` lane (C: `sigaction.c:15-19`). The transport is fixed to
+    /// the direct trap by `minix_sys::sigaction` — the command layer does
+    /// not own a transport seam (18-stage layering rule, boundary gate
+    /// C-7); the wire-lane mapping itself is pinned by minix-sys's own
+    /// `pm::sigaction_via` tests, not here.
+    fn send_sigaction(signum: i32, handler: usize, sigreturn: u64) -> Result<(), Errno> {
         let act = SigActionWire {
             sa_handler: handler,
             sa_mask: [0; 4],
             sa_flags: 0,
             _pad: [0; 4],
         };
-        minix_sys::pm::sigaction_via(transport, signum, Some(&act), None, sigreturn)
+        minix_sys::sigaction(signum, Some(&act), None, sigreturn)
     }
 }
 
@@ -266,16 +262,15 @@ impl InitHost for MinixSysHost {
     }
 
     fn getpid(&self) -> Result<Pid, Errno> {
-        minix_sys::pm::getpid_via(&DirectTrapTransport)
+        minix_sys::getpid()
     }
 
     fn getuid(&self) -> Result<u32, Errno> {
-        minix_sys::pm::getuid_via(&DirectTrapTransport)
-            .map(|(ruid, _euid)| ruid as u32)
+        minix_sys::getuid().map(|ruid| ruid as u32)
     }
 
     fn setsid(&mut self) -> Result<Pid, Errno> {
-        minix_sys::pm::setsid_via(&DirectTrapTransport)
+        minix_sys::setsid()
     }
 
     fn set_controlling_tty(&mut self, device: &str) -> Result<(), Errno> {
@@ -283,20 +278,14 @@ impl InitHost for MinixSysHost {
         // login_tty.c:46-61), folded: setsid (failure warned away,
         // init.c:674), the DTR-low gap (250 ms, init.c:98/680), open
         // O_RDWR, TIOCSCTTY, dup2 onto 0/1/2, close the working fd.
-        let _ = minix_sys::pm::setsid_via(&DirectTrapTransport);
-        let _ = minix_sys::misc::nanosleep_via(
-            &DirectTrapTransport,
-            Some(minix_sys::misc::SleepRequest {
-                seconds: 0,
-                nanoseconds: 250_000_000,
-            }),
-        );
+        let _ = minix_sys::setsid();
+        let _ = minix_sys::nanosleep(0, 250_000_000);
         let fd = minix_sys::open(device, O_RDWR, 0)?;
         // login_tty.c:56-58: the ioctl failure IS the login_tty failure;
         // everything after it is best-effort.
         minix_sys::ioctl(fd, minix_sys::tty::TIOCSCTTY, 0)?;
         for std_fd in [0, 1, 2] {
-            let _ = minix_sys::vfs::dup2_via(&DirectTrapTransport, fd, std_fd);
+            let _ = minix_sys::dup2(fd, std_fd);
         }
         if fd > 2 {
             let _ = minix_sys::close(fd);
@@ -406,10 +395,10 @@ impl InitHost for MinixSysHost {
                 HandlerKind::Ignore => 1usize, // SIG_IGN
                 _ => tramp,
             };
-            Self::send_sigaction(&DirectTrapTransport, *signum, handler, sigreturn)?;
+            Self::send_sigaction(*signum, handler, sigreturn)?;
         }
         if let Some(except) = &spec.blocked_except {
-            minix_sys::pm::sigprocmask_via(&DirectTrapTransport, SIG_SETMASK, Some(&sigset_full_minus(except)))?;
+            minix_sys::sigprocmask(SIG_SETMASK, Some(&sigset_full_minus(except)))?;
         }
         Ok(())
     }
@@ -426,8 +415,7 @@ impl InitHost for MinixSysHost {
                 tv_usec: 0,
             },
         };
-        minix_sys::pm::setitimer_via(
-            &DirectTrapTransport,
+        minix_sys::setitimer(
             minix_sys::pm::ITIMER_REAL,
             Some(&timer),
             None,
@@ -437,17 +425,11 @@ impl InitHost for MinixSysHost {
     fn now_secs(&self) -> Result<i64, Errno> {
         // C reads the wall clock through gettimeofday (init.c:1352 getty
         // spacing, the utmp timestamps); only whole seconds matter here.
-        minix_sys::pm::gettimeofday_via(&DirectTrapTransport).map(|(sec, _nsec)| sec)
+        minix_sys::gettimeofday().map(|(sec, _nsec)| sec)
     }
 
     fn sleep_secs(&mut self, secs: u64) -> Result<(), Errno> {
-        minix_sys::misc::nanosleep_via(
-            &DirectTrapTransport,
-            Some(minix_sys::misc::SleepRequest {
-                seconds: secs as i64,
-                nanoseconds: 0,
-            }),
-        )
+        minix_sys::nanosleep(secs as i64, 0)
     }
 
     fn path_exists(&self, path: &str) -> Result<bool, Errno> {
@@ -504,11 +486,10 @@ impl InitHost for MinixSysHost {
 
     fn chroot(&mut self, root: &str) -> Result<(), Errno> {
         // C: chroot(rootdir) before the chroot run of /etc/rc
-        // (init.c:903); the path travels inline, the open shape.
-        let mut path = Vec::with_capacity(root.len() + 1);
-        path.extend_from_slice(root.as_bytes());
-        path.push(0);
-        minix_sys::vfs::chroot_via(&DirectTrapTransport, path.as_ptr() as u64, path.len())
+        // (init.c:903); the NUL-inclusive path conversion now lives in
+        // `minix_sys::chroot` (18-stage layering rule — the command does
+        // not hand-roll the wire shape).
+        minix_sys::chroot(root)
     }
 
     fn append_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), Errno> {

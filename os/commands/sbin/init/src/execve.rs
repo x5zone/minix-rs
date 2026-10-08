@@ -43,7 +43,6 @@
 use crate::session::ParsedCommand;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use minix_sys::ipc::{DirectTrapTransport, IpcTransport as _};
 use minix_sys::pm;
 use minix_sys::Errno;
 
@@ -181,40 +180,13 @@ pub(crate) fn stack_fill(argv: &[&str], envp: &[&str], vsp: u64, frame: &mut [u8
 }
 
 /// The initial stack pointer the kernel will give the new image (C:
-/// `minix_get_user_sp`, `kernel_utils.c:40-49` — read from the kernel
-/// information page).
-///
-/// The page address comes from the kerninfo query through the direct trap
-/// transport (hosted builds have no kernel behind the trap and get the
-/// honest EIO fallback, E1 slice 5). The `kui_user_sp` field is only read
-/// after the size check `kui_size >= offsetof + sizeof` — the C
-/// `KUSERINFO_HAS_FIELD` rule (`minix3/minix/include/minix/type.h:210-211`).
+/// `minix_get_user_sp`, `kernel_utils.c:40-49`) — reached through the
+/// `minix-sys` top level, not by reopening the info page here (18-stage
+/// layering rule; see `minix_sys::user_stack_top` for the shared
+/// implementation, the honest EIO fallback on hosted builds, and the
+/// `KUSERINFO_HAS_FIELD` size check this used to duplicate).
 pub(crate) fn new_image_stack_top() -> Result<u64, Errno> {
-    let page = DirectTrapTransport
-        .query_kerninfo_page()
-        .map_err(|_| Errno::EIO)?;
-    if page == 0 {
-        return Err(Errno::EIO);
-    }
-    // SAFETY: the kernel published and user-mapped this page before handing
-    // out its address (the boot handoff owns the mapping); user mode treats
-    // it as read-only. Zero would have returned above, so the pointer here
-    // is the kernel's.
-    let info = unsafe { &*(page as *const minix_types::types::MinixKerninfo) };
-    if info.kuserinfo == 0 {
-        return Err(Errno::EIO);
-    }
-    // SAFETY: same kernel-published page family; `kuserinfo` points at the
-    // leading `KuserInfo` (two u64 fields, layout witness in
-    // minix-types/src/types/kerninfo.rs:199-205), and the size field gates
-    // the field read below exactly as KUSERINFO_HAS_FIELD does in C.
-    let user = unsafe { &*(info.kuserinfo as *const minix_types::types::KuserInfo) };
-    const FIELD_OFFSET: u64 = 8; // offsetof(KuserInfo, kui_user_sp)
-    const FIELD_SIZE: u64 = 8;
-    if user.kui_size < FIELD_OFFSET + FIELD_SIZE {
-        return Err(Errno::EIO);
-    }
-    Ok(user.kui_user_sp)
+    minix_sys::user_stack_top()
 }
 
 /// Composes the child's environment: the inherited (birth) strings with the
@@ -310,7 +282,7 @@ pub(crate) fn exec_command(env_overrides: &[(String, String)], cmd: &ParsedComma
         Ok(prepared) => prepared,
         Err(e) => return e,
     };
-    pm::exec_via(&DirectTrapTransport, prepared)
+    minix_sys::exec(prepared)
 }
 
 #[cfg(test)]

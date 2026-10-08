@@ -52,6 +52,7 @@ pub use minix_types::types::stat::Stat;
 /// `minix-rt` alone). The names come from the single authority in
 /// `minix-types` (`types/errno.rs`); this crate adds no constants and
 /// never forks a value.
+pub use minix_types::types::errno;
 pub use minix_types::types::errno::*;
 
 /// The termios table at the crate root — the position `<termios.h>` holds
@@ -908,6 +909,87 @@ pub fn mmap(
     Ok(placed.0 as *mut u8)
 }
 
+// ── Kernel information page and wall clock ──
+
+/// The initial stack pointer the kernel will give a new user process (C:
+/// `minix_get_user_sp`, `minix3/minix/lib/libc/sys/kernel_utils.c:40-49`).
+///
+/// This is the libc-level capability C exposes in `<lib.h>` (and
+/// `stack_utils.c:133`, `rs/exec.c:72`, `vfs/exec.c:217` all consume it
+/// through the library, never by reopening the info page themselves) —
+/// the `exec`-preparing binaries (`sh`, `init`) used to duplicate the
+/// page query and the `KUSERINFO_HAS_FIELD` size check verbatim, which is
+/// the second-source-of-truth family this wrapper closes (per the
+/// 18-stage layering rule, commands reach this through `minix-sys`).
+///
+/// The page address comes from the kerninfo query through the direct trap
+/// transport (hosted builds have no kernel behind the trap and get the
+/// honest `EIO`, E1 slice 5). The `kui_user_sp` field is only read after
+/// the size check `kui_size >= offsetof + sizeof` — the C
+/// `KUSERINFO_HAS_FIELD` rule (`minix3/minix/include/minix/type.h:210-211`).
+pub fn user_stack_top() -> Result<u64, Errno> {
+    let page = ipc::DirectTrapTransport
+        .query_kerninfo_page()
+        .map_err(|_| Errno::EIO)?;
+    if page == 0 {
+        return Err(Errno::EIO);
+    }
+    // SAFETY: the kernel published and user-mapped this page before handing
+    // out its address (the boot handoff owns the mapping); user mode treats
+    // it as read-only. Zero would have returned above, so the pointer here
+    // is the kernel's.
+    let info = unsafe { &*(page as *const MinixKerninfo) };
+    if info.kuserinfo == 0 {
+        return Err(Errno::EIO);
+    }
+    // SAFETY: same kernel-published page family; `kuserinfo` points at the
+    // leading `KuserInfo` (two u64 fields, layout witness in
+    // minix-types/src/types/kerninfo.rs:199-205).
+    let user = unsafe { &*(info.kuserinfo as *const KuserInfo) };
+    const FIELD_OFFSET: u64 = 8; // offsetof(KuserInfo, kui_user_sp)
+    const FIELD_SIZE: u64 = 8;
+    if user.kui_size < FIELD_OFFSET + FIELD_SIZE {
+        return Err(Errno::EIO);
+    }
+    Ok(user.kui_user_sp)
+}
+
+/// Reads the wall clock (C: `gettimeofday`,
+/// `minix3/minix/lib/libc/sys/gettimeofday.c:15-32`; see `pm::gettimeofday_via`
+/// for the wire shape — the C wrapper's second argument, a timezone
+/// pointer, is not carried here since every in-tree caller ignores it).
+pub fn gettimeofday() -> Result<(i64, i64), Errno> {
+    pm::gettimeofday_via(&ipc::DirectTrapTransport)
+}
+
+// ── Signals and timers (transport-hidden face) ──
+
+/// Installs a signal disposition (C: `sigaction`, pm/signal.c:40-86; see
+/// `pm::sigaction_via` for the wire shape). `sigreturn` is the restore
+/// stub address the kernel will plant into the handler frame — C's libc
+/// fills this with `__sigreturn` itself (`sigaction.c:18`); this crate
+/// keeps the choice with the caller, matching `sigreturn`'s own
+/// documented contract above.
+pub fn sigaction(
+    signo: i32,
+    act: Option<&pm::SigActionWire>,
+    oact: Option<&mut pm::SigActionWire>,
+    sigreturn: u64,
+) -> Result<(), Errno> {
+    pm::sigaction_via(&ipc::DirectTrapTransport, signo, act, oact, sigreturn)
+}
+
+/// Sets or reads an interval timer (C: `setitimer`,
+/// `minix3/minix/lib/libc/sys/setitimer.c:19-38`; see `pm::setitimer_via`
+/// for the wire shape).
+pub fn setitimer(
+    which: i32,
+    value: Option<&pm::ItimervalWire>,
+    ovalue: Option<&mut pm::ItimervalWire>,
+) -> Result<(), Errno> {
+    pm::setitimer_via(&ipc::DirectTrapTransport, which, value, ovalue)
+}
+
 /// Error number — single shared ABI type.
 ///
 /// Re-exported from `minix-types` (the Redox `redox_syscall::Error` pattern:
@@ -917,6 +999,15 @@ pub fn mmap(
 /// `EGENERIC`/`ERESTART` (errno.h:78/211/199/200/196); two Errno types force
 /// a conversion at every `KernelApi` boundary (todo §11 N4).
 pub use minix_types::Errno;
+
+/// The kernel information page layout and its user-ABI substructure.
+///
+/// Re-exported so command binaries (`sh`, `init`) read the kernel-
+/// published info page through this crate's top level, the same position
+/// C's `get_minix_kerninfo`/`minix_get_user_sp` occupy in `<lib.h>` —
+/// the layering rule keeps `minix-types` itself off command imports
+/// (18-stage-commands/99-global-concepts.md §1).
+pub use minix_types::{KuserInfo, MinixKerninfo};
 
 /// Signal number constants (Minix3 `<sys/signal.h>` numbering, e.g.
 /// SIGUSR1 = 30 — the value Linux x86 numbers SIGUSR1 differently).
@@ -935,6 +1026,17 @@ mod tests {
         // The RS-required values the old enum lacked must be reachable from
         // the shared type (todo §11 N4).
         assert_eq!(Errno::ENOSYS.to_i32(), 78);
+    }
+
+    /// `user_stack_top` is the shared replacement for the kerninfo-page
+    /// read that `sh` and `init` used to duplicate verbatim (C:
+    /// `minix_get_user_sp`, `kernel_utils.c:40-49`). A hosted build has
+    /// no kernel behind the trap (`kernel_trap` cfg off, T-STAB-1's
+    /// fallback rule), so the honest answer is `EIO` — never a success
+    /// value fabricated from a missing page.
+    #[test]
+    fn test_user_stack_top_honest_eio_without_kernel() {
+        assert_eq!(user_stack_top(), Err(Errno::EIO));
     }
 }
 
