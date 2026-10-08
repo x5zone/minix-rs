@@ -319,7 +319,7 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use minix_types::Message;
+    use minix_types::{Message, VmError};
 
     #[test]
     fn test_encode_mapcache_reply_preserves_high_addr_bits() {
@@ -433,5 +433,22 @@ mod tests {
         let reply = VmReply::Suspend;
         let _ = VmReplyForIpc::new(reply)
             .expect("DispatchAction::Reply carries VmReply::Suspend;                          dispatch_on_msg should translate to DispatchAction::Suspend");
+    }
+
+    /// F10 regression: C VM server is built with `_SYSTEM` (vm.h:5) so handler
+    /// errnos are negative on the wire. Our Rust handler returns positive errno
+    /// constants; `reply_status` at the boundary must fold them once so callers
+    /// (e.g., `minix-sys/src/vm.rs`) see `m_type < 0` for errors.
+    #[test]
+    fn test_reply_boundary_folds_errno_sign() {
+        // Positive errno from `reply_to_errno` must come out negative after
+        // applying `reply_status` at the boundary (mirrors what vm_server.rs
+        // does in `DispatchAction::Reply`).
+        let raw = reply_to_errno(VmReply::Error(VmError::NotImplemented));
+        assert_eq!(raw, minix_types::ENOSYS, "reply_to_errno returns positive");
+        let wire = minix_types::reply_status(raw);
+        assert_eq!(wire, -(minix_types::ENOSYS), "boundary must fold to negative");
+        // OK must pass through unchanged.
+        assert_eq!(minix_types::reply_status(0), 0, "OK stays 0");
     }
 }

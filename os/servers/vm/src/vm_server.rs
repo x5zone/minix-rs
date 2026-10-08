@@ -43,7 +43,7 @@ use minix_types::PhysBytes;
 use minix_types::VM_PROCCTL;
 use minix_types::{
     BootImage, Endpoint, Message, NR_BOOT_PROCS, UserSlot, VM_RQ_BASE, VmError, VmPagefaultIn,
-    VmProcctlIn, VmReply,
+    VmProcctlIn, VmReply, reply_status,
 };
 #[cfg(test)]
 use minix_types::{VmBrkIn, VmExitIn, VmForkIn};
@@ -1616,9 +1616,14 @@ impl VmServer {
                 );
                 // Clone once (VmReply is `Clone`) instead of cloning twice
                 // as the original code did; the wrapper owns the reply.
+                //
+                // F10 sign fold: C VM server is built with `_SYSTEM` (vm.h:5),
+                // so handler errnos are already negative on the wire. Our Rust
+                // tree uses positive errno constants; `reply_status` folds once
+                // at the boundary (0 and already-negative values pass through).
                 let code = reply_to_errno(reply_for_ipc.payload());
                 let mut reply_msg = msg;
-                reply_msg.m_type = code;
+                reply_msg.m_type = reply_status(code);
                 encode_reply_data(reply_for_ipc.into_payload(), &mut reply_msg);
                 self.transport
                     .borrow_mut()
@@ -2685,8 +2690,8 @@ mod tests {
             assert_eq!(sent[0].0, caller_ep, "reply goes to the caller");
             assert_eq!(
                 sent[0].1.m_type,
-                minix_types::ENOSYS as i32,
-                "EXITING caller must be denied (ENOSYS), not waved through"
+                -(minix_types::ENOSYS as i32),
+                "EXITING caller must be denied with -ENOSYS on the wire (F10: C `_SYSTEM` convention)"
             );
 
             reset_boot_slots();
