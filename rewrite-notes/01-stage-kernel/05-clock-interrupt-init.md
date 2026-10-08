@@ -7,14 +7,16 @@
 
 ### 1.1 问题：一张能跳、却还没接上真实硬件的表
 
-03 文档把保护结构建了起来——x86 的 IDT（中断描述符表）、TSS、每 CPU 的入口骨架就位了。但那只是"CPU 知道异常来了该走哪张表"，表里的每一项还没接到**真实的硬件中断源**上：时钟 tick 从哪个计数器来、外设 IRQ 怎么映到向量、哪个中断控制器（APIC / GICv3 / PLIC）负责分发。05 要做的，是把这些"活的信号源"接上：初始化时钟、初始化中断控制器、把 handler 填进向量表、按驱动请求逐个开中断。
+03 文档把保护结构建了起来——x86 的 IDT（中断描述符表）、TSS、每 CPU 的入口骨架就位了，`idt_init` 也把每个向量填上了一段 stub 入口。但那只是"CPU 知道异常来了能跳进一段 stub"，还没接到**真实的硬件中断源**上：时钟 tick 从哪个计数器来、外设 IRQ 怎么映到向量、哪个中断控制器（APIC / GICv3 / PLIC）负责分发、stub 之后交给哪个内核 handler。05 要做的，是把这些"活的信号源"接上。
 
 ### 1.2 为什么这一步必须排在 04 之后
 
-时钟频率、中断控制器基址、有几个 hart——这些参数**不该再由代码写死**（那是 04 批判过的做法）。05 的正确姿势是：**先有 04 发现的 `PlatformDesc`，再从它取参数来初始化时钟与中断**。所以 05 在启动链上排在 04 之后——它第一个动作就是拿 04 冻结好的那份只读描述。这不是编排随意，是数据依赖：没有描述，`init_clock` 不知道该把 APIC timer 配成多快。
+时钟频率、中断控制器基址、有几个 hart——这些参数**不该再由代码写死**（那是 04 批判过的做法）。05 的正确姿势是：**先有 04 发现的 `PlatformDesc`，再从它取参数来初始化中断控制器与架构层**。所以 05 在启动链上排在 04 之后——它第一个动作就是拿 04 冻结好的那份只读描述。这不是编排随意，是数据依赖：没有描述，就不知道该拿哪个基址去构造中断控制器实例、该配哪个 arch-misc。
+
+> **一个必须说清的细分（否则会把依赖讲错）**：这里要区分两个“频率”。**软件 tick 率**（内核把时间切成多少格）是编译期常量 `DEFAULT_HZ`（`os/kernel/src/clock.rs:DEFAULT_HZ`，值 100），**不**从 `pd` 来；而**硬件 timer/中断控制器的基址与拓扑**（拿谁产生周期中断、有多少 hart）才从 `pd` 取。05 对 04 的真实依赖是后者，不是“从 pd 读 tick 频率”。把两者混为一谈会得到“硬件参数全来自发现”这个不真的结论。
 
 ```
-01 boot-shim 交接 → 03 建保护结构(IDT/TSS 空表) → 04 发现 PlatformDesc(只读冻结)
+01 boot-shim 交接 → 03 建保护结构(IDT 填 stub、TSS 就位) → 04 发现 PlatformDesc(只读冻结)
                                                           │
                                         05 从这里取参数：──┤
                                           时钟源频率 / IC 基址 / CPU 拓扑
@@ -35,12 +37,12 @@
 ```c
 void idt_init(void)
 {
-    idt_copy_vectors_pic();   // 把每个向量指向对应的 stub 入口
-    /* 中断门/陷阱门按向量号逐个填 access/dselector/offset */
+	idt_copy_vectors_pic();               // PIC 模式下各向量指向对应 stub
+	idt_copy_vectors(gate_table_exceptions);  // 异常/中断门按向量号填入口地址
 }
 ```
 
-它填的是"向量号 → 处理入口地址"这张表。此刻只保证"中断来了 CPU 能跳进一段 stub"，还没决定"外设 IRQx 用哪个向量、由谁分发"——那是下面中断控制器初始化的事。
+它填的是"向量号 → 处理入口地址"这张表，入口指向的是一段 **stub**（陷入汇编存上下文的小口）。此刻只保证"中断来了 CPU 能跳进一段 stub"，还没决定"外设 IRQx 用哪个向量、由哪个中断控制器分发、stub 之后又交给哪个内核 handler"——**stub 到 handler 这一跳、以及 IRQ→向量的映射**，才是下面中断控制器初始化要接上的。
 
 ### 2.2 init_clock：一个编译期常量撑起的 tick
 
@@ -76,17 +78,24 @@ C 用一堆 `#if` / 板级常量决定用哪个中断控制器。Rust 把 04 的
 ```rust
 pub fn init_clock_and_interrupts() {
     use minix_platform::{platform_desc, PlatformDesc};
+    use minix_plat::{InterruptRouter, CurrentInterruptController};
     use crate::clock::ClockState;
-    // 取 04 冻结好的那份只读描述——所有硬件参数的唯一来源
+
+    // 取 04 冻结好的那份只读描述——硬件参数的来源
     let pd = platform_desc();
 
-    // Step 1: 软件层时钟状态初始化（对位 C: init_clock, clock.c:48）
-    //         hz 是编译期 DEFAULT_HZ，不再 env_get
-    let mut clock = ClockState::new();
+    // Step 1: 软件层时钟状态（对位 C: init_clock, clock.c:48）
+    let mut clock = ClockState::new();   // 软件 tick 率是 DEFAULT_HZ（见 §1.2）
 
-    // Step 2: 中断控制器初始化（对位 C: intr_init(0), i8259.c / omap_intr.c）
-    //         实例化设计：从中断控制器描述符构造实例，再对实例调 init
-    // ...（用 pd 拿 IC 描述、构造并 init 控制器实例、装载 handler 到向量表）
+    // Step 2: 从中断控制器描述符**构造实例**并 init（对位 C: intr_init(0)）
+    let mut intr = CurrentInterruptController::new(pd.interrupt_controller());  // ← 消费 pd
+    intr.init();                                   // 内部 mask_all()
+    unsafe { *IRQ_MANAGER.get() = Some(crate::irq_manager::IrqManager::new(intr)); }
+
+    // Step 3: 从 arch-misc 描述构造架构初始化器并 init（对位 C: arch_init()）
+    let mut arch_init = CurrentArchInit::new(&pd.arch_misc());                    // ← 又消费 pd
+    arch_init.init();
+    // …时钟句柄存入全局，供 clock::clock_irq_handler 在 dispatch 时读…
 }
 ```
 
@@ -95,10 +104,11 @@ pub fn init_clock_and_interrupts() {
 ```
 kmain Phase（03 篇的骨架）
   └─ init_clock_and_interrupts()                       ← 本篇入口
-       ├─ let pd = platform_desc()                     ← 取 04 冻结的 PlatformDesc（唯一真相源）
-       ├─ Step1 ClockState::new()                       时钟软件状态
-       ├─ Step2 从 pd.interrupt_controller() 描述符构造 IC 实例并 init   ← 用发现结果，非写死
-       └─ 装载 handler 到向量表（填实 03 建的 IDT/stvec/VBAR 骨架）
+       ├─ let pd = platform_desc()                     ← 取 04 冻结的 PlatformDesc
+       ├─ Step1 ClockState::new()                       时钟软件状态（tick 率= DEFAULT_HZ）
+       ├─ Step2 CurrentInterruptController::new(pd.interrupt_controller()) 并 init ← 消费 pd
+       ├─ Step3 CurrentArchInit::new(&pd.arch_misc()) 并 init                        ← 又消费 pd
+       └─ 把 intr 存进全局 IRQ_MANAGER；handler 接上 03 建的向量表
             ↓ 之后驱动使能某条 IRQ 时
        irq_manager.enable_irq(hook_id, irq)             (os/kernel/src/irq_manager.rs:fn enable_irq)
 ```
@@ -121,7 +131,7 @@ kmain Phase（03 篇的骨架）
 
 两类典型故障：
 
-- **tick 不来**（调度不动、超时全卡）：多半是时钟源没按发现的参数配好。先确认 `platform_desc()` 给的 timer 频率是否合理（回到 04：是不是又走了 QemuVirt 兜底、频率是预置值而非真硬件）。
+- **tick 不来**（调度不动、超时全卡）：硬件 timer 没按发现的参数定标好。先确认 04 发现的那份描述里 timer/中断部分是否合理（若又走了 QemuVirt 兜底——即 04 里"没拿到真 DTB/ACPI 时的硬编码默认描述"，频率与基址都是预置值而非真硬件）。注意软件 tick 率本身是 `DEFAULT_HZ` 常量，要查的是硬件 timer 的定标而非这个常量。
 - **外设中断收不到**（驱动等待永不返回）：`enable_irq` 是否真解了屏蔽、handler 是否填进了正确向量。x86 上还要分 APIC 与 PIC 回落两套 idt（C 的 `apic_idt_init(0/1)` 就是这个分叉）——选错那套，向量表指向的入口不对。
 
 可复制定位命令：
