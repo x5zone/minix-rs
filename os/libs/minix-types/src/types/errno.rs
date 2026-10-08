@@ -510,6 +510,30 @@ pub trait ToErrno {
     fn to_errno(&self) -> Errno;
 }
 
+/// 服务器回复通道上的状态字：把本树**正号** errno 常量折成线序上的**负号**。
+///
+/// Minix3 的服务以 `_SYSTEM` 编译（各服务头里写死：
+/// `minix3/minix/servers/ds/inc.h:6`、`servers/ipc/inc.h:1`、`servers/is/inc.h:7`、
+/// `servers/rs/inc.h:7`、`servers/pm/pm.h:4`、`servers/sched/sched.h:4`、
+/// `servers/devman/devman.h:3`、`servers/vfs/fs.h:7`、`servers/vm/vm.h:5`），
+/// 错码常量本身带负号（“get OK and negative error codes”）；服务
+/// `m.m_type = result` 写回的因此是负错码，而用户侧 `_taskcall` 按
+/// `m_type < 0` 判错。本树 errno 是正号常量（`ESRCH == 3`），所以每个
+/// `_SYSTEM` 服务都必须在回复边界折一次符号——这一纪律已分别在 VFS 的
+/// `queue_reply`（`servers/vfs/src/main_loop.rs`）与 DS 的
+/// `dispatch::reply_status`（`servers/ds/src/dispatch.rs`）立过，本函数是
+/// 它们的单源归位。
+///
+/// **例外**：MIB 不定义 `_SYSTEM`（`minix3/minix/servers/mib/Makefile` 无此定义，
+/// 也无 `inc.h`），它的错码线序上是正数——MIB 与其客户端对不能套本函数
+/// （仓内已有先例：`sysctl_via` 的正 errno 判定）。
+///
+/// `0`（OK）与已负值原样透传（不会二次取负）；非负成功载荷（fd、字节数）
+/// 不受影响。
+pub const fn reply_status(result: i32) -> i32 {
+    if result > 0 { -result } else { result }
+}
+
 #[cfg(test)]
 mod to_errno_trait_tests {
     use super::*;
@@ -543,6 +567,19 @@ mod to_errno_trait_tests {
         // SchedProcError::BadCpu 的映射目标（kernel 侧 impl 使用）。
         assert_eq!(Errno::EBADCPU.to_i32(), EBADCPU);
         assert_eq!(EBADCPU, 217);
+    }
+
+    /// 回复边界折号：`_SYSTEM` 服务的错码在线序上是负数，OK/已负值不动。
+    /// 判据锈在 C 常量上（EPERM=1、ESRCH=3、ELOCKED=208）。
+    #[test]
+    fn test_reply_status_folds_positive_errno() {
+        assert_eq!(reply_status(0), 0); // OK
+        assert_eq!(reply_status(EPERM), -1);
+        assert_eq!(reply_status(ESRCH), -3);
+        assert_eq!(reply_status(ELOCKED), -208);
+        assert_eq!(reply_status(-EPERM), -EPERM);
+        // 正数一律当错码折：调用方不得把成功载荷（fd、字节数）走这里。
+        assert_eq!(reply_status(7), -7);
     }
 }
 #[cfg(test)]

@@ -106,28 +106,18 @@ pub const fn should_reply(result: i32) -> bool {
     result != EDONTREPLY
 }
 
-/// 回复通道的状态字：把本树**正号** errno 常量折成线序上的**负号**。
-///
-/// C 的 DS 以 `_SYSTEM` 编译（`minix3/minix/servers/ds/inc.h:6`：
-/// “get OK and negative error codes”），所以 `main.c:83` 的
-/// `m.m_type = result` 写进去的错误码本身就带负号（`ESRCH` 在 C 侧就是
-/// 负值），而用户侧 `_taskcall` 按 `m_type < 0` 判错（本树同约定，
-/// `minix-sys/src/syscall.rs:perform_taskcall` 的注记）。Rust 侧 errno
-/// 是正号常量（`minix_types::ESRCH == 3`），不在回复边界折一次符号就会
-/// 让客户端把错误读成成功——真机首例实测于 E5(f) 载体 `e5-ds`：七次调用
-/// 全读回 0。同一纪律在 VFS 的回复边界已经立过（
-/// `servers/vfs/src/main_loop.rs` 的 `queue_reply` 符号注记）。
-///
-/// `0`（OK）与非负成功值原样透传；`EDONTREPLY` 由 [`should_reply`] 先行
-/// 拦下，不进这里。
-pub const fn reply_status(result: i32) -> i32 {
-    if result > 0 { -result } else { result }
-}
+// 回复通道的状态字单源在 `minix_types::reply_status`（上面的 use 引入）。
+// DS 是它的首个消费者，C 锚在此：`_SYSTEM`（minix3/minix/servers/ds/inc.h:6，
+// “get OK and negative error codes”）+ main.c:83 的 `m.m_type = result`；
+// 真机首例实测于 E5(f) 载体 `e5-ds`（七次调用全读回 0）。
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use minix_types::{EINVAL, EPERM, ESRCH};
+    // 回复状态字单源（生产侧由 `server.rs` 直接调 `minix_types::reply_status`，
+    // 本测试模块从这里取）。
+    use minix_types::reply_status;
 
     /// 回复状态字的符号折转：C 的 `_SYSTEM` 把负号烘在常量里，本树
     /// 在边界补一次（真机实测过的假成功入口，见 [`reply_status`] 注记）。
