@@ -27,6 +27,13 @@ ANCHOR = re.compile(
 )
 KEYWORDS = ('fn', 'struct', 'enum', 'trait', 'const', 'static', 'type', 'impl')
 
+# R9-D3：另一类坐标形态——正文里的「`sem.c` 第 697 行」式引用。三个锚点工具都不解析它，
+# 于是整族文档 vacuous green。此处只做**可见化**（列为卫生项待迁移为符号锚点），不做校验。
+PROSE_LINE = re.compile(
+    r'`?([A-Za-z0-9_./-]+\.(?:c|h|rs))`?\s*第\s*'
+    r'(?:\d+|[零一二三四五六七八九十百千]+)'
+    r'(?:\s*[-–~]\s*(?:\d+|[零一二三四五六七八九十百千]+))?\s*行')
+
 
 def symbol_of(token: str) -> str:
     parts = token.split()
@@ -40,6 +47,7 @@ def side_of(path: str) -> str:
 
 def scan_doc(path: str, side: str):
     hits = []
+    prose = []
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         in_fence = False
         for lineno, line in enumerate(f, 1):
@@ -56,7 +64,13 @@ def scan_doc(path: str, side: str):
                 rest = line[:m.start()] + line[m.end():]
                 if not re.search(r'(?<![A-Za-z0-9_])' + re.escape(sym) + r'(?![A-Za-z0-9_])', rest):
                     hits.append((lineno, f"{fpath}:{token}", sym))
-    return hits
+            for pm in PROSE_LINE.finditer(line):
+                # R12-D2：只进 prose（不重复进 hits），且按 --side 过滤（.rs→rust，其余→c）
+                f = pm.group(1)
+                if side != 'all' and ('rust' if f.endswith('.rs') else 'c') != side:
+                    continue
+                prose.append((lineno, pm.group(0)))
+    return hits, prose
 
 
 def main():
@@ -79,7 +93,10 @@ def main():
 
     lines, total, per_side = [], 0, {'c': 0, 'rust': 0}
     for d in docs:
-        for lineno, anchor, sym in scan_doc(d, args.side):
+        hits_d, prose_d = scan_doc(d, args.side)
+        for lineno, anchor in prose_d:  # R11-D2：卫生项标签必须出现在 stdout
+            print(f'{d}:{lineno}: {anchor} → [卫生项] 文件+第N行 形态，工具不解析')
+        for lineno, anchor, sym in hits_d:
             total += 1
             per_side[side_of(anchor.split(':')[0])] += 1
             lines.append(f'{d}:{lineno}: {anchor} → 符号名未出现在本句，需句意复核')

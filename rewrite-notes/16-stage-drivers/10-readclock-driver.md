@@ -215,7 +215,7 @@ Minix3 的实时时钟驱动就是这块挂钟。读操作（`RTCDEV_GET_TIME`�
 
 - `rewrite-notes/16-stage-drivers/plan.md`：阶段划分、文档边界、架构演进清单。
 - `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符框架（本篇不走，对照用）。
-- `rewrite-notes/16-stage-drivers/09-random-driver.md`：随机数驱动（单设备小驱动对照）。
+- `rewrite-notes/16-stage-drivers/09-random-driver.md`：随机数驱动（系统服务批的小驱动对照）。
 - `rewrite-notes/16-stage-drivers/11-pci-driver.md`：总线驱动（下一篇）。
 - `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/clock/readclock/src/protocol.rs`：协议编号与时间形状的实现。

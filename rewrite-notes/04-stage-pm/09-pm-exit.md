@@ -1,6 +1,6 @@
 # 09 — 退出路径 `do_exit → exit_proc → exit_restart` 与僵尸收养链
 
-> **Rust 实现**: `os/servers/pm/src/exit.rs`（退出协调器 `do_exit`/`exit_proc`/`exit_restart`/`zombify`/`check_parent`/`tracer_died`/`disinherit`/`cleanup` 与内核出口 trait `KernelGateway`）、`os/servers/pm/src/mproc/{lifecycle,guardianship,block,wait}.rs`（状态机建模）、`os/servers/pm/src/ipc/{dispatcher,event,vfs}.rs`（`vm_willexit`/`tell_vfs`/`publish_event` 接线）、`os/servers/pm/src/signal.rs`（`sig_proc`/`check_sig` 接线）
+> **Rust 实现**: `os/servers/pm/src/exit.rs`（退出协调器 `do_exit`/`exit_proc`/`exit_restart`/`zombify`/`check_parent`/`tracer_died`/`disinherit`/`cleanup` 与内核出口 trait `KernelGateway`）、`os/servers/pm/src/mproc/{lifecycle,guardianship,block,wait}.rs`（状态机建模）、`os/servers/pm/src/ipc/{dispatcher,vfs}.rs`（`vm_willexit`/`tell_vfs` 接线）、`os/servers/pm/src/event.rs`（`publish_event`/`resume_event`）、`os/servers/pm/src/signal.rs`（`sig_proc`/`check_sig` 接线）
 
 本文讲清进程退出如何分两阶段（`exit_proc` 的 9 步在 `VFS_PM_EXIT_REPLY` 到达前、`exit_restart` 的 5 步在 `VFS_PM_EXIT_REPLY` 到达后）完成资源解绑：从 `do_exit` 的 `PRIV_PROC→SIGKILL` 门、到 `exit_proc` 的 `sys_stop` 强制→`vm_willexit`→`VFS_PM_EXIT`→`PRIV_PROC` 直毁→`EXITING`→`zombify`→`disinherit` 收养 `INIT` 的 `NEW_PARENT` 记忆与 `SIGHUP`，再经 05 的 `handle_vfs_reply` 与 06 的 `publish_event` 衔接至 `exit_restart` 的 `sched_stop`→`sys_clear`→`vm_exit`→`TRACE_EXIT`→`cleanup`，以及 `zombify`/`check_parent` 的两级僵尸（`ZOMBIE` vs `TRACE_ZOMBIE`）如何与 10 的 `wait4` 形成生产–消费闭环。
 
@@ -25,7 +25,7 @@
 
 ### 1.1 为什么退出是两阶段：多服务解绑的顺序敏感
 
-进程是四表共享的资源容器（`proc` 可调度实体 + `vmproc` 地址空间 + `fproc` 打开文件 + `mproc` 身份），退出需按序解绑——`minix3/minix/servers/pm/forkexit.c:exit_proc（L311，工具生成）` 注释点明：
+进程是四表共享的资源容器（`proc` 可调度实体 + `vmproc` 地址空间 + `fproc` 打开文件 + `mproc` 身份），退出需按序解绑——`minix3/minix/servers/pm/forkexit.c:exit_proc` 注释点明：
 
 > *Tell the kernel the process is no longer runnable ... Then tell VFS ... and finally, clean up the process at the kernel. This order is important so that VFS can tell drivers to cancel requests such as copying to/ from the exiting process, before it is gone.*
 
@@ -33,7 +33,7 @@
 
 ### 1.2 为什么系统服务直毁：`PRIV_PROC` 的死锁避免
 
-`minix3/minix/servers/pm/forkexit.c:exit_proc（L361，工具生成）` 注释：
+`minix3/minix/servers/pm/forkexit.c:exit_proc` 注释：
 
 > *Destroy system processes without waiting for VFS. This is needed because the system process might be a block device driver that VFS is blocked waiting on.*
 
@@ -47,7 +47,7 @@
 
 ### 1.4 为什么收养：`INIT` 的 `NEW_PARENT` 记忆
 
-进程退出时其子的 `mp_parent` 指向已死槽位（`proc_nr` 已 `EXITING`），`disinherit` 将其重赋 `INIT_PROC_NR 11`（`minix3/minix/servers/pm/forkexit.c:exit_proc（L396，工具生成）`，`main.c:194` `INIT` 父为自身，`INIT` 永活），若子正 `VFS_CALL` 则 `NEW_PARENT` 记忆（`402-403` `VFS_CALL → NEW_PARENT`），使 `handle_vfs_reply` 的 `VFS_PM_FORK_REPLY` 分支不误回已死父（`main.c:392-393` `!new_parent → reply(parent)`，05 `ipc/vfs.rs:298` `reply_to_new_parent` 抑制）。若子已 `ZOMBIE` 则 `check_parent(..., TRUE)` 立即对 `INIT` 重试 `tell_parent` 或 `SIGCHLD`（`406-407`），`SIGHUP` 在 `procgrp !=0`（会话 Leader，`298` `mp_pid == mp_procgrp`）时广播至进程组（`412` `check_sig(-procgrp, SIGHUP)`，`signal.c:568`）。
+进程退出时其子的 `mp_parent` 指向已死槽位（`proc_nr` 已 `EXITING`），`disinherit` 将其重赋 `INIT_PROC_NR 11`（`minix3/minix/servers/pm/forkexit.c:exit_proc`，`main.c:194` `INIT` 父为自身，`INIT` 永活），若子正 `VFS_CALL` 则 `NEW_PARENT` 记忆（`402-403` `VFS_CALL → NEW_PARENT`），使 `handle_vfs_reply` 的 `VFS_PM_FORK_REPLY` 分支不误回已死父（`main.c:392-393` `!new_parent → reply(parent)`；05 的 `take_vfs_call`（`os/servers/pm/src/ipc/vfs.rs:405-411`）抽出 `reply_to_new_parent` 后抑制对死父的回复）。若子已 `ZOMBIE` 则 `check_parent(..., TRUE)` 立即对 `INIT` 重试 `tell_parent` 或 `SIGCHLD`（`406-407`），`SIGHUP` 在 `procgrp !=0`（会话 Leader，`298` `mp_pid == mp_procgrp`）时广播至进程组（`412` `check_sig(-procgrp, SIGHUP)`，`signal.c:568`）。
 
 ### 1.5 退出与事件的衔接：`publish_event` 串在两阶段之间
 
@@ -57,9 +57,9 @@
 
 Rust 改写不是照抄 `mp_flags &= (IN_USE|VFS_CALL|...)`，而是在吸收工业级 OS 的成熟模式后做取舍。
 
-**Linux `do_exit`。** Linux `do_exit` → `exit_state = EXIT_ZOMBIE` → `forget_original_parent` → `find_new_reaper`（`INIT` 或最近 `PR_SET_CHILD_SUBREAPER`）→ `exit_notify` → `schedule`，`wait4` 的 `do_wait` 消费 `EXIT_ZOMBIE→EXIT_DEAD`。Minix3 的 `zombify`→`check_parent`→`disinherit` 的 `INIT` 收养与 `find_new_reaper` 同源，但 Linux 以 `task_struct->real_parent` 单指针 + `children` 链表，Minix3 以 `mp_parent` 槽位 + 全表扫描（`for rmp=0..NR_PROCS`，`388`），Rust 侧 `Guardianship` 双监护使 `tracer` 伪父显式化（`mproc/guardianship.rs`）。
+**Linux `do_exit`。** Linux `do_exit` → `exit_state = EXIT_ZOMBIE` → `forget_original_parent` → `find_new_reaper`（`INIT` 或最近 `PR_SET_CHILD_SUBREAPER`）→ `exit_notify` → `schedule`，`wait4` 的 `do_wait` 消费 `EXIT_ZOMBIE→EXIT_DEAD`。Minix3 的 `zombify`→`check_parent`→`disinherit` 的 `INIT` 收养与 `find_new_reaper` 同源，但 Linux 以 `task_struct->real_parent` 单指针 + `children` 链表，Minix3 以 `mp_parent` 槽位 + 全表扫描（`for rmp=0..NR_PROCS`，`388`），Rust 侧 `Guardianship` 双监护使 `tracer` 伪父显式化（`os/servers/pm/src/mproc/guardianship.rs`）。
 
-**FreeBSD `proc` 僵尸链表。** FreeBSD 以 `zombproc` 链表链死未收进程，Minix3 以 `ZOMBIE` 位 + `procs_in_use` 计数，Rust 侧 `Lifecycle::Zombie` 枚举使 `is_zombie()` 与 `is_exiting()` 互斥，`TOLD_PARENT` 避免二次通知（`minix3/minix/servers/pm/forkexit.c:tell_parent（L687，工具生成）` 的 `TOLD_PARENT` 位）。
+**FreeBSD `proc` 僵尸链表。** FreeBSD 以 `zombproc` 链表链死未收进程，Minix3 以 `ZOMBIE` 位 + `procs_in_use` 计数，Rust 侧 `Lifecycle::Zombie` 枚举使 `is_zombie()` 与 `is_exiting()` 互斥，`TOLD_PARENT` 避免二次通知（`minix3/minix/servers/pm/forkexit.c:tell_parent` 的 `TOLD_PARENT` 位）。
 
 **Redox `Scheme` 资源释放。** Redox 以 `FileDescription` 的 `close` 经 `Scheme::close` 释放 `fproc` 类资源，Minix3 以 `VFS_PM_EXIT` 经 `tell_vfs` 异步释放 `fproc`（`05-stage-vfs`），二者同为"VFS 侧 `fproc` 清理异步于 PM 侧 `mproc` 标记"，Rust 侧 `VfsCall::Exit` + `EventRegistry::publish` 同 `Scheme::close` 的异步。
 
@@ -67,7 +67,7 @@ Rust 改写不是照抄 `mp_flags &= (IN_USE|VFS_CALL|...)`，而是在吸收工
 
 **结论（本章的设计基线）。** 把 `do_exit` 的 `PRIV_PROC→SIGKILL` 门、`exit_proc` 的 9 步（含 `VFS_CALL` 保留与 `EXITING` 进入）、`exit_restart` 的 5 步（`sched_stop`→`sys_clear`→`vm_exit`）、`zombify` 的两级僵尸与 `disinherit` 的 `INIT` 收养+`NEW_PARENT`，改写为"显式协调器 `do_exit`→`exit_proc`→`zombify`→`disinherit` + 状态机 `Lifecycle`/`Guardianship`/`BlockState` + 事件 `publish` + `VFS_CALL` 延续"。
 
-**内核出口现状**：`sys_clear` 的两处调用点已接真实内核通道——`PmServer` 持有 `Box<dyn KernelGateway>`（`exit.rs` 的 trait，含 `sys_kill`/`sys_clear`/`proc_times`/`sys_diagctl_stacktrace` 等方法），`run_once` 经 `self.kern.as_mut()` 下穿至 `exit_proc`（step 9，PRIV_PROC 直毁）与 `exit_restart`（step 4，用户进程回收），失败 panic 的 C 语义逐字保留（`minix3/minix/servers/pm/forkexit.c:exit_proc` 与 `forkexit.c:exit_restart`）。minix-sys 侧 `sys_clear` wrapper（`syscall.rs`，m1i1 载荷）为 edge E6 切片；pre-E1 诚实回 `-EIO` → panic 与 C 的失败语义同型。生产网关默认装配于 `PmServer::with_transport`，测试经 `with_kernel_gateway` 注入脚本化 mock（`tests/run_once_integration.rs` 的 exit 场景即经此验证）。
+**内核出口现状**：`sys_clear` 的两处调用点已接真实内核通道——`PmServer` 持有 `Box<dyn KernelGateway>`（`os/servers/pm/src/exit.rs` 的 trait，含 `sys_kill`/`sys_clear`/`proc_times`/`sys_diagctl_stacktrace` 等方法），`run_once` 经 `self.kern.as_mut()` 下穿至 `exit_proc`（step 9，PRIV_PROC 直毁）与 `exit_restart`（step 4，用户进程回收），失败 panic 的 C 语义逐字保留（`minix3/minix/servers/pm/forkexit.c:exit_proc` 与 `forkexit.c:exit_restart`）。minix-sys 侧 `sys_clear` wrapper（`minix-sys/src/syscall.rs`，m1i1 载荷）为 edge E6 切片；pre-E1 诚实回 `-EIO` → panic 与 C 的失败语义同型。生产网关默认装配于 `PmServer::with_transport`，测试经 `with_kernel_gateway` 注入脚本化 mock（`os/servers/pm/tests/run_once_integration.rs` 的 exit 场景即经此验证）。
 
 **计账现状**：step 4 的 `sys_times` 同样接真实内核通道——`KernelGateway::proc_times(endpoint)`（minix-sys `sys_times` wrapper，SYS_TIMES = 25，回复载荷 `MessKrnLsysSysTimes`），取回的 user/system ticks 累加进死亡进程自身的 `child_utime/child_stime` 桶（`minix3/minix/servers/pm/forkexit.c:exit_proc`），父进程 wait 时经 `tell_parent` 并入（`minix3/minix/servers/pm/forkexit.c:tell_parent`）。失败 panic 对齐 C（`minix3/minix/servers/pm/forkexit.c:exit_proc`）。pre-E1 行为：集成测试注入零值/脚本化网关，生产 Trap 网关诚实回 `-EIO` → panic。
 
@@ -93,21 +93,21 @@ if(mp->mp_flags & PRIV_PROC) {            // forkexit.c:253 PRIV_PROC 0x02000（
         mp->mp_endpoint, mp->mp_name);    // 254-255
     sys_kill(mp->mp_endpoint, SIGKILL);   // 256 sys_kill 9（signal.h:57 SIGKILL 9）
 } else {
-    exit_proc(mp, m_in.m_lc_pm_exit.status, FALSE /*dump_core*/); // 259 m_lc_pm_exit.status 来自 ipc.h:1812 mess_pm_lc_exit
+    exit_proc(mp, m_in.m_lc_pm_exit.status, FALSE /*dump_core*/); // 259 m_lc_pm_exit.status 来自 ipc.h:mess_lc_pm_exit（ipc.h:445-450 定义 `int status`，联合体成员 ipc.h:2457）
 }
-return(SUSPEND);                          // 261 can't communicate from beyond the grave（main.c:106 ReplyLater 的永不回复子类，dispatcher.rs:45 NoReply）
+return(SUSPEND);                          // 261 can't communicate from beyond the grave（main.c:106 ReplyLater 的永不回复子类，os/servers/pm/src/ipc/dispatcher.rs:ReplyIntent 的 NoReply）
 ```
 
-`PRIV_PROC` 系统服务禁止 `exit`（应由 `SEF` 重启），`sys_kill(SIGKILL)` 9 为 `signal.c:384` `sig_proc` 的 `SIGS_IS_LETHAL` 快捷路径，11 章详述；`!PRIV_PROC` 才 `exit_proc`，恒 `SUSPEND`（`com.h:1151 -998`，`dispatcher.rs:45` `ReplyLater` 的 `NoReply` 子类——`do_exit` 永不回复，`do_fork` 的 `SUSPEND` 由 `handle_vfs_reply` 异步回复，`do_exit` 无后续回复者）。
+`PRIV_PROC` 系统服务禁止 `exit`（应由 `SEF` 重启），`sys_kill(SIGKILL)` 9 为 `signal.c:384` `sig_proc` 的 `SIGS_IS_LETHAL` 快捷路径，11 章详述；`!PRIV_PROC` 才 `exit_proc`，恒 `SUSPEND`（`com.h:1151 -998`，`os/servers/pm/src/ipc/dispatcher.rs:ReplyIntent` 的 `NoReply` 子类——`do_exit` 永不回复，`do_fork` 的 `SUSPEND` 由 `handle_vfs_reply` 异步回复，`do_exit` 无后续回复者）。
 
-**Rust 落地（2026-09-06，todo.md Fix #23 / D-13）**：`exit.rs` 的 `do_exit` 增加内核出口参数 `kern: &mut dyn KernelGateway`，`PRIV_PROC` 分支经 `sys_kill(endpoint, SIGKILL)` 真实发送（libsys `minix3/minix/lib/libsys/sys_kill.c:sys_kill（L8，工具生成）` 的 `_kernel_call(SYS_KILL, &m)` wire，由 `minix-sys/src/syscall.rs` 的 `sys_kill` 包装 + `TrapKernelGateway` 生产实现承载，pre-E1 诚实回 `-EIO` 且 C 本就不检查返回值）。语义要点：违规的 PRIV_PROC **不走** `exit_proc`、在 PM 表中保持 `Running`——真正的终止由内核信号路径稍后经 `process_ksig`（11）回环完成；测试断言"sys_kill 已发 + 进程未 Exiting"两件事（`test_do_exit_priv_proc`）。
+**Rust 落地**：`os/servers/pm/src/exit.rs` 的 `do_exit` 增加内核出口参数 `kern: &mut dyn KernelGateway`，`PRIV_PROC` 分支经 `sys_kill(endpoint, SIGKILL)` 真实发送（libsys `minix3/minix/lib/libsys/sys_kill.c:sys_kill` 的 `_kernel_call(SYS_KILL, &m)` wire，由 `minix-sys` 的 `sys_kill` 包装 + `TrapKernelGateway` 生产实现承载，pre-E1 诚实回 `-EIO` 且 C 本就不检查返回值）。语义要点：违规的 PRIV_PROC **不走** `exit_proc`、在 PM 表中保持 `Running`——真正的终止由内核信号路径稍后经 `process_ksig`（11）回环完成；测试断言"sys_kill 已发 + 进程未 Exiting"两件事（`test_do_exit_priv_proc`）。
 
 ### 2.2 `exit_proc` 首段：`dump_core` 双抑制→`procgrp` 记忆→`ALARM_ON`→`sys_times` 记账（minix3/minix/servers/pm/forkexit.c:exit_proc）
 
 ```c
 if (dump_core && rmp->mp_realuid != rmp->mp_effuid) dump_core = FALSE; // 285-286 setuid 不 dump
 if (dump_core && (rmp->mp_flags & PRIV_PROC)) dump_core = FALSE;       // 291-292 PRIV_PROC 不 dump（VFS 侧 fproc 已直毁）
-proc_nr = (int)(rmp - mproc);             // 294 槽号（rmp-mproc 指针差，03 table.rs 的 UserSlot::new(slot)）
+proc_nr = (int)(rmp - mproc);             // 294 槽号（rmp-mproc 指针差，03 的 `os/servers/pm/src/mproc/table.rs` `UserSlot::new(slot)`）
 proc_nr_e = rmp->mp_endpoint;             // 295 endpoint（跨服务身份，02）
 procgrp = (rmp->mp_pid == mp->mp_procgrp) ? mp->mp_procgrp : 0; // 298 会话 Leader 的 procgrp 记忆（getset.c 会话语义，A-13）
 if (rmp->mp_flags & ALARM_ON) set_alarm(rmp, (clock_t)0); // 301 熄灭定时器（alarm.c:344 set_alarm 0，14 章）
@@ -119,7 +119,7 @@ rmp->mp_child_stime += sys_time;
 
 `dump_core` 双门与 `getset.c` 的 `TAINTED`（`minix3/minix/servers/pm/mproc.h:TAINTED`）语义同源（setuid 进程不 dump，防信息泄漏）；`procgrp` 记忆为 `412` 的 `SIGHUP` 广播前置（`check_sig(-procgrp, SIGHUP)`，`signal.c:568`）。
 
-### 2.3 `exit_proc` 中段：`PROC_STOPPED` 强制→`vm_willexit`→`INIT/VFS` 特例→`VFS_PM_EXIT` 投递→`PRIV_PROC` 直毁（minix3/minix/servers/pm/forkexit.c:exit_proc（L311，工具生成））
+### 2.3 `exit_proc` 中段：`PROC_STOPPED` 强制→`vm_willexit`→`INIT/VFS` 特例→`VFS_PM_EXIT` 投递→`PRIV_PROC` 直毁（minix3/minix/servers/pm/forkexit.c:exit_proc）
 
 ```c
 /* 311-330 PROC_STOPPED 强制（sys_stop） */
@@ -158,7 +158,7 @@ if (rmp->mp_flags & PRIV_PROC) {          // 361-369 PRIV_PROC 直毁（块设�
 
 `PROC_STOPPED` 强制的 `326` 注释 `TODO: make kernel discard delayed calls` 与 `main.c:80-82` 的 `EXITING` 丢弃前置（退出中进程的延迟调用 `continue`）呼应，`DELAY_CALL`（`minix3/minix/servers/pm/mproc.h:DELAY_CALL`）的 `SIGSNDELAY` 语义归 13；`INIT`/`VFS` 特例的 `return`/`panic` 为服务树根的生死契约（`INIT` 永活，`VFS` 与 PM 互生）。
 
-### 2.4 `exit_proc` 尾段：`EXITING` 保留位→`zombify`→`disinherit` 收养与 `SIGHUP`（minix3/minix/servers/pm/forkexit.c:exit_proc（L371，工具生成））
+### 2.4 `exit_proc` 尾段：`EXITING` 保留位→`zombify`→`disinherit` 收养与 `SIGHUP`（minix3/minix/servers/pm/forkexit.c:exit_proc）
 
 ```c
 rmp->mp_flags &= (IN_USE|VFS_CALL|PRIV_PROC|TRACE_EXIT|PROC_STOPPED); // 374 仅 5 位保留
@@ -191,10 +191,10 @@ if (procgrp != 0) check_sig(-procgrp, SIGHUP, FALSE /* ksig */); // 412 会话 L
 ### 2.5 `exit_restart`（minix3/minix/servers/pm/forkexit.c:exit_restart）
 
 ```c
-if((r = sched_stop(rmp->mp_scheduler, rmp->mp_endpoint)) != OK) { // 425 sched_stop（schedule.c:55，16 章，失敗仅 printf 432-433）
+if((r = sched_stop(rmp->mp_scheduler, rmp->mp_endpoint)) != OK) { // 425 sched_stop（minix3/minix/lib/libsys/sched_stop.c:sched_stop，16 章；失败仅 printf 432-433）
     printf("PM: The scheduler did not want to give up scheduling %s, ret=%d.\n", rmp->mp_name, r);
 }
-rmp->mp_scheduler = NONE;                 // 441 NONE 0（com.h:61，01-stage-kernel）
+rmp->mp_scheduler = NONE;                 // 441 NONE = _ENDPOINT_SLOT_TOP - 2（minix3/minix/include/minix/endpoint.h:NONE，01-stage-kernel）
 if (!(rmp->mp_flags & (TRACE_ZOMBIE | ZOMBIE | TOLD_PARENT))) // 444-445 core 路径首次僵尸化（!dump_core 已 zombify，core 首次）
     zombify(rmp);
 if (!(rmp->mp_flags & PRIV_PROC)) {       // 447-452 !PRIV_PROC → sys_clear（与 exit_proc 361-369 互斥，PRIV_PROC 仅一次 sys_clear）
@@ -203,7 +203,7 @@ if (!(rmp->mp_flags & PRIV_PROC)) {       // 447-452 !PRIV_PROC → sys_clear（
 if((r=vm_exit(rmp->mp_endpoint)) != OK) { // 455-457 vm_exit（02-stage-vm，释放页表，panic 守卫）
     panic("exit_restart: vm_exit failed: %d", r);
 }
-if (rmp->mp_flags & TRACE_EXIT) {         // 459-464 TRACE_EXIT → reply(tracer, OK)（mproc.h:100 0x08000，trace.c:276，18 章）
+if (rmp->mp_flags & TRACE_EXIT) {         // 459-464 TRACE_EXIT → reply(tracer, OK)（mproc.h:100 0x08000；TRACE_EXIT 由 trace.c 的 T_EXIT 分支置位，18 章）
     mproc[rmp->mp_tracer].mp_reply.m_pm_lc_ptrace.data = 0;
     reply(rmp->mp_tracer, OK);
 }
@@ -211,64 +211,64 @@ if (rmp->mp_flags & TOLD_PARENT)          // 467-468 已收割则 cleanup（fork
     cleanup(rmp);
 ```
 
-`441` `scheduler=NONE` 在 `sched_stop` 后（`sched_stop` 前 `scheduler` 仍为原 `SCHED`/`NONE`，`sched_stop` 需原 `scheduler` 值）；`TOLD_PARENT` 再 `cleanup`（`467-468`）与 10 的 `tell_parent` 的 `TOLD_PARENT` 避免二次通知（`minix3/minix/servers/pm/forkexit.c:tell_parent（L687，工具生成）`）呼应，`procs_in_use--` 与 07 的 `++` 成对。
+`441` `scheduler=NONE` 在 `sched_stop` 后（`sched_stop` 前 `scheduler` 仍为原 `SCHED`/`NONE`，`sched_stop` 需原 `scheduler` 值）；`TOLD_PARENT` 再 `cleanup`（`467-468`）与 10 的 `tell_parent` 的 `TOLD_PARENT` 避免二次通知（`minix3/minix/servers/pm/forkexit.c:tell_parent`）呼应，`procs_in_use--` 与 07 的 `++` 成对。
 
 ### 2.6 `zombify` / `check_parent` / `tracer_died` / `cleanup`（minix3/minix/servers/pm/forkexit.c:zombify/check_parent/tracer_died/cleanup 四函数）
 
-`zombify`（`593-624`）`TRACE_ZOMBIE|ZOMBIE` 互斥 `panic`（`603-604`）+ `tracer != NO_TRACER && tracer != parent → TRACE_ZOMBIE` 否则 `ZOMBIE`（`607-620`）+ `!wait_test(tracer) → return` 否则 `tell_tracer`（`613-616`，`wait_test` 为 `wait.rs` `WaitState::is_waiting`）+ `check_parent(FALSE)`（`623`）。
+`zombify`（`593-624`）`TRACE_ZOMBIE|ZOMBIE` 互斥 `panic`（`603-604`）+ `tracer != NO_TRACER && tracer != parent → TRACE_ZOMBIE` 否则 `ZOMBIE`（`607-620`）+ `!wait_test(tracer) → return` 否则 `tell_tracer`（`613-616`，`wait_test` 为 `os/servers/pm/src/exit.rs:fn wait_test`（`WaitState::is_waiting_for`））+ `check_parent(FALSE)`（`623`）。
 
 `check_parent`（`626-665`）`p_mp = mproc[child->mp_parent]` → `EXITING → /*do nothing*/`（`646-650` `child of dead parent` 空窗）→ `wait_test → tell_parent` + `try_cleanup && !(VFS_CALL|EVENT_CALL) → cleanup`（`651-660`，`VFS_CALL|EVENT_CALL` 仍阻塞时不 `cleanup`，06 的 `resume_event` 待串行完成） 否则 `sig_proc(SIGCHLD)`（`663`，`signal.c:384`，11 章）。
 
 `tracer_died`（`759-790`）`mp_tracer = NO_TRACER` → `mp_flags &= ~TRACE_EXIT`（`768-769`）→ `!EXITING → SIGKILL` 级联（`775-777` `sig_proc(SIGKILL)`，`11`）→ `TRACE_ZOMBIE → ZOMBIE + check_parent(TRUE)`（`784-788`）。
 
-`cleanup`（`795-806`）`mp_pid=0` + `mp_flags=0` + `child_utime/stime=0` + `procs_in_use--`（`801-806`，`table.rs:release_slot` 对应 `fork` 的 `alloc_slot` 的 `++`）。
+`cleanup`（`795-806`）`mp_pid=0` + `mp_flags=0` + `child_utime/stime=0` + `procs_in_use--`（`801-806`，`os/servers/pm/src/mproc/table.rs:fn release_slot` 对应 `fork` 的 `alloc_slot` 的 `++`）。
 
 ### 2.7 主循环与 VFS 回复的衔接（main.c:80-82/365）
 
-`main.c:80-82` `EXITING` 丢弃（`if (mp->mp_flags & EXITING) continue`，退出中进程的延迟调用 `DELay_CALL` 直接丢弃，`minix3/minix/servers/pm/forkexit.c:exit_proc（L326，工具生成）` 注释 `TODO`）；`main.c:365` `publish_event` 的 `EXIT/CORE → publish_event` 提前 `return` 不走尾部 `restart_sigs`（06 §2.7），`minix3/minix/servers/pm/forkexit.c:do_fork（L116，工具生成）` 的 `mp_eventsub == NO_EVENTSUB` 断言（`fork`/`srv_fork` 子无游标，本章 `exit_restart` 的 `TOLD_PARENT→cleanup` 后 `procs_in_use--` 使 `find_free_slot` 可复用）。
+`main.c:80-82` `EXITING` 丢弃（`if (mp->mp_flags & EXITING) continue`，退出中进程的延迟调用 `DELay_CALL` 直接丢弃，`minix3/minix/servers/pm/forkexit.c:exit_proc` 注释 `TODO`）；`main.c:365` `publish_event` 的 `EXIT/CORE → publish_event` 提前 `return` 不走尾部 `restart_sigs`（06 §2.7），`minix3/minix/servers/pm/forkexit.c:do_fork` 的 `mp_eventsub == NO_EVENTSUB` 断言（`fork`/`srv_fork` 子无游标，本章 `exit_restart` 的 `TOLD_PARENT→cleanup` 后 `procs_in_use--` 使 `find_free_slot` 可复用）。
 
 ### 2.8 对端视角
 
-- **VM 侧**：`vm_willexit`（`minix3/minix/servers/pm/forkexit.c:exit_proc（L332，工具生成）`，`02-stage-vm` 告 VM 将退出）与 `vm_exit`（`455`，释放页表），本章只写 PM 侧 `tell_vfs` 前后 `vm_*` 调用点。
+- **VM 侧**：`vm_willexit`（`minix3/minix/servers/pm/forkexit.c:exit_proc`，`02-stage-vm` 告 VM 将退出）与 `vm_exit`（`455`，释放页表），本章只写 PM 侧 `tell_vfs` 前后 `vm_*` 调用点。
 - **VFS 侧**：`VFS_PM_EXIT 0x904`/`DUMPCORE 0x905`（`com.h:524-525`）的 `fproc` 释放，`VFS_PM_EXIT_REPLY 0x984`/`CORE_REPLY 0x985`（`com.h:537-538`）经 `handle_vfs_reply` 触发 `publish_event`（`main.c:365`），本章只写 `tell_vfs` 投递（`350-359`）。
 
 ### 2.9 不变式分类
 
 | 类别 | 检测 | 触发 | 严重度 |
 |------|------|------|--------|
-| `PRIV_PROC` 直毁 vs 等待的死锁避免 | `minix3/minix/servers/pm/forkexit.c:exit_proc（L361，工具生成）` 注释 | `PRIV_PROC` 块设备驱动 `VFS` 正等待 | 设计约束（P1 未标注即偏差） |
+| `PRIV_PROC` 直毁 vs 等待的死锁避免 | `minix3/minix/servers/pm/forkexit.c:exit_proc` 注释 | `PRIV_PROC` 块设备驱动 `VFS` 正等待 | 设计约束（P1 未标注即偏差） |
 | `EXITING` 丢弃 | `main.c:80-82` | 退出中 `DELAY_CALL` 残留 | 可恢复（`continue`） |
-| `VFS_CALL` 保留至 `handle_vfs_reply` | `minix3/minix/servers/pm/forkexit.c:exit_proc（L374，工具生成）` + `main.c:328` | `EXITING` 与 `VFS_CALL` 同时置位 | 不变式（05 尾部 `IN_USE|EXITING==IN_USE` 不走） |
-| `ZOMBIE|TRACE_ZOMBIE` 互斥 `panic` | `minix3/minix/servers/pm/forkexit.c:zombify（L603，工具生成）` | 已僵尸再 `zombify` | 不可恢复 |
-| `TOLD_PARENT` 防重 | `minix3/minix/servers/pm/forkexit.c:tell_parent（L687，工具生成）` | `tell_parent` 二次通知 | 不可恢复（`panic` 守卫） |
-| `NEW_PARENT` 跨 `fork→handle_vfs_reply` | `minix3/minix/servers/pm/forkexit.c:exit_proc（L402，工具生成）` | `VFS_CALL` 时 `NEW_PARENT` 记忆 | 不变式（05 抑制 `reply(parent)`） |
-| `cleanup` `procs_in_use--` | `minix3/minix/servers/pm/forkexit.c:cleanup（L805，工具生成）` | `TOLD_PARENT` 再 `cleanup` | `procs_in_use` 与 `fork` `++` 成对 |
+| `VFS_CALL` 保留至 `handle_vfs_reply` | `minix3/minix/servers/pm/forkexit.c:exit_proc` + `main.c:328` | `EXITING` 与 `VFS_CALL` 同时置位 | 不变式（05 尾部 `IN_USE|EXITING==IN_USE` 不走） |
+| `ZOMBIE|TRACE_ZOMBIE` 互斥 `panic` | `minix3/minix/servers/pm/forkexit.c:zombify` | 已僵尸再 `zombify` | 不可恢复 |
+| `TOLD_PARENT` 防重 | `minix3/minix/servers/pm/forkexit.c:tell_parent` | `tell_parent` 二次通知 | 不可恢复（`panic` 守卫） |
+| `NEW_PARENT` 跨 `fork→handle_vfs_reply` | `minix3/minix/servers/pm/forkexit.c:exit_proc` | `VFS_CALL` 时 `NEW_PARENT` 记忆 | 不变式（05 抑制 `reply(parent)`） |
+| `cleanup` `procs_in_use--` | `minix3/minix/servers/pm/forkexit.c:cleanup` | `TOLD_PARENT` 再 `cleanup` | `procs_in_use` 与 `fork` `++` 成对 |
 
 ---
 
 ## 3 Rust 设计决策
 
-Rust 改写遵循"显式协调器 + 状态机枚举 + 双监护 + 事件发布"的 8 决策，保留 C 的 9+5 步时序，但用类型系统使 `EXITING/ZOMBIE/TRACE_ZOMBIE/TOLD_PARENT` 互斥与 `NEW_PARENT` 载荷显式化。以下决策对应 `.design/09-design.v1.md` 的 D1–D8。
+Rust 改写遵循"显式协调器 + 状态机枚举 + 双监护 + 事件发布"的 8 决策，保留 C 的 9+5 步时序，但用类型系统使 `EXITING/ZOMBIE/TRACE_ZOMBIE/TOLD_PARENT` 互斥与 `NEW_PARENT` 载荷显式化。以下 D1–D8 为各决策本身。
 
 ### D1：`do_exit` 的 `PRIV_PROC → SIGKILL` 门
 
-`Privilege::is_kernel()` 首检 `sig_proc(SIGKILL)`（`minix3/minix/servers/pm/forkexit.c:do_exit（L253，工具生成）`），`do_exit` 返 `NoReply`（`dispatcher.rs:45` `SUSPEND` 的永不回复子类，`main.c:106` 的 `ReplyLater` 区分 `do_fork` 的异步回复 vs `do_exit` 的永不回复）。
+`Proc::is_kernel_process()` 首检 `sys_kill(endpoint, SIGKILL)`（`minix3/minix/servers/pm/forkexit.c:do_exit`，内核信号经 `process_ksig` 回环后才走 `sig_proc`，`11-signal-core.md`），`do_exit` 返 `NoReply`（`os/servers/pm/src/ipc/dispatcher.rs:ReplyIntent` 的 `SUSPEND` 永不回复子类，`main.c:106` 的 `ReplyLater` 区分 `do_fork` 的异步回复 vs `do_exit` 的永不回复）。
 
 ### D2：`exit_proc` 的 9 步
 
-`exit_proc` 主体 9 步与 `minix3/minix/servers/pm/forkexit.c:exit_proc` 同序同条件，`dump_core` 双抑制（`realuid != effuid` 与 `PRIV_PROC` 各 `FALSE`）、`procgrp` 记忆（`mp_pid == procgrp → procgrp else 0`）、`ALARM_ON → timer=None`、`sys_times → child_utime/stime +=`（真实 `KernelGateway::proc_times` 取回 ticks，失败 panic 与 C 同文案）、`PROC_STOPPED` 强制→`BlockState::stopped=true`、`vm_willexit` 已接线（真实 `sendrec(VM, VM_WILLEXIT)`，`ipc/dispatcher.rs` 的 `vm_willexit`；失败 panic 与 C 同文案）、`INIT/VFS` 特例、`VfsCall::Exit/DumpCore`+`tell_vfs`、`PRIV_PROC→sys_clear`、 `EXITING` 保留位、`zombify`、`disinherit`、`SIGHUP`。
+`exit_proc` 主体 9 步与 `minix3/minix/servers/pm/forkexit.c:exit_proc` 同序同条件，`dump_core` 双抑制（`realuid != effuid` 与 `PRIV_PROC` 各 `FALSE`）、`procgrp` 记忆（`mp_pid == procgrp → procgrp else 0`）、`ALARM_ON → timer=None`、`sys_times → child_utime/stime +=`（真实 `KernelGateway::proc_times` 取回 ticks，失败 panic 与 C 同文案）、`PROC_STOPPED` 强制→`BlockState::stopped=true`、`vm_willexit` 已接线（真实 `sendrec(VM, VM_WILLEXIT)`，`os/servers/pm/src/ipc/dispatcher.rs:fn vm_willexit`；失败 panic 与 C 同文案）、`INIT/VFS` 特例、`VfsCall::Exit/DumpCore`+`tell_vfs`、`PRIV_PROC→sys_clear`、 `EXITING` 保留位、`zombify`、`disinherit`、`SIGHUP`。
 
 ### D3：`Lifecycle` 互斥枚举（`A-2`）
 
-`mproc/lifecycle.rs:27` `Lifecycle::{Unused,Running,Exiting,Zombie,TraceZombie,ToldParent}` 互斥（`minix3/minix/servers/pm/mproc.h:EXITING` 位→枚举），`Exiting` 载荷 `exit_code: i8, sig_status: i8` 对应 `mp_exitstatus/sigstatus` 的 `char` 截断（`minix3/minix/servers/pm/forkexit.c:exit_proc（L379，工具生成）`）。
+`os/servers/pm/src/mproc/lifecycle.rs:enum Lifecycle` 的 `{Unused,Running,Exiting,Zombie,TraceZombie,ToldParent}` 互斥（`minix3/minix/servers/pm/mproc.h:EXITING` 位→枚举），`Exiting` 载荷 `exit_code: i8, sig_status: i8` 对应 `mp_exitstatus/sigstatus` 的 `char` 截断（`minix3/minix/servers/pm/forkexit.c:exit_proc`）。
 
 ### D4：`Guardianship` 双监护 + `NEW_PARENT` 载荷（`A-12`）
 
-`mproc/guardianship.rs:26` 双监护 + `mproc/block.rs:52` `VfsCall{reply_to_new_parent}` 载荷，`disinherit` 的 `INIT` 收养与 `NEW_PARENT` 记忆成对（`minix3/minix/servers/pm/forkexit.c:exit_proc（L402，工具生成）` 与 05 `take_vfs_call` 清位）。
+`os/servers/pm/src/mproc/guardianship.rs:enum Guardianship` 双监护 + `os/servers/pm/src/mproc/block.rs:enum IpcBlockReason` 的 `VfsCall{reply_to_new_parent}` 载荷，`disinherit` 的 `INIT` 收养与 `NEW_PARENT` 记忆成对（`minix3/minix/servers/pm/forkexit.c:exit_proc` 与 05 `take_vfs_call` 清位）。
 
 ### D5：`zombify` 两级僵尸（`A-2`）
 
-`Lifecycle::TraceZombie vs Zombie` 枚举分支（`minix3/minix/servers/pm/forkexit.c:zombify（L607，工具生成）`），`wait_test(tracer)` 决定 `tell_tracer` 或 `return`。
+`Lifecycle::TraceZombie vs Zombie` 枚举分支（`minix3/minix/servers/pm/forkexit.c:zombify`），`wait_test(tracer)` 决定 `tell_tracer` 或 `return`。
 
 ### D6：`check_parent` 的 `wait_test → tell_parent → cleanup` vs `SIGCHLD`
 
@@ -294,9 +294,9 @@ Rust 改写遵循"显式协调器 + 状态机枚举 + 双监护 + 事件发布"�
 
 `Lifecycle` 6 变体（`Unused`/`Running`/`Exiting`/`Zombie`/`TraceZombie`/`ToldParent`）、`Guardianship` 双监护、`BlockState` 保留位、`WaitState` `WAITING`。
 
-### 4.3 `os/servers/pm/src/ipc/{vfs,event}.rs`
+### 4.3 `os/servers/pm/src/ipc/vfs.rs` 与 `os/servers/pm/src/event.rs`
 
-`VfsCall::Exit/DumpCore` + `tell_vfs`（`VFS_CALL` 置退出进程）+ `EventRegistry::publish_event`（EXIT 事件，`main.c:365`）。DumpCore 的名字自 NS10 起按值携带（OQ-5/C-6 裁决：`name_len` 走 `m7_i3`、名字走载荷尾 40..56，取代 C `m7_p1` 指针 + VFS safecopy fetch，`forkexit.c:357` 对位）。
+`VfsCall::Exit/DumpCore` + `tell_vfs`（`VFS_CALL` 置退出进程）+ `EventRegistry::publish_event`（EXIT 事件，`main.c:365`）。DumpCore 的名字按值携带（`name_len` 走 `m7_i3`、名字走载荷尾 40..56，取代 C `m7_p1` 指针 + VFS safecopy fetch，`forkexit.c:357` 对位）。
 
 ### 4.4 `os/servers/pm/src/signal.rs`
 
@@ -308,6 +308,16 @@ VM 对端 `VM_EXIT`/`VM_WILLEXIT` 处理已由 `os/servers/vm/src/exit.rs` 实�
 
 ### 4.6 不变量表（同 §2.9，Rust 表达→panic/Reply/SUSPEND）
 
+| 不变式（§2.9 各行） | Rust 表达 | 违反时的行为 |
+|---|---|---|
+| `PRIV_PROC` 直毁 vs 等待的死锁避免 | `exit_proc` step 9 在 `tell_vfs` 之后立即 `kern.sys_clear`；`exit_restart` step 4 只对 `!is_kernel_process()` 调 `sys_clear` | `sys_clear` 失败 `panic!`（不可恢复，C 同文案） |
+| `EXITING` 丢弃 | `Lifecycle::Exiting` → `run_once` 入口 `caller_proc.is_exiting()` 丢弃延迟调用 | 丢弃（C `main.c:80-82` 的 `continue` 对位） |
+| `VFS_CALL` 保留至 `handle_vfs_reply` | `IpcBlockReason::VfsCall{reply_to_new_parent}`，`handle_vfs_reply` 经 `take_vfs_call` 抽出并清位 | 无 `VFS_CALL` 却收 VFS 回复 → `panic!("handle_vfs_reply: reply without request")` |
+| `ZOMBIE`/`TRACE_ZOMBIE` 互斥 | `Lifecycle::Zombie` 与 `Lifecycle::TraceZombie` 互斥变体 | 已僵尸再 `zombify` → `panic!("zombify: process was already a zombie")` |
+| `TOLD_PARENT` 防重 | `Lifecycle::ToldParent` 变体（`tell_parent` 末尾置位） | 由枚举与 `wait_test` 次序保证；C 的 `tell_parent` 二次通知 `panic` 在 Rust 侧由状态枚举承担（同 10 篇口径） |
+| `NEW_PARENT` 跨 `fork→handle_vfs_reply` | `VfsCall{reply_to_new_parent: true}`（收养时置位） | 组合随载荷编码，`!VFS_CALL` 时的 `NEW_PARENT` 不可表达 |
+| `cleanup` 的 `procs_in_use--` | `ProcTable::release_slot`（`os/servers/pm/src/mproc/table.rs`）+ `procs_in_use` | 与 `fork` 的 `alloc_slot` 的 `++` 成对 |
+
 ### 4.7 与 C 9+5 步的差异说明（分类：设计决策 / 已知缺口）
 
 步数口径：`exit_proc` 的“9 步”指主体段（代码 step 1–9，`tell_vfs` 为 step 8、`PRIV_PROC` 直毁为 step 9），函数内另有收尾 4 步（step 10–13）；`exit_restart` 的“5 步”是压缩口径，代码编号 1–7。未实现步骤见下表。
@@ -317,13 +327,12 @@ VM 对端 `VM_EXIT`/`VM_WILLEXIT` 处理已由 `os/servers/vm/src/exit.rs` 实�
 | `sys_stop` 未下穿内核，Rust 仅置 `BlockState::stopped`，主循环 `EXITING` 丢弃兜底 | 已知缺口（minix-sys E6 切片） | 内核网关接线后此步改真实调用，panic 文案与 C 同 | `minix3/minix/servers/pm/forkexit.c:exit_proc`（强制停调度段） |
 | `INIT` 特例额外置 `Lifecycle::Exiting` | 设计决策 | C 不改 `mp_flags`（`printf`+栈回溯后 `return`，不走 VFS），Rust 置 `Exiting` 使状态机可观测、主循环丢弃路径生效；诊断面 `printf` 与 `sys_diagctl_stacktrace` 与 C 对齐 | `minix3/minix/servers/pm/forkexit.c:exit_proc`（INIT 特例段） |
 | `exit_restart` 的 core 路径 `zombify` 守卫比 C 严格：仅 `Exiting` 触发 | 设计决策 | C 对非 `TRACE_ZOMBIE\|ZOMBIE\|TOLD_PARENT` 状态一律 `zombify`；退出链上到达此处的先验状态只可能是 `Exiting`，严格守卫不丢分支 | `minix3/minix/servers/pm/forkexit.c:exit_restart`（core 首次僵尸化段） |
-| `wait_test` 仅检 `WAITING` 位，`pidarg` 匹配未实现 | 已知缺口（10 章精细化） | 本篇视同“等任意子”语义 | `minix3/minix/servers/pm/forkexit.c:wait_test` |
 
 ---
 
 ## 5 测试矩阵
 
-### 5.1 `exit.rs`（`do_exit`/`exit_proc`/`exit_restart`/`zombify`/`check_parent`/`tracer_died`/`disinherit`/`cleanup`，17 个）
+### 5.1 `os/servers/pm/src/exit.rs`（`do_exit`/`exit_proc`/`exit_restart`/`zombify`/`check_parent`/`tracer_died`/`disinherit`/`cleanup`，19 个）
 
 - `test_do_exit_priv_proc`：`PRIV_PROC→sys_kill(SIGKILL)` 已发且进程未 `Exiting`（内核信号回环前不调 `exit_proc`）
 - `test_do_exit_user_process_skips_sys_kill`：`!PRIV_PROC` 分支不发 `sys_kill`，走 `exit_proc`
@@ -332,22 +341,24 @@ VM 对端 `VM_EXIT`/`VM_WILLEXIT` 处理已由 `os/servers/vm/src/exit.rs` 实�
 - `test_exit_proc_normal`：`EXITING`/僵尸态进入且 `VFS_CALL` 保留（tell_vfs 后不清）
 - `test_zombify_trace_zombie`：tracer 未等待时保持 `TraceZombie`（伪父先序）
 - `test_zombify_tracer_not_waiting_defers_parent`：tracer 未 wait → 直接 `return`，真父不得先收 `SIGCHLD`（C 613-614）
-- `test_check_parent_sends_sigchld_when_parent_not_waiting`：父未等待 → `sig_proc(parent, SIGCHLD, TRUE, FALSE)`（mask 阻塞使 pending 可观察，D-28）
-- `test_tell_parent_delivers_rusage_via_datacopy`：`addr != 0` 时 rusage 经 `copy_to_user` 写入父内存（D-21）
-- `test_tell_parent_null_rusage_addr_skips_datacopy`：`waitpid(pid, NULL, 0)` 的 `addr=0` 跳过拷贝直接回复（B25 真机崩因回归）
+- `test_check_parent_sends_sigchld_when_parent_not_waiting`：父未等待 → `sig_proc(parent, SIGCHLD, TRUE, FALSE)`（mask 阻塞使 pending 可观察）
+- `test_check_parent_waits_for_matching_child_only`：父在等**别的**子（`wait_test` 的 `right_child` 为假）→ 不 `tell_parent`，走 `SIGCHLD`
+- `test_tell_parent_delivers_rusage_via_datacopy`：`addr != 0` 时 rusage 经 `copy_to_user` 写入父内存
+- `test_tell_parent_null_rusage_addr_skips_datacopy`：`waitpid(pid, NULL, 0)` 的 `addr=0` 跳过拷贝直接回复（零地址回归）
 - `test_disinherit_new_parent`：`VFS_CALL→NEW_PARENT`（`reply_to_new_parent` 记忆）
-- `test_session_leader_death_broadcasts_sighup`：会话首领死亡 → `check_sig(-procgrp, SIGHUP)` 组广播（同组成员终止、异组存活，D-27）
+- `test_disinherit_preserves_trace_options`：收养不清 `mp_trace_flags` 对位（`TO_TRACEFORK`/`TO_ALTEXEC` 原样保留）
+- `test_session_leader_death_broadcasts_sighup`：会话首领死亡 → `check_sig(-procgrp, SIGHUP)` 组广播（同组成员终止、异组存活）
 - `test_exit_restart_cleans_priv`：`TOLD_PARENT→cleanup` 释槽且 `!PRIV_PROC` 经 `sys_clear`
 - `test_exit_restart_trace_exit_replies_tracer`：`exit_pending` 时 `reply(tracer, OK)` 且 `m_pm_lc_ptrace.data = 0`（C 459-464）
 - `test_tracer_died_kills_running_child`：tracer 死时子仍运行 → `SIGKILL` 级联终止且 `TRACE_EXIT` 摘位（C 768-777）
 - `test_tracer_died_trace_zombie_becomes_zombie`：`TRACE_ZOMBIE` → `ZOMBIE` + 对真父重试 `check_parent`（C 784-788）
 - `test_cleanup_releases_slot`：`procs_in_use--` 与槽释放
 
-另有两处对位测试位于状态机与信号文件：`test_exiting_state`（`mproc/lifecycle.rs`，`EXITING` 保位语义）、`test_signal_termination_tells_vfs`（`signal.rs`，信号终止链的 `VFS_PM_EXIT` 投递）。
+另有两处对位测试位于状态机与信号文件：`test_exiting_state`（`os/servers/pm/src/mproc/lifecycle.rs`，`EXITING` 保位语义）、`test_signal_termination_tells_vfs`（`os/servers/pm/src/signal.rs`，信号终止链的 `VFS_PM_EXIT` 投递）。
 
 ### 5.2 测试总数声明
 
-> 基线（实测口径，本文不抄录日期快照）：`cargo test -p minix-pm --lib` 当前 **424 passed / 0 failed**；集成 `cargo test -p minix-pm --test run_once_integration` 13 passed（退出链的 `run_once` 全链路场景在此验证）。本节列出与本模块直接相关的 17 + 2 个（子集）。复核：`grep -c '^\s*#\[test\]' os/servers/pm/src/exit.rs`（旧文本曾记作 166/176，已随测试增加而失真）。
+> 基线（实测口径）：`cargo test -p minix-pm --lib` 当前 **428 passed / 0 failed**；集成 `cargo test -p minix-pm --test run_once_integration` 13 passed（退出链的 `run_once` 全链路场景在此验证）。本节列出与本模块直接相关的 19 + 2 个（子集）。复核：`grep -c '^\s*#\[test\]' os/servers/pm/src/exit.rs`。
 
 ---
 
@@ -358,7 +369,6 @@ VM 对端 `VM_EXIT`/`VM_WILLEXIT` 处理已由 `os/servers/vm/src/exit.rs` 实�
 ## 7 参见
 
 - C 源：`minix3/minix/servers/pm/forkexit.c:do_exit`（含 `exit_proc`/`exit_restart`）与 `zombify`/`check_parent`/`tracer_died`/`cleanup`（退出链全体）、`minix3/minix/include/minix/com.h:VFS_PM_EXIT`（`VFS_PM_EXIT`）、`minix3/minix/servers/pm/main.c:handle_vfs_reply`（`publish_event`）
-- 设计契约：`.design/09-design.v1.md`（D1–D8 与行为契约表）、`.design/09-outline.v1.md`、`.design/09-outline-review.v1.md`
 - PM 阶段文档：03-mproc-table.md（`procs_in_use`）、05-vfs-interaction.md（`tell_vfs`）、06-event-subscription.md（`publish_event`）、02-mproc-struct.md（`Lifecycle`）、10-pm-wait.md（`wait_test`）
 - 对端实现：02-stage-vm（`vm_willexit/vm_exit`）、05-stage-vfs（`VFS_PM_EXIT`）
 - 内核接口：01-stage-kernel（`sys_stop/sys_clear/sys_times`）、16-scheduling.md（`sched_stop`）、18-trace.md（`TRACE_EXIT`）

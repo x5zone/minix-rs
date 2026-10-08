@@ -102,11 +102,15 @@ pub const fn check_open(minor: u32) -> i32 {
 
 /// Poll readiness: reads and writes are always instantly possible.
 ///
-/// C: `r_select` (`main.c:259-268`): the device never blocks (reads answer
-/// "try again" instead of parking), so every watched operation is ready at
-/// once; the error bit is ignored.
-pub const fn poll(ops: u32) -> u32 {
-    ops & (OP_READ | OP_WRITE)
+/// C: `r_select` (`main.c:259-268`): an unknown minor answers "input-output
+/// error" before any readiness bit is computed; otherwise the device never
+/// blocks (reads answer "try again" instead of parking), so every watched
+/// operation is ready at once; the error bit is ignored.
+pub const fn poll(minor: u32, ops: u32) -> i32 {
+    if minor != RANDOM_MINOR {
+        return -EIO;
+    }
+    (ops & (OP_READ | OP_WRITE)) as i32
 }
 
 /// Operation bit: read readiness.
@@ -145,9 +149,10 @@ mod tests {
 
     #[test]
     fn test_poll_reports_everything_ready() {
-        assert_eq!(poll(OP_READ | OP_WRITE), OP_READ | OP_WRITE);
-        assert_eq!(poll(OP_READ), OP_READ);
-        assert_eq!(poll(0), 0);
+        assert_eq!(poll(0, OP_READ | OP_WRITE), (OP_READ | OP_WRITE) as i32);
+        assert_eq!(poll(0, OP_READ), OP_READ as i32);
+        assert_eq!(poll(0, 0), 0);
+        assert_eq!(poll(2, OP_READ), -EIO);
     }
 
     #[test]

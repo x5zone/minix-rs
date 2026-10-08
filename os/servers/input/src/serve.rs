@@ -29,7 +29,7 @@ use minix_sys::ds::DsClient;
 use minix_sys::ipc::{AsyncSlot, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
 use minix_sys::syscall::{DirectKernelCallTransport, KernelCallTransport as _, sys_safecopyto};
 use minix_types::{
-    Endpoint, INPUT_EVENT, INPUT_SETLEDS, Message, decode_input_event, decode_setleds,
+    Endpoint, INPUT_EVENT, INPUT_SETLEDS, InputEvent, Message, decode_input_event, decode_setleds,
 };
 
 /// CDEV reply message types. C: `com.h:935-937` —
@@ -330,6 +330,34 @@ pub fn perform(effect: &Effect, t: &mut dyn Transport, self_ep: Endpoint) {
     }
 }
 
+/// Packs a run of events into the contiguous byte image a read copies
+/// through the caller's grant.
+///
+/// C: the two `sys_safecopyto` calls (`input.c:144-151`) land contiguous in
+/// the caller's buffer, one `sizeof(struct input_event)` per event; the
+/// grant therefore receives `EVENT_BYTES * events.len()` bytes, the same
+/// count the reply announces (`input.c:156`). The stride is derived from the
+/// type (`EVENT_BYTES` is `size_of::<InputEvent>()`, 20 on the wire, locked
+/// by `test_event_layout_matches_c`) so a layout change cannot silently
+/// drift from the wire contract.
+fn pack_events_for_grant(events: &[InputEvent]) -> Vec<u8> {
+    let stride = crate::structs::EVENT_BYTES;
+    let mut copied = Vec::with_capacity(events.len() * stride);
+    for event in events {
+        // SAFETY: `InputEvent` is a `repr(C)` POD type with no padding;
+        // every byte of its `size_of` image is initialized, and `stride`
+        // *is* that size (see above). Reading exactly `stride` bytes stays
+        // inside the element.
+        unsafe {
+            let base = core::ptr::addr_of!(*event) as *const u8;
+            for offset in 0..stride {
+                copied.push(core::ptr::read(base.add(offset)));
+            }
+        }
+    }
+    copied
+}
+
 fn perform_all(effects: &[Effect], t: &mut dyn Transport, self_ep: Endpoint) {
     for effect in effects {
         perform(effect, t, self_ep);
@@ -367,17 +395,7 @@ pub fn serve(t: &mut dyn Transport, self_ep: Endpoint, server: &mut crate::dispa
                     device.tail,
                     grant_copy.plan.plan.first_len + grant_copy.plan.plan.second_len,
                 );
-                let mut copied: Vec<u8> = Vec::new();
-                for event in &bytes {
-                    // SAFETY: `InputEvent` is 24-byte repr(C) POD; the byte
-                    // image is what the reader's grant expects.
-                    unsafe {
-                        let base = core::ptr::addr_of!(event) as *const u8;
-                        for offset in 0..24 {
-                            copied.push(core::ptr::read(base.add(offset)));
-                        }
-                    }
-                }
+                let copied = pack_events_for_grant(&bytes);
                 let transported = t
                     .write_grant(grant_copy.caller, grant_copy.grant, &copied)
                     .map_err(|_| crate::error::InputError::DeviceNotActive);
@@ -536,5 +554,32 @@ mod serve_tests {
         let mut msg = Message::default();
         msg.m_type = 0x1000 + 7;
         assert!(matches!(classify(&msg), Some(Arrival::DriverStoreChanged)));
+    }
+
+    /// 传输打包：每个事件恰好 `EVENT_BYTES`（20）字节、连续排列，第二段
+    /// 从步幅处开始（C `input.c:144-151` 两段拷贝合起来的镜像）。步幅写错
+    /// 会同时破坏字节布局与回信口径（回信按 `EVENT_BYTES × n` 计）。
+    #[test]
+    fn test_pack_events_for_grant_is_event_sized_and_contiguous() {
+        let stride = crate::structs::EVENT_BYTES;
+        assert_eq!(stride, 20); // 权威值：test_event_layout_matches_c 锁定
+        let mut first = InputEvent::zero();
+        first.page = 0x0007;
+        first.code = 0x003A;
+        first.value = 1;
+        let mut second = InputEvent::zero();
+        second.page = 0x0001;
+        second.code = 0x0030;
+        second.value = -3;
+        let packed = pack_events_for_grant(&[first, second]);
+        assert_eq!(packed.len(), 2 * stride);
+        assert_eq!(
+            u16::from_ne_bytes([packed[stride], packed[stride + 1]]),
+            second.page
+        );
+        assert_eq!(
+            u16::from_ne_bytes([packed[stride + 2], packed[stride + 3]]),
+            second.code
+        );
     }
 }

@@ -1,0 +1,94 @@
+{
+  "_comment": "C→Rust 语义映射表（drivers 模块，首期：system/random 一族的落点）。用于 coverage-extract.py 的 --semantic-map。",
+  "_note": "2026-10-08 新建（review-flow-hardening Round 10 取证：drivers 模块此前无映射表，Gate A 的 Rust 侧恒近 0%，random 族全部误报『有文档无Rust』）。本表刻意只覆盖 system/random（09-random-driver 的射程），其余驱动族随各自文档 review 逐期追加——drivers 是全仓最大的 C 目录（9539 符号），一次补全不现实。映射依据 = os/drivers/system/random/src 各模块 + 09-design.v2.md。两个已知工具盲区使部分落点只能用面方法表达：(a) `pub const fn` 不被 RUST_FN_PATTERN 抽取（check_read/check_write/check_open/harvest_period/is_seeded/reseed_extra_pools 均不可见）——故 r_read 等映射到 char_face 的同名面方法；(b) C 侧跨行签名片段（r_read/r_write 本身）不被 extract_c_symbols 抽取，无法作为键登记。",
+  "main": [
+    "main"
+  ],
+  "sef_local_startup": [
+    "init"
+  ],
+  "sef_cb_init_fresh": [
+    "init"
+  ],
+  "r_open": [
+    "RandomFace::open"
+  ],
+  "r_read": [
+    "RandomFace::read"
+  ],
+  "r_write": [
+    "RandomFace::write"
+  ],
+  "r_select": [
+    "RandomFace::select"
+  ],
+  "r_random": [
+    "harvest_period",
+    "HARVEST_PERIOD_UNSEEDED",
+    "HARVEST_SLOWDOWN"
+  ],
+  "r_updatebin": [],
+  "random_init": [
+    "PoolSet::new"
+  ],
+  "random_isseeded": [
+    "RandomFace",
+    "RandomFace::read"
+  ],
+  "random_update": [
+    "PoolSet::feed"
+  ],
+  "random_getbytes": [
+    "GeneratorCore::generate"
+  ],
+  "random_putbytes": [
+    "PoolSet::feed_trusted"
+  ],
+  "add_sample": [
+    "DerivativeFilter::feed",
+    "PoolSet::feed"
+  ],
+  "data_block": [
+    "GeneratorCore::next_block"
+  ],
+  "reseed": [
+    "GeneratorCore::reseed",
+    "PoolSet::note_reseeded"
+  ],
+  "rijndael_makekey": [
+    "Aes256::new"
+  ],
+  "rijndael_ecb_encrypt": [
+    "Aes256::encrypt_block"
+  ],
+  "NR_DEVS": [
+    "RANDOM_MINOR"
+  ],
+  "KRANDOM_PERIOD": [
+    "HARVEST_PERIOD_UNSEEDED"
+  ],
+  "RANDOM_BUF_SIZE": [
+    "TRANSFER_CHUNK"
+  ],
+  "N_DERIV": [
+    "DERIVATIVE_DEPTH"
+  ],
+  "NR_POOLS": [
+    "POOL_COUNT"
+  ],
+  "MIN_SAMPLES": [
+    "MIN_SAMPLES"
+  ],
+  "RND_TIMING": [
+    "TIMING_SOURCE"
+  ],
+  "RANDOM_SOURCES_INTERNAL": [
+    "INTERNAL_SOURCES"
+  ],
+  "TOTAL_SOURCES": [
+    "TOTAL_SOURCES"
+  ],
+  "AES_BLOCKSIZE": [
+    "BLOCK_SIZE"
+  ]
+}

@@ -76,7 +76,10 @@
 | 1.5a | 覆盖率工具数据缺口判定（映射表缺失 / `--rust-dir` 缺省 / 短名子串） | Step 1.5 | `ls tools/coverage-extract/{module}-semantic-map.json`；缺表即新建 | 2026-10-08 |
 | 5.6a | Gate G 两趟（骨架 → 回填 gate-evidence-G → 复跑自检） | Step 5.6 | 首跑 FAIL 属正常，回填后 `VERIFY-SELF PASS` | 2026-10-08 |
 | 5.6b | 多 agent 并行 review 的隔离纪律（Round 4–8 取证 R5-D1） | 并行调度时 | 只读仓库 + 各自 `.review/` 子目录 + 禁改 `tools/`/`os/`/`prompt/`；否则证据无版本锚、增量门吃他人改动 | 2026-10-08 |
-| 1.5b | `--c-dir`/`MODULE_PATHS` 与真实 C 目录核对（fs 不在 `servers/` 下；模板可能给出不存在的路径 → 0 符号假报告） | Step 1.5 | `ls` 真实目录；脚本 `MODULE_PATHS` 已补 `fs` | 2026-10-08 |
+| 1.5b | `--c-dir`/`MODULE_PATHS` 与真实 C 目录核对（fs 不在 `servers/` 下；模板曾静默回落 kernel） | Step 1.5 | `python3 tools/coverage-extract/coverage-extract.py <module> --print-c-dir`（单一真相源，`MODULE_PATHS` 已补 fs/sched/ipc/input/is/mib/devman）；`review-init.sh` 不再自造映射、解析失败即告警 | 2026-10-08 |
+| 1.0a | 「文件 + 第 N 行」式坐标（`` `sem.c` 第 697 行 ``）不在三个锚点工具射程内 | Step 1.0 | `tools/anchor-suspect-scan.py` 已能列出该形态（标 `[卫生项]`）；修法 = 迁移为符号锚点，不阻塞 review | 2026-10-08 |
+| 0.9 | **修复的形态覆盖自检**（Round 9–13 串行循环取证：20 条流程缺陷里 12 条是"改一处漏一处"） | 每次改工具/规范后 | 改完用**真实语料全仓 grep 该形态**确认覆盖面（不是只跑手头那一个案例）；`--self-test` 夹具必须含真实形态 | 2026-10-08 |
+| 0.10 | 串行 vs 并行的调度纪律 | 多轮 dry-run 调度时 | **广度用并行**（快速铺 stage），**修复收敛必须串行**（每轮带"上一轮修复验证"作业）；并行结构上发现不了"修复未修透" | 2026-10-08 |
 
 > **新增规则写入方式**：在本表追加一行（id 用表内下一序号，不再新开 `#### Step` 章节），详情正文放对应主干 Step 之下或独立小节并用本表行索引。
 

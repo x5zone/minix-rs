@@ -225,14 +225,25 @@ pub const fn resolve_semctl_mask(cmd: i32) -> SemctlAccess {
     }
 }
 
-/// Mask for a semaphore-operation call: write bit if any operation is
-/// non-zero, read bit if all are zero-wait operations.
+/// Mask for a semaphore-operation call, accumulated the way C does it:
+/// every non-zero operation wants the write bit, every zero-wait
+/// operation wants the read bit, so a mixed array wants both.
 ///
-/// C: the mask loop in `do_semop` (sem.c:697-706). Takes the precomputed
-/// answer (not the array) so the pure judgement stays decoupled from the
-/// operation storage.
-pub const fn resolve_semop_mask(has_nonzero: bool) -> u32 {
-    if has_nonzero { IPC_W } else { IPC_R }
+/// C: the mask loop in `do_semop` (sem.c:697-703) ORs one bit per element
+/// — `mask |= IPC_W` for `sem_op != 0`, `mask |= IPC_R` otherwise — and
+/// `check_perm` then demands the caller hold *all* wanted bits, so an
+/// array mixing both kinds fails for a caller holding only one of them.
+/// Takes the two precomputed answers (not the array) so the pure
+/// judgement stays decoupled from the operation storage.
+pub const fn resolve_semop_mask(has_nonzero: bool, has_zero: bool) -> u32 {
+    let mut mask = 0;
+    if has_nonzero {
+        mask |= IPC_W;
+    }
+    if has_zero {
+        mask |= IPC_R;
+    }
+    mask
 }
 
 /// Mask for a shared-memory attach: read bit for read-only attaches,
@@ -387,9 +398,10 @@ mod tests {
 
     #[test]
     fn semop_mask_matrix() {
-        // C: sem.c:697-706 — any non-zero operation wants the write bit.
-        assert_eq!(resolve_semop_mask(true), IPC_W);
-        assert_eq!(resolve_semop_mask(false), IPC_R);
+        // C: sem.c:697-703 — one bit ORed per element; mixed wants both.
+        assert_eq!(resolve_semop_mask(true, false), IPC_W);
+        assert_eq!(resolve_semop_mask(false, true), IPC_R);
+        assert_eq!(resolve_semop_mask(true, true), IPC_R | IPC_W);
     }
 
     #[test]

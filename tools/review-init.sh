@@ -196,6 +196,7 @@ if [[ "$TOOL" == "trae" ]]; then
     mkdir -p "$SCANS_DIR"
 else
     mkdir -p "$DOC_DIR"
+    mkdir -p "$DOC_DIR/scans"  # R11-D4：非 trae 运行时的脚手架（design-structure 等）也落在文档级 scans/
 fi
 
 # ===== 生成 STATE.md 骨架（若不存在）=====
@@ -391,28 +392,13 @@ COVERAGE_SCRIPT="$SCRIPT_DIR/coverage-extract/coverage-extract.py"
 if [[ -f "$COVERAGE_SCRIPT" ]]; then
     echo "=== coverage-extract.py 命令模板（Gate A）==="
     echo ""
-    # 推断 Minix3 module：kernel 或 servers/{module}。依据 stage 名里的模块词。
-    MINIX3_MODULE="kernel"
-    MODULE_HINT="$STAGE"
-    if [[ "$MODULE_HINT" == *"vm"* ]]; then
-        MINIX3_MODULE="vm"
-    elif [[ "$MODULE_HINT" == *"pm"* ]]; then
-        MINIX3_MODULE="pm"
-    elif [[ "$MODULE_HINT" == *"vfs"* ]]; then
-        MINIX3_MODULE="vfs"
-    elif [[ "$MODULE_HINT" == *"rs"* ]]; then
-        MINIX3_MODULE="rs"
-    elif [[ "$MODULE_HINT" == *"ds"* ]]; then
-        MINIX3_MODULE="ds"
-    elif [[ "$MODULE_HINT" == *"inet"* ]]; then
-        MINIX3_MODULE="inet"
-    elif [[ "$MODULE_HINT" == *"fs"* ]]; then
-        MINIX3_MODULE="fs"
-    fi
-    if [[ "$MINIX3_MODULE" == "kernel" ]]; then
-        C_DIR="minix3/minix/kernel"
-    else
-        C_DIR="minix3/minix/servers/$MINIX3_MODULE"
+    # 模块名从 stage 名通用提取（13-stage-ipc → ipc）；解析失败就如实告警，不回落 kernel。
+    MINIX3_MODULE="$(printf '%s' "$STAGE" | sed -E 's/^[0-9]+-stage-//')"
+    # R9-D1：目录从 coverage-extract.py 的 MODULE_PATHS 取（单一真相源），不再自造映射。
+    C_DIR="$(python3 "$COVERAGE_SCRIPT" "$MINIX3_MODULE" --print-c-dir 2>/dev/null || true)"
+    if [[ -z "$C_DIR" || ! -d "$C_DIR" ]]; then
+        echo "⚠️ 未能解析 $MINIX3_MODULE 的 C 目录（--print-c-dir 失败）——下面的模板请人工核对 --c-dir"
+        C_DIR="<未解析，请人工确认>"
     fi
     DOC_DIR_FOR_COVERAGE="$(dirname "$DOC_PATH_NORMALIZED")"
     echo "python3 $COVERAGE_SCRIPT $MINIX3_MODULE \\"

@@ -64,7 +64,18 @@ usage() { echo "Usage: $0 [--strict] FILE... | --diff [RANGE] | --dir DIR | --se
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --strict) STRICT=1; shift ;;
-    --diff) MODE="diff"; if [ $# -gt 1 ] && [[ "$2" != -* ]]; then RANGE="$2"; shift; fi; shift ;;
+    --diff)
+      MODE="diff"
+      if [ $# -gt 1 ] && [[ "$2" != -* ]]; then
+        RANGE="$2"; shift
+        # R13-D3（同 R8-D5）：把文件路径当 revision 传进来会 fatal 却仍"通过"（假绿）。
+        if [ -e "$RANGE" ]; then
+          echo "⛔ --diff 的参数是 git revision（默认 HEAD），不是文件路径：$RANGE" >&2
+          echo "   要查单篇文档的增量请先 git add，再跑 --diff（不带参数）；要全量检查请直接传文件名。" >&2
+          exit 2
+        fi
+      fi
+      shift ;;
     --dir) MODE="dir"; shift ;;
     --self-test) MODE="self-test"; shift ;;
     -h|--help) usage ;;
@@ -119,7 +130,10 @@ BEGIN {
     if (nfence == 0 && raw ~ /^[[:space:]]*(```|~~~)/) { nfence = 1; next }
     else if (nfence == 1) { if (raw ~ /^[[:space:]]*(```|~~~)/) nfence = 0; next }
   }
-  is_header_date = (raw ~ /^>[[:space:]]*\*\*(创建|重写|生成日期)\*\*/)  # 2026-10-08 R5-D2：设计快照模板强制「生成日期」头行
+  # R9-D4 / R10-D1：头部日期豁免的**真实形态**有四种——`> **创建**:`、`> **重写**:`、
+  # `> **生成日期**:`，以及 `> **状态**: 已改写（…）`（全仓 26 篇）。只豁免冒号紧随字段名的那种
+  # 会漏掉最后一种（R10-D1 复现）。
+  is_header_date = (raw ~ /^>[[:space:]]*\*\*(创建|重写|生成日期|状态)\*\*[[:space:]]*[:：]/)  # 2026-10-08 R5-D2：设计快照模板强制「生成日期」头行
   clean = strip_inline_code(raw)
   # awk 的 /regex/ 作实参会退化为布尔——必须用字符串动态正则（反斜杠双写）
   match_one(clean, raw, "\\<V[0-9]+-(P[0-9]+|A[0-9]+|T[0-9]+)(-[0-9]+)?\\>", "SL-1", "review 批次编号")

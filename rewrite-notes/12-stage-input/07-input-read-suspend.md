@@ -2,10 +2,10 @@
 
 > **状态**: 已改写（2026-09-05，首版完整文档）
 > **定位**: 读的三岔路（给、等、不给）与环形缓冲拷贝几何（阶段 3，字符设备操作面；打开之后的主活动）
-> **源码**: `minix3/minix/servers/input/input.c:input_close（L130，工具生成）`（`input_copy_events`/`input_read`）
+> **源码**: `minix3/minix/servers/input/input.c:input_copy_events`（本篇的 `input_read` 与 `input_copy_events` 都在此文件）
 > **Rust 模块**: `os/servers/input/src/handlers.rs`（读判断与挂起执行）+ `os/servers/input/src/eventbuf.rs`（拷贝几何）
 > **目标读者**: 想理解"读键盘时服务如何决定给几个、什么时候给、没数据时怎么等而不卡住服务"的读者。前置知识：第 02 篇（赊账许可）、第 03 篇（队列结构）、第 06 篇（判断执行分离）。
-> **本章不讲什么**: 唤醒挂起读的事件到来路径（第 09 篇）；取消挂起（第 08 篇）；跨进程内存拷贝的传输实现（未来分发层，只定几何契约）；控制、查询（第 08 篇）。
+> **本章不讲什么**: 唤醒挂起读的事件到来路径（第 09 篇）；取消挂起（第 08 篇）；跨进程内存拷贝的传输实现细节（传输层由 `os/servers/input/src/serve.rs` 承担，本篇只定几何与字节契约）；控制、查询（第 08 篇）。
 
 ---
 
@@ -38,7 +38,7 @@
 
 ### 1.4 拷贝几何：环断了，分两段搬
 
-队列是环形的（第 03 篇）：32 个槽位，队尾指针指着最旧的事件，新事件往队尾加，读走就挪队尾。拷贝时可能遇到"要搬的数据跨过数组末尾"：比如队尾在 30 号槽，要搬 5 个——30、31 号在数组尾，0、1、2 号在数组头。一次连续拷贝搬不走，分两次：先搬尾段（30、31），再搬头段（0、1、2）。分段数永远不超过两段（环至多断一次），这是环形缓冲的几何定理，本章的拷贝规划函数就是这条定理的可执行版本。
+队列是环形的（第 03 篇）：32 个槽位，队尾指针指着最旧的事件；新事件排在现有事件之后（队尾加计数取模指向的槽位），读走就挪队尾。拷贝时可能遇到"要搬的数据跨过数组末尾"：比如队尾在 30 号槽，要搬 5 个——30、31 号在数组尾，0、1、2 号在数组头。一次连续拷贝搬不走，分两次：先搬尾段（30、31），再搬头段（0、1、2）。分段数永远不超过两段（环至多断一次），这是环形缓冲的几何定理，本章的拷贝规划函数就是这条定理的可执行版本。
 
 ### 1.5 三种"不给"：三种不同的"你错了"
 
@@ -54,7 +54,7 @@
 
 > 本章逐段对照原始 C 代码。所有行号以工作区当前 `minix3/` 为准。
 
-### 2.1 读：五段式分支（input_read，input.c:162-199）
+### 2.1 读：五段式分支（input_read，minix3/minix/servers/input/input.c:162-199）
 
 ```c
 static ssize_t
@@ -101,7 +101,7 @@ input_read(devminor_t minor, u64_t UNUSED(position), endpoint_t endpt,
 
 两个细节值得放大。第一，位置参数不用（`UNUSED(position)`）：键盘没有"第几个字节"的概念，读永远从最旧的事件开始——流设备的读位置就是队尾，不需要调用者指定（和读文件的偏移量对比：文件有位置，流没有）。第二，纸条段的自嘲注释（"现在该叫醒选择者，但那太挫了.."）：作者知道挂起时该顺手叫醒查询等待者，但没做。没做的原因不明（可能是"选择者反正会被事件到来叫醒，早叫一会晚叫一会无所谓"），注释的诚实之处在于承认"这里有个小缺憾"。Rust 版本原样保留这个缺憾（挂起不碰选择者，第 3 章）——复刻缺憾需要勇气，但缺憾不在线缆上（调用者观察不到"叫醒早晚"的差别，选择者最终都会被叫醒），复刻它是安全的。
 
-### 2.2 拷贝：两段搬运加两种推进（input_copy_events，input.c:130-157）
+### 2.2 拷贝：两段搬运加两种推进（input_copy_events，minix3/minix/servers/input/input.c:130-157）
 
 ```c
 static ssize_t
@@ -142,9 +142,9 @@ input_copy_events(endpoint_t endpt, cp_grant_id_t grant,
 
 | 符号 | 源码位置 | 本文档位置 | Rust 对应 |
 |------|---------|-----------|----------|
-| `input_read` | input.c:162-199 | 2.1 节 | `handlers.rs` 判断挂起执行三节 |
-| `input_copy_events` | input.c:130-157 | 2.2 节 | `eventbuf.rs` 规划推进两节 |
-| 事件尺寸（20 字节） | input.h:25-32 | 2.1 节胃口换算 | `EVENT_BYTES`（测试锁死） |
+| `input_read` | minix3/minix/servers/input/input.c:162-199 | 2.1 节 | `handlers.rs` 判断挂起执行三节 |
+| `input_copy_events` | minix3/minix/servers/input/input.c:130-157 | 2.2 节 | `eventbuf.rs` 规划推进两节 |
+| 事件尺寸（20 字节） | minix3/minix/include/minix/input.h:25-32 | 2.1 节胃口换算 | `EVENT_BYTES`（测试锁死） |
 | 不等标志 | com.h:946（第 02 篇已登记） | 2.1 节空队列分支 | `decide_read` 参数 |
 
 ---
@@ -155,7 +155,7 @@ input_copy_events(endpoint_t endpt, cp_grant_id_t grant,
 
 ### 3.1 读拆成判断、挂起、拷贝三段，而不是一个函数
 
-C 的读函数 incluye 判断、挂起、拷贝调用三件事。Rust 拆成 `decide_read`（纯判断）、`park_read`（记纸条）、`plan_read_copy`（规划）加 `commit_read_copy`（推进）。理由在第 06 篇 3.1 节已经论证（测试意图分离），读这里多一条硬理由：判断与推进之间隔着一次跨进程拷贝，拷贝可能失败——一体函数需要在失败时"撤销已改的状态"（如果先推进后拷贝）或"把推进拖到最后"（如果先拷贝后推进，前者需要回滚，后者判断与推进被拷贝隔开，天然就是三段）。C 选了后者（推进在两次拷贝之后），靠程序员记住顺序；Rust 把这条顺序纪律升级成类型纪律：规划函数只拿只读的设备引用（规划失败设备一个比特都不动），推进函数要求交出一份规划才肯动队尾——失败的拷贝根本拿不到推进的许可，回滚问题从"调用者保证"变成"编译器保证"。
+C 的读函数包含判断、挂起、拷贝调用三件事。Rust 拆成 `decide_read`（纯判断）、`park_read`（记纸条）、`plan_read_copy`（规划）加 `commit_read_copy`（推进）。理由在第 06 篇 3.1 节已经论证（测试意图分离），读这里多一条硬理由：判断与推进之间隔着一次跨进程拷贝，拷贝可能失败——一体函数需要在失败时"撤销已改的状态"（如果先推进后拷贝）或"把推进拖到最后"（如果先拷贝后推进，前者需要回滚，后者判断与推进被拷贝隔开，天然就是三段）。C 选了后者（推进在两次拷贝之后），靠程序员记住顺序；Rust 把这条顺序纪律升级成类型纪律：规划函数只拿只读的设备引用（规划失败设备一个比特都不动），推进函数要求交出一份规划才肯动队尾——失败的拷贝根本拿不到推进的许可，回滚问题从"调用者保证"变成"编译器保证"。
 
 备选方案是一体函数加"失败回滚"。拒绝的理由：回滚需要记住改前的值（队尾计数的快照），快照本身是新状态，新状态需要新测试——为省两个函数引入一套快照机制，得不偿失。
 
@@ -169,7 +169,7 @@ C 的读函数 incluye 判断、挂起、拷贝调用三件事。Rust 拆成 `de
 
 C 的拷贝入口断言存货够（不够崩溃）。Rust 的 `plan_copy` 存货不够返回"输入输出错误"，且调试构建与发布构建行为一致——刻意不用断言。理由：断言在调试构建崩溃、发布构建返回，同一个调用在两种构建下行为不同；而调试构建的崩溃恰恰是本阶段要删掉的东西（架构演进 A-11：崩溃改显式错误）。"调试构建多一道检查"的前提是检查不改变行为，崩溃式检查改变行为，所以不用。合同（"别多要"）由测试锁死（`test_plan_copy_shortage_is_an_error_not_a_crash`），读路径的钳制保证正常流程永远触发不了这条分支——保证来自调用者，检查来自测试，不来自崩溃。
 
-备选方案是"断言加返回"（plan 备忘录的原始措辞）。偏离备忘录措辞的理由如上：双行为不如单行为。备忘录的方向（不崩溃）完全保留，只是实现手段从"断言加返回"收敛为"统一返回"。评审时记为设计细化，非方向偏离（见 scan Gate B）。
+备选方案是"断言加返回"（plan 备忘录的原始措辞）。偏离备忘录措辞的理由如上：双行为不如单行为。备忘录的方向（不崩溃）完全保留，实现手段从"断言加返回"收敛为"统一返回"——同一方向下的细化，不是方向偏离。
 
 ### 3.4 拷贝几何独立成模块，而不是读的附庸
 
@@ -183,7 +183,7 @@ C 的拷贝入口断言存货够（不够崩溃）。Rust 的 `plan_copy` 存货
 
 ## 4. 实现详解
 
-> 完整代码在 `os/servers/input/src/handlers.rs`（读三节）与 `os/servers/input/src/eventbuf.rs`（几何三节）。本章按"判断、挂起、几何、推进"的顺序展开，每个小节标注对应的第 3 章决策。
+> 完整代码在 `os/servers/input/src/handlers.rs`（读三节）与 `os/servers/input/src/eventbuf.rs`（几何三节），传输打包与提交在 `os/servers/input/src/serve.rs`。本章按"判断、挂起、几何、推进、传输"的顺序展开，每个小节标注对应的第 3 章决策。
 
 ### 4.1 判断：`ReadVerdict` 与 `decide_read`（对应决策 3.1）
 
@@ -195,7 +195,7 @@ pub enum ReadVerdict {
 }
 ```
 
-判断按 C 顺序：营业且无挂起→胃口换算（不足一个拒）→空则等或拒→钳制后给。胃口换算用 `usize` 除法再转 32 位——转之前先钳制到存货（存货不超 32），截断不可能发生（注释写明，大数调用者在钳制处被收敛，见代码注释）。返回的个数恒大于零（空队列早走了等或拒分支，钳制只会把大数变小、不会把零变大）——"给零个"的状态不可达，调用者不需要处理。个数装在 `EventCount` 新类型里：队列记账以事件为单位，读的回信以字节为单位（C 的 `input.c:156`），两个单位在 C 里靠程序员心算换算，Rust 用两个类型让混用变成编译错误。
+判断按 C 顺序：营业且无挂起→胃口换算（不足一个拒）→空则等或拒→钳制后给。胃口换算在 `usize` 里做除法、再收窄到 32 位（与 C 把 `size_t` 收窄进 `unsigned int` 同构）：收窄后的零值当场按"连一个事件都装不下"拒（与 C 一致）；其余无论多大都被钳制到存货（存货不超 32），所以收窄不造成可见差异。返回的个数恒大于零（空队列早走了等或拒分支，钳制只会把大数变小、不会把零变大）——"给零个"的状态不可达，调用者不需要处理。个数装在 `EventCount` 新类型里：队列记账以事件为单位，读的回信以字节为单位（C 的 `minix3/minix/servers/input/input.c:156`），两个单位在 C 里靠程序员心算换算，Rust 用两个类型让混用变成编译错误。
 
 ### 4.2 挂起：`park_read`（对应决策 3.2、3.5）
 
@@ -216,9 +216,13 @@ pub struct CopyPlan {
 
 ### 4.4 规划与推进：`plan_read_copy` 与 `commit_read_copy`（对应决策 3.1）
 
-几何模块在 `CopyPlan` 之上提供读路径的两个入口。`plan_read_copy` 拿只读的设备引用，把"一次拷贝的全部未来"算成一份 `ReadCopyPlan`：分段几何、推进后的队尾与存货，外加回信值——按事件的字节数（`input.c:156` 的 `event_size * event_count`，装在 `ByteCount` 新类型里），分发层不再需要自己乘事件大小，也就不可能把事件数当字节数回给调用方。`commit_read_copy` 按值收下一份规划，只做 C 最后两行的事（改队尾计数，`input.c:153-154`）；按值意味着规划被消费掉，同一份规划推不动两次队尾。两者之间的空隙就是传输的位置：分发层拿规划里的分段去执行授权拷贝，拷贝失败就不调推进——事件留在队列里等重试或取消（C `input.c:144-151` 的语义，从注释纪律升级为类型纪律）。
+几何模块在 `CopyPlan` 之上提供读路径的两个入口。`plan_read_copy` 拿只读的设备引用，把"一次拷贝的全部未来"算成一份 `ReadCopyPlan`：分段几何、推进后的队尾与存货，外加回信值——按事件的字节数（`minix3/minix/servers/input/input.c:156` 的 `event_size * event_count`，装在 `ByteCount` 新类型里），分发层不再需要自己乘事件大小，也就不可能把事件数当字节数回给调用方。`commit_read_copy` 按值收下一份规划，只做 C 最后两行的事（改队尾计数，`minix3/minix/servers/input/input.c:153-154`）；按值意味着规划被消费掉，同一份规划推不动两次队尾。两者之间的空隙就是传输的位置：分发层拿规划里的分段去执行授权拷贝，拷贝失败就不调推进——事件留在队列里等重试或取消（C `minix3/minix/servers/input/input.c:144-151` 的语义，从注释纪律升级为类型纪律）。
 
-### 4.5 与 C 的差异说明
+### 4.5 传输的字节契约（对应决策 3.1）
+
+传输层把规划描述的事件搬进调用者的授权缓冲，字节口径与 C 的两次连续拷贝一致：每个事件占 `EVENT_BYTES` 字节（`size_of::<InputEvent>()`，即 20 字节，由 `test_event_layout_matches_c` 锁定），事件之间连续排列，实际写入的字节数等于回信值 `ReadCopyPlan::bytes`——调用者按 20 字节步幅读事件不会错位，回信说多少字节缓冲里就正好有多少字节（C 的 `event_size * event_count` 口径）。传输失败时不执行提交，事件留在队列里等重试或取消（C 的失败分支，`minix3/minix/servers/input/input.c:144-151`），失败原因按 C 的返回码口径回给调用者。
+
+### 4.6 与 C 的差异说明
 
 | C 行为 | Rust 对应 | 差异分类 |
 |--------|----------|---------|
@@ -229,36 +233,38 @@ pub struct CopyPlan {
 | 存货不足崩溃 | 统一返回输入输出错误 | 架构演进 A-11（见 3.3 节；无断言双行为） |
 | 拷贝失败不推进 | 规划只读、推进按值消费规划，失败拿不到推进许可 | 设计决策：类型保证代替顺序保证 |
 | 回信值 = 事件数 × 事件大小 | `ByteCount` 规划期算好，分发层不做乘法 | 无差异（单位类型化） |
+| 传输按 20 字节/事件连续写入（两次安全拷贝合成连续镜像） | `EVENT_BYTES` 步幅、连续排列（`serve.rs` 打包） | 无差异 |
 
 ---
 
 ## 5. 测试要点
 
-> 测试代码在 `os/servers/input/src/handlers.rs`（读四节）与 `os/servers/input/src/eventbuf.rs`（几何五节）的测试模块。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 98 个）。
+> 测试代码在 `os/servers/input/src/handlers.rs`（读四节）与 `os/servers/input/src/eventbuf.rs`（几何五节）的测试模块，传输打包在 `os/servers/input/src/serve.rs`。运行方法：`cargo test -p minix-input`（全 crate 通过，当前 99 个）。
 
 | 测试函数 | 验证什么 | 对应的 C 行为 |
 |---------|---------|--------------|
-| `test_plan_copy_without_wrap_matches_c` | 不跨时一段、队尾计数推进 | input.c:140-154（手算例：队尾 5 取 3） |
+| `test_plan_copy_without_wrap_matches_c` | 不跨时一段、队尾计数推进 | minix3/minix/servers/input/input.c:140-154（手算例：队尾 5 取 3） |
 | `test_plan_copy_with_wrap_matches_c` | 跨时两段 2+3、队尾回绕 | 同上（手算例：队尾 30 取 5） |
-| `test_plan_copy_shortage_is_an_error_not_a_crash` | 多要返回错误，要零是空规划 | input.c:137-138（崩溃改返回） |
-| `test_apply_copy_advances_tail_and_count` | 推进只改队尾计数 | input.c:153-154 |
-| `test_plan_read_copy_reports_bytes_for_the_reply` | 规划只读、回信值按字节 | input.c:156（+144-151 的只读面） |
-| `test_rejected_plan_leaves_device_untouched` | 拒绝的规划不碰设备 | input.c:144-151 |
-| `test_commit_consumes_plan_and_advances_once` | 推进按值消费规划，只推进一次 | input.c:153-154 |
+| `test_plan_copy_shortage_is_an_error_not_a_crash` | 多要返回错误，要零是空规划 | minix3/minix/servers/input/input.c:137-138（崩溃改返回） |
+| `test_apply_copy_advances_tail_and_count` | 推进只改队尾计数 | minix3/minix/servers/input/input.c:153-154 |
+| `test_plan_read_copy_reports_bytes_for_the_reply` | 规划只读、回信值按字节 | minix3/minix/servers/input/input.c:156（+144-151 的只读面） |
+| `test_rejected_plan_leaves_device_untouched` | 拒绝的规划不碰设备 | minix3/minix/servers/input/input.c:144-151 |
+| `test_commit_consumes_plan_and_advances_once` | 推进按值消费规划，只推进一次 | minix3/minix/servers/input/input.c:153-154 |
 | `test_drain_ordered_reads_oldest_first_across_wrap` | 跨回绕按序读出 | 环顺序语义 |
-| `test_plan_copy_extreme_wrap_boundaries` | 两个极限回绕（1+31 两段、整环一次拷） | input.c:140-142 |
+| `test_plan_copy_extreme_wrap_boundaries` | 两个极限回绕（1+31 两段、整环一次拷） | minix3/minix/servers/input/input.c:140-142 |
 | `test_drain_ordered_zero_count_is_empty` | 计数为零列出为空 | 环顺序语义 |
-| `test_read_serves_clamped_to_buffered` | 给钳制到存货（`EventCount` 类型） | input.c:195-196 |
-| `test_read_refusals_match_c` | 三拒（不营业/有挂起/胃口不足，含零） | input.c:172-179 |
-| `test_read_parks_or_refuses_when_empty` | 空则等、不等则拒、纸条四项 | input.c:182-193 |
-| `test_read_copy_plan_and_commit_match_c_answer` | 规划—推进两步走通、回信 100 字节、多要失败 | input.c:144-156 |
-| `test_event_bytes_match_c`（与 06 共用） | 事件 20 字节 | input.h:25-32 |
+| `test_read_serves_clamped_to_buffered` | 给钳制到存货（`EventCount` 类型） | minix3/minix/servers/input/input.c:195-196 |
+| `test_read_refusals_match_c` | 三拒（不营业/有挂起/胃口不足，含零） | minix3/minix/servers/input/input.c:172-179 |
+| `test_read_parks_or_refuses_when_empty` | 空则等、不等则拒、纸条四项 | minix3/minix/servers/input/input.c:182-193 |
+| `test_read_copy_plan_and_commit_match_c_answer` | 规划—推进两步走通、回信 100 字节、多要失败 | minix3/minix/servers/input/input.c:144-156 |
+| `test_pack_events_for_grant_is_event_sized_and_contiguous` | 传输打包：20 字节/事件、连续排列 | minix3/minix/servers/input/input.c:144-151（+ minix3/minix/include/minix/input.h:25-32） |
+| `test_event_bytes_match_c`（与 06 共用） | 事件 20 字节 | minix3/minix/include/minix/input.h:25-32 |
 
-### 5.1 测试统计（截至 2026-09-15）
+### 5.1 测试统计
 
-- `cargo test -p minix-input`：**86 个通过，0 个失败**（2026-09-15）。
-- 其中与本篇直接相关的 12 个（上表，`test_event_bytes_match_c` 与第 06 篇共用不计入）；其余分属第 01 篇（16 个：启动 5 加分发 11）、第 02 篇（15 个：框架 9 加效应 6）、第 03 篇（8 个：结构 6 加错误码 2）、第 06 篇（4 个，`test_event_bytes_match_c` 与第 07 篇共用 1 个）、第 07 篇（14 个）、第 08 篇（8 个）、第 09 篇（17 个）、第 10 篇（4 个）、第 11 篇（11 个）。
-- 完整测试清单：`rg "#\[test\]" os/servers/input/src/handlers.rs os/servers/input/src/eventbuf.rs`
+- `cargo test -p minix-input --lib`：**99 个通过，0 个失败**。
+- 其中与本篇直接相关的 15 个（上表 16 行，`test_event_bytes_match_c` 与第 06 篇共用不计入）。
+- 完整测试清单：`rg "#\[test\]" os/servers/input/src/handlers.rs os/servers/input/src/eventbuf.rs os/servers/input/src/serve.rs`
 
 ---
 

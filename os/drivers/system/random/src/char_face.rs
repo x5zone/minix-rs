@@ -88,8 +88,10 @@ impl<C: BlockCipher> CharDriver for RandomFace<C> {
         Ok(size)
     }
 
-    fn select(&mut self, _minor: DeviceMinor, ops: u32) -> i32 {
-        poll(ops) as i32
+    fn select(&mut self, minor: DeviceMinor, ops: u32) -> i32 {
+        // C: an unknown minor answers EIO before any readiness bit
+        // (`main.c:266`); the device itself never parks.
+        poll(minor.0, ops)
     }
 }
 
@@ -145,6 +147,15 @@ mod tests {
         assert_eq!(
             CharDriver::select(&mut face, DeviceMinor(0), crate::device::OP_READ | crate::device::OP_WRITE),
             (crate::device::OP_READ | crate::device::OP_WRITE) as i32
+        );
+    }
+
+    #[test]
+    fn test_select_refuses_unknown_minor() {
+        let mut face = TestRandomFace::new(FoldCipher);
+        assert_eq!(
+            CharDriver::select(&mut face, DeviceMinor(9), crate::device::OP_READ),
+            -(minix_types::EIO as i32)
         );
     }
 }

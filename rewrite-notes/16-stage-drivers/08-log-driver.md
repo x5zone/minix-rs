@@ -240,7 +240,7 @@ C 的写尾巴是一条直线语句：先复活挂起读，再发迟通知、清
 - `rewrite-notes/16-stage-drivers/01-chardriver-framework.md`：字符框架（挂起读的框架）。
 - `rewrite-notes/16-stage-drivers/06-tty-driver.md`：终端驱动（黑板报的另一个读者）。
 - `rewrite-notes/16-stage-drivers/07-pty-driver.md`：伪终端（另一只环）。
-- `rewrite-notes/16-stage-drivers/09-random-driver.md`：随机数驱动（系统服务批，待写）。
+- `rewrite-notes/16-stage-drivers/09-random-driver.md`：随机数驱动（系统服务批）。
 - `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/system/log/src/ring.rs`：环形缓冲算法的实现。
 - `os/drivers/system/log/src/device.rs`：挂起读与选择取消的实现。

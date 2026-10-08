@@ -113,12 +113,14 @@ def extract_open_issues(text):
     )
     # R6-D5/R7-D6：现行 STATE 模板用「## Open 项」表格而非 "Open P0 issues:" 行，
     # 旧实现提取 0 条 → 孤儿检查静默空转。回退：扫描 ## Open 段落里的 P[012]-ID。
-    if not open_line_pattern.search(text):
-        sec = re.search(r'^##\s*Open[^\n]*\n(.*?)(?=^##\s|\Z)', text, re.M | re.S)
-        if sec:
-            for m in re.finditer(r'\b(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\b', sec.group(1)):
-                issues.add(m.group(1))
-            return issues
+    # R12-D4 / R13-D1：头部「Open Pn issues:」行、`## Open…` 段、`### Open…（Round N）` 子段都要收；
+    # 旧实现在头部行命中时短路，追加的子段不可见（孤儿检查因此漏报）。
+    for sec in re.finditer(r'^#{2,3}\s*Open[^\n]*\n(.*?)(?=^#{2,3}\s|\Z)', text, re.M | re.S):
+        for m in re.finditer(r'\b(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\b', sec.group(1)):
+            issues.add(m.group(1))
+    if not issues:
+        for m in re.finditer(r'\b(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\b', text):
+            issues.add(m.group(1))
     for match in open_line_pattern.finditer(text):
         severity = 'P' + match.group(1)
         rest = match.group(2)
@@ -304,6 +306,15 @@ def validate_state(state_path, scan_path=None, project_root=None):
         warnings.append("未提供 --scan 且无法自动定位 scan.md，跳过孤儿 issue 检查")
         report.append(f"⚠️ 未提供 --scan 且无法自动定位 scan.md（跳过孤儿检查）")
     report.append("")
+
+    # R13-D2：--scan 只给一篇文档，而 STATE 是 stage 级（Per-Doc Status 多行）时，
+    # 其它文档的 issue 必然"找不到对应条目"——那是口径错配，不是孤儿。多行即跳过该 ERROR。
+    per_doc_rows = len(re.findall(r'^\|\s*[^|]+\|\s*`?\.review/', text, re.M))
+    if per_doc_rows > 1:
+        report.append(f"ℹ️ Per-Doc Status 有 {per_doc_rows} 行（stage 级 STATE）：单文档 --scan 的孤儿检查按口径错配跳过")
+        skip_orphan = True
+    else:
+        skip_orphan = False
 
     # 5. Per-Doc Status 表中引用的 scan 文件存在性
     report.append("--- 5. Per-Doc Status 引用文件检查 ---")

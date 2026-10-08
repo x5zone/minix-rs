@@ -60,8 +60,8 @@ pub const SLICES_PER_SLAB: u32 = 512;
 pub const DEFAULT_MAX_SLABS: u32 = 64;
 
 /// A handle to one pooled slice. Handles stay valid until handed back to
-/// [`Pool::free`]; the pool never moves slice storage (each slice is an
-/// individually boxed array), so a handle can be held across allocations.
+/// [`Pool::free`]; a handle is an index into the pool's slice array, not a
+/// pointer, so growing the pool never invalidates a handle that is still out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SliceHandle(pub u32);
 
@@ -135,7 +135,7 @@ impl Pool {
 
     /// Hand a slice back.
     pub fn free(&mut self, handle: SliceHandle) {
-        debug_assert!((handle.0 as usize) < self.slices.len(), "游离切片句柄");
+        assert!((handle.0 as usize) < self.slices.len(), "游离切片句柄");
         self.free.push(handle);
         self.stats.current -= 1;
     }
@@ -302,6 +302,15 @@ mod tests {
 
         frame.release(&mut pool);
         assert_eq!(pool.stats().current, 0, "整链归还");
+    }
+
+    #[test]
+    #[should_panic(expected = "游离切片句柄")]
+    fn test_free_rejects_a_stray_handle() {
+        let mut pool = Pool::with_slab_limit(1);
+        // 从未分配过的越界句柄必须被拒绝：C 侧对非法释放无条件崩溃，
+        // 这里用不带条件编译的断言守住同一条不变量。
+        pool.free(SliceHandle(SLICES_PER_SLAB + 1));
     }
 
     #[test]

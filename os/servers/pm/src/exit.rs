@@ -946,10 +946,10 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
                 crate::mproc::Guardianship::Normal { .. } => crate::mproc::Guardianship::Normal {
                     parent: UserSlot::new(11), // INIT_PROC_NR
                 },
-                crate::mproc::Guardianship::Traced { tracer, .. } => crate::mproc::Guardianship::Traced {
+                crate::mproc::Guardianship::Traced { tracer, trace_options, .. } => crate::mproc::Guardianship::Traced {
                     parent: UserSlot::new(11),
                     tracer,
-                                        trace_options: crate::mproc::TraceOptions::empty(),
+                    trace_options,
                 },
             };
             if child.state.block.ipc_blocked.is_some() {
@@ -1334,6 +1334,39 @@ mod tests {
             table.procs[11].state.block.ipc_blocked,
             Some(IpcBlockReason::VfsCall { reply_to_new_parent: true })
         ));
+    }
+
+    /// `disinherit` 只改 `mp_parent`（及 `VFS_CALL → NEW_PARENT`），
+    /// `mp_trace_flags` 的 `TO_*` 选项位不被触碰（`forkexit.c:394-408`）：
+    /// 父死亡后被 `INIT` 收养的受跟踪子进程仍归原 tracer 跟踪，跟踪选项
+    /// 必须原样保留，否则 `T_SETOPT` 设定的自动附着/exec 行为在收养处丢失。
+    #[test]
+    fn test_disinherit_preserves_trace_options() {
+        let mut table = ProcTable::new();
+        running_proc(&mut table, 10, 100);
+        table.procs[10].state.lifecycle = Lifecycle::Exiting { exit_code: 0, sig_status: 0 };
+        running_proc(&mut table, 12, 102);
+        table.procs[12].state.guardianship = Guardianship::Traced {
+            parent: UserSlot::new(10),
+            tracer: UserSlot::new(13),
+            trace_options: crate::mproc::TraceOptions::TRACEFORK
+                | crate::mproc::TraceOptions::ALTEXEC,
+        };
+        table.procs[12].state.block.ipc_blocked = Some(IpcBlockReason::VfsCall {
+            reply_to_new_parent: false,
+        });
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        disinherit(&mut table, UserSlot::new(10), &mut t, &mut kern);
+        assert_eq!(table.procs[12].state.guardianship.parent(), UserSlot::new(11));
+        assert_eq!(
+            table.procs[12].state.guardianship.tracer(),
+            Some(UserSlot::new(13))
+        );
+        assert_eq!(
+            table.procs[12].state.guardianship.trace_options(),
+            crate::mproc::TraceOptions::TRACEFORK | crate::mproc::TraceOptions::ALTEXEC
+        );
     }
 
     #[test]

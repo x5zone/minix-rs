@@ -97,7 +97,7 @@
 | 信号量取值类（SETVAL/SETALL） | `sem.c:520` | 写位 | 访问拒绝 |
 | 信号量取值类（其余） | `sem.c:536` | 读位 | 访问拒绝 |
 | 信号量删除与改属性 | `sem.c:524-529` | 不走判断函数：比所有者身份（创建者或所有者或超级用户），否则回操作不许可 | 操作不许可（数值 1） |
-| 信号量操作 | `sem.c:705` | 按操作内容组装：全是零操作则读位，否则写位 | 访问拒绝 |
+| 信号量操作 | `sem.c:705` | 按每个元素累加：非零操作要写位、零操作要读位（两种都出现则读位与写位都要） | 访问拒绝 |
 | 共享内存创建（已存在段） | `shm.c:65` | 创建标志原样 | 访问拒绝 |
 | 共享内存挂接 | `shm.c:156` | 只读挂接则读位，否则读加写两位 | 访问拒绝 |
 | 共享内存状态查询 | `shm.c:305` | 读位 | 访问拒绝 |
@@ -149,7 +149,7 @@ os/servers/ipc-server/src/
 **掩码决策**（`perms.rs`）：
 
 - `resolve_semctl_mask(cmd: u32) -> SemctlAccess`：取值设值类回写位检查、删除改属性回身份检查、信息查询回放行、其余回读位检查。
-- `resolve_semop_mask(has_nonzero: bool) -> u32`：有非零操作则写位，否则读位。
+- `resolve_semop_mask(has_nonzero: bool, has_zero: bool) -> u32`：逐个元素累加——非零操作进写位、零操作进读位，两种都出现则两位都要。
 - `resolve_shmat_mask(flag: u32) -> u32`：只读标志则读位，否则读加写。
 - `resolve_shmctl_stat_needs / identity cmds`：状态查询读位、删除改属性身份检查。
 
@@ -173,7 +173,7 @@ os/servers/ipc-server/src/
 | `partial_hit_denied` | `perms.rs` 测试模块 | 部分命中拒绝（第 31 行第二条件） |
 | `creator_counts_as_owner` | `perms.rs` 测试模块 | 创建者视同所有者（第 18 行） |
 | `semctl_mask_matrix` | `perms.rs` 测试模块 | 取值设值写位、其余读位、删除改属性身份、信息放行（第 516 行到第 538 行） |
-| `semop_mask_matrix` | `perms.rs` 测试模块 | 全零读位、有非零写位（第 697 行到第 706 行） |
+| `semop_mask_matrix` | `perms.rs` 测试模块 | 全零读位、有非零写位、混合读写两位（第 697 行到第 703 行） |
 | `shmat_mask_matrix` | `perms.rs` 测试模块 | 只读读位、否则读写（`shm.c:150-156`） |
 | `owner_check_matrix` | `perms.rs` 测试模块 | 所有者、创建者、超级用户放行，其他人拒绝（第 524 行到第 529 行） |
 | `mib_perm_copies_all_fields` | `perms.rs` 测试模块 | 七个字段原样搬运（第 41 行到第 48 行） |

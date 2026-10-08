@@ -59,16 +59,20 @@ pub enum TryOutcome {
 /// What an operation array needs, permission-wise.
 ///
 /// C: the mask loop in `do_semop` (sem.c:697-703): any non-zero operation
-/// wants the write bit, all-zero wants the read bit. `Nothing` is the
-/// empty array (`nsops == 0 → OK`, sem.c:670-671).
+/// wants the write bit, any zero-wait operation wants the read bit, and a
+/// mixed array wants both. `Nothing` is the empty array
+/// (`nsops == 0 → OK`, sem.c:670-671).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpNeed {
     /// Empty array: nothing to do, succeeds immediately.
     Nothing,
     /// All operations wait-for-zero: needs the read bit.
     Read,
-    /// Some operation changes a value: needs the write bit.
+    /// Every operation changes a value: needs the write bit.
     Write,
+    /// Mixed array: some operations wait-for-zero, some change values;
+    /// both the read and the write bit must be held.
+    ReadWrite,
 }
 
 // ============================================================================
@@ -100,14 +104,19 @@ pub fn validate_ops(
     if ops.len() > SEMOPM {
         return Err(SemError::TooManyOps);
     }
-    // C: the mask loop, sem.c:697-706 — any non-zero operation wants the
-    // write bit, all-zero wants the read bit.
-    let need = if ops.iter().any(|op| op.op != 0) {
-        OpNeed::Write
-    } else {
-        OpNeed::Read
+    // C: the mask loop, sem.c:697-703 — one bit ORed per element: any
+    // non-zero operation wants the write bit, any wait-for-zero operation
+    // wants the read bit. `check_perm` demands *all* wanted bits, so a
+    // mixed array needs both — a caller holding only the write bit is
+    // turned away exactly as in C.
+    let has_nonzero = ops.iter().any(|op| op.op != 0);
+    let has_zero = ops.iter().any(|op| op.op == 0);
+    let need = match (has_nonzero, has_zero) {
+        (true, true) => OpNeed::ReadWrite,
+        (true, false) => OpNeed::Write,
+        (false, _) => OpNeed::Read, // (false, false) is the empty array, handled above
     };
-    if !check_perm(perm, caller, resolve_semop_mask(need == OpNeed::Write)) {
+    if !check_perm(perm, caller, resolve_semop_mask(has_nonzero, has_zero)) {
         return Err(SemError::Access);
     }
     // C: the range loop, sem.c:709-717.
@@ -369,6 +378,28 @@ mod tests {
         assert_eq!(
             validate_ops(&[op(0, 1, 0)], 2, &perm, caller),
             Ok(OpNeed::Write)
+        );
+    }
+
+    #[test]
+    fn validate_mixed_wants_read_and_write() {
+        // C: sem.c:697-703 — the mask ORs one bit per element, so a mixed
+        // array (one raise, one wait-for-zero) wants read *and* write;
+        // `check_perm` demands all wanted bits. A caller holding only the
+        // write bit is turned away with EACCES.
+        let mut write_only = allowed_perm();
+        write_only.mode = 0o200;
+        let caller = allowed_caller();
+        let mixed = [op(0, -1, 0), op(1, 0, 0)];
+        assert_eq!(
+            validate_ops(&mixed, 2, &write_only, caller),
+            Err(SemError::Access),
+            "mixed array must demand the read bit too"
+        );
+        // Holding both bits lets it through, reported as needing both.
+        assert_eq!(
+            validate_ops(&mixed, 2, &allowed_perm(), caller),
+            Ok(OpNeed::ReadWrite)
         );
     }
 

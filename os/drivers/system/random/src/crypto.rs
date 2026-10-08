@@ -20,6 +20,7 @@ use crate::pool::PoolHash;
 /// AES-256 block cipher (`rijndael` with a 32-byte key).
 #[derive(Clone)]
 pub struct Aes256 {
+    key: [u8; KEY_SIZE],
     round_keys: [[u8; 16]; 15],
 }
 
@@ -44,67 +45,83 @@ const SBOX: [u8; 256] = [
 
 const RCON: [u8; 7] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40];
 
+/// Expand a 32-byte key into the fifteen round keys
+/// (FIPS-197 §5.3.5, `Nk = 8`, `Nr = 14`).
+fn expand_key(key: &[u8; KEY_SIZE]) -> [[u8; 16]; 15] {
+    // The 240-byte expansion lives as eight-word columns.
+    let mut w = [[0u8; 4]; 60];
+    for (i, chunk) in key.chunks_exact(4).enumerate() {
+        w[i].copy_from_slice(chunk);
+    }
+    let mut rcon_index = 0;
+    for i in 8..60 {
+        let mut temp = w[i - 1];
+        if i % 8 == 0 {
+            temp.rotate_left(1);
+            for byte in temp.iter_mut() {
+                *byte = SBOX[*byte as usize];
+            }
+            temp[0] ^= RCON[rcon_index];
+            rcon_index += 1;
+        } else if i % 8 == 4 {
+            for byte in temp.iter_mut() {
+                *byte = SBOX[*byte as usize];
+            }
+        }
+        for (byte, prev) in temp.iter_mut().zip(w[i - 8].iter()) {
+            *byte ^= prev;
+        }
+        w[i] = temp;
+    }
+    let mut round_keys = [[0u8; 16]; 15];
+    for (round, key_word) in round_keys.iter_mut().enumerate() {
+        for word in 0..4 {
+            key_word[word * 4..word * 4 + 4]
+                .copy_from_slice(&w[round * 4 + word]);
+        }
+    }
+    round_keys
+}
+
 impl Aes256 {
-    /// Expand a 32-byte key into the fifteen round keys
-    /// (FIPS-197 §5.3.5, `Nk = 8`, `Nr = 14`).
+    /// Build a cipher over one key (the single-key case; the schedule is
+    /// cached and reused while the incoming key stays the same).
     pub fn new(key: &[u8; KEY_SIZE]) -> Self {
-        // The 240-byte expansion lives as eight-word columns.
-        let mut w = [[0u8; 4]; 60];
-        for (i, chunk) in key.chunks_exact(4).enumerate() {
-            w[i].copy_from_slice(chunk);
+        Aes256 {
+            key: *key,
+            round_keys: expand_key(key),
         }
-        let mut rcon_index = 0;
-        for i in 8..60 {
-            let mut temp = w[i - 1];
-            if i % 8 == 0 {
-                temp.rotate_left(1);
-                for byte in temp.iter_mut() {
-                    *byte = SBOX[*byte as usize];
-                }
-                temp[0] ^= RCON[rcon_index];
-                rcon_index += 1;
-            } else if i % 8 == 4 {
-                for byte in temp.iter_mut() {
-                    *byte = SBOX[*byte as usize];
-                }
-            }
-            for (byte, prev) in temp.iter_mut().zip(w[i - 8].iter()) {
-                *byte ^= prev;
-            }
-            w[i] = temp;
-        }
-        let mut round_keys = [[0u8; 16]; 15];
-        for (round, key_word) in round_keys.iter_mut().enumerate() {
-            for word in 0..4 {
-                key_word[word * 4..word * 4 + 4]
-                    .copy_from_slice(&w[round * 4 + word]);
-            }
-        }
-        Aes256 { round_keys }
     }
 
-    /// Encrypt one sixteen-byte block in place (FIPS-197 §5.1).
-    fn encrypt(&self, block: &mut [u8; 16]) {
-        add_round_key(block, &self.round_keys[0]);
-        for round in 1..14 {
+    /// Encrypt one sixteen-byte block in place under the given schedule
+    /// (FIPS-197 §5.1).
+    fn encrypt(block: &mut [u8; 16], round_keys: &[[u8; 16]; 15]) {
+        add_round_key(block, &round_keys[0]);
+        for key in round_keys.iter().take(14).skip(1) {
             sub_bytes(block);
             shift_rows(block);
             mix_columns(block);
-            add_round_key(block, &self.round_keys[round]);
+            add_round_key(block, key);
         }
         sub_bytes(block);
         shift_rows(block);
-        add_round_key(block, &self.round_keys[14]);
+        add_round_key(block, &round_keys[14]);
     }
 }
 
 impl BlockCipher for Aes256 {
     fn encrypt_block(&self, key: &[u8; KEY_SIZE], input: &[u8; BLOCK_SIZE]) -> [u8; BLOCK_SIZE] {
-        // The key is fixed at construction; `Aes256::new` is the key
-        // schedule. This adapter keeps the trait shape the core drives.
-        let _ = key;
+        // The generator rotates its key between requests and passes the
+        // current one per block (`random.c:90,198` rebuilds the schedule
+        // from `random_key` on every call), so the passed key decides the
+        // encryption. The construction key only spares the expansion when
+        // it still matches.
         let mut block = *input;
-        self.encrypt(&mut block);
+        if key == &self.key {
+            Self::encrypt(&mut block, &self.round_keys);
+        } else {
+            Self::encrypt(&mut block, &expand_key(key));
+        }
         block
     }
 }
@@ -277,6 +294,7 @@ const K: [u32; 64] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pool::FoldHash;
 
     #[test]
     fn test_aes256_fips197_appendix_c3() {
@@ -325,5 +343,44 @@ mod tests {
         let mut got = [0u8; 32];
         split.snapshot_reset(&mut got);
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn test_encrypt_block_follows_the_key_argument() {
+        // The generator rotates its key between requests; the block cipher
+        // must use whichever key arrives per call, not the construction
+        // key (`random.c:90,198` rebuilds the schedule from `random_key`).
+        let built_with: [u8; KEY_SIZE] = core::array::from_fn(|i| i as u8);
+        let rotated: [u8; KEY_SIZE] = core::array::from_fn(|i| (255 - i) as u8);
+        let plaintext: [u8; BLOCK_SIZE] =
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+             0xEE, 0xFF];
+        let cipher = Aes256::new(&built_with);
+        let under_built = BlockCipher::encrypt_block(&cipher, &built_with, &plaintext);
+        let under_rotated = BlockCipher::encrypt_block(&cipher, &rotated, &plaintext);
+        assert_ne!(under_built, under_rotated);
+        // The construction key (cached schedule) still matches FIPS-197 C.3.
+        assert_eq!(under_built[0], 0x8E);
+    }
+
+    #[test]
+    fn test_rotated_key_reaches_the_keystream() {
+        // End to end over the core: two cores whose keys differ (one seeded
+        // twice) must produce different blocks from the same counter.
+        let cipher = Aes256::new(&[0; KEY_SIZE]);
+        let first_digest = [1u8; 32];
+        let second_digest = [9u8; 32];
+        let mut fresh = crate::core::GeneratorCore::new();
+        let mut hash = FoldHash::new();
+        fresh.reseed(&mut hash, &[&first_digest]);
+        let once = fresh.next_block(&cipher);
+
+        let mut twice = crate::core::GeneratorCore::new();
+        let mut hash = FoldHash::new();
+        twice.reseed(&mut hash, &[&first_digest]);
+        let mut hash = FoldHash::new();
+        twice.reseed(&mut hash, &[&second_digest]);
+        let after = twice.next_block(&cipher);
+        assert_ne!(once, after);
     }
 }

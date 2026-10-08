@@ -126,6 +126,29 @@ def extract_c_symbols(c_dir):
                 if stripped.endswith(';'):
                     prev_sig = stripped
                     continue
+                # 参数表跨行（R9-D2）：`ret name(args,` 续行到 `)` / `) {` 收尾。
+                # 旧实现逐行匹配，跨行签名整条漏抽（如 ipc 的 try_semop），覆盖率因此少算符号。
+                if not stripped.endswith(')') and not stripped.endswith('{'):
+                    m3 = re.match(
+                        r'^(?:static\s+|extern\s+|inline\s+)*'
+                        r'(?:[a-zA-Z_][a-zA-Z0-9_\s\*]+?)\s+'
+                        r'([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^;]*$',
+                        stripped
+                    )
+                    if m3:
+                        _lines = content.splitlines()
+                        _ok = False
+                        for _j in range(i, min(i + 8, len(_lines))):
+                            _nl = _lines[_j].strip()
+                            if _nl.startswith(')') or _nl.endswith(')') or _nl.endswith(') {'):
+                                _ok = True
+                                break
+                            if ';' in _nl:
+                                break
+                        if _ok and not m3.group(1).isupper():  # R11-D1：宏名全大写，剔除幻影 UNUSED
+                            symbols['functions'].append((m3.group(1), rel_path, i))
+                            continue
+
                 # 匹配函数定义：returntype funcname(args) {
                 m = re.match(
                     r'^(?:static\s+|extern\s+|inline\s+)*'
@@ -142,6 +165,25 @@ def extract_c_symbols(c_dir):
                     )
                     if m2 and _is_pure_type_line(prev_sig):
                         name = m2.group(1)
+                    # K&R 两行式 + 参数表跨行（R9-D2 第二形态）：
+                    #   static int
+                    #   try_semop(struct sem_struct *sem, ..., nsops,
+                    #           pid_t pid, ...)
+                    #   {
+                    if name is None and _is_pure_type_line(prev_sig):
+                        m4 = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^;]*$', stripped)
+                        if m4:
+                            _lines = content.splitlines()
+                            for _j in range(i, min(i + 8, len(_lines))):
+                                _nl = _lines[_j].strip()
+                                if _nl.startswith(')') or _nl.endswith(')') or _nl.endswith(') {'):
+                                    if not m4.group(1).isupper():  # R11-D1
+                                        name = m4.group(1)
+                                    break
+                                if ';' in _nl:
+                                    break
+                if name and name.isupper():
+                    name = None  # R12-D1：宏名全大写（收尾行 `…UNUSED(x))` 会落回单行正则）
                 if name and name not in ('if', 'for', 'while', 'switch', 'else', 'return', 'do'):
                     symbols['functions'].append((name, rel_path, i))
                 prev_sig = stripped
@@ -182,7 +224,8 @@ def extract_c_symbols(c_dir):
 # ===== Rust 符号提取 =====
 
 RUST_FN_PATTERN = re.compile(
-    r'^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+    # R10-D4：`pub const fn` / `const unsafe fn` 此前整族漏抽（全仓 634 名）
+    r'^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+"[^"]*"\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)',
     re.MULTILINE
 )
 
@@ -549,6 +592,7 @@ def generate_symbols_md(module, c_symbols, rust_symbols, rust_qualified, doc_cov
         'macros': '宏',
     }
 
+    skipped = 0
     for cat, title in cat_titles.items():
         if not c_symbols[cat]:
             continue
@@ -573,12 +617,17 @@ def generate_symbols_md(module, c_symbols, rust_symbols, rust_qualified, doc_cov
             else:
                 status = "❌ 缺口"
 
-            # 如果限定 doc_file 且该符号不在目标文档中，可以跳过或淡化显示
+            # 如果限定 doc_file 且该符号不在目标文档中，跳过——但要留一行计数说明，
+            # 否则"缺口有数无行"（R11-D3）
             if doc_file and not in_doc:
+                skipped += 1
                 continue
 
             c_loc = f"{file}:{line}"
             lines.append(f"| `{name}` | {c_loc} | {doc_str} | {rust_str} | {status} | _待AI补充_ |")
+        if skipped:
+            lines.append(f"| _（另有 {skipped} 个符号不在本文档语义范围内，已省略；计数见上方汇总）_ | — | — | — | — | — |")
+            skipped = 0
         lines.append("")
 
     # Rust 符号清单（供 AI 反向核对）
@@ -634,8 +683,16 @@ MODULE_PATHS = {
     'vfs': 'minix3/minix/servers/vfs',
     'rs': 'minix3/minix/servers/rs',
     'ds': 'minix3/minix/servers/ds',
-    'fs': 'minix3/minix/fs',  # 2026-10-08 R8-D1：fs 服务不在 servers/ 下，缺表导致模板给出不存在的路径
-    'inet': 'minix3/minix/servers/inet',
+    'fs': 'minix3/minix/fs',  # 2026-10-08 R8-D1：fs 服务不在 servers/ 下
+    # 2026-10-08 R9-D1：servers/ 下其余六个模块此前不在表里，review-init 静默回落 kernel
+    'sched': 'minix3/minix/servers/sched',
+    'ipc': 'minix3/minix/servers/ipc',
+    'input': 'minix3/minix/servers/input',
+    'is': 'minix3/minix/servers/is',
+    'mib': 'minix3/minix/servers/mib',
+    'devman': 'minix3/minix/servers/devman',
+    'inet': 'minix3/minix/net',  # R12-D3：servers/inet 不存在；inet 与 net 同指 minix3/minix/net
+    'net': 'minix3/minix/net',
     'kernel': 'minix3/minix/kernel',
     'drivers': 'minix3/minix/drivers',
     'include': 'minix3/minix/include',
@@ -645,10 +702,13 @@ MODULE_PATHS = {
 def main():
     parser = argparse.ArgumentParser(description='Minix-RS 覆盖率穷举清单生成器')
     parser.add_argument('module', help='模块名 (vm/pm/vfs/kernel/...) 或自定义 C 源码路径')
-    parser.add_argument('doc_dir', help='文档目录路径')
+    parser.add_argument('doc_dir', nargs='?', default=None,
+                        help='文档目录路径（--print-c-dir 时可省略）')
     parser.add_argument('--rust-dir', help='Rust 源码目录路径', default=None)
     parser.add_argument('--c-dir', help='自定义 C 源码目录（覆盖 module 默认路径）', default=None)
     parser.add_argument('--semantic-map', help='C→Rust 语义映射表 JSON 文件路径', default=None)
+    parser.add_argument('--print-c-dir', action='store_true',
+                        help='只打印该 module 的 C 源码目录后退出（供 review-init.sh 取单一真相源）')
     parser.add_argument('--doc-file', help='只统计该文档文件（相对 doc_dir 的文件名，如 10-pm-wait.md；也接受路径，脚本取 basename）', default=None)
     parser.add_argument('--output', help='输出文件路径（默认 .review/{tool}/{module}/scans/SYMBOLS.md）', default=None)
 
@@ -659,6 +719,13 @@ def main():
     # 0% 文档覆盖 + 空符号表（看似"文档什么都没写"），不报错。现在归一化 + 未命中即退出。
     if args.doc_file and os.sep in args.doc_file:
         args.doc_file = os.path.basename(args.doc_file)
+
+    # R9-D1：review-init.sh 曾自造 module→目录映射（fs 给成 servers/fs，不存在；
+    # ipc/mib/is/sched/input 静默回落 kernel）→ 由本脚本当单一真相源。
+    if args.print_c_dir:
+        cand = args.c_dir or MODULE_PATHS.get(args.module, args.module)
+        print(cand)
+        sys.exit(0 if os.path.isdir(cand) else 2)
 
     # 确定 C 源码目录
     if args.c_dir:
@@ -687,6 +754,9 @@ def main():
 
     print(f"Module: {args.module}", file=sys.stderr)
     print(f"C source: {c_dir}", file=sys.stderr)
+    if not args.doc_dir:
+        print('ERROR: 缺少 doc_dir（--print-c-dir 之外必须提供）', file=sys.stderr)
+        sys.exit(2)
     print(f"Docs: {args.doc_dir}", file=sys.stderr)
     print(f"Rust: {rust_dir or 'N/A'}", file=sys.stderr)
     print(file=sys.stderr)
