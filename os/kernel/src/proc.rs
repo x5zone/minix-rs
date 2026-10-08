@@ -880,6 +880,14 @@ pub struct KProcess {
     /// C: implicit — read from CR2 in `pagefault()` (exception.c:59).
     /// `None` means no pending page fault. Set by `page_fault::set_pagefault_pending`,
     /// cleared by `page_fault::clear_pagefault_pending`.
+    ///
+    /// Diagnostic record only (PD-04,
+    /// `rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md`): the
+    /// address that reaches VM travels in `VM_PAGEFAULT` straight from the
+    /// hardware register (`forward_pagefault_to_vm` in `trap_dispatch.rs`),
+    /// never through this field. Real readers are the x86_64 return-to-user
+    /// flush point (`lib.rs` `finish_and_restore`, invlpg) and diagnostic
+    /// prints — read the field directly; there is deliberately no getter.
     pub p_fault_addr: Option<u64>,
 
     pub p_defer: DeferArgs,

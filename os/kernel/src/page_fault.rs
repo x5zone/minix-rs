@@ -96,11 +96,6 @@ pub fn is_pagefault_pending(proc: &KProcess) -> bool {
     proc.p_rts_flags.is_set(RtsFlagsBits::PAGEFAULT)
 }
 
-/// Returns the last-recorded fault address, if any.
-pub fn last_fault_addr(proc: &KProcess) -> Option<u64> {
-    proc.p_fault_addr
-}
-
 /// Stack-allocated formatting buffer (zero-heap `core::fmt::Write`).
 ///
 /// The kernel has no allocator: the C kernel builds panic text with its
@@ -245,7 +240,7 @@ mod tests {
 
         set_pagefault_pending(proc, 0xdead_beef);
         assert!(is_pagefault_pending(proc));
-        assert_eq!(last_fault_addr(proc), Some(0xdead_beef));
+        assert_eq!(proc.p_fault_addr, Some(0xdead_beef));
     }
 
     #[test]
@@ -259,7 +254,7 @@ mod tests {
         // was_set = true on first clear
         assert!(clear_pagefault_pending(proc));
         assert!(!is_pagefault_pending(proc));
-        assert_eq!(last_fault_addr(proc), None);
+        assert_eq!(proc.p_fault_addr, None);
 
         // was_set = false on second clear (matches C assert)
         assert!(!clear_pagefault_pending(proc));
@@ -273,7 +268,7 @@ mod tests {
         proc.p_endpoint = Endpoint(100);
         proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
         assert!(!is_pagefault_pending(proc));
-        assert_eq!(last_fault_addr(proc), None);
+        assert_eq!(proc.p_fault_addr, None);
     }
 
     #[test]
@@ -329,7 +324,7 @@ mod tests {
         set_pagefault_pending(proc, 0x1000);
         set_pagefault_pending(proc, 0x2000);
         // The addr field is overwritten (last writer wins).
-        assert_eq!(last_fault_addr(proc), Some(0x2000));
+        assert_eq!(proc.p_fault_addr, Some(0x2000));
         assert!(is_pagefault_pending(proc));
     }
 
