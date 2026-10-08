@@ -66,6 +66,22 @@ Minix3 的内核侧，这段故事集中在两个文件里：`minix3/minix/kerne
 
 **为什么第 3 步和第 4 步这个顺序？** 假设反过来——先只映射高地址的内核，再启用分页。那么启用分页的那一瞬间，CPU 的下一条指令地址（`pre_init` 自己的代码，此刻还跑在低地址）在页表里根本没有映射，立刻就是一个取指缺页，机器直接 triple-fault。恒等映射的作用正是：**开分页的那一刻，当前正在执行的代码所在的物理地址，仍然能被翻译到同样的虚拟地址**，于是 `vm_enable_paging` 返回后代码能继续往下跑。内核映射则是**为了之后**——它把内核该待的高地址也一并铺好。两者叠加，才让"控制权从低地址的引导上下文平稳地移到高地址的内核"成为可能。
 
+把这段序列原样看一遍最直观（`minix3/minix/kernel/arch/i386/pre_init.c:pre_init`，节选函数体）：
+
+```c
+kinfo_t *pre_init(u32_t magic, u32_t ebx)
+{
+    assert(magic == MULTIBOOT_INFO_MAGIC);   // ① 验魔数
+    get_parameters(ebx, &kinfo);             // ② 整理启动信息
+    pg_clear();                              // ③ 清页目录
+    pg_identity(&kinfo);                     // ④ 恒等映射（先铺，保当前代码可继续执行）
+    kinfo.freepde_start = pg_mapkernel();    // ⑤ 内核高地址映射
+    pg_load();                               // ⑥ 写 CR3
+    vm_enable_paging();                      // ⑦ 开分页
+    return &kinfo;                           // → 交给 head.S 传给 kmain
+}
+```
+
 ### 2.2 get_parameters：把 multiboot 的散落信息整理成 kinfo_t
 
 `get_parameters(ebx, cbi)`（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters`）是"解析"这一步的实体。它做的事情，Rust 版全部搬到了 boot-shim 内部：
@@ -88,6 +104,29 @@ Minix3 的内核侧，这段故事集中在两个文件里：`minix3/minix/kerne
 - **`alloc_lowest`**（`minix3/minix/kernel/arch/i386/pg_utils.c:alloc_lowest`）：从低地址端挑最小能满足长度的一块分配出去，分配后顺手 `cut_memmap` 扣掉。
 - **`pg_alloc_page`**（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page`）：从内存高地址末端取一个空闲页，专供引导期建页表用。
 
+`add_memmap` 的 4GB 天花板就藏在这几行里（`minix3/minix/kernel/arch/i386/pg_utils.c:add_memmap`，节选）：
+
+```c
+#define LIMIT 0xFFFFF000
+/* 把超过 4GB 的可用内存截断——32 位的其余部分处理不了更大地址 */
+if (addr > LIMIT) return;
+if (addr + len > LIMIT) {
+    len -= (addr + len - LIMIT);
+}
+addr = roundup(addr, I386_PAGE_SIZE);
+len = rounddown(len, I386_PAGE_SIZE);
+```
+
+`cut_memmap` 的"切除可能劈成两半"逻辑（`minix3/minix/kernel/arch/i386/pg_utils.c:cut_memmap`，节选）——把重叠那段清零，剩余左、右两段再用 `add_memmap` 补回：
+
+```c
+cbi->memmap[m].mm_base_addr = cbi->memmap[m].mm_length = 0;
+if (substart > memaddr)
+    add_memmap(cbi, memaddr, substart - memaddr);   // 左残段
+if (subend < memend)
+    add_memmap(cbi, subend, memend - subend);       // 右残段
+```
+
 这四种操作合起来，就是"内核运行前，谁在动这张内存地图"的完整答案。Rust 版把它们的角色做了重新划分（第 3.4、4.2）。
 
 ### 2.4 32 位页表机制：静态池与两种粒度
@@ -98,6 +137,23 @@ Minix3 的内核侧，这段故事集中在两个文件里：`minix3/minix/kerne
 - **`pg_identity`**：用 4MB 大页把从 0 开始的地址一一恒等映射，覆盖到内存高水位；超出真实内存的部分被标记为不可缓存（PWT|PCD），避免把 MMIO 之类当普通内存写坏。
 - **`pg_mapkernel`**：用 4MB 大页把内核物理地址映射到它的高半区虚拟地址，返回第一个空闲页目录项。
 - **`pg_map`**：通用映射，用 4KB 小页，还能传一个 `PG_ALLOCATEME` 哨兵让它自动去 `pg_alloc_page` 取页。
+
+恒等映射与内核映射都只用 4MB 大页，但两者的 flag 组合不同（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity`、`minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`，各节选核心行）：
+
+```c
+// pg_identity：从 0 起逐 4MB 段恒等映射
+u32_t flags = I386_VM_PRESENT | I386_VM_BIGPAGE | I386_VM_USER | I386_VM_WRITE;
+if ((cbi->mem_high_phys & I386_VM_ADDR_MASK_4MB) <= (phys & I386_VM_ADDR_MASK_4MB))
+    flags |= I386_VM_PWT | I386_VM_PCD;   // 超出真实内存的段：禁缓存
+pagedir[i] = phys | flags;
+
+// pg_mapkernel：内核高半区映射——注意，没有 I386_VM_USER
+pagedir[pde] = kern_phys | I386_VM_PRESENT | I386_VM_BIGPAGE | I386_VM_WRITE;
+```
+
+> **辨析一：越界段为何要禁缓存（PWT|PCD）。** `pg_identity` 把从 0 到 4GB 全用大页铺满，但真实 DRAM 只到 `mem_high_phys`。高水位之上那些"地址存在却不是内存"的段，其实是 MMIO 设备寄存器或地址空洞。给它们开着缓存，写下去会滞留在 cache、读上来会拿到陈旧值，设备"写后读"的语义当场被破坏。所以一旦 4MB 段号越过 `mem_high_phys`，就补上 PWT（写穿透）+ PCD（不进 cache）——这正是源码注释那句"map memory that does not correspond to physical memory as non-cacheable"的意思。
+>
+> **辨析二：恒等映射设了 USER，内核映射却不设，这种不对称是有意的。** `pg_identity` 的 flags 里带着 `I386_VM_USER`，看着像给用户态开了门——其实 boot 阶段 CPU 在 Ring 0，U/S 位对内核自身的访问根本不生效，它是个"无所谓"的位。真正表达意图的是 `pg_mapkernel`：它刻意**不**设 `I386_VM_USER`，把内核高半区标成 supervisor-only。而这份恒等映射也留不到运行期——VM 服务在 `pt_init`（`minix3/minix/servers/vm/pagetable.c:pt_init`）里显式跳过所有 BIGPAGE 条目、另建自己的页目录，所以 boot 恒等映射从 VM 接手那刻就被丢弃，任何 Ring 3 进程都用不到它。Rust 版更干脆：boot-shim 页表只在内核 boot 期使用、从不递给用户态，因此压根不设 USER 位。
 
 **为什么 6 个页表页在 C 里够用、在 Rust 里不够？** 因为 32 位是两级页表（页目录 + 页表），引导期只需覆盖很少的映射；64 位是四页层级（x86-64 的 PML4→PDPT→PD→PT），同样的地址范围要动用多得多的页表页。一张静态的 6 页池，撑不住 64 位引导建表的需求——这正是 Rust 版把"静态页表池"换成"bump 分配区"的动机。
 
@@ -114,6 +170,44 @@ Minix3 的内核侧，这段故事集中在两个文件里：`minix3/minix/kerne
 
 这段"清 → PSE → PG → WP → PGE"的时序，是硬件规定的依赖链。它在 Rust 版里不能原样搬——64 位用的是不同的控制位（比如 x86-64 的长模式位）——所以这段被抽象成架构 trait 各自的职责，OS 语义层看不见 CR0/CR4 的具体位（第 3.4）。
 
+C 版这段寄存器操作原样如下（`minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging`，节选）：
+
+```c
+assert(cr0 & I386_CR0_PE);                        // 引导器应已把 CPU 置于保护模式
+write_cr0(cr0 & ~I386_CR0_PG);                    // 先关 PG
+write_cr4(cr4 & ~(I386_CR4_PGE | I386_CR4_PSE));  // 再清 PGE 和 PSE
+/* ...重读 cr0/cr4... */
+cr4 |= I386_CR4_PSE;  write_cr4(cr4);             // 声明用 4MB 大页
+cr0 |= I386_CR0_PG;   write_cr0(cr0);             // 开分页
+cr0 |= I386_CR0_WP;   write_cr0(cr0);             // 开写保护
+if (pgeok) cr4 |= I386_CR4_PGE;  write_cr4(cr4);  // 最后才开全局页
+```
+
+> **辨析三：清 PSE 这步看着多余，实则是顺序的地基。** 为什么要先 `~(PGE | PSE)` 把这几个位全清、再从头设？因为 PGE 依赖 PG、PG 又依赖页表里的 PSE 大页条目——若沿用遗留的寄存器状态，无法保证这条依赖链干净建立。先归零、再按"清 PG/PGE → 开 PSE → 开 PG → 开 WP → 开 PGE"的次序重新点亮，才让"启用分页"在任何 BIOS/引导器残留下都得到确定的结果。
+
+### 2.6 调用关系：一眼看全交接前的动作序列
+
+```
+head.S: multiboot_init（汇编入口，压 magic/ebx）
+  └─ pre_init(magic, ebx)
+       ├─ assert(magic == MULTIBOOT_INFO_MAGIC)
+       ├─ get_parameters(ebx, &kinfo)
+       │    ├─ memcpy(mbi, ebx)                 抄一份可信副本
+       │    ├─ 解析 cmdline → param_buf
+       │    ├─ memcpy(module_list)              拷模块清单
+       │    ├─ add_memmap() × N                 建可用内存视图
+       │    ├─ 把内核当作第 N+1 个模块
+       │    ├─ overlaps() × (N+1)               重叠体检，冲突即 panic
+       │    └─ cut_memmap() × (N+1)             切除已占用区间
+       ├─ pg_clear()                            清页目录
+       ├─ pg_identity(&kinfo)                   4MB 大页恒等映射（越界段禁缓存）
+       ├─ kinfo.freepde_start = pg_mapkernel()  内核高半区映射（supervisor-only）
+       ├─ pg_load() → write_cr3(pagedir)
+       └─ vm_enable_paging()                    CR0/CR4：清→PSE→PG→WP→PGE
+       → return &kinfo
+head.S: call kmain(&kinfo)   （控制权正式易手，本篇到此为止）
+```
+
 ---
 
 ## 第 3 章　Rust 设计：用类型系统重新表达这份交接
@@ -123,6 +217,26 @@ C 版把一切都写进了一个全局 `kinfo_t`。Rust 版要做的不是照搬
 ### 3.1 KernelInfo：字段不是抄 kinfo_t，而是按新架构重排
 
 `KernelInfo`（`os/libs/minix-boot/src/kernel_info.rs:KernelInfo`）是 boot-shim 交给内核的核心结构，对应 C 的 `kinfo_t`。它的字段设计遵循一条原则：**保留的字段语义不变，被删的字段都是 32 位限制或诊断信息，新增的字段是 64 位多架构逼出来的**。
+
+先看它的骨架（`os/libs/minix-boot/src/kernel_info.rs:KernelInfo`，节选代注释）：
+
+```rust
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KernelInfo {
+    pub memmap: &'static [MemoryRegion],
+    pub reserved_regions: &'static [MemoryRegion],
+    pub kern_virt_base: VirBytes,
+    pub kern_phys_base: PhysBytes,
+    pub kern_size: u64,
+    pub free_upper_idx: Option<usize>,
+    // …user_sp / kern_stack_top / syscall_entry / boot_modules…
+    pub bootstrap_start: PhysBytes,   // Rust 端口恒 PhysBytes(0)
+    pub bootstrap_len: u64,           // 恒 0，由 validate 硬断言
+    pub platform_sources: &'static [PlatformDescSource],
+    pub param_buf: &'static [u8],     // 当前恒 &[]
+}
+```
 
 **保留但换类型**（语义不变，用 newtype 把地址的含义写进类型）：
 
@@ -252,6 +366,15 @@ C 版内核先在低地址的 unpaged 段跑，切到高地址后把这段回收
 
 内核侧的入口是 `arch_boot(kernel_info, root_page)`（`os/kernel/src/lib.rs:arch_boot`）。它做三件事：把 `KernelInfo` **按值**收进内核自己的 `.bss` 全局、调用 `arch_boot_impl` 用根页表建立恒等 + 内核高映射并启用分页、最后经 `HigherHalf::jump_to_kmain` 跳到 `kmain`。
 
+```rust
+store_kernel_info(kernel_info);                     // 入口即按值拷进内核 .bss
+let kinfo: &'static KernelInfo = crate::kernel_info()
+    .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
+register_panic_diagnostic();                        // 诊断注册前移：arch_boot 阶段的 panic 必须可见
+arch_boot_impl::<X86_64Paging>(kinfo, root_page);   // 建恒等 + 内核高映射 + 开分页
+unsafe { X86_64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+```
+
 其中"第一件事"藏着一个真实的坑，值得作为经验讲出来。最早的实现是把 shim 栈上的 `&KernelInfo` 通过一段 `noreturn` 内联汇编的入参寄存器直接传给 `kmain`。但在 x86-64 System V（以及 aarch64 的 x0）里，那个参数寄存器是 **caller-saved**：中间任何一次函数调用都可能把它覆写。一旦覆盖发生，`kmain` 拿到的"内核信息指针"其实是别的值——现场曾观测到它恰好落进一段调试字符串的开头，`validate` 读到一堆 ASCII 垃圾当场 panic。修复是釜底抽薪：入口第一时间把 `KernelInfo` 拷进 `.bss` 全局，此后建表、跳 `kmain` 一律用这个全局副本的引用，因为全局副本的地址是链接期就定死的相对常量，不经过任何寄存器交接。
 
 ### 4.2 方案 A 的两段式：boot-shim 侧 与 内核镜像侧
@@ -275,6 +398,33 @@ C 版内核先在低地址的 unpaged 段跑，切到高地址后把这段回收
 
 任何一条不过都是 `panic`：这是一条 fail-fast 契约，产出非法 `KernelInfo` 的 boot-shim bug 不可恢复，越早炸越好。
 
+```rust
+pub fn validate(&self) {
+    assert_eq!(self.bootstrap_len, 0, "…no unpaged section…");
+    assert!(self.kern_size > 0, "…boot-shim did not load kernel?");
+    assert!(self.kern_stack_top.0.is_multiple_of(16), "…16-byte aligned…");
+    assert!(!self.memmap.is_empty(), "…memmap must not be empty…");
+    assert!(!self.boot_modules.is_empty(), "…boot_modules must not be empty…");
+    assert!(self.param_buf.len() <= 1024, "…MULTIBOOT_PARAM_BUF_SIZE…");
+}
+```
+
+### 4.4 三架构：机制各异，语义同一
+
+boot-shim 这件事，x86-64、aarch64、riscv64 三家的**语义动作完全一致**——把散落在固件接口里的信息整理成一份 `KernelInfo`，建好恒等映射与内核高映射、启用分页，然后把控制权交给 `kmain`。差异全在**机制形状**这一层：
+
+| | x86-64 | aarch64 | riscv64 |
+|---|---|---|---|
+| 页表根 | 单个 CR3 | TTBR0 + TTBR1（**双根**，低半/高半各一） | 单个 SATP |
+| 层级 | PML4→PDPT→PD→PT | L0→L1→L2→L3 | Sv39 三级 |
+| 内存映射来源 | UEFI 服务取 EFI memory map | UEFI 或 OpenSBI | OpenSBI 经 SBI ecall |
+| 平台句柄 | RSDP（ACPI） | DTB 或 RSDP 共存 | DTB |
+| 早期控制台 | ISA 串口 | PL011 MMIO | SBI ecall console |
+| 交接形态 | 内联 `arch_boot` | 内联 `arch_boot` + 方案 A 跨镜像 | 内联 `arch_boot` |
+| `reserved_regions` | 非空（内核重定位的低物理恒等窗口） | 依固件 | 空切片（不把内核链进 shim） |
+
+> **本质语义是什么。** 上表里"双根 vs 单根""CR3 vs TTBR vs SATP""内联 vs 跨镜像"全是**硬件承载的形状**，不是 OS 语义。按跨架构四公理（`prompt/review-rules/review-core-semantics.md` §1.6），OS 语义层只要求"每个进程有自己的地址翻译空间""交接是纯数据"——它压根不把"页表根的数量"当语义。aarch64 用两个根、x86-64 用一个根，都是同一 OS 语义的合法实现。所以 boot-shim 对内核暴露的接口（`BootShim` trait + `KernelInfo` + `arch_boot`）三家共用一份，固件与页表的差异关在各架构实现里，不泄漏到 OS 语义层——这正是"抽象语义，不描述机制"的落点。（三个早期控制台后端在 `os/libs/minix-boot/src/platform.rs:ConsoleDesc` 的文档里列名——IsaSerialDesc / MmioSerialDesc / SbiConsoleDesc——实现各在 `minix-platform` 的 arch 子模块。）
+
 ---
 
 ## 第 5 章　测试要点
@@ -293,3 +443,28 @@ C 版内核先在低地址的 unpaged 段跑，切到高地址后把这段回收
 
 - `free_upper_idx` 目前 boot-shim 传 `None`、由内核用前校验（`os/libs/minix-boot/src/kernel_info.rs:KernelInfo`），"这个根级空闲索引最终由谁负责计算"还没有测试或明确定论，应补齐。
 - 第 4.1 那个"引用跨 `noreturn` 内联汇编经 caller-saved 寄存器交接"的陷阱，目前只靠"入口即拷进 `.bss` 全局"这一约定守着，缺一个能主动捕获该形态的静态或运行期检查。
+
+---
+
+## 第 6 章　启动失败与诊断：交接链炸了怎么定位
+
+boot 阶段还没有完整的中断、调度与 IPC，一旦出错就是一台哑机器。这一阶段的可观测性靠三根支柱撑起来。
+
+### 6.1 EarlyConsole：内核接手后的第一根路标
+
+`arch_boot` 入口第一时间通过 EarlyConsole 把原始参数指针打出来（`os/kernel/src/lib.rs:arch_boot`），紧接着打"已进入 arch_boot"。为什么第一动作就是打指针？因为要判定 boot-shim→arch_boot 的**第一跳交接是否已经坏**——如果连入口打印的地址都是垃圾，问题在进内核之前；如果地址正常但后续 `validate` 挂了，问题在拷贝/建表环节。EarlyConsole 是个 trait，x86 走串口、aarch64 走 MMIO UART、riscv64 走 SBI console ecall，品牌名关在各架构实现里（`os/libs/minix-boot/src/platform.rs:ConsoleDesc`）。
+
+与 EarlyConsole 配套的是 panic 诊断注册的**时机前移**：`register_panic_diagnostic` 被提到 arch_boot 一开始就调用，因为 arch_boot 阶段的任何 panic 都必须可见——此时 EarlyConsole、栈回溯这些依赖全部就绪，注册没有理由晚于第一个可 panic 的校验。
+
+### 6.2 validate fail-fast：错误信息即诊断
+
+第 4.3 那六条 `assert` 不是摆设：每条都带描述性消息（如 `bootstrap_len must be 0`、`memmap must not be empty`）。boot 期 panic 的第一现场基本就是这些消息之一，直接指向是 boot-shim 漏填了哪个字段。
+
+### 6.3 两条真实取证签名
+
+| 症状 | 根因 | 定位锈点 |
+|---|---|---|
+| `validate` 读到一堆 ASCII 垃圾当场 panic，kinfo 指针恰为某调试串地址 | 引用跨 `noreturn` 内联汇编经 caller-saved 寄存器交接被覆写（§4.1） | `os/kernel/src/lib.rs:arch_boot` |
+| 刚 `mov cr3` 切到进程页表后下一条取指就 #PF，报错地址落在低物理恒等窗口 | 该窗口未回放进进程页表（§3.5） | `os/libs/minix-boot/src/kernel_info.rs:KernelInfo` |
+
+这两条都是 boot 阶段"哑机器"的典型形态：没有内核日志可回溯，只能靠 EarlyConsole 的第一根路标 + 报错地址落在哪个区间来判断。它们也印证了本篇的主线——**交接前机器必须变成什么样**一旦没满足，故障会以最难定位的方式在交接刚完成后暴露。
