@@ -38,7 +38,7 @@ Minix3 C source behavior > design contract > Rust code (os/) > design/technical 
 - **P0-design-missing**: design 缺关键决策（如未定义 trait 方法签名）
 - **P0-design-wrong**: design 决策技术错误（如不安全抽象）
 - **P0-test-missing**: design 要求测试但代码无
-- **P1**: Architecture diff unstated, design without basis, dev-journal style (✅❌🚧), doc-code mismatch, pub misuse, **detail imprecision** (wrong hardware claim in comment, context leak in universal struct, silently dropped returns, leaks without rationale, dubious comment reasons), **P1-design-missing** (链路断裂)
+- **P1**: Architecture diff unstated, design without basis, dev-journal style (✅❌🚧), doc-code mismatch, pub misuse, **detail imprecision** (wrong hardware claim in comment, context leak in universal struct, silently dropped returns, leaks without rationale, dubious comment reasons), **P1-design-missing** (链路断裂), **P1-docStyle / teaching-artifact carrying gap** (mechanism doc's C-source-analysis or implementation chapter with zero real code fences, or diagnosis chapter with zero reproducible commands — Layer 1, blocking; enforcement `review-cmds.md` §一 gate #9 + `tools/doc-code-density-check.sh`)
 - **P2**: Readability, naming, cross-refs, diagram quality
 
 ## Design First 原则

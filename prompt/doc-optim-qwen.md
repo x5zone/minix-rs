@@ -95,7 +95,8 @@
   - ✅ `review-doc-excellence.md` §七 加"承载性 vs 讲法质量"分界（承载性属正确性门 #9、不属卓越性 grade），修正"教学全不阻塞"的盲区。
   - ✅ `prompt/skill/cmds/style-bible/SKILL.md`、`style-fix/SKILL.md` 同步补 9/10 条与第四维（.agents 软链自动生效）。
   - ✅ 新增 `tools/doc-code-density-check.sh`（带 `--self-test` 正反向夹具）+ 挂进 `.github/workflows/rules-consistency.yml` 工具自测步。
-  - ⏸ 未做（留后续批次）：review-process.md Step 0.3/Gate H 正文级重写（因含 `.claude/rules` 手工副本，本轮把等价规则落在无副本的命令层 review-cmds）、Sync-8 编号（避免"七项"改名连锁）、doc-ref-check/doc-teach-check 重型工具。
+  - ⏸ **仍留后续批次**：review-process.md Step 0.3 正文级全重写（本轮由 Gate H precedence 注 + §一b + 注册表行 0.11 桥接）；doc-code-density 的 `--baseline/--diff` 增量模式（现由 report默认存量不阻断 + `--check` 仅对改动文档生效替代）；verify-check.py 负抽样的代码实现（规则已入注册表 5.6d，暂靠人工）；sha256 edit-binding 自动工具（规则已入 0.13，暂人工）；doc-teach-check 重型读数器。
+- **doc-commit-review 二修补充落地**（本批）：修复 `coverage-extract.py` 语义 gap 恒真 P0-code-bug（mimo G-1/Muse V-12）+新增 `--check-filled`；新增 `tools/doc-ref-check.sh`；承载门工具按 4 份 review 重写（语言感知/内容锚定承载章/去全文降级/diag 优先/退出码）；#9 入 review.md P1 表 + `.claude` 镜像 + 注册表行 0.11/0.12/1.5c/5.6c/5.6d/0.7.5/0.13；Gate H precedence 注；三工具 self-test 入 CI。
 - **四道同步门**：generate-derived-skills --check / check-review-rules / lint-review-rules / diff-trae-skills 全绿。
 
 ## 8. 非目标（划清边界）

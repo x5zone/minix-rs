@@ -567,6 +567,14 @@ def generate_symbols_md(module, c_symbols, rust_symbols, rust_qualified, doc_cov
             1 for n in semantic_symbols
             if not is_in_target_doc(n) and not rust_coverage.get(n)
         )
+        # 修正 P0-code-bug（mimo G-1 / Muse V-12）：semantic_symbols 的定义就是
+        # "in_doc 或 in_rust"，再从中筛"非 in_doc 且非 in_rust"恒为空 → 旧 semantic_gaps
+        # 永远 0，是个循环假绿的"完成"信号。真信号是"有文档无Rust"：
+        # 文档提及了该 C 符号、但无 Rust 映射（潜在语义丢失，非恒 0）。
+        semantic_rust_missing = sum(
+            1 for n in semantic_symbols
+            if is_in_target_doc(n) and not rust_coverage.get(n)
+        )
 
         lines.append(f"### 文档作用域统计（NEW 2026-07-16）")
         lines.append("")
@@ -580,7 +588,10 @@ def generate_symbols_md(module, c_symbols, rust_symbols, rust_qualified, doc_cov
         lines.append(f"| 文档覆盖 % | {pct(doc_covered, total)}% | {pct(semantic_doc_covered, semantic_total)}% |")
         lines.append(f"| Rust 覆盖 | {rust_covered}/{total} | {semantic_rust_covered}/{semantic_total} |")
         lines.append(f"| Rust 覆盖 % | {pct(rust_covered, total)}% | {pct(semantic_rust_covered, semantic_total)}% |")
-        lines.append(f"| Gaps | {gaps} | {semantic_gaps} |")
+        lines.append(f"| Gaps（无文档无Rust） | {gaps} | 恒 0※已废弃 |")
+        lines.append(f"| 有文档无Rust（语义域真信号：提及但无 Rust 映射） | — | {semantic_rust_missing} |")
+        lines.append(f"")
+        lines.append(f"> ※ 语义域分母=本文档**提及**的符号集，按定义测不出「整段未提的 C 符号」这种遗漏；真漏写靠 outline 代码放置清单 + `review-cmds.md` §一 承载门 #9 拦，不由本表 Gaps 数担保。")
         lines.append("")
 
     # 按类别输出
@@ -700,6 +711,27 @@ MODULE_PATHS = {
 
 
 def main():
+    # --check-filled SYMBOLS.md：非恒真的"AI 语义列填完了没"机器门（Gate A 用）。
+    # 残留 `_待AI补充_` > 0 → exit 1（覆盖率穷举未闭环）；=0 → exit 0。
+    # 置于 argparse 之前，因它不需 module 位置参数。
+    if '--check-filled' in sys.argv:
+        _i = sys.argv.index('--check-filled')
+        _p = sys.argv[_i + 1] if _i + 1 < len(sys.argv) else ''
+        if not _p or not os.path.isfile(_p):
+            print(f"check-filled: 找不到文件 {_p or '(未给路径)'}", file=sys.stderr)
+            sys.exit(2)
+        try:
+            _txt = open(_p, encoding='utf-8').read()
+        except Exception as _e:  # noqa: BLE001
+            print(f"check-filled: 读取失败 {_e}", file=sys.stderr)
+            sys.exit(2)
+        _n = _txt.count('_待AI补充_')
+        if _n:
+            print(f"⛔ 覆盖率语义列未填完：残留 {_n} 处 `_待AI补充_`（Gate A 要求 AI 逐行补语义判定后方可 CONVERGED）")
+            sys.exit(1)
+        print("✅ 覆盖率语义列已全部填充（无 `_待AI补充_`）")
+        sys.exit(0)
+
     parser = argparse.ArgumentParser(description='Minix-RS 覆盖率穷举清单生成器')
     parser.add_argument('module', help='模块名 (vm/pm/vfs/kernel/...) 或自定义 C 源码路径')
     parser.add_argument('doc_dir', nargs='?', default=None,
@@ -856,12 +888,15 @@ def main():
         sem_doc = sum(1 for n in semantic_symbols if in_target_doc(n))
         sem_rust = sum(1 for n in semantic_symbols if in_target_doc(n) and rust_coverage.get(n))
         sem_gaps = sum(1 for n in semantic_symbols if not in_target_doc(n) and not rust_coverage.get(n))
+        # 修正 P0-code-bug：sem_gaps 因集合定义恒为 0（假绿）；真信号是"有文档无Rust"。
+        sem_rust_missing = sum(1 for n in semantic_symbols if in_target_doc(n) and not rust_coverage.get(n))
         print(f"")
         print(f"  --- 文档作用域统计（NEW 2026-07-16）---")
         print(f"  Semantic range C symbols: {sem_total}")
         print(f"  Doc covered (semantic): {sem_doc}/{sem_total} ({pct(sem_doc, sem_total)}%)")
         print(f"  Rust covered (semantic): {sem_rust}/{sem_total} ({pct(sem_rust, sem_total)}%)")
-        print(f"  Gaps (semantic): {sem_gaps}")
+        print(f"  Gaps (semantic): {sem_gaps}  ※ 恒 0，已废弃（循环定义）")
+        print(f"  有文档无Rust (语义真信号): {sem_rust_missing}")
 
     print(f"  Output: {output_path}")
 
