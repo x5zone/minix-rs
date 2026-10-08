@@ -1866,7 +1866,7 @@ mod dup2_wire_tests {
     }
 
     /// 全序：F_GETFL 探测 → close(fd2) → F_DUPFD(fd, fd2)，回复即新
-    /// 描述符（dup2.c:22-31）。
+    /// 描述符（dup2.c:22-30）。
     #[test]
     fn test_dup2_probes_closes_and_duplicates() {
         let mut transport = CannedTransport::new();

@@ -1,7 +1,7 @@
 //! Byte comparison for `cmp`.
 //!
 //! Ground truth: `minix3/usr.bin/cmp/` (NetBSD): the compare loop
-//! (`regular.c:70-120`) walks both byte streams from the skip offsets
+//! (`regular.c:70-118`) walks both byte streams from the skip offsets
 //! with byte and line counters starting at one; the first difference
 //! prints "%s %s differ: char %lld, line %lld" and exits 1 (`diffmsg`,
 //! misc.c:78-85) unless `-l` lists every difference as

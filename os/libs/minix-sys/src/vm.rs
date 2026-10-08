@@ -712,7 +712,7 @@ pub fn forget_cacheblock_via(
 
 /// Clears every cache block belonging to a device.
 ///
-/// C: `vm_clear_cache` (`vm_cache.c:77-89`): only the device lane is
+/// C: `vm_clear_cache` (`vm_cache.c:77-88`): only the device lane is
 /// filled; no alignment requirements apply (C checks none).
 pub fn clear_cache_via(transport: &impl IpcTransport, dev: u64) -> Result<(), Errno> {
     if dev == NO_DEVICE {

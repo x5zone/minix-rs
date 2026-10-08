@@ -1037,7 +1037,7 @@ mod tests {
 
     #[test]
     fn test_sigreturn_carries_ctx_only() {
-        // C sigreturn.c:32-35 sets only .set (vestigial on the wire — PM
+        // C sigreturn.c:26-32 sets only .set (vestigial on the wire — PM
         // reads .ctx, signal.c:189) and .ctx; how stays zero.
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));

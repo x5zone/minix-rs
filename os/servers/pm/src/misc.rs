@@ -305,7 +305,7 @@ pub struct SysTimesVmCtl<'a, T: crate::ipc::IpcTransport + ?Sized> {
 impl<T: crate::ipc::IpcTransport + ?Sized> TimesVmCtl for SysTimesVmCtl<'_, T> {
     fn sys_times(&mut self, ep: Endpoint) -> Result<(Clock, Clock), MiscError> {
         // C sys_times(who_e, &utime, &stime, NULL, NULL)（misc.c:429-431;
-        // libsys sys_times.c:8-24)。失败原 errno 上抛(V3-P2-6)。
+        // libsys sys_times.c:3-23)。失败原 errno 上抛(V3-P2-6)。
         let times = minix_sys::syscall::sys_times(
             &minix_sys::syscall::DirectKernelCallTransport,
             ep.0,

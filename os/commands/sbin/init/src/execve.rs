@@ -14,7 +14,7 @@
 //! C builds the frame as: one argc word, the argv pointer slots (with a
 //! NULL terminator), the env pointer slots (with a NULL terminator), the
 //! strings themselves, then the ps_strings descriptor
-//! (`stack_utils.c:159-176`). Slot values are absolute addresses in the NEW
+//! (`stack_utils.c:159-172`). Slot values are absolute addresses in the NEW
 //! address space — `*vsp + (fp - frame)` (`stack_utils.c:160`) — where
 //! `vsp = minix_get_user_sp() - stack_size` (`stack_utils.c:133`).
 //!
@@ -103,7 +103,7 @@ pub(crate) fn stack_params(argv: &[&str], envp: &[&str]) -> Result<usize, Errno>
 }
 
 /// Fills the frame and returns the ps_strings offset within it (C:
-/// `minix_stack_fill`, `stack_utils.c:115-176`).
+/// `minix_stack_fill`, `stack_utils.c:115-172`).
 ///
 /// `frame` must be at least `stack_params` bytes. Slot values are absolute
 /// addresses in the new address space (`vsp` + offset), the arrays are
@@ -155,7 +155,7 @@ pub(crate) fn stack_fill(argv: &[&str], envp: &[&str], vsp: u64, frame: &mut [u8
         tail += 1;
     }
 
-    // The descriptor (C: `stack_utils.c:172-176`). `argv_str = vsp + 8`:
+    // The descriptor (C: `stack_utils.c:172`). `argv_str = vsp + 8`:
     // the LP64 correction — the argc slot is one pointer word. `env_str`
     // is `argv_str + (argc + 1)` slots, C's `ps_argvstr + argc + 1`.
     let ps = PsStrings {
@@ -308,7 +308,7 @@ mod tests {
     }
 
     /// The fill against a fully hand-laid frame (C: `minix_stack_fill`,
-    /// `stack_utils.c:115-176`, with the LP64 ps_argvstr correction):
+    /// `stack_utils.c:115-172`, with the LP64 ps_argvstr correction):
     /// vsp = 0x10000, argv `["sh"]`, envp empty →
     /// `[0]=argc=1`, `[8]=vsp+32` (argv[0]), `[16]=NULL` (argv end),
     /// `[24]=NULL` (empty env end), strings "sh\0" at 32, pad to 40,

@@ -52,7 +52,7 @@
 | `SD-11` | `open` | 虚存服务在大块申请上的失败会复现，需要执行与跟踪分离的修法 |
 | `SD-13` | `partially fixed` | 大部分已闭，剩余面需要给出对应的齐平清单行号 |
 | `SD-15` | `open` | 陷入帧与处理器上下文两套结构靠约定对齐，缺撕裂寄存器的校验（低风险） |
-| `SD-27` | `partially fixed` | 批量纠正已落地：现场扫 `os/**/*.rs` 注释里的 `file.c:NNN` 引用（复用 `tools/pattern-gate.sh` P11 的 basename-多候选消歧算法），17970 条里真正越界或找不到文件的共 23 处（此前 naive 单候选实现会误报 4551 处，提醒工具实现必须多候选全覆盖）；本轮逐一与 `minix3/` 现状核对后修正 21 处（跨一/二/三线，已在 `new_edge4.md` C-74 先登记后动手），剩 2 处为 `os/kernel-image/src/bootface_a64.rs`/`os/kernel/src/smp.rs` 里引 QEMU `hw/arm/boot.c`——已核非 minix3 漂移（属合法跨工程引用，上下文已自明），本轮未改代码但已写入工具设计约束。工具化守卫仍未建（本轮只闭“批量纠正”半），发现三条必须写进未来 `.rs` 模式的约束：① basename 碰撞需多候选全覆盖；② 区间引用需校 END 不能只校 START（本轮人工抽查 `stack_utils.c` 时发现现有工具会漏报）；③ QEMU 等非 minix3 外部引用需白名单或后缀识别。可重跑核实现命令：见 `new_edge4.md` C-74 行（`2026-10-09` 扫得 23→2） |
+| `SD-27` | `closed` | 两半均落地：①批量纠正——扫 os/ 注释里 17970 条 `file.c:NNN` 引用，START+END 双校后共 40 处漂移（23 存在性/START 越界 + 17 区间 END 越界，典型如 sys_getksig.c 实为 sys_getsig.c、ipc.c:2060 实为 ipc.h:2261-2269、stack_utils.c 六个区间 END 越 172 行文件）已全部对照 minix3 修正；②工具化守卫——`tools/pattern-gate.sh` 新增 P18 全量扫描（gate+ 基线豁免，三条设计约束全落：多候选全覆盖/区间校 END/非 minix3 域白名单）。可重跑核实现命令：`bash tools/pattern-gate.sh` → `[P18] PASS（检查 ~11766 个 token）`、FAIL=0，且**零基线条目**（无存量豁免）；`bash tools/pattern-gate.sh --self-test` 含 P18 六例全绿（`2026-10-09` 核，快照见 claim/SD27-RS-MODE-qoder 分支头）。未来新写漂移锚点编译前即拦——"class keeps striking" 从审计可发现升级为门可发现 |
 | `SD-36` | `open` | 内存污染案卷的第三面，绑定在物理地址边界校验上 |
 | `SD-38` | `open` | 设备树消费者与固件路径的分叉尚未收口 |
 | `SD-39` | `open` | 信号集位宽拓宽（六十四位到一百二十八位）成批待做 |

@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_led_bits_match_c() {
-        // C: kbdio.h:15-24.
+        // C: `kbdio.h:18-20`.
         assert_eq!(core::mem::size_of::<KioLeds>(), 4);
         assert_eq!(KBD_LEDS_NUM, 0x1);
         assert_eq!(KBD_LEDS_CAPS, 0x2);
