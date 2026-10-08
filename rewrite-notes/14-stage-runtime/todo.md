@@ -1,6 +1,6 @@
 # 14-stage-runtime Rust 实现架构级 Review TODO
 
-> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1 + 需真机 2：内核信息魔术失配的错误码选型需先对 C 行为裁决，不能凭齐平表象定案。
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`；`2026-10-09` 回勾）：需真机 2。旧记的"未闭合 open 1：内核信息魔术失配的错误码选型需先对 C 裁决"属**账面滞后**——`V1-P1-4` 已于 `2026-09-16` 裁决并落地（Fix #5，对齐 C 容错：`os/libs/minix-rt/src/init.rs:fn KerninfoAvailability` 三态枚举在位、`InitError`/`InitOutcome` 二元组已删——`grep -rn "KerninfoAvailability" os/libs/minix-rt/src/init.rs` 现算有命中，`grep -rn "InitError" os/libs/minix-rt/src` 现算零命中），详节见本文件 §3.2 `V1-P1-4` 的落地段。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > 来源：2026-09-16 首轮架构级代码审查（V1 轮）。查漏补缺优先，其次整体/分层架构深审（code-excellence 口径：整体 → crate → 模块 → trait）。
@@ -23,7 +23,7 @@
 | P1 | V1-P1-1 | ✅ 诞生链整体闭环（第一步 2026-09-16 Fix #4 删 start.rs；**第二步 2026-09-17 真机落地**：minix-rt `crt0` 模块——x86-64 naked `_start`（C crt0.S 入口 ABI：RBX=ps_strings）+ 六命名阶段 + argv/progname 发布 + M_TRAIL 证据；首个 minix-rt 用户二进制 rt-birth 经生产 load_vm_elf 真机执行至 forced panic，五断言 PASS（见 edge_todo E1 诞生链通电注记）；fini_array/init_array 维持登记（无消费方） |
 | P1 | V1-P1-2 | ~~诊断双轨：DiagBuffer/PanicStage 模型层与 lib.rs 内联 BufferWriter 生产层互不相连，`PanicPlan` 是不存在的类型名~~（**✅ 已修复** 2026-09-16，Fix #2，见 §3.2 修复记录） |
 | P1 | V1-P1-3 | ~~misc 发送半缺口：nanosleep 的 select 组装归 09 篇但 09 篇未声明，svrctl 只有分派没有发送~~（**✅ 已修复** 2026-09-16，Fix #10，见 §3.2 修复记录） |
-| P1 | V1-P1-4 | kerninfo MAGIC 失配行为分歧：C 静默降级继续运行，Rust 返回 ENOEXEC 拒绝——`initialize_runtime` 接线前必须裁决（§3.2） |
+| P1 | `V1-P1-4` | kerninfo MAGIC 失配行为分歧：C 静默降级继续运行，Rust 返回 ENOEXEC 拒绝——✅ 已裁决并落地 `2026-09-16`（Fix #5，详节见 §3.2） |
 | P1 | V1-P1-5 | ✅ 99/00 篇同批落稿（2026-09-17，95f971f02）：99-global-concepts 正文 v1（四核心点 + 调用号体例归一裁决 + 56B LP64 判例 + .design outline/design 快照）+ 00-runtime-overview 正文 v1（总览/主线含 rt-birth 真机里程碑/导航/设计原则）；minix-sys 四族 payload 断言补齐（d1091c2b2，200 passed）|
 | P2 | V1-P2-1 | ~~查询族死 `None` 签名：四个 wrapper 的 `Option` 永远是 `Some`，docstring 承诺的失败语义实际走 `Err`~~（**✅ 已修复** 2026-09-16，Fix #6，见 §3.2 修复记录） |
 | P2 | V1-P2-2 | wire 打包双体系：minix-types 的类型化布局与 minix-sys 的本地裸字节打包并存，`cleared_message`/`write_payload` 在三个文件各复制一份；VM_REMAP 两处状态标注不一致（§3.2，跨层部分挂 edge E-MINTYPES-RUNTIME） |
