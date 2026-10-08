@@ -93,7 +93,7 @@ if [ -n "$header_line" ]; then
   header_declared="yes"
   # 无（理由） 豁免形态
   if echo "$header_line" | grep -qE '无（|无\('; then header_exempt="yes"; fi
-  echo "$header_line" | grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs`' | tr -d '`' | expand_braces >> "${TMP}.hdr" || true
+  echo "$header_line" | grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs(:[^`]*)?`' | tr -d '`' | sed 's/:.*$//' | expand_braces >> "${TMP}.hdr" || true
 fi
 touch "${TMP}.hdr"
 
@@ -104,9 +104,9 @@ touch "${TMP}.hdr"
 awk '
   /^#{1,3} [0-9]+(\.[0-9]+)?[[:space:]]/ { section = substr($2, 1, 1) }
   { if (section == "" || section == "3" || section == "4" || section == "5") print }
-' "$DOC" | grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs`' | tr -d '`' | expand_braces >> "${TMP}.body" || true
+' "$DOC" | grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs(:[^`]*)?`' | tr -d '`' | sed 's/:.*$//' | expand_braces >> "${TMP}.body" || true
 if [ ! -s "${TMP}.body" ]; then
-  grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs`' "$DOC" | tr -d '`' | expand_braces >> "${TMP}.body" || true
+  grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs(:[^`]*)?`' "$DOC" | tr -d '`' | sed 's/:.*$//' | expand_braces >> "${TMP}.body" || true
 fi
 touch "${TMP}.body"
 
