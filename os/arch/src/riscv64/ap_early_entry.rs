@@ -31,8 +31,9 @@
 //!
 //! # Status
 //!
-//! **Skeleton** — the obligation list above is the contract; the asm body
-//! lands with S-4 (satp sequencing per §3.3 riscv row).
+//! S-4 body landed — the asm body below implements the obligation list
+//! above (satp sequencing per §3.3 riscv row); the Rust convergence point
+//! parks secondaries pending SMP unclamp (see `ap_early_entry`).
 
 /// Unit-test sentinel: proves the module's contract constants stay in sync
 /// with the SBI channel (`boot_ap` passes the bootstrap cookie in a1/a2).

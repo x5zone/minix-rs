@@ -141,7 +141,7 @@
 | 条目 | 状态 / 证据 | 内容 | 核实命令 |
 |---|---|---|---|
 | 探针残骸块（体只剩计数与引入） | `stopgap landed` / `L1` | 见 §2 探针条目，`L1` 读数 15 行 | `grep -rn "用后即滚" os --include=*.rs` |
-| 过期注释：riscv64 次级核入口文件头部仍自称骨架，实为已完成体 | `open` / `L2` | 会误导下一轮扫描做出"未实现"的假阴性 | `sed -n '30,40p' os/arch/src/riscv64/ap_early_entry.rs` |
+| 过期注释：riscv64 次级核入口文件头部仍自称骨架，实为已完成体 | `closed` / `L1` | 会误导下一轮扫描做出"未实现"的假阴性 | `grep -rn "Skeleton" os/arch/src/riscv64/ap_early_entry.rs` → 0 命中（`os/arch/src/riscv64/ap_early_entry.rs:32-35` 已改 Status 为 S-4 落地）；`cargo test -p minix-arch --test riscv64_ap_early_entry_pin` → 4 通过 / 0 失败（`2026-10-08 @ 613d04c40` 核实，落点见本轮提交） |
 | 过期注释：进程间通信里"保存的 rbx"表述已被寄存器迁移取代 | `open` / `L2` | `SD-14` 已闭，注释未滚 | `grep -n "saved RBX" os/kernel/src/ipc.rs` |
 | 无生产调用方的调试设施 | `open` / `L2`（消费者归属需人定） | 调试与转储函数只被集成测试调用，文档把它当内核设施描述 | `grep -rn "runqueues_ok" os --include=*.rs \| grep -v "os/kernel/src/debug.rs"` → 命中全在测试内 |
 | 消息环的字符写入口没有喂入者（内核打印未注入环） | `open` / `L1` | `grep -rn "console_write_str" os --include=*.rs` → 只有定义 | 要么接线，要么在文档写明"只由系统调用侧喂" |
