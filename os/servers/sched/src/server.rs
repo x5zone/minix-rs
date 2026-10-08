@@ -218,7 +218,11 @@ impl SchedServer {
         // ── settle (C 89-96) ──
         if let DispatchVerdict::Reply(code) = verdict {
             let mut reply = message;
-            reply.m_type = code;
+            // 线序符号：C 的 SCHED 以 `_SYSTEM` 编译（sched.h:4「tell headers
+            // that this is the kernel」→ errno 常量带负号），main.c:89-96 写回
+            // 的错码因此是负数；本树判定面用正号常量，在回复边界折一次
+            // （单源 `minix_types::reply_status`，与 DS/VFS 同纪律）。
+            reply.m_type = minix_types::reply_status(code);
 
             // C 101-106: a failed reply is logged and dropped — the loop
             // moves on. The print has no Rust home (no logging facility);
@@ -683,7 +687,7 @@ mod tests {
         assert_eq!(s.run_once(&ipc, &mut kernel), Step::Handled);
         let sent = ipc.sent.borrow();
         assert_eq!(sent.len(), 2);
-        assert_eq!(sent[1].1.m_type, minix_types::ENOSYS);
+        assert_eq!(sent[1].1.m_type, -minix_types::ENOSYS);
         assert_eq!(
             s.loads.iter().filter(|l| l.is_some_and(|n| n > 0)).count(),
             1,
@@ -799,7 +803,9 @@ mod tests {
             assert_eq!(s.procs[CHILD as usize].state, SlotState::Free);
             let sent = ipc.sent.borrow();
             assert_eq!(sent.len(), 1);
-            assert_eq!(sent[0].1.m_type, expected);
+            // 表中的 `expected` 是正号 errno 常量（判定面语言），线序上回的是
+            // 负值（C `_SYSTEM`，sched.h:4）——在此取负对标。
+            assert_eq!(sent[0].1.m_type, -expected);
         }
         // A taken slot refuses too (the START door is the vacant door).
         let mut s = server(1);
@@ -809,7 +815,7 @@ mod tests {
         let ipc = MockIpc::default();
         ipc.deliver(start_message(CHILD, 50, 5, 200), status_call());
         s.run_once(&ipc, &mut kernel);
-        assert_eq!(ipc.sent.borrow()[0].1.m_type, minix_types::EDEADEPT);
+        assert_eq!(ipc.sent.borrow()[0].1.m_type, -minix_types::EDEADEPT);
     }
 
     #[test]
@@ -823,7 +829,7 @@ mod tests {
         m.m_type = SCHEDULING_INHERIT;
         ipc.deliver(m, status_call());
         s.run_once(&ipc, &mut kernel);
-        assert_eq!(ipc.sent.borrow()[0].1.m_type, minix_types::EDEADEPT);
+        assert_eq!(ipc.sent.borrow()[0].1.m_type, -minix_types::EDEADEPT);
         assert_eq!(s.procs[1].state, SlotState::Free);
     }
 
@@ -839,7 +845,7 @@ mod tests {
         ipc.deliver(start_message(CHILD, 50, 5, 100), status_call());
         s.run_once(&ipc, &mut kernel);
         assert_eq!(s.procs[CHILD as usize].state, SlotState::InUse);
-        assert_eq!(ipc.sent.borrow()[0].1.m_type, minix_types::EINVAL);
+        assert_eq!(ipc.sent.borrow()[0].1.m_type, -minix_types::EINVAL);
     }
 
     #[test]
@@ -895,12 +901,12 @@ mod tests {
         m.m_source = Endpoint(100); // neither PM nor RS
         ipc.deliver(m, status_call());
         s.run_once(&ipc, &mut kernel);
-        assert_eq!(ipc.sent.borrow()[0].1.m_type, EPERM);
+        assert_eq!(ipc.sent.borrow()[0].1.m_type, -EPERM);
         // A vacant slot, even from PM: EDEADEPT.
         let ipc = MockIpc::default();
         ipc.deliver(stop_message(33), status_call());
         s.run_once(&ipc, &mut kernel);
-        assert_eq!(ipc.sent.borrow()[0].1.m_type, minix_types::EDEADEPT);
+        assert_eq!(ipc.sent.borrow()[0].1.m_type, -minix_types::EDEADEPT);
     }
 
     #[test]
@@ -931,7 +937,7 @@ mod tests {
         s.run_once(&ipc, &mut kernel);
         assert_eq!(s.procs[CHILD as usize].priority.get(), 3, "restored");
         assert_eq!(s.procs[CHILD as usize].max_priority.get(), 3, "restored");
-        assert_eq!(ipc.sent.borrow()[0].1.m_type, minix_types::EINVAL);
+        assert_eq!(ipc.sent.borrow()[0].1.m_type, -minix_types::EINVAL);
     }
 
     #[test]
@@ -953,13 +959,13 @@ mod tests {
         m.m_source = Endpoint(100);
         ipc.deliver(m, status_call());
         s.run_once(&ipc, &mut kernel);
-        assert_eq!(ipc.sent.borrow()[0].1.m_type, EPERM);
+        assert_eq!(ipc.sent.borrow()[0].1.m_type, -EPERM);
         assert_eq!(s.procs[CHILD as usize].priority.get(), 9, "untouched");
         // A legal sender with a past-the-end ceiling: EINVAL.
         let ipc = MockIpc::default();
         ipc.deliver(nice_message(CHILD, 16), status_call());
         s.run_once(&ipc, &mut kernel);
-        assert_eq!(ipc.sent.borrow()[0].1.m_type, minix_types::EINVAL);
+        assert_eq!(ipc.sent.borrow()[0].1.m_type, -minix_types::EINVAL);
         assert_eq!(s.procs[CHILD as usize].priority.get(), 9, "untouched");
     }
 
@@ -1037,7 +1043,7 @@ mod tests {
         assert_eq!(s.procs[CHILD as usize].priority.get(), 5, "untouched");
         let sent = ipc.sent.borrow();
         assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].1.m_type, EPERM);
+        assert_eq!(sent[0].1.m_type, -EPERM);
         assert_eq!(kernel.schedule_calls.borrow().len(), 0);
     }
 
@@ -1098,7 +1104,7 @@ mod tests {
         ipc.deliver(blank(0x1234), status_call());
         s.run_once(&ipc, &mut kernel);
         let sent = ipc.sent.borrow();
-        assert_eq!(sent[0].1.m_type, minix_types::ENOSYS);
+        assert_eq!(sent[0].1.m_type, -minix_types::ENOSYS);
     }
 
     #[test]
@@ -1118,7 +1124,7 @@ mod tests {
         let ipc2 = MockIpc::default();
         ipc2.deliver(blank(0x1234), status_call());
         s.run_once(&ipc2, &mut kernel);
-        assert_eq!(ipc2.sent.borrow()[0].1.m_type, minix_types::ENOSYS);
+        assert_eq!(ipc2.sent.borrow()[0].1.m_type, -minix_types::ENOSYS);
     }
 
     #[test]

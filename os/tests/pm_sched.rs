@@ -508,7 +508,10 @@ fn no_quantum_loop_kernel_notify_demotes_and_writes_back() {
         2,
         "前链 START 回执 + 伪造回复各一条（走普通回复面）"
     );
-    assert_eq!(sent[1].1.m_type, EPERM);
+    // 线序符号：C 的 SCHED 以 `_SYSTEM` 编译（minix3/minix/servers/sched/sched.h:4），
+    // main.c:89-96 写回的错码本就带负号；本树判定面用正号常量、在回复边界折号
+    // （minix_types::reply_status），所以这里钉的是负值。
+    assert_eq!(sent[1].1.m_type, -EPERM);
     drop(sent);
     assert_eq!(
         kernel.schedule_calls.borrow().len(),
@@ -557,8 +560,8 @@ fn sched_refusal_surfaces_to_pm_as_nonzero_rv() {
         let results = sched_init(&mut table, &mut ctl);
         assert_eq!(results.len(), 1);
         assert_eq!(
-            results[0].1, EDEADEPT,
-            "拒绝码必须经 rv 透传（taskcall.c:19-20）"
+            results[0].1, -EDEADEPT,
+            "拒绝码必须经 rv 透传（taskcall.c:19-20）；线序上是负值（C `_SYSTEM` SCHED）"
         );
     }
     assert_eq!(

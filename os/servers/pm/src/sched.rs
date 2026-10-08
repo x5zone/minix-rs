@@ -200,7 +200,12 @@ impl<'a, T: IpcTransport> MinixSchedCtl<'a, T> {
                 Err(_) => return -minix_types::EIO,
                 Ok(()) => {
                     let rv = msg.m_type;
-                    if rv == 208 {
+                    // ELOCKED 在线序上是**负**值：C 的 SCHED 以 `_SYSTEM`
+                    // 编译（sched.h:4），`_taskcall` 原样带回回复的 m_type，
+                    // 所以 C 的重试判据 `rv == ELOCKED` 比的是负数（本树
+                    // 判定面用正号常量，服务器在回复边界折号——单源
+                    // `minix_types::reply_status`）。
+                    if rv == -minix_types::ELOCKED {
                         // ELOCKED：tick 抢占（133Hz）下 sched 取得 CPU 推进
                         // 其 receive 半后本 send 即可投递——无界重试对位 C
                         // `_taskcall` 的阻塞直到投递语义。

@@ -28,7 +28,8 @@ use minix_types::{
 use crate::boot::{BootService, apply_boot_map};
 use crate::check::{apply_check, plan_check};
 use crate::delete::apply_delete;
-use crate::dispatch::{DsCall, Incoming, reply_status, should_reply, triage};
+use crate::dispatch::{DsCall, Incoming, should_reply, triage};
+use minix_types::reply_status;
 use crate::getsysinfo::{image_bytes, plan_getsysinfo};
 use minix_types::DsEntrySnap;
 use crate::heap::DsPool;

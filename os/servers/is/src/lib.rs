@@ -297,8 +297,11 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
         };
 
         // C: if (result != EDONTREPLY) reply(who_e, result) — main.c:65-68.
+        // 线序符号：C 的 IS 以 `_SYSTEM` 编译（inc.h:7），main.c 写回的错码
+        // 本就带负号；本树判定面用正号常量，在回复边界折一次（单源
+        // `minix_types::reply_status`，与 DS/SCHED/VFS 同纪律）。
         if !is_reply_suppressed(result) {
-            self.state.reply_buf.m_type = result;
+            self.state.reply_buf.m_type = minix_types::reply_status(result);
             let dest = self.state.caller;
             if self.transport.send(dest, &self.state.reply_buf).is_err() {
                 panic!("unable to send reply!: {result}");
