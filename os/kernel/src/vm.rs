@@ -1890,6 +1890,8 @@ mod tests {
         let ctx = proc.p_vm_suspend.as_mut().unwrap();
         ctx.state = VmSuspendState::Fetched;
 
+        //[SD19-gate] 单元测试 setup：先置 Fetched 态再触发第二次断前置检查，本次返回值在下一行才校验
+        #[allow(clippy::let_underscore_must_use)]
         let _ = VmRequestHandler::memreq_reply(&mut proc, VmCheckResult::Ok);
 
         // Now state is Completed, try again

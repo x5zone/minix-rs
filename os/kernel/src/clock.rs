@@ -434,6 +434,8 @@ fn unregister_profile_hook() {
         return;
     }
     let section = unsafe { crate::smp::BklSection::assume_held() };
+    //[SD19-gate] 拆 profile hook：remove_hook 失败对本就在拆除的钩子无可行动，非静默吞错
+    #[allow(clippy::let_underscore_must_use)]
     let _ = crate::irq_manager_with(&section).remove_hook(IrqId(raw as u32), PROFILE_CLOCK_IRQ);
 }
 

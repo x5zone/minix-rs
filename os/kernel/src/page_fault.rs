@@ -171,6 +171,8 @@ pub fn kernel_mode_pagefault_panic_msg(
     // C: exception.c:91 — fixed format string, no allocation. `write!`
     // into the stack buffer uses core's formatting machinery, which
     // never allocates.
+    //[SD19-gate] 固定格式串写栈上缓冲：core::fmt 不分配、不可失败（紧邻注释已陈明）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = write!(
         buf,
         "kernel-mode page fault: endpoint={}, fault_addr={:#x} \

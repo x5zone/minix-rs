@@ -1957,6 +1957,8 @@ impl<'a> IpcEngine<'a> {
 
             if invalid {
                 // C: goto store_result with r = EINVAL (proc.c:1451-1452).
+                //[SD19-gate] C proc.c store_result 写回：EINVAL 已是结果、OK 已投递，copy 失败对内核无可回滚动作（C 同位亦忽略）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self
                     .user_copy
                     .write_senda_result(sender_root, table, i, EINVAL, flags | AMF_DONE);
@@ -1992,6 +1994,8 @@ impl<'a> IpcEngine<'a> {
             delivered = true;
 
             // C: store_result (proc.c:1479-1488) — result OK + AMF_DONE.
+            //[SD19-gate] C proc.c store_result 写回：EINVAL 已是结果、OK 已投递，copy 失败对内核无可回滚动作（C 同位亦忽略）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self
                 .user_copy
                 .write_senda_result(sender_root, table, i, OK, flags | AMF_DONE);
@@ -2432,6 +2436,8 @@ impl<'a> IpcEngine<'a> {
             // C: store results (proc.c:1300-1307).
             //   tabent.result = r; tabent.flags = flags | AMF_DONE;
             //   A_INSRT ignores copy errors.
+            //[SD19-gate] C proc.c store_result 写回：EINVAL 已是结果、OK 已投递，copy 失败对内核无可回滚动作（C 同位亦忽略）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self
                 .user_copy
                 .write_senda_result(
