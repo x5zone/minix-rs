@@ -164,7 +164,8 @@ pub fn vm_fork<T: IpcTransport>(
 
 /// 发送 VM_WILLEXIT 通知到 VM 服务（同步）。
 ///
-/// C: `vm_willexit`（libsys，`minix3/minix/lib/libsys/vm_willexit.c:11-21`）
+/// C: `vm_willexit`（libsys，与 `vm_exit` 同文件 `libsys/vm_exit.c:25-35`，
+/// 无单独的 `vm_willexit.c`）
 /// —— `_taskcall(VM_PROC_NR, VM_WILLEXIT, &m)`：载荷 `VMWE_ENDPOINT`
 /// （m1i1，`com.h:644`），无回复载荷。taskcall 返回值即结果——非 OK
 /// 时 C 的调用方 panic（`forkexit.c:332-334` "exit_proc: vm_willexit
@@ -449,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_vm_willexit_encodes_endpoint_and_ok() {
-        // C: libsys vm_willexit.c:11-21 — 载荷 VMWE_ENDPOINT（m1i1，
+        // C: libsys vm_exit.c:25-35 — 载荷 VMWE_ENDPOINT（m1i1，
         // com.h:644），无回复载荷；taskcall 返回 OK。
         let mut transport = crate::ipc::TestIpcTransport::new();
         let got = vm_willexit(&mut transport, Endpoint::from_generation_slot(1, 7));

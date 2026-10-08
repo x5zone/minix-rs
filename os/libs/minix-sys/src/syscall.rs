@@ -433,7 +433,7 @@ pub const SYS_GETKSIG_CALL: i32 = 7;
 /// C: SYS_ENDKSIG 是内核调用 8（`kernel/src/syscall.rs` `Syscall::Endksig`）。
 pub const SYS_ENDKSIG_CALL: i32 = 8;
 
-/// C: `sys_getksig(proc_nr_e, &sigset)`（libsys `sys_getksig.c:8-30`）——
+/// C: `sys_getksig(proc_nr_e, &sigset)`（libsys `sys_getsig.c:6-17`）——
 /// 取回一个有待处理内核信号的进程及其信号位图；无待处理时 `endpt`
 /// 为 `Endpoint::NONE`。回复载荷 `m_sigcalls.{endpt, map}`。取回即消费：
 /// 内核同时清除该进程的 RTS_SIGNALED 与 p_pending（后续 endksig 逐信号
@@ -452,7 +452,7 @@ pub fn sys_getksig(transport: &impl KernelCallTransport) -> Result<(i32, u64), i
     Ok((sc.endpt, sc.map))
 }
 
-/// C: `sys_endksig(proc_nr_e, sig_nr)`（libsys `sys_endksig.c:8-20`）——
+/// C: `sys_endksig(proc_nr_e, sig_nr)`（libsys `sys_endsig.c:6-15`）——
 /// 确认消费一个内核信号（载荷 `m_sigcalls.{endpt, sig}`），内核清
 /// SIG_PENDING 位。调用方必须是目标进程的信号管理器（否则 EPERM）。
 pub fn sys_endksig(transport: &impl KernelCallTransport, endpt: i32, sig: i32) -> Result<(), i32> {

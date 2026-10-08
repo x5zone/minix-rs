@@ -69,7 +69,7 @@ impl<B: LineBackend> TtyDriver<B> {
         let Some(slot) = self.slot(minor) else {
             return Err(Errno::from_i32(minix_types::ENXIO));
         };
-        // C: do_write.c:553-556 — `if (size <= 0) return EINVAL`.
+        // C: `drivers/tty/tty/tty.c:553-556` — `if (size <= 0) return EINVAL`.
         if bytes.is_empty() {
             return Err(Errno::from_i32(minix_types::EINVAL));
         }

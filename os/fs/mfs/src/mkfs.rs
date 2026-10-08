@@ -41,7 +41,7 @@ use crate::superblock::{DiskSuperblock, DIRECT_ZONE_COUNT, FLAG_CLEAN, MAGIC_V3,
 use alloc::vec::Vec;
 use alloc::vec;
 
-/// 缺省块大小（C `DEFAULT_BLOCK_SIZE`，mfs.h:9 的 4096）。
+/// 缺省块大小（C `DEFAULT_BLOCK_SIZE`，`usr.sbin/mkfs.mfs/v3/const.h:9` 的 4096）。
 pub const DEFAULT_BLOCK_SIZE: u64 = 4096;
 /// 最小可接受块数（C `if (blocks < 5)`，mkfs.c:356）。
 pub const MIN_BLOCKS: u64 = 5;

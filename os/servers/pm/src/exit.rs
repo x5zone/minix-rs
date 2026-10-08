@@ -115,13 +115,13 @@ pub trait KernelGateway {
     /// `ptrace_range` 参数块即经此通道取出（trace.c:169-171）。
     fn copy_from_user(&mut self, src_ep: Endpoint, src: u64, bytes: &mut [u8]) -> Result<(), i32>;
 
-    /// C: `sys_getksig(&target, &set)`（libsys `sys_getksig.c:8-30`）——
+    /// C: `sys_getksig(&target, &set)`（libsys `sys_getsig.c:6-17`）——
     /// 取回一个有待处理内核信号的进程（endpoint + 位图）；`None` =
     /// 内核侧无更多待处理信号（C：endpt == NONE）。取回即消费内核的
     /// RTS_SIGNALED。SIGKSIG 拉取循环（sef_signal.c:27-63）的取半边。
     fn get_ksig(&mut self) -> Result<Option<(Endpoint, u64)>, i32>;
 
-    /// C: `sys_endksig(proc_nr_e, sig_nr)`（libsys `sys_endksig.c:8-20`）
+    /// C: `sys_endksig(proc_nr_e, sig_nr)`（libsys `sys_endsig.c:6-15`）
     /// ——确认消费一个内核信号（清 SIG_PENDING）。调用方必须是目标
     /// 进程的信号管理器（否则 EPERM）。拉取循环的确认半边。
     fn end_ksig(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32>;

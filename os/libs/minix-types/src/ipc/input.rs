@@ -197,11 +197,11 @@ pub fn driver_label(key: &str) -> Option<&str> {
 // ── Light control encoding (ioctl in, mask out) ──
 
 /// Keyboard light bits as the caller passes them (`kio_leds_t.kl_bits`).
-/// C: `KBD_LEDS_NUM/CAPS/SCROLL 0x1/0x2/0x4` — kbdio.h:22-24.
+/// C: `KBD_LEDS_NUM/CAPS/SCROLL 0x1/0x2/0x4` — `sys/kbdio.h:18-20`.
 pub const KBD_LEDS_NUM: u32 = 0x1;
-/// C: `KBD_LEDS_CAPS 0x2` — kbdio.h:23.
+/// C: `KBD_LEDS_CAPS 0x2` — `sys/kbdio.h:19`.
 pub const KBD_LEDS_CAPS: u32 = 0x2;
-/// C: `KBD_LEDS_SCROLL 0x4` — kbdio.h:24.
+/// C: `KBD_LEDS_SCROLL 0x4` — `sys/kbdio.h:20`.
 pub const KBD_LEDS_SCROLL: u32 = 0x4;
 
 /// Caller-side light state. C: `struct kio_leds { unsigned kl_bits; }` —

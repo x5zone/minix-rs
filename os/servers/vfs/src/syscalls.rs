@@ -2072,7 +2072,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             };
             // SAFETY: `mess_vfs_lsockdriver_addr { int32_t req_id; int32_t
             // sock_id; cp_grant_id_t grant; unsigned int len; endpoint_t
-            // user_endpt; int sflags; }`（ipc.c:2060-2070 一类）。
+            // user_endpt; int sflags; }`（`minix/ipc.h:2261-2269` 一类）。
             unsafe {
                 let raw = &mut req.m_u.raw;
                 raw[0..4].copy_from_slice(&user_e.0.to_le_bytes());

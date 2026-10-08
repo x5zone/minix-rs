@@ -20,7 +20,7 @@
 //!
 //! One C detail does not survive the move to LP64: C seeds the argv array
 //! address with `ps_argvstr = (char **)(*vsp + sizeof(argc))`
-//! (`stack_utils.c:174`), where `argc` is an `int`. That is exact on i386
+//! (`stack_utils.c:168`), where `argc` is an `int`. That is exact on i386
 //! (4-byte slots: the argc word occupies frame+0, argv[0] at frame+4). On
 //! LP64 the argc word is *written* through a `char **` (`stack_utils.c:162`,
 //! an 8-byte store), so argv[0] lives at frame+8 while `sizeof(argc)` is
@@ -340,7 +340,7 @@ mod tests {
 
     /// Two-string env: slots point at successive strings, descriptor's
     /// env_str sits after the argv NULL (`ps_argvstr + argc + 1`,
-    /// `stack_utils.c:176`).
+    /// `stack_utils.c:170`).
     #[test]
     fn test_stack_fill_env_slots_and_descriptor() {
         let argv = ["sh", "/etc/rc"];

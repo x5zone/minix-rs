@@ -9,7 +9,7 @@
 //! prints nothing at all. A shorter stream is reported by `eofmsg`
 //! (misc.c:59-73): "EOF on %s", or with `-l` "EOF on %s: char %lld,
 //! line %lld" — and the EOF names the *shorter* file
-//! (`regular.c:119`: `len1 > len2 ? file2 : file1`). Line numbers count
+//! (`regular.c:111`: `len1 > len2 ? file2 : file1`). Line numbers count
 //! the first stream's newlines.
 
 use alloc::string::String;
@@ -109,11 +109,11 @@ mod tests {
 
     #[test]
     fn test_eof_names_the_shorter_stream() {
-        // regular.c:119 names the shorter stream: the first stream here.
+        // regular.c:111 names the shorter stream: the first stream here.
         let outcome = compare_bytes(b"ab", b"abc", false);
         assert_eq!(outcome.eof_on, Some((1, 3, 1)));
         // Second stream shorter: the EOF names stream two
-        // (regular.c:119's ternary picks file2 when len1 > len2).
+        // (regular.c:111's ternary picks file2 when len1 > len2).
         let outcome = compare_bytes(b"abc\n", b"ab", false);
         assert_eq!(outcome.eof_on, Some((2, 3, 1)));
     }
