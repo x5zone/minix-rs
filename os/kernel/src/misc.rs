@@ -1,4 +1,4 @@
-//! Miscellaneous and unported system calls: getinfo, trace, update, profile, unused.
+//! Miscellaneous and unported system calls: getinfo, trace, update, profile.
 //!
 //! # Minix3 C Source Mapping
 //!
@@ -6,12 +6,12 @@
 //! - `do_trace.c` — SYS_TRACE
 //! - `do_update.c` — SYS_UPDATE
 //! - `do_sprofile.c` — SYS_SPROF
-//! - `do_unused.c` — unimplemented system calls
 //!
 //! # Design Decisions (25-misc-unported.md §3)
 //!
 //! - **D1**: `GetInfoRequest` enum for GETINFO sub-requests
-//! - **D2**: Return ENOSYS for unimplemented calls (matches C)
+//! - **D2**: Unrecognized call numbers return BadCall, matching C's
+//!   EBADREQUEST for a NULL vector entry (there is no `do_unused` in C)
 //! - **D5**: TRACE deferred — debugging feature, not core
 
 use minix_types::{BootImageStruct, IrqHookStruct, KinfoStruct, PrivInfoStruct, ProcInfoStruct};
@@ -2855,15 +2855,6 @@ pub(crate) fn profile_clock_tick(
     }
 }
 
-/// Handle unimplemented system calls.
-///
-/// C: `do_unused()` — do_unused.c
-///
-/// Returns ENOSYS for any unimplemented system call number.
-pub fn dispatch_unused() -> KcallResult {
-    KcallResult::Ok(ENOSYS)
-}
-
 // ── Tests ──
 
 #[cfg(test)]
@@ -3453,13 +3444,6 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.address = tr_addr;
         let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
-    }
-
-    #[test]
-    fn test_dispatch_unused() {
-        // ENOSYS = 78 (errno.h:137). Previously asserted as 38 (ENOTSOCK's
-        // value) due to a duplicated errno constant — fixed in FIX-01.
-        assert!(matches!(dispatch_unused(), KcallResult::Ok(ENOSYS)));
     }
 
     // ── dispatch_update tests (F-38) ────────────────────────────────

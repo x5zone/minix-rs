@@ -26,6 +26,7 @@
 | 次级核本地定时器与量子耗尽检查的接线 | `closed`（断言缺失另计）/ `L2` | `K6`、`smp_todo.md` §28 | `os/arch/src/x86_64/clock.rs:fn init_local_timer`、`os/kernel/src/clock.rs:fn rearm_local_tick` | 见 `TODO-LEDGER-OPEN.md` §1 同名条目（该条只保留"真机载体无断言"的残余） |
 | 简单字符设备信息的单一权威与虚存服务握手 | `closed` / `L2` | `SD-29` 的一处子面、`C-1` | `os/libs/minix-types/src/types/device.rs` 被虚拟文件系统消费 | 读 `new_edge4.md` §2 的 `C-1` 销账行（含提交号） |
 | 跨阶段联调族中已闭的成员 | `closed` / `L2` | `E2`、`E4`、`E-BOOTFRAME`、`E-FORKMSG`、`E-VFSWIRE`、`E-REQWIRE`、`E-SCHEDNICED`、`E-MINTYPES-SYS`、`E-MIBGRANT`、`E-DMCLIENT`、`E-MINSYS-SCOPE`、`E-ISKMESS`、`E-CDRCONV`、`E-TTYEVENT`、`E-PCKBDREG`、`E-DEVWIRE`、`E-IPCWIRE`（账面还挂着进行中的状态行，正文已自宣"八缺全闭合"，属**表头与正文不同步**） | 见 `edge_todo.md` 各条目最新进度注记 | 逐条 `grep -n "<条目 ID>" rewrite-notes/coordination/edge_todo.md` 后读**最新**注记；表头普遍滞后一档 |
+| 未被使用的分发死码 `dispatch_unused` 已删除 | `closed` / `L1` | OPEN §8 卫生项（原无编号；设计 `25-misc-unported.md` §4.6/§6 登记“保留待清理”；`2026-10-08 @ 56e1869ae` 翻转） | `os/kernel/src/misc.rs`（函数、测试、模块映射 `do_unused.c` 行、D2 旧注记已删；D2 改写对齐设计 §3.2） | `rg -n "dispatch_unused" os --include=*.rs` → 零命中；`cargo test -p minix-kernel --lib` → 829 通过 / 0 失败（基线 830 − 1 个被删测试）；`cargo check --workspace --tests` → 零错误 |
 
 ## §2 已裁决（人或既有设计已经替本轮做过选择）
 
