@@ -2,7 +2,7 @@
 
 > **分类**: 阶段 2 — 主循环与异步协议（锚点文档）
 > **源码**: `minix3/minix/servers/pm/main.c`（main 主循环 / reply / calls_stats）、`minix3/minix/servers/pm/table.c`（call_vec）、`minix3/minix/include/minix/callnr.h`（47 个调用号）、`minix3/minix/include/minix/com.h`（IS_VFS_PM_RS / PROC_EVENT_REPLY / SUSPEND / is_ipc_notify）、`minix3/minix/include/minix/ipcconst.h`（IPC_STATUS_CALL）
-> **Rust 模块**: `os/servers/pm/src/ipc/transport.rs`（`IpcTransport::receive` / `IpcStatus`）、`os/servers/pm/src/ipc/calls.rs`（`PmCall` / `dispatch_pm_call`）、`os/servers/pm/src/ipc/dispatcher.rs`（`ReplyIntent` / `dispatch_message`）、`os/servers/pm/src/init.rs`（`PmServer::run` / `run_once` / `reply` / `RunStep`）
+> **Rust 模块**: `os/servers/pm/src/ipc/transport.rs`（`IpcTransport::receive` / `IpcStatus`）、`os/servers/pm/src/ipc/calls.rs`（`dispatch_pm_call`；`PmCall` 的权威定义在 `os/libs/minix-types/src/ipc/pm.rs:pub enum PmCall`，此模块再导出）、`os/servers/pm/src/ipc/dispatcher.rs`（`ReplyIntent` / `dispatch_message`）、`os/servers/pm/src/init.rs`（`PmServer::run` / `run_once` / `reply` / `RunStep`）
 > **前置**: `rewrite-notes/04-stage-pm/01-pm-init-main.md`（启动链进入主循环）、`02-mproc-struct.md`（mproc 结构）、`03-mproc-table.md`（pm_isokendpt 调用点）
 > **说明**: PM 主循环的完整语义：收消息、CLOCK notify 跳过、caller 验证、EXITING 丢弃、三路分发（VFS 回复 / 事件回复 / PM 调用）、SUSPEND 回复模型、reply()、47 调用分发表、调用统计。VFS 回复状态机（05）、事件订阅（06）只在本档建钩子。
 
@@ -381,9 +381,9 @@ pub enum ReplyIntent {
 - **C**: `call_vec[NR_PM_CALLS]` 函数指针表（table.c:14-61）+ `call_index` 索引（main.c:92-99）。
 - **Rust 现状（原型遗留）**: 旧 `MessageDispatcher::dispatch(table, request: PmRequest)` 只有 `PmRequest::Fork` 一个变体，与 C 的 47 调用面严重不匹配。
 - **决策**: 三件套替换——
-  1. `PmCall` 枚举（os/servers/pm/src/ipc/calls.rs:enum PmCall（L29，工具生成））：47 个变体，`#[repr(i32)]` 判别值 = 调用号（`PM_BASE + 1` ~ `+47`）；
-  2. `PmCall::from_call_nr(nr) -> Option<PmCall>`（os/servers/pm/src/ipc/calls.rs:fn from_call_nr（L133，工具生成））：未注册号（含 0 保留值）→ None → 分发层 ENOSYS；
-  3. `dispatch_pm_call(call, table, caller) -> ReplyIntent`（os/servers/pm/src/ipc/calls.rs:fn call_nr（L201，工具生成））：match 路由到 handler。
+  1. `PmCall` 枚举（os/libs/minix-types/src/ipc/pm.rs:pub enum PmCall，与 `Mess*` 载荷同库同源）：47 个变体，`#[repr(i32)]` 判别值 = 调用号（`PM_BASE + 1` ~ `+47`）；
+  2. `PmCall::from_call_nr(nr) -> Option<PmCall>`（os/libs/minix-types/src/ipc/pm.rs:fn from_call_nr）：未注册号（含 0 保留值）→ None → 分发层 ENOSYS；
+  3. `dispatch_pm_call(call, table, caller) -> ReplyIntent`（os/servers/pm/src/ipc/calls.rs:fn dispatch_pm_call）：match 路由到 handler。
 
 - **理由**: Rust 无 C 式"表驱动 void 指针"；match 是类型安全分发（编译期穷尽 47 项，`PmCall` 不可能携带未注册号）；`from_call_nr` 把"调用号合法性"变成类型转换的一部分。
 - **行为契约**: 47 个调用号逐一映射（`test_call_nr_roundtrip_all_registered` 验证 1..=47 全部可解码可回编码）；未注册号 → ENOSYS（与 C 越界槽位一致）。
@@ -442,7 +442,7 @@ trait 新增 `receive`（transport.rs:51）。`KernelIpcTransport::receive`（tr
 
 ### 4.2 calls.rs：47 调用分发表
 
-`PmCall` 枚举（os/servers/pm/src/ipc/calls.rs:enum PmCall（L29，工具生成））47 个变体，判别值 = 调用号。`from_call_nr`（os/servers/pm/src/ipc/calls.rs:fn from_call_nr（L133，工具生成））显式匹配 1..=47；`call_nr()`（os/servers/pm/src/ipc/calls.rs:fn call_nr（L188，工具生成））返回判别值。`dispatch_pm_call`（os/servers/pm/src/ipc/calls.rs:fn call_nr（L201，工具生成））是**单一分发表**——C 的 `call_vec` 是一张 47 项函数指针表，所有已注册调用走同一路径；Rust 对应为这一个穷尽 match，已落地的 7 个 handler（Fork/SrvFork/Exit/Wait4/Kill/SrvKill/ProcEventMask）在此解码消息载荷并调用，其余 40 个返回 ENOSYS 占位：
+`PmCall` 枚举（os/libs/minix-types/src/ipc/pm.rs:pub enum PmCall）47 个变体，判别值 = 调用号。`from_call_nr`（os/libs/minix-types/src/ipc/pm.rs:fn from_call_nr）显式匹配 1..=47；`call_nr()`（os/libs/minix-types/src/ipc/pm.rs:fn call_nr）返回判别值。`dispatch_pm_call`（os/servers/pm/src/ipc/calls.rs:fn dispatch_pm_call）是**单一分发表**——C 的 `call_vec` 是一张 47 项函数指针表，所有已注册调用走同一路径；Rust 对应为这一个穷尽 match，已落地的 7 个 handler（Fork/SrvFork/Exit/Wait4/Kill/SrvKill/ProcEventMask）在此解码消息载荷并调用，其余 40 个返回 ENOSYS 占位：
 
 ```rust
 pub fn dispatch_pm_call<T: IpcTransport>(
@@ -604,8 +604,8 @@ fn reply(&mut self, slot: UserSlot, result: i32) {
 | 13 | `test_pm_call_routes_to_dispatch_pm_call` | main.c:90-101 单一分发表路由 | dispatcher.rs |
 | 14 | `test_unknown_type_returns_enosys` | main.c:102-103 | dispatcher.rs |
 | 14a | `test_vm_fork_encodes_request_and_decodes_reply` / `test_vm_fork_vm_refusal_is_error` / `test_vm_fork_transport_failure_is_error` | libsys vm_fork.c wire + fail-closed（2026-09-06，07 D3） | dispatcher.rs |
-| 15 | `test_call_nr_roundtrip_all_registered` | minix3/minix/include/minix/callnr.h:PM_EXIT 47 项全注册 | calls.rs |
-| 16 | `test_call_nr_rejects_unregistered` | minix3/minix/include/minix/callnr.h:NR_PM_CALLS 越界/NULL → ENOSYS | calls.rs |
+| 15 | `test_call_nr_roundtrip_all_registered` | minix3/minix/include/minix/callnr.h:PM_EXIT 47 项全注册 | minix-types `ipc/pm.rs` |
+| 16 | `test_call_nr_rejects_unregistered` | minix3/minix/include/minix/callnr.h:NR_PM_CALLS 越界/NULL → ENOSYS | minix-types `ipc/pm.rs` |
 | 17 | `test_dispatch_fork_success_is_reply_later` / `test_dispatch_fork_parent_unknown_is_error_reply` / `test_dispatch_exit_is_no_reply` | minix3/minix/servers/pm/forkexit.c:do_fork（L139，工具生成） SUSPEND / 同步可失败 errno / 246 NoReply（2026-09-06 分发收敛后） | calls.rs |
 | 18 | `test_dispatch_unimplemented_call_is_enosys` | 未实现 handler ENOSYS 占位（GetPid） | calls.rs |
 | 19 | `test_mock_receive_returns_queued_message` | receive 队列单次消费 | transport.rs |

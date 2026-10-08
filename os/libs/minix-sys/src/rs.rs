@@ -41,13 +41,13 @@ pub const RS_CALL_GET_SYSTEM_INFO: i32 = 0x709;
 
 /// Ask the process manager for endpoint identities.
 /// C: `PM_GETEPINFO (PM_BASE + 45)` (`callnr.h:58`).
-pub const PM_CALL_GET_ENDPOINT_INFO: i32 = 45;
+pub const PM_CALL_GET_ENDPOINT_INFO: i32 = minix_types::PmCall::GetEpInfo as i32;
 /// Ask the process manager for the endpoint behind a process identifier.
 /// C: `PM_GETPROCNR (PM_BASE + 46)` (`callnr.h:59`).
-pub const PM_CALL_GET_PROCESS_NUMBER: i32 = 46;
+pub const PM_CALL_GET_PROCESS_NUMBER: i32 = minix_types::PmCall::GetProcNr as i32;
 /// Ask the process manager for a numbered information item.
 /// C: `PM_GETSYSINFO (PM_BASE + 47)` (`callnr.h:60`).
-pub const PM_CALL_GET_SYSTEM_INFO: i32 = 47;
+pub const PM_CALL_GET_SYSTEM_INFO: i32 = minix_types::PmCall::GetSysInfo as i32;
 /// Ask the file system for a numbered information item.
 /// C: `VFS_GETSYSINFO (VFS_BASE + 48)` (`callnr.h:120`).
 pub const VFS_CALL_GET_SYSTEM_INFO: i32 = 0x130;

@@ -60,7 +60,7 @@ C 的 endpoint 不是槽位号而是 `_ENDPOINT(generation, slot)` 的打包值�
 1. **常量权威位置**：PM 专属常量在 `mproc/constants.rs`（NR_PIDS=30000/INIT_PID=1/NO_PID=0/NO_TRACER_INDEX=0，逐值 C 注释）；跨服务器共享的在 minix-types（_NSIG=64/NR_PROCS/endpoint 编码）。判据：是否被第二个 crate 消费。
 2. **哨兵类型化**：NO_TRACER → `Option<UserSlot>`（`Guardianship::Normal`/`Traced.tracer`）；NO_EVENTSUB → `Option<EventCursor>`（`BlockState.ipc_blocked`）。哨兵值仅保留打印形态（`NO_EVENTSUB_RAW=-1`）。
 3. **信号位基单点**：信号 s 的位 = `init::sig_bit(s)` = `1<<(s-1)`（C `__sigmask`，sigtypes.h:67-71）——全 crate 唯一位基入口（V2-P0-2/V3-P3-4 确立）。
-4. **调用号单一真值**：`PmCall` 枚举（repr(i32)）判别值即调用号（callnr.h PM_BASE+1..47）；散落常量收敛 re-export（PROC_EVENT_REPLY，V3-P3-5）。
+4. **调用号单一真值**：`PmCall` 枚举（repr(i32)）判别值即调用号（callnr.h PM_BASE+1..47），权威定义在 `os/libs/minix-types/src/ipc/pm.rs:pub enum PmCall`（与 `Mess*` 载荷同库）；PM 调用号常量一律由枚举判别值派生或从 minix-types 再导出（`PROC_EVENT_REPLY` 是先例），不在任何 crate 手抄数值。
 5. **svrctl 命令码算术化**：`const fn ioc` 复刻 `_IOC`（minix3/sys/sys/ioccom.h:_IOC（L84，工具生成）），四命令码逐位断言（V3-P2-5）。
 
 ## 4 实现详解
@@ -77,7 +77,7 @@ NR_PIDS/INIT_PID/NO_PID/NO_TRACER_INDEX 逐常量定义与 C 对账测试。
 ## 5 测试点
 
 - `test_constants_match_c`（各模块同名测试：trace 19 项全量断言、timer/sched/misc/exec/time 各自族）
-- `test_call_nr_roundtrip_all_registered`：47 调用号全量 roundtrip（calls.rs）
+- `test_call_nr_roundtrip_all_registered`：47 调用号全量 roundtrip（minix-types `ipc/pm.rs`）
 - `test_signal_sets_match_c` / `test_signal_set_membership_matches_c_arrays`：三集合位基（init.rs，V2-P0-2 回归锚点）
 - `test_call_nr_rejects_unregistered`：越界/保留值拒绝
 - endpoint 编解码：from_generation_slot/slot 互逆（minix-types）

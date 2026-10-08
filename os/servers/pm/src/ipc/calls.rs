@@ -13,8 +13,9 @@
 //!   调用号返回 ENOSYS；对已注册但 handler 未实现的调用同样返回
 //!   ENOSYS 占位（DEFERRED，归属 07~20 各文档）。
 //!
-//! 调用号常量不单独散列（不重复 callnr.h 47 个 `pub const`）：枚举判别
-//! 值即单一事实源；将来内核侧 libc 需要调用号时再上移 minix-types。
+//! 调用号常量不单独散列（不重复 callnr.h 47 个 `pub const`）：[`PmCall`]
+//! 枚举判别值即单一事实源，权威定义在 minix-types 的 `ipc/pm.rs`（与
+//! `Mess*` 载荷同库同源，PD-23 采甲）；本模块只再导出与分发。
 
 use crate::event::{EventRegistry, PmEventServices};
 use crate::ipc::{IpcTransport, ReplyIntent};
@@ -27,175 +28,11 @@ use minix_types::{ENOSYS, EINVAL, Endpoint, Gid, Message, PmError, ProcEventMask
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// PM 系统调用枚举（C: `callnr.h:14-60`，`PM_BASE + 1` ~ `PM_BASE + 47`）。
-///
-/// 判别值 = 消息 `m_type` 中的调用号（`callnr.h:9`：`PM_BASE = 0x000`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(i32)]
-#[allow(clippy::upper_case_acronyms)] // 与 C `PM_*` 宏名保持同形。
-pub enum PmCall {
-    /// PM_EXIT — _exit(2)
-    Exit = 1,
-    /// PM_FORK — fork(2)
-    Fork = 2,
-    /// PM_WAIT4 — wait4(2)
-    Wait4 = 3,
-    /// PM_GETPID — get[p]pid(2)
-    GetPid = 4,
-    /// PM_SETUID — setuid(2)
-    SetUid = 5,
-    /// PM_GETUID — get[e]uid(2)
-    GetUid = 6,
-    /// PM_STIME — stime(2)
-    Stime = 7,
-    /// PM_PTRACE — ptrace(2)
-    Ptrace = 8,
-    /// PM_SETGROUPS — setgroups(2)
-    SetGroups = 9,
-    /// PM_GETGROUPS — getgroups(2)
-    GetGroups = 10,
-    /// PM_KILL — kill(2)
-    Kill = 11,
-    /// PM_SETGID — setgid(2)
-    SetGid = 12,
-    /// PM_GETGID — get[e]gid(2)
-    GetGid = 13,
-    /// PM_EXEC — execve(2)
-    Exec = 14,
-    /// PM_SETSID — setsid(2)
-    SetSid = 15,
-    /// PM_GETPGRP — getpgrp(2)
-    GetPgrp = 16,
-    /// PM_ITIMER — [gs]etitimer(2)
-    Itimer = 17,
-    /// PM_GETMCONTEXT — getmcontext(2)
-    GetMContext = 18,
-    /// PM_SETMCONTEXT — setmcontext(2)
-    SetMContext = 19,
-    /// PM_SIGACTION — sigaction(2)
-    SigAction = 20,
-    /// PM_SIGSUSPEND — sigsuspend(2)
-    SigSuspend = 21,
-    /// PM_SIGPENDING — sigpending(2)
-    SigPending = 22,
-    /// PM_SIGPROCMASK — sigprocmask(2)
-    SigProcMask = 23,
-    /// PM_SIGRETURN — sigreturn(2)
-    SigReturn = 24,
-    /// PM_SYSUNAME — sysuname(2)（obsolete）
-    SysUname = 25,
-    /// PM_GETPRIORITY — getpriority(2)
-    GetPriority = 26,
-    /// PM_SETPRIORITY — setpriority(2)
-    SetPriority = 27,
-    /// PM_GETTIMEOFDAY — gettimeofday(2)
-    GetTimeOfDay = 28,
-    /// PM_SETEUID — seteuid(2)
-    SetEUid = 29,
-    /// PM_SETEGID — setegid(2)
-    SetEGid = 30,
-    /// PM_ISSETUGID — issetugid(2)
-    IsSetUid = 31,
-    /// PM_GETSID — getsid(2)
-    GetSid = 32,
-    /// PM_CLOCK_GETRES — clock_getres(2)
-    ClockGetRes = 33,
-    /// PM_CLOCK_GETTIME — clock_gettime(2)
-    ClockGetTime = 34,
-    /// PM_CLOCK_SETTIME — clock_settime(2)
-    ClockSetTime = 35,
-    /// PM_GETRUSAGE — getrusage(2)
-    GetRUsage = 36,
-    /// PM_REBOOT — reboot(2)
-    Reboot = 37,
-    /// PM_SVRCTL — svrctl(2)
-    SvrCtl = 38,
-    /// PM_SPROF — sprofile(2)
-    SProf = 39,
-    /// PM_PROCEVENTMASK — proceventmask(2)
-    ProcEventMask = 40,
-    /// PM_SRV_FORK — srv_fork(2)
-    SrvFork = 41,
-    /// PM_SRV_KILL — srv_kill(2)
-    SrvKill = 42,
-    /// PM_EXEC_NEW — exec 新路径（newexec）
-    ExecNew = 43,
-    /// PM_EXEC_RESTART — exec 重启路径
-    ExecRestart = 44,
-    /// PM_GETEPINFO — getepinfo(2)
-    GetEpInfo = 45,
-    /// PM_GETPROCNR — getprocnr(2)
-    GetProcNr = 46,
-    /// PM_GETSYSINFO — getsysinfo(2)
-    GetSysInfo = 47,
-}
-
-impl PmCall {
-    /// 从消息 `m_type` 解码为已注册的 PM 调用。
-    ///
-    /// 返回 `None` 当 `nr` 不在 1..=47（含 `nr == 0` 保留值与未注册号）；
-    /// 调用方（分发层）对 `None` 返回 ENOSYS，与 C `call_index >=
-    /// NR_PM_CALLS || call_vec[call_index] == NULL → ENOSYS`
-    /// （main.c:94-101）一致。
-    pub fn from_call_nr(nr: i32) -> Option<PmCall> {
-        // nr 在 1..=47 内按判别值匹配；判别值即调用号。
-        match nr {
-            1 => Some(PmCall::Exit),
-            2 => Some(PmCall::Fork),
-            3 => Some(PmCall::Wait4),
-            4 => Some(PmCall::GetPid),
-            5 => Some(PmCall::SetUid),
-            6 => Some(PmCall::GetUid),
-            7 => Some(PmCall::Stime),
-            8 => Some(PmCall::Ptrace),
-            9 => Some(PmCall::SetGroups),
-            10 => Some(PmCall::GetGroups),
-            11 => Some(PmCall::Kill),
-            12 => Some(PmCall::SetGid),
-            13 => Some(PmCall::GetGid),
-            14 => Some(PmCall::Exec),
-            15 => Some(PmCall::SetSid),
-            16 => Some(PmCall::GetPgrp),
-            17 => Some(PmCall::Itimer),
-            18 => Some(PmCall::GetMContext),
-            19 => Some(PmCall::SetMContext),
-            20 => Some(PmCall::SigAction),
-            21 => Some(PmCall::SigSuspend),
-            22 => Some(PmCall::SigPending),
-            23 => Some(PmCall::SigProcMask),
-            24 => Some(PmCall::SigReturn),
-            25 => Some(PmCall::SysUname),
-            26 => Some(PmCall::GetPriority),
-            27 => Some(PmCall::SetPriority),
-            28 => Some(PmCall::GetTimeOfDay),
-            29 => Some(PmCall::SetEUid),
-            30 => Some(PmCall::SetEGid),
-            31 => Some(PmCall::IsSetUid),
-            32 => Some(PmCall::GetSid),
-            33 => Some(PmCall::ClockGetRes),
-            34 => Some(PmCall::ClockGetTime),
-            35 => Some(PmCall::ClockSetTime),
-            36 => Some(PmCall::GetRUsage),
-            37 => Some(PmCall::Reboot),
-            38 => Some(PmCall::SvrCtl),
-            39 => Some(PmCall::SProf),
-            40 => Some(PmCall::ProcEventMask),
-            41 => Some(PmCall::SrvFork),
-            42 => Some(PmCall::SrvKill),
-            43 => Some(PmCall::ExecNew),
-            44 => Some(PmCall::ExecRestart),
-            45 => Some(PmCall::GetEpInfo),
-            46 => Some(PmCall::GetProcNr),
-            47 => Some(PmCall::GetSysInfo),
-            _ => None,
-        }
-    }
-
-    /// 返回调用号（消息 `m_type` 值，C: `PM_BASE + N`）。
-    pub fn call_nr(self) -> i32 {
-        self as i32
-    }
-}
+/// PM 系统调用枚举已上移共享类型库（PD-23 采甲：调用号与 `Mess*` 载荷
+/// 同库同源，钉值测试随迁 `minix-types/src/ipc/pm.rs` 的
+/// `pm_call_nr_tests`）。此处再导出，保持 `crate::ipc` 的 `PmCall`
+/// 路径与 [`dispatch_pm_call`] 签名不变。
+pub use minix_types::PmCall;
 
 /// 分发一个已注册的 PM 调用（C: `call_vec[call_index]()`，main.c:99）。
 ///
@@ -1376,25 +1213,6 @@ mod tests {
         table.procs[slot].identity.id.pid = 100 + slot as i32;
         table.procs[slot].state.lifecycle = crate::mproc::Lifecycle::Running;
         (table, EventRegistry::new(), TestIpcTransport::new())
-    }
-
-    #[test]
-    fn test_call_nr_roundtrip_all_registered() {
-        // callnr.h:14-60 — 47 个调用号全部可解码且可回编码。
-        for nr in 1..=47 {
-            let call = PmCall::from_call_nr(nr).unwrap_or_else(|| panic!("nr {} unregistered", nr));
-            assert_eq!(call.call_nr(), nr);
-        }
-    }
-
-    #[test]
-    fn test_call_nr_rejects_unregistered() {
-        // nr == 0 保留（message type 0 traditionally reserved）；
-        // 越界 48/0xff+ 未注册。
-        assert!(PmCall::from_call_nr(0).is_none());
-        assert!(PmCall::from_call_nr(48).is_none());
-        assert!(PmCall::from_call_nr(0x100).is_none());
-        assert!(PmCall::from_call_nr(-1).is_none());
     }
 
     #[test]

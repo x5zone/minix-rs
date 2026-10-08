@@ -41,17 +41,13 @@ pub const RUSAGE_CHILDREN: i32 = -1;
 pub const PROF_START: i32 = 0;
 pub const PROF_STOP: i32 = 1;
 
-/// `PM_*` call numbers (`callnr.h: 25/36-39/45-47`).
-pub const PM_GETMCONTEXT: i32 = 18;
-pub const PM_SETMCONTEXT: i32 = 19;
-pub const PM_SYSUNAME: i32 = 25;
-pub const PM_REBOOT: i32 = 37;
-pub const PM_SVRCTL: i32 = 38;
-pub const PM_SPROF: i32 = 39;
-pub const PM_GETRUSAGE: i32 = 36;
-pub const PM_GETEPINFO: i32 = 45;
-pub const PM_GETPROCNR: i32 = 46;
-pub const PM_GETSYSINFO: i32 = 47;
+/// `PM_*` call numbers (`callnr.h: 25/36-39/45-47`)——minix-types
+/// 单一真源（[`PmCall`] 判别值派生）的再导出，本 crate 不再手抄
+/// （与上方 `SI_*` 同一判例；PD-23 采甲）。
+pub use minix_types::{
+    PM_GETEPINFO, PM_GETMCONTEXT, PM_GETPROCNR, PM_GETRUSAGE, PM_GETSYSINFO, PM_REBOOT,
+    PM_SETMCONTEXT, PM_SPROF, PM_SVRCTL, PM_SYSUNAME,
+};
 
 /// `monitor_params` capacity (`param.h: MULTIBOOT_PARAM_BUF_SIZE`).
 pub const MONITOR_CAP: usize = 4096;

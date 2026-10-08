@@ -61,11 +61,11 @@
 | `PD-20` | 六个消息联合体成员超宽按严格相等修回并加编译期断言（甲） | 已闭（见 §1） |
 | `PD-21` | 内核读写用户内存采两层规范：软件访问规范为第一层（消息面已落地），硬件位与窗口守卫为第二层，入安全加固批 | 第二层待执行；这解释了为什么生产代码里没有置位动作 |
 | `PD-22` | 运行期进程根的内核映射实行写执行互斥，分三步（文本段去写、恒等映射去依赖并退出、可选拆分引导根）（甲） | 政策冻结，三步执行中；直接映射窗实测已是不可执行 |
-| `PD-23` | 进程管理器的调用号枚举**上移**共享类型库，调用号与载荷同库同源（甲） | 待执行。旧待裁决项 `OQ-2` 由此消化 |
+| `PD-23` | 进程管理器的调用号枚举**上移**共享类型库，调用号与载荷同库同源（甲） | **已执行（`2026-10-08`）**：枚举落 `os/libs/minix-types/src/ipc/pm.rs:pub enum PmCall`（与 `Mess*` 载荷同库），`from_call_nr`/`call_nr` 与两枚钉值测试随迁；minix-types 39 个 `PM_*` 常量、`ipc/sysinfo.rs` 的 `PM_GETSYSINFO`、minix-sys 25 个 `PM_CALL_*` 全部改枚举判别值派生（手抄值不可能再漂移），pm 服务器 `misc.rs`/`time.rs` 15 个本地常量改 `pub use` 再导出（`minix_pm::misc::PM_*` 公共面不变），pm 服务器 `ipc/calls.rs` 只再导出与分发。三件套：`grep -n "pub enum PmCall" os/libs/minix-types/src/ipc/pm.rs` → 1 命中、`grep -rn "pub const PM_CALL_EXIT: i32 = [0-9]" os/libs/minix-sys/src/` → 0 命中；`cargo test -p minix-types/-p minix-sys/-p minix-pm` → 324 / 316 / 426+13 全通过 0 失败，`cargo check --workspace --tests` 零错误；clippy 三包 117=117 零新增（`2026-10-08` @ 基线 60bed40e8 + 本笔改动核实，落点见本轮提交）。旧待裁决项 `OQ-2` 由此消化 |
 | `PD-24` | 服务框架的四类拦截（热更新等）本轮不建模，登记为演进项，启用前先补回归哨兵（乙） | 已裁 |
 | `PD-25` | 共享信导语义与词汇表，但**不强制**统一特征类型；初始化族与根服务专属族不合并（第十轮拍板的收窄形态） | 已追认 |
-| `PD-26` | 设备管理器那个从不被框架回调的自有信号钩子**删除**（C 真源无对应注册） | 待执行 |
-| `PD-27` | 补上取消逃生门时库层返回被中断形态，与 C 控制流同形（甲）；这是发方链通电的硬前置 | 待执行 |
+| `PD-26` | 设备管理器那个从不被框架回调的自有信号钩子**删除**（C 真源无对应注册） | **已执行（§续-429，f8afd07bb，含前提修正）**：C 真源复核发现 devman 的 C main 走 `run_vtreefs`（main.c:88），libvtreefs 的 `sef_local_startup` 注册了 `got_signal`（vtreefs.c:59/:39-46）——冻结文本「未注册任何 handler」的前提被证伪；按用户实施口径「删一半接一半」：死方法 `SefHooks::on_signal` 与空壳删除（链从未接通的死面判断成立），`got_signal` 语义落 `MinixTransport::terminate` 锁存＋取消。三件套：`grep -n "fn on_signal" os/servers/devman/src/hooks.rs` → 0 命中；`cargo test -p minix-devman` → 90 通过 / 0 失败（`2026-10-08` @ 60bed40e8 核实）；偏离登记于执行提交节，冻结存证不回填 |
+| `PD-27` | 补上取消逃生门时库层返回被中断形态，与 C 控制流同形（甲）；这是发方链通电的硬前置 | **已执行（§续-428，53da928d9）**：`SefCancel` 令牌＋`sef_receive_status` 两处检查（循环顶先于阻塞收、notify 臂回调后）以 `Err(EINTR)` 收口；uds/lwip/fs-rt/ipc/IS 五服务接线、15 调用点与脚本夹具迁移；「通电即死锁」红线解除，发方链通电余件仍挂 T2。三件套：`grep -n "pub struct SefCancel" os/libs/minix-sef/src/lib.rs` → :135 命中；`cargo test -p minix-sef` → 19+3 通过 / 0 失败（`2026-10-08` @ 60bed40e8 核实） |
 | `PD-28` | 服务器堆终解接可增长页供给、通道选段扩展风格，引导期虚存服务自身保留静态池（甲的政策冻结版） | 首迁对象按四级固定排序机械选择 |
 | `PD-29` | 内核包的替身特性**从默认里摘掉**，接受基线短期变红（甲） | 待执行，硬序是先有持续集成双腿再摘默认 |
 | `PD-30` | 持续集成**加**内核任务：宿主默认形态测试 + 生产形态交叉编译两条腿（甲） | 待执行。这是 OPEN §7"跨架构常驻门"条目的裁决依据 |

@@ -47,22 +47,199 @@ impl PmError {
     }
 }
 
+/// PM 系统调用枚举——调用号单一真源（C: `callnr.h:14-60`，`PM_BASE + 1`
+/// ~ `PM_BASE + 47`）。
+///
+/// 判别值 = 消息 `m_type` 中的调用号（`callnr.h:9`：`PM_BASE = 0x000`）。
+/// 本枚举与下方 `Mess*` 载荷同库同源（PD-23 采甲）：发送方（`minix-sys`
+/// 线形包装）、接收方（PM 分派）、将来的信号代理循环（内核→PM→RS 三方）
+/// 都引用这里，不各自手抄。下方 `PM_*` 常量全部由本枚举派生，六批
+/// C 绝对值钉测随派生同时钉住枚举判别值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+#[allow(clippy::upper_case_acronyms)] // 与 C `PM_*` 宏名保持同形。
+pub enum PmCall {
+    /// PM_EXIT — _exit(2)
+    Exit = 1,
+    /// PM_FORK — fork(2)
+    Fork = 2,
+    /// PM_WAIT4 — wait4(2)
+    Wait4 = 3,
+    /// PM_GETPID — get[p]pid(2)
+    GetPid = 4,
+    /// PM_SETUID — setuid(2)
+    SetUid = 5,
+    /// PM_GETUID — get[e]uid(2)
+    GetUid = 6,
+    /// PM_STIME — stime(2)
+    Stime = 7,
+    /// PM_PTRACE — ptrace(2)
+    Ptrace = 8,
+    /// PM_SETGROUPS — setgroups(2)
+    SetGroups = 9,
+    /// PM_GETGROUPS — getgroups(2)
+    GetGroups = 10,
+    /// PM_KILL — kill(2)
+    Kill = 11,
+    /// PM_SETGID — setgid(2)
+    SetGid = 12,
+    /// PM_GETGID — get[e]gid(2)
+    GetGid = 13,
+    /// PM_EXEC — execve(2)
+    Exec = 14,
+    /// PM_SETSID — setsid(2)
+    SetSid = 15,
+    /// PM_GETPGRP — getpgrp(2)
+    GetPgrp = 16,
+    /// PM_ITIMER — [gs]etitimer(2)
+    Itimer = 17,
+    /// PM_GETMCONTEXT — getmcontext(2)
+    GetMContext = 18,
+    /// PM_SETMCONTEXT — setmcontext(2)
+    SetMContext = 19,
+    /// PM_SIGACTION — sigaction(2)
+    SigAction = 20,
+    /// PM_SIGSUSPEND — sigsuspend(2)
+    SigSuspend = 21,
+    /// PM_SIGPENDING — sigpending(2)
+    SigPending = 22,
+    /// PM_SIGPROCMASK — sigprocmask(2)
+    SigProcMask = 23,
+    /// PM_SIGRETURN — sigreturn(2)
+    SigReturn = 24,
+    /// PM_SYSUNAME — sysuname(2)（obsolete）
+    SysUname = 25,
+    /// PM_GETPRIORITY — getpriority(2)
+    GetPriority = 26,
+    /// PM_SETPRIORITY — setpriority(2)
+    SetPriority = 27,
+    /// PM_GETTIMEOFDAY — gettimeofday(2)
+    GetTimeOfDay = 28,
+    /// PM_SETEUID — seteuid(2)
+    SetEUid = 29,
+    /// PM_SETEGID — setegid(2)
+    SetEGid = 30,
+    /// PM_ISSETUGID — issetugid(2)
+    IsSetUid = 31,
+    /// PM_GETSID — getsid(2)
+    GetSid = 32,
+    /// PM_CLOCK_GETRES — clock_getres(2)
+    ClockGetRes = 33,
+    /// PM_CLOCK_GETTIME — clock_gettime(2)
+    ClockGetTime = 34,
+    /// PM_CLOCK_SETTIME — clock_settime(2)
+    ClockSetTime = 35,
+    /// PM_GETRUSAGE — getrusage(2)
+    GetRUsage = 36,
+    /// PM_REBOOT — reboot(2)
+    Reboot = 37,
+    /// PM_SVRCTL — svrctl(2)
+    SvrCtl = 38,
+    /// PM_SPROF — sprofile(2)
+    SProf = 39,
+    /// PM_PROCEVENTMASK — proceventmask(2)
+    ProcEventMask = 40,
+    /// PM_SRV_FORK — srv_fork(2)
+    SrvFork = 41,
+    /// PM_SRV_KILL — srv_kill(2)
+    SrvKill = 42,
+    /// PM_EXEC_NEW — exec 新路径（newexec）
+    ExecNew = 43,
+    /// PM_EXEC_RESTART — exec 重启路径
+    ExecRestart = 44,
+    /// PM_GETEPINFO — getepinfo(2)
+    GetEpInfo = 45,
+    /// PM_GETPROCNR — getprocnr(2)
+    GetProcNr = 46,
+    /// PM_GETSYSINFO — getsysinfo(2)
+    GetSysInfo = 47,
+}
+
+impl PmCall {
+    /// 从消息 `m_type` 解码为已注册的 PM 调用。
+    ///
+    /// 返回 `None` 当 `nr` 不在 1..=47（含 `nr == 0` 保留值与未注册号）；
+    /// 调用方（分发层）对 `None` 返回 ENOSYS，与 C `call_index >=
+    /// NR_PM_CALLS || call_vec[call_index] == NULL → ENOSYS`
+    /// （main.c:94-101）一致。
+    pub fn from_call_nr(nr: i32) -> Option<PmCall> {
+        // nr 在 1..=47 内按判别值匹配；判别值即调用号。
+        match nr {
+            1 => Some(PmCall::Exit),
+            2 => Some(PmCall::Fork),
+            3 => Some(PmCall::Wait4),
+            4 => Some(PmCall::GetPid),
+            5 => Some(PmCall::SetUid),
+            6 => Some(PmCall::GetUid),
+            7 => Some(PmCall::Stime),
+            8 => Some(PmCall::Ptrace),
+            9 => Some(PmCall::SetGroups),
+            10 => Some(PmCall::GetGroups),
+            11 => Some(PmCall::Kill),
+            12 => Some(PmCall::SetGid),
+            13 => Some(PmCall::GetGid),
+            14 => Some(PmCall::Exec),
+            15 => Some(PmCall::SetSid),
+            16 => Some(PmCall::GetPgrp),
+            17 => Some(PmCall::Itimer),
+            18 => Some(PmCall::GetMContext),
+            19 => Some(PmCall::SetMContext),
+            20 => Some(PmCall::SigAction),
+            21 => Some(PmCall::SigSuspend),
+            22 => Some(PmCall::SigPending),
+            23 => Some(PmCall::SigProcMask),
+            24 => Some(PmCall::SigReturn),
+            25 => Some(PmCall::SysUname),
+            26 => Some(PmCall::GetPriority),
+            27 => Some(PmCall::SetPriority),
+            28 => Some(PmCall::GetTimeOfDay),
+            29 => Some(PmCall::SetEUid),
+            30 => Some(PmCall::SetEGid),
+            31 => Some(PmCall::IsSetUid),
+            32 => Some(PmCall::GetSid),
+            33 => Some(PmCall::ClockGetRes),
+            34 => Some(PmCall::ClockGetTime),
+            35 => Some(PmCall::ClockSetTime),
+            36 => Some(PmCall::GetRUsage),
+            37 => Some(PmCall::Reboot),
+            38 => Some(PmCall::SvrCtl),
+            39 => Some(PmCall::SProf),
+            40 => Some(PmCall::ProcEventMask),
+            41 => Some(PmCall::SrvFork),
+            42 => Some(PmCall::SrvKill),
+            43 => Some(PmCall::ExecNew),
+            44 => Some(PmCall::ExecRestart),
+            45 => Some(PmCall::GetEpInfo),
+            46 => Some(PmCall::GetProcNr),
+            47 => Some(PmCall::GetSysInfo),
+            _ => None,
+        }
+    }
+
+    /// 返回调用号（消息 `m_type` 值，C: `PM_BASE + N`）。
+    pub fn call_nr(self) -> i32 {
+        self as i32
+    }
+}
+
 // ── G 批：杂项 9 调用（04-stage-pm/todo.md §11.1.1 批次表）──
 //
 // C 真值：callnr.h 18/19/25/37/38/39/47 + ipc.h 对应
 // `mess_lc_pm_*` / `mess_lc_svrctl` 结构。45/46（getepinfo/getprocnr）
 // 已由 E9 PmApi 切片落地；37 常量已由 A 批锚定，本批补齐结构。
+// 各常量值由 [`PmCall`] 判别值派生（PD-23 单一真源），本批钉测继续
+// 把派生结果钉在 C 绝对值上。
 
 /// C: `PM_GETMCONTEXT (PM_BASE + 18)` — callnr.h:31.
-pub const PM_GETMCONTEXT: i32 = 18;
+pub const PM_GETMCONTEXT: i32 = PmCall::GetMContext as i32;
 /// C: `PM_SETMCONTEXT (PM_BASE + 19)` — callnr.h:32.
-pub const PM_SETMCONTEXT: i32 = 19;
+pub const PM_SETMCONTEXT: i32 = PmCall::SetMContext as i32;
 /// C: `PM_SYSUNAME (PM_BASE + 25)` — callnr.h:38（C 注记 obsolete，行为保留）。
-pub const PM_SYSUNAME: i32 = 25;
+pub const PM_SYSUNAME: i32 = PmCall::SysUname as i32;
 /// C: `PM_SVRCTL (PM_BASE + 38)` — callnr.h:51.
-pub const PM_SVRCTL: i32 = 38;
+pub const PM_SVRCTL: i32 = PmCall::SvrCtl as i32;
 /// C: `PM_SPROF (PM_BASE + 39)` — callnr.h:52.
-pub const PM_SPROF: i32 = 39;
+pub const PM_SPROF: i32 = PmCall::SProf as i32;
 // PM_GETSYSINFO（PM_BASE + 47，callnr.h:60）已有权威定义于
 // `ipc/sysinfo.rs`（PM 表请求，E-MIBPROD/E-ISPROD 域）——不在此重复。
 
@@ -182,35 +359,35 @@ mod tests {
 // (rs_start LP64 判例)。
 
 /// C: `PM_GETPID` — callnr.h:17。
-pub const PM_GETPID: i32 = 4;
+pub const PM_GETPID: i32 = PmCall::GetPid as i32;
 /// C: `PM_SETUID` — callnr.h:18。
-pub const PM_SETUID: i32 = 5;
+pub const PM_SETUID: i32 = PmCall::SetUid as i32;
 /// C: `PM_GETUID` — callnr.h:19。
-pub const PM_GETUID: i32 = 6;
+pub const PM_GETUID: i32 = PmCall::GetUid as i32;
 /// C: `PM_PTRACE` — callnr.h:21。
-pub const PM_PTRACE: i32 = 8;
+pub const PM_PTRACE: i32 = PmCall::Ptrace as i32;
 /// C: `PM_SETGROUPS` — callnr.h:22.
-pub const PM_SETGROUPS: i32 = 9;
+pub const PM_SETGROUPS: i32 = PmCall::SetGroups as i32;
 /// C: `PM_GETGROUPS` — callnr.h:23.
-pub const PM_GETGROUPS: i32 = 10;
+pub const PM_GETGROUPS: i32 = PmCall::GetGroups as i32;
 /// C: `PM_SETGID` — callnr.h:25.
-pub const PM_SETGID: i32 = 12;
+pub const PM_SETGID: i32 = PmCall::SetGid as i32;
 /// C: `PM_GETGID` — callnr.h:26.
-pub const PM_GETGID: i32 = 13;
+pub const PM_GETGID: i32 = PmCall::GetGid as i32;
 /// C: `PM_SETSID` — callnr.h:28.
-pub const PM_SETSID: i32 = 15;
+pub const PM_SETSID: i32 = PmCall::SetSid as i32;
 /// C: `PM_GETPRIORITY` — callnr.h:41.
-pub const PM_GETPRIORITY: i32 = 26;
+pub const PM_GETPRIORITY: i32 = PmCall::GetPriority as i32;
 /// C: `PM_SETPRIORITY` — callnr.h:42.
-pub const PM_SETPRIORITY: i32 = 27;
+pub const PM_SETPRIORITY: i32 = PmCall::SetPriority as i32;
 /// C: `PM_SETEUID` — callnr.h:44.
-pub const PM_SETEUID: i32 = 29;
+pub const PM_SETEUID: i32 = PmCall::SetEUid as i32;
 /// C: `PM_SETEGID` — callnr.h:45.
-pub const PM_SETEGID: i32 = 30;
+pub const PM_SETEGID: i32 = PmCall::SetEGid as i32;
 /// C: `PM_GETSID` — callnr.h:46.
-pub const PM_GETSID: i32 = 32;
+pub const PM_GETSID: i32 = PmCall::GetSid as i32;
 /// C: `PM_REBOOT` — callnr.h:52.
-pub const PM_REBOOT: i32 = 37;
+pub const PM_REBOOT: i32 = PmCall::Reboot as i32;
 
 /// SYS_SETUID / SYS_SETGID 请求载荷(C: `mess_lc_pm_setuid` /
 /// `mess_lc_pm_setgid` — ipc.h:525-529,字段 4 字节 + padding[52])。
@@ -293,17 +470,17 @@ mod credential_wire_tests {
 // ── E7 B 批:信号控制调用号与 wire 结构(callnr.h:20-24 + ipc.h)──
 
 /// C: `PM_SIGACTION` — callnr.h:33.
-pub const PM_SIGACTION: i32 = 20;
+pub const PM_SIGACTION: i32 = PmCall::SigAction as i32;
 /// C: `PM_SIGSUSPEND` — callnr.h:34.
-pub const PM_SIGSUSPEND: i32 = 21;
+pub const PM_SIGSUSPEND: i32 = PmCall::SigSuspend as i32;
 /// C: `PM_SIGPENDING` — callnr.h:35.
-pub const PM_SIGPENDING: i32 = 22;
+pub const PM_SIGPENDING: i32 = PmCall::SigPending as i32;
 /// C: `PM_SIGPROCMASK` — callnr.h:36.
-pub const PM_SIGPROCMASK: i32 = 23;
+pub const PM_SIGPROCMASK: i32 = PmCall::SigProcMask as i32;
 /// C: `PM_SIGRETURN` — callnr.h:37.
-pub const PM_SIGRETURN: i32 = 24;
+pub const PM_SIGRETURN: i32 = PmCall::SigReturn as i32;
 /// C: `PM_KILL` — callnr.h:24(KILL 与 SIGACTION 共用 `mess_lc_pm_sig`)。
-pub const PM_KILL: i32 = 11;
+pub const PM_KILL: i32 = PmCall::Kill as i32;
 
 /// SIGACTION/KILL 请求载荷(C: `mess_lc_pm_sig` — ipc.h:528-540)。
 ///
@@ -437,17 +614,17 @@ mod sig_wire_tests {
 // `clk_id` 与 `now` 分派(time.c:31/55/79)。
 
 /// C: `PM_STIME` — callnr.h:19(PM_BASE + 7)。
-pub const PM_STIME: i32 = 7;
+pub const PM_STIME: i32 = PmCall::Stime as i32;
 /// C: `PM_GETTIMEOFDAY` — callnr.h:43(PM_BASE + 28)。
-pub const PM_GETTIMEOFDAY: i32 = 28;
+pub const PM_GETTIMEOFDAY: i32 = PmCall::GetTimeOfDay as i32;
 /// C: `PM_CLOCK_GETRES` — callnr.h:48(PM_BASE + 33)。
-pub const PM_CLOCK_GETRES: i32 = 33;
+pub const PM_CLOCK_GETRES: i32 = PmCall::ClockGetRes as i32;
 /// C: `PM_CLOCK_GETTIME` — callnr.h:49(PM_BASE + 34)。
-pub const PM_CLOCK_GETTIME: i32 = 34;
+pub const PM_CLOCK_GETTIME: i32 = PmCall::ClockGetTime as i32;
 /// C: `PM_CLOCK_SETTIME` — callnr.h:50(PM_BASE + 35)。
-pub const PM_CLOCK_SETTIME: i32 = 35;
+pub const PM_CLOCK_SETTIME: i32 = PmCall::ClockSetTime as i32;
 /// C: `PM_GETRUSAGE` — callnr.h:51(PM_BASE + 36)。
-pub const PM_GETRUSAGE: i32 = 36;
+pub const PM_GETRUSAGE: i32 = PmCall::GetRUsage as i32;
 
 /// 时间调用共用载荷(C: `mess_lc_pm_time` — ipc.h:574-583)。
 ///
@@ -499,23 +676,23 @@ mod time_wire_tests {
 // ── E7 D/E 批:itimer 与 exec 调用号与 wire 结构 ──
 
 /// C: `PM_ITIMER` — callnr.h:30(PM_BASE + 17)。
-pub const PM_ITIMER: i32 = 17;
+pub const PM_ITIMER: i32 = PmCall::Itimer as i32;
 /// C: `PM_EXEC` — callnr.h:27(PM_BASE + 14)。
-pub const PM_EXEC: i32 = 14;
+pub const PM_EXEC: i32 = PmCall::Exec as i32;
 /// C: `PM_EXEC_NEW` — callnr.h:56(PM_BASE + 43)。
-pub const PM_EXEC_NEW: i32 = 43;
+pub const PM_EXEC_NEW: i32 = PmCall::ExecNew as i32;
 /// C: `PM_EXEC_RESTART` — callnr.h:57(PM_BASE + 44)。
-pub const PM_EXEC_RESTART: i32 = 44;
+pub const PM_EXEC_RESTART: i32 = PmCall::ExecRestart as i32;
 
 // ── E9 PmApi 分域:RS 服务进程管理调用号与 wire ──
 
 /// `PM_SRV_FORK` — 为系统服务派生子进程(callnr.h:54,PM_BASE + 41)。
 /// RS 自升级链的入口(C manager.c:576 `srv_fork`)。
-pub const PM_SRV_FORK: i32 = 41;
+pub const PM_SRV_FORK: i32 = PmCall::SrvFork as i32;
 /// `PM_GETEPINFO` — 按端点取进程凭证(callnr.h:58,PM_BASE + 45)。
-pub const PM_GETEPINFO: i32 = 45;
+pub const PM_GETEPINFO: i32 = PmCall::GetEpInfo as i32;
 /// `PM_GETPROCNR` — 按 pid 反查端点(callnr.h:59,PM_BASE + 46)。
-pub const PM_GETPROCNR: i32 = 46;
+pub const PM_GETPROCNR: i32 = PmCall::GetProcNr as i32;
 
 /// getepinfo 请求载荷(C: `mess_lsys_pm_getepinfo` — ipc.h:1398-1406)。
 #[repr(C)]
@@ -754,5 +931,31 @@ mod g_batch_wire_tests {
         assert_eq!(offset_of!(MessLcPmSprof, ctl_ptr), 16);
         assert_eq!(offset_of!(MessLcPmSprof, mem_ptr), 24);
         assert_eq!(offset_of!(MessLcPmSprof, mem_size), 32);
+    }
+}
+
+/// 调用号单一真源的随迁钉测（自 pm 服务器 `ipc/calls.rs` 上移，
+/// PD-23 采甲）：47 个判别值全量往返 + 未注册号拒绝。
+#[cfg(test)]
+mod pm_call_nr_tests {
+    use super::PmCall;
+
+    #[test]
+    fn test_call_nr_roundtrip_all_registered() {
+        // callnr.h:14-60 — 47 个调用号全部可解码且可回编码。
+        for nr in 1..=47 {
+            let call = PmCall::from_call_nr(nr).unwrap_or_else(|| panic!("nr {} unregistered", nr));
+            assert_eq!(call.call_nr(), nr);
+        }
+    }
+
+    #[test]
+    fn test_call_nr_rejects_unregistered() {
+        // nr == 0 保留（message type 0 traditionally reserved）；
+        // 越界 48/0xff+ 未注册。
+        assert!(PmCall::from_call_nr(0).is_none());
+        assert!(PmCall::from_call_nr(48).is_none());
+        assert!(PmCall::from_call_nr(0x100).is_none());
+        assert!(PmCall::from_call_nr(-1).is_none());
     }
 }

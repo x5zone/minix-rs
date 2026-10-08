@@ -44,7 +44,7 @@
 |------|------|
 | `Process` 四层组合 + 与 `mproc.h` 逐字段映射表 | `os/servers/pm/src/mproc/mproc.rs:334`（结构体），`mproc/mproc.rs:302-331`（映射表） |
 | SUSPEND 显式化为 `ReplyIntent` 三变体 | `os/servers/pm/src/ipc/dispatcher.rs:49-57`，契约见 `plan.md:393-406` |
-| 47 个调用号 `PmCall` 枚举与 callnr.h 一一对应 + 全量 roundtrip 测试 | `os/servers/pm/src/ipc/calls.rs:30-125`，测试 `calls.rs:348` |
+| 47 个调用号 `PmCall` 枚举与 callnr.h 一一对应 + 全量 roundtrip 测试 | 枚举与测试已上移 `os/libs/minix-types/src/ipc/pm.rs:pub enum PmCall`（pm 侧 `calls.rs` 再导出；PD-23 执行） |
 | Minix3 易漏语义点覆盖（V1 抽查 11 项 + V2 抽查 10 项） | 详见 §1.3 与 §11.1.4；其中两处 V2 勘误后由 Fix #29/#31/#32 修复 |
 | 凭证 13 个调用建模为显式 `GetOp`/`SetOp` 枚举 | `os/servers/pm/src/credentials.rs:19-45`，对照 `getset.c:28/110` |
 | 单线程 `&mut ProcTable` 用借用检查器替代 C 文件级全局（ARCH A-3） | `os/servers/pm/src/mproc/context.rs` |
