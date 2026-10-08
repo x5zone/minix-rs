@@ -53,3 +53,38 @@
 - **首次执行第 4.6 步 学生型走查（只凭本文、禁外部知识）**——抓到 4 处教学链断点：Q6（opaque tag 的 why 外包给 01）、Q4（"语义同形状异"只断言无两实现对照）、Q7（"实地导览"只是 ASCII 地图无真实代码）、Q2（DTB/ACPI/OpenSBI 黑话未释义）。**证明学生型 reviewer 能逮到机器门/CodeReview 逮不到的"教学链断"——正是 GPT 要补的工种**。
 - 全部补齐（`c4d1cfca2`）：§1.3 释义名词、§3.2 加 ApicDesc/Gicv3Desc/PlicDesc 两实现对照+downcast 真实代码、§3.3 就地讲透三条路为何选 opaque tag、§4 引 global.rs `PLATFORM.freeze(...)` 真实行。
 - **D（把走查教训固化）**：doc-gen #11 加"**流程图/地图≠导览**，实地导览须内嵌真实代码行(带 path:fn)"。
+
+## Round 5 · num=05（clock/中断）
+
+- 生成 05（137→150 行）。领 claim/DOCGEN-ITER-05-qoder。
+- **两道 review 都逮到真错**（本流程的双层价值实证）：① 学生型走查(4.6)抓内部自相矛盾——"05 从 pd 取频率"是假的(软件 tick=DEFAULT_HZ 编译期)，且 §4 实地导览把"消费 pd"那段用省略号吞了(违反刚写的 #11)；② CodeReview(F)再抓 §2.2 把 C 说成"编译期常量"(实为运行期 env_get/Rust 才编译期——**说反**)、§5 `test-clock-timer` 是**虚构测试名**(真名 test-timer-irq)、§4 import 漂、§6 register_hook。
+- 全按 ground truth 修（`45b7a1dfe`→`7582e20a3`，两次 fix）：§4 补真消费 pd 的 Step2/Step3 代码、频率三处对齐、idt_init 真两行、测试名去虚构、register_hook。五门绿、test-timer-irq 三变体确认存在。
+
+## 第 5 轮收尾 · 跨轮汇总
+
+### 1. 五篇读数 vs draft 基线（现算，行数/承载门可判章）
+| num | 新篇行 | draft行 | 新承载章 | 新篇含 |
+|---|---|---|---|---|
+| 01 | 435 | 2019 | 4 | 6C+6Rust节选/调用树/三架构表/诊断命令/认知减负/实地导览 |
+| 02 | 229 | 1329 | 4 | kernel.lds/head.S/HigherHalf/x86 asm/双映射图/威胁式流程 |
+| 03 | 182 | 1197 | 3 | kmain/cstart/protect.c/双 trait 真签名/威胁模型反例/实地导览 |
+| 04 | 180 | 1255 | 3 | get_board_name/PlatformDesc/Frozen 取舍/两实现对照/实地导览真码 |
+| 05 | 150 | 2263 | 1 | idt_init/init_clock/init_clock_and_interrupts 真码/两频率细分/诊断 |
+新篇更短但更守纪律(无 draft 手工行号/过程痕迹/越界附录)，且每篇都补齐四层。**诚实**:仍显著短于 draft——draft 更长部分含越界展开(附录/他篇细节)，非纯教学损失；但"每篇实地导览够不够厚"仍可在后续人工回炉加粗。
+
+### 2. 五轮累计工作流改动(标命中次数=此后是否真挡到过问题)
+| 改动 | 落地 | 命中 |
+|---|---|---|
+| doc-style-lint SL-11 工单号检测 | Round1 `fb77c6364` | 1(拦 fix27 类) |
+| density 命令预期输出读数 | Round1 | 1 |
+| anchor 0 锚点守卫 | Round2 `3629a9d74` | 1(02 抽0锚暴露) |
+| density 承载识别扩 .S/.h/.lds+ld/lds | Round2 `427d3a453` | 1(02 Ch2) |
+| doc-code-map 抽带符号锚点 | Round3 `dbd76e0b5` | 1(03) |
+| **doc-code-map expand_braces 顺序回归修** | Round4 | 自纠(自己上轮引入) |
+| doc-gen #11 四层+反过度压缩+第4.6 学生型走查 | Round3 `b4dc9fc71`/Round4 收紧 | **高**(学生走查两轮逮到机器门全过的真错) |
+第4.6 学生型走查命中率最高——是本五轮最有用的新增。
+
+### 3. 遗留/待裁决/假改进(诚实，不粉饰收敛)
+- **仍待裁决**：承载门只数"有无码"、测不出"码够不够/每步是否真兑现"（05 §4 曾吞码全绿=机器门盲区，靠 4.6 兜）。是否给 density 加"实地导览须含≥1 path:fn 真码行"的阻断读数——未做(需权衡 FP)。
+- **假改进风险=0**：五轮新增项均有≥1 次真实命中(见上表)，无"加了没用"的门。
+- **已知不完美**：03 §6.2 riscv64 L2、05 频率等多处需人工 ground-truth 才能逮——机器门+两 review 是纵深防御，非任一单点可替。五轮流程本身可稳定产出过全部门且经两 review 的稿，但"教材厚度是否已达 draft 级"最终仍需人读判。
