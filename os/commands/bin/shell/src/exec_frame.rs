@@ -10,7 +10,7 @@
 //! the consumer half it feeds (`minix-rt/src/crt0.rs`, the birth chain that
 //! reads the frame back).
 //!
-//! # Layout (C: `stack_utils.c:159-176`)
+//! # Layout (C: `stack_utils.c:159-172`)
 //!
 //! One argc word, the argv pointer slots with a NULL terminator, the env
 //! pointer slots with a NULL terminator, the strings, then the
@@ -56,7 +56,7 @@ pub fn stack_params(argv: &[&str], envp: &[&str]) -> Result<usize, i32> {
 }
 
 /// Fills the frame and returns the ps_strings offset within it (C:
-/// `minix_stack_fill`, `stack_utils.c:115-176`). `frame` must be at least
+/// `minix_stack_fill`, `stack_utils.c:115-172`). `frame` must be at least
 /// [`stack_params`] bytes. Slot values are absolute addresses in the new
 /// address space (`vsp` + offset), the arrays are NULL-terminated, and the
 /// descriptor lands after the final alignment pad.
@@ -101,7 +101,7 @@ pub fn stack_fill(argv: &[&str], envp: &[&str], vsp: u64, frame: &mut [u8]) -> u
         tail += 1;
     }
 
-    // The ps_strings descriptor (C: `stack_utils.c:172-176`). `argv_str =
+    // The ps_strings descriptor (C: `stack_utils.c:172`). `argv_str =
     // vsp + 8` is the LP64 correction; `env_str` is `argv_str + argc + 1`
     // slots. The field order mirrors the consumer contract in
     // `minix-rt/src/crt0.rs:49-54` (`ps_argvstr`@0, `ps_nargvstr`@8,
@@ -139,7 +139,7 @@ mod tests {
     }
 
     /// The fill against a fully hand-laid frame (C: `minix_stack_fill`,
-    /// `stack_utils.c:115-176`, with the LP64 ps_argvstr correction):
+    /// `stack_utils.c:115-172`, with the LP64 ps_argvstr correction):
     /// vsp = 0x10000, argv `["sh"]`, envp empty → `[0]=argc=1`,
     /// `[8]=vsp+32` (argv[0]), `[16]=NULL` (argv end), `[24]=NULL` (empty
     /// env end), strings "sh\0" at 32, pad to 40, ps_strings at 40:

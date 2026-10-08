@@ -98,7 +98,7 @@ impl GrantTable {
         {
             // SAFETY: m_lsys_krn_sys_setgrant is the documented SYS_SETGRANT
             // payload (kernel/src/syscall.rs dispatch_setgrant reads
-            // addr/size; C libsys sys_setgrant.c:8-15).
+            // addr/size; C libsys sys_setgrant.c:6-14).
             let g = unsafe { &mut msg.m_u.m_lsys_krn_sys_setgrant };
             g.addr = self.slots.as_ptr() as u64;
             g.size = self.slots.len() as i32;

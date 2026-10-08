@@ -169,7 +169,7 @@ pub fn render_mproc(
     Ok(())
 }
 
-/// `sigaction_dmp` (dmp_pm.c:74-110): same table + alarm countdown against
+/// `sigaction_dmp` (dmp_pm.c:74-106): same table + alarm countdown against
 /// `uptime` (C `getticks()`).
 pub fn render_sigaction(
     out: &mut dyn fmt::Write,

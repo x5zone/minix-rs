@@ -264,7 +264,7 @@ impl KernelCallTransport for CannedKernelCallTransport {
 /// `Syscall::Kill`；C `callnr.h` `SYS_KILL`）。
 pub const SYS_KILL_CALL: i32 = 6;
 
-/// 向内核发送"终止信号"请求（C: libsys `sys_kill`，`sys_kill.c:8-17`）。
+/// 向内核发送"终止信号"请求（C: libsys `sys_kill`，`sys_kill.c:3-13`）。
 ///
 /// `_kernel_call(SYS_KILL, &m)`：载荷 `m_sigcalls.endpt`（目标 endpoint）
 /// 与 `m_sigcalls.sig`（信号号），无回复载荷——返回值即结果（OK 或负
@@ -351,7 +351,7 @@ pub fn sys_abort(
     perform_kernel_call(transport, SYS_ABORT_CALL, &mut msg, |_| {})
 }
 
-/// 读取进程 CPU 计时（C: libsys `sys_times`，`sys_times.c:8-24`）。
+/// 读取进程 CPU 计时（C: libsys `sys_times`，`sys_times.c:3-23`）。
 ///
 /// `_kernel_call(SYS_TIMES, &m)`：请求载荷 m_lsys_krn_sys_times.endpt，
 /// 回复载荷 m_krn_lsys_sys_times（user/system/real/boot 四值 + boottime）。
@@ -477,7 +477,7 @@ pub fn sys_endksig(transport: &impl KernelCallTransport, endpt: i32, sig: i32) -
 /// C: SYS_TRACE 是内核调用 5（`kernel/src/syscall.rs` `Syscall::Trace`）。
 pub const SYS_TRACE_CALL: i32 = 5;
 
-/// C: `sys_trace(req, proc_ep, addr, datap)`（libsys `sys_trace.c:8-22`）——
+/// C: `sys_trace(req, proc_ep, addr, datap)`（libsys `sys_trace.c:3-18`）——
 /// `_kernel_call(SYS_TRACE, &m)`：载荷 `mess_lsys_krn_sys_trace`
 ///（request@0/endpt@4/address@8/data@16，布局与 `m_m1` **不同**——
 /// `m1.m1i1` 落在 request 上而不是 endpt，见 minix-types 的 IMPORTANT
@@ -531,7 +531,7 @@ pub const RC_RESUME: i32 = 1;
 /// Runctl 标志：发送中延迟停止。C: `RC_DELAY`（do_runctl.c）。
 pub const RC_DELAY: i32 = 1;
 
-/// 进程运行控制（C: libsys `sys_runctl`，`sys_runctl.c:8-16`）。
+/// 进程运行控制（C: libsys `sys_runctl`，`sys_runctl.c:3-15`）。
 ///
 /// `_kernel_call(SYS_RUNCTL, &m)`：载荷 m1i1 = RC_ENDPT、m1i2 = RC_ACTION、
 /// m1i3 = RC_FLAGS。返回值 = 内核回复（OK / EBUSY / 负 errno）。
@@ -1352,7 +1352,7 @@ mod tests {
 
     #[test]
     fn test_sys_kill_encodes_sigcalls_wire() {
-        // C: libsys sys_kill.c:8-17 — m_sigcalls.endpt/sig，SYS_KILL = 5；
+        // C: libsys sys_kill.c:3-13 — m_sigcalls.endpt/sig，SYS_KILL = 5；
         // 回复 OK（内核 do_kill 无回复载荷）。
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
@@ -1448,7 +1448,7 @@ mod tests {
 
     #[test]
     fn test_sys_times_encodes_endpt_and_decodes_reply() {
-        // C: libsys sys_times.c:8-24 — 请求 m_lsys_krn_sys_times.endpt；
+        // C: libsys sys_times.c:3-23 — 请求 m_lsys_krn_sys_times.endpt；
         // 回复 m_krn_lsys_sys_times（user/system 等四值）。
         use minix_types::{MessKrnLsysSysTimes, MessSigcalls};
         let mut canned = CannedKernelCallTransport::new();
@@ -1497,7 +1497,7 @@ mod tests {
 
     #[test]
     fn test_sys_trace_encodes_lsys_layout_and_decodes_read_value() {
-        // C: libsys sys_trace.c:8-22 — 载荷 mess_lsys_krn_sys_trace
+        // C: libsys sys_trace.c:3-18 — 载荷 mess_lsys_krn_sys_trace
         //（request@0/endpt@4/address@8/data@16，**不同于 m_m1**：m1.m1i1
         // 是 request 而非 endpt，kernel misc.rs msg_trace 按该布局读）；
         // 回复的读值经同偏移 data 字段写回（write_trace_reply_data）。

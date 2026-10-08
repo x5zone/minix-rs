@@ -24,7 +24,7 @@ fn trunc_status(status: i32) -> i8 {
 /// 编程，生产实现走真实内核调用 wire（pre-E1 由 trap 桩诚实回 `-EIO`），
 /// 测试注入脚本化 mock。E6 后续的 SYS_TIMES/SYS_CLEAR 等按同模式扩展。
 pub trait KernelGateway {
-    /// C: `sys_kill(proc_ep, signr)`（libsys `sys_kill.c:8-17`）——
+    /// C: `sys_kill(proc_ep, signr)`（libsys `sys_kill.c:3-13`）——
     /// `_kernel_call(SYS_KILL, &m)`，载荷 `m_sigcalls.{endpt,sig}`，
     /// 返回值 = 内核回复（OK 或负 errno）。
     fn sys_kill(&mut self, ep: Endpoint, sig: i32) -> Result<(), i32>;
@@ -49,7 +49,7 @@ pub trait KernelGateway {
     fn sys_abort(&mut self, how: i32) -> Result<(), i32>;
 
     /// C: `sys_times(proc_ep, &user, &sys, NULL, NULL)`（libsys
-    /// `sys_times.c:8-24`）——读取目标进程的 user/system CPU ticks。
+    /// `sys_times.c:3-23`）——读取目标进程的 user/system CPU ticks。
     /// 失败返回负 errno。
     fn proc_times(&mut self, ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32>;
 
@@ -88,7 +88,7 @@ pub trait KernelGateway {
         Err(-minix_types::ENOSYS)
     }
 
-    /// C: `sys_trace(req, proc_ep, addr, &data)`（libsys `sys_trace.c:8-22`）
+    /// C: `sys_trace(req, proc_ep, addr, &data)`（libsys `sys_trace.c:3-18`）
     /// ——内核 SYS_TRACE 通道：trace_stop 的 T_STOP（trace.c:263）、
     /// do_trace 的命令透传（trace.c:244-248）与 READB/WRITEB_INS
     ///（trace.c:106/129）。读值由内核写回 `data`。失败返回负 errno

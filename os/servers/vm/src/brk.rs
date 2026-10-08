@@ -5,7 +5,7 @@
 //! `_brksize` (arch brksize.S seeds it at the link-time `_end`; libc
 //! sys/brk.c caches every move), and the VM never reads it back.
 //!
-//! Corresponds to Minix3's `do_brk()`/`real_brk()` (break.c:44-70) on top of
+//! Corresponds to Minix3's `do_brk()`/`real_brk()` (break.c:44-69) on top of
 //! `map_region_extend_upto_v()` (region.c:1002-1064).
 //!
 //! ## Design decisions vs Minix3

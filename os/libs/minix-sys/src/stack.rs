@@ -123,7 +123,7 @@ pub fn stack_params(argv: &[&str], envp: &[&str]) -> StackParams {
 }
 
 /// Fill `frame` with the initial stack image — C `minix_stack_fill`
-/// (stack_utils.c:119-176).
+/// (stack_utils.c:119-172).
 ///
 /// `user_sp` plays the role of `minix_get_user_sp()`: the returned `vsp`
 /// is `user_sp - frame_size`, and every pointer slot in the frame is
@@ -176,7 +176,7 @@ pub fn stack_fill(
     // LP64: vsp + WORD (the argv[0] slot sits one word past the argc
     // word); ps_envstr = ps_argvstr + argc + 1 (char** arithmetic —
     // (argc+1) slots of WORD bytes). The ps_strings block lands after
-    // the strings, padded to a word (stack_utils.c:160-175).
+    // the strings, padded to a word (stack_utils.c:160-171).
     let ps_off = round_up_word(string_off);
     if ps_off + core::mem::size_of::<PsStrings>() > frame.len() {
         return Err(StackFillError::FrameTooSmall);
