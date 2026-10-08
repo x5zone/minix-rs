@@ -305,8 +305,9 @@ fn ds_publish_subscribe_check_chain_wakes_subscriber_and_vfs_classifies() {
     assert_eq!(server.run_once(&mut ipc, &mut kernel), Step::Handled);
     assert_eq!(
         ipc.last_reply().1.m_type,
-        ENOENT,
-        "没有未读更新时取回失败（CheckReject::NoUpdate，store.c:556）"
+        -ENOENT,
+        "没有未读更新时取回失败（CheckReject::NoUpdate，store.c:556）；回复通道按 C 的 \
+         `_SYSTEM`（ds/inc.h:6）把 errno 带负号发出，本树在 `reply_status` 折转"
     );
 
     // ── 第四步：对端接缝——VFS 拿这对 key/值做驱动上线决策 ──
@@ -383,5 +384,5 @@ fn ds_publish_outside_subscribed_pattern_does_not_wake_subscriber() {
     );
     let mut ipc = ScriptedIpc::new(vec![check]);
     assert_eq!(server.run_once(&mut ipc, &mut kernel), Step::Handled);
-    assert_eq!(ipc.last_reply().1.m_type, ENOENT);
+    assert_eq!(ipc.last_reply().1.m_type, -ENOENT);
 }

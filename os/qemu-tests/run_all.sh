@@ -169,6 +169,19 @@ if command -v qemu-system-x86_64 &>/dev/null; then
     if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
     elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-sysboot: skipped)"
     else FAIL=$((FAIL + 1)); fi
+
+    # ── Special-protocol script (E5(f) 真机半 / E-DSWIRE): the DS transport
+    # carrier is a CPL3 userland program seeded on the boot image (/bin/e5-ds,
+    # run by /etc/rc). The gate boots the full system and judges PASS from the
+    # per-leg serial markers plus the `E5f-LABELS 12/12` count (SYS_SETGRANT +
+    # int-33 _taskcall + DS server loop + safecopy both directions). It
+    # assembles its own image via xtask, so it is self-contained.
+    echo "--- Running: test-e5-ds (special: DS transport chain in userland) ---"
+    rc=0
+    bash "$SCRIPT_DIR/test-e5-ds.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-e5-ds: skipped)"
+    else FAIL=$((FAIL + 1)); fi
 fi
 
 # aarch64 tests

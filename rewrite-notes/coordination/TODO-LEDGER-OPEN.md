@@ -67,15 +67,15 @@
 
 | 条目 | 状态 | 差什么 |
 |---|---|---|
-| `E5` 端到端联调测试包（含 `a`—`h` 各子面：挂根、缺页完整回路、多服务器参战、信号、虚存控制、数据存储、系统信息、设备管理生命周期） | `open` / `待验证` | 需要三架构真机各服务参战；这是验收阶梯 T2—T5 的判据本体。**宿主半逐子面已完并带提交号**，细则见 §5 末行 |
+| `E5` 端到端联调测试包（含 `a`—`h` 各子面：挂根、缺页完整回路、多服务器参战、信号、虚存控制、数据存储、系统信息、设备管理生命周期） | `open` / `待验证` | 需要三架构真机各服务参战；这是验收阶梯 T2—T5 的判据本体。**宿主半逐子面已完并带提交号**，细则见 §5 末行。**`E5(f)` 的数据存储子面已拿到首份真机终态（`claim/E5-DS-ONLINE-qoder`）**：新门 `os/qemu-tests/test-e5-ds.sh`（盘上载体 `/bin/e5-ds`，x86_64 全系统启动后的 CPL3 进程）闭了判据1（RS→DS 的 12 条服务 label 全部可解析）与传输链四腿（SYS_SETGRANT、int-33 `_taskcall`、DS 服务环、safecopy 双向）；发布/删除/订阅/notify 四族仍缺，缺的不是代码而是**调用者身份**（DS 源闸只认有 label 的进程，本树无「把测试程序当 RS 服务拉起」的入口）——细则见 `edge_todo.md` 的 E-DSWIRE/E5 同日注记 |
 | `E1` 用户态陷入腿的完整收口 | `partially fixed` / `待验证` | 直通陷入传输已真发中断与系统调用，收口与同场联调待真机 |
 | `E6`、`E7` 进程管理的调用包装与协议面扩充 | `open` | 少数调用号与载荷成员仍缺；信号集位宽拓宽成批挂在 `E7` |
 | `E8` 调度服务的真实通电 | `partially fixed` / `待验证` | 同场测试里取频结果为 0，需设备管理覆盖修复后复跑 |
 | `E9` 根服务的生产接线面（进程、虚存、调度三域接口） | `open` | 三域同型批未做，占位返回码是刻意的失败即止 |
-| `E-RSWIRE`、`E-KERNINFO`、`E-MINTYPES-RS` | `partially fixed` | 虚存侧已真解码根服务表，其余解码与运行时查询桩待翻转 |
+| `E-RSWIRE`、`E-KERNINFO`、`E-MINTYPES-RS` | `partially fixed` | 虚存侧已真解码根服务表；**DS 侧的冷启动 shadow 半也已落地**（经 RS 的 rproctab grant 整表搬回逐行植入 label，对 C `store.c:267-279`，真机读数 12/12）；其余解码与运行时查询桩待翻转 |
 | `E-VMTLB` 目标进程地址空间标识刷新 | `partially fixed` / `待验证` | 机制三件套已闭，多核验收挂 `E5` |
 | `E-PREEMPTFLAG` 可抢占标志的生产可达性 | `partially fixed` | 消费腿已接，调用方全传空值导致分支不可达的余件仍在 |
-| `E-DSWIRE`、`E-ISWIRE`、`E-ISPROD`、`E-ISBOOT`、`E-RMIBWIRE`、`E-MIBPROD`、`E-DMWIRE`、`E-INWIRE`、`E-NETSTART`、`E-INITSYS`、`E-FSBDEV`、`E-FSRUNTIME`、`E-FSVMCACHE`、`E-FSCMDS`、`E-SDEVOWN`、`E-DEVWIRE`、`E-DMABUF` | `open` 或 `partially fixed` | 服务传输通电族与文件系统块层接缝；逐个的缺件清单在原账本，未通电的共同原因是 `E1` 收口与 `E5` 端到端 |
+| `E-DSWIRE`、`E-ISWIRE`、`E-ISPROD`、`E-ISBOOT`、`E-RMIBWIRE`、`E-MIBPROD`、`E-DMWIRE`、`E-INWIRE`、`E-NETSTART`、`E-INITSYS`、`E-FSBDEV`、`E-FSRUNTIME`、`E-FSVMCACHE`、`E-FSCMDS`、`E-SDEVOWN`、`E-DEVWIRE`、`E-DMABUF` | `open` 或 `partially fixed` | 服务传输通电族与文件系统块层接缝；逐个的缺件清单在原账本。**`E-DSWIRE` 一员已拿到真机终态**（见上一行 E5 的同日追加：传输链四腿绿，发布族待具名服务载体）。本批拓出的缺陷类值得全族扫一遍：**服务器回复通道的 errno 符号**——C 的服务以 `_SYSTEM` 编译（`minix3/minix/servers/ds/inc.h:6`），错误码常量本身带负号，本树的 errno 常量是正号，必须在回复边界折一次；已修的只有 DS（`servers/ds/src/dispatch.rs:reply_status`），MIB/devman/input/IS/ipc-server/PM 各服务器的回复边界是否同一形状尚未逐台核 |
 
 ## §5 并行编排仍在制（`new_edge4.md` 认领板与待裁决队列）
 
@@ -152,3 +152,5 @@
 | 阶段正式文档的数量口径不一致 | `open` / `L1` | `rewrite-notes/README.md` 记 38，本轮按编号文件实测 38，其中 `06-todo.md`、`07-paging_init_gpt.md`、`18-trap-bridge-design.md` 属待办与设计稿，正式文档为 35 篇 | `ls rewrite-notes/01-stage-kernel/[0-9]*.md \| wc -l` |
 | 过期注释：状态寄存器读回函数的英文段仍自称保存的 rbx（原无编号） | `closed` / `L1` | 英文段与下方已修正的中文 R10 段自相矛盾 | `grep -n "the IPC status register" os/arch/src/x86_64/trap_stub.rs` → 0 命中（英文残留段已删，`os/arch/src/x86_64/trap_stub.rs:577-583` 中文 R10 段独留）；`grep -n "saved RBX" os/arch/src/x86_64/trap_stub.rs` → 仅 `:951` 合法存活钉 1 处；`cargo test -p minix-arch` → 全绿 0 失败（`2026-10-08 @ a09b92e7a` 核实，落点见本轮提交） |
 | aarch64 架构初始化接线的宿主形状钉住（原无编号） | `closed` / `L1` | 门内代码宿主不可编译，in-module 单测永不运行，宿主钉是唯一可达测试面 | `cargo test -p minix-arch --test arm64_arch_init_pin` → 3 通过 / 0 失败（`os/arch/tests/arm64_arch_init_pin.rs`：构造接线/FPEN 序列/PMU 门控三 msr）；`--test arch_gated_audit` → 2/2 通过（FROZEN 无此文件，无需更新）；全量套件 0 失败（`2026-10-08 @ d85888054` 核实，落点见本轮提交；riscv64 同文件仍零测试，留待后续） |
+| 新增真机门 `test-e5-ds.sh`（E5(f) 数据存储子面的上机判据） | `open`（已入 `run_all.sh` 的 x86_64 专项段）/ `L1` | 门本身可重跑：盘上载体 `/bin/e5-ds` 由 `xtask image` 从 `e5-ds` 包播种（名单真源 `xtask/src/image.rs:E5_DS_READY`，今天只开 x86_64），判据为逐段串口标记 + `E5f-LABELS 12/12` 计数；串口证据留在 `tmp/evidence/` 不删 | `bash os/qemu-tests/test-e5-ds.sh`（可 `SKIP_BUILD=1` 复用已装镜像）→ `RESULT: PASS …`，退出码 0（`claim/E5-DS-ONLINE-qoder` 实跑五轮，其中三轮全链绿） |
+| x86_64 启动链非确定性缺页风暴（原无编号，本批真机跑出的观察项） | `open` / `待验证` | 五轮里有一轮在 `kernel: kmain D memory_init ok` 之后立即进内核态取指缺页风暴：`trap: vector 0xe err 0x10 rip 0x0 cs 0x8`，rsp 在内核栈上递减、千条/轮刷到超时；**同一镜像**下一轮全链正常——即非确定性且与本批改动无因果（本批只改 DS/驱动/载体）。需开独立取证：定位 RIP=0 的调用点与复现率 | `bash os/qemu-tests/test-e5-ds.sh`（连跑三轮看是否再现）；现场读数 `tmp/evidence/e5-ds-serial-20261009-010502.log`（会话产物，不入库） |

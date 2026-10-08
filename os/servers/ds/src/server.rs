@@ -28,7 +28,7 @@ use minix_types::{
 use crate::boot::{BootService, apply_boot_map};
 use crate::check::{apply_check, plan_check};
 use crate::delete::apply_delete;
-use crate::dispatch::{DsCall, Incoming, should_reply, triage};
+use crate::dispatch::{DsCall, Incoming, reply_status, should_reply, triage};
 use crate::getsysinfo::{image_bytes, plan_getsysinfo};
 use minix_types::DsEntrySnap;
 use crate::heap::DsPool;
@@ -179,30 +179,76 @@ impl DsServer {
         // E-BIRTHFACE（NS1）出生臂：C 的 RS_INIT 由 sef_local_startup 在
         // 主循环前消费（ds main.c:96-103 sef_startup → sef.c:127-141 阻塞
         // 等 IS_SEF_INIT_REQUEST），循环体永远见不到它；本树无独立 startup
-        // 面，在此拦截。fresh 锚点 ≡ 构造态（main.rs 注记：reset 半
-        // store.c:254-265，表自构造即净）；shadow 半（store.c:267-269 经
-        // rproctab grant 取 BootService）挂 grant 消费面，登记不扩。应答
-        // 按 process_init 尾部（sef_init.c:113-117）回 RS_INIT+result——
+        // 面，在此拦截。fresh 锚点的两拍都在此走完：reset 半
+        // （store.c:254-265，表自构造即净）+ shadow 半（store.c:267-279 经
+        // rproctab grant 把 RS 公共表整表搬回并逐行 `map_service` 植入
+        // label）。shadow 半是 E-RSWIRE 挂在 DS 名下的最后一块：没有它，
+        // DS 眼里任何服务都没有名字，`do_publish`/`do_delete`/`do_subscribe`
+        // 的源闸（store.c:297/:588/:466）会把所有服务挡在 EPERM/ESRCH，
+        // 而 label 又是 `retrieve_label_endpt` 的全部数据源（E5(f) 判据1）。
+        // 应答按 process_init 尾部（sef_init.c:113-117）回 RS_INIT+result——
         // 注册面 fresh + restart STATEFUL（main.c:96-97），LU 未注册 →
         // 默认 ENOSYS（sef_init.c:324-327）。
         if message.m_type == minix_types::RS_INIT && caller == RS_PROC_NR {
-            let init_type = message.rs_init_type().unwrap_or(0);
+            // 类型化解码（`RsInit::decode_message`，ipc.h:1858-1867 的接收侧
+            //  unpack，sef_init.c:193-215）——与 VM 的 RS_INIT 腿同一条权威，
+            // 不在这里手拄字段偏移。
+            let init = minix_types::RsInit::decode_message(&message);
+            let init_type = init.init_type;
+            // shadow 半的第一拍：把 RS 授权的公共表整表搬回本地缓冲（C
+            // `sys_safecopyfrom(RS_PROC_NR, info->rproctab_gid, 0, rprocpub,
+            // sizeof(rprocpub))`，store.c:267-269；grant 由 RS 以 `ANY` 为
+            // 被授权方建起——boot.rs:963-975 对位 C main.c:185-189，所以 DS
+            // 与 VM 读同一张表）。
+            //
+            // 搬表与植入分成两步写在两处，是借用约束：`process_init` 同时
+            // 持有「清过滤闭包」（借 kernel）与「init 闭包」（借 self），同
+            // 一闭包期里不能两处都摸 kernel。两步都在给 RS 的回报之前完成，
+            // 外部可观测顺序不变（单线程服务器在这一拍不收别的请求）。
+            let mut wire = [0u8; crate::boot::RPROCTAB_BYTES];
+            let read = if init_type == 0 {
+                if init.rproctab_gid < 0 {
+                    // GRANT_INVALID 哨兵（ready.rs 的 None → -1，
+                    // safecopies.h:52）：没有表可读就是出生失败，不静默跳过。
+                    Some(Err(minix_types::EINVAL))
+                } else {
+                    Some(
+                        kernel
+                            .safecopy_from(RS_PROC_NR, init.rproctab_gid as GrantId, &mut wire)
+                            .map(|_| ()),
+                    )
+                }
+            } else {
+                None
+            };
             // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
             // 第一段 sef_init.c:59-60 的 `assert(r == OK)`，经 DsKernel 真
-            // 接线）、回报消息由库构造；分派语义（fresh + restart
-            // STATEFUL → 都 OK；LU 未注册 → 默认 ENOSYS，
-            // sef_init.c:324-327）保持原样。
+            // 接线）、回报消息由库构造；分派语义保持原样（fresh 走 reset +
+            // 植入，restart STATEFUL 不重植——C 注册的是
+            // `SEF_CB_INIT_RESTART_STATEFUL`，main.c:97；LU 未注册 → 默认
+            // ENOSYS，sef_init.c:324-327）。
             let reply = minix_sef::process_init(
                 &mut |req, addr, len| kernel.statectl(req, addr, len),
                 init_type,
                 &mut |t| match t {
-                    0 | 2 => OK, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                    // SEF_INIT_FRESH — sef.h:93：搬回来的表在此落地成 label。
+                    0 => match &read {
+                        Some(Ok(())) => {
+                            crate::boot::plant_from_wire(&mut self.store, &mut self.subs, &wire)
+                                .map(|_| OK)
+                                .unwrap_or_else(|e| e)
+                        }
+                        Some(Err(e)) => *e,
+                        None => OK,
+                    },
+                    // SEF_INIT_RESTART — 状态随 RS 镜像恢复，锚点体为空。
+                    2 => OK,
                     _ => minix_types::ENOSYS,
                 },
             );
             let mut reply = match reply {
                 Ok(m) => m,
-                // C 段一 assert ＝ 出生失败 fail-closed（单线程服务器停机）。
+                // C 段一 assert ＝出生失败 fail-closed（单线程服务器停机）。
                 Err(e) => panic!("ds: birth statectl failed: {e}"),
             };
             // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）。
@@ -220,7 +266,10 @@ impl DsServer {
 
         // C 80-86: the answer rides back in the same message.
         if should_reply(result) {
-            message.m_type = result;
+            // 线序符号：C 侧 errno 常量因 `_SYSTEM`（ds/inc.h:6）本就带负号，
+            // 本树在回复边界折一次（`dispatch::reply_status` 的注记记真机
+            // 实测的假成功入口）；判定面继续用正号常量，不受影响。
+            message.m_type = reply_status(result);
             // C 127-129: a failed reply is logged and dropped — the loop
             // moves on; the drop is the observable half.
             let _ = ipc.send(caller, &message);
@@ -1189,9 +1238,10 @@ mod tests {
 
         // The short ask refuses (store.c:668); the exact ask copies the
         // whole image (C 672-675), first byte = live entry's flags.
+        // 回复通道上的错误码按 C 的 `_SYSTEM` 线序带负号（`reply_status`）。
         let replies = ipc.replies();
         assert_eq!(replies.len(), 3);
-        assert_eq!(replies[1].1, EINVAL);
+        assert_eq!(replies[1].1, -EINVAL);
         assert_eq!(replies[2].1, OK);
         let copies = kernel.copied.borrow();
         assert_eq!(copies.len(), 1);
@@ -1221,19 +1271,32 @@ mod tests {
         drain(&mut server, &mut ipc, &mut kernel);
         assert_eq!(
             ipc.replies(),
-            vec![(Endpoint(4), EINVAL), (Endpoint(4), EINVAL)]
+            vec![(Endpoint(4), -EINVAL), (Endpoint(4), -EINVAL)]
         );
     }
 
-    /// E-BIRTHFACE（NS1）：RS 的出生请求不再落 Unknown/EINVAL，而是按
-    /// process_init 尾部（sef_init.c:113-117）回 RS_INIT+result——fresh
-    /// → OK；且应答走独立 lane，不触碰 store（fresh 锚点 ≡ 构造态）。
+    /// E-BIRTHFACE（NS1）+ shadow 半（E-RSWIRE 的 DS 侧最后一块）：RS 的
+    /// 出生请求不再落 Unknown/EINVAL，而是按 process_init 尾部
+    /// （sef_init.c:113-117）回 RS_INIT+result；fresh 锚点的两拍都走完——
+    /// reset 半 + 经 `rproctab_gid` 整表搬回后逐行植入 label（C
+    /// store.c:267-279）。植入后的表覆盖构造态，所以断言看的是 wire 而不是
+    /// fixture 的 seed。live update 未建模：诚实 ENOSYS（sef_init.c:324-327）。
     #[test]
-    fn test_rs_init_birth_answered_with_ok() {
+    fn test_rs_init_birth_plants_labels_and_answers_ok() {
         let (mut server, mut kernel) = wired();
+        // 一张三行在用、一行未在用的公共表（行宽 = 共享快照 `RprocpubSnap`，
+        // 端点用 com.h 的槽位值）。
+        let wire = rproctab_wire(&[
+            (true, 6, b"ds"),
+            (true, 2, b"rs"),
+            (true, 1, b"vfs"),
+            (false, 9, b"unused"),
+        ]);
+        kernel.lend(RS_PROC_NR, 7, &wire);
         let mut birth = letter(RS_PROC_NR, minix_types::RS_INIT);
         // Union field write is safe: the RS_INIT tag selects m_rs_init.
         birth.m_u.m_rs_init.type_ = 0; // SEF_INIT_FRESH
+        birth.m_u.m_rs_init.rproctab_gid = 7;
         let mut ipc = MockIpc::new(vec![birth]);
         drain(&mut server, &mut ipc, &mut kernel);
 
@@ -1242,6 +1305,29 @@ mod tests {
         assert_eq!(replies[0].0, RS_PROC_NR);
         assert_eq!(replies[0].1.m_type, minix_types::RS_INIT);
         assert_eq!(replies[0].1.rs_init_result(), Some(OK));
+        // 植入真发生：reset 清掉了 fixture 的 seed（vfs→9），wire 的行落地
+        // （vfs→1），未在用行不植（unused 查不到）。
+        assert_eq!(
+            crate::identity::resolve_endpoint(&server.store, b"vfs"),
+            Some(Endpoint(1)),
+            "label 应来自 rproctab 行而不是 fixture seed"
+        );
+        assert_eq!(
+            crate::identity::resolve_endpoint(&server.store, b"ds"),
+            Some(Endpoint(6)),
+            "首行同样落地"
+        );
+        assert_eq!(
+            crate::identity::resolve_endpoint(&server.store, b"unused"),
+            None,
+            "in_use=0 的行不植入（C store.c:273 的 if 判据）"
+        );
+        // 源闸随之开：DS 能反向认出端点 1 就是「vfs」（store.c:297 的闸门
+        // 读的就是这条路）。
+        let named = crate::identity::resolve_name(&server.store, Endpoint(1))
+            .expect("端点 1 应有植入的 label");
+        let n = named.iter().position(|&b| b == 0).unwrap_or(named.len());
+        assert_eq!(&named[..n], b"vfs");
         // live update 未建模：诚实 ENOSYS（sef_init.c:324-327 默认面）。
         let (mut server2, mut kernel2) = wired();
         let mut lu = letter(RS_PROC_NR, minix_types::RS_INIT);
@@ -1251,6 +1337,65 @@ mod tests {
         assert_eq!(
             ipc2.sent.borrow()[0].1.rs_init_result(),
             Some(minix_types::ENOSYS)
+        );
+    }
+
+    /// 拼一张 rprocpub 字节表（仅测试夹具）。行形唯一真源是共享快照
+    /// `minix_types::RprocpubSnap`，与 `boot::decode_rproctab` 同一权威；
+    /// RS 侧的 `pub_wire_bytes` 与 VM 测试的 row_bytes 用同一手法。
+    fn rproctab_wire(rows: &[(bool, i32, &[u8])]) -> Vec<u8> {
+        let row_bytes = core::mem::size_of::<minix_types::RprocpubSnap>();
+        let mut out = vec![0u8; crate::boot::RPROCTAB_BYTES];
+        for (i, (in_use, ep, label)) in rows.iter().enumerate() {
+            let mut lab = [0u8; minix_types::RS_MAX_LABEL_LEN];
+            let n = label.len().min(lab.len());
+            lab[..n].copy_from_slice(&label[..n]);
+            let snap = minix_types::RprocpubSnap {
+                in_use: if *in_use { 1 } else { 0 },
+                sys_flags: 0,
+                endpoint: *ep,
+                dev_nr: 0,
+                label: lab,
+                vm_call_mask: 0,
+            };
+            // SAFETY: 行是 `#[repr(C)]` POD 快照，取其字节镜像写入缓冲；
+            // 读侧（`decode_rproctab`）用 `read_unaligned` 反向同形。
+            unsafe {
+                let src = core::slice::from_raw_parts(
+                    (&snap as *const minix_types::RprocpubSnap).cast::<u8>(),
+                    row_bytes,
+                );
+                let off = i * row_bytes;
+                out[off..off + row_bytes].copy_from_slice(src);
+            }
+        }
+        out
+    }
+
+    /// fresh 锚点读不到表时不得静默成功：GRANT_INVALID 哨兵（RS 还没建
+    /// grant）直接回 EINVAL，由 RS 按出生失败处置。
+    #[test]
+    fn test_rs_init_birth_without_grant_refuses() {
+        let (mut server, mut kernel) = wired();
+        let mut birth = letter(RS_PROC_NR, minix_types::RS_INIT);
+        birth.m_u.m_rs_init.type_ = 0;
+        birth.m_u.m_rs_init.rproctab_gid = -1; // GRANT_INVALID
+        let mut ipc = MockIpc::new(vec![birth]);
+        drain(&mut server, &mut ipc, &mut kernel);
+        assert_eq!(
+            ipc.sent.borrow()[0].1.rs_init_result(),
+            Some(minix_types::EINVAL)
+        );
+        // 拷贝失败同样上浮（C 此处 panic；本树 fail-closed 交 RS 处置）。
+        let (mut server2, mut kernel2) = wired();
+        let mut bad = letter(RS_PROC_NR, minix_types::RS_INIT);
+        bad.m_u.m_rs_init.type_ = 0;
+        bad.m_u.m_rs_init.rproctab_gid = 42; // 没有这份授权
+        let mut ipc2 = MockIpc::new(vec![bad]);
+        drain(&mut server2, &mut ipc2, &mut kernel2);
+        assert_eq!(
+            ipc2.sent.borrow()[0].1.rs_init_result(),
+            Some(minix_types::EIO)
         );
     }
 

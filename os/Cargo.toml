@@ -64,6 +64,8 @@ members = [
     "qemu-tests/test-kernels/kernel/bootstrap/test-paging-faultloop",
     "qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth",
     "qemu-tests/test-kernels/user/rt-birth",
+    # E5(f) 真机半的 DS 传输链载体（imgrd /bin 播种，rc 执行）。
+    "qemu-tests/test-kernels/user/e5-ds",
     "qemu-tests/test-kernels/kernel/bootstrap/test-sysboot",
     "qemu-tests/test-kernels/user/sysboot-rx",
     "qemu-tests/test-kernels/user/sysboot-tx",

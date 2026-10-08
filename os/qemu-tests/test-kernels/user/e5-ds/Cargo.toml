@@ -1,0 +1,29 @@
+[package]
+name = "e5-ds"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "e5-ds"
+path = "src/main.rs"
+# Freestanding user image: never compile a host test harness (the
+# minix-rt `#[panic_handler]` would collide with the std one).
+test = false
+
+required-features = ["fw-user-none"]
+
+[dependencies]
+# Inline declaration (not workspace inheritance) — same reason as rt-birth:
+# this is the freestanding no_std birth-chain image, so minix-rt must come
+# in with `default-features = false` plus the two bare-metal features.
+minix-rt = { path = "../../../../libs/minix-rt", default-features = false, features = [
+    "panic-handler",
+    "alloc-global",
+] }
+minix-sys = { workspace = true }
+minix-types = { workspace = true }
+
+# X-2/NK5 裸机隔离：宿主 --workspace --bins 跳过本包；真机构建由
+# `xtask image`（imgrd /bin 播种）与 run_all.sh 成对传 --target + --features。
+[features]
+fw-user-none = []

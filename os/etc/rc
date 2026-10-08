@@ -13,6 +13,12 @@
 echo "minix-rs rc: minimal boot script marker"
 ls /bin
 cat /etc/rc
+# E5(f) 真机半：DS 数据服务传输链载体（minix-sys DsClient → DS 端点 6）。
+# 串口判据逐段 `e5-ds: ...`，计数行 `E5f-LABELS n/12`，末行是 run_qemu.sh
+# 惯例的 `### TEST_RESULT: ... ###`；门脚本 os/qemu-tests/test-e5-ds.sh。
+# 未播种该二进制的架构（名单真源 xtask `E5_DS_READY`）只多一行 not found，
+# 不影响 marker 在前的既有冒烟判据。
+/bin/e5-ds
 # NK4-C 续-277/278 目标③：ATF C 测试上机腿。本文件只留桥面哨兵（p1/p2/p3，
 # 验裸写/stdio/malloc 地基）；套件 exec 行（/tests/<prog> <tc>）由 xtask 装配
 # 时从 ATF_SUITE+minix3 C 源提取并注入 rc 变体（target/image/<arch>/rc.imgrd，
