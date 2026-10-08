@@ -27,6 +27,7 @@
 | 简单字符设备信息的单一权威与虚存服务握手 | `closed` / `L2` | `SD-29` 的一处子面、`C-1` | `os/libs/minix-types/src/types/device.rs` 被虚拟文件系统消费 | 读 `new_edge4.md` §2 的 `C-1` 销账行（含提交号） |
 | 跨阶段联调族中已闭的成员 | `closed` / `L2` | `E2`、`E4`、`E-BOOTFRAME`、`E-FORKMSG`、`E-VFSWIRE`、`E-REQWIRE`、`E-SCHEDNICED`、`E-MINTYPES-SYS`、`E-MIBGRANT`、`E-DMCLIENT`、`E-MINSYS-SCOPE`、`E-ISKMESS`、`E-CDRCONV`、`E-TTYEVENT`、`E-PCKBDREG`、`E-DEVWIRE`、`E-IPCWIRE`（账面还挂着进行中的状态行，正文已自宣"八缺全闭合"，属**表头与正文不同步**） | 见 `edge_todo.md` 各条目最新进度注记 | 逐条 `grep -n "<条目 ID>" rewrite-notes/coordination/edge_todo.md` 后读**最新**注记；表头普遍滞后一档 |
 | 未被使用的分发死码 `dispatch_unused` 已删除 | `closed` / `L1` | OPEN §8 卫生项（原无编号；设计 `25-misc-unported.md` §4.6/§6 登记“保留待清理”；`2026-10-08 @ 56e1869ae` 翻转） | `os/kernel/src/misc.rs`（函数、测试、模块映射 `do_unused.c` 行、D2 旧注记已删；D2 改写对齐设计 §3.2） | `rg -n "dispatch_unused" os --include=*.rs` → 零命中；`cargo test -p minix-kernel --lib` → 829 通过 / 0 失败（基线 830 − 1 个被删测试）；`cargo check --workspace --tests` → 零错误 |
+| 真机测试脚本收尾清理删串口证据（H7）已修 | `closed` / `L1` | OPEN §7（评审 H7，R3.5 本轮必修） | `os/qemu-tests/test-atf-aarch64.sh:archive_evidence/cleanup` | 全量门 `RESULT: PASS (36/36)`、退出码 0、归档 `serial.log` 36 行、WORK 已清、无 QEMU 残留（`2026-10-08 @ 987fc589e` 基线验证，落点见本轮提交）；riscv 侧为环境变量 opt-out 形态（`RS_ATF_WORK`）未顺手改；`concepts/qemu-environments.md` 与 `misc/` 无相关表述、`REVIEW-HISTORY.md` 系冻结存证，均无需联动 |
 
 ## §2 已裁决（人或既有设计已经替本轮做过选择）
 

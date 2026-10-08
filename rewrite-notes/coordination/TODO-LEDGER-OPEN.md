@@ -129,7 +129,7 @@
 |---|---|---|---|
 | 文档记的测试数与代码实测数不一致的已知三处 | `open` / `L1` | 内核时钟章记 44 实测 47；网络实测远大于记数；调度服务文档内部自相矛盾（概览记 77、命令记 27、实测 27） | `grep -rc "#\[test\]" os/kernel/src/clock.rs`；`grep -rc "#\[test\]" os/servers/sched/src/` |
 | 上游测试套件的建立证据没有钉校验和与构建提交，干净重建后引导腿会崩 | `open` / `待验证` | 评审 `H9` 项的后遗症：单采样门读数不可判读 | 见 `os/qemu-tests/test-atf-riscv64.sh` 与 `REVIEW-HISTORY.md` 的 `R3.3`—`R3.4` 段 |
-| 真机测试脚本的收尾清理会删掉串口证据文件 | `open` / `L1` | 评审 `H7` 升级为第四次断链，本轮必修；现场仍在：`os/qemu-tests/test-atf-aarch64.sh` 的清理段 | `grep -n "rm\|cleanup" os/qemu-tests/test-atf-aarch64.sh` |
+| 真机测试脚本的收尾清理会删掉串口证据文件 | `closed` / `L1` | EXIT 陷阱先归档（`serial.log/build.log/xtask.log` → `/tmp/atf_a64_evidence/<stamp>/` 并走 stderr 回显）再清理；判据与退出码逻辑零触碰 | `bash -n` 通过；`test-atf-aarch64.sh` 全量实跑 `RESULT: PASS (36/36)` 且归档内 `serial.log` 恰 36 条结果行（`2026-10-08 @ 987fc589e` 验证，落点见本轮提交） |
 | 页表走表的错粒度检查被配置门挡住，模糊测试生成器一扩就炸 | `open` / `L2` | 评审 `J1` 项，落 `os/arch/src/riscv64_walk.rs` | 读该文件对应行的 `#[cfg]` 与测试生成器口径 |
 | 地址常量清扫的十三条发现：修复轮已落注记，残余需要按工具复扫逐条判读 | `待验证` / `L1`（工具在，读数未判） | 出处 `ADDRESS-CONSTANT-AUDIT.md` 的 `A1`—`A13` 与修复轮注记 | `python3 tools/address-constant-scan.py os`（输出需按该审计的豁免清单过滤，否则会把测试夹具当违规） |
 | 跨架构常驻编译检查门未落地：同一类事故（公共路径的取证改动打断另两架构构建）已发生两次 | `open` / `L1`；**裁决 `PD-30` 采甲**（加任务：宿主默认形态测试 + 生产形态交叉编译两条腿），`PD-31` 定了静态检查的棘轮口径；现状是工作流只为两架构建生产形态 | 出处回归评审的 `OQ-1`；按 `PD-30` 加任务也是 `PD-29` 摘默认替身特性的前置 | `grep -n "cross-arch\|aarch64\|riscv64" .github/workflows/*.yml` |

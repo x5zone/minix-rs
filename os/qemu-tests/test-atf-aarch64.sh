@@ -37,7 +37,26 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # …/minix-rs/os
 TIMEOUT_BOOT="${TIMEOUT_BOOT:-260}"
 WORK="$(mktemp -d /tmp/atf_a64.XXXXXX)"
 
-cleanup() { rm -rf "$WORK"; }
+# H7（R3.5 本轮必修）：串口证据随 $WORK 陪葬——收尾清理必须先归档再删。
+# 判据逻辑零触碰：归档只发生在 EXIT 陷阱内（verdict 回显之后）；归档的
+# 每一步都 `|| true` 兜底，绝不掩盖 verdict 的退出码；回显走 stderr，不污
+# 染 stdout 上的 RESULT/FAIL 判定行（run_all 与 CI 按 stdout 计分）。
+EVIDENCE_BASE="/tmp/atf_a64_evidence"
+archive_evidence() {
+    [ -d "$WORK" ] || return 0
+    local have=0 f
+    for f in serial.log build.log xtask.log; do
+        [ -f "$WORK/$f" ] && have=1 && break
+    done
+    [ "$have" -eq 1 ] || return 0
+    local dest="$EVIDENCE_BASE/$(date +%Y%m%d-%H%M%S)-$$"
+    mkdir -p "$dest" 2>/dev/null || return 0
+    for f in serial.log build.log xtask.log; do
+        [ -f "$WORK/$f" ] && cp -p "$WORK/$f" "$dest/$f" 2>/dev/null || true
+    done
+    echo "evidence archived: $dest" >&2
+}
+cleanup() { archive_evidence; rm -rf "$WORK"; }
 trap cleanup EXIT
 
 if ! command -v qemu-system-aarch64 &>/dev/null; then
