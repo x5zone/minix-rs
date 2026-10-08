@@ -178,6 +178,8 @@ impl<I: RtIpc> FsRt<I> {
         // (process_init tail: `m.m_type = RS_INIT;
         // m.m_rs_init.result = result;` — sef_init.c).
         reply.m_u.m_rs_init.result = result;
+        //[SD19-gate] RS 出生报告 send：发后即忘，成败由紧随其后的 result==0 判定
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.send(Endpoint::RS, &reply);
         result == 0
     }
@@ -285,6 +287,8 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
                                 m_type: TransactionId::encode_reply(e.to_i32(), transaction),
                                 ..Message::default()
                             };
+                            //[SD19-gate] 错误回复 send：已在返回错误路径，send 失败无可再报
+                            #[allow(clippy::let_underscore_must_use)]
                             let _ = self.ipc.send(self.peer, &reply);
                             continue;
                         }
@@ -301,12 +305,16 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
         if let Some(bytes) = wire::lookup_rewrite_bytes(&reply)
             && self.grant != minix_types::GRANT_INVALID
         {
+            //[SD19-gate] lookup 重写尽力而为 copy_to：失败则 VFS 从重写路径重启解析（紧邻注释已陈明）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.ipc.copy_to(self.peer, self.grant, 0, &bytes);
         }
         // The last served request decides the node-payload layout (mount/
         // new-node replies carry the device; create does not).
         let request = self.last_request.unwrap_or(RequestNumber::GetNode);
         let msg = wire::encode_reply(request, &reply);
+        //[SD19-gate] 终回复 send：发后即忘，与 C sef 回复语义一致（send 失败无从重投）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.send(Endpoint(to), &msg);
     }
 

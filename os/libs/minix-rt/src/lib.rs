@@ -185,6 +185,8 @@ fn nk4c_oom_tag(size: usize) {
     lit!(b"/");
     hex!(alloc::GLOBAL_POOL_PAGES, 3);
     lit!(b"\n");
+    //[SD19-gate] OOM 报告通道 sys_diagctl_write：报告通道自己坏了时无更高可回报处，transport 侧 park 兜底（panic.c:66）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = sys_diagctl_write(
         &DirectKernelCallTransport,
         core::str::from_utf8(&buf[..n]).unwrap_or("nk4c: OOM-RT\n"),
