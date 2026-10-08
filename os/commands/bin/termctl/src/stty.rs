@@ -159,7 +159,7 @@ const FLAG_BITS: [(&str, FlagGroup, u32); 16] = [
 ];
 
 /// Apply parsed operations to a terminal attribute record (`modeset`,
-/// `stty.c:208` 的搜索次序在解析层已定，这里只做落位）。
+/// `modes.c:208` 的搜索次序在解析层已定，这里只做落位）。
 ///
 /// `cs8` 的置位先清 `CSIZE` 掩码（字符大小是域不是位）；清除则只清
 /// `CS8` 位值。速度同时写两个方向（C 的 `cfsetispeed`/`cfsetospeed`

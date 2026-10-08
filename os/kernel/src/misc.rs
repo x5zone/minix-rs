@@ -2532,7 +2532,7 @@ pub fn dispatch_profile(
 
 /// Global "statistical profiling is running" flag.
 ///
-/// C: `int sprofiling` — kernel.h:528 (declared but defined in
+/// C: `int sprofiling` — `minix/kernel/profile.h:13` (declared but defined in
 /// `sprofile.c`). The kernel treats this as a single global bool.
 ///
 /// # SMP safety (SMP/BKL)

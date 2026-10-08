@@ -1137,7 +1137,8 @@ pub fn smp_init() {
             }
             // 生产者侧栅栏：记录写入 → PSCI CPU_ON。交付通道裁定
             // （§续-406）：QEMU 直核 `-kernel` 的 !is_linux 臂只派
-            // first_cpu 进入口（boot.c:731 次级核走未设置的
+            // first_cpu 进入口（QEMU 侧 `hw/arm/boot.c:731`，非 minix3 仓内
+            // 文件——次级核走未设置的
             // secondary_cpu_reset_hook＝保持复位 PC），停车邮箱无人消费；
             // 直核链的次级核交付＝QEMU 内建 PSCI CPU_ON（无固件记账层，
             // §续-405 的 UEFI 链 ret=0-但-不动 是 EDK2/TF-A 特有，且其

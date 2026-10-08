@@ -795,7 +795,7 @@ pub const MAX_VSCPVEC: i32 = SCPVEC_NR as i32;
 
 /// Vector safecopy element.
 ///
-/// C: `struct vscp_vec` — safecopy.h:55-71
+/// C: `struct vscp_vec` — `minix/safecopies.h:41-49`
 ///
 /// Each element describes one copy operation within a vsafecopy call.
 /// `v_from` and `v_to` are endpoints; one of them must equal `SELF`
@@ -2374,7 +2374,7 @@ mod tests {
 
     #[test]
     fn test_vscp_vec_struct_size_matches_c_layout() {
-        // C: safecopy.h:55-71 — struct vscp_vec has 6 fields.
+        // C: `minix/safecopies.h:41-49` — struct vscp_vec has 6 fields.
         // The Rust repr(C) layout MUST match the C layout exactly,
         // since the kernel will (eventually) copy a user-provided
         // vector directly into a VscpVec array.

@@ -177,7 +177,7 @@ mod tests {
 
     /// Two-string env: slots point at successive strings, descriptor's
     /// env_str sits after the argv NULL (`ps_argvstr + argc + 1`,
-    /// `stack_utils.c:176`).
+    /// `stack_utils.c:170`).
     #[test]
     fn test_stack_fill_env_slots_and_descriptor() {
         let argv = ["sh", "/etc/rc"];
