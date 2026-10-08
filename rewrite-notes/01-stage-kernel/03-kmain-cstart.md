@@ -69,8 +69,8 @@ void kmain(kinfo_t *local_cbi)
 ```c
 void cstart(void) {
     prot_init();          // 主/次核保护结构（GDT/IDT/TSS）
-    /* 解析环境变量：ac_layout / no_apic / no_smp / watchdog ... */
     init_clock();         // 时钟变量
+    /* 之后才解析环境变量：ac_layout(L421) / no_apic(L443) / watchdog(L456) / no_smp(L464) */
     intr_init(0);         // 中断控制器（0 = boot CPU）
     arch_init();          // 体系结构收尾（含浮点单元等）
 }
@@ -97,18 +97,31 @@ struct tss_s       tss[CONFIG_MAX_CPUS];
 
 ### 3.1 双 trait 抽象
 
-C 用三套 `#if defined(__i386__)` 各写一遍 `prot_init`。Rust 用两个架构边界 trait 把"差异"关进 impl、把"语义"统一给 OS 层：
+C 侧的多架构切分是**按目录**：`minix3/minix/kernel/arch/i386/protect.c` 与 `arch/earm/protect.c` 各有一份 `prot_init`（riscv 在 Minix3 无 C 端口），并**不是** `#if defined(__i386__)` 预处理块。Rust 用两个架构边界 trait 把差异关进 impl、把统一语义交给 OS 层。真实方法面（节选，去掉 doc 注释）：
 
 ```rust
 pub trait ProtectionArch: Sized {
-    /* 装本架构的门控结构：x86 GDT/TSS、arm EL/向量基、riscv 特权级基 */
+    type PrivilegeLevel: Copy + Eq + core::fmt::Debug;   // 特权级是 OS 语义：类型共享、取值各异
+    const KERNEL_PRIVILEGE: Self::PrivilegeLevel;
+    const USER_PRIVILEGE: Self::PrivilegeLevel;
+    fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self;
+    fn set_kernel_stack(&mut self, cpu_id: u32, stack_top: VirBytes); // x86 TSS.sp0 / arm TPIDR_EL1 / riscv sscratch
+    fn load(&self);
+    fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes);
+    // …to_privilege / from_privilege：与 OS 层 Privilege 互转…
 }
 pub trait TrapEntryArch: Sized {
-    /* 装异常/中断入口：x86 IDT、arm VBAR、riscv stvec + 各自的内核栈机制 */
+    fn init() -> Self;
+    fn configure_syscall(&mut self, entry_point: VirBytes);  // x86 SYSCALL MSR / arm SVC / riscv ecall
+    fn configure_ipc_entry(&mut self, entry_point: VirBytes);
+    fn load(&self);                                          // x86 装 IDT / arm 设 VBAR_EL1 / riscv 装 stvec
+    fn set_handler(/* 按向量号装 handler */);
 }
 ```
 
 （`os/arch/src/arch/protection.rs:trait ProtectionArch`、`os/arch/src/arch/trap_entry.rs:trait TrapEntryArch`）
+
+> **辨析（两个 trait 的分工，别混）：** “陷入时换哪个栈”归 `ProtectionArch::set_kernel_stack`（x86 写 TSS.sp0、arm 写 TPIDR_EL1、riscv 写 sscratch）；“异常/中断来了跳哪”归 `TrapEntryArch::load`（x86 装 IDT、arm 设 VBAR_EL1、riscv 装 stvec）。VBAR 是 `TrapEntryArch` 的职责，不是 `ProtectionArch`——两个 trait 各自把“同一语义在不同硬件上的不同承载”分开。
 
 ### 3.2 取舍：用类型状态替代 `kernel_may_alloc` 运行时闸门
 
@@ -130,6 +143,20 @@ C 的 `cstart()` 是一根函数串；Rust 把 `kmain` 拆成 Phase A/B/C（收�
 `kmain` 在 Phase B 调 `init_protection(kernel_info)`（`os/kernel/src/lib.rs`，prot_init 对位），它按目标架构分派到 `ProtectionArch`/`TrapEntryArch` 的实现：x86-64 写 GDT 段描述符、IDT 门表、每 CPU 的 TSS.RSP0；aarch64 设 VBAR 与 `SP_EL1`；riscv64 装 stvec 与 `sscratch`。**三家写的是完全不同的寄存器/表，但都在回答 §1.2 那三个问题**——OS 语义层（`kmain`）只调 `init_protection`，看不见这些差异（跨架构四公理，`review-core-semantics.md` §1.6）。
 
 `init_protection` 之后才轮到 `proc_init`（清进程表）与 boot 进程诞生——这条先后正是 §2.2 依赖链在 Rust 侧的延续：先把异常入口与内核栈备好，再让可能触发陷入的调度跑起来。
+
+### 4.2 实地导览：现在打开代码，kmain 是按这个顺序排的
+
+上面是"为什么"；这里是"打开仓库怎么顺着读"。从 `jump_to_kmain` 落地的 `kmain` 往下，执行路径是一条带里程碑日志的链（锚点均 `os/kernel/src/lib.rs`）：
+
+```
+kmain(kernel_info)                       // 本篇入口，Phase A
+  │  store KernelInfo 进全局、validate()      ← 接住 01 交来的契约
+  ├─ Phase B: init_protection(kernel_info)    ← 本篇章：装保护结构（prot_init 对位）
+  ├─ (init_clock_and_interrupts 等)          ← 时钟/中断 → 05 篇细讲
+  └─ Phase C: proc_init() + arch_boot_proc   ← 清进程表、boot 进程诞生 → 06 篇
+```
+
+每一里程碑都打一行 `boot_stage!("kernel: kmain C proc_init ok\n")` 式日志——这不是装饰，而是 §6 定位的基础：哑机器时，串口上**最后出现的那条 `boot_stage!`** 就把故障夹在两个里程碑之间。读这篇时按这个序去 `lib.rs` 里找对应函数，Phase B 的 `init_protection` 分派到 §3.1 那两个 trait 的实现，Phase C 之前的 `validate`/store 就是 01 篇 §4.1 那条 caller-saved 陷阱的落地点。**把这条链走一遍，“保护结构为什么在 proc_init 之前”就不再是一句结论，而是你在代码里亲眼看到的位置。**
 
 ---
 
