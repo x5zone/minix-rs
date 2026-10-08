@@ -649,7 +649,7 @@ head.S:multiboot_init
 
 | 方案 | 做法 | 结果 |
 |---|---|---|
-| 选：只传值 | 结构按固定布局、可复制，载荷是静态切片；需要传递"能力"时传一个分类标签（`u32`）加一个物理地址，由接收方自己查表处理（`os/libs/minix-boot/src/platform.rs`，文件头给了这条推演；`os/libs/minix-boot/src/kernel_info.rs:KernelInfo`） | 边界两侧不共享任何代码地址或虚表，传出去的东西不依赖发送方是否还活着 |
+| 选：只传值 | 结构按固定布局、可复制，载荷是静态切片；需要传递"能力"时传一个分类标签（`u32`）加一个物理地址，由接收方自己查表处理（`os/libs/minix-boot/src/platform.rs`，文件头给了这条推演；`os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo`） | 边界两侧不共享任何代码地址或虚表，传出去的东西不依赖发送方是否还活着 |
 | 否：放函数指针 | 契约里带 `fn(...)` 回调 | 指针地址在发送方镜像里解析、函数体在另一个包里；发送方内存被回收后指针悬垂，接收方一调用就跳进无效地址 |
 | 否：共享全局 | 沿用 C 的做法，两侧读写同一个全局 | 需要两个镜像共享数据段全局，而它们各自链接了一份内核代码，`.bss` 是彼此的（见 4.3） |
 
@@ -657,7 +657,7 @@ head.S:multiboot_init
 
 ### 3.2 接口类型约束到哪一步
 
-**C 的这段流程是一条直线函数体**（2.2 的七行），次序天然固定，不可能漏步。重写为了统一两套固件的差异，引入了一个接口类型（`os/libs/minix-boot/src/boot_shim.rs:BootShim`）。它买到了什么、买不到什么，必须说准。接口体只有一条方法：
+**C 的这段流程是一条直线函数体**（2.2 的七行），次序天然固定，不可能漏步。重写为了统一两套固件的差异，引入了一个接口类型（`os/libs/minix-boot/src/boot_shim.rs:trait BootShim`）。它买到了什么、买不到什么，必须说准。接口体只有一条方法：
 
 ```rust
 pub trait BootShim {
@@ -676,7 +676,7 @@ pub trait BootShim {
 
 ### 3.3 谁铺表、谁使能
 
-**C 把两个映射与启用翻译都写在 `pre_init` 里**（2.2、2.6、2.7）。重写的分布不同：发送方一侧只分配页表根那一页与一段连续区（`os/boot-shim/src/uefi_helpers.rs:alloc_root_page`、`alloc_bump_region`），**铺表与启用都在内核侧的同一个函数里**（`os/kernel/src/lib.rs:build_bootstrap_root_and_enable`，三步各自注释了对应的 C 函数）。
+**C 把两个映射与启用翻译都写在 `pre_init` 里**（2.2、2.6、2.7）。重写的分布不同：发送方一侧只分配页表根那一页与一段连续区（`os/boot-shim/src/uefi_helpers.rs:fn alloc_root_page`、`alloc_bump_region`），**铺表与启用都在内核侧的同一个函数里**（`os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable`，三步各自注释了对应的 C 函数）。
 
 "名字叫引导垫片的那段代码不建页表"与直觉相反，所以要问它为什么值得这样搬。答案是有两个调用方需要同一段机器状态切换：
 
@@ -692,7 +692,7 @@ pub trait BootShim {
 
 ### 3.4 启用翻译这一步在固件路径上换了语义
 
-**C 的 `vm_enable_paging` 确实是从关到开的动作**（2.7），并且用"先清零再点亮"来对抗上一棒的遗留位。重写在 x86-64 上遇到的是另一种起点：固件自己就在长模式里运行，翻译已经是开着的。实现里那句注释直说这件事（`os/arch/src/x86_64/paging.rs:enable`）：
+**C 的 `vm_enable_paging` 确实是从关到开的动作**（2.7），并且用"先清零再点亮"来对抗上一棒的遗留位。重写在 x86-64 上遇到的是另一种起点：固件自己就在长模式里运行，翻译已经是开着的。实现里那句注释直说这件事（`os/arch/src/x86_64/paging.rs:fn enable`）：
 
 ```rust
 // Switch CR3 to our own root page table.
@@ -716,8 +716,8 @@ asm!("mov cr3, {}", in(reg) self.root_paddr);
 
 | 解法 | 平台 | 做法 | 代价 |
 |---|---|---|---|
-| 把取指窗口重放进新表 | x86-64 | 内核被静态链接进发送方镜像，实际从低物理地址执行，因此要求运行期页表以"虚拟等于物理、只给特权级"重放这些窗口；这些窗口由契约里的一个字段带给内核（`os/libs/minix-boot/src/kernel_info.rs:KernelInfo` 的 `reserved_regions`） | 契约要新增一类字段，且运行期页表构造方必须照它补映射 |
-| 跳进不参与切换的那一侧 | ARM64 | 两个转换基址寄存器按地址位分流，高地址走其中一半；发送方建表并启用翻译后，绝对跳进独立内核镜像的高地址入口，此后内核全部在高半区运行（`os/kernel/src/lib.rs:bootstrap_to_kernel_image`，文件说明见 `os/libs/minix-boot/src/handoff.rs`） | 需要第二个二进制与一份跨二进制的交接物（4.3） |
+| 把取指窗口重放进新表 | x86-64 | 内核被静态链接进发送方镜像，实际从低物理地址执行，因此要求运行期页表以"虚拟等于物理、只给特权级"重放这些窗口；这些窗口由契约里的一个字段带给内核（`os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo` 的 `reserved_regions`） | 契约要新增一类字段，且运行期页表构造方必须照它补映射 |
+| 跳进不参与切换的那一侧 | ARM64 | 两个转换基址寄存器按地址位分流，高地址走其中一半；发送方建表并启用翻译后，绝对跳进独立内核镜像的高地址入口，此后内核全部在高半区运行（`os/kernel/src/lib.rs:fn bootstrap_to_kernel_image`，文件说明见 `os/libs/minix-boot/src/handoff.rs`） | 需要第二个二进制与一份跨二进制的交接物（4.3） |
 
 两条路回答的是同一个问题，所以"换根之后内核还要有取指映射"是不变量，选哪条是**选择**。RISC-V 与宿主测试在 `reserved_regions` 上传空切片，因为那些平台不把内核链接进发送方镜像。
 
@@ -736,7 +736,7 @@ asm!("mov cr3, {}", in(reg) self.root_paddr);
 
 有一条硬约束解释了 RISC-V 为什么不与前两者共用固件接口那条路：工具链没有该架构的固件接口构建目标，也发不出对应的可执行格式（PE 是一种可执行文件格式，Windows 上的 `.exe` 与该接口世界里的 `.efi` 引导应用都用它；固件只肯加载它能解析的那种二进制）。**因此即使 U-Boot 实现了该接口的一个子集也用不上，因为造不出那个能去消费它的二进制。**测试面能看到这条链的真实形状（`os/qemu-tests/test-riscv64-uboot.sh` 生成的脚本里就是 `fatload virtio 0 ${loadaddr} boot.elf` 再 `bootelf`）。
 
-最后一条属于"读代码时的判别方法"：`os/boot-shim/src/opensbi_helpers.rs:build_memmap` 里那份单区硬编码清单**不是**当前 RISC-V 的生产引导面——它的文档注释直说是为 QEMU virt 构造硬编码清单。生产引导由内核镜像自己充当引导体（`os/kernel-image/src/bootface.rs`），复用同一批构件，但改成从移交时带来的设备树指针解析内存布局。**"库里有这段代码"不等于"生产走这段代码"。**
+最后一条属于"读代码时的判别方法"：`os/boot-shim/src/opensbi_helpers.rs:fn build_memmap` 里那份单区硬编码清单**不是**当前 RISC-V 的生产引导面——它的文档注释直说是为 QEMU virt 构造硬编码清单。生产引导由内核镜像自己充当引导体（`os/kernel-image/src/bootface.rs`），复用同一批构件，但改成从移交时带来的设备树指针解析内存布局。**"库里有这段代码"不等于"生产走这段代码"。**
 
 ---
 
@@ -752,7 +752,7 @@ asm!("mov cr3, {}", in(reg) self.root_paddr);
 let result = UefiBootShim::prepare_boot(1024);
 ```
 
-参数是预留给引导期建表的页数。实现体是 `os/boot-shim/src/uefi_helpers.rs:prepare_boot`，按源码语句顺序取每步最关键的一行（步与步之间的其它行以省略号表示，承载语义的三处在下方单独展开）：
+参数是预留给引导期建表的页数。实现体是 `os/boot-shim/src/uefi_helpers.rs:impl UefiBootShim::prepare_boot`，按源码语句顺序取每步最关键的一行（步与步之间的其它行以省略号表示，承载语义的三处在下方单独展开）：
 
 ```rust
 let root_page = alloc_root_page();
@@ -783,7 +783,7 @@ crate::raw_serial("boot-shim: [raw] boot services exited\r\n");
 
 **一、快照的时机。** 固件的空闲内存报告是当前状态的快照：已分配的页在活图里被改标为引导加载数据一类的用途，"只取可用内存"的视图自然排除它们。所以快照必须晚于**全部**引导期占用——不只晚于页表根与连续区，还要晚于内核镜像段与每个模块段。若拍早了，正在使用的页会以"空闲"名义出现在交给内核的清单里，页帧管理随后就能把这些页再分配出去，而它们上面正放着在用的页表。
 
-紧跟快照的两条检查把这条依赖钉住（`os/boot-shim/src/uefi_helpers.rs:assert_bootstrap_outside_memmap`）：
+紧跟快照的两条检查把这条依赖钉住（`os/boot-shim/src/uefi_helpers.rs:fn assert_bootstrap_outside_memmap`）：
 
 ```rust
 fn assert_bootstrap_outside_memmap(memmap: &[MemoryRegion], base: u64, len: u64) {
@@ -803,7 +803,7 @@ fn assert_bootstrap_outside_memmap(memmap: &[MemoryRegion], base: u64, len: u64)
 
 > **这里停住**：那个逐段扣除发生在哪一行、扣完的清单怎么交给页帧管理，本篇不讲——它回答的是"运行期谁能动这张清单"，属于页表与内存篇。**现在只需要一个结论：同一张清单被两组规则保护，一组靠分配与快照的先后，一组靠扣除。**
 
-**二、`PhysBytes(0), 0` 这两个实参**，对应 C 的 `bootstrap_start` 与 `bootstrap_len`（2.6 末提到的 `freepde_start` 同族字段，定义在 `param.h:kinfo`）。C 用这一对标记"内核中一小节不参与分页的代码"，引导完成后归还。重写里这一节不存在：内核自第一条指令起就在高半区、从不关着翻译跑，那段蹦床在另一个镜像里而不在内核里。所以长度必须为 0，而且这个"必须"被写进断言——`os/libs/minix-boot/src/kernel_info.rs:validate` 要求 `bootstrap_len == 0`。留着非零反而危险：一次过量的归还把固件、设备树、引导垫片自己都扫成可用内存。
+**二、`PhysBytes(0), 0` 这两个实参**，对应 C 的 `bootstrap_start` 与 `bootstrap_len`（2.6 末提到的 `freepde_start` 同族字段，定义在 `param.h:kinfo`）。C 用这一对标记"内核中一小节不参与分页的代码"，引导完成后归还。重写里这一节不存在：内核自第一条指令起就在高半区、从不关着翻译跑，那段蹦床在另一个镜像里而不在内核里。所以长度必须为 0，而且这个"必须"被写进断言——`os/libs/minix-boot/src/kernel_info.rs:impl KernelInfo::validate` 要求 `bootstrap_len == 0`。留着非零反而危险：一次过量的归还把固件、设备树、引导垫片自己都扫成可用内存。
 
 这正是 3.1 那条原则的落地形态之一：字段的语义变了，就把它由"传递数据"改成"由构造方与断言保证"。
 
@@ -811,7 +811,7 @@ fn assert_bootstrap_outside_memmap(memmap: &[MemoryRegion], base: u64, len: u64)
 
 ### 4.2 内核侧的三步（落实 3.3、3.4）
 
-`os/kernel/src/lib.rs:build_bootstrap_root_and_enable`，第一步（过渡映射）：
+`os/kernel/src/lib.rs:fn build_bootstrap_root_and_enable`，第一步（过渡映射）：
 
 ```rust
 let mut paging = P::new_from_page(root_page);
@@ -851,7 +851,7 @@ if kern_virt != kern_phys {
 
 那个"虚拟不等于物理才做"的判断不是可省的分支：两者相等时第一步已经把目的地铺好，再写一遍会在同一组中间层表项上写两次，在 ARM64 与 RISC-V 的多级页表里两次写入可能落在同一槽位却按不同页大小解释（源码注释点名的是 riscv64，ARM64 同理风险），结果破坏第一步铺好的恒等段。链接布局本身到下一篇（高半区内核）讲，这里只需要知道它守的是"别把刚铺好的段拆掉"。
 
-第三步（启用）对应 `os/arch/src/x86_64/paging.rs:enable`。3.4 只引了换根那两行，这里把四步的关键行铺开（注意每步都是"先读回当前值、再置需要的位、再写回"；块里的 `(1)…(4)` 步骤注释是本文加的，源码原注释是英文）：
+第三步（启用）对应 `os/arch/src/x86_64/paging.rs:fn enable`。3.4 只引了换根那两行，这里把四步的关键行铺开（注意每步都是"先读回当前值、再置需要的位、再写回"；块里的 `(1)…(4)` 步骤注释是本文加的，源码原注释是英文）：
 
 ```rust
 const MSR_EFER: u32 = 0xC000_0080;
@@ -881,7 +881,7 @@ if cpu_supports_pge() {
 
 ### 4.3 两条交接路径（落实 3.1、3.5）
 
-**同一二进制内的路径（x86-64、RISC-V）。** 契约由 `os/kernel/src/lib.rs:arch_boot` 接手，它做的第一件事是把这个结构按值收进内核自己的数据段全局，之后一律使用全局副本的引用：
+**同一二进制内的路径（x86-64、RISC-V）。** 契约由 `os/kernel/src/lib.rs:fn arch_boot` 接手（同一个名字按架构有三份定义，本节说的是 x86-64 那一份），它做的第一件事是把这个结构按值收进内核自己的数据段全局，之后一律使用全局副本的引用：
 
 ```rust
 store_kernel_info(kernel_info);
@@ -905,7 +905,7 @@ pub(crate) static BOOT_MODULE_STORE: SyncUnsafeCell<...>;
 
 **这里能看清 3.1 那条原则的限度：值语义是必要条件，不是充分条件。**契约里放的是值，不代表值里的指针在对面还有效。
 
-**跨二进制的路径（ARM64）。** 发送方建表并启用翻译之后，分配一页把交接对象写进去，用绝对跳转进入独立镜像的高地址入口（`os/kernel/src/lib.rs:bootstrap_to_kernel_image`）：
+**跨二进制的路径（ARM64）。** 发送方建表并启用翻译之后，分配一页把交接对象写进去，用绝对跳转进入独立镜像的高地址入口（`os/kernel/src/lib.rs:fn bootstrap_to_kernel_image`）：
 
 ```rust
 let handoff = minix_boot::BootHandoff {
@@ -938,7 +938,7 @@ unsafe {
 
 ### 4.4 契约字段的形状（落实 3.1）
 
-2.3 与 2.6 提到的那个全局结构定义在 `minix3/minix/include/minix/param.h:kinfo`（四段混装：固件直接给的、推导的、引导阶段填的、运行期杂项）。对照 `os/libs/minix-boot/src/kernel_info.rs:KernelInfo`：
+2.3 与 2.6 提到的那个全局结构定义在 `minix3/minix/include/minix/param.h:kinfo`（四段混装：固件直接给的、推导的、引导阶段填的、运行期杂项）。对照 `os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo`：
 
 | 类别 | C | Rust | 为什么 |
 |---|---|---|---|
@@ -975,7 +975,7 @@ pub struct KernelInfo {
 }
 ```
 
-`validate` 守住的几条（`os/libs/minix-boot/src/kernel_info.rs:validate`）：引导代码段长度为 0、内核大小非零、内核栈顶 16 字节对齐、内存清单非空、模块清单非空、参数缓冲不越上限。另有一条编译期断言把交接对象的尺寸钉在一个页以内（`os/libs/minix-boot/src/handoff.rs`），因为它必须装进一页物理内存。
+`validate` 守住的几条（`os/libs/minix-boot/src/kernel_info.rs:impl KernelInfo::validate`）：引导代码段长度为 0、内核大小非零、内核栈顶 16 字节对齐、内存清单非空、模块清单非空、参数缓冲不越上限。另有一条编译期断言把交接对象的尺寸钉在一个页以内（`os/libs/minix-boot/src/handoff.rs`），因为它必须装进一页物理内存。
 
 ### 4.5 RISC-V 的生产路径（落实 3.6）
 
