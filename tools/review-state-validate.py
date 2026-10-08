@@ -348,8 +348,8 @@ def _find_scan_md(state_path, project_root):
         → .review/trae/{stage}/scans/ 下最新的 *-scan.md
       .review/claude/{stage}/STATE.md
         → .review/claude/{stage}/{doc-stem}/scan.md（取第一个存在的）
-      .review/codex/{stage}/STATE.md
-        → .review/codex/{stage}/{doc-stem}/scan.md（取第一个存在的）
+      .review/{claude|codex|zcode|qoder}/{stage}/STATE.md
+        → .review/{tool}/{stage}/{doc-stem}/scan.md（取第一个存在的；R11-D5 补后两家）
     """
     state_path = Path(state_path)
     parts = state_path.parts
@@ -360,7 +360,7 @@ def _find_scan_md(state_path, project_root):
     if review_idx + 2 >= len(parts):
         return None
 
-    tool = parts[review_idx + 1]  # trae, claude, or codex
+    tool = parts[review_idx + 1]  # 运行时名，取值见 review-process.md §Step 0 运行时表
     module = parts[review_idx + 2]
 
     if tool == 'trae':
@@ -369,7 +369,7 @@ def _find_scan_md(state_path, project_root):
             scan_files = sorted(scans_dir.glob('*-scan.md'), key=lambda p: p.stat().st_mtime, reverse=True)
             if scan_files:
                 return scan_files[0]
-    elif tool in {'claude', 'codex'}:
+    elif tool in {'claude', 'codex', 'zcode', 'qoder'}:  # R11-D5：非前三家运行时此前不认，scan 定位失败
         tool_module_dir = project_root / '.review' / tool / module
         if tool_module_dir.exists():
             for doc_dir in sorted(tool_module_dir.iterdir()):
