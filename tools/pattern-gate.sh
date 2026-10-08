@@ -321,9 +321,11 @@ check_p6() {
 # --------------------------------------------------------------- P7 退出码吞没
 # 事故：run_all.sh 构建循环 `|| echo "(build failed)"` 吞退出码，跨架构编译断裂被改判 skip（M3.1）。
 collect_p7() {
-  # 相对路径跑（key 可移植）；排除本脚本（注释/夹具里的模式引用不是真实吞没点）
-  ( cd "$1" && grep -rnE '(cargo|bash|sh) [^|]*\|\| *echo' os tools .github 2>/dev/null \
-    | grep -v '/target/' | grep -v '^tools/pattern-gate.sh:' | sort -u )
+  # 相对路径跑（key 可移植）；排除本脚本（注释/夹具里的模式引用不是真实吞没点）。
+  # 目录级 --exclude-dir 先剪枝再读文件：主树 os/target 实测 51GB，旧写法先全读
+  # 方按路径 grep -v，单检查会把整门拖过超时线（fresh worktree 无 target 故仅 13s）。
+  ( cd "$1" && grep -rnE --exclude-dir=target --exclude-dir=target_smp '(cargo|bash|sh) [^|]*\|\| *echo' os tools .github 2>/dev/null \
+    | grep -v '/target' | grep -v '^tools/pattern-gate.sh:' | sort -u )
 }
 check_p7() {
   local root="$1" line path content key known=0 new=0
