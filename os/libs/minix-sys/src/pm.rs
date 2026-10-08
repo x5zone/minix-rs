@@ -185,6 +185,8 @@ pub fn exit_via(transport: &impl IpcTransport, status: i32) -> ! {
         status,
         _padding: [0; 52],
     };
+    //[SD19-gate] exit 不返回：回复值无可消费，失败则停在本函数 spin 循环
+    #[allow(clippy::let_underscore_must_use)]
     let _ = perform_syscall(transport, pm_endpoint(), PM_CALL_EXIT, &mut message);
     loop {
         core::hint::spin_loop();

@@ -1233,6 +1233,8 @@ mod tests {
         // C: vm_cachecall panics on a block size that is not a page
         // multiple (vm_cache.c:17-19) — a caller bug, not a runtime error.
         let transport = CannedTransport::new();
+        //[SD19-gate] 测试 #[should_panic]：本行必须触发 panic，回复值无可消费
+        #[allow(clippy::let_underscore_must_use)]
         let _ = map_cacheblock_via(&transport, 1, 0, 0, 0, &mut 0u32, 100);
     }
 
@@ -1241,6 +1243,8 @@ mod tests {
     fn test_cache_call_panics_on_no_device() {
         // C: assert(dev != NO_DEV) (vm_cache.c:31) with NO_DEV = 0.
         let transport = CannedTransport::new();
+        //[SD19-gate] 测试 #[should_panic]：本行必须触发 panic，回复值无可消费
+        #[allow(clippy::let_underscore_must_use)]
         let _ = map_cacheblock_via(&transport, NO_DEVICE, 0, 0, 0, &mut 0u32, 4096);
     }
 

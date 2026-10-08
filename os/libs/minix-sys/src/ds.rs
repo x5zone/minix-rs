@@ -151,6 +151,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
         // alive across the call, and C revokes unconditionally (ds.c:32),
         // on the transport-failure path too.
         let outcome = perform_taskcall(&self.ipc, self.ds_endpoint, call, &mut msg);
+        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(key_grant);
         let reply = outcome.map_err(|e| e.to_i32())?;
 
@@ -231,6 +233,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             Some(DsVal::grant(val_grant)),
             buffer.len() as i32,
         );
+        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(val_grant);
         r.map(|_| ())
     }
@@ -262,6 +266,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             Some(DsVal::grant(val_grant)),
             buf.len() as i32,
         );
+        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(val_grant);
         r.map(|_| ())
     }
@@ -317,6 +323,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
         // Same unlifted-outcome shape as `check`: the WRITE grant stays
         // alive across the taskcall; revoke runs on every path (ds.c:32).
         let outcome = perform_taskcall(&self.ipc, self.ds_endpoint, DS_RETRIEVE_LABEL, &mut msg);
+        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(key_grant);
         let reply = outcome.map_err(|e| e.to_i32())?;
         if reply < 0 {
@@ -372,6 +380,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             Some(DsVal::grant(val_grant)),
             grant_len as i32,
         );
+        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(val_grant);
         let msg = r?;
         // SAFETY: reply lane carries the moved length (ds.c:144).
@@ -407,6 +417,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             Some(DsVal::grant(val_grant)),
             buffer.len() as i32,
         );
+        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(val_grant);
         let msg = r?;
         // SAFETY: reply lane carries the moved length (ds.c:144).
@@ -484,6 +496,8 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
             let n = room.min(key.len());
             key[..n].copy_from_slice(&seed[..n]);
         }
+        //[SD19-gate] C ds.c:32 无条件 revoke、不消费返回值（上方 C 锚即理由）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(key_grant);
         if reply < 0 {
             return Err(-reply);

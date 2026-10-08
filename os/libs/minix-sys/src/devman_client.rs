@@ -150,6 +150,8 @@ impl ClientTransport for SysClientTransport {
     }
 
     fn revoke(&mut self, grant: i32) {
+        //[SD19-gate] 本函数返回类型 void（驱动侧不消费 revoke 结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.grants.revoke(grant);
     }
 

@@ -1650,6 +1650,8 @@ mod tests {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(test_message(0)));
         let mut message = test_message(999);
+        //[SD19-gate] 测试夹具：CannedTransport 只答剧本首呼，调用数由下行计数断言
+        #[allow(clippy::let_underscore_must_use)]
         let _ = perform_syscall(&transport, Endpoint(1), 33, &mut message);
         // The reply overwrote the type, but the transport saw call number 33:
         // verified indirectly because the CannedTransport only answers the

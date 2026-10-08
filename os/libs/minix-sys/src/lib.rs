@@ -37,9 +37,11 @@
 // SD-19 静默吞错家族机械化门（本 crate 先行）：`ipc::IpcTransport`/各服务
 // wrapper 返回 `Result`，`let _ = ...` 是最常见的掉空手法。这个 restriction
 // lint 把家族从“需要人专门去审计才能发现”变成“每次 `cargo clippy` 自己就会
-// 报告”，与 `PATTERN-SCAN-REPORT-20260923.md` 的教训同族。基线（当前 27
-// 处警告，均已在现场逐条核对为“ C 对齐或测试夹具故意掉空”），
-// 新开一个未注释的 `let _ =` 会当场多报一条。
+// 报告”，与 `PATTERN-SCAN-REPORT-20260923.md` 的教训同族。首轮基线 27 处
+// 警告已于 `2026-10-09` 逐站定性收编（登记处置表的 maintain+comment 档）：
+// 每处 `let _ =` 上方现为 `//[SD19-gate] <理由>` + 语句级 `#[allow]`，理由均为
+// C 同位忽略/不返回语义/测试夹具断言三类。今后新写一个无理由的 `let _ =`
+// 会当场多报一条警告；新开一处带理由的则警告数不变、grep `SD19-gate` 计数 +1。
 #![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
@@ -225,11 +227,15 @@ pub fn exit(status: i32) -> ! {
 /// means the restoration did not happen; like [`exit`], the function then
 /// parks instead of unwinding into a signal frame that is no longer valid.
 pub fn sigreturn(ctx: u64) -> ! {
+    //[SD19-gate] C sigreturn.c:27-29 sigprocmask 先屏蔽，返回值按 C 不消费
+    #[allow(clippy::let_underscore_must_use)]
     let _ = pm::sigprocmask_via(
         &ipc::DirectTrapTransport,
         pm::SIG_SETMASK,
         Some(&[u32::MAX; 4]),
     );
+    //[SD19-gate] 成功回合不返回（内核换上下文）；可达返回=恢复未发生，与 exit 同 parked
+    #[allow(clippy::let_underscore_must_use)]
     let _ = pm::sigreturn_via(&ipc::DirectTrapTransport, ctx);
     loop {
         core::hint::spin_loop();
@@ -573,6 +579,8 @@ pub fn nanosleep(seconds: i64, nanoseconds: i64) -> Result<(), Errno> {
 /// (C: `sync`, `minix3/minix/lib/libc/sys/sync.c:12-17` — the C
 /// wrapper discards the return value, so this cannot fail).
 pub fn sync() {
+    //[SD19-gate] C sync.c:12-17 包装器丢弃返回值（cannot fail 语义对齐）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = vfs::sync_via(&ipc::DirectTrapTransport);
 }
 
@@ -793,6 +801,8 @@ pub fn fpathconf(fd: Fd, name: i32) -> Result<i64, Errno> {
 pub fn pathconf(path: &str, name: i32) -> Result<i64, Errno> {
     let fd = open(path, 0, 0)?;
     let value = fpathconf(fd, name);
+    //[SD19-gate] C pathconf.c:37-45 close 结果按 C 忽略（ordering included）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = close(fd);
     value
 }
