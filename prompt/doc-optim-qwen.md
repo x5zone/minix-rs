@@ -99,6 +99,16 @@
 - **doc-commit-review 二修补充落地**（本批）：修复 `coverage-extract.py` 语义 gap 恒真 P0-code-bug（mimo G-1/Muse V-12）+新增 `--check-filled`；新增 `tools/doc-ref-check.sh`；承载门工具按 4 份 review 重写（语言感知/内容锚定承载章/去全文降级/diag 优先/退出码）；#9 入 review.md P1 表 + `.claude` 镜像 + 注册表行 0.11/0.12/1.5c/5.6c/5.6d/0.7.5/0.13；Gate H precedence 注；三工具 self-test 入 CI。
 - **四道同步门**：generate-derived-skills --check / check-review-rules / lint-review-rules / diff-trae-skills 全绿。
 
+### 7.1 doc-commit-review **v2** 二修（本批）
+
+4 份 v2 review + 提取 agent 实测又找到真缺陷，已修：
+- **承载门误伤测试/概念章**（glm N1/longcat A）：density 按标题排除非承载章型（测试/概念/参见/附录/概述…），新夹具“测试章带锚无码→放行”。
+- **report 红横幅与 exit0 同屏矛盾**（ds O-2/longcat D/muse V2-9）：report 模式改中性“⚠ 阻断候选（--check 才阻断）”；加分母打印 + 分母 0 不判 ✅ + 豁免泛滥 WARN。
+- **doc-ref-check 在 mawk 下 self-test 挂**（提取 agent 实测，4 份未测到）：根因 mawk 不支持多字节正则→ CI pin `AWK=gawk` + 工具头声明需 gawk + 非 gawk 自提示（不静默误报）；§ 提号改 gsub 字节安全。
+- **规则端旧尺度 4 处未对齐**（muse V2-2/提取扩证）：`review-cmds §三 step4`、`review-doc-excellence:323`、`review-excellence-skill:341`（+两份派生）把三读数项误列为“阻断”——统一改为“阻断仅无 C/Rust 码/无命令；三架构/图/辨析为读数项”。
+- **Gate H 唯一落点**（muse V2-6/ds）：§一b 声明新大纲持久化到 `.design/{NN}-outline.v{N+1}.md`，H.6 glob 命中。
+- 死代码（density `C_RUST_RE`/`check()`、coverage `semantic_gaps`）清除；AGENTS “六个工具自测”→各工具列举。
+
 ## 8. 非目标（划清边界）
 
 - **不是**要求把文档写回 draft 那种 2019 行的体量——draft 自身有过程痕迹、手工行号、落后于代码等纪律问题，血肉 ≠ 冗长。目标是"该贴的码贴上、该画的图画上、该追的辨析追到底"，体量随内容。

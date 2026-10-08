@@ -95,7 +95,7 @@
 | Gate | 语义 | 权威定义位置 | 证据分级 / 通过标准 |
 |---|---|---|---|
 | **Gate 0** | scan.md 制品完整性（9 个 grep 锚段；预检段必含关联代码清单，B4.2） | prompt/skill/review-agent-ide.md §Gate 0；锚段清单 prompt/skill/review-process-skill.md §Step 0 产物 | L1；缺任一锚段 → FAIL（模式 69） |
-| **Gate A** | 覆盖率穷举强制运行 | review-coverage-skill.md §0 + 本文件 Step 1.5 | L1（工具输出必须附 gate-evidence-A）；PARTIAL → FAIL |
+| **Gate A** | 覆盖率穷举强制运行 | review-coverage-skill.md §0 + 本文件 Step 1.5 | L1（工具输出必须附 gate-evidence-A）；PARTIAL → FAIL；AI 语义列须填满（`coverage-extract.py --check-filled <SYMBOLS.md>` exit0，残留 `_待AI补充_` = FAIL） |
 | **Gate B** | Top5 行为契约表（8 字段 × 5 函数） | review-core-semantics.md §Gate B + 本文件 Step 2 | L2；3 语义偏移 + 2 覆盖缺口 |
 | **Gate C** | 细节精确性（Precision Check） | review.md §15 + 本文件 Step 3.5 | L2；5 meta-rules 表 |
 | **Gate D** | P0 必检清单 5 项 | review-patterns.md §0 + 本文件 | L1（每项 grep 证据）；PARTIAL/⚠️ = ❌ |

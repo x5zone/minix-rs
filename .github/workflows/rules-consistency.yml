@@ -43,15 +43,19 @@ on:
 jobs:
   gates:
     runs-on: ubuntu-latest
+    env:
+      # 多字节正则工具（doc-ref-check）需 GNU Awk；ubuntu runner 默认 /usr/bin/awk→mawk，
+      # 但 gawk 预装——统一 pin AWK=gawk，两工具（density/ref-check）都读 $AWK。
+      AWK: gawk
     steps:
       - uses: actions/checkout@v4
 
       - name: 确认工具齐备（缺哪个就直接报错，不要让门静默跳过）
         run: |
-          for t in git rg python3 awk sed grep; do
+          for t in git rg python3 awk gawk sed grep; do
             command -v "$t" >/dev/null 2>&1 || { echo "❌ 缺少必需工具：$t" >&2; exit 1; }
           done
-          echo "工具 OK：$(git --version | head -1) / $(rg --version | head -1) / $(python3 --version)"
+          echo "工具 OK：$(git --version | head -1) / $(gawk --version | head -1) / $(python3 --version)"
 
       - name: 四道一致性门（源 → 三端派生）
         run: |

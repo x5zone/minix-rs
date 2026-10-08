@@ -563,14 +563,9 @@ def generate_symbols_md(module, c_symbols, rust_symbols, rust_qualified, doc_cov
             1 for n in semantic_symbols
             if is_in_target_doc(n) and rust_coverage.get(n)
         )
-        semantic_gaps = sum(
-            1 for n in semantic_symbols
-            if not is_in_target_doc(n) and not rust_coverage.get(n)
-        )
-        # 修正 P0-code-bug（mimo G-1 / Muse V-12）：semantic_symbols 的定义就是
-        # "in_doc 或 in_rust"，再从中筛"非 in_doc 且非 in_rust"恒为空 → 旧 semantic_gaps
-        # 永远 0，是个循环假绿的"完成"信号。真信号是"有文档无Rust"：
-        # 文档提及了该 C 符号、但无 Rust 映射（潜在语义丢失，非恒 0）。
+        # 修正 P0-code-bug（mimo G-1 / Muse V-12）：旧 semantic_gaps = 在"in_doc∪in_rust"集内
+        # 筛"非 in_doc 且非 in_rust"，按集合定义恒为空 → 永远 0，是循环假绿的"完成"信号，已删除。
+        # 真信号是"有文档无Rust"：文档提及了该 C 符号、但无 Rust 映射（潜在语义丢失，非恒 0）。
         semantic_rust_missing = sum(
             1 for n in semantic_symbols
             if is_in_target_doc(n) and not rust_coverage.get(n)
