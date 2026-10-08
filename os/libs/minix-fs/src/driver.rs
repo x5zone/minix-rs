@@ -104,6 +104,8 @@ pub trait FsDriver {
         length: usize,
         out: &mut dyn FnMut(&[u8]),
     ) -> Result<usize, Errno> {
+        //[SD19-gate] default trait impl 占位：丢弃未用形参（非吞错），本方法恒返 ENOSYS 待真实驱动覆写
+        #[allow(clippy::let_underscore_must_use)]
         let _ = (inode, position, length, out);
         Err(Errno::from_i32(ENOSYS))
     }
@@ -138,6 +140,8 @@ pub trait FsDriver {
         capacity: usize,
         out: &mut dyn FnMut(&[u8]),
     ) -> Result<usize, Errno> {
+        //[SD19-gate] default trait impl 占位：丢弃未用形参（非吞错），本方法恒返 ENOSYS 待真实驱动覆写
+        #[allow(clippy::let_underscore_must_use)]
         let _ = (inode, position, capacity, out);
         Err(Errno::from_i32(ENOSYS))
     }
@@ -262,6 +266,8 @@ pub trait FsDriver {
         capacity: usize,
         out: &mut dyn FnMut(&[u8]),
     ) -> Result<usize, Errno> {
+        //[SD19-gate] default trait impl 占位：丢弃未用形参（非吞错），本方法恒返 ENOSYS 待真实驱动覆写
+        #[allow(clippy::let_underscore_must_use)]
         let _ = (inode, capacity, out);
         Err(Errno::from_i32(ENOSYS))
     }
@@ -332,6 +338,8 @@ pub trait FsDriver {
         length: usize,
         out: &mut dyn FnMut(&[u8]),
     ) -> Result<usize, Errno> {
+        //[SD19-gate] default trait impl 占位：丢弃未用形参（非吞错），本方法恒返 ENOSYS 待真实驱动覆写
+        #[allow(clippy::let_underscore_must_use)]
         let _ = (device, position, length, out);
         Err(Errno::from_i32(ENOSYS))
     }

@@ -35,6 +35,11 @@
 //! guarantees.
 
 #![no_std]
+// SD-19 静默吞错家族机械化门（第三家 crate，与 minix-sys/minix-rt 同程序）：
+// 本 crate 的 `let _ =` 全属登记处置表的 maintain+comment 档——预读尽力而为的
+// release、二级 hand_over（失败是二级自我禁用策略）、default trait impl 占位
+// 丢弃形参。新开一个无理由的 `let _ =` 会当场多报一条。
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

@@ -863,6 +863,8 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             .second_level
             .set_block(memory, key, tag, block_size, once, &mut buffer.flags);
         buffer.need_set_cache = false;
+        //[SD19-gate] set_block 失败是二级策略（线没了它自我禁用，见本函数文档头），块在本池仍有效——按 C cache.c:562-587 不回报
+        #[allow(clippy::let_underscore_must_use)]
         let _ = outcome;
     }
 
