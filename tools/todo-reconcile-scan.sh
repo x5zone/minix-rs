@@ -69,8 +69,8 @@ n=$(grep -c "ATF_BOOT_LEG_READY: \&\[&str\] = \&\[\"aarch64\", \"riscv64\"\]" os
 n=$(grep -n '^default' os/kernel/Cargo.toml 2>/dev/null | grep -c 'mock' | tr -d ' ')
                                         row "内核包默认带替身特性（1=是）" "$n" 1 "$(verdict "$n" 1)"
 n=0; for d in os/arch/src/arm64 os/arch/src/riscv64 os/plat/src/arm64 os/plat/src/riscv64; do
-     c=$(grep -rn "#\[test\]" "$d" 2>/dev/null | wc -l); n=$((n + c)); done
-                                        row "宿主不可达的门内测试" "$n" 88 "$(verdict "$n" 88)"
+     c=$(grep -rnE "^[[:space:]]*#\[test\]" "$d" 2>/dev/null | wc -l); n=$((n + c)); done
+                                        row "宿主不可达的门内测试" "$n" 86 "$(verdict "$n" 86)"
 printf '需读码或需真机的判据（调用链可达性、语义对 C 真源、门跑结果）不在本脚本射程\t-\t-\tNA\n'
 
 if [ "$drift" -gt 0 ]; then
