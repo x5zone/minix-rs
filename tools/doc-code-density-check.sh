@@ -14,7 +14,7 @@ set -euo pipefail
 
 scan_chapters() {
   "${AWK:-awk}" '
-    function islang(l){ return (l=="c"||l=="rust"||l=="cpp"||l=="cc"||l=="cxx"||l=="asm"||l=="x86"||l=="arm"||l=="aarch64"||l=="riscv"||l=="s") }
+    function islang(l){ return (l=="c"||l=="rust"||l=="cpp"||l=="cc"||l=="cxx"||l=="asm"||l=="x86"||l=="arm"||l=="aarch64"||l=="riscv"||l=="s"||l=="ld"||l=="lds") }
     { sub(/\r$/,"") }
     function flush(){
       if (seen) printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", title, lines, mech, codenf, bashnf, anyf, tree, triarch, bianxi, exempt, diag, nontitle, expout
@@ -26,7 +26,7 @@ scan_chapters() {
             seen=1; infence=0; curbuf=""; next }
     { if(seen){
         lines++
-        if ($0 ~ /(\.c:|\.rs:)/) mech=1
+        if ($0 ~ /(\.c:|\.rs:|\.h:|\.S:|\.lds?:)/) mech=1
         if ($0 ~ /doc-code-density: exempt/) exempt=1
         # 诊断命令"预期输出"读数：非围栏行里出现 预期/expected/PASS/输出 关键提示
         if (infence==0 && $0 ~ /预期|expected|PASS|关键行|输出/) expout=1
