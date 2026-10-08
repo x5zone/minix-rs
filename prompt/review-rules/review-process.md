@@ -1730,6 +1730,8 @@ ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 
 **触发条件**：所有 review 模式。Profile D/A/G 可以裁剪内容检查，但不能跳过 Step 0 预检或 Gate H。
 
+> **新文档 outline 契约优先级（doc-commit-review 2026-10）**：H.1/H.6 的"快照存在"是底线检查；但为某 stage **新写**文档时，据以对齐的 outline **必须是本篇现推的新 outline（含代码放置栏）**，不得用异代 `draft/*` 旧大纲或旧 `.design/{num}` 快照顶替（它们可能属上一代文档、落后于代码）。该判据以 `review-cmds.md §一b`「生成新文档的 outline-first 硬约束」为准；两者就同一问题表述不一时，以 §一b 优先。
+
 **检查项**（6 项，方案 D 新增 H.6）：
 - [ ] **H.1**: design 快照存在（非 bagging 默认产物）或 design-final 快照存在（bagging 场景）
   - `ls {tree}/{stage}/.design/{NN}-design.v*.md`（非 bagging，持久化可复用快照）

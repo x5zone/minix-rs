@@ -16,7 +16,7 @@ description: "文档+代码的全面 review 与修复：修错误 bug、关注�
 Step 0 必须产出**关联代码清单**（`tools/doc-code-map.sh {doc}.md --check`，进 scan.md `§Step 0: 预检结果` 段）；**Step 3.6 必须执行**（代码维度表 + `gate-evidence-code` 块，含无发现声明）。目标为编号文档时语义 = 文档 + 关联代码完整 review（模式 C）。
 
 ## 强制门
-锚点纪律门（模式 83）+ 测试名对账门（Gate E/Step 4.5a）+ Gate B/C/D/E/H（doc 及以上）+ Ground Truth 链（Minix3 C 源码优先）。
+锚点纪律门（模式 83）+ 测试名对账门（Gate E/Step 4.5a）+ Gate B/C/D/E/H（doc 及以上）+ Ground Truth 链（Minix3 C 源码优先）+ **教学构件承载门**（§一 #9：分析/实现章无码、诊断章无命令 = P1-docStyle；`tools/doc-code-density-check.sh --check`）。
 
 ## 不做（发现即记录，不当场做）
 卓越性重构、文风重写、自动新建文档——分别引导 code-excellence / style-fix / 用户决策。

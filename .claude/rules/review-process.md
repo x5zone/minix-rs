@@ -20,6 +20,8 @@ Every review session must produce these visible artifacts. Do NOT "check in your
 
 **⛔ Gate H 不允许 N/A 判定**：每篇文档都必须通过 Gate H 全部 6 项检查。不允许"本文档复用其他文档 design，Gate H N/A"——这是 P0-process-violation。若本文档无专属 design.md，必须**执行 Step 0.3 嵌入生成**（2026-07-17 变更：原"切换 Design-First 模式生成"改为"Step 0.3 嵌入生成"），而不是标 N/A 跳过。
 
+> **新文档 outline 契约优先级**：H.1/H.6 "快照存在"是底线；为某 stage 新写文档时，据以对齐的 outline 必须是本篇现推的新 outline（含代码放置栏），不得用异代 draft/旧 .design 快照顶替。该判据以 `review-cmds.md §一b` 为准（doc-commit-review 2026-10）。
+
 **Gate Evidence Rule**: For every Gate, attach the actual command + output snippet in a `gate-evidence-{X}` block in scan.md. "✅ Gate passed" without evidence is invalid.
 - Gate 0: Artifact Inventory table with expected vs actual paths + sizes.
 - Gate A: coverage-extract.py command line and stdout coverage summary.
