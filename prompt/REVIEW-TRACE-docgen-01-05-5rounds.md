@@ -30,3 +30,10 @@
 - `tools/doc-style-lint.sh`：加 **SL-11**（error 级，工单号/过程标记 `fixNN`/`续-N`/`首亮`/`（…现场|取证|工单|bagging）`，**含代码围栏内**）+ self-test 夹具 ticket.md。
 - `tools/doc-code-density-check.sh`：加**诊断命令"须带预期输出"report 读数**（命令块有但无预期输出行 → `⚠无预期输出`，不阻断）。
 - 双引擎 self-test 全绿；01 文档 error=0、Ch6 无告警。commit `fb77c6364`（rewrite 主线，工作流 infra）。四道门 PASS。
+
+## Round 2 · num=02（higher-half）
+
+- 生成 02 正文 229 行（kernel.lds/head.S/HigherHalf/x86 asm 节选 + 双映射图 + 三件事表 + 成对跳4况 + 三架构表 + riscv64 L2 撞槽反例 + 命令）。承载门/anchor/ref/style/codemap 全绿。commits 4dd8e7fc6/a59821985。
+- **C 对比**：draft/02 1329 行/大量围栏 vs new 229/精简——new 更守纪律；差距暴露 **2 条工具盲点**（下 D）。
+- **D 落地**：① anchor-resolve 0 锚点守卫（`3629a9d74`）；② doc-code-density 承载识别扩至 `.S/.h/.lds` 锚点 + `ld/lds` 计入节选码（`427d3a453`）——修"C/汇编/链接脚本分析章因锚点形态逃过承载门"。
+- **F 回归（CodeReview 子代理）**：一致性≈92%，锚点/代码/事实/测试/文风 5 项零违规，逮到 **1 个真实错**：§6.3 `run_qemu.sh` 参数顺序写反（应 `<arch> <path>`）→ 已修 01、02 两篇（F 复核价值实证——机器门测不出命令语义错）。
