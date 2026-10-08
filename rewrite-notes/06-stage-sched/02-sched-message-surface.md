@@ -250,7 +250,7 @@ os/libs/minix-types/src/ipc/
 
 ### 5.1 测试统计
 
-基线以 `cargo test -p minix-sched --lib` 实际输出为准（2026-09-06 主循环落地后为 79 passed，落地前 59）。本篇直接相关的测试是上表 23 个（dispatch 3 个加 server 19 个加 types 布局 1 个）。完整测试清单：`rg "fn test_" os/servers/sched/src/dispatch.rs os/servers/sched/src/server.rs`。
+基线以 `cargo test -p minix-sched --lib` 实际输出为准（本篇直接相关 23 个测试；全仓历史基线：主循环落地后 79、落地前 59）。完整测试清单：`rg "fn test_" os/servers/sched/src/dispatch.rs os/servers/sched/src/server.rs`。
 
 ---
 

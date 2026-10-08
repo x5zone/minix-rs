@@ -127,7 +127,7 @@
 
 | 条目 | 状态 / 证据 | 内容 | 核实命令 |
 |---|---|---|---|
-| 文档记的测试数与代码实测数不一致的已知三处 | `open` / `L1` | 内核时钟章记 44 实测 47；网络实测远大于记数；调度服务文档内部自相矛盾（概览记 77、命令记 27、实测 27） | `grep -rc "#\[test\]" os/kernel/src/clock.rs`；`grep -rc "#\[test\]" os/servers/sched/src/` |
+| 文档记的测试数与代码实测数不一致的已知三处 | `partially fixed` / `L1` | **本轮（`claim/TESTCOUNT-NET-SCHED-qoder`，`2026-10-09`）**：网络篇 2 个文档已更新（`08-lwip-tcpsock.md:170` 42→127，`11-lwip-lnksock.md:146` 59→127）；调度篇 `02-sched-message-surface.md:253` 79 加注当前 88。**余面较大**：网络篇另有 14 个文档仍记旧数字（42/59/73/84/95/125），需批量更新。**时钟篇**：`draft/15-clock-timer.md:1071` 记 43 个，实测 `clock.rs` 47 个，但该篇此刻在 `draft/` 被重组线程移动，本轮不代改。**建议**：此类历史快照数字容易随时间漂移，后续文档应只写验证命令不写具体数字，或每次更新时添加“截至 [date] 实测 N”日期限定语。 | `grep -rc "#\[test\]" os/kernel/src/clock.rs` → 47；`grep -rc "#\[test\]" os/servers/sched/src/ | awk -F: '{sum+=$2} END{print sum}'` → 88；`cargo test -p minix-net-lwip --lib 2>&1 | tail -1` → 127 passed | 剩余网络文档（`17-stage-net/05`–`24`）的测试数字批量对齐到 127；时钟篇归文档线；考虑删除历史数字只留验证命令的模式 |
 | 上游测试套件的建立证据没有钉校验和与构建提交，干净重建后引导腿会崩 | `open` / `待验证` | 评审 `H9` 项的后遗症：单采样门读数不可判读 | 见 `os/qemu-tests/test-atf-riscv64.sh` 与 `REVIEW-HISTORY.md` 的 `R3.3`—`R3.4` 段 |
 | 真机测试脚本的收尾清理会删掉串口证据文件 | `closed` / `L1` | EXIT 陷阱先归档（`serial.log/build.log/xtask.log` → `/tmp/atf_a64_evidence/<stamp>/` 并走 stderr 回显）再清理；判据与退出码逻辑零触碰 | `bash -n` 通过；`test-atf-aarch64.sh` 全量实跑 `RESULT: PASS (36/36)` 且归档内 `serial.log` 恰 36 条结果行（`2026-10-08 @ 987fc589e` 验证，落点见本轮提交） |
 | 页表走表的错粒度检查被配置门挡住，模糊测试生成器一扩就炸 | `open` / `L2` | 评审 `J1` 项，落 `os/arch/src/riscv64_walk.rs` | 读该文件对应行的 `#[cfg]` 与测试生成器口径 |
