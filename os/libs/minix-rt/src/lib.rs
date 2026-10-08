@@ -48,6 +48,13 @@
 //! a raw stack image.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+// SD-19 静默吞错家族机械化门（第二家 crate，与 minix-sys 同程序）：本 crate 的
+// 掉空集中在诊断链——`core::fmt::write` 进 `ByteWriter`（其 `write_str` 恒回
+// `Ok(())`、满则静默截断，丢弃的是可证明不会失败的 `fmt::Result`）与
+// `sys_diagctl_write`（报告通道自己坏了时无更高可回报处，transport 侧 park
+// 已是 `panic.c:66` 兑底）。同属登记处置表的 maintain+comment 档；新开一个
+// 无理由的 `let _ =` 会当场多报一条。
+#![warn(clippy::let_underscore_must_use)]
 
 // NK4-C 1.10g 仪器化：格式化 panic 的 String 载荷 downcast 需要 alloc
 // crate 本体（本地 `mod alloc` 是 slab 分配器，名字被遮蔽）。
