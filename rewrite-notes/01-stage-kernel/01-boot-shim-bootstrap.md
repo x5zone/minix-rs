@@ -46,7 +46,7 @@ boot-shim 和内核，在最终形态里是**两个独立的二进制镜像**：
 | aarch64 | UEFI/OpenSBI → boot-shim | boot-shim 自己做 | `KernelInfo` + 平台描述符句柄 |
 | riscv64 | OpenSBI → boot-shim | boot-shim 通过 SBI ecall 询问 | `KernelInfo` + DTB 句柄 |
 
-再往里一层，地址空间布局也在演进。32 位的 Minix3 因为地址空间紧张，内核必须先在一块低地址的 unpaged（未分页）段里跑起来，等页表建好再切到高地址，然后把那块 unpaged 段回收成可用内存。64 位下这个约束消失了——内核从第一条指令就可以直接在高半区运行，不再需要 unpaged 段这个历史包袱。第 3.6 节会处理这个概念在 Rust 版里的遗留。
+再往里一层，地址空间布局也在演进。32 位的 Minix3 因为地址空间紧张，内核必须先在一块低地址的 unpaged（未分页）段里跑起来，等页表建好再切到高地址，然后把那块 unpaged 段回收成可用内存。64 位下这个约束消失了——内核从第一条指令就可以直接在高半区运行，不再需要 unpaged 段这个历史包袱。第 3.7 节会处理这个概念在 Rust 版里的遗留。
 
 ---
 
@@ -93,7 +93,24 @@ kinfo_t *pre_init(u32_t magic, u32_t ebx)
 - **建内存映射**：优先用结构里的内存映射数组，逐段把"可用"类型喂给 `add_memmap`；退化情况下用 `mem_lower`/`mem_upper` 两段凑出可用内存。
 - **重叠体检**：把内核自己也当成一个"模块"，和所有真实模块一起两两查重叠，一旦发现某个模块和内核或别的模块压在同一块物理内存上就 `panic`；对每个通过的区间调用 `cut_memmap` 把它从可用内存里切除。
 
-这一段是 boot-shim 在 Rust 版里最重的一块职责的来源：C 里 `kinfo_t` 的每一个字段，都对应着 `KernelInfo` 的一个字段（对照见第 3.1）。
+`get_parameters` 的重头戏是把内存地图建出来、再挨个切除已占用区间（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters`，节选）：
+
+```c
+/* 建可用内存视图：优先用 multiboot 内存映射，逐段登记 */
+for (mmap = (multiboot_memory_map_t *) mbi->mmap_addr;
+     (unsigned long) mmap < mbi->mmap_addr + mbi->mmap_length; mmap = /* 下一段 */) {
+    if (mmap->mm_type != MULTIBOOT_MEMORY_AVAILABLE) continue;
+    add_memmap(cbi, mmap->mm_base_addr, mmap->mm_length);
+}
+/* 把内核自己也当成一个模块，两两查重叠，冲突即 panic，通过的再切除 */
+for (m = 0; m < cbi->mods_with_kernel; m++) {
+    if (overlaps(cbi->module_list, cbi->mods_with_kernel, m))
+        panic("overlapping boot modules/kernel");
+    cut_memmap(cbi, cbi->module_list[m].mod_start, cbi->module_list[m].mod_end);
+}
+```
+
+这一段是 boot-shim 在 Rust 版里最重的一块职责的来源：C 里 `kinfo_t` 的每一个字段，都对应着 `KernelInfo` 的一个字段（对照见 §3.1）。
 
 ### 2.3 memmap 记账：可用内存视图的四种操作
 
@@ -127,7 +144,7 @@ if (subend < memend)
     add_memmap(cbi, subend, memend - subend);       // 右残段
 ```
 
-这四种操作合起来，就是"内核运行前，谁在动这张内存地图"的完整答案。Rust 版把它们的角色做了重新划分（第 3.4、4.2）。
+这四种操作合起来，就是"内核运行前，谁在动这张内存地图"的完整答案。Rust 版把它们的角色做了重新划分（§3.6、§4.2）。
 
 ### 2.4 32 位页表机制：静态池与两种粒度
 
@@ -168,7 +185,7 @@ pagedir[pde] = kern_phys | I386_VM_PRESENT | I386_VM_BIGPAGE | I386_VM_WRITE;
 5. 置 CR0.WP：打开写保护（内核态也尊重只读页）。
 6. 若 CPU 支持，最后才置 CR4.PGE。
 
-这段"清 → PSE → PG → WP → PGE"的时序，是硬件规定的依赖链。它在 Rust 版里不能原样搬——64 位用的是不同的控制位（比如 x86-64 的长模式位）——所以这段被抽象成架构 trait 各自的职责，OS 语义层看不见 CR0/CR4 的具体位（第 3.4）。
+这段"清 → PSE → PG → WP → PGE"的时序，是硬件规定的依赖链。它在 Rust 版里不能原样搬——64 位用的是不同的控制位（比如 x86-64 的长模式位）——所以这段被抽象成架构 trait 各自的职责，OS 语义层看不见 CR0/CR4 的具体位（§3.6）。
 
 C 版这段寄存器操作原样如下（`minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging`，节选）：
 
@@ -183,7 +200,7 @@ cr0 |= I386_CR0_WP;   write_cr0(cr0);             // 开写保护
 if (pgeok) cr4 |= I386_CR4_PGE;  write_cr4(cr4);  // 最后才开全局页
 ```
 
-> **辨析三：清 PSE 这步看着多余，实则是顺序的地基。** 为什么要先 `~(PGE | PSE)` 把这几个位全清、再从头设？因为 PGE 依赖 PG、PG 又依赖页表里的 PSE 大页条目——若沿用遗留的寄存器状态，无法保证这条依赖链干净建立。先归零、再按"清 PG/PGE → 开 PSE → 开 PG → 开 WP → 开 PGE"的次序重新点亮，才让"启用分页"在任何 BIOS/引导器残留下都得到确定的结果。
+> **辨析三：清 PSE 这步看着多余，实则是顺序的地基。** 为什么要先 `~(PGE | PSE)` 把这几个位全清、再从头设？源码注释给了两条硬约束：一是 `"PGE must be enabled after PG"`——PGE 依赖 PG 已开；二是 `"Our page table contains 4MB entries"`——页表用的是 4MB 大页，必须先声明 PSE、才能开 PG 去用这些条目。先把遗留状态归零、再按"清 PG/PGE → 开 PSE → 开 PG → 开 WP → 开 PGE"的次序重新点亮，才让"启用分页"在任何 BIOS/引导器残留下都得到确定的结果。
 
 ### 2.6 调用关系：一眼看全交接前的动作序列
 
@@ -468,3 +485,17 @@ boot 阶段还没有完整的中断、调度与 IPC，一旦出错就是一台�
 | 刚 `mov cr3` 切到进程页表后下一条取指就 #PF，报错地址落在低物理恒等窗口 | 该窗口未回放进进程页表（§3.5） | `os/libs/minix-boot/src/kernel_info.rs:KernelInfo` |
 
 这两条都是 boot 阶段"哑机器"的典型形态：没有内核日志可回溯，只能靠 EarlyConsole 的第一根路标 + 报错地址落在哪个区间来判断。它们也印证了本篇的主线——**交接前机器必须变成什么样**一旦没满足，故障会以最难定位的方式在交接刚完成后暴露。
+
+### 6.4 可复制的定位命令
+
+```bash
+# 端到端引导回归：boot 哑机器时先看串口是否打出 PASS 标记
+#   （run_qemu.sh 接收起 test-kernel 与 arch，用法见 os/qemu-tests/README.md）
+os/qemu-tests/run_qemu.sh <test-kernel> <arch>
+
+# 判断 reclaim guard 是否恒不触发（§3.5 fix27 现场）：生产构造点应全传 (0,0)
+rg -n "bootstrap_len" os/kernel/src/lib.rs os/libs/minix-boot/src/kernel_info.rs
+
+# 确认跨镜像交接只传纯数据（§1.3）：blob 定义与尺寸断言
+rg -n "struct BootHandoff|size_of::<BootHandoff>" os/libs/minix-boot/src/handoff.rs
+```
