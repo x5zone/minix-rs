@@ -140,7 +140,7 @@
 - 本篇直接相关：4 个测试函数，全部通过。
 - 复现命令（工作目录为 `os/`）：`cargo test -p minix-net-uds --lib core`
 - 完整测试清单：`rg "fn test_" os/net/uds/src/core.rs`
-- 全量测试结果：`cargo test -p minix-net-uds --lib` 共 9 个测试通过，包含本篇 4 个。
+- 全量测试基线：`cargo test -p minix-net-uds --lib` 实际输出为准；本篇 4 个包含在内，历史全量数字详见对应 `.review` 底账。
 
 ---
 

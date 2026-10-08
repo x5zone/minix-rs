@@ -230,7 +230,7 @@ C 语言的掩码回填在缓冲区不足或前缀越界时触发断言崩溃，
 - 本篇直接相关：21 个测试函数（工具模块 8 个，地址模块 13 个），全部通过。
 - 复现命令（工作目录为 `os/`）：`cargo test -p minix-net-lwip --lib util addr`
 - 完整测试清单：`rg "fn test_" os/net/lwip/src/util.rs os/net/lwip/src/addr.rs`
-- 全量测试结果：`cargo test -p minix-net-lwip --lib` 共 42 个测试通过，包含本篇 21 个与其它篇 21 个。
+- 全量测试基线：`cargo test -p minix-net-lwip --lib` 实际输出为准；本篇 21 个包含在内，历史全量数字详见对应 `.review` 底账。
 
 ---
 

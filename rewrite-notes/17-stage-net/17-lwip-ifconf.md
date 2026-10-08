@@ -124,7 +124,7 @@
 - 本篇直接相关：3 个测试函数，全部通过。
 - 复现命令（工作目录为 `os/`）：`cargo test -p minix-net-lwip --lib ifconf`
 - 完整测试清单：`rg "fn test_" os/net/lwip/src/ifconf.rs`
-- 全量测试结果：`cargo test -p minix-net-lwip --lib` 共 84 个测试通过，包含本篇 3 个。
+- 全量测试基线：`cargo test -p minix-net-lwip --lib` 实际输出为准；本篇 3 个包含在内，历史全量数字详见对应 `.review` 底账。
 
 ---
 
