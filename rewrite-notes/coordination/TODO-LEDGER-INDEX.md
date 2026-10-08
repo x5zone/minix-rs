@@ -152,7 +152,7 @@
 | 服务入口未通电 | `grep -rln "loop {}" os --include=main.rs \| wc -l` | 55 | 可定案 |
 | 占位传输实现 | `grep -rn "UnimplementedTransport" os --include=*.rs \| wc -l` | 0（原 5 全为 IS 被 `SysSefTransport` 取代的死桩，`2026-10-08` 移除；脚本基线待维护批）| 可定案；真·未通电信号看 `服务入口空转占位` 的 55 个 `loop {}` main |
 | 架构测试套件装配白名单 | `grep -n "ATF_BOOT_LEG_READY:" os/xtask/src/image.rs` | `["aarch64", "riscv64"]` | 可定案（x86_64 缺席是事实；能否跑绿需上机） |
-| 宿主不可达的门内测试数 | 逐目录 `grep -c "#\[test\]"` 相加：arm64、riscv64 的架构目录与平台目录 | 88（39 + 42 + 3 + 4） | 可定案；每轮须重算，账面写的是"约 90" |
+| 宿主不可达的门内测试数 | 逐目录行首锚定 `grep -rnE "^[[:space:]]*#\[test\]"` 相加：arm64、riscv64 的架构目录与平台目录 | 86（39 + 40 + 3 + 4） | 可定案；每轮须重算。**正则必须锚行首**——旧写法 `grep -c "#\[test\]"` 不锚定，会把 `riscv64/trap_return.rs`、`riscv64/trap_stub.rs` 里解释「为何这个测试宿主跑不到」的注释行也数进去，虚报 2 枚（历史上曾因此记成 88）；`P-ALL-01` 已于 `2026-10-09` 逐文件深度迁移收官后回勾为 `closed`（见 `TODO-LEDGER-OPEN.md` §2 同条目行） |
 | 次级核入口体是否还是骨架 | `wc -l os/arch/src/{arm64,riscv64,x86_64}/ap_early_entry.rs` | 226 / 193 / 533 | 可定案（账面"41/40 行骨架"已过期） |
 | 主核钳位是否仍在 | `grep -rn "clamp_cpu_to_bsp" os --include=*.rs` | 定义、调用、专项测试三处俱在 | 可定案（读调用上下文，`L2`） |
 | 空闲核唤醒臂 | `grep -rn "fn context_stop_idle" os --include=*.rs` | 0 | 可定案 |
