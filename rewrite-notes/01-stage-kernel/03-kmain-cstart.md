@@ -156,7 +156,7 @@ kmain(kernel_info)                       // 本篇入口，Phase A
   └─ Phase C: proc_init() + arch_boot_proc   ← 清进程表、boot 进程诞生 → 06 篇
 ```
 
-每一里程碑都打一行 `boot_stage!("kernel: kmain C proc_init ok\n")` 式日志——这不是装饰，而是 §6 定位的基础：哑机器时，串口上**最后出现的那条 `boot_stage!`** 就把故障夹在两个里程碑之间。读这篇时按这个序去 `lib.rs` 里找对应函数，Phase B 的 `init_protection` 分派到 §3.1 那两个 trait 的实现，Phase C 之前的 `validate`/store 就是 01 篇 §4.1 那条 caller-saved 陷阱的落地点。**把这条链走一遍，“保护结构为什么在 proc_init 之前”就不再是一句结论，而是你在代码里亲眼看到的位置。**
+每一里程碑都打一行 `boot_stage!("kernel: kmain C proc_init ok\n")` 式日志——这不是装饰，而是 §6 定位的基础：哑机器时，串口上**最后出现的那条 `boot_stage!`** 就把故障夹在两个里程碑之间。读这篇时按这个序去 `lib.rs` 里找对应函数，Phase B 的 `init_protection` 分派到 §3.1 那两个 trait 的实现，Phase C 之前的 `validate`/store 就是 01-boot-shim-bootstrap.md §4.1 那条 caller-saved 陷阱的落地点。**把这条链走一遍，“保护结构为什么在 proc_init 之前”就不再是一句结论，而是你在代码里亲眼看到的位置。**
 
 ---
 
