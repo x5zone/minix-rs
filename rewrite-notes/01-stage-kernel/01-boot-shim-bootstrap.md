@@ -401,7 +401,7 @@ boot 阶段还没有完整的中断、调度与 IPC，一旦出错就是一台�
 
 ```bash
 # 端到端引导回归：哑机器先看串口是否打出 PASS 标记（run_qemu.sh 取 test-kernel 与 arch，用法见 os/qemu-tests/README.md）
-os/qemu-tests/run_qemu.sh <test-kernel> <arch>
+os/qemu-tests/run_qemu.sh <arch> <test-kernel>   # 例 x86_64 + 对应 .efi
 
 # 判断 reclaim guard 是否恒不触发：生产构造点应全传 (0,0)
 rg -n "bootstrap_len" os/kernel/src/lib.rs os/libs/minix-boot/src/kernel_info.rs
