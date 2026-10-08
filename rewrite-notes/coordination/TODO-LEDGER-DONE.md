@@ -29,6 +29,7 @@
 | 未被使用的分发死码 `dispatch_unused` 已删除 | `closed` / `L1` | OPEN §8 卫生项（原无编号；设计 `25-misc-unported.md` §4.6/§6 登记“保留待清理”；`2026-10-08 @ 56e1869ae` 翻转） | `os/kernel/src/misc.rs`（函数、测试、模块映射 `do_unused.c` 行、D2 旧注记已删；D2 改写对齐设计 §3.2） | `rg -n "dispatch_unused" os --include=*.rs` → 零命中；`cargo test -p minix-kernel --lib` → 829 通过 / 0 失败（基线 830 − 1 个被删测试）；`cargo check --workspace --tests` → 零错误 |
 | 真机测试脚本收尾清理删串口证据（H7）已修 | `closed` / `L1` | OPEN §7（评审 H7，R3.5 本轮必修） | `os/qemu-tests/test-atf-aarch64.sh:archive_evidence/cleanup` | 全量门 `RESULT: PASS (36/36)`、退出码 0、归档 `serial.log` 36 行、WORK 已清、无 QEMU 残留（`2026-10-08 @ 987fc589e` 基线验证，落点见本轮提交）；riscv 侧为环境变量 opt-out 形态（`RS_ATF_WORK`）未顺手改；`concepts/qemu-environments.md` 与 `misc/` 无相关表述、`REVIEW-HISTORY.md` 系冻结存证，均无需联动 |
 | riscv64 次级核入口文件头部过期自称骨架已改 Status 为 S-4 落地 | `closed` / `L1` | OPEN §8 卫生项（原 `open`/`L2`；`DONE.md` §1 的 `P-A64RV-01` 已证入口体非骨架，本轮只滚注释） | `os/arch/src/riscv64/ap_early_entry.rs:32-35` | `grep -rn "Skeleton" os/arch/src/riscv64/ap_early_entry.rs` → 0 命中；`cargo test -p minix-arch --test riscv64_ap_early_entry_pin` → 4 通过 / 0 失败（`2026-10-08 @ 613d04c40` 核实，落点见本轮提交） |
+| 进程间通信 KernInfo 注释过期自称保存的 rbx 已改 R10 调用者保存车道 | `closed` / `L1` | OPEN §8 卫生项（`SD-14`/`PD-17` 已闭，本轮只滚注释；`trap_stub.rs:580` 同车道英文残留行与 `ps_strings` 另约定未动，留待后续） | `os/kernel/src/ipc.rs:104-109` | `grep -rn "saved RBX" os/kernel/src/ipc.rs` → 0 命中；`cargo test -p minix-kernel --lib` → 829 通过 / 0 失败（`2026-10-08 @ c1cfb82db` 核实，落点见本轮提交） |
 
 ## §2 已裁决（人或既有设计已经替本轮做过选择）
 

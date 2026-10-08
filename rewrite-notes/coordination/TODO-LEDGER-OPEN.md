@@ -142,7 +142,7 @@
 |---|---|---|---|
 | 探针残骸块（体只剩计数与引入） | `stopgap landed` / `L1` | 见 §2 探针条目，`L1` 读数 15 行 | `grep -rn "用后即滚" os --include=*.rs` |
 | 过期注释：riscv64 次级核入口文件头部仍自称骨架，实为已完成体 | `closed` / `L1` | 会误导下一轮扫描做出"未实现"的假阴性 | `grep -rn "Skeleton" os/arch/src/riscv64/ap_early_entry.rs` → 0 命中（`os/arch/src/riscv64/ap_early_entry.rs:32-35` 已改 Status 为 S-4 落地）；`cargo test -p minix-arch --test riscv64_ap_early_entry_pin` → 4 通过 / 0 失败（`2026-10-08 @ 613d04c40` 核实，落点见本轮提交） |
-| 过期注释：进程间通信里"保存的 rbx"表述已被寄存器迁移取代 | `open` / `L2` | `SD-14` 已闭，注释未滚 | `grep -n "saved RBX" os/kernel/src/ipc.rs` |
+| 过期注释：进程间通信里"保存的 rbx"表述已被寄存器迁移取代 | `closed` / `L1` | `SD-14` 已闭，注释未滚 | `grep -rn "saved RBX" os/kernel/src/ipc.rs` → 0 命中（`os/kernel/src/ipc.rs:104-109` 已改 R10 调用者保存车道，见 `os/arch/src/x86_64/trap_stub.rs:fn ipc_status_register`）；`cargo test -p minix-kernel --lib` → 829 通过 / 0 失败（`2026-10-08 @ c1cfb82db` 核实，落点见本轮提交） |
 | 无生产调用方的调试设施 | `open` / `L2`（消费者归属需人定） | 调试与转储函数只被集成测试调用，文档把它当内核设施描述 | `grep -rn "runqueues_ok" os --include=*.rs \| grep -v "os/kernel/src/debug.rs"` → 命中全在测试内 |
 | 消息环的字符写入口没有喂入者（内核打印未注入环） | `open` / `L1` | `grep -rn "console_write_str" os --include=*.rs` → 只有定义 | 要么接线，要么在文档写明"只由系统调用侧喂" |
 | 未被使用的分发死码 | `closed` / `L1` | `grep -rn "dispatch_unused" os --include=*.rs` → `os/` 内零命中（函数、测试、`do_unused.c` 映射行、D2 旧注记已删；D2 改写为 BadCall/EBADREQUEST 并指向设计 25 §3.2） | 已删（`os/kernel/src/misc.rs`，`2026-10-08 @ 56e1869ae` 验证，落点见本轮提交）：设计 `25-misc-unported.md` §2.6/§3.2 定谳在先，本轮执行其“待清理” |

@@ -104,7 +104,9 @@ pub enum IpcCall {
     /// Kernel info page query. C: `MINIX_KERNINFO=6` (ipcconst.h:12,
     /// handled at proc.c:685-693). Returns the user-mapped
     /// `minix_kerninfo` page address via the secondary IPC return channel
-    /// (x86-64: saved RBX); the caller's message buffer is untouched.
+    /// (x86-64: R10, caller-saved — the C i386 `p_reg.bx` lane; see
+    /// `minix_arch::ipc_status_register`); the caller's message buffer is
+    /// untouched.
     KernInfo = 6,
     /// Batch async send. C: `SENDA=16` (ipcconst.h:13)
     SendA = 16,
