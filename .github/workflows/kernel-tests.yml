@@ -1,0 +1,70 @@
+name: kernel-tests
+
+# PD-30 (PENDING-DECISIONS-3ARCH-PARITY.md §七.4, 采甲): the kernel
+# package's ~830 host unit tests + 6 integration tests never ran in CI —
+# "tests not in CI = tests don't exist". Two legs per the adjudication:
+#
+#   1. host-default-form: cargo test on the default (mock) feature form,
+#      the same form developers run locally.
+#   2. x86_64-production-build: the production face (--no-default-features)
+#      on x86_64-unknown-none — completing the arch trio that
+#      qemu-tests.yml's cross-arch-kernel-build guards for aarch64 and
+#      riscv64 ("取证改动打断另两架构构建" happened twice).
+#
+# This is step ② of the credibility chain (§九.4): SD-28 (exit-code
+# swallowing, fixed in run_all.sh) → PD-30 (this file) → PD-29 (removing
+# the mock default may only land once red has a place to surface).
+
+on:
+  push:
+    paths:
+      - 'os/kernel/**'
+      - 'os/arch/**'
+      - 'os/plat/**'
+      - 'os/libs/minix-types/**'
+      - 'os/libs/minix-platform/**'
+      - 'os/libs/minix-boot/**'
+      - 'os/Cargo.toml'
+      - '.github/workflows/kernel-tests.yml'
+  pull_request:
+    paths:
+      - 'os/kernel/**'
+      - 'os/arch/**'
+      - 'os/plat/**'
+      - 'os/libs/minix-types/**'
+      - 'os/libs/minix-platform/**'
+      - 'os/libs/minix-boot/**'
+      - 'os/Cargo.toml'
+      - '.github/workflows/kernel-tests.yml'
+
+jobs:
+  host-default-form:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test kernel package (default = mock form)
+        working-directory: os
+        run: cargo test -p minix-kernel
+
+  # build (not check): inline-asm register/fixup validation happens at
+  # codegen time — check silently passes what build rejects (mutated
+  # proof recorded on the cross-arch-kernel-build job in qemu-tests.yml).
+  x86_64-production-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+
+      - name: Build kernel production face for x86_64
+        working-directory: os
+        run: cargo build -p minix-kernel --target x86_64-unknown-none --no-default-features
