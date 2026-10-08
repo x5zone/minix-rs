@@ -20,7 +20,11 @@
 | 描述载体 | ACPI（RSDP → XSDT → MADT） | DTB（扁平设备树）或 ACPI 共存 | DTB |
 | 谁给内核 | 固件表留在物理内存某地址 | 固件把 DTB 地址传给内核 | OpenSBI 传 DTB 指针 |
 
-01-boot-shim-bootstrap.md里 `KernelInfo.platform_sources` 装的就是这些**物理地址 + 不透明分类标签**（DTB=1、RSDP=2）。本篇接手：内核拿这些句柄，把硬件描述**解析**成一份统一的结构。注意分工——**01 只管"句柄怎么跨镜像安全传进来"，本篇管"句柄背后的表怎么被读成 OS 语义"**，这是"发现"，不是"编程"（把寄存器写进驱动是后续各篇的事）。
+> **先释义几个名词（后文不再解释）**：**DTB**＝Device Tree Blob，一棵描述外设节点的树，开一个内存地址放它；**ACPI** ＝一整套带签名的小表，入口指针叫 **RSDP**，层层指下去到 **MADT**（中断拓扑表）；**OpenSBI** ＝ riscv 上跑在 M-mode 的固件，负责把内核提到 S-mode 并把 DTB 地址递过来。三者的共性是：都只在物理内存某处留一段"硬件说明书"，内核自己去找、去读。
+>
+> 三行“谁给内核”的实质区别：x86 是内核**主动扫**内存找 RSDP；ARM/RISC-V 是固件**把地址直接递**到内核手里（一个寄存器/参数）。方向不同，但都回到同一个动作：“拿着这个入口去读描述”。
+
+01-boot-shim-bootstrap.md 里 `KernelInfo.platform_sources` 装的就是这些**物理地址 + 不透明分类标签**（DTB=1、RSDP=2）。本篇接手：内核拿这些句柄，把硬件描述**解析**成一份统一的结构。注意分工——**01 只管"句柄怎么跨镜像安全传进来"，本篇管"句柄背后的表怎么被读成 OS 语义"**，这是"发现"，不是"编程"（把寄存器写进驱动是后续各篇的事）。
 
 ```
 发现(discovery) 与 编程(programming) 的边界：
@@ -71,11 +75,33 @@ pub trait PlatformDesc: Send + Sync + fmt::Debug {
 
 ### 3.2 子描述符：trait + `Any` 向下转型
 
-中断控制器既有共性语义（`nr_irqs()`），又有架构特有字段（x86 的 lapic_base/ioapic_base、ARM 的 gicd_base/gicr_base、RISC-V 的 plic context）。全塞进 trait 方法会让接口被某一家污染；全砍掉又让 arch 层拿不到具体基址。折中：通用方法走 trait，架构特有字段用 `Any` 向下转型在 arch 层取——OS 层调 `nr_irqs()` 不感知品牌名，arch 实现里 downcast 拿 `gicr_base`。
+中断控制器既有共性语义（`nr_irqs()`），又有架构特有字段（x86 的 lapic_base/ioapic_base、ARM 的 gicd_base/gicr_base、RISC-V 的 plic context）。全塞进 trait 会让接口被某一家污染；全砍掉又让 arch 层拿不到具体基址。折中：通用方法走 trait，架构特有字段用 `Any` 向下转型在 arch 层取。
+
+具体到代码，"同一个语义、不同的形状"是这样分家的（字段名取自 `os/libs/minix-boot/src/platform.rs` 与各 arch 实现）：
+
+```rust
+// OS 层只看得见的共性接口：
+pub trait InterruptControllerDesc: Any + Send + Sync { fn nr_irqs(&self) -> u32; /* + as_any */ }
+
+// 三家各自的“形状”——同名方法、字段完全不同：
+//   x86 : ApicDesc  { nr, lapic_base, ioapic_base }
+//   arm : Gicv3Desc { nr, gicd_base,  gicr_base  }
+//   rv  : PlicDesc  { nr, plic_base,  context    }
+
+// arch 层要拿“自己家特有”的基址时才 downcast；OS 层从不 match 品牌：
+let ic = desc.interrupt_controller();                 // &dyn InterruptControllerDesc
+let n  = ic.nr_irqs();                                // ← 三架构都走这一句，语义相同
+let g  = ic.as_any().downcast_ref::<Gicv3Desc>();     // 只有 aarch64 驱动会转成功
+if let Some(g) = g { let base = g.gicr_base; /* 形状只在 arch 内部流动 */ }
+```
+
+这样 OS 层代码里没有一处 `match 品牌`："语义"是 `nr_irqs()`，"形状"是 `gicr_base`，各归各位——downcast 在错的架构上返回 `None`，不会把别家的字段泄进通用路径。
 
 ### 3.3 分发：opaque tag 查表，不跨边界传函数指针
 
-01-boot-shim-bootstrap.md §3.4 立的规矩在此落地：内核不 import 各解析器再 if-else 判类型，而是拿 `PlatformDescSource` 里的 `kind`（u32）走一张分发表在**同一 crate 内**解析（`os/libs/minix-platform/src/kind.rs:fn parse_by_kind`）——注意它是 `unsafe fn`，因为要按物理地址去读固件留下的表，安全前提（地址有效、identity 映射仍在）由调用方（boot 期）保证。
+01-boot-shim-bootstrap.md §3.4 立的规矩在此落地：内核不 import 各解析器再 if-else 判类型，而是拿 `PlatformDescSource` 里的 `kind`（u32）走一张分发表在**同一 crate 内**解析（`os/libs/minix-platform/src/kind.rs:fn parse_by_kind`）。
+
+> **为什么非得这样（就地讲清，不外推）：** 三条路里，①把解析器做成跨镜像传进来的函数指针——boot-shim 内存一回收就悬垂（正是 01 §3.4 那个事故）；②内核直接 `if kind == DTB { 调 DTB 解析器 }`——就得 import 每一家的具体类型，把"世上有几种平台描述"焊死进内核代码，加一种就改内核；③只传不透明 `u32` tag + 在 minix-platform 内部一张表分发——内核只认数字，加一家描述只改那张表、不碰内核码。**注意 `parse_by_kind` 是 `unsafe fn`**：它要按物理地址去读固件留下的表，安全前提（地址有效、identity 映射仍在）由 boot 期调用方保证。
 
 ### 3.4 全局存储：为什么是 `Frozen` 不是 `Mutex`/`static mut`
 
@@ -113,7 +139,14 @@ kmain (Phase)                         ← 03 篇的 kmain 编排骨架
   PlatformContext::current()  ──► 时钟/中断/SMP 初始化各篇拿 nr_cpus()、gicc 基址、frequency() 等
 ```
 
-读代码时就按这条序点下去：`parse_by_kind` 是**按 kind 分发**的那一个 match；`QemuVirtDesc` 是"什么描述都没给"时的**兜底分支**（dev 构造，release 下无句柄才 panic）；`PLATFORM` 被 freeze 之后，`current()` 在 SMP 下被多 CPU 只读——所以冻结点必须在 BKL 持有时、在任何次级核起来之前。**"发现是只读的、编程在别处"这条 §1.3 的边界，在这条链上就是 `freeze` 与 `current()` 两个点**：把这条链走一遍，`PlatformDesc` 为什么是只读 trait、为什么要 `Frozen`，就不再是结论而是你在代码里看到的位置。
+读代码时就按这条序点下去。两个最关键的真实代码行（非流程图）：分发入口 `os/libs/minix-platform/src/kind.rs:fn parse_by_kind` 按 `kind` match 出三种描述符之一；冻结落盘在 `os/libs/minix-platform/src/global.rs` 里那一行——
+
+```rust
+// global.rs: 把解析好的描述符写进只读全局（BKL 持有、单线程的启动里程碑）
+PLATFORM.freeze(PlatformContext { desc });
+```
+
+`parse_by_kind` 是**按 kind 分发**的那一个 match；`QemuVirtDesc` 是"什么描述都没给"时的**兜底分支**（dev 构造，release 下无句柄才 panic）；`PLATFORM` 被上面那行 `freeze` 之后，`current()` 在 SMP 下被多 CPU 只读——所以冻结点必须在 BKL 持有时、在任何次级核起来之前。**"发现是只读的、编程在别处"这条 §1.3 的边界，在这条链上就是 `freeze` 与 `current()` 两个点**：把这条链（从 `parse_by_kind` 到上面那行 `freeze`）在仓库里点一遍，“为什么需要 `Frozen`”就不再是结论而是你在代码里看到的位置。
 
 ---
 
