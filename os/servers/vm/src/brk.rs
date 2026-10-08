@@ -157,17 +157,25 @@ fn extend_upto_v(
     // anon pages demand-fill on fault). minix-rs realizes the same through
     // VirRegion::extend.
     let grow_len = VirBytes(offset.0 - limit.0);
-    let supports_resize = avl_less(active.regions(), offset.0)
+    let (supports_resize, rejects_resize) = avl_less(active.regions(), offset.0)
         .expect("brk: region present (checked above)")
         .def_memtype
         // CodeReview 续-279m P2-3：`def_memtype==None` 是 C 不存在的形（每个
         // region 都经 map_page_region 带 memtype 诞生）——若残留到此，resize 腿
         // 原地 extend 产出的新页仍会同型 NoMemType 死；路由到 create 腿就地
         // 新建带 MEM_TYPE_ANON 的可 fault 段才是防御性正解。
-        .map(|m| m.supports_resize())
-        .unwrap_or(false);
+        .map(|m| (m.supports_resize(), m.rejects_in_place_resize()))
+        .unwrap_or((false, false));
 
     if supports_resize {
+        // C:1037 non-NULL ev_resize → grow physblocks then *call* the callback
+        // and return its result. The anon_contig / cache callbacks reject with
+        // ENOMEM (mem_anon_contig.c:97, mem_cache.c:83); the [ARCH: A-12] fold
+        // keeps that reject observable via `rejects_in_place_resize` (SD-43),
+        // so the resize leg fails like C instead of silently `extend`-ing.
+        if rejects_resize {
+            return Err(BrkError::OutOfMemory);
+        }
         avl_less_mut(active.regions_mut(), offset.0)
             .expect("brk: region present (checked above)")
             .extend(grow_len)
@@ -346,6 +354,42 @@ mod tests {
         assert!(active.regions().find(VirBytes(0x4000_1800)).is_some(),
             "new region spans the gap from the old end (C map_page_region(vmp, limit, 0, extralen))");
         assert_eq!(active.region_top(), VirBytes(0x4000_2000), "fresh slot writes the hint");
+    }
+
+    #[test]
+    fn test_brk_rejects_in_place_resize_for_contig_and_cache() {
+        // SD-43: C's anon_contig_resize (mem_anon_contig.c:97) and cache_resize
+        // (mem_cache.c:83) are NON-NULL ev_resize callbacks that unconditionally
+        // return ENOMEM; region.c:1037 takes the in-place leg and propagates the
+        // failure. The [ARCH: A-12] resize fold must keep that reject observable
+        // (rejects_in_place_resize) — brk over such a region fails with ENOMEM;
+        // it does NOT silently `extend`, and it does NOT fall through to a fresh
+        // region (that leg is only for NULL ev_resize memtypes).
+        use crate::memtype::{MEM_TYPE_CACHE, MEM_TYPE_CONTIG_ANON};
+        for contig in [true, false] {
+            let slot = next_test_slot();
+            let table = VmProcTable::get_global();
+            unsafe { table.reset_slot(slot); }
+            let empty = table.get_empty(slot).unwrap();
+            let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
+            let mut active = empty.activate(ep);
+            active.init_page_table().unwrap();
+            active.init_regions();
+            active.regions_mut().insert(VirRegion::with_memtype(
+                VirBytes(0x4000_0000),
+                VirBytes(0x1000),
+                VrFlags::WRITABLE | VrFlags::ANON,
+                if contig { &MEM_TYPE_CONTIG_ANON } else { &MEM_TYPE_CACHE },
+            )).unwrap();
+            drop(active);
+
+            assert!(matches!(brk(ep, VirBytes(0x4000_2000)), Err(BrkError::OutOfMemory)),
+                "brk over a {} region must reject in-place resize with ENOMEM",
+                if contig { "anon_contig" } else { "cache" });
+            let active = table.get_active(table.vm_isokendpt(ep).unwrap()).unwrap();
+            assert_eq!(active.regions().len(), 1,
+                "resize-reject must not fall through to a fresh region");
+        }
     }
 
     #[test]

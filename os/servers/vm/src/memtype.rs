@@ -99,6 +99,24 @@ pub(crate) trait MemType {
         true
     }
 
+    /// Whether C's `ev_resize` callback for this memtype unconditionally
+    /// returns `ENOMEM` even though the field is non-NULL. This is a second,
+    /// orthogonal fact to [`MemType::supports_resize`] (which only records
+    /// the `if(!ev_resize)` *branch* at `region.c:1037`): C grows the
+    /// physblocks and then *calls* the callback, whose return is the result.
+    /// [`ContiguousAnonymous`] (`mem_anon_contig.c:97` — "cannot resize
+    /// physically contiguous memory") and [`CacheMemory`] (`mem_cache.c:83`
+    /// — "cannot resize cache blocks") both carry a non-NULL `ev_resize` that
+    /// always rejects. Because the resize callback itself is framework-folded
+    /// ([ARCH: A-12]) — reviving its `&mut ActiveProc` would reintroduce the
+    /// borrow that motivated the fold — this predicate keeps the callback's
+    /// *reject* observable so the brk resize leg fails with ENOMEM like C
+    /// instead of silently succeeding via `VirRegion::extend`. Default false:
+    /// memtypes with a working in-place resize (anonymous) are unaffected.
+    fn rejects_in_place_resize(&self) -> bool {
+        false
+    }
+
     // C NULL → EINVAL (region.c:1164). Default Err(NotSupported).
     // C signature: void (*ev_split)(struct vmproc *vmp, ...).
     // Matches ev_resize: &mut ActiveProc corresponds to struct vmproc*.
@@ -754,6 +772,14 @@ impl MemType for ContiguousAnonymous {
             .unwrap_or(false)
     }
 
+    /// C `anon_contig_resize` (mem_anon_contig.c:97) is a non-NULL callback
+    /// that always returns ENOMEM — physically contiguous memory cannot grow
+    /// in place. SD-43: the [ARCH: A-12] resize fold would otherwise let the
+    /// brk resize leg `extend` this region and succeed, diverging from C.
+    fn rejects_in_place_resize(&self) -> bool {
+        true
+    }
+
     /// Not supported. Contiguous memory cannot be individually referenced.
     fn ev_reference(&self, _frames: &mut PageFrames, _slot: PageSlot) -> Result<(), MemTypeError> {
         Err(MemTypeError::NotSupported)
@@ -889,6 +915,14 @@ impl MemType for CacheMemory {
     /// Always writable when mapped — cache pages have no CoW semantics.
     fn writable(&self, _frames: &PageFrames, slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
         slot.is_mapped()
+    }
+
+    /// C `cache_resize` (mem_cache.c:83) is a non-NULL callback that always
+    /// returns ENOMEM — cache blocks cannot grow in place. SD-43: the
+    /// [ARCH: A-12] resize fold would otherwise let the brk resize leg extend
+    /// a cache region and succeed, diverging from C.
+    fn rejects_in_place_resize(&self) -> bool {
+        true
     }
 
     /// Cache regions never fault in correct operation.
@@ -1234,6 +1268,24 @@ mod tests {
     fn test_shared_memory_name() {
         let shared = SharedMemory::new();
         assert_eq!(shared.name(), "shared memory");
+    }
+
+    #[test]
+    fn test_resize_predicates_match_mem_type_tables() {
+        // SD-43 / C ground truth (mem_type tables + region.c:1037).
+        // supports_resize models "ev_resize field non-NULL"; the two facts are
+        // orthogonal — anon_contig/cache are non-NULL (supports_resize) AND
+        // always reject (rejects_in_place_resize → the callback returns ENOMEM).
+        // anon resizes in place (no reject); direct/shared/mappedfile leave
+        // ev_resize NULL (supports_resize false, take the fresh-region leg).
+        assert!(MEM_TYPE_ANON.supports_resize());
+        assert!(!MEM_TYPE_ANON.rejects_in_place_resize(), "anon grows in place (mem_anon.c:38)");
+        assert!(MEM_TYPE_CONTIG_ANON.supports_resize());
+        assert!(MEM_TYPE_CONTIG_ANON.rejects_in_place_resize(), "anon_contig_resize → ENOMEM (mem_anon_contig.c:97)");
+        assert!(MEM_TYPE_CACHE.supports_resize());
+        assert!(MEM_TYPE_CACHE.rejects_in_place_resize(), "cache_resize → ENOMEM (mem_cache.c:83)");
+        assert!(!MEM_TYPE_DIRECT.supports_resize());
+        assert!(!MEM_TYPE_SHARED.supports_resize());
     }
 
     #[test]
