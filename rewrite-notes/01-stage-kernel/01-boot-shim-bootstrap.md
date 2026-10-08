@@ -210,7 +210,7 @@ kinfo_t *pre_init(u32_t magic, u32_t ebx)
         call    _C_LABEL(kmain)
 ```
 
-**这四条指令是启用翻译之后执行的，而它们自己位于低地址。** `mov $k_initial_stktop, %esp` 换到内核高地址栈之前，处理器仍在用低地址取指、取栈；换栈之后的 `push %eax` 与 `call kmain` 才开始使用高地址。
+**这四条指令是启用翻译之后执行的，而它们自己位于低地址。** `mov $k_initial_stktop, %esp` 把栈换成内核的初始栈（这块栈为什么在那时就能用、它落在哪个地址区间，正是下一篇要回答的问题），换完之前处理器一直在用低地址取指与取栈；换栈之后的 `push $0`、`push %eax` 与 `call kmain` 里，`call kmain` 是**第一次跳往高地址入口**——目的地映射为的就是这一步。
 
 于是上面那个函数里三条映射相关语句（`pg_identity`、`pg_mapkernel`、`vm_enable_paging`）的次序有了完整解释。把假设摊开：**如果去掉 `pg_identity`、只铺内核高地址映射，然后就启用翻译会怎样？** 启用翻译后下一条取指用的是虚拟地址，而此刻正在执行的这段引导代码所在的低地址在新表里没有条目，取指落空就是页错误，页错误需要中断入口表里的处理入口，那张表还没建立——结果是复位。反过来若只铺低地址不铺高地址，`call kmain` 那一步落空，同样没有处理入口。恒等段服务的对象是**正在执行这段代码的处理器**，高地址段服务的对象是**接下来要跳去的地方**，两个都得在开关之前备好。源码注释里那句 "but first a 1:1 mapping so this code stays where it should be" 中的 "this code"，指的就是前者。
 
@@ -560,7 +560,7 @@ head.S:multiboot_init
   │     ├─ pg_load()                            写页表根
   │     └─ vm_enable_paging()                   清零→大页→分页→写保护→全局页
   │           → return &kinfo
-  ├─ 换到内核高地址栈、栈底放 0
+  ├─ 换到内核初始栈、栈底放 0
   └─ push %eax → call kmain
 ```
 
