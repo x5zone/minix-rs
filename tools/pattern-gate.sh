@@ -33,6 +33,8 @@
 #   P15 gate   vendored 依赖源码防线（.dockercargo 跟踪 0 + gitignore 条目；d6f176451 事故）
 #   P16 gate   trap 腿消息物化调用在位（minix-sys commit_message_to_memory；§1.120续-22 事故）
 #   P17 gate   构建缓存/取证产物跟踪防线（os/target_smp+os/tmp 跟踪计数=0；C-66 事故，C-69 转强制）
+#   P18 gate+  .rs 注释里的 C 锚点全量扫描（SD-27 工具化守卫半：存在性+落窗，区间校 END 不只看 START，
+#              非 minix3 引用如 hw/arm/boot.c 属 QEMU 源码域按白名单豁免；存量豁免进基线）
 # 带 "+" 的检查基线豁免（tools/pattern-gate-baseline.txt，key=检查名|路径|cksum）。
 
 set -u
@@ -438,6 +440,69 @@ EOF
   return 0
 }
 
+# --------------------------------------------------------------- P18 .rs 注释 C 锚点全量扫描（SD-27 工具化守卫半）
+# 事故族：`SD-27`——注释里的 file.c:NNN 锤到不存在的文件或越界的行号（2026-10-09 全量核扫
+# 实证 23/17970，典型如 sys_getksig.c 实为 sys_getsig.c、ipc.c:2060 实为 ipc.h:2261-2269）。
+# 与 P11（只查新增行）互补：P18 扫存量 .rs 注释行全量 + 基线豁免。三条已记入台账的设计约束
+# 全部落实：① basename 多候选全覆盖（复用 p11_candidates，单候选实现会误报 4551 处）；
+# ② 区间 token（file.c:NNN-MMM）校 END 不只看 START；③ 带目录前缀的非 minix3 引用
+# （如 QEMU 源码 hw/arm/boot.c）不查存在性也不校行号（白名单语义）。
+collect_p18() { # 全量 token：os/ 下 .rs 的注释行里的 file.c|h:NNN(-MMM)?（排除本脚本自指散文例）
+  local root="$1"
+  find "$root/os" -type f -name '*.rs' ! -path '*/target/*' -print0 2>/dev/null \
+    | xargs -0 grep -hE '^[[:space:]]*(//|///|//!)' 2>/dev/null \
+    | grep -oE '[A-Za-z0-9_./$-]+\.(c|h):[0-9]+(-[0-9]+)?' | sort -u
+}
+# 全量扫描的性能设防：旧写法每个 token 起一次 awk/grep/wc 子进程，11767 个唯一 token
+# 要跑一小时——改为：一次性 find 建"basename → 最大行数"关联数组 + 基线整体预载
+# + token 循环内零子进程（行数用 bash 原生 <(...) 读）。不复用逐名 find 的
+# p11_candidates（P11 只查增量行的少量 token，单次 find 可接受）。
+p18_build_index() { # $1=root；填 P18_MAXLINES[basename]=各变体最大行数（无同名文件则键缺席）
+  local root="$1" n b
+  declare -gA P18_MAXLINES=()
+  # 一次性 find|xargs wc|awk 聚合（awk 已在单进程内按 basename 取最大；旧写法每文件/每
+  # token 一次子进程，数万条目要跑一小时）；进程替换喂 while——管道尾循环会把
+  # 关联数组写进子 shell 就地丢，并发改单行赋值也因此去掉。
+  while IFS=$'\t' read -r b n; do
+    [ -n "$b" ] && [ -n "$n" ] || continue
+    P18_MAXLINES[$b]=$n
+  done < <(find "$root/minix3" -type f \( -name '*.c' -o -name '*.h' \) -print0 2>/dev/null \
+    | xargs -0 wc -l 2>/dev/null \
+    | awk '$0 !~ / total$/ { n = $1; m = split($2, a, "/"); b = a[m]; if (n > max[b]) max[b] = n } END { for (k in max) print k "\t" max[k] }')
+}
+check_p18() {
+  local root="$1" tokfile="$2" tok base path ln1 ln2 maxl bad=0 n=0 bl
+  local -A IN_BASELINE=()
+  [ -s "$tokfile" ] || { skip P18 "无 token（os/ 下未扫到注释态 C 锚点？）"; return 0; }
+  if [ -f "$root/$BASELINE_REL" ]; then
+    while IFS= read -r bl; do case "$bl" in 'P18|'*) IN_BASELINE["${bl#P18|}"]=1 ;; esac; done < "$root/$BASELINE_REL"
+  fi
+  p18_build_index "$root"
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    path="${tok%%:*}"; base="${path##*/}"
+    ln1="${tok#*:}"; ln2="${ln1#*-}"
+    [ "$ln2" = "$ln1" ] || ln1="${ln1%%-*}"   # 区间：START 另切；单行：ln1 不变
+    case "$ln1$ln2" in ''|*[^0-9]*) continue ;; esac   # 两端必须全数字（"5-99" 整体不过关，不能先单独校 ln1）
+    n=$((n+1))
+    # 白名单：带目录前缀的 token（如 QEMU 源码 hw/arm/boot.c:693-723）不属 minix3 域，
+    # 存在性与行号都不校（约束③）；只处理裸 basename 形态。
+    case "$path" in */*) continue ;; esac
+    [ -n "${IN_BASELINE[$tok]:-}" ] && { detail "P18 已知(基线): $tok"; continue; }
+    maxl="${P18_MAXLINES[$base]:-}"
+    if [ -z "$maxl" ]; then
+      fail P18 "C 锚点文件不存在: $tok（虚构/改名路径；确属外部源码域则加 P18|$tok 进基线）"; bad=1
+      baseline_add "P18|$tok"; continue
+    fi
+    if [ "$ln2" -gt "$maxl" ]; then            # 校 END（单行时 ln2==ln1，同 P11 语义；约束②）
+      fail P18 "C 锚点行号越界: $tok（各变体均不足 $ln2 行）"; bad=1
+      baseline_add "P18|$tok"
+    fi
+  done < "$tokfile"
+  [ "$bad" -eq 0 ] && ok P18 ".rs 注释 C 锚点全量存在性/落窗通过（检查 $n 个 token）"
+  return 0
+}
+
 # --------------------------------------------------------------- P12 共享路径 asm/rdmsr 无架构门
 # 事故：9e115387e / ab79b40ba——x86 rdmsr/asm 只带 mock 门不带 target_arch 门，aarch64 载体 17 错。
 P12_FILES="os/kernel/src/trap_dispatch.rs os/kernel/src/lib.rs os/arch/src/arch/stacktrace.rs os/boot-shim/src/lib.rs"
@@ -711,7 +776,27 @@ YAML
   # --- P17（report 式：git 沙箱 SKIP、真树 REPORT）---
   out=$(check_p17 "$F"); st_expect "P17-skip" "[P17] SKIP" "$out"
 
-  rm -f "$F/.p11_tokens" "$F/.p13_tokens"
+  # --- P18（.rs 注释 C 锚点全量：存在性/落窗/区间校 END/白名单）---
+  mkdir -p "$F/minix3/hw/arm" && printf 'x\n' > "$F/minix3/hw/arm/boot.c"
+  printf 'ghost2.c:1\nmemory.c:99\nmemory.c:5-99\nmemory.c:5-8\nhw/arm/boot.c:731\n' > "$F/.p18_tokens"
+  out=$(check_p18 "$F" "$F/.p18_tokens")
+  st_expect "P18-missing-file" "锚点文件不存在: ghost2.c" "$out"
+  st_expect "P18-line-overflow" "memory.c:99" "$out"
+  st_expect "P18-range-end" "memory.c:5-99" "$out"
+  if printf '%s' "$out" | grep -q "memory.c:5-8"; then
+    printf '  [case] %-22s FAIL 区间 END 在界内不应报\n' "P18-range-ok"; ST_FAIL=$((ST_FAIL+1))
+  else
+    printf '  [case] %-22s PASS（区间 END 在界内不报）\n' "P18-range-ok"
+  fi
+  if printf '%s' "$out" | grep -q "hw/arm/boot.c"; then
+    printf '  [case] %-22s FAIL 带目录前缀应走白名单豁免\n' "P18-whitelist"; ST_FAIL=$((ST_FAIL+1))
+  else
+    printf '  [case] %-22s PASS（带目录前缀＝非 minix3 域，白名单豁免）\n' "P18-whitelist"
+  fi
+  printf 'memory.c:5\n' > "$F/.p18_tokens"
+  out=$(check_p18 "$F" "$F/.p18_tokens"); st_expect "P18-ok" "[P18] PASS" "$out"
+
+  rm -f "$F/.p11_tokens" "$F/.p13_tokens" "$F/.p18_tokens"
   echo "----"
   if [ "$ST_FAIL" -gt 0 ]; then
     echo "self-test FAIL（$ST_FAIL 例）"; exit 1
@@ -742,6 +827,7 @@ check_p14 "$ROOT"
 check_p15 "$ROOT"
 check_p16 "$ROOT"
 check_p17 "$ROOT"
+collect_p18 "$ROOT" > "${TMPDIR:-/tmp}/pattern-gate-p18.$$" ; check_p18 "$ROOT" "${TMPDIR:-/tmp}/pattern-gate-p18.$$" ; rm -f "${TMPDIR:-/tmp}/pattern-gate-p18.$$"
 
 if [ "$DO_DIFF" -eq 1 ]; then
   added=$(diff_added_lines "$ROOT" "$RANGE")
