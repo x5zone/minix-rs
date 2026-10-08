@@ -235,3 +235,12 @@ rg -n "0x3f_ffff|0x3fffff" os/ -t rust
 - **A3 修复（R2）**：`mmap.rs` 新增 `check_user_range(limit, addr, len)`（checked_add + 双侧上界，形态同 kernel `user_copy_range_mapped` 第 1 步），MAP_FIXED 与 hint 两分支接入；`dispatcher.rs` remap 显式 target 分支同形校验（越界 `VmError::InvalidAddress`）。语义取舍：越界 hint **拒绝而非静默回退窗口**（Linux 非 FIXED hint 会回退；此处按审计 fail-closed 取舍，越界提示视为调用方 bug）。
 - **复扫**（`python3 tools/address-constant-scan.py os`）：2^41 独立字面量清零——唯一残留 `mmap.rs:217` 为派生比较点（封顶语义本体，非权威副本）；`REMAP_MMAP_*` 字面量清零；`USER_ADDRESS_SPACE_LIMIT` 三分支清零（ipc.rs 归 `use`）。§6 的四通道计数系交付时点快照，本笔后小幅漂移（净减 5 处），不回改 §6 原始记录。
 - **验证**：host 四包 + vm 536/0（新增 `test_check_user_range_both_arch_families`：x86/riscv 双族值注入覆盖，含 2^41-hint 在 riscv 族被拒/在 x86 族合法的对照断言）+ vfs 538/0 + boot-shim test-all 27/0 + check-layout all PASS + x86 cmd-smoke PASS + aarch64 bootmarks PASS（rc=0）+ riscv boot-full PASS（marker reached）。A5/A6/A9/A10（R3）与 A7/A8/A13（R4）未动，按 §7 排序留给后续笔。
+
+## §9 后续轮回勾（`2026-10-09`，qoder，claim/ADDR-AUDIT-A5A6-qoder）
+
+§8 末行"A5/A6/A9/A10（R3）未动"已滞后——其中 **A5、A6 两项已在 `d4e3ccfc9`（R3 小口径）落地**，本次只做账面回勾，无代码改动：
+
+- **A5**（`os/servers/vm/src/boot.rs:128` `BootParams::simple`）：`#[cfg(test)]` 门已在位，`user_sp` 已改引 `minix_types::USER_STACK_TOP`。核实命令：`grep -n "#\[cfg(test)\]" os/servers/vm/src/boot.rs` 命中且紧邻 `pub fn simple`；`grep -n "user_sp: VirBytes(minix_types::USER_STACK_TOP)" os/servers/vm/src/boot.rs` 命中。
+- **A6**（`os/servers/vm/src/vm_server.rs` `kernel_layout.unwrap_or_else` 回退分支）：riscv64 guest 硬失败 `panic!` 已在位（`#[cfg(all(target_arch = "riscv64", not(test)))]`），宿主测试仍可用回退形状。核实命令：`grep -n "handoff lacks kernel layout on riscv64" os/servers/vm/src/vm_server.rs` 命中；同一文件内注释已自引"T13 审计 A6"。
+- 两项的原始验证读数（`d4e3ccfc9` commit message 自带）：vm 宿主 536/0 + riscv guest 构建 0 error + host 构建（仅预存 arch unused-import 噪音）+ **riscv boot-full PASS（marker reached）**，属真机坐实。
+- **A9/A10 仍未动**（实测：`grep -c "0x7fff_ffff_f000" os/servers/vm/src/ipc/dispatcher.rs` → 26 处夹具硬编码仍在）；§7 第 3 项的 A9/A10 子项仍 `open`，不属本次射程（体量与"改引权威常量"机械替换范围较大，`d4e3ccfc9` 的 commit message 当时也自陈 A9/A10 大面留后续）。
