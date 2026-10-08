@@ -207,8 +207,8 @@ pub fn dispatch_setalarm(
     // 的「中途剥旗」定位（s17c：SET_SYS 落 0x12 后 re-arm 仍死）。
     #[cfg(not(feature = "mock"))]
     {
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
         static SAC_N: AtomicUsize = AtomicUsize::new(0);
         if SAC_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
             if let Some(c) = proc_table.get(caller_nr) {

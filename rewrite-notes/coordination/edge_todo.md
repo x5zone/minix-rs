@@ -645,6 +645,8 @@ workspace 根。验收 = 全 workspace `cargo clippy` crate 本体告警清零�
 **依赖**：E5（端到端联调包）、E-ISWIRE、03-stage-rs 动态加载；TTY 观察者面依赖 TTY staging（无条目，遥领）。
 **解锁**：IS 外部行为验收（A-11 的 `-period 5HZ` 存活 ping 端到端）。
 
+> **进度（喂入者接上，claim/KMESS-FEED-qoder）**：本条收口时留下的最后一环——环虽有，内核诊断却没往里写字节（台账 §8 那条）。现已由唯一收口类型 `os/kernel/src/kmess.rs:KernelConsole` 补上：它对位 C `kputc`（`minix3/minix/kernel/utility.c:55-90`，记录与显示并行而非二选一），并且**只覆写 `write_byte`**——`EarlyConsole` 的 `write_str`/`write_hex` 默认体逐字节走 `Self::write_byte`，所以在这一处记录就等价于「控制台看到的每个字节都进环」（含 `\n` 前插的 `\r` 与十六进制展开）；若在 `write_str` 另记一次就会让环与控制台不同形（两个真相）。内核里 12 个文件、74 处控制台别名统一改指收口，`SYS_DIAGCTL` 的逐字节输出也走它（C `do_diagctl.c:28-44` 的 `kputc` 每字节同形）。因此 IS 侧 `KernelKmessTransport` 的取数腿自此有真实内容（IS 的 F7 倾倒不再是空环）。IS 那侧的文档若需补「环内容由内核收口喂入」一句，归 08-stage-is 文档线（本处登记避免与文档重组撞车）。
+
 ---
 
 ## E-RMIBWIRE minix-sys rmib 客户端协议半整缺（10-stage-mib 首轮架构审查登记，2026-09-15）

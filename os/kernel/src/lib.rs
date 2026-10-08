@@ -168,7 +168,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     // NK4-A 首亮取证（临时）：入口第一时间打原始参数指针——判定
     // shim main → arch_boot 的第一跳交接是否已经坏（.bss 收存之前）。
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: arch_boot arg=");
         Console::write_hex(kernel_info as *const KernelInfo as u64);
         Console::write_str(" blen=");
@@ -199,7 +199,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     // NK4-A 首亮诊断：内核侧第一根路标（EarlyConsole=COM1，与 boot-shim
     // 的 raw_serial 同口；EBS 已过、无并发写者）。
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: arch_boot entered\n");
     }
     // 诊断注册前移（原在 kmain Step -1）：arch_boot 阶段的任何 panic
@@ -209,7 +209,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     register_panic_diagnostic();
     arch_boot_impl::<X86_64Paging>(kinfo, root_page);
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: arch_boot_impl done, jumping to kmain\n");
     }
     // SAFETY: arch_boot_impl just enabled paging with both identity
@@ -351,12 +351,12 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
     // This entry sits above the `boot_stage!` definition, so it writes the
     // early console directly (the whole fn is already `not(mock)`-gated).
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel-image: step4 DM coverage (additive on active root)\n");
     }
     crate::dm_coverage::establish_boot_dm(kinfo, root_page);
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel-image: DM ok, jumping to kmain (high half)\n");
     }
     // SAFETY: paging is already live via the boot-shim's identical bootstrap
@@ -417,7 +417,7 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
         ($msg:expr) => {{
             #[cfg(not(feature = "mock"))]
             {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
                 Console::write_str($msg);
             }
         }};
@@ -511,7 +511,7 @@ macro_rules! boot_stage {
     ($msg:expr) => {{
         #[cfg(not(feature = "mock"))]
         {
-            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
             Console::write_str($msg);
         }
     }};
@@ -791,7 +791,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     //（NK4-A 评审 F1，基线 940ad8363 对照证回归）。
     #[cfg(target_arch = "x86_64")]
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         let entry_rdi: u64;
         unsafe { core::arch::asm!("mov {}, rdi", out(reg) entry_rdi, options(nomem, nostack, preserves_flags)); }
         let rsp: u64;
@@ -818,7 +818,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // uses the correct baud rate / UART configuration.
     // C: ser_init() — originally inside arch_init(); moved to EarlyConsole trait.
     {
-        use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+        use crate::kmess::{EarlyConsole, KernelConsole as Console};
         Console::init();
     }
 
@@ -902,7 +902,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // 编译失败，见 NK4B-WORKLOG M3.1 节）。
     #[cfg(target_arch = "x86_64")]
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         let (g_lo, g_hi): (u32, u32);
         // SAFETY: rdmsr of GS_BASE is a read-only side-effect-free probe.
         unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack)) };
@@ -924,7 +924,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     boot_stage!("kernel: kmain B clock+intr ok\n");
     #[cfg(target_arch = "x86_64")]
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         let (g_lo, g_hi): (u32, u32);
         // SAFETY: rdmsr probe, see gs0 above.
         unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack)) };
@@ -1186,7 +1186,7 @@ pub extern "C" fn kmain(kernel_info: &KernelInfo) -> ! {
 /// - fp: frame pointer at kmain entry
 #[cfg(feature = "qemu_test")]
 fn kmain_verify(kernel_info: &KernelInfo, sp: u64, pc: u64, fp: u64) -> ! {
-    use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+    use crate::kmess::{EarlyConsole, KernelConsole as Console};
 
     // Ensure early console is initialized for test kernel output.
     Console::init();
@@ -1900,7 +1900,7 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                 // 直接 query VM entry 页，区分"loader 驱逐未命中"（flags 无
                 // USER 或仍 HUGE）与"装好后又被重映射"。
                 {
-                    use minix_plat::{CurrentEarlyConsole as DiagC, EarlyConsole as _};
+                    use crate::kmess::{EarlyConsole as _, KernelConsole as DiagC};
                     let probe = vm_result.pc;
                     DiagC::write_str("kernel: diag pc=");
                     DiagC::write_hex(probe.0);
@@ -2325,8 +2325,8 @@ static PANIC_DIAG_ACTIVE: core::sync::atomic::AtomicBool =
 /// [`util_stacktrace`] (fail-soft walker). No `.expect()` on the panic
 /// path.
 fn kernel_panic_diagnostic(message: &str) {
+    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
     use minix_arch::EarlyConsole as _;
-    use minix_plat::CurrentEarlyConsole as Console;
 
     // C utility.c:30-36 — "kernel panic: " + formatted message.
     Console::write_str("kernel panic: ");
@@ -2785,7 +2785,7 @@ fn bsp_finish_booting(
     // Step 3: announce() — print MINIX banner
     // C: announce() in main.c:60 — printf("MINIX %s ...\n", OS_RELEASE)
     // Rust: print to EarlyConsole so QEMU serial captures it.
-    use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+    use crate::kmess::{EarlyConsole, KernelConsole as Console};
     Console::write_str("\nMINIX-RS 0.1.0 (rust rewrite) — scheduling live\n");
 
     // Step 4: Unset RTS_PROC_STOP on boot processes
@@ -5579,7 +5579,7 @@ mod tests {
 ///
 /// `!`: shutdown does not return (C: NOT_REACHABLE after the backend).
 pub fn minix_shutdown(status: u32) -> ! {
-    use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+    use crate::kmess::{EarlyConsole, KernelConsole as Console};
     Console::write_str("MINIX-RS: shutting down (status ");
     Console::write_hex(status as u64);
     Console::write_str(")\n");
