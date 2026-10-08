@@ -144,9 +144,20 @@ impl KerninfoSource for DirectTrapSource {
         // register; the header fields are read from that page. Hosted
         // test builds keep the explicit EIO — there is no kernel behind
         // the trap there (the CannedSource is the test seam).
+        //
+        // The real query is a property of the TARGET, not of each package:
+        // a freestanding image (`target_os = "none"`) always has a kernel
+        // to trap into, so it takes this arm by target alone. The
+        // `real-trap` feature stays only as an explicit host-side force
+        // (mirrors minix-sys `build.rs`'s `kernel_trap = freestanding ∨
+        // feature`). Without target-keying here, the three bare-metal user
+        // images had to re-declare `features = ["real-trap"]` per package —
+        // and workspace feature unification then leaked that cfg into every
+        // hosted test binary (T-STAB-1: the vector-33/`syscall` bodies run
+        // on the host → SIGSEGV / ENOSYS).
         #[cfg(all(
             any(target_arch = "x86_64", target_arch = "riscv64", target_arch = "aarch64"),
-            feature = "real-trap"
+            any(feature = "real-trap", target_os = "none")
         ))]
         {
             use minix_sys::ipc::{DirectTrapTransport, IpcTransport as _};
@@ -169,7 +180,7 @@ impl KerninfoSource for DirectTrapSource {
         }
         #[cfg(not(all(
             any(target_arch = "x86_64", target_arch = "riscv64", target_arch = "aarch64"),
-            feature = "real-trap"
+            any(feature = "real-trap", target_os = "none")
         )))]
         {
             Err(minix_types::EIO)

@@ -15,12 +15,16 @@ required-features = ["fw-user-none"]
 # Inline declaration (not workspace inheritance): this is the one consumer
 # that needs `default-features = false` on minix-rt — the freestanding
 # no_std birth-chain image.
+# T-STAB-1 fix: no `real-trap`. The real trap/kerninfo path is now keyed on
+# the freestanding target (minix-sys build.rs `kernel_trap`; minix-rt
+# query_kerninfo `target_os = "none"`). Declaring the feature here was
+# redundant (this image builds `--target *-none`) and leaked the cfg into
+# every hosted test binary via workspace feature unification.
 minix-rt = { path = "../../../../libs/minix-rt", default-features = false, features = [
     "panic-handler",
     "alloc-global",
-    "real-trap",
 ] }
-minix-sys = { workspace = true, features = ["real-trap"] }
+minix-sys = { workspace = true }
 minix-types = { workspace = true }
 
 # X-2/NK5 裸机隔离：宿主 --workspace --bins 跳过本包；
