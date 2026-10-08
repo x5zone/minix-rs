@@ -19,7 +19,7 @@
 01 boot-shim 交接 → 03 建保护结构(IDT 填 stub、TSS 就位) → 04 发现 PlatformDesc(只读冻结)
                                                           │
                                         05 从这里取参数：──┤
-                                          时钟源频率 / IC 基址 / CPU 拓扑
+                                          硬件 timer 参数 / IC 基址 / CPU 拓扑
                                                           ▼
                                 init_clock_and_interrupts：填表、使能、接上 tick
 ```
@@ -44,9 +44,11 @@ void idt_init(void)
 
 它填的是"向量号 → 处理入口地址"这张表，入口指向的是一段 **stub**（陷入汇编存上下文的小口）。此刻只保证"中断来了 CPU 能跳进一段 stub"，还没决定"外设 IRQx 用哪个向量、由哪个中断控制器分发、stub 之后又交给哪个内核 handler"——**stub 到 handler 这一跳、以及 IRQ→向量的映射**，才是下面中断控制器初始化要接上的。
 
-### 2.2 init_clock：一个编译期常量撑起的 tick
+### 2.2 init_clock：运行期 env 定的 tick，与 Rust 把它改成编译期常量
 
-`clock.c:init_clock` 初始化内核时钟状态。C 版里 tick 频率是编译期常量（`DEFAULT_HZ`），x86 走 APIC timer（`arch_clock.c` 注释"Using APIC, it is configured in apic_idt_init()"）、旧 PIC 机型走 8253/8254。APIC 与 PIC 的 idt 是两套（`arch_smp.c` 里 `apic_idt_init(0)` 与 `apic_idt_init(1)` 分别装 APIC 模式与 PIC 回落模式的中断表）——**同一个"收时钟 tick"的语义，在 APIC/PIC 两种承载下写法不同**。
+`clock.c:init_clock` 初始化内核时钟状态。**C 版里 tick 频率是运行期从环境变量读的**：`env_get("hz")` 拿到就用，缺失或越界（`<2` 或 `>50000`）才回落到 `DEFAULT_HZ`。x86 走 APIC timer（`arch_clock.c` 注释"Using APIC, it is configured in apic_idt_init()"）、旧 PIC 机型走 8253/8254。APIC 与 PIC 的 idt 是两套（`arch_smp.c` 里 `apic_idt_init(0)` 与 `apic_idt_init(1)` 分别装 APIC 模式与 PIC 回落模式的中断表）。
+
+> **辨析（一处真实的 Rewrite 偏离）：** Rust 侧把这条 `env_get("hz")` 运行期路径**主动去掉了**，让**软件 tick 率**固定为编译期常量 `DEFAULT_HZ`（`os/kernel/src/clock.rs:DEFAULT_HZ`，值 100）。所以"tick 率是编译期常量"只对 **Rust 侧成立**、对 C 不对——别把 §1.2 那句"Rust 的编译期 DEFAULT_HZ"误当成 C 的行为。而硬件 timer 的定标仍从 04 发现的 `pd` 取（见 §1.2 两频率细分）。
 
 ### 2.3 使能一个外设中断的 C 路径
 
@@ -77,6 +79,7 @@ C 用一堆 `#if` / 板级常量决定用哪个中断控制器。Rust 把 04 的
 
 ```rust
 pub fn init_clock_and_interrupts() {
+    use minix_arch::{ArchInit, CurrentArchInit};
     use minix_platform::{platform_desc, PlatformDesc};
     use minix_plat::{InterruptRouter, CurrentInterruptController};
     use crate::clock::ClockState;
@@ -119,7 +122,7 @@ kmain Phase（03 篇的骨架）
 
 ## 第 5 章　测试要点
 
-- 时钟：`ClockState` 的 tick/换算单测；三架构下 `init_clock_and_interrupts` 后端到端能进调度（`os/qemu-tests/.../test-clock-timer` 一类，验证 tick 到点触发）。
+- 时钟：`ClockState` 的 tick/换算单测；三架构下 timer 中断端到端能触发（`os/qemu-tests/test-timer-irq.sh` 及其 `-aarch64`/`-riscv64` 变体，引导内核在 `os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq*`，验证 tick 到点触发）。
 - 中断：`enable_irq`/mask 路径单测（用 mock 中断控制器断屏蔽位随调用翻转）；真机上外设中断能进 handler。
 - 依赖：断"取 `platform_desc()` 前，04 的冻结必须已完成"——顺序错则拿到空/未初始化描述。**测试数现算**（`rg -c '#\[test\]' os/kernel/src/clock.rs os/kernel/src/irq_manager.rs`），不抄表。
 
@@ -141,7 +144,7 @@ kmain Phase（03 篇的骨架）
 rg -n "platform_desc|ClockState::new|interrupt_controller|\.init\(" os/kernel/src/lib.rs
 
 # 跟一次中断使能路径：hook 登记 → 解屏蔽
-rg -n "fn enable_irq|fn register_irq_hook|mask|unmask" os/kernel/src/irq_manager.rs
+rg -n "fn enable_irq|fn register_hook|mask|unmask" os/kernel/src/irq_manager.rs
 ```
 
 预期：正常启动日志里时钟/中断初始化各有一行里程碑、且出现在 04 的平台发现之后；若 `enable_irq` 后仍收不到中断，沿 §4 那条链核对"向量表填的是哪套 idt（APIC vs PIC）"。
