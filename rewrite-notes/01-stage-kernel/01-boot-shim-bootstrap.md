@@ -86,7 +86,7 @@ C 的这四样分别落在 `pre_init.c` 与 `pg_utils.c` 两个文件里：收�
 
 两处需要单独说明的边界：
 
-`k_initial_stktop`（`head.S` 在 `pre_init` 返回后用作栈顶的符号）在本篇只作为边界出现，但它的落点在本仓可以判到高半一侧，依据是三条：① `mpx.o` 不在 `objcopy --prefix-symbols=__k_unpaged_` 的名单里（名单在 `minix3/minix/kernel/arch/i386/Makefile.inc` 的 `.for unpaged_obj in head.o pre_init.o … pg_utils.o …` 循环，没有 mpx.o）；② `mpx.S` 把 `k_initial_stack` 与紧随其后的标签写在 `.bss` 里；③ `minix3/minix/kernel/arch/i386/kernel.lds` 的 `.unpaged_bss` 输出段只收 `unpaged_*.o(.bss COMMON)`（被改名后的对象），而通用 `.bss` 输出段排在 `. += _kern_offset` 之后——mpx.o 的 `.bss` 落进后者，执行地址在高半一侧。所以"带 `__k_unpaged_` 字样 ⇒ 低地址"这条线索的前提不成立（该字样不是 `objcopy` 施加的结果）。仍未查清的是符号名最终怎么拼：`LABEL(...)` 这个宏在本仓没有定义（`grep -rn 'define LABEL' minix3/` 只命中无关的 external 代码，`minix3/sys/arch/i386/include/asm.h` 里只有 `_LABEL(x)`），因此 `head.S` 的引用如何解析无法从本仓确定——这不影响落点判定（落点由所在的输出段决定，与名字无关）。这条依据链与 `02-higher-half-kernel.md` §2.4 共享，两篇的判定应当一致。
+`k_initial_stktop`（`head.S` 在 `pre_init` 返回后用作栈顶的符号）在本篇只作为边界出现，但它的落点在本仓可以判到高半一侧，依据是三条：① `mpx.o` 不在 `objcopy --prefix-symbols=__k_unpaged_` 的名单里（名单在 `minix3/minix/kernel/arch/i386/Makefile.inc` 的 `.for unpaged_obj in head.o pre_init.o … pg_utils.o …` 循环，没有 mpx.o）；② `mpx.S` 把 `k_initial_stack` 与紧随其后的标签写在 `.bss` 里；③ `minix3/minix/kernel/arch/i386/kernel.lds` 的 `.unpaged_bss` 输出段只收 `unpaged_*.o(.bss COMMON)`（被改名后的对象），而通用 `.bss` 输出段排在 `. += _kern_offset` 之后——mpx.o 的 `.bss` 落进后者，执行地址在高半一侧。所以"带 `__k_unpaged_` 字样 ⇒ 低地址"这条线索的前提不成立（该字样不是 `objcopy` 施加的结果）。符号名同样可以从本仓落实：`LABEL(y)` 定义在 `minix3/sys/arch/i386/include/asm.h:177`（`#define LABEL(y) _LABEL(_C_LABEL(y))`——`#define` 与 `LABEL` 之间是制表符，用空格写的 grep 模式会漏掉它），在 `__ELF__` 下 `_C_LABEL(x)` 就是 `x`，于是 `LABEL(__k_unpaged_k_initial_stktop)` 展开成 `.globl __k_unpaged_k_initial_stktop; __k_unpaged_k_initial_stktop:`，与 `head.o` 经 `objcopy` 加前缀后的引用同名。这条依据链与 `02-higher-half-kernel.md` §2.4 共享，两篇的判定应当一致。
 
 模块启动镜像的 ELF 段拷贝细节同属装载，但它的实现分析（段迭代器、错误变体、BSS 清零）归 `02-higher-half-kernel.md` §4.2。本篇只讲到"哪些文件被读、按什么顺序被读、读不到怎么办"，不展开段拷贝算法。
 
@@ -1127,7 +1127,7 @@ return &kinfo
 - **恒等映射先于内核映射**。两个函数写同一张 `pagedir[]`；`pg_identity` 覆盖全部 1024 个条目，`pg_mapkernel` 从下标 961 开始写（依据：`minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity` 的循环上界 `I386_VM_DIR_ENTRIES` 与 `minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel` 的起始下标计算）。
 - **信息结构先于 `kmain`**。`pre_init` 的返回值是 `&kinfo`，`head.S` 把它压栈作为 `kmain` 的第一个参数（依据：`minix3/minix/kernel/arch/i386/pre_init.c:pre_init` 的 `return &kinfo;` 与 `minix3/minix/kernel/arch/i386/head.S:multiboot_init` 的 `push %eax`）。
 
-换栈那一步的落点：`head.S` 在 `call kmain` 之前把栈换到 `k_initial_stktop`。按 §1.3 给的依据链，它落在高半一侧（`mpx.o` 不在 `objcopy --prefix-symbols` 名单、`mpx.S` 把它放在 `.bss`、`kernel.lds` 的通用 `.bss` 在 `. += _kern_offset` 之后）；仍未查清的是 `LABEL(...)` 宏（本仓无定义）如何拼出最终符号名。该依据链与 `02-higher-half-kernel.md` §2.4 共享，边界说明见 §1.3。
+换栈那一步的落点：`head.S` 在 `call kmain` 之前把栈换到 `k_initial_stktop`。按 §1.3 给的依据链，它落在高半一侧（`mpx.o` 不在 `objcopy --prefix-symbols` 名单、`mpx.S` 把它放在 `.bss`、`kernel.lds` 的通用 `.bss` 在 `. += _kern_offset` 之后），符号名的拼法也在同处落实（`LABEL` 宏定义在 `machine/asm.h:177`，展开后即 `__k_unpaged_k_initial_stktop`）。该依据链与 `02-higher-half-kernel.md` §2.4 共享，边界说明见 §1.3。
 
 把本章的断言按用途分一下：`assert(cbi->bootstrap_start % I386_PAGE_SIZE)` 这类断言不能证明布局一定合法，它把"不合法"从后置的沉默故障提前成现场的立即停止——断言改不了事实，只改故障出现的位置。**如果反过来想**：把这些 `assert` 在编译时全部去掉（`NDEBUG`）。`overlaps` 不再拦重叠布局，而 `cut_memmap` 对同一段物理内存被两个模块声明的情况会切两次——第二次切除在一个已经被清零的条目上做"夹取后无重叠"判断，于是什么也不切，记录把这段内存记成两个洞之间的余量；`pg_alloc_page` 仍会从尾部发页，把这段物理内存发给两个使用者。症状不出现在启动期，而在共享这段内存的两方都开始写入之后，且没有任何一处会报"内存被给了两次"。
 
