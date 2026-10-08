@@ -190,4 +190,23 @@ $ ls .wt/docgen2-00-doc01iter2/{AI-chats/doc-gen-iterate-prompt-v2.md,prompt/GPT
 - 02 正文成稿（规范源七章：概述/C 源码分析/Rust 设计决策/实现详解/测试/诊断/参见），零比喻零元话语，Ch1-2 无 Rust 内容（grep 已核）。两处事实纠偏已入文：AT() 以偏概全、初始栈顶落点 `[待验证]`。
 - 待做：C 阶段学生实读 + F 阶段 CodeReview（本轮不能省，上一轮就是靠它找到 8 条引用忠实度问题）。
 
-<!-- 以下各轮 Round 3..5 由执行时逐轮追加 -->
+## Round 3 · num=03（kmain / cstart：三张表与内核第一次行使特权）——设计阶段已完成
+
+工作树 `.wt/docgen2-03-doc01iter2`（分支 `claim/DOCGEN2-03-doc01iter2`）。Step 0.3 现推快照：`.design/03-design.v1.md`、`.design/03-outline.v1.md`（七章：概述/C 源码分析/Rust 设计决策/实现详解/测试/诊断/参见；每节 Input/Question/Evidence/Output 四格，零比喻）。
+
+**本轮已核实的七条事实纪律**（正文逐条守；v1 在这篇上犯过 P0-fact）：
+1. `grep -c '#if' minix3/minix/kernel/arch/i386/protect.c` = **0**：两个端口是 `minix3/minix/kernel/arch/i386/protect.c` 与 `arch/earm/protect.c` 两份**独立文件**（各自一个 `prot_init`），RISC-V 在 C 里无对应端口——不得写成"三套条件编译"。
+2. `protect.c` 的 `vir2phys` 与 `pre_init.c` 的同名函数**实现不同**（前者减去 `_kern_vir_base - _kern_phys_base`）：这是 01 §2.3 那句"它的有效期就是恒等段还在用的那一段"的当面兼现，必须接上而不是当笔误。
+3. `prot_load_selectors` 同时被 `prot_init`（启动处理器）与 `mpx.S`（辅助处理器）复用，源码原句“everything is set up the same except for the TSS that is per-CPU”——不得夸大为“两边完全相同”。
+4. 那个 LDT 条目基址 0、限长 0、仍带 PRESENT：写“它为何存在”，不写“它写错了”；动机无源码依据则标推断。
+5. `prot_init` 末尾重建页表带源码注释 “Still need 1:1 for lapic and video mem and such”——这是“恒等段此时仍未退位”的第一手依据，必带。
+6. 系统调用入口是能力探测结果（SYSENTER / SYSCALL 两条 `if(_cpufeature(...))`），不是固定路径。
+7. 描述符条数、向量数、测试数一律现算并附命令。
+
+**教学对象**：三张表各回答一个问题（选择子意味着什么权限与基址 / 某向量进来执行谁 / 换特权级时用哪个栈）；五条非显然事实：① 填完不等于生效，生效靠装载那一步 ② C 刻意丢掉引导器给的选择子改用自己的，是一次**主动自我测试** ③ 任务状态段是每 CPU 数据（与多核篇的接缝）④ ARM 端口与 x86 端口只共享“末尾重建页表 + 置完成标志”，结构完全不同 ⑤ 抽象只能表达接口形状，不能保证硬件行为（与 01 §3.2 同族）。
+
+**Rust 侧已定位的锚点**（带类型前缀，正文引用前再逐个核）：`os/arch/src/arch/protection.rs:trait ProtectionArch`、`os/arch/src/arch/trap_entry.rs:trait TrapEntryArch`、`os/kernel/src/lib.rs:fn kmain`、`os/kernel/src/trap_dispatch.rs`、`os/kernel/src/globals.rs`、`os/kernel/src/smp.rs`。
+
+**下一步**：读实 4.1–4.4 与 §5 的现算数据 → 写正文 → 五道门 → 学生实读（C）→ CodeReview（F）→ 合回。
+
+<!-- 以下各轮 Round 4..5 由执行时逐轮追加 -->
