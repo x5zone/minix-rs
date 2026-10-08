@@ -537,6 +537,8 @@ pub fn dispatch_clear(
         for slot in 0..crate::syscall_device::NR_IRQ_HOOKS {
             if let Some(owner) = irq_mgr.hook_owner(slot)
                 && owner == target_endpoint {
+                    //[SD19-gate] 端点析构清 hook 循环：目标正在消亡，remove_hook_by_slot 失败无可回报
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = irq_mgr.remove_hook_by_slot(slot);
                 }
         }

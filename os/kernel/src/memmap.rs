@@ -226,6 +226,8 @@ pub fn cut_memmap(mmap: &mut [MemMapEntry; MAXMEMMAP], start: u64, len: u64) -> 
             let prefix_len = substart - memaddr;
             // Ignore ZeroLength (shouldn't happen since substart > memaddr
             // and both are page-aligned, but defensive).
+            //[SD19-gate] 加回前/后缀块：ZeroLength 本不该发生、防御性忽略，add 失败无补救路径
+            #[allow(clippy::let_underscore_must_use)]
             let _ = add_memmap(mmap, memaddr, prefix_len);
         }
 

@@ -2208,6 +2208,8 @@ mod tests {
             // proc_table_with(&section) would prove BKL ownership at compile time.
             // (Cannot call proc_table_with here because PROC_TABLE may not be
             // initialized in this test, but the type system proof is the point.)
+            //[SD19-gate] BklSection RAII 见证：let _ = &section 让 section 活到此处以证所有权，非吞错
+            #[allow(clippy::let_underscore_must_use)]
             let _ = &section; // use the section
         } // section dropped here, guard no longer borrowed
         // R-05: BklGuard is RAII — use release() for explicit early release

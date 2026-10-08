@@ -15,6 +15,13 @@
 // Struct-literal form would still need `unsafe` for union writes — marginal
 // gain, large churn across 70+ tests. Allowed per clippy::field_reassign_with_default.
 #![cfg_attr(test, allow(clippy::field_reassign_with_default))]
+// SD-19 静默吞错家族机械化门（第四家 crate，与 minix-sys/minix-rt/minix-fs 同
+// 程序，也是最大的一家）：内核里的 `let _ =` 全属登记处置表的 maintain+comment
+// 或类型见证/测试setup——IPC store_result（C 明确不消费 copy 错）、恒等映射的
+// 无 backing 区间、固定格式串的不可失败 write!、BklSection RAII 见证、
+// 钩子拆除/特权继承的"无可行动失败"、以及两处编译期负例/类型断言。新开一个
+// 无理由的 `let _ =` 会当场多报一条。
+#![warn(clippy::let_underscore_must_use)]
 
 // Zero-heap contract: the C kernel has no `malloc` (the minix3 kernel
 // allocates nothing at runtime — all tables are static arrays), and this
@@ -577,6 +584,8 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
     while addr < IDENTITY_MAP_END {
         // Ignore errors — some ranges may not be backed by physical memory,
         // but that's fine; the CPU won't access them.
+        //[SD19-gate] 恒等映射：无 backing 的区间属正常（map_huge 失败即跳过，紧邻注释已陈明）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = paging.map_huge(
             VirBytes(addr), PhysBytes(addr),
             kern_huge as usize, id_flags,
@@ -2236,6 +2245,8 @@ pub(crate) fn consume_kbill_ipc(
     let Some(nr) = (unsafe { kbill_ipc_raw() }) else {
         return false;
     };
+    //[SD19-gate] BklSection RAII 见证：参数 section 本函数不需要，仅用 let _ 表达所有权存在
+    #[allow(clippy::let_underscore_must_use)]
     let _ = section;
     if let Some(p) = table.get(nr) {
         p.p_cycles.add_kipc_cycles(delta);

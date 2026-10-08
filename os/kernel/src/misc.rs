@@ -1971,12 +1971,18 @@ pub fn dispatch_update(
         // Now add each to dst's priv (mutable borrow is safe — src borrow ended)
         if let Some(dst_priv) = priv_table.get_mut(dst_pid) {
             for irq in irqs.iter().take(irq_count) {
+                //[SD19-gate] 特权继承 add_irq/io/mem 失败多为'资源已存在/已授予'，无回滚语义（对齐 C 逐条尽力）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = dst_priv.add_irq(*irq);
             }
             for ior in io_tab.iter().take(io_count) {
+                //[SD19-gate] 特权继承 add_irq/io/mem 失败多为'资源已存在/已授予'，无回滚语义（对齐 C 逐条尽力）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = dst_priv.add_io(ior);
             }
             for memr in mem_tab.iter().take(mem_count) {
+                //[SD19-gate] 特权继承 add_irq/io/mem 失败多为'资源已存在/已授予'，无回滚语义（对齐 C 逐条尽力）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = dst_priv.add_mem(memr);
             }
         }

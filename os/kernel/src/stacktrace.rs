@@ -383,6 +383,8 @@ mod tests {
         // assert the closure's *type* matches `Fn`, not invoke it on a
         // mock-only unmapped address. The walker never calls read_word
         // when fp=0, so we never get here in practice.
+        //[SD19-gate] 闭包类型断言（let _: &dyn Fn… = &read）：证明类型匹配 Fn 而非调用/吞错
+        #[allow(clippy::let_underscore_must_use)]
         let _: &dyn Fn(u64) -> Option<u64> = &read;
     }
 

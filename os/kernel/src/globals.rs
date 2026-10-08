@@ -257,6 +257,8 @@ mod bkl_protected_tests {
 
         // String is NOT in the approved list — would fail to compile:
         // let _ = SyncUnsafeCell::new(String::new());
+        //[SD19-gate] 编译期负例夹具（下方注释：String 不在批准清单会编译失败）：let _ 只为压未用导入告警
+        #[allow(clippy::let_underscore_must_use)]
         let _ = String::new(); // suppress unused import warning
     }
 }
