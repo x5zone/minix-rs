@@ -469,6 +469,8 @@ pub fn dup2_via(transport: &impl IpcTransport, fd: i32, fd2: i32) -> Result<i32,
     if fd == fd2 {
         return Ok(fd2);
     }
+    //[SD19-gate] C dup2.c:30 忽略 close(fd2) 返回值
+    #[allow(clippy::let_underscore_must_use)]
     let _ = close_via(transport, fd2);
     fcntl_via(transport, fd, F_DUPFD, fd2, 0)
 }
