@@ -403,7 +403,7 @@ boot 阶段还没有完整的中断、调度与 IPC，一旦出错就是一台�
 # 端到端引导回归：哑机器先看串口是否打出 PASS 标记（run_qemu.sh 取 test-kernel 与 arch，用法见 os/qemu-tests/README.md）
 os/qemu-tests/run_qemu.sh <test-kernel> <arch>
 
-# 判断 reclaim guard 是否恒不触发（fix27 现场）：生产构造点应全传 (0,0)
+# 判断 reclaim guard 是否恒不触发：生产构造点应全传 (0,0)
 rg -n "bootstrap_len" os/kernel/src/lib.rs os/libs/minix-boot/src/kernel_info.rs
 
 # 确认跨镜像只传纯数据（§1.3）：blob 定义与 ≤1 页的尺寸断言
