@@ -9,7 +9,7 @@
 ```
 stage = 01-stage-kernel      # rewrite-notes 下的 stage 目录名（去 stage 化时替换此值）
 num   = 01                   # 本次生成的正式文档序号（去文档号化时用 {DOC_NN}）
-tool  = <当前 agent 工具名>  # claude / codex / trae / qoder，决定 .review 状态目录
+tool  = qorder  # claude / codex / trae / qoder，决定 .review 状态目录
 tree  = rewrite-notes
 ```
 
@@ -23,6 +23,20 @@ tree  = rewrite-notes
 
 ---
 
+## 第 -1 步 · 并发隔离前置（worktree，动任何文件前先做）
+
+本仓库可能有多个 agent 并发操作同一份工作树。直接在共享主树里开工是 `C-35` 事故判例——一次 `checkout`/`reset` 就会销毁其它会话未提交的在制品。**用现成机制 `tools/claim.sh`，别手搓 `git worktree`**（依据：`rewrite-notes/coordination/CONCURRENT-WORK-PROTOCOL.md` §4、§11）：
+
+- **领取**：`tools/claim.sh claim <条目ID> <owner>`（`<条目ID>` 用文档号如 `doc01`）——建排他锁分支 `claim/<ID>-<owner>` + 自动建专属工作树 `.wt/<id>-<owner>/`。分支名全局唯一，第二人领同一条目会直接失败，天然防双领。
+- **只在自己那棵树里干**：`cd .wt/<id>-<owner>/` 后再读改文档；**共享主树内禁止 `checkout` 与 `reset --force`**。
+- **换任务前自检**：`tools/claim.sh verify`——站在主树会告警，报出的未提交文件数是"在制品即提交"约定的自查信号。
+- **归属线自查**（协议 §2 所有权分线）：本任务属**一线（内核面）**，领地含 `rewrite-notes/01-stage-kernel/`、`os/kernel/`、`os/arch/`、`os/qemu-tests/`；越界碰别人的文件先在编排板 `new_edge4.md` 登记一行"跨界改点"再动。
+- **QEMU 必须串行**：真机门共用同一块串口，两个 QEMU 同跑互相污染读数。跑 qemu 前先 `tools/claim.sh list` 加直接问，确认无人占用。
+- **台账/共享文件是写热点**：`coordination/TODO-LEDGER-OPEN.md`、`TODO-LEDGER-DONE.md`、`new_edge4.md` 多写者共用。各树各分支改，合回 `rewrite` 时会变成一次**显式 git merge 冲突**（优于同树静默覆盖），按"状态以台账为准"手工并解。
+- **收尾合回**：改动在自己树里"一个逻辑单元一笔提交"，合入 `rewrite` 后 `tools/claim.sh release <条目ID> <owner>` 删树 + 销锁（树里仍有未提交改动会被拒绝）。
+
+---
+
 ## 第 0 步 · 强制预加载（不许凭记忆动手，技能必须真调用）
 
 按序完整读取规范源：`prompt/review-rules/` 下 `review.md` → `review-process.md` → `fix-guard.md` → `review-cmds.md` §一b 决策树 → `review-patterns.md` → `review-doc-checklist.md` §4 → `review-core-semantics.md` §1.6。
@@ -32,6 +46,7 @@ tree  = rewrite-notes
 ## 第 1 步 · 选题与衔接（检查点 A：先汇报再动手）
 
 - 文档序真源：`{tree}/{stage}/doc_rerank_*.md`（各 AI 的重建蓝图）+ `checklist.md`。**注：`01-stage-kernel` 无 `plan.md`**（plan.md 只在 02–18 stage 存在），有则参考，无则以上两者为准。
+- `doc_rerank_*.md` 应都读取并参考，这就是多AI bagging的意义。
 - `{tree}/{stage}/draft/` 是旧文档，**仅作思路参考、不作事实来源**；正式文档禁止引用 `draft/`、`.design/`、`tmp_design_and_todo/`（引用即 P0-process-violation）。
 - 结合 `minix3/` C 码与 `os/` Rust 实现，定 `{num}` 的主题边界，说明与前后文档的知识衔接（哪些概念首次在此出现、哪些留后续）。
 - 汇报「选题范围 + 覆盖的 C 文件/函数 + 与相邻文档衔接」，用户确认后进第 2 步。

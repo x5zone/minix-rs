@@ -7,7 +7,7 @@
 ## 参数
 
 ```
-tool    = <当前 agent 工具名>   # claude / codex / trae / qoder，决定 .review 状态目录
+tool    = opencode   # claude / codex / trae / qoder，决定 .review 状态目录
 todo_id = <可选：指定条目编号>  # 留空则由 agent 从 TODO-LEDGER-OPEN.md 选一项可立即开工的
 ```
 
@@ -17,6 +17,19 @@ todo_id = <可选：指定条目编号>  # 留空则由 agent 从 TODO-LEDGER-OP
 > - **一次只修一条**：`todo-fix` 明确"一次只修一个，批量需用户显式说"；不顺手修旁边的 TODO（只记录不执行）。
 > - **DEFERRED 不是修复**：把 TODO 改成 DEFERRED 充数 = P0-process-violation；降级必须给"依赖未解除"的具体论证并登记。
 > - **修复顺序 P0 → P1 → P2**：卓越性重构只在正确性坐实后做，发现新 bug 退回正确性线。
+
+---
+
+## 第 -1 步 · 并发隔离前置（worktree，动任何文件前先做）
+
+本仓库正多 agent 并发（一个跑 doc、一个跑 todo 时共用同一棵树）。直接在共享主树开工是 `C-35` 事故判例——一次 `checkout`/`reset` 就销毁其它会话未提交在制品。**用 `tools/claim.sh`，别手搓 `git worktree`**（依据：`coordination/CONCURRENT-WORK-PROTOCOL.md` §4、§11）：
+
+- **领取**：`tools/claim.sh claim <条目ID> <owner>`——建排他锁分支 `claim/<ID>-<owner>` + 自动建 `.wt/<id>-<owner>/` 专属树；分支名全局唯一，被别人领走就直接失败，换条目、不等不抢。
+- **只在自己树里干**：`cd .wt/<id>-<owner>/`；主树内禁 `checkout`/`reset --force`；换任务前 `tools/claim.sh verify` 自检位置与未提交数。
+- **归属线自查**（协议 §2）：按所选条目落在的线确认领地（一线=内核/引导/真机、二线=`os/libs/`枚举 crate+`os/drivers/`、三线=`os/servers/`+`os/fs/`+`os/net/` 等）；只改所有权清单内路径，越界先在 `new_edge4.md` 登记“跨界改点”。
+- **QEMU 必须串行**：与 doc agent 同跑真机门会互污染串口读数；跑前 `tools/claim.sh list` + 直接问，确认无人占用。
+- **台账是最大写热点**：两个 prompt 都写 `TODO-LEDGER-OPEN.md`/`DONE`。各分支各改，合回 `rewrite` 时在此处集中解一次 merge 冲突（优于同树静默覆盖）；若多人同时改，尽量让其中一方 rebase。
+- **收尾合回**：自己树内一笔提交→合入 `rewrite`→`tools/claim.sh release <条目ID> <owner>` 删树销锁。
 
 ---
 
