@@ -319,11 +319,16 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
             .map_err(|_| minix_types::Errno::from_i32(minix_types::EIO))
     }
 
-    fn copy_out(&mut self, offset: usize, bytes: &[u8]) {
+    fn copy_out(&mut self, offset: usize, bytes: &[u8]) -> Result<(), minix_types::Errno> {
+        // SD-19 signature rework：真失败不再静默吞。invalid grant 维持 OK
+        // （peek 空通道按 C 就是 no-op 成功，data.rs 同语义），但 safecopyto
+        // 本身坏了按 copy_in 同构回 EIO，由 dispatch 梯子覆盖回复。
         if self.grant == minix_types::GRANT_INVALID {
-            return;
+            return Ok(());
         }
-        let _ = self.ipc.copy_to(self.peer, self.grant, offset as u64, bytes);
+        self.ipc
+            .copy_to(self.peer, self.grant, offset as u64, bytes)
+            .map_err(|_| minix_types::Errno::from_i32(minix_types::EIO))
     }
 }
 

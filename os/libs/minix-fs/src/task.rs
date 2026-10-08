@@ -410,7 +410,13 @@ pub trait FsTransport {
     fn copy_in(&mut self, offset: usize, out: &mut [u8]) -> Result<(), Errno>;
     /// Move result bytes out: publish `bytes` at `offset` of the reply
     /// payload (read data, listing entries, status buffers).
-    fn copy_out(&mut self, offset: usize, bytes: &[u8]);
+    ///
+    /// SD-19 signature rework（登记处置表最后一档，`fs-rt copy_out`）：C
+    /// `fsdriver_copyout`（`libfsdriver/utility.c:52-53`）把 safecopyto 的
+    /// 返回值直接回给调用方，`dentry.c:52-54` 更是 copyout 一坏就
+    /// `return r`——传输失败必须推翻本次回复的 status，不能静默吞掉后
+    /// 仍回 OK。故本方法签名与 `copy_in` 对称，失败回 `Err(Errno)`。
+    fn copy_out(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Errno>;
 }
 
 /// Run the task loop until termination is requested and the file system is
@@ -528,16 +534,28 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                 Ok(input) => input,
                 Err(e) => return err(e),
             };
+            // SD-19 signature rework：C read_write 里 put_once 的 copyout
+            // 失败即中断回 r（libfsdriver/utility.c:52-53）——捕获首个传输错，
+            // 驱动链再成功也要覆盖回复；已写入的前缀字节随 -1/错误回复对
+            // 调用方不可见，故与 C 的即时中断在可观测面等价。
+            let mut transport_error: Option<Errno> = None;
             let mut moved = 0usize;
-            adapt_read(&mut server.driver, input, &mut |bytes: &[u8]| {
-                transport.copy_out(moved, bytes);
+            let adapted = adapt_read(&mut server.driver, input, &mut |bytes: &[u8]| {
+                if let Err(e) = transport.copy_out(moved, bytes) {
+                    transport_error.get_or_insert(e);
+                    return;
+                }
                 moved += bytes.len();
-            })
-            .map_or_else(&err, |reply| FsReply {
-                status: 0,
-                transaction,
-                payload: ReplyPayload::Transfer(reply),
-            })
+            });
+            let reply = match adapted {
+                Ok(reply) => FsReply {
+                    status: 0,
+                    transaction,
+                    payload: ReplyPayload::Transfer(reply),
+                },
+                Err(e) => err(e),
+            };
+            transport_error.map_or(reply, &err)
         }
         RequestBody::Write {
             inode,
@@ -599,6 +617,9 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                 Err(e) => return err(e),
             };
             let mut moved = 0usize;
+            // SD-19 signature rework：同 Read 臂，peek 模拟读链的 copyout
+            // 失败也要覆盖回复（C put_once 失败即中断回 r）。
+            let mut transport_error: Option<Errno> = None;
             let result = match path {
                 PeekPath::Direct => adapt_peek(&mut server.driver, input, path, &mut |driver, input| {
                     driver.peek(input.inode, input.position, input.length)
@@ -610,13 +631,16 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                     &mut |driver, input| {
                         driver
                             .read(input.inode, input.position, input.length, &mut |bytes: &[u8]| {
-                                transport.copy_out(moved, bytes);
+                                if let Err(e) = transport.copy_out(moved, bytes) {
+                                    transport_error.get_or_insert(e);
+                                    return;
+                                }
                                 moved += bytes.len();
                             })
                     },
                 ),
             };
-            match result {
+            let reply = match result {
                 Ok(count) => FsReply {
                     status: 0,
                     transaction,
@@ -626,7 +650,8 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                     }),
                 },
                 Err(e) => err(e),
-            }
+            };
+            transport_error.map_or(reply, &err)
         }
         RequestBody::GetDents {
             inode,
@@ -634,6 +659,9 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             capacity,
         } => {
             let mut resume = position;
+            // SD-19 signature rework：C getdents 的 dentry 刷写链每步
+            // copyout 失败即 `return r`（dentry.c:52-54）——首个传输错覆盖回复。
+            let mut transport_error: Option<Errno> = None;
             let mut moved = 0usize;
             let result = adapt_get_dents(
                 &mut server.driver,
@@ -641,11 +669,14 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                 &mut resume,
                 capacity,
                 &mut |bytes: &[u8]| {
-                    transport.copy_out(moved, bytes);
+                    if let Err(e) = transport.copy_out(moved, bytes) {
+                        transport_error.get_or_insert(e);
+                        return;
+                    }
                     moved += bytes.len();
                 },
             );
-            match result {
+            let reply = match result {
                 Ok(count) => FsReply {
                     status: 0,
                     transaction,
@@ -655,7 +686,8 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                     }),
                 },
                 Err(e) => err(e),
-            }
+            };
+            transport_error.map_or(reply, &err)
         }
         RequestBody::Truncate { inode, start, end } => match adapt_truncate(&mut server.driver, inode, start, end) {
             Ok(()) => zero(),
@@ -806,12 +838,18 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             Err(e) => err(e),
         },
         RequestBody::ReadLink { inode, capacity } => {
+            // SD-19 signature rework：同 Read 链（C `fsdriver_rdlink` 的
+            // copyout 失败即回 r，call.c:690-712）。
+            let mut transport_error: Option<Errno> = None;
             let mut moved = 0usize;
             let result = adapt_read_link(&mut server.driver, inode, capacity, &mut |bytes: &[u8]| {
-                transport.copy_out(moved, bytes);
+                if let Err(e) = transport.copy_out(moved, bytes) {
+                    transport_error.get_or_insert(e);
+                    return;
+                }
                 moved += bytes.len();
             });
-            match result {
+            let reply = match result {
                 Ok(count) => FsReply {
                     status: 0,
                     transaction,
@@ -821,7 +859,8 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                     }),
                 },
                 Err(e) => err(e),
-            }
+            };
+            transport_error.map_or(reply, &err)
         }
         RequestBody::Stat { inode } => {
             let mut stat = minix_types::Stat::zeroed();
@@ -845,8 +884,13 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                             minix_types::Stat::USER_STAT_SIZE,
                         )
                     };
-                    transport.copy_out(0, bytes);
-                    zero()
+                    // SD-19 signature rework：C `fsdriver_stat` 最后一步
+                    // `r = fsdriver_copyout(...)` 直接把传输错写进回复 status
+                    // （call.c:717-741）——失败不再回 zero()。
+                    match transport.copy_out(0, bytes) {
+                        Ok(()) => zero(),
+                        Err(e) => err(e),
+                    }
                 }
                 Err(e) => err(e),
             }
@@ -902,17 +946,26 @@ fn dispatch<D: FsDriver, T: FsTransport>(
                 Ok(input) => input,
                 Err(e) => return err(e),
             };
+            let mut transport_error: Option<Errno> = None;
             let mut moved = 0usize;
             let _ = position;
-            adapt_block_read(&mut server.driver, input, &mut |bytes: &[u8]| {
-                transport.copy_out(moved, bytes);
+            // SD-19 signature rework：同 Read 链（块读回写也走 put_once）。
+            let adapted = adapt_block_read(&mut server.driver, input, &mut |bytes: &[u8]| {
+                if let Err(e) = transport.copy_out(moved, bytes) {
+                    transport_error.get_or_insert(e);
+                    return;
+                }
                 moved += bytes.len();
-            })
-            .map_or_else(&err, |reply| FsReply {
-                status: 0,
-                transaction,
-                payload: ReplyPayload::Transfer(reply),
-            })
+            });
+            let reply = match adapted {
+                Ok(reply) => FsReply {
+                    status: 0,
+                    transaction,
+                    payload: ReplyPayload::Transfer(reply),
+                },
+                Err(e) => err(e),
+            };
+            transport_error.map_or(reply, &err)
         }
         RequestBody::BlockWrite {
             device,
@@ -985,6 +1038,8 @@ mod tests {
         replies: alloc::vec::Vec<(i32, FsReply)>,
         out_bytes: alloc::vec::Vec<u8>,
         in_bytes: alloc::vec::Vec<u8>,
+        // SD-19 回归用：从该偏移起的 copy_out 一律报传输失败（None = 永不）。
+        fail_copy_at: Option<usize>,
     }
 
     impl ScriptedTransport {
@@ -994,6 +1049,7 @@ mod tests {
                 replies: Vec::new(),
                 out_bytes: Vec::new(),
                 in_bytes: Vec::new(),
+                fail_copy_at: None,
             }
         }
     }
@@ -1023,11 +1079,15 @@ mod tests {
             Ok(())
         }
 
-        fn copy_out(&mut self, offset: usize, bytes: &[u8]) {
+        fn copy_out(&mut self, offset: usize, bytes: &[u8]) -> Result<(), Errno> {
+            if self.fail_copy_at.is_some_and(|at| offset >= at) {
+                return Err(Errno::from_i32(minix_types::EIO));
+            }
             while self.out_bytes.len() < offset + bytes.len() {
                 self.out_bytes.push(0);
             }
             self.out_bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
+            Ok(())
         }
     }
 
@@ -1242,6 +1302,70 @@ mod tests {
                 new_position: 8,
                 transferred: 8,
             })
+        );
+    }
+
+    /// SD-19 处置表最后一档（signature rework，`fs-rt copy_out`）的回归针：
+    /// 传输腿 copy_out 报失败时，驱动读本身再成功也不得回 OK——C
+    /// `fsdriver_copyout`（libfsdriver/utility.c:52-53）把 safecopyto 的错
+    /// 直接回给调用方，`read_write` 随即中断回 r。旧签名 `copy_out(...)`
+    /// 无返回值，该错被静默吞掉；现在首个传输错必须覆盖本次回复 status。
+    #[test]
+    fn test_read_copyout_transport_failure_overrides_ok_reply() {
+        struct ReadDriver;
+
+        impl crate::driver::FsDriver for ReadDriver {
+            fn mount(
+                &mut self,
+                device: u64,
+                _flags: MountFlags,
+                capabilities: &mut CapabilityFlags,
+            ) -> Result<FileNode, Errno> {
+                *capabilities = CapabilityFlags::EMPTY;
+                Ok(FileNode::new(1, 0o040755, 0, 0, 0, device))
+            }
+
+            fn read(
+                &mut self,
+                _inode: u64,
+                _position: i64,
+                length: usize,
+                out: &mut dyn FnMut(&[u8]),
+            ) -> Result<usize, Errno> {
+                let chunk = [7u8; 8];
+                let take = length.min(chunk.len());
+                out(&chunk[..take]);
+                Ok(take)
+            }
+        }
+
+        let incoming = vec![
+            Incoming::Request(
+                envelope(raw(RequestNumber::ReadSuper, 1)),
+                RequestBody::ReadSuper {
+                    device: 4,
+                    flags: MountFlags::EMPTY,
+                    label: alloc::string::String::new(),
+                },
+            ),
+            Incoming::Request(
+                envelope(raw(RequestNumber::Read, 2)),
+                RequestBody::Read {
+                    inode: 1,
+                    position: 0,
+                    length: 8,
+                },
+            ),
+        ];
+        let mut transport = ScriptedTransport::new(incoming);
+        transport.fail_copy_at = Some(0); // 从第一字节起传输即坏
+        let mut server: Server<ReadDriver> = Server::new(ReadDriver);
+        run(&mut server, &mut transport);
+        let (_, read_reply) = &transport.replies[1];
+        assert_eq!(
+            read_reply.status,
+            minix_types::EIO,
+            "copy_out 失败必须覆盖驱动链的成功，按 C 回传输错"
         );
     }
 

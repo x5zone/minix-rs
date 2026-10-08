@@ -185,7 +185,9 @@ impl TaskTransport for Bridge<'_> {
     fn copy_in(&mut self, _offset: usize, _out: &mut [u8]) -> Result<(), minix_types::Errno> {
         Err(minix_types::Errno::from_i32(minix_types::ENOSYS)) // LOOKUP 无数据面
     }
-    fn copy_out(&mut self, _offset: usize, _bytes: &[u8]) {}
+    fn copy_out(&mut self, _offset: usize, _bytes: &[u8]) -> Result<(), minix_types::Errno> {
+        Ok(()) // 桥测只验请求/回复链，数据面不落地
+    }
 }
 
 // ---------------------------------------------------------------------------
