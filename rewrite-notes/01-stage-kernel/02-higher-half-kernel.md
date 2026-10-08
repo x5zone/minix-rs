@@ -220,7 +220,7 @@ riscv64 的一组引导测试曾出现"无限重复打印启动横幅、最终 P
 
 ```bash
 # 跑高半区跳转的端到端回归（预期：串口打出 PASS 标记；反复打印启动横幅即命中 §6.2 那类映射错乱）
-os/qemu-tests/run_qemu.sh <test-kernel> <arch>
+os/qemu-tests/run_qemu.sh <arch> <test-kernel>   # 例 x86_64 + 对应 .efi
 
 # 看某架构高半区映射用的 l2/vpn 索引算式，核对它是否落在高半区那半边
 rg -n "l2_index|VPN\[2\]|>> 30|KERN_VIRT|kern_virt_base" os/arch/src/riscv64/ os/kernel/src/arch/riscv64/
