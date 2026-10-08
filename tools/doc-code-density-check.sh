@@ -17,16 +17,19 @@ scan_chapters() {
     function islang(l){ return (l=="c"||l=="rust"||l=="cpp"||l=="cc"||l=="cxx"||l=="asm"||l=="x86"||l=="arm"||l=="aarch64"||l=="riscv"||l=="s") }
     { sub(/\r$/,"") }
     function flush(){
-      if (seen) printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", title, lines, mech, codenf, bashnf, anyf, tree, triarch, bianxi, exempt, diag, nontitle
+      if (seen) printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", title, lines, mech, codenf, bashnf, anyf, tree, triarch, bianxi, exempt, diag, nontitle, expout
     }
     /^## /{ flush(); title=substr($0,4); lines=0; mech=0; codenf=0; bashnf=0; anyf=0; tree=0; triarch=0; bianxi=0; exempt=0;
             diag = (title ~ /失败|诊断|定位|排障/) ? 1 : 0
+            expout = 0
             nontitle = (title ~ /测试|参见|附录|概述|概念|目录|术语|导航|小结|导览|速查|总览|全景/) ? 1 : 0
             seen=1; infence=0; curbuf=""; next }
     { if(seen){
         lines++
         if ($0 ~ /(\.c:|\.rs:)/) mech=1
         if ($0 ~ /doc-code-density: exempt/) exempt=1
+        # 诊断命令"预期输出"读数：非围栏行里出现 预期/expected/PASS/输出 关键提示
+        if (infence==0 && $0 ~ /预期|expected|PASS|关键行|输出/) expout=1
         if ($0 ~ /^```/){
           if (infence==0){
             infence=1; lang=$0; sub(/^```/,"",lang); sub(/[ \t].*/,"",lang); anyf++
@@ -50,7 +53,7 @@ run_doc() {
   local doc="$1" mode="${2:-report}" blocks=0 capable=0 total=0 exemptn=0
   echo "== doc-code-density-check: $doc  (模式：$mode)"
   printf '%-30s %4s %3s %3s %3s %3s %3s %4s %4s %8s\n' 章 承载 码 令 图 架 辨 短 豁免 判定
-  while IFS=$'\t' read -r title lines mech codenf bashnf anyf tree triarch bianxi exempt diag nontitle; do
+  while IFS=$'\t' read -r title lines mech codenf bashnf anyf tree triarch bianxi exempt diag nontitle expout; do
     [ -z "${title:-}" ] && continue
     total=$((total+1))
     local short=0; (( lines < 20 )) && short=1
@@ -67,6 +70,7 @@ run_doc() {
       capable=$((capable+1))
       if [ "$diag" = 1 ]; then
         if [ "$bashnf" -eq 0 ]; then verdict="P1 诊断缺命令"; blocks=$((blocks+1)); else verdict="OK 命令($bashnf)"; fi
+        [ "$bashnf" -gt 0 ] && [ "$expout" = 0 ] && verdict="$verdict ⚠无预期输出"
       elif [ "$mech" = 1 ]; then
         if [ "$codenf" -eq 0 ]; then verdict="P1 承载缺码"; blocks=$((blocks+1)); else verdict="OK 码($codenf)"; fi
       fi

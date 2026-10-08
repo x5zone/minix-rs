@@ -29,6 +29,7 @@
 #   SL-8  warning 裸优先级词 P0/P1/P2（仅 --strict 报告）
 #   SL-9  error   孤立坐标注释：/* 33 */、/* 455 — utility.c:44 */（括号内除数字与分隔符外无讲解）
 #   SL-10 warning 坐标与讲解同框 /* 16: 进程标志 */（建议拆出数字），以及正文里的工具派生行号提示
+#   SL-11 error   工单号/过程标记入正文：fixNN、续-N、首亮、（…现场/取证/工单/bagging）（含代码围栏内；Round1 F 回归暴露）
 #                 （L123，工具生成）（仅 --strict 报告；底账抽取工具落地后升为阻断，见 style-bible 硬裁决）
 #
 # SL-9 / SL-10 说明：这两条管「锚点受众分层」——坐标是审查看的，讲解是读者看的。
@@ -126,6 +127,8 @@ BEGIN {
   match_one(raw, raw, "/\\*[[:space:]]*[0-9]{1,4}([[:space:]]*[-—–:：/][[:space:]]*([a-zA-Z_.]{1,24}:[0-9]{1,4})?[0-9]*)*[[:space:]]*\\*/", "SL-9", "孤立坐标注释（数字属审查锚点，应移入锚点底账）")
   match_one(raw, raw, "/\\*[[:space:]]*[0-9]{1,4}[[:space:]]*[:：][[:space:]]*[^*]*\\*/", "SL-10", "坐标与讲解同框（讲解留下、数字移入底账）")
   match_one(raw, raw, "（L[0-9]+，工具生成）", "SL-10", "工具派生行号提示占正文（应移入底账）")
+  # SL-11（Round 1 F 回归暴露）：工单号/过程标记入正文——含代码围栏内（工单号常藏在命令/注释里）。
+  match_one(raw, raw, "\bfix[0-9]+\b|续-[0-9]+|首亮|（[^）]*(现场|取证|工单|bagging)[^）]*）", "SL-11", "工单号/过程标记入正文（fixNN/续-N/首亮/（…现场）等，属修复史叙事，应移入 .review）")
   if (diffmode != 1) {
     if (nfence == 0 && raw ~ /^[[:space:]]*(```|~~~)/) { nfence = 1; next }
     else if (nfence == 1) { if (raw ~ /^[[:space:]]*(```|~~~)/) nfence = 0; next }
@@ -206,8 +209,16 @@ EOF
 Minix3 最初把进程表放在 BSS 段，后来 FS 也复用同一张表。
 EOF
 
+  # SL-11 夹具：工单号藏在代码围栏注释里（围栏内也要查）
+  cat > "$ft/ticket.md" <<'EOF'
+```bash
+# 判断 reclaim guard 是否恒不触发（fix27 现场）
+rg -n "bootstrap_len" os/kernel/src/lib.rs
+```
+EOF
+
   local out rc=0
-  out="$("$0" "$ft/bad.md" "$ft/clean.md" "$ft/history.md" "$ft/anchors.md" 2>&1)" && rc=0 || rc=$?
+  out="$("$0" "$ft/bad.md" "$ft/clean.md" "$ft/history.md" "$ft/anchors.md" "$ft/ticket.md" 2>&1)" && rc=0 || rc=$?
   if [ "$rc" -ne 1 ]; then
     echo "SELF-TEST FAIL: 含违规样例应 exit 1，实际 $rc" >&2
     echo "$out" >&2
@@ -218,12 +229,10 @@ EOF
     echo "$out" | grep "clean.md:" >&2
     exit 1
   fi
-  if echo "$out" | grep "history.md:" | grep -q "SL-5b\|SL-5\]"; then
-    echo "SELF-TEST FAIL: 合法历史叙述被默认级误报" >&2
-    echo "$out" | grep "history.md:" >&2
-    exit 1
+  if echo "$out" | grep -q "history.md:.*SL-11"; then
+    echo "SELF-TEST FAIL: 合法历史被 SL-11 误报" >&2; echo "$out" >&2; exit 1
   fi
-  for id in SL-1 SL-2 SL-3 SL-4 SL-5 SL-6 SL-7 SL-9; do
+  for id in SL-1 SL-2 SL-3 SL-4 SL-5 SL-6 SL-7 SL-9 SL-11; do
     echo "$out" | grep -q "\[$id\]" || { echo "SELF-TEST FAIL: $id 未命中" >&2; echo "$out" >&2; exit 1; }
   done
 
