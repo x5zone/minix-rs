@@ -356,7 +356,16 @@ impl RsServer {
         msg: &minix_types::Message,
     ) {
         if result != minix_types::EDONTREPLY {
-            let _ = self.kernel.reply(who_e, result, msg);
+            // 线序符号：C 的 RS 以 `_SYSTEM` 编译（`minix3/minix/servers/rs/inc.h:7`），
+            // `main.c:124-129` 的 `m_ptr->m_type = r; reply(...)` 写回的是带负号的
+            // 错码，而用户侧 `_taskcall` 按 `m_type < 0` 判错（仓内 RS 客户端
+            // `minix-sys/src/rs.rs` 就是这一约定）。本树判定面用正号常量，故在
+            // 交给回复腿之前折一次号（单源 `minix_types::reply_status`，与
+            // DS/SCHED/IS/VFS 同纪律）；`EDONTREPLY` 的静默判断仍在判定面，
+            // 用的是正号常量，两者不得混用。
+            let _ = self
+                .kernel
+                .reply(who_e, minix_types::reply_status(result), msg);
         }
     }
 
@@ -994,6 +1003,28 @@ mod signal_handler_tests {
         let state = server.state.as_ref().unwrap();
         let id = state.table.endpoint_slot(Endpoint::VFS).expect("indexed");
         assert_eq!(state.table.get(id).alive_tm, 777);
+    }
+
+    /// 回复边界的线序钉：RS 判定面用正号 errno 常量（本树约定），而 C 的 RS 以
+    /// `_SYSTEM` 编译（`minix3/minix/servers/rs/inc.h:7`），`main.c:124-129` 写回
+    /// 的是负错码。所以「交给回复腿之前折一次号」是结构不变量，不是可优化项：
+    /// 生厂商与消费者约定一旦被打破，客户端会把每个拒绝读成成功（F10 同族）。
+    /// 生产回复腿在宿主不可达（无内核 trap），故本钉校形状而非跑收发。
+    #[test]
+    fn reply_boundary_folds_errno_sign() {
+        let src = include_str!("lib.rs");
+        let at = src
+            .find("fn reply_unless_suppressed(")
+            .expect("RS 的回复收口函数存在");
+        let body = &src[at..(src.len().min(at + 1400))];
+        assert!(
+            body.contains("reply_status(result)"),
+            "回复边界必须走单源折号 `minix_types::reply_status`；现体：\n{body}"
+        );
+        assert!(
+            body.contains("result != minix_types::EDONTREPLY"),
+            "静默判断仍在判定面（正号常量），不得被线序值绕过"
+        );
     }
 
     #[test]

@@ -300,6 +300,8 @@
 
 **解锁**：03-stage-rs 19 号主线通电；E-1 自升级；E5(c) 联调链。
 
+> **进度（RS 回复通道线序对齐，claim/F10-REPLYSIGN2-qoder）**：本条的三域接口此前都跑在一条错线上——RS 的回复收口 `servers/rs/src/lib.rs:reply_unless_suppressed` 把**正号** errno 直接交给回复腿，而 C 的 RS 以 `_SYSTEM` 编译（`minix3/minix/servers/rs/inc.h:7`），`main.c:124-129` 写回 `m_type` 的错码带负号，仓内 RS 客户端（`minix-sys/src/rs.rs:179-190`/`:216-222`/`:279-285`）一直按 `reply < 0` 判错——于是 RS 的每一次拒绝在真机上都被读成成功。本轮在收口处走单源 `minix_types::reply_status`（`EDONTREPLY` 的静默判断仍留在判定面的正号常量），并加一枚形状钉测试（生产回复腿在宿主不可达，钉的是「折号发生在唯一收口」这一不变量）。真机验证走 `os/qemu-tests/test-e5-ds.sh`（全系统启动含 RS 的出生/发布链，串口 0 次 `tries to exit`）。**本条余项不变**：三域同型批（进程/虚存/调度的生产接线）与本条无交集。
+
 ---
 
 ## E-KERNINFO MINIX_KERNINFO 内核信息共享 + release/version 字段（= 01-stage-kernel todo.md I-2，2026-09-07 移交）
