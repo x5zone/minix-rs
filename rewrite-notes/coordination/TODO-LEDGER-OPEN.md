@@ -116,7 +116,7 @@
 | 11 设备管理 | [`todo.md`](../11-stage-devman/todo.md) | `open` 1 | 设备拥有权与生产四缺 |
 | 12 输入 | [`todo.md`](../12-stage-input/todo.md) | 阶段内 0（原记 `open` 1，属**账面滞后**：`IN-P3-2` 本体在 `2026-09-15` 已闭但本节摘要行未同步翻；`2026-10-09` 回勾）| 残余为跨阶段传输族（`E-INWIRE` 等） |
 | 13 进程间通信 | [`todo.md`](../13-stage-ipc/todo.md) | 阶段内 0 | 残余为 `E-IPCWIRE` 的装配面 |
-| 14 运行时 | [`todo.md`](../14-stage-runtime/todo.md) | `open` 1 + 真机 2 | 内核信息魔术失配的错误码选型（需对 C 行为裁决） |
+| 14 运行时 | [`todo.md`](../14-stage-runtime/todo.md) | 真机 2 | 旧记的 `open` 1（内核信息魔术失配错误码选型）经现场核实为**账面滞后**——`V1-P1-4` 已于 `2026-09-16` 裁决落地（Fix #5：`KerninfoAvailability` 三态枚举在位、`InitError` 零命中，`2026-10-09` 核），阶段内 `open` 归零，余两件真机面 |
 | 15 文件系统 | [`todo.md`](../15-stage-fs/todo.md) | `partially fixed` 2 | 八个文件服务器入口未接事件循环 |
 | 16 驱动 | [`todo.md`](../16-stage-drivers/todo.md) | `open` 2 + `stopgap landed` 3 | 二十六个纯占位 crate；两套字符驱动收敛 |
 | 17 网络 | [`todo.md`](../17-stage-net/todo.md) | `open` 2 | 协议栈本体与传输未实现；缺设计条目。原记的第三项"套接字标识基值缺 Rust 侧权威"经现场核实为**账面滞后**（`os/libs/minix-netdriver/src/sockid.rs` 已于 `2026-09-17` 落地，`cargo test -p minix-netdriver --lib sockid` → 5 passed，`2026-10-09` 核）——本行旧计数未跟上，已同步 |
