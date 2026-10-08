@@ -133,7 +133,7 @@ P2_TESTS=(
   test_feed_keyboard_byte_uses_full_table               # NL4  死缝销号
   test_sigsuspend_carries_mask_only                     # SIGACT C 化删死参
   test_sigaction_carries_sigreturn_stub                 # NS11 sigreturn 桩地址填真
-  test_rs_init_birth_answered_with_ok                   # NS1  六服务器出生应答臂
+  test_rs_init_birth_plants_labels_and_answers_ok       # NS1  六服务器出生应答臂（原名 test_rs_init_birth_answered_with_ok，`942bc6c8f` 随 DS 通电批改名并加固——断言从"回 OK"升到"label 植入真发生+回 OK"，网变密非消失；P2 报缺失即此因）
   load_process_elf_two_images_same_va_no_collision      # NK1  per-process 根装载
   trampoline_address_is_nonzero                         # NL3  sigreturn trampoline
   test_dispatch_times_self_replacement                  # NK8  判别补强
