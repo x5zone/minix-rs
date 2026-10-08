@@ -176,4 +176,18 @@ $ ls .wt/docgen2-00-doc01iter2/{AI-chats/doc-gen-iterate-prompt-v2.md,prompt/GPT
   2. `draft/02` §2.4 关于 `k_initial_stktop` 落点的断言与源码相互矛盾（见上），02 正文按 `[待验证]` 写。
 - 待写：正文（概念闭环回指、每节先码后结论）、五道门、CodeReview + 双学生闸门。
 
+### 锚点写法的真实缺口（Round 2 发现，两篇都已修正）
+
+工具约定（`prompt/review-rules/review-process.md` §Step 1.0，转述于 `tools/anchor-resolve.sh` 头部）对 Rust 锚点要求**类型前缀**：`path:fn NAME` / `path:struct Name` / `path:trait Name` / `path:impl Type::method` / `path:const NAME` / `path:static NAME`；而 `path:Symbol` 只走 C 启发式。
+
+**后果**：Round 1 的 01 篇里所有 Rust 锚点（`os/kernel/src/lib.rs:build_bootstrap_root_and_enable` 这一类）都写成了 C 形式——**锚点门根本没解析它们**，所以 01 报的"anchors=14 resolved=14"全是 C 锚点，Rust 侧等于无保护地写了一整章。本轮改成类型前缀后：01 从 14 → **31 条锚点（30 resolved + 1 MULTI-DEF）**，02 为 12/12。
+
+- 唯一的 MULTI-DEF：`os/kernel/src/lib.rs:fn arch_boot` 按架构有三份定义（工具要求的 `impl Type::method` 限定对"同名 cfg 变体"不适用）。处理：正文就地注明"同一名字三份定义、本节指 x86-64 那一份"，不改符号名也不删锚点。
+- **本条是个真风险**：前几轮我把它当成"门过了"使用。修正方式不是加新门，而是：锚点必须带类型前缀，否则门不认（写进 Step 0 预检清单与 Round 3 开工检查项）。
+
+### Round 2 进展
+
+- 02 正文成稿（规范源七章：概述/C 源码分析/Rust 设计决策/实现详解/测试/诊断/参见），零比喻零元话语，Ch1-2 无 Rust 内容（grep 已核）。两处事实纠偏已入文：AT() 以偏概全、初始栈顶落点 `[待验证]`。
+- 待做：C 阶段学生实读 + F 阶段 CodeReview（本轮不能省，上一轮就是靠它找到 8 条引用忠实度问题）。
+
 <!-- 以下各轮 Round 3..5 由执行时逐轮追加 -->
