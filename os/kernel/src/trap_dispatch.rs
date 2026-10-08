@@ -2122,14 +2122,6 @@ unsafe fn riscv64_fpu_trap_body(frame: &mut minix_arch::riscv64::trap_stub::Risc
          wiring bug"
     );
     let table = unsafe { crate::proc_table_boot_unchecked() };
-    // 续-133 取证探针（用后即滚）：懒归属取得的一次性现场。
-    #[cfg(not(feature = "mock"))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static FTRAP_N: AtomicUsize = AtomicUsize::new(0);
-        if FTRAP_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-        }
-    }
     use minix_arch::{CurrentFpuArch, FpuArch};
     let fpu = CurrentFpuArch::default();
     // C proc.c:1936-1942 — save the outgoing owner (EXT_REG_INITIALIZED
