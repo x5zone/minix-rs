@@ -153,8 +153,7 @@
   `os/net/lwip/src/main.rs`），全部通过。
 - 复现命令（工作目录为 `os/`）：`cargo test -p minix-net-lwip --lib rtsock`
 - 完整测试清单：`rg "fn test_" os/net/lwip/src/rtsock.rs`
-- 全量测试结果：`cargo test -p minix-net-lwip` 库 125 个测试、服务二
-  进制 10 个测试全部通过，包含本篇 6 个。
+- 全量测试基线：`cargo test -p minix-net-lwip` 实际输出为准（库与服务二进制分别计数）；本篇 6 个包含在内，历史全量数字详见对应 `.review` 底账。
 
 ---
 
