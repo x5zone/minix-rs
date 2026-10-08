@@ -463,5 +463,10 @@ done < "$tmp_all"
 
 echo "----"
 echo "anchors=$grand_total resolved=$grand_resolved zero-def=$grand_zero multi-def=$grand_multi"
+# 0 锚点守卫（Round2 暴露）：正文若本应引代码却抽到 0 锚，多半是 Rust 锚点写成了裸 path.rs:Symbol
+# （本工具只抽 path.rs:fn|struct|... Name 与 C path.c:Symbol）。写 stderr、不改退出码。
+if [ "$grand_total" -eq 0 ]; then
+  echo "ℹ 未抽到任何锚点：若正文确有代码引用，请确认 Rust 锚点用了 keyword 形态 \`path.rs:fn|struct|trait|type|const Name\`——裸 \`path.rs:Symbol\` 不会被抽取（会造成 0 锚却误判干净）。" >&2
+fi
 [ "$grand_zero" -eq 0 ] && [ "$grand_multi" -eq 0 ] && exit 0
 exit 1
