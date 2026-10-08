@@ -20,17 +20,17 @@
 
 extern crate alloc;
 
+use boot_shim::uefi_helpers;
+use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::panic::PanicInfo;
-use core::alloc::{GlobalAlloc, Layout};
-use minix_arch::x86_64::paging::X86_64Paging;
-use minix_plat::x86_64::early_console;
-use minix_kernel::boot_alloc;
-use minix_platform;
 use minix_arch::pt_alloc;
+use minix_arch::x86_64::paging::X86_64Paging;
+use minix_boot::{BootModule, BootPrepareResult, KernelInfo, MemoryRegion};
+use minix_kernel::boot_alloc;
+use minix_plat::x86_64::early_console;
+use minix_platform;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::{BootPrepareResult, KernelInfo, BootModule, MemoryRegion};
-use boot_shim::uefi_helpers;
 use uefi::prelude::*;
 
 // ── Hybrid allocator: UEFI boot services → bump after exit ──
@@ -45,8 +45,15 @@ unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         unsafe {
             if !BOOT_SERVICES_EXITED {
-                let size = if layout.align() > 8 { layout.size() + layout.align() } else { layout.size() };
-                match uefi::boot::allocate_pool(uefi::mem::memory_map::MemoryType::LOADER_DATA, size) {
+                let size = if layout.align() > 8 {
+                    layout.size() + layout.align()
+                } else {
+                    layout.size()
+                };
+                match uefi::boot::allocate_pool(
+                    uefi::mem::memory_map::MemoryType::LOADER_DATA,
+                    size,
+                ) {
                     Ok(ptr) => ptr.as_ptr() as *mut u8,
                     Err(_) => core::ptr::null_mut(),
                 }
@@ -78,23 +85,77 @@ static ALLOCATOR: HybridAllocator = HybridAllocator;
 /// KERNEL_TASKS[]; only the VM slot is patched to the ELF stub so
 /// init_proc_and_boot's VM-load step has something well-formed to parse.
 static mut BOOT_MODULES: [BootModule; 12] = [
-    BootModule { name: "ds",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "rs",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "pm",    start: PhysBytes(0), len: 0 },
-    BootModule { name: "sched", start: PhysBytes(0), len: 0 },
-    BootModule { name: "vfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "memory",start: PhysBytes(0), len: 0 },
-    BootModule { name: "tty",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mib",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "vm",    start: PhysBytes(0), len: 0 },  // patched at runtime
-    BootModule { name: "pfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "mfs",   start: PhysBytes(0), len: 0 },
-    BootModule { name: "init",  start: PhysBytes(0), len: 0 },
+    BootModule {
+        name: "ds",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "rs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "pm",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "sched",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "memory",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "tty",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mib",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "vm",
+        start: PhysBytes(0),
+        len: 0,
+    }, // patched at runtime
+    BootModule {
+        name: "pfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "mfs",
+        start: PhysBytes(0),
+        len: 0,
+    },
+    BootModule {
+        name: "init",
+        start: PhysBytes(0),
+        len: 0,
+    },
 ];
 
 static MEMMAP: [MemoryRegion; 2] = [
-    MemoryRegion { base: PhysBytes(0), len: 0x200_0000 },
-    MemoryRegion { base: PhysBytes(0x200_0000), len: 0x600_0000 },
+    MemoryRegion {
+        base: PhysBytes(0),
+        len: 0x200_0000,
+    },
+    MemoryRegion {
+        base: PhysBytes(0x200_0000),
+        len: 0x600_0000,
+    },
 ];
 
 /// Minimal valid ELF64 image (header only, e_phnum = 0) — same rationale
@@ -102,21 +163,34 @@ static MEMMAP: [MemoryRegion; 2] = [
 #[unsafe(link_section = ".rodata")]
 static VM_ELF_STUB: [u8; 64] = {
     let mut e = [0u8; 64];
-    e[0] = 0x7F; e[1] = b'E'; e[2] = b'L'; e[3] = b'F';
-    e[4] = 2; e[5] = 1; e[6] = 1;
-    e[16] = 2; e[17] = 0;   // e_type = ET_EXEC
-    e[18] = 62; e[19] = 0;  // e_machine = EM_X86_64
-    e[24] = 0; e[25] = 0x40;
+    e[0] = 0x7F;
+    e[1] = b'E';
+    e[2] = b'L';
+    e[3] = b'F';
+    e[4] = 2;
+    e[5] = 1;
+    e[6] = 1;
+    e[16] = 2;
+    e[17] = 0; // e_type = ET_EXEC
+    e[18] = 62;
+    e[19] = 0; // e_machine = EM_X86_64
+    e[24] = 0;
+    e[25] = 0x40;
     e[32] = 64;
-    e[52] = 64; e[53] = 0;
-    e[54] = 56; e[55] = 0;
-    e[56] = 0; e[57] = 0;   // e_phnum = 0
+    e[52] = 64;
+    e[53] = 0;
+    e[54] = 56;
+    e[55] = 0;
+    e[56] = 0;
+    e[57] = 0; // e_phnum = 0
     e
 };
 
 #[entry]
 fn main() -> Status {
-    early_console::write_str("### test_smp_aps (x86_64): S-5 L4 — production smp_init multi-AP bring-up\n");
+    early_console::write_str(
+        "### test_smp_aps (x86_64): S-5 L4 — production smp_init multi-AP bring-up\n",
+    );
 
     // 1. UEFI boot preparation (test-proc-init shape).
     let root_page = uefi_helpers::alloc_root_page();
@@ -162,7 +236,9 @@ fn main() -> Status {
     };
 
     uefi_helpers::exit_boot_services();
-    unsafe { BOOT_SERVICES_EXITED = true; }
+    unsafe {
+        BOOT_SERVICES_EXITED = true;
+    }
 
     // 2. Paging (Phase A).
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
@@ -199,7 +275,9 @@ fn main() -> Status {
     minix_kernel::boot_init_timer();
     // IF=1 during smp_init: the per-AP bounded wait's uptime clock needs
     // PIT ticks to flow (the tick handler inherits this held BKL).
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
     minix_kernel::smp::smp_init();
     early_console::write_str("  smp_init completed (wait_for_aps returned)\n");
 
@@ -223,79 +301,104 @@ fn main() -> Status {
     }
     early_console::write_str("  boot_ack == online == expected (all APs online)\n");
 
-    // S-7 L5: every AP entered the shared scheduling loop (per-CPU flag set
-    // at `scheduler_loop` entry); the BSP did not (it runs this test body
-    // instead). Serial-visible per-CPU activity marker.
-    // Bounded wait driven by SYSTEM TIME (PIT ticks): an AP's loop entry can
-    // trail the masks read by several TCG scheduling timeslices — polling
-    // raw spins both starves the APs and has unpredictable wall length.
-    // Polling against uptime ticks (100 Hz) gives a real 0.3 s window during
-    // which the APs receive timeslices and enter the loop.
-    // Interrupts ON: the tick handler's inherited-BKL contract matches this
-    // held-BKL body (same arrangement as test-timer-irq).
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-    // BKL witness for the clock accessors (the boot chain held the BKL
-    // into this body — smp_init's dance preserves it).
-    let section = unsafe { minix_kernel::smp::BklSection::assume_held() };
-    let start = minix_kernel::clock::get_monotonic(&section);
-    let deadline_ticks = start + 300; // 3 s of system time at 100 Hz
-    let mut aps_in_loop = false;
-    while !aps_in_loop && minix_kernel::clock::get_monotonic(&section) < deadline_ticks {
-        aps_in_loop = true;
+    // S-7 L5 + edge1 K6 的**确定性**判据段：每个 AP 都进了共享调度循环
+    // （`scheduler_loop` 入口置 per-CPU 标志），且每个 AP 的本地 LAPIC
+    // one-shot（向量 0xF1）至少服务过一次。BSP 不置该标志——它跑的是本
+    // 测试体。中断保持开（IF=1），tick 处理链的继承 BKL 约定与 test-timer-irq
+    // 同形；但下面的等待**不再持锁**，见紧邻的解锁注记。
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
+    // BKL 见证：上面两个健康断言不读锁保护数据，下面的等待**必须先放开 BKL**。
+    // 旧形状是持锁轮询，于是两件事同时失真：AP 进 `scheduler_loop` 要抢 BKL，
+    // AP 的 0xF1 本地 tick 处理器更要继承 BKL 才能服务与重装 one-shot——被饿死的
+    // AP 可以 `in_loop=1` 而 `ticks=0`（真机复现过）。正因如此旧版只打印不断言
+    // （台账 §1 K6 行与 §7 那行）。现形状：放开 BKL → 按 TSC 预算轮询 → 断言。
+    minix_kernel::smp::bkl_unlock();
+    // 预算按 TSC（放开 BKL 后没有加锁可用的时钟）：120 G cycles——QEMU TSC
+    // 常见 1–3.5 GHz，约合 35–120s 挂钟。超预算不是环内模糊而是直接判 FAIL——
+    // 那个「TCG 饿死」的 WARNING 就是本条台账项要消灭的东西。
+    const WAIT_BUDGET_CYCLES: u64 = 120_000_000_000;
+    let tsc0 = minix_kernel::clock::read_tsc();
+    let (aps_in_loop, aps_ticked) = loop {
+        let mut aps_in_loop = true;
+        let mut aps_ticked = false;
         for cpu in 1..topo.nr_cpus as u32 {
             let entered = unsafe { minix_kernel::smp_state_boot_unchecked() }
                 .cpu_local(minix_kernel::proc::CpuId::new_unchecked(cpu))
                 .map(|l| l.sched_loop_entered)
                 .unwrap_or(false);
+            let ticks = minix_kernel::clock::LOCAL_TICK_COUNT[cpu as usize % 16]
+                .load(core::sync::atomic::Ordering::Relaxed);
             if !entered {
                 aps_in_loop = false;
             }
+            if ticks > 0 {
+                // 「至少一个次级核计到本地 tick」——见下方判据注释：逐核都计到
+                // 今天是已知缺陷（cpu3 恒 0，台账 §7 新行），不在本门射程。
+                aps_ticked = true;
+            }
+        }
+        if (aps_in_loop && aps_ticked)
+            || minix_kernel::clock::read_tsc().wrapping_sub(tsc0) > WAIT_BUDGET_CYCLES
+        {
+            break (aps_in_loop, aps_ticked);
         }
         core::hint::spin_loop();
-    }
+    };
     for cpu in 0..topo.nr_cpus as u32 {
         let entered = unsafe { minix_kernel::smp_state_boot_unchecked() }
             .cpu_local(minix_kernel::proc::CpuId::new_unchecked(cpu))
             .map(|l| l.sched_loop_entered)
             .unwrap_or(false);
-        early_console::write_str("  cpu ");
-        early_console::write_hex(cpu as u64);
-        early_console::write_str(" in_loop: ");
-        early_console::write_hex(entered as u64);
-        early_console::write_str("\n");
-    }
-    if !aps_in_loop {
-        // L5 marker is informational under TCG: the BSP test body holds the
-        // BKL continuously while polling, and APs waiting on it can be
-        // starved past the window by TCG round-robin timeslicing. The
-        // production gate is the mask assertion above (deterministic —
-        // wait_for_aps completes only with online == boot_ack). Every green
-        // run has shown all-AP entry.
-        early_console::write_str("  WARNING: not all APs observed in the scheduling loop (TCG starvation)\n");
-    }
-    early_console::write_str("  all APs entered the scheduling loop\n");
-
-    // edge1 K6: per-CPU local tick counters — the AP LAPIC one-shot arms
-    // in the AP tail (init_ap_local_timer) and each 0xF1 tick bumps the
-    // hart's slot. Non-AP harts keep 0 ticks; the BSP runs on the PIT.
-    early_console::write_str("  local tick counters:\n");
-    for cpu in 0..topo.nr_cpus as u32 {
         let ticks = minix_kernel::clock::LOCAL_TICK_COUNT[cpu as usize % 16]
             .load(core::sync::atomic::Ordering::Relaxed);
         early_console::write_str("  cpu ");
         early_console::write_hex(cpu as u64);
+        early_console::write_str(" in_loop: ");
+        early_console::write_hex(entered as u64);
         early_console::write_str(" ticks: ");
         early_console::write_hex(ticks);
         early_console::write_str("\n");
     }
+    if !aps_in_loop {
+        early_console::write_str(
+            "  FAIL: AP did not all enter the scheduling loop with the BKL released\n",
+        );
+        fail();
+    }
+    early_console::write_str("  all APs entered the scheduling loop\n");
+    // edge1 K6 的断言版：次级核的 LAPIC one-shot（向量 0xF1，`init_ap` 尾部
+    // `init_local_timer` 装有）确实响过——不再是「人读串口数字」。
+    // 判据取「至少一个 AP 计到 tick」。为什么不是「每个 AP 都计到」：实测
+    // 同镜像 5 轮里 **cpu3 的 tick 恒为 0**，而 cpu1/cpu2 各计到 1、
+    // `in_loop` 三核全 1——放大预算（30G→120G cycles）后仍是 0，所以这不是
+    // 宿主调度抖动，而是「最后一个 AP 的本地 LAPIC 定时器从不触发」这一条
+    // 真缺陷（已按 P0-code-bug 新开台账行，附复跑命令与读数；门里每核计数仍
+    // 逐行打印，cpu3=0 直接可见）。等那条修好后，本判据应收紧为逐核 tick>0。
+    if !aps_ticked {
+        early_console::write_str(
+            "  FAIL: no AP local LAPIC tick fired within the budget (see per-cpu ticks)\n",
+        );
+        fail();
+    }
+    early_console::write_str("  AP local LAPIC ticks observed (deterministic gate)\n");
 
     early_console::write_str("### TEST_RESULT: PASS test-smp-aps ###\n");
-    loop { unsafe { asm!("cli", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("cli", options(nomem, nostack));
+        }
+    }
 }
 
 fn fail() -> ! {
     early_console::write_str("### TEST_RESULT: FAIL test-smp-aps ###\n");
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }
 
 #[panic_handler]
@@ -307,5 +410,9 @@ fn panic(info: &PanicInfo) -> ! {
         early_console::write_hex(loc.line() as u64);
     }
     early_console::write_str(" ###\n");
-    loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
+    loop {
+        unsafe {
+            asm!("hlt", options(nomem, nostack));
+        }
+    }
 }
