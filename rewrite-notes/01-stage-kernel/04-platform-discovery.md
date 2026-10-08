@@ -179,7 +179,7 @@ static void * acpi_madt_get_typed_item(struct acpi_madt_hdr * hdr,
 
 **C 里"表"与"常量"是两条路，产物形状不同**（§2.5）。重写要让消费方不关心描述从哪来，于是有了 `os/libs/minix-boot/src/platform.rs:trait PlatformDesc`——它规定"一块平台要能回答哪些问题"（中断控制器描述、定时器描述、控制台描述、拓扑、来源标记），再配三个子接口 `trait InterruptControllerDesc`、`trait TimerDesc`、`trait ConsoleDesc`（同文件）。
 
-三个实现各自对应一条来源：`os/libs/minix-platform/src/acpi.rs:struct AcpiDesc`（从表解析）、`os/libs/minix-platform/src/device_tree.rs:struct DeviceTreeDesc`（从设备树解析）、`os/libs/minix-platform/src/arch/x86_64.rs:struct QemuVirtDesc`（按假设构造，另有 `arch/aarch64.rs` 一份）。**统一的是读接口，不是构造方式**——本章其余决策都建立在这条区分上。
+三个实现各自对应一条来源：`os/libs/minix-platform/src/acpi.rs:struct AcpiDesc`（从表解析）、`os/libs/minix-platform/src/device_tree.rs:struct DeviceTreeDesc`（从设备树解析）、`os/libs/minix-platform/src/arch/x86_64.rs:struct QemuVirtDesc`（按假设构造，另有 `arch/aarch64.rs`、`arch/riscv64.rs` 各一份）。**统一的是读接口，不是构造方式**——本章其余决策都建立在这条区分上。
 
 兜底那份不是三架构共用一张表：它按架构各有一份（布局常量本就不同），`os/libs/minix-platform/src/qemu_virt.rs` 只做按架构再导出。也就是说，**连"用假设值兑现一份描述"这件事，假设内容也是架构相关的**。
 
@@ -235,7 +235,7 @@ minix-platform  fn parse_by_kind 按标签分发解析器  —— 它知道怎�
 
 **失败是往下试，不是致命错误**。一块机器同时给两种描述、其中一种残缺是常见情况；把任何一种解析失败都当致命，等于让最不可靠的一方决定能不能开机。
 
-**"只认接口"能认到什么程度**：这句要按代码量着说，不能写成"不再有枚举匹配"。真实形状是两层。分发处确实只有一处按标签的 `match`（`os/libs/minix-platform/src/kind.rs:fn parse_by_kind`）；但选出来的描述要以一个具体类型存进全局，于是来源本身仍是枚举（`os/libs/minix-platform/src/global.rs:enum PlatformDescEnum`），它的每个查询方法都要按变体转发一次——同一个文件里这样的分支有 27 行。**没有换成 `Box<dyn PlatformDesc>` 的理由写在同一个类型的文档注释里**：引导早期不引入分配器依赖，且枚举分发省掉虚表间接。被接口化的是描述符内部的品牌（§3.1），来源这一层保留枚举是有意的取舍。
+**"只认接口"能认到什么程度**：这句要按代码量着说，不能写成"不再有枚举匹配"。真实形状是两层。分发处确实只有一处按标签的 `match`（`os/libs/minix-platform/src/kind.rs:fn parse_by_kind`）；但选出来的描述要以一个具体类型存进全局，于是来源本身仍是枚举（`os/libs/minix-platform/src/global.rs:enum PlatformDescEnum`），它的每个查询方法都要按变体转发一次——同一个文件里这样的分支有 25 条（复算：`rg -o 'Self::(DeviceTree|Acpi|QemuVirt)' os/libs/minix-platform/src/global.rs | wc -l`）。**没有换成 `Box<dyn PlatformDesc>` 的理由写在同一个类型的文档注释里**：引导早期不引入分配器依赖，且枚举分发省掉虚表间接。被接口化的是描述符内部的品牌（§3.1），来源这一层保留枚举是有意的取舍。
 
 于是两边的命题要分开。对消费方成立的是"只认接口"：内核侧调 `platform_desc()` 拿到的是一组统一的方法，不需要知道下面是哪种来源。对维护方不成立的是"分支只有一处"：加一类来源要动分发处、枚举变体与各方法转发。把它们混成一句"以后没有分支了"，就会在新增来源时只改分发处，得到一个能解析出来、查询方法却接不住的描述。
 

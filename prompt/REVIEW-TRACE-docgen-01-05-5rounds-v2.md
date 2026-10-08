@@ -235,7 +235,7 @@ $ ls .wt/docgen2-00-doc01iter2/{AI-chats/doc-gen-iterate-prompt-v2.md,prompt/GPT
 
 学生读数抓出的三处（均已核实后修正，`8ab…` 见下轮提交）：
 
-1. §3.3 原写"来源种类只在分发那一个 `match` 里出现，其余代码只认接口"。实际 `global.rs` 里按 `PlatformDescEnum` 变体分支的有 **27 行**，而未换成 `Box<dyn PlatformDesc>` 的理由就写在同一个类型的文档注释里（引导早期不引分配器依赖、枚举分发免虚表间接）。改写为：消费方"只认接口"成立，维护方"只有一处分支"不成立。
+1. §3.3 原写"来源种类只在分发那一个 `match` 里出现，其余代码只认接口"。实际 `global.rs` 里按 `PlatformDescEnum` 变体分支的有 **25 条**（复算：`rg -o 'Self::(DeviceTree|Acpi|QemuVirt)' os/libs/minix-platform/src/global.rs | wc -l`），而未换成 `Box<dyn PlatformDesc>` 的理由就写在同一个类型的文档注释里（引导早期不引分配器依赖、枚举分发免虚表间接）。改写为：消费方"只认接口"成立，维护方"只有一处分支"不成立。
 2. §3.1 把 `desc.rs` 文件头的替换对象写错了：被 trait 化的是描述符内部的**品牌枚举**（`Apic/Gicv3/Plic`、`Pit/ArmGenericTimer/Clint`、`IsaSerial/MmioSerial/SbiConsole`），不是"三种来源"；来源至今仍是枚举。
 3. §3.5 原写开发构建"打一条警告"。实际函数体里是 `let _ = reason;`，注释说该阶段无日志通道、警告尽力而为——**开发构建什么都不打印**，区分兜底只能靠 `source()`。
 
@@ -257,6 +257,17 @@ $ ls .wt/docgen2-00-doc01iter2/{AI-chats/doc-gen-iterate-prompt-v2.md,prompt/GPT
 **两处 `[待验证]`**（不伪造成结论）：`ICW4_AT_MASTER=0x05` 与 `ICW4_AT_SLAVE=0x01` 差一位、而 `i8259.c:16-17` 两条尾注同为 `not SFNM`（注释与数值不合，本仓无依据裁定）；riscv64 `TIMER_IRQ=0` 落在哪个编号空间。
 
 **闸门复跑**：anchor 19/19 resolved；ref-check `--check` 可解析；承载门 4 可判章过；code-map 8/8；style error=0；元话语/比喻复扫零命中；形近字零命中。
+
+## F 阶段（CodeReview 忠实度，只能查对不对）· Round 4/5 补跑
+
+读数：**P0 一处、P1 一处、P2 两处，全部已修**（所以返工提交 `8ab…`/`bb…` 之后又有一笔修补）：
+
+- **P0**：§3.3 与底账里我都写了"按变体分支有 27 行"，实为 **25 条**——我把 `rg -c` 命中的 25 行与两处**构造点**（`PlatformDescEnum::DeviceTree(..)` 包装）混在一个口径里数了。这条恰好落在"要按代码量着说"那个立论点上，数字错比不写更坑。改法：给数字同时给复算命令。
+- **P1**：§2.2 "三件事只能从数值表读出、符号表读不出"过度——主/从 ICW3 之差在 C 源码就是 `(1 << CASCADE_IRQ)` 与 `CASCADE_IRQ` 两种写法。已收敛为"哪两件只能从实数逼出、哪一件只是展开才好懂"。
+- **P2**：riscv64 `TIMER_IRQ=0` 不该整条挂 `[待验证]`——`os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ` 的文件注释已说清它是**保留伪向量**（S 模式定时器为核本地中断、不经平台级控制器、PLIC 路径把 0 当"无控制器线"），本仓可判；只有 `scause` 具体取值属外部规范。已改写并保留窄口径 `[待验证]`。同时给了读者一条我原本指错的核对路径（让我去读 `init_timer`/`mask_all`，那里恰恰不含定时器号）。
+- **P2**：§3.1 的 `QemuVirtDesc` 只列了 x86_64/aarch64，漏 `arch/riscv64.rs`，已补全。
+
+**本轮方法学收获（进判据，不只是记事后）**：凡写进正文的**数字**（分支条数、测试个数、行数）必须附一条可复算命令；否则数字本身就是未经真值的断言。上轮学生读数要的"具体数值解码"与本轮 CodeReview 报的"数值算错"是两件事，两道都得跑。
 
 ## 第 5 轮收尾 · 四项交付
 
