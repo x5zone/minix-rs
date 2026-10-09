@@ -45,6 +45,11 @@ static mut HEAP: [u8; 0x200000] = [0u8; 0x200000]; // 2 MiB
 /// Set to true after exit_boot_services() is called.
 static mut BOOT_SERVICES_EXITED: bool = false;
 
+/// U-2 真机负控门用的独立 `.bss` 进程表（const-fn 初始化，不占启动栈/堆），
+/// 以便确定性地验证 `runqueues_ok_cpu` 既对空表返 true、又对损坏表返 false。
+static mut RQ_TEST_TABLE: minix_kernel::proc_table::ProcessTable =
+    minix_kernel::proc_table::ProcessTable::new();
+
 struct HybridAllocator;
 
 unsafe impl GlobalAlloc for HybridAllocator {
@@ -393,6 +398,30 @@ fn main() -> Status {
         fail();
     }
     early_console::write_str("  P1-c sentinel: CPU reads sentinel via fresh VA (OK)\n");
+
+    // 8. U-2 真机负控门：qemu 下 KernelConsole 经 COM1 打印正常，故可确定性地
+    //    验证 `runqueues_ok_cpu`——空 .bss 表→true；把某槽清成 runnable-but-未入队
+    //    →false（非空转证据，补上宿主因 COM1 SIGSEGV 跑不了的那一半）。
+    {
+        use minix_kernel::debug::runqueues_ok_cpu;
+        use minix_kernel::proc::{CpuId, ProcNr, RtsFlagsBits};
+        use minix_kernel::proc_table::ProcessTable;
+        let smp = minix_kernel::smp::SmpState::new_single_cpu();
+        let rq: &mut ProcessTable = unsafe { &mut *core::ptr::addr_of_mut!(RQ_TEST_TABLE) };
+        if !runqueues_ok_cpu(&smp, rq, CpuId::BSP) {
+            early_console::write_str("  FAIL: runqueues_ok rejected the empty table\n");
+            fail();
+        }
+        // 造违规：一个可运行进程未在任何就绪队列上。
+        if let Some(p) = rq.get_mut(ProcNr(0)) {
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        }
+        if runqueues_ok_cpu(&smp, rq, CpuId::BSP) {
+            early_console::write_str("  FAIL: runqueues_ok accepted an unqueued runnable proc\n");
+            fail();
+        }
+        early_console::write_str("  U-2 runqueues_ok positive+negative real-machine gate ok\n");
+    }
 
     early_console::write_str("### TEST_RESULT: PASS test-proc-init ###\n");
     loop { unsafe { asm!("hlt", options(nomem, nostack)); } }
