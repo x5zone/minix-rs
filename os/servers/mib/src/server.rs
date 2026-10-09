@@ -199,6 +199,8 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
                     // send。sendrec 停在 receive(RS) 半等 RS catch 出口的 OK
                     // 唤醒，避免 RS 的 reply 无人认领被野消费→回声投回
                     // RS→step3 panic。
+                    //[SD19-gate] SD-19: RS birth reply sendrec 尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.ipc.send_rec(Endpoint::RS, &mut reply);
                     (Turn::Handled, Incoming::Birth)
                 }
@@ -253,6 +255,8 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
         // sentinel goes back; send failures are logged, never fatal.
         if should_reply(out.m_type) {
             let to = msg.m_source;
+            //[SD19-gate] SD-19: send_nb 非阻塞回复，失败丢一条
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.ipc.send_nb(to, &out);
         }
         (Turn::Handled, incoming)

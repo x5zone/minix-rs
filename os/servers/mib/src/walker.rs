@@ -457,6 +457,8 @@ fn create_exec<K: MibKernel, S: MibServices>(
             if let (Some(target), Some(oldp)) = (target, req.oldp) {
                 let mut scn = [0u8; 96];
                 serialize_node(ctx, target, &mut scn);
+                //[SD19-gate] SD-19: sysctl copyout 尽力而为，回复已定 EEXIST
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = oldp.copyout(ctx.kernel, 0, &scn);
                 return SysctlOutcome::err_with_len(EEXIST, 96);
             }
@@ -554,6 +556,8 @@ fn destroy_exec<K: MibKernel, S: MibServices>(
     if let Some(oldp) = req.oldp {
         let mut scn = [0u8; 96];
         serialize_node(ctx, target, &mut scn);
+        //[SD19-gate] SD-19: sysctl copyout 尽力而为，无调用方消费
+        #[allow(clippy::let_underscore_must_use)]
         let _ = oldp.copyout(ctx.kernel, 0, &scn);
     }
     let charge = ctx.tree.slot(target).charge;
@@ -891,6 +895,8 @@ fn func_exec<K: MibKernel, S: MibServices>(
         | FuncKey::Kern(KernFunc::IpcInfo)
         | FuncKey::Vm(_)
         | FuncKey::Hw(_) => {
+            //[SD19-gate] SD-19: 防御性 touch transport，下步即回 EIO
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ctx.svc.vm_info(0, Endpoint::NONE, &mut []); // touch the transport honestly
             SysctlOutcome::err(EIO)
         }

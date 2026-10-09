@@ -364,6 +364,8 @@ fn fill_common<K: MibServices>(
     // C `vm_info_usage(kp->p_endpoint, &vui)`——ep 是被查进程。VM 的
     // 回复内联编码仍是登记缺口（26-vm-queries §3.7），失败按 C 语义
     // 折零列。
+    //[SD19-gate] SD-19: vm_info best-effort 折零列，失败填零不持断采集
+    #[allow(clippy::let_underscore_must_use)]
     let _ = svc.vm_info(VMIW_USAGE, Endpoint(kp.p_endpoint), &mut vui);
     let word = |i: usize| -> u64 {
         u64::from_le_bytes(vui[i * 8..i * 8 + 8].try_into().unwrap())
