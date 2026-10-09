@@ -19,6 +19,7 @@ pub mod bus;
 pub mod controller;
 pub mod dma;
 pub mod pio;
+pub mod service;
 
 /// Service initialization entry (wires the controller; transport stays out).
 pub fn init() {}
