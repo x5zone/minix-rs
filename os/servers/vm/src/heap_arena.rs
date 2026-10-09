@@ -271,6 +271,8 @@ mod tests {
             );
 
             // Cleanup: unmap the pre-mapped page.
+            //[SD19-gate] 测试 cleanup 中 unmap 失败可忽：上方 assert! 已确认页已预映射，cleanup 仅回收预页，失败不回影响断言结果。属测试夹具
+            #[allow(clippy::let_underscore_must_use)]
             let _ = crate::pagetable::vm_self_unmap(va1);
         });
     }

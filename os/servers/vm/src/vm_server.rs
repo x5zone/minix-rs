@@ -1892,6 +1892,8 @@ impl VmServer {
             // requires us to defer it until after the vfs_queue borrow
             // is released).
             if let Some((callback, reply, state)) = result.vfs_callback {
+                //[SD19-gate] 与 C req_callback 内联丢弃同构：Rust 因 borrow checker 拆开后才可回调，失败面同内联丢弃，不另外接回
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = callback(self, &reply, &state);
             }
             return match result.reply {

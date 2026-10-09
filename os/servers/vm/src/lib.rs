@@ -1,5 +1,12 @@
 #![cfg_attr(not(test), no_std)]
 
+// SD-19 机械化门（静默吞错家族）：本 crate 内新增无理由的 `let _ =`
+// 会当场多报一条 `clippy::let_underscore_must_use` 警告。不做 crate 级
+// `#![allow]` blanket，保门有效；已定性的历史站点逐站在语句级 `#[allow]`
+// 上方留 `//[SD19-gate] <理由>`。参考 `os/libs/minix-sys/src/lib.rs` 同
+// 族头部注释。
+#![warn(clippy::let_underscore_must_use)]
+
 //! Minix-RS Virtual Memory (VM) server.
 //!
 //! This crate implements the VM server as a single-threaded user-space

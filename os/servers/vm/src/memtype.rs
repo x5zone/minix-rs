@@ -1917,6 +1917,8 @@ mod tests {
     #[should_panic(expected = "contiguous anonymous pagefault")]
     fn test_contig_ev_pagefault_panics() {
         let mut region = VirRegion::new(VirBytes(0x1000), VirBytes(0x1000), VrFlags::empty());
+        //[SD19-gate] `should_panic` 下回不到结果处：ev_pagefault 将 panic 在断言前，Result 不存在。属测试夹具，与 minix-sys 测试档同处理
+        #[allow(clippy::let_underscore_must_use)]
         let _ = MEM_TYPE_CONTIG_ANON.ev_pagefault(
             minix_types::Endpoint(1),
             &mut region,

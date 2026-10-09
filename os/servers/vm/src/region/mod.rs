@@ -35,6 +35,8 @@ pub(crate) fn free_region_pages(
     if let Some(pt) = page_table {
         for i in 0..page_count {
             let vaddr = VirBytes(region.vaddr.0 + (i as u64) * PAGE_SIZE);
+            //[SD19-gate] 区域撕页循环，与 vmproc_handle.rs:711 同构：页面可能本就没映射（未触及/已丢），unmap 失败属预期
+            #[allow(clippy::let_underscore_must_use)]
             let _ = pt.unmap(vaddr);
         }
     }

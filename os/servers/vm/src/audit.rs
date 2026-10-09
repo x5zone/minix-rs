@@ -90,6 +90,8 @@ pub(crate) fn emit_to_gateway(gw: &GatewayHandle, args: core::fmt::Arguments<'_>
         // (header contract: audit loss is never fatal); a panic here would
         // take down the VM event loop instead.
         if let Ok(mut gateway) = gw.try_borrow_mut() {
+            //[SD19-gate] 头部契约“audit 丢失从不致命”：diag_write 失败宁可丢一条记录，不可 panic 拿掉 VM 事件环
+            #[allow(clippy::let_underscore_must_use)]
             let _ = gateway.diag_write(chunk);
         }
         start = end;
