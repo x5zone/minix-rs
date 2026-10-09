@@ -105,6 +105,8 @@ fn list_one(operand: &str, show_dot: bool, almost_all: bool, _header: bool) -> i
             Ok(0) => break,
             Ok(n) => n,
             Err(_) => {
+                //[SD19-gate] SD-19: error path cleanup close
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = minix_sys::close(fd);
                 support::warn(format!("ls: {operand}: read error\n").as_bytes());
                 return 1;
@@ -134,6 +136,8 @@ fn list_one(operand: &str, show_dot: bool, almost_all: bool, _header: bool) -> i
             cursor += reclen;
         }
     }
+    //[SD19-gate] SD-19: close 后 fd 不再使用
+    #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::close(fd);
     names.sort();
     for name in names {
