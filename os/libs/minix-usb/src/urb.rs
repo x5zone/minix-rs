@@ -15,6 +15,18 @@
 pub const INVALID_URB_ID: u32 = 0;
 
 /// Transfer kind of one endpoint (`usb.h:52-58`).
+///
+/// The four variants are the *complete* USB transfer-type domain, not a set
+/// trimmed to what a driver happens to issue: the reference host controller
+/// compares a device endpoint descriptor's transfer type against the request
+/// type (`UE_GET_XFERTYPE(e->descriptor.bmAttributes) != urb->type`,
+/// `hcd.c:999`), so an isochronous or interrupt endpoint legitimately produces
+/// [`TransferKind::Isochronous`] / [`TransferKind::Interrupt`]. Today's ported
+/// drivers (hub, storage) issue only Control and Bulk, so those two variants
+/// have no local producer *yet*, but they are protocol-reachable, transcribe
+/// `usb.h:52-58` verbatim, and are pinned by
+/// `test_transfer_kind_numbers_match_header` — deleting them would break that
+/// C parity, so they are kept, not reclaimed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TransferKind {

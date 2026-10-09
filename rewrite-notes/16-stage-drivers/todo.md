@@ -130,16 +130,16 @@
 
 | 位置 | 内容 | 为何死 / 消除影响 |
 |---|---|---|
-| `os/drivers/storage/ramdisk/` 整 crate | plan §5.4（plan.md:373）明确排除（无 .c，非驱动），stub 注释却自称"C 对应 ramdisk/" | 事实错误 + 死 crate；删，或注明"按 plan §5.4 无 C 对应，语义归 18-stage-commands boot 布局" |
+| `os/drivers/storage/ramdisk/` 整 crate | plan §5.4（plan.md:373）明确排除（无 .c，非驱动），stub 注释却自称"C 对应 ramdisk/" | ✅ **已删（`2026-10-10` @ 快照 `e5b985b95` 复核）**：`ls os/drivers/storage/ramdisk/src/` → 目录不存在、`grep -c ramdisk os/Cargo.toml` → 0（Batch 7 头注已写"已删"，本行旧读数滞后，现回勾） |
 | `os/drivers/examples/hello/` ✅ | doc 24 §2.7 说"文档即课本（无 Rust 建模）"，stub 与文档互相矛盾 | 已删除（doc 24 的"无 Rust 建模"为准） |
 | `os/drivers/hid/pckbd/src/bridge.rs` 全模块 ✅ | 与 minix-sys/inputdriver.rs 双轨（E-PCKBDREG 第 5 项） | 已删除（A11，2026-09-17） |
 | minix-bdev `client.rs:584-591,39` ✅ | 五常量已删（Batch 7，doc §4 错误表已同步） | grep 零残留 |
 | minix-chardriver 三个死 fn + RESTARTED re-export ✅ | 已删（Batch 7；CDEV_REPLY_BASE 修值保留） | grep 零残留 |
 | minix-blockdriver 四个死 fn ✅ | 已删（Batch 7；模式级发现的其余 crate 项随各 crate 后续清扫） |
-| minix-netdriver `driver.rs:417-429` | `announce_ok`/`mode_down`/`link_up` 零使用 | 随 F4/A7 处理 |
+| minix-netdriver `driver.rs:417-429` | `announce_ok`/`mode_down`/`link_up` 零使用 | ✅ **已消解（`2026-10-10` @ 快照 `e5b985b95` 复核，0 命中）**：`grep -rn "announce_ok\|mode_down\|link_up" os/libs/minix-netdriver/src` → **0 命中**（`driver.rs` 已随 socktable/service.rs 重构消解，同 17-stage `N1-P2-2` 判定），无需再回收 |
 | minix-virtio 5 常量 + agreed_bits + IoPort 组 ✅ | 已删/移测（Batch 7；A5 线格式落地后常量有消费） |
 | mmc `commands.rs` | SetRelativeAddr/Select/SendCsd/SetBlockLength 四枚举值不可达（V4） | 随 V4 序列重写回收 |
-| usb `urb.rs:21-33` | `TransferKind::Isochronous`、`Direction` 无消费逻辑 | V8 出册落地时回收 |
+| usb `urb.rs:21-33` | `TransferKind::Isochronous`、`Direction` 无消费逻辑 | ⚖️ **重定性：非死码、属协议域保留（adjudicated keep，`2026-10-10` @ 快照 `e5b985b95`）**：`test_transfer_kind_numbers_match_header`（`urb.rs:96-101`）钉四变体全对位 C `usb.h:52-58`，且 C 主机侧从设备端点描述符 `bmAttributes` 解码传输类型（`hcd.c:999` `UE_GET_XFERTYPE(...) != urb->type`）——Isochronous/Interrupt 是协议可达域，现驱动仅发 Control/Bulk 是进度非删除理由；已在枚举文档注明保留依据，删会破 C 镜像并使该钉失败。`Direction`（usb.h:60-61）同属在 `PendingUrb` 里承载的线形词汇 |
 | filter `checksum.rs:147-148` | `BadSumPolicy` 两变体从不构造、`RETRY_OTHER_MIRROR` 仅测试 | 随 V3 裁决 |
 | vnd `layout.rs:65,70` | `_position` 死局部变量（offset 参数算完即弃） | 用之或删参 |
 | **OQ-1** | netdriver `sdev.rs`+`sockevent.rs`（17-stage-net 语义，零引用，vfs 另有 923 行独立副本） | 归属处置已登记 edge E-SDEVOWN，本 stage 不擅自删 |
