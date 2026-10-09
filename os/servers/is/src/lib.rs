@@ -1,4 +1,7 @@
 #![cfg_attr(not(test), no_std)]
+// SD-19 机械化门
+#![warn(clippy::let_underscore_must_use)]
+
 
 //! Minix-RS Information Server (IS).
 //!
@@ -348,24 +351,32 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [ProcInfoStruct::default(); PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of process table: {r}"
                     );
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_proctab(out, &tab, &mut self.dump_state.proctab);
             }
             DumpId::Procstack => {
                 let mut tab = [ProcInfoStruct::default(); PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of process table: {r}"
                     );
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_procstack(
                     out,
                     &tab,
@@ -377,6 +388,8 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut privs = [PrivInfoStruct::default(); dump_kernel::NR_SYS_PROCS];
                 let r = self.acquires.get_privtab(&mut privs);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of system privileges table: {r}"
@@ -386,12 +399,16 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [ProcInfoStruct::default(); PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of process table: {r}"
                     );
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_privileges(
                     out,
                     &privs,
@@ -403,18 +420,24 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut image = [BootImageStruct::default(); NR_BOOT_PROCS];
                 let r = self.acquires.get_image(&mut image);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of image table: {r}"
                     );
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_image(out, &image);
             }
             DumpId::Irqtab => {
                 let mut hooks = [IrqHookStruct::default(); NR_IRQ_HOOKS];
                 let r = self.acquires.get_irqhooks(&mut hooks);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of irq hooks: {r}"
@@ -424,12 +447,16 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut actids = [0i32; NR_IRQ_HOOKS];
                 let r = self.acquires.get_irqactids(&mut actids);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of irq mask: {r}"
                     );
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_irqtab(out, &hooks, &actids);
             }
             DumpId::Kmessages => {
@@ -437,49 +464,67 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut ring = [0u8; dump_kernel::KMESS_BUF_SIZE as usize];
                 let r = self.acquires.kmessages(&mut meta, &mut ring);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of kernel messages: {r}"
                     );
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_kmessages(out, &meta, &ring);
             }
             DumpId::Monparams => {
                 let mut blob = [0u8; MULTIBOOT_PARAM_BUF];
                 let r = self.acquires.get_monparams(&mut blob);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of monitor params: {r}"
                     );
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_monparams(out, &blob);
             }
             DumpId::Kenv => {
                 let mut kinfo = KinfoStruct::default();
                 let r = self.acquires.get_kinfo(&mut kinfo);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of kernel info struct: {r}"
                     );
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_kenv(out, &kinfo);
             }
             DumpId::Mproc | DumpId::Sigaction => {
                 let mut tab = [MProcSnap::default(); dump_kernel::NR_PROCS as usize];
                 let r = self.acquires.pm_proc_tab(&mut tab);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from PM. Perhaps recompile IS?");
                     return;
                 }
                 if dump == DumpId::Mproc {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = render_mproc(out, &tab, &mut self.dump_state.pm_table);
                 } else {
                     let uptime = self.acquires.uptime();
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = render_sigaction(out, &tab, &mut self.dump_state.sigaction, uptime);
                 }
             }
@@ -487,18 +532,26 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut tab = [FProcSnap::default(); dump_kernel::NR_PROCS as usize];
                 let r = self.acquires.vfs_proc_tab(&mut tab);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from VFS. Perhaps recompile IS?");
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_fproc(out, &tab, &mut self.dump_state.vfs);
             }
             DumpId::Dtab => {
                 let mut tab = [DmapSnap::default(); NR_DEVICES];
                 let r = self.acquires.vfs_dmap_tab(&mut tab);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from VFS. Perhaps recompile IS?");
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_dtab(out, &tab);
             }
             DumpId::Rproc => {
@@ -506,30 +559,42 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let mut privt = [RprocSnap::default(); dump_rs::RS_TABLE_LEN];
                 let r = self.acquires.rs_tables(&mut pubt, &mut privt);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from RS. Perhaps recompile IS?");
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_rproc(out, &pubt, &privt, &mut self.dump_state.rs);
             }
             DumpId::DataStore => {
                 let mut tab = [DsEntrySnap::default(); dump_ds::NR_DS_KEYS];
                 let r = self.acquires.ds_data_store(&mut tab);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(out, "Error obtaining table from DS. Perhaps recompile IS?");
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_data_store(out, &tab, &mut self.dump_state.ds);
             }
             DumpId::Vm => {
                 let mut tab = [ProcInfoStruct::default(); dump_kernel::PROC_TABLE_LEN];
                 let r = self.acquires.get_proctab(&mut tab);
                 if r != OK {
+                    //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = writeln!(
                         out,
                         "IS: warning: couldn't get copy of process table: {r}"
                     );
                     return;
                 }
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_vm(
                     out,
                     &tab,
@@ -539,6 +604,8 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 );
             }
             DumpId::Mapping => {
+                //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = render_mapping(out);
             }
         }
@@ -929,6 +996,8 @@ mod tests {
             FakeFkey::new(),
             FakeAcquires::ok(),
         );
+        //[SD19-gate] SD-19: 诊断输出/渲染尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = s.step();
     }
 

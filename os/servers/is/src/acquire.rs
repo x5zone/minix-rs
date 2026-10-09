@@ -1037,6 +1037,8 @@ mod tests {
                 core::mem::size_of::<KinfoStruct>(),
             )
         };
+        //[SD19-gate] SD-19: 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::syscall::sys_getinfo_into(
             &canned,
             minix_types::GET_KINFO,
@@ -1050,6 +1052,8 @@ mod tests {
         assert_eq!(gi.request, minix_types::GET_KINFO);
         assert_eq!(gi.val_len as usize, core::mem::size_of::<KinfoStruct>());
         assert_eq!(gi.endpt, Endpoint::NONE.0);
+        //[SD19-gate] SD-19: 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = &mut a; // 方法面与承载同形(上面直调展示 wire)
     }
 

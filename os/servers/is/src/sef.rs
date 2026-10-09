@@ -201,6 +201,8 @@ pub struct DiagWriter;
 
 impl fmt::Write for DiagWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
+        //[SD19-gate] SD-19: IPC 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::syscall::sys_diagctl_write(
             &minix_sys::syscall::DirectKernelCallTransport,
             s,
@@ -263,6 +265,8 @@ impl SefTransport for SysSefTransport {
     fn warn_illegal(&mut self, call_nr: i32, sender: Endpoint) {
         // C main.c:60-61 文案。
         use core::fmt::Write as _;
+        //[SD19-gate] SD-19: IPC 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = writeln!(
             self.diag,
             "IS: warning, got illegal request {} from {}",
@@ -273,12 +277,16 @@ impl SefTransport for SysSefTransport {
     fn warn_fkey_events(&mut self, status: i32) {
         // C dmp.c:84-86 文案。
         use core::fmt::Write as _;
+        //[SD19-gate] SD-19: IPC 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = writeln!(self.diag, "IS: warning, fkey_events failed: {}", status);
     }
 
     fn warn_fkey_ctl(&mut self, status: i32) {
         // C dmp.c:63-65 文案。
         use core::fmt::Write as _;
+        //[SD19-gate] SD-19: IPC 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = writeln!(self.diag, "IS: warning, fkey_ctl failed: {}", status);
     }
 
