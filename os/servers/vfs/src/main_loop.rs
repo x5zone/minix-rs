@@ -7769,7 +7769,10 @@ pub fn run() -> ! {
     // ENOTREADY 被 `let _ =` 吞掉 ⇒ OK 回复丢失、PM 的 barrier 缓冲保持
     // 旧内容 ⇒ m_type != 0 panic（1.10i 第二站点）。阻塞 send 使 VFS
     // 挂起直到 PM 进 receive 收下回复——与 C 语义一致。
-    minix_sys::send(
+    // [SD19-gate] C main.c:435-436 ipc_send 不检查返回；阻塞 send 失败仅当
+    // PM 已死，VFS 随后收不到任何请求自然停摆，回错无处可去
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = minix_sys::send(
         Endpoint::PM,
         &Message {
             m_type: minix_types::OK,
@@ -11882,7 +11885,9 @@ mod tests {
         state.init_fresh();
         let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
         let ipc = BootScriptedIpc::default();
-        state.finish_init(&kernel, &ipc);
+        // [SD19-gate] 测试夹内：finish_init 失败由后续状态断言体现
+        #[allow(clippy::let_underscore_must_use)]
+        let _ = state.finish_init(&kernel, &ipc);
     }
 
     #[test]

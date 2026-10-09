@@ -426,12 +426,16 @@ pub(crate) mod recording {
             match self.grants.first() {
                 Some(Ok(id)) => {
                     let id = *id;
-                    self.grants.remove(0);
+                    // [SD19-gate] 测试夹内队首弹出：分支已由 first() 定型，remove 失败由后续断言体现
+                    #[allow(clippy::let_underscore_must_use)]
+                    let _ = self.grants.remove(0);
                     Ok(id)
                 }
                 Some(Err(code)) => {
                     let code = *code;
-                    self.grants.remove(0);
+                    // [SD19-gate] 测试夹内队首弹出：分支已由 first() 定型，remove 失败由后续断言体现
+                    #[allow(clippy::let_underscore_must_use)]
+                    let _ = self.grants.remove(0);
                     Err(code)
                 }
                 None => Ok(41),
@@ -470,12 +474,16 @@ pub(crate) mod recording {
             match self.uids.first() {
                 Some(Ok(uid)) => {
                     let uid = *uid;
-                    self.uids.remove(0);
+                    // [SD19-gate] 测试夹内队首弹出：分支已由 first() 定型，remove 失败由后续断言体现
+                    #[allow(clippy::let_underscore_must_use)]
+                    let _ = self.uids.remove(0);
                     Ok(uid)
                 }
                 Some(Err(code)) => {
                     let code = *code;
-                    self.uids.remove(0);
+                    // [SD19-gate] 测试夹内队首弹出：分支已由 first() 定型，remove 失败由后续断言体现
+                    #[allow(clippy::let_underscore_must_use)]
+                    let _ = self.uids.remove(0);
                     Err(code)
                 }
                 None => Ok(0),

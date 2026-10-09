@@ -254,7 +254,9 @@ fn seeded_state() -> VfsState {
             minix_types::CpFlags::READ,
         ) {
             Ok(g) => {
-                state.grants.revoke(g);
+                // [SD19-gate] 测试夹内撤销授权：尽力而为，失败由后续断言体现
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = state.grants.revoke(g);
                 break;
             }
             Err(_) => continue,

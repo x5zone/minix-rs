@@ -952,7 +952,9 @@ mod tests {
         host.console_write(crate::log::Severity::Alert, "boot");
         assert_eq!(host.console.len(), 1);
         assert_eq!(host.slept.len(), 0);
-        host.sleep_secs(30);
+        // [SD19-gate] 测试夹内：睡眠记录由下方 assert_eq 断言，返回值无关
+        #[allow(clippy::let_underscore_must_use)]
+        let _ = host.sleep_secs(30);
         assert_eq!(host.slept, vec![30]);
     }
 
