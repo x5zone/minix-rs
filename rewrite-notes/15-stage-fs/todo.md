@@ -1,6 +1,7 @@
 # 15-stage-fs Rust 实现架构级 Review TODO（V1 轮）
 
 > **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `partially fixed` 2：八个文件服务器入口未接事件循环（框架侧属本阶段，握手属跨阶段）。
+> **`2026-10-10` 接线现状复核**：“八个未接”已推进为 **4 接 4 未接**——mfs/pfs/procfs/ptyfs 经 minix-fs-rt 接 SEF 接收循环 + RS 出生握手（其 `main.rs` 已无 `loop {}`、带 fs-rt/serve 标记）；ext2/isofs 的 `main.rs` 自陈“有意停放待 E-FSBDEV 交付真镜像”（提前接线=假装有盘）；hgfs/vbfs 仍 `init()+loop {}` 占位。状态仍属 `partially fixed`（未接四家均 E-FSBDEV/E-FSRUNTIME 跨阶段硬件面，非本轮可静态坐实闭合）。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > **来源**：V1 轮架构级审查（2026-09-16，code-excellence 口径：查漏补缺优先，其次整体/分层架构深审；叠加 cmd-20 四步：找遗漏、找改进、补覆盖、回归）。
