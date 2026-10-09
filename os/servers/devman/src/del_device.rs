@@ -123,6 +123,8 @@ pub fn do_del(
     line.push_str(&path);
     {
         use core::fmt::Write as _;
+        //[SD19-gate] SD-19: core::write! 入 String，仅分配可败
+        #[allow(clippy::let_underscore_must_use)]
         let _ = core::write!(line, " 0x{:08x}", id.0);
     }
     on_event(Event::new(&line)?);

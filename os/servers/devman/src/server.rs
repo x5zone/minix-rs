@@ -94,6 +94,8 @@ impl Server {
             return; // pre-init: no events file exists to receive anything
         };
         if let Some(InodeContent::Events(q)) = self.vtreefs.tree_mut().content_mut(ino) {
+            //[SD19-gate] SD-19: 事件队列 push 固定容量，满丢一条
+            #[allow(clippy::let_underscore_must_use)]
             let _ = q.push(ev);
         }
     }

@@ -54,6 +54,8 @@ fn unwind_staged(
     e: minix_types::Errno,
 ) -> minix_types::Errno {
     if let Some(dir) = dir_ino {
+        //[SD19-gate] SD-19: fw.delete 尽力而为清理，主操作已定
+        #[allow(clippy::let_underscore_must_use)]
         let _ = fw.delete(dir);
     }
     tree.rollback_id(id);
@@ -125,6 +127,8 @@ pub fn do_add(
     let mut id_text = String::new();
     {
         use core::fmt::Write as _;
+        //[SD19-gate] SD-19: core::write! 入 String，仅分配可败
+        #[allow(clippy::let_underscore_must_use)]
         let _ = core::write!(id_text, "{}", id.0);
     }
     if let Err(err) = add_static(fw, &mut dev, "devman_id", &id_text) {
@@ -150,6 +154,8 @@ pub fn do_add(
     line.push_str(&path);
     {
         use core::fmt::Write as _;
+        //[SD19-gate] SD-19: core::write! 入 String，仅分配可败
+        #[allow(clippy::let_underscore_must_use)]
         let _ = core::write!(line, " 0x{:08x}", id.0);
     }
     // Over-long lines are ENAMETOOLONG, never truncated (03 §3.5; C

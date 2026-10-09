@@ -224,6 +224,8 @@ impl VTreeFs {
         // The root starts at 0 refs; a failed mount must not leak it,
         // so refcount juggling stays inside `reference` (infallible here:
         // root always exists).
+        //[SD19-gate] SD-19: tree init reference root，失败即 panic 上游
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.tree.reference(root);
         // C: `if (vtreefs_hooks->init_hook != NULL) vtreefs_hooks->init_hook()`
         // (mount.c:24-25) — the library calls back into the service to let
@@ -241,6 +243,8 @@ impl VTreeFs {
     /// for devman — no `Option` slot is modeled for it.
     pub fn unmount(&mut self) {
         let root = self.tree.root();
+        //[SD19-gate] SD-19: tree teardown release root，失败无恢复
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.tree.release(root);
     }
 
