@@ -57,10 +57,10 @@
 | main.c（102 行） | startup.rs（159 行）+ main.rs（10 行） | init 三件套完成两件；信号只移植纯决策；分发主循环缺失（V1-P0-1） |
 | misc.c / table.c | maint.rs / table.rs | fs_sync 的「先 inode 后块」契约一致；表结构 31 行一一对应但翻转状态失真（V1-P1-8） |
 
-账本核查两张清单（table.rs:40，`EntryStatus` 三态）：
+账本核查两张清单（table.rs:40，`EntryStatus` 三态）——`2026-10-10` 逐行对码复核，两张清单均已翻正（下方旧述为快照，以本节为现态）：
 
-- **账本滞后（账本写 pending、实现已存在，20 行）**：Read/Write（read.rs:174、write.rs:331）、GetDents（read.rs:334）、Truncate（link.rs:665 + write.rs:417）、InhibitRead（open.rs:555）、Create/MakeDir/MakeNode（open.rs:244/295/265）、Link/Unlink（link.rs:159/278）、RemoveDir（link.rs:317，含 V1-P0-2 缺陷）、SymbolicLink（open.rs:412）、ReadLink（link.rs:476）、Stat/ChangeOwner/ChangeMode/UpdateTimes/StatVfs（meta.rs:226/122/93/152/325）、Sync（maint.rs:64）、Lookup（部分：构件齐备无入口）。
-- **真 pending（实现确实缺失，3 行）**：PutNode（inode.c:38-64）、Peek（read.c:156-159）、Rename（link.c:255-422）。
+- ~~账本滞后（写 pending、实现已存在，20 行）~~ **已全部翻正**：`grep -oE "status: EntryStatus::[A-Za-z]+" os/fs/mfs/src/table.rs | sort | uniq -c` 现算 **26 LiveInCrate + 5 LiveViaBlockTransfer + 0 PendingDocument（31 行全 Live）**；由 `` `V1-P1-8` `` 随 Fix #2 装配翻转，`test_table_covers_every_dispatchable_request` 与 `test_table_has_thirty_one_rows_like_c` 钉住（26 行 Read/Write/GetDents/Truncate/InhibitRead/Create/MakeDir/MakeNode/Link/Unlink/RemoveDir/SymbolicLink/ReadLink/Stat/ChangeOwner/ChangeMode/UpdateTimes/StatVfs/Sync/Lookup 等实现均已存在，file:line 见旧行注）。
+- ~~真 pending（实现缺失，3 行）PutNode/Peek/Rename~~ **三项实现均已存在且标 Live**：`put_node`（server.rs:368）、`peek`（server.rs:448）、`rename`（server.rs:951 + link.rs:453）；Rename 随 `` `V1-P1-1` `` Fix #8、Peek 随 `` `V1-P1-3` `` Fix #9 落地。table 现无 PendingDocument 行。
 
 ### 2.2 minix-fs 框架（↔ libfsdriver + libminixfs）
 
