@@ -1,4 +1,8 @@
 #![cfg_attr(not(test), no_std)]
+// SD-19 静默吞错家族机械化门（第七家 crate，与 minix-sys/rt/fs/kernel/sef/fs-rt 同程序）：
+// textfilter 里当前仅 `cmp.rs` 一处 `let _ = write!` 入 String（仅内存分配可失败，
+// C regular.c 对应 printf 亦不分支）。新开无理由的 `let _ =` 会当场多报一条。
+#![warn(clippy::let_underscore_must_use)]
 
 //! Text filtering and data processing core for Minix-RS commands.
 //!

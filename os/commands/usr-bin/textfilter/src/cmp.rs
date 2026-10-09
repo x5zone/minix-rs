@@ -73,6 +73,8 @@ pub fn compare_bytes(a: &[u8], b: &[u8], list_all: bool) -> CmpOutcome {
 pub fn format_list_entry(entry: (u64, u8, u8), out: &mut String) {
     use core::fmt::Write;
     let (byte, left, right) = entry;
+    //[SD19-gate] String 格式化仅内存分配可失败；C regular.c:98 对应 printf 亦不分支处理
+    #[allow(clippy::let_underscore_must_use)]
     let _ = write!(out, "{:6} {:3o} {:3o}\n", byte, left, right);
 }
 
