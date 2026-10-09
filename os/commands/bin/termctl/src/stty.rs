@@ -180,6 +180,8 @@ pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_sys::Termios) {
                 // 解析侧已验过语法，这里不可能再失败；坏输入在 C 里
                 // errx 直接终止，报错时机归调用层的 parse。
                 if let Some(rest) = word.strip_prefix("gfmt1") {
+                    //[SD19-gate] SD-19: grep_read 辅助打印，失败丢一行输出
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = grep_read(t, rest);
                 }
             }
