@@ -533,7 +533,7 @@ mod tests {
             vm_allocated_bytes: 0,
             is_first_time: true,
             kernel_layout: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(minix_types::USER_STACK_TOP),
         };
         assert_eq!(params.extra_pages(), 3);
     }
@@ -554,7 +554,7 @@ mod tests {
             vm_allocated_bytes: 0,
             is_first_time: true,
             kernel_layout: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(minix_types::USER_STACK_TOP),
         };
         assert_eq!(params.extra_pages(), 4);
     }
