@@ -852,12 +852,15 @@ fn call_rs_set_priv(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
 }
 
 fn call_info(ctx: &mut VmContext, msg: &Message) -> DispatchResult {
-    // C: utility.c:100 — m_lsys_vm_info (M2: m2i1=what, m2i2=ep, m2i3=count, m2l2=next)
-    let m2 = unsafe { &msg.m_u.m_m2 };
-    let what = m2.m2i1;
-    let mut ep = Endpoint(m2.m2i2);
-    let count = m2.m2i3 as usize;
-    let next = VirBytes(m2.m2l2 as u64);
+    // C: utility.c:100 — `mess_lsys_vm_info`（ipc.h:1494-1501）。专属结构 what@0/
+    // ep@4/count@8/next@24 与旧 `m_m2` overlay 的 m2i1/m2i2/m2i3/m2l2 逐字段同偏移，
+    // 故切到专属结构是行为等价的类型化（V13-P2-6 解码面收口，与其余四个
+    // VM 消息 handler 同形）。
+    let info = unsafe { &msg.m_u.m_lsys_vm_info };
+    let what = info.what;
+    let mut ep = Endpoint(info.ep);
+    let count = info.count as usize;
+    let next = VirBytes(info.next);
     // C: VMIW_STATS=1 / VMIW_USAGE=2 / VMIW_REGION=3 (com.h:732-734) —
     // libsys sends exactly these values (vm_info.c:15/:29/:46).
     let q = match what {

@@ -35,7 +35,7 @@
 | P2 | V13-P2-3 | ACL 闸 fail-open：`get_active(caller)==None`（EXITING 等）时整个 acl_check 被跳过（§18.2） |
 | P2 | V13-P2-4 | MAKE_VM 恒拒是有意设计收缩，但无任何偏差登记——E-RSWIRE 后可达，需文档化豁免（§18.2） |
 | P2 | V13-P2-5 | RS_SET_PRIV 的 call_mask 硬编码 None：C 走 sys_datacopy，M2 wire 无法表达，safecopy 可用前权限下发链断裂（§18.2） |
-| P2 | V13-P2-6 | 五个 C 消息结构（getphys/getref/info/rusage/update）无 Rust 专属 struct，overlay 解码字段语义与 C 错位 + 12 个 VM payload 仅 1 个有 56 字节断言（§18.2） |
+| P2 | `V13-P2-6` | ✅ **已落（`2026-10-10` 复核 + 收口）**：五结构均有 Rust 专属 wire struct（`minix-types::ipc::vm` 的 `MessLcVmGetphys`/`MessLsysVmGetref`/`MessLsysVmInfo`/`MessLsysVmRusage`/`MessLsysVmUpdate`，字段按 LP64 逐位对位 `ipc.h:1487-1534`）并入 `message.rs` 命名 union 域；五个解码 handler 全切到专属结构（`dispatcher.rs` 的 getphys/getref/update/rusage 此前已切，本轮补 `call_info` 从 `m_m2` overlay 切 `m_lsys_vm_info`——`what@0/ep@4/count@8/next@24` 与 `m2i1/m2i2/m2i3/m2l2` 逐字段同偏移，行为等价）。size 断言缺口亦补齐：`message.rs:4558-4618` 对全部 VM payload struct 断言 `== MESSAGE_PAYLOAD_SIZE`，`vm.rs:1774-1860` 另加 `== 56` 与逐字段 `offset_of` 断言。核实：`cargo test -p minix-vm --lib` → 542/0、`cargo test -p minix-types --lib` → 326/0（含线形断言），`cargo clippy -p minix-vm` 0 error。 |
 | P3 | V13-P3-1 | VM_PAGEFAULT 伪造源检查仅 debug_assert，release 零观测（C release 保留 printf）；exit 不清 vfs_queue 挂起请求（无按 owner 取消 API）（§18.2） |
 | edge | E-VMTLB（新） | kernel 侧目标进程 TLB 刷新机制（C MF_FLUSH_TLB）缺失 + 同根跳过优化耦合——真 SMP 正确性前提 |
 | edge | E-RSWIRE 增补 | ACL u64 掩码对账（V13-P2-2）+ RS_SET_PRIV 真掩码（V13-P2-5）随 wire 工作面一并定稿 |
@@ -212,6 +212,8 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
 - **修改方案**：依赖 E2（SYS_SAFECOPYFROM 用户态包装）可用后按 C 语义补真值——M2 的 `m2l1` 是掩码缓冲指针，语义即"从 RS 进程 safecopy"。**登记在 E-RSWIRE/E2 协同面**（edge_todo E-RSWIRE 增补第 2 点），本条为 VM 侧活指针。
 
 ### V13-P2-6（P2 结构缺失族）五个 C 消息结构无 Rust 专属 struct：overlay 解码与 C 字段语义错位 + size 断言缺口
+
+> **状态校正（已落，`2026-10-10`）**：下述“Rust 无专属结构”“仅 MessVmmcpReply 有 56 字节断言”“解码经 overlay”三项均过期——五个专属 struct 已入 `minix-types::ipc::vm` 并接为 `message.rs` 命名 union 域；`dispatcher.rs` 五 handler 全切到专属结构（`call_info` 为本轮收口的一笔）；`message.rs:4558-4618` 已对全部 VM payload 断言 `== MESSAGE_PAYLOAD_SIZE`，`vm.rs` 补 `== 56` 与逐字段 `offset_of` 断言。下表原分析保留作背景（它精确记录了“按 C i386 libc 语义写 minix-sys 消费方时会接错字段”这一历史风险，而专属 struct 正是对该风险的防线）。
 
 - **证据**（逐结构对照 ipc.h，完整表见 gate-evidence）：
   - `mess_lc_vm_getphys`（C：endpt@0、addr@4、ret_addr@8）与 `mess_lsys_vm_getref`（同布局）——Rust 无专属结构，经 `m_m1` overlay 解码读 `m1p1@16`（dispatcher.rs:1075-1089），回复写 `m1p1@16`（vm_server.rs:1721-1722）。
