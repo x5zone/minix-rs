@@ -145,23 +145,23 @@
 
 ## §4 判据表（本轮全部现算，不抄二手计数）
 
-下表里一条命令可定案的行，已由 `tools/todo-reconcile-scan.sh` 集中成可重跑的执行器（只读，输出四列：判据名、本次读数、台账基线、判定）。**它只覆盖机器可判的那部分**：需要追调用链（证据级 `L2`）与需要真机（`待验证`）的条目它不接，输出里固定留一行 `NA` 提醒，免得把「脚本没报漂移」当成「台账已核实」。基线失配时的处置是复核后改台账，不是改脚本里的基线。
+下表里一条命令可定案的行，已由 `tools/todo-reconcile-scan.sh` 集中成可重跑的执行器（只读，输出四列：判据名、本次读数、台账基线、判定）。**它只覆盖机器可判的那部分**：需要追调用链（证据级 `L2`）与需要真机（`待验证`）的条目它不接，输出里固定留一行 `NA` 提醒，免得把「脚本没报漂移」当成「台账已核实」。基线失配时的默认处置是复核后改台账，不是改脚本里的基线。唯一例外见 §6 第 7 条「当轮滚动出口」：已有证据证明基线变化来自合法代码演进时，维护批/专项会话可当轮滚动脚本基线，但须三件套齐全＋完整判据重算＋「读数变化本身不构成滚动依据」＋独立成笔提交。
 
 | 类别 | 判据命令（只读，可重跑） | 快照 `87784ca04` 上的读数 | 能定案到什么程度 |
 |---|---|---|---|
 | 结案后探针未滚除 | `grep -rn "用后即滚" os --include=*.rs \| wc -l`；`grep -rl "用后即滚" os --include=*.rs \| wc -l` | 13 行 / 7 个文件（原 15、`2b0deb62c` 滚 FTRAP_N 后 14、本轮滚 `os/kernel/src/trap_dispatch.rs` 里两处空体残骸后现算 13；脚本基线同步从 15 改为 13） | 可定案（`L1`）；**行数不等于待滚量**——13 行中绝大多数是注释里提到这个纪律的历史说明（真实探针本体），并非每一行都能删；逐站分类见 `TODO-LEDGER-OPEN.md` §2 `P-ALL-04` 行 |
-| 探针命名族 | `grep -rnE "nk4[ac]:" os --include=*.rs \| wc -l` | 15 行 | 可定案；注意计数正则必须覆盖两个族，历史上因只搜 `nk4a:` 而漏 |
+| 探针命名族 | `grep -rnE "nk4[ac]:" os --include=*.rs \| wc -l` | 17 行（维护批 `2026-10-10 @ 1eb5d942a` 现算 15→17、脚本基线同步滚动：多出两行是次级核引导诊断探针 `nk4c: ap-arrived`/`ap-timeout`/`psci conduit` 与 riscv/arm 的 hart 臂，属 SD-24 在案的活跃诊断探针而非可删残骸——滚除仍受内存污染案结案门控，见 `TODO-LEDGER-OPEN.md` §2 `P-ALL-04` 行） | 可定案；注意计数正则必须覆盖两个族，历史上因只搜 `nk4a:` 而漏 |
 | 生产码静默占位 | `grep -rn "todo!()\|unimplemented!()" os/kernel/src os/arch/src \| wc -l` | 0 | 可定案：**内核与架构层没有静默占位**，缺口以注释与显式停止形态存在，只能读码枚举 |
 | 服务入口未通电 | `grep -rln "loop {}" os --include=main.rs \| wc -l` | 55 | 可定案 |
-| 占位传输实现 | `grep -rn "UnimplementedTransport" os --include=*.rs \| wc -l` | 0（原 5 全为 IS 被 `SysSefTransport` 取代的死桩，`2026-10-08` 移除；脚本基线待维护批）| 可定案；真·未通电信号看 `服务入口空转占位` 的 55 个 `loop {}` main |
+| 占位传输实现 | `grep -rn "UnimplementedTransport" os --include=*.rs \| wc -l` | 0（原 5 全为 IS 被 `SysSefTransport` 取代的死桩，`2026-10-08` 移除；维护批 `2026-10-10` 已把脚本基线 5→0）| 可定案；真·未通电信号看 `服务入口空转占位` 的 55 个 `loop {}` main |
 | 架构测试套件装配白名单 | `grep -n "ATF_BOOT_LEG_READY:" os/xtask/src/image.rs` | `["aarch64", "riscv64"]` | 可定案（x86_64 缺席是事实；能否跑绿需上机） |
 | 宿主不可达的门内测试数 | 逐目录行首锚定 `grep -rnE "^[[:space:]]*#\[test\]"` 相加：arm64、riscv64 的架构目录与平台目录 | 86（39 + 40 + 3 + 4） | 可定案；每轮须重算。**正则必须锚行首**——旧写法 `grep -c "#\[test\]"` 不锚定，会把 `riscv64/trap_return.rs`、`riscv64/trap_stub.rs` 里解释「为何这个测试宿主跑不到」的注释行也数进去，虚报 2 枚（历史上曾因此记成 88）；`P-ALL-01` 已于 `2026-10-09` 逐文件深度迁移收官后回勾为 `closed`（见 `TODO-LEDGER-OPEN.md` §2 同条目行） |
 | 次级核入口体是否还是骨架 | `wc -l os/arch/src/{arm64,riscv64,x86_64}/ap_early_entry.rs` | 226 / 193 / 533 | 可定案（账面"41/40 行骨架"已过期） |
-| 主核钳位是否仍在 | `grep -rn "clamp_cpu_to_bsp" os --include=*.rs` | 定义、调用、专项测试三处俱在 | 可定案（读调用上下文，`L2`） |
+| 主核钳位是否仍在 | `grep -rn "clamp_cpu_to_bsp" os --include=*.rs` | 定义、调用、专项测试三处俱在；现算 11 行（维护批 `2026-10-10` 滚动脚本基线 10→11：多出的一行是 `proc_table.rs:924` 的注释提及，钳位本体与专项测试全在——主核钳位仍是刻意的过渡守卫，未撤） | 可定案（读调用上下文，`L2`） |
 | 空闲核唤醒臂 | `grep -rn "fn context_stop_idle" os --include=*.rs` | 0 | 可定案 |
 | 空闲标志清零 | `grep -rn "cpu_is_idle" os --include=*.rs` | 置起 1 处、清零 0 处 | 可定案 |
 | 次级核放行邮箱 | `grep -rn "AP_GO" os --include=*.rs` | 声明 2 处、等待与注释若干、写入 0 处 | 可定案 |
-| 浮点归属写入点 | `grep -rn "fpu_owner" os --include=*.rs` | riscv64 臂 1 处、aarch64 臂 1 处、x86_64 臂 1 处（x86_64 恢复腿已落，见 `TODO-LEDGER-OPEN.md` §1 同日行）、迁移释放腿 1 处；全库命中现算 24 行 | 可定案；脚本 `todo-reconcile-scan.sh` 该判据的历史基线 21 被本轮 x86 臂合法抬高到 24，按 §6 纪律交「规则集维护批」统一滚动，单轮不代改脚本基线 |
+| 浮点归属写入点 | `grep -rn "fpu_owner" os --include=*.rs` | riscv64 臂 1 处、aarch64 臂 1 处、x86_64 臂 1 处（x86_64 恢复腿已落，见 `TODO-LEDGER-OPEN.md` §1 同日行）、迁移释放腿 1 处；全库命中现算 24 行 | 可定案；脚本 `todo-reconcile-scan.sh` 该判据的历史基线 21 被 x86 恢复腿合法抬高到 24，维护批 `2026-10-10` 已按 §6 第 7 条「当轮滚动出口」把脚本基线 21→24 滚动（三件套齐全、独立成笔） |
 | 指令缓存维护 | `grep -rn "fence\.i\|dc *cvau\|ic *iallu\|sync_icache" os --include=*.rs` | 2（同一个 riscv64 文件，其一为注释） | 可定案 |
 | 特权屏蔽位是否在生产置起 | `grep -rn "PAN\|SUM" os/arch/src os/kernel/src --include=*.rs` | 命中全在注释与位定义 | 可定案 |
 | 内核包默认特性 | `grep -n "^default" os/kernel/Cargo.toml` | `default = []`（SD-30/U-1 已摘替身默认；宿主测试形态改由显式 `--features mock` 选定） | 可定案 |
@@ -192,3 +192,4 @@
 4. **每轮收尾跑五道校验**：`bash tools/todo-reconcile-scan.sh`（先重算可机器判据再写状态）、`python3 tools/notes-link-check.py rewrite-notes/`（与上一轮基线做集合差，新增断链必须为零）、`bash tools/todo-staleness-check.sh rewrite-notes/coordination/TODO-LEDGER-OPEN.md`、`bash tools/doc-style-lint.sh --diff`、`bash tools/check-staged-inflight.sh`。
 5. **本文件 §1 的处置表是活表**：新增文件要立刻登记进 1.1—1.6 的某一类；某类文件清零后，其合并卷的对应章节标注"已清空，可归档"。
 6. **阶段文档重生成前必读** `STAGE-KERNEL-FREEZE-READY-20261008.md`：那份文档管的是"哪些阶段文档可以安全定稿、哪些必须等代码"，与本台账互补——本台账管待办，它管冻结边界。
+7. **基线滚动的「当轮滚动出口」（裁决 U-4 采修订版方案 A，`PENDING-DECISIONS-UNBLOCK-20261009.md`）**：§4 默认的「基线失配→复核后改台账、不改脚本基线」是为了保住防篡改锚（否则任何一轮都能顺手改基线迁就现状）。但专门的批量维护会话／已裁决领取的维护项，当已有证据证明基线变化来自合法代码演进时，可当轮滚动脚本基线。四个硬条件缺一不可：（a）三件套齐全——可重跑命令与读数、核实日期、当时快照提交号（同第 2 条定义）；（b）基线滚动**独立成笔提交**，与代码变更分开，让审查者能区分「代码为何变、旧基线为何不再对、新基线怎么来」；（c）跑完整判据重算（`bash tools/todo-reconcile-scan.sh` 退码 0）而非单点改数；（d）**「测试通过」或「读数变了」本身不构成滚动依据**——无证据的漂移仍走第 2 条。首次执行：`2026-10-10` 批量维护会话滚 4 条（探针命名族 15→17、占位传输 5→0、主核钳位 10→11、浮点归属 21→24），逐条合法性见 §4 同行注记。

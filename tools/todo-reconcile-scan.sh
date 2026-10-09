@@ -52,16 +52,16 @@ drift=0
 printf '判据\t本次读数\t台账基线\t判定\n'
 
 n=$(rs "用后即滚");                     row "探针待滚除（行）" "$n" 13 "$(verdict "$n" 13)"
-n=$(rs -E "nk4[ac]:");                  row "探针命名族（行）" "$n" 15 "$(verdict "$n" 15)"
+n=$(rs -E "nk4[ac]:");                  row "探针命名族（行）" "$n" 17 "$(verdict "$n" 17)"
 n=$(grep -rn "todo!()\|unimplemented!()" os/kernel/src os/arch/src 2>/dev/null | wc -l | tr -d ' ')
                                         row "内核与架构层静默占位" "$n" 0 "$(verdict "$n" 0)"
-n=$(rs "UnimplementedTransport");        row "占位传输实现" "$n" 5 "$(verdict "$n" 5)"
+n=$(rs "UnimplementedTransport");        row "占位传输实现" "$n" 0 "$(verdict "$n" 0)"
 n=$(grep -rln "loop {}" os --include=main.rs 2>/dev/null | grep -v '^os/target' | wc -l | tr -d ' ')
                                         row "服务入口空转占位（文件）" "$n" 55 "$(verdict "$n" 55)"
-n=$(rs "clamp_cpu_to_bsp");             row "主核钳位（行）" "$n" 10 "$(verdict "$n" 10)"
+n=$(rs "clamp_cpu_to_bsp");             row "主核钳位（行）" "$n" 11 "$(verdict "$n" 11)"
 n=$(rs "fn context_stop_idle");         row "空闲核唤醒臂本体" "$n" 0 "$(verdict "$n" 0)"
 n=$(rs "AP_GO");                        row "次级核放行邮箱（行）" "$n" 11 "$(verdict "$n" 11)"
-n=$(rs "fpu_owner");                    row "浮点归属相关行" "$n" 21 "$(verdict "$n" 21)"
+n=$(rs "fpu_owner");                    row "浮点归属相关行" "$n" 24 "$(verdict "$n" 24)"
 n=$(rs -E "fence\.i|dc *cvau|ic *iallu|sync_icache");
                                         row "指令缓存维护（行）" "$n" 2 "$(verdict "$n" 2)"
 n=$(grep -c "ATF_BOOT_LEG_READY: \&\[&str\] = \&\[\"aarch64\", \"riscv64\"\]" os/xtask/src/image.rs | tr -d ' ')
