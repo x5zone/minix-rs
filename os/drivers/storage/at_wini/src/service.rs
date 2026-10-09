@@ -12,6 +12,7 @@
 //! later increment) — so the mapping/counting is verifiable on the host without
 //! a controller.
 
+use crate::pio::IdentifyInfo;
 use minix_types::ENXIO;
 
 /// Minors per drive: whole disk plus `NR_PARTITIONS` primary partitions.
@@ -191,6 +192,47 @@ impl Default for Drives {
     }
 }
 
+/// Reported CHS geometry for a drive. C: the `cylinders`/`heads`/`sectors`
+/// fields of `struct part_geom` that `w_geometry` fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    pub cylinders: u32,
+    pub heads: u32,
+    pub sectors: u32,
+}
+
+/// Compute the logical CHS geometry the driver reports for a drive. C:
+/// `w_geometry` (at_wini.c:1700-1721).
+///
+/// An ATAPI device gets made-up numbers (64 heads, 32 sectors, cylinders
+/// derived from the sector count). An ATA device reports its identified
+/// geometry, then repeatedly folds cylinders into heads (`heads *= 2`,
+/// `cylinders /= 2`) while cylinders exceed 1024 — the INT 13h LBA-assist
+/// translation that keeps the reported CHS within BIOS addressable bounds.
+/// `disk_sectors` is the whole-disk sector count (used only for the ATAPI case).
+pub fn compute_geometry(identify: &IdentifyInfo, atapi: bool, disk_sectors: u64) -> Geometry {
+    if atapi {
+        // C: (dv_size / SECTOR_SIZE) / (64*32) — dv_size in bytes, /512 = sectors.
+        return Geometry {
+            cylinders: (disk_sectors / (64 * 32)) as u32,
+            heads: 64,
+            sectors: 32,
+        };
+    }
+    let mut cylinders = identify.cylinders as u32;
+    let mut heads = identify.heads as u32;
+    let sectors = identify.sectors_per_track as u32;
+    while cylinders > 1024 {
+        heads *= 2;
+        cylinders /= 2;
+    }
+    Geometry {
+        cylinders,
+        heads,
+        sectors,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +300,58 @@ mod tests {
         assert_eq!(t.open(20), Err(ENXIO));
         assert_eq!(t.close(0), Ok(false));
         assert_eq!(t.drive(0).unwrap().open_ct(), 1);
+    }
+
+    fn identify(cyl: u16, head: u16, spt: u16) -> IdentifyInfo {
+        IdentifyInfo {
+            cylinders: cyl,
+            heads: head,
+            sectors_per_track: spt,
+            lba: true,
+            lba48: false,
+            total_sectors: 0,
+        }
+    }
+
+    #[test]
+    fn ata_geometry_folds_cylinders_into_heads() {
+        // C: while cylinders > 1024 { heads *= 2; cylinders /= 2 } (:1716-1719).
+        // 16383 → 8191 → 4095 → 2047 → 1023 (four halvings, heads ×16).
+        let g = compute_geometry(&identify(16383, 16, 63), false, 0);
+        assert_eq!(
+            g,
+            Geometry {
+                cylinders: 1023,
+                heads: 256,
+                sectors: 63
+            }
+        );
+    }
+
+    #[test]
+    fn ata_geometry_under_1024_is_untouched() {
+        let g = compute_geometry(&identify(800, 128, 63), false, 0);
+        assert_eq!(
+            g,
+            Geometry {
+                cylinders: 800,
+                heads: 128,
+                sectors: 63
+            }
+        );
+    }
+
+    #[test]
+    fn atapi_geometry_is_made_up() {
+        // C: ATAPI branch — 64 heads, 32 sectors, cylinders = sectors/(64*32).
+        let g = compute_geometry(&identify(0, 0, 0), true, 64 * 32 * 500);
+        assert_eq!(
+            g,
+            Geometry {
+                cylinders: 500,
+                heads: 64,
+                sectors: 32
+            }
+        );
     }
 }
