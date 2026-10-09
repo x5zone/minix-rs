@@ -28,7 +28,11 @@ const STDERR: i32 = 2;
 
 
 fn fail(message: &str) -> ! {
+    //[SD19-gate] SD-19: fail 路径写 stderr 后立即 terminate，write 失败不改变退出码
+    #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::write(STDERR, message.as_bytes());
+    //[SD19-gate] SD-19: fail 路径写 stderr 后立即 terminate，write 失败不改变退出码
+    #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::write(STDERR, b"\n");
     support::terminate(1)
 }
@@ -45,6 +49,8 @@ fn run() -> ! {
         let mut out = [0u8; 512];
         match grep_print(&t, &mut out) {
             Ok(used) => {
+                //[SD19-gate] SD-19: stty config 输出，write 失败无可恢复处
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = minix_sys::write(STDOUT, &out[..used]);
             }
             Err(_) => fail("display buffer too small"),
@@ -57,6 +63,8 @@ fn run() -> ! {
         let mut out = [0u8; 512];
         match display_a(&t, &mut out) {
             Ok(used) => {
+                //[SD19-gate] SD-19: stty config 输出，write 失败无可恢复处
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = minix_sys::write(STDOUT, &out[..used]);
             }
             Err(_) => fail("display buffer too small"),
@@ -69,6 +77,8 @@ fn run() -> ! {
         let mut t = minix_sys::Termios::new();
         tcgetattr(STDIN, &mut t).unwrap_or_else(|_| fail("stdin is not a terminal"));
         let line = format!("speed {} baud\n", t.c_ospeed);
+        //[SD19-gate] SD-19: stty speed 输出，write 失败无可恢复处
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::write(STDOUT, line.as_bytes());
         support::terminate(0);
     }
