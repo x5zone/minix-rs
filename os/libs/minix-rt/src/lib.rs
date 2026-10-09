@@ -236,7 +236,7 @@ static POOL_STORAGE: PoolStorage =
 /// a single first ticket, ordering the construction against every later
 /// read.
 struct GlobalAllocator {
-    inner: core::cell::UnsafeCell<Option<alloc::SlabAllocator<alloc::FixedPoolSupplier<'static>>>>,
+    inner: core::cell::UnsafeCell<Option<alloc::SlabAllocator<alloc::HeapSupplier<'static>>>>,
     ready: core::sync::atomic::AtomicBool,
 }
 
@@ -266,7 +266,7 @@ fn ensure_global_allocator() {
         // the flag is set, so exclusive access holds.
         unsafe {
             let pool = &mut *POOL_STORAGE.0.get();
-            let supplier = alloc::FixedPoolSupplier::new(pool);
+            let supplier = alloc::HeapSupplier::Fixed(alloc::FixedPoolSupplier::new(pool));
             *GLOBAL_ALLOCATOR.inner.get() = Some(alloc::SlabAllocator::new(supplier));
         }
     }
@@ -274,7 +274,7 @@ fn ensure_global_allocator() {
 
 /// Runs `action` against the global allocator, creating it first if needed.
 fn with_global_allocator<R>(
-    action: impl FnOnce(&mut alloc::SlabAllocator<alloc::FixedPoolSupplier<'static>>) -> R,
+    action: impl FnOnce(&mut alloc::SlabAllocator<alloc::HeapSupplier<'static>>) -> R,
 ) -> R {
     ensure_global_allocator();
     // SAFETY: creation above precedes this read (same SeqCst ordering), and
@@ -291,6 +291,38 @@ fn with_global_allocator<R>(
 /// 供用户态服务器（VM/RS 等）在真机采样打印 free-bytes/slab-in-use。
 pub fn global_alloc_diag() -> alloc::AllocDiag {
     with_global_allocator(|allocator| allocator.diag())
+}
+
+/// 把全局分配器的页供给切到 VM_BRK 增长堆（`SD-11` T1 安装口）。
+///
+/// 调用时机：进程完成与 VM 的出生握手、拿到自身 data region 端点之后，
+/// 且必须在任何依赖堆增长的分配发生前（出生期的固定池分配不受影响——
+/// 切换只改变后续 [`alloc::PageSupplier::supply_pages`] 从哪里拿新页，
+/// 见 [`alloc::SlabAllocator::replace_supplier`] 的调用方契约）。
+///
+/// * `initial_break`：VM 侧 data region 的当前端点（对位 C 的
+///   `_brksize` 初值 = exec 建立的 data segment 端点；安装点落地时接
+///   链接器 `__bss_end`，见 `SD-11` T3）。传 0 无意义，返 `EINVAL`。
+/// * 幂等：已切 VM 形态时是 no-op（重复握手不重复安装）。
+/// * 返回后池诊断 [`global_alloc_diag`] 的总/空闲页为 0，即"已切 VM
+///   形态"的标志（[`alloc::VmBreakSupplier`] 无固定总量）。
+pub fn install_vm_supplier(initial_break: u64) -> Result<(), minix_types::Errno> {
+    if initial_break == 0 {
+        return Err(minix_types::Errno::EINVAL);
+    }
+    with_global_allocator(|allocator| {
+        if allocator.is_vm_form() {
+            // 已切 VM 形态：幂等 no-op（重复握手不重复安装，避免把
+            // initial_break 缓存回拨到旧值）。
+            return Ok(());
+        }
+        let vm = alloc::HeapSupplier::Vm(alloc::VmBreakSupplier::new(
+            alloc::DirectTrapTransport,
+            initial_break,
+        ));
+        allocator.replace_supplier(vm);
+        Ok(())
+    })
 }
 
 /// Binding of the runtime slab allocator to the `#[global_allocator]` slot
@@ -355,6 +387,28 @@ mod global_tests {
         init();
         init();
         assert!(!alloc(8).is_null());
+    }
+
+    /// `install_vm_supplier` 安装口（SD-11 T1，host 可观察部分）：
+    /// 0 断点拒绝；安装后池诊断总/空闲归 0（VM 形态标志）；重复安装
+    /// 幂等。注意：本测把全局分配器切到 VM 形态且不可逆——libtest
+    /// 按名字序执行，`test_global_*`（g 前缀）在本测（i 前缀）之前；
+    /// 改测试名时须保持这个偏序。
+    #[test]
+    fn test_install_vm_supplier_guards_and_form_switch() {
+        let _guard = GLOBAL_TEST_LOCK.lock().unwrap();
+        assert_eq!(
+            install_vm_supplier(0),
+            Err(minix_types::Errno::EINVAL),
+            "0 断点无意义，必须拒绝"
+        );
+        install_vm_supplier(0x10_0000).expect("首次安装");
+        let diag = global_alloc_diag();
+        assert_eq!(diag.total_pages, 0);
+        assert_eq!(diag.free_pages, 0);
+        install_vm_supplier(0x20_0000).expect("重复安装必须幂等");
+        let diag = global_alloc_diag();
+        assert_eq!(diag.total_pages, 0);
     }
 }
 

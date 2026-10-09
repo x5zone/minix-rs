@@ -32,7 +32,8 @@
 //! assumption the rest of this crate's startup path makes. Thread support
 //! will revisit this contract when it lands.
 
-use minix_types::Errno;
+pub(crate) use minix_sys::ipc::{DirectTrapTransport, IpcTransport};
+use minix_types::{Errno, VirBytes};
 
 /// One page holds this many bytes.
 ///
@@ -265,6 +266,11 @@ pub trait PageSupplier {
     fn pool_diag(&self) -> (usize, usize, usize) {
         (0, 0, 0)
     }
+    /// 是否为 VM 支撑形态（安装幂等判断用；默认 `false`，VM 形态
+    /// 实现各自覆写）。
+    fn is_vm_form(&self) -> bool {
+        false
+    }
     /// Returns a previously supplied contiguous run.
     ///
     /// # Safety
@@ -425,6 +431,171 @@ impl PageSupplier for FixedPoolSupplier<'_> {
     }
 }
 
+/// VM_BRK 支撑的堆页供给者（`PD-28`/`SD-11` 的终解落点）。
+///
+/// C 真源：`minix3/minix/lib/libc/sys/brk.c` 的 `brk` —— 把断点推进到
+/// 绝对地址并把请求转给虚存服务器；本供给者把它用作整页供给机制：
+/// [`PageSupplier::supply_pages`] 把断点一次推进 n 页、返回区间首址
+/// （C `map_region_extend_upto_v` 延伸既有 region，VA 天然连续；
+/// VM 侧 `brk.rs` 的增长腿是相邻 ANON region）。新页清零由 ANON
+/// 的 demand-zero 语义保证（首次触碰缺页分得零页），与
+/// [`FixedPoolSupplier`] 的显式 `write_bytes` 清零在可观察行为上等价。
+///
+/// # 释放语义（换供给者的关键设计）
+///
+/// 安装点之前全局分配器已经从固定池拿过页（出生过程本身的分配），
+/// 这些旧页的释放记录仍在 `SlabAllocator` 里，归还时会落到本供给者——
+/// 但池页不在本供给者的堆区间，不能被误当成 VM 页。因此 [`release_page`]
+/// 对区间外指针诚实 no-op：池页生命周期等于进程生命周期，最终释放无
+/// 意义；界外归还计入 [`Self::foreign_releases`] 供真机诊断，防止静默
+/// 吞掉未来可能出现的区间计算缺陷。区间内归还同样不降断点——C 收缩
+/// brk 从不 unmap（`brk.rs` `extend_upto_v` 的 "a lower break never
+/// unmaps"），页仍被 region 覆盖，只是供给者不再复用。
+pub struct VmBreakSupplier<T: IpcTransport> {
+    transport: T,
+    /// VM 侧 data region 的初始断点（安装时由调用方提供；对位 C 的
+    /// `_brksize` 初值 = exec 建立的 data segment 端点，来源在首迁
+    /// 安装点落地时接链接器 `__bss_end`）。
+    heap_base: u64,
+    /// 当前断点缓存（C libc 的 `_brksize` 缓存同形；[`break_via` 的
+    /// "地址不变即免往返"短路直接复用]）。
+    top: u64,
+    foreign_releases: usize,
+}
+
+impl<T: IpcTransport> VmBreakSupplier<T> {
+    /// 以 VM 侧初始断点建供给者。`initial_break` 为 0 无意义，由
+    /// [`install_vm_supplier`]（全局安装口）拒绝；直接构造（测试）自担。
+    pub fn new(transport: T, initial_break: u64) -> Self {
+        VmBreakSupplier {
+            transport,
+            heap_base: initial_break,
+            top: initial_break,
+            foreign_releases: 0,
+        }
+    }
+
+    /// VM 侧已供给的整页数（诊断：消耗了断点区间多少页）。
+    pub fn pages_supplied(&self) -> usize {
+        ((self.top - self.heap_base) / PAGE_BYTES as u64) as usize
+    }
+
+    /// 界外归还计数（旧池页等非本供给者页的释放）。
+    pub fn foreign_releases(&self) -> usize {
+        self.foreign_releases
+    }
+
+    fn owns(&self, page: *mut u8) -> bool {
+        let address = page as u64;
+        address >= self.heap_base && address < self.top
+    }
+}
+
+impl<T: IpcTransport> PageSupplier for VmBreakSupplier<T> {
+    fn supply_page(&mut self) -> Option<*mut u8> {
+        self.supply_pages(1)
+    }
+
+    fn supply_pages(&mut self, page_count: usize) -> Option<*mut u8> {
+        if page_count == 0 {
+            return None;
+        }
+        let old_top = self.top;
+        let new_top = old_top + page_count as u64 * PAGE_BYTES as u64;
+        if new_top < old_top {
+            // 地址空间耗尽（溢出）：fail-fast 返回 None，同池耗尽形状。
+            return None;
+        }
+        // C: brk.c — 断点变化必发请求；`break_via` 内部只处理"不变短路"。
+        // Errno（VM ENOMEM 等）→ None，同 [`FixedPoolSupplier`] 耗尽形状。
+        match minix_sys::vm::break_via(&self.transport, VirBytes(old_top), VirBytes(new_top)) {
+            Ok(_) => {
+                self.top = new_top;
+                // SAFETY: 区间 [old_top, new_top) 由 VM 刚刚延伸覆盖
+                //（ANON demand-zero，首次触碰得零页），页对齐由
+                // `extend_upto_v` 的 roundup 保证。
+                Some(old_top as *mut u8)
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn release_page(&mut self, page: *mut u8) {
+        if !self.owns(page) {
+            self.foreign_releases += 1;
+        }
+        // 区间内/外都不真正回收（见类型文档的释放语义）。
+    }
+
+    fn pool_diag(&self) -> (usize, usize, usize) {
+        // (消耗页数, 总页数, 空闲页数)：VM 形态没有固定总量，总/空闲
+        // 记 0 —— OOM 诊断打印的总数为 0 即可读出“已切 VM 形态”。
+        (self.pages_supplied(), 0, 0)
+    }
+
+    /// 是否为 VM 支撑形态（安装幂等判断用；固定池形态保持 trait 默认
+    /// `false`，[`HeapSupplier`] 按当前臂转发）。
+    fn is_vm_form(&self) -> bool {
+        true
+    }
+}
+
+/// 全局分配器页供给者的运行期形态（`PD-28`/`SD-11` T1）。
+///
+/// 出生至 VM 握手前是 [`FixedPoolSupplier`]（行为与历史完全一致）；
+/// 出生握手后经 [`install_vm_supplier`] 切到 [`VmBreakSupplier`]。
+/// 枚举而非 trait object：全局实例免 vtable，且两种形态的切换点是
+/// 编译期已知的有限集合（固定池 / VM_BRK，`mmap` 通道是后续演进）。
+/// 生命周期跟随固定池臂（全局实例用 `'static` 的 `.bss` 池；测试可
+/// 用局部缓冲）。传输通道参数化且默认 [`DirectTrapTransport`]：
+/// 全局实例用默认（真 trap），host 测试注入 mock 钉闭环。
+pub enum HeapSupplier<'a, T = DirectTrapTransport>
+where
+    T: IpcTransport,
+{
+    /// `.bss` 固定池（出生默认形态）。
+    Fixed(FixedPoolSupplier<'a>),
+    /// VM_BRK 增长堆（握手后安装）。
+    Vm(VmBreakSupplier<T>),
+}
+
+impl<T: IpcTransport> PageSupplier for HeapSupplier<'_, T> {
+    fn supply_page(&mut self) -> Option<*mut u8> {
+        match self {
+            HeapSupplier::Fixed(s) => s.supply_page(),
+            HeapSupplier::Vm(s) => s.supply_page(),
+        }
+    }
+
+    fn supply_pages(&mut self, page_count: usize) -> Option<*mut u8> {
+        match self {
+            HeapSupplier::Fixed(s) => s.supply_pages(page_count),
+            HeapSupplier::Vm(s) => s.supply_pages(page_count),
+        }
+    }
+
+    fn release_page(&mut self, page: *mut u8) {
+        match self {
+            HeapSupplier::Fixed(s) => s.release_page(page),
+            HeapSupplier::Vm(s) => s.release_page(page),
+        }
+    }
+
+    fn pool_diag(&self) -> (usize, usize, usize) {
+        match self {
+            HeapSupplier::Fixed(s) => s.pool_diag(),
+            HeapSupplier::Vm(s) => s.pool_diag(),
+        }
+    }
+
+    fn is_vm_form(&self) -> bool {
+        matches!(self, HeapSupplier::Vm(_))
+    }
+}
+
+// 上面 match 臂的类型推断需要知道 `HeapSupplier::Fixed` 构造处的 T：
+// 由赋值/标注上下文提供（全局 = 默认 DirectTrapTransport，测试 = mock）。
+
 /// One slab: a single page cut into equal slots of one size class.
 #[derive(Debug, Clone, Copy)]
 struct Slab {
@@ -471,6 +642,22 @@ impl<S: PageSupplier> SlabAllocator<S> {
             slabs: [None; MAX_SLABS],
             big_blocks: [None; MAX_BIG_BLOCKS],
         }
+    }
+
+    /// 换页供给者（`SD-11` T1）：出生形态（固定池）到 VM 形态的切换点。
+    ///
+    /// 调用方契约：新供给者对不在其区间内的指针（旧池页）释放必须诚实
+    /// no-op——[`VmBreakSupplier`] 的释放语义满足这一点（界外归还仅计数，
+    /// 见其类型文档）。旧池页的 slab/free-list 记录在本结构里原样保留：
+    /// 切换不改变任何已分配块的有效性，只改变后续 [`supply_pages`] 从哪
+    /// 里拿新页。
+    pub fn replace_supplier(&mut self, supplier: S) {
+        self.supplier = supplier;
+    }
+
+    /// 当前供给者是否为 VM 支撑形态（[`install_vm_supplier`] 的幂等判断）。
+    pub fn is_vm_form(&self) -> bool {
+        self.supplier.is_vm_form()
     }
 
     /// Selects the size class for `size`, or `None` for the page-run path.
@@ -718,6 +905,7 @@ pub struct AllocDiag {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minix_sys::ipc::{AsyncSlot, IpcStatus, TrapStatus};
 
     fn pool_buffer() -> [u8; 16384] {
         [0u8; 16384]
@@ -905,5 +1093,182 @@ mod tests {
             AllocError::InvalidRequest.to_errno(),
             Errno::from_i32(minix_types::EINVAL)
         );
+    }
+
+    // ===== SD-11 T2：VmBreakSupplier 闭环（host mock transport）=====
+
+    /// Mock VM transport 的共享状态：`sendrec` 一律成功并记录 brk 请求
+    /// 载荷，其余通道本供给者不触达、统一拒答。宿主测试钉「断点推进→
+    /// 取页→界外释放→ENOMEM→None」闭环；真实 trap 通道由真机门验证
+    /// （与 minix-sys `time.rs` 的 `FakeTimesTransport` 同形）。
+    struct MockVmState {
+        /// 每次 `VM_CALL_BREAK` 请求的 requested 地址（`break_via` 写在
+        /// raw 载荷首 8 字节）。
+        breaks: core::cell::RefCell<Vec<u64>>,
+        /// 置位后模拟 VM 拒绝增长（ENOMEM 路径）。
+        refuse_breaks: core::cell::Cell<bool>,
+    }
+
+    /// transport 按值移交进 [`VmBreakSupplier`]，测试用 `Rc` 克隆持有
+    /// 状态以便移交后继续观测/翻转（std 测试构建可用）。
+    struct MockVmTransport {
+        state: std::rc::Rc<MockVmState>,
+    }
+
+    impl MockVmTransport {
+        fn new(state: std::rc::Rc<MockVmState>) -> Self {
+            MockVmTransport { state }
+        }
+    }
+
+    impl minix_sys::ipc::IpcTransport for MockVmTransport {
+        fn send(
+            &self,
+            _: minix_types::Endpoint,
+            _: &minix_types::Message,
+        ) -> Result<(), TrapStatus> {
+            Err(TrapStatus(-1))
+        }
+        fn receive(
+            &self,
+            _: minix_types::Endpoint,
+            _: &mut minix_types::Message,
+        ) -> Result<IpcStatus, TrapStatus> {
+            Err(TrapStatus(-1))
+        }
+        fn sendrec(
+            &self,
+            _: minix_types::Endpoint,
+            message: &mut minix_types::Message,
+        ) -> Result<(), TrapStatus> {
+            if self.state.refuse_breaks.get() {
+                return Err(TrapStatus(-1));
+            }
+            // SAFETY: raw 载荷 56 字节，`break_via` 刚写入前 8 字节。
+            let requested =
+                unsafe { u64::from_ne_bytes(message.m_u.raw[..8].try_into().unwrap()) };
+            self.state.breaks.borrow_mut().push(requested);
+            Ok(())
+        }
+        fn notify(&self, _: minix_types::Endpoint) -> Result<(), TrapStatus> {
+            Err(TrapStatus(-1))
+        }
+        fn sendnb(
+            &self,
+            _: minix_types::Endpoint,
+            _: &minix_types::Message,
+        ) -> Result<(), TrapStatus> {
+            Err(TrapStatus(-1))
+        }
+        fn senda(&self, _: &[AsyncSlot]) -> Result<(), TrapStatus> {
+            Err(TrapStatus(-1))
+        }
+        fn query_kerninfo_page(&self) -> Result<u64, TrapStatus> {
+            Err(TrapStatus(-1))
+        }
+    }
+
+    /// 闭环：初始断点 → 供给 2 页 → 断点推进且返回旧断点 → 再供给 1 页 →
+    /// 区间内/外释放语义（界外计数、界内 no-op）→ VM 拒绝时 None 且
+    /// 状态不回退 → 诊断三元组（消耗 3 / 总 0 / 空闲 0）。
+    #[test]
+    fn test_vm_break_supplier_growth_page_and_release_semantics() {
+        let state = std::rc::Rc::new(MockVmState {
+            breaks: core::cell::RefCell::new(Vec::new()),
+            refuse_breaks: core::cell::Cell::new(false),
+        });
+        let mut supplier = VmBreakSupplier::new(MockVmTransport::new(state.clone()), 0x10_0000);
+        assert_eq!(supplier.pages_supplied(), 0);
+        assert!(supplier.is_vm_form());
+
+        // 增长：一次供给 2 页，返回旧断点（SlabAllocator 把它当
+        // big-block 首址）。
+        let first = supplier.supply_pages(2).expect("VM 堆首次供给");
+        assert_eq!(first as u64, 0x10_0000);
+        assert_eq!(supplier.pages_supplied(), 2);
+        assert_eq!(
+            *state.breaks.borrow(),
+            vec![0x10_0000 + 2 * PAGE_BYTES as u64]
+        );
+
+        // 再供给 1 页：断点从缓存续推，不再重复 heap_base。
+        let second = supplier.supply_page().expect("第二次供给");
+        assert_eq!(second as u64, 0x10_0000 + 2 * PAGE_BYTES as u64);
+
+        // 区间内释放：诚实 no-op，不计界外（C 收缩 brk 从不 unmap）。
+        supplier.release_page(second);
+        assert_eq!(supplier.foreign_releases(), 0);
+
+        // 界外释放（旧池页等）：计数供真机诊断，不回收（栈上数组地址
+        // 仅作比较、不接触）。
+        let foreign_buffer = [0u8; 16];
+        supplier.release_page(foreign_buffer.as_ptr() as *mut u8);
+        assert_eq!(supplier.foreign_releases(), 1);
+
+        // VM 拒绝（ENOMEM 路径）：None，断点缓存与请求数不回退。
+        state.refuse_breaks.set(true);
+        assert!(supplier.supply_pages(1).is_none());
+        assert_eq!(supplier.pages_supplied(), 3);
+        assert_eq!(state.breaks.borrow().len(), 2);
+
+        // 诊断：VM 形态无固定总量，总/空闲记 0。
+        assert_eq!(supplier.pool_diag(), (3, 0, 0));
+    }
+
+    /// HeapSupplier Fixed 臂转发：诊断与分配行为与裸 FixedPoolSupplier
+    /// 一致（出生形态行为不变的回归 pin）。
+    #[test]
+    fn test_heap_supplier_fixed_form_serves_from_pool() {
+        let mut pool = pool_buffer();
+        let mut allocator: SlabAllocator<HeapSupplier<'_, DirectTrapTransport>> =
+            SlabAllocator::new(HeapSupplier::Fixed(FixedPoolSupplier::new(&mut pool)));
+        assert!(!allocator.is_vm_form());
+        let diag = allocator.diag();
+        assert_eq!(diag.total_pages, 4); // 16 KiB / 4 KiB
+        let pointer = allocator.alloc(8);
+        assert!(!pointer.is_null());
+        allocator.free(pointer);
+    }
+
+    /// T1 切换闭环：出生形态从固定池分配（行为不变）→ `replace_supplier`
+    /// 切 VM 形态 → 出生期 big-block 释放落界外计数（诚实 no-op）→ 新
+    /// 分配从 VM 断点增长 → 诊断切 VM 标志（总/空闲 0）。
+    #[test]
+    fn test_replace_supplier_switches_to_vm_growth() {
+        let mut pool = pool_buffer();
+        let transport = MockVmTransport::new(std::rc::Rc::new(MockVmState {
+            breaks: core::cell::RefCell::new(Vec::new()),
+            refuse_breaks: core::cell::Cell::new(false),
+        }));
+        let mut allocator: SlabAllocator<HeapSupplier<'_, MockVmTransport>> =
+            SlabAllocator::new(HeapSupplier::Fixed(FixedPoolSupplier::new(&mut pool)));
+        // 出生期：固定池分一个 1 页 big block（释放时才会回到供给者，
+        // 小槽归还走 slab 自由表、不触供给者）。
+        let birth = allocator.alloc(PAGE_BYTES);
+        assert!(!birth.is_null());
+
+        allocator.replace_supplier(HeapSupplier::Vm(VmBreakSupplier::new(
+            transport,
+            0x10_0000,
+        )));
+        assert!(allocator.is_vm_form());
+
+        // 切换后出生块仍可释放：固定池页不在 VM 区间 → 界外计数。
+        allocator.free(birth);
+
+        // 新分配从 VM 断点增长（big-block 1 页 → supply_pages(1)）。
+        let vm_page = allocator.alloc(PAGE_BYTES);
+        assert!(!vm_page.is_null());
+        assert_eq!(vm_page as u64, 0x10_0000);
+
+        let diag = allocator.diag();
+        assert_eq!((diag.total_pages, diag.free_pages), (0, 0));
+        assert_eq!(diag.pages_consumed, 1);
+        if let HeapSupplier::Vm(vm) = &allocator.supplier {
+            assert_eq!(vm.foreign_releases(), 1);
+            assert_eq!(vm.pages_supplied(), 1);
+        } else {
+            panic!("replace_supplier 后必须是 Vm 臂");
+        }
     }
 }
