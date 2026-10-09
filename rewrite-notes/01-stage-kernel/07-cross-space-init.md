@@ -346,7 +346,7 @@ static phys_bytes createpde(
 
 **截断与返回**：算出目标在 4 MB 块内的偏移 `offset`，把 `*bytes` 截断到本窗口内可见的剩余量，返回窗口内的起始线性地址 `I386_BIG_PAGE_SIZE*pde + offset`。调用方拿到的可能只是一次部分可见，剩下的字节等下一轮循环再借窗。
 
-用一组数走一遍（槽 0，`linaddr = 0x0123_4567`，请求 16 MB）：
+用一组数走一遍（借的是 `freepdes[0]` 号槽；为让数字可读，**假设这个槽的槽位号是 0**——实际值来自 `kinfo.freepde_start`，在内核映射之后（01 篇 §2.6），返回地址的整体高度随之不同，算式形状不变）：
 
 | 步 | 算式 | 结果 |
 |---|---|---|
@@ -717,7 +717,7 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
     crate::set_current_ptproc_nr(nr); // klib.S:622-624
 ```
 
-（`os/kernel/src/lib.rs:switch_address_space`。两条路径——"根已在位，跳过重载"与"真实切换"——都以 `set_current_ptproc_nr` 收尾，对应 C `setcr3` 的 `p == ptproc` 判据与 `klib.S` 的 `__switch_address_space` 入口（space` 的 `*__ptproc = p`。消费点在 VM 换表请求：`os/kernel/src/syscall.rs` 的 SetAddrSpace 分支以 `current_ptproc_nr() == Some(p.p_nr)` 决定是否只更新软件镜像而跳过硬件重载——C `arch_do_vmctl.c:setcr3` 的对位。）
+（`os/kernel/src/lib.rs:switch_address_space`。两条路径——"根已在位，跳过重载"与"真实切换"——都以 `set_current_ptproc_nr` 收尾，对应 C `setcr3` 的 `p == ptproc` 判据与 `klib.S` 的 `__switch_address_space` 入口（汇编入口在真实切表之后把第二个参数指向的槽写为新表主人：`mov 8(%esp), %eax; mov %edx, (%eax)`，即 `*__ptproc = p`——klib.S:622-624）。消费点在 VM 换表请求：`os/kernel/src/syscall.rs` 的 SetAddrSpace 分支以 `current_ptproc_nr() == Some(p.p_nr)` 决定是否只更新软件镜像而跳过硬件重载——C `arch_do_vmctl.c:setcr3` 的对位。）
 
 如果反过来想，两个方向各有一条：
 
