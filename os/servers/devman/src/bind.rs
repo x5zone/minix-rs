@@ -127,6 +127,8 @@ pub fn on_unbind_response(
         dev.state = DeviceState::Unbound;
     }
     // C: put unconditionally on this path (:93) — may reap (08).
+    //[SD19-gate] SD-19: C devman 无条件 put_device 尽力清理
+    #[allow(clippy::let_underscore_must_use)]
     let _ = crate::del_device::put_device(tree, fw, device);
     Ok(())
 }

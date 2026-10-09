@@ -362,6 +362,8 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
                 // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
                 // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466），非普通 send：
                 // 发 RS_INIT 后停在 receive(RS) 半等 RS catch 出口的 OK 唤醒。
+                //[SD19-gate] SD-19: sendrec RS birth 唤醒，失败不持断
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.sendrec(Endpoint::RS, &mut reply);
                 if reply.rs_init_result() == Some(minix_types::OK) {
                     continue; // 出生已应答，吞掉这条，服务循环继续
@@ -447,6 +449,8 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
                 // 未挂载（非 ReadSuper）或 devman 不服务的请求号：
                 // C 按 EINVAL / ENOSYS 两分（`fsdriver.c:40-56`）。
                 let status = if self.mounted { ENOSYS } else { EINVAL };
+                //[SD19-gate] SD-19: 错误回复 send 尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self
                     .kernel
                     .send(source, &reply_msg(status, self.current_transaction));
@@ -477,6 +481,8 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
                 .is_err()
         {
             // 拷出失败：回 EFAULT（C 的 `fsdriver_copyout` 失败即该 errno）。
+            //[SD19-gate] SD-19: EFAULT 回复 send，失败丢一次
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.kernel.send(
                 self.current_source,
                 &reply_msg(minix_types::EFAULT, self.current_transaction),
@@ -493,10 +499,14 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
                 m.m_u.raw[0..8].copy_from_slice(&(ino.0 as u64).to_le_bytes());
             }
         }
+        //[SD19-gate] SD-19: 终回复 send
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.kernel.send(self.current_source, &m);
     }
 
     fn send(&mut self, dest: Endpoint, msg: &Message) {
+        //[SD19-gate] SD-19: send 抽象层，失败无上层消费
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.kernel.send(dest, msg);
     }
 
