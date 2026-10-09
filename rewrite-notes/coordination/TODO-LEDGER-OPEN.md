@@ -107,7 +107,7 @@
 | 02 虚存 | [`todo.md`](../02-stage-vm/todo.md) | `open` 2、`stopgap landed` 3 | 实时更新的活-重启状态机；启动进程的可执行文件装载链 |
 | 03 根服务 | [`todo.md`](../03-stage-rs/todo.md) | `open` 2 | 二十四个符号的生产接线面；根服务自升级 |
 | 04 进程管理 | [`todo.md`](../04-stage-pm/todo.md) | `open` 3 | 核心转储路径契约；调度服务缺席导致的假端点 |
-| 05 虚拟文件系统 | [`todo.md`](../05-stage-vfs/todo.md) | `open` 1 | 六十四个请求臂的执行绑定层缺穷举分派（真缺口） |
+| 05 虚拟文件系统 | [`todo.md`](../05-stage-vfs/todo.md) | 阶段内 0（原记 `open` 1「六十四个请求臂的执行绑定层缺穷举分派（真缺口）」经现场核实为**账面滞后**——`dispatch_syscall` 已是 64 臂穷举 match 且接生产 `run_once`，本行旧摘要未跟上同文件正文 §9.2/§10 已标 `R2-P1-2` 修复的事实） | 绑定层本体已闭（核实见 `05-stage-vfs/todo.md` 顶部同日校正行）；残余是 FS 对话臂按 `W1` 契约返 `Nosys` 的通电余件，归跨阶段 `E1`/`E5`，不作本阶段缺口 |
 | 06 调度 | [`todo.md`](../06-stage-sched/todo.md) | 阶段内 0 | 残余全压在跨阶段 `E5` 与调度服务缺席边界 |
 | 07 数据存储 | [`todo.md`](../07-stage-ds/todo.md) | `open` 2 | 标签发布与编码的纯逻辑已备，无生产调用方 |
 | 08 中断服务 | [`todo.md`](../08-stage-is/todo.md) | 阶段内 0 | 残余为跨阶段传输族 |

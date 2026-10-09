@@ -1,6 +1,6 @@
 # 05-stage-vfs Rust 实现架构级 Review TODO
 
-> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1，且是真缺口：六十四个请求臂的执行绑定层缺穷举分派（只有枚举标记，无按号到函数的绑定表）。
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`；`2026-10-09` 回勾校正）：阶段内 `open` 归零。旧摘要求的「未闭合 `open` 1：六十四个请求臂的执行绑定层缺穷举分派（只有枚举标记，无按号到函数的绑定表）」经现场核实为**账面滞后**——本文件正文 §9.2/§10 已将绑定层条目（第二轮评审的优先级一第一项）标为 `✅ 已全部修复`（W2 七表聚合 Fix #30、W3 穷举 64 臂 Fix #37/#38），代码也已落地：`os/servers/vfs/src/syscalls.rs:fn dispatch_syscall` 是对 `VfsCallNum` 64 个变体的穷举 match（模块头注释自称「系统调用绑定层」并标 W3），无外层通配臂，由生产入口 `main_loop.rs:1088` 的 `run_once` 调用。可重跑核实命令：枚举变体数 `awk '/pub enum VfsCallNum/,/^}/' os/servers/vfs/src/call_table.rs | grep -cE "^\s+[A-Z][A-Za-z0-9]+ = VFS_BASE"` → `64`；`dispatch_syscall` 体内穷举覆盖与外层通配由 `cargo test -p minix-vfs --lib test_exhaustive_arms_smoke`（64 个调用号逐个分发不 panic）钉住。残余的 FS 对话臂按 `W1` 契约返 `Nosys`（待传输通电）与 `Mapdriver` 重启执行半属跨阶段 `E1`/`E5` 与优先级二那一束，不在本阶段开口。
 > **账面滞后校正**：请求号双址的一处已归一（一处定义、另一处再导出）。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
