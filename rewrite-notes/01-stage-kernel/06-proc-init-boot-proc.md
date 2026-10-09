@@ -1095,6 +1095,8 @@ void proc_init(void)
 
 尾部三行都用裸位运算而不是宏。`RTS_VMINHIBIT`/`RTS_BOOTINHIBIT` 用的是直接的 `|=` 而不是 `RTS_SET` 宏——此时进程已经不可运行（要么刚被 `RTS_SET` 置了两位，要么是内核 task 且 `PROC_STOP` 即将被置上），`RTS_SET` 里的跃迁判定不会触发出队，两者等价；用裸 `|=` 表达的是"这一步不做队列动作"。`RTS_PROC_STOP` 与清 `RTS_SLOT_FREE` 同样用裸操作，理由相同。而 `proc_ptr` 那一句是"第一次赋值后不再改"——它给调度函数留了一个非空指针，具体指向谁不重要（第一个条目），因为此刻没有进程可运行，`pick_proc` 会走 idle 兜底。
 
+**如果反过来想（两件不同的事，别混）**：把**循环方向**倒过来跑（从最后一项往前）——每个动作只依赖条目自身（模块下标由 `i - NR_TASKS` 算出，与访问次序无关，见 §2.4），唯一随方向变的是 `proc_ptr` 兜底指向谁，而它本来就"指向谁不重要"；所以方向本身不坏。真正会坏的是把**表内条目的顺序**倒过来：表头第 2 条写着 `all kernel tasks must come first`，而 `i < NR_TASKS` 这个分支正是靠它把前 5 项按内核 task 处理（写名字、不回填模块地址）；顺序一乱，内核 task 会被当成用户模块去 `kinfo.module_list` 里取地址——错位的机制与 §2.1.1 里"按下标取进程号"那条同型。
+
 **如果反过来想**：把双闸那一步移出循环、对全部 17 项统一置位（"统一处理更整齐"）。VM 的 `p_nr` 等于 `VM_PROC_NR`，它也会被挂上双闸；而解除 `RTS_VMINHIBIT` 的两条路径一条是 VM 自己发 `VMCTL_SETADDRSPACE`（`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl`），另一条是 VM 发 `VMCTL_VMINHIBIT_CLEAR`（`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`）——两条都以"VM 已在运行"为前提。于是没有任何进程能解除 VM 的抑制位，`pick_proc` 永远选不到 VM，`switch_to_user` 之后系统停在 idle 循环里，唯一的现象是"启动到此为止、无输出"。
 
 **如果反过来想**：把 `RTS_VMINHIBIT` 与 `RTS_BOOTINHIBIT` 合成一位。两个位的置位集合不同——boot 循环给除 VM 外的全部用户进程置两位；`do_fork` 只在 `PFF_VMINHIBIT` 标志下给子进程置 `VMINHIBIT`（`minix3/minix/kernel/system/do_fork.c:do_fork`），`VMCTL_VMINHIBIT_SET` 与 `smp.c` 的跨 CPU 路径也只置 `VMINHIBIT`。解除路径也不同——`VMINHIBIT` 有两条（`VMCTL_SETADDRSPACE` 在 VM 装好地址空间时顺带解除、`VMCTL_VMINHIBIT_CLEAR` 显式解除），`BOOTINHIBIT` 只有一条（`VMCTL_BOOTINHIBIT_CLEAR`，VM 装载完镜像时发出）。合成一位之后，解除集变成两条路径的并集，"谁先到谁清"：boot 进程会在页表刚装好、镜像还没装载时就被放行，第一次调度就在空地址空间上取指；反过来，fork 出的子进程只等"地址空间就绪"这一件事，它的解除者只来自 `VMINHIBIT` 那两条路径——如果合并后保留下来的解除路径是 boot 期专用的 `VMCTL_BOOTINHIBIT_CLEAR`，这类进程就再也没有解除者，永远停在 `pick_proc` 之外。两个位分开，表达的是"页表就绪"与"镜像就绪"两件事各有一位、各自有各自的解除者。
@@ -1203,7 +1205,7 @@ static int libexec_pg_alloc(struct exec_info *execi, vir_bytes vaddr, size_t len
 4. **`arch_proc_init`** 写入口三要素：清一次上下文、写名字、再写 `pc`/`sp`/`bx`（`minix3/minix/kernel/arch/i386/memory.c:arch_proc_init`）。`ps_str` 落在 `bx` 上是 32 位 x86 的寄存器约定。
 5. **回收模块物理内存**：`add_memmap` 把模块区间还给空闲清单，随后把 `mod_start`/`mod_end` 置 0。两行必须成对：回收之后若还留着地址，后续任何按 `ip->start_addr` 再回收一次的路径会重复归还同一区间。
 
-五段里最容易出事的是第 3 段（栈顶的三字布局）：它是唯一没有 64 位 C 真源可抄的一段——`ARGC_ARGV_ENVP` 的注释写明上游只有 i386/ARM32 的 `protect.c`（那两种位宽下 `int` 与指针同宽，两种写法重合），并且记录了本端在这一段出过一次对齐错误（旧值 `2*usize + i32` 让出生 sp 落在 4-mod-8 上，§4.2 会引这段注释）。其余四段都能在 C 里找到逐行对位：ELF 头的物理直读、三个 `allocmem_*` 共用的 `pg_map` 路径、`arch_proc_init` 的入口三要素、以及 `add_memmap` 加置零这一对。
+五段里最容易出事的是第 3 段（栈顶的三字布局）：它是唯一没有 64 位 C 真源可抄的一段——`ARGC_ARGV_ENVP` 的注释写明上游只有 i386/ARM32 的 `protect.c`（那两种位宽下 `int` 与指针同宽，两种写法重合），并且记录了本端在这一段出过一次对齐错误（旧值 `2*usize + i32` 让出生 sp 落在 4-mod-8 上，§4.2 会引这段注释）。**这一处的"坏样"要说清**：按源码注释自己的记录，它**当前没有可观察症状**——消费端只读 `ps_strings` 描述符（字段序与写入逐字对位），`argc` 槽那一个字本身没有读者，所以旧写法被记成"对现行行为惰性"；代价是潜伏的：将来若有人把 `argc` 槽当整字读，非 8 字节对齐就会当场暴露。其余四段都能在 C 里找到逐行对位：ELF 头的物理直读、三个 `allocmem_*` 共用的 `pg_map` 路径、`arch_proc_init` 的入口三要素、以及 `add_memmap` 加置零这一对。
 
 **如果反过来想**：删掉 `add_memmap` 那一对句子中的前者（只置 0）。模块原本占的那段物理内存在启动早期被 `cut_memmap` 切走过，此后再也没有归还路径，空闲清单里永远少一整段；表现是"可分配内存比物理内存少了一块（正好是 VM 镜像大小）"。反过来，只保留 `add_memmap` 而删掉置 0：`mod_start`/`mod_end` 仍指向同一段，`kinfo.boot_procs` 的这份副本会被 VM 读到，VM 的遍历里有 `assert(ip->start_addr);` 与随后的 `free_mem(...)`——同一块内存被归还两次，空闲清单出现重叠区间。
 
