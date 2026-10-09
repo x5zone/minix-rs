@@ -278,6 +278,8 @@ mod tests {
         let mut host = ScriptHost::default();
         host.fork_outcomes.push(Ok(0));
         host.exec_outcomes.push(Errno::EPERM);
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| {
             assert!(!ensure_console(&mut host, "/dev/console"));
         }));

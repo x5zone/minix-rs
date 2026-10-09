@@ -28,6 +28,8 @@ pub const STALL_TIMEOUT_SECS: u64 = 30;
 /// Log and sleep (C: `stall`, init.c:440-450).
 pub fn stall(host: &mut dyn InitHost, message: &str) {
     host.console_write(Severity::Alert, message);
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = host.sleep_secs(STALL_TIMEOUT_SECS);
 }
 
@@ -56,6 +58,8 @@ pub enum DisasterAction {
 /// `sys_siglist[sig]`, init.c:507).
 pub fn disaster(host: &mut dyn InitHost, sig: Signal) -> DisasterAction {
     host.console_write(Severity::Emerg, &format!("fatal signal: {}", sig.name()));
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = host.sleep_secs(STALL_TIMEOUT_SECS);
     DisasterAction::ExitWith(sig.signum())
 }

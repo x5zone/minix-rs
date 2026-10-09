@@ -278,16 +278,24 @@ impl InitHost for MinixSysHost {
         // login_tty.c:46-61), folded: setsid (failure warned away,
         // init.c:674), the DTR-low gap (250 ms, init.c:98/680), open
         // O_RDWR, TIOCSCTTY, dup2 onto 0/1/2, close the working fd.
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::setsid();
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::nanosleep(0, 250_000_000);
         let fd = minix_sys::open(device, O_RDWR, 0)?;
         // login_tty.c:56-58: the ioctl failure IS the login_tty failure;
         // everything after it is best-effort.
         minix_sys::ioctl(fd, minix_sys::tty::TIOCSCTTY, 0)?;
         for std_fd in [0, 1, 2] {
+            //[SD19-gate] SD-19: init 尽力而为
+            #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::dup2(fd, std_fd);
         }
         if fd > 2 {
+            //[SD19-gate] SD-19: init 尽力而为
+            #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::close(fd);
         }
         Ok(())
@@ -448,10 +456,16 @@ impl InitHost for MinixSysHost {
     }
 
     fn console_write(&mut self, severity: crate::log::Severity, message: &str) {
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = severity;
         // fd 1 is whatever the boot environment left attached; a
         // failed console write has nowhere better to go.
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::write(1, message.as_bytes());
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::write(1, b"\n");
     }
 
@@ -499,6 +513,8 @@ impl InitHost for MinixSysHost {
         // close. The fd never outlives the call.
         let fd = minix_sys::open(path, O_WRONLY | O_APPEND, 0)?;
         let write_rv = minix_sys::write(fd, bytes);
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
         write_rv.map(|_| ())
     }
@@ -516,11 +532,15 @@ impl InitHost for MinixSysHost {
                 Ok(0) => break,
                 Ok(n) => body.extend_from_slice(&chunk[..n]),
                 Err(e) => {
+                    //[SD19-gate] SD-19: init 尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(fd);
                     return Err(e);
                 }
             }
         }
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
         Ok(String::from_utf8_lossy(&body).into_owned())
     }
@@ -612,6 +632,8 @@ impl InitHost for ScriptHost {
     }
 
     fn waitpid(&mut self, pid: Pid, options: i32) -> Result<(Pid, WaitStatus), Errno> {
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = (pid, options);
         if !self.wait_outcomes.is_empty() {
             return self.wait_outcomes.remove(0);
@@ -643,6 +665,8 @@ impl InitHost for ScriptHost {
     }
 
     fn set_controlling_tty(&mut self, device: &str) -> Result<(), Errno> {
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = device;
         Ok(())
     }
