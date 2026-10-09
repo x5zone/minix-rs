@@ -42,6 +42,20 @@ pub use interrupt::{
 };
 pub use port_io::PortIo;
 
+/// Compile-time form marker for the U-1/SD-30 形态对账绊线：`mock` 开启即替身
+/// 形态，否则生产形态。`SelectedForm` 反映本包当前实际选出的形态。
+pub mod form {
+    /// Built with `mock` (substitute form).
+    pub struct MockForm;
+    /// Built without it (production form).
+    pub struct RealForm;
+}
+
+#[cfg(feature = "mock")]
+pub type SelectedForm = form::MockForm;
+#[cfg(not(feature = "mock"))]
+pub type SelectedForm = form::RealForm;
+
 /// The IRQ vector that carries the boot clock source's interrupt, on the
 /// current architecture's interrupt-controller numbering.
 ///

@@ -62,6 +62,26 @@ pub mod vm;
 pub mod proc;
 pub mod proc_table;
 pub mod kpriv;
+
+/// U-1 / SD-30 编译期形态对账绊线（tripwire，不是修复——修复是三包 `default = []`）。
+///
+/// 用 `Option::<T>::None` 赋给 `Option<期望具体型>`：仅当两类型相同才编译通过，
+/// 无需 unsafe。内核按自身 `mock` 特性**同时**要求 minix-arch 与 minix-plat 的实际
+/// 形态一致；一旦未来某条依赖路径经 cargo 特性统一重新交叉两包形态，报错落在这处
+/// 唯一位置，而非当初散布在 `Current*` 别名消费面的类型错。裸
+/// `cargo test -p minix-kernel`（dev-deps 强 mock 而本包 `mock` 关）也会在此显式
+/// 报错，正提示应改带 `--features mock`。
+#[doc(hidden)]
+pub mod form_contract {
+    #[cfg(feature = "mock")]
+    const _: Option<minix_arch::form::RuntimeWindowForm> = Option::<minix_arch::SelectedForm>::None;
+    #[cfg(feature = "mock")]
+    const _: Option<minix_plat::form::MockForm> = Option::<minix_plat::SelectedForm>::None;
+    #[cfg(not(feature = "mock"))]
+    const _: Option<minix_arch::form::ProductionForm> = Option::<minix_arch::SelectedForm>::None;
+    #[cfg(not(feature = "mock"))]
+    const _: Option<minix_plat::form::RealForm> = Option::<minix_plat::SelectedForm>::None;
+}
 pub mod capability;
 pub mod errno;
 pub mod sched;

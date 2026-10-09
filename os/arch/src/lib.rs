@@ -44,6 +44,21 @@ pub use minix_plat::{MockInterruptController, MockEarlyConsole};
 pub use arch::paging;
 pub use arch::paging_ext;
 pub use arch::pt_alloc;
+
+/// Compile-time form marker for the U-1/SD-30 形态对账绊线（见
+/// `minix_kernel::form_contract`）：`runtime-window` 开启即宿主/替身形态，
+/// 否则生产形态。`SelectedForm` 反映本包当前**实际选出**的形态（两态标记不并陈任选）。
+pub mod form {
+    /// Built with `runtime-window` (host/mock-capable form).
+    pub struct RuntimeWindowForm;
+    /// Built without it (production form).
+    pub struct ProductionForm;
+}
+
+#[cfg(feature = "runtime-window")]
+pub type SelectedForm = form::RuntimeWindowForm;
+#[cfg(not(feature = "runtime-window"))]
+pub type SelectedForm = form::ProductionForm;
 pub use arch::direct_map;
 pub use arch::frame;
 pub use arch::pte_walk_arch;
