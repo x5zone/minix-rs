@@ -30,3 +30,7 @@ minix-plat = { path = "../plat", features = ["mock"] }
 default = ["mock"]
 mock = ["minix-arch/runtime-window", "minix-plat/mock"]
 qemu_test = []
+# U-2（runqueues_ok 生产接线）：默认关。开则在 sched_enqueue/enqueue_head/dequeue
+# 尾部对位 C `#if DEBUG_SANITYCHECKS assert(runqueues_ok_local())`（proc.c:1657/
+# 1709/1778，proto.h:138 = runqueues_ok_cpu(cpuid)）做 fail-stop 队列不变量自检。
+sanity-checks = []

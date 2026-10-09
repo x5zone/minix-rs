@@ -917,6 +917,20 @@ impl ProcessTable {
         // R-15 (2026-08-12): INVARIANT: `nr` was just enqueued above, so its
         // slot exists in `self.procs`; `get_mut()` cannot return None.
         self.get_mut(nr).unwrap().p_accounting.record_enqueue(tsc);
+
+        // U-2 / C proc.c:1657: `#if DEBUG_SANITYCHECKS
+        // assert(runqueues_ok_local())`. runqueues_ok_local() ==
+        // runqueues_ok_cpu(cpuid) (proto.h:138) — the CURRENT cpu. Under the
+        // BKL + clamp_cpu_to_bsp design this enqueue runs on the owning cpu,
+        // so cpu_id == current_cpu_id() and this validates the just-modified
+        // queue; using current_cpu_id() stays C-faithful for future x-cpu.
+        #[cfg(all(feature = "sanity-checks", not(test)))]
+        if let Some(smp) = unsafe { crate::try_smp_state() } {
+            assert!(
+                crate::debug::runqueues_ok_cpu(&*smp, self, crate::current_cpu_id()),
+                "runqueues_ok: queue invariant broken after sched_enqueue"
+            );
+        }
     }
 
     /// Enqueue a preempted process at the head of its priority queue.
@@ -949,6 +963,15 @@ impl ProcessTable {
         acc.record_enqueue(tsc);
         acc.dequeues.fetch_sub(1, Ordering::AcqRel);
         acc.preempted.fetch_add(1, Ordering::AcqRel);
+
+        // U-2 / C proc.c:1709 (enqueue_head tail): assert(runqueues_ok_local()).
+        #[cfg(all(feature = "sanity-checks", not(test)))]
+        if let Some(smp) = unsafe { crate::try_smp_state() } {
+            assert!(
+                crate::debug::runqueues_ok_cpu(&*smp, self, crate::current_cpu_id()),
+                "runqueues_ok: queue invariant broken after sched_enqueue_head"
+            );
+        }
     }
 
     /// Dequeue a non-runnable process from its priority queue.
@@ -981,6 +1004,15 @@ impl ProcessTable {
             get_monotonic(),
             Ordering::Release,
         );
+
+        // U-2 / C proc.c:1778 (dequeue tail): assert(runqueues_ok_local()).
+        #[cfg(all(feature = "sanity-checks", not(test)))]
+        if let Some(smp) = unsafe { crate::try_smp_state() } {
+            assert!(
+                crate::debug::runqueues_ok_cpu(&*smp, self, crate::current_cpu_id()),
+                "runqueues_ok: queue invariant broken after sched_dequeue"
+            );
+        }
     }
 
     /// Whether a process's privilege grants preemption.
