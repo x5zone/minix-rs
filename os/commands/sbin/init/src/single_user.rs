@@ -98,12 +98,16 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
     // C: downgrade an active security level first (init.c:711-713);
     // the gate compares against the pre-downgrade value.
     if deps.from_securitylevel > 0 {
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = host.set_securitylevel(0);
     }
 
     // C: SIG_IGN for SIGHUP/SIGTSTP around the shell (init.c:715-719);
     // restored from the default table on every exit path below.
     let ignore = ignore_spec(&[sig::SIGNAL_HANGUP, sig::SIGNAL_TERMINAL_STOP]);
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = host.register_handlers(&ignore);
 
     let pid = match host.fork() {
@@ -118,6 +122,8 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
             // forever on `Ok((0, _))` (NK4-C §1.117 same mistranslation).
             while matches!(host.waitpid(-1, WNOHANG), Ok((pid, _)) if pid > 0) {}
             let restore = restore_spec(&[sig::SIGNAL_HANGUP, sig::SIGNAL_TERMINAL_STOP]);
+            //[SD19-gate] SD-19: init 尽力而为
+            #[allow(clippy::let_underscore_must_use)]
             let _ = host.register_handlers(&restore);
             return SingleUserOutcome::Restart;
         }
@@ -142,6 +148,8 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
                         // C: stopped shell — SIGCONT it and keep
                         // waiting (init.c:843-847).
                         warning(host, "shell stopped, restarting");
+                        //[SD19-gate] SD-19: init 尽力而为
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = host.kill(pid, sig::SIGNAL_CONTINUE);
                     } else {
                         shell_done = Some(status);
@@ -193,6 +201,8 @@ fn finish_shell(host: &mut dyn InitHost, status: crate::wait::WaitStatus) -> Sin
 
 fn restore_after(host: &mut dyn InitHost) {
     let restore = restore_spec(&[sig::SIGNAL_HANGUP, sig::SIGNAL_TERMINAL_STOP]);
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = host.register_handlers(&restore);
 }
 
@@ -212,6 +222,8 @@ fn child_shell(
         Ok(true) => CONSTTY_PATH,
         _ => CONSOLE_PATH,
     };
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = host.set_controlling_tty(tty);
 
     // The SECURE gate: prompt until a password matches or ^D goes
@@ -256,6 +268,8 @@ fn child_shell(
     // fallback is unconditional: after the first failure C resets
     // argv[0] to "-sh" and retries INIT_BSHELL — even when the first
     // attempt already was INIT_BSHELL.
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = host.set_env("PATH", INIT_PATH);
     let err = host.exec(&crate::session::ParsedCommand {
         exec_path: shell.clone(),
@@ -268,6 +282,8 @@ fn child_shell(
     });
     emergency(host, &format!("can't exec `{RC_SHELL_PATH}' for single user: {err}"));
     // C: plain `sleep(STALL_TIMEOUT)` — no log line (init.c:811).
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = host.sleep_secs(crate::log::STALL_TIMEOUT_SECS);
     host.exit_process(3);
 }
@@ -352,6 +368,8 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = single_user(&mut host, deps);
         assert_eq!(host.securitylevel_sets, vec![0]);
     }
@@ -487,6 +505,8 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         assert_eq!(host.exec_requests.len(), 2);
         let cmd = &host.exec_requests[0];
@@ -519,6 +539,8 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         // First attempt execs the operator's shell; the fallback resets
         // argv[0] to "-sh" on INIT_BSHELL (init.c:803-808).
@@ -549,6 +571,8 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         assert_eq!(
             host.console.iter().filter(|(_, m)| m.contains("login failed")).count(),
@@ -575,6 +599,8 @@ mod tests {
             collector: &mut collector,
             requested: &signals,
         };
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = catch_unwind(AssertUnwindSafe(|| single_user(&mut host, deps)));
         assert_eq!(host.exits, vec![0]);
         assert!(host.exec_requests.is_empty());

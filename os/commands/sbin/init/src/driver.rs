@@ -137,7 +137,11 @@ impl ChildCollector<'_> {
         let now = host.now_secs().unwrap_or(0);
         for (device, code) in &dead {
             let dead = crate::utmp::dead_record(device, pid, *code, now);
+            //[SD19-gate] SD-19: init 尽力而为
+            #[allow(clippy::let_underscore_must_use)]
             let _ = crate::utmp::append_record(host, crate::utmp::UTMPX_PATH, &dead);
+            //[SD19-gate] SD-19: init 尽力而为
+            #[allow(clippy::let_underscore_must_use)]
             let _ = crate::utmp::append_record(host, crate::utmp::WTMPX_PATH, &dead);
         }
         action
@@ -169,6 +173,8 @@ impl<'a> Ledger<'a> {
             return;
         }
         let now = host.now_secs().unwrap_or(0);
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = utmpx_set_runlevel(
             host,
             runlevel_for_optional(old),
@@ -182,6 +188,8 @@ impl<'a> Ledger<'a> {
     /// (init.c:1008).
     pub fn reboot(&self, host: &mut dyn InitHost) {
         let now = host.now_secs().unwrap_or(0);
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = logwtmpx(host, "~", "reboot", RecordType::Init, now);
     }
 
@@ -189,6 +197,8 @@ impl<'a> Ledger<'a> {
     /// (init.c:1674).
     pub fn shutdown(&self, host: &mut dyn InitHost) {
         let now = host.now_secs().unwrap_or(0);
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = logwtmpx(host, "~", "shutdown", RecordType::Init, now);
     }
 }
@@ -364,6 +374,8 @@ fn read_ttys_step(host: &mut dyn InitHost, state: &mut DriverState) -> StateKind
 /// quiet reap that never advances (init.c:850-856).
 fn quiet_wait(host: &mut dyn InitHost) -> ! {
     loop {
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = host.waitpid(-1, 0);
     }
 }

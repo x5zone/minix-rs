@@ -4,6 +4,9 @@
 //! session, device probe, flag parsing, signal registration, stdio
 //! cleanup, securelevel probe, then `transition()` (see 02).
 
+// SD-19 机械化门
+#![warn(clippy::let_underscore_must_use)]
+
 // P1-2 ③（决策记录：09-stage-init/todo.md）：真机用户镜像的目标是
 // `x86_64-unknown-none`（rt-birth 先例；workspace .cargo/config 为该
 // target 配 static 重定位），二进制在那一侧是 freestanding PID 1 ——
@@ -152,6 +155,8 @@ fn run_init() -> ! {
         InitialState::Runcom => StateKind::Runcom,
         InitialState::SingleUser => StateKind::SingleUser,
     };
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = TTYS_PATH; // read per read_ttys step through the seam
     driver::run_transition(&mut host, &mut state, initial);
 }
@@ -207,6 +212,8 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     // 的可见结果（init 退出）不变。
     let message = core::str::from_utf8(&buffer[..length])
         .unwrap_or("init panicked (non-utf8 message)");
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::syscall::sys_diagctl_write(
         &minix_sys::syscall::DirectKernelCallTransport,
         message,

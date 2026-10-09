@@ -97,7 +97,11 @@ pub(crate) fn stack_params(argv: &[&str], envp: &[&str]) -> Result<usize, Errno>
         }
         Ok(slots)
     };
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = count(argv)?;
+    //[SD19-gate] SD-19: init 尽力而为
+    #[allow(clippy::let_underscore_must_use)]
     let _ = count(envp)?;
     Ok(total.div_ceil(SLOT) * SLOT)
 }

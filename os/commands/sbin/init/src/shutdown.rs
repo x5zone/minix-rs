@@ -69,6 +69,8 @@ pub fn death(host: &mut dyn InitHost, deps: &mut ShutdownDeps) -> StateKind {
             }
 
         deps.clang.swap(false, Ordering::SeqCst); // clang = 0
+        //[SD19-gate] SD-19: init 尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = host.alarm(DEATH_WATCH_SECS as u32);
 
         let mut children_exhausted = false;
