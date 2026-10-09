@@ -137,6 +137,8 @@ fn read_indirect<S: BlockSource>(
         .acquire(BlockKey::new(device, zone), AcquireMode::Normal)
         .map_err(|_| ReadError::Io)?;
     let bytes = cache.slot_data(slot).to_vec();
+    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = cache.release(slot);
     if !bytes.len().is_multiple_of(4) {
         return Err(ReadError::Io);
@@ -224,6 +226,8 @@ pub fn read_file<S: BlockSource>(
                 .acquire_tagged(BlockKey::new(device, device_block), AcquireMode::Normal, tag)
                 .map_err(|_| ReadError::Io)?;
             let bytes = cache.slot_data(cache_slot).to_vec();
+            // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = cache.release(cache_slot);
             chunk = chunk.min(bytes.len().saturating_sub(offset));
             out(&bytes[offset..offset + chunk]);
@@ -429,6 +433,8 @@ pub fn list_dir_entries<S: BlockSource>(
                         .acquire(BlockKey::new(device, device_block), AcquireMode::Normal)
                         .map_err(|_| ReadError::Io)?;
                     let bytes = cache.slot_data(cache_slot).to_vec();
+                    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = cache.release(cache_slot);
                     bytes
                 }
@@ -463,6 +469,8 @@ pub fn list_dir_entries<S: BlockSource>(
                 let raw_type = match table.get(cache, device, entry.ino as u64, io) {
                     Ok(target_slot) => {
                         let mode = table.slot(target_slot).mode;
+                        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = table.put(cache, target_slot, io);
                         file_type_byte(mode)
                     }
@@ -960,6 +968,8 @@ mod tests {
         // 冷目录：先放回引用，枚举时从盘重新装载（与 C get_inode 一致）。
         {
             let slot = fixture.table.find(DEVICE, dir_number).unwrap();
+            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = fixture.table.put(&mut fixture.cache, slot, &io);
         }
         // Tiny capacity forces a mid-walk stop with resume position.

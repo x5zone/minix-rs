@@ -121,6 +121,8 @@ pub fn write_map<S: BlockSource>(
                 .acquire(BlockKey::new(device, double_zone), AcquireMode::NoRead)
                 .map_err(|_| WriteError::Io)?;
             zero_slot(cache, slot);
+            // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = cache.release(slot);
         }
         if double_zone == 0 {
@@ -145,6 +147,8 @@ pub fn write_map<S: BlockSource>(
             .acquire(BlockKey::new(device, single_zone), AcquireMode::NoRead)
             .map_err(|_| WriteError::Io)?;
         zero_slot(cache, slot);
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(slot);
     }
     if single_zone == 0 {
@@ -192,6 +196,8 @@ fn read_indirect_entries<S: BlockSource>(
         .acquire(BlockKey::new(device, zone), AcquireMode::Normal)
         .map_err(|_| WriteError::Io)?;
     let bytes = cache.slot_data(slot).to_vec();
+    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = cache.release(slot);
     if !bytes.len().is_multiple_of(4) {
         return Err(WriteError::Io);
@@ -227,12 +233,16 @@ fn write_indirect_entry<S: BlockSource>(
         let data = cache.slot_data_mut(slot);
         let at = index as usize * 4;
         if at + 4 > data.len() {
+            // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = cache.release(slot);
             return Err(WriteError::Io);
         }
         data[at..at + 4].copy_from_slice(&(value as u32).to_le_bytes());
     }
     cache.mark_dirty(slot);
+    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = cache.release(slot);
     Ok(())
 }
@@ -403,6 +413,8 @@ pub fn write_file<S: BlockSource>(
             bytes[offset..offset + chunk].copy_from_slice(&data[moved..moved + chunk]);
         }
         cache.mark_dirty(cache_slot);
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(cache_slot);
         moved += chunk;
         remaining -= chunk;
@@ -495,6 +507,8 @@ pub fn truncate_file<S: BlockSource>(
                             bytes[offset..offset + chunk].fill(0);
                         }
                         cache.mark_dirty(cache_slot);
+                        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = cache.release(cache_slot);
                     }
                     remaining -= chunk as u64;

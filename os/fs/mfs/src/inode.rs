@@ -623,6 +623,8 @@ impl InodeTable {
             )
             .map_err(|_| InodeError::Corrupt)?;
         let record = DiskInode::from_bytes(&cache.slot_data(cache_slot)[offset..])?;
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(cache_slot);
         if record.size < 0 {
             return Err(InodeError::Corrupt);
@@ -682,6 +684,8 @@ impl InodeTable {
             data[offset..offset + INODE_DISK_SIZE].copy_from_slice(&bytes);
         }
         cache.mark_dirty(cache_slot);
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(cache_slot);
         self.slots[slot].dirty = false;
         Ok(())
@@ -884,6 +888,8 @@ mod tests {
             .unwrap();
         let back = DiskInode::from_bytes(&cache.slot_data(check)[offset..]).unwrap();
         assert_eq!(back.size, 500);
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(check);
     }
 

@@ -184,6 +184,8 @@ pub fn create_link<S: BlockSource>(
     }
     if answer.is_err() {
         let io = ctx.io;
+        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, target, &io);
         return answer;
     }
@@ -192,6 +194,8 @@ pub fn create_link<S: BlockSource>(
         .get(ctx.cache, ctx.device, dir_number, &ctx.io)
         .map_err(|_| {
             let io = ctx.io;
+            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ctx.table.put(ctx.cache, target, &io);
             LinkError::Invalid
         })?;
@@ -199,7 +203,11 @@ pub fn create_link<S: BlockSource>(
         let parent_inode = ctx.table.slot(parent);
         if parent_inode.nlinks == crate::inode::NO_LINK {
             let io = ctx.io;
+            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ctx.table.put(ctx.cache, target, &io);
+            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ctx.table.put(ctx.cache, parent, &io);
             return Err(LinkError::Invalid);
         }
@@ -222,14 +230,22 @@ pub fn create_link<S: BlockSource>(
         ) {
             Ok(()) => {
                 let io = ctx.io;
+                // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = ctx.table.put(ctx.cache, target, &io);
+                // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = ctx.table.put(ctx.cache, parent, &io);
                 return Err(LinkError::Exists);
             }
             Err(DirError::NotFound) => {}
             Err(error) => {
                 let io = ctx.io;
+                // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = ctx.table.put(ctx.cache, target, &io);
+                // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = ctx.table.put(ctx.cache, parent, &io);
                 return Err(error.into());
             }
@@ -269,7 +285,11 @@ pub fn create_link<S: BlockSource>(
         inode.dirty = true;
     }
     let io = ctx.io;
+    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, target, &io);
+    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, parent, &io);
     Ok(LinkOutcome::default())
 }
@@ -364,6 +384,8 @@ pub fn remove_directory<S: BlockSource>(
             size: child_size,
             last_dpos: 0,
         };
+        // [SD19-gate] 主操作已成功删除；C mfs 删子目录内 . 与 .. 时忽略错误（link.c），尽力清理
+        #[allow(clippy::let_underscore_must_use)]
         let _ = search_blocks(
             child_blocks,
             ctx.block_size,
@@ -374,6 +396,8 @@ pub fn remove_directory<S: BlockSource>(
             b".",
             &mut number,
         );
+        // [SD19-gate] 主操作已成功删除；C mfs 删子目录内 . 与 .. 时忽略错误（link.c），尽力清理
+        #[allow(clippy::let_underscore_must_use)]
         let _ = search_blocks(
             child_blocks,
             ctx.block_size,
@@ -498,6 +522,8 @@ pub fn rename<S: BlockSource>(
     // 赋值，是 clippy `value_assigned_to_never_read` 报的死写）。
     if let Some(slot) = new_file && ctx.table.slot(slot).mountpoint {
         let io = ctx.io;
+        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, slot, &io);
         return Err(LinkError::Busy);
     }
@@ -539,6 +565,8 @@ pub fn rename<S: BlockSource>(
                         ctx.block_size,
                     )
                     .map_err(|_| LinkError::Io)?;
+                    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = ctx.table.put(ctx.cache, slot, &ctx.io);
                     let mut found = 0u32;
                     match crate::dir::lookup_name(
@@ -742,6 +770,8 @@ pub fn rename<S: BlockSource>(
             last_dpos: 0,
         };
         let mut none = 0u32;
+        // [SD19-gate] 主操作已成功删除；C mfs 删子目录内 . 与 .. 时忽略错误（link.c），尽力清理
+        #[allow(clippy::let_underscore_must_use)]
         let _ = search_blocks(
             &mut moved_images,
             ctx.block_size,
@@ -785,6 +815,8 @@ pub fn rename<S: BlockSource>(
                         .write_slot(slot, image)
                         .map_err(|_| LinkError::Io)?;
                     ctx.cache.mark_dirty(slot);
+                    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = ctx.cache.release(slot);
                 }
             }
@@ -801,6 +833,8 @@ pub fn rename<S: BlockSource>(
     release_parent(ctx, new_dir);
     if let Some(slot) = new_file {
         let io = ctx.io;
+        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, slot, &io);
     }
     match error {
@@ -863,7 +897,11 @@ fn child_number<S: BlockSource>(ctx: &LinkCtx<'_, S>, slot: usize) -> u64 {
 /// Release both slots once.
 fn release_pair<S: BlockSource>(ctx: &mut LinkCtx<'_, S>, parent: usize, child: usize) {
     let io = ctx.io;
+    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, child, &io);
+    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, parent, &io);
 }
 
@@ -882,6 +920,8 @@ fn release_child<S: BlockSource>(
 /// Release the parent slot.
 fn release_parent<S: BlockSource>(ctx: &mut LinkCtx<'_, S>, parent: usize) {
     let io = ctx.io;
+    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, parent, &io);
 }
 
@@ -906,11 +946,15 @@ pub fn read_link<S: BlockSource>(
     };
     if mode as u32 & TYPE_MASK != crate::inode::TYPE_SYMLINK {
         let io = ctx.io;
+        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, slot, &io);
         return Err(LinkError::Access);
     }
     if zone == 0 {
         let io = ctx.io;
+        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = ctx.table.put(ctx.cache, slot, &io);
         return Err(LinkError::Io);
     }
@@ -919,13 +963,19 @@ pub fn read_link<S: BlockSource>(
         .acquire(BlockKey::new(ctx.device, zone), AcquireMode::Normal)
         .map_err(|_| {
             let io = ctx.io;
+            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ctx.table.put(ctx.cache, slot, &io);
             LinkError::Io
         })?;
     let take = (capacity as i64).min(size).max(0) as usize;
     let bytes = ctx.cache.slot_data(cache_slot).to_vec();
+    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.cache.release(cache_slot);
     let io = ctx.io;
+    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ctx.table.put(ctx.cache, slot, &io);
     out(&bytes[..take.min(bytes.len())]);
     Ok(take.min(bytes.len()))

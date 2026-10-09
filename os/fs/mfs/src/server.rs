@@ -260,6 +260,8 @@ impl<S: BlockSource> MfsServer<S> {
             old_size,
             parts.block_size,
         )?;
+        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
         Ok((blocks, old_size))
     }
@@ -315,6 +317,8 @@ impl<S: BlockSource> MfsServer<S> {
             &*blocks,
             parts.block_size,
         );
+        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
         result
     }
@@ -351,6 +355,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
     fn unmounted(&mut self) {
         if let Some(fs) = self.fs.take() {
             let result = crate::mount::unmount(fs, &mut |fs: &mut MountedFs<S>| {
+                // [SD19-gate] 尽力而为收尾同步挂载；失败不改变已成立主结果
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = Self::sync_mounted(fs);
             });
             if let Ok((_, source)) = result {
@@ -552,6 +558,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                         }
                     }
                     parts.cache.mark_dirty(cache_slot);
+                    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = parts.cache.release(cache_slot);
                 }
                 position += chunk as u64;
@@ -638,6 +646,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             name.as_bytes(),
             &mut found,
         );
+        // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
         search.map_err(|error: DirError| error.to_errno())?;
         let child_slot = parts
@@ -805,6 +815,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 &child_blocks,
                 parts.block_size,
             );
+            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = parts.inodes.put(parts.cache, child_slot, &parts.io);
             stored?;
         }
@@ -882,6 +894,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 &mut found,
             )
             .map_err(|error| error.to_errno())?;
+            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = parts.inodes.put(parts.cache, dir_slot, &parts.io);
         }
         let (_, _, mut child_blocks) = {
@@ -903,6 +917,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 size,
                 parts.block_size,
             )?;
+            // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = parts.inodes.put(parts.cache, child_slot, &parts.io);
             (zones, size, images)
         };
@@ -1271,12 +1287,16 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
 
     fn synchronized(&mut self) {
         if let Some(fs) = self.fs.as_mut() {
+            // [SD19-gate] 尽力而为收尾同步挂载；失败不改变已成立主结果
+            #[allow(clippy::let_underscore_must_use)]
             let _ = Self::sync_mounted(fs);
         }
     }
 
     fn flushed(&mut self, device: u64) {
         if let Some(fs) = self.fs.as_mut() {
+            // [SD19-gate] 尽力而为刷设备缓存；收尾失败不改变主结果
+            #[allow(clippy::let_underscore_must_use)]
             let _ = fs.cache_mut().flush_device(device);
             fs.cache_mut().invalidate_device(device);
         }

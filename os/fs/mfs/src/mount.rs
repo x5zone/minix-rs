@@ -268,6 +268,8 @@ impl<S: BlockSource> MountedFs<S> {
             map.store_image_at(base, data);
         }
         cache.mark_dirty(slot);
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(slot);
         Ok(())
     }
@@ -313,6 +315,8 @@ impl<S: BlockSource> MountedFs<S> {
             .acquire(BlockKey::new(device, block), AcquireMode::Normal)
             .map_err(|_| MountError::Inner(Errno::from_i32(EIO)))?;
         let image = cache.slot_data(slot).to_vec();
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(slot);
         map.load_image_at(base, &image);
         Ok(())
@@ -369,6 +373,8 @@ pub fn mount_with_second_level<S: BlockSource>(
             .acquire(BlockKey::new(device, 0), AcquireMode::Normal)
             .map_err(|_| MountError::Inner(Errno::from_i32(EIO)))?;
         let bytes = cache.slot_data(slot).to_vec();
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(slot);
         bytes
     };
@@ -485,6 +491,8 @@ pub fn count_free_bits<S: BlockSource>(
             )
             .map_err(|_| MountError::Inner(Errno::from_i32(EIO)))?;
         let image = cache.slot_data(slot).to_vec();
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = cache.release(slot);
         free += crate::superblock::count_clear_bits_in_image(
             &image,
@@ -513,6 +521,8 @@ pub fn store_superblock<S: BlockSource>(
         let bytes = superblock.rebuild_disk().to_bytes();
         let data = cache.slot_data_mut(slot);
         if data.len() < SUPER_BLOCK_OFFSET + DiskSuperblock::STORED_BYTES {
+            // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = cache.release(slot);
             return Err(MountError::Inner(Errno::from_i32(EIO)));
         }
@@ -520,6 +530,8 @@ pub fn store_superblock<S: BlockSource>(
             .copy_from_slice(&bytes);
     }
     cache.mark_dirty(slot);
+    // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = cache.release(slot);
     cache.flush_device(device).map_err(MountError::from)?;
     Ok(())
@@ -614,6 +626,8 @@ pub fn check_mountpoint<S: BlockSource>(
     } else if file_type == TYPE_BLOCK || file_type == TYPE_CHARACTER {
         answer = Err(MountError::NotDirectory);
     }
+    // [SD19-gate] 主操作已成功后尽力回写 inode；C minix3/minix/fs/mfs 对应 put_inode 为 void、不回错（失败不改变已成立结果）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = inodes.put(cache, slot, io);
     if answer.is_ok() {
         inodes.slot_mut(slot).mountpoint = true;
@@ -877,6 +891,8 @@ mod tests {
             .acquire(BlockKey::new(DEVICE, 3), AcquireMode::Normal)
             .unwrap();
         let byte = mounted.cache().slot_data(slot)[bit as usize / 8];
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = mounted.cache_mut().release(slot);
         assert_eq!(byte & (1 << (bit % 8)), 1 << (bit % 8));
     }
@@ -897,6 +913,8 @@ mod tests {
             .unwrap();
         let flag_byte = mounted.cache().slot_data(slot)[SUPER_BLOCK_OFFSET + 14];
         assert_eq!(flag_byte & 1, 1);
+        // [SD19-gate] 尽力而为释放预读缓存槽；失败是自我禁用策略，不改变主结果（同 minix-fs bio cache.release）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = mounted.cache_mut().release(slot);
     }
 

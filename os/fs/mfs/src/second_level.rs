@@ -150,6 +150,8 @@ impl<T: IpcTransport> VmCacheWire for VmWire<T> {
     fn free_pages(&mut self, page: MappedPage) {
         // C: `munmap_t` (cache.c:270). A failed unmap leaves the mapping to
         // the process's exit; the pool has already stopped using it.
+        // [SD19-gate] C munmap_t(cache.c:270)：失败映射留待进程退出回收，池已停用
+        #[allow(clippy::let_underscore_must_use)]
         let _ = munmap_via(
             &self.transport,
             VirBytes(page.addr() as u64),
