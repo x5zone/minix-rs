@@ -62,6 +62,35 @@ fn real_main() -> ! {
         let mut ipc = SysIpc::new(DirectTrapTransport);
         let mut kernel = SysKernel;
 
+        // SD-11 T3 首迁安装点：把全局堆供给切到 VM_BRK 增长堆，初始
+        // 断点 = 链接器镜像尾（C `brksize.S` 以 `_end` 播 `_brksize`
+        // 的同一符号，`minix_rt::image_end`）。安装本身无 IPC（只切换
+        // 分配器形态）；首次超出固定池的分配才真正发 VM_BRK。出生序
+        // 上 DS 晚于 VM（`rs/boot.rs` 装机表），安装时 VM 主循环已在
+        // 收请求；EINVAL（镜像尾为 0 = 链接缺陷）fail-fast。
+        #[cfg(target_os = "none")]
+        minix_rt::install_vm_supplier(minix_rt::image_end())
+            .expect("ds: install_vm_supplier(镜像尾) 不得失败");
+
+        // SD-11 T3 真机取证探针：安装后立即从 VM 腿取一页（8 字节 slab
+        // 请求触发 add_slab → supply_page → VM_BRK），失败即 fail-fast
+        //（OOM 标签 + panic）。成功打一行串口标记——VM_BRK 增长腿端到
+        // 端贯通的 L1 证据；探针块随 free 回 slab 自由表（VM 侧页不
+        // 回收：收缩 brk 从不 unmap，同 C）。探针发阻塞 sendrec 给 VM，
+        // 出生序上 DS 晚于 VM、无循环依赖，安全。
+        #[cfg(target_os = "none")]
+        {
+            let probe = minix_rt::alloc(8);
+            assert!(!probe.is_null(), "ds: vm-brk probe 分配失败");
+            minix_rt::free(probe);
+            use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+            let _ = sys_diagctl_write(
+                &DirectKernelCallTransport,
+                "nk4a: ds-vmbrk probe ok pages=1 via=VM_BRK\n",
+            );
+        }
+
         // C: main loop — main.c:42-86, owned by server.rs: receive →
         // triage → dispatch → reply, forever; a broken transport dies at
         // the documented 64-turn bound (server.rs, the SCHED-shared

@@ -325,6 +325,31 @@ pub fn install_vm_supplier(initial_break: u64) -> Result<(), minix_types::Errno>
     })
 }
 
+/// 链接器镜像尾符号（C `_end`）与读取口（仅 freestanding 真身）。
+///
+/// C 对位：`minix3/minix/lib/libc/arch/i386/sys/brksize.S` 把链接器
+/// `_end` 播成初始 `_brksize`——数据段之后的第一个字节就是堆起点。
+/// 本 crate 三架构 none 目标均走 lld，其 ELF 可执行文件内建提供
+/// `__bss_start`/`_edata`/`_end` 三符号，取地址即得（无须自定链接
+/// 脚本）。宿主 std 构建不暴露（符号语义随宿主 libc 变化，无消费
+/// 者且避免误用）。
+#[cfg(target_os = "none")]
+mod image_end_sym {
+    unsafe extern "C" {
+        static _end: u8;
+    }
+
+    /// 镜像尾地址（.bss 之后的第一个字节；[`install_vm_supplier`] 的
+    /// 初始断点同源，`SD-11` T3）。
+    pub fn image_end() -> u64 {
+        // 只取符号地址、不解引用——`_end` 是链接器内建符号，无对应
+        // 存储对象（`addr_of!` 本身安全，无需 unsafe 块）。
+        core::ptr::addr_of!(_end) as u64
+    }
+}
+#[cfg(target_os = "none")]
+pub use image_end_sym::image_end;
+
 /// Binding of the runtime slab allocator to the `#[global_allocator]` slot
 /// (opt-in: a binary providing its own global allocator must not enable
 /// this feature, exactly like the `panic-handler` feature).
