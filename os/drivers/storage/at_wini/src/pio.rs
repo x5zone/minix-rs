@@ -438,6 +438,48 @@ pub fn read_identify(
     Ok(parse_identify(&block))
 }
 
+/// The read/write command encoding chosen for a transfer, per the drive's
+/// addressing capability. C: `do_transfer` dispatches on `wn->lba48` then the
+/// LBA bit, else the CHS geometry path (at_wini.c:896-930).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockCommand {
+    /// 28-bit LBA (≤128 GiB). C: the `ldhpref & LDH_LBA` branch (:917-921).
+    Lba28(Command),
+    /// 48-bit LBA (large drives). C: the `do_lba48` branch (:896-916).
+    Lba48(Command48),
+}
+
+/// Choose the command encoding for a block transfer given the drive's IDENTIFY
+/// result.
+///
+/// Returns `None` for a CHS-only drive (media too small to trust LBA, or
+/// LBA-incapable): the geometry command path is a later increment, and the
+/// caller must not silently fall back to LBA (C keeps CHS for such drives).
+/// The LBA28 count saturates at one command's worth (a sector count is a byte;
+/// larger requests split across commands by the caller).
+pub fn block_command(
+    caps: &IdentifyInfo,
+    block: u64,
+    count: u16,
+    drive: u8,
+    do_write: bool,
+) -> Option<BlockCommand> {
+    if caps.lba48 {
+        Some(BlockCommand::Lba48(lba48_command(
+            block, count, drive, do_write,
+        )))
+    } else if caps.lba {
+        Some(BlockCommand::Lba28(lba28_command(
+            block as u32,
+            count.min(u8::MAX as u16) as u8,
+            drive,
+            do_write,
+        )))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,5 +785,48 @@ mod tests {
         assert_eq!(cmd.ldh, ldh_init(1));
         assert_eq!(cmd.ldh & LDH_DEV, LDH_DEV);
         assert_eq!(cmd.ldh & LDH_LBA, 0);
+    }
+
+    /// A drive caps record with only the two addressing bits set.
+    fn caps(lba: bool, lba48: bool) -> IdentifyInfo {
+        IdentifyInfo {
+            cylinders: 0,
+            heads: 0,
+            sectors_per_track: 0,
+            lba,
+            lba48,
+            total_sectors: 0,
+        }
+    }
+
+    #[test]
+    fn test_block_command_selects_by_capability() {
+        // C: do_transfer dispatches LBA48 first, then the LBA bit (:896/:917).
+        match block_command(&caps(false, true), 0x1_2345_6789, 3, 0, false).unwrap() {
+            BlockCommand::Lba48(c) => {
+                assert_eq!(c.command, CMD_READ_EXT);
+                assert_eq!(c.sector, 0x89); // bits 0-7 of the 48-bit block
+            }
+            other => panic!("expected Lba48, got {other:?}"),
+        }
+        match block_command(&caps(true, false), 0x1234_5678, 2, 0, true).unwrap() {
+            BlockCommand::Lba28(c) => {
+                assert_eq!(c.command, CMD_WRITE);
+                assert_eq!(c.sector, 0x78);
+            }
+            other => panic!("expected Lba28, got {other:?}"),
+        }
+        // CHS-only drive → None; never silently mis-fall back to LBA.
+        assert!(block_command(&caps(false, false), 0, 1, 0, false).is_none());
+    }
+
+    #[test]
+    fn test_block_command_lba28_count_saturates() {
+        // A sector count is one byte; LBA28 saturates at u8::MAX (larger
+        // requests split across commands by the caller).
+        match block_command(&caps(true, false), 0, 5000, 0, false).unwrap() {
+            BlockCommand::Lba28(c) => assert_eq!(c.count, u8::MAX),
+            other => panic!("expected Lba28, got {other:?}"),
+        }
     }
 }
