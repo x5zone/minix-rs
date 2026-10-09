@@ -34,7 +34,11 @@ const STDERR: Fd = 2;
 
 
 fn fail(message: &str) -> ! {
+    //[SD19-gate] SD-19: fail 路径 stderr→terminate
+    #[allow(clippy::let_underscore_must_use)]
     let _ = write(STDERR, message.as_bytes());
+    //[SD19-gate] SD-19: fail 路径 stderr→terminate
+    #[allow(clippy::let_underscore_must_use)]
     let _ = write(STDERR, b"\n");
     support::terminate(1)
 }
@@ -148,6 +152,8 @@ fn run() -> ! {
         Some(path) => {
             let fd = minix_sys::open(path, 0, 0).unwrap_or_else(|_| fail("cannot open input"));
             let data = slurp(fd);
+            //[SD19-gate] SD-19: close 后 fd 不再使用，失败仅漏回收
+            #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::close(fd);
             data
         }
@@ -185,6 +191,8 @@ fn run() -> ! {
             let fd = minix_sys::open(path, flags, 0o644)
                 .unwrap_or_else(|_| fail("cannot open output"));
             emit(fd, &framed);
+            //[SD19-gate] SD-19: close 后 fd 不再使用，失败仅漏回收
+            #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::close(fd);
             if let (Some(src), true) = (&source, delete_source) {
                 support::remove_file(src).unwrap_or_else(|_| fail("cannot remove source"));
@@ -196,10 +204,14 @@ fn run() -> ! {
                     0.0
                 };
                 let source_text = source.clone().unwrap_or_default();
+                //[SD19-gate] SD-19: stderr 提示，下步 terminate
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = write(
                     STDERR,
                     format!("{source_text}: {saved:.1}% -- replaced").as_bytes(),
                 );
+                //[SD19-gate] SD-19: stderr 提示，下步 terminate
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = write(STDERR, b"\n");
             }
         }
