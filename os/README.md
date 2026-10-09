@@ -44,10 +44,14 @@ A Rust rewrite of the Minix3 microkernel operating system.
 | `libs/minix-elf/` | `minix-elf` | Minimal ELF64 parser (zero-allocation, no_std) |
 | `libs/minix-sys/` | `minix-sys` | User-space syscall + IPC runtime — implemented (send/receive/notify, fork/exec, per-server client modules) |
 | `libs/minix-rt/` | `minix-rt` | User-space runtime — implemented (crt0, allocator + VM_BRK supplier, panic handler) |
-| `servers/` | (12 crates) | User-space system servers (PM, VM, VFS, RS, DS, ...) |
-| `commands/` | (14 crates) | User-space commands (cat, ls, sh, init, ...) |
-| `qemu-tests/` | (18 crates) | QEMU-based hardware integration test kernels |
+| `servers/` | (see `Cargo.toml`) | User-space system servers (PM, VM, VFS, RS, DS, Sched, IS, DevMan, Input, MIB, …) |
+| `commands/` | (see `Cargo.toml`) | User-space commands (cat, ls, sh, init, …) |
+| `qemu-tests/` | (see `Cargo.toml`) | QEMU-based hardware integration test kernels |
 | `tests/` | `tests` | Host-based integration tests |
+
+> Crate counts are intentionally not pinned here — they drift every time a crate lands.
+> The authoritative membership is `os/Cargo.toml` `[workspace.members]` (list it with
+> `cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name'`).
 
 > `os/libs/` now holds 21 crates (protocol/boot/runtime core plus per-device driver-face libs);
 > there is no separate `minix-ipc` crate (the IPC runtime lives in `minix-sys`) and no `minix-mock`
