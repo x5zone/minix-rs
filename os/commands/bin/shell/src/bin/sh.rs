@@ -304,6 +304,8 @@ fn take_redirects(words: &[String]) -> Option<(Vec<String>, Vec<Redirection<'_>>
                     index += 2;
                     continue;
                 }
+                //[SD19-gate] SD-19: 消解 unused variable，语义已消费
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = other;
                 command.push(word.clone());
             }
@@ -371,19 +373,31 @@ fn run_pipeline(stages: &[Vec<String>], env: &mut RealEnv) -> i32 {
                 // Child: rewire the carried pipe ends, apply redirects,
                 // exec (exec never returns; a failure exits below).
                 if let Some(read) = carry_read {
+                    //[SD19-gate] SD-19: dup2 redirect setup，C shell 不检查 dup2 失败
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = dup2(read, 0);
+                    //[SD19-gate] SD-19: close pipe/fd 尽力回收
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(read);
                 }
                 if let Some((_, write)) = pipe {
+                    //[SD19-gate] SD-19: dup2 redirect setup，C shell 不检查 dup2 失败
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = dup2(write, 1);
+                    //[SD19-gate] SD-19: close pipe/fd 尽力回收
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(write);
                 }
                 if let Some((read, _)) = pipe {
+                    //[SD19-gate] SD-19: close pipe/fd 尽力回收
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(read);
                 }
                 if command.is_empty() {
                     // Redirection-only stage: create/consume the files and
                     // succeed (C `>` with no command still touches files).
+                    //[SD19-gate] SD-19: 重定向 setup 尽力而为
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = apply_redirs(&redirects);
                     terminate(0);
                 }
@@ -391,9 +405,13 @@ fn run_pipeline(stages: &[Vec<String>], env: &mut RealEnv) -> i32 {
             }
             Ok(pid) => {
                 if let Some(read) = carry_read {
+                    //[SD19-gate] SD-19: close pipe/fd 尽力回收
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(read);
                 }
                 if let Some((_, write)) = pipe {
+                    //[SD19-gate] SD-19: close pipe/fd 尽力回收
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(write);
                 }
                 carry_read = pipe.map(|(read, _)| read);
@@ -406,6 +424,8 @@ fn run_pipeline(stages: &[Vec<String>], env: &mut RealEnv) -> i32 {
         }
     }
     if let Some(read) = carry_read {
+        //[SD19-gate] SD-19: close pipe/fd 尽力回收
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(read);
     }
     let mut status = 0;
@@ -449,6 +469,8 @@ fn apply_redirs(redirects: &[Redirection<'_>]) -> Result<(), minix_sys::Errno> {
         let outcome = match red.op {
             RedirOp::DuplicateWrite | RedirOp::DuplicateRead => {
                 if red.target == "-" {
+                    //[SD19-gate] SD-19: close pipe/fd 尽力回收
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(red.fd as i32);
                     Ok(())
                 } else {
@@ -475,8 +497,12 @@ fn apply_redirs(redirects: &[Redirection<'_>]) -> Result<(), minix_sys::Errno> {
 /// Dups `fd` onto `red.fd` and closes the original when they differ.
 fn with_fd(red_fd: u8, opened: Result<i32, minix_sys::Errno>) -> Result<(), minix_sys::Errno> {
     let fd = opened?;
+    //[SD19-gate] SD-19: dup2 redirect setup，C shell 不检查 dup2 失败
+    #[allow(clippy::let_underscore_must_use)]
     let _ = dup2(fd, red_fd as i32);
     if fd != red_fd as i32 {
+        //[SD19-gate] SD-19: close pipe/fd 尽力回收
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
     }
     Ok(())

@@ -73,6 +73,8 @@ pub fn terminate(code: i32) -> ! {
 /// Best-effort write to standard error (the C `warnx` channel); write
 /// failures are ignored exactly as stdio's are in the C utilities.
 pub fn warn(bytes: &[u8]) {
+    //[SD19-gate] SD-19: write stderr warn
+    #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::write(STDERR, bytes);
 }
 
