@@ -962,6 +962,8 @@ pub fn create_service(
             .is_err()
         {
             crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+            // [SD19-gate] 尽力而为 VM 控制清理
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
             return Err(Errno::ENOMEM);
         }
@@ -970,6 +972,8 @@ pub fn create_service(
         Ok(synced) => table.get_mut(rp).priv_ = synced,
         Err(_) => {
             crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+            // [SD19-gate] 尽力而为 VM 控制清理
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
             return Err(Errno::ENOMEM);
         }
@@ -994,6 +998,8 @@ pub fn create_service(
         && let Err(e) = kernel.sched_init_proc(cfg)
     {
         crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+        // [SD19-gate] 尽力而为 VM 控制清理
+        #[allow(clippy::let_underscore_must_use)]
         let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
         return Err(e);
     }
@@ -1004,6 +1010,8 @@ pub fn create_service(
         let slot = table.get_mut(rp);
         if let Err(e) = read_exec(slot) {
             crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
+            // [SD19-gate] 尽力而为 VM 控制清理
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
             return Err(e);
         }
@@ -1021,6 +1029,8 @@ pub fn create_service(
             s.argc as usize,
         )
     };
+    // [SD19-gate] 尽力而为 VM 控制清理
+    #[allow(clippy::let_underscore_must_use)]
     let _ = kernel.vm_memctl(Endpoint::RS, crate::boot::VmRsMemReq::Pin, 0, 0);
     if let Err(e) = execve_result {
         crate::recovery::cleanup_service(table, rp, kernel, &mut no_script);
@@ -1032,6 +1042,8 @@ pub fn create_service(
 
     // The VFS non-blocking-fork workaround (manager.c:646-656) — retained
     // verbatim; the C comment marks it removable once VFS is fixed.
+    // [SD19-gate] 尽力而为 setuid 收尾
+    #[allow(clippy::let_underscore_must_use)]
     let _ = kernel.setuid(0);
 
     // RS instance: pin the child's memory (manager.c:659-669).
@@ -1064,6 +1076,8 @@ pub fn create_service(
             })
             .unwrap_or_default();
         for ep in endpoints {
+            // [SD19-gate] 尽力而为 VM 控制清理
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.vm_memctl(ep, crate::boot::VmRsMemReq::Pin, 0, 0);
         }
     }
@@ -1161,6 +1175,8 @@ mod r22a_tests {
             };
             assert!(create_service(&mut table, rp, &mut k, 100, &mut read_exec).is_ok());
         }
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = &mut loaded;
         // Table refresh landed (manager.c:589-597).
         assert_eq!(table.get(rp).pid, Some(500));
@@ -1805,6 +1821,8 @@ pub fn clone_service(
                         unlink_replica(table, rp, instance_flag);
                         // C: kill_service(replica, ...) — EXITING + crash.
                         let e = Errno::ENOMEM;
+                        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = crate::recovery::kill_service(table.get_mut(replica), kernel, e);
                         return Err(e);
                     }
@@ -1835,6 +1853,8 @@ pub fn restart_service(
 ) {
     // See if a late reply has to be sent (manager.c:1252-1253).
     if table.get(rp).flags.contains(RFlags::LATEREPLY) {
+        // [SD19-gate] 尽力而为回复收尾
+        #[allow(clippy::let_underscore_must_use)]
         let _ = kernel.reply(
             table.get(rp).pub_.endpoint,
             0,
@@ -1846,6 +1866,8 @@ pub fn restart_service(
     // Run a recovery script if available (manager.c:1255-1261).
     if table.get(rp).script[0] != 0 {
         if let Err(e) = (effects.run_script)(table.get_mut(rp)) {
+            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, e);
         }
         return;
@@ -1867,6 +1889,8 @@ pub fn restart_service(
             ) {
                 Ok(r) => r,
                 Err(e) => {
+                    // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, e);
                     return;
                 }
@@ -1883,6 +1907,8 @@ pub fn restart_service(
         .update_service(table, kernel, rp, replica, 1, SysFlags::empty())
         .is_err()
     {
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, Errno::EIO);
         return;
     }
@@ -1900,6 +1926,8 @@ pub fn restart_service(
     )
     .is_err()
     {
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::recovery::kill_service(table.get_mut(rp), kernel, Errno::EIO);
         return;
     }

@@ -69,6 +69,8 @@ fn real_main() {
         if rs_verbose {
             use minix_sys::syscall::{sys_diagctl, DirectKernelCallTransport};
             let line = b"RS: running in verbose mode\n";
+            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = sys_diagctl(&DirectKernelCallTransport, 1, line.as_ptr() as u64, line.len() as i32);
         }
 

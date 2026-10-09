@@ -1197,6 +1197,8 @@ mod r23a_tests {
         assert_eq!(table.get(dst).new_rp, Some(new));
         assert_eq!(table.get(new).old_rp, Some(dst));
         assert_eq!(table.get(src).new_rp, None);
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = idx;
     }
 }
@@ -1646,6 +1648,8 @@ mod r23b_tests {
             )
             .is_none()
         );
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = requested;
     }
 
@@ -1671,6 +1675,8 @@ mod r23b_tests {
             let mut req = |slot: &crate::service_slot::ServiceSlot, _ps: i32| {
                 dispatched.push(slot.pub_.endpoint);
             };
+            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = st.start_update_prepare_next(
                 &mut table,
                 &mut PrepareEffects {
@@ -1681,6 +1687,8 @@ mod r23b_tests {
         }
         // The walk continued past the prepare-only head in one call.
         assert_eq!(st.chain.curr, Some(1));
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = dispatched;
     }
 }
@@ -1791,8 +1799,12 @@ impl UpdateState {
             // without a kernel swap; swapping ones are frozen first.
             let swap = !table.get(new).flags.contains(RFlags::INIT_PENDING);
             if swap {
+                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = kernel.privctl(table.get(new).pub_.endpoint, PrivCtlOp::Disallow, None);
             }
+            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.update_service(
                 table,
                 kernel,
@@ -1823,6 +1835,8 @@ impl UpdateState {
         ticks: Clock,
         effects: &mut EndEffects,
     ) {
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = RssFlags::empty();
         let (old, lu_detached) = {
             let e = &self.chain.entries[entry_idx];
@@ -1860,6 +1874,8 @@ impl UpdateState {
         // Reply or cancel the survivor (update.c:977-987).
         if reply_flag == 1 {
             // RS_REPLY — m_type = result.
+            // [SD19-gate] 尽力而为回复收尾
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.reply(
                 table.get(surviving).pub_.endpoint,
                 result,
@@ -1878,6 +1894,8 @@ impl UpdateState {
             if id == old && lu_detached {
                 table.get_mut(id).flags.insert(RFlags::CLEANUP_DETACH);
                 crate::recovery::cleanup_service(table, id, kernel, &mut effects.run_script);
+                // [SD19-gate] 尽力而为回复收尾
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = kernel.reply(
                     table.get(id).pub_.endpoint,
                     minix_types::EDEADEPT,
@@ -2127,6 +2145,8 @@ impl UpdateState {
         if let Some(last_idx) = self.chain.last {
             let last_slot = self.chain.entries[last_idx].slot;
             if table.get(last_slot).flags.contains(RFlags::LATEREPLY) {
+                // [SD19-gate] 尽力而为回复收尾
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = kernel.reply(
                     table.get(last_slot).pub_.endpoint,
                     result,

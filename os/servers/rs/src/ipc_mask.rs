@@ -328,6 +328,8 @@ mod tests {
         // IPC_ALL includes the shared user priv id (manager.c:2325-2328).
         assert!(map.test(USER_PRIV_ID as usize));
         assert!(map.test(10));
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = a;
     }
 
@@ -339,6 +341,8 @@ mod tests {
         // IPC_ALL_SYS excludes USER_PRIV_ID but includes system privs.
         assert!(!map.test(USER_PRIV_ID as usize));
         assert!(map.test(10));
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = a;
     }
 
@@ -350,6 +354,8 @@ mod tests {
         let map = init_privs(&s, &t, mock_priv_id);
         assert!(map.test(13));
         assert!(!map.test(10));
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = b;
     }
 
@@ -392,6 +398,8 @@ mod tests {
         let tty = t2.get(a).clone();
         let map = init_privs(&tty, &t2, mock_priv_id);
         assert!(map.test(13)); // from vm's IPC_ALL via backward
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = vm;
     }
 

@@ -442,6 +442,8 @@ impl PmApi for TrapKernelApi {
 
         // 4. PM 接管(PM_EXEC_NEW 语义由 exec_restart 的 RS 门续接;
         //    栈帧字节经 exec_restart 的 ps_str/pc 契约交付)。
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = proc;
 
         // 5. exec_restart 握手(pm/exec.c:150:exec_restart(proc, OK,
@@ -628,6 +630,8 @@ impl IpcApi for TrapKernelApi {
     }
 
     fn grant_revoke(&mut self, grant: GrantId) {
+        // [SD19-gate] 尽力而为撤销授权
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.grants.revoke(grant);
     }
 
@@ -687,7 +691,11 @@ mod trap_api_tests {
     fn asynsend_accumulates_without_flush() {
         let mut api = TrapKernelApi::new();
         let m = Message::default();
+        // [SD19-gate] asynsend 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = api.asynsend(Endpoint::VM, &m);
+        // [SD19-gate] asynsend 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = api.asynsend(Endpoint::DS, &m);
         assert_eq!(
             api.senda_queue.pending_count(),

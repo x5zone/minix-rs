@@ -90,6 +90,8 @@ pub fn unpublish_result(
     if !pci_del_ok && !shutting_down {
         result = minix_types::EIO;
     }
+    // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = devman_ok; // C: devman failures only log (manager.c:897-914)
     result
 }
@@ -139,6 +141,8 @@ mod tests {
             answered.m_u.m_m4.m4l1 = -22;
         }
         assert_eq!(devman_result(&answered), -22);
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = Endpoint::NONE;
     }
 

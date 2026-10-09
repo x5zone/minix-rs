@@ -1195,6 +1195,8 @@ impl<'a> BootInit<'a> {
         // RS_INIT message (m_type = OK), except VM (its reply was
         // asynchronous; a synchronous reply could deadlock).
         if m.m_source != minix_types::Endpoint::VM {
+            // [SD19-gate] 尽力而为回复收尾
+            #[allow(clippy::let_underscore_must_use)]
             let _ = sys.reply(m.m_source, 0, &m);
         }
         // C: main.c:819-822 — mark the slot no longer initializing.

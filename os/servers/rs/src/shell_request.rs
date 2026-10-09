@@ -563,6 +563,8 @@ impl RsServer {
                     .flags
                     .contains(crate::privilege::PrivFlags::ROOT_SYS_PROC)
                 {
+                    // [SD19-gate] 尽力而为 VM 控制清理
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.kernel.vm_memctl(
                         state.table.get(nid).pub_.endpoint,
                         crate::boot::VmRsMemReq::Pin,
@@ -698,10 +700,14 @@ impl RsServer {
             let mut msg = minix_types::Message::default();
             msg.m_u.m_rs_update = u;
             msg.m_type = minix_types::RS_LU_PREPARE;
+            // [SD19-gate] asynsend 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
         };
         let mut noop_vm = move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
             // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
+            // [SD19-gate] 尽力而为 VM 预备（失败走回滚）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().vm_prepare(src, dst, flags.bits() as i32);
         };
         let prepared = update.start_update_prepare(
@@ -719,6 +725,8 @@ impl RsServer {
             Err(Errno::EAGAIN) => {
                 // C ignores the abort's internals here (update.c:411 — the
                 // call statement's value is unused).
+                // [SD19-gate] live_update 回滚清理尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = crate::live_update::abort_update_proc(
                     &mut update,
                     &mut state.table,
@@ -745,9 +753,13 @@ impl RsServer {
             let mut msg = minix_types::Message::default();
             msg.m_u.m_rs_update = u;
             msg.m_type = minix_types::RS_LU_PREPARE;
+            // [SD19-gate] asynsend 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
         };
                 let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = update.end_update(
                     &mut state.table,
                     &mut **kern_cell.borrow_mut(),
@@ -876,9 +888,13 @@ impl RsServer {
         match decision.signal {
             crate::request::StopSignal::Hangup => {
                 // RS itself (manager.c:1003) — SIGHUP via the PM face.
+                // [SD19-gate] 尽力而为杀进程（C 不回错）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.srv_kill(pid, 1);
             }
             crate::request::StopSignal::Term => {
+                // [SD19-gate] 尽力而为杀进程（C 不回错）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.srv_kill(pid, 15);
             }
         }
@@ -1127,10 +1143,14 @@ impl RsServer {
             let mut msg = minix_types::Message::default();
             msg.m_u.m_rs_update = u;
             msg.m_type = minix_types::RS_LU_PREPARE;
+            // [SD19-gate] asynsend 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
         };
                 let mut noop_vm = move |src: Endpoint, dst: Endpoint, flags: crate::service_slot::SysFlags| {
             // C vm_prepare(libsys vm_prepare.c)——VM_RS_PREPARE taskcall。
+            // [SD19-gate] 尽力而为 VM 预备（失败走回滚）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().vm_prepare(src, dst, flags.bits() as i32);
         };
                 match state.update.start_update_prepare(
@@ -1207,6 +1227,8 @@ impl RsServer {
             let mut msg = minix_types::Message::default();
             msg.m_u.m_rs_update = u;
             msg.m_type = minix_types::RS_LU_PREPARE;
+            // [SD19-gate] asynsend 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kern_cell.borrow_mut().asynsend(slot.pub_.endpoint, &msg);
         };
                         let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
@@ -1364,6 +1386,8 @@ impl RsServer {
             );
             if let Some(name) = state.table.get(id).pub_.label.as_str() {
                 let mut grants = minix_sys::grant::GrantTable::new();
+                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = ds.delete(&mut grants, name, minix_types::DsFlags::TYPE_LABEL);
             }
             // C manager.c:896-914 —— devman unbind 半:devman_id 非零时
@@ -1379,6 +1403,8 @@ impl RsServer {
                 unbind.m_u.m_m4.m4l2 = devman_id as i64;
                 unbind.m_u.m_m4.m4l3 = state.table.get(id).pub_.endpoint.0 as i64;
                 unbind.m_type = minix_types::DEVMAN_UNBIND;
+                // [SD19-gate] 尽力而为 sendrec 收尾
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.sendrec_to(devman_ep, &mut unbind);
             }
             crate::recovery::cleanup_service(
@@ -1406,11 +1432,15 @@ impl RsServer {
         match decision.signal {
             crate::request::StopSignal::Hangup => {
                 // RS itself (manager.c:1003) — SIGHUP via the PM face.
+                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self
                     .kernel
                     .srv_kill(state.table.get(id).pid.unwrap_or(0), 1);
             }
             crate::request::StopSignal::Term => {
+                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self
                     .kernel
                     .srv_kill(state.table.get(id).pid.unwrap_or(0), 15);
@@ -1551,6 +1581,8 @@ impl RsServer {
                     let Some(name) = pub_.label.as_str() else {
                         return Ok(());
                     };
+                    // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = ds.publish_label(
                         &mut grants,
                         name,
@@ -1617,6 +1649,8 @@ impl RsServer {
                         }
                         let transport = minix_sys::ipc::DirectTrapTransport;
                         // C: mapdriver failure is non-fatal (printf only).
+                        // [SD19-gate] 尽力而为 sendrec 收尾
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = transport.sendrec(
                             minix_types::Endpoint::VFS,
                             &mut mapmsg,
@@ -1642,6 +1676,8 @@ impl RsServer {
             )?;
         }
         for (ep, out) in sent {
+            // [SD19-gate] asynsend 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.kernel.asynsend(ep, &out);
         }
 
@@ -1797,6 +1833,8 @@ impl RsServer {
                 );
                 state.table.get_mut(id).next_rp = None;
             }
+            // [SD19-gate] 克隆失败尽力回滚清理
+            #[allow(clippy::let_underscore_must_use)]
             let _ = crate::service_create::clone_service(
                 &mut state.table,
                 id,

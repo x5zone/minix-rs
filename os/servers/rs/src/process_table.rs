@@ -985,6 +985,8 @@ mod tests {
     #[should_panic(expected = "out of range")]
     fn test_get_rejects_out_of_range_id() {
         let table = RProcTable::new();
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = table.get(SlotId::new(table.len() + 1));
     }
 

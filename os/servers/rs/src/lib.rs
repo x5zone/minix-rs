@@ -1,4 +1,6 @@
 #![cfg_attr(not(test), no_std)]
+// [SD-19] 静默吞错家族编译门：无理由的新 let _ 会在每次 clippy 多报一条；有意丢弃逐站 [SD19-gate] 理由 + #[allow]。
+#![warn(clippy::let_underscore_must_use)]
 
 //! Minix-RS Reincarnation Server.
 //!
@@ -363,6 +365,8 @@ impl RsServer {
             // 交给回复腿之前折一次号（单源 `minix_types::reply_status`，与
             // DS/SCHED/IS/VFS 同纪律）；`EDONTREPLY` 的静默判断仍在判定面，
             // 用的是正号常量，两者不得混用。
+            // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self
                 .kernel
                 .reply(who_e, minix_types::reply_status(result), msg);
@@ -495,6 +499,8 @@ impl RsServer {
                 // `ipc_notify` result.
                 PeriodAction::PingRequest => {
                     let ep = state.table.get(id).pub_.endpoint;
+                    // [SD19-gate] notify 发后即忘
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.kernel.notify(ep);
                 }
             }
@@ -822,6 +828,8 @@ impl SefCallbacks for RsServer {
                 .sys_flags
                 .contains(crate::service_slot::SysFlags::USE_COPY);
             let mut unpublish = |_rp: crate::service_slot::SlotId| {
+                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = crate::publish::unpublish_result(use_copy, false, false, false);
             };
             let outcome = {
@@ -969,6 +977,8 @@ mod signal_handler_tests {
             s.check_tm = 0;
             s.alive_tm = 0;
         }
+        // [SD19-gate] SEF 事件循环退出返回
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let state = server.state.as_ref().unwrap();
         assert_eq!(
@@ -999,6 +1009,8 @@ mod signal_handler_tests {
                 .table
                 .set_endpoint_index(Endpoint::VFS, Some(crate::service_slot::SlotId::new(0)));
         }
+        // [SD19-gate] SEF 事件循环退出返回
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let state = server.state.as_ref().unwrap();
         let id = state.table.endpoint_slot(Endpoint::VFS).expect("indexed");
@@ -1041,6 +1053,8 @@ mod signal_handler_tests {
         };
         mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
         let mut server = booted_with(alloc::boxed::Box::new(mock));
+        // [SD19-gate] SEF 事件循环退出返回
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let state = server.state.as_ref().unwrap();
         assert!(state.shutting_down);
@@ -1065,6 +1079,8 @@ mod signal_handler_tests {
         };
         mock.inbox = alloc::vec![(m, crate::dispatch::IpcStatus { flags: 0 }, 0)];
         let mut server = booted_with(alloc::boxed::Box::new(mock));
+        // [SD19-gate] SEF 事件循环退出返回
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
     }
 
@@ -1091,6 +1107,8 @@ mod signal_handler_tests {
             s.pub_.in_use = true;
             s.pub_.endpoint = ep;
         }
+        // [SD19-gate] SEF 事件循环退出返回
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let s = server
             .state
@@ -1154,6 +1172,8 @@ mod signal_handler_tests {
             // RS_DOWN targets a system process (request.c:104-105 gate).
             s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
         }
+        // [SD19-gate] SEF 事件循环退出返回
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
         let s = server
             .state
@@ -2325,6 +2345,8 @@ mod signal_handler_tests {
         // boot — the panic is the fail-fast contract (C never reaches
         // main()'s loop with a half-booted RS, main.c:226).
         let mut server = RsServer::new(crate::boot::BootTables::placeholder());
+        // [SD19-gate] SEF 事件循环退出返回
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
     }
 
@@ -2363,6 +2385,8 @@ mod signal_handler_tests {
         server
             .init(SefInitType::Fresh)
             .expect("RS-only boot completes (zero pending init-ready)");
+        // [SD19-gate] SEF init 返回
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.init(SefInitType::Fresh);
     }
 

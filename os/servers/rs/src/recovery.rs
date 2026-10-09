@@ -710,13 +710,19 @@ pub fn cleanup_service(
         };
         // The service can no longer run; IPC callers are unblocked
         // (manager.c:438-439). C ignores both results (best effort).
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = kernel.privctl(endpoint, PrivCtlOp::Disallow, None);
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = kernel.privctl(endpoint, PrivCtlOp::ClearIpcRefs, None);
 
         // Send a late reply if there is any pending (manager.c:441 →
         // late_reply, utility.c:332-349: a fresh zero message whose
         // m_type = code).
         if table.get(rp).flags.contains(RFlags::LATEREPLY) {
+            // [SD19-gate] 尽力而为回复收尾
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.reply(endpoint, 0, &minix_types::Message::default());
             table.get_mut(rp).flags.remove(RFlags::LATEREPLY);
         }
@@ -736,12 +742,16 @@ pub fn cleanup_service(
             let s = table.get(rp);
             (s.scheduler, s.pub_.endpoint)
         };
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = kernel.sched_stop(scheduler, endpoint);
 
         // Ask PM to exit the service; pid -1 is warned about in C
         // (manager.c:466-473) — both "no pid" shapes skip the kill.
         let pid = table.get(rp).pid;
         if let Some(p) = pid.filter(|p| *p != -1) {
+            // [SD19-gate] 尽力而为杀进程（C 不回错）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.srv_kill(p, SIGKILL);
         }
     }
@@ -750,6 +760,8 @@ pub fn cleanup_service(
     // (manager.c:476-483). A script failure is a warning, not fatal.
     if cleanup_script {
         table.get_mut(rp).flags.remove(RFlags::CLEANUP_SCRIPT);
+        // [SD19-gate] 尽力而为跑脚本
+        #[allow(clippy::let_underscore_must_use)]
         let _ = run_script(table.get_mut(rp));
     }
 
@@ -803,6 +815,8 @@ pub fn crash_service(
 /// crash result and returns the input `err` for propagation.
 pub fn kill_service(slot: &mut ServiceSlot, kernel: &mut dyn KernelApi, err: Errno) -> Errno {
     slot.flags.insert(RFlags::EXITING); // manager.c:372
+    // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = crash_service(slot, kernel); // manager.c:373 — result ignored
     err
 }
@@ -872,6 +886,8 @@ pub fn detach_service(
     slot.pub_.nr_domain = 0; // manager.c:524
 
     // Allow the service to run (manager.c:526-527) — result ignored in C.
+    // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = kernel.privctl(slot.pub_.endpoint, PrivCtlOp::Allow, None);
 }
 
@@ -955,6 +971,8 @@ fn reincarnate_service(
         read_exec: alloc::boxed::Box::new(&mut *read_exec),
         ..Default::default()
     };
+    // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = crate::service_create::start_service(
         table,
         rp,
@@ -1030,6 +1048,8 @@ pub fn terminate_service(
             .flags
             .contains(crate::live_update::RupdateFlags::UPDATING)
     {
+        // [SD19-gate] live_update 回滚清理尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::live_update::abort_update_proc(
             upd,
             table,
@@ -1117,6 +1137,8 @@ pub fn terminate_service(
                     .flags
                     .contains(crate::live_update::RupdateFlags::UPDATING)
             {
+                // [SD19-gate] live_update 回滚清理尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = crate::live_update::abort_update_proc(
                     upd,
                     table,
@@ -1140,6 +1162,8 @@ pub fn terminate_service(
                 }
             };
             let caller = table.get(rp).caller;
+            // [SD19-gate] 尽力而为回复收尾
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kernel.reply(caller, r, &minix_types::Message::default());
 
             // manager.c:1140 — unpublish (the DS effect is the 11/19 seam hook).
@@ -1220,6 +1244,8 @@ pub fn rs_idle_period(
         if ep == Endpoint::VM && vm_pending {
             continue; // utility.c:470-473
         }
+        // [SD19-gate] 克隆失败尽力回滚清理
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::service_create::clone_service(
             table,
             id,

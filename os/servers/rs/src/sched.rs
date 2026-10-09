@@ -255,6 +255,8 @@ mod tests {
         // release MINIX builds) — a system process without a scheduler is a
         // program error, not a silently-skipped scheduling setup.
         let cfg = SchedulerConfig::from_slot(Endpoint::NONE, Endpoint::PM, 3, 200, 0);
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = sched_decision(&cfg, true);
     }
 
@@ -264,6 +266,8 @@ mod tests {
         // R32: mirror assert (utility.c:369) — a user process must not
         // carry a scheduler.
         let cfg = SchedulerConfig::from_slot(Endpoint::KERNEL, Endpoint::INIT, 3, 200, 0);
+        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = sched_decision(&cfg, false);
     }
 

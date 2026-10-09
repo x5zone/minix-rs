@@ -91,6 +91,8 @@ impl RsServer {
                     walked.is_some(),
                     "peek_next said Some; the walk must dispatch the same target"
                 );
+                // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = walked;
                 Ok(minix_types::EDONTREPLY)
             }
@@ -189,6 +191,8 @@ impl RsServer {
             crate::ready::ReadyOutcome::FreshInitDone => {
                 // C: request.c:517-524 — unblock the service with the echo of
                 // its own RS_INIT message (m_type = OK), then finalize.
+                // [SD19-gate] 尽力而为回复收尾
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.kernel.reply(m.m_source, 0, m);
                 let has_prev = state.table.get(id).prev_rp.is_some();
                 crate::ready::end_srv_init(state.table.get_mut(id), has_prev);
