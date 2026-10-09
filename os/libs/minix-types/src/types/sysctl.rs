@@ -427,6 +427,13 @@ pub const KERN_SYSVIPC_SHMMAXPGS: i32 = 8;
 //
 // C: `VM_*` — sys/uvm/uvm_param.h:165-180. MIB populates 4 of 13
 // (loadavg/uvmexp2/maxslp/uspace); the rest are A-9 (14's list).
+//
+// 裁决 U-3（`PENDING-DECISIONS-UNBLOCK-20261009.md`）：`loadavg`/`uvmexp_sysctl`
+// 的**具名客户端结构体**推迟到首个真实消费者（`ps`/`top`/`vmstat`）立项时在
+// `sysctl_abi.rs` 建模，此处不预建无消费者的死类型。已在位的线上面是节点的
+// size lane——`sizeof(struct loadavg)`=24、`sizeof(struct uvmexp_sysctl)`=616
+// （77 个 int64_t），由 `os/servers/mib/src/subtree/vm.rs` 的 `build()` 落到
+// sysctlnode 并带宿主回读测试钉死；response 字节的逐字段排列随 P1-5 函数腿接线时补。
 
 /// Struct vmmeter (unimplemented). C: `VM_METER`.
 pub const VM_METER: i32 = 1;

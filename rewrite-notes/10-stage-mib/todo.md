@@ -1,6 +1,6 @@
 # 10-stage-mib Rust 实现架构级 Review TODO（第一轮）
 
-> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1：交换格式的应用二进制接口待裁决（执行半已闭）。入口空转挂跨阶段的系统信息生产者条目。
+> **台账状态摘要**（对照代码核实于 `2026-10-10`，快照 `48fc49de1`）：未闭合 `open` 归零——原「交换格式的应用二进制接口待裁决」一项已由裁决 U-3 收口（见 `PENDING-DECISIONS-UNBLOCK-20261009.md`：`loadavg`/`uvmexp_sysctl` 的具名客户端结构体推迟到首个真实消费者立项时再建模，服务端现状转正，不预建无消费者的死类型）。本轮顺带改正一个真缺陷：MIB 系统信息树此前把 `uvmexp2` 节点对外报出的记录宽度记为 0（客户端枚举 `CTL_VM` 时会误以为该节点不返回任何字节），现按 C `sizeof(struct uvmexp_sysctl)` = 616（`minix3/sys/uvm/uvm_extern.h:373-451`，77 个 `int64_t`）改正，`loadavg` 保持 C `sizeof(struct loadavg)` = 24；落点在 `os/servers/mib/src/subtree/vm.rs`，带宿主回读测试（`cargo test -p minix-mib --lib subtree::vm` → 4 passed）。回复字节的逐字段排列随函数腿接线（跨服务拉取虚存统计与负载信息那一步，挂端到端联调 E1/E2）时补，属已登记的推迟而非缺口。入口空转仍挂跨阶段的系统信息生产者条目。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > **来源**：2026-09-15 首轮架构审查（用户指令：查漏补缺优先，再做架构深审；scan-only 轮，未改任何生产代码）。
