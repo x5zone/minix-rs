@@ -116,17 +116,17 @@ fn add_into(unit: &mut UnitType, expr: &str, flip: bool) -> Result<(), UnitsErro
         Some(slash) => (&scratch[..slash], Some(&scratch[slash + 1..])),
         None => (scratch.as_str(), None),
     };
-    let mut doingtop = true;
-    loop {
-        add_product(unit, top, doingtop != flip)?;
-        match bottom {
-            Some(b) if doingtop => {
-                doingtop = false;
-                add_product(unit, b, doingtop != flip)?;
-                break;
-            }
-            _ => break,
-        }
+    // C `addunit` (`minix3/usr.bin/units/units.c:359-436`) 是 `do { …; doingtop--;
+    // if (slash) { scratch = slash + 1; } else doingtop--; } while (doingtop >= 0);`
+    // ——`doingtop` 初值 1，每轮尾 `doingtop--`；无斜杠时额外一次 `--`，共两轮 `--`
+    // 到 `-1`，下一轮 `>= 0` 假就退出。至多两轮（先顶后底），永远没有第三轮。
+    // 下面 Rust 翻译里的 `loop` 就是这个“至多两轮”的直译（`doingtop: bool` 首帧 true
+    // 后下一轮已固定为 false，`match bottom` 两臂均 break——clippy::unused_loop 拓到的就
+    // 是它）。展开为顺序两步，语义与 do-while 一致：首轮 `doingtop != flip == true != flip ==
+    // !flip`，若有底轮 `doingtop != flip == false != flip == flip`。
+    add_product(unit, top, !flip)?;
+    if let Some(b) = bottom {
+        add_product(unit, b, flip)?;
     }
     Ok(())
 }
