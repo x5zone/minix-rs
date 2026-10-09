@@ -64,6 +64,10 @@ pub const STATUS_ERR: u8 = 0x01;
 pub const CMD_READ: u8 = 0x20;
 /// Write sector(s) (LBA28). C: `CMD_WRITE` — at_wini.h:61.
 pub const CMD_WRITE: u8 = 0x30;
+/// Read sector(s), LBA48-addressed. C: `CMD_READ_EXT` — at_wini.h:59.
+pub const CMD_READ_EXT: u8 = 0x24;
+/// Write sector(s), LBA48-addressed. C: `CMD_WRITE_EXT` — at_wini.h:62.
+pub const CMD_WRITE_EXT: u8 = 0x34;
 /// Identify drive. C: `ATA_IDENTIFY` — at_wini.h:72.
 pub const ATA_IDENTIFY: u8 = 0xEC;
 
@@ -190,6 +194,92 @@ pub fn com_out(
         if eightheads { CTL_EIGHTHEADS } else { 0 },
     );
     bus.outb(base_cmd + REG_PRECOMP, cmd.precomp);
+    bus.outb(base_cmd + REG_COUNT, cmd.count);
+    bus.outb(base_cmd + REG_SECTOR, cmd.sector);
+    bus.outb(base_cmd + REG_CYL_LO, cmd.cyl_lo);
+    bus.outb(base_cmd + REG_CYL_HI, cmd.cyl_hi);
+    bus.outb(base_cmd + REG_COMMAND, cmd.command);
+    Ok(())
+}
+
+/// An LBA48 task-file command block.
+///
+/// C: `struct command` LBA48 fields written by `com_out_ext` (at_wini.c:1268-
+/// 1316): each of COUNT/SECTOR/CYL is sent twice (high byte first, then low)
+/// per the ATA 48-bit "set features" protocol. Fields named `*_prev` carry the
+/// high bytes (C `*_prev`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Command48 {
+    /// Sector count high byte. C: `cmd.count_prev`.
+    pub count_prev: u8,
+    /// Sector count low byte. C: `cmd.count`.
+    pub count: u8,
+    /// LBA bits 32-39. C: `cmd.sector_prev`.
+    pub sector_prev: u8,
+    /// LBA bits 0-7. C: `cmd.sector`.
+    pub sector: u8,
+    /// LBA bits 40-47. C: `cmd.cyl_lo_prev`.
+    pub cyl_lo_prev: u8,
+    /// LBA bits 8-15. C: `cmd.cyl_lo`.
+    pub cyl_lo: u8,
+    /// LBA bits 48-55 (unused at 48-bit width, always 0 here). C: `cmd.cyl_hi_prev`.
+    pub cyl_hi_prev: u8,
+    /// LBA bits 16-23. C: `cmd.cyl_hi`.
+    pub cyl_hi: u8,
+    /// Drive/LBA-enable byte (no address bits ride in it at 48-bit). C: `cmd.ldh`.
+    pub ldh: u8,
+    /// Opcode written last. C: `cmd.command`.
+    pub command: u8,
+}
+
+/// Encode an LBA48 read/write command over a 48-bit block address.
+///
+/// C: `do_transfer` LBA48 branch (at_wini.c:896-914) — `sector/cyl_lo/cyl_hi`
+/// carry bits 0-23, `sector_prev` bits 24-31, `cyl_lo_prev` bits 32-39,
+/// `cyl_hi_prev` bits 40-47; `ldh` is the controller's LBA `ldhpref` (no
+/// address nibble); the 16-bit `count` splits into `count`/`count_prev`.
+pub fn lba48_command(block: u64, count: u16, drive: u8, do_write: bool) -> Command48 {
+    Command48 {
+        count_prev: ((count >> 8) & 0xFF) as u8,
+        count: (count & 0xFF) as u8,
+        sector_prev: ((block >> 24) & 0xFF) as u8,
+        sector: (block & 0xFF) as u8,
+        cyl_lo_prev: ((block >> 32) & 0xFF) as u8,
+        cyl_lo: ((block >> 8) & 0xFF) as u8,
+        cyl_hi_prev: ((block >> 40) & 0xFF) as u8,
+        cyl_hi: ((block >> 16) & 0xFF) as u8,
+        ldh: ldh_lba(drive),
+        command: if do_write {
+            CMD_WRITE_EXT
+        } else {
+            CMD_READ_EXT
+        },
+    }
+}
+
+/// Push an LBA48 command block (the `*_ext` register vector).
+///
+/// C: `com_out_ext` (at_wini.c:1268-1316): wait BSY clear, select drive
+/// (`REG_LDH`), wait BSY clear, then the ten-byte vector `[CTL=0, COUNT_hi,
+/// SECTOR_hi, CYL_LO_hi, CYL_HI_hi, COUNT_lo, SECTOR_lo, CYL_LO_lo, CYL_HI_lo,
+/// COMMAND]` — high bytes before low. Unlike the 28-bit `com_out`, the control
+/// register is written as 0 (no eight-heads geometry bit here).
+pub fn com_out_ext(
+    bus: &mut impl IoBus,
+    base_cmd: u16,
+    base_ctl: u16,
+    cmd: &Command48,
+    max_polls: u32,
+) -> Result<(), PioError> {
+    wait_for(bus, base_ctl, STATUS_BSY, 0, max_polls)?;
+    bus.outb(base_cmd + REG_LDH, cmd.ldh);
+    wait_for(bus, base_ctl, STATUS_BSY, 0, max_polls)?;
+
+    bus.outb(base_ctl + REG_CTL_ALTSTAT, 0);
+    bus.outb(base_cmd + REG_COUNT, cmd.count_prev);
+    bus.outb(base_cmd + REG_SECTOR, cmd.sector_prev);
+    bus.outb(base_cmd + REG_CYL_LO, cmd.cyl_lo_prev);
+    bus.outb(base_cmd + REG_CYL_HI, cmd.cyl_hi_prev);
     bus.outb(base_cmd + REG_COUNT, cmd.count);
     bus.outb(base_cmd + REG_SECTOR, cmd.sector);
     bus.outb(base_cmd + REG_CYL_LO, cmd.cyl_lo);
@@ -374,5 +464,58 @@ mod tests {
         assert!(!status_ready(0x00));
         assert!(status_error(STATUS_ERR));
         assert!(!status_error(STATUS_RDY));
+    }
+
+    #[test]
+    fn test_lba48_field_split() {
+        // C: at_wini.c:896-914 — a 48-bit LBA splits across low + *_prev bytes.
+        let block: u64 = 0x1234_5678_9ABC;
+        let cmd = lba48_command(block, 0x0201, 0, false);
+        assert_eq!(cmd.sector, 0xBC); // bits 0-7
+        assert_eq!(cmd.cyl_lo, 0x9A); // bits 8-15
+        assert_eq!(cmd.cyl_hi, 0x78); // bits 16-23
+        assert_eq!(cmd.sector_prev, 0x56); // bits 24-31
+        assert_eq!(cmd.cyl_lo_prev, 0x34); // bits 32-39
+        assert_eq!(cmd.cyl_hi_prev, 0x12); // bits 40-47
+        assert_eq!((cmd.count, cmd.count_prev), (0x01, 0x02)); // 16-bit count split
+        assert_eq!(cmd.command, CMD_READ_EXT);
+        // ldh is the plain LBA ldhpref, no address nibble folded in (C: cmd.ldh = ldhpref).
+        assert_eq!(cmd.ldh, ldh_lba(0));
+        assert_eq!(lba48_command(0, 1, 0, true).command, CMD_WRITE_EXT);
+    }
+
+    #[test]
+    fn test_com_out_ext_writes_high_then_low_vector() {
+        let mut bus = MockBus::new(vec![0x00]);
+        let cmd = Command48 {
+            count_prev: 0x02,
+            count: 0x01,
+            sector_prev: 0x03,
+            sector: 0x04,
+            cyl_lo_prev: 0x05,
+            cyl_lo: 0x06,
+            cyl_hi_prev: 0x07,
+            cyl_hi: 0x08,
+            ldh: 0xE0,
+            command: CMD_READ_EXT,
+        };
+        com_out_ext(&mut bus, BASE_CMD, BASE_CTL, &cmd, 8).unwrap();
+        // LDH select first, then the ten-byte vector (C: at_wini.c:1300-1310).
+        assert_eq!(bus.writes[0], (BASE_CMD + REG_LDH, 0xE0));
+        assert_eq!(
+            &bus.writes[1..],
+            &[
+                (BASE_CTL + REG_CTL_ALTSTAT, 0x00), // CTL always 0 for ext
+                (BASE_CMD + REG_COUNT, 0x02),       // count high
+                (BASE_CMD + REG_SECTOR, 0x03),      // sector high
+                (BASE_CMD + REG_CYL_LO, 0x05),      // cyl_lo high
+                (BASE_CMD + REG_CYL_HI, 0x07),      // cyl_hi high
+                (BASE_CMD + REG_COUNT, 0x01),       // count low
+                (BASE_CMD + REG_SECTOR, 0x04),      // sector low
+                (BASE_CMD + REG_CYL_LO, 0x06),      // cyl_lo low
+                (BASE_CMD + REG_CYL_HI, 0x08),      // cyl_hi low
+                (BASE_CMD + REG_COMMAND, CMD_READ_EXT),
+            ]
+        );
     }
 }
