@@ -12,6 +12,8 @@
 //! exclusively under `#[cfg(test)]` (test doubles, assertions).
 
 #![cfg_attr(not(test), no_std)]
+// SD-19 机械化门：新增无理由 `let _ =` 当场多报一条警告。
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

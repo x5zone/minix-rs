@@ -328,6 +328,8 @@ impl IpcBoundary for SysBoundary {
         } else {
             0
         };
+        //[SD19-gate] SD-19: C kernel.c exit 设事件掩码，进程已走失败无面
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::pm::proceventmask_via(&self.ipc, mask);
     }
 
@@ -338,6 +340,8 @@ impl IpcBoundary for SysBoundary {
             return;
         }
         let msg = Message { m_type: code, ..Message::default() };
+        //[SD19-gate] SD-19: sendnb 非阻塞 kill/signal 投递，失败丢一条
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.sendnb(endpoint, &msg);
     }
 
@@ -368,6 +372,8 @@ impl IpcBoundary for SysBoundary {
 
     fn send_mib_reply(&mut self, to: Endpoint, msg: &Message) {
         // C rmib.c:1067-1068 — SENDREC 到达的请求 → ipc_sendnb。
+        //[SD19-gate] SD-19: C rmib.c:1067 ipc_sendnb 无回复
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.sendnb(to, msg);
     }
 
@@ -381,6 +387,8 @@ impl IpcBoundary for SysBoundary {
             message: *msg,
             result: 0,
         };
+        //[SD19-gate] SD-19: senda 异步回复发后即忘，无等待端
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.ipc.senda(&[slot]);
     }
 
@@ -441,6 +449,8 @@ impl IpcBoundary for SysBoundary {
             addr,
             _padding: [0; 40],
         };
+        //[SD19-gate] SD-19: 段销毁 taskcall 尽力而为，失败无恢复面
+        #[allow(clippy::let_underscore_must_use)]
         let _ = syscall::perform_taskcall(
             &self.ipc,
             Endpoint::VM,
@@ -457,6 +467,8 @@ impl IpcBoundary for SysBoundary {
     fn release_mapping(&self, addr: u64, len: u64) {
         // 段销毁的本地半:退掉自己的匿名映射(C munmap 语义);错误
         // 无可恢复处,静默(与 C 忽略 munmap 返回同型)。
+        //[SD19-gate] SD-19: C 忽略 munmap 返回，错误无可恢复处
+        #[allow(clippy::let_underscore_must_use)]
         let _ = sys_vm::munmap_via(
             &self.ipc,
             minix_types::VirBytes(addr),
@@ -467,6 +479,8 @@ impl IpcBoundary for SysBoundary {
     fn warn(&self, line: &str) {
         // C printf → 控制台;本树的控制台面是 SYS_DIAGCTL 桥(IS 的
         // DiagWriter 同款),失败静默(C 的 printf 同样无可恢复处)。
+        //[SD19-gate] SD-19: C printf 控制台失败静默，无可恢复处
+        #[allow(clippy::let_underscore_must_use)]
         let _ = syscall::sys_diagctl_write(&DirectKernelCallTransport, line);
     }
 
