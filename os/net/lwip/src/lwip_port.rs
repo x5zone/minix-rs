@@ -397,7 +397,6 @@ mod tests {
 
     #[test]
     fn test_key_options_match_glue_header() {
-        assert_eq!(BUILD_C_FILES, 68);
         assert_eq!(OPTION_NO_SYS, 1);
         assert_eq!(OPTION_POOL_SIZE, 0);
         assert_eq!(TCP_MAX_SEGMENT, 1460);
@@ -422,14 +421,19 @@ mod tests {
 
 }
 
-// The hook list mirrors `lwiphooks.h` and the patch list mirrors the patch
-// directory — both hand-maintained, so the counts freeze at compile time
-// instead of burning a runtime test on a fact the compiler already knows
-// (N1-P2-5).
+// The hook list mirrors `lwiphooks.h`, the patch list mirrors the patch
+// directory, and the build-file count mirrors the compiled `.c` subset — all
+// three are hand-maintained numbers the compiler can check statically, so they
+// freeze in a const block instead of burning a runtime test on a fact the
+// compiler already knows (N1-P2-5). The glue values above stay runtime
+// assertions because a maintainer can edit them to a *wrong* number that is
+// still a compile-time-constant self-comparison; the runtime test pins each
+// against the documented `lwipopts.h` value.
 #[cfg(test)]
 const _: () = {
     assert!(ALL_HOOKS.len() == 4);
     assert!(PATCHES.len() == 4);
+    assert!(BUILD_C_FILES == 68);
 };
 
 #[cfg(test)]

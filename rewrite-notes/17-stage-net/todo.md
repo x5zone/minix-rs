@@ -53,7 +53,7 @@
 | P2 | N1-P2-2 | driver.rs 死代码批：classify 死分支 + 三常量包装 + PolicyRow.priority + rawsock 常函数判定 |
 | P2 | N1-P2-3 | legacy_fallback_applies 审计型死代码处置（[ARCH N-2]） |
 | P2 | N1-P2-4 | translate 模式三处：恒等 flag 映射 / common_bits 逐位循环 / 手工位运算 vs bitflags 2.x |
-| P2 | N1-P2-5 | 恒真测试分级处置（ALL_* 长度断言 + BUILD_C_FILES 文档型常量）vs 有效 wire 契约锁 |
+| P2 | `N1-P2-5` | 恒真测试分级处置（ALL_* 长度断言 + BUILD_C_FILES 文档型常量）vs 有效 wire 契约锁 ✅ **已闭环（`2026-10-10` @ 快照 `5d15c876a`，`claim/N1-P2-5-qoder`）**：分级现状——`ALL_HOOKS.len()==4`/`PATCHES.len()==4` 早已被同文件改成 `#[cfg(test)] const _` 编译期钉（lwip_port.rs 内自述 `N1-P2-5`，本轮 grep 坐实）；唯同属“文档型计数常量”的 `BUILD_C_FILES==68` 仍留在运行测试 `test_key_options_match_glue_header` 里（const 自比字面量、运行期永真），本轮按同一约定移入编译期 const 块（三行同层、编译器已知事实不再烧运行测试）。与“真对账”区分：`OPTION_*`/`TCP_*`/`UDP_*` 那批留运行测试——它们镜像 `lwipopts.h`/`tcp_priv.h` 具体值，维护者可改错成一个“仍是编译期常量自比”的错数，运行测试把它钉在文档值上；`BUILD_C_FILES` 是编译产物计数的纯文档量，属前者同类、改钉编译期。核实命令与读数（容器 `minix-ci:1.94` `-m 2g -j 1`，CARGO_TARGET_DIR 挂工作树外避 root 产物）：`cargo test -p minix-net-lwip` → 127 lib + 10 bin passed/0 failed；`cargo clippy -j 1 -p minix-net-lwip --tests` → `lib test` 告警 `6→6` 零新增；fmt 门——本 crate 整仓有容器 rustfmt 口径存量漂移（主树基线 132 hunk），`lwip_port.rs` 基线 10 == 现版 10、插入行零新增漂移 |
 | P2 | N1-P2-6 | 16 个 crate 声明未使用的 minix-types/minix-sys 依赖 ✅ **已闭环（2026-09-17）**：lwip/uds 随 N1-P1-4 真实化；NIC 部分归 16-stage/E-DEVWIRE |
 | P2 | N1-P2-7 | uds 未依赖 minix-netdriver："两个网络服务的共同骨架"未接线（sdev/sockevent 全仓零消费者）✅ **已接线（2026-09-17）**：uds 依赖 minix-netdriver 并消费 socktable |
 | P3 | N1-P3-1 | 文档同步 ✅ **全部落地（2026-09-17）**：plan.md + 00/99 两篇 v1 落稿 |
