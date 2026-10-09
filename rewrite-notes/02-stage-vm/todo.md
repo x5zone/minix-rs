@@ -31,7 +31,7 @@
 |------|------|--------|
 | **P1** | **V13-P1-1** | CoW 快路 refcount≤1 只翻写位不换 memtype：MappedFile 槽位写故障 RO 原样成功 → 活循环（C cow_block 显式换 anon，§18.2）（**✅ 已修复** 2026-09-09，§18.9 Fix #63） |
 | P2 | V13-P2-1 | TLB 纪律三缺口：不改 PTE 的进程运行状态不变量全隐式 + C VM 自刷四处（别名模型）无 Rust 对应且偏差未登记 + 内核 FlushTlb/InvlPg 命令零消费者（§18.2；SMP 半边挂 edge E-VMTLB） |
-| P2 | V13-P2-2 | `RprocEntry.call_mask: u32` 在 E-RSWIRE 落地时必截断 wire 的 u64 掩码——+32..+48 的 9 个调用永远无法授权（§18.2） |
+| P2 | V13-P2-2 | ✅ **已落（`2026-10-10` 复核）**：`RprocEntry.call_mask` 现为 `u64`（vm_server.rs:2296，带注释"截为 u32 会丢 +32..+48 授权位"），`from_bits_truncate(entry.call_mask)` 无 `as u64` cast（:1930），解码 `call_mask: w.vm_call_mask` 从 wire u64 直取（:2251）；读回测 `assert_eq!(vfs_rprocpub_call_mask(), 0x0000_0300_0000_00ff)`（:4016，含高位）在 `cargo test -p minix-vm --lib` 542/0 内绿→截断已不可能。（E-RSWIRE 解码整体激活仍另计，本行仅指 u32→u64 字宽修复。） |
 | P2 | V13-P2-3 | ACL 闸 fail-open：`get_active(caller)==None`（EXITING 等）时整个 acl_check 被跳过（§18.2） |
 | P2 | V13-P2-4 | MAKE_VM 恒拒是有意设计收缩，但无任何偏差登记——E-RSWIRE 后可达，需文档化豁免（§18.2） |
 | P2 | V13-P2-5 | RS_SET_PRIV 的 call_mask 硬编码 None：C 走 sys_datacopy，M2 wire 无法表达，safecopy 可用前权限下发链断裂（§18.2） |
@@ -185,7 +185,9 @@ Fix #60 让 VM 直接写进程硬件 PTE，随后必然面对"C 侧如何保证 
 - **(b) C VM 自刷四处无 Rust 对应（ARCH-EVOLVED，需登记偏差）**：C VM 在 pagetable.c 四处调 `sys_vmctl(SELF, VMCTL_FLUSHTLB)`——宿主函数分别是 `pt_assert`（:119，SANITYCHECKS 调试）、`vm_freepages` ×2（:255/:319）、`vm_pagelock`（:430，MEMPROTECT 死码）。前两类存在的根因是 C 的"把进程内存/页表**别名映射进 VM 自己的地址空间**"模型（vm_freepages 释放的就是 VM 自己的别名映射），释放别名后必须自刷。minix-rs 用 direct map（VA=物理+固定偏移，翻译恒定）消除了别名模型 → 自刷确实不需要。但：① 该偏差未在任何文档登记；② 内核已实现 `VMCTL FlushTlb`/`InvlPg`/`GetPdbr` 三命令（os/kernel/src/syscall.rs:2177-2202 一带，TlbArch 三架构齐备），而 VM 的 KernelGateway 零调用（`rg "invlpg|vmctl" os/servers/vm/src` 仅 memreq/clear_pagefault/set_addrspace 三族）——"内核实现了命令、唯一合法消费者永不调用"的死面需注释锚定（dead-until-needed，防后人误判为漏接）。**处置**：08-pagetable-ops.md（或 07）补偏差行；syscall.rs 对应命令处补 "VM 侧无消费者：direct map 模型下无需自刷，对照 C pagetable.c:119/255/319/430" 注释。
 - **(c) SMP 目标进程刷新缺失（kernel 侧，挂 edge E-VMTLB）**：C 内核对"其他 CPU 上目标进程的陈旧翻译"有显式机制——`MF_FLUSH_TLB` 进程标志 + 调度点刷新（minix3/minix/kernel/proc.c:345-347 `if (p->p_misc_flags & MF_FLUSH_TLB && ptproc == p) tlb_must_refresh = 1`）。Rust 内核无任何对应物（`rg "MF_FLUSH_TLB|tlb_must_refresh" os/kernel/src` 零命中），且调度器 switch_address_space 带"同根跳过重载"优化（syscall.rs:2410-2417 注释自述 mirror 比对语义）——两者叠加在真 SMP + 共享页（CoW 父子、shm）场景下有陈旧翻译窗口。当前单核无影响；登记 edge，随 01-stage-kernel SMP 工作处置。
 
-### V13-P2-2（P2，潜伏 wire 消费 bug）`RprocEntry.call_mask: u32` 必截断 64 位调用掩码
+### V13-P2-2（P2，潜伏 wire 消费 bug）`RprocEntry.call_mask: u32` 必截断 64 位调用掩码 — **✅ 已落（`2026-10-10` 复核）**
+
+> **状态校正（滞后）**：下述“内部 u32、待 E-RSWIRE 一并加宽”已过期——`RprocEntry.call_mask` 现为 `u64`（`vm_server.rs:2296`，注释已内化“截为 u32 会丢 +32..+48 位”的理由），`from_bits_truncate(entry.call_mask)` 无 `as u64` cast（`:1930`），`call_mask: w.vm_call_mask` 从 wire u64 直取（`:2251`），`grep call_mask: *u32` 零命中；读回测 `vfs_rprocpub_call_mask()==0x0000_0300_0000_00ff`（`:4016`，含高位）证截断已不可能。保留下列原分析作背景。
 
 - **证据**：minix-types 的 wire 已是正确 64 位——`RprocPubWire.vm_call_mask: u64`（os/libs/minix-types/src/ipc/rprocpub.rs:89，注释明示 2×u32 chunks little-endian 合并）。VM 内部表示是 `RprocEntry.call_mask: u32`（vm_server.rs:1594-1599），消费点 `AclMask::from_bits_truncate(entry.call_mask as u64)`（vm_server.rs:1340）。E-RSWIRE 落地时 `ipc_call_rs_init` 解码 rproctab 必经 wire→RprocEntry 转换——u64→u32 截断使调用号 +32..+48 的 9 个调用（VM_INFO/RS_UPDATE/RS_MEMCTL/REMAP_RO/PROCCTL/VFS_MMAP/GETRUSAGE/RS_PREPARE 等）**永远无法经握手授权**（掩码高位丢弃）。
 - **类型**：潜伏 bug——当前 `ipc_call_rs_init` 诚实返回 NotImplemented（vm_server.rs:1540 一带，E-RSWIRE 门控）故不可达；与 V12 轮 pattern 84 候选（wire 字宽逐字段对账）同族，但截断点在 VM 内部类型而非 wire 本身。
