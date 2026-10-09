@@ -17,6 +17,7 @@ extern crate alloc;
 
 pub mod controller;
 pub mod dma;
+pub mod pio;
 
 /// Service initialization entry (wires the controller; transport stays out).
 pub fn init() {}
