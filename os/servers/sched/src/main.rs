@@ -12,7 +12,6 @@
 #[global_allocator]
 static GLOBAL: std::alloc::System = std::alloc::System;
 
-
 // freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
 // 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
 // `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
@@ -75,6 +74,34 @@ fn real_main() -> ! {
         server
             .init_scheduling(&mut kernel)
             .unwrap_or_else(|errno| panic!("sys_setalarm failed: {errno}"));
+
+        // SD-11 T3b 第二迁安装点（首迁 DS 同法，`minix_rt::install_vm_supplier`）:
+        // 把全局堆供给切到 VM_BRK 增长堆，初始断点 = 链接器镜像尾
+        //（C `brksize.S` 以 `_end` 播 `_brksize` 的同一符号）。安装本身
+        // 无 IPC；首次超出固定池的分配才真正发 VM_BRK。出生序上 SCHED
+        // 晚于 VM（`rs/boot.rs` 装机表），安装时 VM 主循环已在收请求；
+        // EINVAL（镜像尾为 0 = 链接缺陷）fail-fast。
+        #[cfg(target_os = "none")]
+        minix_rt::install_vm_supplier(minix_rt::image_end())
+            .expect("sched: install_vm_supplier(镜像尾) 不得失败");
+
+        // SD-11 T3b 真机取证探针（DS 同法）：8 字节 slab 请求强制走
+        // `add_slab`→`supply_page`→`VM_BRK`，成功打一行串口标记——
+        // VM_BRK 腿对更早出生服务的贯通证据；探针块随 free 回 slab
+        // 自由表（VM 侧页不回收：收缩 brk 从不 unmap，同 C）。
+        #[cfg(target_os = "none")]
+        {
+            let probe = minix_rt::alloc(8);
+            assert!(!probe.is_null(), "sched: vm-brk probe 分配失败");
+            minix_rt::free(probe);
+            use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+            // [SD19-gate] 报告通道自坏时 park 兜底（panic.c:66）
+            #[allow(clippy::let_underscore_must_use)]
+            let _ = sys_diagctl_write(
+                &DirectKernelCallTransport,
+                "nk4a: sched-vmbrk probe ok pages=1 via=VM_BRK\n",
+            );
+        }
 
         // C: main loop — main.c:35-96, owned by 02-sched-message-surface.md:
         // receive → dispatch → reply, forever (02's `run` adds the
