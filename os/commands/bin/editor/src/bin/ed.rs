@@ -42,10 +42,14 @@ struct TtyIo {
 
 impl EditorIo for TtyIo {
     fn emit(&mut self, bytes: &[u8]) {
+        //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+        #[allow(clippy::let_underscore_must_use)]
         let _ = write(STDOUT, bytes);
     }
 
     fn emit_err(&mut self, bytes: &[u8]) {
+        //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+        #[allow(clippy::let_underscore_must_use)]
         let _ = write(STDERR, bytes);
     }
 
@@ -57,11 +61,15 @@ impl EditorIo for TtyIo {
                 Ok(0) => break,
                 Ok(n) => total += n,
                 Err(_) => {
+                    //[SD19-gate] SD-19: close fd 尽力回收
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(fd);
                     return Err(minix_editor::EditorError::InvalidArgument);
                 }
             }
         }
+        //[SD19-gate] SD-19: close fd 尽力回收
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
         let _ = self.scripted;
         Ok(total)
@@ -87,11 +95,15 @@ impl EditorIo for TtyIo {
                 Ok(0) => break,
                 Ok(n) => done += n,
                 Err(_) => {
+                    //[SD19-gate] SD-19: close fd 尽力回收
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::close(fd);
                     return Err(minix_editor::EditorError::InvalidArgument);
                 }
             }
         }
+        //[SD19-gate] SD-19: close fd 尽力回收
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::close(fd);
         Ok(done)
     }
@@ -166,6 +178,8 @@ fn run() -> ! {
                     // No DES in this build: the C editor prints the notice
                     // and carries on (`main.c:131-137`).
                     'x' => {
+                        //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = write(STDERR, b"crypt unavailable\n?\n");
                     }
                     'p' => {
@@ -178,6 +192,8 @@ fn run() -> ! {
                         break;
                     }
                     _ => {
+                        //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = write(STDERR, b"Usage: ed [-] [-ESsx] [-p string] [name]\n");
                         support::terminate(1);
                     }
@@ -198,6 +214,8 @@ fn run() -> ! {
     // script mode when the read fails.
     if let Some(name) = names.first() {
         if name.is_empty() {
+            //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+            #[allow(clippy::let_underscore_must_use)]
             let _ = write(STDERR, b"?\n");
             sess.error_msg = Some("invalid filename");
             if scripted {
@@ -227,6 +245,8 @@ fn run() -> ! {
                     sess.set_filename(name).unwrap_or_else(|_| support::terminate(2));
                 }
                 Err(_) => {
+                    //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = write(STDERR, b"?\n");
                     if scripted {
                         support::terminate(2);
@@ -239,12 +259,16 @@ fn run() -> ! {
     let mut buf = [0u8; 8192];
     loop {
         if sess.prompt_on && !sess.scripted {
+            //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+            #[allow(clippy::let_underscore_must_use)]
             let _ = write(STDOUT, sess.prompt_bytes());
         }
         let Some(line) = read_line(&mut buf) else {
             // End of input: `q` rules apply (`main.c:206-221`) — modified
             // warns once interactively and quits in script mode.
             if sess.modified && !sess.scripted {
+                //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = write(STDERR, b"?\n");
                 sess.error_msg = Some("warning: file modified");
                 if sess.scripted {
@@ -263,9 +287,15 @@ fn run() -> ! {
             Ok(Flow::Continue) => {}
             Ok(Flow::Quit) => support::terminate(0),
             Ok(Flow::QuitModified) => {
+                //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = write(STDERR, b"?\n");
                 let message = sess.error_msg.unwrap_or("warning: file modified");
+                //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = write(STDERR, message.as_bytes());
+                //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = write(STDERR, b"\n");
                 if sess.scripted {
                     support::terminate(2);
@@ -274,9 +304,15 @@ fn run() -> ! {
             }
             Err(e) => {
                 sess.error_msg = Some(e.message);
+                //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = write(STDERR, b"?\n");
                 if sess.garrulous {
+                    //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = write(STDERR, e.message.as_bytes());
+                    //[SD19-gate] SD-19: write STDOUT/STDERR 尽力输出
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = write(STDERR, b"\n");
                 }
                 if sess.scripted {
