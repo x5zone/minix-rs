@@ -25,7 +25,7 @@ A Rust rewrite of the Minix3 microkernel operating system.
 │  └──────────────────────┘  └──────────────────────┘             │
 ├──────────────────────────────────────────────────────────────────┤
 │  Shared Libraries (libs/)                                        │
-│  minix-types  minix-boot  minix-elf  minix-ipc  minix-sys ...  │
+│  minix-types  minix-boot  minix-elf  minix-sys  minix-rt ... │
 ├──────────────────────────────────────────────────────────────────┤
 │  Boot Shim (boot-shim/)                                          │
 │  UEFI / OpenSBI firmware → kernel handoff                       │
@@ -42,20 +42,23 @@ A Rust rewrite of the Minix3 microkernel operating system.
 | `libs/minix-types/` | `minix-types` | Cross-service protocol types (Endpoint, Pid, Message, errno) |
 | `libs/minix-boot/` | `minix-boot` | Boot protocol types (KernelInfo, BootShim trait) |
 | `libs/minix-elf/` | `minix-elf` | Minimal ELF64 parser (zero-allocation, no_std) |
-| `libs/minix-ipc/` | `minix-ipc` | IPC protocol stubs (send/receive/notify — not yet functional) |
-| `libs/minix-sys/` | `minix-sys` | User-space syscall wrappers (stub) |
-| `libs/minix-rt/` | `minix-rt` | User-space runtime support (stub) |
-| `libs/minix-mock/` | `minix-mock` | Hardware mock for testing (stub) |
+| `libs/minix-sys/` | `minix-sys` | User-space syscall + IPC runtime — implemented (send/receive/notify, fork/exec, per-server client modules) |
+| `libs/minix-rt/` | `minix-rt` | User-space runtime — implemented (crt0, allocator + VM_BRK supplier, panic handler) |
 | `servers/` | (12 crates) | User-space system servers (PM, VM, VFS, RS, DS, ...) |
 | `commands/` | (14 crates) | User-space commands (cat, ls, sh, init, ...) |
 | `qemu-tests/` | (18 crates) | QEMU-based hardware integration test kernels |
 | `tests/` | `tests` | Host-based integration tests |
 
+> `os/libs/` now holds 21 crates (protocol/boot/runtime core plus per-device driver-face libs);
+> there is no separate `minix-ipc` crate (the IPC runtime lives in `minix-sys`) and no `minix-mock`
+> crate (hardware mocking is the `mock` cargo feature in `minix-arch`/`minix-platform`).
+> Full inventory and per-crate detail: `libs/README.md`.
+
 ## Dependency Graph (Simplified)
 
 ```
-commands/* ──→ minix-sys ──→ minix-ipc ──→ minix-types
-servers/*  ──→ minix-ipc ──→ minix-types
+commands/* ──→ minix-sys ──→ minix-types
+servers/*  ──→ minix-sys ──→ minix-types
 kernel     ──→ minix-arch ──→ minix-types
            ──→ minix-boot
 boot-shim  ──→ minix-boot ──→ minix-types
