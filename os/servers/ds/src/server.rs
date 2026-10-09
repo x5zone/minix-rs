@@ -253,6 +253,8 @@ impl DsServer {
                 Err(e) => panic!("ds: birth statectl failed: {e}"),
             };
             // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）。
+            //[SD19-gate] C ds.c:127 birth sendrec 失败即记录丢弃、循环继续，不回滚主注册
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.send_rec(caller, &mut reply);
             return Step::Handled;
         }
@@ -273,6 +275,8 @@ impl DsServer {
             message.m_type = reply_status(result);
             // C 127-129: a failed reply is logged and dropped — the loop
             // moves on; the drop is the observable half.
+            //[SD19-gate] C 127-129 send 失败记录丢弃循环继续，与 birth sendrec 同构
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.send(caller, &message);
         }
         Step::Handled
@@ -581,6 +585,8 @@ impl DsServer {
                 ..
             } = self;
             let woken: &mut dyn FnMut(Endpoint) = &mut |ep: Endpoint| {
+                //[SD19-gate] ipc.notify 发后即忘（C ipc_notify 无回复），失败丢一次唤醒不持断循环
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = ipc.notify(ep);
             };
             apply_delete(store, subs, plan, woken, teardown)
@@ -641,6 +647,8 @@ impl DsServer {
             && let Some(source_ep) =
                 initial_scan(&self.store, &mut self.subs, plan.slot, caller, owner)
         {
+            //[SD19-gate] 发后即忘 notify，initial_scan 唤醒失败丢一次
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.notify(source_ep);
         }
         OK
@@ -707,6 +715,8 @@ impl DsServer {
         let stats = apply_update(&self.store, &mut self.subs, slot, set, &mut out);
         for endpoint in out.iter().take(stats.notified) {
             // C 222: `ipc_notify` answers to nobody; a failed wake drops.
+            //[SD19-gate] C 222 ipc_notify 无回复，失败丢一次唤醒
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.notify(*endpoint);
         }
     }

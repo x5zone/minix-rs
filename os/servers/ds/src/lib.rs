@@ -1,4 +1,6 @@
 #![cfg_attr(not(test), no_std)]
+// SD-19 机械化门：本 crate 内新增无理由的 `let _ =` 会当场多报一条警告。
+#![warn(clippy::let_underscore_must_use)]
 
 //! Minix-RS data store (DS): the registry others read to survive.
 //!
