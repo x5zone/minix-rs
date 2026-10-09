@@ -234,8 +234,10 @@ mod tests {
             return RefWalk::NotPresent;
         }
         if l1e & PTE_RWX_MASK != 0 {
-            if (l1e & PTE_PPN_MASK) >> 10 & ((1 << 9) - 1) != 0 {
-                return RefWalk::NotPresent; // 错粒度 2MB 叶
+            if cfg!(feature = "walk-hardening")
+                && (l1e & PTE_PPN_MASK) >> 10 & ((1 << 9) - 1) != 0
+            {
+                return RefWalk::NotPresent; // 错粒度 2MB 叶（仅加固态拒；关态=旧语义接受并折叠）
             }
             return RefWalk::Leaf { pa: pte_to_paddr(l1e) | (vaddr & 0x1F_FFFF) };
         }
@@ -455,6 +457,20 @@ mod tests {
         }
         *s.entry_mut(root + 8 * 2) = s.page_phys(3) | V;
         *s.entry_mut(root + 8 * 5) = rng(); // L2 随机形态（叶/表/无效都可能）
+        // 确定性覆盖错粒度 2MB 叶（J1：此前参考实现的 2MB 拒绝分支漏了
+        // `walk-hardening` 门控，与被测（两种形态都门控）不同形——随机种子
+        // 恰好不命中则绿、一扩就炸。现在两边一致，此例在开/关两态都同形。
+        let l1_for_i2 = s.page_phys(3);
+        // 把 i2=2 真接指向 page3（用 paddr_to_pte 保证 pte_to_paddr 回映同一页），
+        // 否则行 456 的裸 page_phys 会下降到另一基址、下面的错粒度叶读不到。
+        *s.entry_mut(root + 8 * 2) = paddr_to_pte(l1_for_i2) | V;
+        *s.entry_mut(l1_for_i2 + 8 * 7) = paddr_to_pte(0x8040_1000) | V | R | W; // PPN[0]=1 错粒度 2MB 叶
+        let misaligned_2m_va = (2u64 << 30) | (7u64 << 21) | 0x21;
+        assert_eq!(
+            walk_under(&s, root, misaligned_2m_va),
+            ref_walk(s.region, root, misaligned_2m_va),
+            "错粒度 2MB 叶：参考与被测在当前 walk-hardening 态下必须同形"
+        );
         for _ in 0..4000 {
             let va = rng() & 0x0000_3FFF_FFFF_FFFF; // 用户半区规范域
             assert_eq!(
