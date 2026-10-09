@@ -480,6 +480,71 @@ pub fn block_command(
     }
 }
 
+/// Clip a byte request against the device extent end. C: `w_transfer`
+/// (at_wini.c:1038-1040) — at/over the end answers 0; a request crossing the
+/// end is clipped to the remaining bytes. `size` is the device's byte size.
+pub const fn clip_to_extent(position: u64, want: u64, size: u64) -> u64 {
+    if position >= size {
+        0
+    } else {
+        let room = size - position;
+        if want > room { room } else { want }
+    }
+}
+
+/// Convert a byte position within an extent to a starting LBA block. C:
+/// `block = (dv_base + position) / SECTOR_SIZE` (at_wini.c:1041). `extent_base`
+/// is the device's byte offset into the medium (whole disk 0; a partition its
+/// base). `SECTOR_WORDS * 2` = the 512-byte sector.
+pub const fn byte_to_block(extent_base: u64, position: u64) -> u64 {
+    (extent_base + position) / (SECTOR_WORDS as u64 * 2)
+}
+
+/// Read `n_sectors` sectors over PIO after the read command was sent: per
+/// sector wait BSY-clear then DRQ-set, then move one sector. C: the read arm of
+/// `w_transfer`'s per-sector loop (at_wini.c:1150-1165). `dst` (length
+/// `n_sectors * SECTOR_WORDS`) is filled sequentially with the sector words.
+pub fn pio_read_sectors(
+    bus: &mut impl IoBus,
+    base_cmd: u16,
+    base_ctl: u16,
+    n_sectors: usize,
+    dst: &mut [u16],
+    max_polls: u32,
+) -> Result<(), PioError> {
+    let mut sector = [0u16; SECTOR_WORDS];
+    for chunk in dst.chunks_mut(SECTOR_WORDS).take(n_sectors) {
+        wait_for(bus, base_ctl, STATUS_BSY, 0, max_polls)?;
+        wait_for(bus, base_ctl, STATUS_DRQ, STATUS_DRQ, max_polls)?;
+        pio_read_sector(bus, base_cmd, &mut sector);
+        chunk.copy_from_slice(&sector[..chunk.len()]);
+    }
+    Ok(())
+}
+
+/// Write sectors over PIO after the write command was sent: per sector wait
+/// BSY-clear + DRQ-set, transfer a full sector, then wait for BSY to drop
+/// again. C: the write arm of `w_transfer` (at_wini.c:1150-1186); the trailing
+/// interrupt wait is polled here. `src` length need not be a sector multiple —
+/// the final partial sector is zero-padded to 256 words.
+pub fn pio_write_sectors(
+    bus: &mut impl IoBus,
+    base_cmd: u16,
+    base_ctl: u16,
+    src: &[u16],
+    max_polls: u32,
+) -> Result<(), PioError> {
+    for chunk in src.chunks(SECTOR_WORDS) {
+        wait_for(bus, base_ctl, STATUS_BSY, 0, max_polls)?;
+        wait_for(bus, base_ctl, STATUS_DRQ, STATUS_DRQ, max_polls)?;
+        let mut sector = [0u16; SECTOR_WORDS];
+        sector[..chunk.len()].copy_from_slice(chunk);
+        pio_write_sector(bus, base_cmd, &sector);
+        wait_for(bus, base_ctl, STATUS_BSY, 0, max_polls)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -828,5 +893,39 @@ mod tests {
             BlockCommand::Lba28(c) => assert_eq!(c.count, u8::MAX),
             other => panic!("expected Lba28, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn clip_and_block_math() {
+        // C: w_transfer EOF clip (:1038-1040).
+        assert_eq!(clip_to_extent(0, 100, 1000), 100);
+        assert_eq!(clip_to_extent(950, 100, 1000), 50); // crosses the end
+        assert_eq!(clip_to_extent(1000, 100, 1000), 0); // at/over the end
+        // block = (base + position) / 512.
+        assert_eq!(byte_to_block(0, 512), 1);
+        assert_eq!(byte_to_block(0, 511), 0);
+        assert_eq!(byte_to_block(2048, 512), 5); // partition at byte 2048
+    }
+
+    #[test]
+    fn pio_read_sectors_fills_each_sector() {
+        // DRQ set / BSY clear lets both per-sector waits pass immediately.
+        let mut bus = MockBus::new(vec![STATUS_DRQ]);
+        let mut dst = [0u16; 2 * SECTOR_WORDS];
+        pio_read_sectors(&mut bus, BASE_CMD, BASE_CTL, 2, &mut dst, 4).unwrap();
+        // MockBus.in_words writes (data-port + i) per sector, both sectors alike.
+        assert_eq!(dst[0], BASE_CMD + REG_DATA);
+        assert_eq!(dst[SECTOR_WORDS], BASE_CMD + REG_DATA);
+    }
+
+    #[test]
+    fn pio_write_sectors_pads_and_transfers() {
+        let mut bus = MockBus::new(vec![STATUS_DRQ]);
+        // A short (partial-sector) write becomes one padded sector transfer.
+        pio_write_sectors(&mut bus, BASE_CMD, BASE_CTL, &[0xAAAA, 0xBBBB], 4).unwrap();
+        assert_eq!(bus.word_writes.len(), 1);
+        assert_eq!(bus.word_writes[0].0, BASE_CMD + REG_DATA);
+        assert_eq!(bus.word_writes[0].1.len(), SECTOR_WORDS);
+        assert_eq!(&bus.word_writes[0].1[..2], &[0xAAAA, 0xBBBB]);
     }
 }
