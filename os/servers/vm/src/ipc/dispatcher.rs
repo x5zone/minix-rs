@@ -1236,6 +1236,8 @@ fn dispatch_remap_impl(
     // (a process can remap its own region to a different address),
     // but if they're the same slot, we must not hold an ActiveProc
     // for it. Since we dropped dst_proc above, this is safe regardless.
+    //[SD19-gate] remap 计数属 bookkeeping：主操作 vmremap 已完成射射实际生效，计数失败不回滚主语义（与 C vmremap 不测计数失败同构）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = table.increment_region_remaps(src_slot, src_snapshot.vaddr);
 
     // Step 12: Return mapped address (C: mmap.c:431 — `m->m_lsys_vm_vmremap.ret_addr = vr->vaddr`)

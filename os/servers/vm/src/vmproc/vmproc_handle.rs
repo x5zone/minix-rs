@@ -708,6 +708,8 @@ impl<'a> ActiveProc<'a> {
             // Ignore unmap errors — the page may not be mapped (e.g., never
             // had physical backing), which is safe. C code also silently
             // ignores unmapped pages in pt_writemap with MAP_NONE.
+            //[SD19-gate] 与 C `pt_writemap` MAP_NONE 同构：页面可能本就没映射，unmap 失败属预期，drop 路径不回传
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.page_table_mut().unmap_range(start, num_pages);
         }
 

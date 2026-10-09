@@ -524,6 +524,8 @@ fn mmap_file(
             state: None,
         
             sent: false,};
+        //[SD19-gate] vfs_queue.request 入队失败时区域已先建立，后续重试路径会重发 VFS 请求（与 C do_mmap 入队失败不撤区域同构）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = vfs_queue.request(vreq);
     }
     region.param = VrParam::File {
