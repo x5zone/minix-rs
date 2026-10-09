@@ -67,7 +67,7 @@ n=$(rs -E "fence\.i|dc *cvau|ic *iallu|sync_icache");
 n=$(grep -c "ATF_BOOT_LEG_READY: \&\[&str\] = \&\[\"aarch64\", \"riscv64\"\]" os/xtask/src/image.rs | tr -d ' ')
                                         row "测试套件白名单缺 x86（1=仍缺）" "$n" 1 "$(verdict "$n" 1)"
 n=$(grep -n '^default' os/kernel/Cargo.toml 2>/dev/null | grep -c 'mock' | tr -d ' ')
-                                        row "内核包默认带替身特性（1=是）" "$n" 1 "$(verdict "$n" 1)"
+                                        row "内核包默认带替身特性（0=已摘，SD-30/U-1）" "$n" 0 "$(verdict "$n" 0)"
 n=0; for d in os/arch/src/arm64 os/arch/src/riscv64 os/plat/src/arm64 os/plat/src/riscv64; do
      c=$(grep -rnE "^[[:space:]]*#\[test\]" "$d" 2>/dev/null | wc -l); n=$((n + c)); done
                                         row "宿主不可达的门内测试" "$n" 86 "$(verdict "$n" 86)"

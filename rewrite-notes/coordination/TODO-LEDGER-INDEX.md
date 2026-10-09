@@ -164,7 +164,7 @@
 | 浮点归属写入点 | `grep -rn "fpu_owner" os --include=*.rs` | riscv64 臂 1 处、aarch64 臂 1 处、x86_64 臂 1 处（x86_64 恢复腿已落，见 `TODO-LEDGER-OPEN.md` §1 同日行）、迁移释放腿 1 处；全库命中现算 24 行 | 可定案；脚本 `todo-reconcile-scan.sh` 该判据的历史基线 21 被本轮 x86 臂合法抬高到 24，按 §6 纪律交「规则集维护批」统一滚动，单轮不代改脚本基线 |
 | 指令缓存维护 | `grep -rn "fence\.i\|dc *cvau\|ic *iallu\|sync_icache" os --include=*.rs` | 2（同一个 riscv64 文件，其一为注释） | 可定案 |
 | 特权屏蔽位是否在生产置起 | `grep -rn "PAN\|SUM" os/arch/src os/kernel/src --include=*.rs` | 命中全在注释与位定义 | 可定案 |
-| 内核包默认特性 | `grep -n "^default" os/kernel/Cargo.toml` | `default = ["mock"]` | 可定案 |
+| 内核包默认特性 | `grep -n "^default" os/kernel/Cargo.toml` | `default = []`（SD-30/U-1 已摘替身默认；宿主测试形态改由显式 `--features mock` 选定） | 可定案 |
 | 死码候选 | 逐符号 `grep -rn "<符号>" os --include=*.rs \| grep -v <定义所在文件>` | `dispatch_unused`、`console_write_str`、`runqueues_ok` 的外部命中全在测试内 | 可定案（消费方归属需人裁） |
 | 地址常量残留 | `python3 tools/address-constant-scan.py os` | 有输出，需按审计的豁免清单逐条判读 | 工具在、判读未做 → 标 `待验证` |
 | 真机门读数 | `os/qemu-tests/` 下各门脚本；`tools/check-rs-unwired.sh` | 本轮**不跑**（无人值守下禁止构建与虚拟机） | 全部标 `待验证`，写明解锁需要哪道门 |

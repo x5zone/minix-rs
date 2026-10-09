@@ -14,8 +14,14 @@ minix-plat = { path = "../plat" }
 minix-platform = { path = "../libs/minix-platform" }
 bitflags = { workspace = true }
 
+# 宿主测试替身：minix-arch 的单测用 `paging::mock`（gate 在 `runtime-window`）
+# 与 `minix_plat::Mock*`。SD-30/U-1 摘掉 minix-plat 自身默认后，plat mock 不再
+# 隐式传入，故与 minix-kernel 同式在此 dev-dependency 显式要 `mock`（仅 test 构生效）。
+[dev-dependencies]
+minix-plat = { path = "../plat", features = ["mock"] }
+
 [features]
-default = ["runtime-window"]
+default = []
 runtime-window = []
 # §续-356 A/B：Sv39 走表三加固（规范性/错粒度巨叶）的开关——默认关=旧语义。
 # 开=对保留/非法形态 fail-closed。爬行归因后定去留。
