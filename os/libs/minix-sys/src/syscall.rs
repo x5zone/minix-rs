@@ -806,6 +806,10 @@ pub const _DIO_INPUT: i32 = 0x001;
 pub const _DIO_OUTPUT: i32 = 0x002;
 /// C: `com.h:287` `_DIO_BYTE`。
 pub const _DIO_BYTE: i32 = 0x010;
+/// C: `com.h:285` `_DIO_WORD`（16 位端口宽）。
+pub const _DIO_WORD: i32 = 0x020;
+/// C: `com.h:286` `_DIO_LONG`（32 位端口宽）。
+pub const _DIO_LONG: i32 = 0x030;
 
 /// SYS_DEVIO 字节输出：向硬件端口写一个字节（C: libsys syslib.h:217
 /// `sys_outb(p,v) = sys_out(p, v, _DIO_BYTE)`）。端口可达性由内核
@@ -850,6 +854,83 @@ pub fn sys_inb(transport: &impl KernelCallTransport, port: u16) -> Result<u8, i3
     // SAFETY: 回值在 MessKrnLsysSysDevio.value（偏移 0）——kernel
     // dispatch_devio Input 臂写回同一 variant（对位注释见 :506 附近）。
     Ok(unsafe { msg.m_u.m_krn_lsys_sys_devio.value } as u8)
+}
+
+/// SYS_DEVIO 字输出：向硬件端口写一个 16 位字（C: libsys syslib.h:218
+/// `sys_outw(p,v) = sys_out(p, v, _DIO_WORD)`）。内核 `dispatch_devio` 的
+/// `IoSize::Word` 臂已实现（`port_io.outw`），本封装补齐字节之外的字宽。
+pub fn sys_outw(transport: &impl KernelCallTransport, port: u16, value: u16) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局
+        //（kernel/src/syscall_device.rs dispatch_devio；C ipc.h）。
+        let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
+        devio.request = _DIO_OUTPUT | _DIO_WORD;
+        devio.port = i32::from(port);
+        devio.value = u32::from(value);
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_DEVIO, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_DEVIO 字输入：从硬件端口读一个 16 位字（C: libsys syslib.h:224
+/// `sys_inw(p,v) = sys_in(p, v, _DIO_WORD)`）。回值在
+/// `mess_krn_lsys_sys_devio.value`（偏移 0），内核 `dispatch_devio` Input 臂
+/// 将 `port_io.inw(port)` 零扩展写回同一槽位，此处取低 16 位。
+pub fn sys_inw(transport: &impl KernelCallTransport, port: u16) -> Result<u16, i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局。
+        let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
+        devio.request = _DIO_INPUT | _DIO_WORD;
+        devio.port = i32::from(port);
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_DEVIO, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    // SAFETY: 回值在 MessKrnLsysSysDevio.value（偏移 0），与字节臂同槽位。
+    Ok(unsafe { msg.m_u.m_krn_lsys_sys_devio.value } as u16)
+}
+
+/// SYS_DEVIO 双字输出：向硬件端口写一个 32 位字（C: libsys syslib.h:219
+/// `sys_outl(p,v) = sys_out(p, v, _DIO_LONG)`）。内核 `IoSize::Long` 臂已实现。
+pub fn sys_outl(transport: &impl KernelCallTransport, port: u16, value: u32) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局。
+        let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
+        devio.request = _DIO_OUTPUT | _DIO_LONG;
+        devio.port = i32::from(port);
+        devio.value = value;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_DEVIO, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_DEVIO 双字输入：从硬件端口读一个 32 位字（C: libsys syslib.h:225
+/// `sys_inl(p,v) = sys_in(p, v, _DIO_LONG)`）。内核 `IoSize::Long` 臂回填
+/// `port_io.inl(port)` 全 32 位到 value 槽。
+pub fn sys_inl(transport: &impl KernelCallTransport, port: u16) -> Result<u32, i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局。
+        let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
+        devio.request = _DIO_INPUT | _DIO_LONG;
+        devio.port = i32::from(port);
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_DEVIO, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    // SAFETY: 回值在 MessKrnLsysSysDevio.value（偏移 0）。
+    Ok(unsafe { msg.m_u.m_krn_lsys_sys_devio.value })
 }
 
 /// SYS_SETALARM：设置（或取消）闹钟并取回旧闹钟信息（C: libsys
@@ -1947,6 +2028,79 @@ mod tests {
         let mut denied = CannedKernelCallTransport::new();
         denied.reply(-minix_types::EPERM);
         assert_eq!(sys_inb(&denied, 0x3FD), Err(-minix_types::EPERM));
+    }
+
+    /// SYS_DEVIO outw 回放:请求字 `_DIO_OUTPUT|_DIO_WORD` + 端口/值。
+    /// 对位 C syslib.h:218 `sys_outw(p,v)=sys_out(p,v,_DIO_WORD)`。
+    #[test]
+    fn test_sys_outw_encodes_devio_word_wire() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+
+        let r = sys_outw(&canned, 0x1F0, 0xABCD);
+
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_DEVIO);
+        // SAFETY(test):读回载荷臂核对方向/宽度/端口/值。
+        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
+        assert_eq!(d.request, _DIO_OUTPUT | _DIO_WORD);
+        assert_eq!(d.port, 0x1F0);
+        assert_eq!(d.value, 0xABCD);
+    }
+
+    /// SYS_DEVIO inw 回放:请求字 `_DIO_INPUT|_DIO_WORD`，回值取低 16 位
+    /// （内核 `IoSize::Word` 臂将 `inw` 零扩展写回 value 槽）；errno 走 Err 车道。
+    #[test]
+    fn test_sys_inw_decodes_reply_word() {
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        // SAFETY(test):构造应答臂镜像内核回填(syscall_device.rs Input Word 臂)。
+        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_devio };
+        arm.value = 0x1234;
+        canned.reply_message(reply);
+
+        let r = sys_inw(&canned, 0x1F0); // IDE data register
+        assert_eq!(r, Ok(0x1234));
+        let sent = canned.sent.borrow();
+        // SAFETY(test):读回请求臂核对方向/宽度/端口。
+        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
+        assert_eq!(d.request, _DIO_INPUT | _DIO_WORD);
+        assert_eq!(d.port, 0x1F0);
+
+        let mut denied = CannedKernelCallTransport::new();
+        denied.reply(-minix_types::EPERM);
+        assert_eq!(sys_inw(&denied, 0x1F0), Err(-minix_types::EPERM));
+    }
+
+    /// SYS_DEVIO outl/inl 回放:请求字带 `_DIO_LONG`，回值为全 32 位。
+    /// 对位 C syslib.h:219/:225 sys_outl/sys_inl。
+    #[test]
+    fn test_sys_outl_inl_long_wire_roundtrip() {
+        let mut out = CannedKernelCallTransport::new();
+        out.reply(0);
+        assert_eq!(sys_outl(&out, 0x020, 0xDEAD_BEEF), Ok(()));
+        {
+            let sent = out.sent.borrow();
+            // SAFETY(test):读回请求臂核对宽度位与值。
+            let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
+            assert_eq!(d.request, _DIO_OUTPUT | _DIO_LONG);
+            assert_eq!(d.value, 0xDEAD_BEEF);
+        }
+
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        // SAFETY(test):构造应答臂镜像内核 Long 回填。
+        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_devio };
+        arm.value = 0xFFFF_0000;
+        canned.reply_message(reply);
+        assert_eq!(sys_inl(&canned, 0x020), Ok(0xFFFF_0000));
+        let sent = canned.sent.borrow();
+        // SAFETY(test):读回请求臂核对方向/宽度。
+        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
+        assert_eq!(d.request, _DIO_INPUT | _DIO_LONG);
     }
 
     /// SYS_SETALARM 回放:请求 exp/abs + 应答臂 time_left/uptime。
