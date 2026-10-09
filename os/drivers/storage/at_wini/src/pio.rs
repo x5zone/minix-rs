@@ -119,13 +119,18 @@ pub enum PioError {
     Timeout,
 }
 
+/// Build the drive/head selector byte for a drive on the CHS / pre-IDENTIFY
+/// path (no LBA bit yet). C: `ldh_init(drive) = LDH_DEFAULT | ((drive) << 4)`
+/// (at_wini.h:33); the drive select rides bit 4 (LDH_DEV == 1<<4).
+pub const fn ldh_init(drive: u8) -> u8 {
+    LDH_DEFAULT | ((drive & 0x1) << 4)
+}
+
 /// Build the drive/head selector byte for a drive on the LBA28 path.
 ///
-/// C: `ldh_init(drive) = LDH_DEFAULT | ((drive) << 4)` (at_wini.h:33) OR'd with
-/// `LDH_LBA`; the low nibble later carries LBA bits 24-27.
+/// C: `ldh_init(drive)` OR'd with `LDH_LBA` (at_wini.h:31,33).
 pub const fn ldh_lba(drive: u8) -> u8 {
-    // Drive select rides bit 4 (LDH_DEV == 1<<4), so drive 1 sets it.
-    LDH_DEFAULT | ((drive & 0x1) << 4) | LDH_LBA
+    ldh_init(drive) | LDH_LBA
 }
 
 /// Encode an LBA28 read/write command.
@@ -309,6 +314,76 @@ pub const fn status_ready(status: u8) -> bool {
 /// Whether a status byte signals a latched error. C: `STATUS_ERR` (at_wini.h:44).
 pub const fn status_error(status: u8) -> bool {
     status & STATUS_ERR != 0
+}
+
+/// IDENTIFY word index for the capabilities field. C: `ID_CAPABILITIES` (49) —
+/// at_wini.h:85.
+pub const ID_CAPABILITIES_WORD: usize = 49;
+/// LBA addressing supported. C: `ID_CAP_LBA` — at_wini.h:86.
+pub const ID_CAP_LBA: u16 = 0x0200;
+/// LBA48 addressing supported. C: `ID_CSS_LBA48` — at_wini.h:98.
+pub const ID_CSS_LBA48: u16 = 0x0400;
+
+/// The LBA capabilities read from an IDENTIFY block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdentifyCaps {
+    /// Drive supports LBA (CHS→LBA enable). C: `w & ID_CAP_LBA` (at_wini.c:689).
+    pub lba: bool,
+    /// Drive supports LBA48. C: `w & ID_CSS_LBA48` (at_wini.c:701).
+    pub lba48: bool,
+}
+
+/// Decode the LBA / LBA48 capability bits from IDENTIFY word 49.
+///
+/// C: `w_identify` reads `id_word(ID_CAPABILITIES)` and tests `ID_CAP_LBA` /
+/// `ID_CSS_LBA48` (at_wini.c:688-714). Capacity thresholds (only trust LBA when
+/// the drive is big enough, only check LBA48 past `LBA48_CHECK_SIZE`) are
+/// applied by the caller from the geometry; this is the raw bit decode.
+pub const fn parse_identify_caps(word49: u16) -> IdentifyCaps {
+    IdentifyCaps {
+        lba: word49 & ID_CAP_LBA != 0,
+        lba48: word49 & ID_CSS_LBA48 != 0,
+    }
+}
+
+/// The ATA IDENTIFY command for a drive (CHS selector — LBA capability is
+/// exactly what this command discovers, so the selector carries no LBA bit).
+///
+/// C: `w_identify` sets `cmd.command = ATA_IDENTIFY` with the drive's `ldh_init`
+/// (at_wini.c:656-662).
+pub const fn identify_command(drive: u8) -> Command {
+    Command {
+        precomp: 0,
+        count: 0,
+        sector: 0,
+        cyl_lo: 0,
+        cyl_hi: 0,
+        ldh: ldh_init(drive),
+        command: ATA_IDENTIFY,
+    }
+}
+
+/// Issue IDENTIFY and read back the drive's reported LBA capabilities.
+///
+/// C: `w_identify` (at_wini.c:644-...): send the IDENTIFY command, wait for the
+/// DRQ, transfer the 256-word identify block, then read `ID_CAPABILITIES`.
+/// Geometry/capacity thresholds are the caller's next step; this returns the
+/// decoded capability bits.
+pub fn read_identify(
+    bus: &mut impl IoBus,
+    base_cmd: u16,
+    base_ctl: u16,
+    drive: u8,
+    max_polls: u32,
+) -> Result<IdentifyCaps, PioError> {
+    let cmd = identify_command(drive);
+    // Geometry is not yet known before identify, so the eight-heads bit is off.
+    com_out(bus, base_cmd, base_ctl, &cmd, false, max_polls)?;
+    // The identify block is ready to read once DRQ asserts. C: at_wini.c:672.
+    wait_for(bus, base_ctl, STATUS_DRQ, STATUS_DRQ, max_polls)?;
+    let mut block = [0u16; SECTOR_WORDS];
+    pio_read_sector(bus, base_cmd, &mut block);
+    Ok(parse_identify_caps(block[ID_CAPABILITIES_WORD]))
 }
 
 #[cfg(test)]
@@ -517,5 +592,63 @@ mod tests {
                 (BASE_CMD + REG_COMMAND, CMD_READ_EXT),
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_identify_caps_bits() {
+        // C: ID_CAP_LBA=0x0200 (bit9), ID_CSS_LBA48=0x0400 (bit10) in word 49.
+        assert_eq!(
+            parse_identify_caps(0x0000),
+            IdentifyCaps {
+                lba: false,
+                lba48: false
+            }
+        );
+        assert_eq!(
+            parse_identify_caps(ID_CAP_LBA),
+            IdentifyCaps {
+                lba: true,
+                lba48: false
+            }
+        );
+        assert_eq!(
+            parse_identify_caps(ID_CSS_LBA48),
+            IdentifyCaps {
+                lba: false,
+                lba48: true
+            }
+        );
+        assert_eq!(
+            parse_identify_caps(ID_CAP_LBA | ID_CSS_LBA48),
+            IdentifyCaps {
+                lba: true,
+                lba48: true
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_identify_sends_identify_and_reads_block() {
+        // STATUS stream: DRQ set & BSY clear — both com_out's BSY wait and the
+        // post-command DRQ wait succeed on the first poll.
+        let mut bus = MockBus::new(vec![STATUS_DRQ]);
+        let caps = read_identify(&mut bus, BASE_CMD, BASE_CTL, 0, 16).unwrap();
+        // The command written last before the block read must be ATA_IDENTIFY,
+        // with the CHS selector (no LBA bit). C: at_wini.c:656-662.
+        assert!(bus.writes.contains(&(BASE_CMD + REG_LDH, ldh_init(0))));
+        assert!(bus.writes.contains(&(BASE_CMD + REG_COMMAND, ATA_IDENTIFY)));
+        // MockBus.in_words fills dst[i] = (data-port + i), so word 49 is fixed:
+        let word49 = (BASE_CMD as usize + REG_DATA as usize + ID_CAPABILITIES_WORD) as u16;
+        assert_eq!(caps, parse_identify_caps(word49));
+    }
+
+    #[test]
+    fn test_identify_command_encoding() {
+        let cmd = identify_command(1);
+        assert_eq!(cmd.command, ATA_IDENTIFY);
+        // drive 1 sets LDH_DEV, and no LBA bit (capability is what identify finds).
+        assert_eq!(cmd.ldh, ldh_init(1));
+        assert_eq!(cmd.ldh & LDH_DEV, LDH_DEV);
+        assert_eq!(cmd.ldh & LDH_LBA, 0);
     }
 }
