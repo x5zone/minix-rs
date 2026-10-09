@@ -65,6 +65,8 @@ pub fn terminate(code: i32) -> ! {
 #[cfg(any(test, not(target_os = "none")))]
 pub fn warn(bytes: &[u8]) {
     use std::io::Write as _;
+    //[SD19-gate] SD-19: hosted warn stderr，与 C fputs 无检查同构
+    #[allow(clippy::let_underscore_must_use)]
     let _ = std::io::stderr().write_all(bytes);
 }
 
