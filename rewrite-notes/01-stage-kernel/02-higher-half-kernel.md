@@ -47,7 +47,7 @@ _kern_offset = (_kern_vir_base - _kern_phys_base);
 
 三列各有自己的规则，也各有自己的读者：链接脚本的地址由链接器写进指令与数据；段体落点由装载这个 ELF 的那段代码决定；运行期能访问哪些地址由页表决定。第 2 章先读 C 侧的三个决定点，第 3、4 章读 Rust 侧对应的三个决定点。
 
-内核为什么要在高一侧，而不是和用户代码挤在低地址？`kernel.lds` 在 `_kern_vir_base` 那一行的行尾给了理由：`/* map kernel high for max. user vir space */`——把 0xF0400000 以上留给内核，低地址那一大段就整块归用户进程使用。`pre_init` 里的两行赋值把这条划分落到具体数字上：`cbi->user_sp = USR_STACKTOP; cbi->user_end = USR_DATATOP;`，紧邻的注释写的是 `move user stack/data down to leave a gap to catch kernel stack overflow; and to distinguish kernel and user addresses at a glance (0xf.. vs 0xe..)`（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters`）——用户栈与数据被往下挪，既空出一段"越界就能撞上"的间隙，也让内核地址与用户地址在十六进制表示上第一眼就能分开。另一条依据在 `01-boot-shim-bootstrap.md` 的页表部分（§2.6.2）已经出现过：`pg_mapkernel` 写内核映射时不置 `I386_VM_USER`（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`），而 `pg_identity` 的恒等映射置了它——内核所在的这一段对用户态不可访问。
+内核为什么要在高一侧，而不是和用户代码挤在低地址？`kernel.lds` 在 `_kern_vir_base` 那一行的行尾给了理由：`/* map kernel high for max. user vir space */`——把 0xF0400000 以上留给内核，低地址那一大段就整块归用户进程使用。`pre_init` 里的两行赋值把这条划分落到具体数字上：`cbi->user_sp = USR_STACKTOP; cbi->user_end = USR_DATATOP;`，紧邻的注释写的是 `move user stack/data down to leave a gap to catch kernel stack overflow; and to distinguish kernel and user addresses at a glance (0xf.. vs 0xe..)`（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters`）——用户栈与数据被往下挪，既空出一段"越界就能撞上"的间隙，也让内核地址与用户地址在十六进制表示上第一眼就能分开。另一条依据在 `01-boot-shim-bootstrap.md` §2.6.2 的位表里已经出现过：`pg_mapkernel` 写内核映射时不置 `I386_VM_USER`（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`），而 `pg_identity` 的恒等映射置了它——内核所在的这一段对用户态不可访问。
 
 ### 1.2 三件事必须对齐
 
@@ -204,7 +204,7 @@ __k_unpaged__kern_phys_base = _kern_phys_base;
 
 ARM32 端口是同一形状，逐字对照 `minix3/minix/kernel/arch/earm/kernel.lds`：三个常量的名字与用法相同，只有物理基址不同（`_kern_phys_base = 0x80200000`）；条目段多收一个 `.startup` 段（`.unpaged_text ALIGN(4096) : { unpaged_*.o(.startup); unpaged_*.o(.text) }`），因为 ARM 的入口标签写在那个段里；`.unpaged_data` 之后、`.unpaged_bss` 之前多一个 `__k_unpaged__kern_unpaged_edata`，`.unpaged_bss` 之后是 `__k_unpaged__kern_unpaged_end`。两边的改名名单也不同（ARM 侧没有 `io_inb.o`/`io_outb.o`，另多若干 `compiler_rt` 除法辅助对象）。
 
-**如果反过来想**：把 `pg_utils.o` 从改名名单里去掉（或换成一个没被改名的对象，比如把 `pre_init.o` 去掉）。`pg_identity`、`pg_mapkernel`、`vm_enable_paging` 这些函数会落进高一侧的 `.text`，它们的符号值变成 0xF04xxxxx 一段。调用它们的时候 CPU 还在低地址执行：分页还没开（`vm_enable_paging` 正是开分页的那一步），高地址一侧没有任何映射，取指立刻失败；此时保护结构还没建（`prot_init` 在 03 篇的 `cstart` 里才被调用），没有可用的异常处理，故障直接升级为三重故障。名单在那个 `.for unpaged_obj in …` 块里，函数在 `minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`，调用点在 `minix3/minix/kernel/arch/i386/pre_init.c:pre_init` 的函数体中部——那里依次调用 `pg_clear/pg_identity/pg_mapkernel/pg_load/vm_enable_paging` 五个函数，前四个都在同一个对象里。
+**如果反过来想**：把 `pg_utils.o` 从改名名单里去掉（或换成一个没被改名的对象，比如把 `pre_init.o` 去掉）。`pg_identity`、`pg_mapkernel`、`vm_enable_paging` 这些函数会落进高一侧的 `.text`，它们的符号值变成 0xF04xxxxx 一段。调用它们的时候 CPU 还在低地址执行：分页还没开（`vm_enable_paging` 正是开分页的那一步），高地址一侧没有任何映射，取指立刻失败；此时保护结构还没建（`prot_init` 在 03 篇的 `cstart` 里才被调用），没有可用的异常处理，故障直接升级为三重故障。名单在那个 `.for unpaged_obj in …` 块里，函数在 `minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`，调用点在 `minix3/minix/kernel/arch/i386/pre_init.c:pre_init` 的函数体中部——那里依次调用 `pg_clear/pg_identity/pg_mapkernel/pg_load/vm_enable_paging` 五个函数，前四个都在同一个对象里。反方向的错法是：把一个本该在高半执行的函数（例如 `minix3/minix/kernel/main.c:kmain`）放进改名名单，它的段体就落进低地址一侧（VMA = LMA、按低地址装载）。这种错法当场没有症状——CPU 本来就在低地址执行，分页开启后恒等映射仍覆盖这一段（`pg_identity` 铺满 1024 个目录项，见 `01-boot-shim-bootstrap.md` §2.6），取指照常；坏点推迟出现，且有两条：取指一侧与 §2.3 的"只切栈不跳"同型——恒等映射被移除（VM 接手页表时 `pt_init` 跳过 BIGPAGE 条目）之后，取指落到没有映射的低地址上，`CR2` 记下这条指令的地址；内存一侧，unpaged 段正是 `kinfo.bootstrap_start/len` 覆盖的范围（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters` 把 `_kern_unpaged_start/end` 赋给它），引导阶段一结束这段内存就被交回空闲链（`minix3/minix/kernel/main.c:kmain` 的 `add_memmap`，§2.4 的同一条链），字节会被下一次分配拿走。
 
 ### 2.3 head.S：一次跳转里的两种寻址
 
@@ -987,7 +987,7 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
 
 **如果反过来想**：让自引导镜像照搬形态一的做法，先把自己的段重新拷一遍。目标区间就是它正在执行的代码与栈所在的物理内存：拷贝完成之前，正在执行的这段代码的字节已被改掉，下一条取指拿到的是新内容（或者被清零的 BSS）。这条分界在 `os/kernel-image/src/bootface.rs` 的模块文档里点明。
 
-跳转完成时系统处在什么状态、下一件必须做的事是什么，可以用一张状态表收束（Rust 侧）：
+跳转完成时系统处在什么状态、下一件必须做的事是什么，可以用一张状态表收束（下表描述的是当前 Rust 实现的状态，C 时代的对照见 §4.5）：
 
 | 项 | 跳转完成时的值 | 依据 |
 |---|---|---|

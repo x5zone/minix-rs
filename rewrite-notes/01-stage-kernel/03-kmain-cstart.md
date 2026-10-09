@@ -132,7 +132,7 @@ void kmain(kinfo_t *local_cbi)
 
 BSS 自检用的是函数内的静态变量 `bss_test`。静态存储期的变量放在 BSS 段，链接脚本把 BSS 声明为一段需要清零的内存，但清零动作由装载方执行（`01-boot-shim-bootstrap.md` §5.1 讲的那条链：boot-shim 读 ELF 段时对 `[filesz, memsz)` 清零）。`assert(bss_test == 0)` 在赋值之前读它一次：如果装载方没清，这里读到的是垃圾值，断言当场炸掉，比让它带着垃圾值跑进后续初始化要好。断言通过之后 `bss_test = 1`，这一句的作用是给下一次启动留证据（同一段内存被第二次使用时，值不再是 0）。
 
-第二个动作把 `local_cbi` 指向的内容整份拷进全局 `kinfo`，而这两行 `memcpy` 的源与目的其实是同一个对象：`kinfo` 是 `minix3/minix/kernel/arch/i386/pre_init.c` 里的文件级全局变量（`kinfo_t kinfo;`），`pre_init` 的收尾是 `return &kinfo;`，`head.S` 把这个指针压栈后传给 `kmain`，所以 `local_cbi == &kinfo`，第一行是一次全局自拷贝。第二行同理：`glo.h` 的 `#define kmess kmessages` 与 `pre_init` 里的 `cbi->kmess = &kmess;` 说明 `kinfo.kmess` 就是全局缓冲区 `kmessages` 自己的地址。两行代码体现的事实是"启动信息就落在内核自己的静态存储里"——引导侧（`pre_init` 本身就是内核代码）已经把 `kinfo` 与 `kmessages` 放在 `.bss` 上，`kmain` 不是把信息从别处搬进来，而是把这份约定再确认一遍。Rust 侧的情况不同，差异在 §4.1：那里的启动信息由 boot-shim 用引用交接，`store_kernel_info` 才需要把三个变长载荷真正落进 `.bss`。
+第二个动作的两行 `memcpy` 源与目的是同一个对象：`kinfo` 是 `minix3/minix/kernel/arch/i386/pre_init.c` 里的文件级全局变量（`kinfo_t kinfo;`），`pre_init` 的收尾是 `return &kinfo;`，`head.S` 把这个指针压栈后传给 `kmain`，所以 `local_cbi == &kinfo`，第一行是一次全局自拷贝。第二行同理：`glo.h` 的 `#define kmess kmessages` 与 `pre_init` 里的 `cbi->kmess = &kmess;` 说明 `kinfo.kmess` 就是全局缓冲区 `kmessages` 自己的地址。两行代码体现的事实是"启动信息就落在内核自己的静态存储里"——引导侧（`pre_init` 本身就是内核代码）已经把 `kinfo` 与 `kmessages` 放在 `.bss` 上，`kmain` 不是把信息从别处搬进来，而是把这份约定再确认一遍。Rust 侧的情况不同，差异在 §4.1：那里的启动信息由 boot-shim 用引用交接，`store_kernel_info` 才需要把三个变长载荷真正落进 `.bss`。
 
 第三步识别板子：`machine.board_id = get_board_id_by_name(env_get(BOARDVARNAME))`。它读的是启动参数里的环境变量，注释写着"We have done this exercise in pre_init so we expect this code to simply work!"——同一件事在 `pre_init` 里已经做过一次，这里只是把结果存进 `machine`。紧随其后的 `#ifdef __arm__` 串口初始化说明为什么 ARM 侧必须早于任何输出：串口没配好之前，调试输出无处可去。
 
@@ -650,7 +650,7 @@ phys_bytes vir2phys(void *vir)
 - "we can map in VM, and we no longer rely on pre-relocated data"——重建后的表是 VM 进程将要载入并运行的那张表（`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc` 把 VM 的 ELF 段直接映射进这张页表）。`pre_init` 那张表建立时内核还没重定位、启动信息的补充字段（`nr_procs`/`nr_tasks`/`boot_procs` 等）也还没填，这张表不再需要。
 - "Still need 1:1 for lapic and video mem and such"——恒等段此时仍未退位。LAPIC 的 MMIO、显存这类"地址就是物理地址"的对象要靠它访问，所以重建时必须立刻把它装回去。
 
-**如果反过来想**：把 `pg_identity(&kinfo)` 从重建段里去掉（只保留 `pg_mapkernel`），或者把重建整段删掉只留 `pg_load()`。前者的后果可以逐步推：`pg_clear()` 已经把 1024 个目录项清成 0，恒等窗口随之消失；内核仍在自己高半地址上执行（`pg_mapkernel` 保住了这一侧），所以取指不会立刻出事；第一个按物理地址访问的对象会成为现场——启动期访问 LAPIC 的 MMIO 或写显存时，目标地址在页目录里没有对应项，缺页，而故障地址不是高半地址而是物理地址本身（如 `0xFEE00000` 一段）。后者（删掉清空与重建只留 `pg_load`）在物理地址层面反而看不出差别：`pagedir` 是同一个静态数组的同一块物理内存，`pg_load` 写进 CR3 的值不因此改变；这也解释了为什么这段代码删掉后**冷启动可能照常跑**，它挡的是"第二次进入这段代码"与"此后表内容的正确性"这一类问题——与 §2.3 的 `memset` 是同一族。依据：`pg_clear` 的清零范围、`pg_identity` 的循环、`prot_init` 的两句注释。
+**如果反过来想**：把 `pg_identity(&kinfo)` 从重建段里去掉（只保留 `pg_mapkernel`），或者把重建整段删掉只留 `pg_load()`。前者的后果可以逐步推：`pg_clear()` 已经把 1024 个目录项清成 0，恒等窗口随之消失；内核仍在自己高半地址上执行（`pg_mapkernel` 保住了这一侧），所以取指不会立刻出事；第一个按物理地址访问的对象会成为现场——启动期访问 LAPIC 的 MMIO 或写显存时，目标地址在页目录里没有对应项，缺页，而故障地址不是高半地址而是物理地址本身（如 `0xFEE00000` 一段）。后者（删掉清空与重建只留 `pg_load`）在物理地址层面反而看不出差别：`pagedir` 是同一个静态数组的同一块物理内存，`pg_load` 写进 CR3 的值不因此改变；这也解释了为什么这段代码删掉后**冷启动可能照常跑**，它挡的是"第二次进入这段代码"与"此后表内容的正确性"这一类问题——与 §2.3 的 `memset` 是同一族。这里的"第二次进入"指重启路径：上一轮内核运行结束之后由监控程序重新进入内核（`minix3/minix/kernel/main.c:prepare_shutdown` 与同文件的 `minix_shutdown`，§2.3）。与第一次进入的差别在字节来源：第一次进入时 `.bss` 的初值由装载方的清零与段体摆放定义（§2.1），第二次进入时 `pagedir` 里是上一轮留下的表项，`pg_clear`/`pg_identity`/`pg_mapkernel` 把 1024 个表项逐个写成本轮需要的值。依据：`pg_clear` 的清零范围、`pg_identity` 的循环、`prot_init` 的两句注释。
 
 ### 2.7 earm 的 protect.c：另一个独立端口
 
@@ -1139,6 +1139,8 @@ fn set_entry_stack_base(base: VirBytes) {
 
 `sscratch` 是用户陷阱的交换寄存器（进入内核时第一条指令 `csrrw sp, sscratch, sp` 把用户 sp 存进去、内核栈换出来），所以它不能在返回之后仍当作"内核栈基址"用——返回路径会把 sscratch 重锚到 `KERNEL_TRAP_STACK_BASE`。这个单元与 aarch64 的 `TPIDR_EL1` 是同一问题的两种载体（`os/arch/src/riscv64/protection.rs:static KERNEL_TRAP_STACK_BASE`）。`load` 在 riscv64 上没有需要执行的步骤（CSR 写入即生效），异常入口由 `stvec` 指向的单一地址承载——Direct 模式（低两位为 0），所有 trap 落到同一个入口、由软件按 `scause` 分派。
 
+两条路径的**触发指令**在各体系结构里是固定的一条：aarch64 用 `svc`（`os/arch/src/arm64/trap_stub.rs` 的文件注释写明 `svc` **会**把返回地址推进到下一条指令），riscv64 用 `ecall`（`os/arch/src/riscv64/trap_stub.rs` 的文件注释写明 `ecall` **不**推进 `sepc`——这一点与 x86 的 `int`、arm64 的 `svc` 相反，返回地址的修正因此是内核贴板体自己的事）。用户态执行到那条指令时才发生特权级切换与入口跳转；本篇只到"门与入口已经就位"，完整的"用户 → 内核 → 用户"往返（谁保存寄存器、谁切换栈、哪条指令把特权级降回去）归异常与中断篇（`14-exception-interrupt.md`）。
+
 **如果反过来想**：aarch64 的 `init` 直接 `msr SP_EL1, kernel_stack_top`。`SPSel=1` 时这条写改的就是当前栈指针：正在执行的函数把自己的栈当场换掉，返回地址与寄存器保存区留在旧栈上，下一条指令的取指/压栈落到一个从未初始化过的栈顶。注释里保留了这次崩溃的定位过程：最初被怀疑成 EL2 对 `SP_EL1` 的陷获，最终判据是"SPSel=1 时 SP_EL1 就是当前 SP"。依据：`os/arch/src/arm64/protection.rs:fn set_entry_sp` 与 `:fn init` 的注释。
 
 ### 4.7 与 Minix3 C 的对照（→2.1–§2.7）
@@ -1157,6 +1159,8 @@ fn set_entry_stack_base(base: VirBytes) {
 | 重建页表（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`） | `os/kernel/src/lib.rs:fn arch_boot_impl` 建一次 | 淘汰重建 | §3.5 |
 | `prot_init_done` 标志 | 全局 `Option` + `with_protection`/`with_trap_entry` 的 panic 契约 | 改型 | 未初始化成为一个确定的失败点 |
 | `gate_table_*` 39 条门 | `os/arch/src/x86_64/trap_stub.rs:const STUB_VECTORS` 41 项 + `:fn install_idt_handlers` | 改型 | 长模式保留 9/15、增加 LAPIC/调度向量 |
+
+本篇做完之后，系统处在这样一个状态：三张表都已装载生效、门里有真入口（§3.7），而**中断线全部处于屏蔽**——"有门可走，但没有源被放行"（§2.2）；进程与用户态都还没有。下一件必须做的事是 `kmain` Phase B 的剩余部分：时钟与中断控制器的初始化（`os/kernel/src/lib.rs:fn init_clock_and_interrupts`），它的次序与内部拆分是下一篇的主题（`05-clock-interrupt-init.md`）。
 
 ---
 
