@@ -411,12 +411,12 @@ restored register values correct" — which doubles as the runtime guard for thi
 No ledger row exists. **Recommendation:** build the checksum with the 问题乙 instrument rebuild (one
 stone, two birds — see SD-10/SD-26); otherwise leave documented.
 
-#### SD-15b. `p_fault_addr` filled on three archs, consumed on one — **adjudicated (PD-04), nearly closed**
+#### SD-15b. `p_fault_addr` filled on three archs, consumed on one — **closed (PD-04 决策与实现均已落地，`2026-10-10` 核；本行原记 nearly closed/open)**
 
 **Decision:** re-qualified as a *diagnostic record* (the authority path is far_el1/stval → VM_PAGEFAULT
 message, already landed); delete the zero-call getter; keep the rolled-back consumer arm registered.
 The fill was never a one-sided contract — it is shared code with a real consumer. **Residual:** the
-getter deletion (P-ALL-02, open).
+getter deletion — 已落地（零调用 getter `last_fault_addr` 已从树中移除，`grep -rn "last_fault_addr" os --include=*.rs` → 0 命中；诊断记录形态已入 `proc.rs:885-891`/`trap_dispatch.rs:751-753` 注释，`2026-10-10` 核），P-ALL-02 closed。
 
 #### SD-16. Error-code sign domain — **closed at the convention level (续-388); the type-level guard remains open**
 

@@ -178,7 +178,7 @@
 
 ### 2. PD-04：缺页地址「三架构都填、只有 x86_64 消费」——删死填位还是补消费臂（`P-ALL-02`/`SD-15b`）
 
-**状态**：决策=可冻结（核验后定性为诊断记录）｜实现=未实施（getter 清理与台账登记未做）
+**状态**：决策=可冻结（核验后定性为诊断记录）｜实现=已实施（`2026-10-10` 核）：零调用 getter `last_fault_addr` 已不在树中——`grep -rn "last_fault_addr" os --include=*.rs` → 0 命中；诊断记录形态已在 `os/kernel/src/proc.rs:885-891` 字段注释（“read the field directly; there is deliberately no getter”）与 `os/kernel/src/trap_dispatch.rs:751-753` 填位注释登记，两处均引本决策路径。P-ALL-02/SD-15b 就此闭合。
 
 **背景**。发生缺页（页面不在内存、访问触发硬件异常）时，三架构的软件都把出错地址写进进程表的 `p_fault_addr` 字段；但只有 x86_64 在返回用户态前消费它做精确页表刷新（`os/kernel/src/trap_dispatch.rs`、`os/kernel/src/page_fault.rs:set_page_fault_pending`），aarch64 与 riscv64 填而不读（曾实现消费臂后被回滚）。问题：这两端的「填」是无用死代码，还是消费臂缺失的半成品？
 
