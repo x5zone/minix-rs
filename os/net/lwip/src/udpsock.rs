@@ -7,10 +7,13 @@
 //! flags pass, when a send length is too large, and which multicast defaults
 //! a new socket gets.
 //!
-//! The multicast defaults live beside the send guards because a datagram
-//! socket acquires all of them in one breath at creation time (`udpsock.c`
-//! creates, then sets TTL and loop); splitting them across modules would
-//! make the creation contract read as three unrelated numbers.
+//! The multicast defaults are re-exported from [`crate::ipsock`] rather than
+//! restated here: the reference system fixes one internet-layer value
+//! (`IP_DEFAULT_MULTICAST_*`, `netinet/in.h:305-306`) that both the datagram
+//! and raw creation paths read, so the number lives in one place and the two
+//! socket modules cannot drift apart — the same forward-to-ipsock pattern this
+//! module already uses for `send_flags_allowed` and `payload_fits`. A datagram
+//! socket still acquires them together at creation (`udpsock.c:147`, `:150`).
 
 /// Internet protocol number for user datagrams (`IPPROTO_UDP`, 17,
 /// `minix3/sys/netinet/in.h:85`).
@@ -20,13 +23,11 @@ pub const IPPROTO_UDP: i32 = 17;
 /// the largest unsigned 16-bit value).
 pub const MAX_PAYLOAD: usize = 65535;
 
-/// Default multicast time to live for a new socket (`udpsock.c:147`,
-/// set through `udp_set_multicast_ttl` with value 1).
-pub const MULTICAST_TTL_DEFAULT: u8 = 1;
-
-/// Whether multicast loopback is enabled by default for a new socket
-/// (`udpsock.c:150`, `UDP_FLAGS_MULTICAST_LOOP` set at creation).
-pub const MULTICAST_LOOP_DEFAULT: bool = true;
+/// Default multicast settings a new datagram socket inherits at creation
+/// (`udpsock.c:147`, `:150`). The values are the internet-layer defaults and
+/// live once in [`crate::ipsock`]; re-exported here so this module keeps
+/// naming them and cannot drift from the raw path.
+pub use crate::ipsock::{MULTICAST_LOOP_DEFAULT, MULTICAST_TTL_DEFAULT};
 
 /// Whether a protocol value is accepted for a datagram socket
 /// (`udpsock_socket`, `udpsock.c:116-135`).

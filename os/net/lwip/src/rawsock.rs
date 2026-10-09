@@ -22,11 +22,11 @@ pub const IPPROTO_ICMPV6: i32 = 58;
 /// Largest raw payload in bytes (`RAW_MAX_PAYLOAD`, `rawsock.c:48`).
 pub const MAX_PAYLOAD: usize = 65535;
 
-/// Default multicast time to live for a new raw socket (`rawsock.c:319`).
-pub const MULTICAST_TTL_DEFAULT: u8 = 1;
-
-/// Whether multicast loopback is enabled by default (`rawsock.c:322`).
-pub const MULTICAST_LOOP_DEFAULT: bool = true;
+/// Default multicast settings a new raw socket inherits at creation
+/// (`rawsock.c:319`, `:322`). These are the internet-layer defaults, fixed
+/// once in [`crate::ipsock`] and shared with the datagram path; re-exported
+/// here so the two socket modules cannot drift apart.
+pub use crate::ipsock::{MULTICAST_LOOP_DEFAULT, MULTICAST_TTL_DEFAULT};
 
 /// Whether a protocol value is accepted for a raw socket
 /// (`rawsock_socket`, `rawsock.c:290-299`).

@@ -82,6 +82,25 @@ pub fn buffer_size_allowed(value: usize, minimum: usize, maximum: usize) -> bool
     minimum <= value && value <= maximum
 }
 
+/// Default multicast time to live for a newly created internet socket.
+///
+/// One internet-layer default shared by every protocol that builds on it: the
+/// reference system fixes it once (`IP_DEFAULT_MULTICAST_TTL`, 1,
+/// `minix3/sys/netinet/in.h:305`), and both the datagram and raw creation
+/// paths read that same value (`udp_set_multicast_ttl(..., 1)`,
+/// `udpsock.c:147`; `raw_set_multicast_ttl(..., 1)`, `rawsock.c:319`). It
+/// lives here with the other internet-layer policy so the two socket modules
+/// cannot drift apart, exactly as they already forward `send_flags_allowed`,
+/// `payload_fits`, and `buffer_size_allowed` to this module.
+pub const MULTICAST_TTL_DEFAULT: u8 = 1;
+
+/// Whether a newly created internet socket loopback-transmits its own
+/// multicast by default (`IP_DEFAULT_MULTICAST_LOOP`, 1,
+/// `minix3/sys/netinet/in.h:306`; set at creation in both `udpsock.c:150`
+/// and `rawsock.c:322`). Single-sourced for the same reason as
+/// [`MULTICAST_TTL_DEFAULT`].
+pub const MULTICAST_LOOP_DEFAULT: bool = true;
+
 /// Send flag allowing the caller to bypass routing tables
 /// (`MSG_DONTROUTE`, 0x04, `minix3/sys/sys/socket.h:510`). Both datagram
 /// and raw send paths accept exactly this one flag.
