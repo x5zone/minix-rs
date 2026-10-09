@@ -113,7 +113,7 @@
 | 07 数据存储 | [`todo.md`](../07-stage-ds/todo.md) | `open` 2 | 标签发布与编码的纯逻辑已备，无生产调用方 |
 | 08 中断服务 | [`todo.md`](../08-stage-is/todo.md) | 阶段内 0 | 残余为跨阶段传输族 |
 | 09 初始化 | [`todo.md`](../09-stage-init/todo.md) | `open` 1 | 崩溃处理器的提供形式（归编排 `C-21`） |
-| 10 系统信息 | [`todo.md`](../10-stage-mib/todo.md) | `open` 1 | 交换格式的应用二进制接口待裁决。**已裁决**：`U-3` 采修订版方案 A（具名客户端结构体推迟到首个消费者＋响应布局验收条件，见 `PENDING-DECISIONS-UNBLOCK-20261009.md` 裁决栏与执行清单），可按该节清单直接领取实施 |
+| 10 系统信息 | [`todo.md`](../10-stage-mib/todo.md) | 阶段内 0 | 交换格式的应用二进制接口。**已裁决 U-3 采修订版方案 A**（具名客户端结构体推迟到首个消费者＋响应布局验收条件，见 `PENDING-DECISIONS-UNBLOCK-20261009.md`）。**已执行（`2026-10-10`，`claim/U3-MIB-ABI-LAYOUT-qoder` @ 快照 `48fc49de1`）**：① 具名结构体推迟转正——`os/libs/minix-types/src/types/sysctl.rs` CTL_VM 注释补裁决指针（不预建无消费者死类型）；② 响应布局验收——发现并改正一个真缺陷：MIB 树 `uvmexp2` 节点的 size lane 此前误记 0（`os/servers/mib/src/subtree/vm.rs` 旧注释称「头树无可引用定义」不成立，定义在 `minix3/sys/uvm/uvm_extern.h:373-451`），现按 C `sizeof(struct uvmexp_sysctl)`=616（77 个 `int64_t`）改正、`loadavg`=24（`resource.h:118-121`，`fixpt_t=uint32_t`），带宿主回读测试（`cargo test -p minix-mib --lib subtree::vm` → 4 passed；全量 `--lib` 177/0；clippy 自有文件零新增告警）。边界：回复字节逐字段排列随函数腿接线（跨服务拉取虚存统计与负载信息那一步、挂端到端联调 E1/E2）时补，属已登记的推迟而非缺口，故本行阶段内 `open` 归零但端到端 response 仍记 `待验证`（归跨服务拉取那一步与端到端联调 E1） |
 | 11 设备管理 | [`todo.md`](../11-stage-devman/todo.md) | `open` 1 | 设备拥有权与生产四缺 |
 | 12 输入 | [`todo.md`](../12-stage-input/todo.md) | 阶段内 0（原记 `open` 1，属**账面滞后**：`IN-P3-2` 本体在 `2026-09-15` 已闭但本节摘要行未同步翻；`2026-10-09` 回勾）| 残余为跨阶段传输族（`E-INWIRE` 等） |
 | 13 进程间通信 | [`todo.md`](../13-stage-ipc/todo.md) | 阶段内 0 | 残余为 `E-IPCWIRE` 的装配面 |

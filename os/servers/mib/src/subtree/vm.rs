@@ -213,14 +213,53 @@ mod tests {
         assert_eq!(page_shift(1000, 32), None);
         assert_eq!(page_shift(0, 32), None);
     }
+
+    #[test]
+    fn test_vm_struct_sizes_match_c_layout() {
+        // MIB 把这两个 struct 的宽度写进 sysctlnode 的 size lane（
+        // walker.rs 的 report_size），客户端枚举 CTL_VM 时读到的就是它，
+        // 必须在函数腿接线之前就与 C 对齐。从真实装配的树里回读 size。
+        let t = crate::tree::arena::MibTree::init();
+        let vm = t
+            .child(t.root(), minix_types::CTL_VM)
+            .expect("CTL_VM mounted");
+        // loadavg：C `sizeof(struct loadavg)` — 3×uint32 + 4 pad + long(8) = 24。
+        let loadavg = t.child(vm, VM_LOADAVG).expect("loadavg node");
+        assert_eq!(t.slot(loadavg).size, 24);
+        // uvmexp2：C `sizeof(struct uvmexp_sysctl)` — 77 个 int64_t = 616。
+        // 旧形状此处报 0，客户端会误以为该节点不返回任何字节。
+        let uvmexp2 = t.child(vm, VM_UVMEXP2).expect("uvmexp2 node");
+        assert_eq!(t.slot(uvmexp2).size, 616);
+        // maxslp/uspace 两个常量叶仍为 4 字节 int。
+        let maxslp = t.child(vm, VM_MAXSLP).expect("maxslp node");
+        assert_eq!(t.slot(maxslp).size, 4);
+    }
 }
 
 // ── Arena wiring (P1-2) ──
 //
 // C 的 `mib_vm_init` 等价物：loadavg/uvmexp2 两个函数门 + maxslp/uspace。
-// uvmexp2 的 payload 宽度（`sizeof(struct uvmexp_sysctl)`）在 minix3
-// 头树里没有可引用的定义——尺寸暂记 0 并标注 [待验证]，随 P1-5 表拉取
-// 执行时一并钉。
+// 这两个 struct 的宽度写进 sysctlnode 的 size lane，客户端枚举 CTL_VM 时
+// 直接读到——所以宽度必须在函数腿接线（P1-5 的 `sys_getloadinfo` /
+// `vm_info_stats` 跨服务拉取）之前就与 C 对齐，否则枚举面报出的记录尺寸
+// 是错的（旧值把 uvmexp2 记 0，客户端会以为该节点不返回任何字节）。
+
+/// `sizeof(struct loadavg)` — C `sys/sys/resource.h:118-121`
+/// `{ fixpt_t ldavg[3]; long fscale; }`，`fixpt_t = uint32_t`
+/// (`sys/sys/types.h:188`)。LP64 self-consistent 布局：`3×4` 定长数组 +
+/// 4 字节对齐填充 + `long`（8）= 24。与 vm.c:122 `sizeof(struct loadavg)` 同值。
+pub(crate) const SIZEOF_STRUCT_LOADAVG: u64 = 24;
+
+/// `struct uvmexp_sysctl` 的字段数——C `sys/uvm/uvm_extern.h:373-451`，
+/// 从 `pagesize` 到 `ncolors` 逐行数得 77 个 `int64_t` 字段，无 padding。
+const UVMEXP_SYSCTL_FIELDS: u64 = 77;
+
+/// `sizeof(struct uvmexp_sysctl)` — 77 个 `int64_t`（8 字节、对齐 8、无填充），
+/// 两数据模型（ILP32 参考构建 / LP64 minix-rs）同宽：77 × 8 = 616。与 vm.c:127
+/// `sizeof(struct uvmexp_sysctl)` 同值。此前记「minix3 头树里没有可引用的定义」
+/// 不成立——定义就在 `uvm_extern.h:373`，`mib/vm.c` 经 `#include <uvm/uvm_extern.h>`
+/// 引用它，只是当时未去查。
+pub(crate) const SIZEOF_STRUCT_UVMEXP_SYSCTL: u64 = UVMEXP_SYSCTL_FIELDS * 8;
 
 pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::arena::NodeId) {
     use crate::tree::arena::{FuncKey, NodeId};
@@ -232,11 +271,10 @@ pub(crate) fn build(t: &mut crate::tree::arena::MibTree, parent: crate::tree::ar
         match &e.kind {
             VmKind::Func(f) => {
                 let (flags, size) = match f {
-                    // C vm.c:122 `sizeof(struct loadavg)`；LP64
-                    // self-consistent 布局 = 24（int×3 + pad + long）。
-                    VmFunc::Loadavg => (CTLTYPE_STRUCT | RO, 24),
-                    // C vm.c:127 `sizeof(struct uvmexp_sysctl)` [待验证]。
-                    VmFunc::Uvmexp2 => (CTLTYPE_STRUCT | RO, 0),
+                    // C vm.c:122 `sizeof(struct loadavg)`；见 SIZEOF_STRUCT_LOADAVG 的推导。
+                    VmFunc::Loadavg => (CTLTYPE_STRUCT | RO, SIZEOF_STRUCT_LOADAVG),
+                    // C vm.c:127 `sizeof(struct uvmexp_sysctl)`；见 SIZEOF_STRUCT_UVMEXP_SYSCTL 的推导。
+                    VmFunc::Uvmexp2 => (CTLTYPE_STRUCT | RO, SIZEOF_STRUCT_UVMEXP_SYSCTL),
                 };
                 let n = t.place(parent, e.name, e.id, flags);
                 t.slot_mut(n).func = Some(FuncKey::Vm(*f));
