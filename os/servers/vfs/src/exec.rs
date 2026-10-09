@@ -543,6 +543,8 @@ pub fn clo_exec(rfp: &mut FProc, filp_table: &mut crate::filp::FilpTable) {
         if rfp.cloexec_set.get(i)
             && let Some(fd) = crate::filedes::Fd::new(i)
         {
+            // [SD19-gate] 尽力而为关 fd 收尾（C vfs 清理路径 close 失败不回错）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = close_fd(rfp, fd, filp_table);
         }
     }

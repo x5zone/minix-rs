@@ -302,6 +302,8 @@ impl VnodeTable {
         let map_count = v.mapfs_count;
         fs_ctl.put_node(fs, ino, count)?;
         if map_fs != Endpoint::NONE && map_fs != fs {
+            // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = fs_ctl.put_node(map_fs, map_ino, map_count);
         }
         let v = self.get_mut(id).unwrap();
@@ -323,6 +325,8 @@ impl VnodeTable {
         let fs = v.fs;
         let ino = v.ino;
         let to_put = v.fs_count - 1;
+        // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = fs_ctl.put_node(fs, ino, to_put);
         if let Some(v) = self.get_mut(id) {
             v.fs_count = 1;

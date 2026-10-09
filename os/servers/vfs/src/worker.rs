@@ -1490,6 +1490,8 @@ mod tests {
             let mut fp2 = FProc::new_unused();
             let s = slot(i + 10);
             // Use spare to force assignment even when available==1
+            // [SD19-gate] 测试夹具：调度失败由后续断言体现，不 unwrap 属刻意形状
+            #[allow(clippy::let_underscore_must_use)]
             let _ = pool.start_first_fit(s, &mut fp2, WorkerFunc::DoWork, &msg, true);
         }
         assert_eq!(pool.available(), 0);
@@ -1524,6 +1526,8 @@ mod tests {
         // Now occupy 8 slots (busy=8, avail=1) → may_do_pending false (spare reserved)
         for i in 0..8 {
             let mut f = FProc::new_unused();
+            // [SD19-gate] 测试夹具：调度失败由后续断言体现，不 unwrap 属刻意形状
+            #[allow(clippy::let_underscore_must_use)]
             let _ = pool.start_first_fit(slot(i + 20), &mut f, WorkerFunc::DoWork, &msg, true);
         }
         // busy now 8, pending still 1, avail=1 → need >1 so false
@@ -1793,6 +1797,8 @@ mod tests {
         // Still pending queued?
         pool.set_allow(false);
         let mut fp = FProc::new_unused();
+        // [SD19-gate] 测试夹具：调度失败由后续断言体现，不 unwrap 属刻意形状
+        #[allow(clippy::let_underscore_must_use)]
         let _ = pool.start_first_fit(slot(1), &mut fp, WorkerFunc::DoWork, &m, false);
         // pending==1 → not idle → cleanup fails
         assert!(pool.cleanup().is_err());

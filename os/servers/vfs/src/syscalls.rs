@@ -160,6 +160,8 @@ pub(crate) fn cdev_data_route(
             SyscallResult::Suspend
         }
         Err(e) => {
+            // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+            #[allow(clippy::let_underscore_must_use)]
             let _ = state.revoke_grant(grant);
             SyscallResult::Error(e)
         }
@@ -230,6 +232,8 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             if last_close
                 && let Some(vid) = filp_vid
             {
+                // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = state.put_vnode_deferred(vid);
             }
 
@@ -1987,6 +1991,8 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 .is_err()
             {
                 if grant != minix_types::GRANT_INVALID {
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = state.revoke_grant(grant);
                 }
                 return SyscallResult::Error(minix_types::EIO);
@@ -2091,6 +2097,8 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             if minix_sys::ipc::IpcTransport::send(&minix_sys::ipc::DirectTrapTransport, drv_e, &req)
                 .is_err()
             {
+                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = state.revoke_grant(grant);
                 return SyscallResult::Error(minix_types::EIO);
             }
@@ -2506,6 +2514,8 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                         Ok(()) => SyscallResult::Suspend,
                         Err(e) => {
                             if grant != minix_types::GRANT_INVALID {
+                                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                #[allow(clippy::let_underscore_must_use)]
                                 let _ = state.revoke_grant(grant);
                             }
                             SyscallResult::Error(e)
@@ -2577,6 +2587,8 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                     .is_err()
                     {
                         if grant != minix_types::GRANT_INVALID {
+                            // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                            #[allow(clippy::let_underscore_must_use)]
                             let _ = state.revoke_grant(grant);
                         }
                         return SyscallResult::Error(minix_types::EIO);
@@ -2676,6 +2688,8 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                         Ok(()) => SyscallResult::Suspend,
                         Err(e) => {
                             if grant != minix_types::GRANT_INVALID {
+                                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                #[allow(clippy::let_underscore_must_use)]
                                 let _ = state.revoke_grant(grant);
                             }
                             if let Some(f) =
@@ -5814,6 +5828,8 @@ mod tests {
             let mut state = seeded(100);
             state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap().fs = Endpoint::MFS;
             state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap().dev = 1;
+            // [SD19-gate] 授权登记尽力而为（失败走既有错误回复路径）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = state.grants.grant_direct(
                 &minix_sys::syscall::DirectKernelCallTransport,
                 Endpoint::MFS.get(),
@@ -10005,6 +10021,8 @@ mod tests {
                     v.flags = crate::vmnt::VmntFlags::READONLY;
                 }
             }
+            // [SD19-gate] 授权登记尽力而为（失败走既有错误回复路径）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = state.grants.grant_direct(
                 &minix_sys::syscall::DirectKernelCallTransport,
                 Endpoint::MFS.get(),

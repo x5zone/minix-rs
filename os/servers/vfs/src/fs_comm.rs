@@ -952,7 +952,11 @@ mod tests {
             Box::new(BlockingTransport),
             Box::new(MockTransport::default()),
         ];
+        // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = transports[0].send_vm(0, &msg);
+        // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = transports[1].send_vm(0, &msg);
     }
 

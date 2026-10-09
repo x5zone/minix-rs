@@ -279,13 +279,19 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
         let fp = table.get_mut(slot).ok_or(PmError::BadEndpoint)?;
         for i in 0..crate::fproc::OPEN_MAX {
             if let Some(fd) = crate::filedes::Fd::new(i) {
+                // [SD19-gate] 尽力而为关 fd 收尾（C vfs 清理路径 close 失败不回错）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = crate::filedes::close_fd(fp, fd, filp_table);
             }
         }
         if let Some(rd) = fp.root_dir.take() {
+            // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = vnode_table.put(VnodeId(rd), &mut **fs_ctl);
         }
         if let Some(wd) = fp.work_dir.take() {
+            // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = vnode_table.put(VnodeId(wd), &mut **fs_ctl);
         }
         free_proc_inner(fp, FreeKind::Exiting);

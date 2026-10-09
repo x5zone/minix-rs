@@ -300,7 +300,11 @@ mod tests {
     fn test_tll_append_queues() {
         let mut t = Tll::new();
         t.try_lock(slot(1), TllAccess::Write).unwrap();
+        // [SD19-gate] 测试夹具：try_lock 失败由后续断言体现，不 unwrap 属刻意形状
+        #[allow(clippy::let_underscore_must_use)]
         let _ = t.try_lock(slot(2), TllAccess::Write);
+        // [SD19-gate] 测试夹具：try_lock 失败由后续断言体现，不 unwrap 属刻意形状
+        #[allow(clippy::let_underscore_must_use)]
         let _ = t.try_lock(slot(3), TllAccess::ReadSer);
         assert_eq!(t.write_q.len(), 1);
         assert_eq!(t.serial_q.len(), 1);
@@ -311,7 +315,11 @@ mod tests {
     fn test_tll_unlock_selects() {
         let mut t = Tll::new();
         t.try_lock(slot(1), TllAccess::Write).unwrap();
+        // [SD19-gate] 测试夹具：try_lock 失败由后续断言体现，不 unwrap 属刻意形状
+        #[allow(clippy::let_underscore_must_use)]
         let _ = t.try_lock(slot(2), TllAccess::Write);
+        // [SD19-gate] 测试夹具：try_lock 失败由后续断言体现，不 unwrap 属刻意形状
+        #[allow(clippy::let_underscore_must_use)]
         let _ = t.try_lock(slot(3), TllAccess::ReadSer);
         // Write queue has priority
         t.unlock(slot(1)).unwrap();

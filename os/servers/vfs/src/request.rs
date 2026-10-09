@@ -1279,6 +1279,8 @@ impl<
         // C request.c:813 — `fs_sendrec`（同步往返，worker 上下文）。
         let r = self.ipc.sendrec(fs_e, &mut msg);
         // C request.c:814 — 回复无关成败都先 revoke（C 同样先 revoke 再查 r）。
+        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.grants.revoke(grant_id);
         if let Err(t) = r {
             return Err(FsError::Io(t.0));

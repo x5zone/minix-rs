@@ -449,6 +449,8 @@ where
         ) {
             // C 的失败清扫再跑一次 clearproc（exec_elf.c:279-281/293-295），
             // 防止半装镜像滞留。
+            // [SD19-gate] 尽力而为 VM 清理（exec 失败回滚收尾）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = vm_procctl_clear(ipc, target_e);
             bail!(e);
         }
@@ -462,6 +464,8 @@ where
     let stack_size_paged = roundup(exec::DEFAULT_STACK_LIMIT, PAGE_SIZE);
     let stacklow = stack_high_paged - stack_size_paged;
     if let Err(e) = vm_mmap(ipc, target_e, stacklow, stack_size_paged, 0, PROT_RWX) {
+        // [SD19-gate] 尽力而为 VM 清理（exec 失败回滚收尾）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = vm_procctl_clear(ipc, target_e);
         bail!(e);
     }
@@ -525,6 +529,8 @@ where
 /// 慢路径的 REQ_PUTNODE 进 `pending_puts` 统一投）。
 fn release_vnode(st: &mut crate::main_loop::VfsState, id: VnodeId) {
     let mut sink = crate::main_loop::put_node_sink(&mut st.pending_puts);
+    // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = st.vnode_table.put(id, &mut sink);
 }
 
@@ -696,6 +702,8 @@ where
                     crate::request::encode_lookup(grant, n + 1, dir_ino, root_ino, lk.flags.bits());
                 fs_trans_stamp(&mut msg);
                 let r = ipc.sendrec(fs_e, &mut msg);
+                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = st.grants.revoke(grant);
                 if let Err(t) = r {
                     last_errno.set(neg(t.0));
@@ -776,6 +784,8 @@ where
         let mut msg = crate::request::encode_stat(ino, grant);
         fs_trans_stamp(&mut msg);
         let r = ipc.sendrec(fs_e, &mut msg);
+        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+        #[allow(clippy::let_underscore_must_use)]
         let _ = st.grants.revoke(grant);
         match r {
             Err(t) => bail_open!(neg(t.0)),
@@ -866,6 +876,8 @@ where
     let mut msg = crate::request::encode_read(ino, grant, off as i64, seg_bytes);
     fs_trans_stamp(&mut msg);
     let r = ipc.sendrec(fs_e, &mut msg);
+    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+    #[allow(clippy::let_underscore_must_use)]
     let _ = st.grants.revoke(grant);
     match r {
         Err(t) => Err(neg(t.0)),
@@ -954,6 +966,8 @@ where
         let mut msg = crate::request::encode_read(ino, grant, p_offset as i64, p_filesz as usize);
         fs_trans_stamp(&mut msg);
         let r = ipc.sendrec(fs_e, &mut msg);
+        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+        #[allow(clippy::let_underscore_must_use)]
         let _ = grants.revoke(grant);
         match r {
             Err(t) => return Err(neg(t.0)),

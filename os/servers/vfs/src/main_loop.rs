@@ -579,6 +579,8 @@ impl VfsState {
         // main.c:505 — mount_pfs()：失败容忍（C printf 后继续）。
         // C: printf("VFS: unable to mount PFS (%d)\n", r)——诊断输出，
         // 无行为权重；no_std 载体无 stdout 承诺，这里静默同权。
+        // [SD19-gate] 尽力而为挂载 PFS 辅助服务（失败不阻塞主启动）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.mount_pfs(kernel, transport);
 
         // main.c:508-518 — mount_fs(DEV_IMGRD, "bootramdisk", "/", MFS_PROC_NR,
@@ -1209,6 +1211,8 @@ impl VfsState {
                 // `bdev_reply`/`cdev_reply`/`sdev_reply`，三者的公共前半是
                 // "找等这个驱动的 worker 槽 → 落槽 → 唤醒"。找不到就软失败
                 // （C 里是 printf + return，主循环继续）。
+                // [SD19-gate] 尽力而为回复帧处理（失败仅影响内部状态记录，不改变已回复调用方的事实）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.handle_drv_reply(msg);
             }
             Route::Notify { source, .. } => {
@@ -1221,6 +1225,8 @@ impl VfsState {
             Route::FsReply { .. } => {
                 // C main.c:80-89 — do_reply 无应答对象；软失败（typed
                 // `FsReplyError`）即 C 的 printf+return，主循环继续。
+                // [SD19-gate] 尽力而为回复帧处理（失败仅影响内部状态记录，不改变已回复调用方的事实）
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.handle_fs_reply(msg, codec);
             }
             _ => {}
@@ -1749,6 +1755,8 @@ impl VfsState {
             fp.filps[fd as usize] = None;
             fp.cloexec_set.set(fd as usize, false);
         }
+        // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.put_vnode_deferred(crate::vnode::VnodeId(vnode));
     }
 
@@ -2062,6 +2070,8 @@ impl VfsState {
         }
         // 换：旧目录 put（快速路径）、新目录已经 dup 过（`intern_vnode`）。
         if let Some(old_id) = old {
+            // [SD19-gate] 尽力而为 vnode 放回/引用计数收尾（C put_vnode void 不回错）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.put_vnode_deferred(crate::vnode::VnodeId(old_id));
         }
         if let Some(fp) = self.fproc_table.get_mut(slot) {
@@ -2386,6 +2396,8 @@ impl VfsState {
         match self.send_drv_for_slot(idx, fp_slot, drv_e, &req) {
             Ok(()) => Ok(()),
             Err(e) => {
+                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.revoke_grant(grant);
                 Err(e)
             }
@@ -2546,6 +2558,8 @@ impl VfsState {
             if ndomains > 8 {
                 // `NR_DOMAIN`（config.h:61 = 8）。
                 if major != minix_types::NO_DEV as u32 {
+                    // [SD19-gate] device_map 登记尽力而为（失败由后续 open 路径再暴露）
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = crate::device_map::map_driver(&mut self.dmap_table, None, major, None);
                 }
                 return minix_types::EINVAL;
@@ -2565,6 +2579,8 @@ impl VfsState {
                 Ok(p) => p,
                 Err(e) => {
                     if major != minix_types::NO_DEV as u32 {
+                        // [SD19-gate] 尽力而为收尾；丢弃 Result 不改变已成立主结果（C 同位 void/忽略）
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ =
                             crate::device_map::map_driver(&mut self.dmap_table, None, major, None);
                     }
@@ -2738,6 +2754,8 @@ impl VfsState {
             ) {
                 Ok(g) => g,
                 Err(_) => {
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(g_old);
                     return Err(minix_types::EIO);
                 }
@@ -2932,6 +2950,8 @@ impl VfsState {
             Ok(p) => p,
             Err(e) => {
                 for g in grants.iter().flatten() {
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(*g);
                 }
                 return Err(e);
@@ -2941,6 +2961,8 @@ impl VfsState {
             Ok(p) => p,
             Err(e) => {
                 for g in grants.iter().flatten() {
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(*g);
                 }
                 return Err(e);
@@ -2975,6 +2997,8 @@ impl VfsState {
             .is_err()
         {
             for g in grants.iter().flatten() {
+                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.revoke_grant(*g);
             }
             return Err(minix_types::EIO);
@@ -3048,6 +3072,8 @@ impl VfsState {
         }
         // 撤销留下的 grant（C 的 `sdev_finish` 之前先 revoke 那三张）。
         for g in block.grants.iter().flatten() {
+            // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.revoke_grant(*g);
         }
         let target = self
@@ -3626,6 +3652,8 @@ impl VfsState {
                 .map(|se| se.expiry)
                 .min()
                 .unwrap_or(ticks);
+            // [SD19-gate] 闹钟设置尽力而为（C 同位忽略返回）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::syscall::sys_setalarm(
                 &minix_sys::syscall::DirectKernelCallTransport,
                 next,
@@ -4054,6 +4082,8 @@ impl VfsState {
             .map(|se| se.expiry)
             .min();
         if let Some(ticks) = next {
+            // [SD19-gate] 闹钟设置尽力而为（C 同位忽略返回）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = minix_sys::syscall::sys_setalarm(
                 &minix_sys::syscall::DirectKernelCallTransport,
                 ticks,
@@ -4715,6 +4745,8 @@ impl VfsState {
                     wp.sendrec = None;
                     wp.task = None;
                 }
+                // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.revoke_grant(p.grant);
                 self.worker_pool.release(p.worker);
                 if self.current_worker == Some(p.worker) {
@@ -4747,6 +4779,8 @@ impl VfsState {
             if self.vmnt_table.find_by_fs(p.fs_e).is_none() {
                 continue;
             }
+            // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+            #[allow(clippy::let_underscore_must_use)]
             let _ = transport.sendrec(
                 p.fs_e,
                 &mut crate::request::encode_putnode(p.ino, p.count as i32),
@@ -4801,6 +4835,8 @@ impl VfsState {
             let mut reply_payload: Option<Message> = None;
             match cont {
                 crate::worker::WorkerCont::Fstat { grant } => {
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                 }
                 crate::worker::WorkerCont::OpenTrunc { node, oflags } => {
@@ -4901,6 +4937,8 @@ impl VfsState {
                     // 回复号必须是 `SDEV_REPLY` → 状态取载荷首字；`get` 方向
                     // 那个状态就是**新长度**，塞进回复载荷
                     // （`m_vfs_lc_socklen { len }`，C `do_getsockopt:696-697`）。
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status != minix_sockdriver::sdev::SdevReply::Reply as i32 {
                         status = minix_types::EIO;
@@ -5104,6 +5142,8 @@ impl VfsState {
                     // C `bdev_ioctl` 的收尾：撤 grant → 清 `filp_ioctl_fp` →
                     // 状态取 `mess_lblockdriver_lbdev_reply.status`（**首字**，
                     // 与字符设备同族、与套接字不同族）。
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp)) {
                         f.ioctl_holder = None;
@@ -5125,6 +5165,8 @@ impl VfsState {
                     // 被当错误码回给用户）。负值折正回用户，`EINTR` 折回
                     // `EAGAIN`（cdev.c:471-473 的换码对）；非负按值回
                     // （ioctl 的成功态即 0，`Ok(0)`）。
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     // SAFETY: `mess_lchardriver_vfs_reply { int status;
                     // uint32_t id; }`（ipc.h:943-948）——状态在首字。
@@ -5150,6 +5192,8 @@ impl VfsState {
                     // 回用户）；失败是负 errno，`EINTR` 折回 `EAGAIN`
                     // （cdev.c:471-473 与 `cdev_cancel` 的转换配对）。读/写的
                     // 进程级挂起在此收尾：清 `BlockedOn::Cdev`。
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     // SAFETY: `mess_lchardriver_vfs_reply { int status;
                     // uint32_t id; }`（ipc.h:943-948）——状态在首字。
@@ -5341,6 +5385,8 @@ impl VfsState {
                                     && let Some(fd0) = crate::filedes::Fd::new(fd as usize)
                                     && let Some(fp) = self.fproc_table.get_mut(slot)
                                 {
+                                    // [SD19-gate] 尽力而为关 fd 收尾（C vfs 清理路径 close 失败不回错）
+                                    #[allow(clippy::let_underscore_must_use)]
                                     let _ = crate::filedes::close_fd(fp, fd0, &mut self.filp_table);
                                 }
                                 if let Some(wp) = self.worker_pool.get_mut(idx) {
@@ -5511,6 +5557,8 @@ impl VfsState {
                     // C `update_statvfs` + `fill_statvfs` 的收尾：撤销 grant →
                     // 把 FS 那 17 个字段存进挂载行缓存 → 补本地字段 → 整块拷给
                     // 用户（状态照 C：`update_statvfs` 失败就 EIO，否则看拷贝）。
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
                         use minix_types::statvfs_off as off;
@@ -5593,6 +5641,8 @@ impl VfsState {
                     // C `req_rdlink_actual`（request.c:743-747）：撤销 grant，
                     // 然后**从载荷取字节数**（`mess_fs_vfs_rdlink.nbytes`），
                     // `m_type` 只是 OK——用户拿到的长度不是状态字。
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
                         // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
@@ -5613,6 +5663,8 @@ impl VfsState {
                     // （read.c:311-313 的 `if (r > 0) rfilp->filp_pos =
                     // new_pos;`）——空目录/缓冲满都是 `nbytes == 0`，位置
                     // 必须留在原处，否则下一趟会跳过条目。
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
                         // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
@@ -5656,6 +5708,8 @@ impl VfsState {
                     else {
                         continue;
                     };
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(pending.grant);
                     // `PathFollow` 非 `Copy`（`Mkdir` 带组件名）——克隆一份
                     // 给相位 2，`pending.walk` 仍留在原地供续走。
@@ -6207,6 +6261,8 @@ impl VfsState {
                                     }
                                 };
                                 let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
+                                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                    #[allow(clippy::let_underscore_must_use)]
                                     let _ = self.revoke_grant(grant);
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                     continue;
@@ -6320,13 +6376,19 @@ impl VfsState {
                                 ) {
                                     Ok(g) => g,
                                     Err(_) => {
+                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant_path);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                         continue;
                                     }
                                 };
                                 let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
+                                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                    #[allow(clippy::let_underscore_must_use)]
                                     let _ = self.revoke_grant(grant_path);
+                                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                    #[allow(clippy::let_underscore_must_use)]
                                     let _ = self.revoke_grant(grant_target);
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                     continue;
@@ -6450,6 +6512,8 @@ impl VfsState {
                                     }
                                 };
                                 let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
+                                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                    #[allow(clippy::let_underscore_must_use)]
                                     let _ = self.revoke_grant(grant);
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                     continue;
@@ -6734,6 +6798,8 @@ impl VfsState {
                                 let vmnt = match self.vmnt_table.find_by_fs(node.fs_e) {
                                     Some(v) => v.0,
                                     None => {
+                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                         continue;
@@ -6743,6 +6809,8 @@ impl VfsState {
                                 {
                                     Some(fp) => (fp.eff_uid, fp.eff_gid),
                                     None => {
+                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
                                         continue;
@@ -6848,6 +6916,8 @@ impl VfsState {
                                 let vmnt = match self.vmnt_table.find_by_fs(node.fs_e) {
                                     Some(v) => v.0,
                                     None => {
+                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                         continue;
@@ -6887,6 +6957,8 @@ impl VfsState {
                                 let vmnt = match self.vmnt_table.find_by_fs(node.fs_e) {
                                     Some(v) => v.0,
                                     None => {
+                                        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                                        #[allow(clippy::let_underscore_must_use)]
                                         let _ = self.revoke_grant(grant);
                                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                         continue;
@@ -7031,6 +7103,8 @@ impl VfsState {
                     orig_pos,
                     write,
                 } => {
+                    // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
                         // C `req_readwrite_actual` 的成功半：从**回复**取
@@ -7589,6 +7663,8 @@ impl minix_sef::SefIpc for VfsIpc {
                 line[13] = b' ';
                 line[14] = b'\n';
                 if let Ok(cs) = core::str::from_utf8(&line) {
+                    // [SD19-gate] 诊断通道写：满则截断，从不当致命
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = minix_sys::syscall::sys_diagctl_write(
                         &minix_sys::syscall::DirectKernelCallTransport,
                         cs,
@@ -7641,6 +7717,8 @@ fn send_reply(target: Endpoint, reply: Message) {
     }
     // Non-blocking send (C `ipc_sendnb`): the caller is waiting in
     // sendrec and will not refuse the delivery.
+    // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::ipc::DirectTrapTransport.sendnb(target, &reply);
 }
 
@@ -7651,6 +7729,8 @@ fn send_reply(target: Endpoint, reply: Message) {
 /// RS 的 reply 无人认领被野消费→回声投回 RS→step3 panic。
 fn send_birth_reply(mut reply: Message) {
     use minix_sys::ipc::IpcTransport;
+    // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = minix_sys::ipc::DirectTrapTransport.sendrec(Endpoint::RS, &mut reply);
 }
 
@@ -7781,6 +7861,8 @@ pub fn run() -> ! {
     // 启动段(main.c:441):向 DS 订阅驱动上线事件(失败远端忽略)。
     // C 进程启动时的 grant 表注册（`sys_setgrant`，safecopies.c 的
     // `grants` 全局在这里告诉内核表位置）；失败无恢复面，仅记录。
+    // [SD19-gate] DS 订阅/登记尽力而为（失败由后续查询路径再暴露）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = state
         .grants
         .register(&minix_sys::syscall::DirectKernelCallTransport);
@@ -7794,6 +7876,8 @@ pub fn run() -> ! {
     // 注册）——NK4-C 1.24 修复：DsClient 不再自带私有表，否则其
     // `SYS_SETGRANT` 会覆盖内核 `s_grant_table`，令后续 lookup 的 safecopy
     // 读到错表（fl=0→EPERM→copy_from→wire EIO）。
+    // [SD19-gate] DS 订阅/登记尽力而为（失败由后续查询路径再暴露）
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ds.subscribe(&mut state.grants, "drv\\.[bc]..\\..*", {
         (minix_types::DsFlags::INITIAL | minix_types::DsFlags::OVERWRITE).bits() as i32
     });
@@ -7976,6 +8060,8 @@ pub(crate) fn warm_grants(state: &mut VfsState) {
         }
     }
     for g in ids {
+        // [SD19-gate] 尽力而为撤销授权：主操作已成立或已入错误路径，撤销失败不改变其结果
+        #[allow(clippy::let_underscore_must_use)]
         let _ = state.grants.revoke(g);
     }
 }
@@ -11395,6 +11481,8 @@ mod tests {
         let mut state = VfsState::new();
         seed_waiting(&mut state, 2, Endpoint::MFS); // 未播种 vmnt0
         let reply = reply_msg(0x503, 2, Endpoint::MFS);
+        // [SD19-gate] 尽力而为回复帧处理（失败仅影响内部状态记录，不改变已回复调用方的事实）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = state.handle_fs_reply(&reply, &VfsTransIdCodec);
     }
 
@@ -11558,6 +11646,8 @@ mod tests {
             },
         };
         let req = Message::default();
+        // [SD19-gate] 尽力而为 IPC 收尾（发后即忘/超时路径，失败不改变已成立主结果）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 2, &req);
     }
 

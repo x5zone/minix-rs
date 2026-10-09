@@ -22,6 +22,8 @@
 //! - `ipc`: IPC message handling.
 
 #![cfg_attr(not(test), no_std)]
+// [SD-19] 静默吞错家族编译门：无理由的新 let _ 会在每次 clippy 多报一条；有意丢弃逐站 [SD19-gate] 理由 + #[allow]。
+#![warn(clippy::let_underscore_must_use)]
 
 // alloc 宏（vec!/format!）crate 级引入（init 双形态先例）。
 #[macro_use]
