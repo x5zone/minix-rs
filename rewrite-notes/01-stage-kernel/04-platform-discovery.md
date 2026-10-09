@@ -369,7 +369,7 @@ static int acpi_rsdp_test(void * buff)
 
 第一道闸的校验和覆盖 **20 字节**，而 ACPI 2.0 起的 RSDP 至少 36 字节（多出 `length`、`xsdt_addr`、`extended_checksum`、保留位）。也就是说 RSDP 扩展部分的校验和（偏移 32 的 `extended_checksum`）在 C 里从不校验。第二道闸的签名比对是 8 字节含尾随空格。
 
-两道闸各自挡住什么，可以从缺了它们会怎样看出来。若去掉签名比对只留校验和：一个校验和恰好为 0 的 16 字节窗口就会被当成 RSDP，`rsdt_addr`（偏移 16 的 4 字节）取到任意值。`acpi_init` 下一步就用它调 `acpi_read_sdt_at`（§2.3），那里先读表头再比签名，`"RSDT"` 不匹配时返回 -1，`sdt_count` 由 `(s - sizeof(struct acpi_sdt_header)) / sizeof(u32_t)` 算出负值，循环 `for (i = 0; i < sdt_count; i++)` 一次都不执行——表清单为空，后续 `acpi_get_table_base("APIC")` 恒返回 NULL，`acpi_get_ioapic_next` 直接返回 NULL，`detect_ioapics` 得 0，整条 APIC 路径静默退化到 8259。签名与校验和是这条链唯一的两道闸。
+两道闸各自挡住什么，可以从缺了它们会怎样看出来。若去掉签名比对只留校验和：扫描窗口里任意一个"从偏移 0 起的 20 个字节之和恰好为 0"的 16 字节对齐位置都会被当成 RSDP（扫描步长 16 字节、校验和覆盖 20 字节，两个数不是同一个量），`rsdt_addr`（偏移 16 的 4 字节）取到任意值。`acpi_init` 下一步就用它调 `acpi_read_sdt_at`（§2.3），那里先读表头再比签名，`"RSDT"` 不匹配时返回 -1，`sdt_count` 由 `(s - sizeof(struct acpi_sdt_header)) / sizeof(u32_t)` 算出负值，循环 `for (i = 0; i < sdt_count; i++)` 一次都不执行——表清单为空，后续 `acpi_get_table_base("APIC")` 恒返回 NULL，`acpi_get_ioapic_next` 直接返回 NULL，`detect_ioapics` 得 0，整条 APIC 路径静默退化到 8259。签名与校验和是这条链唯一的两道闸。
 
 ### 2.3 acpi_read_sdt_at 与 sdt_count：一张 32 位表索引
 
@@ -1075,7 +1075,7 @@ $ rg -o 'Self::(DeviceTree|Acpi|QemuVirt)' os/libs/minix-platform/src/global.rs 
 
 口径 = **条**（每个 `match` 臂算一条），不含构造点。这 25 条分布在 `Debug` 实现（3 条）与八个转发方法（22 条）里。这里要分清两件事：**消费方只认接口**成立；**维护方只有一处分支**不成立——`PlatformDescEnum` 自己就是那张 25 条的分派表。
 
-改成 `Box<dyn PlatformDesc>` 会坏在哪：`os/libs/minix-platform/src/lib.rs` 是 `#![no_std]`，全局是 `static PLATFORM: Frozen<PlatformContext>`，T2.5 阶段没有分配器，`Box::new` 无处可取内存。`os/libs/minix-platform/src/global.rs` 的 enum 文档把这条理由写在"为什么不用 `Box<dyn PlatformDesc>`"一段里（`no_std`——避免 T2.5 阶段依赖分配器；enum 分派零 vtable 间接）。这不是"多花一点开销"的取舍，而是当前阶段不可用。
+改成 `Box<dyn PlatformDesc>` 会坏在哪：`os/libs/minix-platform/src/lib.rs` 是 `#![no_std]`，全局是 `static PLATFORM: Frozen<PlatformContext>`，引导早期还没有分配器（堆尚未建立），`Box::new` 无处可取内存。`os/libs/minix-platform/src/global.rs` 的 enum 文档把这条理由写在"为什么不用 `Box<dyn PlatformDesc>`"一段里（`no_std`——避免引导期依赖分配器；enum 分派零 vtable 间接）。这不是"多花一点开销"的取舍，而是当前阶段不可用。
 
 "零 vtable 间接"里的 `vtable` 是一张按 trait 方法声明次序排列的函数指针表：`&dyn PlatformDesc` 这类 trait object 由数据指针与 vtable 指针两个机器字组成，调用 `pd.timer()` 时先取表里第 n 项、再间接跳转。enum 分派没有这张表——`PlatformDescEnum` 的变体在编译期已知，`match self { ... }` 被编译成对判别值的直接分支，分支里调用的是具体类型的静态函数地址。两条路径的代价差别因此落在每次调用上：一条是判别加直接调用，另一条要多一次取表项与间接跳转。
 
@@ -1295,6 +1295,8 @@ pub const RSDP: PlatformDescKind = PlatformDescKind::new(2);
 //! dangling reference. An opaque `u32` tag + physical address is pure data
 //! — safe to pass across binaries.
 ```
+
+引文里的 `TODO-02-3` 是仓库内部的编号，按原文引用；它陈述的事实是"内核尚未成为独立 ELF 时，boot-shim 的内存回收会让函数指针悬挂"。
 
 多来源的规则：`platform_sources` 是有序切片，内核按顺序试、取第一个解析成功的。切片元素是 `PlatformDescSource`（`os/libs/minix-boot/src/platform.rs:struct PlatformDescSource`）：一个 kind 标签加一个物理地址；地址字段的类型 `PhysBytes` 是 `minix-types` 里的一个 `#[repr(transparent)]` newtype（`os/libs/minix-types/src/types/address.rs:struct PhysBytes`，内层是 `u64`）——它比裸 `u64` 多的是类型标签：物理地址与虚拟地址（同文件的 `VirBytes`）在函数签名里不再是同一个可互换的类型，参数位置上混用会在编译期报错。
 
