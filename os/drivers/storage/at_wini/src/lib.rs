@@ -15,6 +15,7 @@
 
 extern crate alloc;
 
+pub mod bus;
 pub mod controller;
 pub mod dma;
 pub mod pio;
