@@ -82,6 +82,8 @@
 
 **净效果**：目录内文件从 76 降到 28（保留 19 + 新增 9），知识类 3 篇移出；`rewrite-notes/concepts/` 从 6 增到 9。
 
+**追加**：`PENDING-DECISIONS-UNBLOCK-20261009.md`——需要人拍板的新问题的新清单（`U-1`—`U-4` 四条待裁 + 三条条件触发附录），自包含、供与外部评审者多轮讨论后填裁决栏；目录文件数 28→29。已裁决不回填冻结的 `PENDING-DECISIONS-3ARCH-PARITY.md`。
+
 ### 1.8 回捞方式
 
 删除的原件按文件名在 Git 历史取回：`git log --diff-filter=D --summary -- rewrite-notes/coordination/<文件名>` 找到删除提交，再 `git show <删除提交>^:rewrite-notes/coordination/<文件名>`。本轮删除发生在清理提交中，其前一笔父提交即含全文。
