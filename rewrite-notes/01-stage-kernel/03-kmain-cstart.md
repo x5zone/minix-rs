@@ -44,7 +44,7 @@ CPU 在异常/特权级切换时需要预先知道的三件事，以及它们的
 
 读者可以从这张表读出三张表的一个差别：②是逐条目不同的（x86 上 256 个门，每类事件一条），①和③在全 CPU 上各只有一套（DPL 存在少数几个描述符里、`sp0` 只有一个字段）。后文两节的装填方式不同正是这个差别带来的——IDT 要按向量逐条建，GDT 与 TSS 只需建少数几条描述符与一个结构体。
 
-③ 还带一个"内核态里又出事用哪根栈"的子问题，三架构的答法同样不同：x86 交给 IST（NMI 与 #DF 各有一条专用栈，§2.4 与 §4.4 展开）；aarch64 不换栈，继续用 `SP_EL1`；riscv64 也不换栈，用当前 `sp`。陷阱入口如何判断"这次进来的是用户还是内核"（riscv64 靠 `sstatus.SPP` 决定要不要交换 `sscratch`）属异常/中断与 trap 入口的主题（`rewrite-notes/01-stage-kernel/draft/14-exception-interrupt.md`）。
+③ 还带一个"内核态里又出事用哪根栈"的子问题，三架构的答法同样不同：x86 交给 IST（NMI 与 #DF 各有一条专用栈，§2.4 与 §4.4 展开）；aarch64 不换栈，继续用 `SP_EL1`；riscv64 也不换栈，用当前 `sp`。陷阱入口如何判断"这次进来的是用户还是内核"（riscv64 靠 `sstatus.SPP` 决定要不要交换 `sscratch`）属异常/中断与 trap 入口的主题（`14-exception-interrupt`（异常与中断篇，尚未重生成））。
 
 x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留了一个槽，装载路径上也有一条 `lldt`（`minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors`）。它不回答上面三问中的任何一问，本章 §2.3 按源码如实处理。
 
@@ -74,9 +74,9 @@ x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留�
 | 平台的参数发现（ACPI/设备树分支、平台描述符） | `04-platform-discovery.md`（本篇不引节号） |
 | 时钟与中断控制器的初始化、中断使能时序 | `05-clock-interrupt-init.md`（本篇不引节号） |
 | 页表的多级结构、页表接口与 Direct Map 的完整语义 | `rewrite-notes/02-stage-vm/07-pagetable-struct.md`；01 篇 §2.6 已用到的部分不重复 |
-| 异常处理体、trap frame 布局、用户态返回路径与"用户→内核→用户"的完整往返（含 riscv64 在陷阱入口按 `sstatus.SPP` 决定是否交换 `sscratch`） | 异常/中断与 trap 入口主题（`rewrite-notes/01-stage-kernel/draft/14-exception-interrupt.md`）与启动收尾/返回主题（`rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md`）；本篇只到"门里有真入口"为止 |
-| 系统调用的分派与各调用语义 | syscall 分派主题（`rewrite-notes/01-stage-kernel/draft/13-syscall-dispatch.md`），本篇只到"入口地址与段选择子写进 MSR"为止 |
-| 进程表、boot 进程装载、特权结构 | 进程初始化与启动收尾主题（`rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md`；`kmain` 的后续 Phase） |
+| 异常处理体、trap frame 布局、用户态返回路径与"用户→内核→用户"的完整往返（含 riscv64 在陷阱入口按 `sstatus.SPP` 决定是否交换 `sscratch`） | 异常/中断与 trap 入口主题（`14-exception-interrupt`（异常与中断篇，尚未重生成））与启动收尾/返回主题（`10-switch-to-user`（切用户篇，尚未重生成））；本篇只到"门里有真入口"为止 |
+| 系统调用的分派与各调用语义 | syscall 分派主题（`13-syscall-dispatch`（系统调用分派篇，尚未重生成）），本篇只到"入口地址与段选择子写进 MSR"为止 |
+| 进程表、boot 进程装载、特权结构 | 进程初始化与启动收尾主题（`06-proc-init-boot-proc`（进程表与 boot 进程篇，尚未重生成）；`kmain` 的后续 Phase） |
 | SDM/APM 的描述符逐位格式全表、ARM 与 RISC-V 的特权规范 | 外部资料；本篇只解释代码实际使用的那几位 |
 
 可以安全跳过的一条：描述符的位级格式（`segdesc_s` 的 `base_low`/`base_middle`/`base_high` 与 granularity 字节）不必背下来。本篇只解释三处用到它的代码（S 位的含义、DPL 占哪两位、限长的"0 表示 4G"约定），其余位在代码里各有宏名，读到再看。
@@ -1285,8 +1285,8 @@ gdb <被调试的工件>
 - `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` — 启动信息、内存记账、页表建立与开启、`KernelInfo` 字段来源；`01-boot-shim-bootstrap.md` §5.1 的装载器测试、§6.4 的三层调试法
 - `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` — 链接布局、按装载地址摆放、成对跳转；§4.4 的状态表是本篇入口
 - `04-platform-discovery.md`、`05-clock-interrupt-init.md` — 平台参数发现、时钟与中断控制器初始化（`cstart` 后半段与 `init_clock_and_interrupts`）
-- `rewrite-notes/01-stage-kernel/draft/06-proc-init-boot-proc.md` — 进程表与 boot 进程装载（`kmain` Phase C）
+- `06-proc-init-boot-proc`（进程表与 boot 进程篇，尚未重生成） — 进程表与 boot 进程装载（`kmain` Phase C）
 - `rewrite-notes/02-stage-vm/07-pagetable-struct.md` — 页表多级结构与页表接口
-- 后续主题级指向：异常/中断与 trap 入口（`rewrite-notes/01-stage-kernel/draft/14-exception-interrupt.md`）、syscall 分派（`rewrite-notes/01-stage-kernel/draft/13-syscall-dispatch.md`）、SMP 与 BKL（`rewrite-notes/01-stage-kernel/draft/16-smp.md`）、启动收尾与 `switch_to_user`（`rewrite-notes/01-stage-kernel/draft/10-switch-to-user.md`）
+- 后续主题级指向：异常/中断与 trap 入口（`14-exception-interrupt`（异常与中断篇，尚未重生成））、syscall 分派（`13-syscall-dispatch`（系统调用分派篇，尚未重生成））、SMP 与 BKL（`16-smp`（SMP 篇，尚未重生成））、启动收尾与 `switch_to_user`（`10-switch-to-user`（切用户篇，尚未重生成））
 - `minix3/minix/kernel/main.c`、`minix3/minix/kernel/arch/i386/protect.c`、`minix3/minix/kernel/arch/i386/pre_init.c`、`minix3/minix/kernel/arch/i386/pg_utils.c`、`minix3/minix/kernel/arch/i386/mpx.S`、`minix3/minix/kernel/arch/i386/head.S`、`minix3/minix/kernel/arch/earm/protect.c`
 - `os/kernel/src/lib.rs`、`os/arch/src/arch/{protection,trap_entry}.rs`、`os/arch/src/{x86_64,arm64,riscv64}/{protection,trap_entry}.rs`、`os/arch/src/x86_64/trap_stub.rs`、`os/qemu-tests/`
