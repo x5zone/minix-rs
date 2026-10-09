@@ -76,6 +76,8 @@ pub trait KernelGateway {
     /// `sys_sigreturn.c`;S3 批次 B 接线)。默认 pre-wire 诚实失败,
     /// 生产 `TrapKernelGateway` 委托 minix-sys `sys_sigreturn`。
     fn sys_sigreturn(&mut self, ep: Endpoint, ctx: VirBytes) -> Result<(), i32> {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = (ep, ctx);
         Err(-minix_types::ENOSYS)
     }
@@ -84,6 +86,8 @@ pub trait KernelGateway {
     /// (C printf 的 Rust 对应物)。默认 pre-wire 诚实失败;生产
     /// TrapKernelGateway 委托 minix-sys sys_diagctl_write。
     fn diag_write(&mut self, text: &str) -> Result<(), i32> {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = text;
         Err(-minix_types::ENOSYS)
     }
@@ -325,6 +329,8 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
             proc.endpoint().get(),
             name_str
         );
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = kern.sys_kill(proc.endpoint(), crate::signal::SIGKILL);
         return ReplyIntent::NoReply;
     }
@@ -443,6 +449,8 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
             "PM: INIT died with exit status {}; showing stacktrace",
             status
         );
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = kern.sys_diagctl_stacktrace(proc_ep);
         table.procs[proc_nr].state.lifecycle = Lifecycle::Exiting { exit_code: status, sig_status };
         return;
@@ -523,6 +531,8 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
         // 的负 pid 组扫描（signal.c:601-604 的 mp_procgrp 匹配），caller
         // 是死亡的首领本人（权限判定与 C 一致）；首领自身已 EXITING，
         // sig_proc 的退出守卫跳过投递。返回值 C 不检查（412）。
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::check_sig(
             table,
             slot,
@@ -624,6 +634,8 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
                 ..Default::default()
             };
             reply_msg.m_u.m_pm_lc_ptrace.data = 0;
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = transport.send(tracer_ep, &reply_msg);
         }
     }
@@ -711,7 +723,11 @@ pub(crate) fn check_parent<T: crate::ipc::IpcTransport + ?Sized>(
         // `sig_proc(p_mp, SIGCHLD, TRUE /*trace*/, FALSE /*ksig*/)`——
         // 默认处置下 SIGCHLD ∈ ign_sset 被忽略，装了 handler 的父进程
         // 收到通知（sigframe 交付链依赖 V2-P2-8，随批次 B 落地）。
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = child_slot;
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(
             table,
             parent_slot,
@@ -744,6 +760,8 @@ pub fn tracer_died<T: crate::ipc::IpcTransport + ?Sized>(
     // in"），只能杀掉避免 trainwreck；可能引发级联退出（C 775-777）。
     // C: `sig_proc(child, SIGKILL, TRUE /*trace*/, FALSE /*ksig*/)`。
     if !table.procs[child_slot.get()].state.lifecycle.is_exiting() {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(
             table,
             child_slot,
@@ -844,6 +862,8 @@ pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
         if let Err(r) = kern.copy_to_user(&rusage, parent_ep, addr.0) {
             // datacopy 失败：reply(parent, errno) + FALSE（forkexit.c:699-701），
             // 子进程保持 ZOMBIE，父进程可重试 wait。
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = transport.send(
                 parent_ep,
                 &Message {
@@ -866,6 +886,8 @@ pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
     // （WCOREFLAG 置位时 sigstatus 为负）。掩码会让原始 status 值与 C 不同——
     // libc 宏（WIFSIGNALED/WEXITSTATUS）会掩掉差异，但 wire 上的整数是外部可观察的。
     reply_msg.m_u.m_pm_lc_wait4.status = crate::wait::w_exitcode(ec as i32, ss as i32);
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = transport.send(parent_ep, &reply_msg);
 
     table.procs[parent_slot.get()].state.wait.waiting = false;
@@ -900,6 +922,8 @@ pub(crate) fn tell_tracer<T: crate::ipc::IpcTransport + ?Sized>(
     reply_msg.m_u.m_pm_lc_wait4.status =
         crate::wait::w_exitcode(ec as i32, (ss as i32) & 0o377); // C forkexit.c:749 显式掩码 sigstatus
     let tracer_ep = table.procs[tracer_slot.get()].endpoint();
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = transport.send(tracer_ep, &reply_msg);
 
     table.procs[tracer_slot.get()].state.wait.waiting = false;
@@ -957,6 +981,8 @@ fn disinherit<T: crate::ipc::IpcTransport + ?Sized>(
                 if let Some(crate::mproc::IpcBlockReason::VfsCall { reply_to_new_parent }) =
                     child.state.block.ipc_blocked
                 {
+                    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = reply_to_new_parent;
                 }
                 // For test we set reply_to_new_parent true via VfsCall

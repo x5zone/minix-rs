@@ -433,6 +433,8 @@ mod tests {
         table.procs[5].state.guardianship = crate::mproc::Guardianship::Traced { parent: UserSlot::new(0), tracer: UserSlot::new(1), trace_options: crate::mproc::TraceOptions::empty() };
         table.procs[5].resources.privilege.credentials_mut().user.effective = 2000; // eff != real (1000)
         let info = ExecInfo { allow_setuid: true, new_uid: 0, new_gid: 0, progname: [0;16], stack_high: VirBytes(0x8000), frame_len: 64 };
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = do_newexec(&mut table, Endpoint::VFS, Endpoint::from_generation_slot(1,5), info).unwrap();
         // tracer present => allow_setuid false, so not via first branch, but eff!=real => tainted true
         assert!(table.procs[5].resources.tainted);

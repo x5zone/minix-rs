@@ -54,6 +54,8 @@ impl<'a, T: IpcTransport + ?Sized> PmEventServices<'a, T> {
 
 impl<T: IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for PmEventServices<'_, T> {
     fn sig_proc(&mut self, table: &mut ProcTable, target: UserSlot, signo: i32, ksig: bool) {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(table, target, signo, false, ksig, self.kern, self.transport);
     }
 }

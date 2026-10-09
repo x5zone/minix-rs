@@ -80,6 +80,8 @@ pub fn handle_sigsn_delay(
     deliver: &mut dyn SignalDeliver,
 ) -> bool {
     const SIGSNDELAY: i32 = 70;
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = SIGSNDELAY;
     // In C this is called only when signo==SIGSNDELAY && DELAY_CALL.
     // Here we expose as explicit check: if slot has DELAY_CALL, clear and handle.
@@ -97,10 +99,14 @@ pub fn handle_sigsn_delay(
     let is_vfs_or_event = table.procs[slot].state.block.is_vfs_blocked()
         || table.procs[slot].state.block.is_event_blocked();
     if is_vfs_or_event {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = stop_proc(table, UserSlot::new(slot), MayDelay::MustStop, kstop);
         return true;
     }
     // Else check_pending (366)
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = check_pending(table, UserSlot::new(slot), deliver);
     assert!(!matches!(
         table.procs[slot].state.block.ipc_blocked,
@@ -205,6 +211,8 @@ pub fn unpause(
     }
     if proc.state.wait.waiting || proc.resources.signals.suspended {
         // `WAITING|SIGSUSPENDED` → stop(MustStop) → Ready (745-753)
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = stop_proc(table, target, MayDelay::MustStop, kstop).expect("MustStop should not defer");
         return UnpauseOutcome::Ready;
     }
@@ -296,7 +304,11 @@ pub fn restart_sigs(
             ),
             "restart_sigs: !DELAY_CALL"
         );
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = check_pending(table, target, svc);
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = try_resume_proc(table, target, svc);
         return RestartAction::CheckAndResume;
     }
@@ -380,6 +392,8 @@ mod tests {
         let mut table = ProcTable::new();
         mk_running(&mut table, 5);
         let mut k = BusyStop;
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = stop_proc(&mut table, UserSlot::new(5), MayDelay::MustStop, &mut k);
     }
 
@@ -399,6 +413,8 @@ mod tests {
         let mut table = ProcTable::new();
         mk_running(&mut table, 5);
         let mut k = FailStop;
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = stop_proc(&mut table, UserSlot::new(5), MayDelay::MayDefer, &mut k);
     }
 

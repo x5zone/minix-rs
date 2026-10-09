@@ -470,6 +470,8 @@ impl<T: IpcTransport> PmServer<T> {
                         line[13] = b' ';
                         line[14] = b'\n';
                         if let Ok(cs) = core::str::from_utf8(&line) {
+                            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                            #[allow(clippy::let_underscore_must_use)]
                             let _ = minix_sys::syscall::sys_diagctl_write(
                                 &minix_sys::syscall::DirectKernelCallTransport,
                                 cs,
@@ -698,6 +700,8 @@ impl<T: IpcTransport> PmServer<T> {
         // m_source is set by kernel on receive, not needed for send
         if let Err(e) = self.transport.send(endpoint, &msg) {
             // C: printf("PM can't reply to %d (%s): %d") — 警告不 panic。
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = e;
             #[cfg(test)]
             pm_diag!("PM can't reply to {}: {:?}", endpoint.get(), e);
@@ -891,6 +895,8 @@ impl<T: IpcTransport> PmServer<T> {
                         rv
                     );
                     #[cfg(not(test))]
+                    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = rv;
                 }
             }
@@ -1368,6 +1374,8 @@ mod tests {
         let mut msg = Message { m_type: 2, ..Message::default() }; // PM_FORK
         msg.m_source = Endpoint::from_generation_slot(9, 9); // 未注册槽位
         server.transport.queue_receive(msg, IpcStatus::default());
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.run_once();
     }
 
@@ -1482,6 +1490,8 @@ mod tests {
         // fail-fast（与 VM V10-P0-2 同型）。
         let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
         server.initialized = true;
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.run();
     }
 

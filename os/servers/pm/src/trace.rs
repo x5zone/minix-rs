@@ -133,6 +133,8 @@ struct TraceDeliver<'a, T: crate::ipc::IpcTransport + ?Sized> {
 
 impl<T: crate::ipc::IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for TraceDeliver<'_, T> {
     fn sig_proc(&mut self, table: &mut ProcTable, target: UserSlot, signo: i32, ksig: bool) {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(table, target, signo, false, ksig, self.kern, self.transport);
     }
 }
@@ -238,6 +240,8 @@ pub fn do_trace<T: crate::ipc::IpcTransport + ?Sized>(
             };
             // sig_proc(SIGSTOP, trace=TRUE)（trace.c:90）——经 sig_proc 的
             // TRACE 分支进 trace_stop：内核停住 + tracer 等待时收到 W_STOPCODE。
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = crate::signal::sig_proc(table, child, crate::signal::SIGSTOP, true, false, kern, transport);
             trace_reply_data(table, caller, 0);
             Ok(ReplyIntent::Reply(OK))
@@ -351,15 +355,21 @@ pub fn do_trace<T: crate::ipc::IpcTransport + ?Sized>(
                         if sigtrace >> (i - 1) & 1 != 0 {
                             table.procs[child.get()].resources.signals.trace_mask &= !(1u64 << (i - 1));
                             // C: check_sig(child->mp_pid, i, FALSE)（trace.c:200）。
+                            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                            #[allow(clippy::let_underscore_must_use)]
                             let _ = crate::signal::check_sig(table, caller, child_pid, i as i32, false, kern, transport);
                         }
                     }
                     if req.data > 0 {
+                        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = crate::signal::sig_proc(table, child, req.data as i32, true, false, kern, transport);
                     }
                     table.procs[child.get()].state.trace.stopped = false;
                     {
                         let mut deliver = TraceDeliver { kern, transport };
+                        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = crate::signal_flow::check_pending(table, child, &mut deliver);
                     }
                     passthrough(kern, table, caller, child, req)
@@ -372,6 +382,8 @@ pub fn do_trace<T: crate::ipc::IpcTransport + ?Sized>(
                         return Err(TraceError::Inval);
                     }
                     if req.data > 0 {
+                        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = crate::signal::sig_proc(table, child, req.data as i32, false, false, kern, transport);
                     }
                     // sigtrace 还有位 → 假成功（reply.data=0），不真恢复
@@ -383,6 +395,8 @@ pub fn do_trace<T: crate::ipc::IpcTransport + ?Sized>(
                     table.procs[child.get()].state.trace.stopped = false;
                     {
                         let mut deliver = TraceDeliver { kern, transport };
+                        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = crate::signal_flow::check_pending(table, child, &mut deliver);
                     }
                     passthrough(kern, table, caller, child, req)

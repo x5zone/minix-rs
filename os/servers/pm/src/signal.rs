@@ -108,6 +108,8 @@ pub fn check_sig<T: crate::ipc::IpcTransport + ?Sized>(
     // 回环产生 ksig，PM 不直接投递系统进程（sig_proc 的 PRIV_PROC !ksig
     // 分支是空操作，直接调它 RS 实际收不到通知，V2-P2-4）。C 不检查返回值。
     if pid == -1 && signo == SIGTERM {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = kern.sys_kill(Endpoint::RS, SIGTERM);
     }
 
@@ -154,6 +156,8 @@ pub fn check_sig<T: crate::ipc::IpcTransport + ?Sized>(
         if signo == 0 || proc.state.lifecycle.is_exiting() {
             continue;
         }
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = sig_proc(table, UserSlot::new(idx), signo, true, ksig, kern, transport);
         if pid > 0 {
             break;
@@ -219,6 +223,8 @@ struct SigProcDeliver<'a, T: crate::ipc::IpcTransport + ?Sized> {
 
 impl<T: crate::ipc::IpcTransport + ?Sized> crate::signal_flow::SignalDeliver for SigProcDeliver<'_, T> {
     fn sig_proc(&mut self, table: &mut ProcTable, target: UserSlot, signo: i32, ksig: bool) {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = sig_proc(table, target, signo, false, ksig, self.kern, self.transport);
     }
 }
@@ -288,6 +294,8 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         // DELAY_CALL 不能共存，故此处守卫只剩 STOPPED 一半。
         if !table.procs[target.get()].state.block.stopped {
             let mut bridge = GatewayStopBridge(kern);
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = crate::signal_flow::stop_proc(
                 table,
                 target,
@@ -307,12 +315,16 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
             // 的信号管理器；若 PM 就是管理器，信号会回到 PM 再实际处置。
             // 返回值 C 不检查。V3-P2-2 之前此分支静默丢弃（Fix #33 只修了
             // check_sig 广播对 RS 的调用点，sig_proc 本体仍是 no-op）。
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kern.sys_kill(table.procs[target.get()].endpoint(), signo);
             return Ok(());
         }
         // C signal.c:464-466：栈回溯类信号（lethal 且非 SIGABRT）先请求内核
         // 打印目标栈，再走终止/投递分岔。返回值 C 不检查（诊断通道失败静默）。
         if is_stacktrace(signo) {
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = kern.sys_diagctl_stacktrace(table.procs[target.get()].endpoint());
         }
         if !is_termination(signo) {
@@ -327,6 +339,8 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
             // `os/servers/rs/src/lib.rs:sigs_signal_message`）。当前内核 ksig 只产
             // 终止类信号，此路实际不可达——登记待信号链批次 H
             //（04-stage-pm/todo.md §12.7）。
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = (target, signo);
             return Ok(());
         } else {
@@ -449,6 +463,8 @@ fn unpause<T: crate::ipc::IpcTransport + ?Sized>(
     if proc.state.wait.waiting || proc.resources.signals.suspended {
         // C 745-753：PM 侧睡眠 → stop_proc(FALSE) 已排除 EBUSY → true。
         let mut stop_bridge = GatewayStopBridge(&mut *kern);
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal_flow::stop_proc(
             table,
             target,
@@ -577,6 +593,8 @@ pub fn process_ksig(
         return Err(KillError::InvalidEndpoint);
     }
     // Pretend PM is sender (312)
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = proc.identity.procgrp;
     let pid = proc.identity.id.pid;
     // SIGVTALRM/SIGPROF → 重置虚拟计时器（C: signal.c:326-328 的
@@ -594,6 +612,8 @@ pub fn process_ksig(
     // check_sig 的返回值 C 不检查（signal.c:337 语句调用）——对
     // SIGSNDELAY(70) 这类超出 _NSIG 的内核信号，check_sig 的越界门
     // 返回 EINVAL 属预期；旧代码用 `?` 传播导致 SIGSNDELAY 尾部死路。
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = check_sig(table, UserSlot::new(0), target_pid, signo, true, kern, transport);
     // SIGSNDELAY（C signal.c:344-369）：更早的 stop_proc 因进程在途
     // 发送而 EBUSY，内核在发送完成后投递 SIGSNDELAY——恢复当初搁置
@@ -618,6 +638,8 @@ pub fn process_ksig(
                 || table.procs[slot].state.block.is_event_blocked()
             {
                 let mut stop_bridge = GatewayStopBridge(&mut *kern);
+                //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = crate::signal_flow::stop_proc(
                     table,
                     UserSlot::new(slot),
@@ -628,6 +650,8 @@ pub fn process_ksig(
             }
             // 尽可能多处置常规信号（366）。
             let mut deliver = SigProcDeliver { kern: &mut *kern, transport: &mut *transport };
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = crate::signal_flow::check_pending(table, UserSlot::new(slot), &mut deliver);
         }
     }
@@ -664,6 +688,8 @@ pub fn process_sigmgr_signals(
                 if let Err(r) = kern.end_ksig(target, signo) {
                     panic!("sys_endksig failed: {}", r);
                 }
+                //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = process_ksig(table, target, signo, vctl, kern, transport);
             }
         }
@@ -1363,6 +1389,8 @@ mod tests {
         let mut t = crate::ipc::TestIpcTransport::default();
         let mut kern = StopRecorder { calls: Vec::new(), reply: 16 }; // EBUSY
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = sig_proc(&mut table, UserSlot::new(5), SIGTERM, false, false, &mut kern, &mut t);
         }));
         assert!(res.is_err(), "MustStop + EBUSY must panic");
@@ -1396,6 +1424,8 @@ mod tests {
 
     /// C signal.c:464-477：PRIV_PROC 进程收到内核致命信号（SIGSEGV 属
     /// stacktrace 类）——先向内核请求打印目标栈回溯，再落入终止链。
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     /// 接线回归锚点：早前此支路是 `let _ = target;` 空转（无诊断输出）。
     #[test]
     fn test_sig_proc_ksig_stacktrace_asks_kernel_then_terminates() {

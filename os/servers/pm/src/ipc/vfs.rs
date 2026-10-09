@@ -344,12 +344,16 @@ impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
             ..Default::default()
         };
         let ep = table.procs[slot.get()].endpoint();
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.transport.send(ep, &msg);
     }
 }
 
 impl<T: IpcTransport> crate::exec::TracerSig for ExecServices<'_, T> {
     fn send(&mut self, table: &mut ProcTable, caller: UserSlot, pid: Pid, sig: i32) {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::check_sig(table, caller, pid, sig, false, self.kern, self.transport);
     }
 }
@@ -591,6 +595,8 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
         // 机器直接停机；失败（pre-E1 为 -EIO）PM 继续循环，不伪造停机状态。
         // [E6 切片已落地] minix-sys `sys_abort`（edge_todo.md E6）。
         if let Err(r) = self.kern.sys_abort(self.abort_flag) {
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = r; // C 同型：忽略返回值，主循环继续
         }
     }
@@ -988,6 +994,8 @@ mod tests {
         let msg = reply_msg(VFS_PM_SETUID_REPLY, Endpoint::from_generation_slot(1, 1));
         let result = std::panic::catch_unwind(move || {
             let mut svc = svc;
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = handle_vfs_reply(&mut svc, &msg);
         });
         assert!(result.is_err(), "入口 UNPAUSED 必须 panic");
