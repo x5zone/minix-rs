@@ -405,6 +405,8 @@ impl SprofCtl for SysSprofCtl {
         ctl_ptr: VirBytes,
         mem_ptr: VirBytes,
     ) -> i32 {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = ep;
         match minix_sys::syscall::sys_sprof(
             &minix_sys::syscall::DirectKernelCallTransport,
@@ -468,6 +470,8 @@ pub fn do_sysuname(
     buf.copy_from_slice(&copy_len);
     cpy.copy_to_user(&buf, VirBytes(0))?; // placeholder VirBytes, caller will map
     // In C, sys_datacopy uses caller endpoint; abstract via CopyToUser.
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = caller_ep;
     Ok(to_copy)
 }
@@ -588,10 +592,14 @@ pub fn do_reboot(
     }
     ctl.set_abort(how);
     if (how & RB_POWERDOWN) != 0 {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = ctl.try_power_off();
     }
     ctl.broadcast_kill(table, caller);
     ctl.stop_init(table);
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = ctl.tell_reboot(table);
     Ok(ReplyIntent::ReplyLater) // SUSPEND never reply
 }
@@ -767,6 +775,8 @@ pub fn do_sprofile(
     }
     #[cfg(not(feature = "sprofile"))]
     {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = (action, mem_size, freq, intr_type, ep, ctl_ptr, mem_ptr, ctl);
         Err(MiscError::Nosys)
     }
@@ -1212,9 +1222,17 @@ mod tests {
     // Ensure traits have ≥2 impl for Gate D
     #[test]
     fn test_traits_have_two_impls() {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = TestSysInfo { data: vec![] };
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = TestSysInfoAlt { _a: 0 };
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = TestReboot { abort: 0, killed: false, stopped: false, told: false };
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = AltReboot;
     }
 }

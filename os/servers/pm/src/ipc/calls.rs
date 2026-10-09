@@ -308,6 +308,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     // (VFS|EVENT 挂起,留待 unpause 路径)。
                     if let crate::mproc::MaskOpEffect::Changed { needs_check: true } = effect {
                         let mut svc = PmEventServices::new(transport, kern);
+                        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = crate::signal_flow::check_pending(table, caller, &mut svc);
                     }
                     ReplyIntent::Reply(0)
@@ -326,6 +328,8 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             match ok {
                 Ok(()) => {
                     let mut svc = PmEventServices::new(transport, kern);
+                    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+                    #[allow(clippy::let_underscore_must_use)]
                     let _ = crate::signal_flow::check_pending(table, caller, &mut svc);
                     ReplyIntent::Reply(0)
                 }
@@ -999,6 +1003,8 @@ impl<T: IpcTransport + ?Sized> crate::misc::RebootCtl for SysRebootCtl<'_, T> {
         // C misc.c:221:check_sig(-1, SIGKILL, FALSE)("kill all users
         // except init"),返回值不检查。广播跳过 PRIV_PROC 的语义在
         // check_sig 内(signal.c:607-608 对位)。
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::check_sig(
             table,
             caller,
@@ -1016,6 +1022,8 @@ impl<T: IpcTransport + ?Sized> crate::misc::RebootCtl for SysRebootCtl<'_, T> {
         // (-EIO,exit.rs),此处对失败静默与 C 同型;「init 未被内核冻结」
         // 的窗口差异随 E6 wrapper 自愈(FIXLOG NS10 已登记)。
         if let Ok(slot) = table.pm_isokendpt(Endpoint::INIT) {
+            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.kern.sys_delay_stop(table.procs[slot.get()].endpoint());
         }
     }

@@ -272,6 +272,8 @@ pub fn getset_vtimer(
     // Since trait uses Option<&mut Clock>, we can pass mutable reference
     let mut old_holder: Clock = 0;
     let get_ref = if get { Some(&mut old_holder) } else { None };
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = vctl.vtimer(ep, which, set_for_vtimer, get_ref);
     if get {
         // Simulate oldticks retrieval: for mock, old_holder already filled
@@ -299,6 +301,8 @@ pub fn check_vtimer(table: &mut ProcTable, proc_nr: usize, sig: i32, vctl: &mut 
     let interval = table.procs[proc_nr].resources.intervals[which as usize];
     if interval > 0 {
         let ep = table.procs[proc_nr].endpoint();
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = vctl.vtimer(ep, which, Some(interval), None);
     }
 }
@@ -356,6 +360,8 @@ pub fn cause_sigalrm<T: crate::ipc::IpcTransport + ?Sized>(
     // Pretend from PM (341)——caller 是 slot 0（PM 本身），check_sig 的
     // 权限判定因此与 C 一致。
     let pid = table.procs[slot].pid();
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = crate::signal::check_sig(
         table,
         UserSlot::new(0),

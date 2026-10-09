@@ -89,6 +89,8 @@ pub fn do_fork<T: IpcTransport>(
     if table.procs[child_slot].state.guardianship.tracer().is_some() {
         // C 忽略此处的 sig_proc 返回值（forkexit.c:135）——子进程刚建、
         // tracer 槽位有效、SIGSTOP 合法，失败在本调用点不可达。
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(
             table,
             UserSlot::new(child_slot),
@@ -182,6 +184,8 @@ pub fn do_srv_fork<T: IpcTransport>(
     // *rmc=*rmp 复制 + 91-96 同型清除，srv_fork_from 的 Normal 构造在此
     // 之后被条件继承覆盖）。
     if table.procs[child_slot].state.guardianship.tracer().is_some() {
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = crate::signal::sig_proc(
             table,
             UserSlot::new(child_slot),
@@ -200,6 +204,8 @@ pub fn do_srv_fork<T: IpcTransport>(
     };
     // Child is now Running with VFS_CALL still set; reply does not clear VFS_CALL
     // (VFS reply 0x988 is empty, 05 handle_vfs_reply SrvFork → {} )
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = transport.send(child_endpoint, &ok_msg);
 
     Ok(child_pid)
@@ -562,6 +568,8 @@ mod tests {
         let mut kern = TestKernelTimes::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
         let params = crate::mproc::SrvForkParams { uid: 42, gid: 43 };
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = do_srv_fork(&mut table, Endpoint::RS, params, &mut transport, &mut kern).unwrap();
         // VFS call should carry real uid/gid, not -1
         let vfs_msg = transport

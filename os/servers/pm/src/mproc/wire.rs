@@ -121,6 +121,8 @@ pub fn flags_for(p: &Process) -> u32 {
 /// 返回全零行（`IN_USE` 未置）——消费方按 `mp_flags & IN_USE` 过滤空槽，
 /// 与 C 的空槽映像同一判据。
 pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
+    //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+    #[allow(clippy::let_underscore_must_use)]
     let _ = idx; // C 的 mp_parent/mp_tracer 已是槽索引，无需换算
     let mut w = MProcSnap::default();
     if !p.state.lifecycle.is_in_use() {

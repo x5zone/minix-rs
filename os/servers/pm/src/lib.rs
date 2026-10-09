@@ -29,6 +29,9 @@
 //! - `ipc`: IPC message handling
 
 #![cfg_attr(not(test), no_std)]
+// SD-19 机械化门
+#![warn(clippy::let_underscore_must_use)]
+
 
 // alloc 宏（vec!/format!）crate 级引入：no_std 侧由 alloc 供给；
 // 测试态 std 形态下与 prelude 同名宏语义一致（init 双形态先例）。
@@ -43,6 +46,8 @@ extern crate alloc;
 macro_rules! pm_diag {
     ($($arg:tt)*) => {{
         let line = alloc::format!($($arg)*);
+        //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
+        #[allow(clippy::let_underscore_must_use)]
         let _ = minix_sys::syscall::sys_diagctl_write(
             &minix_sys::syscall::DirectKernelCallTransport, &line);
     }};
