@@ -218,6 +218,8 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
         // 挂起续答的回执在每趟循环尾发出（C 的 `reply` 非阻塞发送，
         // 失败仅 printf 后继续——对端已死不是服务的错误面）。
         for (dest, wake_reply) in handler.take_wake_replies() {
+            //[SD19-gate] SD-19: wake_reply 发后即忘通知
+            #[allow(clippy::let_underscore_must_use)]
             let _ = ipc.send_reply(dest, &wake_reply);
         }
     }

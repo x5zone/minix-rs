@@ -14,6 +14,9 @@
 //! state across threads.
 
 #![no_std]
+// SD-19 机械化门
+#![warn(clippy::let_underscore_must_use)]
+
 
 extern crate alloc;
 

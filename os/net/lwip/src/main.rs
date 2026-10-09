@@ -26,6 +26,8 @@ fn main() {
     let mut startup = minix_net_lwip::startup::Startup::new();
     // 终止错误（传输持续损坏或启动链失败）在此只有退出一条路；C 侧同位
     // 是 panic（lwip.c:325）——非可观察行为差异，日志归运行时诊断。
+    //[SD19-gate] SD-19: main 入口 run 后进程退出，Result 无调用方消费
+    #[allow(clippy::let_underscore_must_use)]
     let _ = minix_net_lwip::server::run(&mut ipc, &mut handler, &mut table, &mut startup);
 }
 

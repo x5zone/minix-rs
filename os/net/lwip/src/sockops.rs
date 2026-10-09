@@ -383,10 +383,14 @@ pub fn open_socket(
         .and_then(sockid::SockClass::from_base)
         .and_then(|c| SockId::from_class(c, stack_socket.index() as u32));
     let Some(id) = id else {
+        //[SD19-gate] SD-19: error path cleanup，close 失败丢一个孤儿 fd
+        #[allow(clippy::let_underscore_must_use)]
         let _ = stack.close(stack_socket);
         return Err(minix_types::EINVAL);
     };
     if table.add(id).is_err() {
+        //[SD19-gate] SD-19: error path cleanup，close 失败丢一个孤儿 fd
+        #[allow(clippy::let_underscore_must_use)]
         let _ = stack.close(stack_socket);
         return Err(minix_types::EAGAIN);
     }
@@ -729,6 +733,8 @@ pub fn close_socket(
         return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
     };
     if let Some(stack_socket) = stack_socket_of(req.sock_id) {
+        //[SD19-gate] SD-19: 显式 close，C close() 返回值不消费
+        #[allow(clippy::let_underscore_must_use)]
         let _ = stack.close(stack_socket);
     }
     table.close(id);
@@ -1806,6 +1812,8 @@ pub fn ready_scan(
                         pending.accepts.remove(i);
                     }
                     _ => {
+                        //[SD19-gate] SD-19: accept orphan cleanup，close 失败无面
+                        #[allow(clippy::let_underscore_must_use)]
                         let _ = stack.close(accepted);
                         replies.push((
                             note.caller,
