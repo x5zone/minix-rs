@@ -11,7 +11,7 @@ use alloc::boxed::Box;
 
 use minix_fs::protocol::{RequestNumber, TransactionId};
 use minix_fs::task::{Envelope, FsReply, FsTransport, Incoming};
-use minix_types::{Endpoint, Message};
+use minix_types::{reply_status, Endpoint, Message};
 
 use crate::ipc::{Receipt, RtIpc};
 use crate::wire;
@@ -284,7 +284,9 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
                             // hook with no state, so the observable
                             // behavior is the reply code.
                             let reply = Message {
-                                m_type: TransactionId::encode_reply(e.to_i32(), transaction),
+                                // 分类阶段直回的 errno 同样走单源折号（与
+                                // `wire::encode_reply` 同语义），保证 FS→VFS 线上一律非正号。
+                                m_type: TransactionId::encode_reply(reply_status(e.to_i32()), transaction),
                                 ..Message::default()
                             };
                             //[SD19-gate] 错误回复 send：已在返回错误路径，send 失败无可再报

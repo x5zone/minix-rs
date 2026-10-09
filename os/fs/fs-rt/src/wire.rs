@@ -22,7 +22,7 @@ use minix_fs::protocol::{FileNode, LookupFlags, MountFlags, RequestNumber, Trans
 use minix_fs::task::{FsReply, ReplyPayload, RequestBody};
 use minix_fs::lookup::LookupOutcome;
 use minix_types as off;
-use minix_types::{EIO, EINVAL, Errno, Message};
+use minix_types::{reply_status, EIO, EINVAL, Errno, Message};
 
 /// Requests whose payload is a bare `ino_t inode` (`mess_vfs_fs_mountpoint`,
 /// ipc.h; `mess_vfs_fs_putnode` adds a trailing count).
@@ -375,7 +375,11 @@ pub fn data_grant(request: RequestNumber, msg: &Message) -> i32 {
 /// (`fsdriver.c:50-56`).
 pub fn encode_reply(request: RequestNumber, reply: &FsReply) -> Message {
     let mut msg = Message {
-        m_type: TransactionId::encode_reply(reply.status, reply.transaction),
+        // FS→VFS 回复的 status 在线上一律折成非正号（`reply_status`：`0` 与已
+        // 负值原样透传，正 errno 取负）——与 C 服务端 `_SYSTEM` 构建下 FS 回负
+        // errno 一致，且与本树 `FsReply.status` 文档「zero or a negative error
+        // number」对齐。成功字节数走 `payload`（status=0），折号不触及。
+        m_type: TransactionId::encode_reply(reply_status(reply.status), reply.transaction),
         ..Message::default()
     };
     // SAFETY: bounded writes inside the payload area.
@@ -591,6 +595,23 @@ mod tests {
             u64::from_le_bytes(raw[off::transfer_reply_off::NBYTES..off::transfer_reply_off::NBYTES + 8].try_into().unwrap()),
             64
         );
+    }
+
+    #[test]
+    fn test_encode_reply_folds_error_status_to_negative() {
+        // ERESTART 根因回归钉：fs-rt 在 encode 边界把正 errno 折成负号上线，使
+        // VFS `main_loop::run_worker_continuations` 的 `status == -(ERESTART)`
+        // 得命中（ERESTART→EIO 转换因此生效）；此前正号 `69` 永不中。
+        let reply = FsReply::status(minix_types::ERESTART, TransactionId(7));
+        let m = encode_reply(RequestNumber::Read, &reply);
+        assert_eq!(
+            minix_types::trns_del_id(m.m_type),
+            -(minix_types::ERESTART),
+            "FS→VFS 回复的 status 必须折成负 errno"
+        );
+        // 成功 status=0 原样透传（`reply_status` 对 0 幂等），不波及读写字节流（走 payload）。
+        let ok = FsReply::status(0, TransactionId(7));
+        assert_eq!(minix_types::trns_del_id(encode_reply(RequestNumber::Read, &ok).m_type), 0);
     }
 
     #[test]
