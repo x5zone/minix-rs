@@ -52,7 +52,7 @@
 | `PD-10` | 结案后的诊断探针分三档处理：用后即滚、转正式机制、生产守卫（乙） | 三档规则已定，逐站归类属执行 |
 | `PD-11` | 用户态线程模型与快进锁维持延期，每个规划周期显式重登记一次；出现第一个多线程消费者即立项（乙） | 延期生效中 |
 | `PD-12` | 已登记的语义偏差本轮逐条对照 C 真源修掉，有意偏离必须三处一致标注（甲） | 部分完成，见 `P-ALL-05` |
-| `PD-13` | 网络字节序与套接字事件类型的两份手抄收进共享类型库单点权威（甲） | 待执行 |
+| `PD-13` | 网络字节序与套接字事件类型的两份手抄收进共享类型库单点权威（甲） | **已执行（`2026-10-10` @ 快照 `b9240f11d`，只读核实、无新代码改动）**：套接字事件类型已单点于 `os/libs/minix-sockdriver/src/sockevent.rs`（`grep -rn "pub struct SocketEvent" os --include=*.rs` 现算唯一命中 :27，`bitflags` 承载、宽度 `u32` 对位 `sockevent.h:7-12`；`SocketFlag` 同文件 :47）；`SdevRequest` 亦唯一于 `sdev.rs:40`（`as u32` 0x1900… 对位 C 请求码）；netdriver/lwip/uds/vfs 全部 `use minix_sockdriver::{sockevent,sdev}`（`grep -rln` 得 11 个消费文件：netdriver service/sockid/socktable、lwip main/server/sockops、uds server、vfs main_loop/sdev/socket/syscalls），**无第二处定义**；`os/servers/vfs/src/sdev.rs` 头注自陈线形词汇在 minix-sockdriver E-SDEVOWN 单点、本模块只留读 VFS 私有表的 caller-owned 半；无 in_addr/htons/sockaddr 重复命名类型→无 u32/u64 手抄漂移残留。裁决担忧的“手抄同名结构体一侧改字段序就错”风险已由单点引用一次消除 → 本行由“待执行”回勾为已闭，防下轮误起多 crate 线形 ABI 重构 |
 | `PD-14` | riscv64 的装机与交棒形态**就此定为终态**（甲），第三入口形态计入 `PD-07` 的形态账 | 已追认 |
 | `PD-15` | **放弃** U-Boot 对照测试腿，不装包实测（丙）；对照格标"不支持的装载器路径" | 已裁。`01-stage-kernel/todo.md` 里长期挂"保持推迟"的 `T-10` 依此关闭 |
 | `PD-16` | riscv64 内存污染**继续追缴**写者，不放行；止损线是覆盖完成度的三项机器判据加固定预算（甲） | 追缴中，见 OPEN §1 |
