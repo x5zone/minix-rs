@@ -610,6 +610,40 @@ pub mod new_driver_req_off {
 mod tests {
     use super::*;
 
+    /// `StatVfs::write_user_statvfs` 必须按 C `struct statvfs` 偏移落字段，而非
+    /// 旧 10×u64 自定义布局（那会把 blocks 写进 `f_flag`@0）。映射照 C `fs_statvfs`
+    /// （`minix3/minix/fs/mfs/stadir.c:92-102`）。
+    #[test]
+    fn test_statvfs_wire_matches_c_layout() {
+        use crate::types::statvfs::statvfs_off as off;
+        let v = StatVfs {
+            blocks: 100,
+            blocks_free: 90,
+            blocks_available: 80,
+            block_size: 4096,
+            fragment_size: 1024,
+            io_size: 1024,
+            files: 50,
+            files_free: 40,
+            files_available: 40,
+            name_max: 60,
+        };
+        let buf = v.write_user_statvfs();
+        assert_eq!(buf.get_u64(off::BSIZE), 4096);
+        assert_eq!(buf.get_u64(off::FRSIZE), 1024);
+        assert_eq!(buf.get_u64(off::IOSIZE), 1024);
+        assert_eq!(buf.get_u64(off::BLOCKS), 100);
+        assert_eq!(buf.get_u64(off::BFREE), 90);
+        assert_eq!(buf.get_u64(off::BAVAIL), 80);
+        assert_eq!(buf.get_u64(off::FILES), 50);
+        assert_eq!(buf.get_u64(off::FFREE), 40);
+        assert_eq!(buf.get_u64(off::FFAVAIL), 40);
+        assert_eq!(buf.get_u64(off::NAMEMAX), 60);
+        // FS 不填的字段保持零（由 VFS 后补）：f_flag 位必须是 0，
+        // 不能是被 blocks 顶掉的 100（旧错误布局的特征）。
+        assert_eq!(buf.get_u64(off::FLAG), 0);
+    }
+
     /// C 绝对值全量 pin:33 个请求号逐一对照 vfsif.h:42-73 的字面偏移。
     /// 基址错位(0x600 事故)或偏移错位都会在这里爆——单测偏移是不够的,
     /// FS 侧按 0xA00 派生的绝对值分派。
@@ -969,8 +1003,8 @@ pub struct StatVfs {
 }
 
 impl StatVfs {
-    /// 写出所需的字节数。
-    pub const SIZE: usize = 80;
+    /// `sizeof(struct statvfs)`——grant 授权窗口与拷给用户的长度都用它。
+    pub const USER_STATVFS_SIZE: usize = crate::types::statvfs::STATVFS_SIZE;
 
     /// 全零卷状态：由调用方逐字段填充。
     pub const fn zeroed() -> Self {
@@ -988,26 +1022,28 @@ impl StatVfs {
         }
     }
 
-    /// 按稳定小端序写出全部字段。
-    pub fn write_to(&self, out: &mut [u8]) -> Result<(), crate::Errno> {
-        if out.len() < Self::SIZE {
-            return Err(crate::Errno::from_i32(crate::EINVAL));
-        }
-        let fields = [
-            self.blocks,
-            self.blocks_free,
-            self.blocks_available,
-            self.block_size,
-            self.fragment_size,
-            self.io_size,
-            self.files,
-            self.files_free,
-            self.files_available,
-            self.name_max,
-        ];
-        for (index, value) in fields.iter().enumerate() {
-            out[index * 8..index * 8 + 8].copy_from_slice(&value.to_le_bytes());
-        }
-        Ok(())
+    /// 序列化成 C `struct statvfs` 线形布局的 grant 回填缓冲。
+    ///
+    /// 字段→偏移映射照 C `fs_statvfs`（`minix3/minix/fs/mfs/stadir.c:92-102`）：
+    /// `f_bsize`←block_size、`f_frsize`←fragment_size、`f_iosize`←io_size、
+    /// `f_blocks/f_bfree/f_bavail`←blocks/blocks_free/blocks_available、
+    /// `f_files/f_ffree/f_favail`←files/files_free/files_available、`f_namemax`←name_max。
+    /// C 未由 FS 填的字段（`f_flag`/名字/`f_owner`/`f_fsidx` 等）保持零，由 VFS 侧
+    /// `req_statvfs` 后补本地值（对齐 statvfs.rs 模块头的 FS/VFS 分工）。取代旧的
+    /// 10×u64 自定义布局 `write_to`（非 C 布局、零调用、已死）。
+    pub fn write_user_statvfs(&self) -> crate::types::statvfs::StatvfsBuf {
+        use crate::types::statvfs::{StatvfsBuf, statvfs_off as off};
+        let mut buf = StatvfsBuf::new();
+        buf.set_u64(off::BSIZE, self.block_size);
+        buf.set_u64(off::FRSIZE, self.fragment_size);
+        buf.set_u64(off::IOSIZE, self.io_size);
+        buf.set_u64(off::BLOCKS, self.blocks);
+        buf.set_u64(off::BFREE, self.blocks_free);
+        buf.set_u64(off::BAVAIL, self.blocks_available);
+        buf.set_u64(off::FILES, self.files);
+        buf.set_u64(off::FFREE, self.files_free);
+        buf.set_u64(off::FFAVAIL, self.files_available);
+        buf.set_u64(off::NAMEMAX, self.name_max);
+        buf
     }
 }

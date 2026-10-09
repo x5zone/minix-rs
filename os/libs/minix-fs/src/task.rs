@@ -918,14 +918,21 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             Err(e) => err(e),
         },
         RequestBody::StatVfs => {
-            // TODO 同 `RequestBody::Stat` 本轮修复的根因：此腿也只 `zero()`
-            // 丢弃 `vfs`、从不按 C `struct statvfs` 布局 copy_out 到 grant →
-            // `df`/`statvfs` 用户缓冲恒零。df 不属 18-stage 核心命令面（echo/ls/cat），
-            // 且须走 `minix_types::statvfs_off` 的真实 C 偏移（非已死的
-            // `StatVfs::write_to` 那个 10×u64 自定义布局），故拆为独立后续。
             let mut vfs = minix_types::StatVfs::zeroed();
             match adapt_stat_vfs(&mut server.driver, &mut vfs) {
-                Ok(()) => zero(),
+                Ok(()) => {
+                    // C `fs_statvfs` + `req_statvfs`（request.c:232-247）：驱动填好后，
+                    // FS 必须按 C `struct statvfs` 布局（`statvfs_off` 权威偏移）copy_out
+                    // 到 VFS 授权的整块缓冲，否则 `df`/`statvfs` 用户缓冲停留零值
+                    // （此前此腿只 `zero()` 丢弃 `vfs`——同 `Stat` 腿已修的那个根因）。
+                    let buf = vfs.write_user_statvfs();
+                    // SD-19 signature rework：与 `Stat` 腿同律——`fsdriver_copyout`
+                    // 失败直接把传输错写进回复 status，不再回 zero()。
+                    match transport.copy_out(0, buf.as_bytes()) {
+                        Ok(()) => zero(),
+                        Err(e) => err(e),
+                    }
+                }
                 Err(e) => err(e),
             }
         }
@@ -1367,6 +1374,63 @@ mod tests {
             minix_types::EIO,
             "copy_out 失败必须覆盖驱动链的成功，按 C 回传输错"
         );
+    }
+
+    /// statvfs 腿必须把整块 C `struct statvfs`（按 `statvfs_off` 权威偏移）经
+    /// `copy_out` 达 VFS 授权缓冲；此前此腿只 `zero()` 丢弃 `vfs`，使 `df`/
+    /// `statvfs` 用户缓冲恒零（同 stat 腿已修的那个根因）。
+    #[test]
+    fn test_statvfs_streams_struct_statvfs_through_copy_out() {
+        struct StatVfsDriver;
+
+        impl crate::driver::FsDriver for StatVfsDriver {
+            fn mount(
+                &mut self,
+                device: u64,
+                _flags: MountFlags,
+                capabilities: &mut CapabilityFlags,
+            ) -> Result<FileNode, Errno> {
+                *capabilities = CapabilityFlags::EMPTY;
+                Ok(FileNode::new(1, 0o040755, 0, 0, 0, device))
+            }
+
+            fn stat_vfs(&mut self, vfs: &mut minix_types::StatVfs) -> Result<(), Errno> {
+                vfs.blocks = 100;
+                vfs.block_size = 4096;
+                vfs.name_max = 60;
+                Ok(())
+            }
+        }
+
+        let incoming = vec![
+            Incoming::Request(
+                envelope(raw(RequestNumber::ReadSuper, 1)),
+                RequestBody::ReadSuper {
+                    device: 4,
+                    flags: MountFlags::EMPTY,
+                    label: alloc::string::String::new(),
+                },
+            ),
+            Incoming::Request(
+                envelope(raw(RequestNumber::StatVfs, 2)),
+                RequestBody::StatVfs,
+            ),
+        ];
+        let mut transport = ScriptedTransport::new(incoming);
+        let mut server: Server<StatVfsDriver> = Server::new(StatVfsDriver);
+        run(&mut server, &mut transport);
+        use minix_types::statvfs_off as off;
+        // 整块 C `struct statvfs`（272 字节）须经 copy_out 达 grant——修复前此腿
+        // 只 zero()、out_bytes 为空。
+        assert!(
+            transport.out_bytes.len() >= minix_types::STATVFS_SIZE,
+            "statvfs 字节必须整块达 grant"
+        );
+        let u64_at =
+            |o: usize| u64::from_le_bytes(transport.out_bytes[o..o + 8].try_into().unwrap());
+        assert_eq!(u64_at(off::BLOCKS), 100);
+        assert_eq!(u64_at(off::BSIZE), 4096);
+        assert_eq!(u64_at(off::NAMEMAX), 60);
     }
 
     /// stat 回复必须像 read 一样经 `copy_out` 落进用户的 magic grant 缓冲，
