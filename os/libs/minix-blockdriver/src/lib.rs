@@ -30,4 +30,5 @@
 extern crate alloc;
 
 pub mod driver;
+pub mod partition;
 pub mod protocol;
