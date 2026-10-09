@@ -42,6 +42,7 @@
 | 用户态服务的框架语义补齐：信号代理循环、按号分派的消费方盘点等 | `partially fixed` / `L2` | `P-ALL-08`（子项 `T1`—`T7`） | `os/libs/minix-sef/src/lib.rs` | `wc -l os/libs/minix-sef/src/lib.rs` → 千行级框架核已就位 | 子项进度以齐平清单的落地段为准；逃生门已落地（`PD-27`，见 `TODO-LEDGER-DONE.md` §2），发方链通电余件仍挂 T2 |
 | 内核包的默认特性仍带替身特性，宿主与真机形态可能不是同一个二进制 | `open` / `L1` | `P-ALL-10`、`SD-30`、`SD-31`；**裁决 `PD-29` 采甲：从默认里摘掉**，硬序是先建持续集成双腿（`PD-30`）再摘默认 | `os/kernel/Cargo.toml` | `grep -n "^default" os/kernel/Cargo.toml` → `default = ["mock"]` | 先把构建特性分裂导致的崩溃查清，再按 `PD-29` 的次序摘除默认替身特性（硬序② CI 双腿已落，`2026-10-08`，见 §7 同日行与 `TODO-LEDGER-DONE.md` §2 `PD-30` 行）。**本轮实证**：T-STAB-1 崩溃面（`minix-sys` 的 `real-trap` 经 workspace 特性统一泄漏进宿主测试）已根因并修复（见 §7 `closed` 行）；但实测证明单纯把 `mock` 摘出 `default` 会确定性地断 `cargo build --workspace`——`kernel` 的 `Current*` 类型别名与统一后的 mock arch/plat 交叉（`kernel/src/lib.rs:1286/1368/1835` 三处类型错，单包 `cargo build -p minix-kernel` 反而过），属特性统一的另一实例；翻默认的前置是它的解耦，待 `SD-30` 用户裁决，本条仍 `open` |
 | 启动入口的多种形态并存，断言电池未补齐 | `open` / `L2` | `P-ALL-11`、`SD-1`—`SD-4`（`SD-2` 已裁决 `PD-07`） | 各架构链接脚本与 `os/kernel/src/arch/*` | 读 `STRUCTURAL-DEBT-REGISTER-20261008.md` §5.1 对应四行的下一步动作 | 补齐"三架构入口形态一致性"的断言集，并清扫地址常量残留 |
+| 内核→用户 IPC delivery leg 的内存序屏障（completion/visibility 要求）：今天无事可做，绑在 `PD-02` unclamp 里程碑作为硬前置 | `adjudicated`（`PD-19` 重定性为完成/可见性要求，不独立落地）/ `L2` | `P-ALL-13`、`SD-13`（描述权威 `STRUCTURAL-DEBT-REGISTER-20261008.md`；本行系按其建议补齐 claim-ledger 行） | `os/libs/minix-sys/src/ipc.rs:commit_message_to_memory`（函数文档注释含可复用机制注：为何 volatile 读而非 `compiler_fence`——纯排序 fence 不能把寄存器驻留 store 推回 alloca） | `grep -n "commit_message_to_memory" os/libs/minix-sys/src/ipc.rs` → 定义 + 四调用点（send/sendrec/sendnb/senda 全腿三架构，SYSCALL 腿屏障与用户侧腿同批落地） | 不做独立补丁：`PD-02` unclamp（撤主核钳位）落地的那一天，作为硬前置同批落 enqueue-wakeup 锁序（DSB/release 语义）。届时交付腿才可达，提前写无消费者 |
 
 ## §3 结构债中尚未闭合、且未被上面两节覆盖的条目
 
@@ -50,7 +51,7 @@
 | 条目 | 状态 | 一句话 |
 |---|---|---|
 | `SD-11` | `open` | 虚存服务在大块申请上的失败会复现，需要执行与跟踪分离的修法 |
-| `SD-13` | `partially fixed` | 大部分已闭，剩余面需要给出对应的齐平清单行号 |
+| `SD-13` | `partially fixed` | 大部分已闭；剩余两件均有明确归属——delivery-leg 屏障已按登记册建议补齐台账行（见 §2 `P-ALL-13`，绑 `PD-02` unclamp），by-value IPC ABI 是登记在案的架构演进（随 `SD-18`/`PD-18` 端点编码协商，不得以修 bug 夹带） |
 | `SD-15` | `open` | 陷入帧与处理器上下文两套结构靠约定对齐，缺撕裂寄存器的校验（低风险） |
 | `SD-27` | `closed` | 两半均落地：①批量纠正——扫 os/ 注释里 17970 条 `file.c:NNN` 引用，START+END 双校后共 40 处漂移（23 存在性/START 越界 + 17 区间 END 越界，典型如 sys_getksig.c 实为 sys_getsig.c、ipc.c:2060 实为 ipc.h:2261-2269、stack_utils.c 六个区间 END 越 172 行文件）已全部对照 minix3 修正；②工具化守卫——`tools/pattern-gate.sh` 新增 P18 全量扫描（gate+ 基线豁免，三条设计约束全落：多候选全覆盖/区间校 END/非 minix3 域白名单）。可重跑核实现命令：`bash tools/pattern-gate.sh` → `[P18] PASS（检查 ~11766 个 token）`、FAIL=0，且**零基线条目**（无存量豁免）；`bash tools/pattern-gate.sh --self-test` 含 P18 六例全绿（`2026-10-09` 核，快照见 claim/SD27-RS-MODE-qoder 分支头）。未来新写漂移锚点编译前即拦——"class keeps striking" 从审计可发现升级为门可发现 |
 | `SD-36` | `open` | 内存污染案卷的第三面，绑定在物理地址边界校验上 |
