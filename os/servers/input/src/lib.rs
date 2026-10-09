@@ -1,4 +1,6 @@
 #![cfg_attr(not(test), no_std)]
+// SD-19 机械化门
+#![warn(clippy::let_underscore_must_use)]
 
 //! Minix-RS input server: keyboards and mice, as seen by everyone else.
 //!

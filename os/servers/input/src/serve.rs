@@ -268,6 +268,8 @@ fn reply_select_msg(self_ep: Endpoint, minor: i32) -> Message {
 /// Stamp the server's own endpoint and send asynsend-style.
 fn send_from(t: &mut dyn Transport, dst: Endpoint, message: &mut Message, self_ep: Endpoint) {
     message.m_source = self_ep;
+    //[SD19-gate] SD-19: asynsend 异步事件投递，无等待端
+    #[allow(clippy::let_underscore_must_use)]
     let _ = t.asynsend(dst, message);
 }
 
@@ -285,20 +287,28 @@ pub fn perform(effect: &Effect, t: &mut dyn Transport, self_ep: Endpoint) {
                 crate::effects::ReplyValue::Code(code) => *code,
             };
             let mut msg = reply_task_msg(self_ep, *request_id, status);
+            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = t.asynsend(*caller, &mut msg);
         }
         Effect::ReplySelect { selector, minor } => {
             let mut msg = reply_select_msg(self_ep, minor.0 as i32);
+            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = t.asynsend(*selector, &mut msg);
         }
         Effect::SendDriverAsync { to, message } => {
             let mut m = *message;
             m.m_source = self_ep;
+            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = t.asynsend(*to, &mut m);
         }
         Effect::SendTerminalBlocking { message } => {
             let mut m = *message;
             m.m_source = self_ep;
+            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = t.send(Endpoint::TTY, &mut m);
         }
         Effect::FkeyControlReply {
@@ -320,11 +330,15 @@ pub fn perform(effect: &Effect, t: &mut dyn Transport, self_ep: Endpoint) {
             // client reads it right back (`fkey_ctl_via`).
             m.m_u.m_tty_lsys_fkey_ctl.fkeys = *fkeys;
             m.m_u.m_tty_lsys_fkey_ctl.sfkeys = *sfkeys;
+            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = t.sendnb(*caller, &mut m);
         }
         Effect::NotifyFkeyObserver { target } => {
             // C `func_key` tail: `ipc_notify(proc_nr)` when a registered
             // observer's key was pressed (keyboard.c:566-568).
+            //[SD19-gate] SD-19: asynsend 异步投递发后即忘
+            #[allow(clippy::let_underscore_must_use)]
             let _ = t.notify(*target);
         }
     }
