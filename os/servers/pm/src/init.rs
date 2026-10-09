@@ -1285,7 +1285,7 @@ mod tests {
         fn copy_from_user(&mut self, _: Endpoint, _: u64, _: &mut [u8]) -> Result<(), i32> {
             panic!("birth test: unexpected copy_from_user")
         }
-        fn get_ksig(&mut self) -> Result<Option<(Endpoint, u64)>, i32> {
+        fn get_ksig(&mut self) -> Result<Option<(Endpoint, minix_types::SigSetBits)>, i32> {
             panic!("birth test: unexpected get_ksig")
         }
         fn end_ksig(&mut self, _: Endpoint, _: i32) -> Result<(), i32> {

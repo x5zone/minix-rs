@@ -123,7 +123,9 @@ pub trait KernelGateway {
     /// 取回一个有待处理内核信号的进程（endpoint + 位图）；`None` =
     /// 内核侧无更多待处理信号（C：endpt == NONE）。取回即消费内核的
     /// RTS_SIGNALED。SIGKSIG 拉取循环（sef_signal.c:27-63）的取半边。
-    fn get_ksig(&mut self) -> Result<Option<(Endpoint, u64)>, i32>;
+    /// 位图按 C wire 形态（`sigset_t` = 4×u32，128 位；SD-39）回传：
+    /// 内核内部信号（SIGSNDELAY/SIGKSIG 家族，71..=74）落在 word 2。
+    fn get_ksig(&mut self) -> Result<Option<(Endpoint, minix_types::SigSetBits)>, i32>;
 
     /// C: `sys_endksig(proc_nr_e, sig_nr)`（libsys `sys_endsig.c:6-15`）
     /// ——确认消费一个内核信号（清 SIG_PENDING）。调用方必须是目标
@@ -270,7 +272,7 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
         }
     }
 
-    fn get_ksig(&mut self) -> Result<Option<(Endpoint, u64)>, i32> {
+    fn get_ksig(&mut self) -> Result<Option<(Endpoint, minix_types::SigSetBits)>, i32> {
         // SYS_GETKSIG 真实通道（kernel dispatch_getksig，syscall_signal.rs:393）。
         let (endpt, map) = minix_sys::syscall::sys_getksig(&self.transport)?;
         if endpt == Endpoint::NONE.0 {
@@ -1112,7 +1114,7 @@ mod tests {
     }
     impl KernelGateway for KillRecorder {
         fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
-        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, minix_types::SigSetBits)>, i32> { Ok(None) }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
     fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }

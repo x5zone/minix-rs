@@ -121,7 +121,7 @@ impl KernelGateway for NoopKernelGateway {
     ) -> Result<(), i32> {
         Ok(())
     }
-    fn get_ksig(&mut self) -> Result<Option<(Endpoint, u64)>, i32> {
+    fn get_ksig(&mut self) -> Result<Option<(Endpoint, minix_types::SigSetBits)>, i32> {
         Ok(None)
     }
     fn end_ksig(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> {

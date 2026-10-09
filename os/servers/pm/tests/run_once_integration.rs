@@ -26,12 +26,12 @@ use minix_types::{Endpoint, Message};
 struct MockKernelGateway {
     pub user: minix_types::Clock,
     pub sys: minix_types::Clock,
-    pub ksig_script: Vec<Option<(i32, u64)>>,
+    pub ksig_script: Vec<Option<(i32, minix_types::SigSetBits)>>,
 }
 
 impl minix_pm::exit::KernelGateway for MockKernelGateway {
     fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
-    fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> {
+    fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, minix_types::SigSetBits)>, i32> {
         Ok(self.ksig_script.remove(0).map(|(ep, mask)| (Endpoint(ep), mask)))
     }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
@@ -404,15 +404,15 @@ fn kernel_sigksig_notify_drains_pending_kernel_signals() {
             user: 0,
             sys: 0,
             ksig_script: vec![
-                Some((target_ep.0, 1u64 << (15 - 1))),
+                Some((target_ep.0, [1u32 << (15 - 1), 0, 0, 0])),
                 None,
             ],
         }),
     );
     let _ = seed_running(&mut srv, 5, 42);
 
-    // 内核通知：SYSTEM 源即拉取触发（SigSet(u64) 装不下 SIGKSIG 位 73，
-    // kernel syscall_signal.rs:88-94 已声明该限制——SYSTEM 通知本身即
+    // 内核通知：SYSTEM 源即拉取触发（SD-39 后 SigSet 与 C sigset_t 同为
+    // 128 位，SIGKSIG 位 73 本身可编码；SYSTEM 通知仍是
     // "有积累"的唯一载体，PM 按 SYSTEM 源触发）。
     let notify = Message { m_source: Endpoint::SYSTEM, ..Default::default() };
     srv.transport_mut()

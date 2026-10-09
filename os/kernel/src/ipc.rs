@@ -22,7 +22,7 @@
 //! C source: `minix3/minix/kernel/proc.c:263-294, 479-597, 599-698, 703-768,
 //! 870-962, 967-1117, 1122-1167, 1200-1326, 1331-1346`.
 
-use minix_types::{Endpoint, MessNotify, Message, VirBytes, sigset_from_u64};
+use minix_types::{Endpoint, MessNotify, Message, VirBytes};
 #[cfg(not(test))]
 use minix_arch::PteWalkArch;
 use crate::proc::{KProcess, ProcNr, RtsFlagsBits, MiscFlagsBits, NONE_PROC_NR, proc_nr};
@@ -2806,7 +2806,9 @@ fn build_notify_message(
     // callers hold the BKL; hosted notify tests are single-threaded.
     let timestamp = unsafe { crate::clock_state_boot_unchecked() }.uptime();
     let mut interrupts = 0u64;
-    let mut sigset = 0u64;
+    // SD-39: 全宽 4×u32（C sigset_t）——内核内部信号族 71..=74 住
+    // `bits[2]`，随 notify 到达管理器。
+    let mut sigset = [0u32; 4];
 
     match src {
         NotifySource::Hardware => {
@@ -2819,12 +2821,11 @@ fn build_notify_message(
         }
         NotifySource::System => {
             // C: m_notify.sigset = priv(dst)->s_sig_pending; clear it.
-            // 内核的 `SigSet` 仍是 64 位(`proc.rs::SigSet`),所以只有低两字
-            // 会有值;位 70..73 即内核信号族 71..=74 要等 `SigSet` 本身拓宽
-            // 后才能住进 `bits[2]`(跨层 wire 项,已登记)。
+            // SD-39: `SigSet` 已拓宽到 128 位，全四字都可能有值
+            // （位 70..73 即内核信号族 71..=74 住 `bits[2]`）。
             if let Some(dst_priv_id) = procs[dst_idx].priv_id
                 && let Some(dst_priv) = priv_table.get_mut(dst_priv_id) {
-                    sigset = dst_priv.signals.s_sig_pending.get();
+                    sigset = dst_priv.signals.s_sig_pending.to_words();
                     dst_priv.signals.s_sig_pending = crate::proc::SigSet::empty();
                 }
         }
@@ -2838,7 +2839,7 @@ fn build_notify_message(
     // (compile-time asserted in notify.rs). We're writing to a zeroed
     // MessageUnion, so all fields are valid.
     procs[dst_idx].p_delivermsg.m_u.m_notify =
-        MessNotify::new(timestamp, interrupts, sigset_from_u64(sigset));
+        MessNotify::new(timestamp, interrupts, sigset);
 }
 
 /// Core notification logic — shared by `IpcEngine::notify` (syscall path)

@@ -306,8 +306,8 @@ impl ProcessTable {
     /// ```
     ///
     /// The `send_sig(VM, SIGKMEM)` is split: the wake-up half is
-    /// `mini_notify_core(SYSTEM→VM)` (works); the sigset half (SIGKMEM=71
-    /// \> 64) is a no-op like SIGKSIG=74/SIGSNDELAY=70 — VM discovers the
+    /// `mini_notify_core(SYSTEM→VM)` (works); the sigset half now encodes
+    /// SIGKMEM=71 into the 128-bit bitmap (SD-39) — VM discovers the
     /// details via MEMREQ_GET, not the signal number.
     pub fn vm_enqueue_and_notify_vm(&mut self, nr: ProcNr, priv_table: &mut crate::kpriv::PrivTable) {
         let vm_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::VM_PROC_NR.0);
@@ -606,12 +606,14 @@ impl ProcessTable {
     /// 2. Notify PM via `cause_sig(proc_nr(rp), SIGSNDELAY)` (system.c:463)
     ///    so it can re-attempt the stop, which now succeeds immediately.
     ///
-    /// # Known limitation
+    /// # Signal number on the GETKSIG map (SD-39)
     ///
-    /// `SIGSNDELAY` = 70 is outside the `SigSet(u64)` bit range, so the
-    /// signal *number* does not ride the GETKSIG map (same limitation as
-    /// `SIGKSIG`, see `syscall_signal::SIGSNDELAY`); the delivered kernel
-    /// behavior is the wakeup: `RTS_SIGNALED` + manager notification.
+    /// `SIGSNDELAY` = 70 rides the GETKSIG map like any other signal:
+    /// `SigSet` is a 128-bit bitmap matching C's `sigset_t` (4×u32,
+    /// sigtypes.h:59-62), so the kernel-internal family 70..=74 lives in
+    /// word 2 — same as C `cause_sig`/`sigaddset` (system.c:387-440,
+    /// unchecked `__sigaddset` under `_SYSTEM`). PM consumes it via
+    /// `sigset_contains` over the full range (signal.rs pull loop).
     ///
     /// # Why this is a `ProcessTable` method (not a free function)
     ///
@@ -2343,14 +2345,12 @@ mod tests {
     /// notify the signal manager).
     ///
     /// Note: `SIGSNDELAY` = 70 is a *system* signal outside `_NSIG = 64`;
-    /// the `SigSet(u64)` bitmap cannot encode it (`add(70)` is a no-op, same
-    /// known limitation as `SIGKSIG`/`SIGKSIGSM`, see
-    /// `syscall_signal.rs` `cause_signal`). What IS delivered — and what
-    /// this test pins — is the wakeup protocol: `RTS_SIGNALED` +
+    /// since SD-39 the `SigSet` bitmap is the C `sigset_t` 128 bits, so
+    /// `add(70)` encodes word-2 bit 6 (unchecked `__sigaddset` under
+    /// `_SYSTEM`, sigtypes.h:71) — same as `SIGKSIG`/`SIGKSIGSM`. What this
+    /// test pins is the wakeup protocol: `RTS_SIGNALED` +
     /// `RTS_SIG_PENDING` + `mini_notify` to the manager, which is the part
-    /// of the C behavior that drives the manager to `SYS_GETKSIG`. Encoding
-    /// bit 70 requires widening `SigSet` to the C `sigset_t` 128 bits
-    /// (cross-cutting wire change, tracked separately).
+    /// of the C behavior that drives the manager to `SYS_GETKSIG`.
     #[test]
     fn test_sig_delay_done_clears_flag_and_causes_signdelay() {
         let mut table = crate::test_helpers::test_proc_table();
@@ -2438,7 +2438,7 @@ mod tests {
         assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SC_DEFER));
         assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
         // SIGSNDELAY delivery (wakeup): SIGNALED → non-runnable → false.
-        // (bit 70 not encodable in SigSet(u64), see sig_delay_done test.)
+        // (bit 70 encodable since SD-39's 128-bit SigSet, see sig_delay_done test.)
         assert!(proc.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));
         // Manager notified.
         assert!(table.get(manager_nr).unwrap().p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));

@@ -1182,10 +1182,15 @@ impl core::fmt::Display for ProcName {
 }
 
 /// Signal set type (bitmap).
-/// Corresponds to C's sigset_t, using 64 bits for 64 signals.
+/// Corresponds to C's `sigset_t` (`__uint32_t __bits[4]`, sigtypes.h:60-62):
+/// 128 bits wide, so the kernel-internal signal family (`SIGSNDELAY` = 70,
+/// `SIGKSIG` = 74, `SIGKSIGSM` = 73 — sys/sys/signal.h) rides the same map
+/// as the user-visible 1..=64 POSIX signals (`_NSIG` = 64 is a libc-level
+/// check only; system code uses the unchecked `__sig*` macros).
+/// SD-39: widened from 64 to 128 bits — `add(70)` used to be a silent no-op.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct SigSet(u64);
+pub struct SigSet(u128);
 
 impl SigSet {
     /// Creates empty signal set.
@@ -1193,15 +1198,26 @@ impl SigSet {
         Self(0)
     }
 
-    /// Construct from a raw u64 bitmap (e.g. for IPC message fields).
-    /// Inverse of `get()`.
+    /// Construct from a raw u64 bitmap (e.g. for legacy IPC message fields).
+    /// Fills the low half; inverse of `get()`.
     pub const fn from_raw(value: u64) -> Self {
+        Self(value as u128)
+    }
+
+    /// Construct from the full 128-bit map. Inverse of `bits()`.
+    pub const fn from_bits(value: u128) -> Self {
         Self(value)
     }
 
-    /// Checks if signal is in set.
+    /// Returns the full 128-bit map.
+    pub const fn bits(self) -> u128 {
+        self.0
+    }
+
+    /// Checks if signal is in set (1-based; kernel-internal signals up to
+    /// 128 included).
     pub fn contains(self, sig: u8) -> bool {
-        if sig == 0 || sig > 64 {
+        if sig == 0 || sig > 128 {
             return false;
         }
         (self.0 >> (sig - 1)) & 1 == 1
@@ -1209,18 +1225,18 @@ impl SigSet {
 
     /// Adds signal to set.
     pub fn add(&mut self, sig: u8) {
-        if sig == 0 || sig > 64 {
+        if sig == 0 || sig > 128 {
             return;
         }
-        self.0 |= 1 << (sig - 1);
+        self.0 |= 1u128 << (sig - 1);
     }
 
     /// Removes signal from set.
     pub fn remove(&mut self, sig: u8) {
-        if sig == 0 || sig > 64 {
+        if sig == 0 || sig > 128 {
             return;
         }
-        self.0 &= !(1 << (sig - 1));
+        self.0 &= !(1u128 << (sig - 1));
     }
 
     /// Clears signal set.
@@ -1233,10 +1249,30 @@ impl SigSet {
         self.0 == 0
     }
 
-    /// Returns the raw u64 bitmap value.
-    /// Used for writing signal maps into IPC messages (m_sigcalls.map).
-    pub fn get(self) -> u64 {
-        self.0
+    /// Returns the low 64 bits of the bitmap (legacy boundary shape;
+    /// full-fidelity boundaries use [`Self::bits`]/[`Self::to_words`]).
+    pub const fn get(self) -> u64 {
+        self.0 as u64
+    }
+
+    /// Returns the bitmap as C `sigset_t` words (4×u32, little-endian word
+    /// order: word i holds signals 32i+1..=32i+32). Used for the 16-byte
+    /// wire fields (`m_sigcalls.map`, `m_notify.sigset`).
+    pub const fn to_words(self) -> [u32; 4] {
+        [
+            self.0 as u32,
+            (self.0 >> 32) as u32,
+            (self.0 >> 64) as u32,
+            (self.0 >> 96) as u32,
+        ]
+    }
+
+    /// Construct from C `sigset_t` words. Inverse of [`Self::to_words`].
+    pub const fn from_words(w: [u32; 4]) -> Self {
+        Self((w[0] as u128)
+            | ((w[1] as u128) << 32)
+            | ((w[2] as u128) << 64)
+            | ((w[3] as u128) << 96))
     }
 }
 

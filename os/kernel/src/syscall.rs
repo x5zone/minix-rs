@@ -3133,9 +3133,10 @@ fn dispatch_diagctl(
                     // SIGKMESS)`（目标是注册者自身，非 todo 原文所写 PM）。
                     // 两个条件输入在 W-7 演进下均不存在：kmess 缓冲已被
                     // EarlyConsole 直出替代（km_size 恒无意义），唯一消费
-                    // 者 log 驱动（log.c:115 读 kmess）角色同被替代；
-                    // SIGKMESS=72（sys/sys/signal.h:272）>64 亦超 SigSet
-                    // 位宽。故本通知按 C 自身条件恒不触发——订阅状态
+                    // 者 log 驱动（log.c:115 读 kmess）角色同被替代。
+                    // SIGKMESS=72（sys/sys/signal.h:272）落在 SigSet 位图
+                    // 内（SD-39 后 128 位），位宽不再是理由——本通知仍按
+                    // C 自身条件恒不触发（km_size 恒无意义）。订阅状态
                     // （s_diag_sig 置位/复位/SET_SYS 清除，kpriv.rs
                     // reset_pending_ipc）完整保留。update 状态转移的
                     // s_diag_sig 保全已闭合（misc.rs:1845 捕获、:1887

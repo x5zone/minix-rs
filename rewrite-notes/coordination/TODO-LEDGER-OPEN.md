@@ -55,7 +55,7 @@
 | `SD-27` | `closed` | 两半均落地：①批量纠正——扫 os/ 注释里 17970 条 `file.c:NNN` 引用，START+END 双校后共 40 处漂移（23 存在性/START 越界 + 17 区间 END 越界，典型如 sys_getksig.c 实为 sys_getsig.c、ipc.c:2060 实为 ipc.h:2261-2269、stack_utils.c 六个区间 END 越 172 行文件）已全部对照 minix3 修正；②工具化守卫——`tools/pattern-gate.sh` 新增 P18 全量扫描（gate+ 基线豁免，三条设计约束全落：多候选全覆盖/区间校 END/非 minix3 域白名单）。可重跑核实现命令：`bash tools/pattern-gate.sh` → `[P18] PASS（检查 ~11766 个 token）`、FAIL=0，且**零基线条目**（无存量豁免）；`bash tools/pattern-gate.sh --self-test` 含 P18 六例全绿（`2026-10-09` 核，快照见 claim/SD27-RS-MODE-qoder 分支头）。未来新写漂移锚点编译前即拦——"class keeps striking" 从审计可发现升级为门可发现 |
 | `SD-36` | `open` | 内存污染案卷的第三面，绑定在物理地址边界校验上 |
 | `SD-38` | `open` | 设备树消费者与固件路径的分叉尚未收口 |
-| `SD-39` | `open` | 信号集位宽拓宽（六十四位到一百二十八位）成批待做 |
+| `SD-39` | `closed` | 信号集位宽拓宽（六十四位到一百二十八位）已落地：`kernel/src/proc.rs` `SigSet` 从 `u64` 改为 `u128`（对位 C `sigset_t` = `{__uint32_t __bits[4]}`，sigtypes.h:59-62；`_NSIG=64` 仅是 libc 层用户可见上界，`_SYSTEM` 下 `__sigaddset` 不检查，signal.h:118-124），新增 `from_bits/bits/to_words/from_words`，contains/add/remove 边界拓到 `1..=128`；wire 侧 `minix-types` `MessSigcalls.map` 改 `SigSetBits`（= `[u32;4]`，对位 C ipc.h:1917-1923 的 map@0/endpt@16/sig@20/sigctx@24，修正了旧 `endpt@8` 对 C 的偏差），`sigset_contains` 逐位消费；内核 `sig_mask`/`dispatch_getksig`/`cause_signal`/notify 组装全宽化（内核内部信号 SIGSNDELAY=70、SIGKMEM=71、SIGKSIG=74 不再 add 为 no-op，落 word 2）；PM 镜像：`KernelGateway::get_ksig` 签名改 `(Endpoint, SigSetBits)`，拉取循环 `for signo in 1u32..=128` 用 `sigset_contains`（sef_signal.c:27-63），十八处 mock 同步；minix-sys `sys_getksig` 回传全宽 map；proc_table/syscall_signal/run_once 等处过时"位宽限制 no-op"注释改 SD-39 已落地口径。核实（容器 minix-ci:1.94）：`cargo clippy --workspace --tests --exclude minix-textfilter --exclude minix-vm` → error 0、must_use 触发 0；`cargo test -p minix-types -p minix-sys -p minix-pm --tests` → 426+13+317+325 全绿；`cargo test -p minix-kernel` → 830/0；root tests t_signals/pm_vm_fork/srv_fork 各 2/0；stable-fmt 漂移 0→0（docker 内 `cargo fmt --check`，主机 rustfmt 版本不匹配会给出数千块假漂移，须用容器口径）。`get()` 保留低 64 位视图作 legacy 边界，`NSIG=64` 与 do_kill 用户信号校验不动 |
 | `SD-40` | `open` | 被门控的诊断面需要结案批次命名 |
 | `SD-43` | `closed` | 本轮修复：新增 `MemType::rejects_in_place_resize` 谓词 + brk resize 腿 fail-closed，使 anon_contig/cache 的 brk 扩展按 C（region.c:1037 非 NULL→回调返 ENOMEM）失败而非静默 extend；铁证见 §2 P-ALL-05 行（minix-vm 541/0） |
 | `SD-12` | `adjudicated`，执行未竟 | 运行期进程根的写执行互斥收紧已由 `PD-22` 裁决为三步；第一步文本段去写需要静态核验无运行期写入者 |
@@ -69,7 +69,7 @@
 |---|---|---|
 | `E5` 端到端联调测试包（含 `a`—`h` 各子面：挂根、缺页完整回路、多服务器参战、信号、虚存控制、数据存储、系统信息、设备管理生命周期） | `open` / `待验证` | 需要三架构真机各服务参战；这是验收阶梯 T2—T5 的判据本体。**宿主半逐子面已完并带提交号**，细则见 §5 末行。**`E5(f)` 的数据存储子面已拿到首份真机终态（`claim/E5-DS-ONLINE-qoder`）**：新门 `os/qemu-tests/test-e5-ds.sh`（盘上载体 `/bin/e5-ds`，x86_64 全系统启动后的 CPL3 进程）闭了判据1（RS→DS 的 12 条服务 label 全部可解析）与传输链四腿（SYS_SETGRANT、int-33 `_taskcall`、DS 服务环、safecopy 双向）；发布/删除/订阅/notify 四族仍缺，缺的不是代码而是**调用者身份**（DS 源闸只认有 label 的进程，本树无「把测试程序当 RS 服务拉起」的入口）——细则见 `edge_todo.md` 的 E-DSWIRE/E5 同日注记 |
 | `E1` 用户态陷入腿的完整收口 | `partially fixed` / `待验证` | 直通陷入传输已真发中断与系统调用，收口与同场联调待真机 |
-| `E6`、`E7` 进程管理的调用包装与协议面扩充 | `open` | 少数调用号与载荷成员仍缺；信号集位宽拓宽成批挂在 `E7` |
+| `E6`、`E7` 进程管理的调用包装与协议面扩充 | `open` | 少数调用号与载荷成员仍缺；信号集位宽拓宽已随 `SD-39` 落地（见 §3） |
 | `E8` 调度服务的真实通电 | `partially fixed` / `待验证` | 同场测试里取频结果为 0，需设备管理覆盖修复后复跑 |
 | `E9` 根服务的生产接线面（进程、虚存、调度三域接口） | `open` | 三域同型批未做，占位返回码是刻意的失败即止 |
 | `E-RSWIRE`、`E-KERNINFO`、`E-MINTYPES-RS` | `partially fixed` | 虚存侧已真解码根服务表；**DS 侧的冷启动 shadow 半也已落地**（经 RS 的 rproctab grant 整表搬回逐行植入 label，对 C `store.c:267-279`，真机读数 12/12）；其余解码与运行时查询桩待翻转 |

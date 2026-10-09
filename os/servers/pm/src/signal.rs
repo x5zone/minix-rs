@@ -681,16 +681,17 @@ pub fn process_sigmgr_signals(
             Some(pair) => pair,
             None => break,
         };
-        // SIGS_LAST = SIGSNDELAY(70) 超出 u64 位图（kernel syscall_signal.rs:
-        // 88-94 的 SigSet(u64) 已知限制）——位图内可表达的只有 1..=64。
-        for signo in 1..=64 {
-            if set >> (signo - 1) & 1 != 0 {
-                if let Err(r) = kern.end_ksig(target, signo) {
+        // 全宽位图（SD-39：与 C sigset_t 同为 128 位，`sigismember`
+        // 逐位消费；内核内部信号 71..=74 落在 word 2）。范围校验由
+        // sigset_contains 自己完成（越界答 false，而非 C 的未检查索引）。
+        for signo in 1u32..=128 {
+            if minix_types::sigset_contains(set, signo) {
+                if let Err(r) = kern.end_ksig(target, signo as i32) {
                     panic!("sys_endksig failed: {}", r);
                 }
                 //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
                 #[allow(clippy::let_underscore_must_use)]
-                let _ = process_ksig(table, target, signo, vctl, kern, transport);
+                let _ = process_ksig(table, target, signo as i32, vctl, kern, transport);
             }
         }
     }
@@ -707,7 +708,7 @@ mod tests {
     }
     impl crate::exit::KernelGateway for TestKernel {
         fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
-        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, minix_types::SigSetBits)>, i32> { Ok(None) }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
     fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
@@ -849,7 +850,7 @@ mod tests {
         }
         impl crate::exit::KernelGateway for RecordKill {
             fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
-            fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+            fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, minix_types::SigSetBits)>, i32> { Ok(None) }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
             fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
     fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
@@ -992,7 +993,7 @@ mod tests {
     /// 脚本化 get_ksig 的内核网关 mock：`ksig_script` 逐次出队，空则
     /// None（= 内核侧无更多）；记录 end_ksig 确认序列。
     struct KsigRecorder {
-        ksig_script: Vec<Option<(minix_types::Endpoint, u64)>>,
+        ksig_script: Vec<Option<(minix_types::Endpoint, minix_types::SigSetBits)>>,
         endksig_calls: Vec<(minix_types::Endpoint, i32)>,
     }
     impl crate::exit::KernelGateway for KsigRecorder {
@@ -1007,7 +1008,7 @@ mod tests {
         fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
         fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
-        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> {
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, minix_types::SigSetBits)>, i32> {
             Ok(if self.ksig_script.is_empty() { None } else { self.ksig_script.remove(0) })
         }
         fn end_ksig(&mut self, ep: minix_types::Endpoint, sig: i32) -> Result<(), i32> {
@@ -1028,7 +1029,7 @@ mod tests {
         let target_ep = table.procs[5].identity.endpoint;
         let mut kern = KsigRecorder {
             ksig_script: vec![
-                Some((target_ep, 1u64 << (SIGTERM - 1))),
+                Some((target_ep, [1u32 << (SIGTERM - 1), 0, 0, 0])),
                 None,
             ],
             endksig_calls: Vec::new(),
@@ -1156,7 +1157,7 @@ mod tests {
         fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
         fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
-        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, minix_types::SigSetBits)>, i32> { Ok(None) }
         fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_sigsend(&mut self, ep: minix_types::Endpoint, sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> {
             self.calls.push((ep, sigmsg.signo, sigmsg.sighandler));
@@ -1291,7 +1292,7 @@ mod tests {
     
     impl crate::exit::KernelGateway for StopRecorder {
         fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
-        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, minix_types::SigSetBits)>, i32> { Ok(None) }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
     fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
@@ -1414,7 +1415,7 @@ mod tests {
         fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
         fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
-        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, minix_types::SigSetBits)>, i32> { Ok(None) }
         fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
         fn sys_diagctl_stacktrace(&mut self, ep: minix_types::Endpoint) -> Result<(), i32> {
             self.traces.push(ep);

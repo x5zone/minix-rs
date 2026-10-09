@@ -10,7 +10,8 @@
 //!
 //! # Design Decisions (19-syscall-signal.md §3)
 //!
-//! - **D1**: `u64` for signal bitmap (`_NSIG = 64`)
+//! - **D1**: `SigSet` 128 位位图（C `sigset_t` 对位，SD-39 拓宽；`_NSIG = 64`
+//!   仍是用户可见信号上界，内核内部信号 70..=74 同图承载）
 //! - **D4**: `cause_signal()` as KProcess method
 //! - **D5**: Linear scan for GETKSIG (matches C, process count < 128)
 //! - **D6**: `trait SignalContext` for architecture-specific sigframe/sigcontext
@@ -82,16 +83,14 @@ pub const SIGKSIG: u32 = 74;
 /// `RTS_SIGNALED | RTS_SIG_PENDING` + `mini_notify` to the manager, which
 /// drives the manager to `SYS_GETKSIG`.
 ///
-/// # Known limitation (`SigSet(u64)`)
+/// # SD-39（已落地）：128 位位图
 ///
-/// C's `sigset_t` is 128 bits (`__uint32_t __bits[4]`, sigtypes.h:60-62),
-/// so bit 70 lands in `p_pending` and rides the GETKSIG map to the
-/// manager. The Rust `SigSet(u64)` (`_NSIG = 64`) cannot encode it:
-/// `p_pending.add(70)` is a no-op, so the signal *number* is not visible
-/// to the manager — only the wakeup is (same shared limitation as
-/// [`SIGKSIG`]/`SIGKSIGSM`). Widening `SigSet` to 128 bits is a
-/// cross-cutting wire change (GET_PROCTAB/GET_PRIVTAB/notify/GETKSIG
-/// message fields + PM mirror), tracked separately.
+/// C 的 `sigset_t` 是 128 位（`__uint32_t __bits[4]`，sigtypes.h:60-62），
+/// bit 70 落在 `p_pending` 并随 GETKSIG map 到达管理器（`m_sigcalls.map =
+/// rp->p_pending`，do_getksig.c:33）。Rust `SigSet` 已拓宽到同款 128 位：
+/// `p_pending.add(70)` 不再是 no-op，信号号对管理器可见（SD-39 前只有
+/// 唤醒可见）。GETKSIG wire 字段（`MessSigcalls.map`）同步拓宽为 4×u32，
+/// PM 侧循环 1..=128（pm/signal.rs）。
 pub const SIGSNDELAY: u32 = 70;
 
 // ── Endpoint constants ──
@@ -100,18 +99,23 @@ pub const SIGSNDELAY: u32 = 70;
 
 // ── Signal bitmap type ──
 //
-// `SigSet` is the newtype defined in `proc.rs` (`pub struct SigSet(u64)` with
+// `SigSet` is the newtype defined in `proc.rs` (`pub struct SigSet(u128)` with
 // `#[repr(transparent)]`). We reuse it here instead of a local alias so that
-// signal bitmaps have one canonical type across the kernel. IPC message
-// layout is preserved via `SigSet::get()` / `SigSet::from_raw()`.
+// signal bitmaps have one canonical type across the kernel. The 128-bit
+// width matches C's `sigset_t` = `{__uint32_t __bits[4]}` (sigtypes.h:59-62;
+// SD-39): the IPC wire form is the 4×u32 word array via `SigSet::to_words()`
+// / `from_words()` (`MessSigcalls.map`, see minix-types `SigSetBits`), and
+// the PM pull loop consumes it signal-by-signal with `sigset_contains`.
 
 /// Build a signal mask for the given signal number (1-based).
-/// C: `sig_mask(sig)` — signal.h
+/// C: `sig_mask(sig)` — signal.h. Accepts the full 128-bit `sigset_t`
+/// range (system code uses the unchecked `__sigmask`, sigtypes.h:66),
+/// so kernel-internal signals (70..=74) get a mask too.
 pub const fn sig_mask(sig_nr: u32) -> SigSet {
-    if sig_nr == 0 || sig_nr as usize > NSIG {
+    if sig_nr == 0 || sig_nr > 128 {
         SigSet::empty()
     } else {
-        SigSet::from_raw(1u64 << (sig_nr - 1))
+        SigSet::from_bits(1u128 << (sig_nr - 1))
     }
 }
 
@@ -222,8 +226,8 @@ pub fn dispatch_kill(
 /// C: `mini_notify(proc_addr(SYSTEM), rp->p_endpoint)` — system.c:381）实现。
 /// `s_sig_pending` 在本模块只写不读：其消费方在 ipc 通知投递路径
 ///（SYSTEM 源通知送达时编码进 `m_notify.sigset` 并清空，ipc.rs:1776-1782）；
-/// 超过 64 的内核信号（SIGKSIG=74 等）因 `SigSet(u64)` 位宽限制 add 为 no-op，
-/// 唤醒动作本身即 C 语义中该信号的完整内核行为。
+/// SD-39 后位图与 C `sigset_t` 同为 128 位，内核内部信号（SIGKSIG=74 等，
+/// 落 word 2）与 C 同样可编码，唤醒动作即 C 语义的完整内核行为。
 pub(crate) fn cause_signal(
     target_nr: ProcNr,
     sig_nr: u32,
@@ -324,7 +328,7 @@ pub(crate) fn cause_signal(
 
         // C: system.c:433 — sigaddset(&priv(rp)->s_sig_pending, sig_nr)
         // 自管理进程的信号记入其自身 s_sig_pending（内核侧写记录，无内核读者；
-        // sig_nr ≤ 64 在 Rust SigSet(u64) 位宽内）。
+        // SD-39 拓宽后 128 位内全可编码）。
         if let Some(pid) = proc_table.get(target_nr).and_then(|p| p.priv_id)
             && let Some(priv_) = priv_table.get_mut(pid)
         {
@@ -333,9 +337,9 @@ pub(crate) fn cause_signal(
 
         // C: system.c:434 — send_sig(rp->p_endpoint, SIGKSIGSM) → mini_notify(proc_addr(SYSTEM), rp->p_endpoint)
         // SIGKSIGSM=73 的内核动作仅是"唤醒自管理进程去处理自身待决状态"。
-        // Rust SigSet(u64) 无法编码 >64 的信号（add 为 no-op），而唤醒本身
-        // 由 mini_notify 完成，故直接 mini_notify_core（源 = SYSTEM，目标 = 自身），
-        // 无需 SIGKSIGSM 常量。
+        // SIGKSIGSM 号本身经 s_sig_pending.add 记录（SD-39 拓宽后可编码），
+        // 而唤醒本身由 mini_notify 完成，故直接 mini_notify_core
+        // （源 = SYSTEM，目标 = 自身），无需单独 SIGKSIGSM 常量。
         let _ = crate::ipc::mini_notify_core(
             proc_table.procs_slice_mut(),
             priv_table,
@@ -377,8 +381,8 @@ pub(crate) fn cause_signal(
         // 源是 SYSTEM。
         if let Some(sig_mgr_ep) = sig_mgr {
             // C: system.c:380 — sigaddset(&priv->s_sig_pending, sig_nr)
-            // SIGKSIG=74 超出 Rust SigSet(u64) 位宽 → add 为 no-op；s_sig_pending 是
-            // 写记录（内核无读者），行为保持。
+            // SIGKSIG=74 记入 s_sig_pending（SD-39 拓宽后可编码，随 notify
+            // sigset 到达管理器）。
             if let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep)
                 && let Some(sig_mgr_proc) = proc_table.get(sig_mgr_nr)
                     && let Some(pid) = sig_mgr_proc.priv_id
@@ -429,7 +433,7 @@ pub fn dispatch_getksig(
     priv_table: &PrivTable,
 ) -> KcallResult {
     // C: do_getksig.c:27-40 — scan all user processes
-    let mut found: Option<(Endpoint, u64)> = None;
+    let mut found: Option<(Endpoint, [u32; 4])> = None;
 
     for rp in proc_table.iter() {
         // Skip kernel tasks and free slots
@@ -450,7 +454,9 @@ pub fn dispatch_getksig(
         }
 
         // Found a process with a pending signal for this signal manager.
-        found = Some((rp.p_endpoint, rp.p_pending.get()));
+        // SD-39: full 128-bit map — kernel-internal signals (70..=74) ride
+        // the map just like C (`m_sigcalls.map = rp->p_pending`).
+        found = Some((rp.p_endpoint, rp.p_pending.to_words()));
         break;
     }
 
@@ -474,16 +480,16 @@ pub fn dispatch_getksig(
             endpt: endpt.get(),
             sig: 0,
             sigctx: 0,
-            _padding: [0u8; 32],
+            _padding: [0u8; 24],
         };
     } else {
         // C: do_getksig.c:40 — m_ptr->m_sigcalls.endpt = NONE
         msg.m_u.m_sigcalls = MessSigcalls {
-            map: 0,
+            map: [0u32; 4],
             endpt: Endpoint::NONE.get(),
             sig: 0,
             sigctx: 0,
-            _padding: [0u8; 32],
+            _padding: [0u8; 24],
         };
     }
 
@@ -928,7 +934,12 @@ mod tests {
         assert_eq!(sig_mask(2).get(), 2u64);
         assert_eq!(sig_mask(64).get(), 1u64 << 63);
         assert_eq!(sig_mask(0).get(), 0u64);
-        assert_eq!(sig_mask(65).get(), 0u64);
+        // SD-39: 128 位拓宽后 65..=128 可编码（内核内部信号族），
+        // >128 仍为空集。
+        assert_eq!(sig_mask(65).bits(), 1u128 << 64);
+        assert_eq!(sig_mask(70).bits(), 1u128 << 69);
+        assert_eq!(sig_mask(74).bits(), 1u128 << 73);
+        assert_eq!(sig_mask(129).get(), 0u64);
     }
 
     #[test]
@@ -1215,7 +1226,10 @@ mod tests {
         let (got_endpt, got_map) = unsafe { (msg.m_u.m_sigcalls.endpt, msg.m_u.m_sigcalls.map) };
         assert_eq!(got_endpt, target_ep.get());
         // SigSet 位编码与 C sigset_t 同款：信号号 s → bit (s-1)（POSIX sigaddset）。
-        assert_eq!(got_map, 1u64 << (SIGTRAP - 1));
+        // SD-39: map 是 4×u32 全宽位图；SIGTRAP=5 → 字 0 位 4。
+        let mut expect = [0u32; 4];
+        expect[0] = 1 << (SIGTRAP - 1);
+        assert_eq!(got_map, expect);
         // C do_getksig.c:33-34 — 消费后清 p_pending + RTS_SIGNALED
         let t = procs.get(ProcNr(0)).unwrap();
         assert!(!t.p_rts_flags.is_set(RtsFlagsBits::SIGNALED));

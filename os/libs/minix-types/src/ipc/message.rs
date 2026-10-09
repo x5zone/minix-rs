@@ -1837,22 +1837,31 @@ pub struct MessKrnLsysSysFork {
 /// # 64-bit Layout
 /// ```text
 /// | Field   | Type | Offset |
-/// |---------|------|--------|
-/// | map     | u64  | 0      |
-/// | endpt   | i32  | 8      |
-/// | sig     | i32  | 12     |
-/// | sigctx  | u64  | 16     |
-/// | padding | 32B  | 24     |
+/// |---------|---------|--------|
+/// | map     | SigSetBits | 0   |
+/// | endpt   | i32     | 16     |
+/// | sig     | i32     | 20     |
+/// | sigctx  | u64     | 24     |
+/// | padding | 24B     | 32     |
 /// ```
 ///
+/// Layout matches C `mess_sigcalls` (ipc.h:1917-1923): `sigset_t map`
+/// (16 bytes, `__uint32_t __bits[4]`), `endpt` @16, `sig` @20, `sigctx`
+/// @24, 24 bytes padding to the 56-byte payload. SD-39 widened `map` from
+/// `u64` to the full `sigset_t` shape so kernel-internal signals
+/// (`SIGSNDELAY`=70, `SIGKSIG`=74) ride the GETKSIG map (C:
+/// `m_ptr->m_sigcalls.map = rp->p_pending`, do_getksig.c:33) — the
+/// pre-widening layout put `endpt` @8 (a deviation from C offsets, both
+/// ends Rust-internal so self-consistent).
+///
 /// **IMPORTANT**: This layout differs from `MessageM1`. Using `m1.m1i1` for
-/// `endpt` is WRONG — `m1.m1i1` maps to offset 0 (low 4 bytes of `map`),
-/// while `endpt` is at offset 8. Always use `MessSigcalls` for signal syscalls.
+/// `endpt` is WRONG — `m1.m1i1` maps to offset 0 (word 0 of `map`).
+/// Always use `MessSigcalls` for signal syscalls.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MessSigcalls {
-    /// Signal bitmap. C: `sigset_t map`
-    pub map: u64,
+    /// Signal bitmap. C: `sigset_t map` (16 bytes)
+    pub map: crate::ipc::notify::SigSetBits,
     /// Process endpoint. C: `endpoint_t endpt`
     pub endpt: i32,
     /// Signal number. C: `int sig`
@@ -1860,7 +1869,7 @@ pub struct MessSigcalls {
     /// Pointer to signal context. C: `void *sigctx`
     pub sigctx: u64,
     /// Padding to 56 bytes (C: union payload size).
-    pub _padding: [u8; 32],
+    pub _padding: [u8; 24],
 }
 
 /// SYS_GETINFO (GET_WHOAMI) reply message payload.

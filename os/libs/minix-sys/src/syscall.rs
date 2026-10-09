@@ -438,7 +438,11 @@ pub const SYS_ENDKSIG_CALL: i32 = 8;
 /// 为 `Endpoint::NONE`。回复载荷 `m_sigcalls.{endpt, map}`。取回即消费：
 /// 内核同时清除该进程的 RTS_SIGNALED 与 p_pending（后续 endksig 逐信号
 /// 清 SIG_PENDING）。PM 的 SIGKSIG 拉取循环（sef_signal.c:27-63）驱动。
-pub fn sys_getksig(transport: &impl KernelCallTransport) -> Result<(i32, u64), i32> {
+/// 位图按 C wire 形态回传（`sigset_t` = 4×u32，128 位；SD-39）：
+/// PM 侧用 [`minix_types::sigset_contains`] 逐位消费。
+pub fn sys_getksig(
+    transport: &impl KernelCallTransport,
+) -> Result<(i32, minix_types::SigSetBits), i32> {
     let mut msg = Message {
         m_type: SYS_GETKSIG_CALL,
         ..Default::default()
@@ -1530,12 +1534,13 @@ mod tests {
         let mut reply = Message::default();
         reply.m_type = 0;
         unsafe {
+            // 信号 15 → word 0 的 bit 14（与 C `__sigmask(15)` 一致）。
             reply.m_u.m_sigcalls = MessSigcalls {
-                map: 1u64 << (15 - 1),
+                map: [1u32 << 14, 0, 0, 0],
                 endpt: 42,
                 sig: 0,
                 sigctx: 0,
-                _padding: [0u8; 32],
+                _padding: [0u8; 24],
             };
         }
         canned.reply_message(reply);
@@ -1543,7 +1548,8 @@ mod tests {
         let (endpt, map) = sys_getksig(&canned).expect("OK reply decodes");
 
         assert_eq!(endpt, 42);
-        assert_eq!(map, 1u64 << 14);
+        assert!(minix_types::sigset_contains(map, 15));
+        assert!(!minix_types::sigset_contains(map, 14));
         assert_eq!(SYS_GETKSIG_CALL, 7, "kernel Syscall::Getksig = 7");
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, SYS_GETKSIG_CALL);
