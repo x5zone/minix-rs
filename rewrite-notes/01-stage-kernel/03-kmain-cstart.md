@@ -749,7 +749,7 @@ GDT 的槽位对照（两张表的长度也一并现算）：
 
 第 3 槽的变化不止是槽号平移：64 位的用户段在这里多插了一个无人选择的副本。它存在的原因是 `sysret64` 取选择子的规则——返回时 CS 取 STAR 高 16 位加 16、SS 取加 8，因此 STAR 的高位要指向用户 CS 三个槽之前的位置。§4.3 会把这条规则与一次真实的失败记录对上。
 
-**如果反过来想**：只把 TSS 描述符的低 8 字节放进 GDT 映像（把高 32 位放在另一个不暴露的数组里）。长模式的 TSS 描述符是 16 字节，高 8 字节里存的是基址的 63:32 位——`ltr` 读到的基址高半为 0。内核在 0xFFFF_8000_... 一带的 TSS 结构体被解释成 0x0000_0000_xxxxxxxx 的物理地址，第一次 CPL3→CPL0 转场时 CPU 按这个基址读 `sp0`，读到的是低地址上的任意内存内容。Rust 侧对此留了记录：这个写法在 S-4 之前确实存在，因为它当时"没有人跨过 ring"，缺陷是潜伏的（`os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu` 的注释）。
+**如果反过来想**：只把 TSS 描述符的低 8 字节放进 GDT 映像（把高 32 位放在另一个不暴露的数组里）。长模式的 TSS 描述符是 16 字节，高 8 字节里存的是基址的 63:32 位——`ltr` 读到的基址高半为 0。内核在 0xFFFF_8000_... 一带的 TSS 结构体被解释成 0x0000_0000_xxxxxxxx 的物理地址，第一次 CPL3→CPL0 转场时 CPU 按这个基址读 `sp0`，读到的是低地址上的任意内存内容。Rust 侧对此留了记录：这个写法在早期版本里确实存在，因为那时"没有人跨过 ring"，缺陷是潜伏的（`os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu` 的注释）。
 
 ### 3.2 一条真实的顺序依赖拆出两个 trait（→§2.4、§2.5）
 
@@ -818,7 +818,7 @@ pub struct X86_64Protection {
 }
 ```
 
-**如果反过来想**：按最直觉的写法在栈上构造实例、`load()` 之后让实例随作用域结束。`ltr` 已经把 TSS 描述符装进 TR，这个描述符里嵌着 TSS 结构体的地址；实例析构后那一段栈内存被后续调用复用。第一次用户态进入（CPL3→CPL0）时 CPU 从该描述符取基址、从那个地址读 `sp0`——读到的是复用后的字节，压栈目标随之变成一个任意地址。代码注释把后果写成了具体地址：`sp0 = 0 → page fault at VA -8 on the frame push`（帧压栈时写地址 −8 引发缺页）。依据：`os/arch/src/x86_64/trap_entry.rs:fn load` 的 LIFETIME CONTRACT 注释与 `os/kernel/src/lib.rs:fn init_protection` 的 S-5 lifetime 注释。
+**如果反过来想**：按最直觉的写法在栈上构造实例、`load()` 之后让实例随作用域结束。`ltr` 已经把 TSS 描述符装进 TR，这个描述符里嵌着 TSS 结构体的地址；实例析构后那一段栈内存被后续调用复用。第一次用户态进入（CPL3→CPL0）时 CPU 从该描述符取基址、从那个地址读 `sp0`——读到的是复用后的字节，压栈目标随之变成一个任意地址。代码注释把后果写成了具体地址：`sp0 = 0 → page fault at VA -8 on the frame push`（帧压栈时写地址 −8 引发缺页）。依据：`os/arch/src/x86_64/trap_entry.rs:fn load` 的 LIFETIME CONTRACT 注释与 `os/kernel/src/lib.rs:fn init_protection` 的 lifetime 契约注释。
 
 ### 3.4 用户态入口：能力探测换成一条路径 + 内核自己的标签（→§2.4）
 
@@ -924,7 +924,7 @@ $ sed -n '/const STUB_VECTORS/,/^];/p' os/arch/src/x86_64/trap_stub.rs | grep -c
 
 ### 4.1 kmain Phase A 的落地（→3.6）
 
-C 的 Phase A 五步在 Rust 侧有一处结构性变化：全局副本不是"拷贝结构体"，而是把启动信息的三个变长载荷（保留区间、内存映射、模块表）落进 `.bss` 里的固定存储，再发布一个全局 `KernelInfo`。这一步的动因写在 `kmain` 入口的 NK4-A 注释里（同文件的可锚定落点：`os/kernel/src/lib.rs:fn kernel_info` 与 `:fn store_kernel_info`）：入口的参数引用被编译器 spill 到内核栈之后再读回，栈槽遭别名覆写，经参数读到的字段全是 `.rdata` ASCII 垃圾。因此 `kmain` 的第一个动作是改从全局槽取引用：
+C 的 Phase A 五步在 Rust 侧有一处结构性变化：全局副本不是"拷贝结构体"，而是把启动信息的三个变长载荷（保留区间、内存映射、模块表）落进 `.bss` 里的固定存储，再发布一个全局 `KernelInfo`。这一步的动因写在 `kmain` 入口的注释里（同文件的可锚定落点：`os/kernel/src/lib.rs:fn kernel_info` 与 `:fn store_kernel_info`）：入口的参数引用被编译器 spill 到内核栈之后再读回，栈槽遭别名覆写，经参数读到的字段全是 `.rdata` ASCII 垃圾。因此 `kmain` 的第一个动作是改从全局槽取引用：
 
 ```rust
 /* 节选（保留入口取值与诊断块；省略号处为诊断输出），os/kernel/src/lib.rs:fn kmain。 */
@@ -934,9 +934,9 @@ C 的 Phase A 五步在 Rust 侧有一处结构性变化：全局副本不是"�
 
 `store_kernel_info` 做的三块落地（保留区间、memmap、模块表+名字池）见 `os/kernel/src/lib.rs:fn store_kernel_info`。随后三步与 C 一一对应：`KERNEL_MAY_ALLOC.store(true, Ordering::Release)`（闸门；Rust 侧目前只有置位/清位与一个未被调用的 getter `os/kernel/src/lib.rs:fn kernel_may_alloc`，`os/kernel/src/memmap.rs` 只在注释里引 C 的 `assert(kernel_may_alloc)`）、`FREE_MEMMAP` 的拷贝与逐模块 `cut_memmap`（模块物理内存的临时切除；归还发生在 Phase C——`os/kernel/src/lib.rs:fn init_proc_and_boot` 把 VM 的 ELF 段装进页表后调用 `os/kernel/src/memmap.rs:fn add_memmap` 补回。Phase F 的 `add_memmap` 目标是 `bootstrap_start/len`，本移植下该区间长度为 0、恒为 no-op）、`minix_platform::init_from_kinfo`（平台描述符，早于时钟与中断）。
 
-C 的"把内核镜像自己也切一刀"在 Rust 侧由 D-64① 补上：UEFI 路径上内核镜像不在 conventional memmap 里，这一步是空操作（`cut_memmap` 返回 `Err`，代码显式丢弃并注明这是预期），OpenSBI 路径上它防止 GET_MEMINFO 把内核镜像当空闲内存报出去。
+C 的"把内核镜像自己也切一刀"在 Rust 侧由内核侧的一处补充动作接上：UEFI 路径上内核镜像不在 conventional memmap 里，这一步是空操作（`cut_memmap` 返回 `Err`，代码显式丢弃并注明这是预期），OpenSBI 路径上它防止 GET_MEMINFO 把内核镜像当空闲内存报出去。
 
-**如果反过来想**：继续使用入口参数引用而不切全局副本。NK4-A 的记录给出了现场：参数经栈槽读回后字段变垃圾，`validate` 在第一处不变量上 panic；诊断块留下的四个读数（`rdi`、全局槽指针、`rsp`、`bootstrap_len`）就是为此加的。依据：`os/kernel/src/lib.rs:fn kernel_info` 与 `:fn store_kernel_info`（后者落三块载荷）。
+**如果反过来想**：继续使用入口参数引用而不切全局副本。源码注释记录的现象是：参数经栈槽读回后字段变垃圾，`validate` 在第一处不变量上 panic；诊断块留下的四个读数（`rdi`、全局槽指针、`rsp`、`bootstrap_len`）就是为此加的。依据：`os/kernel/src/lib.rs:fn kernel_info` 与 `:fn store_kernel_info`（后者落三块载荷）。
 
 ### 4.2 init_protection 的逐步落地（→3.2、3.3、3.7）
 
@@ -959,7 +959,7 @@ C 的"把内核镜像自己也切一刀"在 Rust 侧由 D-64① 补上：UEFI �
     with_trap_entry(|trap| trap.load());
 ```
 
-次序与 §3.2/§3.3/§3.7 的对应：`store_protection` 在 `load` 之前（§3.3 的搬迁契约）；`refresh_tss_descriptors` 紧跟搬迁（§3.3 的收尾）；`prot.load()` 在 `CurrentTrapEntry::init()` 之前（§3.2 的顺序依赖）；`install_trap_stubs` 在 `trap.load()` 之前（§3.7 的空门不变量）。这段代码里还有一处需要在正文里点明的现状差异：函数的文档注释仍写着"handler 地址为占位 0、表随后丢弃、由后续阶段重建"，而函数体自 S-8 起已经把真入口装齐并调用 `load()`。本篇按函数体写，注释与实现不一致这一点在 §5.3 作为披露项列出。
+次序与 §3.2/§3.3/§3.7 的对应：`store_protection` 在 `load` 之前（§3.3 的搬迁契约）；`refresh_tss_descriptors` 紧跟搬迁（§3.3 的收尾）；`prot.load()` 在 `CurrentTrapEntry::init()` 之前（§3.2 的顺序依赖）；`install_trap_stubs` 在 `trap.load()` 之前（§3.7 的空门不变量）。这段代码里还有一处需要在正文里点明的现状差异：函数的文档注释仍写着"handler 地址为占位 0、表随后丢弃、由后续阶段重建"，而函数体后来已经把真入口装齐并调用 `load()`。本篇按函数体写，注释与实现不一致这一点在 §5.3 作为披露项列出。
 
 **如果反过来想**：把 `configure_syscall` 挪到 `trap.load()` 之后。`EFER.SCE` 一旦置位，`SYSCALL` 指令立刻可用，而 LSTAR 可能仍是 0（复位值）；这条窗口里用户态的第一条 `SYSCALL` 跳到地址 0。两件事的正确顺序是"先把入口地址与掩码写全，再让机制生效"——`configure_syscall` 内部也是这个顺序（STAR → LSTAR → SFMASK → EFER）。依据：`os/arch/src/x86_64/trap_entry.rs:fn configure_syscall` 的写入次序与 `os/kernel/src/lib.rs:fn init_protection` 的调用点。
 
@@ -1215,7 +1215,7 @@ x86_64 版（`os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/ma
 | aarch64 `set_kernel_stack` 为 no-op 的行为 | API 层无可观察行为，只有文档说明 | 由返回用户态路径的真机载体覆盖（属异常/返回主题） |
 | `os/arch/src/x86_64/trap_entry.rs:fn init` 的作者口径 | 函数体的门清单与 C 的 39 条对齐关系只在注释里 | 把 §3.7 的 41 项拆解写成断言（按区计数），任何一侧增删向量都会红 |
 
-另有一处现状差异需要披露：`os/kernel/src/lib.rs:fn init_protection` 的文档注释仍保留着"handler 地址为占位 0、表随后丢弃、由后续阶段重建"的描述，而函数体自 S-8 起已装真入口并 `load()`。本篇正文按函数体写；注释与实现不一致本身是一条应该在代码侧收口的遗留项，不属于文档能修的范围。
+另有一处现状差异需要披露：`os/kernel/src/lib.rs:fn init_protection` 的文档注释仍保留着"handler 地址为占位 0、表随后丢弃、由后续阶段重建"的描述，而函数体已装真入口并 `load()`。本篇正文按函数体写；注释与实现不一致本身是一条应该在代码侧收口的遗留项，不属于文档能修的范围。
 
 ---
 
