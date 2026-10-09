@@ -57,7 +57,7 @@ tree  = rewrite-notes
 
 - 文档序真源：`{tree}/{stage}/doc_rerank_*.md`（各 AI 的重建蓝图）+ `checklist.md`。**注：`01-stage-kernel` 无 `plan.md`**（plan.md 只在 02–18 stage 存在），有则参考，无则以上两者为准。
 - `doc_rerank_*.md` 应都读取并参考，这就是多AI bagging的意义。
-- `{tree}/{stage}/draft/` 是旧文档，**仅作思路参考、不作事实来源**；正式文档禁止引用 `draft/`、`.design/`、`tmp_design_and_todo/`（引用即 P0-process-violation）。**旧文档的章节大纲也同样过期**（它派生自旧正文），只作参考、不许继承复用——新大纲按第 1.5 步现推。
+- `{tree}/{stage}/draft/` 是旧文档，**仅作思路参考、不作事实来源**；正式文档禁止引用 `draft/`、`.design/`、`tmp_design_and_todo/`（引用即 P0-process-violation）。**指向尚未重生成的篇目时，写成 `NN-篇名`（篇题，尚未重生成）的形式、不给路径**（v3 第 5 轮实测：03/05 两篇共 27 处写成了 `rewrite-notes/…/draft/NN-*.md`，而本轮之前五篇正稿里这个数字是 0——是相对既有基线的回归）。**旧文档的章节大纲也同样过期**（它派生自旧正文），只作参考、不许继承复用——新大纲按第 1.5 步现推。
 - 结合 `minix3/` C 码与 `os/` Rust 实现，定 `{num}` 的主题边界，说明与前后文档的知识衔接（哪些概念首次在此出现、哪些留后续）。
 - 汇报「选题范围 + 覆盖的 C 文件/函数 + 与相邻文档衔接」，用户确认后进第 1.3 步（人工资产对账），再到第 1.5 步写大纲；**未得到确认不得直接写正文**。
 
