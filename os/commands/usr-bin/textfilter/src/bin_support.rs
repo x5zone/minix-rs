@@ -52,6 +52,10 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
 #[cfg(any(test, not(target_os = "none")))]
 pub fn warn(bytes: &[u8]) {
     use std::io::Write as _;
+    //[SD19-gate] hosted warn 通道与 C `fputs(msg, stderr)` 无检查同构：`write_all` 可 EPIPE，
+    // 主路径已选 “输出提示” 而非 “报提示失败”，失败不回滚主语义。与 `os/libs/minix-sys/src/lib.rs`
+    // 同族的“不返回语义”处理一致。
+    #[allow(clippy::let_underscore_must_use)]
     let _ = std::io::stderr().write_all(bytes);
 }
 

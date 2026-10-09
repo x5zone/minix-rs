@@ -1074,6 +1074,8 @@ impl FsDriver for Ext2Server {
             return Err(Errno::from_i32(EPERM));
         }
         self.add_entry(directory as u32, inode as u32, dir::TYPE_REGULAR, name.as_bytes())?;
+        //[SD19-gate] C link.c:92 `rip->i_links_count++` 后接 void `put_inode` 不回错；主操作 add_entry 已成功后链数尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.adjust_links(inode as u32, 1);
         Ok(())
     }
@@ -1088,6 +1090,8 @@ impl FsDriver for Ext2Server {
             return Err(Errno::from_i32(EPERM));
         }
         if self.adjust_links(number, -1)? {
+            //[SD19-gate] C link.c:260 `put_inode` 内部处理 inode 归零后的 block 释放、void 不回错；unlink 主操作已确认 last link，不因 block 释放失败而回滚
+            #[allow(clippy::let_underscore_must_use)]
             let _ = self.free_file_blocks(&record);
             self.free_inode(number)?;
         }
@@ -1116,8 +1120,12 @@ impl FsDriver for Ext2Server {
             return Err(Errno::from_i32(minix_types::ENOTEMPTY));
         }
         let number = self.remove_entry(directory as u32, name)?;
+        //[SD19-gate] C link.c:260 `put_inode` 内部处理 inode 归零后的 block 释放、void 不回错；rmdir 已确认 empty 并取子 inode，不因 block 释放失败而回滚
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.free_file_blocks(&child);
         self.free_inode(number)?;
+        //[SD19-gate] C link.c:255 直接 `rip->i_links_count--;` 后接 void `put_inode`；remove_entry 已成功后父目录链数尽力而为
+        #[allow(clippy::let_underscore_must_use)]
         let _ = self.adjust_links(directory as u32, -1);
         Ok(())
     }
@@ -1218,6 +1226,8 @@ impl FsDriver for Ext2Server {
         // （C ENTER + links_count++），插入失败按 C 不加不减。
         if old_is_dir && !same_pdir {
             if let Ok(old_parent) = self.remove_entry(old_number, "..") {
+                //[SD19-gate] C link.c:440 rename 直接 `--` 后 `put_inode(old_dirp)` 不回错；`..` 已摘下、旧父目录链数尽力而为
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.adjust_links(old_parent, -1);
             }
             if self
@@ -1672,9 +1682,13 @@ mod tests {
         assert_eq!(n, big.len());
         // 读回两端：最后一块住在单间间接块里。
         let mut head = Vec::new();
+        //[SD19-gate] 测试夹具：紧邻 `assert_eq!(head, ...)` 断言读回内容，read 失败会体现为下条失配；不 unwrap 是刻意的形状（与 minix-sys/src/lib.rs 测试夹具档同处理）
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.read(11, 0, 16, &mut |bytes| head.extend_from_slice(bytes));
         assert_eq!(head, vec![b'A'; 16]);
         let mut tail = Vec::new();
+        //[SD19-gate] 测试夹具：紧邻 `assert_eq!(tail, ...)` 断言间接块尾部内容，read 失败会体现为下条失配；不 unwrap 同 1675 形状
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.read(11, (block_size * 13) as i64, 16, &mut |bytes| {
             tail.extend_from_slice(bytes)
         });
@@ -1695,6 +1709,8 @@ mod tests {
         let n = server.write(11, 0, b"FRESH").unwrap();
         assert_eq!(n, 5);
         let mut got = Vec::new();
+        //[SD19-gate] 测试夹具：紧邻 `assert_eq!(&got[..5], ...)` 断言截断写入后旧尾巴已清；不 unwrap 同 1675 形状
+        #[allow(clippy::let_underscore_must_use)]
         let _ = server.read(11, 0, 16, &mut |bytes| got.extend_from_slice(bytes));
         assert_eq!(&got[..5], b"FRESH");
     }
