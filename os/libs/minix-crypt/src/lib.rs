@@ -19,6 +19,10 @@
 //!   that scheme, which is the pre-crate behavior and stays honest.
 
 #![no_std]
+// [SD-19] 静默吞错家族编译门：无理由的新 `let _ =`（丢弃 `#[must_use]` 返回值）
+// 会在每次 clippy 当场多报一条，把本家族的发现从「审计可发现」升级为「编译可发现」。
+// 不升 `deny`（零断面风险）；有意丢弃处逐站加 `//[SD19-gate] <理由>` + 语句级 `#[allow]`。
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 
@@ -86,7 +90,11 @@ mod tests {
             let mut out = alloc::string::String::new();
             for b in d {
                 use core::fmt::Write as _;
-                let _ = core::fmt::write(&mut out, format_args!("{:02x}", b));
+                // [SD19-gate] 写向 String 的十六进制格式化器（宿主测试内 `hex` 闭包）：
+                // `String` 的 `write_fmt`（经 `core::fmt::Write` trait）仅在分配失败（OOM）时
+                // 回 Err，测试环境不可恢复；失败体现为后续 `assert_eq!` 的十六进制失配，故丢弃写错属刻意形状。
+                #[allow(clippy::let_underscore_must_use)]
+                let _ = out.write_fmt(format_args!("{:02x}", b));
             }
             out
         };
