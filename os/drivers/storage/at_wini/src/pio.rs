@@ -316,34 +316,88 @@ pub const fn status_error(status: u8) -> bool {
     status & STATUS_ERR != 0
 }
 
-/// IDENTIFY word index for the capabilities field. C: `ID_CAPABILITIES` (49) —
+/// IDENTIFY word holding the LBA capability bit. C: `ID_CAPABILITIES` (49) —
 /// at_wini.h:85.
 pub const ID_CAPABILITIES_WORD: usize = 49;
-/// LBA addressing supported. C: `ID_CAP_LBA` — at_wini.h:86.
+/// IDENTIFY word holding the supported-command-set bits (LBA48). C: `ID_CSS`
+/// (83 = 0x53) — at_wini.h:97.
+pub const ID_CSS_WORD: usize = 83;
+/// LBA addressing supported — bit in word 49. C: `ID_CAP_LBA` — at_wini.h:86.
 pub const ID_CAP_LBA: u16 = 0x0200;
-/// LBA48 addressing supported. C: `ID_CSS_LBA48` — at_wini.h:98.
+/// LBA48 addressing supported — bit in word 83. C: `ID_CSS_LBA48` — at_wini.h:98.
 pub const ID_CSS_LBA48: u16 = 0x0400;
+/// Only trust LBA once the CHS size exceeds this many sectors (~512 MiB).
+/// C: `size > 512L*1024*2` — at_wini.c:689.
+pub const LBA_TRUST_MIN_SECTORS: u32 = 512 * 1024 * 2;
+/// Only probe for LBA48 once the LBA28 sector count reaches this. C:
+/// `LBA48_CHECK_SIZE` — at_wini.h:126.
+pub const LBA48_CHECK_SIZE: u32 = 0x0f00_0000;
 
-/// The LBA capabilities read from an IDENTIFY block.
+/// Geometry / capacity / addressing decoded from an IDENTIFY block.
+///
+/// C: the `wini` fields `cylinders/heads/sectors/lba48` plus `size` set by
+/// `w_identify` (at_wini.c:682-718).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IdentifyCaps {
-    /// Drive supports LBA (CHS→LBA enable). C: `w & ID_CAP_LBA` (at_wini.c:689).
+pub struct IdentifyInfo {
+    /// CHS cylinders (word 1). C: `id_word(1)` — at_wini.c:683.
+    pub cylinders: u16,
+    /// CHS heads (word 3). C: `id_word(3)` — at_wini.c:684.
+    pub heads: u16,
+    /// CHS sectors-per-track (word 6). C: `id_word(6)` — at_wini.c:685.
+    pub sectors_per_track: u16,
+    /// LBA addressing selected. C: `wn->ldhpref |= LDH_LBA` (at_wini.c:693).
     pub lba: bool,
-    /// Drive supports LBA48. C: `w & ID_CSS_LBA48` (at_wini.c:701).
+    /// LBA48 addressing selected. C: `wn->lba48 = 1` (at_wini.c:714).
     pub lba48: bool,
+    /// Total addressable sectors under the chosen mode. C: `size`.
+    pub total_sectors: u32,
 }
 
-/// Decode the LBA / LBA48 capability bits from IDENTIFY word 49.
+/// 4-byte little-endian longword at word index `n` (words `n` and `n+1`).
+/// C: `id_longword(n)` — at_wini.c:555.
+pub fn id_longword(block: &[u16; SECTOR_WORDS], n: usize) -> u32 {
+    block[n] as u32 | (block[n + 1] as u32) << 16
+}
+
+/// Decode LBA / LBA48 support, geometry and total capacity from a 256-word
+/// IDENTIFY block, mirroring C `w_identify` (at_wini.c:682-718).
 ///
-/// C: `w_identify` reads `id_word(ID_CAPABILITIES)` and tests `ID_CAP_LBA` /
-/// `ID_CSS_LBA48` (at_wini.c:688-714). Capacity thresholds (only trust LBA when
-/// the drive is big enough, only check LBA48 past `LBA48_CHECK_SIZE`) are
-/// applied by the caller from the geometry; this is the raw bit decode.
-pub const fn parse_identify_caps(word49: u16) -> IdentifyCaps {
-    IdentifyCaps {
-        lba: word49 & ID_CAP_LBA != 0,
-        lba48: word49 & ID_CSS_LBA48 != 0,
+/// The LBA bit is in word 49 (`ID_CAPABILITIES`) and the LBA48 bit is in word
+/// 83 (`ID_CSS`) — two different words. LBA is trusted only past
+/// `LBA_TRUST_MIN_SECTORS` of the CHS size; LBA48 is probed only at/over
+/// `LBA48_CHECK_SIZE` of the LBA28 count (words 60-61), and its 48-bit count
+/// (words 100-103) truncates to `u32::MAX` when the high longword is nonzero.
+pub fn parse_identify(block: &[u16; SECTOR_WORDS]) -> IdentifyInfo {
+    let cylinders = block[1];
+    let heads = block[3];
+    let sectors_per_track = block[6];
+    let chs_size = (cylinders as u32) * (heads as u32) * (sectors_per_track as u32);
+    let mut info = IdentifyInfo {
+        cylinders,
+        heads,
+        sectors_per_track,
+        lba: false,
+        lba48: false,
+        total_sectors: chs_size,
+    };
+    // C: only enable LBA when the drive is LBA-capable AND big enough to trust
+    // it not to garble the translation (at_wini.c:689).
+    if block[ID_CAPABILITIES_WORD] & ID_CAP_LBA != 0 && chs_size > LBA_TRUST_MIN_SECTORS {
+        info.lba = true;
+        info.total_sectors = id_longword(block, 60); // LBA28 sector count
+        // C: only look for LBA48 once the count reaches the check size
+        // (at_wini.c:697-714).
+        if info.total_sectors >= LBA48_CHECK_SIZE && block[ID_CSS_WORD] & ID_CSS_LBA48 != 0 {
+            info.lba48 = true;
+            // A 48-bit count that overflows 32 bits → truncate to LBA32 max.
+            info.total_sectors = if id_longword(block, 102) != 0 {
+                u32::MAX
+            } else {
+                id_longword(block, 100)
+            };
+        }
     }
+    info
 }
 
 /// The ATA IDENTIFY command for a drive (CHS selector — LBA capability is
@@ -363,19 +417,17 @@ pub const fn identify_command(drive: u8) -> Command {
     }
 }
 
-/// Issue IDENTIFY and read back the drive's reported LBA capabilities.
+/// Issue IDENTIFY and decode the drive's geometry / capacity / addressing.
 ///
-/// C: `w_identify` (at_wini.c:644-...): send the IDENTIFY command, wait for the
-/// DRQ, transfer the 256-word identify block, then read `ID_CAPABILITIES`.
-/// Geometry/capacity thresholds are the caller's next step; this returns the
-/// decoded capability bits.
+/// C: `w_identify` (at_wini.c:644-718): send the IDENTIFY command, wait for the
+/// DRQ, transfer the 256-word identify block, then decode it.
 pub fn read_identify(
     bus: &mut impl IoBus,
     base_cmd: u16,
     base_ctl: u16,
     drive: u8,
     max_polls: u32,
-) -> Result<IdentifyCaps, PioError> {
+) -> Result<IdentifyInfo, PioError> {
     let cmd = identify_command(drive);
     // Geometry is not yet known before identify, so the eight-heads bit is off.
     com_out(bus, base_cmd, base_ctl, &cmd, false, max_polls)?;
@@ -383,7 +435,7 @@ pub fn read_identify(
     wait_for(bus, base_ctl, STATUS_DRQ, STATUS_DRQ, max_polls)?;
     let mut block = [0u16; SECTOR_WORDS];
     pio_read_sector(bus, base_cmd, &mut block);
-    Ok(parse_identify_caps(block[ID_CAPABILITIES_WORD]))
+    Ok(parse_identify(&block))
 }
 
 #[cfg(test)]
@@ -594,52 +646,93 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_parse_identify_caps_bits() {
-        // C: ID_CAP_LBA=0x0200 (bit9), ID_CSS_LBA48=0x0400 (bit10) in word 49.
-        assert_eq!(
-            parse_identify_caps(0x0000),
-            IdentifyCaps {
-                lba: false,
-                lba48: false
-            }
-        );
-        assert_eq!(
-            parse_identify_caps(ID_CAP_LBA),
-            IdentifyCaps {
-                lba: true,
-                lba48: false
-            }
-        );
-        assert_eq!(
-            parse_identify_caps(ID_CSS_LBA48),
-            IdentifyCaps {
-                lba: false,
-                lba48: true
-            }
-        );
-        assert_eq!(
-            parse_identify_caps(ID_CAP_LBA | ID_CSS_LBA48),
-            IdentifyCaps {
-                lba: true,
-                lba48: true
-            }
-        );
+    /// A baseline IDENTIFY block with CHS geometry big enough to trust LBA
+    /// (2048*255*63 = 32,901,120 sectors > LBA_TRUST_MIN_SECTORS). C: words
+    /// 1/3/6 (at_wini.c:683-685).
+    fn id_block() -> [u16; SECTOR_WORDS] {
+        let mut b = [0u16; SECTOR_WORDS];
+        b[1] = 2048;
+        b[3] = 255;
+        b[6] = 63;
+        b
     }
 
     #[test]
-    fn test_read_identify_sends_identify_and_reads_block() {
+    fn test_parse_identify_no_lba_falls_back_to_chs() {
+        // word 49 without the LBA bit → CHS addressing, size = cyl*head*sectors.
+        let mut b = id_block();
+        b[ID_CAPABILITIES_WORD] = 0;
+        let info = parse_identify(&b);
+        assert!(!info.lba);
+        assert!(!info.lba48);
+        assert_eq!(info.total_sectors, 2048 * 255 * 63);
+    }
+
+    #[test]
+    fn test_parse_identify_lba_bit_is_word49_not_word83() {
+        // Regression guard for the R9 conflation: LBA48 bit lives in word 83
+        // (ID_CSS), NOT word 49. Setting only word 49's LBA bit gives lba but
+        // not lba48; setting the LBA48 bit in word 49 must be ignored.
+        let mut b = id_block();
+        b[ID_CAPABILITIES_WORD] = ID_CAP_LBA | ID_CSS_LBA48; // wrong-word LBA48 bit ignored
+        let info = parse_identify(&b);
+        assert!(info.lba);
+        assert!(!info.lba48); // requires word 83, which is still 0 here
+    }
+
+    #[test]
+    fn test_parse_identify_lba28() {
+        // LBA enabled, count below the LBA48 check size → stays LBA28.
+        let mut b = id_block();
+        b[ID_CAPABILITIES_WORD] = ID_CAP_LBA;
+        b[60] = 50_000; // id_longword(60) = 50,000 < LBA48_CHECK_SIZE
+        b[83] = ID_CSS_LBA48; // even with LBA48 support, size gate suppresses it
+        let info = parse_identify(&b);
+        assert!(info.lba);
+        assert!(!info.lba48);
+        assert_eq!(info.total_sectors, 50_000);
+    }
+
+    #[test]
+    fn test_parse_identify_lba48() {
+        // Big enough + word 83 LBA48 bit + 48-bit count fitting in 32 bits.
+        let mut b = id_block();
+        b[ID_CAPABILITIES_WORD] = ID_CAP_LBA;
+        b[60] = 0;
+        b[61] = 0x0F00; // LBA28 count = 0x0F000000 == LBA48_CHECK_SIZE
+        b[ID_CSS_WORD] = ID_CSS_LBA48;
+        b[100] = 0x1234; // id_longword(100) = the real 48-bit count
+        let info = parse_identify(&b);
+        assert!(info.lba);
+        assert!(info.lba48);
+        assert_eq!(info.total_sectors, 0x1234);
+    }
+
+    #[test]
+    fn test_parse_identify_lba48_overflow_truncates() {
+        // High longword (words 102-103) nonzero → count doesn't fit 32 bits.
+        let mut b = id_block();
+        b[ID_CAPABILITIES_WORD] = ID_CAP_LBA;
+        b[61] = 0x0F00;
+        b[ID_CSS_WORD] = ID_CSS_LBA48;
+        b[102] = 0x1; // id_longword(102) != 0
+        let info = parse_identify(&b);
+        assert!(info.lba48);
+        assert_eq!(info.total_sectors, u32::MAX); // LBA32 truncation (C :709)
+    }
+
+    #[test]
+    fn test_read_identify_issues_identify_and_reads_block() {
         // STATUS stream: DRQ set & BSY clear — both com_out's BSY wait and the
         // post-command DRQ wait succeed on the first poll.
         let mut bus = MockBus::new(vec![STATUS_DRQ]);
-        let caps = read_identify(&mut bus, BASE_CMD, BASE_CTL, 0, 16).unwrap();
-        // The command written last before the block read must be ATA_IDENTIFY,
-        // with the CHS selector (no LBA bit). C: at_wini.c:656-662.
+        let info = read_identify(&mut bus, BASE_CMD, BASE_CTL, 0, 16).unwrap();
+        // The IDENTIFY command must be written (CHS selector, ATA_IDENTIFY).
+        // C: at_wini.c:656-662.
         assert!(bus.writes.contains(&(BASE_CMD + REG_LDH, ldh_init(0))));
         assert!(bus.writes.contains(&(BASE_CMD + REG_COMMAND, ATA_IDENTIFY)));
-        // MockBus.in_words fills dst[i] = (data-port + i), so word 49 is fixed:
-        let word49 = (BASE_CMD as usize + REG_DATA as usize + ID_CAPABILITIES_WORD) as u16;
-        assert_eq!(caps, parse_identify_caps(word49));
+        // read_identify returns exactly the parse of the block the bus returned.
+        assert_eq!(info.cylinders, BASE_CMD + REG_DATA + 1);
     }
 
     #[test]
