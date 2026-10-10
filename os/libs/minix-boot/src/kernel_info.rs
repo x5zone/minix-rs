@@ -229,6 +229,58 @@ impl KernelInfo {
         );
     }
 
+    /// SD-1 / PD-07 采甲（债①）：**跨启动形态等价的 boot 后置条件断言**。
+    ///
+    /// PD-07 裁的是「等价后置断言」而非「入口结构相等」——五种启动形态（见
+    /// [`crate::boot_form`]）各从不同固件面（UEFI 内联 / UEFI 跨镜像 / OpenSBI 自举 /
+    /// QEMU 直核自举 / hart 邮箱）产出 `KernelInfo`，其绝对地址随固件而定，天然不可
+    /// 逐一相等；能等价的是**同一组 higher-half 地址空间关系**。本方法把这些关系收
+    /// 成一处、每形态同校，专抓历史上三度复发的「paper constant」类缺陷（`entry_start_pa`
+    /// 错字）与 §1.115「共享 helper 假设单一 `.bss` 世界、把在用的 root 页清零」类越界。
+    ///
+    /// 与 [`Self::validate`] 互补：`validate` 校非地址不变量（bootstrap_len/kern_size/
+    /// 对齐/非空/param_buf 上界），本方法校**地址空间分隔关系**，故各形态构造点都应
+    /// 依次调用二者。所有断言只依赖字段间的相对关系，宿主测试与真机同判据成立。
+    ///
+    /// # Panics
+    ///
+    /// 任一后置条件不成立即 fail-fast（启动期无恢复面，与 `validate` 同权）。
+    pub fn check_boot_postconditions(&self) {
+        // 1. syscall entry 落在内核镜像内：文档（`syscall_entry` 字段）自陈
+        //    "= kern_virt_base + offset"，任何形态都不得把入口指到镜像外——正是
+        //    `entry_start_pa` 类错字的捕获点。
+        let entry_off = self
+            .syscall_entry
+            .0
+            .checked_sub(self.kern_virt_base.0)
+            .unwrap_or(u64::MAX);
+        assert!(
+            entry_off < self.kern_size,
+            "KernelInfo postcond: syscall_entry (0x{:x}) 不在内核镜像 [0x{:x}, 0x{:x}) 内",
+            self.syscall_entry.0,
+            self.kern_virt_base.0,
+            self.kern_virt_base.0.saturating_add(self.kern_size)
+        );
+
+        // 2. 内核初始栈顶落在 higher-half（≥ 内核虚拟基）：三形态都是
+        //    higher-half 内核，栈不得低到用户半区。
+        assert!(
+            self.kern_stack_top.0 >= self.kern_virt_base.0,
+            "KernelInfo postcond: kern_stack_top (0x{:x}) 低于 higher-half 内核基 (0x{:x})",
+            self.kern_stack_top.0,
+            self.kern_virt_base.0
+        );
+
+        // 3. 用户栈顶严格低于内核 higher-half 基：用户/内核地址空间分隔的底线，
+        //    也是 §1.115「把内核在用页当空闲区清零」那类重叠错位的捕获点。
+        assert!(
+            self.user_sp.0 < self.kern_virt_base.0,
+            "KernelInfo postcond: user_sp (0x{:x}) 未严格低于内核基 (0x{:x})",
+            self.user_sp.0,
+            self.kern_virt_base.0
+        );
+    }
+
     // ── Getter methods (R-07: preferred API over direct field access) ──
     //
     // These getters are the recommended API. Direct field access remains

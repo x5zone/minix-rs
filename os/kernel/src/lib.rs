@@ -841,6 +841,11 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // Fail-fast on boot-shim bugs (e.g. non-zero bootstrap_len would
     // trigger add_memmap and reclaim firmware regions).
     kernel_info.validate();
+    // SD-1 / PD-07 债①：跨启动形态的后置条件等价断言。`validate()` 只校非地址不变量，
+    // 这一层再校 higher-half 地址空间分隔关系（入口在镜像内 / 用户栈低于内核基 / 内核
+    // 栈不落到用户半区），专抓 `entry_start_pa` 类 paper constant 错字与 §1.115 类越界。
+    // kmain 是五种启动形态共用的唯一收口，故此处调用即对所有形态等价生效。
+    kernel_info.check_boot_postconditions();
     boot_stage!("kernel: kmain A.1 validate ok\n");
 
     // Initialize the early console first so any boot diagnostic output
