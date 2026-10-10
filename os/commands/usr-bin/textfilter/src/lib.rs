@@ -67,6 +67,7 @@ pub mod unifdef;
 pub mod units;
 pub mod uniq;
 pub mod vis;
+pub mod what;
 pub mod window;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
