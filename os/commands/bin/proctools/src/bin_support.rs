@@ -43,6 +43,25 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
     std::env::args().collect()
 }
 
+/// Every environment string as raw `KEY=VALUE` bytes, in order (C `environ`).
+#[cfg(all(not(test), target_os = "none"))]
+pub fn envs() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+    minix_rt::crt0::envs().map(|raw| raw.to_vec()).collect()
+}
+
+/// Hosted twin of [`envs`], re-joining each var into `KEY=VALUE` bytes.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn envs() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+    std::env::vars()
+        .map(|(k, v)| {
+            let mut s = k.into_bytes();
+            s.push(b'=');
+            s.extend(v.into_bytes());
+            s
+        })
+        .collect()
+}
+
 /// Terminates the process with an exit status (see the module header).
 #[cfg(all(not(test), target_os = "none"))]
 pub fn terminate(code: i32) -> ! {

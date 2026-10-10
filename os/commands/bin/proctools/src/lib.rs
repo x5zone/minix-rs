@@ -32,6 +32,7 @@
 //!   behind `date` (reuses [`stamp`]'s calendar inverse).
 
 pub mod dates;
+pub mod printenv;
 pub mod ptime;
 pub mod signal;
 pub mod stable;
