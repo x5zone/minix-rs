@@ -35,6 +35,7 @@
 // stays allocation free.
 extern crate alloc;
 
+pub mod asa;
 pub mod cksum;
 pub mod cmp;
 pub mod col;
