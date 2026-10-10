@@ -20,7 +20,7 @@ mod support;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use minix_textfilter::nl::{NlOptions, NumFormat, nl_lines};
+use minix_textfilter::nl::{NlOptions, NumberType, NumFormat, nl_lines};
 
 fn fail(message: &str) -> ! {
     let mut line = String::from("nl: ");
@@ -57,7 +57,6 @@ fn run() -> ! {
         }
         let flag = &a[1..];
         match flag {
-            "a" => opts.number_all = true,
             "p" => opts.restart = false,
             "v" => {
                 opts.startnum = value!().parse().unwrap_or(0);
@@ -79,9 +78,24 @@ fn run() -> ! {
                     _ => fail("-n must be ln, rn or rz"),
                 };
             }
-            "b" | "h" | "f" | "d" | "s" | "w" => {
+            "b" | "h" | "f" => {
+                let vt = value!();
+                let kind = match vt {
+                    "a" => NumberType::All,
+                    "n" => NumberType::None,
+                    "t" => NumberType::Nonempty,
+                    _ if vt.starts_with('p') => fail("number_regex (-b/-h/-f p…) not wired"),
+                    _ => fail("bad numbering type (want a, n or t)"),
+                };
+                match flag {
+                    "b" => opts.body = kind,
+                    "h" => opts.header = kind,
+                    _ => opts.footer = kind,
+                }
+            }
+            "d" | "s" | "w" => {
                 let _ = value!();
-                fail("option not wired (residual: -b/-h/-f/-d/-s/-w)");
+                fail("option not wired (residual: -d/-s/-w)");
             }
             _ => fail("unknown option"),
         }

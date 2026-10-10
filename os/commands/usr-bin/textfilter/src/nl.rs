@@ -11,12 +11,13 @@
 //! format (`%-*d`/`%*d`/`%0*d`), an unnumbered line prints `width` blanks
 //! instead; either way the separator then the original line follow.
 //!
-//! Wired: body numbering with `-a` (number all), `-v` (start), `-i` (step),
-//! `-l` (width), `-n` (ln/rn/rz), `-p` (no restart). Declared residual: the
-//! separate header/footer/body numbering types (`-b`/`-h`/`-f` with their own
-//! values, and `number_regex`), `-d` multi-char delimiters, `-s` separator
-//! strings, `-w` blank-run counts, and `-b` field selection — those ride the
-//! next `nl` slice; here every non-delimiter line is treated as body.
+//! Wired: the three logical-page sections (a line of `\:`/`\:\:`/`\:\:\:`
+//! switches to footer/body/header and is dropped, resetting the counter under
+//! restart), each section's numbering type via `-b`/`-h`/`-f` (a/t/n), plus
+//! `-v` (start), `-i` (step), `-l` (width), `-n` (ln/rn/rz), `-p` (no restart).
+//! Declared residual: the `number_regex` form (`-b p…`), `-d` multi-char
+//! delimiter, `-s` separator string, and `-w` blank-run grouping — those ride
+//! the next `nl` slice.
 
 use alloc::vec::Vec;
 
@@ -29,6 +30,27 @@ pub enum NumFormat {
     Right,
     /// Right justified, leading zeros kept.
     RightZero,
+}
+
+/// How a section's lines are numbered (C `numbering_type`; the `p` regex form
+/// is a declared residual and not representable here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberType {
+    /// Number every line.
+    All,
+    /// Number non-empty lines (the body default).
+    Nonempty,
+    /// Number no lines (the header/footer default).
+    None,
+}
+
+/// The logical page section a line belongs to (C `numbering_properties`
+/// order: footer, body, header).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Footer,
+    Body,
+    Header,
 }
 
 /// Line-numbering options (the C globals `nl` reads from its flags).
@@ -44,8 +66,12 @@ pub struct NlOptions {
     pub format: NumFormat,
     /// Separator byte between the number and the text (C `sep`, default tab).
     pub sep: u8,
-    /// Number every line, not just non-empty ones (`-a`).
-    pub number_all: bool,
+    /// Numbering type for body lines (`-b`).
+    pub body: NumberType,
+    /// Numbering type for header lines (`-h`).
+    pub header: NumberType,
+    /// Numbering type for footer lines (`-f`).
+    pub footer: NumberType,
     /// Restart numbering at each page delimiter (default on; `-p` clears it).
     pub restart: bool,
 }
@@ -58,31 +84,61 @@ impl Default for NlOptions {
             width: 6,
             format: NumFormat::Right,
             sep: b'\t',
-            number_all: false,
+            body: NumberType::Nonempty,
+            header: NumberType::None,
+            footer: NumberType::None,
             restart: true,
         }
     }
 }
 
-/// A line is the logical-page delimiter when it is exactly the default `\:`
-/// with no other content (the C "was this the whole line?" test).
-fn is_delimiter(line: &[u8]) -> bool {
-    line == b"\\:"
+/// Classify a delimiter line: how many leading copies of the 2-byte default
+/// `\:` fill the line exactly (C `filter`'s FOOTER/BODY/HEADER probe, one to
+/// three). Returns the section it switches to, or `None` for a non-delimiter
+/// line.
+fn delimiter_section(line: &[u8]) -> Option<Section> {
+    const DELIM: &[u8] = b"\\:";
+    if line.is_empty() || !line.len().is_multiple_of(DELIM.len()) {
+        return None;
+    }
+    if !line.chunks(DELIM.len()).all(|c| c == DELIM) {
+        return None;
+    }
+    match line.len() / DELIM.len() {
+        1 => Some(Section::Footer),
+        2 => Some(Section::Body),
+        3 => Some(Section::Header),
+        _ => None,
+    }
 }
 
-/// Number `lines` (newline-stripped byte slices) into output lines.
+/// Number `lines` (newline-stripped byte slices) into output lines, tracking
+/// the current logical page section. A delimiter line switches the section,
+/// resets the counter under `restart`, and is dropped from the output (C's
+/// `goto nextline`); every other line is numbered per its section's type, an
+/// unnumbered line still carrying the `width`-blank field and separator.
 pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     let mut counter = opts.startnum;
+    let mut section = Section::Body;
     for line in lines {
-        if is_delimiter(line) {
+        if let Some(next) = delimiter_section(line) {
+            section = next;
             if opts.restart {
                 counter = opts.startnum;
             }
-            continue; // the delimiter line itself is not emitted
+            continue;
         }
-        let nonempty = !line.is_empty();
-        let donumber = opts.number_all || nonempty;
+        let kind = match section {
+            Section::Footer => opts.footer,
+            Section::Body => opts.body,
+            Section::Header => opts.header,
+        };
+        let donumber = match kind {
+            NumberType::All => true,
+            NumberType::Nonempty => !line.is_empty(),
+            NumberType::None => false,
+        };
         let mut row = Vec::new();
         if donumber {
             write_number(counter, opts, &mut row);
@@ -172,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_number_all_includes_blanks() {
-        let o = NlOptions { number_all: true, ..Default::default() };
+        let o = NlOptions { body: NumberType::All, ..Default::default() };
         assert_eq!(nl("a\n\nb", &o), "     1\ta\n     2\t\n     3\tb");
     }
 
@@ -191,14 +247,22 @@ mod tests {
     }
 
     #[test]
-    fn test_delimiter_resets_and_is_dropped() {
-        // A `\:` line resets numbering (restart on) and is not emitted.
-        assert_eq!(
-            nl("a\n\\:\nb", &NlOptions::default()),
-            "     1\ta\n     1\tb"
-        );
-        // With restart off, the delimiter is still dropped but numbering runs on.
+    fn test_delimiters_switch_sections_and_are_dropped() {
+        // body `a`=1; `\:` switches to footer (unnumbered, dropped, reset);
+        // `b` is a footer line, so its field is blank but kept.
+        assert_eq!(nl("a\n\\:\nb", &NlOptions::default()), "     1\ta\n      \tb");
+        // `\:\:` switches to body and (restart) resets numbering to startnum.
+        assert_eq!(nl("a\n\\:\\:\nb", &NlOptions::default()), "     1\ta\n     1\tb");
+        // With restart off, the body section still renumbers from the running count.
         let nop = NlOptions { restart: false, ..Default::default() };
-        assert_eq!(nl("a\n\\:\nb", &nop), "     1\ta\n     2\tb");
+        assert_eq!(nl("a\n\\:\\:\nb", &nop), "     1\ta\n     2\tb");
+    }
+
+    #[test]
+    fn test_section_types_independent() {
+        // -h a: header numbers every line; after `\:\:\:` (3 delims) restart
+        // reset the counter to startnum, so the blank header line gets number 1.
+        let o = NlOptions { header: NumberType::All, ..Default::default() };
+        assert_eq!(nl("a\n\\:\\:\\:\n\n", &o), "     1\ta\n     1\t");
     }
 }
