@@ -39,6 +39,7 @@ pub mod asa;
 pub mod cksum;
 pub mod cmp;
 pub mod col;
+pub mod colcrt;
 pub mod colrm;
 pub mod column;
 pub mod comm;
