@@ -45,6 +45,7 @@ pub mod count;
 pub mod diff;
 pub mod expand;
 pub mod jot;
+pub mod join;
 pub mod lam;
 pub mod patch;
 pub mod paste;
