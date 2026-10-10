@@ -326,6 +326,128 @@ fn parse_conversions(text: &str) -> Result<Conversions, ImageError> {    let mut
     Ok(conversions)
 }
 
+/// Byte source/sink the copy loop drives — the seam that keeps the pump
+/// host-testable over a mock and lets the binary bind it to a real file.
+/// `read` returns bytes read (`0` is end of file); `write` consumes the whole
+/// slice or reports an error.
+pub trait Io {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ImageError>;
+    fn write(&mut self, buf: &[u8]) -> Result<(), ImageError>;
+}
+
+/// Copy tallies `dd`'s trailing summary reports (POSIX block counts, matching
+/// the C `if`/`of` line: full and partial blocks each way, plus recovered
+/// read errors).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CopyStats {
+    /// Whole input blocks read.
+    pub full_in: u64,
+    /// Final short input block (0 or 1 unless `sync`).
+    pub part_in: u64,
+    /// Whole output blocks written.
+    pub full_out: u64,
+    /// Final short output block.
+    pub part_out: u64,
+    /// Read errors recovered under `conv=noerror`.
+    pub read_errors: u64,
+}
+
+/// Pump `count`/all input blocks from `source` to `sink` honouring `bs`
+/// (the `ibs == obs` case — the `bs=` operand `dd` is overwhelmingly used
+/// with). `skip`/`seek` advance their streams first; a read error stops
+/// unless `noerror`, which skips the block and retries; `sync` pads a short
+/// final read to a full block before writing.
+///
+/// Declared residual of this slice: the asymmetric `ibs != obs` blocking
+/// machine and the `conv=` case/`swab`/`block`/`unblock`/`cbs` transforms run
+/// in the C through separate buffers and a byte carry (`dd.c`/`conv.c`); this
+/// pump covers the unconverted `bs=` path, and the binary declines an
+/// `ibs != obs` request rather than emit a mis-shaped copy. `scratch` must be
+/// at least `bs` bytes.
+pub fn pump(
+    plan: &CopyPlan<'_>,
+    scratch: &mut [u8],
+    source: &mut dyn Io,
+    sink: &mut dyn Io,
+) -> Result<CopyStats, ImageError> {
+    let bs = plan.input_block as usize;
+    if bs == 0 || bs > scratch.len() || plan.input_block != plan.output_block {
+        return Err(ImageError::InvalidArgument);
+    }
+    let mut stats = CopyStats::default();
+
+    // `skip`: discard that many input blocks (C reads-and-drops on unseekable
+    // input; a real file's `lseek` yields the same bytes to copy).
+    for _ in 0..plan.skip {
+        if source.read(&mut scratch[..bs])? == 0 {
+            break;
+        }
+    }
+    // `seek`: advance the output by whole blocks of NUL (the C zero-fills a
+    // sparse head unless `oflag` says otherwise).
+    for _ in 0..plan.seek {
+        for byte in scratch[..bs].iter_mut() {
+            *byte = 0;
+        }
+        sink.write(&scratch[..bs])?;
+    }
+
+    let limit = plan.count.unwrap_or(u64::MAX);
+    let mut copied = 0u64;
+    loop {
+        if copied >= limit {
+            break;
+        }
+        let read = match read_block(source, &mut scratch[..bs]) {
+            Ok(n) => n,
+            Err(_) => {
+                if plan.conversions.no_error() {
+                    stats.read_errors += 1;
+                    copied += 1;
+                    continue;
+                }
+                break;
+            }
+        };
+        if read == 0 {
+            break; // end of input
+        }
+        let partial = read < bs;
+        let synced = if partial && plan.conversions.sync() {
+            scratch[read..bs].fill(0);
+            bs
+        } else if partial {
+            read
+        } else {
+            bs
+        };
+        sink.write(&scratch[..synced])?;
+        copied += 1;
+        if read < bs {
+            stats.part_in += 1;
+            stats.part_out += 1;
+            break; // short read is EOF of the input
+        }
+        stats.full_in += 1;
+        stats.full_out += 1;
+    }
+    Ok(stats)
+}
+
+/// Fill `buf` from `source` until full or a short/zero read; returns the bytes
+/// held (shorter than `buf.len()` at EOF, and a partial read on mid-block
+/// error so `noerror` can advance past it).
+fn read_block(source: &mut dyn Io, buf: &mut [u8]) -> Result<usize, ImageError> {
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match source.read(&mut buf[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,5 +520,115 @@ mod tests {
         let plain = parse_operands(&["progress=0"]).unwrap();
         assert!(!plain.progress);
         assert!(!plain.human_messages);
+    }
+
+    /// In-memory `Io` over a byte source and a collected sink.
+    struct MockIo {
+        src: Vec<u8>,
+        pos: usize,
+        out: Vec<u8>,
+        fail_after: Option<usize>,
+    }
+
+    impl MockIo {
+        fn reader(src: &[u8]) -> Self {
+            MockIo { src: src.to_vec(), pos: 0, out: Vec::new(), fail_after: None }
+        }
+        fn writer() -> Self {
+            MockIo { src: Vec::new(), pos: 0, out: Vec::new(), fail_after: None }
+        }
+    }
+
+    impl Io for MockIo {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize, ImageError> {
+            if let Some(n) = self.fail_after
+                && self.pos >= n
+            {
+                return Err(ImageError::InvalidArgument);
+            }
+            let avail = self.src[self.pos..].len().min(buf.len());
+            buf[..avail].copy_from_slice(&self.src[self.pos..self.pos + avail]);
+            self.pos += avail;
+            Ok(avail)
+        }
+        fn write(&mut self, buf: &[u8]) -> Result<(), ImageError> {
+            self.out.extend_from_slice(buf);
+            Ok(())
+        }
+    }
+
+    fn pump_with(plan: &CopyPlan<'_>, src: &[u8], bs: usize) -> (CopyStats, Vec<u8>) {
+        let mut source = MockIo::reader(src);
+        let mut sink = MockIo::writer();
+        let mut scratch = vec![0u8; bs];
+        let stats = pump(plan, &mut scratch, &mut source, &mut sink).unwrap();
+        (stats, sink.out)
+    }
+
+    #[test]
+    fn test_pump_copies_everything() {
+        let plan = parse_operands(&["bs=4"]).unwrap();
+        let (stats, out) = pump_with(&plan, b"abcdefghijklmnop", 4);
+        assert_eq!((stats.full_in, stats.part_in, stats.full_out), (4, 0, 4));
+        assert_eq!(out, b"abcdefghijklmnop".to_vec());
+    }
+
+    #[test]
+    fn test_pump_count_limits_input_blocks() {
+        let plan = parse_operands(&["bs=4", "count=2"]).unwrap();
+        let (stats, out) = pump_with(&plan, b"abcdefghijklmnop", 4);
+        assert_eq!((stats.full_in, stats.full_out), (2, 2));
+        assert_eq!(out, b"abcdefgh".to_vec());
+    }
+
+    #[test]
+    fn test_pump_skip_and_seek() {
+        let plan = parse_operands(&["bs=2", "skip=1", "seek=1"]).unwrap();
+        let (stats, out) = pump_with(&plan, b"abcd", 2);
+        // skip one 2-byte block -> copy "cd"; seek one block -> two NULs first
+        // (the seek pad and the skip drop are positioning, not counted blocks).
+        assert_eq!(out, vec![0, 0, b'c', b'd']);
+        assert_eq!((stats.full_in, stats.full_out), (1, 1));
+    }
+
+    #[test]
+    fn test_pump_partial_read_at_eof() {
+        let plan = parse_operands(&["bs=4"]).unwrap();
+        let (stats, out) = pump_with(&plan, b"abcdef", 4);
+        assert_eq!((stats.full_in, stats.part_in), (1, 1));
+        assert_eq!(out, b"abcdef".to_vec());
+    }
+
+    #[test]
+    fn test_pump_sync_pads_final_block() {
+        let plan = parse_operands(&["bs=4", "conv=sync"]).unwrap();
+        let (stats, out) = pump_with(&plan, b"abcdef", 4);
+        // sync pads the trailing "ef" to a full 4-byte block; the padded final
+        // block counts as a partial transfer, not a second full one.
+        assert_eq!(out, vec![b'a', b'b', b'c', b'd', b'e', b'f', 0, 0]);
+        assert_eq!((stats.full_in, stats.part_in, stats.part_out), (1, 1, 1));
+    }
+
+    #[test]
+    fn test_pump_noerror_recovers_read_error() {
+        // `count` bounds the retry loop (as real `dd conv=noerror` relies on
+        // the input ending); the first block reads, then two recovered errors.
+        let plan = parse_operands(&["bs=2", "count=3", "conv=noerror"]).unwrap();
+        let mut source = MockIo::reader(b"abcd");
+        source.fail_after = Some(2); // error from block 2 on
+        let mut sink = MockIo::writer();
+        let mut scratch = vec![0u8; 2];
+        let stats = pump(&plan, &mut scratch, &mut source, &mut sink).unwrap();
+        assert_eq!(stats.read_errors, 2);
+        assert_eq!(sink.out, b"ab".to_vec());
+    }
+
+    #[test]
+    fn test_pump_rejects_asymmetric_block_sizes() {
+        let plan = parse_operands(&["ibs=512", "obs=1024"]).unwrap();
+        let mut source = MockIo::reader(b"xx");
+        let mut sink = MockIo::writer();
+        let mut scratch = vec![0u8; 1024];
+        assert_eq!(pump(&plan, &mut scratch, &mut source, &mut sink), Err(ImageError::InvalidArgument));
     }
 }
