@@ -161,3 +161,17 @@
 4. **接线批**（A2，按 plan §6 波次）：memory → tty/pty/log → random/readclock/pci/gpio → pckbd → 存储 → USB → 显示/音频/网络/杂项；每接一个 crate，就地清其 §2 缺失与 §4 死代码。
 5. **线格式下沉批**（A5 + E-DMABUF）：virtio 环、CBW/CDB、usb_urb 映射与 DMA 契约，在存储/USB 服务层开工前完成。
 6. **收尾**：G5（00/99 展开 + 快照补齐）随各批成果回填。
+
+## 7. at_wini（IDE 存储）实装进度与真机尾件归属
+
+> 核实于 `2026-10-10`，`rewrite` 快照 `f26e35f5a`。U-6 采方案 A 的消费者驱动三批制里，`at_wini`/x86_64 为首选试点，按阶段一可行性门→实装→阶段二端到端验收推进。
+
+**已落地并逐段带测（cargo test -p minix-driver-at_wini --lib → 44 passed）**：
+
+- `pio.rs`：ATA task-file 寄存器映射与状态位判据、`wait_for` 有界轮询、对位 C `at_wini.c:1220-1262` 的七字节 `com_out` 与 `:1268-1316` 的 LBA48 十字节 `com_out_ext`、`lba28_command`/`lba48_command`/`chs_command`（`:896-930`）、`read_identify`（`:644-718`，LBA 位在 word 49、LBA48 位在 word 83）、`block_command` 三向选路、`pio_read_sectors`/`pio_write_sectors` 逐扇区传与 `clip_to_extent`/`byte_to_block` EOF 裁剪（`:1038-1041, 1128-1198`）。
+- `service.rs`：`resolve_minor`、`DriveState`（open 引用计数 + IDENTIFIED/IGNORING/DEAF/ATAPI）、`compute_geometry`（INT13h ≤1024 折叠，`:1700-1721`）。
+- `bus.rs`：`DevioIoBus` 经 `minix_sys::sys_inb/sys_outb/sys_inw/sys_outw` 驱动端口（配套补齐 SYS_DEVIO 的 Word/Long 宽度族，内核 `dispatch_devio` 的 Word/Long 臂本已存在）。
+- `block_face.rs`：`WiniBlock` 实现 `BlockDriver` 的控制面（driver_type/open/close/partition/geometry）。
+- 框架 `minix-blockdriver::partition`：`parse_primary_table` + `primary_extents`（对位 C `drvlib.c::partition()`），共享给所有磁盘驱动。
+
+**真机尾件与归属（非本 stage 单轮项）**：C `w_probe`（`at_wini.c:314-337`）是 PCI 设备枚举（`pci_first_dev`/`pci_reserve`），非可纯化的状态判据；`BlockDriver::transfer` 的完整落地需要「读设备到暂存 → 与调用方缓冲间的 grant 拷贝 → 每扇区 IRQ/超时」，即本文件 §5 已登记为多进程联调、按约定走 E5/E8/E-INWIRE 通电族的那段接缝——参考驱动 memory 亦把数据面 grant 拷贝留作同一接缝。故 at_wini 的可独立闭合逻辑/控制面已到此边界；其余属 E5 类跨阶段集成专轮，遵 §5 与 §6「正确性快修先于架构、接线按波次」的执行顺序，勿以半接线（开得了却读不动）充数。
