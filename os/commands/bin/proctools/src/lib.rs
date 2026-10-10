@@ -35,6 +35,7 @@ pub mod dates;
 pub mod printenv;
 pub mod ptime;
 pub mod signal;
+pub mod sleep;
 pub mod stable;
 pub mod stamp;
 pub mod utmp;
