@@ -27,6 +27,8 @@ fn run() -> ! {
     let mut lines = false;
     let mut words = false;
     let mut bytes = false;
+    let mut chars = false;
+    let mut longest = false;
     let mut any_flag = false;
     for arg in &argv[1..] {
         if arg.starts_with('-') && arg.len() > 1 {
@@ -36,8 +38,10 @@ fn run() -> ! {
                     b'l' => lines = true,
                     b'w' => words = true,
                     b'c' => bytes = true,
+                    b'm' => chars = true,
+                    b'L' => longest = true,
                     _ => {
-                        support::emit(b"usage: wc [-l | -w | -c]\n");
+                        support::emit(b"usage: wc [-L | -m | -l | -w | -c]\n");
                         support::terminate(1);
                     }
                 }
@@ -87,8 +91,14 @@ fn run() -> ! {
     if words {
         put(totals.words);
     }
+    if chars {
+        put(totals.chars);
+    }
     if bytes {
         put(totals.bytes);
+    }
+    if longest {
+        put(totals.longest);
     }
     out[length] = b'\n';
     length += 1;

@@ -18,6 +18,9 @@ pub struct Counter {
     pub words: u64,
     /// All bytes seen.
     pub bytes: u64,
+    /// Multibyte characters seen (`-m`): bytes that are not a UTF-8
+    /// continuation byte, i.e. one per scalar under any UTF-8 locale.
+    pub chars: u64,
     /// Longest line so far, excluding its newline.
     pub longest: u64,
     in_word: bool,
@@ -34,6 +37,11 @@ impl Counter {
     pub fn add(&mut self, chunk: &[u8]) -> Result<(), TextError> {
         for byte in chunk {
             self.bytes = self.bytes.checked_add(1).ok_or(TextError::InvalidArgument)?;
+            // A character begins at any byte that is not a continuation
+            // (`10xxxxxx`); ASCII and every lead byte count once.
+            if byte & 0xC0 != 0x80 {
+                self.chars = self.chars.checked_add(1).ok_or(TextError::InvalidArgument)?;
+            }
             if *byte == b'\n' {
                 self.lines = self.lines.checked_add(1).ok_or(TextError::InvalidArgument)?;
                 if self.current > self.longest {
@@ -105,5 +113,18 @@ mod tests {
     fn test_empty_input() {
         let done = Counter::new().finish();
         assert_eq!((done.lines, done.words, done.bytes), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_multibyte_chars_count_scalars_not_bytes() {
+        // "h\u{e9}llo" is 6 bytes but 5 code points; a 3-byte CJK char is one.
+        let mut counter = Counter::new();
+        counter.add("héllo".as_bytes()).unwrap();
+        let done = counter.finish();
+        assert_eq!((done.bytes, done.chars), (6, 5));
+        let mut cjk = Counter::new();
+        cjk.add("漢字".as_bytes()).unwrap();
+        let done = cjk.finish();
+        assert_eq!((done.bytes, done.chars), (6, 2));
     }
 }
