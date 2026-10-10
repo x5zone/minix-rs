@@ -119,6 +119,19 @@ pub enum PioError {
     Timeout,
 }
 
+/// Outcome of an extent transfer. C `w_transfer` 回两类错：地址/长度不合
+/// 格回 `EINVAL`（at_wini.c:1027/1035），寄存器超时经重试耗尽后回 `EIO`
+/// （:1201-1206）——本层把 `PioError` 直接上抛，由接线层按 C 的重试计数定终态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferError {
+    /// `position` 或请求长度不是扇区大小（512B）的整数倍。C: EINVAL。
+    Unaligned,
+    /// 无法选中可寻址模式（CHS-only 且几何不可用）。C: do_transfer 无适用分支。
+    NoAddressMode,
+    /// 寄存器轮询超时。上层据此走 C 的 errors/max_errors 重试→EIO 路径。
+    Pio(PioError),
+}
+
 /// Build the drive/head selector byte for a drive on the CHS / pre-IDENTIFY
 /// path (no LBA bit yet). C: `ldh_init(drive) = LDH_DEFAULT | ((drive) << 4)`
 /// (at_wini.h:33); the drive select rides bit 4 (LDH_DEV == 1<<4).
@@ -588,6 +601,96 @@ pub fn pio_write_sectors(
     Ok(())
 }
 
+/// C `w_transfer` 外层 extent 环（非 DMA 分支、polling 形）：把一段字节范围按
+/// 每命令 ≤ `max_count` 切块，逐块发一条读/写命令再逐扇区搬运，遇 EOF 裁剪。
+/// 数据落地由调用方给定的字节切片承载（生产里是已映射的 grant）；真机的
+/// IRQ 等待与 grant↔slice 桥接在 `block_face::transfer` 接线时补——本函数是
+/// 可离线测的命令时序 + extent 记账核心。返回成功搬运的字节数（C 的 `total`）。
+#[allow(clippy::too_many_arguments)] // 对位 C w_transfer 的硬件参数面（基址/几何/能力/方向/偏移），拆结构体反而掩盖调用序
+pub fn transfer_extent<B: IoBus>(
+    bus: &mut B,
+    base_cmd: u16,
+    base_ctl: u16,
+    caps: &IdentifyInfo,
+    drive: u8,
+    dv_base: u64,
+    dv_size: u64,
+    max_count: usize,
+    do_write: bool,
+    mut position: u64,
+    buf: &mut [u8],
+    max_polls: u32,
+) -> Result<u64, TransferError> {
+    const SECTOR_SIZE: u64 = SECTOR_WORDS as u64 * 2;
+    // C :1027/1035 — 起始偏移与请求长度都须是扇区整数倍。
+    if !position.is_multiple_of(SECTOR_SIZE) || !(buf.len() as u64).is_multiple_of(SECTOR_SIZE) {
+        return Err(TransferError::Unaligned);
+    }
+    // C :306/:1505-1508 — max_count 恒 ≥ 一扇区；传入 0 归一为一个。
+    let max_count = max_count.max(SECTOR_SIZE as usize);
+    let eightheads = caps.heads >= 8;
+    let total_bytes = buf.len() as u64;
+    let mut off: u64 = 0;
+    let mut sector = [0u16; SECTOR_WORDS];
+
+    while off < total_bytes {
+        // C :1038 — 到/过 EOF 就停，返回已搬量（非错）。
+        if position >= dv_size {
+            break;
+        }
+        // C :1039-1040 — 跨端裁剪，再向下对齐到扇区边界。
+        let remaining = total_bytes - off;
+        let room = dv_size - position;
+        let mut chunk = remaining.min(room).min(max_count as u64);
+        chunk -= chunk % SECTOR_SIZE;
+        let n_sectors = (chunk / SECTOR_SIZE) as usize;
+        if n_sectors == 0 {
+            break;
+        }
+
+        // C :1041 — 设备内字节偏 → 起始块。
+        let block = byte_to_block(dv_base, position);
+        // C :1064→do_transfer(:896-930) — 按能力选 LBA48/LBA28/CHS 并发命令（一命
+        // 令覆盖 n_sectors 个扇区）。
+        let cmd = block_command(caps, block, n_sectors as u16, drive, do_write)
+            .ok_or(TransferError::NoAddressMode)?;
+        match &cmd {
+            BlockCommand::Lba48(c) => {
+                com_out_ext(bus, base_cmd, base_ctl, c, max_polls).map_err(TransferError::Pio)?
+            }
+            BlockCommand::Lba28(c) | BlockCommand::Chs(c) => {
+                com_out(bus, base_cmd, base_ctl, c, eightheads, max_polls)
+                    .map_err(TransferError::Pio)?
+            }
+        }
+
+        // C :1128-1198 — 逐扇区：读先等 BSY 清+DRQ 置再取字，写先等再送字。
+        for s in 0..n_sectors {
+            let dst = (off as usize) + s * SECTOR_SIZE as usize;
+            if do_write {
+                for (wi, w) in sector.iter_mut().enumerate() {
+                    let b = wi * 2;
+                    *w = u16::from_le_bytes([buf[dst + b], buf[dst + b + 1]]);
+                }
+                pio_write_sectors(bus, base_cmd, base_ctl, &sector, max_polls)
+                    .map_err(TransferError::Pio)?;
+            } else {
+                pio_read_sectors(bus, base_cmd, base_ctl, 1, &mut sector, max_polls)
+                    .map_err(TransferError::Pio)?;
+                for (wi, w) in sector.iter().enumerate() {
+                    let bytes = w.to_le_bytes();
+                    buf[dst + wi * 2] = bytes[0];
+                    buf[dst + wi * 2 + 1] = bytes[1];
+                }
+            }
+        }
+        // C :1189-1191 — 记账推进。
+        off += chunk;
+        position += chunk;
+    }
+    Ok(off)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1004,5 +1107,121 @@ mod tests {
         assert_eq!(bus.word_writes[0].0, BASE_CMD + REG_DATA);
         assert_eq!(bus.word_writes[0].1.len(), SECTOR_WORDS);
         assert_eq!(&bus.word_writes[0].1[..2], &[0xAAAA, 0xBBBB]);
+    }
+
+    // ── transfer_extent（C w_transfer 外层 extent 环）──
+
+    fn lba28_caps() -> IdentifyInfo {
+        IdentifyInfo {
+            cylinders: 1000,
+            heads: 16,
+            sectors_per_track: 63,
+            lba: true,
+            lba48: false,
+            total_sectors: 1_000_000,
+        }
+    }
+
+    /// 取出所有写到命令寄存器的字节（即每条发出的 opcode），验证命令次数/选路。
+    fn issued_commands(bus: &MockBus) -> Vec<u8> {
+        bus.writes
+            .iter()
+            .filter(|(p, _)| *p == BASE_CMD + REG_COMMAND)
+            .map(|(_, v)| *v)
+            .collect()
+    }
+
+    #[test]
+    fn transfer_extent_read_returns_full_and_issues_read_command() {
+        let mut bus = MockBus::new(vec![STATUS_DRQ]);
+        let mut buf = [0u8; 512];
+        let total = transfer_extent(
+            &mut bus,
+            BASE_CMD,
+            BASE_CTL,
+            &lba28_caps(),
+            0,
+            0,
+            8 * 512,
+            8 * 512,
+            false,
+            0,
+            &mut buf,
+            4,
+        )
+        .unwrap();
+        assert_eq!(total, 512);
+        assert_eq!(issued_commands(&bus), vec![CMD_READ]);
+        // 数据确实从设备腿落地（MockBus 字填充非零）。
+        assert_ne!(buf, [0u8; 512]);
+    }
+
+    #[test]
+    fn transfer_extent_rejects_unaligned_position() {
+        let mut bus = MockBus::new(vec![STATUS_DRQ]);
+        let mut buf = [0u8; 512];
+        let r = transfer_extent(
+            &mut bus,
+            BASE_CMD,
+            BASE_CTL,
+            &lba28_caps(),
+            0,
+            0,
+            8 * 512,
+            8 * 512,
+            false,
+            1,
+            &mut buf,
+            4,
+        );
+        assert_eq!(r, Err(TransferError::Unaligned));
+    }
+
+    #[test]
+    fn transfer_extent_splits_request_across_max_count() {
+        let mut bus = MockBus::new(vec![STATUS_DRQ]);
+        let mut buf = [0u8; 1024]; // 两个扇区
+        // max_count = 一扇区 → 拆两条命令、共返 1024 字节。
+        let total = transfer_extent(
+            &mut bus,
+            BASE_CMD,
+            BASE_CTL,
+            &lba28_caps(),
+            0,
+            0,
+            100 * 512,
+            512,
+            false,
+            0,
+            &mut buf,
+            4,
+        )
+        .unwrap();
+        assert_eq!(total, 1024);
+        assert_eq!(issued_commands(&bus).len(), 2);
+    }
+
+    #[test]
+    fn transfer_extent_clips_at_eof() {
+        let mut bus = MockBus::new(vec![STATUS_DRQ]);
+        let mut buf = [0u8; 1024]; // 想要两个扇区
+        // 设备只有 1 个扇区 → C :1039 跨端裁剪，只搬 1 个扇区、一命令。
+        let total = transfer_extent(
+            &mut bus,
+            BASE_CMD,
+            BASE_CTL,
+            &lba28_caps(),
+            0,
+            0,
+            512,
+            8 * 512,
+            false,
+            0,
+            &mut buf,
+            4,
+        )
+        .unwrap();
+        assert_eq!(total, 512);
+        assert_eq!(issued_commands(&bus).len(), 1);
     }
 }
