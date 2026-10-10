@@ -27,6 +27,7 @@
 //! layer. Everything here borrows from the input and uses fixed size
 //! buffers: no heap, `no_std` throughout.
 
+pub mod df;
 pub mod fstab;
 pub mod options;
 pub mod order;

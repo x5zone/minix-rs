@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 minix-sys = { workspace = true }
+minix-types = { workspace = true }
 minix-fs-mfs = { path = "../../../fs/mfs" }
 
 # POSIX 安装名是 `fsck.mfs`（带点）；cargo 的 bin 名不收点，构建名用
@@ -18,6 +19,10 @@ minix-fs-mfs = { path = "../../../fs/mfs" }
 [[bin]]
 name = "fsck_mfs"
 path = "src/bin/fsck_mfs.rs"
+
+[[bin]]
+name = "df"
+path = "src/bin/df.rs"
 
 # minix-rt 按目标分形态（fileops/NS12 seam 判例）：真机（x86_64-unknown-none，
 # NS8 装机面的命令工件）取 `_start` 出生链 + `alloc-global` slab 池 +

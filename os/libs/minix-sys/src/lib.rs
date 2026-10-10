@@ -786,6 +786,33 @@ pub fn lstat(path: &str, buf: &mut Stat) -> Result<(), Errno> {
     )
 }
 
+/// Filesystem statistics for the mount containing `path` (C: `statvfs`,
+/// `statvfs1(name, buffer, ST_WAIT)`). The VFS fills `buf` from its mount
+/// cache, so the reply is just the verdict.
+pub fn statvfs(path: &str, buf: &mut minix_types::StatvfsBuf) -> Result<(), Errno> {
+    let (cbuf, clen) = cstr_path(path)?;
+    vfs::statvfs1_via(
+        &ipc::DirectTrapTransport,
+        cbuf.as_ptr() as u64,
+        clen,
+        buf as *mut minix_types::StatvfsBuf as u64,
+        minix_types::ST_WAIT,
+    )
+}
+
+/// Filesystem statistics for every mounted file system (C: `getvfsstat`).
+/// Fills `bufs` with up to `bufs.len()` records (`ST_NOWAIT`, read from the
+/// mount cache without an FS round-trip) and returns how many were written.
+pub fn getvfsstat(bufs: &mut [minix_types::StatvfsBuf]) -> Result<usize, Errno> {
+    let size = (bufs.len() * minix_types::STATVFS_SIZE) as u64;
+    vfs::getvfsstat_via(
+        &ipc::DirectTrapTransport,
+        bufs.as_mut_ptr() as u64,
+        size,
+        minix_types::ST_NOWAIT,
+    )
+}
+
 /// Retrieves file status for an open descriptor (C: `fstat`).
 pub fn fstat(fd: Fd, buf: &mut Stat) -> Result<(), Errno> {
     vfs::fstat_via(&ipc::DirectTrapTransport, fd, buf as *mut Stat as u64)

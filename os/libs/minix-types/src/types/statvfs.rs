@@ -83,6 +83,10 @@ pub const ST_RDONLY: u64 = 0x00000001;
 /// 不向 FS 要新数据。
 pub const ST_NOWAIT: i32 = 2;
 
+/// `ST_WAIT` (`statvfs.h:138` = `MNT_WAIT` `fstypes.h:282` `1`)——向 FS 同步要
+/// 新数据。C `statvfs()` 即以 `ST_WAIT` 调 `statvfs1`。
+pub const ST_WAIT: i32 = 1;
+
 /// VFS 侧的 `struct statvfs` 缓冲（FS 经 grant 整块回填，VFS 再补本地字段）。
 ///
 /// 用字节数组而不是 `#[repr(C)]` 结构体：偏移表是**唯一权威**，字段读写都

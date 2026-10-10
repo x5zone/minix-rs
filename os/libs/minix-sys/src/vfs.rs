@@ -57,6 +57,12 @@ pub const VFS_CALL_STAT: i32 = 0x100 + 21;
 pub const VFS_CALL_FSTAT: i32 = 0x100 + 22;
 /// File status, no symlink follow. C: `VFS_LSTAT (VFS_BASE + 23)` (`callnr.h:95`).
 pub const VFS_CALL_LSTAT: i32 = 0x100 + 23;
+/// Filesystem statistics by path. C: `VFS_STATVFS1 (VFS_BASE + 40)`
+/// (`callnr.h:109`) — `statvfs1(name, buf, flags)`.
+pub const VFS_CALL_STATVFS1: i32 = 0x100 + 40;
+/// Filesystem statistics for all mounts. C: `VFS_GETVFSSTAT (VFS_BASE + 39)`
+/// (`callnr.h:108`) — `getvfsstat(buf, len, flags)`, reply is the record count.
+pub const VFS_CALL_GETVFSSTAT: i32 = 0x100 + 39;
 /// Device-specific control. C: `VFS_IOCTL (VFS_BASE + 24)` (`callnr.h:96`).
 pub const VFS_CALL_IOCTL: i32 = 0x100 + 24;
 /// Duplicate a descriptor. C: `VFS_FCNTL (VFS_BASE + 25)` (`callnr.h:97`),
@@ -246,6 +252,35 @@ struct StatFdPayload {
     _padding: [u8; 40],
 }
 
+/// `statvfs1` payload in C field order.
+///
+/// C: `mess_lc_vfs_statvfs1` (`ipc.h:905-913`) — `fd@0, flags@4, len@8,
+/// name@16, buf@24`; the path variant leaves `fd` zero (VFS picks
+/// `Statvfs1` by call number). The server reads these exact byte offsets
+/// (`servers/vfs/src/syscalls.rs` `Statvfs1 | Fstatvfs1` arm).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct Statvfs1Payload {
+    fd: i32,
+    flags: i32,
+    length: u64,
+    name: u64,
+    buffer: u64,
+}
+
+/// `getvfsstat` payload in C field order.
+///
+/// C: `mess_lc_vfs_getvfsstat` (`ipc.h:897-902`) — `buf@0, len@8, flags@16`;
+/// the reply carries the number of records written (not 0), the same
+/// `>=0`-is-a-count convention `getdents` uses.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct GetVfsStatPayload {
+    buffer: u64,
+    length: u64,
+    flags: i32,
+}
+
 /// Shared body of the two path stat variants; the call number carries the
 /// symlink decision (`stat.c` runs the same message shape for both).
 fn stat_via_path(
@@ -312,6 +347,71 @@ pub fn lstat_via(
         name_length_including_nul,
         buffer_address,
     )
+}
+
+/// Filesystem statistics for the mount containing `name_address`.
+///
+/// C: `statvfs1(name, buffer, flags)` (`minix3/minix/lib/libc/sys/statvfs.c`):
+/// path length (NUL-inclusive), path and `struct statvfs` buffer pointers,
+/// plus a wait flag. `flags` here is the `ST_WAIT`/`ST_NOWAIT` refresh hint
+/// (top-level `statvfs` passes `ST_WAIT` as C's `statvfs` does). The VFS
+/// fills the caller buffer directly (it reads its mount cache, no FS
+/// round-trip), so the reply is only success or the errno.
+pub fn statvfs1_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    buffer_address: u64,
+    flags: i32,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    let packed = Statvfs1Payload {
+        fd: 0,
+        flags,
+        length: name_length_including_nul as u64,
+        name: name_address,
+        buffer: buffer_address,
+    };
+    // SAFETY: plain value type; the byte layout matches C field offsets.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const packed) as *const u8,
+            core::mem::size_of::<Statvfs1Payload>(),
+        )
+    };
+    crate::syscall::write_payload(&mut message, bytes);
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_STATVFS1, &mut message).map(|_| ())
+}
+
+/// Filesystem statistics for every mounted file system.
+///
+/// C: `getvfsstat(buf, bufsize, flags)`
+/// (`minix3/minix/lib/libc/sys/getvfsstat.c`): an array buffer, its size, and
+/// a wait flag; the VFS writes up to `bufsize / sizeof(struct statvfs)`
+/// records and replies with the count written. Returns that count (a
+/// non-negative reply, like `getdents`' byte total).
+pub fn getvfsstat_via(
+    transport: &impl IpcTransport,
+    buffer_address: u64,
+    buffer_size: u64,
+    flags: i32,
+) -> Result<usize, Errno> {
+    let mut message = crate::syscall::cleared_message();
+    let packed = GetVfsStatPayload {
+        buffer: buffer_address,
+        length: buffer_size,
+        flags,
+    };
+    // SAFETY: plain value type; the byte layout matches C field offsets.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const packed) as *const u8,
+            core::mem::size_of::<GetVfsStatPayload>(),
+        )
+    };
+    crate::syscall::write_payload(&mut message, bytes);
+    let count = perform_syscall(transport, vfs_endpoint(), VFS_CALL_GETVFSSTAT, &mut message)?;
+    Ok(count as usize)
 }
 
 /// Retrieves file status for an open descriptor.
@@ -1685,6 +1785,47 @@ mod tests {
         let raw = unsafe { &sent.m_u.raw };
         assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 7);
         assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 0xA000);
+    }
+
+    /// statvfs1 载荷：fd@0(路径半留 0)/flags@4/len@8/name@16/buf@24
+    /// (ipc.h:905-913)；调用号 VFS_STATVFS1=0x128；buf 由服务端填充、
+    /// 应答只是判写（reply 0）。
+    #[test]
+    fn test_statvfs1_wire_roundtrip() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        statvfs1_via(&transport, 0x9000, 12, 0xA000, minix_types::ST_WAIT).unwrap();
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, VFS_CALL_STATVFS1);
+        assert_eq!(sent.m_type, 0x128);
+        // SAFETY(test): 读回五域 raw 字节（与 Statvfs1Payload 同布局）。
+        let raw = unsafe { &sent.m_u.raw };
+        assert_eq!(i32::from_ne_bytes(raw[0..4].try_into().unwrap()), 0);
+        assert_eq!(i32::from_ne_bytes(raw[4..8].try_into().unwrap()), minix_types::ST_WAIT);
+        assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 12);
+        assert_eq!(u64::from_ne_bytes(raw[16..24].try_into().unwrap()), 0x9000);
+        assert_eq!(u64::from_ne_bytes(raw[24..32].try_into().unwrap()), 0xA000);
+    }
+
+    /// getvfsstat 载荷：buf@0/len@8/flags@16 (ipc.h:897-902)；
+    /// 调用号 VFS_GETVFSSTAT=0x127；应答是**个数**（非 0），同 getdents 的
+    /// 非负计数约定。
+    #[test]
+    fn test_getvfsstat_wire_and_count_reply() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(3)));
+        assert_eq!(
+            getvfsstat_via(&transport, 0xC000, 3 * 272, minix_types::ST_NOWAIT),
+            Ok(3)
+        );
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, VFS_CALL_GETVFSSTAT);
+        assert_eq!(sent.m_type, 0x127);
+        // SAFETY(test): 读回 buf/len/flags 三域。
+        let raw = unsafe { &sent.m_u.raw };
+        assert_eq!(u64::from_ne_bytes(raw[0..8].try_into().unwrap()), 0xC000);
+        assert_eq!(u64::from_ne_bytes(raw[8..16].try_into().unwrap()), 3 * 272);
+        assert_eq!(i32::from_ne_bytes(raw[16..20].try_into().unwrap()), minix_types::ST_NOWAIT);
     }
 
     /// ioctl 三 lane：fd/req(64 位)/arg（ipc.h:699-705）；应答原样上浮
