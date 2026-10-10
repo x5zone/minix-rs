@@ -43,6 +43,7 @@ pub mod mode;
 pub mod path;
 pub mod pathchk;
 pub mod printf;
+pub mod pwd;
 pub mod testexpr;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
