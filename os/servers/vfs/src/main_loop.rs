@@ -7885,6 +7885,35 @@ pub fn run() -> ! {
         (minix_types::DsFlags::INITIAL | minix_types::DsFlags::OVERWRITE).bits() as i32
     });
 
+    // SD-11 U-5 迁移（第四迁，缓存大头）：VFS 是走全局堆最重的服务
+    // （fproc/mount/path 等工作集），把全局供给从焊死固定池切到 VM_BRK
+    // 增长堆。安装点在 boot 握手（PM 握手 + RS INIT 会合 + finish_init
+    // root mount）全部完成、DS 订阅之后、稳态事件循环之前——此刻 VM（boot
+    // 序第 2 位，早于 VFS 第 5 位）主循环已在收请求，`install_vm_supplier`
+    // 内的 VM_BRK 直连有应答；EINVAL（镜像尾为 0=链接缺陷）fail-fast。
+    // 启动段的分配（init_fresh 表装配）仍在固定池，形态切换只影响此后的
+    // 增长分配。与首迁 DS（T3）/二迁 SCHED（T3b）/三迁 MIB 同法。
+    #[cfg(target_os = "none")]
+    minix_rt::install_vm_supplier(minix_rt::image_end())
+        .expect("vfs: install_vm_supplier(镜像尾) 不得失败");
+
+    // SD-11 真机取证探针：安装后立即从 VM 腿取一页（8 字节 slab 请求触发
+    // add_slab → supply_page → VM_BRK），失败即 fail-fast；成功打一行串口
+    // 标记作 VM_BRK 增长腿端到端贯通的 L1 证据。探针块随 free 回 slab 自由
+    // 表（VM 侧页不回收：收缩 brk 从不 unmap，同 C）。
+    #[cfg(target_os = "none")]
+    {
+        let probe = minix_rt::alloc(8);
+        assert!(!probe.is_null(), "vfs: vm-brk probe 分配失败");
+        minix_rt::free(probe);
+        use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+        #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+        let _ = sys_diagctl_write(
+            &DirectKernelCallTransport,
+            "nk4a: vfs-vmbrk probe ok pages=1 via=VM_BRK\n",
+        );
+    }
+
     loop {
         // C main.c:601-602 — sef_receive(ANY):ping 拦截在 SEF 层完成。
         let mut msg = Message::default();
