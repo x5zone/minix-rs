@@ -85,6 +85,9 @@ pub const PM_CALL_SERVICE_FORK: i32 = minix_types::PmCall::SrvFork as i32;
 pub const PM_CALL_GETEPINFO: i32 = minix_types::PmCall::GetEpInfo as i32;
 /// C: `PM_GETUID (PM_BASE + 6)` (`callnr.h:20`) — 回复 m1i1=ruid、m1i2=euid。
 pub const PM_CALL_GETUID: i32 = minix_types::PmCall::GetUid as i32;
+/// C: `PM_GETGID (PM_BASE + 13)` (`callnr.h:26`) — 回复 m1i1=rgid、m1i2=egid
+/// (与 [`PM_CALL_GETUID`] 同形，两栏一次带回真实/有效组号)。
+pub const PM_CALL_GETGID: i32 = minix_types::PmCall::GetGid as i32;
 /// C: `PM_SETSID (PM_BASE + 15)` (`callnr.h:29`) — 回复值即新会话 id。
 pub const PM_CALL_SETSID: i32 = minix_types::PmCall::SetSid as i32;
 /// C: `PM_SIGACTION (PM_BASE + 20)` (`callnr.h:33`).
@@ -434,6 +437,19 @@ pub fn getuid_via(transport: &impl IpcTransport) -> Result<(i32, i32), Errno> {
     perform_syscall(transport, pm_endpoint(), PM_CALL_GETUID, &mut message)?;
     // SAFETY: the PM fills `m_m1` (m1i1=ruid, m1i2=euid) on this call —
     // the same reply overlay the C getuid reads (lib/libc getuid).
+    let m1 = unsafe { message.m_u.m_m1 };
+    Ok((m1.m1i1, m1.m1i2))
+}
+
+/// 读真实/有效 gid(C: `getgid(2)`/`getegid(2)`;回复 m1i1=rgid、
+/// m1i2=egid,一次消息同时携带)。服务端 `GetResult::Gid { real, eff }`
+/// 走与 `GetUid` 相同的 `prefill(real, eff)` 落点
+/// (`servers/pm/src/ipc/calls.rs` 的 `GetResult::Gid` 臂)。
+pub fn getgid_via(transport: &impl IpcTransport) -> Result<(i32, i32), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    perform_syscall(transport, pm_endpoint(), PM_CALL_GETGID, &mut message)?;
+    // SAFETY: the PM fills `m_m1` (m1i1=rgid, m1i2=egid) on this call —
+    // the same reply overlay the C getgid reads (lib/libc/sys/getegid.c)。
     let m1 = unsafe { message.m_u.m_m1 };
     Ok((m1.m1i1, m1.m1i2))
 }
@@ -921,6 +937,19 @@ mod tests {
         reply.m_u.m_m1.m1i2 = 0; // euid
         transport.reply_sendrec(Ok(reply));
         assert_eq!(getuid_via(&transport), Ok((0, 0)));
+    }
+
+    #[test]
+    fn test_getgid_reads_m1_pair_in_order() {
+        // Distinct real/effective gids pin the lane order: m1i1=rgid
+        // (position 0), m1i2=egid (position 1) — mirroring getuid_via and
+        // the server's `prefill(real, eff)` for `GetResult::Gid`.
+        let mut transport = CannedTransport::new();
+        let mut reply = reply_with_type(0);
+        reply.m_u.m_m1.m1i1 = 100; // rgid
+        reply.m_u.m_m1.m1i2 = 200; // egid
+        transport.reply_sendrec(Ok(reply));
+        assert_eq!(getgid_via(&transport), Ok((100, 200)));
     }
 
     #[test]

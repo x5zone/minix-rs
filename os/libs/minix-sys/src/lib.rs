@@ -499,6 +499,18 @@ pub fn geteuid() -> Result<i32, Errno> {
     Ok(pm::getuid_via(&ipc::DirectTrapTransport)?.1)
 }
 
+/// Returns the real group id of the caller (C: `getgid`; the same
+/// `PM_GETGID` round trip as [`getegid`], which reads the other lane —
+/// see `pm::getgid_via`).
+pub fn getgid() -> Result<i32, Errno> {
+    Ok(pm::getgid_via(&ipc::DirectTrapTransport)?.0)
+}
+
+/// Returns the effective group id of the caller (C: `getegid`).
+pub fn getegid() -> Result<i32, Errno> {
+    Ok(pm::getgid_via(&ipc::DirectTrapTransport)?.1)
+}
+
 /// Sets the real user id of the caller (C: `setuid`, over
 /// `PM_SETUID` — see `pm::setuid_via`).
 pub fn setuid(uid: u32) -> Result<(), Errno> {
