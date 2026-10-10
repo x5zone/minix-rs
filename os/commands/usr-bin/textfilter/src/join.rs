@@ -18,7 +18,28 @@
 //! Pure: takes the two inputs as byte-line slices and returns the output
 //! lines, so the merge is unit-tested without files or the IPC layer.
 
+use crate::TextError;
 use alloc::vec::Vec;
+
+/// Which side an output-field entry draws from (the `F` of `join -o F.N`),
+/// or the join field itself (`0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Which {
+    /// The join field (always taken from file 1's key column).
+    Join,
+    /// A field of file 1.
+    One,
+    /// A field of file 2.
+    Two,
+}
+
+/// One `join -o` output field: a `Which` and a 0-based field index (unused
+/// for `Join`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OField {
+    pub which: Which,
+    pub idx: usize,
+}
 
 /// Join options, mirroring the C globals `join` carries per run.
 #[derive(Debug, Clone)]
@@ -36,6 +57,11 @@ pub struct JoinOptions {
     pub unmatched1: bool,
     /// Emit unpaired lines from file 2 (`-a 2`).
     pub unmatched2: bool,
+    /// Explicit output field list (`-o`); empty selects the default layout
+    /// (join field, then file 1's rest, then file 2's rest).
+    pub output_fields: Vec<OField>,
+    /// Replacement for a missing/unpaired field (`-e`); `None` leaves it blank.
+    pub empty: Option<Vec<u8>>,
 }
 
 impl Default for JoinOptions {
@@ -46,8 +72,41 @@ impl Default for JoinOptions {
             delim: b' ',
             unmatched1: false,
             unmatched2: false,
+            output_fields: Vec::new(),
+            empty: None,
         }
     }
+}
+
+/// Parse a `join -o` field list (`"1.2,2.3,0"`) into entries; tokens are
+/// comma/space/tab separated (the C `strsep(", \t")`), `0` is the join field,
+/// `F.N` (1-based) a field of file `F`; malformed or zero field numbers are
+/// `EINVAL` (mirroring `fieldarg`'s "field numbers are 1 based").
+pub fn parse_olist(spec: &str) -> Result<Vec<OField>, TextError> {
+    let mut fields = Vec::new();
+    for token in spec.split([',', ' ', '\t']) {
+        if token.is_empty() {
+            continue;
+        }
+        if token == "0" {
+            fields.push(OField { which: Which::Join, idx: 0 });
+            continue;
+        }
+        let mut parts = token.splitn(2, '.');
+        let file = parts.next().unwrap_or("");
+        let num = parts.next().ok_or(TextError::InvalidArgument)?;
+        let which = match file {
+            "1" => Which::One,
+            "2" => Which::Two,
+            _ => return Err(TextError::InvalidArgument),
+        };
+        let n: usize = num.parse().map_err(|_| TextError::InvalidArgument)?;
+        if n == 0 {
+            return Err(TextError::InvalidArgument);
+        }
+        fields.push(OField { which, idx: n - 1 });
+    }
+    Ok(fields)
 }
 
 /// Split a line into fields on runs of space/tab (the C default `tabchar`
@@ -93,7 +152,7 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
                     let fa = split_fields(la, opts.delim);
                     for lb in f2[j..g2].iter().copied() {
                         let fb = split_fields(lb, opts.delim);
-                        out.push(twoline(&fa, opts.field1, &fb, opts.field2, opts.delim));
+                        out.push(twoline(&fa, &fb, opts));
                     }
                 }
                 i = g1;
@@ -102,7 +161,7 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
             core::cmp::Ordering::Less => {
                 if opts.unmatched1 {
                     for la in f1[i..g1].iter().copied() {
-                        out.push(onlyline(&split_fields(la, opts.delim), opts.delim));
+                        out.push(onlyline(&split_fields(la, opts.delim), true, opts));
                     }
                 }
                 i = g1;
@@ -110,7 +169,7 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
             core::cmp::Ordering::Greater => {
                 if opts.unmatched2 {
                     for lb in f2[j..g2].iter().copied() {
-                        out.push(onlyline(&split_fields(lb, opts.delim), opts.delim));
+                        out.push(onlyline(&split_fields(lb, opts.delim), false, opts));
                     }
                 }
                 j = g2;
@@ -122,7 +181,7 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
         while i < f1.len() {
             let g = group_end(f1, i, opts.field1, opts.delim);
             for la in f1[i..g].iter().copied() {
-                out.push(onlyline(&split_fields(la, opts.delim), opts.delim));
+                out.push(onlyline(&split_fields(la, opts.delim), true, opts));
             }
             i = g;
         }
@@ -131,7 +190,7 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
         while j < f2.len() {
             let g = group_end(f2, j, opts.field2, opts.delim);
             for lb in f2[j..g].iter().copied() {
-                out.push(onlyline(&split_fields(lb, opts.delim), opts.delim));
+                out.push(onlyline(&split_fields(lb, opts.delim), false, opts));
             }
             j = g;
         }
@@ -164,37 +223,76 @@ fn push_tok(out: &mut Vec<u8>, sep: u8, first: &mut bool, tok: &[u8]) {
     *first = false;
 }
 
-/// The default pair line: join field (from file 1), then file 1's other
-/// fields, then file 2's other fields, separated by `delim`'s first byte.
-fn twoline(a: &[&[u8]], akey: usize, b: &[&[u8]], bkey: usize, delim: u8) -> Vec<u8> {
+/// Pick the token for one `join -o` entry given the (possibly absent) field
+/// vectors of each file; a missing field or the absent side yields the `-e`
+/// replacement (empty string when none was given).
+fn olist_token(entry: &OField, a: Option<&[&[u8]]>, b: Option<&[&[u8]]>, opts: &JoinOptions) -> Vec<u8> {
+    let fallback = opts.empty.clone().unwrap_or_default();
+    let pick = |side: Option<&[&[u8]]>, idx: usize| -> Vec<u8> {
+        match side {
+            Some(fields) => fields.get(idx).map(|f| f.to_vec()).unwrap_or_else(|| fallback.clone()),
+            None => fallback.clone(),
+        }
+    };
+    match entry.which {
+        // The join field comes from file 1's key column when present, else
+        // file 2's (the unmatched file-1-only case still has its own key).
+        Which::Join => a
+            .and_then(|f| f.get(opts.field1))
+            .or_else(|| b.and_then(|f| f.get(opts.field2)))
+            .map(|f| f.to_vec())
+            .unwrap_or_default(),
+        Which::One => pick(a, entry.idx),
+        Which::Two => pick(b, entry.idx),
+    }
+}
+
+/// The pair output line: the `-o` field list when set (each entry resolved
+/// against both files), else the default join field + file 1 rest + file 2 rest.
+fn twoline(a: &[&[u8]], b: &[&[u8]], opts: &JoinOptions) -> Vec<u8> {
     let mut line = Vec::new();
     let mut first = true;
-    if a.len() > akey {
-        push_tok(&mut line, delim, &mut first, a[akey]);
+    if !opts.output_fields.is_empty() {
+        for entry in &opts.output_fields {
+            push_tok(&mut line, opts.delim, &mut first, &olist_token(entry, Some(a), Some(b), opts));
+        }
+        return line;
+    }
+    if a.len() > opts.field1 {
+        push_tok(&mut line, opts.delim, &mut first, a[opts.field1]);
     }
     for (idx, f) in a.iter().enumerate() {
-        if idx != akey {
-            push_tok(&mut line, delim, &mut first, f);
+        if idx != opts.field1 {
+            push_tok(&mut line, opts.delim, &mut first, f);
         }
     }
     for (idx, f) in b.iter().enumerate() {
-        if idx != bkey {
-            push_tok(&mut line, delim, &mut first, f);
+        if idx != opts.field2 {
+            push_tok(&mut line, opts.delim, &mut first, f);
         }
     }
     line
 }
 
-/// An unpaired line: all its own fields, joined by the separator.
-fn onlyline(fields: &[&[u8]], delim: u8) -> Vec<u8> {
+/// An unpaired line: with `-o` the other file's fields yield the `-e`
+/// replacement; otherwise all of the line's own fields, joined by `delim`.
+fn onlyline(fields: &[&[u8]], is_file1: bool, opts: &JoinOptions) -> Vec<u8> {
     let mut line = Vec::new();
     let mut first = true;
+    if !opts.output_fields.is_empty() {
+        let a: Option<&[&[u8]]> = if is_file1 { Some(fields) } else { None };
+        let b: Option<&[&[u8]]> = if is_file1 { None } else { Some(fields) };
+        for entry in &opts.output_fields {
+            push_tok(&mut line, opts.delim, &mut first, &olist_token(entry, a, b, opts));
+        }
+        return line;
+    }
     for f in fields {
         if f.is_empty() {
             continue;
         }
         if !first {
-            line.push(delim);
+            line.push(opts.delim);
         }
         line.extend_from_slice(f);
         first = false;
@@ -287,5 +385,44 @@ mod tests {
         let f1 = "1 a b\n2 c d";
         let f2 = "1 x\n2 y";
         assert_eq!(join(f1, f2, &JoinOptions::default()), "1 a b x\n2 c d y");
+    }
+
+    #[test]
+    fn test_parse_olist_forms() {
+        assert_eq!(
+            parse_olist("1.2,2.1,0").unwrap(),
+            vec![
+                OField { which: Which::One, idx: 1 },
+                OField { which: Which::Two, idx: 0 },
+                OField { which: Which::Join, idx: 0 },
+            ]
+        );
+        assert!(parse_olist("3.1").is_err()); // no file 3
+        assert!(parse_olist("1.0").is_err()); // fields are 1-based
+        assert!(parse_olist("5").is_err()); // no dot, not `0`
+    }
+
+    #[test]
+    fn test_olist_selects_fields_and_join() {
+        // -o 0,2.2,1.2 : join field, file2's field2, file1's field2.
+        let o = JoinOptions {
+            output_fields: parse_olist("0,2.2,1.2").unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(join("1 a b\n2 c d", "1 x\n2 y", &o), "1 x a\n2 y c");
+    }
+
+    #[test]
+    fn test_olist_empty_replacement_on_unmatched() {
+        // -a 1 -o 0,1.2,2.2 -e '-' : file-1-only line has no file-2 field.
+        let mut o = JoinOptions {
+            output_fields: parse_olist("0,1.2,2.2").unwrap(),
+            empty: Some(b"-".to_vec()),
+            unmatched1: true,
+            ..Default::default()
+        };
+        o.unmatched2 = false;
+        // key 3 pairs with nothing -> file-2 field replaced by '-'.
+        assert_eq!(join("1 a\n3 c", "1 x", &o), "1 a x\n3 c -");
     }
 }

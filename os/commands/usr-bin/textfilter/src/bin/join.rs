@@ -6,9 +6,9 @@
 //! newline-stripped lines to the library, and emits the result.
 //!
 //! Wired: default join, `-t` (delimiter), `-1`/`-2` (per-file join field),
-//! `-a 1`/`-a 2` (unmatched lines). Declared residual: `-o`, `-e`, `-j`,
-//! `-v`, and the obsolete one-argument form — requesting them reports
-//! "option not wired" and exits 1 rather than emitting a wrong join.
+//! `-a 1`/`-a 2` (unmatched lines), `-o` (output field list, `0`/`F.N`) and
+//! `-e` (empty-field replacement). Declared residual: `-j` and the obsolete
+//! one-argument form — requesting them reports "option not wired" and exits 1.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -19,7 +19,7 @@ mod support;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_textfilter::join::{JoinOptions, join_lines};
+use minix_textfilter::join::{JoinOptions, join_lines, parse_olist};
 
 /// Read a whole standard-input stream (a `-` operand).
 fn read_stdin() -> Vec<u8> {
@@ -104,11 +104,21 @@ fn run() -> ! {
                     opts.field2 = n - 1;
                 }
             }
-            "o" | "e" | "j" | "v" => {
+            "o" => {
+                let v = value!();
+                match parse_olist(v) {
+                    Ok(fields) => opts.output_fields = fields,
+                    Err(_) => fail("malformed -o option field"),
+                }
+            }
+            "e" => {
+                opts.empty = Some(value!().as_bytes().to_vec());
+            }
+            "j" | "v" => {
                 // Consume the value so it is not mistaken for a file, then
                 // decline the unwired residual face.
                 let _ = value!();
-                fail("option not wired (residual: -o/-e/-j/-v)");
+                fail("option not wired (residual: -j/-v)");
             }
             _ => fail("unknown option"),
         }
