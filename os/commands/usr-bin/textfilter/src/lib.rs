@@ -48,6 +48,7 @@ pub mod expand;
 pub mod jot;
 pub mod join;
 pub mod lam;
+pub mod look;
 pub mod nl;
 pub mod patch;
 pub mod paste;
