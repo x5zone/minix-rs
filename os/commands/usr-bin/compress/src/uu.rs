@@ -18,6 +18,7 @@
 //! - Decoding rejects bytes outside the encoding alphabet.
 
 use crate::CompressError;
+use alloc::vec::Vec;
 
 /// Encode up to 3 bytes into 4 sextet bytes in `out` (exactly 4 slots).
 /// Returns the encoded bytes; short input pads with zeros.
@@ -73,6 +74,64 @@ pub fn parse_length(byte: u8) -> Result<usize, CompressError> {
         33..=77 => Ok((byte - 32) as usize),
         _ => Err(CompressError::InvalidArgument),
     }
+}
+
+/// Encode a whole input into the classic `uuencode` body: each physical line
+/// carries the byte count as a [`length_byte`], then one [`encode_group`]
+/// (4 sextets) per 3-byte group, terminated by a newline; a final zero-length
+/// line (a lone backquote) closes the body. This mirrors `encode()` in
+/// `minix3/usr.bin/uuencode/uuencode.c:156-193`; the `begin`/`end` framing and
+/// the file mode stay with the caller.
+///
+/// A short trailing group is padded with zero sextets (rendered backquotes).
+/// C leaves stale bytes in its reused buffer there, but the length byte tells
+/// the decoder to drop them, so the decoded stream is identical either way.
+pub fn encode_stream(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for chunk in input.chunks(45) {
+        out.push(length_byte(chunk.len()).unwrap_or(b'`'));
+        for group in chunk.chunks(3) {
+            let mut encoded = [0u8; 4];
+            encode_group(group, &mut encoded);
+            out.extend_from_slice(&encoded);
+        }
+        out.push(b'\n');
+    }
+    out.push(b'`');
+    out.push(b'\n');
+    out
+}
+
+/// Encode a whole input into the `uuencode -m` base64 body (`
+/// base64_encode()` at `uuencode.c:128-151`): standard `A-Za-z0-9+/` with
+/// `=` padding, four characters per 3-byte group, wrapped after every 16
+/// groups (64 characters). Empty input yields an empty body, matching C (the
+/// read loop never runs and `sequence % GROUPS` is zero, so no newline).
+pub fn base64_stream(input: &[u8]) -> Vec<u8> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    // GROUPS from uuencode.c:134 = ((70 / 4) - 1) = 16 quads per line.
+    const GROUPS: usize = 16;
+    let mut out = Vec::new();
+    let mut sequence = 0usize;
+    for chunk in input.chunks(3) {
+        let a = chunk[0] as u32;
+        let b = chunk.get(1).copied().unwrap_or(0) as u32;
+        let c = chunk.get(2).copied().unwrap_or(0) as u32;
+        let packed = (a << 16) | (b << 8) | c;
+        let sextet = |index: usize| ALPHABET[((packed >> (18 - 6 * index)) & 0x3F) as usize];
+        out.push(sextet(0));
+        out.push(sextet(1));
+        out.push(if chunk.len() >= 2 { sextet(2) } else { b'=' });
+        out.push(if chunk.len() >= 3 { sextet(3) } else { b'=' });
+        sequence += 1;
+        if sequence.is_multiple_of(GROUPS) {
+            out.push(b'\n');
+        }
+    }
+    if !sequence.is_multiple_of(GROUPS) {
+        out.push(b'\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -133,5 +192,56 @@ mod tests {
             decode_group(b"abcd", 4, &mut [0u8; 3]),
             Err(CompressError::InvalidArgument)
         );
+    }
+
+    #[test]
+    fn test_encode_stream_canonical_man() {
+        // "Man" -> length 3 ('#') + "36%N" + newline, then the closing "`\n".
+        assert_eq!(encode_stream(b"Man"), b"#36%N\n`\n".to_vec());
+    }
+
+    #[test]
+    fn test_encode_stream_single_byte_pads() {
+        // 1 byte -> length '!' (33), group "M\0\0" -> sextets 19,16,0,0 = "30``".
+        assert_eq!(encode_stream(b"M"), b"!30``\n`\n".to_vec());
+    }
+
+    #[test]
+    fn test_encode_stream_empty_is_backquote_line() {
+        assert_eq!(encode_stream(b""), b"`\n".to_vec());
+    }
+
+    #[test]
+    fn test_encode_stream_splits_at_45() {
+        // 46 bytes -> a full 45-byte line (length 'm' = 77) then a 1-byte line.
+        let out = encode_stream(&[b'a'; 46]);
+        assert_eq!(out[0], 45 + 32); // 'm'
+        assert_eq!(out[61], b'\n'); // end of the 45-byte line (1 + 60 + 1)
+        assert_eq!(out[62], 1 + 32); // '!' length of the leftover 1 byte
+    }
+
+    #[test]
+    fn test_base64_stream_canonical() {
+        assert_eq!(base64_stream(b"Man"), b"TWFu\n".to_vec());
+        assert_eq!(base64_stream(b"M"), b"TQ==\n".to_vec());
+        assert_eq!(base64_stream(b"Ma"), b"TWE=\n".to_vec());
+    }
+
+    #[test]
+    fn test_base64_stream_empty_has_no_newline() {
+        assert!(base64_stream(b"").is_empty());
+    }
+
+    #[test]
+    fn test_base64_stream_wraps_at_16_groups() {
+        // 48 bytes = 16 quads = 64 chars, then a newline (no extra final one).
+        let out = base64_stream(&[b'a'; 48]);
+        assert_eq!(out.len(), 65);
+        assert_eq!(out[64], b'\n');
+        // 49 bytes = 17 quads: 64 + '\n' + 4 + '\n'.
+        let out = base64_stream(&[b'a'; 49]);
+        assert_eq!(out.len(), 70);
+        assert_eq!(out[64], b'\n');
+        assert_eq!(out[69], b'\n');
     }
 }

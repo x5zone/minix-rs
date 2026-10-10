@@ -30,7 +30,12 @@
 //! - [`checksum`]: the [`checksum::Checksum`] trait with the two archive
 //!   integrity functions (cyclic redundancy check and Adler's checksum).
 //!
-//! Everything uses fixed size buffers: no heap, `no_std` throughout.
+//! Data structures use fixed size buffers: no heap in the LZW/SHAR cores.
+//! The uuencode *stream* encoder is the one exception — its output length
+//! is unbounded, so `uu::encode_stream`/`uu::base64_stream` build a `Vec`
+//! through `alloc` (the global allocator comes from `minix-rt`).
+
+extern crate alloc;
 
 pub mod checksum;
 pub mod lzw;
