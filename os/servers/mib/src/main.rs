@@ -54,6 +54,33 @@ fn real_main() {
         let kernel = SysTransport;
         let services = SysServices::default();
 
+        // SD-11 U-5 迁移：把全局堆供给切到 VM_BRK 增长堆，初始断点 = 链接器
+        // 镜像尾（`minix_rt::image_end`，C `brksize.S` 以 `_end` 播 `_brksize`
+        // 的同一符号）。安装本身无 IPC（只切换分配器形态）；首次超出固定池的
+        // 分配才真正发 VM_BRK。出生序上 MIB 晚于 VM（`rs/boot.rs` 装机表），
+        // 安装时 VM 主循环已在收请求；EINVAL（镜像尾为 0 = 链接缺陷）fail-fast。
+        // 与首迁 DS（T3）、二迁 SCHED（T3b）同法。
+        #[cfg(target_os = "none")]
+        minix_rt::install_vm_supplier(minix_rt::image_end())
+            .expect("mib: install_vm_supplier(镜像尾) 不得失败");
+
+        // SD-11 真机取证探针：安装后立即从 VM 腿取一页（8 字节 slab 请求触发
+        // add_slab → supply_page → VM_BRK），失败即 fail-fast。成功打一行串口
+        // 标记——VM_BRK 增长腿端到端贯通的 L1 证据；探针块随 free 回 slab 自由
+        // 表（VM 侧页不回收：收缩 brk 从不 unmap，同 C）。
+        #[cfg(target_os = "none")]
+        {
+            let probe = minix_rt::alloc(8);
+            assert!(!probe.is_null(), "mib: vm-brk probe 分配失败");
+            minix_rt::free(probe);
+            use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+            let _ = sys_diagctl_write(
+                &DirectKernelCallTransport,
+                "nk4a: mib-vmbrk probe ok pages=1 via=VM_BRK\n",
+            );
+        }
+
         // C: main loop — main.c:443-488: receive → triage → dispatch →
         // reply, forever; a broken transport dies at the documented
         // 64-turn bound (server.rs, the SCHED/DS-shared deviation from
