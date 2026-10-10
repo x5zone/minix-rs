@@ -389,7 +389,7 @@ cargo test -p minix-pm --no-run 2>&1 | grep 'unused variable'  # 22 处，全部
 | do_getepinfo | partial | misc.c:184-190 ↔ `misc.rs:362-378` | ngroups 语义（全量 vs 截断）+ groups 拷出未接线 → V3-P2-4 |
 | do_svrctl | partial | misc.c:307-395 ↔ `misc.rs:404-428, 213-218` | 四分支缺失 + 检查顺序相反 → V3-P2-5（扩展 V2-P3-4(b)） |
 | do_sysuname | partial | misc.c:72-100 ↔ `misc.rs:275-304` | req 方向分支缺失（req!=0→EINVAL 无处产生）+ 用户目的地址 placeholder（EFAULT 无载体）→ V3-P2-5 同批 |
-| do_getrusage | partial | misc.c:429-446 ↔ `misc.rs:442-463` | rusage 结构拷出未接线（`_cpy` 未用）+ 底层错误折叠 EINVAL（见 V3-P2-6） |
+| do_getrusage | closed | misc.c:429-446 ↔ `misc.rs:715`（dispatch 臂 `ipc/calls.rs:855/866`，非 ENOSYS） | 本行旧述“rusage 结构拷出未接线（`_cpy` 未用）+ 底层错误折叠 EINVAL”经核为**账面滞后**，现据代码实测刷为 closed：`do_getrusage`（misc.rs:715）已接线且 ① 拷出按 LP64 字节布局落地——`test_getrusage_struct_byte_layout` 见证 utime@0/stime@16/maxrss@32/minflt@64/majflt@72；② 底层/vm 错误原样透传不折 EINVAL——`test_dispatch_getrusage_vm_error_passthrough` + `test_getrusage_vm_error_propagates_without_copyout` 钉死（即 misc.rs:67/308 的透传规约，本卷另设专节）；③ who 门 EINVAL 由 `test_dispatch_getrusage_invalid_who_is_einval` 守。三件套（`2026-10-10`，`claim/GETRUSAGE-RECON-qoder`）：可重跑 `cd os && cargo test -p minix-pm --lib getrusage` 该族全绿；纯核对未改码。 |
 | do_getsetpriority | covered（含一处待核实模式） | misc.c:239-286 ↔ `sched.rs:247-277` | `unwrap_or_default()` 凭据模式见 §12.3 观察 6（不构成对 C 的偏差） |
 | sched_init | covered | schedule.c:20-50 ↔ `sched.rs:171-197` | 两个 C assert 仅注释（sched.rs:181-185）；失败日志 cfg(test) |
 | sched_start_user | **语义偏差** | schedule.c:55-84 + main.c:371-373 ↔ `sched.rs:200-212` | C 继承父进程的 `mp_scheduler`（调用点守卫 KERNEL/NONE），Rust 硬编码 `SCHED_PROC_NR` 且无守卫 → V3-P2-3 |
