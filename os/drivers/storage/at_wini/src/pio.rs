@@ -447,16 +447,50 @@ pub enum BlockCommand {
     Lba28(Command),
     /// 48-bit LBA (large drives). C: the `do_lba48` branch (:896-916).
     Lba48(Command48),
+    /// CHS (cylinder/head/sector) addressing for a drive without LBA.
+    /// C: the `else` branch (at_wini.c:922-930).
+    Chs(Command),
+}
+
+/// Build a CHS (cylinder/head/sector) read/write command for a drive without
+/// LBA. C: `do_transfer` CHS branch (at_wini.c:922-930) — `secspcyl = heads *
+/// sectors_per_track`; `cylinder = block / secspcyl`; `head = (block %
+/// secspcyl) / sectors_per_track`; the sector register is `block %
+/// sectors_per_track + 1` (CHS sectors are 1-based); `ldh = ldhpref | head`.
+///
+/// The caller must supply non-zero `heads` and `sectors_per_track` (a real
+/// drive's IDENTIFY geometry); [`block_command`] guarantees this before calling.
+pub fn chs_command(
+    block: u32,
+    count: u8,
+    drive: u8,
+    heads: u32,
+    sectors_per_track: u32,
+    do_write: bool,
+) -> Command {
+    let secspcyl = heads * sectors_per_track;
+    let cylinder = block / secspcyl;
+    let head = (block % secspcyl) / sectors_per_track;
+    let sec = block % sectors_per_track;
+    Command {
+        precomp: 0,
+        count,
+        sector: (sec + 1) as u8,
+        cyl_lo: (cylinder & 0xFF) as u8,
+        cyl_hi: ((cylinder >> 8) & 0xFF) as u8,
+        ldh: ldh_init(drive) | (head as u8),
+        command: if do_write { CMD_WRITE } else { CMD_READ },
+    }
 }
 
 /// Choose the command encoding for a block transfer given the drive's IDENTIFY
 /// result.
 ///
-/// Returns `None` for a CHS-only drive (media too small to trust LBA, or
-/// LBA-incapable): the geometry command path is a later increment, and the
-/// caller must not silently fall back to LBA (C keeps CHS for such drives).
-/// The LBA28 count saturates at one command's worth (a sector count is a byte;
-/// larger requests split across commands by the caller).
+/// Dispatches LBA48 → LBA28 → CHS exactly as C `do_transfer`. Returns `None`
+/// only for a CHS drive whose geometry is unusable (`heads` or
+/// `sectors_per_track` zero) — such a drive cannot be addressed and must not be
+/// silently sent via LBA. The LBA28/CHS sector count saturates at one
+/// command's worth (a byte; larger requests split across commands by the caller).
 pub fn block_command(
     caps: &IdentifyInfo,
     block: u64,
@@ -473,6 +507,15 @@ pub fn block_command(
             block as u32,
             count.min(u8::MAX as u16) as u8,
             drive,
+            do_write,
+        )))
+    } else if caps.heads > 0 && caps.sectors_per_track > 0 {
+        Some(BlockCommand::Chs(chs_command(
+            block as u32,
+            count.min(u8::MAX as u16) as u8,
+            drive,
+            caps.heads as u32,
+            caps.sectors_per_track as u32,
             do_write,
         )))
     } else {
@@ -881,8 +924,42 @@ mod tests {
             }
             other => panic!("expected Lba28, got {other:?}"),
         }
-        // CHS-only drive → None; never silently mis-fall back to LBA.
+        // No LBA and unusable (zero) geometry → None; never silently fall back.
         assert!(block_command(&caps(false, false), 0, 1, 0, false).is_none());
+    }
+
+    /// A CHS drive with a usable 16-head, 63-sector geometry.
+    fn caps_chs() -> IdentifyInfo {
+        IdentifyInfo {
+            cylinders: 1024,
+            heads: 16,
+            sectors_per_track: 63,
+            lba: false,
+            lba48: false,
+            total_sectors: 1_032_192,
+        }
+    }
+
+    #[test]
+    fn test_block_command_chs_when_no_lba() {
+        // C: do_transfer else branch (at_wini.c:922-930). block 63 with
+        // secspcyl = 16*63 = 1008 → cylinder 0, head (63%1008)/63 = 1,
+        // sector (63%63)+1 = 1, ldh = ldh_init(0) | 1.
+        match block_command(&caps_chs(), 63, 1, 0, false).unwrap() {
+            BlockCommand::Chs(c) => {
+                assert_eq!(c.command, CMD_READ);
+                assert_eq!(c.sector, 1);
+                assert_eq!(c.cyl_lo, 0);
+                assert_eq!(c.cyl_hi, 0);
+                assert_eq!(c.ldh, ldh_init(0) | 1);
+            }
+            other => panic!("expected Chs, got {other:?}"),
+        }
+        // First block: cylinder 0, head 0, sector 1.
+        let c = chs_command(0, 1, 1, 16, 63, true);
+        assert_eq!(c.command, CMD_WRITE);
+        assert_eq!(c.sector, 1);
+        assert_eq!(c.ldh, ldh_init(1)); // drive 1 sets LDH_DEV, head 0
     }
 
     #[test]
