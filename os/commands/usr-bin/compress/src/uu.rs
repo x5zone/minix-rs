@@ -134,6 +134,177 @@ pub fn base64_stream(input: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The parsed header of a uu/base64 archive (`begin`/`begin-base64` line).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UuBegin {
+    /// The octal mode after the keyword.
+    pub mode: u32,
+    /// The embedded output file name (bytes, newline already cut).
+    pub name: Vec<u8>,
+    /// `true` when the header was `begin-base64` (base64 body follows).
+    pub base64: bool,
+}
+
+/// Whitespace that separates the mode from the file name (`isspace` subset).
+fn is_ws(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c)
+}
+
+/// Parse a `begin`/`begin-base64` header line (`uudecode.c:118-150`): detect
+/// the keyword, read the octal mode (strtol base 8 — skip leading whitespace,
+/// then octal digits), require a whitespace separator, then take the file name
+/// up to the line's newline. Returns `None` when the line is not a begin line
+/// or is missing the mode or name, which is what C reports as an error.
+pub fn parse_begin(line: &[u8]) -> Option<UuBegin> {
+    let (base64, mut i) = if line.starts_with(b"begin-base64 ") {
+        (true, 13usize)
+    } else if line.starts_with(b"begin ") {
+        (false, 6usize)
+    } else {
+        return None;
+    };
+    while i < line.len() && is_ws(line[i]) {
+        i += 1;
+    }
+    let start = i;
+    while i < line.len() && (b'0'..=b'7').contains(&line[i]) {
+        i += 1;
+    }
+    if i == start {
+        return None; // no mode digits (C: fn == p)
+    }
+    if i >= line.len() || !is_ws(line[i]) {
+        return None; // mode not followed by whitespace
+    }
+    let mut mode: u32 = 0;
+    for &d in &line[start..i] {
+        mode = mode * 8 + (d - b'0') as u32;
+    }
+    while i < line.len() && is_ws(line[i]) {
+        i += 1;
+    }
+    if i >= line.len() {
+        return None; // no file name
+    }
+    let end = line[i..].iter().position(|&b| b == b'\n').map(|p| i + p).unwrap_or(line.len());
+    let name = line[i..end].to_vec();
+    if name.is_empty() {
+        return None;
+    }
+    Some(UuBegin { mode, name, base64 })
+}
+
+/// The C `DEC` macro (`uudecode.c:237`): `((c - ' ') & 077)`, masking so any
+/// byte lands in 0..=63 (never negative), matching C's silent masking rather
+/// than rejecting off-alphabet bytes.
+fn dec(c: u8) -> i32 {
+    ((c as i32) - 32) & 0o77
+}
+
+/// Decode the uu body lines (`uudecode.c:231-267`): each line's first byte is a
+/// `DEC`-masked length; 0 ends the data; otherwise ceil(length/3) four-char
+/// groups yield the bytes, and only `length` of them are real (the rest is
+/// padding). The caller supplies the body lines (framing — the `begin` header
+/// and the trailing `end` line — stays with the caller).
+pub fn decode_uu_stream(lines: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let n = dec(line[0]) as usize;
+        if n == 0 {
+            break; // zero-length line ends the archive
+        }
+        let mut rest = n;
+        let mut p = &line[1..];
+        while rest > 0 {
+            let g0 = dec(*p.first().unwrap_or(&b'`'));
+            let g1 = dec(*p.get(1).unwrap_or(&b'`'));
+            let g2 = dec(*p.get(2).unwrap_or(&b'`'));
+            let g3 = dec(*p.get(3).unwrap_or(&b'`'));
+            let b0 = ((g0 << 2) | (g1 >> 4)) as u8;
+            let b1 = ((g1 << 4) | (g2 >> 2)) as u8;
+            let b2 = ((g2 << 6) | g3) as u8;
+            out.push(b0);
+            if rest >= 2 {
+                out.push(b1);
+            }
+            if rest >= 3 {
+                out.push(b2);
+            }
+            if p.len() >= 4 {
+                p = &p[4..];
+            } else {
+                break;
+            }
+            rest = rest.saturating_sub(3);
+        }
+    }
+    out
+}
+
+/// Decode a base64 sextet char to its 6-bit value (the inverse of the
+/// `base64_stream` alphabet).
+fn b64_val(c: u8) -> Option<u8> {
+    match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// Decode the base64 body (`uudecode.c:290-314`): collect sextets across the
+/// body lines, stopping at the first `=` (final-quantum padding or the `====`
+/// terminator); whitespace is skipped; a non-alphabet byte also stops. Then
+/// regroup 4 sextets → up to 3 bytes, dropping the padding-only tail bytes.
+pub fn decode_base64_stream(lines: &[&[u8]]) -> Vec<u8> {
+    let mut sextets: Vec<u8> = Vec::new();
+    let mut stop = false;
+    for line in lines {
+        if stop {
+            break;
+        }
+        for &c in *line {
+            if c == b'=' {
+                stop = true;
+                break;
+            }
+            match b64_val(c) {
+                Some(v) => sextets.push(v),
+                None if c == b' ' || c == b'\t' || c == b'\r' => {}
+                None => {
+                    stop = true;
+                    break;
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < sextets.len() {
+        let take = (sextets.len() - i).min(4);
+        let mut packed: u32 = 0;
+        for k in 0..take {
+            packed = (packed << 6) | sextets[i + k] as u32;
+        }
+        packed <<= (4 - take) * 6;
+        let bytes = take * 6 / 8;
+        out.push((packed >> 16) as u8);
+        if bytes >= 2 {
+            out.push((packed >> 8) as u8);
+        }
+        if bytes >= 3 {
+            out.push(packed as u8);
+        }
+        i += 4;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +414,61 @@ mod tests {
         assert_eq!(out.len(), 70);
         assert_eq!(out[64], b'\n');
         assert_eq!(out[69], b'\n');
+    }
+
+    /// Split an encoder body into non-empty lines for the decoders.
+    fn body_lines(enc: &[u8]) -> Vec<&[u8]> {
+        enc.split(|&b| b == b'\n').filter(|l| !l.is_empty()).collect()
+    }
+
+    #[test]
+    fn test_parse_begin_uu() {
+        let b = parse_begin(b"begin 644 foo.txt").unwrap();
+        assert_eq!(b.mode, 0o644);
+        assert_eq!(b.name, b"foo.txt");
+        assert!(!b.base64);
+    }
+
+    #[test]
+    fn test_parse_begin_base64_and_spaced_name() {
+        let b = parse_begin(b"begin-base64 755 my file.bin").unwrap();
+        assert_eq!(b.mode, 0o755);
+        assert_eq!(b.name, b"my file.bin");
+        assert!(b.base64);
+    }
+
+    #[test]
+    fn test_parse_begin_rejects_bad_headers() {
+        assert!(parse_begin(b"not a begin line").is_none());
+        assert!(parse_begin(b"begin 644").is_none()); // no file name
+        assert!(parse_begin(b"begin abc foo").is_none()); // mode not octal-digits
+    }
+
+    #[test]
+    fn test_decode_uu_canonical_man() {
+        assert_eq!(decode_uu_stream(&[b"#36%N".as_ref(), b"`".as_ref()]), b"Man");
+    }
+
+    #[test]
+    fn test_decode_uu_round_trips() {
+        for data in [&b""[..], &b"M"[..], &b"Ma"[..], &b"Man"[..], &b"Hello, World! 234"[..], &[b'x'; 100][..]] {
+            let enc = encode_stream(data);
+            assert_eq!(decode_uu_stream(&body_lines(&enc)), data, "uu round trip");
+        }
+    }
+
+    #[test]
+    fn test_decode_base64_canonical() {
+        assert_eq!(decode_base64_stream(&[b"TWFu".as_ref()]), b"Man");
+        assert_eq!(decode_base64_stream(&[b"TQ==".as_ref()]), b"M");
+        assert_eq!(decode_base64_stream(&[b"TWE=".as_ref()]), b"Ma");
+    }
+
+    #[test]
+    fn test_decode_base64_round_trips() {
+        for data in [&b""[..], &b"M"[..], &b"Ma"[..], &b"Man"[..], &b"the quick brown fox"[..], &[b'z'; 200][..]] {
+            let enc = base64_stream(data);
+            assert_eq!(decode_base64_stream(&body_lines(&enc)), data, "base64 round trip");
+        }
     }
 }
