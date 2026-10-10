@@ -68,6 +68,48 @@ pub fn parse_primary_table(mbr: &[u8; 512]) -> Option<[Option<MbrEntry>; NR_PART
     Some(out)
 }
 
+use crate::protocol::{DeviceExtent, SECTOR_SIZE};
+
+/// Whole-disk plus the `NR_PARTITIONS` primary slices — the minor count a
+/// single drive exposes. C: `DEV_PER_DRIVE (1 + NR_PARTITIONS)` — drvlib.h:10.
+pub const PRIMARY_SLOTS: usize = 1 + NR_PARTITIONS;
+
+/// Resolve byte extents for a drive's whole disk and its primary partitions.
+///
+/// Slot 0 is the whole medium `[0, total_sectors*512)`; slot `i+1` is primary
+/// partition `i`, its byte base `start_lba*512` and size `sectors*512`, clipped
+/// so it never extends past the disk end (an entry starting beyond the medium is
+/// dropped). An empty table slot or a zero-size disk yields `None`.
+///
+/// C: `drvlib.c` `partition()` fills each minor's `dv_base`/`dv_size` and clips
+/// partitions to the medium; the driver's `bdr_part`/`geometry` then serve them.
+pub fn primary_extents(
+    table: &[Option<MbrEntry>; NR_PARTITIONS],
+    total_sectors: u64,
+) -> [Option<DeviceExtent>; PRIMARY_SLOTS] {
+    let disk_end = total_sectors * SECTOR_SIZE;
+    let mut out = [None; PRIMARY_SLOTS];
+    if total_sectors > 0 {
+        out[0] = Some(DeviceExtent {
+            base: 0,
+            size: disk_end,
+        });
+    }
+    for (i, entry) in table.iter().enumerate() {
+        if let Some(e) = entry {
+            let base = e.start_lba as u64 * SECTOR_SIZE;
+            if base < disk_end {
+                let end = (base + e.sectors as u64 * SECTOR_SIZE).min(disk_end);
+                out[i + 1] = Some(DeviceExtent {
+                    base,
+                    size: end - base,
+                });
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +194,58 @@ mod tests {
         let e = parse_primary_table(&m).unwrap()[0].unwrap();
         assert_eq!(e.start_lba, 0x1122_3344);
         assert_eq!(e.sectors, 0xAABB_CCDD);
+    }
+
+    fn entry(start: u32, sectors: u32) -> Option<MbrEntry> {
+        Some(MbrEntry {
+            bootable: false,
+            sysind: MINIX_PART,
+            start_lba: start,
+            sectors,
+        })
+    }
+
+    #[test]
+    fn extents_whole_disk_and_partitions() {
+        // total 100_000 sectors; one partition at LBA 2048 spanning 1000 sectors.
+        let table = [entry(2048, 1000), None, None, None];
+        let ext = primary_extents(&table, 100_000);
+        assert_eq!(
+            ext[0],
+            Some(DeviceExtent {
+                base: 0,
+                size: 100_000 * 512
+            })
+        ); // whole disk
+        assert_eq!(
+            ext[1],
+            Some(DeviceExtent {
+                base: 2048 * 512,
+                size: 1000 * 512
+            })
+        ); // part 0
+        assert!(ext[2].is_none() && ext[3].is_none() && ext[4].is_none());
+    }
+
+    #[test]
+    fn extents_clip_a_partition_past_the_medium() {
+        // A partition claiming more sectors than remain gets clipped to disk end.
+        let table = [entry(90, 1000), None, None, None]; // starts at 90, disk is 100 sectors
+        let ext = primary_extents(&table, 100);
+        assert_eq!(
+            ext[1],
+            Some(DeviceExtent {
+                base: 90 * 512,
+                size: 10 * 512
+            })
+        );
+    }
+
+    #[test]
+    fn extents_drop_partition_starting_past_the_disk() {
+        let table = [entry(200, 10), None, None, None]; // 200 > disk's 100 sectors
+        let ext = primary_extents(&table, 100);
+        assert!(ext[1].is_none());
+        assert_eq!(ext[0].unwrap().size, 100 * 512); // whole disk still present
     }
 }
