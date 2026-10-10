@@ -53,6 +53,30 @@ fn real_main() {
     let mut runtime =
         DriverRuntime::new(transport, "drv.chr.memory").also_announce("drv.blk.memory");
     let mut service = minix_driver_memory::init();
+
+    // SD-11 U-5 迁移（第八台，第二个驱动）：memory 是 ramdisk 块/字符驱动
+    // （boot 期供 /bin/sh、/etc/rc、imgrd 的根盘块源），src/ 内 6 处 Vec/Box、
+    // 链接 alloc-global。把全局堆供给从焊死固定池切到 VM_BRK 增长堆。安装点在
+    // service 构造（两面具与表已建、仍在固定池）之后、`serve` 主循环之前——此刻
+    // VM（boot 序第 2 位，早于 memory 第 4 位）主循环已在收请求；EINVAL fail-fast；
+    // 与 DS/SCHED/MIB/VFS/PFS/PM/TTY 同法，整块 #[cfg(target_os="none")] 不影响宿主测。
+    #[cfg(target_os = "none")]
+    minix_rt::install_vm_supplier(minix_rt::image_end())
+        .expect("memory: install_vm_supplier(镜像尾) 不得失败");
+
+    #[cfg(target_os = "none")]
+    {
+        let probe = minix_rt::alloc(8);
+        assert!(!probe.is_null(), "memory: vm-brk probe 分配失败");
+        minix_rt::free(probe);
+        use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+        #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+        let _ = sys_diagctl_write(
+            &DirectKernelCallTransport,
+            "nk4a: memory-vmbrk probe ok pages=1 via=VM_BRK\n",
+        );
+    }
+
     // A fresh start needs no extra preparation: both faces and their tables
     // are built at service construction. The runtime refuses the stateful
     // kinds (a restart must preserve RAM-disk contents, which the birth
