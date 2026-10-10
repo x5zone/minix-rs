@@ -60,6 +60,29 @@ fn real_main() {
     #[cfg(not(test))]
     {
         let server = minix_fs_pfs::init();
+
+        // SD-11 U-5 迁移：把全局堆供给切到 VM_BRK 增长堆（与 DS T3/SCHED T3b/
+        // MIB/VFS 同法）。init 已建 inode 表（仍在固定池），此后的增长分配走
+        // VM_BRK。安装点在 serve 前、VM（boot 序第 2 位，早于 PFS 第 8 位）
+        // 主循环已在收请求；EINVAL fail-fast；整块 #[cfg(target_os="none")]
+        // 不影响宿主测试。
+        #[cfg(target_os = "none")]
+        minix_rt::install_vm_supplier(minix_rt::image_end())
+            .expect("pfs: install_vm_supplier(镜像尾) 不得失败");
+
+        #[cfg(target_os = "none")]
+        {
+            let probe = minix_rt::alloc(8);
+            assert!(!probe.is_null(), "pfs: vm-brk probe 分配失败");
+            minix_rt::free(probe);
+            use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+            let _ = sys_diagctl_write(
+                &DirectKernelCallTransport,
+                "nk4a: pfs-vmbrk probe ok pages=1 via=VM_BRK\n",
+            );
+        }
+
         // Birth: the C fresh-install sequence builds the inode table inside
         // the server value (pfs.c init half); the callback confirms ready.
         let hooks = minix_fs_rt::transport::ServerHooks {
