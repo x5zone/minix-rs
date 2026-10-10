@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的发行层——压得小、打成包、传得动
 > **源码**: `minix3/usr.bin/gzip/gzip.c`（2114 行）、`minix3/usr.bin/bzip2/`（构建面）、`minix3/minix/commands/compress/compress.c`（1618 行：Lempel-Ziv 变体，选项 `-d`、`-f`、`-v`、`-c`、`-b` 见头部注释第 20 到 42 行）、`minix3/usr.bin/unzip/unzip.c`（1074 行）、`minix3/bin/pax/`（归档全家：`ar_io.c`、`cpio.c`、`pax.c`、`dumptar.c`……）、`minix3/usr.bin/shar/shar.sh`（shell 脚本）、`minix3/usr.bin/uuencode/uuencode.c`（202 行：`encode` 与 `base64_encode` 第 63 到 64 行，主分派第 109 到 113 行）、`minix3/usr.bin/bdes/bdes.c`（1076 行）
-> **Rust 模块**: `os/commands/usr-bin/compress`（库包 `minix-compress`：`uu.rs`、`lzw.rs`（含 `.Z` 帧）、`shar.rs`、`checksum.rs` 加 `compress` 薄壳，28 个测试通过）
+> **Rust 模块**: `os/commands/usr-bin/compress`（库包 `minix-compress`：`uu.rs`（编解码）、`lzw.rs`（含 `.Z` 帧）、`shar.rs`（`generate` 生成 + `scan_archive` 解析）、`checksum.rs`，另有 `compress`/`uuencode`/`uudecode`/`shar` 薄壳；测试数以 `cargo test -p minix-compress --lib` 实际输出为准）
 > **前置依赖**: `06-file-ops.md`（搬文件在先）、`10-doc-man-tools.md`（手册压缩格式是本篇算法的消费者）
 > **不覆盖（移交）**: 压缩算法文件格式封装（头部尾部多成员流，后续阶段）、`bzip2` 变换链与 `gzip` 形变编码实现（后续算法阶段）、DES 分组密码实现（后续密码阶段，本篇只定位置）
 
@@ -36,7 +36,7 @@
 ### 1.3 归档：多文件变一个流
 
 - **`pax`（POSIX 归档全家）**：读 Anchor 写多种归档（`cpio`、`tar`、`pax` 三格式互转），`bin/pax` 下二十余文件各守一段（输入输出、格式、遍历、选项）。它是"归档界的瑞士军刀"，复杂性在格式兼容而不在算法。
-- **`shar`（shell 归档）**：归档即脚本（`shar.sh` 本身就是 shell 脚本）：文件内容裹在 `begin`/`end` 段里，解包就是运行脚本。无须专用解包器是最大优点（有 shell 就能解），明文低效是代价。本库 `shar.rs` 解析其稳定子集（注释、`begin 模式 文件名`、体、`end`）。
+- **`shar`（shell 归档）**：归档即脚本（`shar.sh` 本身就是 shell 脚本）：脚本为每个操作数打印一段 here-doc——目录写成 `echo c - 名` 加 `mkdir -p`，文件写成 `echo x - 名` 加一句 `sed 's/^X//' >名 << 'END-of-名'`、正文逐行前缀一个 `X`（防某行恰等于分隔符、也防邮件传输截改）、再接 `END-of-名`；末尾一句 `exit` 收场。解包就是运行脚本，无须专用解包器是最大优点（有 shell 就能解），明文低效是代价。本库 `shar.rs` 覆盖两端：`generate` 按上述 here-doc 形制逐字节生成（即 `shar` 命令的输出），`scan_archive` 另解更早期工具常用的 `begin 模式 名`／`end` 段式（非本树 `shar` 所产，两种形制互不往返）。
 
 ### 1.4 完整性：压完必须验
 
@@ -71,7 +71,7 @@
 
 ### 2.3 `shar.sh`：归档即脚本
 
-shell 脚本生成 shell 脚本：遍历文件，打印注释头、`begin` 行、体（危险行加 `X` 前缀）、`end` 行。Rust 侧 `shar.rs` 是其逆过程（扫描段、取模式文件名、体原样、`unwrap_line` 去 `X` 前缀）——生成与解析分属两端，各测各的（生成端是格式化，后续阶段）。
+shell 脚本生成 shell 脚本：遍历操作数，先打印固定注释头与一份 `#`-制表的文件清单，再逐个打印段——目录是 `echo c -` 加 `mkdir -p`，文件是 `echo x -` 加一句 `sed 's/^X//' >名 << 'END-of-名'`、正文逐行加 `X` 前缀、再接 `END-of-名`，最后 `echo exit` 与一个空行收场。Rust 侧把这条生成链沉进库函数 `generate`：`shar` 薄壳只做操作数分类（`stat` 判目录、读文件取正文）与写出，逐字节版式全由 `generate` 负责，其输出钉在真实 `shar.sh` 读数上。另留 `scan_archive`／`unwrap_line` 解更早期的 `begin 模式 名`／`end` 段式——本树 `shar` 并不产该形制，两种形制互不往返。生成与解析各测各的。
 
 ### 2.4 大块头三兄弟：职责级覆盖
 
@@ -110,14 +110,14 @@ shell 脚本生成 shell 脚本：遍历文件，打印注释头、`begin` 行�
 | `lib.rs` | — | 错误类型（`CompressError`，22 对应参数无效、12 对应缓冲不足）与模块组织 |
 | `uu.rs` | `uuencode.c` 编码语义 | 组编解码（`encode_group`、`decode_group`）与长度字节 |
 | `lzw.rs` | `compress.c` 算法思想 | 压缩（`compress`）与解压（`decompress`，宽度早切） |
-| `shar.rs` | `shar.sh` 逆过程 | 段扫描（`scan_archive`）与行解包（`unwrap_line`） |
+| `shar.rs` | `shar.sh` 生成与早期段式解析 | 逐字节生成（`generate`）与 `begin`/`end` 段扫描（`scan_archive`）、行解包（`unwrap_line`） |
 | `checksum.rs` | 各格式完整性字段 | `Checksum` 接口、循环冗余与 Adler 实现 |
 
 ### 4.2 关键类型与不变量
 
 - **六位分组**：3 字节进、4 字节出（每字节只用低 6 位）。不变量：零组用反引号（不用空）；短组零填充（实长由长度字节定）；字母表外即错。
 - **LZW 码流**：清空 256、结尾 257、258 起新串。不变量：最大宽度 9 到 12（外则错）；首码必清空；宽度早切（解码侧 2 的幂减一）；表满发清空（编码侧）；缓冲不足即错。
-- **归档段 `SharFile`**：模式、文件名、体。不变量：无 `end` 即错；模式须八进制；段外杂文本即错；体原样（含 `X` 前缀，解包时去）。
+- **归档段 `SharFile`（解析向）**：模式、文件名、体。不变量：无 `end` 即错；模式须八进制；段外杂文本即错；体原样（含 `X` 前缀，解包时去）。生成向由 `generate` 承担：输入为 `SharEntry`（目录或文件+正文），输出逐字节等于 `shar.sh` 版式。
 - **校验 `Checksum`**：投喂分块无关。不变量：空输入有定义值（循环冗余零、Adler 一）；两算法同输入必异值（测试钉住）。
 
 ### 4.3 函数一览
@@ -126,7 +126,8 @@ shell 脚本生成 shell 脚本：遍历文件，打印注释头、`begin` 行�
 |------|------|------|------------|
 | `encode_group`/`decode_group` | 字节组 | 字节组 | 编码组语义 |
 | `compress`/`decompress` | 字节流与宽度 | 字节流 | 字典算法语义 |
-| `scan_archive`/`unwrap_line` | 归档文本 | 文件段 | 归档段语义 |
+| `generate(entries)` | 操作数（目录/文件+正文） | here-doc 归档字节流 | `shar.sh:40-70` 逐字节版式 |
+| `scan_archive`/`unwrap_line` | 归档文本 | 文件段 | 早期 `begin`/`end` 段式语义 |
 | `frame_header(maxbits)` | 宽度 | 三字节 `.Z` 头 | `putc(maxbits | block_compress)`（`compress.c:759`） |
 | `unframe(帧)` | `.Z` 帧 | 宽度与码流 | 魔数与第三字节检查（`compress.c:477-491`） |
 | `update`/`digest` | 字节块 | 校验值 | 完整性语义 |
@@ -135,16 +136,16 @@ shell 脚本生成 shell 脚本：遍历文件，打印注释头、`begin` 行�
 
 ## 5. 测试要点
 
-`cargo test -p minix-compress`：**28 个测试，全部通过**（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行；计数与提交的对应见 18-stage todo 的批次记录）。
+`cargo test -p minix-compress --lib` 实际输出为准（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行）。以下逐模块列出重点行为与其测试名，均可用 `rg "fn test_" os/commands/usr-bin/compress/src/{uu,lzw,shar,checksum}.rs` 复现与计数（不写具体总数，避免随批次漂移）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/compress` 复现）：
 
-- **传输编码**（`uu.rs`，6 个）：`test_round_trip_full_group`（整组往返）、`test_canonical_man_vector`（手算向量 `Man` 到 `36%N`）、`test_zero_sextet_is_backquote`（零组反引号）、`test_short_group_pads`（短组填充）、`test_length_bytes`（长度字节双向）、`test_bad_alphabet_rejected`（字母表外与超长）。
-- **字典压缩**（`lzw.rs`，9 个）：`test_empty_input`（空流）、`test_single_byte`（单字节）、`test_text_round_trip`（经典文本）、`test_all_bytes_round_trip`（256 全值恰跨宽度切换）、`test_repetitive_input_compresses`（千重复真变小）、`test_small_width_forces_clear`（小宽度多轮清空）、`test_pseudorandom_round_trips`（四宽度伪随机 4000 字节）、`test_bad_maxbits_rejected`（宽度越界）、`test_garbage_rejected`（垃圾流）。
-- **归档**（`shar.rs`，6 个）：`test_two_stanzas`（两段）、`test_body_kept_verbatim`（体原样）、`test_unwrap_line_drops_x`（去前缀）、`test_missing_end_rejected`（缺尾）、`test_bad_mode_rejected`（坏模式与缺名）、`test_stray_text_rejected`（段外杂文本）。
-- **校验**（`checksum.rs`，5 个）：`test_crc32_known_vector`（标准九数字向量）、`test_adler32_known_vector`（同）、`test_chunking_does_not_matter`（分块无关）、`test_empty_inputs`（空值）、`test_checksums_share_the_trait`（接口统一且异值）。
+- **传输编码**（`uu.rs`）：`test_round_trip_full_group`（整组往返）、`test_canonical_man_vector`（手算向量 `Man` 到 `36%N`）、`test_zero_sextet_is_backquote`（零组反引号）、`test_short_group_pads`（短组填充）、`test_length_bytes`（长度字节双向）、`test_bad_alphabet_rejected`（字母表外与超长），及流级 `encode_stream`/`base64_stream`/`parse_begin`/`decode_uu_stream`/`decode_base64_stream` 的往返与规范向量。
+- **字典压缩**（`lzw.rs`）：`test_empty_input`（空流）、`test_single_byte`（单字节）、`test_text_round_trip`（经典文本）、`test_all_bytes_round_trip`（256 全值恰跨宽度切换）、`test_repetitive_input_compresses`（千重复真变小）、`test_small_width_forces_clear`（小宽度多轮清空）、`test_pseudorandom_round_trips`（四宽度伪随机 4000 字节）、`test_bad_maxbits_rejected`（宽度越界）、`test_garbage_rejected`（垃圾流），及 `.Z` 帧往返与拒绝。
+- **归档**（`shar.rs`）：解析向 `test_two_stanzas`、`test_body_kept_verbatim`、`test_unwrap_line_drops_x`、`test_missing_end_rejected`、`test_bad_mode_rejected`、`test_stray_text_rejected`（均对早期 `begin`/`end` 段式）；生成向 `test_generate_single_file_golden`、`test_generate_dir_stanza`、`test_generate_index_lists_every_operand_in_order`、`test_generate_empty_body_has_no_wrapped_lines`、`test_generate_body_wrapping_roundtrips_through_unwrap_line`、`test_generate_matches_real_shar_script`（逐字节钉在真实 `shar.sh` 多操作数读数上）。
+- **校验**（`checksum.rs`）：`test_crc32_known_vector`（标准九数字向量）、`test_adler32_known_vector`（同）、`test_chunking_does_not_matter`（分块无关）、`test_empty_inputs`（空值）、`test_checksums_share_the_trait`（接口统一且异值）。
 
-**执行批后的接线与留白**：`compress`/`uncompress` 已接线——`.Z` 帧面（`frame_header`/`unframe`）落 `lzw.rs`，薄壳覆盖 `-d`/`-c`/`-f`/`-v`/`-b`（9 到 12 位）与 `uncompress` 名调用（`compress.c:334`），无操作数走标准输入输出。声明性留白照旧：多成员归档封装、形变编码（`gzip`/`bzip2`）、DES、base64 编码器、外来 16 位宽 `.Z`（Rust LZW 上限 12 位，越界帧诚实拒绝）。
+**执行批后的接线与留白**：`compress`/`uncompress` 已接线——`.Z` 帧面（`frame_header`/`unframe`）落 `lzw.rs`，薄壳覆盖 `-d`/`-c`/`-f`/`-v`/`-b`（9 到 12 位）与 `uncompress` 名调用（`compress.c:334`），无操作数走标准输入输出。`shar` 已接线——here-doc 生成链（`generate`）逐字节对齐 `shar.sh`，薄壳 `bin/shar.rs` 只做操作数分类与写出；文件正文的 `open`/`read`/`stat` 腿与同系命令一样只在真机生效（宿主下被桩掉，逐字节版式由库侧 `generate` 的 golden 测验证），真机 per-command 断言与 imgrd 播种归 `C-57`/E5。声明性留白照旧：多成员归档封装、形变编码（`gzip`/`bzip2`）、DES、base64 编码器、外来 16 位宽 `.Z`（Rust LZW 上限 12 位，越界帧诚实拒绝）。
 
 ---
 
@@ -163,7 +164,7 @@ shell 脚本生成 shell 脚本：遍历文件，打印注释头、`begin` 行�
 - `12-process-tools.md`——进程与会话（下一步：看护运行）
 - `minix3/minix/commands/compress/compress.c:20-42`——选项与策略（头部说明书）
 - `minix3/usr.bin/uuencode/uuencode.c:__COPYRIGHT（L63，工具生成）`——双编码器分派
-- `minix3/usr.bin/shar/shar.sh`——归档生成端（`scan_archive` 的逆过程）
+- `minix3/usr.bin/shar/shar.sh`——归档生成端（`generate` 逐字节对齐的真源）；早期 `begin`/`end` 段式则由 `scan_archive` 逆解析
 
 ---
 
