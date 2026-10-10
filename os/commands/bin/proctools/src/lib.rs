@@ -28,7 +28,10 @@
 //! - [`utmp`]: login record parsing.
 //! - [`stable`]: the [`stable::ProcessTable`] trait with an empty and a
 //!   slice implementation.
+//! - [`dates`]: epoch to broken-down UTC time and the `strftime` subset
+//!   behind `date` (reuses [`stamp`]'s calendar inverse).
 
+pub mod dates;
 pub mod ptime;
 pub mod signal;
 pub mod stable;
