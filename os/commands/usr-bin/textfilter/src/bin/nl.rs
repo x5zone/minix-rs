@@ -5,11 +5,11 @@
 //! reads the file operands (standard input when none), strips newlines into
 //! lines, and emits the numbered result.
 //!
-//! Wired: default body numbering, `-a` (number all), `-v`/`-i`/`-l` (start,
-//! step, width), `-n ln|rn|rz` (format), `-p` (do not restart numbering at a
-//! `\:` page delimiter). Declared residual: `-b`/`-h`/`-f` section types,
-//! `number_regex`, `-d` delimiter, `-s` separator, `-w` blank-run counts —
-//! requesting them reports "option not wired" and exits 1.
+//! Wired: the three logical-page sections with their numbering types via
+//! `-b`/`-h`/`-f` (a/t/n), `-v`/`-i`/`-l` (start, step, width), `-n ln|rn|rz`
+//! (format), `-p` (do not restart numbering at a `\:` page delimiter). Declared
+//! residual: `number_regex` (`-b p…`), `-d` delimiter, `-s` separator, `-w`
+//! blank-run counts — requesting them reports "option not wired" and exits 1.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

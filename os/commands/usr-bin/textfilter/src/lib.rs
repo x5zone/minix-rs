@@ -52,6 +52,7 @@ pub mod patch;
 pub mod paste;
 pub mod split;
 pub mod floatfmt;
+pub mod fmt;
 pub mod fold;
 pub mod hexdump;
 pub mod unexpand;
