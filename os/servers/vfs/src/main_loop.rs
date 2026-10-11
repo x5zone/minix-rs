@@ -7635,43 +7635,6 @@ impl Default for VfsIpc {
 impl minix_sef::SefIpc for VfsIpc {
     fn receive(&mut self, src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
         let sts = self.inner.receive(src, msg).map_err(|t| t.0)?;
-        // NK4-C 1.12b 取证探针（task1-close 裁决删除）：VFS 收到的每件
-        // mt+src 前 16 件（≤15B）——init 的请求被 VFS 的 from=RS 停车
-        // 挡住时的 VFS 侧行为定位。
-        {
-            const HEXS: &[u8; 16] = b"0123456789abcdef";
-            static VFM_N: core::sync::atomic::AtomicUsize =
-                core::sync::atomic::AtomicUsize::new(0);
-            use core::sync::atomic::Ordering as AtomicOrd;
-            if VFM_N.fetch_add(1, AtomicOrd::Relaxed) < 64 {
-                // 续-135：transid-stamped mt 补 req 号（高 16 位）。
-                let mt = msg.m_type as u16 as u32;
-                let se = (msg.m_source.0 & 0xff) as u32;
-                let rq = ((msg.m_type as u32) >> 16) & 0xffff;
-                let mut line = [0u8; 15];
-                line[..3].copy_from_slice(b"vf:");
-                line[3] = HEXS[((mt >> 8) & 0xf) as usize];
-                line[4] = HEXS[((mt >> 4) & 0xf) as usize];
-                line[5] = HEXS[(mt & 0xf) as usize];
-                line[6] = HEXS[(se >> 4) as usize];
-                line[7] = HEXS[(se & 0xf) as usize];
-                line[8] = b' ';
-                line[9] = HEXS[((rq >> 12) & 0xf) as usize];
-                line[10] = HEXS[((rq >> 8) & 0xf) as usize];
-                line[11] = HEXS[((rq >> 4) & 0xf) as usize];
-                line[12] = HEXS[(rq & 0xf) as usize];
-                line[13] = b' ';
-                line[14] = b'\n';
-                if let Ok(cs) = core::str::from_utf8(&line) {
-                    // [SD19-gate] 诊断通道写：满则截断，从不当致命
-                    #[allow(clippy::let_underscore_must_use)]
-                    let _ = minix_sys::syscall::sys_diagctl_write(
-                        &minix_sys::syscall::DirectKernelCallTransport,
-                        cs,
-                    );
-                }
-            }
-        }
         Ok(sts.0 as i32)
     }
 
