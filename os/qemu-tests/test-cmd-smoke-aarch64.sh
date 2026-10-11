@@ -127,7 +127,8 @@ for _ in $(seq 1 "$TIMEOUT_T4"); do
         if grep -qa "/bin/sh" "$AFTER_TXT" \
            && grep -qaE '\bcat\b' "$AFTER_TXT" \
            && grep -qaE '\bls\b' "$AFTER_TXT" \
-           && grep -qaE '^[0-9]+[[:space:]]+/etc\r?$' "$AFTER_TXT"; then
+           && grep -qaE '^[0-9]+[[:space:]]+/etc\r?$' "$AFTER_TXT" \
+           && grep -qaE '^[0-9.]+[KMGT][[:space:]]+/etc\r?$' "$AFTER_TXT"; then
             cmds_ok=1; break
         fi
     fi

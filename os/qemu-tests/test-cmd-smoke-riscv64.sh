@@ -206,8 +206,13 @@ ok_listing = re.search(
 ) is not None
 # `/bin/du /etc` owes one total line: blocks, a tab, then the operand name.
 ok_du = re.search(r"(?m)^[0-9]+[ \t]+/etc\r?$", raw) is not None
-print("  cmdface: marker=%s dump=%s listing=%s du=%s" % (ok_marker, ok_dump, ok_listing, ok_du))
-sys.exit(0 if (ok_marker and ok_dump and ok_listing and ok_du) else 1)
+# ...and the -h rendering, whose number carries a unit letter (prstat's -h branch).
+ok_du_h = re.search(r"(?m)^[0-9.]+[KMGT][ \t]+/etc\r?$", raw) is not None
+print(
+    "  cmdface: marker=%s dump=%s listing=%s du=%s du_h=%s"
+    % (ok_marker, ok_dump, ok_listing, ok_du, ok_du_h)
+)
+sys.exit(0 if (ok_marker and ok_dump and ok_listing and ok_du and ok_du_h) else 1)
 PYEOF
         then
             cmds_ok=1; break

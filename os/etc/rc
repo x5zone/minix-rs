@@ -22,6 +22,10 @@ cat /etc/rc
 # 名走绝对路径避开 PATH 假设；未播种该二进制的架构只多一行 not found（同
 # /bin/e5-ds 先例），不影响 marker 在前的既有冒烟判据。
 /bin/du /etc
+# 同一目录再走一遍 `-h`：prstat 的那条 humanize 分支（du.c:266-272），渲染走
+# minix3/lib/libc/gen/humanize_number.c 的本树移植件，门判据是「数字+单位字母」打头
+# 的那一行（今天的读数 12K）。
+/bin/du -h /etc
 # E5(f) 真机半：DS 数据服务传输链载体（minix-sys DsClient → DS 端点 6）。
 # 串口判据逐段 `e5-ds: ...`，计数行 `E5f-LABELS n/12`，末行是 run_qemu.sh
 # 惯例的 `### TEST_RESULT: ... ###`；门脚本 os/qemu-tests/test-e5-ds.sh。
