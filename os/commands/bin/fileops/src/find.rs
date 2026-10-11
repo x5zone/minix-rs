@@ -16,6 +16,7 @@
 //! `-execdir`、`-ls`、`-print0`、`-printx`）。按真值优先序取代码的行为。
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -247,7 +248,7 @@ pub enum FindError<'a> {
     NeedsArguments(&'a str),
     /// `-exec` 一族没有收尾的 `;`/`+`（`function.c:649-651`）。
     NoTerminator(&'a str),
-    /// `-ok ... +`：POSIX 说不必支持，C 直接拒（`function.c:672-675`）。
+    /// `-ok ... +`：POSIX 说不必支持，C 直接拒（`function.c:666-669`）。
     OkWithPlus,
     /// `(` 没有对应的 `)`（`operator.c:96-98`）。
     UnclosedParen,
@@ -480,7 +481,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// `-exec` 一族的参数：吃到单独的 `;` 为止，或紧跟 `{}` 的 `+`
-    /// （`function.c:645-660`）；`-ok … +` 被 C 拒掉（`function.c:672-675`）。
+    /// （`function.c:647-660`）；`-ok … +` 被 C 拒掉（`function.c:666-669`）。
     fn parse_exec_argv(&mut self, name: &'a str) -> Result<(Vec<&'a str>, bool), FindError<'a>> {
         let mut collected: Vec<&'a str> = Vec::new();
         let mut prev_brace = false;
@@ -767,13 +768,13 @@ mod tests {
         assert!(*plus);
         assert_eq!(argv, &vec!["grep", "{}"]);
 
-        // `+` 不在 `{}` 之后就不是收尾（C 的 `lastbrace` 判据，`function.c:647-657`），
+        // `+` 不在 `{}` 之后就不是收尾（C 的 `lastbrace` 判据，`function.c:647-660`），
         // 于是它被当成普通参数收进去，随后因缺收尾而报错。
         assert_eq!(
             parse(&[".", "-exec", "grep", "+", "-print"]),
             Err(FindError::NoTerminator("-exec"))
         );
-        // `-ok … +` 被 C 明写拒绝（`function.c:672-675`）。
+        // `-ok … +` 被 C 明写拒绝（`function.c:666-669`）。
         assert_eq!(
             parse(&[".", "-ok", "grep", "{}", "+"]),
             Err(FindError::OkWithPlus)
@@ -786,5 +787,783 @@ mod tests {
         assert!(p.expr.is_empty());
         assert!(p.needs_implicit_print);
         assert_eq!(p.paths, vec!["."]);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 第二包：判据求值。真源 `minix3/usr.bin/find/function.c` 的 `f_*` 一族。
+// 目录项由走表腿备好交进来（`Entry`），本层不碰系统调用；需要问文件系统的
+// 三件事（`-newer` 的参照、`-empty` 的目录清单、`-xdev` 的起始设备）也都做成入参。
+// ─────────────────────────────────────────────────────────────────────────
+
+/// `-size` 的默认单位：512 字节的块（`minix3/usr.bin/find/find.h` 的 `FIND_SIZE`）。
+pub const FIND_SIZE: i64 = 512;
+
+/// 一分钟的秒数（`function.c` 里的 `SECSPERMIN`）。
+pub const SECS_PER_MINUTE: i64 = 60;
+/// 一天的秒数（`SECSPERDAY`）。
+pub const SECS_PER_DAY: i64 = 86_400;
+
+/// 一条目录项的视图。字段对应 `FTSENT::fts_statp` 与 `fts_level`、`fts_name`、
+/// `fts_path`（`minix3/include/fts.h`）。
+#[derive(Debug, Clone, Copy)]
+pub struct Entry<'a> {
+    /// 到目前为止的完整路径（`-path` 与 `-newer` 的落点）。
+    pub path: &'a str,
+    /// 目录项名（`-name` 的落点）。
+    pub name: &'a str,
+    /// 搜索深度。`fts_level` 从 1 起（起始路径自身是 1）。
+    pub level: usize,
+    /// `st_mode`。
+    pub mode: u32,
+    /// `st_ino`。
+    pub ino: u64,
+    /// `st_nlink`。
+    pub nlink: u32,
+    /// `st_size`。
+    pub size: i64,
+    /// `st_uid`。
+    pub uid: u32,
+    /// `st_gid`。
+    pub gid: u32,
+    /// `st_dev`（`-xdev` 比较用）。
+    pub dev: u64,
+    /// `st_atim.tv_sec`。
+    pub atime: i64,
+    /// `st_mtim.tv_sec`。
+    pub mtime: i64,
+    /// `st_ctim.tv_sec`。
+    pub ctime: i64,
+    /// 该目次的条目名清单，`-empty` 判空目录用。拿不到（未走表或读失败）
+    /// 就交回 `None`，本层按 C 的 `opendir` 失败支判假。
+    pub children: Option<&'a [&'a str]>,
+}
+
+/// 求值所需的世界状态。
+#[derive(Debug, Clone, Copy)]
+pub struct World {
+    /// `find` 起来的那一刻（C 在 `main.c:214` 用 `time(&now)` 取一次）。
+    pub now: i64,
+    ///  effective uid：`-user`/`-nouser` 那两支缺口令库，这里只留给 `-newer` 之外的用途。
+    pub euid: u32,
+    /// effective gid。
+    pub egid: u32,
+    /// 起始路径所在设备，`-xdev` 用它比较（C 走 `FTS_XDEV`，即遍历腿的事）。
+    pub root_dev: u64,
+}
+
+/// 比较方式。C 的 `F_EQUAL`/`F_LESSTHAN`/`F_GREATER` 三态（`function.c:68-79` 的
+/// `COMPARE`），另有 `-perm -mode` 用的 `F_ATLEAST`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compare {
+    Equal,
+    LessThan,
+    Greater,
+    /// `-perm -mode`：给定位必须都已置起。
+    AtLeast,
+}
+
+/// 一个带比较方式的整数参数（`find_parsenum`，`function.c:135-170`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumArg {
+    pub compare: Compare,
+    pub value: i64,
+}
+
+/// 数字解析失败。C 的两支 `errx`：非法数值、非法尾随字符。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NumError {
+    /// `"%s: %s: illegal numeric value"`。
+    IllegalValue(String),
+    /// `"%s: %s: illegal trailing character"`。尾字符非空时说明还带了别的东西。
+    IllegalTrailing(String, char),
+}
+
+/// `find_parsenum`：可选的 `+`/`-` 定比较方式，其余必须是十进制整数。
+/// `suffix` 是允许的唯一尾字符（只有 `-size` 给 `'c'`）。
+pub fn parse_num(option: &str, text: &str, suffix: Option<char>) -> Result<NumArg, NumError> {
+    let mut chars = text.chars().peekable();
+    let compare = match chars.peek() {
+        Some('+') => {
+            chars.next();
+            Compare::Greater
+        }
+        Some('-') => {
+            chars.next();
+            Compare::LessThan
+        }
+        _ => Compare::Equal,
+    };
+    let digits: String = chars.collect();
+    let number = digits.parse::<i64>();
+    match number {
+        // C 用 `strtoq`：一个数字都没有时值为 0 且 `endchar == str`，即非法。
+        Ok(value) => Ok(NumArg { compare, value }),
+        // C 的判据是 `value == 0 && endchar == str`：一个数字都没吃到才算非法数值。
+        Err(_) if digits.is_empty() || !digits.starts_with(|c: char| c.is_ascii_digit()) => {
+            Err(NumError::IllegalValue(String::from(option)))
+        }
+        Err(_) => {
+            // 尾随字符：只有 `-size` 允许一个 `c`（`c_size` 把 `endch` 传成 'c'）。
+            let last = digits.chars().last().unwrap_or('\0');
+            if suffix == Some(last)
+                && digits[..digits.len() - 1]
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+                && !digits[..digits.len() - 1].is_empty()
+            {
+                let value = digits[..digits.len() - 1].parse::<i64>().unwrap_or(0);
+                return Ok(NumArg { compare, value });
+            }
+            Err(NumError::IllegalTrailing(String::from(option), last))
+        }
+    }
+}
+
+/// `TIME_CORRECT`（`function.c:178-180`）：时间类判据的 `-n` 要再加一格，
+/// 否则「少于一分钟」那种文件会被判到「少于零分钟」外面去。
+pub fn time_correct(compare: Compare, value: i64) -> i64 {
+    if compare == Compare::LessThan {
+        value + 1
+    } else {
+        value
+    }
+}
+
+/// `COMPARE(a, b)` 的三态求值。
+fn compare_with(compare: Compare, a: i64, b: i64) -> bool {
+    match compare {
+        Compare::Equal => a == b,
+        Compare::LessThan => a < b,
+        Compare::Greater => a > b,
+        Compare::AtLeast => true, // 只有 -perm 用，另路处理
+    }
+}
+
+/// 整除前先把差值抬高 `unit - 1`（C 的 `(now - t + UNIT - 1) / UNIT`），
+/// 也就是「不足一格按一格算」。Rust 的 `/` 与 C 一样向零取整。
+fn in_units(delta: i64, unit: i64) -> i64 {
+    (delta + unit - 1) / unit
+}
+
+/// 判据求值的失败面。两类：C 在建计划期就 `errx` 的参数，以及本树缺腿的动作。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JudgeError {
+    /// 数字类参数不合法（`find_parsenum` 的两支 `errx`）。
+    BadNumber(NumError),
+    /// `-type` 的字母不在表里（`c_type` 的 default 支）。
+    UnknownType(String),
+    /// `-perm` 的模式串解析不了（`c_perm` 的 `setmode` 返回空）。
+    BadPerm(String),
+    /// 本树尚无该腿：`-user`/`-group`/`-nouser`/`-nogroup` 要口令库（同 `chown` 的前置），
+    /// `-exec`/`-ok`/`-execdir` 要进程创建，`-delete` 要写根盘，`-fstype` 要设备名对照，
+    /// `-flags` 要 Minix 的旗标字符表，`-regex`/`-iregex` 要 `minix-regex` 的接法。
+    /// 一律按名拒绝而不是悄悄判假。
+    Unwired(String),
+}
+
+/// `-perm` 的两位状态：模式位与是否 `-mode` 形。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermTest {
+    pub compare: Compare,
+    pub bits: u32,
+}
+
+/// 解析 `-perm` 的参数（`c_perm`，`function.c:1444-1470`）。前导 `-` 定 `F_ATLEAST`；
+/// 其余交给 `mode::apply_mode` 以 0 为基数，等价于 C 的 `getmode(set, 0)`。
+pub fn parse_perm(text: &str) -> Result<PermTest, JudgeError> {
+    let (compare, rest) = match text.strip_prefix('-') {
+        Some(tail) => (Compare::AtLeast, tail),
+        None => (Compare::Equal, text),
+    };
+    let bits = crate::mode::apply_mode(0, rest)
+        .map_err(|_| JudgeError::BadPerm(String::from(text)))? as u32;
+    Ok(PermTest { compare, bits })
+}
+
+/// `-perm` 求值。C 只看那 12 位（setuid/setgid/sticky 加九位权限），
+/// 归档两位在 `S_IFMT` 之外故不参与（`f_perm` 的掩码，`function.c:1430-1441`）。
+const PERM_MASK: u32 = 0o7777;
+
+pub fn judge_perm(entry: &Entry, test: &PermTest) -> bool {
+    let mode = entry.mode & PERM_MASK;
+    if test.compare == Compare::AtLeast {
+        (test.bits | mode) == mode
+    } else {
+        mode == test.bits
+    }
+}
+
+/// `-type` 的字母到 `S_IF*` 的映射（`c_type`，`function.c:1668-1723`）。
+pub fn type_mask(letter: &str) -> Result<u32, JudgeError> {
+    use crate::cp::*;
+    Ok(match letter {
+        "b" => S_IFBLK,
+        "c" => S_IFCHR,
+        "d" => S_IFDIR,
+        "f" => S_IFREG,
+        "l" => S_IFLNK,
+        "p" => S_IFIFO,
+        "s" => S_IFSOCK,
+        // Minix 定义了 `S_IFWHT`（`sys/stat.h:147`），C 在 `#ifdef` 里连给 `w` 与 `W` 两个字母。
+        "w" | "W" => crate::mode::S_IFWHT,
+        other => return Err(JudgeError::UnknownType(String::from(other))),
+    })
+}
+
+/// 一条已求值的判据是否要求「跳过本目次」或「剪枝」。`-prune` 恒真并置标志，
+/// 与 C 的 `f_prune` 一样（`function.c:1542-1560`：设 `fts_function = FTS_SKIP` 后返 1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// 什么都不做，只是真值。
+    None,
+    /// 不再下探这一支。
+    Prune,
+    /// 输出这一条的路径（`-print` 一族）。
+    Print(PrintForm),
+}
+
+/// 三种打印形（`f_print`/`f_print0`/`f_printx`，`function.c:1475-1500`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrintForm {
+    /// 路径加换行。
+    Line,
+    /// 路径加 NUL。
+    Nul,
+    /// 经 xargs 安全转义的形态：空格与控制字符前加反斜杠。
+    Xargs,
+}
+
+/// 求值一条叶子的结果：真假，外加本层要顺带记下的动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outcome {
+    pub truth: bool,
+    pub action: Action,
+}
+
+impl Outcome {
+    fn truthy(truth: bool) -> Outcome {
+        Outcome {
+            truth,
+            action: Action::None,
+        }
+    }
+}
+
+/// `-newer` 三兄弟要问参照文件的时间。走表腿提供这个查询，本层保持无系统调用。
+pub trait ReferenceStat {
+    /// 参照路径的 `st_atim`/`st_mtim`/`st_ctim`，取不到交回 `None`
+    /// （C 在 `c_newer` 里就 `err(1)` 退出，故薄壳侧要先把失败当成建计划期错误处理）。
+    fn times_of(&self, path: &str) -> Option<(i64, i64, i64)>;
+}
+
+/// 求值一条叶子判据。`spec` 来自第一包的解析结果，参数原样带着文本。
+pub fn judge_leaf<'a>(
+    world: &World,
+    refs: &dyn ReferenceStat,
+    entry: &Entry<'a>,
+    name: &str,
+    arg: Option<&'a str>,
+    // C 的那个全局旗标（`divsize`）的反面：整棵树里出现过 `-size Nc` 就按字节比。
+    // 做成入参是为了让「一处 `c` 影响全树」这条在调用处也看得见。
+    size_counts_bytes: bool,
+) -> Result<Outcome, JudgeError> {
+    use crate::fnmatch as glob;
+    let text = || {
+        arg.ok_or(JudgeError::BadNumber(NumError::IllegalValue(String::from(
+            name,
+        ))))
+    };
+    match name {
+        "-name" => Ok(Outcome::truthy(glob::matches_bool(text()?, entry.name, 0))),
+        "-iname" => Ok(Outcome::truthy(glob::matches_bool(
+            text()?,
+            entry.name,
+            glob::flags::CASEFOLD,
+        ))),
+        "-path" => Ok(Outcome::truthy(glob::matches_bool(text()?, entry.path, 0))),
+        // C 用 `FNM_CASEFOLD` 走 `fnmatch`，`-ipath` 这一支 Minix 没有，故不发明。
+        "-type" => {
+            let mask = type_mask(text()?)?;
+            Ok(Outcome::truthy(entry.mode & crate::cp::S_IFMT == mask))
+        }
+        "-inum" => {
+            let a = parse_num("-inum", text()?, None).map_err(JudgeError::BadNumber)?;
+            Ok(Outcome::truthy(compare_with(
+                a.compare,
+                entry.ino as i64,
+                a.value,
+            )))
+        }
+        "-links" => {
+            let a = parse_num("-links", text()?, None).map_err(JudgeError::BadNumber)?;
+            Ok(Outcome::truthy(compare_with(
+                a.compare,
+                entry.nlink as i64,
+                a.value,
+            )))
+        }
+        "-size" => {
+            let a = parse_num("-size", text()?, Some('c')).map_err(JudgeError::BadNumber)?;
+            // C 的 `divsize` 初值为 1（按块），任何一处 `-size Nc` 把它置成 0（按字节）
+            // 且**不再置回**（`c_size`，`function.c:1638-1654`）——于是一棵树里只要写过
+            // 一次 `c`，之后所有 `-size` 都按字节比。本层把该旗标算成整棵树的属性传入。
+            let measured = if size_counts_bytes {
+                entry.size
+            } else {
+                (entry.size + FIND_SIZE - 1) / FIND_SIZE
+            };
+            Ok(Outcome::truthy(compare_with(a.compare, measured, a.value)))
+        }
+        "-atime" => {
+            let a = parse_num("-atime", text()?, None).map_err(JudgeError::BadNumber)?;
+            let v = time_correct(a.compare, a.value);
+            Ok(Outcome::truthy(compare_with(
+                a.compare,
+                in_units(world.now - entry.atime, SECS_PER_DAY),
+                v,
+            )))
+        }
+        "-mtime" => {
+            let a = parse_num("-mtime", text()?, None).map_err(JudgeError::BadNumber)?;
+            let v = time_correct(a.compare, a.value);
+            Ok(Outcome::truthy(compare_with(
+                a.compare,
+                in_units(world.now - entry.mtime, SECS_PER_DAY),
+                v,
+            )))
+        }
+        "-ctime" => {
+            let a = parse_num("-ctime", text()?, None).map_err(JudgeError::BadNumber)?;
+            let v = time_correct(a.compare, a.value);
+            Ok(Outcome::truthy(compare_with(
+                a.compare,
+                in_units(world.now - entry.ctime, SECS_PER_DAY),
+                v,
+            )))
+        }
+        "-amin" => {
+            let a = parse_num("-amin", text()?, None).map_err(JudgeError::BadNumber)?;
+            let v = time_correct(a.compare, a.value);
+            Ok(Outcome::truthy(compare_with(
+                a.compare,
+                in_units(world.now - entry.atime, SECS_PER_MINUTE),
+                v,
+            )))
+        }
+        "-mmin" => {
+            let a = parse_num("-mmin", text()?, None).map_err(JudgeError::BadNumber)?;
+            let v = time_correct(a.compare, a.value);
+            Ok(Outcome::truthy(compare_with(
+                a.compare,
+                in_units(world.now - entry.mtime, SECS_PER_MINUTE),
+                v,
+            )))
+        }
+        "-cmin" => {
+            let a = parse_num("-cmin", text()?, None).map_err(JudgeError::BadNumber)?;
+            let v = time_correct(a.compare, a.value);
+            Ok(Outcome::truthy(compare_with(
+                a.compare,
+                in_units(world.now - entry.ctime, SECS_PER_MINUTE),
+                v,
+            )))
+        }
+        "-newer" | "-anewer" | "-cnewer" => {
+            let (at, mt, ct) = refs
+                .times_of(text()?)
+                .ok_or_else(|| JudgeError::BadNumber(NumError::IllegalValue(String::from(name))))?;
+            let mine = match name {
+                "-anewer" => entry.atime,
+                "-cnewer" => entry.ctime,
+                _ => entry.mtime,
+            };
+            let reference = match name {
+                "-anewer" => at,
+                "-cnewer" => ct,
+                _ => mt,
+            };
+            Ok(Outcome::truthy(mine > reference))
+        }
+        "-perm" => {
+            let test = parse_perm(text()?)?;
+            Ok(Outcome::truthy(judge_perm(entry, &test)))
+        }
+        "-empty" => {
+            if entry.mode & crate::cp::S_IFMT == crate::cp::S_IFREG && entry.size == 0 {
+                return Ok(Outcome::truthy(true));
+            }
+            if entry.mode & crate::cp::S_IFMT != crate::cp::S_IFDIR {
+                return Ok(Outcome::truthy(false));
+            }
+            // 目录：C 逐条 `readdir`，凡是「不是只有 `.` 与 `..`」的条目都算不空
+            // （`f_empty`，`function.c:444-470`）。清单拿不到按 C 的 `opendir` 失败支判假。
+            let empty = match entry.children {
+                None => return Ok(Outcome::truthy(false)),
+                Some(list) => list.iter().all(|n| *n == "." || *n == ".."),
+            };
+            Ok(Outcome::truthy(empty))
+        }
+        "-maxdepth" | "-mindepth" => {
+            let depth: usize = text()?
+                .parse()
+                .map_err(|_| JudgeError::BadNumber(NumError::IllegalValue(String::from(name))))?;
+            Ok(Outcome::truthy(if name == "-maxdepth" {
+                entry.level <= depth
+            } else {
+                entry.level >= depth
+            }))
+        }
+        "-prune" => Ok(Outcome {
+            truth: true,
+            action: Action::Prune,
+        }),
+        "-print" => Ok(Outcome {
+            truth: true,
+            action: Action::Print(PrintForm::Line),
+        }),
+        "-print0" => Ok(Outcome {
+            truth: true,
+            action: Action::Print(PrintForm::Nul),
+        }),
+        "-printx" => Ok(Outcome {
+            truth: true,
+            action: Action::Print(PrintForm::Xargs),
+        }),
+        // 注：Minix3 的表里只有 `-false`，没有 bash 的 `-true`（`option.c:60-110`），
+        // 故这里不设 `-true` 一支——它会落到下面的按名拒绝里。
+        "-false" => Ok(Outcome::truthy(false)),
+        // 缺腿的按名拒绝，绝不悄悄判假。
+        "-user" | "-group" | "-nouser" | "-nogroup" | "-exec" | "-execdir" | "-ok" | "-delete"
+        | "-rm" | "-fstype" | "-flags" | "-regex" | "-iregex" | "-newerest" | "-mindepth0" => {
+            Err(JudgeError::Unwired(String::from(name)))
+        }
+        other => Err(JudgeError::Unwired(String::from(other))),
+    }
+}
+
+/// 整棵树里是否出现过 `-size Nc`，即 C 的 `divsize` 是否已被置成「按字节」。
+/// 一旦置起就不再回落（`c_size`，`function.c:1638-1654`），所以扫的是整棵表达式
+/// 而不是当前正在求值的那一条 `-size`。
+pub fn size_counts_bytes(nodes: &[Node<'_>]) -> bool {
+    nodes.iter().any(node_asks_bytes)
+}
+
+fn node_asks_bytes(node: &Node<'_>) -> bool {
+    match node {
+        Node::Leaf(Prim::Keyword { name, arg }) => *name == "-size" && arg.ends_with('c'),
+        Node::Leaf(Prim::Bare(_)) | Node::Leaf(Prim::Exec { .. }) => false,
+        Node::Not(inner) => node_asks_bytes(inner),
+        Node::Paren(inner) => size_counts_bytes(inner),
+        Node::Or { left, right } => size_counts_bytes(left) || size_counts_bytes(right),
+    }
+}
+
+#[cfg(test)]
+mod judge_tests {
+    use super::*;
+
+    fn entry<'a>(path: &'a str, name: &'a str, mode: u32) -> Entry<'a> {
+        Entry {
+            path,
+            name,
+            level: 2,
+            mode,
+            ino: 77,
+            nlink: 3,
+            size: 2048,
+            uid: 0,
+            gid: 0,
+            dev: 1,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+            children: None,
+        }
+    }
+
+    struct NoRefs;
+    impl ReferenceStat for NoRefs {
+        fn times_of(&self, path: &str) -> Option<(i64, i64, i64)> {
+            (path == "/ref").then_some((10, 20, 30))
+        }
+    }
+
+    fn world() -> World {
+        World {
+            now: 86_400 * 3,
+            euid: 0,
+            egid: 0,
+            root_dev: 1,
+        }
+    }
+
+    fn judge<'a>(e: &Entry<'a>, name: &str, arg: Option<&'a str>) -> Result<Outcome, JudgeError> {
+        judge_leaf(&world(), &NoRefs, e, name, arg, false)
+    }
+
+    #[test]
+    fn num_args_carry_the_three_comparisons() {
+        assert_eq!(
+            parse_num("-size", "10", None).unwrap(),
+            NumArg {
+                compare: Compare::Equal,
+                value: 10
+            }
+        );
+        assert_eq!(
+            parse_num("-size", "+10", None).unwrap().compare,
+            Compare::Greater
+        );
+        assert_eq!(
+            parse_num("-size", "-10", None).unwrap().compare,
+            Compare::LessThan
+        );
+        assert!(matches!(
+            parse_num("-size", "x", None),
+            Err(NumError::IllegalValue(_))
+        ));
+        assert!(matches!(
+            parse_num("-inum", "10k", None),
+            Err(NumError::IllegalTrailing(_, 'k'))
+        ));
+        // 只有 -size 带得动那个尾字符 c（c_size 把 endch 传成 'c'）。
+        assert_eq!(parse_num("-size", "10c", Some('c')).unwrap().value, 10);
+        assert!(matches!(
+            parse_num("-inum", "10c", None),
+            Err(NumError::IllegalTrailing(_, 'c'))
+        ));
+    }
+
+    #[test]
+    fn time_correction_only_moves_the_less_than_case() {
+        assert_eq!(time_correct(Compare::LessThan, 1), 2);
+        assert_eq!(time_correct(Compare::Equal, 1), 1);
+        assert_eq!(time_correct(Compare::Greater, 1), 1);
+    }
+
+    #[test]
+    fn day_and_minute_buckets_round_up_before_dividing() {
+        let mut e = entry("/etc/rc", "rc", 0o100644);
+        // 差 1.5 天：C 的 (delta + DAY - 1) / DAY 把它算成 2 天。
+        e.atime = world().now - 86_400 - 43_200;
+        assert!(judge(&e, "-atime", Some("2")).unwrap().truth);
+        assert!(!judge(&e, "-atime", Some("1")).unwrap().truth);
+        // 差 90 秒：分钟格算成 2。
+        e.mtime = world().now - 90;
+        assert!(judge(&e, "-mmin", Some("2")).unwrap().truth);
+        // `-amin -1` 经 TIME_CORRECT 变成「少于一分钟」，故 90 秒不算少于一分钟。
+        e.ctime = world().now - 90;
+        assert!(!judge(&e, "-cmin", Some("-1")).unwrap().truth);
+        e.ctime = world().now - 30;
+        assert!(judge(&e, "-cmin", Some("-1")).unwrap().truth);
+    }
+
+    #[test]
+    fn wildcards_route_through_the_fnmatch_port() {
+        let e = entry("/etc/rc.d", "rc.d", 0o100644);
+        assert!(judge(&e, "-name", Some("rc?d")).unwrap().truth);
+        assert!(judge(&e, "-name", Some("rc.d")).unwrap().truth);
+        assert!(judge(&e, "-iname", Some("RC.D")).unwrap().truth);
+        assert!(!judge(&e, "-name", Some("RC.D")).unwrap().truth);
+        // -path 比的是整条路径，不是名字。
+        assert!(judge(&e, "-path", Some("/etc/*")).unwrap().truth);
+        assert!(!judge(&e, "-name", Some("/etc/*")).unwrap().truth);
+    }
+
+    #[test]
+    fn type_letters_map_to_the_same_masks_c_uses() {
+        let dir = entry("/etc", "etc", crate::cp::S_IFDIR | 0o755);
+        assert!(judge(&dir, "-type", Some("d")).unwrap().truth);
+        assert!(!judge(&dir, "-type", Some("f")).unwrap().truth);
+        let sock = entry("/dev/x", "x", crate::cp::S_IFSOCK);
+        assert!(judge(&sock, "-type", Some("s")).unwrap().truth);
+        let wht = entry("/w", "w", crate::mode::S_IFWHT);
+        // 白底条目两个字母都收（C 在 `#ifdef S_IFWHT` 里连给 w 与 W）。
+        assert!(judge(&wht, "-type", Some("w")).unwrap().truth);
+        assert!(judge(&wht, "-type", Some("W")).unwrap().truth);
+        assert_eq!(
+            judge(&dir, "-type", Some("q")).unwrap_err(),
+            JudgeError::UnknownType(String::from("q"))
+        );
+    }
+
+    #[test]
+    fn inode_and_link_counts_compare_in_three_ways() {
+        let e = entry("/etc/rc", "rc", 0o100644);
+        assert!(judge(&e, "-inum", Some("77")).unwrap().truth);
+        assert!(judge(&e, "-inum", Some("+70")).unwrap().truth);
+        assert!(!judge(&e, "-inum", Some("+80")).unwrap().truth);
+        assert!(judge(&e, "-links", Some("-4")).unwrap().truth);
+        assert!(!judge(&e, "-links", Some("-3")).unwrap().truth);
+    }
+
+    #[test]
+    fn size_counts_512_byte_blocks_until_a_c_suffix_switches_the_flag() {
+        let e = entry("/etc/rc", "rc", 0o100644); // size 2048 → 4 块
+        assert!(judge(&e, "-size", Some("4")).unwrap().truth);
+        assert!(!judge(&e, "-size", Some("2048")).unwrap().truth);
+        // divide_size = true：同一棵树里任何一处 `-size Nc` 都会把整棵切到按字节比。
+        // 全局旗标置起后：2048 就是 2048，块数 4 反而不成立。
+        assert!(
+            judge_leaf(&world(), &NoRefs, &e, "-size", Some("2048"), true)
+                .unwrap()
+                .truth
+        );
+        assert!(
+            !judge_leaf(&world(), &NoRefs, &e, "-size", Some("4"), true)
+                .unwrap()
+                .truth
+        );
+        // 不足一块按一块算：100 字节是 1 块。
+        let mut small = entry("/etc/tiny", "tiny", 0o100644);
+        small.size = 100;
+        assert!(judge(&small, "-size", Some("1")).unwrap().truth);
+    }
+
+    #[test]
+    fn the_divsize_scan_looks_through_groups_and_operators() {
+        // 直接拼一棵树：`( -size 1c -o -name x )`。
+        let tree = vec![Node::Or {
+            left: vec![Node::Leaf(Prim::Keyword {
+                name: "-size",
+                arg: "1c",
+            })],
+            right: vec![Node::Leaf(Prim::Keyword {
+                name: "-name",
+                arg: "x",
+            })],
+        }];
+        assert!(size_counts_bytes(&tree));
+        // `( -size 3 )` 前面加一个 `!`：组里那条不带 c，故整棵树都不除。
+        let inner = vec![Node::Leaf(Prim::Keyword {
+            name: "-size",
+            arg: "3",
+        })];
+        let nested = vec![Node::Not(Box::new(Node::Paren(inner)))];
+        assert!(!size_counts_bytes(&nested));
+    }
+    #[test]
+    fn perm_matches_exact_at_least_and_symbolic_forms() {
+        let mut e = entry("/bin/sh", "sh", 0o100755);
+        assert!(judge(&e, "-perm", Some("755")).unwrap().truth);
+        assert!(!judge(&e, "-perm", Some("644")).unwrap().truth);
+        assert!(judge(&e, "-perm", Some("-700")).unwrap().truth);
+        // `-perm -600` 在 755 上是**真**：`f_perm` 比的是「给定位都已置起」，
+        // 0600 两位都在 0755 里（`function.c:1430-1441`）。要假得挑一个没置起的位。
+        assert!(judge(&e, "-perm", Some("-600")).unwrap().truth);
+        assert!(!judge(&e, "-perm", Some("-4000")).unwrap().truth);
+        e.mode = 0o104755; // setuid 也算进那 12 位
+        // 掩码是 07777，setuid 那四位参与精确比较。
+        assert!(judge(&e, "-perm", Some("4755")).unwrap().truth);
+        assert!(!judge(&e, "-perm", Some("0755")).unwrap().truth);
+        // 符号式：以 0 为基数的 `getmode` 就是那几位被置起，`-perm u=s` 要求精确相等故假。
+        assert!(!judge(&e, "-perm", Some("u=s")).unwrap().truth);
+        assert!(judge(&e, "-perm", Some("-u=s")).unwrap().truth);
+        assert!(matches!(
+            judge(&e, "-perm", Some("zzz")),
+            Err(JudgeError::BadPerm(_))
+        ));
+    }
+
+    #[test]
+    fn empty_covers_regular_zero_dirs_and_the_opendir_failure() {
+        let mut zero = entry("/etc/empty", "empty", 0o100000);
+        zero.size = 0;
+        assert!(judge(&zero, "-empty", None).unwrap().truth);
+        assert!(
+            !judge(&entry("/etc/rc", "rc", 0o100644), "-empty", None)
+                .unwrap()
+                .truth
+        );
+        let dir = crate::cp::S_IFDIR | 0o755;
+        let one_file: [&str; 1] = ["a"];
+        let only_dots: [&str; 2] = [".", ".."];
+        let dot_only: [&str; 1] = ["."];
+        let mut d = entry("/etc", "etc", dir);
+        d.children = Some(&one_file);
+        assert!(!judge(&d, "-empty", None).unwrap().truth);
+        d.children = Some(&only_dots);
+        assert!(judge(&d, "-empty", None).unwrap().truth);
+        // 只有一条 `.` 也算空：C 的 `readdir` 判据把「名字不是 . 开头，或者是
+        // `..` 之外还有内容」才算条目（`function.c:461-466`），单独的 `.` 被跳过。
+        d.children = Some(&dot_only);
+        assert!(judge(&d, "-empty", None).unwrap().truth);
+        d.children = None; // opendir 失败 → C 判 0
+        assert!(!judge(&d, "-empty", None).unwrap().truth);
+    }
+
+    #[test]
+    fn depth_tests_read_the_level_c_reports() {
+        let e = entry("/etc/rc", "rc", 0o100644); // level 2
+        assert!(judge(&e, "-maxdepth", Some("2")).unwrap().truth);
+        assert!(!judge(&e, "-maxdepth", Some("1")).unwrap().truth);
+        assert!(judge(&e, "-mindepth", Some("2")).unwrap().truth);
+        assert!(!judge(&e, "-mindepth", Some("3")).unwrap().truth);
+        assert!(matches!(
+            judge(&e, "-maxdepth", Some("x")),
+            Err(JudgeError::BadNumber(_))
+        ));
+    }
+
+    #[test]
+    fn actions_come_back_with_the_truth() {
+        let e = entry("/etc/rc", "rc", 0o100644);
+        assert_eq!(
+            judge(&e, "-prune", None).unwrap(),
+            Outcome {
+                truth: true,
+                action: Action::Prune
+            }
+        );
+        assert_eq!(
+            judge(&e, "-print", None).unwrap().action,
+            Action::Print(PrintForm::Line)
+        );
+        assert_eq!(
+            judge(&e, "-print0", None).unwrap().action,
+            Action::Print(PrintForm::Nul)
+        );
+        assert_eq!(
+            judge(&e, "-printx", None).unwrap().action,
+            Action::Print(PrintForm::Xargs)
+        );
+        assert_eq!(judge(&e, "-false", None).unwrap(), Outcome::truthy(false));
+    }
+
+    #[test]
+    fn the_newer_family_reads_its_reference_through_the_view() {
+        let mut e = entry("/etc/rc", "rc", 0o100644);
+        e.atime = 11;
+        e.mtime = 19;
+        e.ctime = 31;
+        // atime 11 > 参照的 atime 10 → 真；mtime 19 < 参照的 20 → 假；ctime 31 > 30 → 真。
+        assert!(judge(&e, "-anewer", Some("/ref")).unwrap().truth);
+        assert!(judge(&e, "-cnewer", Some("/ref")).unwrap().truth);
+        assert!(!judge(&e, "-newer", Some("/ref")).unwrap().truth);
+        assert!(matches!(
+            judge(&e, "-newer", Some("/missing")),
+            Err(JudgeError::BadNumber(_))
+        ));
+    }
+
+    #[test]
+    fn legs_the_tree_does_not_have_are_refused_by_name() {
+        let e = entry("/etc/rc", "rc", 0o100644);
+        for name in [
+            "-user", "-group", "-nouser", "-nogroup", "-exec", "-execdir", "-ok", "-delete", "-rm",
+            "-fstype", "-flags", "-regex", "-iregex",
+        ] {
+            assert_eq!(
+                judge(&e, name, Some("x")),
+                Err(JudgeError::Unwired(String::from(name))),
+                "{name} 该按名拒绝而不是悄悄判假"
+            );
+        }
+        // C 的表里也没有 -true（bash 的），同样落拒绝。
+        assert_eq!(
+            judge(&e, "-true", None),
+            Err(JudgeError::Unwired(String::from("-true")))
+        );
     }
 }
