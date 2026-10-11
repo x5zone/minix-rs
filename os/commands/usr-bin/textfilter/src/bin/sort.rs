@@ -6,21 +6,23 @@
 //! `sort` module; the doing half collects stdin, orders the lines
 //! in memory (the C's external merge over temporary files is the
 //! execution layer for inputs beyond memory), and emits lines with a
-//! trailing newline. File operands wait for the gated open-existing
-//! call; `-m` (merge) and `-o` (output file) land with the files face.
-
+//! trailing newline. Each input operand is read in file order and their
+//! lines concatenated (a `-` names standard input); with no operand the
+//! input is standard input. `-m` (merge) and `-o` (output file) are rejected
+//! by the option parser as not yet modelled.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
+use minix_sys::{close, open, read};
 use minix_textfilter::sort::{compare, parse_options};
-use minix_sys::read;
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -32,13 +34,26 @@ fn run() -> ! {
             support::terminate(2);
         }
     };
-    if !operands.is_empty() {
-        support::warn(b"sort: file operands wait for the open call (edge E-CMDSYSFACE)\n");
+    // C reads each input operand in file order (`-` / an unrecognised leading
+    // dash names standard input) and concatenates their lines; no operand reads
+    // standard input. `-c` accepts at most one input file (sort.c too-many guard).
+    if options.check && operands.len() > 1 {
+        support::warn(b"sort: too many input files for -c option\n");
         support::terminate(2);
     }
-
-    let input = support::read_stdin();
-    let mut lines = split_lines(&input);
+    let mut lines: Vec<String> = Vec::new();
+    if operands.is_empty() {
+        lines = split_lines(&support::read_stdin());
+    } else {
+        for operand in operands {
+            let input = if operand == "-" {
+                support::read_stdin()
+            } else {
+                read_file(operand)
+            };
+            lines.extend(split_lines(&input));
+        }
+    }
 
     if options.check {
         check(&lines, &options);
@@ -71,6 +86,31 @@ fn split_lines(input: &[u8]) -> Vec<String> {
     pieces
 }
 
+/// Read an input file to the end; an unopenable file is a status-2 error
+/// (the C `access`/`fopen` failure path).
+fn read_file(path: &str) -> Vec<u8> {
+    let fd = match open(path, 0, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            support::warn(format!("sort: {path}\n").as_bytes());
+            support::terminate(2);
+        }
+    };
+    let mut data = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match read(fd, &mut chunk) {
+            Ok(0) => break,
+            Ok(count) => data.extend_from_slice(&chunk[..count]),
+            Err(_) => break,
+        }
+    }
+    //[SD19-gate] SD-19: close 后 fd 不再使用
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = close(fd);
+    data
+}
+
 /// The `-c` mode: every adjacent pair must be in order, and with `-u`
 /// no pair may compare equal. The first violation is reported by name
 /// and the status leaves 1 (the C's `warn` + `exit(1)` shape).
@@ -97,7 +137,6 @@ fn check(lines: &[String], options: &minix_textfilter::sort::Options) {
         previous = Some(line);
     }
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
