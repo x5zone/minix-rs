@@ -7,8 +7,9 @@
 //! follows them (the C mutates `ip` in place). The deciding half
 //! (specs and row assembly) is the library's `lam` module; this
 //! program parses the command line, reads the streams, and prints
-//! the rows. Named file operands are rejected until the open-existing
-//! seam lands (edge E-CMDSYSFACE); `-` (stdin) works, and at least
+//! the rows. Each operand is read into its stream: a bare `-` reads
+//! stdin and anything else is opened (`lam.c:113-116`), with an
+//! unopenable operand fatal (`errx(1)`, matching the C), and at least
 //! one stream is required. The hosted-versus-target seams are the
 //! echo template's (`os/commands/bin/fileops/src/bin/echo.rs`).
 
@@ -39,12 +40,6 @@ fn run() -> ! {
     while i < argv.len() {
         let arg = argv[i].clone();
         if arg == "-" || !arg.starts_with('-') || arg.len() == 1 {
-            if arg != "-" {
-                support::warn(
-                    b"lam: file operands wait on the open-existing seam (edge E-CMDSYSFACE)\n",
-                );
-                support::terminate(1);
-            }
             if specs.len() >= MAX_STREAMS {
                 support::warn(b"lam: too many input files\n");
                 support::terminate(1);
@@ -62,13 +57,25 @@ fn run() -> ! {
                     pending.eol = prev.eol;
                 }
             }
+            // `lam.c:113-116`: a bare `-` reads stdin, anything else is
+            // fopen'd, and an unopenable operand is fatal (`errx(1)`).
             let mut bytes = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                match read(support::STDIN, &mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => bytes.extend_from_slice(&chunk[..n]),
-                    Err(_) => break,
+            if arg == "-" {
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match read(support::STDIN, &mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+                        Err(_) => break,
+                    }
+                }
+            } else {
+                match support::read_file(&arg) {
+                    Ok(data) => bytes = data,
+                    Err(()) => {
+                        support::warn(format!("lam: open {arg}\n").as_bytes());
+                        support::terminate(1);
+                    }
                 }
             }
             let eol = pending.eol;
