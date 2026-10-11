@@ -2518,7 +2518,7 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 | `p_cycles`、`p_kcall_cycles`、`p_kipc_cycles`、`p_tick_cycles` | `p_cycles: CyclesStats` | 同上 |
 | `p_cpuavg` | `p_cpuavg: CpuAvg` | 同名字段 |
 | `p_found` | 无对位 | C 用它标记"本轮扫描已访问"，Rust 的调试检查改为局部位集（`os/kernel/src/debug.rs` 的 `found` 数组），不动进程表 |
-| `p_stale_tlb` | 无对位 | 32 位端口专用字段；Rust 的 `p_seg` 只有页表根两个字段（`phys_root`/`virt_root`），TLB 陈旧记账尚无归属 |
+| `p_stale_tlb` | 无对位 | 32 位端口专用字段；Rust 的 `p_seg` 只有页表根两个字段（`phys_root`/`virt_root`），TLB 陈旧记账尚无归属。本条**登记不移植**（C 写点在 `do_vmctl` 的 `VMINHIBIT` 解除分支，本树无 SMP 写路径消费它）——待 `16-smp` 方向设计“软件页表走查 + DM 窗口”模型时定夺是否需要等价机制，归 `08-todo.md` T-11 |
 | `p_schedules`（`DEBUG_TRACE`） | 无对位 | 调试构建才有的计数 |
 | （新增） | `p_fault_addr: Option<u64>`、`trap_style`、`fpu_state` | 诊断记录、进入内核的方式、FPU 缓冲 |
 
