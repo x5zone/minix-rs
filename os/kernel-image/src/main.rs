@@ -475,52 +475,15 @@ unsafe impl GlobalAlloc for ImageBump {
             Ok(new_end) => unsafe {
                 (&raw const IMAGE_HEAP).cast::<u8>().add(new_end - layout.size()) as *mut u8
             },
-            Err(_) => {
-                // NK4-C 1.5c 取证（task1-close 裁决删除）：内核 bump arena
-                // 耗尽——锁定 OOM 是否落在内核 ImageBump（非增长 128KiB）。
-                // 无分配路径：定长标签 + 游标/请求字节数手动 hex。
-                let cur = self.cursor.load(Ordering::Relaxed);
-                nk4c_oom_hex(b"nk4c: OOM-KERN cur=", cur, layout.size());
-                core::ptr::null_mut()
-            }
+            // Arena exhausted: hand back null, which the `GlobalAlloc` contract
+            // turns into the caller's allocation failure.
+            Err(_) => core::ptr::null_mut(),
         }
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
         // 镜像期 bump 不回收：一次性阶段无配对释放需求；真回收面随
         // NK1 波次的堆设计落地（届时本分配器整体退役）。
-    }
-}
-
-/// NK4-C 1.5c 取证（task1-close 裁决删除）：无分配的 hex 行打印——
-/// `tag` + `cur`（8 位） + ` req=` + `req`（8 位） + 换行。
-fn nk4c_oom_hex(tag: &[u8], cur: usize, req: usize) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut buf = [0u8; 64];
-    let mut n = 0;
-    for &b in tag {
-        buf[n] = b;
-        n += 1;
-    }
-    let put = |buf: &mut [u8], n: &mut usize, v: usize| {
-        for i in (0..8).rev() {
-            buf[*n] = HEX[(v >> (i * 4)) & 0xf];
-            *n += 1;
-        }
-    };
-    put(&mut buf, &mut n, cur);
-    buf[n] = b' ';
-    n += 1;
-    buf[n] = b'r';
-    buf[n + 1] = b'e';
-    buf[n + 2] = b'q';
-    buf[n + 3] = b'=';
-    n += 4;
-    put(&mut buf, &mut n, req);
-    buf[n] = b'\n';
-    n += 1;
-    if let Ok(s) = core::str::from_utf8(&buf[..n]) {
-        early_console::write_str(s);
     }
 }
 

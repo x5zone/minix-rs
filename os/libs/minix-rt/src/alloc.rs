@@ -259,10 +259,11 @@ pub trait PageSupplier {
     fn supply_pages(&mut self, page_count: usize) -> Option<*mut u8>;
     /// Returns a previously supplied page.
     fn release_page(&mut self, page: *mut u8);
-    /// NK4-C 1.5c 取证（task1-close 裁决删除）：池游标快照——(已 bump
-    /// 消耗的页数, 池总页数, 空闲栈里的可复用页数)。用于真机区分
-    /// 「运行期每轮真增长耗尽池」与「碎片化 / 跟踪数组上限」。
-    /// 默认实现面向不暴露内部游标的 supplier（返回全零，调用方忽略）。
+    /// Pool cursor snapshot: `(pages bumped, pages in the pool, reusable
+    /// pages on the free stack)`. Lets a caller tell "every round really grew
+    /// until the pool ran out" apart from "fragmented / tracking-array capped".
+    /// The default implementation serves suppliers that keep no such cursors
+    /// (it returns all zeroes, which callers ignore).
     fn pool_diag(&self) -> (usize, usize, usize) {
         (0, 0, 0)
     }
@@ -860,10 +861,10 @@ impl<S: PageSupplier> SlabAllocator<S> {
         panic!("minix-rt: free of a pointer this allocator never handed out");
     }
 
-    /// NK4-C 1.5c 取证（task1-close 裁决删除）：分配器状态快照——
-    /// 在用 slab 数 / 在用 big-block 数 / 池游标三元组。真机采样看
-    /// `slabs_in_use` 是否随事件计数单调爬升近 `MAX_SLABS`（跟踪数组
-    /// 上限/碎片化耗尽）还是 `pages_consumed` 近池总页数（字节耗尽）。
+    /// Allocator state snapshot: slabs in use, big blocks in use, and the pool
+    /// cursor triple. Reading it tells whether `slabs_in_use` climbs toward
+    /// `MAX_SLABS` (tracking-array / fragmentation exhaustion) or
+    /// `pages_consumed` toward the pool size (byte exhaustion).
     pub fn diag(&self) -> AllocDiag {
         let mut slabs_in_use = 0;
         let mut index = 0;
@@ -892,7 +893,7 @@ impl<S: PageSupplier> SlabAllocator<S> {
     }
 }
 
-/// 快照输出（NK4-C 1.5c 取证，task1-close 裁决删除）。
+/// The snapshot shape `diag` reports; see [`SlabAllocator::diag`].
 #[derive(Debug, Clone, Copy)]
 pub struct AllocDiag {
     pub slabs_in_use: usize,

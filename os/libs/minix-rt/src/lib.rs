@@ -114,83 +114,7 @@ pub fn init() {
 /// Assumes a single-threaded user process (same assumption as the rest of
 /// the startup path). Thread support will revisit this contract.
 pub fn alloc(size: usize) -> *mut u8 {
-    let ptr = with_global_allocator(|allocator| allocator.alloc(size));
-    // NK4-C 1.5c 取证（task1-close 裁决删除）：slab 分配失败锁定是否
-    // 落在用 minix-rt slab 的服务器（RS 等）。无分配：定长标签 + hex size。
-    #[cfg(all(not(feature = "mock"), not(test)))]
-    if ptr.is_null() {
-        // NK4-C 1.5c 取证：OOM 后上层若有重试会刷屏，与同 crate
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        if N.fetch_add(1, AtomicOrd::Relaxed) < 32 {
-            nk4c_oom_tag(size);
-        }
-    }
-    ptr
-}
-
-/// NK4-C 1.5c 取证（task1-close 裁决删除）：无分配的 slab OOM 行打印。
-#[cfg(all(not(feature = "mock"), not(test)))]
-fn nk4c_oom_tag(size: usize) {
-    use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    // 取当前分配器快照（diag 不分配，安全）。
-    let d = crate::global_alloc_diag();
-    let mut buf = [0u8; 96];
-    let mut n = 0usize;
-    macro_rules! lit {
-        ($s:expr) => {{
-            for &b in $s {
-                buf[n] = b;
-                n += 1;
-            }
-        }};
-    }
-    macro_rules! hex {
-        ($v:expr, $digits:expr) => {{
-            let v = $v;
-            for i in (0..$digits).rev() {
-                buf[n] = HEX[(v >> (i * 4)) & 0xf];
-                n += 1;
-            }
-        }};
-    }
-    lit!(b"nk4c: OOM-RT ");
-    // proc 归因（NK4C 续-279a）：本函数只能走裸 kernel call 诊断腿（minix-rt
-    // 不依赖 IPC 发送通道，服务器/命令 transport 形态不同，拿不到 getpid）——
-    // 归因改由内核侧完成：dispatch_diagctl 对 "nk4c: OOM-RT" 前缀行补打 caller
-    // proc 号（内核腿自带 cur_nr，单点零新通道），见 §续-279a 内核侧改动。
-    lit!(b" size=");
-    hex!(size, 6);
-    // 分母取派生常量真值（NK4-C 1.55：池 512→1024 后写死的 `/200`
-    // 会打出 px=400/200 的非法形态，签名对账判据即被污染）。
-    lit!(b" slabs=");
-    hex!(d.slabs_in_use, 3);
-    lit!(b"/");
-    hex!(alloc::MAX_SLABS, 3);
-    lit!(b" big=");
-    hex!(d.big_in_use, 3);
-    lit!(b"/");
-    // 分母宽度 2→3：MAX_BIG_BLOCKS 已绑 GLOBAL_POOL_PAGES（非 x86 档 2048=0x800，
-    // x86_64 档 1024=0x400，§续-279d 分档后两值并存；279c 前全架构 0x400），
-    // 两位只打得出截断的 "00"——真机 NK4C 续-278 gh140 的 `big=b6/00` 实为
-    // 182/1024（分母溢出使读数歧义，诊断面缺陷本笔坐实并修）。
-    hex!(alloc::MAX_BIG_BLOCKS, 3);
-    lit!(b" px=");
-    hex!(d.pages_consumed, 3);
-    lit!(b"/");
-    hex!(d.total_pages, 3);
-    lit!(b" fp=");
-    hex!(d.free_pages, 3);
-    lit!(b"/");
-    hex!(alloc::GLOBAL_POOL_PAGES, 3);
-    lit!(b"\n");
-    //[SD19-gate] OOM 报告通道 sys_diagctl_write：报告通道自己坏了时无更高可回报处，transport 侧 park 兜底（panic.c:66）
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = sys_diagctl_write(
-        &DirectKernelCallTransport,
-        core::str::from_utf8(&buf[..n]).unwrap_or("nk4c: OOM-RT\n"),
-    );
+    with_global_allocator(|allocator| allocator.alloc(size))
 }
 
 /// Frees memory previously allocated by [`alloc`].
@@ -287,8 +211,12 @@ fn with_global_allocator<R>(
     }
 }
 
-/// NK4-C 1.5c 取证（task1-close 裁决删除）：读全局 slab 分配器状态快照，
-/// 供用户态服务器（VM/RS 等）在真机采样打印 free-bytes/slab-in-use。
+/// Reader of the global slab allocator's state snapshot (slabs and large
+/// blocks in use, pages consumed / total / free). This is the crate's formal
+/// allocator diagnostic surface rather than a boot trace: the SD-11 T1 test
+/// of [`install_vm_supplier`] asserts its post-condition through here, i.e.
+/// that total and free page counts drop to zero once the VM page supplier is
+/// installed.
 pub fn global_alloc_diag() -> alloc::AllocDiag {
     with_global_allocator(|allocator| allocator.diag())
 }
@@ -304,7 +232,7 @@ pub fn global_alloc_diag() -> alloc::AllocDiag {
 ///   `_brksize` 初值 = exec 建立的 data segment 端点；安装点落地时接
 ///   链接器 `__bss_end`，见 `SD-11` T3）。传 0 无意义，返 `EINVAL`。
 /// * 幂等：已切 VM 形态时是 no-op（重复握手不重复安装）。
-/// * 返回后池诊断 [`global_alloc_diag`] 的总/空闲页为 0，即"已切 VM
+/// * 返回后池诊断 [`global_alloc_diag`] 的总/空闲页为 0，即「已切 VM
 ///   形态"的标志（[`alloc::VmBreakSupplier`] 无固定总量）。
 pub fn install_vm_supplier(initial_break: u64) -> Result<(), minix_types::Errno> {
     if initial_break == 0 {
