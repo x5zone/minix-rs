@@ -1,4 +1,4 @@
-# REVIEW-TRACE — doc-gen 迭代 v3（01-stage-kernel 01~07；Round 0–5 为首五轮，Round 6–7 为续做）
+# REVIEW-TRACE — doc-gen 迭代 v3（01-stage-kernel 01~08；Round 0–5 为首五轮，Round 6–8 为续做）
 
 > 本轮（v3）是第三棒：前两棒的取证与复盘分别在 `prompt/REVIEW-TRACE-docgen-01-05-5rounds.md`（v1）与
 > `prompt/REVIEW-TRACE-docgen-01-05-5rounds-v2.md`（v2，qoder）。**两棒的失败定义全部继承**：
@@ -539,3 +539,47 @@ Round 7 的第一版生成代理派出 24 分钟后仍没有任何产物文件�
 | `.design/` 快照随工作树消失 | **决策：确认"快照不留"**。正文与 trace 已携带全部需保留的结论（对账出入已在 06 篇审计中更正并记 trace）；`.design/` 保持 gitignore |
 
 **工具修改的两道自测与七篇回归**：`anchor-resolve --self-test` PASS（含新增第五组）、`doc-ref-check --self-test` PASS（含新增回归夹具）、七篇 ref-check/anchor 全 exit 0。
+
+---
+
+# Round 8 · num=08（启动完成翻转：system-init-boot-finish）
+
+## 8.1 选题与边界（rerank 蓝图定题，draft 只当块清单）
+
+- **权威定位**：glm 蓝图旧编号"09-system-init-boot-finish"节（K-100~K-108，旧编号即本篇 08）+ qwen 的 `12-boot-finish-handoff`（K-053~K-058 与**新增主讲述点 K-099**：vm_handoff/LiveBootstrap/boot_alloc 归宿）+ deepseek 旧 08 勘误两行（Step 8.5 BKL、kinfo 双字段）。
+- **边界（回指不重复）**：05 §2.6/§3.7/§4.7（定时器三段+pic_init）、06 §1.4/§2.6（RTS 位族+boot 循环）、07 §2.1/§2.2（arch_post_init/memory_init）、01 §2.4（add_memmap/cut_memmap 本体）均已教学，本篇只补"时点与调度后果"。分派全景与 58 项全表移 13 方向（mimo/qwen 蓝图明assign）。
+- **draft/08（1019 行）写于占位符时代**（switch_to_user 是 spin loop、timer 未接线、T0-T6 骨架），v1 快照三处"已知缺口"与现实相反——快照按现码重推为 v2。块级对账 48 块：已覆盖 31 / 有意不继承 12 / 遗漏 0 / 范围外 5。
+
+## 8.2 生成（A）
+
+- 单生成代理（general-purpose 后台），3446 秒、167 次工具调用、3055 万 token。产出 **2180 行**，五门自报全绿（W22 首次全程兑现：回报贴了每门读数）、63 个代码引用块全行 diff、四复扫全零、9 项与大纲/fact-priors 不符处**如实登记未静默改**。
+- 代理自己抓到的（编排者 pre-check 漏掉的）：vm_handoff 三处陈旧注释描述已废弃的"回收 VM blob"形状；大纲"七段 WONTFIX"实为六段；syscall.rs:625 的"mpx.S subl"对位在本仓 .S 零命中；D6 撞号；lib.rs:2694 D6 注释与现码矛盾；kmain 裸锚 MULTI-DEF（qemu_test 包装两份定义）→ 符号锚只在题注。
+
+## 8.3 编排者自查与四路复核
+
+- **五门独立复跑**：全绿（初 132/132→终 133/133，修复增一条锚）。
+- **全文逐节实读**：2181 行通读，逐节三态全"能自己推出"；抽查坐实 2 处（任务槽号范围、forget 唯一性）。
+- **盲态闭卷（独立考生、互盲）**：**8/8 机制题"完全能推出"+ 3/3 对抗题全部推出**——本系列首个满分（06/07 为 7/8）。学生点出的教学粒度缺口（§2.1 编译期防线"接受而非推出"）恰好被编排者实验证实为更深的问题（见下）。
+- **独立事实核查（CodeReview，自跑命令取证）**：51 个引用块逐字节全对、十余条复算命令与宿主 cargo 读数全精确复现、16 条点名测试全在、45 锚点全命中、SYS_* 58 格无错位——**引用保真度为本系列最高档**。发现 **3 P0 + 3 P1 + 13 P2**。
+
+## 8.4 本轮 P0 的类型学（三条新类型，全族"把源注释的断言当真值"）
+
+| 类型 | 实例 |
+|---|---|
+| **被引注释的"全库唯一/恒为"式断言有现码反例，照引未登记** | transfer 注释"全库唯一 forget"——trap_dispatch.rs 三处 BklGuard 裸 forget（+3 个 qemu 测试内核）；任务槽范围行照抄记忆而非对 com.h（实为 -5..-1 含 ASYNCM，HARDWARE=KERNEL 别名） |
+| **源注释的过时行为叙事被当现码事实转述** | lib.rs:2864 "deferred-but-functional" 段——现码 note_context_switch 直写 tsc_ctr_switch（smp.rs:231-234+单测钉住），文档却据此断言"与 C 的真实差异"并写进 §5.2 的变异推演 |
+| **测试有效性未验：宿主测试桩恒 0 使断言恒真** | read_tsc() 的 cfg(test) 桩返回 0 → §5.2 声称能杀死的变异（不写 cpu_last_idle）实际杀不死——文档推荐了一个无判别力的测试当覆盖 |
+| **C 声明注释的断言不复现（编排者 gcc 实验）** | "越界注册编译不通过"——宏形态（局部变量下标）与常量下标形态在 `-Wall`/`-O2 -Wall` 下全部干净通过；现宏形态唯一防线是 DEBUG assert。正文与 §3.1 对照表诚实化：Rust 的编译期守卫不是"重表达"而是把 C **声称却没兑现**的防线做实 |
+
+## 8.5 修复批次与终态
+
+- **4 P0 + 3 P1 + 14 P2 共 21 处**，全部由编排者亲自修复（每条修前重放证据命令；清单 `tmp/docgen3/round8-review.md`）。修复引入 1 处裸 §4.7 内部引用被 ref-check 拦下（门在修复后依然有效的一例），改跨篇格式后全绿。
+- **门终态**：anchors 133/133、code-map 14/14、style error=0、ref-check 全可解析、density 4 可判章过；元话语/比喻/编辑口吻复扫零命中；2181 行。
+- **宿主测试实跑**：`cargo test -p minix-kernel --features mock --lib` = 839 收集/831 通过/8 忽略（默认特性配置编译失败为预存，与本篇无关，已在 §5.1 如实披露）。
+
+## 8.6 Round 8 出口判定
+
+- 交付：`08-system-init-boot-finish.md` 2181 行；生成+修复两笔提交。
+- **四路取证面齐**：逐节实读（编排者）、盲态闭卷 8/8+3/3（独立考生）、独立事实核查（CodeReview）、块级对照（生成方自做+CodeReview 全量重放）。
+- **对 W18 第三条的再加证**：draft 块级对账抓到 v1 设计快照三处与现实相反——快照对账表再次证明不能只由作者核。
+- **流程增量（本轮起执行）**：① W20 延伸——"全库唯一/恒为/从不"式被引断言，写入正文前必须 grep 反例（本轮 P0-1/P1-1 的教训）；② 被引注释描述行为时，行为断言对**现码**验（注释叙事只按原文引用），本轮三条 P0 同族；③ 宿主测试的"变异推演"写入前先验测试桩（read_tsc cfg(test)=0 类）——声称"改错会红"的断言要么实验要么降级为"断言意图"。
