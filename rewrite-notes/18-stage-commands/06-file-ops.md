@@ -143,12 +143,13 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 
 ### 4.1 模块结构
 
-`os/commands/bin/fileops`（库包名 `minix-fileops`）共 4 个源文件：
+`os/commands/bin/fileops`（库包名 `minix-fileops`）判断层源文件如下（全量以 `ls os/commands/bin/fileops/src/*.rs` 为准）：
 
 | Rust 文件 | 对应 C 源码位置 | 职责 |
 |-----------|----------------|------|
 | `lib.rs` | — | 错误类型（`FileOpError`，22 对应参数无效、2 对应文件缺失）与模块组织 |
 | `mode.rs` | `chmod.c:166`（解析）、`:216`（应用）思想 | 八进制与符号模式解析应用（`apply_mode`） |
+| `mkdir.rs` | `mkdir.c` 的 `mkpath` 与 `-m` `getmode` 思想 | `-p` 逐级前缀遍历、中间/终端模式、额外位判、`-m` 复用 `apply_mode` |
 | `testexpr.rs` | `test.c:105-168`（算子表、词法、四层声明） | 四层求值（`evaluate`）与 `FileTester` 接口 |
 | `path.rs` | `basename`、`dirname` 语义 | 路径切分（`basename`、`dirname`） |
 
@@ -164,6 +165,7 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 | 函数 | 输入 | 输出 | 对应 C 行为 |
 |------|------|------|------------|
 | `apply_mode(现有位, 模式文本)` | 位与文本 | 新位 | `setmode` 加 `getmode` 语义 |
+| `for_each_parent(路径, 访问器)` | 路径与回调 | 逐级前缀 | `mkpath` 的斜杠扫描 |
 | `evaluate(测试器, 单词表)` | 接口对象与参数 | 真假 | `test.c` 四层语义 |
 | `basename(路径, 后缀)` | 路径与后缀 | 尾名 | `basename` 语义 |
 | `dirname(路径)` | 路径 | 目录部分 | `dirname` 语义 |
@@ -180,7 +182,7 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 | true、false | `exit` | 已接线（纯退出码，忽略操作数） |
 | basename、dirname | `write`、`exit`、argv 交接 | 已接线（决定半在 `path.rs`） |
 | cat | `open`（现有路径）、`read`、`write`、`close` | API 已备（`open_existing_via` 实装，`minix-sys/src/vfs.rs:696`）；真实阻塞 = guest 二进制形态（freestanding bin 尚未交叉编译入镜像）+ exec 递送链（NS3 门 bug 已修，NS5 VFS exec worker 待实装） |
-| cp、ln、mv、rm、mkdir、rmdir、chmod、chown、touch、mkfifo、truncate、link、unlink | 上一行全部，加各自的方向调用（建链/截断/权限位面） | 待 14 侧逐项登记封装 |
+| cp、ln、mv、rm、mkdir、rmdir、chmod、chown、touch、mkfifo、truncate、link、unlink | 上一行全部，加各自的方向调用（建链/截断/权限位面） | mkdir 已接线（`src/bin/mkdir.rs`，决定半 `mkdir.rs` 走已备的 `minix_sys::mkdir`/`chmod`/`stat`）；余行待 14 侧逐项登记封装 |
 | df、du、find、stat、`test` 的文件问 | `stat`、`getdents` | 缺封装（`../14-stage-runtime/todo.md:60` 已登记） |
 | pathchk | `write`、`exit`、argv 交接 | 已接线 `-p` 路（决定半 `pathchk.rs`：`_POSIX_NAME_MAX`/`_POSIX_PATH_MAX` 常量界限、可移植字符集、前导连字符；诊断走标准错误）；缺省模式的 `pathconf`/`stat` 探测待批，现显式拒绝 |
 | printf | `write`、`exit`、argv 交接 | 已接线（决定半 `printf.rs`：运行时格式引擎——标志/宽度/精度与 `d i o u x X s c %b %%`、格式复用、`\c` 截停、base 0 数字解析与字符常量前缀；浮点转换 `e E f g G` 按裁决单独处理，现显式拒绝） |
@@ -193,13 +195,14 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 
 ## 5. 测试要点
 
-`cargo test -p minix-fileops`：**74 个测试，全部通过**（截至 2026-09-17，其中 7 个为 pathchk 决定半、23 个为 printf 引擎、14 个为 expr 决定半）；另有九个已接线的命令二进制（echo、true、false、basename、dirname、pathchk、printf、expr），其决定半由上述库测试覆盖。
+`cargo test -p minix-fileops`：全量以 `cargo test -p minix-fileops --lib` 实际输出为准（本篇直接相关的测包含在内，历史全量数字详见对应 `.review` 底账）。已接线的命令薄壳（echo、true、false、basename、dirname、pathchk、printf、expr、chmod、pwd、sync、test、date、df、mkdir 等）其决定半由库测覆盖。
 - **表达式求值**（`expr.rs`，14 个）：`test_arithmetic_and_precedence`（优先级与括号）、`test_or_and_returns`（`|`/`&` 的空零判定）、`test_comparisons_numeric_and_string`（数值与字节序两路）、`test_match_returns_length_or_group`（锚定匹配、组一提取、无组 "0"/有组空串两种未中形态）、`test_length_keyword`（含 C 的结合行为：length 后的加法在外层）、`test_empty_operand_is_integer_zero`（空串即整数零）、`test_divide_by_zero_is_an_error`、`test_overflow_is_an_error`（加减溢出检查、乘法的已声明怪癖：全正大数环绕漏报）、`test_non_integer_arithmetic_operand_rejected`、`test_out_of_range_operand_rejected`（含 i64::MIN 边界与正数上界两路）、`test_leading_dash_operand_needs_no_quirk`、`test_leading_double_dash_quirk`（首参 `--` 吞与不吞两路）、`test_trailing_operator_is_syntax_error`、`test_exit_relevance_zero_result_shape`。
 - **printf 引擎**（`printf.rs`，23 个）：`test_literal_text_passes_through`、`test_percent_percent_is_one_percent`、`test_decimal_and_string_basics`、`test_missing_operands_are_zero_and_empty`（干列表补零与空串）、`test_format_reuses_over_extra_operands`（格式复用）、`test_flags_plus_space_and_minus`、`test_zero_flag_zero_fills_against_width`（0 旗标与精度互斥）、`test_precision_on_integers`（含精度零渲染零值为空）、`test_unsigned_octal_hex_upper`、`test_negative_unsigned_rejected`（`getuintmax` 拒负）、`test_alternate_form_prefixes`（`#` 的 0/0x/0X 前缀）、`test_string_width_and_precision`、`test_char_takes_first_byte`、`test_star_width_comes_from_operands`（`*` 取操作数）、`test_escapes_expand_in_the_format`（八进制至多三位、十六进制两位）、`test_c_escape_halts_output`（`\c` 截停）、`test_unknown_escape_warns_but_passes_through`、`test_numeric_operands_use_base_zero`（base 0 解析）、`test_character_constant_prefix_operand`（`"A` 字符常量）、`test_bad_number_warns_status_one`、`test_b_expands_operand_escapes`（`%b` 操作数转义）、`test_float_conversions_are_declared_unsupported`、`test_missing_format_character_is_an_error`。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/fileops` 复现）：
 
 - **模式算术**（`mode.rs`，8 个）：`test_octal_replaces_low_bits`（八进制替换且保留文件类型位）、`test_bad_octal_rejected`（非八进制数字、超长、空串）、`test_add_and_remove`（加减）、`test_set_exactly`（精确设置与清空）、`test_special_bits`（设标识位与粘滞位）、`test_copy_between_classes`（类间复制 `g=u`）、`test_chained_clauses`（逗号多子句）、`test_bad_clause_rejected`（非法主语、缺算子、缺内容）。
+- **建目录**（`mkdir.rs`，6 个）：`test_absolute_path_prefixes`（`/a/b/c` 拆为三前缀、仅末个为终端）、`test_relative_path_prefixes`（相对路无前导斜杆）、`test_leading_and_trailing_slashes`（纯斜杆根路无可建、尾斜杆仍终端于末个真组件）、`test_intermediate_mode_forces_user_wx`（中间级强制 `u+wx`）、`test_extra_bit_fixup`（粘滞/设身份位需后续 `chmod`）、`test_parse_mode_spec_octal_and_symbolic`（八进制保额外位、符号仅动主语掩码内位——本轮纠了一处推错的断言 `go-rwx,u+x` 应为 `0700` 非 `0500`）。
 - **表达式求值**（`testexpr.rs`，8 个）：`test_file_status_operators`（六问真假）、`test_empty_fs_answers_no`（空系统全否）、`test_string_operators`（相等、不等、空非空、裸串）、`test_integer_operators`（六比较加非数字报错）、`test_boolean_precedence`（与高于或、非、括号）、`test_newer_older`（新旧比较与缺席为假）、`test_malformed_rejected`（括号不配对、缺操作数、多余单词）、`test_testers_share_the_trait`（接口统一）。
 - **路径切分**（`path.rs`，4 个）：`test_basename_common`（四种形状）、`test_basename_suffix`（后缀三规则）、`test_dirname_common`（六种形状）、`test_empty_path_rejected`（空路径）。
 - **echo 输出布局**（`echo.rs`，10 个）：`test_no_args_prints_bare_newline`（无参数只换行）、`test_single_arg_then_newline`、`test_arguments_separated_by_single_spaces`（单空格分隔、无尾随空格）、`test_leading_nflag_prints_nothing_extra`（`echo -n` 零输出）、`test_leading_nflag_suppresses_only_the_newline`、`test_second_nflag_is_data_not_flag`（getopt 禁令：仅首位 `-n` 是标志，后随的 `-n` 是数据）、`test_double_dash_is_ordinary_data`（echo 无 `--` 约定）、`test_empty_argument_keeps_both_spaces`、`test_write_failure_stops_emission_and_reports`（写失败即停并上报）、`test_write_failure_on_trailing_newline_reports`。
