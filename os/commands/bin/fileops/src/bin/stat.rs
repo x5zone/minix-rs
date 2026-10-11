@@ -39,13 +39,69 @@ mod support;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use minix_fileops::realpath::{PathProbe, real_path};
 use minix_fileops::stat::{
     self, FaceError, Plan, PlanError, Report, StatData, TimeField, parse_args, parse_format, render,
 };
-use minix_sys::{Errno, Stat, fstat, lstat, readlink, stat as stat_follows};
+use minix_sys::{Errno, Stat, fstat, getcwd, lstat, readlink, stat as stat_follows};
 
-/// `readlink` 缓冲的宽度，取 C 那份 `path` 数组的同级容量（`stat.c:578`）。
+/// `readlink` 与路径缓冲的宽度，取 C 那份 `path` 数组的同级容量（`stat.c:578`），
+/// 与 `realpath` 的上限同为 `PATH_MAX`（`minix-sys` 的线长上限即此值）。
 const LINK_BUF: usize = 1024;
+
+/// `%R` 要的 `realpath(3)` 腿。三个动作全走 `minix_sys`，折叠算法在
+/// `minix_fileops::realpath`（`minix3/lib/libc/gen/getcwd.c:64-215` 的移植）。
+struct SysProbe;
+
+impl PathProbe for SysProbe {
+    fn lstat_mode(&self, path: &str) -> Option<u32> {
+        let mut st = zeroed();
+        lstat(path, &mut st).ok().map(|()| st.st_mode)
+    }
+
+    fn read_link(&self, path: &str) -> Option<String> {
+        let mut buf = [0u8; LINK_BUF];
+        let len = readlink(path, &mut buf).ok()?;
+        if len == 0 {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&buf[..len]).into_owned())
+    }
+
+    fn working_directory(&self) -> Option<String> {
+        let mut buf = [0u8; LINK_BUF];
+        let bytes = getcwd(&mut buf).ok()?;
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
+/// 折一次 `%R`。C 在这里也是「失败就出声一次、置 `linkfail`、当空串」，
+/// 具体的错误码不进告警文本（`stat.c:824-833`，那边无 `strerror` 可对位）。
+fn resolve_for(name: &str, quiet: bool) -> Option<String> {
+    match real_path(&SysProbe, name) {
+        Ok(resolved) => Some(resolved),
+        Err(_) => {
+            if !quiet {
+                support::warn(format!("stat: realpath `{name}'\n").as_bytes());
+            }
+            None
+        }
+    }
+}
+
+/// 模板里是否出现 `%R`（含 `%SR` 这类带形态字母的写法）。只有出现才折，
+/// 因为这条腿每段都要一次 `lstat`。
+fn needs_realpath(pieces: &[minix_fileops::stat::Piece<'_>]) -> bool {
+    pieces.iter().any(|piece| {
+        matches!(
+            piece,
+            minix_fileops::stat::Piece::Spec(minix_fileops::stat::Spec {
+                datum: minix_fileops::stat::Datum::Realpath,
+                ..
+            })
+        )
+    })
+}
 
 fn zeroed() -> Stat {
     // SAFETY: `Stat` 是纯整数字段的字节结构，全零是合法位形，随后由
@@ -174,8 +230,13 @@ fn run() -> ! {
         }
 
         let data = to_data(&st);
-        let link = if (data.mode & 0o170000) == 0o120000 {
+        let link = if (data.mode & minix_fileops::cp::S_IFMT) == minix_fileops::cp::S_IFLNK {
             name.and_then(|path| link_target(path, plan.quiet))
+        } else {
+            None
+        };
+        let resolved = if needs_realpath(&pieces) {
+            name.and_then(|path| resolve_for(path, plan.quiet))
         } else {
             None
         };
@@ -183,6 +244,7 @@ fn run() -> ! {
             data: &data,
             name,
             link: link.as_deref(),
+            resolved: resolved.as_deref(),
             timefmt: plan.timefmt,
             file_number: number,
         };
@@ -190,14 +252,6 @@ fn run() -> ! {
         let report: Report = match render(&pieces, &ctx, &mut out) {
             Ok(r) => r,
             Err(FaceError::BadFormat(source)) => bad_format(prog, &source),
-            Err(FaceError::RealpathUnported) => {
-                // 本层没有 realpath 那条腿；照 C 的失败支出声并把这一列当空，
-                // 但把退出码按「坏格式」定下来，免得把未接线当成渲染成功。
-                if !plan.quiet {
-                    support::warn(format!("{prog}: realpath leg not ported\n").as_bytes());
-                }
-                support::terminate(1);
-            }
         };
         support::emit(out.as_bytes());
         if !report.ends_with_newline && !plan.no_nl {

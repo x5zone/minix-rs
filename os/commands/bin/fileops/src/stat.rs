@@ -647,6 +647,9 @@ pub struct Render<'a> {
     pub name: Option<&'a str>,
     /// 符号链目标。只有 `mode` 确为符链时才有意义。
     pub link: Option<&'a str>,
+    /// `%R` 要的解析结果：由薄壳拿 `crate::realpath` 折好后交进来（`None` 表示
+    /// 折失败了，对应 C 的 `realpath()` 返 `NULL` 那一支，`stat.c:824-833`）。
+    pub resolved: Option<&'a str>,
     /// 时间模板（`-t`，或 `-s`/`-x` 的默认，或 `TIME_FORMAT`）。
     pub timefmt: &'a str,
     /// `%@` 用的操作数序号，C 从 1 起（`stat.c:278` 的 `fn = 1`）。
@@ -669,9 +672,6 @@ pub enum FaceError {
     /// 子片段字母或形态字母与该字段不合（`stat.c:994-996`），或字符串形
     /// 却没有字符串可打（`stat.c:1116-1117`）。带着那条子格式串的原文。
     BadFormat(String),
-    /// `%R` 需要 realpath 那条腿（逐段解析符号链的路径解析器），本树尚无封装。
-    /// 显式拒绝而不是悄悄打空串，免得把未接线的形当成渲染错了。
-    RealpathUnported,
 }
 
 /// 一条字段的取值结果。`num` 总在（数值形用），`text` 只在有字符串形时在，
@@ -853,7 +853,24 @@ fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>)
             };
             time_field(t, ctx.timefmt)
         }
-        Datum::Realpath => return Err(FaceError::RealpathUnported),
+        Datum::Realpath => {
+            // C 的这一支与 `%Y` 共用同一套前缀算法（`stat.c:822-838`）：先写
+            // `" -> "`，再让 realpath 往 `path + 4` 里写，折失败时出声一次、置
+            // `linkfail` 并把串清空。默认形态在指针算好之后才补，故裸 `%R` 不带
+            // 前缀，显式 `%SR` 才带。解析本身在薄壳侧（`crate::realpath`），
+            // 本层只吃它交回的结果。
+            let explicit_string = spec.ofmt == Some(OutFmt::String);
+            match (ctx.name, ctx.resolved) {
+                (None, _) => text_field("(stdin)".to_string()),
+                (_, Some(target)) if explicit_string => text_field(format!(" -> {target}")),
+                (_, Some(target)) => text_field(target.to_string()),
+                (_, None) => {
+                    let mut f = text_field(String::new());
+                    f.linkfail = true;
+                    f
+                }
+            }
+        }
         Datum::Symlink => {
             // C 的次序要留着：默认形态在指针算好之后才补上（`stat.c:855-856`），
             // 所以裸 `%Y` 不带 ` -> ` 前缀，显式 `%SY` 才带（`stat.c:443-446` 的注释）。
@@ -1711,6 +1728,7 @@ mod face_tests {
             data,
             name,
             link,
+            resolved: None,
             timefmt,
             file_number: 3,
         };
@@ -1926,6 +1944,7 @@ mod face_tests {
             data: &sample(),
             name: Some("f"),
             link: None,
+            resolved: None,
             timefmt: TIME_FORMAT,
             file_number: 1,
         };
@@ -1944,6 +1963,7 @@ mod face_tests {
             data: &d,
             name: Some("l"),
             link: None,
+            resolved: None,
             timefmt: TIME_FORMAT,
             file_number: 1,
         };
@@ -2043,6 +2063,7 @@ mod face_tests {
             data: &sample(),
             name: Some("f"),
             link: None,
+            resolved: None,
             timefmt: TIME_FORMAT,
             file_number: 1,
         };
@@ -2060,19 +2081,59 @@ mod face_tests {
     }
 
     #[test]
-    fn the_realpath_letter_is_refused_instead_of_rendering_empty() {
-        let pieces = parse_format("%R").unwrap();
-        let ctx = Render {
-            data: &sample(),
-            name: Some("f"),
-            link: None,
-            timefmt: TIME_FORMAT,
-            file_number: 1,
-        };
-        assert_eq!(
-            render(&pieces, &ctx, &mut String::new()).unwrap_err(),
-            FaceError::RealpathUnported
-        );
+    fn the_realpath_letter_renders_what_the_shell_resolved() {
+        // `%R` 与 `%Y` 共用那条前缀规则：裸形不打 ` -> `，显式字符串形才打
+        // （`stat.c:822-838`）。折失败时打空并置 `linkfail`；无操作数打 `(stdin)`。
+        let pieces = parse_format("%R|%SR").unwrap();
+        let d = sample();
+        let mut out = String::new();
+        render(
+            &pieces,
+            &Render {
+                data: &d,
+                name: Some("/etc/rc"),
+                link: None,
+                resolved: Some("/etc/rc"),
+                timefmt: TIME_FORMAT,
+                file_number: 1,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out, "/etc/rc| -> /etc/rc");
+
+        let mut out = String::new();
+        let report = render(
+            &parse_format("%R").unwrap(),
+            &Render {
+                data: &d,
+                name: Some("/etc/rc"),
+                link: None,
+                resolved: None,
+                timefmt: TIME_FORMAT,
+                file_number: 1,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out, "");
+        assert!(report.linkfail);
+
+        let mut out = String::new();
+        render(
+            &parse_format("%R").unwrap(),
+            &Render {
+                data: &d,
+                name: None,
+                link: None,
+                resolved: Some("/whatever"),
+                timefmt: TIME_FORMAT,
+                file_number: 1,
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out, "(stdin)");
     }
 
     #[test]
@@ -2082,6 +2143,7 @@ mod face_tests {
             data: &sample(),
             name: None,
             link: None,
+            resolved: None,
             timefmt: TIME_FORMAT,
             file_number: 2,
         };
