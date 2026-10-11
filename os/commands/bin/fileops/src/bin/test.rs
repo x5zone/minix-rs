@@ -137,11 +137,6 @@ impl FileTester for FsTester {
             _ => false,
         }
     }
-
-    fn modified_since_read(&self, path: &str) -> bool {
-        self.stat(path)
-            .is_some_and(|st| st.st_mtim.tv_sec > st.st_atim.tv_sec)
-    }
 }
 
 /// The whole program body; both `main` forms call it and it never returns.
