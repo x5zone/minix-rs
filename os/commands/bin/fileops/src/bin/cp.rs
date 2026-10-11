@@ -6,26 +6,31 @@
 //! path, which mode — live in `minix_fileops::cp`; this program supplies the
 //! `stat`, `open`, `read`, `write`, `chown`, `chmod`, `utimens` legs.
 //!
-//! Wired: `cp [-f|-i] [-p] [-v] src target` and `cp [-f|-i] [-p] [-v] src ...
-//! directory`, where every source is a plain file (or something `stat` reports
-//! with a size, which the pump reads the way the C loop does). `-i` only asks
-//! when standard input is a terminal (`cp.c:148`), `-f` overwrites without
+//! Wired: `cp [-f|-i] [-p] [-v] src target`, `cp [-f|-i] [-p] [-v] src ...
+//! directory`, and `-R` over either — the hierarchy rooted at a source is
+//! duplicated, directories created then stamped, plain files pumped, links
+//! recreated from their own text, fifos and device nodes recreated. `-i` only
+//! asks when standard input is a terminal (`cp.c:148`), `-f` overwrites without
 //! asking and retries through an unlink (`utils.c:150-156`), `-p` reproduces
 //! ownership, permissions and both timestamps (`utils.c:364-404`), `-v` prints
-//! `src -> dst` for each file that succeeded.
+//! `src -> dst` for each visit that succeeded.
 //!
-//! Declared residual: the recursive family (`-R`, `-r`, `-a`) walks the tree
-//! with fts(3), which this tree has not landed (the same residual `rm -r`
-//! declares), so those letters are refused with a message instead of copying
-//! one level and calling it done. `-l` (hard-link instead of copy), `-N`,
-//! `-H`/`-L`/`-P` (symlink traversal modes, and with them `copy_link`) ride on
-//! that same walk. Two mechanical deviations inside the wired path, both
-//! invisible for a regular-file destination: the C code keeps `fchmod` for the
-//! setuid-restore branch (`utils.c:288`) and `fchown`/`fchmod` in `setfile`
-//! (`utils.c:376-381`), while this tree has no `f*` wrappers, so those bits are
-//! set by path with `chmod`/`chown` before the descriptor is closed. The real
-//! machine effect of every write-side command, this one included, is the
-//! writable-root gate (`C-57`/E5); `strerror` suffixes are not reproduced.
+//! Declared residual (refused up front, like `chmod`'s `-R`): `-r`, the
+//! deprecated logical recursion (`cp.c:175-188`); `-a`, `-P`, `-H`, `-L`, the
+//! symlink-traversal modes, of which `-P` additionally needs the link-preserving
+//! `lchown`/`lchmod` (`utils.c:381-389`) this tree does not wrap; `-l`, hard-link
+//! instead of copy (`utils.c:167-176`); `-N`, keep a dangling link dangling
+//! (`utils.c:395`). Three mechanical deviations inside the wired path:
+//! the C code keeps `fchmod` for the setuid-restore branch (`utils.c:288`) and
+//! `fchown`/`fchmod` in `setfile` (`utils.c:381-389`), while this tree has no
+//! `f*` wrappers, so those bits are set by path with `chmod`/`chown` before the
+//! descriptor is closed; `-p` on a duplicated symlink therefore stamps only its
+//! timestamps (through `utimensat` with `AT_SYMLINK_NOFOLLOW`), because the
+//! by-path `chown`/`chmod` would travel through the new link onto its target;
+//! and fts(3)'s cycle report (`cp.c:349-352`) has no counterpart, a physical
+//! walk never rejoins a tree through a link. The real machine effect of every
+//! write-side command, this one included, is the writable-root gate
+//! (`C-57`/E5); `strerror` suffixes are not reproduced.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -38,13 +43,15 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_fileops::cp::{
-    self, CopyError, CopyIo, CpFlags, CpOption, CpShapeError, FileIds, TargetState, classify,
-    create_mode, has_trailing_slash, is_identical, is_unwanted_directory, join_target,
-    preserved_mode, pump, pumps_data, regains_set_bits, retained_mode, strip_trailing_slashes,
+    self, CopyError, CopyIo, CpFlags, CpOption, CpShapeError, EntryAction, FileIds, TargetState,
+    classify, create_mode, entry_action, has_trailing_slash, is_identical, is_link,
+    is_unwanted_directory, join_target, post_create_dir_mode, preserved_mode, pump, pumps_data,
+    regains_set_bits, retained_mode, strip_trailing_slashes, writes_through,
 };
+use minix_fileops::dents;
 use minix_sys::{
-    Errno, Fd, Stat, chmod, chown, close, fstat, getuid, isatty, open, read, stat, umask, unlink,
-    utimens, write,
+    Errno, Fd, Stat, chmod, chown, close, fstat, getdents, getuid, isatty, lstat, mkdir, mkfifo,
+    mknod, open, read, readlink, stat, symlink, umask, unlink, utimens, utimensat, vfs, write,
 };
 
 /// The C pump's block size is `MAXBSIZE` (`utils.c:96`, one static buffer).
@@ -52,6 +59,15 @@ use minix_sys::{
 /// read, block by block, at any chunk size — so the copy uses a small heap
 /// chunk instead of a megabyte of `.bss` in every command image.
 const CHUNK: usize = 8192;
+
+/// The refill buffer for the `-R` walk (C's fts keeps its own; the size is not
+/// observable, it only bounds how many records arrive per call).
+const WALK_BUF: usize = 4096;
+
+/// `utils.c:308` reads a link's text into `char target[MAXPATHLEN]`; the buffer
+/// bounds how long a duplicated link text can be, and a longer one is reported
+/// rather than truncated behind the caller's back.
+const LINK_BUF: usize = 1024;
 
 fn zeroed() -> Stat {
     // SAFETY: Stat is a plain byte struct of integers; all-zero is a valid bit
@@ -63,6 +79,13 @@ fn zeroed() -> Stat {
 fn stat_of(path: &str) -> Option<Stat> {
     let mut sb = zeroed();
     stat(path, &mut sb).ok().map(|()| sb)
+}
+
+/// The same through `lstat`, for the physical `-R` scan (`cp.c:174, 190-196`)
+/// and for `utils.c:134-135`'s look at a destination that may itself be a link.
+fn lstat_of(path: &str) -> Option<Stat> {
+    let mut sb = zeroed();
+    lstat(path, &mut sb).ok().map(|()| sb)
 }
 
 fn ids_of(sb: &Stat) -> FileIds {
@@ -117,48 +140,62 @@ fn copy_file(
 
     // The destination: an existing file is truncated (`utils.c:143`), a missing
     // one is created with the source mode minus the set-id bits
-    // (`utils.c:145-146`). `tolnk` (`utils.c:109`) is only set by `-P`/`-R`,
-    // which this program refuses, so the link half of the branch below is not
-    // reachable — but C's second `stat` of the target (`utils.c:138-142`) is
-    // reproduced anyway: it is what makes `cp -f a b` refuse rather than create
-    // `b` when `b` disappears between the two looks.
-    let mut to_fd = if !dne {
+    // (`utils.c:145-146`).
+    //
+    // `utils.c:109` computes `tolnk = (Rflag && !(Lflag || Hflag)) || Pflag`,
+    // which with `-L`/`-H`/`-P` refused is exactly the recursive scan. A
+    // destination that is itself a symbolic link is then never written through:
+    // the `lstat` says so (`utils.c:134-135`), the open is skipped
+    // (`utils.c:142-143`) and the unlink-and-recreate branch replaces the link
+    // with a fresh regular file. C's second look at the target is what makes
+    // `cp -f a b` refuse rather than create `b` when `b` disappears between the
+    // two looks, and it is reproduced either way.
+    let tolnk = flags.recursive;
+    let mut to_fd: Option<Fd> = if !dne {
         if flags.interactive && !overwrite_ok(to) {
             // utils.c:123-131: declining is not a failure, just a skip.
             let _ = close(from_fd);
             return false;
         }
-        if stat_of(to).is_none() {
+        let dest_sb = if tolnk {
+            lstat_of(to) // utils.c:135: the link itself, not its target
+        } else {
+            stat_of(to)
+        };
+        let Some(dest_sb) = dest_sb else {
             support::warn(format!("cp: stat: {to}\n").as_bytes());
             let _ = close(from_fd);
             return true;
+        };
+        if writes_through(tolnk, is_link(dest_sb.st_mode)) {
+            open(to, cp::O_WRONLY | cp::O_TRUNC, 0).ok()
+        } else {
+            None // utils.c:142-143: `to_fd` stays at its -1 sentinel
         }
-        open(to, cp::O_WRONLY | cp::O_TRUNC, 0)
     } else {
         open(
             to,
             cp::O_WRONLY | cp::O_TRUNC | cp::O_CREAT,
             create_mode(fs.st_mode),
         )
+        .ok()
     };
 
-    if to_fd.is_err() && flags.force {
+    if to_fd.is_none() && (flags.force || tolnk) {
         // utils.c:148-156: remove the existing name and create a fresh file.
         let _ = unlink(to);
         to_fd = open(
             to,
             cp::O_WRONLY | cp::O_TRUNC | cp::O_CREAT,
             create_mode(fs.st_mode),
-        );
+        )
+        .ok();
     }
 
-    let to_fd = match to_fd {
-        Ok(fd) => fd,
-        Err(_) => {
-            support::warn(format!("cp: {to}\n").as_bytes());
-            let _ = close(from_fd);
-            return true;
-        }
+    let Some(to_fd) = to_fd else {
+        support::warn(format!("cp: {to}\n").as_bytes());
+        let _ = close(from_fd);
+        return true;
     };
 
     let mut failed = false;
@@ -279,6 +316,290 @@ fn set_utimes(path: &str, fs: &Stat) -> bool {
     false
 }
 
+/// `utils.c:364-419` with no descriptor: ownership, mode, then both timestamps,
+/// each failure counted and none of them skipping the others (`setfile(fs, 0)`
+/// calls `set_utimes` itself at `utils.c:417`).
+fn setfile_and_times(path: &str, fs: &Stat) -> bool {
+    let mut failed = setfile(path, fs);
+    if set_utimes(path, fs) {
+        failed = true;
+    }
+    failed
+}
+
+/// The `-p` stamping of a freshly duplicated symbolic link. C reaches it through
+/// `lchown`/`lchmod` (`utils.c:381-389`), which this tree does not wrap; the
+/// by-path `chown`/`chmod` would travel through the new link onto its target,
+/// so only the timestamps are reproduced, link-preservingly.
+fn set_link_times(path: &str, fs: &Stat) -> bool {
+    let times = [
+        (fs.st_atim.tv_sec, fs.st_atim.tv_nsec),
+        (fs.st_mtim.tv_sec, fs.st_mtim.tv_nsec),
+    ];
+    if utimensat(vfs::AT_FDCWD, path, Some(times), vfs::AT_SYMLINK_NOFOLLOW).is_err() {
+        support::warn(format!("cp: utimens: {path}\n").as_bytes());
+        return true;
+    }
+    false
+}
+
+/// `cp.c:339-541` for one walk position: read the source the way the scan reads
+/// it (`lstat` for the physical `-R` walk, `stat` for the logical default),
+/// read the destination once (`cp.c:419`), run the identical and
+/// directory-overwrite refusals before any copying, then let the type bits pick
+/// the routine. Returns true when this position was not copied.
+fn copy_one(
+    src: &str,
+    dst: &str,
+    flags: &CpFlags,
+    myuid: u32,
+    myumask: u32,
+    physical: bool,
+) -> bool {
+    let src_sb = if physical {
+        lstat_of(src)
+    } else {
+        stat_of(src)
+    };
+    let Some(src_sb) = src_sb else {
+        // cp.c:341-348 (`FTS_NS`): warn, count it, keep going.
+        support::warn(format!("cp: {src}\n").as_bytes());
+        return true;
+    };
+
+    // cp.c:419-441: the destination decides whether this is a creation, and two
+    // refusals come before the type dispatch.
+    let dst_sb = stat_of(dst);
+    if let Some(db) = &dst_sb {
+        if is_identical(&ids_of(&src_sb), &ids_of(db)) {
+            support::warn(format!("cp: {dst} and {src} are identical (not copied).\n").as_bytes());
+            // cp.c:429-430 adds `fts_set(FTS_SKIP)`: a directory that is its own
+            // destination is not walked at all, which is why this returns
+            // instead of falling through.
+            return true;
+        }
+        if cp::overwrites_dir(src_sb.st_mode, db.st_mode) {
+            support::warn(
+                format!("cp: cannot overwrite directory {dst} with non-directory {src}\n")
+                    .as_bytes(),
+            );
+            return true;
+        }
+    }
+
+    let action = entry_action(src_sb.st_mode);
+    let failed = match action {
+        EntryAction::Directory => copy_dir(src, dst, &src_sb, dst_sb, flags, myuid, myumask),
+        // cp.c:444-453: the link arm is only taken when the scan did not follow
+        // the link, which for this option set is the recursive scan (the
+        // `stat` of the default scan cannot report `S_IFLNK`).
+        EntryAction::Symlink => copy_link(src, dst, &src_sb, flags, dst_sb.is_some()),
+        // cp.c:517-533: the three special-file arms recreate the entry only
+        // with `-R`; without it they go through `copy_file` like everything
+        // else (for a fifo that means the plain `open` of `utils.c:102`).
+        EntryAction::Fifo if flags.recursive => copy_fifo(dst, &src_sb, flags, dst_sb.is_some()),
+        EntryAction::BlockSpecial | EntryAction::CharacterSpecial if flags.recursive => {
+            copy_special(dst, &src_sb, flags, dst_sb.is_some())
+        }
+        // cp.c:534-537: everything with no branch of its own — a plain file, a
+        // socket, an unrecognised type — goes through `copy_file`, where a
+        // socket fails at the `open` exactly as it does in C.
+        _ => copy_file(src, dst, &src_sb, flags, dst_sb.is_none(), myuid, myumask),
+    };
+    // cp.c:539-540 prints for every visit but the two a directory makes for
+    // itself, which `copy_dir` echoes around its own descent.
+    if flags.verbose && !failed && !matches!(action, EntryAction::Directory) {
+        support::emit(format!("{src} -> {dst}\n").as_bytes());
+    }
+    failed
+}
+
+/// `cp.c:455-516` for one directory. C sees a directory twice — `FTS_D` going
+/// in, `FTS_DP` coming out — and keeps a stack purely to carry the "did I have
+/// to create this?" answer between the two visits (`cp.c:303-321`); here the
+/// two visits are the two halves of one frame, so the answer is a local.
+fn copy_dir(
+    src: &str,
+    dst: &str,
+    sb: &Stat,
+    dst_sb: Option<Stat>,
+    flags: &CpFlags,
+    myuid: u32,
+    myumask: u32,
+) -> bool {
+    if is_unwanted_directory(sb.st_mode, flags.recursive) {
+        // cp.c:456-462: without `-R` a directory source is refused and skipped.
+        support::warn(format!("cp: {src} is a directory (not copied).\n").as_bytes());
+        return true;
+    }
+    let dne = dst_sb.is_none();
+
+    // First pass (cp.c:470-493). Both failures are `err(EXIT_FAILURE)` in C, so
+    // the whole run stops here rather than this operand alone.
+    if dne {
+        // cp.c:482-483 forces the owner bits on so that a 555 source directory
+        // can be written into while it is being filled; the umask still applies.
+        if mkdir(dst, sb.st_mode | cp::S_IRWXU).is_err() {
+            support::warn(format!("cp: {dst}\n").as_bytes());
+            support::terminate(1);
+        }
+    } else if let Some(db) = &dst_sb
+        && !cp::is_dir(db.st_mode)
+    {
+        // cp.c:487-491: `errno = ENOTDIR; err(EXIT_FAILURE, ...)`, with the
+        // name of the destination and nothing else.
+        support::warn(format!("cp: {dst}\n").as_bytes());
+        support::terminate(1);
+    }
+    if flags.verbose {
+        support::emit(format!("{src} -> {dst}\n").as_bytes());
+    }
+
+    let mut failed = descend_copy(src, dst, flags, myuid, myumask);
+
+    // Second pass (cp.c:494-507): `-p` stamps owner, mode and times, and a
+    // directory that had to be created is chmod'ed back to the source mode
+    // whether or not `-p` ran — the umask is undone here, "arguably wrong, but
+    // it's been that way forever".
+    let stamped_failed = flags.preserve && setfile_and_times(dst, sb);
+    if stamped_failed {
+        failed = true;
+    } else if dne {
+        // cp.c:505-506 hands `setfile`'s already-masked mode to `chmod` when
+        // `-p` ran (the sticky bit is gone by then) and the raw source mode
+        // otherwise; `(void)` means the result is not even looked at.
+        let _ = chmod(dst, post_create_dir_mode(sb.st_mode, flags.preserve));
+    }
+    if flags.verbose && !stamped_failed {
+        support::emit(format!("{src} -> {dst}\n").as_bytes());
+    }
+    failed
+}
+
+/// Walk one source directory and copy each of its entries onto the matching
+/// name under `dst_dir`. The fts(3) queue is replaced by this crate's own
+/// directory decoder (`minix_fileops::dents`), the same substitution `rm -r`
+/// made: freed slots and the two dot names are passed over, and every entry is
+/// handed to `copy_one` as its own visit.
+fn descend_copy(src_dir: &str, dst_dir: &str, flags: &CpFlags, myuid: u32, myumask: u32) -> bool {
+    let fd = match open(src_dir, cp::O_RDONLY, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            // cp.c:341-348 (`FTS_DNR`): the unreadable directory is reported and
+            // the run goes on; the caller still stamps it.
+            support::warn(format!("cp: {src_dir}\n").as_bytes());
+            return true;
+        }
+    };
+
+    let mut failed = false;
+    let mut buf = [0u8; WALK_BUF];
+    loop {
+        let transferred = match getdents(fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => {
+                // C ends the whole run on an `fts_read` error (`cp.c:542-544`);
+                // this tree reports the directory and keeps going, so the
+                // failure belongs to this operand instead of killing the rest.
+                support::warn(format!("cp: {src_dir}\n").as_bytes());
+                failed = true;
+                break;
+            }
+        };
+        let mut cursor = 0;
+        while cursor < transferred {
+            let entry = match dents::next_record(&buf, cursor) {
+                Ok(Some((entry, next))) => {
+                    cursor = next;
+                    entry
+                }
+                // Buffer exhausted, or a record whose lengths contradict it:
+                // stop this refill exactly where C's readdir returns NULL.
+                Ok(None) | Err(_) => break,
+            };
+            if entry.ino == 0 {
+                // A deleted slot: libc's readdir skips it (readdir.c:83-84).
+                continue;
+            }
+            let name = match core::str::from_utf8(entry.name) {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
+            if !dents::is_descendable(name) {
+                continue;
+            }
+            // cp.c:387-416 keeps the path relative to the source root and
+            // replays it under the destination root; joining the same name onto
+            // both directories says the same thing.
+            let child_src = dents::join_path(src_dir, name);
+            let child_dst = dents::join_path(dst_dir, name);
+            failed |= copy_one(&child_src, &child_dst, flags, myuid, myumask, true);
+        }
+    }
+    let _ = close(fd);
+    failed
+}
+
+/// `utils.c:304-324` `copy_link`: duplicate the link text, never the target.
+fn copy_link(src: &str, dst: &str, sb: &Stat, flags: &CpFlags, exists: bool) -> bool {
+    let mut buf = [0u8; LINK_BUF];
+    let len = match readlink(src, &mut buf) {
+        Ok(len) => len,
+        Err(_) => {
+            support::warn(format!("cp: readlink: {src}\n").as_bytes());
+            return true;
+        }
+    };
+    // C hands the raw bytes to `symlink()`; this tree's syscall face takes
+    // `&str`, so a link text that is not UTF-8 is reported and left alone.
+    let text = match core::str::from_utf8(&buf[..len]) {
+        Ok(text) => text,
+        Err(_) => {
+            support::warn(format!("cp: symlink: {src}\n").as_bytes());
+            return true;
+        }
+    };
+    if exists && unlink(dst).is_err() {
+        support::warn(format!("cp: unlink: {dst}\n").as_bytes());
+        return true;
+    }
+    if symlink(text, dst).is_err() {
+        support::warn(format!("cp: symlink: {text}\n").as_bytes());
+        return true;
+    }
+    // utils.c:323: `pflag ? setfile(p->fts_statp, 0) : 0`.
+    flags.preserve && set_link_times(dst, sb)
+}
+
+/// `utils.c:326-338` `copy_fifo`: recreate the fifo with the source's mode.
+fn copy_fifo(dst: &str, sb: &Stat, flags: &CpFlags, exists: bool) -> bool {
+    if exists && unlink(dst).is_err() {
+        support::warn(format!("cp: unlink: {dst}\n").as_bytes());
+        return true;
+    }
+    if mkfifo(dst, sb.st_mode).is_err() {
+        support::warn(format!("cp: mkfifo: {dst}\n").as_bytes());
+        return true;
+    }
+    flags.preserve && setfile_and_times(dst, sb)
+}
+
+/// `utils.c:340-352` `copy_special`: recreate a block or character node with the
+/// source's mode and device number. Recreating a node needs the privilege the
+/// file system checks for, so the usual answer outside root is `EPERM` here.
+fn copy_special(dst: &str, sb: &Stat, flags: &CpFlags, exists: bool) -> bool {
+    if exists && unlink(dst).is_err() {
+        support::warn(format!("cp: unlink: {dst}\n").as_bytes());
+        return true;
+    }
+    if mknod(dst, sb.st_mode, sb.st_rdev).is_err() {
+        support::warn(format!("cp: mknod: {dst}\n").as_bytes());
+        return true;
+    }
+    flags.preserve && setfile_and_times(dst, sb)
+}
+
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     if argv.is_empty() {
@@ -289,7 +610,10 @@ fn run() -> ! {
     let (flags, operands) = match CpFlags::parse(&args[1..], isatty(support::STDIN)) {
         Ok(v) => v,
         Err(CpOption::NotWired(c)) => {
-            support::warn(format!("cp: -{c} not wired (fts directory walk)\n").as_bytes());
+            support::warn(
+                format!("cp: -{c} not wired (logical scan, symlink traversal, hard-link copy)\n")
+                    .as_bytes(),
+            );
             support::terminate(1);
         }
         Err(CpOption::Unknown(_)) => usage(),
@@ -322,7 +646,21 @@ fn run() -> ! {
         }
     };
 
-    let shape = match classify(sources.len(), target_state, have_trailing_slash) {
+    // cp.c:258-269: with a nonexistent target and `-R`, the case (3) test looks
+    // at the first source through `lstat` (the `-r` branch that would use
+    // `stat` is refused). Without `-R` the answer cannot change the case, so C
+    // does not take the status either and neither do we.
+    let source_is_dir = target_state == TargetState::Missing
+        && flags.recursive
+        && lstat_of(&sources[0]).is_some_and(|sb| cp::is_dir(sb.st_mode));
+
+    let shape = match classify(
+        sources.len(),
+        target_state,
+        source_is_dir,
+        flags.recursive,
+        have_trailing_slash,
+    ) {
         Ok(s) => s,
         Err(CpShapeError::TooManySources) => usage(),
         Err(CpShapeError::SlashOnNonDir { target_exists }) => {
@@ -347,63 +685,13 @@ fn run() -> ! {
         Err(_) => 0,
     };
 
+    // cp.c:293-299: every operand goes into `copy()`, whose fts queue this
+    // tree's `copy_one` answers one visit at a time — the operand itself for a
+    // plain file, the whole hierarchy for a directory under `-R`.
     let mut any_failed = false;
     for src in &sources {
         let dest = join_target(&target, src, shape);
-
-        let src_sb = match stat_of(src) {
-            Some(sb) => sb,
-            None => {
-                // cp.c:341-348 (`FTS_NS`): warn, count it, keep going.
-                support::warn(format!("cp: {src}\n").as_bytes());
-                any_failed = true;
-                continue;
-            }
-        };
-
-        // cp.c:419-441: the destination decides whether this is a creation.
-        let dest_sb = stat_of(&dest);
-        if let Some(db) = &dest_sb {
-            let db_ids = ids_of(db);
-            let src_ids = ids_of(&src_sb);
-            if is_identical(&src_ids, &db_ids) {
-                support::warn(
-                    format!("cp: {dest} and {src} are identical (not copied).\n").as_bytes(),
-                );
-                any_failed = true;
-                continue;
-            }
-            if cp::overwrites_dir(src_sb.st_mode, db_ids.mode) {
-                support::warn(
-                    format!("cp: cannot overwrite directory {dest} with non-directory {src}\n")
-                        .as_bytes(),
-                );
-                any_failed = true;
-                continue;
-            }
-        }
-
-        if is_unwanted_directory(src_sb.st_mode) {
-            // cp.c:456-462: no -R, so a directory source is refused.
-            support::warn(format!("cp: {src} is a directory (not copied).\n").as_bytes());
-            any_failed = true;
-            continue;
-        }
-
-        let failed = copy_file(
-            src,
-            &dest,
-            &src_sb,
-            &flags,
-            dest_sb.is_none(),
-            myuid,
-            myumask,
-        );
-        any_failed |= failed;
-        if flags.verbose && !failed {
-            // cp.c:539-540.
-            support::emit(format!("{src} -> {dest}\n").as_bytes());
-        }
+        any_failed |= copy_one(src, &dest, &flags, myuid, myumask, flags.recursive);
     }
 
     support::terminate(if any_failed { 1 } else { 0 });

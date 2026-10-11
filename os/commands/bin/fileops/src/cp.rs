@@ -1,18 +1,21 @@
 //! `cp` — copy files: the pure operand, path, mode and pump layer.
 //!
 //! Ground truth: `minix3/bin/cp/cp.c` (option scan at line 117, target
-//! classification at 237 to 287, path concatenation at 387 to 417) and
-//! `minix3/bin/cp/utils.c` (`copy_file` at 93 to 296: the create/retain
-//! mode arithmetic and the read/write pump). The filesystem legs — `stat`,
+//! classification at 237 to 287, path concatenation at 387 to 417, the type
+//! dispatch at 443 to 537) and `minix3/bin/cp/utils.c` (`copy_file` at 93 to
+//! 296: the create/retain mode arithmetic and the read/write pump; `copy_link`,
+//! `copy_fifo`, `copy_special` at 305 to 352). The filesystem legs — `stat`,
 //! `open`, the prompt, the copy, the preservation calls — live in the thin
 //! program `src/bin/cp.rs`.
 //!
-//! Wired shape: the non-recursive copy, `cp [-f|-i] [-p] [-v] src target`
-//! and `cp [-f|-i] [-p] [-v] src ... directory`. The recursive family (`-R`,
-//! `-r`, `-a`) walks the hierarchy with fts(3), which this tree does not have
-//! yet — the same residual `rm -r` declares — so it is refused here rather
-//! than half-implemented; `-l` (hard-link copy), `-N` (no-dereference) and
-//! `-H`/`-L`/`-P` (symlink traversal modes) ride on the same walk.
+//! Wired shape: `cp [-f|-i] [-p] [-v] src target`, `cp [-f|-i] [-p] [-v] src ...
+//! directory`, and `cp -R` over either, which duplicates the hierarchy rooted
+//! at each source. The walk rides this crate's own directory decoder
+//! (`crate::dents`) instead of fts(3), the same substitution `rm -r` made. What
+//! is still refused: `-r` (the deprecated logical recursion, `cp.c:175-188`),
+//! `-a`/`-P`/`-H`/`-L` (the symlink-traversal modes, and with `-P` the
+//! link-preserving `lchown`/`lchmod` this tree does not wrap), `-l` (hard-link
+//! instead of copy) and `-N` (dangling links copied as links).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -21,10 +24,16 @@ use alloc::vec::Vec;
 //
 // `minix3/sys/sys/stat.h:111-159`: `S_ISUID 04000`, `S_ISGID 02000`,
 // `S_ISVTX 01000`, the type mask and the directory/link bits.
+// `minix3/sys/sys/stat.h:138-147`: the type mask plus every type this switch
+// has to tell apart (the file systems can hand them to `cp`).
 pub const S_IFMT: u32 = 0o170000;
+pub const S_IFIFO: u32 = 0o010000;
+pub const S_IFCHR: u32 = 0o020000;
 pub const S_IFDIR: u32 = 0o040000;
+pub const S_IFBLK: u32 = 0o060000;
 pub const S_IFREG: u32 = 0o100000;
 pub const S_IFLNK: u32 = 0o120000;
+pub const S_IFSOCK: u32 = 0o140000;
 pub const S_ISUID: u32 = 0o004000;
 pub const S_ISGID: u32 = 0o002000;
 pub const S_ISVTX: u32 = 0o001000;
@@ -52,10 +61,16 @@ pub fn is_reg(mode: u32) -> bool {
     mode & S_IFMT == S_IFREG
 }
 
+/// Whether the file type bits say a symbolic link (`stat.h:177` `S_ISLNK`), the
+/// test `utils.c:142` makes before writing through a destination name.
+pub fn is_link(mode: u32) -> bool {
+    mode & S_IFMT == S_IFLNK
+}
+
 // ── options ──────────────────────────────────────────────────────────────
 
-/// The option set `cp` acts on (`cp.c:117-167`, the four that do not need a
-/// directory walk).
+/// The option set `cp` acts on (`cp.c:117-167`, the five that need no
+/// symlink-traversal decision).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CpFlags {
     /// `-f`: overwrite without asking, and remove an unopenable destination
@@ -66,6 +81,8 @@ pub struct CpFlags {
     pub interactive: bool,
     /// `-p`: reproduce mode, ownership and timestamps (`utils.c:270-296`).
     pub preserve: bool,
+    /// `-R`: duplicate the hierarchy rooted at each source (`cp.c:293-548`).
+    pub recursive: bool,
     /// `-v`: print `src -> dst` for every file that did not fail
     /// (`cp.c:539-540`).
     pub verbose: bool,
@@ -114,8 +131,12 @@ impl CpFlags {
                         f.force = false; // cp.c:149 clears fflag
                     }
                     b'p' => f.preserve = true,
+                    // `-R` is wired: the hierarchy walk rides this crate's own
+                    // directory decoder (see the bin's `copy_tree`). The rest of
+                    // the family still needs facilities this tree lacks.
+                    b'R' => f.recursive = true,
                     b'v' => f.verbose = true,
-                    b'H' | b'L' | b'N' | b'P' | b'R' | b'a' | b'l' | b'r' => {
+                    b'H' | b'L' | b'N' | b'P' | b'a' | b'l' | b'r' => {
                         return Err(CpOption::NotWired(byte as char));
                     }
                     _ => return Err(CpOption::Unknown(byte as char)),
@@ -138,14 +159,17 @@ pub enum TargetState {
     Exists { is_dir: bool },
 }
 
-/// The copy case `cp.c:223-287` distinguishes. `DIR_TO_DNE` (268-269) only
-/// arises for a directory source with `-R`/`-r`, so it is not reachable here.
+/// The copy case `cp.c:223-287` distinguishes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpShape {
     /// Case (1): the target is not a directory, so it becomes the copy.
     FileToFile,
     /// Case (2): the target is a directory, so each source lands inside it.
     FileToDir,
+    /// Case (3) (`cp.c:268-269`): `-R`, a directory source, and a target that
+    /// does not exist. The target takes the source's contents, so the source's
+    /// own name is not appended to it.
+    DirToDne,
 }
 
 /// Why the operands do not describe a copy this program can attempt.
@@ -159,13 +183,20 @@ pub enum CpShapeError {
     SlashOnNonDir { target_exists: bool },
 }
 
-/// Classify the operands exactly as `cp.c:245-287` does: the directory test
-/// on the target comes first, the source count is checked inside case (1),
-/// and the trailing-slash complaint last (so `cp a b/ c` with a non-directory
-/// `c` is a usage error, not a slash error).
+/// Classify the operands exactly as `cp.c:245-287` does: the directory test on
+/// the target comes first, the source count is checked inside case (1), the
+/// directory-source-without-target case (3) is recognised only for a recursive
+/// copy, and the trailing-slash complaint comes last — and only for case (1),
+/// so `cp -R dir dst/` with neither `dir` nor `dst` existing is a copy, not a
+/// complaint (`cp.c:275` gates on `type == FILE_TO_FILE`).
+///
+/// `source_is_dir` must come from the same status the scan uses: `lstat` for a
+/// recursive copy, `stat` otherwise (`cp.c:259-262`).
 pub fn classify(
     source_count: usize,
     target: TargetState,
+    source_is_dir: bool,
+    recursive: bool,
     have_trailing_slash: bool,
 ) -> Result<CpShape, CpShapeError> {
     let exists_and_dir = match target {
@@ -177,6 +208,9 @@ pub fn classify(
     }
     if source_count != 1 {
         return Err(CpShapeError::TooManySources);
+    }
+    if target == TargetState::Missing && recursive && source_is_dir {
+        return Ok(CpShape::DirToDne);
     }
     if have_trailing_slash {
         return Err(CpShapeError::SlashOnNonDir {
@@ -216,11 +250,13 @@ pub fn appended_component(source: &str) -> &str {
 }
 
 /// `cp.c:400-416`: build the destination name. Case (1) keeps the target as
-/// written (minus its trailing slash); case (2) joins target and component
-/// with exactly one separator, then strips trailing slashes again.
+/// written (minus its trailing slash); case (3) also lands on the target,
+/// because `cp.c:396-397` sets `base` to the end of the source path so the root
+/// contributes an empty component; case (2) joins target and component with
+/// exactly one separator, then strips trailing slashes again.
 pub fn join_target(target: &str, source: &str, shape: CpShape) -> String {
     match shape {
-        CpShape::FileToFile => String::from(target),
+        CpShape::FileToFile | CpShape::DirToDne => String::from(target),
         CpShape::FileToDir => {
             let component = appended_component(source);
             let mut s = String::from(target);
@@ -269,6 +305,28 @@ pub fn regains_set_bits(
     !preserve && dne && (from_mode & (S_ISUID | S_ISGID)) != 0 && from_uid == myuid
 }
 
+/// `utils.c:109` plus `utils.c:142-143`: whether an existing destination may be
+/// opened for writing. `tolnk = (Rflag && !(Lflag || Hflag)) || Pflag` — with
+/// the traversal modes refused that is the recursive scan — and such a scan
+/// refuses to write through a destination that is itself a symbolic link: the
+/// link is removed and a fresh file created in its place.
+pub fn writes_through(physical_scan: bool, dest_is_link: bool) -> bool {
+    !(physical_scan && dest_is_link)
+}
+
+/// `cp.c:502-506`: the mode the post-order `chmod` of a directory that had to be
+/// created re-applies. With `-p` the `setfile` just above has already masked the
+/// source mode down to the bits it dares apply (sticky excluded), and C hands
+/// that masked value to `chmod`; without `-p` the raw source mode goes through
+/// and the file system keeps the low bits, sticky included.
+pub fn post_create_dir_mode(src_mode: u32, preserve: bool) -> u32 {
+    if preserve {
+        preserved_mode(src_mode)
+    } else {
+        src_mode
+    }
+}
+
 // ── stat comparisons ─────────────────────────────────────────────────────
 
 /// The four `stat` fields `cp` compares (`cp.c:424-434`), kept as a plain
@@ -299,9 +357,10 @@ pub fn overwrites_dir(src_mode: u32, dst_mode: u32) -> bool {
     !is_dir(src_mode) && is_dir(dst_mode)
 }
 
-/// `cp.c:456-462`: without `-R`/`-r` a directory source is refused.
-pub fn is_unwanted_directory(src_mode: u32) -> bool {
-    is_dir(src_mode)
+/// `cp.c:456-462`: without `-R`/`-r` a directory source is refused and the walk
+/// skips it; with `-R` the directory is the walk's own business.
+pub fn is_unwanted_directory(src_mode: u32, recursive: bool) -> bool {
+    !recursive && is_dir(src_mode)
 }
 
 // ── the copy pump ────────────────────────────────────────────────────────
@@ -354,6 +413,47 @@ pub fn pumps_data(from_size: i64) -> bool {
     from_size > 0
 }
 
+/// Which copy routine a source entry needs, from its `st_mode` type bits — the
+/// same eight-way switch `cp.c:443-537` runs on `curr->fts_statp->st_mode &
+/// S_IFMT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryAction {
+    /// `S_IFDIR`: create it, then walk it (`cp.c:455-516`).
+    Directory,
+    /// `S_IFLNK`: copy the link text, not the target (`cp.c:444-453`).
+    Symlink,
+    /// `S_IFREG` and the plain-file branch of everything else (`cp.c:534-537`).
+    Regular,
+    /// `S_IFIFO`: recreate the fifo (`cp.c:526-533` with `Rflag`).
+    Fifo,
+    /// `S_IFBLK`: recreate the node (`cp.c:517-525` with `Rflag`).
+    BlockSpecial,
+    /// `S_IFCHR`: as above for a character device.
+    CharacterSpecial,
+    /// A socket has no branch of its own: `cp.c:534-537` lets it fall into the
+    /// `default:` file copy, where the `open` of the socket fails and the copy
+    /// is reported as failed. No type bit this switch recognises lands there too.
+    Socket,
+    /// No `S_IF*` value this switch knows; like `Socket`, the `default:` arm.
+    Unknown,
+}
+
+/// `cp.c:443`: the dispatch on the source's type bits. The recursive scan is
+/// physical (`cp.c:174, 190-196`), so it reaches this through `lstat` and a
+/// symlink is copied by `copy_link` instead of being descended into.
+pub fn entry_action(mode: u32) -> EntryAction {
+    match mode & S_IFMT {
+        S_IFDIR => EntryAction::Directory,
+        S_IFLNK => EntryAction::Symlink,
+        S_IFIFO => EntryAction::Fifo,
+        S_IFBLK => EntryAction::BlockSpecial,
+        S_IFCHR => EntryAction::CharacterSpecial,
+        S_IFSOCK => EntryAction::Socket,
+        S_IFREG => EntryAction::Regular,
+        _ => EntryAction::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +469,7 @@ mod tests {
                 force: false,
                 interactive: false,
                 preserve: false,
+                recursive: false,
                 verbose: false
             }
         );
@@ -403,7 +504,7 @@ mod tests {
 
     #[test]
     fn unwired_letters_are_reported_not_ignored() {
-        for c in ['R', 'r', 'a', 'l', 'H', 'L', 'P', 'N'] {
+        for c in ['r', 'a', 'l', 'H', 'L', 'P', 'N'] {
             let arg = alloc::format!("-{c}");
             assert_eq!(
                 CpFlags::parse(&[arg.as_str(), "a", "b"], true),
@@ -411,6 +512,18 @@ mod tests {
                 "-{c} must be refused explicitly"
             );
         }
+    }
+
+    #[test]
+    fn recursive_letter_is_wired() {
+        // `-R` (`cp.c:134-136`) now selects the hierarchy walk; it clears
+        // nothing else, so `-Rv` is recursion plus the echo.
+        let (f, rest) = CpFlags::parse(&["-R", "src", "dst"], true).unwrap();
+        assert!(f.recursive);
+        assert!(!f.preserve && !f.force && !f.interactive);
+        assert_eq!(rest, ["src", "dst"]);
+        let (f, _) = CpFlags::parse(&["-Rv"], true).unwrap();
+        assert!(f.recursive && f.verbose);
     }
 
     #[test]
@@ -426,22 +539,31 @@ mod tests {
     #[test]
     fn directory_target_takes_every_source_count() {
         let t = TargetState::Exists { is_dir: true };
-        assert_eq!(classify(1, t, false), Ok(CpShape::FileToDir));
-        assert_eq!(classify(3, t, false), Ok(CpShape::FileToDir));
+        assert_eq!(classify(1, t, false, false, false), Ok(CpShape::FileToDir));
+        assert_eq!(classify(3, t, false, false, false), Ok(CpShape::FileToDir));
+        // cp.c:245: an existing directory target wins over case (3), so `-R` on
+        // a directory source still lands inside it.
+        assert_eq!(classify(1, t, true, true, false), Ok(CpShape::FileToDir));
     }
 
     #[test]
     fn non_directory_target_takes_exactly_one_source() {
         assert_eq!(
-            classify(2, TargetState::Exists { is_dir: false }, false),
+            classify(
+                2,
+                TargetState::Exists { is_dir: false },
+                false,
+                false,
+                false
+            ),
             Err(CpShapeError::TooManySources)
         );
         assert_eq!(
-            classify(2, TargetState::Missing, false),
+            classify(2, TargetState::Missing, false, false, false),
             Err(CpShapeError::TooManySources)
         );
         assert_eq!(
-            classify(1, TargetState::Missing, false),
+            classify(1, TargetState::Missing, false, false, false),
             Ok(CpShape::FileToFile)
         );
     }
@@ -450,22 +572,49 @@ mod tests {
     fn source_count_is_checked_before_the_slash() {
         // cp.c:249 usage fires before the cp.c:275 trailing-slash complaint.
         assert_eq!(
-            classify(2, TargetState::Exists { is_dir: false }, true),
+            classify(2, TargetState::Exists { is_dir: false }, false, false, true),
             Err(CpShapeError::TooManySources)
         );
     }
 
     #[test]
+    fn recursive_directory_source_into_a_missing_target_is_case_three() {
+        // cp.c:268-269: DIR_TO_DNE needs all three — the recursion, a directory
+        // source, and a target that stat could not find.
+        assert_eq!(
+            classify(1, TargetState::Missing, true, true, false),
+            Ok(CpShape::DirToDne)
+        );
+        assert_eq!(
+            classify(1, TargetState::Missing, true, false, false),
+            Ok(CpShape::FileToFile),
+            "without -R a directory source is refused later (cp.c:456)"
+        );
+        assert_eq!(
+            classify(1, TargetState::Missing, false, true, false),
+            Ok(CpShape::FileToFile),
+            "a plain-file source is copied onto the target name"
+        );
+        // cp.c:275 only complains for FILE_TO_FILE, so `cp -R dir dst/` with dst
+        // missing is a copy, not a usage error.
+        assert_eq!(
+            classify(1, TargetState::Missing, true, true, true),
+            Ok(CpShape::DirToDne)
+        );
+        assert_eq!(join_target("dst", "src", CpShape::DirToDne), "dst");
+    }
+
+    #[test]
     fn trailing_slash_on_a_file_target_is_refused() {
         assert_eq!(
-            classify(1, TargetState::Exists { is_dir: false }, true),
+            classify(1, TargetState::Exists { is_dir: false }, false, false, true),
             Err(CpShapeError::SlashOnNonDir {
                 target_exists: true
             }),
             "cp.c:280 '%s is not a directory'"
         );
         assert_eq!(
-            classify(1, TargetState::Missing, true),
+            classify(1, TargetState::Missing, false, false, true),
             Err(CpShapeError::SlashOnNonDir {
                 target_exists: false
             }),
@@ -553,6 +702,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_recursive_scan_never_writes_through_a_link() {
+        assert!(writes_through(false, true), "default scan: truncate");
+        assert!(!writes_through(true, true), "-R scan: replace the link");
+        assert!(writes_through(true, false), "a plain destination is opened");
+        assert!(writes_through(false, false));
+    }
+
+    #[test]
+    fn post_order_dir_stamp_follows_the_preserve_mask() {
+        // Without -p the raw source mode goes to `chmod`, type bits and sticky
+        // bit included (the file system keeps the low 12).
+        assert_eq!(
+            post_create_dir_mode(S_IFDIR | 0o1755, false),
+            S_IFDIR | 0o1755
+        );
+        // With -p, `setfile` has masked the mode down to what it dares apply:
+        // the sticky bit is gone, the setgid bit is not, the type bits are off.
+        assert_eq!(post_create_dir_mode(S_IFDIR | 0o1755, true), 0o0755);
+        assert_eq!(post_create_dir_mode(S_IFDIR | 0o2750, true), 0o2750);
+    }
+
     // ── stat comparisons ─────────────────────────────────────────────────
 
     fn ids(dev: u64, ino: u64, mode: u32) -> FileIds {
@@ -594,8 +765,33 @@ mod tests {
 
     #[test]
     fn unwanted_directory_matches_the_mode_bits() {
-        assert!(is_unwanted_directory(S_IFDIR | 0o755));
-        assert!(!is_unwanted_directory(0o100644));
+        assert!(is_unwanted_directory(S_IFDIR | 0o755, false));
+        assert!(!is_unwanted_directory(0o100644, false));
+        // cp.c:456 `if (!Rflag && !rflag)`: with -R a directory source is the
+        // walk's business, not a refusal.
+        assert!(!is_unwanted_directory(S_IFDIR | 0o755, true));
+    }
+
+    #[test]
+    fn entry_dispatch_covers_every_type_bit() {
+        assert_eq!(entry_action(S_IFDIR | 0o755), EntryAction::Directory);
+        assert_eq!(entry_action(S_IFLNK | 0o777), EntryAction::Symlink);
+        assert_eq!(entry_action(S_IFREG | 0o644), EntryAction::Regular);
+        assert_eq!(entry_action(S_IFIFO | 0o644), EntryAction::Fifo);
+        assert_eq!(
+            entry_action(S_IFBLK | 0o644),
+            EntryAction::BlockSpecial,
+            "cp.c:517-525 recreates the node with mknod"
+        );
+        assert_eq!(entry_action(S_IFCHR | 0o644), EntryAction::CharacterSpecial);
+        assert_eq!(entry_action(S_IFSOCK), EntryAction::Socket);
+        assert!(is_link(S_IFLNK | 0o777));
+        assert!(!is_link(S_IFDIR | 0o755));
+        // cp.c:443 masks the type out, so the permission bits cannot shift it.
+        assert_eq!(entry_action(S_IFSOCK | 0o777), EntryAction::Socket);
+        assert_eq!(entry_action(S_IFREG | 0o7777), EntryAction::Regular);
+        assert_eq!(entry_action(0o160000), EntryAction::Unknown);
+        assert_eq!(entry_action(0o644), EntryAction::Unknown);
     }
 
     // ── pump ─────────────────────────────────────────────────────────────
