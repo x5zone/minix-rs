@@ -2,8 +2,9 @@
 //!
 //! Ground truth: `minix3/bin/mv/mv.c` (BSD). The option scan (`getopt(argc,
 //! argv, "ifv")`, `mv.c:88-110`) and the operand-shape decision (`mv.c:113-159`)
-//! live here; the filesystem legs — `rename` for a same-filesystem move and the
-//! interactive prompt — live in the thin bin `src/bin/mv.rs`.
+//! live here, together with the cross-device decisions (`mv.c:236`, `mv.c:251`,
+//! `mv.c:272`); the filesystem legs — `rename` for a same-filesystem move, the
+//! `EXDEV` copy, the interactive prompt — live in the thin bin `src/bin/mv.rs`.
 //!
 //! [`MvFlags::parse`] mirrors the `-f`/`-i` switch pair (the last one seen
 //! wins, as in `rm`/`ln`) plus `-v`. [`plan_operands`] encodes the two shapes:
@@ -112,6 +113,59 @@ pub fn dest_name(path: &str) -> &str {
     }
 }
 
+/// The cross-device form `mv.c:251-252` picks once `rename` failed with
+/// `EXDEV` and the destination has been cleared out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrossDevice {
+    /// A plain file: the C program copies it inline with `fastcopy`
+    /// (`mv.c:256-354`) and then unlinks the source.
+    InlineCopy,
+    /// Anything else (directory, symlink, device, FIFO): `copy` (`mv.c:357-399`)
+    /// does not copy by hand — it runs `/bin/cp -PRp` and then `/bin/rm -rf`
+    /// on the source. That needs the exec delivery chain, so the program
+    /// reports it instead of pretending.
+    NeedsSubprocess,
+}
+
+/// `mv.c:251`: the split is on the source's file type as recorded by `lstat`
+/// (`mv.c:246`), so a symlink is never the inline case.
+pub fn cross_device_plan(src_mode: u32) -> CrossDevice {
+    if crate::cp::is_reg(src_mode) {
+        CrossDevice::InlineCopy
+    } else {
+        CrossDevice::NeedsSubprocess
+    }
+}
+
+/// `mv.c:236`: the call that clears a destination which survived the `EXDEV`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalCall {
+    /// The destination is a directory → `rmdir`.
+    Rmdir,
+    /// Anything else → `unlink`.
+    Unlink,
+}
+
+/// `mv.c:236`: the destination that survived the `EXDEV` is removed first, and
+/// the call chosen depends on what it is — a directory needs `rmdir`, anything
+/// else needs `unlink`.
+pub fn existing_removal(dst_mode: u32) -> RemovalCall {
+    if crate::cp::is_dir(dst_mode) {
+        RemovalCall::Rmdir
+    } else {
+        RemovalCall::Unlink
+    }
+}
+
+/// `mv.c:272`: `fastcopy` hands the source's whole `st_mode` to `open` when it
+/// creates the destination — unlike `cp`, which strips the set-user-id and
+/// set-group-id bits (`cp::create_mode`). The kernel masks the type bits off;
+/// the set-id bits are deliberately kept, because the very next thing
+/// `fastcopy` does is re-apply the source's mode and owner anyway.
+pub fn move_create_mode(from_mode: u32) -> u32 {
+    from_mode
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +227,43 @@ mod tests {
         assert_eq!(dest_name("name"), "name");
         assert_eq!(dest_name("/"), ""); // root has no final component (as ln::basename)
         assert_eq!(dest_name("a//b//"), "b");
+    }
+
+    #[test]
+    fn cross_device_split_is_on_the_source_type() {
+        assert_eq!(cross_device_plan(0o100644), CrossDevice::InlineCopy);
+        assert_eq!(
+            cross_device_plan(crate::cp::S_IFDIR | 0o755),
+            CrossDevice::NeedsSubprocess
+        );
+        assert_eq!(
+            cross_device_plan(crate::cp::S_IFLNK | 0o777),
+            CrossDevice::NeedsSubprocess,
+            "mv.c:246 lstats the source, so a symlink never takes the inline leg"
+        );
+    }
+
+    #[test]
+    fn destination_removal_follows_its_type() {
+        assert_eq!(
+            existing_removal(crate::cp::S_IFDIR | 0o755),
+            RemovalCall::Rmdir
+        );
+        assert_eq!(existing_removal(0o100644), RemovalCall::Unlink);
+        assert_eq!(
+            existing_removal(crate::cp::S_IFLNK | 0o777),
+            RemovalCall::Unlink,
+            "a symlink destination is unlinked, not rmdir'd (mv.c:236)"
+        );
+    }
+
+    #[test]
+    fn move_create_mode_keeps_what_cp_create_mode_strips() {
+        // mv.c:272 hands the whole st_mode to open(); cp's create_mode
+        // (utils.c:146) drops the set-user-id and set-group-id bits. The two
+        // engines differ here on purpose, so the difference is pinned.
+        assert_eq!(move_create_mode(0o4755), 0o4755);
+        assert_eq!(crate::cp::create_mode(0o4755), 0o0755);
+        assert_ne!(move_create_mode(0o4755), crate::cp::create_mode(0o4755));
     }
 }

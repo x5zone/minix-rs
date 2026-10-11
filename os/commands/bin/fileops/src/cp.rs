@@ -23,6 +23,7 @@ use alloc::vec::Vec;
 // `S_ISVTX 01000`, the type mask and the directory/link bits.
 pub const S_IFMT: u32 = 0o170000;
 pub const S_IFDIR: u32 = 0o040000;
+pub const S_IFREG: u32 = 0o100000;
 pub const S_IFLNK: u32 = 0o120000;
 pub const S_ISUID: u32 = 0o004000;
 pub const S_ISGID: u32 = 0o002000;
@@ -44,6 +45,11 @@ pub const O_TRUNC: i32 = 0x00000400;
 /// Whether the file type bits say directory (`stat.h:171` `S_ISDIR`).
 pub fn is_dir(mode: u32) -> bool {
     mode & S_IFMT == S_IFDIR
+}
+
+/// Whether the file type bits say a plain file (`stat.h:174` `S_ISREG`).
+pub fn is_reg(mode: u32) -> bool {
+    mode & S_IFMT == S_IFREG
 }
 
 // ── options ──────────────────────────────────────────────────────────────
