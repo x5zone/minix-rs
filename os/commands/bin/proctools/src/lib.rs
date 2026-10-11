@@ -46,6 +46,7 @@ pub mod env;
 pub mod from;
 pub mod printenv;
 pub mod ptime;
+pub mod renice;
 pub mod signal;
 pub mod sleep;
 pub mod stable;
