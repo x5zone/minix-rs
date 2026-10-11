@@ -391,6 +391,18 @@ impl Quantum {
         }
     }
 
+    /// Reset the quantum to a full `size_ms * cycles_per_ms` budget (C:
+    /// `p_cpu_time_left = ms_2_cpu_time(quantum)`, sched.c).
+    ///
+    /// Note on call-site asymmetry: the *production* scheduler renewal
+    /// (`sched_proc`) writes `cpu_time_left` inline (see `sched.rs`, the
+    /// `cpu_time_left.store(total_cycles, …)` renewal) rather than routing
+    /// through this method, while the tick-decrement side pairs it with the
+    /// real [`Quantum::consume`]. So `allocate` is currently exercised by
+    /// tests as the mirror of `consume` and is the intended home for the
+    /// renewal if it is ever centralized (behavior-equivalent to the inline
+    /// store); it is not dead — it defines the symmetric API next to
+    /// [`Quantum::consume`], which the clock path does call.
     pub fn allocate(&self, cycles_per_ms: u64) {
         let total = self.size_ms.load(Ordering::Relaxed) as u64 * cycles_per_ms;
         self.cpu_time_left.store(total, Ordering::Release);
