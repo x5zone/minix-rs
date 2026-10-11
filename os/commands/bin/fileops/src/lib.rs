@@ -47,6 +47,7 @@ pub mod printf;
 pub mod pwd;
 pub mod rmdir;
 pub mod testexpr;
+pub mod touch;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
 ///
