@@ -34,9 +34,15 @@ mod support;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use minix_fileops::cp;
+use minix_fileops::dents;
 use minix_fileops::mode::strmode;
 use minix_fileops::rm::{CheckFlavor, RmFlags, check_flavor, nonexistent, strip_dots};
-use minix_sys::{Errno, Stat, access, isatty, lstat, rmdir, unlink};
+use minix_sys::{Errno, Stat, access, close, getdents, isatty, lstat, open, rmdir, unlink};
+
+/// The refill buffer for the recursive walk (C's fts keeps its own; the size is
+/// not observable, it only bounds how many records arrive per call).
+const WALK_BUF: usize = 4096;
 
 // `minix3/sys/sys/unistd.h:170` (`W_OK 0x02`) and `stat.h:144` (`_S_IFLNK`).
 const W_OK: i32 = 0x02;
@@ -162,7 +168,7 @@ fn run() -> ! {
 
     // Refuse options that hinge on unwrapped facilities before doing work.
     if flags.needs_unwired() {
-        support::warn(b"rm: -r/-R/-P/-W/-x not wired (fts, overwrite, whiteout)\n");
+        support::warn(b"rm: -P/-W/-x not wired (overwrite, whiteout, FTS_XDEV)\n");
         support::terminate(1);
     }
 
@@ -173,9 +179,158 @@ fn run() -> ! {
     }
 
     for path in &kept {
-        eval |= rm_one(path, &flags);
+        // rm.c:157-160: `-r` selects the hierarchy walk, everything else the
+        // single-entry removal.
+        eval |= if flags.recursive {
+            rm_tree_one(path, &flags)
+        } else {
+            rm_one(path, &flags)
+        };
     }
     support::terminate(if eval { 1 } else { 0 });
+}
+
+/// C `rm_tree` (`rm.c:167-281`) for one operand. The fts(3) walk is replaced by
+/// this crate's own directory decoder (`minix_fileops::dents`), keeping C's
+/// order of decisions: `lstat` first, a pre-order question for a directory that
+/// can skip the whole subtree, children removed before the directory itself
+/// (post-order `rmdir`), symlinks unlinked rather than followed, and `-f`
+/// hiding only the nonexistent family.
+///
+/// Returns true when this operand contributed to the exit status.
+fn rm_tree_one(path: &str, flags: &RmFlags) -> bool {
+    let mut sb = zeroed();
+    if let Err(e) = lstat(path, &mut sb) {
+        // The root of the walk cannot be stat'ed: C's FTS_NS arm (rm.c:200-213)
+        // — `-f` swallows the nonexistent family, otherwise it is reported and
+        // nothing is removed.
+        if flags.force && nonexistent(e) {
+            return false;
+        }
+        warn_err(path);
+        return true;
+    }
+
+    if !s_isdir(sb.st_mode) {
+        // C's default arm (rm.c:226-229): ask, then unlink.
+        if !flags.force && !check(path, &sb, flags) {
+            return false;
+        }
+        return remove_entry(path, flags);
+    }
+
+    // FTS_D pre-order (rm.c:217-222): the question covers the whole subtree; a
+    // declined answer marks the directory skipped and its post-order visit does
+    // nothing at all.
+    if !flags.force && !check(path, &sb, flags) {
+        return false;
+    }
+
+    let failed = descend_children(path, flags);
+
+    // FTS_DP post-order (rm.c:236-244): the directory itself, now empty or
+    // never readable. C still attempts the rmdir after a failed descent, and
+    // under `-f` a vanished directory is not an error.
+    match rmdir(path) {
+        Ok(()) => {
+            echo_removed(path, flags);
+            failed
+        }
+        Err(e) => {
+            if flags.force && e == Errno::ENOENT {
+                return failed;
+            }
+            warn_err(path);
+            true
+        }
+    }
+}
+
+/// Walk one directory's entries and remove each of them. Returns true when any
+/// child failed; the unreadable-directory case is C's `FTS_DNR` (rm.c:190-197):
+/// report it (unless `-f` and the directory simply vanished) and let the caller
+/// still try the `rmdir`.
+fn descend_children(dir: &str, flags: &RmFlags) -> bool {
+    let fd = match open(dir, cp::O_RDONLY, 0) {
+        Ok(fd) => fd,
+        Err(e) => {
+            if !(flags.force && nonexistent(e)) {
+                warn_err(dir);
+            }
+            return true;
+        }
+    };
+
+    let mut failed = false;
+    let mut buf = [0u8; WALK_BUF];
+    loop {
+        let transferred = match getdents(fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => {
+                // C ends the whole run on an fts_read error (`rm.c:278-280`,
+                // `err(1, "fts_read")`); this tree reports the directory and
+                // still lets the caller try its rmdir, so a read error is a
+                // failure for this operand rather than a hard exit.
+                warn_err(dir);
+                failed = true;
+                break;
+            }
+        };
+        let mut cursor = 0;
+        while cursor < transferred {
+            let entry = match dents::next_record(&buf, cursor) {
+                Ok(Some((entry, next))) => {
+                    cursor = next;
+                    entry
+                }
+                // Buffer exhausted, or a record whose lengths contradict it:
+                // stop this refill exactly where C's readdir returns NULL.
+                Ok(None) | Err(_) => break,
+            };
+            if entry.ino == 0 {
+                // A deleted slot: libc's readdir skips it (readdir.c:83-84).
+                continue;
+            }
+            let name = match core::str::from_utf8(entry.name) {
+                Ok(name) => name,
+                Err(_) => continue,
+            };
+            if !dents::is_descendable(name) {
+                continue;
+            }
+            failed |= rm_tree_one(&dents::join_path(dir, name), flags);
+        }
+    }
+    // The descriptor cannot be meaningfully reported on here: the removal
+    // outcome is already decided by the entries walked.
+    let _ = close(fd);
+    failed
+}
+
+/// Unlink one non-directory entry, with C's `-f` nonexistent hiding
+/// (`rm.c:264-269`) and the `-v` echo of a removed name (`rm.c:271-274`).
+fn remove_entry(path: &str, flags: &RmFlags) -> bool {
+    match unlink(path) {
+        Ok(()) => {
+            echo_removed(path, flags);
+            false
+        }
+        Err(e) => {
+            if flags.force && nonexistent(e) {
+                return false;
+            }
+            warn_err(path);
+            true
+        }
+    }
+}
+
+/// `rm.c:271-274`: one name per successfully removed entry when `-v` is set.
+fn echo_removed(path: &str, flags: &RmFlags) {
+    if flags.verbose {
+        support::emit(format!("{path}\n").as_bytes());
+    }
 }
 
 fn usage() -> ! {

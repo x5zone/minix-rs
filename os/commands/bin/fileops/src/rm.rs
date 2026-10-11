@@ -33,7 +33,8 @@ pub struct RmFlags {
     pub interactive: bool,
     /// `-P`: overwrite before unlinking (`rm_overwrite`; not wired).
     pub overwrite: bool,
-    /// `-r`/`-R`: recursive hierarchy walk (`fts`; not wired).
+    /// `-r`/`-R`: recursive hierarchy walk (`rm.c:167-281` `rm_tree`), wired
+    /// through this crate's own directory decoder rather than fts(3).
     pub recursive: bool,
     /// `-v`: print each removed operand.
     pub verbose: bool,
@@ -94,12 +95,14 @@ impl RmFlags {
         Some((f, args[i..].to_vec()))
     }
 
-    /// Whether any requested option needs an unwrapped facility (recursive
-    /// `fts` walk, `-P` overwrite, `-W` whiteout, `-x` cross-device prune).
-    /// The bin refuses these up front rather than silently doing less than the
-    /// flags promise.
+    /// Whether any requested option still needs an unwrapped facility: `-P`
+    /// overwrite (`arc4random` plus `O_NOFOLLOW`), `-W` whiteout `undelete`,
+    /// `-x` cross-device pruning (`FTS_XDEV`). The bin refuses those up front
+    /// rather than silently doing less than the flags promise. The recursive
+    /// walk itself is now wired (the bin's `rm_tree`, walking with
+    /// `crate::dents`), so `-r`/`-R` no longer count here.
     pub fn needs_unwired(&self) -> bool {
-        self.recursive || self.overwrite || self.whiteout || self.cross_fs
+        self.overwrite || self.whiteout || self.cross_fs
     }
 }
 
@@ -227,7 +230,10 @@ mod tests {
         assert!(RmFlags::parse(&["-P", "f"]).unwrap().0.needs_unwired());
         assert!(RmFlags::parse(&["-W", "f"]).unwrap().0.needs_unwired());
         assert!(RmFlags::parse(&["-x", "f"]).unwrap().0.needs_unwired());
-        assert!(RmFlags::parse(&["-r", "f"]).unwrap().0.needs_unwired());
+        // -r/-R are wired since the recursive walk stopped needing fts(3):
+        // the bin's `rm_tree` walks directories with `crate::dents` instead.
+        assert!(!RmFlags::parse(&["-r", "f"]).unwrap().0.needs_unwired());
+        assert!(!RmFlags::parse(&["-R", "f"]).unwrap().0.needs_unwired());
         // The wired default subset needs nothing unwired.
         let wired = RmFlags::parse(&["-f", "-d", "-v", "f"]).unwrap().0;
         assert!(!wired.needs_unwired());
