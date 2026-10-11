@@ -30,8 +30,13 @@
 //!   slice implementation.
 //! - [`dates`]: epoch to broken-down UTC time and the `strftime` subset
 //!   behind `date` (reuses [`stamp`]'s calendar inverse).
+//! - [`printenv`]: environment-variable lookup behind `printenv`.
+//! - [`sleep`]: operand parsing behind `sleep` (integer vs decimal path).
+//! - [`from`]: the `From ` record scan and the BSD sender matcher behind
+//!   `from`.
 
 pub mod dates;
+pub mod from;
 pub mod printenv;
 pub mod ptime;
 pub mod signal;
