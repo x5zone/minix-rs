@@ -143,6 +143,8 @@ tree  = rewrite-notes
 - **教学完整性终检（不止于正确性/覆盖度/设计对齐/代码同步）**：从章标题开始逐节能回答“这里发生了什么、为什么这样做、源码在哪里、改错会怎样、Rust 为何不同”吗？**只看到结论而看不到证据或推导的，判为教学缺失**，不得当成“信息已存在”放行。
 - KERNEL 约束：SMP+BKL，共享数据 `Arc`+`Mutex`/`Atomic`，禁 `Rc`/`RefCell` 跨 CPU；抽象语义而非暴露 CR3/PTE。三档术语 Rewrite/Refactor/[ARCH] 一致标注。
 
+**第 2 步的出口条件（W22，v3 第 7 轮立）**：生成完成 ≠ 正文落盘。生成方在回报里**必须贴五道门的实际读数**——`tools/anchor-resolve.sh --check`（resolved/zero-def 计数）、`tools/doc-code-map.sh --check`（存在性通过数）、`tools/doc-style-lint.sh`（error 级命中数）、`AWK=gawk tools/doc-ref-check.sh --check`（可解析与否）、`tools/doc-code-density-check.sh --check`（阻断项通过与否）——缺任何一门读数即视为**未完成**，编排者不得接收。依据：v3 第 3 轮生成代理在收尾时中断、门未跑，4 处悬空引用与 1 处 SL-11 由编排者补修（trace §3.1）；"没有证据即未完成"要落到生成阶段自己。
+
 ---
 
 ## 第 3 步 · R1 正确性 REVIEW（`full-review`，scope=doc）——先把 P0 清零
