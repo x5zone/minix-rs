@@ -55,6 +55,7 @@ pub mod rm;
 pub mod rmdir;
 pub mod testexpr;
 pub mod touch;
+pub mod truncate;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
 ///
