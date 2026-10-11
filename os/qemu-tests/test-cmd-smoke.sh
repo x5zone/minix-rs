@@ -150,7 +150,10 @@ if [ "$t4" -ne 1 ]; then
     exit 1
 fi
 
-# ── Stage 5: the `du` read-side totals (/bin/du /etc, seeded by xtask's /bin list).
+# ── Stage 5: the `du` read-side totals (/bin/du /etc plus /bin/du -h /etc, both
+# seeded by xtask's /bin list). The second line is the humanised rendering: a
+# number followed by a unit letter, which is how `prstat`'s -h branch differs from
+# the plain block count (du.c:266-277). ──
 # du only reads, so unlike every other command in this family its machine check does
 # not wait for a writable root: the console must carry one "<blocks> TAB /etc" line.
 # Judged on a dropped file rather than a pipe into `grep -q`, because this script runs
@@ -160,7 +163,8 @@ AFTER_TXT="$(mktemp /tmp/cmd_smoke_after.XXXXXX.txt)"
 du_ok=0
 for _ in $(seq 1 "$TIMEOUT_T4"); do
     strings "$SERIAL_LOG" 2>/dev/null | sed -n "/$T4_MARKER/,\$p" > "$AFTER_TXT"
-    if grep -qaE '^[0-9]+[[:space:]]+/etc\r?$' "$AFTER_TXT" 2>/dev/null; then
+    if grep -qaE '^[0-9]+[[:space:]]+/etc\r?$' "$AFTER_TXT" 2>/dev/null \
+       && grep -qaE '^[0-9.]+[KMGT][[:space:]]+/etc\r?$' "$AFTER_TXT" 2>/dev/null; then
         du_ok=1
         break
     fi

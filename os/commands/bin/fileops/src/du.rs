@@ -17,16 +17,19 @@
 //! - `BLOCKSIZE` interpretation, which is `getbsize`'s job in C
 //!   (`minix3/lib/libc/gen/getbsize.c:66-108`) and is reproduced here because
 //!   this tree has no libc to call;
-//! - the printed number, i.e. `howmany(units, blocksize / 512)`;
+//! - the printed text: the raw count under `-i`, `humanize_number` over
+//!   `units * 512` under `-h`, and `howmany(units, blocksize / 512)` otherwise
+//!   (`du.c:258-278`);
 //! - the hard-link dedup table (`linkchk`, `du.c:280-351`), which decides
 //!   whether a multiply-linked file is counted again;
 //! - `-n`'s `UF_NODUMP` skip (`du.c:198-209`).
 //!
-//! Not here, and refused by the program: `-h`, which needs `humanize_number`
-//! (`minix3/lib/libc/gen/humanize_number.c`) and is registered as the next unit
-//! of work; `-H`/`-L`, which pick the traversal mode `du.c:166-171` acts on; and
-//! `-x`, which is `FTS_XDEV` and needs mount-point knowledge.
+//! Not here, and refused by the program: `-H`/`-L`, which pick the traversal mode
+//! `du.c:166-171` acts on, and `-x`, which is `FTS_XDEV` and needs mount-point
+//! knowledge. `-h` goes through [`crate::humanize`], this crate's port of
+//! NetBSD's `humanize_number`.
 
+use crate::humanize::{HN_AUTOSCALE, HN_B, HN_DECIMAL, HN_NOSPACE, humanize_number};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -64,6 +67,9 @@ pub struct DuPlan {
     pub grand_total: bool,
     /// `-i`: count inodes (one per entry) instead of blocks.
     pub inodes: bool,
+    /// `-h`: render the count through `humanize_number`, as `prstat` does
+    /// (`du.c:266-272`). It loses to `-i`, whose raw count is printed first.
+    pub human: bool,
     /// `-n`: skip anything with `UF_NODUMP` and do not descend into it.
     pub skip_nodump: bool,
     /// The deepest level that still prints: `-s` is 0, `-d N` is `N`.
@@ -91,6 +97,7 @@ pub fn parse_args(
     let mut sflag = false;
     let mut grand_total = false;
     let mut inodes = false;
+    let mut human = false;
     let mut skip_nodump = false;
     let mut depth = DEPTH_UNBOUNDED;
     let mut unit: Option<u64> = None;
@@ -135,7 +142,8 @@ pub fn parse_args(
                     depth = parsed;
                     i += 1;
                 }
-                b'h' | b'H' | b'L' | b'x' => return Err(DuOption::NotWired(bytes[k] as char)),
+                b'h' => human = true,
+                b'H' | b'L' | b'x' => return Err(DuOption::NotWired(bytes[k] as char)),
                 _ => return Err(DuOption::Usage),
             }
             k += 1;
@@ -167,6 +175,7 @@ pub fn parse_args(
             list_files: aflag,
             grand_total,
             inodes,
+            human,
             skip_nodump,
             depth,
             blocksize: blocksize_bytes / BLOCK_UNIT,
@@ -290,6 +299,34 @@ pub fn printed_value(units: i64, inodes: bool, blocksize: u64) -> i64 {
     }
     howmany(units, blocksize)
 }
+
+/// `du.c:258-278` (`prstat`): the text that goes before the tab and the name.
+/// The `-i` form wins over `-h` exactly as C's first `if` does, and a
+/// `humanize_number` that cannot fit its five-byte buffer leaves an empty field
+/// behind — that is what C's `buf[0] = '\0'` followed by `return -1` produces
+/// (`humanize_number.c:88-89` with `:146-148`), so it is reproduced rather than
+/// papered over with a fallback number.
+pub fn printed_text(units: i64, plan: &DuPlan) -> String {
+    if plan.inodes {
+        return format!("{units}");
+    }
+    if plan.human {
+        let bytes = units * BLOCK_UNIT as i64;
+        return humanize_number(
+            HUMAN_BUF,
+            bytes,
+            "",
+            HN_AUTOSCALE,
+            HN_B | HN_NOSPACE | HN_DECIMAL,
+        )
+        .unwrap_or_default();
+    }
+    format!("{}", printed_value(units, false, plan.blocksize))
+}
+
+/// `du.c:266`: `char buf[5]`. The fifth byte is `snprintf`'s terminator, so a
+/// `-h` rendering gets four characters of text at most.
+pub const HUMAN_BUF: usize = 5;
 
 /// The `howmany` macro of `sys/param.h`: round up to a whole unit.
 pub fn howmany(units: i64, blocksize: u64) -> i64 {
@@ -465,7 +502,7 @@ mod tests {
 
     #[test]
     fn unwired_letters_are_named_and_the_noop_letters_are_taken() {
-        for c in ['h', 'H', 'L', 'x'] {
+        for c in ['H', 'L', 'x'] {
             let arg = alloc::format!("-{c}");
             assert_eq!(
                 parse_args(&[arg.as_str(), "d"], None),
@@ -610,6 +647,28 @@ mod tests {
         assert!(!seen.seen_before(0, 0));
         assert!(seen.seen_before(0, 0));
         assert!(!seen.seen_before(1, 1), "and it does not shadow real pairs");
+    }
+
+    #[test]
+    fn h_flag_renders_the_prstat_shape() {
+        let human = plan(&["-h", "d"]);
+        assert!(human.human);
+        // 24 blocks is what `du /etc` reads on the machine: 12 KiB.
+        assert_eq!(printed_text(24, &human), String::from("12K"));
+        let both = plan(&["-hi", "d"]);
+        assert_eq!(
+            printed_text(24, &both),
+            String::from("24"),
+            "-i prints the raw count first (du.c:263-265)"
+        );
+        let kilo = plan(&["-hk", "d"]);
+        assert_eq!(
+            printed_text(24, &kilo),
+            String::from("12K"),
+            "-h renders bytes, so the chosen unit does not enter the text"
+        );
+        assert_eq!(printed_text(24, &plan(&["d"])), String::from("24"));
+        assert_eq!(printed_text(24, &plan(&["-k", "d"])), String::from("12"));
     }
 
     #[test]

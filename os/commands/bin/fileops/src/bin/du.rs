@@ -6,10 +6,10 @@
 //! `getdents` legs and drives the walk, replacing fts(3) with this crate's own
 //! directory decoder the way `rm -r`, `cp -R` and `chmod -R` do.
 //!
-//! Wired: `du [-P] [-a | -d depth | -s] [-cijkmnr] [file ...]`, with the operand
-//! defaulting to `.` and with `-h`, `-H`, `-L` and `-x` refused up front (`-h`
-//! for want of `humanize_number`, the other three for want of the logical walk
-//! and the mount-boundary test). The walk is physical, which is C's default
+//! Wired: `du [-P] [-a | -d depth | -s] [-chijklmnpr] [file ...]`, with the
+//! operand defaulting to `.` and with `-H`/`-L`/`-x` refused up front for want of
+//! the logical walk and the mount-boundary test. `-h` renders through
+//! [`minix_fileops::humanize`], the crate's port of `humanize_number`. The walk is physical, which is C's default
 //! (`du.c:88`), so a symbolic link is counted as the link the way `du`'s man page
 //! describes it for `-P`.
 //!
@@ -43,7 +43,7 @@ use alloc::vec::Vec;
 use minix_fileops::cp;
 use minix_fileops::dents;
 use minix_fileops::du::{
-    self, DuOption, DuPlan, LinkSet, count, printed_value, prints_directory, prints_file,
+    self, DuOption, DuPlan, LinkSet, count, printed_text, prints_directory, prints_file,
     skipped_as_nodump,
 };
 use minix_sys::{Fd, Stat, close, getdents, lstat, open};
@@ -111,11 +111,12 @@ fn du_visit(path: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64,
     (own, false)
 }
 
-/// `du.c:261-277` (`prstat`): the number, a tab, the name — with the unit
-/// already applied.
+/// `du.c:258-278` (`prstat`): the number, a tab, the name. Which number — the
+/// raw count under `-i`, the humanised text under `-h`, the unit-rounded blocks
+/// otherwise — is `printed_text`'s decision, since that is the part with a
+/// shape worth testing.
 fn report(path: &str, units: i64, plan: &DuPlan) {
-    let value = printed_value(units, plan.inodes, plan.blocksize);
-    support::emit(format!("{value}\t{path}\n").as_bytes());
+    support::emit(format!("{}\t{path}\n", printed_text(units, plan)).as_bytes());
 }
 
 /// Walk one directory's entries. An unopenable directory is C's `FTS_DNR`
