@@ -217,31 +217,15 @@ fn copy_file(
     failed
 }
 
-/// `utils.c:119-131`: ask before clobbering. Only the first character counts,
-/// and the rest of the line is drained.
+/// `utils.c:119-131`: the `-i` question before clobbering an existing target.
+///
+/// C prints it with a bare `fprintf(stderr, "overwrite %s? ")` — no program-name
+/// prefix and no quotes around the target — and reads the answer as the first
+/// character of the line, draining the rest (`utils.c:126-127`). Both halves are
+/// the shared `bin_support::answer_yes`, which `mv` and `rm` use as well.
 fn overwrite_ok(to: &str) -> bool {
-    support::warn(format!("cp: overwrite {to}? ").as_bytes());
-    let mut buf = [0u8; 64];
-    let first = match read(support::STDIN, &mut buf) {
-        Ok(0) | Err(_) => return false,
-        Ok(n) => buf[0..n].first().copied(),
-    };
-    let answer = first.unwrap_or(b'\n');
-    // Drain the remainder of the line, as C's `while (ch != '\n' && ch != EOF)
-    // ch = getchar();` does (utils.c:126-127).
-    if answer != b'\n' {
-        loop {
-            match read(support::STDIN, &mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if buf[..n].contains(&b'\n') {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    answer == b'y' || answer == b'Y'
+    support::warn(format!("overwrite {to}? ").as_bytes());
+    support::answer_yes()
 }
 
 /// `utils.c:283-290` inside the retain branch: read back what the create got,
