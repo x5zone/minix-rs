@@ -43,6 +43,7 @@ pub mod signal;
 pub mod sleep;
 pub mod stable;
 pub mod stamp;
+pub mod users;
 pub mod utmp;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.

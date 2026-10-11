@@ -132,6 +132,8 @@
 | `bin/who.rs` | `who.c:189`/`:310-318` | 读库、过滤在场会话、打印名/行/时刻 |
 | `from.rs` | `from.c:118-153` | 信箱 `From ` 记录扫描（`FromRecords`）与 BSD sender 匹配（`match_sender`） |
 | `bin/from.rs` | `from.c` 主程序 | 解 `-f`/`-s`、按序解信箱路径、逐记录打印 |
+| `users.rs` | `users.c:90-99` | 登录名插入排序 + 相邻去重（`sorted_unique`，无 alloc） |
+| `bin/users.rs` | `users.c` 主程序 | 读默认 utmp、`walk_database` 收活动名、空格连一行 |
 
 ### 4.2 关键类型与不变量
 
@@ -165,9 +167,10 @@
 - **登录记录**（`utmp.rs`，5 个）：`test_fields_trimmed`（三字段去尾加时间）、`test_logged_out_empty_name`（空名即退出）、`test_short_record_rejected`（短记录）、`test_walk_counts_and_visits`（双记录遍历）、`test_torn_image_rejected`（撕裂库）。
 - **进程表**（`stable.rs`，4 个）：`test_empty_table_lists_nothing`（空表）、`test_slice_lists_and_finds`（列表查找）、`test_lookup_maps_miss`（查无报 3）、`test_tables_share_the_trait`（接口统一）。
 - **信箱扫描**（`from.rs`，13 个）：三记录 fixture 钉记录起点门/字面 `From `/大小写不敏感/`-s` 选路/首行即记录/无尾换行/空信箱；`match_sender` 逐分支钉首词必位、空格即中止、空 sender、后续失配续扫、单字符命中、超长不匹。
+- **登录名表**（`users.rs`，6 个）：`sorted_unique` 就地插入排序+相邻去重——排序去重、单名、空表返 0、全同缩为 1、已排不变、乱序单例排序（逐段对位 `users.c` 的 strcmp 插入排序与相邻不同则输出）。
 - **时刻戳**（`stamp.rs`，4 个）：`test_epoch_zero_is_new_years`（纪元零）、`test_known_stamp_september_nine_2001`（十亿秒名场）、`test_leap_year_february_twenty_nine`（闰日）、`test_civil_matches_days_from_civil`（与 10 篇 `cal.rs` 的格里高利编码器交叉往返，dev-dependency 直连）。
 
-**执行批后的接线与留白**：`kill` 与 `who` 已接线——`kill` 覆盖 `-l`/`-l 码`/`-s 名`/`-名字`/`-号码` 加逐 pid 发信（失败翻退出码不中断，`kill.c` 主循环语义），`who` 覆盖默认库与操作数库、只印在场会话的名/行/时刻十二列；`from` 已接线（批次九十二）——`from [-f file] [-s sender] [user]` 记录扫描与 BSD sender 匹配落 `from.rs`（`match_sender` 复刻 `from.c:131-153` 的遇空格整体中止/`first` 绑定一次不回扫/调用方小写 sender 三个角落）。留白：`who` 的空闲与终端状态列（要 `stat` 终端行）、`-u`/`-T` 等列选；`ps`（要内核表数据源）、`finger`（邮件面）、`date`/`sleep`/`nice` 族随各自数据源批次接；`from` 的 getpwuid 回退（本树无 `getpwuid`/`getuid` 封装，信箱无法经 `-f`/操作数/`MAIL`/`LOGNAME`/`USER` 解析时退 1）。时区声明：时刻戳一律 UTC（本层无时区库，C 的 `ctime` 是本地时）。
+**执行批后的接线与留白**：`kill` 与 `who` 已接线——`kill` 覆盖 `-l`/`-l 码`/`-s 名`/`-名字`/`-号码` 加逐 pid 发信（失败翻退出码不中断，`kill.c` 主循环语义），`who` 覆盖默认库与操作数库、只印在场会话的名/行/时刻十二列；`from` 已接线（批次九十二）——`from [-f file] [-s sender] [user]` 记录扫描与 BSD sender 匹配落 `from.rs`（`match_sender` 复刻 `from.c:131-153` 的遇空格整体中止/`first` 绑定一次不回扫/调用方小写 sender 三个角落）。留白：`who` 的空闲与终端状态列（要 `stat` 终端行）、`-u`/`-T` 等列选；`ps`（要内核表数据源）、`finger`（邮件面）、`date`/`sleep`/`nice` 族随各自数据源批次接；`from` 的 getpwuid 回退（本树无 `getpwuid`/`getuid` 封装，信箱无法经 `-f`/操作数/`MAIL`/`LOGNAME`/`USER` 解析时退 1）。`users` 已接线（批次九十五）——登录名排序去重落 `users.rs`（`sorted_unique` 无 alloc 插入排序，对位 `users.c` 链表插入排序+相邻去重），复用 `utmp::walk_database` 与 `entry.active()`。时区声明：时刻戳一律 UTC（本层无时区库，C 的 `ctime` 是本地时）。
 
 尚未覆盖、随后续阶段补齐的：内核表读取（`ps` 执行层）、终端检查（`-t` 之类）、作业联动（挂起终止特判的执行侧）、邮件系统本体与网络会话（`write` 投递、`finger` 详情）。`from` 的信箱提示面已接线（只看 `From ` 记录，邮件系统本体归 19 篇）。号码记录表格三层是全覆盖的，执行层是显式留白的。
 
