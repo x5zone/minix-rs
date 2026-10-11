@@ -371,6 +371,9 @@ pub fn plan(
         // `du` 只读，不受只读 imgrd 根盘门控（批次一百二十登记的下一件）：
         // 它的盘上读数由 test-cmd-smoke* 的 du 断言判。
         ("du", bin_rel("du")),
+        // `stat` 同样只读（批次一百三十一接线）：三种模板的盘上形状由
+        // test-cmd-smoke* 的 stat 断言收，走的是同一条 lstat IPC 腿。
+        ("stat", bin_rel("stat")),
     ];
     if e5_ds_ready {
         bins.push(("e5-ds", bin_rel("e5-ds")));

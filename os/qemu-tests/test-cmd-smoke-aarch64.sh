@@ -128,7 +128,10 @@ for _ in $(seq 1 "$TIMEOUT_T4"); do
            && grep -qaE '\bcat\b' "$AFTER_TXT" \
            && grep -qaE '\bls\b' "$AFTER_TXT" \
            && grep -qaE '^[0-9]+[[:space:]]+/etc\r?$' "$AFTER_TXT" \
-           && grep -qaE '^[0-9.]+[KMGT][[:space:]]+/etc\r?$' "$AFTER_TXT"; then
+           && grep -qaE '^[0-9.]+[KMGT][[:space:]]+/etc\r?$' "$AFTER_TXT" \
+           && grep -qaE '^[-dlbcps?][-rwxstST]{9}[[:space:]]' "$AFTER_TXT" \
+           && grep -qaE '^st_dev=[0-9]+ st_ino=[0-9]+ st_mode=[0-9]+ .*st_size=[0-9]+' "$AFTER_TXT" \
+           && awk '{ sub(/\r$/, "") } NF>=14 && $NF=="/etc/rc" { found=1 } END { exit !found }' "$AFTER_TXT"; then
             cmds_ok=1; break
         fi
     fi
@@ -137,11 +140,11 @@ done
 kill "$QEMU_PID" 2>/dev/null || true   # 停住串口增长；wait 由 EXIT trap 兑底
 
 if [ "$cmds_ok" -ne 1 ]; then
-    echo "FAIL: /etc/rc command face (ls /bin, cat /etc/rc, du /etc) output not fully observed"
+    echo "FAIL: /etc/rc command face (ls /bin, cat /etc/rc, du /etc, stat /etc/rc) output not fully observed"
     echo "      marker present but ls/cat listing or the du total missing — VFS command chain incomplete?"
     strings "$SERIAL_LOG" 2>/dev/null | tail -12 || true
     exit 1
 fi
 
-echo "RESULT: PASS (aarch64 18-stage command output — marker + ls /bin + cat /etc/rc + du /etc — on the VFS IPC path)"
+echo "RESULT: PASS (aarch64 18-stage command output — marker + ls /bin + cat /etc/rc + du /etc + three stat shapes — on the VFS IPC path)"
 exit 0
