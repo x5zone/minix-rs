@@ -225,9 +225,18 @@ ok_readleg_blocked = "ls: /bin: read error" in raw
 ok_du = re.search(r"(?m)^[0-9]+[ \t]+/etc\r?$", raw) is not None
 # ...and the -h rendering, whose number carries a unit letter (prstat's -h branch).
 ok_du_h = re.search(r"(?m)^[0-9.]+[KMGT][ \t]+/etc\r?$", raw) is not None
+# `stat` 三形：默认模板整行（≥14 字段、以操数名收尾）、`-l` 的 strmode 起头、
+# `-s` 的 `name=value` 起头（C 的 SHELL_FORMAT 到 st_flags 为止，不带文件名）。
+stat_lines = [l.rstrip("\r") for l in raw.splitlines()]
+ok_stat_def = any(len(l.split()) >= 14 and l.split()[-1] == "/etc/rc" for l in stat_lines)
+ok_stat_ls = re.search(r"(?m)^[-dlbcps?][-rwxstST]{9}[ \t]", raw) is not None
+ok_stat_shell = re.search(
+    r"(?m)^st_dev=[0-9]+ st_ino=[0-9]+ st_mode=[0-9]+ .*st_size=[0-9]+", raw
+) is not None
 ok_ls = ok_listing or ok_readleg_blocked
 print(
-    "  cmdface: marker=%s dump=%s listing=%s blocked=%s ls_ok=%s du=%s du_h=%s"
+    "  cmdface: marker=%s dump=%s listing=%s blocked=%s ls_ok=%s du=%s du_h=%s "
+    "stat=%s/%s/%s"
     % (
         ok_marker,
         ok_dump,
@@ -236,11 +245,15 @@ print(
         ok_ls,
         ok_du,
         ok_du_h,
+        ok_stat_def,
+        ok_stat_ls,
+        ok_stat_shell,
     )
 )
 if ok_ls and not ok_listing:
     print("  NOTE: ls 的目录列腿按已知缺陷计（imgrd 根盘 getdents 未通，见台账 §7）")
-sys.exit(0 if (ok_marker and ok_dump and ok_ls and ok_du and ok_du_h) else 1)
+sys.exit(0 if (ok_marker and ok_dump and ok_ls and ok_du and ok_du_h
+          and ok_stat_def and ok_stat_ls and ok_stat_shell) else 1)
 PYEOF
         then
             cmds_ok=1; break
@@ -257,5 +270,5 @@ if [ "$cmds_ok" -ne 1 ]; then
     exit 1
 fi
 
-echo "RESULT: PASS (riscv64 18-stage command output — marker + ls /bin listing + cat /etc/rc dump + du /etc total — on the VFS IPC path)"
+echo "RESULT: PASS (riscv64 18-stage command output — marker + ls /bin listing + cat /etc/rc dump + du /etc total + three stat shapes — on the VFS IPC path)"
 exit 0

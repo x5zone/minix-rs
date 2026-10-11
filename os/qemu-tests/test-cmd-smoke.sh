@@ -178,5 +178,32 @@ if [ "$du_ok" -ne 1 ]; then
     exit 1
 fi
 
-echo "RESULT: PASS (18-stage command output visible on the boot console — T4, plus the du read-side totals)"
+# ── Stage 6: the `stat` command face (/bin/stat, /bin/stat -l, /bin/stat -s).
+# The three predefined templates cover the three render legs at once: the default
+# one carries field values and the quoted time strings, `-l` carries the strmode
+# slice, `-s` the `name=value` shell form (which ends at st_flags and carries no
+# name). Shapes rather than exact numbers are
+# judged, because the inode number, size and timestamps of the seeded /etc/rc are
+# properties of the image, not of the command. ──
+STAT_TXT="$(mktemp /tmp/cmd_smoke_stat.XXXXXX.txt)"
+stat_ok=0
+for _ in $(seq 1 "$TIMEOUT_T4"); do
+    strings "$SERIAL_LOG" 2>/dev/null | sed -n "/$T4_MARKER/,\$p" > "$STAT_TXT"
+    if awk '{ sub(/\r$/, "") } NF>=14 && $NF=="/etc/rc" { found=1 } END { exit !found }' "$STAT_TXT" 2>/dev/null \
+       && grep -qaE '^[-dlbcps?][-rwxstST]{9}[[:space:]]' "$STAT_TXT" 2>/dev/null \
+       && grep -qaE '^st_dev=[0-9]+ st_ino=[0-9]+ st_mode=[0-9]+ .*st_size=[0-9]+' "$STAT_TXT" 2>/dev/null; then
+        stat_ok=1
+        break
+    fi
+    sleep 1
+done
+rm -f "$STAT_TXT"
+if [ "$stat_ok" -ne 1 ]; then
+    echo "FAIL: /bin/stat did not reach the console in all three predefined shapes"
+    echo "      (missing seed in xtask's /bin list, or a render-leg regression?)"
+    tail -12 "$SERIAL_LOG" 2>/dev/null || true
+    exit 1
+fi
+
+echo "RESULT: PASS (18-stage command output visible on the boot console — T4, plus the du read-side totals and the stat command face)"
 exit 0

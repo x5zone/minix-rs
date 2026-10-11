@@ -26,6 +26,13 @@ cat /etc/rc
 # minix3/lib/libc/gen/humanize_number.c 的本树移植件，门判据是「数字+单位字母」打头
 # 的那一行（今天的读数 12K）。
 /bin/du -h /etc
+# 批次一百三十一登记的 `stat` 盘上读数：同一条 `lstat` 腿走三种模板（默认、
+# `-l`、`-s`）。形状判据在 test-cmd-smoke*.sh——不写 `-f` 自定义模板是为了避开
+# 启动脚本里的引号处理，三种预置形已足够把字段取值、strmode 切片与赋值式渲染
+# 三条腿都收到串口上。
+/bin/stat /etc/rc
+/bin/stat -l /etc/rc
+/bin/stat -s /etc/rc
 # E5(f) 真机半：DS 数据服务传输链载体（minix-sys DsClient → DS 端点 6）。
 # 串口判据逐段 `e5-ds: ...`，计数行 `E5f-LABELS n/12`，末行是 run_qemu.sh
 # 惯例的 `### TEST_RESULT: ... ###`；门脚本 os/qemu-tests/test-e5-ds.sh。
