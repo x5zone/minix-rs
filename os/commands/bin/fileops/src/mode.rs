@@ -271,7 +271,7 @@ const S_IFCHR: u32 = 0o020000; // `stat.h:140`
 const S_IFBLK: u32 = 0o060000; // `stat.h:142`
 const S_IFIFO: u32 = 0o010000; // `stat.h:139`
 const S_IFSOCK: u32 = 0o140000; // `stat.h:146`
-const S_IFWHT: u32 = 0o160000; // `stat.h:147`
+pub(crate) const S_IFWHT: u32 = 0o160000; // `stat.h:147`
 // 归档态两位：它们在 `S_IFMT` 之外，所以 `strmode.c:71-80` 在 `S_IFREG` 支里
 // 另判一轮（Minix 确实定义了 `stat.h:148-149`，所以那段 `#ifdef S_ARCH2` 是编得进来的）。
 const S_ARCH1: u32 = 0o200000; // `stat.h:148`，`ls -l` 显示 `a`
