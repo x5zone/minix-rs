@@ -12,8 +12,9 @@
 //! address runs continuously and `-s` skips from the front); with no
 //! operands the stream is stdin, and a bare `-` is a literal file name,
 //! not a stdin alias. An unopenable operand warns and flags the exit
-//! value (`exitval = 1`) and the chain continues. `-n length` is parsed
-//! but not yet applied to the stream (registered corner). The
+//! value (`exitval = 1`) and the chain continues. `-s skip` and `-n
+//! length` bound the displayed range (skip advances past the front of the
+//! stream, then at most `length` bytes are shown, clamped to the input). The
 //! hosted-versus-target seams are the echo template's
 //! (`os/commands/bin/fileops/src/bin/echo.rs`).
 
@@ -128,9 +129,10 @@ fn run() -> ! {
             }
         }
     }
-    // doskip consumes `skip` bytes before any block is shown.
-    let start = (skip as usize).min(input.len());
-    let data = &input[start..];
+    // `doskip` consumes `skip` bytes, then `-n length` bounds the display
+    // (`hexdump.c` `eaddress = address + length`); both clamp to the input.
+    let (start, end) = display_range(input.len(), skip as usize, options.length);
+    let data = &input[start..end];
 
     // display(): each block prints one row per accumulated format.
     let specs: Vec<_> = formats.iter().map(|f| (row_spec(*f), *f)).collect();
@@ -170,6 +172,50 @@ fn usage() -> ! {
     support::terminate(1);
 }
 
+
+/// The byte range to display given `-s skip` and `-n length`: skip advances
+/// past the front of the (chained) input, then at most `length` bytes are
+/// shown. Mirrors `hexdump.c`'s `doskip` (running address) and
+/// `eaddress = address + length` (display stops there), clamped to the input.
+fn display_range(input_len: usize, skip: usize, length: Option<usize>) -> (usize, usize) {
+    let start = skip.min(input_len);
+    let available = input_len - start;
+    let take = length.map_or(available, |n| n.min(available));
+    (start, start + take)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_skip_no_length_shows_all() {
+        assert_eq!(display_range(100, 0, None), (0, 100));
+    }
+
+    #[test]
+    fn skip_advances_the_front() {
+        assert_eq!(display_range(100, 10, None), (10, 100));
+    }
+
+    #[test]
+    fn length_bounds_the_display() {
+        assert_eq!(display_range(100, 0, Some(16)), (0, 16));
+    }
+
+    #[test]
+    fn skip_then_length_compose() {
+        // `-s 40 -n 10` shows bytes [40, 50).
+        assert_eq!(display_range(100, 40, Some(10)), (40, 50));
+    }
+
+    #[test]
+    fn range_clamps_to_the_input() {
+        // length past the end and skip past the end both clamp.
+        assert_eq!(display_range(100, 90, Some(50)), (90, 100));
+        assert_eq!(display_range(100, 150, Some(10)), (100, 100));
+    }
+}
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
