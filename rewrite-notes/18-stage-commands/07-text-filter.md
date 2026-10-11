@@ -203,7 +203,7 @@
 | unifdef | 同上 | 已接线决定半与薄壳（十状态 #if 状态机、C 注释扫描含反斜杠续行、四级优先表达式〔`defined()`、`-D` 值、十六/八进制字面量〕、`#elif`→`#if`/`#endif` 关键字改写保嵌套、`-c` 补集、`-l` 置空、`-s` 符号清单、退出码 0/1/2；注释跨行的 DODGY 表列未建模，`-d`/`-e` 收下即忽略，均登记） |
 | look、ifdef | — | 查证（2026-09-18）：`minix3/usr.bin/` 下无此二命令（`look.c` 在 `usr.bin/m4/` 内属 m4 内建，`ifdef` 同为 m4 内建），不在 07 篇接线范围 |
 | crc | — | 查证（2026-09-18）：`usr.bin/cksum/crc.c` 的 CRC 已由本库 `cksum` 模块的 `cksum_crc` 覆盖（批次十四，const 表与 C crctab 全表核对），无独立命令需要接线 |
-| diff | 同上 | 已接线决定半与薄壳（4.4BSD 引擎全链：稠密等价类〔代 readhash，jackpot 复核随之精确化〕、公共前后缀剪枝、sort+equiv+unsort、stone 候选搜索含 isqrt 尝试上限、unravel 出 J 表、check 复核、六种输出格式 normal/`-e` 逆序 ed/`-f`/`-n` RCS/`-q`/`-u` 合并上下文，15 测试对照宿主向量；`-c`、`#ifdef`、`-b/-w/-i` 忽略族、`\ No newline` 与目录递归为登记角落） |
+| diff | 同上 | 已接线决定半与薄壳（4.4BSD 引擎全链：稠密等价类〔代 readhash，jackpot 复核随之精确化〕、公共前后缀剪枝、sort+equiv+unsort、stone 候选搜索含 isqrt 尝试上限、unravel 出 J 表、check 复核、六种输出格式 normal/`-e` 逆序 ed/`-f`/`-n` RCS/`-q`/`-u` 合并上下文，逐格式对照宿主 diff 向量；`-c`、`#ifdef`、`-b/-w/-i` 忽略族、`\ No newline` 与目录递归为登记角落）；两文件操作数已接线——任一侧 `-` 读 stdin、其余 fopen 读入（对位 C `diffreg`），开不了的侧按 C `status |= 2` 致命退 2（无可比对象），真机 open 腿归 C-57/E5 |
 | patch | 同上 | 已接线决定半与薄壳（unified/normal hunk 解析〔pch.c 的 UNI_DIFF/NORMAL_DIFF 分支：`(起始,计数)` 头、`< / --- / >` 体、空格被吃容错〕、定位引擎〔patch.c 的 locate_hunk/patch_match/apply_hunk：猜测位 `first+last_offset`、正负偏移交替搜索、上下文 fuzz 最多 2 且拒绝真空匹配、`where--` 后按对齐行惰性拷贝/删除/插入〕，10 测试；context 格式、ed 管道、`-R`、reject 文件与 `\ No newline` 为登记角落） |
 
 ---

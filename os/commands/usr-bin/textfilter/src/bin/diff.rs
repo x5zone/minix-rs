@@ -4,9 +4,10 @@
 //! usage `diff [-qeun] [file1 | -] [file2 | -]`. The deciding half
 //! (the 4.4BSD differ: equivalence classes, prune, stone search,
 //! output walk; formats normal/`-e`/`-f`/`-n`/`-q`/`-u`) is the
-//! library's `diff` module. Exactly one side may be `-` (stdin);
-//! named file operands wait on the open-existing seam (edge
-//! E-CMDSYSFACE). Directory recursion, `-c` context, `#ifdef`
+//! library's `diff` module. Exactly one side may be `-` (stdin); named
+//! file operands are opened and read (`diffreg.c` `fopen`), and an
+//! unopenable side is fatal (`status |= 2` → exit 2, since there is
+//! nothing to compare). Directory recursion, `-c` context, `#ifdef`
 //! output and the ignore flags are registered corners. The
 //! hosted-versus-target seams are the echo template's
 //! (`os/commands/bin/fileops/src/bin/echo.rs`): argv via
@@ -99,10 +100,16 @@ fn run() -> ! {
                 }
             }
         } else {
-            support::warn(
-                b"diff: file operands wait on the open-existing seam (edge E-CMDSYSFACE)\n",
-            );
-            support::terminate(2);
+            match support::read_file(operand) {
+                Ok(data) => sides[side] = data,
+                Err(()) => {
+                    // C `diffreg` sets `status |= 2` and exits 2; a side
+                    // that will not open leaves nothing to compare, so it
+                    // is fatal here too.
+                    support::warn(format!("diff: {operand}\n").as_bytes());
+                    support::terminate(2);
+                }
+            }
         }
     }
     let text_a = String::from_utf8_lossy(&sides[0]).into_owned();
