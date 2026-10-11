@@ -170,23 +170,49 @@ pub mod rts {
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct MiscFlagsBits: u32 {
+        /// Reply to an IPC_REQUEST is pending (C `MF_REPLY_PEND`).
         const REPLY_PEND = 0x001;
+        /// Process-virtual timer is running (C `MF_VIRT_TIMER`).
         const VIRT_TIMER = 0x002;
+        /// Process-virtual profile timer is running (C `MF_PROF_TIMER`).
         const PROF_TIMER = 0x004;
+        /// A kernel call was interrupted (usually to let VM resolve a fault or
+        /// finish a long copy) and must be resumed now (C `MF_KCALL_RESUME`).
         const KCALL_RESUME = 0x008;
+        /// Copy a message for this process before running it (C `MF_DELIVERMSG`).
         const DELIVERMSG = 0x040;
+        /// Deliver the pending signal only once this process is no longer
+        /// sending (C `MF_SIG_DELAY`).
         const SIG_DELAY = 0x080;
+        /// Syscall tracing: currently inside a system call (C `MF_SC_ACTIVE`).
         const SC_ACTIVE = 0x100;
+        /// Syscall tracing: a deferred system call (C `MF_SC_DEFER`).
         const SC_DEFER = 0x200;
+        /// Syscall tracing: emit syscall trace events (C `MF_SC_TRACE`).
         const SC_TRACE = 0x400;
+        /// Extended (FPU) registers are significant — the process has used the
+        /// math unit, so its FPU state must be saved/restored. C names this
+        /// `MF_FPU_INITIALIZED`; the arch-neutral Rust name is `EXT_REG_*`.
         const EXT_REG_INITIALIZED = 0x1000;
+        /// This process's message originated from the kernel (C
+        /// `MF_SENDING_FROM_KERNEL`).
         const SENDING_FROM_KERNEL = 0x2000;
+        /// Do not touch the saved context (C `MF_CONTEXT_SET`).
         const CONTEXT_SET = 0x4000;
+        /// Profiling has observed this process (C `MF_SPROF_SEEN`).
         const SPROF_SEEN = 0x8000;
+        /// Flush the TLB before running this process again (SMP page-table
+        /// change) — C `MF_FLUSH_TLB`.
         const FLUSH_TLB = 0x10000;
+        /// An async send to this process missed because VM was modifying the
+        /// sender's address space; retry the receive (C `MF_SENDA_VM_MISS`).
         const SENDA_VM_MISS = 0x20000;
+        /// Single-step this process (C `MF_STEP`).
         const STEP = 0x40000;
+        /// A synchronous message send to this process failed (C
+        /// `MF_MSGFAILED`, which is itself undocumented at the definition).
         const MSGFAILED = 0x80000;
+        /// The user lowered this process's maximum priority (C `MF_NICED`).
         const NICED = 0x100000;
     }
 }
