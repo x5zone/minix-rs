@@ -145,7 +145,7 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-regex`：**43 个测试，全部通过**（库 34 加 grep 薄壳的多文件渲染 9，截至 `2026-10-11`）；grep、sed 两个已接线的命令二进制，其决定半由库测试覆盖，grep 的文件操作数与渲染规则由薄壳内的 9 个测试钉住，行收集与切分属执行半的宿主接缝（见篇首说明）。
+`cargo test -p minix-regex`：**50 个测试，全部通过**（库 34 加 grep 薄壳多文件渲染 9、sed 薄壳参数切分 7，截至 `2026-10-11`）；grep、sed 两个已接线的命令二进制，其决定半由库测试覆盖，grep 的文件操作数渲染规则与 sed 的参数切分由各自薄壳内的测试钉住，行收集与切分属执行半的宿主接缝（见篇首说明）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/regex` 复现）：
 
@@ -154,6 +154,7 @@
 - **搜索选项**（`grep.rs`，7 个）：`test_pattern_operand_form`（位置模式）、`test_bundled_flags_and_e_pattern`（捆绑标志加多模式）、`test_mode_flags`（三拼写切换）、`test_unknown_flag_rejected`（未知标志）、`test_missing_pattern_rejected`（缺模式）、`test_double_dash_ends_flags`（双横杠）、`test_exit_code_matches_c_truth_table`（退出真值表六行情景）。
 - **grep 文件操作数与渲染**（`src/bin/grep.rs`，9 个）：`single_operand_has_no_filename_prefix`（单操作数不加名头，对位 C `argc<=1` 置 hflag）、`multiple_operands_prefix_each_match`（多操作数逐行加 `file:` 前缀）、`line_numbers_restart_per_stream_and_prefix_combines`（行号逐流重置、与名头拼接）、`count_only_prefixes_with_the_name_when_shown`（`-c` 随名头出 `file:count`）、`count_without_prefix_is_a_bare_number`（单流 `-c` 裸计数）、`files_only_prints_the_label_once_and_no_body`（`-l` 只列名不出行体，C 把 `-l` 折进 `-q`）、`no_match_returns_false_and_prints_nothing`（未命中不输出、返假）、`invert_selects_nonmatching_lines`（`-v` 反选）、`quiet_reports_the_match_but_emits_nothing`（`-q` 静默仅报命中）。
 - **替换**（`sed.rs`，11 个）：`test_first_only_by_default`（默认首个）、`test_global_flag`（全局）、`test_nth_match_only`（第 N 个）、`test_ampersand_replays_match`（取整匹配回放）、`test_group_reference`（分组回放换位）、`test_custom_delimiter`（自定分隔符）、`test_print_flag`（打印标志）、`test_missing_delimiter_rejected`（缺分隔符）、`test_zero_nth_rejected`（零序号）、`test_no_match_copies_input`（未命中原样）、`test_empty_match_walk_terminates`（空匹配终止）。
+- **sed 文件操作数与参数切分**（`src/bin/sed.rs`，7 个）：`script_only_has_no_files`（仅脚本无文件）、`dash_n_sets_quiet`（`-n` 置静默）、`operands_after_the_script_are_files`（脚本后位置参数入文件表）、`flags_and_files_mix_in_any_order`（`-n` 识别位置无关）、`bare_dash_is_a_literal_file_operand`（`-` 按 C `fopen` 作普通文件名不特判 stdin）、`unsupported_option_is_rejected`（除 `-n` 外选项拒）、`missing_script_is_rejected`（无脚本拒）。
 
 尚未覆盖、随后续阶段补齐的：模式内后向引用（显式拒绝，待回溯豁免设计）、POSIX 字符类（`[:alpha:]` 等，待本地化升级）、递归遍历与上下文行（`grep -r`、`-A`、`-B`、`-C`，待文件遍历）、地址执行（`sed` 行号范围，待执行层）、grep 的 `-i` 大小写折叠与 `-w` 词边界（引擎未建模，二进制显式拒绝）、sed 的 `;` 链与其他动词（二进制显式拒绝）。模式与替换层、两个已接线二进制是完整的，执行层是显式留白的。
 
@@ -164,7 +165,7 @@
 | 命令 | Requires（最小 API） | 当前状态 |
 |------|---------------------|---------|
 | grep | `read`、`write`、`exit`、argv 交接、`open`/`close`（开放已存在文件） | 已接线（`-E`/`-G`/`-F`、`-v`、`-n`、`-c`、`-q`、`-x`、`-l`、可重复 `-e`）；`-i`/`-w` 解析成功但引擎未建模，二进制显式拒绝（退出 2）；文件操作数已接线——多操作数加 `file:` 名头（`grep.c:493` 单/零操作数隐去名头）、`-l` 列名且折入 quiet 不出行体（`grep.c:387`）、`-c` 随名头出 `file:count`（`util.c` procfile）、行号逐文件重置（`procfile` 每流 `line_no=0`）、开文件失败非致命（置 `file_err`、末了折进退出码 2）、`-` 按 C `fopen` 作普通文件名不特判 stdin；递归 `-r` 与上下文行 `-A`/`-B`/`-C` 仍留白（待文件遍历） |
-| sed | 同上 | 已接线（`s` 命令，含 `p` 标志与 `-n` 的 C 交互、`g`/`N` 作用域）；`;` 链、地址与其他动词显式拒绝；文件操作数待开放路径调用 |
+| sed | 同上 | 已接线（`s` 命令，含 `p` 标志与 `-n` 的 C 交互、`g`/`N` 作用域）；`;` 链、地址与其他动词显式拒绝；文件操作数已接线——逐操作数 open+read 后逐行替换流到 stdout（`main.c` mf_fgets 非 inplace 路：outfile=stdout、无名头前缀）、开文件失败非致命（warn+置 rval+继续，末了 `exit(rval)` 即 main.c:219）、`-` 按 C `fopen` 作普通文件名不特判 stdin；就地编辑 `-i`/`-I`（需 create/rename 面）与地址/`;` 链未建模 |
 
 ---
 
