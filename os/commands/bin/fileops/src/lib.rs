@@ -43,6 +43,7 @@ pub mod expr;
 pub mod ln;
 pub mod mkdir;
 pub mod mode;
+pub mod mv;
 pub mod path;
 pub mod pathchk;
 pub mod printf;
