@@ -9,6 +9,7 @@
 //! 「子格式串 + 解析出的参数」，再交给 `format1()`（`stat.c:568-1151`）去取值渲染。
 //! 两段之间没有共享状态，解析形可以单独钉住测试。
 
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -17,7 +18,7 @@ use alloc::vec::Vec;
 pub const DEF_FORMAT: &str =
     "%d %i %Sp %l %Su %Sg %r %z \"%Sa\" \"%Sm\" \"%Sc\" \"%SB\" %k %b %#Xf %N";
 /// 预置：`-r`（`stat.c:97-98`）。
-pub const RAW_FORMAT: &str = "%d %i %#p %l %u %g %r %z %a %m %c %B %k %b %#f %N";
+pub const RAW_FORMAT: &str = "%d %i %#p %l %u %g %r %z %a %m %c %B %k %b %f %N";
 /// 预置：`-l`（`stat.c:99`）。
 pub const LS_FORMAT: &str = "%Sp %l %Su %Sg %Z %Sm %N%SY";
 /// 预置：`-l -F`（`stat.c:100`）。
@@ -570,6 +571,778 @@ fn claim_fmtchar(slot: &mut Option<char>, c: char) -> Result<(), PlanError> {
     Ok(())
 }
 
+/// 一个时间字段：整秒加纳秒（C 的 `st_*time` 与 `st_*timensec`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeField {
+    pub secs: i64,
+    pub nsecs: i64,
+}
+
+impl TimeField {
+    /// 组装一个时间字段。
+    pub const fn new(secs: i64, nsecs: i64) -> Self {
+        TimeField { secs, nsecs }
+    }
+}
+
+/// 一份纯字段的文件状态。薄壳把内核交回的状态结构逐字段拷进来，本层因此
+/// 不碰任何系统调用面（分层边界：库侧只用 `minix_sys` 的薄壳才许读句柄）。
+///
+/// 宽度按 C 的字段宽度给定，因为 `format1()` 的 `small` 判据（`stat.c:606`、
+/// `:636`、`:684` 一类 `sizeof(...) == 4`）真的会改变非十进制形态下的取值：
+/// 32 位字段在八进制/无符号/十六进制形里先截到 32 位（`stat.c:1126-1128`）。
+#[derive(Debug, Clone, Copy)]
+pub struct StatData {
+    /// `st_dev`（`dev_t`，64 位）。
+    pub dev: u64,
+    /// `st_mode`（`mode_t`，32 位）。
+    pub mode: u32,
+    /// `st_ino`（64 位）。
+    pub ino: u64,
+    /// `st_nlink`（32 位）。
+    pub nlink: u32,
+    /// `st_uid`（32 位）。
+    pub uid: u32,
+    /// `st_gid`（32 位）。
+    pub gid: u32,
+    /// `st_rdev`（64 位）。
+    pub rdev: u64,
+    /// `st_atim`。
+    pub atime: TimeField,
+    /// `st_mtim`。
+    pub mtime: TimeField,
+    /// `st_ctim`。
+    pub ctime: TimeField,
+    /// `st_birthtim`。
+    pub btime: TimeField,
+    /// `st_size`（64 位，有符号）。
+    pub size: i64,
+    /// `st_blocks`（64 位，512 字节块数）。
+    pub blocks: i64,
+    /// `st_blksize`（32 位）。
+    pub blksize: i32,
+    /// `st_flags`（32 位）。
+    pub flags: u32,
+    /// `st_gen`（32 位）。字段名不叫 `gen`：那是 2024 版语言的保留字。
+    pub generation: u32,
+}
+
+/// 形态允许集，位值与 C 的 `FMTF_*` 逐位相同（`stat.c:147-152`）。
+mod fmtf {
+    pub const DECIMAL: u8 = 0x01;
+    pub const OCTAL: u8 = 0x02;
+    pub const UNSIGNED: u8 = 0x04;
+    pub const HEX: u8 = 0x08;
+    pub const FLOAT: u8 = 0x10;
+    pub const STRING: u8 = 0x20;
+}
+
+/// 渲染一条件所需的外部信息。符号链内容由薄壳一次读好交进来：C 也是在
+/// `format1()` 里就地 `readlink()`（`stat.c:844-861`），把这条腿留在薄壳侧
+/// 才能让本层的渲染完全可测。
+pub struct Render<'a> {
+    /// 文件状态。
+    pub data: &'a StatData,
+    /// 操作数名；`None` 表示标准输入（C 的 `file == NULL`，打 `(stdin)`）。
+    pub name: Option<&'a str>,
+    /// 符号链目标。只有 `mode` 确为符链时才有意义。
+    pub link: Option<&'a str>,
+    /// 时间模板（`-t`，或 `-s`/`-x` 的默认，或 `TIME_FORMAT`）。
+    pub timefmt: &'a str,
+    /// `%@` 用的操作数序号，C 从 1 起（`stat.c:278` 的 `fn = 1`）。
+    pub file_number: usize,
+}
+
+/// 一轮渲染的可观察副作用，薄壳据此决定退出码与末尾换行。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Report {
+    /// C 的全局 `linkfail`：`%Y` 读不到目标或 `%R` 解析失败时置起
+    /// （`stat.c:850`、`:829`、`:859`），`readlink` 人格用它当退出码（`stat.c:354`）。
+    pub linkfail: bool,
+    /// 本轮输出是否以换行结尾（`stat.c:559-560` 据此决定是否补一个换行）。
+    pub ends_with_newline: bool,
+}
+
+/// 渲染阶段的失败。C 在这两处都是 `errx(1, "%.*s: bad format", flen, fmt)`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FaceError {
+    /// 子片段字母或形态字母与该字段不合（`stat.c:994-996`），或字符串形
+    /// 却没有字符串可打（`stat.c:1116-1117`）。带着那条子格式串的原文。
+    BadFormat(String),
+    /// `%R` 需要 realpath 那条腿（逐段解析符号链的路径解析器），本树尚无封装。
+    /// 显式拒绝而不是悄悄打空串，免得把未接线的形当成渲染错了。
+    RealpathUnported,
+}
+
+/// 一条字段的取值结果。`num` 总在（数值形用），`text` 只在有字符串形时在，
+/// `nsecs` 只有时间字段带得动 `F` 形态。
+struct Field {
+    num: u64,
+    text: Option<String>,
+    allowed: u8,
+    default: OutFmt,
+    small: bool,
+    shift: u32,
+    linkfail: bool,
+    /// 只有时间字段带得动它：`F` 形态打的是 `秒.纳秒`（`stat.c:1029-1099`）。
+    nsecs: i64,
+    /// `%Z` 在字符/块设备上走的那一支：C 直接把两个片段各自渲染后用逗号接起来
+    /// （`stat.c:966-978`），数值形与字符串形的选择只作用于这两个片段。
+    pair_of_rdev: bool,
+}
+
+impl Field {
+    fn numeric(num: u64, allowed: u8, default: OutFmt, small: bool) -> Field {
+        Field {
+            num,
+            text: None,
+            allowed,
+            default,
+            small,
+            shift: 0,
+            linkfail: false,
+            nsecs: 0,
+            pair_of_rdev: false,
+        }
+    }
+}
+
+/// 取一条字段的值。对应 `format1()` 开头那一大段 `switch (what)`
+/// （`stat.c:600-990`）。`hilo` 在这里就折掉：能被某字段消费的子片段字母
+/// 会被吃掉并置 `None`，消费不掉的留着，由调用方按 C 判坏格式。
+fn take_field(spec: &Spec<'_>, ctx: &Render<'_>) -> Result<(Field, Option<Hilo>), FaceError> {
+    let d = ctx.data;
+    let mut hilo = spec.hilo;
+    let field = match spec.datum {
+        Datum::Dev | Datum::Rdev => {
+            let raw = if spec.datum == Datum::Dev {
+                d.dev
+            } else {
+                d.rdev
+            };
+            // C 的片段取法：`major()` 取高位、`minor()` 取低位（`stat.c:618-625`）。
+            let num = match hilo {
+                Some(Hilo::High) => {
+                    hilo = None;
+                    major_of(raw)
+                }
+                Some(Hilo::Low) => {
+                    hilo = None;
+                    minor_of(raw)
+                }
+                _ => raw,
+            };
+            let mut f = Field::numeric(
+                num,
+                fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX | fmtf::STRING,
+                OutFmt::Unsigned,
+                false,
+            );
+            // `devname(3)` 需要扫 `/dev` 找配对项，本树没有这条腿，取 C 找不到时
+            // 的那一支：打 `???`（`stat.c:616` 的 `sdata = "???"`）。
+            f.text = Some("???".to_string());
+            f
+        }
+        Datum::Ino => Field::numeric(
+            d.ino,
+            fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX,
+            OutFmt::Unsigned,
+            false,
+        ),
+        Datum::Mode => {
+            // `strmode` 的十一个字符里去掉末尾填充位，再按片段切
+            // （`stat.c:636-665`：高位取用户三位、中位取组三位、低位取其他三位）。
+            let mut smode = crate::mode::strmode(d.mode).to_vec();
+            if smode.last() == Some(&b' ') {
+                smode.pop();
+            }
+            let (num, slice) = match hilo {
+                Some(Hilo::High) => {
+                    // 数值折成类型位加用户三位（`stat.c:652`：`data >>= 12`）。
+                    hilo = None;
+                    ((d.mode >> 12) as u64, &smode[1..4])
+                }
+                Some(Hilo::Middle) => {
+                    hilo = None;
+                    (((d.mode >> 9) & 0o7) as u64, &smode[4..7])
+                }
+                Some(Hilo::Low) => {
+                    hilo = None;
+                    ((d.mode & 0o777) as u64, &smode[7..10])
+                }
+                _ => (d.mode as u64, smode.as_slice()),
+            };
+            Field {
+                num,
+                text: Some(String::from_utf8_lossy(slice).into_owned()),
+                allowed: fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX | fmtf::STRING,
+                default: OutFmt::Octal,
+                small: true,
+                shift: 0,
+                linkfail: false,
+                nsecs: 0,
+                pair_of_rdev: false,
+            }
+        }
+        Datum::Nlink => Field::numeric(
+            d.nlink as u64,
+            fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX,
+            OutFmt::Unsigned,
+            true,
+        ),
+        // 口令库在本树尚无封装（同 `chown` 的前置），因此永远走 C 的「查不到」支：
+        // 打 `(123)` 这一形（`stat.c:685-690`、`:699-704`），不是裸数字。
+        Datum::Uid => named_id(d.uid as u64, true),
+        Datum::Gid => named_id(d.gid as u64, false),
+        Datum::Size => {
+            let mut f = Field::numeric(
+                d.size as u64,
+                fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX,
+                OutFmt::Unsigned,
+                false,
+            );
+            // 大/中/小片段在 `stat.c:767-782` 是「按 2 的幂换算到 G/M/K」，
+            // 打印前再「右移一位加一后取整」（`stat.c:1144-1148`），即四舍五入。
+            f.shift = match hilo {
+                Some(Hilo::High) => {
+                    hilo = None;
+                    30
+                }
+                Some(Hilo::Middle) => {
+                    hilo = None;
+                    20
+                }
+                Some(Hilo::Low) => {
+                    hilo = None;
+                    10
+                }
+                _ => 0,
+            };
+            f
+        }
+        Datum::Blocks => Field::numeric(
+            d.blocks as u64,
+            fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX,
+            OutFmt::Unsigned,
+            false,
+        ),
+        Datum::Blksize => Field::numeric(
+            d.blksize as u64,
+            fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX,
+            OutFmt::Unsigned,
+            true,
+        ),
+        Datum::Flags => Field::numeric(
+            d.flags as u64,
+            fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX,
+            OutFmt::Unsigned,
+            true,
+        ),
+        Datum::Gen => Field::numeric(
+            d.generation as u64,
+            fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX,
+            OutFmt::Unsigned,
+            true,
+        ),
+        Datum::Atime | Datum::Mtime | Datum::Ctime | Datum::Btime => {
+            let t = match spec.datum {
+                Datum::Atime => d.atime,
+                Datum::Mtime => d.mtime,
+                Datum::Ctime => d.ctime,
+                _ => d.btime,
+            };
+            time_field(t, ctx.timefmt)
+        }
+        Datum::Realpath => return Err(FaceError::RealpathUnported),
+        Datum::Symlink => {
+            // C 的次序要留着：默认形态在指针算好之后才补上（`stat.c:855-856`），
+            // 所以裸 `%Y` 不带 ` -> ` 前缀，显式 `%SY` 才带（`stat.c:443-446` 的注释）。
+            let explicit_string = spec.ofmt == Some(OutFmt::String);
+            if (d.mode & crate::cp::S_IFMT) == crate::cp::S_IFLNK {
+                let body = ctx.link.unwrap_or_default().to_string();
+                let text = if explicit_string {
+                    format!(" -> {body}")
+                } else {
+                    body
+                };
+                Field {
+                    num: 0,
+                    text: Some(text),
+                    allowed: fmtf::STRING,
+                    default: OutFmt::String,
+                    small: false,
+                    shift: 0,
+                    linkfail: ctx.link.is_none(),
+                    nsecs: 0,
+                    pair_of_rdev: false,
+                }
+            } else {
+                Field {
+                    num: 0,
+                    text: Some(String::new()),
+                    allowed: fmtf::STRING,
+                    default: OutFmt::String,
+                    small: false,
+                    shift: 0,
+                    linkfail: true,
+                    nsecs: 0,
+                    pair_of_rdev: false,
+                }
+            }
+        }
+        Datum::Filetype => {
+            let (name, mark) = type_pair(d.mode);
+            match hilo {
+                None | Some(Hilo::Low) => {
+                    hilo = None;
+                    text_field(mark.to_string())
+                }
+                Some(Hilo::High) => {
+                    hilo = None;
+                    text_field(name.to_string())
+                }
+                _ => Field::numeric(0, fmtf::STRING, OutFmt::String, false),
+            }
+        }
+        Datum::Filename => {
+            let Some(name) = ctx.name else {
+                let f = text_field("(stdin)".to_string());
+                // `(stdin)` 没有路径可切，C 在此直接丢掉高/低片段（`stat.c:919-926`）。
+                if hilo == Some(Hilo::High) || hilo == Some(Hilo::Low) {
+                    hilo = None;
+                }
+                return Ok((f, hilo));
+            };
+            if spec.hilo.is_none() {
+                text_field(name.to_string())
+            } else {
+                let trimmed = name.trim_end_matches('/');
+                match hilo {
+                    Some(Hilo::High) => {
+                        hilo = None;
+                        let dir = trimmed.rsplit_once('/').map_or(".", |(head, _)| head);
+                        text_field(dir.to_string())
+                    }
+                    Some(Hilo::Low) => {
+                        hilo = None;
+                        let base = trimmed.rsplit_once('/').map_or(trimmed, |(_, tail)| tail);
+                        text_field(base.to_string())
+                    }
+                    _ => text_field(name.to_string()),
+                }
+            }
+        }
+        Datum::SizeRdev => {
+            // `%Z`：字符/块设备走 `rdev` 的高低片段，其余走 `size`
+            // （`stat.c:961-989`，C 用两次递归调用拼出 `major,minor`）。
+            let is_dev = (d.mode & crate::cp::S_IFMT) == crate::cp::S_IFCHR
+                || (d.mode & crate::cp::S_IFMT) == crate::cp::S_IFBLK;
+            if is_dev {
+                let mut f = Field::numeric(
+                    0,
+                    fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX,
+                    OutFmt::Unsigned,
+                    false,
+                );
+                f.pair_of_rdev = true;
+                f
+            } else {
+                let mut f = take_field(
+                    &Spec {
+                        flags: spec.flags,
+                        size: spec.size,
+                        prec: spec.prec,
+                        ofmt: spec.ofmt,
+                        hilo: None,
+                        datum: Datum::Size,
+                        source: spec.source,
+                    },
+                    ctx,
+                )?;
+                f.1 = None;
+                f.0
+            }
+        }
+    };
+    Ok((field, hilo))
+}
+
+/// `%Su`/`%Sg`：查得到名字打名字，查不到打 `(数字)`。本树没有口令库，
+/// 所以恒走后者；这一支与 C 的 `getpwuid()` 返回 `NULL` 时同形（`stat.c:685-690`）。
+fn named_id(value: u64, is_user: bool) -> Field {
+    let mut f = Field::numeric(
+        value,
+        fmtf::DECIMAL | fmtf::OCTAL | fmtf::UNSIGNED | fmtf::HEX | fmtf::STRING,
+        OutFmt::Unsigned,
+        true,
+    );
+    f.text = Some(format!("({})", value));
+    let _ = is_user;
+    f
+}
+
+fn text_field(text: String) -> Field {
+    Field {
+        num: 0,
+        text: Some(text),
+        allowed: fmtf::STRING,
+        default: OutFmt::String,
+        small: false,
+        shift: 0,
+        linkfail: false,
+        nsecs: 0,
+        pair_of_rdev: false,
+    }
+}
+
+/// 时间字段：数值形给整秒，字符串形走 `strftime` 子集，浮点形另带纳秒
+/// （`stat.c:741-758`）。C 用 `localtime()`；本层与 `date`/`who` 同一口径——
+/// 无时区库，分解即 UTC。
+fn time_field(t: TimeField, timefmt: &str) -> Field {
+    let mut text = String::new();
+    if t.secs >= 0 || t.secs.checked_add(0).is_some() {
+        let broken = minix_proctools::dates::breakdown(t.secs);
+        let mut buf = [0u8; 256];
+        // 交回秒数本身，`%s` 才有得打（`-s` 的默认模板就是它）。
+        if let Ok(used) =
+            minix_proctools::dates::format_at(timefmt, &broken, Some(t.secs), &mut buf)
+        {
+            text = String::from_utf8_lossy(&buf[..used]).into_owned();
+        }
+    }
+    Field {
+        num: t.secs as u64,
+        text: Some(text),
+        allowed: fmtf::DECIMAL
+            | fmtf::OCTAL
+            | fmtf::UNSIGNED
+            | fmtf::HEX
+            | fmtf::FLOAT
+            | fmtf::STRING,
+        default: OutFmt::Decimal,
+        small: false,
+        shift: 0,
+        linkfail: false,
+        nsecs: t.nsecs,
+        pair_of_rdev: false,
+    }
+}
+
+/// 主设备号。Minix3 给 NetBSD 派生工具用的那对宏在
+/// `minix3/tools/compat/compat_defs.h:1254`：`(x & 0x000fff00) >> 8`。
+fn major_of(dev: u64) -> u64 {
+    (dev & 0x000f_ff00) >> 8
+}
+
+/// 次设备号。同一处 `compat_defs.h:1259-1260`：高段 `0xfff00000 >> 12` 或上低八位。
+fn minor_of(dev: u64) -> u64 {
+    ((dev & 0xfff0_0000) >> 12) | (dev & 0x0000_00ff)
+}
+
+/// `%T` 的两副面孔：高位是名字，低位/缺省是 `ls` 那一类记号
+/// （`stat.c:867-912`）。未知类型两副都落 `???`。
+fn type_pair(mode: u32) -> (&'static str, &'static str) {
+    const S_IFMT: u32 = crate::cp::S_IFMT;
+    match mode & S_IFMT {
+        crate::cp::S_IFIFO => ("Fifo File", "|"),
+        crate::cp::S_IFCHR => ("Character Device", "c"),
+        crate::cp::S_IFDIR => ("Directory", "/"),
+        crate::cp::S_IFBLK => ("Block Device", "b"),
+        crate::cp::S_IFREG => ("Regular File", if mode & 0o111 != 0 { "*" } else { "-" }),
+        crate::cp::S_IFLNK => ("Symbolic Link", "@"),
+        crate::cp::S_IFSOCK => ("Socket", "="),
+        crate::mode::S_IFWHT => ("Whiteout File", "%"),
+        _ => ("???", "?"),
+    }
+}
+
+/// 把件表渲染成文本（`output()` 的输出腿 + `format1()` 的全部形态选择）。
+///
+/// 连续的普通字节合并成一段再落进 `out`，这样模板里的非 ASCII 文字（UTF-8 的
+/// 多字节序列被拆成逐字节件）不会被拆散。
+pub fn render(
+    pieces: &[Piece<'_>],
+    ctx: &Render<'_>,
+    out: &mut String,
+) -> Result<Report, FaceError> {
+    let mut linkfail = false;
+    let mut pending: Vec<u8> = Vec::new();
+    for piece in pieces {
+        match piece {
+            Piece::Literal(b) => pending.push(*b),
+            Piece::Simple(s) => {
+                flush(&mut pending, out);
+                out.push(match s {
+                    Simple::Newline => '\n',
+                    Simple::Tab => '\t',
+                    Simple::Percent => '%',
+                    Simple::FileNumber => {
+                        // C 把 `fn` 用 `%d` 打出来（`stat.c:417-424`）。
+                        pending.clear();
+                        out.push_str(&itoa(ctx.file_number as i64));
+                        continue;
+                    }
+                });
+            }
+            Piece::Spec(spec) => {
+                flush(&mut pending, out);
+                linkfail |= render_spec(spec, ctx, out)?;
+            }
+        }
+    }
+    flush(&mut pending, out);
+    Ok(Report {
+        linkfail,
+        ends_with_newline: out.ends_with('\n'),
+    })
+}
+
+fn flush(pending: &mut Vec<u8>, out: &mut String) {
+    if !pending.is_empty() {
+        out.push_str(&String::from_utf8_lossy(pending));
+        pending.clear();
+    }
+}
+
+/// 渲染一条字段件，返回 C 的 `linkfail` 是否该置起。
+fn render_spec(spec: &Spec<'_>, ctx: &Render<'_>, out: &mut String) -> Result<bool, FaceError> {
+    let (field, leftover_hilo) = take_field(spec, ctx)?;
+    let form = match spec.ofmt {
+        Some(f) => f,
+        None => field.default,
+    };
+    // `stat.c:994-996`：子片段没人吃掉、或形态不在该字段的允许集里，都是坏格式。
+    if leftover_hilo.is_some() || !allowed_has(field.allowed, form) {
+        return Err(FaceError::BadFormat(spec.source.to_string()));
+    }
+    if field.pair_of_rdev {
+        // C 在这里递归渲染主次两段再用逗号接起来，宽度与精度作用于每一段。
+        let head = render_number(
+            spec.flags,
+            spec.size,
+            spec.prec,
+            form,
+            major_of(ctx.data.rdev),
+        );
+        let tail = render_number(
+            spec.flags,
+            spec.size,
+            spec.prec,
+            form,
+            minor_of(ctx.data.rdev),
+        );
+        out.push_str(&format!("{head},{tail}"));
+        return Ok(field.linkfail);
+    }
+    if form == OutFmt::String {
+        let Some(text) = &field.text else {
+            // `stat.c:1116-1117`：要字符串形却没有字符串可打。
+            return Err(FaceError::BadFormat(spec.source.to_string()));
+        };
+        let body = if spec.flags & FLAG_POUND != 0 {
+            vis(text)
+        } else {
+            text.clone()
+        };
+        out.push_str(&pad(&body, spec.size, spec.prec, spec.flags));
+        return Ok(field.linkfail);
+    }
+    if form == OutFmt::Float {
+        out.push_str(&render_float(
+            spec.flags,
+            spec.size,
+            spec.prec,
+            field.num,
+            field.nsecs,
+        ));
+        return Ok(field.linkfail);
+    }
+    let mut value = field.num;
+    if field.small && form != OutFmt::Decimal {
+        // `stat.c:1128-1130`：32 位字段在非十进制形里先截到 32 位，免得符号扩展
+        // 把输出打成一片 f。
+        value &= 0xffff_ffff;
+    }
+    if field.shift > 0 {
+        // `stat.c:1144-1148`：先右移一位、加一、再右移一位，即除以 2 的幂后四舍五入。
+        value = (value >> (field.shift - 1)) + 1;
+        value >>= 1;
+    }
+    out.push_str(&render_number(
+        spec.flags, spec.size, spec.prec, form, value,
+    ));
+    Ok(field.linkfail)
+}
+
+fn allowed_has(allowed: u8, form: OutFmt) -> bool {
+    let bit = match form {
+        OutFmt::Decimal => fmtf::DECIMAL,
+        OutFmt::Octal => fmtf::OCTAL,
+        OutFmt::Unsigned => fmtf::UNSIGNED,
+        OutFmt::Hex => fmtf::HEX,
+        OutFmt::Float => fmtf::FLOAT,
+        OutFmt::String => fmtf::STRING,
+    };
+    allowed & bit != 0
+}
+
+/// 数值形：等价于 C 拼出的 `%[flags][width][.prec]ll[doxu]`。
+fn render_number(flags: u32, width: i32, prec: i32, form: OutFmt, value: u64) -> String {
+    let signed = form == OutFmt::Decimal;
+    let negative = signed && (value as i64) < 0;
+    let magnitude = if negative {
+        (value as i64).unsigned_abs()
+    } else {
+        value
+    };
+    let digits = match form {
+        OutFmt::Hex => format!("{:x}", magnitude),
+        OutFmt::Octal => format!("{:o}", magnitude),
+        // 无符号形要把整 64 位打出来（`%z` 对一个负 `st_size` 就打回绕后的巨数）。
+        OutFmt::Unsigned => format!("{magnitude}"),
+        _ => itoa(magnitude as i64),
+    };
+    let digits = if prec >= 0 {
+        pad_left(&digits, prec as usize, b'0' as char)
+    } else {
+        digits
+    };
+
+    let mut prefix = String::new();
+    if flags & FLAG_POUND != 0 {
+        match form {
+            OutFmt::Hex => prefix.push_str("0x"),
+            OutFmt::Octal if !digits.starts_with('0') => prefix.push('0'),
+            _ => {}
+        }
+    }
+    let mut sign = String::new();
+    if negative {
+        sign.push('-');
+    } else if signed {
+        if flags & FLAG_PLUS != 0 {
+            sign.push('+');
+        } else if flags & FLAG_SPACE != 0 {
+            sign.push(' ');
+        }
+    }
+
+    let body = format!("{sign}{prefix}{digits}");
+    let zero_pad = flags & FLAG_ZERO != 0 && prec < 0 && flags & FLAG_MINUS == 0;
+    if width > 0 && body.chars().count() < width as usize {
+        let fill = width as usize - body.chars().count();
+        if zero_pad {
+            // 零填在符号与前缀之后、数字之前（`%#08x` 打 `0x0000ff`）。
+            return format!("{}{}{}{}", sign, prefix, "0".repeat(fill), digits);
+        }
+        if flags & FLAG_MINUS != 0 {
+            return format!("{body}{}", " ".repeat(fill));
+        }
+        return format!("{}{body}", " ".repeat(fill));
+    }
+    body
+}
+
+/// `F` 形态：`秒.纳秒`。C 把宽度让给秒（`size -= prec + 1`，`stat.c:1056-1062`），
+/// 精度超过九位就用零补足（`stat.c:1088-1093`）。
+fn render_float(flags: u32, width: i32, prec: i32, secs: u64, nsecs: i64) -> String {
+    // 精度为 0 就是「只要秒」，小数点也不打（`stat.c:1031-1042`）。
+    if prec == 0 {
+        return render_number(flags, width, -1, OutFmt::Decimal, secs);
+    }
+    // 未给精度 = 有几位打几位（九位），给了就照给（`stat.c:1045-1048`）。
+    let want = if prec < 0 { 9 } else { prec };
+    let shown = want.min(9) as usize;
+    // 宽度让给秒：C 先扣掉小数点与小数位（`stat.c:1050-1062`）。
+    let secs_width = if width > 0 { width - (want + 1) } else { width };
+    let head = render_number(flags, secs_width, -1, OutFmt::Decimal, secs);
+    let mut frac = nsecs.unsigned_abs();
+    for _ in shown..9 {
+        frac /= 10;
+    }
+    let mut body = format!("{head}.{frac}");
+    if let Some(pos) = body.find('.') {
+        let digits = body.len() - pos - 1;
+        if digits < shown {
+            body.insert_str(pos + 1, &"0".repeat(shown - digits));
+        }
+    }
+    // 超过九位的部分只能补零（`stat.c:1088-1093`）。
+    if want > 9 {
+        body.push_str(&"0".repeat((want - 9) as usize));
+    }
+    body
+}
+
+/// 十进制整数字面量（C 各处 `%d`/`%lld` 的最小实现）。
+fn itoa(value: i64) -> String {
+    format!("{value}")
+}
+
+/// 左补到 `width` 个字符，不足才补。
+fn pad_left(text: &str, width: usize, fill: char) -> String {
+    if text.chars().count() >= width {
+        return text.to_string();
+    }
+    format!(
+        "{}{text}",
+        fill.to_string().repeat(width - text.chars().count())
+    )
+}
+
+/// 字符串形：精度截断、宽度填充。`0` 标志对字符串不生效——C 那侧取决于
+/// libc 是否按 glibc 那样把零填用于 `%s`，本树按 POSIX 的保守读法用空格，
+/// 五条预置模板都不涉及这一形。
+fn pad(text: &str, width: i32, prec: i32, flags: u32) -> String {
+    let mut body: String = if prec >= 0 {
+        text.chars().take(prec as usize).collect()
+    } else {
+        text.to_string()
+    };
+    if width > 0 && body.chars().count() < width as usize {
+        let fill = " ".repeat(width as usize - body.chars().count());
+        if flags & FLAG_MINUS != 0 {
+            body.push_str(&fill);
+        } else {
+            body = format!("{fill}{body}");
+        }
+    }
+    body
+}
+
+/// `vis(3)` 的一个子集：`VIS_CSTYLE | VIS_OCTAL | VIS_WHITE`（`stat.c:1000-1006`
+/// 在 `#` 与字符串形并现时用它）。可打印 ASCII 原样出，有名字的七控制字符
+/// 加 `NUL` 走反斜杠形，其余（含空格与所有非 ASCII 字节）走三位八进制。
+fn vis(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\0' => out.push_str("\\0"),
+            '\u{7}' => out.push_str("\\a"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{b}' => out.push_str("\\v"),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_ascii_graphic() => out.push(c),
+            // VIS_WHITE 把空格也算作要转义的空白；非 ASCII 字节在 C 语言环境里
+            // 不是可打印字符，两者都落三位八进制。
+            c => {
+                for byte in c.encode_utf8(&mut [0u8; 4]).as_bytes() {
+                    if *byte == b' ' || !byte.is_ascii_graphic() {
+                        out.push_str(&format!("\\{:03o}", *byte));
+                    } else {
+                        out.push(*byte as char);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,5 +1671,424 @@ mod tests {
         assert_eq!(parse_args(&["-t", "%Y"], "readlink"), Err(PlanError::Usage));
         // stat 的 `-v` 同样不在选项串里。
         assert_eq!(parse_args(&["-v"], "stat"), Err(PlanError::Usage));
+    }
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::*;
+
+    fn sample() -> StatData {
+        StatData {
+            dev: 2,
+            mode: 0o100644,
+            ino: 42,
+            nlink: 1,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            atime: TimeField::new(1_000_000_000, 123_456_789),
+            mtime: TimeField::new(1_000_000_001, 123_456_789),
+            ctime: TimeField::new(1_000_000_002, 0),
+            btime: TimeField::new(1_000_000_003, 999_000_000),
+            size: 4096,
+            blocks: 8,
+            blksize: 4096,
+            flags: 0x21,
+            generation: 7,
+        }
+    }
+
+    fn face(
+        fmt: &str,
+        data: &StatData,
+        name: Option<&str>,
+        link: Option<&str>,
+        timefmt: &str,
+    ) -> String {
+        let pieces = parse_format(fmt).unwrap_or_else(|e| panic!("{fmt} 应可解析: {}", e.span));
+        let ctx = Render {
+            data,
+            name,
+            link,
+            timefmt,
+            file_number: 3,
+        };
+        let mut out = String::new();
+        render(&pieces, &ctx, &mut out).unwrap_or_else(|e| panic!("{fmt} 应可渲染: {e:?}"));
+        out
+    }
+
+    #[test]
+    fn the_default_template_lays_out_every_field_in_order() {
+        let mut d = sample();
+        d.generation = 7;
+        assert_eq!(
+            face(DEF_FORMAT, &d, Some("/etc/rc"), None, TIME_FORMAT),
+            "2 42 -rw-r--r-- 1 (0) (0) 0 4096 \"Sep  9 01:46:40 2001\" \
+             \"Sep  9 01:46:41 2001\" \"Sep  9 01:46:42 2001\" \"Sep  9 01:46:43 2001\" \
+             4096 8 0x21 /etc/rc"
+        );
+    }
+
+    #[test]
+    fn the_raw_template_leaves_the_quotes_off_and_uses_numbers() {
+        assert_eq!(
+            face(RAW_FORMAT, &sample(), Some("/etc/rc"), None, TIME_FORMAT),
+            "2 42 0100644 1 0 0 0 4096 1000000000 1000000001 1000000002 1000000003 4096 8 33 /etc/rc"
+        );
+    }
+
+    #[test]
+    fn the_ls_like_templates_mark_type_and_follow_the_link() {
+        let mut d = sample();
+        d.mode = crate::cp::S_IFLNK | 0o777;
+        // `%SY` 显式字符串形才带 ` -> `（stat.c:855-856 的指针先于默认形态算好）。
+        assert_eq!(
+            face(
+                LS_FORMAT,
+                &d,
+                Some("/tmp/link"),
+                Some("/etc/rc"),
+                TIME_FORMAT
+            ),
+            "lrwxrwxrwx 1 (0) (0) 4096 Sep  9 01:46:41 2001 /tmp/link -> /etc/rc"
+        );
+        assert_eq!(
+            face(
+                LSF_FORMAT,
+                &d,
+                Some("/tmp/link"),
+                Some("/etc/rc"),
+                TIME_FORMAT
+            ),
+            "lrwxrwxrwx 1 (0) (0) 4096 Sep  9 01:46:41 2001 /tmp/link@ -> /etc/rc"
+        );
+    }
+
+    #[test]
+    fn the_shell_and_linux_templates_print_assignments_and_blocks() {
+        assert!(
+            face(SHELL_FORMAT, &sample(), Some("f"), None, "%s").starts_with(
+                "st_dev=2 st_ino=42 st_mode=0100644 st_nlink=1 st_uid=0 st_gid=0 st_rdev=0 \
+             st_size=4096 st_atime=1000000000 st_mtime=1000000001 st_ctime=1000000002 \
+             st_birthtime=1000000003 st_blksize=4096 st_blocks=8 st_flags=33"
+            )
+        );
+        let linux = face(LINUX_FORMAT, &sample(), Some("f"), None, "%c");
+        assert!(
+            linux.starts_with("  File: \"f\"\n  Size: 4096"),
+            "实际：{linux:?}"
+        );
+        assert!(linux.contains("FileType: Regular File"), "实际：{linux:?}");
+        assert!(linux.contains("Mode: (0644/-rw-r--r--)"), "实际：{linux:?}");
+        assert!(linux.contains("Device: 0,2   Inode: 42"), "实际：{linux:?}");
+    }
+
+    #[test]
+    fn mode_string_form_drops_the_padding_and_the_octal_default_keeps_the_type_bits() {
+        assert_eq!(
+            face("%Sp", &sample(), None, None, TIME_FORMAT),
+            "-rw-r--r--"
+        );
+        assert_eq!(face("%p", &sample(), None, None, TIME_FORMAT), "100644");
+        assert_eq!(face("%#p", &sample(), None, None, TIME_FORMAT), "0100644");
+        assert_eq!(face("%Dp", &sample(), None, None, TIME_FORMAT), "33188");
+    }
+
+    #[test]
+    fn the_three_subfield_letters_slice_the_permission_groups() {
+        let mut d = sample();
+        d.mode = 0o100754;
+        // 字符串形才切权限组（`stat.c:650-666` 的 `stmp += …; stmp[3] = 0`）。
+        assert_eq!(face("%SHp", &d, None, None, TIME_FORMAT), "rwx");
+        assert_eq!(face("%SMp", &d, None, None, TIME_FORMAT), "r-x");
+        assert_eq!(face("%SLp", &d, None, None, TIME_FORMAT), "r--");
+        // 裸片段仍是数值形：高位折成类型位（`stat.c:652`），低位取那九位（`:664`），
+        // 中位取 `(data >> 9) & 07`（`:658`）。
+        assert_eq!(face("%Hp", &d, None, None, TIME_FORMAT), "10");
+        assert_eq!(face("%Lp", &d, None, None, TIME_FORMAT), "754");
+        // 中位是 C 自己的一处不一致：数值那一支折的是粘滞/设组/设身三位，字符串那一支
+        // 切的是组权限（`stmp += 4`，`:659`）。0o100754 的特殊三位全空，所以数值形
+        // 打 0 而字符串形打 `r-x`。照抄不「修正」——外部行为优先。
+        assert_eq!(face("%Mp", &d, None, None, TIME_FORMAT), "0");
+        assert_eq!(face("%SMp", &d, None, None, TIME_FORMAT), "r-x");
+    }
+
+    #[test]
+    fn hex_with_pound_and_zero_padding_put_the_zeros_after_the_prefix() {
+        // 宽度算的是整个字段（含 `0x`），所以零填两位而不是四位。
+        assert_eq!(
+            face("%#08Xz", &sample(), None, None, TIME_FORMAT),
+            "0x001000"
+        );
+        assert_eq!(face("%8Xz", &sample(), None, None, TIME_FORMAT), "    1000");
+        assert_eq!(
+            face("%-8z|", &sample(), None, None, TIME_FORMAT),
+            "4096    |"
+        );
+    }
+
+    #[test]
+    fn sign_flags_only_ride_the_decimal_form() {
+        // 默认是无符号形，`+` 与空格旗标在它身上不落发（C 的 `%+llu` 同理）。
+        assert_eq!(face("%+z", &sample(), None, None, TIME_FORMAT), "4096");
+        assert_eq!(face("%+Dz", &sample(), None, None, TIME_FORMAT), "+4096");
+        assert_eq!(face("% Dz", &sample(), None, None, TIME_FORMAT), " 4096");
+        assert_eq!(face("%+Xz", &sample(), None, None, TIME_FORMAT), "1000");
+        let mut neg = sample();
+        neg.size = -1;
+        assert_eq!(face("%Dz", &neg, None, None, TIME_FORMAT), "-1");
+        // 默认是无符号形，负大小就打成回绕后的巨数（同 C 的 `%llu`）。
+        assert_eq!(
+            face("%z", &neg, None, None, TIME_FORMAT),
+            "18446744073709551615"
+        );
+    }
+
+    #[test]
+    fn precision_pads_the_digits_while_width_pads_the_field() {
+        assert_eq!(face("%.8i", &sample(), None, None, TIME_FORMAT), "00000042");
+        assert_eq!(face("%6i", &sample(), None, None, TIME_FORMAT), "    42");
+        assert_eq!(
+            face("%6.8i", &sample(), None, None, TIME_FORMAT),
+            "00000042"
+        );
+        // 字符串形的精度是截断。
+        assert_eq!(
+            face("%.4SN", &sample(), Some("/etc/rc"), None, TIME_FORMAT),
+            "/etc"
+        );
+    }
+
+    #[test]
+    fn size_subfields_divide_by_powers_of_two_and_round() {
+        assert_eq!(face("%Lz", &sample(), None, None, TIME_FORMAT), "4");
+        assert_eq!(face("%Mz", &sample(), None, None, TIME_FORMAT), "0");
+        assert_eq!(face("%Hz", &sample(), None, None, TIME_FORMAT), "0");
+        let mut big = sample();
+        big.size = 4 * 1024 * 1024;
+        assert_eq!(face("%Mz", &big, None, None, TIME_FORMAT), "4");
+        assert_eq!(face("%Hz", &big, None, None, TIME_FORMAT), "0");
+    }
+
+    #[test]
+    fn times_default_to_seconds_and_the_string_form_uses_the_time_template() {
+        assert_eq!(face("%m", &sample(), None, None, TIME_FORMAT), "1000000001");
+        assert_eq!(
+            face("%Sm", &sample(), None, None, TIME_FORMAT),
+            "Sep  9 01:46:41 2001"
+        );
+        // 时间模板换成 `%s` 之后，字符串形就退化成整秒。
+        assert_eq!(face("%Sm", &sample(), None, None, "%s"), "1000000001");
+    }
+
+    #[test]
+    fn the_float_form_lays_the_nanoseconds_behind_the_decimal_point() {
+        assert_eq!(
+            face("%Fm", &sample(), None, None, TIME_FORMAT),
+            "1000000001.123456789"
+        );
+        assert_eq!(
+            face("%.2Fm", &sample(), None, None, TIME_FORMAT),
+            "1000000001.12"
+        );
+        assert_eq!(
+            face("%.0Fm", &sample(), None, None, TIME_FORMAT),
+            "1000000001"
+        );
+        // 请求超过九位时，多余的部分补零（stat.c:1088-1093）。
+        assert_eq!(
+            face("%.12Fc", &sample(), None, None, TIME_FORMAT),
+            "1000000002.000000000000"
+        );
+        assert_eq!(
+            face("%.6FB", &sample(), None, None, TIME_FORMAT),
+            "1000000003.999000"
+        );
+    }
+
+    #[test]
+    fn the_link_arrow_appears_only_for_the_explicit_string_form() {
+        let mut d = sample();
+        d.mode = crate::cp::S_IFLNK | 0o777;
+        assert_eq!(
+            face("%Y", &d, Some("l"), Some("/tmp/x"), TIME_FORMAT),
+            "/tmp/x"
+        );
+        assert_eq!(
+            face("%SY", &d, Some("l"), Some("/tmp/x"), TIME_FORMAT),
+            " -> /tmp/x"
+        );
+        // 非符链上 `%Y` 打空串，并把 linkfail 置起（stat.c:858-861）。
+        let pieces = parse_format("%Y").unwrap();
+        let ctx = Render {
+            data: &sample(),
+            name: Some("f"),
+            link: None,
+            timefmt: TIME_FORMAT,
+            file_number: 1,
+        };
+        let mut out = String::new();
+        let report = render(&pieces, &ctx, &mut out).unwrap();
+        assert_eq!(out, "");
+        assert!(report.linkfail);
+    }
+
+    #[test]
+    fn the_readlink_personality_reports_a_missing_target_through_the_report() {
+        let mut d = sample();
+        d.mode = crate::cp::S_IFLNK | 0o777;
+        let pieces = parse_format("%Y").unwrap();
+        let ctx = Render {
+            data: &d,
+            name: Some("l"),
+            link: None,
+            timefmt: TIME_FORMAT,
+            file_number: 1,
+        };
+        let mut out = String::new();
+        assert!(render(&pieces, &ctx, &mut out).unwrap().linkfail);
+    }
+
+    #[test]
+    fn filename_subfields_split_the_directory_and_the_basename() {
+        assert_eq!(
+            face("%N", &sample(), Some("/etc/rc"), None, TIME_FORMAT),
+            "/etc/rc"
+        );
+        assert_eq!(
+            face("%HN", &sample(), Some("/etc/rc"), None, TIME_FORMAT),
+            "/etc"
+        );
+        assert_eq!(
+            face("%LN", &sample(), Some("/etc/rc"), None, TIME_FORMAT),
+            "rc"
+        );
+        // 尾部斜杠先剥掉再切（stat.c:929-937）。
+        assert_eq!(
+            face("%HN", &sample(), Some("/etc/rc//"), None, TIME_FORMAT),
+            "/etc"
+        );
+        // 没有斜杠的路径，高位片段打成 `.`（stat.c:939-941）。
+        assert_eq!(face("%HN", &sample(), Some("rc"), None, TIME_FORMAT), ".");
+        assert_eq!(face("%N", &sample(), None, None, TIME_FORMAT), "(stdin)");
+    }
+
+    #[test]
+    fn filetype_names_itself_in_the_high_form_and_marks_it_in_the_low_form() {
+        assert_eq!(
+            face("%HT", &sample(), None, None, TIME_FORMAT),
+            "Regular File"
+        );
+        assert_eq!(face("%LT", &sample(), None, None, TIME_FORMAT), "-");
+        let mut exec = sample();
+        exec.mode = 0o100755;
+        assert_eq!(face("%T", &exec, None, None, TIME_FORMAT), "*");
+        let mut dir = sample();
+        dir.mode = crate::cp::S_IFDIR | 0o755;
+        assert_eq!(face("%HT", &dir, None, None, TIME_FORMAT), "Directory");
+        assert_eq!(face("%LT", &dir, None, None, TIME_FORMAT), "/");
+    }
+
+    #[test]
+    fn device_datums_split_major_and_minor_and_sizerdev_folds_to_the_pair() {
+        let mut dev = sample();
+        dev.mode = crate::cp::S_IFCHR | 0o666;
+        // `makedev(3, 1)` 按同一文件 :1264 的编码是 0x301。
+        dev.rdev = 0x301;
+        assert_eq!(face("%Hr", &dev, None, None, TIME_FORMAT), "3");
+        assert_eq!(face("%Lr", &dev, None, None, TIME_FORMAT), "1");
+        assert_eq!(face("%Z", &dev, None, None, TIME_FORMAT), "3,1");
+        // 非设备走 size 一支（stat.c:979-988）。
+        assert_eq!(face("%Z", &sample(), None, None, TIME_FORMAT), "4096");
+    }
+
+    #[test]
+    fn the_devname_branch_prints_the_marks_c_prints_when_it_finds_nothing() {
+        assert_eq!(face("%Sd", &sample(), None, None, TIME_FORMAT), "???");
+    }
+
+    #[test]
+    fn ids_print_parenthesised_without_a_password_database_behind_them() {
+        assert_eq!(face("%Su", &sample(), None, None, TIME_FORMAT), "(0)");
+        assert_eq!(face("%u", &sample(), None, None, TIME_FORMAT), "0");
+        let mut d = sample();
+        d.gid = 1000;
+        assert_eq!(face("%Sg", &d, None, None, TIME_FORMAT), "(1000)");
+        assert_eq!(face("%g", &d, None, None, TIME_FORMAT), "1000");
+    }
+
+    #[test]
+    fn the_pound_flag_on_a_string_vis_encodes_control_and_space() {
+        assert_eq!(
+            face("%#SN", &sample(), Some("a\tb c"), None, TIME_FORMAT),
+            "a\\tb\\040c"
+        );
+        // 反斜杠自己也要被_escape_，非 ASCII 字节走三位八进制。
+        assert_eq!(
+            face("%#SN", &sample(), Some("a\\b"), None, TIME_FORMAT),
+            "a\\\\b"
+        );
+        assert_eq!(
+            face("%#SN", &sample(), Some("é"), None, TIME_FORMAT),
+            "\\303\\251"
+        );
+    }
+
+    #[test]
+    fn unsupported_subfield_or_form_is_the_same_bad_format_c_reports() {
+        let pieces = parse_format("%Mf").unwrap();
+        let ctx = Render {
+            data: &sample(),
+            name: Some("f"),
+            link: None,
+            timefmt: TIME_FORMAT,
+            file_number: 1,
+        };
+        let mut out = String::new();
+        assert_eq!(
+            render(&pieces, &ctx, &mut out).unwrap_err(),
+            FaceError::BadFormat("%Mf".to_string())
+        );
+        // 节点号没有字符串形（stat.c:639-641 的允许集里没有 FMTF_STRING）。
+        let pieces = parse_format("%Si").unwrap();
+        assert_eq!(
+            render(&pieces, &ctx, &mut String::new()).unwrap_err(),
+            FaceError::BadFormat("%Si".to_string())
+        );
+    }
+
+    #[test]
+    fn the_realpath_letter_is_refused_instead_of_rendering_empty() {
+        let pieces = parse_format("%R").unwrap();
+        let ctx = Render {
+            data: &sample(),
+            name: Some("f"),
+            link: None,
+            timefmt: TIME_FORMAT,
+            file_number: 1,
+        };
+        assert_eq!(
+            render(&pieces, &ctx, &mut String::new()).unwrap_err(),
+            FaceError::RealpathUnported
+        );
+    }
+
+    #[test]
+    fn literals_and_simple_forms_reach_the_output_in_order() {
+        let pieces = parse_format("%@ of %@: %z%n").unwrap();
+        let ctx = Render {
+            data: &sample(),
+            name: None,
+            link: None,
+            timefmt: TIME_FORMAT,
+            file_number: 2,
+        };
+        let mut out = String::new();
+        let report = render(&pieces, &ctx, &mut out).unwrap();
+        assert_eq!(out, "2 of 2: 4096\n");
+        assert!(report.ends_with_newline);
+        assert!(!report.linkfail);
     }
 }

@@ -232,6 +232,7 @@ minix-sef = { path = "libs/minix-sef" }
 # 继承无 std 形态。feature 统一下不把 std 拖进 freestanding 构建。
 minix-rt = { path = "libs/minix-rt", default-features = false }
 minix-regex = { path = "commands/usr-bin/regex" }
+minix-proctools = { path = "commands/bin/proctools" }
 minix-elf = { path = "libs/minix-elf" }
 minix-platform = { path = "libs/minix-platform" }
 minix-fs = { path = "libs/minix-fs" }

@@ -16,6 +16,9 @@ minix-sys = { workspace = true }
 # The `:` operator of expr anchors a basic regular expression; the BRE
 # engine is the 08-stage library (the C expr links libc's regcomp).
 minix-regex = { workspace = true }
+# `stat` 的 `%Sa`/`%Sm`/`%Sc` 与 `-t` 走的就是 12 线那份 `strftime` 子集
+# （`proctools::dates`），日历真源只留一处，故此处取同线库而不另写一份。
+minix-proctools = { workspace = true }
 
 # minix-rt 按目标分形态（init / NS8-B 服务器判例的命令侧推广，NS12）：
 # - 宿主（开发与测试面）取 std 形态：rustc 对 hosted target 一律传

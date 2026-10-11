@@ -6,7 +6,10 @@
 //! `strftime("+%a %b %e %H:%M:%S %Z %Y")` minus the leading `+`
 //! (`date.c:146-166`). The calendar inverse reuses
 //! [`crate::stamp::civil_from_days`] (Hinnant's algorithm, the counterpart
-//! of `days_from_civil`), so there is no second source of date truth.
+//! of `days_from_civil`), so there is no second source of date truth. `%s`
+//! therefore does not re-derive the epoch from the fields: [`format_at`] takes
+//! the seconds the breakdown came from, which is what `stat -s` needs, while
+//! [`format`] (what `date` runs) leaves that directive unmodelled.
 //!
 //! Time zone: this layer carries no tz database, so breakdowns are UTC and
 //! `%Z` renders `UTC`. This is the same declared boundary `stamp.rs` draws
@@ -14,8 +17,8 @@
 //! set-the-time path (`date operand`) needs `settimeofday`, which has no
 //! client wrapper yet — see the `date` binary's residual note.
 
-use crate::stamp::civil_from_days;
 use crate::ProcError;
+use crate::stamp::civil_from_days;
 
 /// Month abbreviations, `ctime`/`%b` order (`date.c` default layout).
 const MONTHS: [&str; 12] = [
@@ -112,6 +115,17 @@ pub fn breakdown(epoch: i64) -> BrokenTime {
 /// common POSIX set; an unrecognised `%X` is passed through verbatim (a
 /// documented subset, matching how the text tools decline un-modelled faces).
 pub fn format(fmt: &str, time: &BrokenTime, out: &mut [u8]) -> Result<usize, ProcError> {
+    format_at(fmt, time, None, out)
+}
+
+/// [`format`] with the epoch seconds that produced `time`, for templates that
+/// ask for `%s`. Pass `None` when the breakdown is all the caller has.
+pub fn format_at(
+    fmt: &str,
+    time: &BrokenTime,
+    epoch: Option<i64>,
+    out: &mut [u8],
+) -> Result<usize, ProcError> {
     let mut w = Sink { out, pos: 0 };
     let bytes = fmt.as_bytes();
     let mut i = 0;
@@ -176,6 +190,15 @@ pub fn format(fmt: &str, time: &BrokenTime, out: &mut [u8]) -> Result<usize, Pro
                 w.pad2(time.minute)?;
             }
             b'S' => w.pad2(time.second)?,
+            b's' => match epoch {
+                // `%s` is the seconds this breakdown came from. Taking them
+                // from the caller keeps a single calendar encoder in the tree
+                // (`crate::stamp::civil_from_days` is the only direction we
+                // own); a caller that hands over only fields - `date` does -
+                // declines the directive instead of re-deriving the epoch.
+                Some(secs) => w.number(secs)?,
+                None => return Err(ProcError::InvalidArgument),
+            },
             b'T' => {
                 w.pad2(time.hour)?;
                 w.byte(b':')?;
@@ -296,6 +319,27 @@ mod tests {
     // The default layout `date.c:146` uses (`+%a %b %e %H:%M:%S %Z %Y`).
     const DEFAULT_FMT: &str = "%a %b %e %H:%M:%S %Z %Y";
 
+    fn rendered_at(fmt: &str, epoch: i64) -> String {
+        let t = breakdown(epoch);
+        let mut buf = [0u8; 256];
+        let used = format_at(fmt, &t, Some(epoch), &mut buf).unwrap();
+        String::from_utf8(buf[..used].to_vec()).unwrap()
+    }
+
+    #[test]
+    fn percent_s_needs_the_seconds_the_breakdown_came_from() {
+        // `stat -s` asks for exactly this letter as its time template (`stat.c:302-306`).
+        assert_eq!(rendered_at("%s", 0), "0");
+        assert_eq!(rendered_at("%s", 1_000_000_000), "1000000000");
+        assert_eq!(rendered_at("%s", -100), "-100");
+        assert_eq!(rendered_at("t=%sZ", 1_709_164_800), "t=1709164800Z");
+        // A caller handing over only the fields (`date`) does not get the form: the
+        // directive is declined rather than re-derived.
+        let t = breakdown(0);
+        let mut buf = [0u8; 16];
+        assert!(format("%s", &t, &mut buf).is_err());
+    }
+
     #[test]
     fn test_epoch_zero_default_layout() {
         // 1970-01-01 00:00:00 UTC was a Thursday.
@@ -305,13 +349,19 @@ mod tests {
     #[test]
     fn test_party_time_2001() {
         // 1_000_000_000: Sun 2001-09-09 01:46:40 UTC (the famous party time).
-        assert_eq!(rendered(DEFAULT_FMT, 1_000_000_000), "Sun Sep  9 01:46:40 UTC 2001");
+        assert_eq!(
+            rendered(DEFAULT_FMT, 1_000_000_000),
+            "Sun Sep  9 01:46:40 UTC 2001"
+        );
     }
 
     #[test]
     fn test_leap_day_2024() {
         // 1_709_164_800 was Feb 29 2024 00:00 (a Thursday).
-        assert_eq!(rendered(DEFAULT_FMT, 1_709_164_800), "Thu Feb 29 00:00:00 UTC 2024");
+        assert_eq!(
+            rendered(DEFAULT_FMT, 1_709_164_800),
+            "Thu Feb 29 00:00:00 UTC 2024"
+        );
         // Next second crosses into March (yearday 60 -> 61 check).
         let t = breakdown(1_709_164_800);
         assert_eq!((t.month, t.day, t.yearday), (2, 29, 60));
@@ -320,7 +370,10 @@ mod tests {
     #[test]
     fn test_negative_epoch_pre_1970() {
         // -86_400 is 1969-12-31 (a Wednesday).
-        assert_eq!(rendered(DEFAULT_FMT, -86_400), "Wed Dec 31 00:00:00 UTC 1969");
+        assert_eq!(
+            rendered(DEFAULT_FMT, -86_400),
+            "Wed Dec 31 00:00:00 UTC 1969"
+        );
     }
 
     #[test]
