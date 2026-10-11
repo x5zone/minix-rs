@@ -43,6 +43,7 @@ pub mod dents;
 pub mod du;
 pub mod echo;
 pub mod expr;
+pub mod find;
 pub mod humanize;
 pub mod linkops;
 pub mod ln;
