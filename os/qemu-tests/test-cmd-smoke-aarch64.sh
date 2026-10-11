@@ -110,10 +110,11 @@ if [ "$reached" -ne 1 ]; then
 fi
 echo "aarch64: command marker reached — checking ls /bin + cat /etc/rc ran"
 
-# ── Stage 4: command-face assertions. The /etc/rc runs `ls /bin` and `cat /etc/rc`.
-# Assert the /bin entry names (sh/echo/ls/cat) reached the console via VFS readdir,
-# and the rc's own shebang line came back via open+read. Allow up to TIMEOUT_T4 for
-# the post-marker commands to flush. ──
+# ── Stage 4: command-face assertions. The /etc/rc runs `ls /bin`, `cat /etc/rc` and
+# `/bin/du /etc`. Assert the /bin entry names (sh/echo/ls/cat) reached the console via
+# VFS readdir, the rc's own shebang line came back via open+read, and du's one total
+# line for /etc is there too — du only reads, so that line is this family's first
+# machine-side numeric reading (the x86 twin asserts it as its own stage). ──
 cmds_ok=0
 AFTER_TXT="$WORK/after_marker.txt"
 for _ in $(seq 1 "$TIMEOUT_T4"); do
@@ -125,7 +126,8 @@ for _ in $(seq 1 "$TIMEOUT_T4"); do
         strings "$SERIAL_LOG" 2>/dev/null | sed -n "/$T4_MARKER/,\$p" > "$AFTER_TXT"
         if grep -qa "/bin/sh" "$AFTER_TXT" \
            && grep -qaE '\bcat\b' "$AFTER_TXT" \
-           && grep -qaE '\bls\b' "$AFTER_TXT"; then
+           && grep -qaE '\bls\b' "$AFTER_TXT" \
+           && grep -qaE '^[0-9]+[[:space:]]+/etc\r?$' "$AFTER_TXT"; then
             cmds_ok=1; break
         fi
     fi
@@ -134,11 +136,11 @@ done
 kill "$QEMU_PID" 2>/dev/null || true   # 停住串口增长；wait 由 EXIT trap 兑底
 
 if [ "$cmds_ok" -ne 1 ]; then
-    echo "FAIL: /etc/rc command face (ls /bin, cat /etc/rc) output not fully observed"
-    echo "      marker present but ls/cat listing missing — VFS command chain incomplete?"
+    echo "FAIL: /etc/rc command face (ls /bin, cat /etc/rc, du /etc) output not fully observed"
+    echo "      marker present but ls/cat listing or the du total missing — VFS command chain incomplete?"
     strings "$SERIAL_LOG" 2>/dev/null | tail -12 || true
     exit 1
 fi
 
-echo "RESULT: PASS (aarch64 18-stage command output — marker + ls /bin + cat /etc/rc — on the VFS IPC path)"
+echo "RESULT: PASS (aarch64 18-stage command output — marker + ls /bin + cat /etc/rc + du /etc — on the VFS IPC path)"
 exit 0

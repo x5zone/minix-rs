@@ -368,6 +368,9 @@ pub fn plan(
         ("echo", bin_rel("echo")),
         ("ls", bin_rel("ls")),
         ("cat", bin_rel("cat")),
+        // `du` 只读，不受只读 imgrd 根盘门控（批次一百二十登记的下一件）：
+        // 它的盘上读数由 test-cmd-smoke* 的 du 断言判。
+        ("du", bin_rel("du")),
     ];
     if e5_ds_ready {
         bins.push(("e5-ds", bin_rel("e5-ds")));
@@ -382,7 +385,7 @@ pub fn plan(
             rc_host,
             imgrd_blocks,
         )?,
-        note: "imgrd 原型文件（/etc 最小集 + /bin/{sh,echo,ls,cat[,e5-ds]} + /tests + /dev/console）",
+        note: "imgrd 原型文件（/etc 最小集 + /bin/{sh,echo,ls,cat,du[,e5-ds]} + /tests + /dev/console）",
     });
     actions.push(Action::Tool {
         program: layout

@@ -8,11 +8,20 @@
 # NK4-C §1.106 起主动验证 18-stage 命令面（echo/ls/cat 为核心）：marker
 # 置首确保既有冒烟 gate（test-cmd-smoke.sh 只 grep marker）不受下游命令
 # 成败影响；随后 ls/cat 走真实 VFS IPC 腿——ls→getdents(readdir)、
-# cat→open+read——是对已修 CDEV/lookup 链之上的文件面命令面端到端检验。
+# cat→open+read。口径校正（批次一百二十一盘上实测）：cat→open+read 一条
+# 确实到位（rc 自身被读回串口），而 ls→getdents 一条今天回 `ls: /bin: read
+# error`——imgrd 根盘的目录读腿未通，见 coordination/TODO-LEDGER-OPEN.md §7
+# 同名登记；du 的读数也带着同一处断裂（`du: /etc` + 仅含自身的 `24 /etc`）。
 # mount/hostname/rc.d 等扩展项仍待 05-shell 消费方就绪后按需上收。
 echo "minix-rs rc: minimal boot script marker"
 ls /bin
 cat /etc/rc
+# 批次一百二十登记的 `du` 盘上读数：du 只读，不受只读 imgrd 根盘门控，是本
+# 家族第一个能在真机判读量的命令。`/bin/du /etc` 回一行「块数 TAB /etc」
+#（默认无 -a 时只印操数自身），由 test-cmd-smoke*.sh 的 du 断言收。进目次
+# 名走绝对路径避开 PATH 假设；未播种该二进制的架构只多一行 not found（同
+# /bin/e5-ds 先例），不影响 marker 在前的既有冒烟判据。
+/bin/du /etc
 # E5(f) 真机半：DS 数据服务传输链载体（minix-sys DsClient → DS 端点 6）。
 # 串口判据逐段 `e5-ds: ...`，计数行 `E5f-LABELS n/12`，末行是 run_qemu.sh
 # 惯例的 `### TEST_RESULT: ... ###`；门脚本 os/qemu-tests/test-e5-ds.sh。
