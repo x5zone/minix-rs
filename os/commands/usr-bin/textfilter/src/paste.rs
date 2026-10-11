@@ -27,9 +27,11 @@ pub struct PasteOptions {
     pub serial: bool,
 }
 
-/// Parses `-d list` and `-s`. Unknown options are [`PasteError::BadOption`].
-pub fn parse(args: &[&str]) -> Result<PasteOptions, PasteError> {
+/// Parses `-d list` and `-s`, collecting the remaining words as file operands.
+/// Unknown options are [`PasteError::BadOption`].
+pub fn parse_args<'a>(args: &[&'a str]) -> Result<(PasteOptions, Vec<&'a str>), PasteError> {
     let mut options = PasteOptions::default();
+    let mut operands: Vec<&str> = Vec::new();
     let mut index = 0;
     while index < args.len() {
         let arg = args[index];
@@ -43,12 +45,19 @@ pub fn parse(args: &[&str]) -> Result<PasteOptions, PasteError> {
             }
         } else if arg == "-s" {
             options.serial = true;
-        } else {
+        } else if arg.starts_with('-') && arg.len() > 1 {
             return Err(PasteError::BadOption(arg.to_string()));
+        } else {
+            operands.push(arg);
         }
         index += 1;
     }
-    Ok(options)
+    Ok((options, operands))
+}
+
+/// Options-only view of [`parse_args`] (any file operands are dropped).
+pub fn parse(args: &[&str]) -> Result<PasteOptions, PasteError> {
+    Ok(parse_args(args)?.0)
 }
 
 /// What went wrong parsing the arguments.
@@ -88,6 +97,29 @@ fn delimiter_for(gap_index: usize, options: &PasteOptions) -> &str {
     &options.delimiters[index]
 }
 
+/// Parallel mode (the default): merge one line from each stream into an output
+/// row. A row runs while any stream still has a line; a stream that has run out
+/// contributes an empty cell. The delimiter before column `j` (gap `j - 1`
+/// between the previous column and this one) cycles through the list exactly as
+/// [`join_serial`] does, restarting each row (paste.c's per-line `dcount`).
+/// Returns the whole output, each row newline-terminated.
+pub fn join_parallel(streams: &[&[&str]], options: &PasteOptions) -> String {
+    let rows = streams.iter().map(|stream| stream.len()).max().unwrap_or(0);
+    let mut out = String::new();
+    for row in 0..rows {
+        for (column, stream) in streams.iter().enumerate() {
+            if column > 0 {
+                out.push_str(delimiter_for(column - 1, options));
+            }
+            if let Some(cell) = stream.get(row) {
+                out.push_str(cell);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +128,42 @@ mod tests {
     fn test_serial_joins_with_tabs_by_default() {
         let options = parse(&["-s"]).unwrap();
         assert_eq!(join_serial(&["a", "b", "c"], &options), "a\tb\tc\n");
+    }
+
+    #[test]
+    fn test_parallel_merges_lines_across_streams() {
+        let options = parse(&[]).unwrap();
+        let a = ["a1", "a2", "a3"];
+        let b = ["b1", "b2"];
+        // Shorter second stream contributes an empty cell on the last row.
+        assert_eq!(
+            join_parallel(&[&a[..], &b[..]], &options),
+            "a1\tb1\na2\tb2\na3\t\n"
+        );
+    }
+
+    #[test]
+    fn test_parallel_delimiter_cycles_restart_each_row() {
+        let options = parse(&["-d", "+:"]).unwrap();
+        let a = ["1", "2"];
+        let b = ["3", "4"];
+        let c = ["5", "6"];
+        // gaps use +,: alternating and reset at each row start.
+        assert_eq!(
+            join_parallel(&[&a[..], &b[..], &c[..]], &options),
+            "1+3:5\n2+4:6\n"
+        );
+    }
+
+    #[test]
+    fn test_parse_args_collects_file_operands() {
+        let (options, operands) = parse_args(&["-d", ",", "x.txt", "y.txt"]).unwrap();
+        assert_eq!(options.delimiters, vec![String::from(",")]);
+        assert_eq!(operands, vec!["x.txt", "y.txt"]);
+        assert_eq!(
+            parse_args(&["-Z"]),
+            Err(PasteError::BadOption("-Z".to_string()))
+        );
     }
 
     #[test]
@@ -114,10 +182,7 @@ mod tests {
 
     #[test]
     fn test_parse_rejects_unknown() {
-        assert!(matches!(
-            parse(&["-Z"]),
-            Err(PasteError::BadOption(_))
-        ));
+        assert!(matches!(parse(&["-Z"]), Err(PasteError::BadOption(_))));
         assert_eq!(parse(&["-d"]), Err(PasteError::MissingValue));
     }
 }
