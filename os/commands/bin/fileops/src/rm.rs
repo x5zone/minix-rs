@@ -111,6 +111,44 @@ pub fn nonexistent(e: Errno) -> bool {
     e == Errno::ENOENT || e == Errno::ENAMETOOLONG || e == Errno::ENOTDIR
 }
 
+/// Which question C's `check` (`rm.c:541-578`) asks, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckFlavor {
+    /// Nothing is asked: the operand is removed straight away (`rm.c:557-560`
+    /// returns "proceed" — its `1` is the caller's "yes, go ahead").
+    None,
+    /// `-i`: `remove '<path>'? ` (`rm.c:551-552`).
+    Remove,
+    /// No `-i`, but a terminal, a non-symlink whose write access is genuinely
+    /// denied: `override <perms><sep><user>:<group> for '<path>'? `
+    /// (`rm.c:561-572`).
+    Override,
+}
+
+/// The ask decision of `rm.c:551-560`.
+///
+/// The comment there is explicit about the exclusions: a symbolic link is not
+/// asked about "because their permissions are meaningless", a non-terminal
+/// standard input never asks, and the `access(name, W_OK)` test treats
+/// `ETXTBSY` (a running binary: writable but in use) as "not a permission
+/// problem", so it does not ask either. `unwritable` is the truth value of
+/// `access(...)` returning `-1`; `busy` says that failure was `ETXTBSY`.
+pub fn check_flavor(
+    interactive: bool,
+    stdin_is_tty: bool,
+    is_symlink: bool,
+    unwritable: bool,
+    busy: bool,
+) -> CheckFlavor {
+    if interactive {
+        return CheckFlavor::Remove;
+    }
+    if !stdin_is_tty || is_symlink || !unwritable || busy {
+        return CheckFlavor::None;
+    }
+    CheckFlavor::Override
+}
+
 /// C `rm.c:588` `ISDOT(a)`: `(a)[0] == '.' && (!(a)[1] || ((a)[1] == '.' &&
 /// !(a)[2]))` — the basename is exactly `"."` or exactly `".."`.
 pub fn is_dot(name: &str) -> bool {
@@ -222,6 +260,50 @@ mod tests {
         // A permission failure is real and must still be reported under -f.
         assert!(!nonexistent(Errno::EPERM));
         assert!(!nonexistent(Errno::EINVAL));
+    }
+
+    #[test]
+    fn check_flavor_minus_i_wins_without_consulting_anything() {
+        // rm.c:551: "Check -i first" — the terminal, the type and the access
+        // bits are not even looked at.
+        assert_eq!(
+            check_flavor(true, false, false, false, false),
+            CheckFlavor::Remove
+        );
+        assert_eq!(
+            check_flavor(true, true, true, true, true),
+            CheckFlavor::Remove
+        );
+    }
+
+    #[test]
+    fn check_flavor_needs_terminal_writable_and_type() {
+        // The one shape that asks: rm.c:557-560 all three guards pass.
+        assert_eq!(
+            check_flavor(false, true, false, true, false),
+            CheckFlavor::Override,
+            "a terminal, a non-symlink, and access(W_OK) denied"
+        );
+        assert_eq!(
+            check_flavor(false, false, false, true, false),
+            CheckFlavor::None,
+            "!stdin_ok"
+        );
+        assert_eq!(
+            check_flavor(false, true, true, true, false),
+            CheckFlavor::None,
+            "symlink: mode is meaningless"
+        );
+        assert_eq!(
+            check_flavor(false, true, false, false, false),
+            CheckFlavor::None,
+            "writable"
+        );
+        assert_eq!(
+            check_flavor(false, true, false, true, true),
+            CheckFlavor::None,
+            "ETXTBSY is a denial, but not a permission one (rm.c:558)"
+        );
     }
 
     #[test]

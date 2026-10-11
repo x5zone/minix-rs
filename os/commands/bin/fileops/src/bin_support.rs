@@ -125,6 +125,32 @@ pub fn write_ok(bytes: &[u8]) -> bool {
     minix_sys::write(STDOUT, bytes).is_ok()
 }
 
+/// Reads one interactive answer the way the C file commands do: the first
+/// character decides (`y`/`Y` is yes), the rest of the line is drained, and
+/// end-of-file or a read failure counts as "no". Ground truth: `rm.c:573-576`
+/// (`first = ch = getchar(); while (ch != '\n' && ch != EOF) ch = getchar();`),
+/// the same shape `mv.c:195-201` and `cp/utils.c:123-131` use.
+pub fn answer_yes() -> bool {
+    let mut buf = [0u8; 64];
+    let first = match minix_sys::read(STDIN, &mut buf) {
+        Ok(0) | Err(_) => return false,
+        Ok(n) => buf[0..n].first().copied().unwrap_or(b'\n'),
+    };
+    if first != b'\n' {
+        loop {
+            match minix_sys::read(STDIN, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if buf[..n].contains(&b'\n') {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    first == b'y' || first == b'Y'
+}
+
 /// Writes the slice to standard output, exiting 1 on failure.
 #[cfg(all(not(test), target_os = "none"))]
 pub fn emit(bytes: &[u8]) {

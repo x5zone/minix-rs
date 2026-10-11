@@ -121,7 +121,7 @@ fn do_move(source: &str, target: &str, flags: &MvFlags) -> bool {
             // mv.c:181: a bare fprintf, so the question carries no program name
             // and no quotes around the target.
             support::warn(format!("overwrite {target}? ").as_bytes());
-            if !answer_yes() {
+            if !support::answer_yes() {
                 // mv.c:200-201: a "no" answer skips this operand, not an error.
                 return false;
             }
@@ -130,7 +130,7 @@ fn do_move(source: &str, target: &str, flags: &MvFlags) -> bool {
             // `ask_about` only answers Override when the target could be stat'd,
             // which is also when tsb holds the mode and owner mv.c:188 prints.
             override_prompt(target, &tsb);
-            if !answer_yes() {
+            if !support::answer_yes() {
                 return false;
             }
         }
@@ -324,29 +324,6 @@ fn override_prompt(target: &str, sb: &Stat) {
         )
         .as_bytes(),
     );
-}
-
-/// mv.c:195-201: the first character answers, the rest of the line is drained,
-/// and end-of-file counts as "no".
-fn answer_yes() -> bool {
-    let mut buf = [0u8; 64];
-    let first = match read(support::STDIN, &mut buf) {
-        Ok(0) | Err(_) => return false,
-        Ok(n) => buf[0..n].first().copied().unwrap_or(b'\n'),
-    };
-    if first != b'\n' {
-        loop {
-            match read(support::STDIN, &mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if buf[..n].contains(&b'\n') {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    first == b'y' || first == b'Y'
 }
 
 fn run() -> ! {
