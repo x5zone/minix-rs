@@ -12,7 +12,7 @@
 //! `100` (the `availblks == 0 ? full` arm at line 476).
 //!
 //! This half is pure integers and strings — it takes the numbers the caller
-//! read out of a [`minix_types::StatvfsBuf`] and emits the report bytes, so
+//! read out of a [`minix_sys::StatvfsBuf`] and emits the report bytes, so
 //! the arithmetic is unit-tested without a filesystem or the IPC layer. The
 //! report block size is fixed at 1024 (the POSIX `-P`/`-k` view); the
 //! human-readable (`-h`) and legacy 512-block aligned formats are a declared

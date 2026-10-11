@@ -23,8 +23,7 @@ mod support;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_mountinfo::df::{format_p_row, P_HEADER};
-use minix_sys::write;
-use minix_types::{StatvfsBuf, statvfs_off};
+use minix_sys::{StatvfsBuf, statvfs_off, write};
 
 const STDERR: i32 = 2;
 /// Matches the VFS mount table width (`NR_MNTS`).

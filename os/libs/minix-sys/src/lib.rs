@@ -53,6 +53,10 @@ pub use minix_types::{Gid, Pid, Uid};
 // 用户态 `struct stat` ABI 走显式路径再导出——minix-types 根上
 // `ipc::fs_driver::Stat`（VTreeFS 序列化载荷）同名，glob 会歧义。
 pub use minix_types::types::stat::Stat;
+// 文件系统统计 ABI 同理走显式再导出：`statvfs`/`getvfsstat` 本就在签名里用
+// `minix_types::StatvfsBuf`，而命令层只允许 `use minix_sys::…`（边界守卫
+// `tools/check-command-boundary.sh`），所以缓冲类型与它的字节偏移模块一并转交。
+pub use minix_types::{StatvfsBuf, statvfs_off};
 
 /// The errno constant table at the crate root — the position `<errno.h>`
 /// holds for C programs (C: `minix3/sys/sys/errno.h`; command binaries
