@@ -2058,7 +2058,9 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
 /// reduced under Direct Map to a **readiness confirmation**:
 ///
 /// 1. Assert VM's page-table root is valid (established in Phase C).
-/// 2. Record VM as the kernel-level ptproc (`set_current_ptproc_nr`) so
+/// 2. Confirm VM is the kernel-level ptproc (the `set_current_ptproc_nr`
+///    write happens in `switch_address_space`, and the CpuLocal slot is
+///    installed in `init_smp_state` — this step records nothing itself) so
 ///    `dispatch_vmctl(SetAddrSpace)` Step 3 can decide whether to reload
 ///    the hardware root register (C: `setcr3()`, arch_do_vmctl.c:19-33; the
 ///    `p == ptproc` check is at :25).
@@ -2083,7 +2085,8 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
     //
     // The root was installed in Phase C (`init_proc_and_boot`): for the
     // non-mock path, `p_seg.phys_root` records the bootstrap root and
-    // `p_seg.virt_root` its identity-mapped VA (lib.rs:960-963). Both must
+    // `p_seg.virt_root` its identity-mapped VA (assigned earlier in
+    // `init_proc_and_boot`). Both must
     // be present before VM can be trusted as the page-table process.
     let vm_proc = proc_table.get(crate::proc::proc_nr::VM_PROC_NR)
         .expect("VM process must be initialized before init_post_and_memory");
@@ -2096,7 +2099,8 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
         "VM page-table root (virt) must be kernel-mapped after stage C"
     );
 
-    // Step 2: Record VM as the kernel-level ptproc.
+    // Step 2: Confirm the kernel-level ptproc is already recorded (this step
+    // itself records nothing — see the note below).
     //
     // C: get_cpulocal_var(ptproc) = vm — protect.c:372 (x86) / protect.c:99 (ARM)
     //
@@ -2114,8 +2118,9 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
 
     // Step 3: Assert the VM Direct Map base is configured.
     //
-    // The VM Direct Map window is established in Phase C when the kernel
-    // builds VM's initial page table (07-cross-space-init.md §3.2). Its
+    // The VM Direct Map window is established by `establish_boot_dm` at the
+    // arch-boot Step 4 (the “step4 DM coverage” call site); Phase C only
+    // records the page-table root (07-cross-space-init.md §3.2). Its
     // base is a per-architecture compile-time constant; this check is a
     // documented-contract assertion that fails fast at boot if a future
     // architecture ever configures a zero base.
