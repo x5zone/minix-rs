@@ -68,6 +68,16 @@ jobs:
           echo '── 4/4 Trae 适配逐文件对照 ──'
           bash tools/diff-trae-skills.sh --only-diff
 
+      - name: 仓库级门禁（模式门全量 + 命令层边界守卫）
+        # 这两个门早已存在但不在任何闸上，所以长期「红着入库」无人拦：
+        # pattern-gate 的全量扫描只跑了 `--self-test`（上一项），边界守卫只靠人记得跑。
+        # 台账 `rewrite-notes/coordination/TODO-LEDGER-OPEN.md` §7「门不在闸上」一行登的丙子面。
+        # 能接进来是因为它俩已被归零：边界守卫 2026-10-12 翻绿（C-84），
+        # P8 的 57 个 CRLF 文件也已全部归一（C-85、C-86）。
+        run: |
+          bash tools/pattern-gate.sh
+          bash tools/check-command-boundary.sh
+
       - name: 门自身的正反向断言
         run: bash tools/lint-review-rules.sh --self-test
 
