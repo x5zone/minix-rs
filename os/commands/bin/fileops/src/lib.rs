@@ -37,6 +37,7 @@
 // other module stays allocation free.
 extern crate alloc;
 
+pub mod cook;
 pub mod echo;
 pub mod expr;
 pub mod mkdir;

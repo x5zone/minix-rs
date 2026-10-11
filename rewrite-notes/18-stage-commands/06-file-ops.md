@@ -149,6 +149,7 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 |-----------|----------------|------|
 | `lib.rs` | — | 错误类型（`FileOpError`，22 对应参数无效、2 对应文件缺失）与模块组织 |
 | `mode.rs` | `chmod.c:166`（解析）、`:216`（应用）思想 | 八进制与符号模式解析应用（`apply_mode`） |
+| `cook.rs` | `cat.c` 的 `cook_buf` | `cat` 行变换：`-n`/`-b` 行号（`%6d\t`）、`-s` 连续空行压缩（逐字状态机） |
 | `mkdir.rs` | `mkdir.c` 的 `mkpath` 与 `-m` `getmode` 思想 | `-p` 逐级前缀遍历、中间/终端模式、额外位判、`-m` 复用 `apply_mode` |
 | `rmdir.rs` | `rmdir.c` 的 `rm_path` | `-p` 由内向外逐级父目录遍历（复刻 `strrchr` 截断、首败即停、不删根） |
 | `touch.rs` | `touch.c` 的 `stime_arg1`/`stime_arg2` | `[[CC]YY]MMDDhhmm[.SS]` 时间解析与 UTC 历法↔历元换算（`-t`/obsolete 定位形） |
@@ -167,6 +168,7 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 | 函数 | 输入 | 输出 | 对应 C 行为 |
 |------|------|------|------------|
 | `apply_mode(现有位, 模式文本)` | 位与文本 | 新位 | `setmode` 加 `getmode` 语义 |
+| `CatCook::push(字节, 发出器)` | 一个输入字节与回调 | cooked 字节序列 | `cook_buf` 的行号与压缩语义 |
 | `for_each_parent(路径, 访问器)` | 路径与回调 | 逐级前缀 | `mkpath` 的斜杠扫描 |
 | `for_each_ancestor(路径, 访问器)` | 路径与回调 | 逐级父目（由内向外） | `rm_path` 的 `strrchr` 截断 |
 | `parse_time_spec(历元, 规格)` | 参考历元与时间串 | 目标历元秒 | `stime_arg1` 的长度分层覆盖与 69 年枢纽 |
@@ -185,7 +187,7 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 | echo | `write`、`exit`、argv 交接 | 已接线（`src/bin/echo.rs`） |
 | true、false | `exit` | 已接线（纯退出码，忽略操作数） |
 | basename、dirname | `write`、`exit`、argv 交接 | 已接线（决定半在 `path.rs`） |
-| cat | `open`（现有路径）、`read`、`write`、`close` | API 已备（`open_existing_via` 实装，`minix-sys/src/vfs.rs:696`）；真实阻塞 = guest 二进制形态（freestanding bin 尚未交叉编译入镜像）+ exec 递送链（NS3 门 bug 已修，NS5 VFS exec worker 待实装） |
+| cat | `open`（现有路径）、`read`、`write`、`close` | API 已备（`open_existing_via` 实装，`minix-sys/src/vfs.rs:696`）；拼接与行变换选项已接（`-n`/`-b`/`-s` 走 `cook_buf` 决定半 `cook.rs`，逐操作符新建状态使行号逐文件重启）；`-e`/`-t`/`-v`（字节可视化）、`-B`/`-l`/`-f` 报 usage；真实执行阻塞 = guest 二进制形态（freestanding bin 尚未交叉编译入镜像）+ exec 递送链（NS3 门 bug 已修，NS5 VFS exec worker 待实装） |
 | cp、ln、mv、rm、mkdir、rmdir、chmod、chown、touch、mkfifo、truncate、link、unlink | 上一行全部，加各自的方向调用（建链/截断/权限位面） | mkdir、rmdir 已接线（`src/bin/{mkdir,rmdir}.rs`，决定半走已备的 `minix_sys::mkdir`/`chmod`/`stat`/`rmdir`）；余行待 14 侧逐项登记封装 |
 | df、du、find、stat、`test` 的文件问 | `stat`、`getdents` | 缺封装（`../14-stage-runtime/todo.md:60` 已登记） |
 | touch | `gettimeofday`、`stat`、`open`（`O_WRONLY|O_CREAT`）、`fstat`、`close`、`utimens` | 已接线（`src/bin/touch.rs`，决定半 `touch.rs`：`parse_time_spec` 与 UTC 历法换算）；默认设当前时间/缺则建文（无时区参与，100% 忠实）；`-t`/obsolete 定长解析按 UTC 口径（本树无时区库，与 date 批同裁）；`-d`/`-r`/`-h`/长选报 not wired |
@@ -210,6 +212,7 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 - **建目录**（`mkdir.rs`，6 个）：`test_absolute_path_prefixes`（`/a/b/c` 拆为三前缀、仅末个为终端）、`test_relative_path_prefixes`（相对路无前导斜杆）、`test_leading_and_trailing_slashes`（纯斜杆根路无可建、尾斜杆仍终端于末个真组件）、`test_intermediate_mode_forces_user_wx`（中间级强制 `u+wx`）、`test_extra_bit_fixup`（粘滞/设身份位需后续 `chmod`）、`test_parse_mode_spec_octal_and_symbolic`（八进制保额外位、符号仅动主语掩码内位——本轮纠了一处推错的断言 `go-rwx,u+x` 应为 `0700` 非 `0500`）。
 - **删目录**（`rmdir.rs`，5 个）：`test_relative_walks_innermost_first`（`a/b/c` 由内向外先 `a/b` 后 `a`）、`test_absolute_stops_before_root`（`/x/y` 只到 `/x`、截至空即根而不删）、`test_single_component_has_no_ancestors`（单组件无父）、`test_trailing_slash_reoffers_leaf_like_c`（忠实 C `rm_path` 不预剥尾斜杠：`a/b/` 首截回叶 `a/b`）、`test_reverse_of_parent_prefixes`（与 `mkdir::for_each_parent` 去叶逆序的交叉对账）。
 - **改时间**（`touch.rs`，8 个）：`test_days_from_civil_anchors`（独立锚点 1970=0 天、`2000-01-01`=10957 天——本轮一度把后者误记 11016、runner 当场报错，已纠）、`test_civil_round_trip`（历日⇄历元往返含负值与闰界）、`test_full_ccyy_specification`（12 位全覆盖 `2025-01-02 15:30:45`=1735831845）、`test_two_digit_year_pivot`（99→1999、70→1970、69→1969 枢纽）、`test_omitted_fields_carry_current_time`（省略字段沿用当前、仅分钟）、`test_seconds_default_zero_unless_explicit`（无 `.SS` 秒归 0 而非沿用当前）、`test_malformed_rejected`（奇长/非数字/`.SS` 非两位）、`test_obsolete_time_spec_shape`（8/10 位纯数字定位形）。
+- **拼接行变换**（`cook.rs`，7 个）：`test_plain_passthrough_without_flags`（无旗标逐字透传）、`test_number_every_line`（`-n` 每行 `%6d\t`）、`test_number_nonblank_skips_blank_lines`（`-b` 空行不编号但仍出换行）、`test_squeeze_collapses_consecutive_blanks`（`-s` 连续空行压成一个、单空行保留）、`test_squeeze_then_number_line_numbers_survive_squeeze`（`-n`+`-s` 组合下行号跳被压行不占号）、`test_no_trailing_newline_last_line_still_numbered`（无尾换行末行仍编号）、`test_line_number_field_widens_past_six_digits`（行号超 6 位不加截断）。
 - **表达式求值**（`testexpr.rs`，8 个）：`test_file_status_operators`（六问真假）、`test_empty_fs_answers_no`（空系统全否）、`test_string_operators`（相等、不等、空非空、裸串）、`test_integer_operators`（六比较加非数字报错）、`test_boolean_precedence`（与高于或、非、括号）、`test_newer_older`（新旧比较与缺席为假）、`test_malformed_rejected`（括号不配对、缺操作数、多余单词）、`test_testers_share_the_trait`（接口统一）。
 - **路径切分**（`path.rs`，4 个）：`test_basename_common`（四种形状）、`test_basename_suffix`（后缀三规则）、`test_dirname_common`（六种形状）、`test_empty_path_rejected`（空路径）。
 - **echo 输出布局**（`echo.rs`，10 个）：`test_no_args_prints_bare_newline`（无参数只换行）、`test_single_arg_then_newline`、`test_arguments_separated_by_single_spaces`（单空格分隔、无尾随空格）、`test_leading_nflag_prints_nothing_extra`（`echo -n` 零输出）、`test_leading_nflag_suppresses_only_the_newline`、`test_second_nflag_is_data_not_flag`（getopt 禁令：仅首位 `-n` 是标志，后随的 `-n` 是数据）、`test_double_dash_is_ordinary_data`（echo 无 `--` 约定）、`test_empty_argument_keeps_both_spaces`、`test_write_failure_stops_emission_and_reports`（写失败即停并上报）、`test_write_failure_on_trailing_newline_reports`。
