@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的印制层——改完的文字变成能看的文档、能查的手册
 > **源码**: `minix3/usr.bin/man/man.c`（1088 行）、`manconf.c`（272 行）、`minix3/etc/man.conf`（版本、数据库路径、节目录顺序、后缀、渲染规则）、`minix3/libexec/makewhatis/makewhatis.c`（1174 行）、`minix3/usr.bin/apropos/apropos.c`（6551 字节）、`minix3/usr.bin/whatis/`、`minix3/usr.bin/whereis/`、`minix3/usr.bin/cal/cal.c`（924 行，缺失日参数第 65 到 66 行、闰年规则第 94 到 137 行）、排版工具（`pr`、`fmt`、`nl`、`colcrt`、`deroff`、`checknr`、`indent`、`soelim`、`tsort`、`ul`）、开发辅助（`ctags`、`gencat`、`lorder`、`mkstr`、`xstr`、`asa`、`fpr`、`fsplit`、`menuc`、`msgc`、`m4`、`what`）、Minix 特有（`minix/commands/cawf`、`spell`、`prep`）、国际化（`locale`、`mklocale`、`mkesdb`、`mkcsmapper`，A-8 候选）
-> **Rust 模块**: `os/commands/usr-bin/doctools`（库包 `minix-doctools`：`cal.rs`（含栅格与渲染面）、`whatis.rs`（含 apropos 逐行匹配）、`manconf.rs` 加 `cal`/`whatis`/`apropos` 薄壳，17 个测试通过）
+> **Rust 模块**: `os/commands/usr-bin/doctools`（库包 `minix-doctools`：`cal.rs`（含栅格与渲染面）、`whatis.rs`（含 apropos 逐行匹配）、`manconf.rs`、`soelim.rs`（`.so` 包含展开字节机）加 `cal`/`whatis`/`apropos`/`soelim` 薄壳）
 > **前置依赖**: `07-text-filter.md`（行变换直觉）、`08-grep-sed.md`（关键词搜索的理论）
 > **不覆盖（移交）**: 排版引擎实现（后续阶段）、拼写词典数据（数据面）、国际化实现（A-8 候选，见 3.5 节）、手册页内容本身（文档数据面）
 
@@ -146,7 +146,7 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 | `bin/whatis.rs` | 查询三姐妹的精确面 | 库文件读取加 `lookup_exact` 逐名打印 |
 | `bin/apropos.rs` | 查询三姐妹的关键词面 | 库文件读取加 `for_each_matching` 行打印 |
 
-`os/commands/usr-bin/doctools`（库包名 `minix-doctools`）共 4 个源文件：
+`os/commands/usr-bin/doctools`（库包名 `minix-doctools`）持决定半共 5 个源文件；`cal`/`whatis`/`apropos`/`soelim` 薄壳在 `src/bin/`：
 
 | Rust 文件 | 对应 C 源码位置 | 职责 |
 |-----------|----------------|------|
@@ -154,6 +154,8 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 | `manconf.rs` | `manconf.c` 思想、`man.conf` 实例 | 指令解析（`parse_directive`，保序保原文） |
 | `whatis.rs` | 数据库行格式 | 行解析（`parse_whatis_line`）与 `ManDb` 接口 |
 | `cal.rs` | `minix3/usr.bin/cal/cal.c:FIRST_MISSING_DAY` 思想 | 双计数器、闰规则、月格（`month_grid`） |
+| `soelim.rs` | `soelim.c:149-230` `process()` | `.so` 包含展开字节机（`expand`/`process`，注入 `open` 回调，递归上限防环） |
+| `bin/soelim.rs` | `soelim.c` 主程序 | `-I` 目次表、`openpath` 逐目次解析、逐源展开输出 |
 
 ### 4.2 关键类型与不变量
 
@@ -175,15 +177,16 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 
 ## 5. 测试要点
 
-`cargo test -p minix-doctools`：**17 个测试，全部通过**（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行；计数与提交的对应见 18-stage todo 的批次记录）。
+`cargo test -p minix-doctools --lib` 实际输出为准（历史全量数字见 `.review` 底账）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/doctools` 复现）：
 
 - **配置**（`manconf.rs`，6 个）：`test_whatdb_from_live_conf`（真实数据库路径行）、`test_subdir_order_preserved`（节顺序保序）、`test_build_keeps_pipeline`（管道原文保留）、`test_comment_and_blank_skipped`（注释空行）、`test_bare_keyword_rejected`（缺参数）、`test_non_directive_rejected`（非指令）。
 - **数据库**（`whatis.rs`，7 个）：`test_single_name_row`（单名行）、`test_shared_row`（多名共享）、`test_blank_skipped`（空行）、`test_missing_separator_rejected`（缺分隔符、无名、无节）、`test_exact_lookup`（精确查中与落空）、`test_keyword_search`（关键词中与空关键词否）、`test_empty_db_misses`（空库）。
 - **日历**（`cal.rs`，5 个）：`test_known_weekdays`（三世纪锚点）、`test_leap_rules_differ`（1900 分叉）、`test_september_2026_grid`（当月月格）、`test_impossible_dates_rejected`（非法日期）、`test_reformation_week_marches_on`（改革周连续）。
+- **`.so` 展开**（`soelim.rs`，10 个）：`passes_through_lines_without_so`（非 `.so` 行直通）、`expands_resolved_so`（可解析包含代入内容）、`keeps_directive_when_unopenable`（不可开回退字面指令）、`so_without_name_keeps_dot_so_plus_terminator`（空名保留 `.so` 与终止符）、`nested_includes_recursive`（嵌套递归）、`source_quirk_parses_as_so_with_remainder`（`.source`→`.so urce` 的 C 怪）、`partial_so_prefixes_emit_literally`（`.s` 失配字面回）、`leading_whitespace_after_so_is_skipped`（前导空白跳）、`depth_cap_breaks_cycles`（防环有界）、`file_operand_without_trailing_newline`（无尾换行）。
 
-尚未覆盖、随后续阶段补齐的：找页执行（目录遍历）、渲染管道执行、排版引擎、词典数据、国际化实现。查算两层是全覆盖的，执行层是显式留白的。
+尚未覆盖、随后续阶段补齐的：找页执行（目录遍历）、渲染管道执行、排版引擎、词典数据、国际化实现。`soelim` 的展开面已接线（只看 `.so`，排版引擎本体归后续）。查算两层是全覆盖的，执行层是显式留白的。
 
 ---
 

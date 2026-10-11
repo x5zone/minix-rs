@@ -24,14 +24,21 @@
 //!   for both Julian and Gregorian reckonings; the reformation gap is the
 //!   caller's date range choice, matching how `cal.c` parameterises the
 //!   missing days).
+//! - [`soelim`]: the `.so` include-expander byte scanner (the only module
+//!   here that needs a growable buffer — the expanded document is unbounded,
+//!   so it writes through a caller-supplied `Vec`, mirroring how `cal.c` and
+//!   `soelim.c` themselves buffer output).
 //!
 //! Typesetting (`cawf`, `troff` friends), spell checking, message
 //! catalogs, and internationalisation stay with later stages. Everything
-//! here borrows from the input and uses fixed size buffers: no heap,
-//! `no_std` throughout.
+//! here borrows from the input and uses fixed size buffers, except [`soelim`]
+//! whose expanded output is unbounded; `no_std` throughout.
+
+extern crate alloc;
 
 pub mod cal;
 pub mod manconf;
+pub mod soelim;
 pub mod whatis;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
