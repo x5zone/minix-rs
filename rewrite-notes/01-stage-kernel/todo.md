@@ -756,3 +756,7 @@ smp_todo §25 环境级根因段相应降级为历史假说）；aarch64 全绿�
 >
 > **处置（`2026-10-11`，`claim/KBOOT-DIVERG-T2-qoder` @ 基线 `cfbf27463`）——#9 已闭环**（= `08-todo.md` T-2）：
 > - **#9（ELF 装载归属三处说法打架）**：`os/arch/src/arch/boot.rs` 的 `ProcKind::RootService`/`UserService` 两条注释原写 "ELF deferred to RS"，与 C 真源不符——`protect.c:388` 的 `arch_boot_proc` 仅在 `p_nr == VM_PROC_NR` 分支把 VM 装进 bootstrap 页表，其余 boot 镜像的页表由 VM 起来后建（`load_process_elf` 文档头 :709-720 早已正确写“生产模块装载是 VM 的活”）。改两条注释为“由 VM 装载”，与 C 及同文件 `load_process_elf` 现有注一致（采 08-todo 案 1，纯注释回修、不动代码语义）。核实：`grep -rn 'deferred to RS' os/`→零命中；`cargo check -p minix-arch` Finished（无新增告警）；`load_process_elf` 仍无生产调用者（`grep -rn load_process_elf os/ \| grep -v test` 仅定义+lib 再导出）。06 篇 §2.7 的偏离登记句（文档侧）待文档 agent 据本修复删除。
+>
+> **处置（`2026-10-11`，`claim/KBOOT-COMMENTS-347-qoder` @ 基线 `bd27af71a`）——#4 已闭环**（= `08-todo.md` T-4；另 `08-todo.md` T-7 的 proc_arch 陈旧引用一并回修）：
+> - **#4（`dm_coverage.rs` “Called once” 过时）**：`establish_boot_dm` 函数注释原写“Called once from `arch_boot_impl`”，实有两条生产路径（`lib.rs:384` = `arch_boot_resume_high_half`、`lib.rs:567` = `arch_boot_impl` Step 4）。注释改为列出两条路径。核实：`grep -rn 'Called once' os/kernel/src/dm_coverage.rs`→零命中。
+> - **proc_arch 陈旧引用（`08-todo.md` T-7）**：`os/arch/src/arch/boot.rs` `load_vm_elf` 注释引用了重构中已删除的 `os/arch/src/{x86_64,arm64,riscv64}/proc_arch.rs`；改指 `arch/mod.rs` 删除记录，不再指向不存在的路径。核实：`grep -rn 'proc_arch' os/arch/src/`→只剩 `arch/mod.rs` 的删除记录行。纯注释回修、无代码语义变更。

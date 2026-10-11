@@ -78,8 +78,10 @@ const PAGE_SIZE: u64 = 4096;
 
 /// Establish both DM windows on the bootstrap root (§6.1 D8-②).
 ///
-/// Called once from `arch_boot_impl` after paging is enabled and before
-/// any VM physical-memory access through the windows (e.g. VM ELF loading).
+/// Called from both boot paths after paging is enabled and before any VM
+/// physical-memory access through the windows (e.g. VM ELF loading):
+/// `arch_boot_impl` Step 4 and `arch_boot_resume_high_half` (the two
+/// `establish_boot_dm` call sites in `lib.rs`).
 /// Establishment failures are boot-layout bugs (leaf conflicts cannot arise
 /// from a single candidate pass into fresh window slots) — the kernel
 /// refuses to start.

@@ -332,8 +332,9 @@ pub trait CpuContextArch {
 ///
 /// This is a **free function** rather than a trait method because the
 /// three architecture implementations are byte-for-byte identical
-/// (verified against `os/arch/src/{x86_64,arm64,riscv64}/proc_arch.rs`
-/// prior to refactor — see `06-proc-init-boot-proc.md` §3.5). Putting
+/// (verified against the three per-arch implementations prior to refactor;
+/// those `proc_arch.rs` files are since removed — see the `arch/mod.rs`
+/// note and `06-proc-init-boot-proc.md` §3.5). Putting
 /// it in a trait would be false polymorphism.
 ///
 /// # Parameters
