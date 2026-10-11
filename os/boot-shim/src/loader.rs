@@ -434,6 +434,52 @@ mod tests {
         assert!(result.is_err(), "should panic on missing kernel");
     }
 
+    /// T-9: `compute_kernel_layout` must surface `NoLoadSegments` for an
+    /// image with no `PT_LOAD`. Flip the single program header from
+    /// `PT_LOAD` to `PT_NULL` so the PT_LOAD iterator yields nothing — the
+    /// same `!found_load` path `load_kernel_with_loader` reports. Covers the
+    /// previously-untested `NoLoadSegments` variant (loader.rs:144).
+    #[test]
+    fn test_compute_kernel_layout_rejects_image_without_load_segments() {
+        let mut elf = build_minimal_elf();
+        elf[64..68].copy_from_slice(&0u32.to_le_bytes()); // p_type = PT_NULL
+        assert!(
+            matches!(
+                compute_kernel_layout(&elf),
+                Err(minix_elf::ElfError::NoLoadSegments)
+            ),
+            "a PT_LOAD-less image must fail with NoLoadSegments"
+        );
+    }
+
+    /// A two-`PT_LOAD` image whose segments share the same physical range,
+    /// built by duplicating `build_minimal_elf`'s single program header into
+    /// a second slot and bumping `e_phnum`. The two identical half-open
+    /// ranges overlap.
+    fn build_overlapping_elf() -> Vec<u8> {
+        let mut image = build_minimal_elf();
+        image.copy_within(64..120, 120); // phdr[1] = phdr[0]
+        image[56..58].copy_from_slice(&2u16.to_le_bytes()); // e_phnum = 2
+        image
+    }
+
+    /// T-9: the `InvalidSegment` error variant (loader.rs:211) had no test
+    /// constructing it. The overlap guard runs *before* the copy loop, so
+    /// calling the real loader with overlapping segments returns
+    /// `Err(InvalidSegment)` without dereferencing the (unmapped) segment
+    /// addresses — safe to invoke in a unit test. The `first_overlapping_pair`
+    /// predicate that drives it already has dedicated tests; this one pins
+    /// the variant is actually produced by `load_segments_into_phys_memory`.
+    #[test]
+    fn test_load_segments_into_phys_memory_rejects_overlapping_elf() {
+        let elf = build_overlapping_elf();
+        let result = unsafe { load_segments_into_phys_memory(&elf) };
+        assert!(
+            matches!(result, Err(minix_elf::ElfError::InvalidSegment)),
+            "two overlapping PT_LOAD segments must fail with InvalidSegment"
+        );
+    }
+
     #[test]
     fn test_bss_region_is_zeroed_after_load() {
         // Construct an ELF whose first PT_LOAD has filesz < memsz.
