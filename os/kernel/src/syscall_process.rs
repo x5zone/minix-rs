@@ -559,8 +559,13 @@ pub fn dispatch_clear(
     }
 
     // C: do_clear.c:57 — RTS_SETFLAGS(rc, RTS_SLOT_FREE)
-    // Mark the TARGET slot as free so it can be reused.
-    proc_table.rts_set(target_nr, RtsFlagsBits::SLOT_FREE);
+    // Whole-value assign (not a bit-set): C overwrites `p_rts_flags` with
+    // exactly `RTS_SLOT_FREE`, wiping the `RTS_NO_ENDPOINT` that
+    // `clear_endpoint` set just above. An exact assign is what makes
+    // `is_empty` (`== RTS_SLOT_FREE`, mirroring C `isemptyp`) see the freed
+    // slot so `fork` can reuse it — `rts_set` here would leave
+    // `SLOT_FREE | NO_ENDPOINT` and strand the slot (§26 #8).
+    proc_table.rts_setflags(target_nr, RtsFlagsBits::SLOT_FREE);
 
     // C: do_clear.c:60-61 — release_fpu(rc), clear MF_FPU_INITIALIZED
     // Clear the FPU initialized flag so the slot's FPU state is not
@@ -1442,6 +1447,19 @@ mod tests {
 
         // TARGET should be SLOT_FREE, not caller
         assert!(proc_table.get(target_nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE));
+        // §26 #8 regression: C `RTS_SETFLAGS(rc, RTS_SLOT_FREE)` overwrites the
+        // flags wholesale, so the `RTS_NO_ENDPOINT` that `clear_endpoint` set
+        // is wiped and `is_empty` (exact `== SLOT_FREE`, C `isemptyp`) holds —
+        // fork can reuse the exited slot. A bit-set (`rts_set`) would leave
+        // NO_ENDPOINT alongside SLOT_FREE and fail this.
+        assert!(
+            !proc_table.get(target_nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT),
+            "clear must wipe NO_ENDPOINT"
+        );
+        assert!(
+            proc_table.is_empty(target_nr),
+            "cleared slot must satisfy the exact is_empty (== SLOT_FREE) predicate"
+        );
     }
 
     #[test]

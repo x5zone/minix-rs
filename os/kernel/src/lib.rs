@@ -947,13 +947,18 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     init_protection(kernel_info);        // prot_init equivalent
     init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
 
-    // NK4-C 1.10c 根因修复：活 boot 路径补 D-59 三段序列（PIT 编程 +
-    // register_hook 解 IOAPIC pin2 mask + gate）。`boot_init_timer` 的
-    // 唯一旧调用点在 `bsp_finish_booting`——那是 `#[allow(dead_code)]`
-    // 的分歧路径，活路径（本函数）从不执行 ⇒ timer hook 从未注册、
-    // pin2 mask 从未解除，tick 从未到达（s14r：bit-enter 零输出实锤；
-    // quantum 抢占孤儿化 = 历史全部用户态自旋永久垄断的总根因）。
-    boot_init_timer();
+    // The boot clock source's D-59 three-part sequence — program the source,
+    // register the local-timer hook, open the delivery gate — runs EXACTLY
+    // ONCE, at the C `boot_cpu_init_timer` position, inside
+    // `bsp_finish_booting` Step 6 (the terminal Phase-F call below).
+    // An interim `boot_init_timer()` here was the NK4-C 1.10c root-cause fix
+    // from when `bsp_finish_booting` was still a `#[allow(dead_code)]`
+    // divergent path the live boot never took (timer hook unregistered, pin2
+    // mask never opened, ticks never arrived — s14r). Now that Phase F wires
+    // `bsp_finish_booting`, that interim call is a redundant double-init and
+    // is removed so `boot_init_timer` stays the single touch point, matching
+    // C (§26 #7: the "dead-code" comment contradicted the live Phase-F call).
+    // See 08-system-init-boot-finish.md §4.5.
 
     boot_stage!("kernel: kmain B clock+intr ok\n");
     #[cfg(target_arch = "x86_64")]

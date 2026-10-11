@@ -455,6 +455,36 @@ impl ProcessTable {
             }
     }
 
+    /// Assign a process's RTS flags to exactly `flags`, clearing every other
+    /// bit — the counterpart of C's `RTS_SETFLAGS` macro
+    /// (`proc.h:226-230`: `if (proc_is_runnable(rp) && (f)) dequeue(rp);
+    /// rp->p_rts_flags = f;`).
+    ///
+    /// Unlike [`ProcessTable::rts_set`] (which ORs bits in), this is the
+    /// "reset the slot to a known value" primitive `do_clear` needs: C's
+    /// `RTS_SETFLAGS(rc, RTS_SLOT_FREE)` wipes any lingering `RTS_NO_ENDPOINT`
+    /// set earlier by `clear_endpoint`, so `isemptyp` (the exact
+    /// `== RTS_SLOT_FREE`) sees the freed slot and `fork` can reuse it.
+    /// Reaching here with `rts_set` instead left `SLOT_FREE | NO_ENDPOINT`,
+    /// which never equals `SLOT_FREE` — a semantic divergence from C that
+    /// stranded exited slots out of `is_empty` (§26 #8, doc-gen v3 复核).
+    pub fn rts_setflags(&mut self, nr: ProcNr, flags: RtsFlagsBits) {
+        // C: dequeue first (only when the process is runnable and the new
+        // value is nonzero), then overwrite the flags wholesale.
+        let was_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
+        if was_runnable && !flags.is_empty() && self.is_in_scheduler(nr) {
+            // C uses `get_cpu_var(rp->p_cpu, run_q_head)` — the assigned CPU
+            // picks which per-CPU queue to dequeue from.
+            let cpu_id = self.get(nr)
+                .map(|p| CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire)))
+                .unwrap_or(CpuId::BSP);
+            self.sched_dequeue(nr, cpu_id);
+        }
+        if let Some(p) = self.get_mut(nr) {
+            p.p_rts_flags.store(flags.bits());
+        }
+    }
+
     /// Complete a block whose flag was set with the primitive
     /// `RtsFlags::set` by a component without run-queue access (the IPC
     /// engine holds a procs slice only — the C `RTS_SET` macro pairs the
@@ -1855,6 +1885,33 @@ mod tests {
         // Clear remaining flag — now runnable again
         table.rts_unset(nr, RtsFlagsBits::RECEIVING);
         assert!(table.get(nr).unwrap().is_runnable());
+    }
+
+    /// Test: `rts_setflags` overwrites the flags wholesale (mirrors C
+    /// `RTS_SETFLAGS`), unlike `rts_set` which only ORs bits in. This is what
+    /// `do_clear` needs so a lingering `NO_ENDPOINT` is wiped and `is_empty`
+    /// (exact `== SLOT_FREE`) holds (§26 #8).
+    #[test]
+    fn test_rts_setflags_wipes_other_bits() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let nr = ProcNr(0);
+
+        // Simulate `clear_endpoint` leaving NO_ENDPOINT on an activated slot.
+        table.get_mut(nr).unwrap().p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        table.rts_set(nr, RtsFlagsBits::NO_ENDPOINT);
+        assert!(table.get(nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT));
+
+        // A bit-set of SLOT_FREE would leave both bits (the #8 divergence).
+        table.rts_set(nr, RtsFlagsBits::SLOT_FREE);
+        assert!(!table.is_empty(nr), "OR-ing SLOT_FREE keeps NO_ENDPOINT → not empty");
+
+        // The whole-value assign matches C RTS_SETFLAGS: exactly SLOT_FREE.
+        table.rts_setflags(nr, RtsFlagsBits::SLOT_FREE);
+        assert!(table.is_empty(nr), "setflags wipes NO_ENDPOINT → is_empty (== SLOT_FREE)");
+        assert!(
+            !table.get(nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT),
+            "setflags must clear every other bit",
+        );
     }
 
     /// Test: rts_set on already-set flag is idempotent.

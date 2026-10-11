@@ -749,3 +749,7 @@ smp_todo §25 环境级根因段相应降级为历史假说）；aarch64 全绿�
 | 10 | `os/boot-shim/src/loader.rs` 错误变体测试缺口 | `NoLoadSegments`（loader.rs:144）与 `InvalidSegment`（loader.rs:211）无任何测试构造 | 01 §5.1、07 未涉及 |
 
 > 处置建议：#1–#7、#9 均为**注释回修**（一处 PR 批量可清）；#8 是**真实语义分歧**，改哪一侧需对照 C 真源与 `is_empty` 消费面单独裁决（建议走 todo-fix 单条流程）；#10 属测试完备性缺口，归 test-audit 排期。
+
+> **处置（`2026-10-11`，`claim/KBOOT-DIVERG-78-qoder` @ 基线 `ff00b80fd`）——#7、#8 已闭环**：
+> - **#8（清槽语义，对齐 C 整值赋值）**：新增 `ProcessTable::rts_setflags`（整值赋值 + C `RTS_SETFLAGS` 同款 `proc_is_runnable`→出队判定），`dispatch_clear` 清槽处由 `rts_set(SLOT_FREE)` 改调它，与 C `do_clear.c:57` 逐位对齐，残留 `NO_ENDPOINT` 隐式清除、`is_empty`（精确 `== SLOT_FREE`）恢复可达。核实：`cargo test -p minix-kernel --features mock --lib`→831/0（`test_rts_setflags_wipes_other_bits` 钉整值清位、`test_dispatch_clear_sets_target_slot_free` 加 `is_empty`+`NO_ENDPOINT` 断言）；`grep -rn fn rts_setflags os/kernel/src/proc_table.rs`→定义与调用两处。
+> - **#7（`bsp_finish_booting` 注释与现码矛盾，并消除一处重复初始化）**：生产 `kmain`（`lib.rs:804`，`#[cfg(not(mock), not(qemu_test))]`）Phase B 曾在 `lib.rs:956` 直调 `boot_init_timer()`，Phase F（`lib.rs:1117`）现调 `bsp_finish_booting`、其内 Step 6（`lib.rs:2864`）又调一次——二者并存为启动重复初始化时钟源。删 `lib.rs:956` 冗余调用，保留 C `boot_cpu_init_timer` 真位（Step 6）单点；注释改写与现码一致并去掉“dead-code”误导。核实：`cargo build -p minix-kernel --target x86_64-unknown-none --no-default-features` Finished、`boot_init_timer` 无 unused 告警；真机 x86_64 release/QEMU（快照 `os/target/image/x86_64/serial.log`）→ 0 panic、进 `entering scheduler`、init runcom 执行 `#!/bin/sh`、`e5-ds: label init = 11`，证 tick 与量子抢占仍正常。改动在共享 arch-无关 `kmain`。
