@@ -13,6 +13,7 @@
 //! above the nine `rwx` bits and are addressed by the same grammar.
 
 use crate::FileOpError;
+use alloc::vec::Vec;
 
 /// User, group, and others read/write/execute bits plus the three special
 /// bits, in classic octal positions.
@@ -21,6 +22,92 @@ pub const SET_USER_ID: u16 = 0o4000;
 pub const SET_GROUP_ID: u16 = 0o2000;
 /// Sticky bit (restricted deletion).
 pub const STICKY: u16 = 0o1000;
+
+// ── options and walk decisions ───────────────────────────────────────────
+
+/// The flags `chmod` acts on (`chmod.c:87-136`): the two that need no link
+/// decision, plus the recursion. `-h` changes the link itself through
+/// `lchmod` (`chmod.c:110-119` with `:159-161`), and `-H`/`-L`/`-P` pick the
+/// traversal mode; all four hinge on facilities this tree does not wrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChmodFlags {
+    /// `-f`: a failed change sets the exit status but prints nothing
+    /// (`chmod.c:107-108` with the `&& !fflag` test at `:215-219`).
+    pub force: bool,
+    /// `-R`: walk each operand directory (`chmod.c:104-105`, `:144-157`).
+    pub recursive: bool,
+    /// `-v`: echo each applied spec. Not a C flag — the option string at
+    /// `chmod.c:87` has no `v`; kept from this tree's first wiring and
+    /// registered as a deviation.
+    pub verbose: bool,
+}
+
+/// Why an option could not be accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChmodOption {
+    /// A letter whose facility this tree has not landed; refused, not ignored.
+    NotWired(char),
+    /// Not in the option string at `chmod.c:87` and not a bare mode letter.
+    Unknown(char),
+}
+
+/// Is `arg` a bare `-[perm]` *mode* rather than a flag? C's `case 'g' … 'x'`
+/// arms step `optind` back over such an argument (`chmod.c:127-133`) so that
+/// `chmod -r file` drops the read bit instead of being an option. `X` is in
+/// C's list at `chmod.c:128`; this tree's parser has not taken it, and its
+/// mode grammar folds `X` onto plain `x` rather than testing "is a directory
+/// or already executable" — both registered as open findings instead of being
+/// fixed beside the recursion.
+pub fn is_bare_mode(arg: &str) -> bool {
+    let b = arg.as_bytes();
+    b.len() == 2
+        && b[0] == b'-'
+        && matches!(b[1], b'r' | b'w' | b'x' | b's' | b't' | b'u' | b'g' | b'o')
+}
+
+impl ChmodFlags {
+    /// Scan the leading options the way BSD `getopt` does: clusters are
+    /// allowed (`-Rf`), a bare `-[perm]` or a non-option ends the scan, and
+    /// `--` ends it too. `args` is the list without `argv[0]`.
+    pub fn parse<'a>(args: &[&'a str]) -> Result<(ChmodFlags, Vec<&'a str>), ChmodOption> {
+        let mut f = ChmodFlags::default();
+        let mut i = 0;
+        while i < args.len() {
+            let a = args[i];
+            if a == "--" {
+                i += 1;
+                break;
+            }
+            if a.len() < 2 || !a.starts_with('-') || is_bare_mode(a) {
+                break;
+            }
+            for &byte in a.as_bytes()[1..].iter() {
+                match byte {
+                    b'f' => f.force = true,
+                    b'v' => f.verbose = true,
+                    b'R' => f.recursive = true,
+                    b'h' | b'H' | b'L' | b'P' => {
+                        return Err(ChmodOption::NotWired(byte as char));
+                    }
+                    _ => return Err(ChmodOption::Unknown(byte as char)),
+                }
+            }
+            i += 1;
+        }
+        Ok((f, args[i..].to_vec()))
+    }
+}
+
+/// `chmod.c:144-157` with `:186-210`: the recursive walk is physical, and the
+/// only flag that could change a link (`-h`) may not be combined with `-R`
+/// (`chmod.c:145-150`), so the links a physical walk meets are passed over —
+/// `FTS_SL`/`FTS_SLNONE` reach `continue` (`chmod.c:201-210`) and never the
+/// `change_mode` call. A non-recursive scan follows its single operand
+/// (`FTS_COMFOLLOW`, `chmod.c:157-158`), so there the link's target is what
+/// gets changed.
+pub fn chmods_entry(mode: u32, physical_walk: bool) -> bool {
+    !(physical_walk && crate::cp::is_link(mode))
+}
 
 /// Apply `spec` (octal or symbolic) to `base` permission bits.
 ///
@@ -239,6 +326,69 @@ fn execute_slot(mode: u32, exec: u32, set_id: u32, upper: u8, lower: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── options and walk decisions ──────────────────────────────────────
+
+    #[test]
+    fn chmod_flags_default_to_all_off() {
+        let (f, rest) = ChmodFlags::parse(&["644", "file"]).unwrap();
+        assert_eq!(f, ChmodFlags::default());
+        assert_eq!(rest, ["644", "file"]);
+    }
+
+    #[test]
+    fn chmod_clusters_and_double_dash() {
+        let (f, _) = ChmodFlags::parse(&["-Rf", "755", "d"]).unwrap();
+        assert!(f.recursive && f.force);
+        let (_, rest) = ChmodFlags::parse(&["--", "-R"]).unwrap();
+        assert_eq!(rest, ["-R"], "-R after -- is an operand");
+        assert_eq!(
+            ChmodFlags::parse(&["-z", "755", "f"]),
+            Err(ChmodOption::Unknown('z'))
+        );
+    }
+
+    #[test]
+    fn chmod_link_flags_are_refused() {
+        for c in ['h', 'H', 'L', 'P'] {
+            let arg = alloc::format!("-{c}");
+            assert_eq!(
+                ChmodFlags::parse(&[arg.as_str(), "755", "f"]),
+                Err(ChmodOption::NotWired(c)),
+                "-{c} must be refused explicitly"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_permission_letter_is_a_mode_not_a_flag() {
+        // chmod.c:127-133: getopt has moved past `-r`, so C steps optind back
+        // and the argument becomes the mode.
+        let (f, rest) = ChmodFlags::parse(&["-r", "notes.txt"]).unwrap();
+        assert_eq!(f, ChmodFlags::default());
+        assert_eq!(rest, ["-r", "notes.txt"]);
+        assert!(is_bare_mode("-r"));
+        assert!(!is_bare_mode("-R"), "the recursion flag is upper case");
+        assert!(!is_bare_mode("-rr"), "only a single letter counts");
+        assert!(!is_bare_mode("r"), "and it needs the dash");
+    }
+
+    #[test]
+    fn a_physical_walk_passes_over_links() {
+        // chmod.c:201-210: FTS_SL and FTS_SLNONE reach `continue`, and the flag
+        // that would change them (`-h`) cannot be combined with -R
+        // (chmod.c:145-150).
+        let link = crate::cp::S_IFLNK | 0o777;
+        let reg = crate::cp::S_IFREG | 0o644;
+        let dir = crate::cp::S_IFDIR | 0o755;
+        assert!(!chmods_entry(link, true), "-R skips the link itself");
+        assert!(
+            chmods_entry(link, false),
+            "the non-recursive scan follows it"
+        );
+        assert!(chmods_entry(reg, true));
+        assert!(chmods_entry(dir, true));
+    }
 
     #[test]
     fn test_octal_replaces_low_bits() {
