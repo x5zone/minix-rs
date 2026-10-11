@@ -40,6 +40,7 @@ pub mod cal;
 pub mod fpr;
 pub mod manconf;
 pub mod soelim;
+pub mod what;
 pub mod whatis;
 pub mod which;
 

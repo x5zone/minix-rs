@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的印制层——改完的文字变成能看的文档、能查的手册
 > **源码**: `minix3/usr.bin/man/man.c`（1088 行）、`manconf.c`（272 行）、`minix3/etc/man.conf`（版本、数据库路径、节目录顺序、后缀、渲染规则）、`minix3/libexec/makewhatis/makewhatis.c`（1174 行）、`minix3/usr.bin/apropos/apropos.c`（6551 字节）、`minix3/usr.bin/whatis/`、`minix3/usr.bin/whereis/`、`minix3/usr.bin/cal/cal.c`（924 行，缺失日参数第 65 到 66 行、闰年规则第 94 到 137 行）、排版工具（`pr`、`fmt`、`nl`、`colcrt`、`deroff`、`checknr`、`indent`、`soelim`、`tsort`、`ul`）、开发辅助（`ctags`、`gencat`、`lorder`、`mkstr`、`xstr`、`asa`、`fpr`、`fsplit`、`menuc`、`msgc`、`m4`、`what`）、Minix 特有（`minix/commands/cawf`、`spell`、`prep`）、国际化（`locale`、`mklocale`、`mkesdb`、`mkcsmapper`，A-8 候选）
-> **Rust 模块**: `os/commands/usr-bin/doctools`（库包 `minix-doctools`：`cal.rs`（含栅格与渲染面）、`whatis.rs`（含 apropos 逐行匹配）、`manconf.rs`、`soelim.rs`（`.so` 包含展开字节机）、`fpr.rs`（Fortran carriage-control/overstrike 格式化）、`which.rs`（`whereis.c` which/whereis 合体的 PATH 拆分与退出码）加 `cal`/`whatis`/`apropos`/`soelim`/`fpr`/`which` 薄壳）
+> **Rust 模块**: `os/commands/usr-bin/doctools`（库包 `minix-doctools`：`cal.rs`（含栅格与渲染面）、`whatis.rs`（含 apropos 逐行匹配）、`manconf.rs`、`soelim.rs`（`.so` 包含展开字节机）、`fpr.rs`（Fortran carriage-control/overstrike 格式化）、`which.rs`（`whereis.c` which/whereis 合体的 PATH 拆分与退出码）、`what.rs`（`what.c` 的 `@(#)` 标识串提取）加 `cal`/`whatis`/`apropos`/`soelim`/`fpr`/`which`/`what` 薄壳）
 > **前置依赖**: `07-text-filter.md`（行变换直觉）、`08-grep-sed.md`（关键词搜索的理论）
 > **不覆盖（移交）**: 排版引擎实现（后续阶段）、拼写词典数据（数据面）、国际化实现（A-8 候选，见 3.5 节）、手册页内容本身（文档数据面）
 
@@ -160,6 +160,8 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 | `bin/fpr.rs` | `fpr.c:92` 主程序 | 读 stdin→格式化→stdout、非法控制计数写 stderr、恒 exit 0 |
 | `which.rs` | `whereis.c:66-157`（which/whereis 合体共享半） | `WhichFlags::parse`（getopt "ap"）、`path_candidates`（PATH 拆分、空元素→`.`、逐字 `%s/%s`）、`is_absolute`、`compute_status`（3/0/2） |
 | `bin/which.rs` | `whereis.c:113-156` which 人格 | 读 `$PATH`、逐 operand `stat`(S_ISREG)+`access(X_OK)` 候选查、首匹配（`-a` 全显）、退 3/0/2 |
+| `what.rs` | `what.c:68-120` | `WhatFlags::parse`（getopt "s"）、`extract_ids`（`@(#)` 扫描含 `goto loop` 回退、终止集 `{'\0','"','>','\n','\\'}`、`-s` 止首） |
+| `bin/what.rs` | `what.c:83-93` | 逐 operand `open`/`read`、先打文件名再逐 id `\t<id>`、开失败即退、`matches?0:1` |
 
 ### 4.2 关键类型与不变量
 
@@ -191,6 +193,7 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 - **`.so` 展开**（`soelim.rs`，10 个）：`passes_through_lines_without_so`（非 `.so` 行直通）、`expands_resolved_so`（可解析包含代入内容）、`keeps_directive_when_unopenable`（不可开回退字面指令）、`so_without_name_keeps_dot_so_plus_terminator`（空名保留 `.so` 与终止符）、`nested_includes_recursive`（嵌套递归）、`source_quirk_parses_as_so_with_remainder`（`.source`→`.so urce` 的 C 怪）、`partial_so_prefixes_emit_literally`（`.s` 失配字面回）、`leading_whitespace_after_so_is_skipped`（前导空白跳）、`depth_cap_breaks_cycles`（防环有界）、`file_operand_without_trailing_newline`（无尾换行）。
 - **fpr 格式化**（`fpr.rs`，8 个）：carriage-control `0`/`1`/blank/非法映射（`control_digit0_leading_newline`、`control_digit1_is_formfeed`、`leading_blank_is_single_space_line`、`illegal_control_counted_and_printed_verbatim`）、尾空格剪（`trailing_blanks_trimmed_on_flush`）、tab 展开（`tab_expands_to_next_tab_stop`）、空输入（`empty_input_no_output`）、叠印列合并（`overprint_plus_merges_two_lines_by_column`，无 oracle 故断存在性+附轨迹）。
 - **PATH 定位**（`which.rs`，11 个）：`flags_parse_known_letters`/`combined_cluster_flags`（getopt "ap"）、`unknown_option_is_error`、`double_dash_ends_options`、`first_operand_ends_option_scan`（无置换）、`candidates_basic`（`/bin:/usr/bin`+`ls`）、`candidates_empty_element_becomes_dot_dir`（前/双/尾冒号→`./name`）、`candidates_single_and_empty`（空 PATH→`./ls`）、`candidates_keep_element_slash_like_c`（元素 `/`→`//ls`，逐字 `%s/%s`）、`absolute_detection`、`status_rule`（found 0→3、≥argc→0、之间→2）。
+- **源码 ID 提取**（`what.rs`，12 个）：`flags_stop_first`/`flags_unknown_is_error_and_double_dash`（getopt "s"）、`empty_and_no_id`（无 `@(#)`）、`single_id_newline_terminated`、`multiple_ids`（`"`/`>` 终止）、`double_at_backtracking`（`@@(#)` 的 goto-loop 回退）、`partial_header_then_match`（`@(x@(#)` 失配后重同步）、`incomplete_header_eof`（`@(#` 不成配）、`id_at_eof_without_terminator`、`empty_id_immediate_terminator`（`@(#)\0`→空串）、`backslash_terminates`、`stop_first_returns_only_first`（`-s`）。
 
 尚未覆盖、随后续阶段补齐的：找页执行（目录遍历）、渲染管道执行、排版引擎、词典数据、国际化实现。`soelim` 的展开面已接线（只看 `.so`，排版引擎本体归后续）；`which` 人格已接线（批次一百，读 `$PATH` 的 PATH 定位）；同源的 `whereis` 人格（默认取 `sysctl user.cs_path`、报多路匹配）为单独命令入口待后续。查算两层是全覆盖的，执行层是显式留白的。
 
