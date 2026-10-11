@@ -6,11 +6,14 @@
 //! was never buffered (one `minix_sys::read` chunk out per call, the C
 //! unbuffered shape). The line-oriented cook flags `-n` (number lines), `-b`
 //! (number non-blank lines, implying `-n`) and `-s` (squeeze blank lines) take
-//! the C `cook_buf` path; the transform is the pure [`minix_fileops::cook`] state
-//! machine, run per operand so line numbers restart for each file as in C. The
-//! visible-character flags `-e`/`-t`/`-v` and `-B`/`-l`/`-f` are a usage failure
-//! like the C `usage()`; a missing or unreadable file warns and carries the
-//! failure in the exit status while later operands still run (`main.c:158-170`).
+//! the C `cook_buf` path; the visible-character flags `-e` (line ends with `$`),
+//! `-t` (tabs as `^I`) and `-v` (non-printing as `^X` / `M-x`, implied by `-e`
+//! and `-t`) ride the same path; the transform is the pure
+//! [`minix_fileops::cook`] state machine, run per operand so line numbers
+//! restart for each file as in C. `-B`/`-l`/`-f` (which do not change cooked
+//! bytes) are a usage failure like the C `usage()`; a missing or unreadable file
+//! warns and carries the failure in the exit status while later operands still
+//! run (`main.c:158-170`).
 //!
 //! The output channel follows the stage contract (99-global-concepts.md
 //! §1): no stdio library, writes through `minix_sys::write`. The
@@ -43,12 +46,16 @@ fn run() -> ! {
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
 
     // C `getopt("B:beflnstuv")`. This wiring supports the line-oriented cook
-    // flags `-n`/`-b`/`-s` and the no-op `-u`; the visible-character flags
-    // `-e`/`-t`/`-v` (byte-visualization) and `-B`/`-l`/`-f` are not yet
-    // implemented, so they are a usage failure rather than silently ignored.
+    // flags `-n`/`-b`/`-s`, the visible-character flags `-e`/`-t`/`-v`, and the
+    // no-op `-u`; `-B` (ignore SIGINT), `-l` (line-buffered) and `-f` (fast
+    // open) do not change cooked bytes and are reported as a usage failure
+    // rather than silently ignored.
     let mut nflag = false;
     let mut bflag = false;
     let mut sflag = false;
+    let mut eflag = false;
+    let mut tflag = false;
+    let mut vflag = false;
     let mut i = 1;
     while i < args.len() {
         let a = args[i];
@@ -63,6 +70,9 @@ fn run() -> ! {
                     b'n' => nflag = true,
                     b'b' => bflag = true,
                     b's' => sflag = true,
+                    b'e' => eflag = true,
+                    b't' => tflag = true,
+                    b'v' => vflag = true,
                     _ => usage(),
                 }
             }
@@ -72,15 +82,24 @@ fn run() -> ! {
         }
     }
 
-    // The cook path is taken when any line flag is set (C `cat.c:133`). `-b`
-    // implies `-n`, which the decision-half's constructor applies.
-    let cook = nflag || bflag || sflag;
+    // The cook path is taken when any line or visible flag is set (C
+    // `cat.c:133`). `-b` implies `-n` and `-e`/`-t` imply `-v`, folded by
+    // `CatCook::new`; `-B`/`-l`/`-f` are rejected above.
+    let cook = nflag || bflag || sflag || eflag || tflag || vflag;
+    let flags = minix_fileops::cook::CookFlags {
+        number: nflag,
+        number_nonblank: bflag,
+        squeeze: sflag,
+        dollar: eflag,
+        show_tabs: tflag,
+        visible: vflag,
+    };
     let operands: Vec<&str> = args[i..].to_vec();
 
     let mut status = 0;
     if operands.is_empty() {
         if cook {
-            cook_stream(support::STDIN, nflag, bflag, sflag);
+            cook_stream(support::STDIN, flags);
         } else {
             copy_stream(support::STDIN);
         }
@@ -88,7 +107,7 @@ fn run() -> ! {
     for operand in operands {
         if operand == "-" {
             if cook {
-                cook_stream(support::STDIN, nflag, bflag, sflag);
+                cook_stream(support::STDIN, flags);
             } else {
                 copy_stream(support::STDIN);
             }
@@ -103,7 +122,7 @@ fn run() -> ! {
             }
         };
         if cook {
-            cook_stream(fd, nflag, bflag, sflag);
+            cook_stream(fd, flags);
         } else {
             copy_stream(fd);
         }
@@ -117,8 +136,8 @@ fn run() -> ! {
 /// Runs one stream through the `cook_buf` line transform. A fresh [`CatCook`]
 /// per operand restarts the line count for each file (C `cook_buf`'s local
 /// `line`); cooked bytes are flushed to standard output in `CHUNK`-sized writes.
-fn cook_stream(fd: i32, nflag: bool, bflag: bool, sflag: bool) {
-    let mut cook = minix_fileops::cook::CatCook::new(nflag, bflag, sflag);
+fn cook_stream(fd: i32, flags: minix_fileops::cook::CookFlags) {
+    let mut cook = minix_fileops::cook::CatCook::new(flags);
     let mut chunk = [0u8; CHUNK];
     let mut outbuf = [0u8; CHUNK];
     let mut olen = 0usize;
