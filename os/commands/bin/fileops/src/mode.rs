@@ -141,6 +141,101 @@ fn apply_clause(mut mode: u16, clause: &str) -> Result<u16, FileOpError> {
     Ok(mode)
 }
 
+// ── strmode：把 mode 位回渲成十一个字符 ────────────────────────────
+//
+// 真源：`minix3/lib/libc/string/strmode.c`（NetBSD 1.19），声明在
+// `minix3/include/unistd.h:403`。它写十一个字符再加终止符：一个类型字母、
+// 九个权限字符（三组 execute 槽位兼作设身份位记号）、末尾一个填充位（启用
+// 访问控制列表时会变成 `+`）。`minix3/bin/mv/mv.c:187-191` 用 `modep + 1`（跳过
+// 类型字母取九个权限字符）并以 `modep[9] == ' '` 决定要不要补一个空格。
+
+// 类型位优先复用本 crate 已在位的 `crate::cp` 常量块（单一真源）；下面五个
+// 类型位与九个权限位尚未在那块里出现，就近补上。
+const S_IFCHR: u32 = 0o020000; // `stat.h:140`
+const S_IFBLK: u32 = 0o060000; // `stat.h:142`
+const S_IFIFO: u32 = 0o010000; // `stat.h:139`
+const S_IFSOCK: u32 = 0o140000; // `stat.h:146`
+const S_IFWHT: u32 = 0o160000; // `stat.h:147`
+// 归档态两位：它们在 `S_IFMT` 之外，所以 `strmode.c:71-80` 在 `S_IFREG` 支里
+// 另判一轮（Minix 确实定义了 `stat.h:148-149`，所以那段 `#ifdef S_ARCH2` 是编得进来的）。
+const S_ARCH1: u32 = 0o200000; // `stat.h:148`，`ls -l` 显示 `a`
+const S_ARCH2: u32 = 0o400000; // `stat.h:149`，`ls -l` 显示 `A`
+
+// 九个读/写/执行位（`stat.h` 的 `_S_IRUSR` 一类），按 strmode 的打印顺序。
+const IRUSR: u32 = 0o00400;
+const IWUSR: u32 = 0o00200;
+const IXUSR: u32 = 0o00100;
+const IRGRP: u32 = 0o00040;
+const IWGRP: u32 = 0o00020;
+const IXGRP: u32 = 0o00010;
+const IROTH: u32 = 0o00004;
+const IWOTH: u32 = 0o00002;
+const IXOTH: u32 = 0o00001;
+
+/// C 的 `strmode` 写出的十一个字符（类型、九个权限位、末尾填充位）。
+/// 末尾的 NUL 不在数组里：本层只交回渲染结果，拼不拼字符串由调用方定。
+pub type ModeString = [u8; 11];
+
+/// `strmode(2)` 的回渲：按 C 逐位写十一个字符。
+///
+/// 三组 execute 槽位兼作设身份位记号：只能执行、无设身份→`x`；有设身份、不可
+/// 执行→`S`/`T`（大写）；两者都有→`s`/`t`（小写）；都无→`-`。粘滞位占用其他组
+/// 的 execute 槽（`strmode.c:111-178`）。
+pub fn strmode(mode: u32) -> ModeString {
+    let mut out = [b'-'; 11];
+    out[0] = match mode & crate::cp::S_IFMT {
+        crate::cp::S_IFDIR => b'd',
+        S_IFCHR => b'c',
+        S_IFBLK => b'b',
+        crate::cp::S_IFREG => {
+            // C 在常规文件支里再查归档态两位（`strmode.c:71-80`）。
+            if mode & S_ARCH2 != 0 {
+                b'A'
+            } else if mode & S_ARCH1 != 0 {
+                b'a'
+            } else {
+                b'-'
+            }
+        }
+        crate::cp::S_IFLNK => b'l',
+        S_IFSOCK => b's',
+        S_IFIFO => b'p',
+        S_IFWHT => b'w',
+        // C 的 default 支：模式里没有认得的类型位就回 `?`（strmode.c:106-108）。
+        _ => b'?',
+    };
+    out[1] = read_or_write(mode, IRUSR, b'r');
+    out[2] = read_or_write(mode, IWUSR, b'w');
+    out[3] = execute_slot(mode, IXUSR, crate::cp::S_ISUID, b'S', b's');
+    out[4] = read_or_write(mode, IRGRP, b'r');
+    out[5] = read_or_write(mode, IWGRP, b'w');
+    out[6] = execute_slot(mode, IXGRP, crate::cp::S_ISGID, b'S', b's');
+    out[7] = read_or_write(mode, IROTH, b'r');
+    out[8] = read_or_write(mode, IWOTH, b'w');
+    out[9] = execute_slot(mode, IXOTH, crate::cp::S_ISVTX, b'T', b't');
+    // C 在此位写一个空格，启用访问控制列表时才换成 `+`（strmode.c:179-180）。
+    // `mv.c:188` 的 `modep[9] == ' '` 判的就是这里是不是空格：本布局下索引 9
+    // 总是权限字符，所以那个条件永假——它只防住“把填充位误当权限末位”的变体。
+    out[10] = b' ';
+    out
+}
+
+/// 读/写槽位：位在对字母，位无则 `-`。
+fn read_or_write(mode: u32, mask: u32, letter: u8) -> u8 {
+    if mode & mask != 0 { letter } else { b'-' }
+}
+
+/// execute 兼设身份位槽位：对应 C 那个四分支 switch。
+/// `upper`/`lower` 是大写与小写的设身份记号（用户与组用 `S`/`s`，其商用 `T`/`t`）。
+fn execute_slot(mode: u32, exec: u32, set_id: u32, upper: u8, lower: u8) -> u8 {
+    match (mode & exec != 0, mode & set_id != 0) {
+        (false, false) => b'-',
+        (true, false) => b'x',
+        (false, true) => upper,
+        (true, true) => lower,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +290,65 @@ mod tests {
         assert_eq!(apply_mode(0o644, "z+x"), Err(FileOpError::InvalidArgument));
         assert_eq!(apply_mode(0o644, "u"), Err(FileOpError::InvalidArgument));
         assert_eq!(apply_mode(0o644, "u+"), Err(FileOpError::InvalidArgument));
+    }
+
+    // ── strmode 回渲 ──────────────────────────────────────────────
+
+    #[test]
+    fn strmode_type_letters() {
+        assert_eq!(strmode(crate::cp::S_IFDIR | 0o755)[0], b'd');
+        assert_eq!(strmode(S_IFCHR | 0o644)[0], b'c');
+        assert_eq!(strmode(S_IFBLK | 0o644)[0], b'b');
+        assert_eq!(strmode(crate::cp::S_IFREG | 0o644)[0], b'-');
+        assert_eq!(strmode(crate::cp::S_IFLNK | 0o777)[0], b'l');
+        assert_eq!(strmode(S_IFSOCK | 0o644)[0], b's');
+        assert_eq!(strmode(S_IFIFO | 0o644)[0], b'p');
+        assert_eq!(strmode(S_IFWHT | 0o644)[0], b'w');
+        // 归档态两位只在常规文件支里查，ARCH2 优先（`strmode.c:71-80`）。
+        assert_eq!(strmode(crate::cp::S_IFREG | S_ARCH1 | 0o644)[0], b'a');
+        assert_eq!(strmode(crate::cp::S_IFREG | S_ARCH2 | 0o644)[0], b'A');
+        assert_eq!(
+            strmode(crate::cp::S_IFDIR | S_ARCH1 | 0o755)[0],
+            b'd',
+            "归档位不影响其它类型的字母"
+        );
+        // 没有可识别的类型位时走 C 的 default 支（strmode.c:106-108）。
+        assert_eq!(strmode(0o644)[0], b'?');
+    }
+
+    #[test]
+    fn strmode_permission_characters() {
+        assert_eq!(&strmode(crate::cp::S_IFREG | 0o777)[1..10], b"rwxrwxrwx");
+        assert_eq!(&strmode(crate::cp::S_IFREG | 0o644)[1..10], b"rw-r--r--");
+        assert_eq!(&strmode(crate::cp::S_IFREG)[1..10], b"---------");
+        // 每段只留一位：IRUSR + IWGRP + IXOTH。
+        assert_eq!(&strmode(crate::cp::S_IFREG | 0o421)[1..10], b"r---w---x");
+    }
+
+    #[test]
+    fn strmode_set_id_slots_replace_the_execute_letter() {
+        // 设身份位与执行位的四种组合（C 那个四分支 switch）。
+        assert_eq!(&strmode(crate::cp::S_IFREG | 0o4111)[1..10], b"--s--x--x");
+        assert_eq!(&strmode(crate::cp::S_IFREG | 0o4000)[1..10], b"--S------");
+        assert_eq!(&strmode(crate::cp::S_IFREG | 0o2000)[1..10], b"-----S---");
+        assert_eq!(&strmode(crate::cp::S_IFREG | 0o1000)[1..10], b"--------T");
+        // 三种同时到位的小写形（粘滞位用 `t`，另两个用 `s`）：0o7777 才是设
+        // 身份两位加粘滞位的全填形；0o1777 只带粘滞位，所以 owner/group 仍是 `x`。
+        assert_eq!(&strmode(crate::cp::S_IFDIR | 0o7777)[1..10], b"rwsrwsrwt");
+        assert_eq!(&strmode(crate::cp::S_IFDIR | 0o1777)[1..10], b"rwxrwxrwt");
+    }
+
+    #[test]
+    fn strmode_pads_with_a_space_after_the_nine_permissions() {
+        let s = strmode(crate::cp::S_IFREG | 0o644);
+        assert_eq!(s.len(), 11);
+        assert_eq!(
+            s[10], b' ',
+            "the access-control-list pad strmode.c:179 writes"
+        );
+        // `mv.c:188` 的 `modep[9] == ' '` 在本布局下永假：索引 9 是权限字符，
+        // 不是填充位。这一条钉住那个分隔空格为何总被输出。
+        assert_ne!(s[9], b' ');
+        assert_ne!(strmode(crate::cp::S_IFREG | 0o4755)[9], b' ');
     }
 }
