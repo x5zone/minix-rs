@@ -56,6 +56,7 @@ pub mod printf;
 pub mod pwd;
 pub mod rm;
 pub mod rmdir;
+pub mod stat;
 pub mod testexpr;
 pub mod touch;
 pub mod truncate;
