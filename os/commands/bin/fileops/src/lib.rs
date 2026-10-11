@@ -40,6 +40,7 @@ extern crate alloc;
 pub mod cook;
 pub mod echo;
 pub mod expr;
+pub mod ln;
 pub mod mkdir;
 pub mod mode;
 pub mod path;
