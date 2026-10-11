@@ -35,9 +35,12 @@
 //! - [`expand`]: variable expansion over the [`expand::Environ`] trait.
 //! - [`redir`]: redirection operator recognition.
 //! - [`script`]: startup file sequencing.
+//! - [`getopt`]: the BSD `getopt(3)` option parser behind the `getopt`
+//!   command.
 
 pub mod expand;
 pub mod exec_frame;
+pub mod getopt;
 pub mod lexer;
 pub mod redir;
 pub mod script;

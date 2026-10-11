@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的交互起点——登录程序交棒之后，谁解释用户敲下的每一行字
 > **源码**: `minix3/bin/sh/`（Almquist shell，22 个 C 文件：`parser.c` 1686 行、`expand.c` 1640 行、`eval.c` 1366 行、`jobs.c` 1532 行、`exec.c` 1071 行、`redir.c` 400 行、`main.c` 376 行、`builtins.def` 93 行）、`minix3/bin/ksh/`、`minix3/bin/csh/`、`minix3/bin/hostname/hostname.c`（101 行，主函数第 57 行）、`minix3/usr.bin/uname/uname.c`（159 行，系统调用第 111 行）、`minix3/usr.bin/env/env.c`（99 行）、`minix3/usr.bin/getopt/getopt.c`（41 行）、`minix3/minix/commands/sysenv/sysenv.c`（81 行）、`minix3/etc/profile`、`minix3/etc/shrc`、`minix3/etc/csh.cshrc`、`minix3/etc/csh.login`、`minix3/etc/csh.logout`、`minix3/etc/hostname.file`（内容 `minix`）
-> **Rust 模块**: `os/commands/bin/shell`（库包 `minix-shell`：`lexer.rs`、`expand.rs`、`redir.rs`、`script.rs`，36 个测试通过）；`sh` 的 `src/bin/` 薄壳随本域执行层批次在本 crate 内落地（派生执行待进程原语；原 `os/commands/bin/sh` 占位壳已于 2026-09-17 删除）
+> **Rust 模块**: `os/commands/bin/shell`（库包 `minix-shell`：`lexer.rs`、`expand.rs`、`redir.rs`、`script.rs`、`getopt.rs`，其中 `getopt.rs` 是 `getopt` 命令的 `getopt(3)` 解析器）；`sh` 与 `getopt` 的 `src/bin/` 薄壳在本 crate 内落地（派生执行待进程原语；原 `os/commands/bin/sh` 占位壳已删除）
 > **前置依赖**: `03-login-passwd.md`（登录链交棒到 shell）、终端属性（`13-terminal-termios.md` 的行规程部分）
 > **不覆盖（移交）**: 命令工具本体（见 `06` 到 `24` 各篇）、终端驱动（见 `16-stage-drivers` 的终端部分）、作业控制的进程组实现（见 14-stage-runtime 的线程模型条目）
 
@@ -164,7 +164,7 @@ libc 不移植——`sh` 的执行层因此不能照抄 C 的 `execve`/`stdio` �
 
 ### 4.1 模块结构
 
-`os/commands/bin/shell`（库包名 `minix-shell`）共 5 个源文件：
+`os/commands/bin/shell`（库包名 `minix-shell`）持决定半，共 6 个源文件（下表）；`sh`、`getopt` 薄壳在 `src/bin/`：
 
 | Rust 文件 | 对应 C 源码位置 | 职责 |
 |-----------|----------------|------|
@@ -173,6 +173,8 @@ libc 不移植——`sh` 的执行层因此不能照抄 C 的 `execve`/`stdio` �
 | `expand.rs` | `expand.c` 变量子集 | `Environ` 接口、`EmptyEnv` 与 `TableEnv`、 `$`、`${}` 展开 |
 | `redir.rs` | `redir.c` 算子层 | 七种重定向算子识别（`parse_redir`） |
 | `script.rs` | `main.c:196-215` | 启动文件序列决策（`plan_startup`） |
+| `getopt.rs` | `libc/stdlib/getopt.c:62-142` | BSD `getopt(3)` 解析器（`Getopt`、`Outcome`） |
+| `bin/getopt.rs` | `usr.bin/getopt/getopt.c` | 复刻 getopt1 渲染与两条诊断的纯函数 `render` + 薄壳 |
 
 ### 4.2 关键类型与不变量
 
@@ -194,7 +196,7 @@ libc 不移植——`sh` 的执行层因此不能照抄 C 的 `execve`/`stdio` �
 
 ## 5. 测试要点
 
-`cargo test -p minix-shell`：**36 个测试，全部通过**（截至 2026-09-06）。
+全量测试基线：`cargo test -p minix-shell --lib` 与 `cargo test -p minix-shell --bin getopt` 实际输出为准（历史全量数字见 `.review` 底账）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/shell` 复现）：
 
@@ -202,6 +204,8 @@ libc 不移植——`sh` 的执行层因此不能照抄 C 的 `execve`/`stdio` �
 - **展开**（`expand.rs`，13 个）：`test_plain_lookup` 与 `test_braced_lookup`（两种变量写法）、`test_unset_expands_empty`（缺席为空）、`test_default_when_unset`、`test_default_keeps_set_value`、`test_colon_default_treats_empty_as_unset`（冒号版视空为缺席、非冒号版只认缺席）、`test_alternate_value`（条件值）、`test_error_when_unset`（问号报错）、`test_assign_rejected_loudly`（赋值响亮拒绝）、`test_unclosed_brace_rejected`（花括号未闭合）、`test_special_parameters`（退出状态与进程号参数）、`test_strong_quote_suppresses`（单引号抑制）、`test_env_trait_objects`（接口统一）。
 - **重定向**（`redir.rs`，7 个）：`test_output_truncate`、`test_error_redirect_with_fd`（描述符前置）、`test_append_and_input`、`test_duplicate_and_close`（复制与关闭）、`test_read_write_and_clobber`（读写与强制覆盖）、`test_plain_word_is_none`（普通词不是重定向）、`test_missing_target_rejected`（无目标报错）。
 - **启动序列**（`script.rs`，6 个）：`test_login_shell_reads_both_profiles`（登录两文件）、`test_interactive_shell_reads_env_file`（交互读环境文件）、`test_login_plus_env_chains_three`（登录加交互三文件）、`test_privileged_shell_skips_env`（特权跳过）、`test_empty_env_reads_nothing`（空环境文件视同未设）、`test_batch_shell_reads_nothing`（批处理不读）。
+- **getopt 解析**（`getopt.rs`，11 个）：簇内 flag（`-ab`）、附写/分写参数（`-nfoo`/`-n foo`）、GNU 可选 `::`、`--` 终止、首个操作数即停（不置换）、未知项、缺参（普通态与前导冒号态）、solitary `-`、flag+参数混束（`-abcVALUE` 配 `abc:`）。
+- **getopt 渲染**（`bin/getopt.rs` 的 `render`，8 个）：逐 golden 验 stdout 命令行（flag/附参/分参/`--` 分隔）、stderr 两条诊断（unknown option / option requires an argument）、退出码、progname 取 argv[0] 末段。
 
 尚未覆盖、随后续阶段补齐的：命令替换、算术展开、通配展开（依赖执行器与文件系统）、语法树与执行器、作业控制（依赖进程原语）。文字层是全覆盖的，执行层是显式留白的。
 
