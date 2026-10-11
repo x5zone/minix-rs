@@ -14,9 +14,13 @@
 //! Declared residual (refused up front, like `chmod`'s `-R`): `-r`/`-R`
 //! (recursive `fts` walk), `-P` (secure overwrite via `arc4random`/
 //! `O_NOFOLLOW`), `-W` (whiteout `undelete`), and `-x` (`FTS_XDEV`) hinge on
-//! facilities not wrapped in this tree. The tty override prompt also needs
-//! `strmode` + `user_from_uid`/`group_from_gid`; under the scripted/non-tty
-//! path this tree runs, `rm.c` proceeds without prompting (`!stdin_ok`).
+//! facilities not wrapped in this tree. The `override` question is wired: it
+//! needs `strmode` (now `minix_fileops::mode::strmode`) and prints the numeric
+//! owner and group, the decimal fallback C's `user_from_uid`/`group_from_gid`
+//! take when the password database has no entry (`pwcache.c:296-306`) — this
+//! tree has no password lookup at all, so that is the only form. C's own `-P`
+//! branch inside `check` (`rm.c:563-568`, "could not be overwritten") stays
+//! unreachable because `-P` is refused before any operand is touched.
 //! C's `warn`/`warnx` `strerror` suffixes are not reproduced (no errno→text
 //! table); real-machine effect is the writable-root gate (`C-57`/E5).
 
@@ -30,8 +34,17 @@ mod support;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_fileops::rm::{RmFlags, nonexistent, strip_dots};
-use minix_sys::{Stat, lstat, read, rmdir, unlink};
+use minix_fileops::mode::strmode;
+use minix_fileops::rm::{CheckFlavor, RmFlags, check_flavor, nonexistent, strip_dots};
+use minix_sys::{Errno, Stat, access, isatty, lstat, rmdir, unlink};
+
+// `minix3/sys/sys/unistd.h:170` (`W_OK 0x02`) and `stat.h:144` (`_S_IFLNK`).
+const W_OK: i32 = 0x02;
+const S_IFLNK: u32 = 0o120000;
+// `minix3/sys/sys/errno.h:68` `ETXTBSY 26` ("Text file busy"): C's `check`
+// treats that one denial as "not a permission problem" and does not ask.
+// `Errno` carries no associated constant for it, so the value is local.
+const ETXTBSY: i32 = 26;
 
 // POSIX file-type bits, matching C `sys/sys/stat.h`: `_S_IFMT 0170000`,
 // `_S_IFDIR 0040000`.
@@ -52,21 +65,39 @@ fn warn_err(path: &str) {
     support::warn(format!("rm: {path}\n").as_bytes());
 }
 
-/// C `check` (`rm.c:541-578`), restricted to the wired `-i` path: with
-/// `iflag` it asks `remove '<path>'? ` and takes the answer from the first
-/// character of the line (C reads `getchar` until newline/EOF, returning
-/// `first == 'y' || 'Y'`). Without `-i` on this tree's non-tty path, C returns
-/// proceed (`!stdin_ok`, `rm.c:557`); the tty override prompt that would ask
-/// before removing an unwritable regular file needs `strmode` +
-/// `user_from_uid`/`group_from_gid` and is a declared residual.
-fn check(path: &str, flags: &RmFlags) -> bool {
-    if !flags.interactive {
-        return true;
+/// C `check` (`rm.c:541-578`): decide via `check_flavor` whether anything is
+/// asked, print that question the way C does, and take the answer from the
+/// first character of the line (draining the rest, `rm.c:573-576`). Returns
+/// true when the operand may be removed.
+fn check(path: &str, sb: &Stat, flags: &RmFlags) -> bool {
+    let denial = access(path, W_OK).err();
+    match check_flavor(
+        flags.interactive,
+        isatty(support::STDIN),
+        sb.st_mode & S_IFMT == S_IFLNK,
+        denial.is_some(),
+        denial == Some(Errno::from_i32(ETXTBSY)),
+    ) {
+        CheckFlavor::None => return true,
+        // Both prompts are bare `fprintf(stderr, ...)`: no program name, and
+        // the path in single quotes (rm.c:552, rm.c:569-572).
+        CheckFlavor::Remove => {
+            support::warn(format!("remove '{path}'? ").as_bytes());
+        }
+        CheckFlavor::Override => {
+            let rendered = strmode(sb.st_mode);
+            let perms = core::str::from_utf8(&rendered[1..10]).unwrap_or_default();
+            let sep = if rendered[9] == b' ' { "" } else { " " };
+            support::warn(
+                format!(
+                    "override {perms}{sep}{}:{} for '{path}'? ",
+                    sb.st_uid, sb.st_gid
+                )
+                .as_bytes(),
+            );
+        }
     }
-    support::warn(format!("remove '{path}'? ").as_bytes());
-    let mut buf = [0u8; 64];
-    let n = read(0, &mut buf).unwrap_or(0);
-    n > 0 && (buf[0] == b'y' || buf[0] == b'Y')
+    support::answer_yes()
 }
 
 /// C `rm_file`'s per-operand body (`rm.c:300-353`). Returns true on failure
@@ -90,7 +121,7 @@ fn rm_one(path: &str, flags: &RmFlags) -> bool {
     }
 
     // Interactive / override check before touching the entry (rm.c:330).
-    if !flags.force && !check(path, flags) {
+    if !flags.force && !check(path, &sb, flags) {
         return false;
     }
 
