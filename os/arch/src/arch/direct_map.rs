@@ -135,9 +135,11 @@ const _: () = assert!(
 /// direct map takes the next top-level slot, VPN[2] = 257
 /// (`0xFFFF_FFC0_4000_0000`), so the window never shares a slot with the
 /// image. The previous base `0xFFFF_FC00_0000_0000` was a non-canonical
-/// address whose 39-bit payload decodes to VPN[2] = 256 — the image's own
-/// slot (the same L2-slot-conflict class documented in
-/// `02-higher-half-kernel.md` Appendix A). The VM direct map is placed at
+/// address for Sv39 — its 39-bit payload is `0x0` (VPN[2] = 0), so it landed
+/// in no legal top-level slot at all and the DM formula subtracted out
+/// garbage. That is a different fault from the x86-64 image-L2-slot collision
+/// documented in `02-higher-half-kernel.md` Appendix A. (Only the kernel
+/// image base `0xFFFF_FFC0_0000_0000` sits at VPN[2] = 256.) The VM direct map is placed at
 /// `0x0000_0010_0000_0000` (64GB offset in the user low half).
 ///
 /// See `07-cross-space-init.md` §4.1 for the address-space layout table.

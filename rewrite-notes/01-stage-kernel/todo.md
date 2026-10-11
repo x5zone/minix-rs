@@ -760,3 +760,6 @@ smp_todo §25 环境级根因段相应降级为历史假说）；aarch64 全绿�
 > **处置（`2026-10-11`，`claim/KBOOT-COMMENTS-347-qoder` @ 基线 `bd27af71a`）——#4 已闭环**（= `08-todo.md` T-4；另 `08-todo.md` T-7 的 proc_arch 陈旧引用一并回修）：
 > - **#4（`dm_coverage.rs` “Called once” 过时）**：`establish_boot_dm` 函数注释原写“Called once from `arch_boot_impl`”，实有两条生产路径（`lib.rs:384` = `arch_boot_resume_high_half`、`lib.rs:567` = `arch_boot_impl` Step 4）。注释改为列出两条路径。核实：`grep -rn 'Called once' os/kernel/src/dm_coverage.rs`→零命中。
 > - **proc_arch 陈旧引用（`08-todo.md` T-7）**：`os/arch/src/arch/boot.rs` `load_vm_elf` 注释引用了重构中已删除的 `os/arch/src/{x86_64,arm64,riscv64}/proc_arch.rs`；改指 `arch/mod.rs` 删除记录，不再指向不存在的路径。核实：`grep -rn 'proc_arch' os/arch/src/`→只剩 `arch/mod.rs` 的删除记录行。纯注释回修、无代码语义变更。
+>
+> **处置（`2026-10-11`，`claim/KBOOT-COMMENT-T5-qoder` @ 基线 `9cb843065`）——#5 已闭环**（= `08-todo.md` T-5）：
+> - **#5（riscv64 `direct_map.rs` 注释算术自相矛盾）**：旧基址 `0xFFFF_FC00_0000_0000` 的注释称“39 位载荷 decodes to VPN[2] = 256，撞镜像自身槽”，但 python 核算 `(v>>30)&0x1FF` = 0、payload = 0x0——它是非规范地址、VPN[2]=0，不落任何合法顶层槽（与 x86-64 撞镜像 L2 槽是不同型的错）；256 是内核镜像基址 `0xFFFF_FFC0_0000_0000` 的位置。注释按算术改写。核实：`python3 -c "v=0xFFFF_FC00_0000_0000; print((v>>30)&0x1FF)"`→0；`grep -rn 'decodes to VPN\[2\] = 256' os/`→零命中。纯注释回修。
