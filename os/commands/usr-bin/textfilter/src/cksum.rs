@@ -87,6 +87,30 @@ pub fn csum2(data: &[u8]) -> (u32, u64) {
     (crc, length)
 }
 
+/// Which length the print step shows. The three algorithms share the value-and-
+/// length output line but disagree on the length's unit (`print.c`: `pcrc`
+/// prints the raw byte count, `psum1` rounds up to 1024-byte blocks, `psum2`
+/// to 512-byte blocks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SumKind {
+    /// `cksum` (default CRC): print the byte count verbatim.
+    Crc,
+    /// `-o 1` / `sum`: print 1024-byte blocks, rounded up.
+    Old1,
+    /// `-o 2`: print 512-byte blocks, rounded up.
+    Old2,
+}
+
+/// The second column `print.c` emits for `kind` given the input `bytes`.
+pub fn sum_display_length(kind: SumKind, bytes: u64) -> u64 {
+    match kind {
+        SumKind::Crc => bytes,
+        // C `(len + 1023) / 1024` and `(len + 511) / 512`, i.e. round up.
+        SumKind::Old1 => bytes.div_ceil(1024),
+        SumKind::Old2 => bytes.div_ceil(512),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +132,19 @@ mod tests {
         assert_eq!(cksum_crc(b"a"), (1220704766, 1));
         assert_eq!(cksum_crc(b"abc"), (1219131554, 3));
         assert_eq!(cksum_crc(b"hello world"), (1135714720, 11));
+    }
+
+    #[test]
+    fn test_sum_display_length_block_rounding() {
+        // CRC shows bytes; old1 rounds to 1024-blocks, old2 to 512-blocks.
+        assert_eq!(sum_display_length(SumKind::Crc, 11), 11);
+        assert_eq!(sum_display_length(SumKind::Old1, 0), 0);
+        assert_eq!(sum_display_length(SumKind::Old1, 1), 1); // (1+1023)/1024
+        assert_eq!(sum_display_length(SumKind::Old1, 1024), 1);
+        assert_eq!(sum_display_length(SumKind::Old1, 1025), 2);
+        assert_eq!(sum_display_length(SumKind::Old2, 511), 1);
+        assert_eq!(sum_display_length(SumKind::Old2, 512), 1);
+        assert_eq!(sum_display_length(SumKind::Old2, 513), 2);
     }
 
     #[test]
