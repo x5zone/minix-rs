@@ -134,6 +134,7 @@
 |------|------|------|------------|
 | 窗口 `push`/`drain` | 行流 | 留存行 | 取头取尾语义 |
 | `Counter::add`/`finish` | 字节块 | 四计数 | `wc` 计数语义 |
+| `format_counts` | 列选择与计数、可选名 | 一行输出字节 | `wc.c` `print_counts` 的 ` %7llu` 列与名后缀 |
 | `parse_list`/`select_bytes`/`select_fields` | 列表文本与行 | 选中字节 | `cut` 选择语义 |
 | `parse_set`/`translate`/`delete`/`squeeze` | 集合文本与输入 | 变换结果 | `tr` 三操作语义 |
 | `Uniq::push`/`finish`/`keep`/`format` | 行流 | 报告 | `uniq` 状态机语义 |
@@ -156,7 +157,7 @@
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/usr-bin/textfilter` 复现）：
 
 - **行窗**（`window.rs`，5 个）：`test_head_keeps_first`（取头）、`test_tail_keeps_last`（取尾跨回绕）、`test_tail_short_input`（不足 N 行全留）、`test_zero_or_huge_rejected`（零与超限）、`test_windows_share_the_trait`（接口统一）。
-- **计数**（`count.rs`，4 个）：`test_basic_counts`（行词节最长四数）、`test_chunk_split_mid_word`（切块一致性）、`test_unterminated_last_line`（末行无换行）、`test_empty_input`（空输入全零）。
+- **计数**（`count.rs`，9 个）：`test_basic_counts`（行词节最长四数）、`test_chunk_split_mid_word`（切块一致性）、`test_unterminated_last_line`（末行无换行）、`test_empty_input`（空输入全零）、`test_multibyte_chars_count_scalars_not_bytes`（`-m` 计码点非字节）、`test_format_default_three_columns_with_width`（缺省三列固定 ` %7llu`）、`test_format_name_column_appended`（文件 operand 后接 ` 名`）、`test_format_char_field_selection`（`-m` 取字符、`-c` 取字节，同一列）、`test_format_wide_value_overflows_field`（超 7 位自然变宽）、`test_format_small_buffer_errors`（缓冲不足报错）。
 - **切割**（`cut.rs`，5 个）：`test_byte_selection`（区间、离散、开尾、开头四写法）、`test_overlaps_print_once`（重叠去重）、`test_field_selection`（字段三选）、`test_missing_delimiter_policy`（无分隔符两策略）、`test_bad_lists_rejected`（空、零、逆序、空段）。
 - **字符集**（`tr.rs`，7 个）：`test_translate_basic`（基本映射）、`test_short_second_set_repeats_last`（短集补末）、`test_range_and_repeat_sets`（区间与重复写法）、`test_named_class`（命名类十数字）、`test_delete_and_squeeze`（删除与压缩）、`test_class_strategies_agree`（两策略 256 字节一致）、`test_bad_sets_rejected`（逆区间、未知类名、坏重复）。
 - **去重**（`uniq.rs`，4 个）：`test_collapses_adjacent`（相邻合并、非相邻不合并）、`test_repeated_and_unique_modes`（两种筛选）、`test_counted_format`（计数前缀）、`test_empty_input_no_runs`（空输入）。
@@ -173,7 +174,7 @@
 | cut | 同上 | 已接线（`-b`/`-c` 字节与 `-f` 字段两路，`-d`/`-s` 就位）；文件操作数待开放路径调用解锁（现仅 stdin） |
 | uniq | 同上 | 已接线（`-c`/`-d`/`-u` 单模式）；`-i`/`-f`/`-s` 比较面与组合模式待批 |
 | head、tail | 同上 | 已接线（`-n`，缺省 10）；窗口容量封顶 32（固定数组窗口），`-c` 字节模式与文件操作数待批 |
-| wc | 同上 | 已接线（`-l`/`-w`/`-c` 任选，缺省三路，流式计数不经收集）；C 的文件操作数列对齐未复刻，文件操作数待开放路径 |
+| wc | 同上 | 已接线（`-l`/`-w`/`-c`/`-m`/`-L` 任选，缺省三路，流式计数不经收集）；文件操作数已接（逐文件 open/read、`argc>1` 补 total 行、打不开的文件 warn 跳过不出行），输出走 `count::format_counts` 复刻 C `print_counts` 的 ` %7llu` 固定列与名后缀（`-c`/`-m` 共享单列、后命中的互斥旗标为准）；真机 open 腿归 C-57/E5 |
 | sort | 同上 | 已接线（决定半 `sort.rs`：`-k F[.C][flags][,F[.C][flags]]` 键规格、`b d f i M n r` 修饰符、`-t`、`-r`、`-u`、`-c`、整行回退；外部归并引擎属执行层，超内存输入待批；文件操作数待开放路径） |
 | cmp | 同上 | 已接线决定半（`cmp.rs`：逐字节比较、首个差异的字符与行定位、`-l` 全量清单、EOF 指名短流；二进制结构就位，文件操作数待开放路径） |
 | seq | 同上 | 已接线（决定半 `seq.rs`：整数序列、方向跟随的缺省增量、方向错误与零增量报错、`-w` 等宽、`-s` 分隔、`-t` 终止；浮点增量与 `-f` 格式待浮点渲染裁决；二进制全功能） |
