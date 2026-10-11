@@ -126,15 +126,9 @@ impl SchedServer {
     /// the rewrite keeps failures at the binary layer where every other
     /// startup failure already dies (01 D2's convention).
     pub fn init_scheduling(&mut self, kernel: &mut impl KernelApi) -> Result<(), i32> {
-        let hz = kernel.get_hz().map_err(|e| {
-            // NK4-C 1.10i 取证探针（task1-close 裁决删除）：get_hz Err 数值
-            // 十六进制打印（sched 无 alloc，手工编码）。
-            e
-        })?;
+        let hz = kernel.get_hz()?;
         let balancer = Balancer::init(hz);
-        kernel.setalarm(balancer.timeout_ticks()).map_err(|e| {
-            e
-        })?;
+        kernel.setalarm(balancer.timeout_ticks())?;
         self.balancer = Some(balancer);
         Ok(())
     }
@@ -168,10 +162,6 @@ impl SchedServer {
         // ── receive (C 38-42) ──
         let (mut message, status) = match ipc.receive() {
             Ok(arrival) => arrival,
-            // NK4-C 1.10y 取证探针（task1-close 裁决删除）：receive Err 的
-            // errno 前 4 次打印。≤16 字节约束（diagctl >16B 静默丢弃，
-            // s14r/w）：b"nk4a: srcv " = 11B + 4 hex + \n = 16B。旧版本
-            // [..15]/15B 字面量错位（copy_from_slice 即 panic）。
             Err(_) => return Step::ReceiveFailed,
         };
         let sender = message.m_source; // C 41
@@ -182,9 +172,6 @@ impl SchedServer {
                 // C 47-49: the balance round. A failed re-arm is fatal —
                 // C panics right there (367-368); the loop has no future
                 // without its bell.
-                // NK4-C 1.10z 取证（task1-close 裁决删除）：re-arm 失败的
-                // errno 数值打印——1.10z 定案 re-arm setalarm 失败致 sched
-                // 死亡，errno 类别定位。
                 if let Err(_) = self.balance_queues(kernel) {
                     panic!("sys_setalarm failed (schedule.c:367-368)");
                 }
