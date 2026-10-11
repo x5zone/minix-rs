@@ -23,6 +23,8 @@ use minix_sys::{read, write, Fd};
 pub const STDIN: Fd = 0;
 /// Standard output, POSIX `STDOUT_FILENO`.
 pub const STDOUT: Fd = 1;
+/// Standard error, POSIX `STDERR_FILENO`.
+pub const STDERR: Fd = 2;
 
 /// Terminates the process with an exit status (see the module header).
 /// Program arguments without `argv[0]` conventions applied — index 0 is
@@ -76,6 +78,12 @@ pub fn emit(bytes: &[u8]) {
     if write(STDOUT, bytes).is_err() {
         terminate(1);
     }
+}
+
+/// Target twin of [`warn`]: writes the diagnostic to standard error.
+#[cfg(all(not(test), target_os = "none"))]
+pub fn warn(bytes: &[u8]) {
+    let _ = write(STDERR, bytes);
 }
 
 /// Reads all of standard input into one vector.
