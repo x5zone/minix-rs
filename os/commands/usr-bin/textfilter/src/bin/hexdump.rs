@@ -7,8 +7,13 @@
 //! list. The deciding half (block iteration, `*` suppression, field
 //! padding) is the library's `hexdump` module. The `-e`/`-f` format
 //! mini-language is a registered remaining corner and exits with an
-//! explicit message. File operands are rejected until the
-//! open-existing seam lands (edge E-CMDSYSFACE); stdin works. The
+//! explicit message. File operands are opened in turn and chained into
+//! one byte stream (`display.c` `next` `freopen`s each onto stdin, so the
+//! address runs continuously and `-s` skips from the front); with no
+//! operands the stream is stdin, and a bare `-` is a literal file name,
+//! not a stdin alias. An unopenable operand warns and flags the exit
+//! value (`exitval = 1`) and the chain continues. `-n length` is parsed
+//! but not yet applied to the stream (registered corner). The
 //! hosted-versus-target seams are the echo template's
 //! (`os/commands/bin/fileops/src/bin/echo.rs`).
 
@@ -95,20 +100,32 @@ fn run() -> ! {
     }
 
     let operands: Vec<&str> = argv[i..].iter().map(|s| s.as_str()).collect();
-    if operands.iter().any(|s| *s != "-") {
-        support::warn(
-            b"hexdump: file operands wait on the open-existing seam (edge E-CMDSYSFACE)\n",
-        );
-        support::terminate(1);
-    }
-
+    // `display.c` `next` chains every operand through `freopen` onto stdin,
+    // so the file operands form one continuous byte stream with a single
+    // running address (and `-s` skips from that stream's front, as `start`
+    // below). With no operands the stream is stdin; a bare `-` is a literal
+    // file name, not a stdin alias. An unopenable operand warns and flags the
+    // exit value, and the chain continues (`next`, `exitval = 1`).
     let mut input = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(support::STDIN, &mut chunk) {
-            Ok(0) => break,
-            Ok(n) => input.extend_from_slice(&chunk[..n]),
-            Err(_) => break,
+    let mut rval = 0;
+    if operands.is_empty() {
+        let mut chunk = [0u8; 4096];
+        loop {
+            match read(support::STDIN, &mut chunk) {
+                Ok(0) => break,
+                Ok(n) => input.extend_from_slice(&chunk[..n]),
+                Err(_) => break,
+            }
+        }
+    } else {
+        for operand in &operands {
+            match support::read_file(operand) {
+                Ok(data) => input.extend_from_slice(&data),
+                Err(()) => {
+                    support::warn(format!("hexdump: {operand}\n").as_bytes());
+                    rval = 1;
+                }
+            }
         }
     }
     // doskip consumes `skip` bytes before any block is shown.
@@ -136,7 +153,7 @@ fn run() -> ! {
         out.extend_from_slice(format!("{:0w$x}\n", data.len(), w = width).as_bytes());
     }
     support::emit(&out);
-    support::terminate(0);
+    support::terminate(rval);
 }
 
 fn flag_value(argv: &[String], i: &mut usize, chars: &[char], k: &mut usize) -> Option<String> {
