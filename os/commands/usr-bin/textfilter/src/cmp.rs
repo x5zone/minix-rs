@@ -78,6 +78,25 @@ pub fn format_list_entry(entry: (u64, u8, u8), out: &mut String) {
     let _ = write!(out, "{:6} {:3o} {:3o}\n", byte, left, right);
 }
 
+/// The first-difference line `misc.c` `diffmsg` sends to standard output:
+/// `"%s %s differ: char %lld, line %lld\n"` (with a trailing newline).
+pub fn report_first_diff(file1: &str, file2: &str, byte: u64, line: u64) -> String {
+    alloc::format!("{file1} {file2} differ: char {byte}, line {line}\n")
+}
+
+/// The early-EOF message `misc.c` `eofmsg` sends to standard error (before the
+/// `cmp: ` program prefix the caller adds): without `-l` just `"EOF on <file>"`;
+/// with `-l` the byte and — when a line count is meaningful — the line too.
+pub fn report_eof(file: &str, byte: u64, line: u64, list_all: bool) -> String {
+    if !list_all {
+        alloc::format!("EOF on {file}")
+    } else if line > 0 {
+        alloc::format!("EOF on {file}: char {byte}, line {line}")
+    } else {
+        alloc::format!("EOF on {file}: char {byte}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,13 +119,26 @@ mod tests {
     }
 
     #[test]
+    fn test_report_first_diff_matches_netbsd_format() {
+        assert_eq!(
+            report_first_diff("a", "b", 5, 2),
+            "a b differ: char 5, line 2\n"
+        );
+    }
+
+    #[test]
+    fn test_report_eof_branches() {
+        // Without -l: just the file. With -l: char, and line when nonzero.
+        assert_eq!(report_eof("b", 3, 0, false), "EOF on b");
+        assert_eq!(report_eof("b", 3, 0, true), "EOF on b: char 3");
+        assert_eq!(report_eof("b", 9, 2, true), "EOF on b: char 9, line 2");
+    }
+
+    #[test]
     fn test_list_all_collects_every_difference() {
         let outcome = compare_bytes(b"aXcYe\n", b"aBcDe\n", true);
         assert!(!outcome.equal);
-        assert_eq!(
-            outcome.byte_list,
-            vec![(2, b'X', b'B'), (4, b'Y', b'D')]
-        );
+        assert_eq!(outcome.byte_list, vec![(2, b'X', b'B'), (4, b'Y', b'D')]);
     }
 
     #[test]

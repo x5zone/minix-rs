@@ -1,24 +1,33 @@
 //! Minix-RS cmp — byte comparison of two streams.
 //!
-//! Ground truth: `minix3/usr.bin/cmp/` (NetBSD). The deciding half — the
-//! byte walk with the `-l` difference list and the EOF report — is the
-//! library's `cmp` module, fully tested there. This program is
-//! structurally wired: both operands are file names in the C, and file
-//! opens wait for the gated open-existing call, so every invocation is
-//! rejected with that message until the face lands (edge
-//! E-CMDSYSFACE). Exit statuses match the C: 0 equal, 1 different, 2
-//! usage or open trouble (`ERR_EXIT`).
-
+//! Ground truth: `minix3/usr.bin/cmp/` (NetBSD). The deciding half — the byte
+//! walk, the `-l` difference list, the EOF detection, and the report strings
+//! (`misc.c` `diffmsg`/`eofmsg`) — is the library's fully tested `cmp` module.
+//! This program opens two file operands, applies the optional `skip1`/`skip2`
+//! byte offsets, compares, and reports exactly as the C: without flags the
+//! first difference `"%s %s differ: char %lld, line %lld"` to standard output
+//! (or `EOF on <file>` when one stream ends first); with `-l` one line per
+//! differing byte (`%6lld %3o %3o`); with `-s` nothing. Exit status matches the
+//! C `ERR_EXIT`/`DIFF_EXIT`: 0 equal, 1 different, 2 usage or open trouble.
+//!
+//! `skip1`/`skip2` are parsed as decimal byte counts (C's `strtoq` also accepts
+//! `0x`/leading-`0` radix prefixes; that base-0 auto-detect is not carried).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
+use minix_sys::{close, open, read};
+use minix_textfilter::cmp::{compare_bytes, format_list_entry, report_eof, report_first_diff};
+
+const ERR_EXIT: i32 = 2;
+const DIFF_EXIT: i32 = 1;
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -37,22 +46,101 @@ fn run() -> ! {
         }
     }
     if list_all && silent {
-        usage();
+        support::warn(b"cmp: only one of -l and -s may be specified\n");
+        support::terminate(ERR_EXIT);
     }
     if operands.len() < 2 || operands.len() > 4 {
         usage();
     }
-    // Both operands are file names; the open-existing call they need is
-    // gated (edge E-CMDSYSFACE).
-    support::warn(b"cmp: file operands wait for the open call (edge E-CMDSYSFACE)\n");
-    support::terminate(2);
+    let (file1, file2) = (operands[0], operands[1]);
+    let skip1 = operands.get(2).map_or(0, |s| parse_skip(s));
+    let skip2 = operands.get(3).map_or(0, |s| parse_skip(s));
+
+    let data1 = match read_file_or_none(file1) {
+        Some(data) => data,
+        None => {
+            support::warn(format!("cmp: {file1}\n").as_bytes());
+            support::terminate(ERR_EXIT);
+        }
+    };
+    let data2 = match read_file_or_none(file2) {
+        Some(data) => data,
+        None => {
+            support::warn(format!("cmp: {file2}\n").as_bytes());
+            support::terminate(ERR_EXIT);
+        }
+    };
+
+    let a = &data1[(skip1.min(data1.len() as u64)) as usize..];
+    let b = &data2[(skip2.min(data2.len() as u64)) as usize..];
+    let outcome = compare_bytes(a, b, list_all);
+
+    let status = if silent {
+        if outcome.equal {
+            0
+        } else {
+            DIFF_EXIT
+        }
+    } else if list_all {
+        let mut text = String::new();
+        for entry in &outcome.byte_list {
+            format_list_entry(*entry, &mut text);
+        }
+        if !text.is_empty() {
+            support::emit(text.as_bytes());
+        }
+        if let Some((which, byte, line)) = outcome.eof_on {
+            let file = if which == 1 { file1 } else { file2 };
+            support::warn(format!("cmp: {}\n", report_eof(file, byte, line, true)).as_bytes());
+            DIFF_EXIT
+        } else if outcome.equal {
+            0
+        } else {
+            DIFF_EXIT
+        }
+    } else if let Some((byte, line)) = outcome.first_difference {
+        support::emit(report_first_diff(file1, file2, byte, line).as_bytes());
+        DIFF_EXIT
+    } else if let Some((which, byte, line)) = outcome.eof_on {
+        let _ = (byte, line);
+        let file = if which == 1 { file1 } else { file2 };
+        support::warn(format!("cmp: {}\n", report_eof(file, 0, 0, false)).as_bytes());
+        DIFF_EXIT
+    } else {
+        0
+    };
+    support::terminate(status)
+}
+
+/// Open, read to the end, and close a file, or `None` if it cannot be opened.
+fn read_file_or_none(path: &str) -> Option<Vec<u8>> {
+    let fd = open(path, 0, 0).ok()?;
+    let mut data = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match read(fd, &mut chunk) {
+            Ok(0) => break,
+            Ok(count) => data.extend_from_slice(&chunk[..count]),
+            Err(_) => break,
+        }
+    }
+    //[SD19-gate] SD-19: close 后 fd 不再使用
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = close(fd);
+    Some(data)
+}
+
+fn parse_skip(word: &str) -> u64 {
+    match word.parse::<u64>() {
+        Ok(value) => value,
+        Err(_) => usage(),
+    }
 }
 
 fn usage() -> ! {
     support::warn(b"usage: cmp [-l | -s] file1 file2 [skip1 [skip2]]\n");
-    support::terminate(2);
+    support::terminate(ERR_EXIT)
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
