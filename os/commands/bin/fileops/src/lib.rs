@@ -47,6 +47,7 @@ pub mod path;
 pub mod pathchk;
 pub mod printf;
 pub mod pwd;
+pub mod rm;
 pub mod rmdir;
 pub mod testexpr;
 pub mod touch;
