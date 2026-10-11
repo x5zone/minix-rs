@@ -166,6 +166,63 @@ pub fn move_create_mode(from_mode: u32) -> u32 {
     from_mode
 }
 
+/// Which question `mv` asks before clobbering an existing target
+/// (`mv.c:172-203`). C's ladder is: the whole block only runs when `-f` is
+/// absent and the target exists; inside it `-i` asks "overwrite", otherwise a
+/// terminal standard input plus a target we cannot write (and can still
+/// `stat`) asks "override", and anything else skips the question. Both asking
+/// branches first check the source is reachable at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask {
+    /// No question: `-f`, a missing target, or the fall-through branch.
+    None,
+    /// The asking branch ran and `access(from, F_OK)` failed: C reports
+    /// `rename <source>` and counts it as an error (`mv.c:177-180`, `:183-186`).
+    SourceUnreachable,
+    /// `-i` on an existing target: `overwrite <target>? ` (`mv.c:181`).
+    Overwrite,
+    /// No flags, standard input is a terminal, the target is not writable and
+    /// can be stat'd: `override <perms> <user>/<group> for <target>? `
+    /// (`mv.c:182-191`).
+    Override,
+}
+
+/// The ask ladder of `mv.c:172-203`, as a pure decision.
+///
+/// Note `-i` does not consult the terminal here: unlike `cp.c:148`, `mv.c:92`
+/// sets `iflg = 1` unconditionally, so an interactive flag asks even with a
+/// pipe for standard input (the answer then reads as end-of-file, which C
+/// treats as "no").
+#[allow(clippy::too_many_arguments)]
+pub fn ask_about(
+    force: bool,
+    interactive: bool,
+    target_exists: bool,
+    stdin_is_tty: bool,
+    target_writable: bool,
+    target_statable: bool,
+    source_exists: bool,
+) -> Ask {
+    if force || !target_exists {
+        return Ask::None;
+    }
+    if interactive {
+        return if source_exists {
+            Ask::Overwrite
+        } else {
+            Ask::SourceUnreachable
+        };
+    }
+    if stdin_is_tty && !target_writable && target_statable {
+        return if source_exists {
+            Ask::Override
+        } else {
+            Ask::SourceUnreachable
+        };
+    }
+    Ask::None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +322,76 @@ mod tests {
         assert_eq!(move_create_mode(0o4755), 0o4755);
         assert_eq!(crate::cp::create_mode(0o4755), 0o0755);
         assert_ne!(move_create_mode(0o4755), crate::cp::create_mode(0o4755));
+    }
+
+    #[test]
+    fn no_force_or_missing_target_means_no_question() {
+        // mv.c:172: `if (!fflg && !access(to, F_OK))` gates the whole block.
+        assert_eq!(
+            ask_about(true, true, true, true, false, true, true),
+            Ask::None,
+            "-f wins over -i in the gate, not just in the flags"
+        );
+        assert_eq!(
+            ask_about(false, true, false, true, false, true, true),
+            Ask::None,
+            "nothing to clobber, nothing to ask"
+        );
+    }
+
+    #[test]
+    fn interactive_asks_overwrite_and_checks_the_source_first() {
+        assert_eq!(
+            ask_about(false, true, true, false, true, true, true),
+            Ask::Overwrite
+        );
+        assert_eq!(
+            ask_about(false, true, true, false, true, true, false),
+            Ask::SourceUnreachable,
+            "mv.c:177-180 checks access(from, F_OK) before printing the prompt"
+        );
+        // mv.c:92 sets iflg unconditionally: a pipe does not disable the ask.
+        assert_eq!(
+            ask_about(false, true, true, false, false, true, true),
+            Ask::Overwrite,
+            "unlike cp, mv does not require a terminal for -i"
+        );
+    }
+
+    #[test]
+    fn override_needs_terminal_unwritable_and_statable() {
+        assert_eq!(
+            ask_about(false, false, true, true, false, true, true),
+            Ask::Override
+        );
+        assert_eq!(
+            ask_about(false, false, true, false, false, true, true),
+            Ask::None,
+            "not a terminal (mv.c:182 stdin_ok)"
+        );
+        assert_eq!(
+            ask_about(false, false, true, true, true, true, true),
+            Ask::None,
+            "we can write it, no need to ask"
+        );
+        assert_eq!(
+            ask_about(false, false, true, true, false, false, true),
+            Ask::None,
+            "stat failed: mv.c:182 requires !stat(to, &sb)"
+        );
+        assert_eq!(
+            ask_about(false, false, true, true, false, true, false),
+            Ask::SourceUnreachable
+        );
+    }
+
+    #[test]
+    fn interactive_branch_precedes_the_override_branch() {
+        // Both conditions hold; mv.c:176 tests iflg first, so the question is
+        // "overwrite", not the long "override" form.
+        assert_eq!(
+            ask_about(false, true, true, true, false, true, true),
+            Ask::Overwrite
+        );
     }
 }

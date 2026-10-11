@@ -1,16 +1,23 @@
 //! Minix-RS `mv` — the doing half over `minix_fileops::mv`.
 //!
-//! Ground truth: `minix3/bin/mv/mv.c`. The option set and operand shape live in
-//! `minix_fileops::mv`; this program supplies the filesystem leg: `do_move` is
-//! C's `mv.c` rename attempt (`mv.c:218`), reached from the two operand shapes
-//! (`mv.c:113-159`) with the `-i` overwrite prompt and `-v` echo.
+//! Ground truth: `minix3/bin/mv/mv.c`. The option set, the operand shape, the
+//! cross-device decisions and the ask ladder live in `minix_fileops::mv`; this
+//! program supplies the filesystem legs: `do_move` (`mv.c:153-253`) reached from
+//! the two operand shapes (`mv.c:113-159`), `fastcopy` (`mv.c:256-354`) for the
+//! `EXDEV` case, and the `-v` echo.
 //!
-//! Wired: the same-filesystem move, which is a single `rename(2)` (POSIX's
-//! "fast" path, `mv.c:218`). `mv [-f|-i] [-v] name target` renames; if `target`
-//! is an existing directory the source lands under its basename there;
-//! `mv name ... directory` moves each source into the directory (which must be
-//! one, else usage as `mv.c:118`). `-f` suppresses the overwrite prompt, `-i`
-//! asks per existing target, `-v` prints `source -> target`.
+//! Wired: the same-filesystem move (a single `rename(2)`, POSIX's "fast" path,
+//! `mv.c:218`) and the cross-device move of a plain file. `mv [-f|-i] [-v] name
+//! target` renames; if `target` is an existing directory the source lands under
+//! its basename there; `mv name ... directory` moves each source into the
+//! directory (which must be one, else usage as `mv.c:117-118`). The questions
+//! follow `mv.c:172-203` exactly: nothing is asked when `-f` is set or the
+//! target does not exist; `-i` on an existing target asks `overwrite <target>? `
+//! (and `mv.c:92` sets `iflg` without consulting the terminal, so unlike `cp`
+//! it asks on a pipe too); with no flags at all, a terminal standard input plus
+//! a target this process cannot write asks `override <perms> <uid>/<gid> for
+//! <target>? `. A "no" answer skips that operand without counting as a failure
+//! (`mv.c:200-201`), and `-v` prints `source -> target`.
 //!
 //! Declared residual: a cross-device move of a **plain file** is wired — the
 //! `EXDEV` leg runs `fastcopy` (`mv.c:256-354`: copy the bytes, stamp the
@@ -19,12 +26,16 @@
 //! all: `copy` (`mv.c:357-399`) execs `/bin/cp -PRp` on the pair and then
 //! `/bin/rm -rf` on the source, so that leg needs the exec delivery chain
 //! (`NS5`/`C-21`) and is reported rather than faked. Two mechanical deviations
-//! inside the wired leg, both invisible for a plain-file destination: C stamps
+//! inside the wired legs, both invisible for a plain-file destination: C stamps
 //! owner and mode through `fchown`/`fchmod` on the open descriptor
 //! (`mv.c:328-334`) and this tree has no `f*` wrappers, so those two go by path
 //! while the descriptor is still open; and C reads through a `malloc`ed buffer
 //! of `st_blksize` bytes (`mv.c:277`) while this copy uses a fixed chunk (the
-//! chunk size is not observable). Real-machine effect of every write-side
+//! chunk size is not observable). The `override` question prints the numeric
+//! user and group identifiers: C takes them from `user_from_uid` and
+//! `group_from_gid`, whose documented behaviour when the password database has
+//! no entry (`pwcache.c:296-306`) is exactly that decimal fallback, and this
+//! tree has no password lookup at all. Real-machine effect of every write-side
 //! command, this one included, is the writable-root gate (`C-57`/E5); `strerror`
 //! suffixes are not reproduced.
 
@@ -39,13 +50,14 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_fileops::cp::{self, CopyError, CopyIo};
+use minix_fileops::mode::strmode;
 use minix_fileops::mv::{
-    CrossDevice, MvFlags, MvPlan, RemovalCall, cross_device_plan, dest_name, existing_removal,
-    move_create_mode, plan_operands,
+    Ask, CrossDevice, MvFlags, MvPlan, RemovalCall, ask_about, cross_device_plan, dest_name,
+    existing_removal, move_create_mode, plan_operands,
 };
 use minix_sys::{
-    Errno, Fd, Stat, chmod, chown, close, futimens, lstat, open, read, rename, rmdir, stat, unlink,
-    write,
+    Errno, Fd, Stat, access, chmod, chown, close, futimens, isatty, lstat, open, read, rename,
+    rmdir, stat, unlink, write,
 };
 
 // POSIX file-type bits and EXDEV, matching C `sys/sys/stat.h:138,141`
@@ -53,6 +65,12 @@ use minix_sys::{
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
 const EXDEV: i32 = 18;
+
+// The `access(2)` modes C's `do_move` tests with, from
+// `minix3/sys/sys/unistd.h:168-171` (`F_OK 0`, `X_OK 0x01`, `W_OK 0x02`,
+// `R_OK 0x04`); this tree re-exports no names for them.
+const F_OK: i32 = 0;
+const W_OK: i32 = 0x02;
 
 /// The copy chunk. C sizes its buffer from `st_blksize` (`mv.c:277`); the size
 /// of a copy chunk is not part of what anyone can observe, so the same fixed
@@ -74,17 +92,47 @@ fn is_dir(path: &str) -> bool {
     stat(path, &mut sb).is_ok() && s_isdir(sb.st_mode)
 }
 
-/// C `do_move`/`mv`'s rename attempt plus the `-i` overwrite prompt. Returns
-/// true on failure (the operand contributed to the exit status).
+/// C `do_move` (`mv.c:153-253`): the ask ladder, the `rename` attempt, and on
+/// `EXDEV` the cross-device leg. Returns true on failure (the operand
+/// contributed to the exit status).
 fn do_move(source: &str, target: &str, flags: &MvFlags) -> bool {
-    // -i (and not -f): ask before clobbering an existing target.
-    if flags.interactive && !flags.force && is_dir_or_file(target) {
-        support::warn(format!("mv: overwrite '{target}'? ").as_bytes());
-        let mut buf = [0u8; 64];
-        let n = read(0, &mut buf).unwrap_or(0);
-        let yes = n > 0 && (buf[0] == b'y' || buf[0] == b'Y');
-        if !yes {
-            return false; // declined: not an error, just skipped
+    // mv.c:172-203, through the pure `ask_about` decision. The three probes C
+    // makes are kept separate because they answer different questions:
+    // `access(to, F_OK)` gates the block, `access(to, W_OK)` drives the
+    // override branch, and `stat(to)` supplies the mode and the owner names.
+    let mut tsb = zeroed();
+    let ask = ask_about(
+        flags.force,
+        flags.interactive,
+        access(target, F_OK).is_ok(),
+        isatty(support::STDIN),
+        access(target, W_OK).is_ok(),
+        stat(target, &mut tsb).is_ok(),
+        access(source, F_OK).is_ok(),
+    );
+    match ask {
+        Ask::None => {}
+        Ask::SourceUnreachable => {
+            // mv.c:177-180: warn("rename %s", from) and count it.
+            support::warn(format!("mv: rename {source}\n").as_bytes());
+            return true;
+        }
+        Ask::Overwrite => {
+            // mv.c:181: a bare fprintf, so the question carries no program name
+            // and no quotes around the target.
+            support::warn(format!("overwrite {target}? ").as_bytes());
+            if !answer_yes() {
+                // mv.c:200-201: a "no" answer skips this operand, not an error.
+                return false;
+            }
+        }
+        Ask::Override => {
+            // `ask_about` only answers Override when the target could be stat'd,
+            // which is also when tsb holds the mode and owner mv.c:188 prints.
+            override_prompt(target, &tsb);
+            if !answer_yes() {
+                return false;
+            }
         }
     }
 
@@ -255,10 +303,50 @@ fn fastcopy(from: &str, to: &str, sb: &Stat, flags: &MvFlags) -> bool {
     false
 }
 
-/// Whether `target` exists at all (a symlink to a missing file counts).
-fn is_dir_or_file(path: &str) -> bool {
-    let mut sb = zeroed();
-    stat(path, &mut sb).is_ok()
+/// mv.c:187-191: the "override" question. It prints the nine permission
+/// characters (`modep + 1`), a separator C adds unless the tenth character is
+/// already a space, then the owner and group names.
+///
+/// C gets those names from `user_from_uid`/`group_from_gid` (`pwcache.c`),
+/// which fall back to the numeric identifier in decimal when the password
+/// database has no entry (`pwcache.c:296-306`). This tree has no password
+/// lookup at all, so it always takes that fallback branch: the message carries
+/// the numbers. The separator is computed from the rendered string exactly as C
+/// tests `modep[9] == ' '`, so it matches whatever layout `strmode` produces.
+fn override_prompt(target: &str, sb: &Stat) {
+    let rendered = strmode(sb.st_mode);
+    let perms = core::str::from_utf8(&rendered[1..10]).unwrap_or_default();
+    let sep = if rendered[9] == b' ' { "" } else { " " };
+    support::warn(
+        format!(
+            "override {perms}{sep}{}/{} for {target}? ",
+            sb.st_uid, sb.st_gid
+        )
+        .as_bytes(),
+    );
+}
+
+/// mv.c:195-201: the first character answers, the rest of the line is drained,
+/// and end-of-file counts as "no".
+fn answer_yes() -> bool {
+    let mut buf = [0u8; 64];
+    let first = match read(support::STDIN, &mut buf) {
+        Ok(0) | Err(_) => return false,
+        Ok(n) => buf[0..n].first().copied().unwrap_or(b'\n'),
+    };
+    if first != b'\n' {
+        loop {
+            match read(support::STDIN, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if buf[..n].contains(&b'\n') {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    first == b'y' || first == b'Y'
 }
 
 fn run() -> ! {
