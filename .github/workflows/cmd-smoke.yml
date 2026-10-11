@@ -1,0 +1,88 @@
+name: cmd-smoke
+
+# C-57 命令冒烟门进持续集成（18-stage 命令面的盘上回归）。三条腿各自装配本架构的
+# 可启动镜像、真启动一次，再用串口断言 /etc/rc 跑过的命令面：
+#   * `echo` 的 marker 行（脚本到过控制台）；
+#   * `ls /bin` 的目录列——或列不出时必须显式出现的 `ls: /bin: read error`
+#     （imgrd 根盘目录读腿是已知缺陷，见 coordination/TODO-LEDGER-OPEN.md §7；
+#     两者皆无＝命令面回归，门照样红）；
+#   * `cat /etc/rc` 的回读；
+#   * `du /etc` 的两条形读数：块数行与 `-h` 渲染行（只读命令，本家族第一批能在
+#     真机上判读数值的面）。
+#
+# 判定口径沿用门脚本：退出 0=PASS、2=SKIP（缺 QEMU/固件/mtools 等前置件）、
+# 1=FAIL。SKIP 不让作业变红，但会打成 `RESULT: SKIP …`，免得「因为没装工具件
+# 所以永远绿」这种假象没人看见。
+#
+# 与 qemu-tests.yml 分文件的原因：那条工作流的 paths 跟的是引导载体（kernel/arch/
+# plat/boot-shim），本门跟的是命令面与装配面（commands/servers/fs/xtask/etc），
+# 两者触发面不同，混在一起只会互相拖慢或互相漏触发。
+
+on:
+  push:
+    paths:
+      - 'os/commands/**'
+      - 'os/servers/**'
+      - 'os/drivers/**'
+      - 'os/fs/**'
+      - 'os/xtask/**'
+      - 'os/etc/**'
+      - 'os/libs/minix-sys/**'
+      - 'os/libs/minix-types/**'
+      - 'os/qemu-tests/**'
+      - '.github/workflows/cmd-smoke.yml'
+  pull_request:
+    paths:
+      - 'os/commands/**'
+      - 'os/servers/**'
+      - 'os/drivers/**'
+      - 'os/fs/**'
+      - 'os/xtask/**'
+      - 'os/etc/**'
+      - 'os/libs/minix-sys/**'
+      - 'os/libs/minix-types/**'
+      - 'os/qemu-tests/**'
+      - '.github/workflows/cmd-smoke.yml'
+
+jobs:
+  cmd-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        gate:
+          - test-cmd-smoke.sh
+          - test-cmd-smoke-aarch64.sh
+          - test-cmd-smoke-riscv64.sh
+    steps:
+      - uses: actions/checkout@v4
+
+      # 三条门各自要为本架构造一遍 freestanding 的命令/模块二进制，故三个裸机
+      # target 都得在（module_target 真源：os/xtask/src/image.rs 的 Arch::module_target）。
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf
+
+      # 前置件与门脚本自己的 skip 判据对齐：QEMU 三族、UEFI 固件（OVMF）、
+      # ESP 读写用的 mtools、riscv64 用的 fdtput（device-tree-compiler）、
+      # 串口日志取字面用的 strings（binutils）。
+      - name: Install QEMU, firmware and log-scanning tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-system-arm qemu-system-misc \
+            ovmf qemu-efi-aarch64 qemu-efi-riscv64 \
+            mtools device-tree-compiler binutils
+
+      - name: Run ${{ matrix.gate }}
+        working-directory: os
+        run: |
+          rc=0
+          bash qemu-tests/${{ matrix.gate }} || rc=$?
+          case "$rc" in
+            0) echo "RESULT: PASS ${{ matrix.gate }}" ;;
+            2) echo "RESULT: SKIP ${{ matrix.gate }} (prerequisites missing)" ;;
+            *) echo "RESULT: FAIL ${{ matrix.gate }} (exit $rc)"; exit 1 ;;
+          esac
