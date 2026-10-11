@@ -117,6 +117,10 @@ resolve_c() { # FILE NAME —— C 启发式（限定定义形态，排除注释
       if (line ~ ("^#[[:space:]]*define[[:space:]]+" name "([^A-Za-z0-9_]|$)")) { print FNR; next }
       if (FILENAME ~ /\.(S|asm)$/) {
         if (line ~ ("^" name ":")) { print FNR }
+        # ENTRY/NENTRY/ASENTRY/_ENTRY 宏定义（07 篇取证：__switch_address_space、
+        # reload_cr3 均为 ENTRY 形式，曾被判 ZERO-DEF——宏展开后的标签在预处理的
+        # 源文件里不存在，只认 NAME: 标签会漏掉全部宏入口）。
+        else if (line ~ ("(^|[^A-Za-z0-9_])(_ENTRY|ENTRY|NENTRY|ASENTRY)[[:space:]]*\\(" name "[,)]")) { print FNR }
         next
       }
       if (line ~ ("^(extern[[:space:]]+)?(typedef[[:space:]]+)?(struct|enum|union)([^A-Za-z0-9_]|$)")) {
@@ -307,6 +311,19 @@ EOF
 ' "$out4" | grep cdev_io >&2; exit 1
   fi
   printf '%s' "$out4" | grep -q "pipe_suspend" || { echo "SELF-TEST FAIL: 夹具锚点未被抽取" >&2; exit 1; }
+
+  # ── 第五组：.S 的 ENTRY 宏入口（07 篇取证：只认 NAME: 标签漏掉全部宏入口）──
+  #   夹具直接指向真实源：klib.S 的 __switch_address_space 以 ENTRY(...) 定义。
+  cat > "$ft/f-symanchor.md" <<'EOF'
+汇编宏入口：`minix3/minix/kernel/arch/i386/klib.S:__switch_address_space` 应识别为定义。
+EOF
+  out5="$("$0" --check "$ft/f-symanchor.md" 2>&1 || true)"
+  if printf '%s' "$out5" | grep -q "__switch_address_space → ZERO-DEF"; then
+    echo "SELF-TEST FAIL: .S 的 ENTRY 宏入口仍被判 ZERO-DEF" >&2
+    printf '%s
+' "$out5" | grep switch_address_space >&2; exit 1
+  fi
+  printf '%s' "$out5" | grep -q "__switch_address_space → resolved" || { echo "SELF-TEST FAIL: .S ENTRY 锚点未被解析" >&2; exit 1; }
 
 rm -rf "$ft"   # 显式清理：下方主流程另有 trap ... EXIT 会覆盖自测里设的 trap
 echo "SELF-TEST PASS（resolved=8 含 fenced 排除与返回类型行反例, ZERO-DEF=1, MULTI-DEF=1, 无锚点=exit0; 另含跨行签名识别用例）"

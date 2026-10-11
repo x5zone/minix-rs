@@ -30,6 +30,7 @@ run_check() {
         else if (match(h, /^Ch[0-9]+/)) { n=h; sub(/^Ch/,"",n); sub(/[^0-9].*/,"",n); head[n]=1 }
         else if (match(h, /^[0-9]+(\.[0-9]+)+/)) { t=h; sub(/[^0-9.].*$/,"",t); head[t]=1; split(t,p,"."); head[p[1]]=1 }
         else if (match(h, /^[0-9]+\.?$/)) { t=h; sub(/[^0-9].*$/,"",t); head[t]=1 }
+        else if (match(h, /^[0-9]+\./)) { t=h; sub(/\..*$/,"",t); head[t]=1 }
       }
       next
     }
@@ -75,6 +76,9 @@ self_test() {
   local tmp; tmp=$(mktemp -d); local fail=0
   printf '# t\n## 第 1 章 概念\n### 1.1 小节\n见 §1.1 与 第 1 章 正常；坏引用见 §9.9 与 第 7 章、见第 8.8 那套。\n' > "$tmp/bad.md"
   printf '# t\n## 第 1 章 概念\n### 1.1 小节\n见 §1.1 与 第 1 章；外部 `review.md §1.6` 与 `§六` 应跳过。\n' > "$tmp/good.md"
+  # 回归夹具（07 篇事实核查抓出的章号登记缺口）：无子节的 "N. 标题" 也必须登记章号
+  printf '# t\n## 5. 测试要点\n本节无子节。见 第 5 章 正常；坏引用见 第 7 章。\n' > "$tmp/chap.md"
+  if run_check "$tmp/chap.md" check >/dev/null 2>&1; then echo "  FAIL: 无子节章号未被登记（第 7 章应坏、第 5 章应过）"; fail=1; else echo "  OK: 无子节章号已登记(第 5 章过/第 7 章拦)"; fi
   run_check "$tmp/bad.md" check >/dev/null 2>&1 && { echo "  FAIL: bad 未被拦"; fail=1; } || echo "  OK: bad 被拦(§9.9/第7章/第8.8)"
   run_check "$tmp/good.md" check >/dev/null 2>&1 && echo "  OK: good 通过" || { echo "  FAIL: good 误拦"; fail=1; }
   rm -rf "$tmp"

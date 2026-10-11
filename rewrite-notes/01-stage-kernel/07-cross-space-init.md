@@ -11,7 +11,7 @@
 
 MMU 做虚拟地址翻译时只看一个东西：当前装在页表根寄存器里的那张页表。x86-32 上是 CR3，翻译过程不问"发起访问的代码来自哪个特权级"——CPL0 的内核代码和 CPL3 的用户代码走的是同一条翻译路径，特权级只影响权限检查（U/S 位那一半），不影响"这个 VA 有没有映射"这个问题本身。
 
-第 2 章会给它的代码证据；先把事实摆出来：**内核没有自己的页表**。C 的调度器不为内核任务换页表根——`minix3/minix/kernel/arch/i386/klib.S` 里以 `ENTRY(__switch_address_space)` 定义的入口（汇编宏定义的符号不以锚点形式引用，见 §2.4 与 §3.5）的第一件事就是检查目标进程的 `p_cr3` 是否为 0，为 0（内核任务，没有自己的页表）就直接返回，CR3 保持原值。也就是说，内核代码永远运行在"某一张已经被装上的页表"里，这张表通常属于某个用户进程。`minix3/minix/kernel/cpulocals.h:ptproc` 的模块注释把这件事说得很直白：
+第 2 章会给它的代码证据；先把事实摆出来：**内核没有自己的页表**。C 的调度器不为内核任务换页表根——`minix3/minix/kernel/arch/i386/klib.S:__switch_address_space` 的第一件事就是检查目标进程的 `p_cr3` 是否为 0，为 0（内核任务，没有自己的页表）就直接返回，CR3 保持原值。也就是说，内核代码永远运行在"某一张已经被装上的页表"里，这张表通常属于某个用户进程。`minix3/minix/kernel/cpulocals.h:ptproc` 的模块注释把这件事说得很直白：
 
 ```c
 /*
@@ -118,7 +118,7 @@ static void setcr3(struct proc *p, u32_t cr3, u32_t *v)
 | 窗口的写入目标与"已可见"判据 | `minix3/minix/kernel/arch/i386/memory.c:createpde` | 随临时窗口机制废弃 |
 | 换表时"是否立即重载"的判据 | `arch_do_vmctl.c:setcr3` | 存活——Rust 侧落到 per-CPU 的 ptproc 记录（第 3 章 §3.5、第 4 章 §4.2） |
 
-还有一个反向假设要处理：把 ptproc 换成 proc_ptr 行不行？不行，而且 `minix3/minix/kernel/arch/i386/memory.c:lin_lin_copy` 的入口断言就是证据——它要求 `read_cr3() == ptproc->p_cr3`（当前硬件寄存器装的就是 ptproc 的表）。这个等式由 `klib.S` 的 `__switch_address_space` 入口维持：每次真实切表（`mov %eax, %cr3`）之后跟着一条 `mov %edx, (%eax)`，把新表主人写进 ptproc。proc_ptr 记的是"正在跑谁"，与"表是谁的"是两个问题：发起跨空间拷贝的系统调用由调用者触发，但表可以是任何一张——把判据换成 proc_ptr，`setcr3` 的"目标已在家"判定和 `lin_lin_copy` 的入口等式都会失去维护者。
+还有一个反向假设要处理：把 ptproc 换成 proc_ptr 行不行？不行，而且 `minix3/minix/kernel/arch/i386/memory.c:lin_lin_copy` 的入口断言就是证据——它要求 `read_cr3() == ptproc->p_cr3`（当前硬件寄存器装的就是 ptproc 的表）。这个等式由 `minix3/minix/kernel/arch/i386/klib.S:__switch_address_space` 维持：每次真实切表（`mov %eax, %cr3`）之后跟着一条 `mov %edx, (%eax)`，把新表主人写进 ptproc。proc_ptr 记的是"正在跑谁"，与"表是谁的"是两个问题：发起跨空间拷贝的系统调用由调用者触发，但表可以是任何一张——把判据换成 proc_ptr，`setcr3` 的"目标已在家"判定和 `lin_lin_copy` 的入口等式都会失去维护者。
 
 ### 1.5 本篇范围与可以安全跳过的内容
 
@@ -404,9 +404,9 @@ static int lin_lin_copy(struct proc *srcproc, vir_bytes srclinaddr,
 
 三个读点：
 
-- 入口断言 `read_cr3() == ptproc->p_cr3`：整条机制只在"硬件寄存器里装的正是 ptproc 的表"时合法。这个等式的维持者是 `klib.S` 里 `ENTRY(__switch_address_space)` 定义的入口——真实切表后更新 ptproc（第 1.4 节已引）。也就是说，跨空间拷贝永远发生在"当前表 = ptproc 表"的上下文里，`createpde` 写 `ptproc->p_cr3_v` 才等价于写"当前生效的表"。
+- 入口断言 `read_cr3() == ptproc->p_cr3`：整条机制只在"硬件寄存器里装的正是 ptproc 的表"时合法。这个等式的维持者是 `minix3/minix/kernel/arch/i386/klib.S:__switch_address_space`——真实切表后更新 ptproc（第 1.4 节已引）。也就是说，跨空间拷贝永远发生在"当前表 = ptproc 表"的上下文里，`createpde` 写 `ptproc->p_cr3_v` 才等价于写"当前生效的表"。
 - 每轮两借：src 固定 0 号槽、dst 固定 1 号槽；两方向互不踩踏。
-- `changed` 才 `reload_cr3()`：刷新是按需的。`minix3/minix/kernel/arch/i386/mpx.S` 里以 `ENTRY(reload_cr3)` 定义的入口（其上注释横幅与之同名）的实现共六条指令、三个动作——读 CR3、原样写回、返回；写回同值即触发一次全量 TLB 失效（全局页除外）。
+- `changed` 才 `reload_cr3()`：刷新是按需的。`minix3/minix/kernel/arch/i386/mpx.S:reload_cr3`（其上注释横幅与之同名）的实现共六条指令、三个动作——读 CR3、原样写回、返回；写回同值即触发一次全量 TLB 失效（全局页除外）。
 
 清零路径 `minix3/minix/kernel/arch/i386/memory.c:vm_memset`（节选；省略号处为入口的 `check_resumed_caller`、端点解析与模式扩展）：
 
