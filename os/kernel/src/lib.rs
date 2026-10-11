@@ -67,10 +67,13 @@ pub mod kpriv;
 ///
 /// 用 `Option::<T>::None` 赋给 `Option<期望具体型>`：仅当两类型相同才编译通过，
 /// 无需 unsafe。内核按自身 `mock` 特性**同时**要求 minix-arch 与 minix-plat 的实际
-/// 形态一致；一旦未来某条依赖路径经 cargo 特性统一重新交叉两包形态，报错落在这处
-/// 唯一位置，而非当初散布在 `Current*` 别名消费面的类型错。裸
-/// `cargo test -p minix-kernel`（dev-deps 强 mock 而本包 `mock` 关）也会在此显式
-/// 报错，正提示应改带 `--features mock`。
+/// 形态一致；一旦未来某条依赖路径经 cargo 特性统一重新交叉两包形态，这处绊线先报出
+/// 「期望型 vs 实到型」，不必等到去猜当初散布在 `Current*` 别名消费面的类型错。
+/// 绊线不是报错过滤器：裸 `cargo test -p minix-kernel`（dev-deps 强 mock 而本包 `mock`
+/// 关）除本处之外还会在 `store_protection`、`store_trap_entry`、
+/// `CurrentDirectMap::default` 三处消费面同时报同一形态错配，四者指向同一个原因。
+/// 正解是把宿主测的形态写清楚——`cargo test -p minix-kernel --features mock`（CI 作业
+/// `kernel-tests.yml` 的 `host-default-form` 腿即此命令），不是去放宽绊线。
 #[doc(hidden)]
 pub mod form_contract {
     #[cfg(feature = "mock")]
