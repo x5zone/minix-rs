@@ -32,6 +32,25 @@ const STDIN: Fd = 0;
 const STDOUT: Fd = 1;
 const STDERR: Fd = 2;
 
+/// `open` flags per `minix3/sys/sys/fcntl.h` (the Minix values, not the
+/// Linux ones): O_WRONLY 0x1 (:65), O_APPEND 0x8 (:82), O_CREAT 0x200 (:99),
+/// O_TRUNC 0x400 (:100).
+const O_WRONLY: i32 = 0x1;
+const O_CREAT: i32 = 0x200;
+const O_TRUNC: i32 = 0x400;
+const O_APPEND: i32 = 0x8;
+
+/// The create-mode flags for an ed write: `w` truncates (`main.c:828`
+/// `fopen("w")`), `W` appends (`fopen("a")`); both create. A pure function so
+/// the flag composition is unit-testable without a filesystem.
+fn write_flags(append: bool) -> i32 {
+    if append {
+        O_WRONLY | O_CREAT | O_APPEND
+    } else {
+        O_WRONLY | O_CREAT | O_TRUNC
+    }
+}
+
 
 /// The production I/O half: bytes in and out through `minix_sys`, files
 /// through the open/read/write/close family (L10's wrappers, one call
@@ -81,12 +100,10 @@ impl EditorIo for TtyIo {
         data: &[u8],
         append: bool,
     ) -> Result<usize, minix_editor::EditorError> {
-        // O_WRONLY 1 | O_CREAT 0x40 | (O_APPEND 0x400 when appending);
-        // mode 0o644 — `io.c`'s fopen("w"/"a") face.
-        let mut flags = 1 | 0x40;
-        if append {
-            flags |= 0x400;
-        }
+        // `main.c:828` maps ed `w` to fopen("w") (truncate) and `W` to
+        // fopen("a") (append); the flags come from `write_flags` (Minix
+        // `fcntl.h` values). mode 0o644 per the existing face.
+        let flags = write_flags(append);
         let fd = minix_sys::open(name, flags, 0o644)
             .map_err(|_| minix_editor::EditorError::InvalidArgument)?;
         let mut done = 0;
@@ -322,6 +339,29 @@ fn run() -> ! {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_truncates_and_creates() {
+        // ed `w`: fopen("w") => O_WRONLY|O_CREAT|O_TRUNC (Minix values).
+        assert_eq!(write_flags(false), O_WRONLY | O_CREAT | O_TRUNC);
+        // Regression guard: O_CREAT is the Minix 0x200, not Linux's 0x40.
+        assert_eq!(O_CREAT, 0x200);
+        assert_eq!(O_TRUNC, 0x400);
+    }
+
+    #[test]
+    fn write_append_appends_not_truncates() {
+        // ed `W`: fopen("a") => O_WRONLY|O_CREAT|O_APPEND (0x8), never O_TRUNC.
+        let flags = write_flags(true);
+        assert_eq!(flags, O_WRONLY | O_CREAT | O_APPEND);
+        assert_eq!(flags & O_TRUNC, 0);
+        assert_ne!(flags & O_APPEND, 0);
     }
 }
 
