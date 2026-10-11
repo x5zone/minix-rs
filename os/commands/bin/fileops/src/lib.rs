@@ -39,6 +39,7 @@ extern crate alloc;
 
 pub mod cook;
 pub mod cp;
+pub mod dents;
 pub mod echo;
 pub mod expr;
 pub mod linkops;

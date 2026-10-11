@@ -34,6 +34,7 @@ mod support;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use minix_fileops::dents;
 
 /// The getdents refill buffer (C `ls` uses a 8 KiB DirentBlock; half of
 /// that covers every real name here).
@@ -112,28 +113,28 @@ fn list_one(operand: &str, show_dot: bool, almost_all: bool, _header: bool) -> i
                 return 1;
             }
         };
+        // The record walk itself is the crate's shared decoder
+        // (`minix_fileops::dents`, C libc `readdir`'s cursor rule); a record
+        // whose lengths contradict the buffer ends the directory the way C's
+        // readdir returning NULL does, rather than reading off the end.
         let mut cursor = 0;
         while cursor < transferred {
-            let record = &buf[cursor..transferred];
-            if record.len() < 13 {
-                break;
-            }
-            let reclen = u16::from_ne_bytes([record[8], record[9]]) as usize;
-            if reclen == 0 || cursor + reclen > transferred {
-                break;
-            }
-            let ino = u64::from_ne_bytes(record[0..8].try_into().expect("8 bytes"));
-            let namlen = u16::from_ne_bytes([record[10], record[11]]) as usize;
-            let name = String::from_utf8_lossy(&record[13..13 + namlen]).into_owned();
-            let keep = if name.starts_with('.') {
-                show_dot || (almost_all && name != "." && name != "..")
-            } else {
-                true
+            let entry = match dents::next_record(&buf, cursor) {
+                Ok(Some((entry, next))) => {
+                    cursor = next;
+                    entry
+                }
+                Ok(None) => break,
+                Err(_) => break,
             };
-            if keep && !(ino == 0 && name.starts_with('.')) {
-                names.push(name);
+            let name = String::from_utf8_lossy(entry.name).into_owned();
+            if !dents::keep_in_listing(&name, show_dot, almost_all) {
+                continue;
             }
-            cursor += reclen;
+            if entry.ino == 0 && name.starts_with('.') {
+                continue;
+            }
+            names.push(name);
         }
     }
     //[SD19-gate] SD-19: close 后 fd 不再使用
