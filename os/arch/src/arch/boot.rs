@@ -57,9 +57,13 @@ pub enum ProcKind {
     KernelTask,
     /// VM process: runs in user mode, ELF is loaded during boot.
     Vm,
-    /// Root system service (RS): runs in user mode, ELF deferred to RS itself.
+    /// Root system service (RS): runs in user mode; its image is loaded by
+    /// **VM** at runtime (C boot-side loads only VM into the bootstrap
+    /// pagetable — `protect.c:388` VM branch — and VM then builds each other
+    /// boot image's page table; not by RS itself).
     RootService,
-    /// Other system service: runs in user mode, ELF deferred to RS at runtime.
+    /// Other system service: runs in user mode; its image is loaded by **VM**
+    /// at runtime (same VM-driven boot-image walk as [`ProcKind::RootService`]).
     UserService,
     /// User process: created by fork/exec, never appears during boot.
     UserProcess,
