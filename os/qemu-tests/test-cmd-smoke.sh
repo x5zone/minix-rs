@@ -14,6 +14,9 @@
 #   4. T4 window: wait for the command-output marker — the line /etc/rc
 #      echoes ("rc: minimal boot script marker", the OQ-3-approved
 #      baseline; override with T4_MARKER).
+#   5. The read-side totals of /bin/du: one "<blocks> TAB /etc" line on the
+#      console, which is the machine face of the du wiring (a read-only
+#      command, so it does not wait for a writable root).
 #
 # Exit codes: 0 = PASS, 1 = FAIL, 2 = SKIP (prerequisites missing).
 #
@@ -147,5 +150,29 @@ if [ "$t4" -ne 1 ]; then
     exit 1
 fi
 
-echo "RESULT: PASS (18-stage command output visible on the boot console — T4)"
+# ── Stage 5: the `du` read-side totals (/bin/du /etc, seeded by xtask's /bin list).
+# du only reads, so unlike every other command in this family its machine check does
+# not wait for a writable root: the console must carry one "<blocks> TAB /etc" line.
+# Judged on a dropped file rather than a pipe into `grep -q`, because this script runs
+# `set -uo pipefail` and a short-circuiting grep kills the upstream strings with
+# SIGPIPE (the 141 mis-judgement recorded in test-cmd-smoke-aarch64.sh). ──
+AFTER_TXT="$(mktemp /tmp/cmd_smoke_after.XXXXXX.txt)"
+du_ok=0
+for _ in $(seq 1 "$TIMEOUT_T4"); do
+    strings "$SERIAL_LOG" 2>/dev/null | sed -n "/$T4_MARKER/,\$p" > "$AFTER_TXT"
+    if grep -qaE '^[0-9]+[[:space:]]+/etc\r?$' "$AFTER_TXT" 2>/dev/null; then
+        du_ok=1
+        break
+    fi
+    sleep 1
+done
+rm -f "$AFTER_TXT"
+if [ "$du_ok" -ne 1 ]; then
+    echo "FAIL: /bin/du /etc totals line never reached the console"
+    echo "      (missing seed in xtask's /bin list, or a read-side regression?)"
+    tail -12 "$SERIAL_LOG" 2>/dev/null || true
+    exit 1
+fi
+
+echo "RESULT: PASS (18-stage command output visible on the boot console — T4, plus the du read-side totals)"
 exit 0

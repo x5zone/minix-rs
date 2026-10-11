@@ -182,9 +182,13 @@ echo "riscv64: command marker reached — checking ls /bin + cat /etc/rc ran"
 #     marker match may land on the same string inside `cat /etc/rc`'s dump instead —
 #     either occurrence still proves the script reached the console (cat runs after
 #     echo/ls in the script).
-#   * The `ls /bin` listing (bare `cat`/`echo`/`ls`/`sh` lines) and the `cat` dump
-#     (`#!/bin/sh` + the rc body) are interleaved with protocol lines, so the listing
-#     is matched with a tolerant in-order regex, not as a contiguous block.
+#   * The `ls /bin` listing (bare `cat`/`du`/`echo`/`ls`/`sh` lines) and the `cat`
+#     dump (`#!/bin/sh` + the rc body) are interleaved with protocol lines, so the
+#     listing is matched with a tolerant in-order regex, not as a contiguous block.
+#   * `/bin/du /etc` must contribute one "<blocks> TAB /etc" line; du only reads, so
+#     this is the family's first machine-side numeric reading (the x86 twin asserts it
+#     as its own stage). The `cat /etc/rc` dump also carries the literal string "du",
+#     which is why the total is matched anchored to a leading number.
 #   * Deliberately NOT asserted: `/tests/*: not found` — that is the rc script's ATF
 #     section and its shape changes when the riscv ATF suite lands (goal③).
 cmds_ok=0
@@ -200,8 +204,10 @@ ok_dump = "#!/bin/sh" in raw and "minix-rs /etc/rc" in raw
 ok_listing = re.search(
     r"(?m)^cat\r?$\n(?:.*\n)*?^echo\r?$\n(?:.*\n)*?^ls\r?$\n(?:.*\n)*?^sh\r?$", raw
 ) is not None
-print("  cmdface: marker=%s dump=%s listing=%s" % (ok_marker, ok_dump, ok_listing))
-sys.exit(0 if (ok_marker and ok_dump and ok_listing) else 1)
+# `/bin/du /etc` owes one total line: blocks, a tab, then the operand name.
+ok_du = re.search(r"(?m)^[0-9]+[ \t]+/etc\r?$", raw) is not None
+print("  cmdface: marker=%s dump=%s listing=%s du=%s" % (ok_marker, ok_dump, ok_listing, ok_du))
+sys.exit(0 if (ok_marker and ok_dump and ok_listing and ok_du) else 1)
 PYEOF
         then
             cmds_ok=1; break
@@ -212,11 +218,11 @@ done
 kill "$QEMU_PID" 2>/dev/null || true   # 停住串口增长；wait 由 EXIT trap 兜底
 
 if [ "$cmds_ok" -ne 1 ]; then
-    echo "FAIL: /etc/rc command face (marker + ls /bin listing + cat /etc/rc dump) not fully observed"
+    echo "FAIL: /etc/rc command face (marker + ls /bin listing + cat /etc/rc dump + du /etc total) not fully observed"
     echo "      VFS command chain incomplete? serial tail:"
     strings "$SERIAL_LOG" 2>/dev/null | tail -12 || true
     exit 1
 fi
 
-echo "RESULT: PASS (riscv64 18-stage command output — marker + ls /bin listing + cat /etc/rc dump — on the VFS IPC path)"
+echo "RESULT: PASS (riscv64 18-stage command output — marker + ls /bin listing + cat /etc/rc dump + du /etc total — on the VFS IPC path)"
 exit 0
