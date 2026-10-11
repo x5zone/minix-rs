@@ -65,10 +65,6 @@ use alloc::sync::Arc;
 fn run_init() -> ! {
     minix_rt::init();
     let mut host = MinixSysHost::default();
-    // NK4-C 1.10t 逐环仪器化（task1-close 裁决删除）：main 前段每步
-    // diagctl 打点——init 停在 receive(ANY) 未进状态机，定位卡死步骤。
-
-
     // C step 1: identity gate (init.c:242-249). getuid has no client
     // wrapper yet (E-INITSYS ②) — say so once and continue; pid 1 is
     // still verified whenever getpid answers.
