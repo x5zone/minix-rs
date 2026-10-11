@@ -37,6 +37,7 @@
 extern crate alloc;
 
 pub mod cal;
+pub mod fpr;
 pub mod manconf;
 pub mod soelim;
 pub mod whatis;
