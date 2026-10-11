@@ -190,7 +190,7 @@
 | paste | 同上 | 已接线决定半（`paste.rs`：`-d` 分隔符列表循环与空项无分隔、`-s` 串行合并 `join_serial`、并行归并 `join_parallel`（每行跨流取一行、短流补空格、定界符逐 gap 循环、每行重启））；两文件操作数已接（无操作数读 stdin、逐操作数 open+read、`-` 读 stdin、fopen 失败按 C `err` 退1）；真机 open 腿归 C-57/E5 |
 | split | 同上 | 已接线决定半与薄壳（`split.rs`：块计算与 `aa`..`zz` 后缀枚举）；文件操作数已接线——输入操作数（`-`→stdin、其余 fopen，`split.c:136`）+ 第二操作数前缀（缺省 `x`，`split.c:143`），逐块写进 `prefix+suffix`（`open(O_WRONLY 加 O_CREAT 加 O_TRUNC, 0666)`+部分写循环，`split.c:332`），旧的 `==> 前缀 <==` 横幅占位已被真写文件取代；`-a`/`-b`/`-n`（后缀宽度/字节/块数）不在决定半、显式拒绝；开文件/写失败按 C `err(1)` 致命；真机文件创建受可写根盘 E5 门控（同 uudecode/写类，本笔交代码+宿主测的 out_path/render_chunk）|
 | tsort | 同上 | 已接线（优先级归并输出、自环与环报告断开、重复弧重复计数、奇数个记号报错；`-l`/`-d` 待批） |
-| vis | 同上 | 已接线决定半与薄壳（默认 M 记法、`-c` C 风格、`-o` 三位八进制、`-n` 无反斜杠；graphic 与空白字节透传——do_svis 顶部判据，lib/libc/gen/vis.c:311-315） |
+| vis | 同上 | 已接线决定半与薄壳（默认 M 记法、`-c` C 风格、`-o` 三位八进制、`-n` 无反斜杠；graphic 与空白字节透传——do_svis 顶部判据，lib/libc/gen/vis.c:311-315）；文件操作数已接——逐操作数 fopen 编码进同一输出流、开不了按 C `warn`+置 `rval=1`+继续、无操作数读 stdin、裸 `-` 按 `fopen` 作普通文件名（`vis.c:151-164`）；未接旗标 `-b/-d/-e/-F/-f/-h/-l/-M/-m/-s/-t/-w` 显式拒绝（非静默忽略）；真机 open 腿归 C-57/E5 |
 | unvis | 同上 | 已接线决定半与薄壳（S_META/S_CTRL/八进制状态机对照 lib/libc/gen/unvis.c:217-330；HTTP/MIME 旗标族待批） |
 | colrm | 同上 | 已接线决定半与薄壳（列显示计：tab 进位到 8 的倍数、退格回拉、换行清零；范围 [start, stop] 之外的字节保留） |
 | tee | 同上 | 已接线（stdin 到 stdout 与每个操作数文件的扇出、逐目标部分写循环）；文件操作数已接——逐操作数 `open(O_WRONLY 加 O_CREAT 加 (O_APPEND 或 O_TRUNC), 0666)`（`tee.c:102-103`，标旗取权威 `minix3/sys/sys/fcntl.h`）、`-a` 已接（选 O_APPEND 而非 O_TRUNC）、开/写/关失败按 C warn 置 exitval=1 且文件不摘除（后续块重试）、`-i`（忽略 SIGINT）仍待信号面显式拒绝；真机文件创建受可写根盘 E5 门控（同 uudecode/写类，本笔交代码与宿主测的 parse_tee_args/open_flags）|
