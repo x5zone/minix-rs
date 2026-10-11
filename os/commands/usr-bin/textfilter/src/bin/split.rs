@@ -1,12 +1,15 @@
-//! Minix-RS split — chunk computation for line splits.
+//! Minix-RS split — split input into numbered chunk files.
 //!
 //! Ground truth: `minix3/usr.bin/split/split.c` (NetBSD): chunks of
 //! 1000 lines (`-l` moves it) named by a two-letter suffix `aa`, `ab`,
 //! ... The deciding half (chunk computation and suffix enumeration) is
-//! the library's `split` module. The doing half's file writes wait for
-//! the gated create face on the host, so this build prints each chunk
-//! under a `==> prefix <==` banner instead of writing files — the chunk
-//! boundaries and suffixes are what the deciding half owns.
+//! the library's `split` module; this build reads an input file (or
+//! stdin) and writes each chunk to `prefix<suffix>` created with
+//! `O_WRONLY|O_CREAT|O_TRUNC` at DEFFILEMODE (`split.c:332`). The input
+//! operand special-cases `-` as stdin (`split.c:136`, unlike grep/sed);
+//! the second operand is the output prefix (default `x`). `-a` (suffix
+//! width), `-b` (bytes) and `-n` (chunk count) are not in the deciding
+//! half and are rejected. Real-machine file creation is gated at C-57/E5.
 
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -20,11 +23,18 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_textfilter::split::{chunks, suffix, DEFAULT_LINES};
-use minix_sys::read;
+use minix_sys::{close, open, write};
+
+// Output-file create flags (`fcntl.h`), mirroring the `uudecode` precedent:
+// O_WRONLY 0x1, O_CREAT 0x200, O_TRUNC 0x400; DEFFILEMODE 0666.
+const O_WRONLY: i32 = 0x1;
+const O_CREAT: i32 = 0x200;
+const O_TRUNC: i32 = 0x400;
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let mut lines_per_chunk = DEFAULT_LINES;
+    let mut operands: Vec<&str> = Vec::new();
     let mut index = 1;
     while index < argv.len() {
         let arg = argv[index].as_str();
@@ -38,49 +48,132 @@ fn run() -> ! {
                 Ok(count) => lines_per_chunk = count,
             }
         } else if arg.starts_with('-') && arg.len() > 1 {
+            // -a (suffix width), -b (bytes), -n (chunk count) are not in the
+            // deciding half yet; reject rather than silently ignore.
             usage();
         } else {
-            support::warn(b"split: file operands wait for the open call (edge E-CMDSYSFACE)\n");
-            support::terminate(2);
+            operands.push(arg);
         }
         index += 1;
     }
-
-    let mut input = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(support::STDIN, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => input.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
+    if operands.len() > 2 {
+        usage();
     }
+    // `split.c:143`: the second operand is the output prefix, default "x".
+    let prefix = operands.get(1).copied().unwrap_or("x");
+
+    // `split.c:135-139`: `-` reads stdin (split, unlike grep/sed, special-cases
+    // it), a named input is opened, no operand reads stdin, and an unopenable
+    // input is fatal (`err(1, "%s", *argv)`).
+    let input = match operands.first() {
+        None => support::read_stdin(),
+        Some(name) if *name == "-" => support::read_stdin(),
+        Some(name) => match support::read_file(name) {
+            Ok(data) => data,
+            Err(()) => {
+                support::warn(format!("split: {name}\n").as_bytes());
+                support::terminate(1);
+            }
+        },
+    };
+
     let text = core::str::from_utf8(&input).unwrap_or("");
-    let owned: Vec<String> = text
-        .split('\n')
-        .map(|line| line.to_string())
-        .collect();
-    let mut lines: Vec<String> = owned;
+    let mut lines: Vec<String> = text.split('\n').map(ToString::to_string).collect();
     if lines.last().is_some_and(|line| line.is_empty()) {
         lines.pop();
     }
     for (index, chunk_lines) in chunks(&lines, lines_per_chunk).iter().enumerate() {
-        let suffix = match suffix(index) {
-            Some(suffix) => suffix,
+        // `split.c:332`: each chunk lands in `prefix + suffix(index)`, created
+        // with O_WRONLY|O_CREAT|O_TRUNC at DEFFILEMODE.
+        let path = match out_path(prefix, index) {
+            Some(path) => path,
             None => {
                 support::warn(b"split: suffixes exhausted\n");
-                support::terminate(2);
+                support::terminate(1);
             }
         };
-        let banner = format!("==> {} <==\n", suffix);
-        support::warn(banner.as_bytes());
-        for line in chunk_lines {
-            let mut out: Vec<u8> = line.as_bytes().to_vec();
-            out.push(b'\n');
-            support::emit(&out);
+        if create_write(&path, &render_chunk(chunk_lines)).is_err() {
+            support::warn(format!("split: {path}\n").as_bytes());
+            support::terminate(1);
         }
     }
     support::terminate(0);
+}
+
+/// Output path for chunk `index`: `prefix` + the two-letter suffix, or `None`
+/// once the suffix space (`aa`..`zz`) is exhausted.
+fn out_path(prefix: &str, index: usize) -> Option<String> {
+    suffix(index).map(|suffix| format!("{prefix}{suffix}"))
+}
+
+/// Renders one chunk back into bytes: each line followed by a newline (the
+/// chunk lines carry no terminator; `split` writes whole lines).
+fn render_chunk(chunk_lines: &[String]) -> Vec<u8> {
+    let mut data = Vec::new();
+    for line in chunk_lines {
+        data.extend_from_slice(line.as_bytes());
+        data.push(b'\n');
+    }
+    data
+}
+
+/// Creates (or truncates) `path`, writes `bytes`, then closes it. Mirrors
+/// `split.c`'s `open(O_WRONLY|O_CREAT|O_TRUNC, DEFFILEMODE)` plus a partial
+/// write loop; a short or failed write returns `Err`.
+fn create_write(path: &str, bytes: &[u8]) -> Result<(), ()> {
+    let fd = match open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o666) {
+        Ok(fd) => fd,
+        Err(_) => return Err(()),
+    };
+    let mut written = 0usize;
+    let mut result = Ok(());
+    while written < bytes.len() {
+        match write(fd, &bytes[written..]) {
+            Ok(0) => {
+                result = Err(());
+                break;
+            }
+            Ok(n) => written += n,
+            Err(_) => {
+                result = Err(());
+                break;
+            }
+        }
+    }
+    // [SD19-gate] SD-19: close 后 fd 不再使用
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = close(fd);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn out_path_prefixes_the_two_letter_suffix() {
+        assert_eq!(out_path("x", 0).as_deref(), Some("xaa"));
+        assert_eq!(out_path("x", 1).as_deref(), Some("xab"));
+        assert_eq!(out_path("part.", 26).as_deref(), Some("part.ba"));
+    }
+
+    #[test]
+    fn out_path_is_none_once_suffixes_exhaust() {
+        // aa..zz is 676 names; index 675 is the last, 676 has none.
+        assert!(out_path("x", 675).is_some());
+        assert_eq!(out_path("x", 676), None);
+    }
+
+    #[test]
+    fn render_chunk_terminates_each_line() {
+        let lines = ["a".to_string(), "b".to_string()];
+        assert_eq!(render_chunk(&lines), b"a\nb\n".to_vec());
+    }
+
+    #[test]
+    fn render_chunk_of_no_lines_is_empty() {
+        assert!(render_chunk(&[]).is_empty());
+    }
 }
 
 fn usage() -> ! {

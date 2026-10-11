@@ -188,7 +188,7 @@
 | fold | 同上 | 已接线（`\b`/`\r`/`\t` 列规则、`-b` 逐字节、`-s` 逐字符断行、缺省最后空格断行且空格留在续行头——`fold.c` 的缓冲回移语义；`-w`/obsolete `-N` 宽度）；文件操作数已接（无操作数读 stdin、有则逐文件折行、列/词态逐文件重置、打不开按 C `err(1)` 直接退出；真机 open 腿归 C-57/E5） |
 | cksum | 同上 | 已接线决定半（`cksum.rs`：POSIX CRC 表 const 生成〔多项式 0x04c11db7，与 C crctab 全表核对〕、长度小端尾随、取反输出；`-o 1`/`-o 2` 历史和；`sum_display_length` 按 `print.c` 的 pcrc/psum1/psum2 将输出长度分别按字节/1024-块/512-块折算；与系统 cksum 四组值交叉验证）；文件操作数已接（逐文件 open+read、有 operand 行尾追加 ` 名`、stdin 无名、打不开的文件 warn 跳过不出行）；`-a` crypto 族显式拒绝待密码原语 |
 | paste | 同上 | 已接线决定半（`paste.rs`：`-d` 分隔符列表循环与空项无分隔、`-s` 串行合并 `join_serial`、并行归并 `join_parallel`（每行跨流取一行、短流补空格、定界符逐 gap 循环、每行重启））；两文件操作数已接（无操作数读 stdin、逐操作数 open+read、`-` 读 stdin、fopen 失败按 C `err` 退1）；真机 open 腿归 C-57/E5 |
-| split | 同上 | 已接线决定半（`split.rs`：块计算与 `aa`..`zz` 后缀枚举；写文件面待开放，二进制以 `==> 前缀 <==` 横幅输出各块） |
+| split | 同上 | 已接线决定半与薄壳（`split.rs`：块计算与 `aa`..`zz` 后缀枚举）；文件操作数已接线——输入操作数（`-`→stdin、其余 fopen，`split.c:136`）+ 第二操作数前缀（缺省 `x`，`split.c:143`），逐块写进 `prefix+suffix`（`open(O_WRONLY|O_CREAT|O_TRUNC, 0666)`+部分写循环，`split.c:332`），旧的 `==> 前缀 <==` 横幅占位已被真写文件取代；`-a`/`-b`/`-n`（后缀宽度/字节/块数）不在决定半、显式拒绝；开文件/写失败按 C `err(1)` 致命；真机文件创建受可写根盘 E5 门控（同 uudecode/写类，本笔交代码+宿主测的 out_path/render_chunk）|
 | tsort | 同上 | 已接线（优先级归并输出、自环与环报告断开、重复弧重复计数、奇数个记号报错；`-l`/`-d` 待批） |
 | vis | 同上 | 已接线决定半与薄壳（默认 M 记法、`-c` C 风格、`-o` 三位八进制、`-n` 无反斜杠；graphic 与空白字节透传——do_svis 顶部判据，lib/libc/gen/vis.c:311-315） |
 | unvis | 同上 | 已接线决定半与薄壳（S_META/S_CTRL/八进制状态机对照 lib/libc/gen/unvis.c:217-330；HTTP/MIME 旗标族待批） |
