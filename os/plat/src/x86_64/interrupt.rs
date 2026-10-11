@@ -23,8 +23,10 @@ use crate::interrupt::{InterruptRouter, PerCpuInterruptUnit, IrqVector, NR_IRQ_V
 /// C: IRQ0_VECTOR — interrupt.h:34
 pub const IRQ0_VECTOR: u8 = 0x50;
 
-/// The boot clock source's IRQ vector: the 8254 PIT output is IOAPIC
-/// input 0, so the timer hook registers under IRQ 0.
+/// The boot clock source's IRQ vector: the 8254 PIT drives ISA IRQ 0, which
+/// virtual-wire mode routes to IOAPIC input pin 2 (see `isa_irq_to_pin`); the
+/// kernel addresses the line by its ISA IRQ number, so the timer hook
+/// registers under IRQ 0.
 ///
 /// C: CLOCK_IRQ = 0 (arch/i386); the timer hook is installed on this
 /// vector by `put_irq_handler` (arch_clock.c:190) and the line is
@@ -33,7 +35,8 @@ pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
 
 // ── 8259A PIC bring-up（NK4-C 1.10c，C i8259.c intr_init 对位）──
 //
-// 历史：本文件假定 PIT 经 IOAPIC input 0 交付、由 register_hook 的
+// 历史：本文件曾按 IOAPIC 首入引脚对待 PIT 时钟（实为 ISA IRQ 0、经
+// `isa_irq_to_pin` 落 pin 2）、由 register_hook 的
 // first-handler 规则解 mask（TimerIrqGate 的 no-op 注释）。但单核
 // QEMU+OVMF boot 走的是 **legacy 8259A**：固件把 PIC 留在 BIOS 向量
 // 或 mask 态，ICW 重映射/IMR/EOI 全部缺位 ⇒ IRQ0 从未到达 0x50 门
@@ -452,8 +455,10 @@ mod tests {
 
     #[test]
     fn test_timer_irq_is_ioapic_input_zero() {
-        // D-59: the boot clock source (8254 PIT) delivers through IOAPIC
-        // input 0, so the boot-end hook registration must target vector 0.
+        // D-59: the boot clock source (8254 PIT) is ISA IRQ 0, which
+        // virtual-wire mode routes to IOAPIC pin 2, but the kernel addresses it
+        // by the ISA number, so the boot-end hook registration targets vector 0
+        // (TIMER_IRQ).
         // Pinning the value here keeps the kernel-side boot chain honest:
         // if the clock source ever moves to the LAPIC timer, this pin must
         // be revisited together with TimerIrqGate's x86 semantics.

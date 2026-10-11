@@ -70,8 +70,9 @@ pub type SelectedForm = form::RealForm;
 /// the sanctioned "define current" pattern (AGENTS.md hardware-abstraction
 /// rule): it picks a constant, it does not pick behavior.
 ///
-/// - x86_64: `0` — the 8254 PIT output is IOAPIC input 0
-///   (C: CLOCK_IRQ = 0, arch/i386).
+/// - x86_64: `0` — the 8254 PIT is ISA IRQ 0 (C: CLOCK_IRQ = 0, arch/i386);
+///   virtual-wire mode routes it to IOAPIC pin 2 via `isa_irq_to_pin`, and the
+///   kernel numbers the line by its ISA IRQ number
 /// - aarch64: `30` — the EL1 non-secure physical timer (CNTP, the bank
 ///   that `CNTP_CTL_EL0` controls at EL1) is PPI INTID 30 per the GIC PPI
 ///   assignment (CNTPNSIRQ); QEMU virt maps it as device-tree PPI 14 with
