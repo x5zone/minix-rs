@@ -45,6 +45,7 @@ pub mod expr;
 pub mod linkops;
 pub mod ln;
 pub mod mkdir;
+pub mod mkfifo;
 pub mod mode;
 pub mod mv;
 pub mod path;
