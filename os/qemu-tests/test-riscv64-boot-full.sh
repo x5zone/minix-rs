@@ -3,7 +3,7 @@
 #
 # 甲案（kernel-image 自引导）入口腿（续-88）已过 arch_boot 前的模块装载闸，
 # 但那只证「bootface 机制通」——本脚本把它推成真系统：装配 12 个 riscv 模块
-# + imgrd（含 riscv /bin/{sh,echo,ls,cat}），拼一张 entry_count=12 的真
+# + imgrd（/bin 名单取自 xtask 的播种单源），拼一张 entry_count=12 的真
 # BootFileTable，注入 DTB /chosen，用 OpenSBI 直载 + `-device loader` 把
 # 表和模块放进物理 RAM，让镜像自引导 → arch_boot → kmain → 12 server birth
 # → init → rc marker。
@@ -64,7 +64,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     MKFS="$ROOT/target/release/mkfs_mfs"
     [ -x "$MKFS" ] || MKFS="$ROOT/target/release/mkfs_mfs"
 
-    echo "== Stage 2: 生成 riscv imgrd（proto = /etc + riscv /bin/{sh,echo,ls,cat}）=="
+    echo "== Stage 2: 生成 riscv imgrd（/etc + /bin/<单源名单>）=="
     mkdir -p "$IMG" || fail "mkdir $IMG"
     PROTO="$IMG/imgrd.proto"
     # proto 逐字对位 xtask::generate_etc_proto（块数/inode/bsize 同 x86 腿）。
@@ -73,7 +73,16 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
         printf 'etc d--755 0 0\nrc ---755 0 0 etc/rc\nttys ---644 0 0 etc/ttys\n$\n'
         printf 'dev d--755 0 0\nconsole c--600 0 0 4 0\n$\n'
         printf 'bin d--755 0 0\n'
-        for n in sh echo ls cat; do printf '%s ---755 0 0 target/%s/release/%s\n' "$n" "$TRIPLE" "$n"; done
+    # /bin 播种名单取自单源 `os/xtask/src/image.rs` 的 `bins` 向量（e5-ds 不入：
+    # 它按 `E5_DS_READY` 名单逐架构开禁，riscv64 不在名单内）。手抄一份就是本腿与
+    # 另两架构漂移的根因——xtask 加了 `du` 之后这里仍只播四件，门判据于是拿到
+    # `sh: /bin/du: not found`（批次一百二十三的读数）。抽取失败必须显式炸，
+    # 不得悄悄退回硬编码列表。
+    XTASK_IMG="$ROOT/xtask/src/image.rs"
+    [ -f "$XTASK_IMG" ] || fail "播种单源缺失：$XTASK_IMG"
+    BINS=$(awk '/let mut bins: Vec<\(&str, String\)> = vec!\[/,/^    \];/ { if (match($0, /\("[a-z0-9-]+", bin_rel/)) { s = substr($0, RSTART + 2); sub(/".*/, "", s); printf "%s ", s } }' "$XTASK_IMG")
+    [ -n "$BINS" ] || fail "从 xtask 抽取 /bin 名单失败（vec 形状变了？同步本脚本的 awk 式）"
+        for n in $BINS; do printf '%s ---755 0 0 target/%s/release/%s\n' "$n" "$TRIPLE" "$n"; done
         printf '$\n$\n'
     } > "$PROTO"
     ( cd "$ROOT" && "$MKFS" "$IMG/imgrd.img" 2048 0 4096 -p "$PROTO" ) || fail "mkfs_mfs 播种失败"
