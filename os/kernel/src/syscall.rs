@@ -371,8 +371,20 @@ pub trait ArchSyscall {
 ///
 /// Delegates to `syscall_device::dispatch_*` with `CurrentPortIo`,
 /// which uses x86 `in/out` instructions via inline assembly.
+///
+/// The type is compiled only where `CurrentArchSyscall` can name it: the alias
+/// selects `DefaultSyscall` on aarch64 and riscv64 (see the note below this
+/// block), and `minix_plat::CurrentPortIo` exists solely for x86_64 and the mock
+/// build (`os/plat/src/lib.rs:148-151`), so an unguarded definition here is
+/// three unresolved names on every other architecture. Ground truth agrees that
+/// these calls are port I/O and nothing else: `system.c:214` maps `SYS_DEVIO` to
+/// `do_devio` with the comment "inb, inw, inl, outb, outw, outl", and
+/// `do_devio.c:2` names the same call. The trait's default methods are what
+/// answers `EBADREQUEST` on the other architectures.
+#[cfg(target_arch = "x86_64")]
 pub struct X86_64Syscall;
 
+#[cfg(target_arch = "x86_64")]
 impl ArchSyscall for X86_64Syscall {
     fn dispatch_devio(
         caller_nr: crate::proc::ProcNr,
