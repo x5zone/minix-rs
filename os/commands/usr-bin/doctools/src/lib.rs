@@ -41,6 +41,7 @@ pub mod fpr;
 pub mod manconf;
 pub mod soelim;
 pub mod whatis;
+pub mod which;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
 ///
