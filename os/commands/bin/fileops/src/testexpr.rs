@@ -9,10 +9,18 @@
 //!
 //! File status questions (`-e` exists, `-f` regular file, `-d` directory,
 //! `-r`/`-w`/`-x` access, `-s` non empty, `-L` link, `-p` pipe, `-S`
-//! socket, `-b`/`-c` devices, `-N` modified since read, `-nt`/`-ot`
-//! newer/older) go through [`FileTester`], so evaluation never touches a
+//! socket, `-h`/`-L` link, `-nt`/`-ot` newer/older) go through [`FileTester`], so evaluation never touches a
 //! real file system. Identity and time comparisons reduce to numbers the
 //! tester reports.
+//!
+//! Two primaries used to live here that `test.c`'s tables never had: `-N`
+//! (modified-since-read) and the bash-style `==`. Minix3's token tables list
+//! `-e -f -d -c -b -p -S -L -h -u -g -k -r -w -x -s -t -n -z -O -G` plus the
+//! binary `= != < > -eq … -ef` (`test.c:105-154`), so both inventions are gone
+//! rather than kept as an unlabelled superset of the upstream language. What
+//! the tables *did* have and this module lacked is now added: the `<`/`>`
+//! string compares (`test.c:109`, `:111`, `:345-348`) and `-h` as the alias of
+//! `-L` the table marks "for backwards compat" (`test.c:139`).
 
 use crate::FileOpError;
 
@@ -44,8 +52,6 @@ pub trait FileTester {
     fn grouped_by_me(&self, path: &str) -> bool;
     /// True when both paths name the same file (equal device + inode, `-ef`).
     fn same_file(&self, a: &str, b: &str) -> bool;
-    /// True when the file was modified since last read (`-N`, mtime > atime).
-    fn modified_since_read(&self, path: &str) -> bool;
 }
 
 /// Permission-mode ornaments the `-u`/`-g`/`-k` operators report
@@ -132,10 +138,6 @@ impl FileTester for EmptyFs {
     fn same_file(&self, _a: &str, _b: &str) -> bool {
         false
     }
-
-    fn modified_since_read(&self, _path: &str) -> bool {
-        false
-    }
 }
 
 /// One in memory file description.
@@ -151,8 +153,6 @@ pub struct TestFile<'a> {
     pub size: u64,
     /// Modification time in seconds.
     pub mtime: u64,
-    /// Access time in seconds (for `-N`).
-    pub atime: u64,
     /// Mode ornaments (`-u`/`-g`/`-k`).
     pub flags: ModeFlags,
     /// Stands in for `st_uid == euid` (`-O`).
@@ -224,10 +224,6 @@ impl FileTester for TableFs<'_> {
             (Some(x), Some(y)) => x.dev == y.dev && x.ino == y.ino,
             _ => false,
         }
-    }
-
-    fn modified_since_read(&self, path: &str) -> bool {
-        self.lookup(path).is_some_and(|file| file.mtime > file.atime)
     }
 }
 
@@ -320,7 +316,8 @@ impl<'w, T: FileTester> Parser<'w, T> {
             "-k" => Ok(self.tester.flags(self.operand()?).sticky),
             "-O" => Ok(self.tester.owned_by_me(self.operand()?)),
             "-G" => Ok(self.tester.grouped_by_me(self.operand()?)),
-            "-N" => Ok(self.tester.modified_since_read(self.operand()?)),
+            // `-h` 与 `-L` 同义：`test.c:139` 明写「for backwards compat」。
+            "-h" => Ok(self.tester.kind(self.operand()?).link),
             "-r" => Ok(self.tester.access(self.operand()?).read),
             "-w" => Ok(self.tester.access(self.operand()?).write),
             "-x" => Ok(self.tester.access(self.operand()?).execute),
@@ -344,9 +341,19 @@ impl<'w, T: FileTester> Parser<'w, T> {
     /// After a leading word: binary comparison or bare string truth.
     fn binary_or_string(&mut self, left: &str) -> Result<bool, FileOpError> {
         match self.peek() {
-            Some("=") | Some("==") => {
+            // C 的比较表里只有单等号（`test.c:110`），没有 bash 的 `==`。
+            Some("=") => {
                 self.pos += 1;
                 Ok(left == self.operand()?)
+            }
+            // `<`/`>`：按字节序的字符串比较，对位 `strcmp`（`test.c:345-348`）。
+            Some("<") => {
+                self.pos += 1;
+                Ok(left.as_bytes() < self.operand()?.as_bytes())
+            }
+            Some(">") => {
+                self.pos += 1;
+                Ok(left.as_bytes() > self.operand()?.as_bytes())
             }
             Some("!=") => {
                 self.pos += 1;
@@ -501,7 +508,6 @@ mod tests {
             },
             size: 90000,
             mtime: 100,
-            atime: 90,
             flags: ModeFlags::default(),
             owned: true,
             grouped: false,
@@ -521,7 +527,6 @@ mod tests {
             },
             size: 512,
             mtime: 200,
-            atime: 200,
             flags: ModeFlags::default(),
             owned: false,
             grouped: true,
@@ -618,11 +623,49 @@ mod tests {
         assert_eq!(evaluate(&fs, &["-O", "/tmp"]), Ok(false));
         assert_eq!(evaluate(&fs, &["-G", "/tmp"]), Ok(true));
         assert_eq!(evaluate(&fs, &["-G", "/bin/sh"]), Ok(false));
-        // -N: mtime > atime. /bin/sh 100>90 true; /tmp 200>200 false.
-        assert_eq!(evaluate(&fs, &["-N", "/bin/sh"]), Ok(true));
-        assert_eq!(evaluate(&fs, &["-N", "/tmp"]), Ok(false));
+        // `<`/`>` 走 `strcmp` 的字节序（`test.c:109`、`:111`、`:345-348`）。
+        assert_eq!(evaluate(&fs, &["a", "<", "b"]), Ok(true));
+        assert_eq!(evaluate(&fs, &["b", "<", "a"]), Ok(false));
+        assert_eq!(evaluate(&fs, &["b", ">", "a"]), Ok(true));
+        assert_eq!(evaluate(&fs, &["a", ">", "b"]), Ok(false));
+        assert_eq!(evaluate(&fs, &["a", "<", "a"]), Ok(false));
+        assert_eq!(evaluate(&fs, &["a", ">", "a"]), Ok(false));
+        // `==` 不在 C 的表里（只有单等号，`test.c:110`）：于是 `[ a == a ]` 不是
+        // 真也不是假，而是「剩下的词没人吃」的语法错（退出码 2 那一支）。
+        assert_eq!(
+            evaluate(&fs, &["a", "==", "a"]),
+            Err(FileOpError::InvalidArgument)
+        );
+        // C 的表里没有 `-N`，本层也不再假装有。
+        assert_eq!(
+            evaluate(&fs, &["-N", "/bin/sh"]),
+            Err(FileOpError::InvalidArgument)
+        );
+
         // -u / -g / -k: fixtures carry no setuid/setgid/sticky.
         assert_eq!(evaluate(&fs, &["-u", "/bin/sh"]), Ok(false));
+    }
+
+    #[test]
+    fn test_h_is_the_alias_of_capital_l() {
+        // `test.c:139` 把 `h` 与 `L` 指到同一个 token（`FILSYM`），注释写明
+        // 「for backwards compat」——两条写法必须读同一个判据，也必须是 lstat 语义。
+        let mut fs = TableFs::empty();
+        fs.files[0] = Some(TestFile {
+            path: "/tmp/link",
+            kind: FileKind {
+                link: true,
+                ..FileKind::default()
+            },
+            ..test_file("/tmp/link")
+        });
+        assert_eq!(evaluate(&fs, &["-h", "/tmp/link"]), Ok(true));
+        assert_eq!(evaluate(&fs, &["-L", "/tmp/link"]), Ok(true));
+        assert_eq!(evaluate(&fs, &["-h", "/nope"]), Ok(false));
+        assert_eq!(
+            evaluate(&fs, &["-h", "/tmp/link"]),
+            evaluate(&fs, &["-L", "/tmp/link"])
+        );
     }
 
     #[test]
@@ -686,7 +729,6 @@ mod tests {
             access: Access::default(),
             size: 0,
             mtime: 0,
-            atime: 0,
             flags: ModeFlags::default(),
             owned: false,
             grouped: false,
