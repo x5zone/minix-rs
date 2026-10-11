@@ -1,0 +1,17 @@
+# 行尾策略：仓库内一律存 LF。
+#
+# 起因：`tools/pattern-gate.sh` 的 P8 门（跟踪文件 CRLF 入库）长期红着——57 个
+# `.rs` 文件带 CRLF，全量扫法又不在任何持续集成门里，于是「红着入库」无人拦
+# （台账 `rewrite-notes/coordination/TODO-LEDGER-OPEN.md` §7「门不在闸上」一行）。
+# 批次一百一十三把 `os/commands/` 那 55 个文件一次性归一（逐文件比对过
+# `git show HEAD:<路径>` 去 CR 后内容与工作树逐字节相同，纯行尾无内容改动），
+# 本文件把规矩变成入库前拦截，免得再靠事后审计。
+#
+# 另两个 CRLF 文件（`os/drivers/storage/at_wini/src/bus.rs` 二线、
+# `os/libs/minix-boot/src/boot_form.rs` 一线）不属本线领地，留在其所有线上一次
+# 改，避免跨线混改；跨线登记见
+# `rewrite-notes/coordination/new_edge4.md` C-85。
+#
+# 只写 `text=auto`：git 自行判别文本（含 NUL 嗅探，二进制不受影响），提交时归一
+# 为 LF；不强制 checkout 端行尾，宿主流水线与镜像构建因此无感。
+* text=auto
