@@ -729,3 +729,23 @@ smp_todo §25 环境级根因段相应降级为历史假说）；aarch64 全绿�
 （截断段与本修复无关——x86 阶梯不参与 arm/riscv 构建）。CI 计数的 23 测试至此
 应全绿，T-5 记录待 CI 复跑刷新。
 
+
+## 26. doc-gen v3 文档复核发现的源码侧分歧（2026-10-09/10 登记，待代码侧裁决）
+
+> 来源：`07-cross-space-init.md` 与 `06-proc-init-boot-proc.md` 的重写复核（四路：逐节实读/盲态闭卷/旧稿块级对照/独立事实核查）。
+> 全部为**注释与现码不一致**或**C/Rust 语义分歧**，无当场可判的代码 bug；文档侧已按现码陈述并在对应节登记，此处汇总供 todo-fix 排期。逐条的证据命令见两篇文档的对应节。
+
+| # | 位置 | 分歧 | 文档登记处 |
+|---|---|---|---|
+| 1 | `os/kernel/src/lib.rs` Step 2 注释（`init_post_and_memory`） | 注释称 "Record VM as the kernel-level ptproc"，函数体无对应语句；记录点实际在 `switch_address_space`（lib.rs:384/567 附近的调用路径内） | 06 §3.12、07 §3.5 |
+| 2 | `os/kernel/src/lib.rs` 同函数 Step 3 注释 | "窗口在 Phase C 建立"与现码偏离：窗口在 `arch_boot` Step 4 建立、Phase C 只记根地址 | 07 §3.2 末、§4.2 |
+| 3 | `os/kernel/src/lib.rs` 同函数 Step 1 注释 | 坐标 `(lib.rs:960-963)` 陈旧：`phys_root`/`virt_root` 实际写在 lib.rs:1997/2000 | 07 §3.5 |
+| 4 | `os/kernel/src/dm_coverage.rs:81`（`establish_boot_dm` 函数文档注释） | "Called once from arch_boot_impl" 已过时：两条生产路径（lib.rs:384/567） | 07 §4.4、§5.3 |
+| 5 | `os/arch/src/arch/direct_map.rs:137-139`（riscv64 模块注释） | 自相矛盾："non-canonical"与"payload decodes to VPN[2] = 256"不能同时成立——旧值 `0xFFFF_FC00_0000_0000` 的 39 位载荷是 0x0（VPN[2]=0） | 07 §4.1（已按算术改写） |
+| 6 | `os/plat/src/x86_64/interrupt.rs:26-31`、`os/plat/src/lib.rs:59-60` | 注释写 "PIT 输出是 IOAPIC input 0"，与 `isa_irq_to_pin` 的 IRQ0→input 2 映射矛盾（文档按操作代码陈述） | 07 §4.9 |
+| 7 | `os/kernel/src/lib.rs`（`bsp_finish_booting` 相关注释） | 注释称其为 dead-code 分歧路径，与现码矛盾（kmain Phase F 调用它、它再调 `boot_init_timer`） | 06 §5.3（报）|
+| 8 | C `do_clear` vs Rust `dispatch_clear` 的 `RTS_NO_ENDPOINT` 清除语义 | C 用 `RTS_SETFLAGS` 整值覆盖（隐式清位）；Rust 用 `rts_set(SLOT_FREE)`（fetch_or 按位置位），SLOT_FREE 与 NO_ENDPOINT 同时留存——`is_empty` 与 fork 子槽检查的精确判据 `p_rts_flags == RTS_SLOT_FREE` 在 Rust 路径下达不到 | 06 §2.2.2（行 581/602 一带） |
+| 9 | 用户模块 ELF 装载归属（三处说法打架） | `ProcKind` 注释写 "ELF deferred to RS"；C 的实际装载者是 VM（`arch_boot_proc`）；`load_process_elf` 目前只有测试内核调用 | 06 §2.7 |
+| 10 | `os/boot-shim/src/loader.rs` 错误变体测试缺口 | `NoLoadSegments`（loader.rs:144）与 `InvalidSegment`（loader.rs:211）无任何测试构造 | 01 §5.1、07 未涉及 |
+
+> 处置建议：#1–#7、#9 均为**注释回修**（一处 PR 批量可清）；#8 是**真实语义分歧**，改哪一侧需对照 C 真源与 `is_empty` 消费面单独裁决（建议走 todo-fix 单条流程）；#10 属测试完备性缺口，归 test-audit 排期。
