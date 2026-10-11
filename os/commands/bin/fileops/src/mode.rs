@@ -51,18 +51,18 @@ pub enum ChmodOption {
     Unknown(char),
 }
 
-/// Is `arg` a bare `-[perm]` *mode* rather than a flag? C's `case 'g' … 'x'`
+/// Is `arg` a bare `-[perm]` *mode* rather than a flag? C's `case 'g' … 'X' … 'x'`
 /// arms step `optind` back over such an argument (`chmod.c:127-133`) so that
-/// `chmod -r file` drops the read bit instead of being an option. `X` is in
-/// C's list at `chmod.c:128`; this tree's parser has not taken it, and its
-/// mode grammar folds `X` onto plain `x` rather than testing "is a directory
-/// or already executable" — both registered as open findings instead of being
-/// fixed beside the recursion.
+/// `chmod -r file` drops the read bit and `chmod -X file` applies the conditional
+/// execute bit instead of being an option.
 pub fn is_bare_mode(arg: &str) -> bool {
     let b = arg.as_bytes();
     b.len() == 2
         && b[0] == b'-'
-        && matches!(b[1], b'r' | b'w' | b'x' | b's' | b't' | b'u' | b'g' | b'o')
+        && matches!(
+            b[1],
+            b'r' | b'w' | b'x' | b'X' | b's' | b't' | b'u' | b'g' | b'o'
+        )
 }
 
 impl ChmodFlags {
@@ -109,23 +109,35 @@ pub fn chmods_entry(mode: u32, physical_walk: bool) -> bool {
     !(physical_walk && crate::cp::is_link(mode))
 }
 
-/// Apply `spec` (octal or symbolic) to `base` permission bits.
+/// Apply `spec` (octal or symbolic) to a file's current mode.
 ///
-/// An all digit spec is octal and replaces the twelve low bits outright
-/// (higher bits of `base`, such as the file type, are preserved). Anything
-/// else is a comma separated list of symbolic clauses applied left to
+/// `current` is the file's own `st_mode`, type bits included: the `X` permission
+/// letter tests them (`setmode.c:148-150` adds the execute bits only when the
+/// original mode is a directory or already executes somewhere), and the octal
+/// spelling preserves the type nibble the same way (`base & 0o170000`).
+///
+/// An all digit spec is octal and replaces the twelve low bits outright.
+/// Anything else is a comma separated list of symbolic clauses applied left to
 /// right. Empty clauses (from `u+x,,go-w`) are rejected, matching the C
 /// library refusing the whole spec.
-pub fn apply_mode(base: u16, spec: &str) -> Result<u16, FileOpError> {
+pub fn apply_mode(current: u32, spec: &str) -> Result<u16, FileOpError> {
     if spec.is_empty() {
         return Err(FileOpError::InvalidArgument);
     }
+    // The low 16 bits carry everything this grammar addresses: the twelve
+    // permission bits plus the four type bits (`S_IFDIR` is `0o040000`); the
+    // two archive bits above them are not settable by `chmod`.
+    let base = (current & 0o177777) as u16;
+    // `getmode` tests the *original* mode for every `X` command, not the mode
+    // as it is being built up (`setmode.c:93` takes `omode`, `:148-150` reads
+    // it), so the answer is computed once here and carried through the clauses.
+    let x_adds = current & (crate::cp::S_IFDIR | 0o111) != 0;
     if spec.bytes().all(|b| b.is_ascii_digit()) {
         return apply_octal(base, spec);
     }
     let mut mode = base;
     for clause in spec.split(',') {
-        mode = apply_clause(mode, clause)?;
+        mode = apply_clause(mode, clause, x_adds)?;
     }
     Ok(mode)
 }
@@ -165,27 +177,26 @@ fn who_mask(who: &str) -> Result<u16, FileOpError> {
 }
 
 /// Permission bits named by one `what` character, resolved against the
-/// addressed classes (`X` means execute only when the target already
-/// executes somewhere or is a directory — directory knowledge lives with
-/// the executor, so `X` behaves as `x` here and the difference is
-/// documented).
+/// addressed classes. `X` is not handled here: `setmode.c:296-297` counts it into
+/// a separate accumulator (`permXbits`) and `getmode`'s `case 'X'` only ever adds
+/// those bits, and only when the original mode is a directory or already
+/// executes — see `apply_clause`.
 fn what_bits(what: u8, who: u16, base: u16) -> Result<u16, FileOpError> {
-    let bits;
-    match what {
-        b'r' => bits = 0o444,
-        b'w' => bits = 0o222,
-        b'x' | b'X' => bits = 0o111,
-        b's' => bits = SET_USER_ID | SET_GROUP_ID,
-        b't' => bits = STICKY,
-        b'u' => bits = ((base >> 6) & 0o7) * 0o111,
-        b'g' => bits = ((base >> 3) & 0o7) * 0o111,
-        b'o' => bits = (base & 0o7) * 0o111,
+    let bits = match what {
+        b'r' => 0o444,
+        b'w' => 0o222,
+        b'x' => 0o111,
+        b's' => SET_USER_ID | SET_GROUP_ID,
+        b't' => STICKY,
+        b'u' => ((base >> 6) & 0o7) * 0o111,
+        b'g' => ((base >> 3) & 0o7) * 0o111,
+        b'o' => (base & 0o7) * 0o111,
         _ => return Err(FileOpError::InvalidArgument),
-    }
+    };
     Ok(bits & who)
 }
 
-fn apply_clause(mut mode: u16, clause: &str) -> Result<u16, FileOpError> {
+fn apply_clause(mut mode: u16, clause: &str, x_adds: bool) -> Result<u16, FileOpError> {
     let bytes = clause.as_bytes();
     let mut pos = 0;
     while pos < bytes.len() && matches!(bytes[pos], b'u' | b'g' | b'o' | b'a') {
@@ -205,9 +216,21 @@ fn apply_clause(mut mode: u16, clause: &str) -> Result<u16, FileOpError> {
         }
         pos += 1;
         let mut bits = 0;
+        let mut xbits = 0;
         let mut any = false;
         while pos < bytes.len() && !matches!(bytes[pos], b'+' | b'-' | b'=') {
-            bits |= what_bits(bytes[pos], who, mode)?;
+            // `setmode.c:296-297` counts `X` into its own accumulator, flushed
+            // after the plain bits (`setmode.c:330-336`), so the order within a
+            // clause is always "the plain bits first, then `X`". One narrow
+            // difference: when a `-` or `=` clause reaches a copy letter
+            // (`u`/`g`/`o`) C drops the accumulated `X` bits, flushing them only
+            // for `+` (`setmode.c:316-318`); this grammar always flushes at the
+            // clause end, so `chmod -Xu f` differs from C for that spelling.
+            if bytes[pos] == b'X' {
+                xbits |= 0o111 & who;
+            } else {
+                bits |= what_bits(bytes[pos], who, mode)?;
+            }
             any = true;
             pos += 1;
         }
@@ -223,6 +246,12 @@ fn apply_clause(mut mode: u16, clause: &str) -> Result<u16, FileOpError> {
                 mode |= bits;
             }
             _ => return Err(FileOpError::InvalidArgument),
+        }
+        // `getmode`'s `case 'X'` (`setmode.c:148-150`) is an unconditional OR
+        // gated on the original mode — it never clears, not even in a `-`
+        // clause, which is why `chmod -X` on a directory adds the bits.
+        if x_adds {
+            mode |= xbits;
         }
     }
     Ok(mode)
@@ -368,6 +397,7 @@ mod tests {
         assert_eq!(f, ChmodFlags::default());
         assert_eq!(rest, ["-r", "notes.txt"]);
         assert!(is_bare_mode("-r"));
+        assert!(is_bare_mode("-X"), "C lists `X` too (chmod.c:128)");
         assert!(!is_bare_mode("-R"), "the recursion flag is upper case");
         assert!(!is_bare_mode("-rr"), "only a single letter counts");
         assert!(!is_bare_mode("r"), "and it needs the dash");
@@ -388,6 +418,45 @@ mod tests {
         );
         assert!(chmods_entry(reg, true));
         assert!(chmods_entry(dir, true));
+    }
+
+    #[test]
+    fn x_letter_only_adds_when_the_original_is_a_directory_or_already_executes() {
+        // setmode.c:148-150: `getmode` tests the *original* mode's directory bit
+        // or any execute bit; neither holds, nothing is added.
+        assert_eq!(apply_mode(0o100644, "a+X").unwrap(), 0o100644);
+        // A directory gets all three execute bits.
+        assert_eq!(apply_mode(0o040644, "a+X").unwrap(), 0o040755);
+        // A file that already executes somewhere gets the remaining two.
+        assert_eq!(apply_mode(0o100744, "a+X").unwrap(), 0o100755);
+        // The addressed classes still bound it: `g+X` on a plain file is a no-op,
+        // on a directory it is the group execute bit alone.
+        assert_eq!(apply_mode(0o100604, "g+X").unwrap(), 0o100604);
+        assert_eq!(apply_mode(0o040604, "g+X").unwrap(), 0o040614);
+    }
+
+    #[test]
+    fn x_never_clears_even_in_a_minus_clause() {
+        // setmode.c:330-336 flushes `permXbits` as its own `'X'` command, and
+        // getmode's `'X'` arm can only OR: `-X` is a conditional add, never a
+        // remove.
+        assert_eq!(apply_mode(0o100755, "a-X").unwrap(), 0o100755);
+        assert_eq!(apply_mode(0o100644, "a-X").unwrap(), 0o100644);
+        // `-xX` on an executable file clears the bits and then adds them back,
+        // because the gate reads the original mode, not the running one.
+        assert_eq!(apply_mode(0o100744, "a-xX").unwrap(), 0o100755);
+    }
+
+    #[test]
+    fn equals_then_x_keeps_the_conditional_add() {
+        // `a=X` is a clear-everything command followed by the `'X'` command, and
+        // the file type nibble survives both legs (the kernel masks it away).
+        assert_eq!(apply_mode(0o040644, "a=X").unwrap(), 0o040111);
+        // An already-executable regular file loses its read bits to the `=` clear
+        // and only gets the execute bits back — `addcmd` turns `=` into
+        // clear-then-set, and the set half carries nothing (`setmode.c:373-384`).
+        assert_eq!(apply_mode(0o100755, "a=X").unwrap(), 0o100111);
+        assert_eq!(apply_mode(0o100644, "a=X").unwrap(), 0o100000);
     }
 
     #[test]

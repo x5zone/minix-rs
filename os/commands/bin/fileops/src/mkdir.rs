@@ -47,7 +47,9 @@ pub fn needs_extra_bit_fixup(mode: u16) -> bool {
 /// `0777` base, matching C `getmode(setmode(optarg), S_IRWXU|S_IRWXG|S_IRWXO)`;
 /// the shared [`apply_mode`] already ported BSD `setmode`/`getmode`.
 pub fn parse_mode_spec(spec: &str) -> Result<u16, FileOpError> {
-    apply_mode(ALL_PERMISSIONS, spec)
+    // C hands `getmode` the plain `S_IRWXU|S_IRWXG|S_IRWXO` base, so an `X` in a
+    // `-m` spec sees an already-executable mode and does add the bits.
+    apply_mode(ALL_PERMISSIONS as u32, spec)
 }
 
 /// Walk the `-p` prefix sequence of `path`, calling `visit` once per component
