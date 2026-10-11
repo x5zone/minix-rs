@@ -134,6 +134,8 @@
 | `bin/from.rs` | `from.c` 主程序 | 解 `-f`/`-s`、按序解信箱路径、逐记录打印 |
 | `users.rs` | `users.c:90-99` | 登录名插入排序 + 相邻去重（`sorted_unique`，无 alloc） |
 | `bin/users.rs` | `users.c` 主程序 | 读默认 utmp、`walk_database` 收活动名、空格连一行 |
+| `env.rs` | `env.c:59-76`（getopt `-i`、`putenv` 循环） | `parse_flags`（`-i` 扫、首个非选项停、未知→None）、`command_start`（前导 `NAME=VALUE` 计数）、`entry_key`+`build_env`（putenv 就地替换/追加、末写胜） |
+| `bin/env.rs` | `env.c:78-88` | 读真环境（`envs()`）、无命令则打印（可清可改）、带命令报 exec 残差拒 |
 
 ### 4.2 关键类型与不变量
 
@@ -158,7 +160,7 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-proctools`：**20 个测试，全部通过**（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行；计数与提交的对应见 18-stage todo 的批次记录）。
+`cargo test -p minix-proctools`：全量以 `cargo test -p minix-proctools --lib` 实际输出为准（本篇直接相关的测包含在内，逐批计数见 18-stage todo §6.1 批次记录；`ulimit -v 3G` 加 `-j 1` 内存闸门下运行）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/proctools` 复现）：
 
@@ -168,9 +170,10 @@
 - **进程表**（`stable.rs`，4 个）：`test_empty_table_lists_nothing`（空表）、`test_slice_lists_and_finds`（列表查找）、`test_lookup_maps_miss`（查无报 3）、`test_tables_share_the_trait`（接口统一）。
 - **信箱扫描**（`from.rs`，13 个）：三记录 fixture 钉记录起点门/字面 `From `/大小写不敏感/`-s` 选路/首行即记录/无尾换行/空信箱；`match_sender` 逐分支钉首词必位、空格即中止、空 sender、后续失配续扫、单字符命中、超长不匹。
 - **登录名表**（`users.rs`，6 个）：`sorted_unique` 就地插入排序+相邻去重——排序去重、单名、空表返 0、全同缩为 1、已排不变、乱序单例排序（逐段对位 `users.c` 的 strcmp 插入排序与相邻不同则输出）。
+- **环境执行**（`env.rs`，14 个）：`flag_i_sets_clean`/`repeated_i_is_idempotent`/`cluster_of_i_still_valid`（`-i` 扫）、`no_leading_option_is_not_clean`（首个非选项即停、无置换）、`unknown_option_is_usage_error`（`-x`、选项区内 `-i -x`）、`bare_dash_is_nonoption_stop`（裸 `-` 作非选项）、`command_start_counts_leading_assignments`（前导 `=` 计数）、`entry_key_stops_at_first_equals`（键截至首个 `=`）、`build_env_replaces_in_place`/`build_env_appends_new_key_at_end`/`build_env_keeps_position_and_takes_last_value`/`build_env_collapses_repeated_new_key`/`build_env_empty_value_and_clean_base`/`build_env_prefix_keys_distinct`（putenv 就地替换/追加/末写胜/空值/`-i` 空基/前缀键不撞）。
 - **时刻戳**（`stamp.rs`，4 个）：`test_epoch_zero_is_new_years`（纪元零）、`test_known_stamp_september_nine_2001`（十亿秒名场）、`test_leap_year_february_twenty_nine`（闰日）、`test_civil_matches_days_from_civil`（与 10 篇 `cal.rs` 的格里高利编码器交叉往返，dev-dependency 直连）。
 
-**执行批后的接线与留白**：`kill` 与 `who` 已接线——`kill` 覆盖 `-l`/`-l 码`/`-s 名`/`-名字`/`-号码` 加逐 pid 发信（失败翻退出码不中断，`kill.c` 主循环语义），`who` 覆盖默认库与操作数库、只印在场会话的名/行/时刻十二列；`from` 已接线（批次九十二）——`from [-f file] [-s sender] [user]` 记录扫描与 BSD sender 匹配落 `from.rs`（`match_sender` 复刻 `from.c:131-153` 的遇空格整体中止/`first` 绑定一次不回扫/调用方小写 sender 三个角落）。留白：`who` 的空闲与终端状态列（要 `stat` 终端行）、`-u`/`-T` 等列选；`ps`（要内核表数据源）、`finger`（邮件面）、`date`/`sleep`/`nice` 族随各自数据源批次接；`from` 的 getpwuid 回退（本树无 `getpwuid`/`getuid` 封装，信箱无法经 `-f`/操作数/`MAIL`/`LOGNAME`/`USER` 解析时退 1）。`users` 已接线（批次九十五）——登录名排序去重落 `users.rs`（`sorted_unique` 无 alloc 插入排序，对位 `users.c` 链表插入排序+相邻去重），复用 `utmp::walk_database` 与 `entry.active()`。时区声明：时刻戳一律 UTC（本层无时区库，C 的 `ctime` 是本地时）。
+**执行批后的接线与留白**：`kill` 与 `who` 已接线——`kill` 覆盖 `-l`/`-l 码`/`-s 名`/`-名字`/`-号码` 加逐 pid 发信（失败翻退出码不中断，`kill.c` 主循环语义），`who` 覆盖默认库与操作数库、只印在场会话的名/行/时刻十二列；`from` 已接线（批次九十二）——`from [-f file] [-s sender] [user]` 记录扫描与 BSD sender 匹配落 `from.rs`（`match_sender` 复刻 `from.c:131-153` 的遇空格整体中止/`first` 绑定一次不回扫/调用方小写 sender 三个角落）。留白：`who` 的空闲与终端状态列（要 `stat` 终端行）、`-u`/`-T` 等列选；`ps`（要内核表数据源）、`finger`（邮件面）、`date`/`sleep`/`nice` 族随各自数据源批次接；`from` 的 getpwuid 回退（本树无 `getpwuid`/`getuid` 封装，信箱无法经 `-f`/操作数/`MAIL`/`LOGNAME`/`USER` 解析时退 1）。`users` 已接线（批次九十五）——登录名排序去重落 `users.rs`（`sorted_unique` 无 alloc 插入排序，对位 `users.c` 链表插入排序+相邻去重），复用 `utmp::walk_database` 与 `entry.active()`。`env` 已接线（批次九十九，`printenv` 只读孪生的可写形）——`env [-i] [name=value ...]` 无命令时打印环境（读 `envs()` + `build_env` putenv 合并，只读环境+写 stdout→不受 E5 写盘门控），决定半 `parse_flags`/`command_start`/`entry_key`/`build_env` 落 `env.rs`；`env ... command` 需 exec 递送链（同 `cat`/`xargs` 的 NS5 门），未接→带命令报 not wired 退 1（不假装成功）。因 putenv 合并需物化结果，为此破 proctools lib 的 no-heap 惯例加 `extern crate alloc`（照 doctools `soelim`/compress 先例，已在 crate 文档标为例外）。时区声明：时刻戳一律 UTC（本层无时区库，C 的 `ctime` 是本地时）。
 
 尚未覆盖、随后续阶段补齐的：内核表读取（`ps` 执行层）、终端检查（`-t` 之类）、作业联动（挂起终止特判的执行侧）、邮件系统本体与网络会话（`write` 投递、`finger` 详情）。`from` 的信箱提示面已接线（只看 `From ` 记录，邮件系统本体归 19 篇）。号码记录表格三层是全覆盖的，执行层是显式留白的。
 

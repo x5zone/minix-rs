@@ -17,7 +17,8 @@
 //! record parsing (`who`, `w`, `last`), and process table listing over the
 //! [`stable::ProcessTable`] trait. Process inspection itself (kernel
 //! tables, terminal checks) stays with the execution layer. Everything
-//! borrows from the input and uses fixed size buffers: no heap, `no_std`
+//! borrows from the input and uses fixed size buffers except the [`env`]
+//! assignment merge (which materialises the resulting environment): `no_std`
 //! throughout.
 //!
 //! # Modules
@@ -31,11 +32,17 @@
 //! - [`dates`]: epoch to broken-down UTC time and the `strftime` subset
 //!   behind `date` (reuses [`stamp`]'s calendar inverse).
 //! - [`printenv`]: environment-variable lookup behind `printenv`.
+//! - [`env`]: option scan, operand split and `putenv` merge behind `env`.
 //! - [`sleep`]: operand parsing behind `sleep` (integer vs decimal path).
 //! - [`from`]: the `From ` record scan and the BSD sender matcher behind
 //!   `from`.
 
+// The `env` assignment merge materialises the resulting environment as an
+// owned list; every other module in this crate stays allocation free.
+extern crate alloc;
+
 pub mod dates;
+pub mod env;
 pub mod from;
 pub mod printenv;
 pub mod ptime;
