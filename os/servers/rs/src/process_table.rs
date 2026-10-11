@@ -199,7 +199,10 @@ impl RProcTable {
         self.by_endpoint[slot as usize]
     }
 
-    /// NK4-A C-3 迭代18 取证（task1-close 裁决删除）：列出全部已索引端点。
+    /// Every indexed endpoint with its slot, in slot order. Born as an
+    /// forensic dump for the NK4-A C-3 boot incident; kept because the step-2
+    /// panic in `boot.rs` now names the missing service through it, which makes
+    /// it part of the production diagnostic path (PD-10 第二档：转正式机制）。
     pub fn indexed_endpoints(&self) -> alloc::vec::Vec<(i32, usize)> {
         let mut out = alloc::vec::Vec::new();
         for (slot, id) in self.by_endpoint.iter().enumerate() {

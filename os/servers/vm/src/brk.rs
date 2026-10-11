@@ -79,21 +79,6 @@ pub(crate) fn handle_brk(
     let mut active = table.get_active(slot)
         .ok_or(BrkError::ProcessNotFound)?;
 
-    // 续-279m 临时取证探针（first-N 封顶 160，真机 D3a 定性用，结案滚除）：
-    // 只打**真正跨出 region 的扩腿请求**（covered no-op 海量不刷），附带
-    // 扩腿后的 region 形状。
-    #[cfg(not(feature = "mock"))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static BRK_LOG: AtomicUsize = AtomicUsize::new(0);
-        let off = request.new_brk_addr.0.div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
-        let pre = avl_less(active.regions(), off);
-        if pre.is_some_and(|r| r.end_addr().0 < off)
-            && BRK_LOG.fetch_add(1, AtomicOrd::Relaxed) < 160
-        {
-        }
-    }
-
     // C: real_brk → map_region_extend_upto_v (region.c:1002-1064), the only
     // brk leg in break.c — the request carries the ABSOLUTE new break and
     // the VM extends the region containing it. No delta against

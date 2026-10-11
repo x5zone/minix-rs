@@ -1045,9 +1045,6 @@ impl<'a> BootInit<'a> {
     fn step2_allow_run(&mut self, sys: &mut dyn KernelApi) -> Result<(), BootError> {
         let tables = self.tables;
         let mut nr_uncaught_init_srvs = 0usize;
-
-
-
         for priv_ in tables.priv_table {
             if priv_.endpoint.is_kernel_task() {
                 continue; // C: iskerneln skip — main.c:354-356
@@ -1098,8 +1095,6 @@ impl<'a> BootInit<'a> {
                 continue;
             }
             // C: sched_init_proc — main.c:376; sys_privctl(SYS_PRIV_ALLOW) — main.c:379.
-            // NK4-A Task C 取证（task1-close 裁决删除）：非 RS/VM 分支逐步打点，
-            // 定位把表基址算成 0 的确切子步。
             sys.sched_init_proc(&SchedulerConfig::boot_defaults(priv_.endpoint))?;
             sys.privctl(priv_.endpoint, PrivCtlOp::Allow, None)?;
 

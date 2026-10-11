@@ -438,49 +438,7 @@ impl<T: IpcTransport> PmServer<T> {
     pub fn run_once(&mut self) -> RunStep {
         // C: main.c:61 — sef_receive_status(ANY, &m_in, &ipc_status)。
         let (msg, rcv_sts) = match self.transport.receive() {
-            Ok(v) => {
-                // NK4-C 1.11d 取证探针（task1-close 裁决删除）：主循环每收
-                // 一件打印 mt+src（≤16B：diagctl >16B 静默丢弃；cap 40 覆盖
-                // boot 全程）——init getuid 无回执（s17k p3park s=0xb 后 PM
-                // 零输出）的「PM 到底收到什么」定位。
-                {
-                    const HEXS: &[u8; 16] = b"0123456789abcdef";
-                    static PMR_N: core::sync::atomic::AtomicUsize =
-                        core::sync::atomic::AtomicUsize::new(0);
-                    use core::sync::atomic::Ordering as AtomicOrd;
-                    if PMR_N.fetch_add(1, AtomicOrd::Relaxed) < 64 {
-                        // 续-135：m_type 是 transid-stamped（REQ<<16|tid）——
-                        // 补 req 号（高 16 位）解码乒乓环；diagctl >16B 丢弃
-                        // ⇒ 压缩格式 "pm:mt3src2 req4"（14B+\n=15）。
-                        let mt = v.0.m_type as u16 as u32;
-                        let se = (v.0.m_source.0 & 0xff) as u32;
-                        let rq = ((v.0.m_type as u32) >> 16) & 0xffff;
-                        let mut line = [0u8; 15];
-                        line[..3].copy_from_slice(b"pm:");
-                        line[3] = HEXS[((mt >> 8) & 0xf) as usize];
-                        line[4] = HEXS[((mt >> 4) & 0xf) as usize];
-                        line[5] = HEXS[(mt & 0xf) as usize];
-                        line[6] = HEXS[(se >> 4) as usize];
-                        line[7] = HEXS[(se & 0xf) as usize];
-                        line[8] = b' ';
-                        line[9] = HEXS[((rq >> 12) & 0xf) as usize];
-                        line[10] = HEXS[((rq >> 8) & 0xf) as usize];
-                        line[11] = HEXS[((rq >> 4) & 0xf) as usize];
-                        line[12] = HEXS[(rq & 0xf) as usize];
-                        line[13] = b' ';
-                        line[14] = b'\n';
-                        if let Ok(cs) = core::str::from_utf8(&line) {
-                            //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
-                            #[allow(clippy::let_underscore_must_use)]
-                            let _ = minix_sys::syscall::sys_diagctl_write(
-                                &minix_sys::syscall::DirectKernelCallTransport,
-                                cs,
-                            );
-                        }
-                    }
-                }
-                v
-            }
+            Ok(v) => v,
             Err(_) => return RunStep::ReceiveFailed,
         };
 
@@ -789,8 +747,6 @@ impl<T: IpcTransport> PmServer<T> {
     /// 行为一致。
     fn vfs_init_sync(&mut self) {
         let messages = self.vfs_init_messages();
-        // NK4-C 1.10q 逐环仪器化（task1-close 裁决删除）：逐条 INIT 发送
-        // 打点（sendnb 直写串口），与 VFS 侧握手 receive 计数对账。
         for msg in messages[..messages.len() - 1].iter() {
             self.transport
                 .send_blocking(self.params.vfs_endpoint, msg)
