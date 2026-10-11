@@ -2,16 +2,18 @@
 //!
 //! Ground truth: `minix3/bin/chmod/chmod.c`. The mode-text→bits translation
 //! (BSD `setmode`/`getmode`) already lives in the library as
-//! [`minix_fileops::mode::apply_mode`], octal and symbolic alike; this program
-//! supplies the missing syscall leg: for each operand it reads the file's
-//! current mode (`stat`), folds the spec onto it (`apply_mode`), and writes the
-//! result (`chmod`), which is exactly C's `getmode(set, st_mode)` then
-//! `change_mode(...)` (`chmod.c:215-216`).
+//! [`minix_fileops::mode::apply_mode`], octal and symbolic alike, `X` included;
+//! this program supplies the missing syscall leg: for each operand it reads the
+//! file's current mode (`stat` or `lstat`), folds the spec onto it
+//! (`apply_mode`), and writes the result (`chmod`), which is exactly C's
+//! `getmode(set, p->fts_statp->st_mode)` then `change_mode(...)`
+//! (`chmod.c:215-216`).
 //!
 //! Wired: `chmod [-f] [-v] mode file ...` and the same with `-R`, which walks
-//! each operand directory. A bare `-[rwxstugo]` (the entire argument) is the
+//! each operand directory. A bare `-[rwxXstugo]` (the entire argument) is the
 //! *mode*, not a flag — reproduced from C's `--optind` correction
-//! (`chmod.c:127-133`), so `chmod -r file` drops the read bit. `-f` continues
+//! (`chmod.c:127-133`), so `chmod -r file` drops the read bit and `chmod -X
+//! file` applies the conditional execute bit. `-f` continues
 //! past errors (only sets the exit status, `chmod.c:215-219`), `-v` prints each
 //! applied mode (this tree's extension; C's option string has no `v`).
 //! Real-machine effect is the writable-root gate (`C-57`/E5), as for every
@@ -30,10 +32,10 @@
 //!
 //! Declared residual: `-h`/`-H`/`-L`/`-P` (the link itself and the traversal
 //! modes, needing `lchmod` and fts's follow decisions) and `--reference` are
-//! refused up front. Two open findings in the option face are registered rather
-//! than fixed here: `X` is missing from the bare-mode letter set although C
-//! lists it (`chmod.c:128`), and this tree's mode grammar folds `X` onto plain
-//! `x` instead of testing "directory or already executable".
+//! refused up front. One narrow grammar difference is documented in
+//! `apply_clause`: a `-` or `=` clause that reaches a copy letter (`u`/`g`/`o`)
+//! drops the accumulated `X` bits in C (`setmode.c:316-318`), while this
+//! grammar flushes them at the clause end.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -82,10 +84,10 @@ fn operand_stat(path: &str, physical: bool) -> Option<Stat> {
 }
 
 /// `chmod.c:215-216`: fold the spec onto the bits this entry already has and
-/// write the result. Either leg failing is the same reported failure.
+/// write the result. The full `st_mode` goes in, type bits included — that is
+/// what lets an `X` in the spec see "this is a directory".
 fn apply_one(path: &str, st: &Stat, spec: &str) -> Result<(), ()> {
-    let base = (st.st_mode & 0o7777) as u16;
-    let mode = apply_mode(base, spec).map_err(|_| ())?;
+    let mode = apply_mode(st.st_mode, spec).map_err(|_| ())?;
     chmod(path, mode as u32).map_err(|_| ())
 }
 
