@@ -44,6 +44,10 @@
 //!   assignments) over the [`sysctl::SysctlTable`] trait.
 //! - [`ldd`]: static archive listing (no dynamic linker exists, so the tool
 //!   lists archive members instead of shared objects).
+//! - [`fsversion`]: file system version probe — super-block magic
+//!   classification (MFS v1/v2/v3, ext2, then the ISO 9660 fallback) and the
+//!   `printroot` display tag; device open and seek stay with the execution
+//!   layer.
 //!
 //! Everything borrows from the input and uses fixed size buffers: no heap,
 //! `no_std` throughout. Driver calls, directory walks, and kernel queries
@@ -51,6 +55,7 @@
 //! [`sysctl::SysctlTable`].
 
 pub mod clock;
+pub mod fsversion;
 pub mod intr;
 pub mod ldd;
 pub mod rootdev;

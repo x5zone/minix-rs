@@ -2,8 +2,8 @@
 
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的观察层——系统跑起来之后，版本是什么，时钟准不准，根设备是哪块，参数怎么查，归档里有什么
-> **源码**: `minix3/minix/commands/version/version.sh`（打印版本文件内容）、`minix3/minix/commands/readclock/readclock.c`（读取用 `RTCDEV_GET_TIME` 见第 73 行附近、写入用 `RTCDEV_SET_TIME` 见第 122 行附近、寄存器访问置位 `RTCDEV_CMOSREG` 见第 55 行附近、两千年兼容置位 `RTCDEV_Y2KBUG` 见第 59 行附近、用法 `readclock [-nqwW2]` 见第 164 行附近）、`minix3/minix/commands/intr/intr.c`（后台开关见第 51 行附近、日志设备见第 19 行附近、闹钟布防见第 140 行附近）、`minix3/minix/commands/printroot/printroot.c`（设备目录见第 25 行附近、未知回退见第 27 行附近、根比较见第 45 行附近）、`minix3/sbin/sysctl/sysctl.c`（节点类型 `CTLTYPE_NODE` 见第 520 行附近）、`minix3/usr.bin/ldd/ldd.c`（可执行与可链接格式两 variant 通吃见第 93 行附近）、`minix3/minix/commands/profile/profile.c` 与 `minix3/minix/commands/sprofalyze/sprofalyze.c`（剖析）、`minix3/usr.sbin/zic/` 与 `minix3/usr.sbin/zdump/`（时区）、`minix3/etc/system.conf`（系统配置）
-> **Rust 模块**: `os/commands/bin/sysinfo`（库包 `minix-sysinfo`：`clock.rs`、`intr.rs`、`rootdev.rs`、`sysctl.rs`、`ldd.rs`，27 个测试通过）
+> **源码**: `minix3/minix/commands/version/version.sh`（打印版本文件内容）、`minix3/minix/commands/readclock/readclock.c`（读取用 `RTCDEV_GET_TIME` 见第 73 行附近、写入用 `RTCDEV_SET_TIME` 见第 122 行附近、寄存器访问置位 `RTCDEV_CMOSREG` 见第 55 行附近、两千年兼容置位 `RTCDEV_Y2KBUG` 见第 59 行附近、用法 `readclock [-nqwW2]` 见第 164 行附近）、`minix3/minix/commands/intr/intr.c`（后台开关见第 51 行附近、日志设备见第 19 行附近、闹钟布防见第 140 行附近）、`minix3/minix/commands/printroot/printroot.c`（设备目录见第 25 行附近、未知回退见第 27 行附近、根比较见第 45 行附近、`-r` 开关见第 43 行附近、文件系统版本后缀见第 71 行附近）与 `minix3/minix/lib/libc/gen/fsversion.c`（跳过引导块读超级块见第 46 行附近、超级块内魔术偏移见第 25 行附近、回退读国际标准化组织光盘卷描述见第 76 行附近）、`minix3/sbin/sysctl/sysctl.c`（节点类型 `CTLTYPE_NODE` 见第 520 行附近）、`minix3/usr.bin/ldd/ldd.c`（可执行与可链接格式两 variant 通吃见第 93 行附近）、`minix3/minix/commands/profile/profile.c` 与 `minix3/minix/commands/sprofalyze/sprofalyze.c`（剖析）、`minix3/usr.sbin/zic/` 与 `minix3/usr.sbin/zdump/`（时区）、`minix3/etc/system.conf`（系统配置）
+> **Rust 模块**: `os/commands/bin/sysinfo`（库包 `minix-sysinfo`：`clock.rs`、`intr.rs`、`rootdev.rs`、`fsversion.rs`、`sysctl.rs`、`ldd.rs`，34 个测试通过；首个执行半薄壳 `src/bin/printroot.rs` 已接线，其余判断层模块的执行半仍留白）
 > **前置依赖**: `00-commands-overview.md`（总览先行，系统工具最后收束）
 > **不覆盖（移交）**: 驱动内部实现（见驱动阶段）、内核参数的生效逻辑（见内核与各服务阶段）、音频设备的采集与播放（待音频驱动，延期候选）
 
@@ -53,6 +53,8 @@
 
 Rust 侧 `rootdev.rs` 的发现函数与这个流程逐项对应：首个块匹配即中，字符设备永不中，扫完无中即回退。
 
+发现只回答“根在哪块设备”，`printroot` 还要回答“那块设备上的文件系统是哪一代”。除非带上 `-r` 只要设备名，程序在设备名后补一个分隔符，再调用版本探测（第 71 行附近）：打开这块设备，跳过一整块引导块读超级块，比对超级块里的两字节魔术——三代 Minix 文件系统的魔术挤在同一个偏移，扩展二文件系统另占一个偏移；都不中就再跳到光盘卷描述区找 `CD001` 标签（`fsversion.c` 第 46、56、70、76 行附近）。魔术比较是把一个十六位整数按小端字节序就地比对，与小端字节序机器上将一个两字节无符号短整数取内字节再比对的结果一致。Rust 侧把这套字节型分类抽进 `fsversion.rs`（纯函数，拿内联的缓冲区就能测），打开设备与跳转读取留给执行半。
+
 ### 2.2 硬件时钟：读写两调用与五个字母
 
 读取调用（第 73 行附近）把硬件时间取回来，写入调用（第 122 行附近）把系统时间写进去。寄存器访问（第 55 行附近）置位后隐含写入，两千年兼容（第 59 行附近）处理年份断代。用法行（第 164 行附近）把五个字母收在一起：预览、写入、寄存器访问、两千年兼容、安静。读取循环最多十次，每次间隔五秒，合法即停。
@@ -101,7 +103,7 @@ Rust 侧 `sysctl.rs` 的名字检查与赋值拆分对应命令的参数面，`l
 
 ### 4.1 模块结构
 
-`os/commands/bin/sysinfo`（库包名 `minix-sysinfo`）共 6 个源文件：
+`os/commands/bin/sysinfo`（库包名 `minix-sysinfo`）共 7 个判断层源文件，外加一个执行半薄壳：
 
 | Rust 文件 | 对应 C 源码位置 | 职责 |
 |-----------|----------------|------|
@@ -109,8 +111,10 @@ Rust 侧 `sysctl.rs` 的名字检查与赋值拆分对应命令的参数面，`l
 | `clock.rs` | `readclock.c` 第 55 行与第 59 行与第 73 行与第 122 行与第 164 行附近 | 时钟选项解析、方向决策、重试策略 |
 | `intr.rs` | `intr.c` 第 19 行与第 51 行与第 140 行附近 | 限时选项解析与 deadline 解析 |
 | `rootdev.rs` | `printroot.c` 第 25 行与第 27 行与第 45 行附近 | 设备目录接口与根发现 |
+| `fsversion.rs` | `fsversion.c` 第 25 行与第 46 行与第 56 行与第 70 行与第 76 行附近 | 超级块魔术分类与展示标签映射 |
 | `sysctl.rs` | `sysctl.c` 第 252 行与第 520 行附近 | 参数名检查、赋值拆分、参数表接口 |
 | `ldd.rs` | `ldd.c` 第 93 行附近 | 归档表接口与清单行绘制 |
+| `bin/printroot.rs` | `printroot.c` 第 34 行至第 71 行附近 | 执行半薄壳：查根目录、遍历 `/dev/`、路由发现与版本探测、拼接输出 |
 
 ### 4.2 关键类型与不变量
 
@@ -131,6 +135,9 @@ Rust 侧 `sysctl.rs` 的名字检查与赋值拆分对应命令的参数面，`l
 | `should_retry_read` | 已试次数、是否合法 | 是否再试 | 十次重试语义 |
 | `parse_intr_options` | 词表 | 选项与命令起点 | 选项聚集语义 |
 | `discover_root` | 目录、根设备号、缓冲 | 发现结果 | 目录扫描语义 |
+| `classify_super` | 超级块字节 | 文件系统版本或无 | 魔术比对语义 |
+| `is_iso9660_descriptor` | 卷描述区字节 | 是否光盘卷 | `CD001` 标签语义 |
+| `version_tag` | 版本或无 | 展示标签 | 打印后缀语义（回退与光盘都归 `0`） |
 | `check_sysctl_name` | 名字 | 是否合法 | 参数名语义 |
 | `split_assignment` | 文本 | 名值对 | 赋值语义 |
 | `render_member_line` | 成员、缓冲 | 行长度 | 清单行语义 |
@@ -139,17 +146,18 @@ Rust 侧 `sysctl.rs` 的名字检查与赋值拆分对应命令的参数面，`l
 
 ## 5. 测试要点
 
-`cargo test -p minix-sysinfo`：**27 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-sysinfo`：**34 个测试，全部通过**（判断层 27 个新增 7 个文件系统版本测；执行半薄壳 `bin/printroot.rs` 靠宿主与自由编译验证，不新增宿主测）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/sysinfo` 复现）：
 
 - **时钟**（`clock.rs`，6 个）：`test_letters_parse`（字母聚集）、`test_uppercase_implies_write`（大写隐含写入）、`test_unknown_letter_rejected`（未知与空拒绝）、`test_words_merge`（多词合并）、`test_direction_follows_write_flag`（方向跟随）、`test_retry_policy`（十次边界）。
 - **限时**（`intr.rs`，7 个）：`test_background_parses`、`test_deadline_attached_and_split`（紧贴与分离两形）、`test_combined_flags`（聚集）、`test_double_dash_ends_options`（双横线）、`test_unknown_flag_rejected`、`test_dangling_deadline_rejected`、`test_deadline_bounds`。
 - **根设备**（`rootdev.rs`，4 个）：`test_matching_block_found`、`test_character_device_never_matches`、`test_empty_dir_falls_back`、`test_small_buffer_rejected`。
+- **文件系统版本**（`fsversion.rs`，7 个）：`test_classify_mfs_versions`（三代魔术逐一命中）、`test_classify_ext2`（扩展二魔术）、`test_mfs_takes_precedence_over_ext2`（两者同现时优先判 Minix，对位“合法的 Minix 可能看起来像扩展二，反之不然”）、`test_no_magic_is_none`（无魔术回空）、`test_byte_order_is_little_endian`（小端字节序钉住 `0x137f` 落为 `7f 13`）、`test_iso9660_descriptor`（`CD001` 位于偏移 1）、`test_version_tag_mapping`（展示标签映射，光盘与无都归 `0`）。
 - **参数**（`sysctl.rs`，5 个）：`test_names_checked`、`test_deep_names_rejected`、`test_assignment_splits`、`test_memory_table_round_trip`、`test_empty_table_denies`。
 - **归档**（`ldd.rs`，5 个）：`test_slice_lists`、`test_empty_lists_nothing`、`test_line_renders`、`test_empty_name_rejected`、`test_small_buffer_rejected`。
 
-尚未覆盖、随后续阶段补齐的：驱动调用（时钟读写的真实往返）、目录遍历（设备目录的真实打开）、内核查询（参数树的真实问答）、音频采集播放（待音频驱动）、基准跑分与剖析采样（待性能设施）。判断层是全覆盖的，执行层是显式留白的。
+判断层是全覆盖的。执行半中，`printroot` 已落成一个真运行的薄壳：它查根目录状态、打开 `/dev/` 逐个目录项回查状态、打开命中的设备读超级块——这些都是真代码（宿主形态与自由目标形态编译门绿），但在真机上端到端跑出结果需要已挂的根与填好的设备目录，与其它写类命令同批归 `C-57`/端到端联调验收。尚未落执行半的仍是驱动调用（时钟读写的真实往返）、内核查询（参数树的真实问答）、音频采集播放（待音频驱动）、基准跑分与剖析采样（待性能设施）。
 
 ---
 
@@ -168,6 +176,8 @@ Rust 侧 `sysctl.rs` 的名字检查与赋值拆分对应命令的参数面，`l
 - `minix3/minix/commands/readclock/readclock.c:main（L55，工具生成）`——时钟选项（`clock.rs` 的形状来源）
 - `minix3/minix/commands/intr/intr.c:_POSIX_SOURCE（L19，工具生成）`——限时执行（`intr.rs` 的形状来源）
 - `minix3/minix/commands/printroot/printroot.c:25-55`——根发现（`rootdev.rs` 的流程来源）
+- `minix3/minix/commands/printroot/printroot.c:57-82`——`done` 打印与版本后缀（`bin/printroot.rs` 执行半的来源）
+- `minix3/minix/lib/libc/gen/fsversion.c:40-90`——超级块魔术与光盘卷描述探测（`fsversion.rs` 的分类来源）
 - `minix3/usr.bin/ldd/ldd.c:dlopen（L93，工具生成）`——格式通吃（`ldd.rs` 的识别来源）
 
 ---
