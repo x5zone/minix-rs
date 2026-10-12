@@ -11,9 +11,10 @@
 //! field of the header line is not rendered here (the C uses the current date,
 //! or each file's mtime; `pr.h:63`). Vertical multi-column output (`-N`, with
 //! `-w` width and `-s` separator) is modelled via the library's `vertcol` face,
-//! and the `-o` left margin via `render_page`; across-fill (`-a`), merge (`-m`),
-//! double spacing (`-d`), the formfeed (`-F`), and the starting page (`+first`)
-//! are later batches. An
+//! and the `-o` left margin via `render_page`; the single-column `-n` running
+//! line number (C `addnum`) via the `number_width`/`number_char` options; across-fill
+//! (`-a`), merge (`-m`), double spacing (`-d`), the formfeed (`-F`), the starting
+//! page (`+first`), and `-n` in multi-column mode are later batches. An
 //! unopenable operand warns
 //! and is skipped with a nonzero exit (`strerror` suffix not reproduced).
 
@@ -96,6 +97,34 @@ fn run() -> ! {
                 Ok(n) if n >= 1 => options.offset = n,
                 _ => usage(),
             }
+        } else if arg.starts_with("-n") {
+            // `-n[ch][width]`: BSD optional glued value (pr.c:1744-1762).
+            let rest = &arg[2..];
+            let mut width: usize = 5; // NMWD
+            let mut sep: u8 = b'\t'; // NMCHAR
+            let mut failed = false;
+            if !rest.is_empty() {
+                let bytes = rest.as_bytes();
+                if bytes[0].is_ascii_digit() {
+                    match rest.parse::<usize>() {
+                        Ok(n) if n >= 1 => width = n,
+                        _ => failed = true,
+                    }
+                } else {
+                    sep = bytes[0];
+                    if rest.len() > 1 {
+                        match rest[1..].parse::<usize>() {
+                            Ok(n) if n >= 1 => width = n,
+                            _ => failed = true,
+                        }
+                    }
+                }
+            }
+            if failed {
+                usage();
+            }
+            options.number_width = width;
+            options.number_char = sep;
         } else if arg.starts_with('+') {
             // `+first_page` (start at a page) is a later batch; `-N` columns
             // are handled above.
@@ -191,7 +220,7 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 
 fn usage() -> ! {
     support::warn(
-        b"usage: pr [-t] [-h header] [-l lines] [-columns] [-w width] [-s[C]] [-o offset]\n",
+        b"usage: pr [-t] [-h header] [-l lines] [-columns] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
     );
     support::terminate(2);
 }

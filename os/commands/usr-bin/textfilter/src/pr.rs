@@ -50,6 +50,13 @@ pub struct PrOptions {
     /// trailer go out unindented (`prhead`/`prtail` print those with bare
     /// `putchar`). `0` is the default (no margin).
     pub offset: usize,
+    /// `-n`: width of the running line-number field (`0` = no numbering, the
+    /// default). The single-column path prefixes each real body line with
+    /// `number_field(n, number_width)` then `number_char` (C `addnum`,
+    /// `pr.c:1438`); blank padding lines are left unnumbered.
+    pub number_width: usize,
+    /// `-n[ch]`: the byte after the number field (`NMCHAR`, a tab by default).
+    pub number_char: u8,
     /// The time field rendered into the header line (the doing half
     /// supplies the host clock's text; an empty prefix is fine).
     pub time_prefix: String,
@@ -65,6 +72,8 @@ impl Default for PrOptions {
             page_width: 72,
             sep: None,
             offset: 0,
+            number_width: 0,
+            number_char: b'\t',
             time_prefix: String::new(),
         }
     }
@@ -97,6 +106,24 @@ impl Page {
 /// capacity is `page_len - HEADLEN - TAILLEN` and short bodies pad with
 /// empty lines. With `-t` the pages carry the body lines only, without
 /// padding.
+/// The `-n` line-number field: running line number `n` right-justified in
+/// `width` columns, space-padded. A number wider than `width` keeps its last
+/// `width` digits (C `addnum` writes from the right and stops at the field's
+/// left edge, so it truncates leading digits rather than growing the field).
+fn number_field(n: usize, width: usize) -> String {
+    let digits = alloc::format!("{n}");
+    if digits.len() >= width {
+        String::from(&digits[digits.len() - width..])
+    } else {
+        let mut s = String::new();
+        for _ in 0..(width - digits.len()) {
+            s.push(' ');
+        }
+        s.push_str(&digits);
+        s
+    }
+}
+
 pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
     if options.columns > 1 {
         return paginate_columns(lines, options);
@@ -117,7 +144,23 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
     let mut cursor = 0usize;
     loop {
         let body_end = (cursor + body_capacity).min(lines.len());
-        let mut body: Vec<String> = lines[cursor..body_end].to_vec();
+        let mut body: Vec<String> = if options.number_width == 0 {
+            lines[cursor..body_end].to_vec()
+        } else {
+            // Running line number per file (`cursor` is the global index, and
+            // `paginate` runs once per file, so it restarts at 1 each file —
+            // matching C's per-file `lncnt`).
+            (cursor..body_end)
+                .map(|idx| {
+                    alloc::format!(
+                        "{}{}{}",
+                        number_field(idx + 1, options.number_width),
+                        options.number_char as char,
+                        lines[idx]
+                    )
+                })
+                .collect()
+        };
         while body.len() < body_capacity {
             body.push(String::new());
         }
@@ -610,5 +653,28 @@ mod tests {
         assert_eq!(pages[0].body_lines[0], "a  ");
         assert_eq!(pages[0].body_lines.len(), 56);
         assert_eq!(pages[0].trailer_lines.len(), TAILLEN);
+    }
+
+    #[test]
+    fn test_number_field_width_and_truncation() {
+        assert_eq!(number_field(1, 3), "  1");
+        assert_eq!(number_field(12, 3), " 12");
+        // A number wider than the field keeps its last `width` digits (C addnum
+        // writes from the right and stops at the left edge).
+        assert_eq!(number_field(1234, 3), "234");
+        assert_eq!(number_field(7, 1), "7");
+    }
+
+    #[test]
+    fn test_paginate_number_prefixes_body_running_per_file() {
+        let mut options = PrOptions::default();
+        options.number_width = 3; // number_field width; default char tab
+        options.page_len = 12; // body capacity 2
+        let pages = paginate_lines(&["a", "b", "c", "d"], &options);
+        // 4 lines over body capacity 2 → 2 pages, numbering runs continuously.
+        assert_eq!(pages[0].body_lines[0], "  1\ta");
+        assert_eq!(pages[0].body_lines[1], "  2\tb");
+        assert_eq!(pages[1].body_lines[0], "  3\tc");
+        assert_eq!(pages[1].body_lines[1], "  4\td");
     }
 }
