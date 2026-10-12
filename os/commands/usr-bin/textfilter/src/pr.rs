@@ -252,9 +252,12 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
 /// `-columns` when `-a` is absent). Input lines are chunked into page-blocks of
 /// `rows * columns` (`rows` = body lines per column, matching `setup`'s
 /// `pr.c:1869-1878` line adjustment), each block laid out down its columns by
-/// [`vertcol_body_rows`], and wrapped in the same 5-line header/trailer as the
-/// single-column path (body padded to `rows` while headers show). `column_width`
-/// is assumed valid; the `doing` half rejects an over-narrow page before here.
+/// [`vertcol_body_rows`] — except a final block that is short by at least a full
+/// column, which [`vertcol_body_rows_balanced`] repacks into even columns (C's
+/// last-page reorder, `pr.c:505-586`) — and wrapped in the same 5-line
+/// header/trailer as the single-column path (body padded to `rows` while headers
+/// show). `column_width` is assumed valid; the `doing` half rejects an
+/// over-narrow page before here.
 fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
     let (colwd, _) = column_width(options.page_width, options.columns)
         .unwrap_or((options.page_width, options.page_width));
@@ -269,16 +272,18 @@ fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
     let mut cursor = 0usize;
     loop {
         let end = (cursor + block).min(lines.len());
+        let page_lines = &lines[cursor..end];
+        // The final page repacks into balanced columns when it is short by at
+        // least a full column (`(mvc - cvc) >= clcnt`, pr.c:522); every other
+        // page, and an over-full final page, keeps the plain down-fill.
+        let balance =
+            !options.across && end >= lines.len() && block - page_lines.len() >= options.columns;
         let mut body = if options.across {
-            horzcol_body_rows(&lines[cursor..end], options.columns, colwd, options.sep)
+            horzcol_body_rows(page_lines, options.columns, colwd, options.sep)
+        } else if balance {
+            vertcol_body_rows_balanced(page_lines, options.columns, colwd, options.sep)
         } else {
-            vertcol_body_rows(
-                &lines[cursor..end],
-                rows,
-                options.columns,
-                colwd,
-                options.sep,
-            )
+            vertcol_body_rows(page_lines, rows, options.columns, colwd, options.sep)
         };
         let (header_lines, trailer_lines) = if options.no_header {
             (Vec::new(), Vec::new())
@@ -424,6 +429,68 @@ pub fn vertcol_body_rows(
             line.push_str(cell);
             if column + 1 == columns {
                 break; // last column: no trailing pad
+            }
+            match sep {
+                Some(byte) => line.push(byte as char),
+                None => {
+                    for _ in 0..(colwd + 1 - cell.len()) {
+                        line.push(' ');
+                    }
+                }
+            }
+        }
+        if !any {
+            break;
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// Last-page column balancing for vertical multi-column output — `vertcol`'s
+/// reorder arm (`pr.c:505-586`). On the final, partially filled page the plain
+/// down-fill leaves a staircase: earlier columns packed to the full `rows`
+/// height while later ones trail. When the page carries at least a full
+/// column's worth of unused cells (`rows * columns - count >= columns`, the
+/// `(mvc - cvc) >= clcnt` gate at `pr.c:522`), C repacks the `count` sequential
+/// input lines into balanced columns of height `pln = ceil(count / columns)`
+/// (`pr.c:523-525`) and emits them column-major with stride `pln`
+/// (`vc[tvc]; tvc += pln`, `pr.c:544-567`) so the columns come out even. The
+/// separator/last-column rules match [`vertcol_body_rows`]: a non-last column
+/// advances `colwd + 1` (space pad, or a single `sep` byte under `-s`), the last
+/// column is never padded, and a column whose cell index runs past the last
+/// line ends the row (C's `tvc >= cvc` break, `pr.c:568` — which may leave the
+/// row's final cell carrying its inter-column pad, exactly as C emits it). The
+/// reorder path is only reached with no line-number field (`nmwd == 0`), the
+/// multi-column `-n` face this module does not model.
+pub fn vertcol_body_rows_balanced(
+    lines_block: &[String],
+    columns: usize,
+    colwd: usize,
+    sep: Option<u8>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let count = lines_block.len();
+    if count == 0 || columns == 0 {
+        return out;
+    }
+    let pln = count.div_ceil(columns);
+    for row in 0..pln {
+        let mut line = String::new();
+        let mut any = false;
+        for column in 0..columns {
+            let idx = column * pln + row;
+            let raw = match lines_block.get(idx) {
+                Some(s) => s.as_str(),
+                None => break, // C `tvc >= cvc`: this balanced column ran dry
+            };
+            if !raw.is_empty() {
+                any = true;
+            }
+            let cell = clip_to_width(raw, colwd);
+            line.push_str(cell);
+            if column + 1 == columns {
+                break; // last column: never padded (C's `mclcnt` arm)
             }
             match sep {
                 Some(byte) => line.push(byte as char),
@@ -787,9 +854,12 @@ mod tests {
         let pages = paginate_lines(&["a", "b"], &options);
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].header_lines[2], " Page 1");
-        // body row 0 = "a" + pad-to-stride + empty last column, then padded
-        // out to the 56-line body capacity.
-        assert_eq!(pages[0].body_lines[0], "a  ");
+        // Two lines across a 2-column page leave far more than a full column of
+        // slack, so the final page balances (`pr.c:522`): `a` and `b` share one
+        // row (`a` padded to the `colwd + 1` stride, `b` the unpadded last
+        // column), then the body pads out to the 56-line capacity.
+        assert_eq!(pages[0].body_lines[0], "a  b");
+        assert_eq!(pages[0].body_lines[1], "");
         assert_eq!(pages[0].body_lines.len(), 56);
         assert_eq!(pages[0].trailer_lines.len(), TAILLEN);
     }
@@ -914,5 +984,126 @@ mod tests {
             ]
         );
         assert!(merge_body_rows(&[], 3, None).is_empty());
+    }
+
+    #[test]
+    fn test_vertcol_balanced_repacks_the_staircase() {
+        // 4 lines, 2 columns → pln = ceil(4/2) = 2, columns come out even
+        // (the plain down-fill would have stacked [1,2,3] in col0 and left
+        // col1 with just [4]).
+        assert_eq!(
+            vertcol_body_rows_balanced(&block(&["1", "2", "3", "4"]), 2, 3, None),
+            vec![String::from("1   3"), String::from("2   4")]
+        );
+        // The naive down-fill of the same block is the staircase, for contrast.
+        assert_eq!(
+            vertcol_body_rows(&block(&["1", "2", "3", "4"]), 3, 2, 3, None),
+            vec![
+                String::from("1   4"),
+                String::from("2   "),
+                String::from("3   ")
+            ]
+        );
+    }
+
+    #[test]
+    fn test_vertcol_balanced_odd_count_keeps_trailing_pad() {
+        // 3 lines, 2 columns → pln 2: col0 [1,2], col1 [3]. Row 1's only cell
+        // (col0) is non-last, so its inter-column pad stays and col1 (absent)
+        // breaks the row — exactly C's `tvc >= cvc` break (pr.c:568).
+        assert_eq!(
+            vertcol_body_rows_balanced(&block(&["1", "2", "3"]), 2, 3, None),
+            vec![String::from("1   3"), String::from("2   ")]
+        );
+    }
+
+    #[test]
+    fn test_vertcol_balanced_three_columns() {
+        // 3 lines, 3 columns → pln = ceil(3/3) = 1: one even row across all
+        // three columns; the last column is unpadded.
+        assert_eq!(
+            vertcol_body_rows_balanced(&block(&["1", "2", "3"]), 3, 3, None),
+            vec![String::from("1   2   3")]
+        );
+    }
+
+    #[test]
+    fn test_vertcol_balanced_sep_and_clip() {
+        // -s: one separator byte, no width padding; last column unpadded.
+        assert_eq!(
+            vertcol_body_rows_balanced(&block(&["1", "2", "3", "4"]), 2, 3, Some(b'\t')),
+            vec![String::from("1\t3"), String::from("2\t4")]
+        );
+        // Cells clip to colwd bytes before the pad (C's inln truncation).
+        assert_eq!(
+            vertcol_body_rows_balanced(&block(&["abcdef", "x", "y", "z"]), 2, 3, None),
+            vec![String::from("abc y"), String::from("x   z")]
+        );
+    }
+
+    #[test]
+    fn test_vertcol_balanced_empty_guards() {
+        assert!(vertcol_body_rows_balanced(&[], 2, 3, None).is_empty());
+        assert!(vertcol_body_rows_balanced(&block(&["1"]), 0, 3, None).is_empty());
+    }
+
+    #[test]
+    fn test_paginate_columns_balances_final_partial_page() {
+        // page_width 5, 2 cols → colwd 2 (stride 3); -t page_len 3 → rows 3,
+        // block 6. 4 lines leave slack 2 >= 2 columns → the final page balances
+        // to ["a  c","b  d"] instead of the staircase ["a  d","b  ","c  "].
+        let mut options = PrOptions::default();
+        options.columns = 2;
+        options.page_width = 5;
+        options.page_len = 3;
+        options.no_header = true;
+        let pages = paginate_lines(&["a", "b", "c", "d"], &options);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            pages[0].body_lines,
+            vec![String::from("a  c"), String::from("b  d")]
+        );
+    }
+
+    #[test]
+    fn test_paginate_columns_balanced_pads_body_with_header() {
+        // page_len 14 → rows 4 (14 - HEADLEN - TAILLEN), block 8. 4 lines leave
+        // slack 4 >= 2 → balanced to 2 rows, padded out to the 4-line body.
+        let mut options = PrOptions::default();
+        options.columns = 2;
+        options.page_width = 5;
+        options.page_len = 14;
+        let pages = paginate_lines(&["a", "b", "c", "d"], &options);
+        assert_eq!(pages[0].header_lines[2], " Page 1");
+        assert_eq!(
+            pages[0].body_lines,
+            vec![
+                String::from("a  c"),
+                String::from("b  d"),
+                String::new(),
+                String::new(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_paginate_columns_full_page_keeps_downfill() {
+        // An exactly-full final block (slack 0) is not balanced: the plain
+        // down-fill stands, guarding against a spurious repack on full pages.
+        let mut options = PrOptions::default();
+        options.columns = 2;
+        options.page_width = 5; // colwd 2, stride 3
+        options.page_len = 3;
+        options.no_header = true; // rows 3, block 6
+        let pages = paginate_lines(&["a", "b", "c", "d", "e", "f"], &options);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            pages[0].body_lines,
+            vec![
+                String::from("a  d"),
+                String::from("b  e"),
+                String::from("c  f")
+            ]
+        );
     }
 }
