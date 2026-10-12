@@ -9,8 +9,9 @@
 //! `==> name <==` banner when there is more than one file (always under `-v`,
 //! never under `-q`), with a blank line between files. Operands are opened
 //! with `fopen`, so `-` is a literal file name (not stdin, unlike `cut`), and
-//! an unopenable file warns and is skipped (exit status stays nonzero). The
-//! byte mode `-c` is not modelled (the window is line-based) and is rejected.
+//! an unopenable file warns and is skipped (exit status stays nonzero). Byte
+//! mode `-c N` emits the first `N` raw bytes of each file, ignoring the line
+//! count (`head.c:149-167`); `N` must be positive.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -29,6 +30,7 @@ use minix_textfilter::window::{HeadWindow, LineWindow};
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let mut count: usize = 10;
+    let mut bytecnt: usize = 0;
     let mut qflag = false;
     let mut vflag = false;
     let mut operands: Vec<String> = Vec::new();
@@ -53,8 +55,15 @@ fn run() -> ! {
             "-q" => qflag = true,
             "-v" => vflag = true,
             "-c" => {
-                support::warn(b"head: -c byte mode is not modelled\n");
-                support::terminate(1);
+                index += 1;
+                if index >= argv.len() {
+                    support::terminate(1);
+                }
+                let n = parse_count(&argv[index]);
+                if n == 0 {
+                    support::terminate(1);
+                }
+                bytecnt = n;
             }
             _ if a.starts_with('-')
                 && a.len() > 1
@@ -69,8 +78,9 @@ fn run() -> ! {
     }
 
     // Reject counts the fixed-capacity window cannot hold (also rejects 0, as
-    // `HeadWindow::new` does — the current line-based behaviour).
-    if HeadWindow::new(count).is_err() {
+    // `HeadWindow::new` does — the current line-based behaviour). Byte mode
+    // ignores the line count, so it skips this window-capacity guard.
+    if bytecnt == 0 && HeadWindow::new(count).is_err() {
         support::terminate(1);
     }
 
@@ -81,7 +91,7 @@ fn run() -> ! {
     let mut status = 0;
 
     if operands.is_empty() {
-        head_stream(support::STDIN, count);
+        head_stream(support::STDIN, count, bytecnt);
         support::terminate(0);
     }
     for operand in &operands {
@@ -98,7 +108,7 @@ fn run() -> ! {
             support::emit(format!("{sep}==> {operand} <==\n").as_bytes());
         }
         first = false;
-        head_stream(fd, count);
+        head_stream(fd, count, bytecnt);
         //[SD19-gate] SD-19: close 后 fd 不再使用
         #[allow(clippy::let_underscore_must_use)]
         let _ = close(fd);
@@ -106,13 +116,18 @@ fn run() -> ! {
     support::terminate(status)
 }
 
-/// Emit the first `count` lines of one open descriptor.
-fn head_stream(fd: Fd, count: usize) {
+/// Emit the head of one open descriptor: the first `bytecnt` raw bytes in byte
+/// mode (`head.c:149-167`), else the first `count` lines through the window.
+fn head_stream(fd: Fd, count: usize, bytecnt: usize) {
+    let input = read_fd(fd);
+    if bytecnt > 0 {
+        support::emit(first_bytes_of(&input, bytecnt));
+        return;
+    }
     let mut window = match HeadWindow::new(count) {
         Ok(window) => window,
         Err(_) => support::terminate(1),
     };
-    let input = read_fd(fd);
     for line in support::lines_of(&input) {
         window.push(line);
     }
@@ -123,6 +138,12 @@ fn head_stream(fd: Fd, count: usize) {
         out.push(b'\n');
         support::emit(&out);
     }
+}
+
+/// The first `bytecnt` bytes of `input`, or all of it when shorter — C's byte
+/// mode `fread`s up to the remaining count per file (`head.c:149-167`).
+fn first_bytes_of(input: &[u8], bytecnt: usize) -> &[u8] {
+    &input[..bytecnt.min(input.len())]
 }
 
 /// Read a descriptor to the end.
@@ -155,4 +176,24 @@ extern "Rust" fn main() -> i32 {
 #[cfg(any(test, not(target_os = "none")))]
 fn main() {
     run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_bytes_of;
+
+    #[test]
+    fn first_bytes_truncates_to_count() {
+        assert_eq!(first_bytes_of(b"abcdef", 3), b"abc");
+    }
+
+    #[test]
+    fn first_bytes_short_input_returns_all() {
+        assert_eq!(first_bytes_of(b"ab", 10), b"ab");
+    }
+
+    #[test]
+    fn first_bytes_of_empty_is_empty() {
+        assert_eq!(first_bytes_of(b"", 5), b"");
+    }
 }
