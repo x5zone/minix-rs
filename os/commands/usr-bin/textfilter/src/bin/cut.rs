@@ -66,7 +66,17 @@ fn run() -> ! {
                 };
             }
             "-s" => suppress = true,
-            _ => operands.push(argv[index].clone()),
+            // `-n`: accepted and ignored for compatibility (`cut.c:112-113`,
+            // `case 'n': break`) — it must not fall through to the operand list.
+            "-n" => {}
+            _ => {
+                // An unrecognised `-X` is C's `case '?'` → `usage()`, not a
+                // file operand (previously any dash token leaked into `files`).
+                if option.starts_with('-') && option.len() > 1 {
+                    usage();
+                }
+                operands.push(argv[index].clone());
+            }
         }
         index += 1;
     }
@@ -75,10 +85,7 @@ fn run() -> ! {
     let list_text = match (bytes_list, fields_list) {
         (Some(list), None) => list,
         (None, Some(list)) => list,
-        _ => {
-            support::emit(b"usage: cut -b list | -c list | -f list [-d delim] [-s]\n");
-            support::terminate(1);
-        }
+        _ => usage(),
     };
     let parsed = match parse_list(&list_text) {
         Ok((ranges, count)) => (ranges, count),
@@ -164,6 +171,13 @@ fn take_value(argv: &[String], index: &mut usize, inline: Option<String>) -> Str
 
 fn conflict() -> ! {
     support::emit(b"cut: only one type of list may be specified\n");
+    support::terminate(1);
+}
+
+/// C `usage()` (`cut.c:290-296`): a missing/extra-ambiguous selection or an
+/// unrecognised option. Exit 1.
+fn usage() -> ! {
+    support::emit(b"usage: cut -b list [-n] | -c list | -f list [-d delim] [-s] [file ...]\n");
     support::terminate(1);
 }
 
