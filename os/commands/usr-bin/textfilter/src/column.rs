@@ -45,6 +45,81 @@ impl Default for ColumnOptions {
     }
 }
 
+/// `column` argv 解析结果：选项 + 文件操数。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnArgs<'a> {
+    pub options: ColumnOptions,
+    pub operands: Vec<&'a str>,
+}
+
+/// `column` 参数解析失败（C `getopt` 的 `?`/default → `usage()`，`column.c:107-109`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnError {
+    /// 表外选项字母、选项缺值、或 `-c` 宽度非正。
+    Usage,
+}
+
+/// 把 `column` 的 argv 尾部按 BSD `getopt("c:s:tx")`（`column.c:93`）拆成 [`ColumnArgs`]。
+/// `t`/`x` 是无值旗标（逐字聚簇，如 `-tx`/`-xt`）；`c`/`s` 带值，值附于字母后
+/// （`-c100`/`-s,`）或取下一项（`-c 100`）。`--` 结束选项扫描（BSD getopt），裸 `-`
+/// 与非连字符项都是文件操数；集外字母/缺值→[`ColumnError::Usage`]。旧薄壳只比整个 token
+/// （`arg == "-t"`），故 C 合法的聚簇 `-tx` 与附值 `-c100`/`-s,` 会静默落进「文件操数」
+/// 分支去 `open("-c100")`——本件把选项与操数正确区分。
+/// 与 C 的一处差异：`-c` 的值 C 走 `atoi`（无守卫，`:96`）；本层要求解析为 `>0` 的
+/// `usize`（否则 usage），避开宽度 0 在列布局里的已知陷阱（防御性，非语义发明）。
+pub fn parse_column_args<'a>(args: &'a [&'a str]) -> Result<ColumnArgs<'a>, ColumnError> {
+    let mut options = ColumnOptions::default();
+    let mut operands: Vec<&'a str> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i];
+        if arg == "--" {
+            operands.extend_from_slice(&args[i + 1..]);
+            break;
+        }
+        let bytes = arg.as_bytes();
+        // 裸 `-`（长度 1）与非连字符项都是文件操数；长度 >1 且以 `-` 开头才是选项串。
+        if bytes.len() < 2 || bytes[0] != b'-' {
+            operands.push(arg);
+            i += 1;
+            continue;
+        }
+        // 逐字符扫描一个选项串（BSD getopt 的聚簇）；取到需值的选项时，值可能是本 token
+        // 的剩余部分（附值），否则是下一个 token。
+        let mut pos = 1usize;
+        while pos < arg.len() {
+            match arg.as_bytes()[pos] {
+                b't' => options.table = true,
+                b'x' => options.fill_rows_first = true,
+                ch @ (b'c' | b's') => {
+                    let rest = &arg[pos + 1..];
+                    let value = if !rest.is_empty() {
+                        rest
+                    } else {
+                        i += 1;
+                        args.get(i).ok_or(ColumnError::Usage)?
+                    };
+                    if ch == b'c' {
+                        let width: usize = value.parse().map_err(|_| ColumnError::Usage)?;
+                        if width == 0 {
+                            return Err(ColumnError::Usage);
+                        }
+                        options.termwidth = width;
+                    } else {
+                        options.separator = value.to_string();
+                    }
+                    pos = arg.len(); // 值已消费（附值或下一项），本选项串结束
+                    break;
+                }
+                _ => return Err(ColumnError::Usage),
+            }
+            pos += 1;
+        }
+        i += 1;
+    }
+    Ok(ColumnArgs { options, operands })
+}
+
 /// Splits one input line into table fields (strtok semantics: leading
 /// and repeated separators collapse, empty fields dropped).
 fn split_fields<'a>(line: &'a str, separator: &str) -> Vec<&'a str> {
@@ -212,10 +287,7 @@ mod tests {
             table: true,
             ..ColumnOptions::default()
         };
-        let entries = vec![
-            "a\tbb\tccc".to_string(),
-            "dddd\te\tff".to_string(),
-        ];
+        let entries = vec!["a\tbb\tccc".to_string(), "dddd\te\tff".to_string()];
         let out = columnate(&entries, &options);
         // Each row: fields padded to the per-column max (4) plus a
         // two-space gap; the trailing gap is trimmed.
@@ -257,5 +329,40 @@ mod tests {
     fn test_entry_collection_strips_leading_blanks_and_skips_blank_lines() {
         let entries = parse_entries(&["   one", "", "  two"]);
         assert_eq!(entries, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn parse_flags_cluster_and_attached_values() {
+        // 关键回归：聚簇与附值不被旧前门当文件操数。
+        let a = parse_column_args(&["-tx", "f"]).unwrap();
+        assert!(a.options.table && a.options.fill_rows_first);
+        assert_eq!(a.operands, vec!["f"]);
+        let b = parse_column_args(&["-c100", "-s,", "f1", "f2"]).unwrap();
+        assert_eq!(b.options.termwidth, 100);
+        assert_eq!(b.options.separator, ",");
+        assert_eq!(b.operands, vec!["f1", "f2"]);
+        // 分离值仍正确。
+        let c = parse_column_args(&["-c", "120", "-t", "f"]).unwrap();
+        assert_eq!(c.options.termwidth, 120);
+        assert!(c.options.table);
+    }
+
+    #[test]
+    fn parse_operand_discrimination_and_usage() {
+        // 裸 `-` 与非 dash 是操数；`--` 后全为操数；集外字母/缺值/非正宽度 → Usage。
+        let a = parse_column_args(&["-", "f2"]).unwrap();
+        assert_eq!(a.operands, vec!["-", "f2"]);
+        let b = parse_column_args(&["-t", "--", "-c", "f"]).unwrap();
+        assert!(b.options.table);
+        assert_eq!(b.operands, vec!["-c", "f"]); // `--` 后的 `-c` 是文件名字串
+        assert_eq!(
+            parse_column_args(&["-z", "f"]).err(),
+            Some(ColumnError::Usage)
+        );
+        assert_eq!(parse_column_args(&["-c"]).err(), Some(ColumnError::Usage)); // 缺值
+        assert_eq!(
+            parse_column_args(&["-c", "0", "f"]).err(),
+            Some(ColumnError::Usage)
+        ); // 宽度 0
     }
 }

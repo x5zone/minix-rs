@@ -11,7 +11,6 @@
 //! comes from `-c` (the C queries the window size, which belongs to the
 //! terminal face).
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -22,40 +21,15 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::column::{columnate, parse_entries, ColumnOptions};
+use minix_textfilter::column::{ColumnError, columnate, parse_column_args, parse_entries};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut options = ColumnOptions::default();
-    let mut operands: Vec<&str> = Vec::new();
-    let mut index = 1;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg == "-t" {
-            options.table = true;
-        } else if arg == "-x" {
-            options.fill_rows_first = true;
-        } else if arg == "-s" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            options.separator = argv[index].clone();
-        } else if arg == "-c" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            match argv[index].parse::<usize>() {
-                // pr.c:1875-1878's style guard: the width must be sane.
-                Ok(width) if width > 0 => options.termwidth = width,
-                _ => usage(),
-            }
-        } else {
-            operands.push(arg);
-        }
-        index += 1;
-    }
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (options, operands) = match parse_column_args(&args[1..]) {
+        Ok(a) => (a.options, a.operands),
+        Err(ColumnError::Usage) => usage(),
+    };
 
     // `column.c:114-123`: no operands reads stdin; otherwise each operand is
     // opened and fed through the same entry pool, and an unopenable operand
@@ -95,7 +69,6 @@ fn usage() -> ! {
     support::warn(b"usage: column [-tx] [-c width] [-s separator]\n");
     support::terminate(1);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
