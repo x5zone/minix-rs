@@ -37,6 +37,7 @@
 | 2026-09-08 Phase 6 | 7 项 | T-1（10/10）、T-6（10 测试）、T-7（5/5）、T-12（5/5 + dispatch_clear 幂等修正）、T-9（3 测试）、T-11（runqueues_ok 集成）、T-5（QEMU CI workflow） |
 | 2026-09-07~08 §22 Phase 1/2 | 12 项 | V12-A1 trap_style（含 MINIX3 BUG 修复）、V12-B1 panic 审计、V12-A2/A3/A4、V12-B2（IoBatchBuf 对齐 UB 修复）、V12-B3（Message 72B 实测）、V12-B4、A1（assume_held + 24 处迁移）、A2（globals.rs）、B1（transfer API）、B-X 第一批、S-2b/S-3a/S-3b/S-3c |
 | 2026-09-09 D1/D2 + Phase 7 | 4 项 | D1/D2（Errno newtype + ToErrno，架构建议清零）、I-14（B 层完成）、I-3（核实闭合） |
+| 2026-10-12 01 篇 CH1-CH2 人审 | 3 项登记 | I-17（§2.6 拆节）/I-18（章头与巨节体检）/I-19（讲解条续扫）；同轮正文修正另见台账 `prompt/WORKFLOW-OPEN-ITEMS.md` 第四节第三轮 |
 | 📌 保持 DEFERRED（依赖仍成立） | — | **I-1**（kernel ELF 构建无引导路径）、**I-5**（ACPI RSDP 无消费方）、**T-10**（U-Boot 工具链，`PD-15` 已裁放弃）、**profiling deferred 体**（等 S-8/S-9）；Edge 表旧 12 项中 SMP 块的 `D-36`/`D-37`/`D-38①`/`D-39` 四条已于 S-4/S-5/S-7 收官时闭合（§23/§24 在案，`2026-10-09` 按代码回勾本行与 §7.1/§10——真正仍开的 SMP 残项是**次级核承载进程**，那是另一件事，不能用"多核未做"盖住四条已完成的账） |
 
 ## 0. 审查基线 — 已确认的良好架构（无需改动）
@@ -185,6 +186,9 @@ I-11（BIOS legacy 范围声明非缺口）、I-12（RAII 拒绝维持，B1 承�
 
 | # | 项 | 状态与解除条件 |
 |---|-----|------|
+| I-17 | 01 篇 §2.6 拆节（`alloc_lowest` 缺陷分析、静态页表池两段独立成 §2.6.3） | ⏳ open（2026-10-12 01 篇人审轮登记）：纯移动不删内容；触发窗口＝下轮 structure 复核或审到 §2.6。现量（2026-10-12 现算）：§2.6 344 行占本章 30%（重跑：`awk '/^### 2\.6 /,/^### 2\.7 /' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md \| wc -l`；同法得 §2 总行 1108） |
+| I-18 | 01 篇 §1、§3–§6 的章头与巨节结构体检 | ⏳ open（同上轮登记）：查两件事——章头是否同样零导语、是否有 ≥300 行的单节。§2 的基线（2026-10-12 现算）：补导语前章头仅 2 行＝无导语；补后全章 1108 行，三节占 68%（2.6 计 344 行、2.4 计 273 行、2.3 计 155 行）；已按建议补章级导语与 2.4/2.6 的"本节结算"句，其余章未动 |
+| I-19 | §3–§6 讲解条目续扫"只报事实不报道理" | ⏳ open（同上轮登记）：判据＝事实陈述后必须回答"为何必须这样、不这样会怎样"，纯细节堆叠（构建改名、符号别名、常量罗列）改为一句话指向 owning 节＋补回道理。§2 已扫 40 条、修 4 条（§2.5/§2.6 三条＋§2.8 拟人句）；§3–§6 约 90 条待过 |
 | I-1 | kernel 独立 ELF 构建接入（build.rs + link.ld → xtask） | ⏸ 诚实 DEFERRED（2026-09-09）：三架构 link.ld 就绪（`os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld`）但 artifact 无引导路径——`KernelLoadResult.entry_point`（`os/boot-shim/src/loader.rs:66`）零消费者，boot-shim→kernel.elf 终局跳转未设计（入口 ABI：e_entry 处接收什么参数/寄存器态无定义）。解除前置：(a) 入口交接 ABI 设计；(b) boot-shim 终局跳转（S-4/S-8 相邻）；(c) bin 目标 + build.rs（先例：hello-boot-riscv64/build.rs）。单独做 (c) = 不可引导 artifact（frame.rs 先例） |
 | I-5 | ACPI RSDP 搜索与表解析 | ⏸ 诚实 DEFERRED（2026-09-09）：三家族 QEMU virt 均不依赖 ACPI（平台发现走 KernelInfo+DTB），内核无 RSDP 消费方；MADT 常量骨架在位（`os/arch/src/acpi.rs`）。解除条件：物理机 x86_64 支持（真实 MADT/HPET 消费方）时实现 RSDP 扫描（EBDA + 0xE0000-0xFFFFF） |
 | I-6 | `bill_ptr` 完整联动 + 真实调度主循环 | ✅ 全条闭合（§23.3 ①②③ 于 `2026-09-15` 落地；旧记"调度循环为 placeholder"过期——`os/kernel/src/lib.rs:fn scheduler_loop` 为真实循环，kmain Phase F 直入（`lib.rs:3909`），`bill_ptr` 联动 `set_bill_to_idle`/`pick_and_bill` 到位；端到端实证 test-smp-aps（四核 idle/pick 多轮）+ test-smp-ipi。核实：`grep -n "fn scheduler_loop" os/kernel/src/lib.rs` |
