@@ -125,6 +125,98 @@ pub fn fold_input(input: &str, options: &FoldOptions) -> Vec<String> {
     out
 }
 
+/// `fold`'s parsed argv tail: the fold options and the file operands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoldArgs<'a> {
+    /// `-w` width (default 80), `-b`, `-s`.
+    pub options: FoldOptions,
+    /// File operands in order.
+    pub operands: Vec<&'a str>,
+}
+
+/// `fold` argument-parsing failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldError {
+    /// An option letter outside `0-9`/`b`/`s`/`w`, or a `-w` with no value
+    /// (C `getopt` default → usage, `fold.c:99`).
+    Usage,
+    /// A `-w`/legacy width that is not a positive integer (C `atoi <= 0` →
+    /// `errx(1, "illegal width value")`, `fold.c:84-86`).
+    IllegalWidth,
+}
+
+/// Split `fold`'s argv tail into [`FoldArgs`], faithful to C's
+/// `getopt(argc, argv, "0123456789bsw:")` (`fold.c:76`): the valueless `-b` and
+/// `-s` cluster in one token (`-bs`, `-bw10`), `-w` takes a value attached
+/// (`-w80`) or as the following argument (`-w 80`), a leading all-digit token is
+/// the obsolete `-N` width form (`fold.c:91-98`), `--` ends option scanning, a
+/// lone `-` is an operand, and any other letter is [`FoldError::Usage`]. A width
+/// that is not a positive integer is [`FoldError::IllegalWidth`] — the old
+/// front door warned and *kept* the default instead of rejecting, diverging from
+/// C's `errx`. The old bin matched only the whole tokens `-b`/`-s`/`-w`, so the
+/// C-legal attached form `fold -w80 file` fell through to a usage error.
+pub fn parse_fold_args<'a>(args: &'a [&'a str]) -> Result<FoldArgs<'a>, FoldError> {
+    let mut options = FoldOptions::new(80);
+    let mut operands: Vec<&'a str> = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index];
+        if arg == "--" {
+            operands.extend_from_slice(&args[index + 1..]);
+            break;
+        }
+        let bytes = arg.as_bytes();
+        if bytes.len() > 1 && bytes[0] == b'-' {
+            if bytes[1].is_ascii_digit() {
+                // Obsolete `-N`: the whole token is the width (`fold.c:91-98`).
+                options.width = parse_width(&arg[1..])?;
+                index += 1;
+                continue;
+            }
+            let mut pos = 1;
+            while pos < bytes.len() {
+                match bytes[pos] {
+                    b'b' => {
+                        options.count_bytes = true;
+                        pos += 1;
+                    }
+                    b's' => {
+                        options.split_words = true;
+                        pos += 1;
+                    }
+                    b'w' => {
+                        let spec = if pos + 1 < bytes.len() {
+                            &arg[pos + 1..]
+                        } else {
+                            index += 1;
+                            if index >= args.len() {
+                                return Err(FoldError::Usage);
+                            }
+                            args[index]
+                        };
+                        options.width = parse_width(spec)?;
+                        pos = bytes.len();
+                    }
+                    _ => return Err(FoldError::Usage),
+                }
+            }
+        } else {
+            operands.push(arg);
+        }
+        index += 1;
+    }
+    Ok(FoldArgs { options, operands })
+}
+
+/// A width is a positive integer; `0`, a non-integer, or overflow is rejected
+/// exactly as C's `atoi(optarg) <= 0` guard (`fold.c:84-86`).
+fn parse_width(spec: &str) -> Result<usize, FoldError> {
+    match spec.parse::<usize>() {
+        Ok(width) if width > 0 => Ok(width),
+        _ => Err(FoldError::IllegalWidth),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,7 +239,10 @@ mod tests {
     #[test]
     fn test_no_space_breaks_hard() {
         let options = FoldOptions::new(4);
-        assert_eq!(fold_input("abcdefghij\n", &options), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(
+            fold_input("abcdefghij\n", &options),
+            vec!["abcd", "efgh", "ij"]
+        );
     }
 
     #[test]
@@ -186,5 +281,61 @@ mod tests {
     #[test]
     fn test_empty_input_yields_nothing() {
         assert!(fold_input("", &FoldOptions::new(80)).is_empty());
+    }
+
+    #[test]
+    fn test_parse_fold_default_and_separate_width() {
+        use alloc::vec;
+        // No options → width 80 default, one operand.
+        assert_eq!(
+            parse_fold_args(&["f"]),
+            Ok(FoldArgs {
+                options: FoldOptions::new(80),
+                operands: vec!["f"]
+            })
+        );
+        // `-w 20` value as the next token.
+        assert_eq!(
+            parse_fold_args(&["-w", "20", "f"]).map(|a| a.options.width),
+            Ok(20)
+        );
+        // The regression: attached `-w20` is accepted (was a usage error).
+        assert_eq!(
+            parse_fold_args(&["-w20", "f"]).map(|a| (a.options.width, a.operands)),
+            Ok((20, vec!["f"]))
+        );
+        // Obsolete leading all-digit `-40` sets the width.
+        assert_eq!(
+            parse_fold_args(&["-40", "f"]).map(|a| a.options.width),
+            Ok(40)
+        );
+    }
+
+    #[test]
+    fn test_parse_fold_cluster_and_errors() {
+        // `-b` and `-s` cluster; `-bw30` clusters `-b` then attached `-w30`.
+        assert_eq!(
+            parse_fold_args(&["-bs"]).map(|a| (a.options.count_bytes, a.options.split_words)),
+            Ok((true, true))
+        );
+        assert_eq!(
+            parse_fold_args(&["-bw30"]).map(|a| (a.options.count_bytes, a.options.width)),
+            Ok((true, 30))
+        );
+        // `--` ends options; a lone `-` is an operand.
+        assert_eq!(
+            parse_fold_args(&["--", "-w"]).map(|a| a.operands),
+            Ok(vec!["-w"])
+        );
+        assert_eq!(parse_fold_args(&["-"]).map(|a| a.operands), Ok(vec!["-"]));
+        // Unknown letter → usage; `-w` with no value → usage.
+        assert_eq!(parse_fold_args(&["-z", "f"]), Err(FoldError::Usage));
+        assert_eq!(parse_fold_args(&["-w"]), Err(FoldError::Usage));
+        // A non-positive / non-integer width → IllegalWidth (C errx).
+        assert_eq!(parse_fold_args(&["-w", "0"]), Err(FoldError::IllegalWidth));
+        assert_eq!(
+            parse_fold_args(&["-w", "abc"]),
+            Err(FoldError::IllegalWidth)
+        );
     }
 }
