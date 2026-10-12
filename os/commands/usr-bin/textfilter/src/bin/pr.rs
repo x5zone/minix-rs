@@ -9,11 +9,12 @@
 //! independently with its name as the header title, and `-h` overrides that
 //! title for every file (`pr.c:224-233`, `nxtfile` `pr.c:1318-1376`). The time
 //! field of the header line is not rendered here (the C uses the current date,
-//! or each file's mtime; `pr.h:63`). The multi-column forms (`-column`, `-a`,
-//! `-m`), double spacing (`-d`), page offsets (`-o`), the formfeed (`-F`), and
-//! the starting page (`+first`) are later batches. An unopenable operand warns
+//! or each file's mtime; `pr.h:63`). Vertical multi-column output (`-N`, with
+//! `-w` width and `-s` separator) is modelled via the library's `vertcol` face;
+//! across-fill (`-a`), merge (`-m`), double spacing (`-d`), page offsets (`-o`),
+//! the formfeed (`-F`), and the starting page (`+first`) are later batches. An
+//! unopenable operand warns
 //! and is skipped with a nonzero exit (`strerror` suffix not reproduced).
-
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -25,14 +26,18 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::pr::{PrOptions, paginate_files};
 use minix_sys::read;
+use minix_textfilter::pr::{column_width, paginate_files, PrOptions};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let mut options = PrOptions::default();
     let mut title_override: Option<String> = None;
     let mut operands: Vec<String> = Vec::new();
+    // `-w` and `-s` interact: the default page width is 512 under `-s` else 72
+    // (`setup` `pr.c:1834-1839`), applied after the scan when `-w` was absent.
+    let mut wflag = false;
+    let mut sflag = false;
     let mut index = 1;
     while index < argv.len() {
         let arg = argv[index].as_str();
@@ -54,12 +59,39 @@ fn run() -> ! {
                 Ok(length) if length > 10 => options.page_len = length,
                 _ => usage(),
             }
+        } else if arg.len() > 1 && arg[1..].bytes().all(|b| b.is_ascii_digit()) {
+            // `-N`: vertical column count, N >= 1 (`pr.c:1665-1668`).
+            match arg[1..].parse::<usize>() {
+                Ok(n) if n >= 1 => options.columns = n,
+                _ => usage(),
+            }
+        } else if arg == "-w" {
+            index += 1;
+            if index >= argv.len() {
+                usage();
+            }
+            match argv[index].parse::<usize>() {
+                Ok(w) if w >= 1 => {
+                    options.page_width = w;
+                    wflag = true;
+                }
+                _ => usage(),
+            }
+        } else if arg == "-s" || (arg.starts_with("-s") && arg.len() > 2) {
+            // `-s[C]`: one separator byte, tab by default (`pr.c:1778-1783`).
+            sflag = true;
+            options.sep = Some(if arg.len() > 2 {
+                arg.as_bytes()[2]
+            } else {
+                b'\t'
+            });
         } else if arg.starts_with('+') {
-            // `+first_page` and multi-column forms are later batches.
-            support::warn(b"pr: +page and -column forms are not modelled yet\n");
+            // `+first_page` (start at a page) is a later batch; `-N` columns
+            // are handled above.
+            support::warn(b"pr: +page is not modelled yet\n");
             support::terminate(2);
         } else if arg.len() > 1 && arg.starts_with('-') {
-            // An option letter we do not model (`-d`, `-a`, `-m`, `-column`).
+            // An option letter we do not model (`-d`, `-a`, `-m`, `-o`, `-F`).
             support::warn(b"pr: option form not modelled yet\n");
             support::terminate(2);
         } else {
@@ -67,6 +99,23 @@ fn run() -> ! {
             operands.push(String::from(arg));
         }
         index += 1;
+    }
+
+    // Default page width when `-w` was absent: 512 under `-s`, else 72
+    // (`setup` `pr.c:1834-1839`). Then reject an over-narrow page the way C
+    // does before laying out (`pr.c:1863-1867`).
+    if !wflag && sflag {
+        options.page_width = 512;
+    }
+    if options.columns > 1 && column_width(options.page_width, options.columns).is_none() {
+        support::warn(
+            format!(
+                "pr: page width is too small for {} columns\n",
+                options.columns
+            )
+            .as_bytes(),
+        );
+        usage();
     }
 
     // Read each operand into a logical file (name, lines). No operands means
@@ -130,10 +179,9 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 }
 
 fn usage() -> ! {
-    support::warn(b"usage: pr [-t] [-h header] [-l lines]\n");
+    support::warn(b"usage: pr [-t] [-h header] [-l lines] [-columns] [-w width] [-s[C]]\n");
     support::terminate(2);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
