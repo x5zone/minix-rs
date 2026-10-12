@@ -95,10 +95,16 @@ impl ReferenceStat for SysProbe {
 }
 
 impl WalkProbe for SysProbe {
-    /// `FTSENT::fts_statp` 的来源：物理遍历下不跟随符号链，故用 `lstat`（`main.c:88`）。
-    fn entry_stat(&self, path: &str) -> Option<StatBits> {
+    /// `FTSENT::fts_statp` 的本体位：链本身（不跟随），供物理形与断链判定。
+    fn lstat_of(&self, path: &str) -> Option<StatBits> {
         let mut sb = zeroed();
         lstat(path, &mut sb).ok().map(|()| Self::bits(&sb))
+    }
+
+    /// 逻辑形（`-L`）与命令行跟随（`-H` 对起始路径）取目标位：`stat` 自然跟随符号链。
+    fn stat_of(&self, path: &str) -> Option<StatBits> {
+        let mut sb = zeroed();
+        stat_follows(path, &mut sb).ok().map(|()| Self::bits(&sb))
     }
 
     /// `readdir` 一次读完一个目次的全部条目（含 `.`/`..`，剔除 `d_ino == 0` 的空槽，

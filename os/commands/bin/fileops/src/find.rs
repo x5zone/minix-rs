@@ -1746,12 +1746,33 @@ pub struct StatBits {
 
 /// 走表腿向系统层要的两件事（并继承 `-newer` 的 `ReferenceStat`）。遍历核心只经它取数，
 /// 故在宿主可用合成树逐分支测；薄壳用 `minix_sys` 的 `lstat`/`getdents`/`stat` 实现同一份口。
+///
+/// 两个 `stat` 口的分工照 `fts_stat`（`minix3/lib/libc/gen/fts.c:921-968`）：物理遍历只对
+/// 链本身取 `lstat_of`；逻辑（`-L`）或命令行跟随（`-H` 对起始路径）先取 `stat_of`（跟随链），
+/// `stat_of` 失败再退回 `lstat_of` 判断链（`FTS_SLNONE`）。
 pub trait WalkProbe: ReferenceStat {
-    /// 路径的 `lstat` 位。取不到 = C 的 `FTS_NS`，交回 `None`。物理遍历（`main.c:88` 默认
-    /// `FTS_PHYSICAL`）不跟随符号链，故此口必须是 `lstat` 而非 `stat`。
-    fn entry_stat(&self, path: &str) -> Option<StatBits>;
+    /// 链本身的 `lstat` 位（不跟随符号链）。取不到 = C 的 `FTS_NS`，交回 `None`。
+    fn lstat_of(&self, path: &str) -> Option<StatBits>;
+    /// 目标路径的 `stat` 位（跟随符号链）。取不到 = 断链或不存在，交回 `None`；仅在逻辑/跟随时被调。
+    fn stat_of(&self, path: &str) -> Option<StatBits>;
     /// 目次里的条目名（C 的 `readdir`，可含 `.`/`..`）。打不开 = C 的 `FTS_DNR`，交回 `None`。
+    /// 逻辑形下对一个符号链到目次的项，`open` 会跟随链读到目标目次，故本口应返回目标的子项。
     fn dir_children(&self, path: &str) -> Option<Vec<String>>;
+}
+
+/// `fts_stat` 对一个路径的判定位（`fts.c:921-968` 的返回码族）。走表腿据此决定求值与下探。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FtsKind {
+    /// 目标是一个可下探的目次（`FTS_D`）。
+    Dir,
+    /// 目标目次与某祖先同 `(dev,ino)`，成环（`FTS_DC`）——求值但不下探。
+    Cycle,
+    /// 非目次的普通项（`FTS_F`/`FTS_SL`/`FTS_DEFAULT`）——求值不下探。
+    NotDir,
+    /// 逻辑形下符号链的目标不存在（`FTS_SLNONE`）——按链自身属性求值，不下探。
+    BrokenLink,
+    /// `stat`/`lstat` 皆失败（`FTS_NS`）——报 warn、记错、跳过。
+    Failed,
 }
 
 /// 一次走表的产出：待写出的行（含各自的换行/NUL）、告警文本、退出码贡献。
@@ -1787,12 +1808,17 @@ pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> 
         sorted: parsed.sorted,
         xdev: parsed.walk.has(fts::XDEV),
         xargs_safe_only: parsed.xargs_safe_only,
+        // `-L` 走逻辑形（所有项都跟随）；`-H` 只对起始路径跟随（`fts.c:171` 对根传
+        // `ISSET(FTS_COMFOLLOW)`，子项 `fts_build` 传 follow=0），故 comfollow 只影响 visit_start。
+        logical: parsed.walk.has(fts::LOGICAL),
+        comfollow: parsed.walk.has(fts::COMFOLLOW),
     };
     let mut w = Walk {
         probe,
         world,
         cfg,
         root_dev: 0,
+        ancestors: Vec::new(),
         out: WalkResult::default(),
     };
     let ctx = Ctx {
@@ -1817,6 +1843,8 @@ struct WalkCfg {
     sorted: bool,
     xdev: bool,
     xargs_safe_only: bool,
+    logical: bool,
+    comfollow: bool,
 }
 
 /// 递归全程不变的一组入参：已成形（含隐式 `-print`）的表达式与 `divsize` 旗标。
@@ -1833,26 +1861,76 @@ struct Walk<'p> {
     cfg: WalkCfg,
     /// 起始路径所在设备，`-x` 用它比较（每颗起始路径各定一个）。
     root_dev: u64,
+    /// 当前正在下探的目录链的 `(dev,ino)`，供逻辑形的 `FTS_DC` 成环检测比对（`fts.c:955-961`）。
+    /// 物理形不跟随链、真目次 inode 唯一，不会成环，故木栈仅在 `logical` 下读写。
+    ancestors: Vec<(u64, u64)>,
     out: WalkResult,
 }
 
 impl Walk<'_> {
     /// 起始路径：`fts_read` 对根返回 `fts_level == 1`，名取末段（`.` 原样保留）。
+    /// 起始路径的跟随位 = `ISSET(FTS_LOGICAL) || ISSET(FTS_COMFOLLOW)`（`fts.c:171`）。
     fn visit_start(&mut self, path: &str, ctx: Ctx<'_>) {
         let name = base_name(path);
-        match self.probe.entry_stat(path) {
-            None => {
+        let follow = self.cfg.logical || self.cfg.comfollow;
+        let (kind, st) = self.classify(path, follow);
+        match kind {
+            FtsKind::Failed => {
                 self.out.warnings.push(format!("{path}: stat failed"));
                 self.out.rval = 1;
             }
-            Some(st) => {
+            _ => {
                 self.root_dev = st.dev;
-                if st.mode & crate::cp::S_IFMT == crate::cp::S_IFDIR {
-                    self.visit_dir(path, name, 1, st, ctx);
-                } else {
-                    self.eval_entry(path, name, 1, st, None, ctx);
-                }
+                self.dispatch(kind, st, path, name, 1, ctx);
             }
+        }
+    }
+
+    /// 把一个已分类项按 `find_execute` 的 `switch (fts_info)` 走向（`find.c:216-235`）：
+    /// 目录走 `visit_dir`；成环/断链/非目次都落进默认分支单点求值、不下探。
+    fn dispatch(
+        &mut self,
+        kind: FtsKind,
+        st: StatBits,
+        path: &str,
+        name: &str,
+        level: usize,
+        ctx: Ctx<'_>,
+    ) {
+        match kind {
+            FtsKind::Dir => self.visit_dir(path, name, level, st, ctx),
+            _ => {
+                self.eval_entry(path, name, level, st, None, ctx);
+            }
+        }
+    }
+
+    /// 对一个路径定位（`fts_stat`，`fts.c:921-968`）。`follow` 时先取 `stat_of`（跟随）；
+    /// 它失败再 `lstat_of`：成功是断链（`FTS_SLNONE`），也失败是 `FTS_NS`。非 `follow` 只取
+    /// `lstat_of`。若目标为目次，只在逻辑形下比对祖先 `(dev,ino)` 查成环（`FTS_DC`）——
+    /// 物理形不跟随链、真目次 inode 唯一，不会成环，故门控在 `logical`（也避开合成树全 0 inode 的假阳性）。
+    fn classify(&self, path: &str, follow: bool) -> (FtsKind, StatBits) {
+        let bits = if follow {
+            match self.probe.stat_of(path) {
+                Some(b) => b,
+                None => match self.probe.lstat_of(path) {
+                    Some(b) => return (FtsKind::BrokenLink, b),
+                    None => return (FtsKind::Failed, StatBits::default()),
+                },
+            }
+        } else {
+            match self.probe.lstat_of(path) {
+                Some(b) => b,
+                None => return (FtsKind::Failed, StatBits::default()),
+            }
+        };
+        if bits.mode & crate::cp::S_IFMT == crate::cp::S_IFDIR {
+            if self.cfg.logical && self.ancestors.iter().any(|a| *a == (bits.dev, bits.ino)) {
+                return (FtsKind::Cycle, bits);
+            }
+            (FtsKind::Dir, bits)
+        } else {
+            (FtsKind::NotDir, bits)
         }
     }
 
@@ -1874,20 +1952,32 @@ impl Walk<'_> {
         if self.cfg.depth {
             // 后序：先下探（`FTS_D` 被 `find.c:218-220` 的 `isdepth` 挡掉），再求值目录自身。
             if can_recurse {
-                self.descend(path, &children, level, ctx);
+                self.enter(path, &children, level, st, ctx);
             }
             self.eval_entry(path, name, level, st, Some(&children), ctx);
         } else {
             // 预序：先求值目录自身，命中 `-prune` 或 `-x` 越界则不下探。
             let pruned = self.eval_entry(path, name, level, st, Some(&children), ctx);
             if !pruned && can_recurse {
-                self.descend(path, &children, level, ctx);
+                self.enter(path, &children, level, st, ctx);
             }
         }
     }
 
+    /// 真正下探：逻辑形下把本目录压入祖先栈再走子项，返回时弹出（供成环检测）；物理形直接下探。
+    fn enter(&mut self, path: &str, children: &[String], level: usize, st: StatBits, ctx: Ctx<'_>) {
+        if self.cfg.logical {
+            self.ancestors.push((st.dev, st.ino));
+            self.descend(path, children, level, ctx);
+            self.ancestors.pop();
+        } else {
+            self.descend(path, children, level, ctx);
+        }
+    }
+
     /// 下探一个目录的子项。跳过 `.`/`..`（`dents::is_descendable`），`-s` 时按名排序；
-    /// 子项 `lstat` 取不到 = `FTS_NS`（报 warn、rval、continue）。
+    /// 子项按逻辑位 `follow` 定位（`fts_build` 传 `follow=0`，靠 `FTS_LOGICAL` 旗标本身决定是否跟随）。
+    /// 定位失败 = `FTS_NS`（报 warn、rval、continue）。
     fn descend(&mut self, dir: &str, children: &[String], level: usize, ctx: Ctx<'_>) {
         let mut names: Vec<&str> = children
             .iter()
@@ -1899,19 +1989,14 @@ impl Walk<'_> {
         }
         for name in names {
             let child = fts_join(dir, name);
-            match self.probe.entry_stat(&child) {
-                None => {
+            let (kind, st) = self.classify(&child, self.cfg.logical);
+            match kind {
+                FtsKind::Failed => {
                     self.out.warnings.push(format!("{child}: stat failed"));
                     self.out.rval = 1;
                     continue;
                 }
-                Some(st) => {
-                    if st.mode & crate::cp::S_IFMT == crate::cp::S_IFDIR {
-                        self.visit_dir(&child, name, level + 1, st, ctx);
-                    } else {
-                        self.eval_entry(&child, name, level + 1, st, None, ctx);
-                    }
-                }
+                _ => self.dispatch(kind, st, &child, name, level + 1, ctx),
             }
         }
     }
@@ -2162,27 +2247,41 @@ mod walk_tests {
 
     struct FakeFs {
         dirs: BTreeMap<String, Vec<String>>,
-        files: BTreeMap<String, StatBits>,
+        /// `lstat` 结果（链本身的位）。
+        lstats: BTreeMap<String, StatBits>,
+        /// 符号链→目标（单跳）；`stat_of`/`dir_children` 据此解析。
+        symlinks: BTreeMap<String, String>,
         /// 打不开的目次（C 的 `FTS_DNR`）。
         unreadable: BTreeSet<String>,
         /// `lstat` 取不到的路径（C 的 `FTS_NS`）。
         unstatable: BTreeSet<String>,
+        /// 自增 ino 分配器：让每个登记项有唯一 `(dev,ino)`，避免逻辑形成环检测的假阳性。
+        next_ino: u64,
     }
 
     impl FakeFs {
         fn new() -> FakeFs {
             FakeFs {
                 dirs: BTreeMap::new(),
-                files: BTreeMap::new(),
+                lstats: BTreeMap::new(),
+                symlinks: BTreeMap::new(),
                 unreadable: BTreeSet::new(),
                 unstatable: BTreeSet::new(),
+                next_ino: 1,
             }
         }
+        fn fresh_ino(&mut self) -> u64 {
+            let n = self.next_ino;
+            self.next_ino += 1;
+            n
+        }
         fn dir(&mut self, path: &str, dev: u64, children: &[&str]) -> &mut FakeFs {
-            self.files.insert(
+            let ino = self.fresh_ino();
+            self.lstats.insert(
                 String::from(path),
                 StatBits {
                     mode: S_IFDIR | 0o755,
+                    ino,
                     dev,
                     nlink: 2,
                     ..Default::default()
@@ -2195,10 +2294,12 @@ mod walk_tests {
             self
         }
         fn file(&mut self, path: &str, dev: u64) -> &mut FakeFs {
-            self.files.insert(
+            let ino = self.fresh_ino();
+            self.lstats.insert(
                 String::from(path),
                 StatBits {
                     mode: S_IFREG | 0o644,
+                    ino,
                     dev,
                     size: 0,
                     ..Default::default()
@@ -2206,15 +2307,25 @@ mod walk_tests {
             );
             self
         }
+        /// 一个普通符号链（无目标，仅物理形下不被下探）。
         fn link(&mut self, path: &str, dev: u64) -> &mut FakeFs {
-            self.files.insert(
+            let ino = self.fresh_ino();
+            self.lstats.insert(
                 String::from(path),
                 StatBits {
                     mode: S_IFLNK | 0o777,
+                    ino,
                     dev,
                     ..Default::default()
                 },
             );
+            self
+        }
+        /// 符号链 `path` → `target`（供逻辑形解析）。
+        fn symlink_to(&mut self, path: &str, target: &str, dev: u64) -> &mut FakeFs {
+            self.link(path, dev);
+            self.symlinks
+                .insert(String::from(path), String::from(target));
             self
         }
     }
@@ -2226,18 +2337,34 @@ mod walk_tests {
     }
 
     impl WalkProbe for FakeFs {
-        fn entry_stat(&self, path: &str) -> Option<StatBits> {
+        fn lstat_of(&self, path: &str) -> Option<StatBits> {
             if self.unstatable.contains(path) {
                 None
             } else {
-                self.files.get(path).copied()
+                self.lstats.get(path).copied()
+            }
+        }
+        fn stat_of(&self, path: &str) -> Option<StatBits> {
+            if self.unstatable.contains(path) {
+                return None;
+            }
+            // 单跳跟随：链解析到目标的 `lstat` 位（真实 stat 会多跳，测试树不依赖）。
+            match self.symlinks.get(path) {
+                Some(target) => self.lstats.get(target).copied(),
+                None => self.lstats.get(path).copied(),
             }
         }
         fn dir_children(&self, path: &str) -> Option<Vec<String>> {
             if self.unreadable.contains(path) {
-                None
-            } else {
-                self.dirs.get(path).cloned()
+                return None;
+            }
+            if let Some(c) = self.dirs.get(path) {
+                return Some(c.clone());
+            }
+            // 逻辑形下 open(链) 会跟随到目标目次。
+            match self.symlinks.get(path) {
+                Some(target) => self.dirs.get(target).cloned(),
+                None => None,
             }
         }
     }
@@ -2348,7 +2475,7 @@ mod walk_tests {
         // 幻影子项：若物理遍历错把符号链当目录下探，它就会冒出来。
         fs.dir("./link", 1, &["deep"]);
         fs.file("./link/deep", 1);
-        // 最后登记链本身的 `lstat` 位（`FakeFs.files` 同键后写覆前写），使 `./link`
+        // 最后登记链本身的 `lstat` 位（`FakeFs.lstats` 同键后写覆前写），使 `./link`
         // 的型是 S_IFLNK——即便它作为目次有子项也不应被下探。
         fs.link("./link", 1);
         let got = run(&["."], &fs);
@@ -2361,5 +2488,65 @@ mod walk_tests {
         // 但 -type d 为假时短路，print 不跑）。
         let got = run(&[".", "-type", "d"], &tree());
         assert_eq!(got.emitted, vec![".\n", "./sub\n"]);
+    }
+
+    #[test]
+    fn logical_follows_symlink_to_dir_and_descends() {
+        let mut fs = FakeFs::new();
+        fs.dir(".", 1, &["sub", "lnk"]);
+        fs.dir("./sub", 1, &["f"]);
+        fs.file("./sub/f", 1);
+        // ./lnk 是指向 ./sub 的符号链；逻辑形下 open 到目标，子项走 ./lnk/f。
+        fs.file("./lnk/f", 1);
+        fs.symlink_to("./lnk", "./sub", 1);
+        let logical = run(&["-L", "."], &fs);
+        assert!(logical.emitted.iter().any(|e| e == "./lnk\n"));
+        assert!(logical.emitted.iter().any(|e| e == "./lnk/f\n"));
+        // 物理形（默认）不跟随：lnk 作为链本体吐一行，子项不出现。
+        let physical = run(&["."], &fs);
+        assert!(physical.emitted.iter().any(|e| e == "./lnk\n"));
+        assert!(!physical.emitted.iter().any(|e| e.contains("./lnk/f")));
+    }
+
+    #[test]
+    fn logical_detects_cycle_and_terminates() {
+        let mut fs = FakeFs::new();
+        fs.dir(".", 1, &["sub"]);
+        fs.dir("./sub", 1, &["back"]);
+        // ./sub/back -> . 形成环：逻辑形应识别为 FTS_DC，求值但不无限下探。
+        fs.symlink_to("./sub/back", ".", 1);
+        let got = run(&["-L", "."], &fs);
+        // back 自身被求值一次（FTS_DC 落入 find.c 默认分支），但不下探——故不会出现更深的环路径。
+        assert!(got.emitted.iter().any(|e| e == "./sub/back\n"));
+        assert!(!got.emitted.iter().any(|e| e.contains("./sub/back/sub")));
+        assert_eq!(
+            got.emitted.iter().filter(|e| **e == "./sub/back\n").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn logical_broken_symlink_is_evaluated_as_a_leaf() {
+        let mut fs = FakeFs::new();
+        fs.dir(".", 1, &["bad"]);
+        fs.symlink_to("./bad", "./gone", 1); // 目标不存在
+        let got = run(&["-L", "."], &fs);
+        // FTS_SLNONE：stat 失败、lstat 成功 → 按链自身求值（吐一行），不下探、不报 NS。
+        assert_eq!(got.emitted, vec![".\n", "./bad\n"]);
+        assert_eq!(got.rval, 0);
+        assert!(got.warnings.is_empty());
+    }
+
+    #[test]
+    fn comfollow_follows_only_the_start_path() {
+        // `-H`：起始路径若是符号链到目次则跟随（`fts.c:171`），但子项按物理形（不跟随）。
+        let mut fs = FakeFs::new();
+        fs.dir("./real", 1, &["x"]);
+        fs.file("./entry/x", 1);
+        fs.symlink_to("./entry", "./real", 1);
+        let got = run(&["-H", "./entry"], &fs);
+        // 起始 ./entry 被跟随成目次 → 下探 → ./entry/x 出现。
+        assert!(got.emitted.iter().any(|e| e == "./entry\n"));
+        assert!(got.emitted.iter().any(|e| e == "./entry/x\n"));
     }
 }
