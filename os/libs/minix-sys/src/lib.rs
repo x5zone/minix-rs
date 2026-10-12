@@ -936,6 +936,21 @@ pub fn sethostname(name: &[u8]) -> Result<(), Errno> {
     sysctl::sethostname_via(&ipc::DirectTrapTransport, name)
 }
 
+/// Reads the current NIS/YP domain name into `buffer`, refreshing
+/// `written` with the service's answer (NetBSD `gen/getdomainname.c`,
+/// the `{CTL_KERN, KERN_DOMAINNAME}` sysctl walk).
+pub fn getdomainname(buffer: &mut [u8], written: &mut usize) -> Result<(), Errno> {
+    sysctl::getdomainname_via(&ipc::DirectTrapTransport, buffer, written)
+}
+
+/// Publishes a new NIS/YP domain name (NetBSD `gen/setdomainname.c`, the
+/// write arm of the same `{CTL_KERN, KERN_DOMAINNAME}` walk). Same size
+/// discipline as [`sethostname`] — `EINVAL` past the node's declared
+/// width, not `ENAMETOOLONG`.
+pub fn setdomainname(name: &[u8]) -> Result<(), Errno> {
+    sysctl::setdomainname_via(&ipc::DirectTrapTransport, name)
+}
+
 /// The `who` selectors and the report types of the `times` face (C
 /// `sys/resource.h:56-57` and `sys/sys/times.h:49-54`).
 pub use time::{RUSAGE_CHILDREN, RUSAGE_SELF, Rusage, Tms};

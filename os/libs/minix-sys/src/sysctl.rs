@@ -47,15 +47,18 @@ use minix_types::{
     SYSCTL_NAMELEN, SYSCTL_TYPEMASK, SysctlNode,
 };
 
-/// Numeric mib paths for the two `kern` sysctl leaves this crate's thin
+/// Numeric mib paths for the `kern` sysctl leaves this crate's thin
 /// wrappers use.
 ///
 /// C init composes `{CTL_KERN, KERN_SECURELVL}` at the call sites
-/// (`minix3/sbin/init/init.c:554-556`, `:607-608`); `gethostname` and
-/// `sethostname` compose `{CTL_KERN, KERN_HOSTNAME}` (`gen/gethostname.c:61-62`,
-/// `gen/sethostname.c:60-61`). The triples travel under these names so
-/// callers never hard-code the numbers.
-pub use minix_types::{CTL_KERN, KERN_HOSTNAME, KERN_SECURELVL};
+/// (`minix3/sbin/init/init.c:554-556`, `:607-608`); `gethostname` /
+/// `sethostname` compose `{CTL_KERN, KERN_HOSTNAME}`
+/// (`gen/gethostname.c:61-62`, `gen/sethostname.c:60-61`); the
+/// `getdomainname` / `setdomainname` pair composes
+/// `{CTL_KERN, KERN_DOMAINNAME}` (NetBSD `gen/getdomainname.c:57-58`,
+/// `gen/setdomainname.c:56-57`). The triples travel under these names
+/// so callers never hard-code the numbers.
+pub use minix_types::{CTL_KERN, KERN_DOMAINNAME, KERN_HOSTNAME, KERN_SECURELVL};
 
 /// Hostname buffer bound — C `MAXHOSTNAMELEN` (`sys/sys/param.h:124`,
 /// NetBSD value `256`). `bin/hostname/hostname.c:60` sizes its caller-
@@ -259,6 +262,44 @@ pub fn gethostname_via<T: IpcTransport>(
 /// over-long answer is `EINVAL`, matching C exactly.
 pub fn sethostname_via<T: IpcTransport>(transport: &T, name: &[u8]) -> Result<(), Errno> {
     let mib = [CTL_KERN, KERN_HOSTNAME];
+    sysctl_via(transport, &mib, None, Some(name))
+}
+
+/// Reads the current NIS/Yellow-Pages domain name over an explicit
+/// transport — the domain arm of the same `{CTL_KERN, …}` walk C uses
+/// (`gen/getdomainname.c`), a two-component sysctl call with the
+/// caller's sink as `oldp`.
+///
+/// `bin/domainname/domainname.c:60` sizes the caller's buffer at
+/// `char domainname[MAXHOSTNAMELEN]` (no `+ 1` — unlike `hostname`,
+/// `domainname.c` never post-clamps a trailing byte), so callers pass
+/// a slice up to [`MAX_HOSTNAME_LEN`] bytes and print the NUL-
+/// terminated result verbatim. The sysctl length-refresh quirk on both
+/// success and service-replied failure (`__sysctl.c:29-38`) is
+/// inherited through [`sysctl_via`].
+pub fn getdomainname_via<T: IpcTransport>(
+    transport: &T,
+    buffer: &mut [u8],
+    written: &mut usize,
+) -> Result<(), Errno> {
+    let mib = [CTL_KERN, KERN_DOMAINNAME];
+    let sink = SysctlOld {
+        buffer,
+        length: written,
+    };
+    sysctl_via(transport, &mib, Some(sink), None)
+}
+
+/// Publishes a new NIS/YP domain name over an explicit transport — C
+/// `gen/setdomainname.c`, whose whole body is the same two-component
+/// sysctl call with the caller's bytes as `newp`.
+///
+/// The service owns the size check (`write_size_ok` + `readwrite_exec`,
+/// matching C `mib_write` tree.c:1203-1204's `newlen > node_size →
+/// EINVAL`) and the terminator append (tree.c:1286-1287); the answer
+/// on an over-long name is `EINVAL`, not `ENAMETOOLONG`.
+pub fn setdomainname_via<T: IpcTransport>(transport: &T, name: &[u8]) -> Result<(), Errno> {
+    let mib = [CTL_KERN, KERN_DOMAINNAME];
     sysctl_via(transport, &mib, None, Some(name))
 }
 
@@ -797,6 +838,56 @@ mod tests {
         assert_eq!(wire.oldlen, 0);
     }
 
+    /// `getdomainname_via` mirrors `gethostname_via` shape but over
+    /// `{CTL_KERN, KERN_DOMAINNAME}`; the caller's sink capacity is
+    /// `MAX_HOSTNAME_LEN` (C `domainname.c:60` uses
+    /// `char domainname[MAXHOSTNAMELEN]`, no `+ 1`).
+    #[test]
+    fn test_getdomainname_wire_carries_kern_domainname_mib_and_refreshes_length() {
+        let mut transport = CannedTransport::new();
+        let mut reply = cleared_message();
+        // SAFETY(test): 服务端答 5 = "local\0"（本例 5 字节包含
+        // 尾部终止符）。
+        unsafe { &mut reply.m_u.m_mib_lc_sysctl }.oldlen = 5;
+        transport.reply_sendrec(Ok(reply));
+        let mut buffer = [0u8; MAX_HOSTNAME_LEN];
+        let mut written = 0usize;
+        getdomainname_via(&transport, &mut buffer, &mut written).unwrap();
+        assert_eq!(written, 5);
+        let (destination, sent) = transport.sent.borrow()[0];
+        assert_eq!(destination, mib_endpoint());
+        assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
+        // SAFETY(test): name 内联两元组 = [CTL_KERN, KERN_DOMAINNAME]。
+        let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
+        assert_eq!(wire.namelen, 2);
+        assert_eq!(&wire.name[..2], &[CTL_KERN, KERN_DOMAINNAME]);
+        assert_eq!(wire.namep, 0);
+        assert_ne!(wire.oldp, 0);
+        assert_eq!(wire.oldlen, MAX_HOSTNAME_LEN as u64);
+        assert_eq!(wire.newp, 0);
+        assert_eq!(wire.newlen, 0);
+    }
+
+    /// `setdomainname_via` mirrors `sethostname_via` write shape with
+    /// the domain mib leaf.
+    #[test]
+    fn test_setdomainname_wire_carries_kern_domainname_mib_and_new_bytes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(cleared_message()));
+        setdomainname_via(&transport, b"local\0").unwrap();
+        let (destination, sent) = transport.sent.borrow()[0];
+        assert_eq!(destination, mib_endpoint());
+        assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
+        // SAFETY(test): new lanes 承载、old lanes 恒零、mib 为 domain。
+        let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
+        assert_eq!(wire.namelen, 2);
+        assert_eq!(&wire.name[..2], &[CTL_KERN, KERN_DOMAINNAME]);
+        assert_ne!(wire.newp, 0);
+        assert_eq!(wire.newlen, 6);
+        assert_eq!(wire.oldp, 0);
+        assert_eq!(wire.oldlen, 0);
+    }
+
     /// A name past the inline window travels by pointer only, and the
     /// inline lanes stay zero (`__sysctl.c:23-24` — the copy is gated on
     /// the exchange overlay's window, two components in the 64-bit form).
@@ -914,6 +1005,9 @@ mod tests {
         // silent renumbering on either side would break the pair.
         assert_eq!(KERN_HOSTNAME, 10);
         assert_eq!(MAX_HOSTNAME_LEN, 256);
+        // The domainname wrappers compose `{CTL_KERN, KERN_DOMAINNAME}`
+        // (NetBSD `gen/getdomainname.c:57-58`, `gen/setdomainname.c:56-57`).
+        assert_eq!(KERN_DOMAINNAME, 22);
         // The version rides the flag word's high bits, off the type mask.
         assert_eq!(SYSCTL_VERSION & SYSCTL_TYPEMASK, 0);
     }

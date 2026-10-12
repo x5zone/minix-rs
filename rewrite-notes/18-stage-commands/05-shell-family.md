@@ -207,6 +207,7 @@ libc 不移植——`sh` 的执行层因此不能照抄 C 的 `execve`/`stdio` �
 - **getopt 解析**（`getopt.rs`，11 个）：簇内 flag（`-ab`）、附写/分写参数（`-nfoo`/`-n foo`）、GNU 可选 `::`、`--` 终止、首个操作数即停（不置换）、未知项、缺参（普通态与前导冒号态）、solitary `-`、flag+参数混束（`-abcVALUE` 配 `abc:`）。
 - **getopt 渲染**（`bin/getopt.rs` 的 `render`，8 个）：逐 golden 验 stdout 命令行（flag/附参/分参/`--` 分隔）、stderr 两条诊断（unknown option / option requires an argument）、退出码、progname 取 argv[0] 末段。
 - **hostname 解析**（`hostname.rs`，10 个）：`parse_plan` 折 getopt 形态成 `Plan::{Read{short}, Write{name}}`（默认读长、`-s` 幂等、`--` 终止扫描、cluster `-sx` 拒、两操作数 `usage`）；`strip_domain` 按首个 `.` 裁剪（无点、空串、首字符点、多段四种形各钉一条），与 `minix3/bin/hostname/hostname.c:86-87` 的 `strchr('.'); *p = '\0'` 逐字对应。sysctl 往返不在本篇：走 `minix_sys::gethostname`/`sethostname`（`{CTL_KERN, KERN_HOSTNAME}` 两元组，C `libc/gen/gethostname.c:61-62` / `sethostname.c:60-61`），线上 wire 帧与长度刷新由 `minix-sys/src/sysctl.rs` 的 `test_gethostname_wire_*` 与 `test_sethostname_wire_*` 钉住。
+- **domainname 落地**（`bin/domainname.rs`，本篇零测；同族的 `minix-sys/src/sysctl.rs` 钉 2 测）：命令无开关（C `bin/domainname/domainname.c:65` 的 `getopt(argc, argv, "")` 只给一个 `case '?'`），两操作数/未知项皆 `usage`；读写腿各对 `minix_sys::getdomainname`/`setdomainname`（`{CTL_KERN, KERN_DOMAINNAME}` 两元组，NetBSD `libc/gen/getdomainname.c`/`setdomainname.c`），sink 尺寸取 `MAX_HOSTNAME_LEN`（同文件行 60 的 `char domainname[MAXHOSTNAMELEN]`，与 `hostname` 的 `+ 1` 不同）。wire 测 `test_getdomainname_wire_*`/`test_setdomainname_wire_*` 与 `test_layout_and_constant_pins` 里的 `KERN_DOMAINNAME == 22` 钉同一形状。
 
 尚未覆盖、随后续阶段补齐的：命令替换、算术展开、通配展开（依赖执行器与文件系统）、语法树与执行器、作业控制（依赖进程原语）。文字层是全覆盖的，执行层是显式留白的。
 
