@@ -88,10 +88,7 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
             })
             .collect();
     }
-    let body_capacity = options
-        .page_len
-        .saturating_sub(HEADLEN + TAILLEN)
-        .max(1);
+    let body_capacity = options.page_len.saturating_sub(HEADLEN + TAILLEN).max(1);
     let mut pages = Vec::new();
     let mut page_number = 1usize;
     let mut cursor = 0usize;
@@ -132,11 +129,7 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
             header_lines: vec![
                 String::new(),
                 String::new(),
-                alloc::format!(
-                    "{}{} Page 1",
-                    options.time_prefix,
-                    options.header
-                ),
+                alloc::format!("{}{} Page 1", options.time_prefix, options.header),
                 String::new(),
                 String::new(),
             ],
@@ -168,6 +161,96 @@ pub fn paginate_files(
     out
 }
 
+/// Column data width derived from the requested page width and column count —
+/// the `nmwd == 0` arm of `setup` (`pr.c:1860-1861`): each column occupies
+/// `colwd + 1` cells (data plus one separating space), so `colwd =
+/// (pgwd + 1 - clcnt) / clcnt` (C's integer division) and the page width is
+/// re-rounded to `(colwd + 1) * clcnt - 1`. Returns `None` when the columns
+/// would leave no data width (`colwd < 1`, the "page width too small" error at
+/// `pr.c:1863`). This is the first package of multi-column `pr`; the page
+/// assembly that consumes it lands next.
+pub fn column_width(pgwd: usize, clcnt: usize) -> Option<(usize, usize)> {
+    if clcnt == 0 {
+        return None;
+    }
+    // C computes with signed ints; `pgwd + 1 - clcnt` may go negative and its
+    // division truncates toward zero, so mirror that in i64 rather than let
+    // unsigned subtraction wrap before the `colwd < 1` guard.
+    let numerator = i64::from(pgwd as u32) + 1 - i64::from(clcnt as u32);
+    let colwd = numerator / i64::from(clcnt as u32);
+    if colwd < 1 {
+        return None;
+    }
+    let colwd = colwd as usize;
+    Some((colwd, (colwd + 1) * clcnt - 1))
+}
+
+/// Clip `s` to at most `n` bytes at a `char` boundary. C's `inln` truncates a
+/// line to `colwd` raw bytes; this floors to the last whole code point so a
+/// clipped cell stays valid UTF-8 (the byte-vs-code-point divergence is the
+/// documented localisation residual, never a panic).
+fn clip_to_width(s: &str, n: usize) -> &str {
+    if s.len() <= n {
+        return s;
+    }
+    let mut end = n;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// One multi-column page's body rows, down-filled the way `vertcol` is (the
+/// default when `-columns` is given and `-a` is not): column `c` takes input
+/// lines `[c*rows .. (c+1)*rows]`, so line `i` lands at column `i / rows`, row
+/// `i % rows` (`pr.c:438-499`). Each cell is clipped to `colwd` bytes; a
+/// non-last column advances `colwd + 1` cells — space padding by default, or a
+/// single `sep` byte under `-s` — and the last column is never padded
+/// (`stp`, `pr.c:478`). Emission stops at the first row with no data in any
+/// column (`pr.c:608`'s `<= offst break`). Inter-column padding is kept exactly
+/// as C emits it (no trailing trim); only the last column omits padding.
+pub fn vertcol_body_rows(
+    lines_block: &[String],
+    rows: usize,
+    columns: usize,
+    colwd: usize,
+    sep: Option<u8>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if rows == 0 || columns == 0 {
+        return out;
+    }
+    for row in 0..rows {
+        let mut line = String::new();
+        let mut any = false;
+        for column in 0..columns {
+            let idx = column * rows + row;
+            let raw = lines_block.get(idx).map(String::as_str).unwrap_or("");
+            if !raw.is_empty() {
+                any = true;
+            }
+            let cell = clip_to_width(raw, colwd);
+            line.push_str(cell);
+            if column + 1 == columns {
+                break; // last column: no trailing pad
+            }
+            match sep {
+                Some(byte) => line.push(byte as char),
+                None => {
+                    for _ in 0..(colwd + 1 - cell.len()) {
+                        line.push(' ');
+                    }
+                }
+            }
+        }
+        if !any {
+            break;
+        }
+        out.push(line);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,9 +266,7 @@ mod tests {
         let pages = paginate(&lines, &PrOptions::default());
         assert_eq!(pages.len(), 2);
         for page in &pages {
-            let total = page.header_lines.len()
-                + page.body_lines.len()
-                + page.trailer_lines.len();
+            let total = page.header_lines.len() + page.body_lines.len() + page.trailer_lines.len();
             assert_eq!(total, LINES);
             assert_eq!(page.header_lines.len(), HEADLEN);
             assert_eq!(page.trailer_lines.len(), TAILLEN);
@@ -213,9 +294,7 @@ mod tests {
     #[test]
     fn test_body_pads_to_capacity() {
         let pages = paginate_lines(&["one"], &PrOptions::default());
-        let body_empty = pages[0].body_lines[1..]
-            .iter()
-            .all(|line| line.is_empty());
+        let body_empty = pages[0].body_lines[1..].iter().all(|line| line.is_empty());
         assert!(body_empty);
         assert_eq!(pages[0].body_lines[0], "one");
     }
@@ -227,7 +306,10 @@ mod tests {
         let pages = paginate_lines(&["one", "two"], &options);
         assert!(pages[0].header_lines.is_empty());
         assert!(pages[0].trailer_lines.is_empty());
-        assert_eq!(pages[0].body_lines, vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(
+            pages[0].body_lines,
+            vec!["one".to_string(), "two".to_string()]
+        );
     }
 
     #[test]
@@ -279,5 +361,70 @@ mod tests {
         let pages = paginate_files(&files, &base, Some("TITLE"));
         assert_eq!(pages[0].header_lines[2], "TITLE Page 1");
         assert_eq!(pages[1].header_lines[2], "TITLE Page 1");
+    }
+
+    fn block(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|s| String::from(*s)).collect()
+    }
+
+    #[test]
+    fn test_column_width_matches_setup_formula() {
+        // pgwd=72 default (PGWD): colwd=(72+1-clcnt)/clcnt, pgwd re-rounded.
+        assert_eq!(column_width(72, 2), Some((35, 71)));
+        assert_eq!(column_width(72, 3), Some((23, 71)));
+        assert_eq!(column_width(72, 1), Some((72, 72)));
+        // Exactly one data byte per column is still legal (colwd == 1).
+        assert_eq!(column_width(3, 2), Some((1, 3)));
+        // colwd would fall below 1 → the "too small" refusal.
+        assert_eq!(column_width(2, 2), None);
+        assert_eq!(column_width(72, 72), None);
+        assert_eq!(column_width(72, 0), None);
+    }
+
+    #[test]
+    fn test_vertcol_downfills_each_column_then_trims_last() {
+        // Column-major fill: col0=[1,2], col1=[3,4]; colwd 3 → stride 4 for
+        // non-last columns, last column unpadded.
+        assert_eq!(
+            vertcol_body_rows(&block(&["1", "2", "3", "4"]), 2, 2, 3, None),
+            vec![String::from("1   3"), String::from("2   4")]
+        );
+        // Uneven last page: row 1 has col1 empty; col0's inter-column pad
+        // stays (C keeps it), only the last column omits padding.
+        assert_eq!(
+            vertcol_body_rows(&block(&["1", "2", "3"]), 2, 2, 3, None),
+            vec![String::from("1   3"), String::from("2   ")]
+        );
+        // A row with no data in any column stops emission: block=["1","2"] fills
+        // col0's two rows, so both emit (col1 empty) — trailing inter-column pad
+        // kept, last column unpadded.
+        assert_eq!(
+            vertcol_body_rows(&block(&["1", "2"]), 2, 2, 3, None),
+            vec![String::from("1   "), String::from("2   ")]
+        );
+        // Only row 0 has data → row 1 is empty in every column → emission stops.
+        assert_eq!(
+            vertcol_body_rows(&block(&["1"]), 2, 2, 3, None),
+            vec![String::from("1   ")]
+        );
+    }
+
+    #[test]
+    fn test_vertcol_sep_and_clip() {
+        // -s: a single separator byte, no width padding between columns.
+        assert_eq!(
+            vertcol_body_rows(&block(&["1", "2", "3", "4"]), 2, 2, 3, Some(b'\t')),
+            vec![String::from("1\t3"), String::from("2\t4")]
+        );
+        // Cells clip to colwd bytes (C's inln truncation).
+        assert_eq!(
+            vertcol_body_rows(&block(&["abcdef", "x", "y", "z"]), 2, 2, 3, None),
+            vec![String::from("abc y"), String::from("x   z")]
+        );
+        // Clip floors to a char boundary, never a panic on multibyte input.
+        assert_eq!(
+            vertcol_body_rows(&block(&["h\u{e9}llo"]), 1, 1, 3, None),
+            vec![String::from("h\u{e9}")]
+        );
     }
 }
