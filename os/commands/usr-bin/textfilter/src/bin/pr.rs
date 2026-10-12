@@ -13,9 +13,10 @@
 //! `-w` width and `-s` separator) is modelled via the library's `vertcol` face,
 //! and the `-o` left margin via `render_page`; the single-column `-n` running
 //! line number (C `addnum`) via the `number_width`/`number_char` options; the
-//! across-fill `-a` (C `horzcol`) via the `across` option; merge (`-m`),
-//! double spacing (`-d`), the formfeed (`-F`), the starting page (`+first`), and
-//! `-n` in multi-column mode are later batches. An
+//! across-fill `-a` (C `horzcol`) via the `across` option; the double-spacing
+//! `-d` (C `otln`+`setup`) via `double_space` in the single-column path; merge
+//! (`-m`), the formfeed (`-F`), the starting page (`+first`), `-d` combined with
+//! columns, and multi-column `-n` are later batches. An
 //! unopenable operand warns
 //! and is skipped with a nonzero exit (`strerror` suffix not reproduced).
 
@@ -127,6 +128,9 @@ fn run() -> ! {
             }
             options.number_width = width;
             options.number_char = sep;
+        } else if arg == "-d" {
+            // `-d`: double-space the body (`setup` `++dspace`, `pr.c:1676`).
+            options.double_space = true;
         } else if arg == "-a" {
             // `-a`: across-fill; needs multiple columns (checked after the scan).
             across = true;
@@ -136,7 +140,7 @@ fn run() -> ! {
             support::warn(b"pr: +page is not modelled yet\n");
             support::terminate(2);
         } else if arg.len() > 1 && arg.starts_with('-') {
-            // An option letter we do not model (`-d`, `-m`, `-F`).
+            // An option letter we do not model (`-m`, `-F`).
             support::warn(b"pr: option form not modelled yet\n");
             support::terminate(2);
         } else {
@@ -233,7 +237,7 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 
 fn usage() -> ! {
     support::warn(
-        b"usage: pr [-t] [-h header] [-l lines] [-columns] [-a] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
+        b"usage: pr [-t] [-h header] [-l lines] [-d] [-columns] [-a] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
     );
     support::terminate(2);
 }

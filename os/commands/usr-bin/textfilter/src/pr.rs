@@ -42,6 +42,12 @@ pub struct PrOptions {
     /// down each column (`vertcol`, the default). Requires `columns > 1` (the
     /// `doing` half rejects a lone `-a`, `pr.c:1823-1828`).
     pub across: bool,
+    /// `-d`: double-space the body — each content line is followed by a blank
+    /// line, and the per-page content count halves to fit (`otln`'s extra
+    /// `putchar`, `pr.c:1258`; the `setup` halving + odd-page `addone`,
+    /// `pr.c:1883-1890`). Single-column path only; a page that can hold fewer
+    /// than two rows falls back to no doubling (C `if (lines == 1) dspace = 0`).
+    pub double_space: bool,
     /// `-w`: requested page width — `PGWD` 72 by default, `SPGWD` 512 under
     /// `-s` (the `doing` half picks the default; see `setup` `pr.c:1834-1839`).
     /// `column_width` folds it into the per-column data width.
@@ -74,6 +80,7 @@ impl Default for PrOptions {
             no_header: false,
             columns: 1,
             across: false,
+            double_space: false,
             page_width: 72,
             sep: None,
             offset: 0,
@@ -144,11 +151,20 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
             .collect();
     }
     let body_capacity = options.page_len.saturating_sub(HEADLEN + TAILLEN).max(1);
+    // Double-spacing halves the content lines per page (`setup` `lines /= 2`);
+    // each is then emitted with a following blank, so the body still fills
+    // `body_capacity` rows and an odd base leaves the `addone` row to the pad.
+    let double = options.double_space && body_capacity >= 2;
+    let content_per_page = if double {
+        body_capacity / 2
+    } else {
+        body_capacity
+    };
     let mut pages = Vec::new();
     let mut page_number = 1usize;
     let mut cursor = 0usize;
     loop {
-        let body_end = (cursor + body_capacity).min(lines.len());
+        let body_end = (cursor + content_per_page).min(lines.len());
         let mut body: Vec<String> = if options.number_width == 0 {
             lines[cursor..body_end].to_vec()
         } else {
@@ -166,6 +182,15 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
                 })
                 .collect()
         };
+        if double {
+            // C `otln` emits the line then a blank (`dspace`), so interleave.
+            let mut spaced = Vec::with_capacity(body.len() * 2);
+            for line in body {
+                spaced.push(line);
+                spaced.push(String::new());
+            }
+            body = spaced;
+        }
         while body.len() < body_capacity {
             body.push(String::new());
         }
@@ -773,5 +798,26 @@ mod tests {
             pages[0].body_lines,
             vec![String::from("a  b"), String::from("c  d")]
         );
+    }
+
+    #[test]
+    fn test_double_space_interleaves_blank_and_halves_page() {
+        let mut options = PrOptions::default();
+        options.double_space = true;
+        options.page_len = 12; // body_capacity 2 → 1 content line/page, doubled to 2 rows
+        let pages = paginate_lines(&["a", "b", "c"], &options);
+        assert_eq!(pages.len(), 3);
+        assert_eq!(pages[0].body_lines, vec![String::from("a"), String::new()]);
+        assert_eq!(pages[2].body_lines, vec![String::from("c"), String::new()]);
+    }
+
+    #[test]
+    fn test_double_space_one_row_page_falls_back() {
+        let mut options = PrOptions::default();
+        options.double_space = true;
+        options.page_len = 11; // body_capacity 1 → no room to double (C `dspace = 0`)
+        let pages = paginate_lines(&["a", "b"], &options);
+        assert_eq!(pages[0].body_lines, vec![String::from("a")]);
+        assert_eq!(pages[1].body_lines, vec![String::from("b")]);
     }
 }
