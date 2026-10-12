@@ -22,6 +22,58 @@ pub enum TsortError {
     OddDataCount,
 }
 
+/// The `tsort` flags + its single optional file operand, folded out of argv
+/// after the program name (`tsort.c:125-153`). `-d` sets the `debug` global and
+/// `-l` the `longest` global — both are declared (`:102`) but never branched on
+/// (the cycle report always walks `longest_cycle`), so they are accepted as
+/// no-ops here; only `quiet` has observable effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TsortArgs<'a> {
+    /// `-q`: suppress the "cycle in data" report.
+    pub quiet: bool,
+    /// The optional file operand (`tsort.c` `switch(argc)`: `0` → stdin, `1` →
+    /// this file, `default` → usage).
+    pub file: Option<&'a str>,
+}
+
+/// Why argv could not be folded into [`TsortArgs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TsortParseError {
+    /// A flag letter outside C's `getopt("dlq")`.
+    UnknownOption(char),
+    /// More than one file operand (C's `default: usage()`).
+    TooManyOperands,
+}
+
+/// Fold argv (after the program name) into a [`TsortArgs`]. Flags cluster like
+/// `getopt` (`-dq` sets both); any other dash letter is unknown; a lone `-` or a
+/// non-dash token is the file operand.
+pub fn parse_args<'a>(args: &[&'a str]) -> Result<TsortArgs<'a>, TsortParseError> {
+    let mut quiet = false;
+    let mut file: Option<&'a str> = None;
+    let mut operand_count = 0usize;
+    for &arg in args {
+        if arg.len() > 1 && arg.starts_with('-') {
+            for flag in arg[1..].chars() {
+                match flag {
+                    'd' | 'l' => {}
+                    'q' => quiet = true,
+                    other => return Err(TsortParseError::UnknownOption(other)),
+                }
+            }
+        } else {
+            operand_count += 1;
+            if file.is_none() {
+                file = Some(arg);
+            }
+        }
+    }
+    if operand_count > 1 {
+        return Err(TsortParseError::TooManyOperands);
+    }
+    Ok(TsortArgs { quiet, file })
+}
+
 /// One detected cycle: the member names in cycle order (the doing half
 /// reports them on standard error unless quiet).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,5 +274,54 @@ mod tests {
     #[test]
     fn test_plain_two_pair_case_keeps_insertion_order_for_ties() {
         assert_eq!(order(&["x", "y", "z", "z"]), vec!["x", "y", "z"]);
+    }
+
+    #[test]
+    fn test_parse_args_accepts_d_and_l_as_noops() {
+        // `-d`/`-l` are C getopt flags whose globals are never read; they must
+        // parse (not error), and cluster (`-dq`) like getopt.
+        assert_eq!(
+            parse_args(&["-d", "-l", "data"]),
+            Ok(TsortArgs {
+                quiet: false,
+                file: Some("data")
+            })
+        );
+        assert_eq!(
+            parse_args(&["-dq"]),
+            Ok(TsortArgs {
+                quiet: true,
+                file: None
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_args_operand_and_errors() {
+        // Zero operands → stdin (file None); one operand → that file.
+        assert_eq!(
+            parse_args(&["-q"]),
+            Ok(TsortArgs {
+                quiet: true,
+                file: None
+            })
+        );
+        // More than one operand is C's `default: usage()`.
+        assert_eq!(
+            parse_args(&["a", "b"]),
+            Err(TsortParseError::TooManyOperands)
+        );
+        // A dash letter outside "dlq" is unknown; a lone `-` is a file operand.
+        assert_eq!(
+            parse_args(&["-z"]),
+            Err(TsortParseError::UnknownOption('z'))
+        );
+        assert_eq!(
+            parse_args(&["-"]),
+            Ok(TsortArgs {
+                quiet: false,
+                file: Some("-")
+            })
+        );
     }
 }
