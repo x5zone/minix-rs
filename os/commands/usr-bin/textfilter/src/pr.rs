@@ -97,6 +97,206 @@ impl Default for PrOptions {
     }
 }
 
+/// Parsed `pr` command line: resolved options + file operands + the `-m` flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrArgs<'a> {
+    pub options: PrOptions,
+    /// `-h`: title override (None ⇒ the default date/header line).
+    pub title_override: Option<&'a str>,
+    /// `-m`: merge operands side by side (one column per file).
+    pub merge: bool,
+    /// File operands in order; a `-` names standard input.
+    pub operands: Vec<&'a str>,
+}
+
+/// `pr` argument failure. Each arm maps to a distinct C error path (the caller
+/// renders it), so the messages and exit codes match the old in-bin parser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrError {
+    /// `getopt` `?`/default → usage; a malformed/absent option value; `+N`/`-N`
+    /// with a bad or zero number; `-l` not `> 10`.
+    Usage,
+    /// `-a` given but `columns <= 1` (`pr.c:1823-1828`).
+    AcrossNeedsColumns,
+    /// the computed column width is `< 1` for the requested columns
+    /// (`pr.c:1863-1867`); carries the column count for the message.
+    ColumnTooSmall(usize),
+    /// an option letter the deciding half does not model yet (`-e`/`-f`/`-F`/
+    /// `-i`/`-p`/`-r`/`-T`): reported rather than silently ignored.
+    Unmodelled,
+}
+
+/// Parse `pr`'s argv tail faithfully to BSD
+/// `egetopt("#adFfmrte?h:i?l:n?o:ps?T:w:")` (`pr.c:1655`), then apply the
+/// post-scan page-width default (`-w` absent ⇒ 512 under `-s` else 72) and the
+/// pre-layout column/`-a` validations.
+///
+/// Parity this adds over the old whole-token matcher (`arg == "-t"`, value on a
+/// separate word): option letters cluster (`-dm`, `-ta`, `-tw100`), and the
+/// value-bearing letters take their value either glued (`-w100`, `-l66`, `-o4`,
+/// `-hT`) or as the following word (`-w 100`). Leading-digit vertical columns
+/// (`-N`) and start page (`+N`) keep their C forms; `-n`/`-s` keep their
+/// optional glued value. Unmodelled letters (e/f/F/i/p/r/T) and any other
+/// `-…` form are rejected, matching the old behaviour (never a silent operand).
+pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
+    let mut options = PrOptions::default();
+    let mut title_override: Option<&'a str> = None;
+    let mut operands: Vec<&'a str> = Vec::new();
+    let (mut merge, mut across) = (false, false);
+    let (mut wflag, mut sflag) = (false, false);
+
+    // Take a required option value: the glued remainder of this token, else
+    // the next token (advancing `index`). Missing ⇒ `Usage`.
+    macro_rules! value {
+        ($rest:expr, $index:ident) => {{
+            if !$rest.is_empty() {
+                $rest
+            } else {
+                $index += 1;
+                match args.get($index) {
+                    Some(v) => *v,
+                    None => return Err(PrError::Usage),
+                }
+            }
+        }};
+    }
+
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index];
+        if arg == "--" {
+            operands.extend_from_slice(&args[index + 1..]);
+            break;
+        }
+        if let Some(rest) = arg.strip_prefix('+') {
+            let n: usize = rest.parse().map_err(|_| PrError::Usage)?;
+            if n < 1 {
+                return Err(PrError::Usage);
+            }
+            options.start_page = n;
+            index += 1;
+            continue;
+        }
+        let bytes = arg.as_bytes();
+        if bytes.len() < 2 || bytes[0] != b'-' {
+            operands.push(arg);
+            index += 1;
+            continue;
+        }
+        // obsolete leading-digit vertical column count `-N` (`pr.c:1665-1668`).
+        if arg[1..].bytes().all(|b| b.is_ascii_digit()) {
+            let n: usize = arg[1..].parse().map_err(|_| PrError::Usage)?;
+            if n < 1 {
+                return Err(PrError::Usage);
+            }
+            options.columns = n;
+            index += 1;
+            continue;
+        }
+        // Scan this token's option letters (BSD clusters them). A value-taking
+        // letter consumes the glued remainder (or the next word) and ends the
+        // token; flag letters fall through to the next letter.
+        let mut pos = 1usize;
+        while pos < arg.len() {
+            match bytes[pos] {
+                b't' => options.no_header = true,
+                b'd' => options.double_space = true,
+                b'm' => merge = true,
+                b'a' => across = true,
+                b'h' => {
+                    title_override = Some(value!(&arg[pos + 1..], index));
+                    break;
+                }
+                b'l' => {
+                    let v = value!(&arg[pos + 1..], index);
+                    let n: usize = v.parse().map_err(|_| PrError::Usage)?;
+                    if n <= 10 {
+                        return Err(PrError::Usage);
+                    }
+                    options.page_len = n;
+                    break;
+                }
+                b'w' => {
+                    let v = value!(&arg[pos + 1..], index);
+                    let n: usize = v.parse().map_err(|_| PrError::Usage)?;
+                    if n < 1 {
+                        return Err(PrError::Usage);
+                    }
+                    options.page_width = n;
+                    wflag = true;
+                    break;
+                }
+                b'o' => {
+                    let v = value!(&arg[pos + 1..], index);
+                    let n: usize = v.parse().map_err(|_| PrError::Usage)?;
+                    if n < 1 {
+                        return Err(PrError::Usage);
+                    }
+                    options.offset = n;
+                    break;
+                }
+                b's' => {
+                    let rest = &arg[pos + 1..];
+                    options.sep = Some(if rest.is_empty() {
+                        b'\t'
+                    } else {
+                        rest.as_bytes()[0]
+                    });
+                    sflag = true;
+                    break;
+                }
+                b'n' => {
+                    // `-n[ch][width]`: BSD optional glued value (`pr.c:1744-1762`).
+                    let rest = &arg[pos + 1..];
+                    let (mut width, mut nsep) = (5usize, b'\t');
+                    if !rest.is_empty() {
+                        let rb = rest.as_bytes();
+                        if rb[0].is_ascii_digit() {
+                            width = rest.parse().map_err(|_| PrError::Usage)?;
+                            if width < 1 {
+                                return Err(PrError::Usage);
+                            }
+                        } else {
+                            nsep = rb[0];
+                            if rest.len() > 1 {
+                                width = rest[1..].parse().map_err(|_| PrError::Usage)?;
+                                if width < 1 {
+                                    return Err(PrError::Usage);
+                                }
+                            }
+                        }
+                    }
+                    options.number_width = width;
+                    options.number_char = nsep;
+                    break;
+                }
+                _ => return Err(PrError::Unmodelled),
+            }
+            pos += 1;
+        }
+        index += 1;
+    }
+
+    if !wflag && sflag {
+        options.page_width = 512;
+    }
+    if options.columns > 1 && column_width(options.page_width, options.columns).is_none() {
+        return Err(PrError::ColumnTooSmall(options.columns));
+    }
+    if across {
+        if options.columns <= 1 {
+            return Err(PrError::AcrossNeedsColumns);
+        }
+        options.across = true;
+    }
+    Ok(PrArgs {
+        options,
+        title_override,
+        merge,
+        operands,
+    })
+}
+
 /// One page: the header lines (empty when `-t`), the body lines (padded
 /// to the body capacity with empty lines when headers are on), and the
 /// trailer lines (empty when `-t`).
@@ -1104,6 +1304,65 @@ mod tests {
                 String::from("b  e"),
                 String::from("c  f")
             ]
+        );
+    }
+
+    #[test]
+    fn parse_defaults_and_basic_options() {
+        // 无参：默认 width 72、columns 1。
+        let d = parse_pr_args(&[]).unwrap();
+        assert_eq!(d.options.page_width, 72);
+        assert_eq!(d.options.columns, 1);
+        assert!(d.operands.is_empty());
+        // 现有分离值形式（回归）。
+        let a = parse_pr_args(&["-t", "-h", "T", "-l", "66", "-w", "100", "f1"]).unwrap();
+        assert!(a.options.no_header);
+        assert_eq!(a.title_override, Some("T"));
+        assert_eq!(a.options.page_len, 66);
+        assert_eq!(a.options.page_width, 100);
+        assert_eq!(a.operands, vec!["f1"]);
+    }
+
+    #[test]
+    fn parse_glued_values_and_clusters_accepted() {
+        // 关键回归：附值与聚簇（旧前门拒）。`-w100 -l66 -o4`。
+        let a = parse_pr_args(&["-w100", "-l66", "-o4"]).unwrap();
+        assert_eq!(a.options.page_width, 100);
+        assert_eq!(a.options.page_len, 66);
+        assert_eq!(a.options.offset, 4);
+        // `-hT`：附值标题。
+        let b = parse_pr_args(&["-hTitle", "f1", "f2"]).unwrap();
+        assert_eq!(b.title_override, Some("Title"));
+        assert_eq!(b.operands, vec!["f1", "f2"]);
+        // 聚簇：`-dm`（双行距+合并）、`-tw100`（无页眉后 w 取附值）。
+        let c = parse_pr_args(&["-dm", "f"]).unwrap();
+        assert!(c.options.double_space && c.merge);
+        let e = parse_pr_args(&["-tw100", "f"]).unwrap();
+        assert!(e.options.no_header);
+        assert_eq!(e.options.page_width, 100);
+        // `+N` 起始页、`-N` 竖列、`-n5`、`-sX`。
+        let f = parse_pr_args(&["+3", "-n5", "-sX", "f"]).unwrap();
+        assert_eq!(f.options.start_page, 3);
+        assert_eq!(f.options.number_width, 5);
+        assert_eq!(f.options.sep, Some(b'X'));
+        let g = parse_pr_args(&["-w", "200", "-2"]).unwrap();
+        assert_eq!(g.options.columns, 2);
+    }
+
+    #[test]
+    fn parse_error_paths() {
+        // 集外/未建模字母、缺值、非法宽、`-a` 无多列。
+        assert_eq!(parse_pr_args(&["-e", "f"]).err(), Some(PrError::Unmodelled));
+        assert_eq!(parse_pr_args(&["-w"]).err(), Some(PrError::Usage)); // 缺值
+        assert_eq!(parse_pr_args(&["-w0"]).err(), Some(PrError::Usage)); // <1
+        assert_eq!(parse_pr_args(&["-l5"]).err(), Some(PrError::Usage)); // 须 >10
+        assert_eq!(
+            parse_pr_args(&["-a"]).err(),
+            Some(PrError::AcrossNeedsColumns)
+        );
+        assert_eq!(
+            parse_pr_args(&["-100"]).err(),
+            Some(PrError::ColumnTooSmall(100))
         );
     }
 }

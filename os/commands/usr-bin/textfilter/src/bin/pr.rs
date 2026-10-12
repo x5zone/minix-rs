@@ -33,155 +33,24 @@ mod support;
 
 use minix_sys::read;
 use minix_textfilter::pr::{
-    column_width, merge_body_rows, paginate, paginate_files, render_page, PrOptions,
+    PrError, column_width, merge_body_rows, paginate, paginate_files, parse_pr_args, render_page,
 };
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut options = PrOptions::default();
-    let mut title_override: Option<String> = None;
-    let mut operands: Vec<String> = Vec::new();
-    // `-w` and `-s` interact: the default page width is 512 under `-s` else 72
-    // (`setup` `pr.c:1834-1839`), applied after the scan when `-w` was absent.
-    let mut wflag = false;
-    let mut sflag = false;
-    let mut across = false;
-    let mut merge = false;
-    let mut index = 1;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg == "-t" {
-            options.no_header = true;
-        } else if arg == "-h" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            title_override = Some(argv[index].clone());
-        } else if arg == "-l" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            match argv[index].parse::<usize>() {
-                // pr.c:1875-1878: the page must carry header and trailer.
-                Ok(length) if length > 10 => options.page_len = length,
-                _ => usage(),
-            }
-        } else if arg.len() > 1 && arg[1..].bytes().all(|b| b.is_ascii_digit()) {
-            // `-N`: vertical column count, N >= 1 (`pr.c:1665-1668`).
-            match arg[1..].parse::<usize>() {
-                Ok(n) if n >= 1 => options.columns = n,
-                _ => usage(),
-            }
-        } else if arg == "-w" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            match argv[index].parse::<usize>() {
-                Ok(w) if w >= 1 => {
-                    options.page_width = w;
-                    wflag = true;
-                }
-                _ => usage(),
-            }
-        } else if arg == "-s" || (arg.starts_with("-s") && arg.len() > 2) {
-            // `-s[C]`: one separator byte, tab by default (`pr.c:1778-1783`).
-            sflag = true;
-            options.sep = Some(if arg.len() > 2 {
-                arg.as_bytes()[2]
-            } else {
-                b'\t'
-            });
-        } else if arg == "-o" {
-            // `-o`: left margin in blank columns (`pr.c:1764-1770`).
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            match argv[index].parse::<usize>() {
-                Ok(n) if n >= 1 => options.offset = n,
-                _ => usage(),
-            }
-        } else if arg.starts_with("-n") {
-            // `-n[ch][width]`: BSD optional glued value (pr.c:1744-1762).
-            let rest = &arg[2..];
-            let mut width: usize = 5; // NMWD
-            let mut sep: u8 = b'\t'; // NMCHAR
-            let mut failed = false;
-            if !rest.is_empty() {
-                let bytes = rest.as_bytes();
-                if bytes[0].is_ascii_digit() {
-                    match rest.parse::<usize>() {
-                        Ok(n) if n >= 1 => width = n,
-                        _ => failed = true,
-                    }
-                } else {
-                    sep = bytes[0];
-                    if rest.len() > 1 {
-                        match rest[1..].parse::<usize>() {
-                            Ok(n) if n >= 1 => width = n,
-                            _ => failed = true,
-                        }
-                    }
-                }
-            }
-            if failed {
-                usage();
-            }
-            options.number_width = width;
-            options.number_char = sep;
-        } else if arg == "-d" {
-            // `-d`: double-space the body (`setup` `++dspace`, `pr.c:1676`).
-            options.double_space = true;
-        } else if arg == "-m" {
-            // `-m`: merge operands side by side (C `merge`/`mulfile`).
-            merge = true;
-        } else if arg == "-a" {
-            // `-a`: across-fill; needs multiple columns (checked after the scan).
-            across = true;
-        } else if arg.starts_with('+') {
-            // `+N`: start printing at page N (C `case '+'` → `pgnm`, `pr.c:1657`).
-            match arg[1..].parse::<usize>() {
-                Ok(n) if n >= 1 => options.start_page = n,
-                _ => usage(),
-            }
-        } else if arg.len() > 1 && arg.starts_with('-') {
-            // An option letter we do not model (`-F`).
-            support::warn(b"pr: option form not modelled yet\n");
-            support::terminate(2);
-        } else {
-            // A file operand; `-` names standard input (pr.c:1338).
-            operands.push(String::from(arg));
-        }
-        index += 1;
-    }
-
-    // Default page width when `-w` was absent: 512 under `-s`, else 72
-    // (`setup` `pr.c:1834-1839`). Then reject an over-narrow page the way C
-    // does before laying out (`pr.c:1863-1867`).
-    if !wflag && sflag {
-        options.page_width = 512;
-    }
-    if options.columns > 1 && column_width(options.page_width, options.columns).is_none() {
-        support::warn(
-            format!(
-                "pr: page width is too small for {} columns\n",
-                options.columns
-            )
-            .as_bytes(),
-        );
-        usage();
-    }
-    // `-a` across-fill requires multiple columns (`pr.c:1823-1828`).
-    if across {
-        if options.columns <= 1 {
-            support::emit(b"pr: -a flag requires multiple columns\n");
-            usage();
-        }
-        options.across = true;
-    }
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // argv folding lives in the deciding half (`parse_pr_args`): BSD getopt with
+    // clustered flag letters, glued-or-next values, and the post-scan page-width
+    // /column/-a validations. The result is projected back onto the value types
+    // the file/merge/paginate tail below already consumes.
+    let parsed = match parse_pr_args(&args[1..]) {
+        Ok(p) => p,
+        Err(e) => arg_error(e),
+    };
+    let options = parsed.options;
+    let merge = parsed.merge;
+    let title_override: Option<String> = parsed.title_override.map(String::from);
+    let operands: Vec<String> = parsed.operands.iter().map(|s| String::from(*s)).collect();
 
     // Read each operand into a logical file (name, lines). No operands means
     // standard input alone, titled `""` (pr.h:63 `FNAME`); an unopenable
@@ -271,6 +140,26 @@ fn split_lines(input: &[u8]) -> Vec<String> {
         pieces.pop();
     }
     pieces
+}
+
+/// Map a [`PrError`] from `parse_pr_args` to the exact C error path (message and
+/// exit code) the old in-bin parser used, then terminate.
+fn arg_error(e: PrError) -> ! {
+    match e {
+        PrError::Usage => usage(),
+        PrError::ColumnTooSmall(n) => {
+            support::warn(format!("pr: page width is too small for {n} columns\n").as_bytes());
+            usage()
+        }
+        PrError::AcrossNeedsColumns => {
+            support::emit(b"pr: -a flag requires multiple columns\n");
+            usage()
+        }
+        PrError::Unmodelled => {
+            support::warn(b"pr: option form not modelled yet\n");
+            support::terminate(2);
+        }
+    }
 }
 
 fn usage() -> ! {
