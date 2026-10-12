@@ -1,7 +1,8 @@
 # WORKFLOW-OPEN-ITEMS — 工作流开放项与裁决承接台账
 
-> **性质**：本文件是 `agents-workflow-optim.md`、`todo_plan.md`、`EXECUTION-LOG-workflow-optim.md` 三份已归档规划/取证文件的**开放项承接台账**（2026-10-08 建立；三文件完成使命后删除，全文可从 git 历史回捞）。
+> **性质**：本文件是 `agents-workflow-optim.md`、`todo_plan.md`、`EXECUTION-LOG-workflow-optim.md` 三份已归档规划/取证文件，**以及历轮 review / 人工审阅中产生的工作流层开放项**的承接台账（2026-10-08 建立；三文件完成使命后删除，全文可从 git 历史回捞）。
 > 承接原则：只搬**仍未闭环的事项、被活规则引用的格式定义、以及不可重演的用户裁决**；已落地能力的规范源本来就在 `prompt/review-rules/` 与 `tools/`，不重复。
+> 分流约束：本文件只收**工作流层**（规则、门、派生同步、流程裁决）的开放项。**文档内容层的待办不放本文件**——某篇要拆节、要补定义、要续扫同类条目，进各 stage 的 `todo.md`（如 `rewrite-notes/01-stage-kernel/todo.md`）；开发/缺陷与跨阶段联动项进 `rewrite-notes/coordination/TODO-LEDGER-OPEN.md`。
 
 ## 一、开放项（需要行动或用户裁决）
 
@@ -103,4 +104,5 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 
 - 第一轮：`prompt/REVIEW-TRACE-vfs-08-dryrun.md`（vfs/08 干跑，流程侧修复 F5-F8 的来源）。
 - 第二轮：`prompt/REVIEW-TRACE-pm-09-fullrun.md`（pm/09 全量实跑，含 Gate A 工具阻断→修复→重跑、Gate G 机检 FAIL→重组→跨 session 独立验证 7/7 的完整轨迹；流程空档 F-1~F-8 待据此修订规范源）。
-- 两轮均收敛；F-2/F-3/F-4/F-5 四条建议改规范源时，按 `prompt/README.md` 三端同步流程执行。
+- 第三轮：01 篇 CH1-CH2 人工审阅（2026-10-12；本轮无独立 REVIEW-TRACE 文件，过程记录就在本台账的 W-6、W-7 与 R5，正文改动落在 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md`、`02-higher-half-kernel.md` 与 `rewrite-notes/08-stage-is/04-is-data-acquisition.md`）。本轮的特征是：**八处"读不懂 / 讲不通"全部由人发现，工具零拦截**——这就是 W-6 要补执行装置的依据。
+- 前两轮均收敛；F-2/F-3/F-4/F-5 四条建议改规范源时，按 `prompt/README.md` 三端同步流程执行。
