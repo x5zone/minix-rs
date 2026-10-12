@@ -14,10 +14,10 @@
 //! Wired: the three logical-page sections (a line of `\:`/`\:\:`/`\:\:\:`
 //! switches to footer/body/header and is dropped, resetting the counter under
 //! restart), each section's numbering type via `-b`/`-h`/`-f` (a/t/n), plus
-//! `-v` (start), `-i` (step), `-l` (width), `-n` (ln/rn/rz), `-p` (no restart).
-//! Declared residual: the `number_regex` form (`-b p…`), `-d` multi-char
-//! delimiter, `-s` separator string, and `-w` blank-run grouping — those ride
-//! the next `nl` slice.
+//! `-v` (start), `-i` (step), `-l` (width), `-n` (ln/rn/rz), `-p` (no restart)
+//! and `-d` (the 2-byte logical-page delimiter, `\:` by default). Declared
+//! residual: the `number_regex` form (`-b p…`), `-s` separator string, and `-w`
+//! blank-run grouping — those ride the next `nl` slice.
 
 use alloc::vec::Vec;
 
@@ -74,6 +74,10 @@ pub struct NlOptions {
     pub footer: NumberType,
     /// Restart numbering at each page delimiter (default on; `-p` clears it).
     pub restart: bool,
+    /// The 2-byte logical-page delimiter (`-d`; C `delim`, default `\\:`). A
+    /// line that is exactly one/two/three repeats of it switches to
+    /// footer/body/header (`nl.c:157-169`).
+    pub delim: [u8; 2],
 }
 
 impl Default for NlOptions {
@@ -88,23 +92,23 @@ impl Default for NlOptions {
             header: NumberType::None,
             footer: NumberType::None,
             restart: true,
+            delim: [b'\\', b':'],
         }
     }
 }
 
-/// Classify a delimiter line: how many leading copies of the 2-byte default
-/// `\:` fill the line exactly (C `filter`'s FOOTER/BODY/HEADER probe, one to
+/// Classify a delimiter line: how many copies of the 2-byte section delimiter
+/// `delim` fill the line exactly (C `filter`'s FOOTER/BODY/HEADER probe, one to
 /// three). Returns the section it switches to, or `None` for a non-delimiter
 /// line.
-fn delimiter_section(line: &[u8]) -> Option<Section> {
-    const DELIM: &[u8] = b"\\:";
-    if line.is_empty() || !line.len().is_multiple_of(DELIM.len()) {
+fn delimiter_section(line: &[u8], delim: [u8; 2]) -> Option<Section> {
+    if line.is_empty() || !line.len().is_multiple_of(delim.len()) {
         return None;
     }
-    if !line.chunks(DELIM.len()).all(|c| c == DELIM) {
+    if !line.chunks(delim.len()).all(|c| c == delim) {
         return None;
     }
-    match line.len() / DELIM.len() {
+    match line.len() / delim.len() {
         1 => Some(Section::Footer),
         2 => Some(Section::Body),
         3 => Some(Section::Header),
@@ -122,7 +126,7 @@ pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
     let mut counter = opts.startnum;
     let mut section = Section::Body;
     for line in lines {
-        if let Some(next) = delimiter_section(line) {
+        if let Some(next) = delimiter_section(line, opts.delim) {
             section = next;
             if opts.restart {
                 counter = opts.startnum;
@@ -256,6 +260,39 @@ mod tests {
         // With restart off, the body section still renumbers from the running count.
         let nop = NlOptions { restart: false, ..Default::default() };
         assert_eq!(nl("a\n\\:\\:\nb", &nop), "     1\ta\n     2\tb");
+    }
+
+    #[test]
+    fn test_delim_one_char_option() {
+        // `-d x` -> delimiter [x, ':']; `x:` switches to footer and is dropped
+        // (nl.c:157-161 fills only delim[0], leaving ':' the default).
+        let o = NlOptions {
+            delim: [b'x', b':'],
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nx:\nb", &o), "     1\ta\n      \tb");
+    }
+
+    #[test]
+    fn test_delim_two_byte_option() {
+        // `-d '#$'` -> delimiter ['#', '$']; a line of two repeats switches to
+        // body and, under restart, renumbers from startnum.
+        let o = NlOptions {
+            delim: [b'#', b'$'],
+            ..Default::default()
+        };
+        assert_eq!(nl("a\n#$#$\nb", &o), "     1\ta\n     1\tb");
+    }
+
+    #[test]
+    fn test_custom_delim_retires_the_default_backslash_colon() {
+        // With a custom delimiter the default `\:` is an ordinary line again,
+        // proving the classifier honors `-d` rather than the built-in byte.
+        let o = NlOptions {
+            delim: [b'x', b':'],
+            ..Default::default()
+        };
+        assert_eq!(nl("a\n\\:\nb", &o), "     1\ta\n     2\t\\:\n     3\tb");
     }
 
     #[test]
