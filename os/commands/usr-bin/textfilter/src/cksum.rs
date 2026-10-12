@@ -111,6 +111,50 @@ pub fn sum_display_length(kind: SumKind, bytes: u64) -> u64 {
     }
 }
 
+/// One classified line of a `cksum -c` check file. C's `do_check`
+/// (`cksum.c:283-460`) reads a line, strips the newline, and branches on
+/// whether it carries the crypto-hash grammar (`… (file) = digest`) or the
+/// sum/cksum grammar (`<checksum> [length] name`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum CheckEntry<'a> {
+    /// sum/cksum line: C takes the checksum from the first token (`buf` up to
+    /// the first space) and the file name from after the **last** space
+    /// (`strrchr(buf, ' ') + 1`); the printed length column is not compared —
+    /// C checks only `val == strtoul(cksum)` (`cksum.c:443`). Names containing
+    /// spaces therefore resolve to their trailing word, matching C.
+    Checksum { crc: u32, name: &'a str },
+    /// The line contains `(` — the `name (file) = digest` hash grammar. It
+    /// needs a crypto primitive we do not carry, so it cannot be verified.
+    Hash,
+    /// No space to split on — C's "bogus format: … Skipping…" case.
+    Malformed,
+}
+
+/// Parse the leading base-10 digits of `token`, mirroring C `strtoul(…, 10)`:
+/// digits up to the first non-digit, `0` when it starts with a non-digit.
+fn leading_u32(token: &str) -> u32 {
+    let digits: &str = {
+        let end = token
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(token.len());
+        &token[..end]
+    };
+    digits.parse::<u32>().unwrap_or(0)
+}
+
+/// Classify one check-file `line` (the trailing newline already removed).
+pub fn parse_check_line(line: &str) -> CheckEntry<'_> {
+    if line.contains('(') {
+        return CheckEntry::Hash;
+    }
+    let Some(first_space) = line.find(' ') else {
+        return CheckEntry::Malformed;
+    };
+    let crc = leading_u32(&line[..first_space]);
+    let name = &line[line.rfind(' ').unwrap() + 1..];
+    CheckEntry::Checksum { crc, name }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +189,63 @@ mod tests {
         assert_eq!(sum_display_length(SumKind::Old2, 511), 1);
         assert_eq!(sum_display_length(SumKind::Old2, 512), 1);
         assert_eq!(sum_display_length(SumKind::Old2, 513), 2);
+    }
+
+    #[test]
+    fn test_parse_check_line_sum_and_cksum_format() {
+        // "<crc> <length> <name>" — length is present but not compared by C.
+        assert_eq!(
+            parse_check_line("1219131554 3 abc"),
+            CheckEntry::Checksum {
+                crc: 1219131554,
+                name: "abc"
+            }
+        );
+        // Two tokens: first is the crc, the rest-after-last-space is the name.
+        assert_eq!(
+            parse_check_line("4294967295 a.txt"),
+            CheckEntry::Checksum {
+                crc: 4294967295,
+                name: "a.txt"
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_check_line_name_is_after_the_last_space() {
+        // C uses strrchr(' ')+1, so a name with spaces resolves to its trailing
+        // word — a documented C limitation, not a bug we diverge on.
+        assert_eq!(
+            parse_check_line("123 456 my file.txt"),
+            CheckEntry::Checksum {
+                crc: 123,
+                name: "file.txt"
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_check_line_classifies_hash_and_malformed() {
+        // The crypto hash grammar carries a '(' — unverifiable without primitives.
+        assert_eq!(parse_check_line("md5 (f) = d41d8cd98f00"), CheckEntry::Hash);
+        // A single token with no space is "bogus format".
+        assert_eq!(parse_check_line("nospace"), CheckEntry::Malformed);
+    }
+
+    #[test]
+    fn test_parse_check_line_leading_digits_only() {
+        // strtoul stops at the first non-digit; a non-numeric start yields 0.
+        assert_eq!(
+            parse_check_line("1234abc 9 f"),
+            CheckEntry::Checksum {
+                crc: 1234,
+                name: "f"
+            }
+        );
+        assert_eq!(
+            parse_check_line("abc 9 f"),
+            CheckEntry::Checksum { crc: 0, name: "f" }
+        );
     }
 
     #[test]
