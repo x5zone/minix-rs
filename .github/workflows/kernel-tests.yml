@@ -11,6 +11,13 @@ name: kernel-tests
 #      on x86_64-unknown-none — completing the arch trio that
 #      qemu-tests.yml's cross-arch-kernel-build guards for aarch64 and
 #      riscv64 ("取证改动打断另两架构构建" happened twice).
+#   3. host-sanity-checks-form: the mock form PLUS the `sanity-checks`
+#      feature (U-2, PENDING-DECISIONS-UNBLOCK-20261009.md 采 A) — the
+#      C `#if DEBUG_SANITYCHECKS` scheduling self-checks compile away by
+#      default, so without a leg that builds them the gated code in
+#      proc_table.rs rots unnoticed. Same host form as leg 1 with the
+#      extra feature on, matching the exec checklist's "宿主持续集成加开
+#      该特性的测试腿".
 #
 # This is step ② of the credibility chain (§九.4): SD-28 (exit-code
 # swallowing, fixed in run_all.sh) → PD-30 (this file) → PD-29 (removing
@@ -51,6 +58,27 @@ jobs:
       - name: Test kernel package (explicit mock form)
         working-directory: os
         run: cargo test -p minix-kernel --features mock
+
+  # U-2 sanity-checks leg: the same mock host form with the `sanity-checks`
+  # feature switched on, so the `#[cfg(all(feature = "sanity-checks",
+  # not(test)))]` self-check blocks in proc_table.rs (sched_enqueue_with /
+  # sched_enqueue_head / sched_dequeue) are compiled and their containing
+  # crate builds clean. Under `cfg(test)` the assert bodies are excluded, so
+  # the suite result must stay identical to leg 1 — that equality IS the
+  # guard (a compile break inside the gated block turns this leg red even
+  # though the runtime assert never fires on the host form).
+  host-sanity-checks-form:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test kernel package (mock form + sanity-checks)
+        working-directory: os
+        run: cargo test -p minix-kernel --features "mock,sanity-checks"
 
   # build (not check): inline-asm register/fixup validation happens at
   # codegen time — check silently passes what build rejects (mutated
