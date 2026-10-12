@@ -9,42 +9,29 @@
 //! `/usr/man/whatis`; the builder (`makewhatis`) is the declared gap of
 //! 10-doc-man-tools.md §3.4.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
 #[path = "../bin_support.rs"]
 mod support;
-use minix_doctools::whatis::{ManDb, SliceManDb};
+use minix_doctools::whatis::{parse_whatis_args, ManDb, SliceManDb, WhatisArgError, WhatisArgs};
 use minix_sys::{open, read, Fd};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let mut db_path = "/usr/man/whatis";
-    let mut names: Vec<&str> = Vec::new();
-    let mut at = 1;
-    while at < args.len() {
-        match args[at] {
-            "-M" => {
-                at += 1;
-                db_path = args.get(at).copied().unwrap_or_else(|| {
-                    support::warn(b"whatis: -M needs a path\n");
-                    support::terminate(1);
-                });
-            }
-            other => names.push(other),
-        }
-        at += 1;
-    }
+    let WhatisArgs { db_path, names } = match parse_whatis_args(&args[1..]) {
+        Ok(parsed) => parsed,
+        Err(WhatisArgError::Usage) => usage(),
+    };
+    let db_path = db_path.unwrap_or("/usr/man/whatis");
     if names.is_empty() {
-        support::warn(b"usage: whatis [-M db] name ...\n");
-        support::terminate(1);
+        usage();
     }
 
     let fd: Fd = match open(db_path, 0, 0) {
@@ -105,6 +92,10 @@ fn query(db: SliceManDb, names: &[&str]) -> ! {
     support::terminate(status)
 }
 
+fn usage() -> ! {
+    support::warn(b"usage: whatis [-C file] [-M path] [-m path] command ...\n");
+    support::terminate(1);
+}
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

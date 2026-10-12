@@ -9,6 +9,8 @@
 
 use crate::DocError;
 
+use alloc::vec::Vec;
+
 /// Maximum names sharing one database row.
 pub const MAX_NAMES: usize = 8;
 
@@ -161,6 +163,82 @@ impl SliceManDb<'_> {
     }
 }
 
+/// Argument-splitting failure for `whatis`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhatisArgError {
+    /// An option letter outside the `C M m P` set, or a value option with no
+    /// argument (C `getopt` returns `?`/`:` → usage, `whatis.c:93-95`).
+    Usage,
+}
+
+/// `whatis`'s parsed argv tail: the database-path override and the query
+/// names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhatisArgs<'a> {
+    /// `-M`/`-P` database path (the last one wins, as both set C's `p_path`);
+    /// `None` means the caller's compiled-in default.
+    pub db_path: Option<&'a str>,
+    /// Query names in order, each already trimmed to its final path component
+    /// (C trims `strrchr('/')`, `whatis.c:107-109`).
+    pub names: Vec<&'a str>,
+}
+
+/// Split `whatis`'s argv tail (no program name) into [`WhatisArgs`], faithful
+/// to C's `getopt(argc, argv, "C:M:m:P:")` (`whatis.c:81`): all four options
+/// take a value, values cluster or attach (`-Mpath`) or follow (`-M path`),
+/// `--` ends option scanning, a lone `-` is a name, and any other option letter
+/// is [`WhatisArgError::Usage`] — never a leaked search name. `-M`/`-P` set the
+/// database path; `-C` (config file) and `-m` (manpath augment) are accepted
+/// and their values consumed but otherwise unused, because this model reads a
+/// single classic text database (the multi-path resolution `makewhatis` builds
+/// is the declared gap of 10-doc-man-tools.md §3.4). Operands are path-trimmed
+/// exactly as C does before the lookup.
+pub fn parse_whatis_args<'a>(args: &'a [&'a str]) -> Result<WhatisArgs<'a>, WhatisArgError> {
+    let mut db_path: Option<&str> = None;
+    let mut names: Vec<&str> = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let token = args[index];
+        if token == "--" {
+            names.extend(args[index + 1..].iter().map(|name| trim_path(name)));
+            break;
+        }
+        let bytes = token.as_bytes();
+        if bytes.len() > 1 && bytes[0] == b'-' {
+            let letter = bytes[1];
+            // Every `whatis` option takes a value: the rest of the token when
+            // attached, else the following argument.
+            let value = if bytes.len() > 2 {
+                &token[2..]
+            } else {
+                index += 1;
+                if index >= args.len() {
+                    return Err(WhatisArgError::Usage);
+                }
+                args[index]
+            };
+            match letter {
+                b'C' | b'm' => {} // config file / manpath augment: not modelled
+                b'M' | b'P' => db_path = Some(value),
+                _ => return Err(WhatisArgError::Usage),
+            }
+        } else {
+            names.push(trim_path(token));
+        }
+        index += 1;
+    }
+    Ok(WhatisArgs { db_path, names })
+}
+
+/// `whatis.c:107-109`'s operand trim: a full path collapses to its final
+/// component (`/usr/bin/foo` → `foo`); a bare name is unchanged.
+fn trim_path(name: &str) -> &str {
+    match name.rfind('/') {
+        Some(at) => &name[at + 1..],
+        None => name,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,7 +256,6 @@ mod tests {
         assert_eq!(entry.section, "1");
         assert_eq!(entry.description, "list directory contents");
     }
-
 
     #[test]
     fn test_shared_row() {
@@ -228,5 +305,81 @@ mod tests {
         let db = EmptyManDb;
         assert_eq!(db.lookup_exact("ls"), None);
         assert!(!db.search_keyword("ls"));
+    }
+
+    #[test]
+    fn test_parse_whatis_operands_and_trim() {
+        use alloc::vec;
+        assert_eq!(
+            parse_whatis_args(&["ls"]),
+            Ok(WhatisArgs {
+                db_path: None,
+                names: vec!["ls"]
+            })
+        );
+        // Full-path operands collapse to their last component (`whatis.c:107`).
+        assert_eq!(
+            parse_whatis_args(&["/usr/bin/foo", "bar/"]).map(|a| a.names),
+            Ok(vec!["foo", ""])
+        );
+        // A lone `-` is a name, not an option.
+        assert_eq!(parse_whatis_args(&["-"]).map(|a| a.names), Ok(vec!["-"]));
+    }
+
+    #[test]
+    fn test_parse_whatis_db_path_options() {
+        use alloc::vec;
+        // `-M` value separate, and attached.
+        assert_eq!(
+            parse_whatis_args(&["-M", "/db", "ls"]),
+            Ok(WhatisArgs {
+                db_path: Some("/db"),
+                names: vec!["ls"]
+            })
+        );
+        assert_eq!(
+            parse_whatis_args(&["-M/db", "ls"]).map(|a| a.db_path),
+            Ok(Some("/db"))
+        );
+        // `-P` also sets the path; the last of `-M`/`-P` wins.
+        assert_eq!(
+            parse_whatis_args(&["-M", "/a", "-P", "/b", "ls"]).map(|a| a.db_path),
+            Ok(Some("/b"))
+        );
+    }
+
+    #[test]
+    fn test_parse_whatis_value_options_are_not_leaked() {
+        use alloc::vec;
+        // The regression: `-m <path>` is consumed (its value is not a name), so
+        // the old catch-all never searches for "-m" or "/augment" as man pages.
+        assert_eq!(
+            parse_whatis_args(&["-m", "/augment", "ls"]),
+            Ok(WhatisArgs {
+                db_path: None,
+                names: vec!["ls"]
+            })
+        );
+        assert_eq!(
+            parse_whatis_args(&["-C", "/conf", "ls"]).map(|a| a.names),
+            Ok(vec!["ls"])
+        );
+        // An unknown option letter is a usage error, never a name.
+        assert_eq!(parse_whatis_args(&["-z", "ls"]), Err(WhatisArgError::Usage));
+        // A value option with no argument is a usage error.
+        assert_eq!(parse_whatis_args(&["-M"]), Err(WhatisArgError::Usage));
+    }
+
+    #[test]
+    fn test_parse_whatis_double_dash() {
+        use alloc::vec;
+        // After `--` everything is a name, even a dash-leading token.
+        assert_eq!(
+            parse_whatis_args(&["--", "-M", "x"]),
+            Ok(WhatisArgs {
+                db_path: None,
+                names: vec!["-M", "x"]
+            })
+        );
     }
 }
