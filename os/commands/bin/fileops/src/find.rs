@@ -7,7 +7,7 @@
 //! `f_*` 一族）在下一包，薄壳在其后。
 //!
 //! 值得先讲清的一处结构：C 的计划表是**链表**，相邻节点天然是「与」——`find_execute`
-//! 一路求值到某个节点返回假就停（`find.c:245` 的 `for (p = plan; p && (p->eval)(p, ...); p = p->next)`），
+//! 一路求值到某个节点返回假就停（`find.c:252` 的 `for (p = plan; p && (p->eval)(p, ...); p = p->next)`），
 //! 所以 `-a`/`-and` 的构造函数是 `c_null`（返回空、不产生节点，`function.c:1867`）。本包
 //! 把这条隐式「与」显式成序列（`Plan`），语义与 C 同形；`!` 与 `-o` 才产生树节点。
 //!
@@ -16,6 +16,7 @@
 //! `-execdir`、`-ls`、`-print0`、`-printx`）。按真值优先序取代码的行为。
 
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -368,7 +369,7 @@ pub fn parse<'a>(args: &'a [&'a str]) -> Result<Parsed<'a>, FindError<'a>> {
 ///
 /// 递归下降一次成形，与 C 的三段压实等价，因为压实次序给出的优先级就是：`()` 最紧
 /// （`paren_squish` 先跑），`!` 收**一个**表达式（`operator.c:175-183` 的 `yankexpr`
-/// 一次只取一个节点），相邻是「与」（`find.c:245` 的求值循环一路短路），`-o` 最松且
+/// 一次只取一个节点），相邻是「与」（`find.c:252` 的求值循环一路短路），`-o` 最松且
 /// 右结合（`operator.c:252-257` 把余下整个计划挂成右支）。
 fn parse_plan<'a>(argv: &'a [&'a str]) -> Result<(Vec<Node<'a>>, bool), FindError<'a>> {
     let mut cur = Cursor { argv, pos: 0 };
@@ -1565,5 +1566,319 @@ mod judge_tests {
             judge(&e, "-true", None),
             Err(JudgeError::Unwired(String::from("-true")))
         );
+    }
+}
+
+/// 一条打印动作的产物（`f_print`/`f_print0`/`f_printx`，`function.c:1475-1507`）。
+/// 交回文本而不是直接写标准输出，是为了让求值器整族可在宿主测；薄壳负责落笔。
+pub fn printed(form: PrintForm, path: &str) -> String {
+    match form {
+        PrintForm::Line => format!("{path}\n"),
+        PrintForm::Nul => format!("{path}\0"),
+        // `-printx` 给 xargs 用：这八个字符前各加一个反斜杠，行尾再加换行
+        // （`f_printx`，`function.c:1492-1507`）。注意它与 `-X` 的 `BADCH`
+        // （`find.c:236-237`，只有五字）不是同一套，别顺手合并。
+        PrintForm::Xargs => {
+            let mut out = String::new();
+            for ch in path.chars() {
+                if matches!(ch, '\'' | '"' | ' ' | '$' | '`' | '\t' | '\n' | '\\') {
+                    out.push('\\');
+                }
+                out.push(ch);
+            }
+            out.push('\n');
+            out
+        }
+    }
+}
+
+/// 一段表达式在一个目录项上的求值结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Evaluated {
+    /// 整段的真值（C 的求值循环：任一节点返假就停，整段为假）。
+    pub truth: bool,
+    /// 是否要剪掉这一支（`-prune` 命中且整段为真时才生效，同 C 由 fts 侧看下一节点的走向）。
+    pub pruned: bool,
+    /// 该吐出去的行（可能多条：一串 `-print` 都会各印一次）。
+    pub emitted: Vec<String>,
+}
+
+/// 求值一段序列（`Vec<Node>`）：与 C 的 `for (p = plan; p && (p->eval)(p, entry); p = p->next)`
+/// 同形——一路求值到某个节点返假并就此短路，其后的节点连输出都不该有（`find.c:252`）。
+pub fn eval_plan(
+    world: &World,
+    refs: &dyn ReferenceStat,
+    entry: &Entry<'_>,
+    nodes: &[Node<'_>],
+    size_bytes: bool,
+) -> Result<Evaluated, JudgeError> {
+    let mut out = Evaluated {
+        truth: true,
+        pruned: false,
+        emitted: Vec::new(),
+    };
+    eval_seq(world, refs, entry, nodes, size_bytes, &mut out)
+}
+
+fn eval_seq(
+    world: &World,
+    refs: &dyn ReferenceStat,
+    entry: &Entry<'_>,
+    nodes: &[Node<'_>],
+    size_bytes: bool,
+    out: &mut Evaluated,
+) -> Result<Evaluated, JudgeError> {
+    for node in nodes {
+        let truth = eval_node(world, refs, entry, node, size_bytes, out)?;
+        if !truth {
+            // 短路：这一段的真值是假，后面的节点一个都不碰。
+            out.truth = false;
+            return Ok(out.clone());
+        }
+    }
+    Ok(out.clone())
+}
+
+fn eval_node(
+    world: &World,
+    refs: &dyn ReferenceStat,
+    entry: &Entry<'_>,
+    node: &Node<'_>,
+    size_bytes: bool,
+    out: &mut Evaluated,
+) -> Result<bool, JudgeError> {
+    match node {
+        Node::Leaf(Prim::Bare(name)) => {
+            let outcome = judge_leaf(world, refs, entry, name, None, size_bytes)?;
+            note(outcome, entry, out);
+            Ok(outcome.truth)
+        }
+        Node::Leaf(Prim::Keyword { name, arg }) => {
+            let outcome = judge_leaf(world, refs, entry, name, Some(arg), size_bytes)?;
+            note(outcome, entry, out);
+            Ok(outcome.truth)
+        }
+        Node::Leaf(Prim::Exec { name, .. }) => {
+            // 执行腿尚未接：按名拒绝，且绝不让它把整段带成「真而无声」。
+            Err(JudgeError::Unwired(String::from(*name)))
+        }
+        Node::Paren(inner) => {
+            let mut sub = Evaluated {
+                truth: true,
+                pruned: false,
+                emitted: Vec::new(),
+            };
+            eval_seq(world, refs, entry, inner, size_bytes, &mut sub)?;
+            let truth = sub.truth;
+            merge(sub, out);
+            Ok(truth)
+        }
+        Node::Not(inner) => {
+            let mut sub = Evaluated {
+                truth: true,
+                pruned: false,
+                emitted: Vec::new(),
+            };
+            let one = vec![(**inner).clone()];
+            eval_seq(world, refs, entry, &one, size_bytes, &mut sub)?;
+            // C 的 `f_not` 只翻转子计划的结果；子计划里的输出该出的还是出了。
+            let truth = !sub.truth;
+            merge(sub, out);
+            Ok(truth)
+        }
+        Node::Or { left, right } => {
+            let mut sub = Evaluated {
+                truth: true,
+                pruned: false,
+                emitted: Vec::new(),
+            };
+            eval_seq(world, refs, entry, left, size_bytes, &mut sub)?;
+            let left_truth = sub.truth;
+            merge(sub, out);
+            if left_truth {
+                return Ok(true);
+            }
+            let mut right_sub = Evaluated {
+                truth: true,
+                pruned: false,
+                emitted: Vec::new(),
+            };
+            eval_seq(world, refs, entry, right, size_bytes, &mut right_sub)?;
+            let truth = right_sub.truth;
+            merge(right_sub, out);
+            Ok(truth)
+        }
+    }
+}
+
+fn note(outcome: Outcome, entry: &Entry<'_>, out: &mut Evaluated) {
+    match outcome.action {
+        Action::None => {}
+        Action::Prune => out.pruned = true,
+        Action::Print(form) => out.emitted.push(printed(form, entry.path)),
+    }
+}
+
+fn merge(sub: Evaluated, out: &mut Evaluated) {
+    out.pruned |= sub.pruned;
+    out.emitted.extend(sub.emitted);
+}
+
+#[cfg(test)]
+mod eval_tests {
+    use super::*;
+
+    struct NoRefs;
+    impl ReferenceStat for NoRefs {
+        fn times_of(&self, _path: &str) -> Option<(i64, i64, i64)> {
+            None
+        }
+    }
+
+    fn entry() -> Entry<'static> {
+        Entry {
+            path: "/etc/rc.d",
+            name: "rc.d",
+            level: 2,
+            mode: 0o100644,
+            ino: 7,
+            nlink: 1,
+            size: 512,
+            uid: 0,
+            gid: 0,
+            dev: 1,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+            children: None,
+        }
+    }
+
+    fn world() -> World {
+        World {
+            now: 0,
+            euid: 0,
+            egid: 0,
+            root_dev: 1,
+        }
+    }
+
+    /// 把「起始路径 + 表达式」按 `find` 的 argv 形状喂进第一包的解析器，
+    /// 再对一条固定目录项求值——两包就这样在测里连成一条链。
+    fn run(src: &[&str]) -> Result<Evaluated, JudgeError> {
+        // argv 形状是「起始路径 + 表达式」：第一包的解析器吃的就是这一串。
+        let mut owned: Vec<String> = vec![String::from(".")];
+        owned.extend(src.iter().map(|s| String::from(*s)));
+        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let parsed = parse(&refs).unwrap();
+        let bytes = size_counts_bytes(&parsed.expr);
+        eval_plan(&world(), &NoRefs, &entry(), &parsed.expr, bytes)
+    }
+
+    #[test]
+    fn a_sequence_short_circuits_at_the_first_false_test() {
+        // `-name rc.d -print`：两个都真，行吐一次。
+        let got = run(&["-name", "rc.d", "-print"]).unwrap();
+        assert!(got.truth);
+        assert_eq!(got.emitted, vec![String::from("/etc/rc.d\n")]);
+        // 前项为假：后面的 -print 根本不该碰。
+        let quiet = run(&["-name", "nope", "-print"]).unwrap();
+        assert!(!quiet.truth);
+        assert!(quiet.emitted.is_empty());
+    }
+
+    #[test]
+    fn every_true_test_in_a_chain_prints_once_per_print() {
+        let two = run(&["-type", "f", "-print", "-print0"]).unwrap();
+        assert_eq!(
+            two.emitted,
+            vec![String::from("/etc/rc.d\n"), String::from("/etc/rc.d\0")]
+        );
+    }
+
+    #[test]
+    fn or_takes_the_right_branch_only_when_the_left_is_false() {
+        // 左真：右支不碰，故右支那个 -print 不吐行。
+        let left = run(&["-name", "rc.d", "-print", "-o", "-name", "x", "-print"]).unwrap();
+        assert_eq!(left.emitted, vec![String::from("/etc/rc.d\n")]);
+        // 左假：右支接手。
+        let right = run(&["-name", "nope", "-print", "-o", "-type", "f", "-print"]).unwrap();
+        assert!(right.truth);
+        assert_eq!(right.emitted, vec![String::from("/etc/rc.d\n")]);
+    }
+
+    #[test]
+    fn not_flips_the_truth_but_keeps_the_output_it_produced() {
+        // C 的 f_not 只翻子计划的结果：子计划里的 -print 照吐。
+        let got = run(&["!", "(", "-name", "rc.d", "-print", ")"]).unwrap();
+        assert!(!got.truth);
+        assert_eq!(got.emitted, vec![String::from("/etc/rc.d\n")]);
+        let flipped = run(&["!", "(", "-name", "nope", ")"]).unwrap();
+        assert!(flipped.truth);
+    }
+
+    #[test]
+    fn prune_is_reported_without_changing_the_truth() {
+        let got = run(&["-type", "d", "-prune"]).unwrap();
+        assert!(!got.truth && !got.pruned); // 不是目录，-prune 也就碰不到
+        let deep = run(&["-type", "f", "-prune", "-print"]).unwrap();
+        assert!(deep.truth && deep.pruned);
+        assert_eq!(deep.emitted, vec![String::from("/etc/rc.d\n")]);
+    }
+
+    #[test]
+    fn the_xargs_print_form_escapes_exactly_the_chars_c_lists() {
+        // f_printx 逃的是 `' " 空格 $ ` \t \n \\` 这八个（function.c:1495-1500）。
+        let raw = "/tmp/a b'c\"d$e`f\n\tg\\";
+        let escaped = printed(PrintForm::Xargs, raw);
+        assert_eq!(escaped, "/tmp/a\\ b\\'c\\\"d\\$e\\`f\\\n\\\tg\\\\\n");
+        // 而 -X 的 BADCH 只有五个字，别把两套并起来（find.c:235）。
+        assert_eq!(printed(PrintForm::Line, "a b"), String::from("a b\n"));
+    }
+
+    #[test]
+    fn one_c_suffix_switches_every_size_test_in_the_tree() {
+        // `-size 1c -o -size 1`：那处 `c` 让全树都按字节比，于是 512 字节的条目
+        // 两条都不成立（C 的 `divsize` 就是这份全局性，`function.c:1638-1654`）。
+        let refs: Vec<&str> = vec![".", "-size", "1c", "-o", "-size", "1"];
+        let parsed = parse(&refs).unwrap();
+        let nodes = parsed.expr.clone();
+        assert!(size_counts_bytes(&nodes));
+        let world = world();
+        let e = entry(); // size 512
+        assert!(!eval_plan(&world, &NoRefs, &e, &nodes, true).unwrap().truth);
+        // 把那条带 `c` 的换成带块的，旗标不置起，1 块（512 字节）就成立了。
+        let plain: Vec<&str> = vec![".", "-size", "2c", "-o", "-size", "1"];
+        let plain = parse(&plain).unwrap();
+        assert!(size_counts_bytes(&plain.expr));
+        assert!(
+            !eval_plan(&world, &NoRefs, &e, &plain.expr, true)
+                .unwrap()
+                .truth
+        );
+        let no_c: Vec<&str> = vec![".", "-size", "1"];
+        let no_c = parse(&no_c).unwrap();
+        assert!(!size_counts_bytes(&no_c.expr));
+        assert!(
+            eval_plan(&world, &NoRefs, &e, &no_c.expr, false)
+                .unwrap()
+                .truth
+        );
+    }
+
+    #[test]
+    fn unwired_actions_refuse_rather_than_reporting_true() {
+        // `-exec` 的执行腿未接：整段是错误，不是「真而无声」。
+        let got = run(&["-exec", "true", ";"]);
+        assert!(matches!(got, Err(JudgeError::Unwired(_))));
+        // 不在表里的写法同样是未知项。
+        let unknown = eval_plan(
+            &world(),
+            &NoRefs,
+            &entry(),
+            &[Node::Leaf(Prim::Bare("-nope"))],
+            false,
+        );
+        assert!(unknown.is_err());
     }
 }
