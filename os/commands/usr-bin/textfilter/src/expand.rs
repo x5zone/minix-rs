@@ -119,6 +119,83 @@ pub fn expand(input: &str, stops: &[usize]) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Tab stops + file operands parsed from `expand`'s argv tail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpandArgs<'a> {
+    /// Tab stop columns from `-t`/obsolete `-N`; empty means the default 8.
+    pub stops: Vec<usize>,
+    /// File operands in order.
+    pub operands: Vec<&'a str>,
+}
+
+/// `expand` argument-parsing failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpandError {
+    /// An option letter other than `-t` (C `getopt` default → usage,
+    /// `expand.c:81-83`).
+    Usage,
+    /// `-t`/`-N` with no value, or a stop list `getstops`/`parse_stops` rejects
+    /// (`expand.c:79`).
+    IllegalStops,
+}
+
+/// Split `expand`'s argv tail into [`ExpandArgs`], faithful to C. The obsolete
+/// leading run `while (argv[1][0] == '-' && isdigit(argv[1][1]))`
+/// (`expand.c:70-73`) consumes a run of `-<digits>` tokens, each handed to
+/// `getstops`, stopping at the first non-match. Then `getopt(argc, argv, "t:")`
+/// (`expand.c:76`) applies: `-t` takes a value either attached (`-t8`) or as the
+/// following argument (`-t 8`); a lone `-` and any non-dash token are file
+/// operands; `--` ends option scanning (BSD getopt), after which everything is
+/// an operand; any other option letter is [`ExpandError::Usage`]. The old front
+/// door matched only the whole token `-t`, so the C-legal attached form
+/// `expand -t8 file` fell through to a usage error — this parser accepts it. A
+/// stop list `parse_stops` rejects, or a `-t`/`-N` with no value, is
+/// [`ExpandError::IllegalStops`].
+pub fn parse_expand_args<'a>(args: &'a [&'a str]) -> Result<ExpandArgs<'a>, ExpandError> {
+    let mut stops: Vec<usize> = Vec::new();
+    let mut operands: Vec<&'a str> = Vec::new();
+    let mut index = 0;
+    // Obsolete leading `-<digit>` run (expand.c:70-73), consumed before getopt.
+    while index < args.len() {
+        let token = args[index].as_bytes();
+        if token.len() >= 2 && token[0] == b'-' && token[1].is_ascii_digit() {
+            let spec = &args[index][1..];
+            stops = parse_stops(spec).ok_or(ExpandError::IllegalStops)?;
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    // getopt("t:").
+    while index < args.len() {
+        let arg = args[index];
+        if arg == "--" {
+            operands.extend_from_slice(&args[index + 1..]);
+            break;
+        }
+        let bytes = arg.as_bytes();
+        if bytes.len() > 1 && bytes[0] == b'-' {
+            if bytes[1] != b't' {
+                return Err(ExpandError::Usage);
+            }
+            let spec = if bytes.len() > 2 {
+                &arg[2..]
+            } else {
+                index += 1;
+                if index >= args.len() {
+                    return Err(ExpandError::IllegalStops);
+                }
+                args[index]
+            };
+            stops = parse_stops(spec).ok_or(ExpandError::IllegalStops)?;
+        } else {
+            operands.push(arg);
+        }
+        index += 1;
+    }
+    Ok(ExpandArgs { stops, operands })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,17 +221,17 @@ mod tests {
         let stops = [1, 5, 20];
         assert_eq!(expand("ab\t", &stops), "ab   ");
         // Past the last stop: a single space.
-        assert_eq!(expand("aaaaaaaaaaaaaaaaaaaa\t", &stops), "aaaaaaaaaaaaaaaaaaaa ");
+        assert_eq!(
+            expand("aaaaaaaaaaaaaaaaaaaa\t", &stops),
+            "aaaaaaaaaaaaaaaaaaaa "
+        );
     }
 
     #[test]
     fn test_backspace_pulls_the_column_and_passes_through() {
         // The backspace bytes pass through untouched (expand.c:128-133);
         // only the column tracking pulls back.
-        assert_eq!(
-            expand("abc\x08\x08x", &[4]),
-            "abc\u{8}\u{8}x".to_string()
-        );
+        assert_eq!(expand("abc\x08\x08x", &[4]), "abc\u{8}\u{8}x".to_string());
         // A tab right after sees the pulled-back column: x sits at
         // column 2, the tab pads to the stop at 4.
         assert_eq!(
@@ -175,5 +252,59 @@ mod tests {
         assert!(parse_stops("4,2").is_none());
         assert!(parse_stops("0").is_none());
         assert!(parse_stops("257").is_none());
+    }
+
+    #[test]
+    fn test_parse_expand_attached_and_separate_stops() {
+        use alloc::vec;
+        // No options → default stops, one operand.
+        assert_eq!(
+            parse_expand_args(&["f"]),
+            Ok(ExpandArgs {
+                stops: Vec::new(),
+                operands: vec!["f"]
+            })
+        );
+        // `-t 8` value as the next token.
+        assert_eq!(
+            parse_expand_args(&["-t", "8", "f"]).map(|a| (a.stops, a.operands)),
+            Ok((vec![8], vec!["f"]))
+        );
+        // The regression: the attached form `-t8` is accepted, not a usage error.
+        assert_eq!(
+            parse_expand_args(&["-t8", "f"]).map(|a| (a.stops, a.operands)),
+            Ok((vec![8], vec!["f"]))
+        );
+        // `-t` takes a list, not just one column.
+        assert_eq!(
+            parse_expand_args(&["-t", "1,4,8"]).map(|a| a.stops),
+            Ok(vec![1, 4, 8])
+        );
+    }
+
+    #[test]
+    fn test_parse_expand_obsolete_and_errors() {
+        use alloc::vec;
+        // Obsolete leading `-N` form (expand.c:70) sets the stops.
+        assert_eq!(
+            parse_expand_args(&["-8", "f"]).map(|a| (a.stops, a.operands)),
+            Ok((vec![8], vec!["f"]))
+        );
+        // A lone `-` is a file operand, not an option.
+        assert_eq!(parse_expand_args(&["-"]).map(|a| a.operands), Ok(vec!["-"]));
+        // `--` ends options; the dash token after it is an operand.
+        assert_eq!(
+            parse_expand_args(&["--", "-t"]).map(|a| a.operands),
+            Ok(vec!["-t"])
+        );
+        // An unknown option letter → usage.
+        assert_eq!(parse_expand_args(&["-z", "f"]), Err(ExpandError::Usage));
+        // `-t` with a stop list parse_stops rejects → IllegalStops.
+        assert_eq!(
+            parse_expand_args(&["-t", "0"]),
+            Err(ExpandError::IllegalStops)
+        );
+        // `-t` with no following value → IllegalStops.
+        assert_eq!(parse_expand_args(&["-t"]), Err(ExpandError::IllegalStops));
     }
 }
