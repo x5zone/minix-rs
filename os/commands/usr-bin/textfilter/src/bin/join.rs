@@ -10,8 +10,11 @@
 //! (empty-field replacement), `-j field` (both join fields at once — the BSD
 //! alias for `-1 field -2 field`) and `-v fileno` (that file's unpairable lines
 //! only, with matched output suppressed). `-a` and `-v` are mutually exclusive
-//! (`join.c:234-235`). Declared residual: the obsolete one-argument form (a bare
-//! `-1`/`-2`/`-o`/`-t`/`-j`/`-v` without a value).
+//! (`join.c:234-235`). Option values take either form the BSD `getopt`
+//! (`join.c:133`) allows: attached (`-t,`, `-a1`, `-o0,1`) or as the following
+//! argument (`-t ,`). Declared residual: the C `obsolete(argv)` pre-pass
+//! (`join.c:132`) that rewrites legacy bare `-a` (both files) and `-j[12]` forms
+//! — not modelled here.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -22,7 +25,7 @@ mod support;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_textfilter::join::{JoinOptions, join_lines, parse_olist};
+use minix_textfilter::join::{JoinError, join_lines, parse_join_args};
 
 /// Read a whole standard-input stream (a `-` operand).
 fn read_stdin() -> Vec<u8> {
@@ -56,104 +59,34 @@ fn fail(message: &str) -> ! {
     support::terminate(1)
 }
 
+/// Map a [`JoinError`] to C's `warnx` line for that branch (each `join.c` arm
+/// warns then calls `usage()`), then exit 1. The two-line `warnx`+`usage` C emits
+/// is collapsed to the specific message — no strerror/usage table here (declared
+/// difference, same as the other command bins).
+fn join_usage_fail(e: JoinError) -> ! {
+    match e {
+        JoinError::Usage => fail(
+            "usage: join [-a fileno | -v fileno] [-1 field1] [-2 field2] [-e empty] [-j field] [-o field] [-t char] file1 file2",
+        ),
+        JoinError::FieldLessThan1 => fail("option field number less than 1"),
+        JoinError::IllegalFieldNumber => fail("illegal field number"),
+        JoinError::FileNumberNot12 => fail("option file number not 1 or 2"),
+        JoinError::IllegalFileNumber => fail("illegal file number"),
+        JoinError::BadTabChar => fail("illegal tab character specification"),
+        JoinError::BadOutputField => fail("malformed -o option field"),
+        JoinError::AAndVMutuallyExclusive => fail("-a and -v options mutually exclusive"),
+    }
+}
+
 /// The whole program body; both `main` forms call it and it never returns.
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
 
-    let mut opts = JoinOptions::default();
-    let mut files: Vec<&str> = Vec::new();
-    let mut aflag = false;
-    let mut vflag = false;
-    let mut i = 1;
-    // Take the next argv word as an option's value (empty if none remains).
-    macro_rules! value {
-        () => {{
-            i += 1;
-            args.get(i).copied().unwrap_or("")
-        }};
-    }
-    while i < args.len() {
-        let a = args[i];
-        if a == "--" {
-            files.extend(args[i + 1..].iter().copied());
-            break;
-        }
-        if a == "-" || !a.starts_with('-') || a.len() == 1 {
-            files.push(a);
-            i += 1;
-            continue;
-        }
-        let flag = &a[1..];
-        match flag {
-            "t" => {
-                let v = value!();
-                if let Some(&b) = v.as_bytes().first() {
-                    opts.delim = b;
-                }
-            }
-            "a" => {
-                aflag = true;
-                match value!() {
-                    "1" => opts.unmatched1 = true,
-                    "2" => opts.unmatched2 = true,
-                    _ => fail("-a option file number not 1 or 2"),
-                }
-            }
-            "1" | "2" => {
-                let v = value!();
-                let n: usize = v.parse().unwrap_or(0);
-                if n == 0 {
-                    fail("option field number less than 1");
-                }
-                if flag == "1" {
-                    opts.field1 = n - 1;
-                } else {
-                    opts.field2 = n - 1;
-                }
-            }
-            "o" => {
-                let v = value!();
-                match parse_olist(v) {
-                    Ok(fields) => opts.output_fields = fields,
-                    Err(_) => fail("malformed -o option field"),
-                }
-            }
-            "e" => {
-                opts.empty = Some(value!().as_bytes().to_vec());
-            }
-            "j" => {
-                // BSD alias: `-j field` == `-1 field -2 field` (`join.c:183-194`).
-                let n: usize = value!().parse().unwrap_or(0);
-                if n == 0 {
-                    fail("-j option field number less than 1");
-                }
-                opts.field1 = n - 1;
-                opts.field2 = n - 1;
-            }
-            "v" => {
-                // `-v fileno`: only that file's unpairable lines print; matched
-                // output is suppressed via `joinout` (`join.c:206-224`).
-                vflag = true;
-                opts.joinout = false;
-                match value!() {
-                    "1" => opts.unmatched1 = true,
-                    "2" => opts.unmatched2 = true,
-                    _ => fail("-v option file number not 1 or 2"),
-                }
-            }
-            _ => fail("unknown option"),
-        }
-        i += 1;
-    }
-
-    if aflag && vflag {
-        fail("-a and -v options mutually exclusive");
-    }
-
-    if files.len() != 2 {
-        fail("usage: join [-a fileno] [-1 field] [-2 field] [-t char] file1 file2");
-    }
+    let (opts, files) = match parse_join_args(&args[1..]) {
+        Ok(a) => (a.opts, a.files),
+        Err(e) => join_usage_fail(e),
+    };
 
     let b1 = if files[0] == "-" {
         read_stdin()
