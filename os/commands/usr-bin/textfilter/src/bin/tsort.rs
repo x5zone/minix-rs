@@ -2,47 +2,44 @@
 //!
 //! Ground truth: `minix3/usr.bin/tsort/tsort.c` (NetBSD). The deciding
 //! half (pair parsing, the removal passes, cycle detection and the
-//! one-node cycle break) is the library's `tsort` module; this program
-//! reads whitespace-separated token pairs from stdin, prints the order,
-//! and reports cycles on standard error ("cycle in data" plus the
-//! members — suppressed by `-q`). An odd token count leaves with status
-//! 1 ("odd data count", tsort.c:183).
-
+//! one-node cycle break) is the library's `tsort` module; this program reads
+//! whitespace-separated token pairs from its single file operand or stdin,
+//! prints the order, and reports cycles on standard error ("cycle in data" plus
+//! the members — suppressed by `-q`; `-d`/`-l` are accepted no-ops as in C). An
+//! odd token count leaves with status 1 ("odd data count", tsort.c:183).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::tsort::{tsort, TsortError};
-use minix_sys::read;
+use minix_textfilter::tsort::{parse_args, tsort, TsortArgs};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut quiet = false;
-    for arg in &argv[1..] {
-        match arg.as_str() {
-            "-q" => quiet = true,
-            _ => {
-                support::warn(b"usage: tsort [-lq] [file]\n");
-                support::terminate(2);
-            }
-        }
-    }
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let TsortArgs { quiet, file } = match parse_args(&refs[1..]) {
+        Ok(args) => args,
+        Err(_) => usage(),
+    };
 
-    let mut input = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(support::STDIN, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => input.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
+    // C `switch(argc)`: no operand reads stdin, one operand reads that file
+    // (`err(1, "%s")` when it cannot be opened), more than one is a usage error.
+    let input = match file {
+        Some(path) => match support::read_file(path) {
+            Ok(bytes) => bytes,
+            Err(()) => {
+                support::warn(format!("tsort: {path}\n").as_bytes());
+                support::terminate(1);
+            }
+        },
+        None => support::read_stdin(),
+    };
     let text = core::str::from_utf8(&input).unwrap_or("");
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let result = match tsort(&tokens) {
@@ -71,6 +68,10 @@ fn run() -> ! {
     support::terminate(0);
 }
 
+fn usage() -> ! {
+    support::warn(b"usage: tsort [-dlq] [file]\n");
+    support::terminate(2);
+}
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
