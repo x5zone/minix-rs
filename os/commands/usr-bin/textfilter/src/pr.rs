@@ -48,6 +48,11 @@ pub struct PrOptions {
     /// `pr.c:1883-1890`). Single-column path only; a page that can hold fewer
     /// than two rows falls back to no doubling (C `if (lines == 1) dspace = 0`).
     pub double_space: bool,
+    /// `+N`: start printing at page N — skip the leading `(N-1)*content_per_page`
+    /// content lines and number pages from N (C `pgnm` + `inskip`, `pr.c:1657`).
+    /// A file too short to reach page N prints nothing (C skips it). Single-column
+    /// path; `1` (the default) prints from the first page.
+    pub start_page: usize,
     /// `-w`: requested page width — `PGWD` 72 by default, `SPGWD` 512 under
     /// `-s` (the `doing` half picks the default; see `setup` `pr.c:1834-1839`).
     /// `column_width` folds it into the per-column data width.
@@ -81,6 +86,7 @@ impl Default for PrOptions {
             columns: 1,
             across: false,
             double_space: false,
+            start_page: 1,
             page_width: 72,
             sep: None,
             offset: 0,
@@ -161,8 +167,14 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
         body_capacity
     };
     let mut pages = Vec::new();
-    let mut page_number = 1usize;
-    let mut cursor = 0usize;
+    let start_page = options.start_page.max(1);
+    let skip = (start_page - 1) * content_per_page;
+    if start_page > 1 && skip >= lines.len() {
+        // C `inskip` could not reach page N → the file yields no output.
+        return Vec::new();
+    }
+    let mut page_number = start_page;
+    let mut cursor = skip;
     loop {
         let body_end = (cursor + content_per_page).min(lines.len());
         let mut body: Vec<String> = if options.number_width == 0 {
@@ -819,5 +831,29 @@ mod tests {
         let pages = paginate_lines(&["a", "b"], &options);
         assert_eq!(pages[0].body_lines, vec![String::from("a")]);
         assert_eq!(pages[1].body_lines, vec![String::from("b")]);
+    }
+
+    #[test]
+    fn test_start_page_skips_ahead_and_offsets_numbering() {
+        let mut options = PrOptions::default();
+        options.page_len = 12; // body_capacity 2
+        options.start_page = 3; // skip (3-1)*2 = 4 content lines
+        let lines: Vec<String> = ("123456").chars().map(|c| c.to_string()).collect();
+        let pages = paginate(&lines, &options);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].header_lines[2], " Page 3");
+        assert_eq!(
+            pages[0].body_lines,
+            vec![String::from("5"), String::from("6")]
+        );
+    }
+
+    #[test]
+    fn test_start_page_beyond_end_prints_nothing() {
+        let mut options = PrOptions::default();
+        options.page_len = 12; // body_capacity 2 → page 3 needs lines 5-6
+        options.start_page = 3;
+        // Only 3 lines: page 3 is unreachable → C `inskip` skips the file.
+        assert!(paginate_lines(&["a", "b", "c"], &options).is_empty());
     }
 }

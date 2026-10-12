@@ -15,7 +15,7 @@
 //! line number (C `addnum`) via the `number_width`/`number_char` options; the
 //! across-fill `-a` (C `horzcol`) via the `across` option; the double-spacing
 //! `-d` (C `otln`+`setup`) via `double_space` in the single-column path; merge
-//! (`-m`), the formfeed (`-F`), the starting page (`+first`), `-d` combined with
+//! (`-m`), the formfeed (`-F`), `-d` combined with
 //! columns, and multi-column `-n` are later batches. An
 //! unopenable operand warns
 //! and is skipped with a nonzero exit (`strerror` suffix not reproduced).
@@ -135,10 +135,11 @@ fn run() -> ! {
             // `-a`: across-fill; needs multiple columns (checked after the scan).
             across = true;
         } else if arg.starts_with('+') {
-            // `+first_page` (start at a page) is a later batch; `-N` columns
-            // are handled above.
-            support::warn(b"pr: +page is not modelled yet\n");
-            support::terminate(2);
+            // `+N`: start printing at page N (C `case '+'` → `pgnm`, `pr.c:1657`).
+            match arg[1..].parse::<usize>() {
+                Ok(n) if n >= 1 => options.start_page = n,
+                _ => usage(),
+            }
         } else if arg.len() > 1 && arg.starts_with('-') {
             // An option letter we do not model (`-m`, `-F`).
             support::warn(b"pr: option form not modelled yet\n");
@@ -237,7 +238,7 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 
 fn usage() -> ! {
     support::warn(
-        b"usage: pr [-t] [-h header] [-l lines] [-d] [-columns] [-a] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
+        b"usage: pr [-t] [-h header] [-l lines] [-d] [+page] [-columns] [-a] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
     );
     support::terminate(2);
 }
