@@ -95,6 +95,39 @@ pub struct Options {
     pub check: bool,
     /// Field delimiter byte (`-t`).
     pub delimiter: Option<u8>,
+    /// Merge already-sorted runs instead of sorting (`-m`, C `sort -m`).
+    pub merge: bool,
+}
+
+/// Merge several already-sorted runs into one sorted vector, the way C's
+/// `sort -m` concatenates sorted inputs by merging rather than re-sorting. Each
+/// run is assumed already ordered under `options`; equal keys keep the earlier
+/// run's line first (a stable, left-biased merge). Because nothing is
+/// re-sorted, `-m` on runs that are not each sorted yields a merge of the runs,
+/// exactly as the C does.
+pub fn merge_sorted(runs: &[&[String]], options: &Options) -> Vec<String> {
+    let mut acc: Vec<String> = Vec::new();
+    for run in runs {
+        acc = merge_two(&acc, run, options);
+    }
+    acc
+}
+
+fn merge_two(a: &[String], b: &[String], options: &Options) -> Vec<String> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        if compare(&b[j], &a[i], options) == core::cmp::Ordering::Less {
+            out.push(b[j].clone());
+            j += 1;
+        } else {
+            out.push(a[i].clone());
+            i += 1;
+        }
+    }
+    out.extend_from_slice(&a[i..]);
+    out.extend_from_slice(&b[j..]);
+    out
 }
 
 /// An unparsable option (`-k`/`-t` value faults included).
@@ -131,6 +164,7 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                 'b' => options.blank_skip = true,
                 'u' => options.unique = true,
                 'c' => options.check = true,
+                'm' => options.merge = true,
                 'k' | 't' => {
                     let mut value: String = chars.by_ref().collect();
                     if value.is_empty() {
@@ -690,5 +724,34 @@ mod tests {
     #[test]
     fn test_parse_options_rejects_unknown() {
         assert_eq!(parse_options(&["-Z"]), Err(ParseError::BadOption('Z')));
+    }
+
+    #[test]
+    fn test_parse_options_accepts_merge() {
+        let (options, operands) = parse_options(&["-m", "a.txt"]).unwrap();
+        assert!(options.merge);
+        assert_eq!(operands, ["a.txt"]);
+    }
+
+    #[test]
+    fn test_merge_sorted_two_runs_interleave() {
+        let options = Options::default();
+        let a = ["a1".to_string(), "a3".to_string(), "a5".to_string()];
+        let b = ["a2".to_string(), "a4".to_string()];
+        let merged = merge_sorted(&[&a, &b], &options);
+        assert_eq!(
+            merged,
+            ["a1", "a2", "a3", "a4", "a5"].map(String::from).to_vec()
+        );
+    }
+
+    #[test]
+    fn test_merge_sorted_equal_keys_keep_earlier_run_first() {
+        let options = Options::default();
+        let a = ["x".to_string(), "y".to_string()];
+        let b = ["x".to_string()];
+        let merged = merge_sorted(&[&a, &b], &options);
+        // run a's "x" precedes run b's "x": a stable, left-biased merge.
+        assert_eq!(merged, ["x", "x", "y"].map(String::from).to_vec());
     }
 }

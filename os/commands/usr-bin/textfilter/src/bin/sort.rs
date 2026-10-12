@@ -3,12 +3,13 @@
 //! Ground truth: `minix3/usr.bin/sort/` (NetBSD). The deciding half —
 //! `-k` key specifications, the `b d f i M n r` modifiers, `-n` numeric
 //! comparison, `-t` delimiters, `-r`, `-u`, and `-c` — is the library's
-//! `sort` module; the doing half collects stdin, orders the lines
+//! `sort` module; the doing half collects the operands, orders the lines
 //! in memory (the C's external merge over temporary files is the
 //! execution layer for inputs beyond memory), and emits lines with a
-//! trailing newline. Each input operand is read in file order and their
-//! lines concatenated (a `-` names standard input); with no operand the
-//! input is standard input. `-m` (merge) and `-o` (output file) are rejected
+//! trailing newline. Each input operand is read in file order as its own
+//! run (a `-` names standard input; no operand reads standard input); the
+//! default concatenates and sorts them, and `-m` merges the runs assuming
+//! each is already ordered (`merge_sorted`). `-o` (output file) is rejected
 //! by the option parser as not yet modelled.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -22,7 +23,7 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, read};
-use minix_textfilter::sort::{compare, parse_options};
+use minix_textfilter::sort::{compare, merge_sorted, parse_options};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -41,9 +42,9 @@ fn run() -> ! {
         support::warn(b"sort: too many input files for -c option\n");
         support::terminate(2);
     }
-    let mut lines: Vec<String> = Vec::new();
+    let mut runs: Vec<Vec<String>> = Vec::new();
     if operands.is_empty() {
-        lines = split_lines(&support::read_stdin());
+        runs.push(split_lines(&support::read_stdin()));
     } else {
         for operand in operands {
             let input = if operand == "-" {
@@ -51,16 +52,22 @@ fn run() -> ! {
             } else {
                 read_file(operand)
             };
-            lines.extend(split_lines(&input));
+            runs.push(split_lines(&input));
         }
     }
+    let mut lines: Vec<String> = runs.iter().flatten().cloned().collect();
 
     if options.check {
         check(&lines, &options);
         support::terminate(0);
     }
 
-    lines.sort_by(|a, b| compare(a, b, &options));
+    if options.merge {
+        let refs: Vec<&[String]> = runs.iter().map(|r| r.as_slice()).collect();
+        lines = merge_sorted(&refs, &options);
+    } else {
+        lines.sort_by(|a, b| compare(a, b, &options));
+    }
     if options.unique {
         lines.dedup_by(|a, b| compare(a, b, &options) == core::cmp::Ordering::Equal);
     }
