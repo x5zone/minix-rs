@@ -171,7 +171,7 @@
 | 命令 | Requires（最小 API） | 当前状态 |
 |------|---------------------|---------|
 | tr | `read`、`write`、`exit`、argv 交接 | 已接线（翻译、`-d` 删除、`-s` 压缩、`-c` 取补四路） |
-| cut | 同上 | 已接线（`-b`/`-c` 字节与 `-f` 字段两路，`-d`/`-s` 就位）；文件操作数已接（无操作数与 `-` 读 stdin、逐文件 open、打不开的文件按 C warn 跳过且退出码置错【非致命，区别于 expand/fold 的 freopen+err】；真机 open 腿归 C-57/E5） |
+| cut | 同上 | 已接线（`-b`/`-c` 字节与 `-f` 字段两路，`-d`/`-s` 就位）；文件操作数已接（无操作数与 `-` 读 stdin、逐文件 open、打不开的文件按 C warn 跳过且退出码置错【非致命，区别于 expand/fold 的 freopen+err】；选项面按 `cut.c:88` `getopt("b:c:d:f:sn")` 忠实解析——`-b`/`-c`/`-f`/`-d` 值附于本 token（`-f1-3`/`-d:`）或取下一词、`-s`/`-n` 逐位聚簇（`-sf1-3`、`-sn`/`-ns`）、`--` 终止、字节与字段表并存报冲突（下沉 `parse_cut_args`，批次一百八十一）；真机 open 腿归 C-57/E5）|
 | uniq | 同上 | 已接线（`-c`/`-d`/`-u` 单模式；决定半 `uniq.rs` 已测）；输入文件操作数已接（无操作数读 stdin、1 操数则 open+read）、fopen 失败退出；输出文件（第2操作数，create-and-write 路径）报未接（不静默截断文件，用 shell 重定向）；`-i`/`-f`/`-s` 比较面与组合模式待批；真机 open 腿归 C-57/E5 |
 | head | 同上 | 已接线（`-n`/obsolete `-N`，缺省 10，窗口封顶 32）；文件操作数已接（逐文件取前 N 行、多文件或 `-v` 时打 `==> 名 <==` 横幅、`-q` 静默、文件间前导空行、fopen 失败 warn+跳过【`-` 不特判为 stdin，因 head.c 用 fopen】）；`-c` 字节模式（行基窗口不支持）报未接；真机 open 腿归 C-57/E5 |
 | tail | 同上 | 已接线（forward 取后 N 行，`-n`/obsolete `-N`，缺省 10，环形封顶 32）；文件操作数已接（逐文件取后 N 行、多文件无条件打 `==> 名 <==` 横幅、文件间前导空行——此 NetBSD tail 无 `-q`/`-v`、fopen/fstat 失败 warn 跳过【非致命】、`-` 不特判为 stdin）；`-c`/`-b`（行基）、`-r` 反序、`-f`/`-F` follow、`-n +N` 前向偏移均报未接；选项面按 `tail.c:108` `getopt("Fb:c:fn:r")` 附值（`-n10`/`-c100`）/聚簇（`-rn3`）与 obsolete 前导-digit 忠实解析、集外旗标显式拒不再漏成操数（下沉 `parse_tail_args`，批次一百八十）；真机 open 腿归 C-57/E5 |

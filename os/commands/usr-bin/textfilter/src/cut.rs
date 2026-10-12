@@ -13,6 +13,7 @@
 //!   prints them whole).
 
 use crate::TextError;
+use alloc::vec::Vec;
 
 /// Maximum ranges in one field list.
 pub const MAX_RANGES: usize = 16;
@@ -193,6 +194,119 @@ fn in_ranges(ranges: &[Range], field: u32) -> bool {
     ranges.iter().any(|range| range.low <= field && field <= range.high)
 }
 
+/// Parsed `cut` command line: the byte (`-b`/`-c`) and field (`-f`) list
+/// selectors, the `-d` delimiter, the `-s` suppress flag, and file operands
+/// (a bare `-` names standard input).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CutArgs<'a> {
+    pub bytes_list: Option<&'a str>,
+    pub fields_list: Option<&'a str>,
+    pub delimiter: u8,
+    pub suppress: bool,
+    pub operands: Vec<&'a str>,
+}
+
+/// `cut` argument failure. Each arm maps to a distinct C path (the caller
+/// renders it): `getopt` `?`/default → `Usage`, the `b_flag + f_flag` guard
+/// (`cut.c:120`) → `Conflict`, a `-d` value that is not one byte → `BadDelimiter`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CutError {
+    Usage,
+    Conflict,
+    BadDelimiter,
+}
+
+/// Fold `cut`'s argv tail faithfully to BSD `getopt("b:c:d:f:sn")` (`cut.c:88`):
+/// `-b`/`-c`/`-f`/`-d` take a value attached (`-f1-3`, `-d:`) or as the next
+/// word; `-s`/`-n` are flags (so `-sf1-3` is `-s` then `-f 1-3`, and `-sn`/`-ns`
+/// both set suppress); `--` ends option scanning; any other dash letter is a
+/// usage error, never a leaked operand. `-b`/`-c` set the byte list (they
+/// coincide here — the selection is byte-grained), and a byte list alongside a
+/// field list is the C `conflict`.
+pub fn parse_cut_args<'a>(args: &'a [&'a str]) -> Result<CutArgs<'a>, CutError> {
+    let mut bytes_list: Option<&'a str> = None;
+    let mut fields_list: Option<&'a str> = None;
+    let mut delimiter: u8 = b'\t';
+    let mut suppress = false;
+    let mut operands: Vec<&'a str> = Vec::new();
+
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index];
+        if arg == "--" {
+            operands.extend_from_slice(&args[index + 1..]);
+            break;
+        }
+        let bytes = arg.as_bytes();
+        if bytes.len() > 1 && bytes[0] == b'-' {
+            let mut pos = 1usize;
+            while pos < bytes.len() {
+                match bytes[pos] {
+                    b'b' | b'c' | b'f' => {
+                        let value = if pos + 1 < bytes.len() {
+                            &arg[pos + 1..]
+                        } else {
+                            index += 1;
+                            match args.get(index) {
+                                Some(v) => *v,
+                                None => return Err(CutError::Usage),
+                            }
+                        };
+                        if bytes[pos] == b'f' {
+                            if bytes_list.is_some() {
+                                return Err(CutError::Conflict);
+                            }
+                            fields_list = Some(value);
+                        } else {
+                            if fields_list.is_some() {
+                                return Err(CutError::Conflict);
+                            }
+                            bytes_list = Some(value);
+                        }
+                        pos = bytes.len(); // the value consumed the token's tail
+                    }
+                    b'd' => {
+                        let value = if pos + 1 < bytes.len() {
+                            &arg[pos + 1..]
+                        } else {
+                            index += 1;
+                            match args.get(index) {
+                                Some(v) => *v,
+                                None => return Err(CutError::Usage),
+                            }
+                        };
+                        let mut vb = value.bytes();
+                        delimiter = match (vb.next(), vb.next()) {
+                            (Some(one), None) => one,
+                            _ => return Err(CutError::BadDelimiter),
+                        };
+                        pos = bytes.len();
+                    }
+                    b's' => {
+                        suppress = true;
+                        pos += 1;
+                    }
+                    // `-n`: accepted and ignored for compatibility
+                    // (`cut.c:112-113` `case 'n': break`), never a leaked operand.
+                    b'n' => pos += 1,
+                    _ => return Err(CutError::Usage),
+                }
+            }
+            index += 1;
+            continue;
+        }
+        operands.push(arg);
+        index += 1;
+    }
+    Ok(CutArgs {
+        bytes_list,
+        fields_list,
+        delimiter,
+        suppress,
+        operands,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +357,54 @@ mod tests {
         assert!(parse_list("0").is_err());
         assert!(parse_list("5-2").is_err());
         assert!(parse_list("1,,2").is_err());
+    }
+
+    #[test]
+    fn test_parse_cut_args_faithful_getopt() {
+        // Defaults: a field list with attached and next-word values.
+        let a = parse_cut_args(&["-f", "1-3", "file"]).unwrap();
+        assert_eq!(a.fields_list, Some("1-3"));
+        assert_eq!(a.operands, vec!["file"]);
+        assert_eq!(a.delimiter, b'\t');
+        // Attached list value (regression vs whole-token leak).
+        assert_eq!(
+            parse_cut_args(&["-f1-3", "file"]).unwrap().fields_list,
+            Some("1-3")
+        );
+        // KEY regression: a flag clustered with a value option (`-sf1-3`).
+        let s = parse_cut_args(&["-sf1-3", "file"]).unwrap();
+        assert!(s.suppress);
+        assert_eq!(s.fields_list, Some("1-3"));
+        // `-sn` and `-ns` both set suppress (`-n` is the compat no-op).
+        assert!(parse_cut_args(&["-sn", "-f1"]).unwrap().suppress);
+        assert!(parse_cut_args(&["-ns", "-f1"]).unwrap().suppress);
+        // `-d` attached and separate; `-b`/`-c` set the byte list.
+        assert_eq!(parse_cut_args(&["-d:", "-f1"]).unwrap().delimiter, b':');
+        assert_eq!(parse_cut_args(&["-d", ",", "-f1"]).unwrap().delimiter, b',');
+        assert_eq!(
+            parse_cut_args(&["-c1-2", "file"]).unwrap().bytes_list,
+            Some("1-2")
+        );
+        // `--` ends scanning; bare `-` is an operand.
+        assert_eq!(
+            parse_cut_args(&["-f1", "--", "-x"]).unwrap().operands,
+            vec!["-x"]
+        );
+        assert_eq!(parse_cut_args(&["-f1", "-"]).unwrap().operands, vec!["-"]);
+        // error paths
+        assert_eq!(parse_cut_args(&["-x", "file"]).err(), Some(CutError::Usage));
+        assert_eq!(parse_cut_args(&["-f"]).err(), Some(CutError::Usage));
+        assert_eq!(
+            parse_cut_args(&["-b1", "-f1"]).err(),
+            Some(CutError::Conflict)
+        );
+        assert_eq!(
+            parse_cut_args(&["-f1", "-b1"]).err(),
+            Some(CutError::Conflict)
+        );
+        assert_eq!(
+            parse_cut_args(&["-dab", "-f1"]).err(),
+            Some(CutError::BadDelimiter)
+        );
     }
 }

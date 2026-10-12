@@ -17,69 +17,31 @@ extern crate alloc;
 use alloc::format;
 use alloc::vec;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read, Fd};
-use minix_textfilter::cut::{parse_list, select_bytes, select_fields};
+use minix_sys::{Fd, close, open, read};
+use minix_textfilter::cut::{CutError, parse_cut_args, parse_list, select_bytes, select_fields};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut bytes_list: Option<String> = None;
-    let mut fields_list: Option<String> = None;
-    let mut delimiter: u8 = b'\t';
-    let mut suppress = false;
-    let mut operands: Vec<String> = Vec::new();
-    let mut index = 1;
-    while index < argv.len() {
-        let mut option = argv[index].as_str();
-        let mut inline: Option<String> = None;
-        if option.starts_with('-') && option.len() > 2 {
-            // `-Nlist` and `-dX` inline forms: split the option from its
-            // argument the way getopt would have.
-            inline = Some(option[2..].to_string());
-            option = &option[..2];
-        }
-        match option {
-            "-b" | "-c" => {
-                let list = take_value(&argv, &mut index, inline);
-                if fields_list.is_some() {
-                    conflict();
-                }
-                bytes_list = Some(list);
-            }
-            "-f" => {
-                let list = take_value(&argv, &mut index, inline);
-                if bytes_list.is_some() {
-                    conflict();
-                }
-                fields_list = Some(list);
-            }
-            "-d" => {
-                let value = take_value(&argv, &mut index, inline);
-                let mut bytes = value.bytes();
-                delimiter = match (bytes.next(), bytes.next()) {
-                    (Some(one), None) => one,
-                    _ => support::terminate(1),
-                };
-            }
-            "-s" => suppress = true,
-            // `-n`: accepted and ignored for compatibility (`cut.c:112-113`,
-            // `case 'n': break`) — it must not fall through to the operand list.
-            "-n" => {}
-            _ => {
-                // An unrecognised `-X` is C's `case '?'` → `usage()`, not a
-                // file operand (previously any dash token leaked into `files`).
-                if option.starts_with('-') && option.len() > 1 {
-                    usage();
-                }
-                operands.push(argv[index].clone());
-            }
-        }
-        index += 1;
-    }
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // argv folding lives in the deciding half (`parse_cut_args`): BSD
+    // `getopt("b:c:d:f:sn")` with attached-or-next list/delimiter values and
+    // flag clustering. The old inline whole-token matcher mishandled a flag
+    // clustered with a value option (`cut -sf1-3` silently dropped the field
+    // list) and `-ns` (dropped the `-s` suppress).
+    let parsed = match parse_cut_args(&args[1..]) {
+        Ok(parsed) => parsed,
+        Err(e) => arg_error(e),
+    };
+    let bytes_list: Option<String> = parsed.bytes_list.map(String::from);
+    let fields_list: Option<String> = parsed.fields_list.map(String::from);
+    let delimiter = parsed.delimiter;
+    let suppress = parsed.suppress;
+    let operands: Vec<String> = parsed.operands.iter().map(|s| String::from(*s)).collect();
 
     let selecting_bytes = bytes_list.is_some();
     let list_text = match (bytes_list, fields_list) {
@@ -154,18 +116,15 @@ fn read_fd(fd: Fd) -> Vec<u8> {
     input
 }
 
-/// Resolves the value of an option given separately (`-f 1`) or inline
-/// (`-f1`), advancing the index past a consumed separate argument.
-fn take_value(argv: &[String], index: &mut usize, inline: Option<String>) -> String {
-    match inline {
-        Some(value) => value,
-        None => {
-            *index += 1;
-            if *index >= argv.len() {
-                support::terminate(1);
-            }
-            argv[*index].clone()
-        }
+/// Map a [`CutError`] from `parse_cut_args` to the exact C error path (the
+/// message and exit code) the old in-bin matcher used, then terminate.
+fn arg_error(e: CutError) -> ! {
+    match e {
+        CutError::Usage => usage(),
+        CutError::Conflict => conflict(),
+        // A `-d` value that is not exactly one byte: C warns and exits;
+        // the old matcher simply terminated nonzero (unchanged here).
+        CutError::BadDelimiter => support::terminate(1),
     }
 }
 
