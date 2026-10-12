@@ -10,11 +10,12 @@
 //! unopenable/unstatable file warns and is skipped (exit status stays
 //! nonzero). Operands open with `fopen`, so `-` is a literal file name.
 //!
-//! Not modelled (rejected rather than mistaken for an operand): the reverse mode
-//! `-r`, the follow modes `-f`/`-F`, the forward-offset form `tail -n +N`, and
-//! the obsolete bare-number syntax beyond `-N`. Byte mode `-c N` (the last N raw
-//! bytes of each file) and block mode `-b N` (the last N 512-byte blocks) are
-//! modelled — C `tail.c` `ARG(1,..)`/`ARG(512,..)` routing to `RBYTES`.
+//! Not modelled (rejected rather than mistaken for an operand): the follow modes
+//! `-f`/`-F`, the forward-offset form `tail -n +N`, and the obsolete bare-number
+//! syntax beyond `-N`. Byte mode `-c N`, block mode `-b N`, and reverse mode
+//! `-r` are modelled — C `tail.c`/`reverse.c`: `-r` prints lines bottom-up
+//! (`REVERSE` reverses every line, `RLINES` = an explicit `-n` reverses the last
+//! `count`), while `-r` combined with `-c`/`-b` (`RBYTES`) is rejected below.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -34,6 +35,8 @@ fn run() -> ! {
     let argv: Vec<String> = support::args();
     let mut count: usize = 10;
     let mut bytecnt: usize = 0;
+    let mut rflag = false;
+    let mut n_seen = false;
     let mut operands: Vec<String> = Vec::new();
     let mut index = 1;
     let mut no_more_opts = false;
@@ -52,6 +55,7 @@ fn run() -> ! {
                     support::terminate(1);
                 }
                 count = parse_count(&argv[index]);
+                n_seen = true;
             }
             "-c" => {
                 index += 1;
@@ -75,7 +79,8 @@ fn run() -> ! {
                 }
                 bytecnt = block_bytes(n);
             }
-            "-r" | "-f" | "-F" => {
+            "-r" => rflag = true,
+            "-f" | "-F" => {
                 support::warn(
                     b"tail: this option is not modelled (line-based ring, forward only)\n",
                 );
@@ -86,6 +91,7 @@ fn run() -> ! {
                 && a[1..].bytes().all(|b| b.is_ascii_digit()) =>
             {
                 count = parse_count(&a[1..]);
+                n_seen = true;
             }
             _ => operands.push(a.to_string()),
         }
@@ -97,6 +103,12 @@ fn run() -> ! {
     if bytecnt == 0 && TailWindow::new(count).is_err() {
         support::terminate(1);
     }
+    // `-r` combined with a byte/block count (C `RBYTES` reverse) is not modelled;
+    // the line-reverse forms (`REVERSE` / `RLINES`) are.
+    if rflag && bytecnt > 0 {
+        support::warn(b"tail: -r with -c/-b is not modelled\n");
+        support::terminate(1);
+    }
 
     // C `for each file: fopen+fstat (ierr on failure), banner when argc>1,
     // forward()`. No operands read stdin.
@@ -105,7 +117,7 @@ fn run() -> ! {
     let mut status = 0;
 
     if operands.is_empty() {
-        tail_stream(support::STDIN, count, bytecnt);
+        tail_stream(support::STDIN, count, bytecnt, rflag, n_seen);
         support::terminate(0);
     }
     for operand in &operands {
@@ -122,7 +134,7 @@ fn run() -> ! {
             support::emit(format!("{sep}==> {operand} <==\n").as_bytes());
         }
         first = false;
-        tail_stream(fd, count, bytecnt);
+        tail_stream(fd, count, bytecnt, rflag, n_seen);
         //[SD19-gate] SD-19: close 后 fd 不再使用
         #[allow(clippy::let_underscore_must_use)]
         let _ = close(fd);
@@ -130,28 +142,54 @@ fn run() -> ! {
     support::terminate(status)
 }
 
-/// Emit the tail of one open descriptor: the last `bytecnt` raw bytes in byte
-/// mode (C `tail -c`), else the last `count` lines via the ring.
-fn tail_stream(fd: Fd, count: usize, bytecnt: usize) {
+/// Emit the tail of one open descriptor. Byte mode (`-c`/`-b`) prints the last
+/// `bytecnt` raw bytes. Reverse mode `-r` prints lines bottom-up: `RLINES` (an
+/// explicit `-n`) the last `count` lines reversed, else `REVERSE` every line
+/// reversed. The default forward path keeps the last `count` lines via the ring.
+fn tail_stream(fd: Fd, count: usize, bytecnt: usize, rflag: bool, n_seen: bool) {
     let input = read_fd(fd);
     if bytecnt > 0 {
         support::emit(last_bytes_of(&input, bytecnt));
+        return;
+    }
+    let lines = support::lines_of(&input);
+    if rflag {
+        for line in reverse_selection(&lines, count, n_seen) {
+            emit_line(line);
+        }
         return;
     }
     let mut window = match TailWindow::new(count) {
         Ok(window) => window,
         Err(_) => support::terminate(1),
     };
-    for line in support::lines_of(&input) {
+    for line in lines {
         window.push(line);
     }
     let mut survivors: Vec<&str> = vec![""; count.min(32)];
     let drained = window.drain(&mut survivors);
     for line in &survivors[..drained] {
-        let mut out = line.as_bytes().to_vec();
-        out.push(b'\n');
-        support::emit(&out);
+        emit_line(line);
     }
+}
+
+fn emit_line(line: &str) {
+    let mut out = line.as_bytes().to_vec();
+    out.push(b'\n');
+    support::emit(&out);
+}
+
+/// The line order C `tail -r` prints: `RLINES` (an explicit `-n`) selects the
+/// last `count` lines then reverses them; bare `-r` (`REVERSE`) reverses every
+/// line (`reverse.c` `r_reg` walks from the end, stopping after `off` lines when
+/// `RLINES`, else at the start).
+fn reverse_selection<'a>(lines: &[&'a str], count: usize, n_seen: bool) -> Vec<&'a str> {
+    let selected: &[&'a str] = if n_seen {
+        &lines[lines.len().saturating_sub(count)..]
+    } else {
+        lines
+    };
+    selected.iter().rev().copied().collect()
 }
 
 /// The last `bytecnt` bytes of `input`, or all of it when shorter — C `tail -c`
@@ -206,7 +244,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{block_bytes, last_bytes_of};
+    use super::{block_bytes, last_bytes_of, reverse_selection};
 
     #[test]
     fn last_bytes_truncates_to_count() {
@@ -228,5 +266,24 @@ mod tests {
         assert_eq!(block_bytes(3), 1536);
         // The byte path then yields the last N blocks worth of bytes.
         assert_eq!(last_bytes_of(b"x", block_bytes(1)), b"x");
+    }
+
+    #[test]
+    fn reverse_selection_all_reverses_every_line() {
+        let lines = ["1", "2", "3"];
+        assert_eq!(reverse_selection(&lines, 10, false), ["3", "2", "1"]);
+    }
+
+    #[test]
+    fn reverse_selection_last_n_reversed() {
+        // -r -n 2 on [1,2,3,4] -> last 2 (3,4) reversed -> 4,3.
+        let lines = ["1", "2", "3", "4"];
+        assert_eq!(reverse_selection(&lines, 2, true), ["4", "3"]);
+    }
+
+    #[test]
+    fn reverse_selection_count_exceeding_input_is_all() {
+        let lines = ["a", "b"];
+        assert_eq!(reverse_selection(&lines, 5, true), ["b", "a"]);
     }
 }
