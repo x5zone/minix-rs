@@ -45,6 +45,11 @@ pub struct PrOptions {
     /// `-s[C]`: one byte that separates columns without space padding (`None`
     /// pads each non-last column out to `colwd + 1`).
     pub sep: Option<u8>,
+    /// `-o`: left margin in blank columns. Applied by [`render_page`] to the
+    /// body lines and the header's text line; the blank header spacers and the
+    /// trailer go out unindented (`prhead`/`prtail` print those with bare
+    /// `putchar`). `0` is the default (no margin).
+    pub offset: usize,
     /// The time field rendered into the header line (the doing half
     /// supplies the host clock's text; an empty prefix is fine).
     pub time_prefix: String,
@@ -59,6 +64,7 @@ impl Default for PrOptions {
             columns: 1,
             page_width: 72,
             sep: None,
+            offset: 0,
             time_prefix: String::new(),
         }
     }
@@ -347,6 +353,35 @@ pub fn vertcol_body_rows(
     out
 }
 
+/// The lines `pr` prints for one page under a `-o` left margin: `offset`
+/// leading blanks on each body line and on the header's text line (the middle
+/// of the 5-line header, carrying the title and page number), while the two
+/// blank header spacers around it and the trailer lines go out unindented — the
+/// C writes those with bare `putchar('\n')` (`prhead` `pr.c:1493-1496`, `prtail`).
+/// `offset == 0` reproduces the plain [`Page::lines`] order exactly, so the
+/// default path is unchanged.
+pub fn render_page(page: &Page, offset: usize) -> Vec<String> {
+    let pad = |s: &str| -> String {
+        let mut out = String::new();
+        for _ in 0..offset {
+            out.push(' ');
+        }
+        out.push_str(s);
+        out
+    };
+    let mut out = Vec::new();
+    for (i, h) in page.header_lines.iter().enumerate() {
+        out.push(if i == 2 { pad(h) } else { h.clone() });
+    }
+    for b in &page.body_lines {
+        out.push(pad(b));
+    }
+    for t in &page.trailer_lines {
+        out.push(t.clone());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,6 +575,26 @@ mod tests {
             pages[0].body_lines,
             vec![String::from("a  c"), String::from("b  d")]
         );
+    }
+
+    #[test]
+    fn test_render_page_offsets_body_and_header_text_not_blanks() {
+        let mut options = PrOptions::default();
+        options.header = "f.txt".to_string();
+        // page_len 12 → body capacity 2, so ["a","b"] exactly fills the body
+        // (no pad lines) and index 7 onward is the trailer.
+        options.page_len = 12;
+        let pages = paginate_lines(&["a", "b"], &options);
+        let out = render_page(&pages[0], 3);
+        assert_eq!(out.len(), 12);
+        assert_eq!(out[0], ""); // header blank spacer, unindented
+        assert_eq!(out[2], "   f.txt Page 1"); // header text line, indented
+        assert_eq!(out[5], "   a"); // body, indented
+        assert_eq!(out[6], "   b");
+        assert_eq!(out[7], ""); // trailer, unindented
+                                // offset 0 reproduces the plain page order exactly.
+        let plain = render_page(&pages[0], 0);
+        assert_eq!(plain, pages[0].lines().cloned().collect::<Vec<_>>());
     }
 
     #[test]
