@@ -224,7 +224,7 @@ pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
                                 return Err(HeadArgError::IllegalCount {
                                     byte: byte_opt,
                                     value,
-                                })
+                                });
                             }
                         }
                         pos = bytes.len(); // the value consumed the token's tail
@@ -240,6 +240,147 @@ pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
                         pos += 1;
                     }
                     _ => return Err(HeadArgError::Usage),
+                }
+            }
+        } else {
+            result.operands.push(String::from(token));
+        }
+        index += 1;
+    }
+    Ok(result)
+}
+
+/// C `tail -b N` counts in 512-byte blocks (`tail.c` `ARG(512, FBYTES, RBYTES)`):
+/// `N` blocks are `N * 512` bytes, saturating rather than wrapping.
+fn block_bytes(n: usize) -> usize {
+    n.saturating_mul(512)
+}
+
+/// Parsed `tail` options and file operands — the deciding half's front door.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailArgs {
+    /// `-n` line count, or the default ten.
+    pub count: usize,
+    /// `-c`/`-b` byte count (already in bytes); `0` (default) selects line mode.
+    pub bytecnt: usize,
+    /// `-r` reverse mode.
+    pub rflag: bool,
+    /// Whether an explicit `-n`/`-N` was seen (C `RLINES` vs `REVERSE`).
+    pub n_seen: bool,
+    /// File operands in order; `-` is a literal file name (`tail` opens operands
+    /// through `fopen`, unlike `cut`).
+    pub operands: Vec<String>,
+}
+
+/// `tail` argument-parsing failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TailError {
+    /// An unknown option letter or a missing `-b`/`-c`/`-n` value (C `getopt`
+    /// `?`/default → usage, `tail.c:128-130`).
+    Usage,
+    /// `-f`/`-F` follow mode — not modelled (line-based ring, forward only).
+    NotModelledFollow,
+    /// A `-b`/`-c`/`-n` value written as a forward offset `+N` (not modelled).
+    ForwardOffset,
+    /// A `-b`/`-c`/`-n` count that is not a decimal integer, or a zero byte or
+    /// block count (C `strtol` reject, `tail.c:88-90`); carries the text.
+    IllegalCount(String),
+}
+
+/// Split `tail`'s argv tail into [`TailArgs`], faithful to C's `obsolete(argv)`
+/// pre-pass (`tail.c:106`) plus `getopt(argc, argv, "Fb:c:fn:r")` (`tail.c:108`):
+/// the leading `-<digit>…` run is rewritten to `-n<digit>…`; option letters
+/// cluster (`-rn` ≡ `-r -n`); a colon option's value attaches to its token
+/// (`-n10`, `-c100`) or follows it (`-n 10`); `--` ends option scanning; a lone
+/// `-` is an operand. `-f`/`-F` are reported, never silently leaked as an
+/// operand (as the old whole-token matcher did with `-n10`).
+pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
+    // Phase 1 — obsolete(): rewrite the leading `-<digit>…` run to `-n<digit>…`,
+    // stop at the first non-matching token and copy the rest verbatim.
+    let mut scanned: Vec<String> = Vec::new();
+    let mut still_obsolete = true;
+    for arg in args {
+        let bytes = arg.as_bytes();
+        if still_obsolete
+            && bytes.len() >= 2
+            && bytes[0] == b'-'
+            && bytes[1] != b'-'
+            && bytes[1].is_ascii_digit()
+        {
+            let mut rewritten = String::from("-n");
+            rewritten.push_str(&arg[1..]);
+            scanned.push(rewritten);
+        } else {
+            still_obsolete = false;
+            scanned.push(String::from(*arg));
+        }
+    }
+
+    // Phase 2 — getopt("Fb:c:fn:r").
+    let mut result = TailArgs {
+        count: 10,
+        bytecnt: 0,
+        rflag: false,
+        n_seen: false,
+        operands: Vec::new(),
+    };
+    let mut index = 0;
+    while index < scanned.len() {
+        let token = scanned[index].as_str();
+        if token == "--" {
+            result.operands.extend_from_slice(&scanned[index + 1..]);
+            break;
+        }
+        let bytes = token.as_bytes();
+        if bytes.len() > 1 && bytes[0] == b'-' {
+            let mut pos = 1usize;
+            while pos < bytes.len() {
+                match bytes[pos] {
+                    b'f' | b'F' => return Err(TailError::NotModelledFollow),
+                    b'r' => {
+                        result.rflag = true;
+                        pos += 1;
+                    }
+                    b'n' | b'c' | b'b' => {
+                        let letter = bytes[pos];
+                        // Value attaches to this token (`-n10`) or is the next
+                        // word (`-n 10`).
+                        let value = if pos + 1 < bytes.len() {
+                            String::from(&token[pos + 1..])
+                        } else {
+                            index += 1;
+                            if index >= scanned.len() {
+                                return Err(TailError::Usage);
+                            }
+                            scanned[index].clone()
+                        };
+                        if value.starts_with('+') {
+                            return Err(TailError::ForwardOffset);
+                        }
+                        let parsed = value
+                            .parse::<usize>()
+                            .map_err(|_| TailError::IllegalCount(value.clone()))?;
+                        match letter {
+                            b'n' => {
+                                result.count = parsed;
+                                result.n_seen = true;
+                            }
+                            b'c' => {
+                                if parsed == 0 {
+                                    return Err(TailError::IllegalCount(value));
+                                }
+                                result.bytecnt = parsed;
+                            }
+                            _ /* b */ => {
+                                if parsed == 0 {
+                                    return Err(TailError::IllegalCount(value));
+                                }
+                                result.bytecnt = block_bytes(parsed);
+                            }
+                        }
+                        pos = bytes.len(); // the value consumed the token's tail
+                    }
+                    _ => return Err(TailError::Usage),
                 }
             }
         } else {
@@ -289,8 +430,14 @@ mod tests {
 
     #[test]
     fn test_zero_or_huge_rejected() {
-        assert_eq!(HeadWindow::new(0).map(|_| ()), Err(TextError::InvalidArgument));
-        assert_eq!(TailWindow::new(33).map(|_| ()), Err(TextError::InvalidArgument));
+        assert_eq!(
+            HeadWindow::new(0).map(|_| ()),
+            Err(TextError::InvalidArgument)
+        );
+        assert_eq!(
+            TailWindow::new(33).map(|_| ()),
+            Err(TextError::InvalidArgument)
+        );
     }
 
     #[test]
@@ -410,6 +557,79 @@ mod tests {
                 byte: true,
                 value: String::from("x")
             })
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_faithful_getopt() {
+        use alloc::string::String;
+        use alloc::vec;
+        // Defaults: no args → ten lines, no operands, not reverse.
+        assert_eq!(
+            parse_tail_args(&[]),
+            Ok(TailArgs {
+                count: 10,
+                bytecnt: 0,
+                rflag: false,
+                n_seen: false,
+                operands: Vec::new(),
+            })
+        );
+        // `-n` attached (regression: the old matcher leaked `-n10` to operands)
+        // and next-word forms both yield the count with n_seen set.
+        assert_eq!(
+            parse_tail_args(&["-n10", "f"]),
+            Ok(TailArgs {
+                count: 10,
+                bytecnt: 0,
+                rflag: false,
+                n_seen: true,
+                operands: operands(&["f"]),
+            })
+        );
+        assert_eq!(parse_tail_args(&["-n", "10", "f"]).unwrap().count, 10);
+        // obsolete leading digit `-N` rewrites to `-n<N>`.
+        let obs = parse_tail_args(&["-5", "f"]).unwrap();
+        assert_eq!(obs.count, 5);
+        assert!(obs.n_seen);
+        // `-c`/`-b` attached values reach bytecnt in bytes (`-b` is blocks*512).
+        assert_eq!(parse_tail_args(&["-c100", "f"]).unwrap().bytecnt, 100);
+        assert_eq!(parse_tail_args(&["-b3", "f"]).unwrap().bytecnt, 1536);
+        // clustering: `-r` flag then attached `-n`.
+        let r = parse_tail_args(&["-rn3", "f"]).unwrap();
+        assert!(r.rflag);
+        assert_eq!(r.count, 3);
+        // `--` ends scanning; a bare `-` is a literal operand.
+        assert_eq!(
+            parse_tail_args(&["--", "-n"]).unwrap().operands,
+            vec![String::from("-n")]
+        );
+        assert_eq!(
+            parse_tail_args(&["-"]).unwrap().operands,
+            vec![String::from("-")]
+        );
+        // error paths
+        assert_eq!(
+            parse_tail_args(&["-f"]).err(),
+            Some(TailError::NotModelledFollow)
+        );
+        assert_eq!(
+            parse_tail_args(&["-F", "f"]).err(),
+            Some(TailError::NotModelledFollow)
+        );
+        assert_eq!(parse_tail_args(&["-x", "f"]).err(), Some(TailError::Usage));
+        assert_eq!(parse_tail_args(&["-n"]).err(), Some(TailError::Usage));
+        assert_eq!(
+            parse_tail_args(&["-n", "+5"]).err(),
+            Some(TailError::ForwardOffset)
+        );
+        assert_eq!(
+            parse_tail_args(&["-n", "x"]).err(),
+            Some(TailError::IllegalCount(String::from("x")))
+        );
+        assert_eq!(
+            parse_tail_args(&["-c", "0"]).err(),
+            Some(TailError::IllegalCount(String::from("0")))
         );
     }
 }

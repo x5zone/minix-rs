@@ -24,80 +24,31 @@ extern crate alloc;
 use alloc::format;
 use alloc::vec;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read, Fd};
-use minix_textfilter::window::{LineWindow, TailWindow};
+use minix_sys::{Fd, close, open, read};
+use minix_textfilter::window::{LineWindow, TailError, TailWindow, parse_tail_args};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut count: usize = 10;
-    let mut bytecnt: usize = 0;
-    let mut rflag = false;
-    let mut n_seen = false;
-    let mut operands: Vec<String> = Vec::new();
-    let mut index = 1;
-    let mut no_more_opts = false;
-    while index < argv.len() {
-        let a = argv[index].as_str();
-        if no_more_opts {
-            operands.push(a.to_string());
-            index += 1;
-            continue;
-        }
-        match a {
-            "--" => no_more_opts = true,
-            "-n" => {
-                index += 1;
-                if index >= argv.len() {
-                    support::terminate(1);
-                }
-                count = parse_count(&argv[index]);
-                n_seen = true;
-            }
-            "-c" => {
-                index += 1;
-                if index >= argv.len() {
-                    support::terminate(1);
-                }
-                let n = parse_count(&argv[index]);
-                if n == 0 {
-                    support::terminate(1);
-                }
-                bytecnt = n;
-            }
-            "-b" => {
-                index += 1;
-                if index >= argv.len() {
-                    support::terminate(1);
-                }
-                let n = parse_count(&argv[index]);
-                if n == 0 {
-                    support::terminate(1);
-                }
-                bytecnt = block_bytes(n);
-            }
-            "-r" => rflag = true,
-            "-f" | "-F" => {
-                support::warn(
-                    b"tail: this option is not modelled (line-based ring, forward only)\n",
-                );
-                support::terminate(1);
-            }
-            _ if a.starts_with('-')
-                && a.len() > 1
-                && a[1..].bytes().all(|b| b.is_ascii_digit()) =>
-            {
-                count = parse_count(&a[1..]);
-                n_seen = true;
-            }
-            _ => operands.push(a.to_string()),
-        }
-        index += 1;
-    }
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // argv folding lives in the deciding half (`parse_tail_args`): BSD
+    // `obsolete()` + `getopt("Fb:c:fn:r")`, with attached-or-next counts and
+    // option clustering. The old inline whole-token matcher leaked attached
+    // values (`tail -n10 f`, `tail -c100 f`) and unknown flags (`tail -x f`)
+    // into the operand list, silently treating them as file names.
+    let parsed = match parse_tail_args(&args[1..]) {
+        Ok(parsed) => parsed,
+        Err(e) => arg_error(e),
+    };
+    let count = parsed.count;
+    let bytecnt = parsed.bytecnt;
+    let rflag = parsed.rflag;
+    let n_seen = parsed.n_seen;
+    let operands: Vec<String> = parsed.operands;
 
     // The fixed-capacity ring rejects 0 and counts above 32 (declared cap).
     // Byte mode ignores the line count, so it skips this ring-capacity guard.
@@ -212,12 +163,6 @@ fn last_bytes_of(input: &[u8], bytecnt: usize) -> &[u8] {
     &input[input.len().saturating_sub(bytecnt)..]
 }
 
-/// C `tail -b N` counts in 512-byte blocks (`tail.c` `ARG(512, FBYTES, RBYTES)`):
-/// `N` blocks are `N * 512` bytes, saturating rather than wrapping.
-fn block_bytes(n: usize) -> usize {
-    n.saturating_mul(512)
-}
-
 /// Read a descriptor to the end.
 fn read_fd(fd: Fd) -> Vec<u8> {
     let mut input = Vec::new();
@@ -232,17 +177,30 @@ fn read_fd(fd: Fd) -> Vec<u8> {
     input
 }
 
-fn parse_count(word: &str) -> usize {
-    // The forward-offset form `-n +N` is not modelled; reject a leading `+`
-    // rather than silently folding it into a plain count.
-    if word.starts_with('+') {
-        support::warn(b"tail: -n +N forward-offset is not modelled\n");
-        support::terminate(1);
+/// Map a [`TailError`] from `parse_tail_args` to the message and exit code the
+/// old in-bin matcher used, then terminate.
+fn arg_error(e: TailError) -> ! {
+    match e {
+        TailError::Usage => usage(),
+        TailError::NotModelledFollow => {
+            support::warn(b"tail: this option is not modelled (line-based ring, forward only)\n");
+            support::terminate(1);
+        }
+        TailError::ForwardOffset => {
+            support::warn(b"tail: -n +N forward-offset is not modelled\n");
+            support::terminate(1);
+        }
+        TailError::IllegalCount(v) => {
+            // C `xerrx(1, "illegal offset -- %s", optarg)` (`tail.c:90`).
+            support::warn(format!("tail: illegal offset -- {v}\n").as_bytes());
+            support::terminate(1);
+        }
     }
-    match word.parse::<usize>() {
-        Ok(value) => value,
-        Err(_) => support::terminate(1),
-    }
+}
+
+fn usage() -> ! {
+    support::warn(b"usage: tail [-r] [-b N | -c N | -n N] [file ...]\n");
+    support::terminate(1);
 }
 
 #[cfg(all(not(test), target_os = "none"))]
@@ -258,7 +216,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{block_bytes, last_bytes_of, reverse_bytes, reverse_selection};
+    use super::{last_bytes_of, reverse_bytes, reverse_selection};
 
     #[test]
     fn last_bytes_truncates_to_count() {
@@ -273,13 +231,6 @@ mod tests {
     #[test]
     fn last_bytes_of_empty_is_empty() {
         assert_eq!(last_bytes_of(b"", 5), b"");
-    }
-
-    #[test]
-    fn block_bytes_is_512_per_block() {
-        assert_eq!(block_bytes(3), 1536);
-        // The byte path then yields the last N blocks worth of bytes.
-        assert_eq!(last_bytes_of(b"x", block_bytes(1)), b"x");
     }
 
     #[test]
