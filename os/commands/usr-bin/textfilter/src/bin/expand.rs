@@ -19,48 +19,19 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, read};
-use minix_textfilter::expand::{expand, parse_stops};
+use minix_textfilter::expand::{expand, parse_expand_args, ExpandArgs, ExpandError};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut stops: Vec<usize> = Vec::new();
-    let mut operands: Vec<String> = Vec::new();
-    let mut index = 1;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg == "-t" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            stops = match parse_stops(&argv[index]) {
-                Some(stops) => stops,
-                None => {
-                    support::warn(b"expand: bad tab stop spec\n");
-                    support::terminate(1);
-                }
-            };
-        } else if arg.starts_with('-')
-            && arg.len() > 1
-            && arg[1..].bytes().all(|b| b.is_ascii_digit())
-        {
-            // Obsolete `-N` stop form (expand.c:69-73).
-            stops = match parse_stops(&arg[1..]) {
-                Some(stops) => stops,
-                None => {
-                    support::warn(b"expand: bad tab stop spec\n");
-                    support::terminate(1);
-                }
-            };
-        } else if arg.starts_with('-') && arg.len() > 1 {
-            // Any other dash-leading token is a bad option (C getopt default →
-            // usage); a bare `-` or a non-dash token is a file operand.
-            usage();
-        } else {
-            operands.push(argv[index].clone());
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let ExpandArgs { stops, operands } = match parse_expand_args(&refs[1..]) {
+        Ok(parsed) => parsed,
+        Err(ExpandError::Usage) => usage(),
+        Err(ExpandError::IllegalStops) => {
+            support::warn(b"expand: bad tab stop spec\n");
+            support::terminate(1);
         }
-        index += 1;
-    }
+    };
 
     // C `do { if (argc>0) freopen(argv[0]); column = 0; getchar… } while(argc>0)`:
     // no operand reads stdin once; otherwise each file is expanded with its own
