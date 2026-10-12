@@ -10,10 +10,10 @@
 //! unopenable/unstatable file warns and is skipped (exit status stays
 //! nonzero). Operands open with `fopen`, so `-` is a literal file name.
 //!
-//! Not modelled (rejected rather than mistaken for an operand): the byte mode
-//! `-c` and block mode `-b` (the ring is line-based), the reverse mode `-r`,
-//! the follow modes `-f`/`-F`, the forward-offset form `tail -n +N`, and the
-//! obsolete bare-number syntax beyond `-N`.
+//! Not modelled (rejected rather than mistaken for an operand): the block mode
+//! `-b`, the reverse mode `-r`, the follow modes `-f`/`-F`, the forward-offset
+//! form `tail -n +N`, and the obsolete bare-number syntax beyond `-N`. Byte mode
+//! `-c N` (the last N raw bytes of each file, C `tail.c` `RBYTES`) is modelled.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -32,6 +32,7 @@ use minix_textfilter::window::{LineWindow, TailWindow};
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let mut count: usize = 10;
+    let mut bytecnt: usize = 0;
     let mut operands: Vec<String> = Vec::new();
     let mut index = 1;
     let mut no_more_opts = false;
@@ -51,7 +52,18 @@ fn run() -> ! {
                 }
                 count = parse_count(&argv[index]);
             }
-            "-r" | "-f" | "-F" | "-c" | "-b" => {
+            "-c" => {
+                index += 1;
+                if index >= argv.len() {
+                    support::terminate(1);
+                }
+                let n = parse_count(&argv[index]);
+                if n == 0 {
+                    support::terminate(1);
+                }
+                bytecnt = n;
+            }
+            "-r" | "-f" | "-F" | "-b" => {
                 support::warn(
                     b"tail: this option is not modelled (line-based ring, forward only)\n",
                 );
@@ -69,7 +81,8 @@ fn run() -> ! {
     }
 
     // The fixed-capacity ring rejects 0 and counts above 32 (declared cap).
-    if TailWindow::new(count).is_err() {
+    // Byte mode ignores the line count, so it skips this ring-capacity guard.
+    if bytecnt == 0 && TailWindow::new(count).is_err() {
         support::terminate(1);
     }
 
@@ -80,7 +93,7 @@ fn run() -> ! {
     let mut status = 0;
 
     if operands.is_empty() {
-        tail_stream(support::STDIN, count);
+        tail_stream(support::STDIN, count, bytecnt);
         support::terminate(0);
     }
     for operand in &operands {
@@ -97,7 +110,7 @@ fn run() -> ! {
             support::emit(format!("{sep}==> {operand} <==\n").as_bytes());
         }
         first = false;
-        tail_stream(fd, count);
+        tail_stream(fd, count, bytecnt);
         //[SD19-gate] SD-19: close 后 fd 不再使用
         #[allow(clippy::let_underscore_must_use)]
         let _ = close(fd);
@@ -105,13 +118,18 @@ fn run() -> ! {
     support::terminate(status)
 }
 
-/// Emit the last `count` lines of one open descriptor (forward mode).
-fn tail_stream(fd: Fd, count: usize) {
+/// Emit the tail of one open descriptor: the last `bytecnt` raw bytes in byte
+/// mode (C `tail -c`), else the last `count` lines via the ring.
+fn tail_stream(fd: Fd, count: usize, bytecnt: usize) {
+    let input = read_fd(fd);
+    if bytecnt > 0 {
+        support::emit(last_bytes_of(&input, bytecnt));
+        return;
+    }
     let mut window = match TailWindow::new(count) {
         Ok(window) => window,
         Err(_) => support::terminate(1),
     };
-    let input = read_fd(fd);
     for line in support::lines_of(&input) {
         window.push(line);
     }
@@ -122,6 +140,12 @@ fn tail_stream(fd: Fd, count: usize) {
         out.push(b'\n');
         support::emit(&out);
     }
+}
+
+/// The last `bytecnt` bytes of `input`, or all of it when shorter — C `tail -c`
+/// prints the final N bytes of each file.
+fn last_bytes_of(input: &[u8], bytecnt: usize) -> &[u8] {
+    &input[input.len().saturating_sub(bytecnt)..]
 }
 
 /// Read a descriptor to the end.
@@ -160,4 +184,24 @@ extern "Rust" fn main() -> i32 {
 #[cfg(any(test, not(target_os = "none")))]
 fn main() {
     run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::last_bytes_of;
+
+    #[test]
+    fn last_bytes_truncates_to_count() {
+        assert_eq!(last_bytes_of(b"abcdef", 3), b"def");
+    }
+
+    #[test]
+    fn last_bytes_short_input_returns_all() {
+        assert_eq!(last_bytes_of(b"ab", 10), b"ab");
+    }
+
+    #[test]
+    fn last_bytes_of_empty_is_empty() {
+        assert_eq!(last_bytes_of(b"", 5), b"");
+    }
 }
