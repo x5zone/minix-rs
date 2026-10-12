@@ -85,7 +85,7 @@
 
 | 条目 | 状态 | 内容 |
 |---|---|---|
-| `C-17` 设备管理客户端的生产传输 | `open` | 授权、撤销、收发三条腿的生产实现 |
+| `C-17` 设备管理客户端的生产传输 | `partially fixed`（三条腿生产传输已实现并有宿主测；无生产驱动消费者，消费接法挂 `E-DMWIRE`）| 授权、撤销、收发三条腿的生产实现——**已落地（`os/libs/minix-sys/src/devman_client.rs:105-162` @ 基线 `b05905406`）**：`SysClientTransport` 实现 `ClientTransport` 的 `grant`（走 `GrantTable::grant_direct`，对位 C `cpf_grant_direct` CPF_READ）/`revoke`/`sendrec`（走 `DirectTrapTransport`），零 `todo!()`。翻 `partially fixed` 而非 `closed`：按 `TODO-LEDGER-INDEX.md` §3「只在测试里存在不等于闭」，当前仅宿主测 `test_sys_client_transport_hosted_errors_are_honest` 实例化，无驱动入口调用——那属 `E-DMWIRE`（本表 §4 同族行），不串 C-17。三件套：`grep -rnE "todo!\|unimplemented!" os/libs/minix-sys/src/devman_client.rs` → 0 命中；`grep -n "impl ClientTransport for SysClientTransport" os/libs/minix-sys/src/devman_client.rs` → :136；`cargo test -p minix-sys --lib devman_client` → 8 passed/0 failed（docker minix-ci:1.94 `-m 2g -j 1`）；核实日 `2026-10-12`；基线 `b05905406` |
 | `C-18` 虚拟文件系统把用户缓冲交给文件服务器的魔法授权 | `open` | 与直接授权同纪律的新入口 |
 | `C-21` 文件系统运行时 crate | `partially fixed` | 家族已收敛，装配待 |
 | `C-22` 系统信息取表半的传输面扩展 | `partially fixed` | 剩余段在内核行的生产半 |
