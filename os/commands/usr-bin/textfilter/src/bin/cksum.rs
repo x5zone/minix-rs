@@ -19,12 +19,18 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, read};
-use minix_textfilter::cksum::{cksum_crc, csum1, csum2, sum_display_length, SumKind};
+use minix_textfilter::cksum::{
+    cksum_crc, csum1, csum2, parse_check_line, sum_display_length, CheckEntry, SumKind,
+};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let mut kind = SumKind::Crc;
     let mut operands: Vec<String> = Vec::new();
+    // `-c` verifies checksums from a check file; `-w` warns on each bogus or
+    // unreadable line (C `check_warn`).
+    let mut do_check = false;
+    let mut check_warn = false;
     let mut index = 1;
     while index < argv.len() {
         let arg = argv[index].as_str();
@@ -46,10 +52,20 @@ fn run() -> ! {
             // for crypto primitives.
             support::warn(b"cksum: -a crypto algorithms are not modelled yet\n");
             support::terminate(2);
+        } else if arg == "-c" {
+            do_check = true;
+        } else if arg == "-w" {
+            check_warn = true;
         } else {
             operands.push(argv[index].clone());
         }
         index += 1;
+    }
+
+    if do_check {
+        // `-c` consumes only the first operand as the check file (extra
+        // operands are ignored), mirroring C's `argv[0]`-or-stdin choice.
+        support::terminate(check_files(&operands, check_warn));
     }
 
     let mut status = 0;
@@ -76,6 +92,84 @@ fn run() -> ! {
         emit_line(kind, &input, Some(operand.as_str()));
     }
     support::terminate(status)
+}
+
+/// `cksum -c`: verify the checksums listed in a check file (the first operand,
+/// or standard input when there is none). Faithful to C's `do_check`
+/// (`cksum.c:283-460`): a line is silent on success, prints `name: FAILED` on a
+/// mismatch or an unreadable file, and the whole run exits 1 if any line failed.
+/// The `name (file) = digest` hash grammar and a spaceless "bogus format" line
+/// are counted as failures (the hash needs a crypto primitive we do not carry),
+/// warned on only under `-w`. `-c` on an unreadable check file is C's `err(1,
+/// "Cannot read %s")` — a hard exit 1.
+fn check_files(operands: &[String], check_warn: bool) -> i32 {
+    let from_operand = !operands.is_empty();
+    let fd = if from_operand {
+        match open(&operands[0], 0, 0) {
+            Ok(fd) => fd,
+            Err(_) => {
+                support::warn(format!("cksum: Cannot read {}\n", operands[0]).as_bytes());
+                return 1;
+            }
+        }
+    } else {
+        support::STDIN
+    };
+    let bytes = read_all(fd);
+    if from_operand {
+        //[SD19-gate] SD-19: close 后 fd 不再使用
+        #[allow(clippy::let_underscore_must_use)]
+        let _ = close(fd);
+    }
+    let Ok(text) = core::str::from_utf8(&bytes) else {
+        return 1;
+    };
+    // C reads line-by-line with `fgets`, so a trailing newline terminates the
+    // last real line and yields no phantom empty line; peel exactly one.
+    let body = text.strip_suffix('\n').unwrap_or(text);
+    let mut failed = false;
+    if !body.is_empty() {
+        for line in body.split('\n') {
+            match parse_check_line(line) {
+                CheckEntry::Hash => {
+                    if check_warn {
+                        support::warn(format!("cksum: unknown hash: {line}\n").as_bytes());
+                    }
+                    failed = true;
+                }
+                CheckEntry::Malformed => {
+                    if check_warn {
+                        support::warn(
+                            format!("cksum: bogus format: {line}. Skipping...\n").as_bytes(),
+                        );
+                    }
+                    failed = true;
+                }
+                CheckEntry::Checksum { crc, name } => {
+                    let ok = match open(name, 0, 0) {
+                        Err(_) => {
+                            if check_warn {
+                                support::warn(format!("cksum: {name}\n").as_bytes());
+                            }
+                            false
+                        }
+                        Ok(data_fd) => {
+                            let data = read_all(data_fd);
+                            //[SD19-gate] SD-19: close 后 fd 不再使用
+                            #[allow(clippy::let_underscore_must_use)]
+                            let _ = close(data_fd);
+                            cksum_crc(&data).0 == crc
+                        }
+                    };
+                    if !ok {
+                        support::emit(format!("{name}: FAILED\n").as_bytes());
+                        failed = true;
+                    }
+                }
+            }
+        }
+    }
+    i32::from(failed)
 }
 
 /// Read a descriptor to the end (the C `crc`/`csum` read the whole input).
