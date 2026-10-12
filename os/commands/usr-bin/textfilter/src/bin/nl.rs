@@ -7,9 +7,10 @@
 //!
 //! Wired: the three logical-page sections with their numbering types via
 //! `-b`/`-h`/`-f` (a/t/n), `-v`/`-i`/`-l` (start, step, width), `-n ln|rn|rz`
-//! (format), `-p` (do not restart numbering at a `\:` page delimiter). Declared
-//! residual: `number_regex` (`-b p…`), `-d` delimiter, `-s` separator, `-w`
-//! blank-run counts — requesting them reports "option not wired" and exits 1.
+//! (format), `-p` (do not restart numbering at a page delimiter) and `-d` (set
+//! the 2-byte page delimiter, `\:` by default). Declared residual:
+//! `number_regex` (`-b p…`), `-s` separator string and `-w` blank-run counts —
+//! requesting them reports "option not wired" and exits 1.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -93,9 +94,24 @@ fn run() -> ! {
                     _ => opts.footer = kind,
                 }
             }
-            "d" | "s" | "w" => {
+            "d" => {
+                // C `delim[3]`: fill delim[0] then delim[1] from the operand,
+                // error on a third char (nl.c:157-169). An empty operand leaves
+                // both bytes at the `\:` default.
+                let bytes = value!().as_bytes().to_vec();
+                match bytes.len() {
+                    0 => {}
+                    1 => opts.delim[0] = bytes[0],
+                    2 => {
+                        opts.delim[0] = bytes[0];
+                        opts.delim[1] = bytes[1];
+                    }
+                    _ => fail("invalid delim argument"),
+                }
+            }
+            "s" | "w" => {
                 let _ = value!();
-                fail("option not wired (residual: -d/-s/-w)");
+                fail("option not wired (residual: -s/-w)");
             }
             _ => fail("unknown option"),
         }
