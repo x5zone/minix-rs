@@ -1,0 +1,8 @@
+# clippy 警告计数棘轮基线（PD-31 采乙）。首行数字=工作区警告总数；# 头=五元组元数据。
+# toolchain: rustc 1.94.1 (e408947bf 2026-03-25)
+# clippy:    clippy 0.1.94 (e408947bfd 2026-03-25)
+# command:   cargo clippy --workspace   (in os, target=all-host, features=default)
+# package-set: workspace members
+# captured:  2026-10-13 @ e7602d707
+# rerun:     bash tools/check-clippy-ratchet.sh
+384
