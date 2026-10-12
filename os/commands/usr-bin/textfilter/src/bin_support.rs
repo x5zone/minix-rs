@@ -233,4 +233,3 @@ pub fn epoch_micros() -> Option<u64> {
     .ok()
     .map(|times| times.boot_time * 1_000_000 + times.real_ticks * 10_000)
 }
-
