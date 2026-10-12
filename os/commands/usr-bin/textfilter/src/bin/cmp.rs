@@ -3,7 +3,9 @@
 //! Ground truth: `minix3/usr.bin/cmp/` (NetBSD). The deciding half — the byte
 //! walk, the `-l` difference list, the EOF detection, and the report strings
 //! (`misc.c` `diffmsg`/`eofmsg`) — is the library's fully tested `cmp` module.
-//! This program opens two file operands, applies the optional `skip1`/`skip2`
+//! This program takes two operands (a `-` names standard input, per the C
+//! backward-compatibility path `cmp.c:95-113`; both may not be `-`), applies the
+//! optional `skip1`/`skip2`
 //! byte offsets, compares, and reports exactly as the C: without flags the
 //! first difference `"%s %s differ: char %lld, line %lld"` to standard output
 //! (or `EOF on <file>` when one stream ends first); with `-l` one line per
@@ -53,21 +55,43 @@ fn run() -> ! {
         usage();
     }
     let (file1, file2) = (operands[0], operands[1]);
-    let skip1 = operands.get(2).map_or(0, |s| parse_skip(s));
-    let skip2 = operands.get(3).map_or(0, |s| parse_skip(s));
-
-    let data1 = match read_file_or_none(file1) {
-        Some(data) => data,
-        None => {
-            support::warn(format!("cmp: {file1}\n").as_bytes());
+    // `cmp.c:95-113` backward compatibility: a `-` operand reads standard
+    // input; both operands may not name it. The label in messages becomes
+    // "stdin" (C `file1 = "stdin"`). Previously `-` was opened as a literal
+    // file, so `cmp - file` (e.g. `cat x | cmp - file`) failed instead of
+    // comparing standard input.
+    let [stdin1, stdin2] = match uses_stdin(file1, file2) {
+        Ok(both) => both,
+        Err(()) => {
+            support::warn(b"cmp: standard input may only be specified once\n");
             support::terminate(ERR_EXIT);
         }
     };
-    let data2 = match read_file_or_none(file2) {
-        Some(data) => data,
-        None => {
-            support::warn(format!("cmp: {file2}\n").as_bytes());
-            support::terminate(ERR_EXIT);
+    let name1 = if stdin1 { "stdin" } else { file1 };
+    let name2 = if stdin2 { "stdin" } else { file2 };
+    let skip1 = operands.get(2).map_or(0, |s| parse_skip(s));
+    let skip2 = operands.get(3).map_or(0, |s| parse_skip(s));
+
+    let data1 = if stdin1 {
+        support::read_stdin()
+    } else {
+        match read_file_or_none(file1) {
+            Some(data) => data,
+            None => {
+                support::warn(format!("cmp: {name1}\n").as_bytes());
+                support::terminate(ERR_EXIT);
+            }
+        }
+    };
+    let data2 = if stdin2 {
+        support::read_stdin()
+    } else {
+        match read_file_or_none(file2) {
+            Some(data) => data,
+            None => {
+                support::warn(format!("cmp: {name2}\n").as_bytes());
+                support::terminate(ERR_EXIT);
+            }
         }
     };
 
@@ -76,11 +100,7 @@ fn run() -> ! {
     let outcome = compare_bytes(a, b, list_all);
 
     let status = if silent {
-        if outcome.equal {
-            0
-        } else {
-            DIFF_EXIT
-        }
+        if outcome.equal { 0 } else { DIFF_EXIT }
     } else if list_all {
         let mut text = String::new();
         for entry in &outcome.byte_list {
@@ -90,7 +110,7 @@ fn run() -> ! {
             support::emit(text.as_bytes());
         }
         if let Some((which, byte, line)) = outcome.eof_on {
-            let file = if which == 1 { file1 } else { file2 };
+            let file = if which == 1 { name1 } else { name2 };
             support::warn(format!("cmp: {}\n", report_eof(file, byte, line, true)).as_bytes());
             DIFF_EXIT
         } else if outcome.equal {
@@ -99,11 +119,11 @@ fn run() -> ! {
             DIFF_EXIT
         }
     } else if let Some((byte, line)) = outcome.first_difference {
-        support::emit(report_first_diff(file1, file2, byte, line).as_bytes());
+        support::emit(report_first_diff(name1, name2, byte, line).as_bytes());
         DIFF_EXIT
     } else if let Some((which, byte, line)) = outcome.eof_on {
         let _ = (byte, line);
-        let file = if which == 1 { file1 } else { file2 };
+        let file = if which == 1 { name1 } else { name2 };
         support::warn(format!("cmp: {}\n", report_eof(file, 0, 0, false)).as_bytes());
         DIFF_EXIT
     } else {
@@ -130,6 +150,19 @@ fn read_file_or_none(path: &str) -> Option<Vec<u8>> {
     Some(data)
 }
 
+/// Which of the two operands read standard input, faithful to C
+/// `cmp.c:95-113`: a `-` names stdin, and both operands naming it is an error
+/// (`Err(())`).
+fn uses_stdin(file1: &str, file2: &str) -> Result<[bool; 2], ()> {
+    let stdin1 = file1 == "-";
+    let stdin2 = file2 == "-";
+    if stdin1 && stdin2 {
+        Err(())
+    } else {
+        Ok([stdin1, stdin2])
+    }
+}
+
 fn parse_skip(word: &str) -> u64 {
     match word.parse::<u64>() {
         Ok(value) => value,
@@ -140,6 +173,20 @@ fn parse_skip(word: &str) -> u64 {
 fn usage() -> ! {
     support::warn(b"usage: cmp [-l | -s] file1 file2 [skip1 [skip2]]\n");
     support::terminate(ERR_EXIT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uses_stdin;
+
+    #[test]
+    fn a_dash_operand_reads_stdin() {
+        assert_eq!(uses_stdin("-", "f"), Ok([true, false]));
+        assert_eq!(uses_stdin("f", "-"), Ok([false, true]));
+        assert_eq!(uses_stdin("a", "b"), Ok([false, false]));
+        // 两个操数都是 `-`：C `cmp.c:110` 报“只能指定一次标准输入”。
+        assert_eq!(uses_stdin("-", "-"), Err(()));
+    }
 }
 
 #[cfg(all(not(test), target_os = "none"))]
