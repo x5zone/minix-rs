@@ -1007,6 +1007,67 @@ mod tests {
         assert_eq!(&written[..], b"x86_64\0");
     }
 
+    /// Write-then-read round trip on a `VarStr` leaf (kern.hostname).
+    ///
+    /// Regression lock for the round-1 (a8a47c3d1) defect class: the
+    /// pre-fix `readwrite_exec` apply clamp
+    /// `let n = keep.min(cur.len())` silently dropped every byte on
+    /// the empty seed box (`subtree/kern.rs`'s `VarStr` arm seeds
+    /// `data = Box::from(&b""[..])`), so `sethostname` returned OK
+    /// while storing nothing and the following `gethostname` still
+    /// printed an empty line — the set arm of `hostname(1)` was a
+    /// no-op on-wire. The fix mirrors C's
+    /// `src[newlen]='\0'; strlcpy(dst, src, node_size)`
+    /// (`minix3/minix/servers/mib/tree.c:1286-1287`) by replacing
+    /// the data box with a NUL-terminated copy sized to fit the
+    /// node; this test writes "minix" through the wire and reads the
+    /// exact bytes back through the same leaf to pin both halves.
+    #[test]
+    fn test_walk_varstr_write_then_read_round_trip() {
+        let mut c = ctx();
+        // Seed the caller buffer with the write payload; C's libc
+        // wrapper forwards `namelen` verbatim (no NUL in the message,
+        // `gen/sethostname.c:62`), so we exercise the terminator-append
+        // half of the apply path rather than passing a pre-terminated
+        // string through.
+        c.kernel.canned_from = b"minix".to_vec();
+        c.kernel.from_off = 0;
+        let hostnid =
+            crate::subtree::kern::find_entry(minix_types::KERN_HOSTNAME).unwrap().id;
+        let write = sysctl(
+            &mut c,
+            &mut req(
+                &[CTL_KERN, hostnid],
+                None,
+                Some(Newp {
+                    endpt: Endpoint::PM,
+                    addr: 0x7000,
+                    len: 5,
+                }),
+            ),
+        );
+        assert_eq!(write, SysctlOutcome::Done(0));
+        // Read back: the sink receives the NUL-terminated data, the
+        // report length carries the terminator (C `mib_read`'s
+        // `oldlen = strlen(node->node_data) + 1`, tree.c:1140-1146).
+        c.kernel.written.borrow_mut().clear();
+        let read = sysctl(
+            &mut c,
+            &mut req(
+                &[CTL_KERN, hostnid],
+                Some(Oldp {
+                    endpt: Endpoint::PM,
+                    addr: 0x7100,
+                    left: 256,
+                }),
+                None,
+            ),
+        );
+        assert_eq!(read, SysctlOutcome::Done(6));
+        let written = c.kernel.written.borrow();
+        assert_eq!(&written[..], b"minix\0");
+    }
+
     /// Unknown id: ENOENT, the find verdict (:1385-1386).
     #[test]
     fn test_walk_enoent_unknown_child() {
