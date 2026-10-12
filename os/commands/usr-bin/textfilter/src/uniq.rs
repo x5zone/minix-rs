@@ -39,27 +39,70 @@ pub struct Run<'a> {
     pub count: u64,
 }
 
+/// C `uniq`'s `skip()` (`uniq.c`): the comparison key of a line under
+/// `-f fields` and `-s chars`. Skip `numfields` whitespace-delimited fields —
+/// leading blanks are not a boundary, and the blank that ends a field is
+/// consumed — then `numchars` bytes, and return the rest. Operates on bytes
+/// because C is byte-oriented (`isspace` on `unsigned char`).
+pub fn comparison_key(line: &[u8], numfields: usize, numchars: usize) -> &[u8] {
+    let mut i = 0usize;
+    let mut nfields = numfields;
+    let mut infield = false;
+    while nfields > 0 && i < line.len() {
+        let b = line[i];
+        if b == b' ' || (0x09..=0x0d).contains(&b) {
+            if infield {
+                infield = false;
+                nfields -= 1;
+            }
+        } else if !infield {
+            infield = true;
+        }
+        i += 1;
+    }
+    let mut nchars = numchars;
+    while nchars > 0 && i < line.len() {
+        i += 1;
+        nchars -= 1;
+    }
+    &line[i..]
+}
+
 /// Adjacent duplicate handler: feed lines in order, collect runs.
 pub struct Uniq<'a> {
     mode: UniqMode,
+    skip_fields: usize,
+    skip_chars: usize,
     previous: Option<&'a str>,
+    previous_key: Option<&'a [u8]>,
     count: u64,
 }
 
 impl<'a> Uniq<'a> {
-    /// A new handler in `mode`.
+    /// A new handler in `mode` (no field/character skip).
     pub fn new(mode: UniqMode) -> Self {
+        Uniq::new_with_skip(mode, 0, 0)
+    }
+
+    /// A handler in `mode` that compares `-f fields`/`-s chars` skipped keys
+    /// while still reporting whole lines (`skip_fields`/`skip_chars` mirror C
+    /// `uniq`'s `numfields`/`numchars`).
+    pub fn new_with_skip(mode: UniqMode, skip_fields: usize, skip_chars: usize) -> Self {
         Uniq {
             mode,
+            skip_fields,
+            skip_chars,
             previous: None,
+            previous_key: None,
             count: 0,
         }
     }
 
     /// Offer one line; returns a completed run when the run breaks.
     pub fn push(&mut self, line: &'a str) -> Option<Run<'a>> {
-        match self.previous {
-            Some(previous) if previous == line => {
+        let key = comparison_key(line.as_bytes(), self.skip_fields, self.skip_chars);
+        match self.previous_key {
+            Some(previous_key) if previous_key == key => {
                 self.count += 1;
                 None
             }
@@ -69,6 +112,7 @@ impl<'a> Uniq<'a> {
                     count: self.count,
                 });
                 self.previous = Some(line);
+                self.previous_key = Some(key);
                 self.count = 1;
                 finished
             }
@@ -82,6 +126,7 @@ impl<'a> Uniq<'a> {
             count: self.count,
         });
         self.previous = None;
+        self.previous_key = None;
         self.count = 0;
         finished
     }
@@ -193,5 +238,40 @@ mod tests {
     fn test_empty_input_no_runs() {
         let mut handler = Uniq::new(UniqMode::All);
         assert_eq!(handler.finish(), None);
+    }
+
+    #[test]
+    fn test_comparison_key_field_skip() {
+        // Skip N whitespace-delimited fields; the blank ending each is consumed.
+        assert_eq!(comparison_key(b"aa bb cc", 1, 0), b"bb cc");
+        assert_eq!(comparison_key(b"aa bb cc", 2, 0), b"cc");
+        assert_eq!(comparison_key(b"  lead blanks", 1, 0), b"blanks");
+    }
+
+    #[test]
+    fn test_comparison_key_char_skip() {
+        // With no field skip, `-s N` advances N bytes from the start.
+        assert_eq!(comparison_key(b"abcdef", 0, 2), b"cdef");
+        assert_eq!(comparison_key(b"abcdef", 0, 0), b"abcdef");
+    }
+
+    #[test]
+    fn test_skip_fields_collapses_on_key_not_full_line() {
+        // -f 1: "foo SAME" and "bar SAME" share the key "SAME", so they form one
+        // run reported as the first full line (uniq.c compares skip(), shows all).
+        let mut handler = Uniq::new_with_skip(UniqMode::All, 1, 0);
+        let mut runs: Vec<(String, u64)> = Vec::new();
+        for line in ["foo SAME", "bar SAME", "baz OTHER"] {
+            if let Some(run) = handler.push(line) {
+                runs.push((run.line.to_string(), run.count));
+            }
+        }
+        if let Some(run) = handler.finish() {
+            runs.push((run.line.to_string(), run.count));
+        }
+        assert_eq!(
+            runs,
+            [("foo SAME".to_string(), 2), ("baz OTHER".to_string(), 1)]
+        );
     }
 }
