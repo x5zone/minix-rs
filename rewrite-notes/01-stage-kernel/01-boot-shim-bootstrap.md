@@ -376,16 +376,20 @@ boot.cfg.default: rootdevname=$rootdevname
    → mb_set_param(kinfo.param_buf, name, value)   ← 这一步是"被认出来"的位置
         · 不是专用字段（只有 cttyline/cttybaud 是），所以只写进 param_buf
         · 以 "rootdevname=<设备名>\0" 的形式追加，并保证同名键只有一份
-   → 读它的人：内核侧读同一张表的入口是 minix3/minix/kernel/main.c:get_value
-                 （例：kmain 开头用 env_get(BOARDVARNAME) 取板卡名）
-     用户态：PM 的 PMGETPARAM 路径（minix3/minix/include/sys/svrctl.h:PMGETPARAM）
-                 → 系统任务 GET_MONPARAMS（minix3/minix/kernel/system/do_getinfo.c）
-                   把 kinfo.param_buf 整块拷给调用者
-                 → 例：mib 服务的 minix3/minix/servers/mib/kern.c:mib_kern_root_device
-                   取出 rootdevname 名字
+   → 落到 param_buf 之后，rootdevname 的读者全在用户态，而两条路共用同一个系统调用：
+     读者一：命令行 `sysenv rootdevname`（minix3/minix/commands/sysenv/sysenv.c 里
+        svrctl(PMGETPARAM, …)）→ 系统任务 GET_MONPARAMS
+        （minix3/minix/kernel/system/do_getinfo.c）把 kinfo.param_buf 整块拷给调用者
+        → 拿它去用的是 RAMDS 的启动脚本 minix3/minix/drivers/storage/ramdisk/rc：
+          取回后拼成 /dev/xxx 交给驱动，没设时打印 "rootdevname not set"
+     读者二：同一条 PMGETPARAM 路径，mib 服务也走一次：
+        minix3/minix/servers/mib/kern.c:mib_kern_root_device 取值后作为
+        MIB 节点 kern.root_device 暴露（人可用 svrctl pm get rootdevname 查）
      注意：内核自身没有 rootdevname 的读者（`grep -rn rootdevname minix3/minix/kernel/`
      无命中）——它是留给用户态的名字
 ```
+
+上面这张图里要把两件事分开：**内核侧有读这张表的机制，但 `rootdevname` 没分到读者**。`minix3/minix/kernel/main.c:get_value` 与 `env_get` 服务的对象是 `arch=`、`board=` 这两个键（键名定在 `minix3/minix/include/minix/const.h`，`kmain` 开头就用它取板卡身份）——下一段推演讲的正是 `board` 被引导配置里多写的一个词改写的后果。`rootdevname` 不同：它穿过内核，只为了到达用户态。
 
 所以"`rootdevname` 为什么要经 `mb_set_param` 才被认出来"的答案是：命令行在 `mbi` 里只是一串字节，内核里没有任何一处按字符串搜索引导器内存；`param_buf` 才是内核自己的参数表，而写入它、保证键唯一、维护分隔格式的唯一入口就是 `mb_set_param`。不经过它，`rootdevname` 就只是一串留在 `mbi.mi_cmdline` 里、之后没人再读的字符。
 
