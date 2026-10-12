@@ -9,11 +9,13 @@
 //! on runs of `tabchar` with empties skipped (`spans`, default on).
 //!
 //! Wired here: the default join (field 1 both sides), `-t` (delimiter +
-//! output separator = that byte), `-1`/`-2` (per-file join field), and `-a`
-//! (unmatched lines). Declared residual: the `-o` output-field list, `-j`,
-//! `-v` (suppress the common field / report only unpairables), `-e` (empty
-//! replacement) and the obsolete one-argument form — these ride the next
-//! `join` slice; the caller supplies options it does not set to the defaults.
+//! output separator = that byte), `-1`/`-2` (per-file join field), `-j` (both
+//! join fields at once — the CLI alias for `-1 N -2 N`), `-a` (unmatched
+//! lines), `-v` (report only unpairables from one file, suppressing matched
+//! lines via the C `joinout` global), `-o` (output-field list) and `-e`
+//! (empty replacement). Declared residual: the obsolete one-argument form (a
+//! bare `-1`/`-2`/`-o`/`-t` without a value) — this module models each option
+//! independently, so the caller supplies the values it does not set as defaults.
 //!
 //! Pure: takes the two inputs as byte-line slices and returns the output
 //! lines, so the merge is unit-tested without files or the IPC layer.
@@ -62,6 +64,9 @@ pub struct JoinOptions {
     pub output_fields: Vec<OField>,
     /// Replacement for a missing/unpaired field (`-e`); `None` leaves it blank.
     pub empty: Option<Vec<u8>>,
+    /// Emit the matched-line output. `-v` clears it so only the unpaired lines
+    /// from the specified file print (C `joinout` global, `join.c:104,207-208`).
+    pub joinout: bool,
 }
 
 impl Default for JoinOptions {
@@ -74,6 +79,7 @@ impl Default for JoinOptions {
             unmatched2: false,
             output_fields: Vec::new(),
             empty: None,
+            joinout: true,
         }
     }
 }
@@ -148,11 +154,16 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
         let k2 = key(&split_fields(f2[j], opts.delim), opts.field2);
         match k1.cmp(k2) {
             core::cmp::Ordering::Equal => {
-                for la in f1[i..g1].iter().copied() {
-                    let fa = split_fields(la, opts.delim);
-                    for lb in f2[j..g2].iter().copied() {
-                        let fb = split_fields(lb, opts.delim);
-                        out.push(twoline(&fa, &fb, opts));
+                // C's `if (joinout) joinlines(F1, F2)` (`join.c:259`): with `-v`
+                // clearing `joinout`, matched groups still advance but emit
+                // nothing.
+                if opts.joinout {
+                    for la in f1[i..g1].iter().copied() {
+                        let fa = split_fields(la, opts.delim);
+                        for lb in f2[j..g2].iter().copied() {
+                            let fb = split_fields(lb, opts.delim);
+                            out.push(twoline(&fa, &fb, opts));
+                        }
                     }
                 }
                 i = g1;
@@ -424,5 +435,38 @@ mod tests {
         o.unmatched2 = false;
         // key 3 pairs with nothing -> file-2 field replaced by '-'.
         assert_eq!(join("1 a\n3 c", "1 x", &o), "1 a x\n3 c -");
+    }
+
+    #[test]
+    fn test_v1_emits_only_file1_unpaired() {
+        // `-v 1` (joinout off, unpair file 1): the key 1 match prints nothing,
+        // key 3 alone from file 1 prints, file 2's key 4 stays silent.
+        let o = JoinOptions {
+            joinout: false,
+            unmatched1: true,
+            ..Default::default()
+        };
+        assert_eq!(join("1 a\n3 c", "1 x\n4 z", &o), "3 c");
+    }
+
+    #[test]
+    fn test_v2_emits_only_file2_unpaired() {
+        let o = JoinOptions {
+            joinout: false,
+            unmatched2: true,
+            ..Default::default()
+        };
+        assert_eq!(join("1 a\n3 c", "1 x\n4 z", &o), "4 z");
+    }
+
+    #[test]
+    fn test_joinout_off_without_unpair_emits_nothing() {
+        // Defensive: `-v` with no matching unpair file yields empty output —
+        // matched groups are silent and no side emits singletons.
+        let o = JoinOptions {
+            joinout: false,
+            ..Default::default()
+        };
+        assert_eq!(join("1 a\n2 b", "1 x\n3 z", &o), "");
     }
 }

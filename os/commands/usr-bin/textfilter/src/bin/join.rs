@@ -6,9 +6,12 @@
 //! newline-stripped lines to the library, and emits the result.
 //!
 //! Wired: default join, `-t` (delimiter), `-1`/`-2` (per-file join field),
-//! `-a 1`/`-a 2` (unmatched lines), `-o` (output field list, `0`/`F.N`) and
-//! `-e` (empty-field replacement). Declared residual: `-j` and the obsolete
-//! one-argument form — requesting them reports "option not wired" and exits 1.
+//! `-a 1`/`-a 2` (unmatched lines), `-o` (output field list, `0`/`F.N`), `-e`
+//! (empty-field replacement), `-j field` (both join fields at once — the BSD
+//! alias for `-1 field -2 field`) and `-v fileno` (that file's unpairable lines
+//! only, with matched output suppressed). `-a` and `-v` are mutually exclusive
+//! (`join.c:234-235`). Declared residual: the obsolete one-argument form (a bare
+//! `-1`/`-2`/`-o`/`-t`/`-j`/`-v` without a value).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -60,6 +63,8 @@ fn run() -> ! {
 
     let mut opts = JoinOptions::default();
     let mut files: Vec<&str> = Vec::new();
+    let mut aflag = false;
+    let mut vflag = false;
     let mut i = 1;
     // Take the next argv word as an option's value (empty if none remains).
     macro_rules! value {
@@ -87,11 +92,14 @@ fn run() -> ! {
                     opts.delim = b;
                 }
             }
-            "a" => match value!() {
-                "1" => opts.unmatched1 = true,
-                "2" => opts.unmatched2 = true,
-                _ => fail("-a option file number not 1 or 2"),
-            },
+            "a" => {
+                aflag = true;
+                match value!() {
+                    "1" => opts.unmatched1 = true,
+                    "2" => opts.unmatched2 = true,
+                    _ => fail("-a option file number not 1 or 2"),
+                }
+            }
             "1" | "2" => {
                 let v = value!();
                 let n: usize = v.parse().unwrap_or(0);
@@ -114,15 +122,33 @@ fn run() -> ! {
             "e" => {
                 opts.empty = Some(value!().as_bytes().to_vec());
             }
-            "j" | "v" => {
-                // Consume the value so it is not mistaken for a file, then
-                // decline the unwired residual face.
-                let _ = value!();
-                fail("option not wired (residual: -j/-v)");
+            "j" => {
+                // BSD alias: `-j field` == `-1 field -2 field` (`join.c:183-194`).
+                let n: usize = value!().parse().unwrap_or(0);
+                if n == 0 {
+                    fail("-j option field number less than 1");
+                }
+                opts.field1 = n - 1;
+                opts.field2 = n - 1;
+            }
+            "v" => {
+                // `-v fileno`: only that file's unpairable lines print; matched
+                // output is suppressed via `joinout` (`join.c:206-224`).
+                vflag = true;
+                opts.joinout = false;
+                match value!() {
+                    "1" => opts.unmatched1 = true,
+                    "2" => opts.unmatched2 = true,
+                    _ => fail("-v option file number not 1 or 2"),
+                }
             }
             _ => fail("unknown option"),
         }
         i += 1;
+    }
+
+    if aflag && vflag {
+        fail("-a and -v options mutually exclusive");
     }
 
     if files.len() != 2 {
