@@ -19,6 +19,8 @@
 //! The table builds as a `const` from the polynomial — 256 entries with
 //! no runtime cost, no transcription risk.
 
+use alloc::vec::Vec;
+
 /// One entry per byte value, MSB-first CRC-32 over the polynomial
 /// 0x04c11db7 (the C `crctab`).
 const CRC_TABLE: [u32; 256] = {
@@ -155,6 +157,102 @@ pub fn parse_check_line(line: &str) -> CheckEntry<'_> {
     CheckEntry::Checksum { crc, name }
 }
 
+/// Everything `cksum` was asked to do, folded out of argv by the C `main`
+/// getopt loop (`cksum.c:193-279`, optstring `"a:cno:pqs:twx"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CksumRequest<'a> {
+    /// Which sum to compute (`-a`/`-o` fold this; default `Crc`).
+    pub kind: SumKind,
+    /// `-c`: verify a check file rather than print sums.
+    pub do_check: bool,
+    /// `-w`: warn on each bogus/unreadable check line.
+    pub check_warn: bool,
+    /// `-n`: `PRINT_NORMAL`. C folds it into `print_flags`, which only shapes
+    /// the crypto-hash output; it is accepted here so the flag is not mistaken
+    /// for a file operand, and has no effect on the CRC/old-sum path.
+    pub print_normal: bool,
+    /// `-q`: `PRINT_QUIET`, same hash-output-only role as `-n`.
+    pub print_quiet: bool,
+    /// The file operands (or `-`/stdin marker), in argv order.
+    pub operands: Vec<&'a str>,
+}
+
+/// Why argv could not be folded into a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CksumError {
+    /// `-o` (or `-a`) carried a value with no supported sum behind it.
+    InvalidAlgorithm,
+    /// `-a <algo>` named a crypto hash (md5/sha…) — needs primitives we lack.
+    CryptoUnsupported,
+    /// `-p`/`-s`/`-t`/`-x` call `requirehash` (`cksum.c:149`), which the
+    /// CRC/old-sum path never satisfies.
+    RequiresHash(char),
+    /// A flag outside C's optstring; C routes it to `usage()`.
+    UnknownOption(char),
+}
+
+/// Fold argv into a [`CksumRequest`]. Recognises every C getopt letter so an
+/// option is never mistaken for a file operand (the previous parser pushed
+/// unrecognised `-n`/`-q`/`-p`/`-s`/`-t`/`-x` straight into the file list).
+/// Options are matched as whole argv entries (`-o 1`/`-a crc` keep their value
+/// in the next entry), matching how C is invoked and the prior bin read argv.
+pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumError> {
+    let mut request = CksumRequest {
+        kind: SumKind::Crc,
+        do_check: false,
+        check_warn: false,
+        print_normal: false,
+        print_quiet: false,
+        operands: Vec::new(),
+    };
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index];
+        // A lone `-`, an empty string, or anything not starting with `-` is a
+        // file operand (C getopt leaves a bare `-` to `argv[optind..]`).
+        if arg.len() <= 1 || !arg.starts_with('-') {
+            request.operands.push(arg);
+            index += 1;
+            continue;
+        }
+        let flag = arg.as_bytes()[1] as char;
+        match arg {
+            "-o" => {
+                index += 1;
+                let value = *args.get(index).ok_or(CksumError::InvalidAlgorithm)?;
+                request.kind = match value {
+                    "1" => SumKind::Old1,
+                    "2" => SumKind::Old2,
+                    _ => return Err(CksumError::InvalidAlgorithm),
+                };
+            }
+            "-a" => {
+                index += 1;
+                let value = *args.get(index).ok_or(CksumError::InvalidAlgorithm)?;
+                // C's `-a` accepts the non-crypto `crc`/`old1`/`old2` (strcasecmp);
+                // the MD5/SHA family needs primitives we do not carry.
+                if value.eq_ignore_ascii_case("crc") {
+                    request.kind = SumKind::Crc;
+                } else if value.eq_ignore_ascii_case("old1") {
+                    request.kind = SumKind::Old1;
+                } else if value.eq_ignore_ascii_case("old2") {
+                    request.kind = SumKind::Old2;
+                } else {
+                    return Err(CksumError::CryptoUnsupported);
+                }
+            }
+            "-c" => request.do_check = true,
+            "-w" => request.check_warn = true,
+            "-n" => request.print_normal = true,
+            "-q" => request.print_quiet = true,
+            "-p" | "-s" | "-t" | "-x" => return Err(CksumError::RequiresHash(flag)),
+            _ => return Err(CksumError::UnknownOption(flag)),
+        }
+        index += 1;
+    }
+    Ok(request)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,6 +344,67 @@ mod tests {
             parse_check_line("abc 9 f"),
             CheckEntry::Checksum { crc: 0, name: "f" }
         );
+    }
+
+    #[test]
+    fn test_parse_cksum_args_keeps_options_out_of_operands() {
+        // `-n`/`-q` are C print modes (no-op on the crc path) and must be
+        // recognised, not pushed as file operands — the previous parser leaked
+        // them into the file list.
+        let req = parse_cksum_args(&["-n", "-q", "f"]).unwrap();
+        assert!(req.print_normal);
+        assert!(req.print_quiet);
+        assert_eq!(req.operands, ["f"]);
+    }
+
+    #[test]
+    fn test_parse_cksum_args_requires_hash_flags() {
+        // `-p/-s/-t/-x` call requirehash; they error instead of leaking as files.
+        assert_eq!(
+            parse_cksum_args(&["-p"]),
+            Err(CksumError::RequiresHash('p'))
+        );
+        assert_eq!(
+            parse_cksum_args(&["-x", "y"]),
+            Err(CksumError::RequiresHash('x'))
+        );
+    }
+
+    #[test]
+    fn test_parse_cksum_args_a_and_o_algorithms() {
+        assert_eq!(parse_cksum_args(&["-a", "crc"]).unwrap().kind, SumKind::Crc);
+        assert_eq!(
+            parse_cksum_args(&["-a", "OLD1"]).unwrap().kind,
+            SumKind::Old1
+        );
+        assert_eq!(
+            parse_cksum_args(&["-a", "old2"]).unwrap().kind,
+            SumKind::Old2
+        );
+        assert_eq!(
+            parse_cksum_args(&["-a", "md5"]),
+            Err(CksumError::CryptoUnsupported)
+        );
+        assert_eq!(parse_cksum_args(&["-o", "2"]).unwrap().kind, SumKind::Old2);
+        assert_eq!(
+            parse_cksum_args(&["-o", "9"]),
+            Err(CksumError::InvalidAlgorithm)
+        );
+        assert_eq!(parse_cksum_args(&["-o"]), Err(CksumError::InvalidAlgorithm));
+    }
+
+    #[test]
+    fn test_parse_cksum_args_check_warn_and_edge_forms() {
+        let req = parse_cksum_args(&["-w", "-c", "ck.txt"]).unwrap();
+        assert!(req.do_check);
+        assert!(req.check_warn);
+        assert_eq!(req.operands, ["ck.txt"]);
+        assert_eq!(
+            parse_cksum_args(&["-Z"]),
+            Err(CksumError::UnknownOption('Z'))
+        );
+        // A bare `-` is a file/stdin operand, not an option letter.
+        assert_eq!(parse_cksum_args(&["-"]).unwrap().operands, ["-"]);
     }
 
     #[test]

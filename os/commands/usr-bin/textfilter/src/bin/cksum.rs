@@ -20,62 +20,50 @@ mod support;
 
 use minix_sys::{close, open, read};
 use minix_textfilter::cksum::{
-    cksum_crc, csum1, csum2, parse_check_line, sum_display_length, CheckEntry, SumKind,
+    cksum_crc, csum1, csum2, parse_check_line, parse_cksum_args, sum_display_length, CheckEntry,
+    CksumError, SumKind,
 };
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut kind = SumKind::Crc;
-    let mut operands: Vec<String> = Vec::new();
-    // `-c` verifies checksums from a check file; `-w` warns on each bogus or
-    // unreadable line (C `check_warn`).
-    let mut do_check = false;
-    let mut check_warn = false;
-    let mut index = 1;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg == "-o" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            kind = match argv[index].as_str() {
-                "1" => SumKind::Old1,
-                "2" => SumKind::Old2,
-                _ => {
-                    support::warn(b"cksum: invalid algorithm\n");
-                    support::terminate(2);
-                }
-            };
-        } else if arg == "-a" {
-            // The crypto family (md5/sha1/sha256/sha384/sha512) waits
-            // for crypto primitives.
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // `argv[0]` is the program name; C's getopt loop starts at `argv[1]`.
+    let request = match parse_cksum_args(&refs[1..]) {
+        Ok(request) => request,
+        Err(CksumError::InvalidAlgorithm) => {
+            support::warn(b"cksum: invalid algorithm\n");
+            support::terminate(2);
+        }
+        Err(CksumError::CryptoUnsupported) => {
             support::warn(b"cksum: -a crypto algorithms are not modelled yet\n");
             support::terminate(2);
-        } else if arg == "-c" {
-            do_check = true;
-        } else if arg == "-w" {
-            check_warn = true;
-        } else {
-            operands.push(argv[index].clone());
         }
-        index += 1;
-    }
+        Err(CksumError::RequiresHash(flag)) => {
+            // C's `requirehash` aborts when `-p/-s/-t/-x` is given without a
+            // hash; the CRC/old-sum path never selects one.
+            support::warn(format!("cksum: -{flag} requires a hash algorithm\n").as_bytes());
+            support::terminate(2);
+        }
+        Err(CksumError::UnknownOption(flag)) => {
+            support::warn(format!("cksum: illegal option -- {flag}\n").as_bytes());
+            usage();
+        }
+    };
 
-    if do_check {
+    if request.do_check {
         // `-c` consumes only the first operand as the check file (extra
         // operands are ignored), mirroring C's `argv[0]`-or-stdin choice.
-        support::terminate(check_files(&operands, check_warn));
+        support::terminate(check_files(&request.operands, request.check_warn));
     }
 
     let mut status = 0;
-    if operands.is_empty() {
+    if request.operands.is_empty() {
         // C computes over stdin and prints the line with no filename.
         let input = read_all(support::STDIN);
-        emit_line(kind, &input, None);
+        emit_line(request.kind, &input, None);
         support::terminate(status);
     }
-    for operand in &operands {
+    for operand in request.operands.iter().copied() {
         let fd = match open(operand, 0, 0) {
             Ok(fd) => fd,
             Err(_) => {
@@ -89,7 +77,7 @@ fn run() -> ! {
         //[SD19-gate] SD-19: close 后 fd 不再使用
         #[allow(clippy::let_underscore_must_use)]
         let _ = close(fd);
-        emit_line(kind, &input, Some(operand.as_str()));
+        emit_line(request.kind, &input, Some(operand));
     }
     support::terminate(status)
 }
@@ -102,10 +90,10 @@ fn run() -> ! {
 /// are counted as failures (the hash needs a crypto primitive we do not carry),
 /// warned on only under `-w`. `-c` on an unreadable check file is C's `err(1,
 /// "Cannot read %s")` — a hard exit 1.
-fn check_files(operands: &[String], check_warn: bool) -> i32 {
+fn check_files(operands: &[&str], check_warn: bool) -> i32 {
     let from_operand = !operands.is_empty();
     let fd = if from_operand {
-        match open(&operands[0], 0, 0) {
+        match open(operands[0], 0, 0) {
             Ok(fd) => fd,
             Err(_) => {
                 support::warn(format!("cksum: Cannot read {}\n", operands[0]).as_bytes());
