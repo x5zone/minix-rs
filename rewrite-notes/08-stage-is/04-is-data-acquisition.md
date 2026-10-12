@@ -190,7 +190,7 @@ void __minix_init(void)   /* __attribute__((constructor))，:13-31 */
 `MINIX_KERNINFO` 门）取内核映射好的 `.usermapped` 页地址，并以
 `KERNINFO_MAGIC`（`0xfc3b84bf`，type.h:229）校验——magic 不对就置 NULL
 （之后 `get_minix_kerninfo()` 的 `assert` 会炸，`minix3/minix/lib/libc/sys/kernel_utils.c:get_minix_kerninfo`）。
-页内 `kmessages`（`minix3/minix/kernel/usermapped_data.c:kmessages`）是内核诊断消息环形缓冲，
+页内 `kmessages`（定在 `minix3/minix/kernel/usermapped_data.c`）是内核诊断消息环形缓冲，
 `kmessages_dmp` 直读并展开（minix3/minix/servers/is/dmp_kernel.c:kmessages_dmp，`km_next`/`km_size` 环形
 游标，`_KMESS_BUF_SIZE` 静态打印缓冲）。
 
@@ -200,6 +200,22 @@ void __minix_init(void)   /* __attribute__((constructor))，:13-31 */
 `kmessages` 环形缓冲），IS 经 `KerninfoTransport` 通道取数（§3.3）。
 否决复用 DIAGCTL（§2.2：只打印不回传）。
 另两处：design D3 + `KerninfoTransport` 注释。
+
+#### 2.3.1 写入侧的三条不变量
+
+上一节讲"取出来"，这一节补另一半："写进去"以及"内核出事时谁把它念出来"。这三条是跨篇的地基——写入侧属内核，本篇只拥有第三条的读出端——所以在此钉住结论与证据，不展开实现。
+
+**一、诊断与 panic 路径不许依赖还没就绪的设施。** C 侧的字符汇 `minix3/minix/kernel/utility.c:kputc` 只有数组写入与取模：不调分配器、不发 IPC。停机收尾更极端——`minix3/minix/kernel/arch/i386/arch_reset.c:arch_shutdown` 直接往 `video_mem` 写字符，因为那一刻驱动与页表都不再可信（`video_mem` 要等到 `minix3/minix/kernel/arch/i386/memory.c:arch_enable_paging` 才被换成映射后的虚拟地址，那是运行期的事）。Rust 侧同一个约束落在 panic handler 上：`os/libs/minix-rt/src/lib.rs:fn panic` 与 `os/kernel-image/src/main.rs:fn panic` 都用定长栈缓冲格式化再写早期控制台，为的就是"进不了带堆的格式化机器"时仍能出话。
+
+**二、消息必须送到一个无需配置就可用的出口。** C 有两个出口，条件不一样：写屏无条件；发串口要编译期与运行时两个条件同时成立——`DEBUG_SERIAL`（`minix3/minix/kernel/debug.h` 根据 `USE_SYSDEBUG` 决定它在不在）与 `kinfo.do_serial_debug`（引导命令行的 `cttyline=` 置位，键名定在 `minix3/minix/include/minix/const.h:SERVARNAME`）。Rust 侧把出口统一成串口化的早期控制台，三架构都有。这顺带躲开了一个 C 遇不到的问题：aarch64/riscv64 的板子既没有 EGA 文本缓冲也没有可等的键盘，"清屏、刷屏、再等一个按键"那种策略在那里没有承载对象。
+
+一个必须记下的坑：C 里有两份同名同职责的 assert 实现。内核链接的是 `minix3/minix/lib/libsys/assert.c` 里的 `__assert13`（打印完直接调 panic），而用户态那份 `minix3/lib/libc/gen/assert.c`（打印完走 `abort()`）不参与内核编译。按用户态那份去推演内核的现场，会得出相反的结论。
+
+**三、现场必须取得出来，不能只是打出去。** C 的做法是打完还留一份可取：`kputc` 每字符同时进 `kmess` 环形缓冲，`minix3/minix/servers/is/dmp_kernel.c:kmessages_dmp` 用 `((km_next + _KMESS_BUF_SIZE) - km_size) % _KMESS_BUF_SIZE` 算出起点、把环形内容展平进静态打印缓冲再播。服务侧的消息也走这条缓冲：`minix3/minix/kernel/system/do_diagctl.c` 的 DIAG 分支把送来的字符串逐字符 `kputc`，末尾补一个 `END_OF_KMESS`（值 0，`minix3/minix/kernel/const.h:END_OF_KMESS`）。读出端要有数据，前提就是这份缓冲存在：如果诊断只做直出，`GET_KMESSAGES` 拿到的就是空——`os/kernel/src/kmess.rs` 提供 10000 字节环形缓冲、让记录与显示并行（与 C 在串口调试开着时两处并写同构），取数通道就是 §2.3 与 §3.3 的 `GET_KMESSAGES` + `KerninfoTransport`。
+
+还有一条容易漏看的**投递者唯一性**约定：C 用同一个条件 `!kinfo.do_serial_debug` 把关两处——`kputc` 收到 `END_OF_KMESS` 时只在"没在 panic 且串口调试未开"的情况下才 `send_diag_sig()` 通知 IS，`DIAGCTL_CODE_REGISTER` 也按同一条件才补发第一个信号。语义是：串口已经把消息同步带走，就不必再让 IS 播一遍。
+
+**没落地的一项**：真机上"只靠串口能不能区分挂死与 panic 被吞"目前没有验收门。若 panic handler 只驻留不输出，这两种情形在串口上的表现完全相同——这正是第二条不变量存在的理由。
 
 ### 2.4 getsysinfo：他馆发函（跨服务表）
 
