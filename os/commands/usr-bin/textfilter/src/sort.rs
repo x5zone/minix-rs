@@ -165,6 +165,16 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                 'u' => options.unique = true,
                 'c' => options.check = true,
                 'm' => options.merge = true,
+                // `-H`: a documented no-op in C — `sort.c:174-176` comments that
+                // `-H` "was; use merge sort for blocks of large files — that is
+                // now the default", so it accepts the flag and does nothing. We
+                // match that: accept, no effect (previously it errored as bad).
+                'H' => {}
+                // `-s`: stable sort. C `sort.c:217-222` sets `posix_sort = 0`,
+                // which its own comment notes is already the NetBSD default, and
+                // `slice::sort_by` (used below) is stable — so it is a no-op here
+                // too, matching C's observable behavior.
+                's' => {}
                 'k' | 't' => {
                     let mut value: String = chars.by_ref().collect();
                     if value.is_empty() {
@@ -731,6 +741,22 @@ mod tests {
         let (options, operands) = parse_options(&["-m", "a.txt"]).unwrap();
         assert!(options.merge);
         assert_eq!(operands, ["a.txt"]);
+    }
+
+    #[test]
+    fn test_parse_options_accepts_h_and_s_as_noops() {
+        // C accepts `-H` ("now the default") and `-s` (stable = default) with no
+        // observable effect; they must parse cleanly (not BadOption) and change
+        // no flag — the previous behavior errored them, diverging from C.
+        let (options, operands) = parse_options(&["-H", "-s", "data.txt"]).unwrap();
+        assert!(!options.merge);
+        assert!(!options.unique);
+        assert!(!options.check);
+        assert!(!options.numeric);
+        assert_eq!(operands, ["data.txt"]);
+        // Clustered in one argument too (getopt treats each letter separately).
+        let (clustered, _) = parse_options(&["-sH"]).unwrap();
+        assert!(!clustered.numeric);
     }
 
     #[test]
