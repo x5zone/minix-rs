@@ -5,8 +5,8 @@
 //! default `\:`) switches the section and is *not* emitted (C's `goto
 //! nextline` before any output); when `restart` is set it also resets the
 //! counter to `startnum`. Otherwise the body numbering type decides: `all`
-//! numbers every line (with the `nblank` blank-run grouping defaulting to
-//! "group of 1", i.e. every line), `nonempty` numbers only lines that are
+//! numbers every line, except a run of fewer than `nblank` (`-l`) consecutive
+//! blank lines is left unnumbered, `nonempty` numbers only lines that are
 //! not just a newline. A numbered line prints the counter rendered by the
 //! format (`%-*d`/`%*d`/`%0*d`), an unnumbered line prints `width` blanks
 //! instead; either way the separator then the original line follow.
@@ -14,11 +14,12 @@
 //! Wired: the three logical-page sections (a line of `\:`/`\:\:`/`\:\:\:`
 //! switches to footer/body/header and is dropped, resetting the counter under
 //! restart), each section's numbering type via `-b`/`-h`/`-f` (a/t/n), plus
-//! `-v` (start), `-i` (step), `-l` (width), `-n` (ln/rn/rz), `-p` (no restart),
-//! `-d` (the 2-byte logical-page delimiter, `\:` by default) and `-s` (the
-//! separator bytes between the number field and the text, a tab by default).
-//! Declared residual: the `number_regex` form (`-b p…`) and `-w` blank-run
-//! grouping — those ride the next `nl` slice.
+//! `-v` (start), `-i` (step), `-w` (number field width), `-n` (ln/rn/rz),
+//! `-p` (no restart), `-d` (the 2-byte logical-page delimiter, `\:` by
+//! default), `-s` (the separator bytes between the number field and the text,
+//! a tab by default) and `-l` (blank-run grouping for `-b a`, C `nblank`,
+//! default 1). Declared residual: the `number_regex` form (`-b p…`) — rides the
+//! next `nl` slice.
 
 use alloc::vec::Vec;
 
@@ -61,7 +62,7 @@ pub struct NlOptions {
     pub startnum: u64,
     /// Number increment (`-i`).
     pub incr: u64,
-    /// Line-number field width (`-l`).
+    /// Line-number field width (`-w`).
     pub width: usize,
     /// Number field format (`-n`).
     pub format: NumFormat,
@@ -80,6 +81,10 @@ pub struct NlOptions {
     /// line that is exactly one/two/three repeats of it switches to
     /// footer/body/header (`nl.c:157-169`).
     pub delim: [u8; 2],
+    /// Blank-run grouping for `number_all` sections (`-l`; C `nblank`, default
+    /// 1). A run of fewer than this many consecutive blank lines stays
+    /// unnumbered; the `n`-th blank numbers and resets the run (`nl.c:313`).
+    pub nblank: usize,
 }
 
 impl Default for NlOptions {
@@ -95,6 +100,7 @@ impl Default for NlOptions {
             footer: NumberType::None,
             restart: true,
             delim: [b'\\', b':'],
+            nblank: 1,
         }
     }
 }
@@ -126,10 +132,12 @@ fn delimiter_section(line: &[u8], delim: [u8; 2]) -> Option<Section> {
 pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
     let mut counter = opts.startnum;
+    let mut adjblank = 0usize;
     let mut section = Section::Body;
     for line in lines {
         if let Some(next) = delimiter_section(line, opts.delim) {
             section = next;
+            adjblank = 0;
             if opts.restart {
                 counter = opts.startnum;
             }
@@ -141,7 +149,23 @@ pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
             Section::Header => opts.header,
         };
         let donumber = match kind {
-            NumberType::All => true,
+            // C `number_all` grouping (`nl.c:307-316`): a blank line increments
+            // the adjacent-blank run and stays unnumbered until the run reaches
+            // `nblank`; a non-blank line numbers and resets the run.
+            NumberType::All => {
+                if line.is_empty() {
+                    adjblank += 1;
+                    if adjblank < opts.nblank {
+                        false
+                    } else {
+                        adjblank = 0;
+                        true
+                    }
+                } else {
+                    adjblank = 0;
+                    true
+                }
+            }
             NumberType::Nonempty => !line.is_empty(),
             NumberType::None => false,
         };
@@ -323,5 +347,31 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(nl("a\nb", &o), "     1a\n     2b");
+    }
+
+    #[test]
+    fn test_all_nblank_groups_blank_run() {
+        // `-b a -l 3`: only every third blank line is numbered; a run of fewer
+        // than 3 blanks stays unnumbered (nl.c:307-316).
+        let o = NlOptions {
+            body: NumberType::All,
+            nblank: 3,
+            width: 3,
+            ..Default::default()
+        };
+        assert_eq!(nl("\n\n\n\n", &o), "   \t\n   \t\n  1\t\n   \t");
+    }
+
+    #[test]
+    fn test_all_nblank_resets_run_on_numbered_and_text() {
+        // nblank 2: the adjacent-blank run resets both when a blank is numbered
+        // and when a non-blank line appears.
+        let o = NlOptions {
+            body: NumberType::All,
+            nblank: 2,
+            width: 3,
+            ..Default::default()
+        };
+        assert_eq!(nl("\n\nx\n\n\n", &o), "   \t\n  1\t\n  2\tx\n   \t\n  3\t");
     }
 }

@@ -6,12 +6,12 @@
 //! lines, and emits the numbered result.
 //!
 //! Wired: the three logical-page sections with their numbering types via
-//! `-b`/`-h`/`-f` (a/t/n), `-v`/`-i`/`-l` (start, step, width), `-n ln|rn|rz`
-//! (format), `-p` (do not restart numbering at a page delimiter), `-d` (set
-//! the 2-byte page delimiter, `\:` by default) and `-s` (set the separator
-//! bytes between the number field and the text). Declared residual:
-//! `number_regex` (`-b p…`) and `-w` blank-run counts —
-//! requesting them reports "option not wired" and exits 1.
+//! `-b`/`-h`/`-f` (a/t/n), `-v`/`-i` (start, step), `-w` (number field width),
+//! `-l` (blank-run grouping for `-b a`, C `nblank`), `-n ln|rn|rz` (format),
+//! `-p` (do not restart numbering at a page delimiter), `-d` (set the 2-byte
+//! page delimiter, `\:` by default) and `-s` (set the separator bytes between
+//! the number field and the text). Declared residual: `number_regex` (`-b p…`) —
+//! requesting it reports "option not wired" and exits 1.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -70,7 +70,8 @@ fn run() -> ! {
                 }
             }
             "l" => {
-                opts.width = value!().parse().unwrap_or(0);
+                // C `-l` sets `nblank` (blank-run grouping), not the width.
+                opts.nblank = value!().parse().unwrap_or(0);
             }
             "n" => {
                 opts.format = match value!() {
@@ -114,8 +115,13 @@ fn run() -> ! {
                 opts.sep = value!().as_bytes().to_vec();
             }
             "w" => {
-                let _ = value!();
-                fail("option not wired (residual: -w)");
+                // C `-w` sets the number field width, which must be > 0
+                // (`nl.c:217-228`).
+                let n: usize = value!().parse().unwrap_or(0);
+                if n == 0 {
+                    fail("width argument must be > 0");
+                }
+                opts.width = n;
             }
             _ => fail("unknown option"),
         }
