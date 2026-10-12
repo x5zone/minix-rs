@@ -11,7 +11,6 @@
 //! width), `-b` (bytes) and `-n` (chunk count) are not in the deciding
 //! half and are rejected. Real-machine file creation is gated at C-57/E5.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -22,8 +21,8 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::split::{chunks, suffix, DEFAULT_LINES};
 use minix_sys::{close, open, write};
+use minix_textfilter::split::{SplitError, chunks, parse_split_args, suffix};
 
 // Output-file create flags (`fcntl.h`), mirroring the `uudecode` precedent:
 // O_WRONLY 0x1, O_CREAT 0x200, O_TRUNC 0x400; DEFFILEMODE 0666.
@@ -33,32 +32,17 @@ const O_TRUNC: i32 = 0x400;
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut lines_per_chunk = DEFAULT_LINES;
-    let mut operands: Vec<&str> = Vec::new();
-    let mut index = 1;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg == "-l" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            match argv[index].parse::<usize>() {
-                Ok(0) | Err(_) => usage(),
-                Ok(count) => lines_per_chunk = count,
-            }
-        } else if arg.starts_with('-') && arg.len() > 1 {
-            // -a (suffix width), -b (bytes), -n (chunk count) are not in the
-            // deciding half yet; reject rather than silently ignore.
-            usage();
-        } else {
-            operands.push(arg);
-        }
-        index += 1;
-    }
-    if operands.len() > 2 {
-        usage();
-    }
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // argv folding lives in the deciding half (`parse_split_args`): BSD getopt
+    // `"0123456789b:l:a:n:"` with attached-or-next `-l` values and the obsolete
+    // all-digit `-N`. `-a`/`-b`/`-n` (suffix width, byte split, chunk count) are
+    // reported unmodelled — the deciding half splits on line counts only.
+    let parsed = match parse_split_args(&args[1..]) {
+        Ok(p) => p,
+        Err(e) => arg_error(e),
+    };
+    let lines_per_chunk = parsed.lines_per_chunk;
+    let operands: Vec<&str> = parsed.operands;
     // `split.c:143`: the second operand is the output prefix, default "x".
     let prefix = operands.get(1).copied().unwrap_or("x");
 
@@ -181,6 +165,21 @@ fn usage() -> ! {
     support::terminate(2);
 }
 
+/// Map a [`SplitError`] from `parse_split_args` to the exact C error path (the
+/// message and exit code) the old in-bin parser used, then terminate.
+fn arg_error(e: SplitError<'_>) -> ! {
+    match e {
+        SplitError::Usage => usage(),
+        SplitError::IllegalLineCount(v) => {
+            support::warn(format!("split: {v}: illegal line count.\n").as_bytes());
+            support::terminate(1);
+        }
+        SplitError::Unmodelled => {
+            support::warn(b"split: -a/-b/-n option not modelled yet\n");
+            support::terminate(2);
+        }
+    }
+}
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
