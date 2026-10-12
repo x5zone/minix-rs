@@ -147,6 +147,27 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
     pages
 }
 
+/// Paginate several logical files, each independently, exactly as C's
+/// `onecol` does: page numbering restarts at 1 for every file and each file
+/// carries its own header title. The title is the file's name, unless
+/// `title_override` (a `-h` value) is supplied — C applies that override to
+/// every file (`pr.c:224-233` restart, `pr.c:1318-1376` + `pr.h:63` `FNAME`
+/// = "" for standard input). Per-file options inherit `base` (page length,
+/// `-t`, time prefix).
+pub fn paginate_files(
+    files: &[(&str, Vec<String>)],
+    base: &PrOptions,
+    title_override: Option<&str>,
+) -> Vec<Page> {
+    let mut out: Vec<Page> = Vec::new();
+    for (name, lines) in files {
+        let mut opts = base.clone();
+        opts.header = String::from(title_override.unwrap_or(*name));
+        out.extend(paginate(lines, &opts));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +239,45 @@ mod tests {
         options.page_len = 8;
         let body_capacity = options.page_len.saturating_sub(HEADLEN + TAILLEN).max(1);
         assert_eq!(body_capacity, 1);
+    }
+
+    #[test]
+    fn test_paginate_files_titles_each_file_independently() {
+        let base = PrOptions::default();
+        let files = [
+            ("a.txt", vec![String::from("x1"), String::from("x2")]),
+            ("b.txt", vec![String::from("y")]),
+        ];
+        let pages = paginate_files(&files, &base, None);
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].header_lines[2], "a.txt Page 1");
+        assert_eq!(pages[0].body_lines[0], "x1");
+        assert_eq!(pages[1].header_lines[2], "b.txt Page 1");
+        assert_eq!(pages[1].body_lines[0], "y");
+    }
+
+    #[test]
+    fn test_paginate_files_restarts_page_numbers_per_file() {
+        // A 57-line first file spans Page 1 and Page 2 (body cap 56); the
+        // second file restarts at Page 1 (pr.c:233 `pagecnt = 1`).
+        let base = PrOptions::default();
+        let many: Vec<String> = (1..=57).map(|n| n.to_string()).collect();
+        let files = [("f1", many), ("f2", vec![String::from("z")])];
+        let pages = paginate_files(&files, &base, None);
+        assert_eq!(pages[0].header_lines[2], "f1 Page 1");
+        assert_eq!(pages[1].header_lines[2], "f1 Page 2");
+        assert_eq!(pages[2].header_lines[2], "f2 Page 1");
+    }
+
+    #[test]
+    fn test_paginate_files_header_override_applies_to_all() {
+        let base = PrOptions::default();
+        let files = [
+            ("a.txt", vec![String::from("x")]),
+            ("b.txt", vec![String::from("y")]),
+        ];
+        let pages = paginate_files(&files, &base, Some("TITLE"));
+        assert_eq!(pages[0].header_lines[2], "TITLE Page 1");
+        assert_eq!(pages[1].header_lines[2], "TITLE Page 1");
     }
 }
