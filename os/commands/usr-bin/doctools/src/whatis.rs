@@ -239,6 +239,64 @@ fn trim_path(name: &str) -> &str {
     }
 }
 
+/// `apropos`'s parsed argv tail: the database-path override and the keywords.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AproposArgs<'a> {
+    /// `-M`/`-P` database path (the last one wins); `None` means the caller's
+    /// compiled-in default.
+    pub db_path: Option<&'a str>,
+    /// Keywords in order.
+    pub keywords: Vec<&'a str>,
+}
+
+/// Split `apropos`'s argv tail into [`AproposArgs`], faithful to C's
+/// `getopt(argc, argv, "C:M:m:P:S:s:")` (`apropos.c:85`) — whatis's face plus
+/// `-S` (machine/arch) and `-s` (section), every option taking a value. All
+/// four of whatis's rules apply: values cluster or attach (`-Mpath`) or follow
+/// (`-M path`), `--` ends option scanning, a lone `-` is a keyword, and any
+/// other letter is [`WhatisArgError::Usage`] — never a leaked keyword. `-M`/`-P`
+/// set the database path; `-C`/`-m`/`-S`/`-s` are accepted and their values
+/// consumed but unused (single classic text db; section/arch selection is a
+/// declared gap). Unlike `whatis`, `apropos.c:120` lower-cases its operands
+/// rather than path-trimming them; here the matching itself is case-folded
+/// (see [`SliceManDb::for_each_matching`]), so the keywords are kept verbatim
+/// and borrowed — the outcome is identical, without an allocation.
+pub fn parse_apropos_args<'a>(args: &'a [&'a str]) -> Result<AproposArgs<'a>, WhatisArgError> {
+    let mut db_path: Option<&str> = None;
+    let mut keywords: Vec<&str> = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let token = args[index];
+        if token == "--" {
+            keywords.extend_from_slice(&args[index + 1..]);
+            break;
+        }
+        let bytes = token.as_bytes();
+        if bytes.len() > 1 && bytes[0] == b'-' {
+            let letter = bytes[1];
+            // Every `apropos` option takes a value: attached, else next arg.
+            let value = if bytes.len() > 2 {
+                &token[2..]
+            } else {
+                index += 1;
+                if index >= args.len() {
+                    return Err(WhatisArgError::Usage);
+                }
+                args[index]
+            };
+            match letter {
+                b'C' | b'm' | b'S' | b's' => {} // not modelled: single text db
+                b'M' | b'P' => db_path = Some(value),
+                _ => return Err(WhatisArgError::Usage),
+            }
+        } else {
+            keywords.push(token);
+        }
+        index += 1;
+    }
+    Ok(AproposArgs { db_path, keywords })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +438,53 @@ mod tests {
                 db_path: None,
                 names: vec!["-M", "x"]
             })
+        );
+    }
+
+    #[test]
+    fn test_parse_apropos_keywords_and_no_trim() {
+        use alloc::vec;
+        assert_eq!(
+            parse_apropos_args(&["ls"]),
+            Ok(AproposArgs {
+                db_path: None,
+                keywords: vec!["ls"]
+            })
+        );
+        // Unlike whatis, apropos does NOT path-trim operands (`apropos.c:120`
+        // lower-cases; the fold lives in the matcher, keywords stay verbatim).
+        assert_eq!(
+            parse_apropos_args(&["/usr/bin/foo"]).map(|a| a.keywords),
+            Ok(vec!["/usr/bin/foo"])
+        );
+        assert_eq!(
+            parse_apropos_args(&["-M", "/db", "-M/db2", "k"]).map(|a| a.db_path),
+            Ok(Some("/db2"))
+        );
+    }
+
+    #[test]
+    fn test_parse_apropos_value_options_are_not_leaked() {
+        use alloc::vec;
+        // The regression: `-m`/`-S`/`-s`/`-C` values are consumed, never keywords.
+        assert_eq!(
+            parse_apropos_args(&["-m", "/augment", "-S", "sun3", "-s", "1", "cp"]),
+            Ok(AproposArgs {
+                db_path: None,
+                keywords: vec!["cp"]
+            })
+        );
+        // Unknown option letter → usage, never a keyword.
+        assert_eq!(
+            parse_apropos_args(&["-z", "cp"]),
+            Err(WhatisArgError::Usage)
+        );
+        // A value option with no argument → usage.
+        assert_eq!(parse_apropos_args(&["-s"]), Err(WhatisArgError::Usage));
+        // `--` ends options; dash-leading tokens after it are keywords.
+        assert_eq!(
+            parse_apropos_args(&["--", "-s", "1"]).map(|a| a.keywords),
+            Ok(vec!["-s", "1"])
         );
     }
 }
