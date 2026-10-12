@@ -10,10 +10,11 @@
 //! unopenable/unstatable file warns and is skipped (exit status stays
 //! nonzero). Operands open with `fopen`, so `-` is a literal file name.
 //!
-//! Not modelled (rejected rather than mistaken for an operand): the block mode
-//! `-b`, the reverse mode `-r`, the follow modes `-f`/`-F`, the forward-offset
-//! form `tail -n +N`, and the obsolete bare-number syntax beyond `-N`. Byte mode
-//! `-c N` (the last N raw bytes of each file, C `tail.c` `RBYTES`) is modelled.
+//! Not modelled (rejected rather than mistaken for an operand): the reverse mode
+//! `-r`, the follow modes `-f`/`-F`, the forward-offset form `tail -n +N`, and
+//! the obsolete bare-number syntax beyond `-N`. Byte mode `-c N` (the last N raw
+//! bytes of each file) and block mode `-b N` (the last N 512-byte blocks) are
+//! modelled — C `tail.c` `ARG(1,..)`/`ARG(512,..)` routing to `RBYTES`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -63,7 +64,18 @@ fn run() -> ! {
                 }
                 bytecnt = n;
             }
-            "-r" | "-f" | "-F" | "-b" => {
+            "-b" => {
+                index += 1;
+                if index >= argv.len() {
+                    support::terminate(1);
+                }
+                let n = parse_count(&argv[index]);
+                if n == 0 {
+                    support::terminate(1);
+                }
+                bytecnt = block_bytes(n);
+            }
+            "-r" | "-f" | "-F" => {
                 support::warn(
                     b"tail: this option is not modelled (line-based ring, forward only)\n",
                 );
@@ -148,6 +160,12 @@ fn last_bytes_of(input: &[u8], bytecnt: usize) -> &[u8] {
     &input[input.len().saturating_sub(bytecnt)..]
 }
 
+/// C `tail -b N` counts in 512-byte blocks (`tail.c` `ARG(512, FBYTES, RBYTES)`):
+/// `N` blocks are `N * 512` bytes, saturating rather than wrapping.
+fn block_bytes(n: usize) -> usize {
+    n.saturating_mul(512)
+}
+
 /// Read a descriptor to the end.
 fn read_fd(fd: Fd) -> Vec<u8> {
     let mut input = Vec::new();
@@ -188,7 +206,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::last_bytes_of;
+    use super::{block_bytes, last_bytes_of};
 
     #[test]
     fn last_bytes_truncates_to_count() {
@@ -203,5 +221,12 @@ mod tests {
     #[test]
     fn last_bytes_of_empty_is_empty() {
         assert_eq!(last_bytes_of(b"", 5), b"");
+    }
+
+    #[test]
+    fn block_bytes_is_512_per_block() {
+        assert_eq!(block_bytes(3), 1536);
+        // The byte path then yields the last N blocks worth of bytes.
+        assert_eq!(last_bytes_of(b"x", block_bytes(1)), b"x");
     }
 }
