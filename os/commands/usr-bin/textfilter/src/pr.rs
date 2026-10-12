@@ -34,6 +34,17 @@ pub struct PrOptions {
     pub page_len: usize,
     /// `-t`: no header, no trailer, no padding.
     pub no_header: bool,
+    /// `-N`: column count for vertical multi-column output (`1`, the default,
+    /// is the single-column path). When `> 1`, `paginate` lays the body out
+    /// down `columns` columns via `vertcol`.
+    pub columns: usize,
+    /// `-w`: requested page width — `PGWD` 72 by default, `SPGWD` 512 under
+    /// `-s` (the `doing` half picks the default; see `setup` `pr.c:1834-1839`).
+    /// `column_width` folds it into the per-column data width.
+    pub page_width: usize,
+    /// `-s[C]`: one byte that separates columns without space padding (`None`
+    /// pads each non-last column out to `colwd + 1`).
+    pub sep: Option<u8>,
     /// The time field rendered into the header line (the doing half
     /// supplies the host clock's text; an empty prefix is fine).
     pub time_prefix: String,
@@ -45,6 +56,9 @@ impl Default for PrOptions {
             header: String::new(),
             page_len: LINES,
             no_header: false,
+            columns: 1,
+            page_width: 72,
+            sep: None,
             time_prefix: String::new(),
         }
     }
@@ -78,6 +92,9 @@ impl Page {
 /// empty lines. With `-t` the pages carry the body lines only, without
 /// padding.
 pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
+    if options.columns > 1 {
+        return paginate_columns(lines, options);
+    }
     if options.no_header {
         return lines
             .chunks(lines.len().max(1))
@@ -134,6 +151,85 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
                 String::new(),
             ],
             body_lines: vec![String::new(); body_capacity],
+            trailer_lines: vec![String::new(); TAILLEN],
+        });
+    }
+    pages
+}
+
+/// Vertical multi-column pagination — the `vertcol` face (the default under
+/// `-columns` when `-a` is absent). Input lines are chunked into page-blocks of
+/// `rows * columns` (`rows` = body lines per column, matching `setup`'s
+/// `pr.c:1869-1878` line adjustment), each block laid out down its columns by
+/// [`vertcol_body_rows`], and wrapped in the same 5-line header/trailer as the
+/// single-column path (body padded to `rows` while headers show). `column_width`
+/// is assumed valid; the `doing` half rejects an over-narrow page before here.
+fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
+    let (colwd, _) = column_width(options.page_width, options.columns)
+        .unwrap_or((options.page_width, options.page_width));
+    let rows = if options.no_header {
+        options.page_len.max(1)
+    } else {
+        options.page_len.saturating_sub(HEADLEN + TAILLEN).max(1)
+    };
+    let block = rows * options.columns;
+    let mut pages = Vec::new();
+    let mut page_number = 1usize;
+    let mut cursor = 0usize;
+    loop {
+        let end = (cursor + block).min(lines.len());
+        let mut body = vertcol_body_rows(
+            &lines[cursor..end],
+            rows,
+            options.columns,
+            colwd,
+            options.sep,
+        );
+        let (header_lines, trailer_lines) = if options.no_header {
+            (Vec::new(), Vec::new())
+        } else {
+            while body.len() < rows {
+                body.push(String::new());
+            }
+            (
+                vec![
+                    String::new(),
+                    String::new(),
+                    alloc::format!(
+                        "{}{} Page {}",
+                        options.time_prefix,
+                        options.header,
+                        page_number
+                    ),
+                    String::new(),
+                    String::new(),
+                ],
+                vec![String::new(); TAILLEN],
+            )
+        };
+        pages.push(Page {
+            header_lines,
+            body_lines: body,
+            trailer_lines,
+        });
+        page_number += 1;
+        cursor = end;
+        if cursor >= lines.len() {
+            break;
+        }
+    }
+    if pages.is_empty() && !options.no_header {
+        // An empty input still prints one headered page (the C emits the first
+        // page header before reading); `-t` of nothing stays nothing.
+        pages.push(Page {
+            header_lines: vec![
+                String::new(),
+                String::new(),
+                alloc::format!("{}{} Page 1", options.time_prefix, options.header),
+                String::new(),
+                String::new(),
+            ],
+            body_lines: vec![String::new(); rows],
             trailer_lines: vec![String::new(); TAILLEN],
         });
     }
@@ -426,5 +522,38 @@ mod tests {
             vertcol_body_rows(&block(&["h\u{e9}llo"]), 1, 1, 3, None),
             vec![String::from("h\u{e9}")]
         );
+    }
+
+    #[test]
+    fn test_paginate_columns_no_header_downfills() {
+        // `-N` wires paginate → paginate_columns → vertcol_body_rows. page_width
+        // 5, 2 cols → colwd 2 (stride 3). -t: no header/trailer/padding.
+        let mut options = PrOptions::default();
+        options.columns = 2;
+        options.page_width = 5;
+        options.page_len = 2;
+        options.no_header = true;
+        let pages = paginate_lines(&["a", "b", "c", "d"], &options);
+        assert_eq!(pages.len(), 1);
+        assert!(pages[0].header_lines.is_empty());
+        assert_eq!(
+            pages[0].body_lines,
+            vec![String::from("a  c"), String::from("b  d")]
+        );
+    }
+
+    #[test]
+    fn test_paginate_columns_headers_on_pad_body_and_number_page() {
+        let mut options = PrOptions::default();
+        options.columns = 2;
+        options.page_width = 5;
+        let pages = paginate_lines(&["a", "b"], &options);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].header_lines[2], " Page 1");
+        // body row 0 = "a" + pad-to-stride + empty last column, then padded
+        // out to the 56-line body capacity.
+        assert_eq!(pages[0].body_lines[0], "a  ");
+        assert_eq!(pages[0].body_lines.len(), 56);
+        assert_eq!(pages[0].trailer_lines.len(), TAILLEN);
     }
 }
