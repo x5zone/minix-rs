@@ -63,7 +63,7 @@ x86_64 走 UEFI（OVMF 固件），aarch64 走 UEFI（AAVMF 固件），riscv64 
 | SmpArch trait | arch 层接口：`boot_ap(hw_id, entry_pa, …)`（唤醒一个 AP——目标参数为硬件号，签名随 S-3/S-5 演进，见 §3.2/§3.4）、`send_sched_ipi(cpu)`（发调度 IPI）、`ack_ipi`（中断确认）、`halt_cpu`、`pause` |
 | CpuTopology | 平台层解析固件表得到的三架构统一结构：`{ nr_cpus, bsp_id, cpus: [CpuInfo; 32] }`，每个 `CpuInfo` 含 `hw_id`（x86 的 APIC ID / ARM 的 MPIDR / RISC-V 的 hart ID）与 per-CPU 设备基址（GICR、mtimecmp） |
 | MADT / DTB | x86 的 ACPI Multiple APIC Description 表（列出每个 LAPIC）/ 设备树（ARM 与 RISC-V 固件传递硬件描述的标准格式），二者的 Rust 解析都已存在 |
-| PSCI | ARM Power State Coordination Interface：固件标准接口，`CPU_ON` 调用（功能号 0x84000003，经 `hvc #0` 指令陷入）可让固件启动一个副核，入口地址与上下文指针由调用者给定 |
+| PSCI | ARM Power State Coordination Interface：固件标准接口，`CPU_ON` 调用（SMC64/HVC64 功能号 0xC4000003，默认经 `hvc #0` 指令陷入、可经 `set_psci_conduit_smc` 切 `smc`）可让固件启动一个副核，入口地址与上下文指针由调用者给定（S-3c 已从旧的 32 位 0x84000003 换为 64 位形，见 §3.1）|
 | SBI HSM | RISC-V SBI 规范的 Hart State Management 扩展：`hart_start(hartid, start_addr, opaque)` 经 `ecall` 陷入 OpenSBI，语义同 PSCI CPU_ON |
 | INIT-SIPI-SIPI | x86 AP 启动协议：BSP 向目标 LAPIC 写 ICR 寄存器发 INIT IPI（复位该核），随后发 Startup IPI（SIPI），AP 从**16 位实模式**、物理地址 `vector << 12`（必须 < 1 MiB 且页对齐）开始执行。这是 Intel SDM 规定的硬件契约，无法绕开 |
 | higher-half kernel | 内核链接并运行在高虚拟地址（如 0xFFFF_xxxx_xxxx_xxxx），物理内存却加载在低位；分页把两者映射起来 |

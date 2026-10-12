@@ -16,8 +16,11 @@
 //!   ICC_EOIR1_EL1 (End Of Interrupt Register) completes handling.
 //! - **CPU halt**: The `wfi` (Wait For Interrupt) instruction suspends
 //!   execution until an interrupt arrives.
-//! - **AP boot**: PSCI `CPU_ON` (function ID 0x84000003) is invoked via
-//!   `hvc #0` to power on a secondary CPU at a given entry point.
+//! - **AP boot**: PSCI `CPU_ON` (SMC64/HVC64 function ID 0xC4000003) is
+//!   invoked via `hvc #0` (default conduit; `set_psci_conduit_smc` switches to
+//!   `smc`) to power on a secondary CPU at a given entry point. The 64-bit form
+//!   keeps the full entry address (S-3c; the older 0x84000003 SMC32 form
+//!   truncated it — see `PSCI_CPU_ON_64`).
 //!
 //! # Anti-translate vs C
 //!
