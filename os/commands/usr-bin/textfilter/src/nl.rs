@@ -14,10 +14,11 @@
 //! Wired: the three logical-page sections (a line of `\:`/`\:\:`/`\:\:\:`
 //! switches to footer/body/header and is dropped, resetting the counter under
 //! restart), each section's numbering type via `-b`/`-h`/`-f` (a/t/n), plus
-//! `-v` (start), `-i` (step), `-l` (width), `-n` (ln/rn/rz), `-p` (no restart)
-//! and `-d` (the 2-byte logical-page delimiter, `\:` by default). Declared
-//! residual: the `number_regex` form (`-b p…`), `-s` separator string, and `-w`
-//! blank-run grouping — those ride the next `nl` slice.
+//! `-v` (start), `-i` (step), `-l` (width), `-n` (ln/rn/rz), `-p` (no restart),
+//! `-d` (the 2-byte logical-page delimiter, `\:` by default) and `-s` (the
+//! separator bytes between the number field and the text, a tab by default).
+//! Declared residual: the `number_regex` form (`-b p…`) and `-w` blank-run
+//! grouping — those ride the next `nl` slice.
 
 use alloc::vec::Vec;
 
@@ -64,8 +65,9 @@ pub struct NlOptions {
     pub width: usize,
     /// Number field format (`-n`).
     pub format: NumFormat,
-    /// Separator byte between the number and the text (C `sep`, default tab).
-    pub sep: u8,
+    /// Separator bytes between the number field and the text (`-s`; C `sep`
+    /// string, a tab by default).
+    pub sep: Vec<u8>,
     /// Numbering type for body lines (`-b`).
     pub body: NumberType,
     /// Numbering type for header lines (`-h`).
@@ -87,7 +89,7 @@ impl Default for NlOptions {
             incr: 1,
             width: 6,
             format: NumFormat::Right,
-            sep: b'\t',
+            sep: [b'\t'].to_vec(),
             body: NumberType::Nonempty,
             header: NumberType::None,
             footer: NumberType::None,
@@ -150,7 +152,7 @@ pub fn nl_lines(lines: &[&[u8]], opts: &NlOptions) -> Vec<Vec<u8>> {
         } else {
             row.resize(row.len() + opts.width, b' ');
         }
-        row.push(opts.sep);
+        row.extend_from_slice(&opts.sep);
         row.extend_from_slice(line);
         out.push(row);
     }
@@ -301,5 +303,25 @@ mod tests {
         // reset the counter to startnum, so the blank header line gets number 1.
         let o = NlOptions { header: NumberType::All, ..Default::default() };
         assert_eq!(nl("a\n\\:\\:\\:\n\n", &o), "     1\ta\n     1\t");
+    }
+
+    #[test]
+    fn test_separator_string_option() {
+        // `-s '::'` -> separator bytes `::` between the number field and text.
+        let o = NlOptions {
+            sep: b"::".to_vec(),
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), "     1::a\n     2::b");
+    }
+
+    #[test]
+    fn test_empty_separator_option() {
+        // `-s ''` -> no separator; the number field abuts the text directly.
+        let o = NlOptions {
+            sep: Vec::new(),
+            ..Default::default()
+        };
+        assert_eq!(nl("a\nb", &o), "     1a\n     2b");
     }
 }
