@@ -18,36 +18,21 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, read};
-use minix_textfilter::unexpand::{parse_stops, unexpand, UnexpandOptions};
+use minix_textfilter::unexpand::{
+    parse_unexpand_args, unexpand, UnexpandArgs, UnexpandError, UnexpandOptions,
+};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut options = UnexpandOptions::default();
-    let mut operands: Vec<String> = Vec::new();
-    let mut index = 1;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg == "-a" {
-            options.all = true;
-        } else if arg == "-t" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            match parse_stops(&argv[index]) {
-                Some(stops) => options.stops = stops,
-                None => {
-                    support::warn(b"unexpand: bad tab stop spec\n");
-                    support::terminate(1);
-                }
-            }
-        } else if arg.starts_with('-') && arg.len() > 1 {
-            usage();
-        } else {
-            operands.push(argv[index].clone());
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let UnexpandArgs { options, operands } = match parse_unexpand_args(&refs[1..]) {
+        Ok(parsed) => parsed,
+        Err(UnexpandError::Usage) => usage(),
+        Err(UnexpandError::IllegalStops) => {
+            support::warn(b"unexpand: bad tab stop spec\n");
+            support::terminate(1);
         }
-        index += 1;
-    }
+    };
 
     // C `do { if (argc>0) freopen(argv[0]); while (fgetln) convertline } while
     // (argc > 0)`: no operand reads stdin once, otherwise each file is tabified

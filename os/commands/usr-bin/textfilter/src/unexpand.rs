@@ -87,9 +87,7 @@ pub fn unexpand_line(line: &str, options: &UnexpandOptions) -> String {
 
         // Non-blank byte: flush the gap as tabs then spaces.
         if options.stops.is_empty() {
-            while (ocol + DEFAULT_STOP) / DEFAULT_STOP <= dcol / DEFAULT_STOP
-                && dcol - ocol >= 2
-            {
+            while (ocol + DEFAULT_STOP) / DEFAULT_STOP <= dcol / DEFAULT_STOP && dcol - ocol >= 2 {
                 out.push('\t');
                 ocol = (1 + ocol / DEFAULT_STOP) * DEFAULT_STOP;
             }
@@ -102,10 +100,7 @@ pub fn unexpand_line(line: &str, options: &UnexpandOptions) -> String {
             while n < options.stops.len() && options.stops[n] <= ocol {
                 n += 1;
             }
-            while n < options.stops.len()
-                && options.stops[n] <= dcol
-                && ocol < dcol
-                && ocol < limit
+            while n < options.stops.len() && options.stops[n] <= dcol && ocol < dcol && ocol < limit
             {
                 out.push('\t');
                 ocol = options.stops[n];
@@ -157,6 +152,87 @@ pub fn unexpand(input: &str, options: &UnexpandOptions) -> Vec<String> {
         .collect()
 }
 
+/// `unexpand`'s parsed argv tail: the merge options and the file operands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnexpandArgs<'a> {
+    /// `-a` / `-t` options (which columns to tabify).
+    pub options: UnexpandOptions,
+    /// File operands in order.
+    pub operands: Vec<&'a str>,
+}
+
+/// `unexpand` argument-parsing failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnexpandError {
+    /// An option letter outside `a`/`t`, a `-t` with no value, or the C
+    /// `-a`/`-t` conflict (`unexpand.c:87-95`: `-a` after a stop list, or `-t`
+    /// once `-a` is set, both `usage()`).
+    Usage,
+    /// A `-t` stop list `parse_stops` rejects (`unexpand.c:113-117`).
+    IllegalStops,
+}
+
+/// Split `unexpand`'s argv tail into [`UnexpandArgs`], faithful to C's
+/// `getopt(argc, argv, "at:")` (`unexpand.c:86`): the valueless `-a` and the
+/// colon `-t` cluster in one token (`-a`, `-t8` attached, `-t 8` separate),
+/// `--` ends option scanning, a lone `-` is an operand, and any other letter is
+/// [`UnexpandError::Usage`]. C makes `-a` and `-t` mutually exclusive — a `-t`
+/// once `-a` is set, or a `-a` once stops are set, is `usage()` (`-at8` is
+/// therefore an error, not a combined form). A rejected stop list is
+/// [`UnexpandError::IllegalStops`]. The old front door matched only the whole
+/// tokens `-a`/`-t`, so the C-legal attached form `unexpand -t8 file` fell
+/// through to a usage error and the conflict was not enforced.
+pub fn parse_unexpand_args<'a>(args: &'a [&'a str]) -> Result<UnexpandArgs<'a>, UnexpandError> {
+    let mut options = UnexpandOptions::default();
+    let mut operands: Vec<&'a str> = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index];
+        if arg == "--" {
+            operands.extend_from_slice(&args[index + 1..]);
+            break;
+        }
+        let bytes = arg.as_bytes();
+        if bytes.len() > 1 && bytes[0] == b'-' {
+            let mut pos = 1;
+            while pos < bytes.len() {
+                match bytes[pos] {
+                    b'a' => {
+                        // `-a` after a `-t` stop list is C's conflict → usage.
+                        if !options.stops.is_empty() {
+                            return Err(UnexpandError::Usage);
+                        }
+                        options.all = true;
+                        pos += 1;
+                    }
+                    b't' => {
+                        // `-t` once `-a` is set is the same conflict → usage.
+                        if options.all {
+                            return Err(UnexpandError::Usage);
+                        }
+                        let spec = if pos + 1 < bytes.len() {
+                            &arg[pos + 1..]
+                        } else {
+                            index += 1;
+                            if index >= args.len() {
+                                return Err(UnexpandError::Usage);
+                            }
+                            args[index]
+                        };
+                        options.stops = parse_stops(spec).ok_or(UnexpandError::IllegalStops)?;
+                        pos = bytes.len();
+                    }
+                    _ => return Err(UnexpandError::Usage),
+                }
+            }
+        } else {
+            operands.push(arg);
+        }
+        index += 1;
+    }
+    Ok(UnexpandArgs { options, operands })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,7 +265,10 @@ mod tests {
         let options = UnexpandOptions::default();
         // Four leading blanks stay spaces (no stop crossed); everything
         // after the first non-blank passes verbatim.
-        assert_eq!(unexpand_line("    ab        cd", &options), "    ab        cd");
+        assert_eq!(
+            unexpand_line("    ab        cd", &options),
+            "    ab        cd"
+        );
     }
 
     #[test]
@@ -230,6 +309,56 @@ mod tests {
         assert_eq!(
             unexpand("        a\n        b\n", &options),
             vec!["\ta".to_string(), "\tb".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_unexpand_flags_and_attach() {
+        use alloc::vec;
+        assert_eq!(
+            parse_unexpand_args(&["f"]).map(|a| (a.options, a.operands)),
+            Ok((UnexpandOptions::default(), vec!["f"]))
+        );
+        // `-a` valueless, `-t` separate value.
+        assert!(parse_unexpand_args(&["-a", "f"])
+            .map(|a| a.options.all)
+            .unwrap());
+        assert_eq!(
+            parse_unexpand_args(&["-t", "8", "f"]).map(|a| a.options.stops),
+            Ok(vec![8])
+        );
+        // The regression: attached `-t8` is accepted (was a usage error).
+        assert_eq!(
+            parse_unexpand_args(&["-t8", "f"]).map(|a| (a.options.stops, a.operands)),
+            Ok((vec![8], vec!["f"]))
+        );
+        // A lone `-` is an operand; `--` ends options.
+        assert_eq!(
+            parse_unexpand_args(&["--", "-a"]).map(|a| a.operands),
+            Ok(vec!["-a"])
+        );
+    }
+
+    #[test]
+    fn test_parse_unexpand_conflicts_and_errors() {
+        // C makes `-a` and `-t` mutually exclusive: `-at8` clusters to an error.
+        assert_eq!(parse_unexpand_args(&["-at8"]), Err(UnexpandError::Usage));
+        // `-a` after a `-t` stop list, and `-t` after `-a`, both conflict.
+        assert_eq!(
+            parse_unexpand_args(&["-t", "8", "-a"]),
+            Err(UnexpandError::Usage)
+        );
+        assert_eq!(
+            parse_unexpand_args(&["-a", "-t", "8"]),
+            Err(UnexpandError::Usage)
+        );
+        // Unknown letter → usage; `-t` with no value → usage; bad stop list →
+        // IllegalStops.
+        assert_eq!(parse_unexpand_args(&["-z", "f"]), Err(UnexpandError::Usage));
+        assert_eq!(parse_unexpand_args(&["-t"]), Err(UnexpandError::Usage));
+        assert_eq!(
+            parse_unexpand_args(&["-t", "4,2"]),
+            Err(UnexpandError::IllegalStops)
         );
     }
 }
