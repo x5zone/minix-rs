@@ -12,9 +12,10 @@
 //! or each file's mtime; `pr.h:63`). Vertical multi-column output (`-N`, with
 //! `-w` width and `-s` separator) is modelled via the library's `vertcol` face,
 //! and the `-o` left margin via `render_page`; the single-column `-n` running
-//! line number (C `addnum`) via the `number_width`/`number_char` options; across-fill
-//! (`-a`), merge (`-m`), double spacing (`-d`), the formfeed (`-F`), the starting
-//! page (`+first`), and `-n` in multi-column mode are later batches. An
+//! line number (C `addnum`) via the `number_width`/`number_char` options; the
+//! across-fill `-a` (C `horzcol`) via the `across` option; merge (`-m`),
+//! double spacing (`-d`), the formfeed (`-F`), the starting page (`+first`), and
+//! `-n` in multi-column mode are later batches. An
 //! unopenable operand warns
 //! and is skipped with a nonzero exit (`strerror` suffix not reproduced).
 
@@ -40,6 +41,7 @@ fn run() -> ! {
     // (`setup` `pr.c:1834-1839`), applied after the scan when `-w` was absent.
     let mut wflag = false;
     let mut sflag = false;
+    let mut across = false;
     let mut index = 1;
     while index < argv.len() {
         let arg = argv[index].as_str();
@@ -125,13 +127,16 @@ fn run() -> ! {
             }
             options.number_width = width;
             options.number_char = sep;
+        } else if arg == "-a" {
+            // `-a`: across-fill; needs multiple columns (checked after the scan).
+            across = true;
         } else if arg.starts_with('+') {
             // `+first_page` (start at a page) is a later batch; `-N` columns
             // are handled above.
             support::warn(b"pr: +page is not modelled yet\n");
             support::terminate(2);
         } else if arg.len() > 1 && arg.starts_with('-') {
-            // An option letter we do not model (`-d`, `-a`, `-m`, `-F`).
+            // An option letter we do not model (`-d`, `-m`, `-F`).
             support::warn(b"pr: option form not modelled yet\n");
             support::terminate(2);
         } else {
@@ -156,6 +161,14 @@ fn run() -> ! {
             .as_bytes(),
         );
         usage();
+    }
+    // `-a` across-fill requires multiple columns (`pr.c:1823-1828`).
+    if across {
+        if options.columns <= 1 {
+            support::emit(b"pr: -a flag requires multiple columns\n");
+            usage();
+        }
+        options.across = true;
     }
 
     // Read each operand into a logical file (name, lines). No operands means
@@ -220,7 +233,7 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 
 fn usage() -> ! {
     support::warn(
-        b"usage: pr [-t] [-h header] [-l lines] [-columns] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
+        b"usage: pr [-t] [-h header] [-l lines] [-columns] [-a] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
     );
     support::terminate(2);
 }

@@ -38,6 +38,10 @@ pub struct PrOptions {
     /// is the single-column path). When `> 1`, `paginate` lays the body out
     /// down `columns` columns via `vertcol`.
     pub columns: usize,
+    /// `-a`: fill multi-column output across each row (`horzcol`) instead of
+    /// down each column (`vertcol`, the default). Requires `columns > 1` (the
+    /// `doing` half rejects a lone `-a`, `pr.c:1823-1828`).
+    pub across: bool,
     /// `-w`: requested page width — `PGWD` 72 by default, `SPGWD` 512 under
     /// `-s` (the `doing` half picks the default; see `setup` `pr.c:1834-1839`).
     /// `column_width` folds it into the per-column data width.
@@ -69,6 +73,7 @@ impl Default for PrOptions {
             page_len: LINES,
             no_header: false,
             columns: 1,
+            across: false,
             page_width: 72,
             sep: None,
             offset: 0,
@@ -227,13 +232,17 @@ fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
     let mut cursor = 0usize;
     loop {
         let end = (cursor + block).min(lines.len());
-        let mut body = vertcol_body_rows(
-            &lines[cursor..end],
-            rows,
-            options.columns,
-            colwd,
-            options.sep,
-        );
+        let mut body = if options.across {
+            horzcol_body_rows(&lines[cursor..end], options.columns, colwd, options.sep)
+        } else {
+            vertcol_body_rows(
+                &lines[cursor..end],
+                rows,
+                options.columns,
+                colwd,
+                options.sep,
+            )
+        };
         let (header_lines, trailer_lines) = if options.no_header {
             (Vec::new(), Vec::new())
         } else {
@@ -371,6 +380,59 @@ pub fn vertcol_body_rows(
         for column in 0..columns {
             let idx = column * rows + row;
             let raw = lines_block.get(idx).map(String::as_str).unwrap_or("");
+            if !raw.is_empty() {
+                any = true;
+            }
+            let cell = clip_to_width(raw, colwd);
+            line.push_str(cell);
+            if column + 1 == columns {
+                break; // last column: no trailing pad
+            }
+            match sep {
+                Some(byte) => line.push(byte as char),
+                None => {
+                    for _ in 0..(colwd + 1 - cell.len()) {
+                        line.push(' ');
+                    }
+                }
+            }
+        }
+        if !any {
+            break;
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// One multi-column page's body rows, filled across each row like `horzcol`
+/// (the `-a` face, `pr.c:710-770`): row `r` takes the consecutive input lines
+/// `[r*columns .. (r+1)*columns]`, so the page reads line-by-line across the
+/// columns rather than down them. A column past the last input line is EOF and
+/// stops the row (C `inln < 0` → `break`); the last column is never padded; a
+/// row whose only cells are absent/empty stops emission entirely (C's
+/// `lstdat - buf <= offst` break at `pr.c:755`). The row count is derived from
+/// the block (`ceil(len / columns)`), capped by the caller's `rows` chunk.
+pub fn horzcol_body_rows(
+    lines_block: &[String],
+    columns: usize,
+    colwd: usize,
+    sep: Option<u8>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if columns == 0 {
+        return out;
+    }
+    let rows = lines_block.len().div_ceil(columns);
+    for row in 0..rows {
+        let mut line = String::new();
+        let mut any = false;
+        for column in 0..columns {
+            let idx = row * columns + column;
+            let raw = match lines_block.get(idx) {
+                Some(s) => s.as_str(),
+                None => break, // EOF: stop this row here (C `inln < 0`)
+            };
             if !raw.is_empty() {
                 any = true;
             }
@@ -676,5 +738,40 @@ mod tests {
         assert_eq!(pages[0].body_lines[1], "  2\tb");
         assert_eq!(pages[1].body_lines[0], "  3\tc");
         assert_eq!(pages[1].body_lines[1], "  4\td");
+    }
+
+    #[test]
+    fn test_horzcol_fills_across_rows() {
+        // Row-major (across): consecutive lines go left-to-right, contrasted
+        // against vertcol_body_rows' column-major down-fill of the same block.
+        assert_eq!(
+            horzcol_body_rows(&block(&["a", "b", "c", "d"]), 2, 3, None),
+            vec![String::from("a   b"), String::from("c   d")]
+        );
+        assert_eq!(
+            vertcol_body_rows(&block(&["a", "b", "c", "d"]), 2, 2, 3, None),
+            vec![String::from("a   c"), String::from("b   d")]
+        );
+        // Odd count: last row's single cell is padded (col0 is not last), then
+        // EOF stops the row — trailing inter-column pad kept.
+        assert_eq!(
+            horzcol_body_rows(&block(&["a", "b", "c"]), 2, 3, None),
+            vec![String::from("a   b"), String::from("c   ")]
+        );
+        assert!(horzcol_body_rows(&[], 2, 3, None).is_empty());
+    }
+
+    #[test]
+    fn test_paginate_across_fills_row_major() {
+        let mut options = PrOptions::default();
+        options.columns = 2;
+        options.page_width = 5; // → colwd 2
+        options.across = true;
+        options.no_header = true;
+        let pages = paginate_lines(&["a", "b", "c", "d"], &options);
+        assert_eq!(
+            pages[0].body_lines,
+            vec![String::from("a  b"), String::from("c  d")]
+        );
     }
 }
