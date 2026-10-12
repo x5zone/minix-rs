@@ -37,10 +37,14 @@
 //! - [`script`]: startup file sequencing.
 //! - [`getopt`]: the BSD `getopt(3)` option parser behind the `getopt`
 //!   command.
+//! - [`hostname`]: option parsing and `-s` display trimming for
+//!   `bin/hostname/hostname.c`; the sysctl round trip stays with
+//!   [`minix_sys::gethostname`] / [`minix_sys::sethostname`].
 
 pub mod expand;
 pub mod exec_frame;
 pub mod getopt;
+pub mod hostname;
 pub mod lexer;
 pub mod redir;
 pub mod script;

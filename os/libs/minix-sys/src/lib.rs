@@ -921,6 +921,21 @@ pub fn sysctlbyname(
     sysctl::sysctlbyname_via(&ipc::DirectTrapTransport, name, old, new)
 }
 
+/// Reads the current hostname into `buffer`, refreshing `written` with
+/// the service's answer (C `gen/gethostname.c`, the two-component
+/// `{CTL_KERN, KERN_HOSTNAME}` sysctl walk).
+pub fn gethostname(buffer: &mut [u8], written: &mut usize) -> Result<(), Errno> {
+    sysctl::gethostname_via(&ipc::DirectTrapTransport, buffer, written)
+}
+
+/// Publishes a new hostname (C `gen/sethostname.c`, the write arm of the
+/// same `{CTL_KERN, KERN_HOSTNAME}` walk). The service owns the
+/// [`sysctl::MAX_HOSTNAME_LEN`] clamp and answers `EINVAL` past it
+/// (C `mib_write` size check, `minix3/minix/servers/mib/tree.c:1203-1204`).
+pub fn sethostname(name: &[u8]) -> Result<(), Errno> {
+    sysctl::sethostname_via(&ipc::DirectTrapTransport, name)
+}
+
 /// The `who` selectors and the report types of the `times` face (C
 /// `sys/resource.h:56-57` and `sys/sys/times.h:49-54`).
 pub use time::{RUSAGE_CHILDREN, RUSAGE_SELF, Rusage, Tms};

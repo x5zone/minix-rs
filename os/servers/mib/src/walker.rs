@@ -653,9 +653,45 @@ fn readwrite_exec<K: MibKernel, S: MibServices>(
             s.imm = Some(i32::from_le_bytes(staging[..4].try_into().unwrap()) as i64);
         } else if ty == CTLTYPE_QUAD {
             s.imm = Some(i64::from_le_bytes(staging[..8].try_into().unwrap()));
+        } else if ty == CTLTYPE_STRING {
+            // Mirror C's `src[newlen] = '\0'; strlcpy(dst, src, node_size)`
+            // (tree.c:1286-1287): copy staging up to the first NUL (or
+            // all of it if none), then append a terminator, capped so
+            // the whole box (data + NUL) fits within node_size. Storing
+            // exactly `strlen + 1` bytes here lets the read half's
+            // `extend_from_slice(slot.data)` answer the same shape C
+            // does (`oldlen = strlen(node->node_data) + 1`,
+            // tree.c:1140-1146). The pre-fix clamp `min(newlen,
+            // cur.len())` silently dropped every byte on the
+            // zero-length VarStr seed (`hostname`, `domainname`,
+            // `minix.test.string`), turning the set arm of `hostname(1)`
+            // into a no-op against a OK reply.
+            let limit = s.size as usize;
+            let end = staging
+                .iter()
+                .position(|b| *b == 0)
+                .unwrap_or(staging.len());
+            let keep = end.min(limit.saturating_sub(1));
+            let mut bytes = Vec::with_capacity(keep + 1);
+            bytes.extend_from_slice(&staging[..keep]);
+            if bytes.len() < limit {
+                bytes.push(0);
+            }
+            s.data = Some(bytes.into_boxed_slice());
         } else {
+            // STRUCT (and any other buffer-typed leaf): memcpy discipline
+            // into a node-width destination box. Grow the box if the seed
+            // is smaller than the write's payload (up to node_size) so a
+            // caller writing exactly `node_size` bytes actually stores
+            // them all, matching C's fixed `dst` buffer semantics at
+            // tree.c:1271.
             let keep = crate::subtree::kern::truncate_len(staging.len(), s.size as usize);
             let cur = s.data.get_or_insert_with(|| Vec::new().into_boxed_slice());
+            if cur.len() < keep {
+                let mut grown = cur.to_vec();
+                grown.resize(keep, 0);
+                *cur = grown.into_boxed_slice();
+            }
             let n = keep.min(cur.len());
             cur[..n].copy_from_slice(&staging[..n]);
         }

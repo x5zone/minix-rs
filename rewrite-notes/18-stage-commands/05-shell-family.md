@@ -206,6 +206,7 @@ libc 不移植——`sh` 的执行层因此不能照抄 C 的 `execve`/`stdio` �
 - **启动序列**（`script.rs`，6 个）：`test_login_shell_reads_both_profiles`（登录两文件）、`test_interactive_shell_reads_env_file`（交互读环境文件）、`test_login_plus_env_chains_three`（登录加交互三文件）、`test_privileged_shell_skips_env`（特权跳过）、`test_empty_env_reads_nothing`（空环境文件视同未设）、`test_batch_shell_reads_nothing`（批处理不读）。
 - **getopt 解析**（`getopt.rs`，11 个）：簇内 flag（`-ab`）、附写/分写参数（`-nfoo`/`-n foo`）、GNU 可选 `::`、`--` 终止、首个操作数即停（不置换）、未知项、缺参（普通态与前导冒号态）、solitary `-`、flag+参数混束（`-abcVALUE` 配 `abc:`）。
 - **getopt 渲染**（`bin/getopt.rs` 的 `render`，8 个）：逐 golden 验 stdout 命令行（flag/附参/分参/`--` 分隔）、stderr 两条诊断（unknown option / option requires an argument）、退出码、progname 取 argv[0] 末段。
+- **hostname 解析**（`hostname.rs`，10 个）：`parse_plan` 折 getopt 形态成 `Plan::{Read{short}, Write{name}}`（默认读长、`-s` 幂等、`--` 终止扫描、cluster `-sx` 拒、两操作数 `usage`）；`strip_domain` 按首个 `.` 裁剪（无点、空串、首字符点、多段四种形各钉一条），与 `minix3/bin/hostname/hostname.c:86-87` 的 `strchr('.'); *p = '\0'` 逐字对应。sysctl 往返不在本篇：走 `minix_sys::gethostname`/`sethostname`（`{CTL_KERN, KERN_HOSTNAME}` 两元组，C `libc/gen/gethostname.c:61-62` / `sethostname.c:60-61`），线上 wire 帧与长度刷新由 `minix-sys/src/sysctl.rs` 的 `test_gethostname_wire_*` 与 `test_sethostname_wire_*` 钉住。
 
 尚未覆盖、随后续阶段补齐的：命令替换、算术展开、通配展开（依赖执行器与文件系统）、语法树与执行器、作业控制（依赖进程原语）。文字层是全覆盖的，执行层是显式留白的。
 
@@ -238,5 +239,5 @@ libc 不移植——`sh` 的执行层因此不能照抄 C 的 `execve`/`stdio` �
 - `sed -n '196,215p' minix3/bin/sh/main.c` → 登录判断与环境文件逻辑已读，与 `plan_startup` 逐项对应。
 - `grep -c "" minix3/bin/sh/builtins.def` → 93 行，与正文"93 行"一致。
 - `cat minix3/etc/hostname.file` → `minix`，与正文一致。
-- `cargo test -p minix-shell` → 36 通过、0 失败；`cargo clippy` 无警告。
+- `cargo test -p minix-shell --lib` → 以实际输出为准（历史全量数字见 `.review` 底账，本行旧读数 36 已随 `hostname.rs` 与后续判例扩测失效，改采防漂移形状）；`cargo clippy` 无警告。
 - 本文档引用的 `file:line` 均来自正文写作前实际执行的 `rg -n` 与 `sed -n` 输出，非凭记忆书写。

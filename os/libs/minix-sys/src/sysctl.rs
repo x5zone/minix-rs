@@ -47,12 +47,22 @@ use minix_types::{
     SYSCTL_NAMELEN, SYSCTL_TYPEMASK, SysctlNode,
 };
 
-/// Numeric mib path for the kernel security level.
+/// Numeric mib paths for the two `kern` sysctl leaves this crate's thin
+/// wrappers use.
 ///
 /// C init composes `{CTL_KERN, KERN_SECURELVL}` at the call sites
-/// (`minix3/sbin/init/init.c:554-556`, `:607-608`); the pair travels under
-/// these names so callers never hard-code the numbers.
-pub use minix_types::{CTL_KERN, KERN_SECURELVL};
+/// (`minix3/sbin/init/init.c:554-556`, `:607-608`); `gethostname` and
+/// `sethostname` compose `{CTL_KERN, KERN_HOSTNAME}` (`gen/gethostname.c:61-62`,
+/// `gen/sethostname.c:60-61`). The triples travel under these names so
+/// callers never hard-code the numbers.
+pub use minix_types::{CTL_KERN, KERN_HOSTNAME, KERN_SECURELVL};
+
+/// Hostname buffer bound — C `MAXHOSTNAMELEN` (`sys/sys/param.h:124`,
+/// NetBSD value `256`). `bin/hostname/hostname.c:60` sizes its caller-
+/// side buffer to `MAXHOSTNAMELEN + 1` so the trailing `hostname[…-1] =
+/// '\0'` clamp has a guaranteed slot; callers pass a slice of at least
+/// [`MAX_HOSTNAME_LEN`] bytes to reproduce C's contract.
+pub const MAX_HOSTNAME_LEN: usize = 256;
 
 /// MIB service endpoint, the C `MIB_PROC_NR`
 /// (`minix3/minix/include/minix/com.h:66`).
@@ -208,6 +218,48 @@ pub fn sysctlbyname_via<T: IpcTransport>(
     new: Option<&[u8]>,
 ) -> Result<(), Errno> {
     sysctlbyname_with(&WireSysctl { transport }, name, old, new)
+}
+
+/// Reads the current hostname over an explicit transport — C
+/// `gen/gethostname.c`, whose whole body is the same two-component sysctl
+/// call with the caller's sink as `oldp`.
+///
+/// The C contract is `gethostname(char *name, size_t namelen)`: the
+/// caller owns a buffer sized for at least [`MAX_HOSTNAME_LEN`] bytes and
+/// never inspects the returned length (`hostname.c:88` prints what sits
+/// in the buffer after clamping the last byte to `'\0'`). We expose
+/// `written` so the sink's answered length stays visible without adding
+/// a caller-side copy step; the sysctl quirk of refreshing the length on
+/// both success and service-replied failure (`__sysctl.c:29-38`) is
+/// inherited through [`sysctl_via`].
+pub fn gethostname_via<T: IpcTransport>(
+    transport: &T,
+    buffer: &mut [u8],
+    written: &mut usize,
+) -> Result<(), Errno> {
+    let mib = [CTL_KERN, KERN_HOSTNAME];
+    let sink = SysctlOld {
+        buffer,
+        length: written,
+    };
+    sysctl_via(transport, &mib, Some(sink), None)
+}
+
+/// Publishes a new hostname over an explicit transport — C
+/// `gen/sethostname.c`, whose whole body is the same two-component sysctl
+/// call with the caller's bytes as `newp`.
+///
+/// The C wrapper forwards `namelen` verbatim; it does not append a NUL
+/// and does not cap at [`MAX_HOSTNAME_LEN`]. The MIB service owns both:
+/// the size check `newlen > node_size → EINVAL` (C `mib_write`,
+/// `minix3/minix/servers/mib/tree.c:1203-1204`; this side mirrors it in
+/// `write_size_ok` + `walker.rs`’s `readwrite_exec`) and the string
+/// terminator append (`src[newlen] = '\0'; strlcpy(dst, src, node_size)`,
+/// tree.c:1286-1287). No `ENAMETOOLONG` is on the table — the
+/// over-long answer is `EINVAL`, matching C exactly.
+pub fn sethostname_via<T: IpcTransport>(transport: &T, name: &[u8]) -> Result<(), Errno> {
+    let mib = [CTL_KERN, KERN_HOSTNAME];
+    sysctl_via(transport, &mib, None, Some(name))
 }
 
 /// The by-name composition over any seam (the tests climb this face).
@@ -689,6 +741,62 @@ mod tests {
         assert_eq!(wire.oldlen, 0);
     }
 
+    /// `gethostname_via` composes the same wire frame as `sysctl_via`
+    /// over `{CTL_KERN, KERN_HOSTNAME}` with a `MAX_HOSTNAME_LEN + 1`
+    /// sink (matching C `hostname.c:60`'s `char
+    /// hostname[MAXHOSTNAMELEN + 1]`); the canned reply's length lane
+    /// flows back into the caller's `written` slot.
+    #[test]
+    fn test_gethostname_wire_carries_kern_hostname_mib_and_refreshes_length() {
+        let mut transport = CannedTransport::new();
+        let mut reply = cleared_message();
+        // SAFETY(test): 回程 overlay 单 lane（oldlen@0）：服务端答复长度
+        // 与 C `mib_read` 的 `strlen+1` 形状一致（6 字节 = "minix\0"）。
+        unsafe { &mut reply.m_u.m_mib_lc_sysctl }.oldlen = 6;
+        transport.reply_sendrec(Ok(reply));
+        let mut buffer = [0u8; MAX_HOSTNAME_LEN + 1];
+        let mut written = 0usize;
+        gethostname_via(&transport, &mut buffer, &mut written).unwrap();
+        assert_eq!(written, 6);
+        let (destination, sent) = transport.sent.borrow()[0];
+        assert_eq!(destination, mib_endpoint());
+        assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
+        // SAFETY(test): 请求 overlay 的 name/lanes（ipc.h:424-433）。
+        let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
+        assert_eq!(wire.namelen, 2);
+        assert_eq!(&wire.name[..2], &[CTL_KERN, KERN_HOSTNAME]);
+        assert_eq!(wire.namep, 0);
+        assert_ne!(wire.oldp, 0);
+        assert_eq!(wire.oldlen, (MAX_HOSTNAME_LEN + 1) as u64);
+        assert_eq!(wire.newp, 0);
+        assert_eq!(wire.newlen, 0);
+    }
+
+    /// `sethostname_via` composes the write arm of the same mib walk:
+    /// the caller's bytes ride `newp`/`newlen`, the sink lanes stay
+    /// zero (C `gen/sethostname.c:62`).
+    #[test]
+    fn test_sethostname_wire_carries_kern_hostname_mib_and_new_bytes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(cleared_message()));
+        // Bytes include a trailing NUL so the shape matches what a
+        // C caller would send through `sethostname(name, strlen(name))`
+        // plus libc's own terminator append (this wire is byte-exact
+        // with `newlen`, no libc-side append; the MIB service appends).
+        sethostname_via(&transport, b"minix\0").unwrap();
+        let (destination, sent) = transport.sent.borrow()[0];
+        assert_eq!(destination, mib_endpoint());
+        assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
+        // SAFETY(test): 请求 overlay：new lanes 承载、old lanes 恒零。
+        let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
+        assert_eq!(wire.namelen, 2);
+        assert_eq!(&wire.name[..2], &[CTL_KERN, KERN_HOSTNAME]);
+        assert_ne!(wire.newp, 0);
+        assert_eq!(wire.newlen, 6);
+        assert_eq!(wire.oldp, 0);
+        assert_eq!(wire.oldlen, 0);
+    }
+
     /// A name past the inline window travels by pointer only, and the
     /// inline lanes stay zero (`__sysctl.c:23-24` — the copy is gated on
     /// the exchange overlay's window, two components in the 64-bit form).
@@ -801,6 +909,11 @@ mod tests {
         assert_eq!(size_of::<SysctlNode>(), 96);
         assert_eq!(CTL_KERN, 1);
         assert_eq!(KERN_SECURELVL, 9);
+        // The hostname wrappers compose `{CTL_KERN, KERN_HOSTNAME}` (C
+        // `gen/gethostname.c:61-62` and `gen/sethostname.c:60-61`); a
+        // silent renumbering on either side would break the pair.
+        assert_eq!(KERN_HOSTNAME, 10);
+        assert_eq!(MAX_HOSTNAME_LEN, 256);
         // The version rides the flag word's high bits, off the type mask.
         assert_eq!(SYSCTL_VERSION & SYSCTL_TYPEMASK, 0);
     }
