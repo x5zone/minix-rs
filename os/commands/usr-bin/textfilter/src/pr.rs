@@ -495,6 +495,46 @@ pub fn horzcol_body_rows(
     out
 }
 
+/// `pr -m`: merge several line-streams side by side, one stream per column
+/// (C `mulfile`, `pr.c:907-993`). Row `r` shows each stream's `r`-th line;
+/// columns past the last stream that still has a line at `r` are dropped
+/// entirely (C's `fproc >= actf` break — no trailing empty columns), a stream
+/// that ran out earlier contributes an empty cell with its inter-column pad.
+/// The pad/separator and last-column rules match [`horzcol_body_rows`].
+pub fn merge_body_rows(streams: &[Vec<String>], colwd: usize, sep: Option<u8>) -> Vec<String> {
+    let mut out = Vec::new();
+    let columns = streams.len();
+    if columns == 0 {
+        return out;
+    }
+    let max_rows = streams.iter().map(Vec::len).max().unwrap_or(0);
+    for row in 0..max_rows {
+        // Last column still holding a line at this row (trailing EOFs dropped).
+        let Some(last) = (0..columns).filter(|&j| streams[j].len() > row).next_back() else {
+            break;
+        };
+        let mut line = String::new();
+        for j in 0..=last {
+            let raw = streams[j].get(row).map(String::as_str).unwrap_or("");
+            let cell = clip_to_width(raw, colwd);
+            line.push_str(cell);
+            if j == last {
+                break;
+            }
+            match sep {
+                Some(byte) => line.push(byte as char),
+                None => {
+                    for _ in 0..(colwd + 1 - cell.len()) {
+                        line.push(' ');
+                    }
+                }
+            }
+        }
+        out.push(line);
+    }
+    out
+}
+
 /// The lines `pr` prints for one page under a `-o` left margin: `offset`
 /// leading blanks on each body line and on the header's text line (the middle
 /// of the 5-line header, carrying the title and page number), while the two
@@ -855,5 +895,24 @@ mod tests {
         options.start_page = 3;
         // Only 3 lines: page 3 is unreachable → C `inskip` skips the file.
         assert!(paginate_lines(&["a", "b", "c"], &options).is_empty());
+    }
+
+    #[test]
+    fn test_merge_body_rows_zip_longest_drops_trailing_eof() {
+        let streams = vec![
+            vec![String::from("a"), String::from("b"), String::from("c")],
+            vec![String::from("1"), String::from("2")],
+        ];
+        // Row 0/1: both columns; row 2: only stream 0 has data → trailing EOF
+        // column dropped, and colwd 3 leaves "c" alone (last active, no pad).
+        assert_eq!(
+            merge_body_rows(&streams, 3, None),
+            vec![
+                String::from("a   1"),
+                String::from("b   2"),
+                String::from("c")
+            ]
+        );
+        assert!(merge_body_rows(&[], 3, None).is_empty());
     }
 }

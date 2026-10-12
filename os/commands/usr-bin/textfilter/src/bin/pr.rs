@@ -14,9 +14,10 @@
 //! and the `-o` left margin via `render_page`; the single-column `-n` running
 //! line number (C `addnum`) via the `number_width`/`number_char` options; the
 //! across-fill `-a` (C `horzcol`) via the `across` option; the double-spacing
-//! `-d` (C `otln`+`setup`) via `double_space` in the single-column path; merge
-//! (`-m`), the formfeed (`-F`), `-d` combined with
-//! columns, and multi-column `-n` are later batches. An
+//! `-d` (C `otln`+`setup`) via `double_space` in the single-column path; the
+//! multi-file merge `-m` (C `mulfile`, one column per operand) via
+//! `merge_body_rows`; the formfeed (`-F`), `-d` combined with columns, and
+//! multi-column `-n` are later batches. An
 //! unopenable operand warns
 //! and is skipped with a nonzero exit (`strerror` suffix not reproduced).
 
@@ -31,7 +32,9 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::read;
-use minix_textfilter::pr::{column_width, paginate_files, render_page, PrOptions};
+use minix_textfilter::pr::{
+    column_width, merge_body_rows, paginate, paginate_files, render_page, PrOptions,
+};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -43,6 +46,7 @@ fn run() -> ! {
     let mut wflag = false;
     let mut sflag = false;
     let mut across = false;
+    let mut merge = false;
     let mut index = 1;
     while index < argv.len() {
         let arg = argv[index].as_str();
@@ -131,6 +135,9 @@ fn run() -> ! {
         } else if arg == "-d" {
             // `-d`: double-space the body (`setup` `++dspace`, `pr.c:1676`).
             options.double_space = true;
+        } else if arg == "-m" {
+            // `-m`: merge operands side by side (C `merge`/`mulfile`).
+            merge = true;
         } else if arg == "-a" {
             // `-a`: across-fill; needs multiple columns (checked after the scan).
             across = true;
@@ -141,7 +148,7 @@ fn run() -> ! {
                 _ => usage(),
             }
         } else if arg.len() > 1 && arg.starts_with('-') {
-            // An option letter we do not model (`-m`, `-F`).
+            // An option letter we do not model (`-F`).
             support::warn(b"pr: option form not modelled yet\n");
             support::terminate(2);
         } else {
@@ -201,6 +208,36 @@ fn run() -> ! {
         }
     }
 
+    // `-m`: merge the operands side by side, one column per file (`mulfile`).
+    // With fewer than two operands C falls back to normal output. POSIX leaves
+    // the merge page header unspecified (`pr.c:848-849`), so the title is the
+    // first operand's name unless `-h` overrides it.
+    if merge && files.len() >= 2 {
+        let streams: Vec<Vec<String>> = files.iter().map(|(_, ls)| ls.clone()).collect();
+        let n = streams.len();
+        let (colwd, _) = match column_width(options.page_width, n) {
+            Some(widths) => widths,
+            None => {
+                support::warn(format!("pr: page width is too small for {n} columns\n").as_bytes());
+                usage();
+            }
+        };
+        let merged = merge_body_rows(&streams, colwd, options.sep);
+        let mut opts = options.clone();
+        opts.columns = 1;
+        opts.header = title_override
+            .clone()
+            .unwrap_or_else(|| String::from(files[0].0));
+        for page in paginate(&merged, &opts) {
+            for line in render_page(&page, options.offset) {
+                let mut out = line.as_bytes().to_vec();
+                out.push(b'\n');
+                support::emit(&out);
+            }
+        }
+        support::terminate(if had_error { 1 } else { 0 });
+    }
+
     for page in paginate_files(&files, &options, title_override.as_deref()) {
         for line in render_page(&page, options.offset) {
             let mut out = line.as_bytes().to_vec();
@@ -238,7 +275,7 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 
 fn usage() -> ! {
     support::warn(
-        b"usage: pr [-t] [-h header] [-l lines] [-d] [+page] [-columns] [-a] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
+        b"usage: pr [-t] [-h header] [-l lines] [-d] [+page] [-columns] [-a] [-m] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
     );
     support::terminate(2);
 }
