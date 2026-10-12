@@ -19,42 +19,19 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, read};
-use minix_textfilter::fold::{fold_input, FoldOptions};
+use minix_textfilter::fold::{fold_input, parse_fold_args, FoldArgs, FoldError, FoldOptions};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut options = FoldOptions::new(80);
-    let mut operands: Vec<String> = Vec::new();
-    let mut index = 1;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg == "-b" {
-            options.count_bytes = true;
-        } else if arg == "-s" {
-            options.split_words = true;
-        } else if arg == "-w" {
-            index += 1;
-            if index >= argv.len() {
-                usage();
-            }
-            set_width(&mut options, &argv[index]);
-        } else if arg.starts_with('-')
-            && arg.len() > 1
-            && arg[1..].bytes().all(|b| b.is_ascii_digit())
-        {
-            // Obsolete `-N` width form.
-            set_width(&mut options, &arg[1..]);
-        } else if arg.starts_with('-') && arg.len() > 1 {
-            usage();
-        } else {
-            operands.push(argv[index].clone());
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let FoldArgs { options, operands } = match parse_fold_args(&refs[1..]) {
+        Ok(parsed) => parsed,
+        Err(FoldError::Usage) => usage(),
+        Err(FoldError::IllegalWidth) => {
+            support::warn(b"fold: illegal width value\n");
+            support::terminate(1);
         }
-        index += 1;
-    }
-    if options.width == 0 {
-        support::warn(b"fold: illegal width value\n");
-        support::terminate(1);
-    }
+    };
 
     // C `if (!*argv) fold(stdin); else for each argv freopen() … err(1) on
     // failure`: no operand folds stdin once; otherwise each file is folded in
@@ -96,17 +73,6 @@ fn fold_stream(fd: i32, options: &FoldOptions) {
         let mut out = line.into_bytes();
         out.push(b'\n');
         support::emit(&out);
-    }
-}
-
-fn set_width(options: &mut FoldOptions, word: &str) {
-    match word.parse::<usize>() {
-        // A zero width would fold every character; the C's `atoi <= 0`
-        // check rejects it.
-        Ok(0) | Err(_) => {
-            support::warn(b"fold: illegal width value\n");
-        }
-        Ok(width) => options.width = width,
     }
 }
 
