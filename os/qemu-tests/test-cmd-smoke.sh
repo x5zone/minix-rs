@@ -205,5 +205,29 @@ if [ "$stat_ok" -ne 1 ]; then
     exit 1
 fi
 
-echo "RESULT: PASS (18-stage command output visible on the boot console — T4, plus the du read-side totals and the stat command face)"
+# ── Stage 7: the `find` command face (/bin/find /etc/rc). A file operand drives
+# the whole parse→walk_paths→lstat→eval→implicit-print pipeline and emits one line
+# that is exactly `/etc/rc`. Not a directory operand because the seeded imgrd root
+# disk's getdents leg is unported (same breakage du/ls hit), which would take the
+# FTS_DNR warn branch instead. The single-field line distinguishes find's print from
+# cat (contents), ls (bare names) and stat (long multi-field lines). ──
+FIND_TXT="$(mktemp /tmp/cmd_smoke_find.XXXXXX.txt)"
+find_ok=0
+for _ in $(seq 1 "$TIMEOUT_T4"); do
+    strings "$SERIAL_LOG" 2>/dev/null | sed -n "/$T4_MARKER/,\$p" > "$FIND_TXT"
+    if awk '{ sub(/\r$/, "") } $0=="/etc/rc" { found=1 } END { exit !found }' "$FIND_TXT" 2>/dev/null; then
+        find_ok=1
+        break
+    fi
+    sleep 1
+done
+rm -f "$FIND_TXT"
+if [ "$find_ok" -ne 1 ]; then
+    echo "FAIL: /bin/find did not print the /etc/rc operand line to the console"
+    echo "      (missing seed in xtask's /bin list, or a walk/print-leg regression?)"
+    tail -12 "$SERIAL_LOG" 2>/dev/null || true
+    exit 1
+fi
+
+echo "RESULT: PASS (18-stage command output visible on the boot console — T4, plus the du read-side totals, the stat command face and the find command face)"
 exit 0

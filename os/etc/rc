@@ -33,6 +33,11 @@ cat /etc/rc
 /bin/stat /etc/rc
 /bin/stat -l /etc/rc
 /bin/stat -s /etc/rc
+# 批次一百六十四/一百七十二登记的 `find` 盘上读数：走文件操作数（`find /etc/rc`
+# 经隐式 -print 吐一行 `/etc/rc`），把整条 parse→walk_paths→lstat→eval→emit 腿
+# 收到串口。不用目录操作数是因为 imgrd 根盘的 getdents 读腿未通（同 du/ls），
+# 目录会走 FTS_DNR 分支只报 warn。判据在 test-cmd-smoke*.sh：一行恰为 `/etc/rc`。
+/bin/find /etc/rc
 # E5(f) 真机半：DS 数据服务传输链载体（minix-sys DsClient → DS 端点 6）。
 # 串口判据逐段 `e5-ds: ...`，计数行 `E5f-LABELS n/12`，末行是 run_qemu.sh
 # 惯例的 `### TEST_RESULT: ... ###`；门脚本 os/qemu-tests/test-e5-ds.sh。

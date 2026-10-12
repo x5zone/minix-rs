@@ -233,10 +233,12 @@ ok_stat_ls = re.search(r"(?m)^[-dlbcps?][-rwxstST]{9}[ \t]", raw) is not None
 ok_stat_shell = re.search(
     r"(?m)^st_dev=[0-9]+ st_ino=[0-9]+ st_mode=[0-9]+ .*st_size=[0-9]+", raw
 ) is not None
+# `find /etc/rc` 的文件操作数：经隐式 -print 吐一行恰为 `/etc/rc`（stat_lines 已剥 \r）。
+ok_find = any(l == "/etc/rc" for l in stat_lines)
 ok_ls = ok_listing or ok_readleg_blocked
 print(
     "  cmdface: marker=%s dump=%s listing=%s blocked=%s ls_ok=%s du=%s du_h=%s "
-    "stat=%s/%s/%s"
+    "stat=%s/%s/%s find=%s"
     % (
         ok_marker,
         ok_dump,
@@ -248,12 +250,13 @@ print(
         ok_stat_def,
         ok_stat_ls,
         ok_stat_shell,
+        ok_find,
     )
 )
 if ok_ls and not ok_listing:
     print("  NOTE: ls 的目录列腿按已知缺陷计（imgrd 根盘 getdents 未通，见台账 §7）")
 sys.exit(0 if (ok_marker and ok_dump and ok_ls and ok_du and ok_du_h
-          and ok_stat_def and ok_stat_ls and ok_stat_shell) else 1)
+          and ok_stat_def and ok_stat_ls and ok_stat_shell and ok_find) else 1)
 PYEOF
         then
             cmds_ok=1; break
@@ -270,5 +273,5 @@ if [ "$cmds_ok" -ne 1 ]; then
     exit 1
 fi
 
-echo "RESULT: PASS (riscv64 18-stage command output — marker + ls /bin listing + cat /etc/rc dump + du /etc total + three stat shapes — on the VFS IPC path)"
+echo "RESULT: PASS (riscv64 18-stage command output — marker + ls /bin listing + cat /etc/rc dump + du /etc total + three stat shapes + find file operand — on the VFS IPC path)"
 exit 0

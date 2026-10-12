@@ -131,7 +131,8 @@ for _ in $(seq 1 "$TIMEOUT_T4"); do
            && grep -qaE '^[0-9.]+[KMGT][[:space:]]+/etc\r?$' "$AFTER_TXT" \
            && grep -qaE '^[-dlbcps?][-rwxstST]{9}[[:space:]]' "$AFTER_TXT" \
            && grep -qaE '^st_dev=[0-9]+ st_ino=[0-9]+ st_mode=[0-9]+ .*st_size=[0-9]+' "$AFTER_TXT" \
-           && awk '{ sub(/\r$/, "") } NF>=14 && $NF=="/etc/rc" { found=1 } END { exit !found }' "$AFTER_TXT"; then
+           && awk '{ sub(/\r$/, "") } NF>=14 && $NF=="/etc/rc" { found=1 } END { exit !found }' "$AFTER_TXT" \
+           && grep -qaE '^/etc/rc\r?$' "$AFTER_TXT"; then
             cmds_ok=1; break
         fi
     fi
@@ -146,5 +147,5 @@ if [ "$cmds_ok" -ne 1 ]; then
     exit 1
 fi
 
-echo "RESULT: PASS (aarch64 18-stage command output — marker + ls /bin + cat /etc/rc + du /etc + three stat shapes — on the VFS IPC path)"
+echo "RESULT: PASS (aarch64 18-stage command output — marker + ls /bin + cat /etc/rc + du /etc + three stat shapes + find file operand — on the VFS IPC path)"
 exit 0

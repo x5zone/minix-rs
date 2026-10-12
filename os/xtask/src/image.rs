@@ -374,6 +374,10 @@ pub fn plan(
         // `stat` 同样只读（批次一百三十一接线）：三种模板的盘上形状由
         // test-cmd-smoke* 的 stat 断言收，走的是同一条 lstat IPC 腿。
         ("stat", bin_rel("stat")),
+        // `find` 只读（批次一百六十四/一百七十二接线）：文件操作数的整条
+        // parse→walk→eval→print 腿由 test-cmd-smoke* 的 find 断言收到串口；
+        // 目录遍历腿仍受 imgrd 根盘 getdents 断腿牵制（同 du/ls），故只判文件操作数。
+        ("find", bin_rel("find")),
     ];
     if e5_ds_ready {
         bins.push(("e5-ds", bin_rel("e5-ds")));
