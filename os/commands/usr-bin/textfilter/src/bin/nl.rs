@@ -7,9 +7,10 @@
 //!
 //! Wired: the three logical-page sections with their numbering types via
 //! `-b`/`-h`/`-f` (a/t/n), `-v`/`-i`/`-l` (start, step, width), `-n ln|rn|rz`
-//! (format), `-p` (do not restart numbering at a page delimiter) and `-d` (set
-//! the 2-byte page delimiter, `\:` by default). Declared residual:
-//! `number_regex` (`-b p…`), `-s` separator string and `-w` blank-run counts —
+//! (format), `-p` (do not restart numbering at a page delimiter), `-d` (set
+//! the 2-byte page delimiter, `\:` by default) and `-s` (set the separator
+//! bytes between the number field and the text). Declared residual:
+//! `number_regex` (`-b p…`) and `-w` blank-run counts —
 //! requesting them reports "option not wired" and exits 1.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -109,9 +110,12 @@ fn run() -> ! {
                     _ => fail("invalid delim argument"),
                 }
             }
-            "s" | "w" => {
+            "s" => {
+                opts.sep = value!().as_bytes().to_vec();
+            }
+            "w" => {
                 let _ = value!();
-                fail("option not wired (residual: -s/-w)");
+                fail("option not wired (residual: -w)");
             }
             _ => fail("unknown option"),
         }
