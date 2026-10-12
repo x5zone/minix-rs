@@ -1724,6 +1724,283 @@ fn merge(sub: Evaluated, out: &mut Evaluated) {
     out.emitted.extend(sub.emitted);
 }
 
+// ============================================================================
+// 走表遍历腿（决定半第四包）——对位 `find_execute`（`minix3/usr.bin/find/find.c:201-273`）
+// ============================================================================
+
+/// 一个路径的 `FTSENT` 承载位。求值半只看 `mode`/`ino`/`nlink`/`size`/`uid`/`gid`/`dev`
+/// 与三段时间，故这里只留这些（`minix3/include/fts.h` 的 `fts_statp`）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatBits {
+    pub mode: u32,
+    pub ino: u64,
+    pub nlink: u32,
+    pub size: i64,
+    pub uid: u32,
+    pub gid: u32,
+    pub dev: u64,
+    pub atime: i64,
+    pub mtime: i64,
+    pub ctime: i64,
+}
+
+/// 走表腿向系统层要的两件事（并继承 `-newer` 的 `ReferenceStat`）。遍历核心只经它取数，
+/// 故在宿主可用合成树逐分支测；薄壳用 `minix_sys` 的 `lstat`/`getdents`/`stat` 实现同一份口。
+pub trait WalkProbe: ReferenceStat {
+    /// 路径的 `lstat` 位。取不到 = C 的 `FTS_NS`，交回 `None`。物理遍历（`main.c:88` 默认
+    /// `FTS_PHYSICAL`）不跟随符号链，故此口必须是 `lstat` 而非 `stat`。
+    fn entry_stat(&self, path: &str) -> Option<StatBits>;
+    /// 目次里的条目名（C 的 `readdir`，可含 `.`/`..`）。打不开 = C 的 `FTS_DNR`，交回 `None`。
+    fn dir_children(&self, path: &str) -> Option<Vec<String>>;
+}
+
+/// 一次走表的产出：待写出的行（含各自的换行/NUL）、告警文本、退出码贡献。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct WalkResult {
+    pub emitted: Vec<String>,
+    pub warnings: Vec<String>,
+    pub rval: u8,
+}
+
+/// 遍历起始路径集合，按 `Parsed` 抽出的选项走表并逐条求值。物理模式：符号链不被跟随，
+/// 目录只在自身 `dev` 与起始路径相等时才下探（`-x`）。`-d` 让目录落在后序求值，`-s` 让
+/// 同层按名排序，`-X` 拒含 xargs 分隔符的路径，无输出表项时补隐式 `-print`。
+pub fn walk_paths(world: &World, probe: &dyn WalkProbe, parsed: &Parsed<'_>) -> WalkResult {
+    // 隐式 `-print` 的成形照 `find_formplan` 尾部（`find.c:103-118`）：空表达式 → 只有
+    // `-print`；否则把表达式括进 `Paren` 再补一条 `-print`（括起来是为了让 `-o` 的短路
+    // 只在括号内发生，隐式 print 永远执行）。
+    let effective: Vec<Node<'_>> = if parsed.needs_implicit_print {
+        if parsed.expr.is_empty() {
+            vec![Node::Leaf(Prim::Bare("-print"))]
+        } else {
+            let mut v = Vec::with_capacity(parsed.expr.len() + 1);
+            v.push(Node::Paren(parsed.expr.clone()));
+            v.push(Node::Leaf(Prim::Bare("-print")));
+            v
+        }
+    } else {
+        parsed.expr.clone()
+    };
+    let size_bytes = size_counts_bytes(&effective);
+    let cfg = WalkCfg {
+        depth: parsed.depth_first,
+        sorted: parsed.sorted,
+        xdev: parsed.walk.has(fts::XDEV),
+        xargs_safe_only: parsed.xargs_safe_only,
+    };
+    let mut w = Walk {
+        probe,
+        world,
+        cfg,
+        root_dev: 0,
+        out: WalkResult::default(),
+    };
+    let ctx = Ctx {
+        nodes: &effective,
+        size_bytes,
+    };
+    let mut paths: Vec<&str> = Vec::with_capacity(parsed.extra_paths.len() + parsed.paths.len());
+    // `-f` 带上来的路径按出现顺序排在位置参数之前（`main.c:109-111` 先塞进数组）。
+    paths.extend(parsed.extra_paths.iter().copied());
+    paths.extend(parsed.paths.iter().copied());
+    for p in &paths {
+        w.root_dev = 0;
+        w.visit_start(p, ctx);
+    }
+    w.out
+}
+
+/// 走表所需的一组位（从 `Parsed` 抽出，避免把整棵表达式树的所有权塞进递归）。
+#[derive(Debug, Clone, Copy)]
+struct WalkCfg {
+    depth: bool,
+    sorted: bool,
+    xdev: bool,
+    xargs_safe_only: bool,
+}
+
+/// 递归全程不变的一组入参：已成形（含隐式 `-print`）的表达式与 `divsize` 旗标。
+/// 捆成一个 `Copy` 结构是为了把 `eval_entry` 的形参压到 clippy 的门以内（≤7）。
+#[derive(Clone, Copy)]
+struct Ctx<'n> {
+    nodes: &'n [Node<'n>],
+    size_bytes: bool,
+}
+
+struct Walk<'p> {
+    probe: &'p dyn WalkProbe,
+    world: &'p World,
+    cfg: WalkCfg,
+    /// 起始路径所在设备，`-x` 用它比较（每颗起始路径各定一个）。
+    root_dev: u64,
+    out: WalkResult,
+}
+
+impl Walk<'_> {
+    /// 起始路径：`fts_read` 对根返回 `fts_level == 1`，名取末段（`.` 原样保留）。
+    fn visit_start(&mut self, path: &str, ctx: Ctx<'_>) {
+        let name = base_name(path);
+        match self.probe.entry_stat(path) {
+            None => {
+                self.out.warnings.push(format!("{path}: stat failed"));
+                self.out.rval = 1;
+            }
+            Some(st) => {
+                self.root_dev = st.dev;
+                if st.mode & crate::cp::S_IFMT == crate::cp::S_IFDIR {
+                    self.visit_dir(path, name, 1, st, ctx);
+                } else {
+                    self.eval_entry(path, name, 1, st, None, ctx);
+                }
+            }
+        }
+    }
+
+    /// 一个目录：`FTS_D`（预序）或 `FTS_DP`（后序），取决于 `-d`。打不开子项 = `FTS_DNR`：
+    /// C 报 warn 并 `continue`（不求值、不下探），本层照此。
+    fn visit_dir(&mut self, path: &str, name: &str, level: usize, st: StatBits, ctx: Ctx<'_>) {
+        let children = match self.probe.dir_children(path) {
+            Some(c) => c,
+            None => {
+                self.out
+                    .warnings
+                    .push(format!("{path}: directory read failed"));
+                self.out.rval = 1;
+                return;
+            }
+        };
+        // `-x`：设备与起始路径不同的目录被报告但不下探（`main.c:122-124` 的 `FTS_XDEV`）。
+        let can_recurse = !self.cfg.xdev || st.dev == self.root_dev;
+        if self.cfg.depth {
+            // 后序：先下探（`FTS_D` 被 `find.c:218-220` 的 `isdepth` 挡掉），再求值目录自身。
+            if can_recurse {
+                self.descend(path, &children, level, ctx);
+            }
+            self.eval_entry(path, name, level, st, Some(&children), ctx);
+        } else {
+            // 预序：先求值目录自身，命中 `-prune` 或 `-x` 越界则不下探。
+            let pruned = self.eval_entry(path, name, level, st, Some(&children), ctx);
+            if !pruned && can_recurse {
+                self.descend(path, &children, level, ctx);
+            }
+        }
+    }
+
+    /// 下探一个目录的子项。跳过 `.`/`..`（`dents::is_descendable`），`-s` 时按名排序；
+    /// 子项 `lstat` 取不到 = `FTS_NS`（报 warn、rval、continue）。
+    fn descend(&mut self, dir: &str, children: &[String], level: usize, ctx: Ctx<'_>) {
+        let mut names: Vec<&str> = children
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|n| crate::dents::is_descendable(n))
+            .collect();
+        if self.cfg.sorted {
+            names.sort();
+        }
+        for name in names {
+            let child = fts_join(dir, name);
+            match self.probe.entry_stat(&child) {
+                None => {
+                    self.out.warnings.push(format!("{child}: stat failed"));
+                    self.out.rval = 1;
+                    continue;
+                }
+                Some(st) => {
+                    if st.mode & crate::cp::S_IFMT == crate::cp::S_IFDIR {
+                        self.visit_dir(&child, name, level + 1, st, ctx);
+                    } else {
+                        self.eval_entry(&child, name, level + 1, st, None, ctx);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 对一个目录项求值整段表达式，交回是否被 `-prune` 剪枝。`-X`（`isxargs`）先做
+    /// `BADCH` 拒径（`find.c:235-243`）；求值期的表外/缺腿按名报错记 rval，不产出行。
+    fn eval_entry(
+        &mut self,
+        path: &str,
+        name: &str,
+        level: usize,
+        st: StatBits,
+        children: Option<&Vec<String>>,
+        ctx: Ctx<'_>,
+    ) -> bool {
+        if self.cfg.xargs_safe_only && path.chars().any(|c| BADCH.contains(c)) {
+            self.out.warnings.push(format!("{path}: illegal path"));
+            self.out.rval = 1;
+            return false;
+        }
+        let kids: Vec<&str> = match children {
+            Some(v) => v.iter().map(|s| s.as_str()).collect(),
+            None => Vec::new(),
+        };
+        let entry = Entry {
+            path,
+            name,
+            level,
+            mode: st.mode,
+            ino: st.ino,
+            nlink: st.nlink,
+            size: st.size,
+            uid: st.uid,
+            gid: st.gid,
+            dev: st.dev,
+            atime: st.atime,
+            mtime: st.mtime,
+            ctime: st.ctime,
+            children: children.map(|_| kids.as_slice()),
+        };
+        match eval_plan(self.world, self.probe, &entry, ctx.nodes, ctx.size_bytes) {
+            Ok(ev) => {
+                self.out.emitted.extend(ev.emitted);
+                ev.pruned && ev.truth
+            }
+            Err(_) => {
+                // 求值期错误（表外/缺腿/参数非法）：C 在计划构造或求值时 errx 终止，
+                // 本层不整轮终止而记 rval 并跳过该径（与 du/find 各批「硬错只令该操数计错」
+                // 同口径，差异登记在薄壳头注）。
+                self.out.rval = 1;
+                false
+            }
+        }
+    }
+}
+
+/// `find.c:236` 的 `BADCH`（给 `-X`/`isxargs` 用）：空格、tab、换行、反斜杠、单引号、双引号。
+/// 注意它与 `-printx` 转义表（`function.c:1492-1507`，八个字符）不是同一套，别合并。
+const BADCH: &str = " \t\n\\'\"";
+
+/// `FTSENT::fts_name`：末段组件名。`.` 与以 `/` 结尾的路径各按其末段取。
+fn base_name(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        // 路径本就是 `/`（或多个斜杠）：fts 对根的名字是空串。
+        return "";
+    }
+    match trimmed.rsplit_once('/') {
+        Some((_, tail)) => tail,
+        None => trimmed,
+    }
+}
+
+/// BSD `fts` 的路径拼接规则（与 `dents::join_path` 的 `ls` dotdir 规则不同）：子项总是
+/// 带上父目录前缀，起始 `.` 的子项得 `./foo`（`fts_read` 的 `fts_path` 即如此），而根 `/`
+/// 下不出现双斜杠。find 打印的是这条完整路径，故不能用 `ls` 那一份去前缀的实现。
+fn fts_join(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        let mut out = String::from(dir);
+        out.push_str(name);
+        out
+    } else {
+        let mut out = String::from(dir);
+        out.push('/');
+        out.push_str(name);
+        out
+    }
+}
+
 #[cfg(test)]
 mod eval_tests {
     use super::*;
@@ -1869,16 +2146,220 @@ mod eval_tests {
     #[test]
     fn unwired_actions_refuse_rather_than_reporting_true() {
         // `-exec` 的执行腿未接：整段是错误，不是「真而无声」。
-        let got = run(&["-exec", "true", ";"]);
-        assert!(matches!(got, Err(JudgeError::Unwired(_))));
-        // 不在表里的写法同样是未知项。
-        let unknown = eval_plan(
-            &world(),
-            &NoRefs,
-            &entry(),
-            &[Node::Leaf(Prim::Bare("-nope"))],
-            false,
+        let got = run(&["-exec", "true", ";"]).unwrap_err();
+        assert!(matches!(got, JudgeError::Unwired(_)));
+    }
+}
+
+// ============================================================================
+// 走表遍历腿的宿主测：一棵合成树，逐分支钉 `find_execute` 的走向
+// ============================================================================
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+    use crate::cp::{S_IFDIR, S_IFLNK, S_IFREG};
+    use alloc::collections::{BTreeMap, BTreeSet};
+
+    struct FakeFs {
+        dirs: BTreeMap<String, Vec<String>>,
+        files: BTreeMap<String, StatBits>,
+        /// 打不开的目次（C 的 `FTS_DNR`）。
+        unreadable: BTreeSet<String>,
+        /// `lstat` 取不到的路径（C 的 `FTS_NS`）。
+        unstatable: BTreeSet<String>,
+    }
+
+    impl FakeFs {
+        fn new() -> FakeFs {
+            FakeFs {
+                dirs: BTreeMap::new(),
+                files: BTreeMap::new(),
+                unreadable: BTreeSet::new(),
+                unstatable: BTreeSet::new(),
+            }
+        }
+        fn dir(&mut self, path: &str, dev: u64, children: &[&str]) -> &mut FakeFs {
+            self.files.insert(
+                String::from(path),
+                StatBits {
+                    mode: S_IFDIR | 0o755,
+                    dev,
+                    nlink: 2,
+                    ..Default::default()
+                },
+            );
+            self.dirs.insert(
+                String::from(path),
+                children.iter().map(|s| String::from(*s)).collect(),
+            );
+            self
+        }
+        fn file(&mut self, path: &str, dev: u64) -> &mut FakeFs {
+            self.files.insert(
+                String::from(path),
+                StatBits {
+                    mode: S_IFREG | 0o644,
+                    dev,
+                    size: 0,
+                    ..Default::default()
+                },
+            );
+            self
+        }
+        fn link(&mut self, path: &str, dev: u64) -> &mut FakeFs {
+            self.files.insert(
+                String::from(path),
+                StatBits {
+                    mode: S_IFLNK | 0o777,
+                    dev,
+                    ..Default::default()
+                },
+            );
+            self
+        }
+    }
+
+    impl ReferenceStat for FakeFs {
+        fn times_of(&self, _path: &str) -> Option<(i64, i64, i64)> {
+            None
+        }
+    }
+
+    impl WalkProbe for FakeFs {
+        fn entry_stat(&self, path: &str) -> Option<StatBits> {
+            if self.unstatable.contains(path) {
+                None
+            } else {
+                self.files.get(path).copied()
+            }
+        }
+        fn dir_children(&self, path: &str) -> Option<Vec<String>> {
+            if self.unreadable.contains(path) {
+                None
+            } else {
+                self.dirs.get(path).cloned()
+            }
+        }
+    }
+
+    /// `.` 之下有 `a`（常规文件）与 `sub`（目录，内含 `b`），全部同设备。
+    fn tree() -> FakeFs {
+        let mut fs = FakeFs::new();
+        fs.dir(".", 1, &["a", "sub"]);
+        fs.file("./a", 1);
+        fs.dir("./sub", 1, &["b"]);
+        fs.file("./sub/b", 1);
+        fs
+    }
+
+    fn run(args: &[&str], fs: &FakeFs) -> WalkResult {
+        let owned: Vec<String> = args.iter().map(|s| String::from(*s)).collect();
+        let refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let parsed = parse(&refs).unwrap();
+        let world = World {
+            now: 0,
+            euid: 0,
+            egid: 0,
+            root_dev: 1,
+        };
+        walk_paths(&world, fs, &parsed)
+    }
+
+    #[test]
+    fn default_print_is_preorder_and_includes_the_start() {
+        let got = run(&["."], &tree());
+        assert_eq!(got.emitted, vec![".\n", "./a\n", "./sub\n", "./sub/b\n"]);
+        assert_eq!(got.rval, 0);
+    }
+
+    #[test]
+    fn depth_option_flips_directories_to_postorder() {
+        let got = run(&["-d", "."], &tree());
+        assert_eq!(got.emitted, vec!["./a\n", "./sub/b\n", "./sub\n", ".\n"]);
+    }
+
+    #[test]
+    fn prune_skips_the_subtree_at_preorder() {
+        // 无输出表项 → 隐式 -print 只在该段为真时才走，故只有被命名的 sub 吐行。
+        let got = run(&[".", "-name", "sub", "-prune"], &tree());
+        assert_eq!(got.emitted, vec!["./sub\n"]);
+        // b 因剪枝从未被访问。
+        assert!(!got.emitted.iter().any(|e| e.contains("/b")));
+    }
+
+    #[test]
+    fn xdev_reports_a_cross_device_dir_but_does_not_descend() {
+        let mut fs = FakeFs::new();
+        fs.dir(".", 1, &["a", "sub"]);
+        fs.file("./a", 1);
+        // sub 落在另一台设备（1 vs 2），其子项不再被访问。
+        fs.dir("./sub", 2, &["b"]);
+        fs.file("./sub/b", 2);
+        let plain = run(&["."], &fs);
+        assert!(plain.emitted.iter().any(|e| e.contains("./sub/b")));
+        let gated = run(&["-x", "."], &fs);
+        assert_eq!(gated.emitted, vec![".\n", "./a\n", "./sub\n"]);
+    }
+
+    #[test]
+    fn unreadable_dir_warns_and_is_not_emitted() {
+        let mut fs = tree();
+        fs.unreadable.insert(String::from("./sub"));
+        let got = run(&["."], &fs);
+        // FTS_DNR：sub 自身不求值（continue），故只报 warn。
+        assert_eq!(got.emitted, vec![".\n", "./a\n"]);
+        assert_eq!(got.rval, 1);
+        assert_eq!(got.warnings.len(), 1);
+        assert!(got.warnings[0].contains("./sub"));
+    }
+
+    #[test]
+    fn unstatable_child_warns_and_skips_only_itself() {
+        let mut fs = tree();
+        fs.dir(".", 1, &["a", "gone", "sub"]);
+        fs.unstatable.insert(String::from("./gone"));
+        let got = run(&[".", "-name", "nope", "-print"], &fs);
+        // gone 报 FTS_NS、rval=1；其它照常走（-name nope 恒假 → 无输出）。
+        assert_eq!(got.rval, 1);
+        assert!(got.warnings.iter().any(|w| w.contains("./gone")));
+        assert!(got.emitted.is_empty());
+    }
+
+    #[test]
+    fn xargs_reject_reports_illegal_path() {
+        let mut fs = FakeFs::new();
+        fs.dir(".", 1, &["a b"]);
+        fs.file("./a b", 1);
+        let got = run(&["-X", "."], &fs);
+        assert_eq!(got.emitted, vec![".\n"]); // 带空格的径被拒
+        assert_eq!(got.rval, 1);
+        assert!(
+            got.warnings
+                .iter()
+                .any(|w| w.contains("./a b: illegal path"))
         );
-        assert!(unknown.is_err());
+    }
+
+    #[test]
+    fn physical_walk_does_not_follow_a_symlink_into_a_dir() {
+        let mut fs = FakeFs::new();
+        fs.dir(".", 1, &["link"]);
+        fs.link("./link", 1);
+        // 幻影子项：若物理遍历错把符号链当目录下探，它就会冒出来。
+        fs.dir("./link", 1, &["deep"]);
+        fs.file("./link/deep", 1);
+        // 最后登记链本身的 `lstat` 位（`FakeFs.files` 同键后写覆前写），使 `./link`
+        // 的型是 S_IFLNK——即便它作为目次有子项也不应被下探。
+        fs.link("./link", 1);
+        let got = run(&["."], &fs);
+        assert_eq!(got.emitted, vec![".\n", "./link\n"]);
+    }
+
+    #[test]
+    fn type_filter_selects_dirs_and_leaves_files_unprinted() {
+        // `-type d`：只有目录吐行；隐式 -print 不叠加（此处 -type d 无输出 → 补 print，
+        // 但 -type d 为假时短路，print 不跑）。
+        let got = run(&[".", "-type", "d"], &tree());
+        assert_eq!(got.emitted, vec![".\n", "./sub\n"]);
     }
 }
