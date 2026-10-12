@@ -6,10 +6,10 @@
 //! shared globals across files, and writes the reflowed text to stdout.
 //!
 //! Wired: `-g goal`, `-m`/`-w max` (both set the max length, as in C), `-r`
-//! (raw), the old BSD positional `[goal [max]]` compatibility form, and the
-//! `max > goal` sanity check (`fmt.c:152-155`). Declared residual: `-C` center
-//! mode and the mail-header heuristic (see the library doc) — `-C` reports "not
-//! wired" and exits 1.
+//! (raw), `-C` (center, handed to the library's `fmt -C` branch), the old BSD
+//! positional `[goal [max]]` compatibility form, and the `max > goal` sanity
+//! check (`fmt.c:152-155`). Declared residual: the mail-header heuristic (see
+//! the library doc).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -75,7 +75,7 @@ fn run() -> ! {
                 compat = false;
             }
             "r" => opts.raw = true,
-            "C" => fail("center (-C) not wired"),
+            "C" => opts.center = true,
             _ => fail("unknown option"),
         }
         i += 1;

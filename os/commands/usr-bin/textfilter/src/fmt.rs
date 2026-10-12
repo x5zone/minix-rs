@@ -21,18 +21,25 @@
 //! special handling of an `.`-prefixed (nroff control) line, which the default
 //! (`-r` absent) keeps on a line of its own.
 //!
+//! `center` reproduces `fmt -C` (`fmt.c:217-254`): C takes an entirely separate
+//! branch that never touches the reflow machinery, so it is modeled as its own
+//! pure function (`fmt_centered`) dispatched from `fmt_bytes`. Per physical line
+//! it strips the leading and trailing whitespace, echoes a line that is blank
+//! once stripped as a bare newline, and otherwise pads a line shorter than the
+//! goal with `(goal - len) / 2` leading spaces. It does no tab expansion, `^H`
+//! or non-printable handling.
+//!
 //! Declared residual: the *mail-header* heuristic. The default path also calls
 //! `ishead()` (`minix3/usr.bin/mail/head.c:266`, an mbox `From `+RFC-822-date
 //! probe that drags in the mail `parse`/`isdate` machinery) and a `To`/`Subject`
 //!/`Cc` near-a-detected-head rule. Those are a different stage's dependency and
 //! are not wired here, so a `From ` header line is reflowed as ordinary text.
 //! For non-mail input `ishead` returns 0 and the `To/Subject/Cc` rule never
-//! fires, so this formatter is byte-identical to the C for ordinary prose. The
-//! `-C` center mode is likewise out of scope (rejected by the `fmt` bin).
+//! fires, so this formatter is byte-identical to the C for ordinary prose.
 
 use alloc::vec::Vec;
 
-/// Formatting knobs (the C globals `goal_length`, `max_length`, `raw`).
+/// Formatting knobs (the C globals `goal_length`, `max_length`, `raw`, `center`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FmtOptions {
     /// Target output line length (C `GOAL_LENGTH`, 65).
@@ -41,11 +48,14 @@ pub struct FmtOptions {
     pub max: usize,
     /// Raw mode: do not keep an `.`-prefixed nroff line on its own (C `-r`).
     pub raw: bool,
+    /// Center mode: strip each line and pad it toward `goal` instead of
+    /// reflowing (C `-C`, `fmt.c:217-254`).
+    pub center: bool,
 }
 
 impl Default for FmtOptions {
     fn default() -> Self {
-        FmtOptions { goal: 65, max: 75, raw: false }
+        FmtOptions { goal: 65, max: 75, raw: false, center: false }
     }
 }
 
@@ -54,6 +64,12 @@ impl Default for FmtOptions {
 /// spans `0x20..=0x7e` — or a high-bit byte (`c >= 160`, treated as printable).
 fn keep_byte(c: u8) -> bool {
     c == b'\t' || (0x20..=0x7e).contains(&c) || c >= 160
+}
+
+/// C `isspace` in the C locale, over the bytes `fmt -C` trims from each line:
+/// space, horizontal tab, newline, vertical tab, form feed, carriage return.
+fn is_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 
 /// The running formatter state that C keeps in file-scope globals (`pfx`,
@@ -251,12 +267,66 @@ impl Formatter {
     }
 }
 
-/// Reflow `input` into formatted output bytes, faithful to `fmt.c`'s non-center
-/// path for the given `opts`.
+/// Format `input` into output bytes for the given `opts`, dispatching to the
+/// centering branch when `opts.center` is set (C `fmt -C`), and to the reflow
+/// machinery otherwise — faithful to `fmt.c`'s two mutually exclusive paths.
 pub fn fmt_bytes(input: &[u8], opts: &FmtOptions) -> Vec<u8> {
+    if opts.center {
+        return fmt_centered(input, opts.goal);
+    }
     let mut f = Formatter::new(opts);
     f.run(input);
     f.out
+}
+
+/// C `fmt.c:217-254`, the centering path taken by `fmt -C`. Each physical line
+/// (bytes up to and including the next newline, or up to the stream's end) has
+/// its leading and trailing whitespace stripped. A line that is blank once
+/// stripped emits a bare newline; otherwise, when it is shorter than `goal`, it
+/// is preceded by `(goal - len) / 2` spaces and then emitted verbatim, followed
+/// by a newline. There is no tab expansion, backspace or non-printable handling
+/// — the stripping and padding operate on the raw bytes, exactly as the C loop
+/// does on `fgetln`'s buffer.
+fn fmt_centered(input: &[u8], goal: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < input.len() {
+        // One `fgetln`: the next line including its newline, or the tail of the
+        // stream when it has no trailing newline.
+        let end = match input[start..].iter().position(|&b| b == b'\n') {
+            Some(off) => start + off + 1,
+            None => input.len(),
+        };
+        let line = &input[start..end];
+        start = end;
+
+        // Strip leading whitespace, then trailing whitespace (the newline rides
+        // along here and is dropped with it).
+        let head = line
+            .iter()
+            .position(|&b| !is_space(b))
+            .unwrap_or(line.len());
+        let body = &line[head..];
+        let tail = body
+            .iter()
+            .rposition(|&b| !is_space(b))
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        let text = &body[..tail];
+
+        if text.is_empty() {
+            out.push(b'\n');
+            continue;
+        }
+        if goal > text.len() {
+            // `(goal - len) / 2` leading spaces (C integer division floors).
+            let pad = (goal - text.len()) / 2;
+            out.resize(out.len() + pad, b' ');
+        }
+        out.extend_from_slice(text);
+        out.push(b'\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -280,7 +350,7 @@ mod tests {
     #[test]
     fn greedy_goal_max_break() {
         // goal 10, max 15 over words aa bb cc dd ee ff (see the pack walkthrough).
-        let o = FmtOptions { goal: 10, max: 15, raw: false };
+        let o = FmtOptions { goal: 10, max: 15, raw: false, center: false };
         assert_eq!(fmt("aa bb cc dd ee ff\n", &o), "aa bb cc dd\nee ff\n");
     }
 
@@ -308,7 +378,7 @@ mod tests {
     #[test]
     fn leading_blank_reencodes_as_tab() {
         // 8 leading spaces survive the round trip as one tab (tabulate).
-        let o = FmtOptions { goal: 30, max: 40, raw: false };
+        let o = FmtOptions { goal: 30, max: 40, raw: false, center: false };
         assert_eq!(fmt("        deep text here\n", &o), "\tdeep text here\n");
     }
 
@@ -319,7 +389,7 @@ mod tests {
 
     #[test]
     fn raw_disables_dot_handling() {
-        let o = FmtOptions { goal: 65, max: 75, raw: true };
+        let o = FmtOptions { goal: 65, max: 75, raw: true, center: false };
         assert_eq!(fmt(".x y\nz\n", &o), ".x y z\n");
     }
 
@@ -340,7 +410,76 @@ mod tests {
     fn escaped_space_is_not_a_break() {
         // `\<space>` keeps the backslash and glues the blank into the word, so
         // "a\ b" stays on one line even past the goal; the next word wraps.
-        let o = FmtOptions { goal: 3, max: 6, raw: false };
+        let o = FmtOptions { goal: 3, max: 6, raw: false, center: false };
         assert_eq!(fmt("a\\ b c\n", &o), "a\\ b\nc\n");
+    }
+
+    // --- `fmt -C` centering (fmt.c:217-254) ---
+
+    fn center(src: &str, goal: usize) -> String {
+        let o = FmtOptions {
+            goal,
+            max: goal + 1,
+            center: true,
+            ..Default::default()
+        };
+        String::from_utf8(fmt_bytes(src.as_bytes(), &o)).unwrap()
+    }
+
+    #[test]
+    fn center_pads_shorter_line_by_half_gap() {
+        // goal 10, text "abc" (3): (10 - 3) / 2 == 3 leading spaces.
+        assert_eq!(center("abc\n", 10), "   abc\n");
+    }
+
+    #[test]
+    fn center_blank_line_is_bare_newline() {
+        // A whitespace-only line strips to empty and emits just a newline.
+        assert_eq!(center("   \t \n", 10), "\n");
+    }
+
+    #[test]
+    fn center_strips_leading_and_trailing_space() {
+        // goal 9, "hi" (2) after trimming: (9 - 2) / 2 == 3 leading spaces.
+        assert_eq!(center("    hi   \n", 9), "   hi\n");
+    }
+
+    #[test]
+    fn center_line_longer_than_goal_is_not_wrapped_or_padded() {
+        // goal 5, "abcdefgh" (8): no leading space, emitted verbatim.
+        assert_eq!(center("abcdefgh\n", 5), "abcdefgh\n");
+        // Boundary `goal == len`: the strict `>` test skips padding too.
+        assert_eq!(center("abc", 3), "abc\n");
+    }
+
+    #[test]
+    fn center_gap_floors_on_odd_remainder() {
+        // goal 10, "ab" (2) -> (10 - 2) / 2 == 4; "abc" (3) -> 7 / 2 == 3.
+        assert_eq!(center("ab\n", 10), "    ab\n");
+        assert_eq!(center("abc\n", 10), "   abc\n");
+    }
+
+    #[test]
+    fn center_each_line_terminates() {
+        // Interior spaces are preserved; each physical line gets its own \n.
+        assert_eq!(center("a b\ncd\n", 7), "  a b\n  cd\n");
+    }
+
+    #[test]
+    fn center_last_line_without_trailing_newline() {
+        // A final line lacking \n is still centered and terminated (fgetln).
+        assert_eq!(center("ab", 6), "  ab\n");
+    }
+
+    #[test]
+    fn center_empty_input_yields_no_output() {
+        assert_eq!(center("", 10), "");
+    }
+
+    #[test]
+    fn center_does_not_expand_tabs() {
+        // Unlike the reflow path, `-C` strips then passes bytes through: an
+        // interior tab is kept and counted as one byte (goal 3 -> no padding).
+        assert_eq!(center("a\tb\n", 3), "a\tb\n");
     }
 }
