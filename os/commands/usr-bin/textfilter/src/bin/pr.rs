@@ -10,9 +10,10 @@
 //! title for every file (`pr.c:224-233`, `nxtfile` `pr.c:1318-1376`). The time
 //! field of the header line is not rendered here (the C uses the current date,
 //! or each file's mtime; `pr.h:63`). Vertical multi-column output (`-N`, with
-//! `-w` width and `-s` separator) is modelled via the library's `vertcol` face;
-//! across-fill (`-a`), merge (`-m`), double spacing (`-d`), page offsets (`-o`),
-//! the formfeed (`-F`), and the starting page (`+first`) are later batches. An
+//! `-w` width and `-s` separator) is modelled via the library's `vertcol` face,
+//! and the `-o` left margin via `render_page`; across-fill (`-a`), merge (`-m`),
+//! double spacing (`-d`), the formfeed (`-F`), and the starting page (`+first`)
+//! are later batches. An
 //! unopenable operand warns
 //! and is skipped with a nonzero exit (`strerror` suffix not reproduced).
 
@@ -27,7 +28,7 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::read;
-use minix_textfilter::pr::{column_width, paginate_files, PrOptions};
+use minix_textfilter::pr::{column_width, paginate_files, render_page, PrOptions};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -85,13 +86,23 @@ fn run() -> ! {
             } else {
                 b'\t'
             });
+        } else if arg == "-o" {
+            // `-o`: left margin in blank columns (`pr.c:1764-1770`).
+            index += 1;
+            if index >= argv.len() {
+                usage();
+            }
+            match argv[index].parse::<usize>() {
+                Ok(n) if n >= 1 => options.offset = n,
+                _ => usage(),
+            }
         } else if arg.starts_with('+') {
             // `+first_page` (start at a page) is a later batch; `-N` columns
             // are handled above.
             support::warn(b"pr: +page is not modelled yet\n");
             support::terminate(2);
         } else if arg.len() > 1 && arg.starts_with('-') {
-            // An option letter we do not model (`-d`, `-a`, `-m`, `-o`, `-F`).
+            // An option letter we do not model (`-d`, `-a`, `-m`, `-F`).
             support::warn(b"pr: option form not modelled yet\n");
             support::terminate(2);
         } else {
@@ -144,7 +155,7 @@ fn run() -> ! {
     }
 
     for page in paginate_files(&files, &options, title_override.as_deref()) {
-        for line in page.lines() {
+        for line in render_page(&page, options.offset) {
             let mut out = line.as_bytes().to_vec();
             out.push(b'\n');
             support::emit(&out);
@@ -179,7 +190,9 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 }
 
 fn usage() -> ! {
-    support::warn(b"usage: pr [-t] [-h header] [-l lines] [-columns] [-w width] [-s[C]]\n");
+    support::warn(
+        b"usage: pr [-t] [-h header] [-l lines] [-columns] [-w width] [-s[C]] [-o offset]\n",
+    );
     support::terminate(2);
 }
 
