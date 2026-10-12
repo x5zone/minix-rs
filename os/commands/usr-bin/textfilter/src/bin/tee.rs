@@ -39,24 +39,36 @@ enum TeeArgError {
     BadFlag,
 }
 
-/// Splits tee argv into `(append, output operands)`. `-a` selects append,
-/// `-i` is rejected (its signal face is pending) and any other leading-dash
-/// option is a usage error; everything else is an output file. tee's input is
-/// always stdin, so a bare `-` operand is just a file named `-` (`tee.c:102`
-/// `open`s it literally).
+/// Splits tee argv into `(append, output operands)`, faithfully folding BSD
+/// `getopt("ai")` (`tee.c:80`). Option letters **cluster within one token**
+/// (`-ai` is `-a -i`); `-a` selects append, `-i` is rejected (its signal face is
+/// pending), any other letter is a usage error. `--` ends option scanning; every
+/// remaining word is an output file. tee's input is always stdin, so a bare `-`
+/// operand is just a file named `-` (`tee.c:102` `open`s it literally).
 fn parse_tee_args<'a>(argv: &'a [&'a str]) -> Result<(bool, Vec<&'a str>), TeeArgError> {
     let mut append = false;
     let mut operands: Vec<&'a str> = Vec::new();
-    for &arg in argv {
-        if arg == "-a" {
-            append = true;
-        } else if arg == "-i" {
-            return Err(TeeArgError::SignalPending);
-        } else if arg.starts_with('-') && arg.len() > 1 {
-            return Err(TeeArgError::BadFlag);
+    let mut index = 0usize;
+    while index < argv.len() {
+        let arg = argv[index];
+        if arg == "--" {
+            operands.extend_from_slice(&argv[index + 1..]);
+            break;
+        }
+        let bytes = arg.as_bytes();
+        if bytes.len() > 1 && bytes[0] == b'-' {
+            // Scan the token's option letters (getopt clusters them).
+            for &letter in &bytes[1..] {
+                match letter {
+                    b'a' => append = true,
+                    b'i' => return Err(TeeArgError::SignalPending),
+                    _ => return Err(TeeArgError::BadFlag),
+                }
+            }
         } else {
             operands.push(arg);
         }
+        index += 1;
     }
     Ok((append, operands))
 }
@@ -177,6 +189,33 @@ mod tests {
     #[test]
     fn unknown_flag_is_a_usage_error() {
         assert_eq!(parse_tee_args(&["-z", "f"]), Err(TeeArgError::BadFlag));
+    }
+
+    #[test]
+    fn option_letters_cluster_within_a_token() {
+        // 关键回归：C getopt("ai") 接受聚簇，旧整 token 匹配把 `-ai` 误拒。
+        // `-a` 后接 `-i`：聚簇命中 -i → 仍按信号未接报 SignalPending。
+        assert_eq!(
+            parse_tee_args(&["-ai", "f"]),
+            Err(TeeArgError::SignalPending)
+        );
+        assert_eq!(
+            parse_tee_args(&["-ia", "f"]),
+            Err(TeeArgError::SignalPending)
+        );
+        // 纯聚簇 -a 两次幂等仍为 append。
+        let (append, operands) = parse_tee_args(&["-aa", "f"]).unwrap();
+        assert!(append);
+        assert_eq!(operands, ["f"]);
+        // 聚簇里混入集外字母 → BadFlag（C `default:`）。
+        assert_eq!(parse_tee_args(&["-az", "f"]), Err(TeeArgError::BadFlag));
+    }
+
+    #[test]
+    fn double_dash_ends_option_scanning() {
+        let (append, operands) = parse_tee_args(&["-a", "--", "-i", "f"]).unwrap();
+        assert!(append);
+        assert_eq!(operands, ["-i", "f"]);
     }
 
     #[test]
