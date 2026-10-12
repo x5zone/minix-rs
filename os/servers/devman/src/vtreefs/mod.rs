@@ -53,10 +53,13 @@ pub struct Dirent {
 
 /// A classified incoming request.
 ///
-/// The production classifier (raw IPC → `Request`) needs the VFS-side wire
-/// layout (`fsdriver_data`, REQ_* field macros) and lands with the IPC
-/// transport (`minix-sys` is still `todo!()`); until then `run` is driven
-/// by test transports. The classification itself is transport-independent.
+/// The production classifier (raw IPC → `Request`) lives in
+/// [`crate::ipc::minix::MinixTransport::next`], which decodes the
+/// VFS-side `fsdriver_data` / REQ_* wire fields into these variants and
+/// routes DEVMAN messages through [`crate::ipc::minix`]’s
+/// `DevmanMsg::classify` (delivered in `f0e02c70f`, S25). Tests drive the
+/// same enum through a scripted in-memory transport without a wire. The
+/// classification itself is transport-independent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Mount { is_root: bool },
@@ -97,8 +100,9 @@ pub enum Reply {
 
 /// Message source/sink for the server loop (`Server::run`).
 ///
-/// Dependency injection (no globals): production uses the kernel IPC
-/// transport once `minix-sys` implements it; tests use [`VecTransport`].
+/// Dependency injection (no globals): production uses
+/// [`crate::ipc::minix::MinixTransport`] (kernel IPC receive/reply/send/sendrec,
+/// wired into `main.rs`’s server loop); tests use [`VecTransport`].
 /// The trait is a dumb pipe — the *server* stamps replies
 /// (`apply_reply_with_id`) and builds forward messages; the transport
 /// only moves bytes.
