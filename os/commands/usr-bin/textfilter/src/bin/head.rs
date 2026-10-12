@@ -19,63 +19,32 @@ extern crate alloc;
 use alloc::format;
 use alloc::vec;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_sys::{close, open, read, Fd};
-use minix_textfilter::window::{HeadWindow, LineWindow};
+use minix_textfilter::window::{parse_head_args, HeadArgError, HeadArgs, HeadWindow, LineWindow};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut count: usize = 10;
-    let mut bytecnt: usize = 0;
-    let mut qflag = false;
-    let mut vflag = false;
-    let mut operands: Vec<String> = Vec::new();
-    let mut index = 1;
-    let mut no_more_opts = false;
-    while index < argv.len() {
-        let a = argv[index].as_str();
-        if no_more_opts {
-            operands.push(a.to_string());
-            index += 1;
-            continue;
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let HeadArgs {
+        count,
+        bytecnt,
+        qflag,
+        vflag,
+        operands,
+    } = match parse_head_args(&refs[1..]) {
+        Ok(parsed) => parsed,
+        Err(HeadArgError::Usage) => usage(),
+        Err(HeadArgError::IllegalCount { byte, value }) => {
+            let kind = if byte { "byte" } else { "line" };
+            support::warn(format!("head: illegal {kind} count -- {value}\n").as_bytes());
+            support::terminate(1);
         }
-        match a {
-            "--" => no_more_opts = true,
-            "-n" => {
-                index += 1;
-                if index >= argv.len() {
-                    support::terminate(1);
-                }
-                count = parse_count(&argv[index]);
-            }
-            "-q" => qflag = true,
-            "-v" => vflag = true,
-            "-c" => {
-                index += 1;
-                if index >= argv.len() {
-                    support::terminate(1);
-                }
-                let n = parse_count(&argv[index]);
-                if n == 0 {
-                    support::terminate(1);
-                }
-                bytecnt = n;
-            }
-            _ if a.starts_with('-')
-                && a.len() > 1
-                && a[1..].bytes().all(|b| b.is_ascii_digit()) =>
-            {
-                // Obsolete `-N` line count (head.c `obsolete`).
-                count = parse_count(&a[1..]);
-            }
-            _ => operands.push(a.to_string()),
-        }
-        index += 1;
-    }
+    };
 
     // Reject counts the fixed-capacity window cannot hold (also rejects 0, as
     // `HeadWindow::new` does — the current line-based behaviour). Byte mode
@@ -160,11 +129,10 @@ fn read_fd(fd: Fd) -> Vec<u8> {
     input
 }
 
-fn parse_count(word: &str) -> usize {
-    match word.parse::<usize>() {
-        Ok(value) => value,
-        Err(_) => support::terminate(1),
-    }
+/// `head`'s usage line, exactly `head.c`'s `usage()` (exit 1).
+fn usage() -> ! {
+    support::warn(b"usage: head [-n lines] [file ...]\n");
+    support::terminate(1);
 }
 
 #[cfg(all(not(test), target_os = "none"))]
