@@ -15,7 +15,8 @@
 //! syntax beyond `-N`. Byte mode `-c N`, block mode `-b N`, and reverse mode
 //! `-r` are modelled — C `tail.c`/`reverse.c`: `-r` prints lines bottom-up
 //! (`REVERSE` reverses every line, `RLINES` = an explicit `-n` reverses the last
-//! `count`), while `-r` combined with `-c`/`-b` (`RBYTES`) is rejected below.
+//! `count`), while `-r` combined with `-c`/`-b` is the `RBYTES` byte-window line
+//! reverse (`reverse_bytes`).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -103,12 +104,6 @@ fn run() -> ! {
     if bytecnt == 0 && TailWindow::new(count).is_err() {
         support::terminate(1);
     }
-    // `-r` combined with a byte/block count (C `RBYTES` reverse) is not modelled;
-    // the line-reverse forms (`REVERSE` / `RLINES`) are.
-    if rflag && bytecnt > 0 {
-        support::warn(b"tail: -r with -c/-b is not modelled\n");
-        support::terminate(1);
-    }
 
     // C `for each file: fopen+fstat (ierr on failure), banner when argc>1,
     // forward()`. No operands read stdin.
@@ -149,7 +144,16 @@ fn run() -> ! {
 fn tail_stream(fd: Fd, count: usize, bytecnt: usize, rflag: bool, n_seen: bool) {
     let input = read_fd(fd);
     if bytecnt > 0 {
-        support::emit(last_bytes_of(&input, bytecnt));
+        // `-r` with a byte/block count is C `RBYTES` (`reverse.c` `r_reg` clamps
+        // the backward walk to `off` bytes): print the trailing `bytecnt`-byte
+        // window's lines bottom-up. Without `-r`, `-c`/`-b` prints raw last bytes.
+        if rflag {
+            for line in reverse_bytes(&input, bytecnt) {
+                emit_line(line);
+            }
+        } else {
+            support::emit(last_bytes_of(&input, bytecnt));
+        }
         return;
     }
     let lines = support::lines_of(&input);
@@ -190,6 +194,16 @@ fn reverse_selection<'a>(lines: &[&'a str], count: usize, n_seen: bool) -> Vec<&
         lines
     };
     selected.iter().rev().copied().collect()
+}
+
+/// C `tail -r` with `-c`/`-b` (`RBYTES`, `reverse.c` `r_reg`): the lines of the
+/// trailing `bytecnt`-byte window, printed bottom-up. The window can begin
+/// mid-line; r_reg still emits that leading fragment (its leftover `WR`), which
+/// is precisely what a byte-window line split yields, so the reverse is exact.
+fn reverse_bytes(input: &[u8], bytecnt: usize) -> Vec<&str> {
+    let window = last_bytes_of(input, bytecnt);
+    let lines = support::lines_of(window);
+    reverse_selection(&lines, 0, false)
 }
 
 /// The last `bytecnt` bytes of `input`, or all of it when shorter — C `tail -c`
@@ -244,7 +258,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{block_bytes, last_bytes_of, reverse_selection};
+    use super::{block_bytes, last_bytes_of, reverse_bytes, reverse_selection};
 
     #[test]
     fn last_bytes_truncates_to_count() {
@@ -285,5 +299,17 @@ mod tests {
     fn reverse_selection_count_exceeding_input_is_all() {
         let lines = ["a", "b"];
         assert_eq!(reverse_selection(&lines, 5, true), ["b", "a"]);
+    }
+
+    #[test]
+    fn reverse_bytes_reverses_lines_of_trailing_window() {
+        // -r -c on "aaa\nbbb\nccc\n": last 8 bytes = "bbb\nccc\n" -> ccc,bbb.
+        let input = b"aaa\nbbb\nccc\n";
+        assert_eq!(reverse_bytes(input, 8), ["ccc", "bbb"]);
+        // window starts mid-line (last 7 = "bb\nccc\n"); r_reg emits the leading
+        // fragment too, so "bb" survives as its own line.
+        assert_eq!(reverse_bytes(input, 7), ["ccc", "bb"]);
+        // bytecnt past the input reverses the whole file's lines.
+        assert_eq!(reverse_bytes(input, 99), ["ccc", "bbb", "aaa"]);
     }
 }
