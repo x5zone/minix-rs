@@ -8,7 +8,10 @@
 //! column. Columns carry tab offsets: one tab for column two, two for
 //! column three (comm.c:56, 105-110). `-1`/`-2`/`-3` suppress a column;
 //! `-f` compares case-insensitively (`strcasecmp`). Both files always
-//! reach end of input (the loop reads on).
+//! reach end of input (the loop reads on). [`parse_comm_args`] mirrors
+//! C's `getopt` option scanning (`comm.c:80`): clustered letters, the `--`
+//! terminator, a lone `-` operand, and an `UnknownOption` for any letter
+//! outside `123f` — so an unrecognized flag is never mistaken for a file.
 
 /// Column suppression flags (`-1`/`-2`/`-3`) and the `-f` fold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -97,6 +100,62 @@ fn line_cmp(a: &str, b: &str, fold: bool) -> core::cmp::Ordering {
     }
 }
 
+/// Argument-splitting failure for `comm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommArgError {
+    /// An option letter outside the `123f` set (C `getopt` returns `?`).
+    UnknownOption(char),
+    /// Not exactly the two file operands `comm` requires: C shifts
+    /// `argc -= optind` (`comm.c:98`) then `if (argc != 2) usage()`
+    /// (`comm.c:101`).
+    NotTwoOperands,
+}
+
+/// Split `comm`'s arguments (the argv tail, without the program name) into
+/// `(options, [file1, file2])`, faithful to C's `getopt(argc, argv, "123f")`
+/// (`comm.c:80`): option letters cluster after one dash (`-12`, `-f1`), `--`
+/// ends option scanning so everything after it is a file operand, a lone `-`
+/// is itself a file operand (standard input), and any other option letter is
+/// [`CommArgError::UnknownOption`] rather than a leaked file name. Fewer or more
+/// than two operands is [`CommArgError::NotTwoOperands`]. The old front door
+/// matched only whole `-1`/`-2`/`-3`/`-f` tokens and pushed everything else
+/// (including an unknown `-z`) as an operand, so `comm -z f` opened a file
+/// literally named `-z`; this parser routes that to `UnknownOption`.
+pub fn parse_comm_args<'a>(
+    args: &'a [&'a str],
+) -> Result<(CommOptions, [&'a str; 2]), CommArgError> {
+    let mut options = CommOptions::default();
+    let mut operands: Vec<&'a str> = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index];
+        if arg == "--" {
+            operands.extend_from_slice(&args[index + 1..]);
+            break;
+        }
+        if arg.len() > 1 && arg.starts_with('-') {
+            for ch in arg[1..].chars() {
+                match ch {
+                    '1' => options.suppress1 = true,
+                    '2' => options.suppress2 = true,
+                    '3' => options.suppress3 = true,
+                    'f' => options.fold = true,
+                    other => return Err(CommArgError::UnknownOption(other)),
+                }
+            }
+        } else {
+            // A file operand; a lone `-` (len 1) and any non-dash token both
+            // name a file (standard input for `-`).
+            operands.push(arg);
+        }
+        index += 1;
+    }
+    if operands.len() != 2 {
+        return Err(CommArgError::NotTwoOperands);
+    }
+    Ok((options, [operands[0], operands[1]]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +239,81 @@ mod tests {
                 (1, "late1".to_string()),
                 (1, "late2".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn test_parse_two_plain_operands() {
+        assert_eq!(
+            parse_comm_args(&["a", "b"]),
+            Ok((CommOptions::default(), ["a", "b"]))
+        );
+    }
+
+    #[test]
+    fn test_parse_separate_and_clustered_flags() {
+        assert_eq!(
+            parse_comm_args(&["-1", "-2", "a", "b"]),
+            Ok((
+                CommOptions {
+                    suppress1: true,
+                    suppress2: true,
+                    ..CommOptions::default()
+                },
+                ["a", "b"]
+            ))
+        );
+        // getopt clusters valueless letters: `-12f` == `-1 -2 -f`.
+        assert_eq!(
+            parse_comm_args(&["-12f", "a", "b"]),
+            Ok((
+                CommOptions {
+                    suppress1: true,
+                    suppress2: true,
+                    fold: true,
+                    ..CommOptions::default()
+                },
+                ["a", "b"]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_dash_and_double_dash_are_operands_or_terminator() {
+        // A lone `-` is a file operand (standard input).
+        assert_eq!(
+            parse_comm_args(&["-", "b"]),
+            Ok((CommOptions::default(), ["-", "b"]))
+        );
+        // `--` ends option scanning; the dashes after it are file names.
+        assert_eq!(
+            parse_comm_args(&["--", "-1", "-2"]),
+            Ok((CommOptions::default(), ["-1", "-2"]))
+        );
+    }
+
+    #[test]
+    fn test_parse_unknown_option_is_not_a_leaked_operand() {
+        // The regression: `comm -z file` must reject `-z` (C `getopt` returns
+        // `?` → usage), NOT open a file literally named `-z`.
+        assert_eq!(
+            parse_comm_args(&["-z", "file"]),
+            Err(CommArgError::UnknownOption('z'))
+        );
+        // Even with a full operand count the bad option still errors first.
+        assert_eq!(
+            parse_comm_args(&["-z", "a", "b"]),
+            Err(CommArgError::UnknownOption('z'))
+        );
+    }
+
+    #[test]
+    fn test_parse_requires_exactly_two_operands() {
+        assert_eq!(parse_comm_args(&[]), Err(CommArgError::NotTwoOperands));
+        assert_eq!(parse_comm_args(&["a"]), Err(CommArgError::NotTwoOperands));
+        assert_eq!(
+            parse_comm_args(&["a", "b", "c"]),
+            Err(CommArgError::NotTwoOperands)
         );
     }
 }

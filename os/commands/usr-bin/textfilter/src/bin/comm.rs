@@ -18,29 +18,18 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, read};
-use minix_textfilter::comm::{comm, CommOptions};
+use minix_textfilter::comm::{comm, parse_comm_args};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut options = CommOptions::default();
-    let mut operands: Vec<&str> = Vec::new();
-    let mut index = 1;
-    while index < argv.len() {
-        match argv[index].as_str() {
-            "-1" => options.suppress1 = true,
-            "-2" => options.suppress2 = true,
-            "-3" => options.suppress3 = true,
-            "-f" => options.fold = true,
-            other => operands.push(other),
-        }
-        index += 1;
-    }
-    if operands.len() != 2 {
-        usage();
-    }
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (options, files) = match parse_comm_args(&refs[1..]) {
+        Ok(parsed) => parsed,
+        Err(_) => usage(),
+    };
 
-    let lines1 = operand_lines(operands[0]);
-    let lines2 = operand_lines(operands[1]);
+    let lines1 = operand_lines(files[0]);
+    let lines2 = operand_lines(files[1]);
     let a: Vec<&str> = lines1.iter().map(String::as_str).collect();
     let b: Vec<&str> = lines2.iter().map(String::as_str).collect();
     let merged = comm(&a, &b, &options);
