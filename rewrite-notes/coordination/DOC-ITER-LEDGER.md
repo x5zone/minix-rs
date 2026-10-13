@@ -10,7 +10,8 @@
 |---|---|---|---|---|---|---|
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 01 | `7468a9e39` | `227028e23` | v0.1 | 已审（GPT 反馈已回收，见 Round 02 §1.x） | `tmp/doc-iter/01-boot-shim-bootstrap/round-01.md` |
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 02 | `227028e23` | `5d0f99e69` | v0.2 | 已审（反馈回收进 Round 03） | `tmp/doc-iter/01-boot-shim-bootstrap/round-02.md` |
-| `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 03 | `5d0f99e69` | `f7a50edc5` | v0.3 | 待送审 | `tmp/doc-iter/01-boot-shim-bootstrap/round-03.md` |
+| `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 03 | `5d0f99e69` | `f7a50edc5` | v0.3 | 已审（反馈回收进 Round 04） | `tmp/doc-iter/01-boot-shim-bootstrap/round-03.md` |
+| `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 04 | `480b09fa4` | （本轮提交后回填） | v0.4 | 待送审 | `tmp/doc-iter/01-boot-shim-bootstrap/round-04.md`（含缺陷闭环台账 `defect-ledger.md`） |
 
 ## 规则变更裁决记录
 
@@ -19,6 +20,7 @@
 | 2026-10-13 | v0.1 | 建立（见 v0.1 变更记录） | 用户裁决 + GPT 对话 | 已生效 |
 | 2026-10-13 | v0.2 | S1 证据盘点 / S4 盲测判分三分 / E7 三级化 + C1 澄清 / §八 归因记录 / §九 三道理门 / F5 / 包与台账 | Round 01 实证 + 外部评审（用户裁决） | 已生效 |
 | 2026-10-14 | v0.3 | S1.5 关键因果主张 / S1.6 运行阶段边界 / S2.1-6 职责漂移+机械对账 / V5 分阶段冷读 / §八 四类归因 / S5 发布扫描+台账重放 | Round 02 实证 + 外部评审（用户裁决"继续"） | 已生效 |
+| 2026-10-13 | v0.4 | S1.0 证据分级（E1–E5）+ S1.7 主张—依据—适用范围表 + S2.1.7 跨节因果一致性检查 / V5 重构为冷读团（A/B/C 全文冷读、材料隔离、7 字段、附带发现） / 缺陷闭环台账（六字段、未发现≠发现未修） / 修复前五类归因 + 不以票数裁决 + 冷读边际价值指标 / S4.7 变更闭环检查 / 轮次类型（优化轮/闭环验证轮） / 包 §4b 源码证据节 | Round 03 实证 + 外部评审（冷读子 agent 提案、缺陷闭环、证据类型分离）+ 用户裁决"效果最大化" | 已生效 |
 | — | — | 候选规则 ③（行号引用检查）、④（对账表集合守恒） | Round 01 | 登记待工具排期 |
 | — | — | 入口 A 完整重做回流 | v0.2 裁决 | 待入口 B 在 2~3 篇不同形态文档上稳定 |
 
@@ -42,3 +44,9 @@
 - `os/boot-shim/src/main.rs` 的预算注释称 1024 页池"costs every boot 4 MiB of VM-selectable memory"，
   而 `os/kernel/src/vm_handoff.rs:160-168` 明写 UEFI 路径下 bump 区不在 conventional 列表、切割是
   no-op；两处注释冲突，待统一（Round 03 V3-lite discovery）。
+- `os/kernel/src/lib.rs` Step 1 的 "Ignore errors — some ranges may not be backed by physical memory,
+  but that's fine; the CPU won't access them." 注释与 `[SD19-gate]` 标记：该理由与 `map_huge` 实际
+  失败类（`alloc_pt_page()?` 分配失败 / `AlreadyMapped`）不闭合——映射路径不检查物理内存是否存在；
+  01 篇文档已按机制分层陈述，**源码注释待另开一笔修订**（Round 04 A13 discovery）。
+- 01 篇构建侧残留（文档侧已按效果陈述，规则出处待核查）：Minix3 内核构建的栈对齐假设
+  （`-mpreferred-stack-boundary` 旗标或 `pre_init` 反汇编）无源码证据（Round 04 C7 discovery）。
