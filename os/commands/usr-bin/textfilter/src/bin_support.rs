@@ -9,10 +9,12 @@
 //! descriptor (`minix_rt::crt0::args`, raw initial-stack bytes rendered
 //! lossily — C passes argv as raw bytes and never validates, so the lossy
 //! render is this layer's text-tool contract), termination via the host
-//! runtime (hosted) or `minix_sys::exit` (target). Reads and writes go
-//! through `minix_sys::read`/`write` only; transport failures short-circuit
-//! to a typed `Err` (edge E-SYSCALL-SIGN), so hosted runs observe honest
-//! failures on both channels.
+//! runtime (hosted) or `minix_sys::exit` (target). Reads and writes on the
+//! target go through `minix_sys::read`/`write`; hosted runs go through
+//! `std::io`/`std::fs` so a developer (and the `tests/` face this crate keeps)
+//! can drive a binary end to end and compare it with the C expectations written
+//! into each golden case. Transport failures on the target short-circuit to a
+//! typed `Err` (edge E-SYSCALL-SIGN).
 
 // Each binary includes this module and uses the subset it needs; the
 // unused helpers in any one binary are intentional, not drift.
@@ -20,7 +22,9 @@
 
 use alloc::vec::Vec;
 
-use minix_sys::{read, write, Fd};
+use minix_sys::Fd;
+#[cfg(all(not(test), target_os = "none"))]
+use minix_sys::{read, write};
 
 /// Standard input, POSIX `STDIN_FILENO`.
 pub const STDIN: Fd = 0;
@@ -89,6 +93,13 @@ pub fn emit(bytes: &[u8]) {
 
 /// Writes the slice to standard output, reporting success without
 /// exiting (the form the yes loop's sink needs).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn write_ok(bytes: &[u8]) -> bool {
+    use std::io::Write as _;
+    std::io::stdout().write_all(bytes).is_ok()
+}
+
+#[cfg(all(not(test), target_os = "none"))]
 pub fn write_ok(bytes: &[u8]) -> bool {
     write(STDOUT, bytes).is_ok()
 }
@@ -107,7 +118,17 @@ pub fn warn(bytes: &[u8]) {
 /// same hosted-first trade the primes bound documents. A read failure
 /// ends collection; the failure itself is not reported (the C filters
 /// exit through their own error paths once the transport reports
-/// honestly).
+/// honestly). Hosted runs read the process' real standard input, which is
+/// what lets an integration test drive the binary the way a shell would.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn read_stdin() -> Vec<u8> {
+    use std::io::Read as _;
+    let mut input = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut input);
+    input
+}
+
+#[cfg(all(not(test), target_os = "none"))]
 pub fn read_stdin() -> Vec<u8> {
     let mut input = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -255,6 +276,63 @@ impl WriteSink {
         let done = minix_sys::write(self.fd, bytes);
         let _ = minix_sys::close(self.fd);
         done.map(|_| ()).map_err(|_| ())
+    }
+}
+
+/// An input operand that has been opened but not yet read.
+///
+/// The split exists because C opens the input *before* it opens (and thereby
+/// truncates) the output operand, and reads only afterwards:
+/// `ifp = file(argv[0], "r"); ofp = file(argv[1], "w")`. Holding the handle lets
+/// a filter keep that order, which is observable in the degenerate
+/// `uniq file file` case — C sees an empty stream there, and a shell-out
+/// implementation that reads first would echo the old bytes back.
+#[cfg(any(test, not(target_os = "none")))]
+pub struct ReadSource(std::fs::File);
+
+#[cfg(all(not(test), target_os = "none"))]
+pub struct ReadSource {
+    fd: minix_sys::Fd,
+}
+
+/// Opens an input operand read-only (C's `fopen(name, "r")`), without reading it.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn open_input(path: &str) -> Result<ReadSource, ()> {
+    std::fs::File::open(path).map(ReadSource).map_err(|_| ())
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn open_input(path: &str) -> Result<ReadSource, ()> {
+    // `O_RDONLY` is zero, the flags `open(path, 0, 0)` already passes.
+    minix_sys::open(path, 0, 0)
+        .map(|fd| ReadSource { fd })
+        .map_err(|_| ())
+}
+
+impl ReadSource {
+    /// Reads the handle to its end. A read failure ends collection, matching the
+    /// honest-transport shape the rest of this layer uses.
+    #[cfg(any(test, not(target_os = "none")))]
+    pub fn read_to_end(mut self) -> Vec<u8> {
+        use std::io::Read as _;
+        let mut data = Vec::new();
+        let _ = self.0.read_to_end(&mut data);
+        data
+    }
+
+    #[cfg(all(not(test), target_os = "none"))]
+    pub fn read_to_end(self) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match read(self.fd, &mut chunk) {
+                Ok(0) => break,
+                Ok(count) => data.extend_from_slice(&chunk[..count]),
+                Err(_) => break,
+            }
+        }
+        let _ = minix_sys::close(self.fd);
+        data
     }
 }
 

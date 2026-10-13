@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百零五打通命令面的宿主读腿（`uniq` 先行），并给它加上一套跑真进程的端到端金样门**
+  （`2026-10-13`，`claim/CMD-HOST-READ-qoder` @ 基线 `2d13d207a`，单域三线 commands/textfilter；`bin_support.rs`
+  是全 crate 四十来个 bin 共用的入口层，改动跑的是整包构建）：
+  接回批次二百零二④与批次二百零四末尾点出的验证能力缺口。改前证据：`bin_support.rs` 的 `read_stdin`
+  无条件走 `minix_sys::read`，而宿主侧那条腿不存在，所以 `target/debug/uniq < file` 输出恒为空（同族 tail/cmp
+  一样），命令面唯一可用的判据只有库内纯函数测。这一步把验证能力本身往上抬一档：能跑真进程、真管道、真档。
+  **形状**：`bin_support.rs` 里 `read_stdin` 与 `write_ok` 拆成 cfg 双胞（宿主走 `std::io`，目标走
+  `minix_sys::read`/`write`），`minix_sys::{read, write}` 的导入随之收进目标 cfg（否则宿主侧未用导入告警）；
+  新增 `open_input`/`ReadSource::read_to_end`（**开而先不读**）与 `bin/uniq.rs` 里的使用点。宿主臂用
+  `std::fs::File::open`/`create`，目标臂用 `minix_sys::open(…, 0, 0)`（`O_RDONLY` 为零）。
+  **为什么需要“开而先不读”**：C `uniq.c:119-122` 的顺序是 `ifp = file(argv[0], "r")` → `ofp = file(argv[1], "w")`
+  → 才开始读，而 `"w"` 的截断发生在打开那一刻。把输入先读进内存再创建输出，在 `uniq f f` 这一个退化调用上
+  会把旧内容原样写回去，而 C 得到空档——批次二百零四的行里已经按 C 写了“空档”的形状，但当时实现还做不到；
+  本轮把顺序真正摆过来（先开输入句柄→创建并截断输出→再读输入），金样门里钉了一枚专这一层的用例。
+  **新增 `tests/uniq_face.rs`（10 枚）**：跑 `env!` 递来的真 `uniq` 二进制（集成测试目标才能拿到
+  `CARGO_BIN_EXE_uniq`），逐字比标准输出与退码：缺省折叠、`%4d` 四列计数、`-c -d`/`-c -u`/`-d -u` 组合
+  （后者什么都不输出且退 0）、`-f 1`/`-f 2`/`-s 4` 的比较键与“比键报整行”、obsolete `-1`/`+4` 与正规形一致、
+  集外选项与第三个操数退用法错、档操作数+输出档落盘、`uniq f f` 得空档、输入打不开时不创建输出档。
+  另有一枚差分腿：在两者语义重合的那几形（折叠/`-d`/`-u`/`-f`/`-s`）上与本机 `uniq` 逐字对比；
+  **故意不比** `-c`（GNU 用 `%7d`）与 obsolete（GNU 不接受），否则量到的是两个程序的差异而不是本壳的回归。
+  三件套：`cargo test -p minix-textfilter` → 全包测试目标全绿（`--test uniq_face` 10/0、`--bin uniq` 9/0，
+  `--lib` 409/0）；容器 `minix-ci:1.94`（`-u`）内同一套门也 10/0 与 9/0（这条路径必须双跑：金样依赖真进程）。
+  变异负控：把输入的 `read_to_end` 换到创建输出之前 → `same_file_as_input_and_output_reports_nothing` FAILED，
+  其余 9 枚全绿（说明该用例只钉住顺序、不与无关）；按备份复原后复测 10/0。
+  因 `bin_support.rs` 是全 crate 共用件，跑整包目标构建：`cargo build -p minix-textfilter --target
+  {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf} --release`（所有 bin）→ 三台 0 error；
+  容器 `cargo check -j 1 --workspace` → Finished 0 error；clippy 指向本次触及文件的告警计数 0；
+  `rustfmt --edition 2024 --check` 三文件零漂移（`bin_support.rs:20` 那条 import 排序存量随本次拆导入一并归正）；
+  核实日 `2026-10-13`；基线 `2d13d207a`。
+  **后续可用形状**：同族命令的宿主逐字对账只需照搬这个测试文件的样子（拿 `CARGO_BIN_EXE_<name>` 跑真进程 +
+  按 C 自推金样 + 在语义重合处与本机对账）；tail/cmp 的宿主读腿仍走各自 `minix_sys::open`，改接
+  `support::open_input`/`read_file` 即可跟进。
+
 - ✅ **批次二百零四把 `uniq` 的输出档操作数接上（create-and-write 腿，打开即截断）**
   （`2026-10-13`，`claim/UNIQ-OUTFILE-qoder` @ 基线 `328da099f`，单域三线 commands/textfilter；`bin_support.rs`
   是本 crate 四十来个 bin 共用的入口层，改它算同域库面，无跨界）：
