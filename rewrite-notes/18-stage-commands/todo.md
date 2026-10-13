@@ -250,6 +250,36 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百零二接上 `uniq` 的 obsolete 跳过写法 `-N`/`+N`**
+  （`2026-10-13`，`claim/UNIQ-OBSOLETE-qoder` @ 基线 `08d9cfe57`，单域三线 commands/textfilter，无跨界）：
+  接回批次二百零一登记的①与②（同一函数的两面，不拆两轮）。改前证据：`grep -n obsolete
+  os/commands/usr-bin/textfilter/src/bin/uniq.rs` 零命中，`parse_uniq_args` 直接从 `i = 1` 扫 argv，
+  于是 `uniq -2`（C 意为「跳过两字段」）落到集外字母 `2` 分支报用法错。
+  **C 真源**：`minix3/usr.bin/uniq/uniq.c` 的 `obsolete()` 在 `getopt` 之前就地改写：`asprintf(&p, "-%c%s",
+  ap[0] == '+' ? 's' : 'f', ap + 1)`——`-2` 变 `-f2`、`+3` 变 `-s3`（注意两个方向折向不同的选项：负数形式
+  跳字段、正数形式跳字符）。**停扫规则与 tail 不同**：uniq 只要求第二位是数字才改写，第二位是其它字符时
+  `continue`（`if (!isdigit(ap[1])) continue;`），只有不以 `-`/`+` 开头的词才 `return`。后果有两面：
+  `uniq -c -2` 里的 `-2` 照折（跨过选项字母继续扫）；`uniq -f 2 -3` 里的 `2` 被当成一个词而整体停扫，
+  `-3` 保持原形交给 `getopt`，按集外字母 `3` 走 `case '?'` 退用法错——tail 那边有 `if (!ap[1]) ++argv`
+  跨值动作，uniq 没有，两个命令的预扫不能共用同一套（这是本轮重读 C 读出来的事实差异，不是实现疏漏）。
+  **形状**：新增 `obsolete_args(&[String]) -> Vec<String>`（程序名那一项不动，等价 C 的 `*++argv`），
+  `parse_uniq_args` 开头先折再扫，后续一切（附值、取下一词、`--`、操作数）看到的都是改写后的词。
+  **为何放在薄壳而不是库**：`uniq` 的选项解析一直在 `bin/uniq.rs`（库侧只拥有 `Uniq`/`comparison_key` 等
+  决定半），本轮不改这个布局；tail 那侧的解析在 `window.rs` 是因为 head/tail 共用同一文件。
+  三件套：`cargo test -p minix-textfilter --bin uniq` → **7 passed / 0 failed**（基线 `5`；新增
+  `parse_obsolete_skip_forms`（`-2`/`-3 in`/`+4`/`-c -2` 四形）与 `parse_obsolete_walk_stops_at_a_plain_word`
+  （`-f 2 -3` 不折））；`--lib` → **409 / 0** 不动；三枚变异负控各让对应测翻红——非数字第二位改成停扫 →
+  `parse_obsolete_skip_forms` FAILED；`+` 也折成 `f` → 同一测 FAILED；预扫整体旁路（`scanned = argv.to_vec()`）→
+  同一测 FAILED；均按备份复原后复测 7/0。三架构裸机 `cargo build -p minix-textfilter --bin uniq --target
+  {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf} --release` → 三台 0 error；
+  clippy 自有文件零新增告警；`rustfmt --edition 2024 --check bin/uniq.rs` 漂移与 base 同为一块（在未触碰的
+  `bin_support.rs`）；容器门读数见本笔提交信息；核实日 `2026-10-13`；基线 `08d9cfe57`。
+  **新发现的两条与本轮无关的差异（只登记）**：⑤ C 的选项串是 `"-cdf:s:u"`，开头那个 `-` 意思是在第一个
+  非选项处停下扫描（`case '-': --optind; goto done;`），所以 `uniq in -c` 在 C 里会把 `-c` 当第二个操作数（进而
+  去创建名为 `-c` 的输出档），而本壳目前仍 permute-on（认 `-c` 为选项）；⑥ `-f`/`-s` 值非数时 C 打
+  `errx(1, "illegal field skip value: %s", optarg)`（或 character 那一句），本壳统一退 usage，退码同、报文不同。
+  另保留批次二百零一登记的③（输出文件不建模）与④（无宿主读腿）。
+
 - ✅ **批次二百零一把 `uniq` 的三个旗标改成 C 那样的独立位，并按 `%4d` 补上计数列宽**
   （`2026-10-13`，`claim/UNIQ-SHOWFLAGS-qoder` @ 基线 `399d274eb`，单域三线 commands/textfilter，无跨界）：
   开工前的选择依据：`07-text-filter.md` uniq 行写着「`-i`/`-f`/`-s` 比较面与组合模式待批」，而

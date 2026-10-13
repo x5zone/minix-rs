@@ -6,7 +6,10 @@
 //! `Run::format`, which prints the `%4d` count prefix without the
 //! trailing newline — the doing half adds it). The three mode flags are
 //! independent bits exactly as C keeps `cflag`/`dflag`/`uflag`, so `-c -d`,
-//! `-c -u` and `-d -u` are all accepted and composed. Input is stdin, split into
+//! `-c -u` and `-d -u` are all accepted and composed. The old-style skip forms
+//! are folded the way C's `obsolete()` does it before `getopt`: `-2` means
+//! `-f 2` (skip two fields) and `+3` means `-s 3` (skip three characters).
+//! Input is stdin, split into
 //! newline-stripped lines before the run handler sees them. The field-skip
 //! comparison (`-f fields`, `-s chars`, C `skip()`) is the library's
 //! `comparison_key`: lines are compared on the skipped key but the full line is
@@ -107,6 +110,42 @@ fn usage() -> ! {
     support::terminate(1);
 }
 
+/// C `obsolete()`'s pre-pass over `uniq`'s argv (`uniq.c`): an old-style
+/// `-<digit>…` token means "skip that many fields" (`-2` → `-f2`) and `+<digit>…`
+/// means "skip that many characters" (`+3` → `-s3`) — C builds the replacement
+/// with `asprintf("-%c%s", ap[0] == '+' ? 's' : 'f', ap + 1)`.
+///
+/// The walk's stopping rule is C's, and it is not the one a `tail` reader would
+/// guess: a token whose second char is not a digit is `continue`d over (an option
+/// letter, known or not), while anything that is neither `-` nor `+` prefixed —
+/// an operand — ends the whole pre-pass. So `-c -2` folds the `-2`, and `-f 2 -3`
+/// does not: the walk stops at the value word `2`, leaving `-3` for the option
+/// scanner to reject. Index 0 (the program name) is left alone, exactly as C's
+/// `*++argv` loop does.
+fn obsolete_args(argv: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = argv.to_vec();
+    for index in 1..argv.len() {
+        let token = argv[index].as_str();
+        let bytes = token.as_bytes();
+        let first = bytes.first().copied();
+        if first != Some(b'-') && first != Some(b'+') {
+            break;
+        }
+        if first == Some(b'-') && bytes.get(1) == Some(&b'-') {
+            break;
+        }
+        let Some(second) = bytes.get(1).copied() else {
+            continue;
+        };
+        if !second.is_ascii_digit() {
+            continue;
+        }
+        let letter = if first == Some(b'+') { 's' } else { 'f' };
+        out[index] = format!("-{letter}{}", &token[1..]);
+    }
+    out
+}
+
 /// Parse `uniq`'s argv the way NetBSD `getopt(argc, argv, "-cdf:s:u")` does
 /// (`uniq.c`): the three mode flags `-c`/`-d`/`-u` are independent bits (C keeps
 /// `cflag`/`dflag`/`uflag` and composes them in `show()`, so `-c -d` and even
@@ -115,15 +154,18 @@ fn usage() -> ! {
 /// and everything else is an operand. Returns `(flags, fields, chars, operands)`;
 /// `Err` on a bad or unknown option (the caller prints usage).
 fn parse_uniq_args(argv: &[String]) -> Result<(UniqFlags, usize, usize, Vec<String>), ()> {
+    // C runs `obsolete(argv)` before `getopt`, so the folding happens first here
+    // too and every later step sees the rewritten words.
+    let scanned = obsolete_args(argv);
     let mut flags = UniqFlags::default();
     let mut fields = 0usize;
     let mut chars = 0usize;
     let mut operands: Vec<String> = Vec::new();
     let mut i = 1usize;
-    while i < argv.len() {
-        let tok = argv[i].as_str();
+    while i < scanned.len() {
+        let tok = scanned[i].as_str();
         if tok == "--" {
-            operands.extend(argv[i + 1..].iter().cloned());
+            operands.extend(scanned[i + 1..].iter().cloned());
             return Ok((flags, fields, chars, operands));
         }
         if tok.len() <= 1 || !tok.starts_with('-') {
@@ -152,7 +194,7 @@ fn parse_uniq_args(argv: &[String]) -> Result<(UniqFlags, usize, usize, Vec<Stri
                         v
                     } else {
                         i += 1;
-                        argv.get(i).cloned().unwrap_or_default()
+                        scanned.get(i).cloned().unwrap_or_default()
                     };
                     let n: usize = value.parse().map_err(|_| ())?;
                     if is_field {
@@ -226,6 +268,37 @@ mod tests {
         assert!(parse_uniq_args(&argv(&["-f", "x"])).is_err()); // non-numeric
         assert!(parse_uniq_args(&argv(&["-f", "-1"])).is_err()); // negative
         assert!(parse_uniq_args(&argv(&["-i"])).is_err()); // not a NetBSD uniq flag
+    }
+
+    #[test]
+    fn parse_obsolete_skip_forms() {
+        // C `obsolete()` folds `-<digit>…` into `-f<digit>…` and `+<digit>…` into
+        // `-s<digit>…` before `getopt` ever sees them.
+        let (flags, f, c, ops) = parse_uniq_args(&argv(&["-2"])).unwrap();
+        assert!(!flags.count);
+        assert_eq!((f, c, ops), (2, 0, Vec::new()));
+        let (_m, f, c, ops) = parse_uniq_args(&argv(&["-3", "in"])).unwrap();
+        assert_eq!((f, c), (3, 0));
+        assert_eq!(ops, strs(&["in"]));
+        let (_m, f, c, _ops) = parse_uniq_args(&argv(&["+4"])).unwrap();
+        assert_eq!((f, c), (0, 4));
+        // The walk continues past option letters, so a mode flag in front does
+        // not stop the fold.
+        let (flags, f, _c, _ops) = parse_uniq_args(&argv(&["-c", "-2"])).unwrap();
+        assert!(flags.count);
+        assert_eq!(f, 2);
+    }
+
+    #[test]
+    fn parse_obsolete_walk_stops_at_a_plain_word() {
+        // C's pre-pass `return`s at the first token that is not `-`/`+` prefixed,
+        // and a value word counts as one: in `-f 2 -3` the `2` ends the walk, so
+        // `-3` is never folded into `-f3` and the option scanner rejects the
+        // unknown letter `3`.
+        assert!(parse_uniq_args(&argv(&["-f", "2", "-3"])).is_err());
+        // Without the stop, the same three words would have folded `-3`.
+        let (_m, f, _c, _ops) = parse_uniq_args(&argv(&["-f", "2"])).unwrap();
+        assert_eq!(f, 2);
     }
 
     #[test]
