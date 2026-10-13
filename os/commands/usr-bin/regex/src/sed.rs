@@ -246,6 +246,78 @@ fn char_len_at(bytes: &[u8], pos: usize) -> usize {
     }
 }
 
+/// Cap on commands one script may fill — the crate stays heap-free (fixed
+/// arrays, no `alloc`), mirroring the engine's other size limits.
+pub const MAX_SCRIPT_COMMANDS: usize = 16;
+
+/// One command in a `;`/newline-separated sed script (C `compile.c` reads
+/// commands one at a time; separators `:165`/`:205`). The no-address common
+/// verbs are modelled; an address prefix or any other verb yields
+/// `ScriptError::NotModelled` so callers fail loudly rather than silently
+/// misbehave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command<'a> {
+    /// `s<delim>re<delim>rep<delim>flags`.
+    Subst(Subst<'a>),
+    /// `d` — pattern space deleted, no auto-print this cycle.
+    Delete,
+    /// `p` — print the current pattern space.
+    Print,
+    /// `=` — print the current line number on its own line.
+    PrintLineNum,
+}
+
+/// Errors while splitting a script into commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptError {
+    /// An address prefix (`/re/`, a line number, `$`), a verb beyond
+    /// `s`/`d`/`p`/`=`, trailing bytes, or more than `MAX_SCRIPT_COMMANDS`
+    /// commands — not modelled by this build.
+    NotModelled,
+    /// A malformed `s` command (bad delimiters/escapes).
+    BadSubst,
+}
+
+/// Split a sed script on `;` and newlines into [`Command`]s written into the
+/// caller's `out` slice (heap-free, like the rest of the crate), returning the
+/// count. Leading blanks are trimmed; empty segments (a trailing/doubled
+/// separator) are skipped as C's line-oriented read yields no command for them.
+/// Purely the no-address subset: `s…`, `d`, `p`, `=`.
+pub fn parse_script<'a>(script: &'a str, out: &mut [Command<'a>]) -> Result<usize, ScriptError> {
+    let mut count = 0usize;
+    for segment in script.split([';', '\n']) {
+        let seg = segment.trim_start();
+        if seg.is_empty() {
+            continue;
+        }
+        let command = match seg.as_bytes()[0] {
+            b's' => {
+                let (subst, consumed) =
+                    parse_subst(&seg[1..]).map_err(|_| ScriptError::BadSubst)?;
+                if consumed != seg.len() - 1 {
+                    return Err(ScriptError::NotModelled);
+                }
+                Command::Subst(subst)
+            }
+            b'd' | b'p' | b'=' => {
+                if seg.len() != 1 {
+                    return Err(ScriptError::NotModelled);
+                }
+                match seg.as_bytes()[0] {
+                    b'd' => Command::Delete,
+                    b'p' => Command::Print,
+                    _ => Command::PrintLineNum,
+                }
+            }
+            // `/re/`, a digit, `$` → address; any other verb → unmodelled.
+            _ => return Err(ScriptError::NotModelled),
+        };
+        *out.get_mut(count).ok_or(ScriptError::NotModelled)? = command;
+        count += 1;
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,10 +332,7 @@ mod tests {
         let (subst, _) = parse_subst(command).unwrap();
         let mut out = [0u8; 512];
         let (len, replaced) = apply(&pattern, &subst, line, &mut out);
-        (
-            String::from_utf8_lossy(&out[..len]).into_owned(),
-            replaced,
-        )
+        (String::from_utf8_lossy(&out[..len]).into_owned(), replaced)
     }
 
     #[test]
@@ -338,5 +407,37 @@ mod tests {
     fn test_empty_match_walk_terminates() {
         let (text, _) = run("x*", false, "/x*/-/g", "ab");
         assert_eq!(text, "-a-b-");
+    }
+
+    #[test]
+    fn test_parse_script_chains_and_skips_empty() {
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        assert_eq!(parse_script("s/a/b/", &mut cmds).unwrap(), 1);
+        assert!(matches!(cmds[0], Command::Subst(_)));
+        assert_eq!(parse_script("s/a/b/g;d;p;=", &mut cmds).unwrap(), 4);
+        assert!(matches!(cmds[1], Command::Delete));
+        assert!(matches!(cmds[2], Command::Print));
+        assert!(matches!(cmds[3], Command::PrintLineNum));
+        // 行分隔与尾随分隔：空段跳过。
+        assert_eq!(parse_script("p;\n", &mut cmds).unwrap(), 1);
+        // 前导空白不算地址（trim_start 后再判）。
+        assert_eq!(parse_script("  d", &mut cmds).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_parse_script_rejects_addresses_and_junk() {
+        let mut cmds = [Command::Delete; MAX_SCRIPT_COMMANDS];
+        assert_eq!(parse_script("1d", &mut cmds), Err(ScriptError::NotModelled));
+        assert_eq!(
+            parse_script("/a/d", &mut cmds),
+            Err(ScriptError::NotModelled)
+        );
+        assert_eq!(parse_script("$d", &mut cmds), Err(ScriptError::NotModelled));
+        assert_eq!(parse_script("q", &mut cmds), Err(ScriptError::NotModelled));
+        assert_eq!(parse_script("dx", &mut cmds), Err(ScriptError::NotModelled));
+        assert_eq!(
+            parse_script("s/a/b/x", &mut cmds),
+            Err(ScriptError::BadSubst)
+        );
     }
 }

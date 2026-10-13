@@ -250,6 +250,20 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十六 sed 多命令支持·第1片（决定半 `parse_script`，非破坏式）**
+  （`2026-10-13`，`claim/SED-CMD2-qoder` @ 基线 `e046b1e89`，单域三线 commands/regex，无跨界）：
+  sed 现只建模单 `s`，`;` 链与其他动词显式拒——最大功能缺口之一。本片按「大功能拆多轮」先落**决定半**：
+  新增 `Command` 枚举（Subst/Delete/Print/PrintLineNum）、`ScriptError`、`MAX_SCRIPT_COMMANDS=16`、
+  `parse_script(script, out)->Result<usize>`：按 `;`/换行切段（对位 compile.c:165/205）、trim_start、
+  空段跳过、无地址子集（s…/d/p/=），地址前缀（/re/、行号、$）与其它动词返回 NotModelled（响亮拒非静默）。
+  因 minix-regex 刻意 heap-free（lib.rs 无 `extern crate alloc`），采 out-slice 风格而非返 Vec。
+  纯新增、**不改 bin/sed_lines**（现有单 `s` 行为逐字不变，bin sed 7 测全绿为回归护栏）。新增 2 测
+  （链式/空段跳过/trim + 地址与 junk 拒绝）。**第2片（待下轮）**：改 `sed_lines` 遍历 Command 环（d 抑自动印、
+  = 移行号、p 打印、链式共享 pattern space）接上本解析器。
+  三件套：`cargo test -p minix-regex --lib` → **39/0**（新 2）；`--bin sed` → 7/0（回归护栏）；
+  clippy 触及文件零新增告警（bin/sed.rs “items after a test module” 基线存量）；`rustfmt` src/sed.rs 零漂移（含顺带归一该文件 1 处存量版差）；
+  核实日 `2026-10-13`；基线 `e046b1e89`。真机腿：sed 文件操作数归 C-57/E5。本片决定半已测、bin 接线待第2片（未静默半接）。
+
 - ✅ **批次一百九十五校正 `head -c` 的旧“报未接”标注（文档-代码同步）**
   （`2026-10-13`，`claim/HEAD-DOC-qoder` @ 基线 `e797e3bfc`，文档仅改、无代码）：
   核两半未接 vein 时发现 07-text-filter.md head 行标 `-c` 字节模式“报未接”，但 head 实已接：
