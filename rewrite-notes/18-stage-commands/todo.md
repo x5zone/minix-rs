@@ -250,7 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
-- ✅ **批次二百零五打通命令面的宿主读腿（`uniq` 先行），并给它加上一套跑真进程的端到端金样门**
+- ✅ **批次二百零六把 `tail` 的操作数读腿接到宿主口子，并补上跑真进程的 `tail_face` 金样门（10 枚）**
+  （`2026-10-13`，`claim/TAIL-HOST-FACE-qoder` @ 基线 `a9f889a9f`，单域三线 commands/textfilter，无跨界）：
+  按批次二百零五末尾的形状跟进。改前证据：`grep -n "minix_sys::" os/commands/usr-bin/textfilter/src/bin/tail.rs`
+  命中 `open`/`read`/`close` 三件与一个自带的 `read_fd`，`support::STDIN` 直接作为 descriptor 使；
+  因此虽有金样测试的形状可用，跑 `target/debug/tail` 仍只会得空输出。现在操作数走 `support::read_file`
+  （宿主 `std::fs`、目标同一套 open/read/close 梯子），`tail_stream` 改为直接收字节片，自带的 `read_fd`
+  与 `minix_sys` 导入一并删除（否则会留死码与未用导入）。
+  **顺带把顺序摆对**：C 的主环是先 `fopen`+`fstat`（失败就 `ierr(); continue;`）、再打横幅，所以打不开的那一个档
+  **不会留下横幅**；横幅打印因此排在读成功之后（一枚金样用例专钉这一层）。
+  **新增 `tests/tail_face.rs`（10 枚）**：缺省十行、`-n`/obsolete `-N`、`-c`/`-b` 尾窗、`-n +N`/`-c +N`/`-b +N`
+  以一为基（`+1` 输出整档）、零计数不输出且退 0、`-r` 三形、多操数横幅与档间空行、打不开的操数只 warn 不横幅且
+  退 1、集外字母与 `-f` 与非法偏移各报自己的文案；另有一枚差分腿在 NetBSD 与 GNU 重合的四形（缺省/`-n 3`/
+  `-n +9`/`-c 4`）上与本机 `tail` 逐字对比（不比 `-r`、`-b` 与无尾换行的行形：后两者 GNU 没有或行为不同，
+  而本壳的行形会给末行补换行，属已声明的归一）。
+  **金样跑出来的两处认知修正（错在金样期望，实现与 C 一致）**：一是 `tail -r -c 3` 作用于四字节 `abc\n`：
+  `reverse.c` 的 `r_reg` 先 `p = start + size - 1` 再把 `size` 夹到 `off`，循环只回走两个字节，收尾
+  `if (llen) WR(p, llen)` 写的是 `bc\n`——窗口外的 `a` 不出现；二是 `tail -r -n +3`：`+3` 经 `tail.c:146-149`
+  折成 `RLINES off = 2`，所以输出的是两行反序而不是一行。两者已按 C 逐行追溯写进用例注释。
+  **金样又拓出一处声明性差异（只钉住不顺手修）**：行窗封顶三十二，`tail -n 40` 在 C 里照报后四十行，本壳退 1；
+  而且该拒绝**无任何文案**（`run` 里 `over_ring_cap()` 直接 `terminate(1)`）。两者一起登记为⑨（去封顶需改
+  `window.rs` 的固定 `[&str; 32]` 设计，并与 `head` 的同族封顶一并考虑，属独立一轮）；金样里钉了一枚
+  `line_window_cap_rejects_the_count_without_a_diagnostic` 专看这一层，去封顶那一轮改它时要连注释一起重读。
+  三件套：`cargo test -p minix-textfilter --test tail_face` → **10 passed / 0 failed**；`--bin tail` → **14 / 0**；
+  `--lib` → **409 / 0**；全包其余测试目标全绿。三枚变异负控：横幅改到开档之前 → 操数告测评 FAILED（第一次跑时
+  补丁静默未命中，补上「变异必须真的改变源码」的断言后才注入成功——变异负控本身也要验其有效）；去掉 `selects_nothing` 早退 → 零计数测 FAILED；
+  `over_ring_cap` 去掉 `off != 0` → 零计数测同样 FAILED；均按备份复原后复测 10/0。
+  整包三架构裸机构建（所有 bin）→ 三台 0 error；clippy 触及文件零告警（中途 `tail_stream` 改收字节片后留下的
+  七枚 `needless_borrow` 已按建议去掉 `&` 消除）；`rustfmt --edition 2024 --check` 触及两文件零漂移；容器门读数见本笔提交信息；
+  核实日 `2026-10-13`；基线 `a9f889a9f`。
+  **仍开登记**：④ `-f`/`-F` 跟踪；⑥ obsolete 后缀单位字母已接（批次二百零二），但 `-3f` 这类带跟踪的写法仍撞④；
+  ⑨ 行窗封顶与它的静默拒绝；尾行无换行时行形补换行（与 head 同族的已接受简化）。
+
+- ✅ **批次二百零五打通命令面宿主读腿（`uniq` 先行），并给它加上一套跑真进程的端到端金样门**
   （`2026-10-13`，`claim/CMD-HOST-READ-qoder` @ 基线 `2d13d207a`，单域三线 commands/textfilter；`bin_support.rs`
   是全 crate 四十来个 bin 共用的入口层，改动跑的是整包构建）：
   接回批次二百零二④与批次二百零四末尾点出的验证能力缺口。改前证据：`bin_support.rs` 的 `read_stdin`
