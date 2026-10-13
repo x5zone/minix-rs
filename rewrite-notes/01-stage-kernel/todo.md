@@ -38,6 +38,7 @@
 | 2026-09-07~08 §22 Phase 1/2 | 12 项 | V12-A1 trap_style（含 MINIX3 BUG 修复）、V12-B1 panic 审计、V12-A2/A3/A4、V12-B2（IoBatchBuf 对齐 UB 修复）、V12-B3（Message 72B 实测）、V12-B4、A1（assume_held + 24 处迁移）、A2（globals.rs）、B1（transfer API）、B-X 第一批、S-2b/S-3a/S-3b/S-3c |
 | 2026-09-09 D1/D2 + Phase 7 | 4 项 | D1/D2（Errno newtype + ToErrno，架构建议清零）、I-14（B 层完成）、I-3（核实闭合） |
 | 2026-10-12 01 篇 CH1-CH2 人审 | 3 项登记 | I-17（§2.6 拆节）/I-18（章头与巨节体检）/I-19（讲解条续扫）；同轮正文修正另见台账 `prompt/WORKFLOW-OPEN-ITEMS.md` 第四节第三轮 |
+| 2026-10-13 01 篇 §2.3–§3.2 人审续 | 1 项登记 + 读数刷新 | I-20（boot-shim 再导出注释与调用点不符）；I-17/I-18 体量读数现算刷新（提交 `8dc20636b`）；同轮正文修正见提交 `2eac4586e` |
 | `2026-10-13` SD-20/SD-42 落地（代码侧） | 文档同步 2 篇 | 装载器尾的指令缓存同步契约（`[ARCH: cache-sync]`）与 aarch64 设备内存属性（`[ARCH: mmio-device]`）已进代码并带形状钉；文档半待补：`06-proc-init-boot-proc.md` §2.7（`arch_boot_proc` 与 VM ELF 装载）需补「装载器尾部做指令缓存同步」一段与标注，`04-platform-discovery.md` 的 MMIO 高半窗口/§1.114 段需补「设备窗口按 2 MiB 分片映射为 Device、恒等与高点两别名同属性」一段与标注（三处一致纪律的文档半；代码半见 `coordination/TODO-LEDGER-OPEN.md` §1 同日行） |
 | 📌 保持 DEFERRED（依赖仍成立） | — | **I-1**（kernel ELF 构建无引导路径）、**I-5**（ACPI RSDP 无消费方）、**T-10**（U-Boot 工具链，`PD-15` 已裁放弃）、**profiling deferred 体**（等 S-8/S-9）；Edge 表旧 12 项中 SMP 块的 `D-36`/`D-37`/`D-38①`/`D-39` 四条已于 S-4/S-5/S-7 收官时闭合（§23/§24 在案，`2026-10-09` 按代码回勾本行与 §7.1/§10——真正仍开的 SMP 残项是**次级核承载进程**，那是另一件事，不能用"多核未做"盖住四条已完成的账） |
 
@@ -187,6 +188,7 @@ I-11（BIOS legacy 范围声明非缺口）、I-12（RAII 拒绝维持，B1 承�
 
 | # | 项 | 状态与解除条件 |
 |---|-----|------|
+| I-20 | `os/boot-shim/src/lib.rs` 的再导出注释与实际调用点不符 | ⏳ open（2026-10-13 01 篇 §3.2 人审发现）：注释写"allows callers to write `boot_shim::prepare_boot(...)` without knowing which firmware is active"，但它再导出的是**类型**（`pub use uefi_helpers::{find_platform_sources, UefiBootShim}`），实况是调用方仍写具体类型（`os/boot-shim/src/main.rs` 的 `UefiBootShim::prepare_boot(1024)`）。修法二选一：改注释按实况（"再导出活动实现的类型"），或真加一层 `pub fn prepare_boot(...)` 转发让注释成立。重跑：`grep -n "cfg(feature\|pub use" os/boot-shim/src/lib.rs` 与 `grep -n "prepare_boot(" os/boot-shim/src/main.rs` |
 | I-17 | 01 篇 §2.6 拆节（`alloc_lowest` 缺陷分析、静态页表池两段独立成 §2.6.3） | ⏳ open（2026-10-12 01 篇人审轮登记）：纯移动不删内容；触发窗口＝下轮 structure 复核或审到 §2.6。现量（2026-10-13 现算）：§2.6 347 行占本章 31%（重跑：`awk '/^### 2\.6 /,/^### 2\.7 /' rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md \| wc -l`；同法得 §2 总行 1125） |
 | I-18 | 01 篇 §1、§3–§6 的章头与巨节结构体检 | ⏳ open（同上轮登记）：查两件事——章头是否同样零导语、是否有 ≥300 行的单节。§2 的基线（2026-10-13 现算）：补导语前章头仅 2 行＝无导语；补后全章 1125 行，最大三节占 70%（2.6 计 347 行、2.4 计 286 行、2.3 计 158 行）；已按建议补章级导语与 2.4/2.6 的"本节结算"句，其余章未动 |
 | I-19 | §3–§6 讲解条目续扫"只报事实不报道理" | ⏳ open（同上轮登记）：判据＝事实陈述后必须回答"为何必须这样、不这样会怎样"，纯细节堆叠（构建改名、符号别名、常量罗列）改为一句话指向 owning 节＋补回道理。§2 已扫 40 条、修 4 条（§2.5/§2.6 三条＋§2.8 拟人句）；§3–§6 约 90 条待过 |
