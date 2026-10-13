@@ -35,8 +35,10 @@
 //!   and `number: factor ...` line rendering.
 //! - [`primes`]: prime sieving over an interval.
 //! - [`caesar`]: rotation table building, rotation parsing, line rotation.
-//! - [`morse`]: code table lookup over the [`morse::MorseTable`] trait (a
-//!   static table plus an empty table so tests run without data files).
+//! - [`morse`]: the C code tables and both directions — `code_for_byte` and
+//!   `show_line` encode, `decode_code` and `decode_stream` decode — with the
+//!   letter and digit layer behind the [`morse::MorseTable`] trait (the static
+//!   international table, so tests run without data files).
 //! - [`words`]: pig latin word conversion and small number to English words.
 //! - [`banner`]: display width scaling over the [`banner::GlyphSource`]
 //!   trait (a block renderer plus an empty source).
