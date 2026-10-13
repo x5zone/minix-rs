@@ -113,11 +113,33 @@ pub struct PrArgs<'a> {
 /// renders it), so the messages and exit codes match the old in-bin parser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrError {
-    /// `getopt` `?`/default → usage; a malformed/absent option value; `+N`/`-N`
-    /// with a bad or zero number; `-l` not `> 10`.
+    /// `getopt` `?`/default, or a required option value that is missing: C's
+    /// three-line `usage()` (`pr.c:1616-1627`) and exit 1.
     Usage,
+    /// `+page` whose `atoi` is `< 1` (`pr.c:1658-1662`).
+    PlusPage,
+    /// the obsolete `-columns` form whose `atoi` is `< 1` (`pr.c:1665-1667`).
+    ColumnCount,
+    /// `-l` whose value does not start with a digit, or whose `atoi` is `< 1`
+    /// (`pr.c:1733-1739`). Note `1` is legal: a short page length turns the
+    /// header off (`pr.c:1875`) rather than being refused.
+    NumberLines,
+    /// `-o` whose value does not start with a digit, or whose `atoi` is `< 1`
+    /// (`pr.c:1765-1769`).
+    OffsetValue,
+    /// `-w` with the same rule (`pr.c:1798-1803`).
+    WidthValue,
+    /// `-n`'s width, when a digit run is present but does not reach 1
+    /// (`pr.c:1752-1756`).
+    NumberWidth,
+    /// leftover text an optional-value letter could not use: C names the letter
+    /// and echoes what is left (`pr.c:1726-1729`, `1757-1760`, `1785-1788`).
+    InvalidValue(char, String),
     /// `-a` given but `columns <= 1` (`pr.c:1823-1828`).
     AcrossNeedsColumns,
+    /// `-m` combined with `-a`, which C refuses before looking at any file
+    /// (`pr.c:1829-1832`).
+    MergeAcross,
     /// the computed column width is `< 1` for the requested columns
     /// (`pr.c:1863-1867`); carries the column count for the message.
     ColumnTooSmall(usize),
@@ -138,6 +160,50 @@ pub enum PrError {
 /// (`-N`) and start page (`+N`) keep their C forms; `-n`/`-s` keep their
 /// optional glued value. Unmodelled letters (e/f/F/i/p/r/T) and any other
 /// `-…` form are rejected, matching the old behaviour (never a silent operand).
+/// C's `atoi` as `setup` uses it for every numeric option: skip leading space, take
+/// one sign, read digits until the first byte that is not one, and ignore the rest.
+/// Saturation stands in for C's undefined overflow.
+fn c_atoi(word: &str) -> i64 {
+    let bytes = word.as_bytes();
+    let mut cursor = 0usize;
+    while bytes.get(cursor).is_some_and(|b| b.is_ascii_whitespace()) {
+        cursor += 1;
+    }
+    let negative = match bytes.get(cursor) {
+        Some(b'-') => {
+            cursor += 1;
+            true
+        }
+        Some(b'+') => {
+            cursor += 1;
+            false
+        }
+        _ => false,
+    };
+    let mut value: i64 = 0;
+    while let Some(digit @ b'0'..=b'9') = bytes.get(cursor).copied() {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(i64::from(digit - b'0'));
+        cursor += 1;
+    }
+    if negative { -value } else { value }
+}
+
+/// The `pr.c:1733-1739` shape shared by `-l`, `-o` and `-w`: the value must begin
+/// with a digit — `+8` and `" 8"` are refused even though `atoi` would read them —
+/// and the number it starts must reach 1.
+fn c_counted(word: &str, error: PrError) -> Result<usize, PrError> {
+    if !word.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        return Err(error);
+    }
+    let n = c_atoi(word);
+    if n < 1 {
+        return Err(error);
+    }
+    Ok(n as usize)
+}
+
 pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
     let mut options = PrOptions::default();
     let mut title_override: Option<&'a str> = None;
@@ -169,11 +235,12 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
             break;
         }
         if let Some(rest) = arg.strip_prefix('+') {
-            let n: usize = rest.parse().map_err(|_| PrError::Usage)?;
-            if n < 1 {
-                return Err(PrError::Usage);
+            // C checks only `atoi(eoptarg) < 1` here, so a word with no digits is
+            // zero and is refused the same way `+0` is.
+            if c_atoi(rest) < 1 {
+                return Err(PrError::PlusPage);
             }
-            options.start_page = n;
+            options.start_page = c_atoi(rest) as usize;
             index += 1;
             continue;
         }
@@ -185,11 +252,11 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
         }
         // obsolete leading-digit vertical column count `-N` (`pr.c:1665-1668`).
         if arg[1..].bytes().all(|b| b.is_ascii_digit()) {
-            let n: usize = arg[1..].parse().map_err(|_| PrError::Usage)?;
+            let n = c_atoi(&arg[1..]);
             if n < 1 {
-                return Err(PrError::Usage);
+                return Err(PrError::ColumnCount);
             }
-            options.columns = n;
+            options.columns = n as usize;
             index += 1;
             continue;
         }
@@ -209,68 +276,74 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
                 }
                 b'l' => {
                     let v = value!(&arg[pos + 1..], index);
-                    let n: usize = v.parse().map_err(|_| PrError::Usage)?;
-                    if n <= 10 {
-                        return Err(PrError::Usage);
-                    }
-                    options.page_len = n;
+                    options.page_len = c_counted(v, PrError::NumberLines)?;
                     break;
                 }
                 b'w' => {
                     let v = value!(&arg[pos + 1..], index);
-                    let n: usize = v.parse().map_err(|_| PrError::Usage)?;
-                    if n < 1 {
-                        return Err(PrError::Usage);
-                    }
-                    options.page_width = n;
+                    options.page_width = c_counted(v, PrError::WidthValue)?;
                     wflag = true;
                     break;
                 }
                 b'o' => {
                     let v = value!(&arg[pos + 1..], index);
-                    let n: usize = v.parse().map_err(|_| PrError::Usage)?;
-                    if n < 1 {
-                        return Err(PrError::Usage);
-                    }
-                    options.offset = n;
+                    options.offset = c_counted(v, PrError::OffsetValue)?;
                     break;
                 }
                 b's' => {
+                    // `-s` takes an optional *glued* character; anything left after
+                    // it is C's "invalid value for -s" (`pr.c:1779-1789`).
                     let rest = &arg[pos + 1..];
                     options.sep = Some(if rest.is_empty() {
                         b'\t'
                     } else {
                         rest.as_bytes()[0]
                     });
+                    if rest.len() > 1 {
+                        return Err(PrError::InvalidValue('s', String::from(&rest[1..])));
+                    }
                     sflag = true;
                     break;
                 }
                 b'n' => {
                     // `-n[ch][width]`: BSD optional glued value (`pr.c:1744-1762`).
+                    // The separator may be any non-digit, and only then may a digit
+                    // run follow it; the run is read by `atoi`, so trailing text does
+                    // not reach the "invalid value" arm — C never advances `eoptarg`
+                    // past the digits it parsed.
                     let rest = &arg[pos + 1..];
                     let (mut width, mut nsep) = (5usize, b'\t');
                     if !rest.is_empty() {
                         let rb = rest.as_bytes();
-                        if rb[0].is_ascii_digit() {
-                            width = rest.parse().map_err(|_| PrError::Usage)?;
-                            if width < 1 {
-                                return Err(PrError::Usage);
-                            }
+                        let digits = if rb[0].is_ascii_digit() {
+                            rest
                         } else {
                             nsep = rb[0];
-                            if rest.len() > 1 {
-                                width = rest[1..].parse().map_err(|_| PrError::Usage)?;
-                                if width < 1 {
-                                    return Err(PrError::Usage);
-                                }
+                            &rest[1..]
+                        };
+                        if digits.is_empty() {
+                            // only a separator: the width stays at NMWD
+                        } else if !digits.as_bytes()[0].is_ascii_digit() {
+                            return Err(PrError::InvalidValue('n', String::from(digits)));
+                        } else {
+                            let n = c_atoi(digits);
+                            if n < 1 {
+                                return Err(PrError::NumberWidth);
                             }
+                            width = n as usize;
                         }
                     }
                     options.number_width = width;
                     options.number_char = nsep;
                     break;
                 }
-                _ => return Err(PrError::Unmodelled),
+                // Letters C's optstring carries but this deciding half does not
+                // implement are named separately from letters `egetopt` itself would
+                // answer `?` for (`pr.c:1655`, `1805-1809`).
+                b'e' | b'i' | b'F' | b'f' | b'p' | b'r' | b'T' => {
+                    return Err(PrError::Unmodelled);
+                }
+                _ => return Err(PrError::Usage),
             }
             pos += 1;
         }
@@ -280,12 +353,22 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
     if !wflag && sflag {
         options.page_width = 512;
     }
+    // `pr.c:1875-1876`: a page too short to carry a five-line header *and* a
+    // five-line trailer does not fail, it loses the header — and because the
+    // header is what the ten lines were reserved for, the full `lines` then holds
+    // body text. `paginate` reads this flag to decide whether to subtract.
+    if options.page_len <= HEADLEN + TAILLEN {
+        options.no_header = true;
+    }
     if options.columns > 1 && column_width(options.page_width, options.columns).is_none() {
         return Err(PrError::ColumnTooSmall(options.columns));
     }
     if across {
         if options.columns <= 1 {
             return Err(PrError::AcrossNeedsColumns);
+        }
+        if merge {
+            return Err(PrError::MergeAcross);
         }
         options.across = true;
     }
@@ -346,17 +429,16 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
     if options.columns > 1 {
         return paginate_columns(lines, options);
     }
-    if options.no_header {
-        return lines
-            .chunks(lines.len().max(1))
-            .map(|body| Page {
-                header_lines: Vec::new(),
-                body_lines: body.to_vec(),
-                trailer_lines: Vec::new(),
-            })
-            .collect();
-    }
-    let body_capacity = options.page_len.saturating_sub(HEADLEN + TAILLEN).max(1);
+    // `setup` subtracts the ten header/trailer lines only when they will actually
+    // be printed (`pr.c:1875-1878`): with `-t` the whole page length is body. The
+    // page count still applies — C's `onecol` runs `while (linecnt < lines)` per
+    // page and only pads when headers are on (`prtail`'s `nohead` arm returns
+    // without padding, `pr.c:1526-1538`).
+    let body_capacity = if options.no_header {
+        options.page_len.max(1)
+    } else {
+        options.page_len.saturating_sub(HEADLEN + TAILLEN).max(1)
+    };
     // Double-spacing halves the content lines per page (`setup` `lines /= 2`);
     // each is then emitted with a following blank, so the body still fills
     // `body_capacity` rows and an odd base leaves the `addone` row to the pad.
@@ -366,6 +448,12 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
     } else {
         body_capacity
     };
+    // C reads the first line before it prints anything, so an input with no lines
+    // produces no page at all — header included (`pr.c:252-262`, `:294`). The loop
+    // below is do-while shaped, so this guard has to be here.
+    if lines.is_empty() {
+        return Vec::new();
+    }
     let mut pages = Vec::new();
     let start_page = options.start_page.max(1);
     let skip = (start_page - 1) * content_per_page;
@@ -403,22 +491,30 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
             }
             body = spaced;
         }
-        while body.len() < body_capacity {
-            body.push(String::new());
+        if !options.no_header {
+            while body.len() < body_capacity {
+                body.push(String::new());
+            }
         }
-        let header_lines = vec![
-            String::new(),
-            String::new(),
-            alloc::format!(
-                "{}{} Page {}",
-                options.time_prefix,
-                options.header,
-                page_number
-            ),
-            String::new(),
-            String::new(),
-        ];
-        let trailer_lines = vec![String::new(); TAILLEN];
+        let (header_lines, trailer_lines) = if options.no_header {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                vec![
+                    String::new(),
+                    String::new(),
+                    alloc::format!(
+                        "{}{} Page {}",
+                        options.time_prefix,
+                        options.header,
+                        page_number
+                    ),
+                    String::new(),
+                    String::new(),
+                ],
+                vec![String::new(); TAILLEN],
+            )
+        };
         pages.push(Page {
             header_lines,
             body_lines: body,
@@ -430,21 +526,9 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
             break;
         }
     }
-    if pages.is_empty() {
-        // An empty input still prints one page, header and all (the C
-        // emits the first page header before reading).
-        pages.push(Page {
-            header_lines: vec![
-                String::new(),
-                String::new(),
-                alloc::format!("{}{} Page 1", options.time_prefix, options.header),
-                String::new(),
-                String::new(),
-            ],
-            body_lines: vec![String::new(); body_capacity],
-            trailer_lines: vec![String::new(); TAILLEN],
-        });
-    }
+    // No fallback page: C prints the header only from inside the line loop, after a
+    // first line exists (`pr.c:255-262`), and `prtail` is guarded by
+    // `if (linecnt && ...)` (`:294`), so an empty input yields no output at all.
     pages
 }
 
@@ -467,9 +551,20 @@ fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
         options.page_len.saturating_sub(HEADLEN + TAILLEN).max(1)
     };
     let block = rows * options.columns;
+    if lines.is_empty() {
+        return Vec::new();
+    }
     let mut pages = Vec::new();
-    let mut page_number = 1usize;
-    let mut cursor = 0usize;
+    // `vertcol` skips whole column-pages before its loop, so a start page consumes
+    // `lines * columns` input lines and the printed page carries that number
+    // (`pr.c:376-381`, `inskip`).
+    let start_page = options.start_page.max(1);
+    let skip = (start_page - 1) * block;
+    if skip >= lines.len() {
+        return Vec::new();
+    }
+    let mut page_number = start_page;
+    let mut cursor = skip;
     loop {
         let end = (cursor + block).min(lines.len());
         let page_lines = &lines[cursor..end];
@@ -518,21 +613,8 @@ fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
             break;
         }
     }
-    if pages.is_empty() && !options.no_header {
-        // An empty input still prints one headered page (the C emits the first
-        // page header before reading); `-t` of nothing stays nothing.
-        pages.push(Page {
-            header_lines: vec![
-                String::new(),
-                String::new(),
-                alloc::format!("{}{} Page 1", options.time_prefix, options.header),
-                String::new(),
-                String::new(),
-            ],
-            body_lines: vec![String::new(); rows],
-            trailer_lines: vec![String::new(); TAILLEN],
-        });
-    }
+    // Same rule as the single-column path: `vertcol` prints its header from inside
+    // the line loop after a first line exists, so empty input produces no output.
     pages
 }
 
@@ -948,6 +1030,106 @@ mod tests {
     }
 
     #[test]
+    fn empty_input_prints_nothing_at_all() {
+        // C prints the header from inside the line loop, only after `inln` has
+        // handed over a first line (`pr.c:252-262`), and guards the trailer with
+        // `if (linecnt && ...)` (`:294`) — so an empty file contributes no page,
+        // with or without `-t`, single column or multiple.
+        let options = PrOptions::default();
+        assert!(paginate(&[], &options).is_empty());
+        let nohead = PrOptions {
+            no_header: true,
+            ..PrOptions::default()
+        };
+        assert!(paginate(&[], &nohead).is_empty());
+        let two = PrOptions {
+            columns: 2,
+            page_width: 40,
+            ..PrOptions::default()
+        };
+        assert!(paginate(&[], &two).is_empty());
+        // …and a mixed run of files still prints the non-empty one.
+        let files = [
+            ("empty.txt", Vec::new()),
+            ("two.txt", vec!["a".to_string(), "b".to_string()]),
+        ];
+        let pages = paginate_files(&files, &options, None);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            pages[0].body_lines[..2],
+            [String::from("a"), String::from("b")]
+        );
+    }
+
+    #[test]
+    fn headerless_pages_still_break_at_the_page_length() {
+        // With `-t` the ten header/trailer lines are not subtracted
+        // (`pr.c:1875-1878`), so `-l 4` gives pages of four body lines and the
+        // last short page is not padded (`prtail`'s nohead arm returns early).
+        let options = PrOptions {
+            page_len: 4,
+            no_header: true,
+            ..PrOptions::default()
+        };
+        let lines: Vec<String> = (1..=10).map(|n| n.to_string()).collect();
+        let pages = paginate(&lines, &options);
+        assert_eq!(pages.len(), 3);
+        assert_eq!(pages[0].body_lines, ["1", "2", "3", "4"]);
+        assert_eq!(
+            pages[2].body_lines,
+            ["9", "10"],
+            "a short last page is not padded"
+        );
+        assert!(pages.iter().all(|page| page.header_lines.is_empty()));
+        // `+page` counts these same four-line pages, and it is the observable proof
+        // that the headerless path really is page-split.
+        let from_two = PrOptions {
+            start_page: 2,
+            ..options.clone()
+        };
+        let pages = paginate(&lines, &from_two);
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].body_lines, ["5", "6", "7", "8"]);
+        // Beyond the last page C prints nothing.
+        let past_end = PrOptions {
+            start_page: 4,
+            ..options.clone()
+        };
+        assert!(paginate(&lines, &past_end).is_empty());
+    }
+
+    #[test]
+    fn column_pages_honour_the_start_page() {
+        // `vertcol` calls the same `inskip` before its loop, so a start page
+        // consumes whole `rows * columns` blocks (`pr.c:376-381`).
+        let options = PrOptions {
+            columns: 2,
+            page_width: 20,
+            page_len: 6, // with -t the whole six lines are body, per column
+            no_header: true,
+            ..PrOptions::default()
+        };
+        let lines: Vec<String> = (1..=24).map(|n| n.to_string()).collect();
+        // One page is `rows * columns` = 12 input lines, laid out down column 1 and
+        // then column 2, each cell padded to `colwd + 1` except the last column.
+        let first = paginate(&lines, &options);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].body_lines[0], "1         7");
+        let second_page = PrOptions {
+            start_page: 2,
+            ..options.clone()
+        };
+        let second = paginate(&lines, &second_page);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].body_lines[0], "13        19");
+        let past_end = PrOptions {
+            start_page: 3,
+            ..options.clone()
+        };
+        assert!(paginate(&lines, &past_end).is_empty());
+    }
+
+    #[test]
     fn test_column_width_matches_setup_formula() {
         // pgwd=72 default (PGWD): colwd=(72+1-clcnt)/clcnt, pgwd re-rounded.
         assert_eq!(column_width(72, 2), Some((35, 71)));
@@ -1041,7 +1223,7 @@ mod tests {
         assert_eq!(out[5], "   a"); // body, indented
         assert_eq!(out[6], "   b");
         assert_eq!(out[7], ""); // trailer, unindented
-                                // offset 0 reproduces the plain page order exactly.
+        // offset 0 reproduces the plain page order exactly.
         let plain = render_page(&pages[0], 0);
         assert_eq!(plain, pages[0].lines().cloned().collect::<Vec<_>>());
     }
@@ -1351,18 +1533,81 @@ mod tests {
 
     #[test]
     fn parse_error_paths() {
-        // 集外/未建模字母、缺值、非法宽、`-a` 无多列。
+        // 集外/未建模字母、缺值、C 为每个数值选项单写的判据消息、`-a` 与 `-m`
+        // 的组合拒绝。
         assert_eq!(parse_pr_args(&["-e", "f"]).err(), Some(PrError::Unmodelled));
-        assert_eq!(parse_pr_args(&["-w"]).err(), Some(PrError::Usage)); // 缺值
-        assert_eq!(parse_pr_args(&["-w0"]).err(), Some(PrError::Usage)); // <1
-        assert_eq!(parse_pr_args(&["-l5"]).err(), Some(PrError::Usage)); // 须 >10
+        assert_eq!(parse_pr_args(&["-w"]).err(), Some(PrError::Usage)); // 缺值 ⇒ getopt '?'
+        assert_eq!(parse_pr_args(&["-w0"]).err(), Some(PrError::WidthValue)); // atoi < 1
+        assert_eq!(parse_pr_args(&["-w", "x"]).err(), Some(PrError::WidthValue)); // 首位非数字
+        assert_eq!(parse_pr_args(&["-o0"]).err(), Some(PrError::OffsetValue));
+        assert_eq!(parse_pr_args(&["+0"]).err(), Some(PrError::PlusPage));
+        assert_eq!(parse_pr_args(&["-0"]).err(), Some(PrError::ColumnCount));
+        assert_eq!(parse_pr_args(&["-n0"]).err(), Some(PrError::NumberWidth));
+        assert_eq!(
+            parse_pr_args(&["-sab"]).err(),
+            Some(PrError::InvalidValue('s', String::from("b")))
+        );
+        assert_eq!(
+            parse_pr_args(&["-nxy"]).err(),
+            Some(PrError::InvalidValue('n', String::from("y")))
+        );
         assert_eq!(
             parse_pr_args(&["-a"]).err(),
             Some(PrError::AcrossNeedsColumns)
         );
         assert_eq!(
+            parse_pr_args(&["-m", "-a", "-2"]).err(),
+            Some(PrError::MergeAcross)
+        );
+        assert_eq!(
             parse_pr_args(&["-100"]).err(),
             Some(PrError::ColumnTooSmall(100))
         );
+    }
+
+    #[test]
+    fn short_page_length_turns_the_header_off_rather_than_failing() {
+        // `pr.c:1875-1876` only raises `nohead` when the page cannot carry both a
+        // five-line header and a five-line trailer, and `-l`'s lower bound is 1 —
+        // so `-l5` is a usable page of five body lines, not an error.
+        let args = parse_pr_args(&["-l5"]).expect("-l 5 is legal in C");
+        assert_eq!(args.options.page_len, 5);
+        assert!(
+            args.options.no_header,
+            "too short for a header ⇒ header off"
+        );
+        assert!(!parse_pr_args(&["-l11"]).expect("-l11").options.no_header);
+        // The value still has to *start* with a digit, which is why `+8` and a
+        // leading space are refused even though `atoi` reads both as 8.
+        assert_eq!(parse_pr_args(&["-l+8"]).err(), Some(PrError::NumberLines));
+        assert_eq!(
+            parse_pr_args(&["-l", " 8"]).err(),
+            Some(PrError::NumberLines)
+        );
+        assert_eq!(parse_pr_args(&["-l0"]).err(), Some(PrError::NumberLines));
+        // Everything else is `atoi`'s leniency: trailing junk ignored, leading
+        // zeroes read as the number they spell.
+        assert_eq!(parse_pr_args(&["-l8x"]).expect("-l8x").options.page_len, 8);
+        assert_eq!(parse_pr_args(&["-l08"]).expect("-l08").options.page_len, 8);
+    }
+
+    #[test]
+    fn optional_option_values_keep_the_c_digit_run_leniency() {
+        // `-n` reads its width with `atoi` and never advances past the digits it
+        // consumed, so `-nx5y` sets width 5 without tripping the invalid-value arm;
+        // only a non-digit where a number should be does (`pr.c:1744-1762`).
+        let glued = parse_pr_args(&["-nx5y"]).expect("-nx5y");
+        assert_eq!(glued.options.number_char, b'x');
+        assert_eq!(glued.options.number_width, 5);
+        // A separator alone leaves the width at NMWD (5).
+        let sep = parse_pr_args(&["-n:"]).expect("-n:");
+        assert_eq!(sep.options.number_char, b':');
+        assert_eq!(sep.options.number_width, 5);
+        // `-s` takes one character and no more (`pr.c:1779-1789`).
+        assert_eq!(
+            parse_pr_args(&["-s:"]).expect("-s:").options.sep,
+            Some(b':')
+        );
+        assert_eq!(parse_pr_args(&["-s"]).expect("-s").options.sep, Some(b'\t'));
     }
 }

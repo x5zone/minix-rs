@@ -31,7 +31,6 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::read;
 use minix_textfilter::pr::{
     PrError, column_width, merge_body_rows, paginate, paginate_files, parse_pr_args, render_page,
 };
@@ -58,12 +57,12 @@ fn run() -> ! {
     let mut files: Vec<(&str, Vec<String>)> = Vec::new();
     let mut had_error = false;
     if operands.is_empty() {
-        let input = read_stdin();
+        let input = support::read_stdin();
         files.push(("", split_lines(&input)));
     } else {
         for op in &operands {
             if op == "-" {
-                let input = read_stdin();
+                let input = support::read_stdin();
                 files.push(("", split_lines(&input)));
             } else {
                 match support::read_file(op) {
@@ -117,19 +116,6 @@ fn run() -> ! {
     support::terminate(if had_error { 1 } else { 0 });
 }
 
-fn read_stdin() -> Vec<u8> {
-    let mut input = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(support::STDIN, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => input.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    input
-}
-
 fn split_lines(input: &[u8]) -> Vec<String> {
     if input.is_empty() {
         return Vec::new();
@@ -142,31 +128,51 @@ fn split_lines(input: &[u8]) -> Vec<String> {
     pieces
 }
 
-/// Map a [`PrError`] from `parse_pr_args` to the exact C error path (message and
-/// exit code) the old in-bin parser used, then terminate.
+/// Map a [`PrError`] to the exact C diagnostic and exit status. Every one of these
+/// is `setup` returning 1: the message goes out on its own (no usage line), and
+/// `main` then exits 1 (`pr.c:142-160`, `1616-1627`).
 fn arg_error(e: PrError) -> ! {
     match e {
         PrError::Usage => usage(),
+        PrError::PlusPage => fail(b"pr: +page number must be 1 or more\n"),
+        PrError::ColumnCount => fail(b"pr: -columns must be 1 or more\n"),
+        PrError::NumberLines => fail(b"pr: Number of lines must be 1 or more\n"),
+        PrError::OffsetValue => fail(b"pr: -o offset must be 1 or more\n"),
+        // C's string really does end in a space before the newline (`pr.c:1800`).
+        PrError::WidthValue => fail(b"pr: -w width must be 1 or more \n"),
+        PrError::NumberWidth => fail(b"pr: -n width must be 1 or more\n"),
+        PrError::InvalidValue(letter, value) => {
+            support::warn(format!("pr: invalid value for -{letter} {value}\n").as_bytes());
+            support::terminate(1);
+        }
+        PrError::AcrossNeedsColumns => fail(b"pr: -a flag requires multiple columns\n"),
+        PrError::MergeAcross => fail(b"pr: -m cannot be used with -a\n"),
         PrError::ColumnTooSmall(n) => {
             support::warn(format!("pr: page width is too small for {n} columns\n").as_bytes());
-            usage()
-        }
-        PrError::AcrossNeedsColumns => {
-            support::emit(b"pr: -a flag requires multiple columns\n");
-            usage()
+            support::terminate(1);
         }
         PrError::Unmodelled => {
             support::warn(b"pr: option form not modelled yet\n");
-            support::terminate(2);
+            support::terminate(1);
         }
     }
 }
 
+fn fail(message: &[u8]) -> ! {
+    support::warn(message);
+    support::terminate(1);
+}
+
+/// C's `usage()` text verbatim, three lines whose second and third each start with
+/// ten spaces (`pr.c:1618-1626`). It is written as one literal because a Rust line
+/// continuation would eat exactly those leading spaces.
+const USAGE: &[u8] = b"usage: pr [+page] [-col] [-adFfmprt] [-e[ch][gap]] [-h header]\n          [-i[ch][gap]] [-l line] [-n[ch][width]] [-o offset]\n          [-s[ch]] [-T timefmt] [-w width] [-] [file ...]\n";
+
+/// C's `usage()` is three lines and does not itself exit; `main` then leaves with
+/// status 1 because `setup` reported the failure (`pr.c:1616-1627`, `:158-160`).
 fn usage() -> ! {
-    support::warn(
-        b"usage: pr [-t] [-h header] [-l lines] [-d] [+page] [-columns] [-a] [-m] [-w width] [-s[C]] [-o offset] [-n[C][width]]\n",
-    );
-    support::terminate(2);
+    support::warn(USAGE);
+    support::terminate(1);
 }
 
 #[cfg(all(not(test), target_os = "none"))]

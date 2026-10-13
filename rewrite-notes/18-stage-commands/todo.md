@@ -250,6 +250,63 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十九把 `pr` 的分页与数值选项面按 C 坐实（多栏接线核实、页高规则、空输入、诊断报文），并新建第 8 道端到端门**
+  （`2026-10-14`，`claim/PR-COLUMNS-qoder` @ 基线 `8eee6c420`，单域三线 commands/textfilter，无跨界）：
+  规划表 13 行「pr 多栏第1片」开工后核实的事实是：**多栏与 `-m` 在库侧与执行侧都早已接线**
+  （`paginate` 在 `columns > 1` 时分派 `paginate_columns`，后者含竖排、`-a` 横排与末页均衡重排），
+  07 篇 pr 行那句「多栏与 `-m` 待批」是陈旧记录——所以本轮的正当作业不是再写一遍多栏，而是
+  **建端到端门把它钉住**，并在钉的过程中暴露并修掉四项真偏差。四项都有 C 锚点与改前读数。
+  **改前四项偏差（前两项以真二进制取数）**：
+  ① 执行半 `bin/pr.rs` 的 stdin 腿不走共享双生封装，直接 `minix_sys::read(support::STDIN, …)`，
+  宿主侧读不到管道 ⇒ 整个命令的输入面在宿主不可测（`cargo build --bin pr` 后 `seq 1 70 | pr -t`
+  输出为空）。改走 `support::read_stdin()` 后可测。
+  ② `pr < /dev/null` 打出一整页（表头 + 66 行补白）；C 的表头是在行循环里读到第一行之后才打
+  （`pr.c:252-262`）、`prtail` 又被 `if (linecnt && …)` 挡住（`:294`），**空输入什么都不印**。
+  ③ `-l` 的门槛被写成「必须 > 10」且失败退 2 报 usage：C 的下界是 1，且 `lines <= HEADLEN + TAILLEN`
+  只是 `++nohead`（`:1875-1876`），于是 `pr -l 5` 在 C 里完全可用、本壳直接拒绝。同时
+  `paginate` 的 `no_header` 分支把全部输入塞进**一页**且不理 `+page`，而 C 关掉表头后不扣那十行、
+  整页都是正文（`prtail` 的 nohead 臂也不补白，`:1526-1538`）——`-t` 因此根本没有分页。
+  ④ 数值选项 `-l`/`-w`/`-o`/`-n` 与 `-s`/`-n` 的多余字符在 C 里各有**一句自己的报文**且退 1
+  （`setup` 返回 1、`main` 才退出，`:142-160`），本壳一律压成 usage 行退 2；且 C 要求 `-l`/`-w`/`-o`
+  的值**首位是数字**（`!isdigit(*eoptarg)` 先判），随后才 `atoi < 1`；`-w` 那句以空格结尾。
+  另修 `-a` 的两条组合判据（`-a` 需多列、`-m` 不得与 `-a` 并用，`:1823-1832`）与
+  「C 认识但未建模的字母」和「getopt 也不认的字母」之分（前者报 not modelled、后者报 usage）。
+  **代码形状**：`PrError` 由 4 臂扩到 11 臂，一臂对 C 一句报文；新增 `c_atoi`（照 C 的宽松 `atoi`：
+  跳空白、一个符号、读到非数字为止）与 `c_counted`（`-l`/`-o`/`-w` 共用的「首位数字 + ≥1」）；
+  `paginate`/`paginate_columns` 的表头与补白改为同一条 `if no_header` 分支并按 C 处理空输入与
+  `start_page`；执行半的 `usage` 用单条字面量——C 的第二三行各带十个前导空格，而 Rust 的行续接
+  `\` 恰好会吃掉这些空格（这是本轮自己踩到的一个坑，写成了注）。
+  三件套：`cargo test -p minix-textfilter --lib` → **430 passed / 0 failed**（基线 427，pr 模块 40 枚：
+  新增 `empty_input_prints_nothing_at_all`、`headerless_pages_still_break_at_the_page_length`、
+  `column_pages_honour_the_start_page`、`short_page_length_turns_the_header_off_rather_than_failing`、
+  `optional_option_values_keep_the_c_digit_run_leniency`，并改写 `parse_error_paths` 到 C 的报文集合）；
+  新建第 8 道端到端门 `tests/pr_face.rs` → **9 passed / 0 failed**（栏宽 9+1 的竖排金样、末页均衡重排、
+  `-a` 行优先、`-s` 制表分隔、表头页 5+10+5 的几何与补白、短页关表头、空输入四情形、`+page`、
+  六句数值报文、三行 usage）。其余七道门 vis 19 / unvis 10 / head 8 / tail 10 / uniq 10 / cmp 10 /
+  sort 8 全不动；`cargo test -p minix-textfilter` 的 50 个测试目标全 ok、合计 568 passed、零 FAILED。
+  **十三枚变异负控**（断言源文件确被改、复位放 `finally`、复位后 md5 与变异前逐字相等）：
+  `-t` 仍扣十行 → 库内 1 + 端到端 1；短页不再关表头 → 库内 1 + 端到端 1；单栏不拦空输入 → 库内 1 +
+  端到端 1；多栏不再按 `+page` 跳页 → 库内 1；数值选项丢掉「首位是数字」判据 → 库内 1 + 端到端 1；
+  `-w` 报文丢掉尾随空格 → 端到端 1；`-s` 多余字符不再报错 → 库内 1 + 端到端 1；多栏不分 `-a` → 库内 1 +
+  端到端 1；`-m` 与 `-a` 并用不再被拒 → 库内 1 + 端到端 1。**一枚等价变异如实登记**：删掉
+  `paginate_columns` 里为「空输入」加的守卫仍全绿，因为它被紧随其后的 `skip >= lines.len()`
+  （`start_page` 跳页判据，`0 >= 0` 成立）完全覆盖；保留该守卫是取意自明，不为它编造断言。
+  门禁：容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` → Finished 零 error，容器内
+  `cargo test -j 1 -p minix-textfilter` 的 50 个测试目标全 ok、FAILED 计数 0；三架构
+  `cargo build -p minix-textfilter --bins` 三台零 error（本轮又一处只有裸机构建能看见的问题没再发生：
+  `minix_sys::Stat` 无 `default`，宿主测试完全看不到目标 cfg 分支，沿 `pwd`/`test`/`ln` 的
+  `core::mem::zeroed()` 同形写法——本轮的 `bin_support` 新腿即按此实现）；clippy 指向
+  `src/bin/pr.rs`、`src/bin_support.rs`、`tests/pr_face.rs` 告警 0，`src/pr.rs` 的 34 条与基线**逐条同数**
+  （三枚新测改用结构体更新语法，避免加深 `field_reassign_with_default` 存量）；
+  `rustfmt --edition 2024 --check` 四文件零漂移；`tools/doc-style-lint.sh --diff` error 0。
+  核实日 `2026-10-14`；基线 `8eee6c420`。
+  **登记不执行**：①`-e`/`-i`（输入与输出的制表展开/压缩，本壳按字符处理、不展开制表）；
+  ②`-f`/`-F`（长行续排与 formfeed 组合）；③`-p` 逐页暂停（要终端腿）；④`-r` 抑制开档失败诊断；
+  ⑤`-T` 自定义时间格式；⑥C 的 `-s` 与 `-w` 组合会把页宽默认抬到 512、`-2` 之下再算 `colwd`，
+  本壳已按公式实现但未对 `-s` 无 `-w` 的 512 情形单列金样；⑦`pr` 的开档失败诊断仍缺 `strerror`
+  后缀（与 cmp/uniq/tail/vis/unvis/sort 同条差异）；⑧`src/window.rs:679-680` 两条 unused import（既存）；
+  ⑨真机 open 腿归 C-57/E5。
+
 - ✅ **批次二百一十八接上 `sort -o` 输出腿（三支路：标准输出 / 直开 / 临时档换名），并新建第 7 道端到端门**
   （`2026-10-14`，`claim/SORT-OUTPUT-qoder` @ 基线 `4bccf477c`，单域三线 commands/textfilter，无跨界）：
   接回 07 篇 sort 行的「`-o` 由选项解析器报 BadOption 拒」。开工前先纠正该行的一处**陈旧事实**：它把
