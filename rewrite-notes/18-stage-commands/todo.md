@@ -250,6 +250,38 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百二十四给 stdio-games 装上真正的标准输入缝（`stdin_chunk` 双生），并用 `factor` 端到端门证明该腿可用**
+  （`2026-10-14`，`claim/GAME-STDIN-LEG-qoder` @ 基线 `55e979a82`，单域三线 commands/games/stdio-games，无跨界）：
+  接回批次二百二十三登记①。**是什么**：本 crate 八个壳都用
+  `LineReader::new(|chunk| read(support::STDIN, chunk).map_err(|_| ()), …)` 驱动标准输入，而
+  `minix_sys::read` 在宿主走的是内核传输替身（不是进程自己的 0 号描述符），所以**这些壳的标准输入腿在宿主
+  端到端上根本读不到东西**——与文本滤器、与上一轮 morse 完全同一条坑（只是落点更多）。拿不到读数就无法
+  给标准输入形状写金样，也就无法发现形状偏差（morse 那轮的 P0-code-bug 正是门才能拓出来的）。
+  **怎么修**：不在各壳里加 `cfg`（那会把同一个判断重复八遍，且宿主与裸机各写一遍容易漂移），而是把缝
+  放在共享件 `bin_support.rs` 里新增 `stdin_chunk(&mut [u8]) -> Result<usize, ()>`（与 `LineReader` 现有的
+  reader 约束逐字吻合，`Ok(0)` 是结束、`Err(())` 是读失败）：宿主腿走 `std::io::stdin().read`，裸机腿
+  局部 `use minix_sys::read` 读 `STDIN`（局部导入避开宿主构建的 unused-import 告警）。然后把八个壳改为
+  `LineReader::new(support::stdin_chunk, …)`，`ppt` 自己那个逐 chunk 循环也改走同一函数，各文件的
+  `use minix_sys::read;` 随之删除。
+  **取证门**：新建 `tests/factor_face.rs` 三枚（第 10 道端到端门），金样逐枚从 `minix3/games/factor/factor.c`
+  手推：`pr_fact` 每值一行、形式是 `value:` 后逐个追加「空格 + 因子」再一个换行（`:228-252`）；无操作数时
+  每行一个值（`fgets` 循环 `:156-171`）；末行不带换行仍是一个值；空行不出行。**本轮只钉己方与 C 已一致的局部**：
+  下列三处与 C 不符，已登记不执行（归下一轮）——前导空白（`isblank` 扫描，`:163`，
+  现壳会当非法值退 1）；值 ≤ 1 与负数（C 是 `errx` 报文 + 退 1，现壳静默退 1 并把 `1` 打成 `1:`）；
+  非法格式那句 `illegal numeric format.`。
+  三件套：`cargo test -p minix-stdio-games` → **13 个测试目标全 ok、合计 122 passed、零 FAILED**（基线 12 目标 /
+  119 passed；+3 枚端到端门）；`--test factor_face` → 3/0；`--lib` → 53/0（零回归）；三架构 `--bins` 三台零 error；
+  容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、容器内本包 13 目标 122/0；
+  clippy 触及文件零新增（全包仅余 `bin/arithmetic.rs` 一条存量，与基线逐条同数）；`rustfmt --edition 2024 --check`
+  零漂移；`tools/pattern-gate.sh --diff` PASS=17 FAIL=0；`tools/doc-style-lint.sh --diff` error 0；核实日
+  `2026-10-14`；基线 `55e979a82`。
+  **三枚变异负控**（`--test factor_face` 与 `--lib` 分两次调用，复位断言 md5）：把宿主缝改成 `Ok(0)`（即回到
+  内核传输替身那个旧坑的读数）→ 两枚标准输入测翻红、操作数测不动（正好证明门钉的是腿而不是形式）；
+  空行不再跳过 → 翻红；末行无换行被丢弃 → 翻红。全部咬中。
+  登记不执行：①factor 的三处 C 偏差（前导空白、≤ 1 与负数、非法格式报文，本轮新判）；②真机播种与 open 腿归
+  C-57/E5（本笔只交代码 + 宿主端到端门，不谎报串口读数）；③caesar `guess_and_rotate`、arithmetic `penalise`、
+  banner 字体腿、bcd/ppt/caesar/number/pig 各自的 stdin 形状尚未逐枚对 C（现在有腿了才能查，下一轮起排）。
+
 - ✅ **批次二百二十三把 `morse -d` 的解码腿改成 C 的两形：操作数整串比对、标准输入走字符流**
   （`2026-10-14`，`claim/MORSE-DECODE-qoder` @ 基线 `0ac4fcca5`，单域三线 commands/games/stdio-games，无跨界）：
   接回批次二百二十二登记①。**原状不符合 C**：旧解码腿把输入按行取出、再按空白拆成码组逐组查表，

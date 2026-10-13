@@ -8,7 +8,6 @@
 //! is the end, and the run ends with a newline when one is owed. Unknown
 //! options print `usage: ppt [-d] [string ...]` and exit 1 (line 61).
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -18,8 +17,7 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_stdio_games::ppt::{decode_line, punch_byte, EDGE};
-use minix_sys::read;
+use minix_stdio_games::ppt::{EDGE, decode_line, punch_byte};
 use support::LineReader;
 
 fn run() -> ! {
@@ -55,7 +53,7 @@ fn punch(strings: &[String]) {
     if strings.is_empty() {
         let mut chunk = [0u8; 256];
         loop {
-            let read = read(support::STDIN, &mut chunk);
+            let read = support::stdin_chunk(&mut chunk);
             let count = match read {
                 Ok(0) => break,
                 Ok(count) => count,
@@ -92,10 +90,7 @@ fn decode_tape(strings: &[String]) {
         usage();
     }
     let mut input = [0u8; 132];
-    let mut reader = LineReader::new(
-        |chunk| read(support::STDIN, chunk).map_err(|_| ()),
-        &mut input,
-    );
+    let mut reader = LineReader::new(support::stdin_chunk, &mut input);
     let mut synced = false;
     let mut needs_newline = false;
     loop {
@@ -124,7 +119,6 @@ fn decode_tape(strings: &[String]) {
     }
     support::terminate(0);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

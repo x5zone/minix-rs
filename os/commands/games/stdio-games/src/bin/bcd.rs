@@ -5,7 +5,6 @@
 //! stdin line (`cardline[80]`, line 132) is rendered; exit 0. The card
 //! layout is the library's `render_card`.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -16,7 +15,6 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_stdio_games::bcd::render_card;
-use minix_sys::read;
 use support::LineReader;
 
 fn run() -> ! {
@@ -27,10 +25,7 @@ fn run() -> ! {
         }
     } else {
         let mut input = [0u8; 80];
-        let mut reader = LineReader::new(
-            |chunk| read(support::STDIN, chunk).map_err(|_| ()),
-            &mut input,
-        );
+        let mut reader = LineReader::new(support::stdin_chunk, &mut input);
         // Read failure ends the stream the way a NULL from C `fgets` does.
         while reader.next_line().unwrap_or(false) {
             card(reader.line());
@@ -46,7 +41,6 @@ fn card(text: &[u8]) {
         Err(_) => support::terminate(1),
     }
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

@@ -8,7 +8,6 @@
 //! deciding half is not yet in the library, so this build reports the C
 //! usage and exits 1 for that mode until it lands.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -19,7 +18,6 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_stdio_games::caesar::{parse_rotation, rotate_line};
-use minix_sys::read;
 use support::LineReader;
 
 fn run() -> ! {
@@ -36,10 +34,7 @@ fn run() -> ! {
     };
     let mut input = [0u8; 1024];
     let mut out = [0u8; 1024];
-    let mut reader = LineReader::new(
-        |chunk| read(support::STDIN, chunk).map_err(|_| ()),
-        &mut input,
-    );
+    let mut reader = LineReader::new(support::stdin_chunk, &mut input);
     while reader.next_line().unwrap_or(false) {
         let length = reader.line().len();
         match rotate_line(reader.line(), rotation, &mut out[..length]) {
@@ -49,7 +44,6 @@ fn run() -> ! {
     }
     support::terminate(0);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
