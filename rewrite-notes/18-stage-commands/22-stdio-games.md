@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第一组——只用标准输入输出说话的游戏，系统能跑、管道能通的证明
 > **源码**: `minix3/games/factor/factor.c`（输出形状见头注释、因子打印函数见第 184 行附近、大数路径见第 110 行附近、用法 `factor [value ...]` 见第 268 行附近）、`minix3/games/primes/primes.c` 与 `pattern.c` 与 `pr_tbl.c` 与 `spsp.c`（区间素数表）、`minix3/games/caesar/caesar.c`（轮转表构造见第 82 行附近、溢出保护 `rot %= LETTERS` 见第 86 行附近、轮转解析见第 125 行附近）、`minix3/games/morse/morse.c`（码表见第 96 行附近、用法 `morse [-ds] [string ...]` 见第 140 行附近、解码匹配见第 219 行附近）、`minix3/games/pig/pig.c`（元音规则见第 103 行附近、用法 `pig` 见第 133 行附近）、`minix3/games/arithmetic/arithmetic.c`（缺省范围 10 见第 99 行附近、对错计数见第 100 行附近、范围选项见第 107 行附近）、`minix3/games/banner/banner.c`（整幅宽 132 见第 58 行附近、用法 `banner [-w width] [message]` 见第 1057 行附近、列缩放见第 1064 行到第 1066 行附近）、`minix3/games/number/number.c`（数字转英文单词）、`minix3/games/bcd/bcd.c`（大字显示）、`minix3/games/ppt/ppt.c`（纸带 punch 显示）
-> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 51 个；端到端门 `tests/morse_face.rs` 九枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 114 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
+> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 53 个；端到端门 `tests/morse_face.rs` 十二枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 119 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `06-file-ops.md`（标准输入输出面先行）
 > **不覆盖（移交）**: 终端控制（见第 23 篇）、键盘读取与逐行显示执行（各游戏二进制包）、大数概率分解（后续补齐）
 
@@ -65,9 +65,28 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 
 轮转表构造（第 82 行附近）先取余防溢出（第 86 行附近），大小写各转各的，非字母直通。轮转解析（第 125 行附近）做溢出检查。Rust 侧 `caesar.rs` 的单字节轮转与建表语义逐项对应，行轮转要求等长（调用方保证缓冲），长度不对报参数无效。
 
-### 2.4 摩斯：码表与整串匹配
+### 2.4 摩斯：三张码表、每字节一行与整串解码
 
-码表其实是三张：`digit` 十项（`morse.c:53-64`）、`alph` 二十六项（`:65-92`）、`other` 十二项再加一个 `'\0'` 哨兵（`:97-111`）。解码时整串比对（`:201-228`），部分匹配不算。用法行（`:140`）的两个字母管的是两件互不相干的事：`-d` 选方向，`-s` 只换**渲染形态**——`show()`（`:253-261`）不带 `-s` 时把每个符号拼成 ` dit` 或 ` daw`，带 `-s` 时打一个空格再加整串符号。它既不是码表打印也不管容错：`decode()` 从不读这个旗标，所以 `-d` 之下 `-s` 一个字节都不改。编码面的形状是**每个输入字节一行**：空白字节不被跳过，而是渲染成空码（`:239-240`）；每个操作数末尾再补一行 `show("")`（`:191`）；整轮结束后统一打一次 `show("...-.-")`（`:195`，即 SK 记号）——收尾行属于整轮而不属于任何操作数。表里没有的字节连一行都不产生：C 的 `else` 支扫完 `other[]` 落空就直接离开（`:241-250`），既不报错也不打空行。两处不对称值得专门钉住：C 的判据是 `*s == '.'`，**凡不是点的都算划**；C 的 `isspace` 含垂直制表 0x0B，而 `u8::is_ascii_whitespace` 不含——照抄后者会吞掉一个分隔行。Rust 侧 `morse.rs` 把三张表与两种形态做成纯查表与纯渲染函数（`code_for_byte` 与 `show_line`），执行半 `bin/morse.rs` 负责逐字节调用、操作数收尾与整轮收尾的次序。
+码表其实是三张：`digit` 十项（`morse.c:53-64`）、`alph` 二十六项（`:65-92`）、`other` 十二项再加一个 `'\0'` 哨兵（`:97-111`）。解码也是整串比对（`:201-228`），部分匹配不算：`.-` 是 A、`.-.` 是 R、`.-..` 是 L，`...-.-`（结束记号）是**唯一不输出任何字节**的输入（`:225-226`），其余查不到一律答 `x`（`:227`）——那是 C 的「线路噪声」答案，不是错误。标准输入那条腿把三个反直觉形状叠在一起（`:151-185`）：**撞上悬挂码组的分隔符只负责冲刷、自己不打印**，空格属于「连着两个都扑空」的那一个（`:175-182`），所以 `...  ---` 一个空格都不打而 `...   ---` 打一个；攒够十个符号算胡码，打一个 `x`、清零，再把同一串剩下的符号**连同紧跟其后的那个字节一起吞掉**（`:160-169`），被吞的字节再也充当不了分隔符；收尾的 `putchar('\n')` 在循环之外（`:185`），于是空输入也有一行，而末尾没等到分隔符的码组直接丢掉。操作数走另一条腿：整串比对、不拆空格（`:146-150`），所以 `morse -d "... ---"` 得 `x` 而不是 `SO`。用法行（`:140`）的两个字母管的是两件互不相干的事：`-d` 选方向，`-s` 只换**渲染形态**——`show()`（`:253-261`）不带 `-s` 时把每个符号拼成 ` dit` 或 ` daw`，带 `-s` 时打一个空格再加整串符号。它既不是码表打印也不管容错：`decode()` 从不读这个旗标，所以 `-d` 之下 `-s` 一个字节都不改。编码面的形状是**每个输入字节一行**：空白字节不被跳过，而是渲染成空码（`:239-240`）；每个操作数末尾再补一行 `show("")`（`:191`）；整轮结束后统一打一次 `show("...-.-")`（`:195`，即 SK 记号）——收尾行属于整轮而不属于任何操作数。表里没有的字节连一行都不产生：C 的 `else` 支扫完 `other[]` 落空就直接离开（`:241-250`），既不报错也不打空行。两处不对称值得专门钉住：C 的判据是 `*s == '.'`，**凡不是点的都算划**；C 的 `isspace` 含垂直制表 0x0B，而 `u8::is_ascii_whitespace` 不含——照抄后者会吞掉一个分隔行。Rust 侧 `morse.rs` 把三张表与两种形态做成纯查表与纯渲染函数（`code_for_byte` 与 `show_line`），执行半 `bin/morse.rs` 负责逐字节调用、操作数收尾与整轮收尾的次序。
+
+两条腿共用同一个输出件，`show()` 值得整段看（`morse.c:253-261`）：
+
+```c
+void
+show(const char *s)
+{
+        if (sflag)
+                printf(" %s", s);
+        else for (; *s; ++s)
+                printf(" %s", *s == '.' ? "dit" : "daw");
+        printf("\n");
+}
+```
+
+它的角色是「一行」的定义者：编码腿每查到一个码就调它一次，收尾的 `SK` 也调它一次（`:195`）。三段各有各的条件。`sflag` 那一支把整串一次打出，前面只有一个空格，因此空码打出的是一行「一个空格」。`else` 那一支逐符号打词，判据写作 `*s == '.'`——**凡不是点的都算划**；码表里只有点与划，所以这条不对称在正常输入下观察不到，除非码串里混进第三种字符，本树就用一个混入 `x` 的码串把这条钉成断言（见 §5 的摩斯清单）。最后那句 `printf("\n")` 落在两支之外，于是**一次调用恰好一行**；也正因为它在两支之外，`show("")` 是一行空白而不是零行——这就是分隔符自己占一行的全部来由。
+
+反过来推：把那句换行挪进 `else` 支，`-s` 形态的输出会全部挤在同一行里；把判据改成 `*s == '-'`，混入的第三种字符就从「划」翻成「点」。两种改法都改变可观察输出，所以按原样保留，而不是顺手把它合理化。
+
 
 ### 2.5 猪拉丁语与算术：元音规则与范围计数
 
@@ -118,7 +137,7 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 | `factor.rs` | `factor.c` 第 184 行与第 268 行附近 | 数值解析、试除、行绘制 |
 | `primes.rs` | `primes.c` 区间语义 | 界限解析、区间生成 |
 | `caesar.rs` | `caesar.c` 第 82 行与第 86 行与第 125 行附近 | 轮转解析、单字节轮转、行轮转 |
-| `morse.rs` | `morse.c` 三张码表（`:53-111`）与 `morse()`/`show()`（`:231-261`） | 逐字节查表、整串解码、两种渲染形态 |
+| `morse.rs` | `morse.c` 三张码表（`:53-111`）、`morse()`/`show()`（`:231-261`）、`decode()` 与 `-d` 循环（`:146-228`） | 逐字节查表、两种渲染形态、整串解码、解码字符流（`decode_stream`） |
 | `words.rs` | `pig.c` 第 103 行、`number.c` | 猪拉丁语、数字转单词 |
 | `banner.rs` | `banner.c` 第 58 行与第 1057 行与第 1064 行附近 | 宽度解析、列缩放、字形源接口与行绘制 |
 | `quiz.rs` | `arithmetic.c` 第 99 行与第 100 行附近 | 范围解析、答案计算、计分 |
@@ -144,8 +163,10 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 | `sieve` | 下界、上界、缓冲 | 素数个数 | 区间生成语义 |
 | `parse_rotation` | 词 | 轮转量 | 轮转解析语义 |
 | `rotate_line` | 输入、轮转量、缓冲 | 无 | 轮转语义 |
-| `encode_word` | 表、词、缓冲 | 码长 | 编码语义 |
-| `decode_group` | 表、码组 | 字母 | 解码语义 |
+| `code_for_byte` | 字节 | 码串（空白得空码、表外得无） | 编码查表语义 |
+| `show_line` | 码串、形态、缓冲 | 行长度 | 两种渲染形态语义 |
+| `decode_code` | 码串 | 字节（结束记号无输出） | 整串解码语义 |
+| `decode_stream` | 字节流、写出回调 | 无 | 解码字符流语义 |
 | `pig_word` | 词、缓冲 | 词长 | 猪拉丁语义 |
 | `number_words` | 数值、缓冲 | 词长 | 数词语义 |
 | `render_banner_row` | 字形源、文本、行号、缓冲 | 行长度 | 横幅行语义 |
@@ -166,7 +187,7 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 | factor | 同上 | 已接线（`src/bin/factor.rs`） |
 | primes | 同上 | 已接线；界限封顶 1,000,000（试除引擎定位），C 的近 2^32 流式筛待后续批 |
 | caesar | 同上 | 已接线固定轮转路；无参频率破解（`guess_and_rotate`）待决定半 |
-| morse | 同上 | 已接线编码面（默认逐符号 `dit`/`daw`、`-s` 短形、每字节一行、操作数收尾行与整轮一次 `SK`、表外字节不出行、`-d`/`-s` 聚簇与 `--`/裸 `-` 的 getopt 形、用法行落 stderr 退 1）与 `-d` 的按组查表；C 解码的字符流形态待批（双空白才打一个空格、逾十个符号打 `x` 并吞掉同串剩余、整轮只在末尾打一个换行、查不到的码打 `x`） |
+| morse | 同上 | 已接线编码面（默认逐符号 `dit`/`daw`、`-s` 短形、每字节一行、操作数收尾行与整轮一次 `SK`、表外字节不出行、`-d`/`-s` 聚簇与 `--`/裸 `-` 的 getopt 形、用法行落 stderr 退 1）与 `-d` 的解码两形：操作数整串比对不拆空格（`:146-150`），标准输入按 C 的字符流（冲刷型分隔符不打印、十个符号算胡码并吞掉其后首字节、整轮收尾一个换行、查不到答 `x`、结束记号静默） |
 | pig | 同上 | 已接线 |
 | number | 同上 | 已接线 |
 | arithmetic | 同上 + 时钟读（播种） | 已接线；`penalise` 罚则提示与用时统计待批 |
@@ -183,7 +204,7 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 - **分解**（`factor.rs`，5 个）：`test_values_parse`（解析与溢出）、`test_small_factoring`（小数、素数、一）、`test_large_prime_beyond_table`（表外大素数与倍数）、`test_line_shape`（行形状）、`test_small_buffer_rejected`（缓冲过小）。
 - **素数**（`primes.rs`，4 个）：`test_first_primes`（前二十内八素数）、`test_inverted_interval_empty`（倒置区间空）、`test_single_values`（单点素数与合数与二）、`test_bounds_checked`（界限与缓冲）。
 - **轮转**（`caesar.rs`，5 个）：`test_rot_thirteen_round_trip`（十三轮转往返）、`test_zero_and_full_turns`（零与整圈）、`test_non_letters_pass_through`（非字母直通）、`test_rotations_parse`（解析与溢出）、`test_length_mismatch_rejected`（不等长拒绝）。
-- **摩斯**（`morse.rs`，10 个）：`the_default_form_spells_each_symbol_and_reads_any_non_dot_as_a_daw`（默认形态与非点即划）、`the_short_form_prints_the_run_after_one_space_and_even_a_blank_run_keeps_it`（短形与空码那一个空格）、`whitespace_is_the_empty_code_and_vertical_tab_counts_as_whitespace`（分隔符即空码，含 0x0B）、`punctuation_comes_from_the_other_table_and_unlisted_bytes_print_nothing`（十二项标点与表外字节不出行）、`test_case_insensitive`（大小写不分）、`test_digits_present`（数字）、`test_unknown_letter_reports_not_found`（未知查无）、`test_bad_groups_rejected`（坏码组拒绝）、`test_empty_table_misses`（空表全 miss）、`a_short_buffer_is_refused_rather_than_truncated`（缓冲不足即拒绝）。另有端到端门 `tests/morse_face.rs` 九枚金样（真进程、真管道，逐枚按 `morse.c` 的 `show()` 与操作数循环手推）。
+- **摩斯**（`morse.rs`，12 个）：`the_default_form_spells_each_symbol_and_reads_any_non_dot_as_a_daw`（默认形态与非点即划）、`the_short_form_prints_the_run_after_one_space_and_even_a_blank_run_keeps_it`（短形与空码那一个空格）、`whitespace_is_the_empty_code_and_vertical_tab_counts_as_whitespace`（分隔符即空码，含 0x0B）、`punctuation_comes_from_the_other_table_and_unlisted_bytes_print_nothing`（十二项标点与表外字节不出行）、`whole_string_lookups_answer_letters_digits_punctuation_noise_and_the_silent_mark`（整串比对与静默的结束记号）、`one_separator_between_groups_prints_nothing_and_a_trailing_group_is_dropped`（冲刷型分隔符与末尾悬挂码组）、`ten_symbols_are_gibberish_and_the_swallow_eats_the_separator_behind_them`（十个符号算胡码并吞掉其后首字节）、`bytes_that_are_neither_symbols_nor_separators_are_ignored_while_nothing_is_pending`（既非符号也非分隔符且无悬挂时静默）、`test_case_insensitive`（大小写不分）、`test_digits_present`（数字）、`unlisted_bytes_stay_silent_on_the_encode_side`（编码侧表外字节静默、解码侧答 `x`）、`a_short_buffer_is_refused_rather_than_truncated`（缓冲不足即拒绝）。另有端到端门 `tests/morse_face.rs` 十二枚金样（真进程、真管道，逐枚按 `morse.c` 的 `show()` 与操作数循环手推）。
 - **文字**（`words.rs`，5 个）：`test_vowel_start_gains_way`、`test_consonant_cluster_moves`（辅音串与 `y` 位置）、`test_capitalization_kept`（大小写三档）、`test_number_words`（零到千）、`test_bad_words_rejected`。
 - **横幅**（`banner.rs`，5 个）：`test_widths_parse`、`test_scrunch_endpoints`（端点恒等）、`test_block_renders_framed`（框形）、`test_empty_source_misses`、`test_bad_row_rejected`。
 - **测验**（`quiz.rs`，4 个）：`test_ranges_parse`、`test_answers_computed`（四则与截零）、`test_grading_counts`、`test_empty_score_zero`。
@@ -191,7 +212,7 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 - **纸带**（`ppt.rs`，6 个）：`test_punch_line_shape`、`test_punch_all_zero_and_all_one`、`test_punch_reports_small_output`、`test_decode_reverses_punch`（编码解码往返）、`test_decode_line_without_feed_hole_is_none`（失步）、`test_decode_treats_anything_but_blank_as_hole`。
 - **行缓冲**（`bin_support.rs`，随九个壳各 6 个）：`test_lines_include_newline_and_split`、`test_final_fragment_without_newline_is_a_line`、`test_oversized_input_returns_full_buffer_lines`（满缓冲即行）、`test_empty_input_yields_no_lines`、`test_reader_failure_ends_stream_with_error`、`test_utoa_shapes`。
 
-尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、caesar 无参频率破解（`guess_and_rotate`）、morse 解码的字符流形态（双空白才打空格、逾限打 `x`、整轮一个换行）、arithmetic 罚则提示（`penalise`）与用时统计、banner 真位图字体与薄壳接线、primes 近 2^32 流式筛（现封顶 1,000,000，见 §4.4 标注）。十个玩法决定半与九个二进制壳是完整的，其余是显式留白的。
+尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、caesar 无参频率破解（`guess_and_rotate`）、arithmetic 罚则提示（`penalise`）与用时统计、banner 真位图字体与薄壳接线、primes 近 2^32 流式筛（现封顶 1,000,000，见 §4.4 标注）。十个玩法决定半与九个二进制壳是完整的，其余是显式留白的。
 
 ---
 

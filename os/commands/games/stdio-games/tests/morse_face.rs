@@ -180,3 +180,79 @@ fn the_short_flag_is_inert_when_the_direction_flag_is_set() {
     let (operand, _, _) = run(&["-d", "....-"], b"");
     assert_eq!(operand, "4\n", "digit table index four");
 }
+
+#[test]
+fn the_decoder_writes_one_newline_for_the_whole_run_and_drops_an_unterminated_group() {
+    // C flushes a pending group only when a non-symbol byte arrives (`morse.c:170-174`)
+    // and its `putchar('\n')` sits after the loop (`:185`), so a stream that ends mid-group
+    // loses that group, and an empty stream still gets its newline.
+    let (out, status, err) = run(&["-d"], b"... --- ...");
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(out, "SO\n", "the third group never met a separator");
+    let (empty, _, _) = run(&["-d"], b"");
+    assert_eq!(empty, "\n");
+    // The end mark is the one code that decodes to nothing at all (`:225-226`).
+    let (mark, _, _) = run(&["-d"], b"...-.-\n");
+    assert_eq!(mark, "\n");
+    // Punctuation is in the tables too (`other[]`, `:97-111`).
+    let (period, _, _) = run(&["-d"], b".-.-.-\n");
+    assert_eq!(period, ".\n");
+}
+
+#[test]
+fn a_separator_that_flushes_a_group_prints_nothing_and_only_later_ones_put_blanks() {
+    // The flush that yields a letter clears `is_blank` (`morse.c:170-174`), so the first
+    // separator of a run never prints; a blank comes from a later separator that finds
+    // nothing pending (`:175-182`). The terminating newline counts as one of that run.
+    let (single, _, _) = run(&["-d"], b"... ---\n");
+    assert_eq!(
+        single, "SO\n",
+        "one separator between two groups prints nothing"
+    );
+    let (pair, _, _) = run(&["-d"], b"...  \n");
+    assert_eq!(
+        pair, "S \n",
+        "the second separator of the run earns the blank"
+    );
+    let (trio, _, _) = run(&["-d"], b"...   ---\n");
+    assert_eq!(
+        trio, "S O\n",
+        "three separators put one space between two letters"
+    );
+    // The flag does not survive a group: a separator that set it before the second group
+    // is spent, so the space has to wait for another free separator (`:174`).
+    let (carry, _, _) = run(&["-d"], b"...  .. \n");
+    assert_eq!(carry, "SI\n");
+    let (carry_plus, _, _) = run(&["-d"], b"...  ..  \n");
+    assert_eq!(carry_plus, "SI \n");
+    // A non-symbol byte that is not a separator and arrives with nothing pending matches
+    // none of C's arms and is dropped (`:170-182`).
+    let (noise, _, _) = run(&["-d"], b"z\n");
+    assert_eq!(noise, "\n");
+}
+
+#[test]
+fn gibberish_runs_answer_one_x_and_swallow_the_separator_behind_them() {
+    // Ten accumulated symbols are gibberish: C prints one `x`, resets, and the scan that
+    // eats the remainder of the run also consumes the byte that ended it (`morse.c:160-169`)
+    // — so the newline right after the run is gone and cannot print a blank line, while a
+    // second one can.
+    let (ten, _, _) = run(&["-d"], b"..........\n");
+    assert_eq!(ten, "x\n");
+    let (twelve, _, _) = run(&["-d"], b"............\n");
+    assert_eq!(twelve, "x\n");
+    let (twelve_plus, _, _) = run(&["-d"], b"............\n\n");
+    assert_eq!(twelve_plus, "x \n");
+    // Nine symbols stay a group and simply match nothing, which is also `x` (`:227`).
+    let (nine, _, _) = run(&["-d"], b".........\n");
+    assert_eq!(nine, "x\n");
+    // The threshold is exactly ten, and the tell is the separator the swallow eats: two
+    // spaces after twelve symbols print one blank, two spaces after nine print none.
+    let (twelve_group, _, _) = run(&["-d"], b"............  ...\n");
+    assert_eq!(twelve_group, "x S\n");
+    let (nine_group, _, _) = run(&["-d"], b".........  ...\n");
+    assert_eq!(nine_group, "xS\n");
+    // An operand, by contrast, is matched whole — no splitting on the blank inside it.
+    let (operand, _, _) = run(&["-d", "... ---"], b"");
+    assert_eq!(operand, "x\n");
+}

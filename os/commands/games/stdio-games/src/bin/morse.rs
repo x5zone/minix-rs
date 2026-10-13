@@ -7,21 +7,24 @@
 //! A whitespace byte is not skipped but rendered as the empty code, and an operand
 //! boundary adds one more such line; the message as a whole is closed by `SK`
 //! (`show("...-.-")`) exactly once. Bytes the tables do not list print nothing at all.
-//! Decode (`-d`) turns code groups back into letters; C's stream-shaped decoder
-//! (double blanks, the ten-symbol overrun that prints `x`) is not the shape here yet
-//! and is registered in the stage ledger.
+//! Decode (`-d`) is the other loop of the same file (`:146-185`): operands are matched
+//! whole, standard input is a byte-at-a-time run in which a separator that flushes a group
+//! prints nothing and only a later separator that finds nothing pending prints a blank,
+//! ten symbols count as gibberish (`x`, then the rest of that run is swallowed), an
+//! unmatched group is `x`, the end mark is silent, and one newline closes the entire run —
+//! even an empty one.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_stdio_games::morse::{
-    BLANK_CODE, MAX_SHOW_LINE, SK_CODE, StaticMorse, code_for_byte, decode_group, show_line,
+    BLANK_CODE, MAX_SHOW_LINE, SK_CODE, code_for_byte, decode_code, decode_stream, show_line,
 };
 
 fn run() -> ! {
@@ -54,13 +57,15 @@ fn run() -> ! {
     }
     let rest: Vec<&str> = argv[first..].iter().map(String::as_str).collect();
     if decode {
-        for line in text_lines(&rest) {
-            for group in line.split_whitespace() {
-                if let Ok(letter) = decode_group(&StaticMorse, group) {
-                    let mut out = [0u8; 4];
-                    let len = letter.len_utf8();
-                    letter.encode_utf8(&mut out);
-                    support::emit(&out[..len]);
+        // C has two decoder shapes and they are not interchangeable: with operands each
+        // one is matched as a whole string (`morse.c:146-150`), while without them the
+        // stream is walked a byte at a time (`:151-184`). Both end with one newline.
+        if rest.is_empty() {
+            decode_stream(&support::read_stdin(), &mut |byte| support::emit(&[byte]));
+        } else {
+            for text in &rest {
+                if let Some(byte) = decode_code(text) {
+                    support::emit(&[byte]);
                 }
             }
             support::emit(b"\n");
@@ -100,20 +105,6 @@ fn emit_code(code: Option<&str>, short: bool) {
     if let Ok(len) = show_line(code, short, &mut out) {
         support::emit(&out[..len]);
     }
-}
-
-/// The strings when given, otherwise standard input split into lines.
-fn text_lines(strings: &[&str]) -> Vec<String> {
-    if !strings.is_empty() {
-        return strings.iter().map(|s| s.to_string()).collect();
-    }
-    let text = String::from_utf8_lossy(&support::read_stdin()).into_owned();
-    let mut lines: Vec<String> = text.split('\n').map(|piece| piece.to_string()).collect();
-    // A trailing newline terminates the last line rather than opening an empty one.
-    if lines.last().is_some_and(|last| last.is_empty()) {
-        lines.pop();
-    }
-    lines
 }
 
 fn usage() -> ! {

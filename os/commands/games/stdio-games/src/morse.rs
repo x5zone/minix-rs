@@ -55,9 +55,12 @@ pub const MORSE_CODES: &[(char, &str)] = &[
     ('9', "----."),
 ];
 
-/// C's `other[]` (`morse.c:97-111`), punctuation plus the two brackets and the quote
-/// forms. The order is the order C's `decode()` walks when it falls through the
-/// letter and digit tables, so it is part of the matching rule, not cosmetics.
+/// C's `other[]` (`morse.c:97-111`). The order is the order C's `decode()` walks after
+/// it falls through the letter and digit tables, and C's `morse()` walks it looking for
+/// a byte. Every code in the table is distinct and none collides with a letter or digit
+/// code, so this particular order has no observable effect — unlike `unvis`, whose
+/// entity table is prefix-scanned and where reordering really would change the accepted
+/// set.
 pub const PUNCT_CODES: &[(u8, &str)] = &[
     (b'.', ".-.-.-"),
     (b',', "--..--"),
@@ -106,19 +109,6 @@ impl MorseTable for StaticMorse {
             .iter()
             .find(|(_, known)| *known == code)
             .map(|(letter, _)| *letter)
-    }
-}
-
-/// Empty table (every lookup misses).
-pub struct EmptyMorse;
-
-impl MorseTable for EmptyMorse {
-    fn code_of(&self, _letter: char) -> Option<&'static str> {
-        None
-    }
-
-    fn letter_of(&self, _code: &str) -> Option<char> {
-        None
     }
 }
 
@@ -190,12 +180,88 @@ pub fn show_line(code: &str, short: bool, out: &mut [u8]) -> Result<usize, GameE
 /// Longest line [`show_line`] can produce: the six-symbol `SK_CODE` spelled out.
 pub const MAX_SHOW_LINE: usize = SK_CODE.len() * 4 + 1;
 
-/// Decode one code group (dots and dashes) into its letter.
-pub fn decode_group<T: MorseTable>(table: &T, group: &str) -> Result<char, GameError> {
-    if group.is_empty() || !group.bytes().all(|byte| byte == b'.' || byte == b'-') {
-        return Err(GameError::InvalidArgument);
+/// C's `decode(const char *s)` (`morse.c:201-228`) as one whole-string lookup.
+///
+/// A code is compared whole against the digit table, then the alphabet, then `other[]`:
+/// `".-"` is `A`, `".-."` is `R` and `".-.."` is `L`, and no shorter code ever matches as
+/// a prefix of a longer one. `SK_CODE` is the one input that produces **no byte at all**
+/// (`:225-226`); anything else that misses every table is line noise and answers `x`
+/// (`:227`). `None` therefore means "silently consumed", not "error".
+///
+/// The answer is a byte rather than a `char` because `putchar` is what C writes, and the
+/// table keys are ASCII by construction — a test below pins that invariant.
+pub fn decode_code(code: &str) -> Option<u8> {
+    if let Some(letter) = StaticMorse.letter_of(code) {
+        return Some(letter as u8);
     }
-    table.letter_of(group).ok_or(GameError::NotFound)
+    if let Some((byte, _)) = PUNCT_CODES.iter().find(|(_, known)| *known == code) {
+        return Some(*byte);
+    }
+    if code == SK_CODE { None } else { Some(b'x') }
+}
+
+/// C's `-d` standard-input loop (`morse.c:151-185`) driven by a byte stream.
+///
+/// Three shapes in it are not what a first reading suggests:
+///
+/// * a separator that finds a group pending only flushes it, and clearing `is_blank` is
+///   part of that flush (`morse.c:170-174`). The space belongs to the pair of separators
+///   that both find nothing pending (`:175-182`), so `...  ---` prints no blank at all
+///   while `...   ---` prints one: word separation is a by-product of runs of blanks, not
+///   of the gaps between code groups.
+/// * ten accumulated symbols are gibberish: C writes one `x`, resets, and then reads
+///   **past the remainder of that symbol run**, which also consumes the first non-symbol
+///   byte after it (`:160-169`). That byte can no longer act as a separator, which is why
+///   the overrun path sets the blank state itself.
+/// * the closing `putchar('\n')` sits outside the loop (`:185`), so it is written even for
+///   an empty stream.
+///
+/// A byte that is neither a symbol nor a separator, arriving with no group pending, hits
+/// none of C's `else if` arms and is ignored (`:170-182`).
+pub fn decode_stream<F: FnMut(u8)>(bytes: &[u8], mut sink: F) {
+    // C's `char foo[10]`: nine symbols max, because the tenth trips the overrun path
+    // before it could ever be decoded (`:152`, `:158-169`).
+    let mut group = [0u8; 10];
+    let mut len = 0usize;
+    let mut blank = false;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        index += 1;
+        if byte == b'-' || byte == b'.' {
+            group[len] = byte;
+            len += 1;
+            if len == group.len() {
+                len = 0;
+                sink(b'x');
+                while index < bytes.len() && (bytes[index] == b'.' || bytes[index] == b'-') {
+                    index += 1;
+                }
+                if index < bytes.len() {
+                    // The byte that ended that scan is consumed and dropped, as in C.
+                    index += 1;
+                }
+                blank = true;
+            }
+        } else if len != 0 {
+            // The pending bytes are all `.` or `-`, so the view is always valid UTF-8;
+            // the fallback keeps a hypothetical miss on C's own `x` answer.
+            let code = core::str::from_utf8(&group[..len]).unwrap_or(BLANK_CODE);
+            if let Some(answer) = decode_code(code) {
+                sink(answer);
+            }
+            len = 0;
+            blank = false;
+        } else if byte == 0x0b || byte.is_ascii_whitespace() {
+            if blank {
+                sink(b' ');
+                blank = false;
+            } else {
+                blank = true;
+            }
+        }
+    }
+    sink(b'\n');
 }
 
 #[cfg(test)]
@@ -208,6 +274,13 @@ mod tests {
         core::str::from_utf8(&out[..len])
             .expect("every rendered line is ascii")
             .to_string()
+    }
+
+    /// Runs C's decoder loop over a byte string and returns what it wrote.
+    fn decoded(input: &[u8]) -> String {
+        let mut out = Vec::new();
+        decode_stream(input, &mut |byte| out.push(byte));
+        String::from_utf8(out).expect("the decoder writes table bytes")
     }
 
     #[test]
@@ -267,6 +340,101 @@ mod tests {
     }
 
     #[test]
+    fn whole_string_lookups_answer_letters_digits_punctuation_noise_and_the_silent_mark() {
+        // `decode()` never prefix-matches: `.-` is A, `.-.` is R, `.-..` is L, and the
+        // digit entry `....-` is the character `4` (`morse.c:206-224`).
+        assert_eq!(decode_code(".-"), Some(b'A'));
+        assert_eq!(decode_code(".-."), Some(b'R'));
+        assert_eq!(decode_code(".-.."), Some(b'L'));
+        assert_eq!(decode_code("....-"), Some(b'4'));
+        assert_eq!(decode_code("....."), Some(b'5'));
+        // Punctuation answers from `other[]`, and the end mark is the one input that
+        // writes nothing at all (`:225-226`).
+        assert_eq!(decode_code(".-.-.-"), Some(b'.'));
+        assert_eq!(decode_code("-....-"), Some(b'-'));
+        assert_eq!(decode_code(SK_CODE), None);
+        // Anything else is line noise, not an error (`:227`) — including the empty code.
+        assert_eq!(decode_code("......."), Some(b'x'));
+        assert_eq!(decode_code(""), Some(b'x'));
+        // The byte answer rests on the table keys being ASCII; that is a fact about the
+        // C tables (`digit[]` `:53-64`, `alph[]` `:65-92`), so pin it rather than assume.
+        for (key, code) in MORSE_CODES {
+            assert!(key.is_ascii(), "{key:?} is not an ascii key");
+            assert!(
+                code.bytes().all(|byte| byte == b'.' || byte == b'-'),
+                "{code:?} holds symbols only"
+            );
+        }
+    }
+
+    #[test]
+    fn one_separator_between_groups_prints_nothing_and_a_trailing_group_is_dropped() {
+        // C's loop only flushes a group when a non-symbol byte arrives (`morse.c:170-174`)
+        // and never flushes at end of input, so the last group of `... --- ...` is lost:
+        // the closing `putchar('\n')` (`:185`) is not a separator.
+        assert_eq!(decoded(b"... --- ..."), "SO\n");
+        assert_eq!(decoded(b"... --- ...\n"), "SOS\n");
+        // The separator that flushes a group does not also print: the blank comes from a
+        // later separator that finds nothing pending (`:175-182`). Counting the terminating
+        // newline as a separator too, two trailing spaces print one blank, three print one,
+        // four print two.
+        assert_eq!(decoded(b"... \n"), "S\n");
+        assert_eq!(decoded(b"...  \n"), "S \n");
+        assert_eq!(decoded(b"...   \n"), "S \n");
+        assert_eq!(decoded(b"...    \n"), "S  \n");
+        // A group sandwiched between separators still decodes with no blank around it, and
+        // a three-separator run is what puts a space between two letters.
+        assert_eq!(decoded(b"...  ---\n"), "SO\n");
+        assert_eq!(decoded(b"...   ---\n"), "S O\n");
+        // The flush clears the flag, so a separator set before a group does not carry over
+        // across it: the space here has to wait for another free separator (`:174`).
+        assert_eq!(decoded(b"...  .. \n"), "SI\n");
+        assert_eq!(decoded(b"...  ..  \n"), "SI \n");
+    }
+
+    #[test]
+    fn ten_symbols_are_gibberish_and_the_swallow_eats_the_separator_behind_them() {
+        // The tenth symbol trips `putchar('x')`, resets the counter and then reads past the
+        // rest of the run — including the first byte after it, which is consumed and
+        // cannot serve as a separator any more (`morse.c:160-169`).
+        assert_eq!(decoded(b"..........\n"), "x\n");
+        assert_eq!(decoded(b"............\n"), "x\n");
+        assert_eq!(
+            decoded(b"............\n\n"),
+            "x \n",
+            "the first newline is eaten, the second prints a blank"
+        );
+        // Nine symbols are still a group, and the buffer never holds a tenth to decode.
+        assert_eq!(
+            decoded(b".........\n"),
+            "x\n",
+            "nine dots match no table entry"
+        );
+        // The threshold is exactly ten, and what makes it observable is the separator the
+        // swallow eats: after twelve symbols the first newline is gone, so the second one
+        // prints the blank; after nine there is no swallow, so the first space only sets the
+        // flag and the second prints nothing until the group closes.
+        assert_eq!(decoded(b"............  ...\n"), "x S\n");
+        assert_eq!(decoded(b".........  ...\n"), "xS\n");
+    }
+
+    #[test]
+    fn bytes_that_are_neither_symbols_nor_separators_are_ignored_while_nothing_is_pending() {
+        // C's `else if` chain has no fall-through arm for such a byte: with no group
+        // pending it simply reads the next one (`morse.c:170-182`).
+        assert_eq!(decoded(b"z"), "\n");
+        assert_eq!(
+            decoded(b""),
+            "\n",
+            "an empty stream still gets its closing newline"
+        );
+        assert_eq!(decoded(b"z\n"), "\n");
+        // Tabs are separators like any other, so they split groups without printing.
+        assert_eq!(decoded(b"...\t...\n"), "SS\n");
+        assert_eq!(decoded(b"...\t\t\t...\n"), "S S\n");
+    }
+
+    #[test]
     fn test_case_insensitive() {
         let table = StaticMorse;
         assert_eq!(table.code_of('a'), table.code_of('A'));
@@ -280,24 +448,11 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_letter_reports_not_found() {
-        let table = StaticMorse;
+    fn unlisted_bytes_stay_silent_on_the_encode_side() {
+        // The encode lookup has no error arm either: C's `else` branch simply finds
+        // nothing in `other[]` and prints nothing (`morse.c:241-250`).
         assert_eq!(code_for_byte(b'!'), None);
-        assert_eq!(decode_group(&table, "...---..."), Err(GameError::NotFound));
-    }
-
-    #[test]
-    fn test_bad_groups_rejected() {
-        let table = StaticMorse;
-        assert_eq!(decode_group(&table, ""), Err(GameError::InvalidArgument));
-        assert_eq!(decode_group(&table, "..x"), Err(GameError::InvalidArgument));
-    }
-
-    #[test]
-    fn test_empty_table_misses() {
-        let table = EmptyMorse;
-        assert_eq!(table.code_of('A'), None);
-        assert_eq!(table.letter_of(".-"), None);
+        assert_eq!(decode_code("...---..."), Some(b'x'));
     }
 
     #[test]
