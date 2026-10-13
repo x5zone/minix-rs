@@ -24,12 +24,14 @@
 // unused helpers in any one binary are intentional, not drift.
 #![allow(dead_code)]
 
-use minix_sys::{write, Fd};
+use minix_sys::{Fd, write};
 
 /// Standard input, POSIX `STDIN_FILENO`.
 pub const STDIN: Fd = 0;
 /// Standard output, POSIX `STDOUT_FILENO`.
 pub const STDOUT: Fd = 1;
+/// Standard error, POSIX `STDERR_FILENO`.
+pub const STDERR: Fd = 2;
 
 /// Terminates the process with an exit status (see the module header).
 /// Program arguments without `argv[0]` conventions applied — index 0 is
@@ -85,6 +87,56 @@ pub fn emit(bytes: &[u8]) {
     if !write_chunk(STDOUT, bytes) {
         terminate(1);
     }
+}
+
+/// Best-effort write to standard error — the C `fprintf(stderr, ...)` channel.
+///
+/// Write failures are ignored exactly as stdio's are in the C games, which is why the
+/// C callers exit immediately afterwards rather than checking (`morse.c:140-141`).
+/// Hosted twin: the process' real stderr, which is what lets an integration test drive
+/// the binary the way a shell would.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn warn(bytes: &[u8]) {
+    use std::io::Write as _;
+    // The hosted channel is unchecked for the same reason C's is: a failed diagnostic
+    // must not rewrite the exit status the C caller already chose.
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = std::io::stderr().write_all(bytes);
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn warn(bytes: &[u8]) {
+    let _ = write(STDERR, bytes);
+}
+
+/// Reads all of standard input.
+///
+/// C's games walk the stream a `getchar()` at a time; collecting first is the hosted
+/// trade already documented for the primes bound and the text filters — the byte
+/// sequence a run consumes is unchanged, only when it is consumed. A read failure ends
+/// collection without being reported itself, because `getchar()` returns EOF there too.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn read_stdin() -> alloc::vec::Vec<u8> {
+    use std::io::Read as _;
+    let mut input = alloc::vec::Vec::new();
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = std::io::stdin().read_to_end(&mut input);
+    input
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn read_stdin() -> alloc::vec::Vec<u8> {
+    use minix_sys::read;
+    let mut input = alloc::vec::Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match read(STDIN, &mut chunk) {
+            Ok(0) => break,
+            Ok(count) => input.extend_from_slice(&chunk[..count]),
+            Err(_) => break,
+        }
+    }
+    input
 }
 
 /// Renders `value` in decimal into `out`, returning the written length.
@@ -228,7 +280,10 @@ mod tests {
 
     #[test]
     fn test_lines_include_newline_and_split() {
-        assert_eq!(lines(b"ab\ncd\n", 16), vec![b"ab\n".to_vec(), b"cd\n".to_vec()]);
+        assert_eq!(
+            lines(b"ab\ncd\n", 16),
+            vec![b"ab\n".to_vec(), b"cd\n".to_vec()]
+        );
     }
 
     #[test]
@@ -240,7 +295,10 @@ mod tests {
     fn test_oversized_input_returns_full_buffer_lines() {
         // Capacity 4: "abcd" fills the buffer without a newline and is
         // returned as its own line, then "e\n" follows.
-        assert_eq!(lines(b"abcde\n", 4), vec![b"abcd".to_vec(), b"e\n".to_vec()]);
+        assert_eq!(
+            lines(b"abcde\n", 4),
+            vec![b"abcd".to_vec(), b"e\n".to_vec()]
+        );
     }
 
     #[test]
@@ -274,4 +332,3 @@ pub fn epoch_micros() -> Option<u64> {
     .ok()
     .map(|times| times.boot_time * 1_000_000 + times.real_ticks * 10_000)
 }
-
