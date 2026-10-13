@@ -110,7 +110,7 @@ mod tests {
         let mut face = TestRandomFace::new(FoldCipher);
         assert_eq!(face.open(DeviceMinor(0), 0, 42), 0);
         assert!(face.opened.contains_raw(0));
-        assert_eq!(face.open(DeviceMinor(1), 0, 42), -(minix_types::ENXIO as i32));
+        assert_eq!(face.open(DeviceMinor(1), 0, 42), -(minix_types::ENXIO));
     }
 
     #[test]
@@ -155,7 +155,7 @@ mod tests {
         let mut face = TestRandomFace::new(FoldCipher);
         assert_eq!(
             CharDriver::select(&mut face, DeviceMinor(9), crate::device::OP_READ),
-            -(minix_types::EIO as i32)
+            -(minix_types::EIO)
         );
     }
 }

@@ -50,7 +50,7 @@ impl Default for PtyMasterFace {
 impl CharDriver for PtyMasterFace {
     fn open(&mut self, minor: DeviceMinor, _access: i32, _user: i64) -> i32 {
         let Some(pair) = self.table.get_mut(minor.0 as usize) else {
-            return -(minix_types::ENXIO as i32);
+            return -(minix_types::ENXIO);
         };
         match pair.open_master() {
             Ok(_) => {
@@ -63,7 +63,7 @@ impl CharDriver for PtyMasterFace {
 
     fn close(&mut self, minor: DeviceMinor) -> i32 {
         let Some(pair) = self.table.get_mut(minor.0 as usize) else {
-            return -(minix_types::ENXIO as i32);
+            return -(minix_types::ENXIO);
         };
         match pair.close(PairEnd::Master) {
             // Slave hangup (B0 + SIGHUP) and the Unix98 node clear are

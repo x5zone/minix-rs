@@ -58,7 +58,7 @@ pub fn cksum_crc(data: &[u8]) -> (u32, u64) {
         crc = (crc << 8) ^ CRC_TABLE[(crc >> 24) as usize ^ (remaining & 0xFF) as usize];
         remaining >>= 8;
     }
-    ((!crc) as u32, length)
+    (!crc, length)
 }
 
 /// `-o 1`: the historic 16-bit rotating sum (`csum1`, sum1.c:44-56).

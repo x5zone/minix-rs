@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(face.last_ioctl, Some(FbIoctl::GetVarScreenInfo));
         assert_eq!(
             CharDriver::ioctl(&mut face, DeviceMinor(0), 9, 0, 0, 0, RequestId(1)),
-            -(minix_types::ENOTTY as i32)
+            -(minix_types::ENOTTY)
         );
     }
 

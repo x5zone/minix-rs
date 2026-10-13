@@ -370,7 +370,7 @@ mod tests {
     fn test_kernel_slot_from_user() {
         let user = UserSlot::new(5);
         let kernel = KernelSlot::from_user_slot(user);
-        assert_eq!(kernel.get(), 5 + MAX_NR_TASKS as usize);
+        assert_eq!(kernel.get(), 5 + MAX_NR_TASKS);
     }
 
     #[test]
@@ -388,14 +388,11 @@ mod tests {
     fn test_endpoint_to_kernel_slot() {
         // 用户进程的内核槽位
         let ep = Endpoint::from_generation_slot(1, 5);
-        assert_eq!(ep.to_kernel_slot().get(), 5 + MAX_NR_TASKS as usize);
+        assert_eq!(ep.to_kernel_slot().get(), 5 + MAX_NR_TASKS);
 
         // 内核任务的内核槽位
         let kernel_ep = Endpoint::from_generation_slot(0, -1);
-        assert_eq!(
-            kernel_ep.to_kernel_slot().get(),
-            (MAX_NR_TASKS - 1) as usize
-        );
+        assert_eq!(kernel_ep.to_kernel_slot().get(), MAX_NR_TASKS - 1);
     }
 
     #[test]

@@ -86,11 +86,7 @@ impl BlockDriver for VirtioBlkFace {
     fn ioctl(&mut self, _minor: DeviceMinor, request: u64, _grant: u64, _user: i64) -> i32 {
         // Flush rides the feature gate: without the feature, refuse.
         let _ = request;
-        if self.flush {
-            0
-        } else {
-            -(minix_types::EIO as i32)
-        }
+        if self.flush { 0 } else { -(minix_types::EIO) }
     }
 
     fn partition(&mut self, _minor: DeviceMinor) -> Option<minix_blockdriver::protocol::DeviceExtent> {
@@ -192,6 +188,6 @@ mod tests {
         let mut face = face();
         assert_eq!(face.ioctl(DeviceMinor(0), 0x9001, 0, 0), 0);
         let mut ro = VirtioBlkFace::new(1024, true, false);
-        assert_eq!(ro.ioctl(DeviceMinor(0), 0x9001, 0, 0), -(minix_types::EIO as i32));
+        assert_eq!(ro.ioctl(DeviceMinor(0), 0x9001, 0, 0), -(minix_types::EIO));
     }
 }

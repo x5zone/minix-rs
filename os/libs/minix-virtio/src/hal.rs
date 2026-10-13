@@ -77,7 +77,7 @@ mod tests {
         let mut hal = MockHal::new();
         let queue = hal.dma_alloc(vring_size_for(8), 4096).unwrap();
         assert_eq!(queue.phys, 0x1000); // already aligned
-        assert_eq!(queue.len as u32, 4096 + 70);
+        assert_eq!(queue.len, 4096 + 70);
         let buffer = hal.dma_alloc(1514, 16).unwrap();
         // 0x1000 + 4166 rounded up to 16.
         assert_eq!(buffer.phys & 0xF, 0);
