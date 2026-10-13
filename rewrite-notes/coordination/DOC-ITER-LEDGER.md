@@ -16,7 +16,7 @@
 | `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md` | 01 | `3e31894db` | `7abc06623`（+`b1727412f` 重放收尾） | v0.5+R06附加 | 待送审（换篇首轮；**不构成形态检验**，G-C 仍待无 C 源篇） | `tmp/doc-iter/06-proc-init-boot-proc/round-01-06-proc.md`（归因包）+ `cold-read-package-r06.md`（冷读包） |
 | `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md` | 02 | `b1727412f` | `05309612a` | v0.5+R02附加 | 待送审（闭环轮：三项结构残余 + C18 Ch5 改造 + 回读 13 处修复；**判冻结**） | `tmp/doc-iter/06-proc-init-boot-proc/round-02-06-proc.md`（归因包；diff 与台账均已内联） |
 | `rewrite-notes/01-stage-kernel/13-syscall-dispatch.md` | 01 | `dd9c6c1fd` | `b413b7f00` | v0.5+R01-13附加 | 待送审（首轮：两条 P0 定案 + 51 条修复 + C18/C24/C25/C26/C28 落地；**不判冻结，拟走第二轮**） | `tmp/doc-iter/13-syscall-dispatch/round-01-r13.md`（归因包；diff/台账/§7 全内联） |
-| `rewrite-notes/01-stage-kernel/13-syscall-dispatch.md` | 02 | `b413b7f00` | `94d312d43` | v0.5+R02-13附加 | 待送审（闭环轮：C24 独立检验 14/0/0 + 回归扫 27/27 + C30 单列；**判篇级可冻结**；G-C 仍待第四篇） | `tmp/doc-iter/13-syscall-dispatch/round-02-r13.md`（归因包；diff/台账/§7 全内联） |
+| `rewrite-notes/01-stage-kernel/13-syscall-dispatch.md` | 02 | `b413b7f00` | `94d312d43` | v0.5+R02-13附加 | **已审·同意冻结**（篇级；一处残留经复核为合法技术用语「RAX 回读」，无需改） | `tmp/doc-iter/13-syscall-dispatch/round-02-r13.md`（归因包；diff/台账/§7 全内联） |
 
 ## 规则变更裁决记录
 
