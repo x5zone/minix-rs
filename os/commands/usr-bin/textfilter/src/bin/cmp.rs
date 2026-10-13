@@ -12,8 +12,14 @@
 //! differing byte (`%6lld %3o %3o`); with `-s` nothing. Exit status matches the
 //! C `ERR_EXIT`/`DIFF_EXIT`: 0 equal, 1 different, 2 usage or open trouble.
 //!
-//! `skip1`/`skip2` are parsed as decimal byte counts (C's `strtoq` also accepts
-//! `0x`/leading-`0` radix prefixes; that base-0 auto-detect is not carried).
+//! `skip1`/`skip2` are parsed the way C's `strtoq(…, 0)` does it (`cmp.c:125`
+//! and `cmp.c:130`): leading blanks skipped, an optional sign, then a radix read
+//! from the digits — `0x`/`0X` is hexadecimal, a leading `0` is octal, anything
+//! else decimal. C reports an error only when nothing was converted or the value
+//! overflowed, so trailing garbage is accepted (`12xyz` skips twelve bytes). The
+//! offset is then applied at C's own site: `c_regular` reports `EOF on <file>`
+//! when the offset is past the file (and a negative offset walks the stream to
+//! its end through `c_special`, landing on the same report).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -69,8 +75,14 @@ fn run() -> ! {
     };
     let name1 = if stdin1 { "stdin" } else { file1 };
     let name2 = if stdin2 { "stdin" } else { file2 };
-    let skip1 = operands.get(2).map_or(0, |s| parse_skip(s));
-    let skip2 = operands.get(3).map_or(0, |s| parse_skip(s));
+    let skip1 = operands.get(2).map_or(0, |s| match parse_skip(s) {
+        Ok(value) => value,
+        Err(()) => usage(),
+    });
+    let skip2 = operands.get(3).map_or(0, |s| match parse_skip(s) {
+        Ok(value) => value,
+        Err(()) => usage(),
+    });
 
     let data1 = if stdin1 {
         support::read_stdin()
@@ -95,8 +107,19 @@ fn run() -> ! {
         }
     };
 
-    let a = &data1[(skip1.min(data1.len() as u64)) as usize..];
-    let b = &data2[(skip2.min(data2.len() as u64)) as usize..];
+    // C applies each offset before comparing and checks the two files in order:
+    // `c_regular`'s `if (skip1 > len1) eofmsg(file1, len1 + 1, 0)` then the same
+    // test for file2; an offset that is negative takes `c_special`'s
+    // `for (...; skip1--; ...)` walk, which consumes the stream to its end and
+    // reports the same `EOF on` line.
+    let a = match skip_window(&data1, skip1) {
+        Some(window) => window,
+        None => skip_eof(name1, data1.len(), list_all, silent),
+    };
+    let b = match skip_window(&data2, skip2) {
+        Some(window) => window,
+        None => skip_eof(name2, data2.len(), list_all, silent),
+    };
     let outcome = compare_bytes(a, b, list_all);
 
     let status = if silent {
@@ -163,11 +186,65 @@ fn uses_stdin(file1: &str, file2: &str) -> Result<[bool; 2], ()> {
     }
 }
 
-fn parse_skip(word: &str) -> u64 {
-    match word.parse::<u64>() {
-        Ok(value) => value,
-        Err(_) => usage(),
+/// C `strtoq(word, &ep, 0)` (`cmp.c:125`/`cmp.c:130`): skip leading blanks, take
+/// an optional sign, then read the radix from the digits — `0x`/`0X` hexadecimal,
+/// a leading `0` octal, otherwise decimal. The longest run of digits valid in
+/// that radix is consumed and anything after it is ignored, because C's only two
+/// failure tests are `errno` (overflow) and `ep == argv[n]` (nothing converted).
+/// `Err(())` is exactly those two cases.
+fn parse_skip(word: &str) -> Result<i64, ()> {
+    let text = word.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let (negative, rest) = match text.as_bytes().first() {
+        Some(b'-') => (true, &text[1..]),
+        Some(b'+') => (false, &text[1..]),
+        _ => (false, text),
+    };
+    // Base 0 decides the radix from the prefix. Note the asymmetry C keeps: with
+    // `0x`/`0X` a missing hex digit means no conversion at all, while a bare
+    // leading `0` is itself a converted digit (so `08` is zero, ep left at `8`).
+    let (radix, digits, zero_counts) =
+        match rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+            Some(hex) => (16, hex, false),
+            None => match rest.strip_prefix('0') {
+                Some(octal) => (8, octal, true),
+                None => (10, rest, false),
+            },
+        };
+    let run = digits
+        .find(|c: char| !c.is_digit(radix))
+        .unwrap_or(digits.len());
+    if run == 0 && !zero_counts {
+        return Err(());
     }
+    // A zero-length run is only reachable through the bare leading `0`, which is
+    // itself the digit C converted: the value is zero and the offset stops there.
+    let value = if run == 0 {
+        0
+    } else {
+        i64::from_str_radix(&digits[..run], radix).map_err(|_| ())?
+    };
+    Ok(if negative { -value } else { value })
+}
+
+/// The bytes left after applying a skip, or `None` when C would report EOF:
+/// `c_regular`'s test is strict (`skip > len`), so an offset exactly at the end
+/// of the file is not an EOF report but an empty window.
+fn skip_window(data: &[u8], skip: i64) -> Option<&[u8]> {
+    if skip < 0 || skip as u64 > data.len() as u64 {
+        return None;
+    }
+    Some(&data[skip as usize..])
+}
+
+/// C `misc.c`'s `eofmsg(file, len + 1, 0)`: silent prints nothing, the plain
+/// form is `EOF on <file>`, and `-l` adds `: char <len + 1>` because the `line`
+/// argument is zero. The exit status is `DIFF_EXIT` in all three cases.
+fn skip_eof(file: &str, len: usize, list_all: bool, silent: bool) -> ! {
+    if !silent {
+        let byte = len as u64 + 1;
+        support::warn(format!("cmp: {}\n", report_eof(file, byte, 0, list_all)).as_bytes());
+    }
+    support::terminate(DIFF_EXIT)
 }
 
 fn usage() -> ! {
@@ -177,7 +254,7 @@ fn usage() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::uses_stdin;
+    use super::{parse_skip, skip_window, uses_stdin};
 
     #[test]
     fn a_dash_operand_reads_stdin() {
@@ -186,6 +263,64 @@ mod tests {
         assert_eq!(uses_stdin("a", "b"), Ok([false, false]));
         // 两个操数都是 `-`：C `cmp.c:110` 报“只能指定一次标准输入”。
         assert_eq!(uses_stdin("-", "-"), Err(()));
+    }
+
+    #[test]
+    fn skip_reads_the_radix_from_its_digits() {
+        // C `strtoq(…, 0)`: `0x`/`0X` hexadecimal, a leading `0` octal, otherwise
+        // decimal.
+        assert_eq!(parse_skip("10"), Ok(10));
+        assert_eq!(parse_skip("010"), Ok(8));
+        assert_eq!(parse_skip("0x10"), Ok(16));
+        assert_eq!(parse_skip("0X1f"), Ok(31));
+        assert_eq!(parse_skip("0"), Ok(0));
+        // An octal prefix that stops early still converts the `0` it consumed:
+        // C leaves `ep` at the offending character and only errors when `ep`
+        // never moved.
+        assert_eq!(parse_skip("08"), Ok(0));
+        assert_eq!(parse_skip("0779"), Ok(63));
+    }
+
+    #[test]
+    fn skip_accepts_sign_blanks_and_trailing_garbage() {
+        assert_eq!(parse_skip("  12"), Ok(12));
+        assert_eq!(parse_skip("+4"), Ok(4));
+        assert_eq!(parse_skip("-3"), Ok(-3));
+        assert_eq!(parse_skip("-0"), Ok(0));
+        // C checks only `errno` and `ep == argv[n]`; a tail that is not a digit
+        // stops the conversion without failing it (`cmp.c:126`).
+        assert_eq!(parse_skip("12xyz"), Ok(12));
+        assert_eq!(parse_skip("0x1Fz"), Ok(31));
+    }
+
+    #[test]
+    fn skip_errors_only_when_nothing_was_converted_or_out_of_range() {
+        assert!(parse_skip("xyz").is_err());
+        assert!(parse_skip("").is_err());
+        assert!(parse_skip("-").is_err());
+        assert!(parse_skip("+").is_err());
+        // `0x` with no hex digits converts nothing at all — C's `ep == argv[n]`.
+        assert!(parse_skip("0x").is_err());
+        assert!(parse_skip("0xg1").is_err());
+        // Out of range is C's `errno` arm: both ends of the `off_t` span and
+        // anything beyond it.
+        assert!(parse_skip("99999999999999999999999").is_err());
+        assert!(parse_skip("-99999999999999999999999").is_err());
+    }
+
+    #[test]
+    fn skip_past_the_end_is_the_eof_side() {
+        let data = [b'a', b'b', b'c'];
+        assert_eq!(skip_window(&data, 1), Some(&data[1..]));
+        // `c_regular`'s test is strict, so an offset at the very end is an empty
+        // window, not an EOF report (`skip1 > len1` is false there).
+        assert_eq!(skip_window(&data, 3), Some(&[][..]));
+        assert_eq!(skip_window(&data, 4), None);
+        // A negative offset takes C's `c_special` walk (`for (...; skip1--;)`),
+        // which consumes the stream to its end and reports the same EOF line.
+        assert_eq!(skip_window(&data, -1), None);
+        assert_eq!(skip_window(&[], 0), Some(&[][..]));
+        assert_eq!(skip_window(&[], 1), None);
     }
 }
 
