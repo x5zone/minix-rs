@@ -115,3 +115,45 @@ fn only_the_first_two_thousand_forty_eight_bytes_vote_and_all_of_them_rotate() {
     );
     assert_ne!(alone, tail);
 }
+
+#[test]
+fn the_rotation_argument_is_parsed_like_strtol_and_rejected_in_two_orders() {
+    // `get_rotation` parses with `strtol`, so leading white space and a plus sign are
+    // accepted before anything is decided (`caesar.c:126`), and `INT_MAX` survives to be
+    // folded by `init_rottbl` (`:86`).
+    for arg in [" 3", "+3", "\t3"] {
+        let (out, status, err) = run(&[arg], b"abc\n");
+        assert_eq!(status, 0, "stderr was {err:?}");
+        assert_eq!(out, b"def\n".to_vec(), "argument {arg:?}");
+    }
+    let (max, status, err) = run(&["2147483647"], b"a");
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(max, b"x".to_vec(), "2147483647 folds to 23");
+    // A minus sign parses and then fails the range test; nothing-or-junk fails the invalid
+    // test. Both print C's sentence — without its strerror tail, which this tree has no
+    // table for — and both leave with status 1 having written nothing to standard output.
+    for arg in ["-1", "2147483648", "99999999999"] {
+        let (out, status, err) = run(&[arg], b"abc");
+        assert_eq!(out, Vec::new(), "argument {arg:?} must not be rotated");
+        assert_eq!(status, 1);
+        assert_eq!(err, format!("caesar: Bad rotation value `{arg}'\n"));
+    }
+    for arg in ["", "5x", "-"] {
+        let (out, status, err) = run(&[arg], b"abc");
+        assert_eq!(out, Vec::new(), "argument {arg:?} must not be rotated");
+        assert_eq!(status, 1);
+        assert_eq!(err, format!("caesar: Bad rotation value `{arg}'\n"));
+    }
+}
+
+#[test]
+fn more_than_one_argument_answers_the_usage_line_on_stderr() {
+    // `main` only counts arguments (`caesar.c:192-203`), so the third case is the usage
+    // line — on standard error, with nothing read from standard input.
+    let (out, status, err) = run(&["5", "7"], b"abc");
+    assert_eq!(out, Vec::new());
+    assert_eq!((status, err.as_str()), (1, "usage: caesar [rotation]\n"));
+    let (out, status, err) = run(&["5", "7", "9"], b"");
+    assert_eq!(out, Vec::new());
+    assert_eq!((status, err.as_str()), (1, "usage: caesar [rotation]\n"));
+}

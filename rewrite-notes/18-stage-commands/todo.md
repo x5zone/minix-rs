@@ -250,6 +250,37 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十把 `caesar` 的入口面按 C 坐实（`get_rotation` 的接受规则、两种失败各成一句、usage 落 stderr）**
+  （`2026-10-14`，`claim/CAESAR-ROTATION-qoder` @ 基线 `13310ccf6`，单域三线 commands/games/stdio-games，无跨界）：
+  接回批次二百二十九登记①②。**是什么**：旧 `parse_rotation` 只收纯数字、上界取 `u32::MAX`，
+  而 C 的 `get_rotation`（`caesar.c:120-137`）先用 `strtol` 解析——**跳前导空白、吃可选符号**——
+  再分两步拒绝：`arg[0] == '\0' || *endp != '\0'` 算 `EINVAL`，`rot < 0 || rot > INT_MAX` 算 `ERANGE`；
+  两句合并走 `err(EXIT_FAILURE, "Bad rotation value `%s'", arg)`。也就是说 `-1` 在 C 里不是「畸形」而是
+  「越界」，`+5` 与 `" 5"` 都是合法值，上界是 `INT_MAX` 而不是 `u32::MAX`。坏值路径以外还有两处：
+  多参数时的 usage 行在 C 里走 stderr（本壳始终走 stdout），以及坏值时本壳完全静默。
+  判类 P0-code-bug（接受规则、上界，以及有退码无报文的静默失败）。
+  **怎么修**：`parse_rotation` 重写为 strtol 形（返 `Result<u32, RotationFailure>`，`Invalid`/`Range` 两型），
+  失败不再塌成单一错误——它不取 `GameError` 是有意选择（后者的「畸形」与「越界」各自合一，
+  无法区分 C 的两个后缀），已在类型注释里写明理由，以便日后补上 strerror 表时直接接上；
+  执行半新增 `usage()`（stderr）与 `bad_rotation()`（`caesar: Bad rotation value ` + 原值 + 单引号 + 换行）。
+  **已知缺口（不隐晦）**：C 句尾还缀一个 strerror 文本（`Invalid argument` / `Numerical result out of range`），
+  本树无表（全族同一处理，如 `stat.rs:224`、factor 溢出句），故行止于原值；`RotationFailure` 保留了两型，
+  壳里的 `match` 将两个后缀应当为何写在注释里。
+  **取证**：`caesar_face.rs` 3→5 枚（接受规则与两种失败各成一句报文；`2147483647` 能过并被 26 取余成 23；
+  usage 落 stderr 退 1）；库测把 `test_rotations_parse` 换为
+  `rotations_parse_the_way_strtol_does_and_then_reject_by_range`（十四项断言，含 `"-"` 这种只有符号的畸形输入）。
+  三件套：`cargo test -p minix-stdio-games` → **17 目标全 ok、合计 157 passed、零 FAILED**（基线 17/155）；
+  `--lib caesar::` 8/0；`--test caesar_face` 5/0；三架构 `--bins` 三台零 error；容器 `minix-ci:1.94`（带 `-u`）
+  `cargo check -j 1 --workspace` Finished 零 error、容器内本包 17 个 `test result: ok`、FAILED 与 error 计数 0；
+  clippy 触及文件零新增（中途 `use crate::GameError;` 因不再使用已收、常量比较按建议改写）；`rustfmt` 零漂移；
+  `pattern-gate.sh --diff` PASS=17 FAIL=0；`doc-style-lint.sh --diff` error 0（一处转义反引号漏进正文已改成人话叙述）；
+  测试名逐枚 grep 存在；核实日 `2026-10-14`；基线 `13310ccf6`。
+  **九枚变异负控**（`--lib caesar::` 与 `--test caesar_face` 分两次调用、复位断言 md5）全部咬中：不跳前导空白、
+  `+` 被当畸形、负号通过、上界改 `u32::MAX`、尾随垃圾接受、空串当 0、两型失败合流、usage 回到 stdout、
+  报文不再带原值。
+  登记不执行：①strerror 句尾（全族同缺，需先做 errno→文本表的基础件）；②number 壳与 `number_words` 的逐枚对 C；
+  ③真机播种与 open 腿归 C-57/E5。
+
 - ✅ **批次二百二十九把 `caesar` 的无参频率破解（`guess_and_rotate`）建成决定半并接上执行半**
   （`2026-10-14`，`claim/CAESAR-FACE-qoder` @ 基线 `85b6f2dac`，单域三线 commands/games/stdio-games，无跨界）：
   **是什么**：22 篇与 `bin/caesar.rs` 都记着「无参频率破解待决定半」，而无参数时 C 走的正是这条腿

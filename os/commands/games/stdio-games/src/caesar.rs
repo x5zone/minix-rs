@@ -19,28 +19,69 @@
 //! stored as the constant it evaluates to; a test in this module recomputes every entry
 //! from `STD_PERCENT` under `std` and compares.
 
-use crate::GameError;
-
 /// Letters in the Latin alphabet.
 pub const LETTERS: u32 = 26;
 
-/// Parse a rotation amount (decimal, zero through the integer ceiling).
-pub fn parse_rotation(word: &str) -> Result<u32, GameError> {
-    if word.is_empty() {
-        return Err(GameError::InvalidArgument);
+/// Why C's `get_rotation` refuses a value: the two `errno`s it sets (`caesar.c:125-135`).
+///
+/// This is deliberately not the crate's `GameError`: that vocabulary collapses "malformed"
+/// and "out of range" into one arm each way (22 and 34), while C keeps them apart because
+/// the suffix of its message differs. Keeping both here means the sentence can be finished
+/// the moment the tree grows a strerror table, without re-deriving which test tripped.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum RotationFailure {
+    /// `arg[0] == '\0' || *endp != '\0'`: nothing to parse, or trailing junk.
+    Invalid,
+    /// `rot < 0 || rot > INT_MAX`, or `strtol` itself overflowed.
+    Range,
+}
+
+/// C's `get_rotation` (`caesar.c:120-137`), acceptance rules and all.
+///
+/// The parsing is `strtol`, which is more generous than "digits only" in two ways a
+/// caller cannot see from the outside: it **skips leading white space** and it takes an
+/// optional sign. A minus sign survives parsing and is then rejected by
+/// `rot < 0 || rot > INT_MAX` — as `ERANGE`, not as malformed input — while an empty
+/// argument or trailing junk is `EINVAL`; `err` fires only when `errno` was still clear,
+/// so which of the two tests tripped decides the suffix C prints. The failure carries
+/// that distinction rather than flattening it.
+///
+/// A value that survives is non-negative and at most `INT_MAX`, and `init_rottbl` folds
+/// it with `% LETTERS` (`:86`), so the returned number is kept as parsed rather than
+/// folded here.
+pub fn parse_rotation(word: &str) -> Result<u32, RotationFailure> {
+    let bytes = word.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    // `strtol` consumes either sign; only the minus one is later refused, and as a range
+    // failure rather than malformed input.
+    let negative = index < bytes.len() && bytes[index] == b'-';
+    if index < bytes.len() && matches!(bytes[index], b'-' | b'+') {
+        index += 1;
     }
     let mut value: u64 = 0;
-    for byte in word.bytes() {
-        if !byte.is_ascii_digit() {
-            return Err(GameError::InvalidArgument);
-        }
-        value = value
-            .checked_mul(10)
-            .and_then(|scaled| scaled.checked_add((byte - b'0') as u64))
-            .ok_or(GameError::OutOfRange)?;
+    let mut digits = 0usize;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        let Some(scaled) = value.checked_mul(10) else {
+            return Err(RotationFailure::Range);
+        };
+        let Some(summed) = scaled.checked_add((bytes[index] - b'0') as u64) else {
+            return Err(RotationFailure::Range);
+        };
+        value = summed;
+        digits += 1;
+        index += 1;
     }
-    if value > u32::MAX as u64 {
-        return Err(GameError::OutOfRange);
+    // `errno == 0 && (arg[0] == '\0' || *endp != '\0')`: an empty argument, or anything
+    // left over after the digits, is the invalid case — including a lone sign, which
+    // `strtol` reports with nothing consumed.
+    if digits == 0 || index != bytes.len() {
+        return Err(RotationFailure::Invalid);
+    }
+    if negative || value > i32::MAX as u64 {
+        return Err(RotationFailure::Range);
     }
     Ok(value as u32)
 }
@@ -290,10 +331,37 @@ mod tests {
     }
 
     #[test]
-    fn test_rotations_parse() {
+    fn rotations_parse_the_way_strtol_does_and_then_reject_by_range() {
+        // C's acceptance comes from `strtol` (`caesar.c:126`): leading white space is
+        // skipped and a sign is consumed. The rejections then come from the two explicit
+        // tests (`:129-133`), and they land on different errnos: nothing-or-junk is the
+        // invalid case, a sign that survived parsing or a value past `INT_MAX` is the
+        // range case. So `-1` is not "malformed", it is out of range.
         assert_eq!(parse_rotation("13"), Ok(13));
-        assert_eq!(parse_rotation(""), Err(GameError::InvalidArgument));
-        assert_eq!(parse_rotation("-1"), Err(GameError::InvalidArgument));
-        assert_eq!(parse_rotation("99999999999"), Err(GameError::OutOfRange));
+        assert_eq!(parse_rotation("0"), Ok(0));
+        assert_eq!(parse_rotation("+5"), Ok(5), "a plus sign is consumed");
+        assert_eq!(parse_rotation(" 7"), Ok(7), "leading blanks are skipped");
+        assert_eq!(parse_rotation("\t9"), Ok(9));
+        assert_eq!(
+            parse_rotation("2147483647"),
+            Ok(2147483647),
+            "INT_MAX is allowed"
+        );
+        assert_eq!(parse_rotation(""), Err(RotationFailure::Invalid));
+        assert_eq!(parse_rotation("5x"), Err(RotationFailure::Invalid));
+        assert_eq!(
+            parse_rotation("-"),
+            Err(RotationFailure::Invalid),
+            "no digits at all"
+        );
+        assert_eq!(parse_rotation(" 5x"), Err(RotationFailure::Invalid));
+        assert_eq!(parse_rotation("-1"), Err(RotationFailure::Range));
+        assert_eq!(parse_rotation("2147483648"), Err(RotationFailure::Range));
+        assert_eq!(parse_rotation("99999999999"), Err(RotationFailure::Range));
+        assert_eq!(
+            parse_rotation("99999999999999999999999"),
+            Err(RotationFailure::Range),
+            "the overflow is caught while scanning, as ERANGE is set by strtol"
+        );
     }
 }
