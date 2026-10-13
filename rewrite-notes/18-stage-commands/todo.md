@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十一把 `number` 重写成 C 的数词：三位一组带尺度名、每组自带句点、小数按位数命名量级**
+  （`2026-10-14`，`claim/NUMBER-FACE-qoder` @ 基线 `5b183cf1e`，单域三线 commands/games/stdio-games，无跨界）：
+  接回批次二百三十登记②。**是什么**：台账与 22 篇都只写「已接线」，而实现是**另一个程序**——
+  `number_words` 把一个 `u32`（≤ 999999）读成一行英文，而 C 的 `number` 读的是**整行里的一个数**，
+  按三位一组报尺度名（hundred 到 vigintillion 共 22 个，因此上限 65 位），**每组末尾自带一个句点**
+  （`unit` 的 `lflag ? " " : ".\n"`，`number.c:229-236`、`:244-246`），所以 `1234` 注定是两行；
+  小数部分先走到第一个非零位再决定说什么，但**量级名用总位数**（`pfract`，`:286-298`）；
+  入口上 C 有 `-l`、有操作数（旧壳反而把任何参数当错误）、有多件时的 `...\n` 分隔、
+  有三句 `errx` 与一句 usage（全在 stderr）。旧壳连 `number_words` 里的连字符也没有（C 用 `thirty-four`）。
+  判类 P0-code-bug（输出形状、尺度名、小数、选项面）+ P0-fact（文档与测试对范围的说法）。
+  **怎么修**：`words.rs` 的数词一半重写为 `convert`/`speak_units`/`speak_group`/`speak_fraction_name`
+  （与 C 同名四层逐句对位）+ `NAME1`/`NAME2`/`NAME3`/`FRACTION_PREFIX`/`MAXNUM`，拒绝用
+  `NumberError::{Illegal{start,end},TooLarge,NoRoom}`（`start..end` 正是 C 的 `line` 还能打出的那段）；
+  执行半重写：`getopt("l")` 逐字母聚簇、`--` 消费、裸 `-` 归操作数、`char line[256]` 的**可用长度 255**
+  （拿不到换行即 `line too long.`）、第二件起前缀 `...\n`、三句 `errx` 与 usage 全走 `support::warn`。
+  这些 `errx` 本身不带 strerror 后缀，所以报文可以全字复现（与 caesar/factor 那类需后缀的不一样）。
+  **金样来历**：先把 C 的 `convert`/`unit`/`number`/`pfract` 逐行誊写成一个独立的参考实现算出期望值，
+  再用参考实现与真二进制互验（两边逐字相同才算数）；其中两枚我自己先推错（`1..2` 的报告包含那个点、
+  以及分数行少算一个换行），都由参考实现当场驳回。
+  三件套：`cargo test -p minix-stdio-games` → **18 个测试目标全 ok、合计 165 passed、零 FAILED**（基线 17 目标 / 157 passed；+3 库测、+5 端到端测）；
+  库测 64/0（`words::` 11/0）、`--test number_face` 5/0（第 15 道端到端门）；三架构 `--bins` 三台零 error；
+  容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、容器内 18 个 `test result: ok`、
+  FAILED 与 error 计数 0；clippy 触及文件零新增（中途四处建议已按形处理：`is_multiple_of` 两例、可合并的 `if` 一例、
+  `is_some`+`unwrap` 改 `match`）；`rustfmt` 零漂移；`pattern-gate.sh --diff` PASS=17 FAIL=0；
+  `doc-style-lint.sh --diff` error 0；`doc-code-density-check.sh --check` 通过；本子树断链 0；
+  文档里的测试名与代码逐枚对账（脚本扫描零 MISSING）；旧 API `number_words` 在代码与文档中均不再出现。
+  **九枚变异负控**全部咬中：`-l` 的组尾分隔符、首位不足三位的分组、尺度名降一级、十位连字符改空格、
+  量级名改用剪短后的位数、不消行首空白、去掉小数侧的 65 位上限、`LINE` 改回声明值 256、`...\n` 分隔不打印。
+  其中最后一枚同时证明 `LINE: usize = 255` 不抄代码：255 位数字加换行在 C 里先碰 `line too long.`，
+  改成 256 那么同一输入会变成「超 65 位」——两句报文不同，金样有牙。
+  登记不执行：①§2.5 数词一段尚无自己的节选码（承载门目前靠本篇其余子节凑齐）；②真机播种与 open 腿归
+  C-57/E5；③全族 strerror 基础件（见批次二百三十）。
+
 - ✅ **批次二百三十把 `caesar` 的入口面按 C 坐实（`get_rotation` 的接受规则、两种失败各成一句、usage 落 stderr）**
   （`2026-10-14`，`claim/CAESAR-ROTATION-qoder` @ 基线 `13310ccf6`，单域三线 commands/games/stdio-games，无跨界）：
   接回批次二百二十九登记①②。**是什么**：旧 `parse_rotation` 只收纯数字、上界取 `u32::MAX`，
