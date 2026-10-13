@@ -137,13 +137,12 @@ fn operands_are_encoded_into_one_stream_and_a_bad_one_only_warns() {
 
 #[test]
 fn unmodelled_letters_are_refused_not_ignored() {
-    // The letters left in the deciding half are `-f -F -h -m`: the two folding
-    // flags and the two alternate encodings whose engine branch (HTTP and MIME
-    // style) the library side has not grown yet. Silently ignoring any of them
-    // would print an encoding the user did not ask for. `-d` is a different case:
-    // it is C's debug counter, compiled out of that build, so C sends it to
-    // `default:` and the answer is the usage line.
-    for flag in ["-f", "-F", "-h", "-m"] {
+    // The letters left in the deciding half are `-h` and `-m`, the two alternate
+    // encodings whose engine branch (HTTP and MIME style) the library side has not
+    // grown yet. Silently ignoring either would print an encoding the user did not
+    // ask for. `-d` is a different case: it is C's debug counter, compiled out of
+    // that build, so C sends it to `default:` and the answer is the usage line.
+    for flag in ["-h", "-m"] {
         let (out, status, err) = run(&[flag], b"a\n");
         assert_eq!(out, Vec::<u8>::new(), "flag {flag} printed {out:?}");
         assert_eq!(status, 1, "flag {flag} stderr was {err:?}");
@@ -257,4 +256,130 @@ fn nolocale_letter_is_accepted_and_changes_nothing() {
     assert_eq!(run(&["-Nc"], b"a\r").0, run(&["-c"], b"a\r").0);
     assert_eq!(run(&["-b"], b"\\").0, b"\\".to_vec());
     assert_eq!(run(&["-M", "-b"], b"$\\").0, b"\\044\\134".to_vec());
+}
+
+/// `minix3/usr.bin/vis/vis.c:58` starts `foldwidth` at 80 and `-f` leaves it there,
+/// so `-f` alone means 78 printable columns before the hidden newline (`vis.c`
+/// breaks at `col > max - 2`, `usr.bin/vis/foldit.c:61`).
+fn eighty() -> Vec<u8> {
+    vec![b'x'; 80]
+}
+
+#[test]
+fn fold_writes_a_hidden_newline_and_closes_a_partial_line() {
+    // Eighty columns of `x` fold after 78, and the two leftover columns are a
+    // partial line, which `usr.bin/vis/vis.c:288-289` terminates with one more marker.
+    let mut expected = vec![b'x'; 78];
+    expected.extend_from_slice(b"\\\nxx\\\n");
+    assert_eq!(run(&["-f"], &eighty()).0, expected);
+    // An empty input still gets the closing marker: `cp` starts at `nul + 1`, so
+    // `*(cp - 1)` is not a newline (`usr.bin/vis/vis.c:171-172`, and the comment there says so).
+    assert_eq!(run(&["-f"], b"").0, b"\\\n".to_vec());
+    // A run that ends exactly on a newline needs no closing marker.
+    assert_eq!(run(&["-f"], b"ab\n").0, b"ab\n".to_vec());
+}
+
+#[test]
+fn fold_flag_alone_marks_lines_but_does_not_fold() {
+    // `-F width` sets the width and `markeol++` but not `fold` (`usr.bin/vis/vis.c:89-95`),
+    // while `-f` sets `fold` and leaves the width alone (`usr.bin/vis/vis.c:96-98`). So `-F 6` alone
+    // marks lines and never folds, and `-f -F 6` folds at 4 columns.
+    assert_eq!(run(&["-F", "6"], b"abcdefgh").0, b"abcdefgh".to_vec());
+    assert_eq!(run(&["-l"], b"abcdefgh").0, b"abcdefgh".to_vec());
+    assert_eq!(
+        run(&["-f", "-F", "6"], b"abcdefgh").0,
+        b"abcd\\\nefgh\\\n".to_vec()
+    );
+    // Attached value and clustered letters are the same call: `-F6` ≡ `-F 6`.
+    assert_eq!(run(&["-fF6"], b"abcdefgh").0, b"abcd\\\nefgh\\\n".to_vec());
+    // `-F` marks the end of line, so a newline in the input gains its `\$`; the
+    // three characters of that marker are three columns, which is why a `\n` right
+    // after a full line folds first.
+    assert_eq!(run(&["-f", "-F", "6"], b"ab\n").0, b"ab\\$\n".to_vec());
+    assert_eq!(
+        run(&["-f", "-F", "6"], b"abcd\n").0,
+        b"abcd\\\n\\$\n".to_vec()
+    );
+}
+
+#[test]
+fn fold_width_is_read_the_way_atoi_reads_it() {
+    // C checks `atoi(optarg) < 5` (`usr.bin/vis/vis.c:90-93`), and `atoi` converts a word with
+    // no digits to zero, ignores trailing garbage and takes a sign — so `4`, `abc`
+    // and `-3` all fail the check while `6x` passes it as 6.
+    let refused: Vec<Vec<&str>> = vec![
+        vec!["-F", "4"],
+        vec!["-F4"],
+        vec!["-Fabc"],
+        vec!["-F-3"],
+        vec!["-F0"],
+    ];
+    for flag in refused {
+        let (out, status, err) = run(&flag, b"abcdefgh");
+        assert_eq!(out, Vec::<u8>::new(), "{flag:?} printed {out:?}");
+        assert_eq!(status, 1, "{flag:?} stderr was {err:?}");
+        assert!(
+            err.contains("can't fold lines to less than 5 cols"),
+            "{flag:?} stderr was {err:?}"
+        );
+    }
+    // Trailing garbage is `atoi`'s business, not getopt's: `-F6x` is width 6.
+    assert_eq!(
+        run(&["-f", "-F6x"], b"abcdefgh").0,
+        b"abcd\\\nefgh\\\n".to_vec()
+    );
+    // A `-F` with nothing after it is the missing-argument case of getopt.
+    let (out, status, err) = run(&["-F"], b"a");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1, "stderr was {err:?}");
+    assert!(err.contains("Usage: vis ["), "stderr was {err:?}");
+}
+
+#[test]
+fn fold_counts_columns_of_the_encoded_text_and_carries_the_column_across_files() {
+    // `usr.bin/vis/foldit.c:47-60` walks the text it was handed, so a tab is the next multiple
+    // of eight columns, an escape sequence is however many characters it spells,
+    // and `usr.bin/vis/vis.c:170`'s `static int col` survives from one operand to the next.
+    // A tab at column 8 overflows the four-column limit of `-F 10`, and the closing
+    // marker does not reset the column, so the second file opens on a fold.
+    assert_eq!(
+        run(&["-f", "-F", "10"], b"\t\t").0,
+        b"\t\\\n\t\\\n".to_vec()
+    );
+    let one = written("fold-a", &[b'x'; 78]);
+    let two = written("fold-b", b"ab");
+    let mut expected = vec![b'x'; 78];
+    expected.extend_from_slice(b"\\\n\\\nab\\\n");
+    assert_eq!(
+        run(&["-f", &one.to_string_lossy(), &two.to_string_lossy()], b"").0,
+        expected
+    );
+
+    // A control byte encodes to three characters and therefore costs three columns:
+    // at the four-column limit of `-F 6`, `a`, `\^A`, `b` fills a line exactly and
+    // the `b` that would be the fifth column opens the next one.
+    assert_eq!(
+        run(&["-f", "-F", "6"], b"a\x01b").0,
+        b"a\\^A\\\nb\\\n".to_vec()
+    );
+    for path in [&one, &two] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn fold_applies_to_the_none_path_too() {
+    // In `process()` the `none` branch only decides what goes into `buff`; the
+    // folding test that follows it runs whatever the chunk turned out to be
+    // (`usr.bin/vis/vis.c:213-228` then `:268-278`), so `-n` folds and `-F`'s line marker is
+    // still shadowed by `-n`.
+    assert_eq!(
+        run(&["-n", "-f", "-F", "6"], b"abcdefgh").0,
+        b"abcd\\\nefgh\\\n".to_vec()
+    );
+    // `-n` doubles a backslash, and both bytes count as columns.
+    assert_eq!(
+        run(&["-n", "-f", "-F", "6"], b"abcd\\e").0,
+        b"abcd\\\n\\\\e\\\n".to_vec()
+    );
 }

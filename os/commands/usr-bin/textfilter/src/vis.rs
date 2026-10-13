@@ -21,6 +21,13 @@
 //! `M`-meta prefixes, `^X` controls, and backslash-octal runs — which is what the
 //! encoder produces.
 //!
+//! Folding is the other half of the contract: `-f` and `-F` change nothing about how
+//! a byte is encoded, only where a line is broken in the text vis has already
+//! emitted, which is why [`foldit`] measures encoded bytes and why the command
+//! encodes one chunk at a time when folding is on. The two places where
+//! `usr.bin/vis/foldit.c` and this shell part company are recorded in
+//! `rewrite-notes/18-stage-commands/07-text-filter.md`.
+//!
 //! Two command flags are deliberately not fields of [`VisOptions`]. `-n` is
 //! `none` in `minix3/usr.bin/vis/vis.c`, which copies the stream with each
 //! backslash doubled and so preserves raw bytes above `0x7F` — bytes a `String`
@@ -137,19 +144,20 @@ pub fn encode(input: &[u8], options: &VisOptions) -> String {
     // per character; a membership table is the same test without the scan.
     let extra = extra_membership(&options.extra_set());
     for (index, &byte) in input.iter().enumerate() {
-        // C's `process()` tests the shapes in this order, so the end-of-line
-        // marker wins over the vis(3) encoding of a newline (`vis.c:220-227`).
-        if options.mark_eol && byte == b'\n' {
-            if !options.no_slash {
-                out.push('\\');
-            }
-            out.push('$');
-            out.push('\n');
-            continue;
-        }
         let next = input.get(index + 1).copied().unwrap_or(0);
-        encode_byte(byte, next, options, &extra, &mut out);
+        encode_into(byte, next, options, &extra, &mut out);
     }
+    out
+}
+
+/// The one-byte form of [`encode`]: exactly what `vis(1)` holds in `buff` before
+/// it prints, so the folding decision is taken on the same text the C feeds to
+/// `foldit()`. The extra list is rebuilt here the way `istrsenvisx:484` rebuilds
+/// it per character.
+pub fn encode_chunk(byte: u8, next: u8, options: &VisOptions) -> String {
+    let extra = extra_membership(&options.extra_set());
+    let mut out = String::new();
+    encode_into(byte, next, options, &extra, &mut out);
     out
 }
 
@@ -161,6 +169,91 @@ fn extra_membership(extra: &[u8]) -> [bool; 256] {
         table[byte as usize] = true;
     }
     table
+}
+
+/// The command's own step for one byte: the end-of-line marker first, because
+/// `usr.bin/vis/vis.c:220-227` tests `markeol && c == '\n'` before it calls the
+/// library at all, so a marked newline never reaches the pass-through test that
+/// would otherwise let it by.
+fn encode_into(byte: u8, next: u8, options: &VisOptions, extra: &[bool; 256], out: &mut String) {
+    if options.mark_eol && byte == b'\n' {
+        if !options.no_slash {
+            out.push('\\');
+        }
+        out.push('$');
+        out.push('\n');
+        return;
+    }
+    encode_byte(byte, next, options, extra, out);
+}
+
+/// The hidden newline `-f` and `-F` insert, and the same one that closes a partial
+/// line at the end of an operand (`usr.bin/vis/vis.c:289` and `foldit.c:63`). C
+/// picks `"=\n"` instead when `VIS_MIMESTYLE` is set, which is the `-m` flag this
+/// command still refuses; when `-m` lands, the choice belongs here.
+pub const FOLD_MARKER: &[u8] = b"\\\n";
+
+/// One column step of C's `foldit()` switch (`usr.bin/vis/foldit.c:47-60`): a
+/// newline or carriage return resets the column, a tab advances to the next
+/// multiple of eight, a backspace backs up but never below zero, and anything else
+/// costs one column. Encoded text is walked, not the input — an escape sequence
+/// `\011` occupies three visible columns even though its byte was one.
+fn column_step(col: usize, byte: u8) -> usize {
+    match byte {
+        b'\n' | b'\r' => 0,
+        b'\t' => (col + 8) & !7,
+        0x08 => col.saturating_sub(1),
+        _ => col + 1,
+    }
+}
+
+/// The column after a whole chunk, with nothing in the way.
+fn columns(chunk: &[u8], incoming: usize) -> usize {
+    let mut col = incoming;
+    for &byte in chunk {
+        col = column_step(col, byte);
+    }
+    col
+}
+
+/// The walk alone: `Some(column)` when the chunk stays inside the limit, `None`
+/// at the first byte that would pass it.
+fn walk(chunk: &[u8], incoming: usize, limit: usize) -> Option<usize> {
+    let mut col = incoming;
+    for &byte in chunk {
+        col = column_step(col, byte);
+        if col > limit {
+            return None;
+        }
+    }
+    Some(col)
+}
+
+/// C's `foldit(chunk, col, max, flags)` (`usr.bin/vis/foldit.c:36-70`), the column
+/// bookkeeping behind `-f` and `-F`. `incoming` is the column the previous chunks
+/// left — `usr.bin/vis/vis.c` keeps it in a `static int col`, so it survives across
+/// chunks *and* across file operands; `max` is 80 under `-f` or the `-F` width.
+/// Returns how many [`FOLD_MARKER`]s to print *before* the chunk (C calls `printf`
+/// inside `foldit`, then the caller emits the chunk) and the column to carry on.
+///
+/// The break test is `col > max - 2`, two columns of slack so a fold can never
+/// leave its own marker hanging past the edge. On a break C prints the marker,
+/// zeroes the column and restarts the *same* chunk from its first byte
+/// (`goto again`), which is why a chunk that only overflowed because of where the
+/// line had got to costs exactly one marker. A chunk wider than `max - 2` can never
+/// fit on a line of its own and that restart never terminates: C prints markers
+/// forever (`printf '\377' | vis -f -F 5`). This shell stops after the one marker it
+/// can actually place and carries the chunk's own width forward; the deviation is
+/// recorded in `rewrite-notes/18-stage-commands/07-text-filter.md`.
+pub fn foldit(chunk: &[u8], incoming: usize, max: usize) -> (usize, usize) {
+    let limit = max.saturating_sub(2);
+    if let Some(carried) = walk(chunk, incoming, limit) {
+        return (0, carried);
+    }
+    (
+        1,
+        walk(chunk, 0, limit).unwrap_or_else(|| columns(chunk, 0)),
+    )
 }
 
 fn encode_byte(byte: u8, next: u8, options: &VisOptions, extra: &[bool; 256], out: &mut String) {
@@ -642,6 +735,62 @@ mod tests {
         };
         assert_eq!(encode(b"|", &options), "|");
         assert_eq!(encode(b"t", &options), "t");
+    }
+
+    #[test]
+    fn test_foldit_breaks_before_the_chunk_that_passes_the_limit() {
+        // `usr.bin/vis/foldit.c:61-65` compares against `max - 2`, so with width 6 (limit 4) a
+        // chunk is placed while the column stays at four and folds the moment it
+        // would become five. The fold costs one marker and the chunk is then
+        // counted from column zero again, exactly as C's `goto again` restart does.
+        assert_eq!(foldit(b"abcd", 0, 6), (0, 4));
+        assert_eq!(foldit(b"a", 3, 6), (0, 4));
+        assert_eq!(foldit(b"a", 4, 6), (1, 1));
+        // Width 5 is the smallest `-F` accepts, so its limit is three columns.
+        assert_eq!(foldit(b"ab", 3, 5), (1, 2));
+    }
+
+    #[test]
+    fn test_foldit_counts_columns_with_the_tab_backspace_and_newline_rules() {
+        // `usr.bin/vis/foldit.c:47-60`: a tab goes to the next multiple of eight, a backspace
+        // comes back one column but never below zero, and a newline or carriage
+        // return starts the line over.
+        assert_eq!(foldit(b"\t", 0, 80), (0, 8));
+        assert_eq!(foldit(b"\t", 8, 80), (0, 16));
+        assert_eq!(foldit(b"\x08", 5, 80), (0, 4));
+        assert_eq!(foldit(b"\x08", 0, 80), (0, 0));
+        assert_eq!(foldit(b"abc\ndef", 70, 80), (0, 3));
+    }
+
+    #[test]
+    fn test_foldit_terminates_where_the_c_would_loop() {
+        // A chunk wider than `max - 2` fits on no line, and C's restart-from-zero
+        // then repeats forever, printing markers and never the chunk
+        // (`printf '\377' | vis -f -F 5`: the chunk is the four characters `\M^?`
+        // and the limit is three). This shell places the one marker it can and
+        // counts the chunk's own width, so the run finishes.
+        assert_eq!(foldit(b"\\M^?", 0, 5), (1, 4));
+        assert_eq!(foldit(b"\\M^?", 79, 80), (1, 4));
+    }
+
+    #[test]
+    fn test_encode_chunk_matches_the_whole_buffer_encode() {
+        // The command folds one chunk at a time while the library path encodes the
+        // stream in one call; both must give the same bytes, since the chunk form
+        // exists only so the fold decision sees the text C would have printed.
+        let options = VisOptions {
+            mark_eol: true,
+            cstyle: true,
+            extra: vec![b'x'],
+            ..VisOptions::default()
+        };
+        let input = b"ax\n\x01\xff\\";
+        let mut chunks = String::new();
+        for (index, &byte) in input.iter().enumerate() {
+            let next = input.get(index + 1).copied().unwrap_or(0);
+            chunks.push_str(&encode_chunk(byte, next, &options));
+        }
+        assert_eq!(chunks, encode(input, &options));
     }
 
     #[test]
