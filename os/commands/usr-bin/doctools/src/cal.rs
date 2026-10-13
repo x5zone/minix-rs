@@ -308,14 +308,16 @@ pub fn render_year(year: i32, reckoning: Reckoning, out: &mut [u8]) -> Result<us
             put(out, &mut at, b" S  M Tu  W Th  F  S")?;
         }
         put(out, &mut at, b"\n")?;
-        // 六行日体：三份并排（一份一行写完再收尾空格）。
+        // 六行日体：三份并排（每周 outer，每月 inner）。
+        // 旧体把 outer 错为月、inner 错为周，导致一月的 6 行被横拼成
+        // 一条线、二月三月各自另起——列不对齐（P1-bug，2026-10-13）。
         let matrices = [day_matrix(&grid_storage[0]), day_matrix(&grid_storage[1]), day_matrix(&grid_storage[2])];
-        for line in matrices.iter() {
-            for (i, row) in line.iter().enumerate() {
-                if i > 0 {
+        for week in 0..6 {
+            for slot in 0..count {
+                if slot > 0 {
                     put(out, &mut at, b"  ")?;
                 }
-                for &day in row {
+                for &day in &matrices[slot][week] {
                     put_day(out, &mut at, day)?;
                 }
                 at -= 1; // 每月行尾的分隔空格交给收尾统一裁剪
@@ -412,5 +414,28 @@ mod render_tests {
         let months = lines.next().unwrap();
         assert!(months.starts_with("      January"), "居中左补 6 空（20-7)/2");
         assert!(months.contains("March"), "一行三个月");
+    }
+
+    #[test]
+    fn test_year_body_is_side_by_side() {
+        // 回归铉（P1-bug）：render_year 的日体必须每周一行、同带三个月并排。
+        // 旧体把两层循环写反（外层=月、内层=周），一月的 6 行被横拼成一条
+        // 线、二月三月另起——test_year_render_band_width 只校标题带没抓到。
+        let mut out = [0u8; 4096];
+        let used = render_year(2025, Reckoning::Gregorian, &mut out).unwrap();
+        let text = core::str::from_utf8(&out[..used]).unwrap();
+        let lines: Vec<&str> = text.split('\n').collect();
+        // 全年 4 带 ×（1 月名 + 1 表头 + 6 日行）+ 顶部年份/空行 + 末尾空串。
+        assert_eq!(lines.len(), 4 * (1 + 1 + 6) + 2 + 1, "年视图总行数");
+        // 首带首行日：2025-01-01 是周三（S/M/Tu 空、W=1），三列各占 WEEK_LEN。
+        assert_eq!(
+            lines[4],
+            "          1  2  3  4                     1                     1"
+        );
+        // 次行：Jan 5–11 | Feb 2–8 | Mar 2–8 并排。
+        assert_eq!(
+            lines[5],
+            " 5  6  7  8  9 10 11   2  3  4  5  6  7  8   2  3  4  5  6  7  8"
+        );
     }
 }
