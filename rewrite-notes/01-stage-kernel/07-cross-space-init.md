@@ -132,7 +132,7 @@ static void setcr3(struct proc *p, u32_t cr3, u32_t *v)
 | 页错误挂起与恢复协议（`vm_suspend` 之后的事） | 一行指向 | `29-cross-space-runtime`（VMSUSPEND 协议，尚未重生成） |
 | AP（应用处理器）侧的 ptproc 安装路径 | 一段带过 | `10-smp-boot`（SMP 启动，尚未重生成） |
 
-认知减负声明：x86 分页的 U/S 位、PWT/PCD 位这些硬件细节，本篇只用其中一条语义（每个 VA 翻译的 U/S 取值来自它自己的页表项，不存在"一条翻译同时是两种特权"），位表本身不展开——它在 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6.1 已经逐位列过；TLB 的替换与预热策略属于 MMU 通识加 `rewrite-notes/02-stage-vm/07-pagetable-struct.md` 的辖区，本篇不碰。
+认知减负声明：x86 分页的 U/S 位、PWT/PCD 位这些硬件细节，本篇只用其中一条语义（每个 VA 翻译的 U/S 取值来自它自己的页表项，不存在"一条翻译同时是两种特权"），位表本身不展开——它在 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6.4 已经逐位列过；TLB 的替换与预热策略属于 MMU 通识加 `rewrite-notes/02-stage-vm/07-pagetable-struct.md` 的辖区，本篇不碰。
 
 把第 1 章的图按同一框架收一次：四步机制里，"记录"与"分配"各跑一次、供给全程；"使用"每次访问都改当前表并可能刷 TLB；"清理"等 VM 的显式指令。第 2 章按这个顺序走函数。
 

@@ -279,6 +279,19 @@ impl BootShim for UefiBootShim {
 ///
 /// Leaks the allocations so they have `'static` lifetime — acceptable
 /// for boot-stage code that runs exactly once.
+///
+/// # Ordering invariant (snapshot staleness)
+///
+/// The two output slices are built from the same pool AFTER this snapshot,
+/// so the pages backing them are still reported as conventional/free in
+/// `regions`. The handoff is safe only because the kernel's first action in
+/// `arch_boot` is `store_kernel_info`, which deep-copies every slice into
+/// its own `.bss` BEFORE anything can allocate from the handed-over free
+/// list; after that copy these pages are genuinely dead (the shim never
+/// returns and never frees them). The map buffer itself is allocated
+/// BEFORE its `GetMemoryMap` call, so it is LOADER_DATA-classified in the
+/// snapshot and conservatively absent from the free list. Keep both
+/// orderings if this function is ever restructured.
 pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let mmap = boot::memory_map(MemoryType::LOADER_DATA)
         .expect("Failed to get UEFI memory map");

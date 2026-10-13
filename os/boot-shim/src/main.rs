@@ -73,8 +73,10 @@ fn main() -> Status {
     //
     //    NK4-A 首亮诊断：EBS 后、arch_boot 前的最后一块 shim 侧路标。
     //    arch_boot 若先于内核第一条串口输出就卡死，本行是最后一根
-    //    可见路标（ConOut 已实证落在 QEMU 串口）。
-    uefi::println!("boot-shim: handing control to kernel arch_boot");
+    //    可见路标。EBS 之后固件控制台（ConOut，Boot Services 协议）按
+    //    规范已失效——这里改走裸串口（x86 COM1 / aarch64 PL011，见
+    //    `boot_shim::raw_serial`），与上一行 pt_alloc 路标同一通道。
+    boot_shim::raw_serial("boot-shim: handing control to kernel arch_boot\r\n");
     // §1.115 方案 A (aarch64): do NOT enter the inlined `arch_boot`/kmain, which
     // would run the kernel at the PE's low identity address and die on the first
     // root switch (§1.114). Instead build the bootstrap tables, enable paging,

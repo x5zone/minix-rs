@@ -47,7 +47,7 @@ _kern_offset = (_kern_vir_base - _kern_phys_base);
 
 三列各有自己的规则，也各有自己的读者：链接脚本的地址由链接器写进指令与数据；段体落点由装载这个 ELF 的那段代码决定；运行期能访问哪些地址由页表决定。第 2 章先读 C 侧的三个决定点，第 3、4 章读 Rust 侧对应的三个决定点。
 
-内核为什么要在高一侧，而不是和用户代码挤在低地址？`kernel.lds` 在 `_kern_vir_base` 那一行的行尾给了理由：`/* map kernel high for max. user vir space */`——把 0xF0400000 以上留给内核，低地址那一大段就整块归用户进程使用。`pre_init` 里的两行赋值把这条划分落到具体数字上：`cbi->user_sp = USR_STACKTOP; cbi->user_end = USR_DATATOP;`，紧邻的注释写的是 `move user stack/data down to leave a gap to catch kernel stack overflow; and to distinguish kernel and user addresses at a glance (0xf.. vs 0xe..)`（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters`）——用户栈与数据被往下挪，既空出一段"越界就能撞上"的间隙，也让内核地址与用户地址在十六进制表示上第一眼就能分开。另一条依据在 `01-boot-shim-bootstrap.md` §2.6.2 的位表里已经出现过：`pg_mapkernel` 写内核映射时不置 `I386_VM_USER`（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`），而 `pg_identity` 的恒等映射置了它——内核所在的这一段对用户态不可访问。
+内核为什么要在高一侧，而不是和用户代码挤在低地址？`kernel.lds` 在 `_kern_vir_base` 那一行的行尾给了理由：`/* map kernel high for max. user vir space */`——把 0xF0400000 以上留给内核，低地址那一大段就整块归用户进程使用。`pre_init` 里的两行赋值把这条划分落到具体数字上：`cbi->user_sp = USR_STACKTOP; cbi->user_end = USR_DATATOP;`，紧邻的注释写的是 `move user stack/data down to leave a gap to catch kernel stack overflow; and to distinguish kernel and user addresses at a glance (0xf.. vs 0xe..)`（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters`）——用户栈与数据被往下挪，既空出一段"越界就能撞上"的间隙，也让内核地址与用户地址在十六进制表示上第一眼就能分开。另一条依据在 `01-boot-shim-bootstrap.md` §2.6.4 的位表里已经出现过：`pg_mapkernel` 写内核映射时不置 `I386_VM_USER`（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`），而 `pg_identity` 的恒等映射置了它——内核所在的这一段对用户态不可访问。
 
 ### 1.2 三件事必须对齐
 
