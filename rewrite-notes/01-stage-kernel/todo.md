@@ -38,6 +38,7 @@
 | 2026-09-07~08 §22 Phase 1/2 | 12 项 | V12-A1 trap_style（含 MINIX3 BUG 修复）、V12-B1 panic 审计、V12-A2/A3/A4、V12-B2（IoBatchBuf 对齐 UB 修复）、V12-B3（Message 72B 实测）、V12-B4、A1（assume_held + 24 处迁移）、A2（globals.rs）、B1（transfer API）、B-X 第一批、S-2b/S-3a/S-3b/S-3c |
 | 2026-09-09 D1/D2 + Phase 7 | 4 项 | D1/D2（Errno newtype + ToErrno，架构建议清零）、I-14（B 层完成）、I-3（核实闭合） |
 | 2026-10-12 01 篇 CH1-CH2 人审 | 3 项登记 | I-17（§2.6 拆节）/I-18（章头与巨节体检）/I-19（讲解条续扫）；同轮正文修正另见台账 `prompt/WORKFLOW-OPEN-ITEMS.md` 第四节第三轮 |
+| `2026-10-13` SD-20/SD-42 落地（代码侧） | 文档同步 2 篇 | 装载器尾的指令缓存同步契约（`[ARCH: cache-sync]`）与 aarch64 设备内存属性（`[ARCH: mmio-device]`）已进代码并带形状钉；文档半待补：`06-proc-init-boot-proc.md` §2.7（`arch_boot_proc` 与 VM ELF 装载）需补「装载器尾部做指令缓存同步」一段与标注，`04-platform-discovery.md` 的 MMIO 高半窗口/§1.114 段需补「设备窗口按 2 MiB 分片映射为 Device、恒等与高点两别名同属性」一段与标注（三处一致纪律的文档半；代码半见 `coordination/TODO-LEDGER-OPEN.md` §1 同日行） |
 | 📌 保持 DEFERRED（依赖仍成立） | — | **I-1**（kernel ELF 构建无引导路径）、**I-5**（ACPI RSDP 无消费方）、**T-10**（U-Boot 工具链，`PD-15` 已裁放弃）、**profiling deferred 体**（等 S-8/S-9）；Edge 表旧 12 项中 SMP 块的 `D-36`/`D-37`/`D-38①`/`D-39` 四条已于 S-4/S-5/S-7 收官时闭合（§23/§24 在案，`2026-10-09` 按代码回勾本行与 §7.1/§10——真正仍开的 SMP 残项是**次级核承载进程**，那是另一件事，不能用"多核未做"盖住四条已完成的账） |
 
 ## 0. 审查基线 — 已确认的良好架构（无需改动）

@@ -47,12 +47,12 @@
 //! single anchor.
 
 use crate::arch::{
-    arch_init::ArchInit, boot::CpuContextArch, clock::ClockArch, cpu_identity::CpuIdentityArch,
-    direct_map::DirectMapArch, dm_coverage::DmCoverageArch, exception::ExceptionArch,
-    fpu_arch::FpuArch, paging::Paging, pte_walk_arch::PteWalkArch, protection::ProtectionArch,
-    signal_context::SignalContext, smp::SmpArch, stacktrace::StacktraceArch,
-    timer_irq_gate::TimerIrqGate, tlb_arch::TlbArch, trap_entry::TrapEntryArch,
-    trap_return::TrapReturnArch,
+    arch_init::ArchInit, boot::CpuContextArch, cache_sync::CacheSyncArch, clock::ClockArch,
+    cpu_identity::CpuIdentityArch, direct_map::DirectMapArch, dm_coverage::DmCoverageArch,
+    exception::ExceptionArch, fpu_arch::FpuArch, paging::Paging, protection::ProtectionArch,
+    pte_walk_arch::PteWalkArch, signal_context::SignalContext, smp::SmpArch,
+    stacktrace::StacktraceArch, timer_irq_gate::TimerIrqGate, tlb_arch::TlbArch,
+    trap_entry::TrapEntryArch, trap_return::TrapReturnArch,
 };
 
 /// The aggregate architecture description.
@@ -72,6 +72,9 @@ pub trait Arch: Sized {
     type Smp: SmpArch;
     /// CPU-wide TLB invalidation (the `Paging`-independent flush path).
     type Tlb: TlbArch;
+    /// Instruction-cache synchronization across the data→instruction
+    /// transition (the ELF-loader tail, SD-20).
+    type CacheSync: CacheSyncArch;
     /// "Which CPU am I running on" probe.
     type CpuId: CpuIdentityArch;
     /// Unmasking/masking the timer IRQ at the arch boundary.
@@ -114,6 +117,7 @@ impl Arch for X86_64Arch {
     type Exception = crate::x86_64::exception::X86_64ExceptionFrame;
     type Smp = crate::x86_64::smp::X86_64SmpArch;
     type Tlb = crate::x86_64::tlb::X86_64TlbArch;
+    type CacheSync = crate::x86_64::cache_sync::X86_64CacheSyncArch;
     type CpuId = crate::x86_64::cpu_identity::X86_64CpuIdentity;
     type IrqGate = crate::x86_64::timer_irq_gate::X86_64TimerIrqGate;
     type Dm = crate::arch::direct_map::X86_64DirectMap;
@@ -139,6 +143,7 @@ impl Arch for AArch64Arch {
     type Exception = crate::arm64::exception::AArch64ExceptionFrame;
     type Smp = crate::arm64::smp::AArch64SmpArch;
     type Tlb = crate::arm64::tlb::AArch64TlbArch;
+    type CacheSync = crate::arm64::cache_sync::AArch64CacheSyncArch;
     type CpuId = crate::arm64::cpu_identity::AArch64CpuIdentity;
     type IrqGate = crate::arm64::timer_irq_gate::AArch64TimerIrqGate;
     type Dm = crate::arch::direct_map::AArch64DirectMap;
@@ -164,6 +169,7 @@ impl Arch for Riscv64Arch {
     type Exception = crate::riscv64::exception::Riscv64ExceptionFrame;
     type Smp = crate::riscv64::smp::Riscv64SmpArch;
     type Tlb = crate::riscv64::tlb::Riscv64TlbArch;
+    type CacheSync = crate::riscv64::cache_sync::Riscv64CacheSyncArch;
     type CpuId = crate::riscv64::cpu_identity::Riscv64CpuIdentity;
     type IrqGate = crate::riscv64::timer_irq_gate::Riscv64TimerIrqGate;
     type Dm = crate::arch::direct_map::Riscv64DirectMap;
@@ -196,6 +202,7 @@ impl Arch for MockArch {
     type IrqGate = crate::x86_64::timer_irq_gate::X86_64TimerIrqGate;
     type Smp = crate::arch::smp::MockSmpArch;
     type Tlb = crate::arch::tlb_arch::MockTlbArch;
+    type CacheSync = crate::arch::cache_sync::MockCacheSyncArch;
     type CpuId = crate::arch::cpu_identity::mock::MockCpuIdentity;
     type Dm = crate::arch::direct_map::MockDirectMap;
     type Protection = crate::arch::protection::MockProtection;
@@ -217,6 +224,7 @@ impl Arch for MockArch {
     type IrqGate = crate::arm64::timer_irq_gate::AArch64TimerIrqGate;
     type Smp = crate::arch::smp::MockSmpArch;
     type Tlb = crate::arch::tlb_arch::MockTlbArch;
+    type CacheSync = crate::arch::cache_sync::MockCacheSyncArch;
     type CpuId = crate::arch::cpu_identity::mock::MockCpuIdentity;
     type Dm = crate::arch::direct_map::MockDirectMap;
     type Protection = crate::arch::protection::MockProtection;
@@ -238,6 +246,7 @@ impl Arch for MockArch {
     type IrqGate = crate::riscv64::timer_irq_gate::Riscv64TimerIrqGate;
     type Smp = crate::arch::smp::MockSmpArch;
     type Tlb = crate::arch::tlb_arch::MockTlbArch;
+    type CacheSync = crate::arch::cache_sync::MockCacheSyncArch;
     type CpuId = crate::arch::cpu_identity::mock::MockCpuIdentity;
     type Dm = crate::arch::direct_map::MockDirectMap;
     type Protection = crate::arch::protection::MockProtection;
@@ -290,6 +299,10 @@ mod tests {
         );
         assert_eq!(tid::<<CurrentArch as Arch>::Smp>(), tid::<crate::CurrentSmpArch>());
         assert_eq!(tid::<<CurrentArch as Arch>::Tlb>(), tid::<crate::CurrentTlbArch>());
+        assert_eq!(
+            tid::<<CurrentArch as Arch>::CacheSync>(),
+            tid::<crate::CurrentCacheSyncArch>()
+        );
         assert_eq!(
             tid::<<CurrentArch as Arch>::CpuId>(),
             tid::<crate::CurrentCpuIdentity>()

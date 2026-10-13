@@ -24,6 +24,9 @@ bitflags::bitflags! {
     /// - `EXECUTABLE`: x86-64 NX bit (inverted), ARM64 PXN bit (inverted), RISC-V X bit (normal)
     /// - `GLOBAL`: x86-64 G bit (normal), ARM64 nG bit (inverted)
     /// - `WRITE_THROUGH` / `NO_CACHE`: cache policy, encoding varies greatly across architectures
+    /// - `DEVICE`: strongly-ordered device memory (MMIO); stronger than
+    ///   `NO_CACHE` — device registers additionally forbid speculation and
+    ///   reordering of accesses
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct PageFlags: u16 {
         const PRESENT         = 1 << 0;
@@ -42,6 +45,21 @@ bitflags::bitflags! {
         // RISC-V: Not a PTE flag; huge page size determined by page table level.
         // Actual page size is determined by the `HugePages` trait and `map()` level.
         const HUGE_PAGE       = 1 << 10;
+        // DEVICE: strongly-ordered device memory (MMIO).
+        //
+        // aarch64: selects MAIR_EL1 Attr1 (AttrIndx=1 in the leaf/block
+        //   descriptor), whose byte is 0x00 = Device-nGnRnE — see
+        //   `arm64::paging::enable`. Distinct from `NO_CACHE`, which would
+        //   be Normal Non-cacheable (an entirely different MAIR byte):
+        //   Device memory additionally forbids speculation, gathering and
+        //   reordering, which is the property MMIO registers require.
+        // x86-64: not encoded yet — no mapping in this tree routes x86
+        //   device memory through `PageFlags` today (device access is port
+        //   I/O; the LAPIC MMIO window keeps its current treatment).
+        // riscv64: no encoding — Sv39 PTEs carry no cacheability bits.
+        //
+        // SD-42 [ARCH: mmio-device].
+        const DEVICE          = 1 << 11;
     }
 }
 
@@ -66,6 +84,7 @@ impl core::fmt::Display for PageFlags {
         flag("A", self.contains(Self::ACCESSED))?;
         flag("D", self.contains(Self::DIRTY))?;
         flag("GUARD", self.contains(Self::GUARD_PAGE))?;
+        flag("DEV", self.contains(Self::DEVICE))?;
         if first { write!(f, "0")?; }
         Ok(())
     }

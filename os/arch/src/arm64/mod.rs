@@ -16,6 +16,7 @@ pub mod arch_init;
 pub mod boot;
 pub mod cpu_identity;
 pub mod tlb;
+pub mod cache_sync;
 
 pub use paging::AArch64Paging;
 pub use protection::{AArch64Protection, AArch64PrivilegeLevel};

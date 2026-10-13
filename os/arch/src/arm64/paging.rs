@@ -70,6 +70,11 @@ bitflags::bitflags! {
         const AP2   = 1 << 7;   // AP[2]: 0=writable, 1=read-only
         const AF    = 1 << 10;  // Access Flag
         const NG    = 1 << 11;  // non-Global: 0=global, 1=process-local
+        /// AttrIndx (bits [4:2]) = 1: selects MAIR_EL1 Attr1, whose byte
+        /// is 0x00 = Device-nGnRnE. Emitted for `PageFlags::DEVICE`
+        /// (SD-42); AttrIndx = 0 (the default, bits all clear) selects
+        /// MAIR Attr0 = Normal WBWA.
+        const ATTR_IDX_DEVICE = 1 << 2;
         const PXN   = 1 << 53;  // Privileged Execute Never
         const XN    = 1 << 54;  // Execute Never (EL0)
     }
@@ -120,6 +125,12 @@ fn flags_to_pte(flags: PageFlags) -> u64 {
     if !flags.contains(PageFlags::EXECUTABLE) {
         pte |= Arm64PteFlags::XN;
     }
+    // DEVICE [ARCH: mmio-device] (SD-42): select the Device MAIR byte
+    // instead of Attr0's Normal WBWA. See `Arm64PteFlags::ATTR_IDX_DEVICE`
+    // and `enable()` for the MAIR layout.
+    if flags.contains(PageFlags::DEVICE) {
+        pte |= Arm64PteFlags::ATTR_IDX_DEVICE;
+    }
     pte.bits()
 }
 
@@ -167,6 +178,10 @@ fn pte_to_flags(pte: u64) -> PageFlags {
     // XN=0 means executable (inverted).
     if !hw.contains(Arm64PteFlags::XN) {
         flags |= PageFlags::EXECUTABLE;
+    }
+    // AttrIndx=1 means the Device MAIR byte (SD-42).
+    if hw.contains(Arm64PteFlags::ATTR_IDX_DEVICE) {
+        flags |= PageFlags::DEVICE;
     }
     flags
 }
@@ -568,10 +583,21 @@ impl Paging for AArch64Paging {
 
     unsafe fn enable(&self) -> PhysBytes {
         unsafe {
-            // MAIR_EL1: Attr0 = Normal WBWA (0xFF).
-            // UEFI firmware may have set its own MAIR; we override to ensure
-            // the sole memory attribute (Normal Write-Back) is available.
-            asm!("msr mair_el1, {}", in(reg) 0xFFu64);
+            // MAIR_EL1 = 0x0000_0000_0000_00FF:
+            //   Attr0 = 0xFF — Normal, Write-Back Write-Allocate (RAM).
+            //   Attr1 = 0x00 — Device-nGnRnE (MMIO; `PageFlags::DEVICE`,
+            //            SD-42). The byte is zero by construction of the
+            //            value, and 0x00 is the architecturally defined
+            //            Device-nGnRnE encoding, so the device attribute
+            //            is available without a second non-zero byte.
+            //   Attr2..7 = 0x00 — unused (would also read as
+            //            Device-nGnRnE; never selected).
+            // UEFI firmware may have set its own MAIR; we override it so
+            // both attributes this port's descriptors select are defined.
+            // The AP early-entry stub programs the same value (its asm
+            // comment points here).
+            const MAIR_EL1_VALUE: u64 = 0xFF;
+            asm!("msr mair_el1, {}", in(reg) MAIR_EL1_VALUE);
 
             // TCR_EL1: Translation Control Register.
             // 4KB granule, 48-bit VA (T0SZ=16, T1SZ=16), 48-bit PA (IPS=5).
