@@ -29,7 +29,6 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read};
 use minix_textfilter::uniq::{Uniq, UniqFlags};
 
 fn run() -> ! {
@@ -44,14 +43,20 @@ fn run() -> ! {
     if operands.len() > 2 {
         usage();
     }
-    // `case 2` opens the input first (`ifp = file(argv[0], "r")`) and only then
-    // the output (`ofp = file(argv[1], "w")`), so an unopenable input never
-    // leaves a created-or-truncated file behind. The output operand is the
-    // create-and-write form, which is why it has to be opened here rather than
-    // written at the end: C truncates it at open time.
-    let input = match operands.first() {
-        None => support::read_stdin(),
-        Some(path) => read_file(path),
+    // `case 2` opens the input handle first (`ifp = file(argv[0], "r")`), then
+    // creates the output (`ofp = file(argv[1], "w")`, which truncates at that
+    // moment), and reads the input only afterwards. Keeping that order is what
+    // makes `uniq file file` produce an empty report, as C does, and keeps an
+    // unopenable input from creating an output file.
+    let source = match operands.first() {
+        None => None,
+        Some(path) => match support::open_input(path) {
+            Ok(source) => Some(source),
+            Err(()) => {
+                support::warn(format!("uniq: {path}\n").as_bytes());
+                support::terminate(1);
+            }
+        },
     };
     let sink = match operands.get(1) {
         None => None,
@@ -62,6 +67,10 @@ fn run() -> ! {
                 support::terminate(1);
             }
         },
+    };
+    let input = match source {
+        Some(source) => source.read_to_end(),
+        None => support::read_stdin(),
     };
     let lines = support::lines_of(&input);
     let mut handler = Uniq::new_with_skip(flags, skip_fields, skip_chars);
@@ -108,31 +117,6 @@ fn report(
         }
         Err(_) => support::terminate(1),
     }
-}
-
-/// Read an input file to the end; an unopenable file is fatal (C `file()`
-/// `err`s), matching the input-only path.
-fn read_file(path: &str) -> Vec<u8> {
-    let fd = match open(path, 0, 0) {
-        Ok(fd) => fd,
-        Err(_) => {
-            support::warn(format!("uniq: {path}\n").as_bytes());
-            support::terminate(1);
-        }
-    };
-    let mut data = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => data.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    //[SD19-gate] SD-19: close 后 fd 不再使用
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = close(fd);
-    data
 }
 
 fn usage() -> ! {
