@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百二十九把 `caesar` 的无参频率破解（`guess_and_rotate`）建成决定半并接上执行半**
+  （`2026-10-14`，`claim/CAESAR-FACE-qoder` @ 基线 `85b6f2dac`，单域三线 commands/games/stdio-games，无跨界）：
+  **是什么**：22 篇与 `bin/caesar.rs` 都记着「无参频率破解待决定半」，而无参数时 C 走的正是这条腿
+  （`caesar.c:192-194` 调 `guess_and_rotate`）；本壳以前在无参时直接报 usage 退 1，等于把三分之一的
+  入口删掉了。`guess_and_rotate`（`:141-187`）有三个容易被当作“显然”的形状：①比例表先做一次
+  `stdf[i] = log(stdf[i]) + log(26/100)` 变形（`:150-151`），不取对数则罕见字母在点积里几乎不存在；
+  ②只拿前 2048 字节投票（`inbuf[2048]`），但窗口外的字节仍用同一张表翻译；③比较是严格大于且
+  `try == 0` 无条件占位（`:176-180`），平手保留较早的轮转量；此外权重表按 `(i + try) % 26` 反向错位，
+  所以右移 5 格的文本答 21。判类 P0-design-missing（能力缺失）+ 文档同步。
+  **怎么修**：`log` 在裸机不可用，故把变形结果作为常量 `WEIGHTED_PERCENT` 入仓，并在宿主测里用
+  `.ln()` 逐项重算验证（`STD_PERCENT` 也与 C 的字面量逐项对账）；新增 `observe`/`best_rotation`/`guess_rotation`
+  与 `GUESS_WINDOW`，执行半无参时走破解、有参时保持原路，输出按 1024 字节分块流过（与 C 逐字节 putchar
+  同形）。同时删掉 `rotate_line` 与其唯一测 `test_length_mismatch_rejected`：新执行半按字节流翻译，
+  该入口已无调用者（留着就是死代码）；测试里一个“大写后整卡相等”式的重复断言不新建，归入现有测。
+  **取证**：新增第 14 道端到端门 `tests/caesar_face.rs`（3 枚）：固定轮转只动字母（含 0x80/0xFF 走恒等段、
+  26 得恒等、27 与 1 等价）；无参模式对 1/5/13/19/25 格位移的英文都能逐字节还原；2048 窗口外的字节
+  不投票但仍翻译（同一段密文单独喂时会投票，证明这个断言有信息量）。库测新增 4 枚。
+  三件套：`cargo test -p minix-stdio-games` → **17 个测试目标全 ok、合计 155 passed、零 FAILED**（基线 17/149）；
+  `--lib` 61/0；`--lib caesar::` 8/0；`--test caesar_face` 3/0；三架构 `--bins` 三台零 error；容器
+  `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、容器内本包 17 个目标全 ok、
+  FAILED 与 error 计数为 0；clippy 触及文件零新增（中途两处已按建议处理：`assert!` 对常量下标比较改为
+  `max_by`/`min_by` 导出峰谷，新测里 `assert_eq!` 内嵌套 `format!` 拆为局部变量）；`rustfmt` 零漂移；
+  `pattern-gate.sh --diff` PASS=17 FAIL=0；`doc-style-lint.sh --diff` error 0；本子树断链 0；测试名逐枚 grep 存在。
+  **八枚变异负控**（`--lib caesar::` 与 `--test caesar_face` 分两次调用、复位断言 md5）首轮有一枚**没咬**：
+  “用原始比例表代替对数表”在所有位移还原用例上与正确表同答——因为英文本身就能被两种表分开；
+  改用穷举找出一组四字母观测（c×29、s×17、y×32、z×8）：对数表答 16、原始表答 2，把它钉成库测后
+  该枚翻红；另一枚因 rustfmt 改了排版而不匹配，校正锚点后也咬中。共八枚（对数表→比例表、位移反向、
+  只计大写、取消窗口、窗口改 4096、破解结果被丢弃改用 0、硬编 rot13、轮转量不按 26 取余）全部咬中。
+  登记不执行：①`get_rotation` 的接受规则（C 用 `strtol`，吃前导空白与 `+`，上界是 `INT_MAX`）与那句
+  `err(EXIT_FAILURE, "Bad rotation value `%s'")` 报文（需 strerror 表）；②多参数时 usage 行应落 stderr
+  （现落 stdout）——本轮写门时才发现，因为不属本条而在 `caesar_face.rs` 里**不断言**，已记入 22 篇状态列；
+  ③真机播种与 open 腿归 C-57/E5；④number 壳的逐枚对 C。
+
 - ✅ **批次二百二十八把 `bcd` 的输入框架按 C 定形（`cardline[80]` 的可用长度是 79），并补上卡片形状的端到端门**
   （`2026-10-14`，`claim/BCD-FACE-qoder` @ 基线 `f7d2349f3`，单域三线 commands/games/stdio-games，无跨界）：
   接回批次二百二十七登记②（逐壳对 C）。**先盘不靠记忆的部分**：用脚本把 `bcd.c:87-120` 的

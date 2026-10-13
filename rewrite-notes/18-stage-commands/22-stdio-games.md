@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第一组——只用标准输入输出说话的游戏，系统能跑、管道能通的证明
 > **源码**: `minix3/games/factor/factor.c`（输出形状见头注释、因子打印函数见第 184 行附近、大数路径见第 110 行附近、用法 `factor [value ...]` 见第 268 行附近）、`minix3/games/primes/primes.c` 与 `pattern.c` 与 `pr_tbl.c` 与 `spsp.c`（区间素数表）、`minix3/games/caesar/caesar.c`（轮转表构造见第 82 行附近、溢出保护 `rot %= LETTERS` 见第 86 行附近、轮转解析见第 125 行附近）、`minix3/games/morse/morse.c`（码表见第 96 行附近、用法 `morse [-ds] [string ...]` 见第 140 行附近、解码匹配见第 219 行附近）、`minix3/games/pig/pig.c`（元音规则见第 103 行附近、用法 `pig` 见第 133 行附近）、`minix3/games/arithmetic/arithmetic.c`（缺省范围 10 见第 99 行附近、对错计数见第 100 行附近、范围选项见第 107 行附近）、`minix3/games/banner/banner.c`（整幅宽 132 见第 58 行附近、用法 `banner [-w width] [message]` 见第 1057 行附近、列缩放见第 1064 行到第 1066 行附近）、`minix3/games/number/number.c`（数字转英文单词）、`minix3/games/bcd/bcd.c`（大字显示）、`minix3/games/ppt/ppt.c`（纸带 punch 显示）
-> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 58 个；端到端门五扇 `tests/morse_face.rs` 十二枚、`tests/factor_face.rs` 八枚、`tests/pig_face.rs` 六枚、`tests/ppt_face.rs` 五枚与 `tests/bcd_face.rs` 六枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 149 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
+> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 61 个；端到端门六扇 `tests/morse_face.rs` 十二枚、`tests/factor_face.rs` 八枚、`tests/pig_face.rs` 六枚、`tests/ppt_face.rs` 五枚、`tests/bcd_face.rs` 六枚与 `tests/caesar_face.rs` 三枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 155 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `06-file-ops.md`（标准输入输出面先行）
 > **不覆盖（移交）**: 终端控制（见第 23 篇）、键盘读取与逐行显示执行（各游戏二进制包）、大数概率分解（后续补齐）
 
@@ -63,7 +63,7 @@ Rust 侧 `factor.rs` 的试除（小素数表起步、六步轮转续航、余�
 
 ### 2.3 轮转：建表与解析
 
-轮转表构造（第 82 行附近）先取余防溢出（第 86 行附近），大小写各转各的，非字母直通。轮转解析（第 125 行附近）做溢出检查。Rust 侧 `caesar.rs` 的单字节轮转与建表语义逐项对应，行轮转要求等长（调用方保证缓冲），长度不对报参数无效。
+轮转表构造（`init_rottbl`，`caesar.c:81-97`）先把整张表填成恒等（`:88-89`）——这正是「非字母原样通过」的实现方式，也把 0x80 以上的字节留在恒等段——再只覆盖大小写两段字母，并且先 `rot %= LETTERS` 再填表（`:86`，注释写明是为了防整数溢出）。轮转解析（`get_rotation`，`:120-137`）用 `strtol`，因此前导空白与正负号都能解析出来，随后才用「空串或尾随垃圾」判非法、用 `<0` 与 `> INT_MAX` 判越界，三句都走 `err` 退出。无参数时走的是另一条腿 `guess_and_rotate`（`:141-187`）：先把公布的比例表整个做一次 `log` 变形（`:150-151`），再把输入的前 2048 个字节按字节值计数（`inbuf[2048]`、`obs[NCHARS]`），对 26 个候选逐一算点积——观测向量取某个字母两种大小写之和，权重表按 `(i + try) % 26` **反向**错位，所以「被右移 5 格的文本」答的是 21；比较用严格大于且第 0 个候选无条件占位（`:176-180`），平手时保留较早的那个。选出后先把这 2048 字节按新表打出，剩下的继续用同一张表流过（`:183-186`），因此窗口只决定投票、不决定翻译。本轮的解析接受规则与 `err` 报文仍待接（现实现只收纯数字、上限取 `u32::MAX`，失败静默退 1），已登记。Rust 侧 `caesar.rs` 的单字节轮转与建表语义逐项对应，行轮转要求等长（调用方保证缓冲），长度不对报参数无效。
 
 ### 2.4 摩斯：三张码表、每字节一行与整串解码
 
@@ -136,7 +136,7 @@ show(const char *s)
 | `bin_support.rs` | — | 各二进制壳共用：行缓冲（C `fgets` 形状）、十进制格式化、宿主/真机接缝（`args`/`terminate`/`emit`/`warn`/`read_stdin`/`stdin_chunk` 各自双生） |
 | `factor.rs` | `factor.c` `:119-128`、`:147-179`、`:196-252` | 取值判定、试除、行绘制 |
 | `primes.rs` | `primes.c` 区间语义 | 界限解析、区间生成 |
-| `caesar.rs` | `caesar.c` 第 82 行与第 86 行与第 125 行附近 | 轮转解析、单字节轮转、行轮转 |
+| `caesar.rs` | `caesar.c` `:81-97`（建表）、`:120-137`（解析）、`:141-187`（频率破解） | 轮转解析、单字节轮转、破解用的计数与点积 |
 | `morse.rs` | `morse.c` 三张码表（`:53-111`）、`morse()`/`show()`（`:231-261`）、`decode()` 与 `-d` 循环（`:146-228`） | 逐字节查表、两种渲染形态、整串解码、解码字符流（`decode_stream`） |
 | `words.rs` | `pig.c` 第 103 行、`number.c` | 猪拉丁语、数字转单词 |
 | `banner.rs` | `banner.c` 第 58 行与第 1057 行与第 1064 行附近 | 宽度解析、列缩放、字形源接口与行绘制 |
@@ -175,7 +175,7 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 | `render_factors` | 数值、因子、缓冲 | 行长度 | 行形状语义 |
 | `sieve` | 下界、上界、缓冲 | 素数个数 | 区间生成语义 |
 | `parse_rotation` | 词 | 轮转量 | 轮转解析语义 |
-| `rotate_line` | 输入、轮转量、缓冲 | 无 | 轮转语义 |
+| `observe` / `best_rotation` / `guess_rotation` | 字节 / 计数表 / 字节 | 计数 / 胜出轮转量 / 轮转量 | 破解语义（`caesar.c:141-187`） |
 | `code_for_byte` | 字节 | 码串（空白得空码、表外得无） | 编码查表语义 |
 | `show_line` | 码串、形态、缓冲 | 行长度 | 两种渲染形态语义 |
 | `decode_code` | 码串 | 字节（结束记号无输出） | 整串解码语义 |
@@ -199,7 +199,7 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 | ppt | 同上 | 已接线并逐枚对 C（`src/bin/ppt.rs`）：`EDGE` 首尾框带、每字节一行打孔、操作数**之间**补一个空白行而末尾不补、标准输入逐字节无行分组；`-d` 拒绝操作数、按 `fgets` 逐行读带，同步之前的无孔行当前导跳过，同步之后遇到无孔行就补上欠着的一个换行并立即结束（末字节本身就是换行时不欠）；`getopt("dh")` 逐字母聚簇，`-h` 与集外字母同路报 usage 退 1，`--` 被消费、裸 `-` 是操作数；读失败那句 `err(1, "fgets")` 因本树无 strerror 表而按普通结束处理（已登记） |
 | factor | 同上 | 已接线（`src/bin/factor.rs`）：操作数与标准输入两形都经 `support::stdin_chunk` 走真标准输入，`pr_fact` 写下 `value:` 后逐个追加「空格 + 因子」、行尾一个换行的形状端到端可判；取值判定 `verdict` 与三句 `errx` 报文按 C 落地（前导空白、符号、行末校验、0/1 与负数分句、`-x` 报 usage 且退 0）；仅溢出那句因本树无 `strerror` 表而按非法格式句给出（退码同 C，已声明） |
 | primes | 同上 | 已接线；界限封顶 1,000,000（试除引擎定位），C 的近 2^32 流式筛待后续批 |
-| caesar | 同上 | 已接线固定轮转路；无参频率破解（`guess_and_rotate`）待决定半 |
+| caesar | 同上 | 已接线两条路：固定轮转（`caesar N`，非字母走恒等段、轮转量先对 26 取余）与**无参频率破解**（`observe`/`best_rotation`/`guess_rotation` 复刻 C 的 `log` 变形表、2048 字节窗口投票、严格大于与第 0 候选占位的平手规则）；端到端门 `tests/caesar_face.rs` 三枚。仍待接：`get_rotation` 的接受规则（`strtol` 吃前导空白与 `+`、上界是 `INT_MAX`）与那句 `err` 报文，以及多参数时 usage 行该走标准错误（现走标准输出） |
 | morse | 同上 | 已接线编码面（默认逐符号 `dit`/`daw`、`-s` 短形、每字节一行、操作数收尾行与整轮一次 `SK`、表外字节不出行、`-d`/`-s` 聚簇与 `--`/裸 `-` 的 getopt 形、用法行落 stderr 退 1）与 `-d` 的解码两形：操作数整串比对不拆空格（`:146-150`），标准输入按 C 的字符流（冲刷型分隔符不打印、十个符号算胡码并吞掉其后首字节、整轮收尾一个换行、查不到答 `x`、结束记号静默） |
 | pig | 同上 | 已接线并逐枚对 C：词是连续字母串（数字标点冲刷并透出）、悬挂词在 EOF 不打印、第 1025 个字母触发 `ate too much!`、操作数被忽略而 `-x` 报 usage 退 1；`pig_word` 复刻 `pigout()` 的两套元音集合、`qu` 整体搬运与「大小写跟着字母走」；端到端门 `tests/pig_face.rs` 六枚 |
 | number | 同上 | 已接线 |
@@ -216,7 +216,8 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 
 - **分解**（`factor.rs`，6 个）：`verdicts_accept_signs_and_blanks_the_way_strtoul_does`（符号、前导空白与行末判定）、`verdicts_split_the_three_sentences_by_path_and_magnitude`（三句拒绝按来路分）、`test_small_factoring`（小数、素数、一）、`test_large_prime_beyond_table`（表外大素数与倍数）、`test_line_shape`（行形状）、`test_small_buffer_rejected`（缓冲过小）。
 - **素数**（`primes.rs`，4 个）：`test_first_primes`（前二十内八素数）、`test_inverted_interval_empty`（倒置区间空）、`test_single_values`（单点素数与合数与二）、`test_bounds_checked`（界限与缓冲）。
-- **轮转**（`caesar.rs`，5 个）：`test_rot_thirteen_round_trip`（十三轮转往返）、`test_zero_and_full_turns`（零与整圈）、`test_non_letters_pass_through`（非字母直通）、`test_rotations_parse`（解析与溢出）、`test_length_mismatch_rejected`（不等长拒绝）。
+- **轮转**（`caesar.rs`，8 个）：`test_rot_thirteen_round_trip`（十三轮转往返）、`test_zero_and_full_turns`（零与整圈）、`test_non_letters_pass_through`（非字母直通）、`test_rotations_parse`（解析与溢出）、`the_weighted_table_is_the_log_form_of_the_published_frequencies`（权重表 = 比例表取对数再平移，且峰在 `e`、谷在 `j`）、`the_log_step_changes_the_answer_on_a_thin_alphabet`（同一组观测下对数表与原始比例表给出不同答案）、`the_cracker_finds_the_shift_that_was_applied`（一段英文在 1/5/13/19/25 格位移后都能还原）、`a_single_letter_observation_picks_the_shift_that_puts_it_on_the_peak`（单字母观测把该字母搬到权重峰值那一格）。
+- **轮转端到端**（`tests/caesar_face.rs`，3 个）：`a_rotation_shifts_letters_alone_and_folds_at_the_alphabet`（含 0x80/0xFF 恒等段）、`the_argument_free_mode_guesses_the_rotation_and_prints_the_plaintext`（无参模式逐格还原）、`only_the_first_two_thousand_forty_eight_bytes_vote_and_all_of_them_rotate`（窗口外不投票、但仍被翻译）。
 - **摩斯**（`morse.rs`，12 个）：`the_default_form_spells_each_symbol_and_reads_any_non_dot_as_a_daw`（默认形态与非点即划）、`the_short_form_prints_the_run_after_one_space_and_even_a_blank_run_keeps_it`（短形与空码那一个空格）、`whitespace_is_the_empty_code_and_vertical_tab_counts_as_whitespace`（分隔符即空码，含 0x0B）、`punctuation_comes_from_the_other_table_and_unlisted_bytes_print_nothing`（十二项标点与表外字节不出行）、`whole_string_lookups_answer_letters_digits_punctuation_noise_and_the_silent_mark`（整串比对与静默的结束记号）、`one_separator_between_groups_prints_nothing_and_a_trailing_group_is_dropped`（冲刷型分隔符与末尾悬挂码组）、`ten_symbols_are_gibberish_and_the_swallow_eats_the_separator_behind_them`（十个符号算胡码并吞掉其后首字节）、`bytes_that_are_neither_symbols_nor_separators_are_ignored_while_nothing_is_pending`（既非符号也非分隔符且无悬挂时静默）、`test_case_insensitive`（大小写不分）、`test_digits_present`（数字）、`unlisted_bytes_stay_silent_on_the_encode_side`（编码侧表外字节静默、解码侧答 `x`）、`a_short_buffer_is_refused_rather_than_truncated`（缓冲不足即拒绝）。另有端到端门 `tests/morse_face.rs` 十二枚金样（真进程、真管道，逐枚按 `morse.c` 的 `show()` 与操作数循环手推）。
 - **文字**（`words.rs`，8 个）：`test_vowel_start_gains_way`（元音开头加 `way`）、`test_consonant_cluster_moves`（辅音串搬运，含 `yellow` 不搬运）、`a_leading_y_never_moves_because_the_stop_set_contains_it`（首字母 `y` 一步不搬）、`the_qu_unit_moves_together`（`qu` 整体搬运，含 `QQUAKES` 的第二个 `q`）、`case_travels_with_the_letters_rather_than_being_normalized`（`Pig`/`String`/`sTring`/`STRING` 四例）、`test_capitalization_kept`（`Apple`/`APPLE`）、`test_number_words`（零到千）、`test_bad_words_rejected`。
 - **猪拉丁语流**（端到端门 `tests/pig_face.rs`，6 个）：`a_word_is_a_run_of_letters_and_every_other_byte_passes_through`（字母成词、其余透出）、`a_pending_word_at_end_of_input_is_never_printed`（EOF 悬挂词丢弃）、`the_two_vowel_sets_decide_which_words_move_at_all`、`case_travels_with_the_letters_rather_than_being_normalized`（同名的进程级对照）、`one_thousand_twenty_four_letters_fit_and_the_next_one_is_fatal`（1024/1025 边界）、`operands_are_counted_and_ignored_while_a_bad_option_answers_usage`。
@@ -229,7 +230,7 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 - **因数分解**（端到端门 `tests/factor_face.rs`，8 个）：`operands_print_one_line_each_in_the_c_shape`（操作数逐值一行与素数自身）、`standard_input_supplies_one_value_per_line_and_matches_the_operand_run`（标准输入逐行取值、与操作数形同结果）、`an_unterminated_last_line_is_still_a_value`（末行无换行仍是值）、`a_value_below_two_stops_the_run_with_c_sentence_on_stderr`（≤ 1 停止整轮并报 C 句）、`leading_blanks_belong_to_the_number_and_a_blank_only_line_is_silent`（缩进属于数、纯空白行静默）、`the_two_minus_sentences_depend_on_which_loop_saw_the_value`（两句负数报按来路分）、`trailing_junk_is_reported_as_an_illegal_numeric_format`（拖尾垃圾报非法格式并点名）、`an_option_like_argument_answers_the_usage_line_and_leaves_with_zero`（`-x` 报 usage 且退 0）。
 - **行缓冲**（`bin_support.rs`，随九个壳各 6 个）：`test_lines_include_newline_and_split`、`test_final_fragment_without_newline_is_a_line`、`test_oversized_input_returns_full_buffer_lines`（满缓冲即行）、`test_empty_input_yields_no_lines`、`test_reader_failure_ends_stream_with_error`、`test_utoa_shapes`。
 
-尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、factor 溢出那句 `err` 的 `strerror` 后缀（现按非法格式句给出，退码同 C）、caesar 无参频率破解（`guess_and_rotate`）、arithmetic 罚则提示（`penalise`）与用时统计、banner 真位图字体与薄壳接线、primes 近 2^32 流式筛（现封顶 1,000,000，见 §4.4 标注）。十个玩法决定半与九个二进制壳是完整的，其余是显式留白的。
+尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、factor 溢出那句 `err` 的 `strerror` 后缀（现按非法格式句给出，退码同 C）、caesar 的 `get_rotation` 接受规则与 `err` 报文、caesar 多参数时 usage 行的去向、arithmetic 罚则提示（`penalise`）与用时统计、banner 真位图字体与薄壳接线、primes 近 2^32 流式筛（现封顶 1,000,000，见 §4.4 标注）。十个玩法决定半与九个二进制壳是完整的，其余是显式留白的。
 
 ---
 
