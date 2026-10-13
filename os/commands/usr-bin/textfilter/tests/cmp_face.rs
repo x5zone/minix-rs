@@ -119,6 +119,26 @@ fn silent_mode_writes_nothing_but_keeps_the_status() {
     assert_eq!(status, 1);
     let same = written("silent-c", b"abc\n");
     assert_eq!(run(&["-s", &text(&one), &text(&same)], "").1, 0);
+
+    // A silent run of two *files* of different sizes reports "different" even
+    // when the skipped windows would match: `c_regular` opens with
+    // `if (sflag && len1 != len2) exit(1)`, comparing the unadjusted sizes
+    // before any skip is applied. The same shapes without `-s` still report by
+    // content, and a standard-input operand goes through `c_special`, which has
+    // no such test.
+    let longer = written("silent-d", b"XXabc\n");
+    let four = text(&one);
+    let six = text(&longer);
+    // Four bytes against six, but the second file loses its two-byte prefix, so
+    // the windows are identical: `abc\n` either way.
+    assert_eq!(run(&["-s", &four, &six, "0", "2"], "").1, 1);
+    let (out, status, _) = run(&[&four, &six, "0", "2"], "");
+    assert_eq!(out, "");
+    assert_eq!(status, 0);
+    // Same content once skipped, but reached through a standard-input operand:
+    // `cmp.c` marks that run `special` and calls `c_special`, which has no size
+    // test at all, so the answer stays "equal".
+    assert_eq!(run(&["-s", "-", &six, "0", "2"], "abc\n").1, 0);
 }
 
 #[test]

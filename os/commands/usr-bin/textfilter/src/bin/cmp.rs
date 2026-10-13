@@ -108,6 +108,17 @@ fn run() -> ! {
         Err(()) => usage(),
     });
 
+    // C reaches this only through `c_regular`, whose very first statement is
+    // `if (sflag && len1 != len2) exit(1);` — the *unadjusted* sizes, before any
+    // skip is applied and before a single byte is compared. So a silent run of
+    // two files of different sizes reports "different" even when the skipped
+    // windows would have matched. `special` in `cmp.c:136-146` means a pipe or a
+    // `-` operand takes `c_special` instead and never sees this test, which is why
+    // the guard below is limited to the two-file case.
+    if silent && !stdin1 && !stdin2 && data1.len() != data2.len() {
+        support::terminate(DIFF_EXIT);
+    }
+
     // C applies each offset before comparing and checks the two files in order:
     // `c_regular`'s `if (skip1 > len1) eofmsg(file1, len1 + 1, 0)` then the same
     // test for file2; an offset that is negative takes `c_special`'s

@@ -250,6 +250,28 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十二补上 `cmp -s` 的入口档长判据（C `c_regular` 的第一句）**
+  （`2026-10-13`，`claim/CMP-SILENT-LEN-qoder` @ 基线 `f1ec87abd`，单域三线 commands/textfilter，无跨界）：
+  接回批次二百零三登记的⑦。改前的形状：执行半把两侧都切完窗口后才交给 `compare_bytes`，`-s` 只看窗口是否相同；
+  而 `minix3/usr.bin/cmp/regular.c` 的 `c_regular` 第一句就是 `if (sflag && len1 != len2) exit(1);`，
+  这里的 `len1`/`len2` 是 `stat` 到的**原始档长**（`cmp.c:152-153` 传进来的 `sb1.st_size`/`sb2.st_size`），
+  还没扣过偏移。后果是一个具体可复现的错答：`file1` 为 `abc\n`（4 字节）、`file2` 为 `XXabc\n`（6 字节）、
+  `cmp -s file1 file2 0 2` —— 跳过之后两边都是 `abc\n`，本壳判为相同退 0，C 在入口就因为 4 != 6 退 1。
+  **限定条件也照 C**：`cmp.c:136-146` 只有在两个操作数都是常规档时才走 `c_regular`，任一档打不开或不是常规档
+  （含 `-` 走标准输入）就置 `special`、改走 `c_special`，那里**没有**这条尺寸判据；所以新守卫限定在
+  `silent && !stdin1 && !stdin2`。残留差异登记在案：本壳的读腿不区分 FIFO 与普通档（都走 `fopen` 式读），
+  所以把一个 FIFO 当文件操作数传进来时仍会做这道检查，而 C 会走 `c_special`；要消掉它得在 `bin_support.rs`
+  的读腿上补一次 `fstat` 的 `S_ISREG` 判定（已登记，不在本笔扩界）。
+  三件套：`cargo test -p minix-textfilter --test cmp_face` → **10 passed / 0 failed**（基线 9；新增三处断言把
+  上面那个反例钉住：`-s` 退 1、去掉 `-s` 后同样的偏移与档内容相同退 0、把第一个操作数换成标准输入则退 0）；
+  `--lib` 411/0、其余四道命令门不动、整包 47 个测试目标全 ok 零 FAILED。变异负控：把新守卫短路成 `false` →
+  该测当场翻红（`left: 0, right: 1`，正是这道判据的效果）；反向替换 + `grep` 验证后复测 10/0。
+  整包三架构裸机构建三台 0 error；clippy 指向 `bin/cmp.rs` 的告警仍只有一条存量的 items after a test module；
+  `rustfmt --edition 2024 --check` 触及两文件零漂移；容器门读数见本笔提交信息；核实日 `2026-10-13`；
+  基线 `f1ec87abd`。
+  **仍开登记**：⑤（C 选项串前导 `-` 的 permute-off 语义）、⑥（C `err()` 会带 `strerror` 后缀，本壳只打档名）、
+  ⑧（GNU 与本壳的 skip 判据不同，本机对账只能比退码与通道空否）、以及本轮新增的 FIFO 与普通档不分这条。
+
 - ✅ **批次二百一十一接上 `vis` 的 `-e extra`，并把编码分支的判定次序摆回 C**
   （`2026-10-13`，`claim/VIS-EXTRA-qoder` @ 基线 `480b09fa4`，单域三线 commands/textfilter，无跨界）：
   旗标族第 2 片（顺带吃掉第 3 片里的选项面部分）。三件事：
