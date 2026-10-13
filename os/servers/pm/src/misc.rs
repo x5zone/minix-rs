@@ -662,7 +662,10 @@ pub const PMGETPARAM: i32 = ioc(IOC_INOUT, b'P', 0, SIZEOF_SYSGETENV);
 /// `PMSETPARAM`（`sys/svrctl.h:17` `_IOW('P', 1, sysgetenv)`）。
 pub const PMSETPARAM: i32 = ioc(IOC_IN, b'P', 1, SIZEOF_SYSGETENV);
 /// `OPMGETPARAM`（`sys/svrctl.h:19` `_IOW('M', 5, sysgetenv)`，旧口径）。
-pub const OPMGETPARAM: i32 = ioc(IOC_OUT, b'M', 5, SIZEOF_SYSGETENV);
+/// C `_IOW` 走 `IOC_IN`（`sys/ioccom.h` `_IOW(g,n,t)=_IOC(IOC_IN,…)`），故方向位
+/// 必为 `0x80…`——曾误按 OPMSETPARAM 的 `IOC_OUT` 写成 `0x40…`，使真实线值
+/// `0x80204D05` 落到未知 req 臂回 EINVAL（`IOCGROUP` 门放 'M' 过，但 case 不命中）。
+pub const OPMGETPARAM: i32 = ioc(IOC_IN, b'M', 5, SIZEOF_SYSGETENV);
 /// `OPMSETPARAM`（`sys/svrctl.h:20` `_IOR('M', 7, sysgetenv)`，旧口径）。
 pub const OPMSETPARAM: i32 = ioc(IOC_OUT, b'M', 7, SIZEOF_SYSGETENV);
 
@@ -1087,10 +1090,17 @@ mod tests {
             do_svrctl(&mut store, OPMGETPARAM, Some("k".into()), None, 2).unwrap(),
             Some("v".to_string())
         );
+        // 回归锁（C 镜像常量审计 2026-10-13）：真实 C 线值 `_IOW('M',5)=0x80204D05`
+        // 须命中 get 分支。旧码把 OPMGETPARAM 写成 IOC_OUT(0x40…)，此值会落
+        // 到未知 req 臂回 EINVAL——修后必路由到 get。
+        assert_eq!(
+            do_svrctl(&mut store, 0x8020_4D05u32 as i32, Some("k".into()), None, 2).unwrap(),
+            Some("v".to_string())
+        );
         // 命令码与 C _IOC 算术逐位一致（i386/earm 双 arch 的 LP64 尺寸口径）。
         assert_eq!(PMGETPARAM, 0xC020_5000u32 as i32);
         assert_eq!(PMSETPARAM, 0x8020_5001u32 as i32);
-        assert_eq!(OPMGETPARAM, 0x4020_4D05u32 as i32);
+        assert_eq!(OPMGETPARAM, 0x8020_4D05u32 as i32); // _IOW→IOC_IN（sys/svrctl.h:19 + ioccom.h）
         assert_eq!(OPMSETPARAM, 0x4020_4D07u32 as i32);
         // 未知 req（组对但命令号未定义）→ EINVAL（C 392-393）。
         assert_eq!(

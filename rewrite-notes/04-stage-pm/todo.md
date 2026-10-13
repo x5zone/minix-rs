@@ -613,3 +613,12 @@ C-28 把 srv_fork 子从 `Privilege::User` 翻正为 `Privilege::Kernel`，使�
 - **三件套**：核实命令 `grep -nE "RB_POWERDOWN|RB_HALT" minix3/sys/sys/reboot.h os/servers/pm/src/misc.rs`（C=0x808/0x8，Rust 修后=0x808）；`cargo test -p minix-pm --lib` → 427 passed / 0 failed；核实日期 `2026-10-13`；当时快照基线 `d25bb524c`。
 - **诚实边界**：本项纯宿主判据（位图门控逻辑 + 常量对 C 值），关机腿的真端到端效应（readclock taskcall、掉电）属 E5/真机面，本轮不主张真机坐实；接线腿本身已在 `calls.rs:735` 生产可达，非死码。
 
+### 12.9 `OPMGETPARAM` ioctl 方向位偏离 C（`2026-10-13`，`claim/PMOPMIIOC-qoder`，状态 closed）
+
+**发现路径**：§12.8 同批 C 镜像常量审计的延续——逐值对 `minix3/minix/include/minix/svrctl.h` + `sys/ioccom.h` 核 `misc.rs` 的 `ioc()` 组合常量，发现 `OPMGETPARAM` 方向位错。
+
+- **症状/根因**：Rust `misc.rs` `OPMGETPARAM = ioc(IOC_OUT, b'M', 5, 32)` = `0x40204D05`，而 C `svrctl.h:19` 定 `OPMGETPARAM = _IOW('M', 5, sysgetenv)`；`ioccom.h` `_IOW(g,n,t)=_IOC(IOC_IN,…)`、`IOC_IN=0x80000000` ⇒ C 真值 `0x80204D05`。常量注释本身写的就是 `_IOW`——**代码与自己的锤点矛盾**（误按下一行 OPMSETPARAM 的 `_IOR`→`IOC_OUT` 抄了方向）。`do_svrctl`（`misc.rs:692`）以 `req == OPMGETPARAM` 分派 get 腿、经 `PmCall::SvrCtl`（`calls.rs:750`）生产接线；`IOCGROUP` 门放 'M' 组过（对位 C `misc.c:306`），但真实线值 `0x80204D05` 与旧常量 `0x40204D05` 不等 → 落到未知 req 臂回 EINVAL（C 会命中 case）。旧测 `test_svrctl_req_gate_and_dispatch` 用常量对称调用且**钉的就是错值 `0x4020_4D05`**，给假防漂移信心。三档定性：P0-fact/P2（'M' 旧口径正逐步淘汰、现代 userspace 走 'P' 组 PMGETPARAM，实用面低，但仍是对 C 的值偏离）。
+- **修法（采甲·对齐 C 单值）**：`OPMGETPARAM` 改 `ioc(IOC_IN, b'M', 5, …)`；旧测钉值 `0x4020_4D05`→`0x8020_4D05`；新增回归——直接用真实线值字面 `0x8020_4D05` 调 `do_svrctl` 断命中 get 分支（旧码下此断言会 EINVAL 而失败）。
+- **三件套**：核实命令 `grep -nE "OPMGETPARAM|_IOW\(|IOC_IN" minix3/minix/include/minix/svrctl.h minix3/sys/sys/ioccom.h os/servers/pm/src/misc.rs`（C `_IOW`→`IOC_IN`=0x80…，Rust 修后=0x80204D05）；`cargo test -p minix-pm --lib` → 427 passed / 0 failed；核实日期 `2026-10-13`；基线快照 `0c3b8d91d`。
+- **诚实边界**：本轮未跑真机（'M' 旧口径 userspace 无活跃调用方，端到端不造轮）；修的是常量值与分派可达性，纯宿主可坐实。
+
