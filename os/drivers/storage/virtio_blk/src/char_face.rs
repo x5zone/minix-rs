@@ -13,7 +13,7 @@ use minix_blockdriver::protocol::DeviceMinor;
 use minix_chardriver::protocol::OpenDeviceSet;
 
 use crate::geometry::{DriveGeometry, OpenCount};
-use crate::request::{plan_transfer, status_to_code, ChainPlan};
+use crate::request::{ChainPlan, plan_transfer};
 
 /// The virtio_blk driver's block face over its geometry and open count.
 pub struct VirtioBlkFace {
