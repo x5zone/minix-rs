@@ -250,6 +250,34 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百零七把 `cmp` 的读腿接到宿主口子，并补上 `cmp_face` 端到端金样门（10 枚）**
+  （`2026-10-13`，`claim/CMP-HOST-FACE-qoder` @ 基线 `956d83dc9`，单域三线 commands/textfilter，无跨界）：
+  命令面宿主读腿的第三个使用者（前两个是 `uniq` 与 `tail`）。改前证据：`bin/cmp.rs` 自搭的
+  `read_file_or_none` 直用 `minix_sys::open`/`read`/`close`，所以跑 `target/debug/cmp` 只会有空输出。
+  现在两个操作数走 `support::read_file`，自搭函数与 `minix_sys` 导入一并删除。
+  **顺带把另一处顺序摆回 C**：`cmp.c:95-119` 先开两个档（打不开就 `warn` + `exit(ERR_EXIT)`），
+  `:121-134` 才解 `skip1`/`skip2`。本壳之前先解参数后开档，所以“档不存在 + 跳过值也不合法”这种双错调用
+  会先报 `usage:`；现在报的是那个档名（金样里钉了一枚专看错误优先级）。两边退码都是 2，差别只在文案。
+  **新增 `tests/cmp_face.rs`（10 枚）**：相同档静默退 0；首个差异的 `"%s %s differ: char %lld, line %lld"`
+  与跨行计数（第二行不同报 `line 2`）；`-l` 的 `"%6lld %3o %3o"` 八进制列与“不提前退出”；`-s` 不输出但保退码；
+  短流时 `cmp: EOF on <短的那一个>` 走标准错误退 1；skip 的五种合法写法（`2`/`0x2`/`02`/`2x`/前导空白）等价；
+  skip 越过档尾的 EOF 报告（非 `-l` 只名档、`-l` 带 `: char <len + 1>`）与“恰等于档长不算越界”；
+  退 2 的五条（集外字母、`-l -s` 并存、只有一个操作数、skip 没转出东西、五个参数）；`-` 操作数走标准输入
+  且报文标签写 `stdin`、两侧都是 `-` 拒；再加一枚与本机 `cmp` 的差分腿，**只比退码与“哪条通道仍为空”**：
+  GNU 打的是 `differ: byte` 且 `-l` 列宽不同，比文案量到的是两个程序的差异而不是本壳的回归。
+  **工具坑（本轮实踩，写下来防后续轮重踩）**：变异负控跑完后的恢复不能写成 `git checkout -- <路径> || cp <备份> <路径>`——
+  `git checkout` 会把整个文件回到 HEAD（连本笔的改动一起抹掉）且退码为 0，`||` 后的恢复分支根本不会跑，本轮就这么差点丢了整笔
+  改动（好在备份 `cp` 还在）。正确做法：恢复只用备份拷贝，且紧跟着跑全量测试确认计数，而不是相信“命令没报错”。
+  三件套：`cargo test -p minix-textfilter --test cmp_face` → **10 passed / 0 failed**；`--test tail_face` 与 `--test uniq_face`
+  各 10/0；`--lib` → **409 / 0**；全包其余测试目标全绿。三枚变异负控各让对应测翻红：`-l` 的八进制改十进制 →
+  `-l` 列表格式测 FAILED；`skip_window` 的越界保护去掉（退回静默夹取）→ 越界 EOF 测 FAILED；把跳过参数改回先解 →
+  错误优先级测 FAILED；均从备份恢复后复测 10/0。整包三架构裸机构建（所有 bin）→ 三台 0 error；
+  clippy 触及文件零告警（新增测试里的 `&PathBuf` 参数按 `ptr_arg` 建议改成 `&Path`）；`rustfmt --edition 2024`
+  对新测试文件就地归一后零漂移；容器门读数见本笔提交信息；核实日 `2026-10-13`；基线 `956d83dc9`。
+  **仍开登记**：批次二百零三的⑤（C 选项串前导 `-` 的 permute-off，会让 `cmp a -c` 类型的调用把 `-c` 当第二个操作数）、
+  ⑥（`-l`/`-s` 之外的报文差异：C `err()` 会带 `strerror` 后缀，本壳只打档名）、⑦（C `c_regular` 首行的
+  `sflag && len1 != len2` 在偏移检查之前）与⑧（GNU 与本壳的 skip 判据不同，本机对账不能越界使用）。
+
 - ✅ **批次二百零六把 `tail` 的操作数读腿接到宿主口子，并补上跑真进程的 `tail_face` 金样门（10 枚）**
   （`2026-10-13`，`claim/TAIL-HOST-FACE-qoder` @ 基线 `a9f889a9f`，单域三线 commands/textfilter，无跨界）：
   按批次二百零五末尾的形状跟进。改前证据：`grep -n "minix_sys::" os/commands/usr-bin/textfilter/src/bin/tail.rs`

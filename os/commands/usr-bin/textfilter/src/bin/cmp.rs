@@ -31,7 +31,6 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read};
 use minix_textfilter::cmp::{compare_bytes, format_list_entry, report_eof, report_first_diff};
 
 const ERR_EXIT: i32 = 2;
@@ -75,21 +74,15 @@ fn run() -> ! {
     };
     let name1 = if stdin1 { "stdin" } else { file1 };
     let name2 = if stdin2 { "stdin" } else { file2 };
-    let skip1 = operands.get(2).map_or(0, |s| match parse_skip(s) {
-        Ok(value) => value,
-        Err(()) => usage(),
-    });
-    let skip2 = operands.get(3).map_or(0, |s| match parse_skip(s) {
-        Ok(value) => value,
-        Err(()) => usage(),
-    });
-
+    // C opens both operands *before* it parses the skip operands (`cmp.c:95-119`
+    // then `:121-134`), so when a file cannot be opened that is what the user
+    // hears about, even if a skip value is also malformed.
     let data1 = if stdin1 {
         support::read_stdin()
     } else {
-        match read_file_or_none(file1) {
-            Some(data) => data,
-            None => {
+        match support::read_file(file1) {
+            Ok(data) => data,
+            Err(()) => {
                 support::warn(format!("cmp: {name1}\n").as_bytes());
                 support::terminate(ERR_EXIT);
             }
@@ -98,14 +91,22 @@ fn run() -> ! {
     let data2 = if stdin2 {
         support::read_stdin()
     } else {
-        match read_file_or_none(file2) {
-            Some(data) => data,
-            None => {
+        match support::read_file(file2) {
+            Ok(data) => data,
+            Err(()) => {
                 support::warn(format!("cmp: {name2}\n").as_bytes());
                 support::terminate(ERR_EXIT);
             }
         }
     };
+    let skip1 = operands.get(2).map_or(0, |s| match parse_skip(s) {
+        Ok(value) => value,
+        Err(()) => usage(),
+    });
+    let skip2 = operands.get(3).map_or(0, |s| match parse_skip(s) {
+        Ok(value) => value,
+        Err(()) => usage(),
+    });
 
     // C applies each offset before comparing and checks the two files in order:
     // `c_regular`'s `if (skip1 > len1) eofmsg(file1, len1 + 1, 0)` then the same
@@ -153,24 +154,6 @@ fn run() -> ! {
         0
     };
     support::terminate(status)
-}
-
-/// Open, read to the end, and close a file, or `None` if it cannot be opened.
-fn read_file_or_none(path: &str) -> Option<Vec<u8>> {
-    let fd = open(path, 0, 0).ok()?;
-    let mut data = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => data.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    //[SD19-gate] SD-19: close 后 fd 不再使用
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = close(fd);
-    Some(data)
 }
 
 /// Which of the two operands read standard input, faithful to C
