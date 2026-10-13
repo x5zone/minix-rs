@@ -250,6 +250,69 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十四接上 `vis` 的 `-f`/`-F` 行折叠（`foldit` 的列状态机），并把编码路径拆成逐 chunk 形态**
+  （`2026-10-14`，`claim/VIS-FOLD-qoder` @ 基线 `92b9c9d66`，单域三线 commands/textfilter，无跨界）：
+  接回批次二百一十三登记的③里行折叠那一半（07 篇 vis 行的「仍未接的 `-f`、`-F`」）。C 的真源形状有三处必读：
+  `usr.bin/vis/foldit.c:36-70` 的列算式与 `goto again`、`usr.bin/vis/vis.c:58` 的三个独立变量
+  （`eflags`、`fold`、`foldwidth = 80`）、以及 `vis.c:202-289` 的 `process()` 循环——**chunk 是按输入字符产出的**，
+  `buff` 每次只装一个字符的编码，折叠判据跑在这段已生成文本上，末了 `if (fold) col = foldit(...)` 之后才把
+  chunk 打出去。本壳先前是整-buffer 编码后一次 `emit`，因此本轮除了接 `-f`/`-F`，还要把编码路径拆成 chunk 形态。
+  **三条路的选择**：甲、照抄含 `goto again` 的循环——最忠实，但 C 的重扫在「单个 chunk 自身宽于 `max - 2`」时
+  永不返回（`-F 5` 的限值是 3，而 0xFF 编出来是四字符的 `\M^?`），照抄就是把一条活锁搬进命令，真机上表现为
+  无界打印隐藏换行；乙、按「意图」重写为「越限的那个字符起算新行」——它与 C 在单字符 chunk 上同解，但 chunk
+  多于一列时答案不同：C 打印标记后把**整个 chunk** 从列 0 重数过去，乙只把越限点之后的剩余挪到下一行，
+  于是会把一个转义序列从中间劈开（`\134` 的前两列留在上一行末）——这是实质错答，不能为了少写一层循环而换；
+  丙（采）：把 `foldit` 建成「(标记数, 折后列值)」的纯函数，正常路径逐字节照 C 的列算式与整段重扫，
+  只对无界那一支给终止语义（插一个放得下的标记、按 chunk 自身宽度计列），并把分岔与复现条件写进 07 篇与
+  `foldit` 的文档注释（`rewrite-notes/18-stage-commands/07-text-filter.md` vis 行）。
+  **顺带纠正两处「看着像别名、其实不是」的语义**：`-F` 的 case 只做 `foldwidth` 赋值与 `markeol++`，它打开的是
+  行末标记**不是**折叠（`vis.c:89-95`），`-f` 才 `fold++` 且不动宽度（`:96-98`），故 `Plan` 里 `fold` 与
+  `foldwidth` 必须是两个字段、不能合成一个 `Option<usize>`（合成即把「只标记不折行」这档判据丢掉）；
+  每个操作数末尾补的那半个标记**不**重置列值（`:288-289` 直接 `printf`，没有 `col = 0`），加上
+  `:170` 的 `static int col`，列值是跨操作数存活的——本轮用一枚双文件金样把这两条钉在同一处断言里。
+  空操作数也补标记：C 的 `cp` 初值是 `nul + 1`，于是 `*(cp - 1)` 按构造不是换行（`:171-172`），
+  这条看似怪癖但属可观察行为，照做并留注。
+  **代码形状**：库侧新增 `encode_chunk(byte, next, options)` 与私有的 `encode_into`（`encode` 与 chunk 形态共用
+  同一个 `encode_byte`，且 chunk 形态每次自建 extra 表，对应 `istrsenvisx:484` 每字符重建的代价），
+  新增 `foldit`/`column_step`/`walk`/`columns` 与 `FOLD_MARKER`（标记字形由 `VIS_MIMESTYLE` 决定，而 `-m` 仍拒，
+  故只有一支可达，注释写明 `-m` 落地时该改哪里）；执行侧 `run()` 改为逐字节产出 chunk、先折后打，
+  并在每个操作数收尾补隐藏换行。`-F` 的取值按 `atoi` 建 `parse_atoi`（跳空白、取一个符号、读数字为止、
+  忽略尾随垃圾、无数字折 0），`< 5` 即 `vis: can't fold lines to less than 5 cols` 退 1。
+  三件套：`cargo test -p minix-textfilter --lib` → **419 passed / 0 failed**（基线 415，新增四枚：
+  `test_foldit_breaks_before_the_chunk_that_passes_the_limit`、
+  `test_foldit_counts_columns_with_the_tab_backspace_and_newline_rules`、
+  `test_foldit_terminates_where_the_c_would_loop`、
+  `test_encode_chunk_matches_the_whole_buffer_encode`——最后一枚把「逐 chunk 拼接 == 整-buffer `encode`」
+  钉成等式，防止拆分引入第二真值）；`--test vis_face` → **17 passed / 0 failed**（基线 12，新增五枚：
+  `fold_writes_a_hidden_newline_and_closes_a_partial_line`、`fold_flag_alone_marks_lines_but_does_not_fold`、
+  `fold_width_is_read_the_way_atoi_reads_it`、
+  `fold_counts_columns_of_the_encoded_text_and_carries_the_column_across_files`、
+  `fold_applies_to_the_none_path_too`）；其余四道命令门 head 8 / tail 10 / uniq 10 / cmp 10 不动，
+  `cargo test -p minix-textfilter` 的 47 个测试目标全 ok、合计 523 passed、零 FAILED；五枚金样全部一次通过，
+  期望值是按 C 的列算式手推的（`-F 6` 限 4 列：`abcd` 折、`\M^?` 四字符超宽、制表进到八的倍数）。
+  **九枚变异负控**（每枚先断言源文件确被改、复位后 md5 与变异前逐字相等）：折叠余量 `max - 2` 改成 `max - 1` →
+  库内 2 枚 + 端到端 4 枚 FAILED；制表符按一列计 → 库内 `test_foldit_counts_columns…` + 端到端
+  `fold_counts_columns…` FAILED；结尾不给半行补标记 → 端到端 4 枚 FAILED（库内不动，证明这条只在真机进程面上可观察）；
+  `-F` 不再打开行标记 → 端到端 `fold_flag_alone…` FAILED；`-F` 顺手也打开折叠 → 同一枚 FAILED（同测双向夹住这档判据）；
+  列值改为每操作数清零 → 端到端 `fold_counts_columns…` FAILED；宽度下限 5 改成 3 →
+  端到端 `fold_width_is_read_the_way_atoi_reads_it` FAILED；`-n` 支路跳过折叠 → 端到端
+  `fold_applies_to_the_none_path_too` FAILED；换行不清零列值 → 库内 1 + 端到端 1 FAILED。
+  门禁：容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` → Finished 零 error，容器内
+  `cargo test -j 1 -p minix-textfilter` 的 47 个测试目标全 ok；三架构
+  `cargo build -p minix-textfilter --bins --target {x86_64-unknown-none, aarch64-unknown-none,
+  riscv64gc-unknown-none-elf}` 三台零 error；clippy 指向 `src/vis.rs`、`src/bin/vis.rs`、`tests/vis_face.rs`
+  的告警计数 0（新增测名含大写字母触发一次 `non_snake_case`，按建议改成不含旗标字母的名字而不是加 `#[allow]`）；
+  `rustfmt --edition 2024 --check` 三文件零漂移；`bash tools/pattern-gate.sh --diff` → PASS=17 FAIL=0 SKIP=1
+  （增量 C 锚点 16 token 存在性/落窗过、反引号常量 3 token 过）；`tools/doc-style-lint.sh --diff` error 0；
+  `tools/notes-link-check.py rewrite-notes/` 断链集合与基线逐条相同（124 → 124，新增 0）。核实日 `2026-10-14`；
+  基线 `92b9c9d66`。
+  **登记不执行**：①`-h`/`-m` 的 HTTP 与 MIME 编码支路（`lib/libc/gen/vis.c` 的 `do_httpvis`/`do_xvis`），
+  其中 `-m` 还连带两处默认（折叠标记换成 `=` 加换行、宽度仍为 80 时压到 76）；②`decode()` 里两枚
+  `#[cfg(test)] eprintln!("DBG …")` 的遗留调试输出（批次十六既存，本轮未动）；③`src/window.rs:679-680`
+  两条 unused import（既存存量）；④解码侧 `unvis` 的 `-e`/`-H`/`-h`/`-m` 对应旗标；⑤多字节宽字符路径
+  （本壳按字节编码，`-N` 与 0x7F 以上字节的差异已在 07 篇声明）；⑥超宽 chunk 的终止分岔已在 07 篇与
+  `foldit` 注释双处声明，真机若要用 C 对拍须避开 `-F 5` 这一档宽度；⑦真机 open 腿归 C-57/E5。
+
 - ✅ **批次二百一十三接上 `vis` 的 `-s`/`-t`/`-w`/`-S`/`-M`/`-N` 六枚旗标，并纠正一笔写错的反斜杠透传事实**
   （`2026-10-14`，`claim/VIS-EXTRALIST-qoder` @ 基线 `826449c6b`，单域三线 commands/textfilter，无跨界）：
   **先纠错（P0-fact）**：错源有两处同源的说法。批次二百一十的金样纠错清单里第②条写着「默认下一律反斜杠是图形
