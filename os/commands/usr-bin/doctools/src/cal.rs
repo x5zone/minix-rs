@@ -465,6 +465,122 @@ pub fn render_year(
     Ok(at)
 }
 
+/// Shift `(year, month)` by `delta` months (delta = -1 or +1), normalizing
+/// across the year boundary. `month` is 1..=12; the result year must stay in
+/// `1..=9999` (`cal.c:381` rejects out-of-range start/end years).
+fn shift_month(year: i32, month: u32, delta: i32) -> Result<(i32, u32), DocError> {
+    let idx = year * 12 + (month as i32 - 1) + delta;
+    let y = idx.div_euclid(12);
+    let m = idx.rem_euclid(12) as u32 + 1;
+    if !(1..=9999).contains(&y) {
+        return Err(DocError::InvalidArgument);
+    }
+    Ok((y, m))
+}
+
+/// Center a `"MonthName Year"` label over one month column, mirroring `cal.c`
+/// `snprintf("%s %d", month_names, year)` + `center` on the non-yearly band.
+fn put_month_year_header(
+    out: &mut [u8],
+    at: &mut usize,
+    year: i32,
+    month: u32,
+    width: usize,
+) -> Result<(), DocError> {
+    let name = MONTH_NAMES[(month - 1) as usize];
+    let mut buf = [0u8; 24];
+    let nlen = name.len();
+    buf[..nlen].copy_from_slice(name.as_bytes());
+    buf[nlen] = b' ';
+    let mut tail = [0u8; 8];
+    let digits = write_decimal(year, &mut tail);
+    buf[nlen + 1..nlen + 1 + digits].copy_from_slice(&tail[..digits]);
+    let label =
+        core::str::from_utf8(&buf[..nlen + 1 + digits]).map_err(|_| DocError::InvalidArgument)?;
+    put_centered(out, at, label, width)
+}
+
+/// Render three consecutive months centered side by side (`cal -3 m y`
+/// face, `cal.c:monthrange` with before=after=1). Because the band is not a
+/// full year, each header is `"MonthName Year"` (the C `inayear` branch is
+/// false), so a year boundary simply changes the outer month's own label.
+pub fn render_triple(
+    year: i32,
+    month: u32,
+    reckoning: Reckoning,
+    style: DayStyle,
+    out: &mut [u8],
+) -> Result<usize, DocError> {
+    if year <= 0 || !(1..=12).contains(&month) {
+        return Err(DocError::InvalidArgument);
+    }
+    let (week_len, day_len, headings) = match style {
+        DayStyle::Month => (WEEK_LEN, 3, DAY_HEADINGS),
+        DayStyle::Julian => (J_WEEK_LEN, 4, JULIAN_HEADINGS),
+    };
+    let months = [
+        shift_month(year, month, -1)?,
+        (year, month),
+        shift_month(year, month, 1)?,
+    ];
+    let mut grid_storage = [MonthGrid {
+        first_weekday: 0,
+        day_count: 0,
+    }; 3];
+    let mut values_storage = [1u32; 3];
+    for slot in 0..3 {
+        let (y, m) = months[slot];
+        grid_storage[slot] = month_grid(y, m, reckoning)?;
+        values_storage[slot] = match style {
+            DayStyle::Month => 1,
+            DayStyle::Julian => day_of_year_of_first(y, m)?,
+        };
+    }
+    let matrices = [
+        day_matrix(&grid_storage[0], values_storage[0]),
+        day_matrix(&grid_storage[1], values_storage[1]),
+        day_matrix(&grid_storage[2], values_storage[2]),
+    ];
+    let mut at = 0;
+    // 标题行：各月 "Name Year" 居中于 week_len，列间两空格。
+    for (i, (y, m)) in months.iter().enumerate() {
+        if i > 0 {
+            put(out, &mut at, b"  ")?;
+        }
+        put_month_year_header(out, &mut at, *y, *m, week_len)?;
+    }
+    put(out, &mut at, b"\n")?;
+    for i in 0..3 {
+        if i > 0 {
+            put(out, &mut at, b"  ")?;
+        }
+        put(out, &mut at, headings.as_bytes())?;
+    }
+    put(out, &mut at, b"\n")?;
+    // 六行日体：每周 outer、每月 inner（固定列跨三数组，allow 同 render_year）。
+    #[allow(clippy::needless_range_loop)]
+    for week in 0..6 {
+        for (slot, matrix) in matrices.iter().enumerate() {
+            if slot > 0 {
+                put(out, &mut at, b"  ")?;
+            }
+            for &day in &matrix[week] {
+                if day_len == 4 {
+                    put_day_julian(out, &mut at, day)?;
+                } else {
+                    put_day(out, &mut at, day)?;
+                }
+            }
+            at -= 1;
+        }
+        while at > 0 && out[at - 1] == b' ' {
+            at -= 1;
+        }
+        put(out, &mut at, b"\n")?;
+    }
+    Ok(at)
+}
+
 /// Decimal writer for the year figure.
 fn write_decimal(value: i32, out: &mut [u8]) -> usize {
     let negative = value < 0;
@@ -620,5 +736,30 @@ mod render_tests {
             "Jan 1 起年内第 1 日"
         );
         assert!(lines[4].contains("32"), "Feb 1 落年内第 32 日（2024 闰）");
+    }
+
+    #[test]
+    fn test_shift_month_across_year_boundary() {
+        assert_eq!(shift_month(2025, 1, -1).unwrap(), (2024, 12));
+        assert_eq!(shift_month(2025, 12, 1).unwrap(), (2026, 1));
+        assert_eq!(shift_month(2025, 9, -1).unwrap(), (2025, 8));
+        assert_eq!(shift_month(2025, 9, 1).unwrap(), (2025, 10));
+        // year 1 的前一月落 year 0 → 拒（对位 C startyear<0 检查）。
+        assert!(shift_month(1, 1, -1).is_err());
+    }
+
+    #[test]
+    fn test_triple_centers_three_months_with_year_labels() {
+        // cal -3 1 2025：年边界三联 = Dec 2024 / Jan 2025 / Feb 2025，各标 "Name Year"。
+        let mut out = [0u8; 8192];
+        let used = render_triple(2025, 1, Reckoning::Gregorian, DayStyle::Month, &mut out).unwrap();
+        let text = core::str::from_utf8(&out[..used]).unwrap();
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert_eq!(
+            lines[0], "   December 2024          January 2025         February 2025    ",
+            "三标题各居 week_len、列间两空格"
+        );
+        // 标题 + 表头 + 6 行日体 + 末尾空串。
+        assert_eq!(lines.len(), 1 + 1 + 6 + 1, "三联总行数");
     }
 }

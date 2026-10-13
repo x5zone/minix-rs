@@ -4,9 +4,10 @@
 //! `render_month`/`render_year` 的年版式）。决定半（栅格与渲染）在库内；
 //! 本程序只翻命令行、取当前时刻、把渲染结果写到标准输出。
 //!
-//! 声明性留白（10-doc-man-tools.md §5）：`-3`/`-h`/`-r`/`-A`/`-B`/`-C`/
+//! 声明性留白（10-doc-man-tools.md §5）：`-r`/`-h`/`-A`/`-B`/`-C`/
 //! `-d`/`-R` 等面回答 "option not wired"；月份只收数字（C 的月名解析面未
-//! 移植）。`-y`（强制年视图）与 `-j`（年积日）已接。
+//! 移植，C 自身也只收数字）。`-y`（强制年视图）、`-j`（年积日）与 `-3`（前/
+//! 当/后月三联）已接。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -17,7 +18,7 @@ use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
 mod support;
-use minix_doctools::cal::{DayStyle, Reckoning, render_month, render_year};
+use minix_doctools::cal::{DayStyle, Reckoning, render_month, render_triple, render_year};
 use minix_sys::write;
 
 const STDOUT: i32 = 1;
@@ -54,17 +55,27 @@ fn now_epoch_days_civil() -> (i32, u32) {
 #[derive(Debug, PartialEq, Eq)]
 enum View {
     Month(i32, u32),
+    Triple(i32, u32),
     Year(i32),
 }
 
-/// Decide the face from operands, the `-y` force-year flag, and the current
-/// `(year, month)`. Mirrors `cal.c` argc switch (`cal.c:283-322`): `-y` only
-/// changes the no-operand case (`cal.c:312` `if (!yflag) month = ...`, else
-/// yearly); explicit operands already fix the face.
-fn choose_view(operands: &[&str], force_year: bool, now: (i32, u32)) -> Result<View, &'static str> {
+/// Decide the face from operands, the `-y`/`-3` flags, and the current
+/// `(year, month)`. Mirrors `cal.c` argc switch + `monthrange` gating
+/// (`cal.c:283-322`, `cal.c:340` before/after): `-y` and `-3` only reshape
+/// the month-based faces; an explicit year-only operand is yearly regardless
+/// (C resets `before`/`after` when `month == 0`), and `-y` outranks `-3` on
+/// the no-operand path.
+fn choose_view(
+    operands: &[&str],
+    force_year: bool,
+    force_triple: bool,
+    now: (i32, u32),
+) -> Result<View, &'static str> {
     match operands {
         [] => Ok(if force_year {
             View::Year(now.0)
+        } else if force_triple {
+            View::Triple(now.0, now.1)
         } else {
             View::Month(now.0, now.1)
         }),
@@ -78,11 +89,15 @@ fn choose_view(operands: &[&str], force_year: bool, now: (i32, u32)) -> Result<V
                 _ => return Err("bad month"),
             };
             match (*year).parse::<i32>() {
-                Ok(y @ 1..=9999) => Ok(View::Month(y, m)),
+                Ok(y @ 1..=9999) => Ok(if force_triple {
+                    View::Triple(y, m)
+                } else {
+                    View::Month(y, m)
+                }),
                 _ => Err("bad number"),
             }
         }
-        _ => Err("usage: cal [-yj] [[month] year]"),
+        _ => Err("usage: cal [-3jy] [[month] year]"),
     }
 }
 
@@ -92,6 +107,7 @@ fn run() -> ! {
     let mut operands: Vec<&str> = Vec::new();
     let mut style = DayStyle::Month;
     let mut force_year = false;
+    let mut force_triple = false;
     for arg in &args[1..] {
         if let Some(rest) = arg.strip_prefix('-') {
             if rest.is_empty() {
@@ -101,7 +117,8 @@ fn run() -> ! {
                 match c {
                     'y' => force_year = true,
                     'j' => style = DayStyle::Julian,
-                    // 其余 C 旗标（-3h rA B C d R）逐个留白。
+                    '3' => force_triple = true,
+                    // 其余 C 旗标（-h rA B C d R）逐个留白。
                     _ => fail("option not wired"),
                 }
             }
@@ -110,7 +127,7 @@ fn run() -> ! {
         }
     }
 
-    let view = match choose_view(&operands, force_year, now_epoch_days_civil()) {
+    let view = match choose_view(&operands, force_year, force_triple, now_epoch_days_civil()) {
         Ok(v) => v,
         Err(msg) => fail(msg),
     };
@@ -118,6 +135,7 @@ fn run() -> ! {
     let mut out = [0u8; 4096];
     let rendered = match view {
         View::Month(y, m) => render_month(y, m, Reckoning::Gregorian, style, &mut out),
+        View::Triple(y, m) => render_triple(y, m, Reckoning::Gregorian, style, &mut out),
         View::Year(y) => render_year(y, Reckoning::Gregorian, style, &mut out),
     };
     match rendered {
@@ -147,7 +165,7 @@ mod view_tests {
     #[test]
     fn no_operand_defaults_to_current_month() {
         assert_eq!(
-            choose_view(&[], false, (2026, 10)),
+            choose_view(&[], false, false, (2026, 10)),
             Ok(View::Month(2026, 10))
         );
     }
@@ -155,13 +173,16 @@ mod view_tests {
     #[test]
     fn no_operand_with_y_is_current_year() {
         // 旧体把 `-y` 当静默 no-op，仍走月视图——这行钉住与 C 一致：无操作数时 -y 拉年。
-        assert_eq!(choose_view(&[], true, (2026, 10)), Ok(View::Year(2026)));
+        assert_eq!(
+            choose_view(&[], true, false, (2026, 10)),
+            Ok(View::Year(2026))
+        );
     }
 
     #[test]
     fn single_operand_is_year_regardless_of_y() {
         assert_eq!(
-            choose_view(&["2025"], true, (2026, 10)),
+            choose_view(&["2025"], true, false, (2026, 10)),
             Ok(View::Year(2025))
         );
     }
@@ -169,21 +190,50 @@ mod view_tests {
     #[test]
     fn two_operands_is_month() {
         assert_eq!(
-            choose_view(&["9", "2025"], false, (2026, 10)),
+            choose_view(&["9", "2025"], false, false, (2026, 10)),
             Ok(View::Month(2025, 9))
         );
     }
 
     #[test]
-    fn bad_values_and_overload_rejected() {
-        assert_eq!(choose_view(&["0"], false, (2026, 10)), Err("bad number"));
+    fn minus_three_reshapes_month_faces_to_triple() {
+        // 无操作数 + -3 → 当前月三联；两操作数 + -3 → 指定月三联。
         assert_eq!(
-            choose_view(&["13", "2025"], false, (2026, 10)),
+            choose_view(&[], false, true, (2026, 10)),
+            Ok(View::Triple(2026, 10))
+        );
+        assert_eq!(
+            choose_view(&["9", "2025"], false, true, (2026, 10)),
+            Ok(View::Triple(2025, 9))
+        );
+    }
+
+    #[test]
+    fn minus_three_ignored_on_year_only_and_y_outranks() {
+        // 单操作数（年）不受 -3 影响（C 在 month==0 时回到 yearly）；-y 优于 -3。
+        assert_eq!(
+            choose_view(&["2025"], false, true, (2026, 10)),
+            Ok(View::Year(2025))
+        );
+        assert_eq!(
+            choose_view(&[], true, true, (2026, 10)),
+            Ok(View::Year(2026))
+        );
+    }
+
+    #[test]
+    fn bad_values_and_overload_rejected() {
+        assert_eq!(
+            choose_view(&["0"], false, false, (2026, 10)),
+            Err("bad number")
+        );
+        assert_eq!(
+            choose_view(&["13", "2025"], false, false, (2026, 10)),
             Err("bad month")
         );
         assert_eq!(
-            choose_view(&["9", "2025", "x"], false, (2026, 10)),
-            Err("usage: cal [-yj] [[month] year]")
+            choose_view(&["9", "2025", "x"], false, false, (2026, 10)),
+            Err("usage: cal [-3jy] [[month] year]")
         );
     }
 }
