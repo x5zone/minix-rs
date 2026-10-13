@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第一组——只用标准输入输出说话的游戏，系统能跑、管道能通的证明
 > **源码**: `minix3/games/factor/factor.c`（输出形状见头注释、因子打印函数见第 184 行附近、大数路径见第 110 行附近、用法 `factor [value ...]` 见第 268 行附近）、`minix3/games/primes/primes.c` 与 `pattern.c` 与 `pr_tbl.c` 与 `spsp.c`（区间素数表）、`minix3/games/caesar/caesar.c`（轮转表构造见第 82 行附近、溢出保护 `rot %= LETTERS` 见第 86 行附近、轮转解析见第 125 行附近）、`minix3/games/morse/morse.c`（码表见第 96 行附近、用法 `morse [-ds] [string ...]` 见第 140 行附近、解码匹配见第 219 行附近）、`minix3/games/pig/pig.c`（元音规则见第 103 行附近、用法 `pig` 见第 133 行附近）、`minix3/games/arithmetic/arithmetic.c`（缺省范围 10 见第 99 行附近、对错计数见第 100 行附近、范围选项见第 107 行附近）、`minix3/games/banner/banner.c`（整幅宽 132 见第 58 行附近、用法 `banner [-w width] [message]` 见第 1057 行附近、列缩放见第 1064 行到第 1066 行附近）、`minix3/games/number/number.c`（数字转英文单词）、`minix3/games/bcd/bcd.c`（大字显示）、`minix3/games/ppt/ppt.c`（纸带 punch 显示）
-> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 61 个；端到端门六扇 `tests/morse_face.rs` 十二枚、`tests/factor_face.rs` 八枚、`tests/pig_face.rs` 六枚、`tests/ppt_face.rs` 五枚、`tests/bcd_face.rs` 六枚与 `tests/caesar_face.rs` 五枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 157 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
+> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 64 个；端到端门七扇 `tests/morse_face.rs` 十二枚、`tests/factor_face.rs` 八枚、`tests/pig_face.rs` 六枚、`tests/ppt_face.rs` 五枚、`tests/bcd_face.rs` 六枚、`tests/caesar_face.rs` 五枚与 `tests/number_face.rs` 五枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 165 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `06-file-ops.md`（标准输入输出面先行）
 > **不覆盖（移交）**: 终端控制（见第 23 篇）、键盘读取与逐行显示执行（各游戏二进制包）、大数概率分解（后续补齐）
 
@@ -39,7 +39,7 @@
 
 猪拉丁语的规则分三种：元音开头直接加后缀，辅音串开头把串搬到尾再加后缀，没有元音可停的串就整个搬完。这里藏着两套不同的字母集合——决定「直接加 `way`」的那一套**不含 `y`**，决定搬运在哪里停下的那一套**含 `y` 且从首字母就检查**，于是 `yellow` 根本不搬运（`yelloway`），而 `yes` 也只加后缀（`yesay`）。另一对容易被抹平的是大小写：被搬走的串里只有原词的**第一个**字母会被转小写，新的首字母若本来大写才被转成大写，其余字母原样走——`Pig` 得 `Igpay`，混写的 `sTring` 得 `ingsTray`——搬到头后的那串里，原本大写的字母照样大写。全大写词整套后缀也用大写（`WAY`/`AY`）。这些细节不是装饰，是几十年玩家约定的玩法，改一条就不是猪拉丁语了。
 
-数字转单词把阿拉伯数字读成英文：十九以内直查，二十以上十位加个位，百位加 hundred，千位加 thousand，零单独读。范围收到九十九万九千九百九十九，够覆盖日常报数，超了报超范围。
+数词把整个数**按三位一组**读出来，每读满一组就报一个尺度名（hundred、thousand、million 一路到 vigintillion，共二十二个，因此上限是六十五位），而每一组后面都跟一个属于自己的句点——所以 1234 是两行（`one thousand.` 与 `two hundred thirty-four.`），不是一行。小数部分先看第一个非零位，再用**位数**给它的量级命名（一位是 tenths、两位是 hundredths、更多由 `ten-`/`hundred-` 前缀加尺度名拼出），并在自己末尾再点一个句点。`-l` 把组末的句点换成空格、把整行的换行挪到最后，但不改量级名末尾那个句点。负号单独占一行。
 
 ### 1.4 大字与测验：横幅宽度与对错计数
 
@@ -90,6 +90,8 @@ show(const char *s)
 
 ### 2.5 猪拉丁语与算术：元音规则与范围计数
 
+数词的分组读法在 `number.c` 里分四层：`convert`（`:112-212`）扫描并拆出整数与小数，`unit`（`:215-249`）负责三位一组与尺度名，`number`（`:252-284`）读一组内的一到三位，`pfract`（`:286-298`）按**小数位数**量级命名。三条最容易被抹平的事实：组末句点使一个数出多行；小数先走到第一个非零位再决定说什么，但量级名用总位数；以及扫描器对空白的态度是**逐个吃掉行首的、拒绝行内的**——所以 `1.2 3` 报错时打的只剩 `1`（第一个点已被写成终止符）。入口也没有选项魔法：`getopt(argc, argv, "l")`，其余字母报 usage 退 1，无操作数时按 `char line[256]` 的 `fgets` 读（**可用 255**），拿不到换行就是致命的 `line too long.`，第二件起前头打 `...\n`。
+
 元音规则（`pig.c:103` 与 `:114`）是**两套集合**：`way` 判据看 `aeiouAEIOU`，搬运停止判据看 `aeiouyAEIOUY` 且从 `start == 0` 就测，故首字母 `y` 让循环一步都不走；搬运时 `qu` 算一个整体（`:117-119`），所以 `quay` 是 `ayquay`。大小写是「跟着字母走」而不是归一化：`if (!allupper) buf[0] = tolower(buf[0])`（`:111-112`）与 `if (firstupper) buf[start] = toupper(buf[start])`（`:124-125`）各只碰一个位置。用法行（`:131-135`）是光秃的 `pig`：optstring 为空，`-x` 报 usage 并退 1，而**操作数被数出来却从不读**——`main` 之后只消费标准输入（`:76`）。流本身（`:62-92`）还有三条：一个词是**连续的 `isalpha` 字节**，数字与标点既冲刷词又原样透出；末行没有分隔符时那个悬挂词**永不打印**（循环退出后直接 `exit(0)`）；字母连到第 1025 个才触发 `errx(1, "ate too much!")`（`:78-79`，检查发生在存入之前）。算术的缺省范围（第 99 行附近）与对错计数（第 100 行附近）是计分核心，范围选项（第 107 行附近）收操作数。Rust 侧 `words.rs` 的三规则分支与元音规则逐项对应，`quiz.rs` 的范围解析与计分与算术语义逐项对应。
 
 ### 2.6 横幅：整幅宽与列缩放
@@ -138,7 +140,7 @@ show(const char *s)
 | `primes.rs` | `primes.c` 区间语义 | 界限解析、区间生成 |
 | `caesar.rs` | `caesar.c` `:81-97`（建表）、`:120-137`（解析）、`:141-187`（频率破解） | 轮转解析、单字节轮转、破解用的计数与点积 |
 | `morse.rs` | `morse.c` 三张码表（`:53-111`）、`morse()`/`show()`（`:231-261`）、`decode()` 与 `-d` 循环（`:146-228`） | 逐字节查表、两种渲染形态、整串解码、解码字符流（`decode_stream`） |
-| `words.rs` | `pig.c` 第 103 行、`number.c` | 猪拉丁语、数字转单词 |
+| `words.rs` | `pig.c` `:94-130`（`pigout`）、`number.c` `:112-298`（`convert`/`unit`/`number`/`pfract`） | 猪拉丁语、数词分组读法与量级命名 |
 | `banner.rs` | `banner.c` 第 58 行与第 1057 行与第 1064 行附近 | 宽度解析、列缩放、字形源接口与行绘制 |
 | `quiz.rs` | `arithmetic.c` 第 99 行与第 100 行附近 | 范围解析、答案计算、计分 |
 
@@ -181,7 +183,7 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 | `decode_code` | 码串 | 字节（结束记号无输出） | 整串解码语义 |
 | `decode_stream` | 字节流、写出回调 | 无 | 解码字符流语义 |
 | `pig_word` | 词、缓冲 | 词长 | 猪拉丁语义 |
-| `number_words` | 数值、缓冲 | 词长 | 数词语义 |
+| `convert` | 一行字节、是否 `-l`、缓冲 | 词长或三种拒绝 | 数词整条腿语义（含 `unit`/`number`/`pfract` 的私有实现） |
 | `render_banner_row` | 字形源、文本、行号、缓冲 | 行长度 | 横幅行语义 |
 | `grade` | 计分、题目、答案 | 对错 | 计分语义 |
 | `hole_mask` | 字节 | 十二位孔码 | `holes[256]` 查表语义 |
@@ -202,7 +204,7 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 | caesar | 同上 | 已接线两条路：固定轮转（`caesar N`，非字母走恒等段、轮转量先对 26 取余）与**无参频率破解**（`observe`/`best_rotation`/`guess_rotation` 复刻 C 的 `log` 变形表、2048 字节窗口投票、严格大于与第 0 候选占位的平手规则）；端到端门 `tests/caesar_face.rs` 五枚。入口面也已按 C：`get_rotation` 的接受规则（吃前导空白与 `+`、上界 `INT_MAX`、负号算越界不算畸形）、坏值句子落 stderr、多参数时 usage 落 stderr 退 1。唯一仍缺的是句尾 strerror 文本（同族共同缺口） |
 | morse | 同上 | 已接线编码面（默认逐符号 `dit`/`daw`、`-s` 短形、每字节一行、操作数收尾行与整轮一次 `SK`、表外字节不出行、`-d`/`-s` 聚簇与 `--`/裸 `-` 的 getopt 形、用法行落 stderr 退 1）与 `-d` 的解码两形：操作数整串比对不拆空格（`:146-150`），标准输入按 C 的字符流（冲刷型分隔符不打印、十个符号算胡码并吞掉其后首字节、整轮收尾一个换行、查不到答 `x`、结束记号静默） |
 | pig | 同上 | 已接线并逐枚对 C：词是连续字母串（数字标点冲刷并透出）、悬挂词在 EOF 不打印、第 1025 个字母触发 `ate too much!`、操作数被忽略而 `-x` 报 usage 退 1；`pig_word` 复刻 `pigout()` 的两套元音集合、`qu` 整体搬运与「大小写跟着字母走」；端到端门 `tests/pig_face.rs` 六枚 |
-| number | 同上 | 已接线 |
+| number | 同上 | 已接线并逐枚对 C：三位一组带尺度名（hundred 到 vigintillion，六十五位封顶）、**每组自带句点**所以一个数可出多行、小数按位数命名量级、`-l` 换句点为空格、负号独立成行；入口按 `getopt("l")`，无操作数时 `fgets` 可用长度 255、无换行即 `line too long.`、第二件起前头 `...\n`；三句 `errx`（`illegal number: ` 只带到已替换的点、`number too large, max 65 digits.`、`line too long.`）与 usage 全落 stderr。端到端门 `tests/number_face.rs` 五枚 |
 | arithmetic | 同上 + 时钟读（播种） | 已接线；`penalise` 罚则提示与用时统计待批 |
 | banner | 同上 + 真位图字体资产 | 决定半已测，薄壳待字体后接线 |
 
@@ -219,7 +221,8 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 - **轮转**（`caesar.rs`，8 个）：`test_rot_thirteen_round_trip`（十三轮转往返）、`test_zero_and_full_turns`（零与整圈）、`test_non_letters_pass_through`（非字母直通）、`rotations_parse_the_way_strtol_does_and_then_reject_by_range`（前导空白、符号、`INT_MAX` 与两种失败）、`the_weighted_table_is_the_log_form_of_the_published_frequencies`（权重表 = 比例表取对数再平移，且峰在 `e`、谷在 `j`）、`the_log_step_changes_the_answer_on_a_thin_alphabet`（同一组观测下对数表与原始比例表给出不同答案）、`the_cracker_finds_the_shift_that_was_applied`（一段英文在 1/5/13/19/25 格位移后都能还原）、`a_single_letter_observation_picks_the_shift_that_puts_it_on_the_peak`（单字母观测把该字母搬到权重峰值那一格）。
 - **轮转端到端**（`tests/caesar_face.rs`，3 个）：`a_rotation_shifts_letters_alone_and_folds_at_the_alphabet`（含 0x80/0xFF 恒等段）、`the_argument_free_mode_guesses_the_rotation_and_prints_the_plaintext`（无参模式逐格还原）、`only_the_first_two_thousand_forty_eight_bytes_vote_and_all_of_them_rotate`（窗口外不投票、但仍被翻译）、`the_rotation_argument_is_parsed_like_strtol_and_rejected_in_two_orders`（接受规则与两种失败各成一句报文）、`more_than_one_argument_answers_the_usage_line_on_stderr`（usage 落 stderr 退 1）。
 - **摩斯**（`morse.rs`，12 个）：`the_default_form_spells_each_symbol_and_reads_any_non_dot_as_a_daw`（默认形态与非点即划）、`the_short_form_prints_the_run_after_one_space_and_even_a_blank_run_keeps_it`（短形与空码那一个空格）、`whitespace_is_the_empty_code_and_vertical_tab_counts_as_whitespace`（分隔符即空码，含 0x0B）、`punctuation_comes_from_the_other_table_and_unlisted_bytes_print_nothing`（十二项标点与表外字节不出行）、`whole_string_lookups_answer_letters_digits_punctuation_noise_and_the_silent_mark`（整串比对与静默的结束记号）、`one_separator_between_groups_prints_nothing_and_a_trailing_group_is_dropped`（冲刷型分隔符与末尾悬挂码组）、`ten_symbols_are_gibberish_and_the_swallow_eats_the_separator_behind_them`（十个符号算胡码并吞掉其后首字节）、`bytes_that_are_neither_symbols_nor_separators_are_ignored_while_nothing_is_pending`（既非符号也非分隔符且无悬挂时静默）、`test_case_insensitive`（大小写不分）、`test_digits_present`（数字）、`unlisted_bytes_stay_silent_on_the_encode_side`（编码侧表外字节静默、解码侧答 `x`）、`a_short_buffer_is_refused_rather_than_truncated`（缓冲不足即拒绝）。另有端到端门 `tests/morse_face.rs` 十二枚金样（真进程、真管道，逐枚按 `morse.c` 的 `show()` 与操作数循环手推）。
-- **文字**（`words.rs`，8 个）：`test_vowel_start_gains_way`（元音开头加 `way`）、`test_consonant_cluster_moves`（辅音串搬运，含 `yellow` 不搬运）、`a_leading_y_never_moves_because_the_stop_set_contains_it`（首字母 `y` 一步不搬）、`the_qu_unit_moves_together`（`qu` 整体搬运，含 `QQUAKES` 的第二个 `q`）、`case_travels_with_the_letters_rather_than_being_normalized`（`Pig`/`String`/`sTring`/`STRING` 四例）、`test_capitalization_kept`（`Apple`/`APPLE`）、`test_number_words`（零到千）、`test_bad_words_rejected`。
+- **文字**（`words.rs`，11 个）：`test_vowel_start_gains_way`（元音开头加 `way`）、`test_consonant_cluster_moves`（辅音串搬运，含 `yellow` 不搬运）、`a_leading_y_never_moves_because_the_stop_set_contains_it`（首字母 `y` 一步不搬）、`the_qu_unit_moves_together`（`qu` 整体搬运，含 `QQUAKES` 的第二个 `q`）、`case_travels_with_the_letters_rather_than_being_normalized`（`Pig`/`String`/`sTring`/`STRING` 四例）、`test_capitalization_kept`（`Apple`/`APPLE`）、`each_scale_group_ends_with_a_period_of_its_own`（每组自带句点、两位十位带连字符）、`the_fraction_is_named_by_how_many_digits_it_has`（量级按小数位数命名）、`linear_mode_trades_the_periods_for_spaces`（`-l` 的换行位置）、`refused_numbers_name_the_text_c_would_still_print`（三种拒绝与 65 位上限）、`test_bad_words_rejected`。
+- **数词端到端**（`tests/number_face.rs`，5 个）：`every_scale_group_ends_with_a_period_of_its_own`（每组自带句点）、`the_fraction_is_named_by_how_many_digits_it_has`（量级按位数命名）、`an_operand_without_a_newline_is_a_line_too_long`（`fgets` 的 255 与 `...` 分隔）、`the_refusals_print_exactly_what_c_would_still_hold`（`illegal number:` 只到已替换的点）、`the_option_face_has_one_letter_and_no_getopt_magic`（`-l` 之外皆 usage）。
 - **猪拉丁语流**（端到端门 `tests/pig_face.rs`，6 个）：`a_word_is_a_run_of_letters_and_every_other_byte_passes_through`（字母成词、其余透出）、`a_pending_word_at_end_of_input_is_never_printed`（EOF 悬挂词丢弃）、`the_two_vowel_sets_decide_which_words_move_at_all`、`case_travels_with_the_letters_rather_than_being_normalized`（同名的进程级对照）、`one_thousand_twenty_four_letters_fit_and_the_next_one_is_fatal`（1024/1025 边界）、`operands_are_counted_and_ignored_while_a_bad_option_answers_usage`。
 - **横幅**（`banner.rs`，5 个）：`test_widths_parse`、`test_scrunch_endpoints`（端点恒等）、`test_block_renders_framed`（框形）、`test_empty_source_misses`、`test_bad_row_rejected`。
 - **测验**（`quiz.rs`，4 个）：`test_ranges_parse`、`test_answers_computed`（四则与截零）、`test_grading_counts`、`test_empty_score_zero`。
