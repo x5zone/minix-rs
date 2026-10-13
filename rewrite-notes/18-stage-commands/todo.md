@@ -250,6 +250,40 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百二十七把 `ppt` 的入口与两路形状按 C 钉死（`-h` 不是帮助、`--` 与裸 `-` 的归属、失步与欠的换行），并纠正了库注里「缓冲里总是 NUL」的事实错**
+  （`2026-10-14`，`claim/PPT-FACE-qoder` @ 基线 `356ad3f30`，单域三线 commands/games/stdio-games，无跨界）：
+  接回批次二百二十六登记①（逐壳对 C），本轮取 `ppt.c`（175 行）。**先说清楚**：库侧的
+  `punch_byte`/`decode_line` 本来就与 `putppt`/`getppt` 逐字吻合（进纸孔先于位 2 的字符、
+  非空格即算孔），本轮拓到的是**入口与两路形状**：旧壳只认整串 `-d`（`"-d"` 全等匹配），
+  所以 `-dd`、`--` 都不对（`--` 被当成非法选项而报 usage，C 是把它当结束标记）；usage 打在
+  **stdout**（C 是 `fprintf(stderr, ...)`）；`-h` 在 C 里不是帮助而是与集外字母同路的错误
+  （`ppt.c:80-83`）。还有一处纯事实错在库注里：它说越界列在 C 的 `buf[132]` 里「总是 NUL」，
+  而 `buf` 是未初始化的栈数组，`fgets` 不零化它——读到的是上一行的残值，进纸孔落在前五行
+  时甚至读穿数组（`:153-167`）；那是未定义行为，不应当作规则来写。判类 P0-code-bug（入口）+
+  P0-fact（库注与文档）。另顺手删掉 `punch` 里重复的一次 `terminate(0)`。
+  **怎么修**：入口改成逐字母的 `getopt("dh")` 形（聚簇逐字扫描、`--` 消费并结束扫描、裸 `-`
+  归操作数、`-h`/集外字母同走 usage）；`usage()` 改走 `support::warn`（stderr）保留退 1；
+  `-d` 带操作数仍拒（C 的 `if (argc > 0) usage()`）；解码保留「同步前无孔行是导引、同步后
+  无孔行即补欠的换行并结束、末字节已是换行则不欠」这三件——库测早已覆盖这些形状，本轮补的是进程级证据。
+  **取证**：新增第 12 道端到端门 `tests/ppt_face.rs`（5 枚），金样逐枚按 C 推：`EDGE` 是 11 个下
+  划线经 `puts` 自带换行、`putppt('A')` = `| o   .  o|`、`putppt(' ')` = `|  o  .   |`、
+  `putppt('-')` = `|  o o.o o|`（由位掩码 0x2D 算出，不是手数）；操作数**之间**才补空白行；
+  编→解往返经真进程管道回到 `A\n`，失步行后的一切不再输出。手推错的一枚（`-` 推成 `|   ..    |`）
+  改由位掩码计算式导出后当场改对。
+  三件套：`cargo test -p minix-stdio-games` → **15 个测试目标全 ok、合计 142 passed、零 FAILED**
+  （基线 14/137；+5 端到端测）；`--lib ppt::` → 6/0；`--test ppt_face` → 5/0；三架构 `--bins` 三台
+  零 error；容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、容器内
+  本包 15 目标 142/0；clippy 触及文件零新增（仅余 `bin/arithmetic.rs` 一条存量）；`rustfmt` 零漂移；
+  `pattern-gate.sh --diff` PASS=17 FAIL=0；`doc-style-lint.sh --diff` error 0；
+  `doc-code-density-check.sh --check` 本篇 §4 因本轮扩充而转为可判章，已补 `BIT_AT_OFFSET` 的 Rust
+  节选码 + 角色框定 + 反向推演，现三章均有码；测试名逐枚 grep 存在；核实日 `2026-10-14`；基线
+  `356ad3f30`。
+  **十枚变异负控**（`--lib ppt::` 与 `--test ppt_face` 分两次调用、复位断言 md5）：进纸孔换列、位序
+  反向、读带只认 `o` 为孔、末尾也补空白、usage 改打 stdout、`-h` 变成无效帮助、`--` 不再结束扫描、
+  裸 `-` 被当选项、欠的换行总是为真、未同步也因无孔行结束 → 全部咬中。
+  登记不执行：①`err(1, "fgets")` 的 strerror 后缀（本树无表，现按普通结束处理）；②bcd/caesar/number
+  三个壳的逐枚对 C（下一轮起）；③真机播种与 open 腿归 C-57/E5；④本篇其余子节的贴码仍靠章级判定。
+
 - ✅ **批次二百二十六把 `pig` 的旋转与字符流按 C 重做，并纠正了文档里「开头 `y` 算辅音、中间 `y` 算元音」与「大小写三档」两处事实错**
   （`2026-10-14`，`claim/PIG-FACE-qoder` @ 基线 `f78ead34c`，单域三线 commands/games/stdio-games，无跨界）：
   接回批次二百二十五登记③（逐壳对 C），选了最小的 `pig.c`（135 行）。**是什么**：`pigout()` 用

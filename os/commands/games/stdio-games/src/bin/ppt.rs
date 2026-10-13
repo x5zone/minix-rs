@@ -1,12 +1,18 @@
 //! Minix-RS ppt — paper tape punch and reader.
 //!
-//! Ground truth: `minix3/games/ppt/ppt.c` (NetBSD 1.19), main at lines 65
-//! to 127. Encode (default): the tape edge, then each byte of the argument
-//! strings (blank between arguments) or of stdin. Decode (`-d`, no string
-//! arguments allowed): stdin tape lines (`buf[132]`, line 68) resolve to
-//! bytes until a line without a feed hole — after the tape has synced that
-//! is the end, and the run ends with a newline when one is owed. Unknown
-//! options print `usage: ppt [-d] [string ...]` and exit 1 (line 61).
+//! Ground truth: `minix3/games/ppt/ppt.c` (NetBSD 1.19), `main` at `:66-127`.
+//! Encode (default): the edge rule `___________` first, then one punched line per
+//! byte of the operands (a punched blank **between** operands, none after the last,
+//! `:107-115`) or per byte of standard input (`:116-118`), and the edge rule again
+//! (`:119`). Decode (`-d`): operands are refused outright (`:95-96`), tape lines come
+//! from `fgets` into `buf[132]` (`:98-105`), and a line with no feed hole ends the run
+//! — but only once the tape has synced; before the first good line such a line is
+//! preamble and is skipped (`:100-105`). The run owes a newline unless its last byte
+//! already was one (`:104`, `:112-113`).
+//!
+//! Options are `getopt(argc, argv, "dh")` (`:74-85`): `-d` selects the direction, and
+//! `-h` is **not** a help flag — it shares `case '?'` and prints the usage line on
+//! standard error with status 1 (`:58-63`).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -24,11 +30,25 @@ fn run() -> ! {
     let argv: Vec<String> = support::args();
     let mut decode = false;
     let mut first = 1;
-    // BSD getopt stops at the first non-option argument.
-    while first < argv.len() && argv[first].starts_with('-') && argv[first].len() > 1 {
-        match argv[first].as_str() {
-            "-d" => decode = true,
-            _ => usage(),
+    // `getopt(argc, argv, "dh")` walks the letters inside one argument, stops at the
+    // first non-option, and consumes `--` as the end-of-options marker (`ppt.c:74-89`).
+    while first < argv.len() {
+        let arg = argv[first].as_str();
+        if !arg.starts_with('-') || arg == "-" {
+            break;
+        }
+        if arg == "--" {
+            first += 1;
+            break;
+        }
+        for letter in arg.as_bytes()[1..].iter() {
+            match letter {
+                b'd' => decode = true,
+                // `-h` shares the error arm with the unknown letters, so there is no
+                // help output on this path at all (`:80-83`).
+                b'h' => usage(),
+                _ => usage(),
+            }
         }
         first += 1;
     }
@@ -41,8 +61,10 @@ fn run() -> ! {
     support::terminate(0)
 }
 
+/// C's `usage()`: the line goes to standard error with the program name, and the
+/// status is 1 (`ppt.c:58-63`). The name is this command's own, not a host path.
 fn usage() -> ! {
-    support::emit(b"usage: ppt [-d] [string ...]\n");
+    support::warn(b"usage: ppt [-d] [string ...]\n");
     support::terminate(1);
 }
 
@@ -75,7 +97,6 @@ fn punch(strings: &[String]) {
     }
     support::emit(EDGE);
     support::emit(b"\n");
-    support::terminate(0);
 }
 
 fn punch_one(byte: u8, piece: &mut [u8]) {
@@ -114,10 +135,12 @@ fn decode_tape(strings: &[String]) {
             None => {}
         }
     }
+    // C reports a failed read through `err(1, "fgets")` after checking `feof`
+    // (`ppt.c:110-111`); this tree has no `strerror` table, so a read failure ends the
+    // run like an ordinary end of input and the difference is registered in the ledger.
     if needs_newline {
         support::emit(b"\n");
     }
-    support::terminate(0);
 }
 
 #[cfg(all(not(test), target_os = "none"))]

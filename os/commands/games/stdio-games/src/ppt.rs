@@ -61,9 +61,15 @@ pub fn punch_byte(byte: u8, out: &mut [u8]) -> Result<usize, GameError> {
 ///
 /// Faithful to `getppt` (ppt.c:147-175): the feed hole `.` anchors the
 /// eight data columns; a blank column carries no hole, anything else does.
-/// `None` marks a line without a feed hole (loss of sync). Columns that
-/// fall outside the line count as blank — the C version reads them in the
-/// fixed 132-byte buffer, where they are always NUL.
+/// `None` marks a line without a feed hole (loss of sync).
+///
+/// Columns outside the line are treated as blank here. C instead reads
+/// `p[-1]` up to `p[-5]` inside its `char buf[132]`, so for a feed hole in the
+/// first five columns it reads whatever the previous `fgets` left on the stack —
+/// and at column zero it walks off the array entirely (`ppt.c:153-167`). That is
+/// undefined behaviour rather than a rule, so it is not reproduced; a correctly
+/// punched line keeps the feed hole in column six, where all eight columns are in
+/// range.
 pub fn decode_line(line: &[u8]) -> Option<u8> {
     let dot = line.iter().position(|&b| b == b'.')?;
     let at = |offset: isize| -> u8 {
