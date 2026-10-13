@@ -2,7 +2,7 @@
 
 > **C 真值源**：`minix3/minix/kernel/proc.h`、`minix3/minix/kernel/proc.c`、`minix3/minix/kernel/priv.h`、`minix3/minix/kernel/table.c`、`minix3/minix/kernel/main.c`、`minix3/minix/kernel/glo.h`、`minix3/minix/kernel/type.h`、`minix3/minix/kernel/system.c`、`minix3/minix/kernel/system/do_vmctl.c`、`minix3/minix/kernel/system/do_privctl.c`、`minix3/minix/kernel/system/do_fork.c`、`minix3/minix/kernel/system/do_clear.c`、`minix3/minix/kernel/system/do_runctl.c`、`minix3/minix/kernel/smp.c`、`minix3/minix/kernel/arch/i386/protect.c`、`minix3/minix/kernel/arch/i386/arch_system.c`、`minix3/minix/kernel/arch/i386/memory.c`、`minix3/minix/kernel/arch/i386/exception.c`、`minix3/minix/kernel/arch/earm/protect.c`、`minix3/minix/include/minix/{const.h,param.h,com.h,priv.h,endpoint.h,sys_config.h}`、`minix3/minix/servers/vm/main.c`
 > **Rust 实现**：`os/kernel/src/{lib.rs,proc.rs,proc_table.rs,kpriv.rs,capability.rs,globals.rs,misc.rs}`、`os/arch/src/arch/boot.rs`、`os/arch/src/{x86_64,arm64,riscv64}/boot.rs`、`os/arch/src/lib.rs`、`os/libs/minix-types/src/types/{endpoint.rs,com.rs,proc_nr.rs}`、`os/libs/minix-boot/src/kernel_info.rs`、`os/boot-shim/src/loader.rs`
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:struct Name`、`path:const NAME`、`path:MACRO`），不使用行号；引文块内部的坐标（若源注释原文带）按原文保留，属引文保真的一部分。
+> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:struct Name`、`path:const NAME`、`path:MACRO`），不使用行号；引文块内部的坐标与历史标记（若源注释原文带——如 `Replaces the previous …`、阶段编号 `D-58`/`E1 slice N`、日期）按原文保留，属引文保真的一部分，与本文结论无关。
 > **本篇主题**：内核的两张编译期定容表怎么存、`struct proc`/`struct priv` 的字段各自承担什么、`p_rts_flags` 的 16 个位各自由谁置位与解除、`p_misc_flags` 的 18 个位各自的位值与语义（置位与解除的调用面散布在各功能篇），以及编译期写死的 17 项 boot image 清单如何被逐项填进进程槽、其中 VM 又是如何被内核亲自装载。
 > **前置**：[03-kmain-cstart.md](03-kmain-cstart.md)（`kmain` 的分段与 `proc_init` 在其中的位置）、[04-platform-discovery.md](04-platform-discovery.md)（平台描述符与 `KernelInfo` 的消费）、[05-clock-interrupt-init.md](05-clock-interrupt-init.md)（§1.4 把"进程表本身的初始化与 boot 进程装载"指给本篇）。
 > **后续**：`08-system-init-boot-finish`（启动收尾与切用户篇，尚未重生成）接 `bsp_finish_booting` 的其余步骤与 `switch_to_user`；`07-cross-space-init`（跨空间访问初始化篇，尚未重生成）接页表根与 Direct Map；`10-smp-boot`（SMP 启动篇，尚未重生成）接 AP 侧的同一批抑制位；`11-scheduling-primitives`（调度原语篇，尚未重生成）接就绪队列与 `pick_proc`；`12-ipc-core`（IPC 核心篇，尚未重生成）接消息流程。
@@ -51,7 +51,7 @@ EXTERN struct proc proc[NR_TASKS + NR_PROCS];	/* process table */
 
 这一步的位置在 `minix3/minix/kernel/main.c:kmain`：`cstart()` 之后、`IPCF_POOL_INIT()`（IPC 过滤池的初始化宏，紧随其后）与 boot 循环之前。
 
-**如果反过来想**：把 `proc_init()` 排到 boot 循环之后。`proc_addr(n)` 的算式会先把槽指针算出来（BSS 里地址是有效的），但槽里的 `p_endpoint` 还是 BSS 零——而 boot 循环第二行就是 `ip->endpoint = rp->p_endpoint;`，把 0 号端点的值回填进清单条目；`p_priv` 也是零，`get_priv` 之前的任何一次 `priv(rp)` 都会解引用空指针。清表语句的位置不是风格问题，它决定了后面几步读到的是什么。
+**把 `proc_init()` 排到 boot 循环之后会怎样**：`proc_addr(n)` 的算式会先把槽指针算出来（BSS 里地址是有效的），但槽里的 `p_endpoint` 还是 BSS 零——而 boot 循环第二行就是 `ip->endpoint = rp->p_endpoint;`，把 0 号端点的值回填进清单条目；`p_priv` 也是零，`get_priv` 之前的任何一次 `priv(rp)` 都会解引用空指针。清表语句的位置不是风格问题，它决定了后面几步读到的是什么。
 
 ### 1.2 三张表与它们各自的容量
 
@@ -88,7 +88,7 @@ EXTERN struct proc proc[NR_TASKS + NR_PROCS];	/* process table */
 
 图中第三条关系用的是 `p_rts_flags` 的判定宏，它把"可运行"写成一次相等比较：`rts_f_is_runnable(flg)` 的值就是 `((flg) == 0)`（`minix3/minix/kernel/proc.h:proc_is_runnable` 就是它的进程版包装）。
 
-**如果反过来想**：若让每个进程槽各自持有一份特权结构——`struct priv` 有 31 个字段，其中三个是定长数组（`s_io_tab[64]`、`s_mem_tab[20]`、`s_irq_tab[16]`），261 份就是按进程数线性增长的 BSS；更实质的变化在掩码宽度上：`s_ipc_to` 的语义是"按特权槽号置位的发送白名单"，它的位宽是 `BITMAP_CHUNKS(NR_SYS_PROCS)`（`minix3/minix/kernel/type.h:sys_map_t`），槽号空间一扩到 261，位图宽度、`has_pending` 的扫描上界 `NR_SYS_PROCS`（`minix3/minix/kernel/proc.c:has_pending`）与 `set_sys_bit` 的边界检查都要一起改。
+**若让每个进程槽各自持有一份特权结构会怎样**：`struct priv` 的 31 个字段、三个定长数组（`s_io_tab[64]`、`s_mem_tab[20]`、`s_irq_tab[16]`）乘 261 份，就是按进程数线性增长的 BSS；更实质的变化在掩码宽度上：`s_ipc_to` 按特权槽号置位（位宽 `BITMAP_CHUNKS(NR_SYS_PROCS)`，`minix3/minix/kernel/type.h:sys_map_t`），槽号空间一扩到 261，位图宽度、`has_pending` 的扫描上界（`minix3/minix/kernel/proc.c:has_pending`）与 `set_sys_bit` 的检查都要一起改。
 
 ### 1.3 boot image：一份编译期清单和它的两类成员
 
@@ -147,7 +147,7 @@ struct boot_image {
 
 `start_addr` 与 `len` 由 boot 循环从模块链表回填，`endpoint` 由 boot 循环从进程槽读出来再写回清单（`main.c:kmain` 的 `ip->endpoint = rp->p_endpoint;`）。方向是从槽到清单：清单本来是常量，却在启动期被改写成"这一次启动的实况"，而这份改写后的副本随后被交给 VM。
 
-**如果反过来想**：把用户模块的 `mod_start` 直接写进静态表是不可能的——链接期还没有引导器摆放模块的地址。真正要防的是取模块时的下标偏移写错。若把 `kinfo.module_list[i - NR_TASKS]` 写成 `kinfo.module_list[i]`（这句在 `i >= NR_TASKS` 分支内，受影响的只有用户模块那一轮）：`i` 从 5 起读 `module_list[5]..module_list[16]`——每个模块的地址整体往后错 5 项，最后 5 次读越出 12 项数组的末尾。
+**把模块取址的下标漏掉 `NR_TASKS` 偏移会怎样**：第 j 个模块的地址被读成第 j+5 项、末 5 次读越过 12 项数组的末尾——这是"编号错位"族的一例，族里现象最完整的一条（端点互换 + VM `panic("no init_proc")`）见 §1.4.1 的反推。
 
 ### 1.4 本篇的终点状态：就位但暂停
 
@@ -173,7 +173,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 上界是 `NR_BOOT_PROCS - NR_TASKS = 12`，而循环体里的 `proc_addr(i)` 用的是**用户进程号**而不是清单下标。这两个事实合起来说明：解除循环覆盖的是进程号 0..11 的 12 个用户进程，5 个内核 task 不在其中，`RTS_PROC_STOP` 对它们永不解除（`proc_init` 里也给每 CPU 的 IDLE 结构置过这一位，`minix3/minix/kernel/proc.c:proc_init`）。这一位对内核 task 保持置位不是遗漏：内核 task 的工作在调用点就地执行——到期的时钟定时器由 tick 处理里的 `tmrs_exptimers` 跑（`minix3/minix/kernel/clock.c:timer_int_handler`），内核调用由 `kernel_call` 在陷入路径上直接分派（`minix3/minix/kernel/system.c:kernel_call`）——它们的槽不需要被调度器选中，`PROC_STOP` 保持置位正是"不把它们放进就绪队列"的表达。
 
-**如果反过来想**：把上界写成 `NR_BOOT_PROCS`。多出的五次迭代落在用户进程号 12..16（`proc_addr` 的槽 17..21）上——这些槽从未被 boot 循环碰过，`p_rts_flags` 仍是 `RTS_SLOT_FREE`；而 `RTS_UNSET(rp, RTS_PROC_STOP)` 只清 `PROC_STOP` 这一位（它们本来就没置它），`SLOT_FREE` 不动，清完仍非零、判定不可运行、不入队——单看这处越界，它恰好无害。上界真正的承重点**是一致性**：循环体按用户进程号寻址（`proc_addr(i)` 覆盖 0..11），上界的 12 与"12 个用户进程"同义；哪一天把坐标或计数换成别的（槽下标、条目数），"清错了位"或"对象错了"才会变成真故障。
+**把上界写成 `NR_BOOT_PROCS` 会怎样**：多出的五次迭代落在用户进程号 12..16（`proc_addr` 的槽 17..21）上——这些槽从未被 boot 循环碰过，`p_rts_flags` 仍是 `RTS_SLOT_FREE`；而 `RTS_UNSET(rp, RTS_PROC_STOP)` 只清 `PROC_STOP` 这一位（它们本来就没置它），`SLOT_FREE` 不动，清完仍非零、判定不可运行、不入队——单看这处越界，它恰好无害。上界真正的承重点**是一致性**：循环体按用户进程号寻址（`proc_addr(i)` 覆盖 0..11），上界的 12 与"12 个用户进程"同义；哪一天把坐标或计数换成别的（槽下标、条目数），"清错了位"或"对象错了"才会变成真故障。
 
 ### 1.4.1 boot image 序号、模块序号与 proc 号三者的映射
 
@@ -203,7 +203,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 内核侧的对应物是两组常量：5 个内核 task 的名字与进程号一张表，12 个用户模块各自的 proc 号另一张表，后者与引导器摆放模块的顺序构成一份位置约定——长度由共享常量钉死，顺序靠人工对齐。
 
-**如果反过来想**：若把"模块序号 → proc 号"的对应写错（例如按模块在链表里的位置直接当 proc 号用）——`module_list[0]`（ds）会被装进 proc 号 0 的槽，也就是 PM 的槽；DS 与 PM 的端点互换。用户态代码按 `DS_PROC_NR` 寻址的调用全部落到 PM 的槽上，而 VM 启动时靠线性扫描 `kernel_boot_info.boot_procs[]` 按 `proc_nr` 找自己的条目（`minix3/minix/servers/vm/main.c:init_proc`），错位后它找不到 DS 的 boot 条目，直接 `panic("no init_proc")`。
+**把模块序号直接当 proc 号用会怎样**：`module_list[0]`（ds）会被装进 proc 号 0 的槽，也就是 PM 的槽；DS 与 PM 的端点互换。用户态代码按 `DS_PROC_NR` 寻址的调用全部落到 PM 的槽上，而 VM 启动时靠线性扫描 `kernel_boot_info.boot_procs[]` 按 `proc_nr` 找自己的条目（`minix3/minix/servers/vm/main.c:init_proc`），错位后它找不到 DS 的 boot 条目，直接 `panic("no init_proc")`。
 
 ### 1.5 本篇范围与可以安全跳过的内容
 
@@ -259,7 +259,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 这段因果链另有四条边界。**其一**，本节回答的只是"为什么是静态数组"——槽定位、状态位图、就绪队列链接、特权槽映射这些字段级存储决策在 §2.1–§2.3 展开，Rust 的类型与同步原语在 §3.1–§3.10 展开，本节不重复。**其二**，三层因果链只在 Minix3 与 minix-rs 的模型下成立，不是内核通用规律：进程表可以做成运行期可增长的结构（Linux 的进程描述符由 slab 分配，Redox 的进程对象装在可增长容器里，seL4 与 Minix3 一样编译期定容——这三句是设计空间的对照，具体形态不属本篇的核对范围）；把 `proc[]` 改成动态分配属加负式架构演进，要引入 id 分配器、退出时的资源回收与 OOM 处理，超出本篇的 Rewrite 范围。**其三**，定容是主动设计选择：没有 id 分配器要维护，内存占用编译期确定，不存在"进程表满"的运行期失败路径。**其四**，`proc[]` 的 261 槽是**全系统进程身份的刚性上限**——超过 261 的进程身份在内核里不存在，动态容器装不满它；静态数组的强制只落在内核 `proc[]` 与 VM 的进程表上（`os/servers/vm/src/vmproc/table.rs:struct VmProcTable`，两者建立时堆都未就绪），PM/VFS 等后启动服务此时堆已可用，它们沿用静态数组是继承 Minix3 的形态而不是"必须"。
 
-**如果反过来想**：假设把两张表改成按需分配。`proc_init` 执行时堆还不存在（第二层），第一句分配要么空指针要么直接 panic；即使把窗口推到 VM 启动之后，`proc_addr(n)` 的"一次乘加定位"会退化成一次查找，`isokprocn(n)` 这类边界宏需要一次容器查询，而唯一的失败返回位置——`sys_call` 的调用链——并没有为 ENOMEM 准备回传路径。静态数组把这三件事都消掉了。
+**把两张表改成按需分配会怎样**：`proc_init` 执行时堆还不存在（第二层），第一句分配要么空指针要么直接 panic；即使把窗口推到 VM 启动之后，`proc_addr(n)` 的"一次乘加定位"会退化成一次查找，`isokprocn(n)` 这类边界宏需要一次容器查询，而唯一的失败返回位置——`sys_call` 的调用链——并没有为 ENOMEM 准备回传路径。静态数组把这三件事都消掉了。
 
 ### 2.1 `struct proc` 字段全集
 
@@ -488,7 +488,7 @@ void reset_proc_accounting(struct proc *p)
 
 `RTS_SETFLAGS` 与另外两个宏不同：它不做"跃迁判定"，而是"若原来可运行先出队、再把整个值覆盖成给定值"。两条注释与三行代码合起来说明回收的终态：`p_rts_flags` 恰好等于 `RTS_SLOT_FREE`（判空宏 `isemptyp` 的判据），`MF_FPU_INITIALIZED` 被清掉意味着"下一个占用该槽的进程不会继承前任的 FPU 状态"。
 
-**如果反过来想**：让 `p_misc_flags` 也参与"能不能跑"的判定（例如把 `MF_SIG_DELAY` 当成暂停条件）。`RTS_SET`/`RTS_UNSET` 的跃迁判定只看 `p_rts_flags`，两处判定若各看一份位，同一个进程可能"按 RTS 可运行、按 MF 不可运行"，`pick_proc` 选中它、`switch_to_user` 又发现不该跑，返回路径没有为这种二次否决准备分支；这也是 `do_runctl` 在收到 `RC_DELAY` 请求时选择"置 `MF_SIG_DELAY` 并返回 EBUSY"而不是"置 RTS 位"的原因（`minix3/minix/kernel/system/do_runctl.c:do_runctl`）。
+**让 `p_misc_flags` 也参与"能不能跑"的判定会怎样**（例如把 `MF_SIG_DELAY` 当成暂停条件）：`RTS_SET`/`RTS_UNSET` 的跃迁判定只看 `p_rts_flags`，两处判定若各看一份位，同一个进程可能"按 RTS 可运行、按 MF 不可运行"，`pick_proc` 选中它、`switch_to_user` 又发现不该跑，返回路径没有为这种二次否决准备分支；这也是 `do_runctl` 在收到 `RC_DELAY` 请求时选择"置 `MF_SIG_DELAY` 并返回 EBUSY"而不是"置 RTS 位"的原因（`minix3/minix/kernel/system/do_runctl.c:do_runctl`）。
 
 ### 2.2 `p_rts_flags` 位表：16 位逐位
 
@@ -614,9 +614,9 @@ Rust 侧的对应路径是 `os/kernel/src/syscall_process.rs:dispatch_clear` 与
 
 其余位的共同点是：它们只表达"现在不能跑的原因"，不表达"恢复后插哪儿"。这就解释了 §1.2 那条"全零才可运行"的判定为什么够用——队列位置这件事没有编码进位里，而是编码进"清位那一步由谁做"。
 
-**如果反过来想**：去掉 `RTS_SET` 里的旧值读取，写成"置位并出队"。对 SENDREC 的阻塞路径来说，一个进程可能同时持 `RTS_SENDING` 与 `RTS_RECEIVING`（`proc.h:P_BLOCKEDON` 的注释解释了为什么两个位可以同时置着），第二次置位时它已经在队列外，`dequeue` 会把它的 `p_nextready` 接到别人身上或清成空——而它的 `p_nextready` 此刻是上一次入队时的残留值。对象落到具体字段：一个新入队进程的 `p_nextready` 被改写。
+**去掉 `RTS_SET` 里的旧值读取会怎样**（写成"置位并出队"）：对 SENDREC 的阻塞路径来说，一个进程可能同时持 `RTS_SENDING` 与 `RTS_RECEIVING`（`proc.h:P_BLOCKEDON` 的注释解释了为什么两个位可以同时置着），第二次置位时它已经在队列外，`dequeue` 会把它的 `p_nextready` 接到别人身上或清成空——而它的 `p_nextready` 此刻是上一次入队时的残留值。对象落到具体字段：一个新入队进程的 `p_nextready` 被改写。
 
-**如果反过来想**：把 `RTS_UNSET` 的入队条件里那句 `!rts_f_is_runnable(rts)` 删掉，改成"清位后若值为零就入队"。`clear_ipc` 对每个相关进程清 `RTS_SENDING`/`RTS_RECEIVING`（`minix3/minix/kernel/system.c:clear_ipc`），其中可能有本来就跑着、这两个位根本没置的进程；它们的清位不改变值，判定却成立，于是同一个槽被 `enqueue` 两次。就绪队列是单链表，同一节点出现两次意味着链尾指向自己，`pick_proc` 遍历时不会终止。
+**去掉 `RTS_UNSET` 的入队条件会怎样**（改成"清位后若值为零就入队"）：`clear_ipc` 对每个相关进程清 `RTS_SENDING`/`RTS_RECEIVING`（`minix3/minix/kernel/system.c:clear_ipc`），其中可能有本来就跑着、这两个位根本没置的进程；它们的清位不改变值，判定却成立，于是同一个槽被 `enqueue` 两次。就绪队列是单链表，同一节点出现两次意味着链尾指向自己，`pick_proc` 遍历时不会终止。
 
 ### 2.3 `struct priv`：31 个字段与权限模板族
 
@@ -879,7 +879,7 @@ void fill_sendto_mask(const struct proc *rp, sys_map_t *map)
 
 把待填的位图交给它，得到的是"C 的终态"：`ALL_M` 展开成全 1 的位图，经过 fill 后本方自位被清掉、对端未关联的位被清掉、对端是纯收端点的位被置上但不互惠。`unset_sendto_bit` 那一侧还负责对称性：清本方位的同时清对端的反向位（`minix3/minix/kernel/system.c:unset_sendto_bit`）。
 
-**如果反过来想**：把 `fill_sendto_mask` 的实现换成整体赋值 `priv(rp)->s_ipc_to = *map;`。两个后果分别落到不同的对象上：本方掩码里自家槽号那一位置上了，掩码检查类宏 `may_send_to` 会让"自己给自己发消息"通过检查；更实质的是清位方向——`map` 里被清掉的位对应的对端，它们的反向位不会同步清除，而 `may_send_to` 是单向查询，于是出现"我不能再发给你、你却还能发给我"的单向授权，掩码对称这条不变量（`set_sendto_bit` 的注释称之为"must be able to reply"）失效。
+**把 `fill_sendto_mask` 换成整体赋值会怎样**（`priv(rp)->s_ipc_to = *map;`）：两个后果分别落到不同的对象上：本方掩码里自家槽号那一位置上了，掩码检查类宏 `may_send_to` 会让"自己给自己发消息"通过检查；更实质的是清位方向——`map` 里被清掉的位对应的对端，它们的反向位不会同步清除，而 `may_send_to` 是单向查询，于是出现"我不能再发给你、你却还能发给我"的单向授权，掩码对称这条不变量（`set_sendto_bit` 的注释称之为"must be able to reply"）失效。
 
 ### 2.4 boot image 静态表与顺序语义
 
@@ -950,7 +950,7 @@ void fill_sendto_mask(const struct proc *rp, sys_map_t *map)
 
 这段循环解释了"顺序"的第二个后果：VM 启动之后按 `kinfo.boot_procs[]` 的顺序给每个 boot 进程建自己的页表并装载 ELF，DS 排在第一个、RS 第二个。注意它按 `proc_nr` 跳过负值（内核 task）与 VM 自己，其余每个条目走一次 `init_proc`（线性扫描匹配 `proc_nr`）+ `exec_bootproc` + 归还文件块。
 
-**如果反过来想**：把 `image[]` 里 DS 与 RS 两行调换。`kinfo.boot_procs[]` 的顺序随之改变，VM 的遍历先给 RS 建页表、后给 DS，而注释声明的"DS 优先"不再有载体；`init_proc` 的线性扫描不受影响（它按 `proc_nr` 匹配，与顺序无关），受影响的是启动期"谁先具备运行条件"的时序。这类改动的可观察差别不在单条分支上，而在启动期多个服务竞争同一批资源的先后。
+**把 `image[]` 里 DS 与 RS 两行调换会怎样**：`kinfo.boot_procs[]` 的顺序随之改变，VM 的遍历先给 RS 建页表；`init_proc` 的线性扫描不受影响（按 `proc_nr` 匹配），受影响的是启动期"谁先具备运行条件"的时序——这类改动的可观察差别不在单条分支上，而在多个服务竞争同一批资源的先后。
 
 ### 2.5 `proc_init`：261 槽的清表流程
 
@@ -1015,7 +1015,7 @@ void proc_init(void)
 
 第三个循环给每个 CPU 的 idle 结构写 4 项（注意：`proc[]` 里另有一个 idle 条目——清单第 2 项、被 boot 循环填名字与权限模板——那份只是表内的一个身份槽；真正被调度器当兜底选中的是这里写的每 CPU `idle_proc`）：端点固定为 `IDLE`（宏值为 −4）、`p_priv` 指向文件级静态 `idle_priv`、`p_rts_flags |= RTS_PROC_STOP`、名字由 `set_idle_name` 按 CPU 编号生成。idle 结构**不在 `proc[]` 数组里**——它是 `__cpu_local_vars` 的一部分，所以它不参与进程号索引，也不需要 `p_nr`。
 
-**如果反过来想**：用一次 `memset(&proc, 0, sizeof(proc))` 代替第一个循环。表面上"清零"更彻底，实际把三个判据同时破坏：`p_rts_flags` 变成 0 而不是 `RTS_SLOT_FREE`，`isemptyp` 恒假，于是 `clear_endpoint` 开头的 `if(isemptyp(rc)) panic("clear_proc: empty process: %d", rc->p_endpoint);`（`minix3/minix/kernel/system.c:clear_endpoint`）在第一次回收槽时触发 `panic`；`p_magic` 变成 0，`proc_ptr_ok` 从第一次校验起失败；`p_endpoint` 变成 0，而 0 既是 `_ENDPOINT(0, 0)`（PM 的端点）也是一个合法数值，故障表现是"所有未初始化槽都指向 PM"而不是立刻报错——最难查的一类。
+**用一次 `memset` 代替清表循环会怎样**：表面上"清零"更彻底，实际把三个判据同时破坏：`p_rts_flags` 变成 0 而不是 `RTS_SLOT_FREE`，`isemptyp` 恒假，于是 `clear_endpoint` 开头的 `if(isemptyp(rc)) panic("clear_proc: empty process: %d", rc->p_endpoint);`（`minix3/minix/kernel/system.c:clear_endpoint`）在第一次回收槽时触发 `panic`；`p_magic` 变成 0，`proc_ptr_ok` 从第一次校验起失败；`p_endpoint` 变成 0，而 0 既是 `_ENDPOINT(0, 0)`（PM 的端点）也是一个合法数值，故障表现是"所有未初始化槽都指向 PM"而不是立刻报错——最难查的一类。
 
 ### 2.6 boot 循环：逐项填充的 12 个动作
 
@@ -1100,13 +1100,13 @@ void proc_init(void)
   }
 ```
 
-尾部三行都用裸位运算而不是宏。`RTS_VMINHIBIT`/`RTS_BOOTINHIBIT` 用的是直接的 `|=` 而不是 `RTS_SET` 宏——此时进程已经不可运行（要么刚被 `RTS_SET` 置了两位，要么是内核 task（内核 task 的 `PROC_STOP` 由循环前段置上、不参与此处的可调度判定）），`RTS_SET` 里的跃迁判定不会触发出队，两者等价；用裸 `|=` 表达的是"这一步不做队列动作"。`RTS_PROC_STOP` 与清 `RTS_SLOT_FREE` 同样用裸操作，理由相同。而 `proc_ptr` 那一句是"第一次赋值后不再改"——它给调度函数留了一个非空指针，具体指向谁不重要（第一个条目），因为此刻没有进程可运行，`pick_proc` 会走 idle 兜底。
+尾部三行都用裸位运算而不是宏。`RTS_VMINHIBIT`/`RTS_BOOTINHIBIT` 用的是直接的 `|=` 而不是 `RTS_SET` 宏——此时进程已经不可运行（要么刚被 `RTS_SET` 置了两位，要么是内核 task（`RTS_SLOT_FREE` 尚未清，两项都不可运行）），`RTS_SET` 里的跃迁判定不会触发出队，两者等价；用裸 `|=` 表达的是"这一步不做队列动作"。`RTS_PROC_STOP` 与清 `RTS_SLOT_FREE` 同样用裸操作，理由相同。而 `proc_ptr` 那一句是"第一次赋值后不再改"——它给调度函数留了一个非空指针，具体指向谁不重要（第一个条目），因为此刻没有进程可运行，`pick_proc` 会走 idle 兜底。
 
-**如果反过来想（两件不同的事，别混）**：把**循环方向**倒过来跑（从最后一项往前）——每个动作只依赖条目自身（模块下标由 `i - NR_TASKS` 算出，与访问次序无关，见 §2.4），唯一随方向变的是 `proc_ptr` 兜底指向谁，而它本来就"指向谁不重要"；所以方向本身不坏。真正会坏的是把**表内条目的顺序**倒过来：表头第 2 条写着 `all kernel tasks must come first`，而 `i < NR_TASKS` 这个分支正是靠它把前 5 项按内核 task 处理（写名字、不回填模块地址）；顺序一乱，内核 task 会被当成用户模块去 `kinfo.module_list` 里取地址——错位的机制与 §1.4.1 里"按下标取进程号"那条同型。
+**把表内条目的顺序倒过来会怎样**：表头第 2 条写着 `all kernel tasks must come first`，而 `i < NR_TASKS` 这个分支正是靠它把前 5 项按内核 task 处理（写名字、不回填模块地址）；顺序一乱，内核 task 会被当成用户模块去 `kinfo.module_list` 里取地址——错位的机制与 §1.4.1 里"按下标取进程号"那条同型。（循环方向本身倒过来不坏：每个动作只依赖条目自身，唯一随方向变的是 `proc_ptr` 兜底指向谁，而它本来就"指向谁不重要"。）
 
-**如果反过来想**：把"双闸"（对用户进程同时置 `RTS_VMINHIBIT` 与 `RTS_BOOTINHIBIT` 的那一步）移出循环、对全部 17 项统一置位（"统一处理更整齐"）。VM 的 `p_nr` 等于 `VM_PROC_NR`，它也会被挂上双闸；而解除 `RTS_VMINHIBIT` 的两条路径一条是 VM 自己发 `VMCTL_SETADDRSPACE`（`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl`），另一条是 VM 发 `VMCTL_VMINHIBIT_CLEAR`（`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`）——两条都以"VM 已在运行"为前提。于是没有任何进程能解除 VM 的抑制位，`pick_proc` 永远选不到 VM，`switch_to_user` 之后系统停在 idle 循环里，唯一的现象是"启动到此为止、无输出"。
+**把"双闸"（对用户进程同时置 `RTS_VMINHIBIT` 与 `RTS_BOOTINHIBIT` 的那一步）移出循环会怎样**（对全部 17 项统一置位）：VM 的 `p_nr` 等于 `VM_PROC_NR`，它也会被挂上双闸；而解除 `RTS_VMINHIBIT` 的两条路径一条是 VM 自己发 `VMCTL_SETADDRSPACE`（`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl`），另一条是 VM 发 `VMCTL_VMINHIBIT_CLEAR`（`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`）——两条都以"VM 已在运行"为前提。于是没有任何进程能解除 VM 的抑制位，`pick_proc` 永远选不到 VM，`switch_to_user` 之后系统停在 idle 循环里，唯一的现象是"启动到此为止、无输出"。
 
-**如果反过来想**：把 `RTS_VMINHIBIT` 与 `RTS_BOOTINHIBIT` 合成一位。两个位的置位集合不同——boot 循环给除 VM 外的全部用户进程置两位；`do_fork` 只在 `PFF_VMINHIBIT` 标志下给子进程置 `VMINHIBIT`（`minix3/minix/kernel/system/do_fork.c:do_fork`），`VMCTL_VMINHIBIT_SET` 与 `smp.c` 的跨 CPU 路径也只置 `VMINHIBIT`。解除路径也不同——`VMINHIBIT` 有两条（`VMCTL_SETADDRSPACE` 在 VM 装好地址空间时顺带解除、`VMCTL_VMINHIBIT_CLEAR` 显式解除），`BOOTINHIBIT` 只有一条（`VMCTL_BOOTINHIBIT_CLEAR`，VM 装载完镜像时发出）。合成一位之后，解除集变成两条路径的并集，"谁先到谁清"：boot 进程会在页表刚装好、镜像还没装载时就被放行，第一次调度就在空地址空间上取指；反过来，fork 出的子进程只等"地址空间就绪"这一件事，它的解除者只来自 `VMINHIBIT` 那两条路径——如果合并后保留下来的解除路径是 boot 期专用的 `VMCTL_BOOTINHIBIT_CLEAR`，这类进程就再也没有解除者，永远停在 `pick_proc` 之外。两个位分开，表达的是"页表就绪"与"镜像就绪"两件事各有一位、各自有各自的解除者。
+**把 `RTS_VMINHIBIT` 与 `RTS_BOOTINHIBIT` 合成一位会怎样**：两个位的置位集合不同——boot 循环给除 VM 外的全部用户进程置两位；`do_fork` 只在 `PFF_VMINHIBIT` 标志下给子进程置 `VMINHIBIT`（`minix3/minix/kernel/system/do_fork.c:do_fork`），`VMCTL_VMINHIBIT_SET` 与 `smp.c` 的跨 CPU 路径也只置 `VMINHIBIT`。解除路径也不同——`VMINHIBIT` 有两条（`VMCTL_SETADDRSPACE` 在 VM 装好地址空间时顺带解除、`VMCTL_VMINHIBIT_CLEAR` 显式解除），`BOOTINHIBIT` 只有一条（`VMCTL_BOOTINHIBIT_CLEAR`，VM 装载完镜像时发出）。合成一位之后，解除集变成两条路径的并集，"谁先到谁清"：boot 进程会在页表刚装好、镜像还没装载时就被放行，第一次调度就在空地址空间上取指；反过来，fork 出的子进程只等"地址空间就绪"这一件事，它的解除者只来自 `VMINHIBIT` 那两条路径——如果合并后保留下来的解除路径是 boot 期专用的 `VMCTL_BOOTINHIBIT_CLEAR`，这类进程就再也没有解除者，永远停在 `pick_proc` 之外。两个位分开，表达的是"页表就绪"与"镜像就绪"两件事各有一位、各自有各自的解除者。
 
 ### 2.7 `arch_boot_proc` 与 VM ELF 装载
 
@@ -1214,7 +1214,7 @@ static int libexec_pg_alloc(struct exec_info *execi, vir_bytes vaddr, size_t len
 
 五段里最容易出事的是第 3 段（栈顶的三字布局）：它是唯一没有 64 位 C 真源可抄的一段——`ARGC_ARGV_ENVP` 的注释写明上游只有 i386/ARM32 的 `protect.c`（那两种位宽下 `int` 与指针同宽，两种写法重合），并且记录了本端在这一段出过一次对齐错误（旧值 `2*usize + i32` 让出生 sp 落在 4-mod-8 上，§4.2 会引这段注释）。**这一处的"坏样"要说清**：按源码注释自己的记录，它**当前没有可观察症状**——消费端只读 `ps_strings` 描述符（字段序与写入逐字对位），`argc` 槽那一个字本身没有读者，所以旧写法被记成"对现行行为惰性"；代价是潜伏的：将来若有人把 `argc` 槽当整字读，非 8 字节对齐就会当场暴露。其余四段都能在 C 里找到逐行对位：ELF 头的物理直读、三个 `allocmem_*` 共用的 `pg_map` 路径、`arch_proc_init` 的入口三要素、以及 `add_memmap` 加置零这一对。
 
-**如果反过来想**：删掉 `add_memmap` 那一对句子中的前者（只置 0）。模块原本占的那段物理内存在启动早期被 `cut_memmap` 切走过，此后再也没有归还路径，空闲清单里永远少一整段；表现是"可分配内存比物理内存少了一块（正好是 VM 镜像大小）"。反过来，只保留 `add_memmap` 而删掉置 0：`mod_start`/`mod_end` 仍指向同一段，`kinfo.boot_procs` 的这份副本会被 VM 读到，VM 的遍历里有 `assert(ip->start_addr);` 与随后的 `free_mem(...)`——同一块内存被归还两次，空闲清单出现重叠区间。
+**删掉 `add_memmap` 那一对句子里的前者会怎样**（只置 0）：模块原本占的那段物理内存在启动早期被 `cut_memmap` 切走过，此后再也没有归还路径，空闲清单里永远少一整段；表现是"可分配内存比物理内存少了一块（正好是 VM 镜像大小）"。反过来，只保留 `add_memmap` 而删掉置 0：`mod_start`/`mod_end` 仍指向同一段，`kinfo.boot_procs` 的这份副本会被 VM 读到，VM 的遍历里有 `assert(ip->start_addr);` 与随后的 `free_mem(...)`——同一块内存被归还两次，空闲清单出现重叠区间。
 
 ### 2.8 endpoint、generation 与槽位常量体系
 
@@ -1257,7 +1257,7 @@ endpoint 是"槽号 + 代"的打包值。三个宏给出打包与拆包：
   rpc->p_endpoint = _ENDPOINT(gen, rpc->p_nr);	/* new endpoint of slot */
 ```
 
-（节选，`minix3/minix/kernel/system/do_fork.c:do_fork`——块内 `...` 处为 i386 分支的 FPU 缓冲指针保存/恢复与 `memcpy` 两段，属 §3.14 的主题。）
+（节选，`minix3/minix/kernel/system/do_fork.c:do_fork`——块内 `...` 处为 i386 分支的 FPU 缓冲指针保存/恢复与 `memcpy` 两段，属 §3.13 的主题。）
 
 代号校验的读点在 `isokendpt`：拆出槽号、检查范围、再确认"该槽此刻的 `p_endpoint` 与传入值相等"（`minix3/minix/kernel/proc.c` 的 `isokendpt_f`，经 `isokendpt` 宏包装）。第三个条件正是代号在起作用：槽已复用但代号不同时，这个比较失败。
 
@@ -1279,7 +1279,7 @@ endpoint 是"槽号 + 代"的打包值。三个宏给出打包与拆包：
 
 `isokprocn` 的写法把两端边界压进一次比较：`(n) + NR_TASKS` 先把负数域平移到 0 起点，再转成无符号与上界比较——`n = -6` 时左边是 `-1` 的无符号形式（极大值），比较不成立；`n = 256` 时左边是 261，不小于 261，同样不成立。一次算术同时挡住两端。
 
-**如果反过来想**：让代号恒为 0（去掉 `do_fork` 里的递增）。`isokendpt` 的第三个条件退化成"槽号对得上就算合法"，于是持有旧 endpoint 的进程发来的消息会落到槽的新占用者身上：一个已经退出的进程的端点号，在槽被复用后完全相同，收件人检查与代号比较都会通过。这类错误的可见形态是"消息被投给了错误的进程"，且只在槽复用之后出现——正是"回绕时 `gen = 1` 而不是 0"这句代码要防的点（代号 0 是 `proc_init` 给全新槽的初值，回绕若落到 0，"全新槽"与"刚复用过的槽"无法区分）。
+**让端点代号恒为 0 会怎样**（去掉 `do_fork` 里的递增）：`isokendpt` 的第三个条件退化成"槽号对得上就算合法"，于是持有旧 endpoint 的进程发来的消息会落到槽的新占用者身上：一个已经退出的进程的端点号，在槽被复用后完全相同，收件人检查与代号比较都会通过。这类错误的可见形态是"消息被投给了错误的进程"，且只在槽复用之后出现——正是"回绕时 `gen = 1` 而不是 0"这句代码要防的点（代号 0 是 `proc_init` 给全新槽的初值，回绕若落到 0，"全新槽"与"刚复用过的槽"无法区分）。
 
 ### 2.9 本章归纳
 
@@ -1308,7 +1308,7 @@ endpoint 是"槽号 + 代"的打包值。三个宏给出打包与拆包：
 
 ## 3. Rust 设计决策
 
-本章 14 节按"两条硬约束（零堆、锁由 BKL 提供 → 表的存储与同步形态）+ 逐对象决策"组织：3.1–3.5 是两张表与清单的类型化重建，3.6–3.9 是执行环境相关决策（FPU、装载、全局存储、抑制位），3.10–3.12 是特权结构与主流程形状，3.13 是去向总表，3.14 补 fork 继承。
+本章 14 节按"两条硬约束（零堆、锁由 BKL 提供 → 表的存储与同步形态）+ 逐对象决策"组织：3.1–3.5 是两张表与清单的类型化重建，3.6–3.9 是执行环境相关决策（FPU、装载、全局存储、抑制位），3.10–3.12 是特权结构与主流程形状，3.13 补 fork 继承，3.14 是去向总表。
 
 ### 3.1 两张表的存储：编译期定容 + 索引化访问（→§2.0、§2.1、§2.5）
 
@@ -1400,7 +1400,7 @@ C 那边 `isokprocn` 只是一个可以被忘记调用的判定宏，`proc_addr`
 | `const fn` 编译期初始化 | 运行期 `proc_init` 循环 | 初值必须在 `const` 可求值范围内（`bitflags::bits()` 不可用，见 §3.8，故用裸位值） |
 | `nr_to_idx -> Option<usize>` | 裸指针 + `isokprocn` 前置检查 | 每个访问点多一次 `Option` 处理 |
 
-**如果反过来想**：若为了"少写 `unsafe`"把表改成 `static PROC_TABLE: Mutex<ProcessTable>`。BKL 已经串行化了整个内核，再加一把 `Mutex` 不增加保护粒度，却在每处访问增加一次锁获取、并且引入"持锁期间不得睡眠"之外的第二套纪律；更实质的是启动期——`proc_init` 对位的初始化发生在 BKL 建立之前（`kmain` 里 `BKL_LOCK()` 与 boot 循环的先后见 `03-kmain-cstart.md`），那时还没有任何锁可用。反过来若把 `get`/`get_mut` 换成返回裸指针 `*mut KProcess`：§4.4 要讲的 IPC 队列（同一进程可能同时是"某队列的节点"与"另一队列的队头"）就需要两个同时有效的可变引用——这正是 C 用裸指针做得成、Rust 引用规则不许可的形状。
+**把 `get`/`get_mut` 换成返回裸指针 `*mut KProcess` 会怎样**：§4.4 要讲的 IPC 队列（同一进程可能同时是"某队列的节点"与"另一队列的队头"）看似需要两个同时有效的可变引用——但那个需求已由 §4.5 的 `get2_mut` 用一次安全拆分覆盖；整体换裸指针真正的代价在别处：`nr_to_idx` 的边界校验会从每个访问点撤走，越界从"返回 `None`"退化成"未定义的内存访问"。（加一把 `Mutex` 的形态也不成立：BKL 已串行化整个内核，它只多一次锁获取与第二套纪律；而启动期初始化发生在 BKL 建立之前——`kmain` 里 `BKL_LOCK()` 与 boot 循环的先后见 `03-kmain-cstart.md`，那时没有任何锁可用。）
 
 ### 3.2 权限模板与能力授予（→§2.3、§2.6）
 
@@ -1501,7 +1501,7 @@ pub enum CapabilityTemplate {
 | 实例例外（CLOCK/SYSTEM）留在授予函数 | 为 `KernelTask` 加两个变体 | 授予函数里多一个 `if`，但模板仍是 5 个 |
 | `CapabilityError` 枚举 | `Option<PrivId>` | 调用点要多写一行错误文案 |
 
-**如果反过来想**：若省掉 `fill_sendto_mask`（"模板已经写全了"），终态就不是 C 的终态——自位留在 `s_ipc_to` 里。同一处的对称性也少了一半：`fill` 的 `else` 分支会走 `unset_sendto_bit`，把"`map` 里没给的对端"的反向位一起清掉，而整体赋值不做这件事，于是掩码表里残留上一次填充留下的单向授权。
+**若省掉 `fill_sendto_mask` 会怎样**：终态就不是 C 的终态——自位留在 `s_ipc_to` 里、掩码表里残留上一次填充留下的单向授权；完整的失败链见 §2.3.3 的反推（本处只做对位提醒）。
 
 ### 3.3 RTS/MF 位图的类型化（→§2.2、§2.1.6）
 
@@ -1596,7 +1596,7 @@ C 的 `iskernelp` 比较的是"槽指针是否落在 `BEG_USER_ADDR` 之前"—�
 | `AtomicU32` 内层 | 普通 `u32` + 约定"读时持锁" | 写入仍是"改整个字"，读改写序列必须持 BKL |
 | 身份判定读 `p_nr` | 比较槽指针 | `p_nr` 必须始终与槽位置一致（`proc_init` 对位与 fork 的 `p_nr` 重写都要保证） |
 
-**如果反过来想**：若把两套位合成一个 `u32` 字段、按"有没有在用"分层（C 里它们是两个字段）。`p_rts_flags` 的一处写入会与 `p_misc_flags` 的写入竞争同一个字（SMP 下两个 CPU 各改一半时经典 read-modify-write 丢失），而 `p_rts_flags` 的读在中断上下文、`p_misc_flags` 的读在内核调用路径，两者的同步要求不同——合在一起只能按更严的那个来。分成两个字段、两个原子字之后，`rts_set` 与 `misc_flags` 的更新互不干扰。
+**把两套位合成同一个字（需 `u64`：RTS 最高位 17、MF 最高位 21）会怎样**：`p_rts_flags` 的一处写入会与 `p_misc_flags` 的写入竞争同一个字（SMP 下两个 CPU 各改一半时经典 read-modify-write 丢失），而 `p_rts_flags` 的读在中断上下文、`p_misc_flags` 的读在内核调用路径，两者的同步要求不同——合在一起只能按更严的那个来。分成两个字段、两个原子字之后，`rts_set` 与 `misc_flags` 的更新互不干扰。
 
 ### 3.4 boot image 的类型重建：`ProcKind` + `EntrySpec`（→§2.4、§2.6、§2.7）
 
@@ -1702,7 +1702,7 @@ pub const KERNEL_TASKS: &[(&str, ProcNr); NR_TASKS] = &[
 | `EntrySpec` 三个 `Option` | 三元素零值约定 | 每个消费者要处理 `None`；`KERNEL_TASK`/`DEFERRED` 同值需靠调用点区分 |
 | 模块号常量数组 + 类型定长 | 运行期按名字查表 | 顺序仍要人工对齐（类型管不住顺序） |
 
-**如果反过来想**：若不引入 `ProcKind`，直接给 `build_cpu_context` 传"是否内核 task"与"是否 VM"两个布尔。同一个组合可以有四种取值，其中"`is_kernel = true` 且 `is_vm = true`"这类非法组合在类型上合法，arch 层必须写 `assert` 或默默按某一支处理；枚举把非法组合从可表达集合里删掉。若把 `EntrySpec` 换回三个裸值，`KERNEL_TASK` 与"VM 装载失败返回 0"仍然无法区分——§3.7 的返回类型正是为这件事服务的。
+**若不引入 `ProcKind` 而传三个布尔（`is_kernel`/`is_vm`/`is_root_sys`）会怎样**：八个组合里"`is_kernel` 与 `is_vm` 同时为真"这类非法组合在类型上合法，arch 层只能靠 `assert` 兜底；枚举把非法组合从可表达集合里删掉。（`EntrySpec` 换回三个裸值则与 §3.7 的返回类型问题同型：`KERNEL_TASK` 与"装载失败"无法区分。）
 
 ### 3.5 CPU 上下文：三个 C 函数收成一个 trait 与一个自由函数（→§2.7、§2.1.4）
 
@@ -1811,7 +1811,7 @@ C 里 `enable_iop` 做的是 `pp->p_reg.psw |= 0x3000`（`0x3000` 是 RFLAGS 的
 | `CpuContext` 为不透明类型 | 内核层可见 `initial_pc`/`initial_sp`/`initial_status`/`p_ext_reg_state` 四字段 | 内核层想看某平台的上下文内容要经 trait 方法暴露 |
 | `build_cpu_context(kind, nr, entry)` | 传裸寄存器值 | trait 参数里必须能表达"角色"（故有 §3.4 的枚举） |
 
-**如果反过来想**：若把 `load_vm_elf` 也做成 trait 方法，三个架构各写一份。三份相同代码的存在会让"真正该改的那一处"难以辨认：修改 `ps_strings` 布局时，改一份与改三份在编译上等价，漏改的那一份不会报错，只在对应架构的启动日志里表现为不同的行为。若把 `CpuContext` 的字段暴露给内核层，内核就要认识 PSW/PSR/sstatus 三种状态字的位定义，03 篇刚划定"抽象语义、不描述机制"的那条边界立刻被穿透。
+**把 `CpuContext` 的字段暴露给内核层会怎样**：内核就要认识 PSW/PSR/sstatus 三种状态字的位定义，03 篇刚划定"抽象语义、不描述机制"的那条边界立刻被穿透。（`load_vm_elf` 做成 trait 方法也不成立：三份相同代码会让"真正该改的那一处"难以辨认，漏改的一份只在对应架构的启动日志里显形。）
 
 ### 3.6 FPU 策略：不翻译 32 位的保存模型（→§2.1.4）
 
@@ -1865,7 +1865,7 @@ C 的负担是 32 位架构下的 FPU 处理：架构级池 `fpu_state[NR_PROCS]
 | 三架构各自的懒初始化策略字段 | 照抄 `fnsave`/`fxrstor` 路径 | 策略语义分散在三份架构代码里，逐寄存器细节要看各架构文档 |
 | 每槽内嵌 FPU 缓冲 | 架构级池 + 指针 | 表体积变大；测试构建用零尺寸类型（ZST）抵消 |
 
-**如果反过来想**：若照抄 `fnsave`/`frstor`。这两个指令在 x86-64 上仍可执行，但 `fnsave` 只保存 x87 状态（108 字节格式），SSE/AVX 寄存器不在其中；两个进程切换后向量寄存器互相污染，表现是"同一个用户进程的浮点结果在别的进程运行过之后变化"。若保留 C 的"指针 + 池"：指针为空这件事必须每处特判（C 那边靠"内核 task 不用 FPU"这一事实回避），而 Rust 的内嵌缓冲让"缓冲总是存在"成为类型事实。
+**照抄 `fnsave`/`fxrstor` 会怎样**：这两个指令在 x86-64 上仍可执行，但 `fnsave` 只保存 x87 状态（108 字节格式），SSE/AVX 寄存器不在其中；两个进程切换后向量寄存器互相污染，表现是"同一个用户进程的浮点结果在别的进程运行过之后变化"。
 
 本节涉及的三架构懒陷阱门控的逐寄存器时序属 FPU 专题文档（尚未重生成）；真机上"首次用户 FP 指令前的门控建立"这一步在本篇按策略字段的归属陈述，未做真机验证 `[待验证]`。
 
@@ -1923,7 +1923,7 @@ pub enum VmLoadError {
 | 装载器返回 `Result` | 装载器内部 `panic` | 调用者要处理错误（这里选择 panic，但决定在调用点） |
 | 四类错误分开 | 单个 `Err(())` | 枚举要随新失败模式增长 |
 
-**如果反过来想**：若保持"返回零 PC"。`EntrySpec::loaded(0, sp, ps)` 与 `KERNEL_TASK` 的差别只剩 `sp`/`ps` 两个 `Some`，arch 层得到的仍是一个"入口为 0"的上下文；VM 第一次被调度时从地址 0 取指，故障以取指异常的形式出现，诊断时看不到任何与 ELF 有关的现场——`06` 这段代码的读者只能从 `arch_boot_proc` 的 `panic` 是否存在来判断"C 当时怎么处理"，而 Rust 侧的答案写在了类型上。
+**若保持"返回零 PC"会怎样**：`EntrySpec::loaded(0, sp, ps)` 与 `KERNEL_TASK` 的差别只剩 `sp`/`ps` 两个 `Some`；VM 第一次被调度时从地址 0 取指，故障以取指异常出现，诊断时看不到任何与 ELF 有关的现场。
 
 ### 3.8 零堆启动的工程实现（→§2.0）
 
@@ -1984,7 +1984,7 @@ pub(crate) struct SyncUnsafeCell<T: ?Sized> {
 | 固定数组表达临时集合 | `Vec`（需要分配器） | 容量上限必须能从常量推导（这里是 `NR_BOOT_MODULES + 1`） |
 | 裸位值出现在 `const fn` 里 | 统一的 `bitflags` 取值 | 两处裸值常量需与 `bitflags` 定义保持同值（有单测覆盖） |
 
-**如果反过来想**：若把 `ProcessTable` 放进 `OnceLock` 或 `lazy_static` 形态。初始化的那一刻要跑到"第一次访问"，而第一个访问者就在启动窗口内——`proc_table_boot_unchecked` 那类 boot 访问器的注释写明了调用前提是"BKL 尚未建立、单线程"；惰性初始化把"表何时存在"从编译期挪到运行期，随之需要处理"两个 CPU 同时首次访问"的可能（SMP 起来之后），而表恰恰是 SMP 数据结构的根。若把排除集换成 `Vec`：`init_proc_and_boot` 会在 `kernel_may_alloc` 窗口内调用分配器，而窗口的语义是"内核可以直接使用空闲物理内存"、不是"堆可用"——第一句分配就会撞上不存在的基础设施。
+**把排除集换成 `Vec` 会怎样**：`init_proc_and_boot` 会在 `kernel_may_alloc` 窗口内调用分配器，而窗口的语义是"内核可以直接使用空闲物理内存"、不是"堆可用"——第一句分配就会撞上不存在的基础设施。（惰性初始化形态同样不成立：`proc_table_boot_unchecked` 一类 boot 访问器以"BKL 尚未建立、单线程"为调用前提，`OnceLock` 把"表何时存在"推到运行期、要面对两个 CPU 同时首次访问。）
 
 ### 3.9 四个抑制位的表达与解除责任（→§2.5、§2.6）
 
@@ -2047,10 +2047,10 @@ C 的负担是四位分散在四处置位、又由四类不同角色解除（§1
 | 选什么 | 否掉什么 | 代价 |
 |---|---|---|
 | 位的语义与值保持 C 原样 | 把 `PROC_STOP` 改成一个"boot 阶段"全局开关 | 每 CPU 的 idle 槽仍需要自己的 `PROC_STOP`；全局开关无法表达 per-进程状态 |
-| `rts_unset` 自带入队 | 标志操作与队列操作分开 API | 拆分会让"清位但忘了入队"成为可写出的 bug（§3.3 的反向推演给出后果） |
+| `rts_unset` 自带入队 | 标志操作与队列操作分开 API | 拆分会让"清位但忘了入队"成为可写出的 bug（本节末的反推给出后果） |
 | 解除循环迭代进程号 | 迭代"清单下标再换算进程号" | 两者在 boot 段恰好重合，但语义上 C 迭代的是进程号；沿用同形写法让边界推演可以逐字对照 |
 
-**如果反过来想**：若把 `rts_unset` 的自动入队拆掉（"状态与队列各自显式"）。`bsp_finish_booting` 这一循环清掉 12 个进程的 `PROC_STOP` 之后，队列里一个进程都没有，`switch_to_user` 的 `pick_proc` 恒空，CPU 进 idle 直到下一次 tick——而 tick 处理本身又要选进程，系统停在"没有可运行进程"的循环里。同一条缺失在运行期的表现是"被 `sched_proc` 重新调度的进程再也收不到时间片"。
+**把 `rts_unset` 的自动入队拆掉会怎样**：`bsp_finish_booting` 清掉 12 个进程的 `PROC_STOP` 之后队列一个进程都没有，`pick_proc` 恒空、CPU 停在 idle 直到下一次 tick——而 tick 处理本身又要选进程；运行期的同款缺失表现为"被重新调度的进程再也收不到时间片"。
 
 ### 3.10 `KPriv` 8 子结构（→§2.3）
 
@@ -2126,7 +2126,7 @@ C 的 31 个字段逐个落到：
 | 每子结构独立 `const fn` 构造 | 整体 `new_zeroed` 一个巨型字面量 | 子结构数量与 wire 顺序耦合（见下） |
 | 保留 `s_` 前缀 | 去掉前缀改成 Rust 命名 | 前缀是"与 C 字段对应"的显式标记 |
 
-**如果反过来想**：若按 §2.3 的七组原样切（身份与能力同一组）。`s_proc_nr` 与 `s_flags` 会落在同一个子结构里，而前者的写时机是"分配槽一次"、后者的写时机是"运行期可改"（`do_privctl` 的 `SYS_PRIV_SET_SYS` 等子命令）。`const fn` 预填时无法只给"身份"部分赋初值而不碰"能力"部分；更要紧的是 wire 边界——用户态 RS 传来的 `PrivUpdateRequest` 按子结构顺序排字段，内核侧与 RS 侧是两份手工对齐的结构（`os/servers/rs/src/privilege.rs` 保持同序），分组一改，两份都要改，改漏一个字段就是 `data_copy` 的静默错位。
+**按 §2.3 的七组原样切会怎样**：`s_proc_nr`（分配一次）与 `s_flags`（运行期可改）落在同一组，`const fn` 预填无法只给身份赋初值；更要紧的是 wire 边界——内核与 RS 两份手工同序的结构（`os/servers/rs/src/privilege.rs`）随分组一起改，改漏一个字段就是 `data_copy` 的静默错位。
 
 ### 3.11 调度字段与统计字段（→§2.1.2、§2.1.5）
 
@@ -2194,7 +2194,7 @@ C 的 `p_priority`、`p_quantum_size_ms`、`p_cpu`、`p_cpu_mask`、`p_scheduler
 | `CpuMask { bits: u64 }`，构造路径给"全允许" | 32 位块数组 + BSS 零 | 默认值语义与 C 不同（C 的零值在当前树里没有读者；启动期两边都不可观察） |
 | 三个统计子结构 | 一个大的统计块 | 访问路径变长 |
 
-**如果反过来想**：若 `Priority` 内部保留 `i8` 并允许负值。`sched_proc(priority = -1)` 的"保持"语义与"优先级为负"在类型上不可区分，而 C 的检查 `priority < TASK_Q`会把 `-1` 放行（`TASK_Q = 0`，`-1 < 0` 成立）走的是"保持"分支——恰好正确，但这是靠调用者守约而不是靠类型。换成 `Option` 之后，这个分支的形状变成"没给就保持"，值域检查只剩一条。
+**若 `Priority` 内部保留 `i8` 并允许负值会怎样**：`sched_proc(priority = -1)` 的"保持"语义与"优先级为负"在类型上不可区分（C 的 `priority < TASK_Q` 检查把 `-1` 放行，恰好正确但靠调用者守约）；`Option` 之后"没给就保持"成为分支形状，值域检查只剩一条。
 
 ### 3.12 boot→running 的转换形状（→§2.5、§2.6、§2.7）
 
@@ -2244,9 +2244,48 @@ C 的负担是这条链散在六个调用里：`proc_init()` → boot 循环 →
 | 保留 `init_post_and_memory` 作就绪确认 | 照抄 `arch_post_init` + `memory_init`（含 freepdes 分配） | 需要断言 VM 的根字段已被填（否则确认退化成空操作） |
 | `bsp_finish_booting` 返回 `!` | C 的 `NOT_REACHABLE` 宏 | 调用点不能有后置代码 |
 
-**如果反过来想**：若删掉 `init_post_and_memory` 的断言、直接进 `bsp_finish_booting`。一个 `phys_root == 0` 的槽会带着空根继续启动，直到第一次切地址空间时由 `switch_address_space` 把它写进页表根寄存器——此后每次运行都从一个空根翻译地址，现象是取指立即失败而不是切换前被拦住。断言是唯一能在切换发生前拦住它的地方——`root_phys` 为 0 在 boot 期不会立刻出错（`p_seg` 只是一块内存），错误要等到第一次切页表才显形。
+**删掉 `init_post_and_memory` 的断言会怎样**：一个 `phys_root == 0` 的槽会带着空根继续启动，直到第一次切地址空间时由 `switch_address_space` 把它写进页表根寄存器——此后每次运行都从一个空根翻译地址，现象是取指立即失败而不是切换前被拦住。断言是唯一能在切换发生前拦住它的地方——`phys_root` 为 0 在 boot 期不会立刻出错（`p_seg` 只是一块内存），错误要等到第一次切页表才显形。
 
-### 3.13 C→Rust 去向表汇总（章末总表；§3.14 是它最后一行的展开）
+### 3.13 fork 与 CPU 上下文的继承（→§2.1.4、§2.2）
+
+C 的负担在 `do_fork` 的开头几行（§2.8 已引）：`*rpc = *rpp;` 把父进程的整个 `struct proc` 复制给子进程，随后逐个修补 `p_nr`、`p_endpoint`、`retreg`；i386 上还要先把父进程的 FPU 状态保存、把子进程原来的缓冲指针存下来、复制完再把指针恢复并按需 `memcpy` 状态。这种方法的前提是"结构体的每一半都适合复制"，而不是"每一半都应该继承"。Rust 侧把继承做成按语义逐项决策，其中最典型的一项是 FPU 策略：
+
+```rust
+        // See 06-proc-init-boot-proc.md §3.14.
+        if parent.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED) {
+            <CurrentCpuContextArch as CpuContextArch>::inherit_fpu_state(
+                &mut child.cpu_context,
+                &parent.cpu_context,
+            );
+            child.fpu_state = parent.fpu_state;
+            child.p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
+        }
+```
+
+（逐字引用，`os/kernel/src/proc.rs` 的 fork 继承分支；块内源码注释里的 `§3.14` 指向本文档旧编号——fork 一节现为 §3.13，源码注释待同步，登记 `SRC-10`。）
+
+条件读的是父进程的"扩展寄存器已初始化"位（C 的 `MF_FPU_INITIALIZED`）：父进程用过 FP，子进程才继承——继承分两层，条件内先调 `inherit_fpu_state` 拿策略，再把 `fpu_state` 缓冲整块复制并把子进程的 `EXT_REG_INITIALIZED` 位置上；否则子进程保持"未初始化"，第一次 FP 指令走懒陷阱。三个架构的实现注释把"为什么要继承"写成了"不继承会怎样"：
+
+```rust
+    /// x86-64: the child inherits the parent's `X86FpuInitPolicy` so that
+    /// a forked user process keeps `LazyUserInit` (rather than silently
+    /// dropping back to `KernelTask`). C: `memcpy(rpc->p_seg.fpu_state,
+```
+
+（逐字引用，`os/arch/src/x86_64/boot.rs:CpuContextArch::inherit_fpu_state` 的文档注释开头三行。）
+
+aarch64 那一份的说法相同：子进程继承 `fpu_enable_el0`，否则"静默退回内核 task 的陷阱模式"；riscv64 那一份继承 `sstatus` 整个值，从而保住 `FS` 字段（`Off`/`Initial`/`Clean`/`Dirty` 四态）。三份 `inherit_fpu_state` 实现继承的都是**策略**；寄存器缓冲另由分支里的 `child.fpu_state = parent.fpu_state` 整块复制，二者共用一个条件（父进程的"已初始化"位）。也就是说被继承的是**策略 + 条件化的寄存器缓冲**——缓冲内容只在父进程用过 FP 时才有意义，与 C 只在 `proc_used_fpu` 下做 `memcpy` 是同一条判据。
+
+| 选什么 | 否掉什么 | 代价 |
+|---|---|---|
+| 逐项继承（策略 + 条件化的状态） | 整块复制后修补 | 每加一个上下文相关字段都要在 fork 路径上做一次决策（漏掉一项的后果可见：子进程缺少该字段的初值） |
+| 继承条件是父进程的"已初始化"位 | 无条件继承 | 未用过 FP 的父进程的子进程保持懒初始化，与 C 的行为一致 |
+
+**子进程不继承 FPU 策略会怎样**：用户进程 fork 出的子进程第一次执行 FP 指令时被判成"内核 task 不许用 FP"，走一段只有子进程到得了的异常路径；三个架构的注释点名的正是这一条。
+
+除 FPU 之外，`fork_from` 还有一张逐字段的继承与修正清单——`p_rts_flags`（复制后 `NO_QUANTUM` 置位、`SIGNALED`/`SIG_PENDING`/`P_STOP` 清掉）、`p_misc_flags`（复制后清 `VIRT_TIMER`/`PROF_TIMER`/`SC_TRACE`/`SPROF_SEEN`/`STEP`）、`p_time`、`p_pending`、以及队列链接各自的处置——它写在 `os/kernel/src/proc.rs:KProcess::fork_from` 的文档注释里，本节只展开 FPU 一项；进程侧的 fork 全流程见 `04-stage-pm/07-pm-fork.md`。
+
+### 3.14 C→Rust 去向表汇总（章末总表；表内 fork 行对应 §3.13）
 
 | 对象 | C 形态 | Rust 形态 | 档位 | 依据节 |
 |---|---|---|---|---|
@@ -2270,49 +2309,11 @@ C 的负担是这条链散在六个调用里：`proc_init()` → boot 循环 →
 | 装载失败 | 内部 `panic("VM loading failed")` | `Result<_, VmLoadError>` + 调用点 `panic` | Refactor | §3.7 |
 | 全局存储 | `EXTERN` 数组 | `SyncUnsafeCell` + `const fn` 初值 | Refactor | §3.8 |
 | 高半区/DM 相关初始化 | `arch_post_init` + `memory_init` 的 freepdes | `init_post_and_memory` 的三条就绪断言（ptproc 记录实际在 `switch_address_space`） | `[ARCH: Direct Map]` | §3.12 |
-| fork 上下文继承 | `*rpc = *rpp` 整块复制 + 定点修补 | 按语义重建 + `inherit_fpu_state` 策略继承 | Rewrite | §3.14 |
+| fork 上下文继承 | `*rpc = *rpp` 整块复制 + 定点修补 | 按语义重建 + `inherit_fpu_state` 策略继承 | Rewrite | §3.13 |
 | 初始栈额度 | 64 KiB + VM 自扩 | 一次性 256 KiB 固定额度（无自扩） | `[ARCH: K-5]` | §4.2 |
 
 档位沿用项目的三档术语：`[ARCH]` 表示外部可观察行为改变；`Rewrite` 与 `Refactor` 的划界是**逐项判断**（各行的理由在"依据节"所列的对应小节，不另立一条机器可判定的统一规则）。**本表是权威**：§4.9 的档位列以本表为准（重复行只从简引用）；§3.10 的选型表不承担档位标注。
 
-### 3.14 fork 与 CPU 上下文的继承（→§2.1.4、§2.2）
-
-C 的负担在 `do_fork` 的开头几行（§2.8 已引）：`*rpc = *rpp;` 把父进程的整个 `struct proc` 复制给子进程，随后逐个修补 `p_nr`、`p_endpoint`、`retreg`；i386 上还要先把父进程的 FPU 状态保存、把子进程原来的缓冲指针存下来、复制完再把指针恢复并按需 `memcpy` 状态。这种方法的前提是"结构体的每一半都适合复制"，而不是"每一半都应该继承"。Rust 侧把继承做成按语义逐项决策，其中最典型的一项是 FPU 策略：
-
-```rust
-        // See 06-proc-init-boot-proc.md §3.14.
-        if parent.p_misc_flags.is_set(MiscFlagsBits::EXT_REG_INITIALIZED) {
-            <CurrentCpuContextArch as CpuContextArch>::inherit_fpu_state(
-                &mut child.cpu_context,
-                &parent.cpu_context,
-            );
-            child.fpu_state = parent.fpu_state;
-            child.p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
-        }
-```
-
-（逐字引用，`os/kernel/src/proc.rs` 的 fork 继承分支。）
-
-条件读的是父进程的"扩展寄存器已初始化"位（C 的 `MF_FPU_INITIALIZED`）：父进程用过 FP，子进程才继承——继承分两层，条件内先调 `inherit_fpu_state` 拿策略，再把 `fpu_state` 缓冲整块复制并把子进程的 `EXT_REG_INITIALIZED` 位置上；否则子进程保持"未初始化"，第一次 FP 指令走懒陷阱。三个架构的实现注释把"为什么要继承"写成了"不继承会怎样"：
-
-```rust
-    /// x86-64: the child inherits the parent's `X86FpuInitPolicy` so that
-    /// a forked user process keeps `LazyUserInit` (rather than silently
-    /// dropping back to `KernelTask`). C: `memcpy(rpc->p_seg.fpu_state,
-```
-
-（逐字引用，`os/arch/src/x86_64/boot.rs:CpuContextArch::inherit_fpu_state` 的文档注释开头三行。）
-
-aarch64 那一份的说法相同：子进程继承 `fpu_enable_el0`，否则"静默退回内核 task 的陷阱模式"；riscv64 那一份继承 `sstatus` 整个值，从而保住 `FS` 字段（`Off`/`Initial`/`Clean`/`Dirty` 四态）。三份 `inherit_fpu_state` 实现继承的都是**策略**；寄存器缓冲另由分支里的 `child.fpu_state = parent.fpu_state` 整块复制，二者共用一个条件（父进程的"已初始化"位）。也就是说被继承的是**策略 + 条件化的寄存器缓冲**——缓冲内容只在父进程用过 FP 时才有意义，与 C 只在 `proc_used_fpu` 下做 `memcpy` 是同一条判据。
-
-| 选什么 | 否掉什么 | 代价 |
-|---|---|---|
-| 逐项继承（策略 + 条件化的状态） | 整块复制后修补 | 每加一个上下文相关字段都要在 fork 路径上做一次决策（漏掉一项的后果可见：子进程缺少该字段的初值） |
-| 继承条件是父进程的"已初始化"位 | 无条件继承 | 未用过 FP 的父进程的子进程保持懒初始化，与 C 的行为一致 |
-
-**如果反过来想**：若子进程不继承策略（默认 `KernelTask`）。一个用户进程 fork 出的子进程在第一次执行 FP 指令时被判为"内核 task 不许用 FP"，异常路径与用户态期望的懒初始化分支不同；父进程的 FP 结论与子进程的不一致，表现是一段只有子进程走得到的异常路径。三个架构的注释点名的正是这一条。
-
-除 FPU 之外，`fork_from` 还有一张逐字段的继承与修正清单——`p_rts_flags`（复制后 `NO_QUANTUM` 置位、`SIGNALED`/`SIG_PENDING`/`P_STOP` 清掉）、`p_misc_flags`（复制后清 `VIRT_TIMER`/`PROF_TIMER`/`SC_TRACE`/`SPROF_SEEN`/`STEP`）、`p_time`、`p_pending`、以及队列链接各自的处置——它写在 `os/kernel/src/proc.rs:KProcess::fork_from` 的文档注释里，本节只展开 FPU 一项；进程侧的 fork 全流程见 `04-stage-pm/07-pm-fork.md`。
 
 ---
 
@@ -2389,7 +2390,7 @@ riscv64 的两个初值常量带一条命名注释，指向本篇 §3.4 的角�
 
 内核层看不到这张表里的任何一项：它只调用 `build_cpu_context(kind, nr, entry)`、`set_boot_cpu_context` 与 `enable_user_io`。表内三条 FPU 门控（x86-64 的 `#NM` 路径、aarch64 的 CPACR 归属、riscv64 的 `FS=Off` 门控）在本篇按源码与注释陈述，真机行为未核实 `[待验证]`。
 
-**如果反过来想**：若把初值 PSW 提到内核层（例如给 `KProcess` 加一个 `p_status: u32` 字段由内核写）。三个架构的状态字位定义会与内核层的字段类型混在一起：x86-64 的 `IF` 位、aarch64 的 `DAIF` 组、riscv64 的 `SPP/SPIE` 位都要在同一个枚举里表达，或者内核层退化成"写一个魔数"——两种情况都破坏 03 篇划定的边界（内核层只认识 OS 概念）。
+**把初值 PSW 提到内核层会怎样**：三个架构的状态字位定义（x86-64 的 `IF`、aarch64 的 `DAIF`、riscv64 的 `SPP/SPIE`）会与内核层字段类型混在一起，或者内核层退化成"写一个魔数"——两种情况都破坏 03 篇划定的边界（内核层只认识 OS 概念）。
 
 ### 4.2 `load_vm_elf`：逐页装载与共享边界页（→3.5、3.7）
 
@@ -2483,7 +2484,7 @@ C 的内核先给 64 KiB 栈、之后由 VM 自己按需扩张（`reservedqueue.
 
 C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 12 字节（三个 4 字节字，与"三个指针"重合），在 64 位上是 20 字节——`argc` 槽只有 4 字节，出生 sp 落在 4 字节边界。Rust 统一成三个整字（24 字节），出生 sp 回到 8 字节对齐。
 
-**如果反过来想**：若按"C 的断言"要求段起点页对齐。链接器用 `lld` 的 separate-code 布局时后一个 `PT_LOAD` 会落在前一页中间，装载直接失败；若对"已存在的页"不做权限判别地复用，恒等映射的监督者页会成为用户段页，用户取指在 CPL3 下撞页错误（`#PF err=0x15` 是记录在案的现象形态）。
+**按"C 的断言"要求段起点页对齐会怎样**：链接器用 `lld` 的 separate-code 布局时后一个 `PT_LOAD` 会落在前一页中间，装载直接失败；若对"已存在的页"不做权限判别地复用，恒等映射的监督者页会成为用户段页，用户取指在 CPL3 下撞页错误（`#PF err=0x15` 是记录在案的现象形态）。
 
 ### 4.3 kernel 层：`ProcessTable` 与 `PrivTable` 的落地（→3.1、3.8）
 
@@ -2514,7 +2515,7 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 
 `ProcessTable::new` 里另外两个字段与本节无关但影响布局：`sched: [Scheduler; MAX_CPUS]` 是 per-CPU 就绪队列（C 的 `run_q_head[]`/`run_q_tail[]` 在 `__cpu_local_vars` 里），`vm_request_queue` 是 VM 请求队列的封装（C 的全局 `vmrequest` 链头）。两者都定容。
 
-**如果反过来想**：若 `iter()` 不校验而直接 `&self.procs[..]` 全量返回（"迭代必然合法"）。调用者按迭代序号当进程号用时就会错位：表的物理下标 0 对应进程号 −5，而 `iter()` 的序号从 0 起。C 的遍历用指针自增、进程号从字段读，不存在这个陷阱；Rust 侧把"下标 → 进程号"的换算留给 `p_nr` 字段，测试里有一条断言逐槽核对 `p_nr == i - NR_TASKS` 正是为此。
+**`iter()` 不校验、按序号当进程号用会怎样**：表的物理下标 0 对应进程号 −5，序号与进程号整体错位；C 的遍历用指针自增、进程号从字段读，不存在这个陷阱——§5.3 的 `test_process_table_const_init_per_slot_nr` 逐槽核对 `p_nr == i - NR_TASKS` 正是为此。
 
 ### 4.4 kernel 层：`KProcess` 的字段分组（→3.11、3.3）
 
@@ -2538,7 +2539,7 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 | `p_cycles`、`p_kcall_cycles`、`p_kipc_cycles`、`p_tick_cycles` | `p_cycles: CyclesStats` | 同上 |
 | `p_cpuavg` | `p_cpuavg: CpuAvg` | 同名字段 |
 | `p_found` | 无对位 | C 用它标记"本轮扫描已访问"，Rust 的调试检查改为局部位集（`os/kernel/src/debug.rs` 的 `found` 数组），不动进程表 |
-| `p_stale_tlb` | 无对位 | 32 位架构专用字段；Rust 的 `p_seg` 只有页表根两个字段（`phys_root`/`virt_root`），TLB 陈旧记账尚无归属。本条**登记不移植**（C 的写点在 `do_vmctl` 的 `VMINHIBIT` 解除分支、消费点在 CONFIG_SMP 下的 `lin_lin_copy` 一类路径；本仓 Rust 侧尚无 SMP 写路径消费它）——待 `16-smp` 方向设计"软件页表走查 + DM 窗口"模型时定夺是否需要等价机制，归 `08-todo.md` T-11 |
+| `p_stale_tlb` | 无对位 | 32 位架构专用；Rust 的 `p_seg` 只有 `phys_root`/`virt_root`，TLB 陈旧记账尚无归属（C 的写点在 `do_vmctl` 的 `VMINHIBIT` 解除分支、消费点在 CONFIG_SMP 下的 `lin_lin_copy` 一类路径），是否需要等价机制归 `10-smp-boot`（SMP 启动篇，尚未重生成） |
 | `p_schedules`（`DEBUG_TRACE`） | 无对位 | 调试构建才有的计数 |
 | （新增） | `p_fault_addr: Option<u64>`、`trap_style`、`fpu_state` | 诊断记录、进入内核的方式、FPU 缓冲 |
 
@@ -2561,7 +2562,7 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 
 `Drop` 只 panic、不做清理，这一点决定了整张表的复用模型：槽是常驻存储，"占用"与"空闲"是一次状态转换（`p_rts_flags` 从 `RTS_SLOT_FREE` 变成别的值、再回到它），而不是"构造对象 / 销毁对象"。这个模型成立的前提是 `KProcess` 不持有需要隐式释放的资源——FPU 缓冲是内嵌的定长数组，队列关系是槽号索引（`Option<ProcNr>`）而不是堆上节点，页表根由显式路径释放（`os/kernel/src/syscall.rs:release_address_space`），所以整槽复用不会漏掉析构动作。live update 的槽交换是这条模型的一个推论：`ProcessTable::swap_slots` 用 `core::mem::swap` 交换两个槽的全部内容，随后把"必须留在原槽"的身份字段按槽恢复——端点、进程号、`priv_id`、调度器、CPU、CPU 掩码与调用者队列头尾（`os/kernel/src/misc.rs` 的 `dispatch_update`，对位 C 的 `adjust_proc_slot`）；不恢复这些字段，交换就会把身份连同内容一起搬走。
 
-**如果反过来想**：若让 `KProcess` 实现 `Clone`/`Copy`（"结构体复制更灵活"）。`*rpc = *rpp` 那种整块复制就有了 Rust 形态，而 fork 路径上"复制后要修哪些字段"的清单会退化成同样易漏的人工步骤（§3.14 讨论过的失败形态）；更重要的是队列链接会被复制——两个槽的 `caller_q_head` 指向同一个后继，链表出现分叉。
+**让 `KProcess` 实现 `Clone`/`Copy` 会怎样**：`*rpc = *rpp` 那种整块复制就有了 Rust 形态，而 fork 路径上"复制后要修哪些字段"的清单会退化成同样易漏的人工步骤（§3.13 讨论过的失败形态）；更重要的是队列链接会被复制——两个槽的 `caller_q_head` 指向同一个后继，链表出现分叉。
 
 ### 4.5 能力授予与 IPC 掩码的落地（→3.2、3.9）
 
@@ -2619,7 +2620,7 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 
 "先读后借"的顺序不是风格：`get2_mut` 通过一次 `split_at_mut` 同时给出两个可变引用，而在它之前必须先把"对端是否只允许 RECEIVE"这个只读查询做完——否则两个可变引用期间还要再借一次表。C 那边用的是裸指针，没有这层约束；这是 Rust 借用规则在实现层留下的一处可见痕迹。
 
-**如果反过来想**：若为了绕过借用限制把 `set_sendto_bit` 改成"先改自己、释放借用、再改对端"。两步之间表处于"单向授权"的中间态；如果第一步之后发生任何提前返回（例如对端索引越界），不变量就停在中间态。`get2_mut` 的写法把两步放在一次借用内，中间态不可观察。
+**把 `set_sendto_bit` 改成两步借用会怎样**（"先改自己、释放借用、再改对端"）：两步之间表处于"单向授权"的中间态；如果第一步之后发生任何提前返回（例如对端索引越界），不变量就停在中间态。`get2_mut` 的写法把两步放在一次借用内，中间态不可观察。
 
 ### 4.6 kernel 层：`KPriv` 8 子结构与 wire 边界（→3.10）
 
@@ -2665,7 +2666,7 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 | `s_ipc_to` | `u64` | `IpcMask`（`NR_SYS_PROCS = 64` 位，单字） |
 | `s_k_call_mask` | `[u32; 2]` | `KCallMask` |
 
-**如果反过来想**：若让 Rust 扩展位也上 wire（"统一宽度更简单"）。`s_flags` 的宽度从 16 位变成 32 位，RS 侧结构与内核侧结构的尺寸不再一致；`data_copy` 按内核侧尺寸从用户地址拷贝时会读到结构之外的字节，或者写回时覆盖用户地址空间里相邻的数据。
+**让 Rust 扩展位也上 wire 会怎样**（"统一宽度更简单"）：`s_flags` 的宽度从 16 位变成 32 位，RS 侧结构与内核侧结构的尺寸不再一致；`data_copy` 按内核侧尺寸从用户地址拷贝时会读到结构之外的字节，或者写回时覆盖用户地址空间里相邻的数据。
 
 ### 4.7 主流程：`init_proc_and_boot` 的逐步走查（→3.12、3.4）
 
@@ -2711,7 +2712,7 @@ VM 分支比 C 多出的三件事都源自同一件事：C 的 VM 在运行后�
 
 驱逐必须发生在 `load_vm_elf` **返回之后**：装载期间模块镜像靠恒等映射直读，驱逐提前会让复制中途的字节消失。源码注释把这条次序依赖写在了原地。
 
-**如果反过来想**：若排除集只排除内核镜像、不排除 boot 模块。`VmBootRegion::select_multi` 会把某个 boot 模块占用的物理区间当作"空闲"选进 VM 的引导区，随后 VM 的 ELF 段帧可能分配在该区间上；模块回收（`add_memmap`）又把它标回空闲——同一段物理内存同时属于"VM 的段页"与"空闲清单"，下一次分配写进去就是覆盖正在使用的页。排除集长度 `NR_BOOT_MODULES + 1` 正是"内核 1 段 + 模块 12 段"。
+**排除集只排除内核镜像会怎样**（不排除 boot 模块）：`VmBootRegion::select_multi` 会把某个 boot 模块占用的物理区间当作"空闲"选进 VM 的引导区，随后 VM 的 ELF 段帧可能分配在该区间上；模块回收（`add_memmap`）又把它标回空闲——同一段物理内存同时属于"VM 的段页"与"空闲清单"，下一次分配写进去就是覆盖正在使用的页。排除集长度 `NR_BOOT_MODULES + 1` 正是"内核 1 段 + 模块 12 段"。
 
 ### 4.8 boot→running：`bsp_finish_booting` 的解除与交接（→3.9）
 
@@ -2736,7 +2737,7 @@ Rust 侧这段的步骤序（与 C 的 `bsp_finish_booting` 对照）：
 
 BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有锁动作，Rust 在切用户前留一条 `debug_assert!(smp::bkl_is_locked())`（`os/kernel/src/lib.rs:bsp_finish_booting`），把"进入 `switch_to_user` 时 BKL 已在手"这个前提写成可执行的检查；BKL 跨 `switch_to_user` 的归属与释放时点归 `08-system-init-boot-finish`（启动收尾与切用户篇，尚未重生成）与 `10-smp-boot`（SMP 启动篇，尚未重生成）。
 
-**如果反过来想**：若把"关窗口"提到解除循环之前。解除循环清掉 12 个进程的 `PROC_STOP`，但**其中只有 VM 因此变为可运行**（RS 仍带双闸、其余十个还带 `NO_PRIV|NO_QUANTUM` 与双闸——见 §1.4 的位表），所以"开始跑用户态"的是 VM。窗口的关闭点必须落在**最后一次内核侧直接分配**之后：窗口一旦早于任何还会走 `pg_alloc_page` 的步骤（例如之后新增的某步），第一次需要直接分配的内核路径就会撞上"内核不得直接分配"的断言；本篇把它定在切用户之前，为的是不再依赖对"还有没有分配"的逐处论证——用户态在 `switch_to_user` 之后才开始，两步骤序都改变不了它的页错误现场，这一点如实说明（本条是设计约束，不是已观察故障）。
+**把"关窗口"提到解除循环之前会怎样**：解除循环清掉 12 个进程的 `PROC_STOP`，但**其中只有 VM 因此变为可运行**（RS 仍带双闸、其余十个还带 `NO_PRIV|NO_QUANTUM` 与双闸——见 §1.4 的位表），所以"开始跑用户态"的是 VM。窗口的关闭点必须落在**最后一次内核侧直接分配**之后：窗口一旦早于任何还会走 `pg_alloc_page` 的步骤（例如之后新增的某步），第一次需要直接分配的内核路径就会撞上"内核不得直接分配"的断言；本篇把它定在切用户之前，为的是不再依赖对"还有没有分配"的逐处论证——用户态在 `switch_to_user` 之后才开始，两步骤序都改变不了它的页错误现场，这一点如实说明（本条是设计约束，不是已观察故障）。
 
 ### 4.9 与 Minix3 C 的对照
 
@@ -2761,7 +2762,7 @@ BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有�
 | `bsp_finish_booting` | 同名函数，返回 `!` | Rewrite | §3.9、§4.8 |
 | `_ENDPOINT`/`_ENDPOINT_P`/`_ENDPOINT_G` | `Endpoint::from_generation_slot`/`slot`/`generation` | Rewrite | §2.8 |
 
-表中的档位沿用 §3.13 的去向总表（该表逐行给出依据；本表从简，冲突时以 §3.13 为准）。
+表中的档位沿用 §3.14 的去向总表（该表逐行给出依据；本表从简，冲突时以 §3.14 为准）。
 
 ---
 
@@ -2788,7 +2789,32 @@ BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有�
 
 宿主测试能证明的部分：表的每槽初值、访问原语的边界、位图的取值与跃迁判定、掩码的自位清除与互惠、ELF 装载器的解析与错误分类。宿主测试不能证明的部分：真实页表的映射后果（`paging.query` 在测试里是 mock）、真机上的首次调度与用户态取指、以及"启动期没有堆分配"这条约束本身（它靠代码审查与构建配置保证，不靠单测）。
 
-### 5.2 进程表访问原语与表的构造测试（→4.3、4.4）
+### 5.2 机制 → 需要证明什么（反转核对表）
+
+本节把顺序倒过来核对一遍：**从机制出发**，逐条问"要证明它成立需要什么可观测断言、现有测试是否覆盖"。这张表是"覆盖证据"（§5.1 读数、§5.3 测试清单）的补集视角——只从测试出发的清单里，**没有任何测试覆盖的机制不会出现**；反转核对专门把它们找出来（01 篇的五层结构中的"机制→断言"一层，在本篇的落地）。
+
+| # | 机制（正文位置） | 需要证明什么（可观测断言） | 证据类型 | 覆盖状态 | TODO |
+|---|---|---|---|---|---|
+| M1 | 容量与槽定位（§1.2/§2.0/§2.8） | 261 槽可遍历；下标 = `NR_TASKS + p_nr` 逐槽成立；边界宏两端正确 | 宿主 | **已覆盖**（`test_iter_counts` / `test_process_table_const_init_per_slot_nr` / `test_is_valid_nr_boundaries`） | — |
+| M2 | 三套编号映射（§1.3/§1.4.1/§2.4） | `KERNEL_TASKS` 与 `BOOT_MODULE_PROC_NRS` 的 12 项顺序与 `image[]` 的模块序一致（位置约定） | 宿主（常量对账） | **未覆盖**：现有测试只查槽内 `p_nr`，不查两张常量表与清单的顺序一致 | **R06-T06** |
+| M3 | 四道抑制位（§1.4/§2.6） | boot 循环后各 boot 成员的位集与 C 表一致（谁挂双闸、谁挂 `NO_PRIV\|NO_QUANTUM`） | 真机 | 部分（`test_process_table_idle` 查 idle 的 `PROC_STOP`；全表位集靠真机载体） | R06-T01（已登记） |
+| M4 | 位与队列的绑定（§2.2.1） | `RTS_SET`/`RTS_UNSET` 只在跃迁时动队列；`SETFLAGS` 整值覆盖 | 宿主 | **已覆盖**（`test_rts_set_unset` 组） | — |
+| M5 | 位值表（§2.1.6/§2.2） | RTS 16 位与 MF 18 位的位值与 C 完全相同 | 宿主（常量对账） | 部分：类型常量保证定义；**逐位值无独立测试** | **R06-T07** |
+| M6 | 特权表与模板族（§2.3/§2.6） | 64 槽与静态/动态分段；模板位组合与 C 一致；`fill` 的自位清除与互惠 | 宿主 | **已覆盖**（kpriv 组 + `set/fill` 组） | — |
+| M7 | VM ELF 装载（§2.7/§4.2） | 无效 ELF/OOM 返回错误；栈与 `ps_strings` 布置；`.bss` 清零；逆序分配；icache 同步恰好一次 | 宿主 | **已覆盖**（`load_vm_elf_*` 7 条 + `load_process_elf_*` 2 条；`os/arch/src/arch/boot.rs` 共 14 条） | — |
+| M8 | 入口上下文初值（§3.5/§4.1） | 内核 task 与用户进程的初值状态字两态；段选择子；FPU 策略继承 | 宿主 | **已覆盖**（x86_64 两态 + 三架构继承各一） | — |
+| M9 | `init_post_and_memory` 的就绪断言（§3.12/§4.7） | `phys_root == 0` 的槽在切地址空间前被断言拦住 | 宿主或真机 | **未覆盖** | **R06-T08** |
+| M10 | 零堆约束（§2.0/§3.8） | 生产构建不链接 `alloc` | 构建期 | 无机器门 | R06-T02（已登记） |
+| M11 | boot 循环 12 动作与主流程（§2.6/§4.7） | 12 动作逐一生效、`init_proc_and_boot` 端到端 | 真机 | 载体存在、通过状态未复核 | R06-T01（已登记） |
+| M12 | FPU 懒陷阱门控（§3.6/§4.1） | 三架构门控的真机行为 | 真机 | 无真机回归 | R06-T03（已登记） |
+| M13 | `ImageInsideSegments` 前提（§4.2） | "真机布局不产生该重叠"的观测 | 真机 | 按源码陈述 `[待验证]` | R06-T04（已登记） |
+| M14 | `iter()` 序号语义（§4.3） | 序号不得当进程号用 | 宿主 | 部分（`test_iter_counts`） | R06-T05（已登记） |
+
+**反转核对判定（三选一）：(b) 有遗漏 → 已执行本节改造**——新增 3 条覆盖不足的机制（M2、M9 未覆盖；M5 逐位对账缺失 → R06-T06/T07/T08，登记进 §5.4 的缺口表）；本表与测试清单（§5.3）构成"机制视角 + 测试视角"两面。
+
+**自检（第二重收益）**：M1–M14 全部写得出可观测断言，无"写不出"的机制。
+
+### 5.3 进程表访问原语与表的构造测试（→4.3、4.4）
 
 `proc_table.rs` 的测试按被验证的对象分几类，逐条列名如下（测试名逐字取自源码）：
 
@@ -2835,7 +2861,7 @@ BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有�
 | `load_vm_elf_syncs_icache_over_exec_segment_frames` | 可执行段的帧区间恰好同步一次（`[ARCH: cache-sync]`） |
 | `load_vm_elf_skips_icache_sync_for_non_exec_image` | 非可执行镜像不同步 |
 
-### 5.3 测试缺口与诚实披露
+### 5.4 测试缺口与诚实披露
 
 | 缺口 | 现状 | 为什么留 | 解除条件 |
 |---|---|---|---|
@@ -2845,8 +2871,11 @@ BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有�
 | `RTS_VMREQTARGET` 的定义/使用不对称 | 无测试 | 该位"有名字、有打印、有人读，但没人置"（§2.2.2），测试无处下断言 | 若上游语义变化（置位点出现或该位被删除），同步更新 §2.2.2 |
 | `RTS_NO_ENDPOINT` 无具名解除点 | **已覆盖**：回收终态由 `dispatch_clear` 的回归测试断言（§2.2.2 末段） | 无具名 `RTS_UNSET` 解除点属上游形态（`XXX` 注释标待清理） | 上游删除该位时同步 §2.2.2 |
 | 三架构 FPU 懒陷阱时序 | 无真机回归（本篇未核实）`[待验证]` | 属 FPU 专题与 SMP/调度篇的交叉 | 见 FPU 专题（尚未重生成） |
+| `BOOT_MODULE_PROC_NRS` ↔ `image[]` 模块序（M2） | 未覆盖（常量对账缺口，反转核对发现） | 位置约定目前只靠人工对齐 | 加一条常量顺序对账断言（R06-T06） |
+| RTS/MF 位值逐位对账（M5） | 部分覆盖（类型常量保证定义，无逐位测试） | 位值在类型定义处集中，漂移面小 | 加构建期 const 对账或宿主测试（R06-T07） |
+| `init_post_and_memory` 根就绪断言的负控（M9） | 未覆盖（反转核对发现） | 断言在真机载体上被动执行 | 负控测试或真机检查点（R06-T08） |
 
-**诚实披露**：本篇的 §3.6 与 §4.1 涉及的三架构 FPU 时序、以及 §4.2 的 `ImageInsideSegments` 触发条件，均按源码与注释陈述；真机行为未在本篇核实，逐项已标 `[待验证]`。真机链的载体名称与覆盖范围本轮已按源码清点（上表第一行），但其**通过状态**未在本篇复核——文档侧不跑测试验证（源码边界）。
+**诚实披露**：本篇的 §3.6 与 §4.1 涉及的三架构 FPU 时序、以及 §4.2 的 `ImageInsideSegments` 触发条件，均按源码与注释陈述（§5.2 的反转核对表给出机制视角的覆盖全貌）；真机行为未在本篇核实，逐项已标 `[待验证]`。真机链的载体名称与覆盖范围本轮已按源码清点（上表第一行），但其**通过状态**未在本篇复核——文档侧不跑测试验证（源码边界）。
 
 ---
 
