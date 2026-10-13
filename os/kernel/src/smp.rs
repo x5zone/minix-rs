@@ -478,6 +478,30 @@ impl SmpState {
         self.cpu_locals.get_mut(cpu.index())
     }
 
+    /// Read-and-clear this CPU's `cpu_is_idle`, returning whether it *was*
+    /// idle. This is the clearing half of C `context_stop_idle()`
+    /// (arch_clock.c:351-359: `is_idle = cpu_is_idle; cpu_is_idle = 0;`),
+    /// invoked at the timer-interrupt entry so a tick that lands on a halted
+    /// CPU marks it busy again. The paired `if (is_idle) restart_local_timer()`
+    /// is already satisfied here: `clock::local_tick` rearms the one-shot local
+    /// timer unconditionally on every CPU, and C's own restart is a no-op on
+    /// auto-reloading clock sources.
+    ///
+    /// SD-24 arm 1 (the clearing arm). The wake *producer* — sending the SCHED
+    /// IPI when a runnable process is enqueued onto an idle CPU (C
+    /// proc.c:1641-1650) — is the separate outstanding arm 2, gated behind the
+    /// BSP clamp removal. Until then this cleared flag has no downstream
+    /// consumer, which is the expected state for a prerequisite building block
+    /// landed ahead of the milestone that reads it (see
+    /// `01-stage-kernel/todo.md` SD-24 and
+    /// `TODO-LEDGER-OPEN.md` §1).
+    pub fn clear_idle_flag(&mut self, cpu: CpuId) -> bool {
+        match self.cpu_locals.get_mut(cpu.index()) {
+            Some(local) => core::mem::replace(&mut local.cpu_is_idle, false),
+            None => false,
+        }
+    }
+
     // ── IPI scheduling ──
 
     /// Get IPI data for a CPU.
@@ -1922,6 +1946,19 @@ mod tests {
         assert!(local.proc_ptr.is_none());
         local.proc_ptr = Some(ProcNr(5));
         assert_eq!(smp.cpu_local(CpuId::BSP).unwrap().proc_ptr, Some(ProcNr(5)));
+    }
+
+    #[test]
+    fn test_clear_idle_flag() {
+        // SD-24 arm 1: read-clear of C `context_stop_idle`'s cpu_is_idle half.
+        let mut smp = SmpState::new_single_cpu();
+        smp.cpu_local_mut(CpuId::BSP).unwrap().cpu_is_idle = true;
+        assert!(smp.clear_idle_flag(CpuId::BSP), "first clear reports was-idle");
+        assert!(!smp.cpu_local(CpuId::BSP).unwrap().cpu_is_idle, "flag cleared");
+        assert!(
+            !smp.clear_idle_flag(CpuId::BSP),
+            "second clear reports was-not-idle"
+        );
     }
 
     #[test]

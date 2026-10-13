@@ -242,6 +242,10 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // the table at once (the early-SMP corruption behind B27).
         let tick_acquired = crate::smp::bkl_lock_or_inherit();
         let section = unsafe { crate::smp::BklSection::assume_held() };
+        // SD-24 arm 1 (C `context_stop_idle` clearing half, arch_clock.c:351-359):
+        // a tick landing on a halted CPU marks it busy again. Runs under the BKL
+        // acquired just above, mirroring C's interrupt-entry placement.
+        crate::smp_state_with(&section).clear_idle_flag(crate::current_cpu_id());
         let cur_nr = {
             let smp = crate::smp_state_with(&section);
             smp.cpu_local(crate::current_cpu_id())
@@ -325,6 +329,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             // the BKL (or inherit it only if this CPU already owns it).
             let tick_acquired = crate::smp::bkl_lock_or_inherit();
             let tick_section = unsafe { crate::smp::BklSection::assume_held() };
+            // SD-24 arm 1: same idle-clearing half as the LAPIC 0xF1 arm — the
+            // PIT-origin tick also wakes a halted CPU (C context_stop_idle).
+            crate::smp_state_with(&tick_section).clear_idle_flag(crate::current_cpu_id());
             let tick_cur = {
                 let smp = crate::smp_state_with(&tick_section);
                 smp.cpu_local(crate::current_cpu_id())
