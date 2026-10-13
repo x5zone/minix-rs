@@ -3,7 +3,7 @@
 > **C 真值源**：`minix3/minix/kernel/main.c`（`arch_post_init`/`memory_init` 的调用位置）、`minix3/minix/kernel/arch/i386/protect.c:arch_post_init`、`minix3/minix/kernel/arch/i386/memory.c:memory_init/createpde/lin_lin_copy/vm_memset/mem_clear_mapcache`、`minix3/minix/kernel/arch/i386/pg_utils.c:pg_info`、`minix3/minix/kernel/system/do_vmctl.c`（`VMCTL_CLEARMAPCACHE` 分支）、`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3`、`minix3/minix/kernel/arch/i386/klib.S`（含 `ENTRY(__switch_address_space)` 入口）。
 > **Rust 模块**：`os/kernel/src/dm_coverage.rs`（`establish_boot_dm` 与四个候选源函数）、`os/arch/src/arch/direct_map.rs`（`DirectMapArch` trait 与三架构实现）、`os/arch/src/arch/dm_coverage.rs`（`DmRange`/`plan_range_units`/`establish_dm_range`）、`os/kernel/src/lib.rs`（`init_post_and_memory`/`switch_address_space`/`arch_boot_impl`）、`os/arch/src/arch/paging.rs`（`map_kernel`/`PageFlags`）。
 > **前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)（boot 期建表，§2.6）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（进程槽与 boot→running 转换，§3.12）。
-> **说明**：本篇讲一件事的两代解法——内核没有自己的页表，却要读写别的地址空间里的内存。32 位 C 的答案是"在当前页表里借一个 4 MB 窗口"（记录 → 分配 → 使用 → 清理四步）；64 位 Rust 的答案是"划一段常驻线性窗口，翻译退化为一次加法"，以及随之而来的双视图地址空间与运行期窗口覆盖模型。**与 01 篇的分界**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6 已从 boot 建表角度讲过 `createpde` 借槽位窗口与 `freepde_start` 的语义（含偏移一位后果）、§3.7/§3.8 讲过页表页分配器换手与 `free_upper_idx` 字段保留；本篇从跨空间访问机制的角度接管同一段代码的完整生命周期，引用不重复。
+> **说明**：本篇讲一件事的两代解法——内核没有自己的页表，却要读写别的地址空间里的内存。32 位 C 的答案是"在当前页表里借一个 4 MB 窗口"（记录 → 分配 → 使用 → 清理四步）；64 位 Rust 的答案是"划一段常驻线性窗口，翻译退化为一次加法"，以及随之而来的双视图地址空间与运行期窗口覆盖模型。**与 01 篇的分界**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6 已从 boot 建表角度讲过 `createpde` 借槽位窗口与 `freepde_start` 的语义（含偏移一位后果）、§3.8/§3.9 讲过页表页分配器换手与 `free_upper_idx` 字段保留；本篇从跨空间访问机制的角度接管同一段代码的完整生命周期，引用不重复。
 
 ## 1. 概述
 
@@ -125,7 +125,7 @@ static void setcr3(struct proc *p, u32_t cr3, u32_t *v)
 | 主题 | 本篇怎么办 | 去处 |
 |---|---|---|
 | `createpde` 借槽位窗口的 boot 建表背景、`freepde_start` 偏移一位后果 | 引用不重复 | [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6 |
-| `free_upper_idx` 字段为何保留 | 引用不重复 | [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §3.8 |
+| `free_upper_idx` 字段为何保留 | 引用不重复 | [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §3.9 |
 | `init_post_and_memory` 的三条断言（boot→running 侧） | §4.2 讲机制，转换形状引 06 | [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §3.12 |
 | 页表结构本体（`pt_t`、层级、宏族、VM 侧 Direct Map 消费） | 不讲 | `rewrite-notes/02-stage-vm/07-pagetable-struct.md` §1.4、`08-pagetable-ops.md` |
 | 跨空间拷贝的系统调用消费面（`sys_vircopy` 一族谁在调） | 只讲到 `lin_lin_copy` 为止 | `22-syscall-copy`（跨空间拷贝调用面，尚未重生成） |
@@ -738,7 +738,7 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
 | ptproc 的窗口用途 | `cpulocals.h:ptproc` | 废弃 | 无窗口可写、无"已可见"特判需求 |
 | ptproc 的切表判据用途 | `arch_do_vmctl.c:setcr3` | 存活 | per-CPU `CpuLocal.ptproc`（§3.5；AP 尾段同装） |
 | 4 MB `BIGPAGE` 窗口概念 | `vm.h:I386_BIG_PAGE_SIZE` | 改型 | 粒度选择归 `plan_range_units` 的 1 GiB/2 MiB/4 KiB 贪心（§4.3） |
-| `kinfo.freepde_start` | `minix3/minix/include/minix/param.h:27` | 改型 | 协议字段 `KernelInfo.free_upper_idx`（`Option<usize>`）保留为 boot-shim 镜像契约；内核侧消费者只剩 GET_KINFO 的报告（`os/kernel/src/misc.rs`）——字段语义与保留判据见 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §3.8 |
+| `kinfo.freepde_start` | `minix3/minix/include/minix/param.h:27` | 改型 | 协议字段 `KernelInfo.free_upper_idx`（`Option<usize>`）保留为 boot-shim 镜像契约；内核侧消费者只剩 GET_KINFO 的报告（`os/kernel/src/misc.rs`）——字段语义与保留判据见 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §3.9 |
 
 表里有两行"改型"要多说一句。`p_cr3` → `phys_root` 不只是改名：C 的记录动作在 Phase D（`arch_post_init`），Rust 的写入点在 Phase C（装载 VM ELF 时），消费点从"内核写窗口条目"变成"调度器切根 + Phase D 断言"。`freepde_start` → `free_upper_idx` 则是**语义孤儿**：机制死了，字段因为跨镜像协议（boot-shim 与内核对同一份 `KernelInfo` 布局的承诺）而保留——这也是全表里唯一"内核侧无消费者仍然存活"的行。
 
@@ -1273,7 +1273,7 @@ python3 -c "print(hex(0xFFFF_8080_0000_0000 + 0x1de0e000), hex(0x0000_0000_8000_
 
 ## 7. 参见
 
-- [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6（`createpde` 借槽位窗口与 `freepde_start` 语义、恒等/内核映射的建表五步）、§3.7（页表页分配器换手）、§3.8（`free_upper_idx` 字段保留）
+- [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6（`createpde` 借槽位窗口与 `freepde_start` 语义、恒等/内核映射的建表五步）、§3.8（页表页分配器换手）、§3.9（`free_upper_idx` 字段保留）
 - [02-higher-half-kernel.md](02-higher-half-kernel.md)（内核高半区与链接布局；顶层槽位冲突的同类处理见其 §3.2–§3.3 与 §4.1）
 - [03-kmain-cstart.md](03-kmain-cstart.md)（Phase A–F 的划分与本篇 Phase D 的位置）
 - [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §3.12（`init_post_and_memory` 的口径与注释偏离登记、boot→running 转换形状）

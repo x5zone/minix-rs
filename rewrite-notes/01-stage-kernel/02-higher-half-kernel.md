@@ -593,7 +593,7 @@ RISC-V 自引导面把跨距写成了常量 `0x40_0000`（4 MiB，`os/kernel-ima
 | 方案 | 选/否 | 代价 |
 |---|---|---|
 | 链接脚本收口到 2MiB，运行时按阶梯选粒度 | 选 | 镜像尾部有最多 2MiB 的填充；换来粒度选择永不落进 panic 分支 |
-| 不收口，运行时按实际 `kern_size` 用 4KiB 细粒度建表 | 否 | 内核镜像映射需要成百上千个页表页，这些页要从引导期 bump 区里出（`01-boot-shim-bootstrap.md` §3.7 的换手路径）；建表时间与池容量都要重算 |
+| 不收口，运行时按实际 `kern_size` 用 4KiB 细粒度建表 | 否 | 内核镜像映射需要成百上千个页表页，这些页要从引导期 bump 区里出（`01-boot-shim-bootstrap.md` §3.8 的换手路径）；建表时间与池容量都要重算 |
 | 收口到更大粒度（1GiB） | 否 | 镜像远小于 1GiB，填充浪费以百 MB 计；且 RISC-V 的当前档位是 2MiB |
 
 **如果反过来想**：把收口改成 4KiB 对齐。`kern_size` 不再是 2MiB 的整数倍，粒度选择落进 `else` 分支，panic 发生在任何页表写入之前——现场是"分页还没开就停"，消息里点名 `kern_virt_base`、`kern_phys_base`、`kern_size` 三者，而根因在链接脚本的段间距上，不在调用方传参上。把 `os/kernel-image/riscv64.ld` 的 `. = ALIGN(0x200000)` 删掉、其余不动，宿主上的复现路径是 `bash os/kernel-image/check-layout.sh riscv64`：L5 先报"跨距非 2MiB 对齐"，L9 跟着红。
@@ -959,7 +959,7 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
         → HigherHalf::jump_to_kmain
 ```
 
-交接形态的分岔（x86_64 的进程内调用与 aarch64 的跨镜像跳转、各自的入参约定）在 `01-boot-shim-bootstrap.md` §3.9 与 §4.8 已逐条给出，本节只把两种形态与装载、跳转两步接起来。
+交接形态的分岔（x86_64 的进程内调用与 aarch64 的跨镜像跳转、各自的入参约定）在 `01-boot-shim-bootstrap.md` §3.7 与 §4.8 已逐条给出，本节只把两种形态与装载、跳转两步接起来。
 
 形态二的正文在 `os/kernel-image/src/bootface.rs:fn bootface`：从 DTB 解出 memmap、按模块表装载 12 个模块、组装 `KernelInfo` 这三步都在它里面，之后才调用内核的启动入口：
 
@@ -1004,14 +1004,14 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
 | C 侧的机制 | Rust 侧落点 | 处置 | 差异原因 |
 |---|---|---|---|
 | `AT()` 表达式给出 LMA，装载器按 `p_paddr` 写段体（§2.1） | `os/kernel-image/*.ld` 的 `AT()` + `os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory` | 保留（形态） | 装载者从 GRUB 换成 boot-shim 或镜像自己，表达式与读法不变 |
-| `objcopy --prefix-symbols` + `unpaged_*.o` 两段式布局（§2.2） | 无对应物：内核镜像只有高半一段，引导侧代码在 boot-shim 或入口汇编里 | 淘汰 | 分页开启前的代码不在内核镜像里（`01-boot-shim-bootstrap.md` §3.9 的交接形态），内核不需要低地址段 |
+| `objcopy --prefix-symbols` + `unpaged_*.o` 两段式布局（§2.2） | 无对应物：内核镜像只有高半一段，引导侧代码在 boot-shim 或入口汇编里 | 淘汰 | 分页开启前的代码不在内核镜像里（`01-boot-shim-bootstrap.md` §3.7 的交接形态），内核不需要低地址段 |
 | `k_initial_stktop` 链接符号（§2.4） | `KernelInfo.kern_stack_top`（`kern_virt_base + kern_size`） | 改型 | 值由装载方算、按值交接，内核不声明外部符号 |
 | `head.S` 的两行（设栈 + 跳转）（§2.3） | `os/kernel/src/boot/higher_half.rs:trait HigherHalf` 与三份内联汇编实现 | 改型 | 收进 trait 契约；栈对齐、屏障、执行视图差值三件事各自显式 |
 | —— | `check-layout.sh` 的 L0–L9 宿主断言 | 新增 | C 侧由 Makefile 与链接脚本的常量约束，没有独立断言脚本 |
 
 三行"改型/新增"的共同点：把 C 里靠"位置相邻、文档说明、读者经验"维持的约束，换成一种可以被工具或类型系统检查的形式——脚本不变量进断言脚本，栈顶值进结构体字段，跳转前提进 `unsafe` 契约。
 
-**如果反过来想**：把 C 的两段式布局照搬进 Rust（给内核镜像也加一个低地址的 unpaged 段，把"分页开启前要执行的代码"放进去）。这些代码在内核镜像里，而装载这个镜像的 boot-shim 此时还没建表、也没开分页（建表正是镜像里那段代码要做的事）——取指会落在高地址一侧的映射上，而映射还不存在，落点与 §2.2 的反向推演相同：三重故障。C 之所以能这么摆，是因为它的低地址段与建表代码在同一个镜像里、而镜像由 GRUB 按 LMA 直接放到物理地址上执行；Rust 侧这两件事被拆给了两个镜像（`01-boot-shim-bootstrap.md` §3.9 的交接形态）。
+**如果反过来想**：把 C 的两段式布局照搬进 Rust（给内核镜像也加一个低地址的 unpaged 段，把"分页开启前要执行的代码"放进去）。这些代码在内核镜像里，而装载这个镜像的 boot-shim 此时还没建表、也没开分页（建表正是镜像里那段代码要做的事）——取指会落在高地址一侧的映射上，而映射还不存在，落点与 §2.2 的反向推演相同：三重故障。C 之所以能这么摆，是因为它的低地址段与建表代码在同一个镜像里、而镜像由 GRUB 按 LMA 直接放到物理地址上执行；Rust 侧这两件事被拆给了两个镜像（`01-boot-shim-bootstrap.md` §3.7 的交接形态）。
 
 ---
 

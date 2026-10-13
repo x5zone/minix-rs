@@ -858,7 +858,7 @@ pub struct GsArea {
 | 谁建表 | `pre_init` 建一次（引导用），`prot_init` 重建一次（正式用） | `os/kernel/src/lib.rs:fn arch_boot_impl` 一次建好恒等窗口、内核映射与 Direct Map 覆盖 |
 | 保护结构初始化里是否碰页表 | 碰（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`） | 不碰 |
 | "仍需要 1:1"的消费者 | LAPIC MMIO、显存等按物理地址访问的对象 | 由 `arch_boot_impl` 的恒等窗口与 Direct Map 覆盖承担（01/02 篇已讲） |
-| `kinfo.freepde_start` | `pre_init` 存值、32 位跨地址空间机制消费 | 已由 `01-boot-shim-bootstrap.md` §3.8 处置（字段保留、消费者搬走） |
+| `kinfo.freepde_start` | `pre_init` 存值、32 位跨地址空间机制消费 | 已由 `01-boot-shim-bootstrap.md` §3.9 处置（字段保留、消费者搬走） |
 
 `init_protection` 的函数体里没有任何 CR3/页表调用，这是"淘汰"的直接证据；`IDENTITY_MAP_END` 这个常量在 `os/kernel/src/lib.rs` 里保留，注释写着它与 C 的对应（`C: pg_identity() maps 1024 × 4MB = 4GB`）。
 
