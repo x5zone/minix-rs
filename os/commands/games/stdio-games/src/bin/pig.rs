@@ -5,7 +5,6 @@
 //! (vowel rule at line 103). Word and separator runs are preserved as they
 //! appear; an unreadable (non-UTF-8) word passes through untouched.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -16,7 +15,6 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_stdio_games::words::pig_word;
-use minix_sys::read;
 use support::LineReader;
 
 fn run() -> ! {
@@ -27,10 +25,7 @@ fn run() -> ! {
     }
     let mut input = [0u8; 1024];
     let mut out = [0u8; 1024];
-    let mut reader = LineReader::new(
-        |chunk| read(support::STDIN, chunk).map_err(|_| ()),
-        &mut input,
-    );
+    let mut reader = LineReader::new(support::stdin_chunk, &mut input);
     while reader.next_line().unwrap_or(false) {
         pig_line(reader.line(), &mut out);
     }
@@ -60,7 +55,6 @@ fn pig_line(line: &[u8], out: &mut [u8]) {
         }
     }
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

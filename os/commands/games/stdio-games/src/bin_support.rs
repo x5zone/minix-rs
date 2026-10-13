@@ -139,6 +139,26 @@ pub fn read_stdin() -> alloc::vec::Vec<u8> {
     input
 }
 
+/// Reads one chunk of standard input into `buf`, returning the byte count.
+///
+/// This is the seam the line reader drives, and the hosted twin is what makes a
+/// game's standard-input face testable at all: `minix_sys::read` on the host goes
+/// through the kernel transport (a mock there) rather than the process' real standard
+/// input — the same trap the text filters documented and the morse shell closed in the
+/// previous batch. `Ok(0)` is end of input and `Err(())` a failed read; both end the
+/// stream, which is exactly the contract `LineReader` expects.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn stdin_chunk(buf: &mut [u8]) -> Result<usize, ()> {
+    use std::io::Read as _;
+    std::io::stdin().read(buf).map_err(|_| ())
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn stdin_chunk(buf: &mut [u8]) -> Result<usize, ()> {
+    use minix_sys::read;
+    read(STDIN, buf).map_err(|_| ())
+}
+
 /// Renders `value` in decimal into `out`, returning the written length.
 ///
 /// Games print numbers (factors, primes, answers) without pulling a

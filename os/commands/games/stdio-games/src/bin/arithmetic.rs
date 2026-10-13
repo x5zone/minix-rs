@@ -17,22 +17,25 @@
 //! (`penalise`, line 255) are not modelled yet — the same problem is
 //! simply asked again.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_stdio_games::quiz::{answer_of, parse_range, Operator, Question, Score, DEFAULT_RANGE};
-use minix_sys::read;
+use minix_stdio_games::quiz::{DEFAULT_RANGE, Operator, Question, Score, answer_of, parse_range};
 use support::LineReader;
 
-const KEYS: [Operator; 4] = [Operator::Add, Operator::Subtract, Operator::Multiply, Operator::Divide];
+const KEYS: [Operator; 4] = [
+    Operator::Add,
+    Operator::Subtract,
+    Operator::Multiply,
+    Operator::Divide,
+];
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -75,10 +78,7 @@ fn run() -> ! {
     let mut random = seed();
     let mut score = Score::default();
     let mut input = [0u8; 64];
-    let mut reader = LineReader::new(
-        |chunk| read(support::STDIN, chunk).map_err(|_| ()),
-        &mut input,
-    );
+    let mut reader = LineReader::new(support::stdin_chunk, &mut input);
     let mut asked = 0u32;
     loop {
         let (question, seed_next) = next_question(&mut random, range, &keys);
@@ -228,7 +228,6 @@ fn print_score(score: &Score) {
 fn seed() -> u32 {
     (support::epoch_micros().unwrap_or(1) as u32) | 1
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

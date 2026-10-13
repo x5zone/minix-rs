@@ -6,7 +6,6 @@
 //! matching the range the words tables model); malformed input is a
 //! failure, exiting 1.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -17,7 +16,6 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_stdio_games::words::number_words;
-use minix_sys::read;
 use support::LineReader;
 
 fn run() -> ! {
@@ -28,10 +26,7 @@ fn run() -> ! {
     }
     let mut input = [0u8; 64];
     let mut out = [0u8; 512];
-    let mut reader = LineReader::new(
-        |chunk| read(support::STDIN, chunk).map_err(|_| ()),
-        &mut input,
-    );
+    let mut reader = LineReader::new(support::stdin_chunk, &mut input);
     while reader.next_line().unwrap_or(false) {
         let line = reader.line();
         let trimmed = match line.last() {
@@ -52,7 +47,6 @@ fn run() -> ! {
     }
     support::terminate(0);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

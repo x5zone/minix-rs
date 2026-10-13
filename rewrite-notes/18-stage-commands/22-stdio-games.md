@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第一组——只用标准输入输出说话的游戏，系统能跑、管道能通的证明
 > **源码**: `minix3/games/factor/factor.c`（输出形状见头注释、因子打印函数见第 184 行附近、大数路径见第 110 行附近、用法 `factor [value ...]` 见第 268 行附近）、`minix3/games/primes/primes.c` 与 `pattern.c` 与 `pr_tbl.c` 与 `spsp.c`（区间素数表）、`minix3/games/caesar/caesar.c`（轮转表构造见第 82 行附近、溢出保护 `rot %= LETTERS` 见第 86 行附近、轮转解析见第 125 行附近）、`minix3/games/morse/morse.c`（码表见第 96 行附近、用法 `morse [-ds] [string ...]` 见第 140 行附近、解码匹配见第 219 行附近）、`minix3/games/pig/pig.c`（元音规则见第 103 行附近、用法 `pig` 见第 133 行附近）、`minix3/games/arithmetic/arithmetic.c`（缺省范围 10 见第 99 行附近、对错计数见第 100 行附近、范围选项见第 107 行附近）、`minix3/games/banner/banner.c`（整幅宽 132 见第 58 行附近、用法 `banner [-w width] [message]` 见第 1057 行附近、列缩放见第 1064 行到第 1066 行附近）、`minix3/games/number/number.c`（数字转英文单词）、`minix3/games/bcd/bcd.c`（大字显示）、`minix3/games/ppt/ppt.c`（纸带 punch 显示）
-> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 53 个；端到端门 `tests/morse_face.rs` 十二枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 119 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
+> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 53 个；端到端门两扇 `tests/morse_face.rs` 十二枚与 `tests/factor_face.rs` 三枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 122 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `06-file-ops.md`（标准输入输出面先行）
 > **不覆盖（移交）**: 终端控制（见第 23 篇）、键盘读取与逐行显示执行（各游戏二进制包）、大数概率分解（后续补齐）
 
@@ -133,7 +133,7 @@ show(const char *s)
 | `lib.rs` | — | 错误类型（`GameError`，22 对应参数无效、2 对应查无、34 对应超范围）与模块组织 |
 | `bcd.rs` | `bcd.c` 第 87 到 120 行（孔位表）、第 151 到 220 行（卡片绘制） | 打孔表、单卡渲染 |
 | `ppt.rs` | `ppt.c` 第 52 行（EDGE）、第 129 到 175 行（打孔与读带） | 纸带行渲染、读带还原 |
-| `bin_support.rs` | — | 各二进制壳共用：行缓冲（C `fgets` 形状）、十进制格式化、宿主/真机接缝 |
+| `bin_support.rs` | — | 各二进制壳共用：行缓冲（C `fgets` 形状）、十进制格式化、宿主/真机接缝（`args`/`terminate`/`emit`/`warn`/`read_stdin`/`stdin_chunk` 各自双生） |
 | `factor.rs` | `factor.c` 第 184 行与第 268 行附近 | 数值解析、试除、行绘制 |
 | `primes.rs` | `primes.c` 区间语义 | 界限解析、区间生成 |
 | `caesar.rs` | `caesar.c` 第 82 行与第 86 行与第 125 行附近 | 轮转解析、单字节轮转、行轮转 |
@@ -184,7 +184,7 @@ show(const char *s)
 |------|---------------------|---------|
 | bcd | `read`、`write`、`exit`、argv 交接 | 已接线（`src/bin/bcd.rs`） |
 | ppt | 同上 | 已接线（`src/bin/ppt.rs`，编码与 `-d` 解码两路） |
-| factor | 同上 | 已接线（`src/bin/factor.rs`） |
+| factor | 同上 | 已接线（`src/bin/factor.rs`）：操作数与标准输入两形都经 `support::stdin_chunk` 走真标准输入，`pr_fact` 写下 `value:` 后逐个追加「空格 + 因子」、行尾一个换行的形状端到端可判；C 的前导空白跳过（`isblank` 扫描，`factor.c:163`）与 `numbers <= 1 aren't permitted.` / `negative numbers aren't permitted.` / `illegal numeric format.` 三句 `errx` 报文待批 |
 | primes | 同上 | 已接线；界限封顶 1,000,000（试除引擎定位），C 的近 2^32 流式筛待后续批 |
 | caesar | 同上 | 已接线固定轮转路；无参频率破解（`guess_and_rotate`）待决定半 |
 | morse | 同上 | 已接线编码面（默认逐符号 `dit`/`daw`、`-s` 短形、每字节一行、操作数收尾行与整轮一次 `SK`、表外字节不出行、`-d`/`-s` 聚簇与 `--`/裸 `-` 的 getopt 形、用法行落 stderr 退 1）与 `-d` 的解码两形：操作数整串比对不拆空格（`:146-150`），标准输入按 C 的字符流（冲刷型分隔符不打印、十个符号算胡码并吞掉其后首字节、整轮收尾一个换行、查不到答 `x`、结束记号静默） |
@@ -210,9 +210,10 @@ show(const char *s)
 - **测验**（`quiz.rs`，4 个）：`test_ranges_parse`、`test_answers_computed`（四则与截零）、`test_grading_counts`、`test_empty_score_zero`。
 - **打孔卡**（`bcd.rs`，7 个）：`test_frame_geometry`（十四行框与列数）、`test_hole_marks_against_the_table`（孔行与表一致）、`test_lowercase_becomes_uppercase`（渲染前大写）、`test_truncation_at_48_columns`、`test_trailing_newline_is_dropped`、`test_newline_inside_text_terminates_the_line`、`test_oversized_output_reports_out_of_range`。
 - **纸带**（`ppt.rs`，6 个）：`test_punch_line_shape`、`test_punch_all_zero_and_all_one`、`test_punch_reports_small_output`、`test_decode_reverses_punch`（编码解码往返）、`test_decode_line_without_feed_hole_is_none`（失步）、`test_decode_treats_anything_but_blank_as_hole`。
+- **因数分解**（端到端门 `tests/factor_face.rs`，3 个）：`operands_print_one_line_each_in_the_c_shape`（操作数逐值一行与素数自身）、`standard_input_supplies_one_value_per_line_and_matches_the_operand_run`（标准输入逐行取值、与操作数形同结果）、`an_unterminated_last_line_is_still_a_value_and_blank_lines_are_skipped`（末行无换行仍是值、空行不出行）。
 - **行缓冲**（`bin_support.rs`，随九个壳各 6 个）：`test_lines_include_newline_and_split`、`test_final_fragment_without_newline_is_a_line`、`test_oversized_input_returns_full_buffer_lines`（满缓冲即行）、`test_empty_input_yields_no_lines`、`test_reader_failure_ends_stream_with_error`、`test_utoa_shapes`。
 
-尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、caesar 无参频率破解（`guess_and_rotate`）、arithmetic 罚则提示（`penalise`）与用时统计、banner 真位图字体与薄壳接线、primes 近 2^32 流式筛（现封顶 1,000,000，见 §4.4 标注）。十个玩法决定半与九个二进制壳是完整的，其余是显式留白的。
+尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、factor 的前导空白跳过与三句 `errx` 诊断报文、caesar 无参频率破解（`guess_and_rotate`）、arithmetic 罚则提示（`penalise`）与用时统计、banner 真位图字体与薄壳接线、primes 近 2^32 流式筛（现封顶 1,000,000，见 §4.4 标注）。十个玩法决定半与九个二进制壳是完整的，其余是显式留白的。
 
 ---
 
