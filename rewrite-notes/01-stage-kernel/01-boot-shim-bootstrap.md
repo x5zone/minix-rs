@@ -65,7 +65,7 @@ x86 上加电后，机器先执行固件；固件自检、初始化并找到可�
 
 四样之间有依赖，而且依赖的方向决定了次序：
 
-- 清单要先于所有读它的步骤。`get_parameters()` 自己就是第一个读者——它把内核与各模块占用的区间从清单里切掉（`cut_memmap`），用的正是它刚建好的那份清单。如果先建页表再收集内存信息，页表页分配这一步就没有可信的可用区间来源。
+- **内存清单先于建表**。`get_parameters()` 自己就是这份清单的第一个读者——它把内核与各模块占用的区间从清单里切掉（`cut_memmap`），用的是刚建好的那份清单。反过来排（先建页表、后收集内存信息），页表页分配这一步就没有可用区间可取。
 - 内核的位置先于清单的裁剪。清单要排除的区间里包含内核镜像自己；内核镜像的物理区间从链接期常量来（`_kern_phys_base`、`_kern_size`），不来自引导器的数据结构。
 - 页表先于开启分页，这是本节唯一一条"硬件强制"的次序。`CR0.PG` 置位后的**下一条取指**就已经在走页表；此时页表里如果没有当前指令所在的虚拟地址的映射，CPU 立刻产生页错误，而页错误处理程序此刻还不存在。
 - 结构先于内核第一条 C 语句。`pre_init()` 返回的就是这份结构；它按值或按指针交给 `kmain()`。
@@ -761,6 +761,8 @@ int overlaps(multiboot_module_t *mod, int n, int cmp_mod)
 
 于是 `panic("overlapping boot modules/kernel")` 落在一个完全合法的布局上。这正是"半开区间必须翻译对"这一类错误的代价：报错信息说"模块重叠了"，而真实情况是模块之间恰好相切。再注意上面那句"两个方向各检查一次"在这里的意思：真重叠时两个方向都会报（各自都能发现对方），而相切的误报只需要一个方向成立就够——外层扫到 `m = 0`（把 A 当比较对象）那一次就已经 panic，反方向那一次根本轮不到执行。
 
+顺带说准一件容易搞反的事：**把 `overlaps` 整个去掉，内存账并不会被弄坏**。同一段物理内存被两个模块声明时，第二次 `cut_memmap` 落在已被排除的区间上，是空操作（按 `add_memmap` 与 `cut_memmap` 的取整规则推演：先切 `[0x120000, 0x150000)`、再切 `[0x130000, 0x140000)`，清单仍是那两截）。代价全在内容侧，就是本节开头那句话：两份镜像在重叠地址上互相覆盖，而内核一声不响——所以 `overlaps` 守的是**模块字节不被踩**，不是内存账不被记错。
+
 ### 2.6 页表建立步骤与被本篇接手的那一半
 
 `pre_init()` 的函数体共八条语句：一条断言 + 一条收集调用 + 五步建表/开启 + 一条 `return`；下面说的"前一条收集、后五条建表与开启"指中间那六条。
@@ -1182,7 +1184,7 @@ void setup_mbi(multiboot_info_t *mbi, char *bootargs)
 
 | 步 | 语义 | x86-32 落点 | ARM32 落点 | 谁定的 |
 |---|---|---|---|---|
-| 1 | 接收引导参数 | `head.S` 压栈 + `pre_init(magic, ebx)` | `head.S` 传 `bootargs` + `setup_mbi` 自造结构 | 引导协议（各架构不同） |
+| 1 | 接收引导参数 | `head.S` 压栈 + `pre_init(magic, ebx)` | `head.S` 只 `bl pre_init`（两侧形参不同：ARM 是 `pre_init(argc, argv)`，没有 `magic` 也没有 `ebx`），再由 `setup_mbi` 自造结构 | 引导协议（各架构不同） |
 | 2 | 建立地址映射 | `minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear` + `:pg_identity` + `:pg_mapkernel` | 同名函数（`minix3/minix/kernel/arch/earm/pg_utils.c:pg_identity`），1MB Section 代替 4MB 大页 | 分页硬件（各架构不同，语义相同） |
 | 3 | 开启分页/MMU | `minix3/minix/kernel/arch/i386/pg_utils.c:pg_load` + `:vm_enable_paging`（写 `CR3`，置 `CR0.PG`） | 同名函数（`minix3/minix/kernel/arch/earm/pg_utils.c:pg_load` 写 `TTBR0`；`minix3/minix/kernel/arch/earm/pg_utils.c:vm_enable_paging` 置 `SCTLR.M` 并使能 I/D cache 与分支预测） | MMU 寄存器（各架构不同） |
 | 4 | 把启动信息交下去 | `return &kinfo` → `kmain(&kinfo)` | `r0` 仍持有指针 → `kmain` | 调用约定（x86 用栈、ARM 用寄存器） |
@@ -1190,8 +1192,6 @@ void setup_mbi(multiboot_info_t *mbi, char *bootargs)
 ARM 侧这两步比 x86 多几个前置：`vm_enable_paging` 先写 `TTBCR`（页表基址控制）与 `DACR`（把 16 个域全设为 Client），再读改写 `SCTLR`；开 MMU 之前还有一次 `dcache_clean()`，调用点在 `minix3/minix/kernel/arch/earm/pre_init.c:pre_init`。
 
 步骤 2、3 在各架构都调用同名函数，是因为"清零页目录 → 建恒等映射 → 把内核映射到高地址 → 装载页表基址 → 开启分页"这一串的**语义**与"用哪条指令、页表项多少位"无关；第 1 步是唯一必须按架构另写的一步，因为"参数从哪来"由引导器决定。第 4 步的差别只在调用约定。
-
-**少了这一层翻译会怎样**：ARM32 侧省掉 `setup_mbi`，让 `get_parameters` 直接用 x86 的第二个形参（那里是 `ebx`，一个由引导器填好的结构体地址）。ARM 的 `head.S` 只传了 `r0`（`bootargs`），`pre_init` 的第二个形参读到的是栈上或寄存器里的残留值。`setup_mbi` 之后才存在的三个 `flags` 位在这里没人置位，于是 `assert(mbi->mi_flags & MULTIBOOT_INFO_HAS_MODS)` 在 `mi_flags` 为垃圾值时直接失败；即使它偶然通过，下一句 `memcpy(&cbi->module_list, (void *) mbi->mi_mods_addr, mbi->mi_mods_count * sizeof(multiboot_module_t))` 会从任意地址拷进最多 20 条模块描述符，随后 `cut_memmap` 按这些垃圾区间把真实 DRAM 从记录里切掉——记录不会报错，只是可用内存凭空少了几段。
 
 ### 2.8 本章归纳
 
@@ -1224,13 +1224,13 @@ return &kinfo
 
 三条次序结论，各配一条源码依据：
 
-- **清单要先于所有读它的步骤**。`pre_init` 的注释把这件事说成"先建 1:1 映射让这段代码留在原地"，而清单的第一次读取（`cut_memmap`）发生在 `get_parameters` 内部——两者都在 `pg_clear()` 之前完成（依据：`minix3/minix/kernel/arch/i386/pre_init.c:pre_init` 的语句顺序）。
-- **恒等映射先于内核映射**。两个函数写同一张 `pagedir[]`；`pg_identity` 覆盖全部 1024 个条目，`pg_mapkernel` 从下标 961 开始写（依据：`minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity` 的循环上界 `I386_VM_DIR_ENTRIES` 与 `minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel` 的起始下标计算）。
+- **内存清单先于建表**。清单在 `get_parameters()` 里就建完并切完（`add_memmap` × N → `overlaps` → `cut_memmap` × (N+1)），`pg_clear()`、`pg_identity()`、`pg_mapkernel()` 都在它之后才跑（依据：`minix3/minix/kernel/arch/i386/pre_init.c:pre_init` 里这几句的排列顺序）。为什么不能反：`pg_identity()` 要用 `mem_high_phys` 决定哪些条目该标成非缓存，`pg_mapkernel()` 与 `pg_map()` 要的页表页也从这份记录里领——记录还不存在，这两步就没有输入。
+- **恒等映射先于内核映射**。两个函数写同一张 `pagedir[]`；`pg_identity` 覆盖全部 1024 个条目，`pg_mapkernel` 从下标 961 开始写（依据：`minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity` 的循环上界 `I386_VM_DIR_ENTRIES` 与 `minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel` 的起始下标计算）。`pre_init` 里那句注释说的正是这件事：`/* … but first a 1:1 mapping so this code stays where it should be */`——先铺恒等映射，好让当前这段代码在分页开启后继续留在原地。
 - **信息结构先于 `kmain`**。`pre_init` 的返回值是 `&kinfo`，`head.S` 把它压栈作为 `kmain` 的第一个参数（依据：`minix3/minix/kernel/arch/i386/pre_init.c:pre_init` 的 `return &kinfo;` 与 `minix3/minix/kernel/arch/i386/head.S:multiboot_init` 的 `push %eax`）。
 
 换栈那一步的落点：`head.S` 在 `call kmain` 之前把栈换到 `k_initial_stktop`，它落在高半一侧。本篇不复制这条判据——它属于"内核怎么走到高半去跑"那个主题，推证与证据表在 `02-higher-half-kernel.md` §2.4，那里还带一句提醒：符号名里的 `__k_unpaged_` 字样不是判据。本篇只需要这一个事实：`pre_init` 返回后换上的那个栈，与紧接着要跳去的高半在同一侧，所以换栈与跳转能成对。
 
-把本章的断言按用途分一下：`assert(cbi->bootstrap_start % I386_PAGE_SIZE)` 这类断言不能证明布局一定合法，它把"不合法"从后置的沉默故障提前成现场的立即停止——断言改不了事实，只改故障出现的位置。**少了这道防线会怎样**：把这些 `assert` 在编译时全部去掉（`NDEBUG`）。`overlaps` 不再拦重叠布局，而 `cut_memmap` 对同一段物理内存被两个模块声明的情况会切两次——第二次切除在一个已经被清零的条目上做"夹取后无重叠"判断，于是什么也不切，记录把这段内存记成两个洞之间的余量；`pg_alloc_page` 仍会从尾部发页，把这段物理内存发给两个使用者。症状不出现在启动期，而在共享这段内存的两方都开始写入之后，且没有任何一处会报"内存被给了两次"。
+把本章的断言按用途分一下：`assert(cbi->bootstrap_start % I386_PAGE_SIZE)` 这类断言不能证明布局一定合法，它把"不合法"从后置的沉默故障提前成现场的立即停止——断言改不了事实，只改故障出现的位置。
 
 ---
 
@@ -1248,9 +1248,7 @@ C 的实现前提写在 2.1 与 2.2 里（本节标题里的 GRUB 泛指"第三�
 | 读内核与模块到内存 | 引导器代劳：`multiboot` / `load_mods` | boot-shim 自己读：`SimpleFileSystem` 协议 + `loader::KERNEL_PATH` / `MODULE_NAMES` | U-Boot 代劳读文件（`fatload`），boot-shim 按 `BootFileTable` 查地址 |
 | 内存布局 | 引导器填 `mbi.mmap_*`；内核遍历 | boot-shim 调 `GetMemoryMap` 一次，产出两份列表 | boot-shim 用硬编码的 QEMU virt DRAM 布局 |
 | 传递参数 | 寄存器 + `multiboot_info_t` | `KernelInfo`（按值）+ 根页表物理地址 | 同 UEFI |
-| 退出固件服务 | 无此步骤（引导器早已离开） | 必须调 `ExitBootServices`，之后 Boot Services 全部失效 | 无此步骤（U-Boot 已把控制权交出去） |
-
-其中"退出固件服务"这一行需要展开：C 里引导器跳过来时早已不提供服务，而 UEFI 里 boot-shim 是在 Boot Services 的**环境内**运行的，它必须在某个时刻主动声明"我不再需要你"。这个声明有两个后果：文件系统协议与页分配接口同时消失。
+| 退出固件服务 | 无此步骤（引导器早已离开） | 必须调 `ExitBootServices`：boot-shim 跑在 Boot Services 的**环境之内**，得在某个时刻主动声明"我不再需要你"；声明之后整套服务失效，本篇用到三件——读文件（`SimpleFileSystem`）、分配内存（`allocate_pool`）、固件控制台输出（`uefi::println!`） | 无此步骤（U-Boot 已把控制权交出去） |
 
 ```rust
 // 节选（保留与调用约束相关的行；注释有删节与改述，被略处见省略号），os/boot-shim/src/uefi_helpers.rs:fn prepare_boot。
@@ -1294,8 +1292,6 @@ pub fn exit_boot_services() {
 | 保留 Multiboot，做 64 位扩展（Multiboot2） | 两个新架构没有等价协议；`head.S` 那套"引导器填结构体 + 寄存器传参"在 aarch64/riscv64 上要各写一份，等于三份引导协议 |
 | 各架构独立引导（x86 用 Multiboot、ARM 用 PSCI、RISC-V 用 SBI） | 引导准备的代码要按架构分叉，而 2.7 展示的正是"这一步的语义与硬件无关"——分叉会把它重新绑回硬件 |
 | 内核自带 stub（把 boot-shim 链接进内核镜像，内核自己读文件再自举） | boot-shim 与内核变成同一个二进制的两个入口，内核要依赖固件类型才能编译；riscv64 上 UEFI 目标不存在（`riscv64-unknown-uefi` 不是 Rust 支持的目标），这条路径会让内核在该架构上不可构建 |
-
-**若提前调用 `ExitBootServices` 会怎样**：把它挪到"读完文件、建完内存图"之前（先退出、再读文件）。Boot Services 消失之后 `SimpleFileSystem` 协议不再可用，`loader::read_required` 拿不到 `kernel.elf` 的字节——它是 `read` 加 `panic!` 的封装，于是启动停在 `boot-shim: required file not found`（`FileLoader::read_required` 的默认实现）。用户看到的是一个"找不到文件"的消息，而真实原因是退出时机，两者之间隔着一次协议失效：文件仍在磁盘上，只是没人能读了。
 
 ### 3.2 一个 trait 两种固件：`BootShim`
 
@@ -1350,19 +1346,21 @@ pub trait FileLoader {
 
 `read_required` 是"缺件必须致命"这件事的**唯一**落点：它把"文件不存在"从 `None` 变成一个带路径的 panic。两个实现各自只提供 `read`：UEFI 走 `SimpleFileSystem`（并把正斜杠转成 UEFI 要求的分隔符），OpenSBI 走 U-Boot 预先落在 RAM 里的 `BootFileTable`。除此之外的全部装载逻辑（解析、段拷贝、模块页分配、结构体构造）只有一份。
 
-trait 相对"纯 feature gate + 散落条件编译"的四条理由，都对应可检查的事实：
+trait 相对"纯 feature gate + 散落条件编译"的收益，只列能在代码里指认的四条：
 
-- 类型安全：`UefiBootShim` 与 `OpenSbiBootShim` 是两个不同的类型，在 riscv64 上写 `UefiBootShim::prepare_boot` 是编译错误，而不是"运行时发现走错了分支"。
-- 封装：每个固件的实现是一个整体，不能把 `uefi_helpers::build_memmap` 与 `opensbi_helpers::alloc_root_page` 混着调——它们不在同一个 impl 里，混合调用需要显式指名两个模块。
-- 可测试性：`os/boot-shim/src/loader.rs` 的 tests 里有一个 `MockLoader`（内存表实现），它证明 `FileLoader` 可以被替换；`os/boot-shim/src/loader.rs` 的 tests 里 `MockLoader` 就是 `FileLoader` 的一个内存表实现，装载逻辑的全部单元测试都跑在它上面。
-- 条件编译的落点收敛：与 feature 有关的 `cfg` 属性只出现在 `lib.rs` 的模块与再导出声明处（口径：`grep -c 'cfg(feature' os/boot-shim/src/lib.rs` 计三处，另有 1 处 `cfg(all(feature = "opensbi", not(feature = "uefi")))`，合计四条），业务逻辑里没有条件编译。
+- **入口与形状统一**：`trait BootShim` 只有一个方法 `prepare_boot(bump_pages)`（`os/libs/minix-boot/src/boot_shim.rs:trait BootShim`），两种固件都返回同一个 `BootPrepareResult`（`kernel_info`、`root_page`、`bump_base`、`bump_end`），而这些类型住在第三方 `minix-boot`（为什么必须住在第三方，§3.3 讲）。于是交接与自举那几步不必为两种固件各写一套，新增实现也照同一个入口名与签名写。
+- **可测试性**：`FileLoader` 同样是 trait——`os/boot-shim/src/loader.rs` 的 tests 里有一个内存表实现 `MockLoader`（`:339` 定义、`:352` 实现该 trait、`:401` 与 `:407` 在用），装载逻辑的全部单元测试都跑在它上面。
+- **条件编译的落点收敛**：与 feature 有关的 `cfg` 属性只出现在 `lib.rs` 的模块与再导出声明处（口径：`grep -c 'cfg(feature' os/boot-shim/src/lib.rs` 计三处，另有 1 处 `cfg(all(feature = "opensbi", not(feature = "uefi")))`，合计四条），业务逻辑里没有条件编译。
+- **boot-shim 是一个独立可执行体**：换一种固件形态时，改动落在 boot-shim 侧的一个新 `impl BootShim for …`，`kernel.elf` 不必重新构建（内核与 boot-shim 分属 `os/kernel-image` 与 `os/boot-shim` 两个产物，这条分界的后果在 §3.9 与 §4.8）。边界要说准：boot-shim 屏蔽的是**固件差异**，板级差异还会落到内核侧的平台发现（`os/arch/src/arch/boot.rs`），不能把它说成"新板子只需写 boot-shim"。
+
+这里故意不列"类型安全"与"封装"——它们常被当成本 trait 的优点，其实来自 feature 门控：`uefi_helpers` 与 `opensbi_helpers` 两个模块各由 `os/boot-shim/src/lib.rs` 的 `#[cfg(feature = ...)]` 门控，feature 关掉的构建里另一个类型根本不存在，**纯 feature gate 同样会在编译期挡住写错的固件名**，"否则要等运行时才发现走错分支"这个对手并不存在。实况还相反：调用点仍按具体类型写，`os/boot-shim/src/main.rs:61` 就是 `UefiBootShim::prepare_boot(1024)`。
 
 否决的方案：
 
 | 方案 | 否决理由 |
 |---|---|
 | 把引导逻辑做成 kernel 内部的一个模块 | 内核会永久依赖 UEFI crate（`uefi`），而它没有 riscv64 目标；内核的依赖面被引导需求污染 |
-| 只做 feature gate，不定义 trait | 调用方直接依赖具体函数名，新增一种固件时没有任何编译期检查保证新实现补齐了同样的步骤；也无法在宿主上用一个假实现验证上层逻辑 |
+| 只做 feature gate，不定义 trait | 调用方直接依赖具体函数名，新增一种固件时没人强制它交出**同名同签名的入口与同一个返回形状**（`trait BootShim` 立的正是这条契约：实现它就必须提供 `prepare_boot`）；宿主侧也难以用一个假实现替换固件来测上层逻辑 |
 | 业务代码里散落 `#[cfg(uefi)]` | 加一种固件要在多处补条件编译，且每处都可能漏；`lib.rs` 里现有的 feature 门只有四条（`grep -c 'cfg(feature'` 计三处 + 一处 `cfg(all(feature = ...))`） |
 
 **把这三个数字改成由调用者传入会怎样**：把"内核物理/虚拟基址与大小"改成 `prepare_boot(kern_virt_base, kern_phys_base, kern_size, bump_pages)` 由调用者传入。这三个数字必须与内核镜像的链接布局一致，而它们现在的来源是 ELF 的 PT_LOAD 段（`loader.rs:compute_kernel_layout` 取所有 PT_LOAD 的 `min(paddr)`、`min(vaddr)`、`max(paddr+memsz)-min(paddr)`）。改成调用者传参后，写错的地方不会被 `check-layout.sh` 拦住：那个脚本校验的是**镜像自身**（首段 VMA/LMA、段间平移一致、跨距对齐），不校验调用者手里的常量。错值进入 `arch_boot_impl` 之后，Step 2 会按错误的 `kern_virt_base` 建映射，症状是开启分页后取指失败——一个"参数错了"的问题表现为"页表建错了"。
