@@ -250,6 +250,35 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十八接上 `tail` 的 obsolete 后缀单位字母与负值选项参数（改写机全形）**
+  （`2026-10-13`，`claim/TAIL-OBSOLETE-qoder` @ 基线 `6be98f777`，单域三线 commands/textfilter，无跨界）：
+  接回批次一百九十七登记的第⑥项（obsolete 后缀单位字母未建模）与第②项（`ARG` 的 `case '-'` 负值臂）——两者不是可拆的两件：
+  C `obsolete()` 改写出的选项值本身就带着原 token 的首字符（`*p++ = *argv[0]` 后再 `strcpy`），所以 `-3c` 必然变成 `-c-3`，
+  不接负值臂就只能把一个合法写法拒成 `IllegalCount("-3")`。
+  **改前现状证据**：解析半的改写段只处理 `bytes[0] == b'-' && bytes[1].is_ascii_digit()`，把 `-3c` 写成 `-n3c` 再被
+  `parse::<usize>` 拒；`minix3/usr.bin/tail/tail.c` 的 `obsolete()` 则是三段：尾随 `f`/`r` 提到最前、新的末字符按
+  `b`/`c`/`l`/数字决定单位字母（`l` 与纯数字都折成 `n`）、再把本 token 首字符插回数字前。
+  **形状**：新增 `obsolete_arg(&str) -> ObsoleteStep`（`Rewritten` / `Verbatim` / `IllegalOption` 三臂，对应 C 的改写、
+  `return`、`default:` 致命）；改写只在连续段内生效，第一个不认识的 token 使整段停扫（与 C 的 `return` 同），故
+  `tail f -3c` 里 `-3c` 原样交给选项扫描器，按集外字母 `3` 走 `case '?'` 报用法错——与 C 逐字一致，不是新发明。
+  同时接 `ARG` 的 `case '-'`：值以 `-` 开头只剥符号前缀、仍走 backward 形态（`-c -3` ≡ `-c 3`）；`+` 值维持上一轮的
+  forward 支。`+10` 这种首字符为 `+` 的 obsolete 写法也走同一台机器（改写后 `tail +10` ≡ `tail -n +10`，从第 10 行起输出）。
+  非法单位字母按 C `xerrx(1, "illegal option -- %s", *argv)` 新增 `TailError::IllegalOption`，报文引整个 token。
+  **过界自检（本笔不算扩修，是同一条留白的依赖件）**：批次一百九十七登记的①重复数字选项与③零值判据未动，仍开。
+  三件套：`cargo test -p minix-textfilter --lib` → **403 passed / 0 failed**（基线 `399`；新增四枚
+  `test_parse_tail_args_obsolete_unit_letters`、`..._obsolete_stops_at_first_non_match`、
+  `..._obsolete_illegal_unit_is_fatal`、`..._negated_value_is_backward`）；`--bin tail` → **14 passed / 0 failed** 不动；
+  负控：去掉尾随 `f`/`r` 提升→ `..._obsolete_unit_letters` FAILED；把负值臂改回不剥符号→ 四枚测同时 FAILED（含 `-3c` 与 `-5`）；
+  两处均按备份复原后复测 403/0。
+  **本轮真正挡住的两件靠非 test 构建才能发现的问题**（写下来防重踩）：一是对 `"-"` 这个单字符 token 取下标 `bytes[1]` 会越界
+  panic，只在带操作数的路径上暴露，而宿主 `--lib` 测跑的是 test 配置（`std` 在位，名字解析不会出错）——现有 `parse_tail_args(&["-"])`
+  一枚断言当场把它打成 FAILED（`index out of bounds: the len is 1 but the index is 1`），补上长度守卫并在测里钉回该形；
+  二是 `format!` 在 no_std 下需 `use alloc::format;`，`--lib` 测试绿但 `--bin tail`（非 test 配置）直接编译失败——
+  **命令面改动必跑 `cargo build --bin <cmd>` 与三架构裸机构建，不能只看宿主测试**。
+  容器 `minix-ci:1.94`（带 `-u $(id -u):$(id -g)`）`cargo check -j 1 --workspace` → Finished、0 error；
+  三架构裸机 `cargo build -p minix-textfilter --bin tail --target {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf} --release`
+  → 三台均 Finished；clippy 自有文件与 base 逐条同集（`window.rs` 三枚存量，零新增）；核实日 `2026-10-13`；基线 `6be98f777`。
+
 - ✅ **批次一百九十七接上 `tail` 的前向偏移 `-n +N`/`-c +N`/`-b +N`（并把模式与计数折成一枚枚举）**
   （`2026-10-13`，`claim/TAIL-FWD-OFFSET-qoder` @ 基线 `c701bbe17`，单域三线 commands/textfilter，无跨界）：
   接回 `07-text-filter.md` tail 行与批次一百八十都显式拒绝的最后一块可离线建模的留白（`tail -n +N` 报「not modelled」）。
