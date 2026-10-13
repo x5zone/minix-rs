@@ -1719,7 +1719,7 @@ C 的负担是同一件事被拆在三个函数里：`arch_proc_reset`（清上�
 //! See `06-proc-init-boot-proc.md` §3.5 for the full rationale.
 ```
 
-（逐字引用，`os/arch/src/arch/boot.rs` 的模块文档。）
+（逐字引用，`os/arch/src/arch/boot.rs` 模块文档的"三函数收拢"段。）
 
 自由函数的理由写在它的文档里：
 
@@ -1826,7 +1826,7 @@ C 的负担是 32 位架构下的 FPU 处理：架构级池 `fpu_state[NR_PROCS]
 //! FPU policy is a `CpuContext` field that the kernel layer never reads.
 ```
 
-（逐字引用，`os/arch/src/arch/boot.rs` 的模块文档。）
+（逐字引用，`os/arch/src/arch/boot.rs` 模块文档的 FPU 小节。）
 
 三个架构的策略字段形状不同，各自表达"FP 指令第一次执行时会不会陷入"：
 
@@ -1974,7 +1974,7 @@ pub(crate) struct SyncUnsafeCell<T: ?Sized> {
                 }
 ```
 
-（逐字引用，`os/kernel/src/lib.rs:init_proc_and_boot` 的生产分支。）
+（逐字引用，`os/kernel/src/lib.rs:init_proc_and_boot` 生产分支的排除集段。）
 
 数组长度是 `NR_BOOT_MODULES + 1`：1 个内核镜像区间加 12 个模块区间。`push_exclusion` 在越界时 `assert`——不是"丢弃多的条目"，因为排除集少一项会让 VM 的段帧与某个已占用区间重叠（§4.7 会讲后果）。
 
