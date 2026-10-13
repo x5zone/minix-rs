@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百二十五把 `factor` 的取值与诊断面按 C 坐实（前导空白、符号、三句拒绝、空 optstring 的 usage）**
+  （`2026-10-14`，`claim/FACTOR-ERRX-qoder` @ 基线 `249d146a0`，单域三线 commands/games/stdio-games，无跨界）：
+  接回批次二百二十四登记①。**原状**：旧壳把每行去掉换行后丢给 `parse_value`（只收纯数字），
+  失败就静默退 1——于是缩进的值被当非法、`0`/`1` 打成 `1:` 且退 0、负数与非法格式都没有报文。
+  C 的真相是三处不同来路的句子加一个空 optstring：`pr_fact` 的防火墙管 0 与 1（`factor.c:218-219`）；
+  以 `-` 开头的**操作数**因 C 的一句话滑差也答同一句（`:173-174`）；标准输入那条腿在空白扫描之后另有
+  `negative numbers aren't permitted.`（`:166-168`）；纯空白行静默继续（`:163-165`）；`getopt(argc, argv, "")`
+  使任何 `-x` 落到 `case '?'`，而 `usage()` 以状态 **0** 退出（`:147-152`、`:266-270`）。判类 P0-code-bug。
+  **怎么修**：把判定全部放进决定半——新增 `Verdict`（`Value`/`Skip`/`NotPermitted`/`Negative`/`Illegal`）
+  与 `verdict(word, from_stdin)`，逐字复刻 `BN_dec2bn` 的 `isblank` 扫描、可选符号、数字后只能遇到
+  行末或换行（`:119-128`）；执行半只负责把句子按 C 的 `errx` 形状写到 stderr（`factor: ` + 报文 + 换行）
+  并退出，`usage()` 按 C 退 0。**删掉 `parse_value`**（被 `verdict` 完全覆盖，留着就是死代码）。
+  **两条有意保留的差异**（写在库注释里，不隐晦）：①溢出 C 走 `err(1, "%s", str)` 带 `strerror` 后缀
+  （`:123-124`），本树无 strerror 表，因此退码同为 1 而句子按非法格式给；②那个非法格式报文在 C 的
+  标准输入分支里打的是已被 `argv += optind` 用完的 `argv[0]`（一个已失效的指针），本壳改报当前行内容。
+  另 C 对操作数只测试**首字节**是否 `-`（`:173`）而不跳空白，所以 `" -6"` 在 C 会经 `strtoul` 回环成巨大
+  无符号值；本壳两条腿都在空白扫描后判符号，因此给报文——这一条也写进了库注释。
+  **取证**：`tests/factor_face.rs` 从三枚扩到八枚（新增 ≤ 1 停止整轮、缩进值可解、两句负数报按来路分、
+  拖尾垃圾点名报非法格式、`-x` 报 usage 且退 0）；库内新增两枚 `verdict` 测并删 `test_values_parse`。
+  三件套：`cargo test -p minix-stdio-games` → **13 个测试目标全 ok、合计 128 passed、零 FAILED**（基线 13 目标 /
+  122 passed；+2 库测、+5 端到端测）；`--lib` → 54/0；`--lib factor::` → 6/0；`--test factor_face` → 8/0；
+  三架构 `--bins` 三台零 error；容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、
+  容器内本包 13 目标 128/0；clippy 触及文件零新增（仅余 `bin/arithmetic.rs` 一条存量）；
+  `rustfmt --edition 2024 --check` 零漂移；`tools/pattern-gate.sh --diff` PASS=17 FAIL=0；
+  `tools/doc-style-lint.sh --diff` error 0；测试名逐枚 grep 存在（§5 清单已同步）；核实日 `2026-10-14`；
+  基线 `249d146a0`。
+  **十枚变异负控**（`--lib` 与 `--test` 分两次调用、复位断言 md5）：空白行不再跳过、操作数的 `-` 改答
+  另一句、防火墙去掉、拖尾垃圾接受、正号被拒、不跳前导空白、usage 改退 1、报文改打 stdout、`--` 不再
+  是结束标记、非法格式句不再点名 → 全部咬中。
+  登记不执行：①溢出那句 `err` 的 `strerror` 后缀（待同族统一的 strerror 基础件）；②真机播种与 open 腿归
+  C-57/E5；③bcd/ppt/caesar/number/pig/morse 各自的取值与诊断面尚未逐枚对 C（本轮只动 factor）；
+  ④大数概率分解（`pollard_rho`）仍在后续批。
+
 - ✅ **批次二百二十四给 stdio-games 装上真正的标准输入缝（`stdin_chunk` 双生），并用 `factor` 端到端门证明该腿可用**
   （`2026-10-14`，`claim/GAME-STDIN-LEG-qoder` @ 基线 `55e979a82`，单域三线 commands/games/stdio-games，无跨界）：
   接回批次二百二十三登记①。**是什么**：本 crate 八个壳都用
