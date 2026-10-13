@@ -250,6 +250,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十五校正 `head -c` 的旧“报未接”标注（文档-代码同步）**
+  （`2026-10-13`，`claim/HEAD-DOC-qoder` @ 基线 `e797e3bfc`，文档仅改、无代码）：
+  核两半未接 vein 时发现 07-text-filter.md head 行标 `-c` 字节模式“报未接”，但 head 实已接：
+  `HeadArgs.bytecnt`、bin `head_stream` 走 `first_bytes_of` 逐字节取前 N、对位 `head.c:149-167`。
+  文档与代码不同步会误导后继轮去“实现”一个已存在能力。本笔校正为“已接（字节模式，与 -n 互斥）”。
+  三件套：grep bytecnt/first_bytes_of 于 head bin 与 window.rs 均在（非仅声明）；核实日 `2026-10-13`；基线 `e797e3bfc`。
+
 - ✅ **批次一百九十四校正 `tsort -l`/`-d` 的旧“待批”标注（文档-代码同步）**
   （`2026-10-13`，`claim/TSORT-DOC-qoder` @ 基线 `031e94b35`，文档仅改、无代码）：
   上一轮核两半未接 vein 时发现：`07-text-filter.md` tsort 行将 `-l`/`-d` 标为“待批”，会误导后继轮
