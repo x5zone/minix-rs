@@ -9,7 +9,7 @@
 | 篇 | 轮 | 基线 commit | 结果 commit | workflow | 审阅状态 | 轮次包（tmp/） |
 |---|---|---|---|---|---|---|
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 01 | `7468a9e39` | `227028e23` | v0.1 | 已审（GPT 反馈已回收，见 Round 02 §1.x） | `tmp/doc-iter/01-boot-shim-bootstrap/round-01.md` |
-| `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 02 | `227028e23` | （本轮提交后回填） | v0.2 | 待送审 | `tmp/doc-iter/01-boot-shim-bootstrap/round-02.md` |
+| `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 02 | `227028e23` | `5d0f99e69` | v0.2 | 待送审 | `tmp/doc-iter/01-boot-shim-bootstrap/round-02.md` |
 
 ## 规则变更裁决记录
 
