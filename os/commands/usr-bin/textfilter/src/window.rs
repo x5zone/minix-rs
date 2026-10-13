@@ -286,6 +286,35 @@ pub enum TailStyle {
     ReverseAll,
 }
 
+impl TailStyle {
+    /// Whether this selection prints nothing at all. C has two early exits that
+    /// both come down to "a backward count of zero selects nothing":
+    /// `forward.c`'s `RLINES`/`RBYTES` arms seek to the end of the file when
+    /// `off` is zero (and for a pipe just drain it), and `reverse.c` returns
+    /// before touching the input when `style != REVERSE && off == 0`. So
+    /// `tail -n 0`, `tail -c 0`, `tail -b 0` and the folded `tail -r -n +1` all
+    /// print nothing while still exiting successfully — and none of them is the
+    /// `REVERSE` shape, which prints the whole file bottom-up.
+    pub fn selects_nothing(self) -> bool {
+        matches!(
+            self,
+            TailStyle::LastLines { off: 0 }
+                | TailStyle::LastBytes { off: 0 }
+                | TailStyle::ReverseLines { off: 0 }
+                | TailStyle::ReverseBytes { off: 0 }
+        )
+    }
+
+    /// Whether this selection is over the fixed-capacity ring's declared limit.
+    /// Only `LastLines` with a non-zero count is backed by the ring: C's
+    /// `forward()` + `RLINES` seeks to the end when `off` is zero (`forward.c`),
+    /// the reverse shapes walk the file with `mmap` (`reverse.c`), and the two
+    /// skip shapes stream past `off` bytes or newlines without buffering.
+    pub fn over_ring_cap(self) -> bool {
+        matches!(self, TailStyle::LastLines { off } if off != 0 && TailWindow::new(off).is_err())
+    }
+}
+
 /// `tail` argument-parsing failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TailError {
@@ -294,8 +323,10 @@ pub enum TailError {
     Usage,
     /// `-f`/`-F` follow mode — not modelled (line-based ring, forward only).
     NotModelledFollow,
-    /// A `-b`/`-c`/`-n` count that is not a decimal integer, or a zero byte or
-    /// block count (C `strtol` reject, `tail.c:88-90`); carries the text.
+    /// A `-b`/`-c`/`-n` count that is not a decimal integer (C `ARG`'s `*p` test
+    /// on the leftover of `strtoll`, `tail.c:89-90`); carries the text. A zero
+    /// count is *not* this error: C accepts it and selects nothing (see
+    /// [`TailStyle::selects_nothing`]).
     IllegalCount(String),
     /// An old-style `-<digit>…` token whose trailing unit letter is none of
     /// `b`/`c`/`l`/digit — C `obsolete()`'s `default:` fatal arm
@@ -505,9 +536,9 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                         let parsed = digits
                             .parse::<usize>()
                             .map_err(|_| TailError::IllegalCount(value.clone()))?;
-                        if !forward && matches!(letter, b'c' | b'b') && parsed == 0 {
-                            return Err(TailError::IllegalCount(value));
-                        }
+                        // C `ARG` does not reject zero: `off = 0 * units` stays
+                        // zero and the style is set anyway, which is the
+                        // "selects nothing" shape of [`TailStyle::selects_nothing`].
                         let mut off = parsed.saturating_mul(units);
                         if forward && off != 0 {
                             off -= units;
@@ -801,10 +832,54 @@ mod tests {
             parse_tail_args(&["-n", "x"]).err(),
             Some(TailError::IllegalCount(String::from("x")))
         );
+        // C `ARG` does not reject a zero count — it selects nothing. Refusing
+        // `-c 0`/`-b 0` as `illegal offset` is not C behavior.
         assert_eq!(
-            parse_tail_args(&["-c", "0"]).err(),
-            Some(TailError::IllegalCount(String::from("0")))
+            parse_tail_args(&["-c", "0"]).unwrap().style,
+            TailStyle::LastBytes { off: 0 }
         );
+        assert_eq!(
+            parse_tail_args(&["-b", "0"]).unwrap().style,
+            TailStyle::LastBytes { off: 0 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-n", "0"]).unwrap().style,
+            TailStyle::LastLines { off: 0 }
+        );
+    }
+
+    #[test]
+    fn test_tail_style_selects_nothing_covers_the_zero_arms() {
+        // C's two early exits: `forward.c` seeks to the end for `RLINES`/`RBYTES`
+        // with `off == 0`, `reverse.c` returns for any non-`REVERSE` style with
+        // `off == 0`.
+        assert!(TailStyle::LastLines { off: 0 }.selects_nothing());
+        assert!(TailStyle::LastBytes { off: 0 }.selects_nothing());
+        assert!(TailStyle::ReverseLines { off: 0 }.selects_nothing());
+        assert!(TailStyle::ReverseBytes { off: 0 }.selects_nothing());
+        // Bare `-r` is `REVERSE`: it prints the whole file, and a forward offset
+        // of `+1` is `off == 0` in the *skip* sense — everything after byte/line
+        // one, i.e. the whole file.
+        assert!(!TailStyle::ReverseAll.selects_nothing());
+        assert!(!TailStyle::SkipLines { off: 0 }.selects_nothing());
+        assert!(!TailStyle::SkipBytes { off: 0 }.selects_nothing());
+        assert!(!TailStyle::LastLines { off: 10 }.selects_nothing());
+        assert!(!TailStyle::ReverseBytes { off: 8 }.selects_nothing());
+    }
+
+    #[test]
+    fn test_tail_style_ring_cap_applies_only_to_the_line_walk() {
+        // The ring keeps at most 32 borrowed lines and rejects 0; that limit is
+        // this shape's business only — `tail -n 0` is C's "seek to the end and
+        // print nothing", not a rejected count.
+        assert!(!TailStyle::LastLines { off: 0 }.over_ring_cap());
+        assert!(!TailStyle::LastLines { off: 32 }.over_ring_cap());
+        assert!(TailStyle::LastLines { off: 33 }.over_ring_cap());
+        assert!(!TailStyle::SkipLines { off: 1000 }.over_ring_cap());
+        assert!(!TailStyle::LastBytes { off: 0 }.over_ring_cap());
+        assert!(!TailStyle::ReverseLines { off: 0 }.over_ring_cap());
+        assert!(!TailStyle::ReverseLines { off: 100 }.over_ring_cap());
+        assert!(!TailStyle::ReverseAll.over_ring_cap());
     }
 
     #[test]

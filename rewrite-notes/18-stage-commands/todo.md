@@ -250,6 +250,29 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百把 `tail` 的零计数改成 C 的「选出空集」而不是拒错**
+  （`2026-10-13`，`claim/TAIL-ZERO-QOFF-qoder` @ 基线 `e3bbe7d95`，单域三线 commands/textfilter，无跨界）：
+  接回批次一百九十七登记的③。改前证据：`grep -n "parsed == 0" os/commands/usr-bin/textfilter/src/window.rs` 命中一臂
+  `if !forward && matches!(letter, b'c' | b'b') && parsed == 0 { return Err(IllegalCount) }`，而 `tail -n 0` 也会走
+  `TailWindow::new(0)` 退 1。C 真源不拒零：`ARG` 的第一句只查「是否已有数字选项」，第二句只查 `strtoll` 留下的尾随字符
+  （`*p`），零照常乘、照常赋给 `off`；`minix3/usr.bin/tail/forward.c` 的 `RLINES` 在 `!off` 时 `fseek(fp, 0, SEEK_END)`、
+  `RBYTES` 在 `st_size >= off` 下 `fseeko(fp, -off, SEEK_END)`，两者都是「位置到档尾然后往后打印」——于是什么也不输出；
+  非普通档那一支 `while (getc(fp) != EOF);` 把输入喝完同样不输出；`reverse.c:79-80` 对非 `REVERSE` 且 `off == 0` 直接返回。
+  退码都是成功（除非写标准输出失败）。
+  **形状**：解析半去掉零拒臂（`IllegalCount` 现在只表「不是十进制」，其文档注释同批改准），新增两个带测的谓词——
+  `TailStyle::selects_nothing`（四个零形：`LastLines{0}`/`LastBytes{0}`/`ReverseLines{0}`/`ReverseBytes{0}`）与
+  `TailStyle::over_ring_cap`（只有非零的 `LastLines` 才受三十二行封顶约束）；执行半进门先查 `selects_nothing` 直接返回，
+  封顶守卫改成读 `over_ring_cap`，不再在薄壳里拼 `matches!` 条件——这样两件事都有宿主可测的落点，而不是只活在跳不到的代码里。
+  **语义后果**：`tail -c 0`、`tail -b 0` 从「illegal offset -- 0」退 1 变成不输出退 0；`tail -n 0` 同样从不输出变不输出（但不再退 1）；
+  三十二行封顶对 `tail -n +40`、字节与反序形的误伤一并消除（那些形本来就不走行窗）。
+  三件套：`cargo test -p minix-textfilter --lib` → **407 passed / 0 failed**（基线 `405`；新增
+  `test_tail_style_selects_nothing_covers_the_zero_arms` 与 `test_tail_style_ring_cap_applies_only_to_the_line_walk`，
+  并把 `-c 0` 的断言从拒错改成 `LastBytes { off: 0 }`，补 `-b 0`/`-n 0` 两钉）；`--bin tail` → **14 / 0** 不动；
+  三枚变异负控各让对应测翻红：恢复零值拒臂 → `test_parse_tail_args_faithful_getopt` FAILED；封顶守卫去掉 `off != 0` →
+  封顶测 FAILED；`selects_nothing` 去掉两个反序零臂 → 空集测 FAILED；均按备份复原后复测 407/0。
+  容器与裸机门读数见本笔提交信息；核实日 `2026-10-13`；基线 `e3bbe7d95`。
+  **仍开登记**：④ `-f`/`-F` 跟踪（需事件循环）、⑦ tail 执行半无宿主读腿（逐字对账归 `C-57`/E5 播种后）。
+
 - ✅ **批次一百九十九把 `tail` 的选项预扫描改成 C 的续扫形，并接上重复数字选项判据**
   （`2026-10-13`，`claim/TAIL-SCANARG-qoder` @ 基线 `0efc3c295`，单域三线 commands/textfilter，无跨界）：
   接回批次一百九十七登记的①（重复数字选项→用法错）。开工时另发现**批次一百九十八自己留下的形状错**：那里的
