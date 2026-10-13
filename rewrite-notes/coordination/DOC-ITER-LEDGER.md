@@ -11,7 +11,7 @@
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 01 | `7468a9e39` | `227028e23` | v0.1 | 已审（GPT 反馈已回收，见 Round 02 §1.x） | `tmp/doc-iter/01-boot-shim-bootstrap/round-01.md` |
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 02 | `227028e23` | `5d0f99e69` | v0.2 | 已审（反馈回收进 Round 03） | `tmp/doc-iter/01-boot-shim-bootstrap/round-02.md` |
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 03 | `5d0f99e69` | `f7a50edc5` | v0.3 | 已审（反馈回收进 Round 04） | `tmp/doc-iter/01-boot-shim-bootstrap/round-03.md` |
-| `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 04 | `480b09fa4` | （本轮提交后回填） | v0.4 | 待送审 | `tmp/doc-iter/01-boot-shim-bootstrap/round-04.md`（含缺陷闭环台账 `defect-ledger.md`） |
+| `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 04 | `480b09fa4` | `4942c40f7` | v0.4 | 待送审 | `tmp/doc-iter/01-boot-shim-bootstrap/round-04.md`（含缺陷闭环台账 `defect-ledger.md`） |
 
 ## 规则变更裁决记录
 
