@@ -71,19 +71,87 @@ fn standard_input_supplies_one_value_per_line_and_matches_the_operand_run() {
 }
 
 #[test]
-fn an_unterminated_last_line_is_still_a_value_and_blank_lines_are_skipped() {
-    // C's `fgets` returns the final fragment (it is not an empty read), and an empty line
-    // is dropped by the leading-blank scan that finds `\n` right away (`:163-166`).
+fn an_unterminated_last_line_is_still_a_value() {
+    // C's `fgets` returns the final fragment because it is not an empty read (`:156-161`),
+    // and `BN_dec2bn` then finds the string end after the digits (`:119-128`).
     let (tail, status, err) = run(&[], b"6");
     assert_eq!(status, 0, "stderr was {err:?}");
     assert_eq!(tail, "6: 2 3\n", "the last line needs no newline");
-    let (blanks, status, _) = run(&[], b"\n\n");
-    assert_eq!(
-        (blanks.as_str(), status),
-        ("", 0),
-        "empty lines produce nothing at all"
-    );
-    // Mixed: blanks in front and in the middle do not shift the value lines.
+    // Blank lines in front of and between values do not shift the value lines.
     let (mixed, _, _) = run(&[], b"\n6\n\n8\n");
     assert_eq!(mixed, "6: 2 3\n8: 2 2 2\n");
+}
+
+#[test]
+fn a_value_below_two_stops_the_run_with_c_sentence_on_stderr() {
+    // `pr_fact` opens with the firewall and leaves through `errx` (`factor.c:218-219`), so
+    // what was printed before it stays out and nothing after it is attempted. The status is
+    // 1 and the sentence carries the program name, which is what `errx` prefixes.
+    let (out, status, err) = run(&["6", "1", "10"], b"");
+    assert_eq!(out, "6: 2 3\n", "the run stops at the rejected value");
+    assert_eq!(status, 1);
+    assert_eq!(err, "factor: numbers <= 1 aren't permitted.\n");
+    // Zero is the same answer, on the stdin path too (`:156-171` feeding `:218-219`).
+    let (out, status, err) = run(&[], b"0\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 1, "factor: numbers <= 1 aren't permitted.\n")
+    );
+}
+
+#[test]
+fn leading_blanks_belong_to_the_number_and_a_blank_only_line_is_silent() {
+    // C scans `isblank` bytes off the front of a line and continues when the line then ends
+    // (`factor.c:163-165`), and `strtoul` skips the same set, so an indented value parses.
+    let (out, status, err) = run(&[], b"  6\n   \n8\n");
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(out, "6: 2 3\n8: 2 2 2\n");
+    // A leading plus sign is part of C's number as well (`:119-128`).
+    let (plus, _, _) = run(&["+12"], b"");
+    assert_eq!(plus, "12: 2 2 3\n");
+}
+
+#[test]
+fn the_two_minus_sentences_depend_on_which_loop_saw_the_value() {
+    // A `-` on a stdin line is the dedicated check after the blank scan (`factor.c:166-168`),
+    // while an operand that starts with `-` answers with the `numbers <= 1` sentence — C's
+    // own wording slip (`:173-174`). A lone `-` is an operand, not an option.
+    let (out, status, err) = run(&[], b"-6\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 1, "factor: negative numbers aren't permitted.\n")
+    );
+    let (out, status, err) = run(&["-"], b"");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 1, "factor: numbers <= 1 aren't permitted.\n")
+    );
+}
+
+#[test]
+fn trailing_junk_is_reported_as_an_illegal_numeric_format() {
+    // `BN_dec2bn` calls the value valid only when the parse stopped at the end or at a
+    // newline (`factor.c:119-128`); anything else prints C's sentence with the operand named
+    // (`:177`). (C's stdin branch passes a spent `argv[0]` there; this shell names the line,
+    // which is declared in the library's own documentation.)
+    let (out, status, err) = run(&["12x"], b"");
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "factor: 12x: illegal numeric format.\n");
+    let (junk, _, _) = run(&[], b"6\n12x\n");
+    assert_eq!(junk, "6: 2 3\n", "the line before the bad one still prints");
+}
+
+#[test]
+fn an_option_like_argument_answers_the_usage_line_and_leaves_with_zero() {
+    // The optstring is empty (`factor.c:147`), so any `-x` falls into `case '?'` and reaches
+    // `usage()`, which prints to standard error and exits **0** (`:266-270`). `--` ends the
+    // scan without becoming an operand, and a lone `-` is an operand rather than an option.
+    let (out, status, err) = run(&["-x"], b"");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 0, "usage: factor [value ...]\n")
+    );
+    let (after, status, err) = run(&["--", "6"], b"");
+    assert_eq!((after.as_str(), status, err.as_str()), ("6: 2 3\n", 0, ""));
 }
