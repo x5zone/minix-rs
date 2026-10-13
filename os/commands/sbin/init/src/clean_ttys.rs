@@ -114,7 +114,7 @@ pub fn clean_ttys(
 mod tests {
     use super::*;
     use crate::host::ScriptHost;
-    use minix_sys::{Errno, Pid};
+    use minix_sys::Pid;
     use crate::session::build_session;
     use crate::session_db::SessionMapDb;
 
