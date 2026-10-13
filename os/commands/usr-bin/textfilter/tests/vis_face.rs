@@ -133,11 +133,11 @@ fn operands_are_encoded_into_one_stream_and_a_bad_one_only_warns() {
 
 #[test]
 fn unmodelled_letters_are_refused_not_ignored() {
-    // The letters left in the deciding half are `-d -e -F -f -h -M -m -s -t -w`;
+    // The letters left in the deciding half are `-f -F -h -M -m -N -S -s -t -w`;
     // silently ignoring any of them would print an encoding the user did not ask
-    // for. (`-d` is C's debug counter, compiled out of that build, so C rejects
-    // it too — through `default:`, same verdict.)
-    for flag in ["-d", "-e", "-F", "-f", "-h", "-M", "-m", "-s", "-t", "-w"] {
+    // for. `-d` is a different case: it is C's debug counter, compiled out of that
+    // build, so C sends it to `default:` and the answer is the usage line.
+    for flag in ["-f", "-F", "-h", "-M", "-m", "-N", "-S", "-s", "-t", "-w"] {
         let (out, status, err) = run(&[flag], b"a\n");
         assert_eq!(out, Vec::<u8>::new(), "flag {flag} printed {out:?}");
         assert_eq!(status, 1, "flag {flag} stderr was {err:?}");
@@ -146,4 +146,49 @@ fn unmodelled_letters_are_refused_not_ignored() {
             "flag {flag} stderr was {err:?}"
         );
     }
+    for flag in ["-d", "-z"] {
+        let (out, status, err) = run(&[flag], b"a\n");
+        assert_eq!(out, Vec::<u8>::new());
+        assert_eq!(status, 1, "flag {flag} stderr was {err:?}");
+        assert!(
+            err.contains("Usage: vis ["),
+            "flag {flag} stderr was {err:?}"
+        );
+    }
+}
+
+#[test]
+fn letters_cluster_and_values_attach_or_follow() {
+    // `getopt("bcde:F:fhlMmNnoSstw")` clusters flags, and `e` takes the rest of its
+    // token or the following word.
+    assert_eq!(
+        run(&["-bl"], b"a\n").0,
+        run(&["-b", "-l"], b"a\n").0,
+        "-bl must equal -b -l"
+    );
+    assert_eq!(run(&["-e", "a"], b"a").0, b"\\141".to_vec());
+    assert_eq!(run(&["-ea"], b"a").0, b"\\141".to_vec());
+    // A later `-e` replaces the list, because C assigns `extra = optarg`.
+    assert_eq!(run(&["-e", "ab", "-e", "b"], b"ab").0, b"a\\142".to_vec());
+    // `--` ends option scanning, so what follows is an operand.
+    let (out, status, err) = run(&["--", "-c"], b"");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1, "stderr was {err:?}");
+    assert!(err.contains("vis: -c"), "stderr was {err:?}");
+}
+
+#[test]
+fn extra_bytes_protect_graphic_characters_and_meta_space_renders_octal() {
+    // A byte named by `-e` skips `do_svis`' pass-through, so a printable letter
+    // becomes three octal digits; under `-c` a graphic non-octal letter that is
+    // not in the skip list gets the short `\c` form instead, and a skip-list or
+    // octal-digit letter falls back to octal because `\n`-style escapes there
+    // would be ambiguous.
+    assert_eq!(run(&["-e", "x"], b"x").0, b"\\170".to_vec());
+    assert_eq!(run(&["-c", "-e", "x"], b"x").0, b"\\x".to_vec());
+    assert_eq!(run(&["-c", "-e", "n"], b"n").0, b"\\156".to_vec());
+    assert_eq!(run(&["-c", "-e", "3"], b"3").0, b"\\063".to_vec());
+    // 0xA0 is the meta-space: `(c & 0177) == ' '` sends it to the octal branch, so
+    // it never becomes a meta sequence.
+    assert_eq!(run(&[], &[0xA0]).0, b"\\240".to_vec());
 }

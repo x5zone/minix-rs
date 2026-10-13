@@ -36,6 +36,11 @@ pub struct VisOptions {
     /// `-l` (`markeol`): end each line with `\$`; the backslash itself follows
     /// `-b`, exactly as `usr.bin/vis/vis.c` writes it before the newline.
     pub mark_eol: bool,
+    /// `-e`: bytes that must be backslash-protected. C keeps this as the `extra`
+    /// string that `do_svis` searches (`lib/libc/gen/vis.c:309`:
+    /// `iswextra = wcschr(extra, c) != NULL`), and a byte it finds skips the
+    /// pass-through shortcut however printable it is.
+    pub extra: Vec<u8>,
 }
 
 /// C's `-n` shape (`vis.c`'s `if (none)` branch): copy every byte through and
@@ -73,26 +78,27 @@ pub fn encode(input: &[u8], options: &VisOptions) -> String {
 }
 
 fn encode_byte(byte: u8, next: u8, options: &VisOptions, out: &mut String) {
-    // do_svis passes graphic bytes and whitespace through unchanged
-    // (lib/libc/gen/vis.c:311-315: `!iswextra && (ISGRAPH || iswwhite)`;
-    // the command's extra list defaults to empty, so iswextra is false).
-    if byte.is_ascii_graphic() || byte == b' ' || byte == b'\t' || byte == b'\n' {
+    // `do_svis`'s one test, extra list included
+    // (lib/libc/gen/vis.c:309-315: `!iswextra && (ISGRAPH || iswwhite)`).
+    let iswextra = options.extra.contains(&byte);
+    if !iswextra && (byte.is_ascii_graphic() || byte == b' ' || byte == b'\t' || byte == b'\n') {
         out.push(byte as char);
         return;
     }
-    if options.octal {
-        push_octal(byte, out);
-        return;
-    }
+    // From here C's order is fixed: the `-c` switch first, then the octal branch
+    // that `-e` also feeds, then the M-notation fallback
+    // (`vis.c:207-287`). The old shell tested `-o` before `-c`, which flips the
+    // answer for a byte that has a named escape and both flags set.
     if options.cstyle {
         if let Some(escape) = cstyle_escape(byte, next) {
             out.push_str(&escape);
             return;
         }
     }
-    // Default M-notation (vis.c:270-292): graphic bytes pass through.
-    if (0x21..=0x7E).contains(&byte) {
-        out.push(byte as char);
+    // `(byte & 0o177) == b' '` is C's meta-space case: 0xA0 renders as `\240`
+    // rather than as a meta sequence (`vis.c:266-271`).
+    if iswextra || (byte & 0o177) == b' ' || options.octal {
+        push_octal(byte, out);
         return;
     }
     if !options.no_slash {
@@ -308,6 +314,29 @@ pub fn decode(input: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extra_bytes_skip_the_pass_through_shortcut() {
+        // `do_svis` only skips its first test for a byte the `extra` list names
+        // (lib/libc/gen/vis.c:309-315), so a printable letter escapes and the
+        // others stay as they were.
+        let options = VisOptions {
+            extra: vec![b'x'],
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"axy", &options), "a\\170y");
+        // With `-c`, C's switch runs first, so a graphic non-octal non-skip letter
+        // takes the short form instead of the octal one.
+        let cstyle = VisOptions {
+            cstyle: true,
+            extra: vec![b'x'],
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"xy", &cstyle), "\\xy");
+        // C's meta-space rule: `(c & 0177) == ' '` sends 0xA0 to octal, so it
+        // never renders as a meta sequence.
+        assert_eq!(encode(&[0xA0], &VisOptions::default()), "\\240");
+    }
 
     #[test]
     fn test_mark_eol_writes_a_backslash_dollar_before_the_newline() {

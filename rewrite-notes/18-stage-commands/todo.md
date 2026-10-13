@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十一接上 `vis` 的 `-e extra`，并把编码分支的判定次序摆回 C**
+  （`2026-10-13`，`claim/VIS-EXTRA-qoder` @ 基线 `480b09fa4`，单域三线 commands/textfilter，无跨界）：
+  旗标族第 2 片（顺带吃掉第 3 片里的选项面部分）。三件事：
+  **① `-e extra`**：`do_svis` 的开首透传原本是 `!iswextra && (ISGRAPH || iswwhite)`
+  （`lib/libc/gen/vis.c:309-315`），本壳先前没有 `iswextra` 这个变量（extra 表恒空，写死了等价于
+  `ISGRAPH || iswwhite`）。现在 `VisOptions` 带一个 `extra: Vec<u8>`，命中的字节不走透传、进八进制支路，
+  所以 `-e x` 会把可打印的 `x` 写成 `\170`；带 `-c` 时 C 的 switch 先跑，`x` 取短形式 `\x`，而
+  跳过表里的 `n` 与八进制数字 `3` 落回 `\156`/`\063`（那里 `\n` 式的转义会有歧义）。
+  **② 判定次序**：`encode_byte` 之前是先查 `-o` 再走 `-c`，C 是 `vis.c:207-271` 的先 CSTYLE 后八进制；
+  对同时有命名转义且 `-o -c` 并用的字节（如 0x07），两者给出 `\007` 与 `\a` 两种答案——本轮改成与 C 同序。
+  **③ 元空格规则**：C 的 `(c & 0177) == ' '` 把 0xA0 送进八进制支路，所以它输出 `\240` 而不是元序列；
+  本壳之前会按 `M` + 脱字符渲染它。
+  **选项面也改成了 getopt 的形**（第 3 片里剩下的只有引擎侧字母）：字母聚簇（`-bl` ≡ `-b -l`）、
+  `-e` 值附于本 token 或取下一词、后来的 `-e` 整串替换（C 是 `extra = optarg` 赋值）、`--` 结束扫描；
+  并把 `-d`/集外字母的报文改成 C 的 usage 行（大写 U、退 1），与"本构建未建模"那类区分开——
+  前者 C 自己就报 usage（`-d` 在非 `DEBUG` 构建里被编译掉、落到 `default:`），后者是诚实的本壳限制。
+  三件套：`cargo test -p minix-textfilter --lib` → **411 passed / 0 failed**（基线 410，新增
+  `test_extra_bytes_skip_the_pass_through_shortcut`）；`--test vis_face` → **9 passed / 0 failed**（基线 7，新增
+  `letters_cluster_and_values_attach_or_follow` 与
+  `extra_bytes_protect_graphic_characters_and_meta_space_renders_octal`）；整包 47 个测试目标全 ok、零 FAILED；
+  两枚变异负控各让对应测翻红：把八进制支路挪回 CSTYLE 之前 → 库内与端到端两处 extra 测同时 FAILED；
+  让 `iswextra` 恒为假 → 端到端两枚测 FAILED；均反向替换 + `grep` 验证后复测 411/0 与 9/0。
+  **又踩一次同一类坑并当场抓住**：`USAGE.to_string()` 在宿主测试里绿、三架构裸机构建报
+  `no method named to_string`（`no_std` 下 `ToString` 不在作用域），改成 `String::from(USAGE)` 后三台 0 error
+  ——再次印证命令面改动必须跑目标构建，光看宿主测试会漏。
+  容器 `minix-ci:1.94`（`-u`）`cargo check -j 1 --workspace` → Finished 0 error，容器内 47 个测试目标全 ok；
+  clippy 指向 `bin/vis.rs` 的告警计数 0（中途一处 `string_slice_as_bytes` 按建议改成先取字节再切）；
+  `rustfmt --edition 2024 --check` 触及三文件零漂移；核实日 `2026-10-13`；基线 `480b09fa4`。
+  **登记不执行（第 3、4 片）**：引擎侧 `VIS_SAFE`(`-s`)/`VIS_TAB`(`-t`)/`VIS_WHITE`(`-w`)/`VIS_META`(`-M`)/
+  `VIS_SHELL`(`-S`)/`VIS_NOLOCALE`(`-N`)/`-h`/`-m` HTTP 与 MIME 编解码、`-f`/`-F` 行折叠与 `col` 状态机；
+  解码侧 `strunvisx` 的 `-e`/`-H` 对应旗标（unvis 那行）；多字节宽字符路径（本壳按字节处理，
+  UTF-8 输入下 C 会按整字符编码）。
+
 - ✅ **批次二百一十接上 `vis` 的 `-b`/`-l`/`-n` 三个旗标（并纠正一处字母错映射）+ `vis_face` 端到端门**
   （`2026-10-13`，`claim/VIS-FLAGS-1-qoder` @ 基线 `3a4cb032d`，单域三线 commands/textfilter，无跨界）：
   旗标族两片中的第 1 片。开工前 grep `bin/vis.rs` 发现的不只是缺口，而是一个**事实错**：本壳把“去反斜杠”
