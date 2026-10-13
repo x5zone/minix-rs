@@ -250,6 +250,22 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十三接上 `split -n`（按块数切）**
+  （`2026-10-13`，`claim/SPLIT-N-qoder` @ 基线 `19fac68c2`，单域三线 commands/textfilter，无跨界）：
+  接回批次一百九十一登记的 `-n` Unmodelled 留白（split 三模式至此集齐）。C `-n` 走 `split3(chunks)`
+  →`split1(size/chunks, chunks)`：前 chunks-1 块各 size/chunks 字节、末块吸收余数（因 maxcnt 封顶不再
+  开新文件）；chunks>size 报“can't split into more than %d files”。决定半 `split.rs` 新增 `chunks_n
+  (data, n) -> Option<Vec<&[u8]>>`（None 当 n=0 或 n>len）；`SplitArgs` 新增 `chunk_count`、`SplitError`
+  新增 `IllegalChunkCount`；parse 把 `n` 从 Unmodelled 拆出（全数字非零、无 k/m 尾，对位 split.c:123-127）
+  并把三模式互斥扩为 l/b/n 两两（set&&（byte||chunk）或 byte&&chunk → Usage）。执行半 `bin/split.rs`：
+  chunk_count 优先于行模式、在 byte_size 后，走 `chunks_n` 逐块原样写，None 时报 too-many-files；
+  `arg_error` 加 illegal number of chunks 臂。新增 2 测（chunks_n 定长/末块余数/n==len/越界 + `-n` 解析与三模式互斥）。
+  三件套：`cargo test -p minix-textfilter --lib` → **396/0**（既有 394 + 新 2）；`--bin split` → 4/0；
+  freestanding `--target x86_64-unknown-none --release` Finished；clippy 触及文件零新增告警（bin/split.rs
+  “Eof variant never constructed” 基线存量）；`rustfmt --edition 2024 --check` split.rs 零漂移（基线即净、
+  新增行经 rustfmt 归净）；核实日 `2026-10-13`；基线 `19fac68c2`。真机腿：同 -b（写盘受 E5），本笔纯函数已测。
+  split 三模式（l/b/n）集齐。
+
 - ✅ **批次一百九十二接上 `grep -h`/`-H`（文件名头抑制/强制）**
   （`2026-10-13`，`claim/GREP-HH-qoder` @ 基线 `141b7832f`，单域三线 commands/regex，无跨界）：
   C `grep.c:69,77,493-494` 支持 -h（从不印名头）/-H（即便单操作数也印），Rust 决定半无此字段、

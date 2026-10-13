@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, write};
-use minix_textfilter::split::{SplitError, chunk_bytes, chunks, parse_split_args, suffix};
+use minix_textfilter::split::{SplitError, chunk_bytes, chunks, chunks_n, parse_split_args, suffix};
 
 // Output-file create flags (`fcntl.h`), mirroring the `uudecode` precedent:
 // O_WRONLY 0x1, O_CREAT 0x200, O_TRUNC 0x400; DEFFILEMODE 0666.
@@ -44,6 +44,7 @@ fn run() -> ! {
     let lines_per_chunk = parsed.lines_per_chunk;
     let sfxlen = parsed.sfxlen;
     let byte_size = parsed.byte_size;
+    let chunk_count = parsed.chunk_count;
     let operands: Vec<&str> = parsed.operands;
     // `split.c:143`: the second operand is the output prefix, default "x".
     let prefix = operands.get(1).copied().unwrap_or("x");
@@ -81,6 +82,33 @@ fn run() -> ! {
             };
             if create_write(&path, chunk).is_err() {
                 support::warn(format!("split: {path}\n").as_bytes());
+                support::terminate(1);
+            }
+        }
+        support::terminate(0);
+    }
+    // `-n`: exactly `n` byte chunks (`split3`); the last absorbs the remainder.
+    // `chunks_n` returns `None` when `n > input.len()` (C "can't split into
+    // more than %d files") or the byte size is zero.
+    if let Some(n) = chunk_count {
+        match chunks_n(&input, n) {
+            Some(chunks) => {
+                for (index, chunk) in chunks.iter().enumerate() {
+                    let path = match out_path(prefix, index, sfxlen) {
+                        Some(path) => path,
+                        None => {
+                            support::warn(b"split: suffixes exhausted\n");
+                            support::terminate(1);
+                        }
+                    };
+                    if create_write(&path, chunk).is_err() {
+                        support::warn(format!("split: {path}\n").as_bytes());
+                        support::terminate(1);
+                    }
+                }
+            }
+            None => {
+                support::warn(b"split: can't split into that many files\n");
                 support::terminate(1);
             }
         }
@@ -199,6 +227,10 @@ fn arg_error(e: SplitError<'_>) -> ! {
         }
         SplitError::IllegalByteCount(v) => {
             support::warn(format!("split: {v}: illegal byte count.\n").as_bytes());
+            support::terminate(1);
+        }
+        SplitError::IllegalChunkCount(v) => {
+            support::warn(format!("split: {v}: illegal number of chunks.\n").as_bytes());
             support::terminate(1);
         }
         SplitError::IllegalSuffixLength(v) => {

@@ -7,9 +7,9 @@
 //! split.c:61). This module computes the chunks (which lines go to
 //! which chunk) and the suffix sequence; the doing half's file writes
 //! wait for the gated create/write face on the host, so the doing half
-//! can only report what it would create. The `-a` suffix-length and `-b` byte
-//! count (`split.c:99-108`) flags are wired here (`chunks` / `chunk_bytes`);
-//! `-n` chunk count (count-driven splitting) is a later batch.
+//! can only report what it would create. The `-a` suffix-length, `-b` byte
+//! count (`split.c:99-108`), and `-n` chunk-count (`split.c:123-127`) flags are
+//! all wired here (`chunks` / `chunk_bytes` / `chunks_n`).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -54,6 +54,25 @@ pub fn chunk_bytes(data: &[u8], n: usize) -> Vec<&[u8]> {
     out
 }
 
+/// Splits `data` into exactly `n` byte chunks (`-n`, C `split3` → `split1
+/// (size/n, n)`): the first `n-1` chunks are `size/n` bytes and the last
+/// absorbs the remainder, so all `n` files are non-empty. `None` when `n == 0`
+/// or `n > data.len()` (C `errx("can't split into more than %d files")`).
+pub fn chunks_n(data: &[u8], n: usize) -> Option<Vec<&[u8]>> {
+    if n == 0 || n > data.len() {
+        return None;
+    }
+    let base = data.len() / n;
+    let mut out = Vec::with_capacity(n);
+    let mut cursor = 0usize;
+    for _ in 0..n - 1 {
+        out.push(&data[cursor..cursor + base]);
+        cursor += base;
+    }
+    out.push(&data[cursor..]);
+    Some(out)
+}
+
 /// The file suffix for chunk `index` (0 based) at width `width`: `width`
 /// lowercase letters enumerating the base-26 space (`aa`..`zz` for the C
 /// default `sfxlen` 2). `None` when the sequence is exhausted (past the
@@ -84,6 +103,9 @@ pub struct SplitArgs<'a> {
     /// `-b` byte count per chunk (`bytecnt`, split.c:76); `Some` selects the
     /// byte-addressed mode over the line `lines_per_chunk` default.
     pub byte_size: Option<usize>,
+    /// `-n` chunk count (`chunks`, split.c:77); `Some` selects `split3`
+    /// (exactly this many byte chunks), mutually exclusive with `-b`/`-l`.
+    pub chunk_count: Option<usize>,
     /// `-a` suffix width (`sfxlen`, split.c:61 default 2).
     pub sfxlen: usize,
     pub operands: Vec<&'a str>,
@@ -102,6 +124,9 @@ pub enum SplitError<'a> {
     /// A `-b` value that is not decimal (with optional `k`/`m` unit) or is
     /// zero: C `errx(1, "%s: illegal byte count.", …)` (split.c:99-108).
     IllegalByteCount(&'a str),
+    /// A `-n` value that is not all-decimal or is zero: C `errx(1, "%s:
+    /// illegal number of chunks.", …)` (split.c:123-127).
+    IllegalChunkCount(&'a str),
     /// A `-a` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal suffix length.", …)` (split.c:117-121).
     IllegalSuffixLength(&'a str),
@@ -153,12 +178,13 @@ fn byte_count(v: &str) -> Option<usize> {
 /// kludge (`split.c:82-98`, applied only while the count is unset so a later
 /// `-l` still trips the `numlines != 0` usage as C does). `--` ends option
 /// scanning; a bare `-` and any non-option token are operands. `-a` sets the
-/// suffix width and `-b` the byte chunk size (attached or next word); the
-/// line/byte deciding half still reports `-n` (chunk count) as `Unmodelled`.
+/// suffix width, `-b` the byte chunk size, and `-n` the chunk count
+/// (attached or next word); the three split modes are mutually exclusive.
 pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitError<'a>> {
     let mut lines_per_chunk = DEFAULT_LINES;
     let mut sfxlen = DEFAULT_SFXLEN;
     let mut byte_size: Option<usize> = None;
+    let mut chunk_count: Option<usize> = None;
     let mut set = false;
     let mut operands: Vec<&'a str> = Vec::new();
 
@@ -247,7 +273,24 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
                         None => return Err(SplitError::IllegalByteCount(value)),
                     }
                 }
-                b'n' => return Err(SplitError::Unmodelled),
+                b'n' => {
+                    // C `case 'n'`: all-decimal, nonzero, no trailing char
+                    // (no k/m unit) — `split.c:123-127`.
+                    let rest = &tail[1..];
+                    let value = if rest.is_empty() {
+                        index += 1;
+                        match args.get(index) {
+                            Some(v) => *v,
+                            None => return Err(SplitError::Usage),
+                        }
+                    } else {
+                        rest
+                    };
+                    match line_count(value) {
+                        Some(n) => chunk_count = Some(n),
+                        None => return Err(SplitError::IllegalChunkCount(value)),
+                    }
+                }
                 _ => return Err(SplitError::Usage),
             }
             index += 1;
@@ -263,15 +306,18 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
     if operands.len() > 2 {
         return Err(SplitError::Usage);
     }
-    // C: `if (numlines == 0) numlines = DEFLINE; else if (bytecnt || chunks) usage()`
-    // — an explicit `-l` together with `-b` is the C usage (`-n` already rejected
-    // above as Unmodelled).
-    if set && byte_size.is_some() {
+    // C: `if (numlines == 0) numlines = DEFLINE; else if (bytecnt || chunks) usage()`;
+    // `if (bytecnt && chunks) usage()` — the three modes are mutually exclusive.
+    if set && (byte_size.is_some() || chunk_count.is_some()) {
+        return Err(SplitError::Usage);
+    }
+    if byte_size.is_some() && chunk_count.is_some() {
         return Err(SplitError::Usage);
     }
     Ok(SplitArgs {
         lines_per_chunk,
         byte_size,
+        chunk_count,
         sfxlen,
         operands,
     })
@@ -434,11 +480,46 @@ mod tests {
     }
 
     #[test]
-    fn parse_error_paths() {
+    fn chunks_n_makes_exactly_n_with_remainder_in_last() {
+        let data = *b"abcdefghij"; // 10 bytes
+        let c = chunks_n(&data, 3).unwrap();
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0], b"abc"); // 10/3 = 3
+        assert_eq!(c[1], b"def");
+        assert_eq!(c[2], b"ghij"); // 末段吸收余数
+        // n == len：逐字节。
         assert_eq!(
-            parse_split_args(&["-n", "4"]).err(),
-            Some(SplitError::Unmodelled)
+            chunks_n(b"abc", 3).unwrap(),
+            vec![&b"a"[..], &b"b"[..], &b"c"[..]]
         );
+        // n > len → None（C "can't split into more than %d files"）。
+        assert_eq!(chunks_n(b"ab", 3), None);
+        assert_eq!(chunks_n(b"", 1), None);
+        assert_eq!(chunks_n(b"abc", 0), None);
+    }
+
+    #[test]
+    fn parse_chunk_count_minus_n() {
+        assert_eq!(parse_split_args(&["-n", "4"]).unwrap().chunk_count, Some(4));
+        assert_eq!(parse_split_args(&["-n4"]).unwrap().chunk_count, Some(4));
+        assert_eq!(parse_split_args(&["f"]).unwrap().chunk_count, None);
+        assert_eq!(
+            parse_split_args(&["-n0"]).err(),
+            Some(SplitError::IllegalChunkCount("0"))
+        );
+        // 三模式两两互斥：-n 与 -l / -b 并存均 usage。
+        assert_eq!(
+            parse_split_args(&["-l", "3", "-n", "4"]).err(),
+            Some(SplitError::Usage)
+        );
+        assert_eq!(
+            parse_split_args(&["-b", "10", "-n", "4"]).err(),
+            Some(SplitError::Usage)
+        );
+    }
+
+    #[test]
+    fn parse_error_paths() {
         assert_eq!(
             parse_split_args(&["-z", "f"]).err(),
             Some(SplitError::Usage)
