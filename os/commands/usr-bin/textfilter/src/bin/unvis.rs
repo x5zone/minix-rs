@@ -5,13 +5,14 @@
 //! gathers the flags, then drives the machine one input byte at a time and prints
 //! what comes back — the same shape as the C's `process()` loop.
 //!
-//! Three of the C's four getopt letters of `"eHhm"` are modelled: `-e`
+//! All four of the C's getopt letters of `"eHhm"` are modelled: `-e`
 //! (`VIS_NOESCAPE`) takes the backslash away as an escape introducer, `-h`
-//! (`VIS_HTTP1808`) reads `%hh`, and `-m` (`VIS_MIMESTYLE`) reads `=HH` and the
-//! soft line break (`unvis.c:59-71`). `-H` (`VIS_HTTP1866`) is the entity leg and
-//! is still rejected rather than silently ignored. Like the C, the modes are not
-//! all combinable: `unvis.c:80-89` refuses `VIS_MIMESTYLE` together with `-h`
-//! and/or `-H` before opening anything, so that error outranks an unreadable file.
+//! (`VIS_HTTP1808`) reads `%hh`, `-m` (`VIS_MIMESTYLE`) reads `=HH` and the soft
+//! line break, and `-H` (`VIS_HTTP1866`) reads the entity references `&#nn;` and
+//! `&name;` (`unvis.c:59-71`). Like the C, the modes are not all combinable:
+//! `unvis.c:80-89` refuses `VIS_MIMESTYLE` together with `-h` and/or `-H` before
+//! opening anything, so that error outranks an unreadable file, while `-h` and `-H`
+//! together are fine — both introducers are then live.
 //!
 //! With operands each is opened and decoded into one output stream; an unopenable
 //! operand warns and is skipped and the exit status still returns success — unlike
@@ -125,18 +126,15 @@ fn parse_unvis_args(argv: &[String]) -> Result<(DecodeOptions, Vec<&str>), Strin
                 b'e' => options.no_escape = true,
                 b'h' => options.http1808 = true,
                 b'm' => options.mime = true,
-                b'H' => {
-                    // Known to C, not to this decoder yet: the entity leg needs the
-                    // hundred-name table of `lib/libc/gen/unvis.c:85-196`, and
-                    // refusing it is better than printing a silent misdecode.
-                    return Err(String::from("unvis: flag -H is not modelled yet\n"));
-                }
+                b'H' => options.http1866 = true,
                 _ => return Err(String::from(USAGE)),
             }
         }
         index += 1;
     }
-    if options.mime && options.http1808 {
+    // `unvis.c:80-89` switches on the three style bits together and lists exactly
+    // the combinations that include MIME plus at least one HTTP style.
+    if options.mime && (options.http1808 || options.http1866) {
         return Err(String::from("unvis: Can't mix -m with -h and/or -H\n"));
     }
     Ok((options, operands))
