@@ -250,6 +250,20 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十二接上 `grep -h`/`-H`（文件名头抑制/强制）**
+  （`2026-10-13`，`claim/GREP-HH-qoder` @ 基线 `141b7832f`，单域三线 commands/regex，无跨界）：
+  C `grep.c:69,77,493-494` 支持 -h（从不印名头）/-H（即便单操作数也印），Rust 决定半无此字段、
+  `parse_grep_args` 遇 h/H 拒（落 `_ => Err`），执行半 `prefix_name = operands.len()>1` 无开关——
+  典型两半未接。决定半 `GrepOptions` 新增 `no_prefix`/`force_prefix` 两 bool + 纯函数
+  `prefix_shown(operand_count) = !no_prefix && (operand_count>1 || force_prefix)`（逐字对位 C：
+  suppress 条件 `hflag || (operands<=1 && !Hflag)`）；parse 接 `b'h'`/`b'H'`。执行半 `prefix_name`
+  改调 `options.prefix_shown(operands.len())`。新增 2 测（parse 置位 + prefix_shown 矩阵：默认多显/单隐、
+  -H 强制、-h 压制、-h与-H并存时-h胜）。文档同步：bin 头注 + 08 篇 §4.2 开关数、§4.5 grep 行。
+  三件套：`cargo test -p minix-regex --lib` → **37/0**（新 2）；`--bin grep` → 9/0；freestanding
+  `--target x86_64-unknown-none --release` Finished；clippy 触及文件零新增告警（bin/grep.rs
+  “items after a test module” 基线存量）；`rustfmt --edition 2024 --check` 两文件 7→7 零新增漂移；
+  核实日 `2026-10-13`；基线 `141b7832f`。真机腿：grep 读文件腿归 C-57/E5（本笔为名头输出时序，纯逻辑已宿主测）。留白：`-i`、`-r`/上下文行。
+
 - ✅ **批次一百九十一接上 `split -b`（按字节数切块）**
   （`2026-10-13`，`claim/SPLIT-B-qoder` @ 基线 `632c888d4`，单域三线 commands/textfilter，无跨界）：
   接回批次一百八十九登记的 `-b` Unmodelled 留白。决定半 `split.rs`：新增 `chunk_bytes(data, n)`

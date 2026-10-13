@@ -7,12 +7,13 @@
 //! parsed options. Supported here: `-E`/`-G`/`-F` (fixed strings through
 //! metacharacter quoting into the basic engine), `-v`, `-n`, `-c`, `-q`,
 //! `-x`, `-l`, `-w` (via [`minix_regex::pattern::Pattern::find_word`], the
-//! `grep.c:85,186` word-boundary strategy), and repeatable `-e`. The `-i`
-//! flag parses but the engine carries no case folding yet, so it is rejected
-//! with an explicit message instead of silently misbehaving (see
+//! `grep.c:85,186` word-boundary strategy), `-h`/`-H` (suppress / force the
+//! filename header), and repeatable `-e`. The `-i` flag parses but the engine
+//! carries no case folding yet, so it is rejected with an explicit message
+//! instead of silently misbehaving (see
 //! 08 §4.4). With file operands, each is opened in turn and scanned
-//! (`grep.c` `main`); the filename heads a match only when more than one
-//! operand is given, `-l` prints the name regardless (and, like C, implies
+//! (`grep.c` `main`); the filename heads a match per `GrepOptions::prefix_shown`
+//! (`grep.c:493-494`), `-l` prints the name regardless (and, like C, implies
 //! quiet: no line body), `-c` prints `file:count` when the name would show,
 //! and line numbers restart per file. With no operands grep reads stdin,
 //! labelled `(standard input)`. An unopenable operand is non-fatal: it sets
@@ -86,7 +87,7 @@ fn run() -> ! {
     // otherwise each operand is opened and scanned in turn. The filename
     // heads a match only when more than one operand is given (`argc <= 1`
     // turns the header off in C); `-l` prints the label regardless.
-    let prefix_name = operands.len() > 1;
+    let prefix_name = options.prefix_shown(operands.len());
     let mut matched_any = false;
     let mut file_error = false;
     if operands.is_empty() {

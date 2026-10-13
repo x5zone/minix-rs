@@ -51,6 +51,10 @@ pub struct GrepOptions {
     pub whole_line: bool,
     /// `-w`: the match must sit on word boundaries.
     pub word: bool,
+    /// `-h`: never print the filename header (C `hflag`).
+    pub no_prefix: bool,
+    /// `-H`: always print the filename header, even for one operand (C `Hflag`).
+    pub force_prefix: bool,
 }
 
 impl Default for GrepOptions {
@@ -65,14 +69,26 @@ impl Default for GrepOptions {
             quiet: false,
             whole_line: false,
             word: false,
+            no_prefix: false,
+            force_prefix: false,
         }
+    }
+}
+
+impl GrepOptions {
+    /// Whether the execution layer should prefix matches with the `file:`
+    /// header for `operand_count` file operands. Mirrors `grep.c:493-494`:
+    /// the header is suppressed (`hflag`) by `-h`, or by default when there
+    /// is at most one operand and `-H` was not given. Otherwise shown.
+    pub fn prefix_shown(&self, operand_count: usize) -> bool {
+        !self.no_prefix && (operand_count > 1 || self.force_prefix)
     }
 }
 
 /// Parse the words after the program name into options plus patterns.
 ///
 /// Recognised: `-E`, `-F`, `-G`, `-i`, `-v`, `-c`, `-l`, `-n`, `-q`, `-x`,
-/// `-w`, and `-e pattern` (repeatable, up to 8 patterns; a line matching
+/// `-w`, `-h`, `-H`, and `-e pattern` (repeatable, up to 8 patterns; a line matching
 /// any one of them is selected). The first non flag word is the pattern
 /// when no `-e` was given; anything after the patterns is file operands
 /// (left for the execution layer to open). A `--` word ends flag parsing.
@@ -115,6 +131,8 @@ pub fn parse_grep_args<'a>(argv: &'a [&'a str]) -> Result<GrepParse<'a>, RegexEr
                     b'q' => options.quiet = true,
                     b'x' => options.whole_line = true,
                     b'w' => options.word = true,
+                    b'h' => options.no_prefix = true,
+                    b'H' => options.force_prefix = true,
                     _ => return Err(RegexError::InvalidPattern),
                 }
             }
@@ -220,5 +238,41 @@ mod tests {
         assert_eq!(exit_code(false, false, false), 1);
         assert_eq!(exit_code(false, true, false), 2);
         assert_eq!(exit_code(false, true, true), 2);
+    }
+
+    #[test]
+    fn test_parse_filename_prefix_flags() {
+        let (opts, ..) = parse_grep_args(&["-h", "pat"]).unwrap();
+        assert!(opts.no_prefix && !opts.force_prefix);
+        let (opts, ..) = parse_grep_args(&["-H", "pat"]).unwrap();
+        assert!(opts.force_prefix && !opts.no_prefix);
+    }
+
+    #[test]
+    fn test_prefix_shown_matrix() {
+        // 默认：多操作数显名、单/零隐名（grep.c:493-494）。
+        let d = GrepOptions::default();
+        assert!(d.prefix_shown(2));
+        assert!(!d.prefix_shown(1));
+        assert!(!d.prefix_shown(0));
+        // -H：即便单操作数也显名。
+        let h = GrepOptions {
+            force_prefix: true,
+            ..Default::default()
+        };
+        assert!(h.prefix_shown(1));
+        // -h 压过一切，从不显名（C 看 !hflag）。
+        let s = GrepOptions {
+            no_prefix: true,
+            ..Default::default()
+        };
+        assert!(!s.prefix_shown(3));
+        // -h 与 -H 并存：-h 胜。
+        let both = GrepOptions {
+            no_prefix: true,
+            force_prefix: true,
+            ..Default::default()
+        };
+        assert!(!both.prefix_shown(2));
     }
 }
