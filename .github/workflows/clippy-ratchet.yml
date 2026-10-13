@@ -1,0 +1,69 @@
+name: clippy-ratchet
+
+# PD-31 采乙（`PENDING-DECISIONS-3ARCH-PARITY.md` 第十轮定稿：报告制 + 新增必须为零）
+# 的机械化件接线。机件本体 `tools/check-clippy-ratchet.sh`（按【警告计数】棘轮）
+# 与 `tools/clippy-ratchet-baseline.txt`（五元组绑定的基线，现读数 384）已落；
+# 本工作流把「超基线即红」接进持续集成——门在世界里存在但不在闸上，等于不存在
+# （pattern-gate 全量扫描此前长期处于此形态的教训，见 `rules-consistency.yml` 的注记）。
+#
+# 为什么钉工具链版本（而不是像其它作业那样用 @stable）：棘轮的基线数字是工具链相关
+# 的读数，任何一次 stable 前进都可能带来新增 lint 触发，把「机器升级」误判成
+# 「新增警告」而误红全树。基线五元组明写 rustc 1.94.1 / clippy 0.1.94
+# （与本地权威门 `minix-ci:1.94` 镜像同号），故本作业钉同一版本。
+# 升级这个 pin 是一次基线事件：必须重跑 `--update-baseline` 刷新读数与五元组，
+# 并按 `coordination/TODO-LEDGER-INDEX.md` §6 第 7 条独立成笔（三件套：可重跑的
+# 命令与读数、核实日期、当时快照提交号），不得在别的改动里顺手改数。
+#
+# 判据（工具三态）：总数 > 基线 FAIL（有新增警告）；< 基线 SHRINK（提示收紧基线）；
+# = 基线 PASS。计数不随无关行号漂移，故可安全机检；按位置的
+# `tools/clippy_base.txt` 只能人工判读，两者是互补关系（分工见工具头注）。
+#
+# 触发面取 `os/**` 全树：棘轮计数的是整个工作区每个编译单元的警告，任何 crate
+# 都可能贡献新增；基线文件与工具本体自身改动也要复跑。
+
+on:
+  push:
+    paths:
+      - 'os/**'
+      - 'tools/check-clippy-ratchet.sh'
+      - 'tools/clippy-ratchet-baseline.txt'
+      - '.github/workflows/clippy-ratchet.yml'
+  pull_request:
+    paths:
+      - 'os/**'
+      - 'tools/check-clippy-ratchet.sh'
+      - 'tools/clippy-ratchet-baseline.txt'
+      - '.github/workflows/clippy-ratchet.yml'
+  workflow_dispatch:
+
+jobs:
+  ratchet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (pinned to the baseline five-tuple)
+        uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          components: clippy
+
+      - name: 机件自检（夹具正反例矩阵，不跑真 clippy）
+        run: bash tools/check-clippy-ratchet.sh --self-test
+
+      - name: Clippy 警告计数棘轮（超基线即红）
+        # 红时要让人当场看得见报告：工具把本轮完整输出留在 /tmp 下两个文件里——
+        # 有新增警告时是 clippy-ratchet-last.log，编译失败或撞上 deny 级 lint 时
+        # 是 clippy-ratchet-last-error.log（工具本身只回放后者的前 5 条 error 行）。
+        # 两个都回放尾部，免得「有新增警告」与「树根本编不过」两种红长得一样。
+        run: |
+          bash tools/check-clippy-ratchet.sh || rc=$?
+          if [ "${rc:-0}" -ne 0 ]; then
+            for f in /tmp/clippy-ratchet-last.log /tmp/clippy-ratchet-last-error.log; do
+              if [ -f "$f" ]; then
+                echo "──── $f 尾部 120 行 ────"
+                tail -120 "$f" || true
+              fi
+            done
+            exit "${rc}"
+          fi
