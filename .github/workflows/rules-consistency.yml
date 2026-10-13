@@ -81,7 +81,7 @@ jobs:
       - name: 门自身的正反向断言
         run: bash tools/lint-review-rules.sh --self-test
 
-      - name: 门禁工具自测（文风门 / 锚点门 / 承载门 / unsafe 审计 / 模式门 / 断链门）
+      - name: 门禁工具自测（文风门 / 锚点门 / 承载门 / unsafe 审计 / 模式门 / 断链门 / clippy 棘轮）
         run: |
           bash tools/doc-style-lint.sh --self-test
           bash tools/anchor-resolve.sh --self-test
@@ -90,4 +90,5 @@ jobs:
           bash tools/anchor-migrate.sh --self-test
           bash tools/unsafe-audit.sh --self-test
           bash tools/pattern-gate.sh --self-test
+          bash tools/check-clippy-ratchet.sh --self-test
           python3 tools/notes-link-check.py --self-test
