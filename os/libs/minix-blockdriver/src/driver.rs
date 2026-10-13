@@ -8,11 +8,10 @@
 //! partition entry `partition()` in `drvlib.c`.
 
 use super::protocol::{
-    BAD_MINOR, BdevRequest, BlockDriverType, DeviceExtent, DeviceId, DeviceMinor, NO_IOCTL_HOOK,
-    NO_TRANSFER_HOOK, NOT_DISK, OpenDeviceSet, PartitionGeometry, PartitionStyle, RequestId,
-    SUCCESS, is_block_request,
+    BdevRequest, BlockDriverType, DeviceExtent, DeviceId, DeviceMinor, NO_IOCTL_HOOK,
+    NO_TRANSFER_HOOK, OpenDeviceSet, PartitionGeometry, PartitionStyle, RequestId, SUCCESS,
+    is_block_request,
 };
-use minix_types::{EINVAL, OK};
 
 /// Router classification for one incoming block message.
 ///
@@ -209,7 +208,7 @@ pub const fn needs_table_parse(style: PartitionStyle, has_part: bool) -> bool {
 mod tests {
     use super::super::protocol::{BdevRequest, BlockDriverType, DeviceMinor, RequestId};
     use super::*;
-    use minix_types::EINTR;
+    use minix_types::{EINTR, EINVAL, OK};
 
     /// Minimal disk: implements nothing, keeps C defaults.
     struct SilentDisk;
