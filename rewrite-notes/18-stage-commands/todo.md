@@ -250,6 +250,44 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百二十接上 `pr` 的 `-e`/`-i` 制表两腿（`inln` 展开与 `otln` 压缩），并揭出上一轮多栏金样缺了压缩腿**
+  （`2026-10-14`，`claim/PR-TABS-qoder` @ 基线 `6b30dd134`，单域三线 commands/textfilter，无跨界）：
+  接回批次二百一十九登记的①。真源两段：`inln`（`pr.c:1032-1068`）与 `otln`（`:1137-1240`）。
+  **C 的四处不对称**（都写进注释并各有断言）：①展开的列从**行首**起算，因为 `inln` 每见换行复位缓冲指针；
+  ②文中已有的 `ch` 在压缩时是**被模拟**而不是照抄——它只把输入列推到下一站、自己不产出；
+  ③`ips - ops > 1` 这道门槛在默认站距 8 下其实**被站距判据蕴含**（`next_stop(ops) >= ops + gap`），
+  只有站距 1（`-i1` 可达）才让它单独起作用——这条不是猜的，是变异负控逼出来的（见下）；
+  ④展开在**读取时**发生、压缩在**写出时**且**只作用正文行**：表头走 `prhead` 的 `printf`、表尾走
+  `prtail` 的 `putchar`，两者都不压缩。
+  **最关键的一条是 `pr.c:1840-1848`**：多栏（`cflag`）与合并（`merge`）**隐含打开两腿**，无需 `-e`/`-i`。
+  这条推翻了我上一轮（批次二百一十九）为多栏手推的四枚金样：当时按「补白串原样输出」推期望值，
+  而 C 实际是「展开→裁剪补白→压缩」的合成，`1 + 九个空格 + 9` 出门成 `1<TAB>  9`。本轮把这四枚
+  （竖排 16 行、末页均衡、`-a` 横排、多栏往返）按合成算式重推，并逐枚与真二进制核对一致。
+  另注：`-e`/`-i` 的值语法是 BSD 可选附值（`x?`），**不吞下一词**——`pr -e f` 里 `f` 是操作数而非 gap；
+  gap 走 `atoi`，字面 0 回落默认站距（`if (ingap == 0) ingap = INGAP`），C 的 `gap < 0` 判据被前置的
+  `isdigit` 挡在 unreachable 位置，故不复现并在注释里点明。
+  **代码形状**：库侧新增纯函数 `expand_tabs`/`contract_tabs`（字节级，与 C 一致）与
+  `parse_char_gap`；`PrOptions` 加 `expand`/`contract: Option<(u8, usize)>`（`None` 即 C 的 `gap == 0`）；
+  执行侧 `expand_input` 挂在读取腿、`emit_page` 挂在写出腿并按 `Page` 的三段划分决定谁被压缩。
+  三件套：`--lib` → **44 pr 测通过**（基线 40，新增 `expand_tabs_follows_the_inln_column_arithmetic`、
+  `contract_tabs_reencodes_blanks_and_simulates_existing_tabs`、
+  `e_and_i_values_take_the_c_char_then_gap_shape`、`columns_and_merge_imply_both_transformations`）；
+  `--test pr_face` → **12 passed / 0 failed**（基线 9，新增三枚：`-e` 读入腿、`-i` 只压正文不压表头、
+  多栏隐含两腿的往返）；其余七道门 vis 19 / unvis 10 / sort 8 / head 8 / tail 10 / uniq 10 / cmp 10 不动；
+  `cargo test -p minix-textfilter` 的 50 个测试目标全 ok、合计 575 passed、零 FAILED。
+  **十枚变异负控**（复位放 `finally` 并断言 md5 复原）：展开算式改成固定一列 → 库内 1；单空格也压缩 →
+  **首轮不咬**（站距 8 下被站距判据蕴含），补 `-i1` 站距 1 的两枚断言后当场 FAILED；删掉文中制表符的
+  模拟支路 → 库内 1；删掉行尾冲刷 → 库内 1 + 端到端 1；多栏不再隐含两腿 → 库内 1 + 端到端 3；
+  `gap 0` 不回落默认 → 库内 1；表头也被压缩 → 端到端 1；输入腿不展开 → 端到端 2。
+  另有一枚过程性自纠：一次批量改写把 `#[test]` 插重了一次（重复属性告警），修掉并复测；
+  clippy 在 `src/pr.rs` 的告警数与基线**逐条同数**（34），新增的一处 `collapsible_if` 已按建议改成 let chain。
+  门禁：容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、容器内 50 目标全 ok、
+  FAILED 0；三架构 `--bins` 三台零 error；clippy 触及文件 0 新增；`rustfmt --edition 2024 --check` 零漂移；
+  `tools/doc-style-lint.sh --diff` error 0。核实日 `2026-10-14`；基线 `6b30dd134`。
+  **登记不执行**：①`-f`/`-F` 与长行跨块状态（`mor`/`lrgln`/`ips`/`ops`）——本壳按整行建模，长行按多栏
+  `trnc` 语义截断，与 C 的续排不同（已在 07 篇声明）；②`-p`（终端腿）、`-r`、`-T`；③`pr` 开档诊断缺
+  `strerror` 后缀（同族既有差异）；④`window.rs:679-680` 两条 unused import；⑤真机 open 腿归 C-57/E5。
+
 - ✅ **批次二百一十九把 `pr` 的分页与数值选项面按 C 坐实（多栏接线核实、页高规则、空输入、诊断报文），并新建第 8 道端到端门**
   （`2026-10-14`，`claim/PR-COLUMNS-qoder` @ 基线 `8eee6c420`，单域三线 commands/textfilter，无跨界）：
   规划表 13 行「pr 多栏第1片」开工后核实的事实是：**多栏与 `-m` 在库侧与执行侧都早已接线**

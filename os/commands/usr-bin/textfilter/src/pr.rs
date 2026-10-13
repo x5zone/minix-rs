@@ -75,6 +75,14 @@ pub struct PrOptions {
     /// The time field rendered into the header line (the doing half
     /// supplies the host clock's text; an empty prefix is fine).
     pub time_prefix: String,
+    /// `-e[ch][gap]`, and implied by multi-column or merge output
+    /// (`pr.c:1840-1843`): the input byte that stands for a tab and the pitch it
+    /// expands to. `None` is C's `ingap == 0`, which leaves the input bytes alone.
+    pub expand: Option<(u8, usize)>,
+    /// `-i[ch][gap]`, likewise implied by multi-column or merge output
+    /// (`pr.c:1844-1847`): the byte a run of output blanks contracts into, and the
+    /// pitch it steps by. `None` is C's `ogap == 0`, the plain `fwrite` arm of `otln`.
+    pub contract: Option<(u8, usize)>,
 }
 
 impl Default for PrOptions {
@@ -93,8 +101,86 @@ impl Default for PrOptions {
             number_width: 0,
             number_char: b'\t',
             time_prefix: String::new(),
+            expand: None,
+            contract: None,
         }
     }
+}
+
+/// C's `inln` expansion half (`pr.c:1032-1068`): each `ch` byte becomes the number of
+/// blanks that carries the column up to the next multiple of `gap`, counted from the
+/// start of the line because `inln` restarts its buffer pointer at every newline. A
+/// `gap` of zero is C's `if (gap)` test — no expansion at all, the bytes pass through.
+pub fn expand_tabs(data: &[u8], ch: u8, gap: usize) -> Vec<u8> {
+    if gap == 0 {
+        return data.to_vec();
+    }
+    let mut out = Vec::with_capacity(data.len());
+    let mut column = 0usize;
+    for &byte in data {
+        if byte == ch {
+            let blanks = gap - (column % gap);
+            out.extend(core::iter::repeat_n(b' ', blanks));
+            column += blanks;
+            continue;
+        }
+        if byte == b'\n' {
+            column = 0;
+        } else {
+            column += 1;
+        }
+        out.push(byte);
+    }
+    out
+}
+
+/// C's `otln` contraction half (`pr.c:1137-1240`): a run of blanks is re-encoded as
+/// as many `ch` bytes as reach tab stops inside it, then single blanks up to the exact
+/// column. Two details make it more than a search-and-replace. First, a `ch` already in
+/// the text is *simulated* rather than copied — it advances the input column by
+/// `gap - (ips % gap)` and emits nothing itself, so contraction re-flows existing tabs
+/// instead of preserving them. Second, a run of one blank is never contracted (the C
+/// condition is `ips - ops > 1`), which is what keeps the single space between two
+/// words a space. C finishes the pending run before the newline
+/// (`pr.c:1229-1262`), so a line ending in blanks keeps its width.
+pub fn contract_tabs(data: &[u8], ch: u8, gap: usize) -> Vec<u8> {
+    if gap == 0 {
+        return data.to_vec();
+    }
+    let mut out = Vec::with_capacity(data.len());
+    let mut input_column = 0usize;
+    let mut output_column = 0usize;
+    let next_stop = |column: usize| column + gap - (column % gap);
+    for &byte in data {
+        if byte == b' ' {
+            input_column += 1;
+            continue;
+        }
+        if byte == ch {
+            input_column += gap - (input_column % gap);
+            continue;
+        }
+        while input_column - output_column > 1 && next_stop(output_column) <= input_column {
+            out.push(ch);
+            output_column = next_stop(output_column);
+        }
+        while output_column < input_column {
+            out.push(b' ');
+            output_column += 1;
+        }
+        out.push(byte);
+        input_column += 1;
+        output_column += 1;
+    }
+    while input_column - output_column > 1 && next_stop(output_column) <= input_column {
+        out.push(ch);
+        output_column = next_stop(output_column);
+    }
+    while output_column < input_column {
+        out.push(b' ');
+        output_column += 1;
+    }
+    out
 }
 
 /// Parsed `pr` command line: resolved options + file operands + the `-m` flag.
@@ -160,6 +246,51 @@ pub enum PrError {
 /// (`-N`) and start page (`+N`) keep their C forms; `-n`/`-s` keep their
 /// optional glued value. Unmodelled letters (e/f/F/i/p/r/T) and any other
 /// `-…` form are rejected, matching the old behaviour (never a silent operand).
+/// `pr.h:45-48`: the two characters and the two pitches the C falls back to.
+const INCHAR: u8 = b'\t';
+const OCHAR: u8 = b'\t';
+const DEFAULT_GAP: usize = 8;
+
+/// The character `-e`/`-i` default to, spelled out so the two options stay readable
+/// at their call sites.
+fn default_char(letter: char) -> u8 {
+    if letter == 'e' { INCHAR } else { OCHAR }
+}
+
+/// The shared value grammar of `-e[ch][gap]` and `-i[ch][gap]` (`pr.c:1674-1692`,
+/// `1710-1728`): a leading non-digit replaces the character and is consumed, a digit
+/// run then sets the gap through `atoi` with a literal zero meaning the default pitch,
+/// and anything else left over is C's named invalid value. C's `gap < 0` refusal sits
+/// behind the same digit test that got us here, so it cannot be reached and is not
+/// reproduced.
+fn parse_char_gap(
+    rest: &str,
+    fallback_char: u8,
+    fallback_gap: usize,
+    letter: char,
+) -> Result<(u8, usize), PrError> {
+    let mut character = fallback_char;
+    let mut cursor = 0usize;
+    if let Some(&first) = rest.as_bytes().first()
+        && !first.is_ascii_digit()
+    {
+        character = first;
+        cursor = 1;
+    }
+    let tail = &rest[cursor..];
+    if tail.is_empty() {
+        return Ok((character, fallback_gap));
+    }
+    if !tail.as_bytes()[0].is_ascii_digit() {
+        return Err(PrError::InvalidValue(letter, String::from(tail)));
+    }
+    let gap = c_atoi(tail);
+    Ok((
+        character,
+        if gap == 0 { fallback_gap } else { gap as usize },
+    ))
+}
+
 /// C's `atoi` as `setup` uses it for every numeric option: skip leading space, take
 /// one sign, read digits until the first byte that is not one, and ignore the rest.
 /// Saturation stands in for C's undefined overflow.
@@ -210,6 +341,11 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
     let mut operands: Vec<&'a str> = Vec::new();
     let (mut merge, mut across) = (false, false);
     let (mut wflag, mut sflag) = (false, false);
+    // `eflag`/`iflag` record that the option was given at all, which is what tells
+    // the implied defaults of `pr.c:1840-1848` apart from an explicit one.
+    let (mut eflag, mut iflag) = (false, false);
+    let (mut in_char, mut in_gap) = (INCHAR, DEFAULT_GAP);
+    let (mut out_char, mut out_gap) = (OCHAR, DEFAULT_GAP);
 
     // Take a required option value: the glued remainder of this token, else
     // the next token (advancing `index`). Missing ⇒ `Usage`.
@@ -337,10 +473,27 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
                     options.number_char = nsep;
                     break;
                 }
+                b'e' | b'i' => {
+                    // `-e[ch][gap]` and `-i[ch][gap]`: an optional glued value
+                    // (`pr.c:1674-1692`, `1710-1728`).
+                    let letter = if bytes[pos] == b'e' { 'e' } else { 'i' };
+                    let (character, gap) =
+                        parse_char_gap(&arg[pos + 1..], default_char(letter), DEFAULT_GAP, letter)?;
+                    if letter == 'e' {
+                        eflag = true;
+                        in_char = character;
+                        in_gap = gap;
+                    } else {
+                        iflag = true;
+                        out_char = character;
+                        out_gap = gap;
+                    }
+                    break;
+                }
                 // Letters C's optstring carries but this deciding half does not
                 // implement are named separately from letters `egetopt` itself would
                 // answer `?` for (`pr.c:1655`, `1805-1809`).
-                b'e' | b'i' | b'F' | b'f' | b'p' | b'r' | b'T' => {
+                b'F' | b'f' | b'p' | b'r' | b'T' => {
                     return Err(PrError::Unmodelled);
                 }
                 _ => return Err(PrError::Usage),
@@ -352,6 +505,17 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
 
     if !wflag && sflag {
         options.page_width = 512;
+    }
+    // `pr.c:1840-1848`: multi-column and merged output imply *both* transformations
+    // with the C's own defaults unless the option already asked for one; plain
+    // single-column output implies neither, which is why a lone `-e` is the only way
+    // to expand tabs in a normal `pr` run.
+    let implied = options.columns > 1 || merge;
+    if eflag || implied {
+        options.expand = Some((in_char, in_gap));
+    }
+    if iflag || implied {
+        options.contract = Some((out_char, out_gap));
     }
     // `pr.c:1875-1876`: a page too short to carry a five-line header *and* a
     // five-line trailer does not fail, it loses the header — and because the
@@ -1130,6 +1294,124 @@ mod tests {
     }
 
     #[test]
+    fn expand_tabs_follows_the_inln_column_arithmetic() {
+        // `col = gap - (col % gap)` blanks per tab, counted from the start of the line
+        // because `inln` restarts its buffer at every newline (`pr.c:1046-1063`). The
+        // widths are spelled out as `" ".repeat(n)` so the arithmetic, not a hand
+        // count of spaces, is what the reader checks.
+        assert_eq!(
+            expand_tabs(b"a\tb", b'\t', 8),
+            format!("a{}b", " ".repeat(7)).into_bytes()
+        );
+        assert_eq!(
+            expand_tabs(b"\t\tx", b'\t', 8),
+            format!("{}x", " ".repeat(16)).into_bytes()
+        );
+        // A second line starts its column count over, so its tab reaches the first
+        // stop again instead of continuing the previous line's column.
+        assert_eq!(
+            expand_tabs(b"12345678\t\n\t", b'\t', 8),
+            format!("12345678{}\n{}", " ".repeat(8), " ".repeat(8)).into_bytes()
+        );
+        // A different pitch and a different tab byte are exactly what the option says.
+        assert_eq!(
+            expand_tabs(b"a\tb", b'\t', 4),
+            format!("a{}b", " ".repeat(3)).into_bytes()
+        );
+        assert_eq!(
+            expand_tabs(b"a^tb", b'^', 8),
+            format!("a{}tb", " ".repeat(7)).into_bytes()
+        );
+        // `ingap == 0` is C's `if (gap)` test: nothing happens at all.
+        assert_eq!(expand_tabs(b"a\tb", b'\t', 0), b"a\tb".to_vec());
+    }
+
+    #[test]
+    fn contract_tabs_reencodes_blanks_and_simulates_existing_tabs() {
+        // Eight blanks reach one stop exactly, so the run becomes a tab; ten blanks
+        // become a tab plus two (`pr.c:1178-1204`).
+        assert_eq!(contract_tabs(b"        x", b'\t', 8), b"\tx".to_vec());
+        assert_eq!(contract_tabs(b"          x", b'\t', 8), b"\t  x".to_vec());
+        // A single blank is never contracted — that is what keeps the space between
+        // two words a space. With the default pitch that also follows from the stop
+        // test alone, so the `ips - ops > 1` half is only load-bearing where a stop
+        // is one column away: `gap` of 1 (reachable via `-i1`) separates the two.
+        assert_eq!(contract_tabs(b"a b", b'\t', 8), b"a b".to_vec());
+        assert_eq!(contract_tabs(b"a b", b'\t', 1), b"a b".to_vec());
+        assert_eq!(contract_tabs(b"a  b", b'\t', 1), b"a\t b".to_vec());
+        // A tab already in the text is *simulated*: it moves the input column to the
+        // next stop and emits nothing itself. A tab sitting on a stop is therefore a
+        // fixed point, and the three blanks behind it stay three because they are one
+        // short of the stop that `ips - ops > 1` refuses to spend a tab on.
+        assert_eq!(contract_tabs(b"\t   x", b'\t', 8), b"\t   x".to_vec());
+        // Seven blanks after a stop fall one short of the next one (column 8 + 7 = 15,
+        // the stop is 16), so that run stays blanks: the fixed point only breaks once
+        // the run reaches the stop itself, and then the eight blanks become one tab.
+        assert_eq!(
+            contract_tabs(format!("a\t{}b", " ".repeat(7)).as_bytes(), b'\t', 8),
+            format!("a\t{}b", " ".repeat(7)).into_bytes()
+        );
+        assert_eq!(
+            contract_tabs(format!("a\t{}b", " ".repeat(8)).as_bytes(), b'\t', 8),
+            b"a\t\tb".to_vec()
+        );
+        // Trailing blanks keep their width through the end-of-line flush.
+        assert_eq!(contract_tabs(b"a       ", b'\t', 8), b"a\t".to_vec());
+        assert_eq!(contract_tabs(b"a  ", b'\t', 8), b"a  ".to_vec());
+        // `ogap == 0` is C's plain `fwrite` arm.
+        assert_eq!(contract_tabs(b"        x", b'\t', 0), b"        x".to_vec());
+    }
+
+    #[test]
+    fn e_and_i_values_take_the_c_char_then_gap_shape() {
+        // `-e[ch][gap]`: a non-digit first byte is the character, a digit run after it
+        // is the gap through `atoi`, and a leftover non-digit is the named invalid
+        // value (`pr.c:1674-1692`).
+        let plain = parse_pr_args(&["-e"]).expect("-e");
+        assert_eq!(plain.options.expand, Some((b'\t', 8)));
+        let gap_only = parse_pr_args(&["-e4"]).expect("-e4");
+        assert_eq!(gap_only.options.expand, Some((b'\t', 4)));
+        let both = parse_pr_args(&["-e:9"]).expect("-e:9");
+        assert_eq!(both.options.expand, Some((b':', 9)));
+        // A literal zero gap means the default pitch, not "off" (`if (ingap == 0)
+        // ingap = INGAP`).
+        let zero = parse_pr_args(&["-e0"]).expect("-e0");
+        assert_eq!(zero.options.expand, Some((b'\t', 8)));
+        // Trailing garbage after the digits is never reached by C's `atoi`, so `-e5x`
+        // is simply gap 5.
+        assert_eq!(
+            parse_pr_args(&["-e5x"]).expect("-e5x").options.expand,
+            Some((b'\t', 5))
+        );
+        assert_eq!(
+            parse_pr_args(&["-e:xy"]).err(),
+            Some(PrError::InvalidValue('e', String::from("xy")))
+        );
+        let contract = parse_pr_args(&["-i3"]).expect("-i3");
+        assert_eq!(contract.options.contract, Some((b'\t', 3)));
+    }
+
+    #[test]
+    fn columns_and_merge_imply_both_transformations() {
+        // `pr.c:1840-1848`: multi-column or merged output switches expansion and
+        // contraction on with the C's defaults, while plain single-column output
+        // switches neither on.
+        let single = parse_pr_args(&["-t"]).expect("single");
+        assert_eq!(single.options.expand, None);
+        assert_eq!(single.options.contract, None);
+        let columns = parse_pr_args(&["-t", "-2"]).expect("columns");
+        assert_eq!(columns.options.expand, Some((b'\t', 8)));
+        assert_eq!(columns.options.contract, Some((b'\t', 8)));
+        let merged = parse_pr_args(&["-t", "-m"]).expect("merge");
+        assert_eq!(merged.options.expand, Some((b'\t', 8)));
+        // An explicit `-e` is not overwritten by the implied default, and `-i` keeps
+        // its own gap while `-e` supplies the other.
+        let explicit = parse_pr_args(&["-2", "-e4"]).expect("explicit");
+        assert_eq!(explicit.options.expand, Some((b'\t', 4)));
+        assert_eq!(explicit.options.contract, Some((b'\t', 8)));
+    }
+
+    #[test]
     fn test_column_width_matches_setup_formula() {
         // pgwd=72 default (PGWD): colwd=(72+1-clcnt)/clcnt, pgwd re-rounded.
         assert_eq!(column_width(72, 2), Some((35, 71)));
@@ -1535,7 +1817,9 @@ mod tests {
     fn parse_error_paths() {
         // 集外/未建模字母、缺值、C 为每个数值选项单写的判据消息、`-a` 与 `-m`
         // 的组合拒绝。
-        assert_eq!(parse_pr_args(&["-e", "f"]).err(), Some(PrError::Unmodelled));
+        // `-e`/`-i` are modelled now, so an unimplemented letter has to come from the
+        // rest of C's optstring; `-x` is not in it at all and answers usage.
+        assert_eq!(parse_pr_args(&["-p"]).err(), Some(PrError::Unmodelled));
         assert_eq!(parse_pr_args(&["-w"]).err(), Some(PrError::Usage)); // 缺值 ⇒ getopt '?'
         assert_eq!(parse_pr_args(&["-w0"]).err(), Some(PrError::WidthValue)); // atoi < 1
         assert_eq!(parse_pr_args(&["-w", "x"]).err(), Some(PrError::WidthValue)); // 首位非数字

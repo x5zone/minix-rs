@@ -32,7 +32,8 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_textfilter::pr::{
-    PrError, column_width, merge_body_rows, paginate, paginate_files, parse_pr_args, render_page,
+    PrError, column_width, contract_tabs, expand_tabs, merge_body_rows, paginate, paginate_files,
+    parse_pr_args, render_page,
 };
 
 fn run() -> ! {
@@ -58,15 +59,18 @@ fn run() -> ! {
     let mut had_error = false;
     if operands.is_empty() {
         let input = support::read_stdin();
-        files.push(("", split_lines(&input)));
+        files.push(("", split_lines(&expand_input(&input, &options))));
     } else {
         for op in &operands {
             if op == "-" {
                 let input = support::read_stdin();
-                files.push(("", split_lines(&input)));
+                files.push(("", split_lines(&expand_input(&input, &options))));
             } else {
                 match support::read_file(op) {
-                    Ok(bytes) => files.push((op.as_str(), split_lines(&bytes))),
+                    Ok(bytes) => {
+                        let bytes = expand_input(&bytes, &options);
+                        files.push((op.as_str(), split_lines(&bytes)));
+                    }
                     Err(_) => {
                         support::warn(format!("pr: cannot open {op}\n").as_bytes());
                         had_error = true;
@@ -97,23 +101,44 @@ fn run() -> ! {
             .clone()
             .unwrap_or_else(|| String::from(files[0].0));
         for page in paginate(&merged, &opts) {
-            for line in render_page(&page, options.offset) {
-                let mut out = line.as_bytes().to_vec();
-                out.push(b'\n');
-                support::emit(&out);
-            }
+            emit_page(&page, &options);
         }
         support::terminate(if had_error { 1 } else { 0 });
     }
 
     for page in paginate_files(&files, &options, title_override.as_deref()) {
-        for line in render_page(&page, options.offset) {
-            let mut out = line.as_bytes().to_vec();
-            out.push(b'\n');
-            support::emit(&out);
-        }
+        emit_page(&page, &options);
     }
     support::terminate(if had_error { 1 } else { 0 });
+}
+
+/// The input leg of C's `-e` (`inln`, `pr.c:1032-1068`): tabs are expanded while the
+/// line is still a byte stream, which is why the column arithmetic downstream sees the
+/// expanded width. No `-e` and no implied multi-column mode means C's `ingap == 0`
+/// and the bytes pass through untouched.
+fn expand_input(data: &[u8], options: &minix_textfilter::pr::PrOptions) -> Vec<u8> {
+    match options.expand {
+        Some((character, gap)) => expand_tabs(data, character, gap),
+        None => data.to_vec(),
+    }
+}
+
+/// One page out, with C's output-leg asymmetry kept: `otln` contracts only the body
+/// lines (`pr.c:1137-1240`), while `prhead` and `prtail` write the header block and
+/// the trailer block with bare `printf`/`putchar` (`:1499-1513`, `:1524-1573`), so
+/// blanks in those lines are never folded back into tabs.
+fn emit_page(page: &minix_textfilter::pr::Page, options: &minix_textfilter::pr::PrOptions) {
+    let header = page.header_lines.len();
+    let body_end = header + page.body_lines.len();
+    for (index, line) in render_page(page, options.offset).iter().enumerate() {
+        let body_line = index >= header && index < body_end;
+        let mut out = match (body_line, options.contract) {
+            (true, Some((character, gap))) => contract_tabs(line.as_bytes(), character, gap),
+            _ => line.as_bytes().to_vec(),
+        };
+        out.push(b'\n');
+        support::emit(&out);
+    }
 }
 
 fn split_lines(input: &[u8]) -> Vec<String> {
