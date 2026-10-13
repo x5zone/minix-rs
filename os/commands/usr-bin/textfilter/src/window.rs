@@ -4,6 +4,12 @@
 //! answer "which lines survive?" from opposite ends, so both implement
 //! [`LineWindow`]. The caller feeds lines in order and drains the survivors
 //! at the end; the window never holds more than N borrowed lines.
+//!
+//! N is the caller's count, with no ceiling of its own: C `head.c` counts down
+//! from it and C `forward.c` + `RLINES` walks back through the mapped file for
+//! any of them. The storage therefore grows as lines arrive and stops at N, so a
+//! `tail -n 1000000` on a twenty-line file holds twenty lines, not a million
+//! slots — the count cannot be turned into an allocation bomb.
 
 use crate::TextError;
 
@@ -24,20 +30,22 @@ pub trait LineWindow<'a> {
 
 /// Keep the first N lines (`head -n`).
 pub struct HeadWindow<'a> {
-    lines: [&'a str; 32],
+    lines: Vec<&'a str>,
     kept: usize,
     limit: usize,
     seen: u64,
 }
 
 impl<'a> HeadWindow<'a> {
-    /// A window keeping the first `n` lines (at most 32).
+    /// A window keeping the first `n` lines. Only `0` is refused: `head.c`'s
+    /// counter never starts, which the callers treat as "print nothing" rather
+    /// than as a window request.
     pub fn new(n: usize) -> Result<Self, TextError> {
-        if n == 0 || n > 32 {
+        if n == 0 {
             return Err(TextError::InvalidArgument);
         }
         Ok(HeadWindow {
-            lines: [""; 32],
+            lines: Vec::new(),
             kept: 0,
             limit: n,
             seen: 0,
@@ -49,7 +57,7 @@ impl<'a> LineWindow<'a> for HeadWindow<'a> {
     fn push(&mut self, line: &'a str) {
         self.seen += 1;
         if self.kept < self.limit {
-            self.lines[self.kept] = line;
+            self.lines.push(line);
             self.kept += 1;
         }
     }
@@ -67,19 +75,21 @@ impl<'a> LineWindow<'a> for HeadWindow<'a> {
 
 /// Keep the last N lines (`tail -n`): a ring holding the most recent N.
 pub struct TailWindow<'a> {
-    ring: [&'a str; 32],
+    ring: Vec<&'a str>,
     limit: usize,
     seen: u64,
 }
 
 impl<'a> TailWindow<'a> {
-    /// A window keeping the last `n` lines (at most 32).
+    /// A window keeping the last `n` lines. `0` is refused (C `forward.c` seeks
+    /// to the end of the file in that case and prints nothing, so no window is
+    /// needed); there is no upper bound, matching `RLINES`' backward walk.
     pub fn new(n: usize) -> Result<Self, TextError> {
-        if n == 0 || n > 32 {
+        if n == 0 {
             return Err(TextError::InvalidArgument);
         }
         Ok(TailWindow {
-            ring: [""; 32],
+            ring: Vec::new(),
             limit: n,
             seen: 0,
         })
@@ -88,7 +98,13 @@ impl<'a> TailWindow<'a> {
 
 impl<'a> LineWindow<'a> for TailWindow<'a> {
     fn push(&mut self, line: &'a str) {
-        self.ring[(self.seen as usize) % self.limit] = line;
+        // Fill before wrapping, so a count larger than the input costs the
+        // input's size and not the count.
+        if self.ring.len() < self.limit {
+            self.ring.push(line);
+        } else {
+            self.ring[(self.seen as usize) % self.limit] = line;
+        }
         self.seen += 1;
     }
 
@@ -303,15 +319,6 @@ impl TailStyle {
                 | TailStyle::ReverseLines { off: 0 }
                 | TailStyle::ReverseBytes { off: 0 }
         )
-    }
-
-    /// Whether this selection is over the fixed-capacity ring's declared limit.
-    /// Only `LastLines` with a non-zero count is backed by the ring: C's
-    /// `forward()` + `RLINES` seeks to the end when `off` is zero (`forward.c`),
-    /// the reverse shapes walk the file with `mmap` (`reverse.c`), and the two
-    /// skip shapes stream past `off` bytes or newlines without buffering.
-    pub fn over_ring_cap(self) -> bool {
-        matches!(self, TailStyle::LastLines { off } if off != 0 && TailWindow::new(off).is_err())
     }
 }
 
@@ -622,15 +629,27 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_or_huge_rejected() {
+    fn test_zero_count_is_refused_and_large_counts_are_not() {
         assert_eq!(
             HeadWindow::new(0).map(|_| ()),
             Err(TextError::InvalidArgument)
         );
         assert_eq!(
-            TailWindow::new(33).map(|_| ()),
+            TailWindow::new(0).map(|_| ()),
             Err(TextError::InvalidArgument)
         );
+        // No ceiling: C `forward.c` + `RLINES` walks back through the mapped
+        // file for any count, so a count above the old 32 must survive.
+        assert!(TailWindow::new(33).is_ok());
+        assert!(HeadWindow::new(33).is_ok());
+        let mut tail = TailWindow::new(1000).unwrap();
+        for line in ["a", "b"] {
+            tail.push(line);
+        }
+        // A count far above the input yields the whole input, in order.
+        let mut out: [&str; 2] = ["", ""];
+        assert_eq!(tail.drain(&mut out), 2);
+        assert_eq!(out, ["a", "b"]);
     }
 
     #[test]
@@ -865,21 +884,6 @@ mod tests {
         assert!(!TailStyle::SkipBytes { off: 0 }.selects_nothing());
         assert!(!TailStyle::LastLines { off: 10 }.selects_nothing());
         assert!(!TailStyle::ReverseBytes { off: 8 }.selects_nothing());
-    }
-
-    #[test]
-    fn test_tail_style_ring_cap_applies_only_to_the_line_walk() {
-        // The ring keeps at most 32 borrowed lines and rejects 0; that limit is
-        // this shape's business only — `tail -n 0` is C's "seek to the end and
-        // print nothing", not a rejected count.
-        assert!(!TailStyle::LastLines { off: 0 }.over_ring_cap());
-        assert!(!TailStyle::LastLines { off: 32 }.over_ring_cap());
-        assert!(TailStyle::LastLines { off: 33 }.over_ring_cap());
-        assert!(!TailStyle::SkipLines { off: 1000 }.over_ring_cap());
-        assert!(!TailStyle::LastBytes { off: 0 }.over_ring_cap());
-        assert!(!TailStyle::ReverseLines { off: 0 }.over_ring_cap());
-        assert!(!TailStyle::ReverseLines { off: 100 }.over_ring_cap());
-        assert!(!TailStyle::ReverseAll.over_ring_cap());
     }
 
     #[test]

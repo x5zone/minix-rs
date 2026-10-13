@@ -132,18 +132,22 @@ fn follow_mode_and_unknown_letters_are_refused_not_leaked() {
 }
 
 #[test]
-fn line_window_cap_rejects_the_count_without_a_diagnostic() {
-    // A declared divergence from C, pinned here so removing it is a deliberate
-    // edit: the line window keeps at most 32 borrowed lines (`window.rs`), while
-    // C `forward()` + `RLINES` walks back through `mmap` for any count. The
-    // rejection is currently silent — a nonzero exit with no message — which is
-    // the second half of what the follow-up round owes.
+fn counts_above_the_old_window_cap_are_honoured() {
+    // C `forward()` + `RLINES` walks back through the mapped file for any count,
+    // and the window now keeps only what the input offered: a count above the
+    // ceiling this shell used to enforce prints the whole file instead of being
+    // refused, and a huge one must not cost the count in memory either.
     let (out, status, err) = run(&["-n", "40"], &twelve());
-    assert_eq!(out, "");
-    assert_eq!(status, 1);
-    assert_eq!(err, "", "the cap rejection is silent today");
-    // The same count in the reverse shape is not the window's business (C walks
-    // the file with `mmap` there), so it prints every line bottom-up.
+    assert_eq!(
+        out,
+        twelve(),
+        "a count above the old 32 must not be refused"
+    );
+    assert_eq!(status, 0, "stderr was {err:?}");
+    let (out, status, err) = run(&["-n", "1000000"], &twelve());
+    assert_eq!(out, twelve());
+    assert_eq!(status, 0, "stderr was {err:?}");
+    // The reverse shape never went through the window and keeps working.
     assert_eq!(
         run(&["-r", "-n", "40"], &twelve()).0,
         "12\n11\n10\n9\n8\n7\n6\n5\n4\n3\n2\n1\n"

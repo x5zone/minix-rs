@@ -1,9 +1,10 @@
 //! Minix-RS tail — last lines of a stream.
 //!
 //! Ground truth: `minix3/usr.bin/tail/tail.c` (NetBSD), `tail [-n count |
-//! -count] [file ...]` with a default of ten lines. The ring capacity is fixed
-//! at 32 (the library's `TailWindow`), so counts above 32 are rejected as out
-//! of range — a declared cap. With no operand tail reads standard input; with
+//! -count] [file ...]` with a default of ten lines. The ring holds as many
+//! borrowed lines as the count asks for and no more than the input offered, so
+//! any count is honoured the way C's backward walk through the mapped file
+//! honours one. With no operand tail reads standard input; with
 //! operands it prints the last `count` lines of each file, prefixing a
 //! `==> name <==` banner when there is more than one file (this NetBSD `tail`
 //! has no `-q`/`-v` to change that) with a blank line between files, and an
@@ -46,12 +47,6 @@ fn run() -> ! {
     };
     let style = parsed.style;
     let operands: Vec<String> = parsed.operands;
-
-    // The fixed-capacity ring rejects 0 and counts above 32 (declared cap), and
-    // only the non-zero `LastLines` walk is backed by it (`over_ring_cap`).
-    if style.over_ring_cap() {
-        support::terminate(1);
-    }
 
     // C `for each file: fopen+fstat (ierr on failure), banner when argc>1,
     // forward()`. No operands read stdin. The banner comes after the successful
@@ -108,7 +103,10 @@ fn tail_stream(input: &[u8], style: TailStyle) {
             for line in support::lines_of(input) {
                 window.push(line);
             }
-            let mut survivors: Vec<&str> = vec![""; off.min(32)];
+            // Size the output by what the input actually offered, never by the
+            // requested count: `tail -n 1000000` on ten lines holds ten.
+            let want = (window.seen() as usize).min(off);
+            let mut survivors: Vec<&str> = vec![""; want];
             let drained = window.drain(&mut survivors);
             for line in &survivors[..drained] {
                 emit_line(line);
