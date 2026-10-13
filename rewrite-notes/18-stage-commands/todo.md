@@ -250,6 +250,14 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十四校正 `tsort -l`/`-d` 的旧“待批”标注（文档-代码同步）**
+  （`2026-10-13`，`claim/TSORT-DOC-qoder` @ 基线 `031e94b35`，文档仅改、无代码）：
+  上一轮核两半未接 vein 时发现：`07-text-filter.md` tsort 行将 `-l`/`-d` 标为“待批”，会误导后继轮
+  去“实现”它们。但 `tsort.c:102` 声明的 `longest`/`Dflag` 从未在其上分支（环报告恒走 `longest_cycle`），
+  tsort.rs 决定半注释（:27-28）已如实记此为 C 侧 no-op、`parse_args` 按 no-op 收下。本轮把 07 行从
+  “待批”改为“经核为 C 侧 no-op，与 C 一致，非缺口”，防后继重复误投。三件套：grep “待批”于 07
+  tsort 行不再命中、grep Dflag 于 tsort.c 仅命中声明行；核实日 `2026-10-13`；基线 `031e94b35`。
+
 - ✅ **批次一百九十三接上 `split -n`（按块数切）**
   （`2026-10-13`，`claim/SPLIT-N-qoder` @ 基线 `19fac68c2`，单域三线 commands/textfilter，无跨界）：
   接回批次一百九十一登记的 `-n` Unmodelled 留白（split 三模式至此集齐）。C `-n` 走 `split3(chunks)`
