@@ -250,6 +250,22 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十一接上 `split -b`（按字节数切块）**
+  （`2026-10-13`，`claim/SPLIT-B-qoder` @ 基线 `632c888d4`，单域三线 commands/textfilter，无跨界）：
+  接回批次一百八十九登记的 `-b` Unmodelled 留白。决定半 `split.rs`：新增 `chunk_bytes(data, n)`
+  （按固定 `n` 字节切块、末块可短、n=0/空输入无块，对位 `split.c` `split1`）；`byte_count(v)` 解
+  十进制+可选小写 `k`/`m` 单位×1024/×1048576、非零、`checked_mul` 防溢出（对位 split.c:99-108）；
+  `SplitArgs` 新增 `byte_size: Option<usize>`、`SplitError` 新增 `IllegalByteCount`；parse 把 `b` 从
+  Unmodelled 拆出（`-b1000` 附值或 `-b 1000` 分词），并按 C 收尾 `else if (bytecnt…)` 使 `-l`/`-b` 互斥
+  （任一侧并存报 Usage）。执行半 `bin/split.rs`：byte_size 时走字节路（逐 chunk 原样 create_write，
+  不重组行），`arg_error` 加 illegal byte count 臂。`-n` 仍 Unmodelled。新增 2 枚测（chunk_bytes 定长/短尾/
+  n=0/超一屏 + `-b` 解析附值/分词/k/m/非法/与 -l 互斥）。`-l`/纯字节模式零回归（既有测全绿）。
+  三件套：`cargo test -p minix-textfilter --lib` → **394/0**（既有 392 + 新 2）；`--bin split` → 4/0；
+  freestanding `cargo build -p minix-textfilter --bin split --target {x86_64,aarch64,riscv64gc}-unknown-none --release` 三架构均 Finished；
+  clippy 触及文件零新增告警（bin/split.rs “items after a test module” 基线存量）；`rustfmt --edition 2024 --check`
+  两目标文件新增行零漂移（仅余共享件 bin_support.rs 的 import 排序存量漂移，未碰）；核实日 `2026-10-13`；基线 `632c888d4`。
+  真机腿：字节切块的写盘受可写根盘 E5 门控（同行切块），本笔交代码+宿主测（chunk_bytes 纯函数已测）。留白：`-n` 块数。
+
 - ✅ **批次一百九十接上 `grep -w`（词边界，决定半已存、接执行半）**
   （`2026-10-13`，`claim/GREP-W-qoder` @ 基线 `5e7ae8236`，单域三线 commands/regex，无跨界）：
   发现：决定半早已有词边界实现（`matcher::find_word`，带 `test_word_match_rejects_partial`），但 grep

@@ -7,9 +7,9 @@
 //! split.c:61). This module computes the chunks (which lines go to
 //! which chunk) and the suffix sequence; the doing half's file writes
 //! wait for the gated create/write face on the host, so the doing half
-//! can only report what it would create. The `-a` suffix-length flag
-//! (`split.c:117`) is wired here; an explicit `-b` byte count and `-n`
-//! chunk count (which need byte-level / count-driven splitting) are later batches.
+//! can only report what it would create. The `-a` suffix-length and `-b` byte
+//! count (`split.c:99-108`) flags are wired here (`chunks` / `chunk_bytes`);
+//! `-n` chunk count (count-driven splitting) is a later batch.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -35,6 +35,23 @@ pub fn chunks(lines: &[String], lines_per_chunk: usize) -> Vec<Vec<String>> {
         cursor = end;
     }
     chunks
+}
+
+/// Splits raw input into fixed-size byte chunks of `n` bytes (the last may be
+/// short); `n == 0` or empty input yields no chunks. The byte-addressed cousin
+/// of [`chunks`], mirroring `split.c` `split1(bytecnt, …)` behind `-b`.
+pub fn chunk_bytes(data: &[u8], n: usize) -> Vec<&[u8]> {
+    let mut out = Vec::new();
+    if n == 0 {
+        return out;
+    }
+    let mut cursor = 0usize;
+    while cursor < data.len() {
+        let end = (cursor + n).min(data.len());
+        out.push(&data[cursor..end]);
+        cursor = end;
+    }
+    out
 }
 
 /// The file suffix for chunk `index` (0 based) at width `width`: `width`
@@ -64,6 +81,9 @@ pub fn suffix(index: usize, width: usize) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitArgs<'a> {
     pub lines_per_chunk: usize,
+    /// `-b` byte count per chunk (`bytecnt`, split.c:76); `Some` selects the
+    /// byte-addressed mode over the line `lines_per_chunk` default.
+    pub byte_size: Option<usize>,
     /// `-a` suffix width (`sfxlen`, split.c:61 default 2).
     pub sfxlen: usize,
     pub operands: Vec<&'a str>,
@@ -79,12 +99,15 @@ pub enum SplitError<'a> {
     /// A `-l`/`-N` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal line count.", …)`; carries the offending value for the message.
     IllegalLineCount(&'a str),
+    /// A `-b` value that is not decimal (with optional `k`/`m` unit) or is
+    /// zero: C `errx(1, "%s: illegal byte count.", …)` (split.c:99-108).
+    IllegalByteCount(&'a str),
     /// A `-a` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal suffix length.", …)` (split.c:117-121).
     IllegalSuffixLength(&'a str),
-    /// `-b`/`-n` — valid `getopt` letters the line-only deciding half
-    /// (`chunks`) does not yet implement (byte split, chunk count); reported
-    /// rather than silently ignored.
+    /// `-n` — a valid `getopt` letter the line/byte deciding half
+    /// (`chunks`/`chunk_bytes`) does not yet implement (chunk count);
+    /// reported rather than silently ignored.
     Unmodelled,
 }
 
@@ -102,6 +125,25 @@ fn line_count(v: &str) -> Option<usize> {
     }
 }
 
+/// A `-b` byte count: decimal with an optional lowercase `k`/`m` unit
+/// (×1024 / ×1048576), nonzero (`split.c:99-108`). `None` for an illegal or
+/// zero count, or a product that overflows `usize` (absurd input).
+fn byte_count(v: &str) -> Option<usize> {
+    let (digits, mul) = match v.as_bytes().last()? {
+        b'k' => (&v[..v.len() - 1], 1024usize),
+        b'm' => (&v[..v.len() - 1], 1024 * 1024),
+        _ => (v, 1usize),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits
+        .parse::<usize>()
+        .ok()
+        .filter(|n| *n > 0)
+        .and_then(|n| n.checked_mul(mul))
+}
+
 /// Fold `split`'s argv tail faithfully to BSD `getopt("0123456789b:l:a:n:")`
 /// (`split.c:80`).
 ///
@@ -111,11 +153,12 @@ fn line_count(v: &str) -> Option<usize> {
 /// kludge (`split.c:82-98`, applied only while the count is unset so a later
 /// `-l` still trips the `numlines != 0` usage as C does). `--` ends option
 /// scanning; a bare `-` and any non-option token are operands. `-a` sets the
-/// suffix width (attached `-a3` or `-a 3`, validated as C's suffix length); the
-/// line-only deciding half still reports `-b`/`-n` as `Unmodelled`.
+/// suffix width and `-b` the byte chunk size (attached or next word); the
+/// line/byte deciding half still reports `-n` (chunk count) as `Unmodelled`.
 pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitError<'a>> {
     let mut lines_per_chunk = DEFAULT_LINES;
     let mut sfxlen = DEFAULT_SFXLEN;
+    let mut byte_size: Option<usize> = None;
     let mut set = false;
     let mut operands: Vec<&'a str> = Vec::new();
 
@@ -186,7 +229,25 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
                         None => return Err(SplitError::IllegalSuffixLength(value)),
                     }
                 }
-                b'b' | b'n' => return Err(SplitError::Unmodelled),
+                b'b' => {
+                    // C `case 'b'`: value attached (`-b1000`) or next word
+                    // (`-b 1000`), decimal with optional k/m, nonzero.
+                    let rest = &tail[1..];
+                    let value = if rest.is_empty() {
+                        index += 1;
+                        match args.get(index) {
+                            Some(v) => *v,
+                            None => return Err(SplitError::Usage),
+                        }
+                    } else {
+                        rest
+                    };
+                    match byte_count(value) {
+                        Some(n) => byte_size = Some(n),
+                        None => return Err(SplitError::IllegalByteCount(value)),
+                    }
+                }
+                b'n' => return Err(SplitError::Unmodelled),
                 _ => return Err(SplitError::Usage),
             }
             index += 1;
@@ -202,8 +263,15 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
     if operands.len() > 2 {
         return Err(SplitError::Usage);
     }
+    // C: `if (numlines == 0) numlines = DEFLINE; else if (bytecnt || chunks) usage()`
+    // — an explicit `-l` together with `-b` is the C usage (`-n` already rejected
+    // above as Unmodelled).
+    if set && byte_size.is_some() {
+        return Err(SplitError::Usage);
+    }
     Ok(SplitArgs {
         lines_per_chunk,
+        byte_size,
         sfxlen,
         operands,
     })
@@ -315,11 +383,58 @@ mod tests {
     }
 
     #[test]
-    fn parse_error_paths() {
+    fn parse_byte_count_minus_b() {
+        // -b 接值：附值/分词、k/m 单位。行数保持默认（字节模式不数行）。
         assert_eq!(
-            parse_split_args(&["-b", "100"]).err(),
-            Some(SplitError::Unmodelled)
+            parse_split_args(&["-b", "100"]).unwrap().byte_size,
+            Some(100)
         );
+        assert_eq!(parse_split_args(&["-b1000"]).unwrap().byte_size, Some(1000));
+        assert_eq!(
+            parse_split_args(&["-b", "4k"]).unwrap().byte_size,
+            Some(4096)
+        );
+        assert_eq!(
+            parse_split_args(&["-b2m"]).unwrap().byte_size,
+            Some(2 * 1024 * 1024)
+        );
+        // 未给 -b 时 byte_size 为 None（行模式）。
+        assert_eq!(parse_split_args(&["f"]).unwrap().byte_size, None);
+        // 非法字节数（0 / 非数字）："illegal byte count"。
+        assert_eq!(
+            parse_split_args(&["-b0"]).err(),
+            Some(SplitError::IllegalByteCount("0"))
+        );
+        assert_eq!(
+            parse_split_args(&["-b", "x"]).err(),
+            Some(SplitError::IllegalByteCount("x"))
+        );
+        // -l 与 -b 并存（任一侧）：C 在收尾 `else if (bytecnt…)` 判 usage。
+        assert_eq!(
+            parse_split_args(&["-l", "3", "-b", "10"]).err(),
+            Some(SplitError::Usage)
+        );
+        assert_eq!(
+            parse_split_args(&["-b", "10", "-l", "3"]).err(),
+            Some(SplitError::Usage)
+        );
+    }
+
+    #[test]
+    fn chunk_bytes_splits_fixed_and_last_short() {
+        let data = *b"abcdefghij";
+        let c = chunk_bytes(&data, 4);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0], b"abcd");
+        assert_eq!(c[1], b"efgh");
+        assert_eq!(c[2], b"ij");
+        assert!(chunk_bytes(&data, 0).is_empty());
+        assert!(chunk_bytes(b"", 5).is_empty());
+        assert_eq!(chunk_bytes(&data, 20), vec![&data[..]]);
+    }
+
+    #[test]
+    fn parse_error_paths() {
         assert_eq!(
             parse_split_args(&["-n", "4"]).err(),
             Some(SplitError::Unmodelled)

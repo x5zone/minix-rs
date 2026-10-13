@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, write};
-use minix_textfilter::split::{SplitError, chunks, parse_split_args, suffix};
+use minix_textfilter::split::{SplitError, chunk_bytes, chunks, parse_split_args, suffix};
 
 // Output-file create flags (`fcntl.h`), mirroring the `uudecode` precedent:
 // O_WRONLY 0x1, O_CREAT 0x200, O_TRUNC 0x400; DEFFILEMODE 0666.
@@ -43,6 +43,7 @@ fn run() -> ! {
     };
     let lines_per_chunk = parsed.lines_per_chunk;
     let sfxlen = parsed.sfxlen;
+    let byte_size = parsed.byte_size;
     let operands: Vec<&str> = parsed.operands;
     // `split.c:143`: the second operand is the output prefix, default "x".
     let prefix = operands.get(1).copied().unwrap_or("x");
@@ -66,6 +67,24 @@ fn run() -> ! {
     let mut lines: Vec<String> = text.split('\n').map(ToString::to_string).collect();
     if lines.last().is_some_and(|line| line.is_empty()) {
         lines.pop();
+    }
+    // `-b`: byte-addressed split (`split1`) over the raw input, no line
+    // reconstruction — each fixed-size chunk is written verbatim.
+    if let Some(n) = byte_size {
+        for (index, chunk) in chunk_bytes(&input, n).iter().enumerate() {
+            let path = match out_path(prefix, index, sfxlen) {
+                Some(path) => path,
+                None => {
+                    support::warn(b"split: suffixes exhausted\n");
+                    support::terminate(1);
+                }
+            };
+            if create_write(&path, chunk).is_err() {
+                support::warn(format!("split: {path}\n").as_bytes());
+                support::terminate(1);
+            }
+        }
+        support::terminate(0);
     }
     for (index, chunk_lines) in chunks(&lines, lines_per_chunk).iter().enumerate() {
         // `split.c:332`: each chunk lands in `prefix + suffix(index)`, created
@@ -178,12 +197,16 @@ fn arg_error(e: SplitError<'_>) -> ! {
             support::warn(format!("split: {v}: illegal line count.\n").as_bytes());
             support::terminate(1);
         }
+        SplitError::IllegalByteCount(v) => {
+            support::warn(format!("split: {v}: illegal byte count.\n").as_bytes());
+            support::terminate(1);
+        }
         SplitError::IllegalSuffixLength(v) => {
             support::warn(format!("split: {v}: illegal suffix length.\n").as_bytes());
             support::terminate(1);
         }
         SplitError::Unmodelled => {
-            support::warn(b"split: -b/-n option not modelled yet\n");
+            support::warn(b"split: -n option not modelled yet\n");
             support::terminate(2);
         }
     }
