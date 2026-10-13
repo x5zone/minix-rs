@@ -48,10 +48,9 @@ fn run() -> ! {
     let style = parsed.style;
     let operands: Vec<String> = parsed.operands;
 
-    // The fixed-capacity ring rejects 0 and counts above 32 (declared cap). It
-    // only backs the `LastLines` walk, so the byte and forward-offset shapes skip
-    // this guard — C reaches neither buffer for them.
-    if matches!(style, TailStyle::LastLines { off } if TailWindow::new(off).is_err()) {
+    // The fixed-capacity ring rejects 0 and counts above 32 (declared cap), and
+    // only the non-zero `LastLines` walk is backed by it (`over_ring_cap`).
+    if style.over_ring_cap() {
         support::terminate(1);
     }
 
@@ -94,6 +93,13 @@ fn run() -> ! {
 /// print whole lines bottom-up (C `reverse()`).
 fn tail_stream(fd: Fd, style: TailStyle) {
     let input = read_fd(fd);
+    // C's zero arms come back with nothing written and a successful exit:
+    // `forward.c` seeks to the end for `RLINES`/`RBYTES` with `off == 0`, and
+    // `reverse.c` returns before touching the input for any other style with
+    // `off == 0`. Only `REVERSE` (bare `-r`) prints the whole file.
+    if style.selects_nothing() {
+        return;
+    }
     match style {
         TailStyle::SkipBytes { off } => support::emit(bytes_from(&input, off)),
         TailStyle::SkipLines { off } => support::emit(bytes_after_lines(&input, off)),
