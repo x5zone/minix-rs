@@ -12,6 +12,7 @@
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 02 | `227028e23` | `5d0f99e69` | v0.2 | 已审（反馈回收进 Round 03） | `tmp/doc-iter/01-boot-shim-bootstrap/round-02.md` |
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 03 | `5d0f99e69` | `f7a50edc5` | v0.3 | 已审（反馈回收进 Round 04） | `tmp/doc-iter/01-boot-shim-bootstrap/round-03.md` |
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 04 | `480b09fa4` | `4942c40f7` | v0.4 | 待送审 | `tmp/doc-iter/01-boot-shim-bootstrap/round-04.md`（含缺陷闭环台账 `defect-ledger.md`） |
+| `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 05 | `3566785d1` | （提交后回填） | v0.4+R05附加 | 待送审（收官轮：两处规定增量 + C1–C13 全量收集） | `tmp/doc-iter/01-boot-shim-bootstrap/round-05.md`（归因包）+ `cold-read-package-r05.md`（冷读包，分投） |
 
 ## 规则变更裁决记录
 
@@ -20,6 +21,7 @@
 | 2026-10-13 | v0.1 | 建立（见 v0.1 变更记录） | 用户裁决 + GPT 对话 | 已生效 |
 | 2026-10-13 | v0.2 | S1 证据盘点 / S4 盲测判分三分 / E7 三级化 + C1 澄清 / §八 归因记录 / §九 三道理门 / F5 / 包与台账 | Round 01 实证 + 外部评审（用户裁决） | 已生效 |
 | 2026-10-14 | v0.3 | S1.5 关键因果主张 / S1.6 运行阶段边界 / S2.1-6 职责漂移+机械对账 / V5 分阶段冷读 / §八 四类归因 / S5 发布扫描+台账重放 | Round 02 实证 + 外部评审（用户裁决"继续"） | 已生效 |
+| 2026-10-13 | v0.4 补充 | S5 发布扫描追加「文档头固定件在场」；轮次包分投（冷读包/归因包）+【§3 起点/终点】标记 + §7 收集节；冷读协议两增（错误自述 + 低置信配额，原始输出未合并入 §7） | R04 外部评审的「R05 附加收集要求」（用户裁决继续执行 R5） | 已生效（三处执行项）；其余收集项待 v0.5 裁决 |
 | 2026-10-13 | v0.4 | S1.0 证据分级（E1–E5）+ S1.7 主张—依据—适用范围表 + S2.1.7 跨节因果一致性检查 / V5 重构为冷读团（A/B/C 全文冷读、材料隔离、7 字段、附带发现） / 缺陷闭环台账（六字段、未发现≠发现未修） / 修复前五类归因 + 不以票数裁决 + 冷读边际价值指标 / S4.7 变更闭环检查 / 轮次类型（优化轮/闭环验证轮） / 包 §4b 源码证据节 | Round 03 实证 + 外部评审（冷读子 agent 提案、缺陷闭环、证据类型分离）+ 用户裁决"效果最大化" | 已生效 |
 | — | — | 候选规则 ③（行号引用检查）、④（对账表集合守恒） | Round 01 | 登记待工具排期 |
 | — | — | 入口 A 完整重做回流 | v0.2 裁决 | 待入口 B 在 2~3 篇不同形态文档上稳定 |
@@ -50,3 +52,10 @@
   01 篇文档已按机制分层陈述，**源码注释待另开一笔修订**（Round 04 A13 discovery）。
 - 01 篇构建侧残留（文档侧已按效果陈述，规则出处待核查）：Minix3 内核构建的栈对齐假设
   （`-mpreferred-stack-boundary` 旗标或 `pre_init` 反汇编）无源码证据（Round 04 C7 discovery）。
+- `os/kernel/src/vm_handoff.rs` 模块级文档的表头行「reserved module blobs | KernelInfo.boot_modules()
+  minus the VM module (reclaimed after ELF copy)」与实现矛盾——代码处已改为全量保留（含 VM 自己，
+  成修注释说明原因）；**表头待更新**（Round 05 C2 discovery，文档侧已注明「表头注释的旧口径」）。
+- Rust 侧模块分配（UEFI `AnyPages`）与内核段落位（直写固定物理地址）之间的重叠防护**未找到对应机制**：
+  C 侧由 `overlaps`（模块+内核当 N+1）挡；Rust 侧 `loader.rs:first_overlapping_pair` 只查内核自身
+  PT_LOAD 段，且内核段在模块分配之前直写（`load_kernel_with_loader` 立即写入）。真机未复现，待核实
+  （Round 05 C附带4 discovery）。
