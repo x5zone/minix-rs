@@ -18,6 +18,7 @@ pub mod cpu_identity;
 #[cfg(target_arch = "x86_64")]
 pub mod ap_early_entry;
 pub mod tlb;
+pub mod cache_sync;
 
 pub use protection::{X86_64Protection, X86PrivilegeLevel};
 pub use trap_entry::X86_64TrapEntry;

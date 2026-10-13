@@ -78,6 +78,10 @@ pub use arch::boot;
 pub use arch::stacktrace;
 pub use arch::tlb_arch;
 
+pub use arch::cache_sync::{
+    CacheSyncArch, MockCacheSyncArch, mock_last_range, mock_reset_cache_sync, mock_sync_calls,
+};
+
 pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;
 pub use arch::dm_coverage::{DmCoverageArch, DmRange, establish_dm_range};
@@ -648,6 +652,22 @@ pub type CurrentTimerIrqGate = crate::x86_64::timer_irq_gate::X86_64TimerIrqGate
 pub type CurrentTimerIrqGate = crate::arm64::timer_irq_gate::AArch64TimerIrqGate;
 #[cfg(target_arch = "riscv64")]
 pub type CurrentTimerIrqGate = crate::riscv64::timer_irq_gate::Riscv64TimerIrqGate;
+
+// ── CurrentCacheSyncArch type aliases ──
+//
+// Selects the architecture-specific `CacheSyncArch` implementor (SD-20
+// instruction-cache synchronization). Under the host test form
+// (`runtime-window`) the mock is selected: the loader's host tests assert
+// that the tail call happened and with which range, without executing
+// cache-maintenance instructions against a synthetic address space.
+#[cfg(feature = "runtime-window")]
+pub type CurrentCacheSyncArch = arch::cache_sync::MockCacheSyncArch;
+#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
+pub type CurrentCacheSyncArch = crate::x86_64::cache_sync::X86_64CacheSyncArch;
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
+pub type CurrentCacheSyncArch = crate::arm64::cache_sync::AArch64CacheSyncArch;
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
+pub type CurrentCacheSyncArch = crate::riscv64::cache_sync::Riscv64CacheSyncArch;
 
 // ── CurrentCpuContextArch / CpuContext / TrapFrame type aliases ──
 //

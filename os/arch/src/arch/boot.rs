@@ -41,8 +41,9 @@ use minix_types::{PhysBytes, PhysFrame, VirBytes};
 /// `crate::arch::boot::ProcNr` / `minix_arch::ProcNr` paths keep resolving.
 pub use minix_types::ProcNr;
 
-use crate::paging::Paging;
+use crate::arch::cache_sync::CacheSyncArch;
 use crate::arch::frame::{PhysAccess, VmBootAllocator};
+use crate::paging::Paging;
 
 /// Process role (OS concept — replaces the previous `is_kernel: bool`
 /// implicit + ad-hoc `is_vm` / `is_root_sys` branching).
@@ -446,6 +447,15 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     let page_size = P::PAGE_SIZE as u64;
     let mut total_allocated: usize = 0;
 
+    // SD-20: kernel-accessible VA span of every *executable* segment byte
+    // written by the loop below. The tail-of-loader instruction-cache sync
+    // runs over this span (see the call after the loop). Tracked per frame
+    // (`dst`), not per user VA: the maintenance instructions translate
+    // through the *active* root, and the image's own root may not be the
+    // active one at call time (`load_process_elf` maps into a fresh root).
+    let mut icache_lo: u64 = u64::MAX;
+    let mut icache_hi: u64 = 0;
+
     // Map each PT_LOAD segment page-by-page. Direction D: the allocator
     // picks a *physical* frame each page; the ELF VA is mapped onto it
     // (PA ≠ VA by design). Per page the loader does
@@ -600,8 +610,27 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
                 }
             }
 
+            // SD-20: this page's bytes are written; remember its
+            // kernel-accessible frame span when the segment is executable
+            // (only code needs the I-side of the sync; the whole frame is
+            // recorded — over-invalidation is harmless, the trait says so).
+            if flags.contains(crate::paging::PageFlags::EXECUTABLE) {
+                icache_lo = icache_lo.min(dst);
+                icache_hi = icache_hi.max(dst + page_size);
+            }
+
             vaddr += page_size;
         }
+    }
+
+    // SD-20 [ARCH: cache-sync] tail-of-loader instruction-cache sync: the
+    // executable bytes above are now written into frames the CPU is about
+    // to fetch as instructions. aarch64/riscv64 need explicit maintenance
+    // here (I-caches are not coherent with these writes); x86_64's
+    // implementor is a no-op. Frozen design: register SD-20, "called at
+    // the ELF-loader tail".
+    if icache_lo < icache_hi {
+        crate::CurrentCacheSyncArch::sync_icache_range(icache_lo..icache_hi);
     }
 
     // Map the user stack: [stack_high - VM_STACK_SIZE, stack_high).
@@ -1188,13 +1217,25 @@ mod tests {
         assert_eq!(result.err(), Some(VmLoadError::OutOfMemory));
     }
 
-    /// Builds an ELF64 with one PT_LOAD: vaddr aligned, filesz spans
-    /// partial pages, memsz > filesz (`.bss`).
+    /// Builds an ELF64 with one PT_LOAD (PF_R|PF_W): vaddr aligned, filesz
+    /// spans partial pages, memsz > filesz (`.bss`).
     ///
     /// Layout: phdr at 0x40, file data at offset 0x200.. (immediately
     /// after the phdr), `filesz` bytes of 0xAB markers, then `.bss`.
     /// `image` is 0x2000 bytes — filesz must keep `0x200 + filesz <= 0x2000`.
     fn build_bss_elf(filesz: u64, memsz: u64, vaddr: u64) -> [u8; 0x2000] {
+        build_bss_elf_with_phflags(filesz, memsz, vaddr, 6 /* PF_R|PF_W */)
+    }
+
+    /// [`build_bss_elf`] with a selectable PT_LOAD `p_flags` — the SD-20
+    /// instruction-cache tests need an executable segment (`PF_X`) and a
+    /// non-executable control.
+    fn build_bss_elf_with_phflags(
+        filesz: u64,
+        memsz: u64,
+        vaddr: u64,
+        phflags: u32,
+    ) -> [u8; 0x2000] {
         assert!(0x200 + filesz as usize <= 0x2000, "filesz too large");
         let mut image = [0u8; 0x2000];
         image[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
@@ -1210,7 +1251,7 @@ mod tests {
         image[56..58].copy_from_slice(&1u16.to_le_bytes());   // e_phnum
         let ph = &mut image[64..120];
         ph[0..4].copy_from_slice(&1u32.to_le_bytes());        // PT_LOAD
-        ph[4..8].copy_from_slice(&6u32.to_le_bytes());        // PF_R|PF_W
+        ph[4..8].copy_from_slice(&phflags.to_le_bytes()); // p_flags
         ph[8..16].copy_from_slice(&0x200u64.to_le_bytes());   // p_offset
         ph[16..24].copy_from_slice(&vaddr.to_le_bytes());     // p_vaddr
         ph[24..32].copy_from_slice(&vaddr.to_le_bytes());     // p_paddr
@@ -1493,5 +1534,151 @@ mod tests {
 
         let result = load_vm_elf(&module, &kinfo, &mut paging, &mut vm_alloc, &access);
         assert_eq!(result.err(), Some(VmLoadError::OutOfMemory));
+    }
+
+    /// SD-20: the loader must run the instruction-cache sync exactly once,
+    /// over the kernel-accessible frame span of the executable segment(s).
+    #[cfg(feature = "runtime-window")]
+    #[test]
+    fn load_vm_elf_syncs_icache_over_exec_segment_frames() {
+        use minix_types::{PhysBytes, VirBytes};
+        use crate::arch::frame::{PhysAccess, VmBootAllocator, VmBootRegion};
+        use crate::arch::cache_sync::{mock_last_range, mock_reset_cache_sync, mock_sync_calls};
+
+        mock_reset_cache_sync();
+
+        // One executable PT_LOAD (PF_R|PF_X = 5) spanning three pages:
+        // filesz = 0x1800, memsz = 0x3000.
+        let image = build_bss_elf_with_phflags(0x1800, 0x3000, 0x400000, 5);
+        let module = BootModule {
+            name: "fake-exec",
+            start: PhysBytes(image.as_ptr() as u64),
+            len: image.len(),
+        };
+
+        let buf: Box<[u8]> = vec![0u8; 0x200000].into_boxed_slice();
+        let dm_base = buf.as_ptr() as u64;
+        struct MockAccess {
+            dm_base: u64,
+        }
+        impl PhysAccess for MockAccess {
+            fn phys_to_virt(&self, phys: PhysBytes) -> VirBytes {
+                VirBytes(self.dm_base + phys.get())
+            }
+        }
+        let access = MockAccess { dm_base };
+
+        let region = VmBootRegion::new(PhysBytes(0x1000), PhysBytes(0x200000)).unwrap();
+        let regions = crate::arch::frame::VmBootRegions::from_sorted(&[region])
+            .expect("test: single region is descending & disjoint");
+        let mut vm_alloc = VmBootAllocator::new(regions);
+
+        let kinfo = KernelInfo {
+            memmap: &[minix_boot::MemoryRegion {
+                base: PhysBytes(0x1000),
+                len: 0x200000,
+            }],
+            kern_virt_base: VirBytes(0xffff_8000_0000_0000),
+            kern_phys_base: PhysBytes(0),
+            kern_size: 0,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x5_0000),
+            kern_stack_top: VirBytes(0),
+            syscall_entry: VirBytes(0),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+            reserved_regions: &[],
+        };
+        let mut paging = crate::paging::mock::MockPaging::new().unwrap();
+
+        load_vm_elf(&module, &kinfo, &mut paging, &mut vm_alloc, &access)
+            .expect("exec ELF must load");
+
+        assert_eq!(
+            mock_sync_calls(),
+            1,
+            "loader must invoke the icache sync exactly once for one exec segment"
+        );
+        // Frames are handed out descending: VA page0 → PA 0x1FF000,
+        // page1 → 0x1FE000, page2 → 0x1FD000. The recorded span therefore
+        // covers all three frames: [dm_base + 0x1FD000, dm_base + 0x200000).
+        assert_eq!(
+            mock_last_range(),
+            Some((dm_base + 0x1FD000, dm_base + 0x200000)),
+            "recorded sync span must cover every executable frame"
+        );
+
+        mock_reset_cache_sync();
+    }
+
+    /// SD-20 negative control: an image whose only PT_LOAD is
+    /// non-executable (PF_R|PF_W) is data, not code — the loader must not
+    /// run the icache sync for it (this also proves the call above is
+    /// conditional on the executable flag, not unconditional).
+    #[cfg(feature = "runtime-window")]
+    #[test]
+    fn load_vm_elf_skips_icache_sync_for_non_exec_image() {
+        use minix_types::{PhysBytes, VirBytes};
+        use crate::arch::frame::{PhysAccess, VmBootAllocator, VmBootRegion};
+        use crate::arch::cache_sync::{mock_reset_cache_sync, mock_sync_calls};
+
+        mock_reset_cache_sync();
+
+        let image = build_bss_elf_with_phflags(0x1800, 0x3000, 0x400000, 6 /* PF_R|PF_W */);
+        let module = BootModule {
+            name: "fake-data",
+            start: PhysBytes(image.as_ptr() as u64),
+            len: image.len(),
+        };
+
+        let buf: Box<[u8]> = vec![0u8; 0x200000].into_boxed_slice();
+        let dm_base = buf.as_ptr() as u64;
+        struct MockAccess {
+            dm_base: u64,
+        }
+        impl PhysAccess for MockAccess {
+            fn phys_to_virt(&self, phys: PhysBytes) -> VirBytes {
+                VirBytes(self.dm_base + phys.get())
+            }
+        }
+        let access = MockAccess { dm_base };
+
+        let region = VmBootRegion::new(PhysBytes(0x1000), PhysBytes(0x200000)).unwrap();
+        let regions = crate::arch::frame::VmBootRegions::from_sorted(&[region])
+            .expect("test: single region is descending & disjoint");
+        let mut vm_alloc = VmBootAllocator::new(regions);
+
+        let kinfo = KernelInfo {
+            memmap: &[minix_boot::MemoryRegion {
+                base: PhysBytes(0x1000),
+                len: 0x200000,
+            }],
+            kern_virt_base: VirBytes(0xffff_8000_0000_0000),
+            kern_phys_base: PhysBytes(0),
+            kern_size: 0,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x5_0000),
+            kern_stack_top: VirBytes(0),
+            syscall_entry: VirBytes(0),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+            reserved_regions: &[],
+        };
+        let mut paging = crate::paging::mock::MockPaging::new().unwrap();
+
+        load_vm_elf(&module, &kinfo, &mut paging, &mut vm_alloc, &access)
+            .expect("data-only ELF must load");
+
+        assert_eq!(
+            mock_sync_calls(),
+            0,
+            "non-executable image must not trigger the icache sync"
+        );
     }
 }

@@ -603,17 +603,64 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
     // supervisor mode unless sstatus.SUM=1. Since we haven't set SUM,
     // identity mapping must be supervisor-only.
     let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
+
+    // SD-42 [ARCH: mmio-device] (aarch64 only): the device MMIO window must
+    // map Device-nGnRnE, not Normal. MMIO registers require strongly-ordered
+    // access (no speculation, no gathering, no reordering); a Normal WBWA
+    // mapping satisfies that on QEMU but not on real hardware. The window
+    // sits inside the first `kern_huge` identity block, so that block is
+    // emitted at 2 MiB granularity with per-piece flags; every other block
+    // keeps `kern_huge` granularity. This identity alias and the high-half
+    // alias of Step 2b carry the same attributes on purpose — mapping one
+    // physical page with two different attribute sets is UNPREDICTABLE per
+    // the ARM ARM, so the two must agree.
     let mut addr: u64 = 0;
     while addr < IDENTITY_MAP_END {
-        // Ignore errors — some ranges may not be backed by physical memory,
-        // but that's fine; the CPU won't access them.
-        //[SD19-gate] 恒等映射：无 backing 的区间属正常（map_huge 失败即跳过，紧邻注释已陈明）
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = paging.map_huge(
-            VirBytes(addr), PhysBytes(addr),
-            kern_huge as usize, id_flags,
-        );
-        addr += kern_huge;
+        let block_end = addr + kern_huge;
+        let mut piece_addr = addr;
+        #[cfg(target_arch = "aarch64")]
+        let piece_size = {
+            use minix_platform::arch::aarch64::{MMIO_PA_BASE, MMIO_WINDOW_LEN};
+            const DEV_BLOCK: u64 = 1 << 21; // 2 MiB
+            // The window is DEV_BLOCK-aligned and `addr` is kern_huge-aligned
+            // (kern_huge is 1 GiB or 2 MiB), so every DEV_BLOCK piece of the
+            // block is fully inside or fully outside the window.
+            const _: () =
+                assert!(MMIO_PA_BASE % DEV_BLOCK == 0 && MMIO_WINDOW_LEN % DEV_BLOCK == 0);
+            let dev_hi = MMIO_PA_BASE + MMIO_WINDOW_LEN;
+            if addr < dev_hi && MMIO_PA_BASE < block_end {
+                DEV_BLOCK
+            } else {
+                kern_huge
+            }
+        };
+        #[cfg(not(target_arch = "aarch64"))]
+        let piece_size = kern_huge;
+        while piece_addr < block_end {
+            #[cfg(target_arch = "aarch64")]
+            let piece_flags = {
+                use minix_platform::arch::aarch64::{MMIO_PA_BASE, MMIO_WINDOW_LEN};
+                if piece_addr >= MMIO_PA_BASE && piece_addr < MMIO_PA_BASE + MMIO_WINDOW_LEN {
+                    PageFlags::kernel_read_write() | PageFlags::DEVICE
+                } else {
+                    id_flags
+                }
+            };
+            #[cfg(not(target_arch = "aarch64"))]
+            let piece_flags = id_flags;
+            // Ignore errors — some ranges may not be backed by physical memory,
+            // but that's fine; the CPU won't access them.
+            //[SD19-gate] 恒等映射：无 backing 的区间属正常（map_huge 失败即跳过，紧邻注释已陈明）
+            #[allow(clippy::let_underscore_must_use)]
+            let _ = paging.map_huge(
+                VirBytes(piece_addr),
+                PhysBytes(piece_addr),
+                piece_size as usize,
+                piece_flags,
+            );
+            piece_addr += piece_size;
+        }
+        addr = block_end;
     }
 
     // Step 2: Kernel high-address mapping.
@@ -653,9 +700,11 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
     // window carries EXECUTABLE=off so EL0 can neither reach nor fetch it
     // (it is already supervisor-only). NOTE: `kernel_read_write` maps to
     // XN(bit54), which only gates EL0 fetch; forbidding EL1 fetch would need
-    // PXN(bit53), which `flags_to_pte` does not currently emit. The identity
-    // map uses the same MAIR Attr0=Normal treatment, so this alias matches the
-    // boot-time access exactly (no Device-type regression introduced here).
+    // PXN(bit53), which `flags_to_pte` does not currently emit. The alias is
+    // mapped with `PageFlags::DEVICE` (SD-42): these are MMIO registers, and
+    // Step 1's identity alias of the same window carries the same Device
+    // attributes so the two mappings of one physical page agree (mismatched
+    // attributes are UNPREDICTABLE per the ARM ARM).
     #[cfg(target_arch = "aarch64")]
     {
         use minix_platform::arch::aarch64::{MMIO_PA_BASE, MMIO_VA_BASE, MMIO_WINDOW_LEN};
@@ -669,7 +718,7 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
                 && MMIO_PA_BASE % MMIO_BLOCK == 0
                 && MMIO_VA_BASE % MMIO_BLOCK == 0
         );
-        let mmio_flags = PageFlags::kernel_read_write();
+        let mmio_flags = PageFlags::kernel_read_write() | PageFlags::DEVICE;
         let mut off = 0u64;
         while off < MMIO_WINDOW_LEN {
             paging
