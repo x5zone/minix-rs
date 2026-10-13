@@ -12,8 +12,8 @@ pub use minix_sys::signal as sig;
 use alloc::string::ToString;
 use alloc::string::String;
 use sig::{
-    SIGNAL_ABORT, SIGNAL_ALARM, SIGNAL_CONTINUE, SIGNAL_HANGUP, SIGNAL_KILL,
-    SIGNAL_TERMINAL_STOP, SIGNAL_TERMINATE, SIGNAL_USER_1,
+    SIGNAL_ABORT, SIGNAL_ALARM, SIGNAL_HANGUP, SIGNAL_TERMINAL_STOP, SIGNAL_TERMINATE,
+    SIGNAL_USER_1,
 };
 
 /// The seven init states (C: `DEATH`..`CATATONIA`, init.c:133-139).
