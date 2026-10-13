@@ -146,8 +146,18 @@ fn weekday_g(year: i32, month: u32, day: u32, reckoning: Reckoning) -> Result<u3
 
 /// Month names as `cal.c:86-91` spells them (full form, title case).
 pub const MONTH_NAMES: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June", "July", "August",
-    "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 /// Layout constants of the C printer (`cal.c:336-343`): three columns per
@@ -160,19 +170,61 @@ pub const HEAD_SEP: usize = 2;
 /// `MONTH_PER_ROW` (`cal.c:342`).
 pub const MONTH_PER_ROW: usize = 3;
 
-/// One month as a 7×6 day matrix (0 = the printer writes blanks).
+/// Which numeral each printed day cell carries, and how wide the cell and the
+/// year band are. BSD `cal -j` switches the day from day-of-month to
+/// day-of-year and widens every cell from two digits to three: `cal.c:255`
+/// sets `julian`, `cal.c:336-343` pick `J_DAY_LEN`/`J_WEEK_LEN`/
+/// `J_MONTH_PER_ROW`, and `ascii_day` (`cal.c:584-603`) renders a three-digit
+/// day with leading zeros dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DayStyle {
+    /// Day of month (`1`..`31`): two-column cells, three months per year row.
+    Month,
+    /// Day of year (`1`..`366`): three-column cells, two months per year row.
+    Julian,
+}
+
+/// `J_WEEK_LEN` (`cal.c:339`): seven four-column cells minus the trailing space.
+pub const J_WEEK_LEN: usize = 27;
+/// `J_HEAD_SEP` (`cal.c:341`).
+pub const J_HEAD_SEP: usize = 2;
+/// `J_MONTH_PER_ROW` (`cal.c:343`).
+pub const J_MONTH_PER_ROW: usize = 2;
+/// `day_headings` (`cal.c:91`).
+pub const DAY_HEADINGS: &str = " S  M Tu  W Th  F  S";
+/// `j_day_headings` (`cal.c:92`).
+pub const JULIAN_HEADINGS: &str = "  S   M  Tu   W  Th   F   S";
+
+/// 1-based day of the year for the first of `month` (Gregorian leap rule),
+/// mirroring `cal.c` `day_in_year`: `cal -j` prints this as the month's first
+/// cell and counts up, so September 2025 opens at 244.
+pub fn day_of_year_of_first(year: i32, month: u32) -> Result<u32, DocError> {
+    if year <= 0 || !(1..=12).contains(&month) {
+        return Err(DocError::InvalidArgument);
+    }
+    let mut doy = 1u32;
+    for m in 1..month {
+        doy += month_days(year, m, Reckoning::Gregorian)?;
+    }
+    Ok(doy)
+}
+
+/// One month as a 7×6 day matrix (0 = the printer writes blanks). The printed
+/// numeral is `first_value + (day - 1)`: the month display passes
+/// `first_value = 1` (day-of-month), `cal -j` passes the day-of-year of the
+/// month's first.
 ///
 /// 列序跟表头走：`day_headings` 是**周日先**（` S  M Tu ...`），而
 /// `grid.first_weekday` 以周一为 0（`weekday` 的历法约定），落位时换算
 /// 一格：周日列 = (周几 + 1) % 7。
-pub fn day_matrix(grid: &MonthGrid) -> [[u32; 7]; 6] {
+pub fn day_matrix(grid: &MonthGrid, first_value: u32) -> [[u32; 7]; 6] {
     let mut matrix = [[0u32; 7]; 6];
     for day in 1..=grid.day_count {
         let index = (day - 1 + grid.first_weekday + 1) as usize;
         let slot = index % 7;
         let line = index / 7;
         if line < 6 {
-            matrix[line][slot] = day;
+            matrix[line][slot] = first_value + (day - 1);
         }
     }
     matrix
@@ -226,19 +278,55 @@ fn put_day(out: &mut [u8], at: &mut usize, day: u32) -> Result<(), DocError> {
     Ok(())
 }
 
-/// Write one month's day body (six rows of `WEEK_LEN`, trailing blanks
-/// trimmed) starting at `*at`. Rows beyond the days come out as blank
-/// lines exactly like the C loop that always runs six times
-/// (`cal.c:448-474`).
-fn put_month_body(out: &mut [u8], at: &mut usize, grid: &MonthGrid) -> Result<(), DocError> {
-    let matrix = day_matrix(grid);
+/// One three-column Julian day-of-year cell plus its separating blank:
+/// `ascii_day` in `julian` mode (`cal.c:584-603`) drops leading zero digits
+/// (so `1` prints `  1`, `105` prints `105`), and the caller's `J_DAY_LEN`
+/// pitch of four carries the separator.
+fn put_day_julian(out: &mut [u8], at: &mut usize, day: u32) -> Result<(), DocError> {
+    if *at + 4 > out.len() {
+        return Err(DocError::InvalidArgument);
+    }
+    if day == 0 {
+        out[*at..*at + 4].copy_from_slice(b"    ");
+    } else {
+        let (hundreds, rest) = (day / 100, day % 100);
+        out[*at] = if hundreds != 0 {
+            b'0' + hundreds as u8
+        } else {
+            b' '
+        };
+        out[*at + 1] = if hundreds != 0 || rest / 10 != 0 {
+            b'0' + (rest / 10) as u8
+        } else {
+            b' '
+        };
+        out[*at + 2] = b'0' + (rest % 10) as u8;
+        out[*at + 3] = b' ';
+    }
+    *at += 4;
+    Ok(())
+}
+
+/// Write one month's day body (six rows) from a prebuilt `matrix`. `day_len`
+/// is 3 for the month display and 4 for `cal -j`; trailing blanks are trimmed
+/// exactly like the C loop that always runs six times (`cal.c:448-474`).
+fn put_month_body(
+    out: &mut [u8],
+    at: &mut usize,
+    matrix: &[[u32; 7]; 6],
+    day_len: usize,
+) -> Result<(), DocError> {
     for line in matrix.iter() {
-        // 七格乘三列是 21：末格的分隔空格随后裁掉（trim_trailing_spaces，
-        // cal.c:471-474）。
-        let mut row = [0u8; WEEK_LEN + 1];
+        // 七格乘 day_len（周最多 28 列）：末格的分隔空格随后裁掉
+        // （trim_trailing_spaces，cal.c:471-474）。
+        let mut row = [0u8; 7 * 4];
         let mut w = 0;
         for &day in line.iter() {
-            put_day(&mut row, &mut w, day)?;
+            if day_len == 4 {
+                put_day_julian(&mut row, &mut w, day)?;
+            } else {
+                put_day(&mut row, &mut w, day)?;
+            }
         }
         while w > 0 && row[w - 1] == b' ' {
             w -= 1;
@@ -256,9 +344,19 @@ pub fn render_month(
     year: i32,
     month: u32,
     reckoning: Reckoning,
+    style: DayStyle,
     out: &mut [u8],
 ) -> Result<usize, DocError> {
     let grid = month_grid(year, month, reckoning)?;
+    let (week_len, day_len, headings, first_value) = match style {
+        DayStyle::Month => (WEEK_LEN, 3, DAY_HEADINGS, 1u32),
+        DayStyle::Julian => (
+            J_WEEK_LEN,
+            4,
+            JULIAN_HEADINGS,
+            day_of_year_of_first(year, month)?,
+        ),
+    };
     let mut at = 0;
     let mut title = [0u8; 24];
     let name = MONTH_NAMES[(month - 1) as usize];
@@ -266,59 +364,94 @@ pub fn render_month(
     title[name.len()] = b' ';
     let mut tail = [0u8; 8];
     let digits = write_decimal(year, &mut tail);
-    title[name.len() + 1..name.len() + 1 + digits]
-        .copy_from_slice(&tail[..digits]);
+    title[name.len() + 1..name.len() + 1 + digits].copy_from_slice(&tail[..digits]);
     let title_len = name.len() + 1 + digits;
     let title = core::str::from_utf8(&title[..title_len]).map_err(|_| DocError::InvalidArgument)?;
-    put_centered(out, &mut at, title, WEEK_LEN)?;
-    put(out, &mut at, b"\n S  M Tu  W Th  F  S\n")?;
-    put_month_body(out, &mut at, &grid)?;
+    put_centered(out, &mut at, title, week_len)?;
+    put(out, &mut at, b"\n")?;
+    put(out, &mut at, headings.as_bytes())?;
+    put(out, &mut at, b"\n")?;
+    let matrix = day_matrix(&grid, first_value);
+    put_month_body(out, &mut at, &matrix, day_len)?;
     Ok(at)
 }
 
 /// Render a whole year (`cal 2025` face, `cal.c:390-475`): the year
 /// centred over the three-column band, then twelve months three to a row.
-pub fn render_year(year: i32, reckoning: Reckoning, out: &mut [u8]) -> Result<usize, DocError> {
-    let band = WEEK_LEN * MONTH_PER_ROW + HEAD_SEP * (MONTH_PER_ROW - 1);
+pub fn render_year(
+    year: i32,
+    reckoning: Reckoning,
+    style: DayStyle,
+    out: &mut [u8],
+) -> Result<usize, DocError> {
+    let (week_len, day_len, month_per_row, headings) = match style {
+        DayStyle::Month => (WEEK_LEN, 3, MONTH_PER_ROW, DAY_HEADINGS),
+        DayStyle::Julian => (J_WEEK_LEN, 4, J_MONTH_PER_ROW, JULIAN_HEADINGS),
+    };
+    let band = week_len * month_per_row + HEAD_SEP * (month_per_row - 1);
     let mut at = 0;
     let mut year_text = [0u8; 8];
     let digits = write_decimal(year, &mut year_text);
-    let year_str = core::str::from_utf8(&year_text[..digits]).map_err(|_| DocError::InvalidArgument)?;
+    let year_str =
+        core::str::from_utf8(&year_text[..digits]).map_err(|_| DocError::InvalidArgument)?;
     put_centered(out, &mut at, year_str, band)?;
     put(out, &mut at, b"\n\n")?;
     let mut first = 1u32;
     while first <= 12 {
-        let count = (12 - first + 1).min(MONTH_PER_ROW as u32) as usize;
-        let mut grid_storage = [MonthGrid { first_weekday: 0, day_count: 0 }; MONTH_PER_ROW];
-        for (slot, grid_cell) in grid_storage.iter_mut().take(count).enumerate() {
-            *grid_cell = month_grid(year, first + slot as u32, reckoning)?;
+        let count = (12 - first + 1).min(month_per_row as u32) as usize;
+        let mut grid_storage = [MonthGrid {
+            first_weekday: 0,
+            day_count: 0,
+        }; 3];
+        let mut values_storage = [1u32; 3];
+        for slot in 0..count {
+            let month = first + slot as u32;
+            grid_storage[slot] = month_grid(year, month, reckoning)?;
+            values_storage[slot] = match style {
+                DayStyle::Month => 1,
+                DayStyle::Julian => day_of_year_of_first(year, month)?,
+            };
         }
         // 标题行与表头行（`cal.c:411-445`）：列间 `HEAD_SEP` 两空格。
         for slot in 0..count {
             if slot > 0 {
                 put(out, &mut at, b"  ")?;
             }
-            put_centered(out, &mut at, MONTH_NAMES[(first + slot as u32 - 1) as usize], WEEK_LEN)?;
+            put_centered(
+                out,
+                &mut at,
+                MONTH_NAMES[(first + slot as u32 - 1) as usize],
+                week_len,
+            )?;
         }
         put(out, &mut at, b"\n")?;
         for slot in 0..count {
             if slot > 0 {
                 put(out, &mut at, b"  ")?;
             }
-            put(out, &mut at, b" S  M Tu  W Th  F  S")?;
+            put(out, &mut at, headings.as_bytes())?;
         }
         put(out, &mut at, b"\n")?;
-        // 六行日体：三份并排（每周 outer，每月 inner）。
-        // 旧体把 outer 错为月、inner 错为周，导致一月的 6 行被横拼成
-        // 一条线、二月三月各自另起——列不对齐（P1-bug，2026-10-13）。
-        let matrices = [day_matrix(&grid_storage[0]), day_matrix(&grid_storage[1]), day_matrix(&grid_storage[2])];
+        let matrices = [
+            day_matrix(&grid_storage[0], values_storage[0]),
+            day_matrix(&grid_storage[1], values_storage[1]),
+            day_matrix(&grid_storage[2], values_storage[2]),
+        ];
+        // 六行日体：每周 outer、每月 inner。外层 `week` 要同切三份月栅格的
+        // 同一行（按周取带），是固定列跨多数组的访问，迭代器形反而更绕，
+        // clippy 的 needless_range_loop 在此属误报——局部 allow + 理由。
+        #[allow(clippy::needless_range_loop)]
         for week in 0..6 {
-            for slot in 0..count {
+            for (slot, matrix) in matrices.iter().enumerate().take(count) {
                 if slot > 0 {
                     put(out, &mut at, b"  ")?;
                 }
-                for &day in &matrices[slot][week] {
-                    put_day(out, &mut at, day)?;
+                for &day in &matrix[week] {
+                    if day_len == 4 {
+                        put_day_julian(out, &mut at, day)?;
+                    } else {
+                        put_day(out, &mut at, day)?;
+                    }
                 }
                 at -= 1; // 每月行尾的分隔空格交给收尾统一裁剪
             }
@@ -327,7 +460,7 @@ pub fn render_year(year: i32, reckoning: Reckoning, out: &mut [u8]) -> Result<us
             }
             put(out, &mut at, b"\n")?;
         }
-        first += MONTH_PER_ROW as u32;
+        first += month_per_row as u32;
     }
     Ok(at)
 }
@@ -365,7 +498,8 @@ mod render_tests {
 
     fn render(year: i32, month: u32) -> String {
         let mut out = [0u8; 4096];
-        let used = render_month(year, month, Reckoning::Gregorian, &mut out).unwrap();
+        let used =
+            render_month(year, month, Reckoning::Gregorian, DayStyle::Month, &mut out).unwrap();
         String::from_utf8(out[..used].to_vec()).unwrap()
     }
 
@@ -403,7 +537,7 @@ mod render_tests {
     #[test]
     fn test_year_render_band_width() {
         let mut out = [0u8; 4096];
-        let used = render_year(2025, Reckoning::Gregorian, &mut out).unwrap();
+        let used = render_year(2025, Reckoning::Gregorian, DayStyle::Month, &mut out).unwrap();
         let text = core::str::from_utf8(&out[..used]).unwrap();
         let mut lines = text.split('\n');
         let title = lines.next().unwrap();
@@ -412,7 +546,10 @@ mod render_tests {
         let names = lines.next().unwrap(); // 标题后的空行
         assert_eq!(names, "");
         let months = lines.next().unwrap();
-        assert!(months.starts_with("      January"), "居中左补 6 空（20-7)/2");
+        assert!(
+            months.starts_with("      January"),
+            "居中左补 6 空（20-7)/2"
+        );
         assert!(months.contains("March"), "一行三个月");
     }
 
@@ -422,7 +559,7 @@ mod render_tests {
         // 旧体把两层循环写反（外层=月、内层=周），一月的 6 行被横拼成一条
         // 线、二月三月另起——test_year_render_band_width 只校标题带没抓到。
         let mut out = [0u8; 4096];
-        let used = render_year(2025, Reckoning::Gregorian, &mut out).unwrap();
+        let used = render_year(2025, Reckoning::Gregorian, DayStyle::Month, &mut out).unwrap();
         let text = core::str::from_utf8(&out[..used]).unwrap();
         let lines: Vec<&str> = text.split('\n').collect();
         // 全年 4 带 ×（1 月名 + 1 表头 + 6 日行）+ 顶部年份/空行 + 末尾空串。
@@ -437,5 +574,51 @@ mod render_tests {
             lines[5],
             " 5  6  7  8  9 10 11   2  3  4  5  6  7  8   2  3  4  5  6  7  8"
         );
+    }
+
+    #[test]
+    fn test_julian_month_day_of_year() {
+        // cal -j 9 2025：September 1 是年内第 244 日（Gregorian 2025 非闰），
+        // 落周一（表头周日起、M 列），单元宽三列加一空格分隔（BSD cal -j）。
+        let mut out = [0u8; 4096];
+        let used = render_month(2025, 9, Reckoning::Gregorian, DayStyle::Julian, &mut out).unwrap();
+        let text = core::str::from_utf8(&out[..used]).unwrap();
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert_eq!(
+            lines[0], "      September 2025       ",
+            "标题居中于 J_WEEK_LEN=27"
+        );
+        assert_eq!(lines[1], "  S   M  Tu   W  Th   F   S", "j_day_headings");
+        assert_eq!(
+            lines[2], "    244 245 246 247 248 249",
+            "首行日 = 年内第 244–249"
+        );
+        assert_eq!(day_of_year_of_first(2025, 9).unwrap(), 244);
+        assert_eq!(
+            day_of_year_of_first(2024, 3).unwrap(),
+            61,
+            "闰年 3/1 = 31+29+1"
+        );
+        assert_eq!(day_of_year_of_first(2025, 1).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_julian_year_two_per_row() {
+        // cal -j 2024：年视图每月 2 个一行（J_MONTH_PER_ROW），Feb 1 = 年内第 32 日。
+        let mut out = [0u8; 8192];
+        let used = render_year(2024, Reckoning::Gregorian, DayStyle::Julian, &mut out).unwrap();
+        let text = core::str::from_utf8(&out[..used]).unwrap();
+        let lines: Vec<&str> = text.split('\n').collect();
+        // 6 带（12 月 / 2）× (1 名 + 1 表 + 6 日) + 顶 2 + 末空。
+        assert_eq!(lines.len(), 6 * (1 + 1 + 6) + 2 + 1, "年积日视图 6 带行数");
+        assert_eq!(
+            lines[2], "          January                     February          ",
+            "首带 = Jan + Feb 两月并排"
+        );
+        assert!(
+            lines[4].starts_with("      1   2   3   4   5   6"),
+            "Jan 1 起年内第 1 日"
+        );
+        assert!(lines[4].contains("32"), "Feb 1 落年内第 32 日（2024 闰）");
     }
 }

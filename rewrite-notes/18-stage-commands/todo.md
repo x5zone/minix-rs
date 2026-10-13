@@ -217,6 +217,22 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - ✅ **批次五十五完成：12 篇 `sleep` 接线**（`2026-10-10`，`claim/CMD-SLEEP-BIN-qoder`，单域三线 commands/proctools，无跨界）：落地缺失命令 `sleep`（暂停若干秒，真源 `minix3/bin/sleep/sleep.c` 159 行）。决定半新增 `minix_proctools::sleep`（无堆）——`plan` 忠实移植 `sleep.c:104-124` 的双路解析：先扫操作数有无非数字字节——无则整数路（`atol`，`<=0` → `NoSleep` 成退 0），有则小数路（`atof`，`<=0` → `Bad` 运 usage，否则 `floor`/小数拆 `secs`+`nanos`）。这个不对称是真实的：`"0"` 走整数→不睡退 0，而 `"0.0"` 走小数→报 usage。plan 以数据返回、交调用方跑 `nanosleep`。6 枚宿主测：整数秒/零不睡/小数拆分/非正拒绝/前导空格与符号走小数路/纳秒位截断。执行半 `src/bin/sleep.rs`：`sleep seconds` 单操作数（`getopt("")` 拒任意 `-x`），Bad→usage退1、NoSleep→退0、Sleep→`minix_sys::nanosleep(secs,nanos)`。三件套：`cargo test -p minix-proctools --lib sleep::`→6/0、全 crate `--lib`→40/0；freestanding x86_64-unknown-none --release（docker `minix-ci:1.94`）绿；clippy 触及文件零告警。**声明性留白**：`SIGINFO` 进度报告与 EINTR 剩余时长恢复循环（`sleep.c:126-136`）需信号处理注册、本树未接→nanosleep 只发一次；小数路不读指数/hex（`1e3`→1 非 1000）；真机 per-command 与 imgrd 播种归 `C-57`/E5。修法详见 `../18-stage-commands/todo.md` §6.1 批次五十五。
 - ✅ **批次五十六完成：06 篇 `chmod` 接线**（`2026-10-10`，`claim/CMD-MKDIR-RMDIR-BIN-qoder`，单域三线 commands/fileops，无跨界）：命令面干净纯项已穷尽（余下 fpr/ul/deroff/banner 是无 C 参照的超大/终端依赖过滤器，tty/mesg 需未封装 ttyname，touch/date-set 受时区纠缠），故改接 prepared-but-unwired：`minix_fileops::mode`（`apply_mode` 已完整移植 BSD setmode+getmode、八进制+符号 u/g/o/a · +-=· rwxXst，带 8 枚宿主测）**早存但无 bin**。本轮补 `src/bin/chmod.rs`：逐操作数 `stat(path)`取当前位 → `apply_mode(base, spec)` → `chmod_via(path, mode)`，对位 `chmod.c:215-216` 的 `getmode(set, st_mode)`+`change_mode`；`-[rwxstugo]` 裸参按 C `--optind` 纠正当模式非旗标（`chmod -r file` 去读位）、`-f` 遇错继续仅置退出码、`-v` 报每文件。退出码按是否失败。三件套：`cargo test -p minix-fileops --lib mode::`→8/0（决定半既有测）、新 bin `chmod` freestanding x86_64-unknown-none --release（docker `minix-ci:1.94`）绿；clippy 触及文件零告警。**声明性留白**：本轮无新增宿主测（实质逻辑在既有已测的 `mode.rs`，bin 仅为 syscall 腿 + 旗标流）；`-R`（fts 递归）/`-h`/`-H`/`-L`/`-P`（lchmod/fts 符号链遍历）/`--reference` 因依赖未封装设施报 not wired（非语义择重）；真机写盘受可写根盘 E5 门控（同 cp/mv/rm 等写类，本笔交代码+宿主测的 parser）。修法详见 `../18-stage-commands/todo.md` §6.1 批次五十六。
 - ✅ **批次五十七完成：06 篇 `pwd` 接线**（`2026-10-10`，`claim/CMD-PWD-BIN-qoder`，单域三线 commands/fileops，无跨界）：落地缺失命令 `pwd`（报当前工作目录，真源 `minix3/bin/pwd/pwd.c` 143 行）。决定半新增 `minix_fileops::pwd`（无堆）——`env_pwd_usable` 忠实移植 BSD `getcwd_logical` 的字符串预筛：`$PWD` 需非空且首字符 `/`、且不含 `/./` 与 `/../` 子串；dev/ino 同一性检查需 stat 归调用方。为此给 fileops `bin_support` 加 `envs()` 双 cfg seam（与 printenv 批次同构）。执行半 `src/bin/pwd.rs`：`pwd [-L|-P]`（默认物理，对位 C `lFlag=0`）；`-L` 下若 `env_pwd_usable(PWD)` 且 `stat(PWD)` 与 `stat(".")` 的 `st_dev`/`st_ino` 相等→用 `PWD`，否则回退 `getcwd`；物理路直接 `getcwd`；多余操作数/未知旗标→usage。只读不写→不受 E5 写盘门控、真机可跑。4 枚宿主测：合法绝对路径/相对或空/点组件/尾部无斜杠点允。三件套：`cargo test -p minix-fileops --lib pwd::`→4/0、全 crate `--lib`→82/0；freestanding x86_64-unknown-none --release（docker `minix-ci:1.94`）绿；clippy 触及文件零告警。**声明性留白**：仅 `-L`/`-P`（对位 BSD getopt 集，无 legacy `+P`）；真机 per-command 与 imgrd 播种归 `C-57`/E5。修法详见 `../18-stage-commands/todo.md` §6.1 批次五十七。
+- ✅ **批次一百八十五接上 `cal -j`（年积日显示）**
+  （`2026-10-13`，`claim/CAL-JULIAN-qoder` @ 基线 `286585ace`，单域三线 commands/doctools，无跨界）：
+  接回批次一百八十四声明的 `-j` 留白。决定半 `cal.rs` 新增 `DayStyle`（Month/Julian）、`day_of_year_of_first`（对
+  位 C `day_in_year`，Gregorian 闰）、`J_WEEK_LEN=27`/`J_MONTH_PER_ROW=2`/`JULIAN_HEADINGS`（对位
+  `cal.c:336-343`/`:92`），新增 `put_day_julian`（三位年内日、前导零按位省略，对位 `ascii_day` 的 julian 支
+  `cal.c:584-603`）；`day_matrix` 改为接 `first_value`（Month=1，Julian=年内序号），`render_month`/`render_year`
+  新增 `style` 参逐路切换单元宽/表头/每月行数。执行半 `bin/cal.rs` 解 `-j` 置 `DayStyle::Julian` 并透传。
+  新增 3 枚 golden 宿主测（月面 244–249 行/年面两月一行/`day_of_year_of_first` 含闰年 3/1=61）。
+  顺带修上一轮遗漏：`render_year` 日体两层循环的 needless_range_loop 两告警（改用迭代器+局部 allow）。
+  三件套：`cargo test -p minix-doctools --lib` → **67/0**（既有 65 零回归 + 新 2）；freestanding
+  `cargo build -p minix-doctools --bin cal --target {x86_64,aarch64,riscv64gc}-unknown-none --release` 三架构均 Finished；
+  `cargo clippy -p minix-doctools --tests` cal.rs 告警由基线 4 降为 2（仅余 `days_from_civil` 的 i64 同型转换
+  两枚存量，本笔零新增）；`rustfmt --edition 2024 --check` 两文件零漂移（顺带归一 cal.rs 的 nightly/stable 版差漂移）；
+  核实日 `2026-10-13`；基线 `286585ace`。**真机腿**：`cal -j` 纯输出不依赖盘上读写，归 C-57/E5 逐命令上机断言（本批交代码+宿主测）。
+  留白：`-3`/`-h`/`-d` 等仍待接。修法详见 `../18-stage-commands/10-doc-man-tools.md` §5 留白行。
+
 - ✅ **批次一百八十四修 `cal` 年视图日体循环转置（P1 正确性缺陷）**
   （`2026-10-13`，`claim/CAL-J-qoder` @ 基线 `f14a3d4b9`，单域三线 commands/doctools，无跨界）：
   发现：`render_year` 的日体两层循环写反（外层=月、内层=周），导致每月 6 行被横拼成一条线、

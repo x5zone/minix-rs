@@ -4,10 +4,9 @@
 //! `render_month`/`render_year` 的年版式）。决定半（栅格与渲染）在库内；
 //! 本程序只翻命令行、取当前时刻、把渲染结果写到标准输出。
 //!
-//! 声明性留白（10-doc-man-tools.md §5）：`-j`（儒略日）、`-3`/`-h`/
-//! `-r`/`-A`/`-B`/`-C`/`-d`/`-R` 等面回答 "option not wired"；月份只收
-//! 数字（C 的月名解析面未移植）。
-
+//! 声明性留白（10-doc-man-tools.md §5）：`-3`/`-h`/`-r`/`-A`/`-B`/`-C`/
+//! `-d`/`-R` 等面回答 "option not wired"；月份只收数字（C 的月名解析面未
+//! 移植）。`-y`（强制年视图）与 `-j`（年积日）已接。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -18,12 +17,11 @@ use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
 mod support;
-use minix_doctools::cal::{render_month, render_year, Reckoning};
+use minix_doctools::cal::{DayStyle, Reckoning, render_month, render_year};
 use minix_sys::write;
 
 const STDOUT: i32 = 1;
 const STDERR: i32 = 2;
-
 
 fn fail(message: &str) -> ! {
     let _ = write(STDERR, message.as_bytes());
@@ -55,6 +53,7 @@ fn run() -> ! {
     let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut operands: Vec<&str> = Vec::new();
+    let mut style = DayStyle::Month;
     for arg in &args[1..] {
         if let Some(rest) = arg.strip_prefix('-') {
             if rest.is_empty() {
@@ -63,7 +62,8 @@ fn run() -> ! {
             for c in rest.chars() {
                 match c {
                     'y' => {}
-                    // 其余 C 旗标（-3hjrA B C d R）逐个留白。
+                    'j' => style = DayStyle::Julian,
+                    // 其余 C 旗标（-3h rA B C d R）逐个留白。
                     _ => fail("option not wired"),
                 }
             }
@@ -104,8 +104,8 @@ fn run() -> ! {
 
     let mut out = [0u8; 4096];
     let rendered = match view {
-        View::Month(y, m) => render_month(y, m, Reckoning::Gregorian, &mut out),
-        View::Year(y) => render_year(y, Reckoning::Gregorian, &mut out),
+        View::Month(y, m) => render_month(y, m, Reckoning::Gregorian, style, &mut out),
+        View::Year(y) => render_year(y, Reckoning::Gregorian, style, &mut out),
     };
     match rendered {
         Ok(used) => {
@@ -115,7 +115,6 @@ fn run() -> ! {
     }
     support::terminate(0);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
