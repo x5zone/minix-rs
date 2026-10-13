@@ -30,7 +30,6 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{Fd, close, open, read};
 use minix_textfilter::window::{LineWindow, TailError, TailStyle, TailWindow, parse_tail_args};
 
 fn run() -> ! {
@@ -55,19 +54,20 @@ fn run() -> ! {
     }
 
     // C `for each file: fopen+fstat (ierr on failure), banner when argc>1,
-    // forward()`. No operands read stdin.
+    // forward()`. No operands read stdin. The banner comes after the successful
+    // open because C `continue`s past a file it cannot open without printing one.
     let show_banner = operands.len() > 1;
     let mut first = true;
     let mut status = 0;
 
     if operands.is_empty() {
-        tail_stream(support::STDIN, style);
+        tail_stream(&support::read_stdin(), style);
         support::terminate(0);
     }
     for operand in &operands {
-        let fd = match open(operand, 0, 0) {
-            Ok(fd) => fd,
-            Err(_) => {
+        let data = match support::read_file(operand) {
+            Ok(data) => data,
+            Err(()) => {
                 support::warn(format!("tail: {operand}\n").as_bytes());
                 status = 1;
                 continue;
@@ -78,10 +78,7 @@ fn run() -> ! {
             support::emit(format!("{sep}==> {operand} <==\n").as_bytes());
         }
         first = false;
-        tail_stream(fd, style);
-        //[SD19-gate] SD-19: close 后 fd 不再使用
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = close(fd);
+        tail_stream(&data, style);
     }
     support::terminate(status)
 }
@@ -91,8 +88,7 @@ fn run() -> ! {
 /// copies what is left of the file, newlines and all, so no line is invented
 /// and a trailing unterminated line stays unterminated); the reverse shapes
 /// print whole lines bottom-up (C `reverse()`).
-fn tail_stream(fd: Fd, style: TailStyle) {
-    let input = read_fd(fd);
+fn tail_stream(input: &[u8], style: TailStyle) {
     // C's zero arms come back with nothing written and a successful exit:
     // `forward.c` seeks to the end for `RLINES`/`RBYTES` with `off == 0`, and
     // `reverse.c` returns before touching the input for any other style with
@@ -101,15 +97,15 @@ fn tail_stream(fd: Fd, style: TailStyle) {
         return;
     }
     match style {
-        TailStyle::SkipBytes { off } => support::emit(bytes_from(&input, off)),
-        TailStyle::SkipLines { off } => support::emit(bytes_after_lines(&input, off)),
-        TailStyle::LastBytes { off } => support::emit(last_bytes_of(&input, off)),
+        TailStyle::SkipBytes { off } => support::emit(bytes_from(input, off)),
+        TailStyle::SkipLines { off } => support::emit(bytes_after_lines(input, off)),
+        TailStyle::LastBytes { off } => support::emit(last_bytes_of(input, off)),
         TailStyle::LastLines { off } => {
             let mut window = match TailWindow::new(off) {
                 Ok(window) => window,
                 Err(_) => support::terminate(1),
             };
-            for line in support::lines_of(&input) {
+            for line in support::lines_of(input) {
                 window.push(line);
             }
             let mut survivors: Vec<&str> = vec![""; off.min(32)];
@@ -119,19 +115,19 @@ fn tail_stream(fd: Fd, style: TailStyle) {
             }
         }
         TailStyle::ReverseAll => {
-            for line in reversed_lines(&support::lines_of(&input), None) {
+            for line in reversed_lines(&support::lines_of(input), None) {
                 emit_line(line);
             }
         }
         // `off == 0` prints nothing, which is C's early return at
         // `reverse.c:79-80` (`style != REVERSE && off == 0`).
         TailStyle::ReverseLines { off } => {
-            for line in reversed_lines(&support::lines_of(&input), Some(off)) {
+            for line in reversed_lines(&support::lines_of(input), Some(off)) {
                 emit_line(line);
             }
         }
         TailStyle::ReverseBytes { off } => {
-            for line in reverse_bytes(&input, off) {
+            for line in reverse_bytes(input, off) {
                 emit_line(line);
             }
         }
@@ -199,22 +195,8 @@ fn bytes_after_lines(input: &[u8], off: usize) -> &[u8] {
     &[]
 }
 
-/// Read a descriptor to the end.
-fn read_fd(fd: Fd) -> Vec<u8> {
-    let mut input = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => input.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    input
-}
-
-/// Map a [`TailError`] from `parse_tail_args` to the message and exit code the
-/// old in-bin matcher used, then terminate.
+/// Map a [`TailError`] from `parse_tail_args` to its diagnostic and exit status,
+/// then terminate.
 fn arg_error(e: TailError) -> ! {
     match e {
         TailError::Usage => usage(),
