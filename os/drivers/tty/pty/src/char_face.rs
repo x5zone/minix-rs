@@ -12,7 +12,7 @@
 //! slave session; a pair reset additionally clears the Unix98 node.
 
 use crate::buffer::OutputRing;
-use crate::pair::{CloseEffect, PairEnd, PairState, PairTable};
+use crate::pair::{CloseEffect, PairEnd, PairTable};
 use minix_chardriver::driver::CharDriver;
 use minix_chardriver::protocol::{DeviceMinor, OpenDeviceSet, RequestId};
 use minix_types::Errno;

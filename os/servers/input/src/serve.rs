@@ -27,7 +27,7 @@ use crate::effects::Effect;
 use alloc::vec::Vec;
 use minix_sys::ds::DsClient;
 use minix_sys::ipc::{AsyncSlot, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
-use minix_sys::syscall::{DirectKernelCallTransport, KernelCallTransport as _, sys_safecopyto};
+use minix_sys::syscall::{DirectKernelCallTransport, sys_safecopyto};
 use minix_types::{
     Endpoint, INPUT_EVENT, INPUT_SETLEDS, InputEvent, Message, decode_input_event, decode_setleds,
 };
