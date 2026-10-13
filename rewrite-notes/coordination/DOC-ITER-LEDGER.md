@@ -13,7 +13,7 @@
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 03 | `5d0f99e69` | `f7a50edc5` | v0.3 | 已审（反馈回收进 Round 04） | `tmp/doc-iter/01-boot-shim-bootstrap/round-03.md` |
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 04 | `480b09fa4` | `4942c40f7` | v0.4 | 待送审 | `tmp/doc-iter/01-boot-shim-bootstrap/round-04.md`（含缺陷闭环台账 `defect-ledger.md`） |
 | `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` | 05 | `3566785d1` | `668436acc` | v0.4+R05附加 | 待送审（收官轮：两处规定增量 + C1–C13 全量收集） | `tmp/doc-iter/01-boot-shim-bootstrap/round-05.md`（归因包）+ `cold-read-package-r05.md`（冷读包，分投） |
-| `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md` | 01 | `3e31894db` | （提交后回填） | v0.5+R06附加 | 待送审（换篇首轮；**不构成形态检验**，G-C 仍待无 C 源篇） | `tmp/doc-iter/06-proc-init-boot-proc/round-01-06-proc.md`（归因包）+ `cold-read-package-r06.md`（冷读包） |
+| `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md` | 01 | `3e31894db` | `7abc06623`（+`b1727412f` 重放收尾） | v0.5+R06附加 | 待送审（换篇首轮；**不构成形态检验**，G-C 仍待无 C 源篇） | `tmp/doc-iter/06-proc-init-boot-proc/round-01-06-proc.md`（归因包）+ `cold-read-package-r06.md`（冷读包） |
 
 ## 规则变更裁决记录
 
