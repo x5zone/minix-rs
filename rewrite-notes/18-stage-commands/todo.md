@@ -250,6 +250,36 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百二十一给 `pr` 接上 `-F`/`-f` 的换页符收尾，并按 `prtail` 的 `nohead` 早退纠正了本轮自己推出的金样**
+  （`2026-10-14`，`claim/PR-FORMFEED-qoder` @ 基线 `7759e8150`，单域三线 commands/textfilter，无跨界）：
+  接回批次二百二十登记的①里 formfeed 那一半。真源三处：`prtail` 的换页符臂（`pr.c:1555-1561`）、
+  它前面的 `nohead` 早退（`:1526-1537`）、`-f` 落穿到 `-F` 的那个 switch（`:1693-1700`）。
+  **先纠错**：本轮初版把 `-F -t` 的金样推成「每页末尾一个 `\f`」，形状自洽却**违反 C**——`prtail` 的第一条
+  语句就是 `if (nohead)` 早退，换页符臂排在它之后，于是关掉表头时换页符一个都不写。这属于 test-audit
+  第 2 维点名的「测试代码就是错的，啥都测不出来」，靠重读 `pr.c` 抓出，不是靠跑自己的二进制（拿自己的
+  输出反推期望值只会把错钉死）。修正落在决定半：`Page.form_feed = options.form_feed && !options.no_header`，
+  单栏与多栏两条路径各自计算；金样里 `-F -t` 的期望值退回与裸 `-t` 逐字节相同。
+  **机制**：换页符一次替换的是**两样东西**——补白行与五行表尾，因为 `cnt += TAILLEN` 与那个
+  `while (--cnt >= 0) putchar('\n')` 都排在换页符臂之后；而 `\f` 自己由裸 `putchar` 送出、**不带换行**，
+  所以它是页的属性而不是多出来的一行。多栏页同样经 `prtail` 收尾（`vertcol` 在两处调用它，`:604-608`），
+  因此两条路径必须同时改，只改一条会留下「单栏对、多栏错」的半截语义。
+  **未建模半**（登记不执行）：`-f` 的另一半 `pgpause |= FIRSTPAGE` 只在 stdout 是终端时生效，本壳无终端腿；
+  `prtail` 的第二个参数 `incomp`（末行缺换行时补一个 `\n`）在本壳的整行建模下恒为 0。
+  三件套：`cargo test -p minix-textfilter` → **50 个测试目标全 ok、合计 578 passed、零 FAILED**；
+  `--lib pr::` → 46/0；`--test pr_face` → 13/0（第 13 枚 `form_feed_ends_every_header_page_and_no_header_cancels_it`）；
+  其余七道门 vis 19 / unvis 10 / sort 8 / head 8 / tail 10 / uniq 10 / cmp 10 不动。
+  **八枚变异负控**（复位放 `finally` 并断言 md5 复原）：`-f` 不落 `-F`、表尾不撤、单栏短页仍补白、
+  不写 `\f`、`\f` 多带换行、多栏短页仍补白、`-t` 在单栏不再取消换页符、`-t` 在多栏不再取消换页符 → 全部咬中。
+  其中两枚首轮**没咬**，成因各不相同：一枚是因为我写的多栏测带着 `-t`，补白分支根本没被执行（去掉 `-t`
+  并补一枚无 `-F` 的对照断言后当场翻红）；另一枚是 harness 把 `--lib pr:: --test pr_face` 拼成一次调用，
+  过滤器 `pr::` 把端到端那 13 枚全滤掉，同时单栏的 `-t` 腿缺断言——拆成两次调用并补断言后同样翻红。
+  门禁：容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` 零 error、容器内 50 目标全 ok、FAILED 0；
+  三架构 `--bins` 三台零 error；clippy `src/pr.rs` 提及数 34 与基线逐条同数，`src/bin/pr.rs` 与 `tests/pr_face.rs` 零提及；
+  `rustfmt --edition 2024 --check` 三文件零漂移；`tools/doc-style-lint.sh --diff` error 0。核实日 `2026-10-14`；基线 `7759e8150`。
+  登记不执行：①`-p`（逐页暂停，需终端腿）、`-r`（抑制开档失败诊断）、`-T`（自定义时间格式）；②长行跨块状态
+  `mor`/`lrgln`/`ips`/`ops` 的续排（与上面 `incomp` 同一条腿）；③`pr` 开档诊断缺 `strerror` 后缀（同族既有差异）；
+  ④`window.rs:679-680` 两条 unused import；⑤真机 open 腿归 C-57/E5。
+
 - ✅ **批次二百二十接上 `pr` 的 `-e`/`-i` 制表两腿（`inln` 展开与 `otln` 压缩），并揭出上一轮多栏金样缺了压缩腿**
   （`2026-10-14`，`claim/PR-TABS-qoder` @ 基线 `6b30dd134`，单域三线 commands/textfilter，无跨界）：
   接回批次二百一十九登记的①。真源两段：`inln`（`pr.c:1032-1068`）与 `otln`（`:1137-1240`）。

@@ -304,3 +304,51 @@ fn multi_column_implies_both_transformations_and_a_tab_survives_the_round_trip()
     );
     assert_eq!(out, "\t  \n");
 }
+
+#[test]
+fn form_feed_ends_every_header_page_and_no_header_cancels_it() {
+    // `prtail`'s form-feed arm writes one `\f` and returns (`pr.c:1555-1561`), so a
+    // page under `-F` shows its header, its real body lines and that byte — the blank
+    // padding rows and the five trailer lines it would otherwise write are both gone.
+    let (out, status, err) = run(&["-F", "-l", "20", "-h", "T"], b"a\nb\nc\n");
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(
+        out, "\n\nT Page 1\n\n\na\nb\nc\n\u{c}",
+        "two blanks, title, two blanks, then the three body lines"
+    );
+    assert_eq!(out.matches('\u{c}').count(), 1);
+    // The multi-column page ends through the same `prtail` call (`pr.c:604-608`), so
+    // three lines in two columns are two rows under the header and nothing after them
+    // but the form feed: 5 header + 2 body lines instead of 5 + 10 + 5.
+    let (cols, _, _) = run(
+        &["-F", "-l", "20", "-h", "T", "-2", "-w", "20"],
+        b"1\n2\n3\n",
+    );
+    assert_eq!(cols.matches('\u{c}').count(), 1);
+    assert!(cols.ends_with('\u{c}'), "-F rides the last line: {cols:?}");
+    assert_eq!(cols.trim_end_matches('\u{c}').lines().count(), 7);
+    let (wide, _, _) = run(&["-l", "20", "-h", "T", "-2", "-w", "20"], b"1\n2\n3\n");
+    assert_eq!(wide.matches('\u{c}').count(), 0);
+    assert_eq!(
+        wide.lines().count(),
+        20,
+        "padded body plus the five trailer lines"
+    );
+    // `-t` makes `prtail` return inside its `nohead` arm before the form-feed arm
+    // (`pr.c:1526-1537`), so the byte is gone as well: `-F` changes nothing at all.
+    let (out, _, _) = run(&["-F", "-t", "-l", "2"], &numbered(1, 5));
+    assert_eq!(out, "1\n2\n3\n4\n5\n");
+    assert_eq!(out.matches('\u{c}').count(), 0);
+    // The same cancellation reaches the multi-column path, because `vertcol` ends each
+    // page through `prtail` too: with headers off, `-F` is indistinguishable from a
+    // plain run byte for byte.
+    let (fed, _, _) = run(&["-F", "-t", "-l", "20", "-2", "-w", "20"], b"1\n2\n3\n");
+    let (bare, _, _) = run(&["-t", "-l", "20", "-2", "-w", "20"], b"1\n2\n3\n");
+    assert_eq!(fed, bare, "no form feed without headers, even in columns");
+    assert_eq!(fed.matches('\u{c}').count(), 0);
+    // `-f` falls through to `-F` in C's switch (`pr.c:1693-1700`); its other half, the
+    // per-page pause, only fires when stdout is a terminal, so the piped output is
+    // identical byte for byte.
+    let (f_out, _, _) = run(&["-f", "-l", "20", "-h", "T"], b"a\nb\nc\n");
+    assert_eq!(f_out, "\n\nT Page 1\n\n\na\nb\nc\n\u{c}");
+}

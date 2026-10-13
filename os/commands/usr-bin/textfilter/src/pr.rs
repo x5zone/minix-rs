@@ -83,6 +83,11 @@ pub struct PrOptions {
     /// (`pr.c:1844-1847`): the byte a run of output blanks contracts into, and the
     /// pitch it steps by. `None` is C's `ogap == 0`, the plain `fwrite` arm of `otln`.
     pub contract: Option<(u8, usize)>,
+    /// `-F`, and also implied by `-f` (`pr.c:1693-1700`: `case 'f'` sets the pause
+    /// flag and falls through to `case 'F'`). The page then ends with a form-feed
+    /// byte instead of the blank trailer lines (`prtail`'s `if (formfeed)` arm,
+    /// `pr.c:1555-1561`).
+    pub form_feed: bool,
 }
 
 impl Default for PrOptions {
@@ -103,6 +108,7 @@ impl Default for PrOptions {
             time_prefix: String::new(),
             expand: None,
             contract: None,
+            form_feed: false,
         }
     }
 }
@@ -490,10 +496,19 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
                     }
                     break;
                 }
+                b'F' => options.form_feed = true,
+                b'f' => {
+                    // C's `case 'f'` sets `pgpause |= FIRSTPAGE` and falls through to
+                    // `case 'F'` (`pr.c:1693-1700`). The form feed is the observable
+                    // half; the per-page pause only ever fires when stdout is a
+                    // terminal (`prpause` is guarded by `ttyout`, `pr.c:1463`), which
+                    // this shell has no leg for — registered, not invented.
+                    options.form_feed = true;
+                }
                 // Letters C's optstring carries but this deciding half does not
                 // implement are named separately from letters `egetopt` itself would
                 // answer `?` for (`pr.c:1655`, `1805-1809`).
-                b'F' | b'f' | b'p' | b'r' | b'T' => {
+                b'p' | b'r' | b'T' => {
                     return Err(PrError::Unmodelled);
                 }
                 _ => return Err(PrError::Usage),
@@ -545,13 +560,21 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
 }
 
 /// One page: the header lines (empty when `-t`), the body lines (padded
-/// to the body capacity with empty lines when headers are on), and the
-/// trailer lines (empty when `-t`).
+/// to the body capacity with empty lines when headers are on and no form feed was
+/// asked for), the trailer lines (empty when `-t` or under `-F`), and whether the
+/// page ends with a form-feed byte.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub header_lines: Vec<String>,
     pub body_lines: Vec<String>,
     pub trailer_lines: Vec<String>,
+    /// `-F`: `prtail` writes one `\f` and returns (`pr.c:1555-1561`), which replaces
+    /// both the blank padding lines and the five-line trailer. It carries no newline
+    /// of its own, which is why it is a page property rather than one more line.
+    /// `-t` cancels it: `prtail` bails out on `nohead` before ever reaching the
+    /// form-feed arm (`pr.c:1526-1537`), so a form-feed page without headers is just
+    /// its body lines and nothing else.
+    pub form_feed: bool,
 }
 
 impl Page {
@@ -655,7 +678,10 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
             }
             body = spaced;
         }
-        if !options.no_header {
+        // The padding rows are `prtail`'s `cnt` loop, which the form-feed arm of
+        // `prtail` skips entirely — it writes one `\f` instead of the blanks
+        // (`pr.c:1555-1561`).
+        if !options.no_header && !options.form_feed {
             while body.len() < body_capacity {
                 body.push(String::new());
             }
@@ -679,10 +705,21 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
                 vec![String::new(); TAILLEN],
             )
         };
+        // Under `-F` the trailer block disappears entirely; the form-feed byte is
+        // written by the caller after the last line.
+        let trailer_lines = if options.form_feed {
+            Vec::new()
+        } else {
+            trailer_lines
+        };
+        // `prtail` bails out inside its `nohead` arm, before the form-feed arm, so
+        // `-t` also cancels the byte itself (`pr.c:1526-1537`).
+        let form_feed = options.form_feed && !options.no_header;
         pages.push(Page {
             header_lines,
             body_lines: body,
             trailer_lines,
+            form_feed,
         });
         page_number += 1;
         cursor = body_end;
@@ -747,8 +784,12 @@ fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
         let (header_lines, trailer_lines) = if options.no_header {
             (Vec::new(), Vec::new())
         } else {
-            while body.len() < rows {
-                body.push(String::new());
+            // Same rule as the single-column path: the padding rows are `prtail`'s
+            // blank run, which the form-feed arm does not write.
+            if !options.form_feed {
+                while body.len() < rows {
+                    body.push(String::new());
+                }
             }
             (
                 vec![
@@ -766,10 +807,21 @@ fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
                 vec![String::new(); TAILLEN],
             )
         };
+        // Under `-F` the trailer block disappears entirely; the form-feed byte is
+        // written by the caller after the last line.
+        let trailer_lines = if options.form_feed {
+            Vec::new()
+        } else {
+            trailer_lines
+        };
+        // Same `-t` cancellation as the single-column path: `vertcol` also ends every
+        // page through `prtail` (`pr.c:604-608`).
+        let form_feed = options.form_feed && !options.no_header;
         pages.push(Page {
             header_lines,
             body_lines: body,
             trailer_lines,
+            form_feed,
         });
         page_number += 1;
         cursor = end;
@@ -1409,6 +1461,83 @@ mod tests {
         let explicit = parse_pr_args(&["-2", "-e4"]).expect("explicit");
         assert_eq!(explicit.options.expand, Some((b'\t', 4)));
         assert_eq!(explicit.options.contract, Some((b'\t', 8)));
+    }
+
+    #[test]
+    fn f_and_capital_f_replace_the_trailer_with_a_form_feed() {
+        // `-F` sets `formfeed`, and `-f` sets it too on the way through the pause
+        // flag (`pr.c:1693-1700`). `prtail` then writes one form feed and returns
+        // (`pr.c:1555-1561`), so neither the blank padding rows nor the five trailer
+        // lines appear — while the header block is untouched.
+        let options = parse_pr_args(&["-F", "-l", "20", "-h", "T"]).expect("-F");
+        let pages = paginate(&[String::from("a"), String::from("b")], &options.options);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].header_lines.len(), HEADLEN);
+        assert_eq!(pages[0].body_lines, ["a", "b"]);
+        assert!(
+            pages[0].trailer_lines.is_empty(),
+            "no blank trailer under -F"
+        );
+        assert!(pages[0].form_feed);
+
+        let same = parse_pr_args(&["-f", "-l", "20", "-h", "T"]).expect("-f");
+        assert!(same.options.form_feed, "-f falls through to -F");
+        assert_eq!(
+            paginate(&[String::from("a"), String::from("b")], &same.options),
+            pages
+        );
+
+        // Without either flag the trailer block is the five blank lines and the short
+        // page is padded up to the body height, as before.
+        let plain = parse_pr_args(&["-l", "20", "-h", "T"]).expect("plain");
+        let plain_pages = paginate(&[String::from("a")], &plain.options);
+        assert_eq!(plain_pages[0].trailer_lines.len(), TAILLEN);
+        assert_eq!(plain_pages[0].body_lines.len(), 20 - HEADLEN - TAILLEN);
+        assert!(!plain_pages[0].form_feed);
+    }
+
+    #[test]
+    fn form_feed_replaces_padding_in_both_paths_and_no_header_cancels_the_byte() {
+        // The padding rows and the trailer come from the same `prtail` call, so a short
+        // page under `-F` stops at its real length in the single-column path *and* in
+        // `vertcol`, which also ends each page through `prtail` (`pr.c:604-608`).
+        let lines: Vec<String> = (1..=3).map(|n| n.to_string()).collect();
+
+        // Two columns over three lines make two rows; the headers keep this leg on the
+        // padding branch, which is the whole point of the contrast below.
+        let columnar = parse_pr_args(&["-F", "-l", "20", "-2", "-w", "20"]).expect("-F -2");
+        let pages = paginate(&lines, &columnar.options);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            pages[0].body_lines.len(),
+            2,
+            "one row per column pair, unpadded"
+        );
+        assert!(pages[0].trailer_lines.is_empty());
+        assert!(pages[0].form_feed);
+
+        let same_shape = parse_pr_args(&["-l", "20", "-2", "-w", "20"]).expect("-2");
+        let padded = paginate(&lines, &same_shape.options);
+        assert_eq!(
+            padded[0].body_lines.len(),
+            20 - HEADLEN - TAILLEN,
+            "without -F the short column page is padded up to the body height"
+        );
+        assert_eq!(padded[0].trailer_lines.len(), TAILLEN);
+        assert!(!padded[0].form_feed);
+
+        // `-t` makes `prtail` return inside its `nohead` arm, before the form-feed arm,
+        // so the byte disappears along with the padding and the trailer — in each of
+        // the two column paths, which is why both are asserted separately.
+        let bare_single = parse_pr_args(&["-F", "-t", "-l", "20"]).expect("-F -t");
+        let pages = paginate(&[String::from("a")], &bare_single.options);
+        assert_eq!(pages[0].body_lines, ["a"], "nohead never pads either");
+        assert!(!pages[0].form_feed, "single-column nohead drops the byte");
+
+        let bare = parse_pr_args(&["-F", "-t", "-l", "20", "-2", "-w", "20"]).expect("-F -t -2");
+        let pages = paginate(&lines, &bare.options);
+        assert!(!pages[0].form_feed, "column nohead drops the byte");
+        assert!(pages[0].header_lines.is_empty() && pages[0].trailer_lines.is_empty());
     }
 
     #[test]
