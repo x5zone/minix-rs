@@ -361,3 +361,122 @@ pub fn epoch_micros() -> Option<u64> {
     .ok()
     .map(|times| times.boot_time * 1_000_000 + times.real_ticks * 10_000)
 }
+
+// ---------------------------------------------------------------------------
+// Output-path verbs (`sort -o`)
+//
+// The `sort(1)` output leg asks four questions of a path and, on the branch that
+// replaces an existing file, performs five operations in a fixed order
+// (`minix3/usr.bin/sort/sort.c:320-379`). They are thin here — the *policy*,
+// including which order C performs them and what it reports when one fails, lives
+// in the command that reads those lines.
+// ---------------------------------------------------------------------------
+
+/// What C's `lstat(outpath, &st)` answers, narrowed to the two things its branch
+/// tests: the permission bits it later copies with `lchmod` (`ALLPERMS`,
+/// `minix3/sys/sys/stat.h:191`), and whether the path is a character or block
+/// special (`S_ISCHR`/`S_ISBLK`, `:172-173`), which is what makes C write straight
+/// through instead of spooling to a temporary. `None` is C's `lstat` failure, i.e.
+/// no such path.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn probe_path(path: &str) -> Option<(u32, bool)> {
+    use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
+    let found = std::fs::symlink_metadata(path).ok()?;
+    let kind = found.file_type();
+    Some((
+        found.permissions().mode() & 0o7777,
+        kind.is_char_device() || kind.is_block_device(),
+    ))
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn probe_path(path: &str) -> Option<(u32, bool)> {
+    // Every field of the ABI `struct stat` is an integer or a timespec of integers,
+    // so an all-zero value is a valid instance — the same construction `pwd`, `test`
+    // and `ln` use for this buffer.
+    let mut buf: minix_sys::Stat = unsafe { core::mem::zeroed() };
+    minix_sys::lstat(path, &mut buf).ok()?;
+    // `S_IFCHR` is 0020000 and `S_IFBLK` 0060000 under `S_IFMT` 0170000
+    // (`minix3/sys/sys/stat.h:140-173`).
+    let kind = buf.st_mode & 0o170000;
+    Some((buf.st_mode & 0o7777, kind == 0o020000 || kind == 0o060000))
+}
+
+/// C's `access(outpath, W_OK)` (`sort.c:336-337`), where `W_OK` is `0x02`
+/// (`minix3/sys/sys/unistd.h:168-171`). The hosted twin reads the owner-write bit
+/// instead of the real-uid check, which is the same answer for the files the hosted
+/// tests create.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn writable(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path)
+        .map(|found| found.permissions().mode() & 0o200 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn writable(path: &str) -> bool {
+    minix_sys::access(path, 0x02).is_ok()
+}
+
+/// Creates a fresh file for writing, failing if the name is already taken — C's
+/// `mkstemp` (`sort.c:340`), whose `O_EXCL` is `0x800` and whose mode is `0600`
+/// (`minix3/sys/sys/fcntl.h:101`, `minix3/lib/libc/stdio/gettemp.c`).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn create_exclusive(path: &str) -> Result<WriteSink, ()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map(WriteSink)
+        .map_err(|_| ())
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn create_exclusive(path: &str) -> Result<WriteSink, ()> {
+    // `O_WRONLY|O_CREAT|O_EXCL` is `0x1|0x200|0x800`.
+    minix_sys::open(path, 0x1 | 0x200 | 0x800, 0o600)
+        .map(|fd| WriteSink { fd })
+        .map_err(|_| ())
+}
+
+/// `lchmod(path, mode)` in C's sense: set the permission bits by path
+/// (`minix3/lib/libc/sys/lchmod.c`; the target has no `lchmod` wrapper, so this
+/// goes through `chmod`, which differs only for a symlink — a name `sort` has just
+/// created for itself).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn set_mode(path: &str, mode: u32) -> Result<(), ()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let permissions = std::fs::Permissions::from_mode(mode);
+    std::fs::set_permissions(path, permissions).map_err(|_| ())
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn set_mode(path: &str, mode: u32) -> Result<(), ()> {
+    minix_sys::chmod(path, mode).map_err(|_| ())
+}
+
+/// C's `link(outfile, outpath)`: the second name appears without moving the bytes,
+/// which is why C unlinks the destination first (`sort.c:375-378`).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn hard_link(from: &str, to: &str) -> Result<(), ()> {
+    std::fs::hard_link(from, to).map_err(|_| ())
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn hard_link(from: &str, to: &str) -> Result<(), ()> {
+    minix_sys::link(from, to).map_err(|_| ())
+}
+
+/// C's `unlink(path)`, used for both the old output name and the temporary.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn remove_path(path: &str) -> Result<(), ()> {
+    std::fs::remove_file(path).map_err(|_| ())
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn remove_path(path: &str) -> Result<(), ()> {
+    minix_sys::unlink(path).map_err(|_| ())
+}
