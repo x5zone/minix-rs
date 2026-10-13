@@ -2,9 +2,9 @@
 //!
 //! Ground truth: `minix3/usr.bin/head/head.c` (NetBSD), `head [-n count |
 //! -count] [-qv] [-c count] [file ...]` with a default of ten lines. The
-//! window capacity is fixed at 32 (the library keeps borrowed lines in a
-//! fixed array, `window.rs` `HeadWindow`), so counts above 32 are rejected as
-//! out of range — a declared cap. With no operand head reads standard input;
+//! window keeps borrowed lines for however many the count asks for and no more
+//! than the input offered (`window.rs` `HeadWindow`), so any count is honoured.
+//! With no operand head reads standard input;
 //! with operands it prints the first `count` lines of each file, prefixing a
 //! `==> name <==` banner when there is more than one file (always under `-v`,
 //! never under `-q`), with a blank line between files. Operands are opened
@@ -46,9 +46,9 @@ fn run() -> ! {
         }
     };
 
-    // Reject counts the fixed-capacity window cannot hold (also rejects 0, as
-    // `HeadWindow::new` does — the current line-based behaviour). Byte mode
-    // ignores the line count, so it skips this window-capacity guard.
+    // `HeadWindow::new` refuses only a zero count (a zero-line head is not a
+    // window request). C prints nothing for `-n 0`; refusing it here is the
+    // line-based behaviour this shell documents rather than C's.
     if bytecnt == 0 && HeadWindow::new(count).is_err() {
         support::terminate(1);
     }
@@ -100,7 +100,8 @@ fn head_stream(fd: Fd, count: usize, bytecnt: usize) {
     for line in support::lines_of(&input) {
         window.push(line);
     }
-    let mut survivors: Vec<&str> = vec![""; count.min(32)];
+    let want = (window.seen() as usize).min(count);
+    let mut survivors: Vec<&str> = vec![""; want];
     let drained = window.drain(&mut survivors);
     for line in &survivors[..drained] {
         let mut out = line.as_bytes().to_vec();

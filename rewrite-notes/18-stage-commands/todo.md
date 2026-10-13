@@ -250,6 +250,35 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百零八去掉行窗的三十二行封顶，`head`/`tail` 的任意计数按 C 照行**
+  （`2026-10-13`，`claim/WINDOW-NOCAP-qoder` @ 基线 `0b10df877`，单域三线 commands/textfilter；`window.rs` 只是
+  本 crate 的行窗库，无跨界）：
+  接回批次二百零六登记的⑨。改前证据：`grep -n "n > 32" os/commands/usr-bin/textfilter/src/window.rs` 命中两臂
+  （`HeadWindow::new` 与 `TailWindow::new`），存的是固定 `[&str; 32]`，调用方再把输出缓冲按 `count.min(32)` 开；
+  实际行为是 `tail -n 40` 与 `head -n 40` 退 1 且无任何文案，而 C `head.c` 是从计数往下跑、
+  `forward.c` 的 `RLINES` 在映射后的档案上往回走，两者都与计数大小无关。
+  **方案对比**：甲案（采）把两个窗的存储换成 `Vec<&'a str>`，**先填满再回绕**：行数未达上限就 `push`，
+  到顶后才按 `seen % limit` 覆写。若图省事按上限直接预分配，
+  `tail -n 1000000` 就是一个百万元素的 malloc，等于把一个参数变成内存炸弹；先填满再回绕后，
+  存储只跟输入给的行数走。调用方的输出缓冲也不再按计数开，而按 `(window.seen(), limit)` 的较小值开。
+  乙案“把 32 提到 1024”仍是个假上限，不采；丙案只改 tail 不改 head，会让同一库里两套窗口语义不一致，不采。
+  **零计数不变**：两个窗仍只拒 0（tail 的零形已由 `TailStyle::selects_nothing` 在进窗前处理）；`over_ring_cap`
+  谓词与其守护一并删除（没上限可查），`tail` 的 `run()` 不再预先退 1。
+  三件套：`cargo test -p minix-textfilter --lib` → **408 passed / 0 failed**（基线 `409`：原
+  `test_zero_or_huge_rejected` 与 `test_tail_style_ring_cap_applies_only_to_the_line_walk` 合成一枚
+  `test_zero_count_is_refused_and_large_counts_are_not`，后者同时钉住 `new(33)`/`new(1000)` 可用与
+  “计数远大于输入时按原序输出全部”）；`--bin tail` 14/0、`--bin head` 3/0、`--test uniq_face` 与
+  `--test cmp_face` 各 10/0 不动；端到端的 `--test tail_face` 10/0，其中
+  `line_window_cap_rejects_the_count_without_a_diagnostic`（钉住旧拒绝）改写为
+  `counts_above_the_old_window_cap_are_honoured`（`-n 40` 与 `-n 1000000` 均输出整档退 0）。
+  两枚变异负控各让对应测翻红：把 `n > 32` 塞回 `TailWindow::new` → 库内测与 tail_face 测同时 FAILED；
+  去掉“先填满再回绕”分支 → 库内测当场 panic（空窗上按下标写）；两笔均从备份恢复后复测 408/0 与 10/0。
+  整包三架构裸机构建（所有 bin）→ 三台 0 error；clippy 自有文件与 base 逐条同集（三枚存量）；
+  `rustfmt --edition 2024 --check` 触及文件零新增漂移（`bin/head.rs` 那条 import 排序与 base 同一块）；
+  容器门读数见本笔提交信息；核实日 `2026-10-13`；基线 `0b10df877`。
+  **新拓一处同族缺口（只登记不修）**：`head -n 0` 仍被 `HeadWindow::new(0)` 拒为退 1，而 C `head.c` 的计数器
+  不启动、是什么也不输出且退 0——tail 那一族零值已在批次二百修过，head 这一形记为新待办。
+
 - ✅ **批次二百零七把 `cmp` 的读腿接到宿主口子，并补上 `cmp_face` 端到端金样门（10 枚）**
   （`2026-10-13`，`claim/CMP-HOST-FACE-qoder` @ 基线 `956d83dc9`，单域三线 commands/textfilter，无跨界）：
   命令面宿主读腿的第三个使用者（前两个是 `uniq` 与 `tail`）。改前证据：`bin/cmp.rs` 自搭的
