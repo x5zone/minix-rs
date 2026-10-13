@@ -250,6 +250,42 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百零一把 `uniq` 的三个旗标改成 C 那样的独立位，并按 `%4d` 补上计数列宽**
+  （`2026-10-13`，`claim/UNIQ-SHOWFLAGS-qoder` @ 基线 `399d274eb`，单域三线 commands/textfilter，无跨界）：
+  开工前的选择依据：`07-text-filter.md` uniq 行写着「`-i`/`-f`/`-s` 比较面与组合模式待批」，而
+  `os/commands/usr-bin/textfilter/src/uniq.rs:fn comparison_key` 与 `bin/uniq.rs` 的 `-f`/`-s` 臂早已接线，
+  那行属账面滞后；`-i` 则根本不是缺口——`minix3/usr.bin/uniq/uniq.c` 的 `getopt(argc, argv, "-cdf:s:u")` 里没有这个
+  字母（它是 GNU 扩展），本壳对集外字母退用法错就是忠实形态。真缺口在另两处：
+  **其一，组合模式被当互斥**。`parse_uniq_args` 里 `if mode_seen && mode != next { return Err(()) }` 把
+  `uniq -d -u` 报成用法错；C 存在 `cflag`/`dflag`/`uflag` 三个 int，`show()` 一行合成：
+  `if ((dflag && repeats == 0) || (uflag && repeats > 0)) return;`——即 `-c -d` 只给重复行计数、`-c -u` 只给单一行计数、
+  `-d -u` 抑制每一条 run，于是什么也不输出。**其二，`-c` 列宽没接**。`format` 直接写十进制再加一个空格，而 C 打的是
+  `"%4d %s"`（计数右对齐四列）。本机 GNU `uniq -c` 用七列（实测 `printf 'a\na\nb\n' | uniq -c` → 六个空格加 `2`），
+  拿它当基线会把本笔引向错的列宽，真值以 C 为纲。
+  **方案对比**：甲案（采）把模式枚举换成 `UniqFlags { count, repeats_only, uniques_only }` 三枚位，`keeps(count)` 就按
+  `show()` 那行写（C 的 `repeats` 等于 `count - 1`，所以“没重复过”就是 `count == 1`），三臂互斥判定从解析器消失；
+  乙案保留 `UniqMode` 再加几个组合变体（`CountedRepeated` 等）——变体会随三个位的组合凑到八个，本质是把 C 的三个位
+  重新拆成二进制的笛卡尔积手写一遍，与“同一层只拥有同一语义”相逆，不采。本处是用户态命令的单线程事件循环，
+  不涉及内核的 SMP 与大内核锁约束。
+  **形状细节**：`decimal_digits` 与 `write_decimal` 分开，前者只回答「`%4d` 会占几列」，零算一列；超过四列的计数撑开字段而
+  不裁数字（`printf` 的宽度从不裁数字），测试钉住 `12345` 仍输出五位。使用侧的 `usage` 文案同步改成 C 的形状
+  `uniq [-cdu] [-f fields] [-s chars] [input_file [output_file]]`（原写的 `[-c | -d | -u]` 把不存在的互斥写进了文案）。
+  三件套：`cargo test -p minix-textfilter --lib` → **409 passed / 0 failed**（基线 `407`；新增
+  `test_flag_combinations_follow_the_show_guard` 与 `test_counted_format_pads_to_four_columns`，`test_counted_format`
+  的期望从 `12 a` 改成 `"  12 a"`）；`cargo test -p minix-textfilter --bin uniq` → **5 passed / 0 failed**
+  （`parse_rejects_composed_modes` 换为 `parse_composes_mode_flags_as_c_does`，附带钉 `-cdu` 聚簇三位同时置位）；
+  三枚变异负控各让对应测翻红：去掉 `%4d` 前导空白→两枚格式测 FAILED；`keeps` 丢掉 `uniques_only` 臂→组合测 FAILED；
+  解析器退回互斥拒→`parse_composes_mode_flags_as_c_does` FAILED；均按备份复原后复测 409/0 与 5/0。
+  三架构裸机 `cargo build -p minix-textfilter --bin uniq --target {x86_64-unknown-none,aarch64-unknown-none,
+  riscv64gc-unknown-none-elf} --release` → 三台 0 error；`rustfmt --edition 2024 --check` 触及文件漂移块从 base 的
+  3 降到 2（本笔没新增，反而归正了一枚存量多行断言）；容器门与 clippy 读数见本笔提交信息；核实日 `2026-10-13`；
+  基线 `399d274eb`。
+  **登记不执行**：① `uniq` 的 obsolete 写法未建模——C `obsolete()` 把 `-<digit>…` 改写成 `-f<digit>…`、`+<digit>…` 改写成
+  `-s<digit>…`（`asprintf("-%c%s", ap[0] == '+' ? 's' : 'f', ap + 1)`），本壳现在会把 `-2` 当集外字母退用法错；
+  ② C `obsolete()` 对认得的字母选项 `continue`、只对操作数与 `--` 停扫，与 tail 同族；③ 输出文件（第 2 操作数）仍不建模；
+  ④ `bin/uniq.rs` 直接调 `minix_sys::open`/`read`，没有 `bin_support.rs:read_file` 的宿主分支，所以「宿主跑二进制逐字对账」
+  这条验证路线对 uniq 也不适用（同 tail 的登记⑦）。
+
 - ✅ **批次二百把 `tail` 的零计数改成 C 的「选出空集」而不是拒错**
   （`2026-10-13`，`claim/TAIL-ZERO-QOFF-qoder` @ 基线 `e3bbe7d95`，单域三线 commands/textfilter，无跨界）：
   接回批次一百九十七登记的③。改前证据：`grep -n "parsed == 0" os/commands/usr-bin/textfilter/src/window.rs` 命中一臂
