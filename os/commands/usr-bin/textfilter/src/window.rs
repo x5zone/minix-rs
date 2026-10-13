@@ -250,26 +250,39 @@ pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
     Ok(result)
 }
 
-/// C `tail -b N` counts in 512-byte blocks (`tail.c` `ARG(512, FBYTES, RBYTES)`):
-/// `N` blocks are `N * 512` bytes, saturating rather than wrapping.
-fn block_bytes(n: usize) -> usize {
-    n.saturating_mul(512)
-}
-
 /// Parsed `tail` options and file operands — the deciding half's front door.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TailArgs {
-    /// `-n` line count, or the default ten.
-    pub count: usize,
-    /// `-c`/`-b` byte count (already in bytes); `0` (default) selects line mode.
-    pub bytecnt: usize,
-    /// `-r` reverse mode.
-    pub rflag: bool,
-    /// Whether an explicit `-n`/`-N` was seen (C `RLINES` vs `REVERSE`).
-    pub n_seen: bool,
+    /// C's `(style, off)` plus `rflag`, already folded (`tail.c:135-164`), so
+    /// the execution half only has to pick a printing shape.
+    pub style: TailStyle,
     /// File operands in order; `-` is a literal file name (`tail` opens operands
     /// through `fopen`, unlike `cut`).
     pub operands: Vec<String>,
+}
+
+/// How `tail` selects what to print — C's `enum STYLE` (`extern.h:36`) carried
+/// with its `off`, folded the way C's `main()` folds it before dispatching to
+/// `forward()` or `reverse()` (`tail.c:135-164`). Keeping mode and count in one
+/// variant is what lets the `+N` forms express `RBYTES`/`RLINES` with `off == 0`
+/// (which C prints as *nothing*, `reverse.c:79-80`) instead of as "no option".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailStyle {
+    /// `forward()` + `RLINES`: the last `off` lines in order (default `off = 10`).
+    LastLines { off: usize },
+    /// `forward()` + `RBYTES`: the trailing `off` bytes (`-b` folded to 512×N).
+    LastBytes { off: usize },
+    /// `forward()` + `FLINES`: drop `off` newlines, print everything after them.
+    SkipLines { off: usize },
+    /// `forward()` + `FBYTES`: drop the first `off` bytes, print the remainder.
+    SkipBytes { off: usize },
+    /// `reverse()` + `RLINES`: the last `off` lines bottom-up.
+    ReverseLines { off: usize },
+    /// `reverse()` + `RBYTES`: the lines of the trailing `off`-byte window,
+    /// bottom-up.
+    ReverseBytes { off: usize },
+    /// `reverse()` + `REVERSE`: every line bottom-up (`-r` with no number).
+    ReverseAll,
 }
 
 /// `tail` argument-parsing failure.
@@ -280,8 +293,6 @@ pub enum TailError {
     Usage,
     /// `-f`/`-F` follow mode — not modelled (line-based ring, forward only).
     NotModelledFollow,
-    /// A `-b`/`-c`/`-n` value written as a forward offset `+N` (not modelled).
-    ForwardOffset,
     /// A `-b`/`-c`/`-n` count that is not a decimal integer, or a zero byte or
     /// block count (C `strtol` reject, `tail.c:88-90`); carries the text.
     IllegalCount(String),
@@ -294,6 +305,11 @@ pub enum TailError {
 /// (`-n10`, `-c100`) or follows it (`-n 10`); `--` ends option scanning; a lone
 /// `-` is an operand. `-f`/`-F` are reported, never silently leaked as an
 /// operand (as the old whole-token matcher did with `-n10`).
+///
+/// A `+N` value takes the `forward` arm of C's `ARG` macro (`tail.c:91-96`),
+/// which is a *different* style, not a negated count: `tail -n +20` starts at
+/// line 20, and because the macro's number options are 1-based it decrements
+/// `off` by one unit first, so `+1` skips nothing and prints the whole file.
 pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
     // Phase 1 — obsolete(): rewrite the leading `-<digit>…` run to `-n<digit>…`,
     // stop at the first non-matching token and copy the rest verbatim.
@@ -316,19 +332,17 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
         }
     }
 
-    // Phase 2 — getopt("Fb:c:fn:r").
-    let mut result = TailArgs {
-        count: 10,
-        bytecnt: 0,
-        rflag: false,
-        n_seen: false,
-        operands: Vec::new(),
-    };
+    // Phase 2 — getopt("Fb:c:fn:r"). C keeps `style` and `off` as two locals and
+    // only fills them in when a number option appears (`NOTSET` until then,
+    // `tail.c:107`); the default and the `-r` folding happen after the loop.
+    let mut seen: Option<(RawStyle, usize)> = None;
+    let mut rflag = false;
+    let mut operands: Vec<String> = Vec::new();
     let mut index = 0;
     while index < scanned.len() {
         let token = scanned[index].as_str();
         if token == "--" {
-            result.operands.extend_from_slice(&scanned[index + 1..]);
+            operands.extend_from_slice(&scanned[index + 1..]);
             break;
         }
         let bytes = token.as_bytes();
@@ -338,7 +352,7 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                 match bytes[pos] {
                     b'f' | b'F' => return Err(TailError::NotModelledFollow),
                     b'r' => {
-                        result.rflag = true;
+                        rflag = true;
                         pos += 1;
                     }
                     b'n' | b'c' | b'b' => {
@@ -354,41 +368,68 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                             }
                             scanned[index].clone()
                         };
-                        if value.starts_with('+') {
-                            return Err(TailError::ForwardOffset);
-                        }
-                        let parsed = value
+                        // C `ARG(units, forward, backward)` (`tail.c:85-104`):
+                        // `off = strtoll(optarg, &p, 10) * units`, a leading `+`
+                        // selects the forward style and gives back one unit
+                        // (only when `off` is non-zero), anything else is the
+                        // backward style. `-b` is `ARG(512, FBYTES, RBYTES)`, so
+                        // it shares `-c`'s two styles at 512-byte units.
+                        let forward = value.starts_with('+');
+                        let digits = &value[if forward { 1 } else { 0 }..];
+                        let (units, fwd, bwd) = match letter {
+                            b'n' => (1usize, RawStyle::SkipLines, RawStyle::LastLines),
+                            b'c' => (1, RawStyle::SkipBytes, RawStyle::LastBytes),
+                            _ /* b */ => (512, RawStyle::SkipBytes, RawStyle::LastBytes),
+                        };
+                        let parsed = digits
                             .parse::<usize>()
                             .map_err(|_| TailError::IllegalCount(value.clone()))?;
-                        match letter {
-                            b'n' => {
-                                result.count = parsed;
-                                result.n_seen = true;
-                            }
-                            b'c' => {
-                                if parsed == 0 {
-                                    return Err(TailError::IllegalCount(value));
-                                }
-                                result.bytecnt = parsed;
-                            }
-                            _ /* b */ => {
-                                if parsed == 0 {
-                                    return Err(TailError::IllegalCount(value));
-                                }
-                                result.bytecnt = block_bytes(parsed);
-                            }
+                        if !forward && matches!(letter, b'c' | b'b') && parsed == 0 {
+                            return Err(TailError::IllegalCount(value));
                         }
+                        let mut off = parsed.saturating_mul(units);
+                        if forward && off != 0 {
+                            off -= units;
+                        }
+                        seen = Some((if forward { fwd } else { bwd }, off));
                         pos = bytes.len(); // the value consumed the token's tail
                     }
                     _ => return Err(TailError::Usage),
                 }
             }
         } else {
-            result.operands.push(String::from(token));
+            operands.push(String::from(token));
         }
         index += 1;
     }
-    Ok(result)
+
+    // C `tail.c:135-164`: when no number option was given the default is the
+    // whole file for `-r` (`REVERSE`), else the last ten lines (`RLINES`).
+    // Under `-r` a forward style becomes the same-unit backward one with `off`
+    // kept, which is how `tail -r -n +5` ends up the last four lines bottom-up.
+    let style = match (rflag, seen) {
+        (false, None) => TailStyle::LastLines { off: 10 },
+        (true, None) => TailStyle::ReverseAll,
+        (false, Some((RawStyle::LastLines, off))) => TailStyle::LastLines { off },
+        (false, Some((RawStyle::LastBytes, off))) => TailStyle::LastBytes { off },
+        (false, Some((RawStyle::SkipLines, off))) => TailStyle::SkipLines { off },
+        (false, Some((RawStyle::SkipBytes, off))) => TailStyle::SkipBytes { off },
+        (true, Some((kind, off))) => match kind {
+            RawStyle::LastLines | RawStyle::SkipLines => TailStyle::ReverseLines { off },
+            RawStyle::LastBytes | RawStyle::SkipBytes => TailStyle::ReverseBytes { off },
+        },
+    };
+    Ok(TailArgs { style, operands })
+}
+
+/// The `NOTSET`-resolved pair C holds while parsing: a style without its count,
+/// so the post-loop fold can tell "no number option" from "`off == 0`".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RawStyle {
+    LastLines,
+    LastBytes,
+    SkipLines,
+    SkipBytes,
 }
 
 #[cfg(test)]
@@ -564,41 +605,57 @@ mod tests {
     fn test_parse_tail_args_faithful_getopt() {
         use alloc::string::String;
         use alloc::vec;
-        // Defaults: no args → ten lines, no operands, not reverse.
+        // Defaults: no args → ten lines, no operands (`tail.c:161-162`).
         assert_eq!(
             parse_tail_args(&[]),
             Ok(TailArgs {
-                count: 10,
-                bytecnt: 0,
-                rflag: false,
-                n_seen: false,
+                style: TailStyle::LastLines { off: 10 },
                 operands: Vec::new(),
             })
         );
         // `-n` attached (regression: the old matcher leaked `-n10` to operands)
-        // and next-word forms both yield the count with n_seen set.
+        // and next-word forms both select `RLINES` with that count.
         assert_eq!(
             parse_tail_args(&["-n10", "f"]),
             Ok(TailArgs {
-                count: 10,
-                bytecnt: 0,
-                rflag: false,
-                n_seen: true,
+                style: TailStyle::LastLines { off: 10 },
                 operands: operands(&["f"]),
             })
         );
-        assert_eq!(parse_tail_args(&["-n", "10", "f"]).unwrap().count, 10);
+        assert_eq!(
+            parse_tail_args(&["-n", "10", "f"]).unwrap().style,
+            TailStyle::LastLines { off: 10 }
+        );
         // obsolete leading digit `-N` rewrites to `-n<N>`.
-        let obs = parse_tail_args(&["-5", "f"]).unwrap();
-        assert_eq!(obs.count, 5);
-        assert!(obs.n_seen);
-        // `-c`/`-b` attached values reach bytecnt in bytes (`-b` is blocks*512).
-        assert_eq!(parse_tail_args(&["-c100", "f"]).unwrap().bytecnt, 100);
-        assert_eq!(parse_tail_args(&["-b3", "f"]).unwrap().bytecnt, 1536);
-        // clustering: `-r` flag then attached `-n`.
-        let r = parse_tail_args(&["-rn3", "f"]).unwrap();
-        assert!(r.rflag);
-        assert_eq!(r.count, 3);
+        assert_eq!(
+            parse_tail_args(&["-5", "f"]).unwrap().style,
+            TailStyle::LastLines { off: 5 }
+        );
+        // `-c`/`-b` attached values reach the byte style (`-b` counts 512-byte
+        // blocks, C `ARG(512, FBYTES, RBYTES)`).
+        assert_eq!(
+            parse_tail_args(&["-c100", "f"]).unwrap().style,
+            TailStyle::LastBytes { off: 100 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-b3", "f"]).unwrap().style,
+            TailStyle::LastBytes { off: 1536 }
+        );
+        // clustering: `-r` then an attached `-n` is C `RLINES` under `reverse()`.
+        assert_eq!(
+            parse_tail_args(&["-rn3", "f"]).unwrap().style,
+            TailStyle::ReverseLines { off: 3 }
+        );
+        // bare `-r` is C `REVERSE` (whole file, `tail.c:157-159`), and bare `-r`
+        // with `-c`/`-b` is `RBYTES`.
+        assert_eq!(
+            parse_tail_args(&["-r", "f"]).unwrap().style,
+            TailStyle::ReverseAll
+        );
+        assert_eq!(
+            parse_tail_args(&["-rc", "8"]).unwrap().style,
+            TailStyle::ReverseBytes { off: 8 }
+        );
         // `--` ends scanning; a bare `-` is a literal operand.
         assert_eq!(
             parse_tail_args(&["--", "-n"]).unwrap().operands,
@@ -620,16 +677,93 @@ mod tests {
         assert_eq!(parse_tail_args(&["-x", "f"]).err(), Some(TailError::Usage));
         assert_eq!(parse_tail_args(&["-n"]).err(), Some(TailError::Usage));
         assert_eq!(
-            parse_tail_args(&["-n", "+5"]).err(),
-            Some(TailError::ForwardOffset)
-        );
-        assert_eq!(
             parse_tail_args(&["-n", "x"]).err(),
             Some(TailError::IllegalCount(String::from("x")))
         );
         assert_eq!(
             parse_tail_args(&["-c", "0"]).err(),
             Some(TailError::IllegalCount(String::from("0")))
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_forward_offset_is_one_based() {
+        // C `ARG` (`tail.c:91-96`): a `+` value takes the forward style and,
+        // when non-zero, gives back one unit — so `+1` skips nothing and `+N`
+        // starts *at* line/byte N.
+        assert_eq!(
+            parse_tail_args(&["-n", "+1"]).unwrap().style,
+            TailStyle::SkipLines { off: 0 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-n", "+20"]).unwrap().style,
+            TailStyle::SkipLines { off: 19 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-c", "+3"]).unwrap().style,
+            TailStyle::SkipBytes { off: 2 }
+        );
+        // The attached form (`-c+3`, and the clustered `-rc+3`) goes through the
+        // same `ARG` path as the next-word form.
+        assert_eq!(
+            parse_tail_args(&["-c+3"]).unwrap().style,
+            TailStyle::SkipBytes { off: 2 }
+        );
+        // `-b` counts 512-byte blocks, so `+2` starts at byte 512.
+        assert_eq!(
+            parse_tail_args(&["-b", "+2"]).unwrap().style,
+            TailStyle::SkipBytes { off: 512 }
+        );
+        // `+0` keeps `off` at zero (C skips the decrement when `off` is zero).
+        assert_eq!(
+            parse_tail_args(&["-n", "+0"]).unwrap().style,
+            TailStyle::SkipLines { off: 0 }
+        );
+        // A count past the ring's declared cap is not the ring's business: C
+        // `forward()` + `FLINES` walks the file with `getc` and needs no buffer.
+        assert_eq!(
+            parse_tail_args(&["-n", "+40"]).unwrap().style,
+            TailStyle::SkipLines { off: 39 }
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_reverse_folds_forward_offset() {
+        // C `tail.c:146-149`: under `-r` `FBYTES` becomes `RBYTES` and `FLINES`
+        // becomes `RLINES`, `off` unchanged — `tail -r -n +5` is the last four
+        // lines bottom-up, not a forward walk.
+        assert_eq!(
+            parse_tail_args(&["-r", "-n", "+5"]).unwrap().style,
+            TailStyle::ReverseLines { off: 4 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-r", "-c", "+9"]).unwrap().style,
+            TailStyle::ReverseBytes { off: 8 }
+        );
+        // `-r -n +1` folds to `RLINES` with `off == 0`, which C prints as
+        // nothing (`reverse.c:79-80`) — the shape must not collapse into
+        // `ReverseAll`, which prints the whole file.
+        assert_eq!(
+            parse_tail_args(&["-r", "-n", "+1"]).unwrap().style,
+            TailStyle::ReverseLines { off: 0 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-r", "-c", "+1"]).unwrap().style,
+            TailStyle::ReverseBytes { off: 0 }
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_forward_offset_rejects_non_numeric() {
+        // C `if (*p) xerrx(1, "illegal offset -- %s", optarg)` (`tail.c:89-90`)
+        // applies to the `+` form too: a bare `+` is not a number.
+        assert_eq!(
+            parse_tail_args(&["-n", "+"]).err(),
+            Some(TailError::IllegalCount(String::from("+")))
+        );
+        assert_eq!(
+            parse_tail_args(&["-c", "+x"]).err(),
+            Some(TailError::IllegalCount(String::from("+x")))
         );
     }
 }

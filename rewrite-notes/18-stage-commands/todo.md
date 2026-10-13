@@ -250,6 +250,63 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十七接上 `tail` 的前向偏移 `-n +N`/`-c +N`/`-b +N`（并把模式与计数折成一枚枚举）**
+  （`2026-10-13`，`claim/TAIL-FWD-OFFSET-qoder` @ 基线 `c701bbe17`，单域三线 commands/textfilter，无跨界）：
+  接回 `07-text-filter.md` tail 行与批次一百八十都显式拒绝的最后一块可离线建模的留白（`tail -n +N` 报「not modelled」）。
+  **改前现状证据**：`grep -rn "ForwardOffset" os/commands/usr-bin/textfilter/src` → 解析半的 `TailError::ForwardOffset`
+  与薄壳 `arg_error` 的拒臂两处俱在，任何 `+N` 值都落到 `support::terminate(1)`。
+  **顺带纠一处账面滞后**：同一行还把 `-c`/`-b`/`-r` 写作「均报未接」，而 `os/commands/usr-bin/textfilter/src/bin/tail.rs:fn last_bytes_of`
+  与 `fn reverse_bytes` 早已落地这三形（批次一百五十、批次一百五十四）；文档与代码不同步会把后继轮引去「实现」一个已存在的能力，
+  故本笔把该行整体重写。
+  **C 真源**：`minix3/usr.bin/tail/tail.c` 的 `ARG(units, forward, backward)` 宏把 `+N` 与「取后 N」分成两种 style——乘完单位后
+  只在积非零时减一个单位（数字选项以一为基），于是 `-n +1`/`-c +1` 什么都不跳、输出整档，`-n +20` 从第 20 行往后输出；
+  `minix3/usr.bin/tail/forward.c` 的 `FBYTES` 支把 seek 夹到 `st_size`、`FLINES` 支在 `getc` 处撞 EOF，两条越过档尾的路都落在
+  「什么都不输出」；`tail.c` 在分派前把 forward 形态折回同单位的 backward 形态（`tail -r -n +5` 因此是末四行反序），而
+  `minix3/usr.bin/tail/reverse.c` 开头对非 `REVERSE` 且 `off == 0` 直接返回——折算确实能造出「反序但零行」这一形。
+  **方案对比**：甲案只加两个字段（一个前向偏移量加单位标志），改动最小，但扁平的 `bytecnt == 0` 同时表示「字节模式关」与
+  「取零字节」，`-r -n +1` 折出的 `off == 0` 无法与「未给数字选项」区分，会把 C 的不输出错写成整档反序；乙案（采）把 C 的
+  `(style, off)` 连同 `rflag` 折成一枚 `TailStyle` 枚举（`LastLines`/`LastBytes`/`SkipLines`/`SkipBytes`/`ReverseLines`/
+  `ReverseBytes`/`ReverseAll`），模式与计数同一真源：解析半用局部 `RawStyle` 加 `Option` 表达 C 的 `NOTSET`，缺省回填与 `-r`
+  折算都留在解析半（对位 C `main()` 分派之前那一段），执行半只对枚举穷举分派，不留需要 `unreachable!()` 的非法态。
+  对照 GNU `tail` 与 POSIX：`-n +K` 同为「自第 K 行起输出」，本树与之外部一致；Redox coreutils 的 `tail` 未实现 `-r` 与前向
+  偏移，故真值仍以 C 为纲。前向两形的输出走原始字节（对位 C `forward.c` 的 `getc`/`putc` 环路）：不逐行补换行，末行无尾换行时
+  不会被造出一个换行。
+  **必要连带的一处行为更正**：三十二行封顶的守卫条件是「非字节模式」，于是反序形态也被它挡住（`tail -r -n 40` 退 1），
+  而 C `minix3/usr.bin/tail/reverse.c` 的反序走 `mmap` 回溯、根本不经过行窗；本笔把封顶收到真正
+  走行窗的 `LastLines` 一形，反序两形改按 C `reverse.c` 的早退与取窗处理。这不是顺手扩修：`-r -n +1` 折出的 `off == 0` 按那条
+  「非字节模式即查窗」的判据会被 `TailWindow::new(0)` 误拒，与新臂共用同一段守卫，必须同批给形状。
+  **改名留痕**：本笔把批次一百五十的 `reverse_selection(lines, count, n_seen)` 换成 `reversed_lines(lines, take: Option<usize>)`
+  （`None` 整档反序、`Some(off)` 末 `off` 行反序、`Some(0)` 不输出）；历史批次条目原文不回改。
+  三件套：`cargo test -p minix-textfilter --lib` → **399 passed / 0 failed**（基线 `396`；新增三枚解析测
+  `test_parse_tail_args_forward_offset_is_one_based`、`test_parse_tail_args_reverse_folds_forward_offset`、
+  `test_parse_tail_args_forward_offset_rejects_non_numeric`）；`cargo test -p minix-textfilter --bin tail` → **14 passed / 0 failed**
+  （基线 `7`；新增 `bytes_from` 三枚、`bytes_after_lines` 三枚、`reversed_lines_zero_takes_nothing`，并在 `reverse_bytes` 内加钉
+  `off == 0` 不输出）；三枚变异负控各让对应测当场翻红——去掉 `off != 0` 守卫 → `..._forward_offset_is_one_based` FAILED
+  （`usize` 减穿 panic，`window.rs:392`）；去掉 `-r` 折算臂 → `..._reverse_folds_forward_offset` FAILED；去掉
+  `bytes_after_lines` 的 `off == 0` 早退 → `bytes_after_lines_lands_on_the_nth_line` FAILED（`bin/tail.rs:283`）；三处均按备份
+  复原后复测 399/0 与 14/0。容器权威编译门 `docker run --rm -v $PWD:/work -w /work/os -m 2g minix-ci:1.94 cargo check -j 1
+  --workspace` → Finished、0 error；三架构裸机构建 `cargo build -p minix-textfilter --bin tail --target
+  {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf} --release` → 三台均 Finished；clippy 自有文件与 base
+  逐条同集（`window.rs` 三条存量：行窗循环变量一枚 + head 测未用导入两枚；`bin/tail.rs` 零告警，中途出现的一条
+  `collapsible_if` 已改写消除）；容器口径 `cargo fmt --check` 的 textfilter 漂移块数 **258 → 258**（插入行零新增漂移）；
+  `bash tools/pattern-gate.sh --diff` → `PASS=17 FAIL=0 SKIP=1`（增量 12 枚 C 锚点逐条回读落窗）；
+  `bash tools/doc-style-lint.sh --diff` → error 级 0；`bash tools/check-command-boundary.sh` → OK；核实日 `2026-10-13`；
+  基线 `c701bbe17`。**真机旁证**：`bash os/qemu-tests/test-cmd-smoke.sh`（x86_64）→ `RESULT: PASS (… the stat command
+  face and the find command face)`——本改动不触启动路径，这轮跑的是「没写坏」而非 tail 本身（tail 不在 imgrd 名单内，
+  读数存 `tmp/tail-fwd/cmd-smoke-x86.log`）。
+  **工具坑（写下来防下轮重踩）**：同一工作树里先用 `docker run` 跑 cargo（容器内是 root）会留下 root 属主的 `os/target` 指纹，
+  之后宿主侧 `xtask image` 撞 `Permission denied`；解法是要么 docker 侧加 `-u $(id -u):$(id -g)`（批次一百五十已用过的形态），
+  要么补一次 `docker run --entrypoint chown … -R $(id -u):$(id -g) target` 归还属主。
+  **登记不执行（同族相邻缺口，本单不顺手修）**：① `tail.c` 的 `ARG` 开头 `if (style) usage()`——`tail -n 5 -c 10` 在 C 是用法错，
+  本树后到者覆盖；② `ARG` 的 `case '-'` 负值臂——`tail -c -5` 在 C 等价 `-c 5`，本树按非十进制拒（`IllegalCount`）；
+  ③ `-c 0`/`-b 0` 本树按非零判据拒，而 C 的 `*p` 判据只拒尾随垃圾、`RBYTES off == 0` 的语义是不输出；④ `-f`/`-F` 跟踪仍需
+  事件循环，维持显式拒绝；⑥ obsolete 形态的后缀单位字母未建模——`tail.c` 的 `obsolete()` 会把 `-3c`/`-3b`/`-3l` 连同尾随
+  `f`/`r` 重写成合法选项（最终等价 `-c 3`），而本树的改写只处理前导数字→`-n<数字>`，`-3c` 会变成 `-n3c` 再被
+  `parse::<usize>` 拒为 `IllegalCount("3c")`（行为与本笔无关，批次一百八十的改写形状就如此）；⑦ **测量通道缺口**：`bin/tail.rs` 直接调 `minix_sys::open`/`minix_sys::read`，没有同族
+  `bin_support.rs:read_file` 那样的宿主分支，于是宿主直接跑 `os/target/debug/tail` 时操作数打不开、标准输入读空（实测
+  `tail -n 2 < /tmp/tf.txt` 输出空、带操作数那腿 warn 退 1，且本笔未触碰的 `-n 2` 同样如此）——「宿主跑二进制与系统 `tail`
+  逐字对账」这条验证路线对 tail 不适用，本单的判据因此是纯函数测加裸机构建，真机逐字对账归 `C-57`/E5 的 imgrd 播种之后。
+
 - ✅ **批次一百九十六 sed 多命令支持·第1片（决定半 `parse_script`，非破坏式）**
   （`2026-10-13`，`claim/SED-CMD2-qoder` @ 基线 `e046b1e89`，单域三线 commands/regex，无跨界）：
   sed 现只建模单 `s`，`;` 链与其他动词显式拒——最大功能缺口之一。本片按「大功能拆多轮」先落**决定半**：
