@@ -9,9 +9,16 @@
 //! escapes (`\n`, `\r`, `\b`, `\a`, `\v`, `\t`, `\f`, `\s`, `\0`, and
 //! `\c` for graphic non-octal bytes, with the C's skip list of letters
 //! that must fall through, vis.c:210-267). `-o` selects three-digit
-//! octal for every byte. The decoder accepts the same grammar —
+//! octal for every byte, `-b` (C's `VIS_NOSLASH`) drops the backslash prefix,
+//! and `-l` ends each line with `\$`. The decoder accepts the same grammar —
 //! `M`-meta prefixes, `^X` controls, and backslash-octal runs — which
 //! is what the encoder produces.
+//!
+//! One command flag is deliberately not a field of [`VisOptions`]: `-n` is
+//! `none` in `minix3/usr.bin/vis/vis.c`, which copies the stream with each
+//! backslash doubled and so preserves raw bytes above `0x7F` — bytes a `String`
+//! could not carry unchanged. It is its own byte-level entry point, see
+//! [`copy_doubling_backslashes`].
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -23,14 +30,42 @@ pub struct VisOptions {
     pub cstyle: bool,
     /// `-o`: three-digit octal for every byte.
     pub octal: bool,
-    /// `-n`: no backslash before the escape sequences.
+    /// `-b` (`VIS_NOSLASH`): inhibit the backslash prefix. C's `-n` is a
+    /// different flag; see [`copy_doubling_backslashes`].
     pub no_slash: bool,
+    /// `-l` (`markeol`): end each line with `\$`; the backslash itself follows
+    /// `-b`, exactly as `usr.bin/vis/vis.c` writes it before the newline.
+    pub mark_eol: bool,
+}
+
+/// C's `-n` shape (`vis.c`'s `if (none)` branch): copy every byte through and
+/// double each backslash. Kept at the byte level on purpose, because the copy
+/// preserves input above 0x7F that a `String` could not carry unchanged.
+pub fn copy_doubling_backslashes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    for &byte in input {
+        out.push(byte);
+        if byte == b'\\' {
+            out.push(b'\\');
+        }
+    }
+    out
 }
 
 /// Encodes the input per the options.
 pub fn encode(input: &[u8], options: &VisOptions) -> String {
     let mut out = String::new();
     for (index, &byte) in input.iter().enumerate() {
+        // C's `process()` tests the shapes in this order, so the end-of-line
+        // marker wins over the vis(3) encoding of a newline (`vis.c`).
+        if options.mark_eol && byte == b'\n' {
+            if !options.no_slash {
+                out.push('\\');
+            }
+            out.push('$');
+            out.push('\n');
+            continue;
+        }
         let next = input.get(index + 1).copied().unwrap_or(0);
         encode_byte(byte, next, options, &mut out);
     }
@@ -109,17 +144,7 @@ fn cstyle_escape(byte: u8, next: u8) -> Option<String> {
     // skip list letters whose escape form would be ambiguous.
     let skip = matches!(
         byte,
-        b'n' | b'r'
-            | b'b'
-            | b'a'
-            | b'v'
-            | b't'
-            | b'f'
-            | b's'
-            | b'0'
-            | b'M'
-            | b'^'
-            | b'$'
+        b'n' | b'r' | b'b' | b'a' | b'v' | b't' | b'f' | b's' | b'0' | b'M' | b'^' | b'$'
     );
     if !skip && byte.is_ascii_graphic() && !(b'0'..=b'7').contains(&byte) {
         let mut out = String::new();
@@ -283,6 +308,44 @@ pub fn decode(input: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_mark_eol_writes_a_backslash_dollar_before_the_newline() {
+        // `vis.c`'s `else if (markeol && c == '\n')` arm.
+        let options = VisOptions {
+            mark_eol: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"a\nb", &options), "a\\$\nb");
+        // The marker's own backslash follows `-b` (`VIS_NOSLASH`).
+        let without_slash = VisOptions {
+            mark_eol: true,
+            no_slash: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"a\nb", &without_slash), "a$\nb");
+        // Only newlines are marked. A backslash byte is graphic in the C locale,
+        // so `do_svis` passes it through untouched — protecting it is what `-e`
+        // or `-S` (`VIS_SHELL`) are for, not the default.
+        assert_eq!(encode(b"a\\b", &options), "a\\b");
+    }
+
+    #[test]
+    fn test_none_copies_through_and_doubles_each_backslash() {
+        // `vis.c`'s `if (none)` arm: the byte is written, and a backslash is
+        // followed by a second one so the output still shows exactly one.
+        assert_eq!(
+            copy_doubling_backslashes(b"a\\b"),
+            vec![b'a', b'\\', b'\\', b'b']
+        );
+        assert_eq!(copy_doubling_backslashes(b"plain"), b"plain".to_vec());
+        // Bytes above 0x7F survive unchanged, which is why this path is not a
+        // `String` and not a `VisOptions` field.
+        assert_eq!(
+            copy_doubling_backslashes(&[0x80, 0xff]),
+            vec![0x80u8, 0xffu8]
+        );
+    }
 
     #[test]
     fn test_graphic_bytes_and_whitespace_pass_through() {
