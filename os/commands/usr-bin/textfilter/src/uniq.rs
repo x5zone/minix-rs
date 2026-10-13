@@ -7,9 +7,17 @@
 //! - Only *adjacent* equal lines collapse (the input is expected sorted;
 //!   `uniq` never reorders).
 //! - Default prints one copy of each run.
-//! - `-c` prefixes each printed line with its run count.
+//! - `-c` prefixes each printed line with its run count (`C` prints `"%4d %s"`,
+//!   so the count is right-justified in four columns).
 //! - `-d` prints only lines from runs longer than one.
 //! - `-u` prints only lines from runs of exactly one.
+//!
+//! The three flags are independent in C (`uniq.c` keeps `cflag`, `dflag` and
+//! `uflag` as three ints), so combinations are legal and each has its own
+//! meaning: `-c -d` counts the repeated runs only, `-c -u` counts the unique
+//! ones, and `-d -u` suppresses every run and prints nothing. `show()`'s guard
+//! says it in one line — skip when `dflag && repeats == 0` or `uflag && repeats
+//! > 0` — and [`UniqFlags::keeps`] is that guard written the same way.
 //!
 //! The handler is a small state machine fed one line at a time: it reports
 //! completed runs through a callback, so arbitrarily long inputs stream
@@ -17,17 +25,29 @@
 
 use crate::TextError;
 
-/// Which runs the handler reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UniqMode {
-    /// Print one copy of every run.
-    All,
-    /// Print one copy prefixed with the run count (`-c`).
-    Counted,
-    /// Print only repeated lines (`-d`).
-    Repeated,
-    /// Print only unique lines (`-u`).
-    Unique,
+/// C `uniq`'s three flag variables (`cflag`, `dflag`, `uflag`), kept separate
+/// because C composes them in `show()` rather than collapsing them into one
+/// mode. A fourth shape is not needed: with no flag set every run is printed
+/// once, which is what the default `false` triple already does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UniqFlags {
+    /// `-c`: prefix each printed line with its run count.
+    pub count: bool,
+    /// `-d`: print only runs of more than one line.
+    pub repeats_only: bool,
+    /// `-u`: print only runs of exactly one line.
+    pub uniques_only: bool,
+}
+
+impl UniqFlags {
+    /// C `show()`'s guard (`uniq.c`): a run is skipped when `-d` is set and it
+    /// never repeated, or when `-u` is set and it did. `repeats` in C is
+    /// `count - 1`, so "never repeated" is `count == 1`. Written as one
+    /// negated disjunction because that is literally C's shape:
+    /// `if ((dflag && repeats == 0) || (uflag && repeats > 0)) return;`.
+    pub fn keeps(&self, count: u64) -> bool {
+        !((self.repeats_only && count == 1) || (self.uniques_only && count > 1))
+    }
 }
 
 /// One completed run handed to the reporter: the line plus its count.
@@ -70,7 +90,7 @@ pub fn comparison_key(line: &[u8], numfields: usize, numchars: usize) -> &[u8] {
 
 /// Adjacent duplicate handler: feed lines in order, collect runs.
 pub struct Uniq<'a> {
-    mode: UniqMode,
+    flags: UniqFlags,
     skip_fields: usize,
     skip_chars: usize,
     previous: Option<&'a str>,
@@ -79,17 +99,17 @@ pub struct Uniq<'a> {
 }
 
 impl<'a> Uniq<'a> {
-    /// A new handler in `mode` (no field/character skip).
-    pub fn new(mode: UniqMode) -> Self {
-        Uniq::new_with_skip(mode, 0, 0)
+    /// A new handler under `flags` (no field/character skip).
+    pub fn new(flags: UniqFlags) -> Self {
+        Uniq::new_with_skip(flags, 0, 0)
     }
 
-    /// A handler in `mode` that compares `-f fields`/`-s chars` skipped keys
-    /// while still reporting whole lines (`skip_fields`/`skip_chars` mirror C
-    /// `uniq`'s `numfields`/`numchars`).
-    pub fn new_with_skip(mode: UniqMode, skip_fields: usize, skip_chars: usize) -> Self {
+    /// A handler that compares `-f fields`/`-s chars` skipped keys while still
+    /// reporting whole lines (`skip_fields`/`skip_chars` mirror C `uniq`'s
+    /// `numfields`/`numchars`).
+    pub fn new_with_skip(flags: UniqFlags, skip_fields: usize, skip_chars: usize) -> Self {
         Uniq {
-            mode,
+            flags,
             skip_fields,
             skip_chars,
             previous: None,
@@ -131,20 +151,22 @@ impl<'a> Uniq<'a> {
         finished
     }
 
-    /// Decide whether `run` is reported under the handler's mode.
+    /// Decide whether `run` is reported: C's `show()` guard, flags composed.
     pub fn keep(&self, run: &Run<'_>) -> bool {
-        match self.mode {
-            UniqMode::All | UniqMode::Counted => true,
-            UniqMode::Repeated => run.count > 1,
-            UniqMode::Unique => run.count == 1,
-        }
+        self.flags.keeps(run.count)
     }
 
-    /// Format one kept run into `out` (`-c` prefixes the count and a
-    /// blank), returning the used byte count.
+    /// Format one kept run into `out`, returning the used byte count. With `-c`
+    /// C writes `"%4d %s"` (`uniq.c`'s `show()`), so the count is right-justified
+    /// in four columns before the single separating blank — `1` becomes three
+    /// spaces and a digit, and a five-digit count simply overflows the field.
     pub fn format(&self, run: &Run<'_>, out: &mut [u8]) -> Result<usize, TextError> {
         let mut written = 0;
-        if self.mode == UniqMode::Counted {
+        if self.flags.count {
+            let digits = decimal_digits(run.count);
+            for _ in digits..4 {
+                written = write_byte(out, written, b' ')?;
+            }
             written = write_decimal(run.count, out, written)?;
             written = write_byte(out, written, b' ')?;
         }
@@ -162,6 +184,18 @@ fn write_byte(out: &mut [u8], mut written: usize, byte: u8) -> Result<usize, Tex
     out[written] = byte;
     written += 1;
     Ok(written)
+}
+
+/// How many columns C's `%4d` fills with `value`'s digits — zero is one digit,
+/// not none (this is the blank-padding decision, kept apart from the digit
+/// writing below so both stay readable).
+fn decimal_digits(mut value: u64) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
 }
 
 fn write_decimal(mut value: u64, out: &mut [u8], mut written: usize) -> Result<usize, TextError> {
@@ -186,8 +220,8 @@ fn write_decimal(mut value: u64, out: &mut [u8], mut written: usize) -> Result<u
 mod tests {
     use super::*;
 
-    fn collect(mode: UniqMode, lines: &[&str]) -> Vec<(String, u64)> {
-        let mut handler = Uniq::new(mode);
+    fn collect(flags: UniqFlags, lines: &[&str]) -> Vec<(String, u64)> {
+        let mut handler = Uniq::new(flags);
         let mut runs = Vec::new();
         for line in lines {
             if let Some(run) = handler.push(line) {
@@ -204,10 +238,33 @@ mod tests {
         runs
     }
 
+    const NONE: UniqFlags = UniqFlags {
+        count: false,
+        repeats_only: false,
+        uniques_only: false,
+    };
+    const COUNTED: UniqFlags = UniqFlags {
+        count: true,
+        ..NONE
+    };
+    const REPEATED: UniqFlags = UniqFlags {
+        repeats_only: true,
+        ..NONE
+    };
+    const UNIQUE: UniqFlags = UniqFlags {
+        uniques_only: true,
+        ..NONE
+    };
+
+    /// One run of the line `a` with `count` copies, for the format tests.
+    fn run_of(count: u64) -> Run<'static> {
+        Run { line: "a", count }
+    }
+
     #[test]
     fn test_collapses_adjacent() {
         assert_eq!(
-            collect(UniqMode::All, &["a", "a", "b", "a"]),
+            collect(NONE, &["a", "a", "b", "a"]),
             [("a".to_string(), 2), ("b".to_string(), 1), ("a".to_string(), 1)]
         );
     }
@@ -215,28 +272,66 @@ mod tests {
     #[test]
     fn test_repeated_and_unique_modes() {
         let lines = ["a", "a", "b"];
-        assert_eq!(
-            collect(UniqMode::Repeated, &lines),
-            [("a".to_string(), 2)]
-        );
-        assert_eq!(
-            collect(UniqMode::Unique, &lines),
-            [("b".to_string(), 1)]
-        );
+        assert_eq!(collect(REPEATED, &lines), [("a".to_string(), 2)]);
+        assert_eq!(collect(UNIQUE, &lines), [("b".to_string(), 1)]);
+    }
+
+    #[test]
+    fn test_flag_combinations_follow_the_show_guard() {
+        // C keeps three independent ints, so combinations are legal and each
+        // falls out of `show()`'s guard rather than being rejected as a clash:
+        // `-d -u` suppresses every run, `-c -d` counts the repeated ones, `-c -u`
+        // the unique ones.
+        let lines = ["a", "a", "b"];
+        let both = UniqFlags {
+            repeats_only: true,
+            uniques_only: true,
+            ..NONE
+        };
+        assert!(collect(both, &lines).is_empty());
+        let count_repeated = UniqFlags {
+            count: true,
+            repeats_only: true,
+            ..NONE
+        };
+        assert_eq!(collect(count_repeated, &lines), [("a".to_string(), 2)]);
+        let count_unique = UniqFlags {
+            count: true,
+            uniques_only: true,
+            ..NONE
+        };
+        assert_eq!(collect(count_unique, &lines), [("b".to_string(), 1)]);
+        // `-c` alone changes only the prefix, never which runs are kept.
+        assert_eq!(collect(COUNTED, &lines), collect(NONE, &lines));
     }
 
     #[test]
     fn test_counted_format() {
-        let handler = Uniq::new(UniqMode::Counted);
-        let run = Run { line: "a", count: 12 };
+        // C prints `"%4d %s"`: the count right-justified in four columns, then
+        // one blank, then the line.
+        let handler = Uniq::new(COUNTED);
         let mut out = [0u8; 16];
-        let len = handler.format(&run, &mut out).unwrap();
-        assert_eq!(&out[..len], b"12 a");
+        let len = handler.format(&run_of(12), &mut out).unwrap();
+        assert_eq!(&out[..len], b"  12 a");
+    }
+
+    #[test]
+    fn test_counted_format_pads_to_four_columns() {
+        let handler = Uniq::new(COUNTED);
+        let mut out = [0u8; 16];
+        let len = handler.format(&run_of(1), &mut out).unwrap();
+        assert_eq!(&out[..len], b"   1 a");
+        let len = handler.format(&run_of(9999), &mut out).unwrap();
+        assert_eq!(&out[..len], b"9999 a");
+        // A count wider than the field overflows it instead of truncating, the
+        // way a `printf` width never cuts digits.
+        let len = handler.format(&run_of(12345), &mut out).unwrap();
+        assert_eq!(&out[..len], b"12345 a");
     }
 
     #[test]
     fn test_empty_input_no_runs() {
-        let mut handler = Uniq::new(UniqMode::All);
+        let mut handler = Uniq::new(NONE);
         assert_eq!(handler.finish(), None);
     }
 
@@ -259,7 +354,7 @@ mod tests {
     fn test_skip_fields_collapses_on_key_not_full_line() {
         // -f 1: "foo SAME" and "bar SAME" share the key "SAME", so they form one
         // run reported as the first full line (uniq.c compares skip(), shows all).
-        let mut handler = Uniq::new_with_skip(UniqMode::All, 1, 0);
+        let mut handler = Uniq::new_with_skip(NONE, 1, 0);
         let mut runs: Vec<(String, u64)> = Vec::new();
         for line in ["foo SAME", "bar SAME", "baz OTHER"] {
             if let Some(run) = handler.push(line) {

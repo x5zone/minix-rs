@@ -1,10 +1,12 @@
 //! Minix-RS uniq — adjacent duplicate filter.
 //!
-//! Ground truth: `minix3/usr.bin/uniq/uniq.c` (NetBSD), `uniq [-c | -d |
-//! -u] [-f fields] [-s chars] [input [output]]`. The run grouping,
-//! mode selection, and count formatting are the library's (`Uniq`,
-//! `UniqMode`, `Run::format`, which prints the count prefix without the
-//! trailing newline — the doing half adds it). Input is stdin, split into
+//! Ground truth: `minix3/usr.bin/uniq/uniq.c` (NetBSD), `uniq [-cdu] [-f fields]
+//! [-s chars] [input_file [output_file]]`. The run grouping, the `show()` flag
+//! guard, and the count formatting are the library's (`Uniq`, `UniqFlags`,
+//! `Run::format`, which prints the `%4d` count prefix without the
+//! trailing newline — the doing half adds it). The three mode flags are
+//! independent bits exactly as C keeps `cflag`/`dflag`/`uflag`, so `-c -d`,
+//! `-c -u` and `-d -u` are all accepted and composed. Input is stdin, split into
 //! newline-stripped lines before the run handler sees them. The field-skip
 //! comparison (`-f fields`, `-s chars`, C `skip()`) is the library's
 //! `comparison_key`: lines are compared on the skipped key but the full line is
@@ -25,11 +27,11 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, read};
-use minix_textfilter::uniq::{Uniq, UniqMode};
+use minix_textfilter::uniq::{Uniq, UniqFlags};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let (mode, skip_fields, skip_chars, operands) = match parse_uniq_args(&argv) {
+    let (flags, skip_fields, skip_chars, operands) = match parse_uniq_args(&argv) {
         Ok(parsed) => parsed,
         Err(_) => usage(),
     };
@@ -49,7 +51,7 @@ fn run() -> ! {
         Some(path) => read_file(path),
     };
     let lines = support::lines_of(&input);
-    let mut handler = Uniq::new_with_skip(mode, skip_fields, skip_chars);
+    let mut handler = Uniq::new_with_skip(flags, skip_fields, skip_chars);
     let mut out = [0u8; 4096];
     for line in &lines {
         if let Some(run) = handler.push(line) {
@@ -101,19 +103,19 @@ fn read_file(path: &str) -> Vec<u8> {
 }
 
 fn usage() -> ! {
-    support::warn(b"usage: uniq [-c | -d | -u] [-f fields] [-s chars] [input [output]]\n");
+    support::warn(b"usage: uniq [-cdu] [-f fields] [-s chars] [input_file [output_file]]\n");
     support::terminate(1);
 }
 
 /// Parse `uniq`'s argv the way NetBSD `getopt(argc, argv, "-cdf:s:u")` does
-/// (uniq.c:77): boolean mode flags `-c`/`-d`/`-u` (mutually exclusive, matching
-/// the C composition guard), value flags `-f`/`-s` taking the rest of the token
-/// or the next argv (rejecting a non-numeric or negative value), `--` ends
-/// options, and everything else is an operand. Returns `(mode, fields, chars,
-/// operands)`; `Err` on a bad or unknown option (the caller prints usage).
-fn parse_uniq_args(argv: &[String]) -> Result<(UniqMode, usize, usize, Vec<String>), ()> {
-    let mut mode = UniqMode::All;
-    let mut mode_seen = false;
+/// (`uniq.c`): the three mode flags `-c`/`-d`/`-u` are independent bits (C keeps
+/// `cflag`/`dflag`/`uflag` and composes them in `show()`, so `-c -d` and even
+/// `-d -u` are legal rather than a clash), value flags `-f`/`-s` take the rest of
+/// the token or the next argv (rejecting a non-numeric value), `--` ends options,
+/// and everything else is an operand. Returns `(flags, fields, chars, operands)`;
+/// `Err` on a bad or unknown option (the caller prints usage).
+fn parse_uniq_args(argv: &[String]) -> Result<(UniqFlags, usize, usize, Vec<String>), ()> {
+    let mut flags = UniqFlags::default();
     let mut fields = 0usize;
     let mut chars = 0usize;
     let mut operands: Vec<String> = Vec::new();
@@ -122,7 +124,7 @@ fn parse_uniq_args(argv: &[String]) -> Result<(UniqMode, usize, usize, Vec<Strin
         let tok = argv[i].as_str();
         if tok == "--" {
             operands.extend(argv[i + 1..].iter().cloned());
-            return Ok((mode, fields, chars, operands));
+            return Ok((flags, fields, chars, operands));
         }
         if tok.len() <= 1 || !tok.starts_with('-') {
             operands.push(String::from(tok));
@@ -134,16 +136,11 @@ fn parse_uniq_args(argv: &[String]) -> Result<(UniqMode, usize, usize, Vec<Strin
         while j < bytes.len() {
             match bytes[j] {
                 b'c' | b'd' | b'u' => {
-                    let next = match bytes[j] {
-                        b'c' => UniqMode::Counted,
-                        b'd' => UniqMode::Repeated,
-                        _ => UniqMode::Unique,
-                    };
-                    if mode_seen && mode != next {
-                        return Err(());
+                    match bytes[j] {
+                        b'c' => flags.count = true,
+                        b'd' => flags.repeats_only = true,
+                        _ => flags.uniques_only = true,
                     }
-                    mode = next;
-                    mode_seen = true;
                     j += 1;
                 }
                 b'f' | b's' => {
@@ -169,7 +166,7 @@ fn parse_uniq_args(argv: &[String]) -> Result<(UniqMode, usize, usize, Vec<Strin
         }
         i += 1;
     }
-    Ok((mode, fields, chars, operands))
+    Ok((flags, fields, chars, operands))
 }
 
 #[cfg(all(not(test), target_os = "none"))]
@@ -200,22 +197,28 @@ mod tests {
 
     #[test]
     fn parse_field_and_char_values() {
-        let (mode, f, c, ops) = parse_uniq_args(&argv(&["-f", "2", "-s", "1", "in"])).unwrap();
-        assert_eq!(mode, UniqMode::All);
+        let (flags, f, c, ops) = parse_uniq_args(&argv(&["-f", "2", "-s", "1", "in"])).unwrap();
+        assert_eq!(flags, UniqFlags::default());
         assert_eq!((f, c), (2, 1));
         assert_eq!(ops, strs(&["in"]));
     }
 
     #[test]
     fn parse_attached_value_and_mode() {
-        let (mode, f, _c, _ops) = parse_uniq_args(&argv(&["-c", "-f3"])).unwrap();
-        assert_eq!(mode, UniqMode::Counted);
+        let (flags, f, _c, _ops) = parse_uniq_args(&argv(&["-c", "-f3"])).unwrap();
+        assert!(flags.count);
         assert_eq!(f, 3);
     }
 
     #[test]
-    fn parse_rejects_composed_modes() {
-        assert!(parse_uniq_args(&argv(&["-d", "-u"])).is_err());
+    fn parse_composes_mode_flags_as_c_does() {
+        // C keeps three independent ints, so `-d -u` is not a clash: both bits
+        // end up set, and it is `show()` that turns that combination into
+        // "suppress every run". Clustered letters (`-cdu`) set all three too.
+        let (flags, ..) = parse_uniq_args(&argv(&["-d", "-u"])).unwrap();
+        assert!(flags.repeats_only && flags.uniques_only && !flags.count);
+        let (clustered, ..) = parse_uniq_args(&argv(&["-cdu"])).unwrap();
+        assert!(clustered.count && clustered.repeats_only && clustered.uniques_only);
     }
 
     #[test]
