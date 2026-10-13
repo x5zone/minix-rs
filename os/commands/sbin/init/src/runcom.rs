@@ -304,7 +304,7 @@ mod tests {
         host.exec_outcomes.push(Errno::EPERM);
         let mut collector = collector(&mut sessions, &mut db, "/");
         let mut seen = false;
-        let ledger = Ledger::new(&mut seen);
+        let _ledger = Ledger::new(&mut seen);
         let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
             rootdir: "/",
@@ -332,7 +332,7 @@ mod tests {
         host.fork_outcomes.push(Ok(0));
         let mut collector = collector(&mut sessions, &mut db, "/newroot");
         let mut seen = false;
-        let ledger = Ledger::new(&mut seen);
+        let _ledger = Ledger::new(&mut seen);
         let deps = RuncomDeps {
             mode: RuncomMode::Fastboot,
             rootdir: "/newroot",
@@ -385,7 +385,7 @@ mod tests {
         host.wait_errors.push(Errno::ESRCH); // reap loop ends
         let mut collector = collector(&mut sessions, &mut db, "/");
         let mut seen = false;
-        let ledger = Ledger::new(&mut seen);
+        let _ledger = Ledger::new(&mut seen);
         let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
             rootdir: "/",
@@ -411,7 +411,7 @@ mod tests {
         host.wait_outcomes.push(Ok((0, WaitStatus::Exited { code: 0 })));
         let mut collector = collector(&mut sessions, &mut db, "/");
         let mut seen = false;
-        let ledger = Ledger::new(&mut seen);
+        let _ledger = Ledger::new(&mut seen);
         let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
             rootdir: "/",
@@ -432,7 +432,7 @@ mod tests {
         host.wait_outcomes.push(Ok((7, WaitStatus::Exited { code: 0 })));
         let mut collector = collector(&mut sessions, &mut db, "/");
         let mut seen = false;
-        let ledger = Ledger::new(&mut seen);
+        let _ledger = Ledger::new(&mut seen);
         let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
             rootdir: "/",
@@ -456,7 +456,7 @@ mod tests {
         )));
         let mut collector = collector(&mut sessions, &mut db, "/");
         let mut seen = false;
-        let ledger = Ledger::new(&mut seen);
+        let _ledger = Ledger::new(&mut seen);
         let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
             rootdir: "/",
@@ -478,7 +478,7 @@ mod tests {
         )));
         let mut collector = collector(&mut sessions, &mut db, "/");
         let mut seen = false;
-        let ledger = Ledger::new(&mut seen);
+        let _ledger = Ledger::new(&mut seen);
         let deps = RuncomDeps {
             mode: RuncomMode::Autoboot,
             rootdir: "/",
