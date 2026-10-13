@@ -217,6 +217,21 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - ✅ **批次五十五完成：12 篇 `sleep` 接线**（`2026-10-10`，`claim/CMD-SLEEP-BIN-qoder`，单域三线 commands/proctools，无跨界）：落地缺失命令 `sleep`（暂停若干秒，真源 `minix3/bin/sleep/sleep.c` 159 行）。决定半新增 `minix_proctools::sleep`（无堆）——`plan` 忠实移植 `sleep.c:104-124` 的双路解析：先扫操作数有无非数字字节——无则整数路（`atol`，`<=0` → `NoSleep` 成退 0），有则小数路（`atof`，`<=0` → `Bad` 运 usage，否则 `floor`/小数拆 `secs`+`nanos`）。这个不对称是真实的：`"0"` 走整数→不睡退 0，而 `"0.0"` 走小数→报 usage。plan 以数据返回、交调用方跑 `nanosleep`。6 枚宿主测：整数秒/零不睡/小数拆分/非正拒绝/前导空格与符号走小数路/纳秒位截断。执行半 `src/bin/sleep.rs`：`sleep seconds` 单操作数（`getopt("")` 拒任意 `-x`），Bad→usage退1、NoSleep→退0、Sleep→`minix_sys::nanosleep(secs,nanos)`。三件套：`cargo test -p minix-proctools --lib sleep::`→6/0、全 crate `--lib`→40/0；freestanding x86_64-unknown-none --release（docker `minix-ci:1.94`）绿；clippy 触及文件零告警。**声明性留白**：`SIGINFO` 进度报告与 EINTR 剩余时长恢复循环（`sleep.c:126-136`）需信号处理注册、本树未接→nanosleep 只发一次；小数路不读指数/hex（`1e3`→1 非 1000）；真机 per-command 与 imgrd 播种归 `C-57`/E5。修法详见 `../18-stage-commands/todo.md` §6.1 批次五十五。
 - ✅ **批次五十六完成：06 篇 `chmod` 接线**（`2026-10-10`，`claim/CMD-MKDIR-RMDIR-BIN-qoder`，单域三线 commands/fileops，无跨界）：命令面干净纯项已穷尽（余下 fpr/ul/deroff/banner 是无 C 参照的超大/终端依赖过滤器，tty/mesg 需未封装 ttyname，touch/date-set 受时区纠缠），故改接 prepared-but-unwired：`minix_fileops::mode`（`apply_mode` 已完整移植 BSD setmode+getmode、八进制+符号 u/g/o/a · +-=· rwxXst，带 8 枚宿主测）**早存但无 bin**。本轮补 `src/bin/chmod.rs`：逐操作数 `stat(path)`取当前位 → `apply_mode(base, spec)` → `chmod_via(path, mode)`，对位 `chmod.c:215-216` 的 `getmode(set, st_mode)`+`change_mode`；`-[rwxstugo]` 裸参按 C `--optind` 纠正当模式非旗标（`chmod -r file` 去读位）、`-f` 遇错继续仅置退出码、`-v` 报每文件。退出码按是否失败。三件套：`cargo test -p minix-fileops --lib mode::`→8/0（决定半既有测）、新 bin `chmod` freestanding x86_64-unknown-none --release（docker `minix-ci:1.94`）绿；clippy 触及文件零告警。**声明性留白**：本轮无新增宿主测（实质逻辑在既有已测的 `mode.rs`，bin 仅为 syscall 腿 + 旗标流）；`-R`（fts 递归）/`-h`/`-H`/`-L`/`-P`（lchmod/fts 符号链遍历）/`--reference` 因依赖未封装设施报 not wired（非语义择重）；真机写盘受可写根盘 E5 门控（同 cp/mv/rm 等写类，本笔交代码+宿主测的 parser）。修法详见 `../18-stage-commands/todo.md` §6.1 批次五十六。
 - ✅ **批次五十七完成：06 篇 `pwd` 接线**（`2026-10-10`，`claim/CMD-PWD-BIN-qoder`，单域三线 commands/fileops，无跨界）：落地缺失命令 `pwd`（报当前工作目录，真源 `minix3/bin/pwd/pwd.c` 143 行）。决定半新增 `minix_fileops::pwd`（无堆）——`env_pwd_usable` 忠实移植 BSD `getcwd_logical` 的字符串预筛：`$PWD` 需非空且首字符 `/`、且不含 `/./` 与 `/../` 子串；dev/ino 同一性检查需 stat 归调用方。为此给 fileops `bin_support` 加 `envs()` 双 cfg seam（与 printenv 批次同构）。执行半 `src/bin/pwd.rs`：`pwd [-L|-P]`（默认物理，对位 C `lFlag=0`）；`-L` 下若 `env_pwd_usable(PWD)` 且 `stat(PWD)` 与 `stat(".")` 的 `st_dev`/`st_ino` 相等→用 `PWD`，否则回退 `getcwd`；物理路直接 `getcwd`；多余操作数/未知旗标→usage。只读不写→不受 E5 写盘门控、真机可跑。4 枚宿主测：合法绝对路径/相对或空/点组件/尾部无斜杠点允。三件套：`cargo test -p minix-fileops --lib pwd::`→4/0、全 crate `--lib`→82/0；freestanding x86_64-unknown-none --release（docker `minix-ci:1.94`）绿；clippy 触及文件零告警。**声明性留白**：仅 `-L`/`-P`（对位 BSD getopt 集，无 legacy `+P`）；真机 per-command 与 imgrd 播种归 `C-57`/E5。修法详见 `../18-stage-commands/todo.md` §6.1 批次五十七。
+- ✅ **批次一百八十九接上 `split -a`（后缀宽度）**
+  （`2026-10-13`，`claim/SPLIT-A-qoder` @ 基线 `c97c41460`，单域三线 commands/textfilter，无跨界）：
+  接回批次一百七十八登记的 `-a` Unmodelled 留白。决定半 `split.rs`：`suffix(index)` 改为 `suffix(index, width)`
+  （按 26 进制生成 `width` 字母后缀、`checked_pow` 定容量、超穷举或 width=0 返 None）；`SplitArgs` 新增
+  `sfxlen`（默认 `DEFAULT_SFXLEN=2`）、`SplitError` 新增 `IllegalSuffixLength`；`parse_split_args` 把 `a` 从
+  Unmodelled 拆出、按 getopt 取值（`-a3` 附值或 `-a 3` 下一词、`line_count` 校非零全数字），`-b`/`-n` 仍 Unmodelled。
+  执行半 `bin/split.rs`：`out_path(prefix, index, width)` 透传 sfxlen；`arg_error` 新增 "illegal suffix length" 臂。
+  width=2 逐字等于旧行为（零回归铉）。新增 3 枚测（`suffix` width 1/3/穷举/0 + `-a` 解析附值/分词/非法 + bin out_path width）。
+  三件套：`cargo test -p minix-textfilter --lib` → **392/0**（既有 390 + 新 2）；`--bin split` → 测绿；
+  freestanding `cargo build -p minix-textfilter --bin split --target {x86_64,aarch64,riscv64gc}-unknown-none --release` 三架构均 Finished；
+  clippy 触及文件零新增告警（bin/split.rs 的 "items after a test module" 系基线即存的存量结构告警，不顺手改）；
+  `rustfmt --edition 2024 --check` 两目标文件零漂移（共享件 bin_support.rs 的 import 排序存量漂移非本笔）；核实日 `2026-10-13`。
+  真机腿：真写文件受可写根盘 E5 门控（同其它写类），本笔交代码+宿主测。留白：`-b`/`-n` 待接（需字节/块数驱动的分块）。
+  修法详见 `../18-stage-commands/07-text-filter.md` split 行。
+
 - ✅ **批次一百八十八接上 `cal -d`（周起始日 0..6）**
   （`2026-10-13`，`claim/CAL-DOW-qoder` @ 基线 `ab108832d`，单域三线 commands/doctools，无跨界）：
   接回 `-d` 留白。C 里 `-d` 同时旋转「表头」与「栅格落位」（`cal.c:435-439` 的 `day_headings + 3*dow`

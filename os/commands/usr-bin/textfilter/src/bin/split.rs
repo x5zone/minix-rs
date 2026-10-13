@@ -8,8 +8,8 @@
 //! `O_WRONLY|O_CREAT|O_TRUNC` at DEFFILEMODE (`split.c:332`). The input
 //! operand special-cases `-` as stdin (`split.c:136`, unlike grep/sed);
 //! the second operand is the output prefix (default `x`). `-a` (suffix
-//! width), `-b` (bytes) and `-n` (chunk count) are not in the deciding
-//! half and are rejected. Real-machine file creation is gated at C-57/E5.
+//! width) is wired; `-b` (bytes) and `-n` (chunk count) are not in the
+//! deciding half and are rejected. Real-machine file creation is gated at C-57/E5.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -42,6 +42,7 @@ fn run() -> ! {
         Err(e) => arg_error(e),
     };
     let lines_per_chunk = parsed.lines_per_chunk;
+    let sfxlen = parsed.sfxlen;
     let operands: Vec<&str> = parsed.operands;
     // `split.c:143`: the second operand is the output prefix, default "x".
     let prefix = operands.get(1).copied().unwrap_or("x");
@@ -69,7 +70,7 @@ fn run() -> ! {
     for (index, chunk_lines) in chunks(&lines, lines_per_chunk).iter().enumerate() {
         // `split.c:332`: each chunk lands in `prefix + suffix(index)`, created
         // with O_WRONLY|O_CREAT|O_TRUNC at DEFFILEMODE.
-        let path = match out_path(prefix, index) {
+        let path = match out_path(prefix, index, sfxlen) {
             Some(path) => path,
             None => {
                 support::warn(b"split: suffixes exhausted\n");
@@ -84,10 +85,10 @@ fn run() -> ! {
     support::terminate(0);
 }
 
-/// Output path for chunk `index`: `prefix` + the two-letter suffix, or `None`
-/// once the suffix space (`aa`..`zz`) is exhausted.
-fn out_path(prefix: &str, index: usize) -> Option<String> {
-    suffix(index).map(|suffix| format!("{prefix}{suffix}"))
+/// Output path for chunk `index`: `prefix` + the `width`-letter suffix, or
+/// `None` once the suffix space (`26^width`) is exhausted.
+fn out_path(prefix: &str, index: usize, width: usize) -> Option<String> {
+    suffix(index, width).map(|suffix| format!("{prefix}{suffix}"))
 }
 
 /// Renders one chunk back into bytes: each line followed by a newline (the
@@ -136,16 +137,19 @@ mod tests {
 
     #[test]
     fn out_path_prefixes_the_two_letter_suffix() {
-        assert_eq!(out_path("x", 0).as_deref(), Some("xaa"));
-        assert_eq!(out_path("x", 1).as_deref(), Some("xab"));
-        assert_eq!(out_path("part.", 26).as_deref(), Some("part.ba"));
+        assert_eq!(out_path("x", 0, 2).as_deref(), Some("xaa"));
+        assert_eq!(out_path("x", 1, 2).as_deref(), Some("xab"));
+        assert_eq!(out_path("part.", 26, 2).as_deref(), Some("part.ba"));
+        // -a 1：单字母后缀。
+        assert_eq!(out_path("x", 0, 1).as_deref(), Some("xa"));
+        assert_eq!(out_path("x", 26, 1), None);
     }
 
     #[test]
     fn out_path_is_none_once_suffixes_exhaust() {
         // aa..zz is 676 names; index 675 is the last, 676 has none.
-        assert!(out_path("x", 675).is_some());
-        assert_eq!(out_path("x", 676), None);
+        assert!(out_path("x", 675, 2).is_some());
+        assert_eq!(out_path("x", 676, 2), None);
     }
 
     #[test]
@@ -174,8 +178,12 @@ fn arg_error(e: SplitError<'_>) -> ! {
             support::warn(format!("split: {v}: illegal line count.\n").as_bytes());
             support::terminate(1);
         }
+        SplitError::IllegalSuffixLength(v) => {
+            support::warn(format!("split: {v}: illegal suffix length.\n").as_bytes());
+            support::terminate(1);
+        }
         SplitError::Unmodelled => {
-            support::warn(b"split: -a/-b/-n option not modelled yet\n");
+            support::warn(b"split: -b/-n option not modelled yet\n");
             support::terminate(2);
         }
     }

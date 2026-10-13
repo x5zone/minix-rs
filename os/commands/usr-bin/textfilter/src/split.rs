@@ -7,14 +7,18 @@
 //! split.c:61). This module computes the chunks (which lines go to
 //! which chunk) and the suffix sequence; the doing half's file writes
 //! wait for the gated create/write face on the host, so the doing half
-//! can only report what it would create. An explicit `-b` byte count
-//! and the suffix-length flag are later batches.
+//! can only report what it would create. The `-a` suffix-length flag
+//! (`split.c:117`) is wired here; an explicit `-b` byte count and `-n`
+//! chunk count (which need byte-level / count-driven splitting) are later batches.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Default lines per chunk (`DEFLINE`, split.c:56).
 pub const DEFAULT_LINES: usize = 1000;
+
+/// Default suffix length (`sfxlen`, split.c:61).
+pub const DEFAULT_SFXLEN: usize = 2;
 
 /// Computes the chunks: each entry holds that chunk's lines (the last
 /// one may be short). `lines_per_chunk` of zero is a caller error the
@@ -33,18 +37,22 @@ pub fn chunks(lines: &[String], lines_per_chunk: usize) -> Vec<Vec<String>> {
     chunks
 }
 
-/// The file suffix for chunk `index` (0 based): two lowercase letters
-/// enumerating `aa`, `ab`, ..., `zz` (the C's default `sfxlen` 2).
-/// `None` when the sequence is exhausted (past `zz`).
-pub fn suffix(index: usize) -> Option<String> {
-    if index >= 26 * 26 {
+/// The file suffix for chunk `index` (0 based) at width `width`: `width`
+/// lowercase letters enumerating the base-26 space (`aa`..`zz` for the C
+/// default `sfxlen` 2). `None` when the sequence is exhausted (past the
+/// `26^width`-th chunk) or `width` is zero.
+pub fn suffix(index: usize, width: usize) -> Option<String> {
+    if width == 0 {
         return None;
     }
-    let mut out = Vec::new();
+    let capacity = 26usize.checked_pow(width as u32)?;
+    if index >= capacity {
+        return None;
+    }
+    let mut out = Vec::with_capacity(width);
     let mut value = index;
-    let places = 2;
-    for place in (0..places).rev() {
-        let divisor = 26usize.pow(place);
+    for place in (0..width).rev() {
+        let divisor = 26usize.pow(place as u32);
         out.push(b'a' + (value / divisor) as u8);
         value %= divisor;
     }
@@ -56,6 +64,8 @@ pub fn suffix(index: usize) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitArgs<'a> {
     pub lines_per_chunk: usize,
+    /// `-a` suffix width (`sfxlen`, split.c:61 default 2).
+    pub sfxlen: usize,
     pub operands: Vec<&'a str>,
 }
 
@@ -69,9 +79,12 @@ pub enum SplitError<'a> {
     /// A `-l`/`-N` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal line count.", …)`; carries the offending value for the message.
     IllegalLineCount(&'a str),
-    /// `-a`/`-b`/`-n` — valid `getopt` letters the line-only deciding half
-    /// (`chunks`/`suffix`) does not yet implement (suffix width, byte split,
-    /// chunk count); reported rather than silently ignored.
+    /// A `-a` value that is not all-decimal or is zero: C `errx(1, "%s:
+    /// illegal suffix length.", …)` (split.c:117-121).
+    IllegalSuffixLength(&'a str),
+    /// `-b`/`-n` — valid `getopt` letters the line-only deciding half
+    /// (`chunks`) does not yet implement (byte split, chunk count); reported
+    /// rather than silently ignored.
     Unmodelled,
 }
 
@@ -97,10 +110,12 @@ fn line_count(v: &str) -> Option<usize> {
 /// next word (`-l 100`), and an all-digit `-N` is the obsolete line-count
 /// kludge (`split.c:82-98`, applied only while the count is unset so a later
 /// `-l` still trips the `numlines != 0` usage as C does). `--` ends option
-/// scanning; a bare `-` and any non-option token are operands. `-a`/`-b`/`-n`
-/// are reported `Unmodelled` (the deciding half splits on line counts only).
+/// scanning; a bare `-` and any non-option token are operands. `-a` sets the
+/// suffix width (attached `-a3` or `-a 3`, validated as C's suffix length); the
+/// line-only deciding half still reports `-b`/`-n` as `Unmodelled`.
 pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitError<'a>> {
     let mut lines_per_chunk = DEFAULT_LINES;
+    let mut sfxlen = DEFAULT_SFXLEN;
     let mut set = false;
     let mut operands: Vec<&'a str> = Vec::new();
 
@@ -153,7 +168,25 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
                     }
                     set = true;
                 }
-                b'a' | b'b' | b'n' => return Err(SplitError::Unmodelled),
+                b'a' => {
+                    // C `case 'a'`: value attached (`-a3`) or next word (`-a 3`),
+                    // all-digit and nonzero, else "illegal suffix length".
+                    let rest = &tail[1..];
+                    let value = if rest.is_empty() {
+                        index += 1;
+                        match args.get(index) {
+                            Some(v) => *v,
+                            None => return Err(SplitError::Usage),
+                        }
+                    } else {
+                        rest
+                    };
+                    match line_count(value) {
+                        Some(n) => sfxlen = n,
+                        None => return Err(SplitError::IllegalSuffixLength(value)),
+                    }
+                }
+                b'b' | b'n' => return Err(SplitError::Unmodelled),
                 _ => return Err(SplitError::Usage),
             }
             index += 1;
@@ -171,6 +204,7 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
     }
     Ok(SplitArgs {
         lines_per_chunk,
+        sfxlen,
         operands,
     })
 }
@@ -206,12 +240,28 @@ mod tests {
 
     #[test]
     fn test_suffix_enumerates_two_letters() {
-        assert_eq!(suffix(0).as_deref(), Some("aa"));
-        assert_eq!(suffix(1).as_deref(), Some("ab"));
-        assert_eq!(suffix(25).as_deref(), Some("az"));
-        assert_eq!(suffix(26).as_deref(), Some("ba"));
-        assert_eq!(suffix(675).as_deref(), Some("zz"));
-        assert_eq!(suffix(676), None);
+        // 默认 width=2：aa..zz 逐字不变（零回归铉）。
+        assert_eq!(suffix(0, 2).as_deref(), Some("aa"));
+        assert_eq!(suffix(1, 2).as_deref(), Some("ab"));
+        assert_eq!(suffix(25, 2).as_deref(), Some("az"));
+        assert_eq!(suffix(26, 2).as_deref(), Some("ba"));
+        assert_eq!(suffix(675, 2).as_deref(), Some("zz"));
+        assert_eq!(suffix(676, 2), None);
+    }
+
+    #[test]
+    fn test_suffix_width_follows_sfxlen() {
+        // -a 1：单字母 a..z（容量 26）。
+        assert_eq!(suffix(0, 1).as_deref(), Some("a"));
+        assert_eq!(suffix(25, 1).as_deref(), Some("z"));
+        assert_eq!(suffix(26, 1), None);
+        // -a 3：三字母 aaa..；index 26 = "aab"。
+        assert_eq!(suffix(0, 3).as_deref(), Some("aaa"));
+        assert_eq!(suffix(1, 3).as_deref(), Some("aab"));
+        assert_eq!(suffix(26 * 26 - 1, 3).as_deref(), Some("azz"));
+        assert_eq!(suffix(26 * 26 * 26, 3), None); // 超 26^3 穷举
+        // width 0 非法 → None。
+        assert_eq!(suffix(0, 0), None);
     }
 
     #[test]
@@ -245,11 +295,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_error_paths() {
+    fn parse_suffix_length_minus_a() {
+        // -a 接值：附值 `-a3` 与分词 `-a 3` 都置 sfxlen=3；默认 2。
+        assert_eq!(parse_split_args(&["-a3", "f"]).unwrap().sfxlen, 3);
+        assert_eq!(parse_split_args(&["-a", "3", "f"]).unwrap().sfxlen, 3);
+        // -a 吃值后，`3` 不泄为操作数：`-a3 f` 只剩一个操数 `f`。
+        assert_eq!(parse_split_args(&["-a3", "f"]).unwrap().operands, vec!["f"]);
+        // 未给 -a 时 sfxlen 默认 2。
+        assert_eq!(parse_split_args(&["f"]).unwrap().sfxlen, DEFAULT_SFXLEN);
+        // 非法后缀长度（0 / 非全数字）：对位 C "illegal suffix length"。
         assert_eq!(
-            parse_split_args(&["-a", "3", "f"]).err(),
-            Some(SplitError::Unmodelled)
+            parse_split_args(&["-a0"]).err(),
+            Some(SplitError::IllegalSuffixLength("0"))
         );
+        assert_eq!(
+            parse_split_args(&["-a", "x"]).err(),
+            Some(SplitError::IllegalSuffixLength("x"))
+        );
+    }
+
+    #[test]
+    fn parse_error_paths() {
         assert_eq!(
             parse_split_args(&["-b", "100"]).err(),
             Some(SplitError::Unmodelled)
