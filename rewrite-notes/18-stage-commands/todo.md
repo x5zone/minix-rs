@@ -250,6 +250,35 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十九把 `tail` 的选项预扫描改成 C 的续扫形，并接上重复数字选项判据**
+  （`2026-10-13`，`claim/TAIL-SCANARG-qoder` @ 基线 `0efc3c295`，单域三线 commands/textfilter，无跨界）：
+  接回批次一百九十七登记的①（重复数字选项→用法错）。开工时另发现**批次一百九十八自己留下的形状错**：那里的
+  “停在第一个不认识的 token”把 C 的续扫规则读小了。重读 `minix3/usr.bin/tail/tail.c` 的 `obsolete()`：`switch (*++ap)`
+  里 `case 'f'`/`case 'r'` 与 `case 'b'`/`case 'c'`/`case 'n'` 都是 `continue`（后者在字母紧跟串尾时多一个
+  `++argv`，把值那一个词跨过去），只有三种情形才 `return`：token 不以 `-`/`+` 开头、第二个字符是 `-`（`--`）、
+  或第二个字符是 `b`/`c`/`n`/`f`/`r`/数字之外的字母。因此 `-r -3c` 在 C 里 `-3c` **会**被改写（本笔前报用法错），
+  而 `f -3c` 里的 `-3c` 因扫描已停而原样交给 `getopt`，按集外字母 `3` 走 `case '?'` 报错——两者本同一口径，上一轮只对了后者。
+  **形状**：`obsolete_arg` 改成 `obsolete_step`，`ObsoleteStep` 从三臂拆成五臂（`Rewritten`/`Verbatim`/`SkipsValue`/
+  `StopScan`/`IllegalOption`）， phase 1 改成带 `frozen` 标志的索引环，`SkipsValue` 多消耗一个词且不扫它；
+  重复数字选项按 `ARG` 首句 `if (style) usage()`（`tail.c:86-87`）在任何 `b`/`c`/`n` 重入时回 `TailError::Usage`。
+  **语义后果**：`tail -r -3c` 从用法错变成末三字节反序（`ReverseBytes { off: 3 }`）；`tail -n 3 -n 5`、
+  `tail -c10 -b2` 从“后到者覆盖”变成用法错；`tail -n -3c` 仍报 `illegal offset -- -3c`（值词不被改写才能把
+  `-3c` 整个交给 `ARG` 的 `*p` 判据，这条成了续扫形状的间接铉）。
+  三件套：`cargo test -p minix-textfilter --lib` → **405 passed / 0 failed**（基线 `403`；新增
+  `test_parse_tail_args_obsolete_scan_survives_letter_options` 与
+  `test_parse_tail_args_second_number_option_is_usage_error`，并在负值测里补 `-n -3c` 钉）；`--bin tail` → **14 / 0** 不动；
+  三枚变异负控各让对应测翻红——`f`/`r` 改成停扫 → 续扫测 FAILED；去掉 `if seen.is_some()` 守卫 →
+  重复选项测 FAILED；`SkipsValue` 退化为不消耗值词 → 三枚测同时 FAILED（含前向偏移与反序折算）；均按备份复原后复测 405/0。
+  三架构裸机 `cargo build -p minix-textfilter --bin tail --target {x86_64-unknown-none,aarch64-unknown-none,
+  riscv64gc-unknown-none-elf} --release` → 三台 0 error；`rustfmt --edition 2024 --check` 对 `window.rs` 零漂移；
+  容器 `minix-ci:1.94`（`-u $(id -u):$(id -g)`）`cargo check -j 1 --workspace` 与 clippy 自有文件读数见本笔提交信息；
+  核实日 `2026-10-13`；基线 `0efc3c295`。
+  **方法论一句**：上一轮把「扫到第一个不认识的 token」当成 C 的 `return` 全部含义，没注意 `continue` 分支里还有
+  两个认得的字母族与一个跨值动作——同一函数重读时不能只看退出路径，要看完整循环体。本轮把五臂拆出来，
+  每一条 `continue`/`return` 对应一枚枚举变体，下轮再改不会丢臂。
+  **仍开看下列登记**（批次一百九十七遗留）：③ `-c 0`/`-b 0`/`-n 0` 的零值语义（C 是不输出，本壳仍拒）；
+  ④ `-f`/`-F` 跟踪；⑦ tail 执行半无宿主读腿。本笔不扩界。
+
 - ✅ **批次一百九十八接上 `tail` 的 obsolete 后缀单位字母与负值选项参数（改写机全形）**
   （`2026-10-13`，`claim/TAIL-OBSOLETE-qoder` @ 基线 `6be98f777`，单域三线 commands/textfilter，无跨界）：
   接回批次一百九十七登记的第⑥项（obsolete 后缀单位字母未建模）与第②项（`ARG` 的 `case '-'` 负值臂）——两者不是可拆的两件：

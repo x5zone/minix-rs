@@ -308,64 +308,88 @@ pub enum TailError {
 enum ObsoleteStep {
     /// The token is an old-style option and was rewritten for `getopt`.
     Rewritten(String),
-    /// C `return`s here: this token and everything after it stay verbatim.
+    /// A recognised letter option (`f`, `r`, or `b`/`c`/`n` with its value
+    /// attached): kept verbatim, and the scan continues.
     Verbatim,
+    /// `b`/`c`/`n` written as its own token: the *next* token is its value and is
+    /// not scanned at all (C's `if (!ap[1]) ++argv`).
+    SkipsValue,
+    /// C `return`s here: this token and everything after it stay verbatim.
+    StopScan,
     /// C's `default:` inside the rewrite — fatal, `xerrx(1, "illegal option")`.
     IllegalOption,
 }
 
-/// C `obsolete()`'s rewrite of one argv token (`tail.c`): a token starting with
-/// `-` or `+` whose second char is a digit becomes a `getopt`-shaped option.
-/// A trailing `f`/`r` is lifted to the front as its own letter; the (possibly
-/// new) last char picks the unit letter — `b` and `c` stay, `l` and a digit
-/// become `n` — and is dropped from the digits; the token's own first char is
-/// then re-inserted before the digits, so the number arrives as the option's
+/// Classify and rewrite one argv token the way C's `obsolete()` walks `argv`
+/// (`tail.c`). A token starting with `-` or `+` whose second char is a digit is
+/// rewritten: a trailing `f`/`r` is lifted to the front as its own letter; the
+/// (possibly new) last char picks the unit letter — `b` and `c` stay, `l` and a
+/// digit become `n` — and is dropped from the digits; the token's own first char
+/// is then re-inserted before the digits, so the number arrives as the option's
 /// value *with its sign*: `-3c` becomes `-c-3`, which `ARG` reads back as three
-/// bytes because its `case '-'` negates the parsed number.
+/// bytes because its `case '-'` negates the parsed number. `tail +10` is the same
+/// machine with a `+` first char: it rewrites to `-n+10`, i.e. the forward form
+/// starting at line 10.
 ///
-/// `tail +10` is the same machine with a `+` first char: it rewrites to `-n+10`,
-/// i.e. the forward form starting at line 10.
-fn obsolete_arg(arg: &str) -> ObsoleteStep {
+/// The walk is what the two `Verbatim`-shaped steps model: C does **not** stop at
+/// the first ordinary option, it keeps scanning past `f`/`r` and past the letter
+/// of a value-taking option (skipping only that option's value). So `tail -r -3c`
+/// rewrites `-3c`, while `tail f -3c` does not — an operand ends the pre-pass.
+fn obsolete_step(arg: &str) -> ObsoleteStep {
     let bytes = arg.as_bytes();
-    let signed = bytes.first() == Some(&b'-') || bytes.first() == Some(&b'+');
-    // C: a bare operand stops the scan (`ap[0] != '-' && ap[0] != '+'`), `--`
-    // stops it too (`ap[1] == '-'`), and so does a second char that is not a
-    // digit — that token is left for `getopt` to reject or treat as an operand.
-    // A lone `-` is the empty-value case of the same test: `*++ap` reads the
-    // terminator, so C falls through to `default: return`.
-    if !signed || bytes.len() < 2 || (bytes[0] == b'-' && bytes[1] == b'-') {
-        return ObsoleteStep::Verbatim;
+    // C: `ap[0] != '-' && ap[0] != '+'` returns, and so does `ap[1] == '-'`
+    // (`--`). A lone `-`/`+` reads the terminator and falls to `default:`.
+    if bytes.first() != Some(&b'-') && bytes.first() != Some(&b'+') {
+        return ObsoleteStep::StopScan;
     }
-    if !bytes[1].is_ascii_digit() {
-        return ObsoleteStep::Verbatim;
-    }
-    let mut body = &arg[1..];
-    let mut trail = "";
-    match body.as_bytes().last() {
-        Some(&b'f') | Some(&b'r') => {
-            trail = &body[body.len() - 1..];
-            body = &body[..body.len() - 1];
-        }
-        _ => {}
-    }
-    let unit = match body.as_bytes().last() {
-        Some(b'b') => {
-            body = &body[..body.len() - 1];
-            'b'
-        }
-        Some(b'c') => {
-            body = &body[..body.len() - 1];
-            'c'
-        }
-        Some(b'l') => {
-            body = &body[..body.len() - 1];
-            'n'
-        }
-        Some(c) if c.is_ascii_digit() => 'n',
-        None => return ObsoleteStep::IllegalOption,
-        Some(_) => return ObsoleteStep::IllegalOption,
+    let Some(second) = bytes.get(1).copied() else {
+        return ObsoleteStep::StopScan;
     };
-    ObsoleteStep::Rewritten(format!("-{trail}{unit}{}{body}", &arg[0..1]))
+    if second == b'-' {
+        return ObsoleteStep::StopScan;
+    }
+    if second.is_ascii_digit() {
+        let mut body = &arg[1..];
+        let mut trail = "";
+        match body.as_bytes().last() {
+            Some(&b'f') | Some(&b'r') => {
+                trail = &body[body.len() - 1..];
+                body = &body[..body.len() - 1];
+            }
+            _ => {}
+        }
+        let unit = match body.as_bytes().last() {
+            Some(b'b') => {
+                body = &body[..body.len() - 1];
+                'b'
+            }
+            Some(b'c') => {
+                body = &body[..body.len() - 1];
+                'c'
+            }
+            Some(b'l') => {
+                body = &body[..body.len() - 1];
+                'n'
+            }
+            Some(c) if c.is_ascii_digit() => 'n',
+            // C `default: xerrx(1, "illegal option -- %s", *argv)` — fatal.
+            Some(_) | None => return ObsoleteStep::IllegalOption,
+        };
+        return ObsoleteStep::Rewritten(format!("-{trail}{unit}{}{body}", &arg[0..1]));
+    }
+    match second {
+        b'b' | b'c' | b'n' => {
+            if bytes.len() == 2 {
+                ObsoleteStep::SkipsValue
+            } else {
+                ObsoleteStep::Verbatim
+            }
+        }
+        b'f' | b'r' => ObsoleteStep::Verbatim,
+        // Any other letter: C returns and lets `getopt` reject it (`case '?'` →
+        // usage), so the pre-pass stops without raising its own error.
+        _ => ObsoleteStep::StopScan,
+    }
 }
 
 /// Split `tail`'s argv tail into [`TailArgs`], faithful to C's `obsolete(argv)`
@@ -384,25 +408,37 @@ fn obsolete_arg(arg: &str) -> ObsoleteStep {
 /// `-N` value takes the other arm: `ARG` negates the parsed number and keeps the
 /// backward style, so `-c -3` means the same as `-c 3`.
 pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
-    // Phase 1 — obsolete(): rewrite each leading old-style token while the run
-    // lasts, stop rewriting at the first token C would `return` on, and hand that
-    // token to `getopt` unchanged.
+    // Phase 1 — obsolete(): walk the tokens the way C does. The walk outlives
+    // ordinary options and skips only a value-taking option's value; it stops at
+    // the first token C returns on, and everything from there on is handed to
+    // `getopt` unchanged.
     let mut scanned: Vec<String> = Vec::new();
-    let mut still_obsolete = true;
-    for arg in args {
-        let step = if still_obsolete {
-            obsolete_arg(arg)
-        } else {
-            ObsoleteStep::Verbatim
-        };
-        match step {
+    let mut rest = args;
+    let mut frozen = false;
+    while let Some((head, tail)) = rest.split_first() {
+        rest = tail;
+        if frozen {
+            scanned.push(String::from(*head));
+            continue;
+        }
+        match obsolete_step(head) {
             ObsoleteStep::Rewritten(token) => scanned.push(token),
-            ObsoleteStep::Verbatim => {
-                still_obsolete = false;
-                scanned.push(String::from(*arg));
+            ObsoleteStep::Verbatim => scanned.push(String::from(*head)),
+            ObsoleteStep::SkipsValue => {
+                scanned.push(String::from(*head));
+                // C `if (!ap[1]) ++argv`: the value word is consumed by the
+                // option, so it is copied through without being scanned.
+                if let Some((value, tail2)) = rest.split_first() {
+                    scanned.push(String::from(*value));
+                    rest = tail2;
+                }
+            }
+            ObsoleteStep::StopScan => {
+                frozen = true;
+                scanned.push(String::from(*head));
             }
             ObsoleteStep::IllegalOption => {
-                return Err(TailError::IllegalOption(String::from(*arg)));
+                return Err(TailError::IllegalOption(String::from(*head)));
             }
         }
     }
@@ -432,6 +468,12 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                     }
                     b'n' | b'c' | b'b' => {
                         let letter = bytes[pos];
+                        // C `ARG`'s first statement: `if (style) usage()` — a
+                        // second number option of any kind is a usage error, not
+                        // a silent override (`tail.c:86-87`).
+                        if seen.is_some() {
+                            return Err(TailError::Usage);
+                        }
                         // Value attaches to this token (`-n10`) or is the next
                         // word (`-n 10`).
                         let value = if pos + 1 < bytes.len() {
@@ -957,11 +999,65 @@ mod tests {
             parse_tail_args(&["-n", "-7"]).unwrap().style,
             TailStyle::LastLines { off: 7 }
         );
-        // A lone `-` after the sign is not a number; C's `*p` test rejects it and
-        // the message carries the whole option argument.
+        // A value that is not a plain number still reaches `ARG`'s `*p` test with
+        // its sign attached: `tail -n -3c` takes `-3c` as the number, and C
+        // reports `illegal offset -- -3c`.
+        assert_eq!(
+            parse_tail_args(&["-n", "-3c"]).err(),
+            Some(TailError::IllegalCount(String::from("-3c")))
+        );
+        // A lone `-` after the sign is not a number either; the message carries
+        // the whole option argument.
         assert_eq!(
             parse_tail_args(&["-n", "-"]).err(),
             Some(TailError::IllegalCount(String::from("-")))
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_obsolete_scan_survives_letter_options() {
+        // C's `obsolete()` walk does not stop at `f`/`r`, and for `b`/`c`/`n`
+        // written as its own token it steps over the *value* and keeps scanning.
+        // So `-r -3c` rewrites: `-c-3` under `rflag` is the three trailing bytes
+        // bottom-up (`RBYTES`), not a usage error.
+        assert_eq!(
+            parse_tail_args(&["-r", "-3c"]).unwrap().style,
+            TailStyle::ReverseBytes { off: 3 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-r", "-5"]).unwrap().style,
+            TailStyle::ReverseLines { off: 5 }
+        );
+        // The value word is consumed by its option, so an old-style number after
+        // `-n` is *not* rewritten: `-n -3c` above is the proof, and here the
+        // operand is untouched.
+        assert_eq!(
+            parse_tail_args(&["-n", "3", "file"]).unwrap().operands,
+            alloc::vec![String::from("file")]
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_second_number_option_is_usage_error() {
+        // C `ARG` opens with `if (style) usage()` (`tail.c:86-87`): two number
+        // options of any kind — repeated or mixed — are a usage error, never a
+        // silent override.
+        assert_eq!(
+            parse_tail_args(&["-n", "3", "-n", "5"]).err(),
+            Some(TailError::Usage)
+        );
+        assert_eq!(
+            parse_tail_args(&["-c10", "-b2"]).err(),
+            Some(TailError::Usage)
+        );
+        assert_eq!(
+            parse_tail_args(&["-n", "3", "-c", "5"]).err(),
+            Some(TailError::Usage)
+        );
+        // One number option alongside `-r` is still fine.
+        assert_eq!(
+            parse_tail_args(&["-r", "-n", "3"]).unwrap().style,
+            TailStyle::ReverseLines { off: 3 }
         );
     }
 }
