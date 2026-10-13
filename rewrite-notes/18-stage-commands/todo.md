@@ -250,6 +250,38 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百二十六把 `pig` 的旋转与字符流按 C 重做，并纠正了文档里「开头 `y` 算辅音、中间 `y` 算元音」与「大小写三档」两处事实错**
+  （`2026-10-14`，`claim/PIG-FACE-qoder` @ 基线 `f78ead34c`，单域三线 commands/games/stdio-games，无跨界）：
+  接回批次二百二十五登记③（逐壳对 C），选了最小的 `pig.c`（135 行）。**是什么**：`pigout()` 用
+  **两套元音集合**——`way` 判据（`pig.c:103`）不含 `y`，搬运停止判据（`:114`）含 `y` 且从 `start == 0`
+  就测，所以 `yellow`/`yes`/`yam` 根本不搬运；搬运时 `qu` 是一个整体（`:117-119`）；大小写只动两个位置
+  （`:111-112` 转小写原词首字母、`:124-125` 转大写新首字母）。而本树的 `pig_word` 把三件都做了错：
+  给 `y` 加了「非首位才算元音」的特殊规则（`yellow` 打成 `ellowyay`）、没有 `qu` 单位（`quay` 打成
+  `uayqay`）、把整个搬走的串转小写再按位置补大写（`STRING` 打成 "STRINGAY" 形）。执行侧也错了三件：
+  词按**字母加数字**聚簇（C 只认 `isalpha`）、把行当单趟处理（悬挂词在 EOF 仍被打印）、
+  把操作数直接报 usage（C 数完操作数后从不读它们）。判类 P0-code-bug + P0-fact（三处文档描述）。
+  **怎么修**：决定半逐字复刻 `pigout()`（`is_vowel`/`is_stop` 两个集合 + 与 C 同序的 `start` 循环 +
+  按 `buf[start .. start+olen]` 的环形窗口输出，其中下标 0 取「可能被转小写的首字母」）；执行半改成
+  C 的字节流：连续 `isalpha` 成词、非字母先冲刷再原样透出、EOF 不冲刷、第 1025 个字母才报
+  `pig: ate too much!`（C 的检查在存入之前，所以 1024 个字母仍然可用）、`option_scan` 复刻空 optstring
+  （`--` 消费、裸 `-` 是操作数、其余 `-x` 报 usage 退 1、多余操作数静默忽略）。
+  新增第 11 道端到端门 `tests/pig_face.rs`（6 枚），库测 `words.rs` 5→8 枚（`test_consonant_cluster_moves`
+  里 `yellow → ellowyay` 这一**错断言**当场改为 `yelloway`）。
+  三处我自己推错的金样当场按 C 重推：`QQUAKES` 不是 "UAKESQQAY" 而是 `AKESQQUAY`（第二个 `q` 也带走了
+  它后面的 `U`）；`MY` 不是 "MYAY" 而是 `YMAY`；`goodbye` 不是 "oodgbaye" 而是 `oodbyegay`。
+  三件套：`cargo test -p minix-stdio-games` → **14 个测试目标全 ok、合计 137 passed、零 FAILED**
+  （基线 14/128；+3 库测、+6 端到端测）；`--lib words::` → 8/0；`--test pig_face` → 6/0；三架构
+  `--bins` 三台零 error；容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、
+  容器内本包 14 目标 137/0；clippy 触及文件零新增（仅余 `bin/arithmetic.rs` 一条存量）；
+  `rustfmt --edition 2024 --check` 零漂移；`pattern-gate.sh --diff` PASS=17 FAIL=0；`doc-style-lint.sh --diff`
+  error 0；测试名逐枚 grep 存在。核实日 `2026-10-14`；基线 `f78ead34c`。
+  **十枚变异负控**（`--lib words::` 与 `--test pig_face` 分两次调用、复位断言 md5）：`way` 判据改走停止集、
+  `qu` 不再整体搬运、全大写词的首字母也被转小写、新首字母不再转大写、EOF 也冲刷、数字与下划线留在词内、
+  缓冲边界提前一个字母、usage 改退 0、操作数不再被忽略、元音分支把词转小写 → 全部咬中。
+  登记不执行：①其余四个壳（bcd/ppt/caesar/number）的取值与诊断面；②真机播种与 open 腿归 C-57/E5（本笔只交
+  代码 + 宿主端到端门）；③`number` 的 `number_words` 与 C `number.c` 的逐枚对账（本轮只动了 `pig_word` 一侧）；
+  ④caesar `guess_and_rotate`、arithmetic `penalise`、banner 字体腿不动。
+
 - ✅ **批次二百二十五把 `factor` 的取值与诊断面按 C 坐实（前导空白、符号、三句拒绝、空 optstring 的 usage）**
   （`2026-10-14`，`claim/FACTOR-ERRX-qoder` @ 基线 `249d146a0`，单域三线 commands/games/stdio-games，无跨界）：
   接回批次二百二十四登记①。**原状**：旧壳把每行去掉换行后丢给 `parse_value`（只收纯数字），
