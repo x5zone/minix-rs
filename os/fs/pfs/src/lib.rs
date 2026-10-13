@@ -445,11 +445,11 @@ impl<C: Clock> FsDriver for PfsServer<C> {
         // (`pfs.c:342`).
         *stat = minix_types::Stat {
             device: inode.device,
-            inode: inode_number as u64,
-            mode: inode.mode as u32,
+            inode: inode_number,
+            mode: inode.mode,
             nlinks: 0,
-            owner: inode.owner as u32,
-            group: inode.group as u32,
+            owner: inode.owner,
+            group: inode.group,
             special: inode.device,
             size: inode.size as i64,
             accessed: inode.accessed,
