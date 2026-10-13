@@ -490,6 +490,14 @@ E-MINSYS-HYGIENE 一句话条目）。
   flags 残留的非法态）时跳过检查而非 panic——与 C 的 NULL 解引用相比是防御性收敛，
   不改变合法态语义。
 
+### ✅ Fix #93 — 卫生项（P2）：`test_rs_constants_match_c` 补全 RS 消息号全量对账 C（CSL 子集谎报收口）
+
+- **File**：`os/servers/rs/src/dispatch.rs`（`test_rs_constants_match_c` 从 4 枚扩到 18 枚逐值断言，全路经 `minix_types::RS_*` 限定名）；todo.md 登记
+- **背景/Before**：该测试注释自称覆盖「the 15 RS message types」，实际只断言 `RS_INIT`/`RS_LU_PREPARE`/`RS_FI` 三枚 + base——属 `04-stage-pm/todo.md` §12.3 观察 5 登记的 CSL（Constants-match Subset Lie）同族。这直接推翻 §0 line 25「消息号均有逐位测试断言 ✅ 防漂移」的说法：`RS_UP`/`RS_EDIT`/`RS_LOOKUP`/`RS_GETSYSINFO`/`RS_SYSCTL` 等 11 枚消息号无钉值，未来偏 C 不会被捕获。
+- **修法（方案对比）**：a) 逐值扩到全集（选定）vs b) 删掉误导注释只留 4 枚（丢防漂移价值，拒）。逐值对 `minix3/minix/include/minix/com.h:463-492` 核对：15 枚消息号 + `RS_FI_CRASH`(:492) + `RS_PROC_NR`(:61) 现值均与 C 一致（不同于 PM `RB_POWERDOWN` 那类实际抄错），本轮为**补钉防未来漂移**而非修错值。
+- **Tests**：现有 `test_rs_constants_match_c` 内新增 14 条 `assert_eq!`（测试计数不变，断言覆盖 4→18）。
+- **Verified**：`cargo test -p minix-rs --lib` → **357 passed / 0 failed**（`test_rs_constants_match_c` 含全部 18 枚断言通过）；`cargo clippy -p minix-rs --lib` 无新增告警（改动全在 `#[cfg(test)]`）；核实日期 `2026-10-13`；基线快照 `a58660927`。§0 line 25 的「消息号均有逐位断言」至此名副其实。
+
 ### 6.6 Step 5.7 Rule Discovery
 
 1. **「deferred 标记指向已收工的工期」模式（新）**：R36 的 deferral 注释写于 16 号未落地

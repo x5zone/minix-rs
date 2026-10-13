@@ -248,10 +248,26 @@ mod tests {
 
     #[test]
     fn test_rs_constants_match_c() {
-        // C: com.h:465-482 — the 15 RS message types.
-        assert_eq!(minix_types::RS_RQ_BASE, 0x700);
-        assert_eq!(RS_INIT, 0x700 + 20);
-        assert_eq!(RS_LU_PREPARE, 0x700 + 21);
-        assert_eq!(RS_FI, 0x700 + 24);
+        // C: com.h:463-492 — the full RS message-type family. (CSL 收口
+        // `2026-10-13`: 本测试原自称覆盖 "15 RS message types" 却只断言 4 枚，
+        // 现逐值对账 `minix3/minix/include/minix/com.h` 补全。)
+        assert_eq!(minix_types::RS_RQ_BASE, 0x700); // com.h:463
+        assert_eq!(minix_types::RS_UP, 0x700 + 0); // com.h:465
+        assert_eq!(minix_types::RS_DOWN, 0x700 + 1); // com.h:466
+        assert_eq!(minix_types::RS_REFRESH, 0x700 + 2); // com.h:467
+        assert_eq!(minix_types::RS_RESTART, 0x700 + 3); // com.h:468
+        assert_eq!(minix_types::RS_SHUTDOWN, 0x700 + 4); // com.h:469
+        assert_eq!(minix_types::RS_UPDATE, 0x700 + 5); // com.h:470
+        assert_eq!(minix_types::RS_CLONE, 0x700 + 6); // com.h:471
+        assert_eq!(minix_types::RS_UNCLONE, 0x700 + 7); // com.h:472
+        assert_eq!(minix_types::RS_LOOKUP, 0x700 + 8); // com.h:474
+        assert_eq!(minix_types::RS_GETSYSINFO, 0x700 + 9); // com.h:476
+        assert_eq!(minix_types::RS_INIT, 0x700 + 20); // com.h:478
+        assert_eq!(minix_types::RS_LU_PREPARE, 0x700 + 21); // com.h:479
+        assert_eq!(minix_types::RS_EDIT, 0x700 + 22); // com.h:480
+        assert_eq!(minix_types::RS_SYSCTL, 0x700 + 23); // com.h:481
+        assert_eq!(minix_types::RS_FI, 0x700 + 24); // com.h:482
+        assert_eq!(minix_types::RS_FI_CRASH, 1); // com.h:492
+        assert_eq!(minix_types::RS_PROC_NR, Endpoint(2)); // com.h:61
     }
 }
