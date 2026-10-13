@@ -250,6 +250,20 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次一百九十接上 `grep -w`（词边界，决定半已存、接执行半）**
+  （`2026-10-13`，`claim/GREP-W-qoder` @ 基线 `5e7ae8236`，单域三线 commands/regex，无跨界）：
+  发现：决定半早已有词边界实现（`matcher::find_word`，带 `test_word_match_rejects_partial`），但 grep
+  执行半遇 `-w` 直接报“wait for engine support”退 2——典型两半分裂。因 grep 持的是编译后的
+  `Pattern`（非 `Matcher` trait），新增 `Pattern::find_word`（走已有 `find_bytes` 逐候选推进、左右邻居非
+  词字节才命中，对位 `grep.c:85,186`），执行半 `-w` 分派到它。`-i` 仍真未接（引擎无大小写折叠）。
+  新增 `test_find_word_boundary`（行首/尾/空格/下划线/多候选推进与 concatenate 反例）。文档同步：
+  `bin/grep.rs` 头注与 08 篇 §2.2/§4.4/§4.5 grep 行从“`-i`/`-w` 未建模”改为“`-w` 已接、仅 `-i` 留白”。
+  三件套：`cargo test -p minix-regex --lib` → **35/0**（新 1）；`--bin grep` → 9/0；
+  freestanding `cargo build -p minix-regex --bin grep --target {x86_64,aarch64,riscv64gc}-unknown-none --release` 三架构均 Finished；
+  clippy 触及文件零新增告警（bin/grep.rs “items after a test module” 系基线存量）；`rustfmt --edition 2024 --check`
+  两目标文件 14→14 零新增漂移（存量 nightly/stable 版差未碰）；核实日 `2026-10-13`；基线 `5e7ae8236`。
+  真机腿：grep 读文件腿归 C-57/E5（本笔为纯词边界谓词，宿主测已覆盖）。留白：`-i`（引擎 case-folding）、`-r`/上下文行。
+
 - ✅ **批次一百八十七接上 `cal -3`（前/当/后月三联居中）**
   （`2026-10-13`，`claim/CAL-THREE-qoder` @ 基线 `5701fa073`，单域三线 commands/doctools，无跨界）：
   接回 `-3` 留白。决定半 `cal.rs` 新增 `render_triple`（`cal.c:monthrange` before=after=1 的面：

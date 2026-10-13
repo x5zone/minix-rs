@@ -553,6 +553,26 @@ impl Pattern {
         None
     }
 
+    /// Leftmost match whose neighbours are not word bytes — BSD grep `-w`
+    /// (`minix3/minix/usr.bin/grep/grep.c:85`, applied at `grep.c:186`). Walks
+    /// match-by-match (advancing past each non-word-delimited match's start)
+    /// so a later word-delimited occurrence still selects the line. Positions
+    /// are byte offsets into `text`; byte-slicing avoids multibyte panics.
+    pub fn find_word(&self, text: &str) -> Option<(usize, usize)> {
+        let bytes = text.as_bytes();
+        let mut from = 0usize;
+        loop {
+            let (start, end, _) = self.find_bytes(bytes, from)?;
+            let left_ok = start == 0 || !crate::matcher::is_word_byte(bytes[start - 1]);
+            let right_ok = end >= bytes.len() || !crate::matcher::is_word_byte(bytes[end]);
+            if left_ok && right_ok {
+                return Some((start, end));
+            }
+            // 非词边界命中：越过本匹配起始字符再找下一个候选（from 严格递增，必终止）。
+            from = start + char_len_at(bytes, start);
+        }
+    }
+
     /// True when the pattern matches anywhere in `text`. Single pass: the
     /// start state joins the active set at every position, so the first
     /// accept found anywhere ends the search.
@@ -992,5 +1012,22 @@ mod tests {
     fn test_group_count_reported() {
         assert_eq!(compile_basic("a").unwrap().group_count, 0);
         assert_eq!(compile_basic("\\(a\\)\\(b\\)").unwrap().group_count, 2);
+    }
+
+    #[test]
+    fn test_find_word_boundary() {
+        // BSD grep -w：命中词必须两侧非词字节。
+        let cat = compile_basic("cat").unwrap();
+        // "a cat sat"：cat 两侧空格 → 词命中。
+        assert_eq!(cat.find_word("a cat sat"), Some((2, 5)));
+        // "concatenate"：cat 夹在词里，逐个候选都不符词边界 → 无。
+        assert_eq!(cat.find_word("concatenate"), None);
+        // 行首/行尾边界也算词边界。
+        assert_eq!(cat.find_word("cat"), Some((0, 3)));
+        assert_eq!(cat.find_word("the cat"), Some((4, 7)));
+        // 下划线是词字节："_cat" 里的 cat 左邻 _ → 非词边界。
+        assert_eq!(cat.find_word("_cat"), None);
+        // 多个候选：先命中一个非词界（concat 里的 cat）、再命中一个词界 → 取后者。
+        assert_eq!(cat.find_word("concat cat"), Some((7, 10)));
     }
 }

@@ -6,9 +6,10 @@
 //! `exit_code`); line selection composes the compiled pattern with the
 //! parsed options. Supported here: `-E`/`-G`/`-F` (fixed strings through
 //! metacharacter quoting into the basic engine), `-v`, `-n`, `-c`, `-q`,
-//! `-x`, `-l`, and repeatable `-e`. The `-i` and `-w` flags parse but the
-//! engine carries no case folding or boundary assertion yet, so they are
-//! rejected with an explicit message instead of silently misbehaving (see
+//! `-x`, `-l`, `-w` (via [`minix_regex::pattern::Pattern::find_word`], the
+//! `grep.c:85,186` word-boundary strategy), and repeatable `-e`. The `-i`
+//! flag parses but the engine carries no case folding yet, so it is rejected
+//! with an explicit message instead of silently misbehaving (see
 //! 08 §4.4). With file operands, each is opened in turn and scanned
 //! (`grep.c` `main`); the filename heads a match only when more than one
 //! operand is given, `-l` prints the name regardless (and, like C, implies
@@ -58,8 +59,8 @@ fn run() -> ! {
                 support::terminate(2);
             }
         };
-    if options.ignore_case || options.word {
-        support::emit(b"grep: -i and -w wait for engine support (see 08 sec 4.4)\n");
+    if options.ignore_case {
+        support::emit(b"grep: -i waits for engine case-folding (see 08 sec 4.4)\n");
         support::terminate(2);
     }
 
@@ -157,6 +158,8 @@ fn grep_stream(
         let hit = patterns.iter().any(|pattern| {
             if options.whole_line {
                 pattern.is_full_match(line)
+            } else if options.word {
+                pattern.find_word(line).is_some()
             } else {
                 pattern.is_match(line)
             }

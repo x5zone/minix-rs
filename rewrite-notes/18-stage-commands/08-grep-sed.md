@@ -71,7 +71,7 @@
 
 ### 2.2 `util.c` 第 205 行：匹配发生的单点
 
-实际调用 `regexec` 的只有这一处：对每行执行匹配，取首个匹配跨度。`-w`（第 186 行）在固定串模式下前后补词边界检查——Rust 侧 `find_word` 是它的独立实现（左右邻居非词字节才算命中，测试 `test_word_match_rejects_partial` 用 `concatenate` 证明子串不成词）。
+实际调用 `regexec` 的只有这一处：对每行执行匹配，取首个匹配跨度。`-w`（第 186 行）在固定串模式下前后补词边界检查——Rust 侧有两份实现：`matcher::find_word`（走 `Matcher` trait，测试 `test_word_match_rejects_partial`）与 `Pattern::find_word`（走编译后 `Pattern::find_bytes` 逐候选推进，grep 二进制 `-w` 用后者，测试 `test_find_word_boundary`）——左右邻居非词字节才算命中。
 
 ### 2.3 `compile.c`：地址与命令的解析（947 行）
 
@@ -156,7 +156,7 @@
 - **替换**（`sed.rs`，11 个）：`test_first_only_by_default`（默认首个）、`test_global_flag`（全局）、`test_nth_match_only`（第 N 个）、`test_ampersand_replays_match`（取整匹配回放）、`test_group_reference`（分组回放换位）、`test_custom_delimiter`（自定分隔符）、`test_print_flag`（打印标志）、`test_missing_delimiter_rejected`（缺分隔符）、`test_zero_nth_rejected`（零序号）、`test_no_match_copies_input`（未命中原样）、`test_empty_match_walk_terminates`（空匹配终止）。
 - **sed 文件操作数与参数切分**（`src/bin/sed.rs`，7 个）：`script_only_has_no_files`（仅脚本无文件）、`dash_n_sets_quiet`（`-n` 置静默）、`operands_after_the_script_are_files`（脚本后位置参数入文件表）、`flags_and_files_mix_in_any_order`（`-n` 识别位置无关）、`bare_dash_is_a_literal_file_operand`（`-` 按 C `fopen` 作普通文件名不特判 stdin）、`unsupported_option_is_rejected`（除 `-n` 外选项拒）、`missing_script_is_rejected`（无脚本拒）。
 
-尚未覆盖、随后续阶段补齐的：模式内后向引用（显式拒绝，待回溯豁免设计）、POSIX 字符类（`[:alpha:]` 等，待本地化升级）、递归遍历与上下文行（`grep -r`、`-A`、`-B`、`-C`，待文件遍历）、地址执行（`sed` 行号范围，待执行层）、grep 的 `-i` 大小写折叠与 `-w` 词边界（引擎未建模，二进制显式拒绝）、sed 的 `;` 链与其他动词（二进制显式拒绝）。模式与替换层、两个已接线二进制是完整的，执行层是显式留白的。
+尚未覆盖、随后续阶段补齐的：模式内后向引用（显式拒绝，待回溯豁免设计）、POSIX 字符类（`[:alpha:]` 等，待本地化升级）、递归遍历与上下文行（`grep -r`、`-A`、`-B`、`-C`，待文件遍历）、地址执行（`sed` 行号范围，待执行层）、grep 的 `-i` 大小写折叠（引擎未建模，二进制显式拒绝；`-w` 词边界已接——`Pattern::find_word`）、sed 的 `;` 链与其他动词（二进制显式拒绝）。模式与替换层、两个已接线二进制是完整的，执行层是显式留白的。
 
 ### 4.5 命令契约与 Requires
 
@@ -164,7 +164,7 @@
 
 | 命令 | Requires（最小 API） | 当前状态 |
 |------|---------------------|---------|
-| grep | `read`、`write`、`exit`、argv 交接、`open`/`close`（开放已存在文件） | 已接线（`-E`/`-G`/`-F`、`-v`、`-n`、`-c`、`-q`、`-x`、`-l`、可重复 `-e`）；`-i`/`-w` 解析成功但引擎未建模，二进制显式拒绝（退出 2）；文件操作数已接线——多操作数加 `file:` 名头（`grep.c:493` 单/零操作数隐去名头）、`-l` 列名且折入 quiet 不出行体（`grep.c:387`）、`-c` 随名头出 `file:count`（`util.c` procfile）、行号逐文件重置（`procfile` 每流 `line_no=0`）、开文件失败非致命（置 `file_err`、末了折进退出码 2）、`-` 按 C `fopen` 作普通文件名不特判 stdin；递归 `-r` 与上下文行 `-A`/`-B`/`-C` 仍留白（待文件遍历） |
+| grep | `read`、`write`、`exit`、argv 交接、`open`/`close`（开放已存在文件） | 已接线（`-E`/`-G`/`-F`、`-v`、`-n`、`-c`、`-q`、`-x`、`-l`、可重复 `-e`）；`-w` 经 `Pattern::find_word` 接上（词边界逐候选，带 `test_find_word_boundary`）；`-i` 解析成功但引擎未建模，二进制显式拒绝（退出 2）；文件操作数已接线——多操作数加 `file:` 名头（`grep.c:493` 单/零操作数隐去名头）、`-l` 列名且折入 quiet 不出行体（`grep.c:387`）、`-c` 随名头出 `file:count`（`util.c` procfile）、行号逐文件重置（`procfile` 每流 `line_no=0`）、开文件失败非致命（置 `file_err`、末了折进退出码 2）、`-` 按 C `fopen` 作普通文件名不特判 stdin；递归 `-r` 与上下文行 `-A`/`-B`/`-C` 仍留白（待文件遍历） |
 | sed | 同上 | 已接线（`s` 命令，含 `p` 标志与 `-n` 的 C 交互、`g`/`N` 作用域）；`;` 链、地址与其他动词显式拒绝；文件操作数已接线——逐操作数 open+read 后逐行替换流到 stdout（`main.c` mf_fgets 非 inplace 路：outfile=stdout、无名头前缀）、开文件失败非致命（warn+置 rval+继续，末了 `exit(rval)` 即 main.c:219）、`-` 按 C `fopen` 作普通文件名不特判 stdin；就地编辑 `-i`/`-I`（需 create/rename 面）与地址/`;` 链未建模 |
 
 ---
