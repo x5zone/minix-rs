@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百二十八把 `bcd` 的输入框架按 C 定形（`cardline[80]` 的可用长度是 79），并补上卡片形状的端到端门**
+  （`2026-10-14`，`claim/BCD-FACE-qoder` @ 基线 `f7d2349f3`，单域三线 commands/games/stdio-games，无跨界）：
+  接回批次二百二十七登记②（逐壳对 C）。**先盘不靠记忆的部分**：用脚本把 `bcd.c:87-120` 的
+  `holes[256]` 与 `bcd.rs` 的 `HOLE_TABLE` 逐值对比——**256 项零差异**，所以下面不是翻表事故而是
+  入口事故。C 的 `main` 用 `fgets(cardline, sizeof cardline, stdin)`，`char cardline[80]` 留一个
+  字节给结尾 NUL，所以**每次最多 79 个字符**；本壳把 `LineReader` 的缓冲给了 80 字节（把声明尺寸
+  当成了可用尺寸），后果是一行超 79 字符时第二张卡少一个字符（一百个字母的输入：C 切成 79+21，本壳切成 80+20）。
+  同时拓到三处描述事实错：文档与库测都写「十四行框」（实为**十五行**：顶栏、文本行、十二打孔行、底栏），
+  且无人记下「无孔字符在文本行留空白」这条对控制字符才可见的规则。判类 P0-code-bug + P0-fact。
+  **怎么修**：新增 `const CARDLINE: usize = 79`，并在注释里写明「声明尺寸」与「可用尺寸」只差一个结尾终止符；
+  渲染本身（去第一个换行→截 48→就地大写→查表）经核对与 C 逐字吻合，未改。`bcd` 无选项解析
+  （`:139` 只看计数），故 `-x` 与 `-` 都是待渲染文本——旧壳本来就这样，本轮把它钉上测。
+  **取证**：新增第 13 道端到端门 `tests/bcd_face.rs`（6 枚）+ 库测一枚（表的 Q/R 分项与
+  「空白类无孔」）；另把新加的“大写后整卡相等”测与已有的 `test_lowercase_becomes_uppercase` **合并**
+  （test-audit 第 3 维：同行为不写两测），库测 7→8。金样均从 C 推：`A` = 0x900 只让第 0 与第 3
+  行打孔；行填充前三行空白、第 3 到 11 行是 `1`..`9`；可打印 ASCII 里只有空格无孔，所以拿制表符
+  做判据（断言输出里根本不出现 `\t`）。
+  三件套：`cargo test -p minix-stdio-games` → **16 个测试目标全 ok、合计 149 passed、零 FAILED**
+  （基线 16/142；+6 端到端、+1 库测、-1 合并）；`--lib bcd::` → 8/0；`--test bcd_face` → 6/0；三架构
+  `--bins` 三台零 error；容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、
+  容器内本包 16 目标 149/0；clippy 触及文件零新增（仅余 `bin/arithmetic.rs` 一条存量；本轮新测里一处
+  `assert_eq!` 内嵌套 `format!` 已按建议拆为局部变量）；`rustfmt` 零漂移；`pattern-gate.sh --diff`
+  PASS=17 FAIL=0；`doc-style-lint.sh --diff` error 0；测试名逐枚 grep 存在；核实日 `2026-10-14`。
+  **九枚变异负控**（`--lib bcd::` 与 `--test bcd_face` 分两次调用、复位断言 md5）首轮有**两枚没咬**：
+  “无孔字符也直接打印”与“打孔位从低往高读”。诊断不是改口而是补区分样例：前者在可打印集里拿不
+  到差异（空格的替代本来就是空格），改用制表符才能看；后者需要真正钉住「哪几行打 `]`」，于是补了
+  `the_twelve_rows_read_the_pattern_from_the_top_bit_down` 与 1024/79 边界断言——两枚当场翻红，
+  其余七枚（可用尺寸改回 80、不大写、截断晚一列、底栏换首栏、顶栏丢前导空格、文本行多一列填充、
+  `-x` 被当选项跳过）始终咬中。
+  登记不执行：①caesar 与 number 两个壳的逐枚对 C（下一轮起）；②真机播种与 open 腿归 C-57/E5（本笔只交
+  代码 + 宿主端到端门）；③`printcard` 遇到非 ASCII 字节的表回绕（C 用 `holes[(unsigned char)*p]`，本树
+  `HOLE_TABLE[byte as usize]` 同形 256 项，已核对等价，无需拆片）。
+
 - ✅ **批次二百二十七把 `ppt` 的入口与两路形状按 C 钉死（`-h` 不是帮助、`--` 与裸 `-` 的归属、失步与欠的换行），并纠正了库注里「缓冲里总是 NUL」的事实错**
   （`2026-10-14`，`claim/PPT-FACE-qoder` @ 基线 `356ad3f30`，单域三线 commands/games/stdio-games，无跨界）：
   接回批次二百二十六登记①（逐壳对 C），本轮取 `ppt.c`（175 行）。**先说清楚**：库侧的
