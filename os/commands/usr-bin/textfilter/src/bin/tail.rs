@@ -10,13 +10,14 @@
 //! unopenable/unstatable file warns and is skipped (exit status stays
 //! nonzero). Operands open with `fopen`, so `-` is a literal file name.
 //!
-//! Not modelled (rejected rather than mistaken for an operand): the follow modes
-//! `-f`/`-F`, the forward-offset form `tail -n +N`, and the obsolete bare-number
-//! syntax beyond `-N`. Byte mode `-c N`, block mode `-b N`, and reverse mode
-//! `-r` are modelled — C `tail.c`/`reverse.c`: `-r` prints lines bottom-up
-//! (`REVERSE` reverses every line, `RLINES` = an explicit `-n` reverses the last
-//! `count`), while `-r` combined with `-c`/`-b` is the `RBYTES` byte-window line
-//! reverse (`reverse_bytes`).
+//! Not modelled (rejected rather than mistaken for an operand): the follow
+//! modes `-f`/`-F`. Byte mode `-c N`, block mode `-b N`, reverse mode `-r` and
+//! the forward offsets `-n +N` / `-c +N` / `-b +N` are all modelled — C
+//! `tail.c`/`forward.c`/`reverse.c`: `-r` prints lines bottom-up (`REVERSE`
+//! reverses every line, `RLINES` = an explicit `-n` reverses the last `count`),
+//! `-r` combined with `-c`/`-b` is the `RBYTES` byte-window line reverse
+//! (`reverse_bytes`), and a `+N` value takes the forward arm of the `ARG` macro
+//! so `tail -n +20` starts at line 20 rather than taking the last twenty lines.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -30,7 +31,7 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{Fd, close, open, read};
-use minix_textfilter::window::{LineWindow, TailError, TailWindow, parse_tail_args};
+use minix_textfilter::window::{LineWindow, TailError, TailStyle, TailWindow, parse_tail_args};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -44,15 +45,13 @@ fn run() -> ! {
         Ok(parsed) => parsed,
         Err(e) => arg_error(e),
     };
-    let count = parsed.count;
-    let bytecnt = parsed.bytecnt;
-    let rflag = parsed.rflag;
-    let n_seen = parsed.n_seen;
+    let style = parsed.style;
     let operands: Vec<String> = parsed.operands;
 
-    // The fixed-capacity ring rejects 0 and counts above 32 (declared cap).
-    // Byte mode ignores the line count, so it skips this ring-capacity guard.
-    if bytecnt == 0 && TailWindow::new(count).is_err() {
+    // The fixed-capacity ring rejects 0 and counts above 32 (declared cap). It
+    // only backs the `LastLines` walk, so the byte and forward-offset shapes skip
+    // this guard — C reaches neither buffer for them.
+    if matches!(style, TailStyle::LastLines { off } if TailWindow::new(off).is_err()) {
         support::terminate(1);
     }
 
@@ -63,7 +62,7 @@ fn run() -> ! {
     let mut status = 0;
 
     if operands.is_empty() {
-        tail_stream(support::STDIN, count, bytecnt, rflag, n_seen);
+        tail_stream(support::STDIN, style);
         support::terminate(0);
     }
     for operand in &operands {
@@ -80,7 +79,7 @@ fn run() -> ! {
             support::emit(format!("{sep}==> {operand} <==\n").as_bytes());
         }
         first = false;
-        tail_stream(fd, count, bytecnt, rflag, n_seen);
+        tail_stream(fd, style);
         //[SD19-gate] SD-19: close 后 fd 不再使用
         #[allow(clippy::let_underscore_must_use)]
         let _ = close(fd);
@@ -88,43 +87,48 @@ fn run() -> ! {
     support::terminate(status)
 }
 
-/// Emit the tail of one open descriptor. Byte mode (`-c`/`-b`) prints the last
-/// `bytecnt` raw bytes. Reverse mode `-r` prints lines bottom-up: `RLINES` (an
-/// explicit `-n`) the last `count` lines reversed, else `REVERSE` every line
-/// reversed. The default forward path keeps the last `count` lines via the ring.
-fn tail_stream(fd: Fd, count: usize, bytecnt: usize, rflag: bool, n_seen: bool) {
+/// Emit the tail of one open descriptor for the resolved [`TailStyle`]. The
+/// forward shapes print raw bytes from an offset (C `forward()`'s `getc` loop
+/// copies what is left of the file, newlines and all, so no line is invented
+/// and a trailing unterminated line stays unterminated); the reverse shapes
+/// print whole lines bottom-up (C `reverse()`).
+fn tail_stream(fd: Fd, style: TailStyle) {
     let input = read_fd(fd);
-    if bytecnt > 0 {
-        // `-r` with a byte/block count is C `RBYTES` (`reverse.c` `r_reg` clamps
-        // the backward walk to `off` bytes): print the trailing `bytecnt`-byte
-        // window's lines bottom-up. Without `-r`, `-c`/`-b` prints raw last bytes.
-        if rflag {
-            for line in reverse_bytes(&input, bytecnt) {
+    match style {
+        TailStyle::SkipBytes { off } => support::emit(bytes_from(&input, off)),
+        TailStyle::SkipLines { off } => support::emit(bytes_after_lines(&input, off)),
+        TailStyle::LastBytes { off } => support::emit(last_bytes_of(&input, off)),
+        TailStyle::LastLines { off } => {
+            let mut window = match TailWindow::new(off) {
+                Ok(window) => window,
+                Err(_) => support::terminate(1),
+            };
+            for line in support::lines_of(&input) {
+                window.push(line);
+            }
+            let mut survivors: Vec<&str> = vec![""; off.min(32)];
+            let drained = window.drain(&mut survivors);
+            for line in &survivors[..drained] {
                 emit_line(line);
             }
-        } else {
-            support::emit(last_bytes_of(&input, bytecnt));
         }
-        return;
-    }
-    let lines = support::lines_of(&input);
-    if rflag {
-        for line in reverse_selection(&lines, count, n_seen) {
-            emit_line(line);
+        TailStyle::ReverseAll => {
+            for line in reversed_lines(&support::lines_of(&input), None) {
+                emit_line(line);
+            }
         }
-        return;
-    }
-    let mut window = match TailWindow::new(count) {
-        Ok(window) => window,
-        Err(_) => support::terminate(1),
-    };
-    for line in lines {
-        window.push(line);
-    }
-    let mut survivors: Vec<&str> = vec![""; count.min(32)];
-    let drained = window.drain(&mut survivors);
-    for line in &survivors[..drained] {
-        emit_line(line);
+        // `off == 0` prints nothing, which is C's early return at
+        // `reverse.c:79-80` (`style != REVERSE && off == 0`).
+        TailStyle::ReverseLines { off } => {
+            for line in reversed_lines(&support::lines_of(&input), Some(off)) {
+                emit_line(line);
+            }
+        }
+        TailStyle::ReverseBytes { off } => {
+            for line in reverse_bytes(&input, off) {
+                emit_line(line);
+            }
+        }
     }
 }
 
@@ -134,33 +138,59 @@ fn emit_line(line: &str) {
     support::emit(&out);
 }
 
-/// The line order C `tail -r` prints: `RLINES` (an explicit `-n`) selects the
-/// last `count` lines then reverses them; bare `-r` (`REVERSE`) reverses every
-/// line (`reverse.c` `r_reg` walks from the end, stopping after `off` lines when
-/// `RLINES`, else at the start).
-fn reverse_selection<'a>(lines: &[&'a str], count: usize, n_seen: bool) -> Vec<&'a str> {
-    let selected: &[&'a str] = if n_seen {
-        &lines[lines.len().saturating_sub(count)..]
-    } else {
-        lines
+/// The line order C `reverse()` prints: `RLINES` (`Some(off)`) takes the last
+/// `off` lines then reverses them (`reverse.c:138-141` stops the backward walk
+/// after `off` lines); `REVERSE` (`None`) reverses every line. `Some(0)` selects
+/// no line at all, matching C's early return.
+fn reversed_lines<'a>(lines: &[&'a str], take: Option<usize>) -> Vec<&'a str> {
+    let selected: &[&'a str] = match take {
+        Some(off) => &lines[lines.len().saturating_sub(off)..],
+        None => lines,
     };
     selected.iter().rev().copied().collect()
 }
 
 /// C `tail -r` with `-c`/`-b` (`RBYTES`, `reverse.c` `r_reg`): the lines of the
-/// trailing `bytecnt`-byte window, printed bottom-up. The window can begin
-/// mid-line; r_reg still emits that leading fragment (its leftover `WR`), which
-/// is precisely what a byte-window line split yields, so the reverse is exact.
-fn reverse_bytes(input: &[u8], bytecnt: usize) -> Vec<&str> {
-    let window = last_bytes_of(input, bytecnt);
+/// trailing `off`-byte window, printed bottom-up. The window can begin mid-line;
+/// r_reg still emits that leading fragment (its leftover `WR`), which is
+/// precisely what a byte-window line split yields, so the reverse is exact.
+fn reverse_bytes(input: &[u8], off: usize) -> Vec<&str> {
+    let window = last_bytes_of(input, off);
     let lines = support::lines_of(window);
-    reverse_selection(&lines, 0, false)
+    reversed_lines(&lines, None)
 }
 
-/// The last `bytecnt` bytes of `input`, or all of it when shorter — C `tail -c`
+/// The last `off` bytes of `input`, or all of it when shorter — C `tail -c N`
 /// prints the final N bytes of each file.
-fn last_bytes_of(input: &[u8], bytecnt: usize) -> &[u8] {
-    &input[input.len().saturating_sub(bytecnt)..]
+fn last_bytes_of(input: &[u8], off: usize) -> &[u8] {
+    &input[input.len().saturating_sub(off)..]
+}
+
+/// C `forward()` + `FBYTES` (`forward.c:100-113`): print from byte `off + 1` on.
+/// C clamps the seek to the file size for regular files and stops at EOF for
+/// pipes, either way an offset past the end prints nothing.
+fn bytes_from(input: &[u8], off: usize) -> &[u8] {
+    &input[off.min(input.len())..]
+}
+
+/// C `forward()` + `FLINES` (`forward.c:115-127`): consume input through the
+/// `off`-th newline, then print everything after it. `off == 0` prints the whole
+/// input (that is `tail -n +1`), and an input with fewer than `off` newlines
+/// leaves C at EOF, which prints nothing.
+fn bytes_after_lines(input: &[u8], off: usize) -> &[u8] {
+    if off == 0 {
+        return input;
+    }
+    let mut seen = 0usize;
+    for (index, byte) in input.iter().enumerate() {
+        if *byte == b'\n' {
+            seen += 1;
+            if seen == off {
+                return &input[index + 1..];
+            }
+        }
+    }
+    &[]
 }
 
 /// Read a descriptor to the end.
@@ -184,10 +214,6 @@ fn arg_error(e: TailError) -> ! {
         TailError::Usage => usage(),
         TailError::NotModelledFollow => {
             support::warn(b"tail: this option is not modelled (line-based ring, forward only)\n");
-            support::terminate(1);
-        }
-        TailError::ForwardOffset => {
-            support::warn(b"tail: -n +N forward-offset is not modelled\n");
             support::terminate(1);
         }
         TailError::IllegalCount(v) => {
@@ -216,7 +242,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{last_bytes_of, reverse_bytes, reverse_selection};
+    use super::{bytes_after_lines, bytes_from, last_bytes_of, reverse_bytes, reversed_lines};
 
     #[test]
     fn last_bytes_truncates_to_count() {
@@ -234,22 +260,75 @@ mod tests {
     }
 
     #[test]
-    fn reverse_selection_all_reverses_every_line() {
-        let lines = ["1", "2", "3"];
-        assert_eq!(reverse_selection(&lines, 10, false), ["3", "2", "1"]);
+    fn bytes_from_skips_the_offset() {
+        // `-c +3` is `off = 2` (`ARG` gives back one unit), i.e. byte three on.
+        assert_eq!(bytes_from(b"abcdef", 2), b"cdef");
     }
 
     #[test]
-    fn reverse_selection_last_n_reversed() {
+    fn bytes_from_zero_is_whole_input() {
+        // `-c +1` folds to `off = 0`: C breaks out of the `FBYTES` case without
+        // seeking, so the whole file prints.
+        assert_eq!(bytes_from(b"abcdef", 0), b"abcdef");
+    }
+
+    #[test]
+    fn bytes_from_past_end_prints_nothing() {
+        // C clamps the seek to `st_size` (`forward.c`), and a pipe stops at EOF —
+        // either way nothing is left to print.
+        assert_eq!(bytes_from(b"abc", 9), b"");
+    }
+
+    #[test]
+    fn bytes_after_lines_lands_on_the_nth_line() {
+        let input = b"one\ntwo\nthree\nfour\n";
+        // `-n +1` → off 0 → whole file; `-n +2` → off 1 → past the first newline.
+        assert_eq!(bytes_after_lines(input, 0), input);
+        assert_eq!(bytes_after_lines(input, 1), b"two\nthree\nfour\n");
+        assert_eq!(bytes_after_lines(input, 3), b"four\n");
+    }
+
+    #[test]
+    fn bytes_after_lines_keeps_a_final_unterminated_line() {
+        // C copies the remaining bytes character by character, so a last line
+        // without a newline keeps its shape instead of gaining one.
+        let input = b"a\nb world";
+        assert_eq!(bytes_after_lines(input, 1), b"b world");
+    }
+
+    #[test]
+    fn bytes_after_lines_short_input_prints_nothing() {
+        // Fewer newlines than `off`: C's `getc` loop reaches EOF and prints
+        // nothing.
+        assert_eq!(bytes_after_lines(b"only\n", 5), b"");
+    }
+
+    #[test]
+    fn reversed_lines_all_reverses_every_line() {
+        let lines = ["1", "2", "3"];
+        assert_eq!(reversed_lines(&lines, None), ["3", "2", "1"]);
+    }
+
+    #[test]
+    fn reversed_lines_last_n_reversed() {
         // -r -n 2 on [1,2,3,4] -> last 2 (3,4) reversed -> 4,3.
         let lines = ["1", "2", "3", "4"];
-        assert_eq!(reverse_selection(&lines, 2, true), ["4", "3"]);
+        assert_eq!(reversed_lines(&lines, Some(2)), ["4", "3"]);
     }
 
     #[test]
-    fn reverse_selection_count_exceeding_input_is_all() {
+    fn reversed_lines_count_exceeding_input_is_all() {
         let lines = ["a", "b"];
-        assert_eq!(reverse_selection(&lines, 5, true), ["b", "a"]);
+        assert_eq!(reversed_lines(&lines, Some(5)), ["b", "a"]);
+    }
+
+    #[test]
+    fn reversed_lines_zero_takes_nothing() {
+        // C `reverse.c:79-80`: a non-`REVERSE` style with `off == 0` returns
+        // before printing, so `tail -r -n +1` prints nothing rather than the
+        // whole file.
+        let lines = ["a", "b"];
+        assert!(reversed_lines(&lines, Some(0)).is_empty());
     }
 
     #[test]
@@ -260,7 +339,9 @@ mod tests {
         // window starts mid-line (last 7 = "bb\nccc\n"); r_reg emits the leading
         // fragment too, so "bb" survives as its own line.
         assert_eq!(reverse_bytes(input, 7), ["ccc", "bb"]);
-        // bytecnt past the input reverses the whole file's lines.
+        // byte offset past the input reverses the whole file's lines.
         assert_eq!(reverse_bytes(input, 99), ["ccc", "bbb", "aaa"]);
+        // -r -c +1 folds to RBYTES with off 0, whose empty window holds no line.
+        assert_eq!(reverse_bytes(input, 0), Vec::<&str>::new());
     }
 }
