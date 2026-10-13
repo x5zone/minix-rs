@@ -303,7 +303,7 @@ impl TextStore for LineTable {
         let mut owned = [0u8; MAX_TEXT + 256];
         let mut len = 0;
         // Copy a stored line with its newline when one follows.
-        let mut copy_line = |owned: &mut [u8; MAX_TEXT + 256],
+        let copy_line = |owned: &mut [u8; MAX_TEXT + 256],
                              len: &mut usize,
                              line: usize,
                              table: &LineTable|
