@@ -2,11 +2,17 @@
 
 > **C 真值源**：`minix3/minix/kernel/proc.h`、`minix3/minix/kernel/proc.c`、`minix3/minix/kernel/priv.h`、`minix3/minix/kernel/table.c`、`minix3/minix/kernel/main.c`、`minix3/minix/kernel/glo.h`、`minix3/minix/kernel/type.h`、`minix3/minix/kernel/system.c`、`minix3/minix/kernel/system/do_vmctl.c`、`minix3/minix/kernel/system/do_privctl.c`、`minix3/minix/kernel/system/do_fork.c`、`minix3/minix/kernel/system/do_clear.c`、`minix3/minix/kernel/system/do_runctl.c`、`minix3/minix/kernel/smp.c`、`minix3/minix/kernel/arch/i386/protect.c`、`minix3/minix/kernel/arch/i386/arch_system.c`、`minix3/minix/kernel/arch/i386/memory.c`、`minix3/minix/kernel/arch/i386/exception.c`、`minix3/minix/kernel/arch/earm/protect.c`、`minix3/minix/include/minix/{const.h,param.h,com.h,priv.h,endpoint.h,sys_config.h}`、`minix3/minix/servers/vm/main.c`
 > **Rust 实现**：`os/kernel/src/{lib.rs,proc.rs,proc_table.rs,kpriv.rs,capability.rs,globals.rs,misc.rs}`、`os/arch/src/arch/boot.rs`、`os/arch/src/{x86_64,arm64,riscv64}/boot.rs`、`os/arch/src/lib.rs`、`os/libs/minix-types/src/types/{endpoint.rs,com.rs,proc_nr.rs}`、`os/libs/minix-boot/src/kernel_info.rs`、`os/boot-shim/src/loader.rs`
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:struct Name`、`path:const NAME`、`path:MACRO`），不使用行号。
+> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:struct Name`、`path:const NAME`、`path:MACRO`），不使用行号；引文块内部的坐标（若源注释原文带）按原文保留，属引文保真的一部分。
 > **本篇主题**：内核的两张编译期定容表怎么存、`struct proc`/`struct priv` 的字段各自承担什么、`p_rts_flags` 的 16 个位各自由谁置位与解除、`p_misc_flags` 的 18 个位各自的位值与语义（置位与解除的调用面散布在各功能篇），以及编译期写死的 17 项 boot image 清单如何被逐项填进进程槽、其中 VM 又是如何被内核亲自装载。
 > **前置**：[03-kmain-cstart.md](03-kmain-cstart.md)（`kmain` 的分段与 `proc_init` 在其中的位置）、[04-platform-discovery.md](04-platform-discovery.md)（平台描述符与 `KernelInfo` 的消费）、[05-clock-interrupt-init.md](05-clock-interrupt-init.md)（§1.4 把"进程表本身的初始化与 boot 进程装载"指给本篇）。
 > **后续**：`08-system-init-boot-finish`（启动收尾与切用户篇，尚未重生成）接 `bsp_finish_booting` 的其余步骤与 `switch_to_user`；`07-cross-space-init`（跨空间访问初始化篇，尚未重生成）接页表根与 Direct Map；`10-smp-boot`（SMP 启动篇，尚未重生成）接 AP 侧的同一批抑制位；`11-scheduling-primitives`（调度原语篇，尚未重生成）接就绪队列与 `pick_proc`；`12-ipc-core`（IPC 核心篇，尚未重生成）接消息流程。
-> **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构）；FPU 处理由 32 位的 `fnsave`/`fxrstor` 保存模型改为三个目标架构各自的懒初始化模型（`[ARCH: K-4]`），riscv64 端口整套为 minix-rs 新增（`[ARCH: K-2]`）。
+> **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构）；FPU 处理由 32 位的 `fnsave`/`fxrstor` 保存模型改为三个目标架构各自的懒初始化模型（`[ARCH: K-4]`），riscv64 一侧整套为 minix-rs 新增（`[ARCH: K-2]`）。
+>
+> **目标读者**：熟悉操作系统基本概念（特权级、分页、进程切换、中断）与 C 语言的开发者；Rust 一侧读到 trait/泛型即可。不需要预先了解 Minix3 的实现——引用的 C 符号都有解码；也不需要先弄懂调度器算法——本篇只用"全零才可运行"这一条规则（§1.5 已声明）。
+>
+> **前置知识**：虚拟内存与中断的大意；上面"前置"一行里那三篇的结论（`kmain` 分段、平台描述符、时钟与中断）。读过"自己写 OS"类书籍的读者可跳过 §1.1 的开场；§1.3 的清单、§1.4.1 的三套编号映射是后文前提，不建议跳过。
+>
+> **教学目标**（读完本篇应能独立讲出）：① 三张表的容量与索引关系（261 进程槽 / 64 特权槽 / 16 位状态），以及"为什么是编译期定容静态数组"的三层约束（§1.2、§2.0）；② `struct proc` 与 `struct priv` 的字段分组及各自承担的语义（§2.1、§2.3）；③ `p_rts_flags` 各位的置位/解除方，以及 `p_misc_flags` 各位的名字与语义（§2.2、§2.1.6；MF 的调用面散布在各功能篇）；④ 17 项 boot image 清单的两类成员、三套编号的映射与逐项填充的动作序列（§1.3、§1.4.1、§2.4–§2.6）；⑤ VM 的 ELF 为什么由内核亲自装载、逐页装载与共享边界页的处理（§2.7、§4.2）；⑥ Rust 侧两张表的类型化重建（`ProcKind`/`EntrySpec`/`KProcess`/`KPriv`）与零堆启动的工程实现（§3.1–§3.12）；⑦ 四道抑制位的就位与解除责任（§2.5、§2.6、§3.9、§4.8）；⑧ 每条机制靠什么证据成立、哪些还没有测试或真机断言（§5 的证据总账）。
 
 05 篇结束时，CPU 已经能接住异常，控制器处于已知的屏蔽态，定时器已经编程、处理函数已经注册、门也开了。能听见硬件说话，不等于有谁可以被打断去服务——那一刻进程表还是一片空白，`proc_ptr` 指向一个尚未初始化的槽，任何一次 tick 进来都找不到可以记账的对象。这一篇要处理的，就是把"内核眼中可被调度的执行流"这件事从数据结构到实例化流程完整读一遍：两张编译期定容的表、挂在槽上的两组状态位、一份编译期写死的清单，以及清单落进槽位的那一段代码。
 
@@ -43,7 +49,7 @@ EXTERN struct proc proc[NR_TASKS + NR_PROCS];	/* process table */
 
 `EXTERN` 在这份文件里是 `extern`、在 `table.c` 里被重定义成空串（`minix3/minix/kernel/table.c` 的文件头注释解释了这套写法），于是这一行在 `table.c` 里产出真正的存储、在其余文件里只是声明。也就是说，进程表不是"启动时创建"的，它是 BSS 里一段编译期就定好地址的内存，`kmain` 里那句 `proc_init()` 做的事情不是分配，而是把每个槽宣布成空槽。
 
-这一步的位置在 `minix3/minix/kernel/main.c:kmain`：`cstart()` 之后、`IPCF_POOL_INIT()` 与 boot 循环之前。
+这一步的位置在 `minix3/minix/kernel/main.c:kmain`：`cstart()` 之后、`IPCF_POOL_INIT()`（IPC 过滤池的初始化宏，紧随其后）与 boot 循环之前。
 
 **如果反过来想**：把 `proc_init()` 排到 boot 循环之后。`proc_addr(n)` 的算式会先把槽指针算出来（BSS 里地址是有效的），但槽里的 `p_endpoint` 还是 BSS 零——而 boot 循环第二行就是 `ip->endpoint = rp->p_endpoint;`，把 0 号端点的值回填进清单条目；`p_priv` 也是零，`get_priv` 之前的任何一次 `priv(rp)` 都会解引用空指针。清表语句的位置不是风格问题，它决定了后面几步读到的是什么。
 
@@ -53,7 +59,7 @@ EXTERN struct proc proc[NR_TASKS + NR_PROCS];	/* process table */
 
 第一问的答案在进程表里，容量是 `NR_TASKS + NR_PROCS`，两个加数在 `minix3/minix/include/minix/sys_config.h` 与 `minix3/minix/include/minix/com.h` 里分别给出：5 个内核 task 与 256 个用户进程槽，合计 261。第二问的答案在特权表里，容量是 `NR_SYS_PROCS = 64`（同一个 `sys_config.h` 文件）。第三问的答案不是一张独立的表，而是每个进程槽里的 `p_rts_flags`——它自己就是一张位图。
 
-三张表之间存在两条固定关系：
+三张表之间有两条固定关系，另有一条贯通全篇的判定关系（第三条）：
 
 - 进程号到槽的定位是一次纯算术：`proc_addr(n)` 展开为 `(&(proc[NR_TASKS + (n)]))`（宏族定义在 `minix3/minix/kernel/proc.h:END_PROC_ADDR` 与它相邻的几行里）。进程号允许为负——内核 task 的进程号是 −5 到 −1——所以下标算式必须写成"加一个偏移"，而不是直接用进程号。
 - 进程与特权槽是多对一：261 个进程槽对应 64 个特权槽。这不是容量不够的妥协，`minix3/minix/kernel/priv.h` 的文件头注释把省空间写成了设计目的（"all user processes share one structure … very space efficient"）。共享的那个槽由一条算式指定：
@@ -141,7 +147,7 @@ struct boot_image {
 
 `start_addr` 与 `len` 由 boot 循环从模块链表回填，`endpoint` 由 boot 循环从进程槽读出来再写回清单（`main.c:kmain` 的 `ip->endpoint = rp->p_endpoint;`）。方向是从槽到清单：清单本来是常量，却在启动期被改写成"这一次启动的实况"，而这份改写后的副本随后被交给 VM。
 
-**如果反过来想**：把用户模块的 `mod_start` 直接写进静态表是不可能的——链接期还没有引导器摆放模块的地址。真正要防的是取模块时的下标偏移写错。若把 `kinfo.module_list[i - NR_TASKS]` 写成 `kinfo.module_list[i]`：`i` 在 0..4 时读的是模块链表的前 5 项，被当成内核 task 的地址写进 `ip->start_addr`；用户模块那一轮从 `module_list[5]` 起读，越界 5 项。
+**如果反过来想**：把用户模块的 `mod_start` 直接写进静态表是不可能的——链接期还没有引导器摆放模块的地址。真正要防的是取模块时的下标偏移写错。若把 `kinfo.module_list[i - NR_TASKS]` 写成 `kinfo.module_list[i]`（这句在 `i >= NR_TASKS` 分支内，受影响的只有用户模块那一轮）：`i` 从 5 起读 `module_list[5]..module_list[16]`——每个模块的地址整体往后错 5 项，最后 5 次读越出 12 项数组的末尾。
 
 ### 1.4 本篇的终点状态：就位但暂停
 
@@ -167,7 +173,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 上界是 `NR_BOOT_PROCS - NR_TASKS = 12`，而循环体里的 `proc_addr(i)` 用的是**用户进程号**而不是清单下标。这两个事实合起来说明：解除循环覆盖的是进程号 0..11 的 12 个用户进程，5 个内核 task 不在其中，`RTS_PROC_STOP` 对它们永不解除（`proc_init` 里也给每 CPU 的 IDLE 结构置过这一位，`minix3/minix/kernel/proc.c:proc_init`）。这一位对内核 task 保持置位不是遗漏：内核 task 的工作在调用点就地执行——到期的时钟定时器由 tick 处理里的 `tmrs_exptimers` 跑（`minix3/minix/kernel/clock.c:timer_int_handler`），内核调用由 `kernel_call` 在陷入路径上直接分派（`minix3/minix/kernel/system.c:kernel_call`）——它们的槽不需要被调度器选中，`PROC_STOP` 保持置位正是"不把它们放进就绪队列"的表达。
 
-**如果反过来想**：把上界写成 `NR_BOOT_PROCS`。`proc_addr(12)` 到 `proc_addr(16)` 是 5 个从未被 boot 循环碰过的用户槽，它们的 `p_rts_flags` 还是 `RTS_SLOT_FREE`；`RTS_UNSET` 的语义是"若这位原来置着、清掉后进程变得可运行就入队"，`SLOT_FREE` 清掉后剩下的位是零，判定成立，于是 `enqueue` 把一个空槽链进了就绪队列。此后 `pick_proc` 可能选中它，`switch_to_user` 会去读它的页表根——一个没被任何代码初始化过的 `p_seg`。
+**如果反过来想**：把上界写成 `NR_BOOT_PROCS`。多出的五次迭代落在用户进程号 12..16（`proc_addr` 的槽 17..21）上——这些槽从未被 boot 循环碰过，`p_rts_flags` 仍是 `RTS_SLOT_FREE`；而 `RTS_UNSET(rp, RTS_PROC_STOP)` 只清 `PROC_STOP` 这一位（它们本来就没置它），`SLOT_FREE` 不动，清完仍非零、判定不可运行、不入队——单看这处越界，它恰好无害。上界真正的承重点**是一致性**：循环体按用户进程号寻址（`proc_addr(i)` 覆盖 0..11），上界的 12 与"12 个用户进程"同义；哪一天把坐标或计数换成别的（槽下标、条目数），"清错了位"或"对象错了"才会变成真故障。
 
 ### 1.4.1 boot image 序号、模块序号与 proc 号三者的映射
 
@@ -210,7 +216,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 | 消息传递的匹配、阻塞与唤醒 | `12-ipc-core`（IPC 核心篇，尚未重生成） |
 | `SYS_PRIVCTL` 的运行时语义与 RS 的授权流程 | 权限管控篇（尚未重生成） |
 | AP 侧的进程可见性与 per-CPU 数据 | `10-smp-boot`（SMP 启动篇，尚未重生成） |
-| FPU 寄存器逐位细节与懒陷阱的完整时序 | FPU 专题（尚未重生成）；本篇只给策略字段与它的归属 |
+| FPU 寄存器逐位细节与懒陷阱的完整时序 | FPU 专题（尚未重生成）；本篇给到策略字段、归属与"门控发生在哪个域"（§3.6、§4.1），逐寄存器时序与完整流程归专题 |
 | VM 侧的 `VMCTL` 协商协议 | `09-vm-boot-protocol`（VM 启动协议篇，尚未重生成） |
 | 启动全流程的 A–F 阶段骨架（本篇对应其中"清表与装载"的那一段） | `00-kernel-overview`（内核总览篇，尚未重生成） |
 
@@ -231,7 +237,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 | `NR_TASKS` | 5 | `minix3/minix/include/minix/com.h:NR_TASKS` | 内核 task 数（ASYNCM/IDLE/CLOCK/SYSTEM/KERNEL，进程号 −5..−1） |
 | `NR_PROCS` | 256 | `minix3/minix/include/minix/sys_config.h:_NR_PROCS`（经 `minix3/minix/include/minix/config.h:NR_PROCS`） | 用户进程槽上限（进程号 0..255） |
 | `NR_SYS_PROCS` | 64 | 同一个 `sys_config.h` 的 `_NR_SYS_PROCS` | 特权槽上限 |
-| `NR_BOOT_PROCS` | `NR_TASKS + LAST_SPECIAL_PROC_NR + 1` = 17 | `minix3/minix/include/minix/param.h:NR_BOOT_PROCS` | boot image 条目数（5 task + 12 模块） |
+| `NR_BOOT_PROCS` | `NR_TASKS + LAST_SPECIAL_PROC_NR + 1` = 17（`LAST_SPECIAL_PROC_NR` 即 `INIT_PROC_NR`（11），定义在 `minix3/minix/include/minix/com.h`） | `minix3/minix/include/minix/param.h:NR_BOOT_PROCS` | boot image 条目数（5 task + 12 模块） |
 | `NR_BOOT_MODULES` | `INIT_PROC_NR + 1` = 12 | `minix3/minix/include/minix/com.h:NR_BOOT_MODULES` | boot image 中用户态模块数 |
 
 两个容量关系由编译期强制。`NR_BOOT_PROCS (17) ≤ NR_SYS_PROCS (64)` 写在 `minix3/minix/kernel/priv.h` 末尾：
@@ -261,14 +267,15 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 | 组 | 成员 | 本节 | boot 期是否被写 |
 |---|---|---|---|
-| 身份 | `p_nr` `p_endpoint` `p_name` `p_magic` `p_priv` `p_found` | §2.1.1 | 清表写 4 个；填充写名字与 `p_priv` 关联 |
+| 身份 | `p_nr` `p_endpoint` `p_name` `p_magic` `p_priv` `p_found` | §2.1.1 | 清表写 3 个（`p_nr`/`p_endpoint`/`p_magic`；`p_rts_flags` 属生命周期组）；填充写名字与 `p_priv` 关联 |
 | 调度与 CPU | `p_priority` `p_cpu_time_left` `p_quantum_size_ms` `p_scheduler` `p_cpu` `p_cpu_mask` `p_stale_tlb` | §2.1.2 | 写优先级、时间片、`p_scheduler`、`p_cpu_time_left` |
 | IPC 链接与消息 | `p_nextready` `p_caller_q` `p_q_link` `p_getfrom_e` `p_sendto_e` `p_sendmsg` `p_delivermsg` `p_delivermsg_vir` | §2.1.3 | 不写（BSS 零 = 无消息） |
 | 执行上下文与 VM 请求 | `p_reg` `p_seg` `p_pending` `p_defer` `p_vmrequest` | §2.1.4 | `arch_proc_reset` 写 `p_reg`/`p_seg`；`p_defer`/`p_vmrequest` 不写 |
 | 记账与统计 | `p_accounting` `p_dequeued` `p_user_time` `p_sys_time` `p_virt_left` `p_prof_left` `p_cycles` `p_kcall_cycles` `p_kipc_cycles` `p_tick_cycles` `p_cpuavg` | §2.1.5 | 只写 `p_accounting` 六个子字段（`reset_proc_accounting`） |
 | 生命周期控制 | `p_rts_flags` `p_misc_flags` | §2.1.6 | 全部 17 项都要定状态 |
+| 条件编译（不分组） | 1 | 仅 `p_schedules`（`DEBUG_TRACE` 下的调度计数）——调试用途，本篇不展开其语义（Rust 对位见 §4.4） |
 
-口径说明：40 这个数按"顶层成员"计——其中 38 个是具名声明，2 个是匿名聚合（`p_accounting` 与 `p_vmrequest`）；另有 3 个成员受条件编译控制（`p_cpu_mask`/`p_stale_tlb` 在 `CONFIG_SMP` 下、`p_schedules` 在 `DEBUG_TRACE` 下），按声明行计入了 40。复算方式见 §6.2。
+口径说明：40 这个数按"顶层成员"计——37 个具名声明 + 3 个匿名聚合类型（`p_accounting`、`p_vmrequest`、`p_defer`）；`p_cpu_mask`/`p_stale_tlb` 在 `CONFIG_SMP` 下、`p_schedules` 在 `DEBUG_TRACE` 下，按声明行一并计入。复算方式见 §6.2。
 
 #### 2.1.1 身份组
 
@@ -286,7 +293,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 （这六个成员在 `struct proc` 里并不相邻：`p_nr`/`p_priv` 在头部，`p_name`/`p_endpoint` 在消息缓冲之前，`p_found`/`p_magic` 在末尾。）
 
-`proc_nr_t` 是 `int`（`minix3/minix/kernel/type.h:proc_nr_t`）。`p_nr` 的值域是 −5..255，它同时是"下标算式的输入"与"进程身份的短标识"。`p_name` 是 16 字节的数组（`PROC_NAME_LEN`，`minix3/minix/include/minix/type.h:PROC_NAME_LEN`）。**boot 期只有两类成员拿到名字**：内核 task 由 boot 循环直接写（`minix3/minix/kernel/main.c:kmain` 里那句 `if(i < NR_TASKS) strlcpy(rp->p_name, ip->proc_name, ...)`）；VM 由 `arch_boot_proc` 末尾那次 `arch_proc_init` 写（`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc`，该调用点整体位于 `if(rp->p_nr == VM_PROC_NR)` 分支内；函数体见 `minix3/minix/kernel/arch/i386/memory.c:arch_proc_init`，它第一件事是 `strlcpy(pr->p_name, name, ...)`）。**其余 11 个用户模块在 boot 期没有名字**——它们各自启动后经 `exec` 路径拿名字（`minix3/minix/kernel/system/do_exec.c:do_exec` 里同一支 `arch_proc_init`）。
+`proc_nr_t` 是 `int`（`minix3/minix/kernel/type.h:proc_nr_t`）。`p_nr` 的值域是 −5..255，它同时是"下标算式的输入"与"进程身份的短标识"。`p_name` 是 16 字节的数组（`PROC_NAME_LEN`，`minix3/minix/include/minix/type.h:PROC_NAME_LEN`）。**boot 期只有两类成员拿到名字**：内核 task 由 boot 循环直接写（`minix3/minix/kernel/main.c:kmain` 里那句 `if(i < NR_TASKS) strlcpy(rp->p_name, ip->proc_name, ...)`）；VM 由 `arch_boot_proc` 末尾那次 `arch_proc_init` 写（`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc`，该调用点整体位于 `if(rp->p_nr == VM_PROC_NR)` 分支内；函数体见 `minix3/minix/kernel/arch/i386/memory.c:arch_proc_init`，它的前两句是 `arch_proc_reset(pr)` 与 `strlcpy(pr->p_name, name, ...)`）。**其余 11 个用户模块在 boot 期没有名字**——它们各自启动后经 `exec` 路径拿名字（`minix3/minix/kernel/system/do_exec.c:do_exec` 里同一支 `arch_proc_init`）。
 
 `p_magic` 是完整性哨兵：`PMAGIC` 定义在 `minix3/minix/include/minix/const.h:PMAGIC`，值为 `0xC0FFEE1`，判定宏是 `proc_ptr_ok(p)`。它的读者是调试与内部校验路径。
 
@@ -307,10 +314,10 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 							    process allowed to
 							    run on */
   bitchunk_t p_stale_tlb[BITMAP_CHUNKS(CONFIG_MAX_CPUS)]; /* On which cpu are
-					possibly stale entries from this process and has
-					to be fresed the next kernel touches this
-					processes memory
-					 */
+				possibly stale entries from this process and has
+				to be fresed the next kernel touches this
+				processes memory
+				 */
 #endif
 ```
 
@@ -318,7 +325,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 `p_scheduler` 指向该进程的用户态调度器；清表时写成 `NULL`，判定宏 `proc_kernel_scheduler(p)` 把 `NULL` 与"指向自己"都当作"由内核默认策略调度"（`minix3/minix/kernel/proc.h:proc_kernel_scheduler`）。
 
-`p_cpu_mask` 与 `p_stale_tlb` 是 32 位端口下的位图数组，前者按注释是"允许在哪些 CPU 上运行"的白名单，后者记录"哪些 CPU 上可能有该进程的陈旧 TLB 项"。这两个字段在当前 C 树里的读者很少：`p_cpu_mask` 全树只有声明与 `do_update` 槽交换时的一次整块拷贝，启动路径不写它、调度路径不读它；`p_stale_tlb` 的写入点在 `do_vmctl` 的 `VMINHIBIT` 解除分支（`bits_fill`）。`p_cpu` 记录最近一次被分配到哪个 CPU。
+`p_cpu_mask` 与 `p_stale_tlb` 在 32 位架构（i386/ARM32）下是位图数组，前者按注释是"允许在哪些 CPU 上运行"的白名单，后者记录"哪些 CPU 上可能有该进程的陈旧 TLB 项"。这两个字段在当前 C 树里的读者很少：`p_cpu_mask` 全树只有声明与 `do_update` 槽交换时的一次整块拷贝，启动路径不写它、调度路径不读它；`p_stale_tlb` 的写入点在 `do_vmctl` 的 `VMINHIBIT` 解除分支（`bits_fill`）。`p_cpu` 记录最近一次被分配到哪个 CPU。
 
 #### 2.1.3 IPC 链接与消息组
 
@@ -351,7 +358,7 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 `p_reg` 是寄存器保存区，`p_seg` 是段/页表描述区。这两个字段是架构私有内容的落点，`arch_proc_reset` 负责在清表时把它们写成已知值：清空寄存器、按进程类型写初值 PSW（内核 task 用 `INIT_TASK_PSW`、用户进程用 `INIT_PSW`）、写六个段选择子、给用户进程分配 FPU 状态缓冲（`minix3/minix/kernel/arch/i386/arch_system.c:arch_proc_reset`）。
 
-FPU 缓冲在 32 位端口是一个架构级池加一个指针：
+FPU 缓冲在 32 位架构下是一个架构级池加一个指针：
 
 ```c
 /* 逐字引用，minix3/minix/kernel/arch/i386/arch_system.c —— FPU 池与取址 */
@@ -460,7 +467,7 @@ void reset_proc_accounting(struct proc *p)
 | `0x10000` | `MF_FLUSH_TLB` | 让它再运行前必须刷 TLB（当前只对 SMP 有意义） |
 | `0x20000` | `MF_SENDA_VM_MISS` | 异步接收落空是因为 VM 正在改发送方的地址空间 |
 | `0x40000` | `MF_STEP` | 单步执行该进程 |
-| `0x80000` | `MF_MSGFAILED` | 消息投递失败 |
+| `0x80000` | `MF_MSGFAILED`（注释列其中一处语义由调用点推得） | 消息投递失败 |
 | `0x100000` | `MF_NICED` | 用户降低了该进程的最高优先级 |
 
 18 个位，位值同样不连续：`0x00010`、`0x00020` 与 `0x00800` 三个位置未被占用。位宽的上限是 21 位（最高位 `0x100000`），离 32 位还有余量。
@@ -566,12 +573,12 @@ void reset_proc_accounting(struct proc *p)
 
 #### 2.2.2 逐位的置位与解除
 
-下表把 16 位逐一列出。第三、四列给置位与解除的调用点；第五列说明解除后会发生什么（是否立刻入队）；最后一列给出该位的存在理由所在的调用链。表内的置位/解除两列给的是 `文件:函数` 坐标：启动期四位（`RTS_NO_PRIV`、`RTS_VMINHIBIT`、`RTS_BOOTINHIBIT`、`RTS_PROC_STOP`）的置位语句在本篇 §2.6 的 boot 循环里有逐字引用，`RTS_PROC_STOP` 的解除循环引在 §1.4，四位的 Rust 对位在 §3.9；其余十二位的置位与解除语句分布在上表点出的 IPC（`mini_send`/`mini_receive`/`clear_ipc`）、信号（`cause_sig`）、VM（`do_vmctl`）、调度（`enqueue`/`switch_to_user`/`sched_proc`）与跟踪（`do_trace`）函数体里，本篇只给坐标，不逐行展开。
+下表把 16 位逐一列出。第三、四列给置位与解除的调用点；第五列说明解除后会发生什么（是否立刻入队）；最后一列给出该位的存在理由所在的调用链。表内的置位/解除两列给的是 `文件:函数` 坐标：启动期四位（`RTS_NO_PRIV`、`RTS_VMINHIBIT`、`RTS_BOOTINHIBIT`、`RTS_PROC_STOP`）的置位语句在本篇 §2.6 的 boot 循环里有逐字引用，`RTS_PROC_STOP` 的解除循环引在 §1.4，四位的 Rust 对位在 §3.9；其余十二位的置位与解除语句**主要**分布在表内点出的 IPC（`mini_send`/`mini_receive`/`clear_ipc`）、信号（`cause_sig`）、VM（`do_vmctl`）、调度（`enqueue`/`switch_to_user`/`sched_proc`）与跟踪（`do_trace`）函数体里，另有清表与回收路径（`proc_init`/`do_clear`）与退出路径（`clear_endpoint`/`do_exec`）若干处，本篇只给坐标，不逐行展开（列举口径：各列给主要调用点，非穷举——漏列的多为 CONFIG_SMP 分支与次要解除路径，可按函数名全树检索复核）。
 
 | 位 | 位名 | 谁置位 | 谁解除 | 解除后的动作 | 读者/判据 |
 |---|---|---|---|---|---|
 | `0x00001` | `RTS_SLOT_FREE` | `minix3/minix/kernel/proc.c:proc_init`（清表写整值）、`minix3/minix/kernel/system/do_clear.c:do_clear`（`RTS_SETFLAGS`） | `minix3/minix/kernel/main.c:kmain`（boot 循环末 `&= ~`） | 出队（`RTS_SETFLAGS` 路径）；boot 路径不触发跃迁 | `isemptyp`（`p_rts_flags == RTS_SLOT_FREE`） |
-| `0x00002` | `RTS_PROC_STOP` | `main.c` 的 `kmain`（全部 17 项）、`minix3/minix/kernel/proc.c:proc_init`（各 CPU 的 idle 槽）、`minix3/minix/kernel/system/do_runctl.c:do_runctl`（`RC_STOP`）、`minix3/minix/kernel/smp.c:smp_sched_handler`（跨 CPU 停） | `main.c` 的 `bsp_finish_booting`（进程号 0..11）、`do_runctl`（`RC_RESUME`）、`smp.c`（迁移收尾） | `RTS_UNSET` 命中跃迁 → 入队 | `do_sigsend.c`、`smp.c` 的断言 |
+| `0x00002` | `RTS_PROC_STOP` | `main.c` 的 `kmain`（全部 17 项）、`minix3/minix/kernel/proc.c:proc_init`（各 CPU 的 idle 槽）、`minix3/minix/kernel/system/do_runctl.c:do_runctl`（`RC_STOP`）、`minix3/minix/kernel/smp.c:smp_sched_handler`（跨 CPU 停）与 `smp.c:smp_schedule_stop_proc` | `main.c` 的 `bsp_finish_booting`（进程号 0..11）、`do_runctl`（`RC_RESUME`）、`smp.c`（迁移收尾）、`minix3/minix/kernel/arch/i386/arch_system.c:save_fpu`（CONFIG_SMP） | `RTS_UNSET` 命中跃迁 → 入队 | `do_sigsend.c`、`smp.c` 的断言 |
 | `0x00004` | `RTS_SENDING` | `minix3/minix/kernel/proc.c` 的 `mini_send`（目标不可收时） | 同文件的投递分支、`minix3/minix/kernel/system.c:clear_ipc` | 入队条件成立才入队（多数路径还有其他位在） | `ipc.h:WILLRECEIVE`、`P_BLOCKEDON` |
 | `0x00008` | `RTS_RECEIVING` | `minix3/minix/kernel/proc.c` 的 `mini_receive` | 同文件的 `mini_send` 命中收方、`minix3/minix/kernel/system.c:clear_ipc`、`system/do_exec.c` | 同上 | `P_BLOCKEDON`、`WILLRECEIVE` |
 | `0x00010` | `RTS_SIGNALED` | `system.c:cause_sig` | `system/do_getksig.c`（PM 取走）、`system/do_fork.c`（子进程不继承） | 另一个位（`SIG_PENDING`）还在，通常不入队 | `do_getksig.c`、`do_endksig.c` |
@@ -599,7 +606,7 @@ minix3/minix/servers/mib/proc.c:358:^I^I    RTS_ISSET(kp, RTS_VMREQTARGET))
 
 `RTS_NO_ENDPOINT` 是另一种不对称：它有置位点（`clear_endpoint`），却没有以 `RTS_UNSET(..., RTS_NO_ENDPOINT)` 形式出现的具名解除点。这个位的语义是"该槽不能再收发消息"，而槽的复用并不因此被堵死：`do_clear` 在 `clear_endpoint` 之后执行 `RTS_SETFLAGS(rc, RTS_SLOT_FREE)`（§2.1.6 已引），这个宏是整值覆盖而不是按位置位，`NO_ENDPOINT` 随整个 `p_rts_flags` 一起被覆盖成 `RTS_SLOT_FREE`；下一个占用该槽的进程从自己的权限授予与端点初始化路径重新获得收发能力。`proc.c` 里另留了一句注释 `/* XXX: RTS_NO_ENDPOINT should be removed */`（`minix3/minix/kernel/proc.c` 的 `mini_receive` 附近的收件人检查处），说明这个位本身被上游标记为待清理。本篇按"检索范围内未命中具名解除点"陈述，不推断它的历史意图。
 
-Rust 侧的对应路径是 `os/kernel/src/syscall_process.rs:dispatch_clear` 与 `os/kernel/src/syscall.rs:clear_endpoint`：置位照做，回收那一步调的是 `rts_set(SLOT_FREE)`（`os/kernel/src/proc_table.rs:ProcessTable::rts_set`），语义是按位置位；`NO_ENDPOINT` 因此与 `SLOT_FREE` 同时留在标志字里，槽达不到 `p_rts_flags == RTS_SLOT_FREE` 这个精确终态——而 `is_empty`（`os/kernel/src/proc_table.rs:ProcessTable::is_empty`）与 fork 的子槽检查都用这个精确判据。
+Rust 侧的对应路径是 `os/kernel/src/syscall_process.rs:dispatch_clear` 与 `os/kernel/src/syscall.rs:clear_endpoint`：置位照做；回收那一步调的是 `rts_setflags(target_nr, RtsFlagsBits::SLOT_FREE)`（`os/kernel/src/proc_table.rs:ProcessTable::rts_setflags`——整值覆盖，其文档注释明写自己是 C 的 `RTS_SETFLAGS` 的对位），`NO_ENDPOINT` 随整个标志字一起被覆盖成精确空槽态。这条对位有回归测试固定：`syscall_process.rs` 的 `test` 断言回收后 `is_empty` 为真（`is_empty` 即"恰好等于 `RTS_SLOT_FREE`"的精确判据，与 C 的 `isemptyp` 同形）。
 
 #### 2.2.3 位与位之间：为什么不是一位一件事
 
@@ -663,7 +670,7 @@ struct priv {
 };
 ```
 
-按职责分组（本节后半逐组给用途）：
+按职责分组（本节只展开与会话/授权相关的那几组；其余组的静态含义按分组名自明，运行期语义归权限管控篇）：
 
 | 组 | 字段 | 组内条数 |
 |---|---|---|
@@ -722,7 +729,7 @@ int get_priv(
 `kmain` 的 boot 循环给三类"立即可调度"的成员填权限，填的值来自一组预定义常量。常量的定义在 `minix3/minix/include/minix/priv.h`：
 
 ```c
-/* 逐字引用，minix3/minix/include/minix/priv.h —— 旗标组合与三层掩码模板（按原文顺序节选） */
+/* 逐字引用，minix3/minix/include/minix/priv.h —— 旗标组合与三层掩码模板（按原文顺序节选；个别注释跨行处以行内 `...` 缩短） */
 /* Allowed targets. */
 #define NO_M      (-1)              /* no targets allowed */
 #define ALL_M     (-2)              /* all targets allowed */
@@ -1006,7 +1013,7 @@ void proc_init(void)
 
 第二个循环写特权表的 5 项：`s_proc_nr = NONE`（未关联）、`s_id = i`（槽号即下标）、`ppriv_addr[i] = sp`（桥接表的指针）、`s_sig_mgr = NONE` 与 `s_bak_sig_mgr = NONE` 两个信号管理器。**注意这里没有清 `s_flags`**——BSS 零就是"没有任何能力位"，这是刻意的：启动期不触碰的字段保持零，含义是"未授权"。§2.3 的 31 字段表里 I/O、内存、运行时三组的字段全部不在清表写列表内，它们对未被授权的进程就是零值。
 
-第三个循环给每个 CPU 的 idle 结构写 4 项：端点固定为 `IDLE`（宏值为 −4）、`p_priv` 指向文件级静态 `idle_priv`、`p_rts_flags |= RTS_PROC_STOP`、名字由 `set_idle_name` 按 CPU 编号生成。idle 结构**不在 `proc[]` 数组里**——它是 `__cpu_local_vars` 的一部分，所以它不参与进程号索引，也不需要 `p_nr`。
+第三个循环给每个 CPU 的 idle 结构写 4 项（注意：`proc[]` 里另有一个 idle 条目——清单第 2 项、被 boot 循环填名字与权限模板——那份只是表内的一个身份槽；真正被调度器当兜底选中的是这里写的每 CPU `idle_proc`）：端点固定为 `IDLE`（宏值为 −4）、`p_priv` 指向文件级静态 `idle_priv`、`p_rts_flags |= RTS_PROC_STOP`、名字由 `set_idle_name` 按 CPU 编号生成。idle 结构**不在 `proc[]` 数组里**——它是 `__cpu_local_vars` 的一部分，所以它不参与进程号索引，也不需要 `p_nr`。
 
 **如果反过来想**：用一次 `memset(&proc, 0, sizeof(proc))` 代替第一个循环。表面上"清零"更彻底，实际把三个判据同时破坏：`p_rts_flags` 变成 0 而不是 `RTS_SLOT_FREE`，`isemptyp` 恒假，于是 `clear_endpoint` 开头的 `if(isemptyp(rc)) panic("clear_proc: empty process: %d", rc->p_endpoint);`（`minix3/minix/kernel/system.c:clear_endpoint`）在第一次回收槽时触发 `panic`；`p_magic` 变成 0，`proc_ptr_ok` 从第一次校验起失败；`p_endpoint` 变成 0，而 0 既是 `_ENDPOINT(0, 0)`（PM 的端点）也是一个合法数值，故障表现是"所有未初始化槽都指向 PM"而不是立刻报错——最难查的一类。
 
@@ -1061,7 +1068,7 @@ void proc_init(void)
             (void) get_priv(rp, static_priv_id(proc_nr));
 ```
 
-三个条件对应三类成员：`iskerneln(proc_nr)` 是"进程号小于零"（`minix3/minix/kernel/proc.h:iskerneln`），覆盖 5 个内核 task；`isrootsysn(proc_nr)` 是"进程号等于 `ROOT_SYS_PROC_NR`"（同文件的 `isrootsysn`，值为 RS 的 2）；第三个条件是 `proc_nr == VM_PROC_NR`（值为 8）。把这三类放进同一分支是有依赖顺序的：内核 task 的代码编在内核镜像里，不依赖任何装载；RS 由 VM 装载但它要早期运行以建立服务；VM 是唯一由内核亲自装载的进程，也是其他所有用户进程的页表建立者。其余 11 个用户模块在这一轮只被登记，等 VM 起来后由 VM 的遍历装载（§2.4）。
+三个条件对应三类成员：`iskerneln(proc_nr)` 是"进程号小于零"（`minix3/minix/kernel/proc.h:iskerneln`），覆盖 5 个内核 task；`isrootsysn(proc_nr)` 是"进程号等于 `ROOT_SYS_PROC_NR`"（同文件的 `isrootsysn`，值为 RS 的 2）；第三个条件是 `proc_nr == VM_PROC_NR`（值为 8）。把这三类放进同一分支是有依赖顺序的：内核 task 的代码编在内核镜像里，不依赖任何装载；RS 由 VM 装载但它要早期运行以建立服务；VM 是唯一由内核亲自装载的进程，也是其他所有用户进程的页表建立者。其余 10 个用户模块（12 项减去当场授予的 RS 与 VM——RS 同轮拿到权限与优先级）在这一轮只被登记，等 VM 起来后由 VM 的遍历装载（§2.4）。
 
 分支内部按成员类型填不同的模板（§2.3.2 的表），并调用 `fill_sendto_mask` 与内核调用掩码填充（§2.3.3 已逐行引用）。注意 `get_priv` 的返回值被强转成 `(void)`——启动期没有为"静态槽被占"或"id 越界"准备处理路径，C 选择不检查；这份信任的前提是"清表刚做完、没有任何槽被占"。
 
@@ -1093,17 +1100,17 @@ void proc_init(void)
   }
 ```
 
-尾部三行都用裸位运算而不是宏。`RTS_VMINHIBIT`/`RTS_BOOTINHIBIT` 用的是直接的 `|=` 而不是 `RTS_SET` 宏——此时进程已经不可运行（要么刚被 `RTS_SET` 置了两位，要么是内核 task 且 `PROC_STOP` 即将被置上），`RTS_SET` 里的跃迁判定不会触发出队，两者等价；用裸 `|=` 表达的是"这一步不做队列动作"。`RTS_PROC_STOP` 与清 `RTS_SLOT_FREE` 同样用裸操作，理由相同。而 `proc_ptr` 那一句是"第一次赋值后不再改"——它给调度函数留了一个非空指针，具体指向谁不重要（第一个条目），因为此刻没有进程可运行，`pick_proc` 会走 idle 兜底。
+尾部三行都用裸位运算而不是宏。`RTS_VMINHIBIT`/`RTS_BOOTINHIBIT` 用的是直接的 `|=` 而不是 `RTS_SET` 宏——此时进程已经不可运行（要么刚被 `RTS_SET` 置了两位，要么是内核 task（内核 task 的 `PROC_STOP` 由循环前段置上、不参与此处的可调度判定）），`RTS_SET` 里的跃迁判定不会触发出队，两者等价；用裸 `|=` 表达的是"这一步不做队列动作"。`RTS_PROC_STOP` 与清 `RTS_SLOT_FREE` 同样用裸操作，理由相同。而 `proc_ptr` 那一句是"第一次赋值后不再改"——它给调度函数留了一个非空指针，具体指向谁不重要（第一个条目），因为此刻没有进程可运行，`pick_proc` 会走 idle 兜底。
 
-**如果反过来想（两件不同的事，别混）**：把**循环方向**倒过来跑（从最后一项往前）——每个动作只依赖条目自身（模块下标由 `i - NR_TASKS` 算出，与访问次序无关，见 §2.4），唯一随方向变的是 `proc_ptr` 兜底指向谁，而它本来就"指向谁不重要"；所以方向本身不坏。真正会坏的是把**表内条目的顺序**倒过来：表头第 2 条写着 `all kernel tasks must come first`，而 `i < NR_TASKS` 这个分支正是靠它把前 5 项按内核 task 处理（写名字、不回填模块地址）；顺序一乱，内核 task 会被当成用户模块去 `kinfo.module_list` 里取地址——错位的机制与 §2.1.1 里"按下标取进程号"那条同型。
+**如果反过来想（两件不同的事，别混）**：把**循环方向**倒过来跑（从最后一项往前）——每个动作只依赖条目自身（模块下标由 `i - NR_TASKS` 算出，与访问次序无关，见 §2.4），唯一随方向变的是 `proc_ptr` 兜底指向谁，而它本来就"指向谁不重要"；所以方向本身不坏。真正会坏的是把**表内条目的顺序**倒过来：表头第 2 条写着 `all kernel tasks must come first`，而 `i < NR_TASKS` 这个分支正是靠它把前 5 项按内核 task 处理（写名字、不回填模块地址）；顺序一乱，内核 task 会被当成用户模块去 `kinfo.module_list` 里取地址——错位的机制与 §1.4.1 里"按下标取进程号"那条同型。
 
-**如果反过来想**：把双闸那一步移出循环、对全部 17 项统一置位（"统一处理更整齐"）。VM 的 `p_nr` 等于 `VM_PROC_NR`，它也会被挂上双闸；而解除 `RTS_VMINHIBIT` 的两条路径一条是 VM 自己发 `VMCTL_SETADDRSPACE`（`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl`），另一条是 VM 发 `VMCTL_VMINHIBIT_CLEAR`（`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`）——两条都以"VM 已在运行"为前提。于是没有任何进程能解除 VM 的抑制位，`pick_proc` 永远选不到 VM，`switch_to_user` 之后系统停在 idle 循环里，唯一的现象是"启动到此为止、无输出"。
+**如果反过来想**：把"双闸"（对用户进程同时置 `RTS_VMINHIBIT` 与 `RTS_BOOTINHIBIT` 的那一步）移出循环、对全部 17 项统一置位（"统一处理更整齐"）。VM 的 `p_nr` 等于 `VM_PROC_NR`，它也会被挂上双闸；而解除 `RTS_VMINHIBIT` 的两条路径一条是 VM 自己发 `VMCTL_SETADDRSPACE`（`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl`），另一条是 VM 发 `VMCTL_VMINHIBIT_CLEAR`（`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`）——两条都以"VM 已在运行"为前提。于是没有任何进程能解除 VM 的抑制位，`pick_proc` 永远选不到 VM，`switch_to_user` 之后系统停在 idle 循环里，唯一的现象是"启动到此为止、无输出"。
 
 **如果反过来想**：把 `RTS_VMINHIBIT` 与 `RTS_BOOTINHIBIT` 合成一位。两个位的置位集合不同——boot 循环给除 VM 外的全部用户进程置两位；`do_fork` 只在 `PFF_VMINHIBIT` 标志下给子进程置 `VMINHIBIT`（`minix3/minix/kernel/system/do_fork.c:do_fork`），`VMCTL_VMINHIBIT_SET` 与 `smp.c` 的跨 CPU 路径也只置 `VMINHIBIT`。解除路径也不同——`VMINHIBIT` 有两条（`VMCTL_SETADDRSPACE` 在 VM 装好地址空间时顺带解除、`VMCTL_VMINHIBIT_CLEAR` 显式解除），`BOOTINHIBIT` 只有一条（`VMCTL_BOOTINHIBIT_CLEAR`，VM 装载完镜像时发出）。合成一位之后，解除集变成两条路径的并集，"谁先到谁清"：boot 进程会在页表刚装好、镜像还没装载时就被放行，第一次调度就在空地址空间上取指；反过来，fork 出的子进程只等"地址空间就绪"这一件事，它的解除者只来自 `VMINHIBIT` 那两条路径——如果合并后保留下来的解除路径是 boot 期专用的 `VMCTL_BOOTINHIBIT_CLEAR`，这类进程就再也没有解除者，永远停在 `pick_proc` 之外。两个位分开，表达的是"页表就绪"与"镜像就绪"两件事各有一位、各自有各自的解除者。
 
 ### 2.7 `arch_boot_proc` 与 VM ELF 装载
 
-`arch_boot_proc` 是 boot 循环动作 9 对应的函数。它以两个提前返回来划分三类成员：
+`arch_boot_proc` 是 boot 循环动作 9 对应的函数。它以"一个提前返回加一个分支"划分三类成员：
 
 ```c
 /* 逐字引用，minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc —— 完整函数体 */
@@ -1180,7 +1187,7 @@ void arch_boot_proc(struct boot_image *ip, struct proc *rp)
 
 两个分类点把成员分成三类：开头的 `if(rp->p_nr < 0) return;` 让内核 task 直接返回；`p_nr >= 0` 但不是 VM 的用户模块，取到 `mod` 之后不进 VM 分支、不做任何事就走到函数末尾——它们的 ELF 由 VM 在启动后装载；只有 VM 走完整段。
 
-Rust 侧同一处的角色注释把这两类写成"deferred to RS"（`os/arch/src/arch/boot.rs:enum ProcKind` 的 `RootService`/`UserService` 两个变体），而 C 里实际装载它们的是 VM（§2.4 的 `init_vm` 遍历）；仓内"给非 VM 装载"的入口是 `load_process_elf`（`os/arch/src/arch/boot.rs:fn load_process_elf`，与 `load_vm_elf` 共用 `load_elf_into`），它目前的调用者只有测试内核（`os/qemu-tests/test-kernels/kernel/bootstrap/test-sysboot/src/main.rs`），生产启动路径尚未接上——其余十个模块在 Rust 侧的装载归属按现状记在 `ProcKind` 的角色注释里。
+Rust 侧同一处的角色注释把这两类写成"其镜像由 **VM** 在运行期装载（C 的 boot 侧只把 VM 装进自举页表，其余启动镜像的页表由 VM 建；不是 RS 自己）"（`os/arch/src/arch/boot.rs:enum ProcKind` 的 `RootService`/`UserService` 两个变体），与 C 里实际装载它们的是 VM（§2.4 的 `init_vm` 遍历）一致；仓内"给非 VM 装载"的入口是 `load_process_elf`（`os/arch/src/arch/boot.rs:fn load_process_elf`，与 `load_vm_elf` 共用 `load_elf_into`），它目前的调用者只有测试内核（`os/qemu-tests/test-kernels/kernel/bootstrap/test-sysboot/src/main.rs`），生产启动路径尚未接上——其余十个模块在 Rust 侧的装载归属按现状记在 `ProcKind` 的角色注释里。
 
 对 VM 这一支，逐段读：
 
@@ -1289,17 +1296,19 @@ endpoint 是"槽号 + 代"的打包值。三个宏给出打包与拆包：
 | 对象 | 状态 |
 |---|---|
 | 内核 task（5 项） | 名字已写、权限模板已填（idle 用 `IDL_F`，其余 `TSK_F`；CLOCK/SYSTEM 的 trap 掩码为 `CSK_T`）、`RTS_PROC_STOP` 置位、`SLOT_FREE` 已清 |
-| 可调度用户进程（RS、VM） | 名字已写、权限模板已填（VM `VM_F`、RS `RSYS_F`）、优先级与时间片已给、`RTS_PROC_STOP` 置位；VM 的 ELF 已在 bootstrap 页表里 |
+| 可调度用户进程（VM、RS） | 权限模板已填（VM `VM_F`、RS `RSYS_F`）、优先级与时间片已给、`RTS_PROC_STOP` 置位。**名字**：VM 已写（`arch_proc_init` 在 `arch_boot_proc` 的 VM 分支里调用）、RS 未写（RS 属"其余 11 个"，名字在它自己 exec 时写——§2.1.1）；**双闸**：RS 带 `VMINHIBIT|BOOTINHIBIT`（§1.4），VM 不带；VM 的 ELF 已在 bootstrap 页表里 |
 | 其余用户模块（10 项） | 名字与模块地址已登记、`RTS_NO_PRIV \| RTS_NO_QUANTUM` 置位、双闸置位、`RTS_PROC_STOP` 置位；ELF 与页表等 VM |
 | 全部 17 项 | `SLOT_FREE` 已清；`p_cpu_time_left == 0`；记账六项已归零 |
 
 两表的差别在分工：清表只写"这个槽存在"，填充才写"这个槽是谁、能做什么"。而"现在能不能跑"由 16 个位共同表达，其中 4 个位在填充阶段被置上、等待不同角色的解除者。
 
-**本章交代给下一章的东西**：三张表的存储形态与容量（§2.0）、字段语义（§2.1–§2.3）、清单与顺序（§2.4）、清表与填充的动作序列（§2.5–§2.6）、VM 装载（§2.7）、身份数值（§2.8）。下一章回答的是同一批问题的另一种表达方式，以及这些负担里哪些在新环境下不再存在。
+**本章交代给下一章的东西**：两张静态数组的存储形态与容量（§2.0）与状态位图的字段形态（§2.1.6、§2.2）、字段语义（§2.1–§2.3）、清单与顺序（§2.4）、清表与填充的动作序列（§2.5–§2.6）、VM 装载（§2.7）、身份数值（§2.8）。下一章回答的是同一批问题的另一种表达方式，以及这些负担里哪些在新环境下不再存在。
 
 ---
 
 ## 3. Rust 设计决策
+
+本章 14 节按"两条硬约束（零堆、锁由 BKL 提供 → 表的存储与同步形态）+ 逐对象决策"组织：3.1–3.5 是两张表与清单的类型化重建，3.6–3.9 是执行环境相关决策（FPU、装载、全局存储、抑制位），3.10–3.12 是特权结构与主流程形状，3.13 是去向总表，3.14 补 fork 继承。
 
 ### 3.1 两张表的存储：编译期定容 + 索引化访问（→§2.0、§2.1、§2.5）
 
@@ -1391,7 +1400,7 @@ C 那边 `isokprocn` 只是一个可以被忘记调用的判定宏，`proc_addr`
 | `const fn` 编译期初始化 | 运行期 `proc_init` 循环 | 初值必须在 `const` 可求值范围内（`bitflags::bits()` 不可用，见 §3.8，故用裸位值） |
 | `nr_to_idx -> Option<usize>` | 裸指针 + `isokprocn` 前置检查 | 每个访问点多一次 `Option` 处理 |
 
-**如果反过来想**：若为了"少写 `unsafe`"把表改成 `static PROC_TABLE: Mutex<ProcessTable>`。BKL 已经串行化了整个内核，再加一把 `Mutex` 不增加保护粒度，却在每处访问增加一次锁获取、并且引入"持锁期间不得睡眠"之外的第二套纪律；更实质的是启动期——`proc_init` 对位的初始化发生在 BKL 建立之前（`kmain` 里 `BKL_LOCK()` 与 boot 循环的先后见 `03-kmain-cstart.md`），那时还没有任何锁可用。反过来若把 `get`/`get_mut` 换成返回裸指针 `*mut KProcess`：§3.5 要讲的 IPC 队列（同一进程可能同时是"某队列的节点"与"另一队列的队头"）就需要两个同时有效的可变引用——这正是 C 用裸指针做得成、Rust 引用规则不许可的形状。
+**如果反过来想**：若为了"少写 `unsafe`"把表改成 `static PROC_TABLE: Mutex<ProcessTable>`。BKL 已经串行化了整个内核，再加一把 `Mutex` 不增加保护粒度，却在每处访问增加一次锁获取、并且引入"持锁期间不得睡眠"之外的第二套纪律；更实质的是启动期——`proc_init` 对位的初始化发生在 BKL 建立之前（`kmain` 里 `BKL_LOCK()` 与 boot 循环的先后见 `03-kmain-cstart.md`），那时还没有任何锁可用。反过来若把 `get`/`get_mut` 换成返回裸指针 `*mut KProcess`：§4.4 要讲的 IPC 队列（同一进程可能同时是"某队列的节点"与"另一队列的队头"）就需要两个同时有效的可变引用——这正是 C 用裸指针做得成、Rust 引用规则不许可的形状。
 
 ### 3.2 权限模板与能力授予（→§2.3、§2.6）
 
@@ -1600,9 +1609,13 @@ pub enum ProcKind {
     KernelTask,
     /// VM process: runs in user mode, ELF is loaded during boot.
     Vm,
-    /// Root system service (RS): runs in user mode, ELF deferred to RS itself.
+    /// Root system service (RS): runs in user mode; its image is loaded by
+    /// **VM** at runtime (C boot-side loads only VM into the bootstrap
+    /// pagetable and VM then builds each other boot image's page table;
+    /// not by RS itself).
     RootService,
-    /// Other system service: runs in user mode, ELF deferred to RS at runtime.
+    /// Other system service: runs in user mode; its image is loaded by **VM**
+    /// at runtime (same VM-driven boot-image walk as `RootService`).
     UserService,
     /// User process: created by fork/exec, never appears during boot.
     UserProcess,
@@ -1802,7 +1815,7 @@ C 里 `enable_iop` 做的是 `pp->p_reg.psw |= 0x3000`（`0x3000` 是 RFLAGS 的
 
 ### 3.6 FPU 策略：不翻译 32 位的保存模型（→§2.1.4）
 
-C 的负担是 32 位端口的 FPU 处理：架构级池 `fpu_state[NR_PROCS]` 加每进程一个 `p_seg.fpu_state` 指针，取值条件还带着"只给 `p_nr >= 0` 的进程分配"这一条（§2.1.4 已引）。Rust 侧的三个目标架构都用懒初始化：x86-64 走 XSAVE 家族、aarch64 用 `CPACR_EL1.FPEN`、riscv64 用 `sstatus.FS`。策略因此不是一个可以照抄的字段，而是一个"架构自己知道、内核层不读"的字段。
+C 的负担是 32 位架构下的 FPU 处理：架构级池 `fpu_state[NR_PROCS]` 加每进程一个 `p_seg.fpu_state` 指针，取值条件还带着"只给 `p_nr >= 0` 的进程分配"这一条（§2.1.4 已引）。Rust 侧的三个目标架构都用懒初始化：x86-64 走 XSAVE 家族、aarch64 用 `CPACR_EL1.FPEN`、riscv64 用 `sstatus.FS`。策略因此不是一个可以照抄的字段，而是一个"架构自己知道、内核层不读"的字段。
 
 ```rust
 //! # FPU handling
@@ -1971,7 +1984,7 @@ pub(crate) struct SyncUnsafeCell<T: ?Sized> {
 | 固定数组表达临时集合 | `Vec`（需要分配器） | 容量上限必须能从常量推导（这里是 `NR_BOOT_MODULES + 1`） |
 | 裸位值出现在 `const fn` 里 | 统一的 `bitflags` 取值 | 两处裸值常量需与 `bitflags` 定义保持同值（有单测覆盖） |
 
-**如果反过来想**：若把 `ProcessTable` 放进 `OnceLock` 或 `lazy_static` 形态。初始化的那一刻要跑到"第一次访问"，而第一个访问者就在启动窗口内——`proc_table_unchecked` 那类 boot 访问器的注释写明了调用前提是"BKL 尚未建立、单线程"；惰性初始化把"表何时存在"从编译期挪到运行期，随之需要处理"两个 CPU 同时首次访问"的可能（SMP 起来之后），而表恰恰是 SMP 数据结构的根。若把排除集换成 `Vec`：`init_proc_and_boot` 会在 `kernel_may_alloc` 窗口内调用分配器，而窗口的语义是"内核可以直接使用空闲物理内存"、不是"堆可用"——第一句分配就会撞上不存在的基础设施。
+**如果反过来想**：若把 `ProcessTable` 放进 `OnceLock` 或 `lazy_static` 形态。初始化的那一刻要跑到"第一次访问"，而第一个访问者就在启动窗口内——`proc_table_boot_unchecked` 那类 boot 访问器的注释写明了调用前提是"BKL 尚未建立、单线程"；惰性初始化把"表何时存在"从编译期挪到运行期，随之需要处理"两个 CPU 同时首次访问"的可能（SMP 起来之后），而表恰恰是 SMP 数据结构的根。若把排除集换成 `Vec`：`init_proc_and_boot` 会在 `kernel_may_alloc` 窗口内调用分配器，而窗口的语义是"内核可以直接使用空闲物理内存"、不是"堆可用"——第一句分配就会撞上不存在的基础设施。
 
 ### 3.9 四个抑制位的表达与解除责任（→§2.5、§2.6）
 
@@ -2029,7 +2042,7 @@ C 的负担是四位分散在四处置位、又由四类不同角色解除（§1
 | `BOOTINHIBIT` | 同上的双闸 | 运行期 VM 的 `VMCTL` 路径 | 同上 |
 | `PROC_STOP` | `init_proc_and_boot` 每个成员各置一次 | `bsp_finish_booting` 的解除循环 | 入队（本节的循环即首次入队） |
 
-`RTS_NO_ENDPOINT` 在本篇没有置位也没有解除——它属于进程退出路径（`clear_endpoint` 的对位），在 `12-ipc-core` 与进程生命周期篇里读。
+`RTS_NO_ENDPOINT` 不在本篇的启动路径（四道抑制位）之内——它的置位与回收走进程退出路径（`clear_endpoint` 与 `do_clear` 的对位见 §2.2.2），运行期语义在 `12-ipc-core` 与进程生命周期篇里读。
 
 | 选什么 | 否掉什么 | 代价 |
 |---|---|---|
@@ -2070,7 +2083,7 @@ C 的 31 个字段逐个落到：
 | `PrivMem` | `s_nr_mem_range`、`s_mem_tab`、`s_ipcf`、`s_stack_guard`、`s_diag_sig` | 内存白名单与过滤 5 项 |
 | `PrivRuntime` | `s_alarm_timer`、`s_grant_*` 三项、`s_state_*` 两项 | 运行时挂载点 6 项 |
 
-分组与 §2.3 的七组不是一一对应：C 的"异步发送表挂载点"三字段并进了 `PrivSignals`（它们只在异步投递路径上与信号簿记一起被读），"身份与角色"拆成 4 个子结构里的三个（把"绑定"与"能力"分开，见下）。
+分组与 §2.3 的七组不是一一对应（下文的"若按 §2.3 的七组原样切"指 §2.3 那七组；Rust 侧另按 wire 边界重构）：C 的"异步发送表挂载点"三字段并进了 `PrivSignals`（它们只在异步投递路径上与信号簿记一起被读），"身份与角色"拆成 4 个子结构里的三个（把"绑定"与"能力"分开，见下）。
 
 拆分的收益在 `const fn` 初始化上可见：
 
@@ -2109,11 +2122,11 @@ C 的 31 个字段逐个落到：
 
 | 选什么 | 否掉什么 | 代价 |
 |---|---|---|
-| 8 子结构 | 31 字段平铺；C 的 6 组切法 | 字段路径变长（`priv.flags.s_flags`）；用户态 wire 结构要按同一顺序维护 |
+| 8 子结构 | 31 字段平铺；§2.3 的七组分法 | 字段路径变长（`priv.flags.s_flags`）；用户态 wire 结构要按同一顺序维护 |
 | 每子结构独立 `const fn` 构造 | 整体 `new_zeroed` 一个巨型字面量 | 子结构数量与 wire 顺序耦合（见下） |
 | 保留 `s_` 前缀 | 去掉前缀改成 Rust 命名 | 前缀是"与 C 字段对应"的显式标记 |
 
-**如果反过来想**：若按 C 的 6 组切（身份与能力同一组）。`s_proc_nr` 与 `s_flags` 会落在同一个子结构里，而前者的写时机是"分配槽一次"、后者的写时机是"运行期可改"（`do_privctl` 的 `SYS_PRIV_SET_SYS` 等子命令）。`const fn` 预填时无法只给"身份"部分赋初值而不碰"能力"部分；更要紧的是 wire 边界——用户态 RS 传来的 `PrivUpdateRequest` 按子结构顺序排字段，内核侧与 RS 侧是两份手工对齐的结构（`os/servers/rs/src/privilege.rs` 保持同序），分组一改，两份都要改，改漏一个字段就是 `data_copy` 的静默错位。
+**如果反过来想**：若按 §2.3 的七组原样切（身份与能力同一组）。`s_proc_nr` 与 `s_flags` 会落在同一个子结构里，而前者的写时机是"分配槽一次"、后者的写时机是"运行期可改"（`do_privctl` 的 `SYS_PRIV_SET_SYS` 等子命令）。`const fn` 预填时无法只给"身份"部分赋初值而不碰"能力"部分；更要紧的是 wire 边界——用户态 RS 传来的 `PrivUpdateRequest` 按子结构顺序排字段，内核侧与 RS 侧是两份手工对齐的结构（`os/servers/rs/src/privilege.rs` 保持同序），分组一改，两份都要改，改漏一个字段就是 `data_copy` 的静默错位。
 
 ### 3.11 调度字段与统计字段（→§2.1.2、§2.1.5）
 
@@ -2189,7 +2202,9 @@ C 的负担是这条链散在六个调用里：`proc_init()` → boot 循环 →
 
 ```rust
 /// 1. Assert VM's page-table root is valid (established in Phase C).
-/// 2. Record VM as the kernel-level ptproc (`set_current_ptproc_nr`) so
+/// 2. Confirm VM is the kernel-level ptproc (the `set_current_ptproc_nr`
+///    write happens in `switch_address_space`, and the CpuLocal slot is
+///    installed in `init_smp_state` — this step records nothing itself) so
 ///    `dispatch_vmctl(SetAddrSpace)` Step 3 can decide whether to reload
 ///    the hardware root register (C: `setcr3()`, arch_do_vmctl.c:19-33; the
 ///    `p == ptproc` check is at :25).
@@ -2231,7 +2246,7 @@ C 的负担是这条链散在六个调用里：`proc_init()` → boot 循环 →
 
 **如果反过来想**：若删掉 `init_post_and_memory` 的断言、直接进 `bsp_finish_booting`。一个 `phys_root == 0` 的槽会带着空根继续启动，直到第一次切地址空间时由 `switch_address_space` 把它写进页表根寄存器——此后每次运行都从一个空根翻译地址，现象是取指立即失败而不是切换前被拦住。断言是唯一能在切换发生前拦住它的地方——`root_phys` 为 0 在 boot 期不会立刻出错（`p_seg` 只是一块内存），错误要等到第一次切页表才显形。
 
-### 3.13 C→Rust 去向表汇总
+### 3.13 C→Rust 去向表汇总（章末总表；§3.14 是它最后一行的展开）
 
 | 对象 | C 形态 | Rust 形态 | 档位 | 依据节 |
 |---|---|---|---|---|
@@ -2256,8 +2271,9 @@ C 的负担是这条链散在六个调用里：`proc_init()` → boot 循环 →
 | 全局存储 | `EXTERN` 数组 | `SyncUnsafeCell` + `const fn` 初值 | Refactor | §3.8 |
 | 高半区/DM 相关初始化 | `arch_post_init` + `memory_init` 的 freepdes | `init_post_and_memory` 的三条就绪断言（ptproc 记录实际在 `switch_address_space`） | `[ARCH: Direct Map]` | §3.12 |
 | fork 上下文继承 | `*rpc = *rpp` 整块复制 + 定点修补 | 按语义重建 + `inherit_fpu_state` 策略继承 | Rewrite | §3.14 |
+| 初始栈额度 | 64 KiB + VM 自扩 | 一次性 256 KiB 固定额度（无自扩） | `[ARCH: K-5]` | §4.2 |
 
-表内每一行的档位判据只有一条：外部可观察行为变了的是 `[ARCH]`，没变的在 Rewrite（实现形态重写但语义保持）与 Refactor（连语义都保持、只是组织方式变化）之间按"是否引入了新的类型层"再分。
+档位沿用项目的三档术语：`[ARCH]` 表示外部可观察行为改变；`Rewrite` 与 `Refactor` 的划界是**逐项判断**（各行的理由在"依据节"所列的对应小节，不另立一条机器可判定的统一规则）。**本表是权威**：§4.9 的档位列以本表为准（重复行只从简引用）；§3.10 的选型表不承担档位标注。
 
 ### 3.14 fork 与 CPU 上下文的继承（→§2.1.4、§2.2）
 
@@ -2302,7 +2318,7 @@ aarch64 那一份的说法相同：子进程继承 `fpu_enable_el0`，否则"静
 
 ## 4. 实现详解
 
-本章按调用链走一遍，每一节回指第 3 章的决策编号。
+本章按"先 arch 层机制、再 kernel 层对象、最后主流程串起"的顺序走一遍，每一节回指第 3 章的决策编号。
 
 ### 4.1 arch 层：`CpuContextArch` 的三架构实现与 per-arch FPU 策略字段（→3.5、3.6）
 
@@ -2371,7 +2387,7 @@ riscv64 的两个初值常量带一条命名注释，指向本篇 §3.4 的角�
 | `enable_user_io` | 写 `psw \|= 0x3000` | 空实现 | 空实现 |
 | `inherit_fpu_state` | 继承策略枚举 | 继承 `fpu_enable_el0` | 继承 `sstatus` 整值 |
 
-内核层看不到这张表里的任何一项：它只调用 `build_cpu_context(kind, nr, entry)`、`set_boot_cpu_context` 与 `enable_user_io`。表内三条 FPU 门控（x86-64 的 `#NM` 腿、aarch64 的 CPACR 归属、riscv64 的 `FS=Off` 门控）在本篇按源码与注释陈述，真机行为未核实 `[待验证]`。
+内核层看不到这张表里的任何一项：它只调用 `build_cpu_context(kind, nr, entry)`、`set_boot_cpu_context` 与 `enable_user_io`。表内三条 FPU 门控（x86-64 的 `#NM` 路径、aarch64 的 CPACR 归属、riscv64 的 `FS=Off` 门控）在本篇按源码与注释陈述，真机行为未核实 `[待验证]`。
 
 **如果反过来想**：若把初值 PSW 提到内核层（例如给 `KProcess` 加一个 `p_status: u32` 字段由内核写）。三个架构的状态字位定义会与内核层的字段类型混在一起：x86-64 的 `IF` 位、aarch64 的 `DAIF` 组、riscv64 的 `SPP/SPIE` 位都要在同一个枚举里表达，或者内核层退化成"写一个魔数"——两种情况都破坏 03 篇划定的边界（内核层只认识 OS 概念）。
 
@@ -2435,6 +2451,8 @@ riscv64 的两个初值常量带一条命名注释，指向本篇 §3.4 的角�
 
 段起始落在页中间时的偏移由 `seg_start_in_page` 承载，它是"链接器产物"与"页对齐假设"之间的桥：C 的 `pg_map` 对 `vaddr % I386_PAGE_SIZE` 有断言（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_map`），Rust 的装载器显式接受段起点非页对齐，代价就是要处理共享页。注释把这条差异写明了（"this loader deliberately accepts mid-page segment starts and maps each page exactly once"）。
 
+段与栈之间还有一步：**装载器尾的指令缓存同步**（源码在该处标注 `[ARCH: cache-sync]`）。页循环里对可执行段逐页记账"被写入的内核可寻址帧区间"，循环结束后一次性调用 `CurrentCacheSyncArch::sync_icache_range`（`os/arch/src/arch/boot.rs:fn load_elf_into` 的页循环记账与尾段调用；注释说明只记整帧、过度失效无害）。需要这一步的是 aarch64 与 riscv64——它们的 I-cache 与这些数据写入之间不保证一致，必须显式维护；x86_64 的 trait 实现是空操作。两条宿主测试把它钉成回归读数：`load_vm_elf_syncs_icache_over_exec_segment_frames`（可执行段恰好同步一次）与 `load_vm_elf_skips_icache_sync_for_non_exec_image`（非可执行段不同步）。
+
 段装完之后是栈与 `ps_strings`：
 
 ```rust
@@ -2445,17 +2463,17 @@ riscv64 的两个初值常量带一条命名注释，指向本篇 §3.4 的角�
 
 （节选（注释有删节）：`os/arch/src/arch/boot.rs:fn load_elf_into` 的栈段注释开头；被删去的是原文末行括号里的一处仓库内部编号引用。）
 
-C 的内核先给 64 KiB 栈、之后由 VM 自己按需扩张（`reservedqueue.mappedin` 机制）；本端还没有 VM 自扩栈，所以把初始栈放大到 256 KiB 作为整段额度（`VM_STACK_SIZE` 常量的注释给了实测数值与留量）。栈帧同样从 bootstrap 分配器取，方向 D（先选物理帧、再映射到虚拟地址）。
+C 的内核先给 64 KiB 栈、之后由 VM 自己按需扩张（`reservedqueue.mappedin` 机制）；本端还没有 VM 自扩栈，所以把初始栈放大到 256 KiB 作为整段额度（`VM_STACK_SIZE` 常量的注释给了实测数值与留量）。栈帧同样从 bootstrap 分配器取，且沿用"先选物理帧、再映射到虚拟地址"的方向（与 §4.2 前半的 ①a–①d 同向）。
 
 `ps_strings` 的三字布局在 Rust 侧有一处与 C 不同的对齐：
 
 ```rust
     /// The three words below ps_strings — argc, argv, envp — each one
     /// full pointer word (SD-17 对齐轮 2026-10-06：旧值 `2*usize + i32`＝
-    /// 20B，argc 槽只有 4B 且令出生 sp 落在 4-mod-8 非全字对齐上；exec 腿
+    /// 20B，argc 槽只有 4B 且令出生 sp 落在 4-mod-8 非全字对齐上；exec 路径
     /// minix-sys/stack.rs 早已是 WORD 槽。上游只有 i386/ARM32 的
     /// protect.c（int 与指针同宽故两形重合），64 位无 C 真源可抄——统一
-    /// 取 LP64 全字，与 exec 腿同形，出生 sp 回到 8 字节对齐。消费端
+    /// 取 LP64 全字，与 exec 路径同形，出生 sp 回到 8 字节对齐。消费端
     /// startup-minix.c 只读 ps_strings 描述符（字段序与下方写入逐字
     /// 对位），argc 槽字本身无读者，改动对现行行为惰性）。
     const ARGC_ARGV_ENVP: u64 = 3 * core::mem::size_of::<usize>() as u64;
@@ -2500,6 +2518,8 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 
 ### 4.4 kernel 层：`KProcess` 的字段分组（→3.11、3.3）
 
+（本节除字段分组外，还含槽复用与槽交换两组对象级内容——它们把分组结论延伸到槽的生命周期，C 侧对位是 `adjust_proc_slot`。）
+
 `KProcess` 的字段与 §2.1 的六组对照，多数同名保留，重要差异列在下面：
 
 | C 字段（组） | Rust 对位 | 差异说明 |
@@ -2514,11 +2534,11 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 | `p_sendmsg`、`p_delivermsg`、`p_delivermsg_vir` | 同名字段 | 无差异 |
 | `p_vmrequest`（总是内嵌 + `RTS_VMREQUEST` 指示有效） | `p_vm_suspend: Option<VmSuspendContext>` | 有效性写进类型；不变式 `RTS_VMREQUEST ⇔ is_some()` |
 | `p_accounting` | `p_accounting: Accounting` | 六个子字段同名 |
-| `p_user_time`、`p_sys_time`、`p_virt_left`、`p_prof_left`、`p_dequeued` | `p_time: TimeStats` | 收成一个子结构 |
+| `p_user_time`、`p_sys_time`、`p_virt_left`、`p_prof_left` | `p_time: TimeStats` | 收成一个子结构（`p_dequeued` 不在其中，Rust 侧是独立字段） |
 | `p_cycles`、`p_kcall_cycles`、`p_kipc_cycles`、`p_tick_cycles` | `p_cycles: CyclesStats` | 同上 |
 | `p_cpuavg` | `p_cpuavg: CpuAvg` | 同名字段 |
 | `p_found` | 无对位 | C 用它标记"本轮扫描已访问"，Rust 的调试检查改为局部位集（`os/kernel/src/debug.rs` 的 `found` 数组），不动进程表 |
-| `p_stale_tlb` | 无对位 | 32 位端口专用字段；Rust 的 `p_seg` 只有页表根两个字段（`phys_root`/`virt_root`），TLB 陈旧记账尚无归属。本条**登记不移植**（C 写点在 `do_vmctl` 的 `VMINHIBIT` 解除分支，本树无 SMP 写路径消费它）——待 `16-smp` 方向设计“软件页表走查 + DM 窗口”模型时定夺是否需要等价机制，归 `08-todo.md` T-11 |
+| `p_stale_tlb` | 无对位 | 32 位架构专用字段；Rust 的 `p_seg` 只有页表根两个字段（`phys_root`/`virt_root`），TLB 陈旧记账尚无归属。本条**登记不移植**（C 的写点在 `do_vmctl` 的 `VMINHIBIT` 解除分支、消费点在 CONFIG_SMP 下的 `lin_lin_copy` 一类路径；本仓 Rust 侧尚无 SMP 写路径消费它）——待 `16-smp` 方向设计"软件页表走查 + DM 窗口"模型时定夺是否需要等价机制，归 `08-todo.md` T-11 |
 | `p_schedules`（`DEBUG_TRACE`） | 无对位 | 调试构建才有的计数 |
 | （新增） | `p_fault_addr: Option<u64>`、`trap_style`、`fpu_state` | 诊断记录、进入内核的方式、FPU 缓冲 |
 
@@ -2653,7 +2673,7 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 
 | # | C 动作（§2.6） | Rust 位置 |
 |---|---|---|
-| — | （C 无）模块数量断言 | `assert_eq!(kernel_info.boot_modules().len(), NR_BOOT_MODULES, ...)`，对位 C 的 `panic("expecting %d boot processes/modules...")` |
+| — | 模块数量断言（Rust 为编译期 `assert_eq!`；C 侧同类检查是运行期 `panic("expecting %d boot processes/modules...")`——形态不同、意图对位） | `assert_eq!(kernel_info.boot_modules().len(), NR_BOOT_MODULES, ...)` |
 | 1–3 | 取条目与槽、回填端点、清时间片 | `KERNEL_TASKS`/`BOOT_MODULE_PROC_NRS` 两轮循环的头部 |
 | 4–5 | 写名字 / 回填模块地址 | 内核 task 轮写的是常量名；用户模块轮写 `module.name`，地址信息由 `KernelInfo` 携带、不在进程表 |
 | 6 | 记账清零 | `reset_proc_accounting` 的对位（清零在 `new_zeroed` 的初值里完成） |
@@ -2665,7 +2685,7 @@ C 的 `sp -= (sizeof(void *) + sizeof(void *) + sizeof(int))` 在 32 位上是 1
 | 12 | `PROC_STOP` + 清 `SLOT_FREE` | 用户模块轮尾部 |
 | — | （C 无）VM 引导区选择与排除集 | `VmBootRegion::select_multi` + `push_exclusion`（§3.8） |
 | — | （C 无）堆窗口驱逐 | 装载完成后对 `VM_HEAP_BASE..+VM_HEAP_SIZE` 逐页拆大页、开放用户走查、解除映射 |
-| — | （C 无）交接页写入 | `build_vm_handoff` + `core::ptr::write(hv, handoff)`；随后登记 `p_seg.phys_root`/`virt_root` |
+| — | （C 无）交接页写入 | `build_vm_handoff` + `core::ptr::write(hv, handoff)`；随后登记 `p_seg.phys_root`/`virt_root`。交接页内容=VM 启动所需的自由内存清单与自举记录（字段构成与 VM 侧消费属 `09-vm-boot-protocol`，见 §1.5 的边界表） |
 
 VM 分支比 C 多出的三件事都源自同一件事：C 的 VM 在运行后会自己安装页表，而本端把 bootstrap 根直接交给 VM 并让它采纳（"the bootstrap root IS VM's initial and permanent root"）。因此需要在装载后立刻清理"VM 运行期会用到、但此刻被引导恒等映射占着"的虚拟地址区间（堆窗口），并把根的地址写进进程槽供 §3.12 的确认使用。
 
@@ -2716,7 +2736,7 @@ Rust 侧这段的步骤序（与 C 的 `bsp_finish_booting` 对照）：
 
 BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有锁动作，Rust 在切用户前留一条 `debug_assert!(smp::bkl_is_locked())`（`os/kernel/src/lib.rs:bsp_finish_booting`），把"进入 `switch_to_user` 时 BKL 已在手"这个前提写成可执行的检查；BKL 跨 `switch_to_user` 的归属与释放时点归 `08-system-init-boot-finish`（启动收尾与切用户篇，尚未重生成）与 `10-smp-boot`（SMP 启动篇，尚未重生成）。
 
-**如果反过来想**：若把"关窗口"提到解除循环之前。解除让 12 个进程同时具备被调度的条件（`rts_unset` 自动入队），第一个被选中的进程返回用户态后一旦发生页错误，处理路径仍可能需要内核直接分配（`kernel_may_alloc` 窗口的语义见 §2.0）；窗口提前关闭，第一次用户态页错误就撞上"内核不得直接分配"的断言。窗口的关闭点必须在"再也没有内核侧分配需求"之后，而它恰好是切用户之前。
+**如果反过来想**：若把"关窗口"提到解除循环之前。解除循环清掉 12 个进程的 `PROC_STOP`，但**其中只有 VM 因此变为可运行**（RS 仍带双闸、其余十个还带 `NO_PRIV|NO_QUANTUM` 与双闸——见 §1.4 的位表），所以"开始跑用户态"的是 VM。窗口的关闭点必须落在**最后一次内核侧直接分配**之后：窗口一旦早于任何还会走 `pg_alloc_page` 的步骤（例如之后新增的某步），第一次需要直接分配的内核路径就会撞上"内核不得直接分配"的断言；本篇把它定在切用户之前，为的是不再依赖对"还有没有分配"的逐处论证——用户态在 `switch_to_user` 之后才开始，两步骤序都改变不了它的页错误现场，这一点如实说明（本条是设计约束，不是已观察故障）。
 
 ### 4.9 与 Minix3 C 的对照
 
@@ -2729,18 +2749,19 @@ BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有�
 | `proc_addr`/`isokprocn`/`iskerneln` 等宏族 | `nr_to_idx` + 访问方法 | Refactor | §2.8、§3.1、§4.3 |
 | `proc_init` | `ProcessTable::new`（`const fn`） | Refactor | §2.5、§3.1 |
 | 16 个 `RTS_*` + 三个操作宏 | `RtsFlagsBits` + `RtsFlags` + `rts_set`/`rts_unset` | Rewrite | §2.2、§3.3 |
-| 18 个 `MF_*` | `MiscFlagsBits` | Rewrite | §2.1.6、§3.3 |
+| 18 个 `MF_*` | `MiscFlagsBits` | Refactor | §2.1.6、§3.3 |
 | `struct boot_image image[17]` | `KERNEL_TASKS` + `BOOT_MODULE_PROC_NRS` | Rewrite | §1.4.1、§2.4、§3.4 |
 | boot 循环（12 动作） | `init_proc_and_boot` | Rewrite | §2.6、§4.7 |
 | `get_priv` + 六字段赋值 | `grant_capability` + `CapabilityTemplate` | Refactor | §2.3、§3.2、§4.5 |
-| `set_sendto_bit`/`unset_sendto_bit`/`fill_sendto_mask` | 同名方法 | Rewrite | §2.3.3、§3.2、§4.5 |
+| `set_sendto_bit`/`unset_sendto_bit`/`fill_sendto_mask` | 同名方法 | Refactor | §2.3.3、§3.2、§4.5 |
 | `arch_proc_reset`/`arch_proc_init`/`arch_boot_proc` | `CpuContextArch::build_cpu_context` + `load_vm_elf` | Refactor | §2.7、§3.5、§4.1、§4.2 |
 | `p_seg.fpu_state` 池 + `fnsave` 路径 | 内嵌 `fpu_state` + 三架构懒初始化策略 | `[ARCH: K-4]` | §2.1.4、§3.6 |
 | `arch_post_init` + `memory_init`（freepdes） | `init_post_and_memory`（三条就绪断言；ptproc 记录在 `switch_address_space`） | `[ARCH: Direct Map]` | §3.12 |
+| 初始栈：C 给 64 KiB + VM 自扩（`reservedqueue.mappedin`） | 一次性 256 KiB 固定额度（无自扩） | `[ARCH: K-5]`（外部可观察的额度变化） | §4.2 |
 | `bsp_finish_booting` | 同名函数，返回 `!` | Rewrite | §3.9、§4.8 |
 | `_ENDPOINT`/`_ENDPOINT_P`/`_ENDPOINT_G` | `Endpoint::from_generation_slot`/`slot`/`generation` | Rewrite | §2.8 |
 
-表中每一步的判据与 §3.13 相同：外部可观察行为是否改变。`Rewrite` 与 `Refactor` 的区分是"是否引入了新的类型层"——位图、枚举、`Option`、newtype 属于类型层变化，因此归 Refactor；纯形态（宏 → 方法、指针 → 索引）也归 Refactor，但语义保持（位值、错误码、次序）的项也一律不改行为。
+表中的档位沿用 §3.13 的去向总表（该表逐行给出依据；本表从简，冲突时以 §3.13 为准）。
 
 ---
 
@@ -2748,15 +2769,15 @@ BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有�
 
 ### 5.1 宿主测试读数与口径
 
-本篇涉及的四个文件与一个 arch 文件里的宿主测试条数（口径：源码里 `#[test]` 的出现次数，含模块内全部测试；复算命令见 §6.2 里标号 8 的那条）：
+本篇涉及的四个 kernel 文件与四个 arch 文件里的宿主测试条数（口径：源码里 `#[test]` 的出现次数，含模块内全部测试；复算命令见 §6.2 里标号 8 的那条）：
 
 | 文件 | `#[test]` 条数 | 主要覆盖 |
 |---|---|---|
 | `os/kernel/src/proc.rs` | 43 | 位图类型、优先级/时间片、CPU 掩码、名称、fork 继承分支 |
-| `os/kernel/src/proc_table.rs` | 40 | 表的构造、访问原语、RTS 跃迁、VM 请求队列、misc 位清理 |
+| `os/kernel/src/proc_table.rs` | 41 | 表的构造、访问原语、RTS 跃迁、VM 请求队列、misc 位清理 |
 | `os/kernel/src/kpriv.rs` | 39 | 特权表构造、槽释放、`grant_capability`、`set/fill` 掩码 |
 | `os/kernel/src/capability.rs` | 15 | 能力位组合、模板与 wire 编解码 |
-| `os/arch/src/arch/boot.rs` | 12 | `load_vm_elf` 的解析、布局、错误路径 |
+| `os/arch/src/arch/boot.rs` | 14 | `load_vm_elf` 的解析、布局、错误路径、尾指令缓存同步 |
 | `os/arch/src/x86_64/boot.rs` | 14 | 初值 PSW 两态、FPU 策略继承、栈回溯 |
 | `os/arch/src/arm64/boot.rs` | 5 | 初值状态字与 `fpu_enable_el0` 继承 |
 | `os/arch/src/riscv64/boot.rs` | 4 | `sstatus` 两态与整值继承 |
@@ -2811,18 +2832,21 @@ BKL 这一项是两边的另一处差别：C 在 `bsp_finish_booting` 内没有�
 | `load_vm_elf_places_stack_and_ps_strings_like_c` | 栈与 `ps_strings` 的布置与 C 对位 |
 | `load_vm_elf_zeroes_bss_and_copies_filesz` | `.bss` 清零与文件段拷贝的分界 |
 | `load_vm_elf_allocates_strictly_descending_across_regions` | 跨引导区的分配次序 |
+| `load_vm_elf_syncs_icache_over_exec_segment_frames` | 可执行段的帧区间恰好同步一次（`[ARCH: cache-sync]`） |
+| `load_vm_elf_skips_icache_sync_for_non_exec_image` | 非可执行镜像不同步 |
 
 ### 5.3 测试缺口与诚实披露
 
 | 缺口 | 现状 | 为什么留 | 解除条件 |
 |---|---|---|---|
-| 真机启动链（`test-proc-init` 一类载体） | 本篇未核实载体名称与覆盖范围 `[待验证]` | 生成阶段未实测 `os/qemu-tests/` 的载体清单 | 在 `os/qemu-tests/` 下查清载体名与断言后补 |
+| 真机启动链 | **载体已核实**：`os/qemu-tests/test-kernels/kernel/bootstrap/test-proc-init/`（x86_64 UEFI `.efi` 测试内核），由 `os/qemu-tests/run_all.sh` 驱动（`run_test "test-proc-init" x86_64 ...`）；按载体头部注释覆盖 7 点——内核 task 初始化、`SLOT_FREE`/`PROC_STOP` 位、VM 的 RTS 位、非 VM 用户的 `VMINHIBIT`+`BOOTINHIBIT`、`VM p_seg` 可达、`init_post_and_memory` 完成性、自举根与 VM Direct Map 的哨兵检查。**本轮未实跑**（文档侧不跑测试验证——按源码边界，见本节末） | 原缺口是「未核实载体名称与覆盖范围」，本轮按源码清点解除 | 载体演进时同步核对覆盖声明 |
 | "启动期零堆分配"这条约束 | 无机器门 | 它由构建配置（生产构建不链接 `alloc`）与代码审查保证 | 加一条构建期或链接期的检查 |
 | `Slice`/`iter` 的遍历与进程号换算的一致性 | 部分被 `test_process_table_const_init_per_slot_nr` 覆盖 | `iter()` 的序号语义只在测试里用到 | 若运行期出现"按序号当进程号"的用法，补一条断言 |
-| `RTS_VMREQTARGET` 与 `RTS_NO_ENDPOINT` 的定义/使用不对称 | 无测试 | 它们当前的形态是"定义了但无人置位/无人解除"，测试无处下断言 | 若上游语义变化（置位点出现或该位被删除），同步更新 §2.2.2 |
+| `RTS_VMREQTARGET` 的定义/使用不对称 | 无测试 | 该位"有名字、有打印、有人读，但没人置"（§2.2.2），测试无处下断言 | 若上游语义变化（置位点出现或该位被删除），同步更新 §2.2.2 |
+| `RTS_NO_ENDPOINT` 无具名解除点 | **已覆盖**：回收终态由 `dispatch_clear` 的回归测试断言（§2.2.2 末段） | 无具名 `RTS_UNSET` 解除点属上游形态（`XXX` 注释标待清理） | 上游删除该位时同步 §2.2.2 |
 | 三架构 FPU 懒陷阱时序 | 无真机回归（本篇未核实）`[待验证]` | 属 FPU 专题与 SMP/调度篇的交叉 | 见 FPU 专题（尚未重生成） |
 
-**诚实披露**：本篇的 §3.6 与 §4.1 涉及的三架构 FPU 时序、§5.3 的真机载体清单、以及 §4.2 的 `ImageInsideSegments` 触发条件，均按源码与注释陈述；真机行为未在本篇核实，逐项已标 `[待验证]`。
+**诚实披露**：本篇的 §3.6 与 §4.1 涉及的三架构 FPU 时序、以及 §4.2 的 `ImageInsideSegments` 触发条件，均按源码与注释陈述；真机行为未在本篇核实，逐项已标 `[待验证]`。真机链的载体名称与覆盖范围本轮已按源码清点（上表第一行），但其**通过状态**未在本篇复核——文档侧不跑测试验证（源码边界）。
 
 ---
 
@@ -2856,7 +2880,7 @@ grep -c '^#define MF_[A-Z_]*[[:space:]]*0x' minix3/minix/kernel/proc.h
 # 3) 结构体成员计数（口径：顶层声明行；proc 含 2 个匿名聚合，priv 无匿名）
 awk '/^struct proc \{/,/^\};/' minix3/minix/kernel/proc.h | grep -cE '^  [a-zA-Z_].*;|^  struct \{$'
 awk '/^struct priv \{/,/^\};/' minix3/minix/kernel/priv.h | grep -cE '^  [a-zA-Z_].*;'
-# 预期输出：40（38 具名 + 2 匿名）与 31
+# 预期输出：40（37 具名 + 3 个匿名聚合类型）与 31
 
 # 4) boot image 条目数
 awk '/struct boot_image image/,/^\};/' minix3/minix/kernel/table.c | grep -cE '^\{'
@@ -2879,7 +2903,7 @@ grep -n "proc_init()\|IPCF_POOL_INIT" minix3/minix/kernel/main.c
 grep -n "NR_PROCS: usize\|NR_SYS_PROCS: usize\|PROC_TABLE_SIZE: usize" os/kernel/src/proc_table.rs
 for f in proc proc_table kpriv capability; do printf "%s.rs %s\n" $f "$(grep -c '#\[test\]' os/kernel/src/$f.rs)"; done
 for f in arch/boot x86_64/boot arm64/boot riscv64/boot; do printf "os/arch/src/%s.rs %s\n" $f "$(grep -c '#\[test\]' os/arch/src/$f.rs)"; done
-# 预期输出：256 / 64 / PROC_TABLE_SIZE = NR_TASKS + NR_PROCS；测试条数 43 / 40 / 39 / 15 与 12 / 14 / 5 / 4
+# 预期输出：256 / 64 / PROC_TABLE_SIZE = NR_TASKS + NR_PROCS；测试条数 43 / 41 / 39 / 15 与 14 / 14 / 5 / 4
 ```
 
 ---
@@ -2906,7 +2930,7 @@ C 源码：
 - `minix3/minix/kernel/system/{do_vmctl.c,do_privctl.c,do_fork.c,do_clear.c,do_runctl.c}` — 四道抑制位的解除/置位与槽回收
 - `minix3/minix/kernel/smp.c` — 跨 CPU 的 `PROC_STOP`/`VMINHIBIT` 置位与 `PREEMPTED`
 - `minix3/minix/kernel/arch/i386/{protect.c,arch_system.c,memory.c,exception.c}` — `arch_boot_proc`、`libexec_pg_alloc`、`arch_proc_reset`、`arch_proc_init`、页错误入口
-- `minix3/minix/kernel/arch/earm/{protect.c,exception.c}` — ARM-32 端口的同一格
+- `minix3/minix/kernel/arch/earm/{protect.c,exception.c}` — ARM-32 架构下的同一格
 - `minix3/minix/include/minix/{const.h,param.h,com.h,endpoint.h,sys_config.h,type.h}` — 常量、容量、endpoint 宏、`struct boot_image`
 - `minix3/minix/servers/vm/main.c` — `init_proc` 与 `init_vm` 的两处清单遍历
 
