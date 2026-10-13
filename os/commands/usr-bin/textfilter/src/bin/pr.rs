@@ -139,6 +139,11 @@ fn emit_page(page: &minix_textfilter::pr::Page, options: &minix_textfilter::pr::
         out.push(b'\n');
         support::emit(&out);
     }
+    if page.form_feed {
+        // `prtail` writes the form feed with a bare `putchar` and no newline
+        // (`pr.c:1556-1557`), so the byte lands right after the page's last line.
+        support::emit(b"\x0c");
+    }
 }
 
 fn split_lines(input: &[u8]) -> Vec<String> {
