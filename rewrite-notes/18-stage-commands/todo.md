@@ -250,6 +250,68 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十三接上 `vis` 的 `-s`/`-t`/`-w`/`-S`/`-M`/`-N` 六枚旗标，并纠正一笔写错的反斜杠透传事实**
+  （`2026-10-14`，`claim/VIS-EXTRALIST-qoder` @ 基线 `826449c6b`，单域三线 commands/textfilter，无跨界）：
+  **先纠错（P0-fact）**：错源有两处同源的说法。批次二百一十的金样纠错清单里第②条写着「默认下一律反斜杠是图形
+  字符，`do_svis` 顶部就透传（保护它是 `-e`/`-S` 的事，不是默认）」，库测 `test_mark_eol…` 据此钉了
+  `encode(b"a\\b") == "a\\b"`；批次十六更早把「0x5C 反斜杠透传不对称」当作已声明的 C 怪癖写进了回环测的豁免。这条事实是反的：`istrsenvisx` 在
+  `lib/libc/gen/vis.c:484` 无条件调 `makeextralist`，而后者在 `:380` 有一句
+  `if ((flags & VIS_NOSLASH) == 0) *d++ = L'\\';`——默认表里就带着反斜杠，`iswextra`（`:310`）因此在图形判据之前
+  命中。按 C，一个裸反斜杠在默认模式输出 `\134`，只有 `-b` 让它直通。本轮把行为与两处描述（07 篇 vis 行、库内
+  注释与测）一并改回 C，并连带删掉 256 字节回环测里「0x5C 因直通而不可回环」的豁免：现在 `0x00..=0xFF` 全部
+  逐字节回环，断言比原来强一枚。顺带把 07 篇 vis 行里那句「graphic 与空白字节透传」扩写成完整的引擎形状
+  （透传判据三条通路 + `do_mbyte` 三支路的次序 + extra 表的拼装次序），并把本轮新接的六枚写进同一行。
+  **接上的六枚字母**（`usr.bin/vis/vis.c:73-135` 的 getopt 表）：`-s`→`VIS_SAFE`，只放宽透传判据，`iswsafe` 是
+  退格/响铃/回车（`vis.c:127` 定义、`:312` 使用）；`-t`→`VIS_TAB`；`-w`→`VIS_WHITE`，而 `vis.h:52` 把它定义成
+  `VIS_SP`、`VIS_TAB`、`VIS_NL` 三位之并，所以 `-w` 一次置三位；`-S`→`VIS_SHELL`，追加 `char_shell`（`vis.c:133`
+  的十七个字）；`-M`→`VIS_META`，即 `VIS_WHITE`、`VIS_GLOB`、`VIS_SHELL` 的并（`vis.h:67`），这也是本命令唯一
+  取得到 glob 集的途径，因为 `VIS_GLOB` 自己没有字母；`-N`→`VIS_NOLOCALE`。
+  **建模方式的三方案比较**：甲、`VisOptions` 存一个 `flags: u32` 位掩码，与 C 完全同形——但 Rust 侧失去字段级
+  可见性，每个用法都要手写位与，`Default` 也不再免费；乙、给 `-w` 与 `-M` 各设一个「组合位」字段，在
+  `extra_set()` 里 `if meta {…} else { if white {…} else if tab {…} }` 分支——本轮开工时的草稿就是这个形，它把
+  C 的一条位并写成了控制流，`else if` 顺手丢掉了 `VIS_SP` 与 `VIS_TAB` 的独立性，将来任何新组合都要重写分支；
+  丙（采）、一位一字段（`sp`/`tab`/`nl`/`shell`/`glob`），组合旗标在读选项处展开成多位。丙让 `extra_set()` 与
+  `makeextralist` 的函数体一行一行对得上，而展开正发生在 C 的 `switch` 所在处，语义归属也干净：库侧只认位义，
+  命令侧只认字母。
+  **`-N` 不进结构体的理由写明**：它在 C 里选的是两处分支的 C-Locale 一侧——`ISGRAPH` 用 `iscgraph` 而非
+  `iswgraph`（`vis.c:122-124`），以及 `makeextralist` 把 `-e` 串按多字节文本解码（`:361`）——本引擎按字节工作、
+  从不把字节重组为字符，这两处都只有这一个答案可给；给结构体加一个恒不改变行为的字段等于加死状态。采「字母
+  接受、不置任何位」，并把结论钉在端到端测里（`-N` 的输出逐字节等于默认输出）。
+  三件套：`cargo test -p minix-textfilter --lib` → **415 passed / 0 failed**（基线 411，新增四枚：
+  `test_a_backslash_is_the_one_graphic_byte_the_default_mode_encodes`、
+  `test_safe_admits_backspace_bell_and_carriage_return`、
+  `test_whitespace_letters_move_whitespace_onto_the_extra_list`、
+  `test_shell_and_meta_letters_name_the_magic_characters`）；`cargo test -p minix-textfilter --test vis_face` →
+  **12 passed / 0 failed**（基线 9，新增 `safe_admits_the_three_named_controls_and_beats_cstyle`、
+  `whitespace_and_magic_letters_change_only_the_extra_list`、`nolocale_letter_is_accepted_and_changes_nothing`）；
+  `--bin vis` 无宿主单测（决定半的测在 `--lib` 侧）；其余四道命令门 head 8、tail 10、uniq 10、cmp 10 全部不动，
+  `cargo test -p minix-textfilter` 的 47 个测试目标全 ok、零 FAILED。
+  **七枚变异负控**（每枚都先断言源文件确实被改、复位后 md5 与变异前逐字相等）：去掉 extra 表的无条件反斜杠项 →
+  库内 3 枚 + 端到端 3 枚 FAILED；透传判据不再看 `VIS_SAFE` → `test_cstyle_named_escapes` 与
+  `test_safe_admits_backspace_bell_and_carriage_return` 与端到端 `safe_admits_the_three_named_controls_and_beats_cstyle`
+  FAILED（第一枚翻红正说明「透传先于 `-c`」这条次序是被测住的，否则 0x08/0x07/0x0D 会走命名转义）；`-c` 支路短路 →
+  库内 3 + 端到端 2 FAILED；`-l` 行标记分支短路 → 库内 1 + 端到端 1 FAILED；执行半把 `-w` 只置 tab 一位 → 端到端
+  `whitespace_and_magic_letters_change_only_the_extra_list` FAILED；`-M` 丢掉 glob 位 → 同一枚端到端测 FAILED；
+  删掉 `-N` 的 match 分支（落到集外字母、报 usage）→ 端到端 `nolocale_letter_is_accepted_and_changes_nothing` FAILED。
+  门禁：容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` → Finished 零 error；三架构
+  `cargo build -p minix-textfilter --bins --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}`
+  三台零 error；clippy 指向 `src/vis.rs`、`src/bin/vis.rs`、`tests/vis_face.rs` 的告警计数 0（同函数体内两处存量
+  顺手消除：`collapsible_if` 改成 let chain、一处 `needless_borrow`）；`rustfmt --edition 2024 --check` 三文件零漂移；
+  `bash tools/pattern-gate.sh --diff` → PASS=17 FAIL=0 SKIP=1（增量 C 锚点 19 个 token 存在性/落窗过、反引号常量
+  12 个 token 过）。核实日 `2026-10-14`；基线 `826449c6b`。
+  **过程教训（工具用法级，非本仓库级）**：变异脚本用 `cp "$f" "/tmp/$(basename $f).pre"` 存基线，而本轮两枚被改
+  文件的 basename 同为 `vis.rs`，后者覆盖前者的备份，随后一次 `cp` 回写把 `src/vis.rs` 覆盖成了 `src/bin/vis.rs`
+  的内容，库侧改动当场丢失。恢复靠 `git show HEAD:…/src/vis.rs` 取回基线再按记录重写，并把全部门禁重跑一遍
+  （415/0、12/0、三架构、clippy、fmt 均为重写后复验值）。固化两条：备份路径必须带目录层级（或用完整相对路径
+  转义后的唯一名字），复位必须用「与变异前 md5 相等」的断言而不是 `cp` 了事——第二版的 python 脚本已按此实现。
+  **登记不执行**：①`src/vis.rs` 的 `decode()` 里两枚 `#[cfg(test)]` 的 `eprintln!("DBG …")` 是批次十六留下的调试
+  输出，宿主每跑一次测试就往 stderr 灌行，属卫生项；②`src/window.rs:679-680` 的
+  `test_parse_head_args_faithful_getopt` 里两条 unused import（`alloc::string::String`、`alloc::vec`）是既存存量，
+  `cargo test -p minix-textfilter` 的 warning 计数含它们；③`-h`/`-m` 的 HTTP 与 MIME 引擎支路（`do_httpvis`/
+  `do_xvis`，`vis.c:160-201`）以及 `-f`/`-F` 的行折叠与 `col` 状态机（`foldit`），合起来是第 4 片；④解码侧
+  `unvis` 的 `-e`/`-H`/`-h`/`-m` 对应旗标；⑤多字节宽字符路径（本壳按字节编码，0x7F 以上字节与 C 在 UTF-8 locale
+  下的整字符答案不同，07 篇 vis 行已声明）。
+
 - ✅ **批次二百一十二补上 `cmp -s` 的入口档长判据（C `c_regular` 的第一句）**
   （`2026-10-13`，`claim/CMP-SILENT-LEN-qoder` @ 基线 `f1ec87abd`，单域三线 commands/textfilter，无跨界）：
   接回批次二百零三登记的⑦。改前的形状：执行半把两侧都切完窗口后才交给 `compare_bytes`，`-s` 只看窗口是否相同；

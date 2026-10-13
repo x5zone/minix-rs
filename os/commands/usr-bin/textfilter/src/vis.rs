@@ -2,23 +2,37 @@
 //!
 //! Ground truth: `minix3/lib/libc/gen/vis.c` (the vis(3) engine the
 //! command drives) and `minix3/usr.bin/unvis/unvis.c` (the decoder).
-//! Default mode: graphic bytes (0x21..=0x7E) pass through; anything
-//! else gains a backslash (unless no-slash), a `M` prefix with the
-//! eighth bit stripped when set, then a control byte renders as `^X`
-//! (`?` for 0x7F) and a non-control as `-x`. `-c` selects C-style
-//! escapes (`\n`, `\r`, `\b`, `\a`, `\v`, `\t`, `\f`, `\s`, `\0`, and
-//! `\c` for graphic non-octal bytes, with the C's skip list of letters
-//! that must fall through, vis.c:210-267). `-o` selects three-digit
-//! octal for every byte, `-b` (C's `VIS_NOSLASH`) drops the backslash prefix,
-//! and `-l` ends each line with `\$`. The decoder accepts the same grammar —
-//! `M`-meta prefixes, `^X` controls, and backslash-octal runs — which
-//! is what the encoder produces.
+//! The engine's first act for a byte is a pass-through test
+//! (`vis.c:310-312`): a byte escapes only if the extra list names it, and
+//! otherwise it survives unchanged when it is graphic, or is whitespace
+//! (space, tab, newline), or `VIS_SAFE` is set and it is backspace, bell or
+//! carriage return. Everything that fails that test goes through `do_mbyte`:
+//! `-c` selects C-style escapes (`\n`, `\r`, `\b`, `\a`, `\v`, `\t`, `\f`, `\s`,
+//! `\0`, and `\c` for graphic non-octal bytes, with the C's skip list of letters
+//! that must fall through, `vis.c:210-267`); `-o`, an entry on the extra list, or
+//! a byte whose low seven bits are a space select three-digit octal; anything
+//! else gains a backslash (unless `-b`, `VIS_NOSLASH`) and renders as `^X` for a
+//! control (`?` for 0x7F) or `-x` otherwise, with an `M` prefix when the eighth
+//! bit is set. Because `makeextralist` puts a backslash on the list unless `-b`
+//! removes it (`vis.c:380`), a plain `\` is the one graphic byte the default
+//! mode encodes: `\134`. The whitespace and magic-character letters `-s`, `-t`,
+//! `-w`, `-S` and `-M` only change that list — see [`VisOptions::extra_set`] —
+//! while `-l` ends each line with `\$`. The decoder accepts the same grammar —
+//! `M`-meta prefixes, `^X` controls, and backslash-octal runs — which is what the
+//! encoder produces.
 //!
-//! One command flag is deliberately not a field of [`VisOptions`]: `-n` is
+//! Two command flags are deliberately not fields of [`VisOptions`]. `-n` is
 //! `none` in `minix3/usr.bin/vis/vis.c`, which copies the stream with each
 //! backslash doubled and so preserves raw bytes above `0x7F` — bytes a `String`
-//! could not carry unchanged. It is its own byte-level entry point, see
-//! [`copy_doubling_backslashes`].
+//! could not carry unchanged; it is its own byte-level entry point, see
+//! [`copy_doubling_backslashes`]. `-N` (`VIS_NOLOCALE`) selects the C-locale twin
+//! of two engine decisions — `ISGRAPH` using `iscgraph` instead of `iswgraph`
+//! (`vis.c:122-124`) and `makeextralist` decoding the `-e` string as multibyte
+//! text (`vis.c:361`) — and an encoder that reads bytes and never reassembles
+//! them into characters has only the C-locale answer to give. So the flag is
+//! accepted and sets nothing; `tests/vis_face.rs` pins that its output equals the
+//! default. Bytes above `0x7F` and what that costs a UTF-8 input are recorded in
+//! `rewrite-notes/18-stage-commands/07-text-filter.md`.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -30,17 +44,76 @@ pub struct VisOptions {
     pub cstyle: bool,
     /// `-o`: three-digit octal for every byte.
     pub octal: bool,
-    /// `-b` (`VIS_NOSLASH`): inhibit the backslash prefix. C's `-n` is a
+    /// `-b` (`VIS_NOSLASH`): inhibit the backslash prefix. It also keeps the
+    /// backslash out of the extra list, which is why `-b` makes a literal
+    /// backslash pass through instead of becoming `\134`. C's `-n` is a
     /// different flag; see [`copy_doubling_backslashes`].
     pub no_slash: bool,
     /// `-l` (`markeol`): end each line with `\$`; the backslash itself follows
     /// `-b`, exactly as `usr.bin/vis/vis.c` writes it before the newline.
     pub mark_eol: bool,
-    /// `-e`: bytes that must be backslash-protected. C keeps this as the `extra`
-    /// string that `do_svis` searches (`lib/libc/gen/vis.c:309`:
-    /// `iswextra = wcschr(extra, c) != NULL`), and a byte it finds skips the
-    /// pass-through shortcut however printable it is.
+    /// `-e`: bytes the user names as backslash-protected. They seed the extra
+    /// list that `do_svis` searches (`lib/libc/gen/vis.c:310`:
+    /// `iswextra = wcschr(extra, c) != NULL`).
     pub extra: Vec<u8>,
+    /// `-s` (`VIS_SAFE`): backspace, bell and carriage return join the
+    /// pass-through set, so they are left as they are (`vis.c:312` with
+    /// `iswsafe`, whose definition is `vis.c:127`).
+    pub safe: bool,
+    /// `VIS_SP`: a space goes on the extra list, so it escapes instead of passing
+    /// through as whitespace. `vis(1)` has no letter for it alone; `-w` and `-M`
+    /// set it (`include/vis.h:49`).
+    pub sp: bool,
+    /// `-t` (`VIS_TAB`): a tab goes on the extra list.
+    pub tab: bool,
+    /// `VIS_NL`: a newline goes on the extra list. Like `VIS_SP`, only reachable
+    /// through `-w` or `-M` (`include/vis.h:51`).
+    pub nl: bool,
+    /// `-S` (`VIS_SHELL`): the shell magic characters go on the extra list.
+    pub shell: bool,
+    /// `VIS_GLOB`: the glob magic characters go on the extra list. `vis(1)` has no
+    /// letter for it either — only `-M` (`VIS_META`) pulls it in (`vis.h:67`).
+    pub glob: bool,
+}
+
+/// The shell magic characters C appends to the extra list under `VIS_SHELL`
+/// (`lib/libc/gen/vis.c:133`). The backslash in the middle is the same byte the
+/// list gets anyway unless `-b` clears that unconditional entry — so a shell mode
+/// protects a backslash whether `-b` is set or not.
+const CHAR_SHELL: &[u8] = b"'`\";&<>()|{}]\\$!^~";
+
+/// The glob magic characters C appends under `VIS_GLOB` (`vis.c:134`). Only
+/// reachable through `-M`, since `vis(1)` has no letter for `VIS_GLOB` alone.
+const CHAR_GLOB: &[u8] = b"*?[#";
+
+impl VisOptions {
+    /// C's `makeextralist(flags, src)` (`lib/libc/gen/vis.c:351-384`), in its
+    /// order: the user's `-e` string, then the glob set for `VIS_GLOB`, the shell
+    /// set for `VIS_SHELL`, then the whitespace named one bit at a time by
+    /// `VIS_SP`/`VIS_TAB`/`VIS_NL`, and finally the backslash unless
+    /// `VIS_NOSLASH` is set (`vis.c:380`).
+    pub fn extra_set(&self) -> Vec<u8> {
+        let mut out: Vec<u8> = self.extra.clone();
+        if self.glob {
+            out.extend_from_slice(CHAR_GLOB);
+        }
+        if self.shell {
+            out.extend_from_slice(CHAR_SHELL);
+        }
+        if self.sp {
+            out.push(b' ');
+        }
+        if self.tab {
+            out.push(b'\t');
+        }
+        if self.nl {
+            out.push(b'\n');
+        }
+        if !self.no_slash {
+            out.push(b'\\');
+        }
+        out
+    }
 }
 
 /// C's `-n` shape (`vis.c`'s `if (none)` branch): copy every byte through and
@@ -60,9 +133,12 @@ pub fn copy_doubling_backslashes(input: &[u8]) -> Vec<u8> {
 /// Encodes the input per the options.
 pub fn encode(input: &[u8], options: &VisOptions) -> String {
     let mut out = String::new();
+    // C builds the extra list once per call (`istrsenvisx:484`) and searches it
+    // per character; a membership table is the same test without the scan.
+    let extra = extra_membership(&options.extra_set());
     for (index, &byte) in input.iter().enumerate() {
         // C's `process()` tests the shapes in this order, so the end-of-line
-        // marker wins over the vis(3) encoding of a newline (`vis.c`).
+        // marker wins over the vis(3) encoding of a newline (`vis.c:220-227`).
         if options.mark_eol && byte == b'\n' {
             if !options.no_slash {
                 out.push('\\');
@@ -72,28 +148,42 @@ pub fn encode(input: &[u8], options: &VisOptions) -> String {
             continue;
         }
         let next = input.get(index + 1).copied().unwrap_or(0);
-        encode_byte(byte, next, options, &mut out);
+        encode_byte(byte, next, options, &extra, &mut out);
     }
     out
 }
 
-fn encode_byte(byte: u8, next: u8, options: &VisOptions, out: &mut String) {
-    // `do_svis`'s one test, extra list included
-    // (lib/libc/gen/vis.c:309-315: `!iswextra && (ISGRAPH || iswwhite)`).
-    let iswextra = options.extra.contains(&byte);
-    if !iswextra && (byte.is_ascii_graphic() || byte == b' ' || byte == b'\t' || byte == b'\n') {
+/// One slot per byte value, set for the bytes on the extra list — what
+/// `wcschr(extra, c) != NULL` asks of `do_svis`.
+fn extra_membership(extra: &[u8]) -> [bool; 256] {
+    let mut table = [false; 256];
+    for &byte in extra {
+        table[byte as usize] = true;
+    }
+    table
+}
+
+fn encode_byte(byte: u8, next: u8, options: &VisOptions, extra: &[bool; 256], out: &mut String) {
+    // `do_svis`'s one test, extra list and `VIS_SAFE` included
+    // (lib/libc/gen/vis.c:310-312). `iswwhite` is space, tab and newline
+    // (`vis.c:126`); `iswsafe` is backspace, bell and carriage return (`:127`).
+    let iswextra = extra[byte as usize];
+    let iswwhite = byte == b' ' || byte == b'\t' || byte == b'\n';
+    let iswsafe = byte == 0x08 || byte == 0x07 || byte == 0x0D;
+    if !iswextra && (byte.is_ascii_graphic() || iswwhite || (options.safe && iswsafe)) {
         out.push(byte as char);
         return;
     }
     // From here C's order is fixed: the `-c` switch first, then the octal branch
-    // that `-e` also feeds, then the M-notation fallback
-    // (`vis.c:207-287`). The old shell tested `-o` before `-c`, which flips the
-    // answer for a byte that has a named escape and both flags set.
-    if options.cstyle {
-        if let Some(escape) = cstyle_escape(byte, next) {
-            out.push_str(&escape);
-            return;
-        }
+    // that `-e` also feeds, then the M-notation fallback (`vis.c:207-293`). Testing
+    // `-o` first instead would flip the answer for any byte that has a named
+    // escape and is given both flags: `0x07` would come out `\007` where C writes
+    // `\a`.
+    if options.cstyle
+        && let Some(escape) = cstyle_escape(byte, next)
+    {
+        out.push_str(&escape);
+        return;
     }
     // `(byte & 0o177) == b' '` is C's meta-space case: 0xA0 renders as `\240`
     // rather than as a meta sequence (`vis.c:266-271`).
@@ -318,7 +408,7 @@ mod tests {
     #[test]
     fn test_extra_bytes_skip_the_pass_through_shortcut() {
         // `do_svis` only skips its first test for a byte the `extra` list names
-        // (lib/libc/gen/vis.c:309-315), so a printable letter escapes and the
+        // (lib/libc/gen/vis.c:310-312), so a printable letter escapes and the
         // others stay as they were.
         let options = VisOptions {
             extra: vec![b'x'],
@@ -353,10 +443,117 @@ mod tests {
             ..VisOptions::default()
         };
         assert_eq!(encode(b"a\nb", &without_slash), "a$\nb");
-        // Only newlines are marked. A backslash byte is graphic in the C locale,
-        // so `do_svis` passes it through untouched — protecting it is what `-e`
-        // or `-S` (`VIS_SHELL`) are for, not the default.
-        assert_eq!(encode(b"a\\b", &options), "a\\b");
+        // Only newlines are marked. A backslash byte is graphic but sits on the
+        // extra list unless `-b` removes it, so the default mode encodes it.
+        assert_eq!(encode(b"a\\b", &options), "a\\134b");
+    }
+
+    #[test]
+    fn test_a_backslash_is_the_one_graphic_byte_the_default_mode_encodes() {
+        // `makeextralist` appends `'\\'` whenever `VIS_NOSLASH` is clear
+        // (lib/libc/gen/vis.c:380), and `do_svis` consults that list before its
+        // graphic test (`vis.c:310-312`), so the byte escapes as octal. Under `-b`
+        // it leaves the list and passes through as the graphic byte it is.
+        assert_eq!(encode(b"a\\b", &VisOptions::default()), "a\\134b");
+        let no_slash = VisOptions {
+            no_slash: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"a\\b", &no_slash), "a\\b");
+        // With `-c` the C-style branch runs first and has no case for a graphic
+        // byte outside its skip list, so the backslash takes the short `\\` form.
+        let cstyle = VisOptions {
+            cstyle: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"a\\b", &cstyle), "a\\\\b");
+    }
+
+    #[test]
+    fn test_safe_admits_backspace_bell_and_carriage_return() {
+        // `VIS_SAFE` only widens the pass-through test (`vis.c:312`), so the three
+        // named bytes survive while every other control still escapes.
+        let options = VisOptions {
+            safe: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"\x08\x07\r", &options), "\u{8}\u{7}\r");
+        assert_eq!(encode(b"\x01", &options), "\\^A");
+        // Without it the same three bytes are controls, each in its own notation;
+        // with `-c` they would have named escapes, which the pass-through
+        // preempts because that test runs before the switch.
+        assert_eq!(
+            encode(b"\x08\x07\r", &VisOptions::default()),
+            "\\^H\\^G\\^M"
+        );
+        let cstyle_safe = VisOptions {
+            cstyle: true,
+            safe: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"\x08\x07\r", &cstyle_safe), "\u{8}\u{7}\r");
+    }
+
+    #[test]
+    fn test_whitespace_letters_move_whitespace_onto_the_extra_list() {
+        // `-t` sets `VIS_TAB` alone; `-w` sets `VIS_WHITE`, which is the three bits
+        // `VIS_SP | VIS_TAB | VIS_NL` (`include/vis.h:49-53`). An extra-list hit
+        // goes to the octal branch (`vis.c:266`), so a tab becomes `\011`.
+        let tab = VisOptions {
+            tab: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"a\tb", &tab), "a\\011b");
+        assert_eq!(encode(b"a b\n", &tab), "a b\n");
+        let white = VisOptions {
+            sp: true,
+            tab: true,
+            nl: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b" \t\n", &white), "\\040\\011\\012");
+    }
+
+    #[test]
+    fn test_shell_and_meta_letters_name_the_magic_characters() {
+        // `-S` appends `char_shell` (`vis.c:133`), and `-M` is `VIS_META` =
+        // `VIS_WHITE | VIS_GLOB | VIS_SHELL` (`include/vis.h:67`), which also
+        // appends `char_glob` (`vis.c:134`). A `$` is shell magic, a `*` is glob
+        // magic, and `-S` alone must not touch the glob one.
+        let shell = VisOptions {
+            shell: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"$", &shell), "\\044");
+        assert_eq!(encode(b"*", &shell), "*");
+        let meta = VisOptions {
+            sp: true,
+            tab: true,
+            nl: true,
+            shell: true,
+            glob: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"*$", &meta), "\\052\\044");
+        assert_eq!(encode(b" ", &meta), "\\040");
+        // `-b` clears only the unconditional entry, and `char_shell` names the same
+        // byte, so a shell mode still encodes a backslash.
+        let shell_no_slash = VisOptions {
+            shell: true,
+            no_slash: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"a\\b", &shell_no_slash), "a\\134b");
+        // Every member of the shell set escapes, and nothing outside it does:
+        // `vis.c:133` lists seventeen characters, one of them that backslash.
+        for byte in CHAR_SHELL {
+            assert_eq!(
+                encode(&[*byte], &shell),
+                format!("\\{byte:03o}"),
+                "shell magic {byte:#04x}"
+            );
+        }
+        assert_eq!(encode(b"aZ.", &shell), "aZ.");
     }
 
     #[test]
@@ -449,14 +646,10 @@ mod tests {
 
     #[test]
     fn test_decode_reverses_the_encoding() {
-        // 0x5C (backslash) is graphic and passes through unescaped, so
-        // `unvis` reads it as an escape start — the one byte the
-        // default mode cannot round-trip (the same asymmetry exists in
-        // the C pair).
+        // Every byte round-trips: the backslash that used to break the pair is on
+        // the extra list by default, so it encodes as `\134` and the decoder reads
+        // the octal run back (lib/libc/gen/unvis.c:246-258).
         for byte in 0x00..=0xFFu8 {
-            if byte == 0x5C {
-                continue;
-            }
             let options = VisOptions::default();
             let encoded = encode(&[byte], &options);
             let decoded = decode(&encoded);
@@ -477,7 +670,7 @@ mod tests {
         assert_eq!(decode("M-^?"), b"M-^?");
         // The canonical 0xFF encoding: backslash, M (meta), caret, ?.
         let escaped = "\\M^?".as_bytes();
-        assert_eq!(decode(std::str::from_utf8(&escaped).unwrap()), vec![0xFF]);
+        assert_eq!(decode(std::str::from_utf8(escaped).unwrap()), vec![0xFF]);
         // The dashed form decodes as two bytes per S_META1.
         assert_eq!(decode("\\M-^?"), vec![0xDE, 0x3F]);
         assert_eq!(decode("\\^I"), vec![0x09]);
