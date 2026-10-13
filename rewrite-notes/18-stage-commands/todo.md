@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十接上 `vis` 的 `-b`/`-l`/`-n` 三个旗标（并纠正一处字母错映射）+ `vis_face` 端到端门**
+  （`2026-10-13`，`claim/VIS-FLAGS-1-qoder` @ 基线 `3a4cb032d`，单域三线 commands/textfilter，无跨界）：
+  旗标族两片中的第 1 片。开工前 grep `bin/vis.rs` 发现的不只是缺口，而是一个**事实错**：本壳把“去反斜杠”
+  挂在 `-n` 上，而 `minix3/usr.bin/vis/vis.c` 里 `case 'b': eflags |= VIS_NOSLASH;`、`case 'n': none++;` ——
+  去反斜杠是 `-b`，`-n` 完全另一回事（逐字节原样送出，只把反斜杠再写一份）。照错的字母走下去，用户按手册输 `-b`
+  会被当“未建模”拒掉、输 `-n` 则拿到完全不同的输出。
+  **三个字母的形状**：`-b` 归到已有的 `VisOptions::no_slash`（字段注释同时改名说清它是 `VIS_NOSLASH`）；`-l` 新增
+  `mark_eol` 字段，在 `encode` 里把 `\n` 写成 `\` + `$` + 换行，且那个反斜杠按 C 的
+  `if ((eflags & VIS_NOSLASH) == 0)` 跟随 `-b`；`-n` **不进 `VisOptions`**——它保留 0x7F 以上的原始字节，
+  而编码路径返的 `String` 存不下（会变成 UTF-8 两字节），所以它另走一个字节级入口
+  `copy_doubling_backslashes`，由薄壳在 `-n` 时改走那条路。C 的 `process()` 循环先判 `none`、再判 `markeol`，
+  所以 `-n` 遮蔽 `-l` 与编码，本轮把它也摆在同一个优先级上。
+  **新增 `tests/vis_face.rs`（7 枚）**：默认编码、`-b`、`-l`、`-b -l`、`-n`（含“`-n` 遮蔽 `-l`”与“0xFF 以单字节原样输出”）、
+  `-o`/`-c`、多操数合并与打不开的操数只 warn 且退 1、裸 `-` 是字面档名、十个未接字母全部拒。金样对比的是**字节**而不是字符，
+  因为 `String` 比对会把“UTF-8 两字节”这个错掩盖掉。
+  **金样当场拓出四处我的错误推断（代码都对，期望错）**：① 0xFF 是 `\M^?`而不是 `\M-^?`（`do_mbyte` 先写 `M`，
+  被剔高位后的 0x7F 走 iswcntrl 分支写 `^?`，两者之间没有 `-`）；② 默认下一律反斜杠是图形字符，`do_svis` 顶部就透传
+  （保护它是 `-e`/`-S` 的事，不是默认）；③ `-c` 对 TAB 与换行**根本不起作用**（同一处透传先于 CSTYLE 分支），
+  而 0x01 没有命名形式（`\a` 是 0x07）故走脱字符形；④ `-o` 才把 0xFF 写成 `\377`。四处都已按 C 写进测注。
+  三件套：`cargo test -p minix-textfilter --test vis_face` → **7 passed / 0 failed**；`--lib` → **410 passed / 0 failed**
+  （基线 `408`，新增 `test_mark_eol_writes_a_backslash_dollar_before_the_newline` 与
+  `test_none_copies_through_and_doubles_each_backslash`）；其余四道命令门（head/tail/uniq/cmp）10/10/10/10 不动；
+  整包三架构裸机构建三台 0 error。三枚变异负控各让对应测翻红：把 `-n` 改回旧的 `no_slash` 映射 → 拷贝测 FAILED；
+  把 `-l` 改成空操作 → 标记测 FAILED；让标记里的反斜杠不跟随 `-b` → 同一测 FAILED；均反向替换后复测 7/0 与 410/0。
+  容器 `minix-ci:1.94`（`-u`）`cargo check -j 1 --workspace` → Finished 0 error，容器内整包测试 47 个目标全 ok、
+  零 FAILED；clippy 自有文件与 base 逐条同集（`vis.rs` 两条 collapsible_if 与一条 deref 均在未触碰的旧代码里）；
+  `rustfmt --edition 2024` 对触及的三份文件就地归一后零漂移（顺带清掉了 `vis.rs` 与 `bin/vis.rs` 的 4 块存量版差，
+  纯空白零行为改变，与本 crate 以往几轮的归一方式一致）；核实日 `2026-10-13`；基线 `3a4cb032d`。
+  **登记不执行（第 2 片候选）**：选项面只认单字母整词，C 的 getopt 支持聚簇（`-bl`）与附值（`-e x`/`-F 40`）；
+  `-d` 的报文文案与 C 的 usage 行不同（退码同）；`-h`/`-m` 并存时 C 报“不能同时指定”，需先有 HTTP/MIME 编码本体；
+  `-f`/`-F`/`-s`/`-t`/`-w`/`-M`/`-S`/`-N`/`-e` 全在引擎侧（`VIS_SAFE`/`VIS_TAB`/`VIS_WHITE`/`VIS_META`/`VIS_SHELL`/
+  `VIS_NOLOCALE`/extra 表），需按 `do_svis`/`do_mbyte` 逐支补；多字节（UTF-8 宽字符）与行折叠本壳未建模。
+
 - ✅ **批次二百零九给 `head` 加上端到端金样门，并纠一笔上一轮写错的事实**
   （`2026-10-13`，`claim/HEAD-HOST-FACE-qoder` @ 基线 `3ae7bb772`，单域三线 commands/textfilter，无跨界）：
   **先纠错**：批次二百零八末尾写下"`head -n 0` 仍被拒为退 1，而 C `head.c` 的计数器不启动、是什么也不输出且退 0"，
