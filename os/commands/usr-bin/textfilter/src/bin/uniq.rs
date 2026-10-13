@@ -15,9 +15,9 @@
 //! `comparison_key`: lines are compared on the skipped key but the full line is
 //! reported. NetBSD `uniq` has no `-i` (its getopt string is `"-cdf:s:u"`), so
 //! case-folding is not offered. The input operand (read a file instead of stdin)
-//! is wired; the second operand (an output file, a create-and-write path) is
-//! reported as not modelled rather than truncating a file, so use a shell
-//! redirect.
+//! is wired; the second operand is written through C's `fopen(name, "w")` shape —
+//! created if absent, truncated at open time even if the input then turns out to
+//! be unreadable.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -40,41 +40,71 @@ fn run() -> ! {
     };
 
     // C `switch (argc) { 0: stdin/stdout; 1: file/stdout; 2: file/file;
-    // default: usage }`. The output-file form (a create-and-write path) is not
-    // modelled; the input file and stdout are.
+    // default: usage }`.
     if operands.len() > 2 {
         usage();
     }
-    if operands.len() == 2 {
-        support::warn(b"uniq: the output-file operand is not modelled; redirect with the shell\n");
-        support::terminate(1);
-    }
+    // `case 2` opens the input first (`ifp = file(argv[0], "r")`) and only then
+    // the output (`ofp = file(argv[1], "w")`), so an unopenable input never
+    // leaves a created-or-truncated file behind. The output operand is the
+    // create-and-write form, which is why it has to be opened here rather than
+    // written at the end: C truncates it at open time.
     let input = match operands.first() {
         None => support::read_stdin(),
         Some(path) => read_file(path),
     };
+    let sink = match operands.get(1) {
+        None => None,
+        Some(path) => match support::create_sink(path) {
+            Ok(sink) => Some(sink),
+            Err(()) => {
+                support::warn(format!("uniq: {path}\n").as_bytes());
+                support::terminate(1);
+            }
+        },
+    };
     let lines = support::lines_of(&input);
     let mut handler = Uniq::new_with_skip(flags, skip_fields, skip_chars);
+    let mut body: Vec<u8> = Vec::new();
     let mut out = [0u8; 4096];
     for line in &lines {
         if let Some(run) = handler.push(line) {
-            report(&mut handler, &run, &mut out);
+            report(&mut handler, &run, &mut out, &mut body);
         }
     }
     if let Some(run) = handler.finish() {
-        report(&mut handler, &run, &mut out);
+        report(&mut handler, &run, &mut out, &mut body);
+    }
+    // The whole report is assembled first because the input is already read to
+    // the end; either destination gets the same bytes C's stdio would flush.
+    match sink {
+        Some(sink) => {
+            if let Err(()) = sink.finish(&body) {
+                support::warn(format!("uniq: {}\n", operands[1]).as_bytes());
+                support::terminate(1);
+            }
+        }
+        None => support::emit(&body),
     }
     support::terminate(0);
 }
 
-fn report(handler: &mut Uniq<'_>, run: &minix_textfilter::uniq::Run<'_>, out: &mut [u8]) {
+/// Append one kept run to the collected report: the library formats it (the
+/// `%4d` count prefix with `-c`, no newline), and the newline C's `fprintf` gets
+/// from the input line is added here because `lines_of` stripped it.
+fn report(
+    handler: &mut Uniq<'_>,
+    run: &minix_textfilter::uniq::Run<'_>,
+    out: &mut [u8],
+    body: &mut Vec<u8>,
+) {
     if !handler.keep(run) {
         return;
     }
     match handler.format(run, out) {
         Ok(len) => {
-            support::emit(&out[..len]);
-            support::emit(b"\n");
+            body.extend_from_slice(&out[..len]);
+            body.push(b'\n');
         }
         Err(_) => support::terminate(1),
     }
@@ -305,5 +335,36 @@ mod tests {
     fn parse_double_dash_collects_operands() {
         let (_m, _f, _c, ops) = parse_uniq_args(&argv(&["-c", "--", "-x", "y"])).unwrap();
         assert_eq!(ops, strs(&["-x", "y"]));
+    }
+
+    /// The output operand goes through `create_sink`/`finish`: the bytes C's
+    /// stdio would flush land in the file, and an existing longer file is
+    /// truncated rather than overwritten in place.
+    #[test]
+    fn output_operand_is_created_and_truncated() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("uniq-outfile-{}", std::process::id()));
+        std::fs::write(&path, b"stale content that is longer than the report\n").unwrap();
+        let sink = support::create_sink(path.to_str().unwrap()).unwrap();
+        // Opening already truncates: the old bytes are gone before anything is
+        // written, which is C's `fopen(..., "w")` at open time.
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        sink.finish(b"   2 a\n").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"   2 a\n");
+        let sink = support::create_sink(path.to_str().unwrap()).unwrap();
+        sink.finish(b"").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// An output operand that cannot be opened is fatal in C (`file()` calls
+    /// `err(1, "%s", name)`); a directory name is the reachable case.
+    #[test]
+    fn output_operand_reports_an_unopenable_path() {
+        let mut path = std::env::temp_dir();
+        path.push("definitely-not-a-file-unique-dir-for-uniq-test");
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(support::create_sink(path.to_str().unwrap()).is_err());
+        std::fs::remove_dir(&path).unwrap();
     }
 }

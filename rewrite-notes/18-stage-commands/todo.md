@@ -250,6 +250,35 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百零四把 `uniq` 的输出档操作数接上（create-and-write 腿，打开即截断）**
+  （`2026-10-13`，`claim/UNIQ-OUTFILE-qoder` @ 基线 `328da099f`，单域三线 commands/textfilter；`bin_support.rs`
+  是本 crate 四十来个 bin 共用的入口层，改它算同域库面，无跨界）：
+  接回批次二百零二登记的③。改前证据：`grep -n "not modelled" os/commands/usr-bin/textfilter/src/bin/uniq.rs`
+  命中一臂——第 2 个操作数一到就 warn + 退 1，要用户自己重定向；而 C `uniq.c` 的 `case 2:` 写的就是
+  `ofp = file(argv[1], "w")`。
+  **C 真源**：`uniq.c:119-122` 先 `ifp = file(argv[0], "r")` 再 `ofp = file(argv[1], "w")`，`file()` 打不开就
+  `err(1, "%s", name)`。`fopen(name, "w")` 展开为 `open(O_WRONLY|O_CREAT|O_TRUNC, 0666)`——标志值在
+  `minix3/sys/sys/fcntl.h` 的 `:65`/`:99`/`:100`（`0x1`/`0x200`/`0x400`），截断发生在**打开时**而不是写时：
+  所以 `uniq f f` 在 C 得到空档，而“先读完再写回”的写法会把内容原样吐回去；输入打不开时也不会留下一个已创建的输出档。
+  **形状**：新增 `bin_support.rs:create_sink(&str) -> Result<WriteSink, ()>` 与 `WriteSink::finish(&[u8])`（宿主臂
+  `std::fs::File::create`，目标臂 `minix_sys::open(…, 0x1|0x200|0x400, 0o666)` 加写一次加 `close`）；句柄**开着跨过比较**，
+  截断时机因此与 C 同形（若在末尾才打开，就看不出“输入坏了但仍留空档”这一层）。`bin/uniq.rs` 的执行半改成先集齐
+  报告再送目的端（输入本就整档读入，内存量级不变），stdout 那条腿仍走 `support::emit`，`report` 由“逐条打印”改为
+  “追入缓存”，行尾换行仍由执行半补（`lines_of` 剔掉了它）。
+  写失败的处理：C 对 stdio 的写与 `fclose` 都不检查（退出码仍为 0），本壳按同族先例（`bin/unifdef.rs` 对
+  `write_file` 的失败）报 `uniq: <path>` 并退 1——这是一处有意高于 C 的健壮选择，不是失真（C 那扇只会在用户看见的空输出里隐掉失败）。
+  三件套：`cargo test -p minix-textfilter --bin uniq` → **9 passed / 0 failed**（基线 `7`；新增
+  `output_operand_is_created_and_truncated`——先写入一段旧内容，打开后立刻断言长度归零，再断言 `finish` 的内容落档、
+  第 2 次 `finish(b"")` 把档清空——与 `output_operand_reports_an_unopenable_path`（目录名当输出档必错））；
+  `--lib` → **409 / 0** 不动。两枚变异负控：目标换 `OpenOptions` 不截断 → 截断测 FAILED；把打不开吞成成功 → 两测同时 FAILED；
+  均按备份复原后复测 9/0。`bin_support.rs` 是全 crate 共用件，因此跑的是**整包目标构建**：
+  `cargo build -p minix-textfilter --target x86_64-unknown-none --release`（所有 bin）→ Finished；
+  aarch64/riscv64 的 `--bin uniq --release` 各 0 error；容器 `minix-ci:1.94`（`-u`）`cargo check -j 1 --workspace` →
+  Finished 0 error，clippy 指向 `bin_support.rs`/`bin/uniq.rs` 的新告警为 0；`rustfmt --edition 2024 --check`
+  触及两文件零新增漂移（`bin_support.rs:20` 那条 import 排序是存量）；核实日 `2026-10-13`；基线 `328da099f`。
+  **下一步顺带价值（不属本笔）**：uniq 的执行半仍直接调 `minix_sys::open`/`read`，而 `bin_support.rs:read_file`
+  已有宿主 `std::fs` 臂——把读腿改到那个口子上就能用本机 `uniq` 做逐字对账（同族 tail/cmp 同理），列入队列。
+
 - ✅ **批次二百零三把 `cmp` 的 `skip` 操作数改成 C 的 `strtoq(…, 0)`，并接上偏移的应用点**
   （`2026-10-13`，`claim/CMP-SKIPBASE0-qoder` @ 基线 `de37e6a9c`，单域三线 commands/textfilter，无跨界）：
   接回 `07-text-filter.md` cmp 行明写的「`skip` 的 strtoq base-0 进制自动识别未建模」。改前证据：

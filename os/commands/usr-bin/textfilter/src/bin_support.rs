@@ -208,6 +208,56 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<(), ()> {
     done.map(|_| ()).map_err(|_| ())
 }
 
+/// A create-or-truncate write sink — C's `fopen(name, "w")`, which truncates the
+/// file at open time, before any byte of the input has been read. Keeping the
+/// handle open (instead of writing once at the end) is what makes that ordering
+/// observable: an input that turns out to be unreadable still leaves the output
+/// empty, exactly as the C's already-opened `FILE *` would at exit.
+#[cfg(any(test, not(target_os = "none")))]
+pub struct WriteSink(std::fs::File);
+
+#[cfg(all(not(test), target_os = "none"))]
+pub struct WriteSink {
+    fd: minix_sys::Fd,
+}
+
+/// Opens an output operand, creating it if absent and truncating it if present.
+/// `O_WRONLY` is `0x1` (`minix3/sys/sys/fcntl.h:65`), `O_CREAT` is `0x200` (`:99`)
+/// and `O_TRUNC` is `0x400` (`:100`); the mode `0666` is what `fopen` hands to
+/// `open(2)`, so the process umask still applies.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn create_sink(path: &str) -> Result<WriteSink, ()> {
+    std::fs::File::create(path).map(WriteSink).map_err(|_| ())
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn create_sink(path: &str) -> Result<WriteSink, ()> {
+    let fd = minix_sys::open(path, 0x1 | 0x200 | 0x400, 0o666).map_err(|_| ())?;
+    Ok(WriteSink { fd })
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+impl WriteSink {
+    /// Writes the collected bytes; the handle is closed when it drops, matching C
+    /// where stdio flushes at exit and reports nothing.
+    pub fn finish(mut self, bytes: &[u8]) -> Result<(), ()> {
+        use std::io::Write as _;
+        self.0.write_all(bytes).map_err(|_| ())
+    }
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+impl WriteSink {
+    /// Writes the collected bytes and releases the descriptor. C never checks
+    /// the stdio write, so a caller that wants to report a failure does so with
+    /// its own diagnostic — see the note on `create_sink`.
+    pub fn finish(self, bytes: &[u8]) -> Result<(), ()> {
+        let done = minix_sys::write(self.fd, bytes);
+        let _ = minix_sys::close(self.fd);
+        done.map(|_| ()).map_err(|_| ())
+    }
+}
+
 /// Wall-clock microseconds since the epoch, when a clock face answers.
 ///
 /// Hosted builds read the host clock; the target build reads the kernel
