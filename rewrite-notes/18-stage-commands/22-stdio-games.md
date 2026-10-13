@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第一组——只用标准输入输出说话的游戏，系统能跑、管道能通的证明
 > **源码**: `minix3/games/factor/factor.c`（输出形状见头注释、因子打印函数见第 184 行附近、大数路径见第 110 行附近、用法 `factor [value ...]` 见第 268 行附近）、`minix3/games/primes/primes.c` 与 `pattern.c` 与 `pr_tbl.c` 与 `spsp.c`（区间素数表）、`minix3/games/caesar/caesar.c`（轮转表构造见第 82 行附近、溢出保护 `rot %= LETTERS` 见第 86 行附近、轮转解析见第 125 行附近）、`minix3/games/morse/morse.c`（码表见第 96 行附近、用法 `morse [-ds] [string ...]` 见第 140 行附近、解码匹配见第 219 行附近）、`minix3/games/pig/pig.c`（元音规则见第 103 行附近、用法 `pig` 见第 133 行附近）、`minix3/games/arithmetic/arithmetic.c`（缺省范围 10 见第 99 行附近、对错计数见第 100 行附近、范围选项见第 107 行附近）、`minix3/games/banner/banner.c`（整幅宽 132 见第 58 行附近、用法 `banner [-w width] [message]` 见第 1057 行附近、列缩放见第 1064 行到第 1066 行附近）、`minix3/games/number/number.c`（数字转英文单词）、`minix3/games/bcd/bcd.c`（大字显示）、`minix3/games/ppt/ppt.c`（纸带 punch 显示）
-> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 64 个；端到端门七扇 `tests/morse_face.rs` 十二枚、`tests/factor_face.rs` 八枚、`tests/pig_face.rs` 六枚、`tests/ppt_face.rs` 五枚、`tests/bcd_face.rs` 六枚、`tests/caesar_face.rs` 五枚与 `tests/number_face.rs` 五枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 165 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
+> **Rust 模块**: `os/commands/games/stdio-games`（库包 `minix-stdio-games`：`factor.rs`、`primes.rs`、`caesar.rs`、`morse.rs`、`words.rs`、`banner.rs`、`quiz.rs`、`bcd.rs`、`ppt.rs`，库测试 70 个；端到端门七扇 `tests/morse_face.rs` 十二枚、`tests/factor_face.rs` 八枚、`tests/pig_face.rs` 六枚、`tests/ppt_face.rs` 五枚、`tests/bcd_face.rs` 六枚、`tests/caesar_face.rs` 五枚与 `tests/number_face.rs` 五枚）；同 crate `src/bin/` 薄壳九个已接线（bcd、ppt、factor、primes、caesar、morse、pig、number、arithmetic，各含 6 个行缓冲测试，连同上述库测试与端到端门共 171 个测试全过）；执行半经 `minix-sys` 顶层 `read`/`write`（宿主传输语义待 edge E-SYSCALL-SIGN）；`banner` 薄壳待真位图字体资产后接线（同名占位二进制壳已删除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `06-file-ops.md`（标准输入输出面先行）
 > **不覆盖（移交）**: 终端控制（见第 23 篇）、键盘读取与逐行显示执行（各游戏二进制包）、大数概率分解（后续补齐）
 
@@ -45,7 +45,7 @@
 
 横幅把消息打成大字，整幅光栅宽 132 列，`-w` 选项压窄，经典终端宽 80 列是常用值。压窄不是裁掉，而是按比例把输出列映射回光栅列，四舍五入，所以窄横幅的字是挤的不是缺的。宽度为零或超过整幅宽都拒绝。
 
-算术测验把操作数限制在零到范围里，缺省十。答对加一，答错加一，百分比是答对除以总数。减法在零处截断（不够减算零），除法只出整除题（出题时保证整除），乘法用饱和乘防溢出。范围解析拒绝零与非数字。
+算术测验把操作数限制在**零到范围（含端点）**，缺省十；答对加一，答错加一，百分比是答对除以总数。答错不是「重问一遍就算」：C 会把这道题的**右操作数**与「加乘时的左操作数 / 减除时的答案」各记一笔五个惩罚，此后的抽值在 `范围 + 活惩罚总数` 的跨度上取模，落在惩罚段里就命中链表——越靠后答错的数越先被命中，命中一次消耗一点，耗尽即从表上摘除。于是同一个难题会反复出现，直到答对为止，而提示语只出题时打一次。减法在零处截断（不够减算零），除法只出整除题（出题时保证整除），乘法用饱和乘防溢出。范围解析拒绝零与非数字。
 
 ---
 
@@ -142,7 +142,7 @@ show(const char *s)
 | `morse.rs` | `morse.c` 三张码表（`:53-111`）、`morse()`/`show()`（`:231-261`）、`decode()` 与 `-d` 循环（`:146-228`） | 逐字节查表、两种渲染形态、整串解码、解码字符流（`decode_stream`） |
 | `words.rs` | `pig.c` `:94-130`（`pigout`）、`number.c` `:112-298`（`convert`/`unit`/`number`/`pfract`） | 猪拉丁语、数词分组读法与量级命名 |
 | `banner.rs` | `banner.c` 第 58 行与第 1057 行与第 1064 行附近 | 宽度解析、列缩放、字形源接口与行绘制 |
-| `quiz.rs` | `arithmetic.c` 第 99 行与第 100 行附近 | 范围解析、答案计算、计分 |
+| `quiz.rs` | `arithmetic.c` `:95-102`（键集与范围）、`:191-266`（出题与答错的记账）、`:283-364`（罚则链表） | 范围解析、答案计算、计分、罚则链表与抽值 |
 
 ### 4.2 关键类型与不变量
 
@@ -205,7 +205,7 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 | morse | 同上 | 已接线编码面（默认逐符号 `dit`/`daw`、`-s` 短形、每字节一行、操作数收尾行与整轮一次 `SK`、表外字节不出行、`-d`/`-s` 聚簇与 `--`/裸 `-` 的 getopt 形、用法行落 stderr 退 1）与 `-d` 的解码两形：操作数整串比对不拆空格（`:146-150`），标准输入按 C 的字符流（冲刷型分隔符不打印、十个符号算胡码并吞掉其后首字节、整轮收尾一个换行、查不到答 `x`、结束记号静默） |
 | pig | 同上 | 已接线并逐枚对 C：词是连续字母串（数字标点冲刷并透出）、悬挂词在 EOF 不打印、第 1025 个字母触发 `ate too much!`、操作数被忽略而 `-x` 报 usage 退 1；`pig_word` 复刻 `pigout()` 的两套元音集合、`qu` 整体搬运与「大小写跟着字母走」；端到端门 `tests/pig_face.rs` 六枚 |
 | number | 同上 | 已接线并逐枚对 C：三位一组带尺度名（hundred 到 vigintillion，六十五位封顶）、**每组自带句点**所以一个数可出多行、小数按位数命名量级、`-l` 换句点为空格、负号独立成行；入口按 `getopt("l")`，无操作数时 `fgets` 可用长度 255、无换行即 `line too long.`、第二件起前头 `...\n`；三句 `errx`（`illegal number: ` 只带到已替换的点、`number too large, max 65 digits.`、`line too long.`）与 usage 全落 stderr。端到端门 `tests/number_face.rs` 五枚 |
-| arithmetic | 同上 + 时钟读（播种） | 已接线；`penalise` 罚则提示与用时统计待批 |
+| arithmetic | 同上 + 时钟读（播种） | 已接线并逐枚对 C：出题按 `problem()` 的形状抽值（减除从答案反推、除法造整除并埋余数、范围**含端点**）、答错走 `penalise` 链表记账（右操作数一律记，另按加乘记左操作数、减除记答案，各五个惩罚），抽值在 `范围 + 活惩罚` 跨度上取模并逐个消耗，同一题问到答对为止、提示语只打出题时一次；结束输入只打换行并退 0（分数只在每二十题与中断时打印）。仍待批：`Total time N seconds; X.X seconds per problem` 的用时统计与 SIGINT 打印 |
 | banner | 同上 + 真位图字体资产 | 决定半已测，薄壳待字体后接线 |
 
 ---
@@ -225,7 +225,7 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 - **数词端到端**（`tests/number_face.rs`，5 个）：`every_scale_group_ends_with_a_period_of_its_own`（每组自带句点）、`the_fraction_is_named_by_how_many_digits_it_has`（量级按位数命名）、`an_operand_without_a_newline_is_a_line_too_long`（`fgets` 的 255 与 `...` 分隔）、`the_refusals_print_exactly_what_c_would_still_hold`（`illegal number:` 只到已替换的点）、`the_option_face_has_one_letter_and_no_getopt_magic`（`-l` 之外皆 usage）。
 - **猪拉丁语流**（端到端门 `tests/pig_face.rs`，6 个）：`a_word_is_a_run_of_letters_and_every_other_byte_passes_through`（字母成词、其余透出）、`a_pending_word_at_end_of_input_is_never_printed`（EOF 悬挂词丢弃）、`the_two_vowel_sets_decide_which_words_move_at_all`、`case_travels_with_the_letters_rather_than_being_normalized`（同名的进程级对照）、`one_thousand_twenty_four_letters_fit_and_the_next_one_is_fatal`（1024/1025 边界）、`operands_are_counted_and_ignored_while_a_bad_option_answers_usage`。
 - **横幅**（`banner.rs`，5 个）：`test_widths_parse`、`test_scrunch_endpoints`（端点恒等）、`test_block_renders_framed`（框形）、`test_empty_source_misses`、`test_bad_row_rejected`。
-- **测验**（`quiz.rs`，4 个）：`test_ranges_parse`、`test_answers_computed`（四则与截零）、`test_grading_counts`、`test_empty_score_zero`。
+- **测验**（`quiz.rs`，10 个）：`test_ranges_parse`、`test_answers_computed`（四则与截零）、`test_grading_counts`、`penalties_charge_five_and_pay_off_in_insertion_order`（头插顺序与逐个消耗）、`an_entry_dies_when_its_penalty_is_paid_out`（五次之后条目消失）、`a_roll_past_the_end_of_the_list_is_the_inconsistency_c_reports`（越界即 C 的 bug 句）、`a_full_list_drops_the_new_penalty_as_c_drops_a_failed_malloc`（满表丢惩罚）、`the_draw_spans_the_range_plus_the_live_penalties`（取模跨度含活惩罚）、`a_wrong_answer_charges_the_right_operand_and_the_side_that_was_solved_for`（加乘记左操作数、减除记答案）、`test_empty_score_zero`。
 - **打孔卡**（`bcd.rs`，8 个）：`test_frame_geometry`（十五行框与列数）、`test_hole_marks_against_the_table`（孔行与表一致）、`test_lowercase_becomes_uppercase`（渲染前大写）、`test_truncation_at_48_columns`、`test_trailing_newline_is_dropped`、`test_newline_inside_text_terminates_the_line`、`test_oversized_output_reports_out_of_range`、`the_shipped_table_keeps_q_and_r_apart_and_blanks_have_no_holes`（表把 Q 与 R 分开、空白类字符无孔）。
 - **打孔卡端到端**（`tests/bcd_face.rs`，6 个）：`a_card_is_fifteen_lines_framed_by_the_two_rules`（十五行与两条边框）、`the_text_row_prints_only_characters_that_carry_a_pattern`（无孔字符留空白、制表符本身绝不出现在输出）、`the_twelve_rows_read_the_pattern_from_the_top_bit_down`（`A`=`0x900` 恰好第 0 与第 3 行打孔）、`the_text_is_upper_cased_and_cut_at_forty_eight_columns`、`a_line_longer_than_seventy_nine_characters_becomes_two_cards`、`there_is_no_option_parsing_so_a_leading_dash_is_text`。
 - **纸带**（`ppt.rs`，6 个）：`test_punch_line_shape`、`test_punch_all_zero_and_all_one`、`test_punch_reports_small_output`、`test_decode_reverses_punch`（编码解码往返）、`test_decode_line_without_feed_hole_is_none`（失步）、`test_decode_treats_anything_but_blank_as_hole`。
@@ -233,7 +233,7 @@ const BIT_AT_OFFSET: [(isize, u8); 8] = [
 - **因数分解**（端到端门 `tests/factor_face.rs`，8 个）：`operands_print_one_line_each_in_the_c_shape`（操作数逐值一行与素数自身）、`standard_input_supplies_one_value_per_line_and_matches_the_operand_run`（标准输入逐行取值、与操作数形同结果）、`an_unterminated_last_line_is_still_a_value`（末行无换行仍是值）、`a_value_below_two_stops_the_run_with_c_sentence_on_stderr`（≤ 1 停止整轮并报 C 句）、`leading_blanks_belong_to_the_number_and_a_blank_only_line_is_silent`（缩进属于数、纯空白行静默）、`the_two_minus_sentences_depend_on_which_loop_saw_the_value`（两句负数报按来路分）、`trailing_junk_is_reported_as_an_illegal_numeric_format`（拖尾垃圾报非法格式并点名）、`an_option_like_argument_answers_the_usage_line_and_leaves_with_zero`（`-x` 报 usage 且退 0）。
 - **行缓冲**（`bin_support.rs`，随九个壳各 6 个）：`test_lines_include_newline_and_split`、`test_final_fragment_without_newline_is_a_line`、`test_oversized_input_returns_full_buffer_lines`（满缓冲即行）、`test_empty_input_yields_no_lines`、`test_reader_failure_ends_stream_with_error`、`test_utoa_shapes`。
 
-尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、factor 溢出那句 `err` 的 `strerror` 后缀（现按非法格式句给出，退码同 C）、caesar 坏值报文缺的 strerror 句尾（同族共同缺口，退码与句子主干已在）、arithmetic 罚则提示（`penalise`）与用时统计、banner 真位图字体与薄壳接线、primes 近 2^32 流式筛（现封顶 1,000,000，见 §4.4 标注）。十个玩法决定半与九个二进制壳是完整的，其余是显式留白的。
+尚未覆盖、随后续阶段补齐的：大数概率分解（试除下游）、factor 溢出那句 `err` 的 `strerror` 后缀（现按非法格式句给出，退码同 C）、arithmetic 的用时统计与 SIGINT 分数打印（需要秒级时钟与信号面）、caesar 坏值报文缺的 strerror 句尾（同族共同缺口，退码与句子主干已在）、arithmetic 罚则提示（`penalise`）与用时统计、banner 真位图字体与薄壳接线、primes 近 2^32 流式筛（现封顶 1,000,000，见 §4.4 标注）。十个玩法决定半与九个二进制壳是完整的，其余是显式留白的。
 
 ---
 
