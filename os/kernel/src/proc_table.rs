@@ -2673,6 +2673,20 @@ mod tests {
         nr: ProcNr,
         manager_nr: ProcNr,
     ) {
+        // The signal path below reaches `get_monotonic()` →
+        // `clock_state_boot_unchecked()`, which expects `CLOCK_STATE` to be
+        // installed. Boot installs it via `init_clock_and_interrupts`; a
+        // unit test must provide it itself, else these tests only pass when
+        // some other test happened to run first (the `-Z`/filter-order
+        // coupling that made `--lib test_process_misc_flags_delivermsg`
+        // panic in isolation). Install idempotently (the `setup_c26_globals`
+        // precedent at lib.rs). SAFETY: the workspace forces
+        // `--test-threads=1`, so no concurrent reader races this global.
+        unsafe {
+            if (*crate::globals::CLOCK_STATE.get()).is_none() {
+                *crate::globals::CLOCK_STATE.get() = Some(crate::clock::ClockState::new());
+            }
+        }
         {
             let p = table.get_mut(nr).unwrap();
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
