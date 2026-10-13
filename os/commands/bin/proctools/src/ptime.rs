@@ -15,7 +15,7 @@ use crate::ProcError;
 /// - at or above: `d-hh:mm:ss` (`2-04:00:00`, days unpadded).
 pub fn format_duration(seconds: u64, out: &mut [u8]) -> Result<usize, ProcError> {
     let mut written = 0;
-    let mut put = |out: &mut [u8], written: &mut usize, byte: u8| -> Result<(), ProcError> {
+    let put = |out: &mut [u8], written: &mut usize, byte: u8| -> Result<(), ProcError> {
         if *written >= out.len() {
             return Err(ProcError::InvalidArgument);
         }
@@ -23,7 +23,7 @@ pub fn format_duration(seconds: u64, out: &mut [u8]) -> Result<usize, ProcError>
         *written += 1;
         Ok(())
     };
-    let mut number = |out: &mut [u8], written: &mut usize, mut value: u64| -> Result<(), ProcError> {
+    let number = |out: &mut [u8], written: &mut usize, mut value: u64| -> Result<(), ProcError> {
         if value == 0 {
             put(out, written, b'0')?;
             return Ok(());
@@ -41,7 +41,7 @@ pub fn format_duration(seconds: u64, out: &mut [u8]) -> Result<usize, ProcError>
         }
         Ok(())
     };
-    let mut pair = |out: &mut [u8], written: &mut usize, value: u64| -> Result<(), ProcError> {
+    let pair = |out: &mut [u8], written: &mut usize, value: u64| -> Result<(), ProcError> {
         put(out, written, b'0' + (value / 10) as u8)?;
         put(out, written, b'0' + (value % 10) as u8)?;
         Ok(())
