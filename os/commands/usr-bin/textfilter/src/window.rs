@@ -7,6 +7,7 @@
 
 use crate::TextError;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -296,39 +297,113 @@ pub enum TailError {
     /// A `-b`/`-c`/`-n` count that is not a decimal integer, or a zero byte or
     /// block count (C `strtol` reject, `tail.c:88-90`); carries the text.
     IllegalCount(String),
+    /// An old-style `-<digit>…` token whose trailing unit letter is none of
+    /// `b`/`c`/`l`/digit — C `obsolete()`'s `default:` fatal arm
+    /// (`xerrx(1, "illegal option -- %s", *argv)`, `tail.c`); carries the token.
+    IllegalOption(String),
+}
+
+/// One token's outcome in C's `obsolete()` pre-pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ObsoleteStep {
+    /// The token is an old-style option and was rewritten for `getopt`.
+    Rewritten(String),
+    /// C `return`s here: this token and everything after it stay verbatim.
+    Verbatim,
+    /// C's `default:` inside the rewrite — fatal, `xerrx(1, "illegal option")`.
+    IllegalOption,
+}
+
+/// C `obsolete()`'s rewrite of one argv token (`tail.c`): a token starting with
+/// `-` or `+` whose second char is a digit becomes a `getopt`-shaped option.
+/// A trailing `f`/`r` is lifted to the front as its own letter; the (possibly
+/// new) last char picks the unit letter — `b` and `c` stay, `l` and a digit
+/// become `n` — and is dropped from the digits; the token's own first char is
+/// then re-inserted before the digits, so the number arrives as the option's
+/// value *with its sign*: `-3c` becomes `-c-3`, which `ARG` reads back as three
+/// bytes because its `case '-'` negates the parsed number.
+///
+/// `tail +10` is the same machine with a `+` first char: it rewrites to `-n+10`,
+/// i.e. the forward form starting at line 10.
+fn obsolete_arg(arg: &str) -> ObsoleteStep {
+    let bytes = arg.as_bytes();
+    let signed = bytes.first() == Some(&b'-') || bytes.first() == Some(&b'+');
+    // C: a bare operand stops the scan (`ap[0] != '-' && ap[0] != '+'`), `--`
+    // stops it too (`ap[1] == '-'`), and so does a second char that is not a
+    // digit — that token is left for `getopt` to reject or treat as an operand.
+    // A lone `-` is the empty-value case of the same test: `*++ap` reads the
+    // terminator, so C falls through to `default: return`.
+    if !signed || bytes.len() < 2 || (bytes[0] == b'-' && bytes[1] == b'-') {
+        return ObsoleteStep::Verbatim;
+    }
+    if !bytes[1].is_ascii_digit() {
+        return ObsoleteStep::Verbatim;
+    }
+    let mut body = &arg[1..];
+    let mut trail = "";
+    match body.as_bytes().last() {
+        Some(&b'f') | Some(&b'r') => {
+            trail = &body[body.len() - 1..];
+            body = &body[..body.len() - 1];
+        }
+        _ => {}
+    }
+    let unit = match body.as_bytes().last() {
+        Some(b'b') => {
+            body = &body[..body.len() - 1];
+            'b'
+        }
+        Some(b'c') => {
+            body = &body[..body.len() - 1];
+            'c'
+        }
+        Some(b'l') => {
+            body = &body[..body.len() - 1];
+            'n'
+        }
+        Some(c) if c.is_ascii_digit() => 'n',
+        None => return ObsoleteStep::IllegalOption,
+        Some(_) => return ObsoleteStep::IllegalOption,
+    };
+    ObsoleteStep::Rewritten(format!("-{trail}{unit}{}{body}", &arg[0..1]))
 }
 
 /// Split `tail`'s argv tail into [`TailArgs`], faithful to C's `obsolete(argv)`
 /// pre-pass (`tail.c:106`) plus `getopt(argc, argv, "Fb:c:fn:r")` (`tail.c:108`):
-/// the leading `-<digit>…` run is rewritten to `-n<digit>…`; option letters
-/// cluster (`-rn` ≡ `-r -n`); a colon option's value attaches to its token
-/// (`-n10`, `-c100`) or follows it (`-n 10`); `--` ends option scanning; a lone
-/// `-` is an operand. `-f`/`-F` are reported, never silently leaked as an
-/// operand (as the old whole-token matcher did with `-n10`).
+/// old-style `-<digit>…` / `+<digit>…` tokens are rewritten into getopt-shaped
+/// options (see [`obsolete_arg`]); option letters cluster (`-rn` ≡ `-r -n`); a
+/// colon option's value attaches to its token (`-n10`, `-c100`) or follows it
+/// (`-n 10`); `--` ends option scanning; a lone `-` is an operand. `-f`/`-F` are
+/// reported, never silently leaked as an operand (as the old whole-token matcher
+/// did with `-n10`).
 ///
 /// A `+N` value takes the `forward` arm of C's `ARG` macro (`tail.c:91-96`),
 /// which is a *different* style, not a negated count: `tail -n +20` starts at
 /// line 20, and because the macro's number options are 1-based it decrements
-/// `off` by one unit first, so `+1` skips nothing and prints the whole file.
+/// `off` by one unit first, so `+1` skips nothing and prints the whole file. A
+/// `-N` value takes the other arm: `ARG` negates the parsed number and keeps the
+/// backward style, so `-c -3` means the same as `-c 3`.
 pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
-    // Phase 1 — obsolete(): rewrite the leading `-<digit>…` run to `-n<digit>…`,
-    // stop at the first non-matching token and copy the rest verbatim.
+    // Phase 1 — obsolete(): rewrite each leading old-style token while the run
+    // lasts, stop rewriting at the first token C would `return` on, and hand that
+    // token to `getopt` unchanged.
     let mut scanned: Vec<String> = Vec::new();
     let mut still_obsolete = true;
     for arg in args {
-        let bytes = arg.as_bytes();
-        if still_obsolete
-            && bytes.len() >= 2
-            && bytes[0] == b'-'
-            && bytes[1] != b'-'
-            && bytes[1].is_ascii_digit()
-        {
-            let mut rewritten = String::from("-n");
-            rewritten.push_str(&arg[1..]);
-            scanned.push(rewritten);
+        let step = if still_obsolete {
+            obsolete_arg(arg)
         } else {
-            still_obsolete = false;
-            scanned.push(String::from(*arg));
+            ObsoleteStep::Verbatim
+        };
+        match step {
+            ObsoleteStep::Rewritten(token) => scanned.push(token),
+            ObsoleteStep::Verbatim => {
+                still_obsolete = false;
+                scanned.push(String::from(*arg));
+            }
+            ObsoleteStep::IllegalOption => {
+                return Err(TailError::IllegalOption(String::from(*arg)));
+            }
         }
     }
 
@@ -375,7 +450,11 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                         // backward style. `-b` is `ARG(512, FBYTES, RBYTES)`, so
                         // it shares `-c`'s two styles at 512-byte units.
                         let forward = value.starts_with('+');
-                        let digits = &value[if forward { 1 } else { 0 }..];
+                        // C `ARG`'s `case '-'`: `off = -off`, which lands on the
+                        // same backward style as an unsigned value, so only the
+                        // sign prefix is stripped here.
+                        let backward_negated = !forward && value.starts_with('-');
+                        let digits = &value[if forward || backward_negated { 1 } else { 0 }..];
                         let (units, fwd, bwd) = match letter {
                             b'n' => (1usize, RawStyle::SkipLines, RawStyle::LastLines),
                             b'c' => (1, RawStyle::SkipBytes, RawStyle::LastBytes),
@@ -764,6 +843,125 @@ mod tests {
         assert_eq!(
             parse_tail_args(&["-c", "+x"]).err(),
             Some(TailError::IllegalCount(String::from("+x")))
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_obsolete_unit_letters() {
+        // C `obsolete()`: a trailing unit letter selects the option and the digits
+        // come back as a *negated* value, which `ARG`'s `case '-'` reads as a
+        // backward count. So `-3c` is `tail -c 3`, `-3b` three 512-byte blocks,
+        // `-3l` and a bare `-3` are lines.
+        assert_eq!(
+            parse_tail_args(&["-3c"]).unwrap().style,
+            TailStyle::LastBytes { off: 3 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-3b"]).unwrap().style,
+            TailStyle::LastBytes { off: 1536 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-3l"]).unwrap().style,
+            TailStyle::LastLines { off: 3 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-3"]).unwrap().style,
+            TailStyle::LastLines { off: 3 }
+        );
+        // A trailing `r` is lifted to the front, so `-3r` ≡ `-r -n 3` and
+        // `-3cr` ≡ `-r -c 3`.
+        assert_eq!(
+            parse_tail_args(&["-3r"]).unwrap().style,
+            TailStyle::ReverseLines { off: 3 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-3cr"]).unwrap().style,
+            TailStyle::ReverseBytes { off: 3 }
+        );
+        // The `+` first char runs through the same machine: `tail +10` ≡
+        // `tail -n +10`, and `+4c` ≡ `tail -c +4`.
+        assert_eq!(
+            parse_tail_args(&["+10"]).unwrap().style,
+            TailStyle::SkipLines { off: 9 }
+        );
+        assert_eq!(
+            parse_tail_args(&["+4c"]).unwrap().style,
+            TailStyle::SkipBytes { off: 3 }
+        );
+        // A trailing `f` lifts too, then meets this shell's honest follow
+        // rejection instead of leaking away as an operand.
+        assert_eq!(
+            parse_tail_args(&["-3f"]).err(),
+            Some(TailError::NotModelledFollow)
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_obsolete_stops_at_first_non_match() {
+        // C `obsolete()` returns from the whole pre-pass at the first token it
+        // does not recognise, so a later old-style token is *not* rewritten. A
+        // `+<digit>` token then reaches `getopt` as a plain operand, exactly as C
+        // permutes it.
+        let frozen = parse_tail_args(&["f", "+10"]).unwrap();
+        assert_eq!(frozen.style, TailStyle::LastLines { off: 10 });
+        assert_eq!(
+            frozen.operands,
+            alloc::vec![String::from("f"), String::from("+10")]
+        );
+        // A frozen `-3c` keeps its dash, so `getopt` sees the unknown letter `3`
+        // and takes C's `case '?'` → usage (`tail.c:128-130`).
+        assert_eq!(parse_tail_args(&["f", "-3c"]).err(), Some(TailError::Usage));
+        // Before the freeze point the rewrite does apply, and the operand list is
+        // just the file name.
+        let live = parse_tail_args(&["-3c", "f"]).unwrap();
+        assert_eq!(live.style, TailStyle::LastBytes { off: 3 });
+        assert_eq!(live.operands, alloc::vec![String::from("f")]);
+        // `--` is the other stop signal, and it still ends option scanning.
+        assert_eq!(
+            parse_tail_args(&["-3c", "--", "f"]).unwrap().operands,
+            alloc::vec![String::from("f")]
+        );
+        // A lone `-` is an operand, not a rewrite — and must not index past the
+        // token's end while deciding that.
+        assert_eq!(
+            parse_tail_args(&["-"]).unwrap().operands,
+            alloc::vec![String::from("-")]
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_obsolete_illegal_unit_is_fatal() {
+        // C's `default:` inside the rewrite is fatal and quotes the whole token:
+        // `xerrx(1, "illegal option -- %s", *argv)`.
+        assert_eq!(
+            parse_tail_args(&["-3x"]).err(),
+            Some(TailError::IllegalOption(String::from("-3x")))
+        );
+        // Only one trailing letter is lifted, so a second one lands on the same
+        // arm (`-3ff` → after lifting `f`, the unit char is `f`).
+        assert_eq!(
+            parse_tail_args(&["-3ff"]).err(),
+            Some(TailError::IllegalOption(String::from("-3ff")))
+        );
+    }
+
+    #[test]
+    fn test_parse_tail_args_negated_value_is_backward() {
+        // C `ARG`'s `case '-'` (`tail.c:97-102`): `off = -off` and the backward
+        // style, so `-c -3` means the same as `-c 3`.
+        assert_eq!(
+            parse_tail_args(&["-c", "-3"]).unwrap().style,
+            TailStyle::LastBytes { off: 3 }
+        );
+        assert_eq!(
+            parse_tail_args(&["-n", "-7"]).unwrap().style,
+            TailStyle::LastLines { off: 7 }
+        );
+        // A lone `-` after the sign is not a number; C's `*p` test rejects it and
+        // the message carries the whole option argument.
+        assert_eq!(
+            parse_tail_args(&["-n", "-"]).err(),
+            Some(TailError::IllegalCount(String::from("-")))
         );
     }
 }

@@ -221,6 +221,11 @@ fn arg_error(e: TailError) -> ! {
             support::warn(format!("tail: illegal offset -- {v}\n").as_bytes());
             support::terminate(1);
         }
+        TailError::IllegalOption(v) => {
+            // C `obsolete()`'s fatal arm: `xerrx(1, "illegal option -- %s", *argv)`.
+            support::warn(format!("tail: illegal option -- {v}\n").as_bytes());
+            support::terminate(1);
+        }
     }
 }
 
