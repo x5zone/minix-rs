@@ -250,6 +250,62 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十八接上 `sort -o` 输出腿（三支路：标准输出 / 直开 / 临时档换名），并新建第 7 道端到端门**
+  （`2026-10-14`，`claim/SORT-OUTPUT-qoder` @ 基线 `4bccf477c`，单域三线 commands/textfilter，无跨界）：
+  接回 07 篇 sort 行的「`-o` 由选项解析器报 BadOption 拒」。开工前先纠正该行的一处**陈旧事实**：它把
+  `-m` 与 `-o` 一起写成"报 BadOption 拒"，而 `sort.rs` 早已接 `-m`（解析器置 `merge`、执行半走
+  `merge_sorted` 两两归并），文档滞后于代码。
+  **C 的三支路形状**（`usr.bin/sort/sort.c:320-379`）：`outpath` 为空 → `stdout`；`lstat(outpath,&st)`
+  失败、或命中的是字符/块特殊档 → `fopen(path,"w")` 直开直写；否则先 `access(outpath, W_OK)`（失败按 C
+  报**裸路径名**退 2），`mkstemp("<path>XXXXXX")` 造临时档、把结果写进去，再 `lchmod(临时档,
+  st.st_mode & ALLPERMS)` 复制**原档权限位**，然后 `unlink(outpath)` → `link(临时档, outpath)` →
+  `unlink(临时档)`。顺序是有后果的：旧档被**换掉**而不是被截断，于是名的 inode 变了、模式位保留、
+  中途失败旧内容仍在原地。`-c` 在 `:316-319` 就 `order()` 并退出，所以 `-c -o f` 连 `f` 都不碰。
+  **三方案**：甲、只做"`-o` 写文件"（一律 `create_sink`）——最小改动，但把三支路里可观察的两条（模式复制、
+  换名而非截断）与"原档在失败时不被动过"这条安全性质全丢掉，且一旦 `-o` 与输入同名就直接毁档；
+  乙、把临时档+换名一律走 `rename`——Linux 的 rename 覆盖语义与 C 的 `unlink`+`link` 不同（C 选这两个
+  调用正是为了避开 rename 在不同文件系统与 POSIX 语义上的差异），照 rename 写即偏离真值；
+  丙（采）：照 C 写三支路，策略做成库侧纯函数 `decide_output(output: Option<&[u8]>, probe) ->
+  {StandardOutput, Direct, ViaTemp{mode}}`，syscall 做成 `bin_support` 的宿主/裸机双生薄原语
+  （`probe_path`/`writable`/`create_exclusive`/`set_mode`/`hard_link`/`remove_path`），命令侧按 C 的次序串起来。
+  丙让"哪条支路"可单测、"支路里做什么"可端到端测，syscall 层不含策略。
+  **两处字段形状的取舍**：`Options.output` 用 `Option<Vec<u8>>` 而不是 `Vec<u8>`——C 的 `-o ""` 里
+  `outpath` 非空指针，会一路走到 `fopen("", "w")` 失败，与"没给 `-o`"结果不同，用空串表达两者会抹平这条差别；
+  `mkstemp` 的六字符取 C 的 `padchar` 六十二字表原序（`lib/libc/stdio/gettemp.c:49-50`）与进位思路，
+  但以进程内时钟播种替代 `arc4random`（本壳无随机源，时钟播种已有 `epoch_micros` 先例），碰撞时按 64 次进位。
+  **改前的一处真缺陷被端到端门当场揭出**：`bin/sort.rs` 的读腿改前直接调 `minix_sys::{open, read, close}`
+  （只有裸机形态），宿主侧 `access(argv[i], R_OK)` 一类的操作数路径此前从未被测到过——新门第一次跑就把
+  两条操作数测打成"读不到档"，改走 `bin_support::read_file` 的双生封装后全绿。这也是本轮再次踩实的老教训：
+  **命令面改动必须跑三架构裸机构建**——首次三架构构建报 13 处
+  `no function or associated item named default found for struct Stat`（宿主测试完全看不见目标 cfg 里的
+  `bin_support` 新函数），改成本层既有写法 `unsafe { core::mem::zeroed() }`（`pwd`/`test`/`ln` 同形）后三台零 error。
+  三件套：`cargo test -p minix-textfilter --lib` → **430 passed / 0 failed**（基线 427，新增
+  `test_parse_options_takes_the_output_path`、`test_output_target_follows_what_lstat_said`、
+  `test_temporary_names_keep_the_prefix_and_walk_forward`）；新建 `tests/sort_face.rs` → **8 passed / 0 failed**
+  （真进程 + 真管道 + 真档：直写新建名、既有档换名且权限位 0640 保留 + inode 必须变 + 目录里不得残留
+  `<path>XXXXXX`、原地 `-o f f`、不可写目标退 2 且原内容不动、`-c -o` 不碰目标、操作数按序拼接且忽略
+  stdin（C 只在 `optind == argc` 时回落 stdin，`:306-312`）、缺档退 2、裸 `-` 读 stdin、`-o` 缺值退 2）；
+  六道既有门 vis 19 / unvis 10 / head 8 / tail 10 / uniq 10 / cmp 10 全不动；
+  `cargo test -p minix-textfilter` 现有 49 个测试目标全 ok、合计 554 passed、零 FAILED。
+  **八枚变异负控**（每枚断言源文件确被改、复位后 md5 与变异前逐字相等；复位放进 `finally`）：
+  丢掉 `is_device` 判据（设备也走临时档）→ 库内支路测 FAILED；`lstat` 失败也走临时档 → 库内 1 + 端到端
+  `a_name_that_does_not_exist_yet_is_written_directly` FAILED；模式复制写死 0600 → 端到端模式测 FAILED；
+  去掉 `access(W_OK)` 检查 → 端到端不可写测 FAILED（档被换掉）；不先 `unlink` 目标名 → 端到端 2 枚 FAILED
+  （`link` 撞已存在的名）；漏掉临时档自清理 → 端到端残留检查 FAILED；stdout 一腿断掉 → 端到端 3 枚 FAILED；
+  `-o` 退化为无值旗标 → 库内 1 + 端到端 3 FAILED。
+  门禁：容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` → Finished 零 error，容器内
+  `cargo test -j 1 -p minix-textfilter` 的 49 个测试目标全 ok、FAILED 计数 0、`cargo fmt --check` 漂移 0；
+  三架构 `cargo build -p minix-textfilter --bins` 三台零 error；clippy 指向 `src/sort.rs`、
+  `src/bin/sort.rs`、`src/bin_support.rs`、`tests/sort_face.rs` 的告警计数 0；
+  `rustfmt --edition 2024 --check` 四文件零漂移；`bash tools/doc-style-lint.sh --diff` error 0。
+  核实日 `2026-10-14`；基线 `4bccf477c`。
+  **登记不执行**：①C 的异常退出清理腿（`atexit(cleanup)` + 六个信号处理器，`sort.c:342-349`）本壳无信号腿，
+  半途被杀会留下临时档名；②C 认整个选项循环之后的尾巴形 `… -o NAME`（`sort.c:262-265`，服务非置换式
+  getopt），本壳选项扫描比 C 更宽（同 crate 既存 permute 差异项）；③`sort` 的 `warn` 报文缺 `strerror`
+  后缀（与 cmp/uniq/tail/vis/unvis 同条 C 差异）；④`-o` 落在目录、落在无权限目录、`link` 跨设备等情况
+  按 C 的对应错误码路径退 2，但未逐一分测（宿主无稳定设备目录可造）；⑤外部归并引擎（超内存输入）；
+  ⑥`src/window.rs:679-680` 两条 unused import（既存存量）；⑦真机 open 腿归 C-57/E5。
+
 - ✅ **批次二百一十七接上 `unvis` 的 `-H` 实体腿（一百名表与 `&#nn;` 态），`unvis(1)` 的选项面至此无留白**
   （`2026-10-14`，`claim/UNVIS-HTTP1866-qoder` @ 基线 `4a238068b`，单域三线 commands/textfilter，无跨界）：
   接回批次二百一十六登记的①（规划表 20b）。真源三处：`lib/libc/gen/unvis.c:85-196` 的一百项

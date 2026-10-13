@@ -97,6 +97,13 @@ pub struct Options {
     pub delimiter: Option<u8>,
     /// Merge already-sorted runs instead of sorting (`-m`, C `sort -m`).
     pub merge: bool,
+    /// `-o path`: where the result goes. `None` is C's null `outpath`, which writes
+    /// to standard output (`sort.c:320-323`); `Some("")` is *not* the same thing —
+    /// C carries the empty string into `lstat`/`fopen` and fails there, so the
+    /// option has to be distinguishable from its absence. The path also decides
+    /// *how* it is written, see [`decide_output`], because C replaces an existing
+    /// file through a temporary rather than truncating it in place.
+    pub output: Option<Vec<u8>>,
 }
 
 /// Merge several already-sorted runs into one sorted vector, the way C's
@@ -175,6 +182,22 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                 // `slice::sort_by` (used below) is stable — so it is a no-op here
                 // too, matching C's observable behavior.
                 's' => {}
+                // `-o` takes a value, inline (`-oNAME`) or as the next word
+                // (`sort.c:188-190`); a missing one is C's `?` and lands on the
+                // usage path. A later `-o` overwrites the earlier one, as C's
+                // `outpath = optarg` assignment does.
+                'o' => {
+                    let mut value: String = chars.by_ref().collect();
+                    if value.is_empty() {
+                        index += 1;
+                        match args.get(index) {
+                            Some(word) => value = (*word).to_string(),
+                            None => return Err(ParseError::BadOption(flag)),
+                        }
+                    }
+                    options.output = Some(value.into_bytes());
+                    break;
+                }
                 'k' | 't' => {
                     let mut value: String = chars.by_ref().collect();
                     if value.is_empty() {
@@ -204,6 +227,70 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
         index += 1;
     }
     Ok((options, operands))
+}
+
+/// What a `lstat` of the requested output path tells the C, narrowed to the two
+/// questions its branch asks (`sort.c:324-326`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputProbe {
+    /// `st_mode & ALLPERMS`, the permission bits C copies onto the temporary before
+    /// it becomes the output name (`sort.c:366`, `ALLPERMS` = `0o7777`).
+    pub mode: u32,
+    /// `S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode)`: writing straight through is
+    /// correct for a device, and C says so out loud.
+    pub is_device: bool,
+}
+
+/// Where the sorted text goes, the three ways C reads `sort.c:320-355`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Output {
+    /// No `-o`: `stdout`, and no path is ever touched.
+    StandardOutput,
+    /// Open the named path for writing and truncate it — the branch C takes when
+    /// `lstat` fails (no such file) or reports a character/block special
+    /// (`sort.c:352-355`).
+    Direct { path: Vec<u8> },
+    /// Write `<path>XXXXXX`, then copy the probed mode onto it, unlink the original
+    /// name, hard-link the temporary to it, and unlink the temporary
+    /// (`sort.c:327-379`). A crash mid-write therefore leaves the old file standing.
+    ViaTemp { path: Vec<u8>, mode: u32 },
+}
+
+/// C's choice between those three, as a function of the option and the probe. An
+/// absent `-o` is the only way to reach standard output; an empty one still names a
+/// path, and C's `fopen("", "w")` fails on it (`sort.c:354-355`).
+pub fn decide_output(output: Option<&[u8]>, probe: Option<OutputProbe>) -> Output {
+    let Some(output) = output else {
+        return Output::StandardOutput;
+    };
+    let path = output.to_vec();
+    match probe {
+        Some(found) if !found.is_device => Output::ViaTemp {
+            path,
+            mode: found.mode,
+        },
+        _ => Output::Direct { path },
+    }
+}
+
+/// The six characters that replace the `XXXXXX` of `sort.c:338-339`. C's `mkstemp`
+/// fills them from `padchar` — sixty-two characters in the order digits, uppercase,
+/// lowercase (`lib/libc/stdio/gettemp.c:49-50`) — drawing one at random per slot, and
+/// then carries the name forward while a create keeps failing (`:120-170`). This
+/// shell takes the same alphabet and walks it the same way from a per-process seed
+/// instead of a random one; all the caller relies on is that the name keeps the
+/// requested prefix, stays six characters long, and differs between attempts.
+pub fn temp_candidate(path: &[u8], seed: u64, attempt: usize) -> Vec<u8> {
+    const PAD_CHAR: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let mut value = seed.wrapping_add(attempt as u64);
+    let mut suffix = [0u8; 6];
+    for slot in suffix.iter_mut().rev() {
+        *slot = PAD_CHAR[(value % PAD_CHAR.len() as u64) as usize];
+        value /= PAD_CHAR.len() as u64;
+    }
+    let mut out = path.to_vec();
+    out.extend_from_slice(&suffix);
+    out
 }
 
 /// Parses one `-k` specification. Modifiers ride the start segment, the
@@ -432,8 +519,8 @@ fn cmp_filtered(a: &[u8], b: &[u8], key: &KeySpec) -> core::cmp::Ordering {
 /// first, per the C month table).
 fn month_of(key_bytes: &[u8]) -> u32 {
     const MONTHS: [&[u8]; 12] = [
-        b"jan", b"feb", b"mar", b"apr", b"may", b"jun", b"jul", b"aug", b"sep",
-        b"oct", b"nov", b"dec",
+        b"jan", b"feb", b"mar", b"apr", b"may", b"jun", b"jul", b"aug", b"sep", b"oct", b"nov",
+        b"dec",
     ];
     if key_bytes.len() < 3 {
         return 0;
@@ -472,10 +559,12 @@ fn numeric_key(bytes: &[u8]) -> NumericKey<'_> {
     let fraction_start = cursor + 1;
     if cursor < bytes.len() && bytes[cursor] == b'.' {
         cursor += 1;
-        let fraction = &bytes[fraction_start..cursor
-            + bytes[fraction_start..].iter()
-                .take_while(|b| b.is_ascii_digit())
-                .count()];
+        let fraction = &bytes[fraction_start
+            ..cursor
+                + bytes[fraction_start..]
+                    .iter()
+                    .take_while(|b| b.is_ascii_digit())
+                    .count()];
         return NumericKey {
             negative,
             integer,
@@ -603,11 +692,7 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
         // order, with the global reverse applied (the modifiers belong
         // to the keys, not to this fallback).
         let raw = a.as_bytes().cmp(b.as_bytes());
-        return if options.reverse {
-            raw.reverse()
-        } else {
-            raw
-        };
+        return if options.reverse { raw.reverse() } else { raw };
     }
     if options.reverse {
         result.reverse()
@@ -729,6 +814,86 @@ mod tests {
         options.keys.push(spec);
         // The one-byte key ties; the whole line breaks the tie.
         assert_eq!(compare("a123", "a456", &options), Ordering::Less);
+    }
+
+    #[test]
+    fn test_parse_options_takes_the_output_path() {
+        // `-o` takes its value inline or as the next word, and a later one replaces
+        // the earlier, because C's `case 'o'` is a plain `outpath = optarg`
+        // assignment (`sort.c:188-190`). Without the option the field stays `None`,
+        // which is what distinguishes standard output from `-o ""`.
+        let (options, operands) = parse_options(&["-o", "out.txt", "in.txt"]).unwrap();
+        assert_eq!(options.output.as_deref(), Some("out.txt".as_bytes()));
+        assert_eq!(operands, vec!["in.txt"]);
+        let (inline, _) = parse_options(&["-oout", "in"]).unwrap();
+        assert_eq!(inline.output.as_deref(), Some("out".as_bytes()));
+        let (replaced, _) = parse_options(&["-oa", "-ob"]).unwrap();
+        assert_eq!(replaced.output.as_deref(), Some("b".as_bytes()));
+        let (none, _) = parse_options(&["-n"]).unwrap();
+        assert_eq!(none.output, None);
+        assert_eq!(parse_options(&["-o"]), Err(ParseError::BadOption('o')));
+    }
+
+    #[test]
+    fn test_output_target_follows_what_lstat_said() {
+        // The three answers of `sort.c:320-355`, and the fourth row that keeps
+        // `-o ""` distinct from no option at all: an empty path is still a path, so
+        // it goes to the direct branch and the open fails there.
+        assert_eq!(decide_output(None, None), Output::StandardOutput);
+        assert_eq!(
+            decide_output(Some(b"new"), None),
+            Output::Direct {
+                path: b"new".to_vec()
+            }
+        );
+        assert_eq!(
+            decide_output(Some(b""), None),
+            Output::Direct { path: Vec::new() }
+        );
+        assert_eq!(
+            decide_output(
+                Some(b"dev"),
+                Some(OutputProbe {
+                    mode: 0o666,
+                    is_device: true
+                }),
+            ),
+            Output::Direct {
+                path: b"dev".to_vec()
+            }
+        );
+        assert_eq!(
+            decide_output(
+                Some(b"old"),
+                Some(OutputProbe {
+                    mode: 0o640,
+                    is_device: false
+                }),
+            ),
+            Output::ViaTemp {
+                path: b"old".to_vec(),
+                mode: 0o640
+            }
+        );
+    }
+
+    #[test]
+    fn test_temporary_names_keep_the_prefix_and_walk_forward() {
+        // C writes `%sXXXXXX` and lets `mkstemp` fill the six slots from a
+        // sixty-two-character alphabet (`gettemp.c:49-50`), carrying forward while a
+        // create collides. What the caller relies on is the prefix, the length, and
+        // that consecutive attempts differ.
+        let first = temp_candidate(b"out.txt", 0x1234, 0);
+        let second = temp_candidate(b"out.txt", 0x1234, 1);
+        assert_eq!(first.len(), b"out.txt".len() + 6);
+        assert!(first.starts_with(b"out.txt"));
+        assert_ne!(first, second, "consecutive attempts must differ");
+        for byte in &first[b"out.txt".len()..] {
+            assert!(
+                b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".contains(byte),
+                "suffix byte {byte:#04x} is outside C's padchar set"
+            );
+        }
     }
 
     #[test]
