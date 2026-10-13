@@ -15,9 +15,7 @@ use minix_usb::urb::{Direction, PendingUrb, TransferKind};
 use minix_usb::wire::{fill_send_urb, split_complete_urb};
 use minix_types::Message;
 
-use crate::cbw::{
-    cdb_read10, cdb_write10, transfer_allowed, Cbw, TagPairing, COMMAND_BLOCK_LENGTH,
-};
+use crate::cbw::{COMMAND_BLOCK_LENGTH, TagPairing, cdb_read10, cdb_write10, transfer_allowed};
 
 /// The usb_storage face: tag pairing plus the URB roster.
 pub struct StorageFace {

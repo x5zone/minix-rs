@@ -12,7 +12,7 @@
 use minix_netdriver::driver::{InitReport, LinkReport, NetDriver};
 use minix_netdriver::protocol::{HardwareAddress, LinkState};
 
-use crate::queues::{padded_length, refill_needed, NetQueue};
+use crate::queues::{padded_length, refill_needed};
 
 /// The virtio_net card's framework face.
 pub struct VirtioNetFace {
