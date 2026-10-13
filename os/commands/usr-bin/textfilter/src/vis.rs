@@ -17,9 +17,11 @@
 //! removes it (`vis.c:380`), a plain `\` is the one graphic byte the default
 //! mode encodes: `\134`. The whitespace and magic-character letters `-s`, `-t`,
 //! `-w`, `-S` and `-M` only change that list — see [`VisOptions::extra_set`] —
-//! while `-l` ends each line with `\$`. The decoder accepts the same grammar —
-//! `M`-meta prefixes, `^X` controls, and backslash-octal runs — which is what the
-//! encoder produces.
+//! while `-l` ends each line with `\$`. The decoder is the same contract in reverse
+//! and, like C's `unvis()`, it works on bytes rather than text: `M`-meta prefixes,
+//! `^X` controls, backslash-octal runs, `\x` hex, and — when the mode asks for them —
+//! `%hh` for HTTP and `=HH` for MIME quoted-printable with its soft line break. The
+//! encoder's own hidden newline and `\$` marker decode to nothing.
 //!
 //! Folding is the other half of the contract: `-f` and `-F` change nothing about how
 //! a byte is encoded, only where a line is broken in the text vis has already
@@ -441,147 +443,344 @@ fn push_octal(byte: u8, out: &mut String) {
     out.push((b'0' + (byte & 0o7)) as char);
 }
 
-/// Decodes visible text back into bytes, mirroring the C `unvis`
-/// state machine (lib/libc/gen/unvis.c:217-330). Returns the decoded
-/// bytes. Incomplete escapes at the end are dropped (the C's
-/// end-of-input flush).
-pub fn decode(input: &str) -> Vec<u8> {
-    #[derive(Debug, PartialEq, Clone, Copy)]
-    enum St {
-        Ground,
-        Start,
-        Meta,
-        Meta1,
-        Ctrl,
-        Octal2,
-        Octal3,
+/// Decoder configuration — the flags `unvis(1)` collects (`usr.bin/unvis/unvis.c:57-71`)
+/// and the ones `unvis()` reads back (`lib/libc/gen/unvis.c:226-246`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DecodeOptions {
+    /// `-e` (`VIS_NOESCAPE`): a backslash is not an escape introducer, so it and
+    /// everything after it are ordinary bytes.
+    pub no_escape: bool,
+    /// `-h` (`VIS_HTTP1808`): `%hh` names a byte, in either hex case.
+    pub http1808: bool,
+    /// `-m` (`VIS_MIMESTYLE`): `=HH` names a byte in *uppercase* hex, and an `=`
+    /// before a line end is quoted-printable's soft break.
+    pub mime: bool,
+}
+
+/// The machine's states, `lib/libc/gen/unvis.c:60-76`. Every state C names is here
+/// except the three `&`-entity ones, which belong to the `-H` leg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum St {
+    Ground,
+    Start,
+    Meta,
+    Meta1,
+    Ctrl,
+    Octal2,
+    Octal3,
+    Hex,
+    Hex1,
+    Hex2,
+    Mime1,
+    Mime2,
+    EatCrnl,
+}
+
+/// The decoder's carried values. C keeps them in two places that never diverge in
+/// practice: the low byte of its single `int state` (here [`St`]) and `outc`, the
+/// byte being assembled, which survives from one call to the next and is what lets
+/// `M` contribute `0200` before the caret step adds the low five bits
+/// (`unvis.c:262-275,357-363`). `state = 0` on a decoding error resets the machine
+/// and leaves `outc` alone, which is harmless precisely because every path that
+/// reads a carried value passes through a state that writes one first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeState {
+    st: St,
+    pending: u8,
+}
+
+impl Default for DecodeState {
+    fn default() -> Self {
+        Self {
+            st: St::Ground,
+            pending: 0,
+        }
     }
-    let bytes = input.as_bytes();
-    let mut out: Vec<u8> = Vec::new();
-    let mut st = St::Ground;
-    let mut value: u8 = 0;
-    let mut cursor = 0usize;
-    #[cfg(test)]
-    eprintln!("DBG decode input={:?} len={}", input, bytes.len());
-    while cursor < bytes.len() {
-        let c = bytes[cursor];
-        cursor += 1;
-        #[cfg(test)]
-        eprintln!("DBG st={:?} c={:?}", st, c);
-        match st {
-            St::Ground => {
-                if c == b'\\' {
-                    st = St::Start;
-                } else {
-                    out.push(c);
-                }
+}
+
+/// What one input byte produced, mirroring the `UNVIS_*` codes
+/// (`minix/include/vis.h:74-80`) as `usr.bin/unvis/unvis.c:118-136` consumes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeOutcome {
+    /// A finished byte; emit it.
+    Byte(u8),
+    /// A finished byte *and* this input byte still has to be fed again — C's
+    /// `UNVIS_VALIDPUSH`, which makes the command `goto again` with the same `c`.
+    /// It ends a short octal or hex run, where the byte that broke off is not part
+    /// of the number.
+    ByteAndRetry(u8),
+    /// Nothing finished yet.
+    Nothing,
+    /// The sequence cannot be decoded. `unvis(1)` reports the offset and restarts
+    /// from the ground state; the byte that arrived is consumed either way.
+    Invalid,
+}
+
+/// One step of C's `unvis()` (`lib/libc/gen/unvis.c:217-470`), one input byte at a
+/// time. `isxdigit`/`isoctal`/`isgraph` keep C's exact ranges, and the two hex
+/// tables are the C's asymmetry: `xtod` (`:79`) folds either case for `%hh` and
+/// `\xhh`, while `XTOD` (`:80`) demands uppercase for MIME — a lowercase digit
+/// there is a decoding error, not a different spelling of the same byte.
+pub fn unvis_byte(byte: u8, state: &mut DecodeState, options: &DecodeOptions) -> DecodeOutcome {
+    match state.st {
+        St::Ground => {
+            state.pending = 0;
+            if !options.no_escape && byte == b'\\' {
+                state.st = St::Start;
+                return DecodeOutcome::Nothing;
             }
-            St::Start => match c {
-                b'\\' => {
-                    out.push(b'\\');
-                    st = St::Ground;
-                }
-                b'0'..=b'7' => {
-                    value = c - b'0';
-                    st = St::Octal2;
-                }
-                b'M' => {
-                    value = 0o200;
-                    st = St::Meta;
-                }
-                b'^' => st = St::Ctrl,
-                b'n' => {
-                    out.push(b'\n');
-                    st = St::Ground;
-                }
-                b'r' => {
-                    out.push(b'\r');
-                    st = St::Ground;
-                }
-                b'b' => {
-                    out.push(0x08);
-                    st = St::Ground;
-                }
-                b'a' => {
-                    out.push(0x07);
-                    st = St::Ground;
-                }
-                b'v' => {
-                    out.push(0x0B);
-                    st = St::Ground;
-                }
-                b't' => {
-                    out.push(b'\t');
-                    st = St::Ground;
-                }
-                b'f' => {
-                    out.push(0x0C);
-                    st = St::Ground;
-                }
-                b's' => {
-                    out.push(b' ');
-                    st = St::Ground;
-                }
-                b'E' => {
-                    out.push(0x1B);
-                    st = St::Ground;
-                }
-                // A hidden newline or marker emits nothing.
-                b'\n' | b'$' => st = St::Ground,
-                other if other.is_ascii_graphic() => {
-                    out.push(other);
-                    st = St::Ground;
-                }
-                // Non-graphic bytes after a backslash are dropped (the
-                // C's default arm requires isgraph).
-                _ => st = St::Ground,
-            },
-            St::Meta => match c {
-                b'-' => st = St::Meta1,
-                b'^' => st = St::Ctrl,
+            if options.http1808 && byte == b'%' {
+                state.st = St::Hex1;
+                return DecodeOutcome::Nothing;
+            }
+            if options.mime && byte == b'=' {
+                state.st = St::Mime1;
+                return DecodeOutcome::Nothing;
+            }
+            state.pending = byte;
+            DecodeOutcome::Byte(byte)
+        }
+        St::Start => match byte {
+            b'\\' => {
+                state.st = St::Ground;
+                DecodeOutcome::Byte(byte)
+            }
+            b'0'..=b'7' => {
+                state.pending = byte - b'0';
+                state.st = St::Octal2;
+                DecodeOutcome::Nothing
+            }
+            b'M' => {
+                state.pending = 0o200;
+                state.st = St::Meta;
+                DecodeOutcome::Nothing
+            }
+            b'^' => {
+                state.st = St::Ctrl;
+                DecodeOutcome::Nothing
+            }
+            b'n' => ground_byte(state, b'\n'),
+            b'r' => ground_byte(state, b'\r'),
+            b'b' => ground_byte(state, 0x08),
+            b'a' => ground_byte(state, 0x07),
+            b'v' => ground_byte(state, 0x0B),
+            b't' => ground_byte(state, b'\t'),
+            b'f' => ground_byte(state, 0x0C),
+            b's' => ground_byte(state, b' '),
+            b'E' => ground_byte(state, 0x1B),
+            b'x' => {
+                // `\x` is hexadecimal, and this arm has no flag guard: the C's
+                // `S_START` recognizes it whatever the mode (`unvis.c:305-307`).
+                state.st = St::Hex;
+                DecodeOutcome::Nothing
+            }
+            // A hidden newline (`\` + newline, what `vis -f` writes) and the hidden
+            // marker of `vis -l` emit nothing at all.
+            b'\n' | b'$' => {
+                state.st = St::Ground;
+                DecodeOutcome::Nothing
+            }
+            other if other.is_ascii_graphic() => ground_byte(state, other),
+            _ => {
+                state.st = St::Ground;
+                DecodeOutcome::Invalid
+            }
+        },
+        St::Meta => {
+            let next = match byte {
+                b'-' => St::Meta1,
+                b'^' => St::Ctrl,
                 _ => {
-                    out.push(c | 0o200);
-                    st = St::Ground;
+                    state.st = St::Ground;
+                    return DecodeOutcome::Invalid;
                 }
-            },
-            St::Meta1 => {
-                out.push(c | 0o200);
-                st = St::Ground;
+            };
+            state.st = next;
+            DecodeOutcome::Nothing
+        }
+        St::Meta1 => {
+            state.pending |= byte;
+            let finished = state.pending;
+            state.st = St::Ground;
+            DecodeOutcome::Byte(finished)
+        }
+        St::Ctrl => {
+            // `\^?` is 0x7F; any other character contributes its low five bits.
+            state.pending |= if byte == b'?' { 0o177 } else { byte & 0o37 };
+            let finished = state.pending;
+            state.st = St::Ground;
+            DecodeOutcome::Byte(finished)
+        }
+        St::Octal2 => {
+            if is_octal(byte) {
+                state.pending = state.pending.wrapping_shl(3) | (byte - b'0');
+                state.st = St::Octal3;
+                DecodeOutcome::Nothing
+            } else {
+                // A one-digit octal run: emit it and reprocess this byte, which is
+                // how `\011` reads as tab and `\0z` as NUL then `z`.
+                state.st = St::Ground;
+                DecodeOutcome::ByteAndRetry(state.pending)
             }
-            St::Ctrl => {
-                let produced = if c == b'?' { 0x7F } else { c & 0x1F };
-                // The pending 0200 from a preceding `M` joins here.
-                out.push(value | produced);
-                st = St::Ground;
+        }
+        St::Octal3 => {
+            state.st = St::Ground;
+            if is_octal(byte) {
+                state.pending = state.pending.wrapping_shl(3) | (byte - b'0');
+                DecodeOutcome::Byte(state.pending)
+            } else {
+                DecodeOutcome::ByteAndRetry(state.pending)
             }
-            St::Octal2 => {
-                if (b'0'..=b'7').contains(&c) {
-                    value = (value << 3) | (c - b'0');
-                    st = St::Octal3;
-                } else {
-                    // Non-digit: the one-digit value emits and the byte
-                    // is reprocessed (the C's ungetc arm).
+        }
+        // `\x` demands a hex digit — `S_HEX` falls through to `S_HEX1` only after
+        // checking, so `\xg` is a decoding error rather than a literal `x` run.
+        St::Hex if !is_hex_digit(byte) => {
+            state.st = St::Ground;
+            DecodeOutcome::Invalid
+        }
+        St::Hex | St::Hex1 => {
+            if is_hex_digit(byte) {
+                state.pending = from_hex(byte);
+                state.st = St::Hex2;
+                DecodeOutcome::Nothing
+            } else {
+                state.st = St::Ground;
+                DecodeOutcome::ByteAndRetry(state.pending)
+            }
+        }
+        St::Hex2 => {
+            state.st = St::Ground;
+            if is_hex_digit(byte) {
+                state.pending = from_hex(byte) | state.pending.wrapping_shl(4);
+                DecodeOutcome::Byte(state.pending)
+            } else {
+                DecodeOutcome::ByteAndRetry(state.pending)
+            }
+        }
+        St::Mime1 => {
+            if byte == b'\n' || byte == b'\r' {
+                // Quoted-printable's soft line break: the `=` says "the line
+                // continues", so the pair disappears.
+                state.st = St::EatCrnl;
+                return DecodeOutcome::Nothing;
+            }
+            if is_upper_hex(byte) {
+                state.pending = from_upper_hex(byte);
+                state.st = St::Mime2;
+                DecodeOutcome::Nothing
+            } else {
+                state.st = St::Ground;
+                DecodeOutcome::Invalid
+            }
+        }
+        St::Mime2 => {
+            if is_upper_hex(byte) {
+                state.pending = from_upper_hex(byte) | state.pending.wrapping_shl(4);
+                state.st = St::Ground;
+                DecodeOutcome::Byte(state.pending)
+            } else {
+                state.st = St::Ground;
+                DecodeOutcome::Invalid
+            }
+        }
+        St::EatCrnl => match byte {
+            // A run of line ends after the soft break is all eaten; `=` starts a new
+            // escape; anything else belongs to the text.
+            b'\r' | b'\n' => DecodeOutcome::Nothing,
+            b'=' => {
+                state.st = St::Mime1;
+                DecodeOutcome::Nothing
+            }
+            other => {
+                state.pending = other;
+                state.st = St::Ground;
+                DecodeOutcome::Byte(other)
+            }
+        },
+    }
+}
+
+/// C's end-of-input flush, `unvis()` with `UNVIS_END` (`lib/libc/gen/unvis.c:218-231`):
+/// a short octal or hex run is finished after all, the ground state adds nothing, and
+/// any half-written sequence is a decoding error — which `unvis(1)` does *not* report
+/// at end of input, because its final call only checks for a byte
+/// (`usr.bin/unvis/unvis.c:137-139`).
+pub fn unvis_end(state: &mut DecodeState) -> DecodeOutcome {
+    let outcome = match state.st {
+        St::Octal2 | St::Octal3 | St::Hex2 => DecodeOutcome::Byte(state.pending),
+        St::Ground => DecodeOutcome::Nothing,
+        _ => DecodeOutcome::Invalid,
+    };
+    // Any other state is a half-written sequence; the machine goes back to the
+    // ground either way, because `unvis(1)`'s flush is the last call it makes.
+    state.st = St::Ground;
+    outcome
+}
+
+/// The whole-stream form, C's `strunvisx` seen from the command side: drive the
+/// machine byte by byte, follow every retry the same way `unvis(1)`'s `goto again`
+/// does, and restart silently where it would warn.
+pub fn decode(input: &[u8], options: &DecodeOptions) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut state = DecodeState::default();
+    for &byte in input {
+        let mut current = Some(byte);
+        while let Some(pending) = current.take() {
+            match unvis_byte(pending, &mut state, options) {
+                DecodeOutcome::Byte(value) => out.push(value),
+                DecodeOutcome::ByteAndRetry(value) => {
                     out.push(value);
-                    cursor -= 1;
-                    st = St::Ground;
+                    current = Some(pending);
                 }
-            }
-            St::Octal3 => {
-                if (b'0'..=b'7').contains(&c) {
-                    value = (value << 3) | (c - b'0');
-                    // A completed octal run emits its byte right away
-                    // and stays ready for the next one.
-                    out.push(value);
-                    st = St::Ground;
-                } else {
-                    out.push(value);
-                    cursor -= 1;
-                    st = St::Ground;
-                }
+                DecodeOutcome::Nothing => {}
+                DecodeOutcome::Invalid => state = DecodeState::default(),
             }
         }
     }
+    if let DecodeOutcome::Byte(value) = unvis_end(&mut state) {
+        out.push(value);
+    }
     out
+}
+
+/// Return to the ground state having assembled `value`.
+fn ground_byte(state: &mut DecodeState, value: u8) -> DecodeOutcome {
+    state.pending = value;
+    state.st = St::Ground;
+    DecodeOutcome::Byte(value)
+}
+
+fn is_octal(byte: u8) -> bool {
+    byte.is_ascii_digit() && byte <= b'7'
+}
+
+fn is_hex_digit(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+
+/// The C's MIME-side digit test (`unvis.c:404,413`): a hex digit that is either a
+/// decimal digit or an uppercase letter.
+fn is_upper_hex(byte: u8) -> bool {
+    is_hex_digit(byte) && (byte.is_ascii_digit() || byte.is_ascii_uppercase())
+}
+
+/// `xtod` (`unvis.c:79`): fold the case first, so `%4a` and `%4A` both read 0x4A.
+fn from_hex(byte: u8) -> u8 {
+    if byte.is_ascii_digit() {
+        byte - b'0'
+    } else {
+        (byte.to_ascii_lowercase() - b'a') + 10
+    }
+}
+
+/// `XTOD` (`unvis.c:80`): no case folding; it is only ever reached after
+/// [`is_upper_hex`] has rejected a lowercase digit.
+fn from_upper_hex(byte: u8) -> u8 {
+    if byte.is_ascii_digit() {
+        byte - b'0'
+    } else {
+        (byte - b'A') + 10
+    }
 }
 
 #[cfg(test)]
@@ -974,14 +1173,75 @@ mod tests {
         for byte in 0x00..=0xFFu8 {
             let options = VisOptions::default();
             let encoded = encode(&[byte], &options);
-            let decoded = decode(&encoded);
+            let decoded = decode(encoded.as_bytes(), &DecodeOptions::default());
             assert_eq!(decoded, vec![byte], "byte {:#04x} via {:?}", byte, encoded);
         }
     }
 
     #[test]
+    fn test_decode_reads_hex_and_the_flag_gated_escapes() {
+        // `\x` is recognized without any flag (`unvis.c:305-307`), while `%` and `=`
+        // only introduce an escape in their own mode; outside it they are literal
+        // bytes that the ground state emits (`:226-246`).
+        let plain = DecodeOptions::default();
+        assert_eq!(decode(b"\\x41", &plain), vec![0x41]);
+        assert_eq!(decode(b"\\x", &plain), vec![]); // an incomplete run is bad input
+        assert_eq!(decode(b"%41", &plain), b"%41".to_vec());
+        assert_eq!(decode(b"=41", &plain), b"=41".to_vec());
+        // HTTP accepts either hex case; MIME demands uppercase and treats a
+        // lowercase digit as a decoding error, not as the same byte spelled
+        // differently (`xtod` against `XTOD`, unvis.c:79-80,404,413).
+        let http = DecodeOptions {
+            http1808: true,
+            ..DecodeOptions::default()
+        };
+        assert_eq!(decode(b"%41%4b", &http), vec![0x41, 0x4B]);
+        // `xtod` folds the case (`unvis.c:79`), so an uppercase letter after `%` and
+        // after `\x` reads the same as its lowercase twin — without the fold the
+        // uppercase digit would land far outside 0..15.
+        assert_eq!(decode(b"%4A%4b", &http), vec![0x4A, 0x4B]);
+        assert_eq!(decode(b"\\x4A", &plain), vec![0x4A]);
+        assert_eq!(decode(b"\\x4a", &plain), vec![0x4A]);
+        assert_eq!(decode(b"a%z", &http), vec![b'a', 0, b'z']);
+        let mime = DecodeOptions {
+            mime: true,
+            ..DecodeOptions::default()
+        };
+        assert_eq!(decode(b"=4A=41", &mime), vec![0x4A, 0x41]);
+        assert_eq!(decode(b"=4a", &mime), vec![]);
+        // `-e` takes the backslash away as an introducer, so every byte that follows
+        // is literal text (`VIS_NOESCAPE` in the ground state, `:228-230`).
+        let no_escape = DecodeOptions {
+            no_escape: true,
+            ..DecodeOptions::default()
+        };
+        assert_eq!(decode(b"\\101", &no_escape), b"\\101".to_vec());
+        // Quoted-printable's soft line break: an `=` before a line end disappears,
+        // and a run of line ends after it is eaten too (`S_EATCRNL`, `:421-433`).
+        assert_eq!(decode(b"ab=\ncd", &mime), b"abcd".to_vec());
+        assert_eq!(decode(b"ab=\r\n\ncd", &mime), b"abcd".to_vec());
+    }
+
+    #[test]
+    fn test_decode_flushes_a_short_run_at_end_of_input() {
+        // The final flush finishes a one- or two-digit octal run and a one-digit hex
+        // run, adds nothing from the ground state, and drops a half-written meta or
+        // control sequence without a word (`unvis.c:218-231` against the command's
+        // `usr.bin/unvis/unvis.c:137-139`, which only looks for a finished byte).
+        let options = DecodeOptions::default();
+        assert_eq!(decode(b"\\1", &options), vec![0x01]);
+        assert_eq!(decode(b"\\12", &options), vec![0x0A]);
+        assert_eq!(decode(b"\\x4", &options), vec![0x04]);
+        assert_eq!(decode(b"\\M", &options), vec![]);
+        assert_eq!(decode(b"abc", &options), b"abc".to_vec());
+    }
+
+    #[test]
     fn test_decode_octal_runs() {
-        assert_eq!(decode("\\101\\010"), vec![0x41, 0x08]);
+        assert_eq!(
+            decode(b"\\101\\010", &DecodeOptions::default()),
+            vec![0x41, 0x08]
+        );
     }
 
     #[test]
@@ -989,12 +1249,15 @@ mod tests {
         // unvis only starts an escape on the backslash; a bare "M-^?"
         // is four literal characters (the C ground state emits every
         // non-backslash byte unchanged).
-        assert_eq!(decode("M-^?"), b"M-^?");
+        assert_eq!(decode(b"M-^?", &DecodeOptions::default()), b"M-^?".to_vec());
         // The canonical 0xFF encoding: backslash, M (meta), caret, ?.
-        let escaped = "\\M^?".as_bytes();
-        assert_eq!(decode(std::str::from_utf8(escaped).unwrap()), vec![0xFF]);
+        let escaped = b"\\M^?";
+        assert_eq!(decode(escaped, &DecodeOptions::default()), vec![0xFF]);
         // The dashed form decodes as two bytes per S_META1.
-        assert_eq!(decode("\\M-^?"), vec![0xDE, 0x3F]);
-        assert_eq!(decode("\\^I"), vec![0x09]);
+        assert_eq!(
+            decode(b"\\M-^?", &DecodeOptions::default()),
+            vec![0xDE, 0x3F]
+        );
+        assert_eq!(decode(b"\\^I", &DecodeOptions::default()), vec![0x09]);
     }
 }

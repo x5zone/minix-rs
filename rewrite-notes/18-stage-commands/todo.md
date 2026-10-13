@@ -250,6 +250,67 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十六接上 `unvis` 的 `-e`/`-h`/`-m` 三面解码旗标，并把解码器改成字节驱动的唯一真值**
+  （`2026-10-14`，`claim/UNVIS-FLAGS-qoder` @ 基线 `d53c2d311`，单域三线 commands/textfilter，无跨界）：
+  接回批次二百一十五登记的①（07 篇 unvis 行的「HTTP/MIME 旗标族 `-e/-H/-h/-m` 显式拒待批」）。
+  **开工前的两条改前读数都是对 C 的事实缺口，用真二进制现场取证**（`cargo build --bin unvis` 后直接喂管道）：
+  ① `printf 'a\xffb' | unvis` 打出**空**——执行侧写的是 `core::str::from_utf8(&input).unwrap_or("")`，
+  一段非法 UTF-8 就让整档输入作废，而 C 的 `process()` 逐 `getc` 拿的是字节，`a\xffb` 三个字节都该原样送出；
+  ② `printf '\\x41' | unvis` 打出 `x41`——C 的 `S_START` 有一支 `case 'x': → S_HEX`（`lib/libc/gen/unvis.c:305-307`），
+  **不需要任何旗标**就该把 `\x41` 解成 0x41，本壳的移植里没有这一支（也没有 `S_HEX*` 三态）。
+  **三条路**：甲、只补旗标、`decode` 仍收 `&str`——上面两条错原样留着，且入参形态本身就挡在字节语义前面；
+  乙、库里再写一个 per-byte 版给命令用、`decode` 继续存在——同一台状态机两份实现，分岔无法被发现，
+  正是本项目反复登记的「第二真值」病形；丙（采）：把 per-byte 的 `unvis_byte`/`unvis_end` 做成唯一真值，
+  `decode` 降为薄封装（逐字节驱动 + 静默重启，对应 C 的 `strunvisx` 视角），入参改 `&[u8]`，
+  执行侧照 C 的 `process()` 自己驱动以便报 offset。丙另有一处红利：`decode` 与 `unvis(1)` 现在**必然**同步，
+  库测的结论可直接引到进程面。
+  **照 C 落实的细节**（逐条带锚点）：`UNVIS_VALIDPUSH` 让 `offset` 不推进——C 的 `offset++` 排在 `getc` 那一侧，
+  `goto again` 重投同一字符时不再计数（`usr.bin/unvis/unvis.c:113-124`）；`UNVIS_SYNBAD` 报
+  `unvis: <名>: offset: N: can't decode` 后 `state = 0` 续跑，且**报错的那个字节随失败一起被吞掉**（不重投），
+  `warnx` 不是 `errx` 所以退码不动（`:126-128`）；结尾的 `UNVIS_END` 冲刷只认成品字节，半个未完成的转义
+  序列**无声**丢弃——C 那一句没有 `switch`，只是 `if (... == UNVIS_VALID) putchar`（`:137-139`）；
+  并用判据按 C 的 `switch (eflags & (VIS_HTTP1808|VIS_HTTP1866|VIS_MIMESTYLE))` 只查三种组合、
+  `-e` 不参与，位置在整轮选项循环之后、开任何档之前，因此它盖过「文件读不到」（`:80-89`）；
+  开档失败只 `warn`、程序恒退 `EXIT_SUCCESS`（`:91-104`，与 vis 的 `rval = 1` 相反，别照搬）。
+  **两张十六进制表的不对称是格式辨认的依据而不是笔误**：`xtod`（`unvis.c:79`）先折大小写，
+  所以 `%4A` 与 `%4a` 同值；`XTOD`（`:80`）不折，且 MIME 的数字判据是
+  `isxdigit(uc) && (isdigit(uc) || isupper(uc))`——`=4a` 在 C 里是**解码错误**，不是同一个字节的另一种写法。
+  本壳备两张表（`from_hex`/`from_upper_hex`）与一个 `is_upper_hex`，注释点明这一点。
+  **拆片**：`-H`（`VIS_HTTP1866`）仍显式拒绝，它要 `unvis.c:85-196` 那张一百项的实体名表与
+  `S_AMP`/`S_NUMBER`/`S_STRING` 三态（`state` 的高字节是表内下标，`GS`/`SS`/`GI` 三个宏就是为它设计的），
+  规模足以单独一轮，已在规划表记为 20b。
+  三件套：`cargo test -p minix-textfilter --lib` → **424 passed / 0 failed**（基线 422，新增
+  `test_decode_reads_hex_and_the_flag_gated_escapes` 与
+  `test_decode_flushes_a_short_run_at_end_of_input`）；新建第 6 道端到端门
+  `cargo test -p minix-textfilter --test unvis_face` → **9 passed / 0 failed**（真进程 + 真管道 + 真文件：
+  语法回环、0xFF 直通（档与管道两路都测）、`%`/`=` 无旗标即字面、`-e` 让反斜杠失去引导符身份、
+  MIME 软换行、坏序列的 offset 报文与续跑、开不了的档不改善、字母聚簇与 `--` 与并用判据、
+  集外字母报 usage）；`vis_face` 19/0、head 8 / tail 10 / uniq 10 / cmp 10 全不动；
+  `cargo test -p minix-textfilter` 现有 48 个测试目标全 ok、合计 539 passed、零 FAILED。九枚金样全部按 C
+  状态机手推，一次通过；一处初版手推错被 runner 当场翻红并改正（`ab=x` 以为 `x` 会落回文本，实则
+  随解码失败一起被吞，正确期望是 `ab` 加一行 offset 4 的告警）。
+  **十枚变异负控**（每枚先断言源文件确被改、复位后 md5 与变异前逐字相等）：去掉 `\x` 支路 → 库内 2 枚 +
+  （补上端到端 `\x41\x4b` 断言后）端到端同测亦翻红；MIME 接受小写十六进制 → 库内 1 枚；`xtod` 不再折大小写 →
+  **首轮十枚里唯一没咬住的一枚**，原因是我的样例只在小写字母后 `%` 的用例上跑，折与不折同值；补
+  `%4A`、`\x4A`、`\x4a` 三枚断言后同一变异当场 FAILED（test-audit 维度四「无效断言」的一例）；
+  软换行只吃一个行末 → 库内 1 + 端到端 1；`-e` 守卫失效 → 库内 1 + 端到端 2；`%` 不受旗标门 → 库内 2 +
+  端到端 1；终局冲刷不再完成一位八进制 → 库内 1；并用判据取消 → 端到端 1；重投字节也被计入 offset → 端到端 2；
+  解码失败时改判为重投 → 端到端 2（这枚正是「`ab=x` 期望 `ab`」那条断言的牙）。
+  门禁：容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` → Finished 零 error，容器内
+  `cargo test -j 1 -p minix-textfilter` 的 48 个测试目标全 ok、FAILED 计数 0；三架构
+  `cargo build -p minix-textfilter --bins --target {x86_64-unknown-none, aarch64-unknown-none,
+  riscv64gc-unknown-none-elf}` 三台零 error；clippy 指向 `src/vis.rs`、`src/bin/unvis.rs`、
+  `tests/unvis_face.rs` 的告警计数 0；`rustfmt --edition 2024 --check` 三文件零漂移；
+  `bash tools/pattern-gate.sh --diff` → PASS=17 FAIL=0 SKIP=1；`tools/doc-style-lint.sh --diff` error 0。
+  核实日 `2026-10-14`；基线 `d53c2d311`。
+  **登记不执行**：①`-H` 实体腿（规划表 20b）；②`unvis` 的 `warn` 报文缺 `strerror` 后缀
+  （与 cmp/uniq/tail/vis 同一条 C 差异，共用一处修）；③`src/window.rs:679-680` 两条 unused import
+  （既存存量）；④多字节宽字符路径（本壳按字节）；⑤超宽 chunk 的折叠终止分岔（批次二百一十四登记）；
+  ⑥真机 open 腿归 C-57/E5。
+  **顺带闭掉一条旧登记**：批次二百一十三与二百一十五登记的「`decode()` 里两枚 `#[cfg(test)]`
+  `eprintln!("DBG …")` 遗留调试输出」位于本轮整体替换掉的解码函数体内，随重写一并消失
+  （`grep -n DBG src/vis.rs` 现无命中），不需要另开卫生轮。
+
 - ✅ **批次二百一十五接上 `vis` 的 `-h`/`-m` 两枚编码样式旗标（C 的选项串至此全部接完）**
   （`2026-10-14`，`claim/VIS-HTTPMIME-qoder` @ 基线 `192155d34`，单域三线 commands/textfilter，无跨界）：
   接回批次二百一十三③与批次二百一十四①留下的最后两枚字母。真源形状：`getvisfun`
