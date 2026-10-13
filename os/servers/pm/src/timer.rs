@@ -822,5 +822,16 @@ mod tests {
         assert_eq!(VT_PROF, 2);
         assert_eq!(SIGALRM, 14);
         assert_eq!(US, 1_000_000);
+        // itimer-family signal numbers (`sys/sys/signal.h:78-79`)
+        assert_eq!(SIGVTALRM, 26);
+        assert_eq!(SIGPROF, 27);
+        // supported interval-timer count (`servers/pm/const.h:17`)
+        assert_eq!(NR_ITIMERS, 3);
+        // ALARM_ON drives the one-shot disarm path (`servers/pm/mproc.h:91`)
+        assert_eq!(RemainingFlags::ALARM_ON.bits(), 0x00010);
+        // Excluded (not single header literals): `MAX_SECS`/`TMRDIFF_MAX` are
+        // derived composites (`servers/pm/const.h:15` `MAX_SECS =
+        // TMRDIFF_MAX/system_hz`); their arithmetic is pinned by the
+        // tick-conversion behavior tests above rather than a literal compare.
     }
 }

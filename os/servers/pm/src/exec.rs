@@ -444,5 +444,8 @@ mod tests {
     fn test_constants_match_c() {
         assert_eq!(crate::mproc::RemainingFlags::PARTIAL_EXEC.bits(), 0x4000);
         assert_eq!(crate::mproc::RemainingFlags::TAINTED.bits(), 0x40000);
+        // `RemainingFlags::ALARM_ON` (`servers/pm/mproc.h:91`) is pinned in
+        // `timer.rs` (its consumer), so all three locally-owned flags are
+        // covered across the PM `test_constants_match_c` family.
     }
 }

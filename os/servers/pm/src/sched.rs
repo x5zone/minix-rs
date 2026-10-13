@@ -672,6 +672,8 @@ mod tests {
         assert_eq!(USER_Q, 7);
         assert_eq!(USER_QUANTUM, 200);
         assert_eq!(SCHED_PROC_NR, Endpoint(4));
+        // `getsetpriority` only accepts this `which` (`sys/sys/resource.h:46`)
+        assert_eq!(PRIO_PROCESS, 0);
     }
 
     /// C: `com.h:806` `SCHEDULING_SET_NICE = SCHEDULING_BASE+4` = 0xF04。

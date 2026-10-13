@@ -462,6 +462,8 @@ mod tests {
         assert_eq!(NGROUPS_MAX, 16);
         assert_eq!(crate::mproc::RemainingFlags::TAINTED.bits(), 0x40000);
         assert_eq!(GID_MAX, 2147483647);
+        // `SUPER_USER` = `(uid_t) 0` (`minix/include/minix/const.h:44`)
+        assert_eq!(SUPER_USER, 0);
     }
 
     fn mk_running(table: &mut ProcTable, slot: usize) {

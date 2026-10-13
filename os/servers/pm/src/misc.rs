@@ -23,8 +23,14 @@ pub const UTS_TBL_LEN: usize = 8;
 /// `MAX_LOCAL_PARAMS` (`misc.c:297` 2).
 pub const MAX_LOCAL_PARAMS: usize = 2;
 
-/// `RB_POWERDOWN` (`reboot.h`).
-pub const RB_POWERDOWN: i32 = 1 << 0;
+/// `RB_POWERDOWN` — power off (`sys/sys/reboot.h:54` = `(RB_HALT|0x800)`,
+/// `RB_HALT = 0x8` at `:46`), i.e. `0x808`. This bit pattern crosses the wire
+/// verbatim from `reboot(2)`'s `how`, and `do_reboot` gates the power-off leg
+/// on `how & RB_POWERDOWN` (C `misc.c:210`), so it MUST equal C — the 2026-10-13
+/// constant audit found the port had `1 << 0`, which made the real wire value
+/// (`0x808`) fall through the gate (system halted/rebooted instead of powering
+/// off) and a plain non-power flag (`0x1`) spuriously take the leg.
+pub const RB_POWERDOWN: i32 = 0x808;
 
 // P-ALL-06 收敛（2026-10-06）：本地 SI_PROC_TAB/SI_CALL_STATS 副本删除，
 // 改用 minix_types::ipc::sysinfo 单一权威。历史记录（E-ISPROD 对账挖出的
@@ -841,12 +847,14 @@ mod tests {
         killed: bool,
         stopped: bool,
         told: bool,
+        powered: bool,
     }
     impl RebootCtl for TestReboot {
         fn set_abort(&mut self, how: i32) {
             self.abort = how;
         }
         fn try_power_off(&mut self) -> bool {
+            self.powered = true;
             false
         }
         fn broadcast_kill(&mut self, _table: &mut ProcTable, _caller: UserSlot) {
@@ -983,6 +991,7 @@ mod tests {
             killed: false,
             stopped: false,
             told: false,
+            powered: false,
         };
         assert_eq!(
             do_reboot(&mut table, UserSlot::new(0), 0, &mut ctl).unwrap_err(),
@@ -995,6 +1004,37 @@ mod tests {
         assert!(ctl.stopped);
         assert!(ctl.told);
         assert_eq!(ctl.abort, RB_POWERDOWN);
+    }
+
+    #[test]
+    fn test_reboot_powerdown_wire_value_gates_power_off() {
+        // Regression lock (2026-10-13 C-mirror constant audit): `how` arrives
+        // verbatim from `reboot(2)` carrying C's `RB_POWERDOWN` = 0x808. A wrong
+        // port constant (`1 << 0`) dropped the power-off leg for 0x808 and took
+        // it spuriously for a plain non-power bit — both are pinned here.
+        let mut table = ProcTable::new();
+        mk_running(&mut table, 0, 1000);
+        table.procs[0].resources.privilege = Privilege::User(Credentials::new(0, 0));
+        // C wire value 0x808 (RB_HALT|0x800) → power-off leg taken.
+        let mut ctl = TestReboot {
+            abort: 0,
+            killed: false,
+            stopped: false,
+            told: false,
+            powered: false,
+        };
+        do_reboot(&mut table, UserSlot::new(0), 0x808, &mut ctl).unwrap();
+        assert!(ctl.powered, "C RB_POWERDOWN (0x808) must take the power-off leg");
+        // A flag carrying neither RB_HALT(0x8) nor 0x800 → power-off leg skipped.
+        let mut ctl2 = TestReboot {
+            abort: 0,
+            killed: false,
+            stopped: false,
+            told: false,
+            powered: false,
+        };
+        do_reboot(&mut table, UserSlot::new(0), 0x1, &mut ctl2).unwrap();
+        assert!(!ctl2.powered, "non-power flag must not trigger power-off");
     }
 
     #[test]
@@ -1217,6 +1257,16 @@ mod tests {
         assert_eq!(SI_CALL_STATS, 9);
         assert_eq!(RUSAGE_SELF, 0);
         assert_eq!(RUSAGE_CHILDREN, -1);
+        // statistical-profiling request codes (`minix/include/minix/profile.h:11-12`)
+        assert_eq!(PROF_START, 0);
+        assert_eq!(PROF_STOP, 1);
+        // Excluded (not single header literals): `UTS_VAL_*` are Rust-side
+        // default strings, `MONITOR_CAP` is a PM-internal cap, and
+        // `PM*PARAM` are `ioc()` composites.
+        // `RB_POWERDOWN` IS a C bit pattern (`sys/sys/reboot.h:54`,
+        // `RB_HALT|0x800` = 0x808); the audit corrected the port from `1 << 0`
+        // and this pin guards against re-drift (regression in the mock below).
+        assert_eq!(RB_POWERDOWN, 0x808);
     }
 
     // Ensure traits have ≥2 impl for Gate D
@@ -1230,7 +1280,7 @@ mod tests {
         let _ = TestSysInfoAlt { _a: 0 };
         //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
         #[allow(clippy::let_underscore_must_use)]
-        let _ = TestReboot { abort: 0, killed: false, stopped: false, told: false };
+        let _ = TestReboot { abort: 0, killed: false, stopped: false, told: false, powered: false };
         //[SD19-gate] SD-19: PM send/notify/reply 发后即忘
         #[allow(clippy::let_underscore_must_use)]
         let _ = AltReboot;
