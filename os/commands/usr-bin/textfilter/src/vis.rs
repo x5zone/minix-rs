@@ -452,6 +452,9 @@ pub struct DecodeOptions {
     pub no_escape: bool,
     /// `-h` (`VIS_HTTP1808`): `%hh` names a byte, in either hex case.
     pub http1808: bool,
+    /// `-H` (`VIS_HTTP1866`): `&#nn;` and `&name;` entity references
+    /// (`lib/libc/gen/unvis.c:431-474`).
+    pub http1866: bool,
     /// `-m` (`VIS_MIMESTYLE`): `=HH` names a byte in *uppercase* hex, and an `=`
     /// before a line end is quoted-printable's soft break.
     pub mime: bool,
@@ -474,6 +477,9 @@ enum St {
     Mime1,
     Mime2,
     EatCrnl,
+    Amp,
+    Number,
+    Entity,
 }
 
 /// The decoder's carried values. C keeps them in two places that never diverge in
@@ -487,6 +493,10 @@ enum St {
 pub struct DecodeState {
     st: St,
     pending: u8,
+    /// How far into an entity name the walk has got. C packs it into the top byte of
+    /// the same `int state` through `GS`/`SS`/`GI` (`unvis.c:212-216`), and only the
+    /// `&name;` leg ever reads it.
+    position: u8,
 }
 
 impl Default for DecodeState {
@@ -494,6 +504,7 @@ impl Default for DecodeState {
         Self {
             st: St::Ground,
             pending: 0,
+            position: 0,
         }
     }
 }
@@ -531,6 +542,10 @@ pub fn unvis_byte(byte: u8, state: &mut DecodeState, options: &DecodeOptions) ->
             }
             if options.http1808 && byte == b'%' {
                 state.st = St::Hex1;
+                return DecodeOutcome::Nothing;
+            }
+            if options.http1866 && byte == b'&' {
+                state.st = St::Amp;
                 return DecodeOutcome::Nothing;
             }
             if options.mime && byte == b'=' {
@@ -683,6 +698,39 @@ pub fn unvis_byte(byte: u8, state: &mut DecodeState, options: &DecodeOptions) ->
                 DecodeOutcome::Invalid
             }
         }
+        St::Amp => {
+            state.pending = 0;
+            state.position = 0;
+            if byte == b'#' {
+                state.st = St::Number;
+                return DecodeOutcome::Nothing;
+            }
+            // `S_AMP` sets the state and falls straight into `S_STRING`, so the first
+            // letter of the name is already consumed here (`unvis.c:431-439`).
+            state.st = St::Entity;
+            decode_entity(byte, state)
+        }
+        St::Entity => decode_entity(byte, state),
+        St::Number => {
+            if byte == b';' {
+                let value = state.pending;
+                state.st = St::Ground;
+                return DecodeOutcome::Byte(value);
+            }
+            if !byte.is_ascii_digit() {
+                state.st = St::Ground;
+                return DecodeOutcome::Invalid;
+            }
+            // C accumulates with `*cp += (*cp * 10) + uc - '0'` (`unvis.c:468-474`),
+            // which adds the new digit to a value that has already multiplied the old
+            // one: `&#65;` lands on 0 + 6 = 6, then 6 + 65 = 71, and yields `G` where
+            // the reader expects `A`. That is the external behavior of this C, so it
+            // is reproduced here and called out in
+            // `rewrite-notes/18-stage-commands/07-text-filter.md`.
+            let tens = state.pending.wrapping_mul(10).wrapping_add(byte - b'0');
+            state.pending = state.pending.wrapping_add(tens);
+            DecodeOutcome::Nothing
+        }
         St::EatCrnl => match byte {
             // A run of line ends after the soft break is all eaten; `=` starts a new
             // escape; anything else belongs to the text.
@@ -741,6 +789,166 @@ pub fn decode(input: &[u8], options: &DecodeOptions) -> Vec<u8> {
         out.push(value);
     }
     out
+}
+
+/// RFC 1866's named entities, copied in `lib/libc/gen/unvis.c:85-196` **in that
+/// order**, because the order is part of the algorithm: `S_STRING` scans the table
+/// forward from the entry the previous letter landed on and stops at the first name
+/// whose next character matches, so a shuffled table would accept or reject a
+/// different set of names. Values above 126 stay in the byte's range exactly as C's
+/// `uint8_t` field does.
+const NAME_VALUES: &[(&str, u8)] = &[
+    ("AElig", 198),
+    ("Aacute", 193),
+    ("Acirc", 194),
+    ("Agrave", 192),
+    ("Aring", 197),
+    ("Atilde", 195),
+    ("Auml", 196),
+    ("Ccedil", 199),
+    ("ETH", 208),
+    ("Eacute", 201),
+    ("Ecirc", 202),
+    ("Egrave", 200),
+    ("Euml", 203),
+    ("Iacute", 205),
+    ("Icirc", 206),
+    ("Igrave", 204),
+    ("Iuml", 207),
+    ("Ntilde", 209),
+    ("Oacute", 211),
+    ("Ocirc", 212),
+    ("Ograve", 210),
+    ("Oslash", 216),
+    ("Otilde", 213),
+    ("Ouml", 214),
+    ("THORN", 222),
+    ("Uacute", 218),
+    ("Ucirc", 219),
+    ("Ugrave", 217),
+    ("Uuml", 220),
+    ("Yacute", 221),
+    ("aacute", 225),
+    ("acirc", 226),
+    ("acute", 180),
+    ("aelig", 230),
+    ("agrave", 224),
+    ("amp", 38),
+    ("aring", 229),
+    ("atilde", 227),
+    ("auml", 228),
+    ("brvbar", 166),
+    ("ccedil", 231),
+    ("cedil", 184),
+    ("cent", 162),
+    ("copy", 169),
+    ("curren", 164),
+    ("deg", 176),
+    ("divide", 247),
+    ("eacute", 233),
+    ("ecirc", 234),
+    ("egrave", 232),
+    ("eth", 240),
+    ("euml", 235),
+    ("frac12", 189),
+    ("frac14", 188),
+    ("frac34", 190),
+    ("gt", 62),
+    ("iacute", 237),
+    ("icirc", 238),
+    ("iexcl", 161),
+    ("igrave", 236),
+    ("iquest", 191),
+    ("iuml", 239),
+    ("laquo", 171),
+    ("lt", 60),
+    ("macr", 175),
+    ("micro", 181),
+    ("middot", 183),
+    ("nbsp", 160),
+    ("not", 172),
+    ("ntilde", 241),
+    ("oacute", 243),
+    ("ocirc", 244),
+    ("ograve", 242),
+    ("ordf", 170),
+    ("ordm", 186),
+    ("oslash", 248),
+    ("otilde", 245),
+    ("ouml", 246),
+    ("para", 182),
+    ("plusmn", 177),
+    ("pound", 163),
+    ("quot", 34),
+    ("raquo", 187),
+    ("reg", 174),
+    ("sect", 167),
+    ("shy", 173),
+    ("sup1", 185),
+    ("sup2", 178),
+    ("sup3", 179),
+    ("szlig", 223),
+    ("thorn", 254),
+    ("times", 215),
+    ("uacute", 250),
+    ("ucirc", 251),
+    ("ugrave", 249),
+    ("uml", 168),
+    ("uuml", 252),
+    ("yacute", 253),
+    ("yen", 165),
+    ("yuml", 255),
+];
+
+/// One character of an entity name, with C's array semantics: `nv[ia].name` is a
+/// `char[7]` whose terminator reads as zero, and reading past the name is how the
+/// walk recognises the end of it (`unvis.c:448,452`).
+fn name_byte(entry: &str, at: usize) -> u8 {
+    entry.as_bytes().get(at).copied().unwrap_or(0)
+}
+
+/// C's `S_STRING` (`lib/libc/gen/unvis.c:449-467`): `pending` carries the table
+/// index while a name is being matched and the finished byte once it has matched —
+/// the same variable plays both roles in C too, through `*cp`. `position` is how far
+/// into the name the walk has got, and a `;` reads as the name's terminator.
+fn decode_entity(byte: u8, state: &mut DecodeState) -> DecodeOutcome {
+    let mut index = state.pending as usize;
+    let position = state.position as usize;
+    let last = if position == 0 {
+        0
+    } else {
+        name_byte(NAME_VALUES[index].0, position - 1)
+    };
+    let wanted = if byte == b';' { 0 } else { byte };
+
+    while index < NAME_VALUES.len() {
+        if position != 0 && name_byte(NAME_VALUES[index].0, position - 1) != last {
+            // Past the block of names that share the prefix already matched: no
+            // entry can continue it, so C goes straight to `bad`.
+            state.st = St::Ground;
+            state.position = 0;
+            return DecodeOutcome::Invalid;
+        }
+        if name_byte(NAME_VALUES[index].0, position) == wanted {
+            break;
+        }
+        index += 1;
+    }
+    if index == NAME_VALUES.len() {
+        state.st = St::Ground;
+        state.position = 0;
+        return DecodeOutcome::Invalid;
+    }
+    if wanted != 0 {
+        state.pending = index as u8;
+        state.position = (position + 1) as u8;
+        return DecodeOutcome::Nothing;
+    }
+    let value = NAME_VALUES[index].1;
+    state.pending = value;
+    state.position = 0;
+    state.st = St::Ground;
+    DecodeOutcome::Byte(value)
 }
 
 /// Return to the ground state having assembled `value`.
@@ -1154,6 +1362,75 @@ mod tests {
                 byte
             );
         }
+    }
+
+    #[test]
+    fn test_http1866_walks_the_entity_table_in_order() {
+        // `S_AMP` falls into `S_STRING`, which scans the table *forward from the entry
+        // the previous letter landed on* (`lib/libc/gen/unvis.c:431-467`), so a `;`
+        // is what turns a partial match into a byte and an unknown name is a
+        // decoding error rather than literal text.
+        let entity = DecodeOptions {
+            http1866: true,
+            ..DecodeOptions::default()
+        };
+        assert_eq!(decode(b"&amp;", &entity), b"&".to_vec());
+        assert_eq!(decode(b"&lt;&gt;", &entity), b"<>".to_vec());
+        assert_eq!(decode(b"&nbsp;&copy;", &entity), vec![0xA0, 0xA9]);
+        // The table itself is C's, one hundred entries in C's order — and the order
+        // is part of the algorithm, so the count is asserted rather than trusted.
+        assert_eq!(
+            NAME_VALUES.len(),
+            100,
+            "lib/libc/gen/unvis.c:85-196 的表项个数"
+        );
+        assert_eq!(NAME_VALUES[0], ("AElig", 198), "表的首项");
+        assert_eq!(NAME_VALUES[99], ("yuml", 255), "表的末项");
+        // Without the flag the ampersand is just a byte, as `%` and `=` are.
+        assert_eq!(
+            decode(b"&amp;", &DecodeOptions::default()),
+            b"&amp;".to_vec()
+        );
+    }
+
+    #[test]
+    fn test_numeric_entities_reproduce_the_c_accumulation_step_for_step() {
+        // C writes `*cp += (*cp * 10) + uc - '0'` (`lib/libc/gen/unvis.c:468-474`),
+        // which multiplies the accumulated value *and* adds it again: two digits land
+        // on `d1 + (d1*10 + d2)`, not on `d1*10 + d2`. So `&#65;` is `G` (0x47), not
+        // `A` — reproduced because it is this C's observable behavior, and called out
+        // in `rewrite-notes/18-stage-commands/07-text-filter.md`.
+        let entity = DecodeOptions {
+            http1866: true,
+            ..DecodeOptions::default()
+        };
+        assert_eq!(decode(b"&#65;", &entity), vec![0x47]);
+        assert_eq!(decode(b"&#48;", &entity), vec![52]);
+        // A single digit is unaffected, because the carried value is still zero when
+        // the first one arrives; `&#;` emits whatever is carried, which is zero.
+        assert_eq!(decode(b"&#7;", &entity), vec![0x07]);
+        assert_eq!(decode(b"&#;", &entity), vec![0x00]);
+        // A non-digit inside the number is a decoding error, and the byte that broke
+        // it is consumed with the sequence — but the bytes after it are ordinary text
+        // again, semicolon included.
+        assert_eq!(decode(b"&#a;x", &entity), vec![b';', b'x']);
+    }
+
+    #[test]
+    fn test_a_broken_entity_name_reports_and_the_rest_of_the_run_survives() {
+        // `&bo`: the walk matched "brvbar"'s `b`, then `o` is neither `r` nor a name
+        // that still shares the matched prefix, so the loop hits `goto bad`
+        // (`unvis.c:449-457`) and the `o` disappears with it; `gus;` then decodes as
+        // ordinary bytes because the command resets to the ground state and carries
+        // on (`usr.bin/unvis/unvis.c:126-128`).
+        let entity = DecodeOptions {
+            http1866: true,
+            ..DecodeOptions::default()
+        };
+        assert_eq!(decode(b"&bogus;", &entity), b"gus;".to_vec());
+        // An entity name cut off by end of input is dropped without a word: the
+        // flush only accepts a finished octal or hex run (`unvis.c:218-231`).
+        assert_eq!(decode(b"&copy;&copy", &entity), vec![0xA9]);
     }
 
     #[test]

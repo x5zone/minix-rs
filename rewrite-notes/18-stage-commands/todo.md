@@ -250,6 +250,56 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十七接上 `unvis` 的 `-H` 实体腿（一百名表与 `&#nn;` 态），`unvis(1)` 的选项面至此无留白**
+  （`2026-10-14`，`claim/UNVIS-HTTP1866-qoder` @ 基线 `4a238068b`，单域三线 commands/textfilter，无跨界）：
+  接回批次二百一十六登记的①（规划表 20b）。真源三处：`lib/libc/gen/unvis.c:85-196` 的一百项
+  `nv[]`、`:431-467` 的 `S_AMP` 落入 `S_STRING` 的前缀扫描、`:468-474` 的 `S_NUMBER` 累加式。
+  **表的次序是算法的一部分**：`S_STRING` 不是二分查表，而是**从上一轮落到的表项接着往下扫**，
+  并且一旦发现扫过的项不再共享已匹配前缀就直接 `goto bad`（`:449-457`）。换序就会改变哪些名字
+  可被接受，所以本表逐字节照抄 C 的顺序，并断言项数（100）、首项 `("AElig", 198)` 与末项
+  `("yuml", 255)`——这三枚断言就是「表被重排或漏项」的哨兵。`;` 读作名字的终止符，
+  `name_byte` 越出名字末尾返回零正好对应 C 的 `char[7]` 数组终止位。
+  **C 的 `&#nn;` 有一个可复现的算术缺陷，本壳照做**：累加式是
+  `*cp += (*cp * 10) + uc - '0'`（`:473`），新数字加在**已经乘过一次的旧值**之上，
+  于是 `&#65;` 走 0+6 = 6、6+65 = 71，出来的是 `G` 而不是 `A`；`&#48;` 得 52。
+  真值优先序把「Minix3 C 源码行为」放在第一，故不在实现里悄悄修正，缺陷写进 07 篇 unvis 行，
+  要改需另立设计裁决（登记见下）。
+  **并用的判据补齐**：C 的 `switch (eflags & (VIS_HTTP1808|VIS_HTTP1866|VIS_MIMESTYLE))`
+  只列三种含 MIME 的组合，因此 `-h` 与 `-H` 并用是合法的——本轮把这条也钉成金样
+  （`-hH` 下 `%41&amp;` 得 `A&`，两个引导符同时生效）。
+  **状态形态的一处拆解**：C 把「名字匹配到第几个字母」塞进同一个 `int state` 的高字节
+  （`GS`/`SS`/`GI` 三个宏，`unvis.c:212-216`），本壳改为 `DecodeState::position` 字段，
+  而 `pending` 与 C 的 `*cp` 一样身兼二职（匹配中是表内下标、命中后是成品字节），
+  这层复用写进了注释，免得读者以为要多一个变量。
+  三件套：`cargo test -p minix-textfilter --lib` → **427 passed / 0 failed**（基线 424，新增
+  `test_http1866_walks_the_entity_table_in_order`、
+  `test_numeric_entities_reproduce_the_c_accumulation_step_for_step`、
+  `test_a_broken_entity_name_reports_and_the_rest_of_the_run_survives`）；
+  `--test unvis_face` → **10 passed / 0 failed**（基线 9，新增
+  `ampersand_flag_walks_the_hundred_name_entity_table`，并把并用判据的清单从 3 组扩到 6 组、
+  删掉 `-H` 的「not modelled」拒绝测）；`vis_face` 19/0 与 head 8 / tail 10 / uniq 10 / cmp 10 不动；
+  `cargo test -p minix-textfilter` 的 48 个测试目标全 ok、合计 543 passed、零 FAILED。
+  实体值 `&nbsp;`=0xA0、`&copy;`=0xA9、`&yuml;`=0xFF 这类高字节结果按字节写出（与本轮
+  上一片把解码改成字节驱动正好配套：这类值在 UTF-8 文本形态下会被拆成两字节）。
+  **十枚变异负控**（每枚先断言源文件确被改、复位后 md5 与变异前逐字相等）：`;` 不再当终止符 → 库内 2 +
+  端到端 2 FAILED；名字位置不推进 → 库内 2 + 端到端 2；每轮从头扫表（丢掉「从上一项往下扫」的语义）→
+  库内 2 + 端到端 2；未命中终止符就急着出字节 → 库内 2 + 端到端 2；`&#` 不再走数字态 → 库内 1 + 端到端 1；
+  **把 C 的算术缺陷「修好」** → 库内 `test_numeric_entities…` 与端到端实体门同时 FAILED（这枚是本轮最要紧的
+  一枚：它证明缺陷是被有意复现而非疏漏）；并用判据漏掉 `-H` → 端到端并用判据 FAILED；`&` 不受旗标门 →
+  库内 1 + 端到端 1；`name_byte` 越界不返回终止零 → 库内 2 + 端到端 2。
+  另有一枚**等价变异**如实登记：把 `if position != 0 && …` 的前缀一致性判据改成无条件执行，
+  全测试仍绿——因为 `position == 0` 时 `last` 恒为 0、越界读也恒为 0，两支同真值，
+  与 C 的 `if (is != 0 && …)` 短路完全一致。它不是漏测，是语义等价，故保留 C 形而不为它编造断言。
+  门禁：容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` → Finished 零 error，容器内
+  `cargo test -j 1 -p minix-textfilter` 的 48 个测试目标全 ok、FAILED 计数 0；三架构
+  `cargo build -p minix-textfilter --bins` 三台零 error；clippy 指向三文件告警 0（新测名首版含大写
+  旗标字母触发 `non_snake_case`，按建议改名）；`rustfmt --edition 2024 --check` 三文件零漂移；
+  `tools/doc-style-lint.sh --diff` error 0。核实日 `2026-10-14`；基线 `4a238068b`。
+  **登记不执行**：①`&#nn;` 的 C 算术缺陷要不要偏离，属设计裁决项（偏离须按三档术语在三处一致标注，
+  本轮不动）；②`unvis` 的 `warn` 报文缺 `strerror` 后缀（与 cmp/uniq/tail/vis 同条 C 差异）；
+  ③`src/window.rs:679-680` 两条 unused import（既存存量）；④多字节宽字符路径（本壳按字节）；
+  ⑤超宽 chunk 的折叠终止分岔（批次二百一十四登记）；⑥真机 open 腿归 C-57/E5。
+
 - ✅ **批次二百一十六接上 `unvis` 的 `-e`/`-h`/`-m` 三面解码旗标，并把解码器改成字节驱动的唯一真值**
   （`2026-10-14`，`claim/UNVIS-FLAGS-qoder` @ 基线 `d53c2d311`，单域三线 commands/textfilter，无跨界）：
   接回批次二百一十五登记的①（07 篇 unvis 行的「HTTP/MIME 旗标族 `-e/-H/-h/-m` 显式拒待批」）。

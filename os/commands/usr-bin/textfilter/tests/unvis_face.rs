@@ -198,6 +198,9 @@ fn flags_cluster_and_the_mix_is_refused_by_name() {
     for flags in [
         vec!["-m", "-h"],
         vec!["-hm"],
+        vec!["-m", "-H"],
+        vec!["-mH"],
+        vec!["-m", "-h", "-H"],
         vec!["-m", "-h", "missing-operand"],
     ] {
         let (out, status, err) = run(&flags, b"a");
@@ -216,6 +219,11 @@ fn flags_cluster_and_the_mix_is_refused_by_name() {
     let (out, status, err) = run(&["-e", "-m", "-h"], b"a");
     assert_eq!(status, 1, "stderr was {err:?}");
     assert_eq!(out, Vec::<u8>::new());
+    // And `-h` with `-H` is *not* refused: C's switch lists only the combinations
+    // that include MIME, so both HTTP introducers can be live at once.
+    let (out, status, err) = run(&["-hH"], b"%41&amp;");
+    assert_eq!(out, b"A&".to_vec(), "stderr was {err:?}");
+    assert_eq!(status, 0, "stderr was {err:?}");
 }
 
 #[test]
@@ -231,10 +239,35 @@ fn letters_outside_the_c_optstring_are_refused_with_usage() {
             "flag {flag} stderr was {err:?}"
         );
     }
-    // `-H` is a known letter whose leg this decoder has not grown: the hundred-name
-    // entity table of `lib/libc/gen/unvis.c:85-196`. It is refused, not ignored.
-    let (out, status, err) = run(&["-H"], b"a");
+    // `-H` (`VIS_HTTP1866`) is a known letter and now a modelled one, so nothing here
+    // reaches the usage line.
+}
+
+#[test]
+fn ampersand_flag_walks_the_hundred_name_entity_table() {
+    // `-H` decodes the entity references RFC 1866 names, through C's forward scan of
+    // the table in its stored order (`lib/libc/gen/unvis.c:431-467`).
+    let (out, status, err) = run(&["-H"], b"&amp;&lt;&gt;&nbsp;");
+    assert_eq!(out, vec![b'&', b'<', b'>', 0xA0], "stderr was {err:?}");
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(err, "");
+    // Without the flag the very same bytes are data.
+    assert_eq!(run(&[], b"&amp;").0, b"&amp;".to_vec());
+    // The table's tail is reachable too: `yuml` is the hundredth entry, and a name
+    // that no entry continues is a decoding error.
+    assert_eq!(run(&["-H"], b"&yuml;&sect;").0, vec![0xFF, 0xA7]);
+    // Numeric entities carry C's own arithmetic defect: `&#65;` accumulates to
+    // 6 + 65 = 71 and lands on `G`, not `A` (`lib/libc/gen/unvis.c:468-474`).
+    assert_eq!(run(&["-H"], b"&#65;").0, b"G".to_vec());
+    // An entity name that the walk cannot continue reports its offset, and the rest
+    // of the line survives: `&bo` fails on the `o` (offset 3), `gus;` is text.
+    let (out, status, err) = run(&["-H"], b"&bogus;");
+    assert_eq!(out, b"gus;".to_vec());
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(err, "unvis: <stdin>: offset: 3: can't decode\n");
+    // A name cut off by end of input is dropped without a word.
+    let (out, status, err) = run(&["-H"], b"&copy");
     assert_eq!(out, Vec::<u8>::new());
-    assert_eq!(status, 1);
-    assert!(err.contains("-H is not modelled"), "stderr was {err:?}");
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(err, "");
 }
