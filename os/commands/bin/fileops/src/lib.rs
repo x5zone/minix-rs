@@ -37,6 +37,7 @@
 // other module stays allocation free.
 extern crate alloc;
 
+pub mod chown;
 pub mod cook;
 pub mod cp;
 pub mod dents;
