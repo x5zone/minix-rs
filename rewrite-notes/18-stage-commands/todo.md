@@ -217,6 +217,24 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - ✅ **批次五十五完成：12 篇 `sleep` 接线**（`2026-10-10`，`claim/CMD-SLEEP-BIN-qoder`，单域三线 commands/proctools，无跨界）：落地缺失命令 `sleep`（暂停若干秒，真源 `minix3/bin/sleep/sleep.c` 159 行）。决定半新增 `minix_proctools::sleep`（无堆）——`plan` 忠实移植 `sleep.c:104-124` 的双路解析：先扫操作数有无非数字字节——无则整数路（`atol`，`<=0` → `NoSleep` 成退 0），有则小数路（`atof`，`<=0` → `Bad` 运 usage，否则 `floor`/小数拆 `secs`+`nanos`）。这个不对称是真实的：`"0"` 走整数→不睡退 0，而 `"0.0"` 走小数→报 usage。plan 以数据返回、交调用方跑 `nanosleep`。6 枚宿主测：整数秒/零不睡/小数拆分/非正拒绝/前导空格与符号走小数路/纳秒位截断。执行半 `src/bin/sleep.rs`：`sleep seconds` 单操作数（`getopt("")` 拒任意 `-x`），Bad→usage退1、NoSleep→退0、Sleep→`minix_sys::nanosleep(secs,nanos)`。三件套：`cargo test -p minix-proctools --lib sleep::`→6/0、全 crate `--lib`→40/0；freestanding x86_64-unknown-none --release（docker `minix-ci:1.94`）绿；clippy 触及文件零告警。**声明性留白**：`SIGINFO` 进度报告与 EINTR 剩余时长恢复循环（`sleep.c:126-136`）需信号处理注册、本树未接→nanosleep 只发一次；小数路不读指数/hex（`1e3`→1 非 1000）；真机 per-command 与 imgrd 播种归 `C-57`/E5。修法详见 `../18-stage-commands/todo.md` §6.1 批次五十五。
 - ✅ **批次五十六完成：06 篇 `chmod` 接线**（`2026-10-10`，`claim/CMD-MKDIR-RMDIR-BIN-qoder`，单域三线 commands/fileops，无跨界）：命令面干净纯项已穷尽（余下 fpr/ul/deroff/banner 是无 C 参照的超大/终端依赖过滤器，tty/mesg 需未封装 ttyname，touch/date-set 受时区纠缠），故改接 prepared-but-unwired：`minix_fileops::mode`（`apply_mode` 已完整移植 BSD setmode+getmode、八进制+符号 u/g/o/a · +-=· rwxXst，带 8 枚宿主测）**早存但无 bin**。本轮补 `src/bin/chmod.rs`：逐操作数 `stat(path)`取当前位 → `apply_mode(base, spec)` → `chmod_via(path, mode)`，对位 `chmod.c:215-216` 的 `getmode(set, st_mode)`+`change_mode`；`-[rwxstugo]` 裸参按 C `--optind` 纠正当模式非旗标（`chmod -r file` 去读位）、`-f` 遇错继续仅置退出码、`-v` 报每文件。退出码按是否失败。三件套：`cargo test -p minix-fileops --lib mode::`→8/0（决定半既有测）、新 bin `chmod` freestanding x86_64-unknown-none --release（docker `minix-ci:1.94`）绿；clippy 触及文件零告警。**声明性留白**：本轮无新增宿主测（实质逻辑在既有已测的 `mode.rs`，bin 仅为 syscall 腿 + 旗标流）；`-R`（fts 递归）/`-h`/`-H`/`-L`/`-P`（lchmod/fts 符号链遍历）/`--reference` 因依赖未封装设施报 not wired（非语义择重）；真机写盘受可写根盘 E5 门控（同 cp/mv/rm 等写类，本笔交代码+宿主测的 parser）。修法详见 `../18-stage-commands/todo.md` §6.1 批次五十六。
 - ✅ **批次五十七完成：06 篇 `pwd` 接线**（`2026-10-10`，`claim/CMD-PWD-BIN-qoder`，单域三线 commands/fileops，无跨界）：落地缺失命令 `pwd`（报当前工作目录，真源 `minix3/bin/pwd/pwd.c` 143 行）。决定半新增 `minix_fileops::pwd`（无堆）——`env_pwd_usable` 忠实移植 BSD `getcwd_logical` 的字符串预筛：`$PWD` 需非空且首字符 `/`、且不含 `/./` 与 `/../` 子串；dev/ino 同一性检查需 stat 归调用方。为此给 fileops `bin_support` 加 `envs()` 双 cfg seam（与 printenv 批次同构）。执行半 `src/bin/pwd.rs`：`pwd [-L|-P]`（默认物理，对位 C `lFlag=0`）；`-L` 下若 `env_pwd_usable(PWD)` 且 `stat(PWD)` 与 `stat(".")` 的 `st_dev`/`st_ino` 相等→用 `PWD`，否则回退 `getcwd`；物理路直接 `getcwd`；多余操作数/未知旗标→usage。只读不写→不受 E5 写盘门控、真机可跑。4 枚宿主测：合法绝对路径/相对或空/点组件/尾部无斜杠点允。三件套：`cargo test -p minix-fileops --lib pwd::`→4/0、全 crate `--lib`→82/0；freestanding x86_64-unknown-none --release（docker `minix-ci:1.94`）绿；clippy 触及文件零告警。**声明性留白**：仅 `-L`/`-P`（对位 BSD getopt 集，无 legacy `+P`）；真机 per-command 与 imgrd 播种归 `C-57`/E5。修法详见 `../18-stage-commands/todo.md` §6.1 批次五十七。
+- ✅ **批次一百八十八接上 `cal -d`（周起始日 0..6）**
+  （`2026-10-13`，`claim/CAL-DOW-qoder` @ 基线 `ab108832d`，单域三线 commands/doctools，无跨界）：
+  接回 `-d` 留白。C 里 `-d` 同时旋转「表头」与「栅格落位」（`cal.c:435-439` 的 `day_headings + 3*dow`
+  与 `day_in_week` 的 `(temp - dow + …) % 7`），两处必须一起忠实移植（只转一处=半接）。决定半
+  `cal.rs`：`day_matrix` 新增 `week_start` 参（列号 `= (基列 - week_start + 7) % 7`）、新增
+  `put_headings`（按 day_len 循环移表头，`week_start=0` 逐字等于基表头）、`render_month`/
+  `render_year`/`render_triple` 透传 `week_start`。执行半 `bin/cal.rs`：`-d` 改为 getopt 取值形
+  （`-dN` 附值或 `-d N` 下一词，0..=6 校验，非法报 "illegal day of week value"，对位 cal.c:247-250）。
+  关键零回归铉：`week_start=0` 时 `day_matrix`/`put_headings` 与旧输出逐字一致（test_week_start_rotation
+  与全部既有 golden 同跑验证）。
+  三件套：`cargo test -p minix-doctools --lib` → **70/0**（既有 69 零回归 + 新 1）；`--bin cal` → **7/0**；
+  freestanding `cargo build -p minix-doctools --bin cal --target {x86_64,aarch64,riscv64gc}-unknown-none` 三架构均 Finished；
+  clippy cal.rs 告警仍为 2（仅存量 i64 同型转换，本笔新增 doc_lazy_continuation 已改写注释消除）；
+  `rustfmt --edition 2024 --check` 两目标文件零漂移（共享件 bin_support.rs 的 EOF 存量漂移非本笔、已还原不入库）；
+  核实日 `2026-10-13`；基线 `ab108832d`。**验证边界**：golden 系按 C `day_in_week`/表头公式自推，
+  本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
+  留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
+
 - ✅ **批次一百八十七接上 `cal -3`（前/当/后月三联居中）**
   （`2026-10-13`，`claim/CAL-THREE-qoder` @ 基线 `5701fa073`，单域三线 commands/doctools，无跨界）：
   接回 `-3` 留白。决定半 `cal.rs` 新增 `render_triple`（`cal.c:monthrange` before=after=1 的面：

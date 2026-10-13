@@ -5,9 +5,9 @@
 //! 本程序只翻命令行、取当前时刻、把渲染结果写到标准输出。
 //!
 //! 声明性留白（10-doc-man-tools.md §5）：`-r`/`-h`/`-A`/`-B`/`-C`/
-//! `-d`/`-R` 等面回答 "option not wired"；月份只收数字（C 的月名解析面未
-//! 移植，C 自身也只收数字）。`-y`（强制年视图）、`-j`（年积日）与 `-3`（前/
-//! 当/后月三联）已接。
+//! `-R` 等面回答 "option not wired"；月份只收数字（C 的月名解析面未
+//! 移植，C 自身也只收数字）。`-y`（强制年视图）、`-j`（年积日）、`-3`（前/
+//! 当/后月三联）与 `-d`（周起始日 0..6）已接。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -108,23 +108,43 @@ fn run() -> ! {
     let mut style = DayStyle::Month;
     let mut force_year = false;
     let mut force_triple = false;
-    for arg in &args[1..] {
-        if let Some(rest) = arg.strip_prefix('-') {
-            if rest.is_empty() {
-                fail("option not wired");
-            }
-            for c in rest.chars() {
-                match c {
+    let mut week_start: usize = 0;
+    let mut i = 1;
+    while i < args.len() {
+        let arg = args[i];
+        if arg.len() > 1 && arg.starts_with('-') {
+            let rest: Vec<char> = arg.chars().skip(1).collect();
+            let mut k = 0usize;
+            while k < rest.len() {
+                match rest[k] {
                     'y' => force_year = true,
                     'j' => style = DayStyle::Julian,
                     '3' => force_triple = true,
-                    // 其余 C 旗标（-h rA B C d R）逐个留白。
+                    // -d 取值（0..=6）：值附于本 token（-d1）或取下一词（-d 1），
+                    // 对位 C getopt("...d:...", cal.c:247) 与 getnum。
+                    'd' => {
+                        k += 1;
+                        let raw: String = if k < rest.len() {
+                            rest[k..].iter().collect()
+                        } else {
+                            i += 1;
+                            args.get(i).copied().unwrap_or("").into()
+                        };
+                        match raw.parse::<i32>() {
+                            Ok(v @ 0..=6) => week_start = v as usize,
+                            _ => fail("illegal day of week value: use 0-6"),
+                        }
+                        k = rest.len(); // -d 吃值后终止本 token 扫描
+                    }
+                    // 其余 C 旗标（-h r A B C R）逐个留白。
                     _ => fail("option not wired"),
                 }
+                k += 1;
             }
         } else {
             operands.push(arg);
         }
+        i += 1;
     }
 
     let view = match choose_view(&operands, force_year, force_triple, now_epoch_days_civil()) {
@@ -134,9 +154,11 @@ fn run() -> ! {
 
     let mut out = [0u8; 4096];
     let rendered = match view {
-        View::Month(y, m) => render_month(y, m, Reckoning::Gregorian, style, &mut out),
-        View::Triple(y, m) => render_triple(y, m, Reckoning::Gregorian, style, &mut out),
-        View::Year(y) => render_year(y, Reckoning::Gregorian, style, &mut out),
+        View::Month(y, m) => render_month(y, m, Reckoning::Gregorian, style, week_start, &mut out),
+        View::Triple(y, m) => {
+            render_triple(y, m, Reckoning::Gregorian, style, week_start, &mut out)
+        }
+        View::Year(y) => render_year(y, Reckoning::Gregorian, style, week_start, &mut out),
     };
     match rendered {
         Ok(used) => {
