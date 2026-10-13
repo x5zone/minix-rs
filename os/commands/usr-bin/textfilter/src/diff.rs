@@ -16,7 +16,7 @@
 
 use crate::floatfmt::parse_float_prefix;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::{vec, vec::Vec};
 
 /// Output shapes (the C's diff_format values).

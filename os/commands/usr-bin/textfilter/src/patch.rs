@@ -10,7 +10,6 @@
 //! hunks, ed-script piping, `similar()` whitespace folding, reverse
 //! (`-R`) and the `\ No newline` bookkeeping are registered corners.
 
-use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 

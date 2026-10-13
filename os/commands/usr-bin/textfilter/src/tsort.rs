@@ -13,7 +13,7 @@
 //! node is removed — which prints it — and the loop resumes.
 
 use alloc::string::{String, ToString};
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 
 /// What went wrong; the doing half renders these.
 #[derive(Debug, Clone, PartialEq, Eq)]

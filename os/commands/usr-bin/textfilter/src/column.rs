@@ -19,7 +19,7 @@
 //! spaces (column.c:252-256).
 
 use alloc::string::{String, ToString};
-use alloc::vec::{self, Vec};
+use alloc::vec::Vec;
 
 /// Column options for one `column` run.
 #[derive(Debug, Clone, PartialEq, Eq)]
