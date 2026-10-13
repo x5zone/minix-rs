@@ -250,6 +250,43 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百二十二把 `morse` 的编码面按 C 的 `show()` 重做，并纠正了文档把 `-s` 记成「码表打印 / 容错」的事实错**
+  （`2026-10-14`，`claim/MORSE-CODETABLE-qoder` @ 基线 `2cf25f849`，单域三线 commands/games/stdio-games，无跨界）：
+  **是什么**：22 篇的 morse 行写「已接线编码与 `-d` 解码；`-s` 码表打印待批」，2.4 节另写「两个开关管方向与容错」。
+  回 `minix3/games/morse/morse.c` 读 `-s` 与 `show()` 后两头都不对：`-s` 不是码表打印也不管容错，它只换**渲染形态**
+  （`:135-137` 置 `sflag`，`:253-261` 的 `show()` 在不带 `-s` 时逐符号打 ` dit`/` daw`、带 `-s` 时打一个空格再加整串），
+  而 `decode()` 从不读它（所以 `-d` 之下 `-s` 无效）。更重的一条是**本壳的编码输出形状整体不是 C 的形状**：
+  C 是**每个输入字节一行**（`:189-194`）、操数末尾补一行 `show("")`（`:191`）、整轮结束后统一打一次
+  `show("...-.-")`（`:195`），本壳却把一个词压成一行 `... --- ...`，既无 dit/daw 也无收尾记号。判类：
+  P0-code-bug（输出形状）+ P0-fact（两处文档描述）。
+  **怎么修（三方案）**：甲只在薄壳补 `-s` 分支、保留单行形——会把错形状钉进文档与金样，否；乙决定半提供
+  `code_for_byte`/`show_line` 两个纯函数、执行半按 C 的调用次序逐字节驱动——三处不对称落在库里可宿主逐分支
+  可测，选它；丙连解码腿一起改成字符流——那是另一个条目，本轮只登记不分送（否则一次两条）。
+  **代码形状**：`morse.rs` 新增 `PUNCT_CODES`（C `other[]` 十二项，顺序即 `decode()` 的比对序）、`SK_CODE`、
+  `BLANK_CODE`、`MAX_SHOW_LINE`；`code_for_byte` 复刻 `morse()` 四支（字母/数字/空白→空码/标点表→表外 `None`）、
+  `show_line` 复刻 `show()` 两支；**删掉 `encode_word`**（它是那个非 C 形态的唯一来源，留着就是死代码）；
+  薄壳新增 `encode`/`emit_code` 与 getopt 形（`-ds` 聚簇、`--` 结束扫描、裸 `-` 是操数、集外字母报 usage 退 1）。
+  **顺带闭掉一条反复出现的坑（命壳直接调 `minix_sys::read(STDIN)`，宿主端到端读不到输入）**：本 crate 的
+  `bin_support.rs` 补上 `read_stdin()`（宿主真 stdin / 裸机 chunk 循环两生缝）与 `warn()`（宿主 stderr），
+  `encode` 与 `text_lines` 改走它。取证很直接：门先对 HEAD 实现跑，9 枚全 FAILED，其中依赖标准输入的三枚
+  读数就是「只剩收尾行」。
+  **两处我自己推错的金样**当场按表纠正：`b` 的码是 `-...`（`alph[1]`，`:67`）而不是我推的 `-.--`；`....-` 是数字
+  `4`（`digit[4]`，`:58`）而不是 `5`。
+  三件套：`cargo test -p minix-stdio-games` → **12 个测试目标全 ok、合计 114 passed、零 FAILED**（基线 11 目标 /
+  102 passed；+9 枚端到端门、+3 枚库测）；`--lib morse::` → 10/0；`--test morse_face` → 9/0（新建第 9 道门）；
+  三架构 `--bins` 三台零 error；容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、
+  容器内本包 12 目标 114 passed / FAILED 0；clippy 触及文件零新增（`src/morse.rs` 一处 `bytes().count()` 按建议改
+  `len()` 后，全包仅余 `bin/arithmetic.rs` 一条存量，与基线逐条同数）；`rustfmt --edition 2024 --check` 四文件零漂移；
+  `tools/pattern-gate.sh --diff` → PASS=17 FAIL=0（P11 13 token、P13 3 token）；`tools/doc-style-lint.sh --diff` → error 0
+  （头部行两处正文日期顺手移出，`--diff` 才不拿存量日期算新增）；核实日 `2026-10-14`；基线 `2cf25f849`。
+  **十枚变异负控**（`--lib` 与 `--test` 分两次调用，复位放 `finally` 并断言 md5 复原）：`-s` 不再置形态、短形丢掉
+  空码那个空格、分隔符被跳过而不是渲染、`0x0B` 不算空白、表外字节也打一行、收尾记号改成每操数一次、操数收尾行
+  丢失、裸 `-` 被当选项扫描、usage 改打 stdout、拼写支路改成「只有划才是划」 → 全部咬中（无等价漏网，所以本轮
+  没有需要补区分样例的次生轮）。
+  登记不执行：①`-d` 的 C 字符流形态（双空白才打一个空格、逾十个符号打 `x` 并吞同串剩余、整轮只打末尾一个换行、
+  查不到的码打 `x`）；②其余八个游戏壳仍各自走 `LineReader` + `minix_sys::read` 的宿主读腿（同一坑的其余落点）；
+  ③真机播种与 open 腿归 C-57/E5；④caesar `guess_and_rotate`、arithmetic `penalise` 与用时统计等原有待批项不动。
+
 - ✅ **批次二百二十一给 `pr` 接上 `-F`/`-f` 的换页符收尾，并按 `prtail` 的 `nohead` 早退纠正了本轮自己推出的金样**
   （`2026-10-14`，`claim/PR-FORMFEED-qoder` @ 基线 `7759e8150`，单域三线 commands/textfilter，无跨界）：
   接回批次二百二十登记的①里 formfeed 那一半。真源三处：`prtail` 的换页符臂（`pr.c:1555-1561`）、
