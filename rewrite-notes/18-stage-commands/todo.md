@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百零三把 `cmp` 的 `skip` 操作数改成 C 的 `strtoq(…, 0)`，并接上偏移的应用点**
+  （`2026-10-13`，`claim/CMP-SKIPBASE0-qoder` @ 基线 `de37e6a9c`，单域三线 commands/textfilter，无跨界）：
+  接回 `07-text-filter.md` cmp 行明写的「`skip` 的 strtoq base-0 进制自动识别未建模」。改前证据：
+  `bin/cmp.rs` 的 `parse_skip` 就一行 `word.parse::<u64>()`，失败去 `usage()`，所以 `cmp a b 0x10`（C 跳 16 字节）
+  与 `cmp a b 010`（C 跳 8 字节）都被拒；应用点写的是 `skip.min(data.len())`，越界偏移被静默夹到档尾。
+  **C 真源**：`minix3/usr.bin/cmp/cmp.c:125`/`:130` 的 `strtoq(argv[n], &ep, 0)` —— 进制由数字本身决定
+  （`0x`/`0X` 十六进制、前导 `0` 八进制、其余十进制），而失败判据只有两条：`errno`（超出 `off_t`）与
+  `ep == argv[n]`（一个数字都没转）。这意味着**尾随垃圾是合法的**：`cmp a b 12xyz` 在 C 就是跳 12 字节。
+  另有一个不对称容易漏掉：`0x` 后面没有十六进制数字等于什么都没转（拒），而单一个前导 `0` 本身就是已转的数字，
+  所以 `08` 在 C 里是合法的零而不是错（`ep` 留在 `8`）。本机 GNU `cmp` 在这两点上都与 Minix3 不同（实测
+  `cmp f1 f2 12xyz` → `invalid --ignore-initial value`），拿它当基线会把本笔反向带偏，真值以 C 为纲。
+  **应用点**：`c_regular` 在 `skip1 > len1` 时直接 `eofmsg(file1, len1 + 1, 0)` 并退 `DIFF_EXIT`（然后才是
+  `len1 -= skip1`，file2 同一顺序），所以“越界”不是静默夹取而是报 `EOF on <file>`；判据是严格大于，偏移恰好等于
+  档长时是空窗而非报错；负值走 `mmap` 失败落到 `c_special` 的 `for (...; skip1--; ...)`（负数作循环条件为非零，一直
+  读到 EOF），同样停在 `eof:` 里的同一张报告上。
+  **形状**：`parse_skip(&str) -> Result<i64, ()>`（跳空白、取号、按前缀定进制、只取该进制合法数字的最长前缀）与
+  `skip_window(&[u8], i64) -> Option<&[u8]>`（`None` 即 C 的 EOF 一侧），报告由 `skip_eof` 走 `report_eof`（库内已有的
+  `EOF on %s` / `-l` 下 `: char %lld` 两形），`-s` 不打印仍退 1（C `eofmsg` 入口的 `if (!sflag)`）。
+  三件套：`cargo test -p minix-textfilter --bin cmp` → **5 passed / 0 failed**（基线 `1`；新增
+  `skip_reads_the_radix_from_its_digits`、`skip_accepts_sign_blanks_and_trailing_garbage`、
+  `skip_errors_only_when_nothing_was_converted_or_out_of_range`、`skip_past_the_end_is_the_eof_side`）；
+  `--lib` → **409 / 0** 不动。三枚变异负控各让对应测翻红：前导 `0` 不再当已转数字 → 进制测 FAILED；
+  尾随垃圾改成报错 → 合法写法测 FAILED；`skip_window` 退回静默夹取 → EOF 一侧测 FAILED；均按备份复原后复测 5/0。
+  过程中本笔自己踩到一个实现错：`run == 0` 时仍去 `from_str_radix("")` 会直接失败，导致 `08`/`-0` 两形错拒——
+  由新增的两枚测当场抓出，补上“零长段只在 `zero_counts` 为真时可达、值即零”的分枝后全绿（再次说明判据要先于实现）。
+  三架构裸机 `cargo build -p minix-textfilter --bin cmp --target {x86_64-unknown-none,aarch64-unknown-none,
+  riscv64gc-unknown-none-elf} --release` → 三台 0 error；clippy 自有文件与 base 同集（`bin/cmp.rs` 一条
+  `items after a test module` 系存量）；`rustfmt --edition 2024 --check bin/cmp.rs` 零漂移；容器门读数见本笔提交信息；
+  核实日 `2026-10-13`；基线 `de37e6a9c`。
+  **登记不执行**：⑦ C `c_regular` 入口的 `if (sflag && len1 != len2) exit(1)` 发生在两侧偏移检查**之前**，比的是未扣
+  偏移的原始档长；本壳统一在切片后比较，所以带 `-s` 且两侧跳得长短不一致的调用会与 C 不同。⑧ GNU `cmp` 的 skip 语义与 Minix3
+  相反（拒尾随垃圾），不可拿本机对账当判据（同 uniq `-c` 列宽的教训）。命令面无宿主读腿一条仍沿用批次二百零二④。
+
 - ✅ **批次二百零二接上 `uniq` 的 obsolete 跳过写法 `-N`/`+N`**
   （`2026-10-13`，`claim/UNIQ-OBSOLETE-qoder` @ 基线 `08d9cfe57`，单域三线 commands/textfilter，无跨界）：
   接回批次二百零一登记的①与②（同一函数的两面，不拆两轮）。改前证据：`grep -n obsolete
