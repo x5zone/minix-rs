@@ -4,8 +4,8 @@
 //! (NetBSD). The deciding half
 //! (the pass-through test, the extra list, the C-style escapes, the octal
 //! form and the column arithmetic of folding) is the library's `vis` module; this
-//! program encodes stdin or each file operand and prints. Thirteen of the C's
-//! fifteen getopt letters `bcde:F:fhlMmNnoSstw` (`vis.c:73-135`) are modelled:
+//! program encodes stdin or each file operand and prints. All fifteen of the C's
+//! getopt letters `bcde:F:fhlMmNnoSstw` (`vis.c:73-135`) are modelled:
 //! `-c` selects C-style escapes, `-o` three-digit octal, `-b` (`VIS_NOSLASH`)
 //! drops the backslash prefix, `-e` names extra bytes, `-l` ends each line with
 //! `\$`, `-s` passes backspace/bell/carriage return through, `-t`/`-w` put a
@@ -14,9 +14,12 @@
 //! already uses, `-n` copies the stream with each backslash doubled, `-f` folds
 //! the output at 80 columns and `-F width` folds at a given width — and, as in the
 //! C, `-F` also switches on the end-of-line marker without switching on folding,
-//! while `-f` alone keeps the 80-column default. `-h` and `-m` are rejected rather
-//! than silently ignored. With operands each is opened, encoded into one output
-//! stream, and an unopenable operand warns and flags the exit
+//! while `-f` alone keeps the 80-column default. `-h` and `-m` switch to HTTP
+//! percent-encoding and MIME quoted-printable, and C refuses the two together
+//! (`vis.c:142-144`); `-m` also brings the fold width down to 76 when it is still
+//! the default 80 (`vis.c:110-111`) and makes the hidden newline `=` plus a newline
+//! instead of a backslash plus one. With operands each is opened, encoded into one
+//! output stream, and an unopenable operand warns and flags the exit
 //! status (`vis.c:151-164`); a bare `-` is a literal file name (`fopen`), not a
 //! stdin alias. Without operands stdin is the source.
 
@@ -31,7 +34,7 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_textfilter::vis::{
-    FOLD_MARKER, VisOptions, copy_doubling_backslashes, encode_chunk, foldit,
+    VisOptions, copy_doubling_backslashes, encode_chunk, fold_marker, foldit,
 };
 
 /// What the getopt scan produces: the encoder's options, the `none` and `fold`
@@ -63,6 +66,9 @@ fn run() -> ! {
     // in C's `process()` loop, so it overrides `-l` and the encoding.
     let mut encoded: Vec<u8> = Vec::new();
     let mut rval = 0;
+    // The marker pair is chosen once per run from the flag C tests: both
+    // `foldit.c:63` and `vis.c:289` read `eflags & VIS_MIMESTYLE`.
+    let marker = fold_marker(plan.options.mime);
     // C's `static int col` (`vis.c:170`): the fold column survives across chunks
     // *and* across file operands, so it lives out here rather than in `consume`.
     let mut col = 0usize;
@@ -89,7 +95,7 @@ fn run() -> ! {
             if *fold {
                 let (markers, carried) = foldit(&chunk, col, *foldwidth);
                 for _ in 0..markers {
-                    encoded.extend_from_slice(FOLD_MARKER);
+                    encoded.extend_from_slice(marker);
                 }
                 col = carried;
             }
@@ -99,7 +105,7 @@ fn run() -> ! {
         // `vis.c:288-289`: a partial line is terminated with a hidden newline,
         // and C does not reset the column when it writes it.
         if *fold && last != b'\n' {
-            encoded.extend_from_slice(FOLD_MARKER);
+            encoded.extend_from_slice(marker);
         }
     };
     if operands.is_empty() {
@@ -134,7 +140,8 @@ fn main() {
 const USAGE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
 
 /// Fold `argv` into a [`Plan`] the way `getopt(argc, argv, "bcde:F:fhlMmNnoSstw")`
-/// does (`vis.c:73-135`): letters cluster inside one token (`-cb`), the two
+/// does (`vis.c:73-135`): every letter of that string is handled, letters cluster
+/// inside one token (`-cb`), the two
 /// value-taking letters `e` and `F` read the rest of their token (`-ex`, `-F40`)
 /// or the following word (`-e x`), `--` ends option scanning, and a lone `-` is
 /// an operand. Each `-e` overwrites the previous one, as C's `extra = optarg`
@@ -180,6 +187,18 @@ fn parse_vis_args(argv: &[String]) -> Result<Plan<'_>, String> {
                     options.nl = true;
                 }
                 b'S' => options.shell = true,
+                // `-h` is `VIS_HTTPSTYLE` and `-m` is `VIS_MIMESTYLE`
+                // (`vis.c:99-101,108-112`). `-m` additionally moves the fold width
+                // from the default 80 to 76, and only when it is still 80 — an
+                // explicit `-F` before it keeps its own width, exactly as C's
+                // `if (foldwidth == 80) foldwidth = 76;` does.
+                b'h' => options.http = true,
+                b'm' => {
+                    options.mime = true;
+                    if foldwidth == 80 {
+                        foldwidth = 76;
+                    }
+                }
                 // `-M` is `VIS_META` = `VIS_WHITE | VIS_GLOB | VIS_SHELL`
                 // (`include/vis.h:67`); it is the only way `vis(1)` reaches the
                 // glob set, which has no letter of its own.
@@ -238,17 +257,18 @@ fn parse_vis_args(argv: &[String]) -> Result<Plan<'_>, String> {
                     pos = bytes.len();
                     continue;
                 }
-                b'h' | b'm' => {
-                    // Known to C, not to this deciding half yet: refuse rather
-                    // than print an encoding the user did not ask for.
-                    let letter = bytes[pos] as char;
-                    return Err(format!("vis: flag -{letter} is not modelled yet\n"));
-                }
                 _ => return Err(String::from(USAGE)), // includes `-d`: C compiles it out too
             }
             pos += 1;
         }
         index += 1;
+    }
+    // `vis.c:142-144`: the two styles are refused *after* the option loop and
+    // before any operand is opened, so this error outranks an unreadable file.
+    if options.http && options.mime {
+        return Err(String::from(
+            "vis: Can't specify -m and -h at the same time\n",
+        ));
     }
     Ok(Plan {
         options,

@@ -28,6 +28,14 @@
 //! `usr.bin/vis/foldit.c` and this shell part company are recorded in
 //! `rewrite-notes/18-stage-commands/07-text-filter.md`.
 //!
+//! Two of the letters select a different encoding instead of a different break:
+//! `-h` percent-encodes whatever a URL may not carry verbatim (lowercase hex, RFC
+//! 1808), and `-m` quoted-printables whatever RFC 2045 may not (uppercase hex,
+//! and a trailing space only when a line ends after it). Both hand the bytes they
+//! allow back to the standard engine, so `-e`, `-b` and `-c` keep their meaning
+//! under either style; `getvisfun` (`vis.c:338-345`) resolves a request for both
+//! styles in favour of HTTP, which the command never lets happen.
+//!
 //! Two command flags are deliberately not fields of [`VisOptions`]. `-n` is
 //! `none` in `minix3/usr.bin/vis/vis.c`, which copies the stream with each
 //! backslash doubled and so preserves raw bytes above `0x7F` — bytes a `String`
@@ -81,6 +89,16 @@ pub struct VisOptions {
     /// `VIS_GLOB`: the glob magic characters go on the extra list. `vis(1)` has no
     /// letter for it either — only `-M` (`VIS_META`) pulls it in (`vis.h:67`).
     pub glob: bool,
+    /// `-h` (`VIS_HTTPSTYLE`): percent-encoding for everything outside the set RFC
+    /// 1808 calls safe (`do_hvis`, `lib/libc/gen/vis.c:161-177`). The C refuses
+    /// `-h` together with `-m` (`usr.bin/vis/vis.c:142-144`); if both were ever
+    /// handed to the library, `getvisfun` (`vis.c:338-345`) picks HTTP style.
+    pub http: bool,
+    /// `-m` (`VIS_MIMESTYLE`): quoted-printable, `=` plus *uppercase* hex for the
+    /// bytes RFC 2045 will not carry verbatim (`do_mvis`, `vis.c:183-201`). In the
+    /// command this flag also moves the fold width from 80 to 76 and swaps the
+    /// hidden newline for `=` plus a newline (`vis.c:108-112`, `foldit.c:63`).
+    pub mime: bool,
 }
 
 /// The shell magic characters C appends to the extra list under `VIS_SHELL`
@@ -184,14 +202,85 @@ fn encode_into(byte: u8, next: u8, options: &VisOptions, extra: &[bool; 256], ou
         out.push('\n');
         return;
     }
+    // `getvisfun` (`lib/libc/gen/vis.c:338-345`) chooses the style in this order:
+    // HTTP, then MIME, then the standard test. The command refuses `-h` together
+    // with `-m` (`usr.bin/vis/vis.c:142-144`), so at most one of these two branches
+    // is live for any run.
+    if options.http && !http_carries(byte) {
+        push_percent(byte, out);
+        return;
+    }
+    if options.mime && mime_escapes(byte, next) {
+        push_mime_hex(byte, out);
+        return;
+    }
     encode_byte(byte, next, options, extra, out);
 }
 
+/// The bytes RFC 1808 lets a URL carry unencoded, as `do_hvis` lists them
+/// (`lib/libc/gen/vis.c:164-170`): alphanumerics, then the five characters it
+/// calls safe — `$`, `-`, `_`, `.`, `+` — then the six extra ones `!`, `*`, `'`,
+/// `(`, `)` and `,`. Everything else goes to percent-encoding, and that set
+/// includes space, tab and newline, which the standard style passes through. Bytes
+/// that *are* carried still go through `do_svis`, so an `-e` entry protects them
+/// here exactly as it does anywhere else.
+fn http_carries(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'$' | b'-' | b'_' | b'.' | b'+' | b'!' | b'*' | b'\'' | b'(' | b')' | b','
+        )
+}
+
+/// Quoted-Printable's escape decision, `do_mvis` (`lib/libc/gen/vis.c:185-197`),
+/// read clause by clause: a newline is never encoded (the `c != L'\n'` guard comes
+/// first, because the line break is the format's own structure); whitespace is
+/// encoded *only* when the next character ends the line, since a trailing space
+/// would otherwise be eaten; anything below `!` or above `~` that is not whitespace
+/// is out of range and goes; `=` goes, and the C spells that as the range test
+/// `c > 60 && c < 62`, which can only ever mean 61; and finally the twelve
+/// characters of `vis.c:195` — `#$@[\]^` plus a backtick, brace, vertical bar,
+/// brace and tilde — are named outright.
+fn mime_escapes(byte: u8, next: u8) -> bool {
+    if byte == b'\n' {
+        return false;
+    }
+    let is_space = byte.is_ascii_whitespace();
+    (is_space && (next == b'\r' || next == b'\n'))
+        || (!is_space && (byte < 33 || byte == b'=' || byte > 126))
+        || matches!(
+            byte,
+            b'#' | b'$' | b'@' | b'[' | b'\\' | b']' | b'^' | b'`' | b'{' | b'|' | b'}' | b'~'
+        )
+}
+
+/// `vis.c:128-129` keeps two hex tables, `xtoa` lowercase and `XTOA` uppercase,
+/// and the two styles do not agree on which one to use: `do_hvis` writes lowercase
+/// digits after `%` while `do_mvis` writes uppercase digits after `=`. Preserving
+/// that difference is what lets `unvis`-style readers and other implementations
+/// recognise the two formats apart, so the tables live side by side here too.
+const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+fn push_percent(byte: u8, out: &mut String) {
+    out.push('%');
+    out.push(LOWER_HEX[(byte >> 4) as usize] as char);
+    out.push(LOWER_HEX[(byte & 0x0f) as usize] as char);
+}
+
+fn push_mime_hex(byte: u8, out: &mut String) {
+    out.push('=');
+    out.push(UPPER_HEX[(byte >> 4) as usize] as char);
+    out.push(UPPER_HEX[(byte & 0x0f) as usize] as char);
+}
+
 /// The hidden newline `-f` and `-F` insert, and the same one that closes a partial
-/// line at the end of an operand (`usr.bin/vis/vis.c:289` and `foldit.c:63`). C
-/// picks `"=\n"` instead when `VIS_MIMESTYLE` is set, which is the `-m` flag this
-/// command still refuses; when `-m` lands, the choice belongs here.
-pub const FOLD_MARKER: &[u8] = b"\\\n";
+/// line at the end of an operand. C picks the pair by flag: `"=\n"` under
+/// `VIS_MIMESTYLE`, `"\\\n"` otherwise (`usr.bin/vis/foldit.c:63` and
+/// `usr.bin/vis/vis.c:289`).
+pub fn fold_marker(mime: bool) -> &'static [u8] {
+    if mime { b"=\n" } else { b"\\\n" }
+}
 
 /// One column step of C's `foldit()` switch (`usr.bin/vis/foldit.c:47-60`): a
 /// newline or carriage return resets the column, a tab advances to the next
@@ -232,9 +321,10 @@ fn walk(chunk: &[u8], incoming: usize, limit: usize) -> Option<usize> {
 /// C's `foldit(chunk, col, max, flags)` (`usr.bin/vis/foldit.c:36-70`), the column
 /// bookkeeping behind `-f` and `-F`. `incoming` is the column the previous chunks
 /// left — `usr.bin/vis/vis.c` keeps it in a `static int col`, so it survives across
-/// chunks *and* across file operands; `max` is 80 under `-f` or the `-F` width.
-/// Returns how many [`FOLD_MARKER`]s to print *before* the chunk (C calls `printf`
-/// inside `foldit`, then the caller emits the chunk) and the column to carry on.
+/// chunks *and* across file operands; `max` is 80 under `-f` (76 once `-m` has had
+/// its way with it) or the `-F` width. Returns how many [`fold_marker`]s to print
+/// *before* the chunk (C calls `printf` inside `foldit`, then the caller emits the
+/// chunk) and the column to carry on.
 ///
 /// The break test is `col > max - 2`, two columns of slack so a fold can never
 /// leave its own marker hanging past the edge. On a break C prints the marker,
@@ -638,7 +728,10 @@ mod tests {
         };
         assert_eq!(encode(b"a\\b", &shell_no_slash), "a\\134b");
         // Every member of the shell set escapes, and nothing outside it does:
-        // `vis.c:133` lists seventeen characters, one of them that backslash.
+        // `vis.c:133` lists eighteen characters, one of them that backslash, and the
+        // length is asserted so this enumeration cannot silently lose a member.
+        assert_eq!(CHAR_SHELL.len(), 18, "vis.c:133 的点名字母个数");
+        assert_eq!(CHAR_GLOB.len(), 4, "vis.c:134 的点名字母个数");
         for byte in CHAR_SHELL {
             assert_eq!(
                 encode(&[*byte], &shell),
@@ -791,6 +884,86 @@ mod tests {
             chunks.push_str(&encode_chunk(byte, next, &options));
         }
         assert_eq!(chunks, encode(input, &options));
+    }
+
+    #[test]
+    fn test_http_style_percent_encodes_with_lowercase_hex() {
+        // `do_hvis` (`lib/libc/gen/vis.c:161-177`) carries alphanumerics, the five
+        // safe and the six extra characters, and percent-encodes everything else in
+        // *lowercase* hex — including the whitespace the standard style passes
+        // through, and the backslash it puts on the extra list.
+        let http = VisOptions {
+            http: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"a b/c?", &http), "a%20b%2fc%3f");
+        assert_eq!(encode(b"$-_.+!*'(),", &http), "$-_.+!*'(),");
+        assert_eq!(encode(b"\\", &http), "%5c");
+        assert_eq!(encode(b"\t\n", &http), "%09%0a");
+        assert_eq!(encode(&[0xff], &http), "%ff");
+        // A byte it does carry still goes through `do_svis`, so `-e` protects it the
+        // same way here as in the default mode.
+        let with_extra = VisOptions {
+            http: true,
+            extra: vec![b'a'],
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"ab", &with_extra), "\\141b");
+    }
+
+    #[test]
+    fn test_mime_style_quoted_printables_with_uppercase_hex() {
+        // `do_mvis` (`lib/libc/gen/vis.c:183-201`) is the mirror image with three
+        // differences worth naming: the introducer is `=`, the hex digits are
+        // *uppercase*, and a space is only escaped when a line ends after it.
+        let mime = VisOptions {
+            mime: true,
+            ..VisOptions::default()
+        };
+        assert_eq!(encode(b"a b\n", &mime), "a b\n");
+        assert_eq!(encode(b"a \nb", &mime), "a=20\nb");
+        // Whitespace in the middle of a line is left to the standard engine, so a
+        // carriage return that does not end the line comes out as `\^M`; only the
+        // one before a line end becomes `=0D`.
+        assert_eq!(encode(b"a\rb", &mime), "a\\^Mb");
+        assert_eq!(encode(b"a\r\n", &mime), "a=0D\n");
+        assert_eq!(encode(&[0xff], &mime), "=FF");
+        assert_eq!(encode(b"\x7f", &mime), "=7F");
+        assert_eq!(encode(b"\x01", &mime), "=01");
+        // A newline is the format's own structure: the `c != L'\n'` guard comes
+        // before any of the escape clauses, so it is never encoded. A single newline
+        // would pass even without that guard, because the clause behind it only fires
+        // on a line end *after* it — two in a row are the case that tells them apart.
+        assert_eq!(encode(b"\n", &mime), "\n");
+        assert_eq!(encode(b"\n\n", &mime), "\n\n");
+        assert_eq!(encode(b"a\r\n\n", &mime), "a=0D\n\n");
+        assert_eq!(encode(b"a\t b", &mime), "a\t b");
+        // The C spells `=` as the range test `c > 60 && c < 62`, which can only
+        // mean 61 — and the twelve named characters follow, with the count asserted
+        // so an edit to the table has to be made on purpose.
+        assert_eq!(encode(b"=", &mime), "=3D");
+        assert_eq!(
+            b"#$@[\\]^`{|}~".len(),
+            12,
+            "do_mvis 的点名字母个数（vis.c:195）"
+        );
+        for byte in b"#$@[\\]^`{|}~" {
+            assert_eq!(
+                encode(&[*byte], &mime),
+                format!("={byte:02X}"),
+                "quoted-printable named {:#04x}",
+                byte
+            );
+        }
+    }
+
+    #[test]
+    fn test_fold_marker_follows_the_mime_flag() {
+        // Two places read the same bit (`usr.bin/vis/foldit.c:63` and
+        // `usr.bin/vis/vis.c:289`): MIME breaks a line with `=` and everything else
+        // with a backslash.
+        assert_eq!(fold_marker(true), b"=\n");
+        assert_eq!(fold_marker(false), b"\\\n");
     }
 
     #[test]

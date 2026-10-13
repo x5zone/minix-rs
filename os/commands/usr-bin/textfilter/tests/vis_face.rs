@@ -136,28 +136,38 @@ fn operands_are_encoded_into_one_stream_and_a_bad_one_only_warns() {
 }
 
 #[test]
-fn unmodelled_letters_are_refused_not_ignored() {
-    // The letters left in the deciding half are `-h` and `-m`, the two alternate
-    // encodings whose engine branch (HTTP and MIME style) the library side has not
-    // grown yet. Silently ignoring either would print an encoding the user did not
-    // ask for. `-d` is a different case: it is C's debug counter, compiled out of
-    // that build, so C sends it to `default:` and the answer is the usage line.
-    for flag in ["-h", "-m"] {
+fn letters_outside_the_c_optstring_are_refused_with_usage() {
+    // Every letter of C's `"bcde:F:fhlMmNnoSstw"` is now modelled, so the only
+    // refusals left are the letters C itself sends to `default:`. `-d` belongs in
+    // that group: it is C's debug counter, compiled out of this build, so the
+    // answer is the usage line rather than a “not modelled” note about our shell.
+    for flag in ["-d", "-z", "-1"] {
         let (out, status, err) = run(&[flag], b"a\n");
         assert_eq!(out, Vec::<u8>::new(), "flag {flag} printed {out:?}");
         assert_eq!(status, 1, "flag {flag} stderr was {err:?}");
         assert!(
-            err.contains("not modelled"),
+            err.contains("Usage: vis ["),
             "flag {flag} stderr was {err:?}"
         );
     }
-    for flag in ["-d", "-z"] {
-        let (out, status, err) = run(&[flag], b"a\n");
-        assert_eq!(out, Vec::<u8>::new());
-        assert_eq!(status, 1, "flag {flag} stderr was {err:?}");
+    // And the one combination C refuses by name: `-h` with `-m`. The check sits
+    // after the whole option loop and before any operand is opened
+    // (`usr.bin/vis/vis.c:142-144`), so it outranks an unreadable file.
+    for flags in [
+        vec!["-h", "-m"],
+        vec!["-hm"],
+        vec!["-m", "-h", "missing-operand"],
+    ] {
+        let (out, status, err) = run(&flags, b"a\n");
+        assert_eq!(out, Vec::<u8>::new(), "{flags:?} printed {out:?}");
+        assert_eq!(status, 1, "{flags:?} stderr was {err:?}");
         assert!(
-            err.contains("Usage: vis ["),
-            "flag {flag} stderr was {err:?}"
+            err.contains("Can't specify -m and -h at the same time"),
+            "{flags:?} stderr was {err:?}"
+        );
+        assert!(
+            !err.contains("missing-operand"),
+            "{flags:?} should not have reached the operands: {err:?}"
         );
     }
 }
@@ -382,4 +392,56 @@ fn fold_applies_to_the_none_path_too() {
         run(&["-n", "-f", "-F", "6"], b"abcd\\e").0,
         b"abcd\\\n\\\\e\\\n".to_vec()
     );
+}
+
+#[test]
+fn http_and_mime_letters_switch_to_their_own_escapes_and_hex_case() {
+    // The two alternate encodings disagree about the case of their hex digits
+    // exactly as the C's two tables do (`xtoa` lowercase after `%`, `XTOA` uppercase
+    // after `=`), and both hand a byte they allow back to the standard engine, so
+    // `-h` with `-e` still protects a letter the same way it does in default mode.
+    assert_eq!(run(&["-h"], b"a b").0, b"a%20b".to_vec());
+    assert_eq!(run(&["-h"], &[0xFF]).0, b"%ff".to_vec());
+    assert_eq!(run(&["-m"], &[0xFF]).0, b"=FF".to_vec());
+    assert_eq!(run(&["-h", "-e", "a"], b"ab").0, b"\\141b".to_vec());
+    // A newline is structure to MIME and data to HTTP.
+    assert_eq!(run(&["-m"], b"a\nb").0, b"a\nb".to_vec());
+    assert_eq!(run(&["-h"], b"a\nb").0, b"a%0ab".to_vec());
+    // A space escapes in MIME only when a line ends after it, which is the
+    // `iswspace(c) && (nextc == '\r' || nextc == '\n')` clause of `do_mvis`.
+    assert_eq!(run(&["-m"], b"a b\n").0, b"a b\n".to_vec());
+    assert_eq!(run(&["-m"], b"a \nb").0, b"a=20\nb".to_vec());
+    // `=` is quoted-printable's own introducer, and the C catches it with the range
+    // test `c > 60 && c < 62`.
+    assert_eq!(run(&["-m"], b"a=b").0, b"a=3Db".to_vec());
+    assert_eq!(run(&["-m", "-b"], b"a\\").0, b"a=5C".to_vec());
+}
+
+#[test]
+fn mime_moves_the_default_fold_width_and_writes_its_own_marker() {
+    // `-m` pulls the fold width from the 80 default down to 76
+    // (`usr.bin/vis/vis.c:110-111`) and changes the hidden newline from a backslash
+    // to an `=` (`usr.bin/vis/foldit.c:63`, `usr.bin/vis/vis.c:289`), so `-f` breaks
+    // at 74 columns for MIME where it breaks at 78 without the flag.
+    let hundred = vec![b'x'; 100];
+    let mut mime_expected = vec![b'x'; 74];
+    mime_expected.extend_from_slice(b"=\n");
+    mime_expected.extend(vec![b'x'; 26]);
+    mime_expected.extend_from_slice(b"=\n");
+    assert_eq!(run(&["-m", "-f"], &hundred).0, mime_expected);
+    let mut plain_expected = vec![b'x'; 78];
+    plain_expected.extend_from_slice(b"\\\n");
+    plain_expected.extend(vec![b'x'; 22]);
+    plain_expected.extend_from_slice(b"\\\n");
+    assert_eq!(run(&["-f"], &hundred).0, plain_expected);
+    // An explicit `-F` wins over the 76 adjustment in either order, because C only
+    // touches a width that is still 80.
+    let mut width40 = vec![b'x'; 38];
+    width40.extend_from_slice(b"=\n");
+    width40.extend(vec![b'x'; 38]);
+    width40.extend_from_slice(b"=\n");
+    width40.extend(vec![b'x'; 24]);
+    width40.extend_from_slice(b"=\n");
+    assert_eq!(run(&["-m", "-f", "-F", "40"], &hundred).0, width40);
+    assert_eq!(run(&["-F", "40", "-m", "-f"], &hundred).0, width40);
 }

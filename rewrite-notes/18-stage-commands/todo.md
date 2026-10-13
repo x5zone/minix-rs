@@ -250,6 +250,62 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百一十五接上 `vis` 的 `-h`/`-m` 两枚编码样式旗标（C 的选项串至此全部接完）**
+  （`2026-10-14`，`claim/VIS-HTTPMIME-qoder` @ 基线 `192155d34`，单域三线 commands/textfilter，无跨界）：
+  接回批次二百一十三③与批次二百一十四①留下的最后两枚字母。真源形状：`getvisfun`
+  （`lib/libc/gen/vis.c:338-345`）按 HTTP、MIME、标准的次序取函数；`do_hvis`（`:164-177`）放行字母数字、
+  五个 safe 字 `$ - _ . +` 与六个 extra 字 `!*'(),`，其余一律 `%` 加**小写**十六进制；`do_mvis`
+  （`:187-201`）用 `=` 加**大写**十六进制，且空白只在「其后就是行末」时转义、行内空白交回 `do_svis`；
+  `usr.bin/vis/vis.c:142-144` 在整轮选项循环之后、打开任何操作数之前拒绝 `-h` 与 `-m` 并用。
+  **两张十六进制表不是笔误**：`vis.c:128-129` 同时定义 `xtoa`（小写）与 `XTOA`（大写），HTTP 用前者、
+  MIME 用后者；本壳也备两张（`LOWER_HEX`/`UPPER_HEX`）并在注释里点明这是格式辨认的依据，不是一处疏漏。
+  **`-m` 的连带默认照 C 落实**：`foldwidth` 若仍是 80 就压到 76（`vis.c:110-111`，`-F` 显式给过宽度后
+  再来 `-m` 就不再动它，两个方向的金样都钉了），隐藏换行的字形从 `` `\`` 换成 `=`（`foldit.c:63` 与
+  `vis.c:289` 读同一个位）——上一轮的 `FOLD_MARKER` 常量因此改成 `fold_marker(mime) -> &'static [u8]`，
+  不留一个恒假的分支。
+  **测试自身的两处补强（test-audit 维度二：防「测试代码就是错的/测不出东西」）**：
+  ①`c != '\n'` 那道守卫最初测不出来——单个换行即便去掉守卫也仍然透传（它后面不是行末，
+  「其后是行末」那项判据同样为假），变异「删掉守卫」跑遍全绿；补 `encode(b"\n\n")` 与
+  `encode(b"a\r\n\n")` 两枚断言后，同一变异当场翻红（`test_mime_style_quoted_printables_with_uppercase_hex`
+  FAILED）。②点名字母表的**个数**只写在注释里、没有判据可挡：`char_shell` 是 18 个（注释一度误记十七）、
+  `do_mvis` 的点名表是 12 个（注释一度误记十一），现各加一枚 `assert_eq!(表.len(), N)` 把个数钉住，
+  并按 `vis.c:133`/`:134`/`:195` 的行号核对——写错的计数属 P0-fact，已在正文与注释一并改正。
+  三件套：`cargo test -p minix-textfilter --lib` → **422 passed / 0 failed**（基线 419，新增
+  `test_http_style_percent_encodes_with_lowercase_hex`、
+  `test_mime_style_quoted_printables_with_uppercase_hex`、`test_fold_marker_follows_the_mime_flag`）；
+  `--test vis_face` → **19 passed / 0 failed**（基线 17，新增
+  `http_and_mime_letters_switch_to_their_own_escapes_and_hex_case`、
+  `mime_moves_the_default_fold_width_and_writes_its_own_marker`，并把
+  `unmodelled_letters_are_refused_not_ignored` 换成 `letters_outside_the_c_optstring_are_refused_with_usage`：
+  本壳已无「未建模」字母，剩下的拒绝只有 C 自己落 `default:` 的集外字母，以及 C 点名的 `-h`/`-m` 并用）；
+  head 8 / tail 10 / uniq 10 / cmp 10 四道门不动；47 个测试目标全 ok、合计 528 passed、零 FAILED。
+  **八枚变异负控**（每枚先断言源文件确被改、复位后 md5 与变异前逐字相等）：MIME 换用小写表 → 库内 1 +
+  端到端 1 FAILED；HTTP 允许集丢掉字母数字 → 库内 1 + 端到端 1；MIME 丢掉「字节不是换行」守卫 → 首轮
+  全绿（即上述补强①的由来），补断言后库内 1 FAILED；空白一律转义 → 库内 1 + 端到端 1；`-m` 不再压宽度 →
+  端到端 `mime_moves…` FAILED；隐藏换行无视 MIME 字形 → 同一枚 FAILED；取消 `-h`/`-m` 并用之拒 → 端到端
+  `letters_outside…` FAILED；HTTP 支路不分派 → 库内 1 + 端到端 1。
+  **一处金样手算错当场抓住并改正**：`-f` 对 100 个 `x` 的第二段是 22 个字符（第 79 到 100），初版按
+  80 字符那枚旧金样的「余 2」写成 22→2，被 runner 翻红后按列算式重推（78 + 折 + 22 + 收尾折）；
+  同轮的 MIME 宽度金样（74 + 26）与 `-F 40` 金样（38 + 38 + 24）均为手推后一次通过。
+  门禁：容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` → Finished 零 error，容器内
+  `cargo test -j 1 -p minix-textfilter` 的 47 个测试目标全 ok、FAILED 计数 0；三架构
+  `cargo build -p minix-textfilter --bins --target {x86_64-unknown-none, aarch64-unknown-none,
+  riscv64gc-unknown-none-elf}` 三台零 error；clippy 指向 `src/vis.rs`、`src/bin/vis.rs`、
+  `tests/vis_face.rs` 的告警计数 0；`rustfmt --edition 2024 --check` 三文件零漂移；
+  `bash tools/pattern-gate.sh --diff` → PASS=17 FAIL=0 SKIP=1（增量 C 锚点 22 token 存在性/落窗过、
+  反引号常量 14 token 过）；`tools/doc-style-lint.sh --diff` error 0。核实日 `2026-10-14`；基线 `192155d34`。
+  **过程教训（表格单元的第二类坑）**：07 篇是一张 Markdown 表，单元里出现裸 `|` 会劈列——本轮写 MIME
+  判据时引 C 的 `nextc == '\r' || nextc == '\n'` 与点名表 `#{|}` 各带竖线，脚本的门禁断言
+  （`row.count('|') == 4`）在写入前就把它挡住，改写为中文措辞后通过；此前踩的是同类的第一种坑
+  （单元里换行劈行）。固化为：**往表单元里写含竖线的代码引用，必须先改写成文字或转义，并在写盘前断言
+  竖线计数**。
+  **登记不执行**：①`vis(1)` 的旗标面至此无留白，但 07 篇里 `unvis` 行仍有一批解码旗标未接
+  （`-e`/`-H`/`-h`/`-m`，对位 `lib/libc/gen/unvis.c` 的 `strunvisx`）——它是 vis 家族最后一处命令面留白；
+  ②`decode()` 里两枚 `#[cfg(test)]` 的 `eprintln!("DBG …")` 遗留调试输出（批次十六既存）；
+  ③`src/window.rs:679-680` 两条 unused import（既存存量）；④多字节宽字符路径（本壳按字节，07 篇已声明）；
+  ⑤超宽 chunk 的折叠终止分岔（批次二百一十四登记，真机与 C 对拍须避开 `-F 5` 档宽度）；
+  ⑥真机 open 腿归 C-57/E5。
+
 - ✅ **批次二百一十四接上 `vis` 的 `-f`/`-F` 行折叠（`foldit` 的列状态机），并把编码路径拆成逐 chunk 形态**
   （`2026-10-14`，`claim/VIS-FOLD-qoder` @ 基线 `92b9c9d66`，单域三线 commands/textfilter，无跨界）：
   接回批次二百一十三登记的③里行折叠那一半（07 篇 vis 行的「仍未接的 `-f`、`-F`」）。C 的真源形状有三处必读：
