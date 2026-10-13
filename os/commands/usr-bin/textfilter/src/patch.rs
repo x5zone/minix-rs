@@ -364,7 +364,7 @@ pub fn apply_patch(input: &[&str], hunks: &[Hunk], options: &PatchOptions) -> Pa
     let mut last_offset = 0i64;
     let mut outcome = PatchOutcome::default();
 
-    let mut copy_till = |out: &mut Vec<String>, frozen: &mut usize, n: usize| {
+    let copy_till = |out: &mut Vec<String>, frozen: &mut usize, n: usize| {
         while *frozen < n && *frozen < input.len() {
             out.push(input[*frozen].to_string());
             *frozen += 1;

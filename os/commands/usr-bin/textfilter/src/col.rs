@@ -344,7 +344,7 @@ fn flush_blanks(nblank_lines: &mut i32, out: &mut Vec<u8>, options: &ColOptions)
 /// and character set shifts.
 fn flush_line(line: &Line, out: &mut Vec<u8>, options: &ColOptions, last_set: &mut u8) {
     // O(n) counting sort by column, stable within a column.
-    let mut sorted_storage: Vec<Cell>;
+    let sorted_storage: Vec<Cell>;
     let chars: &[Cell] = if line.needs_sort {
         let mut sorted = vec![Cell { col: 0, set: 0, ch: 0 }; line.cells.len()];
         let mut count = vec![0usize; line.max_col as usize + 1];
