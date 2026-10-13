@@ -77,7 +77,7 @@ pub fn days_from_civil(year: i32, month: u32, day: u32) -> Result<i64, DocError>
         shifted_year - 399
     } / 400;
     let year_of_era = (shifted_year - era * 400) as i64;
-    let month_index = ((month as i64 + 9) % 12) as i64;
+    let month_index = (month as i64 + 9) % 12;
     let day_of_year = (153 * month_index + 2) / 5 + day as i64 - 1;
     let day_of_era =
         year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + year_of_era / 400 + day_of_year;
@@ -101,7 +101,7 @@ pub fn days_from_civil_julian(year: i32, month: u32, day: u32) -> Result<i64, Do
     let shifted = if month <= 2 { year - 1 } else { year };
     let era = if shifted >= 0 { shifted } else { shifted - 3 } / 4;
     let year_of_era = (shifted - era * 4) as i64;
-    let month_index = ((month as i64 + 9) % 12) as i64;
+    let month_index = (month as i64 + 9) % 12;
     let day_of_year = (153 * month_index + 2) / 5 + day as i64 - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 + day_of_year;
     Ok(era as i64 * 1461 + day_of_era - 719470)
