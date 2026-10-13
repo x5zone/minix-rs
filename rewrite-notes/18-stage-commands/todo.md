@@ -250,6 +250,37 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百零九给 `head` 加上端到端金样门，并纠一笔上一轮写错的事实**
+  （`2026-10-13`，`claim/HEAD-HOST-FACE-qoder` @ 基线 `3ae7bb772`，单域三线 commands/textfilter，无跨界）：
+  **先纠错**：批次二百零八末尾写下"`head -n 0` 仍被拒为退 1，而 C `head.c` 的计数器不启动、是什么也不输出且退 0"，
+  这条推断是错的。重读 `minix3/usr.bin/head/head.c:86-103`：`strtoimax` 之后紧跟的是
+  `if (... || *ep || linecnt <= 0) errx(1, "illegal line count -- %s", optarg)` —— C 对零与负数**就是拒**，退 1 并带报文。
+  本壳的解析半 `parse_head_args`（`window.rs`，`Ok(parsed) if parsed > 0`）早已按 C 这么做，所以根本不存在那条缺口；
+  会误判的原因是套用了 `tail` 的结论：`tail.c` 的 `ARG` 宏允许零偏移（送去档尾、什么也不输出且退 0），
+  两个程序对零的处理本就不同。零计数与超限计数是两件事：前者拒、后者放行。
+  **本轮改的三处**：① 删掉 `bin/head.rs` 里那段基于错误推断写的注释与那条永远走不到的守卫
+  （`parse_head_args` 已拒绝非正计数，`HeadWindow::new(count)` 在其后必成）；② `07-text-filter.md` head 行
+  按 `head.c` 重写这段事实；③ 操作数读腿接到 `support::read_file`，删掉自搭的 `read_fd` 与 `minix_sys` 导入，
+  并补 `tests/head_face.rs`（8 枚）。
+  **金样覆盖面**：缺省十行；`-n`/obsolete `-3`/`-c` 逐字节（四个字节含换行，所以是 `1\n2\n`）；超限计数
+  （`-n 40`、`-n 1000000`）输出整档退 0；非正计数四条报文（`-n 0`/`-n -3`/`-c 0`/`-n x`）退 1；
+  `usage: head [-n lines] [file ...]` 一字不差；`-q`/`-v` 与多操数的横幅规则；打不开的操数不出横幅且退 1；
+  `-` 是字面档名（`head.c` 每个操数都过 `fopen`，与 `cut`/`cmp` 不同）。差分腿与本机 `head` 比四形，
+  只取行尾带换行的输入、且不比零计数（GNU 接受 `-n 0`）。
+  三件套：`cargo test -p minix-textfilter --test head_face` → **8 passed / 0 failed**；`--test tail_face`/`--test uniq_face`/
+  `--test cmp_face` 各 10/0、`--lib` 408/0、`--bin head` 3/0 不动；整包三架构裸机构建三台 0 error；
+  clippy 触及文件零告警（新测试里的 `needless_borrow`/`op_ref` 两处按建议改净）；
+  `rustfmt --edition 2024 --check` 触及文件零漂移（`bin/head.rs` 那条 import 排序存量顺带归正）。
+  两枚变异负控：把 `parsed > 0` 改成 `>= 0` → 金样报文测与库内测 `test_parse_head_args_errors` 同时 FAILED；
+  把操数读取换成"恒返回空档"→ 横幅规则测与打不开的操数测同时 FAILED（第一次这类注入写成了语法不合法的表达式，
+  测试没跑起来也就不算证据；换成合法形态后才真正抽出差分——负控也要验它自己有效）。
+  **恢复现场的教训再犯一次并已修**：变异后我又用 `git checkout -- <路径>` 恢复，命令在错误的当前目录下静默无操作，
+  `window.rs` 带着变异停在那里——是 `git status` 暴露的。此后一律"用同一段脚本反向替换 + `grep` 验证 + 复跑测试计数"，
+  不再依赖任何 checkout/cp 的退码。
+  容器门读数见本笔提交信息；核实日 `2026-10-13`；基线 `3ae7bb772`。
+  **仍开登记**：`head` 行形给末行补换行（C `head()` 逐字符 `putc` 原样输出，无尾换行的末行不会被造出换行），
+  与本族 `tail` 同一条已声明简化；`vis` 旗标族、`sort -m`/`-o`、`pr` 多栏等仍在队列里。
+
 - ✅ **批次二百零八去掉行窗的三十二行封顶，`head`/`tail` 的任意计数按 C 照行**
   （`2026-10-13`，`claim/WINDOW-NOCAP-qoder` @ 基线 `0b10df877`，单域三线 commands/textfilter；`window.rs` 只是
   本 crate 的行窗库，无跨界）：

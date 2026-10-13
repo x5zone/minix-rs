@@ -24,8 +24,7 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read, Fd};
-use minix_textfilter::window::{parse_head_args, HeadArgError, HeadArgs, HeadWindow, LineWindow};
+use minix_textfilter::window::{HeadArgError, HeadArgs, HeadWindow, LineWindow, parse_head_args};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -46,27 +45,22 @@ fn run() -> ! {
         }
     };
 
-    // `HeadWindow::new` refuses only a zero count (a zero-line head is not a
-    // window request). C prints nothing for `-n 0`; refusing it here is the
-    // line-based behaviour this shell documents rather than C's.
-    if bytecnt == 0 && HeadWindow::new(count).is_err() {
-        support::terminate(1);
-    }
-
     // C `if (*argv) for each file: fopen, banner when (vflag || (qflag==0 &&
-    // argc>1)) with a leading blank between files, then head(); else head(stdin)`.
+    // argc>1)) with a leading blank between files, then head(); else head(stdin).
+    // The banner comes after the successful open because C `continue`s past a file
+    // it cannot open without printing one.
     let show_banner = vflag || (!qflag && operands.len() > 1);
     let mut first = true;
     let mut status = 0;
 
     if operands.is_empty() {
-        head_stream(support::STDIN, count, bytecnt);
+        head_stream(&support::read_stdin(), count, bytecnt);
         support::terminate(0);
     }
     for operand in &operands {
-        let fd = match open(operand, 0, 0) {
-            Ok(fd) => fd,
-            Err(_) => {
+        let data = match support::read_file(operand) {
+            Ok(data) => data,
+            Err(()) => {
                 support::warn(format!("head: {operand}\n").as_bytes());
                 status = 1;
                 continue;
@@ -77,27 +71,25 @@ fn run() -> ! {
             support::emit(format!("{sep}==> {operand} <==\n").as_bytes());
         }
         first = false;
-        head_stream(fd, count, bytecnt);
-        //[SD19-gate] SD-19: close 后 fd 不再使用
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = close(fd);
+        head_stream(&data, count, bytecnt);
     }
     support::terminate(status)
 }
 
-/// Emit the head of one open descriptor: the first `bytecnt` raw bytes in byte
-/// mode (`head.c:149-167`), else the first `count` lines through the window.
-fn head_stream(fd: Fd, count: usize, bytecnt: usize) {
-    let input = read_fd(fd);
+/// Emit the head of one stream: the first `bytecnt` raw bytes in byte mode
+/// (`head.c`'s `fread` loop), else the first `count` lines through the window.
+fn head_stream(input: &[u8], count: usize, bytecnt: usize) {
     if bytecnt > 0 {
-        support::emit(first_bytes_of(&input, bytecnt));
+        support::emit(first_bytes_of(input, bytecnt));
         return;
     }
-    let mut window = match HeadWindow::new(count) {
-        Ok(window) => window,
-        Err(_) => support::terminate(1),
+    // `parse_head_args` has already refused a non-positive count with C's
+    // `illegal line count`/`illegal byte count` message (`head.c:90-103`), so
+    // the window always opens here.
+    let Ok(mut window) = HeadWindow::new(count) else {
+        support::terminate(1);
     };
-    for line in support::lines_of(&input) {
+    for line in support::lines_of(input) {
         window.push(line);
     }
     let want = (window.seen() as usize).min(count);
@@ -114,20 +106,6 @@ fn head_stream(fd: Fd, count: usize, bytecnt: usize) {
 /// mode `fread`s up to the remaining count per file (`head.c:149-167`).
 fn first_bytes_of(input: &[u8], bytecnt: usize) -> &[u8] {
     &input[..bytecnt.min(input.len())]
-}
-
-/// Read a descriptor to the end.
-fn read_fd(fd: Fd) -> Vec<u8> {
-    let mut input = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => input.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    input
 }
 
 /// `head`'s usage line, exactly `head.c`'s `usage()` (exit 1).
