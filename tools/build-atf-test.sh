@@ -33,6 +33,8 @@ BUILD="$OUT/tests"
 PICO=/usr/lib/picolibc/riscv64-unknown-elf
 
 [ -f "$LIB" ] || { echo "缺 $LIB —— 先跑 tools/build-libatf-c.sh $ARCH" >&2; exit 2; }
+LIBC_KIND=picolibc      # 两支交叉腿共用 picolibc + 本仓 BSD 接管面
+COMPAT_TAKEOVER=1       # 是否挂 errno-compat / posix-stubs / stdio-minix / random 那层接管
 case "$ARCH" in
     riscv64) CC="riscv64-unknown-elf-gcc"; MC=(-mcmodel=medany)
              SYS=(--specs=picolibc.specs); SEMIHOST=("$PICO/lib/libsemihost.a") ;;
@@ -49,13 +51,22 @@ case "$ARCH" in
              { read -r PICOA && read -r SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64) || true
              [ -n "${SPECS:-}" ] || { echo "aarch64 picolibc 未取得（见上方 vendor-atf-toolchain.sh 报错）" >&2; exit 2; }
              SYS=(--specs="$SPECS"); SEMIHOST=("$PICOA/lib/libsemihost.a") ;;
-    *) echo "本脚本支持 riscv64 | aarch64（真跑另需 fork/exec/VFS 桥）" >&2; exit 2 ;;
+    x86_64) # 宿主 cc + glibc，与 `tools/build-libatf-c.sh:50-51` 同一条腿：发行版没有
+            # x86_64 的 `-unknown-elf` 裸机包，宿主就是它的裸机腿。glibc 原生有
+            # <err.h>/<sys/uio.h>/stresep/sysconf/strerror_r，再注入本仓 compat 反而与
+            # glibc 声明冲突（`errno-compat.h` 里 `extern const int sys_nerr;` 对 glibc 的
+            # `int _sys_nerr` 是类型不符），故整层接管面一律不挂，与库腿 `COMPAT_INC=()`
+            # 同一个判断。`md5.h`/`bm.h` glibc 没有，仍走 -I"$COMPAT"。
+            CC="cc"; MC=(); SYS=(); SEMIHOST=(); LIBC_KIND=glibc; COMPAT_TAKEOVER=0 ;;
+    *) echo "本脚本支持 riscv64 | aarch64 | x86_64（真跑另需 fork/exec/VFS 桥）" >&2; exit 2 ;;
 esac
 command -v "$CC" >/dev/null || { echo "缺编译器：$CC（目标③ 前置，请先装交叉工具链）" >&2; exit 2; }
-[ -f "${SEMIHOST[0]}" ] || { echo "缺 ${SEMIHOST[0]}（picolibc 安装前缀随发行版不同）" >&2; exit 2; }
+if [ "$COMPAT_TAKEOVER" = 1 ]; then
+    [ -f "${SEMIHOST[0]}" ] || { echo "缺 ${SEMIHOST[0]}（picolibc 安装前缀随发行版不同）" >&2; exit 2; }
+fi
 # P1-2 防混用：库必须是同 CC 同 libc 腿的产物（build-libatf-c.sh 写的 flavor 戳），
 # 否则旧 libc 腿的 libatf-c.a 会被静默复用（FILE 布局/stdio 符号语义错）。
-EXPECT_FLAVOR="$CC|picolibc"
+EXPECT_FLAVOR="$CC|$LIBC_KIND"
 FLAVOR="$(cat "$OUT/libatf-c.flavor" 2>/dev/null || echo MISSING)"
 [ "$FLAVOR" = "$EXPECT_FLAVOR" ] || { echo "libatf-c.a flavor 不匹配：got '$FLAVOR' want '$EXPECT_FLAVOR' —— 先重跑 tools/build-libatf-c.sh $ARCH" >&2; exit 2; }
 
@@ -72,6 +83,13 @@ CFGS=(-D__minix -D_GNU_SOURCE -DHAVE_SETENV -DHAVE_UNSETENV -DHAVE_PUTENV
       '-DATF_PKGDATADIR="/usr/share/atf"' '-DATF_SHELL="/bin/sh"' '-DATF_WORKDIR="/tmp"'
       '-D__arraycount(__x)=(sizeof(__x)/sizeof((__x)[0]))')
 
+# 只有 picolibc 腿要靠 `-include errno-compat.h` 补它缺的 BSD 声明；glibc 腿不注入，
+# 理由见上面 x86_64 分支。
+COMPAT_INCLUDE=()
+if [ "$COMPAT_TAKEOVER" = 1 ]; then
+    COMPAT_INCLUDE=(-include "$COMPAT/errno-compat.h")
+fi
+
 mkdir -p "$BUILD"
 # 渲染 atf-c/defs.h（测试经 <atf-c/defs.h> 包含，与 build-libatf-c.sh 同源）。
 mkdir -p "$BUILD/atf-c"
@@ -81,26 +99,51 @@ sed -e 's/@ATTRIBUTE_FORMAT_PRINTF@/__attribute__((format(printf, a, b)))/' \
     "$SRC/atf-c/defs.h.in" > "$BUILD/atf-c/defs.h"
 name="$(basename "$TEST" .c)"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" \
-    -I"$SRC" -I"$BUILD" -I"$COMPAT" -include "$COMPAT/errno-compat.h" "${EXTRA_INC[@]}" "${CFGS[@]}" \
+    -I"$SRC" -I"$BUILD" -I"$COMPAT" "${COMPAT_INCLUDE[@]}" "${EXTRA_INC[@]}" "${CFGS[@]}" \
     "$TEST" -o "$BUILD/$name.o"
-"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/sys-bridge.c" -o "$BUILD/sys-bridge.o"
-"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/posix-stubs.c" -o "$BUILD/posix-stubs.o"
+# sys-bridge 也在接管面之内：它是「与我方内核 trap 同形」的架构内联汇编（文件末尾对
+# 未知架构直接 `#error`）。宿主 glibc 腿走真系统调用，不需要它——把它挂上只会把
+# x86_64 卡死在编译期。x86_64 的出生/系统调用腿属台账 P-X86-01 的缺口④⑤，不在本批。
+if [ "$COMPAT_TAKEOVER" = 1 ]; then
+    "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/sys-bridge.c" -o "$BUILD/sys-bridge.o"
+    STUB_OBJS=("$BUILD/sys-bridge.o")
+else
+    STUB_OBJS=()
+fi
+# posix-stubs / stdio-minix / errno-compat / random 四件是「抢 picolibc 缺位」或「抢 libc
+# 成员」的强定义接管面。glibc 本就有 stresep/sysconf/strerror_r/random，再挂一份会在静态链
+# 上撞重复定义，还会改掉测试看到的 libc 语义，故 glibc 腿一律不编。这条差异记在台账
+# P-X86-01 行：出生腿④ 上机时若 BSD 随机序/strerror 期望对不上，先回这里查。
+STUB_OBJS=()
+if [ "$COMPAT_TAKEOVER" = 1 ]; then
+    "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/posix-stubs.c" -o "$BUILD/posix-stubs.o"
+    STUB_OBJS+=("$BUILD/posix-stubs.o")
+fi
 # 把 picolibc semihost stdio 钩子改接我方 _write/SYS_DIAGCTL（两腿共享；抢定义
 # sys_semihost_putc/getc，须排在 libsemihost.a 之前才能挡住 semihost 实现成员）。
-"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/stdio-minix.c" -o "$BUILD/stdio-minix.o"
+if [ "$COMPAT_TAKEOVER" = 1 ]; then
+    "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/stdio-minix.c" -o "$BUILD/stdio-minix.o"
+    STUB_OBJS+=("$BUILD/stdio-minix.o")
+fi
 # BSD <md5.h> 摘要实现（picolibc 不提供），供 t_memcpy 等测试链入（仅构建/测试用）。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/md5.c" -o "$BUILD/md5.o"
 # BSD Boyer-Moore <bm.h>（bm_comp/exec/free，picolibc 不提供），供 t_bm 链入。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/bm.c" -o "$BUILD/bm.o"
 # BSD sys_nerr（picolibc 不提供），供 t_strerror 编译/链接（真语义上机前校准，见 errno-compat.c 头注释）。
-"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/errno-compat.c" -o "$BUILD/errno-compat.o"
+if [ "$COMPAT_TAKEOVER" = 1 ]; then
+    "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/errno-compat.c" -o "$BUILD/errno-compat.o"
+    STUB_OBJS+=("$BUILD/errno-compat.o")
+fi
 # BSD random/srandom 真源接管（NK4-C §续-283 D1）：minix3/common/lib/libc/stdlib/
 # random.c 逐字 vendor（fidelity=零改动，全部兼容在 random-shim/）。命令行对象
 # 强定义 random+srandom（+initstate/setstate）→ picolibc 单符号成员
 # libc_stdlib_{random,srandom}.c.o 不再被拉入（LCG _rand_next 形永不上台），
 # t_memcpy 的 BSD 期望序由此满足——host 离线对账 MD5=7b405d24… 已 MATCH（§续-283）。
 # sbrk/sysconf/strerror 同形先例。
-"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" -I"$COMPAT/random-shim" "$COMPAT/random.c" -o "$BUILD/random.o"
+if [ "$COMPAT_TAKEOVER" = 1 ]; then
+    "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" -I"$COMPAT/random-shim" "$COMPAT/random.c" -o "$BUILD/random.o"
+    STUB_OBJS+=("$BUILD/random.o")
+fi
 
 # 上机出生链（启动腿）：picolibc 默认 crt0 把 sp 切进 ELF 内 .stack 且
 # main(0,NULL)（atf tp_main 解引用 argv[0] 必死），需 -nostartfiles 换
@@ -118,11 +161,16 @@ case "$ARCH" in
 esac
 
 "$CC" -static "${MC[@]}" "${SYS[@]}" "${LINK_EXTRA[@]}" "${STARTUP_O[@]}" "$BUILD/$name.o" \
-    -Wl,--start-group "$LIB" "$BUILD/sys-bridge.o" "$BUILD/stdio-minix.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "$BUILD/bm.o" "$BUILD/errno-compat.o" "$BUILD/random.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
+    -Wl,--start-group "$LIB" "${STUB_OBJS[@]}" "$BUILD/md5.o" "$BUILD/bm.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
     -o "$BUILD/$name"
 
 # 校验我方加载器 parse_ehdr 的硬项（ELF64 + LSB + ET_EXEC）。
-RE="$("${CC%-gcc}-readelf" -h "$BUILD/$name")"
+# 宿主腿的 `$CC` 是 `cc`，剥掉 `-gcc` 拼出来的 `cc-readelf` 不存在；按存在性挑一个
+# （交叉腿仍是 `<triplet>-readelf`，与宿主腿各用各自的 reader，避免用宿主 readelf 读
+# 交叉产物时字段解释不一致）。
+READER="${CC%-gcc}-readelf"
+command -v "$READER" >/dev/null || READER=readelf
+RE="$("$READER" -h "$BUILD/$name")"
 echo "$RE" | grep -q 'Class:.*ELF64'   || { echo "非 ELF64" >&2; exit 1; }
 echo "$RE" | grep -qi 'little endian'   || { echo "非 LSB" >&2; exit 1; }
 echo "$RE" | grep -q 'Type:.*EXEC'     || { echo "非 ET_EXEC" >&2; exit 1; }
