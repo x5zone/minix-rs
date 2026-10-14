@@ -250,6 +250,38 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十二把 `arithmetic` 的答错罚则建成决定半，并按 C 重写抽题与提问循环**
+  （`2026-10-14`，`claim/ARITH-PENALISE-qoder` @ 基线 `68c91aba6`，单域三线 commands/games/stdio-games，无跨界）：
+  接回 22 篇登记的「`penalise` 罚则待批」。**是什么**：那条留白被记成提示层的小事，缺的其实是**出题模型**。
+  C 答错时给这道题的两个操作数各记一笔惩罚——右操作数，加上「加法与乘法的左操作数 / 减法与除法的正确答案」
+  （`arithmetic.c:255-262`）；此后每个操作数都在 `rangemax + 1 + 活惩罚总数` 的跨度上取随机值，落在惩罚段里就
+  按链表的**头插顺序**命中，命中一次消耗一点、消耗尽即摘除（`penalise`/`getrandom`，`:296-364`）；同一道题会一直
+  问到答对为止，提示语只在出题那一刻打一次（`:231-266`）。旧壳三条都不符：答错就换下一题（等于罚则完全不存在）、
+  操作数取模用 `% range`（C 是含端点的 `rangemax + 1`）、除法用「商从 1 起」的自造形状而不是 C 的
+  `right * rangemax` 构造再埋余数。判类 P0-code-bug + P0-design-missing。
+  **怎么修**：决定半（`quiz.rs`）新增 `WRONG_PENALTY`、`PENALTY_CAPACITY`、`PenaltyList`（头插、逐个消耗、
+  耗尽摘除、满表丢新惩罚——对应 C 里 `malloc` 失败就「忘记这个惩罚」的同一条规则）、`Penalties`
+  （4 个算子 × 2 个操作数共八张表）、`Drawn::{Direct,Penalised,Inconsistent}`，并把「答错该记谁」这条规则本身
+  也放进决定半（`slot_of`/`charged_operands`）：它先前只写在壳里，宿主测看不见，一枚变异因此逃过（见下）。
+  执行半按 C 的 `problem()` 重写抽值（减从答案反推左操作数、除抽非零除数与商并把余数埋进被除数、乘积溢出则
+  重试），提问循环改为一道题问到答对，输入结束只打一个换行退 0（分数只在每二十题与中断时打印，旧壳在输入结束
+  时打分数也不符）。**已知差异如实登记**：链表容量固定 32 而 C 每笔 `malloc`（耗尽时两者都是丢新惩罚）；随机源
+  仍是文档化的同余发生器而 C 用 `random(3)`（它的序列本就不是可观察契约）。
+  三件套：`cargo test -p minix-stdio-games` → **18 个测试目标全 ok、合计 171 passed、零 FAILED**（基线 18 目标 /
+  165 passed）；`--lib quiz::` 4→**10/0**（新增头插顺序、消耗到摘除、越界即 C 的 `bug: inconsistent penalties.`、
+  满表丢惩罚、跨度含活惩罚、答错记谁的四例配对）；库测合计 70/0；三架构 `--bins` 三台零 error；容器
+  `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error、容器内 18 个 `test result: ok`、
+  FAILED 与 error 计数 0；clippy 触及文件零新增（仅余 `bin/arithmetic.rs` 的存量一条）；`rustfmt` 零漂移；
+  `pattern-gate.sh --diff` PASS=17 FAIL=0；`doc-style-lint.sh --diff` error 0；文档测试名与代码逐枚对账零 MISSING。
+  宿主实跑：`printf 'x\n0\n1\n2\n3\n' | arithmetic -r 1 -o +` 得到
+  `1 + 0 =  Please type a number.`→`What?`→`Right!`→再出同一题且提示不再重复——被记过惩罚的数反复回来，正是 C 的意图。
+  核实日 `2026-10-14`；基线 `68c91aba6`。
+  **八枚变异负控**（`--lib quiz::`，复位断言 md5）首轮**一枚没咬**：「答错记错操作数」——规则当时只活在壳里。
+  处置不是放宽断言，而是把规则挪进决定半并补一枚配对测，再动同一处即翻红；其余七枚（每笔惩罚改 1、尾插代替头插、
+  命中不消耗、直取区间多含一个值、取模跨度丢掉活惩罚、满表覆盖最旧项、加乘误记答案）全部咬中。
+  登记不执行：①`Total time %ld seconds; %.1f seconds per problem` 的用时统计与中断打印分数（需秒级时钟与信号面，
+  且 `%.1f` 的舍入还欠一个决定）；②真机播种与 open 腿归 C-57/E5；③全族 strerror 基础件（见批次二百三十）。
+
 - ✅ **批次二百三十一把 `number` 重写成 C 的数词：三位一组带尺度名、每组自带句点、小数按位数命名量级**
   （`2026-10-14`，`claim/NUMBER-FACE-qoder` @ 基线 `5b183cf1e`，单域三线 commands/games/stdio-games，无跨界）：
   接回批次二百三十登记②。**是什么**：台账与 22 篇都只写「已接线」，而实现是**另一个程序**——
