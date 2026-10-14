@@ -290,6 +290,15 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本轮只接了那一行本身的字；③其余命令若也有“无换行提示语”，同样需要 `flush_stdout`（本轮只扫到 `arithmetic` 是
   交互式的）；④`bin_support.rs` 在 freestanding 面的两条 unused import（批次二百五十四已登）。
 
+  **合回后跑出一枚飘红，查出生的是门自己的 bug（已修）**：合入 `rewrite` 后在同一棵树再跑一遍，
+  出现 185 passed / **1 failed**（先前四次都是 206/0）。不是舍入不稳，是**交互 harness 自己错了**：
+  `take_prompt` 用 `rposition` 取**最后一个** ` =   ` 标记，而在 I/O 负载下孩子可以把上一题的
+  `Right!\n` 与下一题的提示语一起冲刷出来，父进程于是跳过了孩子真正在等的那一题，把答案送到错的
+  题上 → 多一个 `What?` → `Wrongs 0` 断言断掉。改成 `position`（取第一个未消费的标记）后连跑 5 次
+  全绿，再叠上三个并发跑与一个读遍 `/usr/lib/*.so*` 的 I/O 负控，又跑两次仍全绿。教训归 `test-audit`
+  的「测试自身错」那一维：逐题读流的解析必须按 FIFO 取第一个标记，不是最后一个；断言里钉住
+  `Wrongs 0` 正是让这类跳题不能静默过关。入库：一笔独立小提交（不重写已合入的那笔）。
+
 - ✅ **批次二百五十六除掉 `what` 的同名重复实现，并把「两包同名 bin」钉成门（P19）**
   （`2026-10-14`，`claim/WHAT-DUP-BIN-qoder` @ 基线 `5887699bc`，单域三线 `os/commands/usr-bin/textfilter`
   与门禁工具 `tools/pattern-gate.sh`，加同线两份台账）：接回批次二百五十五登记不执行①。

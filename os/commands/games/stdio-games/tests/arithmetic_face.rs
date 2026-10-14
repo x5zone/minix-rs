@@ -33,13 +33,19 @@ fn run(args: &[&str]) -> (String, i32, String) {
     )
 }
 
-/// Read the next prompt out of the accumulated output, consuming it. C writes
-/// `"%d %c %d =   "` and then flushes (`arithmetic.c:231-232`), so the marker is three
-/// tokens plus five spaces; whatever came before it (`Right!\n`, the score block) is left
-/// in the caller's buffer for the assertions.
+/// Read the **next** prompt out of the accumulated output, consuming everything up to and
+/// including it. C writes `"%d %c %d =   "` and then flushes (`arithmetic.c:231-232`), so the
+/// marker is three tokens plus five spaces; whatever came before it (`Right!\n`, the score
+/// block) stays in the caller's buffer for the assertions.
+///
+/// Taking the *first* marker is load-bearing: under I/O load the child can flush an answer's
+/// `Right!\n` together with the following prompt while the parent is still parsing, and a
+/// search for the last marker would skip the question the child is actually waiting on — the
+/// answer then goes to the wrong problem and the run records a `What?` (this harness did
+/// exactly that once, which is why `Wrongs 0` is asserted below).
 fn take_prompt(buffer: &mut Vec<u8>) -> Option<(u64, u8, u64)> {
     const MARKER: &[u8] = b" =   ";
-    let at = buffer.windows(MARKER.len()).rposition(|w| w == MARKER)?;
+    let at = buffer.windows(MARKER.len()).position(|w| w == MARKER)?;
     let text = std::str::from_utf8(&buffer[..at]).ok()?;
     let mut words = text.split_whitespace().rev();
     let right: u64 = words.next()?.parse().ok()?;
