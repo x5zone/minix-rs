@@ -250,6 +250,38 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十八接上 `mkfifo` 的 `warn(3)` 腿：一行里既有程序名也有那个号的句子**
+  （`2026-10-14`，`claim/MKFIFO-ERRSUFFIX-qoder` @ 基线 `2c5088736`，**跨线**：二线 `os/libs/minix-types`
+  （新增 `prog_name`）+ 三线 `os/commands/bin/fileops`、`os/commands/bin/shell`（改为转发），
+  在 `new_edge4.md` 登记 C-97 后动手）：
+  接回批次二百三十七登记①的第一枚。**是什么**：C 的 `mkfifo` 逐名建管道，失败那行是
+  `warn("%s", *argv)`（`mkfifo.c:95`），而 `vwarn.c` 把它渲染成 `getprogname(): <名>: <strerror(errno)>`，
+  然后**继续**下一个名字（`exitval = 1` 是记账不是离开）。本壳此前只印 `mkfifo: <名>`：既没有程序名，
+  也没有句子——22 篇与 06 篇都写着「本壳尚未接那张表」。判类 P0-code-bug（报文缺两个字段）。
+  **怎么修**：把 `getprogname()` 的取法也沉到权威处——`minix-types` 新增 `prog_name(argv0)`
+  （规则逐字取自 `minix3/lib/csu/common/crt0-common.c:156-165`：取最后一个 `/` 之后那段），
+  shell 那份同名本地实现改为转发，fileops 的 `bin_support.rs` 加 `prog_name` 与
+  `warn_line(prog, label, code)`（渲染 + 写 + 不退，与 C 的 `vwarn` 同形）；`mkfifo` 的循环改成
+  `if let Err(code) = mkfifo(...)` 交给它。`-m` 被拒那条腿**故意不动**：C 那句 `err(1, ...)` 缀的是
+  当时的 `errno`，而 `setmode` 返回 `NULL` 时并不置号（`mkfifo.c:74-76`），缀什么全凭运气——
+  已在注释里写明这一句没有可复刻的尾巴。
+  **门**：新建 fileops 的第一扇端到端门 `tests/mkfifo_face.rs`（4 枚）：两个名字出两行且每行都是
+  `mkfifo: <名>: <句子>`、退 1 且循环走完；`-m bogus` 即刻走且后面不出行；无名字与 `-q` 同答 usage；
+  把副本放进临时目录按带目录的路径调用，程序名那段仍不含斜杠。号码不钉（宿主传输回什么是环境事实）。
+  三件套：`cargo test -p minix-fileops` → **393 passed、0 failed**（基线 389，+4 枚门）；
+  `cargo test -p minix-shell` → 81/0、`cargo test -p minix-types` → 331/0（`prog_name` 三条断言并进门测）；
+  三架构 `cargo build -p minix-fileops --bins` 三台零 error；容器 `minix-ci:1.94`（带 `-u`）
+  `cargo check -j 1 --workspace` Finished 零 error，三包 `cargo test -j 1` 出 37 个 `test result: ok`、唯一的
+  FAILED 是批次二百三十三登记的那枚恒红测（容器读不到 C 源文件那条）；`rustfmt` 触及五文件零漂移；
+  clippy 对触及文件零命中；
+  宿主实跑 `mkfifo /tmp/a /tmp/b` → 两行 `mkfifo: /tmp/a: Input/output error` 退 1（C 的续行形状）。
+  核实日 `2026-10-14`；基线 `2c5088736`。
+  **四枚变异负控**（`tmp/mkfifo-warn-mutate.py`）全部咬中：丢掉整个句子尾巴、程序名用整条 `argv[0]`
+  （带目录）、失败即退出（丢掉「继续下一个名字」这条 C 的关键差别）、把行首程序名去掉。
+  登记不执行：①其余 fileops 壳的同款接线（rm/cp/mv/unlink/link/truncate/du/find/stat 各腿，逐枚判
+  errno 是否在手，队列 16t）；②`emit` 的宿主双生面（成功路径 stdout 在 shell crate 仍不可见）；
+  ③真机播种与 open 腿归 C-57/E5。
+
 - ✅ **批次二百三十七把 `err(3)` 那一行的渲染下沉成 `minix-types` 的唯一权威，并按 C 补齐 `hostname`/`domainname` 的两句**
   （`2026-10-14`，`claim/ERR-LINE-SHARED-qoder` @ 基线 `8f91514e2`，**跨线**：二线 `os/libs/minix-types` +
   三线 `os/commands/bin/shell` 与 `os/commands/games/stdio-games`，照规则 1 在 `new_edge4.md` 登记 C-96 后动手）：

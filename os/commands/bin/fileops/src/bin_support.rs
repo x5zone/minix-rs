@@ -111,6 +111,27 @@ pub fn warn(bytes: &[u8]) {
     let _ = minix_sys::write(STDERR, bytes);
 }
 
+/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（权威在
+/// `minix_types::prog_name`，规则见 `minix3/lib/csu/common/crt0-common.c:156-165`）。
+/// `warn(3)`/`err(3)`/`usage()` 的那几行都以它开头。
+pub fn prog_name(argv: &[alloc::string::String]) -> &str {
+    let raw = argv
+        .first()
+        .map(alloc::string::String::as_str)
+        .unwrap_or("");
+    minix_types::prog_name(raw)
+}
+
+/// C 的 `warn(3)` 那一行：`prog: label: <strerror 的句子>` 加一个换行，写完继续跑
+/// （`vwarn.c` 不退，退不退由调用者决定）。形状与句子都由 `minix_types::err_line`
+/// 那一份权威给出（`minix3/lib/libc/gen/verrc.c` 与 C 的 `sys_errlist`）。
+pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
+    let mut line = [0u8; 256];
+    let len = minix_types::err_line(prog, label, code, &mut line);
+    warn(&line[..len.min(line.len())]);
+    warn(b"\n");
+}
+
 /// Writes the slice to standard output, reporting success without
 /// exiting (the form the printf engine's sink needs).
 /// Hosted twin of [`write_ok`]: real stdio.
