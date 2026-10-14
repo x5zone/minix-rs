@@ -14,7 +14,9 @@
 //! specifies an exit status of 1" when none matched). Read-only, so like
 //! `whatis`/`which` it is not gated on the writable-root E5 check; real-machine
 //! per-file `open` is the same C-57/E5 delivery gate as every guest binary.
-//! C's `perror` `strerror` suffix is not reproduced (no errno→text table).
+//! C's `perror` `strerror` suffix is not reproduced yet: the errno→text table
+//! exists (`minix_types::Errno::message`), and wiring this shell to it is a
+//! registered follow-up.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

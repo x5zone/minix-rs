@@ -16,8 +16,9 @@
 //! - C prints an unparseable `-s` value and a failed reference `stat` with a bare
 //!   `fprintf` and no program-name prefix (`truncate.c:67-71`, `:92-95`); that
 //!   shape is reproduced. The per-file failures keep this crate's conventional
-//!   `truncate: <path>` line, because there is no `strerror` table here to print
-//!   the suffix C's `perror` would add.
+//!   `truncate: <path>` line, because this shell does not yet print the suffix C's
+//!   `perror` would add — the table exists (`minix_types::Errno::message`), the
+//!   wiring is a registered follow-up.
 //! - C counts an open failure only when `errno` is not `ENOENT`
 //!   (`truncate.c:109-114`), so `truncate -c absent` exits 0 in silence. The same
 //!   triage is kept, which is why the failure is tracked per operand.

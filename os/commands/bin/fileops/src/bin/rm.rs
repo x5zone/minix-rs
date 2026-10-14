@@ -21,8 +21,10 @@
 //! tree has no password lookup at all, so that is the only form. C's own `-P`
 //! branch inside `check` (`rm.c:563-568`, "could not be overwritten") stays
 //! unreachable because `-P` is refused before any operand is touched.
-//! C's `warn`/`warnx` `strerror` suffixes are not reproduced (no errno→text
-//! table); real-machine effect is the writable-root gate (`C-57`/E5).
+//! C's `warn`/`warnx` `strerror` suffixes are not reproduced here: the errno→text
+//! table exists (`minix_types::Errno::message`, landed with the games family), while
+//! this shell is not wired to it yet — a registered per-command follow-up.
+//! Real-machine effect is the writable-root gate (`C-57`/E5).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

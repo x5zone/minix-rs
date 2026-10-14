@@ -5,7 +5,9 @@
 //! `minix_fileops::linkops`, this program supplies the syscall and error leg
 //! (`unlink.c:52-59`). A write-side command: real-machine effect is the
 //! writable-root gate (`C-57`/E5), and C's `perror` `strerror` suffix is not
-//! reproduced (no errno→text table), so a failure prints `unlink: <path>`.
+//! reproduced yet — the table itself lives in `minix_types::Errno::message`, and
+//! wiring this shell to it is a registered follow-up — so a failure prints
+//! `unlink: <path>`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 

@@ -221,7 +221,8 @@ fn run() -> ! {
             errs = true;
             linkfail = true;
             if !plan.quiet {
-                // C 的 `warn` 会缀上 strerror；本树无 strerror，行止于腿名。
+                // C 的 `warn` 会缀上 strerror 的句子。那张表已在本树
+                // （`minix_types::Errno::message`），本壳尚未接它，故行止于腿名（已登记）。
                 let leg = if plan.use_stat { "stat" } else { "lstat" };
                 support::warn(format!("{prog}: {}: {leg}\n", name.unwrap_or("(stdin)")).as_bytes());
             }

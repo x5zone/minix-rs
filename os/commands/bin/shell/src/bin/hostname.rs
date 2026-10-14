@@ -50,9 +50,10 @@ fn usage() -> ! {
 
 /// Fold a transport-or-service errno into the C `err(1, "…")` shape: a
 /// one-line stderr report prefixed by the operation, then exit 1. C's
-/// `err(1, …)` prints `"<prog>: <strerror>"`; this tree has no strerror
-/// text table, so the errno symbol name stands in (via
-/// [`Errno`]'s `Display`, which prints `EINVAL`, `EPERM`, …).
+/// `err(1, …)` 的形状在 `minix3/lib/libc/gen/verrc.c`：`getprogname(): ` + 调用者的
+/// 串 + `": "` + `strerror` 的句子。本壳离它差两处，都已登记在阶段台账：句子表已在
+/// 本树（[`Errno::message`]）而这里仍打标识符（[`Errno`] 的 `Display` 给 `EINVAL`、
+/// `EPERM`…），并且 C 那句开头的 `hostname: ` 也没打。
 fn report_err(prefix: &str, errno: Errno) -> ! {
     support::warn(format!("{prefix}: {errno}\n").as_bytes());
     support::terminate(1);

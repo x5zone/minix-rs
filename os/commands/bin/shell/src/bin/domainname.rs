@@ -41,8 +41,10 @@ fn usage() -> ! {
 
 /// Fold a transport-or-service errno into the C `err(1, "…")` shape: a
 /// one-line stderr report prefixed by the operation, then exit 1 (the
-/// same convention the `hostname` bin uses — errno symbol via
-/// [`Errno::Display`], no strerror text table in this tree).
+/// same convention the `hostname` bin uses — the errno's symbol through
+/// [`Errno`]'s `Display`, with neither C's `strerror` sentence (the table lives
+/// in [`Errno::message`]) nor the `getprogname()` prefix; both gaps are
+/// registered in the stage ledger).
 fn report_err(prefix: &str, errno: Errno) -> ! {
     support::warn(format!("{prefix}: {errno}\n").as_bytes());
     support::terminate(1);

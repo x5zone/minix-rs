@@ -16,9 +16,10 @@
 //! shell's.
 //!
 //! Declared differences, all from legs or C behaviours this tree does not carry:
-//! - Warnings print the path plus a fixed phrase, not `strerror(errno)` (no
-//!   strerror table here — the same boundary `stat`, `du`, and the `what`/`asa`
-//!   batches document). `FTS_NS` prints `<path>: stat failed`, `FTS_DNR` prints
+//! - Warnings print the path plus a fixed phrase, not `strerror(errno)` — not
+//!   because the table is missing (`minix_types::Errno::message` holds C's
+//!   `sys_errlist`) but because this shell is not wired to it yet; the same
+//!   boundary `stat`, `du`, and the `what`/`asa` batches document. `FTS_NS` prints `<path>: stat failed`, `FTS_DNR` prints
 //!   `<path>: directory read failed`.
 //! - A hard error while evaluating one entry (an unwired action, a malformed
 //!   numeric argument) records the failure and moves on rather than calling
@@ -182,7 +183,7 @@ fn run() -> ! {
 }
 
 /// `FindError` 逐支落到 C 的各条报错文案（`usage`/`unknown option`/`requires
-/// additional arguments` 等）。无 strerror 表，故按名报，差异见头注。
+/// additional arguments` 等）。句子表在 `minix_types::Errno::message`，本壳尚未接，故按名报，差异见头注。
 fn report_parse_error(e: &FindError<'_>) {
     let msg = match e {
         FindError::Usage => String::from(
