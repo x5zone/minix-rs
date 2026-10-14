@@ -154,6 +154,83 @@ fn the_rotation_argument_is_parsed_like_strtol_and_rejected_in_two_orders() {
 }
 
 #[test]
+fn a_failed_write_reports_the_stdout_leg_with_the_number() {
+    // `caesar.c:103-107`: a `putchar` that returns `EOF` leaves at once through
+    // `err(EXIT_FAILURE, "<stdout>")` — so this leg is the one that carries the
+    // number's sentence, unlike the two stdio-flag checks at the end of `main`.
+    // `/dev/full` makes every write fail, which is what the C `putchar` sees.
+    let full = std::fs::File::options()
+        .write(true)
+        .open("/dev/full")
+        .expect("/dev/full is the host seam for a failing write");
+    let mut child = Command::new(CAESAR)
+        .args(["3"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(full))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the caesar binary should be runnable");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin piped")
+        .write_all(b"abc\n")
+        .expect("feed the text");
+    let output = child.wait_with_output().expect("wait for caesar");
+    let err = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "`err(EXIT_FAILURE, …)` 退 1：`{err}`"
+    );
+    let head = "caesar: <stdout>: ";
+    assert!(err.starts_with(head), "`{err}` should start with `{head}`");
+    let sentence = err[head.len()..].trim_end_matches('\n');
+    assert!(
+        !sentence.is_empty() && sentence.chars().any(|c| c.is_lowercase()),
+        "缀的应是一句 strerror 文本而不是代号：`{sentence}`"
+    );
+    // 更紧的一层：句子必须来自**那次失败的写**留下的号（宿主 `/dev/full` 回
+    // `ENOSPC`，本树表里就是「No space left on device」）。随便填一个号——哪怕同样
+    // 是一句话——都会在这里露馅，因为这句话不再说到空间。
+    assert!(
+        sentence.to_lowercase().contains("space"),
+        "句子该说那次写的失手，不是任意一个号：`{sentence}`"
+    );
+}
+
+#[test]
+fn a_failed_read_reports_the_stdin_leg_without_a_number() {
+    // `caesar.c:205-208`: after the output, `main` looks at `ferror(stdin)` — a flag,
+    // not a number, so C leaves through `errx`: program name plus `<stdin>`, no
+    // sentence. A directory as standard input is the host seam for "reading fails"
+    // (the same trick `ppt`'s door uses for `EISDIR`).
+    let dir = std::fs::File::open("/tmp").expect("/tmp stands in for an unreadable stream");
+    let output = Command::new(CAESAR)
+        .args(["3"])
+        .stdin(Stdio::from(dir))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the caesar binary should be runnable");
+    let err = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "`errx(EXIT_FAILURE, …)` 退 1：`{err}`"
+    );
+    assert_eq!(
+        err, "caesar: <stdin>\n",
+        "这一支只该有程序名与短语——号在 stdio 的错标志里已经丢了"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "读不出字节就没有输出可写：{:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn more_than_one_argument_answers_the_usage_line_on_stderr() {
     // `main` only counts arguments (`caesar.c:192-203`), so the third case is the usage
     // line — on standard error, with nothing read from standard input.

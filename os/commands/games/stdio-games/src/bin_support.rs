@@ -90,6 +90,39 @@ pub fn emit(bytes: &[u8]) {
     }
 }
 
+/// 与 [`emit`] 同一次写，但把失手那个号交回调用方：C 的 `caesar` 在 `putchar` 返回
+/// `EOF` 时立刻 `err(EXIT_FAILURE, "<stdout>")`（`caesar.c:103-107`、`:116-120`），
+/// 缀的就是那个号——擦成「退 1」会丢掉 C 唯一说出来的信息。宿主侧取
+/// `raw_os_error()`，没有它时退 `EIO`（与 `read_file`、`stdin_chunk` 那条双生面同口径）。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn write_stdout(bytes: &[u8]) -> Result<(), Errno> {
+    use std::io::Write as _;
+    std::io::stdout()
+        .write_all(bytes)
+        .map_err(|e| Errno::from_i32(e.raw_os_error().unwrap_or(EIO)))
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn write_stdout(bytes: &[u8]) -> Result<(), Errno> {
+    write(STDOUT, bytes).map(|_| ())
+}
+
+/// 读完整条标准输入，并区分「读到尽头」与「读失手」：C 的 `caesar` 读的时候不查，
+/// 到全部输出之后才看一眼 `ferror(stdin)`（`caesar.c:205-208`），那时它是 `errx`
+/// 而不是 `err`——因为 stdio 的错标志不带号。交回已读到的字节与那个号，正是为了让
+/// 调用方能保持这个次序与这一族之别。走的是已有的 `stdin_chunk` 缝，两面都不必重写。
+pub fn read_stdin_all() -> (alloc::vec::Vec<u8>, Option<Errno>) {
+    let mut input = alloc::vec::Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stdin_chunk(&mut chunk) {
+            Ok(0) => return (input, None),
+            Ok(count) => input.extend_from_slice(&chunk[..count]),
+            Err(e) => return (input, Some(e)),
+        }
+    }
+}
+
 /// Best-effort write to standard error — the C `fprintf(stderr, ...)` channel.
 ///
 /// Write failures are ignored exactly as stdio's are in the C games, which is why the

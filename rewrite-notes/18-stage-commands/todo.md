@@ -250,6 +250,40 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十三接上 `caesar` 的两条流失败腿：一个缀号、一个只短语**
+  （`2026-10-14`，`claim/CAESAR-NUMBER-ERR-qoder` @ 基线 `69eb456dc`，单域三线 `os/commands/games/stdio-games`
+  与同线文档，无跨界）：接回批次二百五十二登记不执行①之外的判定表行（判定表里 `caesar` 那行现已翻成已闭）。
+  **是什么**：`caesar` 除了已接的坏轮转句（批次二百三十三），还有三条流失败腿本树一条都没有：C 在
+  `putchar` 返 `EOF` 时立刻 `err(EXIT_FAILURE, "<stdout>")`（`caesar.c:103-107`、`:116-120`，缀号），
+  在结尾看 `ferror(stdin)` 时 `errx(EXIT_FAILURE, "<stdin>")`（`:205-208`，不缀号）。本壳此前写失败一律
+  经 `emit` 静默退 1，读失败被 `read_stdin` 与文件尾混为一谈——两条腿都消失。另有一处程名硬写：
+  `bad_rotation` 自己拼 `caesar: ` 前缀（该取 `getprogname()`），也没走那份渲染权威。判类 P0-code-bug ×2。
+  **族的区别正是这条腿的内容**：`<stdout>` 那句必须缀号（那次写的 `errno`），`<stdin>` 那句必须**不**缀
+  （stdio 的错标志不带号）。所以两族不能共用一行渲染，也不能都塞给 `warn_line`。
+  **怎么修**：`bin_support` 补两条带号的双生缝——`write_stdout(bytes) -> Result<(), Errno>`（宿主取
+  `raw_os_error()`、缺省退 `EIO`，与 `read_file`/`stdin_chunk` 同口径；真机侧直接传播 `write(2)` 的号）
+  与 `read_stdin_all() -> (Vec<u8>, Option<Errno>)`（走已有的 `stdin_chunk`，两面不必重写）；壳侧
+  `emit` → `write_stdout` 并在失手时 `warn_line(prog, "<stdout>", code)` 后退出，读完的号留到全部输出之后
+  再以 `errx` 报出（保住 C 的次序）；`bad_rotation` 改交 `support::warn_line` 并接进程名。
+  **为什么不选另一条路**：①让 `<stdin>` 也缀号看似一致，但那是 C 没有的信息（号在 `ferror` 之前就被 stdio 吞了）；
+  ②`emit` 改成会返回错误会牵动其余七个壳的既有契约，故另开 `write_stdout` 一条缝给需要的壳；
+  ③C 结尾那支 `fflush` 后的 `errx "<stdout>"` 在本树没有对应时刻（逐块直写、失败当场报），
+  硬造一行等于凭空多一条报文——声明为无对位。
+  **门**：扩 `tests/caesar_face.rs`（5 → 7 枚）。宿主侧的可复现机关是两条：`/dev/full` 当标准输出让每次写都失手
+  （→ `caesar: <stdout>: No space left on device`，断言句子确实说到 space，从而钉住「号是从那次写带回来的」）；
+  目录 `/tmp` 当标准输入让每次读都失手（→ `caesar: <stdin>`，逐字无句子）。
+  三件套：`cargo test -p minix-stdio-games` → **198 passed、0 failed**（基线 196，+2 枚；20 个测试目标）；
+  容器 `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-stdio-games` → **198/0**；三架构
+  `cargo build -p minix-stdio-games --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 0 error（`touch` 强制重编）；
+  `rustfmt --edition 2024 --check` 触及文件零漂移；clippy 对触及文件零命中；宿主实跑
+  `caesar 3 > /dev/full` → `caesar: <stdout>: No space left on device` 退 1。核实日 `2026-10-14`；基线 `69eb456dc`。
+  **两枚变异负控**（测完按 md5 复原）：拿掉 `<stdin>` 那一支（对应枚独红）、把 `<stdout>` 的号换成随手取的
+  `EINVAL`（对应枚独红——第一版断言只查「像不像一句话」，被这枚暴露太松，已加收紧到句子内容）。
+  22 篇两行随之改准：`caesar` 接线行、§测数行（184→198 那处账面滞后一并更正）。
+  登记不执行：①`number` 的三支 `errx` 程名（判定表下一行，接法与本批同形，单独一轮）；②`text-games` 三面
+  （`fortune`/`random`/`wtf`）的开档与读数腿；③`caesar` 的 `fflush` 那支 `<stdout>` 在本树的无对位声明；
+  ④`primes` 的 `-d`/`-h` 与 `read_num_buf`（批次二百五十二登记）。
+
 - ✅ **批次二百五十二把 `primes` 的界限腿逐枚接上：同一句坏参数在 C 里分属两族（16v 接线第一枚）**
   （`2026-10-14`，`claim/PRIMES-ERR-WIRE-qoder` @ 基线 `212ac44ff`，单域三线 `os/commands/games/stdio-games`
   与同线文档，无跨界）：接回批次二百五十一判定表里 P0 最高的一行。**是什么**：`primes` 的八支诊断腿
@@ -301,7 +335,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   |---|---|---|---|
   | `arithmetic` | `errx` 四支（`:126`、`:132`、`:362`、`:373`）+ `usage` 走 stderr | 本批接齐（`:373` 那支 `op %c not in keylist` 在本树不可达：键表由本树枚举产生） | 已闭 |
   | `primes` | `err(1, "%s", argv[i])` ×3 与 `errx` ×5（`:133`、`:138`、`:140`、`:145`、`:147`、`:149`、`:155`、`:160`） | **一支都没有**：非法数字、负数、停止值过大、开档失败全静默 | P0，接线优先级最高（下一轮 v2-12） |
-  | `caesar` | `err` ×3（`:105`、`:118`、`:137`）+ `errx` ×2（`<stdin>`/`<stdout>`，`:207`、`:213`） | `Bad rotation value` 已按 C 缀句（批次二百三十三）；`<stdout>`/`<stdin>` 三支缺（本树 `emit` 写失败只退 1、不出那行） | 待接（与 16u 的输出面连在一起） |
+  | `caesar` | `err` ×3（`:105`、`:118`、`:137`）+ `errx` ×2（`<stdin>`/`<stdout>`，`:207`、`:213`） | 批次二百五十三接齐：`<stdout>` 写失手缀号、`<stdin>` 只短语；`fflush` 那支在本树无对位（逐块直写，已声明） | 已闭 |
   | `number` | `errx` ×3（`:111`、`:156`、`:164`） | 文本已对（含 `max 65 digits` 的 `MAXNUM`），但程名硬写 `number: ` 而非 `getprogname()` | 待接（小） |
   | `ppt` / `factor` | `err(1, "fgets")`、溢出句 | 批次二百三十四/二百三十五已接 | 已闭 |
   | `bcd` / `morse` | C 侧零支（`bcd.c`、`morse.c` 无 `warn`/`err`） | 只有 usage 行 | 无需接线 |
