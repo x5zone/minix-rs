@@ -34,25 +34,24 @@ use minix_sys::{Errno, getdomainname, setdomainname};
 /// C `domainname.c:60` — `char domainname[MAXHOSTNAMELEN]`, no slack.
 const DOMAINNAME_BUF_LEN: usize = MAX_HOSTNAME_LEN;
 
-fn usage() -> ! {
-    support::warn(b"usage: domainname [name-of-domain]\n");
+/// C 的 `usage()`（`domainname.c:90-94`）：`usage: %s [name-of-domain]` 的 `%s` 同样是
+/// `getprogname()`；`EXIT_FAILURE` 即 1。
+fn usage(prog: &str) -> ! {
+    support::warn(format!("usage: {prog} [name-of-domain]\n").as_bytes());
     support::terminate(1);
 }
 
-/// Fold a transport-or-service errno into the C `err(1, "…")` shape: a
-/// one-line stderr report prefixed by the operation, then exit 1 (the
-/// same convention the `hostname` bin uses — the errno's symbol through
-/// [`Errno`]'s `Display`, with neither C's `strerror` sentence (the table lives
-/// in [`Errno::message`]) nor the `getprogname()` prefix; both gaps are
-/// registered in the stage ledger).
-fn report_err(prefix: &str, errno: Errno) -> ! {
-    support::warn(format!("{prefix}: {errno}\n").as_bytes());
-    support::terminate(1);
+/// C 的 `err(1, "getdomainname")`/`err(1, "setdomainname")`（`domainname.c:80`/`:83`），
+/// 与 `hostname` 同一条约定：`getprogname(): ` + 调用者的串 + `": "` + `strerror` 的句子，
+/// 退 1（见 `minix3/lib/libc/gen/verrc.c` 与 [`support::err_exit`]）。
+fn report_err(prog: &str, operation: &str, errno: Errno) -> ! {
+    support::err_exit(prog, operation, errno, 1);
 }
 
 /// The whole program body; both `main` forms call it and it never returns.
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    let prog = support::prog_name(&argv);
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     // C's `getopt(argc, argv, "")` walks the argv tail looking for a
     // `-X` cluster; the empty optstring makes every option letter fall
@@ -65,7 +64,7 @@ fn run() -> ! {
         // `argv[0]`, so the token would be a name operand starting
         // with `-`). Refuse it as C would.
         if a.starts_with('-') && a != "-" {
-            usage();
+            usage(prog);
         }
     }
     match operands {
@@ -73,7 +72,7 @@ fn run() -> ! {
             let mut buffer = vec![0u8; DOMAINNAME_BUF_LEN];
             let mut written = 0usize;
             if let Err(e) = getdomainname(&mut buffer, &mut written) {
-                report_err("getdomainname", e);
+                report_err(prog, "getdomainname", e);
             }
             // C prints `%s` of the buffer; the service's byte answer is
             // already NUL-terminated within `MAX_HOSTNAME_LEN` (the
@@ -91,11 +90,11 @@ fn run() -> ! {
         }
         [name] => {
             if let Err(e) = setdomainname(name.as_bytes()) {
-                report_err("setdomainname", e);
+                report_err(prog, "setdomainname", e);
             }
             support::terminate(0);
         }
-        _ => usage(),
+        _ => usage(prog),
     }
 }
 

@@ -504,6 +504,35 @@ impl core::fmt::Display for Strerror {
     }
 }
 
+/// C 的 `err(3)`/`warn(3)` 那一行的渲染：`prog: label: <句子>`。
+///
+/// 形状逐字来自 `minix3/lib/libc/gen/verrc.c`——`getprogname()`、`": "`、调用者给的串、
+/// `": "`、`strerror(code)`、换行（换行由调用者补，因为 C 的 `vwarn` 也这样分）。句子出自
+/// `SYS_ERRLIST` 那张表，表外由 [`Strerror`] 出 C 的 `Unknown error: %u`。放在这里而不是
+/// 各命令的共享件里，是为了让所有消费者共用一个权威——C 也只有一个 `verrc`。
+pub fn err_line(prog: &str, label: &str, code: Errno, out: &mut [u8]) -> usize {
+    use core::fmt::Write as _;
+    struct Sink<'a>(&'a mut [u8], &'a mut usize);
+    impl core::fmt::Write for Sink<'_> {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            for byte in text.as_bytes() {
+                if *self.1 < self.0.len() {
+                    self.0[*self.1] = *byte;
+                }
+                *self.1 += 1;
+            }
+            Ok(())
+        }
+    }
+    let mut written = 0usize;
+    let _ = write!(
+        Sink(out, &mut written),
+        "{prog}: {label}: {std}",
+        std = Strerror(code)
+    );
+    written
+}
+
 /// The identifier face of an errno: `"EPERM"` for known values, `Errno(N)`
 /// otherwise. The RS server's contextual descriptions (init/lu_strerror —
 /// error.c:48/:56) compose on top of this. C's `strerror(3)` sentence lives
@@ -629,7 +658,6 @@ impl core::fmt::Display for Errno {
         }
     }
 }
-
 
 /// D2 (todo §3): unified "error type → errno" mapping channel.
 ///
@@ -824,6 +852,37 @@ mod strerror_face_tests {
         assert_ne!(
             Errno::EINVAL.message().unwrap(),
             Errno::EINVAL.name().unwrap()
+        );
+    }
+
+    /// `err(3)` 那一行的形状是 `verrc.c` 逐字给的：程序名、冒号空格、调用者的串、
+    /// 冒号空格、句子。表外的号在渲染里就换成 C 的 `Unknown error: %u`，句子与代号
+    /// 不许混（`EINVAL` 的句子是 `Invalid argument`，不是 `EINVAL`）。
+    #[test]
+    fn err_line_renders_c_verrc_shape() {
+        extern crate alloc;
+        use super::{EINVAL, EISDIR, ENOENT, EPERM, err_line};
+        use alloc::string::ToString as _;
+        let mut out = [0u8; 96];
+        let len = err_line("hostname", "sethostname", Errno::from_i32(EINVAL), &mut out);
+        assert_eq!(&out[..len], b"hostname: sethostname: Invalid argument");
+        let len = err_line("ppt", "fgets", Errno::from_i32(EISDIR), &mut out);
+        assert_eq!(&out[..len], b"ppt: fgets: Is a directory");
+        let len = err_line(
+            "factor",
+            "stdin",
+            Errno::from_i32(4294967295u32 as i32),
+            &mut out,
+        );
+        assert_eq!(&out[..len], b"factor: stdin: Unknown error: 4294967295");
+        // 截断只发生在缓冲区不足时，长度仍按需要的字节数报（调用者据此判断写没写全）。
+        let mut small = [0u8; 8];
+        let len = err_line("rm", "unlink", Errno::from_i32(ENOENT), &mut small);
+        assert_eq!(&small[..], b"rm: unli");
+        assert!(len > small.len());
+        assert_eq!(
+            Strerror(Errno::from_i32(EPERM)).to_string(),
+            "Operation not permitted"
         );
     }
 

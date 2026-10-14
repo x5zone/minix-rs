@@ -43,25 +43,28 @@ use minix_sys::{Errno, gethostname, sethostname};
 /// [`MAX_HOSTNAME_LEN`] plus a terminator.
 const HOSTNAME_BUF_LEN: usize = MAX_HOSTNAME_LEN + 1;
 
-fn usage() -> ! {
-    support::warn(b"usage: hostname [-s] [name-of-host]\n");
+/// C 的 `usage()`（`hostname.c:94-100`）：`usage: %s [-s] [name-of-host]` 里的 `%s` 就是
+/// `getprogname()`，所以程序名与 `err(3)` 那行同源；退码 1。
+fn usage(prog: &str) -> ! {
+    support::warn(format!("usage: {prog} [-s] [name-of-host]\n").as_bytes());
     support::terminate(1);
 }
 
 /// Fold a transport-or-service errno into the C `err(1, "…")` shape: a
 /// one-line stderr report prefixed by the operation, then exit 1. C's
-/// `err(1, …)` 的形状在 `minix3/lib/libc/gen/verrc.c`：`getprogname(): ` + 调用者的
-/// 串 + `": "` + `strerror` 的句子。本壳离它差两处，都已登记在阶段台账：句子表已在
-/// 本树（[`Errno::message`]）而这里仍打标识符（[`Errno`] 的 `Display` 给 `EINVAL`、
-/// `EPERM`…），并且 C 那句开头的 `hostname: ` 也没打。
-fn report_err(prefix: &str, errno: Errno) -> ! {
-    support::warn(format!("{prefix}: {errno}\n").as_bytes());
-    support::terminate(1);
+/// C 的 `err(1, "sethostname")`/`err(1, "gethostname")`（`hostname.c:81`/`:84`）：
+/// 那一行的形状在 `minix3/lib/libc/gen/verrc.c`——`getprogname(): ` + 调用者的串 +
+/// `": "` + `strerror` 的句子，然后退 1。程序名按 C 从 `argv[0]` 去掉目录取
+/// （[`support::prog_name`]），句子取自本树的 `sys_errlist`（[`support::err_exit`] 转发到
+/// `minix_types::err_line`）。
+fn report_err(prog: &str, operation: &str, errno: Errno) -> ! {
+    support::err_exit(prog, operation, errno, 1);
 }
 
 /// The whole program body; both `main` forms call it and it never returns.
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    let prog = support::prog_name(&argv);
     // C `argv += optind; argc -= optind` yields operands only; the pure
     // walker in [`parse_plan`] handles the option scan, so feed it the
     // tail after `argv[0]`.
@@ -69,19 +72,19 @@ fn run() -> ! {
     let operands = args.get(1..).unwrap_or(&[]);
     let plan = match parse_plan(operands) {
         Ok(p) => p,
-        Err(ShellError::InvalidSyntax) => usage(),
+        Err(ShellError::InvalidSyntax) => usage(prog),
         // No other shape can occur today (the walker only returns
         // InvalidSyntax); the extra arm is here so a future ShellError
         // variant forces the call site to reconsider rather than
         // silently fall through.
         #[allow(unreachable_patterns)]
-        Err(_) => usage(),
+        Err(_) => usage(prog),
     };
 
     match plan {
         Plan::Write { name } => {
             if let Err(e) = sethostname(name.as_bytes()) {
-                report_err("sethostname", e);
+                report_err(prog, "sethostname", e);
             }
             support::terminate(0);
         }
@@ -89,7 +92,7 @@ fn run() -> ! {
             let mut buffer = vec![0u8; HOSTNAME_BUF_LEN];
             let mut written = 0usize;
             if let Err(e) = gethostname(&mut buffer, &mut written) {
-                report_err("gethostname", e);
+                report_err(prog, "gethostname", e);
             }
             // C clamps the last byte of the `MAXHOSTNAMELEN + 1` buffer
             // to `'\0'` before printing; the equivalent here is to

@@ -25,7 +25,7 @@
 #![allow(dead_code)]
 
 use minix_sys::{Fd, write};
-use minix_types::{EIO, Errno, Strerror};
+use minix_types::{EIO, Errno};
 
 /// Standard input, POSIX `STDIN_FILENO`.
 pub const STDIN: Fd = 0;
@@ -190,36 +190,9 @@ pub fn utoa(mut value: u32, out: &mut [u8]) -> usize {
     count
 }
 
-/// Renders C's `err(3)`/`warn(3)` line for one failed call: `prog: label: <sentence>`.
-///
-/// The shape is `minix3/lib/libc/gen/verrc.c` verbatim — program name, `": "`, the
-/// caller's string, `": "`, then `strerror(code)` — and the sentence comes from this
-/// tree's own `sys_errlist` ([`Errno::message`]). A code outside the table gets C's
-/// `Unknown error: %u` with the number read as `unsigned`, which is what
-/// [`Strerror`] renders; the two branches share this one writer so a shell cannot
-/// drift from the other.
-pub fn err_line(prog: &str, label: &str, code: Errno, out: &mut [u8]) -> usize {
-    use core::fmt::Write as _;
-    struct Sink<'a>(&'a mut [u8], &'a mut usize);
-    impl core::fmt::Write for Sink<'_> {
-        fn write_str(&mut self, text: &str) -> core::fmt::Result {
-            for byte in text.as_bytes() {
-                if *self.1 < self.0.len() {
-                    self.0[*self.1] = *byte;
-                }
-                *self.1 += 1;
-            }
-            Ok(())
-        }
-    }
-    let mut written = 0usize;
-    let _ = write!(
-        Sink(out, &mut written),
-        "{prog}: {label}: {std}",
-        std = Strerror(code)
-    );
-    written
-}
+/// C 的 `err(3)` 那一行的渲染，权威在表旁边：转发到 [`minix_types::err_line`]，
+/// 免得每个命令族各留一份形状。
+pub use minix_types::err_line;
 
 /// Line assembly over a caller-provided buffer and an injected reader.
 ///

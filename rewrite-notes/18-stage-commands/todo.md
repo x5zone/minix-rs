@@ -250,6 +250,43 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十七把 `err(3)` 那一行的渲染下沉成 `minix-types` 的唯一权威，并按 C 补齐 `hostname`/`domainname` 的两句**
+  （`2026-10-14`，`claim/ERR-LINE-SHARED-qoder` @ 基线 `8f91514e2`，**跨线**：二线 `os/libs/minix-types` +
+  三线 `os/commands/bin/shell` 与 `os/commands/games/stdio-games`，照规则 1 在 `new_edge4.md` 登记 C-96 后动手）：
+  接回批次二百三十六登记②。**是什么**：批次二百三十五把渲染写在 games 那一份 `bin_support.rs` 里，第二个消费者
+  一出现就要复制一份形状；而 `hostname`/`domainname` 的 `err(1, "sethostname")` 离 C 差的不止句子——
+  `verrc.c` 那一行以 `getprogname()` 开头（程序名是运行时刻从 `argv[0]` 去掉目录取的最后一段，
+  `minix3/lib/csu/common/crt0-common.c:156-165`），本壳却打 `sethostname: EINVAL`：既没有程序名，又把标识符当句子。
+  核对中还发现第三个缺口只在宿主可见：该 crate 的 `warn` 没有宿主双生面，宿主侧诊断进的是替身传输，
+  `hostname --x` 跑出退码 1 而 stderr 全空——报文形状在宿主根本无法端到端验证（正是三度复现的那条坑）。
+  判类 P0-code-bug（缺程序名前缀、以代号代句子）+ P0-design-missing（形状无唯一权威、宿主诊断面缺双生）。
+  **怎么修**：①`err_line(prog, label, code, out)` 挪到 `minix-types` 紧挨 `Strerror`，games 那份改为
+  `pub use minix_types::err_line` 转发（形状只此一处，C 也只有一个 `verrc`）；②shell crate 的 `bin_support.rs`
+  新增 `prog_name`（按 C 取 `argv[0]` 末段）与 `err_exit`（渲染 + 写 + 退），`report_err` 交给它；
+  ③`warn` 补宿主双生面（宿主走 `std::io::stderr`，真机仍是 `minix_sys::write(STDERR)`）；
+  ④`usage()` 的程序名同样改取 `getprogname()`，与 C 的 `usage: %s` 同源。**为什么优于在各壳手写**：
+  C 的 `err(3)` 是库函数，形状属于承载它的这一层，不属于某一个命令。
+  **门测的新形状**：新增第 16 扇端到端门 `tests/hostname_face.rs`（4 枚）——失败腿断言
+  `hostname: gethostname: ` / `hostname: sethostname: ` / `domainname: …` 的前缀与「一句非空、不再含字段、
+  不是全大写代号、以换行收尾」的形状，外加 `--x` 的两句 usage。号码本身**故意不钉**：宿主传输回什么号
+  不是 C 的契约，可契约里的前缀、操作名、分隔符、句子、退码全钉。
+  三件套：`cargo test -p minix-shell` → **6 目标全 ok、合计 81 passed、零 FAILED**（基线 5 目标 / 69：
+  四壳各 +2 枚共享面测、新门 4 枚）；`cargo test -p minix-types` → **331/0**（基线 330，新增
+  `err_line_renders_c_verrc_shape`）；`cargo test -p minix-stdio-games` → **18 目标 / 184 passed / 零 FAILED**
+  （转发未减测）；三架构 `cargo build -p minix-shell --bins` 三台零 error；容器 `minix-ci:1.94`（带 `-u`）
+  `cargo check -j 1 --workspace` Finished 零 error，三包容器内 23 个 `test result: ok`、唯一 FAILED 是
+  批次二百三十三登记的恒红测 `test_c_bridge_fs_stat_offsets_match_rust_layout`；宿主实跑
+  `hostname` → `hostname: gethostname: Input/output error` 退 1、`hostname newname` → `…sethostname: …`、
+  `hostname --x` → `usage: hostname [-s] [name-of-host]`（此前宿主全哑）。`rustfmt` 触及五文件零漂移
+  （`errno.rs` 基线那处双空行随整文件格式化一并归零）；clippy 对触及文件零命中；`pattern-gate --diff`
+  PASS=17 FAIL=0；`doc-style --diff` error 0。核实日 `2026-10-14`；基线 `8f91514e2`。
+  **五枚变异负控**（`tmp/err-line-shared-mutate.py`，四类目标分别调用、复位断言 md5）全部咬中：
+  程序名不去目录（面门红）、渲染漏掉操作名（门 3 枚红）、渲染丢掉程序名（四处皆红）、以标识符面代句子
+  （四处皆红）、宿主诊断退回替身传输（4 枚门全红）。
+  登记不执行：①其余命令的 `err(3)`/`perror` 后缀接线（fileops 七枚、`what`、`join`，队列 16t），
+  本轮只把权威与形状立好；②`emit` 的宿主双生面（成功路径的 stdout 在宿主仍不可见，本轮只补了 `warn`）；
+  ③真机播种与 open 腿归 C-57/E5。
+
 - ✅ **批次二百三十六更正命令族里「本树无 strerror 表」这句已成假的理由（12 处，逐处判接线状态）**
   （`2026-10-14`，`claim/STRERROR-NOTES-qoder` @ 基线 `c2289f220`，跨四包同属三线 commands：
   `bin/fileops`（rm/unlink/mkfifo/du/find/truncate/stat）、`bin/shell`（hostname/domainname）、
