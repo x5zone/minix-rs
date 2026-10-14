@@ -250,6 +250,41 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十九接上 `pathchk` 缺省模式的 `pathconf`/`stat` 探测，并把 `warnx` 漏掉的程名改回**
+  （`2026-10-14`，`claim/PATHCONF-PROBE-1-qoder` @ 基线 `67567252d`，单域三线 `os/commands/bin/fileops`
+  与同线文档）：接回 06 篇命令表里「缺省模式的 `pathconf`/`stat` 探测待批，现显式拒」那行（规划表 v2-16）。
+  **是什么**：本壳只服务 `-p`，缺省模式直接报一行「等 pathconf」退 1。而 C 的 `check`（`pathchk.c:91-167`）
+  在缺省模式下问系统三个问题，其中几处形状不能从名子猜：开头那个 `_PC_NAME_MAX` 问的是 `/`（绝对路径）
+  或 `.`（其余，`:105`）；`-1` 与「带 errno 的失败」是两个答案（前者 POSIX 的「无上限」⇒ 检查关掉，
+  后者才走 `NAME_MAX`/`PATH_MAX` 退路，`:106-107`、`:154-155`）；每过一个目次重探一次且**探失败时保留
+  上次的答复**（`svnamemax`，`:139-145`）；`stat` 只认 `ENOENT` 不是拒因（`:124`），其余号才印 `warn` 一行，
+  其 `%.*s` 长是 `strlen(pathd) - complen - 1`（比当前组件之前再短一个字节；负数在 C 的 printf 里就是
+  「无精度」⇒ 打整串，已拿宿主参照进程实测）。判类 P0-design-missing。**拓出的第二件事**：`warnx` 两行
+  本壳**没带程名前缀**（C 的 `vwarnx.c` 先打 `getprogname()` 再打 `": "`），拿参照进程逐字节一对就现形——
+  判类 P0-code-bug。
+  **怎么修**：决定半新增 `PathProbe`（三个方法，`Ok(-1)`/`Err` 两形分明）与 `check_system`（返回带原文碎片的
+  `SystemFault`，位量与长度而非拼好的串）；薄壳新增 `SysProbe` 双生面——真机面走 `minix_sys::pathconf`/`stat`，
+  宿主面两个探测答 `ENOSYS`（恰好就是 C 的「带 errno 失败」，于是走同一退路；而 MINIX 本把这两个变量
+  答成头文件常量，所以退路数与真机一致），`stat` 用 `std::fs::metadata`（就是这一条让 `ENOTDIR` 支在
+  宿主可测）；诊断改走 `support::prog_name`。
+  **为什么不选另一条路**：①宿主面自己拿 `std` 模拟 `pathconf` 看似更能跑，但那是发明一个 C 没有的答案；
+  ②把判定写进薄壳则九条分支在宿主不可测；③只修程名不接探测会把一条完整的腿拆成两笔欠账。
+  **门**：新建本包第一扇 `tests/pathchk_face.rs` 六枚（`-p` 逐字金样、`ENOTDIR` 那一行逐字、缺文件不是拒因、
+  退路上限 511、副本改名只动诊断行不动 usage、逐操数继续不提前收）；库测 +6（整秒那个形状：`/` 与 `.`
+  之分、`-1` 与失败之分、重探失败留上答复、`ENOENT` 免、`PATH_MAX` 报答复减一）。
+  三件套：`cargo test -p minix-fileops` → **449 passed、0 failed**（基线 437；+6 库测 +6 门）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）同包 **449/0**；三架构 `--bin pathchk --target {x86_64,aarch64,riscv64gc}-
+  unknown-none` 各有 `Compiling` 行且 0 error；`rustfmt --edition 2024 --check` 触及三文件零漂移；clippy 触及
+  文件零命中（`collapsible_if` 与 `manual_contains` 两处按提示改写）。另拿宿主编译的 `pathchk.c` 参照进程
+  逐字节对过两组形状（`-p abc+def`、`/etc/hostname/x`）**完全一致**。核实日 `2026-10-14`；基线 `67567252d`。
+  **两枚变异负控**（测完按 md5 复原）：把 `diagnose` 的程名前缀拿掉 → 门两枚独红（逐字枚与改名枚）；
+  把 `errno != ENOENT` 改成 `!= ESRCH`（即把 `ENOENT` 当拒因）→ 库测与门各一枚独红。注意负控证据要看
+  原文：第一轮用了 `cargo test -q`，失败行被压成汇总，看起来像「门不咬」，去 `-q` 重跑才拿到两行 FAILED。
+  登记不执行：①真机播种与上机读数仍归 `C-57`/`E5`（本笔代码路径里的 `pathconf` 真面只在真机可验）；
+  ②`fileops/bin_support.rs` 的 `warn_line` 用 128 字节缓冲，超长操数会被截断后印（本笔的 512 字节案例里
+  看到了），要不要按 C 的 `vsnprintf` 形状放到 1024 得先对 C——归下一轮；③`06` 篇的 `test`/`pathstat` 那一行
+  仍记「pathconf 探测待批」口径已由本笔改掉，其余同名旧账由 19–21 的账面行统一处理。
+
 - ✅ **批次二百五十八给行缓冲开单字节缝，把 `Press RETURN` 后面那一句 `while(!getchar())` 接上**
   （`2026-10-14`，`claim/ARITH-GETCHAR-qoder` @ 基线 `470c34e07`，单域三线 `os/commands/games/stdio-games`
   与同线文档）：接回批次二百五十七登记不执行②（规划表 v2-15 拆出的 v2-15a）。
