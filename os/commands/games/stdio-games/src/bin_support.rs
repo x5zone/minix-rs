@@ -194,6 +194,18 @@ pub fn utoa(mut value: u32, out: &mut [u8]) -> usize {
 /// 免得每个命令族各留一份形状。
 pub use minix_types::err_line;
 
+/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
+/// `minix3/lib/csu/common/crt0-common.c:156-165`，判定本身只住在那一份权威里。
+/// `usage()` 与 `err`/`warn` 那些行的程序名都从这里来；本层只把 `argv` 拆成
+/// 那一段交给它，与 `fileops`/`textfilter` 那两份同名入口同形。
+pub fn prog_name(argv: &[alloc::string::String]) -> &str {
+    let raw = argv
+        .first()
+        .map(alloc::string::String::as_str)
+        .unwrap_or("");
+    minix_types::prog_name(raw)
+}
+
 /// Line assembly over a caller-provided buffer and an injected reader.
 ///
 /// The reader returns `Ok(0)` for end of input and `Err(errno)` for a failed

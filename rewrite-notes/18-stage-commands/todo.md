@@ -250,6 +250,43 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十一接上 `arithmetic` 的报文通道，并交出 16v 的游戏壳判定表（判定轮）**
+  （`2026-10-14`，`claim/GAMES-ERR-SCAN-qoder` @ 基线 `7a8e37fec`，单域三线 `os/commands/games/stdio-games`
+  与同线文档，无跨界）：**接线部分**——`arithmetic` 的三支选项错（`arithmetic.c:126`、`:132`、`:362`）与
+  `usage()`（`:378-385`）在 C 全走标准错误，本壳却把这些行 `emit` 到标准输出，且 usage 是小写、名字硬写
+  （C 是 `Usage: %s …` 带 `getprogname()`）。判类 P0-code-bug（通道是 `err(3)` 族形状的一部分）+ P0-fact
+  （头注那句「penalise 尚未建模」自批次二百三十二起就不成立，已按实况改写为「C 的 `malloc` 失手才放弃惩罚，
+  本树 `Vec` 无此支」）。**照抄不改进的部分**：C 的格式串自己以 `arithmetic: ` 开头，`errx` 再加一次程名，
+  真实字节是 `arithmetic: arithmetic: invalid range.`——按真值优先序复现，登记为上游缺陷，不静默改好。
+  **16v 判定表**（逐枚读 C 源判哪一族，接线归后续轮）：
+  | 壳 | C 源的诊断腿 | 本壳现状 | 判定 |
+  |---|---|---|---|
+  | `arithmetic` | `errx` 四支（`:126`、`:132`、`:362`、`:373`）+ `usage` 走 stderr | 本批接齐（`:373` 那支 `op %c not in keylist` 在本树不可达：键表由本树枚举产生） | 已闭 |
+  | `primes` | `err(1, "%s", argv[i])` ×3 与 `errx` ×5（`:133`、`:138`、`:140`、`:145`、`:147`、`:149`、`:155`、`:160`） | **一支都没有**：非法数字、负数、停止值过大、开档失败全静默 | P0，接线优先级最高（下一轮 v2-12） |
+  | `caesar` | `err` ×3（`:105`、`:118`、`:137`）+ `errx` ×2（`<stdin>`/`<stdout>`，`:207`、`:213`） | `Bad rotation value` 已按 C 缀句（批次二百三十三）；`<stdout>`/`<stdin>` 三支缺（本树 `emit` 写失败只退 1、不出那行） | 待接（与 16u 的输出面连在一起） |
+  | `number` | `errx` ×3（`:111`、`:156`、`:164`） | 文本已对（含 `max 65 digits` 的 `MAXNUM`），但程名硬写 `number: ` 而非 `getprogname()` | 待接（小） |
+  | `ppt` / `factor` | `err(1, "fgets")`、溢出句 | 批次二百三十四/二百三十五已接 | 已闭 |
+  | `bcd` / `morse` | C 侧零支（`bcd.c`、`morse.c` 无 `warn`/`err`） | 只有 usage 行 | 无需接线 |
+  | `text-games` 三面（`fortune`/`random`/`wtf`） | `fortune.c:207`、`:221`、`:352` 是 `err`/`errx`；`random.c:97`、`:99` 同理 | 六支都是 `xxx: <路径>: cannot open`/`read error`/`bad denominator` 这类自创短语，缺号也缺操数原文 | 待接（同 `what` 那一类；`wtf` 的 C 真源尚未在 `minix3` 里定位到，需先找源） |
+  **门**：新建 `tests/arithmetic_face.rs`（4 枚，stdio-games 第八扇）：两支选项错逐字含 C 的重复前缀且标准输出零字节、
+  `Usage:` 大写带程名（多余操数也走这一支）、答题与提示语一行也不写标准错误。
+  三件套：`cargo test -p minix-stdio-games` → **188 passed、0 failed**（基线 184，+4 枚门）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-stdio-games` → **188/0**；三架构
+  `cargo build -p minix-stdio-games --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 Finished 零 error
+  （且经 `touch` 与「故意删掉 `use alloc::format;`」双向验证该门确实在重编）；`rustfmt --edition 2024 --check`
+  触及文件零漂移；clippy 对触及文件零命中（`bin_support.rs` 里 `err_line`/`EIO` 的 unused-import 是逐壳噪声，早于本批）；
+  宿主实跑 `arithmetic -r bogus` → stderr `arithmetic: arithmetic: invalid range.`、stdout 空、退 1。
+  核实日 `2026-10-14`；基线 `7a8e37fec`。
+  **反控一枚**：把 `-r` 那一支改回 `emit`（＝改前形态），门里对应那枚独红、另三枚不受影响。
+  **自我纠正一笔（值得留案）**：本批一度判定「结束输入不打印分数」是 P0 缺口，读了 `main` 循环
+  （`arithmetic.c:148-150`：`if (problem() == EOF) exit(0);`，其后才是每二十题的 `showstats(0)`）才否证——
+  C 在 EOF 处根本不调 `showstats`。据此删掉了那条断言与它的登记项，结论改为「本壳与 C 一致」。
+  教训：门里想断言「C 会做什么」必须先读那段 C，不能从函数名猜。
+  22 篇两行随之改准：`arithmetic` 行、端到端门清单添上本扇。
+  登记不执行：①`primes` 的八支 `err`/`errx` 完全缺失（优先级最高，接线轮 v2-12）；②`caesar` 的
+  `<stdin>`/`<stdout>` 三支与 `emit` 写失败的报文；③`number` 与 `text-games` 三面的程名与缀号
+  （`wtf` 要先定位 C 真源）；④`arithmetic.c:373` 那支在本树不可达的声明（若键表将来可被外部喂值需回来接）。
+
 - ✅ **批次二百五十把 `bin_support::emit` 的宿主孪生面补齐（shell 包），并扫清同类单侧缝**
   （`2026-10-14`，`claim/EMIT-HOST-DUAL-qoder` @ 基线 `79818d566`，单域三线 `os/commands/bin/shell`
   与同线文档，无跨界）：接回批次二百三十七登记②（16u）。**是什么**：命令侧的

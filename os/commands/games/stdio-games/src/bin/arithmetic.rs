@@ -10,17 +10,30 @@
 //! `\n\nRights %d; Wrongs %d; Score %d%%` (line 169), which also fires
 //! every twenty problems.
 //!
-//! Two deviations are declared rather than smuggled in: the operand
-//! source is a seeded linear congruential generator (the C program uses
-//! `random(3)`, whose sequence is time-seeded and therefore not an
-//! observable contract either), and the wrong-answer penalty hints
-//! (`penalise`, line 255) are not modelled yet — the same problem is
-//! simply asked again.
+//! Two declared differences: the operand source is a seeded linear congruential
+//! generator (the C program uses `random(3)`, whose sequence is time-seeded and
+//! therefore not an observable contract either), and C's "no memory left, so
+//! forget about the penalty" branch (`arithmetic.c:309-310`: a failed `malloc`
+//! makes `penalise` a no-op) has no counterpart — this tree's penalty list is a
+//! `Vec`, which aborts instead of returning null. The penalty arithmetic itself
+//! is modelled (批次二百三十二：`Penalties`/`Drawn`/`charged_operands`) and C
+//! emits no sound on a wrong answer, so there is no hint face to miss.
+//!
+//! The diagnostic face is C's and nothing else: all three option errors are
+//! `errx(1, …)` (`arithmetic.c:126`, `:132`, `:362`, `:373`) and `usage()` is a
+//! `fprintf(stderr, …)` with `getprogname()` and a capital `U` (`:378-385`). Two
+//! details are reproduced rather than "cleaned up": the channel is standard error
+//! (this shell used to `emit` them to standard output), and C's format strings
+//! themselves begin with the word `arithmetic: `, so `errx`'s own prefix makes the
+//! real line read `arithmetic: arithmetic: invalid range.` — the doubled name is
+//! C's text, kept as the truth of the byte output (registered as an upstream wart
+//! rather than silently improved).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -42,6 +55,9 @@ const KEYS: [Operator; 4] = [
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    // C 的 `arithmetic` 不调 `setprogname`；`getprogname()` 仍由
+    // `crt0-common.c:156-165` 从 `argv[0]` 起好那一段，`usage()` 用的就是它。
+    let prog = support::prog_name(&argv);
     let mut range = DEFAULT_RANGE;
     let mut keys: Vec<usize> = vec![0, 1];
     let mut index = 1;
@@ -52,7 +68,9 @@ fn run() -> ! {
                 match parse_range(&argv[index]) {
                     Ok(value) => range = value,
                     Err(_) => {
-                        support::emit(b"arithmetic: invalid range.\n");
+                        // `arithmetic.c:132`：`errx(1, "arithmetic: invalid range.")`——
+                        // 前缀重复是 C 的格式串自带的。
+                        support::warn(b"arithmetic: arithmetic: invalid range.\n");
                         support::terminate(1);
                     }
                 }
@@ -64,14 +82,17 @@ fn run() -> ! {
                     match KEYS.iter().position(|op| sign_of(*op) == key) {
                         Some(position) => keys.push(position),
                         None => {
-                            support::emit(b"arithmetic: unknown key.\n");
+                            // `arithmetic.c:126`，同上。
+                            support::warn(b"arithmetic: arithmetic: unknown key.\n");
                             support::terminate(1);
                         }
                     }
                 }
             }
             _ => {
-                support::emit(b"usage: arithmetic [-o +-x/] [-r range]\n");
+                // `arithmetic.c:378-385`：`Usage: %s [-o +-x/] [-r range]\n`，大写 U、
+                // 名字嵌在串里，走 stderr。
+                support::warn(format!("Usage: {prog} [-o +-x/] [-r range]\n").as_bytes());
                 support::terminate(1);
             }
         }
@@ -218,7 +239,9 @@ fn draw(
     match penalties.draw(slot, operand, maxval, next_random(random)) {
         Drawn::Direct(value) | Drawn::Penalised(value) => value,
         Drawn::Inconsistent => {
-            support::warn(b"arithmetic: bug: inconsistent penalties.\n");
+            // `arithmetic.c:362`：`errx(1, "arithmetic: bug: inconsistent penalties.")`，
+            // 重复前缀同上面两处。
+            support::warn(b"arithmetic: arithmetic: bug: inconsistent penalties.\n");
             support::terminate(1)
         }
     }
