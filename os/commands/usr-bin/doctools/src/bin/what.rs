@@ -14,9 +14,11 @@
 //! specifies an exit status of 1" when none matched). Read-only, so like
 //! `whatis`/`which` it is not gated on the writable-root E5 check; real-machine
 //! per-file `open` is the same C-57/E5 delivery gate as every guest binary.
-//! C's `perror` `strerror` suffix is not reproduced yet: the errno→text table
-//! exists (`minix_types::Errno::message`), and wiring this shell to it is a
-//! registered follow-up.
+//! The report line is C's `perror(*argv)` rendered by the one authority in
+//! `minix-types`: `<operand>: <strerror(errno)>` — no program name (Minix3's
+//! `perror` prints none, unlike `warn(3)`/`err(3)`) and no invented phrase, and the
+//! run leaves right after it. A *read* error is not that leg: C's `getchar()` reports
+//! end of file for it too, so this program keeps what it read and moves on.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -29,33 +31,29 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_doctools::what::{WhatFlags, extract_ids};
-use minix_sys::{Fd, close, open, read};
+use minix_sys::{Errno, Fd, close, open, read};
 
 fn usage() -> ! {
     support::warn(b"usage: what [-s] file ...\n");
     support::terminate(1);
 }
 
-/// Read a whole file into memory (C's `freopen` + `getchar` stream).
-fn read_file(path: &str) -> Option<Vec<u8>> {
-    let fd: Fd = match open(path, 0, 0) {
-        Ok(fd) => fd,
-        Err(_) => return None,
-    };
+/// Read a whole file into memory (C's `freopen` + `getchar` stream). Only the open
+/// is a reportable failure: a read error is what C's `getchar()` turns into end of
+/// file, so the bytes already read are the answer and the operand is not a failure.
+fn read_file(path: &str) -> Result<Vec<u8>, Errno> {
+    let fd: Fd = open(path, 0, 0)?;
     let mut image = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
         match read(fd, &mut chunk) {
             Ok(0) => break,
             Ok(n) => image.extend_from_slice(&chunk[..n]),
-            Err(_) => {
-                let _ = close(fd);
-                return None;
-            }
+            Err(_) => break,
         }
     }
     let _ = close(fd);
-    Some(image)
+    Ok(image)
 }
 
 fn run() -> ! {
@@ -75,9 +73,10 @@ fn run() -> ! {
         // C exits the whole program on the first unopenable operand
         // (what.c:84-87); success if it had already found something.
         let image = match read_file(name) {
-            Some(v) => v,
-            None => {
-                support::warn(format!("what: {name}: cannot open\n").as_bytes());
+            Ok(v) => v,
+            Err(code) => {
+                // `what.c:84-87`: `perror(*argv)` then `exit(matches ? EXIT_SUCCESS : 1)`.
+                support::perror_line(name, code);
                 support::terminate(if matched { 0 } else { 1 });
             }
         };

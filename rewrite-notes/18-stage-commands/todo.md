@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十八把 `what` 的报告行改回 `perror(3)` 那一族：程序名与「cannot open」都是自创的（16t 第八枚）**
+  （`2026-10-14`，`claim/WHAT-STRERROR-qoder` @ 基线 `2049a25e7`，**跨线**：三线 `os/commands/usr-bin/doctools`
+  加一条指向二线 `minix-types` 的依赖边（本包以前不读错误码表），在 `new_edge4.md` 登记 C-100 后动手）：
+  接回批次二百四十七登记不执行③。**是什么**：C 的开档失败腿是 `perror(*argv); exit(matches ? EXIT_SUCCESS : 1)`
+  （`what.c:84-87`），而 Minix3 的 `perror`（`minix3/lib/libc/stdio/perror.c`）打 `<操数>: <句子>`——**不缀程序名**；
+  本壳印的 `what: <操数>: cannot open` 三个字段里有两个是自创的，而真正的信息（那个号）没印。判类
+  P0-code-bug + P0-fact（头注里那句「本壳尚未接那张表」在表已入库后就不成立了）。
+  **核对中拓出第二处不是文案的差**：`read_file` 把「开不成」与「读到一半出错」合成一件报——而 C 的
+  `getchar()` 对读错只当文件尾：已找到的 id 照打、然后续下一个操数，不报错也不退。本轮把它改回两件事：
+  只有开档失手走 `perror` + 退，读错交回已读到的字节继续跑。
+  **怎么修**：`bin_support.rs` 加 `perror_line(label, code)`（与 fileops 那份同构，渲染在 `minix_types::perror_line`），
+  为此本包 `Cargo.toml` 加 `minix-types` 依赖（与 `fileops`/`shell` 同一先例）；`read_file` 由 `Option<Vec<u8>>` 改成
+  `Result<Vec<u8>, Errno>`；那一腿改成 `support::perror_line(name, code)`。
+  **为什么不选另一条路**：把它统一成 `warn(3)` 形（即保留 `what: ` 前缀）= 把批次二百三十九立的两族规矩反着犯一次；
+  给读错也补一行 `perror` = 报 C 在本处根本不报的东西；把读错当硬失败退出 = 比 C 多退一步。
+  **门**：新建 `tests/what_face.rs`（4 枚，**本包第一扇进程级门**）：`<操数>: <句子>` 且行首不得出现
+  `what:`/「cannot open」；两个操数只出一行（`perror` 后紧跟 `exit`，与 `mkfifo` 的逐名继续相反）；无操数与
+  未知字母同答那一行硬写 usage（本命令的 usage 不吃 `getprogname()`）；副本改名后两张脸都不跟着变。
+  三件套：`cargo test -p minix-doctools` → **81 passed、0 failed**（基线 77，+4 枚门）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-doctools` → **81/0**；三架构
+  `cargo build -p minix-doctools --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 Finished 零 error；
+  `rustfmt --edition 2024 --check` 触及三文件零漂移；clippy 对触及文件零命中（新增那一处
+  `match` → `?` 已就地改形）；宿主实跑 `what /tmp/what-nope` → `/tmp/what-nope: Input/output error` 退 1、
+  `what /tmp/a /tmp/b` 只出一行、`what` 与 `what -q x` 同答 `usage: what [-s] file ...`。核实日 `2026-10-14`；
+  基线 `2049a25e7`。
+  **两枚变异负控**（测完按 md5 复原）：退回 `what: <操数>: cannot open`（门 3 枚红）、把失败改成
+  `continue`（「只出一行」那枚独红）。**过程记**：第一版负控拿「改成 `break`」当反例——它与 `terminate`
+  在此处行为等价（都是跳出循环后同一个退码），门全绿不说明门不咬；换成 `continue` 才拿到真信号。
+  负控要先论证「它与原码行为不同」，不然只是白跑一次。
+  10 篇两行随之改准：`bin/what.rs` 行、§5 测试清单添上本包第一扇门。
+  登记不执行：①`textfilter` 的 `join` 同族腿（16t 最后一枚）；②本包其余壳（`which`/`soelim`/`fpr`/`whatis`）
+  的开档失败腿是否也是 `perror` 族尚未逐枚对 C——归 16v 的判定轮一并处理；③真机播种与上机腿仍 `C-57`/`E5`。
+
 - ✅ **批次二百四十七接上 `stat` 的四段报告行，并改回 `getprogname()` 的人格判据与 usage 里的名字（16t 第七枚）**
   （`2026-10-14`，`claim/STAT-STRERROR-qoder` @ 基线 `614c63523`，单域三线 `os/commands/bin/fileops`
   与同线文档，无跨界）：接回批次二百四十六登记不执行①。**是什么**：C 的失败腿是

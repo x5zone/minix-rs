@@ -11,6 +11,9 @@ path = "src/lib.rs"
 
 [dependencies]
 minix-sys = { workspace = true }
+# `perror(3)` 那一行的渲染（`perror_line`）与 errno 句子表同住 `minix-types`，
+# 命令侧不自己抄一份（权威与先例见 `os/commands/bin/fileops/Cargo.toml`）。
+minix-types = { workspace = true }
 
 [[bin]]
 name = "cal"

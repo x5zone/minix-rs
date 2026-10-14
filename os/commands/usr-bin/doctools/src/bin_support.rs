@@ -110,6 +110,19 @@ pub fn emit(bytes: &[u8]) {
     }
 }
 
+/// Minix3 的 `perror(3)` 那一行：`<调用者给的串>: <句子>`——注意这张表里的
+/// `perror` **不带程序名前缀**（`minix3/lib/libc/stdio/perror.c` 打的是
+/// `fprintf(stderr, "%s%s%s\n", s, separator, buf)`），与缀程序名的
+/// `err(3)`/`warn(3)` 是两件事。渲染与句子表都在 `minix-types` 那一份权威里
+/// （`perror_line`，与 `err_line`/`prog_name` 并列），本处只负责写与补换行；
+/// 退不退由调用者定（C 的 `perror` 也不退）。
+pub fn perror_line(label: &str, code: minix_sys::Errno) {
+    let mut line = [0u8; 256];
+    let len = minix_types::perror_line(label, code, &mut line);
+    warn(&line[..len.min(line.len())]);
+    warn(b"\n");
+}
+
 /// Wall-clock microseconds since the epoch, when a clock face answers.
 ///
 /// Hosted builds read the host clock; the target build reads the kernel
@@ -145,4 +158,3 @@ pub fn epoch_secs() -> Option<u64> {
     .ok()
     .map(|times| times.boot_time + times.real_ticks / 100)
 }
-
