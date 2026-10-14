@@ -33,6 +33,7 @@ BUILD="$OUT/tests"
 PICO=/usr/lib/picolibc/riscv64-unknown-elf
 
 [ -f "$LIB" ] || { echo "缺 $LIB —— 先跑 tools/build-libatf-c.sh $ARCH" >&2; exit 2; }
+NETBSD_ID_MACROS=()     # 只有 glibc 腿需要补 NetBSD 标识串宏（见下面 x86_64 分支）
 LIBC_KIND=picolibc      # 两支交叉腿共用 picolibc + 本仓 BSD 接管面
 COMPAT_TAKEOVER=1       # 是否挂 errno-compat / posix-stubs / stdio-minix / random 那层接管
 case "$ARCH" in
@@ -57,7 +58,14 @@ case "$ARCH" in
             # glibc 声明冲突（`errno-compat.h` 里 `extern const int sys_nerr;` 对 glibc 的
             # `int _sys_nerr` 是类型不符），故整层接管面一律不挂，与库腿 `COMPAT_INC=()`
             # 同一个判断。`md5.h`/`bm.h` glibc 没有，仍走 -I"$COMPAT"。
-            CC="cc"; MC=(); SYS=(); SEMIHOST=(); LIBC_KIND=glibc; COMPAT_TAKEOVER=0 ;;
+            CC="cc"; MC=(); SYS=(); SEMIHOST=(); LIBC_KIND=glibc; COMPAT_TAKEOVER=0
+            # 上游测试源文件在文件作用域写 NetBSD 的标识串宏（`t_bm.c:32:__RCSID(...)`），
+            # picolibc 的 <sys/cdefs.h> 给得出，glibc 给不出——报
+            # 「expected declaration specifiers or '...' before string constant」。这里把它
+            # 定义成**空展开**（`= ` 结尾，不能省：`-D__RCSID(x)` 会展开成 1 而留下 `1("..")`），
+            # 与批次二百五十四那个三行 shim 同形。只挂 glibc 腿：picolibc 腿用真宏，
+            # 覆盖它会改掉交叉产物的标识串段。
+            NETBSD_ID_MACROS=(-D'__RCSID(x)=' -D'__COPYRIGHT(x)=') ;;
     *) echo "本脚本支持 riscv64 | aarch64 | x86_64（真跑另需 fork/exec/VFS 桥）" >&2; exit 2 ;;
 esac
 command -v "$CC" >/dev/null || { echo "缺编译器：$CC（目标③ 前置，请先装交叉工具链）" >&2; exit 2; }
@@ -81,7 +89,7 @@ CFGS=(-D__minix -D_GNU_SOURCE -DHAVE_SETENV -DHAVE_UNSETENV -DHAVE_PUTENV
       '-DATF_BUILD_CPPFLAGS=""' '-DATF_BUILD_CXX="c++"' '-DATF_BUILD_CXXFLAGS=""'
       '-DATF_INCLUDEDIR="/usr/include/atf"' '-DATF_LIBEXECDIR="/usr/libexec/atf"'
       '-DATF_PKGDATADIR="/usr/share/atf"' '-DATF_SHELL="/bin/sh"' '-DATF_WORKDIR="/tmp"'
-      '-D__arraycount(__x)=(sizeof(__x)/sizeof((__x)[0]))')
+      '-D__arraycount(__x)=(sizeof(__x)/sizeof((__x)[0]))' "${NETBSD_ID_MACROS[@]}")
 
 # 只有 picolibc 腿要靠 `-include errno-compat.h` 补它缺的 BSD 声明；glibc 腿不注入，
 # 理由见上面 x86_64 分支。
