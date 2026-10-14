@@ -91,6 +91,21 @@ pub fn warn(bytes: &[u8]) {
 }
 
 /// Writes the slice to standard output, exiting 1 on failure.
+///
+/// 与上面 `warn` 同一双生面纪律（批次二百三十七登记的那一条）：`emit` 以真机两面各写
+/// 一次，因为 `minix_sys::write` 在宿主进的是替身传输——写会“成功”，而字节永远不会
+/// 出现在进程自己的 stdout 上，于是输出面（`getopt` 的选项表、`hostname` 无操作数时
+/// 印当前主机名、`sh` 的提示符）在宿主既看不到也钉不住。宿主面走进程自己的
+/// `stdout`，写失败退 1（与真机面同一条判据）。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn emit(bytes: &[u8]) {
+    use std::io::Write as _;
+    if std::io::stdout().write_all(bytes).is_err() {
+        terminate(1);
+    }
+}
+
+#[cfg(all(not(test), target_os = "none"))]
 pub fn emit(bytes: &[u8]) {
     if minix_sys::write(STDOUT, bytes).is_err() {
         terminate(1);

@@ -250,6 +250,41 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十把 `bin_support::emit` 的宿主孪生面补齐（shell 包），并扫清同类单侧缝**
+  （`2026-10-14`，`claim/EMIT-HOST-DUAL-qoder` @ 基线 `79818d566`，单域三线 `os/commands/bin/shell`
+  与同线文档，无跨界）：接回批次二百三十七登记②（16u）。**是什么**：命令侧的
+  `bin_support.rs` 是「一条缝两面」的写法（宿主走进程自己的 stdio，真机走
+  `minix_sys::write`），因为 `minix_sys::write` 在宿主进的是替身传输。批次二百三十七
+  只补了 `warn`，输出面 `emit` 还是单面——`os/commands/bin/shell/src/bin_support.rs:94`
+  是全 14 份共享件里唯一没有宿主孪生的传输缝（扫描判据：对每个缝名查「只有一处
+  定义且定义前 6 行内无 `cfg(`」，命中的只有 `emit`；`prog_name`/`warn_line`/`perror_line`/
+  `answer_yes` 是刻意单面，它们不调传输）。**后果不是「测试看不见」而是命令在宿主上白退**：
+  `emit` 写失败即 `terminate(1)`，而宿主那次写必失败。实测改前 `getopt "ab:" -a` → stdout
+  **0 字节 + 退 1**；改后 → ` -a --\n` + 退 0。判类 P0-code-bug——宿主面不是「取证看不到」，是行为本身就错。
+  **怎么修**：加宿主孪生（`std::io::stdout().write_all`，写失败同样退 1，与真机面同判据），
+  真机面原样保留；两面各带 `cfg`，注释写明这条缝为什么要两份实现（沿用 `caesar`/`factor`
+  那批与 `warn` 双生面的先例）。
+  **门**：新建 `tests/getopt_face.rs`（4 枚，shell 包第二扇进程级门）——选 `getopt` 是因为它的
+  全部产品就是 stdout 那一行，别的壳（`hostname`/`domainname` 的成功形状要先有 `gethostname(2)`
+  的答复，宿主恒回 `EIO`；`sh` 的提示符要先过 `fork`，宿主报 `sh: cannot fork`）。四枚逐字对
+  `minix3/usr.bin/getopt/getopt.c:26-40` 的 `printf` 序列，含「未知字母时那一行照打、只退码变 1」。
+  三件套：`cargo test -p minix-shell` → **85 passed、0 failed**（基线 81，+4 枚门）；三架构
+  `cargo build -p minix-shell --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 Finished 零 error；
+  容器 `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-shell` → **85/0**；
+  `rustfmt --edition 2024 --check` 触及两文件零漂移；clippy 对触及文件零命中；宿主实跑
+  `getopt "ab:" -a` → ` -a --`、`getopt "ab:" -b zzz foo bar` → ` -b zzz -- foo bar`、
+  `getopt "ab:" -q` → stdout ` --` + stderr `getopt: unknown option -- q` + 退 1。核实日 `2026-10-14`；
+  基线 `79818d566`。
+  **反控一枚（真凭据）**：把 `emit` 改回「只有一条无 `cfg` 的定义」＝改前形态，宿主重编后
+  `getopt` 得 `stdout 0 字节 + 退 1`，与改前的实测读数逐字对齐；这一枚同时钉住「门不是靠
+  编译期 cfg 混过去的」。过程记：第一次做这个反例时脚本删掉了两面（`emit` 未定义、编译失败），
+  而那次 `getopt` 的 7 字节读数来自**上一个残留二进制**——又一次证明「改完必须看到重编发生」。
+  05 篇两行随之改准：`bin/getopt.rs` 行加缝的来历、§5 测试清单添上本门；
+  **16u 状态**：shell 包的输出面已闭；余下同类项为零（扫描判据可重跑，见上），故 16u 记 `closed`。
+  登记不执行：①`hostname`/`domainname` 的成功输出形状仍只能在真机钉（宿主 `gethostname` 回 `EIO`），
+  归 `C-57`/`E5`；②`sh` 在宿主的执行面受 `fork` 缺失限制（`sh: cannot fork`），那是 exec/fork 交付链的
+  既有边界，不属本条。
+
 - ✅ **批次二百四十九接上 `join` 的 `err(3)` 文件腿与那支完全没实现的 stdin 拒读腿（16t 第九枚，本队列最后一枚壳）**
   （`2026-10-14`，`claim/JOIN-STRERROR-qoder` @ 基线 `b3d9329d9`，**跨线**：三线 `os/commands/usr-bin/textfilter`
   加一条指向二线 `minix-types` 的依赖边，并顺手把本包共享读档缝的错误位从单位型换成错误码型——在
