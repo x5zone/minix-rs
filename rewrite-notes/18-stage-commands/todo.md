@@ -250,6 +250,42 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十三把 Minix3 自己的 `sys_errlist` 落成 `minix-types` 的 errno 句子表，并接上第一个消费者 `caesar`**
+  （`2026-10-14`，`claim/STRERROR-TABLE-qoder` @ 基线 `9734acb2a`，跨线：二线 `os/libs/minix-types` +
+  三线 `os/commands/games/stdio-games`，照规则 1 在 `new_edge4.md` 登记 C-95 后动手）：
+  接回批次二百二十九～二百三十二反复登记的「全族 strerror 基础件」。**是什么**：十余处壳注释与 22 篇都写着
+  「本树无 strerror 表」，而真源一直都在——`strerror(3)`（`minix3/lib/libc/string/strerror.c` 转
+  `strerror_r.c:53-92`）读的是 `sys_errlist`（`minix3/lib/libc/compat/gen/compat_errlist.c:52-151`，
+  全树唯一一份定义），号小于 `sys_nerr`（80）取表、否则拼 `Unknown error: %u`；`err(3)`/`warn(3)` 的形状在
+  `minix3/lib/libc/gen/verrc.c`（`progname: ` + 调用者的串 + 冒号空格 + 句子 + 换行）。判类 P0-design-missing
+  （基础件缺位）+ P0-fact（`impl Display for Errno` 的注释自称是 C 的 strerror 面，而它给的是标识符；
+  caesar 的旧注释把 34 号写成 glibc 的 `Numerical result out of range`，Minix3 的表写
+  `Result too large or too small`）。
+  **怎么修**：`errno.rs` 新增 `SYS_NERR`、`SYS_ERRLIST`（80 项，下标即号）、`Errno::message()`（句子面，
+  表外 `None`）与 `Strerror`（整体形状，表外拼 C 那句；号按 C 的先转 `unsigned` 再比大小，负数因此绕成大数）；
+  标识符面 `name()`/`Display` 不动，只把注释改准。决定半 `RotationFailure::errno()` 命名 C 设的那个号
+  （`caesar.c:133`/`:135`），执行半按 `verrc.c` 缀句。**为什么优于此前的写法**（各壳要么手写整句、要么整段不写）：
+  表在 `minix-types` 一处权威，其余消费者只需接线，不再各自造措辞。
+  **表项来历**：脚本从 C 表逐行提取 80 项，并断言每个带注记的行满足 strings[注记号] 等于该行的串
+  （79 条带注记行零失配），号与名再与 `minix3/sys/sys/errno.h` 的 `#define E… (_SIGN n)` 逐条对账
+  （1..79 零不一致；0 号在表头无名，按 C 惯例记 `ENOERROR`）。
+  三件套：`cargo test -p minix-types` → **330 passed、0 failed**（基线 326；`--lib strerror_face` 4/0）；
+  `cargo test -p minix-stdio-games` → **18 目标全 ok、合计 172 passed、零 FAILED**（基线 18/171；`--lib caesar::`
+  8→9；`--test caesar_face` 5/0，两句金样已换成带后缀的形）；三架构 `cargo build -p minix-stdio-games --bins`
+  对 x86_64/aarch64/riscv64gc 三个 none 目标零 error；容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace`
+  Finished 零 error；宿主实跑 `caesar -1` 得 Bad rotation value 那句缀 Result too large or too small、
+  `caesar 5x` 缀 Invalid argument，退码均为 1。核实日 `2026-10-14`；基线 `9734acb2a`。
+  **七枚变异负控**全部咬中：34 号改回 glibc 措辞、表长改 81、忘记 C 的 unsigned 比较、表外改用标识符面、
+  `Invalid` 报错成 `ERANGE`、壳里去掉冒号空格、壳里丢掉整个句尾。
+  **本轮新发现的债（只登记不执行）**：容器门里 `minix-types` 的
+  `test_c_bridge_fs_stat_offsets_match_rust_layout` 恒红（`stat.rs:111` 以 crate 目录相对路径读
+  `posix-stubs.c`，容器只挂 `os/` 故报 NotFound），基线 `9734acb2a` 现跑同红——属「宿主不可达的门内测试」族，
+  修法应是把 C 文本随测试内联或改用由仓库根派生的路径，另轮认领。
+  登记不执行：①其余消费者的后缀接线（factor 溢出句、ppt 读失败句，以及 `os/commands/` 下十余处写着
+  「本树无 strerror 表」的注释——该说法自本批起不再成立）；②上述容器门恒红测；③真机播种与 open 腿归 C-57/E5；
+  ④`../03-stage-rs/99-rs-global-concepts.md` 的教学构件承载门基线即欠（`tools/doc-code-density-check.sh --check`
+  报 3 个 P1 承载缺码章：§2 常量族、§3 Rust 映射决策、§4 实现；本篇改动前后读数相同，故本批不顺手补码，另轮认领）。
+
 - ✅ **批次二百三十二把 `arithmetic` 的答错罚则建成决定半，并按 C 重写抽题与提问循环**
   （`2026-10-14`，`claim/ARITH-PENALISE-qoder` @ 基线 `68c91aba6`，单域三线 commands/games/stdio-games，无跨界）：
   接回 22 篇登记的「`penalise` 罚则待批」。**是什么**：那条留白被记成提示层的小事，缺的其实是**出题模型**。

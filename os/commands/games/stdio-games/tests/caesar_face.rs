@@ -119,7 +119,7 @@ fn only_the_first_two_thousand_forty_eight_bytes_vote_and_all_of_them_rotate() {
 #[test]
 fn the_rotation_argument_is_parsed_like_strtol_and_rejected_in_two_orders() {
     // `get_rotation` parses with `strtol`, so leading white space and a plus sign are
-    // accepted before anything is decided (`caesar.c:126`), and `INT_MAX` survives to be
+    // accepted before anything is decided (`caesar.c:131`), and `INT_MAX` survives to be
     // folded by `init_rottbl` (`:86`).
     for arg in [" 3", "+3", "\t3"] {
         let (out, status, err) = run(&[arg], b"abc\n");
@@ -136,13 +136,20 @@ fn the_rotation_argument_is_parsed_like_strtol_and_rejected_in_two_orders() {
         let (out, status, err) = run(&[arg], b"abc");
         assert_eq!(out, Vec::new(), "argument {arg:?} must not be rotated");
         assert_eq!(status, 1);
-        assert_eq!(err, format!("caesar: Bad rotation value `{arg}'\n"));
+        // `err(3)` 缀的是 Minix3 自己那张表的句子（`errno.h:78` 对 ERANGE 的注与之一致）。
+        assert_eq!(
+            err,
+            format!("caesar: Bad rotation value `{arg}': Result too large or too small\n")
+        );
     }
     for arg in ["", "5x", "-"] {
         let (out, status, err) = run(&[arg], b"abc");
         assert_eq!(out, Vec::new(), "argument {arg:?} must not be rotated");
         assert_eq!(status, 1);
-        assert_eq!(err, format!("caesar: Bad rotation value `{arg}'\n"));
+        assert_eq!(
+            err,
+            format!("caesar: Bad rotation value `{arg}': Invalid argument\n")
+        );
     }
 }
 

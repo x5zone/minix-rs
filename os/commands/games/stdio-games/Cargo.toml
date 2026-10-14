@@ -9,10 +9,12 @@ license.workspace = true
 name = "minix_stdio_games"
 path = "src/lib.rs"
 
-# Dependencies serve the `src/bin/*.rs` doing halves; the library itself
-# stays free of any system-call imports (pure deciding half).
+# Dependencies serve the `src/bin/*.rs` doing halves; the library itself stays free of any
+# system-call imports (pure deciding half). `minix-types` is types only — the deciding half
+# may name the `errno` a C failure sets, so the doing half can print C's `strerror` suffix.
 [dependencies]
 minix-sys = { workspace = true }
+minix-types = { workspace = true }
 
 # minix-rt 按目标分形态（fileops/NS12 seam 判例）：无条件声明会把 std
 # feature 统一进下游的 none 构建图，freestanding 侧 minix-rt 必须 no_std。
