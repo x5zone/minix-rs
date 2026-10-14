@@ -135,10 +135,7 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
         .first()
         .map(alloc::string::String::as_str)
         .unwrap_or("");
-    match raw.rfind('/') {
-        Some(slash) => &raw[slash + 1..],
-        None => raw,
-    }
+    minix_types::prog_name(raw)
 }
 
 /// 按 C 的 `err(3)` 报一句就走：`prog: label: <strerror 的句子>` 加一个换行，然后以

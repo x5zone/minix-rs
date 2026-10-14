@@ -13,6 +13,8 @@ path = "src/lib.rs"
 # stays free of any system-call imports (pure deciding half).
 [dependencies]
 minix-sys = { workspace = true }
+# `err(3)`/`warn(3)` 那一行的形状与句子表同住 `minix-types`（`err_line`/`prog_name`）。
+minix-types = { workspace = true }
 # The `:` operator of expr anchors a basic regular expression; the BRE
 # engine is the 08-stage library (the C expr links libc's regcomp).
 minix-regex = { workspace = true }

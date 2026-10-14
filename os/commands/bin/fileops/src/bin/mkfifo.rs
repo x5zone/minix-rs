@@ -10,10 +10,11 @@
 //! same `setmode`/`getmode` port `chmod` runs on.
 //!
 //! Two deliberate differences, both cosmetic or invisible:
-//! - C's failure report is `warn("%s", *argv)` (`mkfifo.c:95`), i.e. the name
-//!   with the program name and a `strerror` suffix. That suffix is not wired here
-//!   yet (the table exists in `minix_types::Errno::message`; wiring is a registered
-//!   follow-up), so the line is the conventional `mkfifo: <name>`.
+//! - C's failure report is `warn("%s", *argv)` (`mkfifo.c:95`): the program name
+//!   from `getprogname()`, the name itself, then that errno's `strerror` sentence
+//!   (`minix3/lib/libc/gen/vwarn.c`). Both halves come from the one authority in
+//!   `minix-types`, so the line reads `mkfifo: <name>: <sentence>` and the run
+//!   continues to the next name (`exitval = 1` is remembered, not taken).
 //! - C reads the creation mask with `umask(0)` and never puts it back
 //!   (`mkfifo.c:69`). Nothing else in the program creates a file, and Minix3's
 //!   file servers do not apply the mask to `mknod`/`mkfifo` at all, so the
@@ -74,10 +75,11 @@ fn run() -> ! {
 
     // `mkfifo.c:93-99`: every name gets the same mode, each failure is reported
     // and counted, and the run continues to the next name.
+    let prog = support::prog_name(&argv);
     let mut any_failed = false;
     for name in &plan.names {
-        if mkfifo(name, plan.mode).is_err() {
-            support::warn(format!("mkfifo: {name}\n").as_bytes());
+        if let Err(code) = mkfifo(name, plan.mode) {
+            support::warn_line(prog, name, code);
             any_failed = true;
         }
     }

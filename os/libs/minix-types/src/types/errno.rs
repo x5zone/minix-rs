@@ -504,6 +504,17 @@ impl core::fmt::Display for Strerror {
     }
 }
 
+/// C 的 `getprogname()`：程序名是运行时刻从 `argv[0]` 取的最后一段——
+/// `minix3/lib/csu/common/crt0-common.c:156-165` 扫到最后一个 `/` 就取其后面那段，
+/// 没有斜杠则整段照用。`err(3)`/`warn(3)`/`usage()` 的那几行都以它开头，所以这是契约
+/// 的一部分而不是装饰。
+pub fn prog_name(argv0: &str) -> &str {
+    match argv0.rfind('/') {
+        Some(slash) => &argv0[slash + 1..],
+        None => argv0,
+    }
+}
+
 /// C 的 `err(3)`/`warn(3)` 那一行的渲染：`prog: label: <句子>`。
 ///
 /// 形状逐字来自 `minix3/lib/libc/gen/verrc.c`——`getprogname()`、`": "`、调用者给的串、
@@ -884,6 +895,11 @@ mod strerror_face_tests {
             Strerror(Errno::from_i32(EPERM)).to_string(),
             "Operation not permitted"
         );
+
+        // 程序名取末段，而不是整个 `argv[0]`：C 的运行时刻就是这么切的。
+        assert_eq!(super::prog_name("/bin/mkfifo"), "mkfifo");
+        assert_eq!(super::prog_name("mkfifo"), "mkfifo");
+        assert_eq!(super::prog_name(""), "");
     }
 
     /// 表边界与 C 的 `unsigned` 比较同形：0 号有串（`Undefined error: 0`），79 号是
