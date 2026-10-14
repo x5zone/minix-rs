@@ -12,13 +12,14 @@
 //! every option C takes is taken here, the size grammar included (the multiplier
 //! arms fall through, so `1G` is a gibibyte: `truncate.c:176-190`).
 //!
-//! Three deliberate differences, all in the reporting and failure paths:
-//! - C prints an unparseable `-s` value and a failed reference `stat` with a bare
-//!   `fprintf` and no program-name prefix (`truncate.c:67-71`, `:92-95`); that
-//!   shape is reproduced. The per-file failures keep this crate's conventional
-//!   `truncate: <path>` line, because this shell does not yet print the suffix C's
-//!   `perror` would add — the table exists (`minix_types::Errno::message`), the
-//!   wiring is a registered follow-up.
+//! The failure paths, and the two places this shell differs from C there:
+//! - The four per-file failures are C's `perror(fname)` (`truncate.c:111`, `:118`,
+//!   `:125`, `:135`), and Minix3's `perror` (`minix3/lib/libc/stdio/perror.c`)
+//!   prints `<operand>: <strerror(errno)>` — **no program-name prefix**. The shell
+//!   used to print `truncate: <path>`, which both invented a prefix C does not
+//!   have and dropped the number. The two bare `fprintf` lines (`:67-70` invalid
+//!   size, `:92-94` the reference file) likewise carry no prefix — and no newline
+//!   either, which C omits because it exits right after them.
 //! - C counts an open failure only when `errno` is not `ENOENT`
 //!   (`truncate.c:109-114`), so `truncate -c absent` exits 0 in silence. The same
 //!   triage is kept, which is why the failure is tracked per operand.
@@ -61,8 +62,12 @@ fn zeroed() -> Stat {
     unsafe { core::mem::zeroed() }
 }
 
-fn report(path: &str) {
-    support::warn(format!("truncate: {path}\n").as_bytes());
+/// C's `perror(fname)` (`truncate.c:111`, `:118`, `:125`, `:135`): the operand,
+/// then that number's sentence, and **no program-name prefix** — Minix3's
+/// `perror` (`minix3/lib/libc/stdio/perror.c`) is the family that does not carry
+/// one, unlike `warn(3)`/`err(3)`.
+fn report(path: &str, code: Errno) {
+    support::perror_line(path, code);
 }
 
 /// `truncate.c:91-100`: settle the size before touching any operand.
@@ -75,9 +80,10 @@ fn resolve(plan: &TruncatePlan) -> Resolved {
             match stat(rname, &mut sb) {
                 Ok(()) => Resolved::Fixed(clamp(sb.st_size)),
                 Err(_) => {
-                    // `truncate.c:92-95`: the name alone, then exit — no operand
-                    // is opened at all.
-                    support::warn(format!("{rname}\n").as_bytes());
+                    // `truncate.c:92-94`: `fprintf(stderr, "%s", rname)` then exit —
+                    // the name alone, no newline (C never gets to write one), and no
+                    // operand is opened at all.
+                    support::warn(rname.as_bytes());
                     support::terminate(1);
                 }
             }
@@ -92,9 +98,10 @@ fn truncate_one(fname: &str, plan: &TruncatePlan, resolved: &Resolved) -> bool {
         Ok(fd) => fd,
         Err(e) => {
             // `truncate.c:109-114`: a vanished operand is passed over without a
-            // word; anything else is reported and counted. Neither path truncates.
+            // word; anything else is `perror(fname)` and counted. Neither path
+            // truncates.
             if e != Errno::ENOENT {
-                report(fname);
+                report(fname, e);
                 return true;
             }
             return false;
@@ -105,8 +112,9 @@ fn truncate_one(fname: &str, plan: &TruncatePlan, resolved: &Resolved) -> bool {
         Resolved::Fixed(sz) => *sz,
         Resolved::Relative(delta) => {
             let mut sb = zeroed();
-            if fstat(fd, &mut sb).is_err() {
-                report(fname);
+            if let Err(e) = fstat(fd, &mut sb) {
+                // `truncate.c:116-120`.
+                report(fname, e);
                 let _ = close(fd);
                 return true;
             }
@@ -114,8 +122,9 @@ fn truncate_one(fname: &str, plan: &TruncatePlan, resolved: &Resolved) -> bool {
         }
     };
 
-    if ftruncate(fd, size).is_err() {
-        report(fname);
+    if let Err(e) = ftruncate(fd, size) {
+        // `truncate.c:134-138`.
+        report(fname, e);
         let _ = close(fd);
         return true;
     }
@@ -134,9 +143,10 @@ fn run() -> ! {
         Ok(p) => p,
         Err(TruncateArgError::Usage) => usage(),
         Err(TruncateArgError::InvalidSize(text)) => {
-            // `truncate.c:67-71`: the offending text is quoted, there is no
-            // program-name prefix, and the exit happens before any file is named.
-            support::warn(format!("invalid size argument `{text}'\n").as_bytes());
+            // `truncate.c:67-70`: `fprintf(stderr, "invalid size argument `%s'")`
+            // — quoted text, no program-name prefix, and **no newline**: C calls
+            // `exit` without ever writing the terminator.
+            support::warn(format!("invalid size argument `{text}'").as_bytes());
             support::terminate(1);
         }
     };
@@ -153,10 +163,11 @@ fn run() -> ! {
 }
 
 fn usage() -> ! {
-    support::warn(
-        b"usage: truncate [-c] -s [+|-]size[K|k|M|m|G|g] file ...\n\
-                truncate [-c] -r rfile file ...\n",
-    );
+    // `truncate.c:202-208`: two hardcoded lines (no `getprogname()` here, unlike
+    // `rm`/`cp`/`mv`), the second indented seven spaces so it lines up under the
+    // first one's verb.
+    support::warn(b"usage: truncate [-c] -s [+|-]size[K|k|M|m|G|g] file ...\n");
+    support::warn(b"       truncate [-c] -r rfile file ...\n");
     support::terminate(1);
 }
 

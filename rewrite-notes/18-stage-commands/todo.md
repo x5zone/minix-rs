@@ -250,6 +250,43 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十四把 `truncate` 的四处失败腿改回 `perror(3)` 那一族：前缀与换行都不是本壳说了算（16t 第四枚）**
+  （`2026-10-14`，`claim/TRUNCATE-STRERROR-qoder` @ 基线 `96c429683`，单域三线 `os/commands/bin/fileops`
+  与同线文档，无跨界）：接回批次二百四十三登记不执行①的第一枚。**是什么**：`truncate` 四处逐操数失败
+  （`truncate.c:111`、`:118`、`:125`、`:135`）用的都是 `perror(fname)`，而 Minix3 的 `perror`
+  （`minix3/lib/libc/stdio/perror.c`）**不缀程序名**；本壳印的 `truncate: <路径>` 两头都错：多了一个 C
+  从不写的名字，少了一个 C 一定要写的号。判类 P0-code-bug + P0-fact（头注与 06 篇都把那个前缀当成本树惯例）。
+  **核对中另坐实两处**：①`truncate.c:67-70` 与 `:92-94` 那两句裸 `fprintf` 后紧跟 `exit`，**不带换行**，
+  本壳都给补上了；②`usage()` 的两行是硬写字符串（本命令不用 `getprogname()`，与 `rm`/`cp`/`mv` 不同），
+  第二行的七个空格被本树的 `\` 续行符剔掉了。
+  **怎么修**：`report(path, code)` 改交 `support::perror_line`（权威是 `minix-types` 的 `perror_line`，与
+  `err_line` 并列那一处），四处调用点从 `is_err()` 改 `if let Err(e)` 把号交出来；两句裸 `fprintf` 去掉
+  换行；usage 拆成两个字节串字面量把缩进写回。
+  **为什么不选另一条路**：把 `truncate` 也统一成 `warn(3)` 形（即加 `truncate: ` 前缀）看似与同命令包其他
+  壳一致，而批次二百三十九立的规矩就是「哪一族缀程序名只有一处答案，不许统一成一族」——这里需要的恰恰是
+  反过来：别给 `perror` 添上前缀。另一个选择是给那两句补换行「好看」，那也是改写外部行为。
+  **门**：新建 `tests/truncate_face.rs`（5 枚，本 crate 第六扇进程级门）：失败行以操数开头且行首不得出现
+  `truncate:`；非法 `-s` 逐字等于 `invalid size argument `bogus'`（无换行）；参照名失手只印那个名字且不出
+  操数行；无选项与未列字母都答两行硬写 usage（含第二行的七空格）；**把副本改名后那一行照旧不带名字**
+  （这一枚是两族之别最硬的证：`warn(3)` 会跟着改名，`perror(3)` 根本不写名字）。
+  三件套：`cargo test -p minix-fileops` → **418 passed、0 failed**（基线 413，+5 枚门）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-fileops` → **418/0**、`cargo check -j 1
+  --workspace` Finished 零 error；三架构 `cargo build -p minix-fileops --bins --target {x86_64,aarch64,
+  riscv64gc}-unknown-none` 各 Finished 零 error；`rustfmt --edition 2024 --check` 触及两文件零漂移；clippy 对触及
+  文件零命中；宿主实跑 `truncate -s 10 /tmp/x` → `/tmp/x: Input/output error` 退 1、`truncate -s bogus /tmp/x`
+  → `invalid size argument `bogus'` 后紧跟提示符（无换行）、`truncate -r /tmp/ref /tmp/x` → `/tmp/ref`。
+  核实日 `2026-10-14`；基线 `96c429683`。
+  **三枚变异负控**（测完按 md5 复原）：退回 `truncate: <路径>` 前缀形（门 2 枚红）、给非法尺寸那句补换行
+  （那枚独红）、usage 第二行去掉缩进（usage 那枚独红）。过程记：第一轮负控里一枚因 shell 引号被吃而
+  根本没改进文件（门全绿会被误读成「发牙不对」），改用 python 脚本带 `assert anchor in s` 重跑才拿到红。
+  **新拓一处待定形（登记不修）**：决定半 `relative_target` 用的是 `saturating_add`，而 C 是 `off_t` 加法
+  自然回绕后再 `if (tsize < 0) tsize = 0`（`truncate.c:131-132`）——正向溢出时 C 得 0、本树得 `i64::MAX`；
+  同一处 C 的 `EFBIG` 判据（`:122-126`）拿 `oflow` 与它自己的来源式相比、永不为真，这一点 06 篇已记。要按
+  C 做就得改 `wrapping_add`，那是决定半的语义变更，不跟本批的诊断腿混在一笔里。
+  06 篇两行随之改准：`bin/truncate.rs` 行、端到端门清单添上本扇。
+  登记不执行：①余下 `du`/`find`/`stat`、doctools `what`、textfilter `join` 的同族腿；②`relative_target`
+  的溢出形与 `EFBIG` 死支（如上）；③`ENOENT` 静默与真 `ftruncate` 腿归决定半库测与 `C-57`/`E5`。
+
 - ✅ **批次二百四十三接上 `mv` 的十三处 `warn(3)` 腿，并把 C 的三种标签形分开保留（16t 第三枚）**
   （`2026-10-14`，`claim/MV-STRERROR-qoder` @ 基线 `af0b997c3`，单域三线 `os/commands/bin/fileops`
   与同线文档，无跨界）：接回批次二百四十二登记不执行①的第三枚。**是什么**：`mv` 的失败腿全部只印
