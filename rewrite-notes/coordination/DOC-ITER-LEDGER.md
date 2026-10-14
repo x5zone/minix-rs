@@ -17,6 +17,7 @@
 | `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md` | 02 | `b1727412f` | `05309612a` | v0.5+R02附加 | 待送审（闭环轮：三项结构残余 + C18 Ch5 改造 + 回读 13 处修复；**判冻结**） | `tmp/doc-iter/06-proc-init-boot-proc/round-02-06-proc.md`（归因包；diff 与台账均已内联） |
 | `rewrite-notes/01-stage-kernel/13-syscall-dispatch.md` | 01 | `dd9c6c1fd` | `b413b7f00` | v0.5+R01-13附加 | 待送审（首轮：两条 P0 定案 + 51 条修复 + C18/C24/C25/C26/C28 落地；**不判冻结，拟走第二轮**） | `tmp/doc-iter/13-syscall-dispatch/round-01-r13.md`（归因包；diff/台账/§7 全内联） |
 | `rewrite-notes/01-stage-kernel/13-syscall-dispatch.md` | 02 | `b413b7f00` | `94d312d43` | v0.5+R02-13附加 | **已审·同意冻结**（篇级；一处残留经复核为合法技术用语「RAX 回读」，无需改） | `tmp/doc-iter/13-syscall-dispatch/round-02-r13.md`（归因包；diff/台账/§7 全内联） |
+| `rewrite-notes/01-stage-kernel/12-ipc-core.md` | 01 | `6ab01cbf8` | `af14a09da` | v0.5+R01-第四篇附加（预填） | 待送审（首轮：三笔 P0 级定案 + SRC-17~20 + C18 反转表 M1–M13；**判否，建议一轮闭环**） | `tmp/doc-iter/12-ipc-core/round-01-r12.md`（归因包；diff/台账/§7 C1–C32 全内联） |
 
 ## 规则变更裁决记录
 
