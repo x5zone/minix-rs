@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_stdio_games::factor::{
-    NEGATIVE_MSG, NUMBERS_MSG, Verdict, render_factors, trial_divide, verdict,
+    NEGATIVE_MSG, NUMBERS_MSG, OVERFLOW_ERRNO, Verdict, render_factors, trial_divide, verdict,
 };
 use support::LineReader;
 
@@ -78,6 +78,19 @@ fn factor_word(word: &str, from_stdin: bool) {
                 }
                 Err(_) => support::terminate(1),
             }
+        }
+        Verdict::Overflow => {
+            // C 的这条腿是 `err(1, "%s", str)`（`factor.c:123-126`）：程序名、原串、冒号空格，
+            // 再缀 `strtoul` 设的那个号的句子。它与 `Illegal` 不同句，也不同时机——溢出先看
+            // `errno`，行末检验在其后（`:127`），所以带尾巴的超大数答这句而不提格式。
+            support::warn(b"factor: ");
+            support::warn(word.trim_end_matches(['\n', '\r']).as_bytes());
+            support::warn(b": ");
+            if let Some(text) = OVERFLOW_ERRNO.message() {
+                support::warn(text.as_bytes());
+            }
+            support::warn(b"\n");
+            support::terminate(1);
         }
         Verdict::NotPermitted => errx(NUMBERS_MSG),
         Verdict::Negative => errx(NEGATIVE_MSG),

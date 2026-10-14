@@ -143,6 +143,35 @@ fn trailing_junk_is_reported_as_an_illegal_numeric_format() {
 }
 
 #[test]
+fn an_overflowed_value_leaves_with_the_range_sentence_not_the_format_one() {
+    // `err(1, "%s", str)` (`factor.c:126`) 把 `strtoul` 设的 `ERANGE` 织进句子，而且走在
+    // 行末检验之前：同一个带尾巴的超大数答这句而不提格式。句子取自本树的 `sys_errlist`，
+    // 因此是 Minix3 的 `Result too large or too small` 而不是 glibc 的那句。
+    let (out, status, err) = run(&["18446744073709551616"], b"");
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        "factor: 18446744073709551616: Result too large or too small\n"
+    );
+    // 溢出优先于「行末只许换行」。
+    let (_, _, junked) = run(&["99999999999999999999999x"], b"");
+    assert_eq!(
+        junked,
+        "factor: 99999999999999999999999x: Result too large or too small\n"
+    );
+    // 标准输入那条腿同理，只是 C 把整行（含换行）当 `%s`；本壳与 illegal 那句同样
+    // 先剔行尾换行（已在库文档里声明的分流）。
+    let (out, status, stdin_err) = run(&[], b"18446744073709551616\n");
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(
+        stdin_err,
+        "factor: 18446744073709551616: Result too large or too small\n"
+    );
+}
+
+#[test]
 fn an_option_like_argument_answers_the_usage_line_and_leaves_with_zero() {
     // The optstring is empty (`factor.c:147`), so any `-x` falls into `case '?'` and reaches
     // `usage()`, which prints to standard error and exits **0** (`:266-270`). `--` ends the

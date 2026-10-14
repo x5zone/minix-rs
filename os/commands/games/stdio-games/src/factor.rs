@@ -10,6 +10,7 @@
 //! probabilistic path stays with later work.
 
 use crate::GameError;
+use minix_types::{ERANGE, Errno};
 
 /// Small primes for the trial division wheel (all primes below 100).
 pub const SMALL_PRIMES: &[u64] = &[
@@ -19,6 +20,11 @@ pub const SMALL_PRIMES: &[u64] = &[
 /// C's two fixed diagnostics (`errx` calls at `factor.c:174`, `:168`, `:219`).
 pub const NUMBERS_MSG: &str = "numbers <= 1 aren't permitted.";
 pub const NEGATIVE_MSG: &str = "negative numbers aren't permitted.";
+
+/// C 的溢出腿留下的那个号：`errno = 0; strtoul(...); if (errno) err(1, "%s", str)`
+/// （`factor.c:123-126`）。溢出时 `strtoul` 置 `ERANGE`，于是那句的尾巴由本树的
+/// `sys_errlist` 决定 —— Minix3 写 `Result too large or too small`。
+pub const OVERFLOW_ERRNO: Errno = Errno::from_i32(ERANGE);
 
 /// What C makes of one value token: factor it, skip the line, or leave with a sentence.
 ///
@@ -37,12 +43,11 @@ pub const NEGATIVE_MSG: &str = "negative numbers aren't permitted.";
 /// * `Skip` exists only on the stdin path: a line of blanks ends at `\n` or `\0` right
 ///   away and C reads the next one without printing (`:163-165`).
 ///
-/// Two deliberate divergences, both registered in the stage ledger: overflow is answered as
-/// `Illegal` here while C leaves through `err(1, "%s", str)` with a `strerror` suffix
-/// (`:123-124`) — same exit status, different sentence; and the minus test runs after the
+/// One deliberate divergence is registered in the stage ledger: the minus test runs after the
 /// blank scan on both paths, where C tests an operand's very first byte (`:173`), so an
 /// operand like `" -6"` (which C would hand to `strtoul` as a wrapped huge value) gets a
-/// sentence here.
+/// sentence here. The `Illegal` sentence itself carries a second declared divergence — on the
+/// stdin path C prints a spent `argv[0]` (`:168`), so this shell names the line instead.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// A value to factor.
@@ -55,6 +60,10 @@ pub enum Verdict {
     Negative,
     /// C's `<value>: illegal numeric format.`.
     Illegal,
+    /// C's overflow leg: `strtoul` set `ERANGE`, so `err(1, "%s", str)` (`:123-126`) prints
+    /// the value followed by that errno's sentence — a different line from `Illegal`, and it
+    /// happens **before** the end-of-value test (`:127`), so trailing junk never gets a say.
+    Overflow,
 }
 
 /// Decide what C would do with one token, blank-for-blank (`:119-128`, `:156-179`).
@@ -97,8 +106,8 @@ pub fn verdict(word: &str, from_stdin: bool) -> Verdict {
             .and_then(|wide| wide.checked_add((bytes[cursor] - b'0') as u64));
         match scaled {
             Some(next) => value = next,
-            // C saturates and sets `ERANGE`, which leaves through a different sentence.
-            None => return Verdict::Illegal,
+            // `strtoul` saturates and sets `ERANGE`; C leaves through `err(1, "%s", str)`.
+            None => return Verdict::Overflow,
         }
         cursor += 1;
     }
@@ -231,6 +240,27 @@ mod tests {
         assert_eq!(verdict("  12", true), Verdict::Value(12));
         assert_eq!(verdict("12\n", true), Verdict::Value(12));
         assert_eq!(verdict("12x", false), Verdict::Illegal);
+        // 溢出与带尾巴是两句不同的话：C 的 `if (errno) err(1, "%s", str)`（`factor.c:125-126`）
+        // 走在「行末只许换行」的检验（`:127`）之前，所以「溢出且带尾巴」答溢出那句。
+        assert_eq!(verdict("18446744073709551616", false), Verdict::Overflow);
+        assert_eq!(
+            verdict("99999999999999999999999x", false),
+            Verdict::Overflow
+        );
+        assert_eq!(
+            verdict("18446744073709551615", false),
+            Verdict::Value(u64::MAX)
+        );
+        // 二十个 0 再加一位也不该被判溢出：前导零不吃宽度。
+        assert_eq!(
+            verdict("000000000000000000000000000000002", false),
+            Verdict::Value(2)
+        );
+        // 那句的尾巴由本树的表给出，措辞是 Minix3 的而不是 glibc 的。
+        assert_eq!(
+            OVERFLOW_ERRNO.message(),
+            Some("Result too large or too small")
+        );
         assert_eq!(
             verdict("", false),
             Verdict::NotPermitted,
