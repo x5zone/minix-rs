@@ -11,25 +11,52 @@ use crate::GameError;
 /// Largest bound accepted (keeps the sieve working set small).
 pub const MAX_BOUND: u32 = 1_000_000;
 
-/// Parse a decimal bound.
-pub fn parse_bound(word: &str) -> Result<u32, GameError> {
-    if word.is_empty() {
-        return Err(GameError::InvalidArgument);
+/// 一支边界串的三种转换失手。C 在 `primes.c:136-148` 就按这三种分岔：`errno` 被置起
+/// 就直走 `err(1, "%s", argv[i])`（`minix3/common/lib/libc/stdlib/_strtol.h:69` 的
+/// `EINVAL` 与 `:157`/`:172` 的 `ERANGE`），只有「转出了数字但后面还有字符」（`*p != '\0'`，
+/// 此时 `errno` 未置）才走 `errx(1, "%s: illegal numeric format.")`（`primes.c:140`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundError {
+    /// 一个数字都转不出来：`_strtol.h:69` 的 `errno = EINVAL`。
+    NoConversion,
+    /// 转出来了但超出可表示范围：`_strtol.h:157`/`:172` 的 `errno = ERANGE`。
+    OutOfRange,
+    /// 转出了前缀而后有尾字符：`primes.c:140` 那一支。
+    TrailingJunk,
+}
+
+/// Parse a decimal bound the way `strtoumax(argv[i], &p, 0)` does for the
+/// digits-only case, **without** applying any bound of its own: the size check
+/// C performs (`stop > SPSPMAX`, `primes.c:149`) lives in `main`, so it stays
+/// with the execution layer. Undocumented by C's face: this accepts a plain
+/// decimal string only — the `0x`/octal prefixes, leading blanks and sign that
+/// base 0 would take are not ported (registered in 22 篇).
+pub fn parse_bound(word: &str) -> Result<u64, BoundError> {
+    let bytes = word.as_bytes();
+    if !matches!(bytes.first(), Some(b'0'..=b'9')) {
+        // 空串与非数字开头同归 C 的「无转换」支（`errno = EINVAL`）。
+        return Err(BoundError::NoConversion);
     }
     let mut value: u64 = 0;
-    for byte in word.bytes() {
-        if !byte.is_ascii_digit() {
-            return Err(GameError::InvalidArgument);
-        }
+    let mut index = 0usize;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
         value = value
             .checked_mul(10)
-            .and_then(|scaled| scaled.checked_add((byte - b'0') as u64))
-            .ok_or(GameError::OutOfRange)?;
+            .and_then(|scaled| scaled.checked_add((bytes[index] - b'0') as u64))
+            .ok_or(BoundError::OutOfRange)?;
+        index += 1;
     }
-    if value > MAX_BOUND as u64 {
-        return Err(GameError::OutOfRange);
+    if index < bytes.len() {
+        return Err(BoundError::TrailingJunk);
     }
-    Ok(value as u32)
+    Ok(value)
+}
+
+/// C 的那支上限检查（`primes.c:149`：`stop > SPSPMAX`）。本树的上限是
+/// `MAX_BOUND`，不是 C 的近 2^32（声明的差异，见 22 篇），但报文形状同形。
+#[must_use]
+pub fn over_cap(value: u64) -> bool {
+    value > MAX_BOUND as u64
 }
 
 /// Generate primes from `lo` to `hi` inclusive into `out`.
@@ -116,9 +143,15 @@ mod tests {
     #[test]
     fn test_bounds_checked() {
         assert_eq!(parse_bound("100"), Ok(100));
-        assert_eq!(parse_bound(""), Err(GameError::InvalidArgument));
-        assert_eq!(parse_bound("12a"), Err(GameError::InvalidArgument));
-        assert_eq!(parse_bound("2000000"), Err(GameError::OutOfRange));
+        assert_eq!(parse_bound(""), Err(BoundError::NoConversion));
+        assert_eq!(parse_bound("12a"), Err(BoundError::TrailingJunk));
+        assert_eq!(parse_bound("-5"), Err(BoundError::NoConversion));
+        assert_eq!(parse_bound("2000000"), Ok(2_000_000));
+        assert!(over_cap(2_000_000) && !over_cap(MAX_BOUND as u64));
+        assert_eq!(
+            parse_bound("18446744073709551616"),
+            Err(BoundError::OutOfRange)
+        );
         let mut out = [0u32; 4];
         assert_eq!(sieve(1, 20, &mut out), Err(GameError::OutOfRange));
         assert_eq!(sieve(0, 2_000_000, &mut out), Err(GameError::OutOfRange));

@@ -250,6 +250,44 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十二把 `primes` 的界限腿逐枚接上：同一句坏参数在 C 里分属两族（16v 接线第一枚）**
+  （`2026-10-14`，`claim/PRIMES-ERR-WIRE-qoder` @ 基线 `212ac44ff`，单域三线 `os/commands/games/stdio-games`
+  与同线文档，无跨界）：接回批次二百五十一判定表里 P0 最高的一行。**是什么**：`primes` 的八支诊断腿
+  本树**一支都没有**——`primes.c:133-172` 的负号、`strtoumax` 置 errno、尾随垃圾、超上限、区间倒置在
+  本壳一律 `terminate(1)` 静默，坏参数与空区间看起来一模一样。判类 P0-code-bug + P0-test-missing。
+  **核对中要辨的一件事**：C 里 `abc` 与 `12a` 不是一回事。`_strtol.h:69` 只在**一个数字都转不出来**时置
+  `EINVAL`，`primes.c:138` 遂走 `err(1, "%s", argv[i])`（缀句子）；而 `12a` 转出了前缀、`errno` 未置，
+  落到 `primes.c:140` 的 `errx "%s: illegal numeric format."`（不缀句子、句末带句点）。要分这两支就得让
+  决定半把「哪种失手」交回来——原 `parse_bound` 把两形合在 `GameError::InvalidArgument` 里，还顺手做了
+  上限检查（C 的上限检查在 `main`，不是解析器）。
+  **怎么修**：决定半换成 `BoundError{NoConversion, OutOfRange, TrailingJunk}` 三形 + 返回 `u64`，
+  上限那支拆成独立的 `over_cap`（C 的 `stop > SPSPMAX` 属 `main`）；壳侧加 `errx`/`err_errno`/`usage` 三个
+  落点，`err_errno` 把 `EINVAL`/`ERANGE` 交给 `support::warn_line`（`bin_support` 补 `warn_line`，与
+  fileops/textfilter 同形），`ERANGE` 无关联常量故沿用 `rm.rs` 对 `ETXTBSY` 的先例壳侧定值；
+  开头的选项串一支一判：不认的字母按 C 的 `?`→`default: usage()`，认得的 `-d`/`-h` 报拒收（本树无那两面输出）。
+  **为什么不选另一条路**：①只在壳里 `match` 字符串形状就能省掉决定半改动，但那等于把 `strtoumax` 的语义抄两份、
+  且上限那支仍无处分；②把 `abc`/`12a` 合成一句是「统一成一族」的老错（批次二百三十九立的规矩）；③实现 `-d`/`-h`
+  的输出面是另一件功能活，混进来会让这笔的 diff 说不清。
+  **门**：新建 `tests/primes_face.rs`（8 枚，本包第九扇）：成功区间 `10..20` 逐字节 `11\n13\n17\n19\n`；
+  两支转换失手各归一族；区间倒置、超上限、`5 -3` 的负号支各一句；`-q` 与三个操数都答那一行硬写 usage；
+  `-h` 走拒收支；副本改名后报文行的程名跟着改而 usage 不改（本命令 usage 是字面量）。
+  三件套：`cargo test -p minix-stdio-games` → **196 passed、0 failed**（基线 188，+8 枚门；决定半那三行库测随
+  新错误型改写，`test_bounds_checked` 另补 `18446744073709551616` 的 `ERANGE` 与 `over_cap` 断言）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-stdio-games` → **196/0**；三架构
+  `cargo build -p minix-stdio-games --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各真编一遍（输出里有
+  `Compiling` 行，不是缓存的 `Finished`）零 error；`rustfmt --edition 2024 --check` 触及四文件零漂移；
+  clippy 对触及文件零命中（`never_loop` 与 `let` 链两处就地改形：clippy 指出「循环体两支都发散」＝循环写错了，
+  改成 `filter/and_then` 一支判完）；宿主实跑 `primes abc` → `primes: abc: Invalid argument`、`primes 12a` →
+  `primes: 12a: illegal numeric format.`、`primes 5 4` → `primes: start value must be less than stop value.`、
+  `primes 2 2000000` → `primes: 2000000: stop value too large (>1000000).`、`primes -q` → `usage: primes [-dh] [start [stop]]`。
+  核实日 `2026-10-14`；基线 `212ac44ff`。
+  **两枚变异负控**（测完按 md5 复原）：`err` 腿丢掉句子（门 2 枚红）、把尾字符那支也塞进 `err` 族
+  （那一枚独红——正是「两族不许统一」这条规矩的可执行形式）。
+  22 篇三行随之改准：`primes.rs` 决定半行、`primes` 接线行、端到端门清单添上本扇。
+  登记不执行：①`-d`/`-h` 的输出面（差分列与十六进制打印，`primes.c:255-256`/`:327-328`）；②零操数那一支
+  `read_num_buf`（`:176-205`，含它自己的四腿）；③`strtoumax` base 0 的前缀/空白/显式 `+` 形；④判定表其余行
+  （`caesar` 三支、`number` 程名、`text-games` 三面）按 v2-13 之后继续。
+
 - ✅ **批次二百五十一接上 `arithmetic` 的报文通道，并交出 16v 的游戏壳判定表（判定轮）**
   （`2026-10-14`，`claim/GAMES-ERR-SCAN-qoder` @ 基线 `7a8e37fec`，单域三线 `os/commands/games/stdio-games`
   与同线文档，无跨界）：**接线部分**——`arithmetic` 的三支选项错（`arithmetic.c:126`、`:132`、`:362`）与

@@ -194,6 +194,17 @@ pub fn utoa(mut value: u32, out: &mut [u8]) -> usize {
 /// 免得每个命令族各留一份形状。
 pub use minix_types::err_line;
 
+/// C 的 `warn(3)`/`err(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退
+/// （`vwarnc.c` 不退，退不退由调用者定）。形状与句子都在 `minix-types` 那一份
+/// 权威里（`err_line`），与不缀程序名的 `perror_line` 并列。本壳只有需要
+/// 缀号的腿（`primes` 的 `err(1, "%s", argv[i])`）才用它。
+pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
+    let mut line = [0u8; 256];
+    let len = minix_types::err_line(prog, label, code, &mut line);
+    warn(&line[..len.min(line.len())]);
+    warn(b"\n");
+}
+
 /// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
 /// `minix3/lib/csu/common/crt0-common.c:156-165`，判定本身只住在那一份权威里。
 /// `usage()` 与 `err`/`warn` 那些行的程序名都从这里来；本层只把 `argv` 拆成
