@@ -135,7 +135,7 @@ show(const char *s)
 | `lib.rs` | — | 错误类型（`GameError`，22 对应参数无效、2 对应查无、34 对应超范围）与模块组织 |
 | `bcd.rs` | `bcd.c` `:87-120`（孔位表）、`:153-220`（`printcard`） | 打孔表、单卡渲染 |
 | `ppt.rs` | `ppt.c` `:52`（EDGE）、`:98-170`（读带循环与 `getppt`）、`:130-145`（`putppt`） | 纸带行渲染、读带还原 |
-| `bin_support.rs` | — | 各二进制壳共用：行缓冲（C `fgets` 形状）、十进制格式化、C 的 `err(3)` 那一行的渲染（`err_line`，形状见 `minix3/lib/libc/gen/verrc.c`）、宿主/真机接缝（`args`/`terminate`/`emit`/`warn`/`read_stdin`/`stdin_chunk` 各自双生；`stdin_chunk` 的失败面带着当场的 `errno`，好让读出错与读到尽头分得开） |
+| `bin_support.rs` | — | 各二进制壳共用：行缓冲（C `fgets` 形状）、十进制格式化、C 的 `err(3)` 那一行的渲染（`err_line` 转发 `minix_types::err_line`，形状见 `minix3/lib/libc/gen/verrc.c`；权威随句子表一起住在 `minix-types`）、宿主/真机接缝（`args`/`terminate`/`emit`/`warn`/`read_stdin`/`stdin_chunk` 各自双生；`stdin_chunk` 的失败面带着当场的 `errno`，好让读出错与读到尽头分得开） |
 | `factor.rs` | `factor.c` `:119-128`、`:147-179`、`:196-252` | 取值判定、试除、行绘制 |
 | `primes.rs` | `primes.c` 区间语义 | 界限解析、区间生成 |
 | `caesar.rs` | `caesar.c` `:81-97`（建表）、`:120-137`（解析）、`:141-187`（频率破解） | 轮转解析、单字节轮转、破解用的计数与点积 |

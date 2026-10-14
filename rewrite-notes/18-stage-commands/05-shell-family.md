@@ -64,7 +64,7 @@ Minix 带着三个 shell，不是冗余，而是三段历史：
 - `printenv`：只打印（`env` 的只读子集）。
 - `getopt`（41 行）：帮 shell 脚本解析选项（`optind = 2` 跳过程序名与选项字母表的细节在第 23 行），是"让脚本支持 `-abc` 捆绑选项"的标准件。
 - `sysenv`（81 行）：Minix 特有的系统环境查询（经系统控制接口取系统参数），是 `svrctl`（`02` 篇）思想在环境面的延续。
-- `hostname`（101 行）：无参数打印（经取主机名系统调用，第 83 行），有参数设置（经设主机名系统调用，第 80 行，限管理员）。出厂主机名存在 `etc/hostname.file`（内容就是 `minix` 五个字母）。
+- `hostname`（101 行）：无参数打印（经取主机名系统调用，第 83 行），有参数设置（经设主机名系统调用，第 80 行，限管理员）；两条腿失败都交 `err(1, "…")`（第 84、81 行），那一行由 `getprogname()` 开头、由 `strerror` 收尾（`minix3/lib/libc/gen/verrc.c`），退码 1。出厂主机名存在 `etc/hostname.file`（内容就是 `minix` 五个字母）。
 - `uname`（159 行）：经系统信息系统调用（第 111 行）打印系统名、版本、硬件架构等，是脚本判断"我跑在什么机器上"的标准入口。
 
 ---
@@ -196,7 +196,7 @@ libc 不移植——`sh` 的执行层因此不能照抄 C 的 `execve`/`stdio` �
 
 ## 5. 测试要点
 
-全量测试基线：`cargo test -p minix-shell --lib` 与 `cargo test -p minix-shell --bin getopt` 实际输出为准（历史全量数字见 `.review` 底账）。
+全量测试基线：`cargo test -p minix-shell` 实际输出为准（历史全量数字见 `.review` 底账；本轮读数为 6 个测试目标、81 个测试：库 61、四个壳各 2 枚共享面测、`tests/hostname_face.rs` 4 枚端到端门）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/shell` 复现）：
 
@@ -206,8 +206,9 @@ libc 不移植——`sh` 的执行层因此不能照抄 C 的 `execve`/`stdio` �
 - **启动序列**（`script.rs`，6 个）：`test_login_shell_reads_both_profiles`（登录两文件）、`test_interactive_shell_reads_env_file`（交互读环境文件）、`test_login_plus_env_chains_three`（登录加交互三文件）、`test_privileged_shell_skips_env`（特权跳过）、`test_empty_env_reads_nothing`（空环境文件视同未设）、`test_batch_shell_reads_nothing`（批处理不读）。
 - **getopt 解析**（`getopt.rs`，11 个）：簇内 flag（`-ab`）、附写/分写参数（`-nfoo`/`-n foo`）、GNU 可选 `::`、`--` 终止、首个操作数即停（不置换）、未知项、缺参（普通态与前导冒号态）、solitary `-`、flag+参数混束（`-abcVALUE` 配 `abc:`）。
 - **getopt 渲染**（`bin/getopt.rs` 的 `render`，8 个）：逐 golden 验 stdout 命令行（flag/附参/分参/`--` 分隔）、stderr 两条诊断（unknown option / option requires an argument）、退出码、progname 取 argv[0] 末段。
-- **hostname 解析**（`hostname.rs`，10 个）：`parse_plan` 折 getopt 形态成 `Plan::{Read{short}, Write{name}}`（默认读长、`-s` 幂等、`--` 终止扫描、cluster `-sx` 拒、两操作数 `usage`）；`strip_domain` 按首个 `.` 裁剪（无点、空串、首字符点、多段四种形各钉一条），与 `minix3/bin/hostname/hostname.c:86-87` 的 `strchr('.'); *p = '\0'` 逐字对应。sysctl 往返不在本篇：走 `minix_sys::gethostname`/`sethostname`（`{CTL_KERN, KERN_HOSTNAME}` 两元组，C `libc/gen/gethostname.c:61-62` / `sethostname.c:60-61`），线上 wire 帧与长度刷新由 `minix-sys/src/sysctl.rs` 的 `test_gethostname_wire_*` 与 `test_sethostname_wire_*` 钉住。
-- **domainname 落地**（`bin/domainname.rs`，本篇零测；同族的 `minix-sys/src/sysctl.rs` 钉 2 测）：命令无开关（C `bin/domainname/domainname.c:65` 的 `getopt(argc, argv, "")` 只给一个 `case '?'`），两操作数/未知项皆 `usage`；读写腿各对 `minix_sys::getdomainname`/`setdomainname`（`{CTL_KERN, KERN_DOMAINNAME}` 两元组，NetBSD `libc/gen/getdomainname.c`/`setdomainname.c`），sink 尺寸取 `MAX_HOSTNAME_LEN`（同文件行 60 的 `char domainname[MAXHOSTNAMELEN]`，与 `hostname` 的 `+ 1` 不同）。wire 测 `test_getdomainname_wire_*`/`test_setdomainname_wire_*` 与 `test_layout_and_constant_pins` 里的 `KERN_DOMAINNAME == 22` 钉同一形状。
+- **诊断行渲染**（权威在 `minix-types` 的 `err_line`，1 枚：`err_line_renders_c_verrc_shape`；四个壳各带 2 枚同源测：`test_prog_name_takes_the_last_slash_segment` 钉程序名取 `argv[0]` 末段、`test_err_line_shape_and_truncation` 钉写得下与放不下的两种）。
+- **hostname 解析**（`hostname.rs`，10 个）：`parse_plan` 折 getopt 形态成 `Plan::{Read{short}, Write{name}}`（默认读长、`-s` 幂等、`--` 终止扫描、cluster `-sx` 拒、两操作数 `usage`）；`strip_domain` 按首个 `.` 裁剪（无点、空串、首字符点、多段四种形各钉一条），与 `minix3/bin/hostname/hostname.c:86-87` 的 `strchr('.'); *p = '\0'` 逐字对应。sysctl 往返不在本篇：失败诊断与 C 同形：`bin/hostname.rs` 的 `report_err` 交共享渲染 `minix_types::err_line` 打 `getprogname(): 操作名: strerror 的句子`，程序名按 C 从 `argv[0]` 去掉目录的最后一段取（`minix3/lib/csu/common/crt0-common.c:156-165`），`usage()` 的那句也用同一个名字；宿主侧的诊断走 `warn` 的宿主双生面（`std::io::stderr`）——否则报文进的是替身传输，这条形状在宿主根本看不见。sysctl 往返不在本篇：走 `minix_sys::gethostname`/`sethostname`（`{CTL_KERN, KERN_HOSTNAME}` 两元组，C `libc/gen/gethostname.c:61-62` / `sethostname.c:60-61`），线上 wire 帧与长度刷新由 `minix-sys/src/sysctl.rs` 的 `test_gethostname_wire_*` 与 `test_sethostname_wire_*` 钉住。
+- **domainname 落地**（`bin/domainname.rs`，本篇 2 枚共享面测，另在 `tests/hostname_face.rs` 的门里钉两枚；同族的 `minix-sys/src/sysctl.rs` 钉 2 测）：两条腿的失败也按 C 的 `err(1, "…")` 打同一形状的一行。命令无开关（C `bin/domainname/domainname.c:65` 的 `getopt(argc, argv, "")` 只给一个 `case '?'`），两操作数/未知项皆 `usage`；读写腿各对 `minix_sys::getdomainname`/`setdomainname`（`{CTL_KERN, KERN_DOMAINNAME}` 两元组，NetBSD `libc/gen/getdomainname.c`/`setdomainname.c`），sink 尺寸取 `MAX_HOSTNAME_LEN`（同文件行 60 的 `char domainname[MAXHOSTNAMELEN]`，与 `hostname` 的 `+ 1` 不同）。wire 测 `test_getdomainname_wire_*`/`test_setdomainname_wire_*` 与 `test_layout_and_constant_pins` 里的 `KERN_DOMAINNAME == 22` 钉同一形状。
 
 尚未覆盖、随后续阶段补齐的：命令替换、算术展开、通配展开（依赖执行器与文件系统）、语法树与执行器、作业控制（依赖进程原语）。文字层是全覆盖的，执行层是显式留白的。
 

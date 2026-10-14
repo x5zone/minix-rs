@@ -72,6 +72,18 @@ pub fn terminate(code: i32) -> ! {
 
 /// Best-effort write to standard error (the C `warnx` channel); write
 /// failures are ignored exactly as stdio's are in the C utilities.
+///
+/// 双生两面（`caesar`/`factor` 那批的判例）：宿主侧必须走进程自己的 stderr，
+/// 因为 `minix_sys::write` 在宿主进的是替身传输——诊断会被吞掉，报文形状就无法在
+/// 宿主端到端验证。真机侧仍是那条 `write(2)`。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn warn(bytes: &[u8]) {
+    use std::io::Write as _;
+    #[allow(clippy::let_underscore_must_use)]
+    let _ = std::io::stderr().write_all(bytes);
+}
+
+#[cfg(all(not(test), target_os = "none"))]
 pub fn warn(bytes: &[u8]) {
     //[SD19-gate] SD-19: write stderr warn
     #[allow(clippy::let_underscore_must_use)]
@@ -113,4 +125,75 @@ pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, ()> {
     }
     let _ = minix_sys::close(fd);
     Ok(out)
+}
+
+/// C 的 `getprogname()`：程序名是运行时刻从 `argv[0]` 上取的最后一个 `/` 之后那段
+/// （`minix3/lib/csu/common/crt0-common.c:156-165`），没有斜杠就整段用。`err(3)`/`warn(3)`
+/// 的那一行以它开头，所以这一层给的不是装饰而是 C 契约的一部分。
+pub fn prog_name(argv: &[alloc::string::String]) -> &str {
+    let raw = argv
+        .first()
+        .map(alloc::string::String::as_str)
+        .unwrap_or("");
+    match raw.rfind('/') {
+        Some(slash) => &raw[slash + 1..],
+        None => raw,
+    }
+}
+
+/// 按 C 的 `err(3)` 报一句就走：`prog: label: <strerror 的句子>` 加一个换行，然后以
+/// `eval` 终止。形状与句子都由 `minix-types` 那一份权威给出（`err_line` 转发到
+/// `verrc.c` 的写法，句子取自 C 的 `sys_errlist`），这里只负责写与退。
+pub fn err_exit(prog: &str, label: &str, code: minix_sys::Errno, eval: i32) -> ! {
+    let mut line = [0u8; 128];
+    let len = minix_types::err_line(prog, label, code, &mut line);
+    warn(&line[..len.min(line.len())]);
+    warn(b"\n");
+    terminate(eval)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    /// `getprogname()` 取的是 `argv[0]` 去掉目录的那段：`/bin/hostname` 报 `hostname`，
+    /// 没有斜杠时整段照用（宿主侧跑测试时 `argv[0]` 是构建目录里的路径，同一条规则）。
+    #[test]
+    fn test_prog_name_takes_the_last_slash_segment() {
+        let argv: Vec<String> = ["/bin/hostname", "up"]
+            .iter()
+            .map(|a| String::from(*a))
+            .collect();
+        assert_eq!(prog_name(&argv), "hostname");
+        let bare: Vec<String> = ["domainname"].iter().map(|a| String::from(*a)).collect();
+        assert_eq!(prog_name(&bare), "domainname");
+        let trailing: Vec<String> = ["/usr/"].iter().map(|a| String::from(*a)).collect();
+        assert_eq!(prog_name(&trailing), "");
+        assert_eq!(prog_name(&Vec::new()), "");
+    }
+
+    /// `err_line` 报的是需要的字节数，缓冲区不足时按 C 的截断走；这里钉住两件事：
+    /// 完整时逐字等于 `verrc.c` 的形状，不足时写出的前缀仍是那一段而没有越界。
+    #[test]
+    fn test_err_line_shape_and_truncation() {
+        let mut line = [0u8; 128];
+        let len = minix_types::err_line(
+            "hostname",
+            "sethostname",
+            minix_sys::Errno::from_i32(minix_types::EINVAL),
+            &mut line,
+        );
+        assert_eq!(&line[..len], b"hostname: sethostname: Invalid argument");
+        let mut tight = [0u8; 10];
+        let need = minix_types::err_line(
+            "hostname",
+            "gethostname",
+            minix_sys::Errno::from_i32(minix_types::EPERM),
+            &mut tight,
+        );
+        assert!(need > tight.len(), "这一行放不下，报的是需要的长度");
+        assert_eq!(&tight[..], b"hostname: ");
+    }
 }
