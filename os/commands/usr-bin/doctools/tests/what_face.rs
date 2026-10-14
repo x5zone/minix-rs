@@ -112,3 +112,21 @@ fn a_renamed_copy_changes_neither_line() {
 
     let _ = fs::remove_file(&copied);
 }
+
+#[test]
+fn a_long_operand_survives_the_perror_line_untouched() {
+    // C 的 `perror` 把调用者的串整个 `fprintf` 出去（`minix3/lib/libc/stdio/perror.c:67`），
+    // 只有句子走定长的 `strerror_r` 表。本树的 `perror_line` 曾先写进 256 字节的栈缓冲
+    // 再裁，超长的操数会在句子之前被砍掉；这一枚钉住 `perror(3)` 那一族也不截断
+    // （同一形状也保 `truncate` 那两行裸报文）。
+    let long = format!("/tmp/{}", "w".repeat(600));
+    let (out, status, err) = run(&[long.as_str()]);
+    assert_eq!(out, "", "C 的失败路在 `printf` 之前就走了");
+    assert_eq!(status, 1);
+    assert_perror_line(&err, &long);
+    assert!(
+        err.contains(&long),
+        "600 字节的操数得完整出现在报文里：`{}` 字节",
+        err.len()
+    );
+}

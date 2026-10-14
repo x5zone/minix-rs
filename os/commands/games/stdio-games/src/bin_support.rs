@@ -244,7 +244,13 @@ pub use minix_sys::err_line;
 /// 权威里（`err_line`），与不缀程序名的 `perror_line` 并列。本壳只有需要
 /// 缀号的腿（`primes` 的 `err(1, "%s", argv[i])`）才用它。
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
-    let mut line = [0u8; 256];
+    // C 的 `vwarnc` 直接用 `vfprintf(stderr, fmt, ap)` 打调用者的串，长度不受一行栈缓冲
+    // 限制（`minix3/lib/libc/gen/vwarnc.c:62`；`perror.c:67` 也一样把调用者的串整个打出去，
+    // 只有句子走 `strerror_r` 的定长表）。权威交回的是「本该写多少字节」——缓冲装不下也照数
+    // ——所以这里先量一次、再按那个数渲染，超长操作数不会被截断。
+    let mut sizing: [u8; 0] = [];
+    let need = minix_sys::err_line(prog, label, code, &mut sizing);
+    let mut line = alloc::vec![0u8; need];
     let len = minix_sys::err_line(prog, label, code, &mut line);
     warn(&line[..len.min(line.len())]);
     warn(b"\n");

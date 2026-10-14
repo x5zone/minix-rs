@@ -175,3 +175,19 @@ fn the_recursive_walk_reports_the_same_line_for_an_unstatable_root() {
     assert_eq!(err.lines().count(), 1, "根取不到就不再往下走：`{err}`");
     assert_warn_line(&err, "rm", "/tmp/rm-face-absent-dir");
 }
+
+#[test]
+fn a_long_operand_is_written_out_wholly_in_the_report_line() {
+    // C 的 `vwarnc` 拿 `vfprintf(stderr, fmt, ap)` 打调用者的串，长度不进方程
+    // （`minix3/lib/libc/gen/vwarnc.c:62`），所以一个 600 字节的操数会整段出现在那一行里。
+    // 本树的渲染一开始写进固定 256 字节的栈缓冲再裁，超过的部分静默消失——这一枚
+    // 钉住它不会再发生（同一个形状也保 `cp`/`du`/`mv` 那几路 `warn(3)` 腿）。
+    let long = "r".repeat(600);
+    let (out, status, err) = run("rm", &[long.as_str()]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(lines.len(), 1, "一个操数一行：`{err}`");
+    assert_warn_line(&err, "rm", &long);
+    assert!(err.contains(&long), "600 字节的操作数必须完整出现在报文里");
+}

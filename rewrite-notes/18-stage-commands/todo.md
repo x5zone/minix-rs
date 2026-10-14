@@ -250,6 +250,40 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百六十把五份命令侧诊断行从「固定栈缓冲裁」改成「先量长度再渲染」，C 本来就不截断**
+  （`2026-10-14`，`claim/WARNLINE-NO-TRUNC-qoder` @ 基线 `010ce8fe8`，单域三线：`fileops`/`shell`/
+  `textfilter`/`doctools`/`stdio-games` 五份 `bin_support.rs` 与两扇门）：接回批次二百五十九登记
+  不执行②（规划表 v2-17 改判后的那一件）。
+  **是什么**：六处写行入口（`warn_line`×4、`perror_line`×2、`shell` 的 `err_exit`）先把整行写进
+  `[u8; 256]`/`[u8; 128]` 栈缓冲再 `len.min(buf.len())` 裁，于是超过缓冲的操作数**在句子之前就被
+  静默砍掉**。而 C 不截：`vwarnc.c:62` 是 `vfprintf(stderr, fmt, ap)`，`perror.c:57-67` 只把句子
+  放进定长的 `strerror_r` 表，调用者的串整个打出去。批次二百五十九的 512 字节案例里已看到这个
+  形状。判类 P0-fact（把本树的缓冲裁剪说成 C 的行为）+ P0-code-bug（报文不完整）。
+  **怎么修**：先量后渲染——`let mut sizing: [u8; 0] = []` 递空缓冲给权威，它交回的是「本该写
+  多少字节」（`err_line` 的 `Sink` 写不进也照数），再按那个数 `alloc::vec![0u8; need]` 渲染一次。
+  两次调用都是纯函数，不多一次系统调用；命令层有堆可用（这些壳本就用了 `Vec`）。
+  **为什么不选另一条路**：①把缓冲改大到 1024/4096 只是把截断线搬到别处；②在 `minix-types`
+  里改成返回 `Vec` 会把分配推给二线且改变权威签名，而截断本来发生在命令层自找的栈缓冲上；
+  ③只在两个壳里修、留下四处同源重复，同一个错下次还会冒。
+  **门**：新两枚各钉一族——`rm_face::a_long_operand_is_written_out_wholly_in_the_report_line`
+  （`warn(3)` 族，600 字节操数整段出现在一行里）与 `what_face::a_long_operand_survives_the_perror_line_untouched`
+  （`perror(3)` 族，同一要求），两者用的就是已验的逐字段对助手。
+  另修一处口径：`shell` 共面测 `test_err_line_shape_and_truncation` 的注原本写「缓冲区不足时
+  **按 C 的截断**走」——那是把本树的 plumbing 当成 C 的行为，已改成「权威交回需要的字节数、
+  写不满只写那么多；C 本身不截断，调用方据此先量再渲染」。
+  三件套：逐包 `cargo test` → **fileops 450/0**（基线 449，+1 门）、`textfilter 577/0`、`doctools 82/0`
+  （+1 门）、`shell 85/0`、`stdio-games 215/0`；容器 `minix-ci:1.94`（挂仓根、带 `-u`）五包
+  `test result: FAILED` 计数均为 **0**；`rustfmt --edition 2024 --check` 触及文件零漂移；clippy 触及
+  文件零命中；核实日 `2026-10-14`；基线 `010ce8fe8`。
+  **两枚变异负控**（测完复原并跑绿）：把 `fileops` 的 `warn_line` 退回固定 256 缓冲 → rm 那枚独红；
+  把 `doctools` 的 `perror_line` 同样退回 → what 那枚独红。过程记一笔：第一版负控脚本用
+  `s.index()` 定位，在同一文件里有两处同形代码时把 `perror_line` 那一处替换成了 `err_line` 形状（编译报错
+  才发现），已 `git checkout` 该文件后逐函数重做——同文件多站点不能用「首个匹配」做变异。
+  登记不执行：①本笔只改了写行入口的缓冲策略，没动任何一条报文文字，所以各阶段文档正文无需
+  同步（已 grep 确认 06/07/10/22 篇没写过「会截断」的口径）；②真机读数仍归 `C-57`/`E5`；
+  ③`stdio-games`/`textfilter` 两处 `warn_line` 的超长操数未各自建门（同一函数形状，rm/what 两枚
+  已钉住），若将来改成分叉实现需补门。
+
 - ✅ **批次二百五十九接上 `pathchk` 缺省模式的 `pathconf`/`stat` 探测，并把 `warnx` 漏掉的程名改回**
   （`2026-10-14`，`claim/PATHCONF-PROBE-1-qoder` @ 基线 `67567252d`，单域三线 `os/commands/bin/fileops`
   与同线文档）：接回 06 篇命令表里「缺省模式的 `pathconf`/`stat` 探测待批，现显式拒」那行（规划表 v2-16）。

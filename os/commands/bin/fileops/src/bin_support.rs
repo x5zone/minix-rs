@@ -126,7 +126,13 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
 /// Minix3 的 `perror(3)` 那一行：`<label>: <句子>`（**不带程序名**，见
 /// `minix3/lib/libc/stdio/perror.c`），写完不换行由本函数补换行、不退——退不退由调用者定。
 pub fn perror_line(label: &str, code: minix_sys::Errno) {
-    let mut line = [0u8; 256];
+    // C 的 `perror` 把调用者的串整个 `fprintf` 出去，只有句子走定长的 `strerror_r`
+    // 表（`minix3/lib/libc/stdio/perror.c:57-67`）。权威 `perror_line` 交回的是「本该
+    // 写多少字节」——缓冲装不下也照数——所以这里先量一次、再按那个数渲染，
+    // 超长操作数不会被截断。
+    let mut sizing: [u8; 0] = [];
+    let need = minix_sys::perror_line(label, code, &mut sizing);
+    let mut line = alloc::vec![0u8; need];
     let len = minix_sys::perror_line(label, code, &mut line);
     warn(&line[..len.min(line.len())]);
     warn(b"\n");
@@ -137,7 +143,12 @@ pub fn perror_line(label: &str, code: minix_sys::Errno) {
 /// 一份权威给出（住在 `minix-types` 的 errno 表旁，对位 `minix3/lib/libc/gen/verrc.c` 与 C
 /// 的 `sys_errlist`）。
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
-    let mut line = [0u8; 256];
+    // C 的 `vwarnc` 直接用 `vfprintf(stderr, fmt, ap)` 打调用者的串，长度不进方程
+    // （`minix3/lib/libc/gen/vwarnc.c:62`）——不先量长度就会把超长操作数截在缓冲
+    // 边界上。`err_line` 交回的是需要的字节数，故先拿它量一次、再按这个数渲染。
+    let mut sizing: [u8; 0] = [];
+    let need = minix_sys::err_line(prog, label, code, &mut sizing);
+    let mut line = alloc::vec![0u8; need];
     let len = minix_sys::err_line(prog, label, code, &mut line);
     warn(&line[..len.min(line.len())]);
     warn(b"\n");
