@@ -43,12 +43,12 @@ CPU 在异常/特权级切换时需要预先知道的三件事，以及它们的
 | CPU 需要知道的事 | x86-64 的承载物 | aarch64 的承载物 | riscv64 的承载物 |
 |---|---|---|---|
 | 当前特权级与段可访问性 | GDT 的段描述符（DPL）；长模式下段基址恒为 0 | 由 CPU 的异常级别决定（EL0/EL1），页表项权限位承载访问控制 | 由 CPU 的模式决定（U/S），页表项权限位承载访问控制 |
-| 异常/中断/syscall 的入口 | IDT 的门（每向量一条） | `VBAR_EL1` 指向的定长向量表 | `stvec` 指向的向量（Direct 模式；实现里在两只入口腿之间切换，见 §4.6） |
+| 异常/中断/syscall 的入口 | IDT 的门（每向量一条） | `VBAR_EL1` 指向的定长向量表 | `stvec` 指向的向量（Direct 模式；实现里在两条入口路径之间切换，见 §4.6） |
 | 陷入内核用哪根栈 | TSS 的 `sp0`（另加 IST 数组） | EL1 的当前栈指针（EL1h）；栈基址记在 `TPIDR_EL1` | `sscratch` 交换（硬件不换栈，由入口第一条指令交换） |
 
 读者可以从这张表读出三张表的一个差别：②是逐条目不同的（x86 上 256 个门，每类事件一条），①和③各只有一套（DPL 存在少数几个描述符里、`sp0` 每 CPU 一个字段）。后文 §2.4、§2.5 的装填方式不同正是这个差别带来的——IDT 要按向量逐条建，GDT 与 TSS 只需建少数几条描述符与一个结构体。
 
-③ 还带一个"内核态里又出事用哪根栈"的子问题，三架构的答法同样不同：x86 交给 IST（NMI 与 #DF 各有一条专用栈，64 位新增见 §3.1、门里的 IST 见 §4.4）；aarch64 不换栈，继续用 `SP_EL1`；riscv64 也不换栈，用当前 `sp`。陷阱入口如何判断"这次进来的是用户还是内核"（riscv64 用两只入口腿按 `stvec` 切换，用户腿无条件交换 `sscratch`）属异常/中断与 trap 入口的主题（`14-exception-interrupt.md`，异常与中断篇）。
+③ 还带一个"内核态里又出事用哪根栈"的子问题，三架构的答法同样不同：x86 交给 IST（NMI 与 #DF 各有一条专用栈，64 位新增见 §3.1、门里的 IST 见 §4.4）；aarch64 不换栈，继续用 `SP_EL1`；riscv64 也不换栈，用当前 `sp`。陷阱入口如何判断"这次进来的是用户还是内核"（riscv64 用两条入口路径按 `stvec` 切换，进自用户态的那条无条件交换 `sscratch`）属异常/中断与 trap 入口的主题（`14-exception-interrupt.md`，异常与中断篇）。
 
 x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留了一个槽，装载路径上也有一条 `lldt`（`minix3/minix/kernel/arch/i386/protect.c:prot_load_selectors`）。它不回答上面三问中的任何一问，本篇 §2.3 按源码如实处理。
 
@@ -78,7 +78,7 @@ x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留�
 | 平台的参数发现（ACPI/设备树分支、平台描述符） | `04-platform-discovery.md`（本篇不引节号） |
 | 时钟与中断控制器的初始化、中断使能时序 | `05-clock-interrupt-init.md`（本篇不引节号） |
 | 页表的多级结构、页表接口与 Direct Map 的完整语义 | `rewrite-notes/02-stage-vm/07-pagetable-struct.md`；01 篇 §2.6 已用到的部分不重复 |
-| 异常处理体、trap frame 布局、用户态返回路径与"用户→内核→用户"的完整往返（含 riscv64 的两只入口腿与 `sscratch` 交换） | 异常/中断与 trap 入口主题（`14-exception-interrupt.md`，异常与中断篇）与启动收尾/返回主题（`10-switch-to-user.md`，切用户篇）；本篇只到"门里有真入口"为止 |
+| 异常处理体、trap frame 布局、用户态返回路径与"用户→内核→用户"的完整往返（含 riscv64 的两条入口路径与 `sscratch` 交换） | 异常/中断与 trap 入口主题（`14-exception-interrupt.md`，异常与中断篇）与启动收尾/返回主题（`10-switch-to-user.md`，切用户篇）；本篇只到"门里有真入口"为止 |
 | 系统调用的分派与各调用语义 | syscall 分派主题（`13-syscall-dispatch.md`，系统调用分派篇），本篇只到"入口地址与段选择子写进 MSR"为止 |
 | 进程表、boot 进程装载、特权结构 | 进程初始化与启动收尾主题（`06-proc-init-boot-proc.md`，进程表与 boot 进程篇；`kmain` 的后续 Phase） |
 | SDM/APM 的描述符逐位格式全表、ARM 与 RISC-V 的特权规范 | 外部资料；本篇只解释代码实际使用的那几位 |
@@ -651,7 +651,7 @@ phys_bytes vir2phys(void *vir)
 
 现在可以回答"为什么重建"。源码给的理由在上面的注释里，一共两条，各自有明确的读者：
 
-- "we can map in VM, and we no longer rely on pre-relocated data"——重建后的表是 VM 进程将要载入并运行的那张表（`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc` 把 VM 的 ELF 段直接映射进这张页表）。`pre_init` 那张表建立时内核还没重定位、启动信息的补充字段（`nr_procs`/`nr_tasks`/`boot_procs` 等）也还没填，这张表不再需要。
+- "we can map in VM, and we no longer rely on pre-relocated data"——重建后的表是 VM 进程将要载入并运行的那张表（`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc` 把 VM 的 ELF 段直接映射进这张页表）。理由落在**映射拓扑**上：`pre_init` 那张表建立于重定位前的布局，VM 的段与正式 VA 布局都不在其中——注释里的 "pre-relocated data" 指的就是这批映射；重建后的表才是 VM 装载所需的那张。
 - "Still need 1:1 for lapic and video mem and such"——恒等段此时仍未退位。LAPIC 的 MMIO、显存这类"地址就是物理地址"的对象要靠它访问，所以重建时必须立刻把它装回去。
 
 **把 `pg_identity(&kinfo)` 从重建段去掉、或把重建整段删掉只留 `pg_load()` 会怎样**：前者的后果可以逐步推：`pg_clear()` 已经把 1024 个目录项清成 0，恒等窗口在表里消失；清零与重填之间没有写 CR3，这几步自身的取指与写表靠 TLB 里的旧条目继续走——这就是"原地重填"能成立的机制（§3.5 会用同一机制解释 Rust 侧为什么不能照搬）；`pg_load()` 写入 CR3 之后，执行转而依赖重填后的表内容（此时高半已回、恒等未回——本反例删掉了 `pg_identity`），第一个按物理地址访问的对象成为现场——启动期访问 LAPIC 的 MMIO 或写显存时，目标地址在页目录里没有对应项，缺页，而故障地址不是高半地址而是物理地址本身（如 `0xFEE00000` 一段）。后者（删掉清空与重建只留 `pg_load`）在物理地址层面反而看不出差别：`pagedir` 是同一个静态数组的同一块物理内存，`pg_load` 写进 CR3 的值不因此改变；这也解释了为什么这段代码删掉后**冷启动可能照常跑**，它挡的是"第二次进入这段代码"与"此后表内容的正确性"这一类问题——与 §2.3 的 `memset` 是同一族。这里的"第二次进入"指重启路径：上一轮内核运行结束之后由监控程序重新进入内核（`minix3/minix/kernel/main.c:prepare_shutdown` 与同文件的 `minix_shutdown`，§2.3）。与第一次进入的差别在字节来源：第一次进入时 `.bss` 的初值由装载方的清零与段体摆放定义（§2.1），第二次进入时 `pagedir` 里是上一轮留下的表项，`pg_clear`/`pg_identity`/`pg_mapkernel` 把 1024 个表项逐个写成本轮需要的值（该前提与 §2.1 `bss_test` 断言的关系见 §2.3 的括注）。依据：`pg_clear` 的清零范围、`pg_identity` 的循环、`prot_init` 的两句注释。
@@ -1144,7 +1144,7 @@ fn set_entry_stack_base(base: VirBytes) {
 }
 ```
 
-`sscratch` 是用户陷阱的交换寄存器（进入内核时第一条指令 `csrrw sp, sscratch, sp` 把用户 sp 存进去、内核栈换出来），所以它不能在返回之后仍当作"内核栈基址"用——返回路径会把 sscratch 重锚到 `KERNEL_TRAP_STACK_BASE`。这个单元与 aarch64 的 `TPIDR_EL1` 是同一问题的两种载体（`os/arch/src/riscv64/protection.rs:static KERNEL_TRAP_STACK_BASE`）。`load` 在 riscv64 上没有需要执行的步骤（CSR 写入即生效），异常入口由 `stvec` 指向的向量承载——Direct 模式（低两位为 0）；实现里在两只入口腿（内核腿/用户腿）之间切换 `stvec`，用户腿第一条指令无条件交换 `sscratch`（不按 `SPP` 判定；`SPP` 只在返回侧重锚 `stvec` 时被读），随后由软件按 `scause` 分派。
+`sscratch` 是用户陷阱的交换寄存器（进入内核时第一条指令 `csrrw sp, sscratch, sp` 把用户 sp 存进去、内核栈换出来），所以它不能在返回之后仍当作"内核栈基址"用——返回路径会把 sscratch 重锚到 `KERNEL_TRAP_STACK_BASE`。这个单元与 aarch64 的 `TPIDR_EL1` 是同一问题的两种载体（`os/arch/src/riscv64/protection.rs:static KERNEL_TRAP_STACK_BASE`）。`load` 在 riscv64 上没有需要执行的步骤（CSR 写入即生效），异常入口由 `stvec` 指向的向量承载——Direct 模式（低两位为 0）；实现里在两只入口腿（源码注释把内核与用户两套入口都称作 "leg"，这里沿用译为"腿"：**内核腿**/**用户腿**）之间切换 `stvec`，用户腿第一条指令无条件交换 `sscratch`（不按 `SPP` 判定；`SPP` 只在返回侧重锚 `stvec` 时被读），随后由软件按 `scause` 分派。
 
 两条路径的**触发指令**在各体系结构里是固定的一条：aarch64 用 `svc`（`os/arch/src/arm64/trap_stub.rs` 的文件注释写明 `svc` **会**把返回地址推进到下一条指令），riscv64 用 `ecall`（`os/arch/src/riscv64/trap_stub.rs` 的文件注释写明 `ecall` **不**推进 `sepc`——这一点与 x86 的 `int`、arm64 的 `svc` 相反，返回地址的修正因此落在内核的 trap 入口体自己身上）。用户态执行到那条指令时才发生特权级切换与入口跳转；本篇只到"门与入口已经就位"，完整的"用户 → 内核 → 用户"往返（谁保存寄存器、谁切换栈、哪条指令把特权级降回去）归异常与中断篇（`14-exception-interrupt.md`）。
 
@@ -1218,13 +1218,13 @@ x86_64 版（`os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/ma
 
 ### 5.3 测试缺口
 
-| 缺口 | 现状 | 补法 |
-|---|---|---|
-| `init/load` 顺序不变量的负向验证 | 无测试；顺序只写在调用点与注释里 | 构造"先 load 后装门"的测试载体，断言装载前的 `gate_present` 检查失败 |
-| 门覆盖的负向验证 | 只有正向覆盖检查（`STUB_VECTORS` 与门表对齐）；漏掉一个向量时正向测试会红，但"漏掉后真机行为"没有载体 | 与上一条同族：在门表里人为留一个空向量，断言装载被拦 |
-| `refresh_tss_descriptors` 的后果 | 无宿主测试（需要真实地址）；真机链覆盖了首次用户态进入 | 由首次用户态进入的真机载体间接覆盖 |
-| aarch64 `set_kernel_stack` 为 no-op 的行为 | API 层无可观察行为，只有文档说明 | 由返回用户态路径的真机载体覆盖（属异常/返回主题） |
-| `os/arch/src/x86_64/trap_entry.rs:fn init` 的作者口径 | 函数体的门清单与 C 的 39 条对齐关系只在注释里 | 把 §3.7 的 41 项拆解写成断言（按区计数），任何一侧增删向量都会红 |
+| 缺口 | 现状 | 补法 | TODO |
+|---|---|---|---|
+| `init/load` 顺序不变量的负向验证 | 无测试；顺序只写在调用点与注释里 | 构造"先 load 后装门"的测试载体，断言装载前的 `gate_present` 检查失败 | **R03-T01** |
+| 门覆盖的负向验证 | 只有正向覆盖检查（`STUB_VECTORS` 与门表对齐）；漏掉一个向量时正向测试会红，但"漏掉后真机行为"没有载体 | 与上一条同族：在门表里人为留一个空向量，断言装载被拦 | **R03-T01** |
+| `refresh_tss_descriptors` 的后果 | 无宿主测试（需要真实地址）；真机链覆盖了首次用户态进入 | 由首次用户态进入的真机载体间接覆盖 | **R03-T02** |
+| aarch64 `set_kernel_stack` 为 no-op 的行为 | API 层无可观察行为，只有文档说明 | 由返回用户态路径的真机载体覆盖（属异常/返回主题） | **R03-T04**（跨篇） |
+| `os/arch/src/x86_64/trap_entry.rs:fn init` 的作者口径 | 函数体的门清单与 C 的 39 条对齐关系只在注释里 | 把 §3.7 的 41 项拆解写成断言（按区计数），任何一侧增删向量都会红 | **R03-T05** |
 
 另有一处现状差异需要披露：`os/kernel/src/lib.rs:fn init_protection` 的文档注释仍保留着"handler 地址为占位 0、表随后丢弃、由后续阶段重建"的描述，而函数体已装真入口并 `load()`。本篇正文按函数体写；注释与实现不一致本身是一条应该在代码侧收口的遗留项，不属于文档能修的范围。
 
@@ -1236,16 +1236,28 @@ x86_64 版（`os/qemu-tests/test-kernels/kernel/bootstrap/test-protection/src/ma
 |---|---|---|---|---|
 | M1 | 三张表的建表（§2.3–§2.5） | GDT 槽位/访问字节/DPL；TSS 描述符两半与字段；IDT 门字段与分布 | 已覆盖 | 宿主：16 个保护测试（`tss64_size`/`offsets`/`dpl`/`flat`/`descriptor_high_half`…）+ 14 个 trap 测试（门表六类） |
 | M2 | 一次装载让表生效（§2.5） | 装载后 GDTR/IDTR/TR 指向内核自己的表 | 已覆盖 | 真机 `test-protection` 三架构读寄存器（x86_64 五处；aarch64 `VBAR_EL1`/`DAIF`；riscv64 `stvec`/`sscratch`） |
-| M3 | 门入口覆盖不变量（§3.7） | 41 个向量写齐；present 门 ↔ stub 一一对应；`load()` 在装齐之后 | 部分覆盖 | 宿主 `test_stub_coverage_matches_idt_gates`（正向）；**负向（先 load 后装门）无载体** → §5.3 缺口行 |
-| M4 | 系统调用入口 MSR（§4.5） | STAR/LSTAR/SFMASK/EFER 的值与写入次序；AP 上重写 | 部分覆盖 | 宿主不覆盖 MSR 面；真机载体调 `configure_syscall` 并读寄存器；**AP 侧重写是行为性、无自动断言** |
-| M5 | 栈交接：`sp0`/保留字/GS 次序（§2.4、§4.3、§4.5） | 首次 CPL3→CPL0 用 `sp0`；GS 基址未被装载序列清掉 | 部分覆盖 | 宿主 `sp0` 算术 2 条；第一次跨 ring 与 AP 的 MSR 重写由后续测试载体覆盖（归异常/返回主题） |
-| M6 | 描述符地址稳定（§3.3） | 实例搬迁后 TSS 描述符指向最终地址 | 部分覆盖 | 宿主无法构造（需真实地址）；由首次用户态进入的真机链间接覆盖 |
+| M3 | 门入口覆盖不变量（§3.7） | 41 个向量写齐；present 门 ↔ stub 一一对应；`load()` 在装齐之后 | 部分覆盖 | 宿主 `test_stub_coverage_matches_idt_gates`（正向）；**负向（先 load 后装门）无载体** → §5.3 缺口行；**R03-T01** |
+| M4 | 系统调用入口 MSR（§4.5） | STAR/LSTAR/SFMASK/EFER 的值与写入次序；AP 上重写 | 部分覆盖 | 宿主不覆盖 MSR 面；真机载体调 `configure_syscall` 并读寄存器；**AP 侧重写是行为性、无自动断言** → **R03-T03** |
+| M5 | 栈交接：`sp0`/保留字/GS 次序（§2.4、§4.3、§4.5） | 首次 CPL3→CPL0 用 `sp0`；GS 基址未被装载序列清掉 | 部分覆盖 | 宿主 `sp0` 算术 2 条；第一次跨 ring 与 AP 的 MSR 重写由后续测试载体覆盖（归异常/返回主题）→ **R03-T04** |
+| M6 | 描述符地址稳定（§3.3） | 实例搬迁后 TSS 描述符指向最终地址 | 部分覆盖 | 宿主无法构造（需真实地址）；由首次用户态进入的真机链间接覆盖 → **R03-T02** |
 | M7 | 跨架构入口与交换（§4.6） | `stvec` 非零且 Direct；`sscratch = kern_stack_top`；`CurrentEL`/`VBAR_EL1`/`DAIF`；`SP_EL1` 只读 | 已覆盖 | 真机 `test-protection` aarch64/riscv64 的寄存器判据 |
-| M8 | `sscratch` 返回重锚（§4.6） | 返回路径把 `sscratch` 重指到 `KERNEL_TRAP_STACK_BASE` | 未覆盖（本篇） | 属"用户→内核→用户"往返，归异常/中断篇的载体 |
-| M9 | 重建页表的原地重填（§2.6，C 侧） | 清零→重填窗口内取指可行（TLB 旧条目）；`pg_load` 后表内容齐全 | 说明性 | 架构行为与 C 侧逻辑，不在本仓测试面；Rust 侧以淘汰代替（§3.5） |
-| M10 | 本篇出口状态（§4.7） | 门就位、无源放行（控制器未编程、IF=0） | 部分覆盖 | 真机链的时序读数；完整形态（控制器编程与放行）归 `05-clock-interrupt-init.md` |
+| M8 | `sscratch` 返回重锚（§4.6） | 返回路径把 `sscratch` 重指到 `KERNEL_TRAP_STACK_BASE` | 未覆盖（本篇） | 属"用户→内核→用户"往返，归异常/中断篇的载体 → **R03-T06**（跨篇） |
+| M9 | 重建页表的原地重填（§2.6，C 侧） | 清零→重填窗口内取指可行（TLB 旧条目）；`pg_load` 后表内容齐全 | 说明性 | 架构行为与 C 侧逻辑，不在本仓测试面；Rust 侧以淘汰代替（§3.5）→ **R03-T07**（登记，无动作） |
+| M10 | 本篇出口状态（§4.7） | 门就位、无源放行（控制器未编程、IF=0） | 部分覆盖 | 真机链的时序读数；完整形态（控制器编程与放行）归 `05-clock-interrupt-init.md` → **R03-T01 附属**（顺序负向同族） |
 
 （§5.3 的缺口分别对到本表 M3、M5、M6 与 M1 的断言化；两类表互为反转面，任一表更新须同步另一表。）
+
+**新 TODO（对源码/测试 workflow 的需求输入）**：
+
+| ID | 内容 | 分流 |
+|---|---|---|
+| R03-T01 | `init/load` 顺序与门覆盖的**负向**验证载体（先 load 后装门；门表留空向量） | 文档侧口径已完备（§5.3 补法），实现需**测试侧** |
+| R03-T02 | `refresh_tss_descriptors` 后果的覆盖（真实地址场景） | **测试侧**（宿主需真实地址） |
+| R03-T03 | AP 侧四个 SYSCALL MSR 重写的自动断言 | **源码/测试侧**（行为性） |
+| R03-T04 | aarch64 `set_kernel_stack` no-op 的真机覆盖 | **跨篇**（返回路径载体，归异常/返回主题） |
+| R03-T05 | 41 项门覆盖拆解成按区计数断言 | 文档侧断言口径已在 §3.7/§5.3 写明，实现需**测试侧** |
+| R03-T06 | `sscratch` 返回重锚的载体 | **跨篇**（归异常/中断篇） |
+| R03-T07 | 重建页表"原地重填"（M9）登记 | 登记型（无动作；C 侧不在测试面） |
 
 ---
 
