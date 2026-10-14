@@ -5,7 +5,10 @@
 > **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:enum NAME`、`path:struct NAME`），不使用行号；逐字引用块的块级区间题注带行区间与复算命令。
 > **本篇主题**：微内核的基石——两个没有共享内存的进程如何可靠地交换一条消息。六个原语各自的停与不停、接收侧的三级匹配序、通知的永不丢失与永不阻塞、环等待死锁的机器判定、延迟投递的两段式协议；以及 Rust 的 `IpcEngine`、侵入式 FIFO 与结构化死锁返回如何承接这套协议。
 > **前置**：[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.8（endpoint、generation 与槽位常量体系——通信身份的前提）、[09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3（MEMREQ GET/REPLY 是 VM 拉取的回信形状；FROM_KERNEL 的推送形状在缺页臂，`minix3/minix/kernel/arch/earm/exception.c`）、[10-switch-to-user.md](10-switch-to-user.md) §2.1（五标志循环的 DELIVERMSG 臂=本篇 delivermsg 的消费点）、[11-scheduling-primitives.md](11-scheduling-primitives.md) §2.2 与 §4.2（RTS_SENDING/RECEIVING 的队列半——本篇讲位为什么变，那边讲位变化的队列后果）。
-> **后续**：`13-syscall-dispatch`（trap 入口传参，尚未重生成）、`22-syscall-copy`（拷贝机制本体，尚未重生成）、`23-ipc-filter`（IPC 过滤决策，尚未重生成）、`24-cross-space-runtime`（VMSUSPEND 与跨空间拷贝运行时，尚未重生成）。
+> **后续**：`13-syscall-dispatch`（trap 入口传参，**已重生成**——见 [13-syscall-dispatch.md](13-syscall-dispatch.md)，其"前置"反引本篇 §2.1/§4.3）、`22-syscall-copy`（拷贝机制本体，尚未重生成）、`23-ipc-filter`（IPC 过滤决策，尚未重生成）、`24-cross-space-runtime`（VMSUSPEND 与跨空间拷贝运行时，尚未重生成）。
+
+> **目标读者**：熟悉操作系统基本概念（特权级、陷入、地址空间、进程状态）与 C 语言的开发者；Rust 一侧读到 enum/match/trait 即可（§3.4 引文另含闭包泛型与生命期，按"看得懂在做什么"读即可）。**前置知识**：虚拟内存与陷入的大意，以及上面"前置"一行里 06/09/10/11 四篇的对应小节（端点常量体系、FROM_KERNEL 推送形状、调度循环的 DELIVERMSG 臂、RTS 位的队列半）。本篇引用的 C 符号**多数随文解码**（凡作论证依据的都有展开；少数仅点名的见 §1.3 的范围表）；读过"自己写 OS"类书籍的读者可跳过 §1.1 的开场；**§2.0 的两入口/六原语地图与 §2.2 的解码表是后文前提，不建议跳过**。
+> **教学目标**（读完本篇应能独立讲出）：① 无共享内存下消息交换的两条基本规则与六个原语（SEND/SENDREC/RECEIVE/SENDNB/NOTIFY/SENDA）各自的"停与不停"（§1.1、§2.0、§2.8）；② `do_ipc` 的分派、跟踪预占与 KERNINFO 臂（§2.1）；③ 环等待死锁的机器判定——含"外来环"这一未设防情形——与 XOR 豁免条件（§2.2、SRC-18）；④ 发送两条路径与接收三级匹配序（§2.3、§2.4）；⑤ 通知的"永不丢失、永不阻塞"与 SENDA 三方函数（§2.5、§2.6）；⑥ 延迟投递两段式与 IPCNAME 表（§2.7）；⑦ Rust 承接形状：`IpcEngine`/侵入式 FIFO/结构化死锁返回/`IpcOutcome`/受控比喻的引注式用法（§3.1–§3.5）；⑧ 这套协议靠哪些测试钉住、哪一半要真机（§5）；卡住时的查法（§6.1、§6.2）。
 
 [10-switch-to-user.md](10-switch-to-user.md) 的循环每拍到 DELIVERMSG 臂，都在向本篇的一个函数要答案：那条挂在进程上的待交付消息是谁放的、放进去的时候双方各处于什么状态。本篇回答这些问题：两个地址空间毫无交集的进程，一条消息从发送者的缓冲走到接收者的缓冲要经过哪几只手；哪些情况发送者会停、接收者会停、两者都不停；以及内核怎样在一圈互相等待的进程里认出真正的死结。
 
@@ -17,7 +20,7 @@
 
 ### 1.1 无共享内存的消息交换：六原语与两条规则
 
-两个进程之间没有一块共享内存。它们唯一共同拥有的东西，是内核进程表里各自的槽位：发送消息时，内核把消息字节从发送者的地址空间读出来，写进内核中转位置，再在某个时机写向接收者的缓冲——数据两次过内核的手，地址空间从头到尾没有被对方看见。这套拷贝语义是隔离的代价，也是隔离的目的：一个进程能对另一个进程做的事，被压缩成「往内核槽里放一段定长字节」这一种。
+两个进程之间没有一块共享内存。它们唯一共同拥有的东西，是内核进程表里各自的槽位：发送消息时，内核把消息字节从发送者的地址空间读出来，写进内核中转位置，再在某个时机写向接收者的缓冲——数据两次跨越用户/内核边界（阻塞路径内部另多一次槽间搬运——`p_sendmsg` 内核副本，§2.3），地址空间从头到尾没有被对方看见。这套拷贝语义是隔离的代价，也是隔离的目的：一个进程能对另一个进程做的事，被压缩成「往内核槽里放一段定长字节」这一种。
 
 在这个前提下，内核向用户态开放的通信原语只有两个方向——发与收。C 源码在分派函数的注释里把这层关系写成一段枚举：
 
@@ -34,7 +37,7 @@
 
 （区间复算：`sed -n '646,653p' minix3/minix/kernel/proc.c | wc -l` = 8。锚点：`minix3/minix/kernel/proc.c:do_ipc`。）
 
-六个原语对这两条规则各取所需：SEND、RECEIVE、SENDREC 直走规则（SENDREC 在一次陷入里先后走两条），SENDNB 把规则一换成一次探测，NOTIFY 与 SENDA 各有一条旁路。把关系画成一张机制图，就是全篇的行进地图：
+六个原语对这两条规则各取所需：SEND、RECEIVE、SENDREC 直走规则（SENDREC 在一次陷入里先后走两条），SENDNB 把规则一换成一次探测，NOTIFY 与 SENDA 各有一条旁路。（上面引的 C 注释只列五个原语——注释滞后于实现、未含 SENDNB；SENDNB 的常量与位值见 §2.2 的解码表。）把关系画成一张机制图，就是全篇的行进地图：
 
 ```
               两条阻塞规则（等待语义的全部来源）
@@ -51,7 +54,30 @@
   SENDA    ── 旁路二：永不停；整批消息 → 投得出去的立即投，投不出去的记账留待接收者来取
 ```
 
- SENDREC 不是第三种语义——它是 SEND 与 RECEIVE 两个原语的组合封装：C 的分派把 SENDREC 交给 `do_sync_ipc`，其 switch 里 SENDREC 臂先走 `mini_send`、随后 `/* fall through */` 落进 RECEIVE 臂走 `mini_receive`（§2.3 引文的函数 `do_sync_ipc` 尾部 switch，proc.c:568-583）；进程常说的「等回信（REPLY）」，在内核里就是这次组合后半段的 RECEIVE，REPLY 是 RECEIVE 的特例说法而非独立原语。会停的原语全部停回那两条规则：SEND 停成可发状态、RECEIVE 停成可收状态、SENDREC 先后经历两者；SENDNB 与两个旁路不同，它走的是规则一的位置但只问不停——问出「目标不在」就带着错误码返回。
+ SENDREC 不是第三种语义——它是 SEND 与 RECEIVE 两个原语的组合封装：C 的分派把 SENDREC 交给 `do_sync_ipc`，其 switch 里 SENDREC 臂先走 `mini_send`、随后 `/* fall through */` 落进 RECEIVE 臂走 `mini_receive`（§2.1 与本节下引的函数 `do_sync_ipc` 尾部 switch，proc.c:568-583）；进程常说的「等回信（REPLY）」，在内核里就是这次组合后半段的 RECEIVE，REPLY 是 RECEIVE 的特例说法而非独立原语。会停的原语全部停回那两条规则：SEND 停成可发状态、RECEIVE 停成可收状态、SENDREC 先后经历两者；SENDNB 与两个旁路不同，它走的是规则一的位置但只问不停——问出「目标不在」就带着错误码返回。
+
+fall through 的形状值得看一眼原文（16 行，逐字；函数体其余行略）：
+
+```c
+  switch(call_nr) {
+  case SENDREC:
+	/* A flag is set so that notifications cannot interrupt SENDREC. */
+	caller_ptr->p_misc_flags |= MF_REPLY_PEND;
+	/* fall through */
+  case SEND:			
+	result = mini_send(caller_ptr, src_dst_e, m_ptr, 0);
+	if (call_nr == SEND || result != OK)
+		break;				/* done, or SEND failed */
+	/* fall through for SENDREC */
+  case RECEIVE:			
+	if (call_nr == RECEIVE) {
+		caller_ptr->p_misc_flags &= ~MF_REPLY_PEND;
+		IPC_STATUS_CLEAR(caller_ptr);  /* clear IPC status code */
+	}
+	result = mini_receive(caller_ptr, src_dst_e, m_ptr, 0);
+```
+
+（区间复算：`sed -n '568,583p' minix3/minix/kernel/proc.c | wc -l` = 16。锚点：`minix3/minix/kernel/proc.c:do_sync_ipc`。SENDREC 臂首行置 `MF_REPLY_PEND`（注释：notifications cannot interrupt SENDREC），RECEIVE 臂首段清它——这就是 §2.4 瀑布"整级被跳过"的来源。）
 
 反方向的推演，坏在一个能指认的对象上。设想消息改成引用传递——内核只传一个指向发送者缓冲的指针，接收者直接读那份缓冲。发送者发送完成后继续运行、退出、缓冲被复用或页被回收，接收者读到的是改写后的字节；更坏的情形是发送者进程先于接收者终止，指针落进一片已被回收的地址空间。微内核的服务器隔离性建立在「地址空间即隔离边界」上：客户与服务器的全部契约只有消息字节，一旦引用可以跨过这条边界，任何一个进程的内存布局失误都变成另一个进程的读越界。拷贝语义把这条边界守住——代价是每次消息两次搬运，收益是两边互不可见。
 
@@ -76,7 +102,7 @@
 | `NONE` | 槽位区顶部减 2 | 无效端点：阻塞判定的「链到此为止」哨兵 |
 | `SELF` | 槽位区顶部减 3 | 自指：SENDA 表项里的「发给我自己」，内核交付时替换成调用者自己的端点 |
 
-三者在协议里各守一段：`ANY` 通配接收（发送侧填它会被拒绝，§2.1 的权限段可见对应检查）；`NONE` 是死锁链走查的终止哨兵（§2.2）；`SELF` 只在 SENDA 表里出现（§2.6）。把 generation 防伪反过来推演：设想裸进程号编址——一个被 kill 后重启的服务器，重启后收到旧客户发给「前任」的请求，槽位号完全一致，内核无从分辨这是新进程还是旧进程的消息，语义错乱无声地发生：新服务器把陈年请求当真处理，而那个客户早已不在。generation 把「同一个槽的不同一生」编码进地址本身，错投在解析时就被拦下。
+三者在协议里各守一段：`ANY` 通配接收（发送侧填它会被拒绝——检查在 §2.1 题注所列省略的入口段，本篇未引，锚点 `minix3/minix/kernel/proc.c:do_sync_ipc`）；`NONE` 是死锁链走查的终止哨兵（§2.2）；`SELF` 在 IPC 协议层只在 SENDA 表里出现（§2.6；`system.c:413` 的信号管理器赋值另用该值，不属协议面）。把 generation 防伪反过来推演：设想裸进程号编址——一个被 kill 后重启的服务器，重启后收到旧客户发给「前任」的请求，槽位号完全一致，内核无从分辨这是新进程还是旧进程的消息，语义错乱无声地发生：新服务器把陈年请求当真处理，而那个客户早已不在。generation 把「同一个槽的不同一生」编码进地址本身，错投在解析时就被拦下。
 
 收束一遍本章的框架：消息交换的全部等待只有两条规则——发送侧「目标没在等我」、接收侧「没有可收的消息」；六个原语要么直走这两条规则（SEND/RECEIVE/SENDREC/SENDNB），要么绕开它们（NOTIFY 的位图旁路、SENDA 的整批旁路）；而每一次「发给谁」「从谁收」都凭带 generation 的端点编址，`ANY`/`NONE`/`SELF` 三个特殊值分别承担通配、终止与自指。第 2 章按这份地图逐个函数看 C 怎么落实。
 
@@ -84,7 +110,7 @@
 
 | 主题 | 本篇怎么办 | 去处 |
 |---|---|---|
-| 一次 IPC 从 trap 指令到 `do_ipc` 之间的寄存器搬运 | 只从 `do_ipc` 的三个参数讲起 | `13-syscall-dispatch`（系统调用分派篇，尚未重生成） |
+| 一次 IPC 从 trap 指令到 `do_ipc` 之间的寄存器搬运 | 只从 `do_ipc` 的三个参数讲起 | `13-syscall-dispatch`（系统调用分派篇，**已重生成**） |
 | 消息字节的物理拷贝路径（页表走查、跨地址空间写） | 只讲「消息在两进程槽之间转手」的协议层 | `22-syscall-copy`/`24-cross-space-runtime`（两篇，均尚未重生成；本篇 §3.4 只引用 Rust 侧的边界抽象） |
 | IPC 过滤的决策面（谁能发给谁的链式规则） | 只讲过滤判定挂在匹配路径的哪个位置 | `23-ipc-filter`（过滤决策篇，尚未重生成） |
 | 坏缓冲导致的 VM 挂起与恢复本体 | 只讲协议层的两次失败策略（§2.7） | `24-cross-space-runtime`（跨空间运行时篇，尚未重生成） |
@@ -115,9 +141,9 @@ IPC 的全部 C 实现住在 `minix3/minix/kernel/proc.c` 里，围绕一个入�
         ▼               ▼        │
    mini_send  mini_receive ──────┘
         │        │  │
-        │        │  └─ 第三级：扫 p_caller_q 同步链（CANRECEIVE 逐个验）
-        │        └─ 第二级：has_pending_asend → try_async / try_one
-        │             第一级：has_pending_notify（通知位图）
+        │        ├─ 第一级：has_pending_notify（通知位图）
+        │        ├─ 第二级：has_pending_asend → try_async / try_one
+        │        └─ 第三级：扫 p_caller_q 同步链（CANRECEIVE 逐个验）
         ▼
    deadlock 预检（两个停车点各插一次：mini_send / mini_receive）
         │
@@ -128,7 +154,7 @@ IPC 的全部 C 实现住在 `minix3/minix/kernel/proc.c` 里，围绕一个入�
    delivermsg（MF_DELIVERMSG 置位后，循环拍把消息拷给用户）
 ```
 
-这张图里藏着一个组织方式上的事实：SENDA 的接收侧复用。`mini_receive` 的第二级匹配（异步表）发现接收者有遗留的异步消息时，走的正是 `try_async`/`try_one` 这两个函数——与 SENDA 提交时逐条兑现的是同一套代码。一份表项从提交到兑现可能隔着很多次调度，但经办人只有这一组。
+这张图里藏着一个组织方式上的事实：SENDA 的接收侧复用。`mini_receive` 的第二级匹配（异步表）发现接收者有遗留的异步消息时，走的正是 `try_async`/`try_one` 这两个函数——与提交侧**形状同构、各自成体**（`try_deliver_senda` 自带内联循环，C 注释自述"Some checks done in mini_senda are duplicated here"，`proc.c:1425`；Rust 的 `senda` 同样自带循环）。一份表项从提交到兑现可能隔着很多次调度，表项格式与宏族共享，但经办循环是两份。
 
 锚点：`minix3/minix/kernel/proc.c:do_ipc`、`:do_sync_ipc`、`:mini_send`、`:mini_receive`、`:mini_notify`、`:try_deliver_senda`、`:try_async`、`:try_one`、`:delivermsg`、`:deadlock`。
 
@@ -263,7 +289,7 @@ int do_ipc(reg_t r1, reg_t r2, reg_t r3)
 
 第三件，残留检查。`MF_DELIVERMSG` 在位却来发起新 IPC 是协议违约（上一条消息还没拷给用户），直接 panic——这条检查的存在本身就是「交付分两段」协议的自证，两段式的本体在 §2.7。
 
-第四件，分派。同步五原语（SENDREC/SEND/RECEIVE/NOTIFY/SENDNB）走 `do_sync_ipc`；SENDA 带着表尺寸走 `mini_senda`，尺寸超过 `16*(NR_TASKS + NR_PROCS)` 直接返回 EDOM；KERNINFO 是第三条路。`NR_TASKS` 取 5、进程槽容量取 256（`minix3/minix/include/minix/com.h:NR_TASKS`、`minix3/minix/include/minix/sys_config.h:_NR_PROCS`），上限即 16×261 = 4176 个表项。
+第四件，分派。同步五原语（SENDREC/SEND/RECEIVE/NOTIFY/SENDNB——"同步"指走 `do_sync_ipc` 这条通道，不代表会阻塞：组内 NOTIFY 与 SENDNB 都永不停）走 `do_sync_ipc`；SENDA 带着表尺寸走 `mini_senda`，尺寸超过 `16*(NR_TASKS + NR_PROCS)` 直接返回 EDOM；KERNINFO 是第三条路。`NR_TASKS` 取 5、进程槽容量取 256（`minix3/minix/include/minix/com.h:NR_TASKS`、`minix3/minix/include/minix/sys_config.h:_NR_PROCS`），上限即 16×261 = 4176 个表项。
 
 KERNINFO 臂是六原语之外唯一也从 `do_ipc` 进来的调用，而它不是通信，是查询——把内核信息页的用户态地址交给调用者。交付方式刻意绕开了消息体：
 
@@ -414,7 +440,7 @@ static int deadlock(
 
 （区间复算：`sed -n '703,768p' minix3/minix/kernel/proc.c | wc -l` = 66。锚点：`minix3/minix/kernel/proc.c` 的 `deadlock`（上行逐字块即全函数）。）
 
-走链规则逐条拆：从目标的端点出发，每步用 `P_BLOCKEDON` 问「当前节点在等谁」；`ANY` 终止（目标在收任何来源，链没有指向）返回 0；`NONE` 终止（链断在某个不阻塞的进程）返回 0；链回到调用者自己的端点 → 找到环，返回环的规模 `group_size`。两个调用点只传两种 trap 号：`mini_send` 停车前传 `SEND`（两个函数都在 `minix3/minix/kernel/proc.c`，调用行在各自函数体内）。
+走链规则逐条拆：从目标的端点出发，每步用 `P_BLOCKEDON` 问「当前节点在等谁」；`ANY` 终止（目标在收任何来源，链没有指向）返回 0；`NONE` 终止（链断在某个不阻塞的进程）返回 0；链回到调用者自己的端点 → 找到环，返回环的规模 `group_size`；**第四种情形要单独记**：链若进入一个**不含调用者的环**（B→C→B…），C 侧 `while (src_dst_e != ANY)` 没有访问去重、永不退出（DEBUG 下 `processes[group_size]` 静态数组越界写），本端 `detect_deadlock` 的 `chain` 是定宽数组且无长度守卫——同一输入下 `chain_len` 越过 `PROC_TABLE_SIZE` 即内核 panic。该输入可达：过滤拒收形成的阻塞对（本节"其一"的场景）会让第三方发送者的走链进入外来环。两侧都需要"访问去重/长度守卫"，登记 **SRC-18**（属源码 workflow）。两个调用点只传两种 trap 号：`mini_send` 停车前传 `SEND`、`mini_receive` 停车前传 `RECEIVE`（两个函数都在 `minix3/minix/kernel/proc.c`，调用行在各自函数体内；另见 §2.4）。
 
 XOR 豁免是全函数最密的一行，把 trap 号当位模式用。先看编码规律——trap 号常量与 RTS 位的对齐：
 
@@ -437,13 +463,13 @@ XOR 豁免是全函数最密的一行，把 trap 号当位模式用。先看编�
 | SEND | 1 | 0x04 | RTS_SENDING（0x04） |
 | RECEIVE | 2 | 0x08 | RTS_RECEIVING（0x08） |
 | SENDREC | 3 | 0x0C | SENDING 与 RECEIVING 同帧 |
-| NOTIFY / SENDNB / SENDA | 4 / 5 / 16 | 从不进入 deadlock | （两者都不停） |
+| NOTIFY / SENDNB / SENDA | 4 / 5 / 16 | 从不进入 deadlock | （三者都不停） |
 
 trap 号左移两位恰好落在 RTS 标志字的对应位上——这就是源码注释里那句「The function number is magically converted to flags」的全部机关。`deadlock` 的两个调用点只传 SEND 与 RECEIVE，SENDREC 的编码（0x0C）在现源没有直接的调用点；SENDREC 的两个半各自经 `mini_send`/`mini_receive` 传入 1 或 2，恰好各对齐一个位。
 
 有了编码，豁免判定 `(xp->p_rts_flags ^ (function << 2)) & RTS_SENDING` 可以逐位读懂：XOR 在「链尾进程的实际等待方向」与「调用者本次调用的方向」不同的时候置起 SENDING 位。三个具体手推：
 
-其一（豁免，SENDREC 对 RECEIVE 的互补对）。A 执行 SENDREC→B，在发送半停车前做预检：`deadlock(SEND, A, B)`。B 此刻阻塞在 RECEIVE←A（`RTS_RECEIVING` = 0x08）。链走一步：`P_BLOCKEDON(B)` = `p_getfrom_e` = A，回到调用者，`group_size` = 2。XOR：`(0x08 ^ 0x04) & 0x04` = 0x04，非零 → 判非死锁，A 停进 B 的等待队列。语义：B 在收、A 的消息投得出去，环自解——A 醒来的时刻就是 B 的 RECEIVE 命中队列的时刻。
+其一（豁免，SENDREC 对 RECEIVE 的互补对）。**先记可达性前提**：按 §2.3 的 `WILLRECEIVE`，目标在收且源匹配时 A 的发送会**直接交付**、走不到预检——本场景只在接收者的**过滤链拒绝**这条发送时才可达（与 §2.6 末尾的过滤场景同源）。此时的预检：`deadlock(SEND, A, B)`，B 阻塞在 RECEIVE←A（`RTS_RECEIVING` = 0x08）；链走一步 `P_BLOCKEDON(B)` = `p_getfrom_e` = A，回到调用者，`group_size` = 2；XOR `(0x08 ^ 0x04) & 0x04` = 0x04 非零 → 豁免，A 停进 B 的等待队列。**语义要点**：这条豁免保护的是过滤语义——被过滤的发送者按正常阻塞处理，而不是误报 ELOCKED；"环自解"不成立：过滤链不变则 A 与 B 形成的是静默停车对（A 排队等 B、B 停排等 A 的消息），只在过滤解除（或 B 被别的合格消息唤醒后再收）之后才可能兑现。
 
 其二（判死，互发）。A SEND→B 且 B SEND→A：`deadlock(SEND, A, B)` 走链回到 A，`group_size` = 2；B 的标志是 `RTS_SENDING`（0x04），`(0x04 ^ 0x04) & 0x04` = 0 → 死锁成立，A 得 ELOCKED。两人互发没有任何一方在收，这条环永远解不开。
 
@@ -601,7 +627,7 @@ int mini_send(
 
 三条失败返回各对应一个检查点：EDEADSRCDST（目标端点解析后是 `RTS_NO_ENDPOINT` 槽）、ENOTREADY（非阻塞探测发现目标不在等）、ELOCKED（死锁预检命中）；外加拷贝失败的一条 EFAULT（用户指针坏，`copy_msg_from_user` 失败）。
 
-路径一里藏着交付协议的第一段：消息落在 `dst->p_delivermsg`（接收者槽内的内核中转位置），`m_source` 由内核盖上发送者端点，`MF_DELIVERMSG` 置位宣告「有待交付」，然后才清接收者的 `RTS_RECEIVING` 唤醒它——拷到用户缓冲的动作不在这里做，为什么能推迟、推迟到哪里，§2.7 用 `delivermsg` 收这条线。`IPC_STATUS_ADD_CALL` 把这次交付的 call 类型（SENDREC/SENDNB/SEND 三选一，按发送者的 `MF_REPLY_PEND` 与 flags 判定）记进接收者的 IPC 状态寄存器，用户态库据此知道刚收到的这条要不要回信。
+路径一里藏着交付协议的第一段：消息落在 `dst->p_delivermsg`（接收者槽内的内核中转位置），`m_source` 由内核盖上发送者端点，`MF_DELIVERMSG` 置位宣告「有待交付」，然后才清接收者的 `RTS_RECEIVING` 唤醒它——拷到用户缓冲的动作不在这里做，为什么能推迟、推迟到哪里，§2.7 用 `delivermsg` 收这条线。`IPC_STATUS_ADD_CALL` 把这次交付的 call 类型（SENDREC/SENDNB/SEND 三选一，按发送者的 `MF_REPLY_PEND` 与 flags 判定）记进接收者的 IPC 状态寄存器，用户态库据此知道刚收到的这条要不要回信。（`MF_REPLY_PEND` 的含义：该进程的 SENDREC 已完成发送半、正等回信——置位在 §2.1 引文的 SENDREC 臂首行（注释自述"notifications cannot interrupt SENDREC"），清位在收半开始（RECEIVE 臂首段）；§2.4 瀑布"第一级整级被跳过"正是读它。）
 
 路径二里藏着本节单独成句的那个事实：阻塞的 SEND 把消息**先拷进发送者自己的内核槽**——`copy_msg_from_user(m_ptr, &caller_ptr->p_sendmsg)` 在置位与排队之前执行。停着的时候消息已经离手：发送者的用户缓冲此后怎么改写都不影响这条消息的内容，接收者将来从队列上取走的是 `p_sendmsg` 这份内核副本。直接交付路径的拷贝（`copy_msg_from_user(m_ptr, &dst_ptr->p_delivermsg)`）是两段协议里的第一段就完成了全部搬运——消息没有中途停留，接收者被唤醒后只剩「从内核槽拷到自己用户缓冲」这半段。
 
@@ -765,7 +791,7 @@ receive_done:
 }
 ```
 
-（区间复算：`sed -n '967,1117p' minix3/minix/kernel/proc.c | wc -l` = 151。锚点：`minix3/minix/kernel/proc.c` 的 `mini_receive`（上行逐字块即全函数）；`:has_pending`、`:has_pending_notify`、`:has_pending_asend`、`:unset_notify_pending`。）
+（区间复算：`sed -n '967,1117p' minix3/minix/kernel/proc.c | wc -l` = 151。锚点：`minix3/minix/kernel/proc.c` 的 `mini_receive`（上行逐字块即全函数）；`:has_pending`、`:has_pending_notify`、`:has_pending_asend`、`:unset_notify_pending`。`has_pending` 族四个读侧函数是位图协议的另一半——记/读/清三点由 §2.5 与 §6.2 的定位命令给出；逐行行为不在本篇展开。）
 
 函数入口先记下两件事：用户缓冲地址存进 `p_delivermsg_vir`（本篇 §2.7 的延迟拷贝用它当目的地）；指定来源时先验端点有效性。真正的匹配是三级瀑布，从轻到重：
 
@@ -775,9 +801,9 @@ receive_done:
 | 第二级 | 异步遗留（`has_pending_asend`） | 指定来源走 `try_one`、ANY 走 `try_async`，成功则状态寄存器记 SENDA | 三级瀑布中段 |
 | 第三级 | 同步等待队列 `p_caller_q` | 逐个验 `CANRECEIVE`，命中者：拷 `p_sendmsg`、清发送者 `RTS_SENDING`、摘链、补 FROM_KERNEL 状态、`MF_SIG_DELAY` 者补信号协议 | 三级瀑布尾段 |
 
-三级的次序是固定的：**通知 > 异步 > 同步**。来源优先级跟着这个次序走——一个先阻塞在队列上的发送者，可能被后来的一次通知抢先：第三级还没轮到它，第一级已经交付并返回了。这个次序的理由藏在两类消息的成本差里：通知是内核代投的轻量消息（内容由内核组装，不占发送者的运行），若排在队列之后，一个被大量请求淹没的服务器可能永远收不到时钟或信号这类「不可拖延的状态更新」——通知语义就此失效。反向推演：设想同步优先于通知——HARDWARE 的时钟通知排在第 N 个排队请求之后，每个请求都携带真实工作，队列消化完之前时钟通知递不出去，依赖通知做节拍的上层机制全部迟到。
+三级的次序是固定的：**通知 > 异步 > 同步**。来源优先级跟着这个次序走——一个先阻塞在队列上的发送者，可能被后来的一次通知抢先：第三级还没轮到它，第一级已经交付并返回了。这个次序的理由从代码次序反推（源码没有写动机陈述），落在两类消息的成本差里：通知是内核代投的轻量消息（内容由内核组装，不占发送者的运行），若排在队列之后，一个被大量请求淹没的服务器可能永远收不到时钟或信号这类「不可拖延的状态更新」——通知语义就此失效。反向推演：设想同步优先于通知——HARDWARE 的时钟通知排在第 N 个排队请求之后，每个请求都携带真实工作，队列消化完之前时钟通知递不出去，依赖通知做节拍的上层机制全部迟到。
 
-三个非显然细节各单独记。其一，整段瀑布包在 `!RTS_ISSET(caller_ptr, RTS_SENDING)` 之内：SENDREC 的调用者若发送半还停着（自己排在自己目标的队列上），它跳过全部三级直接落进停车段——不跳的话，它会在扫队列时撞见别人的排队请求，把别人的消息当自己的回信收走。其二，第三级命中后 `RTS_UNSET(sender, RTS_SENDING)` 唤醒发送者，但发送者此刻停在自己的陷入里，它的返回值不在这里写——阻塞 SEND 的「返回 OK」早在停车时就写好了（§4.1 回来看 Rust 侧怎么对齐这条）。其三，瀑布全落空才做 `deadlock(RECEIVE)` 预检，然后停车（`p_getfrom_e` + `RTS_RECEIVING`）；`NON_BLOCKING` 形态不停，带 ENOTREADY 返回。
+三个非显然细节各单独记。其一，整段瀑布包在 `!RTS_ISSET(caller_ptr, RTS_SENDING)` 之内：SENDREC 的调用者若发送半还停着（自己排在自己目标的队列上），它跳过全部三级直接落进停车段——不跳的话，发送半还没成立（或还停着）时收一半就开始兑现——SENDREC 的组合契约与 `MF_REPLY_PEND` 保护被提前解除，收一半的语义（只收原目标的回信）失去前提；这道门保的是"先发后收"这个组合形状本身。其二，第三级命中后 `RTS_UNSET(sender, RTS_SENDING)` 唤醒发送者，但发送者此刻停在自己的陷入里，它的返回值不在这里写——阻塞 SEND 的「返回 OK」早在停车时就写好了（§4.1 回来看 Rust 侧怎么对齐这条）。其三，瀑布全落空才做 `deadlock(RECEIVE)` 预检，然后停车（`p_getfrom_e` + `RTS_RECEIVING`）；`NON_BLOCKING` 形态不停，带 ENOTREADY 返回。
 
 出口处 `receive_done` 统一撤销 `MF_REPLY_PEND`——无论消息从哪一级交付，SENDREC 的「通知禁入」保护在收到消息的那一刻解除。
 
@@ -860,7 +886,26 @@ NOTIFY 的两条路画在一起：
 
 ### 2.6 SENDA：异步表与三方函数（try_deliver_senda/try_async/try_one）
 
-SENDA 是六原语里唯一的「整批」形态：调用者一次提交一张表，每项一条异步消息，内核逐条办、逐条写回结果。先看两个承载逐条协议的宏：
+SENDA 是六原语里唯一的「整批」形态：调用者一次提交一张表，每项一条异步消息，内核逐条办、逐条写回结果。提交入口 `mini_senda` 的门槛很短——特权检查 + 委派（12 行，逐字）：
+
+```c
+static int mini_senda(struct proc *caller_ptr, asynmsg_t *table, size_t size)
+{
+  struct priv *privp;
+
+  privp = priv(caller_ptr);
+  if (!(privp->s_flags & SYS_PROC)) {
+	printf( "mini_senda: warning caller has no privilege structure\n");
+	return(EPERM);
+  }
+
+  return try_deliver_senda(caller_ptr, table, size);
+}
+```
+
+（区间复算：`sed -n '1331,1342p' minix3/minix/kernel/proc.c | wc -l` = 12。（`mini_senda` 定义在 proc.c:1331，同文件 53 行另有前向声明——**两处同名、工具按规报歧义**，故本处不设 `path:symbol` 锚点，定位以上方区间复算为准。）SYS_PROC 门槛即 `do_ipc` 分派段之后的权限复查——`try_deliver_senda` 内不再重复它；尺寸上限的复查在 `do_ipc` 的 SENDA 分支与 `try_deliver_senda` 各有一份，C 注释自述"this check has been duplicated in sys_call"。）
+
+逐条协议由三个宏承载（`A_RETR`/`A_INSRT` 与告警器 `ASCOMPLAIN`；正文只讲前两个的不对称）：
 
 ```c
 #define ASCOMPLAIN(caller, entry, field)	\
@@ -892,9 +937,9 @@ field, caller->p_name, entry, priv(caller)->s_asynsize, priv(caller)->s_asyntab)
   			  } while(0)	
 ```
 
-（区间复算：`sed -n '1169,1195p' minix3/minix/kernel/proc.c | wc -l` = 27。锚点：`minix3/minix/kernel/proc.c:A_RETR`、`minix3/minix/kernel/proc.c:A_INSRT`（宏定义于 proc.c 头部区）。）
+（区间复算：`sed -n '1169,1195p' minix3/minix/kernel/proc.c | wc -l` = 27。锚点：`minix3/minix/kernel/proc.c:A_RETR`、`minix3/minix/kernel/proc.c:A_INSRT`（宏定义于 proc.c 中段、`try_deliver_senda` 之前，1174/1188 两行；引文含三个宏——第三个 `ASCOMPLAIN` 是告警器，正文只讲前两个的不对称）。）
 
-`A_RETR(entry)` 把用户表的一条表项拷进内核（拷失败打印告警后**续跑下一条**，本条不写回结果）；`A_INSRT(entry)` 把结果写回用户表的同一条（拷失败**不**终止——宏注释原文 「Do NOT set r or goto asyn_error here!」：单条结果写不回去，不能拖死其余合法表项）。两个宏的不对称各 protect 一面：A_RETR 失败时，内核连这条表项的目的与旗标都没读到——既无从投递、也无从写一个有意义的结果，更不能替它标 DONE（标了就永久吞掉一条可能合法的消息），唯一安全的动作是留下它等下一次重试，所以既不终止也不写回；A_INSRT 失败时消息可能已经投递成功，结果写不回只是发送者看不到回执，终止整批会把破坏半径从一条扩大到整批。两个宏共同指向一个结构性事实：SENDA 表常驻**用户空间**，内核不缓存副本——提交时逐条 `A_RETR` 拷入处理、逐条 `A_INSRT` 写回结果，表的状态权威始终在用户内存里，内核只做裁判。
+`A_RETR(entry)` 把用户表的一条表项拷进内核（拷失败打印告警后**续跑下一条**，本条不写回结果）；`A_INSRT(entry)` 把结果写回用户表的同一条（拷失败**不**终止——宏注释原文 「Do NOT set r or goto asyn_error here!」：单条结果写不回去，不能拖死其余合法表项）。两个宏的不对称各 protect 一面：A_RETR 失败时，内核连这条表项的目的与旗标都没读到——既无从投递、也无从写一个有意义的结果，更不能替它标 DONE（标了就永久吞掉一条可能合法的消息），唯一安全的动作是留下它**等重试**——但"重试"的承担者只有用户态：`asyn_error` 路径不置 `done`，若整表没有别的遗留项，收尾会清掉表登记（`s_asyntab = -1`），内核此后不再访问这张表；发送者重新提交 SENDA 才会重扫（§6.1 症状四的诊断据此：可观察信号是 `AMF_DONE` 长期未置）。同一 EINVAL 违例在 `try_one` 侧另有待遇——`if (r == EINVAL) goto store_result;` 会写回 `EINVAL|AMF_DONE` 并终止本轮扫描，与提交侧的"不写回"不对称（两侧出口不同形，见本节末的图示注记）；所以既不终止也不写回；A_INSRT 失败时消息可能已经投递成功，结果写不回只是发送者看不到回执，终止整批会把破坏半径从一条扩大到整批。两个宏共同指向一个结构性事实：SENDA 表常驻**用户空间**，内核不缓存副本——提交时逐条 `A_RETR` 拷入处理、逐条 `A_INSRT` 写回结果，表的状态权威始终在用户内存里，内核只做裁判。
 
 提交函数全貌：
 
@@ -1042,18 +1087,32 @@ asyn_error:
      A_RETR 拷入 → 校验 flags                 dst 不匹配/CANRECEIVE 拒 → 跳过
      ├ 空项/已办结 → 跳过                     命中 → 直接交付 + A_INSRT 写回
      ├ 立即交付（目标在收）                   全表办结 → 清登记
-     │   + A_INSRT 写回 OK                    有遗留 → 位图重挂，登记恢复
-     ├ 投不出去 → s_asyn_pending 记位          （s_asyntab/s_asynsize）
+     │   + A_INSRT 写回 OK                    有遗留 → 位图重挂（登记只提交侧管）
+     ├ 投不出去 → s_asyn_pending 记位          （try_one 不写 s_asyntab/s_asynsize）
      │   done=FALSE，本条不写回                      │
      ├ flags 违例 → 告警、不写回、留待重试              │
      └ 目的端错误 → A_INSRT 写回错误码                 ▼
         │                                  接收者再收时又走左列的兑现列
    收尾：done? 清登记收工
         : 登记恢复（s_asyntab/s_asynsize）
-          + 对自己补发一次 ASYNCM 通知
+   收尾后（AMF_NOTIFY 门控，与 done 无关）：
+        对自己补发一次 ASYNCM 通知
 ```
 
-逐条办的四条分支各有一句要说。目标恰在收 → 立即交付（同 §2.3 路径一的形状，状态寄存器记 SENDA）；投不出去 → 在目标特权结构 `s_asyn_pending` 上记发送者的位，`done` 置否，本条**不写回结果**（还没办完，何谈结果）；flags 违例（EINVAL）→ 与拷入失败同一条退出道：打印告警、**不写回**、表项停在未办结态等重试——「写回错误码」只发生在目的端错误那组分支（EDEADSRCDST/ECALLDENIED 落入 Store results 段）；`dst == SELF` 的自指项在 `A_RETR` 宏里就地替换成调用者端点。收尾的两个对称动作把生命周期闭合：全部办结 → 表登记清掉（`s_asyntab = -1`、`s_asynsize = 0`）；有遗留 → 登记恢复（地址+尺寸存回特权结构），接收者将来扫异步位图时按登记找到这张表。收尾那行 `mini_notify(proc_addr(ASYNCM), ...)` 里的 `ASYNCM` 是一个专用于异步投递的伪发送者端点（`minix3/minix/include/minix/com.h` 定义）：给自己补发的这条通知借它的名字，把「你有一批异步消息办结/有进展」用通知通道捎回去。
+逐条办的四条分支各有一句要说。目标恰在收 → 立即交付（同 §2.3 路径一的形状，状态寄存器记 SENDA）；投不出去 → 在目标特权结构 `s_asyn_pending` 上记发送者的位，`done` 置否，本条**不写回结果**（还没办完，何谈结果）；flags 违例（EINVAL）→ **提交侧**与拷入失败同一条退出道：打印告警、**不写回**、表项停在未办结态等重试（重试主体=发送者重交，见上）——「写回错误码」在提交侧只发生在目的端错误那组分支（EDEADSRCDST/ECALLDENIED 落入 Store results 段）；**兑现侧（`try_one`）对同一违例另有出口**：`goto store_result` 写回 `EINVAL|AMF_DONE` 并终止本轮扫描——两侧不同形，如实登记；`dst == SELF` 的自指项在 `A_RETR` 宏里就地替换成调用者端点。收尾的两个对称动作把生命周期闭合：全部办结 → 表登记清掉（`s_asyntab = -1`、`s_asynsize = 0`）；有遗留 → 登记恢复（地址+尺寸存回特权结构），接收者将来扫异步位图时按登记找到这张表。收尾那行 `mini_notify(proc_addr(ASYNCM), ...)` 里的 `ASYNCM` 是一个专用于异步投递的伪发送者端点（`minix3/minix/include/minix/com.h` 定义）：给自己补发的这条通知借它的名字，把「你有一批异步消息办结/有进展」用通知通道捎回去。
+
+表项的五个旗标位与空项约定（`minix3/minix/include/minix/ipc.h` 的 `AMF_*` 族，与 `flags == 0` 的空项一起构成全部合法值域）：
+
+| 位 | 值 | 含义（源注释） | 消费点 |
+|---|---|---|---|
+| `AMF_EMPTY` | 000 | slot is not inuse（C 侧即 `flags == 0`；Rust 侧有同名常量） | 提交/兑现两侧的"空项跳过" |
+| `AMF_VALID` | 001 | slot contains message | 两侧校验的必备位 |
+| `AMF_DONE` | 002 | kernel has processed the message | 结果写回时置（`A_INSRT`/store_result） |
+| `AMF_NOTIFY` | 004 | send a notification when AMF_DONE is set | 收尾的 ASYNCM 自通知门控 |
+| `AMF_NOREPLY` | 010 | not a reply message for a SENDREC | 发送者判定是否等回信 |
+| `AMF_NOTIFY_ERR` | 020 | notify when AMF_DONE is set and error occurred | 错误态通知门控 |
+
+校验行的口径：`flags & ~(AMF_VALID|AMF_DONE|AMF_NOTIFY|AMF_NOREPLY|AMF_NOTIFY_ERR)` 非零即违例（EINVAL）——`AMF_EMPTY`（0）在更早的"空项跳过"处已被滤掉，不进入校验。
 
 兑现侧的两个函数：
 
@@ -1199,11 +1258,11 @@ asyn_error:
 
 `try_async` 扫的是「谁欠我消息」：遍历全部特权结构，凡在接收者 `s_asyn_pending` 位图上挂了位的发送者，逐个交给 `try_one` 兑现，兑现成功即返回。`try_one` 办一张表：入口先清接收者位图上这位发送者的位（「办完了，除非办不完」——办不完在尾部重新挂回）；逐条 `A_RETR` 后做四道判定（dst 是否指向本次接收者、`CANRECEIVE` 是否放行、`AMF_NOREPLY` 项不得顶替 SENDREC 的收一半、flags 是否违例），命中一条即交付并写回，**一次只投一条**（循环里的 break）——一次 receive 至多消费一条异步消息。尾部的对称收尾与提交侧同形：全表办结清登记，有遗留重挂位图。
 
-SMP 构建下还有一条补投支线：源在 VM 操作下地址空间被抑制（`RTS_VMINHIBIT`）时，`has_pending`/`try_async` 不从它的用户表拷数据，改为在源进程上置 `MF_SENDA_VM_MISS`（`minix3/minix/kernel/proc.c:has_pending` 与 `:try_async` 的 CONFIG_SMP 块）；等 VM 解除抑制（VMINHIBIT_CLEAR——位的定义在 [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.2 的位族表，清腿在 [09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3 的 SETADDRSPACE/VMINHIBIT_CLEAR），补投机制把错过的那批重新兑现。
+SMP 构建下还有一条补投支线：源在 VM 操作下地址空间被抑制（`RTS_VMINHIBIT`）时，`has_pending`/`try_async` 不从它的用户表拷数据，改为在源进程上置 `MF_SENDA_VM_MISS`（`minix3/minix/kernel/proc.c:has_pending` 与 `:try_async` 的 CONFIG_SMP 块）；等 VM 解除抑制（VMINHIBIT_CLEAR——位的定义在 [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.2 的位族表，清腿在 [09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3 的 SETADDRSPACE/VMINHIBIT_CLEAR），补投机制把错过的那批重新兑现（**消费点实锤**：`minix3/minix/kernel/system/do_vmctl.c` 的 VMINHIBIT_CLEAR 路径——`RTS_UNSET(p, RTS_VMINHIBIT)` 之后 `if (p->p_misc_flags & MF_SENDA_VM_MISS) { 清位; try_deliver_senda(p, privp->s_asyntab, privp->s_asynsize); }`——"补投"就是对该进程的登记表**重跑一次 `try_deliver_senda`**；本篇给置位半与消费点坐标，逐行展开归 09 篇）。
 
 反向推演两处。其一，设想内核缓存整张表的副本——表尺寸上限 4176 项、每项一条消息，缓存即两份状态：用户表与内核副本随时可能不一致（用户态在两次内核介入之间改表是合法操作），一致性维护要么加锁要么放弃，两者都比「内核只做裁判、状态权威在用户」贵。其二，设想 `A_INSRT` 失败即终止整批——第 K 条的写回 EFAULT 拖死第 K+1 到最后一条本来合法的消息，一批里一条坏指针的破坏半径从一条扩大到整批；宏注释的「Do NOT set r」把破坏半径钉在单条。
 
-### 2.7 delivermsg 延迟拷贝与 IPCNAME 表
+### 2.7 delivermsg 延迟拷贝、通知消息组装与 IPCNAME 表
 
 ```c
 static void delivermsg(struct proc *rp)
@@ -1246,7 +1305,7 @@ static void delivermsg(struct proc *rp)
 
 分两段的理由从接收者的处境读出来：第一段发生的时刻，接收者还没上 CPU——它的用户页是否可写，要在**它的地址空间被激活之后**才有意义。第一段若一次拷到底，内核写的是「当前激活地址空间」里的同名虚拟地址，而那块缓冲属于**接收者**的地址空间；跨地址空间写需要专门的机制（建临时映射或走直接映射窗口，归 `22-syscall-copy`/`24-cross-space-runtime` 方向），协议层把这一步留给消费点——接收者自己上 CPU 时，当前地址空间恰好就是它的，一次普通拷贝就对了。
 
-失败策略是两次机会：第一次拷贝失败 → `vm_suspend` 把进程挂给 VM 处理坏页，`MF_MSGFAILED` 记下「失败过一次」；恢复后循环再次走到这里重试，第二次还失败 → 不再挂起，`cause_sig(SIGSEGV)` 直接杀——连续两次坏页说明这个指针不是暂时不可入，而是坏的。成功路径清 `MF_DELIVERMSG` 与 `MF_MSGFAILED`，并在上下文未被内核重写过（`MF_CONTEXT_SET` 未置）时把返回寄存器写成 OK——被通知唤醒的停车 receive 的「返回 OK」在这一刻才落进现场。
+失败策略是两次机会：第一次拷贝失败 → `vm_suspend` 把进程挂给 VM 处理坏页，`MF_MSGFAILED` 记下「失败过一次」；恢复后循环再次走到这里重试，第二次还失败 → 不再挂起，`cause_sig(SIGSEGV)` 直接杀——连续两次坏页说明这个指针不是暂时不可入，而是坏的。成功路径清 `MF_DELIVERMSG` 与 `MF_MSGFAILED`，并在上下文未被内核重写过（`MF_CONTEXT_SET` 未置）时把返回寄存器写成 OK——C 在停车返回时已把 OK 写进保存现场（§2.4 其二），delivermsg 这一步是对被唤醒路径的**幂等补写**（`MF_CONTEXT_SET` 未置时）；Rust 的异步化模型（分派层补写）使这一步成为主要落点，§4.3 注释里的真机 RAX 事故即此语境。
 
 通知消息的组装函数与通知类型常量：
 
@@ -1307,11 +1366,11 @@ IPCNAME 是本章最后一个装置，它不属于协议，属于可诊断性：
 
 （区间复算：`sed -n '277,290p' minix3/minix/kernel/main.c | wc -l` = 14。锚点：`minix3/minix/kernel/main.c:IPCNAME`。）
 
-宏把六个原语的名字字符串填进 `ipc_call_names[]` 名字表，两条 `assert` 保证区间合法与槽位不重复；启动时逐个登记。消费点在 `do_sync_ipc` 的入口检查（§2.1 的节选块可见 `ipc_call_names[call_nr]`）：trap 号越界或无名字 → ETRAPDENIED。名字表把「trap 号 1」翻译成「SEND」，调试输出与权限告警因此可读。调用点在启动期（[08-system-init-boot-finish.md](08-system-init-boot-finish.md) 引过它的登记时机），本篇只讲语义。
+宏把六个原语的名字字符串填进 `ipc_call_names[]` 名字表，两条 `assert` 保证区间合法与槽位不重复；启动时逐个登记。消费点在 `do_sync_ipc` 的入口检查（§2.1 题注所列省略的入口段——`ipc_call_names[call_nr]` 在 `proc.c:497`，本篇未引）：trap 号越界或无名字 → ETRAPDENIED。名字表把「trap 号 1」翻译成「SEND」，调试输出与权限告警因此可读。调用点在启动期（[08-system-init-boot-finish.md](08-system-init-boot-finish.md) 引过它的登记时机），本篇只讲语义。
 
 ### 2.8 本章归纳：原语总表与阻塞行为分类
 
-六章走完，六原语的停与不停收进一张总表（死锁检测的插入点一并标出）：
+六个原语各节走完（§2.1–§2.7），停与不停收进一张总表（死锁检测的插入点一并标出）：
 
 | 原语 | trap 号 | 何时停 | 停在哪 | 怎么醒 | deadlock 预检 |
 |---|---|---|---|---|---|
@@ -1322,9 +1381,9 @@ IPCNAME 是本章最后一个装置，它不属于协议，属于可诊断性：
 | SENDNB | 5 | 永不停 | —— | —— | 不预检，ENOTREADY 先行 |
 | SENDA | 16 | 永不停 | ——（投不出的记 s_asyn_pending 位） | 接收者下次 receive 的第二级（try_async/try_one） | 不预检（不停） |
 
-表里 SENDNB 那一行与 SEND 的真实差别还要再补一条：它不是「不死锁版 SEND」——它连 deadlock 预检都不经过：`mini_send` 的代码序是「非阻塞探测在前、死锁预检在后」（§2.3 函数体内先查 `NON_BLOCKING` 返回 ENOTREADY，才到 `deadlock`），探测发现目标不在就立刻返回，根本走不到预检那一行。SENDNB 的调用者拿到 ENOTREADY 后自己决定何时重试，环等待在它手里不成立，因为它没有等。
+表里 SENDNB 那一行与 SEND 的差别补记一条（§2.3 的代码序隐含、未在彼处明说）：它不是「不死锁版 SEND」——它连 deadlock 预检都不经过：`mini_send` 的代码序是「非阻塞探测在前、死锁预检在后」（§2.3 函数体内先查 `NON_BLOCKING` 返回 ENOTREADY，才到 `deadlock`），探测发现目标不在就立刻返回，根本走不到预检那一行。SENDNB 的调用者拿到 ENOTREADY 后自己决定何时重试，环等待在它手里不成立，因为它没有等。
 
-表内逐行的反推各收一句：SEND 行若去掉预检，互发环成立且无人报错，两个进程互相停在对方队列上直到永远；RECEIVE 行若去掉预检，互收环同理——这一行在 Rust 侧的对应物恰是现状（§4.1 末段的登记）：receive 向预检未接线，互收环在生产路径静默停车；SENDREC 行的两个半若不共享 `MF_REPLY_PEND` 保护，收一半会被排队的通知顶替（§2.4 的瀑布跳过规则就是这道保护）；NOTIFY 行若允许阻塞，通知的发送者被任意一个忙碌目标拖停，内核代投的轻量语义作废；SENDA 行若整批原子化，一条坏表项的风险半径扩到整批（§2.6 已推）。第 3 章换到 Rust 侧，看这些语义各以什么形状落地。
+表内逐行的反推各收一句：SEND 行若去掉预检，互发环成立且无人报错，两个进程互相停在对方队列上直到永远；RECEIVE 行若去掉预检，互收环同理——这一行在 Rust 侧的对应物恰是现状（差异登记见 §3.5 第 6 条）：receive 向预检未接线，互收环在生产路径静默停车；SENDREC 行的两个半若不共享 `MF_REPLY_PEND` 保护，收一半会被排队的通知顶替（§2.4 的瀑布跳过规则就是这道保护）；NOTIFY 行若允许阻塞，通知的发送者被任意一个忙碌目标拖停，内核代投的轻量语义作废；SENDA 行若整批原子化，一条坏表项的风险半径扩到整批（§2.6 已推）。第 3 章换到 Rust 侧，看这些语义各以什么形状落地。
 
 ---
 
@@ -1362,7 +1421,7 @@ IPCNAME 是本章最后一个装置，它不属于协议，属于可诊断性：
 
 ### 3.1 IpcEngine 与侵入式 FIFO：零堆的消息中转（→§2.3/§2.4）
 
-C 里真实存在的负担是 §2.3 路径二末尾那段二级指针走查：`xpp = &dst_ptr->p_caller_q; while (*xpp) xpp = &(*xpp)->p_q_link; *xpp = caller_ptr;`——链头住在目标槽、链环住在发送者槽，C 用「指向指针的指针」把两种所有权缝在一条循环里。这个形状在 Rust 的借用模型下不能照抄：进程表是一个切片，槽里的 `&mut` 链接字段无法同时持有指向前后的引用而不违反别名规则。承接的形状是**索引化侵入式 FIFO**——链环不用指针，用 `Option<ProcNr>` 槽号；队列头尾两个字段放在目标槽，单个链接字段放在发送者槽，与 C 的字段布局一一对应（`os/kernel/src/ipc.rs` 的 `caller_q_head`/`caller_q_tail`/`send_q_link`，声明于进程槽结构）。四个自由函数经办这条链：
+C 里真实存在的负担是 §2.3 路径二末尾那段二级指针走查：`xpp = &dst_ptr->p_caller_q; while (*xpp) xpp = &(*xpp)->p_q_link; *xpp = caller_ptr;`——链头住在目标槽、链环住在发送者槽，C 用「指向指针的指针」把两种所有权缝在一条循环里。这个形状在 Rust 的借用模型下不能照抄：进程表是一个切片，**在持有切片借用的同时无法在槽内保存指向别的槽的引用**（自引用结构），链环只能退化为索引。承接的形状是**索引化侵入式 FIFO**——链环不用指针，用 `Option<ProcNr>` 槽号；队列头尾两个字段放在目标槽，单个链接字段放在发送者槽，与 C 的字段布局一一对应（`os/kernel/src/ipc.rs` 的 `caller_q_head`/`caller_q_tail`/`send_q_link`，声明于进程槽结构）。四个自由函数经办这条链：
 
 ```rust
 /// Find the first queued sender on `dst_idx`'s queue matching
@@ -1396,6 +1455,8 @@ pub(crate) fn caller_q_find(
 ```
 
 （区间复算：`sed -n '879,906p' os/kernel/src/ipc.rs | wc -l` = 28。锚点：`os/kernel/src/ipc.rs:fn caller_q_find`。）
+
+**注**：该注释引的 `proc.c:1077-1105` 与实测不符——`CANRECEIVE` 判定行在 **`proc.c:1058`**（§6.1 症状二的口径对）；源注释行号待源码侧修（随 SRC-20 一并登记）。
 
 `caller_q_find` 的签名里有一个 C 侧没有直接对应的参数：`accept` 谓词。它插的位置，正是 C 队列扫描里 `CANRECEIVE` 宏所在的位置——C 的 `mini_receive` 第三级一边走链一边逐个验「这条消息接收者现在收不收得」（§2.4 引文中的 `while (*xpp) { if (CANRECEIVE(...)) ... }` 段），谓词与走查是同一段循环；Rust 把走查抽成共享实现，把「收不收得」做成注入的闭包：生产路径传过滤判定（`os/kernel/src/ipc.rs:fn caller_q_find_allowed`，把接收者的过滤链判定作为 accept 传入），测试传恒真闭包。一处走查、两种谓词——C 的入队走尾与命中扫描是两处各自手写的循环（`mini_send` 的链尾走查、`mini_receive` 的命中扫描），Rust 收成 push/find/remove 三个共享函数。
 
@@ -1506,7 +1567,9 @@ pub enum DeadlockDirection {
 
 （区间复算：`sed -n '241,279p' os/kernel/src/ipc.rs | wc -l` = 39。锚点：`os/kernel/src/ipc.rs:struct DeadlockCycle`、`:enum DeadlockDirection`。）
 
-`Some(DeadlockCycle)` 携带方向与成员链，`None` 对应 C 的返回 0；XOR 豁免的移植体在走查里逐行对（§4.2）。方向单独建一个枚举而不复用 `IpcCall`，理由写在文档注释里：检测器的「等待方向」与用户的「调用号」今天是 1:1，但它们是两个概念——把类型分开，将来出现第三种等待方向时改动只落在检测器内部。取舍：
+**注**：引文里"Maximum chain length is bounded by PROC_TABLE_SIZE"是**断言而非守卫**——`chain[chain_len]` 无越界检查、走链亦无访问去重；进入"外来环"的输入会先撑满定宽数组再 panic（见 §2.2 走链规则的第四情形与 SRC-18）。
+
+`Some(DeadlockCycle)` 携带方向与成员链，`None` 对应 C 的返回 0；XOR 豁免的移植体在走查里逐行对（§4.2）。方向单独建一个枚举而不复用 `IpcCall`，理由写在文档注释里：检测器的「等待方向」与用户的「调用号」今天是 1:1，但它们是两个概念——把类型分开，将来出现第三种等待方向时改动主要落在检测器内部——**但 XOR 仍直接吃 `IpcCall` 的判别值**（`function << 2` 依赖 C 的 trap 号 1/2/3/5/16），这层耦合由 §5.1 的 `test_ipc_call_from_raw` 间接兜底；§6.1 症状一另补一条 Rust 判别值核对。取舍：
 
 | 选项 | 否掉什么 | 代价 |
 |---|---|---|
@@ -1595,7 +1658,7 @@ impl SendFlags {
 
 | 选项 | 否掉什么 | 代价 |
 |---|---|---|
-| `IpcOutcome` 三分（选定） | C 的「返回值+副作用」双通道 | 枚举多一个变体要维护（`Delivered` 与 `Blocked` 的分界在两路径交界处要判准，§4.1 的 sendrec 落点可见） |
+| `IpcOutcome` 三分（选定） | C 的「返回值+副作用」双通道 | 枚举多一个变体要维护（`Delivered` 与 `Blocked` 的分界在两路径交界处要判准；sendrec 的两半衔接未在本章逐行走查——落点说明见 §4.1 节末，衔接行为由 §5.1 的三个 sendrec 测试钉住） |
 | `Result<IpcOutcome, IpcError>` 把 Blocked 并进 Err | —— | 调用方每个 IPC 调用点都要排除假错误（§1.1 的阻塞规则是常态而非异常） |
 | 裸布尔 + 查标志位（C 形状直译） | —— | 「停了没有」的判断散回每个调用点，与 §2.4 其二那条「返回值早已写好」的坑同源 |
 
@@ -1641,7 +1704,7 @@ pub trait UserCopy {
 
 （区间复算：`sed -n '493,508p' os/kernel/src/ipc.rs | wc -l` = 16。逐字引用，注释按原文保留。注：「腿」为本仓自造比喻（台账登记受控），对应通行说法的发送半/接收半/路径段；本块引文内出现的该词按原文引用、叙述层一律用「读方向/写方向」。锚点：`os/kernel/src/ipc.rs:fn copy_via_root_pages`。）
 
-这段注释记录的正是边界纪律的一次失守与修复：读方向与写方向两个分支曾在实现里互换，读方向的调用把清零缓冲写进了用户槽位——方向参数与语义的对应关系靠测试与真机签名钉住。`KernelUserCopy` 本身是宿主测试与启动早期的桩实现（`os/kernel/src/ipc.rs:struct KernelUserCopy`），生产注入由各架构提供。取舍：
+这段注释记录的正是边界纪律的一次失守与修复：读方向与写方向两个分支曾在实现里互换，读方向的调用把清零缓冲写进了用户槽位——方向参数与语义的对应关系靠测试与真机签名钉住。`KernelUserCopy` 的 `#[cfg(not(test))]` 分支**就是现行生产实现**（`current_root_phys()` + `copy_via_root_pages`：页表走查→物理地址→直接映射窗口）；仅 `#[cfg(test)]` 分支是返回零消息的桩。各架构专属实现（trait 文档所述 `os/arch/src/*/user_copy.rs`）尚未落地——生产三处引擎构造（`syscall.rs`/`trap_dispatch.rs`/`proc_table.rs`）都注入 `&KernelUserCopy`。取舍：
 
 | 选项 | 否掉什么 | 代价 |
 |---|---|---|
@@ -1657,15 +1720,15 @@ C 的 IPC 面逐项去向（档位：保留=语义与形状同迁；改型=语�
 
 | C 项 | Rust 对应物 | 档位 | 落点 |
 |---|---|---|---|
-| `do_ipc` 六原语分派 | `os/kernel/src/ipc.rs:fn do_ipc` | 保留 | §4.1 |
-| kbill_ipc 记账 + ipc_sync/ipc_async 计数 | `os/kernel/src/globals.rs`（kbill_ipc 对位）+ `os/kernel/src/proc.rs:struct Accounting` | 保留 | §4.1 |
-| `do_sync_ipc` 三道权限门 | `os/kernel/src/ipc.rs:fn check_ipc_permission` | 保留 | §4.1 |
-| 跟踪预占的 `p_defer` 三寄存器 | 进程槽 `p_defer` 字段保留，int-33 分派层用同一字段做参数暂存 | 改型 | §4.1 |
+| `do_ipc` 六原语分派 | `os/kernel/src/ipc.rs:fn do_ipc` | 保留 | §4.4（分派段） |
+| kbill_ipc 记账 + ipc_sync/ipc_async 计数 | `os/kernel/src/globals.rs`（kbill_ipc 对位）+ `os/kernel/src/proc.rs:struct Accounting` | 保留 | §2.1（Rust 侧见 `globals.rs`；§4 未走查，如实登记） |
+| `do_sync_ipc` 权限门（C 六道） | `os/kernel/src/ipc.rs:fn check_ipc_permission`（**四层**：ANY 通配仅 RECEIVE 合法、发送白名单、trap 掩码、内核任务限制；名字表检查由 `IpcCall::from_raw` 承担） | 保留 | §4.1 |
+| 跟踪预占的 `p_defer` 三寄存器 | 进程槽 `p_defer` 字段保留，int-33 分派层用同一字段做参数暂存；**跟踪语义本身有对位**——`SC_TRACE`/`SC_DEFER` 两个 misc 位存在（`os/kernel/src/proc.rs` 的 `MiscFlagsBits` 与同名导出常量），`SC_DEFER` 已接线（`os/kernel/src/proc_table.rs` 的注释自述已接 `arch_do_syscall`） | 改型 | §2.1（§4 未走查跟踪段，如实登记） |
 | `deadlock` + `P_BLOCKEDON` | `os/kernel/src/ipc.rs:fn detect_deadlock` + `KProcess::blocked_on` | 改型（整数→结构化） | §3.2、§4.2 |
 | `mini_send` 两路径 | `os/kernel/src/ipc.rs:fn send` | 保留 | §4.1 |
 | `mini_receive` 三级匹配序 | `os/kernel/src/ipc.rs:fn receive` 的四个 Phase | 保留（分级命名变体：C 的瀑布包在 SENDING 门外，Rust 同形） | §4.1 |
-| `mini_notify` 两分支 | `os/kernel/src/ipc.rs:fn mini_notify_core` | 保留 | §4.3 |
-| `try_deliver_senda`/`try_async`/`try_one` | `os/kernel/src/ipc.rs:fn senda` + `:fn deliver_async` | 保留（无内核侧表缓存） | §4.3 |
+| `mini_notify` 两分支 | `os/kernel/src/ipc.rs:fn mini_notify_core` | 保留 + 过滤面差异（见差异 8，SRC-20） | §4.3 |
+| `try_deliver_senda`/`try_async`/`try_one` | `os/kernel/src/ipc.rs:fn senda` + `:fn deliver_async` | 改型（**三并二**：`mini_senda`+`try_deliver_senda`→`senda`、`try_async`+`try_one`→`deliver_async`；无内核侧表缓存） | §4.3 |
 | `delivermsg` 两段交付 + 两次失败策略 | `os/kernel/src/ipc.rs:fn delivermsg` + `:enum DeliverResult` | 保留 | §4.3 |
 | `BuildNotifyMessage` + `NOTIFY_MESSAGE` 0x1000 | `os/kernel/src/ipc.rs:impl IpcEngine::build_notify_message` + `:const NOTIFY_MESSAGE` | 保留 | §4.3 |
 | `IPCNAME` 名字表 | **无对位**（如实披露，§4.4） | 淘汰（现码无对位） | §4.4 |
@@ -1676,16 +1739,24 @@ C 的 IPC 面逐项去向（档位：保留=语义与形状同迁；改型=语�
 差异登记（每行单独成条）：
 
 1. **receive 入口的已沉降交付**。C 的 `mini_receive` 入口断言 `MF_DELIVERMSG` 未置（§2.4 引文首行 assert）——C 的模型里接收者被唤醒后走调度循环的 delivermsg 臂消费交付，不会再进 `mini_receive`。Rust 的 `receive` 入口先消费已沉降的交付（Phase 0）：引擎模型里接收者自己陷入内完成交付的路径存在（§4.1），带沉降再入时把沉降消费掉而不是断言失败。
-2. **ELOCKED 尺寸超限的错误码**。C 的 SENDA 尺寸超限返回 EDOM（§2.1 分派段）；Rust 的 `IpcError` 无 EDOM 变体，`do_ipc` 与 `senda` 两处尺寸检查都映射到 `BadCall`（os/kernel/src/ipc.rs 的 `do_ipc`/`senda` 尺寸臂）。
+2. **EDOM 尺寸超限的错误码**。C 的 SENDA 尺寸超限返回 EDOM（§2.1 分派段）；Rust 的 `IpcError` 无 EDOM 变体，`do_ipc` 与 `senda` 两处尺寸检查都映射到 `BadCall`（os/kernel/src/ipc.rs 的 `do_ipc`/`senda` 尺寸臂）。
 3. **无特权结构调用者的 NOTIFY**。C 的 `mini_notify` 无条件 `priv(caller)->s_id` 取位编号（§2.5）；Rust 对无 `priv_id` 的调用者静默丢弃通知、对位号不在 64 位内的调用者同样丢弃（`os/kernel/src/ipc.rs:fn mini_notify_core` 尾段）。C 的特权结构人人有、位图宽 `NR_SYS_PROCS`=64，两条丢弃路径在 C 不存在。
-4. **唤醒的原子性拆分**。C 的 `RTS_UNSET` 宏在清位现场立即入队（[11-scheduling-primitives.md](11-scheduling-primitives.md) §1.1 的跃迁检测）；Rust 引擎持有的是切片借用、够不着就绪队列，清位后把被唤醒者记进 `wake_targets`（4 槽记录），由分派层在 `do_ipc` 返回后统一补入队。单次 IPC 至多唤醒两个进程（sendrec 的两半），4 槽是防御性容量。
+4. **唤醒的原子性拆分**。C 的 `RTS_UNSET` 宏在清位现场立即入队（[11-scheduling-primitives.md](11-scheduling-primitives.md) §1.1 的跃迁检测）；Rust 引擎持有的是切片借用、够不着就绪队列，清位后把被唤醒者记进 `wake_targets`（4 槽记录），由分派层在 `do_ipc` 返回后统一补入队。同步路径单次至多唤醒两个（sendrec 的两半）；**SENDA 批量直投不在此界内**——交付路径逐条目记录唤醒者（`deliver_async` 亦调 `record_wake_target`），上界可达条目数级。4 槽满时 `record_wake_target` 无 else 分支、**静默丢弃最新**（其注释"丢最旧的"与代码相抵）——容量面与注释/代码相抵均登记 **SRC-19**（属源码 workflow）。
 5. **死锁返回的形状**。C 的 `group_size` 整数（仅调试消费）→ `DeadlockCycle` 结构化（§3.2 已立，表内引用）。
 
+
+6. **receive 侧死锁预检未接（差异登记）**。C 的 `mini_receive` 有 `deadlock(RECEIVE, ...)` 预检（`proc.c:1102`），本端 `receive` 未移植——生产路径唯一调用在 `send`（对位 `proc.c:930-932`）。后果：互收环在生产路径静默停车（§2.8 的对应物）。**登记 SRC-17，是否补齐由源码 workflow 裁决。**
+
+7. **receive 第三级的快路径与拷贝/过滤次序**。C 的第三级只把消息沉降进 `p_delivermsg` + 置 `MF_DELIVERMSG`，拷贝一律由循环拍的 `delivermsg` 做；Rust 在接收者自己的陷入里**先试同步拷给用户缓冲**（失败才退回沉降，§4.1）——交付协议少了一轮，`MF_DELIVERMSG` 不变式的成立面随之收窄（由 §5.1 的 `test_receive_caller_q_drain_copies_to_user_buffer_not_deposit` 钉住）。另：本端 Path A 的"先拷后滤"（拷贝在 `can_receive` 之前）与 C 的 `WILLRECEIVE` 内含 `CANRECEIVE`（先滤后拷）次序相反——被过滤发送者在坏指针下的错误码优先级因此与 C 不同。
+
+8. **notify 直投的过滤判定缺失（如实登记）**。C 的直投门 `WILLRECEIVE` 内含 `CANRECEIVE`（被过滤来源的通知落 `s_notify_pending` 位图）；本端 `mini_notify_core` 的直投条件只查 `is_willing_to_receive`（不含过滤）+ `!REPLY_PEND`——**被过滤来源的通知会被直投**。消费侧（receive 第一级读位图）另有过滤（D-16 测试钉住）；直投侧的过滤缺失如实登记 **SRC-20**（是否补齐待源码侧裁决）。
 第 4 章逐函数落地，每个实现回指本章的对应决策。
 
 ---
 
 ## 4. 实现详解
+
+> 本章引文保留若干**取证探针的空壳**（`if … { }` 空块，注释自述"裁决删除"）——它们不参与逻辑，可整块跳过；正文只讲块外语句。
 
 ### 4.1 IpcEngine send/receive 走查（→§3.1/§3.3）
 
@@ -1801,7 +1872,9 @@ send 的两条路径承接 §2.3 的两路径图，实现对应 §3.1 的侵入�
 
 （区间复算：`sed -n '1398,1426p' os/kernel/src/ipc.rs | wc -l` = 29。锚点：`os/kernel/src/ipc.rs:fn send`。）
 
-四步与 §2.3 路径二逐项对应：非阻塞探测先于死锁预检（`IpcCall::Send` 传给 `detect_deadlock`，对应 C 的 `deadlock(SEND, ...)`）；消息先拷进**发送者自己**的 `p_sendmsg`（内核副本锚，§2.3 的非显然事实同款）；置 `RTS_SENDING` + `p_sendto_e`；`caller_q_push` 挂目标链尾（§3.1 的 O(1) 追加）。返回 `IpcOutcome::Blocked`——§3.3 的合法结果。
+四步与 §2.3 路径二逐项对应：非阻塞探测先于死锁预检（`IpcCall::Send` 传给 `detect_deadlock`，对应 C 的 `deadlock(SEND, ...)`）；消息先拷进**发送者自己**的 `p_sendmsg`（内核副本锚，§2.3 的非显然事实同款）；置 `RTS_SENDING` + `p_sendto_e`；`caller_q_push` 挂目标链尾（§3.1 的 O(1) 追加）。返回 `IpcOutcome::Blocked`——§3.3 的合法结果。（`p_delivermsg_vir` 的**双用约定**：int-33 分派层在引擎构造前把 r2 的消息指针写进调用者的该字段——`os/kernel/src/trap_dispatch.rs` 的 `caller.p_delivermsg_vir = VirBytes(r2);`（995 行，与 `p_defer.r2/r3` 同批写，注释自述）；C 侧对应参数是 `m_ptr`。同一字段在接收侧承载交付目的地（§2.4）、在发送侧承载本调用的消息源——按"本调用的用户缓冲"一义两用。）
+
+**编号约定**（本节与 §5.1 共用）：C 的"三级匹配序"= Rust 的 Phase 1/2/3（通知/异步/同步），Phase 0 指"入口消费已沉降交付"这一前置步；§3.5 的"四个 Phase"、§5.1 的"四级"与 §2.4 的"三级"是同一套编号的三种叫法。
 
 receive 的走查从两道门前置开始。第一道是 §2.4 其一的 SENDING 门（SENDREC 发送半还停着时跳过全部匹配级）：
 
@@ -1850,7 +1923,7 @@ receive 的走查从两道门前置开始。第一道是 §2.4 其一的 SENDING
 
 （区间复算：`sed -n '1578,1593p' os/kernel/src/ipc.rs | wc -l` = 16。锚点：`os/kernel/src/ipc.rs:fn caller_q_find_allowed`（走查复用 §3.1 的共享走查）。块内注释含仓库内部阶段编号，按原文引用。）
 
-与 §2.4 第三级逐项对：`caller_q_find_allowed` 带过滤谓词走链（accept 谓词位置=C 的 CANRECEIVE 位置，§3.1 已立）；命中后摘链（`caller_q_remove`，前驱链接与头尾指针修完）；盖 `m_source`（发送者用户缓冲里这个字段恒为垃圾，内核交付时盖——注释记录的正是漏盖一次的真机事故）；拷贝去向按「接收者自己的陷入里」分流：先试同步拷给用户缓冲（此刻当前地址空间恰是接收者的，§2.7 的两段协议在此段成立），失败才退回沉降+`MF_DELIVERMSG` 让循环拍兜底——退回条件与 C 的「拷贝失败进 delivermsg」同形。随后是唤醒发送者与返回码的两个门控：
+与 §2.4 第三级逐项对：`caller_q_find_allowed` 带过滤谓词走链（accept 谓词位置=C 的 CANRECEIVE 位置，§3.1 已立）；命中后摘链（`caller_q_remove`，前驱链接与头尾指针修完）；盖 `m_source`（发送者用户缓冲里这个字段恒为垃圾，内核交付时盖——注释记录的正是漏盖一次的真机事故）；拷贝去向按「接收者自己的陷入里」分流：先试同步拷给用户缓冲（此刻当前地址空间恰是接收者的，§2.7 的两段协议在此段成立），失败才退回沉降+`MF_DELIVERMSG` 让循环拍兜底——退回条件与 C 的「拷贝失败进 delivermsg」同形（**但快路径本身与拷贝/过滤次序是 C 没有的形状**：C 一律沉降、且先滤后拷；两处差异见 §3.5 差异 7）。随后是唤醒发送者与返回码的两个门控：
 
 ```rust
             if !sender_reply_pend
@@ -1874,7 +1947,9 @@ receive 的走查从两道门前置开始。第一道是 §2.4 其一的 SENDING
 
 （区间复算：`sed -n '1741,1745p' os/kernel/src/ipc.rs | wc -l` = 5。锚点：`os/kernel/src/ipc.rs:fn receive`。）
 
-`p_getfrom_e` + `RTS_RECEIVING` + `Blocked`，与 §2.4 的停车段逐字对应；死锁预检在停车前的位置同样保留（`receive` 内 `detect_deadlock(IpcCall::Receive, ...)` 调用，对应 C 的 `deadlock(RECEIVE, ...)`）。权限检查在引擎入口之前由 `os/kernel/src/ipc.rs:fn check_ipc_permission` 统一把守，共四层：ANY 通配仅 RECEIVE 合法、发送白名单、trap 掩码、内核任务限制——C 的六道在 Rust 合并为四层（名字表检查由 `IpcCall::from_raw` 的穷举匹配承担，端点有效性与 ANY 检查合并进端点解析），与本篇 §2.1 所述的 C 序一一对应。
+`p_getfrom_e` + `RTS_RECEIVING` + `Blocked`，与 §2.4 的停车段逐字对应；**死锁预检在 receive 侧未接**——生产路径的 `detect_deadlock` 唯一调用点在 `send` 的阻塞支（`os/kernel/src/ipc.rs:fn send`，对位 C 的 `proc.c:930-932`）；C 的 `mini_receive` 有 `deadlock(RECEIVE, ...)` 预检（`proc.c:1102`）而本端未移植——互收环在生产路径静默停车，差异登记见 §3.5 第 6 条（**SRC-17**，是否补齐待源码侧裁决；补齐只差一次调用——`DeadlockDirection`/XOR 归约已支持 Receive 向）。权限检查在引擎入口之前由 `os/kernel/src/ipc.rs:fn check_ipc_permission` 统一把守，共四层：ANY 通配仅 RECEIVE 合法、发送白名单、trap 掩码、内核任务限制——C 的六道在 Rust 合并为四层（名字表检查由 `IpcCall::from_raw` 的穷举匹配承担，端点有效性与 ANY 检查合并进端点解析），与本篇 §2.1 所述的 C 序一一对应。
+
+**sendrec 的两半衔接（本节未逐行引文的落点说明）**：Rust 的 `sendrec`（`os/kernel/src/ipc.rs:fn sendrec`）在发送半进入前先置 `REPLY_PEND`、两半完成后无条件清一次（对位 `proc.c:571/576`；引擎注释记录了"陈旧 REPLY_PEND 使 VM drain 误停"的真实事故）；发送半走路径一成功后直连 receive 的匹配，两半返回码按 §3.3 的 `IpcOutcome` 合并。三个集成测试钉住衔接（§5.1 的 sendrec 组）。
 
 ### 4.2 detect_deadlock 走查（→§3.2）
 
@@ -1959,9 +2034,11 @@ receive 的走查从两道门前置开始。第一道是 §2.4 其一的 SENDING
 
 与 §2.2 逐段对：入口把调用号归约成方向（SEND/SENDNB/SENDREC 归 Send 向，RECEIVE 归 Receive 向——归约对应 C 两个调用点只传 1 或 2 的现实）；走链循环里 `blocked_on` 是 `P_BLOCKEDON` 宏的直系对位（`os/kernel/src/proc.rs:fn blocked_on`，按 RTS 位动态选 `p_sendto_e` 或 `p_getfrom_e`，次序与宏注释同：先 SENDING 后 RECEIVING）；`ANY` 返回 `None`、链断（`blocked_on` 得 `None`）返回 `None`；回到调用者端点时，`group_size == 2` 的 XOR 豁免逐字移植——`(xp_rts ^ function_shifted) & SENDING`，`function_shifted` 的取值约定注释里写明对齐 `RTS_SENDING = 0x04`。
 
-§2.2 的三方环手推在 Rust 侧重放一遍：A SEND→B、B SEND→C、C SEND→A，`detect_deadlock(IpcCall::Send, A, B)` 从 B 出发，`blocked_on(B)` 得 C、`blocked_on(C)` 得 A——A 等于调用者端点，`group_size` 已累计到 3，豁免分支要求 2、不成立，返回 `Some(DeadlockCycle { group_size: 3, chain: [A, B, C], ... })`。互发例（A SEND→B 且 B SEND→A）：走一步回 A，`group_size == 2`，`xp` 为 B、`xp_rts = 0x04`、`function_shifted = 0x04`，XOR 后按位与得 0，豁免不成立 → `Some`，ELOCKED。互补对例（SENDREC 发送半预检遇 B 在收）：`xp_rts = 0x08`、`function_shifted = 0x04`，按位与非零 → `None`，放行停车。混合链的机器重放由测试钉住（§5.2 的 mixed-chain 测试）。
+§2.2 的三方环手推在 Rust 侧重放一遍：A SEND→B、B SEND→C、C SEND→A，`detect_deadlock(IpcCall::Send, A, B)` 从 B 出发，`blocked_on(B)` 得 C、`blocked_on(C)` 得 A——A 等于调用者端点，`group_size` 已累计到 3，豁免分支要求 2、不成立，返回 `Some(DeadlockCycle { group_size: 3, chain: [A, B, C], ... })`。互发例（A SEND→B 且 B SEND→A）：走一步回 A，`group_size == 2`，`xp` 为 B、`xp_rts = 0x04`、`function_shifted = 0x04`，XOR 后按位与得 0，豁免不成立 → `Some`，ELOCKED。互补对例（SENDREC 发送半预检遇 B 在收）：`xp_rts = 0x08`、`function_shifted = 0x04`，按位与非零 → `None`，放行停车。混合链的机器重放由测试钉住（§5.3 的 mixed-chain 测试）。
 
 ### 4.3 notify/SENDA/delivermsg 走查（→§3.3/§3.4）
+
+> 本节 notify 段含一处与 C 的差异（直投缺过滤判定）——见 §3.5 差异 8 与 SRC-20。
 
 notify 的核心是 §2.5 两分支的直译（实现回指 §3.3 的结果三分与 §3.5 的差异登记 3）：
 
@@ -2087,6 +2164,8 @@ SYS_PROC 门槛（对应 §2.6 `mini_senda` 的 EPERM 臂）、登记清零（�
 
 （区间复算：`sed -n '1912,1947p' os/kernel/src/ipc.rs | wc -l` = 36。锚点：`os/kernel/src/ipc.rs:fn deliver_async`。逐字引用，注释按原文含该段受控比喻词（前注已释）。）
 
+**受控比喻的登记约定（两句）**：「腿」是本仓自造的受控比喻（对应通行说法的发送半/接收半/路径段），台账登记后方可入文；**引文块内的该词按原文保留，叙述层一律用「读方向/写方向」**——本节的引注方式即此约定的一次执行。
+
 `deliver_async` 是 `try_one` 的对位，两个非显然点由注释里的真机事故钉住。其一，源过滤用**本次 receive 的实参**而不是接收者槽里存的 `p_getfrom_e`——`deliver_async` 跑在接收者自己 receive 陷入的匹配段，停车字段此时还没写，读它拿到的是握手期的过期值（C 的 `try_one` 同样传形参 `receive_e`，§2.6 引文可见）。其二，表项按**发送者**的页表根翻译（`sender_root`）——这段代码跑在接收者的陷入里，当前地址空间是接收者的，直接按用户地址解引用会落进错误的地址空间；`A_RETR` 的 C 实现经 `umap(sender)` 走发送者段，同一条纪律。尾部与 C 同构：一次只投一条；全表办结清登记、有遗留把发送者位重挂回接收者位图（对应 §2.6 引文块三的尾部收尾）。
 
 delivermsg 的 Rust 体是两段协议第二段的直译（实现回指 §3.4 的边界 trait 与 §2.7 的两次失败策略）：
@@ -2144,7 +2223,7 @@ pub fn delivermsg(proc: &mut crate::proc::KProcess, user_copy: &dyn UserCopy) ->
 
 （区间复算：`sed -n '742,789p' os/kernel/src/ipc.rs | wc -l` = 48。锚点：`os/kernel/src/ipc.rs:fn delivermsg`。块内注释含仓库内部阶段编号，按原文引用。）
 
-两次失败策略与 §2.7 逐项对：首败置 `MF_MSGFAILED` 并把 `DeliverResult::PageFault` 交给调用方路由挂起；连败清位并报 `Segfault`；越界直接报 `Segfault`。成功路径清两个标志、按 `MF_CONTEXT_SET` 门控写返回码——注释里那句「被通知唤醒的接收者若不写 OK 会带着陷入残值恢复」对应 §2.7 成功段同一行 C 代码（`rp->p_reg.retreg = OK`）。引擎侧包装 `os/kernel/src/ipc.rs:fn deliver_message` 委托同一个自由函数，循环拍（[10-switch-to-user.md](10-switch-to-user.md) §4.1 的 misc flags 消费点）与分派层共用一条交付路径。
+两次失败策略与 §2.7 对位，**三处差异要记**（清位面：C 第二次失败只 printf+`cause_sig`、不清 `MF_DELIVERMSG`/`MF_MSGFAILED`，本端清两位；分类面：本端 `OutOfBounds` 直接 Segfault，C 不分类；路由面：SIGSEGV 由调用方路由，C 在 delivermsg 内 `cause_sig`——均入 §3.5 差异 7 的记录面）：首败置 `MF_MSGFAILED` 并把 `DeliverResult::PageFault` 交给调用方路由挂起；连败清位并报 `Segfault`；越界直接报 `Segfault`。成功路径清两个标志、按 `MF_CONTEXT_SET` 门控写返回码——注释里那句「被通知唤醒的接收者若不写 OK 会带着陷入残值恢复」对应 §2.7 成功段同一行 C 代码（`rp->p_reg.retreg = OK`）。引擎侧包装 `os/kernel/src/ipc.rs:fn deliver_message` 委托同一个自由函数，循环拍（[10-switch-to-user.md](10-switch-to-user.md) §4.1 的 misc flags 消费点）与分派层共用一条交付路径。
 
 ### 4.4 KERNINFO 臂与 IPCNAME 的 Rust 对位（→§2.1/§2.7）
 
@@ -2239,7 +2318,7 @@ C 的 i386 载体是 `p_reg.bx`（§2.1 的通道图），x86-64 的载体换到
     MINIX_KERNINFO_USER.store(KERNINFO_USER_VA, Ordering::Relaxed);
 ```
 
-（区间复算：`sed -n '151,163p' os/kernel/src/kerninfo.rs | wc -l` = 13。锚点：`os/kernel/src/kerninfo.rs:fn fill_kerninfo_page`（发布存储在该函数内）。）
+（区间复算：`sed -n '151,163p' os/kernel/src/kerninfo.rs | wc -l` = 13。锚点：`os/kernel/src/kerninfo.rs:fn map_and_publish`（发布存储与引文块都在该函数内，138-163；`fn fill_kerninfo_page` 只写 `page.user`）。）
 
 发布存储是查询臂 EBADCALL/OK 分界的唯一开关：存储之前的所有 MINIX_KERNINFO 查询得 EBADCALL（C 侧同一分界的开关是 `minix_kerninfo_user` 全局指针，§2.1 引文的判空分支）。
 
@@ -2251,7 +2330,7 @@ IPCNAME 的 Rust 对位，如实披露：**没有**。检索范围内（`os/` �
 
 ### 5.1 清单与读数（→Ch4）
 
-ipc.rs 的测试模块（`os/kernel/src/ipc.rs` 内的 tests 模块）按机制分组，60 个测试函数的分布如下（口径：宿主 mock 形态全套件一次运行的输出计数，`grep -c 'test ipc::tests' ` 于测试输出 = 60）：
+ipc.rs 的测试模块（`os/kernel/src/ipc.rs` 内的 tests 模块）按机制分组，60 个测试函数的分布如下（口径：宿主 mock 形态全套件一次运行的输出计数，`grep -c 'test ipc::tests' ` 于测试输出 = 60；**分组表按机制列代表项、非穷举**——每组完整成员以组前缀 grep 复核，行加总小于 60 的差额在未列名的同前缀成员里）：
 
 | 分组 | 测试名（节选，全组可按前缀 grep） | 覆盖 |
 |---|---|---|
@@ -2274,9 +2353,31 @@ ipc.rs 的测试模块（`os/kernel/src/ipc.rs` 内的 tests 模块）按机制�
 cd os && cargo test -p minix-kernel --features mock
 ```
 
-读数（全套件实跑）：单元测试 831 passed / 0 failed / 8 ignored；集成测试（`os/kernel/tests/boot_integration.rs`）3 passed / 0 failed / 3 ignored；doc-test 1 ignored。运行陷阱如实披露：boot_integration 里 3 个 ignored 全部因宿主 x86_64 的诊断输出走真实 COM1 端口触发 SIGSEGV——这三项的判定逻辑只在 QEMU 下生效，宿主读数里它们不构成覆盖；单元测试的 8 个 ignored 是其它模块的既定豁免，与本篇无关。
+读数（全套件实跑，本轮复核）：单元测试 **832** passed / 0 failed / 8 ignored（12 篇生成时点的 831 已过期——其后源码新增 1 条测试；13 篇轮与本轮两次实跑均为 832）；集成测试（`os/kernel/tests/boot_integration.rs`）3 passed / 0 failed / 3 ignored；doc-test 1 ignored。运行陷阱如实披露：boot_integration 里 3 个 ignored 全部因宿主 x86_64 的诊断输出走真实 COM1 端口触发 SIGSEGV——这三项的判定逻辑只在 QEMU 下生效，宿主读数里它们不构成覆盖；单元测试的 8 个 ignored 是其它模块的既定豁免，与本篇无关。
 
-### 5.2 关键测试细读：混合链死锁与零堆 FIFO（→§3.2/§3.1）
+### 5.2 机制 → 需要证明什么（反转核对表）
+
+本节从**机制**出发列出"要证明它成立需要什么断言"，再标注覆盖状态——不是从现有测试出发（那份视角在 §5.1 表；本节是它的反转面）。反转核对查出 4 条覆盖缺口（R12-T01~T04），已按 TODO 登记。
+
+| # | 机制（正文位置） | 需要证明什么（可观测断言） | 覆盖状态 | 现有证据 |
+|---|---|---|---|---|
+| M1 | 两条规则与六原语的停/不停（§1.1、§2.8） | 每个原语的停/不停与唤醒条件 | 已覆盖 | send/receive/notify/SENDA 各组 + §2.8 总表对照 |
+| M2 | 端点编址与 generation 防伪（§1.2） | 槽复用后旧端点解析被拒 | 部分覆盖 | 端点解析测试族；generation 递增的专测未见（登记边际） |
+| M3 | `do_ipc` 分派、跟踪预占、KERNINFO 臂（§2.1） | KERNINFO 两态；`SC_DEFER` 接线后的重入 | 部分覆盖 | `test_do_ipc_receive_prologue_*`、KERNINFO 测试；跟踪重入无专测（登记边际） |
+| M4 | `deadlock` 判定与 XOR 豁免（§2.2） | 混合链/互发/互收判定；**外来环不 panic/不挂死** | 部分覆盖 | mixed-chain 与 receive-receive 测试钉本体；**外来环未覆盖** → **R12-T01**（SRC-18） |
+| M5 | `mini_send` 两路径与四失败返回（§2.3） | 直接交付 vs 排队；NON_BLOCKING 先于预检 | 已覆盖 | send 组 4 条 |
+| M6 | `mini_receive` 三级序与 SENDING 门（§2.4） | 通知>异步>同步次序；SENDREC 半停跳过 | 已覆盖 | receive 组 8 条 |
+| M7 | `mini_notify` 位图与直投（§2.5） | 立即交付 vs 记账；**被过滤来源不直投** | 部分覆盖 | notify 组 4 条 + 消费侧 D-16；**直投侧过滤未覆盖** → **R12-T02**（SRC-20） |
+| M8 | SENDA 表协议与三方函数（§2.6） | 四分支；done 门；重试主体=用户重交 | 部分覆盖 | SENDA 组 5 条；"重试主体"行为无专测（登记边际） |
+| M9 | 两段式交付与失败策略（§2.7） | 两段状态机；两次失败升级；快路径不破坏不变式 | 已覆盖 | deliver 组 4 条 + `test_receive_caller_q_drain_copies_to_user_buffer_not_deposit`（差异 7 的钉） |
+| M10 | Rust 引擎形状：FIFO/Outcome/UserCopy 边界（§3.1/§3.3/§3.4） | 零堆；O(1) 追加；方向契约 | 已覆盖 | 零堆 FIFO 细读 + user_copy 8 条 |
+| M11 | receive 侧死锁预检（差异 6） | 互收环被检出（或登记为不检） | **未覆盖** | → **R12-T03**（SRC-17） |
+| M12 | 唤醒记录器容量（差异 4） | SENDA 批量唤醒不被静默丢弃 | **未覆盖** | → **R12-T04**（SRC-19） |
+| M13 | 宿主/真机边界（§5.4） | 陷入往返与物理拷贝的真机断言 | 已披露 | §5.4 三条反证命令 |
+
+**新 TODO（对源码 workflow 的需求输入）**：`R12-T01`（M4 外来环守卫：C 加访问去重、Rust 加长度守卫）｜`R12-T02`（M7 notify 直投侧过滤补齐或登记）｜`R12-T03`（M11 receive 预检补齐或豁免）｜`R12-T04`（M12 唤醒容量：扩容或明确丢弃语义）。四条与 SRC-17~20 同源。
+
+### 5.3 关键测试细读：混合链死锁与零堆 FIFO（→§3.2/§3.1）
 
 第一个细读对象是 §4.2 混合链重放的测试本体：
 
@@ -2309,7 +2410,7 @@ cd os && cargo test -p minix-kernel --features mock
 
 （区间复算：`sed -n '3225,3248p' os/kernel/src/ipc.rs | wc -l` = 24。锚点：`os/kernel/src/ipc.rs:fn test_deadlock_mixed_chain_cycle`（宏派生项，测试模块内）。）
 
-测试构造 A→B（发送方向待停）、B 收 C、C 发 A 的混合环，断言 `detect_deadlock` 能识别。它的变红条件写在历史里：链走查若把「阻塞在谁身上」固定成单一字段（发送者读 `p_sendto_e`、接收者读 `p_getfrom_e` 的静态二选一），B 这个接收节点会把链走断（B 没在发送，字段里没有有效指向），环漏判、测试红。现行实现经 `blocked_on` 按 RTS 位动态选字段，测试绿——这条对位在 §4.2 的逐段对里已指出（`P_BLOCKEDON` 宏的先 SENDING 后 RECEIVING 次序）。
+测试构造 A→B（发送方向待停）、B 收 C、C 发 A 的混合环，断言 `detect_deadlock` 能识别。它的变红条件是一段反推（写进历史）：链走查若把「阻塞在谁身上」固定成单一字段（发送者读 `p_sendto_e`、接收者读 `p_getfrom_e` 的静态二选一），B 这个接收节点会把链走断（B 没在发送，字段里没有有效指向），环漏判、测试红。现行实现经 `blocked_on` 按 RTS 位动态选字段，测试绿——这条对位在 §4.2 的逐段对里已指出（`P_BLOCKEDON` 宏的先 SENDING 后 RECEIVING 次序）。
 
 第二个细读对象是零堆 FIFO 的队尾修正：
 
@@ -2353,9 +2454,9 @@ cd os && cargo test -p minix-kernel --features mock
 
 （区间复算：`sed -n '3033,3067p' os/kernel/src/ipc.rs | wc -l` = 35。锚点：`os/kernel/src/ipc.rs:fn test_caller_q_push_find_remove_fifo`（宏派生项）。）
 
-测试走完一次完整的入队-命中-摘链：两个发送者进队后断言头尾两个指针与中间链接字段的每一个值；摘掉队中成员后断言前驱链接与头尾指针都修正到位；摘掉最后成员后断言队空；对非成员摘链断言返回 false。它的变红条件在摘链的前驱修正：`caller_q_remove` 若只把被摘者的链接接走而忘了改前驱的 `send_q_link`，队列从被摘点断成两截，队尾之后的发送者从此不可达——测试在「Remove the middle sender」一步的红就是这处缺陷的形状。
+测试走完一次完整的入队-命中-摘链：两个发送者进队后断言头尾两个指针与中间链接字段的每一个值；摘掉队中成员后断言前驱链接与头尾指针都修正到位；摘掉最后成员后断言队空；对非成员摘链断言返回 false。它的变红条件也是一段反推（摘链的前驱修正）：`caller_q_remove` 若只把被摘者的链接接走而忘了改前驱的 `send_q_link`，队列从被摘点断成两截，队尾之后的发送者从此不可达——测试在「Remove the middle sender」一步的红就是这处缺陷的形状。
 
-### 5.3 测试边界与诚实披露（→Ch3）
+### 5.4 测试边界与诚实披露（→Ch3）
 
 宿主 mock 测不到的三件事，各给一句与反证命令。其一，真 int-33 陷入往返：宿主没有陷入指令，消息缓冲指针从用户栈到内核的搬运由门逻辑模拟，往返语义（停车-唤醒-返回码落位）只有真机门覆盖——`grep -rn 'int.33\|int33' os/kernel/tests/ | wc -l` 为零命中：宿主测试面连模拟层的陷入注释都没有。其二，跨地址空间拷贝的物理路径：宿主的 `KernelUserCopy` 是桩（§3.4），页表走查与直接映射窗口的字节搬运在 mock 下不走——`grep -c 'copy_via_root_pages' os/kernel/src/ipc.rs` 的命中集中在生产 `#[cfg(not(test))]` 分支，宿主测试体不执行它们。其三，IPC 过滤的真机行为：过滤集成测试在宿主以手动装配的过滤池驱动（§5.1 的过滤组），生产分派接入的全局过滤池与三架构链式判定只有 QEMU 门可验。真机与宿主的分界即此：协议层（位变、队列、匹配序、死锁）宿主可验；陷入往返与物理搬运真机才验。
 
@@ -2382,9 +2483,9 @@ grep -n 'define RTS_SENDING\|define RTS_RECEIVING' minix3/minix/kernel/proc.h
 grep -n 'CANRECEIVE' minix3/minix/kernel/proc.c
 ```
 
-预期关键行：`1013`（第一级通知的逐源验证）、`1058`（第三级同步队列逐个验证）、`1457`（异步兑现 try_one 内）。三处命中点就是过滤判定嵌进匹配路径的全部位置——「消息不到达」时按接收者的 receive 形态（收 ANY 还是收指定源、是否 SENDREC 中）定位它停在哪一级。
+预期关键行：`1013`（第一级通知的逐源验证）、`1058`（第三级同步队列逐个验证）、`1457`（异步兑现 try_one 内）。三处命中点是**接收瀑布内**的直接验证点（过滤判定还经 `WILLRECEIVE` 嵌入发送/通知/直投三侧的交付判定，不在此 grep 面内——"消息不到达"排查时两侧都要看）——「消息不到达」时按接收者的 receive 形态（收 ANY 还是收指定源、是否 SENDREC 中）定位它停在哪一级。
 
-**症状三：NOTIFY 丢失感（通知像没发过）。** 怀疑对象：位图按特权 id 索引（§2.5 的「Note the indirectness」）——发送者的进程号变了但特权 id 没变时通知仍应可达；反过来，接收者侧的清位时机若被提前（组装之前清、组装失败不还位）就真丢。确认命令与预期关键行：
+**症状三：NOTIFY 丢失感（通知像没发过）。** 怀疑对象：位图按特权 id 索引（§2.5 的「Note the indirectness」）——发送者的进程号变了但特权 id 没变时通知仍应可达；反过来，接收者侧的清位时机若被提前到**比现行更早**（现行=组装之前、同一次陷入内完成，§2.5 已证窗口不存在；异常形态=命中判定/`CANRECEIVE` 之前清、或组装失败不还位）就真丢。确认命令与预期关键行：
 
 ```bash
 grep -n 's_notify_pending' minix3/minix/kernel/proc.c minix3/minix/kernel/priv.h
@@ -2437,6 +2538,6 @@ grep -n 'pub enum IpcCall\|pub enum IpcOutcome\|pub enum IpcError\|pub struct Se
 - [09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3（MEMREQ GET/REPLY 的 VM 拉取回信形状）——FROM_KERNEL 的推送形状在缺页臂（C `arch/earm/exception.c`）
 - [10-switch-to-user.md](10-switch-to-user.md) §2.1（五标志循环的 DELIVERMSG 臂=delivermsg 的消费点）、§4.1（循环侧 misc flags 消费的 Rust 落点）
 - [11-scheduling-primitives.md](11-scheduling-primitives.md) §2.2 与 §4.2（RTS_SENDING/RECEIVING 的队列半：本篇讲位为什么变，那边讲位变化的队列后果）
-- `13-syscall-dispatch`（trap 传参，尚未重生成）、`22-syscall-copy`（拷贝机制本体，尚未重生成）、`23-ipc-filter`（IPC 过滤决策，尚未重生成）、`24-cross-space-runtime`（VMSUSPEND 与跨空间拷贝运行时，尚未重生成）、`02-stage-sched` 方向（SCHED 服务器侧的调度原语消费）
+- `13-syscall-dispatch`（trap 传参，**已重生成**）、`22-syscall-copy`（拷贝机制本体，尚未重生成）、`23-ipc-filter`（IPC 过滤决策，尚未重生成）、`24-cross-space-runtime`（VMSUSPEND 与跨空间拷贝运行时，尚未重生成）、`02-stage-sched` 方向（SCHED 服务器侧的调度原语消费）
 - C 源码：`minix3/minix/kernel/proc.c:do_ipc`、`:do_sync_ipc`、`:deadlock`、`:mini_send`、`:mini_receive`、`:mini_notify`、`:try_deliver_senda`、`:try_async`、`:try_one`、`:delivermsg`、`minix3/minix/kernel/proc.h:P_BLOCKEDON`、`minix3/minix/kernel/ipc.h:WILLRECEIVE`、`minix3/minix/include/minix/ipcconst.h:SEND`、`minix3/minix/include/minix/com.h:NOTIFY_MESSAGE`、`minix3/minix/kernel/main.c:IPCNAME`
 - Rust：`os/kernel/src/ipc.rs`（IpcCall/IpcOutcome/IpcError/SendFlags/DeadlockCycle/UserCopy/KernelUserCopy/delivermsg/caller_q_*/IpcEngine/mini_notify_core/build_notify_message）、`os/kernel/src/syscall.rs:fn dispatch_ipc`、`os/kernel/src/kerninfo.rs`、`os/arch/src/x86_64/boot.rs:fn set_secondary_ipc_return`
