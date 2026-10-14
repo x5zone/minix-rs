@@ -608,7 +608,7 @@ static void estimate_cpu_freq(void)
 }
 ```
 
-这段代码里有一个旁证支持"定时器编程不能提前"：校准的办法是挂一个临时钩子在 `CLOCK_IRQ` 上、打开中断、等 `PROBE_TICKS` 个 tick 到达，再用两次读 TSC 的差算出 CPU 频率。校准窗口本身只需要"中断入口与控制器都已经就位"（探针钩子只数 tick，不读进程上下文）；把整段推到启动末端的另有两条依赖：其一，C 的注释点明定时器初始化会间接用到 CPU 记账值，所以 `cycles_accounting_init()` 必须先跑（本节引用的 `bsp_finish_booting` 段）；其二，真实处理函数 `timer_int_handler` 注册之后，tick 的记账要读当前进程（`proc_ptr`）、通知要送到时钟任务，两者都要求进程表与任务端点已经就位。
+这段代码里有一个旁证支持"定时器编程不能提前"：校准的办法是挂一个临时钩子在 `CLOCK_IRQ` 上、打开中断、等 `PROBE_TICKS` 个 tick 到达，再用两次读 TSC 的差算出 CPU 频率。校准窗口本身只需要"中断入口与控制器都已经就位"（探针钩子只数 tick，不读进程上下文）；把整段推到启动末端的另有两条依赖：其一，C 的注释点明定时器初始化会间接用到 CPU 记账值，所以 `cycles_accounting_init()` 必须先跑（本节引用的 `bsp_finish_booting` 段）；其二，真实处理函数 `timer_int_handler` 注册之后，tick 的记账要读当前进程（`proc_ptr`）、通知要送到时钟任务，两者都要求进程表与任务端点已经就位。同一退化在合法输入下也存在：`hz ∈ [2,9]` 时 `PROBE_TICKS = system_hz / 10 = 0`——`init_clock` 的范围回退只挡 `< 2`，这组取值会让采样循环一开就退出、`tsc1` 停在初值。
 
 注册那一段在 x86 上分两支，但两支都以"线被放行"收尾：
 
@@ -1220,7 +1220,7 @@ x86-64 用 8254 PIT：
     }
 ```
 
-三个常量在文件顶部：`PIT_COMMAND = 0x43`、`PIT_CHANNEL0 = 0x40`、`PIT_CMD_RATE_GEN = 0x36`。引文里那行注释的 C 对位名（`intr_init_8254`）在本仓 C 树里不存在——PIT 编程的 C 对位是 `init_8253A_timer`（`minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer`，端口常量 `TIMER_MODE`/`TIMER0` 在 `ports.h`），`i8259.c` 管的是 8259A 的初始化；正文按实际情况陈述，注释的更新是代码侧的事。前两个端口号与 C 的 `minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer` 用的 `TIMER_MODE`/`TIMER0` 是同一对；命令字节 `0x36` 与 C 的 `SQUARE_WAVE 0x36` 同值，注释都描述为"速率发生器/方波、低字节后高字节"。`pit_base_freq` 来自平台描述符（`os/libs/minix-platform/src/arch/x86_64.rs:struct PitDesc` 的字段注释写着 fixed hardware constant `1_193_182`，构造点填的也是这个数），divisor 是 16 位，所以 `hz < 19` 时 `(pit_base_freq / hz) as u16` 会截断——断言把这条边界挡在编程之前。
+三个常量在文件顶部：`PIT_COMMAND = 0x43`、`PIT_CHANNEL0 = 0x40`、`PIT_CMD_RATE_GEN = 0x36`。引文里那行注释的 C 对位名（`intr_init_8254`）在本仓 C 树里不存在——PIT 编程的 C 对位是 `init_8253A_timer`（`minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer`，端口常量 `TIMER_MODE`/`TIMER0` 在 `ports.h`），`i8259.c` 管的是 8259A 的初始化；正文按实际情况陈述，注释的更新是代码侧的事。前两个端口号与 C 的 `minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer` 用的 `TIMER_MODE`/`TIMER0` 是同一对；命令字节 `0x36` 与 C 的 `SQUARE_WAVE 0x36` 同值，注释都描述为"速率发生器/方波、低字节后高字节"。`pit_base_freq` 来自平台描述符（`os/libs/minix-platform/src/arch/x86_64.rs:struct PitDesc` 的字段注释写着 fixed hardware constant `1_193_182`，构造点填的也是这个数），divisor 是 16 位，所以 `hz < 19` 时 `(pit_base_freq / hz) as u16` 会截断——断言把这条边界挡在编程之前。两个 hz 守卫的域关系在这里说清：`with_hz` 的 `2..=50000` 与这条断言是**交叉而非包含**——`[2,18]` 能通过构造器却会在这里 panic（`with_hz` 当前无生产调用者，这条交叉暂不可达；§3.2 的表记着这一项）。C 侧同区间更安静：`init_clock` 的 `2..50000` 放行 `[2,18]`，而 `TIMER_COUNT(freq)` 的商超过 16 位、低/高字节写入截断——没有断言拦它。
 
 aarch64 用 Generic Timer 的 EL1 物理定时器：
 
@@ -1395,7 +1395,7 @@ aarch64 的 GICv3 初始化分三步，各自解决一类问题：
 
 三处细节各自解决一个问题：
 
-- **Distributor 的 `GICD_CTLR` 用读改写**。注释说的是"整寄存器写会清掉固件配置的位（`ARE_NS`/`ARE_S`，bit 31:30 的亲和性路由），真机上具有破坏性"；所以先读、只置 `EnableGrp1NS`（`0x2`）、再写回。
+- **Distributor 的 `GICD_CTLR` 用读改写**。注释说的是"整寄存器写会清掉固件配置的位（`ARE_NS`/`ARE_S`，bit 31:30 的亲和性路由），真机上具有破坏性"；所以先读、只置 `EnableGrp1NS`（`0x2`）、再写回。（按 GICv3 规范，`ARE_S`/`ARE_NS` 位于 `GICD_CTLR` 的 bit 4 与 bit 5——注释里的 31:30 与规范不符；此处按注释原样引用，差异随源码侧登记。）
 - **Redistributor 的 PPI/SGI 半在另一个地址帧**。`GICR_SGI_FRAME = 0x1_0000`（`os/plat/src/arm64/interrupt.rs:const GICR_SGI_FRAME`）：Redistributor 的 RD 帧（0x0000–0xFFFF）放控制寄存器，SGI/PPI 帧（0x10000–0x1FFFF）复用 Distributor 风格的偏移。所有 `GICR_IGROUPR0`/`ISENABLER0`/`ICENABLER0` 访问都要加这个基址，否则写落在保留槽位、被 QEMU 忽略，使能静默失效。
 - **PPI 的分组要单独写**。复位值 0 把 PPI 放进 Group 0，Group 0 以 FIQ 交付；而 CPU 接口使能的是 Group 1（`ICC_IGRPEN1_EL1`），于是"已经使能的定时器 PPI"在 IRQ 交付通路上听不到。`GICR_IGROUPR0 = 0xFFFF_FFFF` 是把 SGI/PPI 全部归到 Group 1 的动作。
 
@@ -1546,7 +1546,7 @@ x86-64 的 `new()` 只把 ACPI 表地址收进实例字段，`init()` 的函数�
     }
 ```
 
-三条注释各说明一件事：内核栈由链接脚本处理（C 的 `k_stacks = &k_stacks_start` 在 Rust 里是链接器符号）；ACPI 表解析尚未实现（QEMU virt 不依赖它，物理机需要另做，见 §5.3 的缺口表）；APIC 初始化已经归控制器（§3.3/§3.5 的边界判据）。
+三条注释各说明一件事：内核栈由链接脚本处理（C 的 `k_stacks = &k_stacks_start` 在 Rust 里是链接器符号）；ACPI 表解析尚未实现（QEMU virt 不依赖它，物理机需要另做，见 §5.4 的缺口表）；APIC 初始化已经归控制器（§3.3/§3.5 的边界判据）。
 
 aarch64 的 `init()` 有两个动作：一个与 C 等价的 FPEN 写、一个由描述符门控的 PMU 初始化。
 
@@ -1930,7 +1930,34 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 
 这个载体证明的边界，文件顶部写得很直白：`the scheduler is NOT entered; BKL held throughout`，且"syscall 通路与用户帧的重调度出口虽然接线但在这里不可达——在调度器与用户态通路接线之前没有 CPL3 代码"。也就是说它证明的是"从 PIT 到 `uptime` 推进"这条链，不证明 tick 的六步语义，也不证明分发协议在用户态上下文里的行为。
 
-### 5.3 缺口与诚实披露
+### 5.3 机制 → 需要证明什么（反转核对表）
+
+本节从**机制**出发列出"要证明它成立需要什么断言"，再标注覆盖状态——不是从现有测试出发（那份视角在 §5.1/§5.2 的表；本节是它的反转面）。反转核对查出 6 条覆盖缺口（R05-T01~T06），已按 TODO 登记。
+
+| # | 机制（正文位置） | 需要证明什么（可观测断言） | 覆盖状态 | 现有证据 |
+|---|---|---|---|---|
+| M1 | `ClockState` 构造与 hz 边界（§3.2、§4.2） | 越界回退、BSP/AP 区分、挂/摘守卫 | 已覆盖 | 宿主 `clock.rs` 47 条（含 `with_hz` 三例与 `test_ap_state_set_alarm_timer_panics`） |
+| M2 | tick 记账与负载槽位（§4.2） | uptime/realtime/adjtime 推进、槽位轮转 | 已覆盖 | 宿主 `clock.rs`（记账与负载测试族） |
+| M3 | 定时器链的插入/移除/到期（§4.2） | 到期顺序、摘除幂等 | 已覆盖 | 宿主 `clock.rs`（含 `test_alarm_reset_is_idempotent`） |
+| M4 | `IrqManager` 注册-放行语义（§4.8） | 注册/移除/分发、共享线、`unmask→claim→mask→unmask→complete` 次序 | 已覆盖 | 宿主 `irq_manager.rs` 9 条 |
+| M5 | 三架构 `TIMER_IRQ` 取值（§4.9） | 0/30/0 钉住、改值联动 | 已覆盖（x86 宿主；arm/riscv 门控 0 宿主） | `x86_64/interrupt.rs` 4 条 + 真机载体三架构 |
+| M6 | `claim`/`complete` 配对（§4.5） | 身份原样回写、spurious 语义 | 部分覆盖 | `IrqManager` 层有两条（`dispatch_claims_before_mask_and_completes_last`、`not_completed_keeps_active`）；三架构实现本体（寄存器读写）无宿主测试——真机载体承担 |
+| M7 | `init_clock` 纯软件（§2.2） | 函数体无端口/寄存器访问 | 已覆盖 | §6.2 命令 1（可重放 grep） |
+| M8 | `intr_init` 十次写（§2.3） | 实参序列、全屏蔽结束态、**位级写入** | 部分覆盖 | §6.2 命令 2/3 静态核；**位级未证** → **R05-T01** |
+| M9 | x86 APIC 建立与门表重建（§2.4） | LAPIC 使能、RTE 编程、IDT 重载 | 部分覆盖 | 载体隐含（tick 到达）；**RTE/门表位级未证** → **R05-T01** |
+| M10 | x86-64 ACPI 表解析（§4.6） | RSDP 搜索 + MADT 解析 | **未覆盖**（实现只存地址不解析；QEMU virt 不依赖） | → **R05-T02**（物理机路径） |
+| M11 | aarch64 PMU 使能（§4.6） | PMCR/PMCNTENSET/PMUSERENR 写 | **未覆盖**（描述符全 `false`，段不执行） | → **R05-T03**（需承诺 PMU 的机器） |
+| M12 | riscv64 `mtimecmp` 直接 MMIO 写（§4.3） | MMIO 路径对照 SBI | **未覆盖**（实现走 SBI；MMIO 被 PMP 挡——刻意不走） | → **R05-T04**（M 模式参与的环境） |
+| M13 | 定时器三段（编程/注册/放行）（§3.7、§4.7） | 三架构编程 + 注册 + 门打开 → tick 到达 | 已覆盖 | 真机载体 `test-timer-irq`（PASS = uptime 5 ticks） |
+| M14 | x86 第四段 `pic_init`（§4.7） | 8259A ICW 重映射 + IMR 放行 | 部分覆盖 | 载体隐含；位级同 M8 → **R05-T01** |
+| M15 | 注册即放行（C↔Rust 同位）（§4.8） | 首处理者解屏蔽、actids 清零 | 已覆盖 | 宿主 `irq_manager.rs` + 载体 |
+| M16 | 时钟处理函数在用户态上下文的行为（§5.2 边界） | CPL3 进入 + 调度循环下 tick | **未覆盖**（载体不进调度器） | → **R05-T05**（后续文档的调度链） |
+| M17 | 关中断窗口与中断风暴的真机表现（§3.7 推演 3） | 门先于源打开 → 风暴/停摆 | **未覆盖**（宿主无法注入） | → **R05-T06**（故障注入变体） |
+| M18 | tick 六步语义（§1.4 范围外） | 推进/记账/定时器/alarm/负载 | 范围外 | 属 `15-clock-timer` |
+
+**新 TODO（对源码/测试 workflow 的需求输入）**：`R05-T01`（位级真值：8259A ICW 序列、IOAPIC RTE、GICD/GICR、PLIC 位图的 GDB/MMIO 单步核对——覆盖 M8/M9/M14）｜`R05-T02`（x86-64 ACPI 表解析补实现或明确豁免）｜`R05-T03`（aarch64 PMU 使能在承诺该能力的平台上验证）｜`R05-T04`（riscv64 MMIO 路径在 M 模式环境验证或保持 SBI 唯一通道）｜`R05-T05`（时钟处理函数的用户态上下文行为——随调度链文档）｜`R05-T06`（关中断窗口/风暴的故障注入载体变体）。
+
+### 5.4 缺口与诚实披露
 
 宿主测试与真机载体都不能证明的部分，以及本篇写作期未做的事：
 
