@@ -250,6 +250,38 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十九接上 `link`/`unlink` 的 `perror(3)` 腿，并把「哪一族缀程序名」写成一处权威**
+  （`2026-10-14`，`claim/UNLINK-PERROR-qoder` @ 基线 `953870dbe`，跨线：二线 `os/libs/minix-types` +
+  三线 `os/commands/bin/fileops`，登记 C-98 后动手）：
+  接回批次二百三十八登记①的第二处。**是什么**：核对 C 时发现这两条腿此前**报错的东西就不对**——
+  `unlink.c:56`/`link.c:57` 都是 `perror("unlink")`/`perror("link")`，而 Minix3 的 `perror`
+  （`minix3/lib/libc/stdio/perror.c`）打的是 `fprintf(stderr, "%s%s%s\n", s, separator, buf)`：
+  **既不带程序名前缀**（与 glibc/BSD 的习惯不同），**也从不打操作数**；`separator` 只在调用者串非空时是 `": "`。
+  本树两壳都印 `unlink: <路径>` / `link: <newpath>`——看着像 C 的一行，报的却是操作数而不是那个号。
+  判类 P0-code-bug（诊断内容与 C 不同）+ P0-fact（06 篇记着"perror 无 strerror 后缀→仅报路径"）。
+  **怎么修**：`minix-types` 新增 `perror_line(label, code, out)`，与 `err_line`、`prog_name` 并排——
+  「`err(3)`/`warn(3)` 缀程序名、`perror(3)` 不缀」这个差别从此只有一处答案；fileops 的 `bin_support.rs`
+  加写行入口 `perror_line`（渲染 + 换行，不退，退由调用者定，同 C）；两壳的失败臂交出那个号。
+  06 篇那行的说法随之改准，`§5` 补上进程级门的清单。
+  **门**：新建 `tests/linkops_face.rs`（4 枚）：`unlink` 失败行必须是 `unlink: <句子>` 且**路径不出现**、
+  `link` 同理两个操作数都不出现、argc 形状先落 usage（usage 行是硬写字符串、不带程序名，与 C 同）、
+  `-x` 当普通名字走同一条腿。号码不钉（宿主传输回什么是环境事实），字段顺序、操作数缺席、退码钉死。
+  三件套：`cargo test -p minix-fileops` → **397 passed、0 failed**（基线 393，+4 枚门）；
+  `cargo test -p minix-types` → 331/0（`perror_line` 两条断言并入 `err_line_renders_c_verrc_shape`）；
+  三架构 `cargo build -p minix-fileops --bins` 三台零 error；容器 `minix-ci:1.94`（带 `-u`）
+  `cargo check -j 1 --workspace` Finished 零 error、两包 `cargo test -j 1` 出 32 个 `test result: ok`、
+  FAILED 仅剩批次二百三十三登记的那枚恒红测；`rustfmt` 触及五文件零漂移；clippy 对触及文件零命中；
+  `pattern-gate --diff` PASS=17 FAIL=0；`doc-style --diff` error 0；宿主实跑 `unlink /tmp/nope` →
+  `unlink: Input/output error`、`link /tmp/a /tmp/b` → `link: Input/output error`，均退 1。
+  核实日 `2026-10-14`；基线 `953870dbe`。
+  **五枚变异负控**（`tmp/unlink-perror-mutate.py`，门/库/权威三处分别调用、复位断言 md5）全部咬中且
+  各咬在各处：报操作数不报句子（只门红）、给 `perror` 加上程序名前缀即 glibc 化（门 3 枚红）、
+  丢掉空串的 `separator` 规则（只权威测红，说明这条规则只有权威处管得着）、句子换成大写代号（门与权威测同红）、
+  `link` 留着报新路径（只门红）。
+  登记不执行：①其余 `err(3)`/`warn(3)`/`perror(3)` 腿的逐枚接线（rm/cp/mv/truncate/du/find/stat、
+  doctools `what`、textfilter `join`）——接线时要按本批的两族之别选 `err_line` 还是 `perror_line`，
+  不许统一成一族；②`emit` 的宿主双生面；③真机播种与 open 腿归 C-57/E5。
+
 - ✅ **批次二百三十八接上 `mkfifo` 的 `warn(3)` 腿：一行里既有程序名也有那个号的句子**
   （`2026-10-14`，`claim/MKFIFO-ERRSUFFIX-qoder` @ 基线 `2c5088736`，**跨线**：二线 `os/libs/minix-types`
   （新增 `prog_name`）+ 三线 `os/commands/bin/fileops`、`os/commands/bin/shell`（改为转发），

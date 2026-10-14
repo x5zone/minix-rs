@@ -4,10 +4,11 @@
 //! `unlink(2)` behind an argument-count check; the shape check lives in
 //! `minix_fileops::linkops`, this program supplies the syscall and error leg
 //! (`unlink.c:52-59`). A write-side command: real-machine effect is the
-//! writable-root gate (`C-57`/E5), and C's `perror` `strerror` suffix is not
-//! reproduced yet — the table itself lives in `minix_types::Errno::message`, and
-//! wiring this shell to it is a registered follow-up — so a failure prints
-//! `unlink: <path>`.
+//! writable-root gate (`C-57`/E5). The failure leg is C's
+//! `perror("unlink")` (`unlink.c:56`), and Minix3's `perror`
+//! (`minix3/lib/libc/stdio/perror.c`) prints `<the caller's string>: <strerror>`
+//! with **no program-name prefix** — so the line is `unlink: <sentence>` about the
+//! errno, not `unlink: <path>`: the path never reaches C's diagnostic at all.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -16,7 +17,6 @@ extern crate alloc;
 #[path = "../bin_support.rs"]
 mod support;
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_fileops::linkops::unlink_operand;
@@ -36,8 +36,9 @@ fn run() -> ! {
     };
     match unlink(path) {
         Ok(()) => support::terminate(0),
-        Err(_) => {
-            support::warn(format!("unlink: {path}\n").as_bytes());
+        // C 的 `perror("unlink")`：报的是这个号的句子，操作数本身不出现在诊断里。
+        Err(code) => {
+            support::perror_line("unlink", code);
             support::terminate(1);
         }
     }

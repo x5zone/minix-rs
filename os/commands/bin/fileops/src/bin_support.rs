@@ -122,6 +122,15 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
     minix_types::prog_name(raw)
 }
 
+/// Minix3 的 `perror(3)` 那一行：`<label>: <句子>`（**不带程序名**，见
+/// `minix3/lib/libc/stdio/perror.c`），写完不换行由本函数补换行、不退——退不退由调用者定。
+pub fn perror_line(label: &str, code: minix_sys::Errno) {
+    let mut line = [0u8; 256];
+    let len = minix_types::perror_line(label, code, &mut line);
+    warn(&line[..len.min(line.len())]);
+    warn(b"\n");
+}
+
 /// C 的 `warn(3)` 那一行：`prog: label: <strerror 的句子>` 加一个换行，写完继续跑
 /// （`vwarn.c` 不退，退不退由调用者决定）。形状与句子都由 `minix_types::err_line`
 /// 那一份权威给出（`minix3/lib/libc/gen/verrc.c` 与 C 的 `sys_errlist`）。
