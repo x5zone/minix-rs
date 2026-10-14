@@ -10,15 +10,25 @@
 //! code under the name `readlink` (`stat.c:217-232`), where `-f` means `%R`
 //! and the exit code comes from the failed-link flag instead of the error flag.
 //!
-//! Three declared differences, all from legs this tree does not have:
-//! - `%R` (realpath) is refused rather than printed empty: resolving a path
-//!   component by component has no wrapper here yet. The refusal happens per
-//!   operand, the same place C would have warned (`stat.c:824-833`).
+//! Two declared differences, all from legs this tree does not have:
 //! - `%Su`/`%Sg` always take C's "no such password entry" branch and print
 //!   `(123)`, because there is no password database wrapper in this tree —
 //!   the same missing leg that blocks `chown`.
 //! - `%d`/`%r` in the string form print `???`, which is what C prints when
 //!   `devname()` finds nothing (`stat.c:609-613`); no `/dev` scan exists here.
+//!
+//! The report legs are wired to the shared renderer (`err_line` in the
+//! `minix-types` crate, shape from `minix3/lib/libc/gen/vwarnc.c`), and all three of
+//! C's lines here are the `warn(3)` family, so each carries the number's sentence:
+//! `warn("%s: %s", name, usestat ? "stat" : "lstat")` (`stat.c:340-344`) becomes
+//! `stat: <名>: stat: <句子>`, `warn("readlink `%s'", file)` (`stat.c:849`) becomes
+//! `stat: readlink \`<名>': <句子>`, and `warn("realpath `%s'", file)` (`:828`) the
+//! same shape with the number `getcwd.c` set — four of that folder's failure kinds
+//! assign the number themselves (`ENOENT`/`ENAMETOOLONG`/`ELOOP`/`ENOTDIR`) and are
+//! reproduced, while the three that pass a syscall's number through cannot be, since
+//! the folding probe answers only yes-or-no; those three print the phrase alone
+//! rather than an invented number, and the probe interface is registered as a
+//! follow-up batch (the same item `find`'s walk probe needs).
 //!
 //! Time: C breaks the seconds down with `localtime`; this layer has no time-zone
 //! database, so the breakdown is UTC — the same declared boundary as `date` and
@@ -39,7 +49,7 @@ mod support;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_fileops::realpath::{PathProbe, real_path};
+use minix_fileops::realpath::{PathProbe, RealPathError, real_path};
 use minix_fileops::stat::{
     self, FaceError, Plan, PlanError, Report, StatData, TimeField, parse_args, parse_format, render,
 };
@@ -48,6 +58,10 @@ use minix_sys::{Errno, Stat, fstat, getcwd, lstat, readlink, stat as stat_follow
 /// `readlink` 与路径缓冲的宽度，取 C 那份 `path` 数组的同级容量（`stat.c:578`），
 /// 与 `realpath` 的上限同为 `PATH_MAX`（`minix-sys` 的线长上限即此值）。
 const LINK_BUF: usize = 1024;
+
+/// `minix3/sys/sys/errno.h:114` 的 `ELOOP`（值 62，「符号链过多」）。`Errno` 未带这个
+/// 名的关联常量，所以照 `rm.rs` 对 `ETXTBSY` 的做法在壳侧定义数值并换算。
+const ELOOP: i32 = 62;
 
 /// `%R` 要的 `realpath(3)` 腿。三个动作全走 `minix_sys`，折叠算法在
 /// `minix_fileops::realpath`（`minix3/lib/libc/gen/getcwd.c:64-215` 的移植）。
@@ -76,16 +90,40 @@ impl PathProbe for SysProbe {
 }
 
 /// 折一次 `%R`。C 在这里也是「失败就出声一次、置 `linkfail`、当空串」，
-/// 具体的错误码不进告警文本（`stat.c:824-833`，那边无 `strerror` 可对位）。
-fn resolve_for(name: &str, quiet: bool) -> Option<String> {
+/// 且那一行是 `warn("realpath `%s'", file)`（`stat.c:824-833`）——缀的是
+/// `getcwd.c` 设下的那个号的句子。
+fn resolve_for(prog: &str, name: &str, quiet: bool) -> Option<String> {
     match real_path(&SysProbe, name) {
         Ok(resolved) => Some(resolved),
-        Err(_) => {
+        Err(e) => {
             if !quiet {
-                support::warn(format!("stat: realpath `{name}'\n").as_bytes());
+                match real_path_errno(e) {
+                    Some(code) => support::warn_line(prog, &format!("realpath `{name}'"), code),
+                    // 透传支（`lstat`/`readlink`/`getcwd` 自己失手）的号在探针接口
+                    // 那一头就丢了，宁可只出短语也不造一个假号（登记在头注）。
+                    None => support::warn(format!("{prog}: realpath `{name}'\n").as_bytes()),
+                }
             }
             None
         }
+    }
+}
+
+/// `RealPathError` 里那四支由 `getcwd.c` 自己指定号的原因（另三支是系统调用透传，
+/// 本层拿不到）。坐标逐支标在右边。
+fn real_path_errno(e: RealPathError) -> Option<Errno> {
+    match e {
+        // `getcwd.c:104-107`（空路径）与 `:185-191`（链目标长为零）都定 `ENOENT`。
+        RealPathError::NoEntry => Some(Errno::ENOENT),
+        // `getcwd.c:159-165`。
+        RealPathError::NameTooLong => Some(Errno::ENAMETOOLONG),
+        // `getcwd.c:180-183`（链层数过 `MAXSYMLINKS`）。
+        RealPathError::Loop => Some(Errno::from_i32(ELOOP)),
+        // `getcwd.c:207-209`（中间一段不是目次而后还有内容）。
+        RealPathError::NotDir => Some(Errno::ENOTDIR),
+        RealPathError::StatFailed
+        | RealPathError::ReadLinkFailed
+        | RealPathError::NoWorkingDirectory => None,
     }
 }
 
@@ -131,9 +169,10 @@ fn to_data(st: &Stat) -> StatData {
     }
 }
 
-fn usage(synopsis: &str) -> ! {
-    // `stat.c:357-365`：`usage: <prog> <synopsis>`，退出码 1。
-    support::warn(format!("usage: {synopsis}\n").as_bytes());
+fn usage(prog: &str, synopsis: &str) -> ! {
+    // `stat.c:357-365`：`fprintf(stderr, "usage: %s %s\n", getprogname(), synopsis)`——
+    // 名字在行里，synopsis 随人格换。退出码 1。
+    support::warn(format!("usage: {prog} {synopsis}\n").as_bytes());
     support::terminate(1);
 }
 
@@ -145,15 +184,15 @@ fn bad_format(prog: &str, source: &str) -> ! {
 
 /// 读符号链目标。读不到就交回 `None`，由决定半把 `linkfail` 置起
 /// （`stat.c:846-853` 的失败支只出声一次，这里同样只在失败时报一行）。
-fn link_target(name: &str, quiet: bool) -> Option<String> {
+/// C 的那一行是 `warn("readlink `%s'", file)`（`:849`）——缀号。
+fn link_target(prog: &str, name: &str, quiet: bool) -> Option<String> {
     let mut buf = [0u8; LINK_BUF];
     match readlink(name, &mut buf) {
         Ok(len) => Some(String::from_utf8_lossy(&buf[..len]).into_owned()),
         Err(e) => {
             if !quiet {
-                support::warn(format!("stat: readlink `{name}'\n").as_bytes());
+                support::warn_line(prog, &format!("readlink `{name}'"), e);
             }
-            let _ = e;
             None
         }
     }
@@ -161,20 +200,25 @@ fn link_target(name: &str, quiet: bool) -> Option<String> {
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    // C 先 `setprogname(argv[0])`（`stat.c:217`）再拿 `getprogname()` 比人格
+    // （`:220`），所以这一串是去过目录的那一段，且比的是全等。
+    let prog = support::prog_name(&argv);
     if argv.is_empty() {
-        usage("stat [-FlLnqrsx] [-f format] [-t timefmt] [file ...]");
+        usage(prog, "[-FlLnqrsx] [-f format] [-t timefmt] [file ...]");
     }
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let prog = args[0];
     let rest = &args[1..];
 
     let plan: Plan<'_> = match parse_args(rest, prog) {
         Ok(p) => p,
-        Err(PlanError::Usage) => usage(if prog.ends_with("readlink") {
-            "[-fnqsv] [file ...]"
-        } else {
-            "[-FlLnqrsx] [-f format] [-t timefmt] [file ...]"
-        }),
+        Err(PlanError::Usage) => usage(
+            prog,
+            if prog == "readlink" {
+                "[-fnqsv] [file ...]"
+            } else {
+                "[-FlLnqrsx] [-f format] [-t timefmt] [file ...]"
+            },
+        ),
         Err(PlanError::FormatConflict { first, second }) => {
             // `stat.c:261-263`。
             support::warn(
@@ -217,14 +261,15 @@ fn run() -> ! {
                 (_, outcome) => outcome,
             },
         };
-        if got.is_err() {
+        if let Err(e) = got {
             errs = true;
             linkfail = true;
             if !plan.quiet {
-                // C 的 `warn` 会缀上 strerror 的句子。那张表已在本树
-                // （`minix_types::Errno::message`），本壳尚未接它，故行止于腿名（已登记）。
+                // C 的 `warn("%s: %s", name, usestat ? "stat" : "lstat")`
+                // （`stat.c:340-344`）：那两个字是调用者给的格式串里的两个 `%s`，
+                // 而句子是 `errno` 的——四段都出自那一份权威。
                 let leg = if plan.use_stat { "stat" } else { "lstat" };
-                support::warn(format!("{prog}: {}: {leg}\n", name.unwrap_or("(stdin)")).as_bytes());
+                support::warn_line(prog, &format!("{}: {leg}", name.unwrap_or("(stdin)")), e);
             }
             number += 1;
             continue;
@@ -232,12 +277,12 @@ fn run() -> ! {
 
         let data = to_data(&st);
         let link = if (data.mode & minix_fileops::cp::S_IFMT) == minix_fileops::cp::S_IFLNK {
-            name.and_then(|path| link_target(path, plan.quiet))
+            name.and_then(|path| link_target(prog, path, plan.quiet))
         } else {
             None
         };
         let resolved = if needs_realpath(&pieces) {
-            name.and_then(|path| resolve_for(path, plan.quiet))
+            name.and_then(|path| resolve_for(prog, path, plan.quiet))
         } else {
             None
         };

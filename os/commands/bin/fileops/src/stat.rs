@@ -417,11 +417,16 @@ pub enum PlanError {
 /// 扫参数（C 的 `getopt` 串在 `stat.c:219-232`：stat 是 `"f:FlLnqrst:x"`，
 /// readlink 是 `"fnqsv"`）。
 ///
+/// `prog_name` 交的是已经去掉目录的那一段（C 的 `getprogname()`，规则在
+/// `minix3/lib/csu/common/crt0-common.c:156-165`，取法是壳侧唯一的 `bin_support::prog_name`），
+/// 因为人格判据是 `stat.c:220` 的 `strcmp(getprogname(), "readlink") == 0`——整段相等，
+/// 不是「以 `readlink` 结尾」：`/bin/my-readlink` 在 C 里仍走 stat 人格。
+///
 /// 两条人格的差别都照 C：readlink 默认模板 `%Y`、默认 `quiet`、`-f` 意为 `%R`、
 /// `-s` 只是把 `quiet` 再置一次、`-v` 取消 `quiet`，而 stat 的 `-F -L -l -r -t -x`
 /// 在它那里都是不认识的开关（不在选项串里）。
-pub fn parse_args<'a>(args: &[&'a str], prog: &str) -> Result<Plan<'a>, PlanError> {
-    let readlink = prog.ends_with("readlink");
+pub fn parse_args<'a>(args: &[&'a str], prog_name: &str) -> Result<Plan<'a>, PlanError> {
+    let readlink = prog_name == "readlink";
     let mut format: Option<&'a str> = None;
     let mut timefmt: Option<&'a str> = None;
     let mut fmtchar: Option<char> = None;

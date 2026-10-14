@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十七接上 `stat` 的四段报告行，并改回 `getprogname()` 的人格判据与 usage 里的名字（16t 第七枚）**
+  （`2026-10-14`，`claim/STAT-STRERROR-qoder` @ 基线 `614c63523`，单域三线 `os/commands/bin/fileops`
+  与同线文档，无跨界）：接回批次二百四十六登记不执行①。**是什么**：C 的失败腿是
+  `warn("%s: %s", name, usestat ? "stat" : "lstat")`（`stat.c:340-344`），经 `vwarnc.c` 渲染成四段
+  `stat: <操数>: <腿名>: <句子>`；本壳只到第三段。判类 P0-code-bug。
+  **核对中拓出三处不是文案的问题**：①人格判据——C 是 `strcmp(getprogname(), "readlink") == 0`
+  （`stat.c:220`），本树决定半用 `prog.ends_with("readlink")` 且把**未去目录的 `argv[0]`** 交给它，于是
+  `/bin/my-readlink` 会被错认成 readlink（丢选项、丢告警），`/bin/stat` 连 usage 都不对；②`usage()` 行丢了
+  程序名——C 是 `fprintf(stderr, "usage: %s %s\n", getprogname(), synopsis)`（`:357-365`），本壳只印
+  `usage: <synopsis>`（接线前实测：`usage: [-fnqsv] [file ...]`）；③头注与注释里那两句「`%R` 被拒而非折叠」
+  与「本壳尚未接那张表」都是假理由（`%R` 自批次一百三十五已折叠，表已在 `Errno::message`），属 P0-fact。
+  **怎么修**：壳侧 `prog = support::prog_name(&argv)`（取段规则只住在权威那一处），人格比全等；失败腿交
+  `support::warn_line(prog, "<操数>: <腿名>", code)`；`readlink:` 腿直接拿自己那趟 `readlink(2)` 的号；
+  `realpath:` 腿按 `getcwd.c` 自己指定号的四支映射（`ENOENT`/`ENAMETOOLONG`/`ELOOP`/`ENOTDIR`，坐标逐支带注），
+  其余三支是系统调用透传、探针接口不交号，宁可只出短语也不造一个假号（与 `find` 的 `WalkProbe` 同一条登记）；
+  `ELOOP` 在 `Errno` 里没有关联常量，沿用 `rm.rs` 对 `ETXTBSY` 的先例（壳侧定值 + `from_i32`）。
+  **门**：新建 `tests/stat_face.rs`（7 枚）：四段报告行、腿名跟着选项走而不跟着最后失手的调用走、`-q`
+  只关出声不改退码、三支 `errx` 形腿逐字钉（含 `can't use format 'f' with -F` 与 `%Q: bad format`）、usage 行
+  名字在串里、两个副本（`<tmp>/readlink` 与 `<tmp>/my-readlink`）同时钉住人格全等判据与 `getprogname()` 丢目录。
+  三件套：`cargo test -p minix-fileops` → **437 passed、0 failed**（基线 430，+7 枚门；决定半库测零回归）；
+  容器 `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-fileops` → **437/0**；三架构
+  `cargo build -p minix-fileops --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 Finished 零 error；
+  `rustfmt --edition 2024 --check` 触及三文件零漂移；clippy 对触及文件零命中；宿主实跑
+  `stat /tmp/nope` → `stat: /tmp/nope: lstat: Input/output error`、`stat -L` → `… : stat: …`、
+  `stat -q` 一声不出但退 1、`stat -Z` → `usage: stat [-FlLnqrsx] …`、`<tmp>/my-readlink <x>` → 报告行头是
+  `my-readlink:`。核实日 `2026-10-14`；基线 `614c63523`。
+  **三枚变异负控**（测完按 md5 复原）：报告腿丢句子（门 4 枚红）、人格退回 `ends_with`（那枚独红）、
+  usage 丢程序名（usage 两枚红）。
+  06 篇三行随之改准：`stat.rs` 行（人格判据）、`stat` 缺腿表行（`%R` 不再是被拒）、端到端门清单添上本扇。
+  登记不执行：①探针接口不交号这一件（`find` 的 `WalkProbe` 与 `stat` 的 `PathProbe` 同病）：命令层决定半到底
+  能不能收 `Errno` 型——这是 99 篇 §1 分层契约上的一项待定形，不属本轮接线；②`realpath:` 三支透传腿随①一同接；
+  ③余下 doctools `what`、textfilter `join` 的同族腿。
+
 - ✅ **批次二百四十六把 `find` 的八支报文逐枚改回 C 的 `errx` 原文（16t 第六枚，第 1 片）**
   （`2026-10-14`，`claim/FIND-STRERROR-qoder` @ 基线 `c7c897068`，单域三线 `os/commands/bin/fileops`
   与同线文档，无跨界）：接回批次二百四十五登记不执行①。**是什么**：`find` 的报文不是「同一个前缀 + 不同
