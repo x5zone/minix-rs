@@ -32,7 +32,11 @@ Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a
 - Build：`cargo build`（workspace 根在 `os/`）
 - Test：`cargo test`；Lint：`cargo clippy`
 - 内核宿主测必须显式带形态：`cargo test -p minix-kernel --features mock`（CI 作业 `kernel-tests.yml` 的 `host-default-form` 腿即此命令，`2026-10-12` 现跑 831 通过 / 0 失败 / 8 忽略）。`SD-30` 已清空三包默认形态，裸跑 `cargo test -p minix-kernel` 会被 `os/kernel/src/lib.rs` 的 `form_contract` 编译期绊线当场挡住——那是设计行为，不是缺陷，别去放宽绊线
-- 权威编译门配方：docker `minix-ci:1.94` + `-m 2g -j 1`；三架构真机门见 `os/qemu-tests/README.md`
+- 权威编译门配方：docker `minix-ci:1.94` + `-m 2g -j 1`，**挂载仓库根并把工作目录指到 `os/`**：
+  `docker run --rm -v "$PWD:/work" -w /work/os -m 2g minix-ci:1.94 cargo test -j 1 -p <pkg>`（在仓库根执行）。
+  挂载点不是可有可无的：以 `os/` 为根挂载会让任何读仓库内 C 源或工具的宿主测试假红
+  （判例：`minix-types` 的 `test_c_bridge_fs_stat_offsets_match_rust_layout` 读 `tools/atf-c-compat/posix-stubs.c`，
+  旧配方下报 `NotFound` 而被误记成代码债）；三架构真机门见 `os/qemu-tests/README.md`
 
 ## Directory Layout
 
