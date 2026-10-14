@@ -24,8 +24,7 @@
 // unused helpers in any one binary are intentional, not drift.
 #![allow(dead_code)]
 
-use minix_sys::{Fd, write};
-use minix_types::{EIO, Errno};
+use minix_sys::{EIO, Errno, Fd, write};
 
 /// Standard input, POSIX `STDIN_FILENO`.
 pub const STDIN: Fd = 0;
@@ -223,9 +222,9 @@ pub fn utoa(mut value: u32, out: &mut [u8]) -> usize {
     count
 }
 
-/// C 的 `err(3)` 那一行的渲染，权威在表旁边：转发到 [`minix_types::err_line`]，
+/// C 的 `err(3)` 那一行的渲染，权威在 errno 表旁边：转发到 [`minix_sys::err_line`]，
 /// 免得每个命令族各留一份形状。
-pub use minix_types::err_line;
+pub use minix_sys::err_line;
 
 /// C 的 `warn(3)`/`err(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退
 /// （`vwarnc.c` 不退，退不退由调用者定）。形状与句子都在 `minix-types` 那一份
@@ -233,7 +232,7 @@ pub use minix_types::err_line;
 /// 缀号的腿（`primes` 的 `err(1, "%s", argv[i])`）才用它。
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
     let mut line = [0u8; 256];
-    let len = minix_types::err_line(prog, label, code, &mut line);
+    let len = minix_sys::err_line(prog, label, code, &mut line);
     warn(&line[..len.min(line.len())]);
     warn(b"\n");
 }
@@ -247,7 +246,7 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
         .first()
         .map(alloc::string::String::as_str)
         .unwrap_or("");
-    minix_types::prog_name(raw)
+    minix_sys::prog_name(raw)
 }
 
 /// Line assembly over a caller-provided buffer and an injected reader.

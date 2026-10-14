@@ -223,15 +223,15 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
         .first()
         .map(alloc::string::String::as_str)
         .unwrap_or("");
-    minix_types::prog_name(raw)
+    minix_sys::prog_name(raw)
 }
 
 /// C 的 `warn(3)`/`err(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退
-/// （`vwarnc.c` 不退，退不退由调用者定）。形状与句子都在 `minix-types` 的 `err_line`
-/// 那一份权威里（与不缀程序名的 `perror_line` 并列）。
+/// （`vwarnc.c` 不退，退不退由调用者定）。形状与句子都住在 `minix-types` 的 `err_line`
+/// 那一份权威里（本层经 `minix_sys::err_line` 拿，与不缀程序名的 `perror_line` 并列）。
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
     let mut line = [0u8; 256];
-    let len = minix_types::err_line(prog, label, code, &mut line);
+    let len = minix_sys::err_line(prog, label, code, &mut line);
     warn(&line[..len.min(line.len())]);
     warn(b"\n");
 }

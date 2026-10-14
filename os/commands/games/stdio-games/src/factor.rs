@@ -10,7 +10,7 @@
 //! probabilistic path stays with later work.
 
 use crate::GameError;
-use minix_types::{ERANGE, Errno};
+use minix_sys::{ERANGE, Errno};
 
 /// Small primes for the trial division wheel (all primes below 100).
 pub const SMALL_PRIMES: &[u64] = &[

@@ -56,7 +56,7 @@ fn usage(prog: &str) -> ! {
 /// 那一行的形状在 `minix3/lib/libc/gen/verrc.c`——`getprogname(): ` + 调用者的串 +
 /// `": "` + `strerror` 的句子，然后退 1。程序名按 C 从 `argv[0]` 去掉目录取
 /// （[`support::prog_name`]），句子取自本树的 `sys_errlist`（[`support::err_exit`] 转发到
-/// `minix_types::err_line`）。
+/// `minix_sys::err_line`）。
 fn report_err(prog: &str, operation: &str, errno: Errno) -> ! {
     support::err_exit(prog, operation, errno, 1);
 }

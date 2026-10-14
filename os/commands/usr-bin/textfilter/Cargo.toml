@@ -13,9 +13,9 @@ path = "src/lib.rs"
 # stays free of any system-call imports (pure deciding half).
 [dependencies]
 minix-sys = { workspace = true }
-# `err(3)`/`warn(3)` 那一行的形状与 errno 句子表同住 `minix-types`（`err_line`/`prog_name`），
-# 命令侧不自己抄一份（先例：`fileops`、`doctools` 的 `perror_line`）。
-minix-types = { workspace = true }
+# `err(3)`/`warn(3)` 那一行的渲染与 errno 句子表住在 `minix-types`，但命令层不直引它：
+# 本 crate 只走 `minix-sys` 顶层的同名再导出（`err_line`/`prog_name`），与 `fileops` 同形
+# （边界守卫 `tools/check-command-boundary.sh`，判例：批次一百零九的 `df`）。
 
 # minix-rt 按目标分形态（fileops/NS12 seam 判例）：无条件声明会把 std
 # feature 统一进下游的 none 构建图，freestanding 侧 minix-rt 必须 no_std。

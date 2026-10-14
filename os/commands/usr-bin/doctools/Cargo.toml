@@ -11,9 +11,9 @@ path = "src/lib.rs"
 
 [dependencies]
 minix-sys = { workspace = true }
-# `perror(3)` 那一行的渲染（`perror_line`）与 errno 句子表同住 `minix-types`，
-# 命令侧不自己抄一份（权威与先例见 `os/commands/bin/fileops/Cargo.toml`）。
-minix-types = { workspace = true }
+# `perror(3)` 那一行的渲染与 errno 句子表住在 `minix-types`，但命令层不直引它：本 crate
+# 只走 `minix-sys` 顶层的同名再导出（`perror_line`），与 `fileops`/`textfilter` 同形
+# （边界守卫 `tools/check-command-boundary.sh`，判例：批次一百零九的 `df`）。
 
 [[bin]]
 name = "cal"

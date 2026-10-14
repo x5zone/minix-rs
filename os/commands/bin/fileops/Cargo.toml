@@ -13,8 +13,9 @@ path = "src/lib.rs"
 # stays free of any system-call imports (pure deciding half).
 [dependencies]
 minix-sys = { workspace = true }
-# `err(3)`/`warn(3)` 那一行的形状与句子表同住 `minix-types`（`err_line`/`prog_name`）。
-minix-types = { workspace = true }
+# `err(3)`/`warn(3)`/`perror(3)` 那一行的渲染与 errno 句子表住在 `minix-types`，但命令层
+# 不直引它：本 crate 只走 `minix-sys` 顶层的同名再导出（边界守卫
+# `tools/check-command-boundary.sh`，判例：批次一百零九的 `df`）。
 # The `:` operator of expr anchors a basic regular expression; the BRE
 # engine is the 08-stage library (the C expr links libc's regcomp).
 minix-regex = { workspace = true }

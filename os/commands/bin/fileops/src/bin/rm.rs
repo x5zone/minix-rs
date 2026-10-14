@@ -22,7 +22,7 @@
 //! branch inside `check` (`rm.c:563-568`, "could not be overwritten") stays
 //! unreachable because `-P` is refused before any operand is touched.
 //! C's `warn`/`warnx`/`err` legs are wired to the one renderer the whole
-//! command family shares (`minix_types::err_line`, whose shape comes from
+//! command family shares (reached as `minix_sys::err_line`, whose shape comes from
 //! `minix3/lib/libc/gen/verrc.c`): the program name comes from `argv[0]`
 //! through `getprogname()`'s rule, and the trailing sentence is that errno's
 //! `strerror` text. Two shapes are at stake and they are not the same line:

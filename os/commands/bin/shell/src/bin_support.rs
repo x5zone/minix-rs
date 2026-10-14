@@ -150,7 +150,7 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
         .first()
         .map(alloc::string::String::as_str)
         .unwrap_or("");
-    minix_types::prog_name(raw)
+    minix_sys::prog_name(raw)
 }
 
 /// 按 C 的 `err(3)` 报一句就走：`prog: label: <strerror 的句子>` 加一个换行，然后以
@@ -158,7 +158,7 @@ pub fn prog_name(argv: &[alloc::string::String]) -> &str {
 /// `verrc.c` 的写法，句子取自 C 的 `sys_errlist`），这里只负责写与退。
 pub fn err_exit(prog: &str, label: &str, code: minix_sys::Errno, eval: i32) -> ! {
     let mut line = [0u8; 128];
-    let len = minix_types::err_line(prog, label, code, &mut line);
+    let len = minix_sys::err_line(prog, label, code, &mut line);
     warn(&line[..len.min(line.len())]);
     warn(b"\n");
     terminate(eval)

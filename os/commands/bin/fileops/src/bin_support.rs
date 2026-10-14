@@ -111,32 +111,34 @@ pub fn warn(bytes: &[u8]) {
     let _ = minix_sys::write(STDERR, bytes);
 }
 
-/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（权威在
-/// `minix_types::prog_name`，规则见 `minix3/lib/csu/common/crt0-common.c:156-165`）。
+/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（住在 `minix-types` 的 errno
+/// 表旁，本层经 `minix_sys::prog_name` 拿；规则见
+/// `minix3/lib/csu/common/crt0-common.c:156-165`）。
 /// `warn(3)`/`err(3)`/`usage()` 的那几行都以它开头。
 pub fn prog_name(argv: &[alloc::string::String]) -> &str {
     let raw = argv
         .first()
         .map(alloc::string::String::as_str)
         .unwrap_or("");
-    minix_types::prog_name(raw)
+    minix_sys::prog_name(raw)
 }
 
 /// Minix3 的 `perror(3)` 那一行：`<label>: <句子>`（**不带程序名**，见
 /// `minix3/lib/libc/stdio/perror.c`），写完不换行由本函数补换行、不退——退不退由调用者定。
 pub fn perror_line(label: &str, code: minix_sys::Errno) {
     let mut line = [0u8; 256];
-    let len = minix_types::perror_line(label, code, &mut line);
+    let len = minix_sys::perror_line(label, code, &mut line);
     warn(&line[..len.min(line.len())]);
     warn(b"\n");
 }
 
 /// C 的 `warn(3)` 那一行：`prog: label: <strerror 的句子>` 加一个换行，写完继续跑
-/// （`vwarn.c` 不退，退不退由调用者决定）。形状与句子都由 `minix_types::err_line`
-/// 那一份权威给出（`minix3/lib/libc/gen/verrc.c` 与 C 的 `sys_errlist`）。
+/// （`vwarn.c` 不退，退不退由调用者决定）。形状与句子都由 `minix_sys::err_line` 转发的那
+/// 一份权威给出（住在 `minix-types` 的 errno 表旁，对位 `minix3/lib/libc/gen/verrc.c` 与 C
+/// 的 `sys_errlist`）。
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
     let mut line = [0u8; 256];
-    let len = minix_types::err_line(prog, label, code, &mut line);
+    let len = minix_sys::err_line(prog, label, code, &mut line);
     warn(&line[..len.min(line.len())]);
     warn(b"\n");
 }

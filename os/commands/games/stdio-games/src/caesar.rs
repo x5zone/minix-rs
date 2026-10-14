@@ -19,7 +19,7 @@
 //! stored as the constant it evaluates to; a test in this module recomputes every entry
 //! from `STD_PERCENT` under `std` and compares.
 
-use minix_types::{EINVAL, ERANGE, Errno};
+use minix_sys::{EINVAL, ERANGE, Errno};
 
 /// Letters in the Latin alphabet.
 pub const LETTERS: u32 = 26;

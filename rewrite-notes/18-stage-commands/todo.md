@@ -250,6 +250,40 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十五把命令层边界守卫（CI 闸上的那个）从 19 处直引扫回零，并因此发现 `what` 有两个同名二进制**
+  （`2026-10-14`，`claim/COMMAND-BOUNDARY-ZERO-qoder` @ 基线 `dc8322d54`，单域三线：五个命令包的
+  `src/bin_support.rs`/`src/*.rs`/三个 `Cargo.toml` 与同线台账；不动 `minix-types`/`minix-sys`）：
+  **是什么**：`tools/check-command-boundary.sh` 在批次一百零九（`2026-10-12`）刚扫绿，批次一百十四
+  又把它接进了持续集成（`.github/workflows/rules-consistency.yml:79`）；而 16t/16v 那串接线批（二百三十七～
+  二百五十三）为了让一行诊断只有一处形状答案，从命令侧直引了 `minix_types::err_line`/`perror_line`/
+  `prog_name`——现算 **19 处违规**（13 处代码 + 6 处注释里的下划线拼法，守卫不分两者）。这是闸上红旗，
+  判类 P0-code-bug（依赖边界）。
+  **怎么修**：按守卫自己的提示走 `minix-sys` 顶层再导出（那三个名字在 `minix_sys::lib.rs:69` 的
+  `pub use minix_types::types::errno::*` 里已经转交，判例是批次一百零九的 `df`）；13 处调用点改指
+  `minix_sys::`，6 处注释改成 `minix-types` 拼法并补一句「本层经 `minix_sys::` 拿」；`fileops`/
+  `textfilter`/`doctools` 三包改完后再无引用，顺手从 `Cargo.toml` 删掉 `minix-types` 直依赖——
+  批次二百四十八/二百四十九登记的两条依赖边（`new_edge4.md` C-100/C-101）因此可销。
+  **为什么不选另一条路**：①把 `err_line` 再抄一份到每个命令包的 `bin_support` 正是 16t 要消除的重复；
+  ②改守卫的 grep 口径（只查 `use` 行）会把注释里的旧名留在场上误导读者，而且「门不行就改门」是
+  本项目明令禁止的方向；③给 `minix-sys` 新开封装不动——名字已经在那儿了，本批零二线改动。
+  **意外发现（登记不执行）**：扫到 `doctools` 时先报一枚红——`os/commands/usr-bin/textfilter/src/bin/what.rs`
+  与 `os/commands/usr-bin/doctools/src/bin/what.rs` 同名同地产出，共享 `target/debug/what` 一个路径；
+  五包同跑时后建的 textfilter 那份（仍带批次二百四十八判为自创的 `<操数>: cannot open`）覆盖
+  doctools 那份，使 `what_face` 门跑到了错的二进制。逐包单跑全绿，所以这是一个由构建顺序决定的
+  假信号——已作为新一行记入 `../coordination/TODO-LEDGER-OPEN.md` §7（归属待定：哪个 crate 是 `what` 的家）。
+  三件套：`bash tools/check-command-boundary.sh` → **OK: command layer dependency boundary clean** 退码 0
+  （基线同命令 → 19 violation）；逐包 `cargo test` → fileops 437/0、textfilter 584/0、doctools 81/0、
+  shell 85/0、stdio-games 200/0（均与基线同数，零回归）；容器 `minix-ci:1.94`（挂仓根、带 `-u`）五包
+  `failed_blocks=0`；三架构 `--bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 5 行 `Compiling`、
+  0 error；`rustfmt --edition 2024 --check` 触及九文件零漂移；clippy 触及文件零命中（`textfilter/src/pr.rs`
+  那批告警属存量，本批未碰）。核实日 `2026-10-14`；基线 `dc8322d54`。
+  **一枚变异负控**：把 doctools 的一处改回 `minix_types::perror_line` → 守卫报 `1 violation` 退码 1
+  （当场验回，改完 `md5sum` 对齐）——守卫咬的是调用点不是注释。
+  台账同步：`../coordination/TODO-LEDGER-OPEN.md` §7 加两行（本笔的 `closed` 与 `what` 同名的 `open`）。
+  登记不执行：①`what` 同名二进制的归属与去重（§7 新行，下一轮）；②`stdio-games/bin_support.rs` 在
+  freestanding 面的两条 unused import（`EIO`、`err_line`）需按 `#[cfg]` 归位（批次二百五十四已登）；
+  ③守卫若将来要分代码/注释两档，需同时给注释档的拼法约定（本轮已把六处统一为 `minix-types`）。
+
 - ✅ **批次二百五十四把 `number` 的三支 `errx` 接到 `getprogname()`，并因此发现那句报文的载荷也是错的**
   （`2026-10-14`，`claim/NUMBER-ERR-WIRE-qoder` @ 基线 `965b9f5d8`，单域三线 `os/commands/games/stdio-games`
   与同线文档，无跨界）：接回批次二百五十三登记不执行①（16v 判定表的下一行）。
