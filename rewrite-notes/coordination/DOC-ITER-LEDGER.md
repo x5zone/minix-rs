@@ -22,6 +22,7 @@
 | `rewrite-notes/01-stage-kernel/12-ipc-core.md` | 02 | `af14a09da` | `a2b0338b3` | v0.5+R02-12附加 | **已审·同意冻结**（篇级；裁决 E/F/G 更新、0/30 归因采纳、轴①改"落地完整度"） | `tmp/doc-iter/12-ipc-core/round-02-r12.md`（归因包；diff/台账/§7 C1–C35 全内联） |
 | `rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md` | 01 | `dc8322d54` | `31f21ce80` | v0.5+R01-05附加（换篇首轮） | **已审·同意判否**（首轮：4 笔 P0-fact + 121 处修复；C24 灵敏度获证；轴②跨端口新档） | `tmp/doc-iter/05-clock-interrupt-init/round-01-r05.md`（归因包；diff 60 hunks/台账/§7 C1–C36 全内联） |
 | `rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md` | 02 | `31f21ce80` | `dfaf8eb58` | v0.5+R02-05附加（闭环轮） | 待送审（回归扫 40/40+C18 表 M1–M18（未覆盖 5）+C24 16 样本 1 新命中/0 误报+C29 3/3/1/100%+C37 2 失联加注；**判可冻结**） | `tmp/doc-iter/05-clock-interrupt-init/round-02-r05.md`（归因包；diff 5 hunks/台账 F 节/§7 C1–C37 全内联） |
+| `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` | 01 | `dc8322d54` | `<result>` | v0.5+R01-02附加（换篇首轮） | 待送审（首轮：2 笔 P0 级 + 63 处修复 + C18 反转表 M1–M12 + C24 12 样本 1 命中/0 误报 + C29 40/40/0/100%；轴①仍零覆盖；**判否，建议一轮闭环**） | `tmp/doc-iter/02-higher-half-kernel/round-01-r02.md`（归因包；diff 35 hunks/台账/§7 C1–C37 全内联） |
 
 ## 规则变更裁决记录
 
