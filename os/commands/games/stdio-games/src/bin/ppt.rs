@@ -115,7 +115,18 @@ fn decode_tape(strings: &[String]) {
     let mut synced = false;
     let mut needs_newline = false;
     loop {
-        let has_line = reader.next_line().unwrap_or(false);
+        // C 在 `!feof(stdin)` 时走 `err(1, "fgets")`（`ppt.c:109-111`）：读**出错**与读到
+        // 尽头是两件事，前者退 1 且不再补那个换行，后者才走下面的收尾。
+        let has_line = match reader.next_line() {
+            Ok(has_line) => has_line,
+            Err(code) => {
+                let mut line = [0u8; 96];
+                let len = support::err_line("ppt", "fgets", code, &mut line);
+                support::warn(&line[..len]);
+                support::warn(b"\n");
+                support::terminate(1);
+            }
+        };
         if !has_line {
             break;
         }
@@ -135,9 +146,8 @@ fn decode_tape(strings: &[String]) {
             None => {}
         }
     }
-    // C reports a failed read through `err(1, "fgets")` after checking `feof`
-    // (`ppt.c:110-111`); this tree has no `strerror` table, so a read failure ends the
-    // run like an ordinary end of input and the difference is registered in the ledger.
+    // 走到这里只有两种可能：读到尽头，或一张磁带读到没有同步位的行并已提前离开。
+    // 读出错的那条腿在上面已经离开，形状与 C 的 `err(1, "fgets")` 一致。
     if needs_newline {
         support::emit(b"\n");
     }

@@ -25,6 +25,7 @@
 #![allow(dead_code)]
 
 use minix_sys::{Fd, write};
+use minix_types::{EIO, Errno, Strerror};
 
 /// Standard input, POSIX `STDIN_FILENO`.
 pub const STDIN: Fd = 0;
@@ -145,18 +146,26 @@ pub fn read_stdin() -> alloc::vec::Vec<u8> {
 /// game's standard-input face testable at all: `minix_sys::read` on the host goes
 /// through the kernel transport (a mock there) rather than the process' real standard
 /// input — the same trap the text filters documented and the morse shell closed in the
-/// previous batch. `Ok(0)` is end of input and `Err(())` a failed read; both end the
-/// stream, which is exactly the contract `LineReader` expects.
+/// previous batch. `Ok(0)` is end of input and `Err(errno)` a failed read: C's games
+/// distinguish the two, because `factor` leaves with `err(1, "stdin")` and `ppt` with
+/// `err(1, "fgets")` when the stream *errored* (`factor.c:157-161`, `ppt.c:110-111`) and
+/// simply finish when it merely ended. That distinction needs the number the read left
+/// behind, so the seam carries it on both twins — the hosted one takes it from the OS,
+/// the freestanding one from `minix_sys::read`.
 #[cfg(any(test, not(target_os = "none")))]
-pub fn stdin_chunk(buf: &mut [u8]) -> Result<usize, ()> {
+pub fn stdin_chunk(buf: &mut [u8]) -> Result<usize, Errno> {
     use std::io::Read as _;
-    std::io::stdin().read(buf).map_err(|_| ())
+    std::io::stdin().read(buf).map_err(|error| {
+        // `raw_os_error()` is the errno the failed `read(2)` left; `None` means the error
+        // came from somewhere else, and C has no such case here.
+        Errno::from_i32(error.raw_os_error().unwrap_or(EIO))
+    })
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn stdin_chunk(buf: &mut [u8]) -> Result<usize, ()> {
+pub fn stdin_chunk(buf: &mut [u8]) -> Result<usize, Errno> {
     use minix_sys::read;
-    read(STDIN, buf).map_err(|_| ())
+    read(STDIN, buf)
 }
 
 /// Renders `value` in decimal into `out`, returning the written length.
@@ -181,9 +190,40 @@ pub fn utoa(mut value: u32, out: &mut [u8]) -> usize {
     count
 }
 
+/// Renders C's `err(3)`/`warn(3)` line for one failed call: `prog: label: <sentence>`.
+///
+/// The shape is `minix3/lib/libc/gen/verrc.c` verbatim — program name, `": "`, the
+/// caller's string, `": "`, then `strerror(code)` — and the sentence comes from this
+/// tree's own `sys_errlist` ([`Errno::message`]). A code outside the table gets C's
+/// `Unknown error: %u` with the number read as `unsigned`, which is what
+/// [`Strerror`] renders; the two branches share this one writer so a shell cannot
+/// drift from the other.
+pub fn err_line(prog: &str, label: &str, code: Errno, out: &mut [u8]) -> usize {
+    use core::fmt::Write as _;
+    struct Sink<'a>(&'a mut [u8], &'a mut usize);
+    impl core::fmt::Write for Sink<'_> {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            for byte in text.as_bytes() {
+                if *self.1 < self.0.len() {
+                    self.0[*self.1] = *byte;
+                }
+                *self.1 += 1;
+            }
+            Ok(())
+        }
+    }
+    let mut written = 0usize;
+    let _ = write!(
+        Sink(out, &mut written),
+        "{prog}: {label}: {std}",
+        std = Strerror(code)
+    );
+    written
+}
+
 /// Line assembly over a caller-provided buffer and an injected reader.
 ///
-/// The reader returns `Ok(0)` for end of input and `Err(())` for a failed
+/// The reader returns `Ok(0)` for end of input and `Err(errno)` for a failed
 /// read; both end the stream. A line is everything up to and including the
 /// next `\n` (the C `fgets` shape the games are written against); the final
 /// unterminated fragment counts as a line; a full buffer without `\n` is
@@ -197,7 +237,7 @@ pub struct LineReader<'a, R> {
     source_done: bool,
 }
 
-impl<'a, R: FnMut(&mut [u8]) -> Result<usize, ()>> LineReader<'a, R> {
+impl<'a, R: FnMut(&mut [u8]) -> Result<usize, Errno>> LineReader<'a, R> {
     /// Creates a reader over `buf` (its length is the line capacity, the
     /// C games' `fgets` buffer size).
     pub fn new(reader: R, buf: &'a mut [u8]) -> Self {
@@ -210,12 +250,13 @@ impl<'a, R: FnMut(&mut [u8]) -> Result<usize, ()>> LineReader<'a, R> {
         }
     }
 
-    /// Loads the next line, returning `false` at end of input and `Err(())`
-    /// when the injected reader fails.
+    /// Loads the next line, returning `false` at end of input and `Err(errno)`
+    /// when the injected reader fails — the two are different outcomes, as the
+    /// paragraph on [`stdin_chunk`] explains.
     ///
     /// The previous line is dropped here (lazy consumption), so the bytes
     /// behind [`LineReader::line`] stay untouched until this call.
-    pub fn next_line(&mut self) -> Result<bool, ()> {
+    pub fn next_line(&mut self) -> Result<bool, Errno> {
         self.consume(self.line_len);
         loop {
             if let Some(position) = self.buf[..self.filled].iter().position(|&b| b == b'\n') {
@@ -274,6 +315,9 @@ pub fn epoch_micros() -> Option<u64> {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+    // 只给 `test_err_line_writes_c_shape_with_the_tables_sentence` 用得上，
+    // 生产面的壳不需要这两个号，故在测试侧引入。
+    use minix_types::{EINVAL, EISDIR};
 
     /// Runs the reader over canned input, returning every delivered line.
     fn lines(input: &[u8], capacity: usize) -> Vec<Vec<u8>> {
@@ -329,8 +373,25 @@ mod tests {
     #[test]
     fn test_reader_failure_ends_stream_with_error() {
         let mut storage = [0u8; 16];
-        let mut reader = LineReader::new(|_chunk: &mut [u8]| Err(()), &mut storage);
+        let mut reader =
+            LineReader::new(|_chunk: &mut [u8]| Err(Errno::from_i32(EIO)), &mut storage);
         assert!(reader.next_line().is_err());
+    }
+
+    #[test]
+    fn test_err_line_writes_c_shape_with_the_tables_sentence() {
+        // `verrc.c` 的形状：程序名、冒号空格、调用者的串、冒号空格、`strerror` 的句子。
+        // 句子取自本树的表，所以 21 号是 `Is a directory`、22 号是 `Invalid argument`。
+        let mut out = [0u8; 96];
+        let len = err_line("factor", "stdin", Errno::from_i32(EISDIR), &mut out);
+        assert_eq!(&out[..len], b"factor: stdin: Is a directory");
+        let len = err_line("ppt", "fgets", Errno::from_i32(EINVAL), &mut out);
+        assert_eq!(&out[..len], b"ppt: fgets: Invalid argument");
+        // 表外的号走 C 那句 `Unknown error: %u`，读数是 `unsigned`（负号绕成大数）。
+        let len = err_line("ppt", "fgets", Errno::from_i32(200), &mut out);
+        assert_eq!(&out[..len], b"ppt: fgets: Unknown error: 200");
+        let len = err_line("factor", "stdin", Errno::from_i32(-1), &mut out);
+        assert_eq!(&out[..len], b"factor: stdin: Unknown error: 4294967295");
     }
 
     #[test]

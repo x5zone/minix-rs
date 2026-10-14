@@ -37,6 +37,26 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
+/// Runs the binary with standard input set to an **unreadable** descriptor: opening a
+/// directory succeeds but reading it fails with `EISDIR`, which is exactly the case C
+/// separates from end of input (`factor.c:157-161`, `ppt.c:109-111`).
+fn run_with_directory_stdin(args: &[&str]) -> (String, i32, String) {
+    let dir = std::fs::File::open(std::env::temp_dir())
+        .expect("the temporary directory should open read-only");
+    let output = Command::new(FACTOR)
+        .args(args)
+        .stdin(Stdio::from(dir))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the run should finish");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
 #[test]
 fn operands_print_one_line_each_in_the_c_shape() {
     // `printf(" %" PRIu64, *fact)` per factor after `value:` and one `putchar('\n')`
@@ -140,6 +160,23 @@ fn trailing_junk_is_reported_as_an_illegal_numeric_format() {
     assert_eq!(err, "factor: 12x: illegal numeric format.\n");
     let (junk, _, _) = run(&[], b"6\n12x\n");
     assert_eq!(junk, "6: 2 3\n", "the line before the bad one still prints");
+}
+
+#[test]
+fn a_failed_read_leaves_with_c_stdin_sentence_and_exits_one() {
+    // C 在 `fgets` 返回 `NULL` 且 `ferror(stdin)` 时走 `err(1, "stdin")`（`factor.c:157-161`）,
+    // 与「只是读到尽头」分两条路：后者 `exit(0)` 且不出声。读一个目录的描述符必定出错
+    // （`EISDIR`），于是这句能在进程级看到；尾句同样取自本树的表（21 号 `Is a directory`）。
+    let (out, status, err) = run_with_directory_stdin(&[]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "factor: stdin: Is a directory\n");
+    // 对照：空的管道只是读到尽头，C 与本树都安静退 0。
+    let (quiet, quiet_status, quiet_err) = run(&[], b"");
+    assert_eq!(
+        (quiet.as_str(), quiet_status, quiet_err.as_str()),
+        ("", 0, "")
+    );
 }
 
 #[test]

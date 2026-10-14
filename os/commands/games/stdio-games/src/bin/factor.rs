@@ -35,7 +35,22 @@ fn run() -> ! {
     } else {
         let mut input = [0u8; 80];
         let mut reader = LineReader::new(support::stdin_chunk, &mut input);
-        while reader.next_line().unwrap_or(false) {
+        loop {
+            // C 分两种收尾：`fgets` 返回 `NULL` 且 `ferror(stdin)` 才算错，走
+            // `err(1, "stdin")`（`factor.c:157-161`）；只是读到尽头则 `exit(0)`。
+            let has_line = match reader.next_line() {
+                Ok(has_line) => has_line,
+                Err(code) => {
+                    let mut line = [0u8; 96];
+                    let len = support::err_line("factor", "stdin", code, &mut line);
+                    support::warn(&line[..len]);
+                    support::warn(b"\n");
+                    support::terminate(1);
+                }
+            };
+            if !has_line {
+                break;
+            }
             // The line still carries its newline here, which `verdict` treats as C's `buf`
             // does; no copy is needed because the line is used before the next read.
             let line = core::str::from_utf8(reader.line()).unwrap_or("");
