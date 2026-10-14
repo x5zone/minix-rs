@@ -271,6 +271,11 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   `rustfmt` 触及文件零漂移；文档三处过 `doc-style-lint.sh --diff` error 0、`pattern-gate --diff`
   PASS=17 FAIL=0；本子树断链与基线同数。核实日 `2026-10-14`；基线 `6581e7248`。
   **后续轮次沿用**：本文件上文各批次里「容器内唯一 FAILED 是恒红测」那句一律按本批更正读；
+  **本批顺带的行尾归一（声明清楚，别让它藏在 diff 里）**：`CONCURRENT-WORK-PROTOCOL.md` 的入库
+  blob 带 CRLF（183 个 CR），而 `.gitattributes` 立的是「仓库内一律存 LF、`* text=auto`」，本批那次
+  整文件写回把它归一了，于是 `git show --stat` 报出 366 行变更。去 CR 后逐行核对：基线与本批只有
+  **1 行**不同（§6 内存铁律里那句挂载点），即纯行尾无内容改动，与批次一百一十三那次归一同性质。
+  教训：改这类旧文件前先查行尾，被动归一必须在此声明，否则评审者无法从 366 行里分辨那一行真改动。
   `tools/todo-reconcile-scan.sh` 的「宿主不可达的门内测试」计数不含这条（它本就是仓可达、容器挂载不可达）。
   登记不执行：无（本条闭环）。
 
