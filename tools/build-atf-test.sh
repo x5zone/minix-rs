@@ -35,7 +35,7 @@ PICO=/usr/lib/picolibc/riscv64-unknown-elf
 [ -f "$LIB" ] || { echo "缺 $LIB —— 先跑 tools/build-libatf-c.sh $ARCH" >&2; exit 2; }
 NETBSD_ID_MACROS=()     # 只有 glibc 腿需要补 NetBSD 标识串宏（见下面 x86_64 分支）
 LIBC_KIND=picolibc      # 两支交叉腿共用 picolibc + 本仓 BSD 接管面
-COMPAT_TAKEOVER=1       # 是否挂 errno-compat / posix-stubs / stdio-minix / random 那层接管
+COMPAT_TAKEOVER=1       # 是否挂 posix-stubs / stdio-minix / sys-bridge / random 那层接管（picolibc 专用）
 case "$ARCH" in
     riscv64) CC="riscv64-unknown-elf-gcc"; MC=(-mcmodel=medany)
              SYS=(--specs=picolibc.specs); SEMIHOST=("$PICO/lib/libsemihost.a") ;;
@@ -54,9 +54,10 @@ case "$ARCH" in
              SYS=(--specs="$SPECS"); SEMIHOST=("$PICOA/lib/libsemihost.a") ;;
     x86_64) # 宿主 cc + glibc，与 `tools/build-libatf-c.sh:50-51` 同一条腿：发行版没有
             # x86_64 的 `-unknown-elf` 裸机包，宿主就是它的裸机腿。glibc 原生有
-            # <err.h>/<sys/uio.h>/stresep/sysconf/strerror_r，再注入本仓 compat 反而与
-            # glibc 声明冲突（`errno-compat.h` 里 `extern const int sys_nerr;` 对 glibc 的
-            # `int _sys_nerr` 是类型不符），故整层接管面一律不挂，与库腿 `COMPAT_INC=()`
+            # <err.h>/<sys/uio.h>/sysconf/strerror_r(GNU 形)/random，再注入本仓那层
+            # picolibc 专用接管面会与 glibc 声明冲突（旧判据：`errno-compat.h` 的
+            # `extern const int sys_nerr;` 对 glibc 的 `int _sys_nerr` 类型不符；该名字现已
+            # 拆给 bsd-strerr.h，三腿共用），故整层接管面一律不挂，与库腿 `COMPAT_INC=()`
             # 同一个判断。`md5.h`/`bm.h` glibc 没有，仍走 -I"$COMPAT"。
             CC="cc"; MC=(); SYS=(); SEMIHOST=(); LIBC_KIND=glibc; COMPAT_TAKEOVER=0
             # 上游测试源文件在文件作用域写 NetBSD 的标识串宏（`t_bm.c:32:__RCSID(...)`），
@@ -91,12 +92,13 @@ CFGS=(-D__minix -D_GNU_SOURCE -DHAVE_SETENV -DHAVE_UNSETENV -DHAVE_PUTENV
       '-DATF_PKGDATADIR="/usr/share/atf"' '-DATF_SHELL="/bin/sh"' '-DATF_WORKDIR="/tmp"'
       '-D__arraycount(__x)=(sizeof(__x)/sizeof((__x)[0]))' "${NETBSD_ID_MACROS[@]}")
 
-# picolibc 腿要靠 `-include errno-compat.h` 补它缺的 BSD 声明；glibc 腿不挂那层
-# （它自带 sysconf/strerror_r 等，注入反而与 glibc 声明冲突，理由见上面 x86_64 分支）。
-# bsd-strfun.h 则**两腿都挂**：glibc 与 picolibc 的头面都没有 BSD 的 stresep/popcount
-# 家族，不挂就是隐式声明按 int 返回——aarch64 上 `sxtw w0` 把返回指针截成野地址
-# （CodeReview 续-279f P0 实测坐实），位计数族也会把 `unsigned int` 返回值截成 int。
-COMPAT_INCLUDE=(-include "$COMPAT/bsd-strfun.h")
+# picolibc 腿要靠 `-include errno-compat.h` 补它缺的 sysconf 声明；glibc 腿不挂那层
+# （它自带 sysconf，注入反而与 glibc 声明冲突，理由见上面 x86_64 分支）。
+# bsd-strfun.h 与 bsd-strerr.h 则**三腿都挂**：glibc 与 picolibc 的头面都没有 BSD 的
+# stresep/popcount 家族，也给不出 strerror 族的 BSD 语义（`sys_nerr` 这个名字 glibc 2.32 起
+# 已撤、措辞也不是 NetBSD 形），不挂就是隐式声明按 int 返回——aarch64 上 `sxtw w0` 把返回
+# 指针截成野地址（CodeReview 续-279f P0 实测坐实），位计数族也会把 `unsigned int` 返回值截成 int。
+COMPAT_INCLUDE=(-include "$COMPAT/bsd-strfun.h" -include "$COMPAT/bsd-strerr.h")
 if [ "$COMPAT_TAKEOVER" = 1 ]; then
     COMPAT_INCLUDE+=(-include "$COMPAT/errno-compat.h")
 fi
@@ -148,6 +150,8 @@ if [ "$COMPAT_TAKEOVER" = 1 ]; then
 fi
 # BSD <md5.h> 摘要实现（picolibc 不提供），供 t_memcpy 等测试链入（仅构建/测试用）。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/md5.c" -o "$BUILD/md5.o"
+"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/bsd-strerr.c" -o "$BUILD/bsd-strerr.o"
+BSD_STRERR_O=("$BUILD/bsd-strerr.o")
 # BSD 字符串/位计数族（`stresep(3)` + `popcount(3)` 家族）：**glibc 与 picolibc 都没有**
 # 这几个 BSD 函数，所以它不属于「按 libc 种类分腿」的接管面，而是两腿通吃的补位件。
 # 过去它们埋在 posix-stubs.c 里，而 posix-stubs.c 是 picolibc 专用的整层接管面（同一
@@ -159,11 +163,8 @@ fi
 BSD_STRFUN_O=("$BUILD/bsd-strfun.o")
 # BSD Boyer-Moore <bm.h>（bm_comp/exec/free，picolibc 不提供），供 t_bm 链入。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/bm.c" -o "$BUILD/bm.o"
-# BSD sys_nerr（picolibc 不提供），供 t_strerror 编译/链接（真语义上机前校准，见 errno-compat.c 头注释）。
-if [ "$COMPAT_TAKEOVER" = 1 ]; then
-    "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/errno-compat.c" -o "$BUILD/errno-compat.o"
-    STUB_OBJS+=("$BUILD/errno-compat.o")
-fi
+# BSD sys_nerr 与 strerror 族已拆给上面的 bsd-strerr（三腿通吃）；旧的 errno-compat.c
+# 只剩这一条定义，随拆分删除。picolibc 不提供这些 BSD 件，真语义对位见 bsd-strerr.c 头注。
 # BSD random/srandom 真源接管（NK4-C §续-283 D1）：minix3/common/lib/libc/stdlib/
 # random.c 逐字 vendor（fidelity=零改动，全部兼容在 random-shim/）。命令行对象
 # 强定义 random+srandom（+initstate/setstate）→ picolibc 单符号成员
@@ -191,7 +192,7 @@ case "$ARCH" in
 esac
 
 "$CC" -static "${MC[@]}" "${SYS[@]}" "${LINK_EXTRA[@]}" "${STARTUP_O[@]}" "$BUILD/$name.o" \
-    -Wl,--start-group "$LIB" "${STUB_OBJS[@]}" "${BSD_STRFUN_O[@]}" "$BUILD/md5.o" "$BUILD/bm.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
+    -Wl,--start-group "$LIB" "${STUB_OBJS[@]}" "${BSD_STRFUN_O[@]}" "${BSD_STRERR_O[@]}" "$BUILD/md5.o" "$BUILD/bm.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
     -o "$BUILD/$name"
 
 # 校验我方加载器 parse_ehdr 的硬项（ELF64 + LSB + ET_EXEC）。

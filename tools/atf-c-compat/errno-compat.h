@@ -1,42 +1,27 @@
-/* errno-compat.h — 为构建/链接面补 picolibc 缺的 BSD 声明（经
- * build-atf-test.sh 以 -include 注入到测试编译）。
+/* errno-compat.h — 为构建/链接面补 picolibc 缺的声明（经 build-atf-test.sh
+ * 以 -include 注入到测试编译），**只服务 picolibc 腿**。
  *
- * 定义见同目录 errno-compat.c（sys_nerr）与 posix-stubs.c（sysconf/strerror 族）。
- * 声明必须与定义同签名：picolibc 头面对本处每个名字都是**零声明或弱声明**，调用侧
- * 隐式声明按 int 返回——aarch64 目标码用 `sxtw w0` 截返回指针成野地址（CodeReview
- * 续-279f P0 实测坐实）；sysconf 在 picolibc sys/unistd.h 已有同签名声明
- * （long sysconf(int)），本处并列声明是同签名合法重声明，作测试 TU 的显式契约面统一。
- * BSD stresep 与位计数族已拆给 bsd-strfun.h（两腿通吃的补位件，不属于本头的
- * picolibc 专用接管面）。
- * 诚实边界见 errno-compat.c / posix-stubs.c 头注释。*/
+ * 本头现在只剩 sysconf 一条契约：定义在 posix-stubs.c（本头与那个文件都只在
+ * picolibc 腿挂）。声明必须与定义同签名：picolibc 头面对本处名字是零声明或
+ * 弱声明，调用侧隐式声明按 int 返回——aarch64 目标码用 `sxtw w0` 截返回指针成
+ * 野地址（CodeReview 续-279f P0 实测坐实）；sysconf 在 picolibc sys/unistd.h 已有
+ * 同签名声明（long sysconf(int)），本处并列声明是同签名合法重声明，作测试 TU
+ * 的显式契约面统一。
+ * 已搬出去的两族：BSD 字符串/位计数族→bsd-strfun.h，BSD strerror 族→bsd-strerr.h；
+ * 它们都属于「glibc 与 picolibc 都没有」的补位件，走三腿共用的注入通道，
+ * 因此不能留在本头这张 picolibc 专用清单里。诚实边界见 posix-stubs.c /
+ * bsd-strerr.c / bsd-strfun.c 头注释。*/
 #ifndef MINIX_RS_ERRNO_COMPAT_H
 #define MINIX_RS_ERRNO_COMPAT_H
 
 #include <stddef.h>   /* size_t：本头经 -include 注入在测试 TU 所有 #include 之前，须自给 */
 
-extern const int sys_nerr;
+/* BSD strerror 族（sys_nerr / strerror / strerror_r / strerror_l）与 stresep/位计数族同命：
+ * glibc 与 picolibc 都不给那套 BSD 语义，所以走 bsd-strerr.h / bsd-strfun.h 那两条三腿
+ * 共用的注入通道，不在本头这张 picolibc 专用清单里。 */
 
 /* POSIX 配置查询（定义在 posix-stubs.c，抢 libsemihost 强定义；picolibc
  * sys/unistd.h 已有同签名声明，此处为契约面统一的合法重声明）。 */
 long sysconf(int name);
-
-/* strerror 族接管面（定义在 posix-stubs.c，§续-279m）：本仓 compat 全接管
- * 越界语义（BSD 形 "Unknown error: N"+EINVAL），测试 TU 经本通道看到与定义
- * 同签名的契约面；strerror 与 picolibc string.h:72 同签名=合法重声明。
- * strerror_r 用宏转发到本仓 XSI 定义（objdump 实锤测试调用是裸名
- * strerror_r，必须让**所有** TU 的裸名都落到本仓实现；若只挂 asm 别名，
- * 裸引用不满足，链接器会经 picolibc strerror_r 成员的 U _strerror_r 拽入
- * libc_string_strerror.c.o——其定义的 strerror 与自家强定义 multiple
- * definition 硬错，三轮试错坐实）。本宏在 string.h 声明之前注入：其 GNU 形
- * 声明 `char *strerror_r(...)` 被一并改名成 __xpg_strerror_r（与 posix-stubs.c
- * 定义同形——定义亦取 char * 形，XSI 码经 (char *)(intptr_t) 回传，续-279n-b；
- * 无类型冲突）；调用点保留 §续-278d 既有比较告警基线，XSI 返回码
- * 0/EINVAL/ERANGE 的零/非零性在指针/整数值域同形，真机读数定案。
- * **负向契约**（续-279n-b P2-2）：GNU 风格调用法（解引用返回值）在本通道
- * 是 UB——返回值是 XSI 码的整数衣装而非指针。 */
-char *strerror(int);
-#ifndef strerror_r
-#define strerror_r __xpg_strerror_r
-#endif
 
 #endif /* MINIX_RS_ERRNO_COMPAT_H */
