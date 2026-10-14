@@ -43,6 +43,40 @@ const EDGE: &str = "___________";
 const PUNCHED_A: &str = "| o   .  o|";
 
 #[test]
+fn a_failed_read_leaves_with_c_fgets_sentence_and_exits_one() {
+    // C 的解码路在读到尽头时补一个换行后安静离开，读**出错**才走 `err(1, "fgets")`
+    // （`ppt.c:109-111`，判据是 `!feof(stdin)`）。两句在进程级分开：目录描述符读出 `EISDIR`
+    // 得 `ppt: fgets: Is a directory` 并退 1，且不补那个换行。
+    let (out, status, err) = run_with_directory_stdin(&["-d"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "ppt: fgets: Is a directory\n");
+    // 对照：空输入只是读到尽头，退 0 且不出声。
+    let (_, clean_status, clean_err) = run(&["-d"], b"");
+    assert_eq!((clean_status, clean_err.as_str()), (0, ""));
+}
+
+/// Runs the binary with standard input set to an **unreadable** descriptor: opening a
+/// directory succeeds but reading it fails with `EISDIR`, which is exactly the case C
+/// separates from end of input (`factor.c:157-161`, `ppt.c:109-111`).
+fn run_with_directory_stdin(args: &[&str]) -> (String, i32, String) {
+    let dir = std::fs::File::open(std::env::temp_dir())
+        .expect("the temporary directory should open read-only");
+    let output = Command::new(PPT)
+        .args(args)
+        .stdin(Stdio::from(dir))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the run should finish");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
 fn the_encoder_frames_the_tape_and_punches_one_line_per_byte() {
     // `puts(EDGE)`, one line per byte, `puts(EDGE)` again (`ppt.c:106-119`).
     let (out, status, err) = run(&["A"], b"");

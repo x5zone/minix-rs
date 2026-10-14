@@ -35,7 +35,8 @@ fn run() -> ! {
         // start of the second card to the end of the first.
         let mut input = [0u8; CARDLINE];
         let mut reader = LineReader::new(support::stdin_chunk, &mut input);
-        // Read failure ends the stream the way a NULL from C `fgets` does.
+        // C 的 bcd 只看 `fgets` 返回值，没有 `ferror` 那条腿（`bcd.c` 全文无此判），
+        // 所以读出错与读到尽头在这里同样收尾——与 factor/ppt 分两路的做法不同，那是 C 自己分的。
         while reader.next_line().unwrap_or(false) {
             card(reader.line());
         }

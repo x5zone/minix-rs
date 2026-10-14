@@ -250,6 +250,38 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十五把标准输入读缝的失败面改成带 `errno`，接上 `factor: stdin` 与 `ppt: fgets` 两句 `err`**
+  （`2026-10-14`，`claim/STRERROR-SEAM-qoder` @ 基线 `9d950ff9a`，单域三线 commands/games/stdio-games，
+  含同域共享件 `src/bin_support.rs`；承接 C-95）：
+  接回批次二百三十四登记①。**是什么**：C 的两个游戏把「标准输入读出错」与「读到尽头」当作两件事
+  （`factor.c:157-161` 在 `fgets` 返回 `NULL` 后先看 `ferror(stdin)` 才 `err(1, "stdin")`，否则 `exit(0)`；
+  `ppt.c:109-111` 用 `!feof(stdin)` 判读出错并 `err(1, "fgets")`，只有真到底才补那个换行）。本树的读缝
+  `stdin_chunk` 把失败折成不带号的 `Err(())`，壳里一律 `unwrap_or(false)`，于是两句 `err` 无处可接——
+  缺的不是措辞而是**信息**。判类 P0-code-bug（有错无声）+ P0-design-missing（接缝面缺号）。
+  **怎么修**：`stdin_chunk` 的双生两面都改为 `Result<usize, Errno>`——宿主侧取 `raw_os_error()`（那正是
+  失败的 `read(2)` 留下的号），裸机侧直接传播 `minix_sys::read` 的 `Errno`；`LineReader::next_line()`
+  随之带号；共享件新增 `err_line(prog, label, code, out)`，把 `minix3/lib/libc/gen/verrc.c` 那一行
+  （程序名、冒号空格、调用者的串、冒号空格、`strerror` 的句子）一次写定，句子仍出自批次二百三十三的表，
+  表外的号由 `Strerror` 出 C 的 `Unknown error: %u`。factor 与 ppt 各按 C 分两条路；`bcd`/`number`/
+  `arithmetic` 三壳维持「读出错即收摊」，因为 C 那三处**没有** `ferror` 判据（已核 `bcd.c`、`number.c`、
+  `arithmetic.c` 全文无此调用），并在注释里写明这是 C 自己的分法。
+  **取证的新招**：端到端门用**目录描述符**当标准输入——`open` 得成、`read` 必失败于 `EISDIR`，
+  于是「读出错」这条腿第一次在进程级可测（宿主与真机同形），金样 `factor: stdin: Is a directory` 退 1、
+  `ppt: fgets: Is a directory` 退 1，并各带一枚空管道对照（退 0 且不出声）。
+  三件套：`cargo test -p minix-stdio-games` → **18 目标全 ok、合计 184 passed、零 FAILED**（基线 18/173：
+  九壳各 6→7 枚共享面测、`--test factor_face` 9→10、`--test ppt_face` 5→6）；三架构 `--bins` 三台零 error；
+  容器 `minix-ci:1.94`（带 `-u`）`cargo check -j 1 --workspace` Finished 零 error；clippy 触及文件零新增
+  （中途一处 `unused imports` 已把两个号移进测试侧）；`rustfmt` 触及八文件全部零漂移（基线即零）；
+  `pattern-gate.sh --diff` PASS=17 FAIL=0；`doc-style-lint.sh --diff` error 0；宿主实跑目录标准输入
+  两句逐字复现。核实日 `2026-10-14`；基线 `9d950ff9a`。
+  **五枚变异负控**（`tmp/stdin-seam-mutate.py`，`--bin factor support::`、`--test factor_face`、
+  `--test ppt_face` 分三次调用、复位断言 md5）全部咬中，且各咬在自己那条腿：句子渲染成空串（三处皆红）、
+  宿主侧丢掉真号改报 `EIO`（两扇门红）、factor 那条腿折回「读到尽头」（只 factor 门红）、ppt 同理（只
+  ppt 门红）、表外的号打成形数（共享面测红）。
+  登记不执行：①其余写着「本树无 `strerror` 表」的注释更正（`os/commands/` 下十余处，逐处判「已可接」
+  与「仍需接线」，不批量替换）；②真机侧目录读的号是否同为 `EISDIR` 归 VFS 面另行核（本轮金样在宿主取）；
+  ③真机播种与 open 腿归 C-57/E5。
+
 - ✅ **批次二百三十四接上 `factor` 的溢出腿：`ERANGE` 那句与 `illegal numeric format` 分成两句**
   （`2026-10-14`，`claim/STRERROR-WIRE-qoder` @ 基线 `16b1c1fca`，单域三线 commands/games/stdio-games，
   承接批次二百三十三的跨线登记 C-95）：

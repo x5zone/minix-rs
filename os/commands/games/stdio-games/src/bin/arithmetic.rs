@@ -92,6 +92,7 @@ fn run() -> ! {
         // exits — the score is shown every twenty problems and on the interrupt only.
         ask(&question);
         loop {
+            // C 的 arithmetic 不看 `ferror`（全篇无此判），读到尽头与读出错都直接收摊退 0。
             let has_line = reader.next_line().unwrap_or(false);
             if !has_line {
                 support::emit(b"\n");

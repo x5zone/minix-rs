@@ -55,6 +55,7 @@ fn run() -> ! {
     if operands.is_empty() {
         let mut input = [0u8; LINE];
         let mut reader = LineReader::new(support::stdin_chunk, &mut input);
+        // C 的 number 也没有 `ferror` 那条腿：`fgets` 返回 `NULL` 就跳出循环，读出错同样如此。
         while reader.next_line().unwrap_or(false) {
             let line = reader.line();
             if !line.contains(&b'\n') {
