@@ -51,7 +51,7 @@ _kern_offset = (_kern_vir_base - _kern_phys_base);
 
 三列各有自己的规则，也各有自己的读者：链接脚本的地址由链接器写进指令与数据；段体落点由装载这个 ELF 的那段代码决定；运行期能访问哪些地址由页表决定。第 2 章先读 C 侧的三个决定点，第 3、4 章读 Rust 侧对应的三个决定点。
 
-内核为什么要在高一侧，而不是和用户代码挤在低地址？`kernel.lds` 在 `_kern_vir_base` 那一行的行尾给了理由：`/* map kernel high for max. user vir space */`——把 0xF0400000 以上留给内核，低地址那一大段就整块归用户进程使用。`pre_init` 里的两行赋值把这条划分落到具体数字上：`cbi->user_sp = USR_STACKTOP; cbi->user_end = USR_DATATOP;`，紧邻的注释写的是 `move user stack/data down to leave a gap to catch kernel stack overflow; and to distinguish kernel and user addresses at a glance (0xf.. vs 0xe..)`（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters`）——用户栈与数据被往下挪，既空出一段"越界就能撞上"的间隙，也让内核地址与用户地址在十六进制表示上第一眼就能分开。另一条依据在 `01-boot-shim-bootstrap.md` §2.6.4 的位表里已经出现过：`pg_mapkernel` 写内核映射时不置 `I386_VM_USER`（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`），而 `pg_identity` 的恒等映射置了它——内核所在的这一段对用户态不可访问。
+内核为什么要在高一侧，而不是和用户代码挤在低地址？`kernel.lds` 在 `_kern_vir_base` 那一行的行尾给了理由：`/* map kernel high for max. user vir space */`——把 0xF0400000 以上留给内核，低地址那一大段就整块归用户进程使用。`pre_init` 里的两行赋值把这条划分落到具体数字上：`cbi->user_sp = USR_STACKTOP; cbi->user_end = USR_DATATOP;`，紧邻的注释写的是 `move user stack/data down to leave a gap to catch kernel stack overflow; and to distinguish kernel and user addresses at a glance (0xf.. vs 0xe..)`（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters`）。两个取值定义在 `minix3/minix/kernel/const.h` 的 "User limits" 段：`USR_DATATOP` 在 `_MINIX_MAGIC` 构建下取 `0xE0000000`（该宏由 `minix3/share/mk/sys.mk` 定义）、否则取 `0xF0000000`；`USR_STACKTOP` 取同一个值——注释里 "0xe.. 对 0xf.." 的划分正落在这一对取值上。用户栈与数据被往下挪，既空出一段"越界就能撞上"的间隙，也让内核地址与用户地址在十六进制表示上第一眼就能分开。另一条依据在 `01-boot-shim-bootstrap.md` §2.6.4 的位表里已经出现过：`pg_mapkernel` 写内核映射时不置 `I386_VM_USER`（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`），而 `pg_identity` 的恒等映射置了它——内核所在的这一段对用户态不可访问。
 
 ### 1.2 三件事必须对齐
 
@@ -127,7 +127,7 @@ _kern_offset = (_kern_vir_base - _kern_phys_base);
 | `AT(ADDR(sec) - _kern_offset)` | 位置计数器当前值 | VMA − 0xF0000000 | `.text`、`.data`、`.bss` |
 | `AT(_kern_phys_base)` | 位置计数器当前值 | 恒为 0x00400000 | 反例，见本节末 |
 
-`AT(ADDR(.text) - _kern_offset)` 不是"把装载地址设成物理基址"——它是"把装载地址设成该段虚拟地址减去同一个常量"。两者只在某个段的虚拟地址恰好是 0xF0400000 时才相等，而本脚本里没有这样的段：低侧 `.unpaged_*` 三段长度非零，位置计数器加完偏移后已经大于 0xF0400000；接着 `.usermapped_glo` 与 `.usermapped` 两个非空输出段又各占一段、各自对齐到 4KiB（供料方是 `minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S` 与 `minix3/minix/kernel/arch/i386/usermapped_data_arch.c` 里带 `__section(".usermapped")` 的三个 `minix_ipcvecs_*` 对象）。`.text` 的虚拟地址因此严格大于 0xF0400000，它的装载地址也严格大于 0x00400000。真正成立的是逐段关系：每个带 `AT()` 的段，装载地址 = 自己的虚拟地址 − 0xF0000000；五处 `AT()` 减的是同一个常量，于是"虚拟地址 − 装载地址"对**每个带 `AT()` 的段**都相等；低侧 `.unpaged_*` 三段不带 `AT()`、平移量为 0——两组各自一致，不是全表一致。这条平移一致是后面一切映射的基础，`kernel.lds` 自己并没有断言它；Rust 侧把这条件写成了可执行检查（§3.1、§5.3）。
+`AT(ADDR(.text) - _kern_offset)` 不是"把装载地址设成物理基址"——它是"把装载地址设成该段虚拟地址减去同一个常量"。两者只在某个段的虚拟地址恰好是 0xF0400000 时才相等，而本脚本里没有这样的段：低侧 `.unpaged_*` 三段长度非零（对象清单与改名机制见 §2.2），位置计数器加完偏移后已经大于 0xF0400000；接着 `.usermapped_glo` 与 `.usermapped` 两个非空输出段又各占一段、各自对齐到 4KiB（供料方是 `minix3/minix/kernel/arch/i386/usermapped_glo_ipc.S` 与 `minix3/minix/kernel/arch/i386/usermapped_data_arch.c` 里带 `__section(".usermapped")` 的三个 `minix_ipcvecs_*` 对象）。`.text` 的虚拟地址因此严格大于 0xF0400000，它的装载地址也严格大于 0x00400000。真正成立的是逐段关系：每个带 `AT()` 的段，装载地址 = 自己的虚拟地址 − 0xF0000000；五处 `AT()` 减的是同一个常量，于是"虚拟地址 − 装载地址"对**每个带 `AT()` 的段**都相等；低侧 `.unpaged_*` 三段不带 `AT()`、平移量为 0——两组各自一致，不是全表一致。这条平移一致是后面一切映射的基础，`kernel.lds` 自己并没有断言它；Rust 侧把这条件写成了可执行检查（§3.1、§5.3）。
 
 **把五处 `AT()` 都写成 `AT(_kern_phys_base)` 会怎样**：五个带 `AT()` 的输出段（`.usermapped_glo`、`.usermapped`、`.text`、`.data`、`.bss`）的装载地址都会是 0x00400000。装载器按每段的 `p_paddr` 与 `p_filesz` 逐个写字节，于是后写的段覆盖先写的段（`.bss` 是 `p_filesz = 0` 的段，不写字节，但清零范围同样从 0x00400000 起）。链接器不会为此报错——`AT()` 是合法表达式，段在虚拟地址空间里也不重叠。症状是内核镜像里先写的那些段的字节被后写的段覆盖，`kmain` 的入口与 `minix_ipcvecs_*` 表的内容都落在被覆盖的字节上：取到的第一条"指令"是别人的数据。
 
@@ -208,7 +208,7 @@ __k_unpaged__kern_phys_base = _kern_phys_base;
 
 ARM32 一侧是同一形状，逐字对照 `minix3/minix/kernel/arch/earm/kernel.lds`：三个常量的名字与用法相同，只有物理基址不同（`_kern_phys_base = 0x80200000`）；条目段多收一个 `.startup` 段（`.unpaged_text ALIGN(4096) : { unpaged_*.o(.startup); unpaged_*.o(.text) }`），因为 ARM 的入口标签写在那个段里；`.unpaged_data` 之后、`.unpaged_bss` 之前多一个 `__k_unpaged__kern_unpaged_edata`，`.unpaged_bss` 之后是 `__k_unpaged__kern_unpaged_end`。两边的改名名单也不同（ARM 侧没有 `io_inb.o`/`io_outb.o`，另多若干 `compiler_rt` 除法辅助对象）。
 
-**把 `pg_utils.o` 从改名名单里去掉会怎样**（或换成一个没被改名的对象，比如把 `pre_init.o` 去掉）：`pg_identity`、`pg_mapkernel`、`vm_enable_paging` 这些函数会落进高一侧的 `.text`，它们的符号值变成 0xF04xxxxx 一段。调用它们的时候 CPU 还在低地址执行：分页还没开（`vm_enable_paging` 正是开分页的那一步），高地址一侧没有任何映射，取指立刻失败；此时保护结构还没建（`prot_init` 在 03 篇的 `cstart` 里才被调用），没有可用的异常处理，故障直接升级为三重故障。名单在那个 `.for unpaged_obj in …` 块里，函数在 `minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`，调用点在 `minix3/minix/kernel/arch/i386/pre_init.c:pre_init` 的函数体中部——那里依次调用 `pg_clear/pg_identity/pg_mapkernel/pg_load/vm_enable_paging` 五个函数，全都在同一个对象里。反方向的错法是：把一个本该在高半执行的函数（例如 `minix3/minix/kernel/main.c:kmain`）放进改名名单，它的段体就落进低地址一侧（VMA = LMA、按低地址装载）。这种错法当场没有症状——CPU 本来就在低地址执行，分页开启后恒等映射仍覆盖这一段（`pg_identity` 铺满 1024 个目录项，见 `01-boot-shim-bootstrap.md` §2.6），取指照常；坏点推迟出现，且有两条：取指一侧与 §2.3 的"只切栈不跳"同型——恒等映射被移除（VM 接手页表时 `pt_init` 跳过 BIGPAGE 条目）之后，取指落到没有映射的低地址上，`CR2` 记下这条指令的地址；内存一侧，unpaged 段正是 `kinfo.bootstrap_start/len` 覆盖的范围（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters` 把 `_kern_unpaged_start/end` 赋给它），引导阶段一结束这段内存就被交回空闲链（`minix3/minix/kernel/main.c:kmain` 的 `add_memmap`，§2.4 的同一条链），字节会被下一次分配拿走。
+**把 `pg_utils.o` 从改名名单里去掉会怎样**（或换成一个没被改名的对象，比如把 `pre_init.o` 去掉）：`pg_identity`、`pg_mapkernel`、`vm_enable_paging` 这些函数会落进高一侧的 `.text`，它们的符号值变成 0xF04xxxxx 一段。调用它们的时候 CPU 还在低地址执行：分页还没开（`vm_enable_paging` 正是开分页的那一步），高地址一侧没有任何映射，取指立刻失败；此时保护结构还没建（`prot_init` 在 03 篇的 `cstart` 里才被调用），没有可用的异常处理，故障直接升级为三重故障。名单在那个 `.for unpaged_obj in …` 块里，函数在 `minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel`，调用点在 `minix3/minix/kernel/arch/i386/pre_init.c:pre_init` 的函数体中部——那里依次调用 `pg_clear/pg_identity/pg_mapkernel/pg_load/vm_enable_paging` 五个函数，全都在同一个对象里。反方向的错法是：把一个本该在高半执行的函数（例如 `minix3/minix/kernel/main.c:kmain`）放进改名名单，它的段体就落进低地址一侧（VMA = LMA、按低地址装载）。这种错法当场没有症状——CPU 本来就在低地址执行，分页开启后恒等映射仍覆盖这一段（`pg_identity` 铺满 1024 个目录项，见 `01-boot-shim-bootstrap.md` §2.6），取指照常；坏点推迟出现，且有两条：取指一侧与 §2.3 的"只切栈不跳"同型——恒等映射被移除（VM 接手页表时 `pt_init` 跳过 BIGPAGE 条目）之后，取指落到没有映射的低地址上，`CR2` 记下这条指令的地址；内存一侧，unpaged 段正是 `kinfo.bootstrap_start/len` 覆盖的范围（`minix3/minix/kernel/arch/i386/pre_init.c:get_parameters` 把 `_kern_unpaged_start/end` 赋给它——源码侧就写这两个短名，`pre_init.o` 在被改名之列，objcopy 给引用加前缀后链接脚本里对应 `__k_unpaged__kern_unpaged_start/end`，见 §2.1），引导阶段一结束这段内存就被交回空闲链（`minix3/minix/kernel/main.c:kmain` 的 `add_memmap`，§2.4 的同一条链），字节会被下一次分配拿走。
 
 ### 2.3 head.S：一次跳转里的两种寻址
 
@@ -230,7 +230,7 @@ ARM32 一侧是同一形状，逐字对照 `minix3/minix/kernel/arch/earm/kernel
 逐行解码：
 
 1. `mov $k_initial_stktop, %esp`：把栈指针设到 `k_initial_stktop` 的值。`$符号` 形式的立即数在汇编后就是符号的**值**——链接期填进去的一个 32 位常量。这条指令携带的是绝对值，它与"当前 PC 在哪"无关。
-2. `push $0`：往新栈里压一个 0。源码注释写作 `Terminate stack`：栈回溯逐帧读保存的帧指针，0 表示链到此为止。`head.S` 的入口段也清过一次帧指针（`mov $0, %ebp`，紧跟在第一次设栈 `mov $load_stack_start, %esp` 之后、`pre_init` 之前）。
+2. `push $0`：往新栈里压一个 0。源码注释写作 `Terminate stack`——它是初始栈底的终止槽，与回溯链的终止点是两件事：本仓两侧的回溯器都沿**帧指针链**走（C 侧 `minix3/minix/lib/libsys/stacktrace.c:util_stacktrace` 从 `get_bp()` 出发 `while(bp)` 逐帧读 `[bp]` 与 `[bp+1]`；内核侧 `minix3/minix/kernel/arch/i386/exception.c:proc_stacktrace_execute` 与 Rust 侧 `os/arch/src/arch/stacktrace.rs:walk_frames_from` 同形），链走到保存帧指针槽里的 0 才停——这个 0 由**清帧指针**提供：`head.S` 的入口段清过一次（`mov $0, %ebp`，紧跟在第一次设栈 `mov $load_stack_start, %esp` 之后、`pre_init` 之前；`load_stack` 是那处预留区的起点标签、`load_stack_start` 是区顶，定义在文件末尾的 `.data` 段），调用链上第一个带序言的帧把它压进自己的保存槽。压进栈的这个 0 槽不在帧指针链上（Rust 侧保留它的理由见 §4.3）。
 3. `push %eax`：把 `pre_init` 的返回值（`kinfo` 的地址）压栈。i386 的调用约定从栈上取参数，所以这次压栈就是给即将被调用的 `kmain` 准备第一个参数。
 4. `call _C_LABEL(kmain)`：跳转。`call` 在机器码里是一条相对调用：位移在链接期算好，运行时 CPU 用"当前 PC + 位移"得到目标。位移的值是链接器按**两个链接地址**之差算出来的（调用点在 `.unpaged_text` 里，目标 `kmain` 在 `.text` 里），两个链接地址一低一高，差值在 0xF0000000 量级。把补码这笔账算一遍：`call` 的位移定义为"目标地址 − 下一条指令地址"，即 `S − (P + 5)`。代入布局：高侧的位置计数器在低侧三段之后才加 `_kern_offset`（`kernel.lds` 的 `. += _kern_offset` 排在 `.unpaged_bss` 之后），所以 `kmain` 的虚拟地址是 `0xF0400000 + 低侧总长 + 高侧段内偏移`，而调用点在 `.unpaged_text` 里、地址是 `0x00400000 + 调用点偏移`。两者相减：位移 = `0xF0000000 + (低侧总长 + 高侧段内偏移 − 调用点偏移 − 5)`——低侧总长是正数且远大于后三项，**位移略大于 `0xF0000000`**，落在 `0xF000_xxxx` 一段。32 位有符号位移的可表示范围是 −2^31..2^31−1；`0xF0000000` 按补码读作 `0xF0000000 − 0x1_0000_0000` = `−0x1000_0000`（约 −268 MB），`0xF000_xxxx` 比它略大（约 −268 MB 加几十 KB），仍在范围内——高半地址与低半地址之间的距离因此能塞进一条 32 位相对调用，不需要额外指令。
 
@@ -266,11 +266,11 @@ ARM 这里用 `ldr r2, =sym` 加 `bx r2`，不用 `bl kmain`。两个原因叠�
 
 **三条推演（按"缺哪一步"分：只切栈不跳；只跳不切；把切栈挪进 `kmain` 内部）**：
 
-其一，只切栈不跳。`%esp` 是 0xF04xxxxx 一侧的值，而 PC 停在 `.unpaged_text` 的下一行（`hang: jmp hang`）。此刻恒等映射还在，取指正常，看起来"没坏"。坏点推迟到恒等映射被移除的那一刻——VM 服务接手页表时跳过所有 BIGPAGE 条目（`minix3/minix/servers/vm/pagetable.c:pt_init` 的复制循环里 `if((entry & ARCH_VM_BIGPAGE)) continue;`），引导期建的 4MB 恒等映射随之消失，此后 CPU 在低地址取指，`CR2` 记下这条 unpaged 指令的地址，而没有映射的取指是页错误。
+其一，只切栈不跳。`%esp` 是 0xF04xxxxx 一侧的值，而 PC 停在 `.unpaged_text` 的下一行（`head.S` 里 `pre_init` 之后的兜底循环：`hang: jmp hang`，就在 `call kmain` 的下面）。此刻恒等映射还在，取指正常，看起来"没坏"。坏点推迟到恒等映射被移除的那一刻——VM 服务接手页表时跳过所有 BIGPAGE 条目（`minix3/minix/servers/vm/pagetable.c:pt_init` 的复制循环里 `if((entry & ARCH_VM_BIGPAGE)) continue;`），引导期建的 4MB 恒等映射随之消失，此后 CPU 在低地址取指，`CR2` 记下这条 unpaged 指令的地址，而没有映射的取指是页错误。
 
-其二，只跳不切。`call` 会把返回地址压进当前栈——`load_stack`（`head.S` 自己 `.data` 段里的 4096 字节，见同文件末尾的 `load_stack: .space 4096`）。`kmain` 的函数序言、参数保存、后续每次 `push`/`pop` 都发生在这个低地址栈上。恒等映射移除之后，第一次栈访问就落在没有映射的页上，`CR2` 是那个低地址栈页的地址。这一处与上一处的区别是：上一处坏在取指，这一处坏在数据访问，而数据访问在中断发生时也会发生（中断处理要压栈）。
+其二，只跳不切。`call` 会把返回地址压进当前栈——`load_stack`（`head.S` 自己 `.data` 段里的 4096 字节：`load_stack` 起、`load_stack_start` 止——设栈取的是后者）。`kmain` 的函数序言、参数保存、后续每次 `push`/`pop` 都发生在这个低地址栈上。恒等映射移除之后，第一次栈访问就落在没有映射的页上，`CR2` 是那个低地址栈页的地址。这一处与上一处的区别是：上一处坏在取指，这一处坏在数据访问，而数据访问在中断发生时也会发生（中断处理要压栈）。
 
-其三，把"切栈"挪到 `kmain` 内部作为第一步。`kmain` 是 C 函数，进入它之前编译器生成的序言已经动过栈（保存帧指针、调整栈指针），也就是在切栈之前至少已经有一次对旧栈的写。要让"切栈发生在任何压栈之前"，它就必须排在 `call` 之前——`head.S` 正是这么排的，设栈与 `call` 之间隔着两条给 `kmain` 准备参数的 `push`。
+其三，把"切栈"挪到 `kmain` 内部作为第一步。`kmain` 是 C 函数，进入它之前编译器生成的序言已经动过栈（保存帧指针、调整栈指针），也就是在切栈之前至少已经有一次对旧栈的写。要让"切栈发生在任何压栈之前"，它就必须排在 `call` 之前——`head.S` 正是这么排的，设栈与 `call` 之间隔着两条 `push`——`push $0`（终止槽）与 `push %eax`（给 `kmain` 准备的参数）。
 
 ### 2.4 `k_initial_stktop` 落在哪一段
 
@@ -321,7 +321,7 @@ Rust 侧不再用链接符号给出 `kmain` 用的栈顶（入口 `_start` 仍�
 |---|---|---|
 | 链接布局 | `kernel.lds` 的三行常量与 `AT()` 表达式 | 符号值是高一侧，装载地址是低一侧，差是 `_kern_offset` |
 | 装载摆放 | `Makefile.inc` 的改名规则 + 装载器按 `p_paddr` 写段体 | 段体落在低一侧；哪些对象进低一侧由改名名单决定 |
-| 成对跳转 | `head.S` 的四行（设栈 + 跳转） | 设栈携带绝对值，跳转携带相对位移；两者都在高一侧落地 |
+| 成对跳转 | `head.S` 的四行（设栈、压终止槽、压参数、跳转） | 设栈携带绝对值，跳转携带相对位移；两者都在高一侧落地 |
 
 影响本章三个动作结论的差异只在这两处：入口段的段名（ARM 多一个 `.startup`）与跳转指令的写法（x86 用相对 `call`，ARM 用字面量池取值的 `bx`）（§2.2 还列了物理基址取值与改名名单两处差异，它们不改变三个动作的结论）。两边的语义相同：先设栈、再跳转，两个动作指向同一侧。
 
@@ -361,7 +361,7 @@ SECTIONS
 
 第三种形态在载体侧：`os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half-riscv64/link.ld` 只有一套地址（`. = 0x80200000`），段没有 `AT()`，收尾一行 `__stack_top = . + 0x10000`。载体被固件放在低地址执行，不需要两套地址。
 
-三种形态的判据归结为一件事：**有谁按 `p_paddr` 摆放，就需要低地址的 LMA；没有读者，就不必维护第二套地址。**
+三种形态的判据归结为一件事：**有谁按 `p_paddr` 摆放到与符号地址不同的位置，才需要低地址的 LMA；摆放位置与符号地址一致（或没有读者）时，一套地址就够。**
 
 取舍表：
 
@@ -381,7 +381,7 @@ SECTIONS
 | 镜像跨距（末段 `paddr + memsz` − 首段 `paddr`；平移一致时等于按 `vaddr` 算的差） | `kern_size` | 映射循环的上界、`kern_stack_top` 的算式 | 要映射多大的范围 |
 | `ENTRY(_start)` | `entry_point`（`KernelLoadResult`） | 装载方决定从哪里进入镜像 | 第一条指令的地址 |
 
-四个量里前三个由装载方从 ELF 的 PT_LOAD 段现算（`os/boot-shim/src/loader.rs:fn compute_kernel_layout`），不是从脚本里读常量；脚本与读者之间没有代码依赖，只有约定。
+四个量里前三个由外部装载器（boot-shim 的两个 helper）从 ELF 的 PT_LOAD 段现算（`os/boot-shim/src/loader.rs:fn compute_kernel_layout`），不是从脚本里读常量；例外是自引导形态——它的三个量是与脚本同源的手写常量，正确性靠 L9 与 `readelf` 实测对账（§3.5、§4.4）。除这个例外，脚本与读者之间没有代码依赖，只有约定。
 
 **给 `os/kernel-image/x86_64.ld` 去掉 `AT()` 会怎样**（保留高半基址）：四条 `AT` 都去掉之后，每个 `PT_LOAD` 的 `p_paddr` 退化成虚拟地址，段拷贝会向 `0xFFFF800000200000` 一类物理地址写字节。宿主侧先红的是 `check-layout.sh` 的 L3c（"首段 LMA = 0x200000"），真机侧的表现是内核字节从未被放到可执行位置。
 
@@ -389,7 +389,7 @@ SECTIONS
 
 C 侧的负担：装载器要按 `p_paddr` 摆放、按 `p_memsz - p_filesz` 清零，这些都是 ELF 程序头里的字段，而 C 侧读它们的是 GRUB，内核自己一行解析代码都没有。Rust 侧没有这个外部角色，字段要自己读。需要的字段只有几个：`p_paddr`、`p_vaddr`、`p_offset`、`p_filesz`、`p_memsz`、`p_flags`（`p_flags` 在装载内核镜像时用不到，在装载用户 ELF 时要用，见本节末的处置表）。符号表、重定位、section header 都不在射程内。
 
-解析器放在 `os/libs/minix-elf`，是一个独立 crate，被五个 crate 依赖（复算：`grep -rl 'minix-elf =' os/*/Cargo.toml os/*/*/Cargo.toml` 输出 `os/arch/Cargo.toml`、`os/boot-shim/Cargo.toml`、`os/servers/vfs/Cargo.toml`、`os/servers/vm/Cargo.toml`、`os/servers/rs/Cargo.toml` 五行）。用途分三类：boot-shim 用它装载**内核镜像**（模块是按原字节整块拷贝的，不经解析——`os/boot-shim/src/loader.rs:fn load_boot_modules_with_loader` 里没有段迭代）；`os/arch/src/arch/boot.rs:fn load_vm_elf` 用它把用户 ELF 逐页映射进进程地址空间；`os/servers/rs/src/trap_api.rs` 的 exec 路径用它读段与入口点。vfs 的 exec 路径只在常量上借用它（`ET_EXEC`/`PT_LOAD`），表头解析是 `os/servers/vfs/src/exec_worker.rs` 自带的 `ElfHead`。同一份"段迭代"语义被多个调用方共用，是它成为共享 crate 而不是某个模块内部实现的理由。
+解析器放在 `os/libs/minix-elf`，是一个独立 crate，被五个 crate 依赖（复算：`grep -rl 'minix-elf =' os/*/Cargo.toml os/*/*/Cargo.toml` 输出 `os/arch/Cargo.toml`、`os/boot-shim/Cargo.toml`、`os/servers/vfs/Cargo.toml`、`os/servers/vm/Cargo.toml`、`os/servers/rs/Cargo.toml` 五行）。用途按调用点分四类：boot-shim 用它装载**内核镜像**（模块是按原字节整块拷贝的，不经解析——`os/boot-shim/src/loader.rs:fn load_boot_modules_with_loader` 里没有段迭代）；`os/arch/src/arch/boot.rs:fn load_vm_elf` 用它把用户 ELF 逐页映射进进程地址空间；`os/servers/rs/src/trap_api.rs` 的 exec 路径用它读段与入口点；`os/servers/vm/src/vm_server.rs` 的 bootstrap 装载用 `entry_point` 与 `segment_iter` 取入口与段表。vfs 的 exec 路径只在常量上借用它（`ET_EXEC`/`PT_LOAD`），表头解析是 `os/servers/vfs/src/exec_worker.rs` 自带的 `ElfHead`。同一份"段迭代"语义被多个调用方共用，是它成为共享 crate 而不是某个模块内部实现的理由。
 
 取舍表：
 
@@ -485,14 +485,14 @@ pub struct LoadSegment {
 
 C 侧的负担：`k_initial_stktop` 是一个链接符号，`head.S` 用一条绝对立即数指令把它的值写进 `%esp`（§2.3）。这个做法把"栈顶是多少"与"链接脚本怎么摆段"绑在一起：换一个布局，符号值跟着变。Rust 侧如果照搬，内核就要在源码里声明一个外部链接符号，而"内核被链接进谁"有三种形态（§3.1）——符号的值在每种形态下由不同的脚本决定，且测试载体根本没有这个符号。
 
-改成按值交接：装载方算好一个地址，放进 `KernelInfo`，跳转处只消费它（`os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo` 的 `kern_stack_top` 字段）。算它的公式在 boot-shim 的 builder 里（`os/boot-shim/src/uefi_helpers.rs` 与 `os/boot-shim/src/opensbi_helpers.rs` 各一份）：
+改成按值交接：装载方算好一个地址，放进 `KernelInfo`，跳转处只消费它（`os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo` 的 `kern_stack_top` 字段）。算它的公式在 boot-shim 的 builder 里（`os/boot-shim/src/uefi_helpers.rs` 与 `os/boot-shim/src/opensbi_helpers.rs` 各一份实现；两个自引导面 `bootface.rs` 与 `bootface_a64.rs` 复用 opensbi 那份——`use boot_shim::opensbi_helpers::build_kernel_info`，没有第三份副本）：
 
 ```rust
 /* 节选（保留赋值行），os/boot-shim/src/uefi_helpers.rs:build_kernel_info。 */
         kern_stack_top: VirBytes(kern_virt_base.0 as u64 + kern_size as u64),
 ```
 
-式中 `kern_size` 来自 `os/boot-shim/src/loader.rs:fn compute_kernel_layout` 的 `kern_end_phys - kern_phys_base`，`kern_end_phys` 是所有段 `paddr + memsz` 的最大值（取物理侧极值而不是虚拟侧：映射的目标侧就是物理地址——高半映射把 `[kern_virt_base, +kern_size)` 指向 `[kern_phys_base, +kern_size)`；平移一致时两者数值相等，这里选与映射循环同一口径）。于是栈顶 = 镜像虚拟基址 + 镜像跨距 = 镜像尾的虚拟地址。这个值成立要两个前提：
+式中 `kern_size` 来自 `os/boot-shim/src/loader.rs:fn compute_kernel_layout` 的 `kern_end_phys - kern_phys_base`，`kern_end_phys` 是所有段 `paddr + memsz` 的最大值（取物理侧极值而不是虚拟侧：映射的目标侧就是物理地址——高半映射把 `[kern_virt_base, +kern_size)` 指向 `[kern_phys_base, +kern_size)`；平移一致（§2.1 的逐段关系，L4 是它的可执行检查）时两者数值相等，这里选与映射循环同一口径）。于是栈顶 = 镜像虚拟基址 + 镜像跨距 = 镜像尾的虚拟地址。这个值成立要两个前提：
 
 - 前提一：镜像的最后一个可加载段覆盖到镜像尾（`.bss` 是最后一段，它的 `memsz` 含链接脚本末尾那段对齐填充）。
 - 前提二：镜像尾按 16 字节对齐——`os/kernel/src/lib.rs:fn boot_validate_and_prepare` 里有一条断言 `kern_stack_top must be 16-byte aligned`，而它由链接脚本的 2MiB 收口顺带满足（§3.5）。
@@ -515,7 +515,7 @@ Rust 侧还有第二个栈：链接脚本在 `.bss` 里预留的 64 KiB 引导�
 
 ### 3.4 成对的换栈与跳转收进一个 trait 契约（→§2.3）
 
-C 侧的负担：换栈与跳转必须成对、且有固定次序（§2.3 的三处反向推演），而这两件事在 C 里是两行汇编，没有任何类型或接口约束它们。调用者（`pre_init` 返回后的那几行）与实现（同一个文件）在一起，所以约束靠位置相邻来维持。
+C 侧的负担：换栈与跳转必须成对、且有固定次序（§2.3 的三处反向推演），而这两个动作在 C 里只是相邻的四行汇编（设栈、压终止槽、压参数、跳转），没有任何类型或接口约束它们。调用者（`pre_init` 返回后的那几行）与实现（同一个文件）在一起，所以约束靠位置相邻来维持。
 
 Rust 侧把它写成一个 trait，前置条件写进文档与 `unsafe` 契约，返回类型写成 `!`（`os/kernel/src/boot/higher_half.rs:trait HigherHalf`）：
 
@@ -703,21 +703,9 @@ VPN[2] = (vaddr >> 30) & 0x1FF
 
 复算：`printf '0x%x\n' $(( (0xFFFFFFC000000000 >> 30) & 0x1FF ))` 输出 `0x100`（256）；把基址换成 `0xFFFFFC0000000000` 或 `0xFFFFC00000000000`，同一条命令输出 `0x0`。后两个地址看起来像高地址，但 bit 38 是 0，符号扩展后落在低半——它们的 VPN[2] 与恒等映射（覆盖低 4GiB，即 VPN[2] = 0..3）共用同一个顶层槽位。`os/kernel-image/riscv64.ld` 的头注释把这两个地址列为"不是合法的 Sv39 canonical high"的实例；`os/arch/src/arch/direct_map.rs` 把内核 direct map 放在 VPN[2] = 257 也是同一个理由（不与镜像自己占的 256 号槽共用）。
 
-这类"把下级页表指针写到已有叶子条目上"的动作，映射接口本身会拦一次（`os/arch/src/riscv64/paging.rs:fn map_huge`）：取到目标槽位的旧条目后先问它是不是叶子，是叶子就返回错误而不是降级：
+这类"把下级页表指针写到已有叶子条目上"的动作，映射接口本身会拦一次：各架构的 `map_huge` 在写目标槽位前先判断旧条目是不是叶子——riscv64 的判据函数是 `pte_is_leaf`（按 R/W/X 位判断，`os/arch/src/riscv64_walk.rs:fn pte_is_leaf`；`os/arch/src/riscv64/paging.rs` 侧是转发），x86_64 看 `PRESENT` 与 `PS` 两位同时置位（`os/arch/src/x86_64/paging.rs:fn map_huge`），aarch64 看 `VALID` 置位且 `TABLE` 未置位（`os/arch/src/arm64/paging.rs:fn map_huge`；`os/arch` 一侧目录名用 `arm64`、`os/kernel` 一侧用 `aarch64`，两套目录名在本仓并存）——命中叶子就返回 `PageTableError::AlreadyMapped` 而不是把它降级成表指针；页表多级结构与接口的完整定义在 `rewrite-notes/02-stage-vm/07-pagetable-struct.md`（该文尚未落到本目录），本节只用到这道检查的存在。
 
-```rust
-/* 节选（保留判断与注释），os/arch/src/riscv64/paging.rs:fn map_huge。 */
-            if pte_is_leaf(e2) {
-                // L2 entry is already a 1GB leaf (R/W/X set). Demoting it to
-                // a table pointer would silently corrupt the existing 1GB mapping.
-                // Return AlreadyMapped to signal the conflict.
-                return Err(PageTableError::AlreadyMapped);
-            }
-```
-
-判据是 `pte_is_leaf`（实现按 R/W/X 位判断条目是不是叶子，在 `os/arch/src/riscv64_walk.rs:fn pte_is_leaf`；`os/arch/src/riscv64/paging.rs` 侧是转发），返回的错误是 `PageTableError::AlreadyMapped`。x86_64 与 aarch64 的 `map_huge` 里各有一份同形的检查，只是叶子的判据按各自的条目格式写：x86_64 看 `PRESENT` 与 `PS` 两位同时置位（`os/arch/src/x86_64/paging.rs:fn map_huge`），aarch64 看 `VALID` 置位且 `TABLE` 未置位（`os/arch/src/arm64/paging.rs:fn map_huge`）。
-
-**把基址写成 `0xFFFFFC0000000000` 会怎样**：内核高半映射要写的是 VPN[2] = 0 那个槽，而引导期的恒等映射已经在那里放了 1GiB 叶子；如果映射接口不检查叶子（把上面那段删掉），后写的下级页表指针会把叶子覆盖掉，恒等映射的覆盖范围从 1GiB 缩到 2MiB 一块。CPU 此刻正在低半执行，取指一离开这 2MiB 就失败——故障地址是低半的一条指令地址，而根因写在链接脚本的基址常量上；有了这道检查，同一个错误会在建表时以 `AlreadyMapped` 提前报出来。
+**把基址写成 `0xFFFFFC0000000000` 会怎样**：内核高半映射要写的是 VPN[2] = 0 那个槽，而引导期的恒等映射已经在那里放了 1GiB 叶子；如果映射接口不检查叶子，后写的下级页表指针会把叶子覆盖掉，恒等映射的覆盖范围从 1GiB 缩到 2MiB 一块。CPU 此刻正在低半执行，取指一离开这 2MiB 就失败——故障地址是低半的一条指令地址，而根因写在链接脚本的基址常量上；有了这道检查，同一个错误会在建表时以 `AlreadyMapped` 提前报出来。
 
 **把 `.lbss` 从 `.bss` 的通配里去掉会怎样**：`--gc-sections` 之外，`.lbss` 节会被链接器当作孤儿节处理：放在它遇到的位置之后（通常是 `.bss` 之后、`ALIGN(0x200000)` 之前或之后取决于链接器版本），跨距随之变化——最坏情况是跨距不再是 2MiB 整数倍，L5 判定失败、`boot_validate_and_prepare` 走进 panic 分支。把 `KEEP(*(.text.boot))` 从 `.text` 首位挪走：`_start` 不再落在首段开头，L6a 红（它比的是 `e_entry` 与按脚本常量算出的预期首段 VMA）；L6b 仍绿——它比的是 `nm` 出来的 `_start` 符号与 `e_entry`，两者由 `ENTRY(_start)` 绑在一起、同时移动。装载方（或固件）从 `ENTRY` 得到入口后仍然能跳，但 §4.3 里"链接地址与执行地址的关系"这一前提要重新论证。把 `. = ALIGN(0x200000)` 删掉：L5 与 L9 红（§3.5）。
 
@@ -853,7 +841,7 @@ impl HigherHalf for X86_64HigherHalf {
 }
 ```
 
-五条指令与 §2.3 的 C 版本逐一对应，多出来的两条各有理由：`and rsp, -16` 把栈对齐到 16 字节边界（对齐这条与 C 的 `head.S` 同形——x86-32 的 4 字节栈没有这条；psABI 的严格不变量是函数入口 `(RSP+8)` 为 16 的倍数，而这里对齐到边界后接 `push 0` 与 `call`、入口 RSP 落在 16 边界上；`kmain` 是裸函数（`naked_asm!`），编译器序言的对齐假设不适用，这条对齐服务的是跨形态一致的栈形）；`xor rbp, rbp` 对应 `head.S` 的 `mov $0, %ebp`——这里放在换栈之后，清的是新栈上的帧指针。`push 0` 与 `head.S` 的 `push $0` 同义：栈上的终止标记。`kmain = sym kmain` 让汇编器把 `{kmain}` 换成符号名，`call` 的位移由链接期决定；`in("rdi") kinfo` 把启动信息指针绑到 System V 的第一个参数寄存器上。
+五条对四行（§2.3 摘录的 C 版本是四行，这里五条），逐条对应：`mov rsp` ↔ `mov %esp`；`push 0` ↔ `push $0`；`call {kmain}` ↔ `call kmain`；C 的 `push %eax` 由 `in("rdi") kinfo` 的寄存器绑定承担（不在 asm 指令里）；多出来的两条各有理由。第一条 `and rsp, -16`：把栈对齐到 16 字节——C 的 `head.S` 里没有对应（x86-32 的 4 字节栈不需要 16 字节对齐）；psABI 的严格不变量是函数入口 `(RSP+8)` 为 16 的倍数，而这里对齐到边界后接 `push 0` 与 `call`、入口 RSP 落在 16 边界上；`kmain` 是裸函数（`naked_asm!`），编译器序言的对齐假设不适用，这条对齐服务的是跨形态一致的栈形。第二条 `xor rbp, rbp`：对应 `head.S` 入口段的 `mov $0, %ebp`（不在 §2.3 摘录的四行里）——清帧指针在 C 里发生在换栈之前、在 Rust 里放在换栈之后，两边清的都是新栈上的帧指针（它的用处见 §2.3 第 2 项：给帧指针链一个终止点）。`push 0` 与 `head.S` 的 `push $0` 同义：初始栈的终止槽（C 注释 `Terminate stack`；它另有一半对齐作用——入栈与 `call` 合计 16 字节，§3.4 有复算）。`kmain = sym kmain` 让汇编器把 `{kmain}` 换成符号名，`call` 的位移由链接期决定；`in("rdi") kinfo` 把启动信息指针绑到 System V 的第一个参数寄存器上。
 
 aarch64 的对齐与跳转（`os/kernel/src/arch/aarch64/higher_half.rs:struct AArch64HigherHalf`）：
 
@@ -910,7 +898,7 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
 
 - `delta = kern_virt_base - kern_phys_base` 在跳转前算出来，`in("t2")` 传进 asm，`add t1, t1, t2` 把它加到 `la` 取到的地址上。
 - `la t1, {kmain}` 在 `-mcmodel=medany` 下展开为 `auipc` 加 `addi`，是一个 PC 相对取址：它算出的值是"链接期位移 + 当前 PC"。当前 PC 属于哪种执行视图，决定了这个值落在哪一侧（见下一段）。
-- `fence.i` 同步指令缓存与此前的存储；`jalr x0, t1, 0` 的 `rd=x0` 显式丢弃返回地址（对应 x86_64 的 `push 0` 与 aarch64 的 `br`）。asm 块不使用 a0/a7/a6，因为 a0 里装着 `kinfo`，而 SBI 调用会破坏它（源码注释写明这条约束）。
+- `fence.i` 同步指令缓存与此前的存储；`jalr x0, t1, 0` 的 `rd=x0` 显式丢弃返回地址（对应 x86_64 的 `push 0` 与 aarch64 的 `br`）。asm 块不改动 a0（`in("a0")` 载着 `kinfo`，须保留到 `kmain`），也不使用 a6/a7（SBI 调用约定占用的寄存器）——源码注释用 "Do NOT use a0/a7/a6 inside this asm block!" 写明这条约束。
 
 `delta` 要存在的原因，是"链接地址"与"执行地址"之间可能有一个固定的差。§2.3 给出的判据是：PC 相对取址要求调用点的执行地址等于它的链接地址。内核镜像的两种执行形态里，只有一种满足这条：
 
@@ -931,7 +919,7 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
 | 跳转 | `call {kmain}` | `br x1` | `jalr x0, t1, 0` |
 | 参数寄存器 | `rdi` | `x0` | `a0` |
 
-表中"取入口地址"一行是三架构唯一的语义差异：x86_64 与 aarch64 携带的是绝对值（相对位移加上链接期的 PC、或字面量池里的常量），riscv64 的 `la` 携带的是 PC 相对量，因此需要显式补上执行视图的差。
+表中"取入口地址"一行才是需要按形态论证的差异（切栈、对齐、清帧指针、跳转、屏障、参数寄存器六行是同义的机械对应）：差异不在指令编码的"绝对 vs 相对"，而在进入形态——x86_64 的 `call`（位移 + 运行时 PC）与 aarch64 的字面量池都以"运行地址 = 链接地址"为前提，而它们被支持的全部进入形态都满足这条前提；riscv64 的自引导形态不满足，所以 `la` 之后要显式补上执行视图的差。
 
 还有第三种执行形态：内核被编进 boot-shim 自己的镜像（x86_64 的 UEFI 路径今天走的是这一种，`os/boot-shim/src/main.rs` 在进程内调用 `arch_boot`）。此时内核代码与垫片一起在低地址执行，符号值与执行地址之间没有平移差，相对取址与绝对取值都落在同一个视图里；"PC 在高半"不是这条形态的判据（§5.2 的测试载体也属这一形态）。
 
@@ -941,7 +929,7 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
 
 其二，aarch64 去掉 `isb`。此前 `enable()` 写过 TTBR/SCTLR 之类的系统寄存器，而没有 `isb` 时这些写入对随后的取指不保证可见；后果是 `br` 之后的取指可能仍按旧映射解释，落在错误位置。
 
-其三，x86_64 去掉 `push 0`（或 aarch64/riscv64 用带链接的跳转）。栈上的终止标记消失，栈回溯逐帧读到的"返回地址"是栈上的残留内容，回溯链走到一片合法映射里才停下——症状是 panic 打印的调用栈里出现与调用关系无关的地址。
+其三，x86_64 去掉 `xor rbp, rbp`（或 aarch64 去掉 `mov x29, #0`、riscv64 去掉 `li s0, 0`——三个架构都靠这一步给帧指针链一个终止点）。调用链上第一个带序言的帧会把当时的帧指针压进自己的保存槽；这一步缺席时，槽里是换栈前留下的值，回溯链读到与调用关系无关的地址，走到一片合法映射里才停下——症状是 panic 打印的调用栈里出现无关地址。（x86_64 序列里的 `push 0` 终止槽不在这条链上；去掉它改变的是入口栈的对齐，`sp_aligned` 断言会当场失败。）
 
 ### 4.4 从装载到 `kmain` 的完整路径（→3.1、3.3）
 
@@ -953,8 +941,8 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
         → minix_elf 解析 → 按 p_paddr 写段体、清零 BSS
         → 读 12 个模块 → 组 KernelInfo → ExitBootServices
         → 交接（x86_64：进程内调 arch_boot；aarch64：建根后绝对跳进镜像高半 _start）
-        → arch_boot 或 arch_boot_resume_high_half
-        → arch_boot_impl（校验 → 建根 → 开分页 → 建 Direct Map 覆盖）→ HigherHalf::jump_to_kmain
+        → arch_boot 或 arch_boot_resume_high_half（后者：镜像已在高半运行、重新进入时的入口，只做加法性步骤、不重建页表）
+        → arch_boot_impl（校验 → 建根（建立根页表）→ 开分页 → 建 Direct Map 覆盖——Direct Map 是把物理内存整段按固定偏移映射进内核虚拟空间的映射）→ HigherHalf::jump_to_kmain
 
 形态二（自引导：riscv64 的 kernel-image）
   OpenSBI → 镜像 _start（清 .bss、立栈）→ rust_image_main
@@ -991,11 +979,11 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
     minix_kernel::arch_boot(&kernel_info, root_page)
 ```
 
-两个基址与跨距是常量（`KERN_VIRT_BASE`、`KERN_PHYS_BASE`、`KERN_SIZE`，与 `riscv64.ld` 同源，L9 对账），`KernelInfo` 由共享的 builder 组装，最后调用内核的启动入口（`os/kernel/src/lib.rs:fn arch_boot_impl` 是它的通用实现）。模块字节的搬运用 `os/kernel-image/src/bootface.rs:fn place_modules`：源直拷进 bump 页、不清零整页之外的余量只清尾，名字槽从定长字节池拷进一页物理名字池——模块名以胖指针（`&str` 是"指针 + 长度"两个机器字，与单个地址不同）形式交给内核，指针必须指向物理视图可达的字节（这段的视图约束写在模块文档里）。自引导镜像的早期代码在物理视图下靠 PC 相对寻址自洽（`la` 算出的值与当前 PC 同侧），只有最后跳 `kmain` 需要加上视图差值 `delta`（§4.3）。
+两个基址与跨距是常量（`KERN_VIRT_BASE`、`KERN_PHYS_BASE`、`KERN_SIZE`，与 `riscv64.ld` 同源，L9 对账），`KernelInfo` 由共享的 builder 组装（自引导面复用 boot-shim `opensbi_helpers::build_kernel_info` 那一份，两份实现的分布见 §3.3），最后调用内核的启动入口（`os/kernel/src/lib.rs:fn arch_boot_impl` 是它的通用实现）。模块字节的搬运用 `os/kernel-image/src/bootface.rs:fn place_modules`：源直拷进 bump 页、不清零整页之外的余量只清尾，名字槽从定长字节池拷进一页物理名字池——模块名以胖指针（`&str` 是"指针 + 长度"两个机器字，与单个地址不同）形式交给内核，指针必须指向物理视图可达的字节（这段的视图约束写在模块文档里）。自引导镜像的早期代码在物理视图下靠 PC 相对寻址自洽（`la` 算出的值与当前 PC 同侧），只有最后跳 `kmain` 需要加上视图差值 `delta`（§4.3）。
 
 形态二与形态一的分界写在模块文档里：自引导镜像**不重拷自己的段**。形态一的 boot-shim 会把 `kernel.elf` 的段拷进物理内存并清 NOBITS；自引导镜像已经在运行，同样的动作会覆盖正在执行的代码与栈。它只搬**模块**，自己的段不动，`.bss` 清理由入口汇编完成（§4.2 的第一处反向推演——BSS 清零那一条——讲过为什么这一步不能省）。
 
-两形态在 `arch_boot_impl` 之后合流：同一份 `os/kernel/src/lib.rs:fn arch_boot_impl` 建根、开分页、建 Direct Map 覆盖，然后调用同一个 `jump_to_kmain`。形态一里 `KernelInfo` 在进入内核时先落进内核自己的 `.bss` 副本（`os/kernel/src/lib.rs:fn store_kernel_info`），跳转时用的是那个副本的地址——这一步的作用是让指针不经过调用者保存寄存器传递（源码注释记录了这一处寄存器被覆写的情形）。
+两形态在 `arch_boot_impl` 之后合流：同一份 `os/kernel/src/lib.rs:fn arch_boot_impl` 建根、开分页、建 Direct Map 覆盖，然后调用同一个 `jump_to_kmain`。形态一里 `KernelInfo` 在进入内核时先落进内核自己的 `.bss` 副本（`os/kernel/src/lib.rs:fn store_kernel_info`），跳转时消费的是 `.bss` 副本的地址。这一步的原因在源码注释里有两条现场：**载荷存活**——`reserved_regions`/`memmap`/`boot_modules` 原本指向 boot-shim 堆上的字节，高半切换后那块内存不再被映射（真机读数：同一 VA 读回全零），落进内核 `.bss` 才能整段运行期可达（`os/kernel/src/lib.rs:fn store_kernel_info` 的 `fix27c`/NK4-C 注释）；**交接路径**——早先版本把 shim 栈上的 `&KernelInfo` 经 `noreturn` asm 的 `in("rdi")` 直传给 `kmain`，RDI 是 caller-saved、被调用方覆写后 `kmain` 拿到的是 .rdata 字符串地址（早期版本的读数：`kmain` 收到的指针 `0x1ddda2ee` 与 `.rdata` 里一个字符串常量的地址相合），现在全局副本的地址是链接期 RIP 相对常量，不经任何寄存器交接（`arch_boot` 函数头的修复注释，x86_64 版，`os/kernel/src/lib.rs`）。
 
 **让自引导镜像照搬形态一的做法、先把自己的段重新拷一遍会怎样**：目标区间就是它正在执行的代码与栈所在的物理内存：拷贝完成之前，正在执行的这段代码的字节已被改掉，下一条取指拿到的是新内容（或者被清零的 BSS）。这条分界在 `os/kernel-image/src/bootface.rs` 的模块文档里点明。
 
@@ -1018,7 +1006,7 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
 | `AT()` 表达式给出 LMA，装载器按 `p_paddr` 写段体（§2.1） | `os/kernel-image/*.ld` 的 `AT()` + `os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory` | 保留（形态） | 装载者从 GRUB 换成 boot-shim 或镜像自己，表达式与读法不变 |
 | `objcopy --prefix-symbols` + `unpaged_*.o` 两段式布局（§2.2） | 无对应物：内核镜像只有高半一段，引导侧代码在 boot-shim 或入口汇编里 | 淘汰 | 分页开启前的代码不在内核镜像里（`01-boot-shim-bootstrap.md` §3.7 的交接形态），内核不需要低地址段 |
 | `k_initial_stktop` 链接符号（§2.4） | `KernelInfo.kern_stack_top`（`kern_virt_base + kern_size`） | 改型 | 值由装载方算、按值交接，内核不声明外部符号 |
-| `head.S` 的两行（设栈 + 跳转）（§2.3） | `os/kernel/src/boot/higher_half.rs:trait HigherHalf` 与三份内联汇编实现 | 改型 | 收进 trait 契约；栈对齐、屏障、执行视图差值三件事各自显式 |
+| `head.S` 的成对动作：设栈 + 跳转（C 侧四行，§2.3） | `os/kernel/src/boot/higher_half.rs:trait HigherHalf` 与三份内联汇编实现 | 改型 | 收进 trait 契约；栈对齐、屏障、执行视图差值三件事各自显式 |
 | —— | `check-layout.sh` 的 L0–L9 宿主断言 | 新增 | C 侧由 Makefile 与链接脚本的常量约束，没有独立断言脚本 |
 
 三行"改型/新增"的共同点：把 C 里靠"位置相邻、文档说明、读者经验"维持的约束，换成一种可以被工具或类型系统检查的形式——脚本不变量进断言脚本，栈顶值进结构体字段，跳转前提进 `unsafe` 契约。
@@ -1066,15 +1054,15 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
 
 三条断言各对应 §4.3 的一条指令：`sp_ok` 对应"切栈"（栈指针落在高半地址空间）、`sp_aligned` 对应"对齐"、`fp_zero` 对应"清帧指针"。捕获方式按架构写在裸函数 `kmain` 的 `naked_asm!` 里（x86_64 用 `mov rdx, rsp` 与 `lea r8, [rip]`，aarch64 用 `mov x1, sp` 与 `adr x2, .`，riscv64 用 `mv a1, sp` 与 `auipc a2, 0`）。
 
-**PC 不在断言里**，这条取舍写在源码注释里：测试载体被固件装在低地址，PC 的高半只有在"镜像被装到低地址、但被按高半 VMA 进入"的形态下才成立，而测试载体走的不是那种形态。`PC 不在高半` 被打印成 `INFO`，不参与成败判定。测试载体的 `KernelInfo` 是合成的（`os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs` 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_size: 0x200_000`、`kern_stack_top: VirBytes(0xFFFF_8000_0020_0000)`），第三个值正是前两者之和，也就是 §3.3 的算式在测试形态下的取值。
+**PC 不在成败判定里**，这条取舍写在源码注释里（"PC check is architecture-dependent… PC may not be in the high range"）：三个载体都被固件装在低地址，但**进入方式不同**——x86_64 与 aarch64 用镜像自己的（低）链接地址进入，PC 停在低半；riscv64 的载体走"低装高进"（`la` 加上 `delta` 位移，`os/kernel/src/arch/riscv64/higher_half.rs` 的说明段），PC 落在 `kmain` 的高半 VMA，源码注释记录了实机读数（`0xffffffc0…`，修正前是 `0x8020…`）。PC 一项因此按架构可高可低，只打印、不判定；`PC 不在高半` 时该行打印成 `INFO`，它只在失败分支里出现、不会出现在 PASS 输出中。测试载体的 `KernelInfo` 是合成的（各载体同形、取值按架构；以 x86_64 载体为例：`os/qemu-tests/test-kernels/kernel/bootstrap/test-higher-half/src/main.rs` 里 `kern_virt_base: VirBytes(0xFFFF_8000_0000_0000)`、`kern_size: 0x200_000`、`kern_stack_top: VirBytes(0xFFFF_8000_0020_0000)`），第三个值正是前两者之和，也就是 §3.3 的算式在测试形态下的取值。
 
 运行方式与判定标记：`os/qemu-tests/run_qemu.sh` 用 `-serial file:` 收串口、用 `strings | grep '### TEST_RESULT: PASS'` 判定（`os/qemu-tests/run_qemu.sh` 的判定段），退出码里 `SKIP` 与 `FAIL` 分开（0 表示 PASS 或 SKIP，1 表示失败）。测试本身的输出形如 `### TEST_RESULT: PASS test-higher-half ###`。
 
-**把 PC 也加进成败判定会怎样**：测试载体的 PC 常驻低地址，这条断言在三个架构上恒红；红色成为常态之后，`sp_ok`/`sp_aligned`/`fp_zero` 三条真正的失败会淹没在同一条常红里——而这三条恰好是"镜像被装低、按高半进入"这条链上唯一能证明交接完成的读数。
+**把 PC 也加进成败判定会怎样**：x86_64 与 aarch64 的载体按低地址进入、PC 常驻低半，这条断言在这两个架构上恒红；而 riscv64 侧它恒绿（PC 本来就该到高半）。同一条断言在两处常红、一处常绿，红色成为常态之后，`sp_ok`/`sp_aligned`/`fp_zero` 三条真正的失败会淹没在同一条常红里——而这三条恰好是"镜像被装低、按高半进入"这条链上唯一能证明交接完成的读数。（想盯 `delta` 路径的读者：riscv64 载体的 PC 读数已在高半，给它加一条 PC 判据即可直接覆盖那条路径——见 §5.4 的 R02-T03。）
 
 ### 5.3 布局契约与 01 篇断言体系的分工（回指 01 篇 §5.2）
 
-镜像还没运行就能检查的那批断言（`check-layout.sh` 的 L0–L9）在 `01-boot-shim-bootstrap.md` §5.2 已逐条列出，本节不重复。与本章有因果关系的是四条：L3c（首段 LMA = 物理基址）与 L4（所有段平移一致）是 §3.1 那条"有谁按 `p_paddr` 摆放、就需要低地址 LMA"的可执行形式；L5（跨距 2MiB 对齐）与 L9（跨距对账）是 §3.5 与 §3.3 的可执行形式（L9 只在 riscv64 分支执行，01 篇 §5.2 的清单注明了这一条）。四条断言的作用是把"脚本里的常量、boot-shim 读出的布局、自引导面硬写的常量"这三处互相拽住，任一处单独改动都会让其中一条变红。
+镜像还没运行就能检查的那批断言（`check-layout.sh` 的 L0–L9）在 `01-boot-shim-bootstrap.md` §5.2 已逐条列出完整措辞，本节不重复；写给未读 01 篇读者的编号速查：L0 脚本预期表与链接脚本声明的两个基址互相对账；L1 ELF 类型 = `EXEC`；L2 机器类型与预期相符；L3a 段数 ≥ 1、L3b 首段 VMA = 预期、L3c 首段 LMA = 物理基址；L4 所有 `PT_LOAD` 的 `vaddr − paddr` 一致；L5 镜像跨距 2MiB 对齐；L6a 入口 = 预期、L6b `_start` 符号 = 入口、L6c 入口落在首段内；L7 引导栈符号存在、64 KiB、落在末段；L8 `minix_kernel::arch_boot` 在镜像里；L9 跨距对账（ELF 实测 = `bootface.rs` 的 `KERN_SIZE`，只在 riscv64 分支执行）。与本章有因果关系的是四条：L3c（首段 LMA = 物理基址）与 L4（所有段平移一致）是 §3.1 那条"按 `p_paddr` 摆放到与符号地址不同处就需要低地址 LMA"判据的可执行形式；L5（跨距 2MiB 对齐）与 L9（跨距对账）是 §3.5 与 §3.3 的可执行形式（L9 只在 riscv64 分支执行，01 篇 §5.2 的清单注明了这一条）。四条断言的作用是把"脚本里的常量、boot-shim 读出的布局、自引导面硬写的常量"这三处互相拽住，任一处单独改动都会让其中一条变红。
 
 ### 5.4 机制 → 需要证明什么（反转核对表）
 
@@ -1089,13 +1077,13 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
 | M5 | Rust 三种脚本形态的判据（§3.1） | 生产脚本有 `AT()` 且常量与预期表一致；arch link.ld 无链接读者 | 部分覆盖 | L0/L3c/L4 覆盖生产脚本；**arch link.ld 的常量无断言锁步**（本轮加注）→ **R02-T02** |
 | M6 | ELF 解析器的五道校验与九个变体（§3.2） | 每种畸形输入返回对应变体 | 已覆盖 | minix-elf 23 测试（各族齐全，含两个 loader 侧变体） |
 | M7 | 按 `p_paddr` 摆放与 BSS 清零（§4.2） | 段体写到 `paddr`；NOBITS 区清零；重叠拒绝 | 已覆盖 | loader 15 测试（含 `bss_zeroed` 与 `rejects_overlapping`） |
-| M8 | 三架构成对跳转的指令序列（§4.3） | 切栈+跳转按序、对齐、清帧指针、`delta` 处理 | 部分覆盖 | 真机载体三架构（`sp_ok`/`sp_aligned`/`fp_zero` 三断言）；**PC 高半不判（载体低地址）——`delta` 路径无断言** → **R02-T03** |
+| M8 | 三架构成对跳转的指令序列（§4.3） | 切栈+跳转按序、对齐、清帧指针、`delta` 处理 | 部分覆盖 | 真机载体三架构（`sp_ok`/`sp_aligned`/`fp_zero` 三断言）；**PC 判据缺——x86_64/aarch64 按低地址进入不可判，riscv64 载体 PC 已在高半、可判而未判；`delta` 路径无断言** → **R02-T03（射程：给 riscv64 载体加 PC 判据即可）** |
 | M9 | 从装载到 `kmain` 的合流（§4.4） | 两形态各自到达 `arch_boot_impl` 并完成跳转 | 已覆盖 | 真机链（aarch64/riscv64 两条 + x86_64 内联） |
 | M10 | 镜像跨距的 2MiB 收口（§3.5） | 跨距 2MiB 对齐、与 `bootface` 常量一致 | 已覆盖 | L5/L9（riscv64 分支） |
 | M11 | 交接的寄存器约定（§4.3、§4.4） | `kinfo` 经 `.bss` 副本交接（不经 caller-saved 寄存器） | 部分覆盖 | NK4-A 的寄存器覆写修复与注释；**行为性，无自动断言** |
 | M12 | 布局断言的持续成立（§5.3） | L0–L9 全过 | 已覆盖 | `check-layout.sh` 三架构实跑（本轮复跑全 PASS） |
 
-**新 TODO（对源码/测试 workflow 的需求输入）**：`R02-T01`（段归属的断言或静态检查——改名名单 ↔ 段归类的机械对账）｜`R02-T02`（arch link.ld 常量与生产脚本的锁步断言或删除该形态）｜`R02-T03`（`delta` 路径的真机断言——高地址进入的载体变体，或给现有载体加 PC 视图判据）。
+**新 TODO（对源码/测试 workflow 的需求输入）**：`R02-T01`（段归属的断言或静态检查——改名名单 ↔ 段归类的机械对账）｜`R02-T02`（arch link.ld 常量与生产脚本的锁步断言或删除该形态）｜`R02-T03`（`delta` 路径的真机断言——riscv64 载体已按高半 VMA 进入，给它加一条 PC 高半判据即可覆盖；其余形态另议）。
 
 ---
 
@@ -1110,7 +1098,7 @@ riscv64 多一件事（`os/kernel/src/arch/riscv64/higher_half.rs:struct Riscv64
 | 内核镜像里某段的内容像另一段 | `AT()` 用了常量表达式，段体在物理上互相覆盖 | `readelf -lW` 看多个 `LOAD` 行的 `p_paddr` 是否相同（§2.1 反向推演） |
 | 进入 `kmain` 后第一次压栈/中断失败，故障地址是低地址 | 栈指针未切换（§2.3 的"只跳不切"）或栈顶值算错（§3.3） | 在 `kmain` 入口打印栈指针与 `kern_stack_top`；比对其高半一侧范围 |
 | 分页还没开启就 panic，消息点名三个对齐条件 | 镜像跨距不是大页粒度的整数倍（§3.5） | `readelf -lW` 算跨距；`check-layout.sh` 的 L5/L9 |
-| 栈回溯出现与调用关系无关的地址 | 栈上的终止标记缺失（§4.3 的 `push 0` 或等价写法） | 检查 `higher_half.rs` 的 asm 块是否保留终止标记 |
+| 栈回溯出现与调用关系无关的地址 | 帧指针链的终止点缺失（§4.3 的清帧指针：`xor rbp` / `mov x29,#0` / `li s0,0`；`push 0` 的终止槽不在链上） | 检查 `higher_half.rs` 的 asm 块是否保留了清帧指针动作（§5.2 的 `fp_zero` 断言覆盖它） |
 | 模块字节或模块名错位、内核报数量不符 | 装载顺序或名字契约被破坏（模块装载一侧，01 篇 §4.3） | 比对 boot-shim 的 `MODULE_NAMES` 与内核的 `BOOT_MODULE_PROC_NRS` |
 
 ### 6.2 可复制命令
@@ -1121,6 +1109,8 @@ readelf -hW  os/target/x86_64-unknown-none/release/kernel     # Type: EXEC；Ent
 readelf -lW  os/target/x86_64-unknown-none/release/kernel     # LOAD 行的 VMA/LMA/Filesz/Memsz
 # 关键行：所有 LOAD 行的第三列（VirtAddr）与第四列（PhysAddr）之差一致（L4 断言的这一条）。
 #         当前工件的 LOAD 行数：x86_64 5 行、aarch64 与 riscv64 各 4 行（复算：readelf -lW <工件> | grep -c '^  LOAD'）。
+#         x86_64 多出的一行来自编译器产生的只读节 .lrodata.* 独立成段：5 行依次是 .text（RX）、.lrodata.*（R）、
+#         .rodata 含 .eh_frame_hdr（R）、.data（RW）、.bss（RW、NOBITS）；逐段对名：readelf -lW <工件> | sed -n '/Section to Segment/,$p'。
 #         首段 PhysAddr 应当是链接脚本里的 KERNEL_PHYS_BASE。
 
 # 第二组：脚本里的常量与表达式
@@ -1158,10 +1148,10 @@ gdb <被调试的工件>
 
 五组命令的预期输出：
 
-- 第一组：`readelf -hW` 的 `Type:` 行应为 `EXEC`（不是 `DYN`），`Entry point address:` 应等于首段虚拟地址；`readelf -lW` 的每个 `LOAD` 行两列地址之差三行一致，首段 `PhysAddr` 等于脚本里的物理基址。
+- 第一组：`readelf -hW` 的 `Type:` 行应为 `EXEC`（不是 `DYN`），`Entry point address:` 应等于首段虚拟地址；`readelf -lW` 的所有 `LOAD` 行两列地址之差一致（= 高半平移量），首段 `PhysAddr` 等于脚本里的物理基址。
 - 第二组：`grep -c ': AT('` 对三份生产脚本各输出 4、对 `os/kernel/src/arch/*/link.ld` 各输出 0。这条读数必须带口径：把模式放宽成 `AT(` 会把注释里的字样算进来，x86_64 的 arch 脚本会从 0 变 2。两条 `printf` 分别输出 `961` 与 `0xf0000000`。
 - 第三组：全绿时最后一行是 `CHECK-LAYOUT=PASS（x86_64）`、退出码 0；任一断言失败时对应行是 `  [Ln] FAIL …` 且最后一行 `CHECK-LAYOUT=FAIL（…）`。
-- 第四组：PASS 时串口日志里出现 `### TEST_RESULT: PASS test-higher-half ###`（判定标记见 `os/qemu-tests/run_qemu.sh` 的判定段）；失败时同一位置是 `### TEST_RESULT: FAIL test-higher-half ###`，它之前的若干行里，失败项以 `FAIL:` 开头（`SP not at high address`、`SP not 16-byte aligned`、`FP not zero` 三者之一），而 `INFO: PC not at high address (expected in test kernel)` 是常驻信息行、不参与成败判定，别把它读成失败原因；`qemu_int.log` 里另有 `check_exception` 行给出故障类型与地址。
+- 第四组：PASS 时串口日志里出现 `### TEST_RESULT: PASS test-higher-half ###`（判定标记见 `os/qemu-tests/run_qemu.sh` 的判定段）；失败时同一位置是 `### TEST_RESULT: FAIL test-higher-half ###`，它之前的若干行里，失败项以 `FAIL:` 开头（`SP not at high address`、`SP not 16-byte aligned`、`FP not zero` 三者之一），而 `INFO: PC not at high address (expected in test kernel)` 是参考信息行、不参与成败判定，别把它读成失败原因（它只在失败分支里出现；x86_64 与 aarch64 的低地址进入会带上它，riscv64 的载体 PC 在高半、不会出现这一行）；`qemu_int.log` 里另有 `check_exception` 行给出故障类型与地址。
 - 第五组：断在 `kmain` 后 `$rip` 应等于 `nm <工件> | grep kmain` 读出的符号值（形态一的高半视图下是高半地址；内联形态下是垫片镜像里的低地址）；`$rsp` 应落在 `kern_virt_base` 之上（`0xffff8000…` 一段）——两条读数合起来即"跳转与切栈都已生效"的现场证据。
 
 ---
