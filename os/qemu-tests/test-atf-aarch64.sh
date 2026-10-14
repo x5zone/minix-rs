@@ -146,6 +146,17 @@ if [ ! -s "$PLAN" ]; then
     echo "FAIL: $PLAN missing/empty — image assembled without ATF suite (stale build?)"; exit 1
 fi
 EXPECTED=$(grep -c ' ' "$PLAN")
+
+# 建立证据（钉构建提交 + 工具链 + 逐 prog 的 ELF 校验和 + prog 数）：没有这一层，「一次绿」只是
+# 单采样读数——换工具链、跳过重建复用旧 ELF、或干净重建后少链一例，串口都可能长得一样，而引导腿
+# 其实已崩。判据与比对逻辑在 tools/atf-evidence.sh（带 self-test）。
+EVID="$WORK/atf-evidence.txt"
+echo "== Stage 2b: ATF 建立证据（tools/atf-evidence.sh）=="
+bash "$ROOT/../tools/atf-evidence.sh" write aarch64 "$PLAN" "$EVID" \
+    || fail "建立证据生成失败（计划里的 prog 与构建产物不齐，或 plan 空）"
+echo "ATF-EVIDENCE $(grep -E '^(commit|worktree|toolchain|progs|suite_sha256)=' "$EVID" | tr '\n' ' ')"
+bash "$ROOT/../tools/atf-evidence.sh" check aarch64 "$PLAN" "$EVID" \
+    || fail "刚写的证据重算即不等（证据本身不可信）"
 verdict=""
 stall_count=0
 n_total_last=-1
@@ -186,6 +197,9 @@ done
 kill_qemu
 
 if [ "$verdict" = "PASSED" ]; then
+    # 收尾前再核一次证据：跑动中套件 ELF 若被换掉（并发重建），这次的读数就不属于那份产物
+    bash "$ROOT/../tools/atf-evidence.sh" check aarch64 "$PLAN" "$EVID" \
+        || fail "RESULT: FAIL — 跑完后建立证据与记录不一致，本次读数不可归属"
     echo "RESULT: PASS ($EXPECTED/$EXPECTED ATF cases reached a terminal result: $n_pass passed + $n_skip skipped, 0 failed/broken — SYS_DIAGCTL stdio bridge, per atf-plan.txt)"
     exit 0
 elif [ "$verdict" = "PANIC" ]; then

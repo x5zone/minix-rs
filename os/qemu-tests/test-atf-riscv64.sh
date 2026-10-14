@@ -90,6 +90,19 @@ fi
 EXPECTED=$(grep -c ' ' "$PLAN")
 [ "$EXPECTED" -gt 0 ] || fail "$PLAN 无有效条目"
 
+# 建立证据（钉构建提交 + 工具链 + 逐 prog 的 ELF 校验和 + prog 数）：没有这一层，「一次绿」
+# 只是单采样读数——换工具链、RS_ATF_SKIP_BUILD=1 复用旧 ELF、或干净重建后少链一例，串口都可能
+# 长得一样，而引导腿其实已崩。判据与比对逻辑在 tools/atf-evidence.sh（它有 self-test）。
+EVID="$WORK/atf-evidence.txt"
+echo "== Stage 2b: ATF 建立证据（tools/atf-evidence.sh）=="
+bash "$ROOT/../tools/atf-evidence.sh" write riscv64 "$PLAN" "$EVID" \
+    || fail "建立证据生成失败（计划里的 prog 与构建产物不齐，或 plan 空）"
+echo "ATF-EVIDENCE $(grep -E '^(commit|worktree|toolchain|progs|suite_sha256)=' "$EVID" | tr '\n' ' ')"
+bash "$ROOT/../tools/atf-evidence.sh" check riscv64 "$PLAN" "$EVID" \
+    || fail "刚写的证据重算即不等（证据本身不可信）"
+
+
+
 # 套件 prog 清单（从 atf-face 的 tests.<prog>=<rel> 行解析；rel 是相对 os/ 的
 # 宿主路径，直接进 imgrd proto）。Stage 2 在非 SKIP 路径必跑 atf-face，此处
 # 必然非空——不再保留"plan 首列回退"（CodeReview 续-340b P2-3：该分支不可达，
@@ -248,6 +261,9 @@ done
 kill_qemu
 
 if [ "$verdict" = "PASSED" ]; then
+    # 收尾前再核一次证据：跑动中套件 ELF 若被换掉（并发重建），这次的读数就不属于那份产物
+    bash "$ROOT/../tools/atf-evidence.sh" check riscv64 "$PLAN" "$EVID" \
+        || fail "RESULT: FAIL — 跑完后建立证据与记录不一致，本次读数不可归属"
     echo "RESULT: PASS ($EXPECTED/$EXPECTED riscv64 ATF cases reached a terminal result: $n_pass passed + $n_skip skipped, 0 failed/broken — SYS_DIAGCTL stdio bridge, per atf-plan.txt)"
     exit 0
 elif [ "$verdict" = "PANIC" ]; then
