@@ -16,11 +16,20 @@
 //! shell's.
 //!
 //! Declared differences, all from legs or C behaviours this tree does not carry:
-//! - Warnings print the path plus a fixed phrase, not `strerror(errno)` — not
-//!   because the table is missing (`minix_types::Errno::message` holds C's
-//!   `sys_errlist`) but because this shell is not wired to it yet; the same
-//!   boundary `stat`, `du`, and the `what`/`asa` batches document. `FTS_NS` prints `<path>: stat failed`, `FTS_DNR` prints
-//!   `<path>: directory read failed`.
+//! - The parse-side error lines are byte-for-byte C's `errx(1, …)` text (they went
+//!   through their own invented wording until this batch; see the `errx` sites in
+//!   `option.c:131`/`:134`, `function.c:649`/`:668`, `operator.c:98`/`:108`/`:149`/`:199`),
+//!   and each starts with `getprogname()` like C's `verrc.c`/`vwarnx.c` do. The one
+//!   exception is `operator.c:98`, where C calls `err(1, …)` rather than `errx`:
+//!   the errno there is whatever the last call left, so no number can be reproduced
+//!   honestly and the line stops at the phrase — the same judgement `mkfifo`'s `-m`
+//!   leg documents.
+//! - Walk warnings still print the path plus a fixed phrase, not `strerror(errno)`:
+//!   the probes (`lstat_of`/`stat_of`/`dir_children`) answer `Option` and drop the
+//!   number, so wiring C's `warnx("%s: %s", fts_path, strerror(...))` (`find.c:230`)
+//!   needs the deciding half's probe trait to hand the number over — registered as
+//!   a follow-up batch, not silently half-done here. `FTS_NS` prints `<path>: stat
+//!   failed`, `FTS_DNR` prints `<path>: directory read failed`.
 //! - A hard error while evaluating one entry (an unwired action, a malformed
 //!   numeric argument) records the failure and moves on rather than calling
 //!   `err(1)` and killing the whole walk. C exits the process (`find.c:269`,
@@ -152,11 +161,15 @@ impl WalkProbe for SysProbe {
 
 fn run() -> ! {
     let argv = support::args();
+    // C never calls `setprogname` here either; `getprogname()` answers `argv[0]`'s
+    // last segment because `crt0-common.c:156-165` seeds it from there, and every
+    // `errx`/`err`/`usage` line below starts with it.
+    let prog = support::prog_name(&argv);
     let refs: Vec<&str> = argv.iter().skip(1).map(|s| s.as_str()).collect();
     let parsed = match parse(&refs) {
         Ok(p) => p,
         Err(e) => {
-            report_parse_error(&e);
+            report_parse_error(prog, &e);
             support::terminate(1);
         }
     };
@@ -182,25 +195,38 @@ fn run() -> ! {
     support::terminate(result.rval as i32)
 }
 
-/// `FindError` 逐支落到 C 的各条报错文案（`usage`/`unknown option`/`requires
-/// additional arguments` 等）。句子表在 `minix_types::Errno::message`，本壳尚未接，故按名报，差异见头注。
-fn report_parse_error(e: &FindError<'_>) {
+/// `FindError` 逐支落到 C 的那几行报文——全是 `errx(1, …)` 形：程序名、短语、**不带**
+/// 句子（C 没查 `errno`）。每支的原文坐标写在行上。
+fn report_parse_error(prog: &str, e: &FindError<'_>) {
     let msg = match e {
-        FindError::Usage => String::from(
-            "Usage: find [-H | -L | -P] [-dEhsXx] [-f file] file [file ...] [expression]",
-        ),
-        FindError::UnknownOption(name) => format!("find: unknown option `{name}'"),
+        // `main.c:159-163`：`fprintf(stderr, "Usage: %s ...", getprogname())`——首字母
+        // 大写，程序名嵌在行里。
+        FindError::Usage => {
+            format!("Usage: {prog} [-H | -L | -P] [-dEhsXx] [-f file] file [file ...] [expression]")
+        }
+        // `option.c:131`：`errx(1, "%s: unknown option", *argv)`——名字在前，无反引号。
+        FindError::UnknownOption(name) => format!("{prog}: {name}: unknown option"),
+        // `option.c:134`：`errx(1, "%s: requires additional arguments", *--argv)`。
         FindError::NeedsArguments(name) => {
-            format!("find: {name}: requires additional arguments")
+            format!("{prog}: {name}: requires additional arguments")
         }
+        // `function.c:649-651`：`errx(1, "%s: no terminating \";\" or \"+\"", ...)`。
         FindError::NoTerminator(name) => {
-            format!("find: {name}: missing argument to `;' command")
+            format!("{prog}: {name}: no terminating \";\" or \"+\"")
         }
-        FindError::OkWithPlus => String::from("find: -ok ... + is not supported"),
-        FindError::UnclosedParen => String::from("find: (` unmatched"),
-        FindError::EmptyParens => String::from("find: expression requires non-empty parens"),
-        FindError::StrayCloseParen(name) => format!("find: unexpected `)' near `{name}'"),
-        FindError::NotWithoutOperand => String::from("find: `!' requires an expression"),
+        // `function.c:668`：`errx(1, "-ok: terminating \"+\" not permitted.")`——句末有句点。
+        FindError::OkWithPlus => format!("{prog}: -ok: terminating \"+\" not permitted."),
+        // `operator.c:96-98`：C 在这里用的是 `err` 而不是 `errx`，缀的是上一个调用留下的
+        // `errno`（与 `mkfifo` 的 `-m` 腿同判）——无号可复刻，故止于短语。
+        FindError::UnclosedParen => format!("{prog}: (: missing closing ')'"),
+        // `operator.c:106-108`：`errx(1, "(): empty inner expression")`。
+        FindError::EmptyParens => format!("{prog}: (): empty inner expression"),
+        // `operator.c:149`：`errx(1, "): no beginning '('")`——C 的那行不带出错的那个词，
+        // 所以本层把 `StrayCloseParen` 里的名字放下，不另造 C 没有的字段。
+        FindError::StrayCloseParen(_) => format!("{prog}: ): no beginning '('"),
+        // `operator.c:197-199`：`errx(1, "!: no following expression")`。C 另有 `:201` 的
+        // `"!: nothing between ! and -o"`，本层的解析树分不出这两支（已登记）。
+        FindError::NotWithoutOperand => format!("{prog}: !: no following expression"),
     };
     support::warn(format!("{msg}\n").as_bytes());
 }

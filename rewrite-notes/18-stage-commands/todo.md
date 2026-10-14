@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十六把 `find` 的八支报文逐枚改回 C 的 `errx` 原文（16t 第六枚，第 1 片）**
+  （`2026-10-14`，`claim/FIND-STRERROR-qoder` @ 基线 `c7c897068`，单域三线 `os/commands/bin/fileops`
+  与同线文档，无跨界）：接回批次二百四十五登记不执行①。**是什么**：`find` 的报文不是「同一个前缀 + 不同
+  描述」，而是 C 逐句写好的 `errx` 原文；本壳八支里有六支是自创文案，形状也不同——`option.c:131` 是
+  `errx(1, "%s: unknown option", *argv)`（名字在前、无反引号），本壳写的是「find: unknown option `-nope'」；
+  `operator.c:149` 是 `): no beginning '('`，不带出错词，本壳多带了个名字；`function.c:649` 的
+  `no terminating ";" or "+"` 本壳换成了「missing argument to `; 命令项」那类写法（C 里没这句）；`function.c:668`
+  的 `-ok: terminating "+" not permitted.` 被换成了 `-ok ... + is not supported`；usage 行本该嵌
+  `getprogname()`（`main.c:161`）而被硬写成 `find`。判类 P0-fact + P0-code-bug（报文与 C 不同）。
+  **怎么修**：`report_parse_error(prog, e)` 逐支按 C 原文落，每支带坐标注；`prog` 取自 `argv[0]`；
+  `StrayCloseParen` 的名字放下（C 不报它）；`operator.c:98` 在 C 里是 `err` 不是 `errx`，缀的是上一个调用
+  留下的 `errno`——无号可诚实复刻，止于短语并在头注写明同 `mkfifo` 的 `-m` 腿一个判法。
+  **门**：新建 `tests/find_face.rs`（8 枚）——这些腿不需文件系统，所以本门能逐字钉住每一支，含
+  `-exec … {} +` 被 C 收下（不是报文路）与 `-ok echo +`（`+` 未紧跟 `{}`）仍走 `no terminating` 那一支。
+  三件套：`cargo test -p minix-fileops` → **430 passed、0 failed**（基线 422，+8 枚门）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-fileops` → **430/0**；三架构
+  `cargo build -p minix-fileops --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 Finished 零 error；
+  `rustfmt --edition 2024 --check` 触及两文件零漂移；clippy 对触及文件零命中；宿主实跑八支报文逐条对上
+  （`Usage: find …`、`find: -nope: unknown option`、`find: -name: requires additional arguments`、
+  `find: (: missing closing ')'`、`find: (): empty inner expression`、`find: ): no beginning '('`、
+  `find: !: no following expression`、`find: -ok: terminating "+" not permitted.`）。核实日 `2026-10-14`；
+  基线 `c7c897068`。
+  **三枚变异负控**（测完按 md5 复原）：退回反引号形报文（门 2 枚红）、程序名硬写 `"find"`（改名那枚独红）、
+  括号报文退回自创的 `(` unmatched`（括号那枚独红）。**过程记**：shell 嵌套引号会吃坏变异串（M1/M3 首跑
+  只拿到编译错误），改用 heredoc 里的 python 带 `assert old in s` 才拿到各自的红；`-exec … {} +` 在宿主是
+  「走表失败」而非「退码不为 1」，断言改成报文内容而不是退码。
+  **拆片声明（第 2 片，登记不执行）**：走表警告腿的号——`find.c:230` 是 `warnx("%s: %s", fts_path,
+  strerror(fts_errno))`，而本树的 `WalkProbe` 三个方法返回 `Option`，号在探测腿就丢了；要按 C 做需把
+  返回型改成带 `Errno` 的形状并让求值半拼出那一行（决定半 API 变更，连带走表/逻辑形两组库测）。同一片里还有
+  C 区分而本层不分两支的两处：`operator.c:199`/`:201`（`!` 的两支）、`operator.c:254`/`:258`（`-o` 的两支，
+  本层现在归入 `StrayCloseParen`/`NotWithoutOperand`）。另：`find.c:240` 的 `warnx("%s: illegal path")` 与
+  `main.c:152` 的 `err(1, ".")` 在本树没有对位点（不开 `dotfd`、不做 xargs 安全件），归头注里的声明。
+
 - ✅ **批次二百四十五接上 `du` 的报告腿与 `fts_read` 终止腿，并纠正一处把已接旗标说成未接的报文（16t 第五枚）**
   （`2026-10-14`，`claim/DU-STRERROR-qoder` @ 基线 `006edefb0`，单域三线 `os/commands/bin/fileops` 与同线
   文档，无跨界）：接回批次二百四十四登记不执行①的第一枚。**是什么**：C 的逐访问报告是
