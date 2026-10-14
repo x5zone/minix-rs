@@ -2,11 +2,14 @@
 
 > **C 真值源**：`minix3/minix/kernel/clock.c`、`minix3/minix/kernel/main.c`、`minix3/minix/kernel/interrupt.c`、`minix3/minix/kernel/glo.h`、`minix3/minix/kernel/clock.h`、`minix3/minix/kernel/arch/i386/i8259.c`、`minix3/minix/kernel/arch/i386/arch_clock.c`、`minix3/minix/kernel/arch/i386/arch_system.c`、`minix3/minix/kernel/arch/i386/apic.c`、`minix3/minix/include/arch/i386/include/interrupt.h`、`minix3/minix/include/arch/i386/include/archconst.h`、`minix3/minix/include/arch/earm/include/archconst.h`、`minix3/minix/kernel/arch/earm/arch_system.c`、`minix3/minix/kernel/arch/earm/arch_clock.c`、`minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c`、`minix3/minix/kernel/arch/earm/bsp/ti/omap_timer.c`
 > **Rust 实现**：`os/kernel/src/lib.rs`、`os/kernel/src/clock.rs`、`os/kernel/src/irq_manager.rs`、`os/kernel/src/globals.rs`、`os/plat/src/lib.rs`、`os/plat/src/interrupt.rs`、`os/plat/src/{x86_64,arm64,riscv64}/interrupt.rs`、`os/arch/src/lib.rs`、`os/arch/src/arch/{clock,arch_init,timer_irq_gate}.rs`、`os/arch/src/{x86_64,arm64,riscv64}/{clock,arch_init,timer_irq_gate}.rs`、`os/libs/minix-platform/src/arch/x86_64.rs`、`os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq{,-aarch64,-riscv64}/src/main.rs`、`os/qemu-tests/run_all.sh`
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:struct Name`、`path:const NAME`），不使用行号。
+> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:struct Name`、`path:const NAME`），不使用行号；正文里出现的行号（调用链快照、命令预期输出、引文题注的 L 区间）是当期快照数据，不作定位锚点。
 > **本篇主题**：`cstart` 后半段与它在 Rust 侧的对位——软件时钟状态、中断控制器、架构杂项三件事怎么建立，硬件定时器为什么不在这一步启动，以及"放开一条中断线"需要先凑齐哪几样东西。
 > **前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) 交出启动信息与内存记账（`KernelInfo` 字段的存放与 `cut_memmap` 的用法）、[02-higher-half-kernel.md](02-higher-half-kernel.md) 建立高半地址空间（设备寄存器页可被内核直接寻址的前提）、[03-kmain-cstart.md](03-kmain-cstart.md) 装上保护结构（GDT/IDT/TSS 三张表与"门里有真入口"）、[04-platform-discovery.md](04-platform-discovery.md) 产出描述符（本篇的三次实例化都从它取地址与频率）。
-> **后续**：tick 到达之后做什么（`15-clock-timer`（时钟与定时器篇，尚未重生成））、中断分发与 claim/complete 协议（`14-exception-interrupt`（异常与中断篇，尚未重生成））、`bsp_finish_booting` 的其余步骤与 `switch_to_user`（`08-system-init-boot-finish`（启动收尾与切用户篇，尚未重生成））、AP 定时器与 SMP（`16-smp`（SMP 篇，尚未重生成））。
-> **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构）；aarch64 用 GICv3 与 Generic Timer 取代 32 位 ARM 端口的 OMAP INTC 与 BSP timer（`[ARCH: K-1]`）、riscv64 整套是 minix-rs 新增（`[ARCH: K-2]`）、时钟频率从 60/1000 Hz 统一为 100 Hz（`[ARCH: K-3]`）。
+> **后续**：tick 到达之后做什么（`15-clock-timer`（时钟与定时器篇，尚未重生成））、中断分发与 claim/complete 协议（`14-exception-interrupt`（异常与中断篇））、`bsp_finish_booting` 的其余步骤与 `switch_to_user`（`08-system-init-boot-finish`（启动收尾与切用户篇））、AP 定时器与 SMP（`16-smp`（SMP 篇，尚未重生成））。
+> **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构）；aarch64 用 GICv3 与 Generic Timer 取代 32 位 ARM 一侧的 OMAP INTC 与 BSP timer（`[ARCH: K-1]`）、riscv64 整套是 minix-rs 新增（`[ARCH: K-2]`）、时钟频率从 60/1000 Hz 统一为 100 Hz（`[ARCH: K-3]`）。
+> **目标读者**：熟悉操作系统基本概念（特权级、中断与异常、陷入、地址空间、进程）与 C 语言的开发者；Rust 一侧读到 enum/match/trait 即可。
+> **前置知识**：特权级与中断门/陷阱门的大意；8259A 与 PIT 作为"中断控制器与定时器芯片"的概念（不需要数据手册——本篇结论由源码常量互相做差得出）；描述符（04 篇产物）与"IDT 门里有真入口"（03 篇结论）。
+> **教学目标**：①三样东西与 cstart 三行调用的次序（哪一步不可交换、为什么）；②init_clock 纯软件与 hz 的回退；③intr_init 的十次写与"全屏蔽"的结束状态；④arch_init 六件事与 system_hz 依赖；⑤定时器为什么不在 cstart 里、三段序列与它的位置；⑥Rust 承接的八条决策与三架构差异；⑦测试与诊断（§5、§6）。
 
 上一篇结束时，CPU 已经能接住异常：IDT 里每一条门都有真入口，从 ring3 进内核时 CPU 知道该换哪根栈。能接住不等于会接到——那一刻全部中断线还是屏蔽的，硬件定时器还没编程，架构侧的杂项（ACPI、PMU、TSS 的剩余部分）也没做。这一篇处理的就是这几件事，以及它们之间那条不能改动的次序。
 
@@ -19,13 +22,13 @@
 03 篇的收尾把状态写得很窄：三张表都已装载生效、门里有真入口（[03-kmain-cstart.md](03-kmain-cstart.md) §3.7），而中断线全部处于屏蔽——"有门可走，但没有源被放行"（[03-kmain-cstart.md](03-kmain-cstart.md) §2.2）。这套状态能接住异常，却接不住设备。缺的不是入口，入口已经在了；缺的是入口背后的三样东西：
 
 1. **一份软件时钟状态**。内核需要一组记录：一秒分多少个 tick、从启动到现在过了多少个 tick、实时钟偏移多少、负载历史怎么采样。C 把这些收在 `kclockinfo` 与 `kloadinfo` 两个全局结构里（声明在 `minix3/minix/kernel/glo.h`，`kclockinfo` 的定义在 `minix3/minix/kernel/usermapped_data.c` 的 `.usermapped` 段）。
-2. **一个处于已知状态的中断控制器**。控制器需要先建立"每条线都在屏蔽"的确定状态，之后"放开某一条线"才是一个有定义的动作。
-3. **一组架构杂项**。x86 上包括内核栈指针、TSS 的单 CPU 收尾、串口、ACPI、APIC 的建立与内存图裁剪；ARM 端口上是 TSS 与 PMU；riscv64 上是它自己的那几件。
+2. **一个处于已知状态的中断控制器**。控制器需要先建立"每条线都在屏蔽"的确定状态，之后"放开某一条线"才是一个有定义的动作（x86 由控制器初始化建立；C 的 ARM 一侧把这一步交给 BSP 与后续钩子注册，§2.5）。
+3. **一组架构杂项**。x86 上包括内核栈指针、TSS 的单 CPU 收尾、串口、ACPI、APIC 的建立与内存图裁剪；ARM 一侧是 TSS 与 PMU；riscv64 上是它自己的那几件。
 
 C 的 `cstart` 用三行调用把这三样排出来（`minix3/minix/kernel/main.c:cstart`）：
 
 ```text
-cstart 的三行调用，以及每一行之后系统多出的能力
+cstart 的三行调用（`prot_init` 是 03 篇的起点，作上下文列出），以及每一行之后系统多出的能力
   prot_init ──► init_clock ──► intr_init(0) ──► arch_init
      │              │                │               │
      │              │                │               └─ 架构杂项：TSS / 串口 / ACPI / APIC / 内存裁剪
@@ -44,22 +47,22 @@ cstart 的三行调用，以及每一行之后系统多出的能力
 
 第一条次序关系由此可以推出来：`init_clock` 与 `intr_init` 之间没有硬件依赖，交换它们不会造成错误。前者的函数体里没有任何端口写（§2.2），后者的函数体里没有任何 `kclockinfo` 读取（§2.3）。真正不能颠倒的是 `arch_init` 与它前面的两步。
 
-**如果反过来想**：把 `arch_init` 提到 `init_clock` 之前。x86 的 `arch_init` 在 APIC 分支里调用 `apic_single_cpu_init`（`minix3/minix/kernel/arch/i386/arch_system.c:arch_init`），后者会经 `lapic_enable` 走到 `init_8253A_timer(system_hz)` 与 `system_hz * lapic_delta / (PROBE_TICKS - 1)` 这样的算式（`minix3/minix/kernel/arch/i386/apic.c`）。而 `system_hz` 在 C 里是一个别名宏：
+**把 `arch_init` 提到 `init_clock` 之前会怎样**：x86 的 `arch_init` 在 APIC 分支里调用 `apic_single_cpu_init`（`minix3/minix/kernel/arch/i386/arch_system.c:arch_init`），后者会经 `lapic_enable` 走到 `init_8253A_timer(system_hz)` 与 `system_hz * lapic_delta / (PROBE_TICKS - 1)` 这样的算式（`minix3/minix/kernel/arch/i386/apic.c`）。而 `system_hz` 在 C 里是一个别名宏：
 
 ```c
-// minix3/minix/kernel/glo.h —— 逐字引用（上下文两行）
+// minix3/minix/kernel/glo.h —— 逐字引用（该宏的定义行）
 #define system_hz (kclockinfo.hz)		/* HZ value (alias) */
 ```
 
 `kclockinfo` 声明在 `minix3/minix/kernel/glo.h`、定义在 `minix3/minix/kernel/usermapped_data.c` 的 `.usermapped` 段（与 `kinfo`/`machine` 同段，用户态可见；结构体本体在 `minix3/minix/include/minix/type.h`）。`init_clock` 之前它是全零，而它的第一个动作就是 `memset(&kclockinfo, 0, sizeof(kclockinfo))`（`minix3/minix/kernel/clock.c:init_clock`）。于是 `system_hz == 0` 会同时污染三处：
 
-- `lapic_bus_freq[cpuid] = system_hz * lapic_delta / (PROBE_TICKS - 1)` 的第 1 个因子变成 0，频率读数恒为 0；
-- `PROBE_TICKS` 的定义是 `(system_hz / 10)`（文件级宏，`minix3/minix/kernel/arch/i386/apic.c` 与 `arch_clock.c` 各一份），除以 0 的直接后果；
-- `estimate_cpu_freq` 里 `while(probe_ticks < PROBE_TICKS)` 的终止条件在 `PROBE_TICKS == 0` 时永不成立，采样循环不退出。
+- `load_update` 的槽位算式 `(kclockinfo.uptime / system_hz / _LOAD_UNIT_SECS) % _LOAD_HISTORY` 直接除以 0（`minix3/minix/kernel/clock.c:load_update`）；
+- `init_local_timer` 的 legacy 分支里 `tsc_per_tick[0] = cpu_get_freq(0) / system_hz` 除以 0（`minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer`）；
+- 校准链整体失准：`apic_calibrate_clocks` 的两式 `system_hz * lapic_delta / (PROBE_TICKS - 1)` 与 `(tsc_delta / (PROBE_TICKS - 1)) * make64(system_hz, 0)` 分子为 0（此时 `PROBE_TICKS`（定义式 `system_hz / 10`，`minix3/minix/kernel/arch/i386/apic.c` 与 `arch_clock.c` 各一份）也是 0，除数退化成 `-1`），频率读数恒为 0；`estimate_cpu_freq` 里 `while(probe_ticks < PROBE_TICKS)` 的继续条件在 `PROBE_TICKS == 0` 时一开始就为假，采样循环几乎不执行，`tsc1` 停在初值。
 
 依据都在常量与式子上：`minix3/minix/kernel/clock.c:init_clock` 是唯一给 `kclockinfo.hz` 赋值的地方（结构体其余字段由 tick 与 `set_realtime`/`set_boottime` 各自推进），`minix3/minix/kernel/arch/i386/apic.c` 里 `system_hz` 出现在分频与样本数的算式里。
 
-第三条次序关系与这三行调用不在同一处：硬件定时器的编程不在 `cstart` 里。C 把它放在 `boot_cpu_init_timer`（`minix3/minix/kernel/clock.c:boot_cpu_init_timer`），由 `bsp_finish_booting` 在 `kmain` 的最后调用（`minix3/minix/kernel/main.c:bsp_finish_booting`）。原因在 §2.6 展开：定时器的编程里含一次"等时钟中断到达"的校准，而那时进程表必须已经存在。
+第三条次序关系与这三行调用不在同一处：硬件定时器的编程不在 `cstart` 里。C 把它放在 `boot_cpu_init_timer`（`minix3/minix/kernel/clock.c:boot_cpu_init_timer`），由 `bsp_finish_booting` 在 `kmain` 的最后调用（`minix3/minix/kernel/main.c:bsp_finish_booting`）。原因在 §2.6 展开：定时器的编程里含一次"等时钟中断到达"的校准，且 tick 的消费者（记账与时钟任务通知）要到启动末端才就位。
 
 ### 1.2 中断控制器在这条链上做什么
 
@@ -85,11 +88,11 @@ CPU 侧的"意外"分两类，本篇只需要其中一类能用的判据：
 | 异常 | CPU 自己执行了某条指令 | 同步：由该指令直接引起 | 缺页处理后可以重试 | IDT 门与 trap 入口（[03-kmain-cstart.md](03-kmain-cstart.md)） |
 | 中断 | CPU 之外的硬件 | 异步：与当前指令无关 | 不能重试，设备状态已经变了 | 8254 PIT 的 tick |
 
-完整的异常分类（除法错、断点、越界、缺页……各自的向量与处理）属异常/中断与 trap 入口主题（`14-exception-interrupt`（异常与中断篇，尚未重生成））；本篇用到这张表的只有一处：中断是异步的，所以"什么时候可以被打断"必须由内核显式决定——这就是初始化要先把每条线置成屏蔽、再由需要它的人逐条放开的原因。
+完整的异常分类（除法错、断点、越界、缺页……各自的向量与处理）属异常/中断与 trap 入口主题（`14-exception-interrupt`（异常与中断篇））；本篇用到这张表的只有一处：中断是异步的，所以"什么时候可以被打断"必须由内核显式决定——这就是初始化要先把每条线置成屏蔽、再由需要它的人逐条放开的原因。
 
 **控制器的初始化产出什么？** `intr_init` 的函数体是一串定长的端口写（执行路径十次，源码里 12 行，口径见 §2.3），它的结束状态不是"控制器可用了"，而是"控制器可用了，并且每一条线都在屏蔽"。这一点在两个地方能读到：函数头的注释写着 `finishing with all interrupts disabled`，函数体最后两次写把主片与从片的屏蔽字都置成全屏蔽（主片留一个例外，见 §2.3）。
 
-**如果反过来想**：控制器初始化结束时若留下任何一条未屏蔽的线，这条线上的设备在 `sti` 之后的任意时刻都能把 CPU 拉进它对应的门。此刻门是有的（03 篇已装好），钩子链却是空的——C 的分发函数在这个状态下的动作是打印一行超时中断提示并保持屏蔽（`minix3/minix/kernel/interrupt.c:irq_handle` 的空链表分支：`printf("irq_handle: spurious irq %d …")` 后 `return`）。后果落到对象上是 `irq_handlers[irq]` 这个链表头为空、`nspurious[irq]` 被计数、以及一次落在启动期临时栈上的进出。这不是崩溃，但它把一次无主的进栈塞进了"进程表还没建完、`proc_ptr` 还指向旧值"的时间窗里。
+**控制器初始化结束时若留下未屏蔽的线会怎样**：这条线上的设备在 `sti` 之后的任意时刻都能把 CPU 拉进它对应的门。此刻门是有的（03 篇已装好），钩子链却是空的——C 的分发函数在这个状态下的动作是打印一行伪中断（`spurious irq`）提示并保持屏蔽（`minix3/minix/kernel/interrupt.c:irq_handle` 的空链表分支：`printf("irq_handle: spurious irq %d …")` 后 `return`）。后果落到对象上是 `irq_handlers[irq]` 这个链表头为空、`nspurious[irq]` 被计数、以及一次落在启动期临时栈上的进出。这不是崩溃，但它把一次无主的进栈塞进了"进程表还没建完、`proc_ptr` 还指向旧值"的时间窗里。
 
 ### 1.3 三架构的时钟源、控制器与架构杂项
 
@@ -101,12 +104,12 @@ CPU 侧的"意外"分两类，本篇只需要其中一类能用的判据：
 | 时钟中断怎么到 CPU | PIT 输出接 8259A IRQ0；8259A 的 INT 接 IOAPIC 输入 2，由 IOAPIC 转成向量送 LAPIC | EL1 非安全物理定时器产生 PPI，经 GIC 的 redistributor 与 CPU 接口送 CPU | S 模式定时器中断：`mtime >= mtimecmp` 置起 `sip.STIP`，由 `sie.STIE` 使能后直接进入 S 模式的陷阱入口 |
 | 中断控制器 | 8259A（经典）或 LAPIC + IOAPIC（APIC 形态） | GICv3：Distributor + Redistributor + CPU 接口 | PLIC：外部设备中断的仲裁与使能 |
 | 定时器寄存器 | PIT divisor（I/O 端口 0x40/0x43） | `CNTP_CVAL_EL0` / `CNTP_CTL_EL0` | `mtimecmp`（每 hart 一份） |
-| 架构杂项 | 内核栈指针、TSS、串口、ACPI、APIC、内存裁剪 | 内核栈指针、TSS、PMU、板级初始化 | 物理内存保护、中断使能位 |
-| Minix3 C 的端口 | 有（`arch/i386`） | 有，但目标是 32 位 ARM：OMAP INTC 与 BSP timer | 无端口 |
+| 架构杂项 | 内核栈指针、TSS、串口、ACPI、APIC、内存裁剪 | 内核栈指针、TSS、PMU、板级初始化 | 无 S 模式写法（PMP 由固件承担）；定时器与 IPI 使能位归 `TimerIrqGate` 与 SMP（§3.5、§4.6） |
+| Minix3 C 的覆盖 | 有（`arch/i386`） | 有，但目标是 32 位 ARM：OMAP INTC 与 BSP timer | 无对应实现 |
 
-最后一行是关键前提。Minix3 C 只有两个端口，RISC-V 这一列没有对应的 C 实现；ARM 那一列在 C 里是 32 位机器（OMAP3 的 INTC 与私有定时器），不是本篇实现所对的机器。
+最后一行是关键前提。Minix3 C 只覆盖两种架构，RISC-V 这一列没有对应的 C 实现；ARM 那一列在 C 里是 32 位机器（OMAP3 的 INTC 与私有定时器），不是本篇实现所对的机器。
 
-**如果反过来想**：把 RISC-V 的定时器当成 PLIC 上的一条普通设备线来管。PLIC 的屏蔽与放行改的是它自己的 enable 位图，而这条线的中断由 `mtime >= mtimecmp` 比较与 `sie.STIE` 使能位决定——对 PLIC 位图的操作既不能阻止、也不能允许这次中断，等于一次没有效果的屏蔽。同时那条被占用的位在 PLIC 的位图里仍然记在名下，会对后来注册在这个编号上的真实设备产生误导：它看起来"已经被某个所有者使能了"。落到对象：PLIC 的 enable 位图、`sie.STIE` 位、定时器的 `mtimecmp` 比较器。定时器因此需要一个与设备线号分开的"分发身份"，这就是 §4.9 的保留伪向量要解决的问题。
+**把 RISC-V 的定时器当成 PLIC 上的普通设备线来管会怎样**：PLIC 的屏蔽与放行改的是它自己的 enable 位图，而这条线的中断由 `mtime >= mtimecmp` 比较与 `sie.STIE` 使能位决定——对 PLIC 位图的操作既不能阻止、也不能允许这次中断，等于一次没有效果的屏蔽。同时那条被占用的位在 PLIC 的位图里仍然记在名下，会对后来注册在这个编号上的真实设备产生误导：它看起来"已经被某个所有者使能了"。落到对象：PLIC 的 enable 位图、`sie.STIE` 位、定时器的 `mtimecmp` 比较器。定时器因此需要一个与设备线号分开的"分发身份"，这就是 §4.9 的保留伪向量要解决的问题。
 
 ### 1.4 本篇范围与可以安全跳过的内容
 
@@ -115,14 +118,14 @@ CPU 侧的"意外"分两类，本篇只需要其中一类能用的判据：
 | 不在这里展开的内容 | 它属于 |
 |---|---|
 | tick 到达之后的六步（推进 uptime/realtime、记账、虚拟与档案定时器、到期 alarm、负载更新）与 `clock_irq_handler` 的批处理细节 | `15-clock-timer`（时钟与定时器篇，尚未重生成） |
-| 中断分发链（claim → mask → 链 → unmask → complete）与 claim/complete 协议的硬件理由 | `14-exception-interrupt`（异常与中断篇，尚未重生成） |
-| `bsp_finish_booting` 的其余步骤（announce、`cycles_accounting_init`、`fpu_init`、`kernel_may_alloc = 0`、`switch_to_user`） | `08-system-init-boot-finish`（启动收尾与切用户篇，尚未重生成） |
+| 中断分发链（claim → mask → 链 → unmask → complete）与 claim/complete 协议的硬件理由 | `14-exception-interrupt`（异常与中断篇） |
+| `bsp_finish_booting` 的其余步骤（announce、`cycles_accounting_init`、`fpu_init`、`kernel_may_alloc = 0`、`switch_to_user`） | `08-system-init-boot-finish`（启动收尾与切用户篇） |
 | AP 的本地定时器、IPI 使能与 SMP 状态 | `16-smp`（SMP 篇，尚未重生成） |
 | 统计 profiling 时钟的运行时行为（`SYS_SPROF` 的完整语义） | 内核 profiling 专题文档 |
-| 进程表本身的初始化与 boot 进程装载 | `06-proc-init-boot-proc`（进程表与 boot 进程篇，尚未重生成） |
-| 时间片（quantum）的扣减与调度器如何消费 tick | 调度篇与 `11-scheduling-primitives`（尚未重生成）；本篇只到"tick 开始进来" |
+| 进程表本身的初始化与 boot 进程装载 | `06-proc-init-boot-proc`（进程表与 boot 进程篇） |
+| 时间片（quantum）的扣减与调度器如何消费 tick | 调度篇与 `11-scheduling-primitives`；本篇只到"tick 开始进来" |
 
-两条可以安全跳过的说明：本篇**不需要**掌握 8259A 数据手册的完整位定义——§2.3 的三条结论全部由 `minix3/minix/kernel/arch/i386/i8259.c` 里的常量互相做差得到；本篇也**不需要**掌握 GICv3 的完整寄存器地图——只需要四个地址偏移与两级门的归属（§4.4、§4.7.1）。
+两条可以安全跳过的说明：本篇**不需要**掌握 8259A 数据手册的完整位定义——§2.3 的三条结论由 `minix3/minix/kernel/arch/i386/i8259.c` 里的常量与调用点互相对照得到；本篇也**不需要**掌握 GICv3 的完整寄存器地图——只需要四个地址偏移与两级门的归属（§4.4、§4.7.1）。
 
 **章末复述**：用 §1.1 的那张框架再说一遍这一章——三行调用各自补齐一样东西（软件时钟状态、处于已知屏蔽态的控制器、架构杂项），三样东西里只有"架构杂项"读前两者的产物，因此唯一不能交换的次序是 `arch_init`；而真正让时间开始流动的第四步（编程定时器）不在这一章：C 把它放在启动末端的 `bsp_finish_booting`，因为那次编程里含一次"等时钟中断到达"的校准，函数体也要读那时才存在的进程上下文（实现侧把这一步放在什么位置、为什么可以在进程表建立之前执行，见 §4.7）。
 
@@ -180,7 +183,7 @@ void cstart(void)
 
 两处省略号各隐去一样东西：第一处是紧接 `ac_layout` 解析之后的 `DEBUGEXTRA(("cstart\n"));` 一行；第二处才是三段条件编译块（`USE_APIC` 的 `no_apic`/`apic_timer_x` 解析、`USE_WATCHDOG`、`CONFIG_SMP` 的 `no_smp`），它们与本节结论无关，分别属于平台发现（`04-platform-discovery.md`）与 SMP 篇。
 
-逐段读下来的结论：三行调用之间夹着的都是**读 boot 参数、写 `kinfo` 与用户映射结构**的动作。`init_clock` 与 `intr_init` 都没有读这些动作的产物；`arch_init` 会在 APIC 分支里读 `system_hz`，而那是 `init_clock` 的产物。也就是说，两行之间的准备不构成任何状态依赖，唯一真实的前后关系是第三行对第一行的依赖。
+逐段读下来的结论：三行调用之间夹着的都是**读 boot 参数、写 `kinfo` 与用户映射结构**的动作。`init_clock` 与 `intr_init` 都没有读这些动作的产物；`arch_init` 会读这些动作的产物——它读 `config_no_apic`（被省略的解析块写入的开关，§2.4 的 `if (config_no_apic)` 分支）与 `kinfo` 的内存图（`cut_memmap` 的两个入参），也读 `system_hz`（`init_clock` 的产物）。所以 `arch_init` 排在最后有两条依据：它读准备段与 `init_clock` 的产物（本节的读值依赖），加上 §2.4 那条写动作之间的约束（门表重建要求控制器处于已定义的屏蔽态）。而 `init_clock` 与 `intr_init` 之间没有任何依赖，可以交换。
 
 `intr_init(0)` 的实参也在这里定下来：它是 `auto_eoi`。C 传 0，于是 `intr_init` 内部走 `else` 分支，写入的是 `ICW4_AT_MASTER` / `ICW4_AT_SLAVE` 这一对常量，而不是自动回执的那一对。这一个数字决定了 §2.3 里哪一组常量出现在那十次 `outb` 中。
 
@@ -217,7 +220,7 @@ char *env_get(const char *name)
 
 `param_buf` 是启动信息里带过来的一段 NUL 分隔的 `key=value` 串；`get_value` 逐字节比较键名，命中后再确认后面紧跟 `=\0` 形式的等号，返回等号之后的指针。这段实现解释了 §2.2 里 `env_get("hz")` 的三种返回：找到（返回指向数字串的指针）、找不到（`NULL`）、键名是某个更长键的前缀（不会命中，因为要等号）。
 
-**如果反过来想**：把 `intr_init(0)` 改成 `intr_init(1)`。写进 ICW4 的就换成 `ICW4_AT_AEOI_MASTER = 0x07` 与 `ICW4_AT_AEOI_SLAVE = 0x03`，差异落在 ICW4 的 bit 1（自动回执位）。后果不在"少写一次 EOI"，而在整条回执链的语义：C 的分发路径与 `hw_intr_ack` 是按"处理完显式写 EOI"组织的（`minix3/minix/kernel/arch/i386/include/hw_intr.h` 把 `hw_intr_ack` 映射到 `ioapic_eoi` 或 `irq_8259_eoi`），自动回执会让控制器在中断被应答的同时就重新打开同一条线——在中断处理尚未完成时允许同级中断重入。依据：`minix3/minix/kernel/arch/i386/i8259.c` 的八条 ICW4 常量与 `if (auto_eoi)` 分支。
+**把 `intr_init(0)` 改成 `intr_init(1)` 会怎样**：写进 ICW4 的就换成 `ICW4_AT_AEOI_MASTER = 0x07` 与 `ICW4_AT_AEOI_SLAVE = 0x03`，差异落在 ICW4 的 bit 1（自动回执位）。后果不在"少写一次 EOI"，而在整条回执链的语义：C 的分发路径与 `hw_intr_ack` 是按"处理完显式写 EOI"组织的（`minix3/minix/kernel/arch/i386/include/hw_intr.h` 把 `hw_intr_ack` 映射到 `ioapic_eoi` 或 `irq_8259_eoi`），自动回执会让控制器在中断被应答的同时就重新打开同一条线——在中断处理尚未完成时允许同级中断重入。依据：`minix3/minix/kernel/arch/i386/i8259.c` 的八条 ICW4 常量与 `if (auto_eoi)` 分支。
 
 ### 2.2 init_clock：只清软件状态
 
@@ -247,23 +250,23 @@ init_clock(void)
 
 逐行读：
 
-1. `memset(&kclockinfo, 0, sizeof(kclockinfo))` —— `kclockinfo` 是 `glo.h` 里的全局结构（`minix3/minix/kernel/glo.h` 声明，定义在 `minix3/minix/kernel/clock.h` 的 `struct clockinfo` 周围），清零之后 `hz`、`uptime`、`realtime`、`boottime` 都为 0。
+1. `memset(&kclockinfo, 0, sizeof(kclockinfo))` —— `kclockinfo` 是 `glo.h` 里的全局结构（`minix3/minix/kernel/glo.h` 声明，定义在 `minix3/minix/kernel/usermapped_data.c` 的 `.usermapped` 段；结构体本体在 `minix3/minix/include/minix/type.h`，与 §1.1 同一组锚点），清零之后 `hz`、`uptime`、`realtime`、`boottime` 都为 0。
 2. `env_get("hz")` —— 从 boot 参数串里找 `hz`；找得到就 `atoi`，找不到就保持 0。
 3. 范围回退 —— `value == NULL || hz < 2 || hz > 50000` 三者任一成立就用 `DEFAULT_HZ`。这里有一个顺序细节：`atoi(value)` 把非数字串解析成 0，落进 `hz < 2` 的分支，所以"参数给了但写得不是数字"也走回退。
 4. `memset(&kloadinfo, 0, sizeof(kloadinfo))` —— 负载历史环形缓冲清零；`kloadinfo` 的字段（`proc_last_slot`、`proc_load_history[]`、`last_clock`）在 `minix3/minix/include/minix/type.h` 的 `struct loadinfo` 里。
 
-`DEFAULT_HZ` 在两个端口上是两个值：
+`DEFAULT_HZ` 在两种架构上是两个值：
 
-| 端口 | `DEFAULT_HZ` | 定义处 |
+| 架构 | `DEFAULT_HZ` | 定义处 |
 |---|---|---|
 | i386 | 60 | `minix3/minix/include/arch/i386/include/archconst.h:DEFAULT_HZ`（行尾注释写着 `clock freq (software settable on IBM-PC)`） |
 | earm | 1000 | `minix3/minix/include/arch/earm/include/archconst.h:DEFAULT_HZ` |
 
-全局别名在 `glo.h` 里：`system_hz` 就是 `kclockinfo.hz`（本篇 §1.1 已引用该宏）。这一点让 `init_clock` 的产物被整个内核的计时算式读到——它是后来 `arch_init` 必须排在它之后的全部理由。
+全局别名在 `glo.h` 里：`system_hz` 就是 `kclockinfo.hz`（本篇 §1.1 已引用该宏）。这一点让 `init_clock` 的产物被整个内核的计时算式读到——它是后来 `arch_init` 必须排在它之后的第一条依据（第二条见 §2.4 的门表重建约束；两条的合并陈述见 §2.1 的结论段）。
 
 整个函数体里没有任何端口写、没有任何寄存器访问。硬件定时器的编程在 C 里属于另外两个函数（`init_local_timer` 与 `boot_cpu_init_timer`），它们由 `bsp_finish_booting` 在启动末端调用，见 §2.6。
 
-**如果反过来想**：把范围回退那一行删掉。`kclockinfo` 刚被清零，未命中 `env_get` 时 `hz` 保持 0，而 `system_hz` 是它的别名，于是三个读者同时被污染：`load_update` 的槽位算式 `(kclockinfo.uptime / system_hz / _LOAD_UNIT_SECS) % _LOAD_HISTORY` 变成除以 0（`minix3/minix/kernel/clock.c:load_update`）；`estimate_cpu_freq` 用的 `PROBE_TICKS`（文件级宏，定义式 `system_hz / 10`，`minix3/minix/kernel/arch/i386/arch_clock.c:PROBE_TICKS` 与 `apic.c` 各一份）除 0、采样循环的终止条件永不成立（`minix3/minix/kernel/arch/i386/arch_clock.c:estimate_cpu_freq`）；`apic.c` 里 `lapic_bus_freq[cpuid] = system_hz * lapic_delta / (PROBE_TICKS - 1)` 的分子为 0（`minix3/minix/kernel/arch/i386/apic.c`）。落到对象：`kloadinfo.proc_last_slot` 永远算不出、`probe_ticks` 永不达界、频率读数为 0。
+**把范围回退那一行删掉会怎样**：`kclockinfo` 刚被清零，未命中 `env_get` 时 `hz` 保持 0，而 `system_hz` 是它的别名，于是同一张污染清单（§1.1）在这里逐条落地：`load_update` 的槽位算式 `(kclockinfo.uptime / system_hz / _LOAD_UNIT_SECS) % _LOAD_HISTORY` 变成除以 0（`minix3/minix/kernel/clock.c:load_update`）；`init_local_timer` 的 legacy 分支里 `tsc_per_tick[0] = cpu_get_freq(0) / system_hz` 除以 0（`minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer`）；`apic.c` 的校准两式分子为 0、`estimate_cpu_freq` 的采样循环退化（`minix3/minix/kernel/arch/i386/apic.c`、`:estimate_cpu_freq`）。落到对象：`kloadinfo.proc_last_slot` 永远算不出、`tsc_per_tick[0]` 除零、频率读数为 0。
 
 ### 2.3 intr_init 的十次 outb（源码 12 行）
 
@@ -333,7 +336,7 @@ int intr_init(const int auto_eoi)
 
 **第一条，ICW1 那三个常量互相做差就给出了位含义。** `0x11`、`0x13`、`0x19` 三条注释都是英文短语，值上的差是 `0x13 - 0x11 = 0x02` 与 `0x19 - 0x11 = 0x08`。对照注释可以读出：bit 1 对应 `cascade` 的有无（`0x13` 的注释是 `no cascade`），bit 3 对应触发方式（`0x19` 的注释是 `level triggered`），而三条共有的 bit 0 对应 `need ICW4`、共有的 bit 4 是"这是一次 ICW1"的标识位。三个常量就是三位含义的对照表。
 
-**第二条，主片与从片的 ICW3 用了同一条宏、两种语法。** 主片写的是 `1 << CASCADE_IRQ` = `0x04`：一个位图，第 2 位置位表示"IRQ2 线上挂着从片"。从片写的是 `CASCADE_IRQ` = `0x02`：一个编号，值 2 表示"我是从片，接在主片的 IRQ2 上"。同一个宏 `CASCADE_IRQ` 在两个端口上是两种编码——位图与编号。这是这段代码里最容易看漏的不对称。
+**第二条，主片与从片的 ICW3 用了同一条宏、两种语法。** 主片写的是 `1 << CASCADE_IRQ` = `0x04`：一个位图，第 2 位置位表示"IRQ2 线上挂着从片"。从片写的是 `CASCADE_IRQ` = `0x02`：一个编号，值 2 表示"我是从片，接在主片的 IRQ2 上"。同一个宏 `CASCADE_IRQ` 在两片上是两种编码——位图与编号。这是这段代码里最容易看漏的不对称。
 
 **第三条，ICW4 的主从常量只差一位，而两条注释完全相同。** `ICW4_AT_MASTER = 0x05` 与 `ICW4_AT_SLAVE = 0x01` 的差是 `0x04`，也就是 bit 2；而 `minix3/minix/kernel/arch/i386/i8259.c` 里这两行的尾注都是 `not SFNM, not buffered, normal EOI, 8086`。注释没有为这一位的差异提供任何说明，本篇也不据外部资料裁定哪一侧的注释过时——只登记"两个值差 bit 2、注释相同"这个事实。读者若要判定，需要读 8259A 的 ICW4 位定义，那是本仓之外的材料。
 
@@ -349,11 +352,11 @@ int intr_init(const int auto_eoi)
 
 置位是禁用。所以第 5 次写的 `~(1 << CASCADE_IRQ)` = `0xFB` 里那唯一的 0 位（bit 2）是唯一放行的线——级联线必须开着，从片的中断才有通路；其余 7 条主片线被屏蔽。最后一次写（`~0` = `0xFF`）把从片的 8 条线全部屏蔽。函数头注释说的 `finishing with all interrupts disabled` 就是这个状态：主片放行一条级联、从片一条不放、主片自己的设备线全关。
 
-**反向推演**（三条，逐条落到具体对象）：
+**三条推演（主片 ICW3 写成编号；第 5 次写改成全屏蔽；ICW2 写 0）**：
 
 1. 主片的 ICW3 若按"编号"写 `0x02`：位图里变成 bit 1 置位、bit 2 清零，即主片认为"从片挂在我的 IRQ1 上"；而第 5 次写的屏蔽字仍是 `0xFB`（bit 2 打开、bit 1 屏蔽）。从片的中断从 IRQ2 进来，主片却把它理解成"从片在 IRQ1 上"——IRQ1 那条线还是屏蔽的。落到对象：主片 ICW3 的 bit 1 与 bit 2、IRQ2 线的屏蔽状态。
 2. 第 5 次写若改成 `~0`（主片也全屏蔽，看起来更"安全"）：从片的 INT 输出走主片的 IRQ2，这条线一封，从片上的 8 条线全部失去通路；此后任何人去 `unmask` 从片自己的线都不起作用。落到对象：主片屏蔽字的 bit 2、从片的全部 8 条线。
-3. ICW2 若写 0（把向量基址"从零开始编"）：IRQ0 的中断会落到 IDT 的向量 0，那是处理器定义的除法错门，而不是 03 篇在 0x50 处装好的那个门。落到对象：`IRQ0_VECTOR` 的值、IDT 向量 0 与 0x50 两个门。依据：`minix3/minix/include/arch/i386/include/interrupt.h:IRQ0_VECTOR` 与 `minix3/minix/kernel/arch/i386/i8259.c:intr_init` 的第 2 步写。
+3. ICW2 若写 0（把向量基址"从零开始编"）：在 8259A 供向量的形态（legacy PIC 直连，或以 ExtINT 交付）下，IRQ0 的中断会落到 IDT 的向量 0，那是处理器定义的除法错门，而不是 03 篇在 0x50 处装好的那个门（APIC 形态下向量由 IOAPIC 重定向项提供，见 §4.4；这条推演按 8259A 供向量的形态陈述）。落到对象：`IRQ0_VECTOR` 的值、IDT 向量 0 与 0x50 两个门。依据：`minix3/minix/include/arch/i386/include/interrupt.h:IRQ0_VECTOR` 与 `minix3/minix/kernel/arch/i386/i8259.c:intr_init` 的第 2 步写。
 
 ### 2.4 arch_init：x86 的六件事与它对 system_hz 的依赖
 
@@ -423,14 +426,14 @@ arch_init（arch_system.c:246）
 
 第二条依据是它自己的写动作。`apic_single_cpu_init` 末尾的 `apic_idt_init(0)` 与 `idt_reload()` 会按 APIC 形态重建门表；这个过程要求控制器处于一个已经定义好的状态，否则重建期间到达的请求会落在一个门刚被改写、钩子还没挂的窗口里。`intr_init` 结束时"每条线都屏蔽"正好提供了这个定义好的状态（§2.3 的第 5、10 步写）。
 
-**如果反过来想**（两条）：
+**两条推演（删掉 `cut_memmap`；删掉 `apic_single_cpu_init` 的调用）**：
 
 1. 删掉两次 `cut_memmap`。`kinfo.memmap` 会把 BIOS 区间与高内存区当成可用内存交给内核的物理内存分配器；第一个按这张表分配页的调用者会拿到被固件或硬件占用的物理页。落到对象：`kinfo.memmap` 的区间表、两条 `cut_memmap` 的起止地址（`BIOS_MEM_BEGIN`/`BIOS_MEM_END`、`BASE_MEM_TOP`/`UPPER_MEM_END`）。这条裁剪换到实现侧之后由谁在哪一步负责，见 §3.6。
 2. 删掉 `apic_single_cpu_init` 的调用。`lapic_addr` 保持为 0，`init_local_timer` 走 legacy 分支（`DEBUGBASIC(("Initiating legacy i8253 timer\n"))` 所在的那一支），`tsc_per_ms[0]` 由 `cpu_get_freq(0)` 得到而不是 APIC 校准值；计时仍能走，但 `stop_local_timer`/`restart_local_timer` 里的 `lapic_*` 分支永远不会被执行。落到对象：`lapic_addr`、`tsc_per_ms[0]`、`stop_local_timer` 的两个分支。
 
-### 2.5 ARM 端口的同一格：`arch_init` 与 `intr_init` 的另一种答法
+### 2.5 ARM 一侧的同一格：`arch_init` 与 `intr_init` 的另一种答法
 
-Minix3 的另一个端口是 32 位 ARM。同一格里它做的是不同的几件事：
+Minix3 的另一个架构是 32 位 ARM。同一格里它做的是不同的几件事：
 
 ```c
 // minix3/minix/kernel/arch/earm/arch_system.c:arch_init —— 逐字引用（L101-132 的完整函数体）
@@ -470,7 +473,7 @@ void arch_init(void)
 
 与 x86 的共同点：栈区赋值与对齐断言、单 CPU 配置下的 `tss_init`。不同点是三行 PMU 寄存器的读写（`PMCR` 的 C+E 两位、`PMCNTENSET` 的 C 位、`PMUSERENR` 的 EN 位），以及一行 `bsp_init()`——板级初始化。这里没有串口、没有 ACPI、没有 APIC、没有内存裁剪。
 
-ARM 端口的控制器初始化只做一件更基础的事：
+ARM 一侧的控制器初始化只做一件更基础的事：
 
 ```c
 // minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init —— 逐字引用（函数体；上方 `omap_intr` 结构体定义与 `static kern_phys_map intr_phys_map;` 未收）
@@ -490,7 +493,7 @@ intr_init(const int auto_eoi)
 
 	kern_phys_map_ptr(omap_intr.base, omap_intr.size,
 	    VMMF_UNCACHED | VMMF_WRITE,
-	    &intr_phys_map, (vir_bytes) &omap_intr.base);
+	    &intr_phys_map, (vir_bytes) & omap_intr.base);
 	return 0;
 }
 ```
@@ -516,7 +519,7 @@ bsp_register_timer_handler(const irq_handler_t handler)
 }
 ```
 
-两行相邻的语句加上一行注释，把本篇的一条核心次序写成了 ARM 端口的实现：先 `put_irq_handler` 挂链，再 `bsp_irq_unmask` 放行。C 的 ARM 端口里 `register_local_timer_handler` 就是转发到这里（`minix3/minix/kernel/arch/earm/arch_clock.c:register_local_timer_handler`）。
+两行相邻的语句加上一行注释，把本篇的一条核心次序写成了 ARM 一侧的实现：先 `put_irq_handler` 挂链，再 `bsp_irq_unmask` 放行。C 的 ARM 一侧里 `register_local_timer_handler` 就是转发到这里（`minix3/minix/kernel/arch/earm/arch_clock.c:register_local_timer_handler`）。
 
 三处对照：
 
@@ -526,11 +529,11 @@ bsp_register_timer_handler(const irq_handler_t handler)
 | 全屏蔽在哪里 | `intr_init` 结尾（主片留级联线） | 由 BSP 的屏蔽状态与后续 hook 注册承担（`bsp_irq_unmask` 是显式放行） |
 | 架构杂项 | 栈指针、TSS、串口、ACPI、APIC、内存裁剪 | 栈指针、TSS、PMU、`bsp_init` |
 
-**如果反过来想**：把 `bsp_register_timer_handler` 里那两行对调。定时器线在钩子链还空着的时候就被打开，任何一次到达都会经 BSP 的中断入口进入 C 的分发函数，而 `irq_handlers[irq]` 恰好为空——C 在空链表分支打印一行超时中断提示后返回（`minix3/minix/kernel/interrupt.c:irq_handle`）。落到对象：`omap3_timer_hook` 的挂链时刻、`bsp_irq_unmask` 的调用时刻、`irq_handlers[irq]` 的链表头。这是一条纯次序错误：两种写法在"最终状态"上完全一样，差别只在中途是否存在一个"线开、链空"的窗口。
+**把 `bsp_register_timer_handler` 里那两行对调会怎样**：定时器线在钩子链还空着的时候就被打开，任何一次到达都会经 BSP 的中断入口进入 C 的分发函数，而 `irq_handlers[irq]` 恰好为空——C 在空链表分支打印一行伪中断提示后返回（`minix3/minix/kernel/interrupt.c:irq_handle`）。落到对象：`omap3_timer_hook` 的挂链时刻、`bsp_irq_unmask` 的调用时刻、`irq_handlers[irq]` 的链表头。这是一条纯次序错误：两种写法在"最终状态"上完全一样，差别只在中途是否存在一个"线开、链空"的窗口——而落在窗口里的 tick 会走空链分支并把线保持在屏蔽态（§2.6 同一机制），此后无人再打开它。
 
 ### 2.6 硬件定时器不在 cstart 里：`boot_cpu_init_timer` 的三段与它的位置
 
-`cstart` 的三行调用完成后，内核有了软件时钟状态、有了处于全屏蔽态的控制器、有了架构杂项——但还没有时间在流动：没有任何硬件在按固定间隔产生中断。C 把这一步放在启动的末端，函数只有七行：
+`cstart` 的三行调用完成后，内核有了软件时钟状态、有了处于全屏蔽态的控制器、有了架构杂项——但还没有时间在流动：没有任何硬件在按固定间隔产生中断。C 把这一步放在启动的末端，函数体 11 行、只有两个动作：
 
 ```c
 // minix3/minix/kernel/clock.c:boot_cpu_init_timer —— 逐字引用（L294-304 的完整函数体）
@@ -605,7 +608,7 @@ static void estimate_cpu_freq(void)
 }
 ```
 
-这段代码里有一个旁证支持"定时器编程不能提前"：校准的办法是挂一个临时钩子在 `CLOCK_IRQ` 上、打开中断、等 `PROBE_TICKS` 个 tick 到达，再用两次读 TSC 的差算出 CPU 频率。它需要时钟中断**真的到达**，也就是说它天然属于"中断入口与控制器都已经就位"之后；而且它用 `intr_enable()` 打开 CPU 的中断允许位，此刻若进程表还是空的、`proc_ptr` 指向尚未初始化的槽，tick 处理函数第一步就会去读它。
+这段代码里有一个旁证支持"定时器编程不能提前"：校准的办法是挂一个临时钩子在 `CLOCK_IRQ` 上、打开中断、等 `PROBE_TICKS` 个 tick 到达，再用两次读 TSC 的差算出 CPU 频率。校准窗口本身只需要"中断入口与控制器都已经就位"（探针钩子只数 tick，不读进程上下文）；把整段推到启动末端的另有两条依赖：其一，C 的注释点明定时器初始化会间接用到 CPU 记账值，所以 `cycles_accounting_init()` 必须先跑（本节引用的 `bsp_finish_booting` 段）；其二，真实处理函数 `timer_int_handler` 注册之后，tick 的记账要读当前进程（`proc_ptr`）、通知要送到时钟任务，两者都要求进程表与任务端点已经就位。
 
 注册那一段在 x86 上分两支，但两支都以"线被放行"收尾：
 
@@ -682,7 +685,7 @@ PIC 支路的放行藏在 `put_irq_handler` 内部。C 的这个函数在挂链�
 
 三件事在同一段里：`boot_cpu_init_timer` 之前先 `cycles_accounting_init()`（注释说明定时器初始化会间接用到它），之后是 `fpu_init()` 与 `kernel_may_alloc = 0`。这说明定时器编程在 C 的启动谱上属于"最后一段"，与 `cstart` 的三行调用之间隔着整个进程表初始化与内存初始化。
 
-**如果反过来想**：把三段的次序改成"先放行、后注册"（在 C 里表现为把 `hw_intr_unmask(CLOCK_IRQ)` 移到 `put_irq_handler` 调用之前）。两个后果同时发生。其一是校准：`estimate_cpu_freq` 的探针钩子还没挂上时中断就允许到达，`probe_ticks` 可能在真实 handler 挂上之前被计数，`tsc0`/`tsc1` 的采样点漂移，算出的 `cpu_freq` 偏小（`tsc_per_tick[]` 随之偏小，quantum 递减的换算被拉长）。其二是运行期：`timer_int_handler` 未注册的窗口里 tick 进入空链，`irq_handle` 走 spurious 分支。落到对象：`probe_ticks`、`tsc0`/`tsc1`、`lapic_bus_freq[]`、`irq_handlers[CLOCK_IRQ]` 的链表头。
+**把三段的次序改成"先放行、后注册"会怎样**（在 C 里表现为把 `hw_intr_unmask(CLOCK_IRQ)` 移到 `put_irq_handler` 调用之前）：钩子链还空着时线就被打开，落在窗口里的 tick 走 `irq_handle` 的空链分支——该分支打印伪中断提示后**保持屏蔽**（入口先 `hw_intr_mask`，空链分支直接 return），线被关回且没有代码再打开它。窗口无论落在哪一次注册（校准的探针、或真实处理函数），后果形状相同：线停在被关状态，`probe_ticks` 不再增长（校准循环等不到）、或 tick 列车直接停摆。落到对象：`irq_handlers[CLOCK_IRQ]` 的链表头、`hw_intr_unmask(CLOCK_IRQ)` 的调用时刻、`probe_ticks`。
 
 ### 2.7 本章归纳
 
@@ -705,7 +708,7 @@ PIC 支路的放行藏在 `put_irq_handler` 内部。C 的这个函数在挂链�
 
 ### 3.1 决策：ClockArch —— 把软件状态与硬件定时器分开（→§2.2、§2.6）
 
-C 里"时钟"这件事分成两个文件、两个时间点：`minix3/minix/kernel/clock.c:init_clock` 在 `cstart` 里建软件状态，`minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer` 在启动末端编程硬件，两者由 `boot_cpu_init_timer` 缝合；每多一个架构就要多一份硬件实现，接口靠 `minix3/minix/kernel/clock.h` 的四条函数声明（`init_local_timer`、`stop_local_timer`、`register_local_timer_handler`）约束。
+C 里"时钟"这件事分成两个文件、两个时间点：`minix3/minix/kernel/clock.c:init_clock` 在 `cstart` 里建软件状态，`minix3/minix/kernel/arch/i386/arch_clock.c:init_local_timer` 在启动末端编程硬件，两者由 `boot_cpu_init_timer` 缝合；每多一个架构就要多一份硬件实现，接口靠 `minix3/minix/kernel/clock.h` 的四条函数声明（`init_local_timer`、`stop_local_timer`、`restart_local_timer`、`register_local_timer_handler`）约束。
 
 Rust 把它分成两层：`ClockState` 放软件状态（kernel 层，`os/kernel/src/clock.rs`），`ClockArch` 放硬件定时器（arch 层，`os/arch/src/arch/clock.rs`）。
 
@@ -738,7 +741,7 @@ pub trait ClockArch: Sized + Send + Sync {
 
 `Send + Sync` 在这里的含义需要与"线程安全"分开说。`Send` 表达"该类型的所有权可以跨线程转移"，`Sync` 表达"共享引用 `&T` 可以跨线程传递"（`&T: Send` 当且仅当 `T: Sync`）。两者都不保证"用 `&self` 调方法时的访问是安全的"，同步要靠显式的锁或原子量。回到 `ClockArch`：它的实例是**瞬态的**——每个调用点从 `platform_desc().timer()` 现构造一个，完成一次硬件操作后即丢弃（`os/kernel/src/lib.rs:fn boot_init_timer` 与 `os/kernel/src/clock.rs:fn local_tick` 都是这个形状），并不存在"每核存一份实例"的结构。因此这里的 `Send + Sync` 编码的是"每核的定时器寄存器物理上互不干扰 + 引用可以传"，而不是"这是一个并发数据结构"。
 
-**如果反过来想**：让 `ClockState::tick_with` 直接持有 `ClockArch` 实例，把硬件读写与软件记账放进一个结构。这不会引入 crate 依赖环——`minix-kernel` 依赖 `minix-arch` 是单向的，`os/arch/Cargo.toml` 的依赖表里没有 `minix-kernel`；代价落在职责划分上：一个类型同时承担"读硬件计数器"与"记 uptime 与负载"两种职责，arch 层"只谈硬件"的边界被抹掉。真能把环引入的是另一种形态：把 `KProcess`（定义在 kernel crate）写进 arch 层的方法签名，那要求 `minix-arch` 反向依赖 `minix-kernel`（`os/arch/src/arch/clock.rs` 的模块注释记着这个例子）。落到对象：`os/kernel/Cargo.toml` 与 `os/arch/Cargo.toml` 的依赖表、`os/arch/src/arch/clock.rs` 的模块注释。
+**让 `ClockState::tick_with` 直接持有 `ClockArch` 实例会怎样**：把硬件读写与软件记账放进一个结构。这不会引入 crate 依赖环——`minix-kernel` 依赖 `minix-arch` 是单向的，`os/arch/Cargo.toml` 的依赖表里没有 `minix-kernel`；代价落在职责划分上：一个类型同时承担"读硬件计数器"与"记 uptime 与负载"两种职责，arch 层"只谈硬件"的边界被抹掉。真能把环引入的是另一种形态：把 `KProcess`（定义在 kernel crate）写进 arch 层的方法签名，那要求 `minix-arch` 反向依赖 `minix-kernel`（`os/arch/src/arch/clock.rs` 的模块注释记着这个例子）。落到对象：`os/kernel/Cargo.toml` 与 `os/arch/Cargo.toml` 的依赖表、`os/arch/src/arch/clock.rs` 的模块注释。
 
 ### 3.2 决策：DEFAULT_HZ 用编译时常量，范围的守卫留在构造器（→§2.2）
 
@@ -785,7 +788,7 @@ pub const DEFAULT_HZ: u32 = 100;
 范围守卫的落点也在构造器里：
 
 ```rust
-// os/kernel/src/clock.rs:fn with_hz —— 逐字引用（函数体三行）
+// os/kernel/src/clock.rs:fn with_hz —— 逐字引用（函数体四行）
 pub fn with_hz(hz: u32) -> Self {
     let hz = if !(2..=50000).contains(&hz) { DEFAULT_HZ } else { hz };
     let mut state = Self::new();
@@ -796,11 +799,11 @@ pub fn with_hz(hz: u32) -> Self {
 
 与 C 的差别只有两条：没有"参数非数字"这条路径（Rust 侧没有字符串解析，调用者给的就是整数），以及默认值从 60/1000 变成 100。C 的四条取值路径在 Rust 侧的对应物：无参数 → `ClockState::new()` 直接用 `DEFAULT_HZ`；参数合法 → `with_hz(n)`；参数越界 → `with_hz` 内部回退；参数非数 → 不存在。
 
-**如果反过来想**：让 `boot_init_timer` 把 `clock.hz()`（运行时字段）而不是 `DEFAULT_HZ` 传给 `init_timer`。如果将来有人用 `with_hz(60)` 建了 `ClockState`，PIT 会按 60 Hz 编程，而软件侧的记账常量仍是 100 Hz；`ClockState.hz` 与硬件实际频率不一致，`uptime` 的推进速率与墙钟时间的比例从 1:1 变成 60:100——`sleep(1)` 会变成约 1.67 秒。落到对象：`ClockState.hz` 字段、PIT divisor、`uptime` 的推进速率。依据：`os/kernel/src/lib.rs:fn boot_init_timer` 传的实参、`os/kernel/src/clock.rs:fn with_hz` 的存在。
+**让 `boot_init_timer` 把 `clock.hz()` 而不是 `DEFAULT_HZ` 传给 `init_timer` 会怎样**：如果将来有人用 `with_hz(60)` 建了 `ClockState`，PIT 会按 60 Hz 编程，而软件侧的记账常量仍是 100 Hz；被点名的冲突不是"字段与硬件"（按假设两者都是 60），而是**硬件 60 与仍在用编译期 100 的记账路径**：`uptime` 的推进速率与墙钟时间的比例从 1:1 变成 60:100——`sleep(1)` 会变成约 1.67 秒。落到对象：`DEFAULT_HZ` 的编译期读者、PIT divisor（60 Hz）、`uptime` 的推进速率。依据：`os/kernel/src/lib.rs:fn boot_init_timer` 传的实参、`os/kernel/src/clock.rs:fn with_hz` 的存在。
 
 ### 3.3 决策：把控制器拆成 InterruptRouter 与 PerCpuInterruptUnit（→§2.3、§2.5）
 
-C 里控制器的操作面由一组宏给出：`minix3/minix/kernel/arch/i386/include/hw_intr.h` 在 `USE_APIC` 时把 `hw_intr_mask`/`hw_intr_unmask`/`hw_intr_ack` 映射到 `ioapic_mask_irq`/`ioapic_unmask_irq`/`ioapic_eoi`，否则映射到 `irq_8259_mask`/`irq_8259_unmask`/`irq_8259_eoi`；ARM 端口换一套函数。这一组动作在硬件上其实是两类：改全局路由表的（屏蔽/放行一条线，一改所有 CPU 都看见）与写当前核私有寄存器的（应答与结束）。
+C 里控制器的操作面由一组宏给出：`minix3/minix/kernel/arch/i386/include/hw_intr.h` 在 `USE_APIC` 时把 `hw_intr_mask`/`hw_intr_unmask`/`hw_intr_ack` 映射到 `ioapic_mask_irq`/`ioapic_unmask_irq`/`ioapic_eoi`，否则映射到 `irq_8259_mask`/`irq_8259_unmask`/`irq_8259_eoi`；ARM 一侧换一套函数。这一组动作在硬件上其实是两类：改全局路由表的（屏蔽/放行一条线，一改所有 CPU 都看见）与写当前核私有寄存器的（应答与结束）。
 
 Rust 按这条缝隙拆成两个 trait：
 
@@ -829,7 +832,7 @@ pub trait PerCpuInterruptUnit: Send {
 | 单一 `InterruptController`（六方法） | 否决 | 拆分前的六个应答实现（三架构 × `ack`/`eoi`）都忽略传入的 `irq` 参数、而 `mask`/`unmask` 确实按参数路由；把两类语义混在一个接口里，读者会以为 `ack(irq)` 的参数有用 |
 | 把两个方法合成一个"原子应答并结束" | 否决 | GIC 的结束写回身份来自应答读的同一个寄存器；合起来就无法表达"claim 在陷阱入口、分发在别的函数"这种拆分（aarch64 的入口要先用 INTID 决定走哪条链） |
 
-**如果反过来想**：把 `claim` 与 `complete` 合并，并按"先回执再处理"的次序调用。GIC 上 `ICC_EOIR1_EL1` 写回的身份必须来自一次 `ICC_IAR1_EL1` 读；在处理器还没跑完时先回执，等于把本次中断的 active 优先级放掉，同优先级或更高优先级的待处理中断可以在处理函数返回之前打断它。落到对象：GIC 的 `ICC_IAR1_EL1` 与 `ICC_EOIR1_EL1` 这一对寄存器、PLIC 的 claim/complete 共用同一偏移（读是 claim、写是 complete，`os/plat/src/riscv64/interrupt.rs:const PLIC_COMPLETE`）这一事实。依据：`os/plat/src/interrupt.rs:trait PerCpuInterruptUnit` 的注释（"GIC/PLIC: write back the SAME identity `claim` returned — the pairing is the protocol"）与三架构的四份实现。
+**把 `claim` 与 `complete` 合并、按"先回执再处理"调用会怎样**：GIC 上 `ICC_EOIR1_EL1` 写回的身份必须来自一次 `ICC_IAR1_EL1` 读；在处理器还没跑完时先回执，等于把本次中断的 active 优先级放掉，同优先级或更高优先级的待处理中断可以在处理函数返回之前打断它。落到对象：GIC 的 `ICC_IAR1_EL1` 与 `ICC_EOIR1_EL1` 这一对寄存器、PLIC 的 claim/complete 共用同一偏移（读是 claim、写是 complete，`os/plat/src/riscv64/interrupt.rs:const PLIC_COMPLETE`）这一事实。依据：`os/plat/src/interrupt.rs:trait PerCpuInterruptUnit` 的注释（"GIC/PLIC: write back the SAME identity `claim` returned — the pairing is the protocol"）与三架构的三份实现（测试与 mock 另有一份）。
 
 ### 3.4 决策：控制器的归宿是全局 `IRQ_MANAGER`（→§2.4）
 
@@ -865,7 +868,7 @@ Rust 的控制器实例在 `init_clock_and_interrupts` 里构造、`init()` 之�
 全局存的不是裸控制器，而是一个合成体：
 
 ```rust
-// os/kernel/src/irq_manager.rs:struct IrqManager —— 逐字引用（字段与一行注释）
+// os/kernel/src/irq_manager.rs:struct IrqManager —— 逐字引用（五个字段）
 pub struct IrqManager<IC: InterruptRouter + PerCpuInterruptUnit> {
     hooks: [Option<IrqHookSlot>; NR_IRQ_HOOKS],
     handlers: [Option<usize>; NR_IRQ_VECTORS],
@@ -875,15 +878,15 @@ pub struct IrqManager<IC: InterruptRouter + PerCpuInterruptUnit> {
 }
 ```
 
-四个字段各自对一份 C 状态：`handlers` 对 `irq_handlers[]`、`actids` 对 `irq_actids[]`、`hooks` 对 C 的钩子池（`irq_hooks[NR_IRQ_HOOKS]`）、`irq_use` 对"这条线被用过"的记账。把"哪条线被谁注册"与"控制器的屏蔽位"放在同一个对象里，使 §4.8 的那条规则（第一个注册者解屏蔽）有一个明确的实现位置。
+四个字段各自对一份 C 状态（第五个字段 `controller` 装的是控制器实例本身）：`handlers` 对 `irq_handlers[]`、`actids` 对 `irq_actids[]`、`hooks` 对 C 的钩子池（`irq_hooks[NR_IRQ_HOOKS]`）、`irq_use` 对"这条线被用过"的记账。把"哪条线被谁注册"与"控制器的屏蔽位"放在同一个对象里，使 §4.8 的那条规则（第一个注册者解屏蔽）有一个明确的实现位置。
 
 访问这个全局有两套入口，分界是"BKL 是否存在"：启动期用 `os/kernel/src/lib.rs:fn irq_manager_boot_unchecked`（`unsafe`，契约是"单线程初始化期"），运行期用 `os/kernel/src/lib.rs:fn irq_manager_with`（接收一个 `BklSection` 见证）。时钟状态同样有两套（`os/kernel/src/lib.rs:fn clock_state_with` 与 `os/kernel/src/lib.rs:fn clock_state_boot_unchecked`）。
 
-**如果反过来想**：在 `init_clock_and_interrupts` 里 `intr.init()` 之后把实例丢弃，让陷阱入口每次中断都现构造一个控制器。构造要做一次 downcast 与基址搬运，这是次要代价；真正的代价落在**实例承载的硬件侧状态**上：GIC 的 `ICC_IAR1_EL1` 读取本身就是应答动作，谁读走那个编号谁就欠一次 `ICC_EOIR1_EL1` 的回执（§4.5 的三架构对照）。实例用完即弃意味着"读"与"写"分属两个不同的对象，而回执必须写回**同一个**被应答的 INTID——编号此刻只存在于栈上的一个局部量里，任何一次重构都可能把它丢掉或写错。落到对象：`ICC_IAR1_EL1` / `ICC_EOIR1_EL1` 这对寄存器，以及 `fn claim(&mut self) -> Option<u32>` 与 `fn complete(&mut self, claimed: Option<u32>)` 之间那条靠参数传递的身份。依据：`os/plat/src/arm64/interrupt.rs:fn claim` 与 `:fn complete`（`claimed` 是参数、不是实例字段）。
+**`intr.init()` 之后把实例丢弃、让陷阱入口每次中断现构造控制器会怎样**：构造要做一次 downcast 与基址搬运，这是次要代价；真正的代价落在**实例承载的硬件侧状态**上：GIC 的 `ICC_IAR1_EL1` 读取本身就是应答动作，谁读走那个编号谁就欠一次 `ICC_EOIR1_EL1` 的回执（§4.5 的三架构对照）。实例用完即弃意味着"读"与"写"分属两个不同的对象，而回执必须写回**同一个**被应答的 INTID——编号此刻只存在于栈上的一个局部量里，任何一次重构都可能把它丢掉或写错。落到对象：`ICC_IAR1_EL1` / `ICC_EOIR1_EL1` 这对寄存器，以及 `fn claim(&mut self) -> Option<u32>` 与 `fn complete(&mut self, claimed: Option<u32>)` 之间那条靠参数传递的身份。依据：`os/plat/src/arm64/interrupt.rs:fn claim` 与 `:fn complete`（`claimed` 是参数、不是实例字段）。
 
 ### 3.5 决策：ArchInit 是阶段 trait（→§2.4、§2.5）
 
-C 的 `arch_init` 用 `#ifdef USE_APIC`、`#ifdef USE_ACPI`、`#ifndef CONFIG_SMP` 在一具函数体里选分支；x86 与 ARM 两个端口的实现内容几乎不重叠（§2.4 与 §2.5 的对照表）。这些杂项里没有任何一条有跨架构一致的语义。
+C 的 `arch_init` 用 `#ifdef USE_APIC`、`#ifdef USE_ACPI`、`#ifndef CONFIG_SMP` 在一具函数体里选分支；x86 与 ARM 两侧的实现内容几乎不重叠（§2.4 与 §2.5 的对照表）。这些杂项里没有任何一条有跨架构一致的语义。
 
 Rust 把它收进一个 trait：
 
@@ -905,15 +908,22 @@ trait 的文档注释把边界写死在一句话里：`ArchInit` 是**阶段 tra
 | 内存裁剪 | 不进来（§3.6） | 属于内存管理，不是硬件初始化 |
 | ACPI 表地址、PMU 使能、FPEN | `ArchInit` | 本身就没有跨架构一致性 |
 
-最后一条判据的作用是把两类东西分开：`ArchInit` 里放的是"**本身就没有**跨架构一致性"的杂项，不是"所有架构都不同"的东西。两者的差别在于后者里常常藏着可以被抽象出来的公共语义——串口就是一个例子：三个架构的早期输出都是"一个字节一个字节地写"，差异只在寄存器位置，于是它有自己的 trait（`os/plat/src/early_console.rs`）。本篇只用它的"能打字"这一面（§6.2 的命令输出就是它在打）；它的完整编程（串口初始化序列、FIFO 设置、为什么要在 `prot_init` 之前就能输出）属控制台与外设驱动主题（`16-drivers` 方向，尚未重生成），本篇不展开。
+最后一条判据的作用是把两类东西分开：`ArchInit` 里放的是"**本身就没有**跨架构一致性"的杂项，不是"所有架构都不同"的东西。两者的差别在于后者里常常藏着可以被抽象出来的公共语义——串口就是一个例子：三个架构的早期输出都是"一个字节一个字节地写"，差异只在寄存器位置，于是它有自己的 trait（`os/plat/src/early_console.rs`）。本篇只用它的"能打字"这一面（§6.2 的命令输出就是它在打）；它的完整编程（串口初始化序列、FIFO 设置、为什么要在 `prot_init` 之前就能输出）属控制台与外设驱动主题（`16-drivers` 方向；串口芯片的寄存器级展开在该 stage 的终端驱动篇与后续架构文档），本篇不展开。
 
 三架构 `ArchInit::init()` 今天的实际内容：
 
 ```rust
-// os/arch/src/riscv64/arch_init.rs:fn init —— 逐字引用（函数体后半段的注释与全部语句）
+// os/arch/src/riscv64/arch_init.rs:fn init —— 逐字引用（函数体的注释与全部语句）
     fn init(&mut self) {
         // 1. PMP (Physical Memory Protection): NO S-mode setup possible or
-        // needed. ...
+        // needed. PMP CSRs (pmpcfg*/pmpaddr*) are M-mode-only per the
+        // privileged spec — an S-mode write takes an illegal instruction
+        // (live, first timer-irq carrier run: scause=2,
+        // stval=0x3b051073 = `csrw pmpaddr0`). Under OpenSBI the firmware
+        // owns PMP and its Domain0 regions already delegate S/U (R,W,X)
+        // over the whole address space, so the allow-all intent this
+        // entry once tried to program is satisfied by the firmware.
+        //
         // 2. (Removed by D-59, 2026-09-09.) This step used to set
         // `sie = STIE | SSIE` (0x22) here — enabling the S-mode timer gate
         // before any handler is registered. Both bits now have owners:
@@ -929,7 +939,7 @@ trait 的文档注释把边界写死在一句话里：`ArchInit` 是**阶段 tra
 
 块内有一处仓库内部的阶段编号与两处工作记录编号（`smp_todo.md` 的条目号），按原文引用；本段要读的是它陈述的机制：这条写入曾经在 `ArchMiscDesc` 的初始化阶段就把 S 模式定时器门打开，而那个时刻定时器源还没编程、处理函数还没注册；现在两个位各有归属——定时器位归 `TimerIrqGate`，软件中断位归 SMP 的 IPI 拉起。
 
-**如果反过来想**：把 `sie.STIE` 的写入放回 `ArchInit::init()`。这个函数的执行点在 `init_clock_and_interrupts` 里，而 `boot_init_timer`（编程定时器、注册处理函数、开门）在它之后——门在源与处理者都不存在时就被打开。RISCV 的定时器条件比较是 `mtime >= mtimecmp`，而 `mtimecmp` 的复位值是 0，`mtime` 从复位起就在递增，于是条件恒真：一旦 `sie.STIE` 置位，`sip.STIP` 立刻挂起，中断在启动中途反复到达。落到对象：`sie` 的 STIE 位（bit 5）、`sip` 的 STIP 位、`mtimecmp` 的复位值、`irq_handlers[TIMER_IRQ]` 的空链。依据：`os/arch/src/riscv64/arch_init.rs:fn init` 的注释、`os/arch/src/riscv64/timer_irq_gate.rs:fn enable_timer_irq` 的写值。
+**把 `sie.STIE` 的写入放回 `ArchInit::init()` 会怎样**：这个函数的执行点在 `init_clock_and_interrupts` 里，而 `boot_init_timer`（编程定时器、注册处理函数、开门）在它之后——门在源与处理者都不存在时就被打开。RISCV 的定时器条件比较是 `mtime >= mtimecmp`，而 `mtimecmp` 的复位值是 0，`mtime` 从复位起就在递增，于是条件恒真：一旦 `sie.STIE` 置位，`sip.STIP` 立刻挂起，中断在启动中途反复到达。落到对象：`sie` 的 STIE 位（bit 5）、`sip` 的 STIP 位、`mtimecmp` 的复位值、`irq_handlers[TIMER_IRQ]` 的空链。依据：`os/arch/src/riscv64/arch_init.rs:fn init` 的注释、`os/arch/src/riscv64/timer_irq_gate.rs:fn enable_timer_irq` 的写值。
 
 ### 3.6 决策：内存裁剪不进 `ArchInit`（→§2.4）
 
@@ -941,16 +951,16 @@ Rust 不做这两次裁剪，理由有三条，都能从源码指出：
 2. `BIOS_MEM_BEGIN`/`BIOS_MEM_END`、`BASE_MEM_TOP`/`UPPER_MEM_END` 是 x86 的固件内存布局常量；aarch64 与 riscv64 上没有这些区间。
 3. "裁剪内存图"是内存管理的职责，把它放进 `ArchInit` 会让这个阶段 trait 的边界失效。
 
-**如果反过来想**：把两次 `cut_memmap` 照抄进 `ArchInit`。这个 trait 的三个实现里，aarch64 与 riscv64 的实现会在自己平台上执行两条来自 x86 常量名的裁剪：`BIOS_MEM_END` 与 `BASE_MEM_TOP` 这些符号在非 x86 平台上没有对应语义，落到 `FREE_MEMMAP` 的区间表上就是两条凭空的保留区间——它们可能正好盖住真实可用的物理页，把这些页从分配器里抹掉。落到对象：`kinfo.memmap`（C）/ `FREE_MEMMAP`（Rust）的区间表、`BIOS_MEM_BEGIN` 与 `BASE_MEM_TOP` 这些常量的取值来源。依据：`os/arch/src/arch/arch_init.rs` 的模块注释（`No memory cutting`）与 `os/arch/src/x86_64/arch_init.rs:fn init` 的现状（它不做任何裁剪）。
+**把两次 `cut_memmap` 照抄进 `ArchInit` 会怎样**：这个 trait 的三个实现里，aarch64 与 riscv64 的实现会在自己平台上执行两条来自 x86 常量名的裁剪：`BIOS_MEM_END` 与 `BASE_MEM_TOP` 这些符号在非 x86 平台上没有对应语义，落到 `FREE_MEMMAP` 的区间表上就是两条凭空的保留区间——它们可能正好盖住真实可用的物理页，把这些页从分配器里抹掉。落到对象：`kinfo.memmap`（C）/ `FREE_MEMMAP`（Rust）的区间表、`BIOS_MEM_BEGIN` 与 `BASE_MEM_TOP` 这些常量的取值来源。依据：`os/arch/src/arch/arch_init.rs` 的模块注释（`No memory cutting`）与 `os/arch/src/x86_64/arch_init.rs:fn init` 的现状（它不做任何裁剪）。
 
 ### 3.7 决策：定时器的"编程、注册、放行"三段分离（→§2.6）
 
-C 把编程与注册连在两个函数调用里（`boot_cpu_init_timer`），而放行没有自己的名字——它藏在两处调用者的行为里：x86 的 PIC 支路藏在 `put_irq_handler` 末尾的 `hw_intr_unmask`，ARM 端口显式写成注册之后的 `bsp_irq_unmask`。三件事在 C 里存在，但没有三个名字。
+C 把编程与注册连在两个函数调用里（`boot_cpu_init_timer`），而"注册即放行"这一半没有独立的名字——它藏在两处调用者的行为里：x86 的 PIC 支路藏在 `put_irq_handler` 末尾的 `hw_intr_unmask`，ARM 一侧显式写成注册之后的 `bsp_irq_unmask`（C 另有具名的 `enable_irq`，那是处理完成后的重新放行，不是首次放行）。三件事在 C 里存在，但首次放行没有自己的名字。
 
 Rust 把它们拆成三个有名字的动作，并收进一个函数：
 
 ```rust
-// os/kernel/src/lib.rs:fn boot_init_timer —— 节选（省略号处依次为函数头文档注释、三段之间的解释性注释、一个空的 mock 条件块，以及仅 x86_64 的 `pic_init` 尾调用）
+// os/kernel/src/lib.rs:fn boot_init_timer —— 节选（省略号处依次为函数头文档注释、两条 `use` 声明、三段之间的解释性注释、一个空的 mock 条件块，以及仅 x86_64 的 `pic_init` 尾调用）
 pub fn boot_init_timer() {
     ...
     use minix_arch::{ClockArch, CurrentClockArch, CurrentTimerIrqGate, TimerIrqGate};
@@ -1003,7 +1013,7 @@ pub trait TimerIrqGate: Sized {
 
 x86 那一格的两个"没有"是本实现的选择而不是三架构共有的推论：PIT 没有模块本地门，所以两个方法都是空操作（`os/arch/src/x86_64/timer_irq_gate.rs:struct X86_64TimerIrqGate`，文件注释记着"早先的实现会去清 LAPIC LVT Timer 的 mask 位，那是给 LAPIC 定时器准备的门，而 LAPIC 定时器不是当前的时钟源、也没有被编程——提前打开它等于开放一个没有处理者的中断源"）。将来时钟源换成 LAPIC 定时器时，这个空操作会换成 LVT 位的操作。
 
-**如果反过来想**（三条，逐条落到具体对象）：
+**三条推演（只做前两段；跳过注册；把第三段提到第一段之前）**：
 
 1. 只做前两段、不做第三段。aarch64 的 `init_timer` 特意把 `CNTP_CTL_EL0` 写成 `0x2`（Enable=0、IMASK=1），定时器模块不产生 PPI——即使控制器侧的 bit 30 已经置位，也没有中断可以投递。`uptime` 永不推进。落到对象：`CNTP_CTL_EL0` 的 bit 0 与 bit 1、PPI 的 INTID 30。
 2. 只做第一段与第三段、跳过注册。两级门都开了，处理器不存在；中断到达后分发器在 `irq_handlers[TIMER_IRQ]` 上找不到链，返回 `IrqError::Spurious`。落到对象：钩子池的空槽位、`os/kernel/src/irq_manager.rs:fn dispatch_claimed` 里 `slot_idx.is_none()` 的分支。
@@ -1017,21 +1027,23 @@ x86 那一格的两个"没有"是本实现的选择而不是三架构共有的�
 | `IrqManager::register_hook` | `put_irq_handler` | 在放行之前；它自己内含控制器侧放行 |
 | `TimerIrqGate::enable_timer_irq` | ARM 的 `bsp_irq_unmask` / x86 的空缺 | 三段里的最后一段 |
 
+与这条决策线相连的另两条边界决策——handler 注册为什么不进 `TimerIrqGate`、aarch64 两级门的归属——写在 §4.7.1 与 §4.7.2，与本节同属一条决策线。
+
 ### 3.8 决策：三架构差异与三档术语的落点（→§2.5）
 
-Minix3 只覆盖 x86-32 与 ARM-32 两个端口，本篇实现面对的是 x86-64、aarch64、riscv64 三种机器。差异因此分成三类，各自要给不同的标注：
+Minix3 只覆盖 x86-32 与 ARM-32 两种架构，本篇实现面对的是 x86-64、aarch64、riscv64 三种机器。差异因此分成三类，各自要给不同的标注：
 
 | 演进 | 内容 | C 现状 | 本实现 | 依据锚点 |
 |---|---|---|---|---|
 | `[ARCH: K-1]` | 控制器与定时器型号 | 32 位 ARM 用 OMAP INTC（`minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init`）+ BSP 私有定时器（`minix3/minix/kernel/arch/earm/bsp/ti/omap_timer.c:bsp_register_timer_handler`） | ARMv8-A：GICv3（Distributor + Redistributor + CPU 接口）+ Generic Timer（CNTP 一组寄存器） | `os/plat/src/arm64/interrupt.rs`、`os/arch/src/arm64/clock.rs` 的模块注释 |
-| `[ARCH: K-2]` | 整套 RISC-V 支持 | 无端口 | CLINT 的 mtime/mtimecmp + PLIC + `sie.STIE`；读计数走 `time` CSR、编程走 SBI TIME ecall | `os/plat/src/riscv64/interrupt.rs`、`os/arch/src/riscv64/clock.rs` 的模块注释 |
+| `[ARCH: K-2]` | 整套 RISC-V 支持 | 无对应实现 | CLINT 的 mtime/mtimecmp + PLIC + `sie.STIE`；读计数走 `time` CSR、编程走 SBI TIME ecall | `os/plat/src/riscv64/interrupt.rs`、`os/arch/src/riscv64/clock.rs` 的模块注释 |
 | `[ARCH: K-3]` | 默认 tick 频率 | i386 60 Hz、earm 1000 Hz，且可由 boot 参数覆盖 | 三架构统一 100 Hz 编译期常量 | `os/arch/src/arch/clock.rs:const DEFAULT_HZ` 的注释、`os/kernel/src/clock.rs:const DEFAULT_HZ` |
 
-三类之外的都属于 Rewrite 或 Refactor：`init_clock` 的软件状态语义、`cut_memmap` 的裁剪语义、`put_irq_handler` 的"注册即放行"规则、`boot_cpu_init_timer` 的三段关系，在 Rust 侧都保持同样的外部行为，只换了内部组织方式。
+三类之外的都属于 Rewrite 或 Refactor：`init_clock` 的软件状态语义、`cut_memmap` 的裁剪语义（由 `KernelInfo` 提供者代为排除，结果表等价而非同址重写，§3.6）、`put_irq_handler` 的"注册即放行"规则、`boot_cpu_init_timer` 的三段关系，在 Rust 侧都保持同样的外部行为，只换了内部组织方式。
 
-差异表里有一处不属于 Rewrite：riscv64 的定时器编程通道。C 没有这个端口，所以没有"保持行为"可言；而实现内部还有一处不一致——读计数用 `time` CSR，写比较值用 SBI ecall——理由是 OpenSBI 把 CLINT 的 MMIO 帧放在 PMP 保护的 M 模式内存里，S 模式的 MMIO 读会取访问异常（`os/arch/src/riscv64/clock.rs:fn read_ticks` 的注释给出的实测读数是 `scause=5`、`stval=0x200bff8`），而 `time` CSR 是同一个计数器的 S 模式合法视图。
+差异表里有一处不属于 Rewrite：riscv64 的定时器编程通道。C 没有这一架构的实现，所以没有"保持行为"可言；而实现内部还有一处不一致——读计数用 `time` CSR，写比较值用 SBI ecall——理由是 OpenSBI 把 CLINT 的 MMIO 帧放在 PMP 保护的 M 模式内存里，S 模式的 MMIO 读会取访问异常（`os/arch/src/riscv64/clock.rs:fn read_ticks` 的注释给出的实测读数是 `scause=5`、`stval=0x200bff8`），而 `time` CSR 是同一个计数器的 S 模式合法视图。
 
-**如果反过来想**：把 riscv64 的计数读改成 MMIO。`read_ticks` 会被 `decrement_quantum`、`bsp_finish_booting` 的 TSC 基线、`local_timer_eoi` 的重挂路径调用；第一次调用就取 S 模式访问异常，异常发生在刚建立的陷阱入口上，而 `scause=5` 的语义是"取指访问故障"还是"读访问故障"取决于当时的访问类型。落到对象：`mtime_addr` 这个 MMIO 地址、PMP 的配置、`time` CSR 的读取契约。依据：`os/arch/src/riscv64/clock.rs:fn read_ticks` 的注释与它返回的 CSR 读。
+**把 riscv64 的计数读改成 MMIO 会怎样**：这条计数读（`read_ticks`，以及同一 CSR 的兄弟读取 `read_time_csr`）会被 `decrement_quantum`（经 `read_tsc` 的默认委托）、`bsp_finish_booting` 的 TSC 基线、`local_timer_eoi` 的重挂路径调用；第一次调用就取 S 模式访问异常，异常发生在刚建立的陷阱入口上；`scause=5` 的编码就是读访问故障（Load access fault，RISC-V 特权规范），`stval` 给出出错的地址。落到对象：`mtime_addr` 这个 MMIO 地址、PMP 的配置、`time` CSR 的读取契约。依据：`os/arch/src/riscv64/clock.rs:fn read_ticks` 的注释与它返回的 CSR 读。
 
 ---
 
@@ -1042,7 +1054,7 @@ Minix3 只覆盖 x86-32 与 ARM-32 两个端口，本篇实现面对的是 x86-6
 函数不长，每一步都对应第 3 章的一条决策。原文（节选）：
 
 ```rust
-// os/kernel/src/lib.rs:fn init_clock_and_interrupts —— 节选（省略号处为各段之间的解释性注释：SAFETY 说明与阶段编号注释）
+// os/kernel/src/lib.rs:fn init_clock_and_interrupts —— 节选（省略号处为各段之间的解释性注释：SAFETY 说明与阶段编号注释；开头 `use minix_arch` 的跨行写法已并为一行）
 pub fn init_clock_and_interrupts() {
     use minix_arch::{ArchInit, CurrentArchInit};
     use crate::clock::ClockState;
@@ -1081,7 +1093,7 @@ pub fn init_clock_and_interrupts() {
 }
 ```
 
-四步与 C 的对应：
+五步（步 0 是前置的取描述符）与 C 的对应：
 
 | 步 | 动作 | C 对应 | 回指的决策 | 这一步之后多了什么 |
 |---|---|---|---|---|
@@ -1099,7 +1111,7 @@ CLOCK_STATE not initialized — init_clock_and_interrupts must run first
 
 这条 `expect` 的信息本身就是一件证据：它说明这条路径被认为"不该发生"，而保证它不发生的是另外两件事——控制器此刻每条线都还屏蔽着，且定时器的本地门也没开。
 
-**如果反过来想**：把 Step 2 与 Step 3 对调，让 `ArchInit::init()` 先跑。x86 的 `ArchInit` 实现今天只存 ACPI 表地址、不做实际动作（§4.6），所以对 x86 影响为零；但会同时破坏两条约定的**理由**：控制器还没有建立"全屏蔽"的确定状态，而 `ArchInit` 是唯一被排除在"不使能中断"要求之外的阶段（§3.5 的约束）——一旦某个架构的 `ArchInit` 实现里出现任何一次中断使能，它就会在控制器状态未定义时生效。落到对象：`IRQ_MANAGER` 的写入点、`mask_all` 的执行点、`ArchInit` 三架构实现的语句集合。
+**把 Step 2 与 Step 3 对调、让 `ArchInit::init()` 先跑会怎样**：x86 的 `ArchInit` 实现今天只存 ACPI 表地址、不做实际动作（§4.6），所以对 x86 影响为零；但会同时破坏两条约定的**理由**：控制器还没有建立"全屏蔽"的确定状态；而 `ArchInit` 的边界（§3.5：只收没有跨架构一致性的杂项，不碰各 trait 的门）今天不含任何中断使能——一旦某个架构的 `ArchInit` 实现里出现任何一次中断使能，它就会在控制器状态未定义时生效。落到对象：`IRQ_MANAGER` 的写入点、`mask_all` 的执行点、`ArchInit` 三架构实现的语句集合。
 
 ### 4.2 `ClockState`：软件状态的形状（→3.1、3.2）
 
@@ -1150,9 +1162,11 @@ pub struct ClockState {
 | `timers_head` | `static minix_timer_t *clock_timers` | BSP |
 | `load_info` | `kloadinfo` | 每实例（C 里 `load_update` 所有 CPU 都写） |
 
+（`timers_head` 与 `adjtime_delta` 的运行时语义——到期扫描、`EXP_TIME`、`expire_alarm_timers`——属 `15-clock-timer`；本节只讲形状与所有权。）
+
 构造有三个入口（`os/kernel/src/clock.rs:fn new_for_cpu` 是共同底座）：`new()` 建 BSP 实例、`new_for_cpu(cpu_id, is_bsp)` 显式指定、`with_hz(hz)` 带范围守卫（§3.2）。BSP 实例拥有全局时间与 alarm 定时器链，AP 实例只跟踪负载——这条区分在 C 里是每处现算的 `cpu_is_bsp(cpuid)` 分支，在 Rust 里是实例字段 `is_bsp` 加运行时分支（`os/kernel/src/clock.rs:fn tick_bsp` 与 `:fn tick_ap` 是带 `debug_assert` 的包装）。
 
-BSP-only 的守卫写在挂/摘定时器的自由函数里（不是 `ClockState` 的方法——定时器的增删改查后来被移出结构体，`os/kernel/src/clock.rs` 里的注释记着这次搬迁）：
+BSP-only 的守卫写在挂定时器的自由函数里（`set_alarm_timer` 的断言；摘除路径 `reset_alarm_timer` 不带守卫）——不是 `ClockState` 的方法，定时器的增删改查后来被移出结构体，`os/kernel/src/clock.rs` 里的注释记着这次搬迁：
 
 ```rust
 // os/kernel/src/clock.rs:fn set_alarm_timer —— 节选（函数头与守卫断言）
@@ -1169,7 +1183,7 @@ pub fn set_alarm_timer(
     );
 ```
 
-**如果反过来想**：去掉这条断言，让 AP 实例也能挂定时器。alarm 链头 `timers_head` 是每实例一份，而 `tick_with` 的到期扫描只在 `is_bsp` 为真时执行（`os/kernel/src/clock.rs:fn tick_with` 第 5 步）；挂在 AP 实例上的定时器永远不会被弹出，它的持有者会永远等不到通知。落到对象：AP 实例的 `timers_head`、`tick_with` 的 BSP 分支、`expire_alarm_timers` 的唯一调用点。
+**去掉这条断言、让 AP 实例也能挂定时器会怎样**：alarm 链头 `timers_head` 是每实例一份，而 `tick_with` 的到期扫描只在 `is_bsp` 为真时执行（`os/kernel/src/clock.rs:fn tick_with` 第 5 步）；挂在 AP 实例上的定时器永远不会被弹出，它的持有者会永远等不到通知。落到对象：AP 实例的 `timers_head`、`tick_with` 的 BSP 分支、`expire_alarm_timers` 的唯一调用点。
 
 ### 4.3 `ClockArch` 的三架构实现（→3.1）
 
@@ -1181,7 +1195,12 @@ x86-64 用 8254 PIT：
 // os/arch/src/x86_64/clock.rs:fn init_timer —— 逐字引用（函数体，含守卫断言与三次端口写）
     fn init_timer(&mut self, hz: u32, _cpu_id: u32) {
         // Configure 8254 PIT channel 0 for periodic mode.
-        // ...
+        // C: intr_init_8254() — i8259.c equivalent
+        //
+        // The PIT is a single system-wide device; the per-CPU LAPIC timer
+        // (used later, and by `stop_local_timer`) is reached through the
+        // same MMIO base on every CPU, so `cpu_id` is not needed here.
+        //
         // PIT divisor is 16-bit, so hz must be >= 19 (1193182 / 65535 ≈ 18.2).
         // Values below 19 would overflow the divisor.
         assert!(hz >= 19, "PIT divisor overflow: hz must be >= 19, got {}", hz);
@@ -1201,7 +1220,7 @@ x86-64 用 8254 PIT：
     }
 ```
 
-三个常量在文件顶部：`PIT_COMMAND = 0x43`、`PIT_CHANNEL0 = 0x40`、`PIT_CMD_RATE_GEN = 0x36`。前两个端口号与 C 的 `minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer` 用的 `TIMER_MODE`/`TIMER0` 是同一对；命令字节 `0x36` 与 C 的 `SQUARE_WAVE 0x36` 同值，注释都描述为"速率发生器/方波、低字节后高字节"。`pit_base_freq` 来自平台描述符（`os/libs/minix-platform/src/arch/x86_64.rs:struct PitDesc` 的字段注释写着 fixed hardware constant `1_193_182`，构造点填的也是这个数），divisor 是 16 位，所以 `hz < 19` 时 `(pit_base_freq / hz) as u16` 会截断——断言把这条边界挡在编程之前。
+三个常量在文件顶部：`PIT_COMMAND = 0x43`、`PIT_CHANNEL0 = 0x40`、`PIT_CMD_RATE_GEN = 0x36`。引文里那行注释的 C 对位名（`intr_init_8254`）在本仓 C 树里不存在——PIT 编程的 C 对位是 `init_8253A_timer`（`minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer`，端口常量 `TIMER_MODE`/`TIMER0` 在 `ports.h`），`i8259.c` 管的是 8259A 的初始化；正文按实际情况陈述，注释的更新是代码侧的事。前两个端口号与 C 的 `minix3/minix/kernel/arch/i386/arch_clock.c:init_8253A_timer` 用的 `TIMER_MODE`/`TIMER0` 是同一对；命令字节 `0x36` 与 C 的 `SQUARE_WAVE 0x36` 同值，注释都描述为"速率发生器/方波、低字节后高字节"。`pit_base_freq` 来自平台描述符（`os/libs/minix-platform/src/arch/x86_64.rs:struct PitDesc` 的字段注释写着 fixed hardware constant `1_193_182`，构造点填的也是这个数），divisor 是 16 位，所以 `hz < 19` 时 `(pit_base_freq / hz) as u16` 会截断——断言把这条边界挡在编程之前。
 
 aarch64 用 Generic Timer 的 EL1 物理定时器：
 
@@ -1231,7 +1250,9 @@ aarch64 用 Generic Timer 的 EL1 物理定时器：
             // (arch_clock.c:177-196 / interrupt.c:65).
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 0x2u64);
         }
-        // Record the interval for the per-tick re-arm ...
+        // Record the interval for the per-tick re-arm (`local_timer_eoi`
+        // — CNTP is a one-shot; without the re-arm the tick train stops
+        // dead after the first interrupt).
         TICK_INTERVAL.store(interval, core::sync::atomic::Ordering::Relaxed);
     }
 ```
@@ -1268,7 +1289,7 @@ riscv64 用 CLINT 的 `mtimecmp`，但编程通道是 SBI：
 | `cpu_id` 参数 | 忽略 | 忽略 | 也忽略（写的是"本 hart 的比较器"，SBI 以调用 hart 为对象） |
 | 门的初始状态 | 无本地门 | 关（`0x2`） | 关（`sie.STIE` 不动） |
 
-**如果反过来想**：把 aarch64 的结尾写值改成 `1`（Enable=1、IMASK=0），也就是把放行并进编程。这样 §3.7 的第三段就失去意义，而且 boot 余下的整段（`init_proc_and_boot`、`init_post_and_memory`、`smp_init`）里 PPI 一直可以触发，而 `clock_irq_handler` 要到 `boot_init_timer` 才注册——中间的任何一个 tick 都走进空链。落到对象：`CNTP_CTL_EL0` 的 bit 0、PPI 的 INTID 30、钩子池的空槽位。依据：`os/arch/src/arm64/clock.rs:fn init_timer` 里那行被注释明确解释过的写值。
+**把 aarch64 的结尾写值改成 `1`、把放行并进编程会怎样**（Enable=1、IMASK=0）：这样 §3.7 的第三段就失去意义，而且 boot 余下的整段（`init_proc_and_boot`、`init_post_and_memory`、`smp_init`）里 PPI 一直可以触发，而 `clock_irq_handler` 要到 `boot_init_timer` 才注册——中间的任何一个 tick 都走进空链。落到对象：`CNTP_CTL_EL0` 的 bit 0、PPI 的 INTID 30、钩子池的空槽位。依据：`os/arch/src/arm64/clock.rs:fn init_timer` 里那行被注释明确解释过的写值。
 
 ### 4.4 `InterruptRouter` 的三架构实现（→3.3、3.8）
 
@@ -1308,7 +1329,7 @@ x86-64 分两步：LAPIC 与 IOAPIC。
 IOAPIC 侧逐引脚编程。这里有一个必须看代码才能发现的事实：
 
 ```rust
-// os/plat/src/x86_64/interrupt.rs:fn isa_irq_to_pin —— 逐字引用（文档注释与函数体；注释内含仓库内部阶段编号，按原文引用）
+// os/plat/src/x86_64/interrupt.rs:fn isa_irq_to_pin —— 逐字引用（文档注释与函数体）
     /// ISA IRQ number → IOAPIC input pin — the classic ISA override present
     /// on the pc machine and real chipsets alike: the PIT (ISA IRQ0) enters
     /// the IOAPIC at pin 2, and the slave-cascade (ISA IRQ2) at pin 0;
@@ -1341,6 +1362,7 @@ aarch64 的 GICv3 初始化分三步，各自解决一类问题：
                 ...
                 self.gicd_write32(GICD_ICENABLER + reg * 4, 0xFFFF_FFFF);
             }
+            ...
             let ctlr = self.gicd_read32(GICD_CTLR) | GICD_CTLR_ENABLE_GRP1NS;
             self.gicd_write32(GICD_CTLR, ctlr);
         }
@@ -1375,7 +1397,7 @@ aarch64 的 GICv3 初始化分三步，各自解决一类问题：
 
 - **Distributor 的 `GICD_CTLR` 用读改写**。注释说的是"整寄存器写会清掉固件配置的位（`ARE_NS`/`ARE_S`，bit 31:30 的亲和性路由），真机上具有破坏性"；所以先读、只置 `EnableGrp1NS`（`0x2`）、再写回。
 - **Redistributor 的 PPI/SGI 半在另一个地址帧**。`GICR_SGI_FRAME = 0x1_0000`（`os/plat/src/arm64/interrupt.rs:const GICR_SGI_FRAME`）：Redistributor 的 RD 帧（0x0000–0xFFFF）放控制寄存器，SGI/PPI 帧（0x10000–0x1FFFF）复用 Distributor 风格的偏移。所有 `GICR_IGROUPR0`/`ISENABLER0`/`ICENABLER0` 访问都要加这个基址，否则写落在保留槽位、被 QEMU 忽略，使能静默失效。
-- **PPI 的分组要单独写**。复位值 0 把 PPI 放进 Group 0，Group 0 以 FIQ 交付；而 CPU 接口使能的是 Group 1（`ICC_IGRPEN1_EL1`），于是"已经使能的定时器 PPI"在 IRQ 腿上听不到。`GICR_IGROUPR0 = 0xFFFF_FFFF` 是把 SGI/PPI 全部归到 Group 1 的动作。
+- **PPI 的分组要单独写**。复位值 0 把 PPI 放进 Group 0，Group 0 以 FIQ 交付；而 CPU 接口使能的是 Group 1（`ICC_IGRPEN1_EL1`），于是"已经使能的定时器 PPI"在 IRQ 交付通路上听不到。`GICR_IGROUPR0 = 0xFFFF_FFFF` 是把 SGI/PPI 全部归到 Group 1 的动作。
 
 riscv64 的 PLIC 初始化做三件事：
 
@@ -1404,11 +1426,11 @@ riscv64 的 PLIC 初始化做三件事：
 | aarch64 | Distributor 的 SPI 半（从 32 起）**加上** Redistributor 的 SGI/PPI 半（`GICD_ICENABLER` + `GICR_ICENABLER0`） | `os/plat/src/arm64/interrupt.rs:fn mask_all` |
 | riscv64 | PLIC 的 enable 位图（按 context 划分的字） | `os/plat/src/riscv64/interrupt.rs:fn mask_all` |
 
-**反向推演**（三条）：
+**三条推演（删掉 0↔2 交换；去掉 `GICR_SGI_FRAME` 偏移；删掉 `GICR_IGROUPR0` 那一行）**：
 
 1. 删掉 `isa_irq_to_pin` 的 0↔2 交换，直接拿 IRQ 号当引脚号。`register_hook(TIMER_IRQ = 0)` 的"第一个处理者解屏蔽"会去解引脚 0 的 mask（那是级联线），而 PIT 真正所在的引脚 2 保持屏蔽；`clock_irq_handler` 一次都不会被调用。落到对象：IOAPIC RTE 2 的 mask 位、`ioapic_route_and_mask` 给引脚 0 编程的向量（它是 `0x50 + 2 = 0x52`）。依据：`os/plat/src/x86_64/interrupt.rs:fn isa_irq_to_pin` 与 `:fn ioapic_route_and_mask` 的映射表。
 2. aarch64 的 GICR 偏移去掉 `GICR_SGI_FRAME`。写落到 RD 帧的保留槽位，被实现忽略：timer PPI 的使能静默丢弃、`mask_all` 的 PPI 半也无效——于是"`init` 结束时全部屏蔽"这条不变量在 PPI 半上不成立，固件留下的 PPI 使能状态会留在原处。落到对象：`GICR_ISENABLER0` 与 `GICR_ICENABLER0` 的地址。依据：`os/plat/src/arm64/interrupt.rs:const GICR_SGI_FRAME` 的注释。
-3. aarch64 删掉 `GICR_IGROUPR0` 那一行。复位值把 PPI 放进 Group 0，而 CPU 接口使能的是 Group 1；定时器 PPI 即使被 `IrqManager` 解了屏蔽也到不了 IRQ 腿（它以 FIQ 交付）。落到对象：`GICR_IGROUPR0`、`ICC_IGRPEN1_EL1`、每个中断的 Group 归属。依据：`os/plat/src/arm64/interrupt.rs:fn init_redistributor` 的注释（它记着第一次真机载体运行时"定时器 PPI 保持沉默"的现象）。
+3. aarch64 删掉 `GICR_IGROUPR0` 那一行。复位值把 PPI 放进 Group 0，而 CPU 接口使能的是 Group 1；定时器 PPI 即使被 `IrqManager` 解了屏蔽也到不了 IRQ 交付通路（它以 FIQ 交付）。落到对象：`GICR_IGROUPR0`、`ICC_IGRPEN1_EL1`、每个中断的 Group 归属。依据：`os/plat/src/arm64/interrupt.rs:fn init_redistributor` 的注释（它记着第一次真机载体运行时"定时器 PPI 保持沉默"的现象）。
 
 ### 4.5 `PerCpuInterruptUnit`：claim/complete 的三种回答（→3.3）
 
@@ -1493,9 +1515,9 @@ riscv64 的 PLIC 初始化做三件事：
 | aarch64 | `ICC_IAR1_EL1`（低 24 位） | INTID 1023 | `ICC_EOIR1_EL1`，值 = claim 返回的 INTID |
 | riscv64 | PLIC claim 寄存器（按 context 偏移） | ID 0 | 同一偏移写 complete，值 = claim 返回的 ID |
 
-分发链本身（mask → 链 → unmask → complete 的次序与理由）在 `14-exception-interrupt`（异常与中断篇，尚未重生成） §2.6；本篇只用到这条协议的初始化侧结论：`claim` 与 `complete` 的配对必须在同一个实例上进行，所以控制器实例不能"用完即弃"（§3.4）。
+分发链本身（mask → 链 → unmask → complete 的次序与理由）在 `14-exception-interrupt` §2.4（IRQ hook 链）与 §4.3（Rust 对位）；本篇只用到这条协议的初始化侧结论：`claim` 与 `complete` 的配对必须在同一个实例上进行，所以控制器实例不能"用完即弃"（§3.4）。
 
-**如果反过来想**：让 x86 的 `claim` 也写一次 LAPIC EOI，看起来与另外两个架构"对称"。EOI 是完成动作，在中断处理函数运行之前发出等于把 LAPIC 的 in-service 位清掉：同向量的中断可以在处理函数返回之前再进来，而 `IrqManager` 的 active 位图机制正是为了防止这种重入（`os/kernel/src/irq_manager.rs:fn dispatch_claimed` 里先 `mask` 再走链）。落到对象：LAPIC EOI 寄存器偏移 `0x0B0`、LAPIC 的 ISR 位、`actids[irq_idx]` 的置位时刻。
+**让 x86 的 `claim` 也写一次 LAPIC EOI 会怎样**（看起来与另外两个架构"对称"）：EOI 是完成动作，在中断处理函数运行之前发出等于把 LAPIC 的 in-service 位清掉：同向量的中断可以在处理函数返回之前再进来，而 `IrqManager` 的 active 位图机制正是为了防止这种重入（`os/kernel/src/irq_manager.rs:fn dispatch_claimed` 里先 `mask` 再走链）。落到对象：LAPIC EOI 寄存器偏移 `0x0B0`、LAPIC 的 ISR 位、`actids[irq_idx]` 的置位时刻。
 
 ### 4.6 `ArchInit` 的三架构实现（→3.5、3.6）
 
@@ -1574,7 +1596,7 @@ riscv64 的 `init()` 是空的，理由写在注释里：
 
 这里有一处与 C 形态最不同的地方：C 的 `arch_init` 有一件事可做（内存裁剪），而 riscv64 的 `init()` 什么都不做——原因是它能做的那些写入不属于 S 模式。注释里的现场读数（`scause=2`、`stval=0x3b051073` 是 `csrw pmpaddr0` 的编码）说明这不是"暂时没写"，而是"这个动作在 S 模式下没有合法形式"。
 
-**如果反过来想**：把 aarch64 的 `pmu_cycle_counter` 门控去掉、无条件使能 PMU。这个门控的值来自平台描述符，`false` 的含义是"这台机器的描述里没有承诺这个能力"；无条件写 `PMUSERENR_EL0.EN = 1` 会把一个未在描述中承诺的能力开放给 EL0，而上面的时钟状态与异常处理都没有为"用户态读 cycle counter"准备任何约束。落到对象：`pmuserenr_el0` 的 bit 0、`ArchMiscDesc` 的该字段、描述符在三个平台上的取值。依据：`os/arch/src/arm64/arch_init.rs:fn init` 的门控与 `os/arch/src/arch/arch_init.rs:trait ArchInit` 的实例化说明。
+**把 aarch64 的 `pmu_cycle_counter` 门控去掉、无条件使能 PMU 会怎样**：这个门控的值来自平台描述符，`false` 的含义是"这台机器的描述里没有承诺这个能力"；无条件写 `PMUSERENR_EL0.EN = 1` 会把一个未在描述中承诺的能力开放给 EL0，而上面的时钟状态与异常处理都没有为"用户态读 cycle counter"准备任何约束。落到对象：`pmuserenr_el0` 的 bit 0、`ArchMiscDesc` 的该字段、描述符在三个平台上的取值。依据：`os/arch/src/arm64/arch_init.rs:fn init` 的门控与 `os/arch/src/arch/arch_init.rs:trait ArchInit` 的实例化说明。
 
 ### 4.7 `boot_init_timer`：编程、注册、放行（→3.7）
 
@@ -1616,6 +1638,9 @@ pub fn boot_init_timer() {
 | `init_timer`（编程） | 写 PIT 命令字节与 divisor 低/高字节（§4.3） | 写 `CNTP_CVAL_EL0` = 当前计数 + 间隔；`CNTP_CTL_EL0` = `0x2`（门保持关） | 发 SBI TIME ecall 写 `mtimecmp` 为 `mtime + 间隔`；`sie.STIE` 不动 |
 | `register_hook`（注册 + 控制器侧放行） | 挂 `TIMER_IRQ = 0` 的钩子；first-handler 规则解 IOAPIC 输入 2（ISA IRQ0）的 mask | 挂 `TIMER_IRQ = 30` 的钩子；解 `GICR_ISENABLER0` 的 bit 30 | 挂 `TIMER_IRQ = 0` 的钩子；PLIC 对 0 提前返回，无硬件动作 |
 | `enable_timer_irq`（模块本地门） | 空操作（PIT 无本地门） | `CNTP_CTL_EL0 = 1`（Enable=1、IMASK=0）+ `isb` | `csrs sie, 0x20`（STIE = bit 5） |
+| `pic_init`（x86 附加段，接在函数末尾） | 8259A 初始化与 IMR 放行（向量基 0x50/0x70、只放行 IRQ0 与级联线） | — | — |
+
+x86-64 端到端因此是"三段 + `pic_init`"四件事：控制器侧的门（IOAPIC 引脚 2）由第 2 段解、8259A 的 IMR 由 `pic_init` 放行、本地门不存在（PIT 无本地门）——三层门的口径在这里收拢为"控制器侧的门 / 模块本地的门 / CPU 的中断允许位"。
 
 注册传的五个参数对应 C `put_irq_handler` 所需的全部信息：向量（`minix_plat::TIMER_IRQ`）、处理函数（`crate::clock::clock_irq_handler`）、拥有者端点（CLOCK 任务）、通知位（`IrqNotifyId(0)`）与策略（`REENABLE`）。`REENABLE` 的含义在 15 篇展开；在本篇它只决定"这个处理函数返回时是否算完成"，而 `clock_irq_handler` 的实现按这条策略返回 `Completed`（`os/kernel/src/clock.rs:fn clock_irq_handler` 的末段）。
 
@@ -1663,15 +1688,15 @@ pub fn pic_init() {
 }
 ```
 
-把这段与 §2.3 的十次 `outb` 并列，能看到同一个动作的两种实现：C 的 ICW1/ICW2/ICW3/ICW4/OCW1 序列在 Rust 里重写了一遍，端口用 `PIC1_CMD = 0x20`、`PIC1_DATA = 0x21`、`PIC2_CMD = 0xA0`、`PIC2_DATA = 0xA1`（与 C 的四个宏同值），ICW3 的两个值也是 `0x04` 与 `0x02`（与 §2.3 第二条结论相同的不对称），最后两张屏蔽字都是 `0xFF`（全屏蔽），再由 `unmask_irq(0)` 与 `unmask_irq(2)` 打开 PIT 与级联线——与 C 的 `0xFB`（除级联外全屏蔽）等价：C 留级联线开着是因为它随后要靠 `put_irq_handler` 打开时钟线；Rust 的 `pic_init` 把两条都打开，因为时钟线的打开本来就要发生。
+把这段与 §2.3 的十次 `outb` 并列，能看到同一个动作的两种实现：C 的 ICW1/ICW2/ICW3/ICW4/OCW1 序列在 Rust 里重写了一遍，端口用 `PIC1_CMD = 0x20`、`PIC1_DATA = 0x21`、`PIC2_CMD = 0xA0`、`PIC2_DATA = 0xA1`（与 C 的四个宏同值），ICW3 的两个值也是 `0x04` 与 `0x02`（与 §2.3 第二条结论相同的不对称）；ICW4 则相反：C 主片写 `ICW4_AT_MASTER = 0x05`、从片写 `ICW4_AT_SLAVE = 0x01`（§2.3 第三条结论），而 Rust 两片同写 `ICW4_8086 = 0x01`——C 主片那一位（bit 2）的差异在 Rust 侧不存在，此处按现状登记。最后两张屏蔽字都是 `0xFF`（全屏蔽），再由 `unmask_irq(0)` 与 `unmask_irq(2)` 打开 PIT 与级联线——与 C 的 `0xFB`（除级联外全屏蔽）等价：C 留级联线开着是因为它随后要靠 `put_irq_handler` 打开时钟线；Rust 的 `pic_init` 把两条都打开，因为时钟线的打开本来就要发生。
 
-`boot_init_timer` 在启动路径上被调用两次：一次在 `kmain` 的 Phase B（`init_clock_and_interrupts()` 之后、`init_proc_and_boot` 之前），一次在 `bsp_finish_booting` 里标注为 Step 6 的那一段（`os/kernel/src/lib.rs:fn bsp_finish_booting`，即 C `boot_cpu_init_timer` 的位置；它之后还有 `fpu_init`、`kernel_may_alloc = 0` 与 `switch_to_user` 三步），两处调用同一个函数、同一段次序。
+`boot_init_timer` 在启动路径上只被调用一次，位置在 `bsp_finish_booting` 里标注为 Step 6 的那一段（`os/kernel/src/lib.rs:fn bsp_finish_booting`，即 C `boot_cpu_init_timer` 的位置；它之后还有 `fpu_init`、`kernel_may_alloc = 0` 与 `switch_to_user` 三步）。`init_clock_and_interrupts` 不碰定时器——三段序列只有一个维护点，与 C 把三段收进 `boot_cpu_init_timer` 一处（§3.7）对位。
 
-第一次调用早于进程表建立，它之所以安全，是因为**此刻 CPU 还没有开始取中断**：BSP 的启动路径上没有 `sti`，中断使能位在切到用户态的恢复路径上才被置起（`os/arch/src/x86_64/trap_return.rs:const IF_MASK`）。控制器与定时器模块两级门开着，但 CPU 侧的中断允许位还关着——这正是两级门与 CPU 使能位三者可以分开操作的原因：放行一条线不等于 CPU 会立刻响应它。`test-timer-irq` 载体同样按 kmain 的顺序走一遍，只是它把 `boot_init_timer` 放在进程表初始化之后、自己再显式 `sti`（§5.2）。
+这次调用之所以安全（三段门都开着而系统不受干扰），是因为**此刻 CPU 还没有开始取中断**：BSP 的启动路径上没有 `sti`，中断使能位在切到用户态的恢复路径上才被置起（`os/arch/src/x86_64/trap_return.rs:const IF_MASK`）。控制器与定时器模块两级门开着，但 CPU 侧的中断允许位还关着——这正是两级门与 CPU 使能位三者可以分开操作的原因：放行一条线不等于 CPU 会立刻响应它。`test-timer-irq` 载体同样按 kmain 的顺序走一遍，只是它把 `boot_init_timer` 放在进程表初始化之后、自己再显式 `sti`（§5.2）。
 
-**反向推演**（两条）：
+**两条推演（把 `register_hook` 与放行的次序对调；删掉 x86 的 `pic_init` 调用）**：
 
-1. 把 `register_hook` 换成"先 `enable_timer_irq` 再注册"。这是 §3.7 推演 3 的落地：aarch64 上 `CNTP_CVAL_EL0` 还是复位值 0 时开门，比较条件恒真、PPI 持续挂起；riscv64 上 `mtimecmp` 还是 0 时置 `sie.STIE`，`sip.STIP` 同理。落到对象：两个比较器的复位值、`CNTP_CTL_EL0.Enable`、`sie.STIE`、`sip.STIP`。
+1. 把 `register_hook` 换成"先 `enable_timer_irq` 再注册"——这是 §3.7 推演 3 在 `boot_init_timer` 内的落地位置，机制与后果同那一处（复位值 0 的比较器使门一开就持续挂起），此处不重复展开。
 2. 把 x86 的 `pic_init()` 调用删掉、只留前两段。IOAPIC 输入 2 的 mask 已被 `register_hook` 解开，但 8259A 还停在固件留下的向量基与屏蔽字上：PIT 的输出进不了主片 IRQ0（屏蔽字里它是关的），或者即使进来，主片的 INT 也到不了 IOAPIC（取决于固件的屏蔽状态）；`clock_irq_handler` 一次都不会被调用，`uptime` 停在 0。落到对象：8259A 主片的 IMR bit 0、主片 ICW2 的向量基（固件值 vs `0x50`）、IOAPIC RTE 2 的 mask 位。
 
 #### 4.7.1 aarch64 真硬件路径与职责边界
@@ -1693,9 +1718,11 @@ CNTP_CTL_EL0.Enable      GICR_ICENABLER0/      GICR_WAKER /       ICC_SRE_EL1 /
 - `IrqManager::register_hook` 负责 PPI 使能位（由 first-handler 规则调 `unmask`）；
 - `TimerIrqGate` 只写 `CNTP_CTL_EL0`，不碰 `ICC_IGRPEN1_EL1`。
 
+四级门里，前两级就是正文说的"模块本地门"与"控制器侧的门"；后两级（Redistributor 唤醒与 CPU 接口）属于控制器初始化的产物（`init_cpu_interface`），不在放行序列里。
+
 这条边界的判据是"谁写这个寄存器，在别处还会不会再写"。`ICC_IGRPEN1_EL1` 的写者只有控制器初始化一处；如果让门也写它，同一条使能位就有了两个所有者，将来控制器需要重新配置（AP 上线、GIC 复位）时，门的写入会掩盖控制器的意图。
 
-**如果反过来想**：让 `TimerIrqGate` 顺手写 `ICC_IGRPEN1_EL1`。两个所有者写同一位，写入的先后决定最终值：AP 拉起时若控制器先关全局使能、门后写 1，关门就失败了。落到对象：`ICC_IGRPEN1_EL1` 的写者集合、AP 拉起的顺序。依据：`os/arch/src/arm64/timer_irq_gate.rs` 的模块注释（它明确列出 `ICC_IGRPEN1_EL1` 属于控制器初始化而不是门）与 `os/plat/src/arm64/interrupt.rs:fn init_cpu_interface` 的写。
+**让 `TimerIrqGate` 顺手写 `ICC_IGRPEN1_EL1` 会怎样**：两个所有者写同一位，写入的先后决定最终值：AP 拉起时若控制器先关全局使能、门后写 1，关门就失败了。落到对象：`ICC_IGRPEN1_EL1` 的写者集合、AP 拉起的顺序。依据：`os/arch/src/arm64/timer_irq_gate.rs` 的模块注释（它明确列出 `ICC_IGRPEN1_EL1` 属于控制器初始化而不是门）与 `os/plat/src/arm64/interrupt.rs:fn init_cpu_interface` 的写。
 
 #### 4.7.2 handler 注册不在此 trait
 
@@ -1703,7 +1730,7 @@ CNTP_CTL_EL0.Enable      GICR_ICENABLER0/      GICR_WAKER /       ICC_SRE_EL1 /
 
 判据是"差异出现之前不预建抽象"：handler 注册的硬件形态在三架构上并不统一——PIT 路径不需要任何本地注册（挂链即放行），aarch64 的 CNTP 也没有独立的注册寄存器，riscv64 更没有；三者真正共有的动作只有一件，"把处理函数挂到 `IrqManager` 的钩子池里"，而这件动作已经有唯一的入口 `os/kernel/src/irq_manager.rs:fn register_hook`。把它再包一层到 `TimerIrqGate` 里，得到的只是一组互相转发的空实现。
 
-**如果反过来想**：给 `TimerIrqGate` 加一个 `register_handler(handler)`。三个实现里只有一个能做真事（转发到 `IrqManager`），另两个是空操作；调用点会面临"该调 trait 还是直接调 `IrqManager`"的二选一，而正确答案永远是后者。落到对象：trait 的方法集合、三份实现文件里会多出的空方法。依据：`os/arch/src/arch/timer_irq_gate.rs` 的模块注释（`Timer handler *registration* is intentionally NOT part of this trait`）。
+**给 `TimerIrqGate` 加一个 `register_handler(handler)` 会怎样**：三个实现里只有一个能做真事（转发到 `IrqManager`），另两个是空操作；调用点会面临"该调 trait 还是直接调 `IrqManager`"的二选一，而正确答案永远是后者。落到对象：trait 的方法集合、三份实现文件里会多出的空方法。依据：`os/arch/src/arch/timer_irq_gate.rs` 的模块注释（`Timer handler *registration* is intentionally NOT part of this trait`）。
 
 ### 4.8 `IrqManager::register_hook` 的注册路径（→3.3、3.4、3.7）
 
@@ -1738,14 +1765,14 @@ C 的对应段落（§2.6 已引用过末尾几行）逐项对得上：
 
 `id` 的取值形态两边也一致：第一个注册者拿到 1，第二个拿到 2，依次左移；`irq_actids[]` 里存的是这些位的或。这条规则的作用是支持共享线：同一条线上多个设备各自注册钩子，只有全部"完成"之后线才重新打开。
 
-**如果反过来想**：把 `unmask` 从注册路径里整体删掉。所有线会永远停在 `init()` 留下的屏蔽态；`boot_init_timer` 第三段打开的是模块本地门，而控制器侧的门没人解——两级门只开了一级，tick 一个也到不了。落到对象：`actids[irq_idx]` 的清零动作、`controller.unmask(TIMER_IRQ)` 的调用点、IOAPIC 输入 2 的 mask 位（x86）/`GICR_ISENABLER0` 的 bit 30（aarch64）。
+**把 `unmask` 从注册路径里整体删掉会怎样**：所有线会永远停在 `init()` 留下的屏蔽态；`boot_init_timer` 第三段打开的是模块本地门，而控制器侧的门没人解——两级门只开了一级，tick 一个也到不了。落到对象：`actids[irq_idx]` 的清零动作、`controller.unmask(TIMER_IRQ)` 的调用点、IOAPIC 输入 2 的 mask 位（x86）/`GICR_ISENABLER0` 的 bit 30（aarch64）。
 
 ### 4.9 三架构 `TIMER_IRQ` 的取值与硬件理由（→3.8）
 
 `TIMER_IRQ` 是"启动时钟源的中断在内核侧用哪个编号寻址"这一个量。三个值都是本实现的选择，但各自的理由来自硬件：
 
 ```rust
-// os/plat/src/lib.rs:const TIMER_IRQ —— 节选（三个 cfg 分支与各架构的常量定义行）
+// os/plat/src/lib.rs:const TIMER_IRQ —— 节选（三条 cfg 转发；各架构常量定义在各自文件，见下表）
 #[cfg(target_arch = "x86_64")]
 pub const TIMER_IRQ: IrqVector = crate::x86_64::interrupt::TIMER_IRQ;
 #[cfg(target_arch = "aarch64")]
@@ -1762,7 +1789,7 @@ pub const TIMER_IRQ: IrqVector = crate::riscv64::interrupt::TIMER_IRQ;
 
 三处来源各自写明"改这个值要同时改什么"：aarch64 的 30 与"用哪一族定时器寄存器（`CNTP_*` 而不是 `CNTV_*`/`CNTPS_*`）"绑定，且它小于 32 这一事实决定了控制器侧的放行必须走 `GICR_ISENABLER0`（写在 `os/plat/src/arm64/interrupt.rs:const TIMER_IRQ` 的文档注释里）；riscv64 的 0 与"陷阱入口把 `scause == SupervisorTimer` 映射到哪个编号、PLIC 的 mask/unmask 把 0 当无控制器线"绑定（写在 `os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ` 的文档注释里）；x86 的这一条不在常量的文档注释里，而在测试注释 `test_timer_irq_is_ioapic_input_zero`（`os/plat/src/x86_64/interrupt.rs`）里：时钟源若换成 LAPIC 定时器，这个值与 `TimerIrqGate` 的 x86 语义要一起改。
 
-x86 侧另有一处源码注释互相矛盾：`os/plat/src/x86_64/interrupt.rs:const TIMER_IRQ` 的文档注释、`os/plat/src/lib.rs` 的 x86_64 条目与上述测试的注释，都把 PIT 的交付写成"IOAPIC 输入 0"，而同一份实现里的 `isa_irq_to_pin` 把 ISA IRQ0 映射到引脚 2、`ioapic_route_and_mask` 也按这条映射编程。本篇按操作代码陈述（PIT 经 8259A 的 INT 输出进 IOAPIC 输入 2，见 §1.2 的链路图与 §4.4）。
+x86 侧的"输入 0"表述仍有残留载体：`const TIMER_IRQ` 的文档注释与 `os/plat/src/lib.rs` 的 x86_64 条目都已按操作代码写成"经 `isa_irq_to_pin` 落引脚 2"，但测试名 `test_timer_irq_is_ioapic_input_zero`（`os/plat/src/x86_64/interrupt.rs`）与 `os/arch/src/x86_64/timer_irq_gate.rs` 的模块注释仍写着"IOAPIC 输入 0"。本篇按操作代码陈述（PIT 经 8259A 的 INT 输出进 IOAPIC 输入 2，见 §1.2 的链路图与 §4.4）——名字与注释的更新是代码侧的事。
 
 riscv64 的 PLIC 驱动把 0 当"没有控制器线"处理：
 
@@ -1781,9 +1808,9 @@ riscv64 的 PLIC 驱动把 0 当"没有控制器线"处理：
         }
 ```
 
-这一段与 §1.3 的反向推演合成一条结论：riscv64 的定时器在 PLIC 上没有任何位可以被改，所以 `IrqManager` 在"第一个处理者注册"时对它的 `unmask` 是一次约定内的空操作；投递门完全由 `TimerIrqGate` 承担。
+这一段与 §1.3 的推演合成一条结论：riscv64 的定时器在 PLIC 上没有任何位可以被改，所以 `IrqManager` 在"第一个处理者注册"时对它的 `unmask` 是一次约定内的空操作；投递门完全由 `TimerIrqGate` 承担。
 
-**如果反过来想**：把 riscv64 的 `TIMER_IRQ` 改成 1。PLIC 的 enable 位图 bit 1 会被"第一个处理者"规则打开（`mask`/`unmask` 对非 0 值都会做读改写）；一旦那条线上的设备中断经陷阱入口进入分发，它以 `IrqVector(1)` 落到链上挂着的 `clock_irq_handler`——一次设备中断被记成一次时钟 tick，`uptime` 被虚假推进。落到对象：PLIC 的 enable 位图 bit 1、`handlers[1]` 的链、`clock_irq_handler` 的调用来源。
+**把 riscv64 的 `TIMER_IRQ` 改成 1 会怎样**：PLIC 的 enable 位图 bit 1 会被"第一个处理者"规则打开（`mask`/`unmask` 对非 0 值都会做读改写）；一旦那条线上的设备中断经陷阱入口进入分发，它以 `IrqVector(1)` 落到链上挂着的 `clock_irq_handler`——一次设备中断被记成一次时钟 tick，`uptime` 被虚假推进。落到对象：PLIC 的 enable 位图 bit 1、`handlers[1]` 的链、`clock_irq_handler` 的调用来源。
 
 ### 4.10 全局存储与访问契约（→3.4）
 
@@ -1794,7 +1821,7 @@ riscv64 的 PLIC 驱动把 0 当"没有控制器线"处理：
 | `PLATFORM` | `kmain` Phase A.5 的 `minix_platform::init_from_kinfo`（04 篇） | `platform_desc()` | 同左（只读） |
 | `IRQ_MANAGER` | `init_clock_and_interrupts` Step 2 的 `intr.init()` 之后 | `os/kernel/src/lib.rs:fn irq_manager_boot_unchecked` | `os/kernel/src/lib.rs:fn irq_manager_with` |
 | `CLOCK_STATE` | `init_clock_and_interrupts` 的末尾 | `os/kernel/src/lib.rs:fn clock_state_boot_unchecked` | `os/kernel/src/lib.rs:fn clock_state_with` |
-| `SMP_STATE` | `kmain` Phase D 的 `init_smp_state` | `os/kernel/src/lib.rs:fn try_smp_state` 与 `:fn smp_state_boot_unchecked` | `os/kernel/src/lib.rs:fn smp_state_with` |
+| `SMP_STATE` | `kmain` 的 `init_smp_state`（调用点在 Phase F 段，函数注释自称 Phase D） | `os/kernel/src/lib.rs:fn try_smp_state` 与 `:fn smp_state_boot_unchecked` | `os/kernel/src/lib.rs:fn smp_state_with` |
 
 两套访问器的分界不是"调用者是谁"，而是"BKL 是否已经存在"：`boot_unchecked` 的契约是"单线程初始化期、BKL 还不存在"，`with` 系列接收一个 `BklSection` 见证、证明锁已被持有。触发这条区分的现实原因是时钟处理函数：它在中断上下文里跑，而中断可能在任意时刻到达，因此必须走带见证的路径进入全局。
 
@@ -1805,7 +1832,7 @@ IRQ_MANAGER not initialized — init_clock_and_interrupts must run first
 CLOCK_STATE not initialized — init_clock_and_interrupts must run first
 ```
 
-**如果反过来想**：删掉 `init_clock_and_interrupts` 末尾那次 `CLOCK_STATE` 写入。编译与启动都不会报错（写入点只是少了一句），第一次 tick 到达时 `clock_irq_handler` 走到 `clock_state_with`，在中断上下文里命中上面第二条 `expect` 并 panic——故障现场在中断里，而不是在启动期，排查时需要从 panic 信息反推回初始化函数。落到对象：`CLOCK_STATE` 的写入点、`os/kernel/src/clock.rs:fn clock_irq_handler` 的第一个全局读取。
+**删掉 `init_clock_and_interrupts` 末尾那次 `CLOCK_STATE` 写入会怎样**：编译与启动都不会报错（写入点只是少了一句），第一次 tick 到达时 `clock_irq_handler` 走到 `clock_state_with`，在中断上下文里命中上面第二条 `expect` 并 panic——故障现场在中断里，而不是在启动期，排查时需要从 panic 信息反推回初始化函数。落到对象：`CLOCK_STATE` 的写入点、`os/kernel/src/clock.rs:fn clock_irq_handler` 的第一个全局读取。
 
 ---
 
@@ -1840,10 +1867,11 @@ for f in kernel/src/clock.rs kernel/src/irq_manager.rs arch/src/arch/clock.rs \
          arch/src/x86_64/arch_init.rs arch/src/arm64/arch_init.rs arch/src/riscv64/arch_init.rs; do
   printf "%s: " "$f"; grep -c '#\[test\]' "$f"
 done
-# 第二口径：宿主实跑（--list 只编译不运行）
-cargo test -p minix-kernel --lib -- --list | grep -c '^clock'
-cargo test -p minix-kernel --lib -- --list | grep -c '^irq_manager'
-cargo test -p minix-arch   --lib -- --list | grep -c '^arch::clock'
+# 第二口径：宿主实跑（--list 只编译不运行；两条特性旗标是形态要求：
+#   minix-kernel 裸跑会被 form_contract 编译期绊线挡住，minix-arch 的测试在 std 语境编写）
+cargo test -p minix-kernel --features mock --lib -- --list | grep -c '^clock'
+cargo test -p minix-kernel --features mock --lib -- --list | grep -c '^irq_manager'
+cargo test -p minix-arch --features runtime-window --lib -- --list | grep -c '^arch::clock'
 cargo test -p minix-plat   --lib -- --list | grep -c '^x86_64::interrupt'
 ```
 
@@ -1900,7 +1928,7 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 
 预期关键行 `[待验证]`：开头一行 `### test_timer_irq (x86_64): S-8 L3 — PIT→IOAPIC→stub→IrqManager→uptime`，随后是装配进度（`paging enabled`、`protection loaded`、`IDT live with S-8 stubs (no empty gate)`、`clock + controller initialized (all lines masked)`、`proc table + smp state initialized`、`PIT programmed, clock hook registered, gate open`、`IF=1 — polling uptime`），再往后是逐 tick 的 `tick: uptime = 0x…`，最后 `### TEST_RESULT: PASS test-timer-irq ###`。这些行取自载体源码里的 `write_str` 调用与判定分支，本篇写作期未实跑；实际输出以串口为准。
 
-这个载体证明的边界，文件顶部写得很直白：`the scheduler is NOT entered; BKL held throughout`，且"syscall 腿与用户帧的重调度出口虽然接线但在这里不可达——在调度器与用户态腿接线之前没有 CPL3 代码"。也就是说它证明的是"从 PIT 到 `uptime` 推进"这条链，不证明 tick 的六步语义，也不证明分发协议在用户态上下文里的行为。
+这个载体证明的边界，文件顶部写得很直白：`the scheduler is NOT entered; BKL held throughout`，且"syscall 通路与用户帧的重调度出口虽然接线但在这里不可达——在调度器与用户态通路接线之前没有 CPL3 代码"。也就是说它证明的是"从 PIT 到 `uptime` 推进"这条链，不证明 tick 的六步语义，也不证明分发协议在用户态上下文里的行为。
 
 ### 5.3 缺口与诚实披露
 
@@ -1915,7 +1943,7 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 | 时钟处理函数在用户态上下文里的行为 | 载体不进调度器（§5.2） | 需要 CPL3 与调度循环（后续文档） |
 | 关中断窗口与中断风暴的真机表现 | 宿主无法注入中断 | QEMU 载体的故障注入变体 |
 
-另外一处需要披露的是代码注释与实现的状态差：`os/arch/src/arch/clock.rs:trait ClockArch` 里 `init_timer` 的文档注释仍写着"在 `init_clock_and_interrupts()` 中首次调用；`bsp_finish_booting()` 会以幂等空操作的形式再调一次"，而现码里 `ClockArch::init_timer` 的唯一调用点在 `os/kernel/src/lib.rs:fn boot_init_timer` 内（`init_clock_and_interrupts` 不再碰定时器）。这段注释是按早期形态写的，读者按注释去找调用点会找不到；本篇按现码陈述，注释的更新是代码侧的事，不在文档范围内完成。
+另外一处需要披露的是代码注释与实现的状态差：`os/arch/src/arch/clock.rs:trait ClockArch` 里 `init_timer` 的文档注释仍写着"在 `init_clock_and_interrupts()` 中首次调用；`bsp_finish_booting()` 会以幂等空操作的形式再调一次"，而现码里 `ClockArch::init_timer` 的唯一调用点在 `os/kernel/src/lib.rs:fn boot_init_timer` 内（`init_clock_and_interrupts` 不再碰定时器）。这段注释是按早期形态写的，读者按注释去找调用点会找不到；本篇按现码陈述，注释的更新是代码侧的事，不在文档范围内完成。同类的"注释与现码不符"还有三处，都不影响本篇的断言：`os/arch/src/riscv64/timer_irq_gate.rs` 的模块注释仍写"直接写 CLINT MMIO、不经 SBI"（现码走 SBI ecall）、`os/arch/src/x86_64/clock.rs:fn stop_local_timer` 的注释称 C 侧没有具名函数（实有 `lapic_stop_timer` 一类）、`os/plat/src/interrupt.rs` 的 trait 表把 PLIC 的 `mask_all` 写成 threshold/max 口径（现码是 enable 位图清零）。
 
 本篇写作期未运行真机门（`run_all.sh` 需要完整的工件构建与 QEMU/GDB 环境）。上面 §5.2 的命令与预期输出关键行取自载体源码与 `run_all.sh` 的登记，实际读数需要跑一次才能确认；这类"我未实跑"的项已在文中逐处标明来源，而不是写成已验证的事实。
 
@@ -1935,7 +1963,7 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 | riscv64 上 PLIC 的使能位被改而定时器没反应 | 把定时器当成 PLIC 线上的一条普通线 | 核 `os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ` 的值与 `:fn mask`/`:fn unmask` 的 `irq_num == 0` 提前返回 |
 | 启动期 panic 信息是 `CLOCK_STATE not initialized …` | 时钟状态入全局的那一步没执行，或某条路径在 `init_clock_and_interrupts` 完成前就进入了时钟处理函数 | 核 `os/kernel/src/lib.rs:fn init_clock_and_interrupts` 末尾的写入；核 `os/kernel/src/lib.rs:fn clock_state_with` 的 `expect` |
 | PIT divisor 断言 panic（`hz must be >= 19`） | `DEFAULT_HZ` 或调用点传的 hz 小于 19 | 核 `os/arch/src/x86_64/clock.rs:fn init_timer` 的断言与 `os/kernel/src/lib.rs:fn boot_init_timer` 传的实参 |
-| 中断落到了 `#DE`（向量 0）而不是 0x50 | 8259A 的 ICW2 向量基没被重映射（`pic_init` 缺失或值错） | 核 `os/plat/src/x86_64/interrupt.rs:fn pic_init` 的两处 ICW2 写（`IRQ0_VECTOR` 与 `IRQ0_VECTOR + 8`） |
+| 中断落到了 `#DE`（向量 0）而不是 0x50 | 被解屏蔽的那条线对应的 RTE 向量未编程（复位值 0，S-8 注释记着这条）；或 8259A 仍停在固件状态、向量基没被重映射 | 核 `os/plat/src/x86_64/interrupt.rs:fn ioapic_route_and_mask` 的向量算式（引脚 2 = 0x50）与 `:fn pic_init` 的两处 ICW2 写 |
 
 ### 6.2 可复制命令与预期输出
 
@@ -1996,8 +2024,8 @@ rg -n 'self.controller.unmask' kernel/src/irq_manager.rs
 #       remove_hook 的移除路径、dispatch_claimed 的分发中重开、enable_irq 的显式重新放行、
 #       remove_hook_by_slot 的按槽位移除路径。
 # 10) 测试读数（宿主口径）
-cargo test -p minix-kernel --lib -- --list | grep -c '^clock'
-cargo test -p minix-arch   --lib -- --list | grep -c '^arch::clock'
+cargo test -p minix-kernel --features mock --lib -- --list | grep -c '^clock'
+cargo test -p minix-arch --features runtime-window --lib -- --list | grep -c '^arch::clock'
 # 预期：47 与 3（口径见 §5.1；两边都以 x86_64 宿主编译为准）。
 ```
 
@@ -2023,7 +2051,7 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 - [02-higher-half-kernel.md](02-higher-half-kernel.md) — 高半地址空间与恒等映射（设备寄存器页可被内核寻址的前提）；§4.4 的状态表给出本篇入口
 - [03-kmain-cstart.md](03-kmain-cstart.md) — 保护结构（GDT/IDT/TSS）与 cstart 的调用序列；本篇 §1.1 的次序分析是它 §2.2 的下一段
 - [04-platform-discovery.md](04-platform-discovery.md) — 描述符的来源与消费（本篇三次实例化取地址与频率；§3.4 的实例化模式、§4.8 的 downcast 表）
-- 后续：tick 的六步语义与定时器队列（`15-clock-timer`（时钟与定时器篇，尚未重生成））、中断分发与 claim/complete 协议（`14-exception-interrupt`（异常与中断篇，尚未重生成））、`bsp_finish_booting` 的其余步骤（`08-system-init-boot-finish`（启动收尾与切用户篇，尚未重生成））、SMP 与 AP 定时器（`16-smp`（SMP 篇，尚未重生成））、进程表初始化（`06-proc-init-boot-proc`（进程表与 boot 进程篇，尚未重生成））
+- 后续：tick 的六步语义与定时器队列（`15-clock-timer`（时钟与定时器篇，尚未重生成））、中断分发与 claim/complete 协议（`14-exception-interrupt`（异常与中断篇））、`bsp_finish_booting` 的其余步骤（`08-system-init-boot-finish`（启动收尾与切用户篇））、SMP 与 AP 定时器（`16-smp`（SMP 篇，尚未重生成））、进程表初始化（`06-proc-init-boot-proc`（进程表与 boot 进程篇））
 
 C 源码：
 
@@ -2034,7 +2062,7 @@ C 源码：
 - `minix3/minix/kernel/arch/i386/arch_clock.c` — `init_local_timer`、`register_local_timer_handler`、`estimate_cpu_freq`、`init_8253A_timer`
 - `minix3/minix/kernel/arch/i386/arch_system.c` — `arch_init`、`fpu_init`、`ser_init`
 - `minix3/minix/kernel/arch/i386/apic.c` — `apic_single_cpu_init`、`lapic_enable`、`apic_calibrate_clocks`、`lapic_set_timer_one_shot`
-- `minix3/minix/kernel/arch/earm/arch_system.c`、`arch/earm/arch_clock.c`、`arch/earm/bsp/ti/omap_intr.c`、`arch/earm/bsp/ti/omap_timer.c` — ARM-32 端口的同一格
+- `minix3/minix/kernel/arch/earm/arch_system.c`、`arch/earm/arch_clock.c`、`arch/earm/bsp/ti/omap_intr.c`、`arch/earm/bsp/ti/omap_timer.c` — ARM-32 一侧的同一格
 - `minix3/minix/include/arch/i386/include/interrupt.h` — 端口宏、向量基与线号定义；`minix3/minix/kernel/glo.h` — `system_hz` 别名宏与 `kclockinfo` 声明；`minix3/minix/include/arch/{i386,earm}/include/archconst.h` — 两个 `DEFAULT_HZ`
 
 Rust 实现：

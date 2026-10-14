@@ -18,7 +18,8 @@
 | `rewrite-notes/01-stage-kernel/13-syscall-dispatch.md` | 01 | `dd9c6c1fd` | `b413b7f00` | v0.5+R01-13附加 | 待送审（首轮：两条 P0 定案 + 51 条修复 + C18/C24/C25/C26/C28 落地；**不判冻结，拟走第二轮**） | `tmp/doc-iter/13-syscall-dispatch/round-01-r13.md`（归因包；diff/台账/§7 全内联） |
 | `rewrite-notes/01-stage-kernel/13-syscall-dispatch.md` | 02 | `b413b7f00` | `94d312d43` | v0.5+R02-13附加 | **已审·同意冻结**（篇级；一处残留经复核为合法技术用语「RAX 回读」，无需改） | `tmp/doc-iter/13-syscall-dispatch/round-02-r13.md`（归因包；diff/台账/§7 全内联） |
 | `rewrite-notes/01-stage-kernel/12-ipc-core.md` | 01 | `6ab01cbf8` | `af14a09da` | v0.5+R01-第四篇附加（预填） | 待送审（首轮：三笔 P0 级定案 + SRC-17~20 + C18 反转表 M1–M13；**判否，建议一轮闭环**） | `tmp/doc-iter/12-ipc-core/round-01-r12.md`（归因包；diff/台账/§7 C1–C32 全内联） |
-| `rewrite-notes/01-stage-kernel/12-ipc-core.md` | 02 | `af14a09da` | `a2b0338b3` | v0.5+R02-12附加 | 待送审（闭环轮：C24 复现 3 复放全立 + 11/0/0 + 回归扫 28/28；**判篇级可冻结**） | `tmp/doc-iter/12-ipc-core/round-02-r12.md`（归因包；diff/台账/§7 C1–C35 全内联） |
+| `rewrite-notes/01-stage-kernel/12-ipc-core.md` | 02 | `af14a09da` | `a2b0338b3` | v0.5+R02-12附加 | **已审·同意冻结**（篇级；裁决 E/F/G 更新、0/30 归因采纳、轴①改"落地完整度"） | `tmp/doc-iter/12-ipc-core/round-02-r12.md`（归因包；diff/台账/§7 C1–C35 全内联） |
+| `rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md` | 01 | `dc8322d54` | `<result>` | v0.5+R01-05附加（换篇首轮） | 待送审（首轮：4 笔 P0-fact + 121 处修复 + C24 批量对抗 14+8/0 误报/2 命中；轴②跨端口新档；**判否，建议一轮闭环**） | `tmp/doc-iter/05-clock-interrupt-init/round-01-r05.md`（归因包；diff 60 hunks/台账/§7 C1–C36 全内联） |
 
 ## 规则变更裁决记录
 
