@@ -250,6 +250,29 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十六更正命令族里「本树无 strerror 表」这句已成假的理由（12 处，逐处判接线状态）**
+  （`2026-10-14`，`claim/STRERROR-NOTES-qoder` @ 基线 `c2289f220`，跨四包同属三线 commands：
+  `bin/fileops`（rm/unlink/mkfifo/du/find/truncate/stat）、`bin/shell`（hostname/domainname）、
+  `usr-bin/doctools`（what）、`usr-bin/textfilter`（join）；承接 C-95）：
+  接回批次二百三十五登记①。**是什么**：批次二百三十三把 C 的 `sys_errlist` 落进 `minix-types` 之后，
+  命令族里仍有十余处注释把「报文缺 `err(3)`/`perror` 那句尾巴」的理由写成**本树没有那张表**——这句自那批起
+  就是假的（真表在 `Errno::message`）。理由写错比行为差异更糟：后来人会照着「没有表」再建一张。判类 P0-fact。
+  **怎么修**：逐处判接线状态再改措辞，不做批量替换——已判**接线待批**的 10 处改成「表在本树，本壳尚未接它（已登记）」；
+  另两处（`hostname`/`domainname` 的 `report_err`）在核对 C 时发现**差异不止句子**：C 的 `err(1, "sethostname")`
+  经 `verrc.c` 打的是 `getprogname() + ": " + 调用者的串 + ": " + strerror`，本壳既不打程序名前缀
+  （现在只有 `sethostname: EINVAL`），也用标识符代替句子；旧注释只说「本树无表」把这个前缀缺口也一起掩住了。
+  两处注释现在把两个缺口分开写明，并按「不顺手修」登记为独立条目（要改退码面之外的报文形状，须配门测与真机判据）。
+  **取证**：`git grep` 同一模式在基线与本树的命中数 12 → 0（剩下的 1 处是 `cp.rs` 讲 fts 环路报告的
+  「has no counterpart」，与 strerror 无关）；脚本 `tmp/strerror-notes-sweep.py` 逐处断言原文唯一后才替换。
+  行为零改动，故回归以「四包测试数不动」为准：`minix-fileops` **389/0**、`minix-shell` **69/0**、
+  `minix-doctools` **77/0**、`minix-textfilter` **578/0**（与基线同数）；三架构 `--bins` 四包三台零 error；
+  clippy 对 11 个触及文件零命中；`rustfmt` 触及文件零新增漂移（唯一一处 diff 在
+  `doctools/src/bin_support.rs`，基线即存，未动）；`pattern-gate.sh --diff` PASS=17 FAIL=0；
+  `doc-style-lint.sh --diff` 无文档正文改动。核实日 `2026-10-14`；基线 `c2289f220`。
+  登记不执行：①各命令的 `strerror` 后缀接线（fileops 七枚、doctools 的 `what`、textfilter 的 `join`），
+  逐条要配门测；②`hostname`/`domainname` 的 `err(1,…)` 两句需同时补 `getprogname()` 前缀与句子，
+  属报文形状变更，另轮带门做；③真机播种与 open 腿归 C-57/E5。
+
 - ✅ **批次二百三十五把标准输入读缝的失败面改成带 `errno`，接上 `factor: stdin` 与 `ppt: fgets` 两句 `err`**
   （`2026-10-14`，`claim/STRERROR-SEAM-qoder` @ 基线 `9d950ff9a`，单域三线 commands/games/stdio-games，
   含同域共享件 `src/bin_support.rs`；承接 C-95）：

@@ -61,7 +61,9 @@ fn fail(message: &str) -> ! {
 
 /// Map a [`JoinError`] to C's `warnx` line for that branch (each `join.c` arm
 /// warns then calls `usage()`), then exit 1. The two-line `warnx`+`usage` C emits
-/// is collapsed to the specific message — no strerror/usage table here (declared
+/// is collapsed to the specific message — this shell wires neither the `strerror`
+/// sentence (the table itself lives in `minix_types::Errno::message`) nor the usage
+/// line (declared
 /// difference, same as the other command bins).
 fn join_usage_fail(e: JoinError) -> ! {
     match e {

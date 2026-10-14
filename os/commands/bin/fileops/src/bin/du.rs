@@ -23,8 +23,8 @@
 //!
 //! Two deliberate differences from C, both in parts of the run a user rarely
 //! reaches: an unreadable directory is reported and still counted, which is C's
-//! `FTS_DNR` path (`du.c:230-235`) — its warn suffix has no `strerror` table
-//! here; and a `getdents` read error, which C turns into `err(1, "fts_read")`
+//! `FTS_DNR` path (`du.c:230-235`) — its warn suffix is not wired to the table
+//! yet (`minix_types::Errno::message`; registered follow-up); and a `getdents` read error, which C turns into `err(1, "fts_read")`
 //! (`du.c:251-253`) killing the whole run, is reported for the offending
 //! directory only. Unlike every other command in this family, `du` only reads, so
 //! its real-machine check does not wait for a writable image — the seeding and the

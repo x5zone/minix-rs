@@ -11,8 +11,9 @@
 //!
 //! Two deliberate differences, both cosmetic or invisible:
 //! - C's failure report is `warn("%s", *argv)` (`mkfifo.c:95`), i.e. the name
-//!   with the program name and a `strerror` suffix. The suffix has no counterpart
-//!   in this tree, so the line is the conventional `mkfifo: <name>`.
+//!   with the program name and a `strerror` suffix. That suffix is not wired here
+//!   yet (the table exists in `minix_types::Errno::message`; wiring is a registered
+//!   follow-up), so the line is the conventional `mkfifo: <name>`.
 //! - C reads the creation mask with `umask(0)` and never puts it back
 //!   (`mkfifo.c:69`). Nothing else in the program creates a file, and Minix3's
 //!   file servers do not apply the mask to `mknod`/`mkfifo` at all, so the
