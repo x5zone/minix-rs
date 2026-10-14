@@ -208,6 +208,17 @@ RS 是**单线程事件循环**（AGENTS.md 执行模型），内核交互面收
 > minix-types，RS 只持上下文描述（error.c:12-15/:20-25 的四/两条文本），miss 回退
 > C strerror 语义（error.c:44）。`ELAST≡EPROTO(96)` 同值别名以首个常量名为准。
 
+> **名与句是两个面**：`name()` 与 `Display` 给的是标识符（`"EINVAL"`），C 的 `strerror(3)` 给
+> 的是句子（`"Invalid argument"`），两者不可互换——`err(3)`/`warn(3)` 缀的是后者
+> （minix3/lib/libc/gen/verrc.c）。句子来自 `sys_errlist`（minix3/lib/libc/compat/gen/
+> compat_errlist.c:52-151，本树唯一一份定义），落为 `Errno::message()` 与 `Strerror`：号小于
+> `sys_nerr`（80）时取表，表外走 C 的 `Unknown error: %u`（minix3/lib/libc/string/
+> strerror_r.c:66/:78；比较前 `int` 先转 `unsigned`，负数因此绕成大数而不是命中表头）。
+> 这张表与 glibc 的措辞差异不止一处：34 号在 Minix3 里是 `Result too large or too small`
+> （glibc 写 `Numerical result out of range`），6 号是 `Device not configured`（glibc 写
+> `No such device or address`）。以 Minix3 为真源意味着照抄外来表会把 `err(3)` 的句尾换成
+> Linux 的话。
+
 ---
 
 ## 5. 测试要点

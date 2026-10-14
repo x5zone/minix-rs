@@ -371,9 +371,143 @@ impl Errno {
     }
 }
 
-/// The C `strerror` face of an errno: the identifier ("EPERM") for known
-/// values, `Errno(N)` otherwise. The RS server's contextual descriptions
-/// (init/lu_strerror — error.c:48/:56) compose on top of this.
+/// C 的 `sys_nerr`：`sys_errlist` 的表长。`strerror(3)` 只在号小于它时查表，
+/// 否则走 `"Unknown error: %u"`（minix3/lib/libc/compat/gen/compat_errlist.c:153、
+/// minix3/lib/libc/string/strerror_r.c:66）。
+pub const SYS_NERR: usize = 80;
+
+/// C `strerror(3)` 的句子表：下标就是 errno 号。
+///
+/// 真源是 `minix3/lib/libc/compat/gen/compat_errlist.c:52-151`（本树里 `sys_errlist`
+/// 只有这一份定义），不是 glibc 或 Linux 的同名表——两者措辞不同：34 号在 Minix3 里是
+/// `Result too large or too small`，而 glibc 写 `Numerical result out of range`；
+/// 35 号 `Resource temporarily unavailable` 同时服务 `EAGAIN` 与 `EWOULDBLOCK`（C 只给
+/// 一份串，别名靠注释标出）；47 号 `Address family not supported by protocol family`
+/// 独立成项，与 46 号的 `Protocol family not supported` 不是一句。
+///
+/// 表项逐条与 `minix3/sys/sys/errno.h` 的号对过：脚本按行提取 80 项串，并断言每个带
+/// 注记的行满足 `strings[注记号] == 该行的串`（79 条带注记行零失配；0 号在表头没有名字，
+/// 按 C 惯例记作 `ENOERROR`）。
+const SYS_ERRLIST: [&str; SYS_NERR] = [
+    /*  0 ENOERROR               */ "Undefined error: 0",
+    /*  1 EPERM                  */ "Operation not permitted",
+    /*  2 ENOENT                 */ "No such file or directory",
+    /*  3 ESRCH                  */ "No such process",
+    /*  4 EINTR                  */ "Interrupted system call",
+    /*  5 EIO                    */ "Input/output error",
+    /*  6 ENXIO                  */ "Device not configured",
+    /*  7 E2BIG                  */ "Argument list too long",
+    /*  8 ENOEXEC                */ "Exec format error",
+    /*  9 EBADF                  */ "Bad file descriptor",
+    /* 10 ECHILD                 */ "No child processes",
+    /* 11 EDEADLK                */ "Resource deadlock avoided",
+    /* 12 ENOMEM                 */ "Cannot allocate memory",
+    /* 13 EACCES                 */ "Permission denied",
+    /* 14 EFAULT                 */ "Bad address",
+    /* 15 ENOTBLK                */ "Block device required",
+    /* 16 EBUSY                  */ "Device busy",
+    /* 17 EEXIST                 */ "File exists",
+    /* 18 EXDEV                  */ "Cross-device link",
+    /* 19 ENODEV                 */ "Operation not supported by device",
+    /* 20 ENOTDIR                */ "Not a directory",
+    /* 21 EISDIR                 */ "Is a directory",
+    /* 22 EINVAL                 */ "Invalid argument",
+    /* 23 ENFILE                 */ "Too many open files in system",
+    /* 24 EMFILE                 */ "Too many open files",
+    /* 25 ENOTTY                 */ "Inappropriate ioctl for device",
+    /* 26 ETXTBSY                */ "Text file busy",
+    /* 27 EFBIG                  */ "File too large",
+    /* 28 ENOSPC                 */ "No space left on device",
+    /* 29 ESPIPE                 */ "Illegal seek",
+    /* 30 EROFS                  */ "Read-only file system",
+    /* 31 EMLINK                 */ "Too many links",
+    /* 32 EPIPE                  */ "Broken pipe",
+    /* 33 EDOM                   */ "Numerical argument out of domain",
+    /* 34 ERANGE                 */ "Result too large or too small",
+    /* 35 EAGAIN                 */ "Resource temporarily unavailable",
+    /* 36 EINPROGRESS            */ "Operation now in progress",
+    /* 37 EALREADY               */ "Operation already in progress",
+    /* 38 ENOTSOCK               */ "Socket operation on non-socket",
+    /* 39 EDESTADDRREQ           */ "Destination address required",
+    /* 40 EMSGSIZE               */ "Message too long",
+    /* 41 EPROTOTYPE             */ "Protocol wrong type for socket",
+    /* 42 ENOPROTOOPT            */ "Protocol option not available",
+    /* 43 EPROTONOSUPPORT        */ "Protocol not supported",
+    /* 44 ESOCKTNOSUPPORT        */ "Socket type not supported",
+    /* 45 EOPNOTSUPP             */ "Operation not supported",
+    /* 46 EPFNOSUPPORT           */ "Protocol family not supported",
+    /* 47 EAFNOSUPPORT           */ "Address family not supported by protocol family",
+    /* 48 EADDRINUSE             */ "Address already in use",
+    /* 49 EADDRNOTAVAIL          */ "Can't assign requested address",
+    /* 50 ENETDOWN               */ "Network is down",
+    /* 51 ENETUNREACH            */ "Network is unreachable",
+    /* 52 ENETRESET              */ "Network dropped connection on reset",
+    /* 53 ECONNABORTED           */ "Software caused connection abort",
+    /* 54 ECONNRESET             */ "Connection reset by peer",
+    /* 55 ENOBUFS                */ "No buffer space available",
+    /* 56 EISCONN                */ "Socket is already connected",
+    /* 57 ENOTCONN               */ "Socket is not connected",
+    /* 58 ESHUTDOWN              */ "Can't send after socket shutdown",
+    /* 59 ETOOMANYREFS           */ "Too many references: can't splice",
+    /* 60 ETIMEDOUT              */ "Operation timed out",
+    /* 61 ECONNREFUSED           */ "Connection refused",
+    /* 62 ELOOP                  */ "Too many levels of symbolic links",
+    /* 63 ENAMETOOLONG           */ "File name too long",
+    /* 64 EHOSTDOWN              */ "Host is down",
+    /* 65 EHOSTUNREACH           */ "No route to host",
+    /* 66 ENOTEMPTY              */ "Directory not empty",
+    /* 67 EPROCLIM               */ "Too many processes",
+    /* 68 EUSERS                 */ "Too many users",
+    /* 69 EDQUOT                 */ "Disc quota exceeded",
+    /* 70 ESTALE                 */ "Stale NFS file handle",
+    /* 71 EREMOTE                */ "Too many levels of remote in path",
+    /* 72 EBADRPC                */ "RPC struct is bad",
+    /* 73 ERPCMISMATCH           */ "RPC version wrong",
+    /* 74 EPROGUNAVAIL           */ "RPC prog. not avail",
+    /* 75 EPROGMISMATCH          */ "Program version wrong",
+    /* 76 EPROCUNAVAIL           */ "Bad procedure for program",
+    /* 77 ENOLCK                 */ "No locks available",
+    /* 78 ENOSYS                 */ "Function not implemented",
+    /* 79 EFTYPE                 */ "Inappropriate file type or format",
+];
+
+impl Errno {
+    /// C `strerror(3)` 返回的那句话（`sys_errlist[errno]`）；号在表外时 `None`。
+    ///
+    /// 这与 [`Errno::name`] 是两件事：`name()` 给标识符（`"EINVAL"`），这里给读者读的
+    /// 句子（`"Invalid argument"`）。C 的 `err(3)`/`warn(3)` 缀的是后者——
+    /// `minix3/lib/libc/gen/verrc.c` 的形状是 `progname: ` + 调用者的格式串 + `": "` +
+    /// `strerror(code)` + 换行。
+    pub fn message(self) -> Option<&'static str> {
+        // C 把 `int num` 先转成 `unsigned int` 再比大小（strerror_r.c:56/:66），
+        // 所以负数在这里绕成一个很大的数、直接落到表外。
+        let errnum = self.0 as u32;
+        if (errnum as usize) < SYS_NERR {
+            Some(SYS_ERRLIST[errnum as usize])
+        } else {
+            None
+        }
+    }
+}
+
+/// C `strerror(3)` 的完整形状：表内取句子，表外取 C 的 `Unknown error: %u`
+/// （minix3/lib/libc/string/strerror_r.c:55/:78）。`%u` 的实参是 `unsigned int`，
+/// 因此负数会打成绕回后的大数——这是 C 自己的行为，不是本树的发明。
+pub struct Strerror(pub Errno);
+
+impl core::fmt::Display for Strerror {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0.message() {
+            Some(text) => f.write_str(text),
+            None => write!(f, "Unknown error: {}", self.0.to_i32() as u32),
+        }
+    }
+}
+
+/// The identifier face of an errno: `"EPERM"` for known values, `Errno(N)`
+/// otherwise. The RS server's contextual descriptions (init/lu_strerror —
+/// error.c:48/:56) compose on top of this. C's `strerror(3)` sentence lives
+/// in [`Errno::message`] / [`Strerror`], not here.
 impl core::fmt::Display for Errno {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.0 {
@@ -629,5 +763,94 @@ mod tests {
             assert_eq!(e.name(), Some(e.to_string().as_str()));
         }
         assert_eq!(Errno::from_i32(9999).name(), None);
+    }
+}
+
+#[cfg(test)]
+mod strerror_face_tests {
+    extern crate alloc;
+    use super::{EBADF, ENOENT, Errno, SYS_ERRLIST, SYS_NERR, Strerror};
+    use alloc::string::ToString as _;
+
+    /// 表长与 C 的 `sys_nerr` 同数，且没有空串（C 的 80 项里每一项都有文字，
+    /// 空串会让 `err(3)` 打出光秃秃的冒号尾巴）。
+    #[test]
+    fn table_is_c_sys_nerr_long_with_no_empty_entry() {
+        assert_eq!(SYS_ERRLIST.len(), SYS_NERR);
+        assert_eq!(SYS_NERR, 80);
+        assert!(SYS_ERRLIST.iter().all(|text| !text.is_empty()));
+    }
+
+    /// 措辞以 Minix3 的表为纲，不是 glibc/Linux 的那一张：6 号在 Minix3 里是
+    /// `Device not configured`（glibc 写 `No such device or address`），19 号是
+    /// `Operation not supported by device`（glibc 写 `No such device`），34 号是
+    /// `Result too large or too small`（glibc 写 `Numerical result out of range`）。
+    /// 46 与 47 是两句话，不是一个别名。
+    #[test]
+    fn wording_follows_the_minix3_table_not_glibc() {
+        assert_eq!(Errno::from_i32(6).message(), Some("Device not configured"));
+        assert_eq!(
+            Errno::from_i32(19).message(),
+            Some("Operation not supported by device")
+        );
+        assert_eq!(
+            Errno::from_i32(34).message(),
+            Some("Result too large or too small")
+        );
+        assert_eq!(
+            Errno::from_i32(46).message(),
+            Some("Protocol family not supported")
+        );
+        assert_eq!(
+            Errno::from_i32(47).message(),
+            Some("Address family not supported by protocol family")
+        );
+    }
+
+    /// 句子面与标识符面是两件事：同一个 `EINVAL` 一边给 `Invalid argument`，
+    /// 一边给 `EINVAL`。把两者混起来的壳会在 `err(3)` 后缀里打出大写代号。
+    #[test]
+    fn message_and_name_are_two_different_faces() {
+        assert_eq!(Errno::EINVAL.message(), Some("Invalid argument"));
+        assert_eq!(Errno::EINVAL.name(), Some("EINVAL"));
+        assert_eq!(
+            Errno::from_i32(ENOENT).message(),
+            Some("No such file or directory")
+        );
+        assert_eq!(
+            Errno::from_i32(EBADF).message(),
+            Some("Bad file descriptor")
+        );
+        assert_ne!(
+            Errno::EINVAL.message().unwrap(),
+            Errno::EINVAL.name().unwrap()
+        );
+    }
+
+    /// 表边界与 C 的 `unsigned` 比较同形：0 号有串（`Undefined error: 0`），79 号是
+    /// 最后一项，80 号落表外；负号先绕成 `unsigned` 的大数，因此也落表外，而
+    /// `Strerror` 打出 C 那句 `Unknown error: %u` 的绕回读数。
+    #[test]
+    fn table_edges_and_unknown_shape_follow_c_unsigned_compare() {
+        assert_eq!(Errno::from_i32(0).message(), Some("Undefined error: 0"));
+        assert_eq!(
+            Errno::from_i32(79).message(),
+            Some("Inappropriate file type or format")
+        );
+        assert_eq!(Errno::from_i32(80).message(), None);
+        assert_eq!(Errno::from_i32(-1).message(), None);
+        assert_eq!(
+            Strerror(Errno::from_i32(80)).to_string(),
+            "Unknown error: 80"
+        );
+        assert_eq!(
+            Strerror(Errno::from_i32(-1)).to_string(),
+            "Unknown error: 4294967295"
+        );
+        assert_eq!(
+            Strerror(Errno::EINVAL).to_string(),
+            "Invalid argument",
+            "表内的号不该走 Unknown error 分支"
+        );
     }
 }

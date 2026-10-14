@@ -19,15 +19,17 @@
 //! stored as the constant it evaluates to; a test in this module recomputes every entry
 //! from `STD_PERCENT` under `std` and compares.
 
+use minix_types::{EINVAL, ERANGE, Errno};
+
 /// Letters in the Latin alphabet.
 pub const LETTERS: u32 = 26;
 
-/// Why C's `get_rotation` refuses a value: the two `errno`s it sets (`caesar.c:125-135`).
+/// Why C's `get_rotation` refuses a value: the two `errno`s it sets (`caesar.c:133`/`:135`).
 ///
 /// This is deliberately not the crate's `GameError`: that vocabulary collapses "malformed"
 /// and "out of range" into one arm each way (22 and 34), while C keeps them apart because
-/// the suffix of its message differs. Keeping both here means the sentence can be finished
-/// the moment the tree grows a strerror table, without re-deriving which test tripped.
+/// the suffix of its message differs. Each arm names the `errno` C sets, so the sentence is
+/// finished by [`Errno::message`] — the table this crate now has.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RotationFailure {
     /// `arg[0] == '\0' || *endp != '\0'`: nothing to parse, or trailing junk.
@@ -36,7 +38,19 @@ pub enum RotationFailure {
     Range,
 }
 
-/// C's `get_rotation` (`caesar.c:120-137`), acceptance rules and all.
+impl RotationFailure {
+    /// The `errno` C's `get_rotation` sets before it calls `err(3)` (`caesar.c:133/:135`):
+    /// `EINVAL` for a value that will not parse, `ERANGE` for one that parses but is
+    /// refused. The message suffix is then C's own — not a wording invented here.
+    pub const fn errno(self) -> Errno {
+        match self {
+            Self::Invalid => Errno::from_i32(EINVAL),
+            Self::Range => Errno::from_i32(ERANGE),
+        }
+    }
+}
+
+/// C's `get_rotation` (`caesar.c:124-139`), acceptance rules and all.
 ///
 /// The parsing is `strtol`, which is more generous than "digits only" in two ways a
 /// caller cannot see from the outside: it **skips leading white space** and it takes an
@@ -332,9 +346,9 @@ mod tests {
 
     #[test]
     fn rotations_parse_the_way_strtol_does_and_then_reject_by_range() {
-        // C's acceptance comes from `strtol` (`caesar.c:126`): leading white space is
+        // C's acceptance comes from `strtol` (`caesar.c:131`): leading white space is
         // skipped and a sign is consumed. The rejections then come from the two explicit
-        // tests (`:129-133`), and they land on different errnos: nothing-or-junk is the
+        // tests (`:132-135`), and they land on different errnos: nothing-or-junk is the
         // invalid case, a sign that survived parsing or a value past `INT_MAX` is the
         // range case. So `-1` is not "malformed", it is out of range.
         assert_eq!(parse_rotation("13"), Ok(13));
@@ -363,5 +377,25 @@ mod tests {
             Err(RotationFailure::Range),
             "the overflow is caught while scanning, as ERANGE is set by strtol"
         );
+    }
+
+    /// 两个失败各自缀哪一句，由 Minix3 自己的 `sys_errlist` 决定（本树那份表在
+    /// `minix-types`）：`EINVAL` 是 `Invalid argument`，`ERANGE` 是
+    /// `Result too large or too small`。后者是这张表与 glibc 的差别之一——照抄 glibc 会
+    /// 写成 `Numerical result out of range`，而 Minix3 的 `errno.h:78` 注释本身就写
+    /// `Result too large or too small`。
+    #[test]
+    fn each_failure_carries_the_errno_c_sets_and_minix3_words_it() {
+        assert_eq!(
+            RotationFailure::Invalid.errno().message(),
+            Some("Invalid argument")
+        );
+        assert_eq!(
+            RotationFailure::Range.errno().message(),
+            Some("Result too large or too small")
+        );
+        // 标识符面与句子面各归各：`err(3)` 缀的是句子。
+        assert_eq!(RotationFailure::Invalid.errno().name(), Some("EINVAL"));
+        assert_eq!(RotationFailure::Range.errno().to_i32(), ERANGE);
     }
 }

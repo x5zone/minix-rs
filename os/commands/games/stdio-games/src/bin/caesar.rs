@@ -59,22 +59,21 @@ fn usage() -> ! {
     support::terminate(1);
 }
 
-/// C's `err(EXIT_FAILURE, "Bad rotation value `%s'", arg)` (`caesar.c:134-135`).
+/// C's `err(EXIT_FAILURE, "Bad rotation value `%s'", arg)` (`caesar.c:137`).
 ///
-/// C appends the strerror text for the errno it set — `Invalid argument` or `Numerical
-/// result out of range` — and this tree has no such table, so the line stops at the
-/// quoted value. The distinction is kept as `failure` and reported by the exit status the
-/// same way; the missing suffix is registered in the stage ledger.
+/// `err(3)` 的形状在 `minix3/lib/libc/gen/verrc.c`：`progname: ` + 调用者的串 + `": "` +
+/// `strerror(errno)` + 换行。句尾那一句来自本树的 `sys_errlist`（`minix-types` 的
+/// [`Errno::message`]），因此它是 Minix3 自己的措词而不是外来的那张表：`EINVAL` 缀
+/// `Invalid argument`，`ERANGE` 缀 `Result too large or too small`。
 fn bad_rotation(arg: &str, failure: RotationFailure) -> ! {
-    match failure {
-        // The suffix C would put here for `EINVAL`: `: Invalid argument`.
-        RotationFailure::Invalid => {}
-        // …and for `ERANGE`: `: Numerical result out of range`.
-        RotationFailure::Range => {}
-    }
     support::warn(b"caesar: Bad rotation value `");
     support::warn(arg.as_bytes());
-    support::warn(b"'\n");
+    support::warn(b"': ");
+    // 表内的号总有句子；表外才会像 C 那样只留下一个空的逗号位（本例不会发生）。
+    if let Some(text) = failure.errno().message() {
+        support::warn(text.as_bytes());
+    }
+    support::warn(b"\n");
     support::terminate(1);
 }
 
