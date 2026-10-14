@@ -106,6 +106,19 @@ pub fn write_stdout(bytes: &[u8]) -> Result<(), Errno> {
     write(STDOUT, bytes).map(|_| ())
 }
 
+/// C 的 `fflush(stdout)`：`arithmetic.c:231-232` 打完不带换行的提示语就冲刷一次，
+/// 否则读它的人看不见问题。宿主侧 `std::io::stdout()` 是行缓冲的，不冲刷则提示语
+/// 留在缓冲区里，交互式命令挂在管道上就永不返回（本轮的端到端门就是挂在这一点上）；
+/// 真机侧 `emit` 每调用一次就是一次 `write(2)`，无缓冲可冲，故为空动作。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn flush_stdout() {
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn flush_stdout() {}
+
 /// 读完整条标准输入，并区分「读到尽头」与「读失手」：C 的 `caesar` 读的时候不查，
 /// 到全部输出之后才看一眼 `ferror(stdin)`（`caesar.c:205-208`），那时它是 `errx`
 /// 而不是 `err`——因为 stdio 的错标志不带号。交回已读到的字节与那个号，正是为了让

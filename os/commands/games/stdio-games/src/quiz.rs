@@ -3,9 +3,11 @@
 //! Ground truth: `minix3/games/arithmetic/arithmetic.c`. Operands confine to zero through
 //! the range (default upper bound 10, `:102`); the score keeps right and wrong counters
 //! (`:101`); the key set comes from `-o` over `+-x/` (`:95-97`, `:120-129`); over large
-//! ranges results may look odd (header warning near `:63`). Question generation, prompting
-//! and the clock stay with the execution layer; this module owns the range, the scoring,
-//! the answer check, and the penalty lists of `penalise()`/`getrandom()` (`:283-364`).
+//! ranges results may look odd (header warning near `:63`). Question generation and
+//! prompting stay with the execution layer; this module owns the range, the scoring,
+//! the answer check, the penalty lists of `penalise()`/`getrandom()` (`:283-364`), and
+//! the two numbers of C's score line — the accumulated whole seconds of `qtime`
+//! (`:271-272`) and the one-decimal seconds-per-problem text (`:172-173`).
 
 use crate::GameError;
 
@@ -34,6 +36,105 @@ impl Score {
         }
         self.right * 100 / self.total()
     }
+}
+
+/// Microseconds in one second, the granularity C stamps at (`arithmetic.c:271`).
+pub const MICROS_PER_SEC: u64 = 1_000_000;
+
+/// C's `qtime += finish - start` (`arithmetic.c:271-272`), where both stamps come from
+/// `time(2)` — whole seconds. The stamps truncate **before** the subtraction, so a question
+/// opened 0.9 s into a second and answered 2.1 s later is charged two seconds, not one;
+/// C's own comment (`:265-268`) expects those partial seconds to cancel out across
+/// questions, and says nothing about the rounding, so the truncation is the contract.
+pub fn elapsed_secs(start_micros: u64, finish_micros: u64) -> u64 {
+    (finish_micros / MICROS_PER_SEC).saturating_sub(start_micros / MICROS_PER_SEC)
+}
+
+/// The one-decimal number C prints at `arithmetic.c:172-173`, split so the shell can lay it
+/// out with `utoa` and one digit instead of owning a float formatter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OneDecimal {
+    /// The digits before the point.
+    pub whole: u64,
+    /// The single digit after the point.
+    pub tenth: u8,
+}
+
+/// `printf("%.1f", (float)qtime / nright)` — three things about that expression are
+/// load-bearing, and each one changes the printed digit somewhere:
+///
+/// * the division happens in **`float`**, not `double`: `3/20` is `0.15000000596…` as a
+///   `float` (so `%.1f` answers `0.2`), while the same quotient computed in `double` is
+///   `0.1499999999999999944…` and would print `0.1`;
+/// * the promoted value is then rounded to one decimal **to nearest, ties to even** —
+///   Minix3's `printf` is `vfprintf.c` over `vfwprintf.c`, which asks `gdtoa` for the
+///   digits, and `gdtoa.c:782-790` rounds up only when the remainder exceeds half or
+///   equals half and the last digit is odd. `ROUND_BIASED` (ties away from zero) is set
+///   only for non-IEEE arithmetic (`gdtoaimp.h:225-232`, `:430-437`), which none of this
+///   tree's targets is. So `5/4` prints `1.2` and `15/4` prints `3.8`;
+/// * the argument is guarded by `if (nright > 0)` (`:171`), so a quiz with no correct
+///   answer never divides by zero and never prints the line at all — `None` here.
+///
+/// Multiplying a `float` by ten needs 28 mantissa bits, so the scaling into `f64` is exact
+/// and the tie test below is against the true value, not an approximation of it.
+pub fn seconds_per_problem(qtime_secs: u64, right: u32) -> Option<OneDecimal> {
+    if right == 0 {
+        return None;
+    }
+    // The quotient itself is the hardware `float` division C performs; only the decimal
+    // rounding is done below, in integers, because `f64::round_ties_even` is not reachable
+    // from this crate's `no_std` build.
+    let value = (qtime_secs as f32) / (right as f32);
+    let tenths = round_half_even_after_scale(value)?;
+    Some(OneDecimal {
+        whole: tenths / 10,
+        tenth: (tenths % 10) as u8,
+    })
+}
+
+/// Multiply a `float` by ten exactly and round the result to the nearest integer, ties to
+/// even — the same decision `gdtoa.c:782-790` makes (`j > 0 || (j == 0 && dig & 1)`).
+///
+/// The value is split into its mantissa and power of two (`m * 2^exp`, `m` up to 24 bits for
+/// a normal `float`), so `10 * m` and the shift are integer work with no rounding error of
+/// their own: a `float` times ten needs 28 bits, and `u128` holds the shifted forms for every
+/// exponent a realistic quiz reaches.
+pub fn round_half_even_after_scale(value: f32) -> Option<u64> {
+    let bits = value.to_bits();
+    let biased = ((bits >> 23) & 0xff) as i32;
+    let fraction = bits & 0x007f_ffff;
+    if biased == 0xff || value.is_sign_negative() {
+        return None; // NaN / infinity: no such shape comes out of a seconds count
+    }
+    let (mantissa, exp) = if biased == 0 {
+        (u128::from(fraction), -149) // subnormal and zero
+    } else {
+        (u128::from(fraction) + (1 << 23), biased - 150)
+    };
+    let scaled = mantissa * 10;
+    let tenths = if exp >= 0 {
+        let shifted = scaled.checked_shl(u32::try_from(exp).ok()?)?;
+        u64::try_from(shifted).ok()?
+    } else {
+        let shift = u32::try_from(-exp).ok()?;
+        if shift >= 128 {
+            return Some(0); // far below 0.05 seconds per problem
+        }
+        let whole = u64::try_from(scaled >> shift).ok()?;
+        let remainder = scaled & ((1u128 << shift) - 1);
+        let half = 1u128 << (shift - 1);
+        if remainder > half || (remainder == half && whole % 2 == 1) {
+            whole.checked_add(1)?
+        } else {
+            whole
+        }
+    };
+    Some(tenths)
+}
+
+/// Whether C's `showstats` prints the score block at all: `nright + nwrong > 0` (`:168`).
+pub fn shows_score(score: Score) -> bool {
+    score.total() > 0
 }
 
 /// Parse a range bound (must be strictly positive).
@@ -412,5 +513,110 @@ mod tests {
     #[test]
     fn test_empty_score_zero() {
         assert_eq!(Score::default().percent(), 0);
+    }
+
+    #[test]
+    fn elapsed_seconds_are_the_difference_of_truncated_stamps() {
+        // C stamps twice with `time(2)` and subtracts (`arithmetic.c:271-272`), so partial
+        // seconds at each end do not cancel within one question: 0.9 s → 2.1 s charges two.
+        assert_eq!(elapsed_secs(900_000, 2_100_000), 2);
+        assert_eq!(
+            elapsed_secs(0, 999_999),
+            0,
+            "under a second is charged nothing"
+        );
+        assert_eq!(elapsed_secs(1_000_000, 1_000_000), 0, "same second");
+        assert_eq!(
+            elapsed_secs(5_000_000, 4_000_000),
+            0,
+            "a clock going backwards cannot subtract below zero"
+        );
+    }
+
+    #[test]
+    fn the_seconds_per_problem_table_is_what_c_prints() {
+        // Every expected value below was read off a host-compiled reference program that
+        // reproduces `arithmetic.c:172-173` verbatim — `printf("Total time %ld seconds; %.1f
+        // seconds per problem", (long)q, (float)q / n)` — not hand-computed.
+        let cases: &[(u64, u32, u64, u8)] = &[
+            (40, 20, 2, 0),
+            (1, 3, 0, 3),
+            (2, 3, 0, 7),
+            (0, 5, 0, 0),
+            (1, 7, 0, 1),
+            (2, 7, 0, 3),
+            (1, 6, 0, 2),
+            (1, 8, 0, 1),
+            (100, 3, 33, 3),
+            (1_000_000, 7, 142_857, 1),
+            (599, 7, 85, 6),
+            (12_345_678, 3, 4_115_226, 0),
+            (1, 25, 0, 0),
+            (1, 250, 0, 0),
+            (1_000_000, 1_048_576, 1, 0),
+            (1_048_575, 1_048_576, 1, 0),
+        ];
+        for &(q, n, whole, tenth) in cases {
+            assert_eq!(
+                seconds_per_problem(q, n),
+                Some(OneDecimal { whole, tenth }),
+                "qtime={q} right={n}"
+            );
+        }
+        assert_eq!(
+            seconds_per_problem(5, 0),
+            None,
+            "C guards the divisor (`:171`)"
+        );
+    }
+
+    #[test]
+    fn exact_ties_round_to_the_even_digit_and_a_float_quotient_differs_from_a_double_one() {
+        // The two discriminating families. Ties: `x.25`/`x.75` at one decimal are exactly
+        // representable, and `gdtoa.c:782-790` keeps the even digit — `5/4` is `1.2` while
+        // `3/4`, `7/4` and `11/4` are `0.8`, `1.8` and `2.8`.
+        assert_eq!(
+            seconds_per_problem(5, 4),
+            Some(OneDecimal { whole: 1, tenth: 2 })
+        );
+        assert_eq!(
+            seconds_per_problem(3, 4),
+            Some(OneDecimal { whole: 0, tenth: 8 })
+        );
+        assert_eq!(
+            seconds_per_problem(7, 4),
+            Some(OneDecimal { whole: 1, tenth: 8 })
+        );
+        assert_eq!(
+            seconds_per_problem(11, 4),
+            Some(OneDecimal { whole: 2, tenth: 8 })
+        );
+        assert_eq!(
+            seconds_per_problem(15, 4),
+            Some(OneDecimal { whole: 3, tenth: 8 })
+        );
+        // Not-ties-after-float-rounding: C divides in `float`, so `3/20` is
+        // 0.15000000596… and prints `0.2`, while `1/20` is 0.05000000074… and prints `0.1`;
+        // a `double` path would answer `0.1` for `3/20`, which is wrong against C.
+        assert_eq!(
+            seconds_per_problem(3, 20),
+            Some(OneDecimal { whole: 0, tenth: 2 })
+        );
+        assert_eq!(
+            seconds_per_problem(1, 20),
+            Some(OneDecimal { whole: 0, tenth: 1 })
+        );
+        assert_eq!(
+            seconds_per_problem(7, 20),
+            Some(OneDecimal { whole: 0, tenth: 3 })
+        );
+    }
+
+    #[test]
+    fn an_untouched_quiz_prints_no_score_block() {
+        // `showstats` opens with `if (nright + nwrong > 0)` (`arithmetic.c:168`).
+        assert!(!shows_score(Score::default()));
+        assert!(shows_score(Score { right: 0, wrong: 1 }));
+        assert!(shows_score(Score { right: 1, wrong: 0 }));
     }
 }

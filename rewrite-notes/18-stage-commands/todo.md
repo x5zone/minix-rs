@@ -250,6 +250,46 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十七把 `arithmetic` 的用时统计接上，并把 `%.1f` 的舍入按 Minix3 自己的 `gdtoa` 定形（附带两处早就存在的缺陷）**
+  （`2026-10-14`，`claim/ARITH-TIMING-1-qoder` @ 基线 `5b3a374eb`，单域三线 `os/commands/games/stdio-games`
+  与同线文档）：接回规划表 v2-14 那一行（`16p` 第1片）。
+  **是什么**：`showstats` 的那一句 `Total time %ld seconds; %.1f seconds per problem` 本树从来不挨，
+  `qtime` 也不累加；判定它不能从函数名猜，得先读 C：分数行包在 `if (nright + nwrong > 0)`（`:168`）里，
+  时间行另包一层 `if (nright > 0)`（`:171`，这就是 C 不会除零的原因——规划表里那个待定项就此关掉），
+  `Press RETURN` 与收尾那个换行在两道守卫之外；`qtime` 是两次 `time(2)` 戳的**整秒差**逐题累加（`:232`、
+  `:271-272`）。判类 P0-design-missing（一条完整腿未接）。
+  **`%.1f` 怎么定的形**：先拿宿主 `cc` 编一个只重印那一句 `printf` 的参照程序（`(float)q / n` 的写法逐字照搬），
+  跑出 25 对 `(qtime, right)` 的真值表，再拿 `f64::round_ties_even` 写第一版——**结果它根本编译不过**（
+  `no_std` 面里没这个方法），于是改成从 `to_bits()` 拆出 `m * 2^exp` 后用 `u128` 做整数舍入。舍入规则不是拿
+  glibc 的默认行为当权威，而是读了本树的 C 源：`vfprintf.c` 指向 `vfwprintf.c`，后者向 `gdtoa` 要数字；
+  `gdtoa.c:782-790` 只在余数大于一半、**或正好一半且末位为奇**时入上——即平手取偶；`ROUND_BIASED`（平手远离零）
+  只在 `IEEE_Arith` 未定义时才定义（`gdtoaimp.h:225-232`、`:430-437`），本树三个目标都是 IEEE。两条可观察的收获：
+  ①平手族 `5/4` → `1.2`、`3/4` → `0.8`；②**除法发生在 `float` 不是 `double`**——`3/20` 得 `0.2`，而按 double
+  算会是 `0.1`；拿这个当第二枚变异负控的目标，改成就红。
+  **门拓出的两处早就存在的缺陷**（都是 P0-code-bug，不补上接不了交互式门）：①提示语的 `=` 后只写两个空格，
+  C 的三个（`"%d %c %d =   "` `:231`），本壳头注自己写着三个——正文与代码不一致；②**宿主面不冲刷标准输出**，
+  而 C 打完提示语就 `fflush(stdout)`；宿主 `std::io::stdout()` 是行缓冲的，不带换行的提示语留在缓冲区里，
+  交互式命令挂在管道上永不返回（本轮新门第一次跑就挂住，九百秒超时）。补法：`bin_support` 加双生面的
+  `flush_stdout()`（宿主 `flush()`，真机为空动作——`emit` 本就是逐次 `write(2)`，无缓冲可冲），`ask()` 在
+  `emit` 后调用。
+  **为什么不选另一条路**：①拿 `format!("{}.{:.1}")` 类浮点格式化看似更短，但本树 `no_std` 没有浮点格式化，
+  而且它把舍入规则交给别处，不可审；②用有理数直接舍入（不经过 `float`）会把 `3/20` 那一类答错；③先接
+  SIGINT 再接用时不行：本树无 `signal(2)` 封装，而时间行不依赖信号。
+  **门**：库测 +4（整秒截断、 16 对真值表、平手与 float/double 分岔、两道守卫）；`tests/arithmetic_face.rs`
+  4 → 6 枚，新增的两枚里有一枚是**真交互管道**（逐题读提示语→算答案→写回去，连跑 20 题），它同时钉住
+  “计数器只在答对时前进”（二十次全错永远不走到分数块）与“时间行两个数同源”（把印出的秒数重新过一遍
+  决定半再比对，不假定跑多久）。
+  三件套：`cargo test -p minix-stdio-games` → **206 passed、0 failed**（基线 200；拆解 75 库测 + 九壳×7 +
+  九扇门 68）；容器 `minix-ci:1.94`（挂仓根、带 `-u`）同包 **206/0**；三架构 `--bins` 各有 `Compiling` 行、
+  0 error（`f32` 除法与 `u128` 位移在三个 freestanding 目标都过）；`rustfmt --edition 2024 --check` 触及四文件
+  零漂移；clippy 触及文件只剩一条存量的 `manual_is_multiple_of`（`git show HEAD` 对比确认非本笔引入）。核实日
+  `2026-10-14`；基线 `5b3a374eb`。
+  **两枚变异负控**（测完按 md5 复原）：平手改远离零（`remainder >= half`）→ 一枚库测独红；丢掉小数位只印整数
+  部分 → 真交互门独红。第一轮门挂住九百秒本身就是“未冲刷”那枚缺陷的反控。
+  登记不执行：①SIGINT 分数打印——本树无 `signal(2)` 封装；该缺口的归属早已定在 14 篇（`../14-stage-runtime/todo.md:294` 记 termios/signal 大族「按需移植」，13 篇登记），命令侧需要时即触发它，本轮不代开三线入口；②`Press RETURN` 后面 `while(!getchar())`（`:178-179`）吃**一个字符**，需给 `LineReader` 开一个单字节缝；
+  本轮只接了那一行本身的字；③其余命令若也有“无换行提示语”，同样需要 `flush_stdout`（本轮只扫到 `arithmetic` 是
+  交互式的）；④`bin_support.rs` 在 freestanding 面的两条 unused import（批次二百五十四已登）。
+
 - ✅ **批次二百五十六除掉 `what` 的同名重复实现，并把「两包同名 bin」钉成门（P19）**
   （`2026-10-14`，`claim/WHAT-DUP-BIN-qoder` @ 基线 `5887699bc`，单域三线 `os/commands/usr-bin/textfilter`
   与门禁工具 `tools/pattern-gate.sh`，加同线两份台账）：接回批次二百五十五登记不执行①。

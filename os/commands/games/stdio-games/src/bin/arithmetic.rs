@@ -6,9 +6,13 @@
 //! `+-` of `+-x/`, line 101). Answers: non-numeric input asks again with
 //! `Please type a number.` (line 246), a correct answer answers
 //! `Right!` (line 250), a wrong one `What?` and the same problem is asked
-//! again (lines 254 and following); end of input prints the score
-//! `\n\nRights %d; Wrongs %d; Score %d%%` (line 169), which also fires
-//! every twenty problems.
+//! again (lines 254 and following). End of input prints **only** a newline and
+//! exits (`:241-243`); the score block is `showstats`, which fires every twenty
+//! problems (`:148-151`) and on the interrupt (`:156-161`) — never at end of input.
+//! Its shape is three pieces with two different guards, and it carries the
+//! `Total time %ld seconds; %.1f seconds per problem` line (`:172-173`) that批次二百五十七
+//! 接上：`qtime` 逐题累加的是两次 `time(2)` 戳的**整秒差**，那一个小数位是
+//! `(float)qtime / nright` 经 `gdtoa` 的就近取整、平手取偶。
 //!
 //! Two declared differences: the operand source is a seeded linear congruential
 //! generator (the C program uses `random(3)`, whose sequence is time-seeded and
@@ -42,7 +46,7 @@ mod support;
 
 use minix_stdio_games::quiz::{
     DEFAULT_RANGE, Drawn, Operator, Penalties, Question, Score, answer_of, charged_operands,
-    parse_range, slot_of,
+    elapsed_secs, parse_range, seconds_per_problem, shows_score, slot_of,
 };
 use support::LineReader;
 
@@ -101,6 +105,7 @@ fn run() -> ! {
 
     let mut random = seed();
     let mut score = Score::default();
+    let mut qtime = 0u64;
     let mut penalties = Penalties::default();
     let mut input = [0u8; 64];
     let mut reader = LineReader::new(support::stdin_chunk, &mut input);
@@ -112,6 +117,9 @@ fn run() -> ! {
         // next line (`arithmetic.c:231-266`). End of input prints a newline and the program
         // exits — the score is shown every twenty problems and on the interrupt only.
         ask(&question);
+        // C stamps `time(&start)` right after the prompt and its flush (`arithmetic.c:232`),
+        // so the wrong attempts below are inside the charged window.
+        let start = support::epoch_micros();
         loop {
             // C 的 arithmetic 不看 `ferror`（全篇无此判），读到尽头与读出错都直接收摊退 0。
             let has_line = reader.next_line().unwrap_or(false);
@@ -148,9 +156,15 @@ fn run() -> ! {
                 penalties.add(charge_slot, operand, value);
             }
         }
+        // …and `qtime += finish - start` once the answer is right (`:271-272`). A clock face
+        // that refuses has no counterpart in C (its `time(2)` cannot fail here), so it charges
+        // nothing rather than inventing a duration.
+        if let (Some(start), Some(finish)) = (start, support::epoch_micros()) {
+            qtime += elapsed_secs(start, finish);
+        }
         asked += 1;
         if asked % 20 == 0 {
-            print_score(&score);
+            show_stats(&score, qtime);
         }
     }
 }
@@ -255,7 +269,9 @@ fn next_random(random: &mut u32) -> u32 {
     value
 }
 
-/// Prints `left op right =   ` (arithmetic.c:231).
+/// Prints `left op right =   ` — C's `"%d %c %d =   "` (`arithmetic.c:231`), three spaces
+/// after the sign; the shell used to write two, which the interactive door caught because the
+/// prompt never finished the way C's does.
 fn ask(question: &Question) {
     let mut out = [0u8; 24];
     let mut length = 0;
@@ -275,32 +291,90 @@ fn ask(question: &Question) {
     length += 1;
     out[length] = b' ';
     length += 1;
-    support::emit(&out[..length]);
-}
-
-/// Prints the running score (arithmetic.c:169).
-fn print_score(score: &Score) {
-    let mut out = [0u8; 64];
-    let mut length = 0;
-    for &byte in b"\n\nRights " {
-        out[length] = byte;
-        length += 1;
-    }
-    length += support::utoa(score.right, &mut out[length..]);
-    for &byte in b"; Wrongs " {
-        out[length] = byte;
-        length += 1;
-    }
-    length += support::utoa(score.wrong, &mut out[length..]);
-    for &byte in b"; Score " {
-        out[length] = byte;
-        length += 1;
-    }
-    length += support::utoa(score.percent(), &mut out[length..]);
-    out[length] = b'%';
+    out[length] = b' ';
     length += 1;
     support::emit(&out[..length]);
+    // …and C flushes it (`arithmetic.c:232`): the prompt ends without a newline, so a
+    // buffered stdout would leave the player staring at nothing.
+    support::flush_stdout();
+}
+
+/// C's `showstats(0)` (`arithmetic.c:166-181`) — the every-twenty-problems call. Three
+/// pieces, and the guards are the shape: the score block needs `nright + nwrong > 0` (`:168`),
+/// the time block separately needs `nright > 0` (`:171`, which is also why C never divides by
+/// zero), and the `Press RETURN` line plus the closing newline sit **outside** both guards.
+/// The score line's own format ends at the percent sign: the newline that follows belongs to
+/// the time line, so a run with no correct answer ends with no newline of its own either.
+fn show_stats(score: &Score, qtime: u64) {
+    if shows_score(*score) {
+        let mut out = [0u8; 64];
+        let mut length = 0;
+        length = append(&mut out, length, b"\n\nRights ");
+        length += support::utoa(score.right, &mut out[length..]);
+        length = append(&mut out, length, b"; Wrongs ");
+        length += support::utoa(score.wrong, &mut out[length..]);
+        length = append(&mut out, length, b"; Score ");
+        length += support::utoa(score.percent(), &mut out[length..]);
+        length = append(&mut out, length, b"%");
+        support::emit(&out[..length.min(out.len())]);
+        if let Some(rate) = seconds_per_problem(qtime, score.right) {
+            // `"\nTotal time %ld seconds; %.1f seconds per problem\n\n"` with `(long)qtime`
+            // and `(float)qtime / nright` (`:172-173`).
+            let mut line = [0u8; 96];
+            let mut n = 0;
+            n = append(&mut line, n, b"\nTotal time ");
+            n = put_udec(&mut line, n, qtime);
+            n = append(&mut line, n, b" seconds; ");
+            n = put_udec(&mut line, n, rate.whole);
+            line[n] = b'.';
+            n += 1;
+            line[n] = b'0' + rate.tenth;
+            n += 1;
+            n = append(&mut line, n, b" seconds per problem\n\n");
+            support::emit(&line[..n.min(line.len())]);
+        }
+    }
+    support::emit(b"Press RETURN to continue...\n");
+    // C waits with `while(!getchar());` (`:178-179`) — it consumes one character. This
+    // shell's line reader owns the buffered bytes and has no single-byte seam yet, so the
+    // wait is the registered gap while the printed line is byte-for-byte C's.
     support::emit(b"\n");
+}
+
+/// Copy `text` into `out` at `at` and report the new end; the callers clip with
+/// `out.len()` at the write, so a mis-sized buffer shortens the line instead of panicking.
+fn append(out: &mut [u8], at: usize, text: &[u8]) -> usize {
+    let mut at = at;
+    for &byte in text {
+        if at < out.len() {
+            out[at] = byte;
+        }
+        at += 1;
+    }
+    at
+}
+
+/// `utoa` widened to `u64`: the time line's first field is C's `%ld` on a `time_t` sum, and
+/// the seconds-per-problem number is that divided by a count, so neither is bounded like the
+/// two counters above.
+fn put_udec(out: &mut [u8], at: usize, value: u64) -> usize {
+    let mut digits = [0u8; 20];
+    let mut filled = 0usize;
+    let mut rest = value;
+    loop {
+        digits[filled] = b'0' + (rest % 10) as u8;
+        filled += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let mut at = at;
+    while filled > 0 {
+        filled -= 1;
+        at = append(out, at, &digits[filled..filled + 1]);
+    }
+    at
 }
 
 /// Seeds the generator from the clock face (`support::epoch_micros`
