@@ -250,6 +250,54 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十四把 `number` 的三支 `errx` 接到 `getprogname()`，并因此发现那句报文的载荷也是错的**
+  （`2026-10-14`，`claim/NUMBER-ERR-WIRE-qoder` @ 基线 `965b9f5d8`，单域三线 `os/commands/games/stdio-games`
+  与同线文档，无跨界）：接回批次二百五十三登记不执行①（16v 判定表的下一行）。
+  **是什么**：三支 `errx`（`number.c:111`、`:156`、`:164`）的格式串里都没有程序名，名字是
+  `verrx` 添的（`minix3/lib/libc/gen/verrx.c:59` 打 `getprogname()`、`:62` 打换行），而本壳把
+  `number: ` 当字面量写死——改名跑（副本、符号链接）就不对了。判类 P0-code-bug。
+  **核对时才发现的第二件事**：判定表那行原本写「文本已对」，这一句账面超出证据。C 的扫描只在
+  遇到 `.` 时写一个终止符（`:149`），别处一个字节也不改，所以 `errx(1, "illegal number: %s", line)`
+  打的是从当前起点到缓冲尾的**整串**：`1e5` 答 `1e5`（不是 `1`）、`12-34` 答 `12-34`；在 `fgets`
+  那条路上行尾换行也还在串里，于是报文后面多一个空行。本壳此前在出错的那个字节处截短，两支都不对，
+  而既有金样 `illegal number: 1` 把错的形状当了对的——判类 P0-code-bug + P0-test-missing
+  （测试自身错，`test-audit` 的那一维）。
+  **新增的取证手法（后续轮可复用）**：把 C 真源用宿主编译器编成参照进程——
+  `printf '#define __COPYRIGHT(x)\n#define __RCSID(x)\n#define __dead __attribute__((__noreturn__))\n' > shim.h`
+  后 `cc -O0 -include shim.h -o number minix3/games/number/number.c`（glibc 的 `<err.h>` 与 NetBSD 的
+  `verrx` 同形），再把两个进程放一起逐字节对：本轮 26 例（16 例操数形 + 10 例标准输入形，含 255/254
+  位边界、制表符、前导空白、点截短、无点带换行）**SAME=26 DIFF=0**。这比手推金样硬得多，本轮就是
+  靠它把一处手推错出来的金样抓出来的。
+  **怎么修**：决定半 `NumberError::Illegal` 的 `end` 改为 `dot.unwrap_or(line.len())`（只在点截短，
+  否则到缓冲尾）；壳侧加本地 `errx(prog, phrase, payload)` 复刻 `verrx.c:59-63` 那几次 `fprintf`，
+  程名取 `support::prog_name(&argv)`（与 caesar 同形）；usage 那一行相反，C 把 `number` 写进字面量
+  （`:288`），所以继续不跟 `argv[0]` 走。
+  **为什么不选另一条路**：①用 `String::from_utf8_lossy` 拼一句会换掉非 UTF8 字节，C 是原样透出；
+  ②把四次 `warn` 合成一次看似更原子，但 C 本来就是多次 `fprintf`，报文内容不变而结构更贴近原文；
+  ③只改编程名不改载荷，等于把已知错的金样继续供着。
+  **门**：`tests/number_face.rs` 5 → 7 枚：新增 `a_refusal_on_the_read_path_carries_the_lines_own_newline`
+  钉住标准输入那条路的空行与制表符，`the_three_refusals_follow_argv_zero_while_the_usage_does_not`
+  拿副本改名同时钉两半（三支拒绝跟着走、usage 不跟）；库测 `refused_numbers_name_the_text_c_would_still_print`
+  的金样按 C 重写（`1e5`、`12-34`、`  7 x`、`12a\n` 四支）。
+  三件套：`cargo test -p minix-stdio-games` → **200 passed、0 failed**（基线 198，+2 枚；20 个测试目标，
+  拆解 71 库测 + 九壳×7 + 九扇门 66）；容器 `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-stdio-games`
+  → **200/0**；三架构 `cargo build -p minix-stdio-games --bins --target {x86_64,aarch64,riscv64gc}-unknown-none`
+  各有 `Compiling` 行且 0 error；`rustfmt --edition 2024 --check` 触及三文件零漂移；clippy 对触及文件零命中；
+  C 参照对账 26 例 DIFF=0。核实日 `2026-10-14`；基线 `965b9f5d8`。
+  **两枚变异负控**（测完按 md5 复原）：把 `end` 退回 `dot.unwrap_or(index)` → 4 枚红（1 库测 + 3 门）；
+  把程名退回硬写 `number: ` → **只有改名那一枚红**（其余枚都用真名跑，本来看不出来，正是那一枚存在的理由）。
+  22 篇四处随之改准：§2.5 数词段、`number` 接线行、§5 测数行与两个端到端清单条目。**账面滞后两笔一并清**：
+  §5 的测数行还写着「十五扇门」、`caesar_face` 那一条还写着 3 个（批次二百五十三漏改），现按实测取
+  九扇 66 枚与 7 枚。
+  **顺带核正**：`words.rs` 与 `number_face.rs` 里 12 处 `number.c` 锚点漂移——函数区间写成了 `:112-212`
+  /`:215-249`/`:252-284`/`:286-298`，`grep -n` 实测是 `convert` `:125-192`、`unit` `:194-227`、`number`
+  `:229-265`、`pfract` `:267-283`（`unit`/`number` 还互换了），`MAXNUM` 实为 `:55`。门检不出这批：
+  `pattern-gate` 的 P18 只抽带文件名的锚点，裸 `:NNN` 区间不受检——该工具缺口已登记。
+  登记不执行：①`words.rs` 头部 1-30 行的 `pig.c` 锚点同批未复核，需另轮；②`bin_support.rs` 在
+  freestanding 面两条 unused import（`EIO`、`err_line`）需按 `#[cfg]` 归位；③`getopt` 自己那句
+  `invalid option` 报文本壳无（宿主 glibc 有），归 `7g` 的 getopt 一轮；④`text-games` 三面；⑤`primes`
+  的 `-d`/`-h` 与 `read_num_buf`；⑥P18 扩到裸 `:NNN`（带同文件最近一个文件名归属）。
+
 - ✅ **批次二百五十三接上 `caesar` 的两条流失败腿：一个缀号、一个只短语**
   （`2026-10-14`，`claim/CAESAR-NUMBER-ERR-qoder` @ 基线 `69eb456dc`，单域三线 `os/commands/games/stdio-games`
   与同线文档，无跨界）：接回批次二百五十二登记不执行①之外的判定表行（判定表里 `caesar` 那行现已翻成已闭）。
@@ -336,7 +384,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   | `arithmetic` | `errx` 四支（`:126`、`:132`、`:362`、`:373`）+ `usage` 走 stderr | 本批接齐（`:373` 那支 `op %c not in keylist` 在本树不可达：键表由本树枚举产生） | 已闭 |
   | `primes` | `err(1, "%s", argv[i])` ×3 与 `errx` ×5（`:133`、`:138`、`:140`、`:145`、`:147`、`:149`、`:155`、`:160`） | **一支都没有**：非法数字、负数、停止值过大、开档失败全静默 | P0，接线优先级最高（下一轮 v2-12） |
   | `caesar` | `err` ×3（`:105`、`:118`、`:137`）+ `errx` ×2（`<stdin>`/`<stdout>`，`:207`、`:213`） | 批次二百五十三接齐：`<stdout>` 写失手缀号、`<stdin>` 只短语；`fflush` 那支在本树无对位（逐块直写，已声明） | 已闭 |
-  | `number` | `errx` ×3（`:111`、`:156`、`:164`） | 文本已对（含 `max 65 digits` 的 `MAXNUM`），但程名硬写 `number: ` 而非 `getprogname()` | 待接（小） |
+  | `number` | `errx` ×3（`:111`、`:156`、`:164`） | 批次二百五十四接齐：程名改走 `getprogname()`，usage 仍按 C 的字面量。核对时发现原判「文本已对」不成立——C 只在 `.` 处写终止符，`illegal number: %s` 打整串（无点就连行尾换行一起打），本壳此前在出错字节处截短、金样也跟着错了，一并改正 | 已闭 |
   | `ppt` / `factor` | `err(1, "fgets")`、溢出句 | 批次二百三十四/二百三十五已接 | 已闭 |
   | `bcd` / `morse` | C 侧零支（`bcd.c`、`morse.c` 无 `warn`/`err`） | 只有 usage 行 | 无需接线 |
   | `text-games` 三面（`fortune`/`random`/`wtf`） | `fortune.c:207`、`:221`、`:352` 是 `err`/`errx`；`random.c:97`、`:99` 同理 | 六支都是 `xxx: <路径>: cannot open`/`read error`/`bad denominator` 这类自创短语，缺号也缺操数原文 | 待接（同 `what` 那一类；`wtf` 的 C 真源尚未在 `minix3` 里定位到，需先找源） |

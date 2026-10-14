@@ -1,17 +1,22 @@
 //! Minix-RS number — numbers as English words.
 //!
-//! Ground truth: `minix3/games/number/number.c`, `main` at `:91-126`. Options are
+//! Ground truth: `minix3/games/number/number.c`, `main` at `:89-123`. Options are
 //! `getopt(argc, argv, "l")`, where `-l` is the only letter and anything else answers the
-//! usage line on standard error with status 1 (`:85-90`, `:299-303`). Operands are spoken
-//! in order (`:117-122`); with none, standard input is read one `fgets` at a time into
-//! `char line[256]` — usable length **255**, because the terminator owns the last byte —
-//! and a chunk that holds no newline means the line did not fit, which is fatal
-//! (`:109-111`). Every item after the first is preceded by a literal `"...\n"`
-//! (`:110-111`, `:119-120`); the number itself is `convert`'s business.
+//! usage line on standard error with status 1 (`:95-103`, `:285-290`). Operands are spoken
+//! in order (`:116-121`); with none, standard input is read one `fgets` at a time into
+//! `char line[256]` (`:92`, `:108-109`) — usable length **255**, because the terminator owns
+//! the last byte — and a chunk that holds no newline means the line did not fit, which is
+//! fatal (`:110-111`). Every item after the first is preceded by a literal `"...\n"`
+//! (`:112-113`, `:118-119`); the number itself is `convert`'s business.
 //!
-//! The failure messages are plain `errx` calls with no `strerror` suffix, so this shell
-//! reproduces them exactly: `illegal number: ` plus the text C's `line` still held,
-//! `number too large, max 65 digits.`, and `line too long.`
+//! The three refusals are plain `errx` calls (`:111`, `:156`, `:164`), so they carry no
+//! `strerror` sentence — but `verrx` opens with `getprogname()` plus `": "` and closes with a
+//! newline (`minix3/lib/libc/gen/verrx.c:59-62`). The name therefore comes from `argv[0]`, not
+//! from the literal word `number`, and the text after `illegal number: ` is whatever C's `line`
+//! still holds: only a `.` is overwritten with a terminator (`:149`), so without one the report
+//! runs to the end of the buffer — offending bytes and `fgets`' newline included. The usage
+//! line is the opposite case: `number.c:288` spells `number` into the literal, so it never
+//! follows the name.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -22,14 +27,16 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
+use alloc::format;
 use minix_stdio_games::words::{NumberError, convert};
 use support::LineReader;
 
-/// Usable bytes of C's `char line[256]` under `fgets` (`number.c:94`, `:108`).
+/// Usable bytes of C's `char line[256]` under `fgets` (`number.c:92`, `:108-109`).
 const LINE: usize = 255;
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    let prog = support::prog_name(&argv);
     let mut linear = false;
     let mut first = 1usize;
     while first < argv.len() {
@@ -59,13 +66,12 @@ fn run() -> ! {
         while reader.next_line().unwrap_or(false) {
             let line = reader.line();
             if !line.contains(&b'\n') {
-                support::warn(b"number: line too long.\n");
-                support::terminate(1);
+                errx(prog, b"line too long.", b"");
             }
             if spoken_any {
                 support::emit(b"...\n");
             }
-            speak(line, linear, &mut out);
+            speak(prog, line, linear, &mut out);
             spoken_any = true;
         }
     } else {
@@ -73,7 +79,7 @@ fn run() -> ! {
             if spoken_any {
                 support::emit(b"...\n");
             }
-            speak(text.as_bytes(), linear, &mut out);
+            speak(prog, text.as_bytes(), linear, &mut out);
             spoken_any = true;
         }
     }
@@ -81,26 +87,34 @@ fn run() -> ! {
 }
 
 /// One number through C's `convert`, with its two `errx` exits.
-fn speak(line: &[u8], linear: bool, out: &mut [u8]) {
+fn speak(prog: &str, line: &[u8], linear: bool, out: &mut [u8]) {
     match convert(line, linear, out) {
         Ok(len) => support::emit(&out[..len]),
         Err(NumberError::Illegal { start, end }) => {
-            // C prints the `line` it still has: from its advanced start up to the `.` it
-            // already turned into a terminator, when there was one.
-            support::warn(b"number: illegal number: ");
-            support::warn(&line[start..end]);
-            support::warn(b"\n");
-            support::terminate(1);
+            // C prints the `line` it still holds (`number.c:156`): from its advanced start to
+            // the `.` it wrote a terminator at, or to the end of the buffer when no `.` came
+            // first — which on the `fgets` path leaves the line's own newline inside the text.
+            errx(prog, b"illegal number: ", &line[start..end]);
         }
-        Err(NumberError::TooLarge) => {
-            support::warn(b"number: number too large, max 65 digits.\n");
-            support::terminate(1);
-        }
+        Err(NumberError::TooLarge) => errx(prog, b"number too large, max 65 digits.", b""),
         // Unreachable for legal input, whose spelling fits well inside `out`.
         Err(NumberError::NoRoom) => support::terminate(1),
     }
 }
 
+/// C's `errx(eval, fmt, ...)`: program name, `": "`, the formatted text, one newline, exit
+/// (`verrx.c:59-63`). `phrase` is the format's fixed text and `payload` the `%s` argument it
+/// may carry; the two fixed phrases pass an empty payload.
+fn errx(prog: &str, phrase: &[u8], payload: &[u8]) -> ! {
+    support::warn(format!("{prog}: ").as_bytes());
+    support::warn(phrase);
+    support::warn(payload);
+    support::warn(b"\n");
+    support::terminate(1)
+}
+
+/// C's `usage()` writes a literal that names `number` itself (`number.c:288`), so this line
+/// keeps the word even when `argv[0]` says otherwise.
 fn usage() -> ! {
     support::warn(b"usage: number [# ...]\n");
     support::terminate(1);

@@ -115,7 +115,7 @@ pub fn pig_word(word: &str, out: &mut [u8]) -> Result<usize, GameError> {
     Ok(written)
 }
 
-/// C's three word tables (`number.c:57-73`): `name1` covers 0 through 19 (index 0 is the
+/// C's three word tables (`number.c:57-77`): `name1` covers 0 through 19 (index 0 is the
 /// empty string, so a zero group speaks nothing), `name2` the tens decades, and `name3`
 /// the scale names by group of three digits — 22 of them, which is why the ceiling is
 /// `MAXNUM` = 65 digits.
@@ -169,21 +169,25 @@ pub const NAME3: &[&str] = &[
     "vigintillion",
 ];
 
-/// Prefixes for the fraction name, indexed by digits modulo three (`number.c:287`).
+/// Prefixes for the fraction name, indexed by digits modulo three (`number.c:270`).
 const FRACTION_PREFIX: &[&str] = &["", "ten-", "hundred-"];
 
-/// Biggest number C handles, in digits, on either side of the point (`MAXNUM`, `:53`).
+/// Biggest number C handles, in digits, on either side of the point (`MAXNUM`, `:55`).
 pub const MAXNUM: usize = 65;
 
-/// Why C's `convert` refuses a line (`number.c:128-158`).
+/// Why C's `convert` refuses a line (`number.c:134-164`).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum NumberError {
-    /// A blank inside the number, a `-` that is not leading, or a second `.`. C prints
-    /// `illegal number: ` plus whatever its `line` still holds: from the current start
-    /// (leading blanks are consumed one by one) up to the `.` it already replaced with a
-    /// terminator, if any — so `1.2 3` reports `1`, not the whole line.
+    /// A blank inside the number, a `-` that is not leading, or a second `.` (`:135-155`).
+    /// C hands its `line` to `errx("illegal number: %s", line)` (`:156`), and the only byte
+    /// that scan ever writes into `line` is the terminator left at a `.` (`:149`). So the
+    /// reported text runs from the current start (leading blanks are consumed one by one,
+    /// `:135-140`) to that `.` when there is one — `1.2 3` reports `1` — and **otherwise to
+    /// the end of the buffer**, offending characters and all. On the `fgets` path that end
+    /// still owns the line's `\n`, which is why the report of an unreadable stdin line is
+    /// followed by a blank line of its own.
     Illegal { start: usize, end: usize },
-    /// More than `MAXNUM` digits on either side of the point (`:161-163`).
+    /// More than `MAXNUM` digits on either side of the point (`:162-164`).
     TooLarge,
     /// The output buffer was too small. Legal input needs a few hundred bytes at most, so
     /// this is a plumbing guard rather than a C behaviour: C's `printf` has no such limit.
@@ -209,7 +213,8 @@ impl<'a> Speaker<'a> {
         self.written += bytes.len();
     }
 
-    /// C's `lflag ? " " : ".\n"`, the tail a scale group ends with (`:229-230`, `:244-246`).
+    /// C's `lflag ? " " : ".\n"`, the tail a scale group ends with (`:207-208`, `:216-217`,
+    /// and the bare `".\n"` of the last group at `:222-223`).
     fn end_group(&mut self) {
         if self.linear {
             self.put(" ");
@@ -219,7 +224,7 @@ impl<'a> Speaker<'a> {
     }
 }
 
-/// C's `number()` (`:252-284`): speak at most three digits of `bytes`, and say whether
+/// C's `number()` (`:229-265`): speak at most three digits of `bytes`, and say whether
 /// anything was spoken. A three-digit group whose hundreds digit is zero prints nothing
 /// for that digit and falls through — so `105` is `one hundred five`, and `007` is `seven`.
 fn speak_group(bytes: &[u8], len: usize, s: &mut Speaker) -> bool {
@@ -258,7 +263,7 @@ fn speak_group(bytes: &[u8], len: usize, s: &mut Speaker) -> bool {
     rval
 }
 
-/// C's `unit()` (`:215-249`): speak a group of up to `MAXNUM` digits with the scale names
+/// C's `unit()` (`:194-227`): speak a group of up to `MAXNUM` digits with the scale names
 /// between them. The scale index is the number of *remaining* groups of three, which is
 /// why `1000` is `one thousand` and not `one thousand zero`.
 fn speak_units(bytes: &[u8], mut len: usize, s: &mut Speaker) -> bool {
@@ -296,7 +301,7 @@ fn speak_units(bytes: &[u8], mut len: usize, s: &mut Speaker) -> bool {
     rval
 }
 
-/// C's `pfract()` (`:286-298`): name the place value of a fraction. One digit is tenths,
+/// C's `pfract()` (`:267-283`): name the place value of a fraction. One digit is tenths,
 /// two is hundredths, and beyond that the prefix table and the scale names compose — and
 /// like every other group in C it ends with a period, which `-l` does not suppress here.
 fn speak_fraction_name(len: usize, s: &mut Speaker) {
@@ -311,7 +316,7 @@ fn speak_fraction_name(len: usize, s: &mut Speaker) {
     }
 }
 
-/// C's `convert()` (`number.c:112-212`) for one line or one operand.
+/// C's `convert()` (`number.c:125-192`) for one line or one operand.
 ///
 /// The scan is the surprising part and it is deliberately unforgiving: a blank only counts
 /// as leading while it sits at the current start of the number, so ` number 5` fails after
@@ -340,7 +345,7 @@ pub fn convert(line: &[u8], linear: bool, out: &mut [u8]) -> Result<usize, Numbe
             }
             return Err(NumberError::Illegal {
                 start,
-                end: dot.unwrap_or(index),
+                end: dot.unwrap_or(line.len()),
             });
         }
         if byte.is_ascii_digit() {
@@ -360,7 +365,7 @@ pub fn convert(line: &[u8], linear: bool, out: &mut [u8]) -> Result<usize, Numbe
             _ => {
                 return Err(NumberError::Illegal {
                     start,
-                    end: dot.unwrap_or(index),
+                    end: dot.unwrap_or(line.len()),
                 });
             }
         }
@@ -506,8 +511,8 @@ mod tests {
     #[test]
     fn each_scale_group_ends_with_a_period_of_its_own() {
         // C's `unit()` prints the scale name and then `lflag ? " " : ".\n"` per group
-        // (`number.c:229-236`), so a four-group number arrives as several lines. The decades
-        // join with a hyphen (`number()` at `:271-278`), not a space.
+        // (`number.c:201-223`), so a four-group number arrives as several lines. The decades
+        // join with a hyphen (`number()` at `:251-253`), not a space.
         assert_eq!(spoken("0"), "zero.\n");
         assert_eq!(spoken("7"), "seven.\n");
         assert_eq!(spoken("007"), "seven.\n", "leading zeros speak nothing");
@@ -533,7 +538,7 @@ mod tests {
     #[test]
     fn the_fraction_half_is_named_after_its_own_digit_count() {
         // C walks the fraction to its first non-zero digit, joins with `and`, and then names
-        // the whole fraction by length (`:184-203`, `pfract` at `:286-298`).
+        // the whole fraction by length (`:173-187`, `pfract` at `:267-283`).
         assert_eq!(
             spoken("1.0"),
             "one.\n",
@@ -551,7 +556,7 @@ mod tests {
     #[test]
     fn linear_mode_trades_the_periods_for_spaces() {
         // `-l` replaces each group's `".\n"` with `" "` and ends the line with one newline
-        // (`number.c:229-230`, `:244-246`, `:209-211`); the fraction name keeps its period.
+        // (`number.c:207-208`, `:216-217`, `:190-191`); the fraction name keeps its period.
         assert_eq!(spoken_flag("6", true), "six\n");
         assert_eq!(
             spoken_flag("1234", true),
@@ -568,11 +573,13 @@ mod tests {
     #[test]
     fn refused_numbers_name_the_text_c_would_still_print() {
         // `convert` refuses a blank inside the number, a `-` that is not leading, and a
-        // second `.` (`number.c:138-153`); the payload is the slice C's `line` still holds.
+        // second `.` (`number.c:135-155`). C writes a terminator only at the `.` (`:149`), so
+        // without one the payload is the whole remainder — offending bytes included, which is
+        // what the C reference binary answers for `1e5` and `12-34`.
         let mut out = [0u8; 64];
         assert_eq!(
             convert(b"1e5", false, &mut out),
-            Err(NumberError::Illegal { start: 0, end: 1 })
+            Err(NumberError::Illegal { start: 0, end: 3 })
         );
         assert_eq!(
             convert(b"1.2 3", false, &mut out),
@@ -583,16 +590,22 @@ mod tests {
             Err(NumberError::Illegal { start: 0, end: 1 })
         );
         assert_eq!(
-            convert(b"1-2", false, &mut out),
-            Err(NumberError::Illegal { start: 0, end: 1 })
+            convert(b"12-34", false, &mut out),
+            Err(NumberError::Illegal { start: 0, end: 5 })
         );
-        // The leading blanks are consumed, so the start is the digit; the refusal happens at
-        // the blank after it, and C's `line` still reaches only that far.
+        // The leading blanks are consumed, so the start is the first digit (`:136-139`), and
+        // the refusal at the following blank reports everything after that digit.
         assert_eq!(
             convert(b"  7 x", false, &mut out),
-            Err(NumberError::Illegal { start: 2, end: 3 })
+            Err(NumberError::Illegal { start: 2, end: 5 })
         );
-        // and 65 digits on either side of the point is the ceiling (`:161-163`).
+        // On the `fgets` path the buffer's newline is part of `line`, so the payload ends with
+        // it and `errx` adds a second one — that pair is what makes the blank line.
+        assert_eq!(
+            convert(b"12a\n", false, &mut out),
+            Err(NumberError::Illegal { start: 0, end: 4 })
+        );
+        // and 65 digits on either side of the point is the ceiling (`:162-164`).
         assert_eq!(
             convert(format!("1{}", "0".repeat(65)).as_bytes(), false, &mut out),
             Err(NumberError::TooLarge)
