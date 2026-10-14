@@ -504,6 +504,35 @@ impl core::fmt::Display for Strerror {
     }
 }
 
+/// Minix3 的 `perror(3)` 那一行：`<调用者给的串>: <strerror 的句子>`——注意这张表里的
+/// `perror` **不带程序名前缀**（`minix3/lib/libc/stdio/perror.c` 打的是
+/// `fprintf(stderr, "%s%s%s\n", s, separator, buf)`，`separator` 在串为空时是空串），
+/// 与带前缀的 `err(3)`/`warn(3)`（[`err_line`]）是两件事。把两者都放在这里，是为了让
+/// 「哪一个函数缀程序名」这个差别只有一处答案。
+pub fn perror_line(label: &str, code: Errno, out: &mut [u8]) -> usize {
+    use core::fmt::Write as _;
+    struct Sink<'a>(&'a mut [u8], &'a mut usize);
+    impl core::fmt::Write for Sink<'_> {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            for byte in text.as_bytes() {
+                if *self.1 < self.0.len() {
+                    self.0[*self.1] = *byte;
+                }
+                *self.1 += 1;
+            }
+            Ok(())
+        }
+    }
+    let separator = if label.is_empty() { "" } else { ": " };
+    let mut written = 0usize;
+    let _ = write!(
+        Sink(out, &mut written),
+        "{label}{separator}{std}",
+        std = Strerror(code)
+    );
+    written
+}
+
 /// C 的 `getprogname()`：程序名是运行时刻从 `argv[0]` 取的最后一段——
 /// `minix3/lib/csu/common/crt0-common.c:156-165` 扫到最后一个 `/` 就取其后面那段，
 /// 没有斜杠则整段照用。`err(3)`/`warn(3)`/`usage()` 的那几行都以它开头，所以这是契约
@@ -895,6 +924,14 @@ mod strerror_face_tests {
             Strerror(Errno::from_i32(EPERM)).to_string(),
             "Operation not permitted"
         );
+
+        // Minix3 的 `perror` 不缀程序名：`perror("unlink")` 出的是 `unlink: <句子>`，
+        // 空串时连那个冒号空格都没有（`perror.c` 的 `separator` 规则）。
+        let mut line = [0u8; 96];
+        let len = super::perror_line("unlink", Errno::from_i32(ENOENT), &mut line);
+        assert_eq!(&line[..len], b"unlink: No such file or directory");
+        let len = super::perror_line("", Errno::from_i32(ENOENT), &mut line);
+        assert_eq!(&line[..len], b"No such file or directory");
 
         // 程序名取末段，而不是整个 `argv[0]`：C 的运行时刻就是这么切的。
         assert_eq!(super::prog_name("/bin/mkfifo"), "mkfifo");

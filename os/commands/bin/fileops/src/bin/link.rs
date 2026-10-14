@@ -4,8 +4,10 @@
 //! behind an argument-count check; the shape check lives in
 //! `minix_fileops::linkops`, this program supplies the syscall and error leg
 //! (`link.c:52-59`). A write-side command: real-machine effect is the
-//! writable-root gate (`C-57`/E5), and C's `perror` `strerror` suffix is not
-//! reproduced, so a failure prints `link: <newpath>`. Note this is the single
+//! writable-root gate (`C-57`/E5). The failure leg is C's `perror("link")`
+//! (`link.c:57`), which in Minix3 prints `<the caller's string>: <strerror>` with no
+//! program-name prefix (`minix3/lib/libc/stdio/perror.c`) — so the line is
+//! `link: <sentence>`, and neither operand reaches the diagnostic. Note this is the single
 //! `link(2)` utility (hard link, target must be an existing non-directory on a
 //! filesystem that disallows linking directories); the richer BSD `ln` with its
 //! `-s`/`-f`/`-n` behaviour is the separate `ln` command.
@@ -17,7 +19,6 @@ extern crate alloc;
 #[path = "../bin_support.rs"]
 mod support;
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_fileops::linkops::link_operands;
@@ -37,8 +38,9 @@ fn run() -> ! {
     };
     match link(old, new) {
         Ok(()) => support::terminate(0),
-        Err(_) => {
-            support::warn(format!("link: {new}\n").as_bytes());
+        // C 的 `perror("link")`：报号不报操作数。
+        Err(code) => {
+            support::perror_line("link", code);
             support::terminate(1);
         }
     }
