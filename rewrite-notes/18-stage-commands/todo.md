@@ -250,6 +250,33 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十五接上 `du` 的报告腿与 `fts_read` 终止腿，并纠正一处把已接旗标说成未接的报文（16t 第五枚）**
+  （`2026-10-14`，`claim/DU-STRERROR-qoder` @ 基线 `006edefb0`，单域三线 `os/commands/bin/fileops` 与同线
+  文档，无跨界）：接回批次二百四十四登记不执行①的第一枚。**是什么**：C 的逐访问报告是
+  `warnx("%s: %s", p->fts_path, strerror(p->fts_errno))`（`du.c:233`），本壳只印 `du: <路径>`——号丢了，
+  不可读目次与不存在的操数在用户眼里一个样。判类 P0-code-bug。
+  **核对中坐实三处**：①`du.c:251-253` 的 `err(1, "fts_read")` 是终止腿，本壳以前报完继续走（与 `rm`/`cp`
+  同一病）；②拒收报文写的是「`humanize_number`, logical walk, FTS_XDEV」，而 `-h` 早已接上（走 `humanize.rs`），
+  真正拒的是 `-H`/`-L`/`-x`——报文在骗人（P0-fact）；③本命令的 `usage()` 在 C 里是硬写字符串（`du.c:356-362`），
+  与 `rm`/`cp`/`mv` 那三个带 `getprogname()` 的不是一回事，所以 `du` 只有报告行跟 `argv[0]` 走。
+  **怎么修**：`warn_path(prog, path, code)` 交共享渲染（`warnx` 带 `strerror` 那一形与 `err_line` 输出同一
+  个三字段行，这一点在头注里写明，免得后人以为这里少用了一族）；`descend` 的 `getdents` 失手改按 C
+  印 `du: fts_read: <句子>` 即退；拒收报文去掉 `humanize_number`；`prog` 在 `run()` 里取一次往下传。
+  **门**：新建 `tests/du_face.rs`（4 枚，本 crate 第七扇进程级门）：三段齐的报告行且退 1、两个操数出两行
+  只一个退码、`-H` 拒收行有程序名无句子、副本改名后报告行跟着改而 usage 行不跟。
+  三件套：`cargo test -p minix-fileops` → **422 passed、0 failed**（基线 418，+4 枚门）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-fileops` → **422/0**；三架构
+  `cargo build -p minix-fileops --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 Finished 零 error；
+  `rustfmt --edition 2024 --check` 触及两文件零漂移；clippy 对触及文件零命中。核实日 `2026-10-14`；
+  基线 `006edefb0`。
+  **变异负控与一条诚实边界**：报告腿退回只报名字 → 门 3 枚红✓；而把 `fts_read` 退回「报完继续走」时
+  **门全绿**（422/0）——宿主 `open` 先失败，根本走不到 `getdents`，所以那一腿本门钉不住；这一点已写进门头注
+  与 06 篇，真机半归 `C-57`/`E5`（imgrd 根盘的 `getdents` 断腿另已登记）。不拿「门绿」当作那条腿已证的错觉。
+  06 篇三行随之改准：`du.rs` 行（`-h` 已接、`-H`/`-L`/`-x` 拒收）、`bin/du.rs` 行、端到端门清单添上本扇。
+  登记不执行：①余下 `find`/`stat`、doctools `what`、textfilter `join` 的同族腿；②`du.c:195` 的
+  `err(1, "fts_open \`%s'")` 在本树没有对位调用（逐目次 `open`），其形状已被 `FTS_DNR` 那一支吃掉；
+  ③`du.c:321` 的 `err(1, "calloc")`（硬链接表分配失败）在本树无对位——`LinkSet` 是 `Vec`，失败不给出可印的号。
+
 - ✅ **批次二百四十四把 `truncate` 的四处失败腿改回 `perror(3)` 那一族：前缀与换行都不是本壳说了算（16t 第四枚）**
   （`2026-10-14`，`claim/TRUNCATE-STRERROR-qoder` @ 基线 `96c429683`，单域三线 `os/commands/bin/fileops`
   与同线文档，无跨界）：接回批次二百四十三登记不执行①的第一枚。**是什么**：`truncate` 四处逐操数失败

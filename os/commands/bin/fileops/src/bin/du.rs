@@ -23,12 +23,16 @@
 //!
 //! Two deliberate differences from C, both in parts of the run a user rarely
 //! reaches: an unreadable directory is reported and still counted, which is C's
-//! `FTS_DNR` path (`du.c:230-235`) — its warn suffix is not wired to the table
-//! yet (`minix_types::Errno::message`; registered follow-up); and a `getdents` read error, which C turns into `err(1, "fts_read")`
-//! (`du.c:251-253`) killing the whole run, is reported for the offending
-//! directory only. Unlike every other command in this family, `du` only reads, so
-//! its real-machine check does not wait for a writable image — the seeding and the
-//! on-machine totals are registered as this batch's follow-up.
+//! `FTS_DNR` path (`du.c:230-235`) — the report itself is wired to the shared
+//! renderer (`err_line` in the `minix-types` crate), because C's line is
+//! `warnx("%s: %s", p->fts_path, strerror(p->fts_errno))` (`:233`), which renders
+//! to exactly `du: <path>: <sentence>`; and the descriptor leaks in C's failure
+//! paths are closed here. Unlike every other command in this family, `du` only
+//! reads, so its real-machine check does not wait for a writable image — the
+//! seeding and the on-machine totals are registered as this batch's follow-up.
+//! A failed directory read is fatal, as in C: `if (errno) err(1, "fts_read")`
+//! (`du.c:251-253`) prints `du: fts_read: <sentence>` and leaves the run, so the
+//! totals of the directories already walked are never printed.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -46,7 +50,7 @@ use minix_fileops::du::{
     self, DuOption, DuPlan, LinkSet, count, printed_text, prints_directory, prints_file,
     skipped_as_nodump,
 };
-use minix_sys::{Fd, Stat, close, getdents, lstat, open};
+use minix_sys::{Errno, Fd, Stat, close, getdents, lstat, open};
 
 /// The refill buffer for the walk (C's fts keeps its own; the size is not
 /// observable, it only bounds how many records arrive per call).
@@ -58,8 +62,12 @@ fn zeroed() -> Stat {
     unsafe { core::mem::zeroed() }
 }
 
-fn warn_path(path: &str) {
-    support::warn(format!("du: {path}\n").as_bytes());
+/// C's `warnx("%s: %s", p->fts_path, strerror(p->fts_errno))` (`du.c:233`), the
+/// `FTS_DNR`/`FTS_ERR`/`FTS_NS` arm: program name, the path, that number's
+/// sentence — the same three fields `warn(3)` produces, which is why this goes to
+/// the shared `err_line` renderer rather than a hand-built line.
+fn warn_path(prog: &str, path: &str, code: Errno) {
+    support::warn_line(prog, path, code);
 }
 
 /// The value of `name` in the environment, as C's `getenv` would find it: the
@@ -75,12 +83,12 @@ fn env_value(name: &str) -> Option<String> {
 /// One walk position (`du.c:197-249`): the entry's own count, its children's
 /// totals when it is a directory, and the print this visit owes. Returns the count
 /// in 512-byte blocks (or inodes, under `-i`) and whether anything failed.
-fn du_visit(path: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64, bool) {
+fn du_visit(prog: &str, path: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64, bool) {
     let mut sb = zeroed();
-    if lstat(path, &mut sb).is_err() {
+    if let Err(e) = lstat(path, &mut sb) {
         // `du.c:230-235` (`FTS_NS`/`FTS_ERR`): report, count the failure, and
         // contribute nothing.
-        warn_path(path);
+        warn_path(prog, path, e);
         return (0, true);
     }
     if skipped_as_nodump(plan, sb.st_flags) {
@@ -90,7 +98,7 @@ fn du_visit(path: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64,
 
     let own = count(plan.inodes, sb.st_blocks);
     if cp::is_dir(sb.st_mode) {
-        let (children, failed) = descend(path, level + 1, plan, links);
+        let (children, failed) = descend(prog, path, level + 1, plan, links);
         let total = own.saturating_add(children);
         if prints_directory(level, plan) {
             report(path, total, plan);
@@ -122,11 +130,12 @@ fn report(path: &str, units: i64, plan: &DuPlan) {
 /// Walk one directory's entries. An unopenable directory is C's `FTS_DNR`
 /// (`du.c:230-235`): reported, counted as a failure, and the caller still adds the
 /// directory's own blocks.
-fn descend(dir: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64, bool) {
+fn descend(prog: &str, dir: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64, bool) {
     let fd: Fd = match open(dir, cp::O_RDONLY, 0) {
         Ok(fd) => fd,
-        Err(_) => {
-            warn_path(dir);
+        Err(e) => {
+            // C's `FTS_DNR` arm reports the same three-field line and carries on.
+            warn_path(prog, dir, e);
             return (0, true);
         }
     };
@@ -138,12 +147,12 @@ fn descend(dir: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64, b
         let transferred = match getdents(fd, &mut buf) {
             Ok(0) => break,
             Ok(n) => n,
-            Err(_) => {
-                // C ends the whole run here (`du.c:251-253`); this tree reports
-                // the directory and keeps the totals it already has.
-                warn_path(dir);
-                failed = true;
-                break;
+            Err(e) => {
+                // `du.c:251-253`: `if (errno) err(1, "fts_read")` — the C name of
+                // the step, that number's sentence, and the run leaves; the totals
+                // already gathered are never printed.
+                support::warn_line(prog, "fts_read", e);
+                support::terminate(1);
             }
         };
         let mut cursor = 0;
@@ -168,7 +177,8 @@ fn descend(dir: &str, level: i32, plan: &DuPlan, links: &mut LinkSet) -> (i64, b
             if !dents::is_descendable(name) {
                 continue;
             }
-            let (units, child_failed) = du_visit(&dents::join_path(dir, name), level, plan, links);
+            let (units, child_failed) =
+                du_visit(prog, &dents::join_path(dir, name), level, plan, links);
             total = total.saturating_add(units);
             failed |= child_failed;
         }
@@ -189,28 +199,30 @@ fn run() -> ! {
         usage();
     }
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // C's `du` never calls `setprogname`; `getprogname()` still answers `argv[0]`'s
+    // last segment because `crt0-common.c:156-165` seeds it from there, so every
+    // `warnx` line starts with that string. C's own `usage()` (`du.c:356-362`) is a
+    // hardcoded string and stays one.
+    let prog = support::prog_name(&argv);
 
     let (plan, warnings) = match parse_with_env(&args[1..]) {
         Ok(v) => v,
         Err(DuOption::NotWired(c)) => {
-            support::warn(
-                format!("du: -{c} not wired (humanize_number, logical walk, FTS_XDEV)\n")
-                    .as_bytes(),
-            );
+            support::warn(format!("{prog}: -{c} not wired (logical walk, FTS_XDEV)\n").as_bytes());
             support::terminate(1);
         }
         Err(DuOption::Usage) => usage(),
     };
     // `getbsize` warns from inside the option processing, before any total.
     for text in warnings {
-        support::warn(format!("du: {text}\n").as_bytes());
+        support::warn(format!("{prog}: {text}\n").as_bytes());
     }
 
     let mut links = LinkSet::new();
     let mut grand: i64 = 0;
     let mut failed = false;
     for root in &plan.roots {
-        let (units, this_failed) = du_visit(root, 0, &plan, &mut links);
+        let (units, this_failed) = du_visit(prog, root, 0, &plan, &mut links);
         grand = grand.saturating_add(units);
         failed |= this_failed;
     }
