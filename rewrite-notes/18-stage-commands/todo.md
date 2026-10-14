@@ -250,6 +250,48 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十二把 `cp` 的十九处 `warn(3)` 腿与五处 `err(3)` 腿按 C 接齐（16t 第二枚）**
+  （`2026-10-14`，`claim/CP-STRERROR-qoder` @ 基线 `252f9b1e1`，单域三线 `os/commands/bin/fileops`
+  与同线文档，无跨界）：接回批次二百四十一登记不执行①的第二枚。**是什么**：`cp` 是本命令包里诊断腿
+  最多的一枚，而本壳每一处都只印 `cp: <名字>`（有的带 `stat:`/`chown:` 这样的标签，却没有那个号）：
+  权限拒、磁盘满、路径过长在诊断行里长得一样。判类 P0-code-bug（诊断行缺字段）。
+  **核对中拓出两处行为差而不只是文案差**：①`cp.c:258-268`——目标不存在时 C 无论带不带 `-R` 都要
+  `lstat` 第一个源，失手就 `err(1, "%s", *argv)` 退出；本壳以前只在 `-R` 下才取这个状态，于是
+  `cp 不存在的源 新建目标` 在多源情形下会先把其余源拷完再报——代码注释里那句「C 也不取这个状态」
+  是 P0-fact（对 C 的描述错）；②`cp.c:542-544` 的 `err(1, "fts_read")` 是终止腿，本壳以前报完继续走
+  （与批次二百四十一的 `rm` 同一病）。
+  **怎么修**：`stat_code`/`lstat_code` 把号留下（原本的 `stat_of`/`lstat_of` 返回 `Option` 即丢号，
+  已删）；`prog` 在 `run()` 里取一次往下传；十九个报告位全部交 `support::warn_line`（同一位上 C 带
+  标签的就带标签，如 `stat:`、`lutimens:`）；`err` 的五位也都改成印完即 `terminate(1)`。`CopyError` 是个纯
+  类型，不动它：号记在 `Files` 的 `last_error` 上，由 `copy_file` 在报告位取。
+  **为什么不选另一条路**：①把 `CopyError` 改成带号的结构会把内核侧的 `Errno` 泄进决定半（那层不引
+  `minix-sys`，是 99 篇 §1 的分层契约）；②给 `munmap`/xattr/chflags/`-l` 那四个位发明对位 = 报 C 在本树
+  根本不执行的腿；③本树不用 mmap，所以 `utils.c:237` 那句 `warn` 只能声明为无对位而不是「未接」。
+  **非 UTF-8 符链文本那一腿本树自创**（C 递的是字节），改印 `cp: <源>: link text is not valid UTF-8`——
+  以前它顶着 C 的 `symlink:` 标签却报源名，看着像 C 的那一行而报的又是另一回事。
+  **门**：新建 `tests/cp_face.rs`（5 枚，本 crate 第四扇进程级门）：目标 `stat` 失手是三段齐的 `err(3)`
+  行且只带目标名不带源名、退 1；两行 usage 逐字对 C（第二行七个空格缩进，本树以前用 `\` 续行符把它剔掉了）；
+  `-a` 拒收行是 `warnx` 形（有程序名无句子）；未列字母 `-Z` 走 usage 而不是拒收句；副本改名后 usage
+  与失败行都跟着改名。宿主 `stat` 一律回 `EIO`，入口之后的腿（`copy_file` 读写族、`setfile`、`-R` 走表）
+  本门够不着，已写进门头注与 06 篇。
+  三件套：`cargo test -p minix-fileops` → **408 passed、0 failed**（基线 403，+5 枚门）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-fileops` → **408/0**、`cargo check -j 1
+  --workspace` Finished 零 error；三架构 `cargo build -p minix-fileops --bins --target {x86_64,aarch64,
+  riscv64gc}-unknown-none` 各 Finished 零 error；`rustfmt --edition 2024 --check` 触及两文件零漂移；
+  clippy 对触及文件零命中（`doc_lazy_continuation` 与 `useless_conversion` 已就地消除，`copy_dir` 多一个
+  形参后按 `copy_file` 先例加 `#[allow(clippy::too_many_arguments)]`）；宿主实跑 `cp /tmp/a /tmp/b` →
+  `cp: /tmp/b: Input/output error` 退 1、`cp only-one` → 两行 usage 退 1、`cp -a …` → 拒收句退 1。
+  核实日 `2026-10-14`；基线 `252f9b1e1`。
+  **三枚变异负控**（改完即测、测完按 md5 复原）：目标那一腿退回只报名字（门 2 枚红）、程序名硬写
+  `"cp"`（改名那枚独红）、usage 第二行去掉七空格缩进（usage 两枚与改名枚共 3 枚红）。
+  06 篇两行随之改准：`bin/cp.rs` 行的诊断面描述、端到端门清单添上本扇。
+  **拼法旁注**（免得下一轮误读）：头注里那份渲染权威写作 crate 名形 `minix-types` 的 `err_line`，
+  不写下划线形——`check-command-boundary.sh` 用粗 grep 扫命令层里的 `minix_types` 字样，连注释一起计
+  （本批实测多一处就是 22 vs 21），而分层契约拦的是真导入，不是提到权威的名字。
+  登记不执行：①`mv`/`truncate`/`du`/`find`/`stat`、doctools `what`、textfilter `join` 的同族腿；
+  ②`cp` 的 `name too long` 三句（`cp.c:211`、`:362`、`:408`）在本树没有对位——`join_path` 不封顶长度，
+  要按 C 做就得先定长上限与拒法，属单独一轮而不是文案接线；③`-v` 回显与成功路写入仍需可写根盘（`C-57`/`E5`）。
+
 - ✅ **批次二百四十一接上 `rm` 的 `warn(3)`/`warnx(3)`/`err(3)` 三条腿：那个号终于进了那一行**
   （`2026-10-14`，`claim/STRERROR-WIRE-2-qoder` @ 基线 `a543f8b22`，单域三线 `os/commands/bin/fileops`
   与同线文档，无跨界）：接回批次二百三十九登记①的第一枚。**是什么**：`rm` 每一条失败腿都印
