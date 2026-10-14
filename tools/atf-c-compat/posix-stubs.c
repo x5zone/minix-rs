@@ -220,42 +220,12 @@ void *dlsym(void *h, const char *n){ (void)h;(void)n; return (void*)0; }
 int dlclose(void *h){ (void)h; return -1; }
 char *dlerror(void){ return (char *)"dlopen unsupported"; }
 
-/* BSD stresep（picolibc 无）——对位本仓 C 真源逐行移植：
- * minix3/lib/libc/string/stresep.c（BSD strsep 基 + esc 处理：命中 esc 则
- * strcpy 就地删 esc 并字面化下一字符；未转义分隔符写 NUL 断句；串尽返
- * NULL 并置 *stringp=NULL；省 _DIAGASSERT/__weak_alias，余逐行同）。
- * **调用侧声明配套**：picolibc 头面零声明→隐式 int 返回在 aarch64 被
- * sxtw 截成野地址（CodeReview 续-279f P0 实测旧二进制坐实），声明已补入
- * errno-compat.h（-include 注入通道，与 sys_nerr 同络）；修后须核
- * `objdump -d t_stresep | grep -A1 'bl.*<stresep>'` 无 sxtw 才算闭合。
- * 旧占位返 NULL 的 t_stresep 假红预告（§续-271 P2-3）至此定义+声明配套就位。 */
-char *stresep(char **stringp, const char *delim, int esc) {
-    char *s;
-    const char *spanp;
-    int c, sc;
-    char *tok;
-
-    if ((s = *stringp) == NULL)
-        return NULL;
-    for (tok = s;;) {
-        c = *s++;
-        while (esc != '\0' && c == esc) {
-            (void)strcpy(s - 1, s);
-            c = *s++;
-        }
-        spanp = delim;
-        do {
-            if ((sc = *spanp++) == c) {
-                if (c == 0)
-                    s = NULL;
-                else
-                    s[-1] = 0;
-                *stringp = s;
-                return tok;
-            }
-        } while (sc != 0);
-    }
-}
+/* BSD stresep 与位计数家族**不在此文件**：它们属于「glibc 与 picolibc 都没有」的那一类
+ * 补位件，不是「抢 picolibc 缺位」的接管件。原先 stresep/popcount/popcountll 住在这里，
+ * 而本 TU 是 picolibc 专用的整层接管面（同文件还强定义 sysconf/strerror/strerror_r），
+ * 于是 x86_64（glibc）腿要拿这三个名字就得把整层挂回去——批次二百六十四实测 glibc
+ * 根本没有 stresep（旧注释记它「glibc 本就有」是错的）。现已拆到 bsd-strfun.c，
+ * 两腿通吃；本文件的头注与 build-atf-test.sh 的分腿判据同步更正。 */
 
 /* sysconf：既有定义在 **libsemihost.a 的 sysconf.c.o，强符号**（非 weak；
  * libc.a 内无 sysconf，nm 实测）——它只认 _SC_CLK_TCK，其余（含
@@ -315,8 +285,11 @@ void *sbrk(intptr_t incr) {
     return (void *)old;
 }
 
-int popcountll(long long x){ return __builtin_popcountll((unsigned long long)x); }
-int popcount(unsigned x){ return __builtin_popcount(x); }
+/* popcount/popcountl/popcountll/popcount32/popcount64 与 stresep 同命：已拆给
+ * bsd-strfun.c（两腿通吃）。这里旧的 `int popcount(unsigned)` / `int popcountll(long long)`
+ * 除了返回型与 Minix3 的 `strings.h:57-59`（`unsigned int`）不符、且没有 popcountl/
+ * popcount32/popcount64——三个宽度名全靠隐式 int 声明兼容着跑，现已换为同签名的
+ * 契约面。本文件不再定义位计数族（否则与 bsd-strfun.o 强-强 multiple definition）。 */
 
 /* --- strerror 族真语义（§续-279m 探针 gh160 定谳后落地，自给表实现）——
  * picolibc(newlib 血缘)对越界码**永不产 BSD 形 "Unknown error: N"**：

@@ -91,11 +91,14 @@ CFGS=(-D__minix -D_GNU_SOURCE -DHAVE_SETENV -DHAVE_UNSETENV -DHAVE_PUTENV
       '-DATF_PKGDATADIR="/usr/share/atf"' '-DATF_SHELL="/bin/sh"' '-DATF_WORKDIR="/tmp"'
       '-D__arraycount(__x)=(sizeof(__x)/sizeof((__x)[0]))' "${NETBSD_ID_MACROS[@]}")
 
-# 只有 picolibc 腿要靠 `-include errno-compat.h` 补它缺的 BSD 声明；glibc 腿不注入，
-# 理由见上面 x86_64 分支。
-COMPAT_INCLUDE=()
+# picolibc 腿要靠 `-include errno-compat.h` 补它缺的 BSD 声明；glibc 腿不挂那层
+# （它自带 sysconf/strerror_r 等，注入反而与 glibc 声明冲突，理由见上面 x86_64 分支）。
+# bsd-strfun.h 则**两腿都挂**：glibc 与 picolibc 的头面都没有 BSD 的 stresep/popcount
+# 家族，不挂就是隐式声明按 int 返回——aarch64 上 `sxtw w0` 把返回指针截成野地址
+# （CodeReview 续-279f P0 实测坐实），位计数族也会把 `unsigned int` 返回值截成 int。
+COMPAT_INCLUDE=(-include "$COMPAT/bsd-strfun.h")
 if [ "$COMPAT_TAKEOVER" = 1 ]; then
-    COMPAT_INCLUDE=(-include "$COMPAT/errno-compat.h")
+    COMPAT_INCLUDE+=(-include "$COMPAT/errno-compat.h")
 fi
 
 mkdir -p "$BUILD"
@@ -112,17 +115,27 @@ name="$(basename "$TEST" .c)"
 # sys-bridge 也在接管面之内：它是「与我方内核 trap 同形」的架构内联汇编（文件末尾对
 # 未知架构直接 `#error`）。宿主 glibc 腿走真系统调用，不需要它——把它挂上只会把
 # x86_64 卡死在编译期。x86_64 的出生/系统调用腿属台账 P-X86-01 的缺口④⑤，不在本批。
+#
+# ⚠ 接管面对象一律「先初始化一次、之后只追加」。批次二百六十三把这几段包进
+# `if [ "$COMPAT_TAKEOVER" = 1 ]` 时，在 if 块之后又写了一条无条件 `STUB_OBJS=()`，
+# 把刚放进来的 sys-bridge.o 当场抹掉——链接行里从此没有它。后果不是「少一个可有可无
+# 的对象」：`_write`/`_read`/`ipc_sendrec`/`geteuid`/`getgroups` 全定义在 sys-bridge.c，
+# riscv64 腿实测 13 处 undefined、一个 ATF 二进制也产不出（aarch64 同构同病）。而
+# 批次二百六十三/二百六十四的验收证据只跑了 x86_64 腿，这条回退在账面上隐身了两天，
+# 直到下一轮想往 STUB_OBJS 里追加新 compat 件时才被同一颗雷绊住（判据见台账 P-X86-01）。
+# 因此这里只留一条追加通道，任何新增 compat 件都必须走 append、不许再赋值。
+STUB_OBJS=()
 if [ "$COMPAT_TAKEOVER" = 1 ]; then
     "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/sys-bridge.c" -o "$BUILD/sys-bridge.o"
-    STUB_OBJS=("$BUILD/sys-bridge.o")
-else
-    STUB_OBJS=()
+    STUB_OBJS+=("$BUILD/sys-bridge.o")
 fi
 # posix-stubs / stdio-minix / errno-compat / random 四件是「抢 picolibc 缺位」或「抢 libc
-# 成员」的强定义接管面。glibc 本就有 stresep/sysconf/strerror_r/random，再挂一份会在静态链
-# 上撞重复定义，还会改掉测试看到的 libc 语义，故 glibc 腿一律不编。这条差异记在台账
-# P-X86-01 行：出生腿④ 上机时若 BSD 随机序/strerror 期望对不上，先回这里查。
-STUB_OBJS=()
+# 成员」的强定义接管面，只在 picolibc 腿挂。glibc 本就有 sysconf/strerror_r/random，
+# 再挂一份会在静态链上撞重复定义，还会改掉测试看到的 libc 语义（stresep 原先也记在这
+# 一句里，实测 glibc 没有它——那个旧理由已在批次二百六十四被推翻，拆给 bsd-strfun）。
+# 这条差异记在台账 P-X86-01 行：出生腿④ 上机时若 BSD 随机序/strerror 期望对不上，先回这里查。
+# BSD stresep/popcount 族不在这层之内：它已拆给下面的 bsd-strfun（两腿通吃），
+# 判据与理由见那里。
 if [ "$COMPAT_TAKEOVER" = 1 ]; then
     "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/posix-stubs.c" -o "$BUILD/posix-stubs.o"
     STUB_OBJS+=("$BUILD/posix-stubs.o")
@@ -135,6 +148,15 @@ if [ "$COMPAT_TAKEOVER" = 1 ]; then
 fi
 # BSD <md5.h> 摘要实现（picolibc 不提供），供 t_memcpy 等测试链入（仅构建/测试用）。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/md5.c" -o "$BUILD/md5.o"
+# BSD 字符串/位计数族（`stresep(3)` + `popcount(3)` 家族）：**glibc 与 picolibc 都没有**
+# 这几个 BSD 函数，所以它不属于「按 libc 种类分腿」的接管面，而是两腿通吃的补位件。
+# 过去它们埋在 posix-stubs.c 里，而 posix-stubs.c 是 picolibc 专用的整层接管面（同一
+# TU 里还强定义 `sysconf`/`strerror`/`strerror_r`）——x86_64 腿要拿 popcount/stresep 就
+# 必须把整层挂回去，连带改掉宿主 libc 的语义。台账 P-X86-01 要的正是「按符号拆开的
+# compat 面」，本件即该拆分的第一个落点（真源：minix3/common/lib/libc/string/
+# popcount32.c、popcount64.c、minix3/lib/libc/string/stresep.c）。
+"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/bsd-strfun.c" -o "$BUILD/bsd-strfun.o"
+BSD_STRFUN_O=("$BUILD/bsd-strfun.o")
 # BSD Boyer-Moore <bm.h>（bm_comp/exec/free，picolibc 不提供），供 t_bm 链入。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/bm.c" -o "$BUILD/bm.o"
 # BSD sys_nerr（picolibc 不提供），供 t_strerror 编译/链接（真语义上机前校准，见 errno-compat.c 头注释）。
@@ -169,7 +191,7 @@ case "$ARCH" in
 esac
 
 "$CC" -static "${MC[@]}" "${SYS[@]}" "${LINK_EXTRA[@]}" "${STARTUP_O[@]}" "$BUILD/$name.o" \
-    -Wl,--start-group "$LIB" "${STUB_OBJS[@]}" "$BUILD/md5.o" "$BUILD/bm.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
+    -Wl,--start-group "$LIB" "${STUB_OBJS[@]}" "${BSD_STRFUN_O[@]}" "$BUILD/md5.o" "$BUILD/bm.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
     -o "$BUILD/$name"
 
 # 校验我方加载器 parse_ehdr 的硬项（ELF64 + LSB + ET_EXEC）。

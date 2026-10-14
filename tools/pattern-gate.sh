@@ -557,7 +557,11 @@ check_p13() {
     [ -n "$tok" ] || continue
     n=$((n+1))
     baseline_has "P13|$tok" && continue
-    hits=$(grep -rlF "$tok" "$ROOT/os" "$ROOT/minix3" 2>/dev/null | wc -l)
+    # 搜索根含 tools/：门禁与构建脚本自己也是文档引用的对象。旧版只扫 os/ + minix3/，
+    # 于是台账引用 tools/build-atf-test.sh 里的 shell 变量（STUB_OBJS/BSD_STRFUN_O/
+    # COMPAT_TAKEOVER，批次二百六十七）被误报成「全仓不存在」——那不是虚构符号，
+    # 是门自己看不见 tools/。加根只会把误报变真报：幻影符号在三处仍然零命中。
+    hits=$(grep -rlF "$tok" "$ROOT/os" "$ROOT/minix3" "$ROOT/tools" 2>/dev/null | wc -l)
     if [ "$hits" -eq 0 ]; then
       fail P13 "新增行引用的全大写常量符号全仓不存在: $tok（虚构符号事故族；目录文档引例加 P13|$tok 进基线）"; bad=1
     fi
@@ -766,11 +770,17 @@ YAML
   # --- P13 ---
   mkdir -p "$F/os/drivers/x"
   printf 'static let A_REAL_SYMBOL = 1;\n' > "$F/os/drivers/x/lib.rs"
+  # tools/ 根的正例：符号只活在门禁脚本里（shell 变量形），仍应被判存在。
+  mkdir -p "$F/tools"
+  printf 'A_SHELL_ONLY_SYMBOL=()\n' > "$F/tools/build-atf-test.sh"
   printf 'A_REAL_SYMBOL\nA_PHANTOM_SYMBOL\n' > "$F/.p13_tokens"
   out=$(check_p13 "$F" "$F/.p13_tokens")
   st_expect "P13-phantom" "全仓不存在: A_PHANTOM_SYMBOL" "$out"
   printf 'A_REAL_SYMBOL\n' > "$F/.p13_tokens"
   out=$(check_p13 "$F" "$F/.p13_tokens"); st_expect "P13-ok" "[P13] PASS" "$out"
+  printf 'A_SHELL_ONLY_SYMBOL\n' > "$F/.p13_tokens"
+  out=$(check_p13 "$F" "$F/.p13_tokens")
+  st_expect "P13-tools-root" "[P13] PASS" "$out"
 
   # --- P14 ---
   mkdir -p "$F/os/kernel/src"
