@@ -18,7 +18,6 @@
 //! hosted-versus-target seams are the echo template's
 //! (`os/commands/bin/fileops/src/bin/echo.rs`).
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -29,10 +28,10 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::hexdump::{
-    parse_skip, render_row, row_spec, walk_blocks, BlockEvent, DumpFormat, HexError, HexOptions,
-};
 use minix_sys::read;
+use minix_textfilter::hexdump::{
+    BlockEvent, DumpFormat, HexError, HexOptions, parse_skip, render_row, row_spec, walk_blocks,
+};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -65,7 +64,9 @@ fn run() -> ! {
                     match value.parse::<i64>() {
                         Ok(n) if n >= 0 => options.length = Some(n as usize),
                         _ => {
-                            support::warn(format!("hexdump: {}: bad length value\n", value).as_bytes());
+                            support::warn(
+                                format!("hexdump: {}: bad length value\n", value).as_bytes(),
+                            );
                             support::terminate(1);
                         }
                     }
@@ -78,7 +79,9 @@ fn run() -> ! {
                     match parse_skip(&value) {
                         Ok(n) => skip = n,
                         Err(HexError::BadSkip(_)) => {
-                            support::warn(format!("hexdump: {}: bad skip value\n", value).as_bytes());
+                            support::warn(
+                                format!("hexdump: {}: bad skip value\n", value).as_bytes(),
+                            );
                             support::terminate(1);
                         }
                         Err(_) => unreachable!(),
@@ -122,7 +125,7 @@ fn run() -> ! {
         for operand in &operands {
             match support::read_file(operand) {
                 Ok(data) => input.extend_from_slice(&data),
-                Err(()) => {
+                Err(_) => {
                     support::warn(format!("hexdump: {operand}\n").as_bytes());
                     rval = 1;
                 }
@@ -168,10 +171,11 @@ fn flag_value(argv: &[String], i: &mut usize, chars: &[char], k: &mut usize) -> 
 }
 
 fn usage() -> ! {
-    support::warn(b"usage: hexdump [-bcCdovx] [-e fmt] [-f fmt_file] [-n length] [-s skip] [file ...]\n");
+    support::warn(
+        b"usage: hexdump [-bcCdovx] [-e fmt] [-f fmt_file] [-n length] [-s skip] [file ...]\n",
+    );
     support::terminate(1);
 }
-
 
 /// The byte range to display given `-s skip` and `-n length`: skip advances
 /// past the front of the (chained) input, then at most `length` bytes are

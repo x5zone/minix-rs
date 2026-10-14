@@ -60,7 +60,7 @@ fn run() -> ! {
     for operand in &operands {
         let data = match support::read_file(operand) {
             Ok(data) => data,
-            Err(()) => {
+            Err(_) => {
                 support::warn(format!("head: {operand}\n").as_bytes());
                 status = 1;
                 continue;

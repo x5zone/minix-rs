@@ -22,7 +22,9 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, write};
-use minix_textfilter::split::{SplitError, chunk_bytes, chunks, chunks_n, parse_split_args, suffix};
+use minix_textfilter::split::{
+    SplitError, chunk_bytes, chunks, chunks_n, parse_split_args, suffix,
+};
 
 // Output-file create flags (`fcntl.h`), mirroring the `uudecode` precedent:
 // O_WRONLY 0x1, O_CREAT 0x200, O_TRUNC 0x400; DEFFILEMODE 0666.
@@ -57,7 +59,7 @@ fn run() -> ! {
         Some(name) if *name == "-" => support::read_stdin(),
         Some(name) => match support::read_file(name) {
             Ok(data) => data,
-            Err(()) => {
+            Err(_) => {
                 support::warn(format!("split: {name}\n").as_bytes());
                 support::terminate(1);
             }

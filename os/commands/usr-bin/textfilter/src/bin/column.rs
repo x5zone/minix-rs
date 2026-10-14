@@ -42,7 +42,7 @@ fn run() -> ! {
         for operand in &operands {
             match support::read_file(operand) {
                 Ok(bytes) => entries.extend(parse_from(&bytes)),
-                Err(()) => {
+                Err(_) => {
                     support::warn(format!("column: Cannot open `{operand}'\n").as_bytes());
                     rval = 1;
                 }

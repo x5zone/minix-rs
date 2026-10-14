@@ -23,6 +23,7 @@ extern crate alloc;
 #[path = "../bin_support.rs"]
 mod support;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_textfilter::join::{JoinError, join_lines, parse_join_args};
@@ -51,32 +52,42 @@ fn line_refs(buf: &[u8]) -> Vec<&[u8]> {
     lines
 }
 
-fn fail(message: &str) -> ! {
-    let mut line = String::from("join: ");
-    line.push_str(message);
-    line.push('\n');
-    support::warn(line.as_bytes());
+/// C 的 `errx` 那一族：程序名（`getprogname()`）、短语、不缀句子，写完退 1。
+fn fail(prog: &str, message: &str) -> ! {
+    support::warn(format!("{prog}: {message}\n").as_bytes());
+    support::terminate(1)
+}
+
+/// `join.c:630-637`：`fprintf(stderr, "usage: %s ...\n            ...\n", getprogname())`——
+/// **两行**，名字只出现在第一行（第二行十二个空格的缩进把它接在第 12 列下面）。
+fn usage(prog: &str) -> ! {
+    support::warn(
+        format!("usage: {prog} [-a fileno | -v fileno] [-e string] [-j fileno field]\n").as_bytes(),
+    );
+    support::warn(b"            [-o list] [-t char] [-1 field] [-2 field] file1 file2\n");
     support::terminate(1)
 }
 
 /// Map a [`JoinError`] to C's `warnx` line for that branch (each `join.c` arm
-/// warns then calls `usage()`), then exit 1. The two-line `warnx`+`usage` C emits
-/// is collapsed to the specific message — this shell wires neither the `strerror`
-/// sentence (the table itself lives in `minix_types::Errno::message`) nor the usage
-/// line (declared
-/// difference, same as the other command bins).
-fn join_usage_fail(e: JoinError) -> ! {
+/// warns then calls `usage()`), then exit 1.
+///
+/// The two lines C emits are still collapsed to the specific message here: the
+/// per-option wording C uses (`"-1 option field number less than 1"`,
+/// `"illegal field number -- <值>"`, …) needs the option letter and its argument
+/// text, which the deciding half's `JoinError` throws away — registered as the
+/// second slice of this batch rather than half-wired with invented wording.
+fn join_usage_fail(prog: &str, e: JoinError) -> ! {
     match e {
-        JoinError::Usage => fail(
-            "usage: join [-a fileno | -v fileno] [-1 field1] [-2 field2] [-e empty] [-j field] [-o field] [-t char] file1 file2",
-        ),
-        JoinError::FieldLessThan1 => fail("option field number less than 1"),
-        JoinError::IllegalFieldNumber => fail("illegal field number"),
-        JoinError::FileNumberNot12 => fail("option file number not 1 or 2"),
-        JoinError::IllegalFileNumber => fail("illegal file number"),
-        JoinError::BadTabChar => fail("illegal tab character specification"),
-        JoinError::BadOutputField => fail("malformed -o option field"),
-        JoinError::AAndVMutuallyExclusive => fail("-a and -v options mutually exclusive"),
+        // `join.c:236-237`：`if (argc != 2) usage();`——本壳的 parse 一并管选项形状。
+        JoinError::Usage => usage(prog),
+        JoinError::FieldLessThan1 => fail(prog, "option field number less than 1"),
+        JoinError::IllegalFieldNumber => fail(prog, "illegal field number"),
+        JoinError::FileNumberNot12 => fail(prog, "option file number not 1 or 2"),
+        JoinError::IllegalFileNumber => fail(prog, "illegal file number"),
+        JoinError::BadTabChar => fail(prog, "illegal tab character specification"),
+        JoinError::BadOutputField => fail(prog, "malformed -o option field"),
+        // `join.c:235`：这一支是 `errx`，印完就走，没有 usage。
+        JoinError::AAndVMutuallyExclusive => fail(prog, "-a and -v options mutually exclusive"),
     }
 }
 
@@ -84,21 +95,46 @@ fn join_usage_fail(e: JoinError) -> ! {
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // C 的 `join` 不调 `setprogname`；`getprogname()` 仍由
+    // `minix3/lib/csu/common/crt0-common.c:156-165` 从 `argv[0]` 起好那一段，
+    // 所以它的 `errx`/`err`/`usage` 三族都从那一段开头。
+    let prog = support::prog_name(&argv);
 
     let (opts, files) = match parse_join_args(&args[1..]) {
         Ok(a) => (a.opts, a.files),
-        Err(e) => join_usage_fail(e),
+        Err(e) => join_usage_fail(prog, e),
     };
+
+    // `join.c:250-251`：两个操数都是 `-` 时两个 `FILE*` 都等于 `stdin`，C 直接
+    // `errx(1, "only one input file may be stdin")`——本壳此前没有这一支，会把同一条
+    // 输入读两遍。C 在 `slurp` 之前护住它，这里也放在两次读之前。
+    if files[0] == "-" && files[1] == "-" {
+        fail(prog, "only one input file may be stdin");
+    }
 
     let b1 = if files[0] == "-" {
         read_stdin()
     } else {
-        support::read_file(files[0]).unwrap_or_else(|_| fail("cannot open file 1"))
+        // `join.c:241-244`: `fopen` 失手就是 `err(1, "%s", *argv)`——操数名与那个号的
+        // 句子一起出，然后整个程序就此结束。
+        match support::read_file(files[0]) {
+            Ok(bytes) => bytes,
+            Err(code) => {
+                support::warn_line(prog, files[0], code);
+                support::terminate(1);
+            }
+        }
     };
     let b2 = if files[1] == "-" {
         read_stdin()
     } else {
-        support::read_file(files[1]).unwrap_or_else(|_| fail("cannot open file 2"))
+        match support::read_file(files[1]) {
+            Ok(bytes) => bytes,
+            Err(code) => {
+                support::warn_line(prog, files[1], code);
+                support::terminate(1);
+            }
+        }
     };
 
     let out = join_lines(&line_refs(&b1), &line_refs(&b2), &opts);

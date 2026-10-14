@@ -250,6 +250,49 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十九接上 `join` 的 `err(3)` 文件腿与那支完全没实现的 stdin 拒读腿（16t 第九枚，本队列最后一枚壳）**
+  （`2026-10-14`，`claim/JOIN-STRERROR-qoder` @ 基线 `b3d9329d9`，**跨线**：三线 `os/commands/usr-bin/textfilter`
+  加一条指向二线 `minix-types` 的依赖边，并顺手把本包共享读档缝的错误位从单位型换成错误码型——在
+  `new_edge4.md` 登记 C-101 后动手）：接回批次二百四十八登记不执行①。**是什么**：三件事一起。**其一**：C 的
+  文件腿是 `err(1, "%s", *argv)`（`join.c:244`、`:249`），本壳印 `join: cannot open file 1`——操数名没印、号没印、
+  短语是自创的；而号之所以拿不到，是因为本包共享的 `bin_support::read_file` 把错误擦成了 `()`。**其二**：
+  `usage()` 在 C 是两行且程序名嵌在第一行的格式串里（`:632-635`，第二行十二空格缩进），本壳是一行且选项表
+  与 C 不符。判类 P0-code-bug + P0-fact。**其三**（最重）：`join.c:250-251` 的
+  `errx(1, "only one input file may be stdin")` 本壳**根本没有这一支**——两个 `-` 会把同一条标准输入读两遍，
+  第二遍是空，于是 `join - -` 静默产出错的连接结果而不是报错。
+  **怎么修**：`read_file` 的错误位改为 `Errno`（宿主侧取 `raw_os_error()`，没有它时退 `EIO`，与 `stdio-games`
+  的读缝双生面同一口径；真机侧直接传播 `minix_sys::read` 的号），其余十三个调用方的 `Err(())` 位由编译器逐个
+  点到、改成 `Err(_)`，**行为一字未动**（它们本来就把错误当哑的）；`bin_support.rs` 加 `prog_name`/`warn_line`
+  两个写行入口（都转调 `minix-types` 那一份权威）；`join` 的两条文件腿交 `warn_line`，usage 拆成两行，
+  stdin 那一支按 C 放在两次读之前。
+  **为什么不选另一条路**：①在 `join.rs` 里另起一条自己的读档梯子就能保住号，但那会在同一包里出现两份 open/read/close
+  阶梯，两本的宿主/真机双生面迟早分叉；②给其余十三个壳也顺手补上报文（它们各自印 `xxx: <路径>`）是把别人家的 TODO
+  一并做了——本轮只把它们改到「编译得过、行为不变」；③C 其余选项错的文案带选项字母与非法值
+  （`"-1 option field number less than 1"`、`"illegal field number -- %s"`），而决定半的 `JoinError` 把字母与值都丢了，
+  要按 C 做就得给错误型加实参（连带十余处库测断言）——那是下一片，不混进本轮。
+  **门**：新建 `tests/join_face.rs`（6 枚，本包第二扇进程级门）：成功路 stderr 一声不出；失手的操数带名字与句子；
+  `join - -` 在读之前就被护住（stdout 空、退 1、那一行 `errx` 形）；`-a`+`-v` 是 `errx`（不跟 usage）；两行 usage 逐字
+  对 C；副本改名后 `err(3)` 行与 usage 行的名字都跟着改，而操数路径照原样。与 file-ops 那几扇不同，本壳在宿主
+  **能真开文件**（`read_file` 的宿主双生面走 `std::fs`），所以连接成功路也在射程内。
+  三件套：`cargo test -p minix-textfilter` → **584 passed、0 failed**（基线 578，+6 枚门；十三个共用读缝的壳零回归）；
+  容器 `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-textfilter` → **584/0**；三架构
+  `cargo build -p minix-textfilter --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 Finished 零 error；
+  `rustfmt --edition 2024 --check` 触及文件零漂移；clippy 对触及文件零命中；宿主实跑 `join`（无操数）→ 两行 usage 退 1、
+  `join - -` → `join: only one input file may be stdin` 退 1、`join /tmp/join-face-absent x` → `join: /tmp/join-face-absent: No such file or directory`。
+  核实日 `2026-10-14`；基线 `b3d9329d9`。
+  **三枚变异负控**（测完按 md5 复原）：文件腿退回 `cannot open`（门 2 枚红）、拿掉 stdin 那一支（那枚独红）、
+  usage 合成一行（usage 两枚红）。**过程记两笔**：①`join.rs` 换 import 时把 `alloc::string::String` 删掉了——宿主测
+  全绿，是 `--target x86_64-unknown-none` 那道门炸出来（`cannot find type String`），而且**第一次跑该门看着像通过**，
+  是 `touch` 强制重编才见红：增量缓存在同尺寸改动上会骗人，别拿「0.1s Finished」当证据；②读缝换型的影响面由编译器
+  逐点报出（`Err(()) → Err(_)`），不是靠猜。
+  10 篇、07 篇各一行随之改准；**顺带补一处文档缺口**：`join` 在 07 篇此前**没有行**（只在 §1 prose 提过一次），
+  本批按实况补上（登记为 P1-doc 缺口的修复，见该行自述）。
+  **16t 收口**：`err(3)`/`warn(3)`/`perror(3)` 腿的逐枚接线队列到此走完九枚壳（rm/cp/mv/truncate/du/find/stat/what/join），
+  登记不执行改为两条独立条目：①**第2片**——`join` 其余选项错的 C 文案（要 `JoinError` 带字母与值）+
+  `find` 的 `WalkProbe`/`stat` 的 `PathProbe` 不交号那一件（含 `99` 篇 §1 分层契约上「决定半能不能收 `Errno` 型」
+  的待定形）；②`relative_target` 的溢出形（`saturating_add` vs C 的回绕钳零，批次二百四十四登记）。
+  ③真机播种与上机腿仍归 `C-57`/`E5`。
+
 - ✅ **批次二百四十八把 `what` 的报告行改回 `perror(3)` 那一族：程序名与「cannot open」都是自创的（16t 第八枚）**
   （`2026-10-14`，`claim/WHAT-STRERROR-qoder` @ 基线 `2049a25e7`，**跨线**：三线 `os/commands/usr-bin/doctools`
   加一条指向二线 `minix-types` 的依赖边（本包以前不读错误码表），在 `new_edge4.md` 登记 C-100 后动手）：

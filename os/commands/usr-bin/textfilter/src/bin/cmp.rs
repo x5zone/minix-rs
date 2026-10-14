@@ -82,7 +82,7 @@ fn run() -> ! {
     } else {
         match support::read_file(file1) {
             Ok(data) => data,
-            Err(()) => {
+            Err(_) => {
                 support::warn(format!("cmp: {name1}\n").as_bytes());
                 support::terminate(ERR_EXIT);
             }
@@ -93,7 +93,7 @@ fn run() -> ! {
     } else {
         match support::read_file(file2) {
             Ok(data) => data,
-            Err(()) => {
+            Err(_) => {
                 support::warn(format!("cmp: {name2}\n").as_bytes());
                 support::terminate(ERR_EXIT);
             }

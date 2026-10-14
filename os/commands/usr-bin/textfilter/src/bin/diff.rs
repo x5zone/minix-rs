@@ -13,7 +13,6 @@
 //! (`os/commands/bin/fileops/src/bin/echo.rs`): argv via
 //! `std::env::args`, termination via the host runtime.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -24,8 +23,8 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::diff::{diff_lines, split_text, DiffFormat, DiffOptions, DiffStatus};
 use minix_sys::read;
+use minix_textfilter::diff::{DiffFormat, DiffOptions, DiffStatus, diff_lines, split_text};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -72,9 +71,7 @@ fn run() -> ! {
                 }
                 _ => {
                     support::warn(format!("diff: illegal option -- {}\n", chars[k]).as_bytes());
-                    support::warn(
-                        b"usage: diff [-qeuFn] [-U n] file1 file2\n",
-                    );
+                    support::warn(b"usage: diff [-qeuFn] [-U n] file1 file2\n");
                     support::terminate(2);
                 }
             }
@@ -102,7 +99,7 @@ fn run() -> ! {
         } else {
             match support::read_file(operand) {
                 Ok(data) => sides[side] = data,
-                Err(()) => {
+                Err(_) => {
                     // C `diffreg` sets `status |= 2` and exits 2; a side
                     // that will not open leaves nothing to compare, so it
                     // is fatal here too.
@@ -117,14 +114,19 @@ fn run() -> ! {
     let la = split_text(&text_a);
     let lb = split_text(&text_b);
 
-    let result = diff_lines(&la, &lb, operands[0].as_str(), operands[1].as_str(), &options);
+    let result = diff_lines(
+        &la,
+        &lb,
+        operands[0].as_str(),
+        operands[1].as_str(),
+        &options,
+    );
     support::emit(result.text.as_bytes());
     support::terminate(match result.status {
         DiffStatus::Same => 0,
         DiffStatus::Differ => 1,
     });
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

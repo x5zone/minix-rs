@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::tsort::{parse_args, tsort, TsortArgs};
+use minix_textfilter::tsort::{TsortArgs, parse_args, tsort};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -33,7 +33,7 @@ fn run() -> ! {
     let input = match file {
         Some(path) => match support::read_file(path) {
             Ok(bytes) => bytes,
-            Err(()) => {
+            Err(_) => {
                 support::warn(format!("tsort: {path}\n").as_bytes());
                 support::terminate(1);
             }

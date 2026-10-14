@@ -188,7 +188,7 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 fn read_operand(path: &str) -> Vec<u8> {
     match support::read_file(path) {
         Ok(data) => data,
-        Err(()) => {
+        Err(_) => {
             support::warn(format!("sort: {path}\n").as_bytes());
             support::terminate(2);
         }

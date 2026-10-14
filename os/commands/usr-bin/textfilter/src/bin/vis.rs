@@ -114,7 +114,7 @@ fn run() -> ! {
         for &operand in operands {
             match support::read_file(operand) {
                 Ok(data) => consume(&data),
-                Err(()) => {
+                Err(_) => {
                     support::warn(format!("vis: {operand}\n").as_bytes());
                     rval = 1;
                 }

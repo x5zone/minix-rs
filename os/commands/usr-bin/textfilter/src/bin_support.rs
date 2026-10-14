@@ -184,30 +184,56 @@ pub fn lines_of(input: &[u8]) -> Vec<&str> {
 ///
 /// Hosted builds read the host filesystem (`std::fs`, no kernel in the
 /// loop); the target build walks the same open/read/close ladder through
-/// the `minix_sys` transport. The error is erased to the failure signal
-/// every caller maps onto its own diagnostic.
+/// the `minix_sys` transport.
+///
+/// 错误位带的是**那个号**（不是单位）：C 的这些命令的报错腿是 `err(1, "%s", *argv)`
+/// （如 `join.c:244`、`:249`），印的就是它，擦成单位只剩「出错了」三个字。宿主侧的号
+/// 取 `raw_os_error()`，没有它时退到 `EIO`（与 `stdio-games` 那条读缝双生面同一口径）。
 #[cfg(any(test, not(target_os = "none")))]
-pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, ()> {
-    std::fs::read(path).map_err(|_| ())
+pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, minix_sys::Errno> {
+    std::fs::read(path).map_err(|e| {
+        minix_sys::Errno::from_i32(e.raw_os_error().unwrap_or(minix_sys::Errno::EIO.to_i32()))
+    })
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, ()> {
-    let fd = minix_sys::open(path, 0, 0).map_err(|_| ())?;
+pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, minix_sys::Errno> {
+    let fd = minix_sys::open(path, 0, 0)?;
     let mut out = alloc::vec::Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
         match minix_sys::read(fd, &mut chunk) {
             Ok(0) => break,
             Ok(count) => out.extend_from_slice(&chunk[..count]),
-            Err(_) => {
+            Err(e) => {
                 let _ = minix_sys::close(fd);
-                return Err(());
+                return Err(e);
             }
         }
     }
     let _ = minix_sys::close(fd);
     Ok(out)
+}
+
+/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
+/// `minix3/lib/csu/common/crt0-common.c:156-165`，权威在 `minix-types` 的 `prog_name`）。
+/// `err(3)`/`warn(3)`/`usage()` 的那几行都以它开头。
+pub fn prog_name(argv: &[alloc::string::String]) -> &str {
+    let raw = argv
+        .first()
+        .map(alloc::string::String::as_str)
+        .unwrap_or("");
+    minix_types::prog_name(raw)
+}
+
+/// C 的 `warn(3)`/`err(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退
+/// （`vwarnc.c` 不退，退不退由调用者定）。形状与句子都在 `minix-types` 的 `err_line`
+/// 那一份权威里（与不缀程序名的 `perror_line` 并列）。
+pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
+    let mut line = [0u8; 256];
+    let len = minix_types::err_line(prog, label, code, &mut line);
+    warn(&line[..len.min(line.len())]);
+    warn(b"\n");
 }
 
 /// Writes bytes over a whole file (the `unifdef` in-place shape).

@@ -13,7 +13,6 @@
 //! one stream is required. The hosted-versus-target seams are the
 //! echo template's (`os/commands/bin/fileops/src/bin/echo.rs`).
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
@@ -24,8 +23,8 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::lam::{laminate, parse_width, split_stream, LamSpec, MAX_STREAMS};
 use minix_sys::read;
+use minix_textfilter::lam::{LamSpec, MAX_STREAMS, laminate, parse_width, split_stream};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -72,7 +71,7 @@ fn run() -> ! {
             } else {
                 match support::read_file(&arg) {
                     Ok(data) => bytes = data,
-                    Err(()) => {
+                    Err(_) => {
                         support::warn(format!("lam: open {arg}\n").as_bytes());
                         support::terminate(1);
                     }
@@ -174,12 +173,9 @@ fn need_after(c: char) -> ! {
 }
 
 fn usage() -> ! {
-    support::warn(
-        b"\nUsage:  lam [ -[fp] min.max ] [ -s sepstring ] [ -t c ] file ...\n",
-    );
+    support::warn(b"\nUsage:  lam [ -[fp] min.max ] [ -s sepstring ] [ -t c ] file ...\n");
     support::terminate(1);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

@@ -54,7 +54,7 @@ fn run() -> ! {
         for operand in &operands {
             match support::read_file(operand) {
                 Ok(data) => process(&data, operand, &options, &mut out),
-                Err(()) => support::warn(format!("unvis: {operand}\n").as_bytes()),
+                Err(_) => support::warn(format!("unvis: {operand}\n").as_bytes()),
             }
         }
     }
