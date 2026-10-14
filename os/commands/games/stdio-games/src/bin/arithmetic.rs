@@ -164,7 +164,7 @@ fn run() -> ! {
         }
         asked += 1;
         if asked % 20 == 0 {
-            show_stats(&score, qtime);
+            show_stats(&mut reader, &score, qtime);
         }
     }
 }
@@ -305,7 +305,11 @@ fn ask(question: &Question) {
 /// zero), and the `Press RETURN` line plus the closing newline sit **outside** both guards.
 /// The score line's own format ends at the percent sign: the newline that follows belongs to
 /// the time line, so a run with no correct answer ends with no newline of its own either.
-fn show_stats(score: &Score, qtime: u64) {
+fn show_stats<R: FnMut(&mut [u8]) -> Result<usize, minix_sys::Errno>>(
+    reader: &mut LineReader<R>,
+    score: &Score,
+    qtime: u64,
+) {
     if shows_score(*score) {
         let mut out = [0u8; 64];
         let mut length = 0;
@@ -335,9 +339,10 @@ fn show_stats(score: &Score, qtime: u64) {
         }
     }
     support::emit(b"Press RETURN to continue...\n");
-    // C waits with `while(!getchar());` (`:178-179`) — it consumes one character. This
-    // shell's line reader owns the buffered bytes and has no single-byte seam yet, so the
-    // wait is the registered gap while the printed line is byte-for-byte C's.
+    // C 的 `while(!getchar());`（`arithmetic.c:177-179`）从这里**吃掉一个字节**：拿到 NUL 就继续
+    // 等，拿到任何别的字节、读到尽头或读失手都结束（它不查 `feof`，也不查 `ferror`）。不吃
+    // 掉它，下一个 `fgets` 就会把这个字符读进题里，第 21 题的答案因而偏一位。
+    while reader.next_byte() == Some(0) {}
     support::emit(b"\n");
 }
 

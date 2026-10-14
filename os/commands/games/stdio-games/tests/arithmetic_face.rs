@@ -33,25 +33,28 @@ fn run(args: &[&str]) -> (String, i32, String) {
     )
 }
 
-/// Read the **next** prompt out of the accumulated output, consuming everything up to and
-/// including it. C writes `"%d %c %d =   "` and then flushes (`arithmetic.c:231-232`), so the
-/// marker is three tokens plus five spaces; whatever came before it (`Right!\n`, the score
-/// block) stays in the caller's buffer for the assertions.
+/// Read the **next** prompt out of the accumulated output, moving the cursor past it. C writes
+/// `"%d %c %d =   "` and then flushes (`arithmetic.c:231-232`), so the marker is three
+/// tokens plus five spaces. The buffer is never shrunk — everything before the marker is part
+/// of the transcript the assertions read (`Right!\n`, the score block).
 ///
-/// Taking the *first* marker is load-bearing: under I/O load the child can flush an answer's
-/// `Right!\n` together with the following prompt while the parent is still parsing, and a
-/// search for the last marker would skip the question the child is actually waiting on — the
-/// answer then goes to the wrong problem and the run records a `What?` (this harness did
-/// exactly that once, which is why `Wrongs 0` is asserted below).
-fn take_prompt(buffer: &mut Vec<u8>) -> Option<(u64, u8, u64)> {
+/// Taking the *first* marker ahead of the cursor is load-bearing: under I/O load the child can
+/// flush an answer's `Right!\n` together with the following prompt while the parent is still
+/// parsing, and a search for the last marker would skip the question the child is actually
+/// waiting on — the answer then goes to the wrong problem and the run records a `What?` (this
+/// harness did exactly that once, which is why `Wrongs 0` is asserted below).
+fn take_prompt(buffer: &[u8], cursor: &mut usize) -> Option<(u64, u8, u64)> {
     const MARKER: &[u8] = b" =   ";
-    let at = buffer.windows(MARKER.len()).position(|w| w == MARKER)?;
-    let text = std::str::from_utf8(&buffer[..at]).ok()?;
+    let at = buffer[*cursor..]
+        .windows(MARKER.len())
+        .position(|w| w == MARKER)
+        .map(|found| *cursor + found)?;
+    let text = std::str::from_utf8(&buffer[*cursor..at]).ok()?;
     let mut words = text.split_whitespace().rev();
     let right: u64 = words.next()?.parse().ok()?;
     let op = *words.next()?.as_bytes().first()?;
     let left: u64 = words.next()?.parse().ok()?;
-    buffer.drain(..at + MARKER.len());
+    *cursor = at + MARKER.len();
     match op {
         b'+' | b'-' | b'x' | b'/' => {}
         _ => return None,
@@ -106,11 +109,12 @@ fn the_twentieth_correct_answer_prints_the_score_block_with_both_time_numbers() 
     let mut stdout = child.stdout.take().expect("stdout pipe");
 
     let mut buffer: Vec<u8> = Vec::new();
+    let mut seen = 0usize;
     let mut byte = [0u8; 1];
     let mut answered = 0;
     let mut closed = false;
     while answered < 20 && !closed {
-        if let Some((left, op, right)) = take_prompt(&mut buffer) {
+        if let Some((left, op, right)) = take_prompt(&buffer, &mut seen) {
             let answer = answer_of_prompt(left, op, right);
             writeln!(stdin, "{answer}").expect("write the answer");
             stdin.flush().expect("flush the answer");
@@ -131,11 +135,41 @@ fn the_twentieth_correct_answer_prints_the_score_block_with_both_time_numbers() 
         answered,
         String::from_utf8_lossy(&buffer)
     );
+
+    // C 的 `while(!getchar())`（`arithmetic.c:177-179`）吃掉一个字节。先投一个 `x`：它应当被
+    // 那个等待用掉，于是第 21 题读到的是我们随后写去的真答案。若这一腿不接，`x` 会落进
+    // 第 21 题那一行，C 的 `Please type a number.` 就冒出来，而第 21 题永远答不上。
+    stdin.write_all(b"x").expect("feed the keypress");
+    stdin.flush().expect("flush the keypress");
+    let mut question = None;
+    while question.is_none() && !closed {
+        if let Some(next) = take_prompt(&buffer, &mut seen) {
+            question = Some(next);
+        } else if stdout.read(&mut byte).expect("read the next prompt") == 0 {
+            closed = true;
+        } else {
+            buffer.push(byte[0]);
+        }
+    }
+    let (left, op, right) = question.expect("第 21 题应在被吃掉的那个字符之后才出现");
+    writeln!(stdin, "{}", answer_of_prompt(left, op, right)).expect("write the 21st answer");
+    stdin.flush().expect("flush the 21st answer");
     drop(stdin);
     let mut tail = Vec::new();
     stdout.read_to_end(&mut tail).expect("drain the output");
     buffer.extend_from_slice(&tail);
     let out = String::from_utf8_lossy(&buffer).into_owned();
+    // 那一个字符是被等待吃掉的，不是被题目读走的：二十题全对，加第 21 题共 21 个 `Right!`，
+    // 且全程不出一句 `Please type a number.`。
+    assert_eq!(
+        out.matches("Right!\n").count(),
+        21,
+        "第 21 题也该一次答对：`{out:?}`"
+    );
+    assert!(
+        !out.contains("Please type a number."),
+        "被吃掉的那个字符不能落进题里：`{out:?}`"
+    );
     let status = child
         .wait()
         .expect("wait for arithmetic")

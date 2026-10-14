@@ -324,6 +324,37 @@ impl<'a, R: FnMut(&mut [u8]) -> Result<usize, Errno>> LineReader<'a, R> {
         }
     }
 
+    /// C's `getchar()`: one byte, not a line. The pending line from the last
+    /// [`LineReader::next_line`] is dropped first — the same lazy consumption
+    /// [`LineReader::next_line`] applies — so a caller that has just read `"ab\n"`
+    /// gets the byte that follows it, exactly where C's stdio cursor sits.
+    ///
+    /// `None` is C's `EOF`. Here the two read outcomes are deliberately not separated:
+    /// `arithmetic.c:177`'s `while(!getchar())` looks only at the returned byte — it checks
+    /// neither `feof` nor `ferror` — so a zero byte loops on, while any other byte *and*
+    /// both end-of-input and a failed read end the loop.
+    pub fn next_byte(&mut self) -> Option<u8> {
+        if self.line_len > 0 {
+            let drop = self.line_len;
+            self.line_len = 0;
+            self.consume(drop);
+        }
+        loop {
+            if self.filled > 0 {
+                let byte = self.buf[0];
+                self.consume(1);
+                return Some(byte);
+            }
+            if self.source_done {
+                return None;
+            }
+            match (self.reader)(&mut self.buf[self.filled..]) {
+                Ok(0) | Err(_) => self.source_done = true,
+                Ok(read) => self.filled += read,
+            }
+        }
+    }
+
     /// The line loaded by the last [`LineReader::next_line`] call.
     pub fn line(&self) -> &[u8] {
         &self.buf[..self.line_len]
@@ -389,6 +420,33 @@ mod tests {
             lines(b"ab\ncd\n", 16),
             vec![b"ab\n".to_vec(), b"cd\n".to_vec()]
         );
+    }
+
+    #[test]
+    fn test_next_byte_takes_one_byte_after_the_pending_line() {
+        // C 的 `getchar()` 与 `fgets()` 共用同一个 stdio 游标：读完一行之后取一个字节，
+        // 拿到的是紧跟在那一行后面的那个字节，不是下一行的开头。
+        let mut source: &[u8] = b"ab\ncd\ne";
+        let mut storage = [0u8; 16];
+        let mut reader = LineReader::new(
+            |chunk: &mut [u8]| {
+                if source.is_empty() {
+                    return Ok(0);
+                }
+                let take = source.len().min(chunk.len());
+                chunk[..take].copy_from_slice(&source[..take]);
+                source = &source[take..];
+                Ok(take)
+            },
+            &mut storage,
+        );
+        assert!(reader.next_line().unwrap());
+        assert_eq!(reader.line(), b"ab\n");
+        assert_eq!(reader.next_byte(), Some(b'c'), "跳过刚交付的那一行");
+        assert!(reader.next_line().unwrap());
+        assert_eq!(reader.line(), b"d\n", "剩下的半个行仍按整行交付");
+        assert_eq!(reader.next_byte(), Some(b'e'));
+        assert_eq!(reader.next_byte(), None, "尽头就是 C 的 EOF");
     }
 
     #[test]

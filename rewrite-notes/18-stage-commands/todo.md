@@ -250,6 +250,35 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十八给行缓冲开单字节缝，把 `Press RETURN` 后面那一句 `while(!getchar())` 接上**
+  （`2026-10-14`，`claim/ARITH-GETCHAR-qoder` @ 基线 `470c34e07`，单域三线 `os/commands/games/stdio-games`
+  与同线文档）：接回批次二百五十七登记不执行②（规划表 v2-15 拆出的 v2-15a）。
+  **是什么**：C 每次打印分数后（`arithmetic.c:176-179`）先印 `Press RETURN to continue...`，再
+  `while(!getchar());` **吃掉一个字符**才继续出题。本壳只印那一行、不吃字符——下一个
+  `fgets` 就把用户那个按键读进题里，第 21 题的答案偏一位（打印字节相同，输入消费不同）。
+  判类 P0-design-missing。
+  **怎么修**：`LineReader` 加 `next_byte() -> Option<u8>`，沿用它的惰性消费规矩——先把上一次
+  `line()` 还留在缓冲里的那一行交出去，再从缓冲取一个字节（空了就再读一块）。关键是**尽头与
+  读失手在这一条腿上不分家**：`while(!getchar())` 只看返回值，既不查 `feof` 也不查 `ferror`，
+  所以 NUL 继续等，别的任何字节、EOF 与读错都结束循环；壳侧就一句 `while reader.next_byte()
+  == Some(0) {}`。不另开一条 `read(2)` 缝的理由：那会绕过缓冲把顺序打乱（C 里 stdio 游标是共享的）。
+  **门**：共享面测 7 → 8 枚（九壳同增，共 +9）；真交互门扩一步：20 题答对拿到分数块后先投一个
+  `x`，再读第 21 题并作答——`x` 必须被等待用掉，第 21 题才能一次答对（`Right!` 共 21 行）且全程
+  不出一句 `Please type a number.`。**顺手修了门自己的一处缺陷**：`take_prompt` 原本 `drain` 掉
+  已读部分，使得后面所有针对全文转录的断言只能看见最后一段（实测报 `left: 1, right: 21`）；
+  改成“游标不缩缓冲”，`Right!` 计数与 `Please type a number.` 这两类断言才真能成立。
+  三件套：`cargo test -p minix-stdio-games` → **215 passed、0 failed**（基线 206，+9）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）同包 **215/0**；三架构 `--bins --target {x86_64,aarch64,riscv64gc}-
+  unknown-none` 各有 `Compiling` 行且 0 error；`rustfmt --edition 2024 --check` 触及三文件零漂移；
+  clippy 触及文件仅剩一条存量（`asked % 20`，批次二百五十七已记）。核实日 `2026-10-14`；基线 `470c34e07`。
+  **一枚变异负控**：把 `while reader.next_byte() == Some(0) {}` 换成不消费 → 真交互门独红，报
+  `第 21 题也该一次答对：left 20, right 21`，转录里多出 `Please type a number.`（那就是不接这一腿时
+  用户真实遇到的）。
+  登记不执行：①SIGINT 分数打印仍需 `signal(2)` 封装（归属在 `../14-stage-runtime/todo.md:294` 的
+  「按需移植」口径，本轮不代开二线入口）；②`bin_support.rs` 在 freestanding 面的两条 unused import
+  （批次二百五十四已登）；③`07` 篇测数行与「三十三个已接线二进制」那类旧快照口径仍待 19–21 的
+  账面行统一处理（批次二百五十六已登）。
+
 - ✅ **批次二百五十七把 `arithmetic` 的用时统计接上，并把 `%.1f` 的舍入按 Minix3 自己的 `gdtoa` 定形（附带两处早就存在的缺陷）**
   （`2026-10-14`，`claim/ARITH-TIMING-1-qoder` @ 基线 `5b3a374eb`，单域三线 `os/commands/games/stdio-games`
   与同线文档）：接回规划表 v2-14 那一行（`16p` 第1片）。
