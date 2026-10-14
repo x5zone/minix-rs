@@ -35,6 +35,8 @@
 #   P17 gate   构建缓存/取证产物跟踪防线（os/target_smp+os/tmp 跟踪计数=0；C-66 事故，C-69 转强制）
 #   P18 gate+  .rs 注释里的 C 锚点全量扫描（SD-27 工具化守卫半：存在性+落窗，区间校 END 不只看 START，
 #              非 minix3 引用如 hw/arm/boot.c 属 QEMU 源码域按白名单豁免；存量豁免进基线）
+#   P19 gate   跨 crate 重名 bin 防线（两个包都产出 target/debug/<name> 时后建者覆盖前者，
+#              env!("CARGO_BIN_EXE_<name>") 拿到哪个看构建顺序；`what` 同名事故，批次二百五十五拓出）
 # 带 "+" 的检查基线豁免（tools/pattern-gate-baseline.txt，key=检查名|路径|cksum）。
 
 set -u
@@ -647,6 +649,38 @@ check_p17() {
   return 0
 }
 
+# --------------------------------------------------------------- P19 跨 crate 重名 bin 防线（批次二百五十五事故）
+# 判据来源：扫命令层边界时发现 `os/commands/usr-bin/textfilter` 与 `os/commands/usr-bin/doctools`
+# 都产出名为 `what` 的二进制。cargo 把两者写到同一个 `target/debug/what`，后建者覆盖前者，
+# 而端到端门用 `env!("CARGO_BIN_EXE_what")` 取路径——门跑的是哪一个取决于构建顺序（五包同跑时
+# doctools 那枚独红，逐包单跑全绿）。同一个 crate 里自动发现与显式 `[[bin]]` 指同一个名字不算
+# 重名（cargo 会按 path 去重），故先按「crate + 名字」去重再按名字计数。
+check_p19() {
+  local root="$1" dir pairs dup n
+  dir="$root/os/commands"
+  if [ ! -d "$dir" ]; then
+    skip P19 "os/commands 不存在（self-test 沙箱）"
+    return 0
+  fi
+  pairs=$({
+    find "$dir" -path '*/src/bin/*.rs' 2>/dev/null | sed 's|/src/bin/| |; s|\.rs$||'
+    find "$dir" -name Cargo.toml 2>/dev/null | while IFS= read -r t; do
+      awk -v c="${t%/Cargo.toml}" '
+        /^\[\[bin\]\]/ { bin=1; next }
+        bin && /^[[:space:]]*name[[:space:]]*=/ { gsub(/^[^"]*"|".*/, ""); print c" "$0; bin=0 }
+      ' "$t"
+    done
+  } | sort -u)
+  dup=$(printf '%s\n' "$pairs" | awk '{ cnt[$2]++; who[$2]=who[$2]" "$1 } END { for (n in cnt) if (cnt[n] > 1) printf "%s ->%s\n", n, who[n] }' | sort)
+  if [ -n "$dup" ]; then
+    fail P19 "跨 crate 重名 bin（同一个 target/debug/<name> 会被后建者覆盖）:$(printf '\n  %s' "$dup")"
+    return 0
+  fi
+  n=$(printf '%s\n' "$pairs" | grep -c ' ' || true)
+  ok P19 "无跨 crate 重名 bin（命令面 $n 个名字各归一个 crate）"
+  return 0
+}
+
 # --------------------------------------------------------------- 自测（正反例判别矩阵）
 ST_FAIL=0
 st_expect() { # 用例名 期望子串（固定串匹配） 实际输出
@@ -778,6 +812,25 @@ YAML
   # --- P17（report 式：git 沙箱 SKIP、真树 REPORT）---
   out=$(check_p17 "$F"); st_expect "P17-skip" "[P17] SKIP" "$out"
 
+  # --- P19（跨 crate 重名 bin；what 同名事故的判例形状）---
+  mkdir -p "$F/os/commands/usr-bin/alpha/src/bin" "$F/os/commands/usr-bin/beta/src/bin"
+  : > "$F/os/commands/usr-bin/alpha/src/bin/tool.rs"
+  : > "$F/os/commands/usr-bin/beta/src/bin/other.rs"
+  out=$(check_p19 "$F"); st_expect "P19-ok" "[P19] PASS" "$out"
+  # 跨 crate 重名 → FAIL，且名字与两个归属都报出来
+  : > "$F/os/commands/usr-bin/beta/src/bin/tool.rs"
+  out=$(check_p19 "$F")
+  st_expect "P19-cross-crate-dup" "[P19] FAIL" "$out"
+  st_expect "P19-names-both-crates" "tool ->" "$out"
+  rm -f "$F/os/commands/usr-bin/beta/src/bin/tool.rs"
+  # 同 crate 内自动发现 + 显式 [[bin]] 指同一个名字 → 不算重名
+  printf '[[bin]]\nname = "other"\npath = "src/bin/other.rs"\n' > "$F/os/commands/usr-bin/beta/Cargo.toml"
+  out=$(check_p19 "$F"); st_expect "P19-same-crate-explicit" "[P19] PASS" "$out"
+  # 显式 [[bin]] 引出一个与别的 crate 重名的名字（无对应 src/bin 文件）也要拦住
+  printf '[[bin]]\nname = "tool"\npath = "src/extra.rs"\n' >> "$F/os/commands/usr-bin/beta/Cargo.toml"
+  out=$(check_p19 "$F"); st_expect "P19-explicit-only-dup" "[P19] FAIL" "$out"
+  rm -rf "$F/os/commands"
+
   # --- P18（.rs 注释 C 锚点全量：存在性/落窗/区间校 END/白名单）---
   mkdir -p "$F/minix3/hw/arm" && printf 'x\n' > "$F/minix3/hw/arm/boot.c"
   printf 'ghost2.c:1\nmemory.c:99\nmemory.c:5-99\nmemory.c:5-8\nhw/arm/boot.c:731\n' > "$F/.p18_tokens"
@@ -829,6 +882,7 @@ check_p14 "$ROOT"
 check_p15 "$ROOT"
 check_p16 "$ROOT"
 check_p17 "$ROOT"
+check_p19 "$ROOT"
 collect_p18 "$ROOT" > "${TMPDIR:-/tmp}/pattern-gate-p18.$$" ; check_p18 "$ROOT" "${TMPDIR:-/tmp}/pattern-gate-p18.$$" ; rm -f "${TMPDIR:-/tmp}/pattern-gate-p18.$$"
 
 if [ "$DO_DIFF" -eq 1 ]; then

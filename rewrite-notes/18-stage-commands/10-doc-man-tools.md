@@ -161,7 +161,7 @@ Unix 把说明书做进系统：每个命令、调用、文件格式都有一页
 | `which.rs` | `whereis.c:66-157`（which/whereis 合体共享半） | `WhichFlags::parse`（getopt "ap"）、`path_candidates`（PATH 拆分、空元素→`.`、逐字 `%s/%s`）、`is_absolute`、`compute_status`（3/0/2） |
 | `bin/which.rs` | `whereis.c:113-156` which 人格 | 读 `$PATH`、逐 operand `stat`(S_ISREG)+`access(X_OK)` 候选查、首匹配（`-a` 全显）、退 3/0/2 |
 | `what.rs` | `what.c:68-120` | `WhatFlags::parse`（getopt "s"）、`extract_ids`（`@(#)` 扫描含 `goto loop` 回退、终止集 `{'\0','"','>','\n','\\'}`、`-s` 止首） |
-| `bin/what.rs` | `what.c:83-93` | 逐 operand `open`/`read`、先打文件名再逐 id `\t<id>`、开失败即退、`matches?0:1`；报告行是 C 的 `perror(*argv)`（`what.c:85`）那一族：`<操数>: <这个号的句子>`，**不缀程序名**、也不加「cannot open」这类自创短语（接线前本壳印的正是 `what: <操数>: cannot open`）；`usage()` 在 C 里是硬写字符串（`:126`），本命令不跟 `argv[0]` 走；读错不是那一腿——C 的 `getchar()` 把它当文件尾，本层同样交回已读到的部分继续下一个操数 |
+| `bin/what.rs` | `what.c:83-93` | 逐 operand `open`/`read`、先打文件名再逐 id `\t<id>`、开失败即退、`matches?0:1`；报告行是 C 的 `perror(*argv)`（`what.c:85`）那一族：`<操数>: <这个号的句子>`，**不缀程序名**、也不加「cannot open」这类自创短语（接线前本壳印的正是 `what: <操数>: cannot open`）；`usage()` 在 C 里是硬写字符串（`:126`），本命令不跟 `argv[0]` 走；读错不是那一腿——C 的 `getchar()` 把它当文件尾，本层同样交回已读到的部分继续下一个操数；**`what` 在本树只有这一份实现**——`textfilter` 曾于批次四十九落过一份同名薄壳与库模块，批次二百五十六删去（两份都声称对位同一份 C，而 cargo 把同名 bin 写进同一个 `target/debug/what`，后建者覆盖前者，端到端门因此会跑错二进制） |
 
 ### 4.2 关键类型与不变量
 

@@ -250,6 +250,42 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百五十六除掉 `what` 的同名重复实现，并把「两包同名 bin」钉成门（P19）**
+  （`2026-10-14`，`claim/WHAT-DUP-BIN-qoder` @ 基线 `5887699bc`，单域三线 `os/commands/usr-bin/textfilter`
+  与门禁工具 `tools/pattern-gate.sh`，加同线两份台账）：接回批次二百五十五登记不执行①。
+  **是什么**：`os/commands/usr-bin/textfilter/src/bin/what.rs` 与 `os/commands/usr-bin/doctools/src/bin/what.rs`
+  同名同地产出，cargo 把两者写进同一个 `target/debug/what`，后建者覆盖前者；端到端门用
+  `env!("CARGO_BIN_EXE_what")` 取路径，于是 doctools 的 `what_face` 跑的是哪一个取决于构建顺序
+  （五包同跑必红，逐包单跑全绿）。判类 P0-code-bug（重复实现）+ P0-test-missing（门可跑错对象）。
+  **归属怎么定的**：文档五处（10 篇篇首源码清单、Rust 模块行、命令表、§4.1 模块表、§5 门清单）都把
+  `what` 记在 doctools 名下，07 篇从头到尾没列过它（批次四十九当时就没同步步正文）；doctools 那份
+  决定半 12 测含 `goto loop` 回退与终止集，比 textfilter 那份 7 测贴 C，薄壳也已按 C 的
+  `perror(*argv)` 重写。所以删的是 textfilter 那份，不是另造一份。
+  **为什么不选另一条路**：①改名保留两份（如 `what2`）会把重复实现供下来，而 C 只有一
+  个 `usr.bin/what`；②只加门不删重复，`target/debug/what` 仍会被覆盖，门的 FAIL 变成常亮红——
+  那是拿门去掩代码债；③把两份都收进 workspace 依赖图去重不可行，重名是产物路径不是依赖层。
+  **门**：`tools/pattern-gate.sh` 新添 P19：扫 `os/commands/*/src/bin/*.rs` 与显式 `[[bin]] name=`，先按
+  「crate+名字」去重（同 crate 的自动发现与显式声明指同一名字不算，cargo 自会按 path 去重），
+  再按名字计数 >1 即 FAIL。self-test 五枚夹具：ok / 跨 crate 重名 FAIL / FAIL 里报出名字与两边归属 /
+  同 crate 显式不算 / 只出自显式声明的重名也算。
+  三件套：`bash tools/pattern-gate.sh --self-test` → 全绿；真树 `bash tools/pattern-gate.sh` →
+  `[P19] PASS  无跨 crate 重名 bin（命令面 114 个名字各归一个 crate）`且 `PASS=15 FAIL=0 SKIP=1`；
+  **变异负控用真树实物**：把同名文件放回 → `[P19] FAIL … what -> …/doctools …/textfilter` 退码 1，
+  删回即 PASS；**验收判据（本批要修的那一幕）**：`cargo test -p minix-textfilter -p minix-doctools`
+  同跑 → 60 个 ok 块、**0 失败**；五包同跑 → **1380 passed、0 failed**（= 437+577+81+85+200）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）同两包 60/0；`strings -n 6 os/target/debug/what | grep -c 'cannot open'`
+  → **0**（现只剩 doctools 那一份）；三架构 `cargo build -p minix-textfilter --bins --target
+  {x86_64,aarch64,riscv64gc}-unknown-none --release` 各有 `Compiling` 行、0 error，且这些 target 目录下
+  不再产出 `what`。textfilter 测数 584 → **577**（删掉的 7 枚同名库测）。核实日 `2026-10-14`；
+  基线 `5887699bc`。容器里另跑的那次 `--target x86_64-unknown-none` 报「该 target may not be installed」，
+  属镜像环境非回归（批次一百七十五已记同口径）。
+  台账同步：10 篇 §4.1 `bin/what.rs` 行加「本树只此一份实现」与删重复的缘由；§7 那一行由 `open`
+  翻 `closed`，并把原「同跑必红」那句标为登记时读数、补上收口后的可重跑读数。
+  登记不执行：①07 篇的测数行仍写「229 个测试」与「三十三个已接线二进制」（带旧快照口径的日期限定），
+  与实测（577 / 本包 bin 名单）已差一大截——归 19–21 的账面口径行统一处理，本批不改历史快照；
+  ②`PATTERN-SCAN-REPORT-20260923.md` §4 检查映射表没记 P18/P19（现记到更早的 P 号），门数从 18 项
+  变 19 项宜同批回填；③本队列其余项（`text-games` 三面、`primes` 的 `-d`/`-h` 与 `read_num_buf`）不变，仍按 v2 表排队。
+
 - ✅ **批次二百五十五把命令层边界守卫（CI 闸上的那个）从 19 处直引扫回零，并因此发现 `what` 有两个同名二进制**
   （`2026-10-14`，`claim/COMMAND-BOUNDARY-ZERO-qoder` @ 基线 `dc8322d54`，单域三线：五个命令包的
   `src/bin_support.rs`/`src/*.rs`/三个 `Cargo.toml` 与同线台账；不动 `minix-types`/`minix-sys`）：
