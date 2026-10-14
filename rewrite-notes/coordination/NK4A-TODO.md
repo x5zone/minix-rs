@@ -137,9 +137,12 @@ Ok——RS 的 step0-4 全过；kc 流水里出现 step3/step4 的调用；RS �
 
 ## §5 关键技术事实与陷阱（每条都有真机教训，违者重蹈）
 
-1. **宿主测试一律 docker**：`docker run --rm -v "$PWD:/work" -w /work
-   -m 2g minix-ci:1.94 cargo test -j 1 -p <pkg>`（在 `os/` 目录下执行，
-   `$PWD` 是 os/）。内存小；`-j 1` 防崩。
+1. **宿主测试一律 docker，且挂载仓库根**：在**仓库根**执行
+   `docker run --rm -v "$PWD:/work" -w /work/os -m 2g minix-ci:1.94 cargo test -j 1 -p <pkg>`。
+   内存小；`-j 1` 防崩。**挂载点是指令的一部分不是习惯**：以 `os/` 为根挂载时容器看不见
+   `tools/`、`minix3/`，于是读仓内文件的宿主测试必红（判例：`minix-types` 的
+   `test_c_bridge_fs_stat_offsets_match_rust_layout` 读 `tools/atf-c-compat/posix-stubs.c`，
+   旧配方下报 `NotFound`，被当成代码债登记；换成仓根挂载后同一测试同镜像 331/0）。
 2. **none/uefi 构建（镜像组装用）走宿主 ulimit**：见 §7 命令；
    IMG-EXIT 必须 = 0 才跑 QEMU（旧镜像会产出假进展——先确认退出码，
    必要时 `strings BOOTX64.EFI | grep <新符号>` 验证新镜像）。
@@ -226,10 +229,10 @@ cd /home/xzhao/github/minix-rs
 pgrep -f '[q]emu-system' && pkill -f '[q]emu-system'   # 方括号防自匹配
 git log --oneline -3
 
-# 1) 宿主测试（docker，在 os/ 目录）
-cd os
-docker run --rm -v "$PWD:/work" -w /work -m 2g minix-ci:1.94 \
+# 1) 宿主测试（docker，在**仓库根**执行，容器工作目录指到 os/）
+docker run --rm -v "$PWD:/work" -w /work/os -m 2g minix-ci:1.94 \
   cargo test -j 1 -p minix-vm          # 换 -p 逐包跑：minix-kernel/minix-arch/minix-rs/minix-rt/minix-sys
+                                        # 内核包要带形态：-p minix-kernel --features mock
 
 # 2) 组装镜像（宿主 ulimit；必须 IMG-EXIT=0）
 cd /home/xzhao/github/minix-rs/os

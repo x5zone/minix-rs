@@ -250,6 +250,30 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十更正权威编译门的挂载点：那枚「容器恒红测」是取证配方错，不是代码债**
+  （`2026-10-14`，`claim/GATE-MOUNT-RECIPE-qoder` @ 基线 `6581e7248`，改的是仓库共享件
+  `AGENTS.md` 与 coordination 两份配方文档 + 一处测试注释，登记 C-99 后动手）：
+  接回批次二百三十三「本轮新发现的债」。**真相**：`test_c_bridge_fs_stat_offsets_match_rust_layout`
+  读的是**仓库根**下的 `tools/atf-c-compat/posix-stubs.c`（路径按 crate 位置推导），而配方
+  （`NK4A-TODO.md` §5.1 与 §7 命令块）写的是「在 `os/` 目录下执行 `-v $PWD:/work -w /work`」——
+  那样容器里根本没有 `tools/`，测试只能报 `NotFound`。此前批次二百三十三/二百三十七/二百三十八/
+  二百三十九的容器读数里那句「唯一 FAILED 是这枚恒红测」**全部由此产生**，属测量假象。
+  **判类**：P0-process-violation。取证方法一错，门里的读数就全都不可比，后人还会把测量问题当成缺陷去修。
+  **怎么修**：改配方而不是改测试——三处文档统一成「在仓库根执行、`-v $PWD:/work -w /work/os`」
+  （`AGENTS.md` Build & Test 是所有 agent 的第一入口，`CONCURRENT-WORK-PROTOCOL.md` §6 内存铁律
+  补同一句，`NK4A-TODO.md` §5.1 与 §7 命令块同步并顺手在内核那行注明要带 `--features mock` 形态）；
+  测试注释里写清「容器门必须以仓根为挂载点，报 `NotFound` 是配方错不是布局漂移」。
+  **为什么不选另一条路**：给测试加 `#[ignore]` 或「读不到就跳过」会让这条 C 桥对账在门里
+  永久失效——它正是用来抓「Rust 布局改了而 C 侧宏没跟着改」的那道牙，牺牲它换取门好看是反的。
+  三件套（同一棵树、同一镜像 A/B 对照）：`os/` 为根挂载 → `cargo test -j 1 -p minix-types` =
+  **330 passed、1 failed**（`posix-stubs.c readable from crate dir: NotFound`）；仓库根挂载
+  `-w /work/os` → **331 passed、0 failed**；`cargo check -j 1 --workspace` Finished 零 error；
+  `rustfmt` 触及文件零漂移；文档三处过 `doc-style-lint.sh --diff` error 0、`pattern-gate --diff`
+  PASS=17 FAIL=0；本子树断链与基线同数。核实日 `2026-10-14`；基线 `6581e7248`。
+  **后续轮次沿用**：本文件上文各批次里「容器内唯一 FAILED 是恒红测」那句一律按本批更正读；
+  `tools/todo-reconcile-scan.sh` 的「宿主不可达的门内测试」计数不含这条（它本就是仓可达、容器挂载不可达）。
+  登记不执行：无（本条闭环）。
+
 - ✅ **批次二百三十九接上 `link`/`unlink` 的 `perror(3)` 腿，并把「哪一族缀程序名」写成一处权威**
   （`2026-10-14`，`claim/UNLINK-PERROR-qoder` @ 基线 `953870dbe`，跨线：二线 `os/libs/minix-types` +
   三线 `os/commands/bin/fileops`，登记 C-98 后动手）：

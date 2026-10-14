@@ -103,11 +103,17 @@ mod tests {
     /// `FS_ST_*` 宏——本测试读那份 C 源逐条对账：任何一侧改动（字段序/
     /// 宽度/宏值）都会让这里变红，而不是让 C 侧静默读垃圾。
     /// 路径从 crate 位置推导（os/libs/minix-types 上溯三级 = 仓根），仅宿主
-    /// 测试跑（#[cfg(test)] 天然不进生产构建）。
+    /// 测试跑（#[cfg(test)] 天然不进生产构建）。因此**容器门必须以仓根为挂载点**
+    /// （`-v "$PWD:/work" -w /work/os`，配方写在 `AGENTS.md` 的 Build & Test）：以
+    /// `os/` 为根挂载时这份 C 源在容器外，本测试会报 `NotFound`——那是取证配方错，
+    /// 不是布局漂移，别把它当代码债登记。
     #[test]
     fn test_c_bridge_fs_stat_offsets_match_rust_layout() {
-        use std::format;   // no_std 预lude 不带 format!，宿主测试显式导入
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/atf-c-compat/posix-stubs.c");
+        use std::format; // no_std 预lude 不带 format!，宿主测试显式导入
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tools/atf-c-compat/posix-stubs.c"
+        );
         let src = std::fs::read_to_string(path).expect("posix-stubs.c readable from crate dir");
         let want: &[(&str, usize)] = &[
             ("FS_ST_DEV", offset_of!(Stat, st_dev)),
