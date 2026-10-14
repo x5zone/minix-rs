@@ -250,6 +250,42 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十三接上 `mv` 的十三处 `warn(3)` 腿，并把 C 的三种标签形分开保留（16t 第三枚）**
+  （`2026-10-14`，`claim/MV-STRERROR-qoder` @ 基线 `af0b997c3`，单域三线 `os/commands/bin/fileops`
+  与同线文档，无跨界）：接回批次二百四十二登记不执行①的第三枚。**是什么**：`mv` 的失败腿全部只印
+  `mv: rename <从> to <到>` 这一类句子头，`Errno` 在 `is_err()`/`format!` 那一步就丢了：跨设备改名、
+  权限拒、源不存在三种失败长得一样。判类 P0-code-bug（诊断行缺字段）。
+  **核对中另坐实两处文案错**：`usage()` 写的是本树的 `[-f | -i] [-v]`，C 是 `[-fiv]`（`mv.c:404-405`）；
+  询问梯里 `access(from, F_OK)` 失手那一支被展成了 `bool`，号拿不回来。
+  **怎么修**：`do_move`/`cross_device_move`/`fastcopy` 多带一个 `prog`；十三处报告位改交
+  `support::warn_line`，**按 C 的三种标签形分开保留**：前置形（`rename %s`、`rename %s to %s`、
+  `can't remove %s`）、后置形（`%s: remove`、`%s: set times`、`%s: set owner/group`、`%s: set mode`）、
+  无前缀形（`%s`）；`source_probe` 保留 `Result` 以便把 `access` 留下的号带进那一行；读写腿按 `cp` 同法把号
+  记在 `Files::last_error`，不动决定半的 `CopyError`。
+  **为什么不选另一条路**：①把十三处统一成 `mv: <路径>: <句子>` 很 tidy，但那三形在 C 里就不是同一行，
+  拼平等于改写外部行为（批次二百三十九的两族之别同理）；②给 `warn(NULL)`（`mv.c:278`，报 `malloc`
+  失手）发明一个号——本树的读块缓冲是一个 `Vec` 分配，失败不会给出可印的号，所以声明为无对位；
+  ③`mv.c:362-398` 那六句 `_PATH_CP`/`_PATH_RM` 腿跟 exec 递送链一起未落地，不代它们编报文。
+  **门**：新建 `tests/mv_face.rs`（5 枚，本 crate 第五扇进程级门）：改名失败行五段齐（程序名、`rename`、
+  两个操作数、句子）且退 1；一个与零个操作数都答两行 usage；N 对一形在尾操数不是目次时同样走 usage；
+  `-Z` 走 usage 而不是拒收句；副本改名后失败行与 usage 都跟着改名。宿主的 `access`/`stat`/`rename` 皆从
+  传输缝失手，所以询问梯不触发、`fastcopy` 不可达，这一点写进了门头注与 06 篇。
+  三件套：`cargo test -p minix-fileops` → **413 passed、0 failed**（基线 408，+5 枚门）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-fileops` → **413/0**、`cargo check -j 1
+  --workspace` Finished 零 error；三架构 `cargo build -p minix-fileops --bins --target {x86_64,aarch64,
+  riscv64gc}-unknown-none` 各 Finished 零 error；`rustfmt --edition 2024 --check` 触及两文件零漂移；
+  clippy 对触及文件零命中；宿主实跑 `mv /tmp/x /tmp/y` → `mv: rename /tmp/x to /tmp/y: Input/output error`
+  退 1、`mv one` → 两行 `[-fiv]` usage 退 1。核实日 `2026-10-14`；基线 `af0b997c3`。
+  **三枚变异负控**（测完按 md5 复原）：`rename` 腿退回不缀句子（门 2 枚红）、usage 换回本树的空格形
+  （usage 四枚全红）、程序名硬写 `"mv"`（改名那枚独红）。
+  **过程记**：本轮第一次跑负控时 shell 的 `cd` 链断了，三枚变异实际跑在同一份改动上（读数看似全同），
+  改用绝对路径重跑才拿到各自的红——负控也要检查 “它真的只改了这一处”。
+  06 篇两行随之改准：`bin/mv.rs` 行、端到端门清单添上本扇。
+  登记不执行：①余下 `truncate`/`du`/`find`/`stat`、doctools `what`、textfilter `join` 的同族腿；
+  ②`mv` 的 `destination pathname too long` 两句（`mv.c:125`、`:141`）同 `cp` 的 `name too long` 一样
+  在本树无对位（`dest_name` 不封顶），要与长度上限一并定形；③exec 递送链那六句（`mv.c:362-398`）归
+  `NS5`/`C-21`；④真机写腿与询问梯的tty 形状归 `C-57`/`E5`。
+
 - ✅ **批次二百四十二把 `cp` 的十九处 `warn(3)` 腿与五处 `err(3)` 腿按 C 接齐（16t 第二枚）**
   （`2026-10-14`，`claim/CP-STRERROR-qoder` @ 基线 `252f9b1e1`，单域三线 `os/commands/bin/fileops`
   与同线文档，无跨界）：接回批次二百四十一登记不执行①的第二枚。**是什么**：`cp` 是本命令包里诊断腿
