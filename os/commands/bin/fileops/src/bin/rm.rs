@@ -21,9 +21,18 @@
 //! tree has no password lookup at all, so that is the only form. C's own `-P`
 //! branch inside `check` (`rm.c:563-568`, "could not be overwritten") stays
 //! unreachable because `-P` is refused before any operand is touched.
-//! C's `warn`/`warnx` `strerror` suffixes are not reproduced here: the errno→text
-//! table exists (`minix_types::Errno::message`, landed with the games family), while
-//! this shell is not wired to it yet — a registered per-command follow-up.
+//! C's `warn`/`warnx`/`err` legs are wired to the one renderer the whole
+//! command family shares (`minix_types::err_line`, whose shape comes from
+//! `minix3/lib/libc/gen/verrc.c`): the program name comes from `argv[0]`
+//! through `getprogname()`'s rule, and the trailing sentence is that errno's
+//! `strerror` text. Two shapes are at stake and they are not the same line:
+//! `warn("%s", f)` (`rm.c:311`, `:348`) prints `rm: <operand>: <sentence>`,
+//! while `warnx("%s: is a directory", f)` (`rm.c:323`) prints `rm: <operand>:
+//! is a directory` — a fixed phrase, no sentence. C's hierarchy walk ends the
+//! whole run on a failed directory read (`err(1, "fts_read")`, `rm.c:284-285`),
+//! and this program now does the same rather than reporting the directory and
+//! carrying on.
+//!
 //! Real-machine effect is the writable-root gate (`C-57`/E5).
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -69,8 +78,10 @@ fn zeroed() -> Stat {
     unsafe { core::mem::zeroed() }
 }
 
-fn warn_err(path: &str) {
-    support::warn(format!("rm: {path}\n").as_bytes());
+/// C's `warn("%s", f)` (`rm.c:311`, `rm.c:348`): the program name, the operand,
+/// then that errno's sentence — and the run continues, since `vwarn` does not exit.
+fn warn_err(prog: &str, path: &str, code: Errno) {
+    support::warn_line(prog, path, code);
 }
 
 /// C `check` (`rm.c:541-578`): decide via `check_flavor` whether anything is
@@ -88,7 +99,7 @@ fn check(path: &str, sb: &Stat, flags: &RmFlags) -> bool {
     ) {
         CheckFlavor::None => return true,
         // Both prompts are bare `fprintf(stderr, ...)`: no program name, and
-        // the path in single quotes (rm.c:552, rm.c:569-572).
+        // the path in single quotes (`rm.c:549`, `rm.c:567-570`).
         CheckFlavor::Remove => {
             support::warn(format!("remove '{path}'? ").as_bytes());
         }
@@ -110,21 +121,23 @@ fn check(path: &str, sb: &Stat, flags: &RmFlags) -> bool {
 
 /// C `rm_file`'s per-operand body (`rm.c:300-353`). Returns true on failure
 /// (the operand contributed to the exit status), matching `eval = 1`.
-fn rm_one(path: &str, flags: &RmFlags) -> bool {
+fn rm_one(prog: &str, path: &str, flags: &RmFlags) -> bool {
     // "Assume if can't stat the file, can't unlink it" (rm.c:302). -f hides a
     // nonexistent operand; anything else is reported.
     let mut sb = zeroed();
     if let Err(e) = lstat(path, &mut sb) {
         if !(flags.force && nonexistent(e)) {
-            warn_err(path);
+            warn_err(prog, path, e);
             return true;
         }
         return false;
     }
 
-    // POSIX: removing a directory without -d is an error (rm.c:322-326).
+    // POSIX: removing a directory without -d is an error (rm.c:322-326). C's
+    // `warnx("%s: is a directory", f)` carries the program name but no errno
+    // sentence, so it is not a `warn_err` call.
     if s_isdir(sb.st_mode) && !flags.dflag {
-        support::warn(format!("rm: {path}: is a directory\n").as_bytes());
+        support::warn(format!("{prog}: {path}: is a directory\n").as_bytes());
         return true;
     }
 
@@ -142,7 +155,7 @@ fn rm_one(path: &str, flags: &RmFlags) -> bool {
     };
     if let Err(e) = removed {
         if !(flags.force && nonexistent(e)) {
-            warn_err(path);
+            warn_err(prog, path, e);
             return true;
         }
     } else if flags.verbose {
@@ -154,10 +167,13 @@ fn rm_one(path: &str, flags: &RmFlags) -> bool {
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // C calls `setprogname(argv[0])` first thing (`rm.c:104`); every `warn`/`warnx`/
+    // `err` line and the usage line start from that one string.
+    let prog = support::prog_name(&argv);
 
     let (flags, operands) = match RmFlags::parse(&args[1.min(args.len())..]) {
         Some(v) => v,
-        None => usage(),
+        None => usage(prog),
     };
 
     // C rm.c:144-148: with no operand, -f exits 0, otherwise usage.
@@ -165,7 +181,7 @@ fn run() -> ! {
         if flags.force {
             support::terminate(0);
         }
-        usage();
+        usage(prog);
     }
 
     // Refuse options that hinge on unwrapped facilities before doing work.
@@ -175,24 +191,26 @@ fn run() -> ! {
     }
 
     // POSIX "." / ".." rejection (rm.c checkdot); complain once if any dropped.
+    // C's line is `warnx("\".\" and \"..\" may not be removed")` (`rm.c:610`) — program
+    // name plus that fixed phrase, no errno sentence behind it.
     let (kept, mut eval) = strip_dots(&operands);
     if eval {
-        support::warn(b"rm: \".\" and \"..\" may not be removed\n");
+        support::warn(format!("{prog}: \".\" and \"..\" may not be removed\n").as_bytes());
     }
 
     for path in &kept {
         // rm.c:157-160: `-r` selects the hierarchy walk, everything else the
         // single-entry removal.
         eval |= if flags.recursive {
-            rm_tree_one(path, &flags)
+            rm_tree_one(prog, path, &flags)
         } else {
-            rm_one(path, &flags)
+            rm_one(prog, path, &flags)
         };
     }
     support::terminate(if eval { 1 } else { 0 });
 }
 
-/// C `rm_tree` (`rm.c:167-281`) for one operand. The fts(3) walk is replaced by
+/// C `rm_tree` (`rm.c:167-287`) for one operand. The fts(3) walk is replaced by
 /// this crate's own directory decoder (`minix_fileops::dents`), keeping C's
 /// order of decisions: `lstat` first, a pre-order question for a directory that
 /// can skip the whole subtree, children removed before the directory itself
@@ -200,39 +218,40 @@ fn run() -> ! {
 /// hiding only the nonexistent family.
 ///
 /// Returns true when this operand contributed to the exit status.
-fn rm_tree_one(path: &str, flags: &RmFlags) -> bool {
+fn rm_tree_one(prog: &str, path: &str, flags: &RmFlags) -> bool {
     let mut sb = zeroed();
     if let Err(e) = lstat(path, &mut sb) {
-        // The root of the walk cannot be stat'ed: C's FTS_NS arm (rm.c:200-213)
+        // The root of the walk cannot be stat'ed: C's FTS_NS arm (`rm.c:211-224`)
         // — `-f` swallows the nonexistent family, otherwise it is reported and
-        // nothing is removed.
+        // nothing is removed. C's line is `warnx("%s: %s", path, strerror(errno))`,
+        // which renders to the same shape `warn_err` already produces.
         if flags.force && nonexistent(e) {
             return false;
         }
-        warn_err(path);
+        warn_err(prog, path, e);
         return true;
     }
 
     if !s_isdir(sb.st_mode) {
-        // C's default arm (rm.c:226-229): ask, then unlink.
+        // C's default arm (`rm.c:238-242`, unlink at `rm.c:266-274`): ask, then unlink.
         if !flags.force && !check(path, &sb, flags) {
             return false;
         }
-        return remove_entry(path, flags);
+        return remove_entry(prog, path, flags);
     }
 
-    // FTS_D pre-order (rm.c:217-222): the question covers the whole subtree; a
+    // FTS_D pre-order (`rm.c:225-232`): the question covers the whole subtree; a
     // declined answer marks the directory skipped and its post-order visit does
     // nothing at all.
     if !flags.force && !check(path, &sb, flags) {
         return false;
     }
 
-    let failed = descend_children(path, flags);
+    let failed = descend_children(prog, path, flags);
 
-    // FTS_DP post-order (rm.c:236-244): the directory itself, now empty or
-    // never readable. C still attempts the rmdir after a failed descent, and
-    // under `-f` a vanished directory is not an error.
+    // FTS_DP post-order (`rm.c:233-237`, rmdir at `rm.c:250-256`): the directory
+    // itself, now empty or never readable. C still attempts the rmdir after a
+    // failed descent, and under `-f` a vanished directory is not an error.
     match rmdir(path) {
         Ok(()) => {
             echo_removed(path, flags);
@@ -242,22 +261,25 @@ fn rm_tree_one(path: &str, flags: &RmFlags) -> bool {
             if flags.force && e == Errno::ENOENT {
                 return failed;
             }
-            warn_err(path);
+            warn_err(prog, path, e);
             true
         }
     }
 }
 
 /// Walk one directory's entries and remove each of them. Returns true when any
-/// child failed; the unreadable-directory case is C's `FTS_DNR` (rm.c:190-197):
+/// child failed; the unreadable-directory case is C's `FTS_DNR` (`rm.c:200-206`):
 /// report it (unless `-f` and the directory simply vanished) and let the caller
 /// still try the `rmdir`.
-fn descend_children(dir: &str, flags: &RmFlags) -> bool {
+fn descend_children(prog: &str, dir: &str, flags: &RmFlags) -> bool {
     let fd = match open(dir, cp::O_RDONLY, 0) {
         Ok(fd) => fd,
         Err(e) => {
+            // C's FTS_DNR arm (`rm.c:200-206`): report `rm: <dir>: <sentence>` and
+            // let the caller still try the rmdir, unless `-f` says the directory
+            // simply vanished.
             if !(flags.force && nonexistent(e)) {
-                warn_err(dir);
+                warn_err(prog, dir, e);
             }
             return true;
         }
@@ -269,14 +291,13 @@ fn descend_children(dir: &str, flags: &RmFlags) -> bool {
         let transferred = match getdents(fd, &mut buf) {
             Ok(0) => break,
             Ok(n) => n,
-            Err(_) => {
-                // C ends the whole run on an fts_read error (`rm.c:278-280`,
-                // `err(1, "fts_read")`); this tree reports the directory and
-                // still lets the caller try its rmdir, so a read error is a
-                // failure for this operand rather than a hard exit.
-                warn_err(dir);
-                failed = true;
-                break;
+            Err(e) => {
+                // `rm.c:284-285`: after the walk loop C checks `errno` and calls
+                // `err(1, "fts_read")` — program name, the C name of the failing
+                // step, that errno's sentence, then exit 1. The walk does not
+                // carry on, so the rmdir of this directory never happens.
+                support::warn_line(prog, "fts_read", e);
+                support::terminate(1);
             }
         };
         let mut cursor = 0;
@@ -301,7 +322,7 @@ fn descend_children(dir: &str, flags: &RmFlags) -> bool {
             if !dents::is_descendable(name) {
                 continue;
             }
-            failed |= rm_tree_one(&dents::join_path(dir, name), flags);
+            failed |= rm_tree_one(prog, &dents::join_path(dir, name), flags);
         }
     }
     // The descriptor cannot be meaningfully reported on here: the removal
@@ -311,8 +332,8 @@ fn descend_children(dir: &str, flags: &RmFlags) -> bool {
 }
 
 /// Unlink one non-directory entry, with C's `-f` nonexistent hiding
-/// (`rm.c:264-269`) and the `-v` echo of a removed name (`rm.c:271-274`).
-fn remove_entry(path: &str, flags: &RmFlags) -> bool {
+/// (`rm.c:271-274`) and the `-v` echo of a removed name (`rm.c:279-282`).
+fn remove_entry(prog: &str, path: &str, flags: &RmFlags) -> bool {
     match unlink(path) {
         Ok(()) => {
             echo_removed(path, flags);
@@ -322,21 +343,24 @@ fn remove_entry(path: &str, flags: &RmFlags) -> bool {
             if flags.force && nonexistent(e) {
                 return false;
             }
-            warn_err(path);
+            warn_err(prog, path, e);
             true
         }
     }
 }
 
-/// `rm.c:271-274`: one name per successfully removed entry when `-v` is set.
+/// `rm.c:279-282`: one name per successfully removed entry when `-v` is set.
 fn echo_removed(path: &str, flags: &RmFlags) {
     if flags.verbose {
         support::emit(format!("{path}\n").as_bytes());
     }
 }
 
-fn usage() -> ! {
-    support::warn(b"usage: rm [-f | -i] [-dPRrvWx] file ...\n");
+fn usage(prog: &str) -> ! {
+    // `rm.c:620-628`: `fprintf(stderr, "usage: %s [-f|-i] [-dPRrvWx] file ...\n",
+    // getprogname())` — the program name rides inside the line, it is not a
+    // `warn`-style prefix, and the option groups keep C's unspaced `|`.
+    support::warn(format!("usage: {prog} [-f|-i] [-dPRrvWx] file ...\n").as_bytes());
     support::terminate(1);
 }
 

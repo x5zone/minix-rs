@@ -250,6 +250,49 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百四十一接上 `rm` 的 `warn(3)`/`warnx(3)`/`err(3)` 三条腿：那个号终于进了那一行**
+  （`2026-10-14`，`claim/STRERROR-WIRE-2-qoder` @ 基线 `a543f8b22`，单域三线 `os/commands/bin/fileops`
+  与同线文档，无跨界）：接回批次二百三十九登记①的第一枚。**是什么**：`rm` 每一条失败腿都印
+  `rm: <路径>`就收——C 的那行是 `warn("%s", f)`（`rm.c:311`、`:348`），经 `vwarn.c` 渲染成
+  `getprogname(): <路径>: <strerror(errno)>`。本壳在 `warn_err(path)` 那一步就把 `Errno` 丢了：
+  权限被拒、路径过长、不存在三种失败在读者眼里长得一模一样。判类 P0-code-bug（诊断行缺一个字段）。
+  **核对中另坐实三处同源错**：①程序名硬写成 `"rm"`，而 C 用 `getprogname()`（`argv[0]` 去掉目录的
+  最后一段）；②`usage()` 抄的是本树的空格形 `[-f | -i]`，C 是 `[-f|-i]`（`rm.c:624`）；③目录读失败
+  那一腿本树报完继续走，C 是 `err(1, "fts_read")`（`rm.c:284-285`）印完即退 1。
+  **怎么修**：`warn_err(prog, path, code)` 把号交给 `support::warn_line`（形状与句子都在
+  `minix_types::err_line` 那一份权威里），程序名在 `run()` 里取一次往下传；`warnx` 那两处可达腿
+  （`:323` 的 is a directory、`:610` 的「. 与 .. 不得删」）只加程序名、不缀句子；`fts_read` 腿改成按 C 退出。
+  **为什么不选另一条路**：①给每壳各写一份 errno→句子渲染等于把 `verrc.c` 抄十几遍，句子表一改就散；
+  ②把 `warnx` 也统一成 `warn` 形状，就是给「is a directory」缀一句并不存在的号——批次二百三十九立的
+  「两族只有一处答案」只是要分清谁带句子；③`fts_read` 继续报完就走 = 与 C 的终止语义分岔，而这类分岔
+  必须由裁决来定、不能在接线时悄悄保留（本轮采 C，因为真值优先序里 C 是纲）。
+  **门**：新建 `tests/rm_face.rs`（6 枚，fileops 的第三扇进程级门）：一个操作数失败出三段齐的一行、
+  三个操作数出三行只一个退码、把副本改名后跑证明程序名不是硬写（usage 行也跟着改名）、无操作数时空手
+  usage 退 1 而带 `-f` 静默退 0（`rm.c:144-148`）、`.`/`..` 只抱怨一次且那句没有句子尾巴、`-r` 的根取不到
+  走 `FTS_NS` 那一支。号码不钉（宿主 `lstat` 回 `EIO`，那是环境事实不是 C 的契约）。
+  三件套：`cargo test -p minix-fileops` → **403 passed、0 failed**（基线 397，+6 枚门）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-fileops` → **403/0**、
+  `cargo check -j 1 --workspace` Finished 零 error；三架构 `cargo build -p minix-fileops --bins
+  --target {x86_64,aarch64,riscv64gc}-unknown-none` 各 Finished 零 error；`rustfmt --edition 2024 --check`
+  触及两文件零漂移；clippy 对触及文件零命中；宿主实跑 `rm /tmp/nope` → `rm: /tmp/nope: Input/output error`
+  退 1、`rm -f` 空手退 0、`rm . .. .` 只抱怨一次。核实日 `2026-10-14`；基线 `a543f8b22`。
+  **三枚变异负控**（改完即测、测完按 md5 复原）：句子退回只报路径（门 5 枚红）、程序名硬写
+  `"rm"`（改名那枚独红）、usage 恢复本树的空格形（usage 两枚红）。
+  **验证边界**：`NONEXISTENT` 三值分档与 `-f` 静默只在决定半的库测里钉（宿主拿不到 ENOENT）；
+  `fts_read` 腿宿主不可达（`open` 先失败），要等可写根盘的真机门；`-v` 的回显腿需要真删成功才出，
+  宿主 `unlink` 恒失败故不断言（`emit` 的宿主双生面在本 crate 已到位，缺的是成功路径本身）。
+  **诊断腿穷举**（`rm.c` 逐枚点完，14 处）：本轮接上 9 处可达腿——`:202-204`（FTS_DNR）、
+  `:219`/`:222`（FTS_NS）、`:277`（树内删失败）、`:285`（fts_read）、`:311`（rm_file 的 lstat 失败）、
+  `:323`（is a directory）、`:348`（rm_file 的删失败）、`:610`（「. 与 .. 不得删」）、`:624`（usage）；
+  `:549` 与 `:567-570` 两句询问是 C 的裸 `fprintf`，本就无程序名、本轮不动；剩下四处不可达——
+  `:317`（`-W` 的 EEXIST 句）与 `:535`、`:562-565`（`-P` 的两处）随被前置拒的旗标一起死，
+  `:196`（`err(1, "fts_open failed")`）与 `:208`（`errx` 的 FTS_ERR）在本树没有对位调用：
+  前者被 `open` 失败腿（即 FTS_DNR 那一支）吃掉，后者被 `:285` 的终止腿吃掉。
+  06 篇两行随之改准：`bin/rm.rs` 行的诊断面描述、以及端到端门清单添上本扇。
+  登记不执行：①余下 `cp`/`mv`/`truncate`/`du`/`find`/`stat`、doctools `what`、textfilter `join` 的同族腿
+  （逐枚先对 C 判哪一族再接）；②`os/commands/bin/shell` 那份 `bin_support.rs` 的 `emit` 仍无宿主双生面
+  （`grep -c "pub fn emit"` 该文件 = 1，其余十三个共享件都是 2）；③真机播种与写腿归 `C-57`/`E5`。
+
 - ✅ **批次二百四十更正权威编译门的挂载点：那枚「容器恒红测」是取证配方错，不是代码债**
   （`2026-10-14`，`claim/GATE-MOUNT-RECIPE-qoder` @ 基线 `6581e7248`，改的是仓库共享件
   `AGENTS.md` 与 coordination 两份配方文档 + 一处测试注释，登记 C-99 后动手）：
