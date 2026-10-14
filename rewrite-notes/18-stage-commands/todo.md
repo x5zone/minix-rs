@@ -250,6 +250,33 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百三十四接上 `factor` 的溢出腿：`ERANGE` 那句与 `illegal numeric format` 分成两句**
+  （`2026-10-14`，`claim/STRERROR-WIRE-qoder` @ 基线 `16b1c1fca`，单域三线 commands/games/stdio-games，
+  承接批次二百三十三的跨线登记 C-95）：
+  接回批次二百三十三登记①的第一处。**是什么**：C 的 `factor` 取值有两条不同的出路——`BN_dec2bn`
+  （`factor.c:118-128`）先 `errno = 0` 再 `strtoul`，**只看 `errno` 就 `err(1, "%s", str)`**（`:125-126`），
+  之后才判 `*p == '\n' || *p == '\0'`（`:127`）并交给调用者的 `illegal numeric format`（`:168`/`:177`）。
+  也就是说溢出与带尾巴是两句话，而且溢出优先。本树此前把溢出折成 `Verdict::Illegal`，退码相同而句子不同；
+  22 篇与库文档都把它记成「因本树无 `strerror` 表而按非法格式句给出（已声明的分流）」——表已在批次二百三十三落地，
+  这条分流就不再是分流，而是与 C 不符。判类 P0-code-bug + P0-fact（文档与注释里的旧理由）。
+  **怎么修**：决定半加 `Verdict::Overflow` 与 `OVERFLOW_ERRNO`（= `Errno::from_i32(ERANGE)`，
+  号由 C 设、句子由本树的表给），溢出改判此支；执行半新增该臂，按 `minix3/lib/libc/gen/verrc.c` 的形状打
+  `factor: <原串>: Result too large or too small` 退 1。**顺带**把库文档里那条已闭合的分流声明删掉，
+  只留仍在的两条（负数检验的落点、stdin 形里 C 打的是已推进过的 `argv[0]`）。
+  三件套：`cargo test -p minix-stdio-games` → **18 目标全 ok、合计 173 passed、零 FAILED**（基线 18/172）；
+  `--lib factor::` 6/0（`verdicts_accept_signs_and_blanks_the_way_strtoul_does` 内加四组断言：
+  `18446744073709551616` 溢出、`99999999999999999999999x` 溢出优先于尾巴、`u64::MAX` 不溢出、
+  33 位前导零不溢出）；`--test factor_face` 8→**9/0**（新增 `an_overflowed_value_leaves_with_the_range_sentence_not_the_format_one`，
+  操作数形、带尾巴的超大数、标准输入形各一枚）；三架构 `--bins` 三台零 error；容器 `minix-ci:1.94`（带 `-u`）
+  `cargo check -j 1 --workspace` Finished 零 error；`rustfmt` 零漂移；clippy 对 `factor.rs` 零命中。
+  核实日 `2026-10-14`；基线 `16b1c1fca`。
+  **五枚变异负控**（`tmp/factor-overflow-mutate.py`，`--lib factor::` 与 `--test factor_face` 分两次调用、
+  复位断言 md5）全部咬中：溢出折回 `Illegal`、句子前不接冒号空格、壳里丢掉整句尾巴、号改用 `EINVAL`、
+  把前导零当溢出（最后一枚一次掀翻七枚门测，说明「宽度不等于溢出」这条被真钉住了）。
+  登记不执行：①`factor: stdin` 与 `ppt: fgets` 那两句 `err` 的后缀——它们要的是失败当场留下的号，
+  而共享读缝 `stdin_chunk` 现在把失败折成不带号的形状，改它要连九个壳的行读取器一起改形（另一轮）；
+  ②其余写着「本树无 `strerror` 表」的注释更正；③真机播种与 open 腿归 C-57/E5。
+
 - ✅ **批次二百三十三把 Minix3 自己的 `sys_errlist` 落成 `minix-types` 的 errno 句子表，并接上第一个消费者 `caesar`**
   （`2026-10-14`，`claim/STRERROR-TABLE-qoder` @ 基线 `9734acb2a`，跨线：二线 `os/libs/minix-types` +
   三线 `os/commands/games/stdio-games`，照规则 1 在 `new_edge4.md` 登记 C-95 后动手）：
