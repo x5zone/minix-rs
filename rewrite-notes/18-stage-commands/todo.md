@@ -250,6 +250,57 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十六把 `cut` 的列表语法按 C 定形（四形之外又拓出一形），并拓出一枚不可复现的容器门读数**
+  （`2026-10-15`，`claim/CUT-LIST-GRAMMAR-qoder` @ 基线 `6c4c47517`，单域三线同一 crate：
+  `src/cut.rs`、`src/bin/cut.rs`、`tests/cut_face.rs`，另改一枚既有测 `tests/sort_face.rs`（见下面
+  那处推翻），无跨线登记）：批次二百八十一末尾登记的第三条。
+  **改的是哪四形**（都在 `minix3/usr.bin/cut/cut.c:get_list` 里，旧写法把它们全拒）：
+  ① 分隔符集是 `,`、空格、制表符三个且空项被折叠（`:175` 用的是 `strtok(list, ", \t")`，
+  所以 `1,,3`、`1 3`、`1\t3`、` 1 , 3 ` 与 `1,3` 同解）；② 空列表不是错（`strtok` 对空串直接
+  交 NULL，置位循环一次也跑不到，于是一个位置也不选，而 `x_cut.c:86` 照旧给每行补一个换行）；
+  ③ `5-2` 不查大小关系（`:209-210` 只是 `start++ <= stop` 地置位，倒序就一个也不置，得到空
+  集合而不是错）；④ 项数不封顶（`:163-164` 初次分配、`:199-206` 按 `ALLOC_CHUNK` 长大，
+  本树旧写法封顶 16 项并把超限报成「非法列表」）。返回形状因此从「定长数组 + 计数」改成
+  `Vec<Range>`，`MAX_RANGES`/`parse_part`/`parse_number` 三个旧件删除（共 56 行）。
+  **第五形是实施中发现的，不在原登记的四条里**：C 在 `*p == '-'` 上写了**两个**判据
+  （`:186`、`:189`），第二个测的还是同一个位置——只有 `isdigit(p[1])` 成立、`strtol` 真跑了，
+  指针才前进（`:187-188`）；否则指针原地不动，第二个判据又命中同一个 `-` 并 `++p`（`:190`）。
+  把它压成「跨过减号再读一个数」会同时错两处且正好互换：`1-2-` 在 C 是**接受**的（autostop
+  那一支，`x_cut.c:80-82` 把 `maxval` 之后的原样打出，等价于从 1 打到行尾），压平后报残留；
+  `5--` 在 C 是残留错（`illegal list value`），压平后报零。因此 `parse_token` 按两层判据写，
+  并用一对句子门钉住（`the_two_dash_tests_are_not_merged` 与端到端那枚）。
+  **一处推翻（台账读数不可复现，不是代码错）**：批次二百八十四登记「docker `minix-ci:1.94`
+  同包 612/0」，本轮**按同一条命令重跑直接报红**：`sort_face.rs` 的
+  `an_unwritable_target_is_refused_before_anything_changes` 期望退 2，容器里拿到退 0。根因是该镜像默认以 root 执行
+  （`docker run --rm minix-ci:1.94 id` → `uid=0(root)`），而带 `CAP_DAC_OVERRIDE` 的进程走
+  `access(2)`/`open` 时不看权限位，那个 `chmod 0444` 拦不住它——即 C 自己在 root 下也是写出
+  结果并退 0。所以那枚门断的不是 C 的行为，而是**跑它的那个 uid**；旧登记要么当时用了非 root
+  用户而未记录，要么读数取自宿主——两种情形都算三件套不齐。修法不是跳过也不是改容器配方，
+  而是按有效 uid 分支两支各自钉住（root 支：退 0、stderr 为空、目标内容被排好；非 root 支：
+  退 2、那句 `sort: <路径>: Permission denied` 逐字、旧内容不动），探针取 `/proc/self/status` 的
+  `Uid:` 第二列。**本轮不动任何生产代码**（`bin_support.rs::writable` 的双生缝本身与 C 同形）。
+  三件套：宿主 `cargo test -p minix-textfilter` → **620 passed、0 failed**（基线 613：
+  `cut.rs` 新增两枚 lib 测 + `tests/cut_face.rs` 9→14 枚）；docker `minix-ci:1.94` 同包
+  **620/0**、`cargo check --workspace -j 1` **0 error**；三架构 `--bins`（`x86_64-unknown-none`、
+  `aarch64-unknown-none`、`riscv64gc-unknown-none-elf`）均零错；`rustfmt --check` 本笔三件共报
+  三处漂移（`cut.rs` 的 `select_bytes` 多行签名与 `in_ranges` 链式、`bin/cut.rs` 的 `use` 排序），
+  逐一拿 `git show HEAD:` 的副本重跑 `--check` 确认**三处在基线即存在**（本笔新增行零漂移），
+  因此不入库也不「顺手排好」；那个 HEAD 副本比对用的是临时换位 + `cmp` 复原，已确认同一；
+  clippy 触及件的新增代码零告警（`cut_face.rs:111` 的 `iter().copied().collect()` 与 `jot.rs:771`
+  的 `approx_constant`（deny 级，使 `cargo clippy --all-targets` 在本 crate 非零退出）都是 HEAD
+  即有的存量，本笔不顺手改，登记在此）；`tools/pattern-gate.sh` PASS=15 FAIL=0 SKIP=1（P18 回读
+  13332 个 token 全落窗）；`tools/check-command-boundary.sh` OK；`tools/doc-style-lint.sh --diff`
+  零 error（第一版正文里写了两处 `（Lnnn，工具生成）`被 SL-10 挡住，已改为符号锚点）。
+  三枚变异负控各咬一处（均先打印 `mutation applied` 再跑门，恢复用备份并 `cmp` 同一）：
+  ① 把两层减号判据压平 → lib 三枚报红（含新那枚）且端到端一枚报红；② 取消空项折叠 →
+  lib 一枚 + 端到端两枚报红；③ 恢复「倒序区间报错」→ lib 一枚 + 端到端一枚报红。
+  核实日 `2026-10-15`；基线 `6c4c47517`。
+  登记不执行：① C 的 `autostart`/`autostop` 是**跳项、跳行的全局量**（`:183-184`、`:191-192`、
+  `:213-219`），本树只把它折算成单个区间的开上界——单项列表（`5-`、`1-2-`）输出与 C 一致，而
+  `3-,1` 那类靠全局 `maxval` 与 `positions` 位图拼出的行为不保证一致（下一项）；② 数值溢出时
+  本树饱和，C 拿到 `LONG_MAX` 后会把 `positions` 重开到那个尺寸直到分配失败（`:199-206`），不建模；
+  ③ `-b` 与 `-c` 在本树同义，所以四道 post-check 的第三道（`bflag && cflag`）仍不可达。
+
 - ✅ **批次二百八十五接完 `pr` 的诊断面，并推翻了两处此前写在台账与门里的错结论**
   （`2026-10-15`，`claim/PR-DIAG-LEGS-qoder` @ 基线 `84963dd2b`，单域三线同一 crate：
   `src/lib.rs`、`src/pr.rs`、`src/bin/pr.rs`、`tests/pr_face.rs`，无跨线登记）：
@@ -311,6 +362,10 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   先打印 `mutation applied` 再跑门，恢复用备份并 `cmp` 同一。核实日 `2026-10-15`；基线 `83850de82`。
   登记不执行：`chmod`/`link` 两腿的带号句子在宿主造不出稳定金样（需要让一个刚创建的 0600 临时档
   在 `chmod`/`link` 上失败），本轮只保证缝把号交到了壳里；写失败与 `fdopen` 的形状差异（上面那段）。
+  **更正（批次二百八十六发现，`2026-10-15`，原正文不改）**：上面那句「docker `minix-ci:1.94` 同包
+  **612/0**」不可复现——该镜像默认以 root 执行，而 `access(2)`/`open` 对带 `CAP_DAC_OVERRIDE` 的进程
+  不看权限位，所以 `an_unwritable_target_is_refused_before_anything_changes` 在容器里拿到退 0。
+  本轮把该枚改成按有效 uid 分支、两支各自钉住，读数与修法见批次二百八十六条目。
 
 - ✅ **批次二百八十三接完同族诊断面第三支（`sort` 与 `join` 的选项腿），并把 `sort` 的键解析收严到 C 的停点**
   （`2026-10-15`，`claim/FAMILY-DIAG-JOIN-SORT-qoder` @ 基线 `a7a7d7e72`，单域三线同包，无跨界）：

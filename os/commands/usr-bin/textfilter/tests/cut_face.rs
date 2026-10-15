@@ -121,12 +121,12 @@ fn list_complaints_carry_no_offending_value() {
     // `cut.c:196` and `:198` are `errx(1, "[-bcf] list: …")` with no `%s`：坏文本不会被
     // 拼回句子里。零那一形走后一句，其他读不完的走前一句。
     //
-    // 这一只拿两侧一致的形做金样。C 的 `get_list` 比本树的 `parse_list` 宽（`cut.c:171-174`
-    // 的注释写着「This parser is less restrictive than the Draft 9 POSIX spec」），三形
-    // 归不到同一句：`strtok(list, ", \t")`（`:176`）会折叠空项并把空格与制表符也当分隔符
-    //（`1,,2` 在 C 就是 `{1,2}`），`5-2`（`:193-195` 不查大小关系）在 C 选中空集合而不是
-    // 报错，而 `-f ''` 连一次循环体都不进（`strtok` 直接交 NULL）。这三形归入下一条
-    // 待办（列表语法），本轮不拿它们的读数当 C 的基线。
+    // 这一只拿两侧一致的形做金样。C 的 `get_list` 曾经比本树宽（`cut.c:171-174`
+    // 的注释写着「This parser is less restrictive than the Draft 9 POSIX spec」），
+    // 批次二百八十六已经把列表语法对齐：`strtok(list, ", \t")`（`:175`）折叠空项
+    // 并把空格与制表符也当分隔符，`5-2`（`:209-210` 不查大小关系）在 C 选中空
+    // 集合而不是报错，`-f ''` 连一次循环体都不进。这三形的读数另有四枚门钉住，
+    // 不在本枚里。
     for value in ["0", "0-5", "5-0"] {
         let (out, status, err) = run(&["-f", value], "a\n");
         assert_eq!(out, "", "列表 {value:?} 不该打任何内容");
@@ -181,6 +181,67 @@ fn a_multi_byte_delimiter_is_truncated_not_rejected() {
     // An empty value takes the NUL byte itself, which is still not an error.
     let (out, status, _) = run(&["-d", "", "-f", "1"], "a:b:c\n");
     assert_eq!(status, 0, "空分隔符不该报错，输出是 {out:?}");
+}
+
+#[test]
+fn a_reversed_range_selects_nothing_rather_than_erroring() {
+    // C 不查区间大小关系（`cut.c:209-210` 只是 `start++ <= stop` 地置位），所以
+    // `5-2` 一个位置也不置，而 `x_cut.c:69-87` 那个外层环路每行仍以一个换行结尾。
+    // 旧写法把它当成「illegal list value」拒掉。
+    let (out, status, err) = run(&["-b", "5-2"], "abcde\nxyz\n");
+    assert_eq!(out, "\n\n", "倒序区间选不中任何东西，但行还在");
+    assert_eq!(status, 0, "stderr was {err:?}");
+}
+
+#[test]
+fn separators_include_blank_space_and_empty_items() {
+    // `cut.c:175` 是 `strtok(list, ", \t")`：三个分隔符、空项折叠。所以五种写法
+    // 选到的是同一组位置（旧写法只认逗号，且把空项当错）。
+    for list in ["1,3", "1 3", "1\t3", "1,,3", " 1 , 3 "] {
+        let (out, status, err) = run(&["-b", list], "abcde\n");
+        assert_eq!(out, "ac\n", "列表 {list:?} 的 stderr 是 {err:?}");
+        assert_eq!(status, 0, "列表 {list:?}");
+    }
+}
+
+#[test]
+fn an_empty_list_is_not_an_error_and_prints_a_blank_line_per_input() {
+    // `get_list("")` 里 `strtok` 直接交 NULL，循环体一次也跑不到：不报错、也不置
+    // 任何位置（`cut.c:175`）；`x_cut.c:86` 又总给每行补一个换行。旧写法把空串
+    // 当成「illegal list value」。
+    let (out, status, err) = run(&["-b", ""], "abc\nde\n");
+    assert_eq!(out, "\n\n");
+    assert_eq!(status, 0, "stderr was {err:?}");
+}
+
+#[test]
+fn more_than_sixteen_items_is_accepted() {
+    // C 的 positions 数组按需长大（`cut.c:163-164`、`:199-206`，每块
+    // `_POSIX2_LINE_MAX`），本树之前封顶 16 项。20 项该照切。
+    let list = (1..=20)
+        .map(|n| n.to_string())
+        .collect::<Vec<String>>()
+        .join(",");
+    let line = "abcdefghijklmnopqrst\n";
+    let (out, status, err) = run(&["-b", &list], line);
+    assert_eq!(out, line, "stderr 是 {err:?}");
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn a_trailing_dash_opens_the_line_end_but_a_dangling_one_is_illegal() {
+    // C 在 `*p == '-'` 上写了两个判据（`cut.c:186`、`:189`），不能压平成一件事。
+    // `1-2-` 是接受的：第二个判据跨过尾部那个 `-` 正好走到行尾，autostop 那一支
+    // 把 maxval 之后的内容原样打出（`x_cut.c:80-82`），效果就是从 1 打到行尾。
+    // `5--` 却不接受：`isdigit(p[1])` 不成立（`:187`），跨过索引 1 的 `-` 后还停在
+    // 索引 2 的 `-` 上 → 残留那句（`:195-196`）而不是零那句。
+    let (out, status, err) = run(&["-b", "1-2-"], "abcde\n");
+    assert_eq!(out, "abcde\n", "stderr 是 {err:?}");
+    assert_eq!(status, 0);
+    let (out, status, err) = run(&["-b", "5--"], "abcde\n");
+    assert_eq!(out, "");
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(err, "cut: [-bcf] list: illegal list value\n");
 }
 
 #[test]

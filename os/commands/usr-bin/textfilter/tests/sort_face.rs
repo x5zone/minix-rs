@@ -55,6 +55,22 @@ fn clean(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+/// 本进程的**有效** uid（`/proc/self/status` 里 `Uid:` 那行的第二列）。
+/// 拿不准就返 `None`，让调用方按普通用户那一支走。
+///
+/// 这一探针不是可有可无的：本仓的权威编译门跑在 docker `minix-ci:1.94` 里，而那个镜像
+/// 默认以 root 执行（`docker run --rm minix-ci:1.94 id` → `uid=0(root)`）。root 无视
+/// 权限位，所以下面那枚「只读目标」门在容器内与在宿主上看到的是**两种都合法**的行为。
+fn effective_uid() -> Option<u32> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("Uid:") {
+            return rest.split_whitespace().nth(1).and_then(|v| v.parse().ok());
+        }
+    }
+    None
+}
+
 #[test]
 fn without_the_flag_the_result_goes_to_standard_output() {
     let (out, status, err) = run(&[], b"c\na\nb\n");
@@ -152,18 +168,30 @@ fn an_unwritable_target_is_refused_before_anything_changes() {
     // `access(outpath, W_OK)`（`sort.c:336-337`）那一支在 C 是 `err(2, "%s", outpath)`：
     // 程序名、路径、`strerror` 句子三件齐备（旧写法只印到路径为止），且退 2。
     // 旧内容必须还在。
+    //
+    // **这一判据只在非 root 成立**：带 `CAP_DAC_OVERRIDE` 的进程（root 默认有）走
+    // `access(2)`/`open` 时不看权限位，只受只读挂载这类文件系统级限制约束。所以同一句
+    // C 命令以 root 跑就会写出结果并退 0。权威容器门正是 root，故两支各自钉住自己的
+    // 形——而不是把其中一支跳过。
     let target = written("read-only", b"keep me\n");
     fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).expect("chmod");
     let input = written("read-only-input", b"b\na\n");
     let (out, status, err) = run(&["-o", &text(&target), &text(&input)], b"");
     assert_eq!(out, Vec::<u8>::new());
-    assert_eq!(status, 2, "stderr was {err:?}");
-    assert_eq!(
-        err,
-        format!("sort: {}: Permission denied\n", text(&target)),
-        "那句得把号对应的句子带上"
-    );
-    assert_eq!(fs::read(&target).expect("untouched"), b"keep me\n");
+    if effective_uid() == Some(0) {
+        // root：`access` 放行 → 写成功，目标内容变成排好的结果。
+        assert_eq!(status, 0, "root 下 access 放行，stderr 是 {err:?}");
+        assert_eq!(err, "", "root 那一支不该发任何句子");
+        assert_eq!(fs::read(&target).expect("written"), b"a\nb\n");
+    } else {
+        assert_eq!(status, 2, "stderr was {err:?}");
+        assert_eq!(
+            err,
+            format!("sort: {}: Permission denied\n", text(&target)),
+            "那句得把号对应的句子带上"
+        );
+        assert_eq!(fs::read(&target).expect("untouched"), b"keep me\n");
+    }
     clean(&target);
     clean(&input);
 }

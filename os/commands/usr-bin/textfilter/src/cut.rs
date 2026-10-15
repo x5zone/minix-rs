@@ -1,8 +1,10 @@
 //! Field list parsing and column selection behind `cut`.
 //!
 //! Ground truth: `minix3/usr.bin/cut/cut.c` (option string `b:c:d:f:sn` at
-//! line 88). Three selection modes share one list grammar (comma separated
-//! numbers and `low-high` ranges, 1 based):
+//! line 88). Three selection modes share one list grammar: numbers and
+//! `low-high` ranges, 1 based, separated by any of comma, space and tab
+//! (`strtok(list, ", \t")`, `cut.c:175`), with empty items collapsed and no
+//! cap on the item count:
 //!
 //! - `-b`: byte positions.
 //! - `-c`: character positions (identical to bytes here; multibyte
@@ -14,9 +16,6 @@
 
 use crate::{GetoptReport, TextError};
 use alloc::vec::Vec;
-
-/// Maximum ranges in one field list.
-pub const MAX_RANGES: usize = 16;
 
 /// One selected interval, 1 based and inclusive on both ends.
 /// `high == u32::MAX` means "to the end of the line" (`3-`).
@@ -36,93 +35,106 @@ pub struct Range {
 ///（`if (!stop || !start)`，`:197-198`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListError {
-    /// 这一项读不完（残留字符、空项、非数字、溢出）。
+    /// 这一项读不完（残留字符、非数字）。
     IllegalValue,
-    /// 这一项里出现了零（孤立一个 `0`、`0-5`、`3-0`）。
+    /// 这一项里出现了零（孤立一个 `0`、`0-5`、`5-0`）。
     IncludesZero,
 }
 
-/// Parse a `cut` list (`1,3-5,8-`) into up to 16 ranges, sorted by `low`
-/// with overlaps kept (overlapping output is deduplicated at selection
-/// time, matching the C tool printing each byte once).
-pub fn parse_list(text: &str) -> Result<([Range; MAX_RANGES], usize), ListError> {
-    if text.is_empty() {
-        return Err(ListError::IllegalValue);
-    }
-    let mut ranges: [Range; MAX_RANGES] = [Range { low: 1, high: 0 }; MAX_RANGES];
-    let mut count = 0;
-    for part in text.split(',') {
-        if count >= MAX_RANGES {
-            // C 不封顶：`get_list` 用 `ecalloc` 按 `ALLOC_CHUNK` 长大（`cut.c:161-164`、
-            // `:200-208`）。本树的 16 项上限是已登记的声明性限制，它借用 C 的
-            // 「非法列表」那一句报出去，差异记在 07 篇的 cut 行。
-            return Err(ListError::IllegalValue);
+/// Parse a `cut` list (`1,3-5,8-`) into ranges, sorted by `low` with overlaps
+/// kept (overlapping output is deduplicated at selection time, matching the C
+/// tool printing each byte once).
+///
+/// 四个形状是本轮（批次二百八十六）按 C 重定的，旧写法把它们都拒了：
+/// **分隔符集是 `,`、空格、制表符三个**，而且空项被折叠（`cut.c:175` 用的是
+/// `strtok(list, ", \t")`），所以 `1,,2` 与 `1 2` 都是两项；**空列表不是错**
+/// （`strtok` 直接交 NULL，循环体一次也跑不到，于是一个位置也不选）；
+/// `5-2` 不查大小关系（`:209-210` 只是 `start++ <= stop` 地置位，倒序就一个也不置）；
+/// 项数也不封顶（`:163-164` 初次分配、`:199-206` 按 `ALLOC_CHUNK = _POSIX2_LINE_MAX`
+/// 长大，`:153`）。`-3-5` 那类的 autostart/autostop 是跨项、跨行的全局量
+///（`:183-184`、`:191-192`、`:213-219`），本树只建模到单项可解析、单区间可选择的
+/// 程度，剩下的记为下一项。
+pub fn parse_list(text: &str) -> Result<Vec<Range>, ListError> {
+    let mut ranges: Vec<Range> = Vec::new();
+    for token in text.split([' ', '\t', ',']) {
+        if token.is_empty() {
+            // strtok 的空项折叠：`1,,2` 与 ` 1 ` 都不报错。
+            continue;
         }
-        ranges[count] = parse_part(part)?;
-        count += 1;
+        ranges.push(parse_token(token)?);
     }
-    // Insertion sort by low (lists are tiny).
-    for i in 1..count {
-        let mut j = i;
-        while j > 0 && ranges[j].low < ranges[j - 1].low {
-            ranges.swap(j, j - 1);
-            j -= 1;
-        }
-    }
-    Ok((ranges, count))
+    // 插入排序语义不变（C 的 positions 位图天然有序）；列表本来就小。
+    ranges.sort_by_key(|range| range.low);
+    Ok(ranges)
 }
 
-fn parse_part(part: &str) -> Result<Range, ListError> {
-    if part.is_empty() {
-        return Err(ListError::IllegalValue);
+/// 一项，逐字对位 `cut.c:176-198` 的那三段：前置一个 `-` 是 C 的 setautostart 形，
+/// `N-` 是靠 autostop 打到行尾。C 在 `*p == '-'` 上写了**两个**判据（`:186`、`:189`），
+/// 第二个测的是同一个位置——只有 `isdigit(p[1])` 成立、`strtol` 真的跑了，指针才前进
+///（`:187-188`）；否则指针原地不动，于是第二个判据又命中同一个 `-` 并 `++p`（`:190`）。
+/// 把这个双层结构压成「跨过 `-` 再读一个数」就会反：`5--` 在 C 是残留字符（
+/// `illegal list value`），压平后却会读成零那句；`1-2-` 在 C 是**接受**的（autostop
+/// 那一支把行尾整段照打），压平后会误报残留。leftover 与零两句的先后也不许换：
+/// 残留先判（`:195-196`），零后判（`:197-198`），所以 `0-` 走零那句、`x` 走残留那句。
+fn parse_token(token: &str) -> Result<Range, ListError> {
+    let bytes = token.as_bytes();
+    let mut cursor = 0usize;
+    let auto_start = bytes.first() == Some(&b'-');
+    if auto_start {
+        cursor = 1;
     }
-    match part.split_once('-') {
-        None => {
-            let n = parse_number(part)?;
-            Ok(Range { low: n, high: n })
+    // `if (isdigit((unsigned char)*p)) start = stop = strtol(p, &p, 10)`（`:181-182`）：
+    // 一个数字也没有时两个端点都留在 0，指针也不动。
+    let (start, next) = scan_number(token, cursor);
+    cursor = next;
+    let mut stop = start;
+    let mut open_ended = false;
+    if bytes.get(cursor) == Some(&b'-') {
+        let after = cursor + 1;
+        // 里层第一判据 `if (isdigit(p[1])) stop = strtol(p + 1, &p, 10)`（`:187-188`）。
+        // 注意它**无条件覆盖** stop，包括把它写成 0（`5-0` 因此落进零那句）。
+        let (value, scanned) = scan_number(token, after);
+        if scanned > after {
+            stop = value;
+            cursor = scanned;
         }
-        Some((low_text, high_text)) => {
-            if low_text.is_empty() {
-                // `-N`: from the start through N.
-                Ok(Range {
-                    low: 1,
-                    high: parse_number(high_text)?,
-                })
-            } else if high_text.is_empty() {
-                // `N-`: from N to the end of the line.
-                Ok(Range {
-                    low: parse_number(low_text)?,
-                    high: u32::MAX,
-                })
-            } else {
-                let low = parse_number(low_text)?;
-                let high = parse_number(high_text)?;
-                if low > high {
-                    // C 这里不报错（它「比 POSIX 草案宽」，`:171-174` 的注释），
-                    // 只是选出空集合；本树先按已登记的差异拒，差异记在 07 篇。
-                    return Err(ListError::IllegalValue);
-                }
-                Ok(Range { low, high })
+        // 里层第二判据 `if (*p == '-') { ++p; … }`（`:189-193`）：`strtol` 没跑时它命中
+        // 的还是同一个 `-`。走到行尾就是 C 的 autostop，本树用 high 到顶来表示「打到行尾」
+        // 的效果（`x_cut.c:80-82` 那句「把 maxval 之后的原样打出」等价于此）。
+        if bytes.get(cursor) == Some(&b'-') {
+            cursor += 1;
+            if cursor == bytes.len() {
+                open_ended = true;
             }
         }
     }
-}
-
-fn parse_number(text: &str) -> Result<u32, ListError> {
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+    if cursor != bytes.len() {
         return Err(ListError::IllegalValue);
     }
-    let mut value: u32 = 0;
-    for byte in text.bytes() {
-        value = value
-            .checked_mul(10)
-            .and_then(|v| v.checked_add((byte - b'0') as u32))
-            .ok_or(ListError::IllegalValue)?;
-    }
-    if value == 0 {
+    if start == 0 || stop == 0 {
         return Err(ListError::IncludesZero);
     }
-    Ok(value)
+    Ok(Range {
+        low: if auto_start { 1 } else { start },
+        high: if open_ended { u32::MAX } else { stop },
+    })
+}
+
+/// C 那句 `strtol(p, &p, 10)`（`:182`、`:188`）：一个数字也没转出来时值为 0 且
+/// 指针不动（对应 C 的 `if (isdigit(…))` 不成立）。转得出来但超出 `u32` 时本树
+/// 饱和到最大值，而 C 会拿到 `LONG_MAX` 并把 `positions` 重开到那个尺寸（`:199-206`）
+/// 直到分配失败——那一形不建模，饱和与 C 同为「不报句子」。
+fn scan_number(token: &str, from: usize) -> (u32, usize) {
+    let bytes = token.as_bytes();
+    let mut cursor = from;
+    let mut value: u32 = 0;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(u32::from(bytes[cursor] - b'0'));
+        cursor += 1;
+    }
+    (value, cursor)
 }
 
 /// Select byte ranges from `line` (1 based positions), writing into `out`.
@@ -381,16 +393,16 @@ mod tests {
     use super::*;
 
     fn bytes_of(line: &str, list: &str) -> String {
-        let (ranges, count) = parse_list(list).unwrap();
+        let ranges = parse_list(list).unwrap();
         let mut out = [0u8; 64];
-        let len = select_bytes(line, &ranges[..count], &mut out).unwrap();
+        let len = select_bytes(line, &ranges, &mut out).unwrap();
         String::from_utf8_lossy(&out[..len]).into_owned()
     }
 
     fn fields_of(line: &str, list: &str, delimiter: u8, suppress: bool) -> String {
-        let (ranges, count) = parse_list(list).unwrap();
+        let ranges = parse_list(list).unwrap();
         let mut out = [0u8; 64];
-        let len = select_fields(line, &ranges[..count], delimiter, suppress, &mut out).unwrap();
+        let len = select_fields(line, &ranges, delimiter, suppress, &mut out).unwrap();
         String::from_utf8_lossy(&out[..len]).into_owned()
     }
 
@@ -422,10 +434,51 @@ mod tests {
 
     #[test]
     fn test_bad_lists_rejected() {
-        assert!(parse_list("").is_err());
-        assert!(parse_list("0").is_err());
-        assert!(parse_list("5-2").is_err());
-        assert!(parse_list("1,,2").is_err());
+        // 只有两类形报错，而且各对应 C 自己那一句：零（`:197-198`）与残留（`:195-196`）。
+        assert_eq!(parse_list("0").err(), Some(ListError::IncludesZero));
+        assert_eq!(parse_list("a").err(), Some(ListError::IllegalValue));
+        assert_eq!(parse_list("1-x").err(), Some(ListError::IllegalValue));
+        assert_eq!(parse_list("1-2-3").err(), Some(ListError::IllegalValue));
+        // 孤一个减号：start 与 stop 都是零（C 的 setautostart 不产生数字），走零那句。
+        assert_eq!(parse_list("-").err(), Some(ListError::IncludesZero));
+    }
+
+    /// 列表语法的四形按 C 的 `get_list` 定形（批次二百八十六）：这四形在旧写法里
+    /// 都被拒，而 C 接受。
+    #[test]
+    fn list_grammar_matches_the_strtok_rule() {
+        // ① 空列表不是错：`strtok` 直接交 NULL（`cut.c:175`），一个位置也不选。
+        assert_eq!(parse_list("").unwrap().len(), 0);
+        assert_eq!(bytes_of("abc", ""), "");
+        // ② 空项折叠与空白分隔：`cut.c:175` 的分隔符集是 `,`、空格、制表符。
+        assert_eq!(bytes_of("abcde", "1,,2"), "ab");
+        assert_eq!(bytes_of("abcde", "1 2"), "ab");
+        assert_eq!(bytes_of("abcde", "1\t3"), "ac");
+        // ③ 倒序区间不查大小关系，只是选不中任何东西（`:209-210` 那个
+        // `start++ <= stop` 的循环一次也不跑）。
+        assert_eq!(bytes_of("abcde", "5-2"), "");
+        // ④ 项数不封顶（C 按 `ALLOC_CHUNK` 长大）：20 项照接。
+        let many = (1..=20)
+            .map(|n| n.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        assert_eq!(parse_list(&many).unwrap().len(), 20);
+    }
+
+    /// C 在 `*p == '-'` 上的两个判据（`:186`、`:189`）不能被压平成一件事：
+    /// `strtol` 没跑时指针不动，第二个判据又命中同一个 `-`。这两形的报错句子
+    /// 在压平写法下正好互换。
+    #[test]
+    fn the_two_dash_tests_are_not_merged() {
+        // `5--`：第一个判据的 `isdigit(p[1])` 不成立（`:187`），于是第二个判据跨过
+        // 索引 1 的 `-` 后停在索引 2 的 `-` 上 → 残留那句（`:195-196`）。
+        assert_eq!(parse_list("5--").err(), Some(ListError::IllegalValue));
+        // `1-2-` 却是 C 接受的：跨过尾部那个 `-` 正好走到行尾（`:189-193`），
+        // autostop 那一支把 maxval 之后的内容原样打出（`x_cut.c:80-82`），
+        // 等价于从 1 打到行尾。
+        assert_eq!(bytes_of("abcde", "1-2-"), "abcde");
+        // `0-` 也是接受的形，但走零那句：残留判据在前、零判据在后（`:195-198`）。
+        assert_eq!(parse_list("0-").err(), Some(ListError::IncludesZero));
     }
 
     #[test]

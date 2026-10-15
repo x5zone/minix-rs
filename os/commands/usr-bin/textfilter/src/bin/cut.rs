@@ -51,21 +51,20 @@ fn run() -> ! {
         (Some(list), None) | (None, Some(list)) => list,
         _ => usage(),
     };
-    let (ranges, count) = match parse_list(list_text) {
+    let ranges = match parse_list(list_text) {
         Ok(parsed) => parsed,
         // 不可达：上面那个解析器已经跑过同一个串。真到了这里也按 C 的句子报，
         // 而不是静默退 1——旧写法就是静默退 1，一句都不说。
         Err(error) => arg_error(CutError::from(error), prog),
     };
-    let ranges = &ranges[..count];
 
     let process = |input: &[u8]| {
         for line in support::lines_of(input) {
             let mut out = vec![0u8; line.len() + 1];
             let selection = if selecting_bytes {
-                select_bytes(line, ranges, &mut out)
+                select_bytes(line, &ranges, &mut out)
             } else {
-                select_fields(line, ranges, delimiter, suppress, &mut out)
+                select_fields(line, &ranges, delimiter, suppress, &mut out)
             };
             match selection {
                 Ok(len) => {
