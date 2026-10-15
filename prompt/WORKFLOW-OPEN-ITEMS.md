@@ -32,7 +32,7 @@
 | OQ5 | pre-commit / CI 钩子 | **裁决点到**（原条件"跑两轮 review 后再评估"已满足）。默认推荐**继续不做**：门都在 review 流程内触发，钩子会把卫生项批量修逼进提交路径。待用户表态 |
 | OQ6 | 编辑战役（存量清洗）启动时机 | **已闭环**（用户表态延后；批次计划承接于 W-1） |
 | OQ7 | `[ARCH:]`/`TODO`/`DEFERRED` 保留正文 | **已闭环**（保留，项目硬要求/既有流程管理） |
-| OQ8 | QEMU 门触发面 `os/kernel|arch|boot-shim/**` | **未落地**（规范源 grep 无挂钩），属代码批次，待实施 |
+| OQ8 | QEMU 门触发面 `os/kernel\|arch\|boot-shim/**` | **未落地**（规范源 grep 无挂钩），属代码批次，待实施 |
 | OQ9 | unsafe 基线冻结 vs 逐月递减 | **已闭环**（`unsafe-baseline.txt` + `--diff` 只拦新增；递减留待治理批次） |
 
 ### W-5 安全提示：`.claude/settings.local.json` 中段通配授权（已复验关闭）
@@ -84,7 +84,7 @@ EXECUTION-LOG §2.5 曾发现形如 `Bash(rg "...*" notes/rewrite/...)` 的中�
 
 - 缘起：人审 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 头部第 3–4 行与 §7 参见第 2962–2965 行——同一份源清单被抄两遍，且头部那遍是 §7 的**严格子集**（C 侧 §7 多 `mpx.S`、`const.h`、`arch/i386/include/vm.h`、`system/do_getinfo.c`、`servers/{mib/kern.c,vm/pagetable.c}`；Rust 侧多 `minix-boot/platform.rs`、`kernel/memmap.rs`、`arch/paging.rs`、`kernel-image/bootface{,_a64}.rs`、`servers/vm/{vm_server,alloc_page}.rs`、`minix-types/types/boot.rs`），读者第一眼看到的是全篇最难读的长行。方向性裁决见第三节 R7：**清单收拢到 §7，头部不再长罗列**。
 - 卡点是工具实现，不是契约本身：`tools/doc-code-map.sh:86-97` 用 `head -30 | grep -E '^>[[:space:]]*\*\*Rust (实现|模块)\*\*' | head -1` 定位声明——"头部必须有"与"头部只能一行"都是 `head -30` / `head -1` 这两处的结果。现测（取证在 `tmp/docfmt-01/`）：删掉 01 篇头部两行，关联代码清单 32→31，唯一掉出的是 `os/kernel/src/globals.rs`（正文 §3–§5 未出现过它），另触发 L154 的"缺头部字段"告警（规范源 §1.1 判 P1）。即**头部瘦身对机器门几乎零风险**；而声明整体移入 §7 后，连这一条也由 §7 清单覆盖住了（预演读数见本节末第 4 条）。
-- 落地顺序（**不能反**，反了 01 篇改完当场 Gate 0 红）：
+- 落地顺序（**不能反**，反了 01 篇改完当场 Gate 0 红；**执行真源已并入 W-11 节末《联合落地工序表》，下面四步只留依据与理由，不另存一份步骤**）：
   1. **先改工具**（定案，2026-10-15 二次裁决；完整目标形态与逐条读数见本节末「目标形态与预演读数」）。抽取改为四级优先序合并去重：**① 语义小标题声明块**（定名 `关联 Rust 源码清单`，取该标题之下、下一个 `###`/`##` 之前的区段）→ **② 头部 `> **Rust 实现**` 存量兼容**（14 篇仍长这样，不能把已过门的篇目判红）→ **③ 正文 §3–§5 的 `os/*.rs` 引用** → **④ 全文回退**（现状保留）。两处位置限制 `head -30` / `head -1` 一并去掉；来源标注由"头部声明"改为"声明字段"（`doc-code-map.sh:140` 的 `grep -qxF ... "${TMP}.hdr"` 与 L149/L154 文案同步）。同一笔里还要修 **token 正则的边界缺陷**（现正则要求 `.rs` 后紧跟反引号 → 全树 97 处含 `.rs` 的花括号簇整条抽不到，读数与两种形态见本节末第 3 条）。**小标题要当 grep 键用，必须满足"正文不出现"**：`关联 Rust 源码清单` / `关联 C 源码清单` 现测全树 0 命中；而 `**Rust 实现**` 这个措辞在语料里有歧义——`rewrite-notes/02-stage-vm/draft/04-physical-memory.md:1126`（§3.1）与 `14-cow-mechanism.md:982`（§4.1）都拿它当正文段落小标题，所以②这一路**必须继续要求行首 `>`**，self-test 收这条负例。**不采"整章扫 §7"**：章号不统一（正式篇 `## 7. 参见`、draft 用 `## Ch6`/`## 6. 参见`），且 §7 混列 C 源/构建入口/相关篇，整章扫会把"本篇关联代码"从"实现落点"放宽成"引用面"（`os/servers/vm/src/vm_server.rs` 在 01 §7 是 VM 侧交接点，不是本篇落点）。
   2. **补门的回归保护**。`tools/doc-code-map.sh` 现无 `--self-test`（`grep -c 'self-test' tools/doc-code-map.sh` 为 0），`.github/workflows/rules-consistency.yml:86-94` 的自测腿也不含它（`grep -c doc-code-map .github/workflows/rules-consistency.yml` 为 0）——这个契约字段目前**没有任何测试**，2026-10-08 那次"§3-5 抽不到就全文回退"正是在无测试状态下打的补丁。改工具须同批补 self-test，并把这条腿加进 `rules-consistency.yml`。用例清单（逐条都是本台账已实测过的形态，接手者可直接抄为夹具）：正例——头部 `> **Rust 实现**` 声明、§7 语义小标题声明块、`{a,b}.rs` 同后缀簇、`{a.rs,b.rs}` 自带扩展名簇（现正则在这条上漏抽）、`os/kernel-image/{check-layout.sh,src/main.rs}` 混合后缀簇（现正则也漏抽）、`无（理由）` 豁免形态；反例——正文段落小标题 `**Rust 实现**`（无 `>` 前缀）不得被当声明、目录簇 `os/libs/minix-{a,b,c}` 不得被当文件、不存在路径 → 退出码 1。
   3. **再改规范源，一次改全**。`prompt/review-rules/review-doc-checklist.md` §1.1（第 63–78 行：字段名、冒号、"禁止花括号展开"、"逗号分隔"、"新文档缺失判 P1"的位置措辞）、`prompt/skill/review-doc-skill.md` §1.1（第 44–49 行，同源另一份）、`prompt/DOC-ITER-WORKFLOW.md:23`（"读目标文档**头部字段**列出的 C 真值源与 Rust 实现"→ 含 §7）、`prompt/review-rules/review-process.md` 与 `review.md` / `review-cmds.md` 中指向 `doc-code-map` 产物的表述、`tools/review-gate-check.sh:258-262`（B4.1 只断言 scan.md 含"关联代码清单"字样，改文案时别踩）、派生端 `.claude/rules/review-process.md` 与 `.claude|.codex|.trae|.agents/skills/**`。改完跑四道门：`tools/generate-derived-skills.sh` → `tools/check-review-rules.sh` → `tools/lint-review-rules.sh` → `tools/diff-trae-skills.sh --only-diff`。
@@ -148,28 +148,40 @@ EXECUTION-LOG §2.5 曾发现形如 `Bash(rg "...*" notes/rewrite/...)` 的中�
 3. **现正则的边界缺陷（本项发现的最重要事实，与本文档重排无关但必须一并修）**：`doc-code-map.sh:96` 的 token 正则要求 `.rs` 之后紧跟反引号，于是末位以 `}` 收尾的簇**整条匹配不到**。实测探针（`tmp/docfmt-01/regex_probe.txt`）：`os/kernel-image/{check-layout.sh,src/main.rs,src/bootface.rs,src/bootface_a64.rs}` 与 `os/kernel-image/{check-layout.sh,src/main.rs}`（01 篇头部第 4 行现在就长这样）两条 **0 命中**；而 `os/kernel/src/{lib,boot_alloc,globals,vm_handoff,misc}.rs`、`os/servers/vm/src/{vm_server,alloc_page}.rs` 正常命中。影响面（全树 `os/` 簇共 470 处，其中不含 `.rs` 的目录簇 48 处本就不应抽）：**含 `.rs` 却抽不到 97 处**；排除 `archive`/`draft`/`.design` 后为 **69 处、涉 20 篇正式文档**。两种漏抽形态：① 混合后缀簇（`.sh` 与 `.rs` 同簇）；② 簇内每项自带扩展名 `{proc.rs,proc_table.rs}`（06 篇头部即此形）。修法：按反引号整段取 token → `expand_braces()` → 再判 `endswith(".rs")`（先剥 `:符号` 尾巴）；文档侧约定"簇末位以共享扩展名收尾、混合后缀拆两条"。
 4. **目标形态后的清单覆盖（两种正则都跑过，接手者应复现）**：声明块 现正则 22 条 / 修正则 25 条（差的 3 条即第 3 条的边界缺陷）｜正文 §3–§5 31 条｜并入 **35 条**；对比现工具清单 32 条 → **零丢失**（原头部独占的 `os/kernel/src/globals.rs` 已由 §7.3 覆盖），**新增 3 条**（`os/arch/src/arch/paging.rs`、`os/libs/minix-boot/src/platform.rs`、`os/servers/vm/src/alloc_page.rs`——都是 §7 本来就列了、头部没列的）。存在性 25/25 通过。
 5. **其它四道门在目标形态下的读数**：`doc-code-map.sh`（现工具）对头部已删的副本仍打"⛔ 缺 `Rust 实现` 字段"告警且清单降到 31 条 → **这就是"先改工具后改文档"不可反的实际后果**；`doc-style-lint.sh` exit 0、0 命中；`anchor-resolve.sh --check` → `anchors=103 resolved=103 zero-def=0 multi-def=0`（与原文基线逐字相同，即本次重排不动锚点）；`notes-link-check.py` 报 4 处断链——**这是副本落在 `tmp/` 导致的相对路径解析结果**，四篇目标文件均已确认存在于 `rewrite-notes/01-stage-kernel/`，落位后须实跑复验。
-6. **复现命令**（逐条可重放）：`python3 tmp/docfmt-01/mk_target.py` → `bash tools/doc-code-map.sh tmp/docfmt-01/target.md --check --format=plain | wc -l` → `bash tools/doc-code-density-check.sh tmp/docfmt-01/target.md` → `bash tools/doc-style-lint.sh tmp/docfmt-01/target.md` → `bash tools/anchor-resolve.sh --check tmp/docfmt-01/target.md`；正则探针在 `tmp/docfmt-01/regex_probe.txt`（用 `grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs(:[^`]*)?`'` 重放）。
+6. **复现命令**（逐条可重放）：`python3 tmp/docfmt-01/mk_target.py` → `bash tools/doc-code-map.sh tmp/docfmt-01/target.md --check --format=plain | wc -l` → `bash tools/doc-code-density-check.sh tmp/docfmt-01/target.md` → `bash tools/doc-style-lint.sh tmp/docfmt-01/target.md` → `bash tools/anchor-resolve.sh --check tmp/docfmt-01/target.md`；正则探针在 `tmp/docfmt-01/regex_probe.txt`（重放时用 `doc-code-map.sh:96` 那条原样正则，不要自己简写）。
 
 ### W-11 正文符号锚点改「短锚 + 链接」双通道，保真度标签去"逐字"腔（状态 OPEN，2026-10-15 登记；本轮**只登记不实施**）
 
 - 缘起：人审 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` §2.6.2 反事实段（现第 1050 行）——一句话说清机制，中间埋着五条全路径锚点。用户提出改用 `[短锚](全路径)` 形态：读者读论证，路径信进链接。方向裁决见第三节 R6。
-- 目标重新框定（2026-10-15 二次澄清）：**链接是否可点不在射程内**；两项目标是——渲染后长路径被隐藏（读者体感），且全路径仍以文本形式留存于源文件（工具与 workflow 可用）。这个澄清直接推翻了本条初稿"必须先改 `anchor-resolve.sh`"的判断（错在以为锚点只能待在反引号里）——`extract_anchors()` 的正则 `[A-Za-z0-9_./-]+\.(rs|c|h|S|asm|ld):…` 并不排除 `(...)` 上下文，所以**链接目标里的 `全路径:符号` 现在就被正常识别**。
+- 目标重新框定（2026-10-15 二次澄清）：**链接是否可点不在射程内**；两项目标是——渲染后长路径被隐藏（读者体感），且全路径仍以文本形式留存于源文件（工具与 workflow 可用）。这个澄清直接推翻了本条初稿"必须先改 `anchor-resolve.sh`"的判断（错在以为锚点只能待在反引号里）——`extract_anchors()` 的正则 `[A-Za-z0-9_./-]+\.(rs|c|h|S|asm|ld):…` 并不排除 `(...)` 上下文，所以**链接目标里的 `全路径:符号` 现在就被正常识别**。（执行入口：本节末《联合落地工序表》）
 - 六种写法的实测对账（探针文件保留在 `tmp/docfmt-01/probe-hide.md`、`probe-p1b.md`、`probe-p6.md`、`probe-anchor.md`、`probe-links.md`）：
 
 | 形态 | 写法 | `anchor-resolve` | `notes-link-check` | 判定 |
 |---|---|---|---|---|
 | P0 现状 | 行内反引号裹全路径锚点 | resolved ✅ | 0 断链 ✅ | 工具好、读者差（本项要治的） |
-| P1 | `[`lin_lin_copy`](minix3/…/memory.c:lin_lin_copy)` | resolved @ :149 ✅ | BROKEN ⚠️（目标带 `:symbol`） | 可用，但要配套消噪 |
-| **P1b（推荐）** | `i386/memory.c` 的 `[`lin_lin_copy`](minix3/…/memory.c:lin_lin_copy)`——**文字不带冒号** | `anchors=1 resolved=1 multi-def=0` ✅ | BROKEN ⚠️（同 P1） | 读者可见一级文件名与符号名，长度只有现在的 1/5 |
-| P2 | `[`i386/memory.c:lin_lin_copy`](全路径:同)`——文字带冒号短锚 | `multi-def=1` ❌（短锚触发现行消歧判据） | BROKEN ⚠️ | 不采；除非将来真改 `anchor-resolve` |
-| P3 脚注式 | `[`lin_lin_copy`][a1]` + 文末 `[a1]: minix3/…/memory.c:lin_lin_copy` | resolved ✅ | **0 断链** ✅（定义行不被当链接） | **已评估否决（2026-10-15 七篇互检后定）**，理由见下条 |
-| P6 | `[`lin_lin_copy`](minix3/…/memory.c)`——目标不带符号名 | **`anchors=0`** ❌ | 0 断链 ✅ | **禁用**：门看着绿（工具自带提示"0 锚却误判干净"），实则 184 条锚点整篇蒸发 |
+| P1 | 见下方《形态样例》块 P1 | resolved @ :149 ✅ | BROKEN ⚠️（目标带 `:symbol`） | 可用，但要配套消噪 |
+| **P1b（推荐）** | 见《形态样例》块 P1b（`i386/memory.c` 前缀词 + 链接，**文字不带冒号**） | `anchors=1 resolved=1 multi-def=0` ✅ | BROKEN ⚠️（同 P1） | 读者可见一级文件名与符号名，长度只有现在的 1/5 |
+| P2 | 见《形态样例》块 P2——文字带冒号短锚 | `multi-def=1` ❌（短锚触发现行消歧判据） | BROKEN ⚠️ | 不采；除非将来真改 `anchor-resolve` |
+| P3 脚注式 | 见《形态样例》块 P3 | resolved ✅ | **0 断链** ✅（定义行不被当链接） | **已评估否决（2026-10-15 七篇互检后定）**，理由见下条 |
+| P6 | 见《形态样例》块 P6——目标不带符号名 | **`anchors=0`** ❌ | 0 断链 ✅ | **禁用**：门看着绿（工具自带提示"0 锚却误判干净"），实则 184 条锚点整篇蒸发 |
+
+形态样例（**可直接复制的 Markdown 源**；`…` 处为完整仓库根相对路径。之所以抽成围栏块：行内反引号包不住带反引号的语法，写在正文或表格单元里会破渲染）：
+
+```md
+P0 现状    `minix3/…/memory.c:lin_lin_copy`
+P1         [`lin_lin_copy`](minix3/…/memory.c:lin_lin_copy)
+P1b（采）   `i386/memory.c` 的 [`lin_lin_copy`](minix3/…/memory.c:lin_lin_copy)
+P2（禁用）  [`i386/memory.c:lin_lin_copy`](minix3/…/memory.c:lin_lin_copy)
+P3（否决）  [`lin_lin_copy`][a1]  ＋ 文末一行：[a1]: minix3/…/memory.c:lin_lin_copy
+P6（禁用）  [`lin_lin_copy`](minix3/…/memory.c)
+纯路径     [`lib.rs`](os/kernel/src/lib.rs)
+```
 
 - **要动的工具（初稿只计一处，七篇互检后定为两处，见下下条）**：其一，`tools/notes-link-check.py` 解析前剥目标尾部 `:symbol`（与 `anchor-resolve` 已有的 `sed 's/:.*$//'` 口径一致），否则 1700 条改造会把断链扫描变成噪音。为何这算必修：CI 现况只在 `rules-consistency.yml:94` 跑它的 `--self-test`（不扫 `rewrite-notes/`），但 `review-process.md:2304` 把"断链检查"列为人工质量步骤——人工执行时满屏假断链等于该步失效，属 W-10 记过的"门静默失效"同族；它同样没有针对本形态的用例，补 self-test 时一并收正/反例。其二（互检新增）：`doc-code-map.sh` 的 token 抽取要认 `](os/**.rs)` 链接目标，否则纯路径一旦链接化就从关联代码清单里消失。
-- **P3 否决的完整理由（七篇互检得出，2026-10-15）**：① id 表规模其实可接受——01 篇 184 次出现对应 **95 个唯一 `path:symbol`**（复用 1.9 次）、06 篇 183/50 个文件、12 篇 83/14，不是 1700 个 id 的量级；但② **悬空 id 两道门全盲**：实测故意写 `[`kmain`][ghost]`（无定义），`notes-link-check.py` 不计它（报的 1 条是另一行的 `:symbol` 目标）、`anchor-resolve.sh` 得 `anchors=1 resolved=1`（只数到同行真锚点），而渲染会把 `[kmain][ghost]` 原样打印给读者；③ 要把它接住就得新增"id 存在性"判据——那是**新工具能力**，比 P1b 只需把 `notes-link-check` 的解析口径向 `anchor-resolve` 已有的 `sed 's/:.*$//'` **对齐**更贵。结论：P3 不是"零工具改动"的退路，而是把盲区从一类换成另一类；本条保留作为已评估否决记录，不作降级路径。
+- **P3 否决的完整理由（七篇互检得出，2026-10-15）**：① id 表规模其实可接受——01 篇 184 次出现对应 **95 个唯一 `path:symbol`**（复用 1.9 次）、06 篇 183/50 个文件、12 篇 83/14，不是 1700 个 id 的量级；但② **悬空 id 两道门全盲**：实测故意写一个悬空引用（`[kmain][ghost]`，无对应定义），`notes-link-check.py` 不计它（报的 1 条是另一行的 `:symbol` 目标）、`anchor-resolve.sh` 得 `anchors=1 resolved=1`（只数到同行真锚点），而渲染会把 `[kmain][ghost]` 原样打印给读者；③ 要把它接住就得新增"id 存在性"判据——那是**新工具能力**，比 P1b 只需把 `notes-link-check` 的解析口径向 `anchor-resolve` 已有的 `sed 's/:.*$//'` **对齐**更贵。结论：P3 不是"零工具改动"的退路，而是把盲区从一类换成另一类；本条保留作为已评估否决记录，不作降级路径。
 - **七篇互检的第二处撞墙（跨 W-10/W-11 的耦合漏洞，最重要的一条）**：正文里的长路径不止带符号锚点一种。实测分布（带符号 vs 纯路径）：`01` 110/78、`02` 66/62、`03` 85/58、`06` 138/75、`12` 83/40、`13` 64/49——**纯路径引用共 362 处**（如 `minix3/etc/boot.cfg.default`、`os/kernel/src/lib.rs`），它们同样打断阅读，同样在改造射程内。但实测证明：**链接目标里的 `os/**.rs` 会被 `doc-code-map.sh` 完全漏掉**（探针 `tmp/docfmt-01/probe-lonly.md`：三个候选只回 1 条，两条链接形态蒸发）。即若只按本条初稿改 `notes-link-check`、把纯路径也链接化，就会把 W-10 刚建立的关联代码清单大面积打漏。处置（定）：**同一批里 `doc-code-map.sh` 的 token 抽取必须同时认 `](os/**.rs)` 链接目标**（正则加一条分支，与 W-10 的簇边界修复并成一笔），否则链接化范围只能限定在带符号锚点、纯路径保持反引号——那就是"问题只解一半"。工具改动清单因此从 1 处变 **2 处**：`doc-code-map.sh`（认链接目标 + 修簇边界）、`notes-link-check.py`（剥 `:symbol`）；`anchor-resolve.sh` 仍不动。
 - **第三处：行号坐标形态不在改造射程**。实测 `(os|minix3)/….(c|rs|h):数字` 形态共 **259 处**（如 `minix3/…/pre_init.c:196-216`），而 `anchor-resolve.sh` 根本不抽它们（实测同一条里只数到真锚点：`anchors=1 resolved=1`）。它们属 `style-bible` 的"锚点受众分层"管辖（坐标外移 `.review/{tool}/{stage}/{doc-stem}.anchors.md` 底账），**不得混进链接化批次**：一是它们本来对锚点门透明、改了也看不见成效；二是 GitHub 要真能点得靠 `#L196-L216`，而行号会漂移，与"符号锚点是唯一不随代码漂移的定位手段"的既有裁决直接相冲。迁移脚本需把它单独排除并单独计数。
-- **第四处：表格单元里的锚点需单独约定**。实测含锚表格行：`01` 36、`03` 18、`06` 14、`12` 12、`13` 10、`02` 11。表格里已经挤着路径与括号注释，再叠 `i386/memory.c` 的 `[`lin_lin_copy`](…)` 这种"前缀词 + 链接"会让单元更膨胀。约定（待规范源采纳）：**表内只写 `[`lin_lin_copy`](全路径:lin_lin_copy)`，不加一级目录前缀词**（一级目录信息已在目标里）；目标不含 `|`，故无管道符冲突。
+- **第四处：表格单元里的锚点需单独约定**。实测含锚表格行：`01` 36、`03` 18、`06` 14、`12` 12、`13` 10、`02` 11。表格里已经挤着路径与括号注释，再叠《形态样例》块 P1b 那种"前缀词 + 链接"会让单元更膨胀。约定（待规范源采纳）：**表内只写《形态样例》块里"纯链接"那一形（不加一级目录前缀词）**（一级目录信息已在目标里）；目标不含管道符，故无冲突。
 - 渲染环境事实：`mdbook.yml` 只 build `book/`（产物路径 `./book`），`rewrite-notes/` 不走 mdBook → 读者侧是 GitHub 与本地预览器；GitHub 对 `/path` 按仓库根解析、对 `../../../path` 按当前文件目录解析，两种都能点。**CommonMark 陷阱**：直接写"文字 `[全路径]`"（无圆括号目标）是 shortcut reference link，没有同名引用定义时**原样打印成 `[...]`**，反而更脏——必须写 `[文字](目标)` 完整形式。
 - 短锚保留一级目录的判据（实测 `find minix3 -name` 歧义度）：`memory.c` 4 份、`protect.c` 6 份、`main.c` 74 份，而 `pg_utils.c`/`pre_init.c`/`head.S` 各 2 份且正是 earm 与 i386 同名——本书核心论证常做 earm↔i386 对照，一级目录名（`i386/`、`earm/`、`system/`）承担真实消歧语义，**不得再往下砍到裸文件名**。
 - 应用范围（用户裁决）：全部正文；**两处例外**——① §7 参见（清单章本就应给全路径，且 W-10 定的机器抽取要从 §7.2/§7.3 读全路径）；② 代码块内的保真度题注（现第 1056–1057 行那种），那是审查坐标最密处，拆成两半反而伤可 grep 性。
@@ -181,6 +193,51 @@ EXECUTION-LOG §2.5 曾发现形如 `Bash(rg "...*" notes/rewrite/...)` 的中�
   - 定义处共 **16 个文件**（`grep -rl 逐字引用 prompt/ tools/ .claude/ .codex/ .trae/ .agents/ AGENTS.md`）：规范源 `prompt/review-rules/review-doc-checklist.md`、`review-patterns.md`、`prompt/skill/review-patterns-skill.md`、`prompt/skill/review-scan/checks/{doc,patterns}.md`、`prompt/DOC-ITER-WORKFLOW.md`、`tools/doc-snippet-extract.sh`；派生端 `.claude/skills/review-scan/checks/{doc,patterns}.md`、`.codex/skills/review-patterns-skill/SKILL.md`、`.codex/skills/review-scan/checks/{doc,patterns}.md`、`.trae/skills/review-patterns-skill/SKILL.md`。历史取证文件（`prompt/REVIEW-TRACE-*`、`prompt/doc-optim-*.md`）与 R5 裁决行**不改字**（存档），只在旁加注新旧词映射。
 - 落地顺序（沿用 W-10 的纪律，不能反）：① **先改两处工具**——`notes-link-check.py`（剥目标尾部 `:symbol` 再解析）与 `doc-code-map.sh`（token 抽取同时认 `](os/**.rs)` 链接目标，与 W-10 的簇边界修复并成一笔）；两者各补 self-test（正例：剥后命中真文件、链接目标里的 `.rs` 能进清单；负例：真断链仍须报 BROKEN、目录簇不得被当文件）。② 同步规范源与派生端共 16 个定义处（标签改名）+ 锚点写法条款入 `review-doc-checklist.md` 与 `DOC-ITER-WORKFLOW.md` 的锚点纪律门，跟四道派生门；③ 文档侧按 W-1 的"增量阻断 + 存量报告"逐篇迁（现测规模：01 篇正文 184 条、全 stage 正式篇约 1700 条：01 184、06 183、08 177、05 154、04 122、09 117、03 116、10 115、13 112、11 109、02 80、12 83、07 75、14 54），随 01/02/03 串行迭代推进；**行号坐标（259 处）单列不参与**。**每篇迁完必复跑 `anchor-resolve --check` 与 `doc-code-map.sh --check` 两个门并对账条数**：前者条数降即 P6 型静默丢锚，后者条数降就是纯路径链接化把关联代码清单打漏——不接受"门绿了"当交付。④ **标签改名、锚点改形、工具改动分三笔提交**：各自的 diff 要能独立回滚，混在一笔里 reviewer 无法分辨哪一半出问题。
 - 本轮未做：不动 `notes-link-check.py`、不动 `doc-code-map.sh`、不动 `anchor-resolve.sh`、不动 16 个定义处、不动任何正式文档。
+
+#### 联合落地工序表（W-10 + W-11 的执行真源，2026-10-15 重构；接手者按阶段跑，不按上面叙事顺序跑）
+
+**为什么两条合一张表**：工具与规范源改动已实质重叠——`doc-code-map.sh` 同时被 W-10（抽取源改造）与 W-11（认链接目标）要动，`review-doc-checklist.md` 与 `DOC-ITER-WORKFLOW.md` 同时是两条的规范源。分两遍各自跑四道派生门，第二遍会把第一遍的字段口径改乱。
+
+**三笔提交不可混**（各自的 diff 要能独立回滚）：
+
+| 笔 | 内容 | 为何单独一笔 |
+|---|---|---|
+| ① 工具 | `doc-code-map.sh` + `notes-link-check.py` + 两者 `--self-test` + CI 腿 | 门得先能认新形态，文档才可能改；反了当场 Gate 0 红 |
+| ② 规范源与派生端 | W-10 的 §1.1 + W-11 的 16 个标签定义处 + 锚点写法条款 | 规则与工具同批对齐，不得再出现"规则源落后于工具" |
+| ③ 文档 | 逐篇迁（题注改名 → 并 §7 → 删头部 → 正文链接化） | 题注改名零工具依赖，可先行；其余须等①② |
+
+**阶段表（每阶段都带验收命令、现测基线、不过则停）**：
+
+| 阶段 | 动什么 | 验收命令 | 预期读数（基线已现测） | 不过则 |
+|---|---|---|---|---|
+| S1 | `doc-code-map.sh`：去 `head -30`/`head -1`；新增按语义小标题 `关联 Rust 源码清单` 取声明块（保留头部作存量兼容）；token 抽取改为"整段反引号→`expand_braces()`→再判 `.rs`"；新增认 `](os/**.rs)` 链接目标 | `bash tools/doc-code-map.sh --self-test` | self-test exit 0；夹具含簇两种形态、混后缀簇、链接目标、正文段落小标题负例 | 未过→禁进 S4/S5 |
+| S2 | `notes-link-check.py`：解析前剥目标尾部 `:symbol` | `python3 tools/notes-link-check.py --self-test`；再对 `tmp/docfmt-01/probe-links.md` 复跑 | self-test exit 0；该探针的 **A 行（`:symbol` 目标）不再计 BROKEN**，真断链仍报 | 真断链也不报了→剥过头，停 |
+| S3 | 把 `doc-code-map.sh` 加进 CI 自测腿 | `grep -c doc-code-map .github/workflows/rules-consistency.yml` | 由 **0** 变 ≥1（现测：该工具与 `notes-link-check` 的本体扫描都不在 CI，前者零回归保护） | 仍为 0 = 两个改过的门无保护 |
+| S4 | 规范源与派生端（16 个标签定义处 + `review-doc-checklist.md` §1.1 的字段口径与花括号禁令 + `DOC-ITER-WORKFLOW.md:23` 去"头部字段"字样 + 锚点写法条款） | `tools/generate-derived-skills.sh` → `check-review-rules.sh` → `lint-review-rules.sh` → `diff-trae-skills.sh --only-diff` | 四条全绿（现测后两条已 exit 0） | 任一红 = 派生端漏同步 |
+| S5 | **逐篇循环**（01→02→03，每篇六个子步） | 见下「篇级子步」 | 每篇三基线全部不降（见下表） | 任一基线下降→**整篇回滚**，不带伤进入下一篇 |
+
+**篇级子步**（S5 展开；**文档层每篇一笔**——这就是上面三笔划分里的第③笔在单篇上的展开）：
+
+1. 先记基线三数（下表）。
+2. 题注标签改名：`逐字引用`→`代码引用`、`教学简化`→`有改写`、`反面示例`→`反例（勿这样写）`；`节选`/`签名示意` 不动；`未删节` 降为附注（同义反复如"逐字引用，未删节："改一个词）。**本子步零工具依赖，不必等 S1–S4**：若某一轮只想改标签，可单独成笔先做（先同步完 16 个定义处再扫正文，否则新旧词混存）。
+3. 把**头部独占项**全量并入 §7.2/§7.3（先并后删）。新建小节一律 `###`，不升 `##`。
+4. 删头部两行（不留指针）。
+5. 正文链接化：带符号锚点改采《形态样例》块 **P1b** 的写法；纯路径同样链接化（目标给真实文件路径、不带 `:symbol`）；**行号坐标不参与**；表内只写 `[符号](全路径:符号)`；§7 整节例外（保全路径）。
+6. 三基线对账：清单条数、`anchors=` 总数与 `zero-def`/`multi-def`、`notes-link-check` 断链增量。
+
+**逐篇基线（2026-10-15 现测，迁移后只能升不能降）**：
+
+| 篇 | 关联代码清单 | 锚点门读数 | `逐字引用` 题注行 | 头部独占项（先并入 §7） |
+|---|---|---|---|---|
+| 01 | **32** 条（目标形态预演得 **35**） | `anchors=103 resolved=103 zero-def=0 multi-def=0` | 26 | 0 |
+| 02 | **24** 条 | `anchors=65 resolved=65 zero-def=0 multi-def=0` | 12 | **9 条**（`boot.rs`、`opensbi_helpers.rs`、`build.rs` 等） |
+| 03 | **20** 条 | `anchors=85 resolved=85 zero-def=0 multi-def=0` | 22 | **7 条**（`lib.rs`、`globals.rs`、`memmap.rs`、`smp.rs` 等） |
+
+**形态速查（已定与禁用，不再重开讨论）**：采 **P1b**；**P2** 禁用（文字带冒号短锚→MULTI-DEF）、**P3** 已评估否决（悬空 id 两道门全盲）、**P6** 禁用（`anchors=0` 而门仍绿）。簇写法：同目录 ≥3 个用 `{a,b}.rs`、1–2 个写全路径、正文散文禁用簇、混合后缀拆两条且簇末位以共享扩展名收尾。
+
+**不在射程（本轮不要动）**：链接可点性、§7 每文件补说明、行号坐标外移（属坐标底账另走 W-1/SL-10 口径）、`01-stage-kernel` 之外其它 stage 的头部形态（该形态只在本 stage 成立，全树 14 篇）。
+
+**复现基线的命令（逐条可重放）**：`bash tools/doc-code-map.sh rewrite-notes/01-stage-kernel/{doc}.md --check --format=plain | grep -c '^os/'`、`bash tools/anchor-resolve.sh --check {doc}.md | tail -1`、`grep -cE '^( *(#|//|/\*)).*逐字引用' {doc}.md`；预演副本：`python3 tmp/docfmt-01/mk_target.py`。
 
 ## 二、被活规则引用、必须留存的格式/纪律定义
 
@@ -225,8 +282,8 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 | R3 | todo_plan 21 项未闭环验收 | 逐条补跑并留证据（已完成：12 勾选、9 标明未闭环/作废理由；存活项承接于本台账） |
 | R4 | 外部参考（get-shit-done、高星 Rust skill） | 借原则，不搬结构 |
 | R5 | 读者体验与正确性装置的取舍（2026-10-12 批次，人审 01 篇第 1 章引出） | ① 代码块的保真度分类标签（逐字引用 / 教学简化 / 反面示例 / 签名示意）**不得因"像废话"删除**：它对读者是微小噪音，对文档正确性是可 diff 的钩子；可改进的是措辞（逐字引用块写"未删节"或起止符号，禁"及邻近字段"式含糊尾巴）。② 可读性缺口的处置：本轮**只登记开放项 W-6，不动规则源与工具**。③ 存量扫描：暂不回扫存量文档，只防新增（与 W-1"增量阻断 + 存量报告"的既有口径一致） |
-| R6 | 正文锚点的可读性与保真度标签用词（2026-10-15 批次，人审 01 篇 §2.6.2 引出，承接 W-11） | ① 目标只有两项：**渲染后长路径被隐藏** + **全路径仍留存于源文本供工具与 review 使用**；**链接可点性不在射程内**。采 **P1b**：`i386/memory.c` 的 [`lin_lin_copy`](minix3/…/memory.c:lin_lin_copy)`（链接文字不带冒号，全路径锚点放目标），实测 `anchors=1 resolved=1 multi-def=0` 且 **`anchor-resolve.sh` 无需改动**；配套只需给 `notes-link-check.py` 剥目标尾部 `:symbol`。禁用形态：文字带冒号短锚（P2，触发 MULTI）、目标不带符号名（P6，`anchors=0` 静默丢锚）。**P3 脚注式已评估否决**（悬空 id 两道门全盲，接住它需新增工具能力，比 P1b 的口径对齐更贵）。七篇互检后另补两条射程边界：**纯路径引用（362 处）也在射程内，但 `doc-code-map.sh` 认不到链接目标里的 `os/**.rs`**（实测三个候选只回 1 条）→ 本项工具改动仍为 **2 处**（`doc-code-map.sh` 认链接目标 + `notes-link-check.py` 剥符号），`anchor-resolve.sh` 不动；**行号坐标（259 处 `path.c:196-216` 型）单列不参与**（对锚点门透明、且 GitHub 行锚会漂移，属坐标外移底账的射程）。② 短锚**保留一级目录且不带冒号**（承担 earm/i386 与 `system/` 的真实消歧），不砍到裸文件名。③ 适用范围 = 全部正文；例外 = §7 参见与代码块内题注。④ 保真度标签词表定名 `代码引用` / `节选`（原样保留）/ `有改写` / `签名示意` / `反例（勿这样写）`，并注明 `未删节` 退回附注角色（七篇互检发现它在题注内 **0 处**，先前"库里已有 83 行先例"的说法只成立到全文口径）；`反面示例` 采**改名 + 写清与 W-8 反事实段的边界**而不摘除（保真度轴上它仍自洽，摘掉后真出现虚构代码块时"标 ❌ 并给正确版本"这条约束会无处挂靠）。⑤ 本轮**仅登记 W-11，不实施**；标签改名、锚点改形、工具改动分三笔提交（各自可独立回滚） |
-| R7 | 关联代码清单的位置与形态（2026-10-15 批次，人审 01 篇头部与 §7 引出，承接 W-10） | ① 意图：同一份源清单不在头部与 §7 各抄一遍，**收拢到 §7**；**头部不留指针、不再有任何源码清单**（同日二次裁决：头部要清爽，由工具去适应文档形态，不是反过来）。② 前提：`doc-code-map.sh` 的 `head -30` / `head -1` 只是当前实现，**允许改抽取逻辑**，但顺序必须是"改工具 → 补 self-test 与 CI 腿 → 改规范源 → 最后动文档"，且**该改的一次改全**，不允许再出现规则源落后于工具。③ 同目录源文件收拢采"≥3 个用花括号簇、1–2 个写全路径、正文散文禁用簇"；另补硬约束：簇末位以共享扩展名收尾，混合后缀拆两条（原形 `{check-layout.sh,src/main.rs}` 与 `{proc.rs,lib.rs}` 现均整条抽不到，见 W-10 第 3 条）。③b §7 小节改用语义名「关联 C 源码清单」/「关联 Rust 源码清单」（全树 0 命中、适合当 grep 键），层级必须 `###`。④ §7 渲染可读（含改可点击链接）优先级**低于**合同字段的正确性维护；§7 不补每文件说明。⑤ 本轮**仅登记 W-10，不实施**；实施前需计划，由用户对 01、02、03 三篇做串行迭代（每轮检测上轮结果与轨迹）以确保意图完整落地。⑥ 七篇互检后补的硬工序（2026-10-15）：**"删头部零丢失"不是普遍性质**（仅 01 篇成立，因它是唯一把 §7 写成完整清单的篇目）——其余六篇头部有 §7 与正文均无的独占项（按 `doc-code-map.sh` 同口径的真丢数：`02` 9 条、`03` 7 条、`05` 3 条、`12` 3 条、`06` 2 条、`13` 2 条，`01` 0 条），所以删头部前必须先把头部独占项全量并入 §7 关联清单，并用 `doc-code-map.sh --check --format=plain | wc -l` **对账迁移前后条数不降** |
+| R6 | 正文锚点的可读性与保真度标签用词（2026-10-15 批次，人审 01 篇 §2.6.2 引出，承接 W-11） | ① 目标只有两项：**渲染后长路径被隐藏** + **全路径仍留存于源文本供工具与 review 使用**；**链接可点性不在射程内**。采 **P1b**（写法见 W-11《形态样例》块：链接文字不带冒号、全路径锚点放目标），实测 `anchors=1 resolved=1 multi-def=0` 且 **`anchor-resolve.sh` 无需改动**；配套只需给 `notes-link-check.py` 剥目标尾部 `:symbol`。禁用形态：文字带冒号短锚（P2，触发 MULTI）、目标不带符号名（P6，`anchors=0` 静默丢锚）。**P3 脚注式已评估否决**（悬空 id 两道门全盲，接住它需新增工具能力，比 P1b 的口径对齐更贵）。七篇互检后另补两条射程边界：**纯路径引用（362 处）也在射程内，但 `doc-code-map.sh` 认不到链接目标里的 `os/**.rs`**（实测三个候选只回 1 条）→ 本项工具改动仍为 **2 处**（`doc-code-map.sh` 认链接目标 + `notes-link-check.py` 剥符号），`anchor-resolve.sh` 不动；**行号坐标（259 处 `path.c:196-216` 型）单列不参与**（对锚点门透明、且 GitHub 行锚会漂移，属坐标外移底账的射程）。② 短锚**保留一级目录且不带冒号**（承担 earm/i386 与 `system/` 的真实消歧），不砍到裸文件名。③ 适用范围 = 全部正文；例外 = §7 参见与代码块内题注。④ 保真度标签词表定名 `代码引用` / `节选`（原样保留）/ `有改写` / `签名示意` / `反例（勿这样写）`，并注明 `未删节` 退回附注角色（七篇互检发现它在题注内 **0 处**，先前"库里已有 83 行先例"的说法只成立到全文口径）；`反面示例` 采**改名 + 写清与 W-8 反事实段的边界**而不摘除（保真度轴上它仍自洽，摘掉后真出现虚构代码块时"标 ❌ 并给正确版本"这条约束会无处挂靠）。⑤ 本轮**仅登记 W-11，不实施**；标签改名、锚点改形、工具改动分三笔提交（各自可独立回滚） |
+| R7 | 关联代码清单的位置与形态（2026-10-15 批次，人审 01 篇头部与 §7 引出，承接 W-10） | ① 意图：同一份源清单不在头部与 §7 各抄一遍，**收拢到 §7**；**头部不留指针、不再有任何源码清单**（同日二次裁决：头部要清爽，由工具去适应文档形态，不是反过来）。② 前提：`doc-code-map.sh` 的 `head -30` / `head -1` 只是当前实现，**允许改抽取逻辑**，但顺序必须是"改工具 → 补 self-test 与 CI 腿 → 改规范源 → 最后动文档"，且**该改的一次改全**，不允许再出现规则源落后于工具。③ 同目录源文件收拢采"≥3 个用花括号簇、1–2 个写全路径、正文散文禁用簇"；另补硬约束：簇末位以共享扩展名收尾，混合后缀拆两条（原形 `{check-layout.sh,src/main.rs}` 与 `{proc.rs,lib.rs}` 现均整条抽不到，见 W-10 第 3 条）。③b §7 小节改用语义名「关联 C 源码清单」/「关联 Rust 源码清单」（全树 0 命中、适合当 grep 键），层级必须 `###`。④ §7 渲染可读（含改可点击链接）优先级**低于**合同字段的正确性维护；§7 不补每文件说明。⑤ 本轮**仅登记 W-10，不实施**；实施前需计划，由用户对 01、02、03 三篇做串行迭代（每轮检测上轮结果与轨迹）以确保意图完整落地。⑥ 七篇互检后补的硬工序（2026-10-15）：**"删头部零丢失"不是普遍性质**（仅 01 篇成立，因它是唯一把 §7 写成完整清单的篇目）——其余六篇头部有 §7 与正文均无的独占项（按 `doc-code-map.sh` 同口径的真丢数：`02` 9 条、`03` 7 条、`05` 3 条、`12` 3 条、`06` 2 条、`13` 2 条，`01` 0 条），所以删头部前必须先把头部独占项全量并入 §7 关联清单，并用 `doc-code-map.sh --check --format=plain` 的输出行数（`wc -l` 计数）**对账迁移前后条数不降** |
 
 ## 四、review 流程实证检验索引（本台账的"过程正常完备且正确"证据链）
 
