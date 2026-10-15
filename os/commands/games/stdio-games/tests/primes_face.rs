@@ -4,12 +4,21 @@
 //!
 //! Before this batch the shell had **no** diagnostic at all: every bad argument
 //! reached `terminate(1)` in silence, so a typo looked identical to an empty
-//! interval. C splits those failures by family, and the split is the content:
-//! a word `strtoumax` cannot convert at all sets `errno`, so C prints
-//! `primes: <word>: Invalid argument` (`primes.c:138`/`:145`/`:160` via
-//! `err(1, "%s", argv[i])`), while digits followed by junk leave `errno` alone and
-//! print `primes: <word>: illegal numeric format.` (`:140`, note the period) —
-//! the first is the `err(3)` family, the second `errx(3)`.
+//! interval. C splits those failures by family, and the split is the content: the
+//! `err(3)` line (`primes.c:138`/`:145`/`:160`, `err(1, "%s", argv[i])`) is reached
+//! **only when `errno` is actually set**, and in this command the only thing that sets
+//! it is a range error — `strtoumax` over/underflow (`_strtol.h:157`/`:172`, giving
+//! `Result too large or too small`). Everything else leaves `errno` alone and lands on
+//! `errx(1, "%s: illegal numeric format.")` (`:140`, note the period), *including* a
+//! word with no convertible digits: NetBSD/Minix's `_strtol.h:184-186` stores the
+//! original `nptr` in `endptr` when nothing was consumed and does not touch `errno`
+//! (the `EINVAL` at `:69` guards an invalid `base` argument, which `strtoumax(…, 0)`
+//! never hits), so `*p != '\0'` fires. Earlier batches of this door asserted
+//! `primes: abc: Invalid argument` on the strength of a misreading of that line;
+//! a host-built C reference (`primes_ref` from these very sources) says otherwise.
+//!
+//! The two families are still worth separating — just along the real seam: overflow
+//! (`ERANGE`, sentence appended) versus any malformed word (`errx`, no sentence).
 //!
 //! `usage()` is the other family detail worth pinning: C writes it as a literal
 //! (`:341`), so renaming the binary moves the `err`/`errx` lines and leaves the
@@ -59,6 +68,101 @@ fn run(args: &[&str]) -> (String, i32, String) {
     run_at(Path::new(env!("CARGO_BIN_EXE_primes")), args)
 }
 
+/// C 的零操数支从标准输入读起始值（`read_num_buf`，`primes.c:176-205`），所以要能喂 stdin。
+/// 读出的那一路不继承 `run_at` 的 `Stdio::null()`——那是这条腿唯一测不到的原因。
+fn run_stdin(args: &[&str], input: &str) -> (String, i32, String) {
+    use std::io::Write as _;
+    let mut child = Command::new(Path::new(env!("CARGO_BIN_EXE_primes")))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the primes binary should be runnable");
+    child
+        .stdin
+        .take()
+        .expect("stdin pipe")
+        .write_all(input.as_bytes())
+        .expect("feed stdin");
+    let output = child.wait_with_output().expect("collect the output");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// 零操数支的四种收尾各归 C 的一支。注意两支报文的实参是**整块 `buf`（含换行）**，
+/// 所以 C 的一行会断成两物理行——这不是排版失误，而是 `err(1, "%s", buf)` /
+/// `errx(1, "%s: illegal numeric format.", buf)` 的字面形状。
+#[test]
+fn the_stdin_legs_split_into_c_s_four_outcomes() {
+    // ①只有一个换行/空白行：C `continue` 再读一行；这里喂「空白行 + 真值」证明它确实跳过了。
+    // 值取 999983 是因为本树上限 1e6（C 的默认上界近 2^32，声明差）：参照件在这一形上
+    // 给 `999983 1000003 1000033…`，我方只到上限为止，区间里也只有这一个素数（实测）。
+    let (out, status, err) = run_stdin(&[], "\n  \n999983\n");
+    assert_eq!(status, 0);
+    assert_eq!(err, "", "跳过空白行不该出声");
+    assert_eq!(out, "999983\n", "起始值取自第三行");
+
+    // ②空输入（EOF，无 `ferror`）：C `exit(0)`，一声不出。
+    let (out, status, err) = run_stdin(&[], "");
+    assert_eq!((status, out, err), (0, String::new(), String::new()));
+
+    // ③一个数字也转不出：本仓真源 `_strtol.h:69` 在此置 `EINVAL`，走 `err(1, "%s", buf)`。
+    //   （宿主 glibc 的 `strtoumax` 不置这个号，参照件因此与真源不同落点，以真源为准。）
+    let (_, status, err) = run_stdin(&[], "abc\n");
+    assert_eq!(status, 1);
+    assert_eq!(err, "primes: abc\n: illegal numeric format.\n");
+
+    // ④转出了前缀而后可非换行：`errx`，缀整块 buf、句末带句点。
+    let (_, status, err) = run_stdin(&[], "10x\n");
+    assert_eq!(status, 1);
+    assert_eq!(err, "primes: 10x\n: illegal numeric format.\n");
+
+    // 负号支在读之前就拒（`:193-194`），前导空白不影响它。
+    let (_, status, err) = run_stdin(&[], " -5\n");
+    assert_eq!(status, 1);
+    assert_eq!(err, "primes: negative numbers aren't permitted.\n");
+
+    // 溢出支：C 置 `ERANGE` 后走 `err` 族，句子取本树那张 Minix3 表。
+    let (_, status, err) = run_stdin(&[], "999999999999999999999999\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        "primes: 999999999999999999999999\n: Result too large or too small\n"
+    );
+}
+
+/// `strtoumax(…, 0)`：`0x`/`0X` 走十六进制、前导 `0` 走八进制、前导空白与 `+` 都算合法。
+/// 操数支与 stdin 支共用同一个转换，所以两边都得认。
+#[test]
+fn bounds_are_converted_in_base_zero_like_c() {
+    let (out, status, err) = run(&["0x10", "0x20"]);
+    assert_eq!(status, 0, "stderr: {err}");
+    assert_eq!(out, "17\n19\n23\n29\n31\n", "16<=p<32");
+
+    let (out, _, _) = run(&["010", "014"]);
+    assert_eq!(out, "11\n", "八进制 010=8、014=12，中间只有 11");
+
+    // 两个操数也走同一个转换：`0x10..0x20` 即 16<=p<32。
+    let (out, status, _) = run(&["0x10", "0x20"]);
+    assert_eq!(status, 0);
+    assert_eq!(out, "17\n19\n23\n29\n31\n");
+
+    // stdin 那条腿与 `-d` 可以叠加（C 先 getopt 再取操数/stdin），并且**存表支点在这条腿上
+    // 同样生效**：起始值 999979 在存表（尾值 65537）之外，所以第一个素数不带差列、往后的照带。
+    // 参照件同读数（`printf 999979 | primes_ref -d` → `999979` / `999983 (4)` / `1000003 (20)`…，
+    // 我方到 1e6 上限为止，那是已声明的上界差异）。
+    let (out, status, _) = run_stdin(&["-d"], "999979\n");
+    assert_eq!(status, 0);
+    assert_eq!(
+        out, "999979\n999983 (4)\n",
+        "首个不带列、次个带：与表内起点那一形不同"
+    );
+}
+
 #[test]
 fn a_bounded_run_prints_primes_and_stays_silent_on_stderr() {
     // One prime per line for `start <= p < stop` (`primes.c:49`, `primes.c:173`
@@ -84,13 +188,26 @@ fn digits_with_trailing_junk_is_the_errx_line() {
 }
 
 #[test]
-fn a_word_that_cannot_convert_carries_the_number_sentence() {
-    // `primes.c:138` with `_strtol.h:69` (`errno = EINVAL`): this one is
-    // `err(1, "%s", argv[0])`, so the sentence belongs to the number.
+fn a_word_with_no_digits_is_the_errx_line_too() {
+    // 「一个位也没转出」并**不**缀句子：真源 `_strtol.h:184-186` 把 `endptr` 留在最初
+    // 的 `nptr` 且不动 errno（`:69` 的 `EINVAL` 是 base 参数非法的分支，base 恒 0 到不了），
+    // 于是 `primes.c:139` 的 `*p != '\0'` 成立，走上面那同一句 `errx`。
+    // 本文件此前把它当成 `err` 族（并据此命名），是按 `_strtol.h` 误读；参照件
+    // （宿主编译的 `primes_ref`）与真源在此一致，故改名并改断言。
     let (out, status, err) = run(&["abc"]);
     assert_eq!(out, "");
     assert_eq!(status, 1);
-    assert_eq!(err, "primes: abc: Invalid argument\n");
+    assert_eq!(err, "primes: abc: illegal numeric format.\n");
+}
+
+#[test]
+fn only_a_range_error_appends_the_strerror_sentence() {
+    // 操数路上唯一真会置 errno 的是越范围（`_strtol.h:157`），它才走
+    // `err(1, "%s", argv[i])` 那一族；句子取本树那张 Minix3 表（表外另有分支）。
+    let (out, status, err) = run(&["999999999999999999999999", "5"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "primes: 999999999999999999999999: Result too large or too small\n");
 }
 
 #[test]
@@ -154,7 +271,7 @@ fn the_usage_line_ignores_argv_zero_while_the_error_lines_do_not() {
 
     let name = copied.file_name().unwrap().to_str().unwrap().to_string();
     let (_, _, err) = run_at(&copied, &["abc"]);
-    assert_eq!(err, format!("{name}: abc: Invalid argument\n"));
+    assert_eq!(err, format!("{name}: abc: illegal numeric format.\n"));
 
     let (_, _, err) = run_at(&copied, &["-q"]);
     assert_eq!(err, USAGE, "C 的 usage 是硬写字面量，不跟 `argv[0]`");

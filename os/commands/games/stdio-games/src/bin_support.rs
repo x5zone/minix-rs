@@ -24,7 +24,7 @@
 // unused helpers in any one binary are intentional, not drift.
 #![allow(dead_code)]
 
-use minix_sys::{write, Errno, Fd, EIO};
+use minix_sys::{EIO, Errno, Fd, write};
 
 /// Standard input, POSIX `STDIN_FILENO`.
 pub const STDIN: Fd = 0;

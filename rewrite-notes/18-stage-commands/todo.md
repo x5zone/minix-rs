@@ -250,6 +250,48 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百七十七接上 `primes` 的零操数路，并纠正批次二百五十二对 `_strtol.h` 的一处误读**
+  （`2026-10-15`，`claim/PRIMES-STDIN-LEG-qoder` @ 基线 `5c01d1e11`，单域三线 `os/commands/games/stdio-games`
+  与同线文档，无跨界）：接回批次二百五十二的登记①②（零操数路 + base 0 形，规划表 R11）。
+  **①本轮真正值钱的部分是纠正**：批次二百五十二写下「`_strtol.h:69` 在一个数字都转不出时置
+  `EINVAL`，所以 `primes abc` 走 `err(1, "%s", argv[i])` 缀句子」，本轮把该函数读到底，发现
+  `:66-72` 那段 `EINVAL` 的守卫条件是 `base && (base < 2 || base > 36)`——**base 参数非法**才走它，
+  而 primes 两处调用都是 `strtoumax(…, 0)`，永远进不去；无转换时真源只做 `_strtol.h:184-186` 的
+  `*endptr = any ? s - 1 : nptr` 且**不动 errno**，于是 `primes.c:139` 的 `*p != '\0'` 成立，
+  `abc` 与 `12a` 同属 `errx` 那一句。三重佐证：真源逐行、Minix3 自己的 `tests/lib/libc/stdlib/t_strtol.c`
+  只以 `errno != ERANGE` 判越界（无「无转换置号」的预期）、宿主编译的 C 参照件实跑给
+  `primes_ref: abc|: illegal numeric format.`。所以操数路的 `err` 族**只剩越范围一种**，
+  测试名 `a_word_that_cannot_convert_carries_the_number_sentence` 与事实相反，一并改名。
+  外溢排查（未动，登记）：同一误读可能传到 `caesar` 的 `strtol` 支（本台账里 `caesar` 报文那笔中「`caesar 5x` 缀
+  Invalid argument」的叙述），需单独一轮按 `_strtol.h` 复核有符号 `strtol` 的真行为。
+  **②零操数路**（`read_num_buf`，`primes.c:176-205`）四支各归自己的落点：读错→`err(1, "stdin")`；
+  EOF→`exit(0)` 一声不出；跳空白后行首 `-`→`errx` 负号句；`errno` 置起→`err(1, "%s", buf)`；
+  `*p != '\n'`→`errx` 那句。**两支持的都是整块 `buf`（含换行）**，所以 C 的一行报文断成两个物理行
+  （实测 `primes: abc\n: illegal numeric format.`）——这不是排版问题而是 `err`/`errx` 的实参形状。
+  结尾判据是 `'\n'` 而非 `'\0'`（行尾无换行的最后一块也算失手）。空白行 `continue` 再读下一行。
+  **③base 0**：`0x`/`0X` 跳两位、前导 `0` 切八进制（于是 `08` 停在 `8` 上报尾字符错）、前导空白与
+  `+` 合法、**空串是合法值 0**（`strtoumax("")` 的 endptr 就落在终止符上，参照件 `primes "" 5` → 2/3
+  与本树同读数）；`0x` 后无位时 `endptr` 回**最初位置**（真源的 `any` 只由累计到位置起，`:170`/`:178`），
+  所以是尾字符错而不是零。负值在 `strtoumax` 里按真源是下溢置 `ERANGE`（`__INT` 为无符号型，
+  `:152-157` 首枚位即触发），glibc 这里是安静回绕——两路都在转换前先拒负号，命令路不可达，
+  库只为与真源一致而如此实现。
+  **门**：`primes_face` 14→**17** 枚（零操数四支、含换行的 `buf` 形状、base 0 操数与 stdin 双路、
+  「只有越范围缀句子」一枚），库测 5→**7** 枚（`test_base_zero_conversions`、
+  `test_stdin_line_legs_split_as_c_does`）。三件套：`cargo test -p minix-stdio-games` → **227 passed、0 failed**
+  （基线 222，+5；上一批基线在主树实测）；容器 `minix-ci:1.94`（挂仓根、带 `-u`）**227/0**、退码 0；
+  三架构 `cargo build --bins --target …` 各 `touch` 真编 `Compiling=5`、0 error；`rustfmt --check` 零漂移；
+  clippy 触及件零命中。另与参照件逐形对照 11 形：10 形逐字节同（除过程序名），第 11 形只差在
+  errno 句子的来源——参照给 glibc 的 `Numerical result out of range`，本树给 Minix3 表的
+  `Result too large or too small`，这是**故意的**（被测对象是本树的 libc 语义，不是宿主）。核实日 `2026-10-15`。
+  **三枚变异负控**（各按 `cmp` 复原）：把无转换重新归进缀句子那族 ⇒ 两枚门红且给出
+  `Result too large or too small` vs `illegal numeric format.` 的精确差异；拿掉八进制前缀分支 ⇒
+  两枚库测红（`Ok(10)` vs `Ok(8)`）；拿掉空白行 `continue` 支 ⇒ 库测红（`TrailingJunk("")` vs `SkipLine`）。
+  **过程自查一笔**：中途一次「测试全绿」的结论是假的——grep 模式没含 `^error`，而当时 `cargo test`
+  正卡在编译错（残留的旧变量名）上；补正后所有读数都改成「含 error 行的过滤 + 现算总数」双条件。
+  登记不执行：①选项 permute（台账 `7g`）；②`caesar` 的 `strtol` 支是否被同一误读传导；
+  ③`primes` 的 `-d` 差值列在 stdin 起始值落在存表之外时首个不带列（已按真源实现并测过，
+  但真机上整条 `-d`/`-h` 与 1e6 上限的组合仍待机器腿覆盖）。
+
 - ✅ **批次二百七十六把 `find` 的 `!`/`-o` 两支各分成两句，改前三支坏形状根本不报错**
   （`2026-10-15`，`claim/FIND-OPSPLIT-ARMS-qoder` @ 基线 `140498dae`，单域三线 `os/commands/bin/fileops`
   与同线文档，无跨界）：接回批次二百七十五的登记①（规划表 R15 后半）。**是什么**：C 把两个算符的拒绝各分两句——

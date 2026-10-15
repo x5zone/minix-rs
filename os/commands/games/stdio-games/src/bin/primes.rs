@@ -23,12 +23,11 @@
 //! hardcoded literal (`:339-343`) — unlike `rm`/`cp`/`mv`, this one does not
 //! carry `getprogname()`.
 //!
-//! Two of C's own legs remain unwired, each declared rather than hidden: C's
-//! zero-operand path, which reads the start value from standard input
-//! (`read_num_buf`, `:176-205`, with its own four legs), and the base-0
-//! spellings (`0x`/octal prefixes, leading blanks, explicit `+`) that
-//! `strtoumax` would take. Option *permutation* (C's getopt moves options
-//! found after operands) is the separate registered item `7g`.
+//! One leg of C's own remains unwired and is declared rather than hidden: option
+//! *permutation* — C's getopt moves an option letter found after an operand back into
+//! the option scan, which this shell's single-pass parser does not (the separate
+//! registered item `7g`). The zero-operand path (`read_num_buf`, `:176-205`) and the
+//! base-0 spellings (`0x`/octal/leading blanks/leading `+`) are wired since this batch.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -42,7 +41,8 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_stdio_games::primes::{
-    over_cap, parse_bound, previous_prime, sieve, BoundError, MAX_BOUND, TABLE_LAST_PRIME,
+    BoundError, MAX_BOUND, NumVerdict, TABLE_LAST_PRIME, judge_number_line, over_cap, parse_bound,
+    previous_prime, sieve,
 };
 use minix_sys::Errno;
 use support::terminate;
@@ -53,16 +53,19 @@ fn errx(prog: &str, phrase: &str) -> ! {
     terminate(1)
 }
 
-/// C 的 `err(1, "%s", argv[i])`：同一个形状，但缀上 `strtoumax` 留下的那个号
-/// （`EINVAL` 或 `ERANGE`，`minix3/sys/sys/errno.h`）。
-fn err_errno(prog: &str, word: &str, kind: BoundError) -> ! {
-    let code = match kind {
-        BoundError::NoConversion => Errno::EINVAL,
-        BoundError::OutOfRange => Errno::from_i32(ERANGE),
-        // 不可达：尾字符那一支在 C 里 `errno` 未置，走的是 `errx`。
-        BoundError::TrailingJunk => Errno::EINVAL,
-    };
-    support::warn_line(prog, word, code);
+/// C 的 `err(1, "%s", argv[i])`：同一个形状，但缀上 `strtoumax` 留下的那个号。
+/// 本命令能置起 errno 的只有一种——`ERANGE`（`_strtol.h:157`/`:172`）。「一个数字也转不出」
+/// 不置号（`_strtol.h:69` 的 `EINVAL` 是 base 非法分支，base 恒 0 到不了），所以那形落
+/// `errx` 的「illegal numeric format」而不是这里。批次二百五十二把两者混为一支，本批改正。
+fn err_erange(prog: &str, word: &str) -> ! {
+    support::warn_line(prog, word, Errno::from_i32(ERANGE));
+    terminate(1)
+}
+
+/// C 的 `err(1, "stdin")`：同一形状，但号不是解析留下的，而是 `ferror(stdin)` 那个
+/// （`primes.c:187-190`）。与上面那个助手的区别只在号的来路，报文形状与 C 吻合。
+fn err_errno_code(prog: &str, label: &str, code: Errno) -> ! {
+    support::warn_line(prog, label, code);
     terminate(1)
 }
 
@@ -85,10 +88,11 @@ fn bound_of(prog: &str, word: &str) -> u64 {
     }
     match parse_bound(word) {
         Ok(value) => value,
-        // `primes.c:140`/`:147`/`:160`：转出了数字而后面还有字符（此时 `errno` 未置）。
-        // 句末的句点是 C 自己的。
+        // `primes.c:140`/`:147`/`:160`：`*p != '\0'`——尾字符与「一个位也没转出」同属这支
+        // （真源把 `endptr` 留在原处）。句末的句点是 C 自己的。
         Err(BoundError::TrailingJunk) => errx(prog, &format!("{word}: illegal numeric format.")),
-        Err(kind) => err_errno(prog, word, kind),
+        // `primes.c:138`/`:145`：只有 `errno` 真被置起（ERANGE）才缀句子。
+        Err(BoundError::OutOfRange) => err_erange(prog, word),
     }
 }
 
@@ -128,9 +132,45 @@ fn run() -> ! {
     }
 
     let (lo, hi) = match operands {
-        // C 在这一支从标准输入读数（`read_num_buf`，`:176-205`）；本树未接那条腿，
-        // 区间退到 2..上限，已列入头注的声明差。
-        [] => (2, MAX_BOUND),
+        [] => {
+            // C 的 `case 0: start = read_num_buf();`（`primes.c:165-166`）：从标准输入一行行
+            // 取起始值。四条腿的判据都在决定半的 `judge_number_line`（可纯测），本支只做读与写。
+            // 缓冲尺寸：C 用 `buf[LINE_MAX]`，本树取 256（与同包其他壳的定长行同口径）；
+            // 单行超过它时本层会拆成两次读（与 C 的一次读完不同，已登记）。
+            let mut input = [0u8; 256];
+            let mut reader = support::LineReader::new(support::stdin_chunk, &mut input);
+            let start = loop {
+                // 两种收尾在 C 里不是一回事：`fgets` 返 NULL 且 `ferror(stdin)` 才算错，走
+                // `err(1, "stdin")`（`:187-190`）；只是读到尽头则 `exit(0)`，一声不出。
+                let has_line = match reader.next_line() {
+                    Ok(has_line) => has_line,
+                    Err(code) => err_errno_code(prog, "stdin", code),
+                };
+                if !has_line {
+                    terminate(0);
+                }
+                // 下面的报文字段都用整块 `buf`（含结尾换行），所以 C 的那两行会断成两行。
+                let buf = core::str::from_utf8(reader.line()).unwrap_or("");
+                match judge_number_line(buf) {
+                    NumVerdict::SkipLine => continue,
+                    NumVerdict::Negative => errx(prog, "negative numbers aren't permitted."),
+                    NumVerdict::RangeError => err_erange(prog, buf),
+                    NumVerdict::TrailingJunk(whole) => {
+                        errx(prog, &format!("{whole}: illegal numeric format."))
+                    }
+                    NumVerdict::Start(value) => break value,
+                }
+            };
+            if over_cap(start) {
+                // C 不查起始值（只查 `stop > SPSPMAX`，`:149`）；本树的筛子接不了超限值，
+                // 只能在这里拦，报文形与操数那两支同形——本树上限与 C 默认上界的差异已声明。
+                errx(
+                    prog,
+                    &format!("{start}: stop value too large (>{}).", MAX_BOUND),
+                );
+            }
+            (start as u32, MAX_BOUND)
+        }
         [start] => {
             let lo = bound_of(prog, start);
             if over_cap(lo) {
