@@ -250,6 +250,69 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十把 `tail` 的跟随真正接线（上一轮的纯模型被实现取代了两处），并用宿主参照件逐字钉住环路**
+  （`2026-10-15`，`claim/TAIL-FOLLOW-WIRING-qoder` @ 基线 `72b35d181`，单域三线同包，无跨界）：
+  规划表 R18 的第二片。**接的是哪一支**：决定半把 C 的整型 `fflag` 建模成 `Follow` 三态
+  （`Off`/`ByHandle`/`ByName`，`tail.c:110-121`），环落在壳里照 `forward.c:248-272` 的 `USE_SLEEP`：
+  睡一拍 →仅 `-F` 的具名操作数查身份 →认出换档就重开并把新身份接手 →把当前位置之后的字节
+  边读边写（`:191-200`、`:253-266`）。
+  **实现选择取代了上一轮模型的两处**：上轮留的是「按路径重读 + `new_bytes(size, seen)` 折算」，
+  本轮改成**手上一直握着那个句柄**——因为 C 的偏移是 `FILE *` 的性质而不是尺寸的算术。这不是
+  口味问题：参照件在同一剧本下给出可区分的读数（`-f` 改名后往旧索引节点追加**看得见**、同名
+  替身**看不见**），按路径重读的实现两条都会答错。于是 `new_bytes` 与 `StatIdentity.size` 一并
+  撤下（不留未用的模型），「缩小不回退」改由端到端门钉：截空后重写 21 字节，打出的正是半行
+  `EFGHIJ`——与参照件逐字同。
+  **一处被负控逼出来的分工错（新模式候选，见文末）**：先把「只有 `-F` 才查」同时写在
+  `probes_identity` 与 `reopen_needed` 两处，负控①（抹平 `probes_identity` 里的 `fflag == 2`）
+  **改坏了却全绿**——重复承载同一事实的两个条件互相遮蔽。按 C 的分工收敛：`:255` 的门只管
+  「谁去查」，`:257-260` 的比较只管四个字段。收敛后同一枚负控咬出了新加的
+  `follow_by_handle_ignores_a_replacement_at_the_same_name`。
+  **参照件及其可用边界**（`tmp/tail-follow-ref/`，宿主编 `tail.c`+`forward.c`+`reverse.c`+`read.c`+`misc.c`，
+  加 `-D__minix` 让 kqueue 半支被排除、`-D'SIZE_T_MAX=...'`、`-include stdint.h` 与一份
+  `getprogname`/`setprogname` 垫片（本机 glibc 不声明它，隐式声明会把返回值截成 `int`））：
+  静态十一形逐字同读数（另有一形 `-x` 只比得了 usage 那一行，getopt 那行按上文不可比），
+  动态六形逐字同读数（追加、`-F` 换档、截空后重写、`-f` 改名后追旧 inode、`-F` 后删档静默、
+  管道上的 `-f`；前缀因路径不同而不可比，只比句子与行为）；**它比不了
+  getopt 那一行**（它链的是 glibc 的 `getopt`，那句写 `invalid option -- 'x'`，而 Minix3 写
+  `unknown option -- x`）——这一句的真值只能来自 `minix3/lib/libc/stdlib/getopt.c:101-104`。
+  **一道被参照件与门双重反证回来的自写错期望**：本轮先把 `-n 3 -F a` 判成 usage 错，库门当场报红——
+  C 的互斥只写在 `if (rflag)` 那一支里（`tail.c:143-145`），参照件同形给「仍在跟随 + 末三行」，
+  两方一致后改测。
+  **同一条诊断线上的三处既有偏离（本笔一并接回，与批次二百七十五同形）**：① `usage()` 在 C 是大写
+  `Usage:`、带 `getprogname()`、选项列表本来就有 `-f | -F`（`tail.c:299-305`），旧写法小写且只列 `-r`；
+  ② 操作数打不开那句走带号的 `xerr`/`vwarn`（`misc.c:53-57`、`:65-76`），旧写法把 `warn(3)` 当 `warnx(3)` 用、
+  少了 `strerror` 句子；③ 集外字母与带值选项缺值在 C 都是**两行**（`getopt.c:101-104`、`:132-136`
+  先印一句，再返回 `'?'` 落 usage），而 `ARG` 首句与 `-r` 配跟随那两支只有一行——因此
+  `TailError::Usage` 拆成三型（`Usage`/`UnknownOption(char)`/`MissingValue(char)`）而不是返一个。
+  **一处登记不复刻**：读失败时本壳把整个操作数判失败，C 的前向两臂（`FBYTES`/`FLINES`）在
+  `forward.c:112-134` 已把读到的字节抄到了输出——差异只在「读中途失败」这种造不出金样的腿上。
+  三件套：`cargo test -p minix-textfilter` → **594 passed、0 failed**（基线 583：`--lib` 438/0 净增 1 枚、
+  `tail_face` 10→**20**）；权威容器门 docker `minix-ci:1.94` `cargo test -j 1 -p minix-textfilter` →
+  **594/0**（从 `/work/os` 现编），同容器 `cargo check --workspace -j 1` → 0 error；
+  freestanding `cargo build -p minix-textfilter --bin tail --target {x86_64-unknown-none,
+  aarch64-unknown-none, riscv64gc-unknown-none-elf} --release` 三架构均 `Compiling` + Finished
+  （真机臂是本轮新写的 `open`/`read`/`stat`/`fstat`/`lseek`/`nanosleep`/`close` 七条缝；注意
+  riscv 的目标名是 `-unknown-none-elf`，写成 `-unknown-none` 会报「学不到目标信息」）；
+  `rustfmt --edition 2024 --check` 三件零漂移；clippy 触及件零新增（本笔自引的两枚 `needless_borrow`
+  与一枚 unused Result 已清；`window.rs` 仍报的那三枚是存量：行窗循环变量一枚 + 测内未用导入两枚）；
+  三枚变异负控各咬一处（①抹平 `fflag == 2` →同名替身腿报「expected silence, got "replacement1"」；
+  ②两道门调换→face 与 lib 各报红；③删 `*sbp = statbuf`→`-F` 换档后的追加行被重复内容顶掉），
+  每枚复原后 `cmp` 同一。核实日 `2026-10-15`；基线 `72b35d181`。
+  **更正批次二百七十九的一句登记**：那笔末尾写的「多操数时 C 的 `forward()` 永不返回、所以只有
+  第一个文件被跟随」不成立——`tail.c:135-137` 在打开任何文件之前就把「跟随 + 两个以上操作数」判成
+  致命错，那个形状不可达；可达的是本笔实现的两道门及其先后（参照件对 `-f A B`、`-F A B`、
+  `-r -f A B` 三形都只给那一句，退 1、不打任何内容）。
+  **一处锚点现查现钉（本轮引用过的行号逐条回读真源重钉）**：`fflag` 的声明在 `extern.h:51`（旧注释写的 `:41`
+  顶到了 `enum STYLE` 前面）、`enum STYLE` 在 `extern.h:38`（旧注释写的 `:36`）、`xerr` 在 `misc.c:65-76`、
+  `xerrx` 在 `misc.c:78-89`（本轮先写成 `:74-83`/`:53-72` 两组错区间，均已钉回）、`SEEK_CUR` 在
+  `minix3/sys/sys/unistd.h:175`。
+  **新模式候选（交文档线判是否入 `prompt/review-rules/review-patterns.md`）**：「同一个事实被两处
+  条件重复承载 → 变异负控改坏任一处仍全绿」。这类冗余不会被测试发现，只能由**故意改坏看一下是否
+  报红**发现；判据是每枚负控必须报红，报不了红就回头找是不是写了两个守卫。适用边界：只适用于
+  本笔新写的判据（存量重复另说），且收敛方向是「按真源的分工一层只留一处」而不是删了了事。
+  留白：`tail -f < /dev/null`（可定位但永不增长的标准输入）在 C 与本壳都是永久睡下去，同一形
+  不入测；真机跟随腿（`nanosleep` 与 VFS 读到新尺寸）本轮只做到编过，跑要等 imgrd 播种归 C-57/E5。
+
 - ✅ **批次二百七十九判定 `tail -f`/`-F` 可行（原以为是门控项，实为缺一条双生缝），并先落纯模型**
   （`2026-10-15`，`claim/TAIL-F-FEASIBILITY-qoder` @ 基线 `f4bc9c1e1`，单域三线同包，无跨界）：
   规划表 R18 的判定轮。**判的是什么**：`tail` 的跟随两形此前是「认得字母就拒收」
@@ -280,6 +343,8 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   登记待接线（第二片，非阻塞）：①`bin_support` 的 sleep 双生缝（宿主 `std::thread::sleep`／
   真机 `minix_sys::nanosleep`）；②壳的跟随循环与「多操数时 C 的 `forward()` 永不返回、
   所以只有第一个文件被跟随」这一形一并照搬；③端到端门喂真档 + 追加 + 断言新行（含 `-F` 换档与缩小不回退）。
+  【批次二百八十更正：这一句里的②不成立，`tail.c:135-137` 的单文件门使那个形状不可达；
+  ①③已按本笔落地，sleep 缝最终住在 `bin/tail.rs` 而不是 `bin_support`（理由见那笔）】
 
 - ✅ **批次二百七十八复核结案：上一批登记的「误读是否传到 `caesar`」为否，并把两命令的来源差写进注释**
   （`2026-10-15`，`claim/CAESAR-STRTOL-AUDIT-qoder` @ 基线 `33b401c7d`，单域三线同包，无跨界）：

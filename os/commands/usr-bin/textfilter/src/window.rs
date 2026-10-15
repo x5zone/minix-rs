@@ -273,12 +273,52 @@ pub struct TailArgs {
     /// C's `(style, off)` plus `rflag`, already folded (`tail.c:135-164`), so
     /// the execution half only has to pick a printing shape.
     pub style: TailStyle,
+    /// C's `fflag` (`extern.h:51`, set by `-f`/`-F` at `tail.c:110-121`).
+    pub follow: Follow,
     /// File operands in order; `-` is a literal file name (`tail` opens operands
     /// through `fopen`, unlike `cut`).
     pub operands: Vec<String>,
 }
 
-/// How `tail` selects what to print — C's `enum STYLE` (`extern.h:36`) carried
+/// `tail` 的跟随三态，对位 C 的整型全局 `fflag`（`extern.h:51`）：`-f` 置 1、`-F` 置 2、
+/// 不给是 0（`tail.c:110-121`）。三个值都被真源用在不同的判据上，所以不能压成一个布尔：
+/// 1 只读新字节、2 还按名字认换档（`forward.c:255`），0 则连睡都不睡（`:201-202`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Follow {
+    /// 没有跟随选项：打印完就退出。
+    Off,
+    /// `-f`（`fflag == 1`）：跟着**已打开的那个文件**读新字节，永不按名字重开。
+    ByHandle,
+    /// `-F`（`fflag == 2`）：除读新字节外，每拍按操作数名字查身份，认出的换档就重开。
+    ByName,
+}
+
+impl Follow {
+    /// 是否由 `fflag` 认出来的跟随（C 的 `if (fflag)`、`if (fflag && argc > 1)`、
+    /// `if (rflag) { if (fflag) usage(); }` 三处都只问这一件事）。
+    #[must_use]
+    pub fn active(self) -> bool {
+        self != Follow::Off
+    }
+
+    /// 这一拍要不要按名字查身份（C `forward.c:255` 的 `fflag == 2 && fp != stdin`）。
+    /// 两个条件各挡一支：`-f` 不比身份，标准输入没有名字可查（`tail.c:186` 把
+    /// `fname` 写成字面量 `"stdin"`，拿它去 `stat` 只会得到一个虚构的路径）。
+    #[must_use]
+    pub fn probes_identity(self, is_stdin: bool) -> bool {
+        self == Follow::ByName && !is_stdin
+    }
+
+    /// C `tail.c:197-201`：无操作数时先探一次标准输入能不能定位，`lseek` 报
+    /// `ESPIPE`（管道）就把 `fflag` 清零，注释写着「POSIX.2 requires this」。
+    /// 所以 `cat x | tail -f` 打印完就退出，不是永久等待。
+    #[must_use]
+    pub fn kept_for_stdin(self, stdin_is_pipe: bool) -> Follow {
+        if stdin_is_pipe { Follow::Off } else { self }
+    }
+}
+
+/// How `tail` selects what to print — C's `enum STYLE` (`extern.h:38`) carried
 /// with its `off`, folded the way C's `main()` folds it before dispatching to
 /// `forward()` or `reverse()` (`tail.c:135-164`). Keeping mode and count in one
 /// variant is what lets the `+N` forms express `RBYTES`/`RLINES` with `off == 0`
@@ -325,11 +365,24 @@ impl TailStyle {
 /// `tail` argument-parsing failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TailError {
-    /// An unknown option letter or a missing `-b`/`-c`/`-n` value (C `getopt`
-    /// `?`/default → usage, `tail.c:128-130`).
+    /// 不带 getopt 前置消息的用法错：C 的 `ARG` 宏首句 `if (style) usage()`
+    /// （`tail.c:86-87`，两个数字选项无论重复还是混用）与 `-r` 配跟随（`:143-145`）
+    /// 都是直接走 usage，前面不会多一行 getopt 自己的报文。
     Usage,
-    /// `-f`/`-F` follow mode — not modelled (line-based ring, forward only).
-    NotModelledFollow,
+    /// getopt 认不出的字母：C 先由 `getopt` 自己印一行
+    /// `"<prog>: unknown option -- <字母>"`（`minix3/lib/libc/stdlib/getopt.c:101-104`，
+    /// 字母不带引号，与 glibc 的 `invalid option -- 'x'` 不同形），再返回 `BADCH`（`'?'`，
+    /// `:54`）落到 `tail.c:128-130` 的 `case '?'` → usage。所以这一支是**两行**。
+    UnknownOption(char),
+    /// 带值选项（`-b`/`-c`/`-n`）没给值：optstring 不以 `:` 开头，所以 C 走的仍是
+    /// `getopt.c:132-136` 那一支——先印 `"<prog>: option requires an argument -- <字母>"`，
+    /// 再返回 `'?'` → usage，同样两行。带的是那个字母。
+    MissingValue(char),
+    /// `-f`/`-F` 配了两个以上操作数：C 在解析完选项、打开任何文件之前就致命退出
+    /// （`tail.c:135-137` 的 `xerrx(1, "-f and -F options only appropriate for a
+    /// single file")`）。这句话没有 `errno` 后缀（`xerrx` 走 `vwarnx`，
+    /// `misc.c:78-89`），且排在 `-r` 的用法检查之前。
+    FollowMultiFile,
     /// A `-b`/`-c`/`-n` count that is not a decimal integer (C `ARG`'s `*p` test
     /// on the leftover of `strtoll`, `tail.c:89-90`); carries the text. A zero
     /// count is *not* this error: C accepts it and selects nothing (see
@@ -486,6 +539,9 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
     // `tail.c:107`); the default and the `-r` folding happen after the loop.
     let mut seen: Option<(RawStyle, usize)> = None;
     let mut rflag = false;
+    // C 的 `fflag` 是 0/1/2 三值而不是布尔（`-f` 置 1、`-F` 置 2，`tail.c:110-121`），
+    // 后到者覆盖前者：`tail -f -F` 在 C 就是 `fflag = 2`，所以这里也是赋值。
+    let mut follow = Follow::Off;
     let mut operands: Vec<String> = Vec::new();
     let mut index = 0;
     while index < scanned.len() {
@@ -499,7 +555,14 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
             let mut pos = 1usize;
             while pos < bytes.len() {
                 match bytes[pos] {
-                    b'f' | b'F' => return Err(TailError::NotModelledFollow),
+                    b'f' => {
+                        follow = Follow::ByHandle;
+                        pos += 1;
+                    }
+                    b'F' => {
+                        follow = Follow::ByName;
+                        pos += 1;
+                    }
                     b'r' => {
                         rflag = true;
                         pos += 1;
@@ -519,7 +582,7 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                         } else {
                             index += 1;
                             if index >= scanned.len() {
-                                return Err(TailError::Usage);
+                                return Err(TailError::MissingValue(letter as char));
                             }
                             scanned[index].clone()
                         };
@@ -553,13 +616,23 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                         seen = Some((if forward { fwd } else { bwd }, off));
                         pos = bytes.len(); // the value consumed the token's tail
                     }
-                    _ => return Err(TailError::Usage),
+                    _ => return Err(TailError::UnknownOption(bytes[pos] as char)),
                 }
             }
         } else {
             operands.push(String::from(token));
         }
         index += 1;
+    }
+
+    // C 的两道门按 `tail.c` 里的先后排：单文件门在 `:135-137`（紧接 `argc -= optind`），
+    // 反序与跟随互斥在 `:143-145`。因此 `tail -r -f a b` 报的是单文件那句，
+    // 而不是 usage——顺序反了会把一条已经到口的诊断吞掉。
+    if follow.active() && operands.len() > 1 {
+        return Err(TailError::FollowMultiFile);
+    }
+    if rflag && follow.active() {
+        return Err(TailError::Usage);
     }
 
     // C `tail.c:135-164`: when no number option was given the default is the
@@ -578,7 +651,11 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
             RawStyle::LastBytes | RawStyle::SkipBytes => TailStyle::ReverseBytes { off },
         },
     };
-    Ok(TailArgs { style, operands })
+    Ok(TailArgs {
+        style,
+        follow,
+        operands,
+    })
 }
 
 /// The `NOTSET`-resolved pair C holds while parsing: a style without its count,
@@ -591,11 +668,12 @@ enum RawStyle {
     SkipBytes,
 }
 
-/// `tail -f`/`-F` 的每拍决策模型（可行性判定见 18 篇台账批次二百七十九那笔：三条原语都在，
-/// 缺的只是等待缝的双生面，所以这里先把纯判据落下来，壳尚未接线）。
+/// `tail -f`/`-F` 每拍决策要比的身份（接线轮见 18 篇台账批次二百八十那笔）。
 ///
-/// 对位 C `forward.c` 的 `USE_SLEEP` 支（`:246-275`）——kqueue 那半在 Minix 上被
-/// `#if !defined(__minix)` 排除（`:204-230`），所以真源的跟随就是「睡一拍 + 可选 stat 比对」。
+/// 对位 C `forward.c` 的 `USE_SLEEP` 支（`:248-272`）——kqueue 那半在 Minix 上被
+/// `#if !defined(__minix)` 排除（`:207-246`），所以真源的跟随就是「睡一拍 + 按名字
+/// 查身份」。字段就是 C 比的那四个：`st_size` 不在判据里（真源从不比它，尺寸的变化
+/// 由句柄的读位置自己反映），时间戳也不在——所以这两个都不进这个记录。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatIdentity {
     /// `struct stat::st_ino`：C 用它认出文件被换过。
@@ -606,30 +684,23 @@ pub struct StatIdentity {
     pub rdev: u64,
     /// `st_nlink`：为 0 表示最后一个链接已删。
     pub nlink: u64,
-    /// `st_size`。
-    pub size: u64,
 }
 
-/// `-F`（`fflag == 2`）才做换档检测；`-f`（`fflag == 1`）不换档，因此恒为 `false`。
-/// C 的比较在 `forward.c:255-261`：`st_ino`/`st_dev`/`st_rdev` 任一变了，或 `st_nlink == 0`。
-#[must_use]
-pub fn reopen_needed(follow_by_name: bool, opened: &StatIdentity, current: &StatIdentity) -> bool {
-    follow_by_name
-        && (current.ino != opened.ino
-            || current.dev != opened.dev
-            || current.rdev != opened.rdev
-            || current.nlink == 0)
-}
-
-/// 这一拍该打印的字节数（C 的偏移由 stdio 维护，只随读到的字节前进）。
+/// 手上这个文件与名字现在指向的是不是同一个（C `forward.c:257-260` 的四个比较：
+/// `st_ino`/`st_dev`/`st_rdev` 任一变了，或 `st_nlink == 0`）。
 ///
-/// 关键的一条不是「大了怎么办」而是「小了怎么办」：真源在文件缩小时**不回退偏移**
-/// （收缩后的重定位只在被排除掉的 kqueue 支里做，`forward.c:236-243`），所以缩到比偏移还短
-/// 之后仍然一声不出，直到长回超过旧偏移。本函数因此对 `size <= seen` 交 0，且调用方**不得**
-/// 把 `seen` 改小——那会多打一段重复内容。
+/// 这里**不再问 `fflag`**：「只有 `-F` 才查」是 `:255` 那道门的活，已经由
+/// [`Follow::probes_identity`] 承载。两处各重复一份同一个事实的话，抹平任何一处
+/// 都不会改变行为，变异负控也就咬不住（本轮就是这么发现的：先写成两处重复，
+/// 直到一枚负控「改坏了却全绿」）。
+/// 重开后调用方把新的身份接过来继续比（C 的 `*sbp = statbuf`，`:266`），并把
+/// 读位置交回新档的开头（C 的 `freopen`，`:261`）。
 #[must_use]
-pub fn new_bytes(size: u64, seen: u64) -> u64 {
-    size.saturating_sub(seen)
+pub fn reopen_needed(opened: &StatIdentity, current: &StatIdentity) -> bool {
+    current.ino != opened.ino
+        || current.dev != opened.dev
+        || current.rdev != opened.rdev
+        || current.nlink == 0
 }
 
 #[cfg(test)]
@@ -646,48 +717,40 @@ mod tests {
         out
     }
 
-    /// 跟随模型的两条判据（对位 C `forward.c:255-261` 的比较与「缩小不回退偏移」）。
+    /// 换档比较的四个字段与「不问 fflag」的分工（对位 `forward.c:255` 与 `:257-260`）。
     #[test]
-    fn follow_reopen_needs_a_name_follow_and_a_changed_identity() {
+    fn follow_reopen_needs_a_changed_identity() {
         let opened = StatIdentity {
             ino: 7,
             dev: 1,
             rdev: 0,
             nlink: 1,
-            size: 10,
         };
-        // -f 不换档：身份变了也不重开
+        // 认三种形：ino 变、dev 变、最后一个链接被删（nlink == 0）
         let rotated = StatIdentity { ino: 8, ..opened };
-        assert!(!reopen_needed(false, &opened, &rotated));
-        // -F 认三种形：ino 变、dev 变、最后一个链接被删（nlink == 0）
-        assert!(reopen_needed(true, &opened, &rotated));
-        assert!(reopen_needed(
-            true,
-            &opened,
-            &StatIdentity { dev: 2, ..opened }
-        ));
-        assert!(reopen_needed(
-            true,
-            &opened,
-            &StatIdentity { nlink: 0, ..opened }
-        ));
-        // 只有 size 长不算换档
-        assert!(!reopen_needed(
-            true,
-            &opened,
-            &StatIdentity { size: 40, ..opened }
-        ));
+        assert!(reopen_needed(&opened, &rotated));
+        assert!(reopen_needed(&opened, &StatIdentity { dev: 2, ..opened }));
+        assert!(reopen_needed(&opened, &StatIdentity { nlink: 0, ..opened }));
+        // `st_rdev` 也算：设备文件换了指向就是换了档
+        assert!(reopen_needed(&opened, &StatIdentity { rdev: 5, ..opened }));
+        // 四个字段全同就不重开（尺寸不进这个记录，因此也不参与比较）
+        assert!(!reopen_needed(&opened, &opened));
     }
 
+    /// 探身份的那道门与标准输入的两支例外（`forward.c:255` 与 `tail.c:197-201`）。
     #[test]
-    fn follow_prints_only_past_the_offset_and_never_walks_it_back() {
-        assert_eq!(new_bytes(30, 10), 20);
-        assert_eq!(new_bytes(10, 10), 0);
-        // 文件缩小：C 不回退偏移，所以这一拍什么也不打（调用方保持 seen 不变）
-        assert_eq!(new_bytes(4, 10), 0);
-        // 长回超过旧偏移之前一直是 0
-        assert_eq!(new_bytes(9, 10), 0);
-        assert_eq!(new_bytes(12, 10), 2);
+    fn follow_probes_only_a_named_file_and_a_pipe_stdin_gives_it_up() {
+        // 「谁去查」全部住在这里：`-F` 只对真文件查，`-f` 不查，标准输入也不查
+        // （它没有名字可查）。比较那一步不再重复这个判断。
+        assert!(Follow::ByName.probes_identity(false));
+        assert!(!Follow::ByName.probes_identity(true));
+        assert!(!Follow::ByHandle.probes_identity(false));
+        assert!(!Follow::Off.probes_identity(false));
+        // 标准输入是管道时，C 把 fflag 清零（POSIX.2），连 `-F` 也算放弃
+        assert_eq!(Follow::ByName.kept_for_stdin(true), Follow::Off);
+        assert_eq!(Follow::ByHandle.kept_for_stdin(true), Follow::Off);
+        assert_eq!(Follow::ByName.kept_for_stdin(false), Follow::ByName);
+        assert_eq!(Follow::Off.kept_for_stdin(true), Follow::Off);
     }
 
     #[test]
@@ -866,6 +929,7 @@ mod tests {
             parse_tail_args(&[]),
             Ok(TailArgs {
                 style: TailStyle::LastLines { off: 10 },
+                follow: Follow::Off,
                 operands: Vec::new(),
             })
         );
@@ -875,6 +939,7 @@ mod tests {
             parse_tail_args(&["-n10", "f"]),
             Ok(TailArgs {
                 style: TailStyle::LastLines { off: 10 },
+                follow: Follow::Off,
                 operands: operands(&["f"]),
             })
         );
@@ -922,16 +987,19 @@ mod tests {
             vec![String::from("-")]
         );
         // error paths
+        // 集外字母与缺值都带着那个字母走（C 在 getopt 里先印一行再退 usage）。
         assert_eq!(
-            parse_tail_args(&["-f"]).err(),
-            Some(TailError::NotModelledFollow)
+            parse_tail_args(&["-x", "f"]).err(),
+            Some(TailError::UnknownOption('x'))
         );
         assert_eq!(
-            parse_tail_args(&["-F", "f"]).err(),
-            Some(TailError::NotModelledFollow)
+            parse_tail_args(&["-n"]).err(),
+            Some(TailError::MissingValue('n'))
         );
-        assert_eq!(parse_tail_args(&["-x", "f"]).err(), Some(TailError::Usage));
-        assert_eq!(parse_tail_args(&["-n"]).err(), Some(TailError::Usage));
+        assert_eq!(
+            parse_tail_args(&["-c"]).err(),
+            Some(TailError::MissingValue('c'))
+        );
         assert_eq!(
             parse_tail_args(&["-n", "x"]).err(),
             Some(TailError::IllegalCount(String::from("x")))
@@ -1094,12 +1162,63 @@ mod tests {
             parse_tail_args(&["+4c"]).unwrap().style,
             TailStyle::SkipBytes { off: 3 }
         );
-        // A trailing `f` lifts too, then meets this shell's honest follow
-        // rejection instead of leaking away as an operand.
+        // A trailing `f` lifts to the front of the rewritten token (`-3f` becomes
+        // `-fn-3`, `tail.c:247-251`), so the old-style form sets the follow flag
+        // and the count together instead of leaking away as an operand.
+        let oldstyle = parse_tail_args(&["-3f"]).unwrap();
+        assert_eq!(oldstyle.style, TailStyle::LastLines { off: 3 });
+        assert_eq!(oldstyle.follow, Follow::ByHandle);
+    }
+
+    /// 跟随两形的取值、聚簇、覆盖与 C 的两道门（`tail.c:110-121`、`:135-137`、`:143-145`）。
+    #[test]
+    fn test_parse_tail_args_follow_flags_and_gates() {
+        // `-f` 与 `-F` 是两个不同的值，不是同一个布尔
         assert_eq!(
-            parse_tail_args(&["-3f"]).err(),
-            Some(TailError::NotModelledFollow)
+            parse_tail_args(&["-f", "f"]).unwrap().follow,
+            Follow::ByHandle
         );
+        assert_eq!(
+            parse_tail_args(&["-F", "f"]).unwrap().follow,
+            Follow::ByName
+        );
+        // C 的 switch 对两个字母都是赋值，所以后到者覆盖前者
+        assert_eq!(
+            parse_tail_args(&["-f", "-F", "f"]).unwrap().follow,
+            Follow::ByName
+        );
+        // 同一 token 里的聚簇也认（`-Ff` 是两个无值选项）
+        assert_eq!(
+            parse_tail_args(&["-Ff", "f"]).unwrap().follow,
+            Follow::ByHandle
+        );
+        // 单文件门只看操作数个数，0 个（读标准输入）与 1 个都不拦
+        assert_eq!(parse_tail_args(&["-f"]).unwrap().follow, Follow::ByHandle);
+        assert_eq!(parse_tail_args(&["-f", "a"]).unwrap().operands.len(), 1);
+        assert_eq!(
+            parse_tail_args(&["-f", "a", "b"]).err(),
+            Some(TailError::FollowMultiFile)
+        );
+        assert_eq!(
+            parse_tail_args(&["-F", "a", "b"]).err(),
+            Some(TailError::FollowMultiFile)
+        );
+        // 单文件门排在 `-r` 的用法检查之前，所以 `-r -f a b` 报的是前一句
+        assert_eq!(
+            parse_tail_args(&["-r", "-f", "a", "b"]).err(),
+            Some(TailError::FollowMultiFile)
+        );
+        // `-r` 与跟随互斥，带不带计数都一样
+        assert_eq!(
+            parse_tail_args(&["-r", "-f", "a"]).err(),
+            Some(TailError::Usage)
+        );
+        // 互斥只在 `rflag` 那一支里查（`tail.c:143-145`），所以只给计数与 `-F`
+        // 不报错——这一条是本轮自己写错过一次期望、由门反证回来的
+        let counted = parse_tail_args(&["-n", "3", "-F", "a"]).unwrap();
+        assert_eq!(counted.style, TailStyle::LastLines { off: 3 });
+        assert_eq!(counted.follow, Follow::ByName);
+        assert_eq!(parse_tail_args(&["-rF", "a"]).err(), Some(TailError::Usage));
     }
 
     #[test]
@@ -1115,8 +1234,11 @@ mod tests {
             alloc::vec![String::from("f"), String::from("+10")]
         );
         // A frozen `-3c` keeps its dash, so `getopt` sees the unknown letter `3`
-        // and takes C's `case '?'` → usage (`tail.c:128-130`).
-        assert_eq!(parse_tail_args(&["f", "-3c"]).err(), Some(TailError::Usage));
+        // and takes C's `getopt.c:101-104` report plus `case '?'` → usage.
+        assert_eq!(
+            parse_tail_args(&["f", "-3c"]).err(),
+            Some(TailError::UnknownOption('3'))
+        );
         // Before the freeze point the rewrite does apply, and the operand list is
         // just the file name.
         let live = parse_tail_args(&["-3c", "f"]).unwrap();
