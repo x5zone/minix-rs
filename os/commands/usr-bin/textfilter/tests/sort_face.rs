@@ -331,6 +331,41 @@ fn the_length_flag_sorts_by_span_length() {
 }
 
 #[test]
+fn numeric_sort_normalizes_signs_and_zeros_the_way_c_does() {
+    // C 的 `number()` 把前导零吃掉、正号只跨过、小数尾零随 terminator 一起回退，
+    // 所以这些形**同值**——同值就意味着并列键，而并列键保持输入序（批次二百九十的
+    // 规则）。读数拿参照件 `sort_ref -n` 逐对量过（两向输入都原序输出）。
+    // 旧写法只认负号且不归一小数尾零，`+7` 会被当成「一个数字也没转出来」而落到零，
+    // 于是 `007`/`7`/`+7` 三行被拆成两个键——那时这里回退整行，看着像对的。
+    for input in [
+        b"007\n7\n".to_vec(),
+        b"7\n007\n".to_vec(),
+        b"+7\n7\n".to_vec(),
+        b"1.5\n1.50\n".to_vec(),
+        b"1.50\n1.5\n".to_vec(),
+        b".5\n0.5\n".to_vec(),
+        b"+0\n-0\n".to_vec(),
+        b"12.0\n12\n".to_vec(),
+        b"  12\n12\n".to_vec(),
+    ] {
+        let (out, status, err) = run(&["-n"], &input);
+        assert_eq!(status, 0, "stderr 是 {err:?}");
+        assert_eq!(out, input, "{input:?} 两行同值，必须保持输入序");
+    }
+    // 归一不能把量级弄丢：去零之后仍按位数与逐位比。
+    let (out, _, err) = run(&["-n"], b"7\n6\n");
+    assert_eq!(out, b"6\n7\n", "stderr 是 {err:?}");
+    let (out, _, err) = run(&["-n"], b"0007\n0006\n");
+    assert_eq!(out, b"0006\n0007\n", "前导零归一后仍要比出量级，stderr 是 {err:?}");
+    // C 不认指数：`1e3` 的键是 1（在 `e` 处停住），所以排在 `1000` 前。
+    let (out, _, err) = run(&["-n"], b"1000\n1e3\n");
+    assert_eq!(out, b"1e3\n1000\n", "参照件同读数，stderr 是 {err:?}");
+    // 一个数字也没有的形按零算（C 的注释明写“\"0\", \"0.00\", \"000\" or \"fubar\" but sorts as 0”）。
+    let (out, _, err) = run(&["-n"], b"abc\n0\n");
+    assert_eq!(out, b"abc\n0\n", "两者都是零键，保持输入序，stderr 是 {err:?}");
+}
+
+#[test]
 fn equal_keys_keep_input_order_and_capital_s_switches_to_the_record() {
     // 并列键的规则（批次二百九十按参照件 `sort_ref` 逐形量过）。输入四行的键（第二列）
     // 全部相等，所以四种写法给的是四种读数，每一枚都只对得上自己那一支：

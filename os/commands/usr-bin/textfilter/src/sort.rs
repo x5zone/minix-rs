@@ -825,8 +825,11 @@ fn numeric_key(bytes: &[u8]) -> NumericKey<'_> {
     while cursor < bytes.len() && is_blank(bytes[cursor]) {
         cursor += 1;
     }
+    // C 的 `number()` 先 `SKIP_BLANKS`，再取一个符号：`-` 翻负号，`+` 只是跨过去
+    //（`fields.c:283-288`）。之前本树只认 `-`，于是 `+7` 走成「一个数字也没转出来」
+    // 的那一支（整数位为空串），与 `7`/`007` 不同值——参照件量出三者同值。
     let negative = bytes.get(cursor) == Some(&b'-');
-    if negative {
+    if matches!(bytes.get(cursor), Some(b'-') | Some(b'+')) {
         cursor += 1;
     }
     let integer_start = cursor;
@@ -856,25 +859,35 @@ fn numeric_key(bytes: &[u8]) -> NumericKey<'_> {
     }
 }
 
-fn trim_leading_zeros(mut digits: &[u8]) -> &[u8] {
-    while digits.len() > 1 && digits[0] == b'0' {
-        digits = &digits[1..];
+
+/// 把键归一到可比形状：整数位去前导零。C 那边是「eat initial zeroes」
+///（`fields.c:290-292`）加「Add key terminator, deleting any trailing "00"」
+///（`:373-374`，靠 `last_nz_pos` 把尾零那几字节回退掉）两句做到的。
+/// **小数尾零那一句本树不需要**：`compare_numeric` 的逐位比较把短的一方按补零算，
+/// 于是 `1.5` 与 `1.50` 已经在同一侧（这一条是负控逼出来的——先把尾零剥离删掉再跑，
+/// 新测与既有测全绿，说明那几行是冗余支而不是判据；宁可删冗余，也不去编一枚测把
+/// 它说成必要的）。
+fn normalized_parts<'a>(key: &NumericKey<'a>) -> (&'a [u8], &'a [u8]) {
+    let mut integer = key.integer;
+    while let Some((b'0', rest)) = integer.split_first() {
+        integer = rest;
     }
-    digits
+    (integer, key.fraction)
 }
 
+/// 零的判据归一到两位都为空：C 那句「If the first/next character isn't a digit …
+/// value is zero」（`fields.c:307-312`）把 `0`、`000`、`0.00`、`.0` 与一个数字也
+/// 没转出来的 `fubar` 全归给同一个零键（它写的 terminator 甚而不带 `negate`，
+/// 所以 `-0` 与 `+0` 也同值，参照件实测同）。`0.00` 这种写法落在这里靠的是补零
+/// 比较：它的整数位被前导零吃光、小数位与另一方的空位逐位相等。
 fn is_numeric_zero(key: &NumericKey<'_>) -> bool {
-    trim_leading_zeros(key.integer) == b"0" && {
-        let mut fraction = key.fraction;
-        while fraction.last() == Some(&b'0') {
-            fraction = &fraction[..fraction.len() - 1];
-        }
-        fraction.is_empty()
-    }
+    let (integer, fraction) = normalized_parts(key);
+    integer.is_empty() && fraction.is_empty()
 }
 
 fn compare_numeric(a: &NumericKey<'_>, b: &NumericKey<'_>) -> core::cmp::Ordering {
     use core::cmp::Ordering;
+    // 先查零：两个都是零就是平局，不进符号位（否则 `-0` 与 `+0` 会被符号拆开）。
     if is_numeric_zero(a) && is_numeric_zero(b) {
         return Ordering::Equal;
     }
@@ -883,36 +896,28 @@ fn compare_numeric(a: &NumericKey<'_>, b: &NumericKey<'_>) -> core::cmp::Orderin
         (true, false) => return Ordering::Less,
         _ => {}
     }
-    let magnitude = {
-        let ai = trim_leading_zeros(a.integer);
-        let bi = trim_leading_zeros(b.integer);
-        let by_length = ai.len().cmp(&bi.len());
-        let by_lex = ai.cmp(bi);
-        if by_length != Ordering::Equal {
-            by_length
-        } else {
-            by_lex
-        }
-    };
-    let magnitude = match magnitude {
-        Ordering::Equal => {
-            let mut longer = a.fraction.len().max(b.fraction.len());
-            let mut index = 0usize;
-            let mut ordering = Ordering::Equal;
-            while index < longer {
-                let x = a.fraction.get(index).copied().unwrap_or(b'0');
-                let y = b.fraction.get(index).copied().unwrap_or(b'0');
-                if x != y {
-                    ordering = x.cmp(&y);
-                    break;
-                }
-                index += 1;
-            }
-            longer = 0;
-            let _ = longer;
-            ordering
-        }
+    let (ai, af) = normalized_parts(a);
+    let (bi, bf) = normalized_parts(b);
+    // 整数位：先比归一后的位数（也就是量级），再按字典序逐位比——十进制无符号串
+    // 这样比就是数值序，对得上 C 那套「指数 + 尾数」的字节序编码。
+    let magnitude = match ai.len().cmp(&bi.len()) {
+        Ordering::Equal => ai.cmp(bi),
         other => other,
+    };
+    let magnitude = if magnitude != Ordering::Equal {
+        magnitude
+    } else {
+        // 小数位逐位比，短的一方按补零算（`1.5` 对 `1.45`）。
+        let mut ordering = Ordering::Equal;
+        for index in 0..af.len().max(bf.len()) {
+            let x = af.get(index).copied().unwrap_or(b'0');
+            let y = bf.get(index).copied().unwrap_or(b'0');
+            if x != y {
+                ordering = x.cmp(&y);
+                break;
+            }
+        }
+        ordering
     };
     if a.negative {
         magnitude.reverse()
@@ -922,8 +927,9 @@ fn compare_numeric(a: &NumericKey<'_>, b: &NumericKey<'_>) -> core::cmp::Orderin
 }
 
 /// Compares two lines per the options: each key spec contributes a
-/// comparison, ties fall through to the next key and then to the whole
-/// line in byte order, and the global `-r` inverts the outcome.
+/// comparison, ties fall through to the next key; only `-S` breaks them by the
+/// whole record (`posix_tiebreak`, see `compare`), and the global `-r` inverts
+/// the outcome.
 pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
     use core::cmp::Ordering;
     // Without `-k` the global modifiers apply to the whole line: one
@@ -1175,6 +1181,42 @@ mod tests {
                 "{spec}：长度序优先，不是数值序也不是字典序"
             );
         }
+    }
+
+    /// 数值键的归一按 C 的 `number()` 做（批次二百九十一）：下面八对形在参照件里
+    /// 都是「两种输入顺序都原序输出」，也就是同值——正号只是跨过（`fields.c:283-288`）、
+    /// 前导零被吃掉（`:290-292`）、小数尾零随 terminator 一起回退（`:373-374`），
+    /// 而那个零键不带 `negate`，所以 `-0` 与 `+0` 也同值。
+    #[test]
+    fn numeric_keys_normalize_sign_leading_and_trailing_zeros() {
+        for (a, b) in [
+            ("007", "7"),
+            ("+7", "7"),
+            ("1.5", "1.50"),
+            (".5", "0.5"),
+            ("0.0", "0"),
+            ("+0", "-0"),
+            ("12.0", "12"),
+            ("  12", "12"),
+            ("fubar", "0"),
+        ] {
+            assert_eq!(compare(a, b, &opts("-n")), Ordering::Equal, "{a} 对 {b}");
+            assert_eq!(compare(b, a, &opts("-n")), Ordering::Equal, "{b} 对 {a}");
+        }
+        // 补零比较才是「尾零等价」的承重件，而不是剥离：`1.4` 与 `1.40` 同值（两向
+        // 输入都原序），可 `1.4` 与 `1.45` **不同值**——决定位落在短一方的长度之外，
+        // 只有按补零逐位比才分得开（参照件两向都给 `1.4` 在前）。
+        assert_eq!(compare("1.4", "1.40", &opts("-n")), Ordering::Equal);
+        assert_eq!(compare("1.40", "1.4", &opts("-n")), Ordering::Equal);
+        assert_eq!(compare("1.4", "1.45", &opts("-n")), Ordering::Less);
+        assert_eq!(compare("1.45", "1.4", &opts("-n")), Ordering::Greater);
+        // 归一不等于丢掉量级：位数比较在去零之后做，符号仍优先。
+        assert_eq!(compare("0007", "0006", &opts("-n")), Ordering::Greater);
+        assert_eq!(compare("-0.5", "-0.05", &opts("-n")), Ordering::Less);
+        // C 不认指数（`fields.c:315` 的注释写着“Maybe here we should allow for e+12 (etc)”）：
+        // `1e3` 的键就是 1（`e` 处停住），所以在 `1000` 之前——参照件两向都给这个序。
+        assert_eq!(compare("1e3", "1000", &opts("-n")), Ordering::Less);
+        assert_eq!(compare("1000", "1e3", &opts("-n")), Ordering::Greater);
     }
 
     /// `init.c:193-194` 的继承判据是「局部一个字母也没有」才整体拿全局标志，不是逐位或。
