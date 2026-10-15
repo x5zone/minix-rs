@@ -250,6 +250,45 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十三接完同族诊断面第三支（`sort` 与 `join` 的选项腿），并把 `sort` 的键解析收严到 C 的停点**
+  （`2026-10-15`，`claim/FAMILY-DIAG-JOIN-SORT-qoder` @ 基线 `a7a7d7e72`，单域三线同包，无跨界）：
+  前两批（二百八十一、二百八十二）把同一句登记的两支撑做完了。**sort 三条出口本来挤在一个
+  `BadOption(char)` 里**（所以壳只能自己发一句自创的 `sort: bad option`）：集外字母与缺值在 C 是
+  「libc 一行 + `usage(NULL)`」两行（`getopt.c:101-104`/`:132-136` 接 `sort.c:252`）；键形不对是
+  `errx(2, "illegal field descriptor")`（`init.c:189-190`）**不接 usage**；`-t` 给第二次是
+  `usage("multiple field delimiters")`（`sort.c:214-215`）先 `%s: %s` 那一句再接整个 usage 块。拆成
+  三型后，行数、有无 usage、退码（一律 2）都能被门分开。`usage()` 本体是两条 `fprintf` 拼成的
+  **一行**，第二条以十三个空格开头——那十三个空格不是手抄，是从编译产物 `sort.o` 的 `.rodata`
+  数出来的（`strings` + 逐字计数），端到端门逐字钉住。**顺带按 C 收严两处**：`-t` 只取首字节不报错
+  （`:219` 就一句 `dchar = *optarg`，旧壳把多字节当错）；`setcolumn` 在**第一个不是修饰字母的字符
+  上停下**（`init.c:204` 的 `for (; (tmp = optval(*pos, …)); pos++)` 遇 0 即停），旧写法把整串吃下去，
+  于是 `-k x`、`-k 1 2` 这些在 C 报错的形被静默接受——不收紧的话新加的 `IllegalFieldDescriptor`
+  就是不可达死码（上一轮的负控教训同一形状）。不对称也钉了一枚：结束列之后的残留 C 反倒不查。
+  **join**：把挤在 `JoinError::Usage` 里的三条分开——只有「非两个操数」（`:236-237`）是裸 usage，
+  表外字母与缺值前面多一行 libc 报文（`value!` 宏现在带字母）。**开档腿的 `err(2, …)` 补句子**：
+  输入文件（`:285`）、直开输出（`:355`）、临时档创建（`:341`）三腿齐了（`create_exclusive` 的错位
+  一并从 `()` 改成 `Errno`）；`access(W_OK)`/`lchmod`/`link` 三腿需先把 `bin_support` 那几个
+  `Result<_, ()>` 缝改成带号，登记不本轮做。
+  **两处自写错期望由门反证**：一是 `-t,,` 被当成 C 的错（其实结束列的残留 C 不查，那一形应当被接受、分隔符取首字符）；
+  二是 `test_parse_options_splits_the_three_error_paths` 里重复了集外字母那形（删去，指针指到已有那枚）。
+  三件套：`cargo test -p minix-textfilter` → **612 passed、0 failed**（基线 607：`sort` 决定半 +1、
+  `sort_face` 10→11（拆三型新增 3 枚、改 1 枚）、`join_face` 9→10）；权威容器门 docker `minix-ci:1.94`
+  `cargo test -j 1 -p minix-textfilter` → **612/0**；同容器 `cargo check --workspace -j 1` → **0 error**；
+  freestanding `cargo build -p minix-textfilter --bins --target {x86_64-unknown-none,
+  aarch64-unknown-none, riscv64gc-unknown-none-elf} --release` 三架构零错；`rustfmt` 只跑本笔七件，
+  `git status` 复核污染面 = 0（本轮没出现跟随 `mod` 级联重排）；clippy 决定半零告警（中途新加的
+  `VALUE_OPTS`/`takes_value` 被报 never used，删掉并把那段事实归入函数文档）；四枚变异负控各咬一处：
+  ① sort 丢 libc 那一行→两枚报红；② 把 errx 那支也接上 usage→一枚报红；③ join 丢 libc 那一行→
+  一枚报红；④ `setcolumn` 改回静默跳过→库门与端到端门各一枚报红。核实日 `2026-10-15`；基线 `a7a7d7e72`。
+  **另记一处差点造成假报红的脚本问题**：第一版负控用 `python3 - <<EOF` 内嵌三行带 `\\n` 的锚文本，
+  转义一层后锚不到→脚本抛异常，但后面的测试仍跑了旧代码并输出「全绿」，看起来像「负控没咬住」。
+  改法：把变异脚本落成 `/tmp/ctl283.py` 文件、先打印「mutation applied」再跑测试，并把注入前的
+  锚文本存在性作为硬前置（同一条记忆里的「注入必须验效」）。恢复也不用 `git checkout`：本轮
+  一度用它退掉了 `bin/join.rs` 的真实编辑，随即重贴。
+  登记不执行：`sort` 的 `D`/`R`/`T`/`l`/`S`/`x` 六个选项字母未建模（现在只能落进集外字母那支）；
+  `-k 0` 在 C 是 `field numbers must be positive`、`-k 2,1` 在 C 是 `fields out of order`，本树分别
+  当 0→1 与不查；`access`/`lchmod`/`link` 三腿的带号缝；`pr` 的 `egetopt`（`pr.c:1655`）需单独读源。
+
 - ✅ **批次二百八十二接完同族诊断面的第二支（`head` 与 `uniq`），并把宿主错误号换算也归成单源**
   （`2026-10-15`，`claim/FAMILY-DIAG-HEAD-UNIQ-qoder` @ 基线 `19e9058b6`，单域三线同包，无跨界）：
   接着批次二百八十一那条登记做。**head 三处**：① 集外字母与 `-c`/`-n` 缺值在 C 是两行

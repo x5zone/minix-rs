@@ -131,6 +131,26 @@ fn usage_is_two_lines_with_the_name_only_in_the_first() {
     assert_eq!(err, expected);
 }
 
+/// 表外字母与带值选项缺值这两支，上面那两行 usage 前还有一行 libc 自己的报文
+/// （`minix3/lib/libc/stdlib/getopt.c:101-104` 与 `:132-136`）。上一枚测钉的是
+/// **裸 usage**（第三个操数与无操数），两者行数不同——拿一枚通用「usage 错」盖住
+/// 就会把那一行弄掉（本壳之前就是这样）。
+#[test]
+fn getopt_owned_legs_print_their_line_before_the_two_usage_lines() {
+    let usage = format!("{USAGE_FIRST}{USAGE_SECOND}");
+    let (out, status, err) = run(&["-z", "f1", "f2"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, format!("join: unknown option -- z\n{usage}"));
+    // 缺值那一句带的是那个字母（字母不带引号，与本机 glibc 不同形）。
+    let (_, status, err) = run(&["f1", "f2", "-t"]);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        format!("join: option requires an argument -- t\n{usage}")
+    );
+}
+
 #[test]
 fn the_report_line_follows_argv_zero_like_getprogname_does() {
     // The program name is `argv[0]`'s last segment: a copy under another name moves the

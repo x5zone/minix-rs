@@ -26,7 +26,7 @@ mod support;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_textfilter::join::{join_lines, parse_join_args, JoinError};
+use minix_textfilter::join::{JoinError, join_lines, parse_join_args};
 
 /// Read a whole standard-input stream (a `-` operand).
 fn read_stdin() -> Vec<u8> {
@@ -82,9 +82,14 @@ fn warn_then_usage(prog: &str, message: &str) -> ! {
 /// 与 `fieldarg` 的 `:527-532` 逐支对应。
 fn join_error_fail(prog: &str, e: JoinError<'_>) -> ! {
     match e {
-        // `join.c:236-237`：`if (argc != 2) usage();` 与 getopt 的 `default: usage()`——
-        // 只打两行 usage，不缀诊断行。
+        // `join.c:236-237`：`if (argc != 2) usage();`——只打两行 usage，不缀诊断行。
         JoinError::Usage => usage(prog),
+        // 表外字母与带值选项缺值：libc 先印自己那一句（`getopt.c:101-104`、
+        // `:132-136`），再落 `join.c:226-228` 的 `case '?'` → 同样那两行 usage。
+        JoinError::Getopt(report) => {
+            support::warn(report.line(prog).as_bytes());
+            usage(prog)
+        }
         // 句子把选项字母写在前面（`"-1 option field number less than 1"`）。
         JoinError::FieldLessThan1(opt) => {
             warn_then_usage(prog, &format!("{opt} option field number less than 1"))

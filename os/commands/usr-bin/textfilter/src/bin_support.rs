@@ -474,7 +474,7 @@ pub fn writable(path: &str) -> bool {
 /// `mkstemp` (`sort.c:340`), whose `O_EXCL` is `0x800` and whose mode is `0600`
 /// (`minix3/sys/sys/fcntl.h:101`, `minix3/lib/libc/stdio/gettemp.c`).
 #[cfg(any(test, not(target_os = "none")))]
-pub fn create_exclusive(path: &str) -> Result<WriteSink, ()> {
+pub fn create_exclusive(path: &str) -> Result<WriteSink, minix_sys::Errno> {
     use std::os::unix::fs::OpenOptionsExt as _;
     std::fs::OpenOptions::new()
         .write(true)
@@ -482,15 +482,13 @@ pub fn create_exclusive(path: &str) -> Result<WriteSink, ()> {
         .mode(0o600)
         .open(path)
         .map(WriteSink)
-        .map_err(|_| ())
+        .map_err(|e| errno_of(&e))
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn create_exclusive(path: &str) -> Result<WriteSink, ()> {
+pub fn create_exclusive(path: &str) -> Result<WriteSink, minix_sys::Errno> {
     // `O_WRONLY|O_CREAT|O_EXCL` is `0x1|0x200|0x800`.
-    minix_sys::open(path, 0x1 | 0x200 | 0x800, 0o600)
-        .map(|fd| WriteSink { fd })
-        .map_err(|_| ())
+    minix_sys::open(path, 0x1 | 0x200 | 0x800, 0o600).map(|fd| WriteSink { fd })
 }
 
 /// `lchmod(path, mode)` in C's sense: set the permission bits by path

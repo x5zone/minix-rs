@@ -210,5 +210,50 @@ fn a_lone_dash_names_standard_input() {
     let (out, status, err) = run(&["-o"], b"a\n");
     assert_eq!(out, Vec::<u8>::new(), "stderr was {err:?}");
     assert_eq!(status, 2, "stderr was {err:?}");
-    assert!(err.contains("bad option"), "stderr was {err:?}");
+    // 两行：libc 的那一句在前（`getopt.c:132-136`，字母不带引号），整个 usage 块在后。
+    // 旧壳只印一句自创的 `sort: bad option`。
+    assert_eq!(
+        err,
+        format!("sort: option requires an argument -- o\n{USAGE}")
+    );
+}
+
+/// C `usage()` 的那一行（`sort.c:405-410`）：两条 `fprintf` 拼成**一行**，第二条以
+/// 十三个空格开头（从 `sort.o` 的 `.rodata` 数出来的）。这里逐字钉住，间距也算。
+const USAGE: &str = "usage: sort [-bcdfHilmnrSsu] [-k field1[,field2]] [-o output] [-R char] [-T dir]             [-t char] [file ...]\n";
+
+#[test]
+fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
+    let (out, status, err) = run(&["-Z"], b"a\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 2);
+    assert_eq!(err, format!("sort: unknown option -- Z\n{USAGE}"));
+}
+
+#[test]
+fn a_bad_key_gets_its_own_sentence_without_the_usage() {
+    // `setfield`/`setcolumn` 的三支 `errx` 都**不接 usage**（`init.c:186-200`），
+    // 与上面那两支正好相反；把退出码与「有没有 usage 块」一起钉住才分得开。
+    let (out, status, err) = run(&["-k", "x"], b"a\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 2);
+    assert_eq!(err, "sort: illegal field descriptor\n");
+    // 开始列后的残留不是 `\0` 也不是 `,` 就是这一支（`-k 1 2` 的空格）。
+    assert_eq!(
+        run(&["-k", "1 2"], b"a\n").2,
+        "sort: illegal field descriptor\n"
+    );
+}
+
+#[test]
+fn a_second_delimiter_option_takes_the_message_plus_the_usage_block() {
+    // `usage("multiple field delimiters")`（`sort.c:214-215`）：先 `%s: %s` 那一句，
+    // 再接整个 usage 行。而多字节本身不是错（C 只取首字节）。
+    let (out, status, err) = run(&["-t,", "-t;"], b"a\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 2);
+    assert_eq!(err, format!("sort: multiple field delimiters\n{USAGE}"));
+    let (out, status, err) = run(&["-t::", "-k", "1"], b"a:a\n");
+    assert_eq!(out, b"a:a\n", "多字节分隔符取首字节，不该报错：{err:?}");
+    assert_eq!(status, 0);
 }

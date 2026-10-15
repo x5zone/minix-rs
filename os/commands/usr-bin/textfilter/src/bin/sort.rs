@@ -23,23 +23,25 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::sort::{compare, merge_sorted, parse_options};
+use minix_textfilter::sort::{ParseError, compare, merge_sorted, parse_options};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    // C 的每一句诊断都从 `getprogname()` 开头（`sort.c:401-412` 的 usage、
+    // `:261-285` 的 errx/err），所以不能写死「sort」。
+    let prog = support::prog_name(&argv);
     let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
     let (options, operands) = match parse_options(&words) {
         Ok((options, operands)) => (options, operands),
-        Err(_) => {
-            support::warn(b"sort: bad option\n");
-            support::terminate(2);
-        }
+        Err(error) => parse_fail(prog, error),
     };
     // C reads each input operand in file order (`-` / an unrecognised leading
     // dash names standard input) and concatenates their lines; no operand reads
     // standard input. `-c` accepts at most one input file (sort.c too-many guard).
     if options.check && operands.len() > 1 {
-        support::warn(b"sort: too many input files for -c option\n");
+        // `errx(2, "too many input files for -c option")`（`sort.c:261`）：只这一句，
+        // 没 usage、也【不】缀 `errno` 句子。
+        support::warn(format!("{prog}: too many input files for -c option\n").as_bytes());
         support::terminate(2);
     }
     let mut runs: Vec<Vec<String>> = Vec::new();
@@ -50,7 +52,7 @@ fn run() -> ! {
             let input = if operand == "-" {
                 support::read_stdin()
             } else {
-                read_operand(operand)
+                read_operand(prog, operand)
             };
             runs.push(split_lines(&input));
         }
@@ -79,7 +81,7 @@ fn run() -> ! {
         payload.extend_from_slice(line.as_bytes());
         payload.push(b'\n');
     }
-    write_output(&options, &payload);
+    write_output(prog, &options, &payload);
     support::terminate(0);
 }
 
@@ -90,7 +92,7 @@ fn run() -> ! {
 /// the old name, hard-links the temporary to it and only then unlinks the temporary;
 /// if not, C opens the name straight through with `"w"`. The temporary is why a
 /// sort that dies halfway leaves the previous file intact rather than an empty one.
-fn write_output(options: &minix_textfilter::sort::Options, payload: &[u8]) {
+fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: &[u8]) {
     use minix_textfilter::sort::{Output, OutputProbe, decide_output, temp_candidate};
 
     // The path is probed only when `-o` was given, as C's `lstat` sits inside the
@@ -110,10 +112,10 @@ fn write_output(options: &minix_textfilter::sort::Options, payload: &[u8]) {
                 // exit can fail just as silently, so no message is invented here.
                 let _ = sink.finish(payload);
             }
-            // `create_sink` 现在返 `errno`（`uniq` 的致命 `err(1, "%s", name)` 需要它）。
-            // sort 这一腿的文案本轮不动，它的诊断面同 `join` 一起排在下一轮。
-            Err(_) => {
-                support::warn(format!("sort: output file {target}\n").as_bytes());
+            // C `sort.c:354-355` 是 `err(2, "output file %s", outfile)`：那句后面还缀
+            // 着 `strerror` 的句子（旧写法只印到名字为止）。
+            Err(code) => {
+                support::warn_line(prog, &format!("output file {target}"), code);
                 support::terminate(2);
             }
         },
@@ -127,16 +129,28 @@ fn write_output(options: &minix_textfilter::sort::Options, payload: &[u8]) {
             let seed = support::epoch_micros().unwrap_or(0);
             let mut temp = target.clone();
             let mut sink = None;
+            // 最后一次的号要留着报：C 是 `err(2, "Cannot create temporary file `%s'", toutpath)`
+            // （`sort.c:340-341`），那句后面缀的是 `strerror`。试名过程中的失败不报，
+            // 只有整个循环跑空才报（与 C 的 `mkstemp` 只试一次不同：本树拿
+            // 时种推候选名，所以上面那六个字符的碰撞要自己跳）。
+            let mut last_error = minix_sys::Errno::EEXIST;
             for attempt in 0..64 {
                 temp = String::from_utf8_lossy(&temp_candidate(target.as_bytes(), seed, attempt))
                     .into_owned();
-                if let Ok(opened) = support::create_exclusive(&temp) {
-                    sink = Some(opened);
-                    break;
+                match support::create_exclusive(&temp) {
+                    Ok(opened) => {
+                        sink = Some(opened);
+                        break;
+                    }
+                    Err(code) => last_error = code,
                 }
             }
             let Some(sink) = sink else {
-                support::warn(format!("sort: Cannot create temporary file `{temp}'\n").as_bytes());
+                support::warn_line(
+                    prog,
+                    &format!("Cannot create temporary file `{temp}'"),
+                    last_error,
+                );
                 support::terminate(2);
             };
             if sink.finish(payload).is_err() {
@@ -187,14 +201,53 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 /// (the C's `access(argv[i], R_OK)` guard at `sort.c:284` and the `fopen` failure
 /// in `files.c`). The open-and-read itself is the shared `bin_support` twin, so the
 /// hosted door and the target run take the same path through the seam.
-fn read_operand(path: &str) -> Vec<u8> {
+fn read_operand(prog: &str, path: &str) -> Vec<u8> {
     match support::read_file(path) {
         Ok(data) => data,
-        Err(_) => {
-            support::warn(format!("sort: {path}\n").as_bytes());
+        // C `sort.c:285` 是 `err(2, "%s", argv[i])`：程序名、操作数、`strerror` 句子
+        // 三件齐备（旧写法把 `err(3)` 当成 `errx(3)` 用，只留了前两件）。
+        Err(code) => {
+            support::warn_line(prog, path, code);
             support::terminate(2);
         }
     }
+}
+
+/// 把决定半的 [`ParseError`] 落成 C 那一条腿的报文。三条腿各不相同：
+/// - libc 先印一行，再是**整个 usage 块**，退 2（`sort.c:252` 的 `usage(NULL)`，
+///   报文本体在 `getopt.c:101-104`/`:132-136`）；
+/// - `sort: illegal field descriptor`，退 2，**没 usage**（`init.c:189-190` 的 `errx`）；
+/// - `sort: multiple field delimiters` 紧跟整个 usage 块，退 2（`sort.c:214-215` 的
+///   `usage("multiple field delimiters")`，走的是 `usage()` 的 `%s: %s` 那头一句）。
+fn parse_fail(prog: &str, error: ParseError) -> ! {
+    match error {
+        ParseError::Getopt(report) => {
+            support::warn(report.line(prog).as_bytes());
+            usage(prog, None)
+        }
+        ParseError::IllegalFieldDescriptor => {
+            support::warn(format!("{prog}: illegal field descriptor\n").as_bytes());
+            support::terminate(2);
+        }
+        ParseError::MultipleFieldDelimiters => usage(prog, Some("multiple field delimiters")),
+    }
+}
+
+/// C `usage()`（`sort.c:399-412`）：可选的 `"%s: %s\n"` 头一句，然后是那**一个**输出行。
+/// 那一行由两条 `fprintf` 拼成，第一条不带换行、第二条以十三个空格开头，所以真源的
+/// usage 看上去是「一行里裂了一段大间距」——间距与列项都逐字保留（那十三个空格是从
+/// 编译产物 `sort.o` 的 `.rodata` 里数出来的，不是手抄）。退 2。
+fn usage(prog: &str, message: Option<&str>) -> ! {
+    if let Some(message) = message {
+        support::warn(format!("{prog}: {message}\n").as_bytes());
+    }
+    support::warn(
+        format!(
+            "usage: {prog} [-bcdfHilmnrSsu] [-k field1[,field2]] [-o output] [-R char] [-T dir]             [-t char] [file ...]\n"
+        )
+        .as_bytes(),
+    );
+    support::terminate(2)
 }
 
 /// The `-c` mode: every adjacent pair must be in order, and with `-u`

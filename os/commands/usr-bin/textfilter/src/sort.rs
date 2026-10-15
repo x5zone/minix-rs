@@ -137,17 +137,32 @@ fn merge_two(a: &[String], b: &[String], options: &Options) -> Vec<String> {
     out
 }
 
-/// An unparsable option (`-k`/`-t` value faults included).
+/// 一条不可解析的选项参数错。三条出口对位 C 的三条真出路（见各变体注释），
+/// 不是一句「bad option」到底。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseError {
-    BadOption(char),
+    /// libc 的 `getopt` 自己那一行（集外字母或带值选项缺值），随后才是 `sort.c:252`
+    /// 的 `usage(NULL)`——所以真源是两行。两类各自带字母。
+    Getopt(crate::GetoptReport),
+    /// `-k` 的键形不对：`setfield` 里的 `errx(2, "illegal field descriptor")`
+    /// （`minix3/usr.bin/sort/init.c:189-190`）。这一支**不接 usage**。
+    IllegalFieldDescriptor,
+    /// `-t` 给了第二次：`sort.c:214-215` 的 `usage("multiple field delimiters")`，
+    /// 即先一句带程名的话，再接整个 usage 块。
+    MultipleFieldDelimiters,
 }
 
 /// Parse global options from the argument words, returning the options
 /// plus the remaining operand words (file paths in the C; the doing half
 /// rejects them while the open-existing call is gated). `-k` and `-t`
-/// take a value, given separately or inline. Unknown options and missing
-/// values are [`ParseError::BadOption`].
+/// take a value, given separately or inline; 集外字母与缺值各自成一个
+/// [`ParseError::Getopt`]，键形不对与 `-t` 给第二次则是另两条出口。
+///
+/// 本解析器已建模的带值字母是 `k`、`o`、`t`：C 的选项串是 `sort.c:148` 的
+/// `#define SORT_OPTS "bcdD:fHik:lmno:rR:sSt:T:ux"`，其中 `:` 标出的是 `D`、`k`、`o`、
+/// `R`、`t`、`T` 六个；但 `D`/`R`/`T`（以及旗标 `l`/`S`/`x`）在本树尚未建模，它们现在
+/// 落进「集外字母」那一支——那是**选项面**的缺口（另案登记）。分成两条 libc 报文
+/// （集外字母走 `getopt.c:101-104`，缺值走 `:132-136`）的做法就体现在下面各臂里。
 pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), ParseError> {
     let mut options = Options::default();
     let mut operands: Vec<&str> = Vec::new();
@@ -192,7 +207,11 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                         index += 1;
                         match args.get(index) {
                             Some(word) => value = (*word).to_string(),
-                            None => return Err(ParseError::BadOption(flag)),
+                            None => {
+                                return Err(ParseError::Getopt(crate::GetoptReport::MissingValue(
+                                    flag,
+                                )));
+                            }
                         }
                     }
                     options.output = Some(value.into_bytes());
@@ -204,24 +223,35 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                         index += 1;
                         match args.get(index) {
                             Some(word) => value = (*word).to_string(),
-                            None => return Err(ParseError::BadOption(flag)),
+                            None => {
+                                return Err(ParseError::Getopt(crate::GetoptReport::MissingValue(
+                                    flag,
+                                )));
+                            }
                         }
                     }
                     if flag == 'k' {
                         match parse_key(&value, &options) {
+                            // C 这一支不写 usage：`setfield` 里是 `errx(2, "illegal
+                            // field descriptor")`（`init.c:189-190`）。
                             Some(spec) => options.keys.push(spec),
-                            None => return Err(ParseError::BadOption(flag)),
+                            None => return Err(ParseError::IllegalFieldDescriptor),
                         }
                     } else {
-                        let mut bytes = value.bytes();
-                        match (bytes.next(), bytes.next()) {
-                            (Some(one), None) => options.delimiter = Some(one),
-                            _ => return Err(ParseError::BadOption(flag)),
+                        // `-t` 在 C 里只取首字节（`sort.c:219` 的 `d_mask[(u_char)*optarg]`），
+                        // 从不查长度；但同一个选项给第二次就是
+                        // `usage("multiple field delimiters")`（`:214-215`）。
+                        if options.delimiter.is_some() {
+                            return Err(ParseError::MultipleFieldDelimiters);
                         }
+                        // 空值（`-t ''`）在 C 取到那个 `\0`，不报错。
+                        options.delimiter = Some(value.bytes().next().unwrap_or(0));
                     }
                     break;
                 }
-                _ => return Err(ParseError::BadOption(flag)),
+                _ => {
+                    return Err(ParseError::Getopt(crate::GetoptReport::UnknownOption(flag)));
+                }
             }
         }
         index += 1;
@@ -297,11 +327,18 @@ pub fn temp_candidate(path: &[u8], seed: u64, attempt: usize) -> Vec<u8> {
 /// end segment, or both; unknown flag letters are skipped silently. A
 /// `.0` character offset is rejected (the C's "illegal offset").
 pub fn parse_key(spec: &str, global: &Options) -> Option<KeySpec> {
-    let (start_text, end_text) = match spec.split_once(',') {
-        Some((a, b)) => (a, Some(b)),
-        None => (spec, None),
+    // C 的形状（`init.c:181-192` 的 `setfield`）：先解开始列，然后看它停在哪个字符上——
+    // 到结尾就是「键延伸到行尾」；不是逗号就是 `errx(2, "illegal field descriptor")`。
+    // 旧写法把整串都吃下去（未知字母按 `optval` 的默认略过），所以 `-k x`、`-k 1x`
+    // 这些在 C 会报错的形在这里被静默接受。
+    let (start_field, start_char, start_flags, blank_start, rest) = parse_column(spec)?;
+    let end_text = if rest.is_empty() {
+        None
+    } else if let Some(tail) = rest.strip_prefix(',') {
+        Some(tail)
+    } else {
+        return None;
     };
-    let (start_field, start_char, start_flags, blank_start) = parse_column(start_text)?;
     let mut key = KeySpec {
         start_field: if start_field == 0 { 1 } else { start_field },
         start_char,
@@ -317,7 +354,9 @@ pub fn parse_key(spec: &str, global: &Options) -> Option<KeySpec> {
         reverse: start_flags.contains('r') && !global.reverse,
     };
     if let Some(end_text) = end_text {
-        let (end_field, end_char, end_flags, blank_end) = parse_column(end_text)?;
+        // 结束列之后的残留 C 不再查（`setfield` 里第二个 `setcolumn` 后没有任何
+        // `*pos` 判据），所以这里把 `rest` 丢掉是有依据的，不是漏写。
+        let (end_field, end_char, end_flags, blank_end, _rest) = parse_column(end_text)?;
         key.end_field = end_field;
         key.end_char = end_char;
         key.blank_end = blank_end || global.blank_skip;
@@ -337,8 +376,9 @@ pub fn parse_key(spec: &str, global: &Options) -> Option<KeySpec> {
 
 /// Parses `F[.C]` plus trailing modifier flags. Returns the field, the
 /// character (`.C`; absent and `.1` are both offset zero, `.0` is an
-/// error), the modifier letters, and whether a `b` modifier was present.
-fn parse_column(text: &str) -> Option<(usize, usize, String, bool)> {
+/// error), the modifier letters, whether a `b` modifier was present, and
+/// **where it stopped**（`setcolumn` 返回的 `pos`，`init.c:191`/`:205`）。
+fn parse_column(text: &str) -> Option<(usize, usize, String, bool, &str)> {
     let bytes = text.as_bytes();
     let mut position = 0;
     let mut field = 0usize;
@@ -366,13 +406,16 @@ fn parse_column(text: &str) -> Option<(usize, usize, String, bool)> {
         match bytes[position] {
             b'b' => blank = true,
             b'd' | b'f' | b'i' | b'n' | b'M' | b'r' => flags.push(bytes[position] as char),
-            // Unknown flag letters skip silently (optval's default).
-            _ => {}
+            // C 的 `for (; (tmp = optval(*pos, …)); pos++)`（`init.c:204`）在**第一个
+            // 不是修饰字母的字符上停下**，那个字符就成了 `setfield` 眼里的 `*pos`；
+            // 它不是「略过继续」。旧写法把每个未知字符都跳掉，于是 `-k x`、`-k 1 2`
+            // 这些在 C 报 `illegal field descriptor` 的形被静默接受。
+            _ => break,
         }
         position += 1;
     }
     let _ = character_given;
-    Some((field, character, flags, blank))
+    Some((field, character, flags, blank, &text[position..]))
 }
 
 /// The span of the `field`-th field of a line (1 based), byte offsets
@@ -831,7 +874,44 @@ mod tests {
         assert_eq!(replaced.output.as_deref(), Some("b".as_bytes()));
         let (none, _) = parse_options(&["-n"]).unwrap();
         assert_eq!(none.output, None);
-        assert_eq!(parse_options(&["-o"]), Err(ParseError::BadOption('o')));
+        assert_eq!(
+            parse_options(&["-o"]),
+            Err(ParseError::Getopt(crate::GetoptReport::MissingValue('o')))
+        );
+    }
+
+    /// 三条出口各自一个型，而且只有两条前面带 libc 那一行（壳根据型选行数）。
+    /// 集外字母那一支另有一枚测（`test_parse_options_rejects_unknown`），不在此重复。
+    #[test]
+    fn test_parse_options_splits_the_three_error_paths() {
+        use crate::GetoptReport;
+        // 缺值：与集外字母同属 `Getopt`，但句子不同。
+        assert_eq!(
+            parse_options(&["-t"]),
+            Err(ParseError::Getopt(GetoptReport::MissingValue('t')))
+        );
+        // 键形不对：C 是 `errx(2, "illegal field descriptor")`，不接 usage。
+        assert_eq!(
+            parse_options(&["-k", "x"]),
+            Err(ParseError::IllegalFieldDescriptor)
+        );
+        assert_eq!(
+            parse_options(&["-k", "1 2"]),
+            Err(ParseError::IllegalFieldDescriptor)
+        );
+        // `-t` 给第二次才是 `usage("multiple field delimiters")`；
+        // 而多字节本身**不是**错（C 只取首字节）。
+        let (one, _) = parse_options(&["-t,", "f"]).unwrap();
+        assert_eq!(one.delimiter, Some(b','));
+        let (two, _) = parse_options(&["-t::", "f"]).unwrap();
+        assert_eq!(two.delimiter, Some(b':'), "多字节取首字节，不报错");
+        assert_eq!(
+            parse_options(&["-t,", "-t;"]).err(),
+            Some(ParseError::MultipleFieldDelimiters)
+        );
+        // 空值取到那个 `\0`（C 的 `*optarg`）。
+        let (nul, _) = parse_options(&["-t", "", "f"]).unwrap();
+        assert_eq!(nul.delimiter, Some(0));
     }
 
     #[test]
@@ -898,7 +978,10 @@ mod tests {
 
     #[test]
     fn test_parse_options_rejects_unknown() {
-        assert_eq!(parse_options(&["-Z"]), Err(ParseError::BadOption('Z')));
+        assert_eq!(
+            parse_options(&["-Z"]),
+            Err(ParseError::Getopt(crate::GetoptReport::UnknownOption('Z')))
+        );
     }
 
     #[test]

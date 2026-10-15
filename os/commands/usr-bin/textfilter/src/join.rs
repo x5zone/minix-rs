@@ -20,6 +20,7 @@
 //! Pure: takes the two inputs as byte-line slices and returns the output
 //! lines, so the merge is unit-tested without files or the IPC layer.
 
+use crate::GetoptReport;
 use alloc::vec::Vec;
 
 /// Which side an output-field entry draws from (the `F` of `join -o F.N`),
@@ -201,8 +202,11 @@ pub struct JoinArgs<'a> {
 /// 否则壳只能拼出一句通用话（旧状：`join: option field number less than 1`，丢了字母与值）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinError<'a> {
-    /// 表外选项字母、缺选项值、或非两个操数（C `getopt` default / `usage()`）——只打两行 usage。
+    /// 只有非两个操数走这一支（`join.c:236-237` 的 `if (argc != 2) usage();`）：
+    /// 选项环已经跑完，所以前面**没有** libc 那一行。
     Usage,
+    /// 表外字母与带值选项缺值：libc 先印一行，再是同样的两行 usage。
+    Getopt(crate::GetoptReport),
     /// `-1`/`-2`/`-j`：`strtol` 值 < 1（C `join.c:141`/`:152`/`:186`）。字段是 C 句子里的那个字母串。
     FieldLessThan1(&'static str),
     /// 同上三支但 `*end` 非零（`:145`/`:156`/`:190`）：C 把 `optarg` 整个跟在 `-- ` 后，
@@ -234,16 +238,18 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
     let mut files: Vec<&'a str> = Vec::new();
     let (mut aflag, mut vflag) = (false, false);
     let mut i = 0;
-    // 取一个选项的值：附在字母后（`&arg[2..]`）或紧跟的下一项。
+    // 取一个选项的值：附在字母后（`&arg[2..]`）或紧跟的下一项。缺值时要把**那个字母**
+    // 交出去：C 那一支先由 libc 印 `"<prog>: option requires an argument -- <字母>"`
+    // （`getopt.c:132-136`），然后才轮到 `usage()`。
     macro_rules! value {
-        () => {{
+        ($letter:expr) => {{
             let cur = args[i];
             if cur.len() > 2 {
                 &cur[2..]
             } else {
                 i += 1;
                 if i >= args.len() {
-                    return Err(JoinError::Usage);
+                    return Err(JoinError::Getopt(GetoptReport::MissingValue($letter)));
                 }
                 args[i]
             }
@@ -296,10 +302,10 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
             continue;
         }
         match b[1] {
-            b'1' => opts.field1 = field_no(value!(), "-1")?,
-            b'2' => opts.field2 = field_no(value!(), "-2")?,
+            b'1' => opts.field1 = field_no(value!('1'), "-1")?,
+            b'2' => opts.field2 = field_no(value!('2'), "-2")?,
             b't' => {
-                let v = value!();
+                let v = value!('t');
                 let bytes = v.as_bytes();
                 if bytes.len() != 1 {
                     return Err(JoinError::BadTabChar);
@@ -308,28 +314,42 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
             }
             b'a' => {
                 aflag = true;
-                file_no(value!(), "-a", &mut opts.unmatched1, &mut opts.unmatched2)?;
+                file_no(
+                    value!('a'),
+                    "-a",
+                    &mut opts.unmatched1,
+                    &mut opts.unmatched2,
+                )?;
             }
             b'v' => {
                 vflag = true;
                 opts.joinout = false;
-                file_no(value!(), "-v", &mut opts.unmatched1, &mut opts.unmatched2)?;
+                file_no(
+                    value!('v'),
+                    "-v",
+                    &mut opts.unmatched1,
+                    &mut opts.unmatched2,
+                )?;
             }
-            b'e' => opts.empty = Some(value!().as_bytes().to_vec()),
+            b'e' => opts.empty = Some(value!('e').as_bytes().to_vec()),
             b'j' => {
-                let n = field_no(value!(), "-j")?;
+                let n = field_no(value!('j'), "-j")?;
                 opts.field1 = n;
                 opts.field2 = n;
             }
             b'o' => {
                 // `fieldarg` 的两支都是 `errx`，但句子不同，所以不能拢一个错型上去。
-                opts.output_fields = match parse_olist(value!()) {
+                opts.output_fields = match parse_olist(value!('o')) {
                     Ok(fields) => fields,
                     Err(OListError::Malformed) => return Err(JoinError::MalformedOutputField),
                     Err(OListError::OneBased) => return Err(JoinError::FieldNumbersAre1Based),
                 };
             }
-            _ => return Err(JoinError::Usage),
+            // 表外字母：C 也先有一行 libc 报文（`getopt.c:101-104`），再落
+            // `join.c:226-228` 的 `case '?'`/`default: usage()`。
+            _ => {
+                return Err(JoinError::Getopt(GetoptReport::UnknownOption(b[1] as char)));
+            }
         }
         i += 1;
     }
@@ -755,10 +775,16 @@ mod tests {
     #[test]
     fn parse_validations_and_mutual_exclusion() {
         // 非两个操数、表外字母、-a&-v 互斥、非法号、非单字节 tab。
+        // 非两个操数走裸 usage；表外字母走「libc 那一行 + usage」，两者不同型。
         assert_eq!(parse_join_args(&["only1"]).err(), Some(JoinError::Usage));
         assert_eq!(
             parse_join_args(&["-z", "f1", "f2"]).err(),
-            Some(JoinError::Usage)
+            Some(JoinError::Getopt(GetoptReport::UnknownOption('z')))
+        );
+        // 带值选项缺值同样带字母（`-t` 到量尽头没有值）。
+        assert_eq!(
+            parse_join_args(&["f1", "f2", "-t"]).err(),
+            Some(JoinError::Getopt(GetoptReport::MissingValue('t')))
         );
         assert_eq!(
             parse_join_args(&["-a1", "-v2", "f1", "f2"]).err(),
