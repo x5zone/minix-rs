@@ -198,7 +198,7 @@ menu=Start MINIX 3:load_mods /boot/minix_default/mod*;multiboot /boot/minix_defa
 | 指令 | 送到哪里 | 内核哪一段读它 |
 |---|---|---|
 | `multiboot <内核路径> [命令行]` | 内核镜像被读进某个物理地址，然后跳到它的入口；内核路径与 `[命令行]` 拼成的一整串成为 `mbi->mi_cmdline` | 命令行由 `get_parameters()` 解析；镜像地址不从引导器读，它来自链接期常量（见 2.3） |
-| `load_mods <模块通配路径>` | 每个匹配到的文件（模块＝内核随后要逐个启动的那些服务进程的镜像，名单与顺序见 §4.3）被读进物理内存，地址与长度填进模块描述符数组，数组地址进 `mbi->mi_mods_addr`，条数进 `mbi->mi_mods_count` | `i386/pre_init.c` 的 [`get_parameters`](minix3/minix/kernel/arch/i386/pre_init.c:get_parameters) 把整个数组 `memcpy` 进 `kinfo.module_list[]` |
+| `load_mods <模块通配路径>` | 每个匹配到的文件（模块＝内核随后要逐个启动的那些服务进程的镜像，名单与顺序见 §4.3）被读进物理内存，地址与长度填进模块描述符数组，数组地址进 `mbi->mi_mods_addr`，条数进 `mbi->mi_mods_count` | [`get_parameters`](minix3/minix/kernel/arch/i386/pre_init.c:get_parameters) 把整个数组 `memcpy` 进 `kinfo.module_list[]` |
 | `rootdevname=<设备名>` | 只是命令行里的一个 `key=value` 词，随整串进 `mbi->mi_cmdline` | `get_parameters()` 解析命令行时逐词交给 `mb_set_param()`，最终以 `key=value` 形式落进 `kinfo.param_buf` |
 
 先说清 `rootdevname` 是什么：**它是根文件系统的设备名，写的时候不带 `/dev/` 前缀**——值形如 `c0d0p0`，对应的完整设备路径才是 `/dev/c0d0p0`。这个值由装机脚本剥前缀得到——`minix3/minix/commands/update_bootcfg/update_bootcfg.sh` 里 `rootdevname=` 那一行就是把 `$ROOT`（形如 `/dev/c0d0p0`）过一道 `sed 's/\/dev\///'`；同文件的注释还说明它在 setup 期间会变，所以 `boot.cfg.default` 里只能写成变量 `$rootdevname`，每次刷配置时重算。
@@ -653,7 +653,7 @@ phys_bytes pg_alloc_page(kinfo_t *cbi)
 | 名称 | 对象 | 时刻 | 谁做 | 动作 | 为什么 |
 |---|---|---|---|---|---|
 | **切占用** | 内核与全部模块的字节 | `pre_init` → `get_parameters` | `cut_memmap`（本文 2.4） | 从可用记录里切掉 `[mod_start, mod_end)` | 这段内存里躺着模块的字节，页表页与内核数据不能分配到这里 |
-| **还 VM 镜像** | 只有 VM 模块的字节 | 内核装载启动进程时（`i386/protect.c` 的 [`arch_boot_proc`](minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc)） | `add_memmap` + 清空模块描述符 | 把模块的字节段复制进目标地址空间后，把这段物理区间加回记录，并把 `mod_start`/`mod_end` 置 0 | 字节已经搬到别处，原地址可以复用；置 0 是"已回收"的标记 |
+| **还 VM 镜像** | 只有 VM 模块的字节 | 内核装载启动进程时（[`arch_boot_proc`](minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc)） | `add_memmap` + 清空模块描述符 | 把模块的字节段复制进目标地址空间后，把这段物理区间加回记录，并把 `mod_start`/`mod_end` 置 0 | 字节已经搬到别处，原地址可以复用；置 0 是"已回收"的标记 |
 | **还引导段** | 内核自己的 unpaged 段 | `kmain` 后段（`cstart`、`system_init` 之后） | `add_memmap(bootstrap_start, bootstrap_len)` | 归还分页开启前使用的那一小段 | C 的 `unpaged` 段只在启动期需要（本文 §3.5），与模块无关 |
 
 两条容易混的口径：**"切占用"与"还 VM 镜像"处的是模块字节，"还引导段"处的是内核镜像自己的 unpaged 段**（边界由链接脚本导出的 `_kern_unpaged_start/end` 给出）。另外，"还 VM 镜像"只还 VM 那一块，其余模块的字节区间在 C 里从头到尾都没加回过——代价见本节末。
@@ -809,11 +809,11 @@ kinfo_t *pre_init(u32_t magic, u32_t ebx)
 
 | 步 | 函数 | 改的是什么 | 输入 |
 |---|---|---|---|
-| 1 | `i386/pg_utils.c` 的 [`pg_clear`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear) | 静态页目录数组 `pagedir[1024]` 清零 | 无 |
-| 2 | `i386/pg_utils.c` 的 [`pg_identity`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity) | 把低地址全部映射成恒等（VA = PA） | `kinfo.mem_high_phys` |
-| 3 | `i386/pg_utils.c` 的 [`pg_mapkernel`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel) | 把内核镜像映射到它的高虚拟基址，返回第一个空闲页目录下标 | 链接期常量 + `pagedir[]` |
-| 4 | `i386/pg_utils.c` 的 [`pg_load`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_load) | 把页目录物理地址写进 `CR3` | 页目录地址 |
-| 5 | `i386/pg_utils.c` 的 [`vm_enable_paging`](minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging) | 置 `CR0.PG`（以及 `PSE`/`WP`/`PGE`） | `CR0`/`CR4` 当前值 |
+| 1 | [`pg_clear`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear) | 静态页目录数组 `pagedir[1024]` 清零 | 无 |
+| 2 | [`pg_identity`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_identity) | 把低地址全部映射成恒等（VA = PA） | `kinfo.mem_high_phys` |
+| 3 | [`pg_mapkernel`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_mapkernel) | 把内核镜像映射到它的高虚拟基址，返回第一个空闲页目录下标 | 链接期常量 + `pagedir[]` |
+| 4 | [`pg_load`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_load) | 把页目录物理地址写进 `CR3` | 页目录地址 |
+| 5 | [`vm_enable_paging`](minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging) | 置 `CR0.PG`（以及 `PSE`/`WP`/`PGE`） | `CR0`/`CR4` 当前值 |
 
 步骤 2 与步骤 3 写同一张数组，这是它们必须有序的机制来源。
 
@@ -1199,8 +1199,8 @@ void setup_mbi(multiboot_info_t *mbi, char *bootargs)
 | 步 | 语义 | x86-32 落点 | ARM32 落点 | 谁定的 |
 |---|---|---|---|---|
 | 1 | 接收引导参数 | `head.S` 压栈 + `pre_init(magic, ebx)` | `head.S` 只 `bl pre_init`（两侧形参不同：ARM 是 `pre_init(argc, argv)`，没有 `magic` 也没有 `ebx`），再由 `setup_mbi` 自造结构 | 引导协议（各架构不同） |
-| 2 | 建立地址映射 | `i386/pg_utils.c` 的 [`pg_clear`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear) + `:pg_identity` + `:pg_mapkernel` | 同名函数（`earm/pg_utils.c` 的 [`pg_identity`](minix3/minix/kernel/arch/earm/pg_utils.c:pg_identity)），1MB Section 代替 4MB 大页 | 分页硬件（各架构不同，语义相同） |
-| 3 | 开启分页/MMU | `i386/pg_utils.c` 的 [`pg_load`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_load) + `:vm_enable_paging`（写 `CR3`，置 `CR0.PG`） | 同名函数（`earm/pg_utils.c` 的 [`pg_load`](minix3/minix/kernel/arch/earm/pg_utils.c:pg_load) 写 `TTBR0`；`earm/pg_utils.c` 的 [`vm_enable_paging`](minix3/minix/kernel/arch/earm/pg_utils.c:vm_enable_paging) 置 `SCTLR.M` 并使能 I/D cache 与分支预测） | MMU 寄存器（各架构不同） |
+| 2 | 建立地址映射 | [`pg_clear`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_clear) + `:pg_identity` + `:pg_mapkernel` | 同名函数（[`pg_identity`](minix3/minix/kernel/arch/earm/pg_utils.c:pg_identity)），1MB Section 代替 4MB 大页 | 分页硬件（各架构不同，语义相同） |
+| 3 | 开启分页/MMU | [`pg_load`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_load) + `:vm_enable_paging`（写 `CR3`，置 `CR0.PG`） | 同名函数（[`pg_load`](minix3/minix/kernel/arch/earm/pg_utils.c:pg_load) 写 `TTBR0`；[`vm_enable_paging`](minix3/minix/kernel/arch/earm/pg_utils.c:vm_enable_paging) 置 `SCTLR.M` 并使能 I/D cache 与分支预测） | MMU 寄存器（各架构不同） |
 | 4 | 把启动信息交下去 | `return &kinfo` → `kmain(&kinfo)` | `r0` 仍持有指针 → `kmain` | 调用约定（x86 用栈、ARM 用寄存器） |
 
 ARM 侧这两步比 x86 多几个前置：`vm_enable_paging` 先写 `TTBCR`（页表基址控制）与 `DACR`（把 16 个域全设为 Client），再读改写 `SCTLR`；开 MMU 之前还有一次 `dcache_clean()`，调用点在 `earm/pre_init.c` 的 [`pre_init`](minix3/minix/kernel/arch/earm/pre_init.c:pre_init)。
@@ -1458,21 +1458,21 @@ pub struct KernelInfo {
 
 | C 字段 | 接管者 / 去哪了 | 依据 |
 |---|---|---|
-| `mbi` | 不进内核：UEFI/SBI 没有 Multiboot 结构体 | `kernel_info.rs` 的 [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo) 无对应字段 |
+| `mbi` | 不进内核：UEFI/SBI 没有 Multiboot 结构体 | [`struct KernelInfo`](os/libs/minix-boot/src/kernel_info.rs:struct KernelInfo) 无对应字段 |
 | `mem_high_phys` | 无接管者：恒等映射改用固定上界（§4.6 的 `IDENTITY_MAP_END`），帧分配器直接遍历区间、不再维护"最高物理地址"这个数；GET_KINFO 的 Rust 载荷（[`kinfo.rs`](os/libs/minix-types/src/types/kinfo.rs)）也不含它 | [`memmap.rs`](os/kernel/src/memmap.rs) 的模块注释（Known Gaps 段） |
 | `mods_with_kernel` | 内核布局改由 `kern_phys_base`/`kern_size` 单独表达，"把内核当第 N+1 个模块"的做法消失 | §3.4 的字段表 |
 | `kern_mod` | 同上 | 同上 |
 | `kmessages` | 独立的内核消息/诊断设施 | [`kmess.rs`](os/kernel/src/kmess.rs)（`KernelConsole`） |
 | `do_serial_debug` | 早期控制台初始化自己决定串口 | [`early_console.rs`](os/plat/src/early_console.rs) |
 | `serial_debug_baud` | 同上（波特率由平台实现持有） | 同上 |
-| `minix_panicing` | panic 路径自己维护状态 | `main.rs` 的 [`fn panic`](os/boot-shim/src/main.rs:fn panic)、`lib.rs` 的 [`fn register_panic_diagnostic`](os/kernel/src/lib.rs:fn register_panic_diagnostic) |
-| `user_end` | 由 `user_sp` 与地址空间布局常量推导 | `boot.rs` 的 [`const USER_STACK_TOP`](os/libs/minix-types/src/types/boot.rs:const USER_STACK_TOP) |
-| `boot_procs[]` | 内核侧从 `boot_modules` 构造 boot image 表 | `vm_handoff.rs` 的 [`fn build_vm_handoff`](os/kernel/src/vm_handoff.rs:fn build_vm_handoff) |
-| `nr_procs` / `nr_tasks` | 常量与表长度 | `proc_table.rs` 的 [`const NR_PROCS`](os/kernel/src/proc_table.rs:const NR_PROCS)、`:const NR_TASKS`、`kernel_info.rs` 的 [`const NR_BOOT_MODULES`](os/libs/minix-boot/src/kernel_info.rs:const NR_BOOT_MODULES) |
+| `minix_panicing` | panic 路径自己维护状态 | [`fn panic`](os/boot-shim/src/main.rs:fn panic)、[`fn register_panic_diagnostic`](os/kernel/src/lib.rs:fn register_panic_diagnostic) |
+| `user_end` | 由 `user_sp` 与地址空间布局常量推导 | [`const USER_STACK_TOP`](os/libs/minix-types/src/types/boot.rs:const USER_STACK_TOP) |
+| `boot_procs[]` | 内核侧从 `boot_modules` 构造 boot image 表 | [`fn build_vm_handoff`](os/kernel/src/vm_handoff.rs:fn build_vm_handoff) |
+| `nr_procs` / `nr_tasks` | 常量与表长度 | [`const NR_PROCS`](os/kernel/src/proc_table.rs:const NR_PROCS)、`:const NR_TASKS`、[`const NR_BOOT_MODULES`](os/libs/minix-boot/src/kernel_info.rs:const NR_BOOT_MODULES) |
 | `release[]` / `version[]` | 内核构建身份，来源为 `minix-types` 里与 config.h 对位的固定字符串常量（`OS_RELEASE`/`OS_VERSION`） | [`misc.rs`](os/kernel/src/misc.rs) 的 GET_KINFO 段、[`kerninfo.rs`](os/libs/minix-types/src/types/kerninfo.rs) |
-| `vm_allocated_bytes` | VM 交接记录的字段 | `vm_handoff.rs` 的 [`fn build_vm_handoff`](os/kernel/src/vm_handoff.rs:fn build_vm_handoff) |
+| `vm_allocated_bytes` | VM 交接记录的字段 | [`fn build_vm_handoff`](os/kernel/src/vm_handoff.rs:fn build_vm_handoff) |
 | `kernel_allocated_bytes` | 同上（记录里的 `kernel_allocated_static`） | 同上 |
-| `kernel_allocated_bytes_dynamic` | 同上（记录里的 `kernel_allocated_dynamic`，值来自 bump 分配器用量） | `boot_alloc.rs` 的 [`fn boot_alloc_used_bytes`](os/kernel/src/boot_alloc.rs:fn boot_alloc_used_bytes) |
+| `kernel_allocated_bytes_dynamic` | 同上（记录里的 `kernel_allocated_dynamic`，值来自 bump 分配器用量） | [`fn boot_alloc_used_bytes`](os/kernel/src/boot_alloc.rs:fn boot_alloc_used_bytes) |
 
 几处需要展开的字段，各自的来源与理由：
 
@@ -1845,8 +1845,8 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
 
 | 时刻 | 谁写这个槽 | 代码 | 依据 |
 |---|---|---|---|
-| boot-shim 进入内核之前 | boot-shim 进程自己 | `boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end); minix_arch::pt_alloc::register(boot_alloc::boot_pt_alloc);` | `main.rs` 的 [`main`](os/boot-shim/src/main.rs:main) |
-| `arch_boot_impl` Step 0 | 只有"未注册"时才写 | `if !pt_alloc::is_registered() { pt_alloc::register(boot_alloc::boot_pt_alloc); }` | `lib.rs` 的 [`boot_validate_and_prepare`](os/kernel/src/lib.rs:boot_validate_and_prepare) |
+| boot-shim 进入内核之前 | boot-shim 进程自己 | `boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end); minix_arch::pt_alloc::register(boot_alloc::boot_pt_alloc);` | [`main`](os/boot-shim/src/main.rs:main) |
+| `arch_boot_impl` Step 0 | 只有"未注册"时才写 | `if !pt_alloc::is_registered() { pt_alloc::register(boot_alloc::boot_pt_alloc); }` | [`boot_validate_and_prepare`](os/kernel/src/lib.rs:boot_validate_and_prepare) |
 | VM 初始化 | VM 在自己的地址空间里注册（并注册归还钩子） | `if !minix_arch::pt_alloc::is_registered() { minix_arch::pt_alloc::register(crate::alloc_page::vm_pt_alloc); }` 与 `if !minix_arch::pt_alloc::is_free_registered() { minix_arch::pt_alloc::register_free(crate::alloc_page::vm_pt_free); }` | [`vm_server.rs`](os/servers/vm/src/vm_server.rs) |
 
 内核侧与 VM 侧的写者都用 `is_registered()`（或 `is_free_registered()`）先自检；boot-shim 侧是第一个写者，它的 `register` 调用是无条件的（`main.rs` 的 [`fn main`](os/boot-shim/src/main.rs:fn main)）。这个槽是"写一次"的，重写是 bug，因此没有"后注册者覆盖前者"的语义。VM 侧的分配函数把页表页从 VM 的物理内存分配器取出，归还函数把它还回同一个池（C 的对应物是 `pt_free` 把页表页还回 `alloc_mem` 池）；两者成对，未注册归还钩子时销毁路径只清零根、中间页表页泄漏。
@@ -1940,7 +1940,7 @@ UEFI 入口是固件加载 `.efi` 后调用的那个函数。它只做三件事�
 
 | 阶段 | UEFI 路径 | 非 UEFI 链（OpenSBI / U-Boot / `-kernel` 直核） |
 |---|---|---|
-| 谁在跑引导面 | 固件直接调 boot-shim 的 `.efi` 入口（`main.rs` 的 [`fn main`](os/boot-shim/src/main.rs:fn main)） | 内核镜像自带的引导面（[`main.rs`](os/kernel-image/src/main.rs) 的 `rust_image_main` → `bootface`/`bootface_a64`，复用 boot-shim 库的取件车道） |
+| 谁在跑引导面 | 固件直接调 boot-shim 的 `.efi` 入口（[`fn main`](os/boot-shim/src/main.rs:fn main)） | 内核镜像自带的引导面（[`main.rs`](os/kernel-image/src/main.rs) 的 `rust_image_main` → `bootface`/`bootface_a64`，复用 boot-shim 库的取件车道） |
 | 读内核与模块 | boot-shim 自己读：`SimpleFileSystem` 加 12 项 `MODULE_NAMES`（§4.3） | 生产链（U-Boot）：预载 → `BootFileTable` 查地址读字节（§4.3）；`-kernel` 直核：从 DTB 解内存、从表/DTB 通道取模块（§4.8） |
 | 内存与参数准备 | `GetMemoryMap` 一次快照分流两份列表；`build_kernel_info` 装配全部字段（§4.2、§4.4） | 生产链：硬编码的 QEMU virt DRAM 布局；直核：DTB 的内存节点（§4.8）——两种来源都进同一个 builder，只有 `reserved_regions` 一行取值不同（`param_buf` 两边都是空切片；§4.4） |
 | 退出固件服务 | 必须调 `ExitBootServices`（§4.2 八步流程的最后一步） | 无此步骤（引导器早已把控制权交出去） |
@@ -2621,22 +2621,22 @@ fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! 
 
 | C 函数（第 2 章） | Rust 落点 | 保留 / 改型 / 淘汰 / 新增 | 差异原因一句话 |
 |---|---|---|---|
-| `i386/head.S` 的 [`multiboot_init`](minix3/minix/kernel/arch/i386/head.S:multiboot_init) | `main.rs` 的 [`fn main`](os/boot-shim/src/main.rs:fn main) | 改型 | 引导器跳转到内核入口 → 固件跳转到 boot-shim 入口 |
+| [`multiboot_init`](minix3/minix/kernel/arch/i386/head.S:multiboot_init) | [`fn main`](os/boot-shim/src/main.rs:fn main) | 改型 | 引导器跳转到内核入口 → 固件跳转到 boot-shim 入口 |
 | `pre_init(magic, ebx)` | `os/boot-shim/src/{uefi_helpers,opensbi_helpers}.rs:impl BootShim` | 改型 | 六条语句被拆成两条路径的 `prepare_boot` |
 | `get_parameters(ebx, cbi)` | `os/boot-shim/src/{uefi_helpers,opensbi_helpers}.rs:fn prepare_boot` + `build_memmaps`/`build_kernel_info` | 改型 | 拷一份引导器结构体 → 调固件接口拿两份内存列表 |
-| `mb_set_param(...)` | `kernel_info.rs` 的 [`param_buf`](os/libs/minix-boot/src/kernel_info.rs:param_buf)（空切片 + 校验上限） | 改型 | 参数表暂未接线；字段与 1024 上限保留 |
-| `add_memmap(cbi, addr, len)` | `uefi_helpers.rs` 的 [`fn build_memmaps`](os/boot-shim/src/uefi_helpers.rs:fn build_memmaps) + [`memmap.rs`](os/kernel/src/memmap.rs) | 改型 | 构建侧改为一次快照分流；内核侧仍按区间记账 |
-| `cut_memmap(cbi, start, end)` | `memmap.rs` 的 [`fn cut_memmap`](os/kernel/src/memmap.rs:fn cut_memmap)（由 `kmain` A.2 调） | 改型 | 引导侧报告全部 DRAM，切除移到内核侧；第三个参数从"结束地址"改成**长度**（`memmap.rs:fn cut_memmap` 收 `start, len`），与同族的 `add_memmap` 统一——C 里两者不一致，§2.4 那处 `alloc_lowest` 传错参数就出在这个差异上 |
-| `alloc_lowest(cbi, len)` | 当前无对应物；低地址代码的拷入端已有（`ap_early_entry.rs` 的 [`fn install_at`](os/arch/src/x86_64/ap_early_entry.rs:fn install_at)，地址由调用者给） | 暂未移植 | 唯一的消费者是 32 位 AP 启动跳板（SMP 归 16 篇）；`install_at` 的注释写明扫描空闲表找最低区间的动作归 SMP 篇的 `smp_init`，**重做时不得复刻 §2.4 那处"把长度当结束地址"的误用** |
-| `overlaps(mod, n, cmp_mod)` | `loader.rs` 的 [`fn first_overlapping_pair`](os/boot-shim/src/loader.rs:fn first_overlapping_pair) | 改型 | 检查对象从"模块 + 内核"变成"内核镜像自身的 PT_LOAD 段" |
-| `pg_clear()` | `paging.rs` 的 [`X86_64Paging::new_from_page`](os/arch/src/x86_64/paging.rs:X86_64Paging::new_from_page) 的清零 | 改型 | 根页由调用者提供 |
-| `pg_identity(&kinfo)` | `lib.rs` 的 [`build_bootstrap_root_and_enable`](os/kernel/src/lib.rs:build_bootstrap_root_and_enable) Step 1 | 改型 | 范围与页尺寸由常量与阶梯决定 |
+| `mb_set_param(...)` | [`param_buf`](os/libs/minix-boot/src/kernel_info.rs:param_buf)（空切片 + 校验上限） | 改型 | 参数表暂未接线；字段与 1024 上限保留 |
+| `add_memmap(cbi, addr, len)` | [`fn build_memmaps`](os/boot-shim/src/uefi_helpers.rs:fn build_memmaps) + [`memmap.rs`](os/kernel/src/memmap.rs) | 改型 | 构建侧改为一次快照分流；内核侧仍按区间记账 |
+| `cut_memmap(cbi, start, end)` | [`fn cut_memmap`](os/kernel/src/memmap.rs:fn cut_memmap)（由 `kmain` A.2 调） | 改型 | 引导侧报告全部 DRAM，切除移到内核侧；第三个参数从"结束地址"改成**长度**（`memmap.rs:fn cut_memmap` 收 `start, len`），与同族的 `add_memmap` 统一——C 里两者不一致，§2.4 那处 `alloc_lowest` 传错参数就出在这个差异上 |
+| `alloc_lowest(cbi, len)` | 当前无对应物；低地址代码的拷入端已有（[`fn install_at`](os/arch/src/x86_64/ap_early_entry.rs:fn install_at)，地址由调用者给） | 暂未移植 | 唯一的消费者是 32 位 AP 启动跳板（SMP 归 16 篇）；`install_at` 的注释写明扫描空闲表找最低区间的动作归 SMP 篇的 `smp_init`，**重做时不得复刻 §2.4 那处"把长度当结束地址"的误用** |
+| `overlaps(mod, n, cmp_mod)` | [`fn first_overlapping_pair`](os/boot-shim/src/loader.rs:fn first_overlapping_pair) | 改型 | 检查对象从"模块 + 内核"变成"内核镜像自身的 PT_LOAD 段" |
+| `pg_clear()` | [`X86_64Paging::new_from_page`](os/arch/src/x86_64/paging.rs:X86_64Paging::new_from_page) 的清零 | 改型 | 根页由调用者提供 |
+| `pg_identity(&kinfo)` | [`build_bootstrap_root_and_enable`](os/kernel/src/lib.rs:build_bootstrap_root_and_enable) Step 1 | 改型 | 范围与页尺寸由常量与阶梯决定 |
 | `pg_mapkernel()` | 同函数 Step 2 | 改型 | 返回值不再被使用 |
-| `pg_load()` | `paging.rs` 的 [`X86_64Paging::enable`](os/arch/src/x86_64/paging.rs:X86_64Paging::enable) 的 `mov cr3` | 保留（同一动作） | 硬件动作不变 |
+| `pg_load()` | [`X86_64Paging::enable`](os/arch/src/x86_64/paging.rs:X86_64Paging::enable) 的 `mov cr3` | 保留（同一动作） | 硬件动作不变 |
 | `vm_enable_paging()` | 同函数 `enable` 的 `EFER.NXE` + `CR0` + `CR4` 段 | 改型 | 多了 NXE；少了 `PSE` |
-| `pg_alloc_page(cbi)` | `boot_alloc.rs` 的 [`BootAlloc::alloc`](os/kernel/src/boot_alloc.rs:BootAlloc::alloc) | 改型 | 从记录尾部取页 → 从注册的区间取页 |
-| `alloc_pagetable(&ph)` | `pt_alloc.rs` 的 [`fn alloc_pt_page`](os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page) + 三架构实现 | 改型 | 6 页静态池 → 注册式分配器 |
-| `pg_map(phys, vaddr, vaddr_end, cbi)` | `paging.rs` 的 [`X86_64Paging::map`](os/arch/src/x86_64/paging.rs:X86_64Paging::map)（4KB 粒度） | 保留（语义） | 4KB 细粒度映射的用途不变 |
+| `pg_alloc_page(cbi)` | [`BootAlloc::alloc`](os/kernel/src/boot_alloc.rs:BootAlloc::alloc) | 改型 | 从记录尾部取页 → 从注册的区间取页 |
+| `alloc_pagetable(&ph)` | [`fn alloc_pt_page`](os/arch/src/arch/pt_alloc.rs:fn alloc_pt_page) + 三架构实现 | 改型 | 6 页静态池 → 注册式分配器 |
+| `pg_map(phys, vaddr, vaddr_end, cbi)` | [`X86_64Paging::map`](os/arch/src/x86_64/paging.rs:X86_64Paging::map)（4KB 粒度） | 保留（语义） | 4KB 细粒度映射的用途不变 |
 
 这张表里 `alloc_lowest` 一行标的是"暂未移植"，它也不是"因为不需要所以删掉"：`alloc_lowest` 的服务对象（把 16 位启动代码放到 1MB 以下）属于 AP 启动，而 64 位侧的对应机制（AP 停车邮箱 + 启动记录）在 [`smp.rs`](os/kernel/src/smp.rs) 与 [`main.rs`](os/kernel-image/src/main.rs) 的 `park` 段里，不经过"从记录最低处分配"这条路径。
 
@@ -2666,7 +2666,7 @@ fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! 
 | M10 | 布局契约（§5.2 与 §3.6） | L0–L9 十一条断言 | 宿主断言 | **已覆盖**：`check-layout.sh`（全量，见 5.2.2） | — |
 | M11 | 模块顺序契约（§4.3） | 12 项按 `MODULE_NAMES` 顺序返回、缺件 panic | 宿主测试＋真机前置检查 | **已覆盖**：`loader.rs` 顺序/缺件测试＋真机链的 `mdir` 前置 | — |
 | M12 | EBS 阶段边界（§4.1） | EBS 之后不再出现固件调用；裸串口路标仍输出 | 真机＋静态检查 | 真机覆盖（两条 `raw_serial` 路标）；**无静态检查** | **TODO-04**（见 5.3） |
-| M13 | UEFI 侧快照函数（§4.2：`build_memmaps`、`assert_bootstrap_outside_memmap` 等） | 两列表互斥完备；root/bump 不与 free 列表相交 | 宿主测试→真机 | **宿主未覆盖**：调用点单根（`main.rs` 的 [`fn main`](os/boot-shim/src/main.rs:fn main) → Boot Services），宿主无法构造 | **TODO-07**（见 5.3） |
+| M13 | UEFI 侧快照函数（§4.2：`build_memmaps`、`assert_bootstrap_outside_memmap` 等） | 两列表互斥完备；root/bump 不与 free 列表相交 | 宿主测试→真机 | **宿主未覆盖**：调用点单根（[`fn main`](os/boot-shim/src/main.rs:fn main) → Boot Services），宿主无法构造 | **TODO-07**（见 5.3） |
 | M14 | 交接三形态（§3.7/§4.8） | aarch64 resume 只做 additive（不重建根）；`x0` 分道（空指针→自引导面） | 真机＋引文 | 真机链覆盖（aarch64 UEFI、riscv64 两条） | **TODO-06**（见 5.3） |
 | M15 | 失败路径防线（§4.2 步骤 7） | root/bump 与 free 列表相交时立刻 panic（EBS 前、可打印） | 真机 | 断言在源码内、每次启动都执行 | — |
 
@@ -2837,8 +2837,8 @@ pub fn raw_serial(text: &str) {
 | `boot-shim: [raw] boot services exited` | 已退出（裸串口） | `crate::raw_serial` 调用点 |
 | `boot-shim: [raw] pt_alloc registered, entering kernel arch_boot` | 分配器已注册 | `main.rs:main` |
 | `boot-shim: handing control to kernel arch_boot` | 跳转前最后一条 shim 路标（裸串口） | `main.rs:main` |
-| `kernel: arch_boot entered` | 内核侧入口路标（x86_64；它之前诊断块还打印 `kernel: arch_boot arg=…`/`reslen=…` 两行） | `lib.rs` 的 [`arch_boot`](os/kernel/src/lib.rs:arch_boot) |
-| `kernel: v0 enter`（aarch64 UEFI 链） | resume 路径的首个内核侧路标（v0–v3 四个标记由 `boot_validate_and_prepare` 依次打出，shim 侧在跳转前已打过一遍）；riscv64 与 aarch64 直核的内核侧首行是 `kernel: entering validate` | `lib.rs` 的 [`boot_validate_and_prepare`](os/kernel/src/lib.rs:boot_validate_and_prepare) |
+| `kernel: arch_boot entered` | 内核侧入口路标（x86_64；它之前诊断块还打印 `kernel: arch_boot arg=…`/`reslen=…` 两行） | [`arch_boot`](os/kernel/src/lib.rs:arch_boot) |
+| `kernel: v0 enter`（aarch64 UEFI 链） | resume 路径的首个内核侧路标（v0–v3 四个标记由 `boot_validate_and_prepare` 依次打出，shim 侧在跳转前已打过一遍）；riscv64 与 aarch64 直核的内核侧首行是 `kernel: entering validate` | [`boot_validate_and_prepare`](os/kernel/src/lib.rs:boot_validate_and_prepare) |
 | `kernel: step0 validate ok` / `step1+2 mappings ok` / `step4 DM coverage ok` | 建表逐步路标 | [`lib.rs`](os/kernel/src/lib.rs) 的 `boot_stage!` |
 
 （`build_memmaps` 内另有两条诊断打印、只在有料时出声：`boot-shim: memmaps conv=… reserved=…` 与 ≥4MiB 描述符的 `reserved-big …` 行；它们是诊断读数，不进主路径里程碑。）
@@ -2898,8 +2898,8 @@ fn panic(info: &PanicInfo) -> ! {
 
 | 失败模式 | 触发点 | 现场信号 | 下一步确认 |
 |---|---|---|---|
-| 引导器指令次序错（`load_mods` 在 `multiboot` 之后） | `i386/pre_init.c` 的 [`get_parameters`](minix3/minix/kernel/arch/i386/pre_init.c:get_parameters) 的 `assert(mbi->mi_mods_count > 0)`（同函数前面那条查 `HAS_MODS` 的会放过去，理由见 2.1） | 未开串口调试（默认）：屏幕刷出 `Minix panic. System diagnostics buffer:` 与 `press any key to reboot`、等一个按键才复位；命令行里写了 `cttyline=`（`do_serial_debug` 为真）时走**互斥**的另一条通路——panic 由串口同步输出后立即复位，不刷屏、也不等按键。这条断言排在命令行解析之后，所以 `cttyline=` 已经生效；对照下一行那条在解析之前，串口一定不出声 | 核对 `boot.cfg.default` 的 `;` 分隔次序 |
-| 参数压栈次序错（x86-32） | `i386/pre_init.c` 的 [`pre_init`](minix3/minix/kernel/arch/i386/pre_init.c:pre_init) 的 `assert(magic == MULTIBOOT_INFO_MAGIC)` | 同样刷屏等按键，但串口一定不出声——这条断言在命令行解析之前，`do_serial_debug` 还是 `.bss` 的零初值；报出的表达式里带着 `magic` 这个名字，而它当时装的是地址（值本身不打印，见 §2.2 的说明） | 核对 `head.S` 两条 `push` 的次序 |
+| 引导器指令次序错（`load_mods` 在 `multiboot` 之后） | [`get_parameters`](minix3/minix/kernel/arch/i386/pre_init.c:get_parameters) 的 `assert(mbi->mi_mods_count > 0)`（同函数前面那条查 `HAS_MODS` 的会放过去，理由见 2.1） | 未开串口调试（默认）：屏幕刷出 `Minix panic. System diagnostics buffer:` 与 `press any key to reboot`、等一个按键才复位；命令行里写了 `cttyline=`（`do_serial_debug` 为真）时走**互斥**的另一条通路——panic 由串口同步输出后立即复位，不刷屏、也不等按键。这条断言排在命令行解析之后，所以 `cttyline=` 已经生效；对照下一行那条在解析之前，串口一定不出声 | 核对 `boot.cfg.default` 的 `;` 分隔次序 |
+| 参数压栈次序错（x86-32） | [`pre_init`](minix3/minix/kernel/arch/i386/pre_init.c:pre_init) 的 `assert(magic == MULTIBOOT_INFO_MAGIC)` | 同样刷屏等按键，但串口一定不出声——这条断言在命令行解析之前，`do_serial_debug` 还是 `.bss` 的零初值；报出的表达式里带着 `magic` 这个名字，而它当时装的是地址（值本身不打印，见 §2.2 的说明） | 核对 `head.S` 两条 `push` 的次序 |
 | 模块缺失 | `loader.rs:load_boot_modules_with_loader` | `boot-shim: required boot module 'X' not found at <路径>` | 核对盘上 12 个模块名（脚本的 `mdir` 前置检查会先报） |
 | 内核 ELF 读不到 | `FileLoader::read_required` | `boot-shim: required file not found: /EFI/minix/kernel.elf` | 核对 ESP 的 `/EFI/minix/kernel.elf` 与固件是否挂载了该分区 |
 | bump 区间耗尽 | `BootAlloc::alloc` 返回 `AllocationFailed` | `bootstrap_to_kernel_image: handoff blob page alloc failed` 或内核侧 `map_huge` 失败 | 复算 `prepare_boot(N)` 的页数预算与镜像规模 |
