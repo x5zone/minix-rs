@@ -250,6 +250,37 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百七十九判定 `tail -f`/`-F` 可行（原以为是门控项，实为缺一条双生缝），并先落纯模型**
+  （`2026-10-15`，`claim/TAIL-F-FEASIBILITY-qoder` @ 基线 `f4bc9c1e1`，单域三线同包，无跨界）：
+  规划表 R18 的判定轮。**判的是什么**：`tail` 的跟随两形此前是「认得字母就拒收」
+  （`window.rs:502` 的 `TailError::NotModelledFollow`），要不要做、能不能做此前没有论证。
+  **结论：可行，且不需要等可写根盘**。三条依据逐条取自真源与本树代码，不是印象：
+  ①真源在 Minix 上**根本不用事件通知**——`forward.c` 的 kqueue 半支被 `#if !defined(__minix)`
+  排除（`:204-230`），实际走的是 `USE_SLEEP`：`sleep(1)` 一拍 + `-F` 时 `stat` 比
+  `st_ino`/`st_dev`/`st_rdev`/`st_nlink == 0` 后 `freopen`（`:246-275`）。所以「要 poll/select 才行」
+  这个前提就不成立；②等待通道本树已有：`minix_sys::nanosleep` 的实现就是 VFS 的空集 `select`
+  带超时（`misc::nanosleep_via` → `select_empty_via`，与 C `nanosleep.c` 同源），③文件系统层能长文件：
+  `os/fs/ext2/src/server.rs` 的 `write` 会更新 `record.size` 并回写 inode + 刷新缓存（`:868-873`），
+  `read` 每次重取 `inode.size`（`:807`），所以「读到 EOF 后再读能拿到新字节」在 fs 侧成立。
+  **真正缺的只有一条**：`select_empty_via` 没有宿主双生面（它总是 `perform_syscall(VFS_CALL_SELECT)`），
+  而命令的宿主测确实能读真文件（`tail_face.rs` 已在用 `fs::write` 造真档并断言读出内容），
+  所以按本仓既有的双生缝套路（`bin_support` 的 `stdin_chunk`/`flush_stdout` 都是这个形状）
+  补一条 `sleep` 缝即可，宿主测与机器测两头都能覆盖。
+  **一处顺带纠正的记录习惯**：`C-57` 那行「写侧仍被可写根盘门控」（协调台账 §4 的 `C-57` 行）曾被本文档当作
+  本项不可行的理由引用过；本次核对后明确：**根盘可写性只影响真机冒烟的写侧，不影响本项**——
+  宿主测走的是宿主自己的真文件，不经过根盘。
+  **本批动手**：把每拍决策做成纯判据先落进决定半（`StatIdentity`/`reopen_needed`/`new_bytes`），
+  并写明两条容易被想当然的细节——`-f` 不做换档检测（`fflag` 只有 2 才比身份）、
+  **文件缩小时真源不回退偏移**（收缩重定位只存在于被排除的 kqueue 支里，`forward.c:236-243`），
+  所以 `size <= seen` 这一拍交 0 且调用方不得把 `seen` 改小。壳**仍拒收** `-f`/`-F`，
+  不做半接线（决定半的模型注释里写明「壳尚未接线」）。
+  三件套：`cargo test -p minix-textfilter` → **583 passed、0 failed**（基线 581，+2 枚模型测）；
+  `rustfmt --check` 触及件零漂移；clippy 触及件零命中（该文件报的两处 unused import 在存量测试代码里，
+  与本批 diff 无关）。核实日 `2026-10-15`。
+  登记待接线（第二片，非阻塞）：①`bin_support` 的 sleep 双生缝（宿主 `std::thread::sleep`／
+  真机 `minix_sys::nanosleep`）；②壳的跟随循环与「多操数时 C 的 `forward()` 永不返回、
+  所以只有第一个文件被跟随」这一形一并照搬；③端到端门喂真档 + 追加 + 断言新行（含 `-F` 换档与缩小不回退）。
+
 - ✅ **批次二百七十八复核结案：上一批登记的「误读是否传到 `caesar`」为否，并把两命令的来源差写进注释**
   （`2026-10-15`，`claim/CAESAR-STRTOL-AUDIT-qoder` @ 基线 `33b401c7d`，单域三线同包，无跨界）：
   接回批次二百七十七的登记②。**查的是什么**：批次二百五十二对 `_strtol.h:69` 的误读是否也进了

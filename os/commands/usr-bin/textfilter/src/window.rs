@@ -591,6 +591,47 @@ enum RawStyle {
     SkipBytes,
 }
 
+/// `tail -f`/`-F` 的每拍决策模型（可行性判定见 18 篇台账批次二百七十九那笔：三条原语都在，
+/// 缺的只是等待缝的双生面，所以这里先把纯判据落下来，壳尚未接线）。
+///
+/// 对位 C `forward.c` 的 `USE_SLEEP` 支（`:246-275`）——kqueue 那半在 Minix 上被
+/// `#if !defined(__minix)` 排除（`:204-230`），所以真源的跟随就是「睡一拍 + 可选 stat 比对」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatIdentity {
+    /// `struct stat::st_ino`：C 用它认出文件被换过。
+    pub ino: u64,
+    /// `st_dev`。
+    pub dev: u64,
+    /// `st_rdev`（C 一并比，设备文件换指向时也算换档）。
+    pub rdev: u64,
+    /// `st_nlink`：为 0 表示最后一个链接已删。
+    pub nlink: u64,
+    /// `st_size`。
+    pub size: u64,
+}
+
+/// `-F`（`fflag == 2`）才做换档检测；`-f`（`fflag == 1`）不换档，因此恒为 `false`。
+/// C 的比较在 `forward.c:255-261`：`st_ino`/`st_dev`/`st_rdev` 任一变了，或 `st_nlink == 0`。
+#[must_use]
+pub fn reopen_needed(follow_by_name: bool, opened: &StatIdentity, current: &StatIdentity) -> bool {
+    follow_by_name
+        && (current.ino != opened.ino
+            || current.dev != opened.dev
+            || current.rdev != opened.rdev
+            || current.nlink == 0)
+}
+
+/// 这一拍该打印的字节数（C 的偏移由 stdio 维护，只随读到的字节前进）。
+///
+/// 关键的一条不是「大了怎么办」而是「小了怎么办」：真源在文件缩小时**不回退偏移**
+/// （收缩后的重定位只在被排除掉的 kqueue 支里做，`forward.c:236-243`），所以缩到比偏移还短
+/// 之后仍然一声不出，直到长回超过旧偏移。本函数因此对 `size <= seen` 交 0，且调用方**不得**
+/// 把 `seen` 改小——那会多打一段重复内容。
+#[must_use]
+pub fn new_bytes(size: u64, seen: u64) -> u64 {
+    size.saturating_sub(seen)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,6 +644,50 @@ mod tests {
         let count = window.drain(&mut out);
         assert!(count <= 8);
         out
+    }
+
+    /// 跟随模型的两条判据（对位 C `forward.c:255-261` 的比较与「缩小不回退偏移」）。
+    #[test]
+    fn follow_reopen_needs_a_name_follow_and_a_changed_identity() {
+        let opened = StatIdentity {
+            ino: 7,
+            dev: 1,
+            rdev: 0,
+            nlink: 1,
+            size: 10,
+        };
+        // -f 不换档：身份变了也不重开
+        let rotated = StatIdentity { ino: 8, ..opened };
+        assert!(!reopen_needed(false, &opened, &rotated));
+        // -F 认三种形：ino 变、dev 变、最后一个链接被删（nlink == 0）
+        assert!(reopen_needed(true, &opened, &rotated));
+        assert!(reopen_needed(
+            true,
+            &opened,
+            &StatIdentity { dev: 2, ..opened }
+        ));
+        assert!(reopen_needed(
+            true,
+            &opened,
+            &StatIdentity { nlink: 0, ..opened }
+        ));
+        // 只有 size 长不算换档
+        assert!(!reopen_needed(
+            true,
+            &opened,
+            &StatIdentity { size: 40, ..opened }
+        ));
+    }
+
+    #[test]
+    fn follow_prints_only_past_the_offset_and_never_walks_it_back() {
+        assert_eq!(new_bytes(30, 10), 20);
+        assert_eq!(new_bytes(10, 10), 0);
+        // 文件缩小：C 不回退偏移，所以这一拍什么也不打（调用方保持 seen 不变）
+        assert_eq!(new_bytes(4, 10), 0);
+        // 长回超过旧偏移之前一直是 0
+        assert_eq!(new_bytes(9, 10), 0);
+        assert_eq!(new_bytes(12, 10), 2);
     }
 
     #[test]
