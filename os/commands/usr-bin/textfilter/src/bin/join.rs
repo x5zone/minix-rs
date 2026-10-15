@@ -26,7 +26,7 @@ mod support;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use minix_textfilter::join::{JoinError, join_lines, parse_join_args};
+use minix_textfilter::join::{join_lines, parse_join_args, JoinError};
 
 /// Read a whole standard-input stream (a `-` operand).
 fn read_stdin() -> Vec<u8> {
@@ -68,25 +68,42 @@ fn usage(prog: &str) -> ! {
     support::terminate(1)
 }
 
-/// Map a [`JoinError`] to C's `warnx` line for that branch (each `join.c` arm
-/// warns then calls `usage()`), then exit 1.
-///
-/// The two lines C emits are still collapsed to the specific message here: the
-/// per-option wording C uses (`"-1 option field number less than 1"`,
-/// `"illegal field number -- <值>"`, …) needs the option letter and its argument
-/// text, which the deciding half's `JoinError` throws away — registered as the
-/// second slice of this batch rather than half-wired with invented wording.
-fn join_usage_fail(prog: &str, e: JoinError) -> ! {
+/// C 的 `warnx` 那一族在这里的形状：先一句缀程名的话，再接那两行 usage，退 1
+/// （`join.c:141-142` 等八支都是 `warnx(...)` 紧跟 `usage()`）。
+fn warn_then_usage(prog: &str, message: &str) -> ! {
+    support::warn(format!("{prog}: {message}\n").as_bytes());
+    usage(prog)
+}
+
+/// 把决定半交回的 [`JoinError`] 落成 C 那支自己的报文。**三支 `warnx`+`usage()`、
+/// 三支 `errx`（不接 usage）、一支只出 usage** ——分岔本体（哪个字母、哪个值、
+/// 接不接 usage）都在决定半交的变体参数里，所以壳不需要自己发明文案：
+/// `join.c:141`/`:145`/`:152`/`:156`/`:171`/`:176`/`:186`/`:190`/`:202`/`:217`/`:222`
+/// 与 `fieldarg` 的 `:527-532` 逐支对应。
+fn join_error_fail(prog: &str, e: JoinError<'_>) -> ! {
     match e {
-        // `join.c:236-237`：`if (argc != 2) usage();`——本壳的 parse 一并管选项形状。
+        // `join.c:236-237`：`if (argc != 2) usage();` 与 getopt 的 `default: usage()`——
+        // 只打两行 usage，不缀诊断行。
         JoinError::Usage => usage(prog),
-        JoinError::FieldLessThan1 => fail(prog, "option field number less than 1"),
-        JoinError::IllegalFieldNumber => fail(prog, "illegal field number"),
-        JoinError::FileNumberNot12 => fail(prog, "option file number not 1 or 2"),
-        JoinError::IllegalFileNumber => fail(prog, "illegal file number"),
-        JoinError::BadTabChar => fail(prog, "illegal tab character specification"),
-        JoinError::BadOutputField => fail(prog, "malformed -o option field"),
-        // `join.c:235`：这一支是 `errx`，印完就走，没有 usage。
+        // 句子把选项字母写在前面（`"-1 option field number less than 1"`）。
+        JoinError::FieldLessThan1(opt) => {
+            warn_then_usage(prog, &format!("{opt} option field number less than 1"))
+        }
+        JoinError::FileNumberNot12(opt) => {
+            warn_then_usage(prog, &format!("{opt} option file number not 1 or 2"))
+        }
+        // 这两支 C 不写字母，只把 `optarg` 跟在一对短线后（`"illegal field number -- %s"`）。
+        JoinError::IllegalFieldNumber(value) => {
+            warn_then_usage(prog, &format!("illegal field number -- {value}"))
+        }
+        JoinError::IllegalFileNumber(value) => {
+            warn_then_usage(prog, &format!("illegal file number -- {value}"))
+        }
+        // `-t` 那一支同样不写字母（C 也只写 `"illegal tab character specification"`）。
+        JoinError::BadTabChar => warn_then_usage(prog, "illegal tab character specification"),
+        // 以下三支 C 走 `errx`：印完就走，没有 usage。
+        JoinError::MalformedOutputField => fail(prog, "malformed -o option field"),
+        JoinError::FieldNumbersAre1Based => fail(prog, "field numbers are 1 based"),
         JoinError::AAndVMutuallyExclusive => fail(prog, "-a and -v options mutually exclusive"),
     }
 }
@@ -102,7 +119,7 @@ fn run() -> ! {
 
     let (opts, files) = match parse_join_args(&args[1..]) {
         Ok(a) => (a.opts, a.files),
-        Err(e) => join_usage_fail(prog, e),
+        Err(e) => join_error_fail(&prog, e),
     };
 
     // `join.c:250-251`：两个操数都是 `-` 时两个 `FILE*` 都等于 `stdin`，C 直接

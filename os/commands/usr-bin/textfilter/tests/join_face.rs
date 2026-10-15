@@ -155,3 +155,88 @@ fn the_report_line_follows_argv_zero_like_getprogname_does() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// `warnx` + `usage()` 两支合起来是**三行**：第一行缀程名并带该支自己的选项字母，
+/// 后两行是 usage。旧壳把第一行写成不带字母的通用话，等于把 `join.c` 的八支并成了一句。
+#[test]
+fn a_warnx_leg_prints_its_own_letter_then_the_two_usage_lines() {
+    for (args, first) in [
+        (
+            vec!["-1", "0", "f1", "f2"],
+            "join: -1 option field number less than 1\n",
+        ),
+        (
+            vec!["-2", "0", "f1", "f2"],
+            "join: -2 option field number less than 1\n",
+        ),
+        (
+            vec!["-j", "0", "f1", "f2"],
+            "join: -j option field number less than 1\n",
+        ),
+        (
+            vec!["-a", "3", "f1", "f2"],
+            "join: -a option file number not 1 or 2\n",
+        ),
+        (
+            vec!["-v", "3", "f1", "f2"],
+            "join: -v option file number not 1 or 2\n",
+        ),
+        (
+            vec!["-t", "ab", "f1", "f2"],
+            "join: illegal tab character specification\n",
+        ),
+    ] {
+        let (out, status, err) = run(&args);
+        assert_eq!(out, "", "报文只走 stderr");
+        assert_eq!(status, 1, "`{args:?}` 应退 1");
+        assert_eq!(
+            err,
+            format!("{first}{USAGE_FIRST}{USAGE_SECOND}"),
+            "`{args:?}` 的三行形与 C 不符"
+        );
+    }
+}
+
+/// `illegal … -- <值>` 那两支**不写选项字母**，只把 `optarg` 整个跟在一对短线后
+/// （`join.c:145`/`:176`）。同时钉住 `strtol` 的判序：`1x` 的 1 已被 switch 认下，
+/// 所以 `-a 1x` 落 illegal 那句；而一个数字都转不出的 `f1` 先过 `< 1` 那道守卫，
+/// 所以 `-j f1` 落 less-than-1——旧实现按「是否全数字」分流，这两支都归错了。
+#[test]
+fn the_illegal_legs_quote_the_value_without_the_option_letter() {
+    let (_, status, err) = run(&["-1", "2x", "f1", "f2"]);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        format!("join: illegal field number -- 2x\n{USAGE_FIRST}{USAGE_SECOND}")
+    );
+
+    let (_, _, err) = run(&["-a", "1x", "f1", "f2"]);
+    assert_eq!(
+        err,
+        format!("join: illegal file number -- 1x\n{USAGE_FIRST}{USAGE_SECOND}")
+    );
+
+    let (_, _, err) = run(&["-j", "f1", "f2"]);
+    assert_eq!(
+        err,
+        format!("join: -j option field number less than 1\n{USAGE_FIRST}{USAGE_SECOND}"),
+        "`strtol` 转不出数字时值为 0，C 先查 `< 1`"
+    );
+}
+
+/// `-o` 的 `fieldarg` 两支与 `-a`+`-v` 那支都是 `errx`：**只有一行**，后面不接 usage
+/// （`join.c:235`、`:527-532`）。两支 `-o` 失手在 C 里是两句不同的话，不能拢成一句。
+#[test]
+fn the_errx_legs_print_one_line_and_skip_the_usage_block() {
+    let (_, status, err) = run(&["-o", "1.0", "f1", "f2"]);
+    assert_eq!(status, 1);
+    assert_eq!(err, "join: field numbers are 1 based\n");
+
+    let (_, status, err) = run(&["-o", "3.1", "f1", "f2"]);
+    assert_eq!(status, 1);
+    assert_eq!(err, "join: malformed -o option field\n");
+
+    let (_, status, err) = run(&["-a1", "-v2", "f1", "f2"]);
+    assert_eq!(status, 1);
+    assert_eq!(err, "join: -a and -v options mutually exclusive\n");
+}

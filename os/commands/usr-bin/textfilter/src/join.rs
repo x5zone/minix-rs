@@ -20,7 +20,6 @@
 //! Pure: takes the two inputs as byte-line slices and returns the output
 //! lines, so the merge is unit-tested without files or the IPC layer.
 
-use crate::TextError;
 use alloc::vec::Vec;
 
 /// Which side an output-field entry draws from (the `F` of `join -o F.N`),
@@ -86,9 +85,9 @@ impl Default for JoinOptions {
 
 /// Parse a `join -o` field list (`"1.2,2.3,0"`) into entries; tokens are
 /// comma/space/tab separated (the C `strsep(", \t")`), `0` is the join field,
-/// `F.N` (1-based) a field of file `F`; malformed or zero field numbers are
-/// `EINVAL` (mirroring `fieldarg`'s "field numbers are 1 based").
-pub fn parse_olist(spec: &str) -> Result<Vec<OField>, TextError> {
+/// `F.N` (1-based) a field of file `F`; the two refusal shapes are kept apart
+/// because C's `fieldarg` prints a different sentence for each (see [`OListError`]).
+pub fn parse_olist(spec: &str) -> Result<Vec<OField>, OListError> {
     let mut fields = Vec::new();
     for token in spec.split([',', ' ', '\t']) {
         if token.is_empty() {
@@ -101,21 +100,92 @@ pub fn parse_olist(spec: &str) -> Result<Vec<OField>, TextError> {
             });
             continue;
         }
-        let mut parts = token.splitn(2, '.');
-        let file = parts.next().unwrap_or("");
-        let num = parts.next().ok_or(TextError::InvalidArgument)?;
-        let which = match file {
-            "1" => Which::One,
-            "2" => Which::Two,
-            _ => return Err(TextError::InvalidArgument),
-        };
-        let n: usize = num.parse().map_err(|_| TextError::InvalidArgument)?;
-        if n == 0 {
-            return Err(TextError::InvalidArgument);
+        // C `fieldarg` 的两支 `errx` 是不同的句子，所以下面两道守卫不能合：
+        // 前缀不是 `1.`/`2.` 或有尾字符走「malformed -o option field」，
+        // 形状对但字段号是 0 走「field numbers are 1 based」（`join.c:526-532`）。
+        if !matches!(token.as_bytes().first(), Some(b'1' | b'2'))
+            || token.as_bytes().get(1) != Some(&b'.')
+        {
+            return Err(OListError::Malformed);
         }
-        fields.push(OField { which, idx: n - 1 });
+        let num = &token[2..];
+        let (value, consumed) = strtol_decimal(num);
+        if consumed != num.len() {
+            // C 的 `if (*end)` 在前：尾字符一律算 malformed。
+            return Err(OListError::Malformed);
+        }
+        if value == 0 {
+            return Err(OListError::OneBased);
+        }
+        // 负数与超宽值在本树拒掉：C 把 `strtol` 的结果赋给 `u_long fieldno`，
+        // 所以 `-o 1.-1` 在 C 里反而能过（回绕成巨值）。这一形要照搬得先拿输出级参照，
+        // 而探针件在走到输出前就崩（已在 18 篇台账登记），故先记为声明差而不静默同 C。
+        if value < 0 || value > i64::from(u32::MAX) {
+            return Err(OListError::Malformed);
+        }
+        let which = if token.as_bytes()[0] == b'1' {
+            Which::One
+        } else {
+            Which::Two
+        };
+        fields.push(OField {
+            which,
+            idx: (value as u32 - 1) as usize,
+        });
     }
     Ok(fields)
+}
+
+/// `-o` 字段的两种失手，逐字对位 C `fieldarg` 的两支 `errx`（两句不同、都不接 usage）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OListError {
+    /// 前缀不是 `1.`/`2.`，或字段号带尾字符（`join.c:527-530`）。
+    Malformed,
+    /// 形状对但字段号是 0（`join.c:531-532`）。
+    OneBased,
+}
+
+/// C 的 `strtol(optarg, &end, 10)` 在本命令实际需要的那一段：先跳前导空白（空格、
+/// `\t`、`\n`、垂直跳格 `\x0b`、换页 `\x0c`、回车——与 `isspace` 同集），再可带一个符号，
+/// 再吃十进制位。**一个数字也没吃到时值为 0、
+/// `end` 回到开头**——这个形就是 `-1 x` 落「less than 1」而不是「illegal field number」的原因
+/// （参照件同读数，`join.c:140-147`）。返回（值，吃掉的字节数），调用方用
+/// 「吃掉数 < 长度」等价于 C 的 `*end != '\0'`。饱和行为不在本支射程（字段号远小于
+/// `LONG_MAX`，C 饱和后仍然 `>= 1`，这里钳住不致溢出）。
+#[must_use]
+fn strtol_decimal(text: &str) -> (i64, usize) {
+    let bytes = text.as_bytes();
+    let mut at = 0usize;
+    while matches!(
+        bytes.get(at),
+        Some(b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r')
+    ) {
+        at += 1;
+    }
+    let negative = match bytes.get(at) {
+        Some(b'+') => {
+            at += 1;
+            false
+        }
+        Some(b'-') => {
+            at += 1;
+            true
+        }
+        _ => false,
+    };
+    let digits_start = at;
+    let mut value: i64 = 0;
+    while matches!(bytes.get(at), Some(d) if d.is_ascii_digit()) {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(i64::from(bytes[at] - b'0'));
+        at += 1;
+    }
+    if at == digits_start {
+        // 无数字：值 0、`end` 停在符号/空白后的位置——与 C 同形（符号算已消费）。
+        return (0, at);
+    }
+    (if negative { -value } else { value }, at)
 }
 
 /// `join` 的 argv 尾部解析结果：选项 + 两个文件操数。
@@ -125,24 +195,30 @@ pub struct JoinArgs<'a> {
     pub files: Vec<&'a str>,
 }
 
-/// `join` 参数解析失败。每个变体对应 C `join.c` 的一支 `warnx`+`usage()`。
+/// `join` 参数解析失败。每个变体对应 C `join.c` 的一支，**带该支自己的选项字母与被拒的值**：
+/// C 的句子把字母写在前面（`"-1 option field number less than 1"`）或把 `optarg` 拓在
+/// `-- ` 后面（`"illegal field number -- %s"`），所以这两样东西必须在决定半就交回来，
+/// 否则壳只能拼出一句通用话（旧状：`join: option field number less than 1`，丢了字母与值）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JoinError {
-    /// 表外选项字母、缺选项值、或非两个操数（C `getopt` default / `usage()`）。
+pub enum JoinError<'a> {
+    /// 表外选项字母、缺选项值、或非两个操数（C `getopt` default / `usage()`）——只打两行 usage。
     Usage,
-    /// `-1`/`-2`/`-j` 的字段号 < 1。
-    FieldLessThan1,
-    /// `-1`/`-2`/`-j` 的字段号含非数字尾（C `*end` 非零）。
-    IllegalFieldNumber,
-    /// `-a`/`-v` 的文件号非 1/2。
-    FileNumberNot12,
-    /// `-a`/`-v` 的文件号含非数字尾。
-    IllegalFileNumber,
-    /// `-t` 的分隔符不是单字节（C `strlen(optarg) != 1`）。
+    /// `-1`/`-2`/`-j`：`strtol` 值 < 1（C `join.c:141`/`:152`/`:186`）。字段是 C 句子里的那个字母串。
+    FieldLessThan1(&'static str),
+    /// 同上三支但 `*end` 非零（`:145`/`:156`/`:190`）：C 把 `optarg` 整个跟在 `-- ` 后，
+    /// 而**这一支的句子不写选项字母**（所以下面只带值，不带用不上的字母）。
+    IllegalFieldNumber(&'a str),
+    /// `-a`/`-v` 的文件号不是 1/2（`:171`/`:217`）。
+    FileNumberNot12(&'static str),
+    /// `-a`/`-v` 的 `*end` 非零（`:176`/`:222`）；与上一支同形，C 也不写选项字母。
+    IllegalFileNumber(&'a str),
+    /// `-t` 的串不是单字节（`:202`）——这一支 C 不写选项字母。
     BadTabChar,
-    /// `-o` 的字段列表不合法（`fieldarg`/`parse_olist` 拒）。
-    BadOutputField,
-    /// `-a` 与 `-v` 同时给（C `aflag && vflag` → `usage()`）。
+    /// `-o` 的字段形状不对（`fieldarg` 第一支 `errx`）：不接 usage。
+    MalformedOutputField,
+    /// `-o` 的字段号是 0（`fieldarg` 第二支 `errx`，另一句话）：不接 usage。
+    FieldNumbersAre1Based,
+    /// `-a` 与 `-v` 同时给（`:235` 的 `errx`）：印完就走，没有 usage。
     AAndVMutuallyExclusive,
 }
 
@@ -153,7 +229,7 @@ pub enum JoinError {
 /// 会误落「unknown option」。`--` 结束选项扫描（BSD getopt），裸 `-` 与非连字符
 /// 项都是文件操数。C 的 `obsolete(argv)`（`:132`）对裸 `-a`、`-j[12]` 等 legacy 写法
 /// 重写 argv 为 `\01`/`-1`/`-2`，本层不实现该 legacy 重写（登记为余面）。
-pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinError> {
+pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinError<'a>> {
     let mut opts = JoinOptions::default();
     let mut files: Vec<&'a str> = Vec::new();
     let (mut aflag, mut vflag) = (false, false);
@@ -173,39 +249,37 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
             }
         }};
     }
-    // 一个必为十进制且 >=1 的字段号（C `strtol` + `<1` + `*end`）。
-    fn field_no(v: &str) -> Result<usize, JoinError> {
-        if v.is_empty() {
-            // C `strtol("")` → 0，`< 1` 分支。
-            return Err(JoinError::FieldLessThan1);
+    // 一个必为十进制且 >=1 的字段号。判序逐字对位 C：先 `strtol` 取值、**先查 `< 1`**、
+    // 再查尾字符（`join.c:140-147`/`:151-158`/`:184-191`）。这个顺序有可观察后果：
+    // `x` 一个数字也转不出→值为 0→落「less than 1」，而不是「illegal field number」
+    // （旧实现按「是不是全数字」分流，把 `x` 归错了支；参照件同读数钉住这一形）。
+    fn field_no<'b>(v: &'b str, opt: &'static str) -> Result<usize, JoinError<'b>> {
+        let (value, consumed) = strtol_decimal(v);
+        if value < 1 {
+            return Err(JoinError::FieldLessThan1(opt));
         }
-        if !v.bytes().all(|b| b.is_ascii_digit()) {
-            // `*end` 非零：带非数字尾。
-            return Err(JoinError::IllegalFieldNumber);
+        if consumed != v.len() {
+            return Err(JoinError::IllegalFieldNumber(v));
         }
-        let n: usize = v.parse().map_err(|_| JoinError::IllegalFieldNumber)?;
-        if n < 1 {
-            return Err(JoinError::FieldLessThan1);
-        }
-        Ok(n - 1)
+        Ok(value as usize - 1)
     }
-    // 一个只能是 1/2 的文件号（C `strtol` + switch + `*end`）。
-    fn file_no(v: &str, unpair1: &mut bool, unpair2: &mut bool) -> Result<(), JoinError> {
-        match v {
-            "1" => *unpair1 = true,
-            "2" => *unpair2 = true,
-            _ => {
-                // C 先 strtol 取 1/2、否则 "not 1 or 2"；尾字符另报 "illegal file number"。
-                if v.bytes().all(|b| b.is_ascii_digit()) && !v.is_empty() {
-                    let n: i64 = v.parse().unwrap_or(-1);
-                    return if n == 1 || n == 2 {
-                        Ok(())
-                    } else {
-                        Err(JoinError::FileNumberNot12)
-                    };
-                }
-                return Err(JoinError::FileNumberNot12);
-            }
+    // 一个只能是 1/2 的文件号。C 也是两道守卫且**先 switch 后查尾字符**
+    // （`:165-179`/`:209-224`），所以 `1x` 落「illegal file number -- 1x」（switch 先认了 1），
+    // 而 `x`、`0`、`3` 落「not 1 or 2」（旧实现把 `1x` 归进了后一支）。
+    fn file_no<'b>(
+        v: &'b str,
+        opt: &'static str,
+        unpair1: &mut bool,
+        unpair2: &mut bool,
+    ) -> Result<(), JoinError<'b>> {
+        let (value, consumed) = strtol_decimal(v);
+        match value {
+            1 => *unpair1 = true,
+            2 => *unpair2 = true,
+            _ => return Err(JoinError::FileNumberNot12(opt)),
+        }
+        if consumed != v.len() {
+            return Err(JoinError::IllegalFileNumber(v));
         }
         Ok(())
     }
@@ -222,8 +296,8 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
             continue;
         }
         match b[1] {
-            b'1' => opts.field1 = field_no(value!())?,
-            b'2' => opts.field2 = field_no(value!())?,
+            b'1' => opts.field1 = field_no(value!(), "-1")?,
+            b'2' => opts.field2 = field_no(value!(), "-2")?,
             b't' => {
                 let v = value!();
                 let bytes = v.as_bytes();
@@ -234,22 +308,26 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
             }
             b'a' => {
                 aflag = true;
-                file_no(value!(), &mut opts.unmatched1, &mut opts.unmatched2)?;
+                file_no(value!(), "-a", &mut opts.unmatched1, &mut opts.unmatched2)?;
             }
             b'v' => {
                 vflag = true;
                 opts.joinout = false;
-                file_no(value!(), &mut opts.unmatched1, &mut opts.unmatched2)?;
+                file_no(value!(), "-v", &mut opts.unmatched1, &mut opts.unmatched2)?;
             }
             b'e' => opts.empty = Some(value!().as_bytes().to_vec()),
             b'j' => {
-                let n = field_no(value!())?;
+                let n = field_no(value!(), "-j")?;
                 opts.field1 = n;
                 opts.field2 = n;
             }
             b'o' => {
-                opts.output_fields =
-                    parse_olist(value!()).map_err(|_| JoinError::BadOutputField)?;
+                // `fieldarg` 的两支都是 `errx`，但句子不同，所以不能拢一个错型上去。
+                opts.output_fields = match parse_olist(value!()) {
+                    Ok(fields) => fields,
+                    Err(OListError::Malformed) => return Err(JoinError::MalformedOutputField),
+                    Err(OListError::OneBased) => return Err(JoinError::FieldNumbersAre1Based),
+                };
             }
             _ => return Err(JoinError::Usage),
         }
@@ -688,11 +766,11 @@ mod tests {
         );
         assert_eq!(
             parse_join_args(&["-1", "0", "f1", "f2"]).err(),
-            Some(JoinError::FieldLessThan1)
+            Some(JoinError::FieldLessThan1("-1"))
         );
         assert_eq!(
             parse_join_args(&["-1", "2x", "f1", "f2"]).err(),
-            Some(JoinError::IllegalFieldNumber)
+            Some(JoinError::IllegalFieldNumber("2x"))
         );
         assert_eq!(
             parse_join_args(&["-t", "ab", "f1", "f2"]).err(),
@@ -700,11 +778,50 @@ mod tests {
         );
         assert_eq!(
             parse_join_args(&["-a3", "f1", "f2"]).err(),
-            Some(JoinError::FileNumberNot12)
+            Some(JoinError::FileNumberNot12("-a"))
         );
         assert_eq!(
             parse_join_args(&["-j", "f1", "f2"]).err(),
-            Some(JoinError::IllegalFieldNumber) // -j 吃 f1 作值→非数字→IllegalFieldNumber
+            // C 的 `strtol("f1")` 转不出数字→值 0→**先过 `< 1` 那道守卫**，
+            // 所以落「less than 1」而不是「illegal field number」（`join.c:184-189`，
+            // 参照件同读数）——旧实现在这里归错了支，它先按「是否全数字」分流。
+            Some(JoinError::FieldLessThan1("-j"))
         );
+        // 一个数字也转不出来的值一律先落 `< 1` 支（同上形，三支都适用）。
+        assert_eq!(
+            parse_join_args(&["-1", "x", "f1", "f2"]).err(),
+            Some(JoinError::FieldLessThan1("-1"))
+        );
+        // 而文件号那两支的判序是「先 switch 后查尾字符」：`1x` 的 1 已被 switch 认下，
+        // 所以它走 illegal 那句，而不是 not-1-or-2（`:165-179`）。
+        assert_eq!(
+            parse_join_args(&["-a", "1x", "f1", "f2"]).err(),
+            Some(JoinError::IllegalFileNumber("1x"))
+        );
+        assert_eq!(
+            parse_join_args(&["-v", "x", "f1", "f2"]).err(),
+            Some(JoinError::FileNumberNot12("-v"))
+        );
+        // `-o` 的两支 `errx` 是两个错型（两句不同），且都不接 usage。
+        assert_eq!(
+            parse_join_args(&["-o", "1.0", "f1", "f2"]).err(),
+            Some(JoinError::FieldNumbersAre1Based)
+        );
+        assert_eq!(
+            parse_join_args(&["-o", "3.1", "f1", "f2"]).err(),
+            Some(JoinError::MalformedOutputField)
+        );
+    }
+
+    #[test]
+    fn strtol_decimal_mirrors_the_no_digit_case() {
+        // `strtol` 的四形：前导空白与符号算已消费；无数字时值为 0 且不报错。
+        assert_eq!(strtol_decimal("12"), (12, 2));
+        assert_eq!(strtol_decimal(" 12"), (12, 3));
+        assert_eq!(strtol_decimal("+12"), (12, 3));
+        assert_eq!(strtol_decimal("-3"), (-3, 2));
+        assert_eq!(strtol_decimal("x"), (0, 0));
+        assert_eq!(strtol_decimal("1x"), (1, 1));
+        assert_eq!(strtol_decimal(""), (0, 0));
     }
 }

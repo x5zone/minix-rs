@@ -250,6 +250,47 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百七十四把 `join` 的选项错文案逐支接回 C，并纠回两支归错族的判序**
+  （`2026-10-15`，`claim/JOIN-ERRTEXT-FACES-qoder` @ 基线 `43e83e8f4`，单域三线 `os/commands/usr-bin/textfilter`
+  与同线文档，无跨界）：接回批次二百四十九拆出的第2片（规划表 R13）。**是什么**：C 的八支选项错各是
+  「先 `warnx(具体句)` 再 `usage()`」，句子带**自己的选项字母**与被拒的值；本树 `JoinError` 把这两样都丢了，
+  壳只能拼出一句无字母的通用话，两支 `-o` 失手（C 是两个句子）也被拢成一个。判类 P0-code-bug + P0-test-missing。
+  **参照件与它的可用边界（这条必须写清，否则读数会被高估）**：`minix3/usr.bin/join/join.c` 可以在宿主编起来
+  （`cc -O2 -D'__RCSID(x)=' -D'__COPYRIGHT(x)=' -D'__dead=__attribute__((__noreturn__))' -include stdlib.h join.c
+  tmp/join-probe/fgetln_shim.c`，shim 补 BSD 缺的 `fgetln` 与 `getprogname`），它给出的读数是
+  `-1 x`⇒「-1 option field number less than 1」、`-1 0`⇒同句、`-j 0`⇒「-j …」、`-t xy`⇒「illegal tab character
+  specification」、`-o 1.0`⇒「field numbers are 1 based」（退码 1、**不带 usage**）、`-o 3.1`/`-o 1.x`⇒
+  「malformed -o option field」。但它在**进入 usage 之后**与**读文件那一段**都段错误（退出 139）：独立探针
+  （同样两句 `warnx`+`fprintf(usage)`+`exit`）正常，故故障在 `join.c` 与本 glibc 探针壳的组合（`obsolete()` 改 argv
+  与 glibc `getopt` 的内联状态、以及 `fgetln` 静态缓冲与 `slurp` 所有权不匹配），**不是被测代码的性质**。
+  所以本轮以 C 源字面量为权威、参照件只用于印证消息文本，凡用不到的地方都这么注明。
+  **两支归错族的判序（本轮的实质纠正，非文案润色）**：C 的形状是「`strtol` 取值 → 先查 `< 1` → 再查尾字符」，
+  文件号那两支是「`strtol` → 先 switch → 再查尾字符」。本树此前按「是不是全数字」分流，于是
+  ① `-j f1`（一个数字都转不出、值为 0）被送去「illegal field number」而 C 说「less than 1」；
+  ② `-a 1x`（switch 已认下 1）被送去「not 1 or 2」而 C 说「illegal file number -- 1x」。
+  为此决定半加 `strtol_decimal`（跳空白、可带号、**无数字时值 0 且不报错**）并按 C 的顺序重排两道守卫。
+  **怎么修**：`JoinError` 带上该支的字母与被拒值（`Illegal*` 两支**故意不带字母**——C 那两句就没有字母）；
+  壳侧 `warn_then_usage`（一句 + 两行 usage）与 `fail`（一句就走）分开，`-o` 的两支拆成 `MalformedOutputField`
+  与 `FieldNumbersAre1Based`（新 `OListError` 承 `fieldarg` 的两个句子）；决定半不再 `use crate::TextError`。
+  **为什么不选另一条路**：①在壳里按 `optind` 反推是哪个字母——决定半已经把选项扫过一遍，壳再扫一次就是两套
+  状态机；②把 `-o` 两句并成一句省事，但那是本项目 2026 年 10 月立的规矩（同一失手在 C 里分属两族不得统一，
+  批次二百三十九/二百五十二两次踩过）；③照抄 C 的 `-o 1.-1` 接受形（`u_long` 回绕）需要输出级参照，
+  而探针件读不到那一步，故本树先拒并登记，不假装与 C 一致。
+  **门**：`tests/join_face.rs` 6→**9 枚**（三行形六支各印自己那句、两支 illegal 只带值、`-o` 两句与 `-a`+`-v` 一行不接 usage），
+  库测 15→**16**（`strtol_decimal_mirrors_the_no_digit_case`；并把 `parse_validations_and_mutual_exclusion` 里
+  那枚按旧错形写的断言改成 C 的落点）。07 篇 `join` 行同步：枚数、三支新测试名、「余面」改写为已闭 + 新余面。
+  三件套：`cargo test -p minix-textfilter` → **581 passed、0 failed**（基线 577，+4）；容器 `minix-ci:1.94`
+  （挂仓根、带 `-u`）`cargo test -j 1 -p minix-textfilter` → 见下行读数；三架构
+  `cargo build -p minix-textfilter --bins --target {x86_64,aarch64,riscv64gc}-unknown-none*` 各 `touch` 强制重编
+  真编一遍，各 `Compiling=5`、0 error；`rustfmt --edition 2021` 触及三文件零漂移；clippy 触及件零命中
+  （就地把一处 `join_error_fail(&prog, …)` 的多余取引用掉——`prog` 本就是 `&str`）。核实日 `2026-10-15`。
+  **三枚变异负控**（测完按 `cmp` 复原）：把 `warn_then_usage` 尾上的 `usage(prog)` 换成直接退码 ⇒ 两枚 warnx 族
+  测试红；把 `field_no` 的两道守卫顺序倒回 ⇒ 库测红（并暴露一个读数陷阱：`cargo test` 在 lib 目标失败后
+  **不再跑后续目标**，总数看着从 581 掉到 435，那是没跑不是回归）；把 `-o` 的 `OneBased` 并进 `Malformed` ⇒ 库测红。
+  登记不执行：①`obsolete(argv)` 的 legacy 重写（裸 `-a`、`-j[12]`）；②选项 permute（台账 `7g`）；
+  ③`-o 1.-1` 的 C 接受形与所需输出级参照；④本 glibc 探针件在 usage 之后与读文件路崩，若下轮还要用 join 参照，
+  先补 `fgetln` 的所有权语义（每次调用返回新缓冲）再谈。
+
 - ✅ **批次二百七十三接上 `primes` 的 `-d`/`-h` 输出面，参照进程顺带拓出更早的一支 P0：`stop` 本来就是开区间**
   （`2026-10-15`，`claim/PRIMES-OUTPUT-FACES-qoder` @ 基线 `f36648125`，单域三线 `os/commands/games/stdio-games`
   与同线文档，无跨界）：接回批次二百五十二的登记不执行①（规划表 R10）。**是什么**：`primes.c:107-112` 的
