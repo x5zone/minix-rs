@@ -224,6 +224,21 @@ pub enum JoinError<'a> {
     FieldNumbersAre1Based,
     /// `-a` 与 `-v` 同时给（`:235` 的 `errx`）：印完就走，没有 usage。
     AAndVMutuallyExclusive,
+    /// legacy `-j` 的畸形写法：`obsolete()` 在 `getopt` **之前**就把整条 argv 扫过一遍，
+    /// `-j` 后面不是 `1`/`2`、或跟着数字却不止一位，都当场
+    /// `errx(1, "illegal option -- %s", ap)`（`join.c:592` 的 `jbad`），句子带的是**整个
+    /// token**（含前导短线）。参照件读数：`join -j3 f1 f2` → `illegal option -- -j3`。
+    /// 因为它在选项环之前，所以 `-j3` 后面还藏着别的错也轮不到先报。
+    IllegalOptionToken(&'a str),
+}
+
+/// legacy `-o arg arg` 里那些「要被重写成 `-o<该项>`」的字段规格，判据逐字对位
+/// `join.c:604-609`：首字符是 `1` 或 `2`、次字符是 `.`、其后至少一位且全是十进制位
+/// （C 用 `len - 2 != strspn(p + 2, "0123456789")` 表达「其余至少一位且全是数字」——
+/// 门槛是 `>= 3` 而不是 `>= 4`：`1.1` 这种一项数字的写法在 C 确实会被改写）。
+fn is_field_spec(word: &str) -> bool {
+    let b = word.as_bytes();
+    b.len() >= 3 && matches!(b[0], b'1' | b'2') && b[1] == b'.' && b[2..].iter().all(u8::is_ascii_digit)
 }
 
 /// 把 `join` 的 argv 尾部按 BSD `getopt("\01a:e:j:1:2:o:t:v:")` 拆成 [`JoinArgs`]。
@@ -237,6 +252,30 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
     let mut opts = JoinOptions::default();
     let mut files: Vec<&'a str> = Vec::new();
     let (mut aflag, mut vflag) = (false, false);
+    // `obsolete()` 的畸形 `-j` 形在 `getopt` 之前就 `errx`（`join.c:570-595`）：`-j` 后面
+    // 既不是 `1`/`-2` 也不是空，或者虽是其二却还拖着别的字符（`-j12`、`-j1x`、`-j3`），
+    // 都当场报「illegal option -- <整个 token>」。这一遍只判错、不改写（改写在各支里做）。
+    {
+        let mut k = 0;
+        while k < args.len() {
+            let tok = args[k];
+            if tok == "--" {
+                break;
+            }
+            let tb = tok.as_bytes();
+            if tb.len() >= 2 && tb[0] == b'-' && tb[1] == b'j' {
+                let bad = match tb.len() {
+                    2 => false,
+                    3 => !matches!(tb[2], b'1' | b'2'),
+                    _ => true,
+                };
+                if bad {
+                    return Err(JoinError::IllegalOptionToken(tok));
+                }
+            }
+            k += 1;
+        }
+    }
     let mut i = 0;
     // 取一个选项的值：附在字母后（`&arg[2..]`）或紧跟的下一项。缺值时要把**那个字母**
     // 交出去：C 那一支先由 libc 印 `"<prog>: option requires an argument -- <字母>"`
@@ -301,6 +340,36 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
             i += 1;
             continue;
         }
+        // `join.c:obsolete()`（`:547`）的三段 legacy 重写在这里落地。它跑在 `getopt`
+        // **之前**、遇 `--` 即停，所以畸形形要先报错、改写形要按改写后的样子派发。
+        // legacy `-j1`/`-j2`：C 把 token 就地改成 `-1`/`-2` 再交给 getopt，于是值取**下一词**
+        // （inline 那位是字母的一部分，不是值）。参照件坐实：`join -j1 f1 f2` 报的是
+        // `-1 option field number less than 1`——下一词是文件名，一个数字也转不出来。
+        if b.len() == 3 && b[1] == b'j' && matches!(b[2], b'1' | b'2') {
+            i += 1;
+            if i >= args.len() {
+                return Err(JoinError::Getopt(GetoptReport::MissingValue(b[2] as char)));
+            }
+            let v = args[i];
+            if b[2] == b'1' {
+                opts.field1 = field_no(v, "-1")?;
+            } else {
+                opts.field2 = field_no(v, "-2")?;
+            }
+            i += 1;
+            continue;
+        }
+        // legacy 裸 `-a`（不带文件号）：C 把 `ap[1]` 写成 `\01`，落到 `case '\01'`
+        // （`join.c:135-138`）——`aflag` 置起且**两个文件都**出不配对。本壳此前把 `-a`
+        // 当成「带值选项」，于是 `join -a f1 f2` 会吞掉第一个文件名再按 `f1` 转数字，
+        // 落「field number less than 1」——那是把 legacy 形当成新形读的实证错。
+        if b.len() == 2 && b[1] == b'a' {
+            aflag = true;
+            opts.unmatched1 = true;
+            opts.unmatched2 = true;
+            i += 1;
+            continue;
+        }
         match b[1] {
             b'1' => opts.field1 = field_no(value!('1'), "-1")?,
             b'2' => opts.field2 = field_no(value!('2'), "-2")?,
@@ -338,12 +407,31 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
                 opts.field2 = n;
             }
             b'o' => {
+                // C 的 `-o arg arg` 改写只在 token **恰好是裸 `-o`** 时才发生
+                //（`join.c:601-602` 的 `if (ap[2] != '\0') break;`），所以附值形 `-o1.1`
+                // 后面的 `2.1` 仍是操作数。这个门槛要在取 value 之前记下来。
+                let bare_o = a.len() == 2;
                 // `fieldarg` 的两支都是 `errx`，但句子不同，所以不能拢一个错型上去。
-                opts.output_fields = match parse_olist(value!('o')) {
-                    Ok(fields) => fields,
-                    Err(OListError::Malformed) => return Err(JoinError::MalformedOutputField),
-                    Err(OListError::OneBased) => return Err(JoinError::FieldNumbersAre1Based),
+                let push_list = |list: &'a str, acc: &mut Vec<OField>| -> Result<(), JoinError<'a>> {
+                    match parse_olist(list) {
+                        Ok(fields) => {
+                            // C 的 `fieldarg` 是**往 olist 尾部追加**（`join.c:540-542` 的
+                            // `olist[olistcnt] = ...; ++olistcnt`），所以重复 `-o` 累加而不是覆盖。
+                            acc.extend(fields);
+                            Ok(())
+                        }
+                        Err(OListError::Malformed) => Err(JoinError::MalformedOutputField),
+                        Err(OListError::OneBased) => Err(JoinError::FieldNumbersAre1Based),
+                    }
                 };
+                push_list(value!('o'), &mut opts.output_fields)?;
+                // legacy `-o arg arg`：C 在 `obsolete()` 里把紧跟其后的每个 `[12].<数字>` 项
+                // 逐个重写成 `-o<该项>`（`join.c:596-617`），所以它们**不再是操作数**而是各自
+                // 一条 `-o` 列表；第一个不像字段规格的项就停止改写（后面的仍算操作数）。
+                while bare_o && i + 1 < args.len() && is_field_spec(args[i + 1]) {
+                    i += 1;
+                    push_list(args[i], &mut opts.output_fields)?;
+                }
             }
             // 表外字母：C 也先有一行 libc 报文（`getopt.c:101-104`），再落
             // `join.c:226-228` 的 `case '?'`/`default: usage()`。
@@ -772,6 +860,79 @@ mod tests {
         assert_eq!(b.files, vec!["-", "f2"]);
     }
 
+    /// `join.c:obsolete()` 的三段 legacy 重写（跑在 `getopt` 之前，遇 `--` 即停）。
+    /// 这一段有反直觉的读法，所以每形都单独钉住：
+    /// ①裸 `-a` 被改写成 `case '\01'`（`join.c:135-138`）——`aflag` 加**两个**unpair；
+    /// ②正因为改写无条件，`join -a 3 f1 f2` 里那个 `3` **不再是 `-a` 的值**而是操作数，
+    ///   于是三个操作数撞 `if (argc != 2) usage()`（`join.c:236-237`）——参照件那形零输出
+    ///   崩在 `usage()` 里，与此同形；③`-j1`/`-j2` 改成 `-1`/`-2`，值取下一词（参照件
+    ///   `join -j1 f1 f2` 报的就是 `-1 option field number less than 1`）；④畸形 `-j` 形
+    ///   在选项环之前就让 `illegal option -- <整个 token>` 先出场。
+    #[test]
+    fn obsolete_legacy_forms_rewrite_before_getopt() {
+        // ①裸 `-a`：两文件都出不配对，且不吞值。
+        let bare = parse_join_args(&["-a", "f1", "f2"]).unwrap();
+        assert!(bare.opts.unmatched1 && bare.opts.unmatched2);
+        assert_eq!(bare.files, vec!["f1", "f2"]);
+        // ②分开写的值成了操作数 → 三操数 → 裸 usage 那一支。
+        assert_eq!(
+            parse_join_args(&["-a", "3", "f1", "f2"]).err(),
+            Some(JoinError::Usage)
+        );
+        // ③`-j1` 改成 `-1`：值取下一词，字段一是那一词转出来的（这里转不出→<1 那句）。
+        assert_eq!(
+            parse_join_args(&["-j1", "f1", "f2"]).err(),
+            Some(JoinError::FieldLessThan1("-1"))
+        );
+        let conv = parse_join_args(&["-j2", "2", "f1", "f2"]).unwrap();
+        assert_eq!(conv.opts.field2, 1, "`-j2 2` 等价于 `-2 2`");
+        assert_eq!(conv.opts.field1, 0, "开始列没被 `-j2` 动过");
+        // ④畸形 `-j` 形：整个 token 进句子，且它排在别的错之前。
+        assert_eq!(
+            parse_join_args(&["-j3", "f1", "f2"]).err(),
+            Some(JoinError::IllegalOptionToken("-j3"))
+        );
+        assert_eq!(
+            parse_join_args(&["-j12", "f1", "f2"]).err(),
+            Some(JoinError::IllegalOptionToken("-j12"))
+        );
+        assert_eq!(
+            parse_join_args(&["-j1", "-j3", "f1", "f2"]).err(),
+            Some(JoinError::IllegalOptionToken("-j3")),
+            "pre-pass 先扫完整条 argv，所以后面的畸形形赢过前面的改写"
+        );
+        // `--` 之后不再扫：那串畸形形落进操作数，报的是裸 usage。
+        assert_eq!(
+            parse_join_args(&["--", "-j3", "f1", "f2"]).err(),
+            Some(JoinError::Usage)
+        );
+    }
+
+    /// legacy `-o arg arg`：C 在 `obsolete()` 里把紧跟 `-o` 值的每个 `[12].<数字>` 项
+    /// 逐个重写成 `-o<该项>`（`join.c:596-617`），而 `fieldarg` 每次都是**追加**
+    /// （`join.c:540-542`），所以重复 `-o` 累加而不是覆盖。不像字段规格的项停止改写，
+    /// 它自己与后面的项仍是操作数。
+    #[test]
+    fn legacy_o_lists_accumulate_instead_of_replacing() {
+        let one = parse_join_args(&["-o", "1.1", "f1", "f2"]).unwrap();
+        assert_eq!(one.opts.output_fields.len(), 1);
+        let legacy = parse_join_args(&["-o", "1.1", "2.1", "f1", "f2"]).unwrap();
+        assert_eq!(
+            legacy.opts.output_fields.len(),
+            2,
+            "`-o 1.1 2.1` 是 legacy 的两条列表，`2.1` 不是操作数"
+        );
+        assert_eq!(legacy.files, vec!["f1", "f2"]);
+        // 附值形 `-o1.1` 不触发改写（`join.c:601-602` 的 `ap[2] != '\0'` 直接 break），
+        // 所以 `2.1` 仍是操作数——两个操作数刚好配得上，三操数就会撞裸 usage。
+        let inline = parse_join_args(&["-o1.1", "2.1", "f1"]).unwrap();
+        assert_eq!(inline.opts.output_fields.len(), 1);
+        assert_eq!(inline.files, vec!["2.1", "f1"]);
+        // 两个附值 `-o` 也累加：这是 C 的 `olistcnt++`，不是覆盖。
+        let twice = parse_join_args(&["-o1.1", "-o2.1", "f1", "f2"]).unwrap();
+        assert_eq!(twice.opts.output_fields.len(), 2);
+    }
+
     #[test]
     fn parse_validations_and_mutual_exclusion() {
         // 非两个操数、表外字母、-a&-v 互斥、非法号、非单字节 tab。
@@ -821,8 +982,9 @@ mod tests {
         // 而文件号那两支的判序是「先 switch 后查尾字符」：`1x` 的 1 已被 switch 认下，
         // 所以它走 illegal 那句，而不是 not-1-or-2（`:165-179`）。
         assert_eq!(
-            parse_join_args(&["-a", "1x", "f1", "f2"]).err(),
-            Some(JoinError::IllegalFileNumber("1x"))
+            parse_join_args(&["-a1x", "f1", "f2"]).err(),
+            Some(JoinError::IllegalFileNumber("1x")),
+            "附值形才走 file_no：分开的 `-a 1x` 会被 obsolete() 改写成裸 `-a`（见下行测）"
         );
         assert_eq!(
             parse_join_args(&["-v", "x", "f1", "f2"]).err(),

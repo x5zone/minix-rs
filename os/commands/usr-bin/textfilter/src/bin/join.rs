@@ -110,6 +110,11 @@ fn join_error_fail(prog: &str, e: JoinError<'_>) -> ! {
         JoinError::MalformedOutputField => fail(prog, "malformed -o option field"),
         JoinError::FieldNumbersAre1Based => fail(prog, "field numbers are 1 based"),
         JoinError::AAndVMutuallyExclusive => fail(prog, "-a and -v options mutually exclusive"),
+        // legacy `-j` 的畸形形：C 在 `obsolete()` 里 `errx(1, "illegal option -- %s", ap)`
+        // （`join.c:592`），句子带整个 token，**不接 usage**（errx 已经走了），退 1。
+        JoinError::IllegalOptionToken(token) => {
+            fail(prog, &format!("illegal option -- {token}"))
+        }
     }
 }
 
@@ -124,7 +129,7 @@ fn run() -> ! {
 
     let (opts, files) = match parse_join_args(&args[1..]) {
         Ok(a) => (a.opts, a.files),
-        Err(e) => join_error_fail(&prog, e),
+        Err(e) => join_error_fail(prog, e),
     };
 
     // `join.c:250-251`：两个操数都是 `-` 时两个 `FILE*` 都等于 `stdin`，C 直接

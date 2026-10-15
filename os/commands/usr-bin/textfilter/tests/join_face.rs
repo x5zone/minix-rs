@@ -194,7 +194,7 @@ fn a_warnx_leg_prints_its_own_letter_then_the_two_usage_lines() {
             "join: -j option field number less than 1\n",
         ),
         (
-            vec!["-a", "3", "f1", "f2"],
+            vec!["-a3", "f1", "f2"],
             "join: -a option file number not 1 or 2\n",
         ),
         (
@@ -274,7 +274,7 @@ fn the_illegal_legs_quote_the_value_without_the_option_letter() {
         format!("join: illegal field number -- 2x\n{USAGE_FIRST}{USAGE_SECOND}")
     );
 
-    let (_, _, err) = run(&["-a", "1x", "f1", "f2"]);
+    let (_, _, err) = run(&["-a1x", "f1", "f2"]);
     assert_eq!(
         err,
         format!("join: illegal file number -- 1x\n{USAGE_FIRST}{USAGE_SECOND}")

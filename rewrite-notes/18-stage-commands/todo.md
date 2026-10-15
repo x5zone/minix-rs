@@ -250,6 +250,35 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百九十五接上 `join` 的 `obsolete()` legacy 重写，并顺手修掉「重复 `-o` 会丢前面各列」的覆盖错**
+  （`2026-10-15`，`claim/JOIN-OBSOLETE-LEGACY-qoder` @ 基线 `395cf3d21`，三线同包：`src/join.rs`、
+  `src/bin/join.rs`、`tests/join_face.rs` 加 `07-text-filter.md`）：批次二百九十四「登记不执行」那条。
+  **C 的三段**（`join.c:547-617` 的 `obsolete()`，跑在 `getopt` 之前、遇 `--` 即停）：
+  ①token 恰好是裸 `-a` 时 `ap[1] = '\01'`，于是落到 `case '\01'`（`:135-138`）——`aflag` 加
+  **两个**文件的 unpair；②`-j1`/`-j2` 就改成 `-1`/`-2`（值取下一词），`-j` 后面是别的或数字后
+  还拖字符（`-j3`、`-j12`）当场 `errx(1, "illegal option -- %s", ap)`（`:592`，句子带整个 token，
+  usage 走不到）；③裸 `-o` 之后紧跟的每个 `[12].<数字>` 项逐个重写成独立 `-o` 列表（`:596-617`）。
+  **由此翻出本壳两处真 bug**：一是裸 `-a` 之前被当「带值选项」，`join -a f1 f2` 会吞掉第一个
+  文件名再拿它转数字，落「field number less than 1」——那是把 legacy 形当新形读；二是 `fieldarg`
+  在 C 里是**追加**（`olist[olistcnt] = ...; ++olistcnt`，`:540-542`），本壳写成 `=` 覆盖，于是
+  `-o 1.1 -o 2.1`（以及 legacy 的 `-o 1.1 2.1`）只剩最后一列。
+  **反直觉但有据的一处**：因为改写无条件，`join -a 3 f1 f2` 里那个 `3` 是**操作数**而不是 `-a` 的
+  值，于是三操数撞 `if (argc != 2) usage()`——参照件那一形零输出崩在自己的 `usage()` 垫片里
+  （说明它同样走到了 usage），与本壳读数同形。
+  测：lib 两枚新测 `obsolete_legacy_forms_rewrite_before_getopt`（含 pre-pass 的先后、`--` 之后不扫）
+  与 `legacy_o_lists_accumulate_instead_of_replacing`（累加、附值形不触发改写）；三处旧断言按 C 真形
+  改成附值形（`-a1x`/`-a3`），因为它们原来钉的正是「把裸 `-a` 当带值选项」这个错读法。
+  三件套：docker `minix-ci:1.94` `cargo test --target-dir /tmp/fin295 --no-fail-fast -j 1
+  -p minix-textfilter` → **631 passed、0 failed**（零 `FAILED` 行；基线 629 + 本笔 lib 两枚）、
+  同容器 `cargo check --workspace -j 1` 0 error、clippy 触及三件零命中、`rustfmt --check` 三件零漂移；
+  **四枚**变异负控各咬一处（①取消 `-j1` 改写→legacy 测报红；②取消裸 `-a` 改写→同一枚；
+  ③取消 pre-pass 守卫→同一枚；④取消 `-o` 累加改写→累加测报红），恢复用备份并 `cmp` 同一；
+  五道收尾校验全过（断链基线 124 不变、`doc-style-lint --diff` error=0）。核实日 `2026-10-15`；
+  基线 `395cf3d21`。
+  **第三次踩同一个坑，记死**：负控脚本经 shell heredoc 生成时又出语法错，那四次「全绿」其实一次
+  都没注入——控制器一律用编辑工具直接落盘，且每枚先看 `mutation applied` 再谈颜色。
+  登记不执行：`join` 的 `-e`（空字段占位）与 `-v` 的输出面本轮未碰；`sort` 选项面余 `D`/`R`/`T`。
+
 - ✅ **批次二百九十四把 `join` 的选项诊断与 BSD 参照件逐形 A/B：结论是无差异，对账落成一枚可重跑的门**
   （`2026-10-15`，`claim/JOIN-OPTION-DIAGS-qoder` @ 基线 `76f4552de`，只动 `tests/join_face.rs`）：
   规划表 R13（v2-9 拆片①）的收口轮。**做了什么**：把 `minix3/usr.bin/join/join.c` 真源加
