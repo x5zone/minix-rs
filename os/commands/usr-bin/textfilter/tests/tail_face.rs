@@ -26,12 +26,19 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 const TAIL: &str = env!("CARGO_BIN_EXE_tail");
-/// One C round is `sleep(1)` (`forward.c:253`), so a line that has not turned up
-/// after three ticks is genuinely missing rather than merely late.
-const TICK: Duration = Duration::from_secs(4);
-/// How long to hold a "must not print anything" claim open. Longer than one
-/// tick, so a stray round would have been caught.
-const QUIET: Duration = Duration::from_millis(2_500);
+/// C 的一拍就是 `sleep(1)`（`forward.c:253`），这里只作参照：正向等待按它的倍数取，
+/// 静默窗口也必须长于它（不然「本该有一拍什么也不打」那一支根本抓不住 stray round）。
+const ROUND: Duration = Duration::from_secs(1);
+/// 等一行到来时的**耐心上限**，不是判据。断言的是「来的是哪一行」而不是「它第几秒到」，
+/// 所以把这里放宽不会让任何断言变弱；反过来，拿它当判据就会把「机器此刻被别的线程占满、
+/// 子进程十几秒才拿到一次 CPU」误报成跟随环路的缺陷——本仓的整包并跑就报过一次这种假红
+/// （单跑同一目标与 `--no-fail-fast` 重跑均绿，而这一枚的等待本身就是唯一依赖调度快慢的量）。
+/// 代价只有真失败时多等几秒，而失败路径本来就要打 stderr 与通道错。取 20 拍，
+/// 所以下面那个数是从 `ROUND` 乘出来的，不是拍的个数写成魔法数。
+const PATIENCE: Duration = Duration::from_secs(ROUND.as_secs() * 20);
+/// 「必须什么都不打」的窗口：必须是 `ROUND` 的倍数且大于一拍，否则一整个周期都没跑完就
+/// 下结论。这个方向上**缩短它就是削弱判据**，所以它不参与上面的耐心调整（仍是 2.5 拍）。
+const QUIET: Duration = Duration::from_millis((ROUND.as_millis() * 5 / 2) as u64);
 
 /// Runs `tail` with the given words and standard input.
 fn run(args: &[&str], input: &str) -> (String, i32, String) {
@@ -105,14 +112,15 @@ fn spawn_follow(args: &[&str], stderr_to: &Path) -> (Child, Receiver<String>) {
     (child, lines)
 }
 
-/// 下一行，超时即失败（附上的读数含 stderr，便于定位）。
+/// 下一行，超过耐心上限即失败（附上的读数含 stderr，便于定位）。这里等的是「会不会来」，
+/// 不是「多久来」，所以用 [`PATIENCE`] 而不是拍数的倍数。
 fn next_line(lines: &Receiver<String>, child: &mut Child, stderr_to: &Path) -> String {
-    match lines.recv_timeout(TICK) {
+    match lines.recv_timeout(PATIENCE) {
         Ok(line) => line,
         Err(error) => {
             let text = fs::read_to_string(stderr_to).unwrap_or_default();
             let _ = child.kill();
-            panic!("no line within {TICK:?} (stderr was {text:?}, channel {error:?})");
+            panic!("no line within {PATIENCE:?} (stderr was {text:?}, channel {error:?})");
         }
     }
 }

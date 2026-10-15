@@ -250,6 +250,50 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十九把 `tail` 跟随门的「拍数判据」改成「耐心上限」，并查清了一档 root 属主产物的真正来源**
+  （`2026-10-15`，`claim/FACE-TEST-DETERMINISM-qoder` @ 基线 `0138c876e`，**只改一个测试文件**
+  `tests/tail_face.rs`，无生产码改动）：批次二百八十八「登记不执行」第①条的可证明那一半。
+  **负载敏感点在哪**：全量 grep 后确认旧常量 `TICK` 只用在 `next_line` 一处定义、被 20 处
+  调用共用（`grep -c "next_line(&lines" tests/tail_face.rs` → 20）——那就是「下一行会在多久
+  内出现」的**正向等待**；而静默与存活两支各自只有 2 处调用且用的都是 `QUIET`
+  （`grep -c "expect_quiet(&lines, QUIET)"` → 2，`grep -c "outlives_ticks(&mut child, QUIET)"` → 2）。C 的一拍是 `sleep(1)`
+  （`forward.c:253`），旧的 `TICK = 4s` 把「三拍以内」当判据写进了注释，于是机器被其它线程占满、
+  子进程十几秒才拿到一次 CPU 时，跟随环路本身没错却被报成缺陷——这正是整包并跑时那次假红的形状
+  （单跑同一目标与 `--no-fail-fast` 重跑均绿）。改法：拆成三个概念——`ROUND`（一拍 = 1s，仅作派生
+  源头）、`PATIENCE`（耐心上限，从 `ROUND` 乘出 20 拍）、`QUIET`（静默窗口，`ROUND × 2.5`）。
+  **只放宽正向等待，不动静默窗口**：断言的是「来的是哪一行」而不是「它第几秒到」，所以前者放宽
+  不削弱任何东西；而「必须什么都不打」那一支**缩短窗口就是削弱判据**，所以它不参与调整（仍是 2.5 拍）。
+  代价只有真失败时多等几秒（成功路径一到即返，本目标实测仍为 17.06s，与改前同）。
+  **一枚变异负控证明这些门在等真读数而不是跳过**：把 `PATIENCE` 压成 1ms →
+  `follow_prints_what_arrives_after_the_first_round`、`follow_by_handle_stays_with_the_file_it_opened`、
+  `follow_by_name_prints_the_replacement_from_its_start`、`follow_does_not_rewind_the_position_when_the_file_shrinks`
+  四枚同时报红；恢复用备份并 `cmp` 同一。**另一枚的局限也写清楚，不假装全盖住了**：`expect_quiet` 与
+  `outlives_ticks` 的失败路在「实现正确」的当下无观察得到它们的变异（改掉它们也不会变红），它们的
+  价值靠的是同一目标里那些「静默期结束后仍要打出下一行」的断言——这类「只能验证一半的辅助件」
+  应在注里言明，不能拿「写了负控」当它们也被盖住的凭据。
+  **vis 那枚未定因，而且证据是我自己丢的**：当时我的采集只留 `FAILED` 行（`grep -E "FAILED|test result"`），
+  panic 文本被我自己过滤掉了，所以现在无从判定。静态判读也没找到环境依赖：`tests/vis_face.rs` 的 `run()`
+  写完 stdin 就 `drop`、没有固定超时、不读终端，`fold_width_is_read_the_way_atoi_reads_it` 一枚也不碰任何档（
+  四个 scratch tag 互不撞且带 pid）。**方法论上一条必须记死：不要用手造 CPU 压力去复现——那两条
+  带 8 个 spinner 的容器命令把这台机器打崩重启了一次**。下一次只靠自然重现：拿 `--no-fail-fast` 把
+  完整输出落盘（不再 grep 过滤），有 panic 文本再定性；登记保持 open，本轮不拿「改好了」的读数签字。
+  **顺手推翻了自己上一笔写下的一个推断**：「容器门不带 `CARGO_TARGET_DIR` 会留下 root 属主产物」
+  本身没错，但本轮查到的 5192 个残留**不是**配方失效——`-e CARGO_TARGET_DIR` 是被认的（仓内
+  `grep -rn target-dir os/.cargo os/Cargo.toml` 零命中，镜像里也没有 `CARGO_BUILD_*`），真正原因是我那
+  两个压力脚本的容器没带该参数。两种写法都实测过残留为 0：`-e CARGO_TARGET_DIR=/tmp/<name>` 与
+  `cargo … --target-dir /tmp/<name>`（CLI 压过 config，更明确，本轮权威读数就是这么跑的）。
+  另外提醒一句：这些 root 产物会让 cargo 反复失效重编，是拖垮宿主编译的候选成因，跑完容器门
+  若发现残留，`docker run --rm -v "$PWD:/work" <镜像> chown -R 1000:1000 /work/os` 一次即可归还。
+  三件套：docker `minix-ci:1.94` `cargo test --target-dir /tmp/td289 --no-fail-fast -j 1 -p minix-textfilter`
+  → **624 passed、0 failed**（零 `FAILED` 行，完整日志落盘后统计；上一笔的 624 总数**不因本笔而变**，
+  因为本笔只改常量不改断言数量），同容器 `cargo check --workspace -j 1` **0 error**；`tail_face` 单目标
+  在容器内 **20/20**（17.06s）；`rustfmt --check` 零漂移；clippy 对 `tail_face.rs` 零命中（本包基线 89 条
+  不变）；**三架构 `--bins` 本笔不适用**：改动面是一个 `tests/` 文件（`git show --stat` 可证只一件），
+  既不进 `--bins` 也不进 `--lib`，freestanding 构建不编译它；五道收尾校验与 pattern-gate/边界门照旧全过。
+  核实日 `2026-10-15`；基线 `0138c876e`。
+  登记不执行（保持 open，本轮没拿它签字）：`vis_face::fold_width_is_read_the_way_atoi_reads_it` 的
+  一次假红未定因，等自然重现时保留完整日志再定性；且复现手段禁止用合成 CPU 压力。
+
 - ✅ **批次二百八十八接上 `sort` 的 `-l`（按字段长度），并把 `x` 定为「不建模且说清为何」**
   （`2026-10-15`，`claim/SORT-LX-FLAGS-qoder` @ 基线 `db4c688ba`，单域三线同一 crate：
   `src/sort.rs`、`tests/sort_face.rs` 加 `07-text-filter.md`，无跨线登记）：批次二百八十七
