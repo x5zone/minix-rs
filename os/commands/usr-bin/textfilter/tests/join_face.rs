@@ -221,6 +221,50 @@ fn a_warnx_leg_prints_its_own_letter_then_the_two_usage_lines() {
 /// （`join.c:145`/`:176`）。同时钉住 `strtol` 的判序：`1x` 的 1 已被 switch 认下，
 /// 所以 `-a 1x` 落 illegal 那句；而一个数字都转不出的 `f1` 先过 `< 1` 那道守卫，
 /// 所以 `-j f1` 落 less-than-1——旧实现按「是否全数字」分流，这两支都归错了。
+/// 与 BSD 参照件逐形 A/B 的一枚对账门（`tmp/family-diag-ref/join_ref`，由
+/// `minix3/usr.bin/join/join.c` 真源加 `fgetln`/`getprogname` 垫片链成；批次二百九十四）。
+/// 每一行的期望句子都是从参照件**实测抄回**的常量（本文件跑的是我们自己的二进制；对账
+/// 命令与读数记在 `rewrite-notes/18-stage-commands/todo.md` 批次二百九十四那条里：同一批
+/// 形两边各跑一遍，差异只剩程序名段），不是从 C 代码推的。覆盖的是既有门没钉到的形：
+/// `-2`、`-j` 的尾字符支、`-o` 的四形、`-t` 的附值形。
+/// **可用边界（必须写清，否则这枚门会被误当成全形对照）**：那份参照件链的是宿主 glibc 的
+/// `fgetln` 垫片，**读档路径会段错误**，所以它只量得到「在开档之前就退出」的诊断路；
+/// 而它的 `usage()` 在同一垫片下也段错误（`-1 0` 那类 warnx 之后就到不了 usage 块），
+/// 因此这里比的是**首行句子**，usage 那两行由上面各枚门按 C 源码文本单独钉。
+#[test]
+fn the_option_error_first_lines_match_the_bsd_reference() {
+    let subject = std::path::Path::new(env!("CARGO_BIN_EXE_join"));
+    let (first, second) = operand_files();
+    for (args, line) in [
+        (vec!["-2", "0"], "join: -2 option field number less than 1"),
+        (vec!["-1", "1x"], "join: illegal field number -- 1x"),
+        (vec!["-j", "5x"], "join: illegal field number -- 5x"),
+        (vec!["-o", "0.1"], "join: malformed -o option field"),
+        (vec!["-o", "3.1"], "join: malformed -o option field"),
+        (vec!["-o", "1.1x"], "join: malformed -o option field"),
+        (vec!["-o", "1.0"], "join: field numbers are 1 based"),
+        (
+            vec!["-t", "xy"],
+            "join: illegal tab character specification",
+        ),
+    ] {
+        let mut words = args.clone();
+        words.push(first.to_str().unwrap());
+        words.push(second.to_str().unwrap());
+        let (_, status, err) = run_at(subject, &words);
+        let got = err.lines().next().unwrap_or_default().to_owned();
+        assert_eq!(
+            got, line,
+            "`{args:?}` 的首行该与 C 同形，完整 stderr 是 {err:?}"
+        );
+        // 这些支全部 `warnx`+`usage()` 或 `errx`，两者都退 1（`join.c:usage()` 的
+        // `exit(1)` 与 `errx(1, ...)` 同值）。
+        assert_eq!(status, 1, "`{args:?}` 的退码该是 1，stderr 是 {err:?}");
+    }
+    let _ = std::fs::remove_file(&first);
+    let _ = std::fs::remove_file(&second);
+}
+
 #[test]
 fn the_illegal_legs_quote_the_value_without_the_option_letter() {
     let (_, status, err) = run(&["-1", "2x", "f1", "f2"]);

@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百九十四把 `join` 的选项诊断与 BSD 参照件逐形 A/B：结论是无差异，对账落成一枚可重跑的门**
+  （`2026-10-15`，`claim/JOIN-OPTION-DIAGS-qoder` @ 基线 `76f4552de`，只动 `tests/join_face.rs`）：
+  规划表 R13（v2-9 拆片①）的收口轮。**做了什么**：把 `minix3/usr.bin/join/join.c` 真源加
+  `fgetln`/`getprogname` 垫片链成参照件 `tmp/family-diag-ref/join_ref`（与 `sort_ref` 同法，坑也一样：
+  垫片里 `progname_shim.c` 与 `fgetln_shim.c` 的 `getprogname` 重名，链时只留后者），再拿 19 个形两边
+  各跑一遍。结果：**每一行差异都只剩程序名段**（`join` 对 `join_ref`），句子与退码全同——R13 的文案
+  面已由批次二百八十三做完，本笔是去**证**它。对账做法（可重跑）：容器里 `cargo build --target-dir
+  /tmp/ab -j 1 -p minix-textfilter --bin join` 取我们的二进制，与 `join_ref` 跑同一批形（`-1 0`、
+  `-1 x`、`-1 1x`、`-2 0`、`-j 0`、`-j 5x`、`-a 3`、`-a 1x`、`-v 3`、`-t xy`、`-t ,`、`-o 0.1`、
+  `-o 1.0`、`-o 3.1`、`-o 1.1x`、`-e`、`-q`、`-a 1 -v 2`、单操数），各取 stderr 首行逐条对照。
+  **补一枚表驱动门** `the_option_error_first_lines_match_the_bsd_reference`（8 行，取既有门没钉的
+  `-2`、`-j` 尾字符、`-o` 四形、`-t` 附值形），期望句子是参照件实测常量；**诚实边界写在文档注释里**：
+  门跑的是我们自己的二进制、只有期望值来自参照件，而那份参照件链宿主 glibc 的 `fgetln` 垫片——
+  **读档路径段错误**、`usage()` 在同一垫片下也段错误（`-1 0` 实测 exit 139、usage 块打不出来），
+  所以它只能量「开档之前就退出」的诊断首行，usage 那两行仍由既有门按 C 源码文本单独钉。`-q` 那行
+  顺带坐实同族老结论：参照件给 glibc 的 `invalid option -- 'q'`，我们给 Minix libc 的
+  `unknown option -- q`（`getopt.c:101-104`），**宿主形不可当基线**。
+  三件套：docker `minix-ci:1.94` `cargo test --target-dir /tmp/fin294 --no-fail-fast -j 1
+  -p minix-textfilter` → **629 passed、0 failed**（零 `FAILED` 行；基线 628 + 本笔 1 枚，`join_face`
+  10→11 现测）、同容器 `cargo check --workspace -j 1` **0 error**、clippy 对 `join_face.rs` 零命中、
+  `rustfmt --check` 本笔新行 2 处已排定并复查零漂移；一枚变异负控咬住（把 `-o` 的
+  `field numbers are 1 based` 支塌成 `malformed -o option field` → 新门与既有 errx 门**同时**报红），
+  恢复用备份并 `cmp` 同一。核实日 `2026-10-15`；基线 `76f4552de`。
+  **一条环境事实**：三架构 `--bins` 在 `minix-ci:1.94` 里跑不出来——镜像没装 freestanding Rust
+  target，实测 `error[E0463]: can't find crate for 'core'`；那三道门归宿主跑（或容器内先
+  `rustup target add`）。本笔只改一个 `tests/` 文件，`--bins` 与 `--lib` 都不编译它，故本笔免跑并
+  写明理由，不拿免跑当通过。
+  登记不执行（真缺口）：`join.c:obsolete()`（`:547`）的三段 legacy 重写本壳未实现——①裸 `-a` 改写成
+  `\01`（两文件都不配对）；②`-j1`/`-j2` 改写成 `-1`/`-2`（参照件坐实：`-j1` 报的是
+  `-1 option field number less than 1`），而 `-j3`/`-j12` 落 `errx(1, "illegal option -- %s", ap)`
+  （实测 `join_ref: illegal option -- -j3`）；③`-o arg arg` 的 legacy 形要把后续 `1.`/`2.` 项逐个
+  重写成 `-o`。下一单接线时注意它是一次 **pre-pass**：在 `getopt` 之前跑、遇 `--` 即停。
+
 - ✅ **批次二百九十二把 `sort -c` 那两句话按 C 逐字定形，并收严了两枚「只 `contains` 一下就绿」的门**
   （`2026-10-15`，`claim/SORT-CHECK-WORDING-qoder` @ 基线 `2278b239a`，单域三线同一 crate：
   `src/bin/sort.rs`、`tests/sort_face.rs` 加 `07-text-filter.md`）：批次二百九十一「登记不执行」第①条。
