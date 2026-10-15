@@ -304,7 +304,7 @@ LABEL(k_boot_stktop)
 | 证据 | 位置 | 排除了什么 |
 |---|---|---|
 | `mpx.o` 不在 `objcopy` 改名名单里 | `minix3/minix/kernel/arch/i386/Makefile.inc`（`.for` 块逐项列出；同文件 `SRCS+=` 一行里 `mpx.S` 只进普通源码清单） | 排除"它会被 `unpaged_*.o(.text)` 这类通配收走"——通配匹配的是输入文件名，`mpx.o` 的名字里没有 `unpaged_` 前缀 |
-| 栈定义在 `mpx.S` 的 `.bss` 段里 | `i386/mpx.S` 的 [`k_initial_stack`](minix3/minix/kernel/arch/i386/mpx.S:k_initial_stack)（栈底标签所在处） | 排除"定义在某个专门的低地址段"——`.bss` 由链接脚本的哪一条输出段规则收，取决于对象名 |
+| 栈定义在 `mpx.S` 的 `.bss` 段里 | [`k_initial_stack`](minix3/minix/kernel/arch/i386/mpx.S:k_initial_stack)（栈底标签所在处） | 排除"定义在某个专门的低地址段"——`.bss` 由链接脚本的哪一条输出段规则收，取决于对象名 |
 | `kernel.lds` 的 `.unpaged_bss` 只收 `unpaged_*.o(.bss COMMON)`，通用 `.bss` 排在 `. += _kern_offset` 之后 | `minix3/minix/kernel/arch/i386/kernel.lds`（三条语句按 `.unpaged_bss` → `. += _kern_offset` → `.bss` 的次序出现） | 落点唯一：`mpx.o` 的 `.bss` 只能进通用 `.bss`，也就是位置计数器加过偏移之后的段 |
 
 结论是落点在高一侧：`k_initial_stktop` 的值是 0xF04xxxxx 一段的某个地址。这条依据链只在本篇给全：`01-boot-shim-bootstrap.md` 的 §1.4 只交代边界并声明落点判定归本篇，它的 §2.8 直接引用本篇的结论，两篇的结论一致。名字上带 `__k_unpaged_` 字样**不是**判据：这个字样在定义处是手写的，在引用处是 `objcopy` 加的，两处都不是"它进了 unpaged 段"的证据；把它当线索会得出相反的结论。
@@ -365,7 +365,7 @@ SECTIONS
 
 | 方案 | 选/否 | 代价 |
 |---|---|---|
-| 生产镜像：脚本用 `AT()` 给出低地址 LMA，交外部装载器摆放 | 选（`os/kernel-image/*.ld`） | 装载器必须按 `p_paddr` 写（`loader.rs` 的 [`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory) 就是这么写的）；脚本要维护"段间平移一致"这条不变量，并靠 `check-layout.sh` L4 兜住 |
+| 生产镜像：脚本用 `AT()` 给出低地址 LMA，交外部装载器摆放 | 选（`os/kernel-image/*.ld`） | 装载器必须按 `p_paddr` 写（[`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory) 就是这么写的）；脚本要维护"段间平移一致"这条不变量，并靠 `check-layout.sh` L4 兜住 |
 | 载体：脚本只给一套地址，内核与载体一起在低地址运行 | 选（测试载体） | 内核符号值与运行地址之间没有平移关系，`KernelInfo` 的基址必须由载体自己填对 |
 | 给载体形态的脚本写 `AT()` | 否 | 载体（测试内核）被固件或 `-kernel` 直接放在低地址执行，它自己不用 `p_paddr` 布局；写 `AT()` 只会多一套没有读者的地址。生产镜像（含 riscv64 的自引导形态）则必须有 `AT()`——它的 `p_paddr` 有读者：自引导面按最低物理装载地址被跳入，U-Boot 的 `bootelf` 也按它摆放 |
 | 用常量表达式而不是逐段表达式（`AT(KERNEL_PHYS_BASE)`） | 否 | 段之间在物理上互相覆盖，见 §2.1 的反向推演 |
@@ -466,7 +466,7 @@ pub struct LoadSegment {
 
 `LoadSegment` 的字段在两个装载场景下的用法不同，这张表把每个字段的去向列全：
 
-| 字段 | 装载内核镜像：摆放用 `loader.rs` 的 [`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory)，取基址与跨距用同文件 `:fn compute_kernel_layout` | 内核装载用户 ELF（`boot.rs` 的 [`fn load_elf_into`](os/arch/src/arch/boot.rs:fn load_elf_into)） |
+| 字段 | 装载内核镜像：摆放用 [`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory)，取基址与跨距用同文件 `:fn compute_kernel_layout` | 内核装载用户 ELF（[`fn load_elf_into`](os/arch/src/arch/boot.rs:fn load_elf_into)） |
 |---|---|---|
 | `paddr` | 拷贝目标（唯一的用途） | 不使用：物理页由分配器选，PA 与 VA 无固定关系 |
 | `vaddr` | 只进 `compute_kernel_layout` 取最小值 | 映射的目标虚拟地址（逐页映射） |
@@ -529,7 +529,7 @@ pub trait HigherHalf {
 | 前置条件 | 谁保证 | 违反时的落点 |
 |---|---|---|
 | 分页已启用、两套映射已建立 | 调用者（`arch_boot_impl` 的返回点） | 取指或压栈落在无映射地址 |
-| `kinfo` 在高地址可访问 | 调用者，加上内核把 `KernelInfo` 收进自己 `.bss` 副本的存储路径（`lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)） | 解引用 `kinfo` 时页错误 |
+| `kinfo` 在高地址可访问 | 调用者，加上内核把 `KernelInfo` 收进自己 `.bss` 副本的存储路径（[`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)） | 解引用 `kinfo` 时页错误 |
 | `stack_top` 16 字节对齐 | 值的一侧（`boot_validate_and_prepare` 的断言）加契约 | 入口处需要对齐的指令 |
 | 不返回 | 类型：`-> !` 让"返回"在编译期不成立 | 无法表达（不返回是签名的一部分） |
 | 只调用一次 | 调用者（Safety 段的第四条写明；类型系统不区分调用次数） | 第二次调用会在已经切过去的栈上再切一次，落点不可预期 |
@@ -989,11 +989,11 @@ riscv64 多一件事（`higher_half.rs` 的 [`struct Riscv64HigherHalf`](os/kern
 
 | 项 | 跳转完成时的值 | 依据 |
 |---|---|---|
-| 程序计数器 | 按形态而定：高半视图下是 `kmain` 的高半虚拟地址；内联形态下是它在垫片镜像里的低地址（§4.3 的第三种形态） | `higher_half.rs` 的 [`trait HigherHalf`](os/kernel/src/boot/higher_half.rs:trait HigherHalf) 的三份实现 |
-| 栈指针 | 高一侧（`kern_stack_top`），16 字节对齐，帧指针为 0 | `lib.rs` 的 [`fn kmain_verify`](os/kernel/src/lib.rs:fn kmain_verify) 的三条断言（展开见 §5.2） |
-| 分页 | 已启用；恒等映射与内核高半映射并存；Direct Map 覆盖已建立 | `lib.rs` 的 [`fn arch_boot_impl`](os/kernel/src/lib.rs:fn arch_boot_impl) 的 Step 1–4 |
-| 保护结构 | **未建立**：`kmain` 的早期阶段（Phase A）只做校验与信息收存，保护结构 `init_protection`（GDT/TSS 或 VBAR_EL1/stvec）是 Phase B 的首件事——在那之前任何异常都无法处理 | `lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 的文档注释（`This must be the very first thing called in kmain, because without valid GDT/TSS … any exception will cause an unrecoverable triple fault`） |
-| 中断 | 未接管；时钟与中断控制器在保护结构之后初始化（`kmain` 的 Phase B 里 `init_protection` 在前、`init_clock_and_interrupts` 在后） | `lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection)、`:fn init_clock_and_interrupts`；细节属 `03-kmain-cstart.md` 的范围 |
+| 程序计数器 | 按形态而定：高半视图下是 `kmain` 的高半虚拟地址；内联形态下是它在垫片镜像里的低地址（§4.3 的第三种形态） | [`trait HigherHalf`](os/kernel/src/boot/higher_half.rs:trait HigherHalf) 的三份实现 |
+| 栈指针 | 高一侧（`kern_stack_top`），16 字节对齐，帧指针为 0 | [`fn kmain_verify`](os/kernel/src/lib.rs:fn kmain_verify) 的三条断言（展开见 §5.2） |
+| 分页 | 已启用；恒等映射与内核高半映射并存；Direct Map 覆盖已建立 | [`fn arch_boot_impl`](os/kernel/src/lib.rs:fn arch_boot_impl) 的 Step 1–4 |
+| 保护结构 | **未建立**：`kmain` 的早期阶段（Phase A）只做校验与信息收存，保护结构 `init_protection`（GDT/TSS 或 VBAR_EL1/stvec）是 Phase B 的首件事——在那之前任何异常都无法处理 | [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 的文档注释（`This must be the very first thing called in kmain, because without valid GDT/TSS … any exception will cause an unrecoverable triple fault`） |
+| 中断 | 未接管；时钟与中断控制器在保护结构之后初始化（`kmain` 的 Phase B 里 `init_protection` 在前、`init_clock_and_interrupts` 在后） | [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection)、`:fn init_clock_and_interrupts`；细节属 `03-kmain-cstart.md` 的范围 |
 
 也就是说，这一篇结束时 CPU 已经站在内核自己的地址空间与自己的栈上，但还没有任何"出事能被接住"的设施。**本篇主线的终点在这里——验证与诊断见 §5、§6**（下一篇从 `kmain` 的第一条指令开始，先把保护结构装上；范围归属见 §1.3）。
 
@@ -1001,10 +1001,10 @@ riscv64 多一件事（`higher_half.rs` 的 [`struct Riscv64HigherHalf`](os/kern
 
 | C 侧的机制 | Rust 侧落点 | 处置 | 差异原因 |
 |---|---|---|---|
-| `AT()` 表达式给出 LMA，装载器按 `p_paddr` 写段体（§2.1） | `os/kernel-image/*.ld` 的 `AT()` + `loader.rs` 的 [`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory) | 保留（形态） | 装载者从 GRUB 换成 boot-shim 或镜像自己，表达式与读法不变 |
+| `AT()` 表达式给出 LMA，装载器按 `p_paddr` 写段体（§2.1） | `os/kernel-image/*.ld` 的 `AT()` + [`fn load_segments_into_phys_memory`](os/boot-shim/src/loader.rs:fn load_segments_into_phys_memory) | 保留（形态） | 装载者从 GRUB 换成 boot-shim 或镜像自己，表达式与读法不变 |
 | `objcopy --prefix-symbols` + `unpaged_*.o` 两段式布局（§2.2） | 无对应物：内核镜像只有高半一段，引导侧代码在 boot-shim 或入口汇编里 | 淘汰 | 分页开启前的代码不在内核镜像里（`01-boot-shim-bootstrap.md` §3.7 的交接形态），内核不需要低地址段 |
 | `k_initial_stktop` 链接符号（§2.4） | `KernelInfo.kern_stack_top`（`kern_virt_base + kern_size`） | 改型 | 值由装载方算、按值交接，内核不声明外部符号 |
-| `head.S` 的成对动作：设栈 + 跳转（C 侧四行，§2.3） | `higher_half.rs` 的 [`trait HigherHalf`](os/kernel/src/boot/higher_half.rs:trait HigherHalf) 与三份内联汇编实现 | 改型 | 收进 trait 契约；栈对齐、屏障、执行视图差值三件事各自显式 |
+| `head.S` 的成对动作：设栈 + 跳转（C 侧四行，§2.3） | [`trait HigherHalf`](os/kernel/src/boot/higher_half.rs:trait HigherHalf) 与三份内联汇编实现 | 改型 | 收进 trait 契约；栈对齐、屏障、执行视图差值三件事各自显式 |
 | —— | `check-layout.sh` 的 L0–L9 宿主断言 | 新增 | C 侧由 Makefile 与链接脚本的常量约束，没有独立断言脚本 |
 
 三行"改型/新增"的共同点：把 C 里靠"位置相邻、文档说明、读者经验"维持的约束，换成一种可以被工具或类型系统检查的形式——脚本不变量进断言脚本，栈顶值进结构体字段，跳转前提进 `unsafe` 契约。
