@@ -49,6 +49,17 @@ minix-rs 沿用同一方向，C 库的位置由两样东西顶上：
 
 需要的能力如果在 `minix-sys` 顶层没有对应函数，正确做法是在运行时阶段补一个封装，而不是在命令里直接发消息。echo 就是这种情况的正面样本：它的二进制（`os/commands/bin/fileops/src/bin/echo.rs`）只调用 `write`（`os/libs/minix-sys/src/lib.rs:fn write（L217，工具生成）`）与 exit，不需要知道 VFS 的消息编号。
 
+决定半能否让 `Errno` 穿过自己的边界，判据是「它是数据还是通道」：**系统调用的失败号属于数据**，
+它决定的是 C 那一行报文的内容，所以必须原样交到渲染处，不能在中间层被折成布尔或短语。
+折掉的后果是可观察的——`find` 的走表告警在 C 里是 `warnx("%s: %s", 路径, strerror(fts_errno))`
+（`minix3/usr.bin/find/find.c:230-231`），若探针只回 `Option`，壳就只能自创一句 `<路径>: stat failed`，
+句子与真源无关。因此向系统要数的探针接口一律形如 `Result<T, Errno>`：`pathchk.rs` 的 `PathProbe`
+（`pathconf`/`stat` 三问）与 `find.rs` 的 `WalkProbe`（`lstat`/`stat`/`readdir` 三口）同此。
+两条配套约束：其一，号到句子的转换只在渲染处做，且必须用 `minix-sys` 再导出的 `Strerror`
+（它对位 `minix3/lib/libc/compat/gen/compat_errlist.c` 的表，表外走 C 自己的 `Unknown error: %u`），
+命令层不得另抄表或自己 `match` 号——那是把同一份真源抄第二遍；其二，`Errno` 只作为**失败值**流动，
+消息构造与服务器语义仍按上表禁在命令层之外，`minix-sys` 顶层负责把 wire 的错误码折成 `Errno`。
+
 plan.md 中多处用 "stdio" 指代命令的输入输出通道（`plan.md:206`、`:394`、`:405`、`:407`）。由于 [ARCH] A-2 已决定不移植 libc 的 stdio（`../14-stage-runtime/plan.md:157`、`:273`），这些句子需要落到具体函数上，否则读者会等待一个不会出现的库。准确的含义是：
 
 - 输出：`core::fmt` 与 `alloc::format` 组织文本，再用 `minix-sys` 的 `write` 写出；

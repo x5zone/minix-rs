@@ -1089,6 +1089,10 @@ pub fn setitimer(
 /// `EGENERIC`/`ERESTART` (errno.h:78/211/199/200/196); two Errno types force
 /// a conversion at every `KernelApi` boundary (todo §11 N4).
 pub use minix_types::Errno;
+// `Strerror` 与 `Errno` 同行：它是 C `strerror(3)` 完整形状（表内句子、表外
+// `Unknown error: %u`）的唯一权威，命令侧拼 `warn`/`err` 那一句时要它而不能自己另抄一份。
+// 这样再导出的理由与形状同 `Errno` 本身（二线权威、三线经本通道取用）。
+pub use minix_types::Strerror;
 
 /// The kernel information page layout and its user-ABI substructure.
 ///

@@ -10,9 +10,14 @@
 //! checked byte-for-byte against the C source, including the punctuation C chose.
 //!
 //! These legs need no filesystem, so all of them are reachable on a host build —
-//! unlike the walk warnings (`find.c:230`'s `warnx` with `strerror`), whose number is
-//! still dropped by the probe trait; that gap is registered in the shell's header and
-//! in `rewrite-notes/18-stage-commands/todo.md`, and this door does not cover it.
+//! while the walk warnings (`find.c:230`'s `warnx` with `strerror`) used to be the
+//! exception: the probe trait answered `Option` and dropped the number. Since batch 274
+//! the probes hand it over, and this door pins the *shape* of that line (program name,
+//! path, `strerror` sentence) — but only the shape: a hosted `find` cannot read a real
+//! directory, because `getdents` goes over the VFS IPC (`minix-sys`'s `getdents_via`)
+//! and there is no VFS server here, so the number the host produces is `EIO`. Which
+//! sentence a genuine `EACCES`/`ENOENT` produces is pinned at the unit level
+//! (`find.rs`'s walk tests, synthetic probe) and on the machine leg.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
@@ -148,4 +153,29 @@ fn every_line_follows_argv_zero_like_getprogname_does() {
     assert_eq!(err, format!("{name}: -nope: unknown option\n"));
 
     let _ = fs::remove_file(&copied);
+}
+
+/// 宿主能钉的是**行形**：`warnx` 族先打 `getprogname() + ": "`（`vwarnx.c`），再是
+/// `<路径>: <strerror 句子>`。走表告警此前漏了程名前缀（同壳的解析错 `errx` 行都带了），
+/// 本批补上。至于号本身：宿主的 `getdents` 走 VFS IPC（`minix-sys::getdents_via`），
+/// 这里没有 VFS 服务，所以真跑一次只能拿到 `EIO` —— 这一形在宿主上恰恰证明
+/// 「报的是号对应的句子，不是编造的短语」，而 `EACCES` 那类真号在单元测与机器腿各自钉。
+#[test]
+fn a_walk_warning_line_carries_the_program_name_path_and_sentence() {
+    let dir = std::env::temp_dir().join(format!("find-face-warn-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create the walk root");
+
+    let (out, status, err) = run(&[dir.to_str().unwrap()]);
+    let _ = fs::remove_dir_all(&dir);
+
+    assert_eq!(
+        err,
+        format!("find: {}: Input/output error\n", dir.display()),
+        "走表告警必须是 `find: <路径>: <strerror 句子>`；stdout 为 {out:?}"
+    );
+    assert_eq!(
+        status, 1,
+        "读不下目次 = C 的 `FTS_DNR`，`rval` 置 1（`find.c:232`）"
+    );
 }

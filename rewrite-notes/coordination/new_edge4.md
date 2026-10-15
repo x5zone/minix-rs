@@ -32,6 +32,7 @@
 | C-21 | fs-rt crate 成员 | edge3 | 🔄 卡D 开工 | 携带 |
 | C-22 | MIB 取表 wire 权威扩展 | edge3 | 🔄 卡I 开工（kernel 半 C-25 已销） | 携带余段 |
 | C-23 | termios wire + tty ioctl 面 | edge3 | 🔄 卡H 批次二十五 | 携带 |
+| C-102 | `minix_sys` 再导出 `Strerror`，让三线 `find` 的走表告警能落 C 的 `strerror(号)` 句子 | qoder 三线（todo-fix 循环，`claim/PROBE-ERRNO-CONTRACT-qoder`） | 🔄 登记即动（本批交付见批次二百七十五那笔） | **已随批次二百七十五交付**：`os/libs/minix-sys/src/lib.rs` 加一行 `pub use minix_types::Strerror;`（与既有的 `pub use minix_types::Errno;` 同段同理：二线持有 errno 表与 C 完整形状的权威，三线经再导出通道取用）。刻意不选的方案：在三线另抄一份句子表，或在壳里 `match` 号到字符串——都会把 `compat_errlist.c` 的真源抄成第二份（本项目在批次二百三十三前后已为此立过规矩）。三线未新增对 `minix-types` 的直接依赖，命令层边界守卫零违规 |
 | C-24 | smoltcp 外部依赖引入 | edge3 | 🔄 卡E 批三开工 | 携带 |
 | C-26 | sffs 语义核心入库 | edge3 | 🔄 卡F3d 开工 | 携带 |
 | C-27 | 全系统自举载体 | edge3 | ✅ 2026-09-21（zcode_glm_4，91d3fa024/merge b5fe7e2fa）| **并入 new_edge1 NK1 收口**——真机 test-sysboot PASS（六标记双 DONE）+ run_all 已接线（特殊协议脚本段） |

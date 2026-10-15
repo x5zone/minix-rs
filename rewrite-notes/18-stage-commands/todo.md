@@ -250,6 +250,45 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百七十五让 `find` 的走表告警交出号并按 C 落句子，顺带补回 `warnx` 该有的程名前缀**
+  （`2026-10-15`，`claim/PROBE-ERRNO-CONTRACT-qoder` @ 基线 `312dede08`；三线 `os/commands/bin/fileops`
+  加一处二线再导出，跨界改点已按 §2 规矩先登记为 C-102）：接回批次二百四十九拆出的第2片与
+  规划表 R14/R15 的头一半。**是什么**：C 对 `FTS_NS`/`FTS_ERR`/`FTS_DNR` 三类都打
+  `warnx("%s: %s", fts_path, strerror(fts_errno))`（`find.c:230-231`）再置 `rval=1`（`:232`），
+  而我方 `WalkProbe` 三方法答 `Option`，号在决定半就被丢掉，壳只能自己编
+  `<路径>: stat failed` / `<路径>: directory read failed` 两个短语。判类 P0-code-bug + P0-test-missing。
+  **先出定形再动码**（这是 99 篇 §1 挂着的「决定半能不能收 `Errno` 型」）：同包 `pathchk.rs` 的
+  `PathProbe` 三方法早就是 `Result<i64, Errno>`（批次二百五十九落地并过了命令层边界守卫），
+  所以答案不是新开的口子而是既有契约；本轮把走表腿补齐到同一形状，不动分层原则本身。
+  **核对中拓出的两处既有偏离**（都在这一行上，故同批修）：①走表告警**没有程名前缀**——
+  `support::warn` 是裸写 stderr，而同壳的解析错 `errx` 行都手工带了 `{prog}: `，这个不对称被新加的
+  宿主端到端门当场抓出（`left: "/tmp/…: Input/output error"` vs C 应有的 `find: …`）；
+  ②句子权威不能在三线另抄：号→句子的唯一真源是 `minix-types` 那张对位 `compat_errlist.c` 的表，
+  于是走既有再导出通道加 `pub use minix_types::Strerror;`（`Strerror` 已实现 C 的完整形状，含表外
+  `Unknown error: %u`），而不是在壳里 `match` 号到字符串。
+  **一条容易搞对的判序（拿真源逐行核对，不看函数名猜）**：`fts_stat` 在逻辑形下 `stat` 失败时
+  先 `saved_errno = errno`，若 `lstat` 也失败则把 **stat 的号**存进 `fts_errno`（`fts.c:950-955`），
+  而不是 lstat 的；两号给的句子不同（典型为 `EPERM` vs `ENOENT`），取错就是打错报文。
+  另一条是**反方向**的旧错话：`getdents` 读错在 C 里既不终止也不告警——`fts.c:763` 的
+  `while ((dp = readdir(dirp)) != NULL)` 不区分读错与读到尾；本层把号交回并报一行 warn，
+  已改准为声明差登记（要改成 C 的静默需要自己的证据轮，不混进本批）。
+  **门**：单元侧新两枚（`walk_warning_line_ends_with_the_strerror_sentence` 钉 `ENOENT`/`EACCES`/表外码
+  三种句子；`logical_walk_reports_the_stat_errno_not_the_lstat_one` 钉上面那条取号规则），
+  并把两枚旧测试从「含不含路径」收紧成整行断言（`contains` 式断言会放过任何编造的后缀）；
+  端到端侧新枚 `a_walk_warning_line_carries_the_program_name_path_and_sentence` 钉行形（程名+路径+句子+rval=1），
+  它的可用边界写进门面头注：**宿主跑不出真号**，因为 `getdents` 走 VFS IPC（`minix-sys::getdents_via`），
+  没有 VFS 服务时只能拿到 `EIO`，所以 `EACCES` 那类真号由单元测与机器腿各自负责。
+  三件套：`cargo test -p minix-fileops` → **453 passed、0 failed**（基线 450，+3）；容器
+  `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-fileops -p minix-sys` 与
+  `cargo check -j 1 --workspace` 见下；三架构 `cargo build -p minix-fileops --bins --target …` 各 `touch`
+  强制重编，各 `Compiling=7`、0 error；命令层边界守卫（`tools/check-command-boundary.sh`）零违规。核实日 `2026-10-15`。
+  **三枚变异负控**（各按 `cmp` 复原）：把 `visit_start` 的告警退回编造短语 ⇒ 逻辑形那枚红；
+  把取号改回 `lstat_err` ⇒ 该枚以精确差异行红（`No such file or directory` vs `Operation not permitted`）；
+  撤掉程名前缀 ⇒ 端到端那枚红。
+  登记不执行：①C 的 `!` 两支与 `-o` 两支各两句报文，本层解析树分不出（`operator.c:199`/`:201`、
+  `:254`/`:258`），属规划表 R15 的后半；②`find.c:240` 的 illegal path 与 `main.c:152` 的 `err(1, ".")`
+  在本树无对位点（不开 `dotfd`）；③走表告警在**真机**上的真号（需机器腿跑一次带权限的目录）。
+
 - ✅ **批次二百七十四把 `join` 的选项错文案逐支接回 C，并纠回两支归错族的判序**
   （`2026-10-15`，`claim/JOIN-ERRTEXT-FACES-qoder` @ 基线 `43e83e8f4`，单域三线 `os/commands/usr-bin/textfilter`
   与同线文档，无跨界）：接回批次二百四十九拆出的第2片（规划表 R13）。**是什么**：C 的八支选项错各是

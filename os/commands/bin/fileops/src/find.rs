@@ -20,6 +20,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use minix_sys::{Errno, Strerror};
 
 /// `fts_open` 的选项位。位值照 `minix3/include/fts.h:71-77`；本层不传给真的 fts，
 /// 下一包的遍历腿按这些位决定怎么走，所以位值只用来彼此区分。
@@ -1750,14 +1751,23 @@ pub struct StatBits {
 /// 两个 `stat` 口的分工照 `fts_stat`（`minix3/lib/libc/gen/fts.c:921-968`）：物理遍历只对
 /// 链本身取 `lstat_of`；逻辑（`-L`）或命令行跟随（`-H` 对起始路径）先取 `stat_of`（跟随链），
 /// `stat_of` 失败再退回 `lstat_of` 判断链（`FTS_SLNONE`）。
+///
+/// 三个口都交回 `Result<_, Errno>` 而不是 `Option`：C 对 `FTS_NS`/`FTS_ERR`/`FTS_DNR`
+/// 三类都打 `warnx("%s: %s", fts_path, strerror(fts_errno))`（`find.c:230-231`），
+/// 那个**号就是报文的内容**；只交回「失败」二元信息的话，壳只能自己编一句话
+/// （旧形：`<路径>: stat failed`），那就是拿发明顶替真源。形状与同包 `pathchk.rs` 的
+/// `PathProbe` 同（它的三方法早就是 `Result<i64, Errno>`），所以这不是新开车道，而是把
+/// 走表腿补齐到同一契约上。
 pub trait WalkProbe: ReferenceStat {
-    /// 链本身的 `lstat` 位（不跟随符号链）。取不到 = C 的 `FTS_NS`，交回 `None`。
-    fn lstat_of(&self, path: &str) -> Option<StatBits>;
-    /// 目标路径的 `stat` 位（跟随符号链）。取不到 = 断链或不存在，交回 `None`；仅在逻辑/跟随时被调。
-    fn stat_of(&self, path: &str) -> Option<StatBits>;
-    /// 目次里的条目名（C 的 `readdir`，可含 `.`/`..`）。打不开 = C 的 `FTS_DNR`，交回 `None`。
-    /// 逻辑形下对一个符号链到目次的项，`open` 会跟随链读到目标目次，故本口应返回目标的子项。
-    fn dir_children(&self, path: &str) -> Option<Vec<String>>;
+    /// 链本身的 `lstat` 位（不跟随符号链）。失败 = C 的 `FTS_NS`，交回 `lstat` 的号。
+    fn lstat_of(&self, path: &str) -> Result<StatBits, Errno>;
+    /// 目标路径的 `stat` 位（跟随符号链）。失败仅在逻辑/跟随时被调；按 `fts_stat` 的规则，
+    /// 连 `lstat` 也失败时上报的是**这一次（stat）的号**（`fts.c:950-955` 的 `saved_errno`）。
+    fn stat_of(&self, path: &str) -> Result<StatBits, Errno>;
+    /// 目次里的条目名（C 的 `readdir`，可含 `.`/`..`）。打不开 = C 的 `FTS_DNR`，
+    /// 交回 `open`/`getdents` 的号。逻辑形下对一个符号链到目次的项，`open` 会跟随链
+    /// 读到目标目次，故本口应返回目标的子项。
+    fn dir_children(&self, path: &str) -> Result<Vec<String>, Errno>;
 }
 
 /// `fts_stat` 对一个路径的判定位（`fts.c:921-968` 的返回码族）。走表腿据此决定求值与下探。
@@ -1771,8 +1781,9 @@ pub enum FtsKind {
     NotDir,
     /// 逻辑形下符号链的目标不存在（`FTS_SLNONE`）——按链自身属性求值，不下探。
     BrokenLink,
-    /// `stat`/`lstat` 皆失败（`FTS_NS`）——报 warn、记错、跳过。
-    Failed,
+    /// `stat`/`lstat` 皆失败（`FTS_NS`）——报 warn、记错、跳过。带的就是 C 存进
+    /// `fts_errno`、由 `strerror(3)` 打成句子的那个数。
+    Failed(Errno),
 }
 
 /// 一次走表的产出：待写出的行（含各自的换行/NUL）、告警文本、退出码贡献。
@@ -1875,8 +1886,10 @@ impl Walk<'_> {
         let follow = self.cfg.logical || self.cfg.comfollow;
         let (kind, st) = self.classify(path, follow);
         match kind {
-            FtsKind::Failed => {
-                self.out.warnings.push(format!("{path}: stat failed"));
+            // C 对 `FTS_NS` 打的是 `warnx("%s: %s", 路径, strerror(号))`，所以后缀是句子本身
+            // 而不是描述失手类型的短语。
+            FtsKind::Failed(err) => {
+                self.out.warnings.push(format!("{path}: {}", Strerror(err)));
                 self.out.rval = 1;
             }
             _ => {
@@ -1912,16 +1925,20 @@ impl Walk<'_> {
     fn classify(&self, path: &str, follow: bool) -> (FtsKind, StatBits) {
         let bits = if follow {
             match self.probe.stat_of(path) {
-                Some(b) => b,
-                None => match self.probe.lstat_of(path) {
-                    Some(b) => return (FtsKind::BrokenLink, b),
-                    None => return (FtsKind::Failed, StatBits::default()),
+                Ok(b) => b,
+                Err(stat_err) => match self.probe.lstat_of(path) {
+                    Ok(b) => return (FtsKind::BrokenLink, b),
+                    // 连链本身也取不到：C 上报的是 **stat 那次的号**（`fts.c:950-955`
+                    // 先存 `saved_errno`，只在 `lstat` 也失败时拿它当 `fts_errno`），
+                    // 不是 lstat 的号。两个号不同时（典型为链不存在 vs 权限不足），
+                    // 拿错就会打错句子。
+                    Err(_) => return (FtsKind::Failed(stat_err), StatBits::default()),
                 },
             }
         } else {
             match self.probe.lstat_of(path) {
-                Some(b) => b,
-                None => return (FtsKind::Failed, StatBits::default()),
+                Ok(b) => b,
+                Err(lstat_err) => return (FtsKind::Failed(lstat_err), StatBits::default()),
             }
         };
         if bits.mode & crate::cp::S_IFMT == crate::cp::S_IFDIR {
@@ -1938,11 +1955,10 @@ impl Walk<'_> {
     /// C 报 warn 并 `continue`（不求值、不下探），本层照此。
     fn visit_dir(&mut self, path: &str, name: &str, level: usize, st: StatBits, ctx: Ctx<'_>) {
         let children = match self.probe.dir_children(path) {
-            Some(c) => c,
-            None => {
-                self.out
-                    .warnings
-                    .push(format!("{path}: directory read failed"));
+            Ok(c) => c,
+            // `FTS_DNR` 与 `FTS_NS` 共用 C 的那一行 `warnx`：前缀是路径，后缀是号对应的句子。
+            Err(err) => {
+                self.out.warnings.push(format!("{path}: {}", Strerror(err)));
                 self.out.rval = 1;
                 return;
             }
@@ -1991,8 +2007,10 @@ impl Walk<'_> {
             let child = fts_join(dir, name);
             let (kind, st) = self.classify(&child, self.cfg.logical);
             match kind {
-                FtsKind::Failed => {
-                    self.out.warnings.push(format!("{child}: stat failed"));
+                FtsKind::Failed(err) => {
+                    self.out
+                        .warnings
+                        .push(format!("{child}: {}", Strerror(err)));
                     self.out.rval = 1;
                     continue;
                 }
@@ -2255,11 +2273,37 @@ mod walk_tests {
         unreadable: BTreeSet<String>,
         /// `lstat` 取不到的路径（C 的 `FTS_NS`）。
         unstatable: BTreeSet<String>,
+        /// 逐路径指定「哪一次调用失败、失败是哪个号」：`[stat, lstat, dnr]` 三个槽，
+        /// 0 表示该口不失败。`unstatable`/`unreadable` 只能给笼统的 ENOENT/EACCES，
+        /// 而 C 的那一行 warn 报的正是号本身，所以三个口要能分开给。
+        fails: BTreeMap<String, [i32; 3]>,
         /// 自增 ino 分配器：让每个登记项有唯一 `(dev,ino)`，避免逻辑形成环检测的假阳性。
         next_ino: u64,
     }
 
+    /// `fails` 的三个槽位。分开指名才测得出「逻辑形下 `stat` 与 `lstat` 都失败时
+    /// 上报的是 `stat` 的号」那一条（`fts.c:950-955`）。
+    #[derive(Clone, Copy)]
+    enum WhichCall {
+        Stat = 0,
+        Lstat = 1,
+        Dnr = 2,
+    }
+
     impl FakeFs {
+        /// 某个路径的某一口是否失败、失败带哪个号（0 = 不失败）。
+        fn fail_code(&self, path: &str, which: WhichCall) -> Option<i32> {
+            self.fails
+                .get(path)
+                .map(|codes| codes[which as usize])
+                .filter(|code| *code != 0)
+        }
+
+        /// 让某个路径的某一口失败并带回指定号（其余两口保持不失败）。
+        fn fail(&mut self, path: &str, which: WhichCall, code: i32) {
+            self.fails.entry(String::from(path)).or_insert([0, 0, 0])[which as usize] = code;
+        }
+
         fn new() -> FakeFs {
             FakeFs {
                 dirs: BTreeMap::new(),
@@ -2267,6 +2311,7 @@ mod walk_tests {
                 symlinks: BTreeMap::new(),
                 unreadable: BTreeSet::new(),
                 unstatable: BTreeSet::new(),
+                fails: BTreeMap::new(),
                 next_ino: 1,
             }
         }
@@ -2337,34 +2382,53 @@ mod walk_tests {
     }
 
     impl WalkProbe for FakeFs {
-        fn lstat_of(&self, path: &str) -> Option<StatBits> {
-            if self.unstatable.contains(path) {
-                None
-            } else {
-                self.lstats.get(path).copied()
+        fn lstat_of(&self, path: &str) -> Result<StatBits, Errno> {
+            if let Some(code) = self.fail_code(path, WhichCall::Lstat) {
+                return Err(Errno::from_i32(code));
             }
-        }
-        fn stat_of(&self, path: &str) -> Option<StatBits> {
             if self.unstatable.contains(path) {
-                return None;
+                return Err(Errno::from_i32(minix_sys::ENOENT));
+            }
+            self.lstats
+                .get(path)
+                .copied()
+                .ok_or_else(|| Errno::from_i32(minix_sys::ENOENT))
+        }
+        fn stat_of(&self, path: &str) -> Result<StatBits, Errno> {
+            if let Some(code) = self.fail_code(path, WhichCall::Stat) {
+                return Err(Errno::from_i32(code));
+            }
+            if self.unstatable.contains(path) {
+                return Err(Errno::from_i32(minix_sys::ENOENT));
             }
             // 单跳跟随：链解析到目标的 `lstat` 位（真实 stat 会多跳，测试树不依赖）。
-            match self.symlinks.get(path) {
-                Some(target) => self.lstats.get(target).copied(),
-                None => self.lstats.get(path).copied(),
-            }
+            let target = match self.symlinks.get(path) {
+                Some(t) => t.as_str(),
+                None => path,
+            };
+            self.lstats
+                .get(target)
+                .copied()
+                .ok_or_else(|| Errno::from_i32(minix_sys::ENOENT))
         }
-        fn dir_children(&self, path: &str) -> Option<Vec<String>> {
+        fn dir_children(&self, path: &str) -> Result<Vec<String>, Errno> {
+            if let Some(code) = self.fail_code(path, WhichCall::Dnr) {
+                return Err(Errno::from_i32(code));
+            }
             if self.unreadable.contains(path) {
-                return None;
+                return Err(Errno::from_i32(minix_sys::EACCES));
             }
             if let Some(c) = self.dirs.get(path) {
-                return Some(c.clone());
+                return Ok(c.clone());
             }
             // 逻辑形下 open(链) 会跟随到目标目次。
             match self.symlinks.get(path) {
-                Some(target) => self.dirs.get(target).cloned(),
-                None => None,
+                Some(target) => self
+                    .dirs
+                    .get(target)
+                    .cloned()
+                    .ok_or_else(|| Errno::from_i32(minix_sys::ENOENT)),
+                None => Err(Errno::from_i32(minix_sys::ENOENT)),
             }
         }
     }
@@ -2436,8 +2500,59 @@ mod walk_tests {
         // FTS_DNR：sub 自身不求值（continue），故只报 warn。
         assert_eq!(got.emitted, vec![".\n", "./a\n"]);
         assert_eq!(got.rval, 1);
-        assert_eq!(got.warnings.len(), 1);
-        assert!(got.warnings[0].contains("./sub"));
+        assert_eq!(
+            got.warnings,
+            vec!["./sub: Permission denied"],
+            "整行钉死：只查「含不含路径」会放过任何编造的后缀"
+        );
+    }
+
+    /// C 对 `FTS_NS`/`FTS_DNR` 打的都是 `warnx("%s: %s", 路径, strerror(号))`
+    /// （`find.c:230-231`），所以后缀必须是**号对应的那句话**，不是描述失手类型的短语。
+    /// 句子权威在 `minix-types` 的 errno 表（对位 C `compat_errlist.c`），本树经
+    /// `minix_sys::Strerror` 再导出取用；表外码走 C 自己的 `Unknown error: %u`。
+    #[test]
+    fn walk_warning_line_ends_with_the_strerror_sentence() {
+        let mut fs = tree();
+        fs.dir(".", 1, &["a", "gone"]);
+        fs.fail("./gone", WhichCall::Lstat, minix_sys::ENOENT);
+        let got = run(&[".", "-name", "nope"], &fs);
+        assert_eq!(
+            got.warnings,
+            vec!["./gone: No such file or directory"],
+            "`FTS_NS` 的句子取自号，不取自失手类型"
+        );
+        assert_eq!(got.rval, 1);
+
+        // 同一个形状在 `FTS_DNR` 侧：EACCES 的句子是「Permission denied」。
+        let mut fs2 = tree();
+        fs2.fail("./sub", WhichCall::Dnr, minix_sys::EACCES);
+        let got2 = run(&["."], &fs2);
+        assert_eq!(got2.warnings, vec!["./sub: Permission denied"]);
+
+        // 表外码：C 的 `strerror` 打「Unknown error: <无符号值>」，本树同形。
+        let mut fs3 = tree();
+        fs3.dir(".", 1, &["a", "gone"]);
+        fs3.fail("./gone", WhichCall::Lstat, 140);
+        let got3 = run(&[".", "-name", "nope"], &fs3);
+        assert_eq!(got3.warnings, vec!["./gone: Unknown error: 140"]);
+    }
+
+    /// 逻辑形下 `stat` 失败、`lstat` 也失败时，C 上报的是 **stat 那次的号**：
+    /// `fts.c:950-955` 先 `saved_errno = errno`（stat 的），只在 `lstat` 也失败时拿它当
+    /// `fts_errno`。两个号给的是不同的句子，取错就等于打错报文。
+    #[test]
+    fn logical_walk_reports_the_stat_errno_not_the_lstat_one() {
+        let mut fs = tree();
+        fs.fail(".", WhichCall::Stat, minix_sys::EPERM);
+        fs.fail(".", WhichCall::Lstat, minix_sys::ENOENT);
+        let got = run(&["-L", "."], &fs);
+        assert_eq!(
+            got.warnings,
+            vec![".: Operation not permitted"],
+            "报的是 stat 的号（EPERM），不是 lstat 的号（ENOENT）"
+        );
+        assert_eq!(got.rval, 1);
     }
 
     #[test]
@@ -2448,7 +2563,11 @@ mod walk_tests {
         let got = run(&[".", "-name", "nope", "-print"], &fs);
         // gone 报 FTS_NS、rval=1；其它照常走（-name nope 恒假 → 无输出）。
         assert_eq!(got.rval, 1);
-        assert!(got.warnings.iter().any(|w| w.contains("./gone")));
+        assert_eq!(
+            got.warnings,
+            vec!["./gone: No such file or directory"],
+            "整行钉死：后缀必须是 `strerror` 的句子"
+        );
         assert!(got.emitted.is_empty());
     }
 

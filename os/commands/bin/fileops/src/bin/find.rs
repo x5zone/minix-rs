@@ -24,12 +24,13 @@
 //!   the errno there is whatever the last call left, so no number can be reproduced
 //!   honestly and the line stops at the phrase — the same judgement `mkfifo`'s `-m`
 //!   leg documents.
-//! - Walk warnings still print the path plus a fixed phrase, not `strerror(errno)`:
-//!   the probes (`lstat_of`/`stat_of`/`dir_children`) answer `Option` and drop the
-//!   number, so wiring C's `warnx("%s: %s", fts_path, strerror(...))` (`find.c:230`)
-//!   needs the deciding half's probe trait to hand the number over — registered as
-//!   a follow-up batch, not silently half-done here. `FTS_NS` prints `<path>: stat
-//!   failed`, `FTS_DNR` prints `<path>: directory read failed`.
+//! - Walk warnings now print the path plus `strerror(errno)` exactly as C does
+//!   (`find.c:230-231`): the probe hands the number over since batch 274.
+//!   One declared difference stays: C's `fts_build` loop treats a `readdir()`
+//!   failure and end-of-directory the same (`fts.c:763`, `!= NULL`) and so says
+//!   nothing when a directory cannot be read to the end, while this shell hands
+//!   the number back and warns. Kept as-is (warning beats silence, and matching C
+//!   here would need its own evidence round), registered in 07 篇.
 //! - A hard error while evaluating one entry (an unwired action, a malformed
 //!   numeric argument) records the failure and moves on rather than calling
 //!   `err(1)` and killing the whole walk. C exits the process (`find.c:269`,
@@ -61,7 +62,9 @@ use minix_fileops::dents;
 use minix_fileops::find::{
     FindError, ReferenceStat, StatBits, WalkProbe, World, parse, walk_paths,
 };
-use minix_sys::{Fd, Stat, close, getdents, gettimeofday, lstat, open, stat as stat_follows};
+use minix_sys::{
+    Errno, Fd, Stat, close, getdents, gettimeofday, lstat, open, stat as stat_follows,
+};
 
 /// 读目录的逐次填充缓冲（与 `du` 同级）：尺寸不可观察，只限每趟 `getdents` 到达的记录数。
 const WALK_BUF: usize = 4096;
@@ -106,56 +109,57 @@ impl ReferenceStat for SysProbe {
 
 impl WalkProbe for SysProbe {
     /// `FTSENT::fts_statp` 的本体位：链本身（不跟随），供物理形与断链判定。
-    fn lstat_of(&self, path: &str) -> Option<StatBits> {
+    /// 失败时直接把 `lstat` 的号交回走表腿（它就是 C 存进 `fts_errno` 的那个数）。
+    fn lstat_of(&self, path: &str) -> Result<StatBits, Errno> {
         let mut sb = zeroed();
-        lstat(path, &mut sb).ok().map(|()| Self::bits(&sb))
+        lstat(path, &mut sb).map(|()| Self::bits(&sb))
     }
 
     /// 逻辑形（`-L`）与命令行跟随（`-H` 对起始路径）取目标位：`stat` 自然跟随符号链。
-    fn stat_of(&self, path: &str) -> Option<StatBits> {
+    fn stat_of(&self, path: &str) -> Result<StatBits, Errno> {
         let mut sb = zeroed();
-        stat_follows(path, &mut sb).ok().map(|()| Self::bits(&sb))
+        stat_follows(path, &mut sb).map(|()| Self::bits(&sb))
     }
 
     /// `readdir` 一次读完一个目次的全部条目（含 `.`/`..`，剔除 `d_ino == 0` 的空槽，
-    /// `readdir.c:83-84`）。打不开 = C 的 `FTS_DNR`，交回 `None` 让走表腿报 warn。
-    fn dir_children(&self, dir: &str) -> Option<Vec<String>> {
-        let fd: Fd = match open(dir, O_RDONLY, 0) {
-            Ok(fd) => fd,
-            Err(_) => return None,
-        };
+    /// `readdir.c:83-84`）。打不开 = C 的 `FTS_DNR`：`fts.c:675-677` 先存 `errno` 再置
+    /// `FTS_DNR`，所以交回 `open` 的号就是 C 那一行 warn 的后半。
+    /// 读错（`getdents` 失败）则是一处**声明差**，已改准：C 的循环 `while ((dp = readdir(dirp)) != NULL)`
+    /// （`fts.c:763`）**不区分读错与读到尾**，那种情况下既不终止也不告警；本层把号交回走表腿
+    /// 并报一行 warn（宁可多报不漏报）。把它改成 C 的静默需要自己的证据轮，不混进本批（登记在 07 篇）。
+    fn dir_children(&self, dir: &str) -> Result<Vec<String>, Errno> {
+        let fd: Fd = open(dir, O_RDONLY, 0)?;
         let mut names: Vec<String> = Vec::new();
         let mut buf = [0u8; WALK_BUF];
-        let mut opened = true;
+        let mut outcome: Result<(), Errno> = Ok(());
         loop {
-            let transferred = match getdents(fd, &mut buf) {
+            match getdents(fd, &mut buf) {
                 Ok(0) => break,
-                Ok(n) => n,
-                // 读错：C 会 `err(1, "fts_read")` 终止全局；本层视同为该目次不可读，
-                // 交回 `None`（走表腿报 `FTS_DNR`），差异登记在头注。
-                Err(_) => {
-                    opened = false;
-                    break;
-                }
-            };
-            let mut cursor = 0;
-            while cursor < transferred {
-                match dents::next_record(&buf, cursor) {
-                    Ok(Some((entry, next))) => {
-                        cursor = next;
-                        if entry.ino == 0 {
-                            continue;
-                        }
-                        if let Ok(name) = core::str::from_utf8(entry.name) {
-                            names.push(String::from(name));
+                Ok(n) => {
+                    let mut cursor = 0;
+                    while cursor < n {
+                        match dents::next_record(&buf, cursor) {
+                            Ok(Some((entry, next))) => {
+                                cursor = next;
+                                if entry.ino == 0 {
+                                    continue;
+                                }
+                                if let Ok(name) = core::str::from_utf8(entry.name) {
+                                    names.push(String::from(name));
+                                }
+                            }
+                            Ok(None) | Err(_) => break,
                         }
                     }
-                    Ok(None) | Err(_) => break,
+                }
+                Err(err) => {
+                    outcome = Err(err);
+                    break;
                 }
             }
         }
         let _ = close(fd);
-        if opened { Some(names) } else { None }
+        outcome.map(|()| names)
     }
 }
 
@@ -190,7 +194,10 @@ fn run() -> ! {
         support::emit(line.as_bytes());
     }
     for warn in &result.warnings {
-        support::warn(format!("{warn}\n").as_bytes());
+        // C 走的是 `warnx`，那一族在 `vwarnx.c` 里先打 `getprogname() + ": "`，所以
+        // 走表告警也得缀程名——与上面解析错那一批 `errx` 行同口径（它们已经缀了）。
+        // 决定半交回的是 `<路径>: <句子>`（C 交给 `warnx` 的那两个参数），前缀在此补上。
+        support::warn(format!("{prog}: {warn}\n").as_bytes());
     }
     support::terminate(result.rval as i32)
 }
