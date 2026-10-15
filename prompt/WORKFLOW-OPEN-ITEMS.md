@@ -80,7 +80,7 @@ EXECUTION-LOG §2.5 曾发现形如 `Bash(rg "...*" notes/rewrite/...)` 的中�
 - 拟落地形态（均属改规则源，需走 `prompt/README.md` 三端同步与四道派生门）：一、把"中文惯用法优先"写进 `prompt/skill/cmds/style-bible/SKILL.md` 的词汇约束段，W-7 并入；二、给 `tools/doc-style-lint.sh` 增**报告级**判据（同一行同时出现"端口"与移植线索 `arch/i386|earm|两种|换个|各自写` 时列清单，不阻断），沿用 W-1 的"增量阻断 + 存量报告"口径；三、维护一份直译/生造对照表放 `prompt/review-rules/`，由文风门引用。
 - 本轮未做的：对照表没开写（不凭印象列条目，每条都要有真实案例支撑）；存量篇目随各自审阅轮次逐处判断，不进独立批次。本条只先把总判据立下来，避免新写段落继续用直译词。
 
-### W-10 关联代码声明与 §7 参见的位置重定（状态 OPEN，2026-10-15 登记；本轮**只登记不实施**）
+### W-10 关联代码声明与 §7 参见的位置重定（状态：S1–S4 工具与规范源已于轮 0（2026-10-15）落地，七篇文档待轮 1–7 串行迁）
 
 - 缘起：人审 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 头部第 3–4 行与 §7 参见第 2962–2965 行——同一份源清单被抄两遍，且头部那遍是 §7 的**严格子集**（C 侧 §7 多 `mpx.S`、`const.h`、`arch/i386/include/vm.h`、`system/do_getinfo.c`、`servers/{mib/kern.c,vm/pagetable.c}`；Rust 侧多 `minix-boot/platform.rs`、`kernel/memmap.rs`、`arch/paging.rs`、`kernel-image/bootface{,_a64}.rs`、`servers/vm/{vm_server,alloc_page}.rs`、`minix-types/types/boot.rs`），读者第一眼看到的是全篇最难读的长行。方向性裁决见第三节 R7：**清单收拢到 §7，头部不再长罗列**。
 - 卡点是工具实现，不是契约本身：`tools/doc-code-map.sh:86-97` 用 `head -30 | grep -E '^>[[:space:]]*\*\*Rust (实现|模块)\*\*' | head -1` 定位声明——"头部必须有"与"头部只能一行"都是 `head -30` / `head -1` 这两处的结果。现测（取证在 `tmp/docfmt-01/`）：删掉 01 篇头部两行，关联代码清单 32→31，唯一掉出的是 `os/kernel/src/globals.rs`（正文 §3–§5 未出现过它），另触发 L154 的"缺头部字段"告警（规范源 §1.1 判 P1）。即**头部瘦身对机器门几乎零风险**；而声明整体移入 §7 后，连这一条也由 §7 清单覆盖住了（预演读数见本节末第 4 条）。
@@ -150,7 +150,7 @@ EXECUTION-LOG §2.5 曾发现形如 `Bash(rg "...*" notes/rewrite/...)` 的中�
 5. **其它四道门在目标形态下的读数**：`doc-code-map.sh`（现工具）对头部已删的副本仍打"⛔ 缺 `Rust 实现` 字段"告警且清单降到 31 条 → **这就是"先改工具后改文档"不可反的实际后果**；`doc-style-lint.sh` exit 0、0 命中；`anchor-resolve.sh --check` → `anchors=103 resolved=103 zero-def=0 multi-def=0`（与原文基线逐字相同，即本次重排不动锚点）；`notes-link-check.py` 报 4 处断链——**这是副本落在 `tmp/` 导致的相对路径解析结果**，四篇目标文件均已确认存在于 `rewrite-notes/01-stage-kernel/`，落位后须实跑复验。
 6. **复现命令**（逐条可重放）：`python3 tmp/docfmt-01/mk_target.py` → `bash tools/doc-code-map.sh tmp/docfmt-01/target.md --check --format=plain | wc -l` → `bash tools/doc-code-density-check.sh tmp/docfmt-01/target.md` → `bash tools/doc-style-lint.sh tmp/docfmt-01/target.md` → `bash tools/anchor-resolve.sh --check tmp/docfmt-01/target.md`；正则探针在 `tmp/docfmt-01/regex_probe.txt`（重放时用 `doc-code-map.sh:96` 那条原样正则，不要自己简写）。
 
-### W-11 正文符号锚点改「短锚 + 链接」双通道，保真度标签去"逐字"腔（状态 OPEN，2026-10-15 登记；本轮**只登记不实施**）
+### W-11 正文符号锚点改「短锚 + 链接」双通道，保真度标签去"逐字"腔（状态：S1–S4 工具与规范源已于轮 0（2026-10-15）落地，七篇文档待轮 1–7 串行迁）
 
 - 缘起：人审 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` §2.6.2 反事实段（现第 1050 行）——一句话说清机制，中间埋着五条全路径锚点。用户提出改用 `[短锚](全路径)` 形态：读者读论证，路径信进链接。方向裁决见第三节 R6。
 - 目标重新框定（2026-10-15 二次澄清）：**链接是否可点不在射程内**；两项目标是——渲染后长路径被隐藏（读者体感），且全路径仍以文本形式留存于源文件（工具与 workflow 可用）。这个澄清直接推翻了本条初稿"必须先改 `anchor-resolve.sh`"的判断（错在以为锚点只能待在反引号里）——`extract_anchors()` 的正则 `[A-Za-z0-9_./-]+\.(rs|c|h|S|asm|ld):…` 并不排除 `(...)` 上下文，所以**链接目标里的 `全路径:符号` 现在就被正常识别**。（执行入口：本节末《联合落地工序表》）
@@ -195,6 +195,10 @@ P6（禁用）  [`lin_lin_copy`](minix3/…/memory.c)
 - 本轮未做：不动 `notes-link-check.py`、不动 `doc-code-map.sh`、不动 `anchor-resolve.sh`、不动 16 个定义处、不动任何正式文档。
 
 #### 联合落地工序表（W-10 + W-11 的执行真源，2026-10-15 重构；接手者按阶段跑，不按上面叙事顺序跑）
+
+> **落地状态（轮 0，2026-10-15，快照见 git）**：S1–S4 已完成——`doc-code-map.sh` 四级抽取序 + 簇边界修复 + 认 `](os/**.rs)` 链接目标 + `--self-test`；`notes-link-check.py` 剥目标尾部 `:symbol`；两者 self-test 绿、CI 腿已加（`grep -c doc-code-map .github/workflows/rules-consistency.yml` = 1）；规范源 §1.1、`DOC-ITER-WORKFLOW.md`、保真度标签词表（代码引用/节选/有改写/签名示意/反例（勿这样写））与派生端已同步，四道派生门全绿。
+>
+> **轮 0 的一处 workflow 修订（须读）**：S1 的簇修复把 `{a.rs,b.rs}`/混合后缀簇拉进清单后，**七篇基线不是恒等**——01/02/03/05/12/13 不变，唯 **06 由 20→23**（`os/libs/minix-types/src/types/{endpoint.rs,com.rs,proc_nr.rs}` 三条自扩展名簇此前整条抽不到，正是本节 §92「判例篇」）。故**轮 1–7 的对账锚以新工具现测为准**：01=32、02=24、03=20、05=28、**06=23**、12=9、13=14（迁移后只升不降）。
 
 **为什么两条合一张表**：工具与规范源改动已实质重叠——`doc-code-map.sh` 同时被 W-10（抽取源改造）与 W-11（认链接目标）要动，`review-doc-checklist.md` 与 `DOC-ITER-WORKFLOW.md` 同时是两条的规范源。分两遍各自跑四道派生门，第二遍会把第一遍的字段口径改乱。
 

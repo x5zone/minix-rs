@@ -2,7 +2,7 @@
 # doc-snippet-extract.sh — 文档 Rust 代码块抽取（todo_plan.md H3 落地）
 #
 # 目的：把正式文档中的 ```rust / ```ignore / ```no_run 围栏代码块抽成清单
-#   （{doc}:{start-end}:{lang}），供 review 逐块分类（逐字引用 / 教学简化 / 反面示例 / 签名示意）
+#   （{doc}:{start-end}:{lang}），供 review 逐块分类（代码引用 / 节选 / 有改写 / 签名示意 / 反例（勿这样写））
 #   与最佳实践判定。刻意保持简单：只做围栏抽取，不做解析判定——判定是 review 的事。
 #
 # 用法：

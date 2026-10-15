@@ -1295,9 +1295,9 @@ rg "proc_table\.rs:129|smp\.rs:127-132|smp\.rs:80-145" os/ notes/
 
 ### 模式 84: 未标注反模式的文档代码示例（Unlabeled Antipattern Snippet）（P1，NEW 2026-09-18 H3）
 
-- 判定：文档 ```rust 块教反模式而不标注——kernel 语境用 Rc/RefCell、unsafe 无安全论据、教学简化冒充逐字引用、static mut 未迁移
-- 验证：`tools/doc-snippet-extract.sh {doc}.md` 抽块 → checklist §2.4k 四类分类（逐字引用/教学简化/反面示例/签名示意）+ 最佳实践判据
-- 严重度：未标注反模式 → P1（新增/触碰块必须修复或写明延期理由，存量登记）；逐字引用漂移 → P1（模式 73）；分类缺失 → P2
+- 判定：文档 ```rust 块教反模式而不标注——kernel 语境用 Rc/RefCell、unsafe 无安全论据、有改写冒充代码引用、static mut 未迁移
+- 验证：`tools/doc-snippet-extract.sh {doc}.md` 抽块 → checklist §2.4k 五类分类（代码引用/节选/有改写/签名示意/反例（勿这样写））+ 最佳实践判据
+- 严重度：未标注反模式 → P1（新增/触碰块必须修复或写明延期理由，存量登记）；代码引用漂移 → P1（模式 73）；分类缺失 → P2
 - 关联：checklist §2.4k；模式 73；style-fix 文档类产物
 
 ---
