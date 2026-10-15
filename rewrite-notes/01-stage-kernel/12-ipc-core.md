@@ -1718,20 +1718,20 @@ C 的 IPC 面逐项去向（档位：保留=语义与形状同迁；改型=语�
 
 | C 项 | Rust 对应物 | 档位 | 落点 |
 |---|---|---|---|
-| `do_ipc` 六原语分派 | `ipc.rs` 的 [`fn do_ipc`](os/kernel/src/ipc.rs:fn do_ipc) | 保留 | §4.4（分派段） |
-| kbill_ipc 记账 + ipc_sync/ipc_async 计数 | [`globals.rs`](os/kernel/src/globals.rs)（kbill_ipc 对位）+ `proc.rs` 的 [`struct Accounting`](os/kernel/src/proc.rs:struct Accounting) | 保留 | §2.1（Rust 侧见 `globals.rs`；§4 未走查，如实登记） |
-| `do_sync_ipc` 权限门（C 六道） | `ipc.rs` 的 [`fn check_ipc_permission`](os/kernel/src/ipc.rs:fn check_ipc_permission)（**四层**：ANY 通配仅 RECEIVE 合法、发送白名单、trap 掩码、内核任务限制；名字表检查由 `IpcCall::from_raw` 承担） | 保留 | §4.1 |
+| `do_ipc` 六原语分派 | [`fn do_ipc`](os/kernel/src/ipc.rs:fn do_ipc) | 保留 | §4.4（分派段） |
+| kbill_ipc 记账 + ipc_sync/ipc_async 计数 | [`globals.rs`](os/kernel/src/globals.rs)（kbill_ipc 对位）+ [`struct Accounting`](os/kernel/src/proc.rs:struct Accounting) | 保留 | §2.1（Rust 侧见 `globals.rs`；§4 未走查，如实登记） |
+| `do_sync_ipc` 权限门（C 六道） | [`fn check_ipc_permission`](os/kernel/src/ipc.rs:fn check_ipc_permission)（**四层**：ANY 通配仅 RECEIVE 合法、发送白名单、trap 掩码、内核任务限制；名字表检查由 `IpcCall::from_raw` 承担） | 保留 | §4.1 |
 | 跟踪预占的 `p_defer` 三寄存器 | 进程槽 `p_defer` 字段保留，int-33 分派层用同一字段做参数暂存；**跟踪语义本身有对位**——`SC_TRACE`/`SC_DEFER` 两个 misc 位存在（[`proc.rs`](os/kernel/src/proc.rs) 的 `MiscFlagsBits` 与同名导出常量），`SC_DEFER` 已接线（[`proc_table.rs`](os/kernel/src/proc_table.rs) 的注释自述已接 `arch_do_syscall`） | 改型 | §2.1（§4 未走查跟踪段，如实登记） |
-| `deadlock` + `P_BLOCKEDON` | `ipc.rs` 的 [`fn detect_deadlock`](os/kernel/src/ipc.rs:fn detect_deadlock) + `KProcess::blocked_on` | 改型（整数→结构化） | §3.2、§4.2 |
-| `mini_send` 两路径 | `ipc.rs` 的 [`fn send`](os/kernel/src/ipc.rs:fn send) | 保留 | §4.1 |
-| `mini_receive` 三级匹配序 | `ipc.rs` 的 [`fn receive`](os/kernel/src/ipc.rs:fn receive) 的四个 Phase | 保留（分级命名变体：C 的瀑布包在 SENDING 门外，Rust 同形） | §4.1 |
-| `mini_notify` 两分支 | `ipc.rs` 的 [`fn mini_notify_core`](os/kernel/src/ipc.rs:fn mini_notify_core) | 保留 + 过滤面差异（见差异 8，SRC-20） | §4.3 |
-| `try_deliver_senda`/`try_async`/`try_one` | `ipc.rs` 的 [`fn senda`](os/kernel/src/ipc.rs:fn senda) + `:fn deliver_async` | 改型（**三并二**：`mini_senda`+`try_deliver_senda`→`senda`、`try_async`+`try_one`→`deliver_async`；无内核侧表缓存） | §4.3 |
-| `delivermsg` 两段交付 + 两次失败策略 | `ipc.rs` 的 [`fn delivermsg`](os/kernel/src/ipc.rs:fn delivermsg) + `:enum DeliverResult` | 保留 | §4.3 |
-| `BuildNotifyMessage` + `NOTIFY_MESSAGE` 0x1000 | `ipc.rs` 的 [`impl IpcEngine::build_notify_message`](os/kernel/src/ipc.rs:impl IpcEngine::build_notify_message) + `:const NOTIFY_MESSAGE` | 保留 | §4.3 |
+| `deadlock` + `P_BLOCKEDON` | [`fn detect_deadlock`](os/kernel/src/ipc.rs:fn detect_deadlock) + `KProcess::blocked_on` | 改型（整数→结构化） | §3.2、§4.2 |
+| `mini_send` 两路径 | [`fn send`](os/kernel/src/ipc.rs:fn send) | 保留 | §4.1 |
+| `mini_receive` 三级匹配序 | [`fn receive`](os/kernel/src/ipc.rs:fn receive) 的四个 Phase | 保留（分级命名变体：C 的瀑布包在 SENDING 门外，Rust 同形） | §4.1 |
+| `mini_notify` 两分支 | [`fn mini_notify_core`](os/kernel/src/ipc.rs:fn mini_notify_core) | 保留 + 过滤面差异（见差异 8，SRC-20） | §4.3 |
+| `try_deliver_senda`/`try_async`/`try_one` | [`fn senda`](os/kernel/src/ipc.rs:fn senda) + `:fn deliver_async` | 改型（**三并二**：`mini_senda`+`try_deliver_senda`→`senda`、`try_async`+`try_one`→`deliver_async`；无内核侧表缓存） | §4.3 |
+| `delivermsg` 两段交付 + 两次失败策略 | [`fn delivermsg`](os/kernel/src/ipc.rs:fn delivermsg) + `:enum DeliverResult` | 保留 | §4.3 |
+| `BuildNotifyMessage` + `NOTIFY_MESSAGE` 0x1000 | [`impl IpcEngine::build_notify_message`](os/kernel/src/ipc.rs:impl IpcEngine::build_notify_message) + `:const NOTIFY_MESSAGE` | 保留 | §4.3 |
 | `IPCNAME` 名字表 | **无对位**（如实披露，§4.4） | 淘汰（现码无对位） | §4.4 |
-| KERNINFO 查询臂 | `syscall.rs` 的 [`fn dispatch_ipc`](os/kernel/src/syscall.rs:fn dispatch_ipc) 的 KERNINFO 分支 + [`kerninfo.rs`](os/kernel/src/kerninfo.rs) | 保留（载体寄存器 i386 bx → x86-64 R10） | §4.4 |
-| `IPC_STATUS_ADD_*` 状态编码 | `ipc.rs` 的 [`fn ipc_status_call_to`](os/kernel/src/ipc.rs:fn ipc_status_call_to) 族 | 保留 | §3.3 |
+| KERNINFO 查询臂 | [`fn dispatch_ipc`](os/kernel/src/syscall.rs:fn dispatch_ipc) 的 KERNINFO 分支 + [`kerninfo.rs`](os/kernel/src/kerninfo.rs) | 保留（载体寄存器 i386 bx → x86-64 R10） | §4.4 |
+| `IPC_STATUS_ADD_*` 状态编码 | [`fn ipc_status_call_to`](os/kernel/src/ipc.rs:fn ipc_status_call_to) 族 | 保留 | §3.3 |
 | sender 队列 `p_caller_q`/`p_q_link` | `caller_q_head`/`caller_q_tail`/`send_q_link`（索引化） | 改型 | §3.1 |
 
 差异登记（每行单独成条）：
@@ -2541,10 +2541,10 @@ grep -n 'pub enum IpcCall\|pub enum IpcOutcome\|pub enum IpcError\|pub struct Se
 - `13-syscall-dispatch`（trap 传参，**已重生成**）、`22-syscall-copy`（拷贝机制本体，尚未重生成）、`23-ipc-filter`（IPC 过滤决策，尚未重生成）、`24-cross-space-runtime`（VMSUSPEND 与跨空间拷贝运行时，尚未重生成）、`06-stage-sched` 方向（SCHED 服务器侧的调度原语消费；stage 目录名为准——`rewrite-notes/06-stage-sched/`）
 ### 7.2 关联 C 源码清单
 
-- `minix3/minix/kernel/arch/i386/arch_system.c:arch_set_secondary_ipc_return` — 二次返回通道的落点（原头部 C 真值源收拢至此）
+- `minix3/minix/kernel/arch/i386/arch_system.c:arch_set_secondary_ipc_return`
 - `minix3/minix/kernel/proc.c:do_ipc`、`:do_sync_ipc`、`:deadlock`、`:mini_send`、`:mini_receive`、`:mini_notify`、`:try_deliver_senda`、`:try_async`、`:try_one`、`:delivermsg`、`minix3/minix/kernel/proc.h:P_BLOCKEDON`、`minix3/minix/kernel/ipc.h:WILLRECEIVE`、`minix3/minix/include/minix/ipcconst.h:SEND`、`minix3/minix/include/minix/com.h:NOTIFY_MESSAGE`、`minix3/minix/kernel/main.c:IPCNAME`
 ### 7.3 关联 Rust 源码清单
 
 - `os/kernel/src/ipc.rs`（IpcCall/IpcOutcome/IpcError/SendFlags/DeadlockCycle/UserCopy/KernelUserCopy/delivermsg/caller_q_*/IpcEngine/mini_notify_core/build_notify_message）、`os/kernel/src/syscall.rs:fn dispatch_ipc`、`os/kernel/src/kerninfo.rs`、`os/arch/src/x86_64/boot.rs:fn set_secondary_ipc_return`
-- `os/kernel/src/syscall.rs:fn dispatch_ipc` — IPC 陷入的分发（原头部 Rust 实现收拢至此）
-- `os/arch/src/x86_64/boot.rs:fn set_secondary_ipc_return` — 架构侧二次返回落点（原头部 Rust 实现收拢至此）
+- `os/kernel/src/syscall.rs:fn dispatch_ipc`
+- `os/arch/src/x86_64/boot.rs:fn set_secondary_ipc_return`
