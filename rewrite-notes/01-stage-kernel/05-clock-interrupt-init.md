@@ -257,8 +257,8 @@ init_clock(void)
 
 | 架构 | `DEFAULT_HZ` | 定义处 |
 |---|---|---|
-| i386 | 60 | `include/archconst.h` 的 [`DEFAULT_HZ`](minix3/minix/include/arch/i386/include/archconst.h:DEFAULT_HZ)（行尾注释写着 `clock freq (software settable on IBM-PC)`） |
-| earm | 1000 | `include/archconst.h` 的 [`DEFAULT_HZ`](minix3/minix/include/arch/earm/include/archconst.h:DEFAULT_HZ) |
+| i386 | 60 | [`DEFAULT_HZ`](minix3/minix/include/arch/i386/include/archconst.h:DEFAULT_HZ)（行尾注释写着 `clock freq (software settable on IBM-PC)`） |
+| earm | 1000 | [`DEFAULT_HZ`](minix3/minix/include/arch/earm/include/archconst.h:DEFAULT_HZ) |
 
 全局别名在 `glo.h` 里：`system_hz` 就是 `kclockinfo.hz`（本篇 §1.1 已引用该宏）。这一点让 `init_clock` 的产物被整个内核的计时算式读到——它是后来 `arch_init` 必须排在它之后的第一条依据（第二条见 §2.4 的门表重建约束；两条的合并陈述见 §2.1 的结论段）。
 
@@ -781,7 +781,7 @@ pub const DEFAULT_HZ: u32 = 100;
 | 编译时常量 100 Hz | 采用 | 失去 boot 期调整 tick 频率的能力；三个架构行为一致 |
 | 保留 `env_get("hz")` 的运行时读取 | 否决（保留在构造器） | Rust 侧的启动信息里没有 boot 参数字符串（[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.3 的 `param_buf` 用途已变），且频率是硬件相关的量 |
 | 每架构一个默认值 | 否决 | 三个架构的默认值会立刻分叉，读者需要记住三套；统一值有源码注释给出的理由 |
-| `with_hz(hz)` 构造器 | 保留 | 它保留了 C 的范围守卫 `2..=50000`（`clock.rs` 的 [`fn with_hz`](os/kernel/src/clock.rs:fn with_hz)），当前没有生产调用者，只在需要与 C 逐值对齐的场合使用 |
+| `with_hz(hz)` 构造器 | 保留 | 它保留了 C 的范围守卫 `2..=50000`（[`fn with_hz`](os/kernel/src/clock.rs:fn with_hz)），当前没有生产调用者，只在需要与 C 逐值对齐的场合使用 |
 
 范围守卫的落点也在构造器里：
 
@@ -1033,9 +1033,9 @@ Minix3 只覆盖 x86-32 与 ARM-32 两种架构，本篇实现面对的是 x86-6
 
 | 演进 | 内容 | C 现状 | 本实现 | 依据锚点 |
 |---|---|---|---|---|
-| `[ARCH: K-1]` | 控制器与定时器型号 | 32 位 ARM 用 OMAP INTC（`ti/omap_intr.c` 的 [`intr_init`](minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init)）+ BSP 私有定时器（`ti/omap_timer.c` 的 [`bsp_register_timer_handler`](minix3/minix/kernel/arch/earm/bsp/ti/omap_timer.c:bsp_register_timer_handler)） | ARMv8-A：GICv3（Distributor + Redistributor + CPU 接口）+ Generic Timer（CNTP 一组寄存器） | [`interrupt.rs`](os/plat/src/arm64/interrupt.rs)、[`clock.rs`](os/arch/src/arm64/clock.rs) 的模块注释 |
+| `[ARCH: K-1]` | 控制器与定时器型号 | 32 位 ARM 用 OMAP INTC（[`intr_init`](minix3/minix/kernel/arch/earm/bsp/ti/omap_intr.c:intr_init)）+ BSP 私有定时器（[`bsp_register_timer_handler`](minix3/minix/kernel/arch/earm/bsp/ti/omap_timer.c:bsp_register_timer_handler)） | ARMv8-A：GICv3（Distributor + Redistributor + CPU 接口）+ Generic Timer（CNTP 一组寄存器） | [`interrupt.rs`](os/plat/src/arm64/interrupt.rs)、[`clock.rs`](os/arch/src/arm64/clock.rs) 的模块注释 |
 | `[ARCH: K-2]` | 整套 RISC-V 支持 | 无对应实现 | CLINT 的 mtime/mtimecmp + PLIC + `sie.STIE`；读计数走 `time` CSR、编程走 SBI TIME ecall | [`interrupt.rs`](os/plat/src/riscv64/interrupt.rs)、[`clock.rs`](os/arch/src/riscv64/clock.rs) 的模块注释 |
-| `[ARCH: K-3]` | 默认 tick 频率 | i386 60 Hz、earm 1000 Hz，且可由 boot 参数覆盖 | 三架构统一 100 Hz 编译期常量 | `clock.rs` 的 [`const DEFAULT_HZ`](os/arch/src/arch/clock.rs:const DEFAULT_HZ) 的注释、`clock.rs` 的 [`const DEFAULT_HZ`](os/kernel/src/clock.rs:const DEFAULT_HZ) |
+| `[ARCH: K-3]` | 默认 tick 频率 | i386 60 Hz、earm 1000 Hz，且可由 boot 参数覆盖 | 三架构统一 100 Hz 编译期常量 | [`const DEFAULT_HZ`](os/arch/src/arch/clock.rs:const DEFAULT_HZ) 的注释、[`const DEFAULT_HZ`](os/kernel/src/clock.rs:const DEFAULT_HZ) |
 
 三类之外的都属于 Rewrite 或 Refactor：`init_clock` 的软件状态语义、`cut_memmap` 的裁剪语义（由 `KernelInfo` 提供者代为排除，结果表等价而非同址重写，§3.6）、`put_irq_handler` 的"注册即放行"规则、`boot_cpu_init_timer` 的三段关系，在 Rust 侧都保持同样的外部行为，只换了内部组织方式。
 
@@ -1151,7 +1151,7 @@ pub struct ClockState {
 | Rust 字段 | C 对应物 | 谁拥有 |
 |---|---|---|
 | `cpu_id` | `cpuid`（`get_cpulocal_var(cpu)`） | 每实例 |
-| `is_bsp` | 无字段，用 `cpu_is_bsp(cpuid)` 现算（`kernel/clock.c` 的 [`timer_int_handler`](minix3/minix/kernel/clock.c:timer_int_handler) 的第一处分支） | 每实例 |
+| `is_bsp` | 无字段，用 `cpu_is_bsp(cpuid)` 现算（[`timer_int_handler`](minix3/minix/kernel/clock.c:timer_int_handler) 的第一处分支） | 每实例 |
 | `hz` | `kclockinfo.hz`（别名 `system_hz`） | BSP；AP 实例也有值但不参与全局时间 |
 | `uptime` | `kclockinfo.uptime` | BSP |
 | `realtime` | `kclockinfo.realtime` | BSP |
@@ -1420,9 +1420,9 @@ riscv64 的 PLIC 初始化做三件事：
 
 | | "全部"指什么 | 实现位置 |
 |---|---|---|
-| x86-64 | `nr_irq_vectors` 条内核线号（描述符给，clamp 到 64），每条经 `isa_irq_to_pin` 落到某个 IOAPIC RTE | `interrupt.rs` 的 [`fn mask_all`](os/plat/src/x86_64/interrupt.rs:fn mask_all) |
-| aarch64 | Distributor 的 SPI 半（从 32 起）**加上** Redistributor 的 SGI/PPI 半（`GICD_ICENABLER` + `GICR_ICENABLER0`） | `interrupt.rs` 的 [`fn mask_all`](os/plat/src/arm64/interrupt.rs:fn mask_all) |
-| riscv64 | PLIC 的 enable 位图（按 context 划分的字） | `interrupt.rs` 的 [`fn mask_all`](os/plat/src/riscv64/interrupt.rs:fn mask_all) |
+| x86-64 | `nr_irq_vectors` 条内核线号（描述符给，clamp 到 64），每条经 `isa_irq_to_pin` 落到某个 IOAPIC RTE | [`fn mask_all`](os/plat/src/x86_64/interrupt.rs:fn mask_all) |
+| aarch64 | Distributor 的 SPI 半（从 32 起）**加上** Redistributor 的 SGI/PPI 半（`GICD_ICENABLER` + `GICR_ICENABLER0`） | [`fn mask_all`](os/plat/src/arm64/interrupt.rs:fn mask_all) |
+| riscv64 | PLIC 的 enable 位图（按 context 划分的字） | [`fn mask_all`](os/plat/src/riscv64/interrupt.rs:fn mask_all) |
 
 **三条推演（删掉 0↔2 交换；去掉 `GICR_SGI_FRAME` 偏移；删掉 `GICR_IGROUPR0` 那一行）**：
 
@@ -1754,7 +1754,7 @@ CNTP_CTL_EL0.Enable      GICR_ICENABLER0/      GICR_WAKER /       ICC_SRE_EL1 /
 
 C 的对应段落（§2.6 已引用过末尾几行）逐项对得上：
 
-| 步骤 | C（`kernel/interrupt.c` 的 [`put_irq_handler`](minix3/minix/kernel/interrupt.c:put_irq_handler)） | Rust（`irq_manager.rs` 的 [`fn register_hook_at_slot`](os/kernel/src/irq_manager.rs:fn register_hook_at_slot)） |
+| 步骤 | C（[`put_irq_handler`](minix3/minix/kernel/interrupt.c:put_irq_handler)） | Rust（[`fn register_hook_at_slot`](os/kernel/src/irq_manager.rs:fn register_hook_at_slot)） |
 |---|---|---|
 | 合法性检查 | `if( irq < 0 \|\| irq >= NR_IRQ_VECTORS ) panic(...)` | `if irq_idx >= NR_IRQ_VECTORS { panic!(...) }` |
 | 求最低空闲 id | `for (id = 1; id != 0; id <<= 1) if (!(bitmap & id)) break;` | `let mut id = 1u32; while id != 0 && (bitmap & id) != 0 { id <<= 1; }` |
@@ -1781,9 +1781,9 @@ pub const TIMER_IRQ: IrqVector = crate::riscv64::interrupt::TIMER_IRQ;
 
 | 架构 | 值 | 定义处 | 硬件理由 |
 |---|---|---|---|
-| x86-64 | 0 | `interrupt.rs` 的 [`const TIMER_IRQ`](os/plat/src/x86_64/interrupt.rs:const TIMER_IRQ) | PIT 是 ISA IRQ0（C 的 `CLOCK_IRQ` 也是 0）；实际投递经 IOAPIC 输入 2（§4.4 的 0↔2 映射） |
-| aarch64 | 30 | `interrupt.rs` 的 [`const TIMER_IRQ`](os/plat/src/arm64/interrupt.rs:const TIMER_IRQ) | EL1 非安全物理定时器（CNTP）是 PPI INTID 30（GIC 的 PPI 分配 CNTPNSIRQ）；30 < 32，所以它走 Redistributor 而不是 Distributor |
-| riscv64 | 0 | `interrupt.rs` 的 [`const TIMER_IRQ`](os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ) | 保留伪向量：S 模式定时器是核本地中断，不经 PLIC，0 只作分发身份 |
+| x86-64 | 0 | [`const TIMER_IRQ`](os/plat/src/x86_64/interrupt.rs:const TIMER_IRQ) | PIT 是 ISA IRQ0（C 的 `CLOCK_IRQ` 也是 0）；实际投递经 IOAPIC 输入 2（§4.4 的 0↔2 映射） |
+| aarch64 | 30 | [`const TIMER_IRQ`](os/plat/src/arm64/interrupt.rs:const TIMER_IRQ) | EL1 非安全物理定时器（CNTP）是 PPI INTID 30（GIC 的 PPI 分配 CNTPNSIRQ）；30 < 32，所以它走 Redistributor 而不是 Distributor |
+| riscv64 | 0 | [`const TIMER_IRQ`](os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ) | 保留伪向量：S 模式定时器是核本地中断，不经 PLIC，0 只作分发身份 |
 
 三处来源各自写明"改这个值要同时改什么"：aarch64 的 30 与"用哪一族定时器寄存器（`CNTP_*` 而不是 `CNTV_*`/`CNTPS_*`）"绑定，且它小于 32 这一事实决定了控制器侧的放行必须走 `GICR_ISENABLER0`（写在 `interrupt.rs` 的 [`const TIMER_IRQ`](os/plat/src/arm64/interrupt.rs:const TIMER_IRQ) 的文档注释里）；riscv64 的 0 与"陷阱入口把 `scause == SupervisorTimer` 映射到哪个编号、PLIC 的 mask/unmask 把 0 当无控制器线"绑定（写在 `interrupt.rs` 的 [`const TIMER_IRQ`](os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ) 的文档注释里）；x86 的这一条不在常量的文档注释里，而在测试注释 `test_timer_irq_is_ioapic_input_zero`（[`interrupt.rs`](os/plat/src/x86_64/interrupt.rs)）里：时钟源若换成 LAPIC 定时器，这个值与 `TimerIrqGate` 的 x86 语义要一起改。
 
@@ -1817,9 +1817,9 @@ riscv64 的 PLIC 驱动把 0 当"没有控制器线"处理：
 | 全局 | 写入点 | 启动期访问器 | 运行期访问器 |
 |---|---|---|---|
 | `PLATFORM` | `kmain` Phase A.5 的 `minix_platform::init_from_kinfo`（04 篇） | `platform_desc()` | 同左（只读） |
-| `IRQ_MANAGER` | `init_clock_and_interrupts` Step 2 的 `intr.init()` 之后 | `lib.rs` 的 [`fn irq_manager_boot_unchecked`](os/kernel/src/lib.rs:fn irq_manager_boot_unchecked) | `lib.rs` 的 [`fn irq_manager_with`](os/kernel/src/lib.rs:fn irq_manager_with) |
-| `CLOCK_STATE` | `init_clock_and_interrupts` 的末尾 | `lib.rs` 的 [`fn clock_state_boot_unchecked`](os/kernel/src/lib.rs:fn clock_state_boot_unchecked) | `lib.rs` 的 [`fn clock_state_with`](os/kernel/src/lib.rs:fn clock_state_with) |
-| `SMP_STATE` | `kmain` 的 `init_smp_state`（调用点在 Phase F 段，函数注释自称 Phase D） | `lib.rs` 的 [`fn try_smp_state`](os/kernel/src/lib.rs:fn try_smp_state) 与 `:fn smp_state_boot_unchecked` | `lib.rs` 的 [`fn smp_state_with`](os/kernel/src/lib.rs:fn smp_state_with) |
+| `IRQ_MANAGER` | `init_clock_and_interrupts` Step 2 的 `intr.init()` 之后 | [`fn irq_manager_boot_unchecked`](os/kernel/src/lib.rs:fn irq_manager_boot_unchecked) | [`fn irq_manager_with`](os/kernel/src/lib.rs:fn irq_manager_with) |
+| `CLOCK_STATE` | `init_clock_and_interrupts` 的末尾 | [`fn clock_state_boot_unchecked`](os/kernel/src/lib.rs:fn clock_state_boot_unchecked) | [`fn clock_state_with`](os/kernel/src/lib.rs:fn clock_state_with) |
+| `SMP_STATE` | `kmain` 的 `init_smp_state`（调用点在 Phase F 段，函数注释自称 Phase D） | [`fn try_smp_state`](os/kernel/src/lib.rs:fn try_smp_state) 与 `:fn smp_state_boot_unchecked` | [`fn smp_state_with`](os/kernel/src/lib.rs:fn smp_state_with) |
 
 两套访问器的分界不是"调用者是谁"，而是"BKL 是否已经存在"：`boot_unchecked` 的契约是"单线程初始化期、BKL 还不存在"，`with` 系列接收一个 `BklSection` 见证、证明锁已被持有。触发这条区分的现实原因是时钟处理函数：它在中断上下文里跑，而中断可能在任意时刻到达，因此必须走带见证的路径进入全局。
 
@@ -1980,15 +1980,15 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 
 | 症状 | 怀疑对象（状态 / 位 / 线 / 地址 / 次序） | 确认动作 |
 |---|---|---|
-| `uptime` 恒为 0，载体停在 `IF=1 — polling uptime` | 控制器侧的门没开：`register_hook` 的 first-handler `unmask` 没执行，或引脚映射把 mask 解到了别的引脚 | 核 `irq_manager.rs` 的 [`fn register_hook_at_slot`](os/kernel/src/irq_manager.rs:fn register_hook_at_slot) 的 `unmask` 行；核 `interrupt.rs` 的 [`fn isa_irq_to_pin`](os/plat/src/x86_64/interrupt.rs:fn isa_irq_to_pin) 的 0↔2 映射 |
-| x86-64 上 tick 一次都不来，且 8259A 从未初始化 | `pic_init` 没被调用（它在 `boot_init_timer` 的末尾），或固件留下 IMR 把 IRQ0 关着 | 核 `lib.rs` 的 [`fn boot_init_timer`](os/kernel/src/lib.rs:fn boot_init_timer) 的 x86_64 尾调用；用 `grep -n 'pic_init' os/kernel/src/lib.rs os/plat/src/lib.rs` 确认调用链 |
-| tick 只来一次就停 | 定时器是一次性的（CNTP/CVAL 或 `mtimecmp`），每次 tick 的重挂路径没走到 | 核 `clock.rs` 的 [`fn rearm_next_tick`](os/arch/src/arm64/clock.rs:fn rearm_next_tick) 与 `clock.rs` 的 [`fn local_timer_eoi`](os/arch/src/riscv64/clock.rs:fn local_timer_eoi)；核 `clock.rs` 的 [`fn local_tick`](os/kernel/src/clock.rs:fn local_tick) 是否调了 `local_timer_eoi` |
-| 中断风暴（`uptime` 飞涨或系统卡在中断里） | 门先于源打开：`CNTP_CVAL_EL0` / `mtimecmp` 还是复位值 0 时 Enable 已置位 | 核 `clock.rs` 的 [`fn init_timer`](os/arch/src/arm64/clock.rs:fn init_timer) 的写值（应为 `0x2`）与 `arch_init.rs` 的 [`fn init`](os/arch/src/riscv64/arch_init.rs:fn init) 里是否又出现了 `sie` 写入 |
-| aarch64 上定时器 PPI 已使能但仍无 tick | PPI 被分到 Group 0（以 FIQ 交付）而 CPU 接口只开了 Group 1；或 GICR 的 SGI/PPI 帧偏移写错 | 核 `interrupt.rs` 的 [`fn init_redistributor`](os/plat/src/arm64/interrupt.rs:fn init_redistributor) 的 `GICR_IGROUPR0` 与 `GICR_ICENABLER0` 两行；核 `interrupt.rs` 的 [`const GICR_SGI_FRAME`](os/plat/src/arm64/interrupt.rs:const GICR_SGI_FRAME) 是否参与了所有 GICR 访问 |
-| riscv64 上 PLIC 的使能位被改而定时器没反应 | 把定时器当成 PLIC 线上的一条普通线 | 核 `interrupt.rs` 的 [`const TIMER_IRQ`](os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ) 的值与 `:fn mask`/`:fn unmask` 的 `irq_num == 0` 提前返回 |
-| 启动期 panic 信息是 `CLOCK_STATE not initialized …` | 时钟状态入全局的那一步没执行，或某条路径在 `init_clock_and_interrupts` 完成前就进入了时钟处理函数 | 核 `lib.rs` 的 [`fn init_clock_and_interrupts`](os/kernel/src/lib.rs:fn init_clock_and_interrupts) 末尾的写入；核 `lib.rs` 的 [`fn clock_state_with`](os/kernel/src/lib.rs:fn clock_state_with) 的 `expect` |
-| PIT divisor 断言 panic（`hz must be >= 19`） | `DEFAULT_HZ` 或调用点传的 hz 小于 19 | 核 `clock.rs` 的 [`fn init_timer`](os/arch/src/x86_64/clock.rs:fn init_timer) 的断言与 `lib.rs` 的 [`fn boot_init_timer`](os/kernel/src/lib.rs:fn boot_init_timer) 传的实参 |
-| 中断落到了 `#DE`（向量 0）而不是 0x50 | 被解屏蔽的那条线对应的 RTE 向量未编程（复位值 0，S-8 注释记着这条）；或 8259A 仍停在固件状态、向量基没被重映射 | 核 `interrupt.rs` 的 [`fn ioapic_route_and_mask`](os/plat/src/x86_64/interrupt.rs:fn ioapic_route_and_mask) 的向量算式（引脚 2 = 0x50）与 `:fn pic_init` 的两处 ICW2 写 |
+| `uptime` 恒为 0，载体停在 `IF=1 — polling uptime` | 控制器侧的门没开：`register_hook` 的 first-handler `unmask` 没执行，或引脚映射把 mask 解到了别的引脚 | 核 [`fn register_hook_at_slot`](os/kernel/src/irq_manager.rs:fn register_hook_at_slot) 的 `unmask` 行；核 [`fn isa_irq_to_pin`](os/plat/src/x86_64/interrupt.rs:fn isa_irq_to_pin) 的 0↔2 映射 |
+| x86-64 上 tick 一次都不来，且 8259A 从未初始化 | `pic_init` 没被调用（它在 `boot_init_timer` 的末尾），或固件留下 IMR 把 IRQ0 关着 | 核 [`fn boot_init_timer`](os/kernel/src/lib.rs:fn boot_init_timer) 的 x86_64 尾调用；用 `grep -n 'pic_init' os/kernel/src/lib.rs os/plat/src/lib.rs` 确认调用链 |
+| tick 只来一次就停 | 定时器是一次性的（CNTP/CVAL 或 `mtimecmp`），每次 tick 的重挂路径没走到 | 核 [`fn rearm_next_tick`](os/arch/src/arm64/clock.rs:fn rearm_next_tick) 与 [`fn local_timer_eoi`](os/arch/src/riscv64/clock.rs:fn local_timer_eoi)；核 [`fn local_tick`](os/kernel/src/clock.rs:fn local_tick) 是否调了 `local_timer_eoi` |
+| 中断风暴（`uptime` 飞涨或系统卡在中断里） | 门先于源打开：`CNTP_CVAL_EL0` / `mtimecmp` 还是复位值 0 时 Enable 已置位 | 核 [`fn init_timer`](os/arch/src/arm64/clock.rs:fn init_timer) 的写值（应为 `0x2`）与 [`fn init`](os/arch/src/riscv64/arch_init.rs:fn init) 里是否又出现了 `sie` 写入 |
+| aarch64 上定时器 PPI 已使能但仍无 tick | PPI 被分到 Group 0（以 FIQ 交付）而 CPU 接口只开了 Group 1；或 GICR 的 SGI/PPI 帧偏移写错 | 核 [`fn init_redistributor`](os/plat/src/arm64/interrupt.rs:fn init_redistributor) 的 `GICR_IGROUPR0` 与 `GICR_ICENABLER0` 两行；核 [`const GICR_SGI_FRAME`](os/plat/src/arm64/interrupt.rs:const GICR_SGI_FRAME) 是否参与了所有 GICR 访问 |
+| riscv64 上 PLIC 的使能位被改而定时器没反应 | 把定时器当成 PLIC 线上的一条普通线 | 核 [`const TIMER_IRQ`](os/plat/src/riscv64/interrupt.rs:const TIMER_IRQ) 的值与 `:fn mask`/`:fn unmask` 的 `irq_num == 0` 提前返回 |
+| 启动期 panic 信息是 `CLOCK_STATE not initialized …` | 时钟状态入全局的那一步没执行，或某条路径在 `init_clock_and_interrupts` 完成前就进入了时钟处理函数 | 核 [`fn init_clock_and_interrupts`](os/kernel/src/lib.rs:fn init_clock_and_interrupts) 末尾的写入；核 [`fn clock_state_with`](os/kernel/src/lib.rs:fn clock_state_with) 的 `expect` |
+| PIT divisor 断言 panic（`hz must be >= 19`） | `DEFAULT_HZ` 或调用点传的 hz 小于 19 | 核 [`fn init_timer`](os/arch/src/x86_64/clock.rs:fn init_timer) 的断言与 [`fn boot_init_timer`](os/kernel/src/lib.rs:fn boot_init_timer) 传的实参 |
+| 中断落到了 `#DE`（向量 0）而不是 0x50 | 被解屏蔽的那条线对应的 RTE 向量未编程（复位值 0，S-8 注释记着这条）；或 8259A 仍停在固件状态、向量基没被重映射 | 核 [`fn ioapic_route_and_mask`](os/plat/src/x86_64/interrupt.rs:fn ioapic_route_and_mask) 的向量算式（引脚 2 = 0x50）与 `:fn pic_init` 的两处 ICW2 写 |
 
 ### 6.2 可复制命令与预期输出
 
@@ -2100,5 +2100,5 @@ os/qemu-tests/run_qemu.sh x86_64 os/target/x86_64-unknown-uefi/release/test-time
 - `os/arch/src/arch/{clock,arch_init,timer_irq_gate}.rs` — 三个 trait 与它们的边界说明
 - `os/arch/src/{x86_64,arm64,riscv64}/{clock,arch_init,timer_irq_gate}.rs` — 三架构实现
 - `os/qemu-tests/test-kernels/kernel/bootstrap/test-timer-irq{,-aarch64,-riscv64}/src/main.rs`、`os/qemu-tests/run_all.sh`、`os/qemu-tests/README.md` — 真机载体与运行方式
-- `os/kernel/src/globals.rs` — 时钟/中断相关的全局槽位与 `kinfo` 持有
-- `os/arch/src/lib.rs` — 架构再导出与 clock/interrupt 相关入口
+- `os/kernel/src/globals.rs`
+- `os/arch/src/lib.rs`
