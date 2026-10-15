@@ -250,6 +250,48 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百九十八把 `join` 输出面的分隔符槽位按 C 定形：先占槽、再决定内容**
+  （`2026-10-16`，`claim/JOIN-OUTFIELD-SLOTS-qoder` @ 基线 `f675b95a1`，单域三线 commands/doctools，无跨界）：
+  照上一单写死的三条判据落地。**①**`push_tok` 改成无条件先占分隔符槽、之后才决定内容（C 的 `outfield()`
+  第一句是 `if (needsep++) printf("%c", *tabchar)`，`join.c:496-497`；「字段存在但为空串」才 `return`
+  且槽位留着，`:503-504`）；**②**`twoline` 默认布局里缺席的连接字段占一个槽并按 `-e` 取值（`:499-501`），
+  旧写法是 `if a.len() > opts.field1` 整个不打；**③**`olist_token` 的 `Which::Join` 从
+  `unwrap_or_default()` 改成 `unwrap_or_else(|| fallback.clone())`。金样全部来自参照件
+  `tmp/family-diag-ref/join_ref` 现测（该参照件必须给 `fgetln`/`getprogname` 带原型，否则被隐式声明成
+  返回 `int`、指针截断段错误——上一单已登记）。
+  **推翻上一单的一处金样**：`-t,` 对 `a,,c` 两侧，参照件实测是 `a,,c,,c`，不是记的 `a,,c,a,,c`。顺着这条
+  查出更深一层分歧：本壳 `split_fields` 把按 `-t` 切出的空段跳掉，而 C 把空段当字段——分歧在字段切分层
+  不在输出层，**不属本单射程**（判据见下）。
+  新增两枚测，**追加到 `join_face.rs` 文件末尾**（吸取上一单「行号切片覆盖掉既有测」的教训，改完先核对
+  门数不减）：必跑的 `missing_join_field_keeps_its_separator_slot`（`,q,q\n,q,r\n,r,q\n,r,r\n` 与
+  `-e -` 的 `-,q,q…` 四串逐字节等式）、标 `#[ignore]` 的
+  `empty_fields_from_the_delimiter_split_keep_their_slots`（注释写明为什么不通过、归下一单）。07 篇 join 行
+  同步两处：槽位语义段 + 测试名对账（该文件此前漏记批次二百九十四的
+  `the_option_error_first_lines_match_the_bsd_reference`，一并补上，现列 12 枚必跑 + 1 枚 ignore）。
+  三件套：容器门 `docker run --rm -v "$PWD:/work" -w /work/os -m 2g minix-ci:1.94 cargo test --target-dir
+  /tmp/u298r --no-fail-fast -j 1 -p minix-textfilter` → **632 passed、0 failed、1 ignored**（51 个
+  `test result` 行、零 `FAILED`/`error[`/`panicked`；基线 631 现测，join_face 由 11 枚必跑增至 12 枚必跑 +
+  1 枚 ignore）；同容器 `cargo check --workspace -j 1` 零 error；clippy 的 `--all-targets` 日志里对
+  `join.rs`/`join_face.rs` 零命中（唯一那条 error 在 `jot.rs:771`，是存量，登记见下）；
+  宿主三架构 `cargo check --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` 各零 error；
+  两枚变异负控（`old_slot_swallowing` 把 `push_tok` 改回旧写法、`no_fallback_for_join` 撤掉 `-e` 回退）
+  均**先打印 `mutation applied` 再看到 `missing_join_field_keeps_its_separator_slot ... FAILED`**，
+  恢复后 `cmp` 同一（控制器 `tmp/ctl298.py`）。核实日 `2026-10-16`；基线 `f675b95a1`。
+  **格式化补记（第三处自纠）**：`rustfmt --check` 首轮报三处漂移。拿 `git show HEAD:` 的副本对照分来源——
+  `join_face.rs` 那处是本笔新写的长 `assert_eq!`（已断行），`src/join.rs` 的 `:238`/`:412` 两处**在基线副本上
+  同样报漂移**，即批次二百九十五遗留（当时那句「零漂移」的读数不成立，与批次二百九十二记过的同一性质）；
+  两处一并在本笔格式化，格式化后 `--check` 零漂移，并**在容器里重跑整包门**复核同数，不让读数对应到旧树。
+  **登记不执行**：`os/commands/usr-bin/textfilter/src/jot.rs:771` 的 `assert_eq!(render(&f, 3.14159), …)`
+  触发 deny 级 `clippy::approx_constant`，使该包 `cargo clippy --all-targets` 在基线上就红一处；改法是别让
+  那个字面量正好是 π 的近似（如写 `3.1415_9`），属独立的卫生项，不在本单射程。
+  **下一单判据**：`split_fields` 对显式 `-t` 分隔符要保留空段（C 的 `splitline()` 按 tabchar 切，空段就是
+  字段），去掉 `empty_fields_from_the_delimiter_split_keep_their_slots` 的 `#[ignore]`，金样 `-t,` 对
+  `a,,c` 两侧 → `a,,c,,c`；注意这一改动会牵动 `-o`/`-v`/计数类的字段号语义，属另一个射程，别顺手合并。
+  **过程自纠两处**：① 第一次把「①②③ 三形」塞进同一枚测并整体 `#[ignore]`，结果两枚负控「注入成功却全绿」
+  ——拆成两枚（必跑钉 ②③、ignore 只钉 ①）后负控才真咬住；② 本单台账的第一版用
+  「表外字母与缺值在 C 是**两行**」当锚，该串在 07 篇不唯一，断言当场挡下（代码与测都在，只重跑台账写入），
+  无损伤。**电脑因我上一单前的合成 CPU 压力重启过一次，本单起全程无合成压力、包测一律容器内跑。**
+
 - 🟡 **批次二百九十七：oracle 修好了、金样量到了，代码修复回退（我改测时删坏了既有测，不 ship 未证实的东西）**
   （`2026-10-15`，`claim/JOIN-OUTFIELD-SLOTS-qoder` @ 基线 `ab9cd59bf`；实现与测**全部 `git checkout` 回退**，
   回退后容器整包复测 **631 passed、0 failed** 与基线逐枚同数——破坏已确认修复）。

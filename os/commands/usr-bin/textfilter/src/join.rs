@@ -238,7 +238,10 @@ pub enum JoinError<'a> {
 /// 门槛是 `>= 3` 而不是 `>= 4`：`1.1` 这种一项数字的写法在 C 确实会被改写）。
 fn is_field_spec(word: &str) -> bool {
     let b = word.as_bytes();
-    b.len() >= 3 && matches!(b[0], b'1' | b'2') && b[1] == b'.' && b[2..].iter().all(u8::is_ascii_digit)
+    b.len() >= 3
+        && matches!(b[0], b'1' | b'2')
+        && b[1] == b'.'
+        && b[2..].iter().all(u8::is_ascii_digit)
 }
 
 /// 把 `join` 的 argv 尾部按 BSD `getopt("\01a:e:j:1:2:o:t:v:")` 拆成 [`JoinArgs`]。
@@ -412,18 +415,19 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
                 // 后面的 `2.1` 仍是操作数。这个门槛要在取 value 之前记下来。
                 let bare_o = a.len() == 2;
                 // `fieldarg` 的两支都是 `errx`，但句子不同，所以不能拢一个错型上去。
-                let push_list = |list: &'a str, acc: &mut Vec<OField>| -> Result<(), JoinError<'a>> {
-                    match parse_olist(list) {
-                        Ok(fields) => {
-                            // C 的 `fieldarg` 是**往 olist 尾部追加**（`join.c:540-542` 的
-                            // `olist[olistcnt] = ...; ++olistcnt`），所以重复 `-o` 累加而不是覆盖。
-                            acc.extend(fields);
-                            Ok(())
+                let push_list =
+                    |list: &'a str, acc: &mut Vec<OField>| -> Result<(), JoinError<'a>> {
+                        match parse_olist(list) {
+                            Ok(fields) => {
+                                // C 的 `fieldarg` 是**往 olist 尾部追加**（`join.c:540-542` 的
+                                // `olist[olistcnt] = ...; ++olistcnt`），所以重复 `-o` 累加而不是覆盖。
+                                acc.extend(fields);
+                                Ok(())
+                            }
+                            Err(OListError::Malformed) => Err(JoinError::MalformedOutputField),
+                            Err(OListError::OneBased) => Err(JoinError::FieldNumbersAre1Based),
                         }
-                        Err(OListError::Malformed) => Err(JoinError::MalformedOutputField),
-                        Err(OListError::OneBased) => Err(JoinError::FieldNumbersAre1Based),
-                    }
-                };
+                    };
                 push_list(value!('o'), &mut opts.output_fields)?;
                 // legacy `-o arg arg`：C 在 `obsolete()` 里把紧跟其后的每个 `[12].<数字>` 项
                 // 逐个重写成 `-o<该项>`（`join.c:596-617`），所以它们**不再是操作数**而是各自
@@ -553,17 +557,18 @@ fn group_end(lines: &[&[u8]], start: usize, field: usize, delim: u8) -> usize {
     end
 }
 
-/// Append a non-empty field to an in-progress output line, inserting the
-/// separator before all but the first field.
+/// 把字段接到正在拼的输出行上。**分隔符槽位先无条件占下**，之后才决定打不打内容：C 的
+/// `outfield()` 第一句就是 `if (needsep++) printf("%c", *tabchar);`
+///（`minix3/usr.bin/join/join.c:496-497`），只有"字段存在但本身是空串"才 `return`
+///（`:503-504`），槽位留着。所以 `-t,` 下 `a`、``、`c` 三字段在 C 是 `a,,c`；旧写法先判空
+/// 整个 `return`，把槽位一起抹掉，参照件现测（`join_ref`，金样见 `join_face.rs` 的
+/// `output_slots_match_the_bsd_reference_byte_for_byte`）钉住这一形。
 fn push_tok(out: &mut Vec<u8>, sep: u8, first: &mut bool, tok: &[u8]) {
-    if tok.is_empty() {
-        return;
-    }
     if !*first {
         out.push(sep);
     }
-    out.extend_from_slice(tok);
     *first = false;
+    out.extend_from_slice(tok);
 }
 
 /// Pick the token for one `join -o` entry given the (possibly absent) field
@@ -592,7 +597,7 @@ fn olist_token(
             .and_then(|f| f.get(opts.field1))
             .or_else(|| b.and_then(|f| f.get(opts.field2)))
             .map(|f| f.to_vec())
-            .unwrap_or_default(),
+            .unwrap_or_else(|| fallback.clone()),
         Which::One => pick(a, entry.idx),
         Which::Two => pick(b, entry.idx),
     }
@@ -614,9 +619,17 @@ fn twoline(a: &[&[u8]], b: &[&[u8]], opts: &JoinOptions) -> Vec<u8> {
         }
         return line;
     }
-    if a.len() > opts.field1 {
-        push_tok(&mut line, opts.delim, &mut first, a[opts.field1]);
-    }
+    // 缺席的连接字段照样占一个槽：C 是 `outfield(lp1, F1->joinf)`，而 `outfield` 对
+    // 「字段号超出这一行的字段数」走 `-e` 那一支（`:499-501`），没有 `-e` 就是个空槽。
+    let owned_join: Vec<u8>;
+    let join_tok: &[u8] = match a.get(opts.field1) {
+        Some(f) => f,
+        None => {
+            owned_join = opts.empty.clone().unwrap_or_default();
+            &owned_join
+        }
+    };
+    push_tok(&mut line, opts.delim, &mut first, join_tok);
     for (idx, f) in a.iter().enumerate() {
         if idx != opts.field1 {
             push_tok(&mut line, opts.delim, &mut first, f);

@@ -304,3 +304,53 @@ fn the_errx_legs_print_one_line_and_skip_the_usage_block() {
     assert_eq!(status, 1);
     assert_eq!(err, "join: -a and -v options mutually exclusive\n");
 }
+
+/// 金样来自 BSD 参照件现测：`join_ref`（`minix3/usr.bin/join/join.c` + 垫片，垫片须带
+/// `fgetln`/`getprogname` 的**原型**，否则二者被隐式声明成返回 `int`、指针截断后段错误）。
+/// 钉的是 `push_tok` 的槽位顺序：C 的 `outfield()` 先占分隔符槽、之后才决定内容
+///（`join.c:496-497`；"字段存在但为空串"才 `return` 且槽位留着，`:503-504`）。旧写法先判空
+/// 整个 `return`，于是 `-t,` 下 `a`、``、`c` 三字段被写成 `a,c`，而 C 是 `a,,c`。
+// 缺席连接字段要占一个分隔符槽（金样来自参照件 `join_ref` 现测，批次二百九十八）。
+// C 的 `outfield()` 先 `needsep++` 占槽再决定内容（`join.c:496-497`），因此 `-1 2`/`-2 2`
+// 对上只有一列的行时，连接字段那个槽是空的但仍在；配 `-e` 就往那个槽里打替换串。
+#[test]
+fn missing_join_field_keeps_its_separator_slot() {
+    let dir = std::env::temp_dir().join(format!("join-slot-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("scratch dir");
+    let file = |name: &str, body: &[u8]| -> String {
+        let path = dir.join(name);
+        fs::write(&path, body).expect("scratch file");
+        path.to_str().expect("utf-8 path").to_owned()
+    };
+    let s1 = file("short1", b"q\nr\n");
+    let s2 = file("short2", b"q\nr\n");
+    let (out, _, err) = run(&["-t,", "-1", "2", "-2", "2", &s1, &s2]);
+    assert_eq!(
+        out, ",q,q\n,q,r\n,r,q\n,r,r\n",
+        "缺席的连接字段占一个空槽，stderr 是 {err:?}"
+    );
+    let (out, _, _) = run(&["-t,", "-1", "2", "-2", "2", "-e", "-", &s1, &s2]);
+    assert_eq!(out, "-,q,q\n-,q,r\n-,r,q\n-,r,r\n", "`-e` 打的就是那个槽");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// 已知不通过（不是本轮射程，标 ignore 而不是删掉）：`-t,` 下 C 把空段当字段，
+// 本壳 `split_fields` 把 `-t` 切出的空段也跳掉了，于是 `a,,c` 两侧被拼成 `a,c,c`
+// 而参照件给 `a,,c,,c`。这是字段切分层与 C 的另一处分歧，已登记为下一单。
+#[ignore = "split_fields 丢掉 -t 切出的空字段：C 对 a,,c 两侧给 a,,c,,c，本壳给 a,c,c"]
+#[test]
+fn empty_fields_from_the_delimiter_split_keep_their_slots() {
+    let dir = std::env::temp_dir().join(format!("join-slot-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("scratch dir");
+    let file = |name: &str, body: &[u8]| -> String {
+        let path = dir.join(name);
+        fs::write(&path, body).expect("scratch file");
+        path.to_str().expect("utf-8 path").to_owned()
+    };
+    let a = file("left", b"a,,c\n");
+    let b = file("right", b"a,,c\n");
+    let (out, status, err) = run(&["-t,", &a, &b]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "a,,c,,c\n");
+    let _ = fs::remove_dir_all(&dir);
+}
