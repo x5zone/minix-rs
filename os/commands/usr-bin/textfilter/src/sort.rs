@@ -12,10 +12,14 @@
 //! fields separated by blank runs or by the `-t` delimiter byte, default
 //! whole-line keys, the modifier transformations dictionary (`d`), fold
 //! (`f`), ignore non-printable (`i`), numeric (`n`, blank-skipping sign
-//! and fraction aware), and reverse (`r`; a local `r` is dropped when a global
+//! and fraction aware), sort-by-field-length (`l`, `fields.c` 的 `length()`：跳完前导
+//! 空白后取跨度字节数），and reverse (`r`; a local `r` is dropped when a global
 //! `-r` stands — init.c:195-197). There is **no month flag in this C**: `M` is in
 //! neither `SORT_OPTS` (sort.c:148) nor `optval`, so `-M` falls to `usage()` and
-//! `-k 1M` to `illegal field descriptor`.
+//! `-k 1M` to `illegal field descriptor`. The last letter of `optval`'s table, `x`
+//! (hex numeric), is **not** modelled: C 的那句 `numhex()` 把 `sscanf(… "%llx", &n)`
+//! 施在**目的缓冲区游标** `pos` 而不是字段本身（`fields.c` 里 `numhex` 的那三行），所以它的
+//! 读数依赖键缓冲的复用，在值级无从复制——本壳把 `x` 留在集外字母那一支自报，不假装同形。
 //! Ties fall back to the whole line in byte order, and the global `-r`
 //! inverts the final outcome.
 //!
@@ -54,6 +58,9 @@ pub struct KeySpec {
     pub fold: bool,
     pub ignore_nonprint: bool,
     pub numeric: bool,
+    /// Sort by the **length** of the selected span (`l`, `fields.c` 的 `length()`)。
+    /// C 在 `enterfield` 里把这一位排在数值位之前（`:208-211`），所以 `l` 与 `n` 同时存在时按长度走。
+    pub by_length: bool,
     /// This key's comparison inverts (dropped when a global `-r` stands).
     pub reverse: bool,
 }
@@ -72,6 +79,7 @@ impl KeySpec {
             fold: false,
             ignore_nonprint: false,
             numeric: false,
+            by_length: false,
             reverse: false,
         }
     }
@@ -88,6 +96,8 @@ pub struct Options {
     pub dictionary: bool,
     pub ignore_nonprint: bool,
     pub numeric: bool,
+    /// Global sort-by-length (`-l`); same shape as the other flag letters.
+    pub by_length: bool,
     /// Leading-blank skip as a global flag.
     pub blank_skip: bool,
     /// Suppress lines that compare equal to their predecessor.
@@ -207,7 +217,7 @@ impl KeySpecError {
 ///
 /// 本解析器已建模的带值字母是 `k`、`o`、`t`：C 的选项串是 `sort.c:148` 的
 /// `#define SORT_OPTS "bcdD:fHik:lmno:rR:sSt:T:ux"`，其中 `:` 标出的是 `D`、`k`、`o`、
-/// `R`、`t`、`T` 六个；但 `D`/`R`/`T`（以及旗标 `l`/`S`/`x`）在本树尚未建模，它们现在
+/// `R`、`t`、`T` 六个；但 `D`/`R`/`T`（以及旗标 `S`/`x`）在本树尚未建模，它们现在
 /// 落进「集外字母」那一支——那是**选项面**的缺口（另案登记）。分成两条 libc 报文
 /// （集外字母走 `getopt.c:101-104`，缺值走 `:132-136`）的做法就体现在下面各臂里。
 pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), ParseError> {
@@ -229,6 +239,9 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                 'd' => options.dictionary = true,
                 'i' => options.ignore_nonprint = true,
                 'n' => options.numeric = true,
+                // `-l` 在 C 里与 `-d`/`-f`/`-i`/`-n` 同臂（`sort.c:168`），效果也是那一句
+                // `fldtab[0].flags |= optval(ch, 0)`（`:172`），所以它是一个全局默认标志。
+                'l' => options.by_length = true,
                 'b' => options.blank_skip = true,
                 'u' => options.unique = true,
                 'c' => options.check = true,
@@ -378,9 +391,11 @@ pub fn temp_candidate(path: &[u8], seed: u64, attempt: usize) -> Vec<u8> {
 /// 句子签字；② 旧写法把全局标志写成「逐位或」，而 C 是「局部一个字母也没有才整体继承」
 ///（`init.c:193-194`），于是 `-n -k 1r` 这种形在本树按数值排、在 C 按字典序反排。
 ///
-/// 本树尚未建模的修饰字母是 `l`（按字段长度）与 `x`（十六进制数，`__minix` 专有）：
-/// 它们在 `optval` 表里存在，但这里把它们当**残留字符**拒掉（报 `illegal field descriptor`）。
-/// 那是已知缺口，故意不静默接受：接受而无效会把「顺序错」伪装成「顺序对」。
+/// 本树尚未建模的修饰字母只剩 `x`（十六进制数，`__minix` 专有）：C 的那句 `numhex()`
+/// 把 `sscanf(… "%llx", &n)` 施在目的缓冲区的写游标而不是字段本身（`fields.c` 里 `numhex`
+/// 的那几行），读数依赖键缓冲的复用，值级无从复制。所以下面的循环**不把 `x` 收进来**（它
+/// 现在被当残留字符拒掉，报 `illegal field descriptor`），全局 `-x` 也仍走集外字母那一支——
+/// 故意不静默接受：接受而无效会把「顺序错」伪装成「顺序对」。
 /// `M` 不在 `optval` 表里，也不在 `SORT_OPTS`（`sort.c:148`）里，`switch` 同样没有
 /// `case 'M'`——所以 `-M` 与 `-k 1M` 在 C 都不认（参照件实测：前者落 `usage`，后者报
 /// `illegal field descriptor`）；旧写法把月名排序当成本树功能，那是无源建模。
@@ -404,12 +419,13 @@ pub fn parse_key(spec: &str, global: &Options) -> Result<KeySpec, KeySpecError> 
     let local = start.merge(&end);
     // `init.c:193-194`：`if (!cur_fld->flags) cur_fld->flags = gflag;`——局部只要有
     // 一个修饰字母就不再继承全局标志。
-    let (dictionary, fold, ignore_nonprint, numeric, reverse) = if local.any {
+    let (dictionary, fold, ignore_nonprint, numeric, by_length, reverse) = if local.any {
         (
             local.dictionary,
             local.fold,
             local.ignore_nonprint,
             local.numeric,
+            local.by_length,
             local.reverse,
         )
     } else {
@@ -418,6 +434,7 @@ pub fn parse_key(spec: &str, global: &Options) -> Result<KeySpec, KeySpecError> 
             global.fold,
             global.ignore_nonprint,
             global.numeric,
+            global.by_length,
             local.reverse,
         )
     };
@@ -454,6 +471,7 @@ pub fn parse_key(spec: &str, global: &Options) -> Result<KeySpec, KeySpecError> 
         fold,
         ignore_nonprint,
         numeric,
+        by_length,
         reverse,
     })
 }
@@ -468,13 +486,14 @@ struct Column<'a> {
     /// C 存在 `col->indent` 里的那个数：开始列在 `.C` 上减一（`init.c:168-169`），
     /// 没给 `.C` 时两列都是 0（结构体是 memset 过的）。
     eff_indent: i64,
-    /// 下面七个位就是 `optval` 给这一列置上的标志。
+    /// 下面八个位就是 `optval` 给这一列置上的标志。
     bi: bool,
     bt: bool,
     dictionary: bool,
     fold: bool,
     ignore_nonprint: bool,
     numeric: bool,
+    by_length: bool,
     reverse: bool,
     /// 一个修饰字母也没扫到（C 用 `if (!cur_fld->flags)` 判这件事）。
     any: bool,
@@ -495,6 +514,7 @@ impl<'a> Column<'a> {
             fold: false,
             ignore_nonprint: false,
             numeric: false,
+            by_length: false,
             reverse: false,
             any: false,
             rest: "",
@@ -513,6 +533,7 @@ impl<'a> Column<'a> {
             fold: self.fold || other.fold,
             ignore_nonprint: self.ignore_nonprint || other.ignore_nonprint,
             numeric: self.numeric || other.numeric,
+            by_length: self.by_length || other.by_length,
             reverse: self.reverse || other.reverse,
             any: self.any || other.any,
             rest: "",
@@ -559,6 +580,7 @@ fn scan_column<'a>(text: &'a str, filling_end: bool) -> Result<Column<'a>, KeySp
         fold: false,
         ignore_nonprint: false,
         numeric: false,
+        by_length: false,
         reverse: false,
         any: false,
         rest: "",
@@ -578,6 +600,8 @@ fn scan_column<'a>(text: &'a str, filling_end: bool) -> Result<Column<'a>, KeySp
             b'f' => column.fold = true,
             b'i' => column.ignore_nonprint = true,
             b'n' => column.numeric = true,
+            // `optval` 的 `case 'l': return L;`（`init.c:234`）。
+            b'l' => column.by_length = true,
             b'r' => column.reverse = true,
             _ => break,
         }
@@ -619,6 +643,19 @@ fn scan_long(text: &str, from: usize) -> (i64, usize) {
         return (0, from);
     }
     (if negative { -value } else { value }, position)
+}
+
+/// C `fields.c:length()` 的那一步：先 `SKIP_BLANKS(line)`，再取 `lineend - line`。
+/// 所以量的不是「补白后的跨度」也不是过滤后的键字节，而是跳完前导空白到跨度末尾的
+/// 字节数（`enterfield` 里的 `start`/`end`，与 [`key_bytes`] 同一套算式）。
+fn span_length(line: &str, key: &KeySpec, delimiter: Option<u8>) -> usize {
+    let span = key_bytes(line, key, delimiter);
+    let bytes = span.as_bytes();
+    let mut offset = 0usize;
+    while offset < bytes.len() && is_blank(bytes[offset]) {
+        offset += 1;
+    }
+    bytes.len() - offset
 }
 
 /// The span of the `field`-th field of a line (1 based), byte offsets
@@ -885,6 +922,7 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
             dictionary: options.dictionary,
             ignore_nonprint: options.ignore_nonprint,
             numeric: options.numeric,
+            by_length: options.by_length,
             blank_start: options.blank_skip,
             ..KeySpec::whole_line()
         };
@@ -896,7 +934,11 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
     for key in keys {
         let ka = key_bytes(a, key, options.delimiter);
         let kb = key_bytes(b, key, options.delimiter);
-        let ordering = if key.numeric {
+        let ordering = if key.by_length {
+            // C 那句是 `length()`：跳完前导空白后把「跨度还有几个字节」写成十进制串，
+            // 再交给 `number()`。对纯十进制串来说数值序就是整数序，所以直接比长度。
+            span_length(a, key, options.delimiter).cmp(&span_length(b, key, options.delimiter))
+        } else if key.numeric {
             compare_numeric(&numeric_key(ka.as_bytes()), &numeric_key(kb.as_bytes()))
         } else {
             cmp_filtered(ka.as_bytes(), kb.as_bytes(), key)
@@ -1054,6 +1096,44 @@ mod tests {
                 parse_key(spec, &opts("")).unwrap().start_field,
                 1,
                 "{spec:?}"
+            );
+        }
+    }
+
+    /// `-l` 排的是「跨度还有几个字节」（C `fields.c:length()`：先 `SKIP_BLANKS(line)`，
+    /// 再把 `lineend - line` 写成十进制串交给 `number()`）。下面四个读数直接拿参照件
+    /// `sort_ref` 量过：空行（0）、`b 2`（1）、`cc 3`（2）、`aaa 1`（3）。
+    /// 量的是长度而不是内容，所以 `b 2` 反而排在 `aaa 1` 之前（字典序倒过来）。
+    #[test]
+    fn sort_by_length_orders_by_span_length_not_content() {
+        let by_length = opts("-l");
+        assert_eq!(compare("b 2", "aaa 1", &by_length), Ordering::Less);
+        assert_eq!(compare("cc 3", "aaa 1", &by_length), Ordering::Less);
+        assert_eq!(compare("", "b 2", &by_length), Ordering::Less);
+        // 等长时平在本键上，再回退到整行比较（那是本树的既有形状；C 的默认是并列键保持
+        // 输入序，那一处差异已登记在批次二百八十七条的「登记不执行」第②条）。
+        assert_eq!(compare("ab 1", "cd 2", &by_length), Ordering::Less);
+        // 全局 `-l` 与局部 `-k 1l` 同序（`-l` 走的是 `fldtab[0].flags`，`sort.c:168-172`）。
+        assert_eq!(compare("b 2", "aaa 1", &opts("-k 1l")), Ordering::Less);
+        // 跳前导空白只发生在本键那一支里（`SKIP_BLANKS`），所以 `-t:` 下「两个补白加 aa」
+        // 的长度是 2 而不是 4——参照件给 `b:2`、`  aa:1`、`ccc:3` 这个序。
+        let delimited = opts("-t: -k 1l");
+        assert_eq!(compare("  aa:1", "b:2", &delimited), Ordering::Greater);
+        assert_eq!(compare("  aa:1", "ccc:3", &delimited), Ordering::Less);
+    }
+
+    /// `l` 与 `n` 同时存在时按长度走：C 在 `enterfield` 里先查 `L` 再查 `N`
+    /// （`fields.c:208-211`），参照件量出 `-k 1ln` 与 `-k 1nl` 的读数与 `-k 1l` 完全相同
+    ///（而不是数值序：`aaa` 与 `cc` 都没有数字前缀，走数值两者都是 0 而平局）。
+    #[test]
+    fn the_length_flag_wins_over_numeric() {
+        for spec in ["1ln", "1nl"] {
+            let key = parse_key(spec, &opts("")).unwrap();
+            assert!(key.by_length && key.numeric, "{spec} 两位都该点亮");
+            assert_eq!(
+                compare("cc 3", "aaa 1", &opts(&format!("-k {spec}"))),
+                Ordering::Less,
+                "{spec}：长度序优先，不是数值序也不是字典序"
             );
         }
     }

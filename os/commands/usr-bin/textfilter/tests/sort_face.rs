@@ -302,6 +302,35 @@ fn a_bad_key_gets_its_own_sentence_without_the_usage() {
 }
 
 #[test]
+fn the_length_flag_sorts_by_span_length() {
+    // `-l` 排的是跳完前导空白后的「跨度字节数」（C `fields.c` 的 `length()`），不是内容。
+    // 下面四行读数是拿参照件 `tmp/family-diag-ref/sort_ref` 在同一输入上量出来的：
+    // 空行（0）、`b 2`（1）、`cc 3`（2）、`aaa 1`（3）。字典序与数值序都给不出这个序。
+    let input = b"aaa 1\nb 2\ncc 3\n\n";
+    let (out, status, err) = run(&["-l"], input);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, b"\nb 2\ncc 3\naaa 1\n");
+    // 局部 `-k 1l` 与全局 `-l` 同序；`-l` 配 `-r` 就是它的倒序。
+    assert_eq!(run(&["-k", "1l"], input).0, out);
+    assert_eq!(run(&["-l", "-r"], input).0, b"aaa 1\ncc 3\nb 2\n\n");
+    // `l` 与 `n` 同时给时按长度走（`enterfield` 先查 `L` 再查 `N`）：参照件上
+    // `-k 1ln` 与 `-k 1nl` 的读数与 `-k 1l` 逐字节相同。
+    assert_eq!(run(&["-k", "1ln"], input).0, out);
+    assert_eq!(run(&["-k", "1nl"], input).0, out);
+    // 补白不计入长度：`-t:` 下第一行「  aa:1」的字段一是 `  aa`，跳完两个空白是 2，
+    // 所以它排在长度为 1 的 `b:2` 之后。
+    let delimited = b"  aa:1\nb:2\nccc:3\n";
+    let (out, status, err) = run(&["-t:", "-k", "1l"], delimited);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(
+        out, b"b:2\n  aa:1\nccc:3\n",
+        "参照件给的序就是 b:2、  aa:1、ccc:3"
+    );
+    // 反方向的一枚：不带 `-l` 时同一输入走字典序，带补白的 `  aa:1` 反而排在第一位。
+    assert_eq!(run(&["-t:", "-k", "1"], delimited).0, delimited);
+}
+
+#[test]
 fn a_second_delimiter_option_takes_the_message_plus_the_usage_block() {
     // `usage("multiple field delimiters")`（`sort.c:214-215`）：先 `%s: %s` 那一句，
     // 再接整个 usage 行。而多字节本身不是错（C 只取首字节）。

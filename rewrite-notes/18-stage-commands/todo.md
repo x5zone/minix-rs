@@ -250,6 +250,49 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十八接上 `sort` 的 `-l`（按字段长度），并把 `x` 定为「不建模且说清为何」**
+  （`2026-10-15`，`claim/SORT-LX-FLAGS-qoder` @ 基线 `db4c688ba`，单域三线同一 crate：
+  `src/sort.rs`、`tests/sort_face.rs` 加 `07-text-filter.md`，无跨线登记）：批次二百八十七
+  「登记不执行」的第①条拆出的前一半。
+  **接的是哪一支**：C 的 `enterfield` 在 `fields.c:208-211` 依次查 `L`→`N`→`X`，`L` 那一支就是
+  `length()`：先 `SKIP_BLANKS(line)`、再把 `lineend - line` 写成十进制串交给 `number()`。对纯
+  十进制串来说数值序就是整数序，所以本壳直接比「跳完前导空白后的跨度字节数」（新函数
+  `sort.rs:span_length`，与 `key_bytes` 共用同一套起停算式）。`KeySpec`/`Options`/`Column` 各加
+  一位 `by_length`，修饰环收 `b'l'`（`optval` 的 `case 'l': return L;`，`init.c:234`），选项环收
+  全局 `'l'`（C 把它与 `d`/`f`/`i`/`n` 写在同一臂，`sort.c:168`，效果是 `:172` 那一句）。
+  **五条读数全拿参照件量**：`-l`、`-k 1l`、`-k 1ln`、`-k 1nl` 四者在输入「空行/`aaa 1`/`b 2`/`cc 3`」
+  上逐字节同序（空行、`b 2`、`cc 3`、`aaa 1`）——`ln`/`nl` 与 `l` 同序证明的是「`L` 排在 `N` 前」
+  而不是巧合；`-t:` 下「两个补白加 `aa`」算 2 不算 4，所以 `b:2` 在 `  aa:1` 之前。另钉一枚反方向：
+  同一输入不带 `-l` 时走字典序，`  aa:1` 反而排第一。
+  **`x` 的处置是一处推翻式登记**：C 的 `numhex()` 写的是 `sscanf((const char *) pos, "%llx", &n)`，
+  而那个 `pos` 是 `enterfield` 传进来的**目的缓冲区写游标**，不是字段游标——它解析的根本不是那一列
+  的内容，读数依赖键缓冲的复用（实测 `sort_ref -k 1x` 与 `-k 1n` 给出不同且与任何干净语义都对不
+  上的序）。本壳既不复制也不假装：把它静默接受为空操作会把「顺序错」伪装成「顺序对」，所以 `x`
+  仍不进修饰集（`-k 1x` 报 `illegal field descriptor`），全局 `-x` 仍走集外字母那一支。
+  **两处读数过程错（都是自己的命令写错，不是代码错）**：① 第一次容器门拿的是**截断读数**：
+  `cargo test` 缺 `--no-fail-fast` 时，首个失败目标之后的所有目标根本不跑，所以先后得到 536 与 605
+  两个偏小的数，且第二次数掉的 19 枚里有一枚偶发失败。改成 `cargo test --no-fail-fast -j 1 -p
+  minix-textfilter > /tmp/d.log` 后落盘统计得 **624/0**，零 `FAILED` 行。② **宿主上跑整包测试会
+  把 WSL 打挂**（并发编译加上跟随腿要睡十几秒的目标叠在一起），用户明确要求**测试一律在容器里跑**；
+  本轮之后的包级测试与合回后复跑均走 docker 配方（带 `-m 2g` 与 `-e CARGO_TARGET_DIR`）。
+  **遗留一枚偶发，不当它不存在也不当作已证伪**：整包并跑时 `vis_face::fold_width_is_read_the_way_
+  atoi_reads_it` 与 `tail_face` 的跟随腿各报过一次红，但同一目标单跑、以及改 `--no-fail-fast` 重跑
+  全绿（本轮两次全绿）。两者都是负载敏感型（前者要子进程拿终端宽度作缺省页宽，后者一拍睡一秒），
+  归入新登记的一条：要给这两枚门加超时/隔离或改成不依赖环境的形（下一单）。
+  三件套：**docker `minix-ci:1.94` `cargo test --no-fail-fast -j 1 -p minix-textfilter` → 624 passed、
+  0 failed**（权威读数，完整日志落盘后统计）、同容器 `cargo check --workspace -j 1` **0 error**；
+  宿主同包 **624/0**（基线 621：`--lib` 443→445 新增两枚，`sort_face` 11→12 新增一枚）；三架构
+  `--bins`（x86_64/aarch64/riscv64gc）零错；`rustfmt --check` 本笔两件：`sort.rs` 零漂移，
+  `sort_face.rs` 报出一处**是本笔自己写的超长 `assert_eq!`**（拿 `git show HEAD:` 副本比对基线为零
+  漂移），已 rustfmt 排定并复跑零漂移、确认它不在结束列之后重排任何存量行（工作树污染面 0）；
+  clippy 触及件零告警；三枚变异负控各咬一处（①修饰环 `b'l'` 不置位→lib 两枚加端到端一枚报红；
+  ②`span_length` 不跳前导空白→lib 一枚加端到端一枚；③比较半不走长度臂→lib 两枚加端到端一枚），
+  均先打印 `mutation applied`、恢复用备份并 `cmp` 同一；`tools/pattern-gate.sh` PASS=15 FAIL=0 SKIP=1；
+  `tools/check-command-boundary.sh` OK；核实日 `2026-10-15`；基线 `db4c688ba`。
+  登记不执行（待办）：① `vis_face`/`tail_face` 两枚负载敏感门的隔离或超时改造（本轮只在容器里跑
+  过它，不在宿主重跑）；② `sort` 选项面余下四个字母 `D`/`R`/`T`/`S`（`R` 记录分隔符是真功能，
+  `S`/`D`/`T` 需定口径）；③ C 默认「并列键保持输入序」而本树回退整行比较那一题。
+
 - ✅ **批次二百八十七把 `sort` 键形的五句 `errx` 分流，并推翻两处写进台账的断言（`-k 2,1` 与月名）**
   （`2026-10-15`，`claim/SORT-OPTION-COVERAGE-qoder` @ 基线 `0c9681fb5`，单域三线同一 crate：
   `src/sort.rs`、`src/bin/sort.rs`、`tests/sort_face.rs` 加 `rewrite-notes/18-stage-commands/07-text-filter.md`，
