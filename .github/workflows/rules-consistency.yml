@@ -85,6 +85,7 @@ jobs:
         run: |
           bash tools/doc-style-lint.sh --self-test
           bash tools/anchor-resolve.sh --self-test
+          bash tools/doc-code-map.sh --self-test
           bash tools/doc-code-density-check.sh --self-test
           bash tools/doc-ref-check.sh --self-test
           bash tools/anchor-migrate.sh --self-test

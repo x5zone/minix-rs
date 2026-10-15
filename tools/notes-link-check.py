@@ -55,6 +55,14 @@ def strip_fragment(target: str) -> str:
     return target.split("#", 1)[0]
 
 
+def strip_symbol(target: str) -> str:
+    """剥掉链接目标尾部的 `:符号` 锚点（如 `os/x.rs:lin_lin_copy` → `os/x.rs`）。
+    与 anchor-resolve.sh 的 `sed 's/:.*$//'` 口径一致，使 W-11 链接化后的
+    `[`sym`](path:sym)` 目标按真实文件解析，否则满屏假断链。
+    外链（http:/mailto: 等）已在 is_checkable 中先行排除，不会误剥 scheme 冒号。"""
+    return target.split(":", 1)[0]
+
+
 def is_checkable(target: str) -> bool:
     if not target:
         return False
@@ -108,7 +116,7 @@ def collect_broken(files: list, root: Path) -> list:
             for t in targets:
                 if not is_checkable(t):
                     continue
-                path_part = strip_fragment(t)
+                path_part = strip_symbol(strip_fragment(t))
                 if not path_part:
                     continue
                 via_file = (f.parent / path_part).resolve()
@@ -145,6 +153,7 @@ def do_self_test() -> int:
             "父目录链接存在 [x](../docs/b.md)\n"
             "断链 [x](./missing.md)\n"
             "带行号锚点且存在 [x](./b.md#L78-L96)\n"
+            "带符号锚点目标剥后存在 [x](./b.md:lin_lin_copy)\n"
             "外链跳过 [x](https://example.com/nope.md)\n"
             "纯锚点跳过 [x](#section)\n"
             "仓库根形态 [x](docs/b.md)\n"
@@ -162,6 +171,7 @@ def do_self_test() -> int:
             "./b.md",
             "../docs/b.md",
             "./b.md#L78-L96",
+            "./b.md:lin_lin_copy",
             "https://example.com/nope.md",
             "#section",
             "docs/b.md",
