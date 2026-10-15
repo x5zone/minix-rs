@@ -29,19 +29,37 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
+use minix_textfilter::GetoptReport;
 use minix_textfilter::uniq::{Uniq, UniqFlags};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    // C 的诊断行都以 `getprogname()` 开头（`uniq.c:216-221` 的 `err(1, "%s", name)`、
+    // `:91-98` 的 `errx`、`:252-256` 的 usage），所以不能写死命令名。
+    let prog = support::prog_name(&argv);
     let (flags, skip_fields, skip_chars, operands) = match parse_uniq_args(&argv) {
         Ok(parsed) => parsed,
-        Err(_) => usage(),
+        // libc 先印一行，再由 `case '?'` → usage（`uniq.c:102-104`）。
+        Err(UniqArgError::Getopt(report)) => {
+            support::warn(report.line(prog).as_bytes());
+            usage(prog)
+        }
+        // C 的两句 errx（`uniq.c:91`、`:97`）：走 `vwarnx`，不缀 `errno` 句子，
+        // 但**把坏值拼回句子**（那句里有 `%s`）。
+        Err(UniqArgError::IllegalField(value)) => {
+            support::warn(format!("{prog}: illegal field skip value: {value}\n").as_bytes());
+            support::terminate(1);
+        }
+        Err(UniqArgError::IllegalChar(value)) => {
+            support::warn(format!("{prog}: illegal character skip value: {value}\n").as_bytes());
+            support::terminate(1);
+        }
     };
 
     // C `switch (argc) { 0: stdin/stdout; 1: file/stdout; 2: file/file;
-    // default: usage }`.
+    // default: usage }`——这一支是**裸 usage**，前面没有 libc 那一行。
     if operands.len() > 2 {
-        usage();
+        usage(prog);
     }
     // `case 2` opens the input handle first (`ifp = file(argv[0], "r")`), then
     // creates the output (`ofp = file(argv[1], "w")`, which truncates at that
@@ -52,8 +70,10 @@ fn run() -> ! {
         None => None,
         Some(path) => match support::open_input(path) {
             Ok(source) => Some(source),
-            Err(()) => {
-                support::warn(format!("uniq: {path}\n").as_bytes());
+            // C 的 `file()` 是 `err(1, "%s", name)`（`uniq.c:216-221`）：致命，
+            // 且那句里三个成分缺一不可。旧写法把 `err(3)` 当成 `errx(3)` 用。
+            Err(code) => {
+                support::warn_line(prog, path, code);
                 support::terminate(1);
             }
         },
@@ -62,8 +82,8 @@ fn run() -> ! {
         None => None,
         Some(path) => match support::create_sink(path) {
             Ok(sink) => Some(sink),
-            Err(()) => {
-                support::warn(format!("uniq: {path}\n").as_bytes());
+            Err(code) => {
+                support::warn_line(prog, path, code);
                 support::terminate(1);
             }
         },
@@ -119,8 +139,12 @@ fn report(
     }
 }
 
-fn usage() -> ! {
-    support::warn(b"usage: uniq [-cdu] [-f fields] [-s chars] [input_file [output_file]]\n");
+fn usage(prog: &str) -> ! {
+    // 逐字对位 `uniq.c:252-256`（一行，中间一个空格拼起来，退 1）。
+    support::warn(
+        format!("usage: {prog} [-cdu] [-f fields] [-s chars] [input_file [output_file]]\n")
+            .as_bytes(),
+    );
     support::terminate(1);
 }
 
@@ -164,10 +188,14 @@ fn obsolete_args(argv: &[String]) -> Vec<String> {
 /// (`uniq.c`): the three mode flags `-c`/`-d`/`-u` are independent bits (C keeps
 /// `cflag`/`dflag`/`uflag` and composes them in `show()`, so `-c -d` and even
 /// `-d -u` are legal rather than a clash), value flags `-f`/`-s` take the rest of
-/// the token or the next argv (rejecting a non-numeric value), `--` ends options,
-/// and everything else is an operand. Returns `(flags, fields, chars, operands)`;
-/// `Err` on a bad or unknown option (the caller prints usage).
-fn parse_uniq_args(argv: &[String]) -> Result<(UniqFlags, usize, usize, Vec<String>), ()> {
+/// the token or the next argv, `--` ends options, and everything else is an
+/// operand.
+///
+/// 三类出口不是一回事，所以不再返一个 `()`：集外字母与缺值走 libc 那一行，
+/// 而转不出一个合法跳过数的值走的是 C 自己的 `errx`（带坏值、不带 usage）。
+fn parse_uniq_args(
+    argv: &[String],
+) -> Result<(UniqFlags, usize, usize, Vec<String>), UniqArgError> {
     // C runs `obsolete(argv)` before `getopt`, so the folding happens first here
     // too and every later step sees the rewritten words.
     let scanned = obsolete_args(argv);
@@ -200,7 +228,8 @@ fn parse_uniq_args(argv: &[String]) -> Result<(UniqFlags, usize, usize, Vec<Stri
                     j += 1;
                 }
                 b'f' | b's' => {
-                    let is_field = bytes[j] == b'f';
+                    let letter = bytes[j];
+                    let is_field = letter == b'f';
                     j += 1;
                     let value = if j < bytes.len() {
                         let v = String::from(&tok[j..]);
@@ -208,21 +237,92 @@ fn parse_uniq_args(argv: &[String]) -> Result<(UniqFlags, usize, usize, Vec<Stri
                         v
                     } else {
                         i += 1;
-                        scanned.get(i).cloned().unwrap_or_default()
+                        match scanned.get(i) {
+                            Some(v) => v.clone(),
+                            // C：optstring 不以 `:` 开头，缺值时 getopt 先印一句
+                            // 再返回 `'?'`（`getopt.c:132-136`）。
+                            None => {
+                                return Err(UniqArgError::Getopt(GetoptReport::MissingValue(
+                                    letter as char,
+                                )));
+                            }
+                        }
                     };
-                    let n: usize = value.parse().map_err(|_| ())?;
+                    // C 只查两条：转出一个负数，或 `*p` 还有残留（`uniq.c:90-98`）。
+                    // 旧写法把两者都当成 usage 错，既弄错了出口也弄错了句子。
+                    let n = skip_count(&value).ok_or(if is_field {
+                        UniqArgError::IllegalField(value)
+                    } else {
+                        UniqArgError::IllegalChar(value)
+                    })?;
                     if is_field {
                         fields = n;
                     } else {
                         chars = n;
                     }
                 }
-                _ => return Err(()),
+                _ => {
+                    return Err(UniqArgError::Getopt(GetoptReport::UnknownOption(
+                        bytes[j] as char,
+                    )));
+                }
             }
         }
         i += 1;
     }
     Ok((flags, fields, chars, operands))
+}
+
+/// `uniq` 的参数错三型（对应 C 的三条真出路）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UniqArgError {
+    /// 集外字母或缺值：libc 先印一行，再走 usage。
+    Getopt(GetoptReport),
+    /// `-f` 的跳过数不合法（C `errx "illegal field skip value: %s"`）。
+    IllegalField(String),
+    /// `-s` 的跳过数不合法（C `errx "illegal character skip value: %s"`）。
+    IllegalChar(String),
+}
+
+/// C 那句 `strtol(optarg, &p, 10)` 加 `if (numfields < 0 || *p)` 的模型：
+/// 跳前导空白、可带一个符号、读到非数字为止；**一个数字都没转出来时值为 0**
+/// 且 `p` 停在数字起点，所以空串是合法的零（`-f ''` 在 C 不报错），而 `-f -`
+/// 的 `p` 停在那个减号上——这就是两形的分界。超出 `long` 的溢出在 C 里只
+/// 置 `errno`（uniq 不查），本函数因此饱和而不报错。
+///
+/// `None` 就是 C 的那句 errx。
+fn skip_count(value: &str) -> Option<usize> {
+    let bytes = value.as_bytes();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    let number_start = cursor;
+    let negative = bytes.get(cursor) == Some(&b'-');
+    if matches!(bytes.get(cursor), Some(b'-') | Some(b'+')) {
+        cursor += 1;
+    }
+    let digits_from = cursor;
+    let mut number = 0usize;
+    while let Some(&byte) = bytes.get(cursor) {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        number = number
+            .saturating_mul(10)
+            .saturating_add(usize::from(byte - b'0'));
+        cursor += 1;
+    }
+    let tail = if cursor > digits_from {
+        cursor
+    } else {
+        // 没转出一个数字：`strtol` 把 `endptr` 放回数字起点（含符号）。
+        number_start
+    };
+    if negative || tail < bytes.len() {
+        return None;
+    }
+    Some(number)
 }
 
 #[cfg(all(not(test), target_os = "none"))]
@@ -279,9 +379,51 @@ mod tests {
 
     #[test]
     fn parse_rejects_bad_value_and_unknown_option() {
-        assert!(parse_uniq_args(&argv(&["-f", "x"])).is_err()); // non-numeric
-        assert!(parse_uniq_args(&argv(&["-f", "-1"])).is_err()); // negative
-        assert!(parse_uniq_args(&argv(&["-i"])).is_err()); // not a NetBSD uniq flag
+        assert_eq!(
+            parse_uniq_args(&argv(&["-f", "x"])),
+            Err(UniqArgError::IllegalField(String::from("x")))
+        ); // C 的 errx，不是 usage
+        assert_eq!(
+            parse_uniq_args(&argv(&["-s", "x"])),
+            Err(UniqArgError::IllegalChar(String::from("x")))
+        ); // 两个值各自的句子
+        // 注意两形的区别：`-f -1` 里的 `-1` 会先被 `obsolete()` 折叠成 `-f1`，
+        // 所以 optarg 看到的、以及被拼回句子里的是 `-f1`（宿主参照件同读数：
+        // `uniq_ref: illegal field skip value: -f1`）；要测「转出一个负数」那一支
+        // 得用附值形 `-f-1`。
+        assert_eq!(
+            parse_uniq_args(&argv(&["-f", "-1"])),
+            Err(UniqArgError::IllegalField(String::from("-f1")))
+        );
+        assert_eq!(
+            parse_uniq_args(&argv(&["-f-1"])),
+            Err(UniqArgError::IllegalField(String::from("-1")))
+        ); // negative → C 的 `numfields < 0`
+        assert_eq!(
+            parse_uniq_args(&argv(&["-i"])),
+            Err(UniqArgError::Getopt(GetoptReport::UnknownOption('i')))
+        ); // not a NetBSD uniq flag
+        assert_eq!(
+            parse_uniq_args(&argv(&["-f"])),
+            Err(UniqArgError::Getopt(GetoptReport::MissingValue('f')))
+        ); // 缺值走 libc 那一行
+        // strtol 的两条形状：没转出一个数字时值为 0 且 `p` 停在数字起点，
+        // 所以空串合法（宿主参照件同形：与无选项基线一样进到读路径里）、
+        // 孤一个减号不合法。
+        assert_eq!(
+            parse_uniq_args(&argv(&["-f", ""])).unwrap().1,
+            0,
+            "`-f ''` 在 C 是合法的零"
+        );
+        assert_eq!(
+            parse_uniq_args(&argv(&["-s", " -3"])),
+            Err(UniqArgError::IllegalChar(String::from(" -3")))
+        );
+        assert_eq!(parse_uniq_args(&argv(&["-f", " 2"])).unwrap().1, 2); // 前导空白
+        assert_eq!(
+            parse_uniq_args(&argv(&["-f", "5x"])),
+            Err(UniqArgError::IllegalField(String::from("5x")))
+        ); // 残留
     }
 
     #[test]

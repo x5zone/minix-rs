@@ -92,16 +92,9 @@ pub struct FollowSource {
     is_stdin: bool,
 }
 
-/// 把宿主 `io::Error` 的号取成 C 的 `errno`：C 的诊断腿印的就是这个号
-/// （`misc.c:53-57` 的 `ierr()` → `xerr(0, "%s", fname)`（`:65-76`）→ `vwarn`）。
-#[cfg(any(test, not(target_os = "none")))]
-fn host_errno(error: &std::io::Error) -> minix_sys::Errno {
-    minix_sys::Errno::from_i32(
-        error
-            .raw_os_error()
-            .unwrap_or(minix_sys::Errno::EIO.to_i32()),
-    )
-}
+// 宿主错误号 → C `errno` 的换算住在 `support::errno_of`（与 `read_file`、`open_input`
+// 同一口径），本文件不再另写一份：C 的 `ierr()` 走的是带号的 `xerr`/`vwarn`
+// （`misc.c:53-57`、`:65-76`），两份换算迟早会漂移。
 
 impl FollowSource {
     /// C `fopen(fname, "r")`（`tail.c:167`）。
@@ -112,7 +105,7 @@ impl FollowSource {
                 file: std::mem::ManuallyDrop::new(file),
                 is_stdin: false,
             })
-            .map_err(|e| host_errno(&e))
+            .map_err(|e| support::errno_of(&e))
     }
 
     #[cfg(all(not(test), target_os = "none"))]
@@ -152,7 +145,7 @@ impl FollowSource {
         self.file
             .metadata()
             .map(host_identity)
-            .map_err(|e| host_errno(&e))
+            .map_err(|e| support::errno_of(&e))
     }
 
     #[cfg(all(not(test), target_os = "none"))]
@@ -196,7 +189,7 @@ impl FollowSource {
         let mut data = Vec::new();
         self.file
             .read_to_end(&mut data)
-            .map_err(|e| host_errno(&e))?;
+            .map_err(|e| support::errno_of(&e))?;
         Ok(data)
     }
 
@@ -224,7 +217,7 @@ impl FollowSource {
             match self.file.read(&mut chunk) {
                 Ok(0) => return Ok(()),
                 Ok(count) => support::emit(&chunk[..count]),
-                Err(error) => return Err(host_errno(&error)),
+                Err(error) => return Err(support::errno_of(&error)),
             }
         }
     }
@@ -249,7 +242,7 @@ impl FollowSource {
         if self.is_stdin {
             return Err(minix_sys::Errno::EBADF);
         }
-        let fresh = std::fs::File::open(path).map_err(|e| host_errno(&e))?;
+        let fresh = std::fs::File::open(path).map_err(|e| support::errno_of(&e))?;
         // C 的 `freopen` 是把那个流换掉，旧句柄不留着；本对象自己管那份释放
         // （`Drop` 只在没重开过的手上跑）。
         unsafe { std::mem::ManuallyDrop::drop(&mut self.file) };
@@ -333,7 +326,7 @@ fn target_identity(stat: &minix_sys::Stat) -> StatIdentity {
 fn stat_by_path(path: &str) -> Result<StatIdentity, minix_sys::Errno> {
     std::fs::metadata(path)
         .map(host_identity)
-        .map_err(|e| host_errno(&e))
+        .map_err(|e| support::errno_of(&e))
 }
 
 #[cfg(all(not(test), target_os = "none"))]

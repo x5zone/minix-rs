@@ -110,7 +110,9 @@ fn write_output(options: &minix_textfilter::sort::Options, payload: &[u8]) {
                 // exit can fail just as silently, so no message is invented here.
                 let _ = sink.finish(payload);
             }
-            Err(()) => {
+            // `create_sink` 现在返 `errno`（`uniq` 的致命 `err(1, "%s", name)` 需要它）。
+            // sort 这一腿的文案本轮不动，它的诊断面同 `join` 一起排在下一轮。
+            Err(_) => {
                 support::warn(format!("sort: output file {target}\n").as_bytes());
                 support::terminate(2);
             }

@@ -261,6 +261,19 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<(), ()> {
     done.map(|_| ()).map_err(|_| ())
 }
 
+/// 把宿主 `io::Error` 的号取成 C 的 `errno`。C 的这些命令的开档腿印的就是那个号
+/// （`err(1, "%s", name)`/`warn("%s", name)` 走 `vwarn`，不是 `warnx`），没有号就只剩
+/// 「出错了」三个字。拿不到 `raw_os_error()` 时退到 `EIO`（与 `read_file`、`stdio-games`
+/// 那条读缝同一口径）。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn errno_of(error: &std::io::Error) -> minix_sys::Errno {
+    minix_sys::Errno::from_i32(
+        error
+            .raw_os_error()
+            .unwrap_or(minix_sys::Errno::EIO.to_i32()),
+    )
+}
+
 /// A create-or-truncate write sink — C's `fopen(name, "w")`, which truncates the
 /// file at open time, before any byte of the input has been read. Keeping the
 /// handle open (instead of writing once at the end) is what makes that ordering
@@ -278,14 +291,19 @@ pub struct WriteSink {
 /// `O_WRONLY` is `0x1` (`minix3/sys/sys/fcntl.h:65`), `O_CREAT` is `0x200` (`:99`)
 /// and `O_TRUNC` is `0x400` (`:100`); the mode `0666` is what `fopen` hands to
 /// `open(2)`, so the process umask still applies.
+///
+/// 错误腿带的是那个号（不是单位）：`uniq` 的输出腿是 `file(argv[1], "w")` →
+/// `err(1, "%s", name)`（`uniq.c:216-221`），报的正是它。
 #[cfg(any(test, not(target_os = "none")))]
-pub fn create_sink(path: &str) -> Result<WriteSink, ()> {
-    std::fs::File::create(path).map(WriteSink).map_err(|_| ())
+pub fn create_sink(path: &str) -> Result<WriteSink, minix_sys::Errno> {
+    std::fs::File::create(path)
+        .map(WriteSink)
+        .map_err(|e| errno_of(&e))
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn create_sink(path: &str) -> Result<WriteSink, ()> {
-    let fd = minix_sys::open(path, 0x1 | 0x200 | 0x400, 0o666).map_err(|_| ())?;
+pub fn create_sink(path: &str) -> Result<WriteSink, minix_sys::Errno> {
+    let fd = minix_sys::open(path, 0x1 | 0x200 | 0x400, 0o666)?;
     Ok(WriteSink { fd })
 }
 
@@ -328,17 +346,18 @@ pub struct ReadSource {
 }
 
 /// Opens an input operand read-only (C's `fopen(name, "r")`), without reading it.
+/// 错误腿同 `create_sink`：带的是 `errno`，不是单位。
 #[cfg(any(test, not(target_os = "none")))]
-pub fn open_input(path: &str) -> Result<ReadSource, ()> {
-    std::fs::File::open(path).map(ReadSource).map_err(|_| ())
+pub fn open_input(path: &str) -> Result<ReadSource, minix_sys::Errno> {
+    std::fs::File::open(path)
+        .map(ReadSource)
+        .map_err(|e| errno_of(&e))
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn open_input(path: &str) -> Result<ReadSource, ()> {
-    // `O_RDONLY` is zero, the flags `open(path, 0, 0)` already passes.
-    minix_sys::open(path, 0, 0)
-        .map(|fd| ReadSource { fd })
-        .map_err(|_| ())
+pub fn open_input(path: &str) -> Result<ReadSource, minix_sys::Errno> {
+    // `O_RDONLY` 是零，就是 `open(path, 0, 0)` 已经传的那组形参。
+    minix_sys::open(path, 0, 0).map(|fd| ReadSource { fd })
 }
 
 impl ReadSource {

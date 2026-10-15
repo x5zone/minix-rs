@@ -149,10 +149,11 @@ pub struct HeadArgs {
 /// `head` argument-parsing failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeadArgError {
-    /// An unknown option letter, a missing `-c`/`-n` value, or a bare `-`
-    /// where an option value belonged (C `getopt` `?`/`:`/default → usage,
-    /// `head.c:115-117`).
-    Usage,
+    /// 集外字母与带值选项缺值。head 没有自己的裸 usage 腿（C 全文只有一处
+    /// `usage()`，就在 `head.c:115-117` 的 `case '?'`/`default:` 里），而那一支前面
+    /// 还有 libc 自己印的一行（`getopt.c:101-104`、`:132-136`），所以本型只留
+    /// 这一个出口，不另设 `Usage`。
+    Getopt(crate::GetoptReport),
     /// A `-c`/`-n` value that is not a strictly positive integer: trailing
     /// garbage, `<= 0`, or overflow (C `strtoimax` reject, `head.c:90-103`).
     IllegalCount {
@@ -175,7 +176,8 @@ pub enum HeadArgError {
 ///   (`-n 5`), `--` ends option scanning so everything after is an operand, and
 ///   a lone `-` is itself an operand.
 /// - `-q`/`-v` are mutually exclusive with the last one winning
-///   (`head.c:105-113`); any other letter is [`HeadArgError::Usage`].
+///   (`head.c:105-113`); any other letter is [`HeadArgError::Getopt`] with that
+///   letter, because libc prints its own line before `usage()` runs.
 pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
     // Phase 1 — obsolete(): rewrite the leading `-<digit>…` run, stop at the
     // first non-matching token and copy the remainder verbatim.
@@ -225,7 +227,9 @@ pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
                         } else {
                             index += 1;
                             if index >= scanned.len() {
-                                return Err(HeadArgError::Usage);
+                                return Err(HeadArgError::Getopt(
+                                    crate::GetoptReport::MissingValue(bytes[pos] as char),
+                                ));
                             }
                             scanned[index].clone()
                         };
@@ -256,7 +260,11 @@ pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
                         result.vflag = true;
                         pos += 1;
                     }
-                    _ => return Err(HeadArgError::Usage),
+                    _ => {
+                        return Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
+                            bytes[pos] as char,
+                        )));
+                    }
                 }
             }
         } else {
@@ -897,12 +905,26 @@ mod tests {
     fn test_parse_head_args_errors() {
         use alloc::string::String;
         // The regression: an unknown option no longer leaks as a file operand.
-        assert_eq!(parse_head_args(&["-z", "f"]), Err(HeadArgError::Usage));
+        // 两支都是「libc 先印一行，再轮到 usage」，所以带的是那个字母。
+        assert_eq!(
+            parse_head_args(&["-z", "f"]),
+            Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
+                'z'
+            )))
+        );
         // obsolete() only rewrites the LEADING run, so `f -5` is not `-n5`;
-        // `-5` after a file is an unknown option letter '5' → usage.
-        assert_eq!(parse_head_args(&["f", "-5"]), Err(HeadArgError::Usage));
-        // A colon option with no value argument → usage (C getopt ':' arm).
-        assert_eq!(parse_head_args(&["-n"]), Err(HeadArgError::Usage));
+        // `-5` after a file is an unknown option letter '5'.
+        assert_eq!(
+            parse_head_args(&["f", "-5"]),
+            Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
+                '5'
+            )))
+        );
+        // A colon option with no value argument → the libc 缺值那一行。
+        assert_eq!(
+            parse_head_args(&["-n"]),
+            Err(HeadArgError::Getopt(crate::GetoptReport::MissingValue('n')))
+        );
         // Illegal counts (<= 0, trailing garbage) → the byte/line reject arm.
         assert_eq!(
             parse_head_args(&["-n", "0"]),

@@ -28,6 +28,9 @@ use minix_textfilter::window::{HeadArgError, HeadArgs, HeadWindow, LineWindow, p
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    // C 的诊断行与 usage 行都以 `getprogname()` 开头（`head.c:200-202` 把程序名
+    // 当 `%s` 递进去），所以不能写死命令名。
+    let prog = support::prog_name(&argv);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     let HeadArgs {
         count,
@@ -37,10 +40,16 @@ fn run() -> ! {
         operands,
     } = match parse_head_args(&refs[1..]) {
         Ok(parsed) => parsed,
-        Err(HeadArgError::Usage) => usage(),
+        // libc 的那一行在前，usage 在后（`getopt.c:101-104`、`:132-136`）。
+        Err(HeadArgError::Getopt(report)) => {
+            support::warn(report.line(prog).as_bytes());
+            usage(prog)
+        }
         Err(HeadArgError::IllegalCount { byte, value }) => {
+            // C `errx(1, "illegal byte count -- %s", optarg)`（`head.c:92-102`）：
+            // 走 `vwarnx`，所以后面不缀 `errno` 句子。
             let kind = if byte { "byte" } else { "line" };
-            support::warn(format!("head: illegal {kind} count -- {value}\n").as_bytes());
+            support::warn(format!("{prog}: illegal {kind} count -- {value}\n").as_bytes());
             support::terminate(1);
         }
     };
@@ -60,8 +69,11 @@ fn run() -> ! {
     for operand in &operands {
         let data = match support::read_file(operand) {
             Ok(data) => data,
-            Err(_) => {
-                support::warn(format!("head: {operand}\n").as_bytes());
+            // C `head.c:124-127` 是 `warn("%s", *argv)` + `eval = 1` + `continue`：
+            // 程序名、操作数、`strerror` 句子三个成分缺一不可（旧写法把 `warn(3)`
+            // 当成 `warnx(3)` 用）。
+            Err(code) => {
+                support::warn_line(prog, operand, code);
                 status = 1;
                 continue;
             }
@@ -108,9 +120,11 @@ fn first_bytes_of(input: &[u8], bytecnt: usize) -> &[u8] {
     &input[..bytecnt.min(input.len())]
 }
 
-/// `head`'s usage line, exactly `head.c`'s `usage()` (exit 1).
-fn usage() -> ! {
-    support::warn(b"usage: head [-n lines] [file ...]\n");
+/// `head` 的 usage 行，逐字对位 `head.c:199-203`（`"usage: %s [-n lines] [file ...]\n"`
+/// 加 `getprogname()`，退 1）。注意 C 这一行里根本没有 `-c`/`-q`/`-v` 三个字母——
+/// 上游就少列了，本壳照C而不替它修正清单。
+fn usage(prog: &str) -> ! {
+    support::warn(format!("usage: {prog} [-n lines] [file ...]\n").as_bytes());
     support::terminate(1);
 }
 

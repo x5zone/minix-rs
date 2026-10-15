@@ -250,6 +250,53 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十二接完同族诊断面的第二支（`head` 与 `uniq`），并把宿主错误号换算也归成单源**
+  （`2026-10-15`，`claim/FAMILY-DIAG-HEAD-UNIQ-qoder` @ 基线 `19e9058b6`，单域三线同包，无跨界）：
+  接着批次二百八十一那条登记做。**head 三处**：① 集外字母与 `-c`/`-n` 缺值在 C 是两行
+  （`getopt.c:101-104`、`:132-136` 先印，再 `head.c:115-117` 的 `case '?'` → usage），且 head 全文
+  只有一处 `usage()`——所以 `HeadArgError::Usage` 这个变体本来就是多余的，直接删掉而不是再返它；
+  ② usage 行的程序名走 `getprogname()`（`head.c:199-203`），不写死 `head`；③ 开档失败那句
+  `warn("%s", *argv)`（`:124-126`）补上 `strerror` 句子。**uniq 四处**：同样补 libc 前置行，并区分
+  两支不同的裸 usage（`uniq.c:124` 的第三个操作数）；`-f`/`-s` 的非法值不再混进 usage，走自己的
+  `errx`（`:91`、`:97`，带坏值不缀号）；开档腿是致命的 `err(1, "%s", name)`（`:216-221`）三成分齐备；
+  跳过数的判据改成 C 那两条（`strtol` 的形状），而不是旧的 `parse::<usize>()`。
+  **`strtol` 那一处不是凑数**：C 只问「转出了负数」与「`*p` 还有残留」，而 `strtol` 一个数字都没转
+  出来时值为零且 `p` 停在数字起点，所以四形是有分界的：`-f ''` 是合法的零、`-f ' 0'` 跳前导空白、
+  `-f+0` 可带正号、`-f -` 报句（旧写法四形一律当 usage 错）。`skip_count` 把这三条写在一处并带测。
+  **一处由参照件反证回来的自写错期望（两连）**：先把 `"-f", "-1"` 的回显写成 `-1`、又把
+  `"-f", "+0"` 当成合法的正号形——实际上 `obsolete()` 先把独立的 `+0`/`-1` 折成 `-s0`/`-f1`，
+  所以 `optarg` 看到的、以及被拼回句子的是折叠后的串（宿主参照件同读数：
+  `uniq_ref: illegal field skip value: -s0`、`-f1`）；两形都改测，附值形 `-f+0`/`-f-1` 另测。
+  **参照件的可用边界（三条，下轮引用前先看）**：`tmp/family-diag-ref/` 编 `uniq.c` 需补
+  `fgetln` 垫片与 `progname` 垫片，但（a）它的 getopt 是 glibc 的，两句措辞不同形，只能比「几行」
+  不能比文字；（b）选项串首字符 `-` 的语义两边不同（glibc 遇非选项返 `1`，C 的代码只认 `case '-'`），
+  所以一旦带文件操作数就落 `default: usage()`——参照件只能走标准输入；（c）我们的 `fgetln`
+  垫片在读路径上段错误（与无选项基线同退码），所以「接受」可由退码证明，输出内容不可比。
+  **顺手归单源的两处**（与上一笔同一理由，不算改题）：宿主 `io::Error` → `errno` 的换算从
+  `bin/tail.rs` 的局部副本上提为 `bin_support.rs:errno_of`（与 `read_file` 同口径），`open_input`/
+  `create_sink` 的错误位从 `()` 改成 `Errno`（`uniq` 的 `err(1, "%s", name)` 需要那个号；
+  `sort` 的调用点本轮只换类型不改文案，它的诊断面同 `join` 排在下一轮）。
+  三件套：`cargo test -p minix-textfilter` → **607 passed、0 failed**（基线 604；`uniq_face` 1→4 枚拆分，
+  `head_face` 改写两枚）；权威容器门 docker `minix-ci:1.94` `cargo test -j 1 -p minix-textfilter`
+  → **607/0**，同容器 `cargo check --workspace -j 1` → **0 error**；三架构 `--bins` 零错（均 `Compiling`+Finished）；
+  clippy 两支撑本体零告警（`--bin uniq`/`--bin head` 的指向 `bin/uniq.rs`、`bin/head.rs` 的告警为 0，
+  其余 43 条是本 crate 存量库告警）；
+  `rustfmt` 只对本笔文件跑并回退跟随 `pub mod`/`mod` 级联的 20 个无关件与两处基线存量重排
+  （`cut.rs` 的 `select_bytes` 签名与 `in_ranges` 链式）；四枚变异负控各咬一处并 `cmp` 复原同一：
+  ① head 丢 libc 前置行→`head_face` 报红；② 两个跳过值退回一律 usage→两枚报红；③ 开档腿丢
+  `strerror` 句子→一枚报红；④ 把空值判成错→「合法零」那枚报红。核实日 `2026-10-15`；基线 `19e9058b6`。
+  登记不执行：`join`/`sort` 两支的同形诊断面（`join.c:226-227`/`:630-637`、`sort.c:250-251`，
+  sort 退 2）；`pr` 的 `egetopt`（`pr.c:1655` 用的是自己的解析器，需单独读源定形）；
+  `head`/`uniq` 的宿主参照件在带操作数时不可用（上面那三条边界）。
+  **本笔自犯并已纠正的两处过程错**（写下来因为两者都是旧教训的变体）：
+  ① 负控脚本里用 `cd ../../..` 换楼层，算错一级后 `cp` 把在制的 `bin/uniq.rs` 复进了**共享主树**；
+  当时拿它当「基线」比 clippy 读数，读到的是两份不同代码拼起来的 `E0308` 错位，差点据此写下
+  「本轮带走了两枚存量告警」的假证据。已 `git checkout -- os/commands/.../bin/uniq.rs` 复原主树
+  （只这一件，不碰文档线程的脏件）并重新在自树跑 clippy 取数。纪律：**脚本里不用相对 `cd` 换楼层，
+  路径全用绝对量**；比较基线读数只从 `git show HEAD:<path>` 取，不从主树工作副本取。
+  ② 另一枚负控写成了非法表达式——编译不过也算「红」，但那不是门咬住了行为，而是变异根本没进到语义；
+  已换成合法改写重跑（即上面那枚④）。负控的有效判据必须是「能编译、行为变错、门报红」三件同时成立。
+
 - ✅ **批次二百八十一把 `cut` 的诊断腿整支接回 C（五处偏离，其中一处是通道错），并把 libc 那一行归成单源**
   （`2026-10-15`，`claim/FAMILY-DIAG-LEGS-qoder` @ 基线 `9c645d31d`，单域三线同包，无跨界）：
   上一轮接 `tail` 时发现 Minix3 的 `getopt` 会为集外字母与缺值**各印一行**，然后才轮到命令

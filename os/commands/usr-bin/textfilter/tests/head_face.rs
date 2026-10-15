@@ -107,12 +107,33 @@ fn non_positive_counts_reject_with_c_wording() {
 }
 
 #[test]
-fn unknown_option_prints_the_c_usage_line() {
-    // `usage()` prints exactly `usage: %s [-n lines] [file ...]`.
+fn unknown_option_prints_the_libc_line_then_the_usage_line() {
+    // C 是**两行**：`getopt` 先印 `"<prog>: unknown option -- <字母>"`
+    // （`minix3/lib/libc/stdlib/getopt.c:101-104`，字母不带引号），再由
+    // `head.c:115-117` 的 `case '?'` 走 usage。usage 那一行逐字对位
+    // `head.c:199-203`，而且 C 的清单里本来就没有 `-c`/`-q`/`-v`。
+    const USAGE: &str = "usage: head [-n lines] [file ...]\n";
     let (out, status, err) = run(&["-x"], "a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1);
-    assert_eq!(err, "usage: head [-n lines] [file ...]\n");
+    assert_eq!(err, format!("head: unknown option -- x\n{USAGE}"));
+    // 缺值是同一形状的另一句（`getopt.c:132-136`）。
+    let (out, status, err) = run(&["-n"], "a\n");
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        format!("head: option requires an argument -- n\n{USAGE}")
+    );
+    // 集外字母不靠位置：`obsolete()` 只折前导那一串，所以文件名之后的 `-5`
+    // 走到 getopt 那里就是字母 `5`。
+    let good = written("letter-after-operand", b"a1\n");
+    let good_text = text(good.as_path());
+    let (out, status, err) = run(&[&good_text, "-5"], "");
+    assert_eq!(out, "", "不该把 -5 当成操作数去读");
+    assert_eq!(status, 1);
+    assert_eq!(err, format!("head: unknown option -- 5\n{USAGE}"));
+    let _ = fs::remove_file(&good);
 }
 
 #[test]
@@ -149,7 +170,9 @@ fn an_unopenable_operand_warns_without_a_banner_and_sets_the_status() {
     let missing = format!("head-face-{}-missing", std::process::id());
     let (out, status, err) = run(&[&missing, &good_text], "");
     assert_eq!(status, 1);
-    assert!(err.contains("head:"), "stderr was {err:?}");
+    // `warn("%s", *argv)`（`head.c:124-126`）的三个成分：程序名、操作数、
+    // `strerror` 句子。旧写法只印前两个。
+    assert_eq!(err, format!("head: {missing}: No such file or directory\n"));
     assert_eq!(out, format!("==> {good_text} <==\ng1\n"));
 
     let (out, status, err) = run(&["-"], "");
