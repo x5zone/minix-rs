@@ -130,8 +130,12 @@ fn the_rotation_argument_is_parsed_like_strtol_and_rejected_in_two_orders() {
     assert_eq!(status, 0, "stderr was {err:?}");
     assert_eq!(max, b"x".to_vec(), "2147483647 folds to 23");
     // A minus sign parses and then fails the range test; nothing-or-junk fails the invalid
-    // test. Both print C's sentence — without its strerror tail, which this tree has no
-    // table for — and both leave with status 1 having written nothing to standard output.
+    // test. Both print C's sentence *including* the strerror tail, which this tree does
+    // carry (the Minix3 `sys_errlist` table, batch 233) — the two loops below assert the
+    // exact sentences, so nothing here is left to "a phrase we invented".
+    // 与 `primes` 的区别值得留在注释里：那两个命令对「一个位也没转出」的落点不同，
+    // 不是因为 libc 行为不同，而是因为 caesar 自己合成 errno（`caesar.c:131-135`），
+    // 而 primes 只看 `strtoumax` 留下的 errno（真源在无转换时不置号）。
     for arg in ["-1", "2147483648", "99999999999"] {
         let (out, status, err) = run(&[arg], b"abc");
         assert_eq!(out, Vec::new(), "argument {arg:?} must not be rotated");
@@ -142,7 +146,9 @@ fn the_rotation_argument_is_parsed_like_strtol_and_rejected_in_two_orders() {
             format!("caesar: Bad rotation value `{arg}': Result too large or too small\n")
         );
     }
-    for arg in ["", "5x", "-"] {
+    // `abc` 是 `primes` 那处误读的照妖镜：同一个输入在 caesar 这里是 EINVAL（C 自己合成），
+    // 在 primes 那里却是「illegal numeric format」那句（真源不置 errno）——两形都各有门钉住。
+    for arg in ["", "5x", "-", "abc"] {
         let (out, status, err) = run(&[arg], b"abc");
         assert_eq!(out, Vec::new(), "argument {arg:?} must not be rotated");
         assert_eq!(status, 1);

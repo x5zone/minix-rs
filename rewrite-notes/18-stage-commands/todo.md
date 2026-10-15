@@ -250,6 +250,26 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百七十八复核结案：上一批登记的「误读是否传到 `caesar`」为否，并把两命令的来源差写进注释**
+  （`2026-10-15`，`claim/CAESAR-STRTOL-AUDIT-qoder` @ 基线 `33b401c7d`，单域三线同包，无跨界）：
+  接回批次二百七十七的登记②。**查的是什么**：批次二百五十二对 `_strtol.h:69` 的误读是否也进了
+  `caesar` 的轮转解析。**结论是没有**，理由在真源：`caesar.c:131-133` 的 `get_rotation` 是
+  「`errno = 0; rot = strtol(...); if (errno == 0 && (arg[0] == '\0' || *endp != '\0')) errno = EINVAL;`」——
+  它**自己合成** `EINVAL`，从不依赖 `strtol` 在无转换时是否置号；`primes` 走的才是「只看 `strtoumax`
+  留下的 errno」那条路（真源在无转换时不置号），所以同一串 `abc` 在两个命令里分属两句。
+  **实测对照**（宿主编译的 `caesar_ref`，`cc` 只需两个 NetBSD 宏）：八个输入形 `5x`/`-3`/`""`/`0`/`26`/
+  `2147483648`/`abc`/24 位溢出串 ⇒ 逐字同 5 形、仅句子来源不同 3 形（参照给 glibc 的
+  `Numerical result out of range`，本树给 Minix3 表的 `Result too large or too small`，这是被测对象的语义）、
+  **意外差 0**。C 把负值算 `ERANGE` 而不是畸形输入这一微妙处，现有门已经钉着（`-1`/`2147483648`/
+  `99999999999` 三形断 `ERANGE` 句，`""`/`5x`/`-` 断 `EINVAL` 句）。
+  **本轮动手的三处**：①门上那句自相矛盾的旧注释——它写「不缀 `strerror` 尾巴，本树没有表」，
+  而它下面两行断言的正是表里的句子（批次二百三十三之后表就有了），改准；②把 `abc` 加进
+  `EINVAL` 那一族（它就是 `primes` 误读的照妖镜，两命令在此分家）；③在 `caesar.rs` 的
+  `parse_rotation` 文档上写下来源差并明确「别把 `primes` 的结论搬过来修这里，反之亦然」。
+  三件套：`cargo test -p minix-stdio-games` → **227 passed、0 failed**（枚数不变，新增的是一个输入形）；
+  `rustfmt --check` 触及两文件零漂移；clippy 触及件零命中；一枚变异负控（把「空串或尾字符」的错型
+  从 `EINVAL` 挪到 `ERANGE`）⇒ 门以精确差异行红（`Result too large or too small` vs `Invalid argument`）。核实日 `2026-10-15`。
+
 - ✅ **批次二百七十七接上 `primes` 的零操数路，并纠正批次二百五十二对 `_strtol.h` 的一处误读**
   （`2026-10-15`，`claim/PRIMES-STDIN-LEG-qoder` @ 基线 `5c01d1e11`，单域三线 `os/commands/games/stdio-games`
   与同线文档，无跨界）：接回批次二百五十二的登记①②（零操数路 + base 0 形，规划表 R11）。

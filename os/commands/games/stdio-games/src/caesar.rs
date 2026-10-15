@@ -52,6 +52,12 @@ impl RotationFailure {
 
 /// C's `get_rotation` (`caesar.c:124-139`), acceptance rules and all.
 ///
+/// 这里最容易搬错的一件事：`caesar` 的 `EINVAL` 是**它自己合成**的（`caesar.c:131-133`
+/// 在 `errno == 0` 且「空串或有尾字符」时手动置起），不依赖 `strtol` 在无转换时是否置号；
+/// 而 `primes` 走的是「只看 `strtoumax` 留下的 errno」那条路，真源在无转换时不置号
+/// （`_strtol.h:184-186` 只把 `endptr` 留在原处），所以同一串 `abc` 在两个命令里分属两句。
+/// 别把 `primes` 的结论搬过来「修」这里，反之亦然。
+///
 /// The parsing is `strtol`, which is more generous than "digits only" in two ways a
 /// caller cannot see from the outside: it **skips leading white space** and it takes an
 /// optional sign. A minus sign survives parsing and is then rejected by
