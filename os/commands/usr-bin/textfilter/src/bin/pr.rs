@@ -38,6 +38,10 @@ use minix_textfilter::pr::{
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    // `egetopt` 那一句的前缀不是 `getprogname()` 而是它自己现算的 argv[0] 最后一段
+    // （`egetopt.c:145-147`），两者同一物；而 pr 自己的那些句子把 `pr` 写死在串里，
+    // 所以只有 `Getopt` 那一枝用 prog。
+    let prog = support::prog_name(&argv);
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     // argv folding lives in the deciding half (`parse_pr_args`): BSD getopt with
     // clustered flag letters, glued-or-next values, and the post-scan page-width
@@ -45,7 +49,7 @@ fn run() -> ! {
     // the file/merge/paginate tail below already consumes.
     let parsed = match parse_pr_args(&args[1..]) {
         Ok(p) => p,
-        Err(e) => arg_error(e),
+        Err(e) => arg_error(prog, e),
     };
     let options = parsed.options;
     let merge = parsed.merge;
@@ -71,8 +75,17 @@ fn run() -> ! {
                         let bytes = expand_input(&bytes, &options);
                         files.push((op.as_str(), split_lines(&bytes)));
                     }
-                    Err(_) => {
-                        support::warn(format!("pr: cannot open {op}\n").as_bytes());
+                    Err(code) => {
+                        // C `pr.c:1364-1370`：`++errcnt` 后印
+                        // `"pr: Cannot open %s, %s\n", argv[…], strerror(errno)`——
+                        // 大写 C、名字与句子之间是一个逗号（不是 `err(3)` 那个冒号形），
+                        // 然后 `continue`，退码最终才变 1。旧写法是自创的
+                        // `pr: cannot open <名>`，既丢了句子也换了词。`-r`（nodiag）
+                        // 能屏蔽这一句，本壳没有那支（已登记）。
+                        support::warn(
+                            format!("pr: Cannot open {op}, {}\n", minix_sys::Strerror(code))
+                                .as_bytes(),
+                        );
                         had_error = true;
                     }
                 }
@@ -158,12 +171,21 @@ fn split_lines(input: &[u8]) -> Vec<String> {
     pieces
 }
 
-/// Map a [`PrError`] to the exact C diagnostic and exit status. Every one of these
-/// is `setup` returning 1: the message goes out on its own (no usage line), and
-/// `main` then exits 1 (`pr.c:142-160`, `1616-1627`).
-fn arg_error(e: PrError) -> ! {
+/// Map a [`PrError`] to the exact C diagnostic and exit status.
+///
+/// 关键点（本轮现查 C 得到的推翻）：`main` 是 `ret_val = setup(...); if (!ret_val) {…}
+/// else usage();`（`pr.c:142-157`），所以**任何**一条 setup 错误都会再接上那三行 usage；
+/// 旧注释写的“message goes out on its own (no usage line)”是错的，本枝所有臂现在都是
+/// “自己那句 + usage 三行”，退码 1（`:158-160`）。唯一例外是 [`PrError::Unmodelled`]：
+/// 那三个字母在 C 是被接受的，本树没建模，所以那一句是**本壳自己的**，不套 C 形。注意
+/// 那三行里后两行各带十个前导空格，而整个句子不靠 `getprogname()`（C 写死了 `pr`）。
+fn arg_error(prog: &str, e: PrError) -> ! {
     match e {
-        PrError::Usage => usage(),
+        // `egetopt` 那一行（`egetopt.c:144-151` 或 `:196-205`）紧跟 usage 三行。
+        PrError::Getopt(report) => {
+            support::warn(report.line(prog).as_bytes());
+            usage()
+        }
         PrError::PlusPage => fail(b"pr: +page number must be 1 or more\n"),
         PrError::ColumnCount => fail(b"pr: -columns must be 1 or more\n"),
         PrError::NumberLines => fail(b"pr: Number of lines must be 1 or more\n"),
@@ -173,13 +195,13 @@ fn arg_error(e: PrError) -> ! {
         PrError::NumberWidth => fail(b"pr: -n width must be 1 or more\n"),
         PrError::InvalidValue(letter, value) => {
             support::warn(format!("pr: invalid value for -{letter} {value}\n").as_bytes());
-            support::terminate(1);
+            usage()
         }
         PrError::AcrossNeedsColumns => fail(b"pr: -a flag requires multiple columns\n"),
         PrError::MergeAcross => fail(b"pr: -m cannot be used with -a\n"),
         PrError::ColumnTooSmall(n) => {
             support::warn(format!("pr: page width is too small for {n} columns\n").as_bytes());
-            support::terminate(1);
+            usage()
         }
         PrError::Unmodelled => {
             support::warn(b"pr: option form not modelled yet\n");
@@ -188,9 +210,10 @@ fn arg_error(e: PrError) -> ! {
     }
 }
 
+/// C 的一条 setup 错误：先自己那句（走 `errf`），再由 `main` 接上 usage（`pr.c:156-157`）。
 fn fail(message: &[u8]) -> ! {
     support::warn(message);
-    support::terminate(1);
+    usage()
 }
 
 /// C's `usage()` text verbatim, three lines whose second and third each start with

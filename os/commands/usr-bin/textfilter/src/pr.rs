@@ -17,6 +17,7 @@
 //! page-pause are later batches; this module covers the single-column
 //! pagination face.
 
+use crate::GetoptReport;
 use alloc::string::String;
 use alloc::{vec, vec::Vec};
 
@@ -205,9 +206,12 @@ pub struct PrArgs<'a> {
 /// renders it), so the messages and exit codes match the old in-bin parser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrError {
-    /// `getopt` `?`/default, or a required option value that is missing: C's
-    /// three-line `usage()` (`pr.c:1616-1627`) and exit 1.
-    Usage,
+    /// 集外字母与带值选项缺值：`egetopt` 先印自己那一句（集外字母是
+    /// `illegal option -- <字母>`，`egetopt.c:144-151`；缺值是
+    /// `option requires an argument -- <字母>`，`:196-205`），然后 `setup` 返回 1、
+    /// `main` 再接上那三行 usage（`pr.c:156-157`）。注意措辞：`pr` 链的是自带的
+    /// `egetopt`，不是 libc 的 `getopt`，所以集外字母那一句与同族其它命令**不同形**。
+    Getopt(crate::GetoptReport),
     /// `+page` whose `atoi` is `< 1` (`pr.c:1658-1662`).
     PlusPage,
     /// the obsolete `-columns` form whose `atoi` is `< 1` (`pr.c:1665-1667`).
@@ -354,16 +358,19 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
     let (mut out_char, mut out_gap) = (OCHAR, DEFAULT_GAP);
 
     // Take a required option value: the glued remainder of this token, else
-    // the next token (advancing `index`). Missing ⇒ `Usage`.
+    // the next token (advancing `index`). 缺值要把那个字母交出去——`egetopt` 的那一句
+    // 带的是字母（`egetopt.c:196-205`）。
     macro_rules! value {
-        ($rest:expr, $index:ident) => {{
+        ($rest:expr, $index:ident, $letter:expr) => {{
             if !$rest.is_empty() {
                 $rest
             } else {
                 $index += 1;
                 match args.get($index) {
                     Some(v) => *v,
-                    None => return Err(PrError::Usage),
+                    None => {
+                        return Err(PrError::Getopt(GetoptReport::MissingValue($letter)));
+                    }
                 }
             }
         }};
@@ -413,22 +420,22 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
                 b'm' => merge = true,
                 b'a' => across = true,
                 b'h' => {
-                    title_override = Some(value!(&arg[pos + 1..], index));
+                    title_override = Some(value!(&arg[pos + 1..], index, 'h'));
                     break;
                 }
                 b'l' => {
-                    let v = value!(&arg[pos + 1..], index);
+                    let v = value!(&arg[pos + 1..], index, 'l');
                     options.page_len = c_counted(v, PrError::NumberLines)?;
                     break;
                 }
                 b'w' => {
-                    let v = value!(&arg[pos + 1..], index);
+                    let v = value!(&arg[pos + 1..], index, 'w');
                     options.page_width = c_counted(v, PrError::WidthValue)?;
                     wflag = true;
                     break;
                 }
                 b'o' => {
-                    let v = value!(&arg[pos + 1..], index);
+                    let v = value!(&arg[pos + 1..], index, 'o');
                     options.offset = c_counted(v, PrError::OffsetValue)?;
                     break;
                 }
@@ -511,7 +518,11 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
                 b'p' | b'r' | b'T' => {
                     return Err(PrError::Unmodelled);
                 }
-                _ => return Err(PrError::Usage),
+                _ => {
+                    return Err(PrError::Getopt(GetoptReport::IllegalOption(
+                        bytes[pos] as char,
+                    )));
+                }
             }
             pos += 1;
         }
@@ -1949,7 +1960,16 @@ mod tests {
         // `-e`/`-i` are modelled now, so an unimplemented letter has to come from the
         // rest of C's optstring; `-x` is not in it at all and answers usage.
         assert_eq!(parse_pr_args(&["-p"]).err(), Some(PrError::Unmodelled));
-        assert_eq!(parse_pr_args(&["-w"]).err(), Some(PrError::Usage)); // 缺值 ⇒ getopt '?'
+        // 集外字母与缺值各带一个 `egetopt` 报文（注意集外字母那一句的措辞与
+        // libc `getopt` 同族其它命令不同形：这里是 `illegal option`）。
+        assert_eq!(
+            parse_pr_args(&["-w"]).err(),
+            Some(PrError::Getopt(GetoptReport::MissingValue('w')))
+        ); // 缺值 ⇒ egetopt 那一句（egetopt.c:196-205）
+        assert_eq!(
+            parse_pr_args(&["-x"]).err(),
+            Some(PrError::Getopt(GetoptReport::IllegalOption('x')))
+        ); // 集外字母 ⇒ egetopt.c:144-151
         assert_eq!(parse_pr_args(&["-w0"]).err(), Some(PrError::WidthValue)); // atoi < 1
         assert_eq!(parse_pr_args(&["-w", "x"]).err(), Some(PrError::WidthValue)); // 首位非数字
         assert_eq!(parse_pr_args(&["-o0"]).err(), Some(PrError::OffsetValue));

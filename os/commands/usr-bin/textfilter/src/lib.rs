@@ -106,20 +106,34 @@ impl TextError {
 /// 都不会改变行为），所以把它收在这里。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GetoptReport {
-    /// `getopt.c:101-104`：集外字母。
+    /// `getopt.c:101-104`：集外字母（libc 版）。
     UnknownOption(char),
-    /// `getopt.c:132-136`：带值选项没给值。
+    /// `egetopt.c:144-151`：集外字母（`pr` 自带的 `egetopt` 版）。措辞与 libc 那一行**不同**，
+    /// 所以不能共用一个变体：`pr` 不吃 libc 的 `getopt`，它链的是
+    /// `minix3/usr.bin/pr/egetopt.c`，而那里写的是 `illegal option`。同一个字母在两个
+    /// 解析器下得到的句子就是不一样，拿“同族规律”抹平会把措辞写错。
+    IllegalOption(char),
+    /// `getopt.c:132-136`（libc）与 `egetopt.c:196-205`（`pr`）——两处的句子逐字相同，
+    /// 所以共一个变体。（`egetopt` 还有第三句 `illegal '+' delimiter with option`，
+    /// 在 `:158-167`，只在 `+` 后面接不上数字时走，本壳的 `+` 腿自己报 `+page number ...`。）
     MissingValue(char),
 }
 
 impl GetoptReport {
     /// 那一行的完整文本（带换行）。调用方把它写到标准错误，随后接自己的 usage。
+    ///
+    /// 前缀都是程序名：libc 那两句递的是 `getprogname()`，而 `egetopt` 自己拿
+    /// `strrchr(*nargv, '/')` 现算 `argv[0]` 的最后一段（`egetopt.c:145-147`、
+    /// `:159-161`、`:197-199`），结果同一物。
     #[must_use]
     pub fn line(self, prog: &str) -> alloc::string::String {
         use alloc::format;
         match self {
             GetoptReport::UnknownOption(letter) => {
                 format!("{prog}: unknown option -- {letter}\n")
+            }
+            GetoptReport::IllegalOption(letter) => {
+                format!("{prog}: illegal option -- {letter}\n")
             }
             GetoptReport::MissingValue(letter) => {
                 format!("{prog}: option requires an argument -- {letter}\n")
@@ -146,10 +160,21 @@ mod tests {
             GetoptReport::MissingValue('f').line("tail"),
             "tail: option requires an argument -- f\n"
         );
-        // 程序名来自 `getprogname()`，不是写死的命令名。
+        // 程序名来自 `getprogname()`（或 `egetopt` 自己算的那一段），不是写死的命令名。
         assert_eq!(
             GetoptReport::UnknownOption('3').line("head"),
             "head: unknown option -- 3\n"
+        );
+        // `pr` 自带的 `egetopt` 对集外字母写的是另一句（`egetopt.c:148`），与上面
+        // 那一形一字之差；拿同族措辞替它会把句子写错。
+        assert_eq!(
+            GetoptReport::IllegalOption('x').line("pr"),
+            "pr: illegal option -- x\n"
+        );
+        // 缺值那一句两边逐字相同（`egetopt.c:202` 与 `getopt.c:134`），所以两枝共用一个变体。
+        assert_eq!(
+            GetoptReport::MissingValue('w').line("pr"),
+            "pr: option requires an argument -- w\n"
         );
     }
 }

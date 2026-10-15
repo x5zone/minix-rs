@@ -250,6 +250,40 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十五接完 `pr` 的诊断面，并推翻了两处此前写在台账与门里的错结论**
+  （`2026-10-15`，`claim/PR-DIAG-LEGS-qoder` @ 基线 `84963dd2b`，单域三线同一 crate：
+  `src/lib.rs`、`src/pr.rs`、`src/bin/pr.rs`、`tests/pr_face.rs`，无跨线登记）：
+  同族诊断面第四支，也是措辞不同形的那一支——`pr` 链的不是 libc `getopt` 而是自带的
+  `minix3/usr.bin/pr/egetopt.c`（`grep -rln egetopt minix3/` 只命中 pr 目录三处）。
+  **推翻一（本壳与本文档都错过）**：`main` 是 `ret_val = setup(…); if (!ret_val) {…}
+  else usage();`（`pr.c:142-157`），所以**任何** setup 错都会再接那三行 usage；而壳侧注释与
+  批次二百二十的登记都写的是“各有一句自己的错误文本（不再是 usage 行）”，端到端门也跟着
+  断“stderr 只有那一句”——三枚门因此正在为错的形签字。现在各臂都是“自己那句 + usage”，
+  逐枚钉住（数值选项六枚、`-a`/`-m` 两枚、页宽不足一枚、`-l` 三枚）。注意“不是一律 usage”
+  与“不接 usage”是两件事，前一句本身没错，错在把它读成后者。
+  **推翻二（措辞与形）**：集外字母那一句在 `egetopt` 里是 `illegal option -- <字母>`
+  （`egetopt.c:144-151`），而 libc 版是 `unknown option`（`getopt.c:101-104`）；缺值那一句
+  两边逐字相同（`:196-205` vs `:132-136`）。所以 `lib.rs:GetoptReport` 新增 `IllegalOption`
+  一个变体，共三个臂（同一事实的不同版本分开存，而不是抹平），前缀都是 argv[0] 的
+  最后一段（`egetopt` 自己用 `strrchr(*nargv, '/')` 算，`:145-147`）。`value!` 宏现在带字母。
+  **开档失败那句也不是 `err(3)` 那个冒号形**：C 写的是 `"pr: Cannot open %s, %s\n"`
+  （`pr.c:1364-1370`，大写 C、名字与句子之间一个逗号），`continue` 后退码由 `errcnt` 推到 1
+  （`:157-159`）且**不接 usage**（它不是 setup 错）——拿上一笔的“三成分齐备”公式直接套就错；
+  旧壳那句是自创的 `pr: cannot open <名>`。新增一枚门钉这个形（含“后面的操作数照跑”）。
+  `-r`（`nodiag`）能屏蔽那一句，本壳无该枝（原有登记，本轮未动）。
+  三件套：`cargo test -p minix-textfilter` → **613 passed、0 failed**（基线 612；`pr_face` 13→14 枚）；
+  docker `minix-ci:1.94` 同包 **613/0**、`cargo check --workspace -j 1` **0 error**；三架构 `--bins`
+  零错；`rustfmt` 只跑 `pr.rs`/`pr_face.rs`（`lib.rs` 的三处 `pub mod` 排序漂移是基线存量，
+  不入库也不去“顺手排好”）；clippy 触及件零告警（`pr.rs:1089` 那几枚是存量分页代码的，
+  行数因本笔上移）；三枚变异负控各咬一处：① Getopt 臂丢掉 egetopt 那一行→一枚报红；
+  ② `fail()` 不接 usage→三枚报红；③ 开档腿退回自创句子→新那枚报红；三枚都先打印
+  `mutation applied` 再跑门，恢复用备份并 `cmp` 同一。核实日 `2026-10-15`；基线 `84963dd2b`。
+  登记不执行：`-p`（逐页暂停，需终端腿）与 `-r`（nodiag）仍是本壳没有的枝；本壳把
+  `p`/`r`/`T` 三字母归为 `Unmodelled` 自报一句（C 接受它们，那一句不扮 C 形）；`errf` 那套
+  “先把诊断暂存到临时文件、结尾再倒回标准输出”的机制（`pr.c:1648-1654`、`flsh_errs`）
+  本壳没有，因此多条消息之间的**先后顺**与 C 可比而**与 stdout 的交错**不可比（本轮门只比
+  stderr 内的内容，不去比跨流的顺）。
+
 - ✅ **批次二百八十四把 `sort` 输出腿剩下的四条缝改成带号（`access`/`F_OK`/`lchmod`/`link`）**
   （`2026-10-15`，`claim/SORT-OUTPUT-ERRNO-LEGS-qoder` @ 基线 `83850de82`，单域三线同一 crate：
   `os/commands/usr-bin/textfilter` 里的 `src/bin_support.rs`、`src/bin/sort.rs`、`tests/sort_face.rs`，

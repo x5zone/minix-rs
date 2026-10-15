@@ -88,16 +88,19 @@ fn across_flag_fills_row_major_and_requires_columns() {
     let (out, status, err) = run(&["-a", "-2", "-l", "8", "-w", "20", "-t"], &numbered(1, 4));
     assert_eq!(status, 0, "stderr was {err:?}");
     assert_eq!(out, "1\t  2\n3\t  4\n");
-    // `-a` alone is C's named refusal, not the usage line, and the exit is 1
-    // (`pr.c:1823-1828`).
+    // `-a` 单独给是 C 那句具名拒答（`pr.c:1823-1828`），但退码 1 不是它自己给的：
+    // `setup` 返回 1 后 `main` 还会接上那三行 usage（`:142-157`）。
     let (out, status, err) = run(&["-a"], b"a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1, "stderr was {err:?}");
-    assert_eq!(err, "pr: -a flag requires multiple columns\n");
-    // `-m` cannot be combined with `-a` (`pr.c:1829-1832`).
+    assert_eq!(
+        err,
+        format!("pr: -a flag requires multiple columns\n{USAGE}")
+    );
+    // `-m` cannot be combined with `-a` (`pr.c:1829-1832`), 同样后面跟 usage。
     let (_, status, err) = run(&["-m", "-a", "-2"], b"a\n");
     assert_eq!(status, 1);
-    assert_eq!(err, "pr: -m cannot be used with -a\n");
+    assert_eq!(err, format!("pr: -m cannot be used with -a\n{USAGE}"));
 }
 
 #[test]
@@ -124,7 +127,7 @@ fn separator_character_replaces_the_column_padding() {
     );
     let (_, status, err) = run(&["-sab"], b"a\n");
     assert_eq!(status, 1);
-    assert_eq!(err, "pr: invalid value for -s b\n");
+    assert_eq!(err, format!("pr: invalid value for -s b\n{USAGE}"));
 }
 
 #[test]
@@ -159,11 +162,18 @@ fn a_short_page_length_loses_the_header_instead_of_failing() {
     for bad in ["-l+8", "-l0"] {
         let (_, status, err) = run(&[bad], b"a\n");
         assert_eq!(status, 1, "{bad} should be refused");
-        assert_eq!(err, "pr: Number of lines must be 1 or more\n", "{bad}");
+        assert_eq!(
+            err,
+            format!("pr: Number of lines must be 1 or more\n{USAGE}"),
+            "{bad}"
+        );
     }
     let (_, status, err) = run(&["-l", " 8"], b"a\n");
     assert_eq!(status, 1);
-    assert_eq!(err, "pr: Number of lines must be 1 or more\n");
+    assert_eq!(
+        err,
+        format!("pr: Number of lines must be 1 or more\n{USAGE}")
+    );
 }
 
 #[test]
@@ -199,9 +209,10 @@ fn start_page_counts_the_same_pages_the_output_shows() {
 }
 
 #[test]
-fn numeric_option_diagnostics_are_c_named_messages_with_status_one() {
-    // Each numeric option carries its own sentence, and none of them prints the
-    // usage line (`pr.c:1655-1810`); `-w`'s message really does end in a space.
+fn numeric_option_diagnostics_are_c_named_messages_then_the_usage() {
+    // 每个数值选项各有一句自己的话（不是一律 usage），但 `main` 在任何 setup 错后
+    // 都接上那三行 usage（`pr.c:142-157`）——本轮之前这里错写成“只印自己那句”；
+    // `-w` 那句确实以一个空格结尾（`:1800`）。
     let cases = [
         ("+0", "pr: +page number must be 1 or more\n"),
         ("-0", "pr: -columns must be 1 or more\n"),
@@ -214,31 +225,43 @@ fn numeric_option_diagnostics_are_c_named_messages_with_status_one() {
         let (out, status, err) = run(&[flag], b"a\n");
         assert_eq!(out, "", "{flag} printed {out:?}");
         assert_eq!(status, 1, "{flag} stderr was {err:?}");
-        assert_eq!(err, message, "{flag}");
+        assert_eq!(err, format!("{message}{USAGE}"), "{flag}");
     }
     // A page too narrow for the requested column count is the other named error
     // (`pr.c:1863-1867`).
     let (_, status, err) = run(&["-100", "-w", "20"], b"a\n");
     assert_eq!(status, 1);
-    assert_eq!(err, "pr: page width is too small for 100 columns\n");
+    assert_eq!(
+        err,
+        format!("pr: page width is too small for 100 columns\n{USAGE}")
+    );
 }
 
+/// C `usage()`（`pr.c:1616-1627`）：三行，后两行各带十个前导空格，整句不靠
+/// `getprogname()`（C 把 `pr` 写死在串里）。当成一个字面量写，因为 Rust 的续行
+/// 会正好吃掉那十个空格。
+const USAGE: &str = "usage: pr [+page] [-col] [-adFfmprt] [-e[ch][gap]] [-h header]\n          [-i[ch][gap]] [-l line] [-n[ch][width]] [-o offset]\n          [-s[ch]] [-T timefmt] [-w width] [-] [file ...]\n";
+
 #[test]
-fn letters_outside_the_c_optstring_print_the_three_line_usage() {
-    // `egetopt` answers `?` for anything off `"#adFfmrte?h:i?l:n?o:ps?T:w:"`,
-    // `setup` returns 1 and `main` prints C's three-line usage (`:1616-1627`) before
-    // exiting 1.
+fn letters_outside_the_c_optstring_print_the_egetopt_line_then_the_usage() {
+    // `egetopt` 对不在 `"#adFfmrte?h:i?l:n?o:ps?T:w:"` 里的字母先印自己那一句
+    // （`egetopt.c:144-151`），再返回 `'?'`；`setup` 返回 1，`main` 接三行 usage
+    // （`pr.c:1616-1627`）后退 1。**两句都是两行起步**，而本枝之前只印 usage。
     let (out, status, err) = run(&["-x"], b"a\n");
     assert_eq!(out, "");
     assert_eq!(status, 1, "stderr was {err:?}");
-    // Written as one literal: a Rust line continuation would eat the ten leading
-    // spaces C's second and third lines carry.
+    assert_eq!(err, format!("pr: illegal option -- x\n{USAGE}"));
+    // 缺值那一句：措辞与 libc 的 `getopt` 逐字相同（`egetopt.c:196-205`），
+    // 但集外字母那一句不同（libc 是 `unknown option`）——同一个事实的两个版本。
+    let (_, status, err) = run(&["-w"], b"a\n");
+    assert_eq!(status, 1);
     assert_eq!(
         err,
-        "usage: pr [+page] [-col] [-adFfmprt] [-e[ch][gap]] [-h header]\n          [-i[ch][gap]] [-l line] [-n[ch][width]] [-o offset]\n          [-s[ch]] [-T timefmt] [-w width] [-] [file ...]\n"
+        format!("pr: option requires an argument -- w\n{USAGE}")
     );
     // Letters C's optstring carries but this deciding half does not implement are
     // reported rather than ignored: `-p` pauses per page, which needs a terminal leg.
+    // 那一句是本壳的（C 接受 `-p`），所以也不扮 C 的形。
     let (_, status, err) = run(&["-p"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(err, "pr: option form not modelled yet\n");
@@ -303,6 +326,31 @@ fn multi_column_implies_both_transformations_and_a_tab_survives_the_round_trip()
         format!("{}x\n", " ".repeat(16)).as_bytes(),
     );
     assert_eq!(out, "\t  \n");
+}
+
+#[test]
+fn an_unreadable_operand_gets_the_comma_form_and_does_not_stop_the_run() {
+    // C 的开档失败腿（`pr.c:1364-1370`）是
+    // `fprintf(errf, "pr: Cannot open %s, %s\n", argv[…], strerror(errno))`：大写 C，
+    // 名字与句子之间是一个逗号（不是 `err(3)`/`warn(3)` 那个冒号形），然后 `continue`，
+    // 退码最后由 `errcnt` 推到 1（`:157-159`），而且**不接 usage**——它不是 setup 错。
+    let missing = format!("pr-face-{}-missing", std::process::id());
+    let (out, status, err) = run(&[&missing], b"a\n");
+    assert_eq!(out, "");
+    assert_eq!(status, 1, "stderr was {err:?}");
+    assert_eq!(
+        err,
+        format!("pr: Cannot open {missing}, No such file or directory\n")
+    );
+    // 后面的操作数照跑（C 是 `continue` 而不是致命），且句子只一个文件一条。
+    // 加 `-t` 是为了避开表头（pr 默认每页带 5+5 行头尾，本枝单测的是开档腿不是分页）。
+    let (out, status, err) = run(&["-t", &missing, "-"], b"a\n");
+    assert_eq!(out, "a\n", "第二个操作数该照常输出，stderr 是 {err:?}");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        format!("pr: Cannot open {missing}, No such file or directory\n")
+    );
 }
 
 #[test]
