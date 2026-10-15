@@ -149,15 +149,20 @@ fn sorting_a_file_over_itself_works() {
 
 #[test]
 fn an_unwritable_target_is_refused_before_anything_changes() {
-    // `access(outpath, W_OK)` (`sort.c:336-337`), with C's bare-path message and
-    // status 2. The old contents must still be there afterwards.
+    // `access(outpath, W_OK)`（`sort.c:336-337`）那一支在 C 是 `err(2, "%s", outpath)`：
+    // 程序名、路径、`strerror` 句子三件齐备（旧写法只印到路径为止），且退 2。
+    // 旧内容必须还在。
     let target = written("read-only", b"keep me\n");
     fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).expect("chmod");
     let input = written("read-only-input", b"b\na\n");
     let (out, status, err) = run(&["-o", &text(&target), &text(&input)], b"");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 2, "stderr was {err:?}");
-    assert!(err.contains(&text(&target)), "stderr was {err:?}");
+    assert_eq!(
+        err,
+        format!("sort: {}: Permission denied\n", text(&target)),
+        "那句得把号对应的句子带上"
+    );
     assert_eq!(fs::read(&target).expect("untouched"), b"keep me\n");
     clean(&target);
     clean(&input);

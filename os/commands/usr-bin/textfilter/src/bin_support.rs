@@ -454,20 +454,39 @@ pub fn probe_path(path: &str) -> Option<(u32, bool)> {
 }
 
 /// C's `access(outpath, W_OK)` (`sort.c:336-337`), where `W_OK` is `0x02`
-/// (`minix3/sys/sys/unistd.h:168-171`). The hosted twin reads the owner-write bit
-/// instead of the real-uid check, which is the same answer for the files the hosted
-/// tests create.
+/// (`minix3/sys/sys/unistd.h:168-171`).
+///
+/// 错误腿带的是**那个号**：C 那一支是 `err(2, "%s", outpath)`，印的就是 `strerror(errno)`。
+/// 真机臂直接拿 `access(2)` 的号；宿主这一臂没有 `access(2)` 的 std 包装，所以用
+/// 「以写方式打开一下」的同义判据（不开 `O_CREAT`/`O_TRUNC`，不动内容也不动元数据，
+/// 失败时 `raw_os_error()` 就是 `EACCES`/`ENOENT` 这些真号）。之前那一版只看
+/// owner-write 位，根本给不出号。
 #[cfg(any(test, not(target_os = "none")))]
-pub fn writable(path: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::metadata(path)
-        .map(|found| found.permissions().mode() & 0o200 != 0)
-        .unwrap_or(false)
+pub fn writable(path: &str) -> Result<(), minix_sys::Errno> {
+    match std::fs::OpenOptions::new().write(true).open(path) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(errno_of(&error)),
+    }
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn writable(path: &str) -> bool {
-    minix_sys::access(path, 0x02).is_ok()
+pub fn writable(path: &str) -> Result<(), minix_sys::Errno> {
+    minix_sys::access(path, 0x02)
+}
+
+/// C's `access(outfile, F_OK)` (`sort.c:364-365`): does the name exist at all?
+/// 错腿同样带号，因为那一支是 `err(2, "%s", outfile)`。`F_OK` 是 `0`
+/// （`minix3/sys/sys/unistd.h:168`）。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn exists(path: &str) -> Result<(), minix_sys::Errno> {
+    std::fs::metadata(path)
+        .map(|_| ())
+        .map_err(|error| errno_of(&error))
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn exists(path: &str) -> Result<(), minix_sys::Errno> {
+    minix_sys::access(path, 0)
 }
 
 /// Creates a fresh file for writing, failing if the name is already taken — C's
@@ -494,29 +513,31 @@ pub fn create_exclusive(path: &str) -> Result<WriteSink, minix_sys::Errno> {
 /// `lchmod(path, mode)` in C's sense: set the permission bits by path
 /// (`minix3/lib/libc/sys/lchmod.c`; the target has no `lchmod` wrapper, so this
 /// goes through `chmod`, which differs only for a symlink — a name `sort` has just
-/// created for itself).
+/// created for itself). 失败时交回号，因为 C 那支是
+/// `err(2, "cannot chmod %s: output left in %s", outpath, outfile)`（`sort.c:373-374`）。
 #[cfg(any(test, not(target_os = "none")))]
-pub fn set_mode(path: &str, mode: u32) -> Result<(), ()> {
+pub fn set_mode(path: &str, mode: u32) -> Result<(), minix_sys::Errno> {
     use std::os::unix::fs::PermissionsExt as _;
     let permissions = std::fs::Permissions::from_mode(mode);
-    std::fs::set_permissions(path, permissions).map_err(|_| ())
+    std::fs::set_permissions(path, permissions).map_err(|error| errno_of(&error))
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn set_mode(path: &str, mode: u32) -> Result<(), ()> {
-    minix_sys::chmod(path, mode).map_err(|_| ())
+pub fn set_mode(path: &str, mode: u32) -> Result<(), minix_sys::Errno> {
+    minix_sys::chmod(path, mode)
 }
 
 /// C's `link(outfile, outpath)`: the second name appears without moving the bytes,
-/// which is why C unlinks the destination first (`sort.c:375-378`).
+/// which is why C unlinks the destination first (`sort.c:375-378`). 同样带号：
+/// `err(2, "cannot link %s: output left in %s", outpath, outfile)`（`:379-380`）。
 #[cfg(any(test, not(target_os = "none")))]
-pub fn hard_link(from: &str, to: &str) -> Result<(), ()> {
-    std::fs::hard_link(from, to).map_err(|_| ())
+pub fn hard_link(from: &str, to: &str) -> Result<(), minix_sys::Errno> {
+    std::fs::hard_link(from, to).map_err(|error| errno_of(&error))
 }
 
 #[cfg(all(not(test), target_os = "none"))]
-pub fn hard_link(from: &str, to: &str) -> Result<(), ()> {
-    minix_sys::link(from, to).map_err(|_| ())
+pub fn hard_link(from: &str, to: &str) -> Result<(), minix_sys::Errno> {
+    minix_sys::link(from, to)
 }
 
 /// C's `unlink(path)`, used for both the old output name and the temporary.

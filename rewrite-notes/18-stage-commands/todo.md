@@ -250,6 +250,34 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十四把 `sort` 输出腿剩下的四条缝改成带号（`access`/`F_OK`/`lchmod`/`link`）**
+  （`2026-10-15`，`claim/SORT-OUTPUT-ERRNO-LEGS-qoder` @ 基线 `83850de82`，单域三线同一 crate：
+  `os/commands/usr-bin/textfilter` 里的 `src/bin_support.rs`、`src/bin/sort.rs`、`tests/sort_face.rs`，
+  不碰 `os/libs/`，无跨线登记）：
+  上一笔末尾登记的那条余面。C 在输出支上有四句 `err(2, ...)`：`access(outpath, W_OK)`
+  （`sort.c:336-337`）、`access(outfile, F_OK)`（`:364-365`）、`lchmod` 失败（`:373-374`，
+  句子是 `"cannot chmod %s: output left in %s"`，**两个名字都在句子里**）、`link` 失败
+  （`:379-380`，同一句式）。既然都是 `err`，印的就得包括 `strerror(errno)`；而本树这四个
+  缝只返 `bool`/`Result<_, ()>`，号在缝里被丢了，所以句子根本拼不出来。改法：
+  `bin_support.rs:writable`/`set_mode`/`hard_link` 错型改成 `Result<(), Errno>`，新增
+  `exists(path) -> Result<(), Errno>` 对位 `access(F_OK)`（旧的那腿拿 `probe_path(..).is_none()`
+  当判据，本来就没号可给）。真机臂直接拿 `access(2)`/`chmod`/`link` 的真号；**宿主臂是一处
+  同义改写**：std 没有 `access(2)` 包装，旧那一版只看 owner-write 位（给不出号也答不准非属主
+  的情形），现在改成「以写方式打开一下」（不开 `O_CREAT`/`O_TRUNC`，不动内容也不动元数据），
+  失败时 `raw_os_error()` 就是 `EACCES`/`ENOENT` 这类真号；两臂口径差异已写进缝的注释。
+  `unlink` 两支出错 C 不看（`:376`），本壳也不看。未动的一处：本壳把写失败报在
+  `Cannot open temporary file` 那一句上，而 C 那一支是 `fdopen` 失败（`:350-351`）——两者不是
+  同一事件（C 的写失败由 stdio 在 exit 时默默丢弃），本轮只登记不改。
+  三件套：`cargo test -p minix-textfilter` → **612 passed、0 failed**（数不变；端到端那一枚由
+  `contains("sort:")` 收严成逐字等式 `sort: <路径>: Permission denied`，否则号丢了看不出来）；
+  docker `minix-ci:1.94` 同包 **612/0**、`cargo check --workspace -j 1` **0 error**；三架构
+  `--bins` 零错；`rustfmt` 只跑本笔三件（含 `#[path]` 连带项，污染面 0）；clippy 触及件零告警；
+  两枚变异负控各咬一处：①把 `writable` 腿退回裸路径→那枚门报出左右差异（正好少一个句子）；
+  ②把宿主臂改成永远 `Ok(())`→同一枚报红（证明这道检查本身是承重件，不只是文案）；两枚均
+  先打印 `mutation applied` 再跑门，恢复用备份并 `cmp` 同一。核实日 `2026-10-15`；基线 `83850de82`。
+  登记不执行：`chmod`/`link` 两腿的带号句子在宿主造不出稳定金样（需要让一个刚创建的 0600 临时档
+  在 `chmod`/`link` 上失败），本轮只保证缝把号交到了壳里；写失败与 `fdopen` 的形状差异（上面那段）。
+
 - ✅ **批次二百八十三接完同族诊断面第三支（`sort` 与 `join` 的选项腿），并把 `sort` 的键解析收严到 C 的停点**
   （`2026-10-15`，`claim/FAMILY-DIAG-JOIN-SORT-qoder` @ 基线 `a7a7d7e72`，单域三线同包，无跨界）：
   前两批（二百八十一、二百八十二）把同一句登记的两支撑做完了。**sort 三条出口本来挤在一个

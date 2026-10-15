@@ -120,10 +120,11 @@ fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: 
             }
         },
         Output::ViaTemp { mode, .. } => {
-            // `access(outpath, W_OK)` first, with C's plain path message
-            // (`sort.c:336-337`).
-            if !support::writable(&target) {
-                support::warn(format!("sort: {target}\n").as_bytes());
+            // `access(outpath, W_OK)` 先走（`sort.c:336-337`）。那一支是
+            // `err(2, "%s", outpath)`：程序名、路径、`strerror` 句子三件齐备，
+            // 不是一句裸路径。
+            if let Err(code) = support::writable(&target) {
+                support::warn_line(prog, &target, code);
                 support::terminate(2);
             }
             let seed = support::epoch_micros().unwrap_or(0);
@@ -154,27 +155,38 @@ fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: 
                 support::terminate(2);
             };
             if sink.finish(payload).is_err() {
+                // 本壳把写失败报在这里；C 那一支是 `fdopen(outfd, "w")` 失败（`:350-351`），
+                // 两者不是同一个事件（写失败在 C 里由 stdio 在 exit 时默默丢弃）。
+                // 本轮不动这个形状，只登记。
                 support::warn(format!("sort: Cannot open temporary file `{temp}'\n").as_bytes());
                 support::terminate(2);
             }
-            // `access(outfile, F_OK)` before the mode copy (`sort.c:358-361`), then
-            // the old file's own permission bits land on the temporary
-            // (`:366-370`), and only then does the destination name move
-            // (`:372-379`).
-            if support::probe_path(&temp).is_none() {
-                support::warn(format!("sort: {temp}\n").as_bytes());
+            // `access(outfile, F_OK)` 在换 mode 之前（`sort.c:364-365`），然后原档自己的
+            // 权限位落到临时档上（`:373-374`），最后才换名字（`:376-380`）。
+            if let Err(code) = support::exists(&temp) {
+                // C 这一支也是 `err(2, "%s", outfile)`：临时档不见了也要报出号。
+                support::warn_line(prog, &temp, code);
                 support::terminate(2);
             }
-            if support::set_mode(&temp, mode).is_err() {
-                support::warn(
-                    format!("sort: cannot chmod {target}: output left in {temp}\n").as_bytes(),
+            if let Err(code) = support::set_mode(&temp, mode) {
+                // `err(2, "cannot chmod %s: output left in %s", outpath, outfile)`
+                // （`sort.c:373-374`）：两个名字都在句子里，后面还缀号。
+                support::warn_line(
+                    prog,
+                    &format!("cannot chmod {target}: output left in {temp}"),
+                    code,
                 );
                 support::terminate(2);
             }
+            // C 对 `unlink(outpath)` 的失败不看（`:376`），这里也不看。
             let _ = support::remove_path(&target);
-            if support::hard_link(&temp, &target).is_err() {
-                support::warn(
-                    format!("sort: cannot link {target}: output left in {temp}\n").as_bytes(),
+            if let Err(code) = support::hard_link(&temp, &target) {
+                // `err(2, "cannot link %s: output left in %s", outpath, outfile)`
+                // （`sort.c:379-380`）。
+                support::warn_line(
+                    prog,
+                    &format!("cannot link {target}: output left in {temp}"),
+                    code,
                 );
                 support::terminate(2);
             }
