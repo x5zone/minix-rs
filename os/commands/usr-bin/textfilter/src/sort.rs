@@ -102,6 +102,11 @@ pub struct Options {
     pub blank_skip: bool,
     /// Suppress lines that compare equal to their predecessor.
     pub unique: bool,
+    /// `-S`：键相等时再按**整条记录**破并列（C 的 `posix_sort`，`sort.c:202-212`）。
+    /// 不开这一位时 C 不拿原始记录再排（`:257` 的注释就写着“Don't sort on raw record
+    /// if keys match”），所以并列键保持输入序。`-u` 在选项环**之后**把它归零
+    ///（`:256-258`），所以 `-S -u` 与 `-u -S` 同效。
+    pub posix_tiebreak: bool,
     /// Check only: report disorder and duplicates, sort nothing.
     pub check: bool,
     /// Field delimiter byte (`-t`).
@@ -251,11 +256,14 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                 // now the default", so it accepts the flag and does nothing. We
                 // match that: accept, no effect (previously it errored as bad).
                 'H' => {}
-                // `-s`: stable sort. C `sort.c:217-222` sets `posix_sort = 0`,
-                // which its own comment notes is already the NetBSD default, and
-                // `slice::sort_by` (used below) is stable — so it is a no-op here
-                // too, matching C's observable behavior.
+                // `-s`（`sort.c:194-201`）与 `-S`（`:202-212`）是同一个开关的两面：前者把
+                // `posix_sort` 归零，后者置一。归零就是 C 的默认（并列键不再拿整条记录
+                // 再排，稳定保输入序），所以 `-s` 在这里确实是无操作；而 `-S` **不是**——
+                // 它打开的是下面那枚 `posix_tiebreak`，本树之前把两者都当 no-op，等于把
+                // `-S` 的那一半语义丢了（参照件：四行同键时 `-k 2,2` 给输入序 `b a c d`，
+                // `-S -k 2,2` 给记录序 `a b c d`）。
                 's' => {}
+                'S' => options.posix_tiebreak = true,
                 // `-o` takes a value, inline (`-oNAME`) or as the next word
                 // (`sort.c:188-190`); a missing one is C's `?` and lands on the
                 // usage path. A later `-o` overwrites the earlier one, as C's
@@ -314,6 +322,12 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
             }
         }
         index += 1;
+    }
+    // `sort.c:256-258`：选项环**跑完之后**才查 `if (UNIQUE) posix_sort = 0;`。就位置
+    // 是有意义的：它在环外，所以 `-S -u` 与 `-u -S` 同效（两形在参照件上都只留首行）。
+    // 而“并列键不再拿记录排”正是 `sort -u` 该有的：否则一叠同键行会被记录序拆散。
+    if options.unique {
+        options.posix_tiebreak = false;
     }
     Ok((options, operands))
 }
@@ -953,10 +967,12 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
             break;
         }
     }
-    if result == Ordering::Equal {
-        // The C's last-resort comparison: the raw whole lines in byte
-        // order, with the global reverse applied (the modifiers belong
-        // to the keys, not to this fallback).
+    if result == Ordering::Equal && options.posix_tiebreak {
+        // C 的 `-S` 那一支：键相等时再比整条记录（`fields.c:168` 把 `keylen` 撑到包含
+        // 原始记录的长度），全局 `-r` 同样作用在这一步上。修饰字母属于键而不属于
+        // 回退，所以这里用的是未过滤的原始字节。不开 `-S` 时**不进这一支**：C 默认
+        // 不拿记录再排，并列键保持输入序（排序那一路的稳定与 `-r` 下的倒装见
+        // `bin/sort.rs`，那里才能看到输入序号）。
         let raw = a.as_bytes().cmp(b.as_bytes());
         return if options.reverse { raw.reverse() } else { raw };
     }
@@ -1001,25 +1017,37 @@ mod tests {
         let options = opts("-n");
         assert_eq!(compare("  -3.5", "2", &options), Ordering::Less);
         assert_eq!(compare("2.10", "2.5", &options), Ordering::Less);
-        // POSIX -n has no plus sign: "+7" is not a number and sorts as
-        // zero, equal to "007"; the whole-line fallback then separates
-        // them by raw bytes ("+" sorts before "0").
-        assert_eq!(compare("+7", "007", &options), Ordering::Less);
-        // Non-numeric prefixes compare as zero; the whole-line fallback
-        // then orders them by raw bytes.
-        assert_eq!(compare("abc", "  ", &options), Ordering::Greater);
+        // 并列键不再在比较半拆散：两个数字值相同、尾不同的行就是平局（参照件：`-n`
+        // 对 `1 y`/`1 x` 两种输入顺序都原序输出），开了 `-S` 才按记录排。
+        assert_eq!(compare("1 y", "1 x", &options), Ordering::Equal);
+        assert_eq!(compare("1 x", "1 y", &options), Ordering::Equal);
+        assert_eq!(compare("1 y", "1 x", &opts("-n -S")), Ordering::Greater);
+        // 非数字前缀都算零，同样不在比较半用记录拆散（参照件 `-n` 对 `abc`/两个
+        // 空白也原序输出）。
+        assert_eq!(compare("abc", "  ", &options), Ordering::Equal);
+        // 注：`+7`/`007`/`7` 这一组**不能**拿来做本例——参照件量出三者在 C 里同值
+        //（任意输入顺序都原序输出），而本树的数值键把 `+` 当「不是数字」处理，于
+        // 是 `+7` 得零而 `007` 得 7——那是上一轮的整行回退正好并掩盖住的一处差异，
+        // 已另立一批修（批次二百九十的「登记不执行」第①条），不在这里拿旧读数签字。
     }
 
     #[test]
     fn test_fold_and_dictionary() {
-        // The fold makes the keys equal; the C's last-resort comparison
-        // then falls back to the raw whole line, where 'A' < 'a'.
+        // 折叠使两行的键相等，而 C 在不开 `-S` 时**不拿整条记录再排**：参照件对
+        // `Apple`/`apple`（与反过来输入）都原序输出，所以这里就该交回 `Equal`。
+        // 旧断言写的「回退到整行、`A` 先于 `a`」是本树自创的次序（批次二百九十推翻）。
         let options = opts("-f");
-        assert_eq!(compare("Apple", "apple", &options), Ordering::Less);
+        assert_eq!(compare("Apple", "apple", &options), Ordering::Equal);
+        assert_eq!(compare("apple", "Apple", &options), Ordering::Equal);
         assert_eq!(compare("Apple", "Apple", &options), Ordering::Equal);
+        // `-S` 才把记录拿进来：这时 `A`(0x41) 先于 `a`(0x61)，与参照件
+        // `printf 'ab\nAB\n' | sort -f -S` 给出 `AB` 在前的读数同形。
+        assert_eq!(compare("apple", "Apple", &opts("-f -S")), Ordering::Greater);
         let dictionary = opts("-d");
-        // The '+' byte filters away on both sides: "ab" versus "abc".
+        // '+' 字节两侧都被滤掉："ab" 对 "abc"——这是键本身不等，与并列无关。
         assert_eq!(compare("a+b", "a+bc", &dictionary), Ordering::Less);
+        // 而滤完真的相等时仍是平局（参照件 `-d` 对 `a+b`/`ab` 原序输出）。
+        assert_eq!(compare("a+b", "ab", &dictionary), Ordering::Equal);
     }
 
     #[test]
@@ -1029,11 +1057,22 @@ mod tests {
         let mut options = opts("-t:");
         options.keys.clear();
         options.keys.push(spec);
-        // -t: -k2,2 compares the second colon field only; different keys
-        // order by it, and the whole line breaks the tie.
+        // -t: -k2,2 只比第二个冒号字段；字段不同就按它排，字段相同时**不在这里拆**。
         assert_eq!(compare("x:b:zz", "a:a:yy", &options), Ordering::Greater);
-        assert_eq!(compare("x:b:zz", "a:b:yy", &options), Ordering::Greater);
-        assert_eq!(compare("x:b:1", "x:b:2", &options), Ordering::Less);
+        assert_eq!(compare("x:b:zz", "a:b:yy", &options), Ordering::Equal);
+        // 键都是字段二的 `b`，所以第三段的差异不构成序（旧写法在这里靠整行回退
+        // 报出 Less，那是自创的次序）；要拆得开只能 `-S`。
+        assert_eq!(compare("x:b:1", "x:b:2", &options), Ordering::Equal);
+        assert_eq!(
+            compare("x:b:1", "x:b:2", &opts("-t: -k 2,2 -S")),
+            Ordering::Less
+        );
+        // 拆平行尾靠 `-S`：参照件上同键不同尾的行，`-k 2,2` 原序输出，而
+        // `-S -k 2,2` 按记录排。
+        assert_eq!(
+            compare("x:b:zz", "a:b:yy", &opts("-t: -k 2,2 -S")),
+            Ordering::Greater
+        );
     }
 
     /// `.0` 在两列上不对称：只有开始列会 `col->indent--`（`init.c:168-169`），所以
@@ -1110,9 +1149,9 @@ mod tests {
         assert_eq!(compare("b 2", "aaa 1", &by_length), Ordering::Less);
         assert_eq!(compare("cc 3", "aaa 1", &by_length), Ordering::Less);
         assert_eq!(compare("", "b 2", &by_length), Ordering::Less);
-        // 等长时平在本键上，再回退到整行比较（那是本树的既有形状；C 的默认是并列键保持
-        // 输入序，那一处差异已登记在批次二百八十七条的「登记不执行」第②条）。
-        assert_eq!(compare("ab 1", "cd 2", &by_length), Ordering::Less);
+        // 等长就是平局：不开 `-S` 时比较半不拿记录拆（参照件 `-l` 对同长行原序输出），
+        // 输入序由排序那一步保住。
+        assert_eq!(compare("ab 1", "cd 2", &by_length), Ordering::Equal);
         // 全局 `-l` 与局部 `-k 1l` 同序（`-l` 走的是 `fldtab[0].flags`，`sort.c:168-172`）。
         assert_eq!(compare("b 2", "aaa 1", &opts("-k 1l")), Ordering::Less);
         // 跳前导空白只发生在本键那一支里（`SKIP_BLANKS`），所以 `-t:` 下「两个补白加 aa」
@@ -1180,15 +1219,23 @@ mod tests {
         assert_eq!(compare("a y z", "b x w", &options), Ordering::Greater);
     }
 
+    /// 并列键的规则（批次二百九十按参照件定形）：不开 `-S` 时比较半交回 `Equal`，
+    /// 由排序那一步的稳定性保住输入序；开了 `-S` 才拿整条记录拆平行。
     #[test]
-    fn test_tie_falls_back_to_whole_line() {
-        let global = opts("");
-        let spec = parse_key("1,1.1", &global).unwrap();
+    fn a_tie_stays_tied_and_capital_s_breaks_it_by_the_record() {
         let mut options = opts("");
-        options.keys.clear();
-        options.keys.push(spec);
-        // The one-byte key ties; the whole line breaks the tie.
+        options.keys.push(parse_key("1,1.1", &opts("")).unwrap());
+        // 一字节长的键相等就是平局（旧写法在这里回退整行，自创了一个次序）。
+        assert_eq!(compare("a123", "a456", &options), Ordering::Equal);
+        assert_eq!(compare("a456", "a123", &options), Ordering::Equal);
+        options.posix_tiebreak = true;
         assert_eq!(compare("a123", "a456", &options), Ordering::Less);
+        // `-u` 在选项环**之后**把这一位归零（`sort.c:256-258`），所以两种书写顺序同效。
+        assert!(!parse_options(&["-S", "-u"]).unwrap().0.posix_tiebreak);
+        assert!(!parse_options(&["-u", "-S"]).unwrap().0.posix_tiebreak);
+        assert!(parse_options(&["-S"]).unwrap().0.posix_tiebreak);
+        // `-s` 仍是无操作：它写的就是默认那一侧（`sort.c:194-201`）。
+        assert!(!parse_options(&["-s"]).unwrap().0.posix_tiebreak);
     }
 
     #[test]

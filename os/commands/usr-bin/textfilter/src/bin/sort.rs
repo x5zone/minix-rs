@@ -68,7 +68,22 @@ fn run() -> ! {
         let refs: Vec<&[String]> = runs.iter().map(|r| r.as_slice()).collect();
         lines = merge_sorted(&refs, &options);
     } else {
-        lines.sort_by(|a, b| compare(a, b, &options));
+        // C 的并列键规则要在排序这一步才完整：比较半只在 `-S` 之下拿整条记录
+        // 破并列，否则返回平。平局怎么走要看 C 的方向位：默认稳定保持输入序
+        //（参照件对四行同键的 `-k 2,2` 给出 `b a c d`，正是输入序），而带全局 `-r`
+        // 时同一组读数倒装成 `d c a b`。`sort_by` 本身稳定，拿不到“倒装”这一半，
+        // 所以这里显式把输入序号带进比较：正序取升号，`-r` 取降号。
+        let mut indexed: Vec<(usize, String)> = lines.drain(..).enumerate().collect();
+        indexed.sort_by(|(ia, a), (ib, b)| {
+            compare(a, b, &options).then_with(|| {
+                if options.reverse {
+                    ib.cmp(ia)
+                } else {
+                    ia.cmp(ib)
+                }
+            })
+        });
+        lines = indexed.into_iter().map(|(_, line)| line).collect();
     }
     if options.unique {
         lines.dedup_by(|a, b| compare(a, b, &options) == core::cmp::Ordering::Equal);

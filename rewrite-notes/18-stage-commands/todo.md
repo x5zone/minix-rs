@@ -250,6 +250,47 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百九十改掉 `sort` 一处自创次序：并列键默认保持输入序，只有 `-S` 才按整条记录破并列**
+  （`2026-10-15`，`claim/SORT-STABLE-TIEBREAK-qoder` @ 基线 `e34427e26`，单域三线同一 crate：
+  `src/sort.rs`、`src/bin/sort.rs`、`tests/sort_face.rs` 加 `07-text-filter.md`）：批次二百八十七
+  「登记不执行」第②条，也是 `sort` 选项面 `D`/`R`/`T`/`S` 四字母里的 `S`。
+  **C 的真形**（全部拿参照件 `tmp/family-diag-ref/sort_ref` 逐形量，四行同键输入
+  `b 1/a 1/c 1/d 1`）：`-k 2,2` → 原序（`b a c d`）；`-S -k 2,2` → 记录序（`a b c d`）；
+  `-r -k 2,2` → 原序倒装（`d c a b`）；`-u -k 2,2` → 只留首行 `b 1`（`-S -u` 与 `-u -S` 同）；
+  `-c -k 2,2` → 退 0 不报；`-c -S -k 2,2` → 退 1 报失序。机制在 `sort.c:194-212` 的
+  `posix_sort`（`-s` 归零、`-S` 置一）与 `fields.c:168`（该位为零时 `keylen` 只含键、
+  不含原始记录），再加上 `sort.c:256-258` 那句**在选项环之后**的 `if (UNIQUE) posix_sort = 0;`。
+  **本树之前错在两处**：① 比较半**总是**在键相等时回退整行（`Options` 里连承载 `-S` 的位都没有，
+  `'S'` 落进集外字母那一支），于是默认序被自创成记录序，而 `sort -u` 面对一叠同键行会全部留下——
+  这恰是 `sort -u` 的反面；② `-s` 与 `-S` 都被当无操作写死。修法：`Options` 加
+  `posix_tiebreak`，`'S'` 置一、环后由 `unique` 归零；`compare()` 的回退臂加上
+  `&& options.posix_tiebreak`；壳里的排序显式带输入序号（`sort_by` 稳定，只交回 `Equal`
+  拿不到 C 那半「`-r` 把稳定序倒装」的行为，故 `then_with` 按 `-r` 取升/降号）。
+  **推翻三处旧断言**（都是拿自创次序签字的）：`test_tie_falls_back_to_whole_line`（改名并
+  重写为 `a_tie_stays_tied_and_capital_s_breaks_it_by_the_record`）、`test_fold_and_dictionary`
+  里「`Apple` 先于 `apple`」与 `test_numeric_with_signs_and_fractions`、
+  `test_key_spec_field_selection_with_delimiter`、`sort_by_length_orders_by_span_length_not_content`
+  中依赖回退的四条读数，全部改成「平局交回 `Equal`，要拆得开只能 `-S`」，逐条带参照件读数。
+  **顺手掀出一处被回退掩盖的差异**（本笔不修，登记）：`-n` 下 C 把 `+7`/`7`/`007` 视为同值
+  （三种输入顺序两两都原序输出，实测 A/B/C/D 四组），而本树的数值键把 `+` 当「不是数字」处理，
+  于是 `+7` 得零、`007` 得 7——旧测正好写着「POSIX `-n` 没有正号」这个错认知，而它当时的 Less
+  读数其实来自整行回退，两个错凑出了一个看着对的断言。另两处同族登记：本壳失序那句写的是
+  `sort: disorder: `（C 是 `errx(1, "found disorder: %s", …)`，`msort.c:403`，少一个词）；
+  本壳在 `-c -u` 那一路会打 `sort: duplicate: `，而这份 C 里没有对应的 `errx`（重复是被标记后
+  丢弃的，见 `append.c:72`、`radix_sort.c:111/203`），那句疑为自创。三处都归诊断面/数值键那一单。
+  三件套：docker `minix-ci:1.94` `cargo test --target-dir /tmp/final290 --no-fail-fast -j 1
+  -p minix-textfilter` → **625 passed、0 failed**（零 `FAILED` 行；基线 624：`sort_face` 11→12
+  新增一枚端到端，lib 改名不增数）、同容器 `cargo check --workspace -j 1` **0 error**、
+  clippy 对触及三件零命中；三架构 `--bins` 在 `x86_64-unknown-none`/`aarch64-unknown-none`/
+  `riscv64gc-unknown-none-elf` 均零错（本笔动了 lib 与 bin，适用）；`rustfmt --check`：
+  `sort.rs` 一处是本笔新行、已排定复跑零漂移，`bin/sort.rs` 两处拿 `git show HEAD:` 副本比对
+  确认基线即存在（本笔不顺手排），`sort_face.rs` 零漂移；三枚变异负控各咬一处（①`'S'` 退回
+  no-op → lib 四枚报红；②删掉环后的 `unique` 归零 → lib 一枚报红；③把壳里 `-r` 的倒装臂压平 →
+  端到端那枚报红），均先打印 `mutation applied`、恢复用备份并 `cmp` 同一；核实日 `2026-10-15`；
+  基线 `e34427e26`。过程教训一条：**测试名过滤器会同时套到被一并选中的集成目标上**——第一次跑
+  `--lib sort:: --test sort_face` 时 `sort_face` 的 13 枚被同名过滤器全过滤掉（0 跑 13 滤），
+  于是那枚本该报红的负控看着「没咬住」；分开跑端到端目标才见它咬中。
+
 - ✅ **批次二百八十九把 `tail` 跟随门的「拍数判据」改成「耐心上限」，并查清了一档 root 属主产物的真正来源**
   （`2026-10-15`，`claim/FACE-TEST-DETERMINISM-qoder` @ 基线 `0138c876e`，**只改一个测试文件**
   `tests/tail_face.rs`，无生产码改动）：批次二百八十八「登记不执行」第①条的可证明那一半。

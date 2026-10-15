@@ -331,6 +331,38 @@ fn the_length_flag_sorts_by_span_length() {
 }
 
 #[test]
+fn equal_keys_keep_input_order_and_capital_s_switches_to_the_record() {
+    // 并列键的规则（批次二百九十按参照件 `sort_ref` 逐形量过）。输入四行的键（第二列）
+    // 全部相等，所以四种写法给的是四种读数，每一枚都只对得上自己那一支：
+    let input = b"b 1\na 1\nc 1\nd 1\n";
+    // 默认：C 不拿整条记录再排（`fields.c:168` 在 `posix_sort` 为零时把 `keylen` 收到
+    // 只含键），所以并列键保持输入序——旧写法在这里回退到整行，给出的是 a b c d。
+    assert_eq!(run(&["-k", "2,2"], input).0, input.to_vec());
+    // `-S` 才是「按键排完再按整条记录排」（`sort.c:202-212`）。
+    assert_eq!(run(&["-S", "-k", "2,2"], input).0, b"a 1\nb 1\nc 1\nd 1\n");
+    // 全局 `-r` 连稳定序一起倒装（参照件 `-r -k 2,2` 给出 d c a b）。
+    assert_eq!(run(&["-r", "-k", "2,2"], input).0, b"d 1\nc 1\na 1\nb 1\n");
+    // `-u` 在选项环**之后**撤掉 `-S`（`:256-258`），所以两形都只留首行；旧写法因为总
+    // 按整行拆平行，会把四行全留下——那是 `sort -u` 的反面。
+    assert_eq!(run(&["-u", "-k", "2,2"], input).0, b"b 1\n");
+    assert_eq!(run(&["-S", "-u", "-k", "2,2"], input).0, b"b 1\n");
+    assert_eq!(run(&["-u", "-S", "-k", "2,2"], input).0, b"b 1\n");
+    // `-c` 看的是同一把尺：默认四行不算失序（退 0、不打任何东西），开了 `-S` 之后
+    // `a 1` 排在 `b 1` 之后就是失序（参照件 `errx(1, "found disorder: %s", …)`，
+    // `msort.c:403`，退 1）。这里只钉「有没有报、退码几」；本壳那句文案与 C 差一个
+    // 词（我们写的是 `sort: disorder: `，C 是 `found disorder: `），那是诊断面的
+    // 一笔，已另单登记，不在本枚里拿错的形签字。
+    let (out, status, err) = run(&["-c", "-k", "2,2"], input);
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(err, "");
+    let (out, status, err) = run(&["-c", "-S", "-k", "2,2"], input);
+    assert_eq!(out, Vec::<u8>::new(), "失序检查不该往标准输出打东西");
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert!(err.contains("disorder"), "stderr 是 {err:?}");
+}
+
+#[test]
 fn a_second_delimiter_option_takes_the_message_plus_the_usage_block() {
     // `usage("multiple field delimiters")`（`sort.c:214-215`）：先 `%s: %s` 那一句，
     // 再接整个 usage 行。而多字节本身不是错（C 只取首字节）。
