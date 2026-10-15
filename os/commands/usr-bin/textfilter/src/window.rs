@@ -369,15 +369,9 @@ pub enum TailError {
     /// （`tail.c:86-87`，两个数字选项无论重复还是混用）与 `-r` 配跟随（`:143-145`）
     /// 都是直接走 usage，前面不会多一行 getopt 自己的报文。
     Usage,
-    /// getopt 认不出的字母：C 先由 `getopt` 自己印一行
-    /// `"<prog>: unknown option -- <字母>"`（`minix3/lib/libc/stdlib/getopt.c:101-104`，
-    /// 字母不带引号，与 glibc 的 `invalid option -- 'x'` 不同形），再返回 `BADCH`（`'?'`，
-    /// `:54`）落到 `tail.c:128-130` 的 `case '?'` → usage。所以这一支是**两行**。
-    UnknownOption(char),
-    /// 带值选项（`-b`/`-c`/`-n`）没给值：optstring 不以 `:` 开头，所以 C 走的仍是
-    /// `getopt.c:132-136` 那一支——先印 `"<prog>: option requires an argument -- <字母>"`，
-    /// 再返回 `'?'` → usage，同样两行。带的是那个字母。
-    MissingValue(char),
+    /// 集外字母与带值选项缺值：那一行由 libc 的 getopt 自己印，随后才是本命令的
+    /// usage，所以真源是**两行**。句子住在 [`GetoptReport`] 里（同族的头三个命令共用）。
+    Getopt(crate::GetoptReport),
     /// `-f`/`-F` 配了两个以上操作数：C 在解析完选项、打开任何文件之前就致命退出
     /// （`tail.c:135-137` 的 `xerrx(1, "-f and -F options only appropriate for a
     /// single file")`）。这句话没有 `errno` 后缀（`xerrx` 走 `vwarnx`，
@@ -582,7 +576,9 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                         } else {
                             index += 1;
                             if index >= scanned.len() {
-                                return Err(TailError::MissingValue(letter as char));
+                                return Err(TailError::Getopt(crate::GetoptReport::MissingValue(
+                                    letter as char,
+                                )));
                             }
                             scanned[index].clone()
                         };
@@ -616,7 +612,11 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                         seen = Some((if forward { fwd } else { bwd }, off));
                         pos = bytes.len(); // the value consumed the token's tail
                     }
-                    _ => return Err(TailError::UnknownOption(bytes[pos] as char)),
+                    _ => {
+                        return Err(TailError::Getopt(crate::GetoptReport::UnknownOption(
+                            bytes[pos] as char,
+                        )));
+                    }
                 }
             }
         } else {
@@ -987,18 +987,18 @@ mod tests {
             vec![String::from("-")]
         );
         // error paths
-        // 集外字母与缺值都带着那个字母走（C 在 getopt 里先印一行再退 usage）。
+        // 集外字母与缺值都带着 libc 那一行走（句子单源在 `GetoptReport`）。
         assert_eq!(
             parse_tail_args(&["-x", "f"]).err(),
-            Some(TailError::UnknownOption('x'))
+            Some(TailError::Getopt(crate::GetoptReport::UnknownOption('x')))
         );
         assert_eq!(
             parse_tail_args(&["-n"]).err(),
-            Some(TailError::MissingValue('n'))
+            Some(TailError::Getopt(crate::GetoptReport::MissingValue('n')))
         );
         assert_eq!(
             parse_tail_args(&["-c"]).err(),
-            Some(TailError::MissingValue('c'))
+            Some(TailError::Getopt(crate::GetoptReport::MissingValue('c')))
         );
         assert_eq!(
             parse_tail_args(&["-n", "x"]).err(),
@@ -1237,7 +1237,7 @@ mod tests {
         // and takes C's `getopt.c:101-104` report plus `case '?'` → usage.
         assert_eq!(
             parse_tail_args(&["f", "-3c"]).err(),
-            Some(TailError::UnknownOption('3'))
+            Some(TailError::Getopt(crate::GetoptReport::UnknownOption('3')))
         );
         // Before the freeze point the rewrite does apply, and the operand list is
         // just the file name.

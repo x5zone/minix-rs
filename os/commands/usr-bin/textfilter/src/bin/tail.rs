@@ -639,15 +639,10 @@ fn bytes_after_lines(input: &[u8], off: usize) -> &[u8] {
 fn arg_error(e: TailError, prog: &str) -> ! {
     match e {
         TailError::Usage => usage(prog),
-        TailError::MissingValue(letter) => {
-            // C `getopt.c:132-136` 先印一句，再落 `case '?'` → usage（两行）。
-            support::warn(format!("{prog}: option requires an argument -- {letter}\n").as_bytes());
-            usage(prog)
-        }
-        TailError::UnknownOption(letter) => {
-            // C `getopt.c:101-104` 的那一句字母不带引号（glibc 写的是
-            // `invalid option -- 'x'`，拿它当基线会错）；随后同样接 usage 行。
-            support::warn(format!("{prog}: unknown option -- {letter}\n").as_bytes());
+        TailError::Getopt(report) => {
+            // libc 的那一句（`getopt.c:101-104` 或 `:132-136`）在前，usage 行在后。
+            // 句子单源住在 `GetoptReport`，本族其它命令拿到的是同一份文本。
+            support::warn(report.line(prog).as_bytes());
             usage(prog)
         }
         TailError::FollowMultiFile => {

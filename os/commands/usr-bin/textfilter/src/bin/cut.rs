@@ -22,11 +22,12 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{Fd, close, open, read};
 use minix_textfilter::cut::{CutError, parse_cut_args, parse_list, select_bytes, select_fields};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    // C 的每一句诊断都以 `getprogname()` 开头（err/errx 走 `vwarn`/`vwarnx`）。
+    let prog = support::prog_name(&argv);
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     // argv folding lives in the deciding half (`parse_cut_args`): BSD
     // `getopt("b:c:d:f:sn")` with attached-or-next list/delimiter values and
@@ -35,25 +36,28 @@ fn run() -> ! {
     // list) and `-ns` (dropped the `-s` suppress).
     let parsed = match parse_cut_args(&args[1..]) {
         Ok(parsed) => parsed,
-        Err(e) => arg_error(e),
+        Err(e) => arg_error(e, prog),
     };
-    let bytes_list: Option<String> = parsed.bytes_list.map(String::from);
-    let fields_list: Option<String> = parsed.fields_list.map(String::from);
+    let bytes_list = parsed.bytes_list;
+    let fields_list = parsed.fields_list;
     let delimiter = parsed.delimiter;
     let suppress = parsed.suppress;
     let operands: Vec<String> = parsed.operands.iter().map(|s| String::from(*s)).collect();
 
     let selecting_bytes = bytes_list.is_some();
+    // `parse_cut_args` 已经在选项环里把列表解了一遍（C 的 `get_list` 就坐在那个
+    // case 里），所以这里只剩「取哪一份」。四道 post-check 也已在那一半跑完。
     let list_text = match (bytes_list, fields_list) {
-        (Some(list), None) => list,
-        (None, Some(list)) => list,
+        (Some(list), None) | (None, Some(list)) => list,
         _ => usage(),
     };
-    let parsed = match parse_list(&list_text) {
-        Ok((ranges, count)) => (ranges, count),
-        Err(_) => support::terminate(1),
+    let (ranges, count) = match parse_list(list_text) {
+        Ok(parsed) => parsed,
+        // 不可达：上面那个解析器已经跑过同一个串。真到了这里也按 C 的句子报，
+        // 而不是静默退 1——旧写法就是静默退 1，一句都不说。
+        Err(error) => arg_error(CutError::from(error), prog),
     };
-    let ranges = &parsed.0[..parsed.1];
+    let ranges = &ranges[..count];
 
     let process = |input: &[u8]| {
         for line in support::lines_of(input) {
@@ -85,64 +89,56 @@ fn run() -> ! {
             process(&support::read_stdin());
             continue;
         }
-        let fd = match open(operand, 0, 0) {
-            Ok(fd) => fd,
-            Err(_) => {
-                support::warn(format!("cut: {operand}\n").as_bytes());
+        // `support::read_file` 而不是裸 `minix_sys::open`：后者在本 crate 的命令层
+        // 没有宿主双生面，直接跑宿主二进制时任何操作数都打不开（tail 在同一条腿上
+        // 过同一个坑，那个缺口当时被登为「逐字对账不适用于 tail」）。接回双生面之后，
+        // 这一腿的报错腿才能被 `cut_face.rs` 钉住。
+        let input = match support::read_file(operand) {
+            Ok(input) => input,
+            // C `cut.c:138-142` 的 `warn("%s", *argv)`：程序名、操作数、`strerror`
+            // 句子三个成分缺一不可（旧写法把 `warn(3)` 当成 `warnx(3)` 用）。
+            Err(code) => {
+                support::warn_line(prog, operand, code);
                 status = 1;
                 continue;
             }
         };
-        let input = read_fd(fd);
-        //[SD19-gate] SD-19: close 后 fd 不再使用
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = close(fd);
         process(&input);
     }
     support::terminate(status)
 }
 
-/// Read a descriptor to the end.
-fn read_fd(fd: Fd) -> Vec<u8> {
-    let mut input = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => input.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    input
-}
-
-/// Map a [`CutError`] from `parse_cut_args` to the exact C error path (the
-/// message and exit code) the old in-bin matcher used, then terminate.
-fn arg_error(e: CutError) -> ! {
+/// Map a [`CutError`] to the exact C path (message and exit code), then terminate.
+fn arg_error(e: CutError, prog: &str) -> ! {
     match e {
         CutError::Usage => usage(),
-        CutError::Conflict => conflict(),
-        // A `-d` value that is not exactly one byte: C warns and exits;
-        // the old matcher simply terminated nonzero (unchanged here).
-        CutError::BadDelimiter => support::terminate(1),
+        // libc 的那一行排在前面，usage 的三行在后面。
+        CutError::Getopt(report) => {
+            support::warn(report.line(prog).as_bytes());
+            usage()
+        }
+        // C 的两句 errx（`cut.c:196`、`:198`）：走 `vwarnx`，所以后面不缀 `errno`
+        // 句子，而且两句都不把出错的那一段拼回去。
+        CutError::IllegalList => {
+            support::warn(format!("{prog}: [-bcf] list: illegal list value\n").as_bytes());
+            support::terminate(1);
+        }
+        CutError::ZeroInList => {
+            support::warn(format!("{prog}: [-bcf] list: values may not include zero\n").as_bytes());
+            support::terminate(1);
+        }
     }
 }
 
-fn conflict() -> ! {
-    support::emit(b"cut: only one type of list may be specified\n");
-    support::terminate(1);
-}
-
-/// C `usage()` (`cut.c:290-296`): a missing/extra-ambiguous selection or an
-/// unrecognised option. Exit 1.
+/// C `usage()`（`cut.c:290-296`）：**三行**，`usage:` 后面是一个制表符，后两行各以
+/// 制表符开头，而且这句里没有程序名占位（C 写死了 `cut`）。全部写标准错误——
+/// 旧写法走的是 `support::emit`，即把诊断发到标准输出，那是通道错。退 1。
 fn usage() -> ! {
-    support::emit(b"usage: cut -b list [-n] | -c list | -f list [-d delim] [-s] [file ...]\n");
+    support::warn(
+        b"usage:\tcut -b list [-n] [file ...]\n\tcut -c list [file ...]\n\tcut -f list [-d string] [-s] [file ...]\n",
+    );
     support::terminate(1);
 }
-
-// Standard input descriptor retained for the no_std sweep (the collection
-// helper owns the read today).
-const _: Fd = 0;
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

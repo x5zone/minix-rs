@@ -94,3 +94,62 @@ impl TextError {
         }
     }
 }
+
+/// libc 的 `getopt` 在返回 `'?'` **之前**自己先印的那一行。
+///
+/// 这一行不属于任何一条命令：只要 optstring 不以 `:` 开头（本族没有一条以它开头），
+/// `getopt` 就在两个地方各自印一句，然后才把 `'?'` 交给调用者的 `usage()`：
+/// 集外字母走 `minix3/lib/libc/stdlib/getopt.c:101-104`，带值选项缺值走
+/// `:132-136`。两句都把程序名放在最前（`getprogname()`），字母**不带引号**——
+/// 本机 glibc 写的是 `invalid option -- 'x'`，拿宿主当基线会错，所以这一句的真值
+/// 只能来自 C 源。两个命令各写一份同样的句子就是重复承载同一个事实（谁先被抹平
+/// 都不会改变行为），所以把它收在这里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GetoptReport {
+    /// `getopt.c:101-104`：集外字母。
+    UnknownOption(char),
+    /// `getopt.c:132-136`：带值选项没给值。
+    MissingValue(char),
+}
+
+impl GetoptReport {
+    /// 那一行的完整文本（带换行）。调用方把它写到标准错误，随后接自己的 usage。
+    #[must_use]
+    pub fn line(self, prog: &str) -> alloc::string::String {
+        use alloc::format;
+        match self {
+            GetoptReport::UnknownOption(letter) => {
+                format!("{prog}: unknown option -- {letter}\n")
+            }
+            GetoptReport::MissingValue(letter) => {
+                format!("{prog}: option requires an argument -- {letter}\n")
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GetoptReport;
+
+    /// 那两行的原文逐字钉在这里（单源），因为壳侧的门只能证明「渲染出来了」，
+    /// 证明不了措辞。真值取 `minix3/lib/libc/stdlib/getopt.c:101-104` 与
+    /// `:132-136`：`"%s: unknown option -- %c\n"`、
+    /// `"%s: option requires an argument -- %c\n"`，字母两边都不带引号。
+    #[test]
+    fn getopt_report_lines_match_the_libc_format_strings() {
+        assert_eq!(
+            GetoptReport::UnknownOption('x').line("cut"),
+            "cut: unknown option -- x\n"
+        );
+        assert_eq!(
+            GetoptReport::MissingValue('f').line("tail"),
+            "tail: option requires an argument -- f\n"
+        );
+        // 程序名来自 `getprogname()`，不是写死的命令名。
+        assert_eq!(
+            GetoptReport::UnknownOption('3').line("head"),
+            "head: unknown option -- 3\n"
+        );
+    }
+}

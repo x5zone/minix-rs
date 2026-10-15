@@ -250,6 +250,57 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十一把 `cut` 的诊断腿整支接回 C（五处偏离，其中一处是通道错），并把 libc 那一行归成单源**
+  （`2026-10-15`，`claim/FAMILY-DIAG-LEGS-qoder` @ 基线 `9c645d31d`，单域三线同包，无跨界）：
+  上一轮接 `tail` 时发现 Minix3 的 `getopt` 会为集外字母与缺值**各印一行**，然后才轮到命令
+  自己的 `usage()`——那是 libc 行为，不属于任何一条命令（`minix3/lib/libc/stdlib/getopt.c:101-104`
+  写 `"%s: unknown option -- %c\n"`、`:132-136` 写 `"%s: option requires an argument -- %c\n"`，
+  optstring 不以 `:` 开头就走这两支；字母**不带引号**，本机 glibc 的 `invalid option -- 'x'` 不同形）。
+  普查五支（`head`/`cut`/`uniq`/`join`/`sort`）确认它们都是 `case '?'` → `usage()`，所以这一行集体缺失。
+  本轮只动 `cut` 一支（一次一条），但句子存成单源 `lib.rs:GetoptReport`（带一枚逐字测），
+  `tail` 也从内联格式改为调它——同一个事实写在两个壳里就是重复承载，抹平任一处都不会改变行为
+  （那是上一轮负控「改坏了却全绿」的同一形状）。
+  **`cut` 本轮接回的五处**：① `usage()` 实为**三行**且以制表符对齐、那句里没有程序名占位
+  （`cut.c:290-296` 写死了 `cut`），而本壳把自创的单行发到了**标准输出**——`support::emit` 是
+  stdout，诊断被当成数据吃掉，这是通道错不是文案错；② 上面那两行的 libc 前置行；
+  ③ 两类列表并存与「没列表」「`-d`/`-s` 不配 `-f`」是选项环**外**的四道 post-check
+  （`cut.c:120-128`），全走裸 usage，而列表合法性在环**里**就地查（`get_list(optarg)` 坐在
+  `case 'f'` 里，`:105`）——两个优先级方向各一枚端到端测（旧写法把冲突当环内错抢先报，还把
+  自创的 GNU 句子 `only one type of list may be specified` 当成了 C 的文案）；④ `-d` 只取首字节
+  且不报错（`cut.c:101-102` 就一句 `dchar = *optarg`），旧写法把多字节做成专门的错（`BadDelimiter`）；
+  ⑤ 列表两句 errx 都不把坏文本拼回句子（`cut.c:196`、`:198`），而旧壳对非法列表是**静默退 1**。
+  **顺手拓出一处测量通道缺口**：`cut` 的操作数腿走裸 `minix_sys::open`，在宿主没有双生面，
+  所以直接跑宿主二进制时**任何**操作数都打不开（与 tail 早年被登为「宿主逐字对账不适用」同一坑）；
+  接回 `bin_support.rs:read_file` 后这一腿才可测，才钉住了 `warn("%s", *argv)` 的三个成分。
+  **本轮自己写错过一次期望（门反证）**：先把 `""`/`1,,2`/`5-2` 当成「illegal list value」的读数写进
+  门里——而 C 的 `get_list` 用 `strtok(list, ", \t")`（`:176`）会折叠空项并把空格制表符也当分隔符，
+  `5-2` 不查大小关系（`:193-195`，注释明写比 POSIX 草案宽），`-f ''` 连一次循环体都不进。
+  这三形与超 16 项同理（C 按 `ALLOC_CHUNK` 长大）归入下一条待办（**列表语法**，不是诊断），
+  本轮的门只取两侧一致的形。
+  三件套：`cargo test -p minix-textfilter` → **604 passed、0 failed**（基线 594：新建
+  `tests/cut_face.rs` 九枚 + `lib.rs` 单源测一枚）；权威容器门 docker `minix-ci:1.94`
+  `cargo test -j 1 -p minix-textfilter` → **604/0**（从 `/work/os` 现编）；同容器
+  `cargo check --workspace -j 1` → **0 error**；freestanding `cargo build -p minix-textfilter --bins
+  --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} --release` 三架构均
+  `Compiling` + Finished；**格式化的坑（本仓旧教训复发一次）**：`rustfmt --edition 2024 src/lib.rs …`
+  会跟着 `lib.rs` 的 `pub mod` 声明把**整个 crate** 重排，当场污染 20 个无关文件；已全部
+  `git checkout --` 回退，并把它顺手重排的本笔两文件基线存量也钉回去（`lib.rs` 的 `pub mod` 字母序、
+  `cut.rs` 的 `select_bytes` 多行签名与 `in_ranges` 链式调用），最终 `lib.rs` 是**纯新增**（59 行、0 删）、
+  本笔新增行零漂移；clippy 触及件零命中；
+  `tools/pattern-gate.sh` PASS=15 FAIL=0（P18 落窗）；`tools/check-command-boundary.sh` OK；
+  五道收尾校验全过（断链基线 124 不变）。三枚变异负控各咬一处并 `cmp` 复原同一：
+  ①`usage` 改回 `emit` → 通道与内容双错被报出；②抹掉 libc 那一行 → 三支门同时报红
+  （含 `a_later_unknown_letter_outranks_the_conflict`）；③把冲突查环内 → 仅那一枚报红（方向可区分）。
+  核实日 `2026-10-15`；基线 `9c645d31d`。
+  登记不执行（同族同形缺口，本单不顺手修）：① `head`/`uniq`/`join`/`sort` 四支的 libc 前置行与
+  `usage` 原文（`head.c:115-117`/`:198-203`、`uniq.c:102-104`/`:252-256`、`join.c:226-227`/`:630-637`、
+  `sort.c:250-251`）；`head` 还有一处 `warn("%s", *argv)` 缺句子（`head.c:124-126`）、`uniq` 的开档腿
+  走的是致命 `err(1, "%s", name)`（`uniq.c:216-221`）而旧壳只印名字；② `pr` 用的是 `egetopt`，
+  那一份的报错行为得单独读源定形；③ `cut` 的列表语法四形（上面那三条 + 分隔符集）。
+  **另外两处本轮未动的已知差异**：`parse_list` 的 16 项上限与 `low > high` 拒（两者都是 C 接受而
+  本树拒，已归入上面那条待办）；`-b` 与 `-c` 在本树同义，所以四道 post-check 的第三道
+  （`bflag && cflag`）不可达。
+
 - ✅ **批次二百八十把 `tail` 的跟随真正接线（上一轮的纯模型被实现取代了两处），并用宿主参照件逐字钉住环路**
   （`2026-10-15`，`claim/TAIL-FOLLOW-WIRING-qoder` @ 基线 `72b35d181`，单域三线同包，无跨界）：
   规划表 R18 的第二片。**接的是哪一支**：决定半把 C 的整型 `fflag` 建模成 `Follow` 三态
