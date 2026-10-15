@@ -21,6 +21,12 @@
 
 #include <stddef.h>   /* size_t：本头经 -include 注入在测试 TU 所有 #include 之前，须自给 */
 #include <locale.h>   /* locale_t：strerror_l 的签名（与本头同批注入，不依赖调用方先包） */
+/* **必须先吃下 <string.h>，再定义文件末尾那条转发宏**：宏若先生效，系统头里那句
+ * `char *strerror_r(...)`（`-D_GNU_SOURCE` 下的 GNU 形声明）会被一起改名成
+ * `char *__xpg_strerror_r(...)`，与本头下面那条 `int` 声明当场冲突（gcc 14 实测
+ * `error: conflicting types for '__xpg_strerror_r'`）。先包含就让系统声明以原名落地，
+ * 之后的宏只影响调用点。glibc 自己也以 `int` 声明 `__xpg_strerror_r`，同形即无冲突。 */
+#include <string.h>
 
 /* 已知错误码上界（BSD 语义：[1, sys_nerr) 已知，sys_nerr 本身即「首个未知码」）。 */
 extern const int sys_nerr;
@@ -28,9 +34,12 @@ extern const int sys_nerr;
 /* BSD 措辞的 strerror：表内取本仓自给表，表外产 "Unknown error: N" 并置 errno=EINVAL。 */
 char *strerror(int);
 
-/* XSI strerror_r 的实现名；裸名经下面的宏统一转发到此。返回型取 `char *` 是与被改名的
- * GNU 形声明保持同形（真正的成败值是 0/EINVAL/ERANGE，以整数衣装回传）。 */
-char *__xpg_strerror_r(int e, char *buf, size_t buflen);
+/* XSI strerror_r 的实现名；裸名经文件末尾的宏统一转发到此。**返回型必须是 `int`**：
+ * 那既是 XSI 的契约（本仓 `strerror_r(3)` 成败值是 0/EINVAL/ERANGE），也是测试的用法
+ * （`t_strerror.c:110` 把返回值赋给 `int`、`:94` 拿它与 `EINVAL` 比）。旧写法为了与被
+ * 改名的 GNU 形声明「同形」而取 `char *`，代价是每次赋值都要把整数伪装成指针——
+ * gcc 13 只给 `-Wint-conversion` 警告，gcc 14（CI 镜像 `minix-ci:1.94`）直接判错。 */
+int __xpg_strerror_r(int e, char *buf, size_t buflen);
 
 /* 本环不存在 locale 切换，l 版即同表查询（接管它同时断掉 libc 成员被拽入的链）。 */
 char *strerror_l(int e, locale_t loc);

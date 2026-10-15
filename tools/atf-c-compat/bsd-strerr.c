@@ -227,7 +227,7 @@ char *strerror(int e) {
  * (char *)(intptr_t) 回传。**负向契约**：GNU 风格调用法（`char *s =
  * strerror_r(...)` 后解引用）在本通道是 UB——返回值是 XSI 码的整数衣装而非
  * 指针；现役测试集（t_strerror.c）全为 XSI 断言式，无 GNU 受害者。 */
-char *__xpg_strerror_r(int e, char *buf, size_t buflen) {
+int __xpg_strerror_r(int e, char *buf, size_t buflen) {
     const char *s = compat_strerror_msg(e);
     char unk[COMPAT_STRERROR_UNK_MAX];
     if (s == NULL) {
@@ -235,13 +235,13 @@ char *__xpg_strerror_r(int e, char *buf, size_t buflen) {
         s = unk;
     }
     if (buflen < strlen(s) + 1)
-        return (char *)(intptr_t)ERANGE;  /* XSI strerror_r(3) 失败码 */
+        return ERANGE;                    /* XSI strerror_r(3) 失败码 */
     strcpy(buf, s);
     if (compat_strerror_msg(e) == NULL) {
         errno = EINVAL;               /* 越界：与 strerror 同置（调用方可察） */
-        return (char *)(intptr_t)EINVAL;
+        return EINVAL;
     }
-    return (char *)(intptr_t)0;
+    return 0;
 }
 
 
