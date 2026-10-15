@@ -4,14 +4,18 @@
 //! record's sort keys into transformed key buffers and compares those
 //! buffers byte-wise (`fields.c`); the observable semantics — which this
 //! module reimplements at the value level — are: key specifications
-//! `-k F[.C][flags][,F[.C][flags]]` with per-key flags `b d f i M n r`
-//! (unknown flag letters skip silently, `optval`'s default, init.c:229-247;
-//! `.0` is rejected as an illegal offset, init.c:168-170), fields
-//! separated by blank runs or by the `-t` delimiter byte, default
+//! `-k F[.C][flags][,F[.C][flags]]` with per-key flags from `optval`'s table
+//! `b d f i l n x r` (init.c:222-242; the scan **stops at the first letter not in
+//! that table** — init.c:173 — and the leftover decides the next sentence, while
+//! `.0` on the start column is an `illegal offset` and on the end column is legal
+//! because only the start column's indent gets decremented — init.c:168-171),
+//! fields separated by blank runs or by the `-t` delimiter byte, default
 //! whole-line keys, the modifier transformations dictionary (`d`), fold
 //! (`f`), ignore non-printable (`i`), numeric (`n`, blank-skipping sign
-//! and fraction aware), month (`M`, `jan` lowest), and reverse (`r`; a
-//! local `r` is dropped when a global `-r` stands — init.c:239-242).
+//! and fraction aware), and reverse (`r`; a local `r` is dropped when a global
+//! `-r` stands — init.c:195-197). There is **no month flag in this C**: `M` is in
+//! neither `SORT_OPTS` (sort.c:148) nor `optval`, so `-M` falls to `usage()` and
+//! `-k 1M` to `illegal field descriptor`.
 //! Ties fall back to the whole line in byte order, and the global `-r`
 //! inverts the final outcome.
 //!
@@ -50,7 +54,6 @@ pub struct KeySpec {
     pub fold: bool,
     pub ignore_nonprint: bool,
     pub numeric: bool,
-    pub month: bool,
     /// This key's comparison inverts (dropped when a global `-r` stands).
     pub reverse: bool,
 }
@@ -69,7 +72,6 @@ impl KeySpec {
             fold: false,
             ignore_nonprint: false,
             numeric: false,
-            month: false,
             reverse: false,
         }
     }
@@ -86,7 +88,6 @@ pub struct Options {
     pub dictionary: bool,
     pub ignore_nonprint: bool,
     pub numeric: bool,
-    pub month: bool,
     /// Leading-blank skip as a global flag.
     pub blank_skip: bool,
     /// Suppress lines that compare equal to their predecessor.
@@ -144,12 +145,58 @@ pub enum ParseError {
     /// libc 的 `getopt` 自己那一行（集外字母或带值选项缺值），随后才是 `sort.c:252`
     /// 的 `usage(NULL)`——所以真源是两行。两类各自带字母。
     Getopt(crate::GetoptReport),
-    /// `-k` 的键形不对：`setfield` 里的 `errx(2, "illegal field descriptor")`
-    /// （`minix3/usr.bin/sort/init.c:189-190`）。这一支**不接 usage**。
-    IllegalFieldDescriptor,
+    /// `-k` 的键形不对：`setcolumn`/`setfield` 里的五句 `errx(2, …)` 之一（
+    /// [`KeySpecError`]）。五句各有判据，但出口相同：退 2、**不接 usage**。
+    /// 之前五句挤在一个 `IllegalFieldDescriptor` 里，所以四句的报文都在拿别人的句子签字。
+    KeySpec(KeySpecError),
     /// `-t` 给了第二次：`sort.c:214-215` 的 `usage("multiple field delimiters")`，
     /// 即先一句带程名的话，再接整个 usage 块。
     MultipleFieldDelimiters,
+}
+
+/// `minix3/usr.bin/sort/init.c` 里 `setcolumn()` 与 `setfield()` 的五句 `errx(2, …)`。
+/// 句文本单源在 [`KeySpecError::sentence`]，壳只负责加程序名与退 2。
+///
+/// 五句都是拿编译出来的参照件逐形量出来的（`tmp/family-diag-ref/sort_ref`，由
+/// `minix3/usr.bin/sort/` 的真源加垫片链成），不是推出来的：
+///
+/// | 形 | C 的那一句 |
+/// |---|---|
+/// | `-k 0`、`-k x`、`-k ''`、`-k ,5`、`-k 1,-2` | `field numbers must be positive` |
+/// | `-k 1.0` | `illegal offset` |
+/// | `-k 1,0.5` | `cannot indent end of line` |
+/// | `-k 1 2`、`-k 1n2`、`-k 1.2.3` | `illegal field descriptor` |
+/// | `-k 2.5,1.2` | `fields out of order` |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeySpecError {
+    /// `init.c:160-161` 的 `col->num <= 0 && !(col->num == 0 && col == &tcol)`：
+    /// 开始列必须为正数；结束列允许 0（那表示到行尾），但负数两列都拒。
+    /// 注意判据用的是 `strtol` 的结果，所以 `-k x` 与 `-k ''` 也是零（一个数字也没转出来）。
+    FieldNumbersNotPositive,
+    /// `init.c:163-164`：列号是 0（到行尾）时不能再给 `.C` 缩进。
+    CannotIndentEndOfLine,
+    /// `init.c:168-171`：缩进算出来是负数。只有**开始列**会 `col->indent--`，
+    /// 所以 `1.0` 报错而 `1,2.0` 合法——两列的 `.0` 不对称。
+    IllegalOffset,
+    /// `init.c:188-190`：开始列停下后既不是串尾也不是逗号。
+    IllegalFieldDescriptor,
+    /// `init.c:210-216`：结束列的（字段号，缩进）整体落在开始列之前。三个条件全要
+    /// 成立才报，缺一不报——`-k 2,1` 就不报（结束列没给 `.C` 时缩进是 0，源码里那句
+    /// 注释写着「indent if 0 -> end of field, i.e. okay」）。
+    FieldsOutOfOrder,
+}
+
+impl KeySpecError {
+    /// C 那句 `errx` 的格式串原文（五句都没有 `%s`，坏文本不会被拼回句子）。
+    pub fn sentence(self) -> &'static str {
+        match self {
+            KeySpecError::FieldNumbersNotPositive => "field numbers must be positive",
+            KeySpecError::CannotIndentEndOfLine => "cannot indent end of line",
+            KeySpecError::IllegalOffset => "illegal offset",
+            KeySpecError::IllegalFieldDescriptor => "illegal field descriptor",
+            KeySpecError::FieldsOutOfOrder => "fields out of order",
+        }
+    }
 }
 
 /// Parse global options from the argument words, returning the options
@@ -182,7 +229,6 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                 'd' => options.dictionary = true,
                 'i' => options.ignore_nonprint = true,
                 'n' => options.numeric = true,
-                'M' => options.month = true,
                 'b' => options.blank_skip = true,
                 'u' => options.unique = true,
                 'c' => options.check = true,
@@ -232,10 +278,10 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                     }
                     if flag == 'k' {
                         match parse_key(&value, &options) {
-                            // C 这一支不写 usage：`setfield` 里是 `errx(2, "illegal
-                            // field descriptor")`（`init.c:189-190`）。
-                            Some(spec) => options.keys.push(spec),
-                            None => return Err(ParseError::IllegalFieldDescriptor),
+                            // C 这一支不写 usage：`setfield`/`setcolumn` 里是那五句
+                            // `errx(2, …)` 之一（`init.c:160-216`），句子逐句不同。
+                            Ok(spec) => options.keys.push(spec),
+                            Err(error) => return Err(ParseError::KeySpec(error)),
                         }
                     } else {
                         // `-t` 在 C 里只取首字节（`sort.c:219` 的 `d_mask[(u_char)*optarg]`），
@@ -323,99 +369,256 @@ pub fn temp_candidate(path: &[u8], seed: u64, attempt: usize) -> Vec<u8> {
     out
 }
 
-/// Parses one `-k` specification. Modifiers ride the start segment, the
-/// end segment, or both; unknown flag letters are skipped silently. A
-/// `.0` character offset is rejected (the C's "illegal offset").
-pub fn parse_key(spec: &str, global: &Options) -> Option<KeySpec> {
-    // C 的形状（`init.c:181-192` 的 `setfield`）：先解开始列，然后看它停在哪个字符上——
-    // 到结尾就是「键延伸到行尾」；不是逗号就是 `errx(2, "illegal field descriptor")`。
-    // 旧写法把整串都吃下去（未知字母按 `optval` 的默认略过），所以 `-k x`、`-k 1x`
-    // 这些在 C 会报错的形在这里被静默接受。
-    let (start_field, start_char, start_flags, blank_start, rest) = parse_column(spec)?;
-    let end_text = if rest.is_empty() {
+/// 解一条 `-k` 规格。形状逐句对位 `init.c:181-220` 的 `setfield()`，包括**判据的先后**：
+/// 先解两列（各自的句子），再看残留（`illegal field descriptor`），然后才做四次标志
+/// 合成（局部为空才继承全局、全局 `-r` 抹掉局部 `r`、全局的 BI/BT 无条件并上、结束列
+/// 没缩进时抹掉 BT），最后才查 `fields out of order`。
+///
+/// 与旧写法的两处实质差别：① 旧写法把五句 `errx` 挤成一句，所以四句的报文都在拿别人的
+/// 句子签字；② 旧写法把全局标志写成「逐位或」，而 C 是「局部一个字母也没有才整体继承」
+///（`init.c:193-194`），于是 `-n -k 1r` 这种形在本树按数值排、在 C 按字典序反排。
+///
+/// 本树尚未建模的修饰字母是 `l`（按字段长度）与 `x`（十六进制数，`__minix` 专有）：
+/// 它们在 `optval` 表里存在，但这里把它们当**残留字符**拒掉（报 `illegal field descriptor`）。
+/// 那是已知缺口，故意不静默接受：接受而无效会把「顺序错」伪装成「顺序对」。
+/// `M` 不在 `optval` 表里，也不在 `SORT_OPTS`（`sort.c:148`）里，`switch` 同样没有
+/// `case 'M'`——所以 `-M` 与 `-k 1M` 在 C 都不认（参照件实测：前者落 `usage`，后者报
+/// `illegal field descriptor`）；旧写法把月名排序当成本树功能，那是无源建模。
+pub fn parse_key(spec: &str, global: &Options) -> Result<KeySpec, KeySpecError> {
+    let start = scan_column(spec, false)?;
+    // `setfield` 只看开始列停下的地方：串尾就是「键延伸到行尾」，逗号就开始解结束列，
+    // 别的字符是 `illegal field descriptor`（`init.c:188-190`）。
+    let end_text = if start.rest.is_empty() {
         None
-    } else if let Some(tail) = rest.strip_prefix(',') {
+    } else if let Some(tail) = start.rest.strip_prefix(',') {
         Some(tail)
     } else {
-        return None;
+        return Err(KeySpecError::IllegalFieldDescriptor);
     };
-    let mut key = KeySpec {
-        start_field: if start_field == 0 { 1 } else { start_field },
-        start_char,
-        blank_start: blank_start || global.blank_skip,
-        end_field: 0,
-        end_char: 0,
-        blank_end: false,
-        dictionary: start_flags.contains('d') || global.dictionary,
-        fold: start_flags.contains('f') || global.fold,
-        ignore_nonprint: start_flags.contains('i') || global.ignore_nonprint,
-        numeric: start_flags.contains('n') || global.numeric,
-        month: start_flags.contains('M') || global.month,
-        reverse: start_flags.contains('r') && !global.reverse,
+    let end = match end_text {
+        Some(text) => scan_column(text, true)?,
+        // 没给结束列：C 把 `tcol.num` 留在 0（到行尾），也不扫任何字母。
+        None => Column::absent(),
     };
-    if let Some(end_text) = end_text {
-        // 结束列之后的残留 C 不再查（`setfield` 里第二个 `setcolumn` 后没有任何
-        // `*pos` 判据），所以这里把 `rest` 丢掉是有依据的，不是漏写。
-        let (end_field, end_char, end_flags, blank_end, _rest) = parse_column(end_text)?;
-        key.end_field = end_field;
-        key.end_char = end_char;
-        key.blank_end = blank_end || global.blank_skip;
-        key.dictionary |= end_flags.contains('d');
-        key.fold |= end_flags.contains('f');
-        key.ignore_nonprint |= end_flags.contains('i');
-        key.numeric |= end_flags.contains('n');
-        key.month |= end_flags.contains('M');
-        key.reverse |= end_flags.contains('r') && !global.reverse;
+
+    let local = start.merge(&end);
+    // `init.c:193-194`：`if (!cur_fld->flags) cur_fld->flags = gflag;`——局部只要有
+    // 一个修饰字母就不再继承全局标志。
+    let (dictionary, fold, ignore_nonprint, numeric, reverse) = if local.any {
+        (
+            local.dictionary,
+            local.fold,
+            local.ignore_nonprint,
+            local.numeric,
+            local.reverse,
+        )
+    } else {
+        (
+            global.dictionary,
+            global.fold,
+            global.ignore_nonprint,
+            global.numeric,
+            local.reverse,
+        )
+    };
+    // `init.c:195-197`：全局 `-r` 存在时，局部 `r` 被抹掉（不是再反一次）。
+    let reverse = if global.reverse { false } else { reverse };
+    // `init.c:206`：全局的 BI/BT 是**无条件并上**的（与上面那句不一样），而 C 的全局
+    // `-b` 一次就点亮两个位（`sort.c:159` 的 `fldtab[0].flags |= BI | BT`）。
+    let blank_start = local.bi || global.blank_skip;
+    let mut blank_end = local.bt || global.blank_skip;
+    // `init.c:207-208`：`if (!cur_fld->tcol.indent) flags &= ~BT`——结束列没缩进时 BT 无意义。
+    if end.eff_indent == 0 {
+        blank_end = false;
     }
-    if global.reverse {
-        // init.c:239-242 — a local `r` does not invert a global `-r`.
-        key.reverse = false;
+    // `init.c:210-216` 的三个条件全要成立：结束列有字段号、不是「只有 BT 没有 BI」、
+    // 且结束列（号，缩进）落在开始列之前。C 写的是 `!(!(flags & BI) && (flags & BT))`
+    //（`:211`），下面那句是它的德摩根改写（clippy 不接受双重否定形，同值）。
+    let not_bt_without_bi = !local.bt || local.bi;
+    if end.num != 0
+        && not_bt_without_bi
+        && end.num <= start.num
+        && end.eff_indent != 0
+        && end.eff_indent < start.eff_indent
+    {
+        return Err(KeySpecError::FieldsOutOfOrder);
     }
-    Some(key)
+    Ok(KeySpec {
+        start_field: start.num as usize,
+        start_char: start.raw_indent as usize,
+        blank_start,
+        end_field: end.num as usize,
+        end_char: end.eff_indent as usize,
+        blank_end,
+        dictionary,
+        fold,
+        ignore_nonprint,
+        numeric,
+        reverse,
+    })
 }
 
-/// Parses `F[.C]` plus trailing modifier flags. Returns the field, the
-/// character (`.C`; absent and `.1` are both offset zero, `.0` is an
-/// error), the modifier letters, whether a `b` modifier was present, and
-/// **where it stopped**（`setcolumn` 返回的 `pos`，`init.c:191`/`:205`）。
-fn parse_column(text: &str) -> Option<(usize, usize, String, bool, &str)> {
+/// 一列扫出来的形状，对位 C 的 `struct column`（`sort.h`）。
+#[derive(Debug, Clone, Copy)]
+struct Column<'a> {
+    /// 字段号；结束列允许 0（表示到行尾）。
+    num: i64,
+    /// `.C` 的原样读数（没给就是 0），交给 [`KeySpec::start_char`]。
+    raw_indent: i64,
+    /// C 存在 `col->indent` 里的那个数：开始列在 `.C` 上减一（`init.c:168-169`），
+    /// 没给 `.C` 时两列都是 0（结构体是 memset 过的）。
+    eff_indent: i64,
+    /// 下面七个位就是 `optval` 给这一列置上的标志。
+    bi: bool,
+    bt: bool,
+    dictionary: bool,
+    fold: bool,
+    ignore_nonprint: bool,
+    numeric: bool,
+    reverse: bool,
+    /// 一个修饰字母也没扫到（C 用 `if (!cur_fld->flags)` 判这件事）。
+    any: bool,
+    /// 停点之后的残留，就是 C 返回给 `setfield` 的那个 `pos`。
+    rest: &'a str,
+}
+
+impl<'a> Column<'a> {
+    /// 结束列缺席时的形状：C 里就是那个 memset 后没动过的 `tcol`。
+    fn absent() -> Self {
+        Column {
+            num: 0,
+            raw_indent: 0,
+            eff_indent: 0,
+            bi: false,
+            bt: false,
+            dictionary: false,
+            fold: false,
+            ignore_nonprint: false,
+            numeric: false,
+            reverse: false,
+            any: false,
+            rest: "",
+        }
+    }
+
+    /// 两列的标志在 C 里是同一个 `cur_fld->flags` 上的或，这里同形。
+    fn merge(&self, other: &Self) -> Self {
+        Column {
+            num: self.num,
+            raw_indent: self.raw_indent,
+            eff_indent: self.eff_indent,
+            bi: self.bi || other.bi,
+            bt: self.bt || other.bt,
+            dictionary: self.dictionary || other.dictionary,
+            fold: self.fold || other.fold,
+            ignore_nonprint: self.ignore_nonprint || other.ignore_nonprint,
+            numeric: self.numeric || other.numeric,
+            reverse: self.reverse || other.reverse,
+            any: self.any || other.any,
+            rest: "",
+        }
+    }
+}
+
+/// C 的 `setcolumn()`（`init.c:152-178`）逐句对位。`filling_end` 对应 C 里那句
+/// `col = cur_fld->icol.num ? (&cur_fld->tcol) : (&cur_fld->icol)`（`:157`）：它决定
+/// `.C` 要不要减一。而 `b` 记成 BI 还是 BT 用的是另一个判据——`optval` 的 `tcolflag`
+/// 是 `cur_fld->tcol.num`（`:173`），所以在结束列填了 0 的那一形（`-k 1,0b`）里，
+/// `b` 仍然算 BI。两个判据不许合为一个。
+fn scan_column<'a>(text: &'a str, filling_end: bool) -> Result<Column<'a>, KeySpecError> {
     let bytes = text.as_bytes();
-    let mut position = 0;
-    let mut field = 0usize;
-    while position < bytes.len() && bytes[position].is_ascii_digit() {
-        field = field * 10 + (bytes[position] - b'0') as usize;
-        position += 1;
+    let (num, mut position) = scan_long(text, 0);
+    // `init.c:160-161`：开始列非正即错；结束列允许 0（那表示到行尾）。
+    if num <= 0 && !(num == 0 && filling_end) {
+        return Err(KeySpecError::FieldNumbersNotPositive);
     }
-    let mut character_given = false;
-    let mut character = 0usize;
-    if position < bytes.len() && bytes[position] == b'.' {
-        position += 1;
-        character_given = true;
-        while position < bytes.len() && bytes[position].is_ascii_digit() {
-            character = character * 10 + (bytes[position] - b'0') as usize;
-            position += 1;
+    let tcolflag = filling_end && num != 0;
+    let mut raw_indent = 0i64;
+    let mut eff_indent = 0i64;
+    if bytes.get(position) == Some(&b'.') {
+        // `init.c:162-164`：列号是 0（到行尾）时 `.C` 无从谈起。
+        if num == 0 {
+            return Err(KeySpecError::CannotIndentEndOfLine);
         }
-        if character == 0 {
-            // The C's indent decrement turns `.0` negative: illegal offset.
-            return None;
+        position += 1;
+        let (value, next) = scan_long(text, position);
+        position = next;
+        raw_indent = value;
+        eff_indent = if filling_end { value } else { value - 1 };
+        if eff_indent < 0 {
+            return Err(KeySpecError::IllegalOffset);
         }
     }
-    let mut flags = String::new();
-    let mut blank = false;
+    let mut column = Column {
+        num,
+        raw_indent,
+        eff_indent,
+        bi: false,
+        bt: false,
+        dictionary: false,
+        fold: false,
+        ignore_nonprint: false,
+        numeric: false,
+        reverse: false,
+        any: false,
+        rest: "",
+    };
+    // `init.c:173` 的 `for (; (tmp = optval(*pos, cur_fld->tcol.num)); pos++)`：`optval`
+    // 返回 0 就**停下**，那个字符留给 `setfield` 当 `*pos` 判据，不是「略过继续」。
     while position < bytes.len() {
         match bytes[position] {
-            b'b' => blank = true,
-            b'd' | b'f' | b'i' | b'n' | b'M' | b'r' => flags.push(bytes[position] as char),
-            // C 的 `for (; (tmp = optval(*pos, …)); pos++)`（`init.c:204`）在**第一个
-            // 不是修饰字母的字符上停下**，那个字符就成了 `setfield` 眼里的 `*pos`；
-            // 它不是「略过继续」。旧写法把每个未知字符都跳掉，于是 `-k x`、`-k 1 2`
-            // 这些在 C 报 `illegal field descriptor` 的形被静默接受。
+            b'b' => {
+                if tcolflag {
+                    column.bt = true;
+                } else {
+                    column.bi = true;
+                }
+            }
+            b'd' => column.dictionary = true,
+            b'f' => column.fold = true,
+            b'i' => column.ignore_nonprint = true,
+            b'n' => column.numeric = true,
+            b'r' => column.reverse = true,
             _ => break,
         }
+        column.any = true;
         position += 1;
     }
-    let _ = character_given;
-    Some((field, character, flags, blank, &text[position..]))
+    column.rest = &text[position..];
+    Ok(column)
+}
+
+/// C 那句 `strtol(pos, &npos, 10)`（`init.c:158`、`:166`）：跳前导空白、可带一个正负号，
+/// 然后才是十进制位。一个数字也没转出来时值是 0 且指针**退回起点**（这正是 `-k x`、
+/// `-k ''` 落进「字段号必须为正」的原因）。超出 `i64` 时 C 饱和到 `LONG_MAX`/`LONG_MIN`
+/// 且**不看 `errno`**，所以那里不报错；本树同样饱和。
+fn scan_long(text: &str, from: usize) -> (i64, usize) {
+    let bytes = text.as_bytes();
+    let mut position = from;
+    while position < bytes.len() && bytes[position].is_ascii_whitespace() {
+        position += 1;
+    }
+    let mut negative = false;
+    match bytes.get(position) {
+        Some(b'-') => {
+            negative = true;
+            position += 1;
+        }
+        Some(b'+') => position += 1,
+        _ => {}
+    }
+    let digits_start = position;
+    let mut value: i64 = 0;
+    while position < bytes.len() && bytes[position].is_ascii_digit() {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(i64::from(bytes[position] - b'0'));
+        position += 1;
+    }
+    if position == digits_start {
+        return (0, from);
+    }
+    (if negative { -value } else { value }, position)
 }
 
 /// The span of the `field`-th field of a line (1 based), byte offsets
@@ -557,25 +760,6 @@ fn cmp_filtered(a: &[u8], b: &[u8], key: &KeySpec) -> core::cmp::Ordering {
     }
 }
 
-/// Month names, `jan` lowest through `dec`; anything shorter than three
-/// bytes or outside the names is zero (blank and unknown fields sort
-/// first, per the C month table).
-fn month_of(key_bytes: &[u8]) -> u32 {
-    const MONTHS: [&[u8]; 12] = [
-        b"jan", b"feb", b"mar", b"apr", b"may", b"jun", b"jul", b"aug", b"sep", b"oct", b"nov",
-        b"dec",
-    ];
-    if key_bytes.len() < 3 {
-        return 0;
-    }
-    for (index, name) in MONTHS.iter().enumerate() {
-        if key_bytes[..3].eq_ignore_ascii_case(name) {
-            return index as u32 + 1;
-        }
-    }
-    0
-}
-
 /// A `-n` numeric key parsed in place: blank-skipping optional sign,
 /// digit run, optional fraction; an empty parse is zero.
 #[derive(Debug, PartialEq, Eq)]
@@ -701,7 +885,6 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
             dictionary: options.dictionary,
             ignore_nonprint: options.ignore_nonprint,
             numeric: options.numeric,
-            month: options.month,
             blank_start: options.blank_skip,
             ..KeySpec::whole_line()
         };
@@ -715,8 +898,6 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
         let kb = key_bytes(b, key, options.delimiter);
         let ordering = if key.numeric {
             compare_numeric(&numeric_key(ka.as_bytes()), &numeric_key(kb.as_bytes()))
-        } else if key.month {
-            month_of(ka.as_bytes()).cmp(&month_of(kb.as_bytes()))
         } else {
             cmp_filtered(ka.as_bytes(), kb.as_bytes(), key)
         };
@@ -800,15 +981,6 @@ mod tests {
     }
 
     #[test]
-    fn test_month_table() {
-        let options = opts("-M");
-        assert_eq!(compare("jan 1", "feb 1", &options), Ordering::Less);
-        assert_eq!(compare("DEC", "jan", &options), Ordering::Greater);
-        // Blank or unknown months sort first.
-        assert_eq!(compare("???", "jan", &options), Ordering::Less);
-    }
-
-    #[test]
     fn test_key_spec_field_selection_with_delimiter() {
         let global = opts("-t:");
         let spec = parse_key("2,2", &global).unwrap();
@@ -822,15 +994,95 @@ mod tests {
         assert_eq!(compare("x:b:1", "x:b:2", &options), Ordering::Less);
     }
 
+    /// `.0` 在两列上不对称：只有开始列会 `col->indent--`（`init.c:168-169`），所以
+    /// 开始列的 `.0` 算出 -1 走 `illegal offset`，而结束列的 `.0`（以及光一个点）
+    /// 缩进是 0，表示「到字段末」——参照件同样接受。
     #[test]
-    fn test_key_spec_dot_zero_rejected() {
-        assert!(parse_key("1.0", &opts("")).is_none());
-        assert!(parse_key("1.2", &opts("")).is_some());
+    fn dot_zero_is_an_error_only_on_the_start_column() {
+        assert_eq!(
+            parse_key("1.0", &opts("")).err(),
+            Some(KeySpecError::IllegalOffset)
+        );
+        assert_eq!(parse_key("1.2", &opts("")).unwrap().start_char, 2);
+        assert!(parse_key("1,2.0", &opts("")).is_ok());
+        assert!(parse_key("1,2.", &opts("")).is_ok());
+    }
+
+    /// 五句 `errx` 各自有自己的形与句子，读数拿 `tmp/family-diag-ref/sort_ref` 逐形量过。
+    /// 旧写法把五句挤成一句，所以除 `1 2` 之外四句都在拿别人的句子签字。
+    #[test]
+    fn the_five_key_spec_sentences_are_distinct() {
+        // `field numbers must be positive`（`init.c:160-161`）：零、负数、以及一个数字
+        // 也没转出来的形（`strtol` 交回 0 且指针不动）。
+        for spec in ["0", "x", "", ",5", "1,-2", "-1"] {
+            assert_eq!(
+                parse_key(spec, &opts("")).err(),
+                Some(KeySpecError::FieldNumbersNotPositive),
+                "键形 {spec:?}"
+            );
+        }
+        // `illegal offset`（`:168-170`）：开始列 `.0` 减一后为负。
+        assert_eq!(
+            parse_key("1.0", &opts("")).err(),
+            Some(KeySpecError::IllegalOffset)
+        );
+        // `cannot indent end of line`（`:162-163`）：列号是 0 还要给 `.C`。
+        assert_eq!(
+            parse_key("1,0.5", &opts("")).err(),
+            Some(KeySpecError::CannotIndentEndOfLine)
+        );
+        // `illegal field descriptor`（`:186-191`）：开始列停在非逗号的字符上。
+        for spec in ["1 2", "1n2", "1.2.3", "1M"] {
+            assert_eq!(
+                parse_key(spec, &opts("")).err(),
+                Some(KeySpecError::IllegalFieldDescriptor),
+                "键形 {spec:?}"
+            );
+        }
+        // `fields out of order`（`:213-217`）：三个条件全成立才报。
+        assert_eq!(
+            parse_key("2.5,1.2", &opts("")).err(),
+            Some(KeySpecError::FieldsOutOfOrder)
+        );
+        // 缺一个就不报：结束列没给 `.C`（缩进为 0，源码注释写着「i.e. okay」），
+        // 以及结束列号比开始列大的那种正常接法。
+        assert!(parse_key("2,1", &opts("")).is_ok());
+        assert!(parse_key("1,2.1", &opts("")).is_ok());
+        // 也接受 `strtol` 的宽容形：前导空白、正号、多余的前导零。
+        for spec in ["+1", " 1", "01"] {
+            assert_eq!(
+                parse_key(spec, &opts("")).unwrap().start_field,
+                1,
+                "{spec:?}"
+            );
+        }
+    }
+
+    /// `init.c:193-194` 的继承判据是「局部一个字母也没有」才整体拿全局标志，不是逐位或。
+    /// 这一形是参照件量出来的：`-n -k 2r` 与 `-k 2r` 同序（按字典序反排），而不是
+    /// `-n -k 2` 的反序（那才是把 `n` 当全局位或进来的写法）。
+    #[test]
+    fn a_local_modifier_switches_the_global_flags_off() {
+        // 全局 `-n` 且局部无字母：继承，2 排在 10 前。
+        assert_eq!(compare("x 2", "y 10", &opts("-n -k 2")), Ordering::Less);
+        // 全局 `-n` 但局部有 `r`：这一支的 **键**不继承 `n`，只按字典序的键反排——
+        // 所以两条命令排出来是同一个序。比的是那一条键规格，不是整个 [`Options`]
+        //（全局位本身当然还记在 Options 上，那里没有差异可查）。
+        let with_global = parse_options(&["-n", "-k", "2r"]).unwrap().0;
+        let without_global = parse_options(&["-k", "2r"]).unwrap().0;
+        assert_eq!(
+            with_global.keys, without_global.keys,
+            "局部有字母时全局标志不得逐位渗进来"
+        );
+        assert!(!with_global.keys[0].numeric);
+        assert!(with_global.numeric, "全局位本身仍照 C 存在 gflag 里");
+        // 而「局部空」那一支确实拿到了全局：同一条 `-k 2` 带不带 `-n` 是两个序。
+        assert!(parse_options(&["-n", "-k", "2"]).unwrap().0.keys[0].numeric);
     }
 
     #[test]
     fn test_local_reverse_drops_under_global() {
-        // init.c:239-242: a local `r` does not invert a global `-r`; the
+        // init.c:195-197: a local `r` does not invert a global `-r`; the
         // key parses without reversal.
         let global = opts("-r");
         let key = parse_key("1r", &global).unwrap();
@@ -890,14 +1142,14 @@ mod tests {
             parse_options(&["-t"]),
             Err(ParseError::Getopt(GetoptReport::MissingValue('t')))
         );
-        // 键形不对：C 是 `errx(2, "illegal field descriptor")`，不接 usage。
+        // 键形不对：C 是 `errx(2, …)` 五句之一，不接 usage。
         assert_eq!(
             parse_options(&["-k", "x"]),
-            Err(ParseError::IllegalFieldDescriptor)
+            Err(ParseError::KeySpec(KeySpecError::FieldNumbersNotPositive))
         );
         assert_eq!(
             parse_options(&["-k", "1 2"]),
-            Err(ParseError::IllegalFieldDescriptor)
+            Err(ParseError::KeySpec(KeySpecError::IllegalFieldDescriptor))
         );
         // `-t` 给第二次才是 `usage("multiple field delimiters")`；
         // 而多字节本身**不是**错（C 只取首字节）。

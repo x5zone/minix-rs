@@ -228,7 +228,8 @@ fn read_operand(prog: &str, path: &str) -> Vec<u8> {
 /// 把决定半的 [`ParseError`] 落成 C 那一条腿的报文。三条腿各不相同：
 /// - libc 先印一行，再是**整个 usage 块**，退 2（`sort.c:252` 的 `usage(NULL)`，
 ///   报文本体在 `getopt.c:101-104`/`:132-136`）；
-/// - `sort: illegal field descriptor`，退 2，**没 usage**（`init.c:189-190` 的 `errx`）；
+/// - `sort: <那五句之一>`，退 2，**没 usage**（`init.c:159-217` 的 `errx`，句文本单源在
+///   `sort.rs:KeySpecError::sentence`）——旧写法把五句挤成了一句 `illegal field descriptor`；
 /// - `sort: multiple field delimiters` 紧跟整个 usage 块，退 2（`sort.c:214-215` 的
 ///   `usage("multiple field delimiters")`，走的是 `usage()` 的 `%s: %s` 那头一句）。
 fn parse_fail(prog: &str, error: ParseError) -> ! {
@@ -237,8 +238,8 @@ fn parse_fail(prog: &str, error: ParseError) -> ! {
             support::warn(report.line(prog).as_bytes());
             usage(prog, None)
         }
-        ParseError::IllegalFieldDescriptor => {
-            support::warn(format!("{prog}: illegal field descriptor\n").as_bytes());
+        ParseError::KeySpec(spec) => {
+            support::warn(format!("{prog}: {}\n", spec.sentence()).as_bytes());
             support::terminate(2);
         }
         ParseError::MultipleFieldDelimiters => usage(prog, Some("multiple field delimiters")),

@@ -265,17 +265,40 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
 
 #[test]
 fn a_bad_key_gets_its_own_sentence_without_the_usage() {
-    // `setfield`/`setcolumn` 的三支 `errx` 都**不接 usage**（`init.c:186-200`），
-    // 与上面那两支正好相反；把退出码与「有没有 usage 块」一起钉住才分得开。
-    let (out, status, err) = run(&["-k", "x"], b"a\n");
-    assert_eq!(out, Vec::<u8>::new());
-    assert_eq!(status, 2);
-    assert_eq!(err, "sort: illegal field descriptor\n");
-    // 开始列后的残留不是 `\0` 也不是 `,` 就是这一支（`-k 1 2` 的空格）。
-    assert_eq!(
-        run(&["-k", "1 2"], b"a\n").2,
-        "sort: illegal field descriptor\n"
-    );
+    // `setfield`/`setcolumn` 那五支 `errx` 都**不接 usage**（`init.c:160-216`），与上面
+    // 那两支正好相反；把退码与「有没有 usage 块」一起钉住才分得开。五句文本单源在
+    // `sort.rs:KeySpecError::sentence`，而每一句用哪些形都是拿参照件
+    //（`tmp/family-diag-ref/sort_ref`，由 `minix3/usr.bin/sort/` 真源链成）逐形量过的：
+    // 旧写法把五句挤成一句 `illegal field descriptor`，所以四句都在拿别人的句子签字。
+    for (spec, sentence) in [
+        ("x", "field numbers must be positive"),
+        ("0", "field numbers must be positive"),
+        ("1,-2", "field numbers must be positive"),
+        ("1.0", "illegal offset"),
+        ("1,0.5", "cannot indent end of line"),
+        ("1 2", "illegal field descriptor"),
+        ("1n2", "illegal field descriptor"),
+        ("2.5,1.2", "fields out of order"),
+    ] {
+        let (out, status, err) = run(&["-k", spec], b"a\n");
+        assert_eq!(out, Vec::<u8>::new(), "键形 {spec:?} 不该打任何东西");
+        assert_eq!(status, 2, "键形 {spec:?} 的 stderr 是 {err:?}");
+        assert_eq!(
+            err,
+            format!("sort: {sentence}\n"),
+            "键形 {spec:?} 该走那一句，而且不接 usage"
+        );
+    }
+    // 反方向也要钉：C 接受的那些形不能报任何句子。`-k 2,1` 不报 `fields out of order`
+    //（结束列没给 `.C` 时缩进是 0，`:214` 那个 `tcol.indent != 0` 不成立）；`-k 1,2.0`
+    // 不报 `illegal offset`（减一只发生在开始列，`:166-167`）。旧台账把 `-k 2,1` 登记成
+    // 「在 C 是 fields out of order」，本轮拿参照件推翻了那一句。
+    for spec in ["2,1", "1,2.0", "1,2.", "1,0", "1b", "+1", "01"] {
+        let (out, status, err) = run(&["-k", spec], b"a\n");
+        assert_eq!(status, 0, "键形 {spec:?} 的 stderr 是 {err:?}");
+        assert_eq!(err, "", "键形 {spec:?} 不该报句子");
+        assert_eq!(out, b"a\n", "键形 {spec:?}");
+    }
 }
 
 #[test]

@@ -250,6 +250,68 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百八十七把 `sort` 键形的五句 `errx` 分流，并推翻两处写进台账的断言（`-k 2,1` 与月名）**
+  （`2026-10-15`，`claim/SORT-OPTION-COVERAGE-qoder` @ 基线 `0c9681fb5`，单域三线同一 crate：
+  `src/sort.rs`、`src/bin/sort.rs`、`tests/sort_face.rs` 加 `rewrite-notes/18-stage-commands/07-text-filter.md`，
+  无跨线登记）：批次二百八十三末尾登记的那条键形余面。
+  **先拓了一件工具**：批次二百八十三记着「`sort_ref` 缺 `emalloc/erealloc/__arraycount` 无法链接」，
+  本轮把参照件**链起来了**（`tmp/family-diag-ref/sort_ref`：补一个 `minixshim.h` 把 `__dead`/
+  `__COPYRIGHT`/`__RCSID`/`__arraycount` 宏化、一个 `sort_shim.c` 把 `e*` 族按最小语义实现，再去掉
+  与 `fgetln_shim.c` 重名的 `progname_shim.c`）。**可用边界**：它链的是宿主 glibc 的 `getopt`，
+  所以 libc 前置行与 usage 块不能拿它当基线（`-M` 那形还会在 `getprogname()` 上段错误，属垫片缺陷）；
+  能拿它量的是 `sort` 自己的五句 `errx`、键形的接受/拒绝、以及排序行为。
+  **分流了什么**：`setcolumn`/`setfield` 里是**五句**不同的 `errx(2, …)`（`init.c:160-216`），旧树把它们
+  挤成一句 `IllegalFieldDescriptor`，所以四句都在拿别人的句子签字。`parse_column` 重写成 C 的
+  `setcolumn` 形（`scan_column` + `scan_long`），返回 `Result<KeySpec, KeySpecError>`，句子文本单源在
+  `KeySpecError::sentence`。四处按 C 改正：① `-k 0` 之前被当 1 静默接受，现在走
+  `field numbers must be positive`，且那一句用的是 `strtol` 的结果（`-k x`、`-k ''`、`-k ,5`、
+  `-k 1,-2`、`-k -1` 全部同句）；② `.0` 在两列上不对称（减一只发生在开始列，`init.c:168-169`），
+  所以 `1.0` 是 `illegal offset` 而 `1,2.0`、`1,2.` 合法；③ 列号是 0 还要给 `.C` 才是
+  `cannot indent end of line`（`1,0.5`）；④ 全局标志的继承判据是「局部一个字母也没有才整体拿
+  全局」（`init.c:193-194`）而不是逐位或——参照件量出 `-n -k 2r` 与 `-k 2r` **同序**（只按字典序
+  的键反排），而旧写法把 `n` 也渗了进去。`b` 的两个判据也没合写：选列看 `icol.num`（`:157`），
+  而 `optval` 的 `tcolflag` 看 `tcol.num`（`:173`），所以 `-k 1,0b` 里那个 `b` 仍算 BI。
+  **推翻一（台账与文档都写着错的那句）**：批次二百八十三登记「`-k 2,1` 在 C 是
+  `fields out of order`」——参照件给出退 0。C 的那三条件（`init.c:210-216`）要求
+  `tcol.indent != 0`，而没给 `.C` 时缩进就是 0，源码注释自己写着「indent if 0 -> end of field,
+  i.e. okay」；真正报那一句的是 `2.5,1.2`。本轮既钉报错的那形，也钉住**不报错**的那些形
+  （`2,1`、`1,2.0`、`1,2.`、`1,0`、`1b`、`+1`、`01`），否则只钉单向的门挡不住「收严过头」。
+  **推翻二（建模自创）**：月名排序在这份 C 里根本不存在——`M` 既不在 `SORT_OPTS`（`sort.c:148`）
+  也不在 `optval` 表（`init.c:222-242`）里，`switch` 也没有 `case 'M'`，所以 `-M` 落 `usage()`、
+  `-k 1M` 落 `illegal field descriptor`（参照件同读数）。本树的 `month` 位、`month_of` 表、比较
+  那一臂与 `test_month_table` 已全部删除（核法：`grep -n "month\|'M'" src/sort.rs` 只剩两行——第 16 行与
+  第 385 行——都是「这一位不存在」的正文，代码里零命中），07 篇的修饰符表与测试名清单同步更正。
+  修饰集本身只收了 `optval` 表里本树已建模的那六个字母（`b d f i n r`）。
+  **自己写坏过一次读数（已当场发现并重测）**：第一次 docker 跑报 **602/0**，与宿主的 621 不符；
+  重跑把完整输出落盘后再数，得 **621/0**——少的 19 枚正是最后一个 target（`vis_face`），是我自己在
+  容器命令里接的 `head -40` 把流截了。**读数不能拿截断过的管道算**，本轮改用「落盘再统计」。
+  另一处过程修正：本轮新写的注释里有 18 处 `init.c:NNN` 锚点行号偏了几行，而
+  `tools/pattern-gate.sh` 的 P18 **只查文件存在与落窗、不查语义**，所以它们全绿也没挡住错——
+  逐条拿 `awk NR` 重读 C 原文重钉，并用 `tmp/fix-anchors287.py` 批量修正（代码、端到端门、07 篇三处）。
+  三件套：宿主 `cargo test -p minix-textfilter` → **621 passed、0 failed**（基线 620：`--lib` 442→443，
+  新增三枚（`dot_zero_is_an_error_only_on_the_start_column`、`the_five_key_spec_sentences_are_distinct`、
+  `a_local_modifier_switches_the_global_flags_off`）、删一枚月名测、另一枚由 `test_key_spec_dot_zero_rejected`
+  改名而来（同数）；`sort_face` 仍 11 枚，但其中那一枚改成八句正向循环 + 七个反向循环（620 + 1 = 621，等式已核）；docker `minix-ci:1.94` 同包 **621/0**（完整日志落盘后统计）、
+  `cargo check --workspace -j 1` **0 error**；三架构 `--bins` 零错；**容器配方本轮加了一条**
+  `-e CARGO_TARGET_DIR=/tmp/…`：上一批不带它时，容器以 root 往专属工作树里写了 10642 个 root 属主文件，
+  把 `claim.sh release` 的 `rm -rf` 卡住了；本轮同法测量残留数为 **0**；`rustfmt --check` 本笔三件只报
+  `bin/sort.rs` 两处漂移，拿 `git show HEAD:` 副本重跑确认两处基线即存在（`sort.rs` 本笔新行已由
+  rustfmt 排定、复跑零漂移，工树污染面 0）；clippy 触及件零告警（`nonminimal_bool` 按德摩根改写，
+  并在注释里注明那是 C 那句 `!(!(flags & BI) && (flags & BT))` 的同值形式）；三枚变异负控各咬一处
+  （①继承判据改回无条件继承→lib 那枚报红；②五句压回一句→端到端那枚报红；③把 `.0` 减一施加到两列→
+  lib 与端到端各一枚报红），均先打印 `mutation applied`、恢复用备份并 `cmp` 同一；
+  `tools/pattern-gate.sh` PASS=15 FAIL=0 SKIP=1（P18 13341 个 token）；边界门 OK；
+  `doc-style-lint --diff` error=0；断链基线 124 不变；五道收尾校验全过。核实日 `2026-10-15`；
+  基线 `0c9681fb5`。
+  登记不执行：① `optval` 表里的 `l`（按字段长度，`fields.c:208-209` 的 `length()`）与 `x`（十六进制数，
+  `:213-214` 的 `numhex()`）仍未建模。本轮**故意不把两字母放进修饰集**：接受而无效会把「顺序错」
+  伪装成「顺序对」，所以 `1l`/`1x` 现在报 `illegal field descriptor`（而 C 接受并按长度/十六进制排），
+  全局 `-l`/`-x` 仍走集外字母那一支——这一形连同 `D`/`R`/`T`/`S` 四个字母归选项面那一条（下一批）；
+  ② C 的默认是「并列键保持输入序」（`posix_sort` 为零时 `keylen` 不含整条记录，`fields.c:168`），
+  而本树总是回退到整行比较——那相当于 C 的 `-S`，两边的默认不同，属比较半的独立一题；
+  ③ `D` 只改内部调试位（`DEBUG('k')` 把正文换成键 dump）、`T` 只影响本壳没有的临时档引擎，
+  两者在本壳不可观察，但也不能假装同形，所以继续留在集外字母那一支自报。
+
 - ✅ **批次二百八十六把 `cut` 的列表语法按 C 定形（四形之外又拓出一形），并拓出一枚不可复现的容器门读数**
   （`2026-10-15`，`claim/CUT-LIST-GRAMMAR-qoder` @ 基线 `6c4c47517`，单域三线同一 crate：
   `src/cut.rs`、`src/bin/cut.rs`、`tests/cut_face.rs`，另改一枚既有测 `tests/sort_face.rs`（见下面
