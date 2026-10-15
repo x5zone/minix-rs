@@ -250,6 +250,49 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百七十三接上 `primes` 的 `-d`/`-h` 输出面，参照进程顺带拓出更早的一支 P0：`stop` 本来就是开区间**
+  （`2026-10-15`，`claim/PRIMES-OUTPUT-FACES-qoder` @ 基线 `f36648125`，单域三线 `os/commands/games/stdio-games`
+  与同线文档，无跨界）：接回批次二百五十二的登记不执行①（规划表 R10）。**是什么**：`primes.c:107-112` 的
+  `-d`（差分列）与 `-h`（十六进制）两支输出面，本壳此前「认得字母但拒收」——打一行 `-d/-h not wired` 退 1。
+  判类 P0-code-bug（两支输出面缺失）+ P0-test-missing；核对中还拓出一支**更早的** P0-code-bug：本壳把 `stop`
+  当闭上界，而 C 从头注（`primes.c:49`：`Print primes >= start and < stop`）到实现都是开区间。
+  **核对靠的是参照进程，不是猜测**：把 C 真源在宿主编成可执行件当金样源——
+  `cc -O2 -D'__RCSID(x)=' -D'__COPYRIGHT(x)=' -D'__dead=__attribute__((__noreturn__))' -include stdlib.h
+  minix3/games/primes/{primes,pattern,pr_tbl,spsp}.c -lm -o /tmp/primes_ref`（只欠 `-lm` 与三个 NetBSD 宏，
+  不动一行 C 源），再与本壳逐形对跑 **21 个参数形 ⇒ `SAME=21 DIFF=0`**。这条差分同时是开区间那支的发现渠道：
+  `primes 5 13` 参照给 `5 7 11`，我方给 `5 7 11 13`；`primes 2 2` 参照什么都不打，我方打 `2`。
+  **四条容易猜错的形**（都取参照读数写进门，不靠推理）：①`-d` 的**首项是 `2 (2)`**——C 的 `prev` 从 0 起
+  （`primes.c:220`/`:261`），看着像 bug 却是 C 自己的形状；②差值列用的前驱**可以落在区间外**（`primes -d 5 15`
+  给 `5 (2)`，那 2 来自区间外的 3）；③起始值落在存表之外（表尾实测 65537，`pr_tbl.c`）时**第一个素数不带差列**——
+  筛子路的守卫 `dflag && (prev || start <= *pr_limit)`（`:328`）走到那条路时后半恒假，只剩 `prev != 0`，
+  实测 `primes -d 70000 70040` 首行就是不带差值列的 `70001`，而 `-d 65530 65545` 首项带 `65537 (16)`；
+  ④`-h` **不改差值的进制**（`PRIu64` 恒十进制）：`primes -dh 113 130` → `71 (4)`、`7f (14)`，那个 `14` 不是 `e`。
+  **怎么修**：决定半加 `TABLE_LAST_PRIME`（把支点常量与它的理由放在一起）与 `previous_prime`（对位 C 的 `prev`，
+  复用本模块已有的 `is_prime`，不再抄一份判素数）；`bin_support` 加 `utox`（小写、无 `0x`，与 `utoa` 同双生面形状）；
+  壳侧把「一次一判的选项串」换成 getopt 计数器循环（`-d`/`-h`/`-dh`/`-hd`/`-d -h` 都算数，裸 `-` 仍当操数），
+  输出面按①②③④落形，区间那支在调用点降 1（`saturating_sub`，`stop == 0` 与 `lo > hi` 一同落空输出）。
+  **为什么不选另一条路**：①把 `sieve` 本身改成开区间原语会连带改它 6 枚库测与既有语义——`sieve` 是通用的
+  闭上界原语，「开区间」是 `primes` 这一支命令的面，该待在调用点；②在壳里自己数前驱等于把 `is_prime` 抄第二份；
+  ③把差值也走十六进制（看似「更一致」）会直接偏离参照。
+  **门**：`tests/primes_face.rs` 8→**14 枚**（新增：开区间专枚、差分含首项怪形、十六进制小写无前后缀、
+  混进制下差值仍十进制、表外首项不带列、选项等价类三族），库测 +1 枚（`test_difference_predecessors`，
+  含表尾 65537 的前驱 65521）；旧门里那枚断言 `-h` 走拒收的分支改写为「认得的字母不再被拒收」。
+  三件套：`cargo test -p minix-stdio-games` → **222 passed、0 failed**（基线 215，+7；20 个测试目标）；
+  容器 `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-stdio-games` → **222/0**；三架构
+  `cargo build -p minix-stdio-games --bins --target {x86_64,aarch64,riscv64gc}-unknown-none*` 各 `touch` 强制重编
+  真编一遍，各 `Compiling=5`、0 error；`rustfmt` 触及四文件零漂移；clippy 触及文件零命中（就地把新写的
+  `% 2 == 0` 改成本仓惯用 `is_multiple_of(2)`）；差分门 `SAME=21 DIFF=0`。核实日 `2026-10-15`。
+  **三枚变异负控**（测完按 `cmp` 复原）：撤掉调用点的降 1 → 开区间那枚独红；把 `uses_table` 拧成恒真 →
+  表外那枚独红；`utox` 退回 `utoa` → 十六进制那一族 3 枚红。**另记一笔自己的错**：第一版把 `-dd` 归进
+  `-dh` 的等价类，门当场红在 `option_letters_cluster_repeat_and_split`——代码是对的，错的是分类，
+  已按参照的三个等价类（`{dh,hd,-d -h,-d -dh}`/`{d,dd}`/`{h,hh}`）重写。
+  **账面回勾**：批次二百五十二那笔的门描述里「`-h` 走拒收支」与其「登记不执行①」自本批起被取代
+  （历史条目按不重写原则保留，此处只回勾）；旧门 `a_bounded_run_prints_primes_and_stays_silent_on_stderr`
+  的注释理由「区间的两端都算」是**错的**（输出因为 20 不是素数恰好看不出来），已改成实况并注明开区间由新枚钉住。
+  登记不执行：①`primes` 的零操数路 `read_num_buf`（`primes.c:176-205`，含它自己的四腿）；②`strtoumax` base 0
+  的前缀/前导空白/显式 `+`；③选项 permute（操数后面的选项，台账 `7g`）；④NetBSD getopt 自打的
+  `illegal option` 那一行（本壳按 C 的 `default: usage()` 只出 usage，两者同形与否需单独一轮定）。
+
 - ✅ **批次二百六十把五份命令侧诊断行从「固定栈缓冲裁」改成「先量长度再渲染」，C 本来就不截断**
   （`2026-10-14`，`claim/WARNLINE-NO-TRUNC-qoder` @ 基线 `010ce8fe8`，单域三线：`fileops`/`shell`/
   `textfilter`/`doctools`/`stdio-games` 五份 `bin_support.rs` 与两扇门）：接回批次二百五十九登记

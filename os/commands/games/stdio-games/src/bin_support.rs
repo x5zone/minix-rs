@@ -24,7 +24,7 @@
 // unused helpers in any one binary are intentional, not drift.
 #![allow(dead_code)]
 
-use minix_sys::{EIO, Errno, Fd, write};
+use minix_sys::{write, Errno, Fd, EIO};
 
 /// Standard input, POSIX `STDIN_FILENO`.
 pub const STDIN: Fd = 0;
@@ -227,6 +227,34 @@ pub fn utoa(mut value: u32, out: &mut [u8]) -> usize {
     while value > 0 {
         digits[count] = b'0' + (value % 10) as u8;
         value /= 10;
+        count += 1;
+    }
+    for (index, digit) in digits[..count].iter().rev().enumerate() {
+        out[index] = *digit;
+    }
+    count
+}
+
+/// Renders `value` in **lowercase** hexadecimal into `out`, returning the written length.
+///
+/// `primes -h` 的对位件（`primes.c:255`/`:327` 的 `printf("%" PRIx64, …)`）：C 用 `x`
+/// 而不是 `X`，也不带 `0x` 前缀，所以 17 打 `11`、11 打 `b`——与 `utoa` 同一双生面形状，
+/// 不把格式化栈拉进决定半。
+pub fn utox(mut value: u32, out: &mut [u8]) -> usize {
+    if value == 0 {
+        out[0] = b'0';
+        return 1;
+    }
+    let mut digits = [0u8; 8];
+    let mut count = 0;
+    while value > 0 {
+        let digit = (value & 0xf) as u8;
+        digits[count] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + digit - 10
+        };
+        value >>= 4;
         count += 1;
     }
     for (index, digit) in digits[..count].iter().rev().enumerate() {

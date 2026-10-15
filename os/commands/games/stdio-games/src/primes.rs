@@ -59,6 +59,38 @@ pub fn over_cap(value: u64) -> bool {
     value > MAX_BOUND as u64
 }
 
+/// C 存表的最后一个素数（`minix3/games/primes/pr_tbl.c` 的 `pr_limit` 指向表尾，
+/// 实测表里最大的数就是 65537）。它不是本树的容量参数，而是 `-d` 一条形分岔的支点：
+/// C 的打印分两条路——表内路（`primes.c:251-262`，条件 `start <= *pr_limit`）与筛子路
+/// （`:322-332`），后者守卫是 `dflag && (prev || start <= *pr_limit)`，而走到筛子路时
+/// `start` 要么被表内路改写成 `*pr_limit+2`、要么本来就在表外，两种情况下半个条件都为假，
+/// 所以守卫实际只剩 `prev != 0`。拿参照进程验过的两个形：`primes -d 65537 65560` 打
+/// `65537 (16)`（表内，有前驱），`primes -d 70000 70100` 第一个 `70001` **不带差值列**。
+pub const TABLE_LAST_PRIME: u32 = 65_537;
+
+/// `-d` 差值列用的「前一个素数」，逐格对位 C 的 `prev`（`primes.c:220` 起值为 0，
+/// 表内路每走一格 `prev = factor`，`:261`）。因此整张表的第一个素数 2 的差是
+/// `2 - 0 = 2`——参照进程实跑 `primes -d 2 10` 得 `2 (2)|3 (1)|5 (2)|7 (2)`，那个看着
+/// 像错的 `2 (2)` 是 C 自己的形状，不是本树的疏漏。大于 2 的素数取它下面最大的素数；
+/// 表是 2 开始的连续素数序列，所以「表里上一个」与「真前驱」同一件事。
+#[must_use]
+pub fn previous_prime(value: u32) -> u32 {
+    if value <= 2 {
+        return 0;
+    }
+    let mut candidate = value - 1;
+    if candidate > 2 && candidate.is_multiple_of(2) {
+        candidate -= 1;
+    }
+    while candidate >= 3 {
+        if is_prime(candidate) {
+            return candidate;
+        }
+        candidate -= 2;
+    }
+    2
+}
+
 /// Generate primes from `lo` to `hi` inclusive into `out`.
 ///
 /// Each odd candidate is trial divided by known small factors up to its square
@@ -155,5 +187,16 @@ mod tests {
         let mut out = [0u32; 4];
         assert_eq!(sieve(1, 20, &mut out), Err(GameError::OutOfRange));
         assert_eq!(sieve(0, 2_000_000, &mut out), Err(GameError::OutOfRange));
+    }
+
+    #[test]
+    fn test_difference_predecessors() {
+        // 逐条对位参照进程（宿主编译的 `minix3/games/primes/*.c`）的 `-d` 读数。
+        assert_eq!(previous_prime(2), 0); // → `2 (2)`：C 的 prev 从 0 起，那个看着像错的形状是它自己的
+        assert_eq!(previous_prime(3), 2); // → `3 (1)`
+        assert_eq!(previous_prime(5), 3); // → `5 (2)`
+        assert_eq!(previous_prime(7), 5);
+        assert_eq!(previous_prime(100), 97); // 101 印 `101 (4)`
+        assert_eq!(previous_prime(TABLE_LAST_PRIME), 65_521); // 表尾印 `65537 (16)`
     }
 }

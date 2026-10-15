@@ -1,11 +1,16 @@
 //! Minix-RS primes — prime generation over an interval.
 //!
-//! Ground truth: `minix3/games/primes/primes.c`, `primes [start [stop]]`.
+//! Ground truth: `minix3/games/primes/primes.c`, `primes [-dh] [start [stop]]`.
 //! The library caps the interval at `MAX_BOUND` (1,000,000 — the trial
 //! division engine is built for short lived runs, not the C streaming
 //! sieve), so with no arguments the interval is 2 to the cap instead of the
-//! C default near 2^32; one argument starts there, two bound it. Output is
-//! one prime per line.
+//! C default near 2^32; one argument starts there, two bound it.
+//!
+//! `stop` is an **exclusive** bound — C says so in its own header
+//! (`primes.c:49`, "Print primes >= start and < stop") and the reference
+//! process agrees: `primes 5 13` stops at 11, `primes 2 2` prints nothing.
+//! The shell expresses that by lowering the sieve's inclusive upper bound by
+//! one; `sieve` itself stays the generic inclusive primitive.
 //!
 //! The diagnostic face is wired to C leg by leg (`primes.c:133-172`): the
 //! negative check and the two conversion kinds are different lines in C, and
@@ -18,14 +23,12 @@
 //! hardcoded literal (`:339-343`) — unlike `rm`/`cp`/`mv`, this one does not
 //! carry `getprogname()`.
 //!
-//! Three legs of C's own remain unwired, each declared rather than hidden:
-//! the `-d` (difference) and `-h` (hexadecimal) output flags
-//! (`:107-112`, used at `:255-256` and `:327-328`) — an option letter we do
-//! not implement is reported as not wired, mirroring the other shells; C's
+//! Two of C's own legs remain unwired, each declared rather than hidden: C's
 //! zero-operand path, which reads the start value from standard input
-//! (`read_num_buf`, `:176-205`, with its own four legs); and the base-0
+//! (`read_num_buf`, `:176-205`, with its own four legs), and the base-0
 //! spellings (`0x`/octal prefixes, leading blanks, explicit `+`) that
-//! `strtoumax` would take.
+//! `strtoumax` would take. Option *permutation* (C's getopt moves options
+//! found after operands) is the separate registered item `7g`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -38,7 +41,9 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_stdio_games::primes::{BoundError, MAX_BOUND, over_cap, parse_bound, sieve};
+use minix_stdio_games::primes::{
+    over_cap, parse_bound, previous_prime, sieve, BoundError, MAX_BOUND, TABLE_LAST_PRIME,
+};
 use minix_sys::Errno;
 use support::terminate;
 
@@ -94,26 +99,28 @@ fn run() -> ! {
     let prog = support::prog_name(&argv);
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
 
-    // `primes.c:105-117` 的 `getopt("dh")`：本树没有那两个旗标的输出面，所以开头的
-    // 选项串一支就得出结果——认得的字母报拒收，不认得的按 C 的 `?`→`default: usage()`。
-    // 一次就止，也意味着后面的项全是操数（与 C 的差别仅在「多个选项串」这一形，已登记）。
-    if let Some(letters) = args
-        .get(1)
-        .filter(|word| word.len() > 1)
-        .and_then(|word| word.strip_prefix('-'))
-    {
-        if letters
-            .bytes()
-            .any(|letter| letter != b'd' && letter != b'h')
-        {
-            usage();
+    // `primes.c:105-117` 的 `getopt(argc, argv, "dh")`：`-d` 与 `-h` 都是计数器
+    // （`dflag++`/`hflag++`），所以 `-d`、`-h`、`-dh`、`-hd`、`-dd`、`-d -h` 全都算数；
+    // 不认得的字母落 `case '?': default: usage()`。裸 `-` 在 getopt 里是操数不是选项，
+    // 所以这里只吃带字母的串。选项 permute（C 的 getopt 会把操数后面的选项也抽走）
+    // 是台账里的另一件（`7g`），本轮不顺手扩。
+    let mut dflag = false;
+    let mut hflag = false;
+    let mut cursor = 1usize;
+    while let Some(word) = args.get(cursor) {
+        let Some(letters) = word.strip_prefix('-').filter(|letters| !letters.is_empty()) else {
+            break;
+        };
+        for letter in letters.bytes() {
+            match letter {
+                b'd' => dflag = true,
+                b'h' => hflag = true,
+                _ => usage(),
+            }
         }
-        errx(
-            prog,
-            "-d/-h not wired (difference column, hexadecimal output)",
-        );
+        cursor += 1;
     }
-    let operands = &args[1..];
+    let operands = &args[cursor..];
 
     if operands.len() > 2 {
         // `primes.c:167-168`：`default: usage()`。
@@ -153,10 +160,13 @@ fn run() -> ! {
                 );
             }
             if lo > hi {
-                // `primes.c:171-172`。
+                // `primes.c:171-172`：C 比的是**原始**两个值，所以 `lo == hi` 是合法的
+                // （它不报错，只是什么都不印——下面那一降就把它交给了空区间）。
                 errx(prog, "start value must be less than stop value.");
             }
-            (lo as u32, hi as u32)
+            // C 的上界是开区间（`:49` 头注 + 参照进程实测），`sieve` 的上界是闭区间，
+            // 所以在这里降 1；`stop == 0` 时降到 0，与 `lo > hi` 一同落在空输出上。
+            (lo as u32, (hi as u32).saturating_sub(1))
         }
         // 不可达：三支之外的操数已经在上面 `usage()` 掉了（编译器需要这一支才认完备）。
         _ => usage(),
@@ -167,11 +177,37 @@ fn run() -> ! {
         Ok(count) => count,
         Err(_) => terminate(1),
     };
+    // C 的两条打印路对「第一个素数有没有前驱」答案不同（形状与实测见 `TABLE_LAST_PRIME`）：
+    // 起始值落在存表范围内时差值列无条件印（`primes.c:256-258`），表外走筛子路时
+    // 守卫只剩 `prev != 0`，即第一个素数不带列（`:328`）。
+    let uses_table = (lo as u64) <= TABLE_LAST_PRIME as u64;
+    let mut printed: Option<u32> = None;
     let mut out = [0u8; 12];
     for &prime in &found[..count] {
-        let len = support::utoa(prime, &mut out);
+        // `-h` 只改**素数本身**的进制；差值列在 C 里永远是十进制的 `PRIu64`
+        // （`:257`/`:329`）。参照进程给得出这一分：`primes -dh 113 130` 打
+        // `71 (4)` 与 `7f (14)`——素数走十六进制（113→`71`、127→`7f`），而那个差值印 `14` 而不是 `e`。
+        let len = if hflag {
+            support::utox(prime, &mut out)
+        } else {
+            support::utoa(prime, &mut out)
+        };
         support::emit(&out[..len]);
+        if dflag {
+            let difference = match printed {
+                Some(before) => Some(prime - before),
+                None if uses_table => Some(prime - previous_prime(prime)),
+                None => None,
+            };
+            if let Some(difference) = difference {
+                support::emit(b" (");
+                let dlen = support::utoa(difference, &mut out);
+                support::emit(&out[..dlen]);
+                support::emit(b")");
+            }
+        }
         support::emit(b"\n");
+        printed = Some(prime);
     }
     terminate(0);
 }

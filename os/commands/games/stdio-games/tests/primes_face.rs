@@ -15,10 +15,23 @@
 //! (`:341`), so renaming the binary moves the `err`/`errx` lines and leaves the
 //! usage line alone — the opposite of `rm`/`cp`/`mv`.
 //!
-//! Two of C's faces are declared out of reach instead of faked: the `-d`/`-h`
-//! output flags (this shell refuses them by name) and the zero-operand path that
-//! reads a start value from standard input (`read_num_buf`), which this tree
-//! replaces with the 2..cap interval.
+//! Two of C's faces are declared out of reach instead of faked: the zero-operand
+//! path that reads a start value from standard input (`read_num_buf`), which this
+//! tree replaces with the 2..cap interval, and the base-0 spellings. Option
+//! *permutation* (an option letter after an operand) is the separate `7g` item.
+//!
+//! The `-d`/`-h` legs are wired now, and their golden values were not written by
+//! hand: they were read off a **reference process** built from the very C sources
+//! (`cc -O2 -D'__RCSID(x)=' -D'__COPYRIGHT(x)='
+//!  -D'__dead=__attribute__((__noreturn__))' -include stdlib.h
+//!  minix3/games/primes/{primes,pattern,pr_tbl,spsp}.c -lm -o /tmp/primes_ref`),
+//! then diffed against this binary over 21 argument shapes (`SAME=21 DIFF=0`).
+//! That diff is also what surfaced the exclusive-`stop` bug this batch fixes:
+//! C says `>= start and < stop` in its own header (`primes.c:49`), and the
+//! reference prints `5 7 11` for `primes 5 13` while the old shell printed `13`
+//! too. The first test below used to justify its output as "both ends included"
+//! — the output happened to match because 20 is not prime, while the rationale
+//! was wrong. An assertion can be green and still teach the opposite of C.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
@@ -48,15 +61,15 @@ fn run(args: &[&str]) -> (String, i32, String) {
 
 #[test]
 fn a_bounded_run_prints_primes_and_stays_silent_on_stderr() {
-    // The success path C shares with this tree: one prime per line from `start`
-    // up to and including `stop` (`primes.c:173` → `primes(start, stop)`).
+    // One prime per line for `start <= p < stop` (`primes.c:49`, `primes.c:173`
+    // → `primes(start, stop)`). 20 is not prime, so this shape looks the same
+    // under an inclusive bound — the exclusivity itself is pinned by
+    // `stop_is_an_exclusive_bound` below, which is where C and the old shell
+    // actually disagreed.
     let (out, status, err) = run(&["10", "20"]);
     assert_eq!(status, 0);
     assert_eq!(err, "", "正常路一声不出");
-    assert_eq!(
-        out, "11\n13\n17\n19\n",
-        "区间的两端都算（`primes.c:173` 的注释）"
-    );
+    assert_eq!(out, "11\n13\n17\n19\n");
 }
 
 #[test]
@@ -121,13 +134,13 @@ fn unknown_letters_and_extra_operands_answer_the_hardcoded_usage() {
     assert_eq!(status, 1);
     assert_eq!(err, USAGE);
 
-    // A refused option we know but do not implement is its own line, not usage.
-    let (_, status, err) = run(&["-h"]);
-    assert_eq!(status, 1);
-    assert_eq!(
-        err,
-        "primes: -d/-h not wired (difference column, hexadecimal output)\n"
-    );
+    // C 认得的字母不再被拒收：`-d`/`-h` 从本批起是真输出面（形状由下面几枚钉），
+    // 所以带它们的正常跑退 0、只走 stdout，不再出一行「未接线」。
+    // （旧版在这里断言的是 `primes: -d/-h not wired …`，那个行为已不存在。）
+    let (out, status, err) = run(&["-d", "2", "6"]);
+    assert_eq!(status, 0);
+    assert_eq!(err, "");
+    assert_eq!(out, "2 (2)\n3 (1)\n5 (2)\n");
 }
 
 #[test]
@@ -147,4 +160,100 @@ fn the_usage_line_ignores_argv_zero_while_the_error_lines_do_not() {
     assert_eq!(err, USAGE, "C 的 usage 是硬写字面量，不跟 `argv[0]`");
 
     let _ = fs::remove_file(&copied);
+}
+
+#[test]
+fn stop_is_an_exclusive_bound() {
+    // The bug this batch fixes, pinned where C and the old shell actually disagreed.
+    // C: `primes.c:49` “Print primes >= start and < stop”; reference process reads
+    // `primes 5 13` → `5 7 11` and `primes 2 2` → nothing at all. The old shell
+    // treated `stop` as inclusive and printed `13` / `2`.
+    assert_eq!(run(&["5", "13"]).0, "5\n7\n11\n");
+    assert_eq!(
+        run(&["2", "2"]).0,
+        "",
+        "空输出不是错误：C 只拦 `start > stop`"
+    );
+    assert_eq!(run(&["13", "13"]).0, "");
+    assert_eq!(run(&["7", "8"]).0, "7\n", "上界不是素数时两形看起来一样");
+    // `start > stop` 仍是那一句 `errx`（`primes.c:171-172`），与开区间不矛盾。
+    let (_, status, err) = run(&["20", "10"]);
+    assert_eq!(status, 1);
+    assert_eq!(err, "primes: start value must be less than stop value.\n");
+}
+
+#[test]
+fn difference_column_prints_c_including_its_first_prime_quirk() {
+    // `-d` 的差值对位 C 的 `prev`（`primes.c:220`/`:261`）。两个细节都不是凑出来的：
+    // 首项 `2 (2)` 因为 `prev` 从 0 起；`5 15` 里 `5 (2)` 的前驱 3 落在区间外，C 照样
+    // 拿它作差。逐字取自参照进程的同输入读数。
+    assert_eq!(run(&["-d", "5", "15"]).0, "5 (2)\n7 (2)\n11 (4)\n13 (2)\n");
+    assert_eq!(run(&["-d", "2", "10"]).0, "2 (2)\n3 (1)\n5 (2)\n7 (2)\n");
+    assert_eq!(run(&["-d", "1", "10"]).0, "2 (2)\n3 (1)\n5 (2)\n7 (2)\n");
+    // 113 的前驱是 109 而不是「上一项奇数」，所以差是 4；127 前面是 113，差 14。
+    assert_eq!(run(&["-d", "113", "130"]).0, "113 (4)\n127 (14)\n");
+}
+
+#[test]
+fn hex_output_is_lowercase_and_carries_no_prefix() {
+    // `printf("%" PRIx64, …)`（`primes.c:255`/`:327`）：小写、无 `0x`，所以 17 打 `11`。
+    // 这一点单看输出容易错认成“少了个 0x”，所以连十进制同跑一次的对照也钉住。
+    assert_eq!(run(&["-h", "5", "20"]).0, "5\n7\nb\nd\n11\n13\n");
+    assert_eq!(run(&["5", "20"]).0, "5\n7\n11\n13\n17\n19\n");
+}
+
+#[test]
+fn hex_flag_does_not_make_the_difference_hexadecimal() {
+    // 两个旗标各管一段：`-h` 只改素数本身的进制，差值列在 C 里始终是十进制
+    // `PRIu64`（`:257`/`:329`）。参照进程：`primes -dh 113 130` → `71 (4)`/`7f (14)`，
+    // 那个 `14` 若跟着走十六进制就会变成 `e`。
+    assert_eq!(run(&["-dh", "113", "130"]).0, "71 (4)\n7f (14)\n");
+}
+
+#[test]
+fn first_prime_above_the_stored_table_has_no_difference_column() {
+    // C 的筛子路守卫 `dflag && (prev || (start <= *pr_limit))`（`:328`）在走到这条路时
+    // 只剩 `prev != 0`，所以从表外（存表尾值 65537，`pr_tbl.c`）开始时第一个素数不带列。
+    // 两形都逐字取自参照进程：`primes -d 70000 70040` 的首行就是不带列的 `70001`，
+    // 而 `primes -d 65530 65545` 从表内起，首项就带 `65537 (16)`。
+    let (out, status, err) = run(&["-d", "70000", "70040"]);
+    assert_eq!(status, 0);
+    assert_eq!(err, "");
+    assert_eq!(
+        out, "70001\n70003 (2)\n70009 (6)\n70019 (10)\n70039 (20)\n",
+        "第一个不带列，往后的照带"
+    );
+    assert_eq!(
+        run(&["-d", "65530", "65545"]).0,
+        "65537 (16)\n65539 (2)\n65543 (4)\n"
+    );
+}
+
+#[test]
+fn option_letters_cluster_repeat_and_split() {
+    // `getopt("dh")` 的两个分支都是 `flag++`（`primes.c:107-112`），所以同一个旗标写几次
+    // 也只是一个旗标。等价类得按字母集分开，不能拢总比：参照进程给得出三个类——
+    // `{dh, hd, -d -h, -d -dh}` 同打「十六进制 + 差值」，`{d, dd}` 同打「十进制 + 差值」，
+    // `{h, hh}` 同打「十六进制不带差」。（本批第一轮把 `-dd` 归进了 `-dh` 那一类，
+    // 测试当场红在那里：代码是对的，错的是分类。）
+    let both = run(&["-dh", "10", "20"]);
+    assert_eq!(both.0, "b (4)\nd (2)\n11 (4)\n13 (2)\n");
+    for shape in [
+        &["-hd", "10", "20"][..],
+        &["-d", "-h", "10", "20"][..],
+        &["-h", "-d", "10", "20"][..],
+        &["-d", "-dh", "10", "20"][..],
+    ] {
+        assert_eq!(both.0, run(shape).0, "{shape:?} 应与 `-dh` 同形");
+    }
+    let diff_only = run(&["-d", "10", "20"]);
+    assert_eq!(diff_only.0, "11 (4)\n13 (2)\n17 (4)\n19 (2)\n");
+    assert_eq!(
+        diff_only.0,
+        run(&["-dd", "10", "20"]).0,
+        "`-dd` 是 `-d`，不是 `-dh`"
+    );
+    let hex_only = run(&["-h", "10", "20"]);
+    assert_eq!(hex_only.0, "b\nd\n11\n13\n");
+    assert_eq!(hex_only.0, run(&["-hh", "10", "20"]).0, "`-hh` 是 `-h`");
 }
