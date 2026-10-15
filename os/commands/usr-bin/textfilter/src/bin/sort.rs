@@ -60,7 +60,7 @@ fn run() -> ! {
     let mut lines: Vec<String> = runs.iter().flatten().cloned().collect();
 
     if options.check {
-        check(&lines, &options);
+        check(prog, &lines, &options);
         support::terminate(0);
     }
 
@@ -280,22 +280,28 @@ fn usage(prog: &str, message: Option<&str>) -> ! {
 
 /// The `-c` mode: every adjacent pair must be in order, and with `-u`
 /// no pair may compare equal. The first violation is reported by name
-/// and the status leaves 1 (the C's `warn` + `exit(1)` shape).
-fn check(lines: &[String], options: &minix_textfilter::sort::Options) {
+/// `-c` 那一路的两句话，逐字对位 C 的 `msort.c:order()`：失序是
+/// `errx(1, "found disorder: %s", …)`（`msort.c:403`），`-u` 下键相等是
+/// `errx(1, "found non-uniqueness: %s", …)`（`:405-407`）。两句都退 1、都**不接
+/// usage**，程序名走 `argv[0]` 的最后一段（`errx` 自己加），而那一个 `%s` 装的是
+/// **被报出的后一条记录**——C 在打印前先把记录尾部分隔符写成 `\0`
+/// （`crec->data[crec->length-1] = 0;`，`:402`/`:406`），所以输出正好是一行一条。
+/// 本壳之前写的是 `sort: disorder: ` 与 `sort: duplicate: `，两句都是自创措辞，
+/// 且程序名写死成 `sort`（本轮批次二百九十二按参照件读数改掉：`sort: found disorder: a`
+/// 与 `sort: found non-uniqueness: a`，两者退码都是 1）。
+fn check(prog: &str, lines: &[String], options: &minix_textfilter::sort::Options) {
     let mut previous: Option<&str> = None;
     for line in lines {
         if let Some(prev) = previous {
+            // 判据的先后照 C：先 `0 < cmp(prec, crec)`（失序），再看
+            // `UNIQUE && !c`（重复）。两者都对**同一次**比较取值，所以不会各比一遍。
             match compare(prev, line, options) {
                 core::cmp::Ordering::Greater => {
-                    support::warn(b"sort: disorder: ");
-                    support::warn(line.as_bytes());
-                    support::warn(b"\n");
+                    support::warn(format!("{prog}: found disorder: {line}\n").as_bytes());
                     support::terminate(1);
                 }
                 core::cmp::Ordering::Equal if options.unique => {
-                    support::warn(b"sort: duplicate: ");
-                    support::warn(line.as_bytes());
-                    support::warn(b"\n");
+                    support::warn(format!("{prog}: found non-uniqueness: {line}\n").as_bytes());
                     support::terminate(1);
                 }
                 _ => {}

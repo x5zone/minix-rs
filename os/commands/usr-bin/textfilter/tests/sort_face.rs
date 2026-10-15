@@ -206,7 +206,12 @@ fn the_check_mode_never_opens_the_output() {
     let (out, status, err) = run(&["-c", "-o", &text(&target), &text(&input)], b"");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 1, "stderr was {err:?}");
-    assert!(err.contains("disorder"), "stderr was {err:?}");
+    // 逐字而非 `contains`：这一枚之前只写 `contains("disorder")`，所以壳把那句自创成
+    // `sort: disorder: ` 的时候它照样绿（批次二百九十二收严）。
+    assert_eq!(
+        err, "sort: found disorder: a\n",
+        "那句得逐字对位 `msort.c:403`"
+    );
     assert_eq!(fs::read(&target).expect("untouched"), b"untouched\n");
     clean(&target);
     clean(&input);
@@ -356,13 +361,19 @@ fn numeric_sort_normalizes_signs_and_zeros_the_way_c_does() {
     let (out, _, err) = run(&["-n"], b"7\n6\n");
     assert_eq!(out, b"6\n7\n", "stderr 是 {err:?}");
     let (out, _, err) = run(&["-n"], b"0007\n0006\n");
-    assert_eq!(out, b"0006\n0007\n", "前导零归一后仍要比出量级，stderr 是 {err:?}");
+    assert_eq!(
+        out, b"0006\n0007\n",
+        "前导零归一后仍要比出量级，stderr 是 {err:?}"
+    );
     // C 不认指数：`1e3` 的键是 1（在 `e` 处停住），所以排在 `1000` 前。
     let (out, _, err) = run(&["-n"], b"1000\n1e3\n");
     assert_eq!(out, b"1e3\n1000\n", "参照件同读数，stderr 是 {err:?}");
     // 一个数字也没有的形按零算（C 的注释明写“\"0\", \"0.00\", \"000\" or \"fubar\" but sorts as 0”）。
     let (out, _, err) = run(&["-n"], b"abc\n0\n");
-    assert_eq!(out, b"abc\n0\n", "两者都是零键，保持输入序，stderr 是 {err:?}");
+    assert_eq!(
+        out, b"abc\n0\n",
+        "两者都是零键，保持输入序，stderr 是 {err:?}"
+    );
 }
 
 #[test]
@@ -384,9 +395,8 @@ fn equal_keys_keep_input_order_and_capital_s_switches_to_the_record() {
     assert_eq!(run(&["-u", "-S", "-k", "2,2"], input).0, b"b 1\n");
     // `-c` 看的是同一把尺：默认四行不算失序（退 0、不打任何东西），开了 `-S` 之后
     // `a 1` 排在 `b 1` 之后就是失序（参照件 `errx(1, "found disorder: %s", …)`，
-    // `msort.c:403`，退 1）。这里只钉「有没有报、退码几」；本壳那句文案与 C 差一个
-    // 词（我们写的是 `sort: disorder: `，C 是 `found disorder: `），那是诊断面的
-    // 一笔，已另单登记，不在本枚里拿错的形签字。
+    // `msort.c:403`，退 1）。文案本轮（批次二百九十二）已按参照件逐字钉住，
+    // 精确到「哪个程序名前缀 + 哪一个词」，见下面那枚独立门。
     let (out, status, err) = run(&["-c", "-k", "2,2"], input);
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 0, "stderr 是 {err:?}");
@@ -394,7 +404,40 @@ fn equal_keys_keep_input_order_and_capital_s_switches_to_the_record() {
     let (out, status, err) = run(&["-c", "-S", "-k", "2,2"], input);
     assert_eq!(out, Vec::<u8>::new(), "失序检查不该往标准输出打东西");
     assert_eq!(status, 1, "stderr 是 {err:?}");
-    assert!(err.contains("disorder"), "stderr 是 {err:?}");
+    assert_eq!(err, "sort: found disorder: a 1\n");
+}
+
+#[test]
+fn the_two_check_reports_use_c_sentences_and_one_line_each() {
+    // `-c` 那两句话逐字对位 C 的 `msort.c:order()`（参照件 `sort_ref` 同读数）：
+    // 失序 `found disorder: <后一条>`（`:403`），`-u` 下键相等 `found non-uniqueness:
+    // <后一条>`（`:405-407`）。两句都退 1、都不接 usage、都只打**一行**（C 在打印前把
+    // 记录尾部的分隔符写成 `\0`，所以句尾那个换行是 `errx` 自己加的）。
+    let (out, status, err) = run(&["-c"], b"b\na\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(err, "sort: found disorder: a\n");
+    // 这两句都不是 usage 错：整个 stderr 就那一句，usage 块一个字也不许跟出来。
+    assert_eq!(err.matches('\n').count(), 1, "stderr 是 {err:?}");
+    let (out, status, err) = run(&["-c", "-u"], b"a\na\nb\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(err, "sort: found non-uniqueness: a\n");
+    // 先后：C 在同一趟比较里先看失序再看重复，所以 `b b a` 报的是先撞上的那对
+    //（重复的 `b`），而不是后面那次失序——参照件同读数。
+    let (_, status, err) = run(&["-c", "-u"], b"b\nb\na\n");
+    assert_eq!(
+        (status, err.as_str()),
+        (1, "sort: found non-uniqueness: b\n")
+    );
+    // 反方向的一枚：没有 `-u` 时同样的输入不该冒出「non-uniqueness」那句话（退 0）。
+    let (out, status, err) = run(&["-c"], b"a\na\nb\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(
+        (status, err.as_str()),
+        (0, ""),
+        "相等键在无 -u 时既不失序也不报错"
+    );
 }
 
 #[test]

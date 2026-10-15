@@ -250,6 +250,34 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百九十二把 `sort -c` 那两句话按 C 逐字定形，并收严了两枚「只 `contains` 一下就绿」的门**
+  （`2026-10-15`，`claim/SORT-CHECK-WORDING-qoder` @ 基线 `2278b239a`，单域三线同一 crate：
+  `src/bin/sort.rs`、`tests/sort_face.rs` 加 `07-text-filter.md`）：批次二百九十一「登记不执行」第①条。
+  **C 的真形（参照件 `sort_ref` 逐字节量，`cat -A` 看过行尾）**：失序那句是
+  `errx(1, "found disorder: %s", …)`（`msort.c:403`）→ 读数 `sort: found disorder: a`；`-u` 下键相等是
+  `errx(1, "found non-uniqueness: %s", …)`（`:405-407`）→ 读数 `sort: found non-uniqueness: a`。
+  两句都退 **1**、都不接 usage、都只打一行，报的是**后一条**记录（C 在打印前把记录尾部分隔符写成
+  `\0`，`:402`/`:406`，所以句尾那个换行是 `errx` 自己加的）。先后也量了：`b b a` 报的是先撞上的
+  那对（重复的 `b`）而不是后面那次失序——两者取自同一次比较，`0 < cmp` 先看、`UNIQUE && !c` 后看。
+  **本壳错在两处**：措辞自创（`sort: disorder: ` 与 `sort: duplicate: `），且程序名写死成 `sort`
+  而不是走 `argv[0]`——改成 `check(prog, …)` 用 `support::prog_name`，与同族其它腿同一做法。
+  **为什么之前没被门挡住**：两枚端到端门只写了 `assert!(err.contains("disorder"))`，退码也对，
+  于是自创措辞一路绿灯。本轮把它们收严成逐字等式，并新增一枚独立门
+  `the_two_check_reports_use_c_sentences_and_one_line_each`（含「stderr 只有一行」这条
+  usage 块混不进来的判据，以及无 `-u` 时不许冒出 `non-uniqueness` 的反方向一枚）。
+  三件套：docker `minix-ci:1.94` `cargo test --target-dir /tmp/final292b --no-fail-fast -j 1
+  -p minix-textfilter` → **628 passed、0 failed**（零 `FAILED` 行；基线 627，本笔 `sort_face` 14→15
+  新增一枚，现测非抄表）、同容器 `cargo check --workspace -j 1` 与 clippy 触及件均 0；三架构
+  `--bins` 零错；三枚变异负控**全部确认注入后咬住**（①失序措辞退回自创 → 三枚门报红；②重复措辞
+  退回自创 → 一枚报红；③撤掉 `-u` 那一路判据 → 一枚报红），恢复用备份并 `cmp` 同一。
+  **两处过程自纠**：① 负控生成脚本第一版有 Python 语法错，三次「全绿」其实**一次都没注入**，
+  改用直接落盘的控制器后才拿到真读数；② `rustfmt` 的 `sort_face.rs` 这轮实测有 5 处长行需要断行
+  （其中两处是批次二百九十一带进来的，当时那句「两件零漂移」的读数不成立），已格式化并复查为
+  零漂移，`src/bin/sort.rs` 剩下的两处经 `git show HEAD:` 副本比对确认是基线存量、不顺手排。
+  核实日 `2026-10-15`；基线 `2278b239a`。登记不执行：`sort` 选项面余下 `D`/`R`/`T` 三字母
+  （`R` 记录分隔符是真功能，含 `\` 前缀走八进制、`record/field delimiter clash`、
+  `invalid record delimiter %s`、`multiple record delimiters` 四件）。
+
 - ✅ **批次二百九十一把 `sort -n` 的数值键按 C 的 `number()` 归一，并删掉一处被负控判为冗余的支**
   （`2026-10-15`，`claim/SORT-NUMERIC-KEY-qoder` @ 基线 `fdded04d4`，单域三线同一 crate：
   `src/sort.rs`、`tests/sort_face.rs` 加 `07-text-filter.md`）：批次二百九十「登记不执行」第①条。
