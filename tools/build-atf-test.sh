@@ -35,7 +35,7 @@ PICO=/usr/lib/picolibc/riscv64-unknown-elf
 [ -f "$LIB" ] || { echo "缺 $LIB —— 先跑 tools/build-libatf-c.sh $ARCH" >&2; exit 2; }
 NETBSD_ID_MACROS=()     # 只有 glibc 腿需要补 NetBSD 标识串宏（见下面 x86_64 分支）
 LIBC_KIND=picolibc      # 两支交叉腿共用 picolibc + 本仓 BSD 接管面
-COMPAT_TAKEOVER=1       # 是否挂 posix-stubs / stdio-minix / sys-bridge / random 那层接管（picolibc 专用）
+COMPAT_TAKEOVER=1       # 是否挂 posix-stubs / stdio-minix / sys-bridge 那层 picolibc 专用接管（BSD 补位件不受这个开关管）
 case "$ARCH" in
     riscv64) CC="riscv64-unknown-elf-gcc"; MC=(-mcmodel=medany)
              SYS=(--specs=picolibc.specs); SEMIHOST=("$PICO/lib/libsemihost.a") ;;
@@ -131,13 +131,11 @@ if [ "$COMPAT_TAKEOVER" = 1 ]; then
     "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/sys-bridge.c" -o "$BUILD/sys-bridge.o"
     STUB_OBJS+=("$BUILD/sys-bridge.o")
 fi
-# posix-stubs / stdio-minix / errno-compat / random 四件是「抢 picolibc 缺位」或「抢 libc
-# 成员」的强定义接管面，只在 picolibc 腿挂。glibc 本就有 sysconf/strerror_r/random，
-# 再挂一份会在静态链上撞重复定义，还会改掉测试看到的 libc 语义（stresep 原先也记在这
-# 一句里，实测 glibc 没有它——那个旧理由已在批次二百六十四被推翻，拆给 bsd-strfun）。
-# 这条差异记在台账 P-X86-01 行：出生腿④ 上机时若 BSD 随机序/strerror 期望对不上，先回这里查。
-# BSD stresep/popcount 族不在这层之内：它已拆给下面的 bsd-strfun（两腿通吃），
-# 判据与理由见那里。
+# posix-stubs / stdio-minix / sys-bridge 三件是「抢 picolibc 缺位」或「抢 libc
+# 成员」的强定义接管面，只在 picolibc 腿挂。glibc 本就有 sysconf/strerror_r(GNU 形)/random，
+# 再挂一份会在静态链上撞重复定义，还会改掉测试看到的 libc 语义。其余三族——stresep/位计数
+# （bsd-strfun）、strerror/sys_nerr（bsd-strerr）、BSD 随机序（random.c）——都是「glibc 与
+# picolibc 都不给同一个答案」的补位件，走下面三腿共用的通道。这条分工记在台账 P-X86-01 行。
 if [ "$COMPAT_TAKEOVER" = 1 ]; then
     "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/posix-stubs.c" -o "$BUILD/posix-stubs.o"
     STUB_OBJS+=("$BUILD/posix-stubs.o")
@@ -165,16 +163,17 @@ BSD_STRFUN_O=("$BUILD/bsd-strfun.o")
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/bm.c" -o "$BUILD/bm.o"
 # BSD sys_nerr 与 strerror 族已拆给上面的 bsd-strerr（三腿通吃）；旧的 errno-compat.c
 # 只剩这一条定义，随拆分删除。picolibc 不提供这些 BSD 件，真语义对位见 bsd-strerr.c 头注。
-# BSD random/srandom 真源接管（NK4-C §续-283 D1）：minix3/common/lib/libc/stdlib/
+# BSD random/srandom 真源（NK4-C §续-283 D1）：minix3/common/lib/libc/stdlib/
 # random.c 逐字 vendor（fidelity=零改动，全部兼容在 random-shim/）。命令行对象
-# 强定义 random+srandom（+initstate/setstate）→ picolibc 单符号成员
-# libc_stdlib_{random,srandom}.c.o 不再被拉入（LCG _rand_next 形永不上台），
-# t_memcpy 的 BSD 期望序由此满足——host 离线对账 MD5=7b405d24… 已 MATCH（§续-283）。
-# sbrk/sysconf/strerror 同形先例。
-if [ "$COMPAT_TAKEOVER" = 1 ]; then
-    "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" -I"$COMPAT/random-shim" "$COMPAT/random.c" -o "$BUILD/random.o"
-    STUB_OBJS+=("$BUILD/random.o")
-fi
+# 强定义 random+srandom（+initstate/setstate）→ libc 归档里的同名单文件成员不再被拉入
+# （picolibc 的 LCG _rand_next 形、glibc 的 __random 形都永不上台），测试看到的
+# 随机序由此在三条腿上都是 BSD 形——`t_memcpy` 的 goodResult 正押在这个序上，
+# glibc 腿不挂它时该用例在宿主必 fail（批次二百六十九实测现形，本批改入三腿共用面）。
+# 抢 glibc 自带符号不撞重复定义这件事，已由同批的 strerror 族实测定谳：
+# 命令行目标文件先于归档解析，同名单文件成员因此不被拽入。
+"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" -I"$COMPAT/random-shim" "$COMPAT/random.c" -o "$BUILD/random.o"
+BSD_RNG_O=("$BUILD/random.o")
+# sbrk/sysconf/strerror 同形先例（但前两者仍只在 picolibc 腿抢，理由见上面分工段）。
 
 # 上机出生链（启动腿）：picolibc 默认 crt0 把 sp 切进 ELF 内 .stack 且
 # main(0,NULL)（atf tp_main 解引用 argv[0] 必死），需 -nostartfiles 换
@@ -192,7 +191,7 @@ case "$ARCH" in
 esac
 
 "$CC" -static "${MC[@]}" "${SYS[@]}" "${LINK_EXTRA[@]}" "${STARTUP_O[@]}" "$BUILD/$name.o" \
-    -Wl,--start-group "$LIB" "${STUB_OBJS[@]}" "${BSD_STRFUN_O[@]}" "${BSD_STRERR_O[@]}" "$BUILD/md5.o" "$BUILD/bm.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
+    -Wl,--start-group "$LIB" "${STUB_OBJS[@]}" "${BSD_STRFUN_O[@]}" "${BSD_STRERR_O[@]}" "${BSD_RNG_O[@]}" "$BUILD/md5.o" "$BUILD/bm.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
     -o "$BUILD/$name"
 
 # 校验我方加载器 parse_ehdr 的硬项（ELF64 + LSB + ET_EXEC）。
