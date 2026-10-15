@@ -107,7 +107,9 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
         │
         ▼
 ⑤ 各消费者在初始化阶段取用
-     C 侧：apic_single_cpu_init / discover_cpus / init_local_timer / ser_init
+     C 侧：apic_single_cpu_init / discover_cpus（消费发现结果的仅有两个
+     出口——SMP 构建下前者并入 smp_init 路径；早期控制台用 COM1 常量、
+     本地定时器用 lapic_addr 常量，都不在此列，见 §1.5、§2.5）
 ```
 
 链上每一段的输入与输出：
@@ -122,7 +124,7 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
 
 这张图在 §4.1 会用 Rust 侧的实际类型再走一遍，两处对照着看能看出哪些段换了承载物、哪些段的位置变了。
 
-把第 ④ 段（保存为只读全局）省掉、让每个消费者各自去读一遍会坏在哪：C 侧会撞上 `acpi_phys2vir` 的 `vm_running` 检查——发现函数在 VM 起来之后拒绝工作（§1.3），而消费者（`apic_single_cpu_init`、`discover_cpus`、`init_local_timer`）分散在启动序列的不同位置，其中有的在 VM 起来之后才跑；Rust 侧同一错排会让 `init_clock_and_interrupts` 的第一行 `platform_desc()` 触发 `Frozen` 的读取断言（§4.1）。
+把第 ④ 段（保存为只读全局）省掉、让每个消费者各自去读一遍会坏在哪：C 侧会撞上 `acpi_phys2vir` 的 `vm_running` 检查——发现函数在 VM 起来之后拒绝工作（§1.3），而消费者（`apic_single_cpu_init`、`discover_cpus`）分散在启动序列的不同位置（SMP 构建下第二处跟在更晚的 `smp_init` 里）；Rust 侧同一错排会让 `init_clock_and_interrupts` 的第一行 `platform_desc()` 触发 `Frozen` 的读取断言（§4.1）。
 
 ### 1.5 本篇范围与可以安全跳过的内容
 
@@ -150,14 +152,14 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
 
 ### 1.6 本篇的 C 侧覆盖边界
 
-本篇的 C 侧对照物只有 Minix3 的两个内核端口：i386 与 earm（`minix3/minix/kernel/arch/` 下只有这两个目录；earm 是 32 位 ARM 的另一套板级实现）。Rust 侧有三条发现链，其中两条在 C 树里没有对应物——读 §2 的 C 分析时，不能把"i386 与 earm 的做法"默认推广成"三架构都有 C 先例"。
+本篇的 C 侧对照物只有 Minix3 内核的两个架构实现：i386 与 earm（`minix3/minix/kernel/arch/` 下只有这两个目录；earm 是 32 位 ARM 的另一套板级实现）。Rust 侧有三条发现链，其中两条在 C 树里没有对应物——读 §2 的 C 分析时，不能把"i386 与 earm 的做法"默认推广成"三架构都有 C 先例"。
 
 | Rust 侧分支 / 机制 | C 对照物 | 判定 |
 |---|---|---|
 | x86-64 发现链（RSDP → 根表 → MADT → LAPIC/IOAPIC → 拓扑） | i386：`acpi.c` / `apic.c` / `arch_smp.c` / `arch_system.c` 等 | **有 C 可对照**（§2.1–§2.8 逐处对账；其中一类的对照面是"C 的缺失"——XSDT、扩展校验和、MADT 表头 LAPIC 字段、RSDP 的 20 字节校验口径，见 §2.2、§2.3、§2.5） |
 | 发现结果的发布结构（`machine` 六字段） | i386 与 earm：`type.h` / `usermapped_data.c` / `do_getinfo.c` | 有 C 可对照（§2.8、§4.10） |
 | earm 板级常量与板号位域 | earm：`arch/earm/` / `bsp/ti/` / `board.h` | 有 C 可对照（§2.9） |
-| aarch64 的设备树路径（`parse_gic`、GICv3、PSCI 通道） | **无**——C 内核没有 aarch64 端口 | **未覆盖（无 C 源）** |
+| aarch64 的设备树路径（`parse_gic`、GICv3、PSCI 通道） | **无**——C 内核没有 aarch64 版本 | **未覆盖（无 C 源）** |
 | aarch64 的 ACPI 路径（GICC/GICD/GICR 记录、`check_gic_madt`） | **无**——C 的 ACPI 解析器是 i386 专属，MADT 只处理 LAPIC 与 IOAPIC 两种记录（§4.4） | **未覆盖（无 C 源）** |
 | riscv64 全链（PLIC/CLINT/ACLINT、`a1` 交接、SBI 控制台） | **无**——Minix3 没有 RISC-V 版本（头部术语档的 `[ARCH: K-2]`） | **未覆盖（无 C 源）** |
 | Rust 统一面（`PlatformDesc` trait、`PlatformDescEnum`、`Frozen`、有序多来源、兜底） | **无**——"统一"是 Rust 侧要解决的新问题；C 的"两套实现无统一层"只是设计动因（§3.2） | **未覆盖（无 C 源）** |
@@ -1472,7 +1474,7 @@ Rust 侧的五段链（与 §1.4 的概念图对照，看哪些段换了承载�
    → ⑤ 三个 new(desc) 把值搬进实例字段
 ```
 
-Rust 把发现前移的理由不是"把 C 的顺序反过来"，而是消费者变多了：C 侧消费 ACPI 结果的入口只有少数几处——APIC 初始化（`apic_single_cpu_init`，§2.1）与 CPU 拓扑发现（`discover_cpus`，§2.4），外加用户态 ACPI 驱动经 `machine.acpi_rsdp` 的一处（§2.8）；Rust 的时钟、中断控制器、架构初始化三者的 `new(desc)` 全都要读描述符。四组问题在 Rust 侧的消费者：
+Rust 把发现前移的理由不是"把 C 的顺序反过来"，而是消费者变多了：C 侧消费 ACPI 结果的入口只有少数几处——APIC 初始化（`apic_single_cpu_init`，非 SMP 构建；SMP 构建下并入 `smp_init` 路径，§2.1）与 CPU 拓扑发现（`discover_cpus`，§2.4），外加用户态 ACPI 驱动经 `machine.acpi_rsdp` 的一处（§2.8）；Rust 的时钟、中断控制器、架构初始化三者的 `new(desc)` 全都要读描述符。四组问题在 Rust 侧的消费者：
 
 | 要问的问题 | Rust 侧谁问 | 在哪一步 |
 |---|---|---|
@@ -2400,7 +2402,7 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 | `os/libs/minix-boot/src/kernel_info.rs` | 1 | `KernelInfo` 构造夹具 |
 | `os/libs/minix-boot/src/boot_form.rs` | 1 | `#[cfg(test)]` 夹具（启动形态测试的 `KernelInfo` 构造） |
 | `os/kernel/tests/boot_integration.rs` | 1 | 集成测试夹具 |
-| 21 个极简测试内核（`os/qemu-tests/test-kernels/kernel/bootstrap/` 下，如 `hello-boot` / `test-paging-enable` / `test-protection` 各架构变体） | 各 1 | 这些测试内核在 `main.rs` 里直接构造 `KernelInfo`，不经过 boot-shim 的固件发现阶段 |
+| 21 个极简测试内核（`os/qemu-tests/test-kernels/kernel/bootstrap/` 下，如 `hello-boot` / `test-paging-enable` / `test-protection` 各架构变体；全量即 §6.2 #4 输出里的测试内核条目） | 各 1 | 这些测试内核在 `main.rs` 里直接构造 `KernelInfo`，不经过 boot-shim 的固件发现阶段 |
 
 判断一处 `&[]` 是正常夹具还是覆盖漏洞的判据：**被测单元是否依赖平台发现**。上述 51 处的被测单元（页表映射、ELF 装载、进程初始化、内核映像布局）都不读平台描述符，所以不需要喂真实 DTB/ACPI；而三个 `test-smp-topo` 变体不在这份名单里——它们自己扫配置表 / 读 `a1` 并构造真实来源，发现链的真机覆盖由它们承担。
 
@@ -2410,17 +2412,17 @@ $ rg -o 'platform_sources:\s*&\[\]' os/ --type rust -g '*.rs' | wc -l
 
 ### 5.4 机制 → 需要证明什么（反转核对表）
 
-本节从**机制**出发列出"要证明它成立需要什么断言"，再标注覆盖状态——不是从现有测试出发（那份视角在 §5.1–§5.3；本节是它的反转面）。表中的机制全部是 Rust 侧机制；无 C 源分支的覆盖依据说明见 §1.6。
+本节从**机制**出发列出"要证明它成立需要什么断言"，再标注覆盖状态——不是从现有测试出发（那份视角在 §5.1–§5.3；本节是它的反转面）。表中的机制全部是 Rust 侧机制；无 C 源分支的覆盖依据说明见 §1.6。**列名消歧**：本表的"覆盖"一律指**测试覆盖**（某机制有没有载体去证）；"C 侧有没有对照物"是另一维度，见 §1.6——两表同用"覆盖"二字，读时按列名区分。
 
-| # | 机制（正文位置） | 需要证明什么（可观测断言） | 覆盖状态 | 现有证据 / TODO |
+| # | 机制（正文位置） | 需要证明什么（可观测断言） | 测试覆盖状态 | 现有证据 / TODO |
 |---|---|---|---|---|
 | M1 | boot-shim 来源定位（§4.2） | 两段 GUID 扫描的顺序（设备树优先）；命中即停；切片内容与顺序正确 | 部分覆盖 | 真机 10 个测试内核走 ACPI 命中路径；**DTB GUID 命中路径从未在真机上命中**（AAVMF 无 DTB 项）→ **R04-T05** |
 | M2 | 分派 `parse_by_kind`（§4.3） | 两个真实分支各返回对应变体；未知 kind 报 `UnknownKind` | 部分覆盖 | 宿主只测未知 kind（`test_parse_by_kind_unknown_returns_error`）；两真实分支为间接覆盖 → **R04-T08** |
 | M3 | ACPI 链解析（RSDP → 根表 → MADT）（§4.4） | 合成链端到端可解析；rev 2 走 XSDT、rev < 2 回落 RSDT | 部分覆盖 | 宿主 `test_parse_synthetic_acpi`（rev 2 形态）＋真机 x86_64/aarch64 变体；**RSDT 回落路径无载体** → **R04-T01** |
 | M4 | MADT 遍历两道闸（§4.4） | 零长记录被拒（解析器不挂死）；越界记录被拒 | 未覆盖（本篇） | 合成表是良构输入，畸形记录无载体 → **R04-T02** |
 | M5 | GICC/GICD/GICR 完备性决策（§4.4） | 八条判定全对（含 GICv2 形状被拒、GICD 缺失优先） | 已覆盖 | 宿主 `test_check_gic_madt_decision_table`（八断言）＋真机 aarch64 变体 |
-| M6 | 设备树解析（riscv64：PLIC/CLINT/拓扑/SSWI/PSCI）（§4.5） | 真实 DTB 的关键字段提取；`a1` 交接链 | 部分覆盖 | 宿主真实 DTB 端到端＋真机 riscv64 变体；ACLINT MTIMER 备用路径（`aclint=on` 形态）已由真机覆盖——`test-smp-ipi-riscv64` 以 `-machine virt,aclint=on` 点火并走 `a1` DTB 解析；**宿主夹具仍缺** → **R04-T03** |
-| M7 | 设备树解析（aarch64：`parse_gic` 等）（§4.5） | `reg` 两格提取 GICD/GICR；与 ACPI 路径同构的拓扑提取 | 部分覆盖 | 真机经 `test-smp-aps-aarch64` 的 `-kernel`＋`-dtb` 直核（`kernel-image` 侧装 DTB 单源 → `parse_gic`）；**宿主 DTB 夹具缺** → **R04-T04** |
+| M6 | 设备树解析（riscv64：PLIC/CLINT/拓扑/SSWI/PSCI）（§4.5） | 真实 DTB 的关键字段提取；`a1` 交接链 | 部分覆盖 | 宿主真实 DTB 端到端＋真机 riscv64 变体；ACLINT MTIMER 备用路径（`aclint=on` 形态）已由真机覆盖——`test-smp-ipi-riscv64` 以 `-machine virt,aclint=on` 点火并走 `a1` DTB 解析（复核：`rg -n "aclint=on" os/qemu-tests/test-smp-ipi-riscv64.sh` 命中点火行与头注；载体 `os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi-riscv64/src/main.rs` 经 `parse_by_kind(DTB)`）；**宿主夹具仍缺** → **R04-T03** |
+| M7 | 设备树解析（aarch64：`parse_gic` 等）（§4.5） | `reg` 两格提取 GICD/GICR；与 ACPI 路径同构的拓扑提取 | 部分覆盖 | 真机经 `test-smp-aps-aarch64` 的 `-kernel`＋`-dtb` 直核，DTB 单源装在 `os/kernel-image/src/bootface_a64.rs:fn bootface_a64`（`PlatformDescSource::new(DTB, DTB_PA)` → `parse_gic`）（复核：`rg -n "\-dtb" os/qemu-tests/test-smp-aps-aarch64.sh` → 直核点火行含 `-dtb "$QEMU_DTB"`）；**宿主 DTB 夹具缺** → **R04-T04** |
 | M8 | 多来源顺序与兜底（§3.5、§4.7） | 解析失败继续下一来源；全失败时 debug 兜底 / release panic | 未覆盖（本篇） | 真机上首个来源即成功；失败路径与多来源切换无载体 → **R04-T06** |
 | M9 | `Frozen` 一次性冻结（§3.7、§4.7） | 二次 `freeze` 在 debug 构建被断言拦下；AP 上线后并发只读 | 部分覆盖 | 断言在类型内（`debug_assert!`）；宿主未见直接测试 → **R04-T07**；并发只读由 SMP 真机间接覆盖 |
 | M10 | aarch64 高半别名（§4.8） | 第一次切根之后 MMIO 访问仍可达（`mmio_translate` 生效） | 已覆盖 | 真机 aarch64（启动越过第一次切根；注释记录未翻译时的实测故障） |
