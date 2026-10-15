@@ -259,9 +259,18 @@ pub enum FindError<'a> {
     /// 表达式以 `)` 收尾却不在括号里（`yanknode` 把它原样交回，`find_create` 不认识
     /// 落单 `)` 之后的算符——这一支由 `or_squish`/`not_squish` 的越界报错承担）。
     StrayCloseParen(&'a str),
-    /// `!` 后面没有可收的表达式。C 让 `c_not` 收下 NULL，运行期才炸；本层在解析期
-    /// 就拒绝，免得交回一棵求值时才坏的树。
+    /// `!` 后面没有可收的表达式（C 的 `operator.c:198-199`：`node == NULL`）。
+    /// C 让 `c_not` 收下 NULL、运行期才炸；本层在解析期就拒，免得交回一棵求值时才坏的树。
     NotWithoutOperand,
+    /// `!` 紧跟一个 `-o`（C 的 `operator.c:200-201`：yank 到的节点类型是 `N_OR`）——
+    /// 与上一支同属 `c_not`，但 C 分两句：「! 后没东西」与「! 与 -o 之间没东西」。
+    /// 连续 `!` 先被 C 的 `while (node->type == N_NOT)` 消合并计数，本层靠递归到达同一判据。
+    NotBeforeOr,
+    /// `-o` 左边没有表达式（`operator.c:253-255`：`result == NULL`）。
+    OrWithoutLeft,
+    /// `-o` 右边没有表达式（`operator.c:257-259`：`or_squish(plan)` 交回 NULL）。
+    /// 两道守卫在 C 里有先后（先查左、后查右），所以 `find . -o` 报的是「左边没」而不是「右边没」。
+    OrWithoutRight,
 }
 
 /// 扫全局选项、划出路径段、再把剩下的当表达式解析。
@@ -397,7 +406,16 @@ impl<'a> Cursor<'a> {
         let (left, mut produced) = self.parse_and()?;
         if matches!(self.peek(), Some("-o") | Some("-or")) {
             self.pos += 1;
+            // C 的第一道守卫在赋值之前：`result == NULL` 就是「左支空」，
+            // 所以 `find . -o …` 报的是「-o: no expression before -o」而不是另一句。
+            if left.is_empty() {
+                return Err(FindError::OrWithoutLeft);
+            }
             let (right, right_produced) = self.parse_or()?;
+            // 第二道守卫：`or_squish(plan)` 交回 NULL = 右边没表达式。
+            if right.is_empty() {
+                return Err(FindError::OrWithoutRight);
+            }
             produced |= right_produced;
             // C 的 `or_squish` 把整个左链搬进 `p_data[0]`，计划表的头就此变成一个
             // `N_OR` 节点——返回单元素序列正是那个形状。
@@ -444,11 +462,18 @@ impl<'a> Cursor<'a> {
                 let Some(operand) = self.peek() else {
                     return Err(FindError::NotWithoutOperand);
                 };
+                // C 的 `c_not` 先 yank 一个节点再问它的类型：`N_OR` 就是「! 与 -o 之间没东西」
+                // （`operator.c:200-201`）。本层递归下去，让里层 `!` 命中同一判据，
+                // 等价于 C 那个 `while (node->type == N_NOT)` 的先消合并再判断。
+                if matches!(operand, "-o" | "-or") {
+                    return Err(FindError::NotBeforeOr);
+                }
                 self.pos += 1;
                 let (node, produced) = self.parse_primary(operand)?;
                 let Some(inner) = node else {
-                    // `! -a` 这种：C 把 NULL 收进 `p_data[0]`，求值期才炸。本层在解析期
-                    // 就拒，交回不出一棵求值时才坏的树。
+                    // `! -a` 这种：C 的 yank 拿到的是一个 `N_AND`/`c_null` 节点（不是 NULL），
+                    // 所以 C **不报错**；本层交不回节点，只能拒在此——这是一处声明差，
+                    // 登记于本模块头注与 06 篇台账（要照搬 C 得先让 `-a` 也是个可参与的节点形）。
                     return Err(FindError::NotWithoutOperand);
                 };
                 Ok((Some(Node::Not(Box::new(inner))), produced))
@@ -729,6 +754,24 @@ mod tests {
         assert_eq!(
             parse(&[".", "!", "-a", "-print"]),
             Err(FindError::NotWithoutOperand)
+        );
+        // `c_not` 与 `c_or` 在 C 里各管两句，四支不能拢成两句：下面逐支钉自己的错型。
+        // （旧实现只能报 `NotWithoutOperand` 或不报错，三种坏形能一路走到求值。）
+        assert_eq!(
+            parse(&[".", "!", "-o", "-print"]),
+            Err(FindError::NotBeforeOr)
+        );
+        assert_eq!(parse(&[".", "-o", "-print"]), Err(FindError::OrWithoutLeft));
+        assert_eq!(
+            parse(&[".", "-print", "-o"]),
+            Err(FindError::OrWithoutRight)
+        );
+        // C 的先查左后查右：孤立一个 `-o` 时左守卫先到，不能报成「after」那一句。
+        assert_eq!(parse(&[".", "-o"]), Err(FindError::OrWithoutLeft));
+        // 连续 `!` 消合并后碰到 `-o`，C 报的仍是「之间没东西」那一句。
+        assert_eq!(
+            parse(&[".", "!", "!", "-or", "-print"]),
+            Err(FindError::NotBeforeOr)
         );
     }
 

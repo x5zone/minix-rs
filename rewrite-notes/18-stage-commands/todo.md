@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百七十六把 `find` 的 `!`/`-o` 两支各分成两句，改前三支坏形状根本不报错**
+  （`2026-10-15`，`claim/FIND-OPSPLIT-ARMS-qoder` @ 基线 `140498dae`，单域三线 `os/commands/bin/fileops`
+  与同线文档，无跨界）：接回批次二百七十五的登记①（规划表 R15 后半）。**是什么**：C 把两个算符的拒绝各分两句——
+  `c_not` 有「`!` 后没东西」（`operator.c:198-199`，yank 到 NULL）与「`!` 与 `-o` 之间没东西」（`:200-201`，
+  yank 到的节点类型是 `N_OR`），`c_or` 有「`-o` 前没表达式」（`:253-255`，`result == NULL`）与
+  「`-o` 后没表达式」（`:257-259`，`or_squish` 交回 NULL）。我方只报了 `!` 的第一句，`-o` 的两支**完全不报**。判类 P0-code-bug。
+  **改前的实测症状（先跑再改，不靠推断）**：宿主构建的 `find` 对 `find . -o`、`find . -print -o`、
+  `find . ! -o -print` 三形都不拒绝，一路走到走表阶段（在宿主表现为 `find: .: Input/output error`）——
+  即 C 在解析期就 `exit(1)` 的输入，我方会拿一棵语义不同的树去求值。`! -o` 那形更隐蔽：`-o` 被
+  `parse_primary` 当成一个普通主项收进 `Not` 里（C 的表里 `-o` 只有 `N_OR` 一条，`option.c:96`，
+  它不是可带参数的输出表主项）。
+  **两道守卫的先后是有内容的**：C 先查左再查右，所以孤立一个 `-o` 报的是「before」不是「after」；
+  `c_not` 先把连续 `!` 消合并（`while (node->type == N_NOT)`）再看类型，所以 `! ! -or` 落「之间没东西」。
+  两条都各自钉了断言，不是随手加的分支。
+  **声明差一处（查过真源才写的）**：`! -a` 在 C 里**不报错**——`option.c:63` 的 `-a` 是
+  `{ "-a", N_AND, c_null, 0 }`，既非 NULL 也非 `N_OR`，两道守卫都不触发；本层交不出可被 `!` 取用的
+  `-a` 节点，只能在解析期拒。要照搬得先给 `-a` 一个节点形，登记在壳侧头注与 06 篇，不在本批顺手做。
+  **参照件的边界如实记**：本想照前几轮先在宿主编一个 C `find` 参照，但它需要 Minix 专有的
+  `tzfile.h`/`util.h`/`REG_BASIC`/`SIGINFO` 等一串（试到第三轮仍缺），成本高于收益；四支的触发形状在
+  `c_not`/`c_or` 源码里是逐行明确的，故本轮以 C 源为权威、并用**改前实测**证实现状，不再猜。
+  **门**：端到端新枚 `the_two_operator_pairs_refuse_with_their_own_sentences`（六形各钉自己那句 + 退码 1 +
+  不写标准输出，复用门面既有的 `assert_errx_line` 助手）；单元测在 `malformed_groupings_are_refused_at_parse_time`
+  内补五断言（含 `! ! -or` 的消合并形与孤立 `-o` 的左优先形）。`find_face` 9→10 枚。
+  三件套：`cargo test -p minix-fileops` → **454 passed、0 failed**（基线 453，+1；上一批基线在主树实测）；
+  容器 `minix-ci:1.94`（挂仓根、带 `-u`）`cargo test -j 1 -p minix-fileops` → **454/0**（与宿主同数，退码 0）；
+  三架构 `cargo build -p minix-fileops --bins --target …` 各 `touch` 强制重编真编一遍，各 `Compiling=7`、0 error；
+  `rustfmt` 触及三文件零漂移（`cargo fmt -p` 会波及他档，改完用 `git status` 逐档核对）；clippy 触及件零命中
+  （`find.rs` 上唯一那条 `iter().any` 告警经 `git diff` 证实不在本批 diff 内，是存量）。核实日 `2026-10-15`。
+  **三枚变异负控**（各按 `cmp` 复原）：撤左守卫 / 撤右守卫 / 撤 `! -o` 判定——三笔各自只咬端到端那一枚，
+  且暴露的都是改前症状（`left: "find: .: Input/output error"`），即「坏形状滑到求值」这一形被门钉住了。
+  登记不执行：①`! -a` 的 C 接受形（需先给 `-a` 节点形）；②`find.c:240` 的 illegal path 与
+  `main.c:152` 的 `err(1, ".")` 在本树无对位点（不开 `dotfd`）；③走表告警在真机上的真号。
+
 - ✅ **批次二百七十五让 `find` 的走表告警交出号并按 C 落句子，顺带补回 `warnx` 该有的程名前缀**
   （`2026-10-15`，`claim/PROBE-ERRNO-CONTRACT-qoder` @ 基线 `312dede08`；三线 `os/commands/bin/fileops`
   加一处二线再导出，跨界改点已按 §2 规矩先登记为 C-102）：接回批次二百四十九拆出的第2片与

@@ -24,6 +24,12 @@
 //!   the errno there is whatever the last call left, so no number can be reproduced
 //!   honestly and the line stops at the phrase — the same judgement `mkfifo`'s `-m`
 //!   leg documents.
+//! - `! -a` (and `! -and`) is *accepted* by C: `yanknode` hands back an `N_AND` node
+//!   (`option.c:63` — `{ "-a", N_AND, c_null, 0 }`), which is neither `NULL` nor `N_OR`,
+//!   so neither of `c_not`'s two refusals fires. This layer cannot produce a node for
+//!   `-a` at all (C's `c_null` builds nothing that `!` could invert), so it refuses the
+//!   shape at parse time with `!: no following expression`. Declared difference; matching
+//!   C would mean giving `-a` a node form that can participate in `!` — registered in 06.
 //! - Walk warnings now print the path plus `strerror(errno)` exactly as C does
 //!   (`find.c:230-231`): the probe hands the number over since batch 274.
 //!   One declared difference stays: C's `fts_build` loop treats a `readdir()`
@@ -231,9 +237,14 @@ fn report_parse_error(prog: &str, e: &FindError<'_>) {
         // `operator.c:149`：`errx(1, "): no beginning '('")`——C 的那行不带出错的那个词，
         // 所以本层把 `StrayCloseParen` 里的名字放下，不另造 C 没有的字段。
         FindError::StrayCloseParen(_) => format!("{prog}: ): no beginning '('"),
-        // `operator.c:197-199`：`errx(1, "!: no following expression")`。C 另有 `:201` 的
-        // `"!: nothing between ! and -o"`，本层的解析树分不出这两支（已登记）。
+        // `operator.c:197-199`：`errx(1, "!: no following expression")`。
         FindError::NotWithoutOperand => format!("{prog}: !: no following expression"),
+        // `operator.c:200-201`：连续 `!` 消合并后 yank 到的是 `N_OR` —— C 把这一形与上一形
+        // 分作两句，本层现在也分得出（`parse_primary` 在 `!` 位上看到 `-o`/`-or` 即拒）。
+        FindError::NotBeforeOr => format!("{prog}: !: nothing between ! and -o"),
+        // `operator.c:253-255` 与 `:257-259`：`-o` 的左空与右空也是两句，且 C 有先后。
+        FindError::OrWithoutLeft => format!("{prog}: -o: no expression before -o"),
+        FindError::OrWithoutRight => format!("{prog}: -o: no expression after -o"),
     };
     support::warn(format!("{msg}\n").as_bytes());
 }

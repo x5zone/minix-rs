@@ -179,3 +179,25 @@ fn a_walk_warning_line_carries_the_program_name_path_and_sentence() {
         "读不下目次 = C 的 `FTS_DNR`，`rval` 置 1（`find.c:232`）"
     );
 }
+
+/// C 的 `c_not` 与 `c_or` 各管两句，四支各有自己的报文（`operator.c:198-201`、`:253-259`）。
+/// 旧实现把 `!` 的两支拢成一句、`-o` 的两支干脆不报（三种坏形状一路走到求值），所以这里钉的是
+/// 「哪一句」而不是「有没有报错」——退码由 `assert_errx_line` 统一按 `errx(1, …)` 断言。
+#[test]
+fn the_two_operator_pairs_refuse_with_their_own_sentences() {
+    assert_errx_line(&[".", "!"], "find: !: no following expression");
+    assert_errx_line(
+        &[".", "!", "-o", "-print"],
+        "find: !: nothing between ! and -o",
+    );
+    assert_errx_line(&[".", "-o", "-print"], "find: -o: no expression before -o");
+    assert_errx_line(&[".", "-print", "-o"], "find: -o: no expression after -o");
+    // C 的 `c_not` 先把连续 `!` 消合并（`while (node->type == N_NOT)`）再看类型，
+    // 所以 `! ! -or` 落的是同一句「之间没东西」。
+    assert_errx_line(
+        &[".", "!", "!", "-or", "-print"],
+        "find: !: nothing between ! and -o",
+    );
+    // C 的先查左后查右：只写一个 `-o` 时不能报成「after」那一句。
+    assert_errx_line(&[".", "-o"], "find: -o: no expression before -o");
+}
