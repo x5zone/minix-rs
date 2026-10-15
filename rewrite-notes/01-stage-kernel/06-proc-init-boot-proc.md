@@ -153,10 +153,10 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 | 位 | 挡住什么 | 由谁解除 |
 |---|---|---|
-| `RTS_NO_PRIV` | 还没有权限（`p_priv` 未分配或未填） | RS 发 `SYS_PRIV_ALLOW`（`system/do_privctl.c` 的 [`do_privctl`](minix3/minix/kernel/system/do_privctl.c:do_privctl)） |
-| `RTS_VMINHIBIT` | 页表还没由 VM 建好 | VM 发 `VMCTL_SETADDRSPACE` 或 `VMCTL_VMINHIBIT_CLEAR`（`i386/arch_do_vmctl.c` 的 [`arch_do_vmctl`](minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl) 与 `system/do_vmctl.c` 的 [`do_vmctl`](minix3/minix/kernel/system/do_vmctl.c:do_vmctl)） |
+| `RTS_NO_PRIV` | 还没有权限（`p_priv` 未分配或未填） | RS 发 `SYS_PRIV_ALLOW`（[`do_privctl`](minix3/minix/kernel/system/do_privctl.c:do_privctl)） |
+| `RTS_VMINHIBIT` | 页表还没由 VM 建好 | VM 发 `VMCTL_SETADDRSPACE` 或 `VMCTL_VMINHIBIT_CLEAR`（[`arch_do_vmctl`](minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl) 与 [`do_vmctl`](minix3/minix/kernel/system/do_vmctl.c:do_vmctl)） |
 | `RTS_BOOTINHIBIT` | VM 还没把它的镜像装好 | VM 发 `VMCTL_BOOTINHIBIT_CLEAR`（同上文件） |
-| `RTS_PROC_STOP` | 内核还没到"可以开始调度"的时刻 | `bsp_finish_booting` 的解除循环（`kernel/main.c` 的 [`bsp_finish_booting`](minix3/minix/kernel/main.c:bsp_finish_booting)） |
+| `RTS_PROC_STOP` | 内核还没到"可以开始调度"的时刻 | `bsp_finish_booting` 的解除循环（[`bsp_finish_booting`](minix3/minix/kernel/main.c:bsp_finish_booting)） |
 
 四个位被置位的时机也不同：`NO_PRIV` 与 `NO_QUANTUM` 成对置给"不能立刻调度"的成员；`VMINHIBIT`/`BOOTINHIBIT` 置给除 VM 以外的所有用户进程；`PROC_STOP` 置给全部 17 项。§2.6 会把这几步逐条读出来。
 
@@ -232,11 +232,11 @@ boot 循环结束时，17 个条目的槽都已经写好字段，但没有一个
 
 | 常量 | 值 | 定义处 | 含义 |
 |---|---|---|---|
-| `NR_TASKS` | 5 | `minix/com.h` 的 [`NR_TASKS`](minix3/minix/include/minix/com.h:NR_TASKS) | 内核 task 数（ASYNCM/IDLE/CLOCK/SYSTEM/KERNEL，进程号 −5..−1） |
-| `NR_PROCS` | 256 | `minix/sys_config.h` 的 [`_NR_PROCS`](minix3/minix/include/minix/sys_config.h:_NR_PROCS)（经 `minix/config.h` 的 [`NR_PROCS`](minix3/minix/include/minix/config.h:NR_PROCS)） | 用户进程槽上限（进程号 0..255） |
+| `NR_TASKS` | 5 | [`NR_TASKS`](minix3/minix/include/minix/com.h:NR_TASKS) | 内核 task 数（ASYNCM/IDLE/CLOCK/SYSTEM/KERNEL，进程号 −5..−1） |
+| `NR_PROCS` | 256 | [`_NR_PROCS`](minix3/minix/include/minix/sys_config.h:_NR_PROCS)（经 [`NR_PROCS`](minix3/minix/include/minix/config.h:NR_PROCS)） | 用户进程槽上限（进程号 0..255） |
 | `NR_SYS_PROCS` | 64 | 同一个 `sys_config.h` 的 `_NR_SYS_PROCS` | 特权槽上限 |
-| `NR_BOOT_PROCS` | `NR_TASKS + LAST_SPECIAL_PROC_NR + 1` = 17（`LAST_SPECIAL_PROC_NR` 即 `INIT_PROC_NR`（11），定义在 [`minix/com.h`](minix3/minix/include/minix/com.h)） | `minix/param.h` 的 [`NR_BOOT_PROCS`](minix3/minix/include/minix/param.h:NR_BOOT_PROCS) | boot image 条目数（5 task + 12 模块） |
-| `NR_BOOT_MODULES` | `INIT_PROC_NR + 1` = 12 | `minix/com.h` 的 [`NR_BOOT_MODULES`](minix3/minix/include/minix/com.h:NR_BOOT_MODULES) | boot image 中用户态模块数 |
+| `NR_BOOT_PROCS` | `NR_TASKS + LAST_SPECIAL_PROC_NR + 1` = 17（`LAST_SPECIAL_PROC_NR` 即 `INIT_PROC_NR`（11），定义在 [`minix/com.h`](minix3/minix/include/minix/com.h)） | [`NR_BOOT_PROCS`](minix3/minix/include/minix/param.h:NR_BOOT_PROCS) | boot image 条目数（5 task + 12 模块） |
+| `NR_BOOT_MODULES` | `INIT_PROC_NR + 1` = 12 | [`NR_BOOT_MODULES`](minix3/minix/include/minix/com.h:NR_BOOT_MODULES) | boot image 中用户态模块数 |
 
 两个容量关系由编译期强制。`NR_BOOT_PROCS (17) ≤ NR_SYS_PROCS (64)` 写在 [`kernel/priv.h`](minix3/minix/kernel/priv.h) 末尾：
 
@@ -575,20 +575,20 @@ void reset_proc_accounting(struct proc *p)
 
 | 位 | 位名 | 谁置位 | 谁解除 | 解除后的动作 | 读者/判据 |
 |---|---|---|---|---|---|
-| `0x00001` | `RTS_SLOT_FREE` | `kernel/proc.c` 的 [`proc_init`](minix3/minix/kernel/proc.c:proc_init)（清表写整值）、`system/do_clear.c` 的 [`do_clear`](minix3/minix/kernel/system/do_clear.c:do_clear)（`RTS_SETFLAGS`） | `kernel/main.c` 的 [`kmain`](minix3/minix/kernel/main.c:kmain)（boot 循环末 `&= ~`） | 出队（`RTS_SETFLAGS` 路径）；boot 路径不触发跃迁 | `isemptyp`（`p_rts_flags == RTS_SLOT_FREE`） |
-| `0x00002` | `RTS_PROC_STOP` | `main.c` 的 `kmain`（全部 17 项）、`kernel/proc.c` 的 [`proc_init`](minix3/minix/kernel/proc.c:proc_init)（各 CPU 的 idle 槽）、`system/do_runctl.c` 的 [`do_runctl`](minix3/minix/kernel/system/do_runctl.c:do_runctl)（`RC_STOP`）、`kernel/smp.c` 的 [`smp_sched_handler`](minix3/minix/kernel/smp.c:smp_sched_handler)（跨 CPU 停）与 `smp.c:smp_schedule_stop_proc` | `main.c` 的 `bsp_finish_booting`（进程号 0..11）、`do_runctl`（`RC_RESUME`）、`smp.c`（迁移收尾）、`i386/arch_system.c` 的 [`save_fpu`](minix3/minix/kernel/arch/i386/arch_system.c:save_fpu)（CONFIG_SMP） | `RTS_UNSET` 命中跃迁 → 入队 | `do_sigsend.c`、`smp.c` 的断言 |
-| `0x00004` | `RTS_SENDING` | [`kernel/proc.c`](minix3/minix/kernel/proc.c) 的 `mini_send`（目标不可收时） | 同文件的投递分支、`kernel/system.c` 的 [`clear_ipc`](minix3/minix/kernel/system.c:clear_ipc) | 入队条件成立才入队（多数路径还有其他位在） | `ipc.h:WILLRECEIVE`、`P_BLOCKEDON` |
-| `0x00008` | `RTS_RECEIVING` | [`kernel/proc.c`](minix3/minix/kernel/proc.c) 的 `mini_receive` | 同文件的 `mini_send` 命中收方、`kernel/system.c` 的 [`clear_ipc`](minix3/minix/kernel/system.c:clear_ipc)、`system/do_exec.c` | 同上 | `P_BLOCKEDON`、`WILLRECEIVE` |
+| `0x00001` | `RTS_SLOT_FREE` | [`proc_init`](minix3/minix/kernel/proc.c:proc_init)（清表写整值）、[`do_clear`](minix3/minix/kernel/system/do_clear.c:do_clear)（`RTS_SETFLAGS`） | [`kmain`](minix3/minix/kernel/main.c:kmain)（boot 循环末 `&= ~`） | 出队（`RTS_SETFLAGS` 路径）；boot 路径不触发跃迁 | `isemptyp`（`p_rts_flags == RTS_SLOT_FREE`） |
+| `0x00002` | `RTS_PROC_STOP` | `main.c` 的 `kmain`（全部 17 项）、[`proc_init`](minix3/minix/kernel/proc.c:proc_init)（各 CPU 的 idle 槽）、[`do_runctl`](minix3/minix/kernel/system/do_runctl.c:do_runctl)（`RC_STOP`）、[`smp_sched_handler`](minix3/minix/kernel/smp.c:smp_sched_handler)（跨 CPU 停）与 `smp.c:smp_schedule_stop_proc` | `main.c` 的 `bsp_finish_booting`（进程号 0..11）、`do_runctl`（`RC_RESUME`）、`smp.c`（迁移收尾）、[`save_fpu`](minix3/minix/kernel/arch/i386/arch_system.c:save_fpu)（CONFIG_SMP） | `RTS_UNSET` 命中跃迁 → 入队 | `do_sigsend.c`、`smp.c` 的断言 |
+| `0x00004` | `RTS_SENDING` | [`kernel/proc.c`](minix3/minix/kernel/proc.c) 的 `mini_send`（目标不可收时） | 同文件的投递分支、[`clear_ipc`](minix3/minix/kernel/system.c:clear_ipc) | 入队条件成立才入队（多数路径还有其他位在） | `ipc.h:WILLRECEIVE`、`P_BLOCKEDON` |
+| `0x00008` | `RTS_RECEIVING` | [`kernel/proc.c`](minix3/minix/kernel/proc.c) 的 `mini_receive` | 同文件的 `mini_send` 命中收方、[`clear_ipc`](minix3/minix/kernel/system.c:clear_ipc)、`system/do_exec.c` | 同上 | `P_BLOCKEDON`、`WILLRECEIVE` |
 | `0x00010` | `RTS_SIGNALED` | `system.c:cause_sig` | `system/do_getksig.c`（PM 取走）、`system/do_fork.c`（子进程不继承） | 另一个位（`SIG_PENDING`）还在，通常不入队 | `do_getksig.c`、`do_endksig.c` |
 | `0x00020` | `RTS_SIG_PENDING` | `system.c:cause_sig` | `system/do_endksig.c`（信号处理完毕）、`do_fork.c` | 命中跃迁 → 入队 | `do_endksig.c`、`do_update.c` |
 | `0x00040` | `RTS_P_STOP` | `system/do_trace.c`（开始跟踪） | `do_trace.c`（三处恢复路径）、`do_fork.c` | 命中跃迁 → 入队 | `do_trace.c`、`do_fork.c` |
 | `0x00080` | `RTS_NO_PRIV` | `main.c:kmain`（非可调度的 boot 成员）、`system/do_privctl.c:do_privctl`（收回）、`system/do_fork.c`（子进程先无权限） | `do_privctl.c`（`SYS_PRIV_ALLOW`）、`system.c:cause_sig`（切到备用信号管理器） | 命中跃迁 → 入队 | `do_privctl.c` 的 `EPERM` 检查、`do_update.c` |
-| `0x00100` | `RTS_NO_ENDPOINT` | `kernel/system.c` 的 [`clear_endpoint`](minix3/minix/kernel/system.c:clear_endpoint)（进程退出） | 无具名解除点；`do_clear` 的 `RTS_SETFLAGS` 整值覆盖会清掉它（见下） | —— | `proc.c` 里 `mini_send`/`mini_receive` 的收件人检查 |
-| `0x00200` | `RTS_VMINHIBIT` | `main.c` 的 `kmain`（除 VM 的全部用户进程）、`system/do_fork.c`、`do_vmctl.c`（`VMCTL_VMINHIBIT_SET`）、`smp.c` | `i386/arch_do_vmctl.c` 的 [`arch_do_vmctl`](minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl)（`VMCTL_SETADDRSPACE`）、`system/do_vmctl.c` 的 [`do_vmctl`](minix3/minix/kernel/system/do_vmctl.c:do_vmctl)（`VMCTL_VMINHIBIT_CLEAR`） | 命中跃迁 → 入队 | `proc.c:has_pending`（异步投递跳过）、`memory.c` 的断言 |
+| `0x00100` | `RTS_NO_ENDPOINT` | [`clear_endpoint`](minix3/minix/kernel/system.c:clear_endpoint)（进程退出） | 无具名解除点；`do_clear` 的 `RTS_SETFLAGS` 整值覆盖会清掉它（见下） | —— | `proc.c` 里 `mini_send`/`mini_receive` 的收件人检查 |
+| `0x00200` | `RTS_VMINHIBIT` | `main.c` 的 `kmain`（除 VM 的全部用户进程）、`system/do_fork.c`、`do_vmctl.c`（`VMCTL_VMINHIBIT_SET`）、`smp.c` | [`arch_do_vmctl`](minix3/minix/kernel/arch/i386/arch_do_vmctl.c:arch_do_vmctl)（`VMCTL_SETADDRSPACE`）、[`do_vmctl`](minix3/minix/kernel/system/do_vmctl.c:do_vmctl)（`VMCTL_VMINHIBIT_CLEAR`） | 命中跃迁 → 入队 | `proc.c:has_pending`（异步投递跳过）、`memory.c` 的断言 |
 | `0x00400` | `RTS_PAGEFAULT` | `arch/i386/exception.c`、`arch/earm/exception.c`（页错误处理入口） | `system/do_vmctl.c`（`VMCTL_CLEAR_PAGEFAULT`） | 命中跃迁 → 入队 | `do_vmctl.c` 的断言 |
 | `0x00800` | `RTS_VMREQUEST` | `proc.c:vm_suspend`（发起内存请求） | `system/do_vmctl.c`（`VMCTL_MEMREQ_REPLY`）、`system.c:clear_memreq`（进程退出） | 命中跃迁 → 入队 | `do_vmctl.c` 的 `assert(RTS_ISSET(...))`、`kernel_call_resume` |
 | `0x01000` | `RTS_VMREQTARGET` | **本仓检索范围内无置位点** | 同左 | —— | `debug.c` 的打印、`servers/mib/proc.c` 的读点 |
-| `0x04000` | `RTS_PREEMPTED` | [`kernel/proc.c`](minix3/minix/kernel/proc.c) 的 `enqueue` 抢占分支、`kernel/smp.c` 的 [`smp_ipi_sched_handler`](minix3/minix/kernel/smp.c:smp_ipi_sched_handler) 后处理 | `kernel/proc.c` 的 [`switch_to_user`](minix3/minix/kernel/proc.c:switch_to_user) 的 `not_runnable_pick_new` 段 | 出队；若仍可运行则按 `p_cpu_time_left` 决定插队首还是队尾 | `proc_is_preempted` |
+| `0x04000` | `RTS_PREEMPTED` | [`kernel/proc.c`](minix3/minix/kernel/proc.c) 的 `enqueue` 抢占分支、[`smp_ipi_sched_handler`](minix3/minix/kernel/smp.c:smp_ipi_sched_handler) 后处理 | [`switch_to_user`](minix3/minix/kernel/proc.c:switch_to_user) 的 `not_runnable_pick_new` 段 | 出队；若仍可运行则按 `p_cpu_time_left` 决定插队首还是队尾 | `proc_is_preempted` |
 | `0x08000` | `RTS_NO_QUANTUM` | `main.c:kmain`（与 `NO_PRIV` 成对）、`system/do_fork.c`、`system.c:sched_proc`、`proc.c:notify_scheduler` | `system.c:sched_proc`（末尾统一清） | 命中跃迁 → 入队 | `proc_no_quantum` |
 | `0x10000` | `RTS_BOOTINHIBIT` | `main.c:kmain`（除 VM 的全部用户进程） | `system/do_vmctl.c`（`VMCTL_BOOTINHIBIT_CLEAR`） | 命中跃迁 → 入队 | 与 `VMINHIBIT` 同批检查 |
 

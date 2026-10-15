@@ -601,9 +601,9 @@ C 里真实存在的语义是（§2.0）：`kernel_call` 一体五步，BKL 在�
 
 | 函数 | 承接 C 的哪几步（§2.1-§2.3） | 锁动作 |
 |---|---|---|
-| `syscall.rs` 的 [`fn kernel_call`](os/kernel/src/syscall.rs:fn kernel_call) | ①记地址 + ②拷入 + 盖 m_source（+④⑤经调用下属） | 不取锁（锁在 dispatch 里取） |
-| `syscall.rs` 的 [`fn kernel_call_dispatch`](os/kernel/src/syscall.rs:fn kernel_call_dispatch) | ③分派 + ④记账 | `bkl_lock()` 取锁，`transfer()` 把锁交给后手 |
-| `syscall.rs` 的 [`fn kernel_call_dispatch_inner`](os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner) | 归一化 + 三道门 + 路由（③的纯逻辑半） | 不取锁——吃一个 `BklSection` 见证参数 |
+| [`fn kernel_call`](os/kernel/src/syscall.rs:fn kernel_call) | ①记地址 + ②拷入 + 盖 m_source（+④⑤经调用下属） | 不取锁（锁在 dispatch 里取） |
+| [`fn kernel_call_dispatch`](os/kernel/src/syscall.rs:fn kernel_call_dispatch) | ③分派 + ④记账 | `bkl_lock()` 取锁，`transfer()` 把锁交给后手 |
+| [`fn kernel_call_dispatch_inner`](os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner) | 归一化 + 三道门 + 路由（③的纯逻辑半） | 不取锁——吃一个 `BklSection` 见证参数 |
 
 分派函数的锁段全貌（锁的取、用、交三段都在这 31 行里）：
 
@@ -670,19 +670,19 @@ C 的内核调用面逐项去向如下。每行给出验证方式——测试名
 
 | C 的东西（出处） | 处置 | Rust 对应 | 验证 |
 |---|---|---|---|
-| `call_vec[58]` 函数指针数组 + `map()` 运行时 assert（system.c:52-57） | **消失**（被 enum+match 吸收，08 篇 §3.1 已立） | `syscall.rs` 的 [`enum Syscall`](os/kernel/src/syscall.rs:enum Syscall) + `TryFrom<u16>` + `const` 编译期断言（判别式 0-57，空洞号直接不设成员） | `test_syscall_enum_tracks_minix_types_kernel_call_family`（§5.3）；编译期断言在 enum 定义后 |
+| `call_vec[58]` 函数指针数组 + `map()` 运行时 assert（system.c:52-57） | **消失**（被 enum+match 吸收，08 篇 §3.1 已立） | [`enum Syscall`](os/kernel/src/syscall.rs:enum Syscall) + `TryFrom<u16>` + `const` 编译期断言（判别式 0-57，空洞号直接不设成员） | `test_syscall_enum_tracks_minix_types_kernel_call_family`（§5.3）；编译期断言在 enum 定义后 |
 | 46 个 `SYS_*` 宏（com.h:207-267） | 保留（共享权威化） | [`kernel_call.rs`](os/libs/minix-types/src/ipc/kernel_call.rs) 的 46 个 `pub const`（曾缺位、后补齐的共享权威化产物——调度器本地镜像抄 `0x600+n` 的事故模式是登记动机，现全仓消费这一个权威） | 同上 pin 测试 46 对逐值对账 |
-| `KERNEL_CALL` 基座 + `NR_SYS_CALLS`=58（com.h:205/270） | 保留 | `minix-types::KERNEL_CALL`、`minix-types::NR_SYS_CALLS`；`syscall.rs` 的 [`const NR_SYS_CALLS`](os/kernel/src/syscall.rs:const NR_SYS_CALLS) 另有内核侧副本——**字面 58、未从 minix-types 派生**，当前无对账 pin 覆盖两者相等（登记 SRC-16，是否改派生待源码侧定） | §6.2 手算命令 |
-| `kernel_call` 五步（§2.1） | 拆分 | `syscall.rs` 的 [`fn kernel_call`](os/kernel/src/syscall.rs:fn kernel_call)（①②+盖章）+ `:fn kernel_call_dispatch`（③④）+ `:fn kernel_call_finish`（⑤） | §4.1 走查；`test_kernel_call_wrapper` |
+| `KERNEL_CALL` 基座 + `NR_SYS_CALLS`=58（com.h:205/270） | 保留 | `minix-types::KERNEL_CALL`、`minix-types::NR_SYS_CALLS`；[`const NR_SYS_CALLS`](os/kernel/src/syscall.rs:const NR_SYS_CALLS) 另有内核侧副本——**字面 58、未从 minix-types 派生**，当前无对账 pin 覆盖两者相等（登记 SRC-16，是否改派生待源码侧定） | §6.2 手算命令 |
+| `kernel_call` 五步（§2.1） | 拆分 | [`fn kernel_call`](os/kernel/src/syscall.rs:fn kernel_call)（①②+盖章）+ `:fn kernel_call_dispatch`（③④）+ `:fn kernel_call_finish`（⑤） | §4.1 走查；`test_kernel_call_wrapper` |
 | `copy_msg_from_user` + EFAULT→printf+SIGSEGV | 保留（信号路径统一） | `UserCopy::copy_msg_from_user` + `crate::syscall_signal::cause_signal(SIGSEGV)`——printf 的告警语义并入 cause_signal 的信号闭环（12 篇 §4.3 的 delivermsg 同族） | `test_kernel_call_wrapper` 的 UserCopy 注入 |
 | 三道门（§2.2） | 保留 + 次序拆分（**空洞号拒绝码与 C 不同**） | inner 的归一化→`Syscall::try_from`（范围+空洞）→`kcall_filter_check`→match；无权者+空洞号：C 得 `ECALLDENIED`、本端得 `BadCall`→`EBADREQUEST`（§4.1，差异登记 SRC-13） | `test_kernel_call_dispatch_bad_call`/`_call_denied_no_priv`/`test_padconf_unused_kernel_call_replies_ebadrequest`（§5.1 表；后两条另有 §5.3 细读一/细读二） |
-| `s_k_call_mask` 位测试 | 改型 | `ipc_filter.rs` 的 [`fn kcall_filter_check`](os/kernel/src/ipc_filter.rs:fn kcall_filter_check)（`KCallMask` 位集；无特权结构的调用者一律拒绝） | 同上 denied 测试 |
+| `s_k_call_mask` 位测试 | 改型 | [`fn kcall_filter_check`](os/kernel/src/ipc_filter.rs:fn kcall_filter_check)（`KCallMask` 位集；无特权结构的调用者一律拒绝） | 同上 denied 测试 |
 | `kernel_call_finish` 两分支（§2.3） | 保留 + 拆变体 | `:fn kernel_call_finish_holding_bkl`（VMSUSPEND 臂逐行对位）+ `:fn kernel_call_finish`/`:fn kernel_call_finish_ipc_door` 两个薄包装 | §4.2 走查 |
 | `m_source=SYSTEM`/`m_type=result` 回写 | 改型（线上形式） | `reply.m_source = Endpoint::SYSTEM`；`m_type = reply_wire()`（错误码取负后与 C 线上同号——皆负；数据码原样；失败处置差异——C 在 `finish` 检查 printf+SIGSEGV，本端 `None => break` 静默、信号延后，§4.2/§5.4） | `test_syscall_leg_wire_negates_nonzero_errno` |
 | EDONTREPLY 哨兵 | 保留（改型为变体） | `KcallResult::NoReply`；finish 不回写 + trap 腿不写 RAX | `test_kcall_result_variants`；trap 腿 NoReply 早退（§4.2） |
 | `kernel_call_resume` 四步（§2.4） | 拆分 | `:fn kernel_call_resume`（三断言+重派+清+finish 的全形）+ 调度循环 Stage 3a 块（生产重派路径，内联同样四步但**清位前移**——次序差见 §4.3） | §4.3 走查；vm.rs 两条 resume 测试 |
-| `p_vmrequest.saved.reqmsg` 挂起登记 | 改型 | `p_vm_suspend` 上下文的 `saved_msg`（`vm.rs` 的 [`struct VmSuspendContext`](os/kernel/src/vm.rs:struct VmSuspendContext)，进程表字段经 [`proc.rs`](os/kernel/src/proc.rs) 引用） | vm.rs `memreq_reply_*` 族测试 |
-| `kbill_kcall = caller`（§2.1 第④步） | 保留 | `crate::set_kbill_kcall_with`（`lib.rs` 的 [`fn set_kbill_kcall_with`](os/kernel/src/lib.rs:fn set_kbill_kcall_with)，dispatch 内、finish 前） | `test_kernel_call_dispatch_sets_kbill_marker`（§5.1 表） |
+| `p_vmrequest.saved.reqmsg` 挂起登记 | 改型 | `p_vm_suspend` 上下文的 `saved_msg`（[`struct VmSuspendContext`](os/kernel/src/vm.rs:struct VmSuspendContext)，进程表字段经 [`proc.rs`](os/kernel/src/proc.rs) 引用） | vm.rs `memreq_reply_*` 族测试 |
+| `kbill_kcall = caller`（§2.1 第④步） | 保留 | `crate::set_kbill_kcall_with`（[`fn set_kbill_kcall_with`](os/kernel/src/lib.rs:fn set_kbill_kcall_with)，dispatch 内、finish 前） | `test_kernel_call_dispatch_sets_kbill_marker`（§5.1 表） |
 | 挂起后重派+完成半写 RAX（C 侧恢复只走消息回拷，RAX 交付为 64 位移植新形状） | 新增 | trap 腿 VmSuspend 臂：存现场、记样式、重入调度器；完成后 `set_ipc_return_code` 写 RAX（§4.2） | trap 腿臂走查（§4.2）；真机联调 |
 
 先给 `enum Syscall` 的头部落 18 行节选（判别式即 C 相对号、空洞以注释占位）：
@@ -1436,7 +1436,7 @@ pub fn dispatch_ipc_entry(
 
 | 症状 | 怀疑对象 | 确认命令与预期关键行 |
 |---|---|---|
-| 进程的内核调用被拒，拿到 -210（ECALLDENIED） | `s_k_call_mask` 对应位未开——调用者的特权模板没授权这个号，或 SYS_PRIVCTL 授权路径没走到 | C 侧串口行：`SYSTEM: denied request <nr> from <ep>.`（`kernel/system.c` 的 [`kernel_call_dispatch`](minix3/minix/kernel/system.c:kernel_call_dispatch) 的 printf）。宿主侧复核门的形状：`cargo test -p minix-kernel --features mock test_kernel_call_dispatch_call_denied` 预期 `ok`；位图的授权写入点定位：`grep -n 's_k_call_mask' minix3/minix/kernel/system/do_privctl.c minix3/minix/kernel/main.c` 命中模板下发与 privctl 两条路径 |
+| 进程的内核调用被拒，拿到 -210（ECALLDENIED） | `s_k_call_mask` 对应位未开——调用者的特权模板没授权这个号，或 SYS_PRIVCTL 授权路径没走到 | C 侧串口行：`SYSTEM: denied request <nr> from <ep>.`（[`kernel_call_dispatch`](minix3/minix/kernel/system.c:kernel_call_dispatch) 的 printf）。宿主侧复核门的形状：`cargo test -p minix-kernel --features mock test_kernel_call_dispatch_call_denied` 预期 `ok`；位图的授权写入点定位：`grep -n 's_k_call_mask' minix3/minix/kernel/system/do_privctl.c minix3/minix/kernel/main.c` 命中模板下发与 privctl 两条路径 |
 | 拿到 -212（EBADREQUEST） | 门一（越界号）或门三（空洞号/架构缺位号）——两者同码不同因 | C 侧区分文案：`SYSTEM: illegal request`（门一）vs `Unused kernel call`（门三）。宿主侧：`cargo test -p minix-kernel --features mock test_kernel_call_dispatch_bad_call` 与 `cargo test -p minix-kernel --features mock test_padconf_unused_kernel_call` 双双预期 `ok`；空洞号清单手算见 §6.2 |
 | 调用返回码到了，但回信缓冲内容不对/缺 | `p_delivermsg_vir` 错位（入口登记被中途覆盖）或用户缓冲坏指针 | 入口登记唯一写点核对：`grep -n 'p_delivermsg_vir =' os/kernel/src/syscall.rs` 预期只命中 `fn kernel_call` 内一行；宿主侧：`cargo test -p minix-kernel --features mock test_kernel_call_wrapper` 预期 `ok`（其中断言登记值等于传入地址）。C 侧坏指针串口行：`WARNING wrong user pointer 0x... from process <name> / <ep>.` |
 | 被挂起的调用永不恢复，进程停排 | Stage 3a 状态守卫反复 `continue`（VM 未到 `Completed`）——VM 侧没回或回复链断（10 篇 §3.3 防护点一同族：`Pending`/`Fetched` 是合法等待，长期不动才是病） | 守卫读数定位：`grep -n 'state_completed' os/kernel/src/lib.rs` 命中 Stage 3a 守卫块；恢复端状态机：`cargo test -p minix-kernel --features mock kernel_call_resume` 预期 2 passed（vm.rs 两条）；VM 侧对端（memreq 回复置标志+清 VMREQUEST）走 09 篇 §2.3 的链路核对 |
