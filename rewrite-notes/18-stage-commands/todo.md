@@ -277,6 +277,12 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   基线 `395cf3d21`。
   **第三次踩同一个坑，记死**：负控脚本经 shell heredoc 生成时又出语法错，那四次「全绿」其实一次
   都没注入——控制器一律用编辑工具直接落盘，且每枚先看 `mutation applied` 再谈颜色。
+  **三架构门补跑（合回后在主树现测，`2026-10-15`，快照 `8f2e2585c` 之后一笔）**：本批动了
+  `src/join.rs`（lib）与 `src/bin/join.rs`（bin），按纪律跑
+  `cd os && cargo build --target-dir /tmp/x295c -j 1 -p minix-textfilter --bins --target
+  {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` → 三架构各
+  **0 error**。顺手记一次险些自证的误读：第一次跑我从仓库根发起，得三个 "1"，实为
+  `could not find Cargo.toml`（workspace 根是 `os/`）——**错误计数之前先看错误文本**。
   登记不执行：`join` 的 `-e`（空字段占位）与 `-v` 的输出面本轮未碰；`sort` 选项面余 `D`/`R`/`T`。
 
 - ✅ **批次二百九十四把 `join` 的选项诊断与 BSD 参照件逐形 A/B：结论是无差异，对账落成一枚可重跑的门**
