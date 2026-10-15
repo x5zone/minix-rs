@@ -56,7 +56,7 @@ x86 上还有一张表与本节的三张并列出现：LDT。`GDT` 里为它留�
 
 | 指令 | 特权要求 | 本条之前，该寄存器/表是谁的值 | 本条之后是谁的值 |
 |---|---|---|---|
-| `lgdt` | ring0 | 引导方 GDT 的基址与限长 | `i386/protect.c` 的 [`prot_init`](minix3/minix/kernel/arch/i386/protect.c:prot_init) 里 `gdt_desc` 指向的 `gdt[]` |
+| `lgdt` | ring0 | 引导方 GDT 的基址与限长 | [`prot_init`](minix3/minix/kernel/arch/i386/protect.c:prot_init) 里 `gdt_desc` 指向的 `gdt[]` |
 | `lidt` | ring0 | 引导方 IDT | 同文件 `idt_desc` 指向的 `idt[]` |
 | `lldt` | ring0 | 引导方 LDTR（或复位值） | `LDT_SELECTOR`（[`include/archconst.h`](minix3/minix/kernel/arch/i386/include/archconst.h) 里的槽号 5） |
 | `ltr` | ring0 | 引导方 TR（或复位值） | `TSS_SELECTOR(0)`，即上面那张 TSS 描述符 |
@@ -252,7 +252,7 @@ void cstart(void)
 | 调用 | 依赖前一步的哪样产物 | 把它提前/推后，最先坏的对象 |
 |---|---|---|
 | `prot_init()` | 无（函数自己完成全部前提） | 它是后面所有步骤的前提，无法提前 |
-| `init_clock()` | 无硬依赖；它只初始化 `kclockinfo`/`kloadinfo` 并读 `hz` 环境变量（`kernel/clock.c` 的 [`init_clock`](minix3/minix/kernel/clock.c:init_clock)） | 与 `prot_init` 可交换；它的硬件编程不在这里（见下） |
+| `init_clock()` | 无硬依赖；它只初始化 `kclockinfo`/`kloadinfo` 并读 `hz` 环境变量（[`init_clock`](minix3/minix/kernel/clock.c:init_clock)） | 与 `prot_init` 可交换；它的硬件编程不在这里（见下） |
 | `intr_init(0)` | 需要 IDT 已装填（门要已就位、可被中断递送使用） | 提前到 `prot_init` 之前：窗口内到达的异常或 NMI 按引导方 IDT 递送（可屏蔽中断被 IF=0 挡在门外，见下） |
 | `arch_init()` | 需要保护结构、控制器都已就绪 | 提前：它里面还会再动一次 TSS 与栈（见 §2.4 末尾） |
 
@@ -685,7 +685,7 @@ void prot_init(void)
 |---|---|---|
 | 段描述符表 | GDT 七个槽（§2.3） | 没有 |
 | TSS 描述符 | GDT 第 6 槽（§2.4） | 没有；TSS 结构体只存 `sp0` |
-| `tss_init` 的调用者 | `prot_init`（第一个参数 `&k_boot_stktop`；`arch_init` 与 AP 路径的第二次调用见 §2.4） | `earm/arch_system.c` 的 [`arch_init`](minix3/minix/kernel/arch/earm/arch_system.c:arch_init)（参数 `get_k_stack_top(0)`） |
+| `tss_init` 的调用者 | `prot_init`（第一个参数 `&k_boot_stktop`；`arch_init` 与 AP 路径的第二次调用见 §2.4） | [`arch_init`](minix3/minix/kernel/arch/earm/arch_system.c:arch_init)（参数 `get_k_stack_top(0)`） |
 | 异常入口 | 填 IDT + `lidt`（在 `prot_load_selectors` 里） | `write_vbar(&exc_vector_table)`，一条写系统寄存器的动作 |
 | 重建页表 | 有 | 有（恒等注释略不同："Still need 1:1 for device memory ."） |
 | 置 `prot_init_done` | 有 | 有 |
@@ -728,7 +728,7 @@ TSS 的字段级去留（对 `include/arch_proto.h` 的 [`tss_s`](minix3/minix/k
 
 | C 字段 | 处置 | Rust 对应 |
 |---|---|---|
-| `sp0` | 保留（64 位宽度） | `protection.rs` 的 [`struct Tss64`](os/arch/src/x86_64/protection.rs:struct Tss64) 的 `sp0` |
+| `sp0` | 保留（64 位宽度） | [`struct Tss64`](os/arch/src/x86_64/protection.rs:struct Tss64) 的 `sp0` |
 | `ss0` | 保留语义 | 由分段模型隐含；`Tss64` 里没有独立的 `ss0` 字段，CPU 在转场时按 STAR/门推出内核 SS |
 | `cs`/`ss`/`ds`/`es`/`fs`/`gs` | 淘汰 | 长模式下转场不读这些备份字段 |
 | `sp1`/`sp2` | 保留为 64 位格式槽（零值、无读者） | `Tss64` 的格式自带这两格；语义上不用 |
@@ -744,7 +744,7 @@ GDT 的槽位对照（两张表的长度也一并现算）：
 | 0 | 空 | 空 |
 | 1 | 内核 CS | 内核 CS |
 | 2 | 内核 DS | 内核 DS |
-| 3 | 用户 CS | SYSRET anchor（用户 CS 的副本，`protection.rs` 的 [`const GDT_USER_ANCHOR_INDEX`](os/arch/src/x86_64/protection.rs:const GDT_USER_ANCHOR_INDEX)） |
+| 3 | 用户 CS | SYSRET anchor（用户 CS 的副本，[`const GDT_USER_ANCHOR_INDEX`](os/arch/src/x86_64/protection.rs:const GDT_USER_ANCHOR_INDEX)） |
 | 4 | 用户 DS | 用户 DS |
 | 5 | LDT 占位 | 用户 CS |
 | 6 起 | 每 CPU 一个 TSS 槽 | 每 CPU 两个槽（16 字节 TSS 描述符） |
@@ -829,7 +829,7 @@ pub struct X86_64Protection {
 |---|---|---|---|
 | 入口指令 | 按能力位逐个安装（`SYSENTER` 与 `SYSCALL` 各有一个独立的 `if`，两类指令都支持的 CPU 上两条路径都装） | 只有 `SYSCALL`/`SYSRET` | 淘汰 SYSENTER：长模式不提供该指令 |
 | 能力探测 | `minix_feature_flags` 两个位，`tss_init` 里按位装 MSR | 无探测；直接装 SYSCALL 的四个 MSR | 淘汰 |
-| 入口地址来源 | 两类汇编标签：`ipc_entry_sysenter`（1 个）与 `ipc_entry_syscall_cpu0..7`（8 个） | `trap_stub.rs` 的 [`fn syscall_entry_va`](os/arch/src/x86_64/trap_stub.rs:fn syscall_entry_va) 返回内核自己的汇编标签 | 改型 |
+| 入口地址来源 | 两类汇编标签：`ipc_entry_sysenter`（1 个）与 `ipc_entry_syscall_cpu0..7`（8 个） | [`fn syscall_entry_va`](os/arch/src/x86_64/trap_stub.rs:fn syscall_entry_va) 返回内核自己的汇编标签 | 改型 |
 | "我在哪颗 CPU" | per-CPU 入口标签 + `k_percpu_stacks[cpu]` 表 | per-CPU GS 区（`gs:0x0` 取内核栈顶） | 改型 |
 | `KernelInfo.syscall_entry` | —— | 只作元数据；`configure_syscall` 不读它 | 降级为参考信息 |
 
@@ -858,7 +858,7 @@ pub struct GsArea {
 
 | 项 | C | Rust |
 |---|---|---|
-| 谁建表 | `pre_init` 建一次（引导用），`prot_init` 重建一次（正式用） | `lib.rs` 的 [`fn arch_boot_impl`](os/kernel/src/lib.rs:fn arch_boot_impl) 一次建好恒等窗口、内核映射与 Direct Map 覆盖 |
+| 谁建表 | `pre_init` 建一次（引导用），`prot_init` 重建一次（正式用） | [`fn arch_boot_impl`](os/kernel/src/lib.rs:fn arch_boot_impl) 一次建好恒等窗口、内核映射与 Direct Map 覆盖 |
 | 保护结构初始化里是否碰页表 | 碰（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`） | 不碰 |
 | "仍需要 1:1"的消费者 | LAPIC MMIO、显存等按物理地址访问的对象 | 由 `arch_boot_impl` 的恒等窗口与 Direct Map 覆盖承担（01/02 篇已讲） |
 | `kinfo.freepde_start` | `pre_init` 存值、32 位跨地址空间机制消费 | 已由 `01-boot-shim-bootstrap.md` §3.9 处置（字段保留、消费者搬走） |
@@ -1152,18 +1152,18 @@ fn set_entry_stack_base(base: VirBytes) {
 
 | C 侧的行为 | Rust 侧落点 | 处置 | 差异原因 |
 |---|---|---|---|
-| `kmain` 拷 `kinfo` 到全局 | `lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)（把三个载荷落进 `.bss`、发布全局副本） | 改型 | 值语义与 `.bss` 落地；引用不能跨镜像存活（01 篇 §3.4） |
+| `kmain` 拷 `kinfo` 到全局 | [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)（把三个载荷落进 `.bss`、发布全局副本） | 改型 | 值语义与 `.bss` 落地；引用不能跨镜像存活（01 篇 §3.4） |
 | `bss_test` 断言 | 无对应物 | 淘汰 | BSS 清零由 boot-shim 装载器保证（测试覆盖见 `01-boot-shim-bootstrap.md` §5.2.1） |
-| `kernel_may_alloc` 闸门 | `globals.rs` 的 [`static KERNEL_MAY_ALLOC`](os/kernel/src/globals.rs:static KERNEL_MAY_ALLOC)（Phase A 置 true） | 保留（改型为原子量） | 同一语义：VM 启动前允许内核直接分配 |
-| `cstart` 单函数 | `lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) + `:fn init_clock_and_interrupts` | 改型 | 按里程碑拆分（§3.6） |
+| `kernel_may_alloc` 闸门 | [`static KERNEL_MAY_ALLOC`](os/kernel/src/globals.rs:static KERNEL_MAY_ALLOC)（Phase A 置 true） | 保留（改型为原子量） | 同一语义：VM 启动前允许内核直接分配 |
+| `cstart` 单函数 | [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) + `:fn init_clock_and_interrupts` | 改型 | 按里程碑拆分（§3.6） |
 | `prot_init` 的表清单 | `:fn init_protection` 的两段（保护结构 + trap 层） | 改型 | 两个 trait 的职责划分（§3.2） |
-| `tss_init` 的 `sp0` 与栈顶保留字 | `protection.rs` 的 [`fn setup_tss_for_cpu`](os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu) + `:fn stamp_cpu_id` | 保留（宽度随 64 位） | 保留字从 2×4 字节变 2×8 字节 |
+| `tss_init` 的 `sp0` 与栈顶保留字 | [`fn setup_tss_for_cpu`](os/arch/src/x86_64/protection.rs:fn setup_tss_for_cpu) + `:fn stamp_cpu_id` | 保留（宽度随 64 位） | 保留字从 2×4 字节变 2×8 字节 |
 | `_cpufeature(SYSENTER/SYSCALL)` + 两套入口 | `:fn configure_syscall` 只装 SYSCALL | 淘汰 SYSENTER | 长模式不提供 SYSENTER |
-| per-CPU 入口标签 + `k_percpu_stacks` | `trap_stub.rs` 的 [`struct GsArea`](os/arch/src/x86_64/trap_stub.rs:struct GsArea) + `:fn program_gs` | 改型 | 入口从 GS 区取栈顶 |
-| `prot_load_selectors` 的 `lldt` | `protection.rs` 的 [`fn load_with_tss`](os/arch/src/x86_64/protection.rs:fn load_with_tss) 注释说明不执行 `lldt` | 淘汰 | 长模式不使用 LDT |
-| 重建页表（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`） | `lib.rs` 的 [`fn arch_boot_impl`](os/kernel/src/lib.rs:fn arch_boot_impl) 建一次 | 淘汰重建 | §3.5 |
+| per-CPU 入口标签 + `k_percpu_stacks` | [`struct GsArea`](os/arch/src/x86_64/trap_stub.rs:struct GsArea) + `:fn program_gs` | 改型 | 入口从 GS 区取栈顶 |
+| `prot_load_selectors` 的 `lldt` | [`fn load_with_tss`](os/arch/src/x86_64/protection.rs:fn load_with_tss) 注释说明不执行 `lldt` | 淘汰 | 长模式不使用 LDT |
+| 重建页表（`pg_clear`/`pg_identity`/`pg_mapkernel`/`pg_load`） | [`fn arch_boot_impl`](os/kernel/src/lib.rs:fn arch_boot_impl) 建一次 | 淘汰重建 | §3.5 |
 | `prot_init_done` 标志 | 全局 `Option` + `with_protection`/`with_trap_entry` 的 panic 契约 | 改型 | 未初始化成为一个确定的失败点 |
-| `gate_table_*` 39 条门 | `trap_stub.rs` 的 [`const STUB_VECTORS`](os/arch/src/x86_64/trap_stub.rs:const STUB_VECTORS) 41 项 + `:fn install_idt_handlers` | 改型 | 长模式保留 9/15、增加 LAPIC/调度向量 |
+| `gate_table_*` 39 条门 | [`const STUB_VECTORS`](os/arch/src/x86_64/trap_stub.rs:const STUB_VECTORS) 41 项 + `:fn install_idt_handlers` | 改型 | 长模式保留 9/15、增加 LAPIC/调度向量 |
 
 本篇做完之后，系统处在这样一个状态：三张表都已装载生效、门里有真入口（§3.7），而**尚未放行任何中断源**（IF=0 一直保持、控制器尚未编程；"有门可走，但没有源被放行"（§2.2）在当前即成立，控制器的编程与放行在下一篇）；进程与用户态都还没有。下一件必须做的事是 `kmain` Phase B 的剩余部分：时钟与中断控制器的初始化（`lib.rs` 的 [`fn init_clock_and_interrupts`](os/kernel/src/lib.rs:fn init_clock_and_interrupts)），它的次序与内部拆分是 `05-clock-interrupt-init.md` 的主题。
 
@@ -1222,7 +1222,7 @@ x86_64 版（[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-protec
 | 门覆盖的负向验证 | 只有正向覆盖检查（`STUB_VECTORS` 与门表对齐）；漏掉一个向量时正向测试会红，但"漏掉后真机行为"没有载体 | 与上一条同族：在门表里人为留一个空向量，断言装载被拦 | **R03-T01** |
 | `refresh_tss_descriptors` 的后果 | 无宿主测试（需要真实地址）；真机链覆盖了首次用户态进入 | 由首次用户态进入的真机载体间接覆盖 | **R03-T02** |
 | aarch64 `set_kernel_stack` 为 no-op 的行为 | API 层无可观察行为，只有文档说明 | 由返回用户态路径的真机载体覆盖（属异常/返回主题） | **R03-T04**（跨篇） |
-| `trap_entry.rs` 的 [`fn init`](os/arch/src/x86_64/trap_entry.rs:fn init) 的作者口径 | 函数体的门清单与 C 的 39 条对齐关系只在注释里 | 把 §3.7 的 41 项拆解写成断言（按区计数），任何一侧增删向量都会红 | **R03-T05** |
+| [`fn init`](os/arch/src/x86_64/trap_entry.rs:fn init) 的作者口径 | 函数体的门清单与 C 的 39 条对齐关系只在注释里 | 把 §3.7 的 41 项拆解写成断言（按区计数），任何一侧增删向量都会红 | **R03-T05** |
 
 另有一处现状差异需要披露：`lib.rs` 的 [`fn init_protection`](os/kernel/src/lib.rs:fn init_protection) 的文档注释仍保留着"handler 地址为占位 0、表随后丢弃、由后续阶段重建"的描述，而函数体已装真入口并 `load()`。本篇正文按函数体写；注释与实现不一致本身是一条应该在代码侧收口的遗留项，不属于文档能修的范围。
 
@@ -1274,8 +1274,8 @@ x86_64 版（[`main.rs`](os/qemu-tests/test-kernels/kernel/bootstrap/test-protec
 | AP 首次用户态 `syscall` 失败 | 该 CPU 的四个 MSR 未重写（per-CPU） | 在 AP 尾路径确认 `write_syscall_msrs` 被调用；核 `program_gs` 的调用次序 |
 | LAPIC/显存访问缺页，故障地址是物理地址本身 | 恒等窗口消失（C 侧重启路径；Rust 侧建表遗漏） | C 侧核 `pg_identity` 是否在重建段里；Rust 侧核 `arch_boot_impl` 的建表 Step |
 | 重启（监控程序第二次进入内核）后异常跳进旧地址、GDT/IDT 槽内容疑似上一轮残留 | 表项残留——§2.3 的 `memset` 清零或 §2.6 的 `pg_clear`/重建被跳过 | 读 `gdtr`/`idtr` 指向的表内容与门表行数；核 `prot_init` 的两行 `memset` 与页表重建段是否在场（§2.3、§2.6 的反例） |
-| aarch64 启动即同步异常，PC 落在 `TPIDR_EL1`/`SP_EL1` 相关代码 | `SPSel=1` 下写了 `SP_EL1` | 核 `protection.rs` 的 [`fn init`](os/arch/src/arm64/protection.rs:fn init) 是否走了 `set_entry_sp` 分支 |
-| riscv64 首次用户陷阱返回后取到错的内核栈，或 `sscratch` 读数与预期不符 | 返回路径未把 `sscratch` 重锚回 `KERNEL_TRAP_STACK_BASE`，或 `stvec` 未按运行模式切回内核腿 | 读 `sscratch`/`stvec` 与前一次读数比较；核 `protection.rs` 的 [`fn set_entry_stack_base`](os/arch/src/riscv64/protection.rs:fn set_entry_stack_base) 与 §4.6 的入口腿说明 |
+| aarch64 启动即同步异常，PC 落在 `TPIDR_EL1`/`SP_EL1` 相关代码 | `SPSel=1` 下写了 `SP_EL1` | 核 [`fn init`](os/arch/src/arm64/protection.rs:fn init) 是否走了 `set_entry_sp` 分支 |
+| riscv64 首次用户陷阱返回后取到错的内核栈，或 `sscratch` 读数与预期不符 | 返回路径未把 `sscratch` 重锚回 `KERNEL_TRAP_STACK_BASE`，或 `stvec` 未按运行模式切回内核腿 | 读 `sscratch`/`stvec` 与前一次读数比较；核 [`fn set_entry_stack_base`](os/arch/src/riscv64/protection.rs:fn set_entry_stack_base) 与 §4.6 的入口腿说明 |
 
 ### 6.2 可复制命令
 
