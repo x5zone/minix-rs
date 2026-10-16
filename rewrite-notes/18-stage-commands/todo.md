@@ -321,6 +321,37 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十九收尾：翻正一条陈旧射程数字，并把 `split` 行模式的两处分叉登记入台账**
+  （`2026-10-17`，无认领——纯台账笔，只动本文件）：
+  **翻正的那个数**：批次三百二十七与本文件另一处都把 `GETOPT-REPORT-BYTE-LETTER` 的射程写成
+  「26 处 / 20 余个薄壳」，现查（`grep` 去掉 `src/lib.rs` 自身）实际是
+  `.line(` 调用 **30 行**、`GetoptReport::{UnknownOption,IllegalOption,MissingValue}` **构造点 114 行**、
+  分布在 **23 个文件**，另有 **39 个薄壳**使用 `support::args()`，`tests/` 里 27 扇 `*_face.rs` 门中
+  钉着 `unknown option` 的断言 **97 行**。旧数数的是某一类调用点的子集，**不足以用来估工作量**，
+  据此结论也随之改写：这一族**不是单轮量级**，得按文件切片（第 1 片只动 `src/lib.rs:GetoptReport`
+  与那两个已按字节取选项环的支及其门）。
+  **新登记的缺陷 ①（`SPLIT-NONUTF8-DROP`，P0 级：静默丢数据）**：`split` 行模式在输入含
+  非法 UTF-8 字节时**一个文件都不产**且退 0。现量：输入 `aa\xffbb\ncc\xfe\ndd\n`、
+  `split -l 1 <in> x` ⇒ 参照件 `tmp/split-311/split_ref` 退 0 出 `xaa`=`aa 377 bb \n`、
+  `xab`=`cc 376 \n`、`xac`=`dd \n`，本层退 0 且 `y*` 不存在。根因在
+  `os/commands/usr-bin/textfilter/src/bin/split.rs:65`
+  的 `core::str::from_utf8(&input).unwrap_or("")`——整档不可解码就折成空串。
+  C 侧 `minix3/usr.bin/split/split.c:185` 与 `:252` 都是 `read(ifd, bfr, MAXBSIZE)`，
+  行模式数的是字节缓冲里的换行，从不校验编码；同一条壳里的 `-b`（`chunk_bytes(&input, n)`）与
+  `-n`（`chunks_n(&input, n)`）**本来就按字节读**，同一输入的 `-b 6` 两侧逐字节相同，可当改动对照门。
+  **新登记的缺陷 ②（同一处的另一半：末行终止符）**：输入 `a\nb`（末行**无**换行）、`split -l 1`
+  ⇒ 参照件 `zaa`=`a \n`、`zab`=`b`（原样不补），本层 `zab`=`b \n`。根因是 `:66-69` 把输入切成
+  不带终止符的行并 pop 掉尾部空片、写出时 `:118` 的 `render_chunk` 再逐行补 `\n`，
+  往返一次就把「末行有没有换行」丢了；空行对照（`a\n\nb\n`）两侧相同，说明丢的只是终止符。
+  **修法记在这里以便开工**：`src/split.rs` 加 `chunks_bytes`（形状照 `chunk_bytes`），
+  壳侧行模式改保留终止符的字节切分、写出侧不再补 `\n`。取证读数存 `tmp/split-330/`。
+  **顺带修正一条候选的定性（`COMM-DIR-OPERAND`）**：目录操作数那一形，参照件 `tmp/comm-315/comm_ref`
+  退 0（`comm <dir> <file>` 打出 `	a\n	b\n`），本层退 1 报三段形 `comm: …: Is a directory`。
+  但参照件那个退 0 是**宿主 glibc 的形状**——`fopen(dir,"r")` 在 Linux 成功、`fgets` 把 `EISDIR`
+  当 EOF，而 `minix3/usr.bin/comm/comm.c:181-182` 只在 `fopen` 返回 `NULL` 时才 `err(1, "%s", name)`。
+  真值取决于 Minix 自己的 open-on-dir 语义（归 `C-57`/E5 那一档），**拿宿主参照件当期望值会把
+  平台的偶然当成语义**，故这条从「单轮可闭」清单移出，登记保留并附此现量。
+
 - ✅ **批次三百二十九把 `bin_support::args` 的宿主腿改成 `args_os()` + lossy，闭合 `BIN-SUPPORT-HOSTED-ARGV-NONUTF8`**
   （`2026-10-17`，`claim/BIN-SUPPORT-HOSTED-ARGV-NONUTF8-qoder` @ 基线 `4e02c33c1`，单域三线 commands/textfilter，无跨界）：
   **这一条是什么**：`os/commands/usr-bin/textfilter/src/bin_support.rs:args` 是一对 `cfg` 双生面。
