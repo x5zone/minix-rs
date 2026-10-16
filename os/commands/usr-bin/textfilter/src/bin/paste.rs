@@ -1,111 +1,140 @@
-//! Minix-RS paste — merge lines of files side by side.
+//! Minix-RS paste — merge lines of files.
 //!
 //! Ground truth: `minix3/usr.bin/paste/paste.c` (NetBSD), `paste [-s]
-//! [-d list] file ...`. With no operand a single standard-input stream is
-//! read; each `-` operand also names standard input, and any other operand is
-//! opened (an unopenable file is fatal, matching C `fpp == NULL → err`). In
-//! parallel (default) mode one line is taken from each stream per output row,
-//! shorter streams contributing an empty cell; in `-s` mode each stream's lines
-//! are joined into a single row before the next stream. The delimiter list
-//! cycles per gap and restarts each row/serial group. Both merges are the
-//! library's tested `join_parallel` / `join_serial`.
+//! [-d list] file ...`. The ring is `paste.c:70`'s `getopt(argc, argv,
+//! "d:s")`; the merge itself is the library's `join_parallel` /
+//! `join_serial`, and every operand names an already-open stream (each
+//! file opens once, all `-` operands share the single standard-input
+//! stream, `paste.c:106-112`).
+//!
+//! 前门有**三家句子、两个退码**，都按 C 逐句搬回：
+//! ① 集外字母与 `-d` 缺值各走「libc 一行 + **一行** usage」且退 **1**
+//!    （`paste.c:80-82` 的 `case '?': default: usage();` 在环里直接退出，所以
+//!    本支的环**只可能有一行** libc 报文——与 `seq`/`jot` 的累加形正相反）；
+//!    usage 那一行的程序名是**写死在串里**的（`paste.c:231`），libc 那行跟着
+//!    `getprogname()`，同一支命令里两行来历不同。
+//! ② `-d ''` 走 `errx(1, "no delimiters specified.")`：一行、带程序名、**句子自带句号**、
+//!    不带 `strerror`，退 1（`paste.c:221-223`）。
+//! ③ 开不了的档名在两种模式下走两条不同的出口（这是本支最值钱的一处形状）：
+//!    并行模式是 `err(1, "%s", argv[cnt])` 三段形**致命**（`paste.c:107-108`，
+//!    第一个开不了的档名就退出，后面的档名连试都不试）；顺序模式是
+//!    `warn("%s", p)` 三段形**非致命**（`paste.c:166-169`，跳过这个档名继续下一个，
+//!    整体仍退 0）。两支的句子形状相同，退码与是否继续相反。
+//!
+//! 操作数**没有个数判**：`paste` 不带操作数既不读标准输入也不报错，退 0 打空
+//! （`paste.c:88-92` 把 `argc` 直接交给 `parallel`，零条流时那个行循环一步不走）。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read};
-use minix_textfilter::paste::{join_parallel, join_serial, parse_args};
+use minix_textfilter::paste::{PasteError, join_parallel, join_serial, parse_paste_args};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    let prog = support::prog_name(&argv);
     let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
-    let (options, operands) = match parse_args(&words) {
+    let parsed = match parse_paste_args(&words) {
         Ok(parsed) => parsed,
-        Err(_) => {
-            usage();
-        }
+        Err(error) => fail(prog, &error),
     };
-
-    // Gather one line vector per stream: no operands is one stdin stream; each
-    // operand is `-` (stdin) or a file. An unopenable file is fatal (C err).
-    let mut streams: Vec<Vec<String>> = Vec::new();
+    let options = parsed.options;
+    let operands = parsed.operands;
     if operands.is_empty() {
-        streams.push(split_lines(&support::read_stdin()));
-    } else {
-        for operand in &operands {
-            let input = if *operand == "-" {
-                support::read_stdin()
-            } else {
-                read_file(operand)
+        support::terminate(0);
+    }
+
+    // 一列 = 一个**已打开的流**：档名各开一次（所以 `paste a.txt a.txt` 是两个游标），
+    // 而所有 `-` 共用标准输入这一个流（参照件 `paste - -` 对三行打的是两列各取一行）。
+    let mut sources: Vec<Vec<String>> = Vec::new();
+    let mut columns: Vec<usize> = Vec::new();
+    let mut stdin_source: Option<usize> = None;
+    for operand in &operands {
+        if *operand == "-" {
+            let index = match stdin_source {
+                Some(index) => index,
+                None => {
+                    sources.push(split_lines(&support::read_stdin()));
+                    stdin_source = Some(sources.len() - 1);
+                    sources.len() - 1
+                }
             };
-            streams.push(split_lines(&input));
+            columns.push(index);
+            continue;
+        }
+        match support::read_file(operand) {
+            Ok(data) => {
+                sources.push(split_lines(&data));
+                columns.push(sources.len() - 1);
+            }
+            Err(errno) => {
+                support::warn_line(prog, operand, errno);
+                if options.serial {
+                    // `sequential` 的那一支是 `warn` + `continue`（`paste.c:166-169`）
+                    continue;
+                }
+                support::terminate(1);
+            }
         }
     }
 
-    let refs: Vec<Vec<&str>> = streams
-        .iter()
-        .map(|stream| stream.iter().map(String::as_str).collect())
-        .collect();
-
     if options.serial {
-        for stream in &refs {
-            support::emit(join_serial(stream, &options).as_bytes());
+        // 同一个流被列在多处时，第二处已经没有行可取（游标是流的，不是列的）
+        let mut taken: Vec<usize> = vec![0; sources.len()];
+        for column in &columns {
+            let source = *column;
+            let rest = &sources[source][taken[source]..];
+            taken[source] = sources[source].len();
+            let lines: Vec<&str> = rest.iter().map(String::as_str).collect();
+            support::emit(join_serial(&lines, &options).as_bytes());
         }
     } else {
-        let slices: Vec<&[&str]> = refs.iter().map(Vec::as_slice).collect();
-        support::emit(join_parallel(&slices, &options).as_bytes());
+        let lines: Vec<Vec<&str>> = sources
+            .iter()
+            .map(|source| source.iter().map(String::as_str).collect())
+            .collect();
+        let slices: Vec<&[&str]> = lines.iter().map(Vec::as_slice).collect();
+        support::emit(join_parallel(&columns, &slices, &options).as_bytes());
     }
     support::terminate(0)
 }
 
-/// Read a named operand; an unopenable file is fatal (C `fpp == NULL` err).
-fn read_file(path: &str) -> Vec<u8> {
-    let fd = match open(path, 0, 0) {
-        Ok(fd) => fd,
-        Err(_) => {
-            support::warn(format!("paste: {path}\n").as_bytes());
+/// 三家句子各走各的出口与退码；libc 那一行交回 [`minix_textfilter::GetoptReport`] 单源。
+fn fail(prog: &str, error: &PasteError) -> ! {
+    match error {
+        PasteError::Usage { reports } => {
+            for report in reports {
+                support::warn(report.line(prog).as_bytes());
+            }
+            support::warn(b"paste: [-s] [-d delimiters] file ...\n");
             support::terminate(1);
         }
-    };
-    let mut data = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => data.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
+        PasteError::NoDelimiters => {
+            support::warn(format!("{prog}: no delimiters specified.\n").as_bytes());
+            support::terminate(1);
         }
     }
-    //[SD19-gate] SD-19: close 后 fd 不再使用
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = close(fd);
-    data
 }
 
 /// Split bytes into newline-stripped lines, dropping the empty piece after a
-/// trailing newline (interior blank lines stay as empty cells).
+/// trailing newline (interior blank lines stay as empty cells)——C 用 `fgetln`
+/// 拿到含换行的整行再把换行减掉（`paste.c:134-136`），末行没有换行照样是一行。
 fn split_lines(input: &[u8]) -> Vec<String> {
     if input.is_empty() {
         return Vec::new();
     }
     let text = core::str::from_utf8(input).unwrap_or("");
-    let mut pieces: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
+    let mut pieces: Vec<String> = text.split('\n').map(String::from).collect();
     if input.ends_with(b"\n") {
         pieces.pop();
     }
     pieces
-}
-
-fn usage() -> ! {
-    support::warn(b"paste: [-s] [-d delimiters] file ...\n");
-    support::terminate(2)
 }
 
 #[cfg(all(not(test), target_os = "none"))]
