@@ -321,6 +321,36 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十四把 `jot` 的操作数派生 switch 按 C 的精确标签定形（P0：零步长不再无界）**
+  （`2026-10-17`，`claim/JOT-STEP-ZERO-UNBOUNDED-qoder` @ 基线 `9d117c1f6`，单域三线 commands/textfilter，无跨界）：
+  **缺口**：`src/jot.rs:derive` 把 C 的 `switch (have)`（`jot.c:247-296`）写成了**子集判**
+  （`have & X != 0 && …`），而 C 的 case 标签是**精确值**——少一位就不是同一支。
+  现量（参照件 `tmp/jot-317/jot_ref`，见 `tmp/jot-324/measure_before.log`）：
+  `jot 3 1 100 0` 参照件是三行 `1` 退 0，本壳**永不终止**（五个操作数齐给时 C 落
+  `case REPS | BEGIN | ENDER | STEP` 的 `break`，`:281-284`；本壳却落进 `case ENDER | STEP`
+  那一支的 `reps = 0`，`:251-253`，而打印循环是 `i <= reps || reps == 0`，`:129`）。
+  同一根因的第二形是数据量错：`jot 3 1 100 5` 参照件三行，本壳二十行。
+  **修法**：四条判据全部改成 `have == 值` 的精确匹配，顺序与 C 的 case 次序一致，
+  末尾留 `default`（`jot.c:293-295`）不动任何值。没有改壳、没有改循环、没有加特例。
+  **门**：库测 +3 枚（`test_all_four_operands_with_zero_step_keeps_reps`、
+  `test_derived_reps_branch_still_goes_unbounded`——反方向也要钉住，`jot - - 100 0` 的
+  `reps = 0` 在 C 就是无界、`test_begin_ender_step_derives_reps`——第三枚是变异负控
+  C2 咬出的缺口：`case ENDER | STEP | BEGIN` 少写一个标签时**原有 13 枚门全绿**），
+  端到端门 +1 枚 `four_operands_with_a_zero_step_stay_bounded`（内含六形）。
+  **读数**：`tmp/jot-324/ab324.py` 二十形 `SAME=16 DIFF=4`，四处 DIFF 全是已登记的
+  `JOT-PREC-MINUS-ONE-FORMAT` 一族（`prec` 保持 `-1` 时 C 拼出的说明符本身是坏的，
+  参照件在本机打成字面量 `%.0-1f`）；双方都无界的一形（`jot 0 1 10 2`）也算一致。
+  **三件套**：容器整包 `cargo test -p minix-textfilter -j 1` → **899 / 0 / 0**
+  （比上一笔的 895 恰多出本笔的 4 枚）；`cargo clippy -p minix-textfilter --all-targets` 退码 0，
+  本笔新增行**零诊断**（指向 `src/jot.rs` 的 4 条全在未触碰的存量行，见下）；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins -j 1 -p minix-textfilter` 各 `Finished`、
+  0 error；`rustfmt --edition 2024 --check` 零漂移。四枚变异负控（`tmp/jot-324/ctl324.py`）
+  **全部咬住**，且四枚都避开无界写法（变异体一旦把 `reps` 归零就会在门里真跑无限输出）。
+  **登记不执行**：① clippy 指向 `src/jot.rs` 的 4 条全在本笔未触碰的存量行
+  （`let mut width = 0` 未读、`Jot` 的 `dox`/`exhausted` 字段未读、`match` 可换
+  `unwrap_or_default`、`next` 与标准 trait 同名），本笔不顺手改；② `JOT-PREC-MINUS-ONE-FORMAT`
+  与 `JOT-RANDOM-NEGATIVE-SEED` 沿用既有登记。核实日 `2026-10-17`；基线 `9d117c1f6`。
+
 - ✅ **批次三百二十三把 `tr` 的空 string1 按 C 折回恒等映射（P0-code-bug，端到端门第一枚空集合形）**
   （`2026-10-17`，`claim/TR-EMPTY-SET1-TRANSLATE-qoder` @ 基线 `872948d89`，单域三线 commands/textfilter，无跨界）：
   **缺口从哪来**：上一笔的代码专项复核翻出库侧 `os/commands/usr-bin/textfilter/src/tr.rs:translate`

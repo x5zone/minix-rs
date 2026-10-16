@@ -508,16 +508,27 @@ fn parse_conv_spec(word: &str, pct: usize) -> Result<Conv, JotError> {
     })
 }
 
-/// The derivation switch at the end of `getargs` (jot.c:247-296).
+/// The derivation switch at the end of `getargs`（`jot.c:247-296`）。
+///
+/// C 的 `switch (have)` 用的是**精确值**而不是「含某几位」：`case ENDER | STEP`
+/// （`:249`）只在 `have` 恰好等于这两位时命中，四个操作数都给齐时命中的是
+/// `case REPS | BEGIN | ENDER | STEP`（`:281`）。按子集判会把四旗标形误派到 `:249-259`
+/// 那一支，而两支队尾相反：那一支在 `step == 0.0` 时写的是 `reps = 0`（**无界**，
+/// 打印循环是 `for (i = 1; i <= reps || reps == 0; i++)`，`jot.c:129`），
+/// `:281-284` 写的是 `break`（**reps 保持给定的 3**）。于是 `jot 3 1 100 0`
+/// 从三行变成永不终止，`jot 3 1 100 5` 从三行变成二十行。
 pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
     if options.randomize {
         // Randomize takes the operands as given (step is the seed).
         return Ok(());
     }
     let have = options.have;
-    if have & HAVE_ENDER != 0 && have & HAVE_STEP != 0 && have & HAVE_REPS == 0
-        || have & HAVE_ENDER != 0 && have & HAVE_STEP != 0 && have & HAVE_BEGIN != 0
-    {
+    let r = HAVE_REPS;
+    let b = HAVE_BEGIN;
+    let e = HAVE_ENDER;
+    let s = HAVE_STEP;
+    // `jot.c:249-259`：只给了 ender 与 step（可带 begin），reps 要算出来
+    if have == e | s || have == e | s | b {
         if options.step == 0.0 {
             options.reps = 0;
         } else {
@@ -529,18 +540,16 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
         }
         return Ok(());
     }
-    if have & HAVE_REPS != 0 && have & HAVE_ENDER != 0 && have & HAVE_BEGIN == 0 {
+    // `jot.c:261-268`：给了 reps 与 ender（可带 step），begin 要算出来
+    if have == r | e || have == r | e | s {
         if options.reps == 0 {
             return Err(JotError::MustSpecifyBegin);
         }
         options.begin = options.ender - options.reps as f64 * options.step + options.step;
         return Ok(());
     }
-    if have & HAVE_REPS != 0
-        && have & HAVE_BEGIN != 0
-        && have & HAVE_ENDER != 0
-        && have & HAVE_STEP == 0
-    {
+    // `jot.c:270-279`：给了 reps、begin、ender，step 要算出来
+    if have == r | b | e {
         if options.reps == 0 {
             return Err(JotError::InfiniteUnbounded);
         }
@@ -551,11 +560,9 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
         }
         return Ok(());
     }
-    if have & HAVE_REPS != 0
-        && have & HAVE_BEGIN != 0
-        && have & HAVE_ENDER != 0
-        && have & HAVE_STEP != 0
-    {
+    // `jot.c:281-291`：四个都给，取「给定的」与「算出的」较小的那个 reps；
+    // step 为零时 **break**——reps 保持给定值，既不无界也不报错
+    if have == r | b | e | s {
         if options.step == 0.0 {
             return Ok(());
         }
@@ -566,7 +573,9 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
         if t < options.reps {
             options.reps = t;
         }
+        return Ok(());
     }
+    // `jot.c:293-295` 的 `default`：什么也算不出来，全部按现值走
     Ok(())
 }
 
@@ -874,6 +883,49 @@ mod tests {
         assert_eq!(j.next(), Some("2".into()));
         assert_eq!(j.next(), Some("3".into()));
         assert_eq!(j.separator_after(), None);
+    }
+
+    #[test]
+    fn test_begin_ender_step_derives_reps() {
+        // `jot - 1 100 5`：reps 没给而 begin 给了，命中的是 C 的第三个标签
+        // `case ENDER | STEP | BEGIN`（`jot.c:250`）——它与 `case ENDER | STEP` 共用同一段体，
+        // 标签少写一个就整支落进 `default`，reps 停在默认值而不是算出的 20
+        let mut o = opts();
+        o.begin = 1.0;
+        o.ender = 100.0;
+        o.step = 5.0;
+        o.have = HAVE_BEGIN | HAVE_ENDER | HAVE_STEP;
+        let j = Jot::new(o, 0).unwrap();
+        assert_eq!(j.remaining(), Some(20));
+    }
+
+    #[test]
+    fn test_all_four_operands_with_zero_step_keeps_reps() {
+        // `jot 3 1 100 0`：C 的 `case REPS | BEGIN | ENDER | STEP`（`jot.c:281-284`）在
+        // step 为零时是 **break**，reps 保持给定值；把 reps 归零的是另一支
+        // `case ENDER | STEP`（`:251-253`）。switch 的 case 标签是精确值，少一位就不是同一支
+        let mut o = opts();
+        o.reps = 3;
+        o.begin = 1.0;
+        o.ender = 100.0;
+        o.step = 0.0;
+        o.have = HAVE_REPS | HAVE_BEGIN | HAVE_ENDER | HAVE_STEP;
+        let mut j = Jot::new(o, 0).unwrap();
+        let items = (0..3).map(|_| j.next().unwrap()).collect::<Vec<_>>();
+        assert_eq!(items, vec!["1", "1", "1"]);
+        assert_eq!(j.remaining(), Some(0));
+    }
+
+    #[test]
+    fn test_derived_reps_branch_still_goes_unbounded() {
+        // 反方向也要钉住：`jot - - 100 0` 走 `case ENDER | STEP`，那里 `reps = 0` 就是**无界**
+        // （打印循环是 `for (i = 1; i <= reps || reps == 0; i++)`，`jot.c:129`）
+        let mut o = opts();
+        o.ender = 100.0;
+        o.step = 0.0;
+        o.have = HAVE_ENDER | HAVE_STEP;
+        let j = Jot::new(o, 0).unwrap();
+        assert_eq!(j.remaining(), None);
     }
 
     #[test]

@@ -256,3 +256,28 @@ fn the_precision_takes_base_zero_and_requires_a_full_operand() {
     let (out, status, _err) = run(&["-p", "2", "3", "1.5"]);
     assert_eq!((out.as_str(), status), ("1.50\n2.50\n3.50\n", 0));
 }
+
+#[test]
+fn four_operands_with_a_zero_step_stay_bounded() {
+    // 参照件 `tmp/jot-317/jot_ref` 现量：`jot 3 1 100 0` 是三行 `1`，退 0；
+    // 派生 switch 曾把它误派到 `case ENDER | STEP` 那一支而 reps 归零，于是永不终止
+    for args in [&["3", "1", "100", "0"][..], &["3", "1", "1", "0"][..]] {
+        let (out, code, err) = run(args);
+        assert_eq!((code, err.as_str()), (0, ""), "{args:?}");
+        assert_eq!(out, "1\n1\n1\n", "{args:?}");
+    }
+    // 步长非零时取「给定的 reps」与「算出的个数」里较小的一个：`jot 3 1 100 5` 是三行而不是二十行
+    let (out, code, err) = run(&["3", "1", "100", "5"]);
+    assert_eq!((code, err), (0, String::new()));
+    assert_eq!(out, "1\n6\n11\n");
+    // 算出的更小就用算出的（`jot 2 1 100 5` 两行；`jot 20 1 100 5` 二十行，此处只钉前两行）
+    let (out, code, _) = run(&["2", "1", "100", "5"]);
+    assert_eq!((code, out.as_str()), (0, "1\n6\n"));
+    // reps 缺省而 begin/ender/step 三个都给：C 用 `case ENDER | STEP | BEGIN` 的同一段体算 reps
+    // （`(10 - 1 + 2) / 2` = 5），本层少写这一个标签时它会落进 `default` 而按默认 100 行走
+    let (out, code, _) = run(&["-", "1", "10", "2"]);
+    assert_eq!((code, out.as_str()), (0, "1\n3\n5\n7\n9\n"));
+    // 六个给定 reps 但 ender 已在步内 reached 的形：C 仍按 reps 与算出值取小，这里打六行 `1`
+    let (out, code, _) = run(&["6", "1", "10", "0"]);
+    assert_eq!((code, out.as_str()), (0, "1\n1\n1\n1\n1\n1\n"));
+}
