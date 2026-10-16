@@ -142,6 +142,48 @@ pub fn read_stdin() -> Vec<u8> {
     input
 }
 
+/// Reads one line from standard input the way C's `fgets(buf, limit + 1, stdin)` does:
+/// it stops **after consuming** a newline (which is not returned), or as soon as
+/// `limit` bytes are collected — in that case the next byte stays in the stream and
+/// belongs to the following call. `None` means an immediate EOF with nothing
+/// buffered, which is what lets a prompting program tell "no more input" from
+/// "empty line" (the latter is `Some` of an empty vector, and the program still
+/// processes it).
+///
+/// The hosted leg reads byte-wise from the real process standard input so an
+/// integration test can drive a prompting binary; the target leg goes through
+/// `minix_sys::read` on the same descriptor. Blocking per line, not a slurp:
+/// a program that prompts and then reads must not wait for EOF first.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn read_line_bounded(limit: usize) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut stdin = std::io::stdin();
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while line.len() < limit {
+        match stdin.read(&mut byte) {
+            Ok(1) if byte[0] == b'\n' => return Some(line),
+            Ok(1) => line.push(byte[0]),
+            _ => break,
+        }
+    }
+    if line.is_empty() { None } else { Some(line) }
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn read_line_bounded(limit: usize) -> Option<Vec<u8>> {
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while line.len() < limit {
+        match read(STDIN, &mut byte) {
+            Ok(1) if byte[0] == b'\n' => return Some(line),
+            Ok(1) => line.push(byte[0]),
+            _ => break,
+        }
+    }
+    if line.is_empty() { None } else { Some(line) }
+}
+
 /// Renders `value` in decimal into `out`, returning the written length.
 ///
 /// The counting totals are 64 bit (`Counter`), so the formatter is too.

@@ -250,6 +250,77 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十九把 `units` 的三类出口按 C 定形（第十处读缝缺陷），并新立它的第一扇端到端门**
+  （`2026-10-16`，`claim/UNITS-GETOPT-LINE-qoder` @ 基线 `d967ef638`，单域三线 commands/textfilter，无跨界）：
+  **真源形状**：`units.c:817` 的 optstring 是 `"lLvqf:"`——只有 `f` 带值，所以「带值选项缺值」那一支
+  在本支只有 `-f` 一个字母可达；`l`/`L` 是**两个字母且语义成对**（`-l` 列原名、`-L` 列折算形，
+  顺带把 `precision` 置成 `DBL_DIG`），`v` 在环内就退出。三类出口：① 集外字母与缺值各由 libc 先印
+  一行再接**整块九行** usage（`units.c:793-807` 是两个 `fprintf`，首行与说明段各带一个前导空行），
+  退 3；② `-v` 打两行版本再接同一块 usage，那两行在**标准错误**上（`units.c:836-839` 是
+  `fprintf(stderr, …)`），且它排在操作数判据之前，所以 `-f <档> -v` 也是版本块；③ 操作数不是
+  0/2/3 个、或「列表模式还带操作数」时**只有 usage 块**、没有 libc 那一行。三支都退 3，
+  而 usage 里的 `units` 是写死的字面量，只有 libc 那两行跟着 `getprogname()`。
+  **这一支的次序是可观测的**：C 的操作数判据（`units.c:849-851`）排在 `readunits()` 之前，
+  所以 `units -f <坏档> m` 报的是 usage 而不是开档失败——旧写法把个数判拖到读库之后，这形先印开档失败。
+  **两支开档句子分属 err 与 errx**：`-f` 的档打不开是 `err(1, "Unable to open units file '%s'", …)`
+  三段形（带 `strerror`），默认档找不到是 `errx(1, "Can't find units file '%s'", …)` 两段形（不带）；
+  默认档名取自 `minix3/usr.bin/units/pathnames.h` 的 `_PATH_UNITSLIB` = `/usr/share/misc/units.lib`，
+  而本壳此前写成 `/usr/lib/units`（07 篇第 212 行跟着同一处错，本笔一并翻正）。
+  **四处只能量出来推不出来的形制**（参照件 `tmp/units-319/units`，`units.c` + Minix `getopt.c`
+  + 程序名与 `strlcpy`/`strlcat` 垫片，另需空 `namespace.h`、`__printflike` 空宏与 `<stdarg.h>`）：
+  `-f` 取下一个 token 时不看脸色，故 `units -f - m sec` 的档名就是 `-`；环不重排，故
+  `units -f <档> m sec -l` 的 `-l` 是第三个操作数（参照件报 `Unknown unit '-l'` 且退 0，
+  旧写法把它当旗标吃掉并进列表、还退 1）；裸 `-` 结束环却不推进 `optind`（`getopt.c:86-93`），
+  于是它是操作数而 `--` 被吃掉（`:80-85`）；`optstring` 里那个 `:` 只是记号，libc 的判据是
+  `optopt == ':' || strchr(...) == NULL`（`getopt.c:98`），所以 `units -:` 与 `-l:` 走集外字母那一支，
+  而 `-f:` 的冒号才是值——这一处是 full-review 的代码维度在本笔落盘**之后**抓出来的，同轮补正并加测。
+  **交互面的读缝（同族第十处）**：本支拿裸 `minix_sys::read` 逐字节读标准输入，宿主上一个字节也
+  读不到，那台 `You have: `/`You want: ` 提示机从没被进程级测过；现走 `bin_support` 新增的
+  `read_line_bounded`（宿主 `std::io::stdin` 与目标 `minix_sys::read` 各一条腿，按字节读，
+  与 C 的 `fgets(buf, 80, …)` 同为一次至多 79 字节、截断时换行留在流里）。
+  **第二处交互面实缺陷**：C 是 `do { 提示; fgets; } while (addunit || completereduce)`
+  （`units.c:876-893`），一行不认就**重问同一格**；参照件对 `bogus\nm\nsec\n` 打的是
+  `You have: You have: You want: `，旧写法把两次读当成 have/want 一对，把坏行喂给了对面那一格。
+  选项环提入库侧 `parse_units_args`（libc 两行交回 `GetoptReport` 单源），`mywarnx` 的三句
+  （`Unknown unit '<名>'` / `Unit reduces to zero` / `Junk before '|'`）提入库侧 `units_error_line`。
+  **门测 20 枚**（`tests/units_face.rs`，本支第一扇端到端门）+ 库测 9 枚（三类出口、`:` 记号、
+  紧贴值与下一个 token 值、`--` 与裸 `-`、不重排、个数判次序、句子单源）。新门里 `-L` 那一枚
+  当场抓到一处实缺陷：`list_units` 的两个展开分支各多打一个换行——C 的 `listunits()` 是「先
+  `printf` 名字、再 `showunit()`」，结尾换行归 `showunit` 自带（`units.c:700-790` 那一段的两支），
+  本壳写成 `"{}{}\n"` 于是每条展开行后面多一个空行；`-l` 的两支不受影响，所以这一形此前
+  既没进门也没有库测覆盖。
+  **三件套**：容器整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **839 / 0 / 0**（64 target，
+  基线 `d967ef638` 为 810/63）；`cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、
+  按「带 `-->` 的诊断条数」口径整包 **65 条**——较三百一十八的 59 多出的六条全在 `src/units.rs` 的
+  决定半旧码（`:60`、`:66`、`:106`、`:136`、`:144`、`:221`），该文件上一轮走缓存没被重打印，
+  **本笔触及件零新增**（唯一一枚落在我新写的 `bin/units.rs:89` 的 `single_match` 已改成 `if let`）；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`；
+  `rustfmt --edition 2024 --check` 触及件零漂移（顺带抹平 `src/units.rs` 那 14 处存量漂移）；
+  A/B 与参照件比 46 形（退码、stdout、stderr 三件逐形比，每形套 `timeout 5`）**SAME=40 DIFF=6** 形，前门 SAME=40 DIFF=6（差形：环不重排第三操作数是 -l、陌生名 have、陌生名两边、裸 - 作操作数、-L 展开真库全清单（决定半量级用）、非 ASCII 聚簇 -é）；
+  变异负控六枚（`tmp/units-319/ctl319.py`：带值判定恒假、集外字母并到 usage、去掉列表带操作数那一判、
+  一个操作数也算合法、版本改打标准输出、行长上限 79→80）分别咬 16 / 5 / 1 / 2 / 1 / 1 枚。
+  A/B 排在变异腿**之后**且跑前重链二进制（三百一十七那个坑的第二次规避）。核实日 `2026-10-16`；
+  基线 `d967ef638`。
+  **登记不执行**（六处）：① `UNITS-PARTIAL-UNIT-ON-ERROR`——C 忽略 `addunit`/`completereduce` 的
+  返回值，拿半成品照样出一个答案块（参照件对 `bogus m` 打 `conformability error\n\t1 bogus\n\t1 m`），
+  本壳的库交回 `Err` 时没有半成品可展示，退码与报文照 C、答案块那一行缺；
+  ② `UNITS-LEADING-DASH-NAME`——参照件报 `Unknown unit '-l'`，本壳的名字段少了前导短横（决定半的
+  切词形状），所以门里那一枚只对到句子骨架；③ `UNITS-PATH-SEARCH`——默认档找不到时 C 先按 `PATH`
+  逐目录试（`units.c:146-176`，且它把绝对路径 `UNITSFILE` 直接接在目录后），本机与宿主都落不到；
+  ④ `UNITS-ERRPREFIX-STDOUT`——列表模式下 `errprefix = "/ "` 让同一句 `mywarnx` 改走标准输出并带
+  `/ ` 前缀（`units.c:114-118`、`:714`），本壳 `list_units` 只数错误条数不印句子；
+  ⑤ `UNITS-FGETS-80-DBLINE`——C 的词典行也过 `fgets(…, 80, …)`，超过 79 字符的一行被切成两条读；
+  ⑥ `UNITS-NONUTF8-DROP`——本壳整档过一次 UTF-8 校验、不过则整段丢光（与 `split` 那处同形）。
+  **验证边界**：参照件链的是宿主 glibc 的 `strerror`/`printf`/`qsort`，所以 `strerror` 句子取自宿主表
+  （`No such file or directory` 两边同文）、`-L` 的展开数值取自宿主 `%.15g`；真机读库腿归 `C-57`/E5。
+  换算的决定半（`units.lib` 全量 574 行清单、可折算与不可折算两形）不在本笔射程内，
+  门只对到本支小词典的六行清单与两对换算。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/
+  col/column/comm/cmp/jot/unifdef/**units** + pr；待接 `seq`、`paste`、`tr`；
+  另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `SEQ-GETOPT-LINE`
+  （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
+  `w` 排在串尾容易被误读成带值）。
+
 - ✅ **批次三百一十八把 `unifdef` 的三类出口按 C 定形（第九处读缝缺陷），并新立它的第一扇端到端门**
   （`2026-10-16`，`claim/UNIFDEF-GETOPT-LINE-qoder` @ 基线 `caefad38c`，单域三线 commands/textfilter，无跨界）：
   **真源形状**：`unifdef.c:273` 的 optstring 是 `"i:D:U:I:o:cdeklst"`——`D`/`U`/`i`/`I`/`o` 五个带值、

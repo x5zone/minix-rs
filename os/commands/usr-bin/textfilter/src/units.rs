@@ -7,10 +7,10 @@
 //! conformability check and the `\t* \t/` answer rendering. The
 //! interactive prompt face and units-file path search stay in the
 //! bin (registered as 待开放路径 for the file operand).
-use alloc::vec::Vec;
 use crate::floatfmt::{decimal_exponent, parse_float_prefix, pow10};
-use alloc::string::{String, ToString};
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// Precision of `%.*g` in showunit/showanswer (units.c:43).
 pub const PRECISION: usize = 8;
@@ -89,7 +89,10 @@ pub fn read_units(lines: &[&str]) -> UnitsTable {
 /// addunit: parses one unit expression into `theunit`, flipping into
 /// the denominator past `/` (units.c:332-424).
 pub fn add_unit(expr: &str, flip: bool) -> Result<UnitType, UnitsError> {
-    let mut unit = UnitType { factor: 1.0, ..UnitType::default() };
+    let mut unit = UnitType {
+        factor: 1.0,
+        ..UnitType::default()
+    };
     add_into(&mut unit, expr, flip)?;
     Ok(unit)
 }
@@ -133,7 +136,8 @@ fn add_into(unit: &mut UnitType, expr: &str, flip: bool) -> Result<(), UnitsErro
 
 /// One product side: items split on spaces/`*`/tabs.
 fn add_product(unit: &mut UnitType, product: &str, top: bool) -> Result<(), UnitsError> {
-    for item in product.split(|c: char| c == ' ' || c == '*' || c == '\t' || c == '\n' || c == '/') {
+    for item in product.split(|c: char| c == ' ' || c == '*' || c == '\t' || c == '\n' || c == '/')
+    {
         if item.is_empty() {
             continue;
         }
@@ -266,7 +270,12 @@ pub fn reduce_unit(table: &UnitsTable, unit: &mut UnitType) -> Result<(), UnitsE
     while changed {
         changed = false;
         'outer: for side in [true, false] {
-            let names: Vec<String> = (if side { &unit.numerator } else { &unit.denominator }).clone();
+            let names: Vec<String> = (if side {
+                &unit.numerator
+            } else {
+                &unit.denominator
+            })
+            .clone();
             for name in names {
                 if name.is_empty() {
                     continue;
@@ -278,7 +287,11 @@ pub fn reduce_unit(table: &UnitsTable, unit: &mut UnitType) -> Result<(), UnitsE
                 if def.contains(PRIMITIVECHAR) {
                     continue;
                 }
-                let product = if side { &mut unit.numerator } else { &mut unit.denominator };
+                let product = if side {
+                    &mut unit.numerator
+                } else {
+                    &mut unit.denominator
+                };
                 for p in product.iter_mut() {
                     if *p == name {
                         *p = String::new();
@@ -305,8 +318,18 @@ pub fn complete_reduce(table: &UnitsTable, unit: &mut UnitType) -> Result<(), Un
 
 /// cancelunit: drop names appearing on both sides (units.c:386-407).
 pub fn cancel_unit(unit: &mut UnitType) {
-    let mut den = unit.denominator.clone().into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>();
-    let mut num = unit.numerator.clone().into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>();
+    let mut den = unit
+        .denominator
+        .clone()
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    let mut num = unit
+        .numerator
+        .clone()
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
     den.sort();
     num.sort();
     let mut out_num = Vec::new();
@@ -337,19 +360,59 @@ pub fn cancel_unit(unit: &mut UnitType) {
 
 /// compareunits: zero when numerator and denominator products match.
 pub fn compare_units(a: &UnitType, b: &UnitType) -> bool {
-    let an: Vec<&str> = a.numerator.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    let bn: Vec<&str> = b.numerator.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    let ad: Vec<&str> = a.denominator.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    let bd: Vec<&str> = b.denominator.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+    let an: Vec<&str> = a
+        .numerator
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let bn: Vec<&str> = b
+        .numerator
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let ad: Vec<&str> = a
+        .denominator
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let bd: Vec<&str> = b
+        .denominator
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
     an == bn && ad == bd
 }
 
 /// compareunitsreciprocal: a's numerator matches b's denominator.
 pub fn compare_units_reciprocal(a: &UnitType, b: &UnitType) -> bool {
-    let an: Vec<&str> = a.numerator.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    let bd: Vec<&str> = b.denominator.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    let ad: Vec<&str> = a.denominator.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    let bn: Vec<&str> = b.numerator.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+    let an: Vec<&str> = a
+        .numerator
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let bd: Vec<&str> = b
+        .denominator
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let ad: Vec<&str> = a
+        .denominator
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let bn: Vec<&str> = b
+        .numerator
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
     an == bd && ad == bn
 }
 
@@ -391,10 +454,20 @@ pub fn format_g(value: f64, prec: usize) -> String {
         (format!("{:.*}", decimals, v), false)
     };
     let body = body.trim_end_matches('0').trim_end_matches('.').to_string();
-    let body = if body.is_empty() { "0".to_string() } else { body };
+    let body = if body.is_empty() {
+        "0".to_string()
+    } else {
+        body
+    };
     let sign = if neg { "-" } else { "" };
     if exp_used {
-        format!("{}{}e{}{:02}", sign, body, if exp < 0 { "-" } else { "+" }, exp.abs())
+        format!(
+            "{}{}e{}{:02}",
+            sign,
+            body,
+            if exp < 0 { "-" } else { "+" },
+            exp.abs()
+        )
     } else {
         format!("{}{}", sign, body)
     }
@@ -455,14 +528,22 @@ pub fn show_unit(unit: &UnitType, prec: usize) -> String {
 /// Renders an Answer into the exact stdout text.
 pub fn render_answer(answer: &Answer, prec: usize) -> String {
     match answer {
-        Answer::Factor(mul, div) => format!("\t* {}\n\t/ {}\n", format_g(*mul, prec), format_g(*div, prec)),
+        Answer::Factor(mul, div) => format!(
+            "\t* {}\n\t/ {}\n",
+            format_g(*mul, prec),
+            format_g(*div, prec)
+        ),
         Answer::Reciprocal(mul, div) => format!(
             "\treciprocal conversion\n\t* {}\n\t/ {}\n",
             format_g(*mul, prec),
             format_g(*div, prec)
         ),
         Answer::Conformability(have, want) => {
-            format!("conformability error\n{}{}", show_unit(have, prec), show_unit(want, prec))
+            format!(
+                "conformability error\n{}{}",
+                show_unit(have, prec),
+                show_unit(want, prec)
+            )
         }
     }
 }
@@ -483,17 +564,16 @@ pub fn list_units(table: &UnitsTable, expand: bool, prec: usize) -> (String, usi
     for (name, defn) in &table.prefixes {
         let mut printable = true;
         if expand {
-            match add_unit(defn, false)
-                .and_then(|mut u| {
-                    complete_reduce(table, &mut u)?;
-                    Ok(u)
-                }) {
+            match add_unit(defn, false).and_then(|mut u| {
+                complete_reduce(table, &mut u)?;
+                Ok(u)
+            }) {
                 Err(_) => {
                     errors += 1;
                     printable = false;
                 }
                 Ok(u) => {
-                    out.push_str(&format!("{}-{}\n", name, show_unit(&u, prec)));
+                    out.push_str(&format!("{}-{}", name, show_unit(&u, prec)));
                     continue;
                 }
             }
@@ -510,17 +590,16 @@ pub fn list_units(table: &UnitsTable, expand: bool, prec: usize) -> (String, usi
         let mut printable = true;
         if expand {
             // The C expands the NAME, catching bad names too.
-            match add_unit(name, false)
-                .and_then(|mut u| {
-                    complete_reduce(table, &mut u)?;
-                    Ok(u)
-                }) {
+            match add_unit(name, false).and_then(|mut u| {
+                complete_reduce(table, &mut u)?;
+                Ok(u)
+            }) {
                 Err(_) => {
                     errors += 1;
                     printable = false;
                 }
                 Ok(u) => {
-                    out.push_str(&format!("{}{}\n", name, show_unit(&u, prec)));
+                    out.push_str(&format!("{name}{}", show_unit(&u, prec)));
                     continue;
                 }
             }
@@ -530,6 +609,132 @@ pub fn list_units(table: &UnitsTable, expand: bool, prec: usize) -> (String, usi
         }
     }
     (out, errors)
+}
+
+/// 前门跑完那个选项环之后手上有的东西（`units.c:818-833` 的 `switch` 各支置的变量）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UnitsArgs<'a> {
+    /// `-f` 的值，C 的 `userfile`。
+    pub userfile: Option<&'a str>,
+    /// `-l` 或 `-L` 都置它（C 的 `list`）。
+    pub list: bool,
+    /// `-L` 才置它（C 的 `listexpand`）。
+    pub listexpand: bool,
+    /// `-q`（C 的 `quiet`）。
+    pub quiet: bool,
+    /// 环结束后的操作数，即 C 的 `argv += optind`。
+    pub operands: Vec<&'a str>,
+}
+
+/// 前门的三类出口。句式各有主人，所以不是一支的详略版：
+/// [`UnitsArgError::Getopt`] 那一行由 libc `getopt` 印、其后必接 usage
+/// （`units.c:843-845` 的 `default: usage()`）；[`UnitsArgError::Version`] 是
+/// `-v` 那两行加 usage（`units.c:836-841`，两行都在**标准错误**上）；
+/// [`UnitsArgError::Usage`] 只有 usage 块、没有 libc 那一行（操作数个数不对，
+/// `units.c:849-851`）。三支都退 3。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitsArgError {
+    Getopt(crate::GetoptReport),
+    Version,
+    Usage,
+}
+
+/// `units.c:817` 的 `getopt(argc, argv, "lLvqf:")`。
+///
+/// 只有 `f` 带值，所以「带值选项缺值」那一支在本支只有 `f` 一个字母可达；
+/// `l`/`L` 是两个不同字母而不是大小写同义（`-l` 列原名、`-L` 列展开形），
+/// `v` 在环里就退出，所以 `-vZ` 只有版本块、`-Zv` 只有集外字母那一行加 usage，
+/// 两支都经参照件现量。
+///
+/// 游标走**字节**而非 `chars()`：参照件对 `-é` 报的是首字节 `\303`
+/// （libc 的 `%c` 打的是那个字节本身），按字符走会在非 ASCII 字节上越出字符边界
+/// （与 `column`/`col` 那两处同形）。
+pub fn parse_units_args<'a>(args: &'a [&'a str]) -> Result<UnitsArgs<'a>, UnitsArgError> {
+    const OPTSTRING: &[u8] = b"lLvqf:";
+    let mut parsed = UnitsArgs::default();
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i];
+        let bytes = arg.as_bytes();
+        // 不以 `-` 开头的 token、以及单破折号本身，都在 `getopt.c:74-78` 与 `:87-92`
+        // 结束选项环且**不被吃掉**，于是它自己就是第一个操作数（不重排）。
+        if bytes.len() < 2 || bytes[0] != b'-' {
+            break;
+        }
+        // `--` 在 `getopt.c:81-85` 结束环且自身被推进掉，所以它不是操作数。
+        if bytes == b"--" {
+            i += 1;
+            break;
+        }
+        let mut k = 1usize;
+        while k < bytes.len() {
+            let letter = bytes[k];
+            k += 1;
+            // `:` 在 optstring 里只是「前一个字母要值」的记号：libc 的判据是
+            // `optopt == ':' || strchr(ostr, optopt) == NULL`（`getopt.c:98`），所以它
+            // 永远不是可选字母，`-:` 落进集外字母那一支。
+            let Some(slot) = OPTSTRING.iter().position(|&o| o == letter && o != b':') else {
+                return Err(UnitsArgError::Getopt(crate::GetoptReport::UnknownOption(
+                    char::from(letter),
+                )));
+            };
+            if OPTSTRING.get(slot + 1) == Some(&b':') {
+                // 带值项：值要么紧贴在本 token 的尾巴上，要么占下一个 token
+                // （`getopt.c:112-141`）。两种情形都结束本 token，尾巴不再当字母扫。
+                let value = if k < bytes.len() {
+                    &arg[k..]
+                } else {
+                    i += 1;
+                    let Some(next) = args.get(i) else {
+                        return Err(UnitsArgError::Getopt(crate::GetoptReport::MissingValue(
+                            char::from(letter),
+                        )));
+                    };
+                    *next
+                };
+                if letter == b'f' {
+                    parsed.userfile = Some(value);
+                }
+                // 值一旦取走，本 token 剩下的字节不再当字母扫（libc 直接推进 `optind`）。
+                break;
+            }
+            match letter {
+                b'l' => parsed.list = true,
+                b'L' => {
+                    parsed.list = true;
+                    parsed.listexpand = true;
+                }
+                b'q' => parsed.quiet = true,
+                b'v' => return Err(UnitsArgError::Version),
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    parsed.operands = args[i..].to_vec();
+    // C 的这个判断排在环之后、`readunits` 之前（`units.c:849-851`），所以
+    // 「操作数个数不对 + 档打不开」报的是 usage 而不是开档失败——顺序是可观测的。
+    if !matches!(parsed.operands.len(), 0 | 2 | 3) || (parsed.list && !parsed.operands.is_empty()) {
+        return Err(UnitsArgError::Usage);
+    }
+    Ok(parsed)
+}
+
+/// `UnitsError` 对应到 C 侧那一句 `mywarnx`（`units.c:109-124`）。
+///
+/// 非列表模式下 `errprefix` 是 `NULL`，所以句子走 `vwarnx` 到**标准错误**，
+/// 形如 `<prog>: Unknown unit '<名字>'`。列表模式下同一句换成走标准输出并带
+/// `/ ` 前缀，那一段归 `list_units`（登记未做）。
+#[must_use]
+pub fn units_error_line(prog: &str, error: &UnitsError) -> Option<String> {
+    let text = match error {
+        UnitsError::UnknownUnit(name) => format!("Unknown unit '{name}'"),
+        UnitsError::ReducesToZero => "Unit reduces to zero".to_string(),
+        UnitsError::JunkBeforeBar => "Junk before '|'".to_string(),
+        // 词典行的错误由 `read_units` 那半处理，操作数推导这一路交不出这一句。
+        UnitsError::ReadError(_) | UnitsError::Conformability => return None,
+    };
+    Some(format!("{prog}: {text}\n"))
 }
 
 #[cfg(test)]
@@ -558,8 +763,14 @@ mod tests {
     #[test]
     fn test_read_units_prefixes_and_comments() {
         let t = table();
-        assert!(t.units.contains(&("inch".to_string(), "centimeter 2.54".to_string())));
-        assert_eq!(t.prefixes, vec![("kilogram".to_string(), "1000 grams".to_string())]);
+        assert!(
+            t.units
+                .contains(&("inch".to_string(), "centimeter 2.54".to_string()))
+        );
+        assert_eq!(
+            t.prefixes,
+            vec![("kilogram".to_string(), "1000 grams".to_string())]
+        );
     }
 
     #[test]
@@ -669,5 +880,200 @@ mod tests {
             factor: 2.5,
         };
         assert_eq!(show_unit(&u, 8), "\t2.5 m^2 / s\n");
+    }
+
+    #[test]
+    fn test_ring_only_f_takes_a_value() {
+        // `"lLvqf:"` 里 `l`/`L`/`q` 都不带值，所以「带值选项缺值」那一支在本支只有 `f` 可达。
+        let parsed = parse_units_args(&["-lq", "-L"]).expect("-l/-q/-L 都不缺值");
+        assert!(parsed.list);
+        assert!(parsed.listexpand);
+        assert!(parsed.quiet);
+        assert!(parsed.operands.is_empty());
+        assert_eq!(
+            parse_units_args(&["-f"]).err(),
+            Some(UnitsArgError::Getopt(crate::GetoptReport::MissingValue(
+                'f'
+            )))
+        );
+        // 缺值那一行只由 libc 印，句子后面接的是调用方的 usage（`units.c:843-845`）。
+        assert_eq!(
+            parse_units_args(&["-lq", "-f"]).err(),
+            Some(UnitsArgError::Getopt(crate::GetoptReport::MissingValue(
+                'f'
+            )))
+        );
+    }
+
+    #[test]
+    fn test_off_letter_follows_the_c_cluster_order() {
+        // 参照件：`-Z`、`-qZ`、`-Zq` 三形的第一行都是 `units: unknown option -- Z`，
+        // 差别只在 `q`/`l` 有没有先被置上——那一支走到 usage 就退出了，所以只有字母可见。
+        use crate::GetoptReport;
+        assert_eq!(
+            parse_units_args(&["-Z"]).err(),
+            Some(UnitsArgError::Getopt(GetoptReport::UnknownOption('Z')))
+        );
+        assert_eq!(
+            parse_units_args(&["-qZ"]).err(),
+            Some(UnitsArgError::Getopt(GetoptReport::UnknownOption('Z')))
+        );
+        assert_eq!(
+            parse_units_args(&["-Zq"]).err(),
+            Some(UnitsArgError::Getopt(GetoptReport::UnknownOption('Z')))
+        );
+        // 游标按字节走：`-é` 交回的是首字节 0xC3（libc 的 `%c` 打的就是那个字节）。
+        // 报文里它渲染成 Latin-1 码点而非原始字节，这一处失真与 `rev`/`colrm` 同形。
+        assert_eq!(
+            parse_units_args(&["-é"]).err(),
+            Some(UnitsArgError::Getopt(GetoptReport::UnknownOption(
+                '\u{00c3}'
+            )))
+        );
+    }
+
+    #[test]
+    fn test_v_exits_inside_the_ring() {
+        // `-v` 那两行打完就 `usage()`，所以它后面的字母永远扫不到；
+        // 反过来 `-Zv` 只能看到集外字母那一行。两支都经参照件现量。
+        assert_eq!(
+            parse_units_args(&["-v"]).err(),
+            Some(UnitsArgError::Version)
+        );
+        assert_eq!(
+            parse_units_args(&["-q", "-v"]).err(),
+            Some(UnitsArgError::Version)
+        );
+        assert_eq!(
+            parse_units_args(&["-vZ"]).err(),
+            Some(UnitsArgError::Version)
+        );
+        assert_eq!(
+            parse_units_args(&["-Z", "-v"]).err(),
+            Some(UnitsArgError::Getopt(crate::GetoptReport::UnknownOption(
+                'Z'
+            )))
+        );
+    }
+
+    #[test]
+    fn test_attached_value_and_next_token_value_both_work() {
+        assert_eq!(
+            parse_units_args(&["-fmy.lib"]).expect("紧贴的值").userfile,
+            Some("my.lib")
+        );
+        assert_eq!(
+            parse_units_args(&["-f", "my.lib"])
+                .expect("分开的值")
+                .userfile,
+            Some("my.lib")
+        );
+        // 值取自下一个 token 时**不看它的脸色**：`-f -` 的档名就是 `-`。
+        let parsed = parse_units_args(&["-f", "-", "m", "sec"]).expect("- 可以被 -f 取走");
+        assert_eq!(parsed.userfile, Some("-"));
+        assert_eq!(parsed.operands, vec!["m", "sec"]);
+        // 值取走之后，同一 token 剩下的字节不再当字母扫：`-fql` 的档名是整条尾巴 `ql`，
+        // 而不是「`-f` 取 `q` 当值、`l` 再置列表」。
+        let parsed = parse_units_args(&["-fql"]).expect("尾巴整段是值");
+        assert_eq!(parsed.userfile, Some("ql"));
+        assert!(!parsed.list);
+    }
+
+    #[test]
+    fn test_double_dash_is_consumed_and_bare_dash_is_an_operand() {
+        // `getopt.c:81-85`：`--` 结束环且自身被推进掉；`:87-92`：裸 `-` 结束环却不推进，
+        // 于是它自己是操作数（参照件对 `-f <档> - sec` 报的是 `Unknown unit '-'`）。
+        assert!(
+            parse_units_args(&["--"])
+                .expect("光写 -- 是零操作数")
+                .operands
+                .is_empty()
+        );
+        assert_eq!(
+            parse_units_args(&["-", "m", "sec"])
+                .expect("裸 - 算操作数")
+                .operands,
+            vec!["-", "m", "sec"]
+        );
+        assert_eq!(
+            parse_units_args(&["--", "m", "sec"])
+                .expect("-- 之后的两个是操作数")
+                .operands,
+            vec!["m", "sec"]
+        );
+        // `--` 之后的 `-Z` 不是选项，于是这一形只剩一个操作数——走 usage 且没有 libc 那一行。
+        assert_eq!(
+            parse_units_args(&["--", "-Z"]).err(),
+            Some(UnitsArgError::Usage)
+        );
+    }
+
+    #[test]
+    fn test_operand_count_check_precedes_any_file_access() {
+        // C 的判据 `(argc != 3 && argc != 2 && argc != 0) || (list && argc != 0)`
+        // 排在 `readunits` 之前，所以坏档加一个操作数报的是 usage 而不是开档失败。
+        assert_eq!(
+            parse_units_args(&["-f", "db", "m"]).err(),
+            Some(UnitsArgError::Usage)
+        );
+        assert_eq!(
+            parse_units_args(&["-f", "db", "m", "sec", "km", "cm"]).err(),
+            Some(UnitsArgError::Usage)
+        );
+        assert_eq!(
+            parse_units_args(&["-l", "m", "sec"]).err(),
+            Some(UnitsArgError::Usage)
+        );
+        assert!(parse_units_args(&["-f", "db", "m", "sec"]).is_ok());
+        assert!(parse_units_args(&["-f", "db", "3", "km", "cm"]).is_ok());
+    }
+
+    #[test]
+    fn test_ring_does_not_rearrange() {
+        // `m -l sec`：环在第一个非选项 token 就结束，`-l` 落进操作数（参照件把
+        // `units -f <档> m sec -l` 的 `-l` 当成了 want 侧的单位名并报 `Unknown unit '-l'`）。
+        let parsed = parse_units_args(&["m", "-l", "sec"]).expect("三个都是操作数");
+        assert!(!parsed.list);
+        assert_eq!(parsed.operands, vec!["m", "-l", "sec"]);
+    }
+
+    #[test]
+    fn test_error_lines_quote_the_c_sentences() {
+        // 非列表模式下 `errprefix` 是 `NULL`，所以 `mywarnx` 走 `vwarnx`：两段形、
+        // 前缀是程序名、不带 `strerror`。三句的措辞各自抄 `units.c`。
+        assert_eq!(
+            units_error_line("units", &UnitsError::UnknownUnit("bogus".to_string())).as_deref(),
+            Some("units: Unknown unit 'bogus'\n")
+        );
+        assert_eq!(
+            units_error_line("units", &UnitsError::ReducesToZero).as_deref(),
+            Some("units: Unit reduces to zero\n")
+        );
+        assert_eq!(
+            units_error_line("units", &UnitsError::JunkBeforeBar).as_deref(),
+            Some("units: Junk before '|'\n")
+        );
+        // 词典行与可折算这两支不由 `mywarnx` 在推导路径上句子，交回 `None` 让调用方不印。
+        assert_eq!(units_error_line("units", &UnitsError::Conformability), None);
+        assert_eq!(units_error_line("units", &UnitsError::ReadError(7)), None);
+    }
+
+    #[test]
+    fn test_colon_in_optstring_is_a_marker_not_a_letter() {
+        // `getopt.c:98` 把 `:` 排除在可选字母之外，所以 `-:` 与聚簇里的 `-l:` 都走集外
+        // 字母那一支；而 `-f:` 的冒号是**值**（值取自本 token 的尾巴，不查字母集合）。
+        use crate::GetoptReport;
+        assert_eq!(
+            parse_units_args(&["-:"]).err(),
+            Some(UnitsArgError::Getopt(GetoptReport::UnknownOption(':')))
+        );
+        assert_eq!(
+            parse_units_args(&["-l:"]).err(),
+            Some(UnitsArgError::Getopt(GetoptReport::UnknownOption(':')))
+        );
+        assert_eq!(
+            parse_units_args(&["-f:"]).expect("冒号是值").userfile,
+            Some(":")
+        );
     }
 }
