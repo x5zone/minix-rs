@@ -30,6 +30,7 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;

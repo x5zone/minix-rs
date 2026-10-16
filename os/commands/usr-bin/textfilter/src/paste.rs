@@ -154,10 +154,11 @@ pub fn tr_delims(list: &str) -> Result<Vec<u8>, PasteError> {
     Ok(out)
 }
 
-/// 第 `gap` 个分隔符位对应的字节（表按位循环；`None` = 这一位打不出东西）。
-fn delimiter_byte(delimiters: &[u8], gap: usize) -> Option<u8> {
+/// 第 `gap` 个分隔符位的字符（表按位循环）。值为 0 的那位与空表都返回 `None`——
+/// C 的 `if (ch) putchar(ch)` 就是「占一位而不打任何东西」。
+fn delimiter_char(delimiters: &[u8], gap: usize) -> Option<char> {
     let byte = *delimiters.get(gap % delimiters.len())?;
-    Some(byte)
+    char::from_u32(u32::from(byte)).filter(|ch| *ch != '\0')
 }
 
 /// 顺序模式（`-s`）：把一个流的行用循环的分隔符并成一行（`paste.c:177-191`）。
@@ -168,11 +169,7 @@ pub fn join_serial(lines: &[&str], options: &PasteOptions) -> String {
     let mut out = String::new();
     for (index, line) in lines.iter().enumerate() {
         if index > 0 {
-            if let Some(byte) = delimiter_byte(&options.delimiters, index - 1) {
-                if byte != 0 {
-                    out.push(byte as char);
-                }
-            }
+            out.extend(delimiter_char(&options.delimiters, index - 1));
         }
         out.push_str(line);
     }
@@ -249,6 +246,11 @@ pub fn join_parallel(columns: &[usize], sources: &[&[&str]], options: &PasteOpti
         out.push('\n');
     }
     out
+}
+
+/// 只要选项的一瞥（操作数由前门 [`parse_paste_args`] 给出）。
+pub fn parse_args(args: &[&str]) -> Result<PasteOptions, PasteError> {
+    Ok(parse_paste_args(args)?.options)
 }
 
 #[cfg(test)]
@@ -438,9 +440,4 @@ mod tests {
         );
         assert_eq!(parse_args(&["-d", ""]), Err(PasteError::NoDelimiters));
     }
-}
-
-/// 只要选项的一瞥（操作数由前门 [`parse_paste_args`] 给出）。
-pub fn parse_args<'a>(args: &[&'a str]) -> Result<PasteOptions, PasteError> {
-    Ok(parse_paste_args(args)?.options)
 }

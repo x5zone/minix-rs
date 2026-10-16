@@ -321,6 +321,68 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十一把 `paste` 的选项环、`tr` 表与开档两条出口按 C 定形（第十一处读缝缺陷），并重建并行合并**
+  （`2026-10-17`，`claim/PASTE-GETOPT-LINE-qoder` @ 基线 `e7e79fa5e`，单域三线 commands/textfilter，无跨界；
+  **本轮拆两片落地**：首片 `9f0db881e` 是前门与读缝，末片补 clippy 清零、交叉编译腿与 A/B/负控）：
+  **真源形状**：`paste.c:70` 的环是 `while ((ch = getopt(argc, argv, "d:s")) != -1)`——`d` 带值、`s` 是旗标。
+  与同族最不同的一点：`case '?': default: usage();`（`paste.c:80-82`）**坐在环里直接退出**，
+  所以 libc 的报文**不可能累加**（`-ZQ` 与 `-sZ` 都只有一行），这正与刚做完的 `seq`（BADCH 之后继续扫、
+  报文累加到五行）相反；而错误出口的**先后就是扫描的先后**：`-d ''` 在 `case 'd'` 里就地跑 `tr()`，
+  故 `paste -d '' -Z` 报「没有分隔符」而 `paste -Z -d ''` 报集外字母。三家句子两个退码：
+  ① 集外字母与 `-d` 缺值 = libc 一行 + **一行** usage（程序名**写死在串里**，`paste.c:231`）退 1；
+  ② `-d ''` = `errx(1, "no delimiters specified.")` 一行，句子**自带句号**且不带 `strerror`，退 1；
+  ③ 开不了的档名在两种模式下走**两条相反**的出口——并行是 `err(1, "%s", argv[cnt])` 三段形**致命**
+  （第一个开不了就退出，后面的档名连试都不试，`paste.c:107-108`），顺序是 `warn("%s", p)` 三段形
+  **跳过并继续**且整体退 0（`paste.c:166-169`）。
+  **五处只能量出来推不出来的形制**（形状逐条现量，落盘在 `tmp/paste-321/measure.log`）：
+  (a) 操作数**没有个数判**——`paste` 不带操作数既不读标准输入也不报错，退 0 打空
+  （`paste.c:88-92` 把 `argc` 直接交给 `parallel`，零条流时行循环一步不走）；
+  (b) 环不重排：`paste a.txt -s` 的 `-s` 是**第二个档名**，于是报的是并行的开档致命而不是/help；
+  (c) `-d` 的值可以紧贴本 token（`-d,` 合法，且 `-ds` 的 `s` 是**值**而不是旗标）；
+  (d) `tr()`（`paste.c:199-226`）只认 `\n`、`\t`、`\0` 三个转义，**认不出的转义丢掉反斜杠**
+  （`\q` → `q`，与 `seq` 的 `unescape` 相反），且 `\0` 是**占一位而不打任何东西**（`if (ch) putchar(ch)`），
+  所以 `paste -d '\0' a b` 打 `1a\n2b\n3\n`、`-d 'a\0b'` 的表是三位；串尾一个孤反斜杠不成位；
+  (e) 并行的分隔符游标**每行从表尾那个 NUL 起**（`dp = delim + delimcnt`，`paste.c:112`），
+  且「追平」环按**列号**而不是按实际发出数走 ⇒ 某条流提前见底时，后面的列会**为它多补一个分隔符**：
+  `paste -d '+:' a.txt b.txt a.txt`（a 三行、b 两行）的第三行是 `3+:3`，而行尾还为剩下的每一列各补一个
+  （`paste.c:144-150`）。参照件另一枚 `paste - -` 定出**一列 = 一个已打开的流**：两列都是 `-` 时
+  共用同一个游标（对三行打 `1\t2` 与 `3\t`），而 `paste a.txt a.txt` 是两次 `open` ⇒ 两个游标。
+  **第十一处「薄壳裸 `open`/`read` 宿主读不到输入」**：读操作数档的那一层是裸 `minix_sys::open`，
+  宿主上任何档名都开不了 ⇒ 并行一律退 1、顺序一律 warn，操作数形状与两种合并因此从来没被进程级测过；
+  本笔把它接到 `bin_support` 的双生面（`read_file`/`read_stdin`）。选项环提入库侧 `parse_paste_args`，
+  `tr()` 提为库侧 `tr_delims`（libc 两句交回 `lib.rs:GetoptReport` 单源，`err`/`errx`/`warn` 句子留在壳里），
+  并行合并的签名改成 `(columns, sources, …)` 才能表达「两列共用一个流」。
+  **门测 11 枚**（`tests/paste_face.rs`，本支第一扇端到端门，期望值逐枚取自参照件）+
+  **库测 11 枚**（`paste.rs` 全新增）。**三件套**：容器整包
+  `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **881 / 0 / 0**（66 target，基线 `e7e79fa5e` 为 866/65）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、带 `-->` 的整包诊断 65 条，
+  其中**指向本轮触及件的 0 条**（中途出过四条——两处 `collapsible_if`、一处 `needless_lifetimes`、
+  一处 `items_after_test_module`——都在末片清零）；`cargo check --workspace -j 1` 0 error；
+  宿主三架构 `--bins` 各 `Finished`——**它抓到 `bin/paste.rs` 里 `vec!` 未 `use alloc::vec` 的交叉编译错**，
+  宿主整包测与 clippy 全绿也发现不了（与批次三百一十七同型的坑，第二次踩）；
+  `rustfmt --edition 2024 --check` 触及件零漂移。
+  **A/B 与参照件** `tmp/paste-321/paste`（`paste.c` 真源 + Minix 的 `getopt.c` + 程序名垫片 +
+  **一个 BSD `fgetln` 垫片**——glibc 没有 `fgetln`，必须按 BSD 语义复刻：返回含结尾换行的整行、
+  以长度而非 NUL 传长度、只在 EOF 且一字未读时返回 `NULL`）比退码、stdout、stderr 三件，
+  **前门 49 形 SAME=49 DIFF=0**；决定半 2 形 DIFF 全部登记（见下），另 1 形巧合相同。
+  **十枚变异负控**（`tmp/paste-321/ctl321.py`，跑在最终源码上，每枚跑完即还原并核对 md5）
+  分别咬 **5 / 4 / 1 / 1 / 2 / 2 / 6 / 5 / 2 / 1** 枚：丢掉 libc 那一行、usage 退码当成 2、
+  把顺序模式的 warn 也当致命、零操作数改成读标准输入、`\0` 转义当字面 0、认不出的转义不再丢反斜杠、
+  并行游标起点从表尾 NUL 改成表头、取消行尾补分隔符、`-d` 不吃紧贴本 token 的值、串尾反斜杠也算一位。
+  **登记不执行**（三处）：① `PASTE-SERIAL-LINE-MAX`——顺序模式用 `fgets(buf, _POSIX2_LINE_MAX + 1)`
+  一行一读，超长行是 `err(1, "%s: input line too long.", *argv)` **致命退 1**，且该句末段是
+  `strerror(0)`（参照件打 `Success`，errno 未设）；本层整档一次读完再分行，既无 2048 上限也无这一形；
+  ② `PASTE-NONASCII-OPTLETTER`——C 用 `%c` 打裸字节（`-é` 得 `\303`），本壳按 `char` 渲染成 `Ã`（与
+  `SEQ-NONASCII-OPTLETTER`、`UNITS-NONASCII-OPTLETTER` 同源）；③ `PASTE-NONUTF8-DELIM`——
+  `-d` 的表按字节建，参数含非法 UTF-8 时本层走 `from_utf8_lossy`。
+  **验证边界**：参照件在本机链 glibc 的 `err`/`warn`/`getopt`，`strerror` 末段取宿主表
+  （`No such file or directory` 两侧同文，故开档两支持住 A/B）；真机 open/read 腿归 `C-57`/E5。
+  核实日 `2026-10-17`；基线 `e7e79fa5e`。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/
+  col/column/comm/cmp/jot/unifdef/units/seq/paste + pr；**只剩 `tr`**（`minix3/usr.bin/tr/tr.c:68`
+  用 libc `getopt("cds")`，三个都是旗标），另判 `expand`/`hexdump`/`colcrt`/`lam`。
+  下一支取 `TR-GETOPT-LINE`；其后回 `tmp/todo-loop-PLAN.md` 的 V3-11 起继续。
+
 - ✅ **批次三百二十把 `seq` 的选项环与三家句子按 C 定形，并新立它的第一扇端到端门**
   （`2026-10-17`，`claim/SEQ-GETOPT-LINE-qoder` @ 基线 `65457036c`，单域三线 commands/textfilter，无跨界）：
   **真源形状**：`seq.c:101-102` 的环写作 `while ((optind < argc) && !numeric(argv[optind]) &&
