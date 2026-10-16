@@ -527,3 +527,45 @@ fn the_mixed_field_counts_case_still_matches_the_reference() {
     assert_eq!(out, "1 p p\nq\nr 1\n");
     let _ = fs::remove_dir_all(dir);
 }
+
+// —— 以下四枚钉 `-o 0` 一族的拒收（批次三百零二）。C 的 `fieldarg` 只看 token 首字符是不是
+// `1`/`2`（`minix3/usr.bin/join/join.c:526-527`），所以「`0` 表示连接字段自己」那支在 BSD/GNU 上
+// 存在、在本树真源上不存在。四形（分开写、列首、列尾、附值形）的参照件读数都是
+// `join: malformed -o option field` 退 1、且不接 usage（`errx` 那族的形状）。
+
+/// 分开写的 `-o 0`：C 落 `errx` 那一族——只有一行句子、后面不接 usage、退 1。
+#[test]
+fn a_lone_zero_output_field_is_refused_without_a_usage_block() {
+    let (out, status, err) = run(&["-o", "0", "f1", "f2"]);
+    assert_eq!(out, "", "报文只走 stderr");
+    assert_eq!(status, 1, "C 的 `errx(1, …)` 退 1");
+    assert_eq!(err, "join: malformed -o option field\n");
+}
+
+/// `0` 在列表开头也一样被拒（C 是逐项扫的，第一项就撞前缀守卫）。
+#[test]
+fn a_zero_first_in_the_output_list_is_refused() {
+    let (out, status, err) = run(&["-o", "0,1.1", "f1", "f2"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "join: malformed -o option field\n");
+}
+
+/// `0` 在列表尾部同样被拒：C 的循环不因前面已收下合法项就放过它。
+#[test]
+fn a_zero_last_in_the_output_list_is_refused() {
+    let (out, status, err) = run(&["-o", "1.1,0", "f1", "f2"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "join: malformed -o option field\n");
+}
+
+/// 附值形 `-o0` 走同一支：`obsolete()` 的 legacy 改写只针对恰好是裸 `-o` 的 token，
+/// 附值形直接把 `0` 交给 `fieldarg`，所以拒收的句子与分开写的那形完全相同。
+#[test]
+fn the_attached_dash_o_zero_is_refused_too() {
+    let (out, status, err) = run(&["-o0", "f1", "f2"]);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(err, "join: malformed -o option field\n");
+}

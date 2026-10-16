@@ -250,6 +250,41 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百零二把 `join` 的 `-o 0` 按 C 关掉：那支「连接字段自己」是外来约定，顺手删掉 `Which::Join` 死路**
+  （`2026-10-16`，`claim/JOIN-OZERO-ACCEPTANCE-qoder` @ 基线 `77ea92659`，单域三线 commands/textfilter，无跨界）：
+  清批次三百零一登记的那一支。**真源形状**：C 的 `fieldarg` 只判 token 首字符是不是 `1`/`2` 且第二位是不是 `.`
+  （`minix3/usr.bin/join/join.c:526-527`），**从不**接受 `0`；「`-o 0` 表示连接字段自己」是 BSD/GNU 的约定。
+  参照件逐形现测：`-o 0`、`-o 0,1.1`、`-o 1.1,0`、`-o0` 四形全部 `join: malformed -o option field` 退 1、不接 usage；
+  改前的本壳把四形全部收下并输出（`-o 0` 给 `a`/`b` 两行），读数记在 `tmp/join-ozero-302/before.log`。
+  **本档是三档术语里的 Rewrite（保持外部行为）**，不该把外来约定留在实现里——本项目此前多次因「拿 BSD 行为当真的」
+  被判 P0-fact（同一命令的 `-o 0` 正是其中一处），所以这里不放宽、不立 `[ARCH]`，直接照 C 拒收。
+  **改法**：`parse_olist` 去掉 `token == "0"` 那一支；解析器造不出 `Which::Join` 之后，**该变体就是无生产来源的死码**，
+  于是连同 `olist_token` 里那支回退逻辑一并删掉，`Which` 只剩 `One`/`Two`（留着它会骗下一轮以为 `-o 0` 还能走）。
+  `parse_olist` 的文档与 `Which` 的文档同步改成「两支」的形状，并把拒收的凭据写在注释里。
+  **改测四处（都是「测试代码就是错的」那一类，不是为了让门绿）**：拿 `0` 写期望的三枚库测与拿 `-o0,1.2` 写的那枚
+  解析测，改成同义的 `1.1` 形——默认连接字段本就是文件一的字段 1，所以期望串**一字未动**；
+  另新增一枚库测 `parse_olist_refuses_the_zero_join_field_entry`（五形：`0`、`0,1.1`、`1.1,0`、`0.1`、`1.1 0`），
+  门面按形分枚加四枚（`a_lone_zero_output_field_is_refused_without_a_usage_block`、
+  `a_zero_first_in_the_output_list_is_refused`、`a_zero_last_in_the_output_list_is_refused`、
+  `the_attached_dash_o_zero_is_refused_too`——附值形与分开写分开钉，因为 `obsolete()` 的 legacy 改写只认裸 `-o`）。
+  三件套：容器 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **657 passed / 0 failed / 0 ignored**
+  （51 个 target；基线 `77ea92659` 为 652，本笔 +5 与测数增量相符）；`--lib --test join_face` → 456 / 29 全绿；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` → 退码 0、0 error、86 条 warning 与基线同数（棘轮不动）；
+  容器 `cargo check --workspace -j 1` → 0 error；宿主三架构 `cargo check -p minix-textfilter --bins
+  --target {x86_64,aarch64,riscv64gc}-unknown-none` → 三者均 `Finished` 零 error；rustfmt 触及两文件零漂移；
+  改后与参照件逐形对账 **SAME=6 DIFF=0**（四支拒收形 + 两支合法 `-o` 形作回归，日志 `tmp/join-ozero-302/ab.log`）；
+  07 篇 join 行的测试名清单与本包实到函数名逐枚对账，除夹具辅助 `scratch` 外全部命中（测试名对账门）；核实日 `2026-10-16`。
+  **两枚变异负控**（控制器 `tmp/join-ozero-302/ctl302.py`，每枚先打印 `mutation applied`、还原后 md5 对齐
+  `d4a638e125538dc0bdb9e7c335eeebde`）：① 把 `0` 重新收下 → 恰好 6 枚 FAILED（四枚新门面 + 两枚库测），
+  其余零枚受影响——这条事实只由新门承载，没有别处置顶；② 拒收但落错另一支 `errx` 的句子（one-based 而非 malformed）
+  → 8 枚 FAILED，即①的 6 枚再加 `the_errx_legs_print_one_line_and_skip_the_usage_block` 与
+  `the_option_error_first_lines_match_the_bsd_reference`——**句子归属**这一事实另有既有门把守，
+  所以「拒收」与「用哪句拒收」在两处各自可检。
+  **登记不执行**：`join` 与 C 真源之间登记的差异至此只剩一处**声明差** `-o 1.-1`（C 把 `strtol` 的结果赋给 `u_long`，
+  回绕后反而被接受，本树拒之）——它的输出级参照件在宿主走不到那一步，改法要先解决参照件的读档段，不在本单射程。
+  批次三百登记的两项（`jot.rs` 的 10 处存量 rustfmt 漂移、`%5.2f` 的不补宽支与负值支）本轮仍未取。
+  **负载条款**：一条命令只跑一件事、容器 `-j 1 -m 2g -u`、宿主三架构只在容器不在跑时跑，无合成 CPU 压力。
+
 - ✅ **批次三百零一把 `join` 的比较层按 C 定形：字段号越界不等于空字段，配对与切组两处一起转绿**
   （`2026-10-16`，`claim/JOIN-CMP-OVERFIELD-qoder` @ 基线 `5daa464b4`，单域三线 commands/textfilter，无跨界）：
   清批次二百九十九登记的第①条。**真源形状**：C 的 `cmp`（`minix3/usr.bin/join/join.c:405-414`）有**三种**答案

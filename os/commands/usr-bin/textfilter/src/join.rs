@@ -27,20 +27,21 @@
 use crate::GetoptReport;
 use alloc::vec::Vec;
 
-/// Which side an output-field entry draws from (the `F` of `join -o F.N`),
-/// or the join field itself (`0`).
+/// Which side an output-field entry draws from (the `F` of `join -o F.N`).
+///
+/// 本树只有两支：C 的 `fieldarg` 只看 token 首字符是不是 `1`/`2`（`join.c:526-527`），
+/// 所以 `0`（「连接字段自己」）这一支在 BSD/GNU 上存在、在**本树真源上不存在**——
+/// 参照件对 `-o 0` 实测报 `malformed -o option field`。本项目是「保持外部行为」的重写，
+/// 不拿 BSD 约定当真的，故这里不留 `Join` 变体（留了就是一条无生产来源的死路）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Which {
-    /// The join field (always taken from file 1's key column).
-    Join,
     /// A field of file 1.
     One,
     /// A field of file 2.
     Two,
 }
 
-/// One `join -o` output field: a `Which` and a 0-based field index (unused
-/// for `Join`).
+/// One `join -o` output field: a `Which` and a 0-based field index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OField {
     pub which: Which,
@@ -105,9 +106,9 @@ impl JoinOptions {
     }
 }
 
-/// Parse a `join -o` field list (`"1.2,2.3,0"`) into entries; tokens are
-/// comma/space/tab separated (the C `strsep(", \t")`), `0` is the join field,
-/// `F.N` (1-based) a field of file `F`; the two refusal shapes are kept apart
+/// Parse a `join -o` field list (`"1.2,2.3"`) into entries; tokens are
+/// comma/space/tab separated (the C `strsep(", \t")`), each token must be
+/// `F.N`（1-based）a field of file `F`; the two refusal shapes are kept apart
 /// because C's `fieldarg` prints a different sentence for each (see [`OListError`]).
 pub fn parse_olist(spec: &str) -> Result<Vec<OField>, OListError> {
     let mut fields = Vec::new();
@@ -115,13 +116,8 @@ pub fn parse_olist(spec: &str) -> Result<Vec<OField>, OListError> {
         if token.is_empty() {
             continue;
         }
-        if token == "0" {
-            fields.push(OField {
-                which: Which::Join,
-                idx: 0,
-            });
-            continue;
-        }
+        // 不留 `0` 那一支：C 的前缀守卫只认 `1.`/`2.`，`0` 当场落「malformed -o option field」
+        //（`join.c:526-527`；参照件对 `-o 0`、`-o 0,1.1`、`-o 1.1,0`、`-o0` 四形均退 1）。
         // C `fieldarg` 的两支 `errx` 是不同的句子，所以下面两道守卫不能合：
         // 前缀不是 `1.`/`2.` 或有尾字符走「malformed -o option field」，
         // 形状对但字段号是 0 走「field numbers are 1 based」（`join.c:526-532`）。
@@ -638,13 +634,6 @@ fn olist_token(
         }
     };
     match entry.which {
-        // The join field comes from file 1's key column when present, else
-        // file 2's (the unmatched file-1-only case still has its own key).
-        Which::Join => a
-            .and_then(|f| f.get(opts.field1))
-            .or_else(|| b.and_then(|f| f.get(opts.field2)))
-            .map(|f| f.to_vec())
-            .unwrap_or_else(|| fallback.clone()),
         Which::One => pick(a, entry.idx),
         Which::Two => pick(b, entry.idx),
     }
@@ -923,7 +912,7 @@ mod tests {
     #[test]
     fn test_parse_olist_forms() {
         assert_eq!(
-            parse_olist("1.2,2.1,0").unwrap(),
+            parse_olist("1.2,2.1").unwrap(),
             vec![
                 OField {
                     which: Which::One,
@@ -933,10 +922,6 @@ mod tests {
                     which: Which::Two,
                     idx: 0
                 },
-                OField {
-                    which: Which::Join,
-                    idx: 0
-                },
             ]
         );
         assert!(parse_olist("3.1").is_err()); // no file 3
@@ -944,11 +929,24 @@ mod tests {
         assert!(parse_olist("5").is_err()); // no dot, not `0`
     }
 
+    /// 本树真源不收 `-o 0`（那支「连接字段自己」是 BSD/GNU 的约定）：四形都落
+    /// `Malformed`（C 的 `fieldarg` 只认首字符 `1`/`2`，`join.c:526-527`）。
+    /// 旧测把 `0` 当合法项收下，是给自创行为背书，不是对着真源写的。
     #[test]
-    fn test_olist_selects_fields_and_join() {
-        // -o 0,2.2,1.2 : join field, file2's field2, file1's field2.
+    fn parse_olist_refuses_the_zero_join_field_entry() {
+        assert_eq!(parse_olist("0"), Err(OListError::Malformed));
+        assert_eq!(parse_olist("0,1.1"), Err(OListError::Malformed));
+        assert_eq!(parse_olist("1.1,0"), Err(OListError::Malformed));
+        assert_eq!(parse_olist("0.1"), Err(OListError::Malformed));
+        // 带空格的列也一样：C 用 `strsep(", \t")` 拆项，`0` 单独成项就被拒。
+        assert_eq!(parse_olist("1.1 0"), Err(OListError::Malformed));
+    }
+
+    #[test]
+    fn test_olist_selects_numbered_fields() {
+        // 本树没有 `0` 这一支，拿 `1.1` 写同一件事（默认连接字段就是文件一的字段 1）。
         let o = JoinOptions {
-            output_fields: parse_olist("0,2.2,1.2").unwrap(),
+            output_fields: parse_olist("1.1,2.2,1.2").unwrap(),
             ..Default::default()
         };
         assert_eq!(join("1 a b\n2 c d", "1 x\n2 y", &o), "1 x a\n2 y c");
@@ -956,9 +954,9 @@ mod tests {
 
     #[test]
     fn test_olist_empty_replacement_on_unmatched() {
-        // -a 1 -o 0,1.2,2.2 -e '-' : file-1-only line has no file-2 field.
+        // 1.1 取代旧写法里的 `0`（本树不收那个字母）：文件一单独一行时没有文件二的字段。
         let mut o = JoinOptions {
-            output_fields: parse_olist("0,1.2,2.2").unwrap(),
+            output_fields: parse_olist("1.1,1.2,2.2").unwrap(),
             empty: Some(b"-".to_vec()),
             unmatched1: true,
             ..Default::default()
@@ -1016,7 +1014,7 @@ mod tests {
             "`-t` 在 C 里同时清掉 `spans`（`join.c:200`）"
         );
         assert_eq!(a.files, vec!["f1", "f2"]);
-        let b = parse(&["-a1", "-o0,1.2", "f1", "f2"]);
+        let b = parse(&["-a1", "-o1.1,1.2", "f1", "f2"]);
         assert!(b.opts.unmatched1 && !b.opts.unmatched2);
         assert_eq!(b.opts.output_fields.len(), 2);
         // 分离值仍正确（向后兼容）。
@@ -1171,6 +1169,15 @@ mod tests {
         );
         assert_eq!(
             parse_join_args(&["-o", "3.1", "f1", "f2"]).err(),
+            Some(JoinError::MalformedOutputField)
+        );
+        // `-o 0` 与它的附值形 `-o0` 同落 malformed 那一句（C 不收「连接字段自己」那一支）。
+        assert_eq!(
+            parse_join_args(&["-o", "0", "f1", "f2"]).err(),
+            Some(JoinError::MalformedOutputField)
+        );
+        assert_eq!(
+            parse_join_args(&["-o0", "f1", "f2"]).err(),
             Some(JoinError::MalformedOutputField)
         );
     }
