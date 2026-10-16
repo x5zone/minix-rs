@@ -9,9 +9,9 @@
 //! known-false group meets an unknown `#elif`. The DODGY variants
 //! (directives with comments spanning the newline) are not modeled;
 //! such lines parse as their plain counterparts (registered corner).
-use alloc::vec::Vec;
-use alloc::string::{String, ToString};
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 pub const MAXDEPTH: usize = 64;
 
@@ -37,49 +37,222 @@ pub struct Options {
     pub text: bool,
     /// `-k`: process constant `#if` expressions.
     pub killconsts: bool,
+    /// `-o`: write the result to this path instead of standard output
+    /// (`unifdef.c:311-312` 的 `ofilename = optarg`).
+    pub output: Option<String>,
+}
+
+/// `addsym`（`unifdef.c:965-991`）的两种失败：形不合（C 直接 `usage()`）与符号表满
+/// （`unifdef.c:971-972` 的 `errx(2, "too many symbols")`）。
+#[derive(Debug, PartialEq)]
+pub enum SymError {
+    Malformed,
+    TooMany,
+}
+
+/// C 的 `skipsym`（`unifdef.c:947-952`）：吃一串 `[A-Za-z0-9_]`，**空串合法**（它一个字符
+/// 也不吃就返回原点，于是 `addsym` 看到的是 `*val == '\0'`）。
+fn symbol_run(spec: &str) -> usize {
+    let mut end = 0usize;
+    while end < spec.len()
+        && matches!(spec.as_bytes()[end], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+    {
+        end += 1;
+    }
+    end
 }
 
 /// Parses `-Dsym[=val]` / `-Usym` (and the `-iD/-iU` ignore variants).
-pub fn add_symbol(options: &mut Options, spec: &str, defined: bool, ignore: bool) -> Result<(), String> {
-    let (name, value) = match spec.find('=') {
-        Some(eq) => (&spec[..eq], Some(spec[eq + 1..].to_string())),
-        None => (spec, None),
+///
+/// 判据逐条对着 `addsym` 走，不自创句子：`-D` 那一支允许 `sym`、`sym=`、`sym=val`，
+/// 名字之后既不是结尾也不是 `=` 就交回 [`SymError::Malformed`]（C 那边是一句 `usage()`）；
+/// `-U` 那一支名字之后必须是结尾，带 `=` 就坏（参照件现量：`unifdef -UFOO=1` 只打 usage 一行）。
+/// 名字重复时 C 用 `findsym` 找到同一格再覆写 `value`/`ignore`，这里同形。
+pub fn add_symbol(
+    options: &mut Options,
+    spec: &str,
+    defined: bool,
+    ignore: bool,
+) -> Result<(), SymError> {
+    let cut = symbol_run(spec);
+    let (name, rest) = spec.split_at(cut);
+    let value = if defined {
+        if rest.is_empty() {
+            Some(String::new())
+        } else if let Some(tail) = rest.strip_prefix('=') {
+            Some(tail.to_string())
+        } else {
+            return Err(SymError::Malformed);
+        }
+    } else if rest.is_empty() {
+        None
+    } else {
+        return Err(SymError::Malformed);
     };
-    if name.is_empty()
-        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        || (!defined && value.is_some())
-    {
-        return Err(format!("bad symbol spec {}", spec));
-    }
     for sym in options.symbols.iter_mut() {
         if sym.name == name {
-            sym.value = if defined {
-                Some(value.unwrap_or_default())
-            } else {
-                None
-            };
+            sym.value = if defined { value } else { None };
             sym.ignore = ignore;
             return Ok(());
         }
     }
+    // `MAXSYMS`（`unifdef.c:197`）是 C 那张静态表的容量，溢出那句 `too many symbols`
+    // 走的是 `errx(2, …)` 而不是 usage。
+    if options.symbols.len() >= 4096 {
+        return Err(SymError::TooMany);
+    }
     options.symbols.push(Sym {
         name: name.to_string(),
-        value: if defined { Some(value.unwrap_or_default()) } else { None },
+        value,
         ignore,
     });
     Ok(())
+}
+
+/// 前门环的出口（`unifdef.c:273` 的 `getopt(argc, argv, "i:D:U:I:o:cdeklst")`）。
+#[derive(Debug, PartialEq)]
+pub enum UnifdefArgError {
+    /// 集外字母或缺值字母：libc 先印一行，`unifdef.c:322-323` 的 `default: usage()` 接第二行。
+    Getopt(crate::GetoptReport),
+    /// `-i` 后面不是 `D`/`U`（`unifdef.c:283-287`），或符号名不合 `addsym` 的形——
+    /// 两处 C 都只 `usage()`，**不打任何自拟句子**。
+    Usage,
+    /// 符号表满：`errx(2, "too many symbols")` 单独一行。
+    TooManySymbols,
+}
+
+/// 选项环的产物：旗标与**按原序**交回的操数（C 只接受 0 或 1 个，多的在壳里判）。
+pub struct UnifdefArgs<'a> {
+    pub options: Options,
+    pub operands: Vec<&'a str>,
+}
+
+/// `unifdef.c:273-323` 的选项环。
+///
+/// 五个带值项（`D`/`U`/`i`/`I`/`o`）与七个不带值的字母（`c`/`d`/`e`/`k`/`l`/`s`/`t`），
+/// 大小写混排——`D` 与 `d`、`U` 与 `u`（后者不在串里）是两回事，集外的判定不能按字母族猜。
+/// `-i` 的取值先吃掉紧随其后的**一个字符**再看剩下那段（`opt = *optarg++`，`unifdef.c:278-287`）：
+/// `-iDFOO` 里的符号是 `FOO`，`-iD` 的符号是空串（合法），`-iX` 与 `-i` 配空串都直接 usage。
+/// `-I` 收下值却什么都不做（`unifdef.c:289-291` 的 cpp 兼容位）。
+///
+/// 环**不重排**：第一个非选项 token 一到，`getopt.c:74-78` 当场结束环且不推进 `optind`，
+/// 于是 `unifdef -DFOO in.c -c` 里的 `-c` 是第二个操数（参照件现量：`unifdef: can only do one file`），
+/// 而不是又点起一面旗标。裸 `-` 留在操数里，且 `unifdef.c:333` 的 `strcmp(*argv, "-") != 0`
+/// 把它读成标准输入。
+pub fn parse_unifdef_args<'a>(args: &'a [&'a str]) -> Result<UnifdefArgs<'a>, UnifdefArgError> {
+    let mut options = Options::default();
+    let mut index = 0usize;
+    let operands = loop {
+        let Some(&arg) = args.get(index) else {
+            break Vec::new();
+        };
+        let bytes = arg.as_bytes();
+        if arg == "--" {
+            // `getopt.c:81-85`：`++optind` 之后才返回 -1，所以 `--` 自身不是操数。
+            break args[index + 1..].to_vec();
+        }
+        if bytes.len() < 2 || bytes[0] != b'-' {
+            // `getopt.c:74-78`：非选项 token 一到就结束，不推进 `optind`。
+            break args[index..].to_vec();
+        }
+        let mut pos = 1usize;
+        while pos < bytes.len() {
+            match bytes[pos] {
+                b'c' => options.complement = true,
+                b'k' => options.killconsts = true,
+                b'l' => options.lnblank = true,
+                b's' => options.symlist = true,
+                b't' => options.text = true,
+                // `-d`（调试报告）与 `-e`（宽容畸形行）在本壳是无操作的合法字母：
+                // 它们门控的是 DODGY 表那几列，已另登记。
+                b'd' | b'e' => {}
+                ch @ (b'D' | b'U' | b'i' | b'I' | b'o') => {
+                    // 值是「本串去掉 `-` 与字母之后的那一段」，没有剩余就取下一个 token
+                    // （`getopt.c:118-141`）；两种取法都把本串吃到尽头。
+                    let value = if pos + 1 < bytes.len() {
+                        &arg[pos + 1..]
+                    } else {
+                        match args.get(index + 1) {
+                            Some(next) => {
+                                index += 1;
+                                next
+                            }
+                            None => {
+                                return Err(UnifdefArgError::Getopt(
+                                    crate::GetoptReport::MissingValue(ch as char),
+                                ));
+                            }
+                        }
+                    };
+                    match ch {
+                        b'D' => {
+                            add_symbol(&mut options, value, true, false).map_err(usage_or_full)?
+                        }
+                        b'U' => {
+                            add_symbol(&mut options, value, false, false).map_err(usage_or_full)?
+                        }
+                        b'I' => {}
+                        b'o' => options.output = Some(value.to_string()),
+                        _ => {
+                            // `-i` 的第一个字符选边，剩下那段才是符号名。
+                            let mut rest = value.bytes();
+                            match rest.next() {
+                                Some(b'D') => add_symbol(&mut options, &value[1..], true, true)
+                                    .map_err(usage_or_full)?,
+                                Some(b'U') => add_symbol(&mut options, &value[1..], false, true)
+                                    .map_err(usage_or_full)?,
+                                _ => return Err(UnifdefArgError::Usage),
+                            }
+                        }
+                    }
+                    pos = bytes.len();
+                }
+                _ => {
+                    // 报的是**这一处的第一个字节**：C 的 `optopt` 是 `char`，`%c` 打的就是
+                    // 那一个字节；游标 `pos` 是字节下标，非 ASCII 字母时它会落进多字节字符
+                    // 中间，所以按字节取而不切字符串（切串当场 panic）。
+                    return Err(UnifdefArgError::Getopt(crate::GetoptReport::UnknownOption(
+                        char::from(bytes[pos]),
+                    )));
+                }
+            }
+            pos += 1;
+        }
+        index += 1;
+    };
+    Ok(UnifdefArgs { options, operands })
+}
+
+/// `addsym` 的两种失败在 C 里落在两个不同的出口上：形不合是 `usage()`，表满是 `errx`。
+fn usage_or_full(err: SymError) -> UnifdefArgError {
+    match err {
+        SymError::Malformed => UnifdefArgError::Usage,
+        SymError::TooMany => UnifdefArgError::TooManySymbols,
+    }
 }
 
 /// Errors mirroring unifdef.c's `error()` exits (status 2).
 #[derive(Debug, PartialEq)]
 pub enum UnifdefError {
     EofInComment,
-    InappropriateElif { line: usize, if_line: usize, depth: usize },
-    InappropriateElse { line: usize },
-    InappropriateEndif { line: usize },
+    InappropriateElif {
+        line: usize,
+        if_line: usize,
+        depth: usize,
+    },
+    InappropriateElse {
+        line: usize,
+    },
+    InappropriateEndif {
+        line: usize,
+    },
     PrematureEof,
-    ObfuscatedControlLine { line: usize },
-    TooDeep { line: usize },
+    ObfuscatedControlLine {
+        line: usize,
+    },
+    TooDeep {
+        line: usize,
+    },
 }
 
 /// Success: filtered text plus the exit status (0 = unchanged input,
@@ -277,7 +450,11 @@ impl Unifdef {
                 LT::False => self.ffalse(line)?,
                 LT::Elif | LT::ElTrue | LT::ElFalse => {
                     let (l, d) = (self.linenum, 0);
-                    return Err(UnifdefError::InappropriateElif { line: l, if_line: d, depth: 0 });
+                    return Err(UnifdefError::InappropriateElif {
+                        line: l,
+                        if_line: d,
+                        depth: 0,
+                    });
                 }
                 LT::Else => return Err(UnifdefError::InappropriateElse { line: self.linenum }),
                 LT::EndIf => return Err(UnifdefError::InappropriateEndif { line: self.linenum }),
@@ -408,7 +585,11 @@ impl Unifdef {
                 LT::False => self.ffalse(line)?,
                 LT::Elif | LT::ElTrue | LT::ElFalse => {
                     let (l, ifl, d) = (self.linenum, self.stifline[self.depth], self.depth);
-                    return Err(UnifdefError::InappropriateElif { line: l, if_line: ifl, depth: d });
+                    return Err(UnifdefError::InappropriateElif {
+                        line: l,
+                        if_line: ifl,
+                        depth: d,
+                    });
                 }
                 LT::Else => return Err(UnifdefError::InappropriateElse { line: self.linenum }),
                 LT::EndIf => {
@@ -423,7 +604,11 @@ impl Unifdef {
                 LT::If | LT::True | LT::False => self.fdrop(line)?,
                 LT::Elif | LT::ElTrue | LT::ElFalse => {
                     let (l, ifl, d) = (self.linenum, self.stifline[self.depth], self.depth);
-                    return Err(UnifdefError::InappropriateElif { line: l, if_line: ifl, depth: d });
+                    return Err(UnifdefError::InappropriateElif {
+                        line: l,
+                        if_line: ifl,
+                        depth: d,
+                    });
                 }
                 LT::Else => return Err(UnifdefError::InappropriateElse { line: self.linenum }),
                 LT::EndIf => self.dendif(line),
@@ -438,7 +623,11 @@ impl Unifdef {
                 LT::False => self.ffalse(line)?,
                 LT::Elif | LT::ElTrue | LT::ElFalse => {
                     let (l, ifl, d) = (self.linenum, self.stifline[self.depth], self.depth);
-                    return Err(UnifdefError::InappropriateElif { line: l, if_line: ifl, depth: d });
+                    return Err(UnifdefError::InappropriateElif {
+                        line: l,
+                        if_line: ifl,
+                        depth: d,
+                    });
                 }
                 LT::Else => return Err(UnifdefError::InappropriateElse { line: self.linenum }),
                 LT::EndIf => self.dendif(line),
@@ -601,11 +790,7 @@ impl Unifdef {
                 retval = match self.ifeval(b, cp) {
                     Some((v, end)) => {
                         cp = end;
-                        if v != 0 {
-                            LT::True
-                        } else {
-                            LT::False
-                        }
+                        if v != 0 { LT::True } else { LT::False }
                     }
                     None => LT::If,
                 };
@@ -613,11 +798,7 @@ impl Unifdef {
                 retval = match self.ifeval(b, cp) {
                     Some((v, end)) => {
                         cp = end;
-                        if v != 0 {
-                            LT::ElTrue
-                        } else {
-                            LT::ElFalse
-                        }
+                        if v != 0 { LT::ElTrue } else { LT::ElFalse }
                     }
                     None => LT::Elif,
                 };
@@ -638,7 +819,9 @@ impl Unifdef {
                     other => other,
                 };
             }
-            if retval != LT::Plain && (wascomment != CommentState::No || self.incomment != CommentState::No) {
+            if retval != LT::Plain
+                && (wascomment != CommentState::No || self.incomment != CommentState::No)
+            {
                 // DODGY (not modeled; see module note): the C shifts
                 // into the DODGY table columns here.
                 if self.incomment != CommentState::No {
@@ -660,11 +843,7 @@ impl Unifdef {
     fn ifeval(&mut self, b: &[u8], pos: usize) -> Option<(i32, usize)> {
         self.keepthis = !self.options.killconsts;
         let result = self.eval_table(0, b, pos)?;
-        if self.keepthis {
-            None
-        } else {
-            Some(result)
-        }
+        if self.keepthis { None } else { Some(result) }
     }
 
     fn eval_table(&mut self, level: usize, b: &[u8], pos: usize) -> Option<(i32, usize)> {
@@ -776,7 +955,8 @@ impl Unifdef {
             }
             match self.incomment {
                 CommentState::No => {
-                    if b[cp] == b'/' && cp + 2 < b.len() && b[cp + 1] == b'\\' && b[cp + 2] == b'\n' {
+                    if b[cp] == b'/' && cp + 2 < b.len() && b[cp + 1] == b'\\' && b[cp + 2] == b'\n'
+                    {
                         self.incomment = CommentState::Starting;
                         cp += 3;
                     } else if cp + 1 < b.len() && b[cp] == b'/' && b[cp + 1] == b'*' {
@@ -802,7 +982,8 @@ impl Unifdef {
                     cp += 1;
                 }
                 CommentState::C => {
-                    if b[cp] == b'*' && cp + 2 < b.len() && b[cp + 1] == b'\\' && b[cp + 2] == b'\n' {
+                    if b[cp] == b'*' && cp + 2 < b.len() && b[cp + 1] == b'\\' && b[cp + 2] == b'\n'
+                    {
                         self.incomment = CommentState::Finishing;
                         cp += 3;
                     } else if cp + 1 < b.len() && b[cp] == b'*' && b[cp + 1] == b'/' {
@@ -929,6 +1110,95 @@ fn split_lines(input: &str) -> Vec<&str> {
 mod tests {
     use super::*;
 
+    /// 集外字母与缺值都交回 libc 那两个形状；大小写算集合的一部分（`u` 与 `E` 都不在串里）。
+    #[test]
+    fn an_unreachable_option_shape_is_reported_by_the_libc_line() {
+        for (args, report) in [
+            (vec!["-z"], crate::GetoptReport::UnknownOption('z')),
+            (vec!["-cz"], crate::GetoptReport::UnknownOption('z')),
+            (vec!["--x"], crate::GetoptReport::UnknownOption('-')),
+            (vec!["-uD"], crate::GetoptReport::UnknownOption('u')),
+            (vec!["-tE"], crate::GetoptReport::UnknownOption('E')),
+            (vec!["-cD"], crate::GetoptReport::MissingValue('D')),
+            (vec!["-lI"], crate::GetoptReport::MissingValue('I')),
+        ] {
+            assert_eq!(
+                parse_unifdef_args(&args).err().unwrap(),
+                UnifdefArgError::Getopt(report),
+                "`{args:?}` 的出口"
+            );
+        }
+    }
+
+    /// 环**不重排**：`-DA in.c -c` 里的 `-c` 留在操数里（参照件那句 `can only do one file`），
+    /// 而裸 `-` 也是操数；`--` 结束环且自身不算操数。
+    #[test]
+    fn the_ring_ends_at_the_first_operand_and_keeps_everything_after_it() {
+        let parsed = parse_unifdef_args(&["-DA", "in.c", "-c"]).expect("环在 in.c 处结束");
+        assert_eq!(parsed.operands, ["in.c", "-c"]);
+        assert!(!parsed.options.complement, "环后的 `-c` 不该再点旗标");
+        let parsed = parse_unifdef_args(&["-DA", "-"]).expect("裸 `-` 是操数");
+        assert_eq!(parsed.operands, ["-"]);
+        let parsed = parse_unifdef_args(&["--", "-z"]).expect("`--` 之后全是操数");
+        assert_eq!(parsed.operands, ["-z"]);
+        assert!(parse_unifdef_args(&["--"]).unwrap().operands.is_empty());
+    }
+
+    /// `-i` 的取值先吃一个字母：`-iDFOO` 的符号是 `FOO` 且带 ignore；后随字母不是 `D`/`U`
+    /// 就是 `Usage`（C 直接 `usage()`，没有自己的句子）。
+    #[test]
+    fn the_ignore_letter_splits_its_value() {
+        let parsed = parse_unifdef_args(&["-iDFOO", "-iUBAR"]).expect("两个 ignore 符号");
+        assert_eq!(
+            parsed.options.symbols,
+            [
+                Sym {
+                    name: "FOO".into(),
+                    value: Some(String::new()),
+                    ignore: true,
+                },
+                Sym {
+                    name: "BAR".into(),
+                    value: None,
+                    ignore: true,
+                },
+            ]
+        );
+        assert_eq!(
+            parse_unifdef_args(&["-iX"]).err().unwrap(),
+            UnifdefArgError::Usage
+        );
+        assert_eq!(
+            parse_unifdef_args(&["-i", ""]).err().unwrap(),
+            UnifdefArgError::Usage,
+            "空值时 `*optarg` 当场是 `\\0`"
+        );
+    }
+
+    /// 空符号名合法（`skipsym` 原地返回），而名字之后既不是结尾也不是 `=` 就交回 `Usage`；
+    /// 重复给同一个符号覆写同一格而不是叠两份。
+    #[test]
+    fn a_symbol_name_is_a_leading_identifier_run_and_may_be_empty() {
+        let parsed = parse_unifdef_args(&["-D", ""]).expect("空符号名是合法的");
+        assert_eq!(parsed.options.symbols.len(), 1);
+        assert_eq!(parsed.options.symbols[0].value, Some(String::new()));
+        for args in [
+            vec!["-DFOO."],
+            vec!["-UFOO=1"],
+            vec!["-D", "FOO BAR"],
+            vec!["-U", "FOO."],
+        ] {
+            assert_eq!(
+                parse_unifdef_args(&args).err().unwrap(),
+                UnifdefArgError::Usage,
+                "`{args:?}` 的符号形"
+            );
+        }
+        let parsed = parse_unifdef_args(&["-DA", "-DA=2"]).expect("同一个符号覆写同一格");
+        assert_eq!(parsed.options.symbols.len(), 1);
+        assert_eq!(parsed.options.symbols[0].value.as_deref(), Some("2"));
+    }
+
     fn run_with(input: &str, setup: impl FnOnce(&mut Options)) -> Result<Outcome, UnifdefError> {
         let mut options = Options::default();
         setup(&mut options);
@@ -989,7 +1259,10 @@ mod tests {
     #[test]
     fn test_unknown_if_passed_through() {
         let out = run_with("#if UNKNOWN > 2\nbody\n#endif\n", |_| {}).unwrap();
-        assert_eq!(String::from_utf8(out.output).unwrap(), "#if UNKNOWN > 2\nbody\n#endif\n");
+        assert_eq!(
+            String::from_utf8(out.output).unwrap(),
+            "#if UNKNOWN > 2\nbody\n#endif\n"
+        );
     }
 
     #[test]
@@ -1030,7 +1303,10 @@ mod tests {
         .unwrap();
         // The complement re-emits the directive skeleton and drops
         // what would have been kept.
-        assert_eq!(String::from_utf8(out.output).unwrap(), "#ifdef FOO\n#endif\n");
+        assert_eq!(
+            String::from_utf8(out.output).unwrap(),
+            "#ifdef FOO\n#endif\n"
+        );
         assert_eq!(out.exitstat, 1);
     }
 

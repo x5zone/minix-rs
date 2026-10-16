@@ -250,6 +250,62 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十八把 `unifdef` 的三类出口按 C 定形（第九处读缝缺陷），并新立它的第一扇端到端门**
+  （`2026-10-16`，`claim/UNIFDEF-GETOPT-LINE-qoder` @ 基线 `caefad38c`，单域三线 commands/textfilter，无跨界）：
+  **真源形状**：`unifdef.c:273` 的 optstring 是 `"i:D:U:I:o:cdeklst"`——`D`/`U`/`i`/`I`/`o` 五个带值、
+  `c`/`d`/`e`/`k`/`l`/`s`/`t` 七个不带值，且**大小写算不同字母**（`-uD` 的 `u` 与 `-tE` 的 `E` 都集外，
+  判定表里这一支是第一次要靠字母集合本身而不是词族来定可达出口）。三类出口：
+  ① 集外字母与缺值各由 libc 先印一行（`getopt.c:101-104`、`:132-136`）再接 `default: usage()` 一行；
+  ② `-i` 的后随字符不是 `D`/`U`（`unifdef.c:278-287` 的 `opt = *optarg++`）或符号名不合 `addsym`
+  的形（`:978-990`）时，C **只打 usage 一行**——旧写法在这两处自拟了 `-i must be followed by D or U`
+  与 `bad symbol spec …`，各多出一行；③ 环结束后先查「一个符号都没有且没给 `-s`」（`warnx` 一句 +
+  usage 共两行），**这支排在操数判定之前**，所以 `unifdef -- -z` 报的是它而不是「只能一个档」。
+  本支退码的形状也与同族不同：`usage()` 自己是 `exit(2)`（`:373-379`），所以四类出口全退 2，
+  而 usage 那行的程序名**写死在串里**（没有 `getprogname()`），libc 那两行与 `err`/`warnx` 的前缀
+  却跟着 `getprogname()`——同一支命令里两行来历不同。**四处只能量出来推不出来的形制**：
+  `-D ''` 与 `-U ''` 是**合法**的空符号名（`skipsym` 原地返回，`*val == '\0'` 走「值为空」那一支），
+  整档透传退 0，而旧写法把空名当坏形拒；`-i` 先吃一个字母，所以 `-iDA` 的符号是 `A`（与 `-D A`
+  逐字节同效）而不是 `DFOO`，`-iD=1` 更是「空名字挂个值」的合法形；环**不重排**，
+  `unifdef -DA in.c -c` 的 `-c` 是第二个操数（`unifdef: can only do one file` 退 2）而不是旗标；
+  开不了的操数档名是 `err(2, "can't open %s", …)` 三段形，旧写法少了 `strerror` 那一段。
+  **第九处「薄壳裸 `read` 宿主读不到输入」**：本支自己拿 `minix_sys::read` 圈标准输入（同族八处之后
+  的第九处），现已改走 `bin_support` 的双生面（`read_stdin`/`read_file`）。选项环提入库侧
+  `parse_unifdef_args`，`addsym` 的判定提入库侧 `add_symbol`（libc 两行交回 `GetoptReport` 单源，
+  `errx`/`warnx` 句子留在壳里跟着 `getprogname()`）。
+  **门测 13 枚**（`tests/unifdef_face.rs`，本支第一扇端到端门）+ 库测 4 枚（libc 两形与大小写、
+  不重排、`-i` 切字母、空符号名与坏形）。**三件套**：容器整包
+  `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **810 / 0 / 0**（63 target，基线
+  `caefad38c` 为 793/62）；`cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、
+  **整包诊断 59 条与基线同数、触及件从 4 条降到 3 条**（`if let Err(_) =` 换成 `.is_err()`
+  消掉一枚 `redundant_pattern_matching`，零新增；`grep -c '^warning'` 在两次跑里是 85/82，
+  那差的是各 crate 的汇总行随缓存重放条数走，不是告警增减，所以这条腿按「带 `-->` 的诊断条数」计）；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`；
+  `rustfmt --edition 2024 --check` 触及件零漂移；A/B 与参照件 `tmp/unifdef-318/unifdef`
+  （`unifdef.c` + Minix 的 `getopt.c` + 程序名与 `strlcpy` 垫片，另需一个空 `namespace.h`
+  与 `__printflike` 空宏）比 72 形的退码、stderr、stdout 与 `-o` 档内容四件，
+  **前门 68 形 SAME=68 DIFF=0**，四枚 DIFF 全在决定半（`-s` 的三形与 `-d` 的一形，见下）；
+  五枚变异负控（`tmp/unifdef-318/ctl318.py`）分别咬 **3 / 2 / 3 / 2 / 2** 枚：丢 libc 那一行、
+  给坏形加自拟句子、把空符号名当坏形拒、`-i` 不再先吃字母、取消「不重排」。A/B 这一趟排在
+  变异腿**之后**且跑前重链一次二进制——三百一十七踩过「变异腿与宿主 A/B 共用 `os/target/`，
+  变异源链出的二进制被拿来比对」那个坑，这次按顺序避开了。核实日 `2026-10-16`；基线 `caefad38c`。
+  **登记不执行**（四处）：① `UNIFDEF-SYMLIST-OUTPUT`——本行上方那句「`-s` 符号清单」是超前陈述，
+  C 的清单由 `findsym` 在查表的同时 `printf`（`unifdef.c:930-931`），`unifdef -s` 打 `A`/`B` 两行，
+  本壳打空（退码两侧一致，差的是标准输出）；② `UNIFDEF-D-DEBUG-OUTPUT`——`-d` 在 C 不是纯忽略，
+  它让 `debug()` 往标准错误刷一串状态转移行；③ `UNIFDEF-O-ERRNO-LEG`——`-o` 写失败那句在 C 是
+  `err(2, "can't open %s", ofilename)` 三段形，本层 `write_file` 的返回型是 `Result<(), ()>`，
+  没有 errno 通道可拼 `strerror`；C 的 `-o` 还有一条「输出与输入同档且内容未变」的
+  `errx(2, "%s unchanged", ofilename)`（`:509`、`:514`）与临时档改名流程，本层一次直写，那一形不可达；
+  ④ `UNIFDEF-MAXSYMS-ERRX`——`too many symbols` 要 4096 个符号才触发，句子已备好
+  （`unifdef.c:971-972`），进程级没有门钉。
+  **验证边界**：参照件在本机链 glibc 的 `err`/`warn`/`getopt`，所以 `strerror` 句子取自宿主表
+  （`No such file or directory` 两边同文）；`-o` 那一支 C 走 `stat` + 临时档 + `rename`，本层直写，
+  同档那一形在本机不可比对；真机 open/rename 腿归 `C-57`/E5。C 把 `symname` 存成**指向 argv 的
+  指针**并把 `=` 就地截断，本壳按 `String` 建模，观测面等价（`-iD=1` 与 `-DFOO=1` 两枚已逐形比过）。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/col/column/comm/cmp/jot/**unifdef** + pr；
+  待接 `units`、`seq`、`paste`、`tr`；另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取
+  `UNITS-GETOPT-LINE`（`minix3/usr.bin/units/units.c:817` 的 optstring 是 `"lLvqf:"`，
+  只有 `f` 带值，`l`/`L`/`v`/`q` 都不带）。
+
 - ✅ **批次三百一十七把 `jot` 的四类出口按 C 定形，并新立它的第一扇端到端门**
   （`2026-10-16`，`claim/JOT-GETOPT-LINE-qoder` @ 基线 `4b2a81e4f`，单域三线 commands/textfilter，无跨界）：
   **真源形状**：`jot.c:150` 的 optstring 是 `"b:cnp:rs:w:"`——`c`/`n`/`r` 三个不带值，

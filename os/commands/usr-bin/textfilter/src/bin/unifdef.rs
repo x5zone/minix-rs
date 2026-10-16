@@ -9,141 +9,91 @@
 //! input was already clean, 1 when lines were dropped, 2 on trouble.
 //! `-d` (debugging) and `-e` (obfuscated-directive tolerance) are
 //! accepted and ignored — the DODGY table columns they gate are a
-//! registered corner. File access goes through `std::fs` (the file
-//! open seam, edge E-CMDSYSFACE). The hosted-versus-target seams are
-//! the echo template's (`os/commands/bin/fileops/src/bin/echo.rs`).
-
+//! registered corner. File access goes through `bin_support` 的双生面
+//! （标准输入走 `read_stdin`，操数档走 `read_file`，`-o` 走 `write_file`）。
+//! The hosted-versus-target seams are the echo template's
+//! (`os/commands/bin/fileops/src/bin/echo.rs`).
+//!
+//! 前门有三类出口，句式各有主人，而且**这一支的 usage 退的是 2 不是 1**
+//! （`unifdef.c:373-379` 那句 `exit(2)`）：① 集外字母与带值字母缺值都先由 libc 印一行
+//! （`getopt.c:101-104`、`:132-136`），后面必接 usage；② `-i` 的后随字母不是 `D`/`U`、
+//! `-D`/`-U` 的符号名不合 `addsym` 的形，两处 C 都**只打 usage 一行**，没有自己的句子；
+//! ③ 环结束后先查「一个符号都没有且没给 `-s`」——`warnx` 一句 + usage 共两行，这一支排在
+//! 操数判定之前；两个以上操数是一句 `unifdef: can only do one file`，开不了的操数档名是
+//! `err(2, "can't open %s", …)` 的三段形。usage 那一行的程序名**写死在串里**
+//! （`unifdef.c:375-377` 没有 `getprogname()`），而 libc 那两行与 `err`/`warnx` 的前缀
+//! 跟着 `getprogname()`——同一支命令里两行来历不同。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::format;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::unifdef::{add_symbol, Options, Unifdef, UnifdefError};
-use minix_sys::read;
+use minix_textfilter::unifdef::{Unifdef, UnifdefArgError, UnifdefError, parse_unifdef_args};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut options = Options::default();
-    let mut ofilename: Option<String> = None;
-    let mut operand: Option<String> = None;
-
-    let mut i = 1;
-    while i < argv.len() {
-        let arg = argv[i].clone();
-        if !arg.starts_with('-') || arg.len() == 1 {
-            if operand.is_some() {
-                support::warn(b"unifdef: can only do one file\n");
-                support::terminate(2);
-            }
-            operand = Some(arg);
-            i += 1;
-            continue;
+    let prog = support::prog_name(&argv);
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // 选项环（`unifdef.c:273` 的 `"i:D:U:I:o:cdeklst"`）。libc 那两行后面必接 usage，
+    // 而 `-i` 的后随字母坏了、符号名不合 `addsym` 的形这两支，C 只有 usage 一行。
+    let (options, operands) = match parse_unifdef_args(&args[1..]) {
+        Ok(parsed) => (parsed.options, parsed.operands),
+        Err(UnifdefArgError::Getopt(report)) => {
+            support::warn(report.line(prog).as_bytes());
+            usage();
         }
-        let chars: Vec<char> = arg.chars().skip(1).collect();
-        let mut k = 0usize;
-        while k < chars.len() {
-            let c = chars[k];
-            match c {
-                'D' | 'U' | 'i' => {
-                    // -Dsym[=val] / -Usym / -i[D|U]sym: the symbol is
-                    // attached or the next argument.
-                    let (ignore, kind) = if c == 'i' {
-                        k += 1;
-                        match chars.get(k) {
-                            Some('D') => (true, true),
-                            Some('U') => (true, false),
-                            _ => {
-                                support::warn(b"unifdef: -i must be followed by D or U\n");
-                                usage();
-                            }
-                        }
-                    } else {
-                        (false, c == 'D')
-                    };
-                    k += 1;
-                    let spec = if k < chars.len() {
-                        Some(chars[k..].iter().collect::<String>())
-                    } else {
-                        i += 1;
-                        argv.get(i).cloned()
-                    };
-                    match spec {
-                        Some(s) => {
-                            if let Err(msg) = add_symbol(&mut options, &s, kind, ignore) {
-                                support::warn(format!("unifdef: {}\n", msg).as_bytes());
-                                usage();
-                            }
-                        }
-                        None => usage(),
-                    }
-                }
-                'c' => options.complement = true,
-                'd' => {} // debugging reports: no-op here
-                'e' => {} // iocccok: DODGY columns not modeled
-                'k' => options.killconsts = true,
-                'l' => options.lnblank = true,
-                's' => options.symlist = true,
-                't' => options.text = true,
-                'I' => {} // cpp compatibility: ignored
-                'o' => {
-                    k += 1;
-                    if k < chars.len() {
-                        ofilename = Some(chars[k..].iter().collect());
-                    } else {
-                        i += 1;
-                        ofilename = argv.get(i).cloned();
-                        if ofilename.is_none() {
-                            usage();
-                        }
-                    }
-                }
-                _ => usage(),
-            }
-            k += 1;
+        Err(UnifdefArgError::Usage) => usage(),
+        Err(UnifdefArgError::TooManySymbols) => {
+            support::warn(format!("{prog}: too many symbols\n").as_bytes());
+            support::terminate(2);
         }
-        i += 1;
-    }
+    };
 
+    // `unifdef.c:327-330`：符号表空且没给 `-s` 时先 `warnx` 一句再接 usage，
+    // 这一支排在操数判定之前，所以 `unifdef -- -z` 报的是它而不是「只能一个档」。
     if options.symbols.is_empty() && !options.symlist {
-        support::warn(b"unifdef: must -D or -U at least one symbol\n");
+        support::warn(format!("{prog}: must -D or -U at least one symbol\n").as_bytes());
         usage();
     }
+    // `unifdef.c:331-332`：两个以上操数是 `errx(2, "can only do one file")` 单独一行。
+    if operands.len() > 1 {
+        support::warn(format!("{prog}: can only do one file\n").as_bytes());
+        support::terminate(2);
+    }
 
-    let input = match operand.as_deref() {
-        None | Some("-") => {
-            let mut v = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                match read(support::STDIN, &mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => v.extend_from_slice(&chunk[..n]),
-                    Err(_) => break,
-                }
-            }
-            v
-        }
+    // `unifdef.c:333-341`：一个操数且不是裸 `-` 才开档；裸 `-` 与没有操数同样读标准输入。
+    // 开不了的那句是 `err(2, "can't open %s", filename)` 三段形（程序名、操数原文、
+    // `strerror` 句子），退码是 2 而不是 1。
+    let input = match operands.first().copied() {
+        None | Some("-") => support::read_stdin(),
         Some(path) => match support::read_file(path) {
-            Ok(v) => v,
-            Err(_) => {
-                support::warn(format!("unifdef: can't open {}\n", path).as_bytes());
+            Ok(bytes) => bytes,
+            Err(code) => {
+                support::warn_line(prog, &format!("can't open {path}"), code);
                 support::terminate(2);
             }
         },
     };
     let text = String::from_utf8_lossy(&input).into_owned();
+    // `-o` 的值在操数判定之前就被环收下（`unifdef.c:311-312`），这里先抄一份，
+    // 因为 `options` 整体交进决定半之后就拿不到了。
+    let output_path = options.output.clone();
 
     match Unifdef::new(options).run(&text) {
         Ok(outcome) => {
-            match ofilename {
+            match output_path.as_deref() {
                 Some(path) => {
-                    if let Err(_) = support::write_file(&path, &outcome.output) {
-                        support::warn(format!("unifdef: can't open {}\n", path).as_bytes());
+                    // C 那句是 `err(2, "can't open %s", ofilename)` 三段形；本层的
+                    // `write_file` 没有 errno 通道（`Result<(), ()>`），所以这里只能打两段，
+                    // 差的那一段登记为 `UNIFDEF-O-ERRNO-LEG`。
+                    if support::write_file(path, &outcome.output).is_err() {
+                        support::warn(format!("{prog}: can't open {path}\n").as_bytes());
                         support::terminate(2);
                     }
                 }
@@ -161,11 +111,18 @@ fn run() -> ! {
 fn error_text(err: &UnifdefError) -> String {
     match err {
         UnifdefError::EofInComment => "unifdef: EOF in comment\n".to_string(),
-        UnifdefError::InappropriateElif { line, if_line, depth } => {
+        UnifdefError::InappropriateElif {
+            line,
+            if_line,
+            depth,
+        } => {
             if *depth == 0 {
                 format!("unifdef: {}: Inappropriate #elif\n", line)
             } else {
-                format!("unifdef: {}: Inappropriate #elif (#if line {} depth {})\n", line, if_line, depth)
+                format!(
+                    "unifdef: {}: Inappropriate #elif (#if line {} depth {})\n",
+                    line, if_line, depth
+                )
             }
         }
         UnifdefError::InappropriateElse { line } => {
@@ -190,7 +147,6 @@ fn usage() -> ! {
     );
     support::terminate(2);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
