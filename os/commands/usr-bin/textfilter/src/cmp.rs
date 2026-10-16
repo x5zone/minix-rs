@@ -97,6 +97,72 @@ pub fn report_eof(file: &str, byte: u64, line: u64, list_all: bool) -> String {
     }
 }
 
+/// `cmp` 选项环的读数：两面旗标加**环之后剩下的全部 token**。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CmpFlags<'a> {
+    /// `-l`：把每一处差异逐字节列出来。
+    pub list_all: bool,
+    /// `-s`：什么都不打，只把结论放在退出码上。
+    pub silent: bool,
+    /// 选项环交回的 token 序列：`file1 file2 [skip1 [skip2]]`，个数由调用者判。
+    pub operands: Vec<&'a str>,
+}
+
+/// 选项环的失败形状。`cmp.c:74` 的 optstring 是 `"ls"`——**两个字母都不带值**，
+/// 所以 libc 那句 `option requires an argument` 在本支到不了，只可能交回集外字母。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpArgError {
+    /// `getopt.c:95-104`：集外字母（libc 那一行由调用者经 [`crate::GetoptReport`] 渲染）。
+    UnknownOption(char),
+}
+
+/// 把 `cmp` 的 argv 尾部按 `getopt(argc, argv, "ls")`（`cmp.c:74`）拆成 [`CmpFlags`]。
+///
+/// 逐字母聚簇：`-ls` 与 `-sl` 都是两面旗标同时立起（C 接着用
+/// `if (lflag && sflag) errx(...)` 报**一行**、不接 usage，`cmp.c:87-88`），
+/// 而 `-lq` 在第二个字母上就落集外一支。旧前门只比整个 token
+/// （`arg == "-l"`），所以 `-ls` 掉进「未知选项」并打出 usage——两出口的行数与
+/// 句子都不同。`-l -l` 重复给同一面旗标是合法的（C 只是再赋一次 1）。
+///
+/// **不重排**（`getopt.c:74-78`）：非选项 token 一到就返回 -1 且不推进 `optind`，
+/// 它和后面的 token 整个交回当操作数，所以 `cmp 档1 -l 档2` 是**三个操作数**，
+/// 那个 `-l` 是第二个档名（参照件现量 `cmp: -l: No such file or directory`、退 2）。
+/// `--` 结束环而自身不是操作数；裸 `-` 长度为一，是操作数（`cmp.c:95-113` 认它作标准输入）。
+///
+/// 操作数个数（`< 2 || > 4`）与 `-l`/`-s` 互斥这一判留在调用者手里：C 的次序是
+/// 「选项环 → 互斥 → 个数 → 开档」，句子各归各的出口，换序会把一行的 `errx`
+/// 支与两行的 usage 支弄混。
+pub fn parse_cmp_flags<'a>(args: &'a [&'a str]) -> Result<CmpFlags<'a>, CmpArgError> {
+    let mut flags = CmpFlags {
+        list_all: false,
+        silent: false,
+        operands: Vec::new(),
+    };
+    let mut index = 0usize;
+    flags.operands = loop {
+        let Some(&arg) = args.get(index) else {
+            break Vec::new();
+        };
+        if arg == "--" {
+            // `getopt.c:81-85`：先 `++optind` 才返回 -1，所以 `--` 自身不是操作数。
+            break args[index + 1..].to_vec();
+        }
+        if arg.len() < 2 || !arg.starts_with('-') {
+            // 包括裸 `-`：`getopt.c:87-92` 在 optstring 没有 `-` 时结束环而**不推进**。
+            break args[index..].to_vec();
+        }
+        for ch in arg[1..].chars() {
+            match ch {
+                'l' => flags.list_all = true,
+                's' => flags.silent = true,
+                other => return Err(CmpArgError::UnknownOption(other)),
+            }
+        }
+        index += 1;
+    };
+    Ok(flags)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +224,48 @@ mod tests {
         // Five bytes compared (byte counter now 6); the two newlines of
         // stream one put the counter on line 3.
         assert_eq!(outcome.eof_on, Some((1, 6, 3)));
+    }
+
+    /// 聚簇逐字母：`-ls` 与 `-sl` 都立起两面旗标（调用者据此走 `errx` 那一行），
+    /// `-lq` 在第二个字母上报集外；`-l -l` 重复给同一面旗标合法。
+    #[test]
+    fn parse_flags_cluster_letter_by_letter() {
+        let both = parse_cmp_flags(&["-ls", "a", "b"]).unwrap();
+        assert!(both.list_all && both.silent);
+        assert_eq!(both.operands, ["a", "b"]);
+        assert_eq!(
+            parse_cmp_flags(&["-sl", "a", "b"]).unwrap(),
+            parse_cmp_flags(&["-ls", "a", "b"]).unwrap()
+        );
+        assert_eq!(
+            parse_cmp_flags(&["-lq", "a", "b"]).err(),
+            Some(CmpArgError::UnknownOption('q'))
+        );
+        assert_eq!(
+            parse_cmp_flags(&["--x"]).err(),
+            Some(CmpArgError::UnknownOption('-'))
+        );
+        let twice = parse_cmp_flags(&["-l", "-l", "a", "b"]).unwrap();
+        assert!(twice.list_all && !twice.silent);
+    }
+
+    /// 环不重排，`--` 结束环而自身不是操作数，裸 `-` 是操作数。
+    #[test]
+    fn parse_ring_stops_at_the_first_operand() {
+        // 参照件：`cmp 档1 -l 档2` 是三个操作数，`-l` 是第二个档名。
+        assert_eq!(
+            parse_cmp_flags(&["f1", "-l", "f2"]).unwrap().operands,
+            ["f1", "-l", "f2"]
+        );
+        assert_eq!(
+            parse_cmp_flags(&["-l", "f1", "-l", "f2"]).unwrap().operands,
+            ["f1", "-l", "f2"]
+        );
+        assert!(!parse_cmp_flags(&["--", "-l", "-s"]).unwrap().list_all);
+        assert_eq!(
+            parse_cmp_flags(&["--", "-l", "-s"]).unwrap().operands,
+            ["-l", "-s"]
+        );
+        assert_eq!(parse_cmp_flags(&["-", "-"]).unwrap().operands, ["-", "-"]);
     }
 }

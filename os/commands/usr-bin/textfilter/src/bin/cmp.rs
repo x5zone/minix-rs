@@ -31,27 +31,30 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::cmp::{compare_bytes, format_list_entry, report_eof, report_first_diff};
+use minix_textfilter::GetoptReport;
+use minix_textfilter::cmp::{
+    CmpArgError, compare_bytes, format_list_entry, parse_cmp_flags, report_eof, report_first_diff,
+};
 
 const ERR_EXIT: i32 = 2;
 const DIFF_EXIT: i32 = 1;
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut list_all = false;
-    let mut silent = false;
-    let mut operands: Vec<&str> = Vec::new();
-    for arg in &argv[1..] {
-        if arg == "-l" {
-            list_all = true;
-        } else if arg == "-s" {
-            silent = true;
-        } else if !arg.starts_with('-') || arg.len() == 1 {
-            operands.push(arg);
-        } else {
+    let prog = support::prog_name(&argv);
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // C 的次序是「选项环 → `-l`/`-s` 互斥 → 操作数个数 → 开档」（`cmp.c:74-100`），
+    // 三处出口的形制各不相同：集外字母是 libc 一行**加** usage 一行；互斥是一句 `errx`
+    // 就完（没有 usage）；个数不对只有 usage 一行。都退 `ERR_EXIT` = 2。
+    let flags = match parse_cmp_flags(&refs[1..]) {
+        Ok(flags) => flags,
+        Err(CmpArgError::UnknownOption(letter)) => {
+            support::warn(GetoptReport::UnknownOption(letter).line(prog).as_bytes());
             usage();
         }
-    }
+    };
+    let (list_all, silent) = (flags.list_all, flags.silent);
+    let operands = flags.operands;
     if list_all && silent {
         support::warn(b"cmp: only one of -l and -s may be specified\n");
         support::terminate(ERR_EXIT);
@@ -82,8 +85,12 @@ fn run() -> ! {
     } else {
         match support::read_file(file1) {
             Ok(data) => data,
-            Err(_) => {
-                support::warn(format!("cmp: {name1}\n").as_bytes());
+            Err(code) => {
+                // C `cmp.c:101-104`：`if (!sflag) warn("%s", file1);` 然后
+                // `exit(ERR_EXIT)`——`-s` 之下**整句不打**，只留退出码 2。
+                if !silent {
+                    support::warn_line(prog, file1, code);
+                }
                 support::terminate(ERR_EXIT);
             }
         }
@@ -93,8 +100,11 @@ fn run() -> ! {
     } else {
         match support::read_file(file2) {
             Ok(data) => data,
-            Err(_) => {
-                support::warn(format!("cmp: {name2}\n").as_bytes());
+            Err(code) => {
+                // 同上：第二支的 `warn` 也被 `sflag` 管着（`cmp.c:113-117`）。
+                if !silent {
+                    support::warn_line(prog, file2, code);
+                }
                 support::terminate(ERR_EXIT);
             }
         }

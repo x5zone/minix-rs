@@ -1,37 +1,88 @@
-//! End-to-end face for the `cmp` binary: real process, real pipes and real
-//! files, checked against the report strings and exit statuses in
-//! `minix3/usr.bin/cmp/` (`cmp.c`, `misc.c`, `regular.c`).
+//! End-to-end face for the `cmp` binary, checked against
+//! `minix3/usr.bin/cmp/cmp.c`（选项环 `:74-86`、`-l`/`-s` 互斥 `:87-90`、
+//! 操作数个数 `:92-93`、开档支 `:95-119`、skip 解析 `:121-134`、`usage()` `:158-164`）
+//! 与它驱动的 libc `getopt`（`minix3/lib/libc/stdlib/getopt.c:74-92`、`:95-104`）。
 //!
-//! The host's GNU `cmp` is used only to compare exit statuses and whether a
-//! channel stayed empty. Its wording is not compared: GNU prints
-//! `"… differ: byte N, line M"` where NetBSD prints `"char"`, and its
-//! `-l` columns differ too, so a text match there would measure the two
-//! programs rather than this one.
+//! `cmp.c:74` 的 optstring 是 `"ls"`：两个字母**都不带值**，所以 libc 的
+//! `option requires an argument` 那一支在本支根本到不了（可达出口由 optstring 定，
+//! 不按同族规律补）。参照件 `tmp/cmp-316/cmp_ref`（`cmp.c` + `misc.c` + `regular.c` +
+//! `special.c` 真源 + Minix 的 `getopt.c` + 程序名垫片，宿主现链）逐形量出的形状是：
+//! ① 集外字母 = libc 一行 + usage 一行，退 **2**（`-q`、聚簇 `-lq` 报 `q`、`--x` 报 `-`）；
+//! ② `-l` 与 `-s` 同时给（含聚簇 `-ls`、`-sl`）= `cmp: only one of -l and -s may be specified`
+//!    **单独一行、不接 usage**，退 2（`errx` 两支形）；
+//! ③ 操作数少于两个或多于四个 = **只有 usage 一行**，退 2；
+//! ④ 开不了的档名 = `warn("%s", name)` 三段形、退 2，而且 **`-s` 之下整句不打**
+//!    （`cmp.c:101-104`、`:113-117` 的 `if (!sflag)`）；
+//! ⑤ 环不重排：`cmp 档1 -l 档2` 是**三个操作数**，那个 `-l` 是第二个档名
+//!    （参照件现量 `cmp: -l: No such file or directory`），旧写法把它当旗标吃掉后再比两个档；
+//! ⑥ 裸 `-` 是标准输入的别名，而**两个操作数都能写 `-` 一次**——两边都写时
+//!    `errx(ERR_EXIT, "standard input may only be specified once")`；
+//! ⑦ 报文里出现的是**操作数原文**（`cmp.c:96` 把 `file1` 改写成 `"stdin"` 只影响后面的
+//!    报表，不影响这一行），退出码三档：0 相同、1 有差异、2 出错（`ERR_EXIT`）。
+//!
+//! skip 那一段（`strtoq(…, 0)`）也是量出来的：`5x` 吃 5（尾巴不管）、`010` 是八进制的 8、
+//! `0x2` 是 2、`-1` 合法（越界后落 `EOF on <file>` 那一支，且**不带** char/line 后缀），
+//! 而 `x`、空串、溢出各落 usage。
 
 mod face_support;
 
+use face_support::write_stdin;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const CMP: &str = env!("CARGO_BIN_EXE_cmp");
+/// `cmp.c:161-162` 那一行：程序名写死在串里。
+const USAGE: &str = "usage: cmp [-l | -s] file1 file2 [skip1 [skip2]]\n";
 
-/// Runs `cmp` with the given words and standard input.
-fn run(args: &[&str], input: &str) -> (String, i32, String) {
-    run_with(CMP, args, input)
+/// 与参照件同一套档名与内容（放在临时目录里，命令以该目录为工作目录跑，
+/// 这样报文里的档名就是可逐字比对的短名）。
+/// 报表里的档名标签：`-` 那一侧写成 `stdin`（`cmp.c:96`、`:111` 把 `file1`/`file2`
+/// 改写成 `"stdin"`），另一侧仍是操作数原文。
+/// 再一件是**次序**：C 先开两个档、后解析 skip（`cmp.c:95-119` 在 `:121-134` 之前），
+/// 所以「档开不了 + skip 又是坏值」时打的是开档那一句，`usage:` 根本不会出现。
+#[test]
+fn the_stdin_label_wins_in_the_report_and_the_open_failure_wins_over_a_bad_skip() {
+    let dir = workspace("label");
+    fs::write(dir.join("b2.txt"), b"abd\n").expect("write b2");
+    let (out, status, err) = run(&dir, &["-", "b2.txt"], b"abc\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("stdin b2.txt differ: char 3, line 1\n", 1, "")
+    );
+
+    let (out, status, err) = run(&dir, &["nope.txt", "same2.txt", "x"], b"");
+    assert_eq!((out.as_str(), status), ("", 2));
+    assert_eq!(err, "cmp: nope.txt: No such file or directory\n");
+    assert!(
+        !err.contains("usage:"),
+        "开档失败该压过坏 skip：stderr 是 {err:?}"
+    );
 }
 
-/// The same run for any program, so the differential leg drives the host `cmp`
-/// through the identical pipe.
-fn run_with(program: &str, args: &[&str], input: &str) -> (String, i32, String) {
-    let mut child = Command::new(program)
+fn workspace(tag: &str) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("cmp-face-{}-{tag}-{n}", std::process::id()));
+    fs::create_dir_all(&dir).expect("scratch dir");
+    fs::write(dir.join("same1.txt"), b"abcde\n").expect("write same1");
+    fs::write(dir.join("same2.txt"), b"abcde\n").expect("write same2");
+    fs::write(dir.join("diff2.txt"), b"abXde\n").expect("write diff2");
+    fs::write(dir.join("short3.txt"), b"abc\n").expect("write short3");
+    fs::write(dir.join("empty.txt"), b"").expect("write empty");
+    dir
+}
+
+fn run(dir: &Path, args: &[&str], input: &[u8]) -> (String, i32, String) {
+    let mut child = Command::new(CMP)
         .args(args)
+        .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|_| panic!("{program} should be runnable"));
-    face_support::write_stdin(&mut child, input.as_bytes());
+        .expect("the cmp binary should be runnable");
+    write_stdin(&mut child, input);
     let output = child.wait_with_output().expect("the run should finish");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -40,251 +91,206 @@ fn run_with(program: &str, args: &[&str], input: &str) -> (String, i32, String) 
     )
 }
 
-/// A scratch file holding `bytes`, named after `tag` so parallel tests cannot
-/// collide. Returns its path.
-fn written(tag: &str, bytes: &[u8]) -> PathBuf {
-    let mut path = std::env::temp_dir();
-    path.push(format!("cmp-face-{}-{tag}", std::process::id()));
-    fs::write(&path, bytes).expect("writing the scratch file");
-    path
-}
-
-fn text(path: &Path) -> String {
-    path.to_str().unwrap().to_owned()
-}
-
+/// 集外字母：libc 那一行在前、usage 在后，退 2（旧写法少了 libc 那一行）。
 #[test]
-fn identical_files_are_silent_and_zero() {
-    let one = written("same-a", b"abc\n");
-    let two = written("same-b", b"abc\n");
-    let (out, status, err) = run(&[&text(&one), &text(&two)], "");
-    assert_eq!(out, "");
-    assert_eq!(err, "");
-    assert_eq!(status, 0);
-}
+fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
+    let dir = workspace("unknown");
+    let (out, status, err) = run(&dir, &["-q", "same1.txt", "same2.txt"], b"");
+    assert_eq!((out.as_str(), status), ("", 2), "stderr 是 {err:?}");
+    assert_eq!(err, format!("cmp: unknown option -- q\n{USAGE}"));
 
-#[test]
-fn first_difference_names_the_char_and_the_line() {
-    // `misc.c` `diffmsg`: `"%s %s differ: char %lld, line %lld\n"` on standard
-    // output, then `exit(DIFF_EXIT)` — status 1.
-    let one = written("diff-a", b"abc\n");
-    let two = written("diff-b", b"abd\n");
-    let (out, status, err) = run(&[&text(&one), &text(&two)], "");
-    assert_eq!(
-        out,
-        format!("{} {} differ: char 3, line 1\n", text(&one), text(&two))
-    );
-    assert_eq!(err, "");
-    assert_eq!(status, 1);
-
-    // The line counter advances on every newline passed, so a difference in the
-    // second line reports `line 2` (`regular.c` bumps `line` after each `'\n'`).
-    let one = written("lines-a", b"a1\nb2\n");
-    let two = written("lines-b", b"a1\nb3\n");
-    let (out, _, _) = run(&[&text(&one), &text(&two)], "");
-    assert!(out.ends_with("differ: char 5, line 2\n"), "out was {out:?}");
-}
-
-#[test]
-fn list_mode_prints_one_line_per_differing_byte_in_octal() {
-    // `regular.c`: `printf("%6lld %3o %3o\n", byte, ch, *p2)`, and `-l` keeps
-    // going to the end of the shorter stream instead of exiting at the first hit.
-    let one = written("list-a", b"abc\nxy\n");
-    let two = written("list-b", b"abd\nxz\n");
-    let (out, status, err) = run(&["-l", &text(&one), &text(&two)], "");
-    assert_eq!(err, "");
-    assert_eq!(status, 1, "list mode still reports a difference");
-    assert_eq!(
-        out,
-        format!(
-            "{:>6} {:3o} {:3o}\n{:>6} {:3o} {:3o}\n",
-            3, b'c', b'd', 6, b'y', b'z'
-        )
-    );
-}
-
-#[test]
-fn silent_mode_writes_nothing_but_keeps_the_status() {
-    // `diffmsg` guards its print with `if (!sflag)` and still exits `DIFF_EXIT`.
-    let one = written("silent-a", b"abc\n");
-    let two = written("silent-b", b"abd\n");
-    let (out, status, err) = run(&["-s", &text(&one), &text(&two)], "");
-    assert_eq!(out, "");
-    assert_eq!(err, "");
-    assert_eq!(status, 1);
-    let same = written("silent-c", b"abc\n");
-    assert_eq!(run(&["-s", &text(&one), &text(&same)], "").1, 0);
-
-    // A silent run of two *files* of different sizes reports "different" even
-    // when the skipped windows would match: `c_regular` opens with
-    // `if (sflag && len1 != len2) exit(1)`, comparing the unadjusted sizes
-    // before any skip is applied. The same shapes without `-s` still report by
-    // content, and a standard-input operand goes through `c_special`, which has
-    // no such test.
-    let longer = written("silent-d", b"XXabc\n");
-    let four = text(&one);
-    let six = text(&longer);
-    // Four bytes against six, but the second file loses its two-byte prefix, so
-    // the windows are identical: `abc\n` either way.
-    assert_eq!(run(&["-s", &four, &six, "0", "2"], "").1, 1);
-    let (out, status, _) = run(&[&four, &six, "0", "2"], "");
-    assert_eq!(out, "");
-    assert_eq!(status, 0);
-    // Same content once skipped, but reached through a standard-input operand:
-    // `cmp.c` marks that run `special` and calls `c_special`, which has no size
-    // test at all, so the answer stays "equal".
-    assert_eq!(run(&["-s", "-", &six, "0", "2"], "abc\n").1, 0);
-}
-
-#[test]
-fn a_shorter_stream_reports_eof_on_the_shorter_name() {
-    // `regular.c` ends with `eofmsg(len1 > len2 ? file2 : file1, byte, line)` —
-    // the file that ran out is the one named, on standard error, status 1.
-    let longer = written("short-a", b"abc\n");
-    let shorter = written("short-b", b"ab");
-    let (out, status, err) = run(&[&text(&longer), &text(&shorter)], "");
-    assert_eq!(out, "");
-    assert_eq!(status, 1);
-    assert_eq!(err, format!("cmp: EOF on {}\n", text(&shorter)));
-}
-
-#[test]
-fn skip_operands_take_any_base_and_ignore_a_trailing_tail() {
-    // `strtoq(argv[2], &ep, 0)` with only two failure tests: nothing converted,
-    // or overflow. `0x2` is two bytes, `02` is octal two, `2x` converts the `2`
-    // and stops, and leading blanks are skipped — all five are the same skip.
-    let one = written("skip-a", b"abc\n");
-    let two = written("skip-b", b"abd\n");
-    for skip in ["2", "0x2", "02", "2x", " 2"] {
-        let (out, status, err) = run(&[&text(&one), &text(&two), skip, "0"], "");
-        assert_eq!(status, 1, "skip {skip:?} stderr was {err:?}");
-        // Both streams lose the same two bytes, so the report shifts its offset
-        // back by two while keeping the same shape.
-        assert!(
-            out.contains("differ: char 1, line 1\n"),
-            "skip {skip:?} gave {out:?}"
-        );
-    }
-    // Without the skip the same pair differs at byte three.
-    assert!(
-        run(&[&text(&one), &text(&two)], "")
-            .0
-            .contains("char 3, line 1\n")
-    );
-}
-
-#[test]
-fn a_skip_past_the_end_is_an_eof_report() {
-    // `c_regular`: `if (skip1 > len1) eofmsg(file1, len1 + 1, 0)` — with `line`
-    // zero the `-l` form drops the line and keeps `: char <len + 1>`.
-    let one = written("past-a", b"abc\n");
-    let two = written("past-b", b"abc\n");
-    let (out, status, err) = run(&[&text(&one), &text(&two), "9"], "");
-    assert_eq!(out, "");
-    assert_eq!(status, 1);
-    assert_eq!(err, format!("cmp: EOF on {}\n", text(&one)));
-    let (out, _, err) = run(&["-l", &text(&one), &text(&two), "9"], "");
-    assert_eq!(out, "");
-    assert_eq!(err, format!("cmp: EOF on {}: char 5\n", text(&one)));
-    // Exactly at the end is not past it: the window is empty and equal.
-    assert_eq!(run(&[&text(&one), &text(&two), "4", "4"], "").1, 0);
-}
-
-#[test]
-fn malformed_invocations_exit_two() {
-    // `ERR_EXIT` covers `usage()` and the `lflag && sflag` guard in `cmp.c`; the
-    // messages go to standard error while stdout stays empty.
-    let one = text(&written("bad-a", b"a"));
-    let two = text(&written("bad-b", b"a"));
-    let cases: Vec<(Vec<&str>, &str)> = vec![
-        (vec!["-x", &one, &two], "usage:"),
-        (
-            vec!["-l", "-s", &one, &two],
-            "only one of -l and -s may be specified",
-        ),
-        (vec![&one], "usage:"),
-        (vec![&one, &two, "zz"], "usage:"),
-        (vec![&one, &two, "1", "2", "3"], "usage:"),
-    ];
-    for (words, message) in cases {
-        let (out, status, err) = run(&words, "");
-        assert_eq!(out, "", "args {words:?} printed {out:?}");
-        assert_eq!(status, 2, "args {words:?} stderr was {err:?}");
-        assert!(err.contains(message), "args {words:?} stderr was {err:?}");
-    }
-
-    // Both operands are opened before the skip values are parsed (`cmp.c:95-119`
-    // then `:121-134`), so an unopenable file is what the user hears about even
-    // when a skip value is also malformed — that is the open failure's message,
-    // not `usage:`.
-    let missing =
-        text(&std::env::temp_dir().join(format!("cmp-face-{}-missing", std::process::id())));
-    let (out, status, err) = run(&[&missing, &two, "zz"], "");
-    assert_eq!(out, "");
-    assert_eq!(status, 2, "stderr was {err:?}");
-    assert!(err.contains(&missing), "stderr was {err:?}");
-    assert!(
-        !err.contains("usage:"),
-        "the open failure must win over the malformed skip: {err:?}"
-    );
-}
-
-#[test]
-fn a_dash_operand_compares_standard_input_and_is_named_in_the_report() {
-    // `cmp.c:95-113`: `-` becomes fd 0 and the label `"stdin"`.
-    let two = written("stdin-b", b"abd\n");
-    let (out, status, _) = run(&["-", &text(&two)], "abc\n");
-    assert_eq!(status, 1);
-    assert_eq!(
-        out,
-        format!("stdin {} differ: char 3, line 1\n", text(&two))
-    );
-    // Both operands naming standard input is rejected before anything opens.
-    let (out, status, err) = run(&["-", "-"], "abc\n");
-    assert_eq!(out, "");
+    // 聚簇只报第一个集外字母（前面的合法字母不改变出口）。
+    let (_, status, err) = run(&dir, &["-lq", "same1.txt", "same2.txt"], b"");
     assert_eq!(status, 2);
-    assert!(
-        err.contains("standard input may only be specified once"),
-        "stderr was {err:?}"
+    assert_eq!(err, format!("cmp: unknown option -- q\n{USAGE}"));
+
+    // `--x` 报的字母是第二个连字符：optstring 里没有 `-`。
+    let (_, status, err) = run(&dir, &["--x", "same1.txt", "same2.txt"], b"");
+    assert_eq!(status, 2);
+    assert_eq!(err, format!("cmp: unknown option -- -\n{USAGE}"));
+}
+
+/// `-l` 与 `-s` 同时给是一句 `errx`：程序名 + 句子 + 句尾**没有**句点，
+/// 而且**不接 usage**（旧写法把聚簇形判成集外字母，打的是两行的 usage）。
+#[test]
+fn the_two_flags_conflict_in_one_line_without_the_usage() {
+    let dir = workspace("conflict");
+    for word in ["-ls", "-sl"] {
+        let (out, status, err) = run(&dir, &[word, "same1.txt", "same2.txt"], b"");
+        assert_eq!(
+            (out.as_str(), status),
+            ("", 2),
+            "`{word}` 的 stderr 是 {err:?}"
+        );
+        assert_eq!(
+            err, "cmp: only one of -l and -s may be specified\n",
+            "`{word}` 在 C 是逐字母聚簇，两面旗标都立起来才落这一支"
+        );
+    }
+    // 分两支写同样冲突（C 只是再赋一次 1，所以 `-l -l` 反而合法——见下一枚）。
+    let (_, status, err) = run(&dir, &["-l", "-s", "same1.txt", "same2.txt"], b"");
+    assert_eq!(status, 2);
+    assert_eq!(err, "cmp: only one of -l and -s may be specified\n");
+}
+
+/// 操作数少于两个或多于四个：只有 usage 一行、退 2（参照件现量三种形都同）。
+#[test]
+fn an_operand_count_out_of_range_is_the_usage_line_only() {
+    let dir = workspace("count");
+    for args in [
+        vec![],
+        vec!["same1.txt"],
+        vec!["same1.txt", "same2.txt", "0", "0", "0"],
+    ] {
+        let (out, status, err) = run(&dir, &args, b"");
+        assert_eq!((out.as_str(), status), ("", 2), "args 是 {args:?}");
+        assert_eq!(err, USAGE);
+    }
+}
+
+/// 重复给同一面旗标是合法的（C 就是再赋一次 1），`-l -l` 与 `-l` 同读数。
+#[test]
+fn a_repeated_flag_stays_legal_and_idempotent() {
+    let dir = workspace("repeat");
+    let (out, status, err) = run(&dir, &["-l", "-l", "same1.txt", "diff2.txt"], b"");
+    assert_eq!((out.as_str(), status), ("     3 143 130\n", 1));
+    assert_eq!(err, "");
+}
+
+/// 环不重排：`same1.txt` 一到，环就结束，那个 `-l` 是**第二个档名**（参照件现量
+/// `cmp: -l: No such file or directory`、退 2）。旧写法扫完全程，把 `-l` 当旗标吃掉后
+/// 比两个档，退码与句子全不同。
+#[test]
+fn the_option_ring_stops_at_the_first_operand() {
+    let dir = workspace("reorder");
+    let (out, status, err) = run(&dir, &["same1.txt", "-l", "same2.txt"], b"");
+    assert_eq!((out.as_str(), status), ("", 2));
+    assert_eq!(err, "cmp: -l: No such file or directory\n");
+
+    // `--` 结束环而自身不是操作数：`-- same1 same2` 与不带 `--` 同读数。
+    let (out, status, err) = run(&dir, &["--", "same1.txt", "same2.txt"], b"");
+    assert_eq!((out.as_str(), status), ("", 0));
+    assert_eq!(err, "");
+}
+
+/// 开不了的档名是三段形 `warn(3)`，而 `-s` 之下**整句不打**（`cmp.c:101-104` 的
+/// `if (!sflag)`）——退出码仍是 2。
+#[test]
+fn an_unopenable_operand_warns_in_three_parts_and_silence_suppresses_it() {
+    let dir = workspace("open");
+    let (out, status, err) = run(&dir, &["nope.txt", "same2.txt"], b"");
+    assert_eq!((out.as_str(), status), ("", 2));
+    assert_eq!(err, "cmp: nope.txt: No such file or directory\n");
+
+    let (out, status, err) = run(&dir, &["-s", "nope.txt", "same2.txt"], b"");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 2, ""),
+        "`-s` 把开档失败的那一句整个压掉，只留退出码"
+    );
+
+    // 第二个档名开不了也一样，且报文里是它自己的名字。
+    let (out, status, err) = run(&dir, &["same1.txt", "nope2.txt"], b"");
+    assert_eq!((out.as_str(), status), ("", 2));
+    assert_eq!(err, "cmp: nope2.txt: No such file or directory\n");
+}
+
+/// 裸 `-` 是标准输入的别名；两边都写 `-` 是一句 `errx`（参照件现量退 2）。
+#[test]
+fn a_dash_operand_reads_stdin_and_only_one_operand_may() {
+    let dir = workspace("stdin");
+    let (out, status, err) = run(&dir, &["-", "same1.txt"], b"abcde\n");
+    assert_eq!((out.as_str(), status, err.as_str()), ("", 0, ""));
+    let (out, status, err) = run(&dir, &["same1.txt", "-"], b"abcde\n");
+    assert_eq!((out.as_str(), status, err.as_str()), ("", 0, ""));
+    let (out, status, err) = run(&dir, &["-", "-"], b"abcde\n");
+    assert_eq!((out.as_str(), status), ("", 2));
+    assert_eq!(
+        err, "cmp: standard input may only be specified once\n",
+        "`cmp.c:106-110` 的第二支 `errx`，不接 usage"
     );
 }
 
+/// 三档退出码与两条报表：相同 0 且什么都不打；有差异 1，报表走**标准输出**、
+/// 句式是 `%s %s differ: char %lld, line %lld`；`-l` 换成一格六宽的字节表。
 #[test]
-fn agrees_with_the_host_cmp_on_status_and_emptiness() {
-    // Exit statuses and the "this channel stayed empty" facts are shared between
-    // NetBSD and GNU; the report wording is not, so it is not compared here.
-    let cases: Vec<(Vec<&str>, &[u8], &[u8])> = vec![
-        (vec![], b"abc\n", b"abc\n"),
-        (vec![], b"abc\n", b"abd\n"),
-        (vec!["-s"], b"abc\n", b"abd\n"),
-        (vec!["-l"], b"abc\n", b"abd\n"),
-        (vec![], b"abc\n", b"ab"),
-        (vec!["-s"], b"abc\n", b"abc\n"),
+fn the_three_exit_codes_and_both_reports_follow_the_c() {
+    let dir = workspace("report");
+    let (out, status, err) = run(&dir, &["same1.txt", "same2.txt"], b"");
+    assert_eq!((out.as_str(), status, err.as_str()), ("", 0, ""));
+    let (out, status, err) = run(&dir, &["same1.txt", "diff2.txt"], b"");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("same1.txt diff2.txt differ: char 3, line 1\n", 1, "")
+    );
+    let (out, status, _) = run(&dir, &["-l", "same1.txt", "diff2.txt"], b"");
+    assert_eq!((out.as_str(), status), ("     3 143 130\n", 1));
+    let (out, status, err) = run(&dir, &["-s", "same1.txt", "diff2.txt"], b"");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 1, ""),
+        "`-s` 什么都不打"
+    );
+    // 两边都空也退 0（`empty.txt` 与 `empty.txt`）。
+    let (out, status, _) = run(&dir, &["empty.txt", "empty.txt"], b"");
+    assert_eq!((out.as_str(), status), ("", 0));
+}
+
+/// 一边先见底：`regular.c:111` 报的是**短的那一边**。不带 `-l` 时先撞到的是差异
+/// （`c` 之后一边是 `d` 一边是换行）所以走 `differ` 那一支；带 `-l` 才走到
+/// `eofmsg`，句式是 `cmp: EOF on <短档>: char N, line M`。
+#[test]
+fn an_early_eof_names_the_shorter_file_with_its_own_shape() {
+    let dir = workspace("eof");
+    let (out, status, err) = run(&dir, &["same1.txt", "short3.txt"], b"");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("same1.txt short3.txt differ: char 4, line 1\n", 1, "")
+    );
+    let (out, status, err) = run(&dir, &["-l", "same1.txt", "short3.txt"], b"");
+    assert_eq!((out.as_str(), status), ("     4 144  12\n", 1));
+    assert_eq!(err, "cmp: EOF on short3.txt: char 5, line 1\n");
+}
+
+/// skip 那一段是 `strtoq(…, 0)` 的读数：`5x` 吃 5 而不管尾巴，`0x2` 是 2，
+/// `010` 是八进制的 8（越过档尾 → `cmp: EOF on same1.txt`，**不带** char/line 后缀），
+/// `-1` 合法并落到同一支；一个数字也没转出来的（`x`、空串）与溢出各退 2 走 usage。
+#[test]
+fn the_skip_operands_are_read_the_way_strtoq_reads_them() {
+    let dir = workspace("skip");
+    let cases = [
+        ("2", "same1.txt same2.txt differ: char 1, line 1\n"),
+        ("0x2", "same1.txt same2.txt differ: char 1, line 1\n"),
+        ("5x", "same1.txt same2.txt differ: char 1, line 1\n"),
     ];
-    let system = if Command::new("cmp").arg("--version").output().is_ok() {
-        "cmp"
-    } else {
-        eprintln!("no host cmp to compare against; skipping the differential leg");
-        return;
-    };
-    for (number, (options, left, right)) in cases.into_iter().enumerate() {
-        let one = written(&format!("delta-a-{number}"), left);
-        let two = written(&format!("delta-b-{number}"), right);
-        let words: Vec<String> = options
-            .iter()
-            .map(|word| (*word).to_owned())
-            .chain([text(&one), text(&two)])
-            .collect();
-        let word_refs: Vec<&str> = words.iter().map(String::as_str).collect();
-        let ours = run(&word_refs, "");
-        let theirs = run_with(system, &word_refs, "");
-        assert_eq!(ours.1, theirs.1, "options {word_refs:?}");
+    for (word, expected) in cases {
+        let (out, status, err) = run(&dir, &["same1.txt", "same2.txt", word], b"");
         assert_eq!(
-            ours.0.is_empty(),
-            theirs.0.is_empty(),
-            "options {word_refs:?}: ours {:?}, host {:?}",
-            ours.0,
-            theirs.0
+            (out.as_str(), status, err.as_str()),
+            (expected, 1, ""),
+            "`{word}` 的读数不对"
         );
     }
+    for word in ["010", "-1"] {
+        let (out, status, err) = run(&dir, &["same1.txt", "same2.txt", word], b"");
+        assert_eq!(
+            (out.as_str(), status, err.as_str()),
+            ("", 1, "cmp: EOF on same1.txt\n"),
+            "`{word}` 越过档尾该报不带 char/line 的那一支"
+        );
+    }
+    for word in ["x", "", "99999999999999999999999"] {
+        let (out, status, err) = run(&dir, &["same1.txt", "same2.txt", word], b"");
+        assert_eq!(
+            (out.as_str(), status, err.as_str()),
+            ("", 2, USAGE),
+            "`{word}` 该落 usage 一支"
+        );
+    }
+    // 两个 skip 都给：`2 2` 之后仍是差异。
+    let (out, status, _) = run(&dir, &["same1.txt", "diff2.txt", "2", "2"], b"");
+    assert_eq!(
+        (out.as_str(), status),
+        ("same1.txt diff2.txt differ: char 1, line 1\n", 1)
+    );
 }

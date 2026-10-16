@@ -250,6 +250,60 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十六把 `cmp` 的三类出口与「`-s` 压住开档告警」按 C 定形，并新立它的第一扇端到端门**
+  （`2026-10-16`，`claim/CMP-GETOPT-LINE-qoder` @ 基线 `005e6a3a2`，单域三线 commands/textfilter，无跨界）：
+  判定表里 `cmp` 这一支（历史条目的序号各自按当时的口径写，以每笔末尾那行「判定表进度」为准）。**真源形状**：`cmp.c:74` 的 optstring 是 `"ls"`——两个字母**都不带值**，
+  所以 libc 那句 `option requires an argument` 在本支根本到不了。三类出口**行数各不相同**：
+  ① 集外字母 = libc 一行（`getopt.c:101-104`；聚簇 `-lq` 报 `q`、`--x` 报 `-`）+ usage 一行；
+  ② `-l` 与 `-s` 同时给（含聚簇 `-ls`、`-sl`）= 一句 `cmp: only one of -l and -s may be specified`
+  且**不接 usage**；③ 操作数少于两个或多于四个 = **只有 usage 一行**。三支都退
+  `ERR_EXIT` = 2（`extern.h:38`，另有 `DIFF_EXIT` = 1 与 `OK_EXIT` = 0——本支是三档退出码）。
+  前门以前按整个 token 比字母（`arg == "-l"`），于是聚簇形落进「未知选项」并打出 usage：
+  一行 `errx` 被换成两行，句子也没了。现在选项环逐字母走，`-l -l` 这种重复给同一面旗标
+  照常合法（C 只是再赋一次 1）。
+  **两处只能量出来、推不出来的形制**：① 开档失败那一句 `warn(3)` 是 `cmp.c:101-104` 的
+  `if (!sflag) warn("%s", file1);` 再 `exit(ERR_EXIT)`——**`-s` 之下整句不打**，只留退出码 2
+  （本壳以前无条件打，且打的是缺 `strerror` 那一段的两段形）；② 环不重排之后
+  `cmp 档1 -l 档2` 是**三个操作数**、那个 `-l` 是第二个档名，参照件现量
+  `cmp: -l: No such file or directory`，而旧写法扫完全程把 `-l` 当旗标吃掉、退码变成 0/1 一档。
+  裸 `-` 是标准输入的别名而只能给一次（两边都写是一句 `errx`），且报文里出现的是**操作数原文**
+  （`cmp.c:96` 的 `file1 = "stdin"` 改写只影响后面的报表，不影响这一行）。
+  选项环提入库侧 `parse_cmp_flags`（同 `split`/`unexpand`/`col`/`column` 的分层：判定住库、
+  句子交回壳），`-l`/`-s` 互斥与操作数个数两判留在壳里按 C 的次序走——换序会把一行的 `errx`
+  支与两行的 usage 支弄混。**门测 11 枚**（既有的 `tests/cmp_face.rs` 整扇重写，target 数不变）
+  + 库测 2 枚（聚簇逐字母、不重排与 `--`/裸 `-`），金样逐形取自参照件读数，含 skip 那一段的
+  `strtoq` 读数（`5x` 吃 5、`010` 是八进制 8、`-1` 合法并落 `cmp: EOF on <短档>` **不带**
+  char/line 的那一支、`x`/空串/溢出各退 2 走 usage）。
+  **换掉的是参照系而不是门**：旧那扇门拿**宿主 GNU `cmp`** 作对照，且只比「退码相同」与
+  「这一路是否为空」两件事（它的文件头自己写着 GNU 的句子是 `byte`、NetBSD 是 `char`，
+  所以报文不比）——本笔换成链真源量的 Minix 参照件，报文与行数逐字进断言，旧门里那两条
+  既有断言（`-` 侧报表写 `stdin`、开档失败排在坏 skip 之前）也一并搬进新的第 11 枚。
+  **三件套**：容器整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **775 / 0 / 0**
+  （61 target，基线 `005e6a3a2` 为 772/61——门本身从 10 枚长成 11 枚，库侧 +2）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、**85 warning 同基线**；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`；
+  `rustfmt --edition 2024 --check` 触及件零漂移；A/B 与参照件 `tmp/cmp-316/cmp_ref`
+  （`cmp.c` + `misc.c` + `regular.c` + `special.c` 真源 + Minix 的 `getopt.c` + 程序名垫片）
+  逐形比退码/stdout/stderr 三件，**38 形 SAME=38 DIFF=0**；变异负控四枚
+  （`tmp/cmp-316/ctl316.py`）分别咬 **1 / 1 / 3 / 1** 枚：丢 libc 那一行、把互斥那一支并到
+  usage 后面、取消「不重排」、让 `-s` 不再压住开档告警。核实日 `2026-10-16`；基线 `005e6a3a2`。
+  **验证边界**：参照件在本机链 glibc，`warn(3)`/`err(3)` 走 glibc，其 `strerror` 句子与 Minix
+  表可能不同——本笔落在报文上的形都是 `No such file or directory`，两边同文，故 `DIFF=0` 是
+  逐字节对账的结果；比较函数一侧 C 先 `setlocale(LC_ALL, "")`，`cmp` 的字节比较不经 `strcoll`，
+  所以这一支不受 locale 影响。
+  **登记不执行**：① C 的 `fstat` 两支（`cmp.c:136-145`）里 `err(ERR_EXIT, "%s", file1)` 那一形
+  本层不可达——本层一次读全，`fstat` 失败与开档失败在同一只眼里；`special`（管道/字符设备）
+  与 `regular` 两条比较路径本层也合成一条（`CMP-SPECIAL-PATH`）；② 目录当操作数时 C 的 `open`
+  成功、`read` 才 `EISDIR`，于是那一侧直接见底并退 0/1，本层把它报成开档失败退 2
+  （`CMP-DIR-OPERAND`，与上一笔的 `COMM-DIR-OPERAND` 同形）；③ 07 篇第 155 行的陈旧测试计数
+  仍归 V3-5/V3-6（既有登记）；④ 真机 open/lseek 腿归 `C-57`/E5。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/col/column/comm/**cmp** + pr
+  （egetopt 措辞）；待接 `jot`、`unifdef`、`units`、`seq`、`paste`、`tr`；
+  另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `JOT-GETOPT-LINE`
+  （`minix3/usr.bin/jot/jot.c:150` 的 optstring 是 `"b:cnp:rs:w:"`，注意 `cn` 两个字母都不带值）。
+
+- ✅ **批次三百一十五把 `comm` 的两类出口与列前缀发放按 C 定形，并新立它的第一扇端到端门（第八处读缝缺陷）**
+
 - ✅ **批次三百一十五把 `comm` 的两类出口与列前缀发放按 C 定形，并新立它的第一扇端到端门（第八处读缝缺陷）**
   （`2026-10-16`，`claim/COMM-GETOPT-LINE-qoder` @ 基线 `ed4db08d6`，单域三线 commands/textfilter，无跨界）：
   判定表第十一支。**真源形状**：`comm.c:80` 的 optstring 是 `"123f"`——`1`/`2`/`3`/`f` 四个
