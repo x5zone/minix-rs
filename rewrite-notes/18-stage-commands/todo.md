@@ -321,6 +321,33 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十五把 `jot -r` 的种子判据按 C 收回去（闭合三百一十七登记的第③条 `JOT-RANDOM-NEGATIVE-SEED`）**
+  （`2026-10-17`，`claim/JOT-RANDOM-NEGATIVE-SEED-qoder` @ 基线 `c40ad74cc`，单域三线 commands/textfilter，无跨界）：
+  **缺口**：壳 `src/bin/jot.rs` 算种子处写着 `Ok(v) if v >= 0.0 => v as u64`，其余一律
+  `Bad step value`——这条非负判据 C 没有。`jot.c:118` 是 `srandom((unsigned long) step)`：
+  先按 C 的截断取整、再按无符号回绕，**负数与小数都是合法种子**。
+  参照件现量（`tmp/jot-317/jot_ref`）：`jot -r 3 1 10 -5`、`-0.5`、`-2147483648` 都退 0 打三个整数，
+  本壳退 1 并报 `jot: Bad step value:  -5`——把一个能用的输入判成坏输入。
+  **修法**：判据删掉，转换写成 `(v as i64) as u64`（截断后回绕，与 C 同一形状）；
+  `parse_step` 的 `strtod` 全串检查**没动**，所以 `jot -r 3 1 10 5x` 两侧仍是同一句
+  `jot: Bad step value:  5x` 退 1。随机流的**数值**本就是另一档分歧（本层 LCG 不是 libc 的
+  `random()`，07 篇 §4.4 已写明），因此门只钉退码、行数、全为数字、以及
+  「`-0.5` 与 `0` 必须逐字节相同」这条截断的可观察推论（参照件同读数 `9\n4\n8\n`）。
+  **门**：端到端门 +1 枚 `a_negative_or_fractional_seed_is_accepted_like_c`（内含五形加两条形）。
+  **读数**：种子一族 10 形对账 `SAME=9`，唯一 DIFF 是 `jot -r 0 1 10 -5`——`reps == 0` 在 C
+  就是无界（`jot.c:129` 的 `i <= reps || reps == 0`），两侧都跑到截停为止，不算分歧；
+  clippy `-p minix-textfilter --all-targets` 退码 0 且**指向触及件 0 条**、workspace 0 error、
+  宿主三架构各 `Finished`、`rustfmt --edition 2024 --check` 零漂移、库测 514 枚与门测 14 枚全绿；
+  容器整包 `cargo test -p minix-textfilter -j 1` → **900 / 0 / 0**（67 target，比上一笔的 899 多这枚门测）。
+  **三枚变异负控见 `tmp/jot-325-ctl.log`，读数不是一句「全咬」**：把 `parse_step` 的全串检查一起放宽
+  那枚被新门咬住；把自创的非负判据加回来那枚**在编译期就被挡住**（那个 `match` 的下一支是 `Err(_)`，
+  加上守卫后模式不再穷尽，所以它证明不了门的灵敏度）；把截断改成「+1 偏移」那枚**漏网**，
+  原因是本层的种子只经由 LCG 流出，而 LCG 与 libc `random()` 的**数值流本就登记为另一档分歧**，
+  于是「`-0.5` 与 `0` 同串」这条推论对全体种子同幅偏移天然不敏感——要钉住种子转换本身，
+  得在库侧把 `(v as i64) as u64` 提成一个可单测的函数（登记为 `JOT-SEED-CAST-UNIT-TEST`，
+  本笔不顺手做，因为它改的是可测性结构而不是行为）。
+  核实日 `2026-10-17`；基线 `c40ad74cc`。
+
 - ✅ **批次三百二十四把 `jot` 的操作数派生 switch 按 C 的精确标签定形（P0：零步长不再无界）**
   （`2026-10-17`，`claim/JOT-STEP-ZERO-UNBOUNDED-qoder` @ 基线 `9d117c1f6`，单域三线 commands/textfilter，无跨界）：
   **缺口**：`src/jot.rs:derive` 把 C 的 `switch (have)`（`jot.c:247-296`）写成了**子集判**

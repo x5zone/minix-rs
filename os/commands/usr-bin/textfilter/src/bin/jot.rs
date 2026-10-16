@@ -108,9 +108,13 @@ fn run() -> ! {
     );
 
     let seed: u64 = match seed_word {
+        // `jot.c:118` 是 `srandom((unsigned long) step)`：先按 C 的截断取整，再按无符号回绕。
+        // 所以**负数与小数都是合法种子**（`-5` 能用，`-0.5` 截成 0），本层此前那句
+        // `v >= 0.0` 把参照件接受的形报成 `Bad step value` 是自创的判据；`strtod`
+        // 的全串检查（`parse_step`）没动，坏值照样报同一句。
         Some(s) => match parse_step(&s) {
-            Ok(v) if v >= 0.0 => v as u64,
-            _ => bad_step(prog, &s),
+            Ok(v) => (v as i64) as u64,
+            Err(_) => bad_step(prog, &s),
         },
         None => {
             // Clock + pid mix (C jot seeds from time(2)); the clock half

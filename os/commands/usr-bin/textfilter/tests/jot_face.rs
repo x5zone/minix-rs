@@ -281,3 +281,31 @@ fn four_operands_with_a_zero_step_stay_bounded() {
     let (out, code, _) = run(&["6", "1", "10", "0"]);
     assert_eq!((code, out.as_str()), (0, "1\n1\n1\n1\n1\n1\n"));
 }
+
+#[test]
+fn a_negative_or_fractional_seed_is_accepted_like_c() {
+    // `jot.c:118` 是 `srandom((unsigned long) step)`：负数与小数都是**合法**种子。
+    // 参照件 `jot -r 3 1 10 -5` 退 0 打三个整数（本层曾用自创的 `v >= 0.0` 报
+    // `Bad step value`）。随机流的**数值**是另一档分歧（本层的 LCG 不是 libc 的
+    // `random()`，见 07 §4.4），所以这里只钉退码、行数、行数与「全是数字」这三件。
+    for arg in ["-5", "-2147483648", "-0.5", "0", "5"] {
+        let (out, code, err) = run(&["-r", "3", "1", "10", arg]);
+        assert_eq!(code, 0, "种子 {arg} 的 stderr={err:?}");
+        assert_eq!(err, "", "种子 {arg} 不该有诊断");
+        let lines: Vec<&str> = out.trim_end_matches('\n').split('\n').collect();
+        assert_eq!(lines.len(), 3, "种子 {arg} 实际输出 {out:?}");
+        assert!(
+            lines.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit())),
+            "种子 {arg} 输出不全是整数：{out:?}"
+        );
+    }
+    // 截断取整的可观察推论：C 的 `(unsigned long)(-0.5)` 就是 0，
+    // 所以 `-0.5` 与 `0` 两串数必须逐字节相同（参照件现量同为 `9\n4\n8\n`）
+    let (a, _, _) = run(&["-r", "3", "1", "10", "-0.5"]);
+    let (b, _, _) = run(&["-r", "3", "1", "10", "0"]);
+    assert_eq!(a, b, "小数种子要先截断，不能当成坏值");
+    // `strtod` 的全串检查没动：尾巴带杂字符仍然报同一句、退 1
+    let (out, code, err) = run(&["-r", "3", "1", "10", "5x"]);
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert_eq!(err, "jot: Bad step value:  5x\n");
+}
