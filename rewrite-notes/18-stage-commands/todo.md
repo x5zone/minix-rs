@@ -318,7 +318,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   无 IO 缝，输出腿归 `C-57`/E5 的 stdout 写面。
   **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/col/column/comm/**jot** + pr；待接 `unifdef`、`units`、`seq`、`paste`、`tr`；
   另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `UNIFDEF-GETOPT-LINE`
-  （`minix3/usr.bin/unifdef/unifdef.c:273` 的 optstring 是 `"i:D:U:I:o:cdeklst"`，六个带值项）。
+  （`minix3/usr.bin/unifdef/unifdef.c:273` 的 optstring 是 `"i:D:U:I:o:cdeklst"`，五个带值项（`i`/`D`/`U`/`I`/`o`））。
 
 - ✅ **批次三百一十六把 `cmp` 的三类出口与「`-s` 压住开档告警」按 C 定形，并新立它的第一扇端到端门**
   （`2026-10-16`，`claim/CMP-GETOPT-LINE-qoder` @ 基线 `005e6a3a2`，单域三线 commands/textfilter，无跨界）：
