@@ -115,9 +115,16 @@ pub struct SplitArgs<'a> {
 /// can reproduce C's message and exit code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SplitError<'a> {
-    /// `getopt` `default:`, a missing `-l` value, or a `-l` once the count is
-    /// already set (`numlines != 0`): the C `usage()`.
+    /// `split.c:80-130` 的 `default: usage()`（两个都算过：`-l 3 -l 4` 的
+    /// `if (numlines != 0) usage()`、多于两个操作数的 `if (*argv != NULL) usage()`）。
     Usage,
+    /// 集外字母：libc 在返回 `'?'` **之前**先印一行（`getopt.c:101-104`），C 的
+    /// `default:` 才接 usage —— 于是**两行**。`-Z`、`-Zb`、`--x`（报 `-`）都走这一支。
+    UnknownOption(char),
+    /// 带值选项缺值（`-l`/`-b`/`-a`/`-n` 后面没有下一段）：libc 印
+    /// `option requires an argument -- <字母>`（`getopt.c:132-136`）后返回 `'?'`，
+    /// 调用者的 `default:` 再接 usage —— 同样两行。
+    MissingValue(char),
     /// A `-l`/`-N` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal line count.", …)`; carries the offending value for the message.
     IllegalLineCount(&'a str),
@@ -130,10 +137,6 @@ pub enum SplitError<'a> {
     /// A `-a` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal suffix length.", …)` (split.c:117-121).
     IllegalSuffixLength(&'a str),
-    /// `-n` — a valid `getopt` letter the line/byte deciding half
-    /// (`chunks`/`chunk_bytes`) does not yet implement (chunk count);
-    /// reported rather than silently ignored.
-    Unmodelled,
 }
 
 /// An all-decimal, nonzero line count, or `None` (the C `strtoull` + `*ep !=
@@ -198,9 +201,11 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
         let bytes = arg.as_bytes();
         if bytes.len() > 1 && bytes[0] == b'-' {
             let tail = &arg[1..];
-            // obsolete `-N`: an all-digit tail sets the line count, but only
-            // while it is unset (C runs the kludge `if (numlines == 0)`).
-            if tail.bytes().all(|b| b.is_ascii_digit()) {
+            // C 的遗留形 `-<数字>`：optstring 里 `0-9` 六个都是**合法字母**，第一个数字回来后
+            // `split.c:86-90` 从 `argv[optind] + 1`（整段 token 去掉那个 `-`）取数字，
+            // 所以 `-1000` 的列数是 1000、`-12x` 落 `12x: illegal line count.`，
+            // 而 `-3b5` 的整段 `3b5` 一起交给 `strtoull`（不是只认「全数字尾巴」）。
+            if bytes[1].is_ascii_digit() {
                 if !set {
                     match line_count(tail) {
                         Some(n) => {
@@ -215,7 +220,7 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
             }
             match bytes[1] {
                 b'l' => {
-                    // C `case 'l'`: `if (numlines != 0) usage()`.
+                    // C `case 'l'`: `if (numlines != 0) usage()`。
                     if set {
                         return Err(SplitError::Usage);
                     }
@@ -226,7 +231,8 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
                         index += 1;
                         match args.get(index) {
                             Some(v) => *v,
-                            None => return Err(SplitError::Usage),
+                            // `-l` 后面没有下一段：libc 先印一行缺值（`getopt.c:132-136`）。
+                            None => return Err(SplitError::MissingValue('l')),
                         }
                     } else {
                         rest
@@ -245,7 +251,7 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
                         index += 1;
                         match args.get(index) {
                             Some(v) => *v,
-                            None => return Err(SplitError::Usage),
+                            None => return Err(SplitError::MissingValue('a')),
                         }
                     } else {
                         rest
@@ -263,7 +269,7 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
                         index += 1;
                         match args.get(index) {
                             Some(v) => *v,
-                            None => return Err(SplitError::Usage),
+                            None => return Err(SplitError::MissingValue('b')),
                         }
                     } else {
                         rest
@@ -281,7 +287,7 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
                         index += 1;
                         match args.get(index) {
                             Some(v) => *v,
-                            None => return Err(SplitError::Usage),
+                            None => return Err(SplitError::MissingValue('n')),
                         }
                     } else {
                         rest
@@ -291,14 +297,25 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
                         None => return Err(SplitError::IllegalChunkCount(value)),
                     }
                 }
-                _ => return Err(SplitError::Usage),
+                // 集外字母：`getopt.c:95-104` 先印一行，再由 `split.c:128-129` 的
+                // `default: usage()` 接第二行。递出去的是 `-` 后面的**第一个字符**
+                // （聚簇与 `--x` 都只报第一个：量过 `-Zb` 报 `Z`、`--x` 报 `-`）。
+                _ => {
+                    return Err(SplitError::UnknownOption(
+                        tail.chars().next().unwrap_or('-'),
+                    ));
+                }
             }
             index += 1;
             continue;
         }
-        // A bare `-` (length 1) and any non-option token are operands.
-        operands.push(arg);
-        index += 1;
+        // **不重排**：非选项 token 一到，C 的选项环就当场结束（`getopt.c:74-78` 见不到
+        // `-` 即返 -1），它和它后面的 token 整个落进 `argv += optind` 的那一段——
+        // 第一个是输入档、第二个是前缀、还有第三个就 usage（`split.c:135-150`）。
+        // 所以 `split in -Z` 里的 `-Z` 是**前缀**而不是选项（参照件现量：它去开 `in`
+        // 而报 `split: in: No such file or directory`）。
+        operands.extend_from_slice(&args[index..]);
+        break;
     }
 
     // C reads one input operand then the output prefix (`split.c:135-143`);
@@ -520,11 +537,73 @@ mod tests {
 
     #[test]
     fn parse_error_paths() {
+        // 集外字母交回字母本身，由壳先印 libc 那一行再接 usage（参照件：`-Z` 两行）。
         assert_eq!(
             parse_split_args(&["-z", "f"]).err(),
-            Some(SplitError::Usage)
-        ); // 集外
-        assert_eq!(parse_split_args(&["-l"]).err(), Some(SplitError::Usage)); // 缺值
+            Some(SplitError::UnknownOption('z'))
+        );
+        // 聚簇与 `--x` 只报第一个字符（参照件：`-Zb` 报 `Z`、`--x` 报 `-`）。
+        assert_eq!(
+            parse_split_args(&["-Zb"]).err(),
+            Some(SplitError::UnknownOption('Z'))
+        );
+        assert_eq!(
+            parse_split_args(&["--x"]).err(),
+            Some(SplitError::UnknownOption('-'))
+        );
+        // 缺值是 libc 的另一句（`getopt.c:132-136`），不是 usage 自己那一行。
+        assert_eq!(
+            parse_split_args(&["-l"]).err(),
+            Some(SplitError::MissingValue('l'))
+        );
+        assert_eq!(
+            parse_split_args(&["-b"]).err(),
+            Some(SplitError::MissingValue('b'))
+        );
+        assert_eq!(
+            parse_split_args(&["-a"]).err(),
+            Some(SplitError::MissingValue('a'))
+        );
+        assert_eq!(
+            parse_split_args(&["-n"]).err(),
+            Some(SplitError::MissingValue('n'))
+        );
+        // 遗留形取的是整段 token 去掉那个 `-`（C 的 `argv[optind] + 1`）：尾巴有杂字符
+        // 就整段报成 illegal line count，而不是当成集外字母。
+        assert_eq!(
+            parse_split_args(&["-12x"]).err(),
+            Some(SplitError::IllegalLineCount("12x"))
+        );
+        assert_eq!(
+            parse_split_args(&["-3b5"]).err(),
+            Some(SplitError::IllegalLineCount("3b5"))
+        );
+        // **不重排**：非选项 token 一到，它和后面的整个交回当操作数，
+        // 所以 `split in -Z` 里的 `-Z` 是前缀而不是选项（参照件现量）。
+        assert_eq!(
+            parse_split_args(&["in", "-Z"]).unwrap().operands,
+            vec!["in", "-Z"]
+        );
+        assert_eq!(
+            parse_split_args(&["in", "-l"]).unwrap().operands,
+            vec!["in", "-l"],
+            "操作数之后的 `-l` 不再被当选项读，而是当输出前缀"
+        );
+        assert_eq!(
+            parse_split_args(&["in", "-l"]).unwrap().lines_per_chunk,
+            DEFAULT_LINES,
+            "没被当选项读就不改列数（C 的 `getopt` 见非选项即返 -1）"
+        );
+        assert_eq!(
+            parse_split_args(&["in", "-l", "3"]).err(),
+            Some(SplitError::Usage),
+            "不重排之后这是**三个**操作数：档名、前缀、多出来的一支（`split.c:148-149`）"
+        );
+        assert_eq!(
+            parse_split_args(&["a", "b", "c"]).err(),
+            Some(SplitError::Usage),
+            "多于两个操作数才是 usage 那一支"
+        );
         assert_eq!(
             parse_split_args(&["-l0"]).err(),
             Some(SplitError::IllegalLineCount("0"))

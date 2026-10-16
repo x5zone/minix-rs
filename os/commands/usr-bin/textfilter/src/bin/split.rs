@@ -7,9 +7,9 @@
 //! stdin) and writes each chunk to `prefix<suffix>` created with
 //! `O_WRONLY|O_CREAT|O_TRUNC` at DEFFILEMODE (`split.c:332`). The input
 //! operand special-cases `-` as stdin (`split.c:136`, unlike grep/sed);
-//! the second operand is the output prefix (default `x`). `-a` (suffix
-//! width) is wired; `-b` (bytes) and `-n` (chunk count) are not in the
-//! deciding half and are rejected. Real-machine file creation is gated at C-57/E5.
+//! the second operand is the output prefix (default `x`). `-a` (suffix width)、
+//! `-b` (bytes)、`-n` (chunk count) 都由决定半解析，模式互斥照 C。
+//! Real-machine file creation is gated at C-57/E5.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -21,27 +21,21 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, write};
+use minix_textfilter::GetoptReport;
 use minix_textfilter::split::{
     SplitError, chunk_bytes, chunks, chunks_n, parse_split_args, suffix,
 };
 
-// Output-file create flags (`fcntl.h`), mirroring the `uudecode` precedent:
-// O_WRONLY 0x1, O_CREAT 0x200, O_TRUNC 0x400; DEFFILEMODE 0666.
-const O_WRONLY: i32 = 0x1;
-const O_CREAT: i32 = 0x200;
-const O_TRUNC: i32 = 0x400;
-
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    let prog = support::prog_name(&argv);
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     // argv folding lives in the deciding half (`parse_split_args`): BSD getopt
-    // `"0123456789b:l:a:n:"` with attached-or-next `-l` values and the obsolete
-    // all-digit `-N`. `-a`/`-b`/`-n` (suffix width, byte split, chunk count) are
-    // reported unmodelled — the deciding half splits on line counts only.
+    // `"0123456789b:l:a:n:"` with attached-or-next values and the obsolete
+    // `-<数字>`. 集外字母与缺值各由 libc 先印一行，本壳再接 usage。
     let parsed = match parse_split_args(&args[1..]) {
         Ok(p) => p,
-        Err(e) => arg_error(e),
+        Err(e) => arg_error(prog, e),
     };
     let lines_per_chunk = parsed.lines_per_chunk;
     let sfxlen = parsed.sfxlen;
@@ -59,8 +53,10 @@ fn run() -> ! {
         Some(name) if *name == "-" => support::read_stdin(),
         Some(name) => match support::read_file(name) {
             Ok(data) => data,
-            Err(_) => {
-                support::warn(format!("split: {name}\n").as_bytes());
+            // C 的 `err(1, "%s", *argv)`（`split.c:137-138`）：程序名、操作数原文、
+            // `strerror` 句子三段齐备。旧写法只印到名字为止（同族第五例）。
+            Err(code) => {
+                support::warn_line(prog, name, code);
                 support::terminate(1);
             }
         },
@@ -77,40 +73,36 @@ fn run() -> ! {
         for (index, chunk) in chunk_bytes(&input, n).iter().enumerate() {
             let path = match out_path(prefix, index, sfxlen) {
                 Some(path) => path,
-                None => {
-                    support::warn(b"split: suffixes exhausted\n");
-                    support::terminate(1);
-                }
+                None => too_many_files(),
             };
-            if create_write(&path, chunk).is_err() {
-                support::warn(format!("split: {path}\n").as_bytes());
-                support::terminate(1);
+            if let Err(failure) = create_write(&path, chunk) {
+                write_failure(prog, &path, failure);
             }
         }
         support::terminate(0);
     }
     // `-n`: exactly `n` byte chunks (`split3`); the last absorbs the remainder.
-    // `chunks_n` returns `None` when `n > input.len()` (C "can't split into
-    // more than %d files") or the byte size is zero.
+    // `chunks_n` returns `None` when `n > input.len()` (C 的
+    // `errx(1, "can't split into more than %d files", (int)sb.st_size)`，
+    // `split.c:298-299`，报的是输入的**字节数**）或片宽为零。
     if let Some(n) = chunk_count {
         match chunks_n(&input, n) {
             Some(chunks) => {
                 for (index, chunk) in chunks.iter().enumerate() {
                     let path = match out_path(prefix, index, sfxlen) {
                         Some(path) => path,
-                        None => {
-                            support::warn(b"split: suffixes exhausted\n");
-                            support::terminate(1);
-                        }
+                        None => too_many_files(),
                     };
-                    if create_write(&path, chunk).is_err() {
-                        support::warn(format!("split: {path}\n").as_bytes());
-                        support::terminate(1);
+                    if let Err(failure) = create_write(&path, chunk) {
+                        write_failure(prog, &path, failure);
                     }
                 }
             }
             None => {
-                support::warn(b"split: can't split into that many files\n");
+                support::warn(
+                    format!("{prog}: can't split into more than {} files\n", input.len())
+                        .as_bytes(),
+                );
                 support::terminate(1);
             }
         }
@@ -121,14 +113,10 @@ fn run() -> ! {
         // with O_WRONLY|O_CREAT|O_TRUNC at DEFFILEMODE.
         let path = match out_path(prefix, index, sfxlen) {
             Some(path) => path,
-            None => {
-                support::warn(b"split: suffixes exhausted\n");
-                support::terminate(1);
-            }
+            None => too_many_files(),
         };
-        if create_write(&path, &render_chunk(chunk_lines)).is_err() {
-            support::warn(format!("split: {path}\n").as_bytes());
-            support::terminate(1);
+        if let Err(failure) = create_write(&path, &render_chunk(chunk_lines)) {
+            write_failure(prog, &path, failure);
         }
     }
     support::terminate(0);
@@ -151,33 +139,45 @@ fn render_chunk(chunk_lines: &[String]) -> Vec<u8> {
     data
 }
 
-/// Creates (or truncates) `path`, writes `bytes`, then closes it. Mirrors
-/// `split.c`'s `open(O_WRONLY|O_CREAT|O_TRUNC, DEFFILEMODE)` plus a partial
-/// write loop; a short or failed write returns `Err`.
-fn create_write(path: &str, bytes: &[u8]) -> Result<(), ()> {
-    let fd = match open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o666) {
-        Ok(fd) => fd,
-        Err(_) => return Err(()),
-    };
-    let mut written = 0usize;
-    let mut result = Ok(());
-    while written < bytes.len() {
-        match write(fd, &bytes[written..]) {
-            Ok(0) => {
-                result = Err(());
-                break;
-            }
-            Ok(n) => written += n,
-            Err(_) => {
-                result = Err(());
-                break;
-            }
-        }
+/// Creates (or truncates) `path` and writes `bytes` into it, mirroring
+/// `split.c`'s `open(O_WRONLY|O_CREAT|O_TRUNC, DEFFILEMODE)` plus the partial
+/// write loop（`newfile()` 与 `bigwrite()`）。
+///
+/// 缝走 `bin_support::create_sink` 的双生面（宿主 `std::fs::File::create`、真机
+/// `minix_sys::open`）：本文件以前直接拿裸 `minix_sys::open`/`write`/`close`，
+/// **宿主上一个分片文件都写不出去**，所以 `split` 的输出腿从来没有被进程级测过
+/// （读缝同病的第五例：批次三百零六的 `nl`、三百零八的 `fold`、三百零九的 `rev`、
+/// 三百一十的 `colrm`）。交回的是 `Errno`，因为 C 那一行是 `err(3)` 三段形。
+fn create_write(path: &str, bytes: &[u8]) -> Result<(), ChunkWrite> {
+    let sink = support::create_sink(path).map_err(ChunkWrite::Open)?;
+    // 短写与写错在 C 那边由 `bigwrite` 检出后 `err(1, "write")`；本壳的 `finish`
+    // 不交回平台号，按既有口径退到 `EIO`（`bin_support::errno_of` 同一处置）。
+    sink.finish(bytes)
+        .map_err(|_| ChunkWrite::Write(minix_sys::Errno::EIO))
+}
+
+/// 分片文件的两种失败：开不开（C 报路径）与写不写进（C 报 `write`）。
+enum ChunkWrite {
+    Open(minix_sys::Errno),
+    Write(minix_sys::Errno),
+}
+
+/// 两个失败出口各自的 `err(3)` 三段形，印完即退 1（C 的 `err` 本身就是致命支）。
+fn write_failure(prog: &str, path: &str, failure: ChunkWrite) -> ! {
+    match failure {
+        // `split.c:332-333`：`err(1, "%s", fname)`。
+        ChunkWrite::Open(code) => support::warn_line(prog, path, code),
+        // `split.c:204` 等五处：`err(1, "write")`——标签是 `write` 而不是路径。
+        ChunkWrite::Write(code) => support::warn_line(prog, "write", code),
     }
-    // [SD19-gate] SD-19: close 后 fd 不再使用
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = close(fd);
-    result
+    support::terminate(1);
+}
+
+/// C 的 `errx(1, "too many files.")`（`split.c:326-330`）：后缀空间（26 的 width 次方）
+/// 用完。旧写法印的是本壳自拟的 `suffixes exhausted`。
+fn too_many_files() -> ! {
+    support::warn(b"split: too many files.\n");
+    support::terminate(1);
 }
 
 #[cfg(test)]
@@ -213,35 +213,46 @@ mod tests {
     }
 }
 
-fn usage() -> ! {
-    support::warn(b"usage: split [-l lines]\n");
-    support::terminate(2);
+fn usage(prog: &str) -> ! {
+    // C 的 `usage()`（`split.c:355-361`）：程序名跟着 `getprogname()`、一整行、`exit(1)`。
+    // 旧写法两样都不合：句子是本壳自拟的短式，退码写成 2。
+    support::warn(
+        format!(
+            "usage: {prog} [-b byte_count] [-l line_count] [-n chunk_count] \
+[-a suffix_length] [file [prefix]]\n"
+        )
+        .as_bytes(),
+    );
+    support::terminate(1);
 }
 
-/// Map a [`SplitError`] from `parse_split_args` to the exact C error path (the
-/// message and exit code) the old in-bin parser used, then terminate.
-fn arg_error(e: SplitError<'_>) -> ! {
+/// Map a [`SplitError`] to the exact C path（哪一行、几行、退码）。
+fn arg_error(prog: &str, e: SplitError<'_>) -> ! {
     match e {
-        SplitError::Usage => usage(),
+        SplitError::Usage => usage(prog),
+        SplitError::UnknownOption(letter) => {
+            support::warn(GetoptReport::UnknownOption(letter).line(prog).as_bytes());
+            usage(prog)
+        }
+        SplitError::MissingValue(letter) => {
+            support::warn(GetoptReport::MissingValue(letter).line(prog).as_bytes());
+            usage(prog)
+        }
         SplitError::IllegalLineCount(v) => {
-            support::warn(format!("split: {v}: illegal line count.\n").as_bytes());
+            support::warn(format!("{prog}: {v}: illegal line count.\n").as_bytes());
             support::terminate(1);
         }
         SplitError::IllegalByteCount(v) => {
-            support::warn(format!("split: {v}: illegal byte count.\n").as_bytes());
+            support::warn(format!("{prog}: {v}: illegal byte count.\n").as_bytes());
             support::terminate(1);
         }
         SplitError::IllegalChunkCount(v) => {
-            support::warn(format!("split: {v}: illegal number of chunks.\n").as_bytes());
+            support::warn(format!("{prog}: {v}: illegal number of chunks.\n").as_bytes());
             support::terminate(1);
         }
         SplitError::IllegalSuffixLength(v) => {
-            support::warn(format!("split: {v}: illegal suffix length.\n").as_bytes());
+            support::warn(format!("{prog}: {v}: illegal suffix length.\n").as_bytes());
             support::terminate(1);
-        }
-        SplitError::Unmodelled => {
-            support::warn(b"split: -n option not modelled yet\n");
-            support::terminate(2);
         }
     }
 }

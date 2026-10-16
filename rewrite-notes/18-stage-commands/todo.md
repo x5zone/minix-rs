@@ -250,6 +250,66 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十一把 `split` 的诊断面按 C 分回四类出口，并新立它的第一扇端到端门（顺带修好宿主写不出的写缝）**
+  （`2026-10-16`，`claim/SPLIT-GETOPT-LINE-qoder` @ 基线 `589fc4ce0`，单域三线 commands/textfilter，无跨界）：
+  判定表第十三支。**真源形状**：`split.c:80` 的 optstring 是 `"0123456789b:l:a:n:"`——`0-9` 六个是
+  **合法字母**（NetBSD 注释自称「Undocumented kludge」，遗留的 `-<数字>` 形），四个带值项，
+  所以它的出口比只吃空 optstring 的 `rev`/`colrm` 多一整层，共四类：① 集外字母（libc 一行
+  `split: unknown option -- <字母>` + `usage()` 一行，退 1；`-Z`、聚簇 `-Zb` 报 `Z`、`--x` 报 `-`）；
+  ② 带值项缺值（libc 的另一句 `split: option requires an argument -- <字母>` + usage，退 1，
+  `l`/`b`/`a`/`n` 四支都走这里）；③ 值非法（`errx` 两支形：`split: <原文>: illegal line count.` 等
+  四句，没有 usage）；④ 只有 usage 自己（`-l 3 -l 4` 的 `if (numlines != 0)`、多于两个操作数）。
+  **本壳改前的五处失真**（参照件 `tmp/split-311/split_ref` 逐形量出，`golden.log` 是读数）：
+  没有①②两类的 libc 行；`usage()` 的句子是本壳自拟的短式 `usage: split [-l lines]` 而 C 写的是
+  四选项式样且程序名跟着 `getprogname()`（`split.c:357-359`），**退码还写成 2**（C 是 `exit(1)`）；
+  选项环**重排**——非选项 token 之后继续扫，于是 `split <file> -Z` 把前缀当成坏选项，而 C 的
+  `getopt` 见非选项即返 -1（`getopt.c:74-78`），那个 `-Z` 是**输出前缀**（参照件现量：生成 `-Zaa`、退 0）；
+  遗留形只认「全数字尾巴」，`-12x` 与 `-3b5` 被当集外字母而 C 把整段交给 `strtoull` 后报
+  `illegal line count.`；后缀穷尽与 `-n` 超限两句是自拟的（C 是 `errx(1, "too many files.")` 与
+  `errx(1, "can't split into more than %d files", (int)sb.st_size)`，后者缀的是输入的**字节数**）。
+  **新门一立暴露的是写腿而不是读腿（同族第五例，方向相反）**：`split` 壳自己拿裸
+  `minix_sys::open`/`write`/`close` 建分片文件，**宿主上一个文件都写不出去**（门测首轮五枚红，
+  报的是 `split: xaa`），所以它的输出从来没有被进程级测过；已改走 `bin_support::create_sink` 的
+  双生面（宿主 `std::fs::File::create`、真机 `open(O_WRONLY|O_CREAT|O_TRUNC, 0666)`），
+  并把两条失败出口按 C 分开：开档失败 `err(1, "%s", fname)`（程序名 + 路径 + `strerror`），
+  写失败 `err(1, "write")`（标签是 `write` 不是路径，`split.c:204` 等五处）。
+  **门测 12 枚**（`tests/split_face.rs`，新立的 target）：四类出口各一枚（缺值那枚把 `l`/`b`/`a`/`n`
+  四支扫全）、usage 文本与退码一枚、不重排两枚（前缀形与三操作数形）、输入腿三段形一枚、
+  `-` 与 `--` 一枚、遗留形一枚、值附形与另形一枚、输出腿一枚。
+  **两处测试自身的错**（test-audit 第 2 维当场逮住，都是我先写错再被门否掉）：一条期望写成
+  「操作数之后的 `-l 3` 该交回当操作数」，但那已经是**三个**操作数，C 在那里走 usage 而不是成功；
+  另一条把「十二行按五行切」算成两片而实际是三片；第三处是把 `split -l 3 pp` 当成「前缀是 pp」，
+  其实 `pp` 是**第一**操作数、意思是读一个叫 pp 的档（参照件在同一形上给同一句话，A/B 逐字对过）。
+  三处都按 C 改期望而不是改代码。
+  **登记不执行**：① C 的 `err(1, "read")`（`split.c:190`、`:257`）与 `err(1, "stat")`（`:294`）
+  两形在本壳不可观测——`bin_support::read_stdin()` 没有错误通道、`-n` 走的是收全后的长度而不是
+  `fstat`（`SPLIT-READ-STAT-ERRLEG`，与 `REV-STDIN-ERRLEG`/`COLRM-IO-ERRLEG` 同族）；
+  ② `close` 失败 C 也报 `err(1, "%s", fname)`（`:321-322`），本壳的 `WriteSink` 由 drop 释放、
+  不上报（`SPLIT-CLOSE-ERRLEG`）；③ 短写与写错时本壳交回 `EIO` 而不是平台的号
+  （`bin_support::errno_of` 的既有口径，`SPLIT-WRITE-ERRNO`）；④ 输入仍过一遍 UTF-8 校验，
+  非文本字节会让整段输入被当空（`split.rs` 里的 `from_utf8(...).unwrap_or("")`），
+  与批次三百一十在 `colrm` 修掉的是同一失真，但 `split` 的行重建要一并改，单独一轮
+  （`SPLIT-NONUTF8-DROP`）；⑤ `split` 先收全输入再切块，C 边读边写（`SPLIT-STREAMING-MEMORY`）；
+  ⑥ 真机分片文件创建与 per-command 断言归 `C-57`/E5（既有口径）；⑦ 07 篇第 155 行那句陈旧的
+  测试计数仍归 V3-5/V3-6 的口径轮（批次三百零九已登记，本笔不顺手改）。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/**split** + pr
+  （egetopt 措辞）；待接 `unexpand`、`col`、`column`、`comm`、`cmp`、`jot`、`unifdef`、`units`、
+  `seq`、`paste`、`tr`；另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `UNEXPAND-GETOPT-LINE`
+  （`minix3/usr.bin/unexpand/unexpand.c:86` 的 optstring 是 `"at:"`，只有 `t` 带值，
+  出口比 `split` 少一层，是本族目前最便宜的一支）。
+  **三件套**：容器整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **725 / 0 / 0**
+  （57 target，基线 `589fc4ce0` 为 713/56，+12 是新立的 `split_face`、+1 是它的 target）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、**86 warning 同基线**且触及件零命中；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`；
+  `rustfmt --edition 2024 --check` 触及件零漂移；A/B 与参照件逐形 **SAME=31 DIFF=0**
+  （`tmp/split-311/ab.log`，比的是退码、stderr、生成的文件名清单）；
+  变异负控四枚（`tmp/split-311/ctl311.py`，每枚先打印 `mutation applied`、还原后核 md5）：
+  丢 libc 那一行 → 咬 3 枚；取消「不重排」→ 咬 2 枚；缺值退回只印 usage → 咬 2 枚；
+  写腿退回裸 `minix_sys::open` → 咬 5 枚（输出腿、前缀形、`-` 与 `--`、遗留形、值形各一支）。核实日 `2026-10-16`；基线 `589fc4ce0`。
+  **验证边界**：参照件在本机链 glibc 的 `err`/`errx`/`strtoull`，其 `strerror` 句子与 Minix 表可能不同；
+  本笔 31 形里没有一支依赖 0 号错误的句子（与批次三百一十那一形之差不同），故 DIFF=0 是逐字节对账的结果。
+  **负载条款**：一条命令只一件事、容器 `-j 1 -m 2g -u`、宿主与容器不交叉用同一 target、无合成压力。
+
 - ✅ **批次三百一十把 `colrm` 的选项环与列号段按 C 定形，并新立它的第一扇端到端门（第四处读缝缺陷）**
   （`2026-10-16`，`claim/COLRM-GETOPT-LINE-qoder` @ 基线 `58ff62978`，单域三线 commands/textfilter，无跨界）：
   判定表第十二支（按 `tmp/todo-loop-HANDOFF.md` 现查选出的最廉价一支）。**真源形状**：
