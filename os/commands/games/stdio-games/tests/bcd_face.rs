@@ -12,7 +12,8 @@
 //! (`:132`, `:142`): a physical line longer than **79** characters arrives as a
 //! 79-character chunk and then the remainder, and each chunk becomes its own card.
 
-use std::io::Write as _;
+mod face_support;
+
 use std::process::{Command, Stdio};
 
 const BCD: &str = env!("CARGO_BIN_EXE_bcd");
@@ -25,13 +26,7 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("the bcd binary should be runnable");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin piped")
-        .write_all(input)
-        .expect("writing standard input");
-    drop(child.stdin.take());
+    face_support::write_stdin(&mut child, input);
     let output = child.wait_with_output().expect("the run should finish");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),

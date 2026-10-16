@@ -10,7 +10,8 @@
 //! five-line header and five-line trailer (`pr.h:60-61`, `pr.c:1875-1878`), and a
 //! headerless page is not padded at all (`prtail`'s `nohead` arm, `pr.c:1526-1538`).
 
-use std::io::Write as _;
+mod face_support;
+
 use std::process::{Command, Stdio};
 
 const PR: &str = env!("CARGO_BIN_EXE_pr");
@@ -23,13 +24,7 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("the pr binary should be runnable");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin piped")
-        .write_all(input)
-        .expect("writing standard input");
-    drop(child.stdin.take());
+    face_support::write_stdin(&mut child, input);
     let output = child.wait_with_output().expect("the run should finish");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -399,4 +394,37 @@ fn form_feed_ends_every_header_page_and_no_header_cancels_it() {
     // identical byte for byte.
     let (f_out, _, _) = run(&["-f", "-l", "20", "-h", "T"], b"a\nb\nc\n");
     assert_eq!(f_out, "\n\nT Page 1\n\n\na\nb\nc\n\u{c}");
+}
+
+/// 门自身的契约，钉在这里而不是别处：命令在**读标准输入之前**就退出时，写输入不是失败。
+///
+/// 上面那枚诊断门用的都是这一形状（`pr.c:142-157` 的 setup 错排在任何读之前）。
+/// 该不该拿到 `BrokenPipe` 取决于父子谁先被调度——输入只有几个字节时父进程通常先写完，
+/// 于是同一条用例在负载下时红时绿（实测三连跑 1 红 2 绿）。这里**先等到子进程退出再写**，
+/// 确定性地造出「管道读端已关闭」那一状态：旧写法当场 panic，现写法安静放过
+/// （`face_support::write_stdin` 只容忍 `BrokenPipe`，其余写错仍然当场失败）。
+///
+/// 为什么用 `try_wait` 轮询而不是 `wait`：`Child::wait` 会先把 `child.stdin` 那个句柄
+/// 丢掉（std 这么做是为了别让子进程卡在输入上等不死），那样就没得写了。轮询带耐心上限，
+/// 超时明确报出来，不留无界自旋。
+#[test]
+fn writing_stdin_to_an_already_exited_child_is_not_a_gate_failure() {
+    let mut child = Command::new(PR)
+        .args(["+0"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the pr binary should be runnable");
+    let mut exited = child.try_wait().expect("polling the child should work");
+    for _ in 0..2000 {
+        if exited.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        exited = child.try_wait().expect("polling the child should work");
+    }
+    let status = exited.expect("pr exits on the setup error without reading stdin");
+    assert_eq!(status.code().unwrap_or(-1), 1, "这一形走的是 usage 那一支");
+    face_support::write_stdin(&mut child, b"a\n");
 }

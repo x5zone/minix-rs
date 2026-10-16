@@ -7,8 +7,9 @@
 //! as bytes because `-n` copies the input through, including bytes above 0x7F,
 //! which no `String` could carry unchanged.
 
+mod face_support;
+
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -22,13 +23,7 @@ fn run(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("the vis binary should be runnable");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin piped")
-        .write_all(input)
-        .expect("writing standard input");
-    drop(child.stdin.take());
+    face_support::write_stdin(&mut child, input);
     let output = child.wait_with_output().expect("the run should finish");
     (
         output.stdout,

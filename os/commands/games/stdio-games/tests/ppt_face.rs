@@ -10,7 +10,8 @@
 //! already was one (`:98-113`). `-h` is not help: it shares the `case '?'` arm and leaves
 //! with the usage line on standard error and status 1 (`:58-63`, `:80-83`).
 
-use std::io::Write as _;
+mod face_support;
+
 use std::process::{Command, Stdio};
 
 const PPT: &str = env!("CARGO_BIN_EXE_ppt");
@@ -23,13 +24,7 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("the ppt binary should be runnable");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin piped")
-        .write_all(input)
-        .expect("writing standard input");
-    drop(child.stdin.take());
+    face_support::write_stdin(&mut child, input);
     let output = child.wait_with_output().expect("the run should finish");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),

@@ -8,7 +8,8 @@
 //! extra `show("")` line, and one `show("...-.-")` ends the whole message — so the
 //! trailing `SK` line belongs to the run, never to an argument.
 
-use std::io::Write as _;
+mod face_support;
+
 use std::process::{Command, Stdio};
 
 const MORSE: &str = env!("CARGO_BIN_EXE_morse");
@@ -21,13 +22,7 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("the morse binary should be runnable");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin piped")
-        .write_all(input)
-        .expect("writing standard input");
-    drop(child.stdin.take());
+    face_support::write_stdin(&mut child, input);
     let output = child.wait_with_output().expect("the run should finish");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),

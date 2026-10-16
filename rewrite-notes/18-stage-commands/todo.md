@@ -250,6 +250,45 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百零三把端到端门的「写标准输入」竞态修掉：16 处收成一件夹具，只放过 `BrokenPipe`**
+  （`2026-10-16`，`claim/FACE-GATE-STDIN-RACE-qoder` @ 基线 `66bcd264a`，单域三线 commands 两包的 `tests/`，
+  **一行生产码都没动**，无跨界）：清批次二百九十九登记的第③条。
+  **现象与根因**：`tests/pr_face.rs` 的 `numeric_option_diagnostics_are_c_named_messages_then_the_usage`
+  单目标三连跑 1 红 2 绿，红的那次报 `writing standard input: Os { code: 32, kind: BrokenPipe }`；
+  `vis_face` 在同一容器里串跑多门那一趟独红。根因不在被测代码：C 的诊断支（`minix3/usr.bin/pr/pr.c:142-157`
+  的 setup 错、`vis.c` 的集外字母支等）**排在任何读之前**，子进程一退出管道读端就关闭，父进程此时的
+  `write_all` 拿到 `BrokenPipe`；而这件事**是否发生取决于父子双方谁先被调度**（输入只有几个字节时父进程通常先写完），
+  所以是门自己的竞态被当成了被测缺陷。
+  **改法**：新建 `tests/face_support/mod.rs`（两个包各一份：`usr-bin/textfilter` 与 `games/stdio-games`），
+  把「写标准输入并关闭它」收成一件 `write_stdin(&mut Child, &[u8])`：**只放过 `BrokenPipe`，其余写错当场断言失败**
+  ——否则门会静默失去输入而假绿，这是修法里唯一需要判断的地方。16 处调用点（`bcd`/`caesar`/`factor`/`morse`/
+  `number`/`pig`/`ppt` 七枚 + `cmp`/`cut`/`head`/`pr`/`sort`/`tail`/`uniq`/`unvis`/`vis` 九枚）逐处替换，
+  并收掉因此不再使用的 `use std::io::Write as _;`。这个形状此前被复制 16 遍，正是批次二百八十记过的
+  「同一事实多处承载」——修一处不够，得一次改齐。
+  **新增一枚门自身的契约测**（`pr_face.rs` 末尾）：先 `try_wait` 轮询到子进程退出、再写输入，**确定性地**造出
+  同一状态。用 `try_wait` 而不是 `wait` 是有原因的：`Child::wait` 会先把 `child.stdin` 句柄丢掉
+  （std 这么做是为了别让子进程卡在输入上等不死），那样就没得写了——这一点连同耐心上限写进测注。
+  三件套：容器 `cargo test -j 1 --no-fail-fast -p minix-textfilter -p minix-stdio-games` →
+  **885 passed / 0 failed / 0 ignored**（71 个 target：textfilter 658 = 上一笔 657 + 新契约测 1，
+  stdio-games 227 与基线同数）；把当年会红的三枚目标复跑 **五连全绿**（`--test pr_face --test vis_face
+  --test unvis_face` → 15/10/19 × 5，日志 `tmp/face-303-flake.log`；修前两目标三连跑就出过 1 红）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` → 退码 0、0 error、**86 条 warning 与基线逐编译单元同数**
+  （17 个文件收夹具后没留下 unused import）；`-p minix-stdio-games --all-targets` → 退码 0、0 error、23 条
+  warning 且无一条指向 `tests/`；容器 `cargo check --workspace -j 1` → 0 error；rustfmt 触及件零漂移
+  （唯一那块 `primes_face.rs:207` 经 `git show HEAD:` 副本核对为**存量**，本笔未动该文件）；核实日 `2026-10-16`。
+  **一枚决定性负控**：把 `write_stdin` 改回「写不可失败」的旧形状 → `writing_stdin_to_an_already_exited_child_is_not_a_gate_failure`
+  **确定性地红**，报的正是当年那一句 `writing standard input: Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }`
+  （`tmp/face-303-mut.log`）；同一次跑里 `pr_face` 其余 14 枚与 `vis_face`/`unvis_face` **全部仍绿**——
+  既证明新测确实承载这条事实，也证明其余门对它没有分辨力（它们只是次序上赢了那场竞速）。还原后 md5 对齐
+  `0b422e8b205fa11fe6f22a6e0ec115fd`，并复跑取最终读数。
+  **登记不执行**：① `primes_face.rs:207` 的存量 rustfmt 漂移（与 `jot.rs` 那 10 处同类，格式化应单独成笔）；
+  ② 同一夹具在两包各存一份——Cargo 的集成测试没有跨 crate 共享机制，要单源得先立一个 dev-dependency 的测试件
+  crate，属结构面，不在本单射程；③ 三架构 `--bins` 本轮未跑（改动全在 `tests/`，freestanding 目标不收集测目标），
+  如实记下射程边界而不是补一枚空读数。
+  **过程自纠一处**：负控第一次仍按老习惯写成 heredoc 里的嵌套引号 python，结果是「锚点没匹配上、门全绿」的
+  假注入——批次二百九十五记过的同一坑，本轮改回**用编辑工具落盘变异**才拿到真读数。
+  **负载条款**：一条命令只跑一件事、容器 `-j 1 -m 2g -u`、无合成 CPU 压力。
+
 - ✅ **批次三百零二把 `join` 的 `-o 0` 按 C 关掉：那支「连接字段自己」是外来约定，顺手删掉 `Which::Join` 死路**
   （`2026-10-16`，`claim/JOIN-OZERO-ACCEPTANCE-qoder` @ 基线 `77ea92659`，单域三线 commands/textfilter，无跨界）：
   清批次三百零一登记的那一支。**真源形状**：C 的 `fieldarg` 只判 token 首字符是不是 `1`/`2` 且第二位是不是 `.`

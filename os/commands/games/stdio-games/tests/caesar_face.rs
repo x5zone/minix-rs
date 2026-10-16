@@ -10,6 +10,8 @@
 //! (`:88-89`), so everything that is not a Latin letter is written back unchanged —
 //! including bytes above 0x7F, which the identity row also covers.
 
+mod face_support;
+
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
@@ -23,13 +25,7 @@ fn run(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("the caesar binary should be runnable");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin piped")
-        .write_all(input)
-        .expect("writing standard input");
-    drop(child.stdin.take());
+    face_support::write_stdin(&mut child, input);
     let output = child.wait_with_output().expect("the run should finish");
     (
         output.stdout,

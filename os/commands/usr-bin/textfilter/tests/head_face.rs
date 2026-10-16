@@ -8,8 +8,9 @@
 //! GNU copy bytes; and the `-n 0`/`-c 0` cases are pinned to C alone, since
 //! `head.c:90-103` rejects a non-positive count where GNU accepts zero.
 
+mod face_support;
+
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -27,13 +28,7 @@ fn run_with(program: &str, args: &[&str], input: &str) -> (String, i32, String) 
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|_| panic!("{program} should be runnable"));
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin piped")
-        .write_all(input.as_bytes())
-        .expect("writing standard input");
-    drop(child.stdin.take());
+    face_support::write_stdin(&mut child, input.as_bytes());
     let output = child.wait_with_output().expect("the run should finish");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),

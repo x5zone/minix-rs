@@ -14,6 +14,8 @@
 //! `warn("%s", *argv)` — program name, operand, and the `strerror` sentence
 //! (`cut.c:138-142`).
 
+mod face_support;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -36,13 +38,7 @@ fn run(args: &[&str], input: &str) -> (String, i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("the cut binary should be runnable");
-    {
-        use std::io::Write as _;
-        let stdin = child.stdin.as_mut().expect("stdin piped");
-        stdin
-            .write_all(input.as_bytes())
-            .expect("writing standard input");
-    }
+    face_support::write_stdin(&mut child, input.as_bytes());
     let output = child.wait_with_output().expect("the run should finish");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
