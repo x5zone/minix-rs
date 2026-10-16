@@ -321,6 +321,46 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十九把 `bin_support::args` 的宿主腿改成 `args_os()` + lossy，闭合 `BIN-SUPPORT-HOSTED-ARGV-NONUTF8`**
+  （`2026-10-17`，`claim/BIN-SUPPORT-HOSTED-ARGV-NONUTF8-qoder` @ 基线 `4e02c33c1`，单域三线 commands/textfilter，无跨界）：
+  **这一条是什么**：`os/commands/usr-bin/textfilter/src/bin_support.rs:args` 是一对 `cfg` 双生面。
+  目标侧把 `minix_rt::crt0::args()` 交来的原始字节做 lossy 渲染（那层注释写明这是本层文本工具的约定：
+  C 把 argv 当原始字节、从不校验，`minix3/lib/libc/stdlib/getopt.c:79` 取的就是字节），
+  宿主侧那一腿写的是 `std::env::args()`——它内部对每个参数做 UTF-8 解码并在失败处 `unwrap`，
+  于是**同一个参数在两条腿上一条 panic、一条继续**。
+  **开工前的现量**（`tmp/bin-support-329/probe.py` → `measure.log`）：argv 含裸 `0xFF` 的形里
+  `tr`/`seq`/`paste`/`fold`/`rev`/`units` **六支全退 `rc=-6`（SIGABRT）+ `thread 'main' panicked`**，
+  唯一不退信号的是纯 ASCII 的 `seq 1 3`（`rc=0 out=1\n2\n3\n`）；参照件同形分别给出
+  `tr_ref: unknown option -- \xff` + usage 退 1、`seq_ref` 两行 libc 报文退 1、
+  `tr a\xffb c` **退 0 打 `cccccc`**（非法字节落在操作数里只是普通数据）、`paste -d\xff` 退 0 空输出。
+  **做法**：宿主腿改走 `std::env::args_os()`，用 `OsStrExt::as_bytes` 拿到原始字节后过**同一个**
+  `String::from_utf8_lossy`——两条腿从此共用一条渲染规则，panic 那一支不复存在。
+  这是**双生面对齐**，不是与 C 对齐：改后仍与 C 差在字节上（见下），那一半的登记不撤。
+  **门**：新立 `tests/bin_support_face.rs` 四枚（宿主侧起真子进程、argv 用 `OsStr::from_bytes` 传原始字节）：
+  ① 六支在 `-\xff` 上都不再走信号路径且第一句仍是各的 `<prog>: unknown option -- …`
+  （退码 1，`units` 退 3——退码也按现量钉）；② `tr a\xffb c` 退 0 打 `cccccc\n`、stderr 空；
+  ③ `paste -d\xff` 退 0 且三条通道都空；④ `seq -\xff` 连报**三行** `unknown option`。
+  **与 C 的差留在门上，不当已闭**：lossy 先把 `0xFF` 变成 U+FFFD，其后各支按自己的取法显形——
+  按字节取的得到 `c3 af`（U+00EF 的两字节），按 `char` 取的 `rev` 得到 `ef bf bd`，
+  累加型环的 `seq` 把替换字符的三个字节当三个字母连报三行，而 C 只有一行原字节 `ff`。
+  因此本笔只撤 `BIN-SUPPORT-HOSTED-ARGV-NONUTF8`，`GETOPT-REPORT-BYTE-LETTER` 的射程**反而量得更清**：
+  根因有**两处**——`src/lib.rs:110 GetoptReport::UnknownOption(char)` / `:129 line() -> String`
+  的句子渲染（已登记的 26 个调用点），以及 **argv 在缝上就被 lossy 吃掉**；
+  要打到 C 那一形得让 `bin_support::args` 两条腿都交字节（`Vec<Vec<u8>>` 或等价物），
+  薄壳侧的选项环与操作数跟着按字节走。门里那些精确字节断言是**故意的**：那笔落地时它们会当场变红，
+  由改的人有意识翻正，而不是让门静默跟着漂。
+  **六枚负控**（`tmp/bin-support-329/ctl329.py`，逐枚改回再复跑、跑完还原核 md5）：
+  C1 宿主腿退回 `std::env::args()`、C2 不可解码就整段丢词、C4 交回空串 ⇒ **三枚由门咬住**
+  （C1 咬住全部四枚、C2 咬住三枚、C4 咬住四枚）；C3 剥掉 `>=0x80`、C5 丢掉 `argv[0]`、
+  C6 换成 strict `from_utf8` + `unwrap_or_default` ⇒ **编译期就被挡住**，
+  对门的灵敏度既不证明也不否证。本轮实得 **3/6**，仍未到六枚门槛，欠账照旧记在台账里。
+  三件套：容器整包 `cargo test -p minix-textfilter -j 1` → **908 / 0 / 0**（68 个 target，
+  新格的 `running 4 tests`；上一笔是 904/67，本笔只加门测不加库测）；
+  `cargo clippy -p minix-textfilter --all-targets` 退码 0、`^error` 计数 0、`bin_support` 零命中；
+  workspace `cargo check -j 1` 0 error；宿主三架构 `--bins -p minix-textfilter` 各 `Finished`、各 0 error；
+  `rustfmt --edition 2021` 两件零漂移；宿主直跑库测 516 与新门 4 枚全绿。
+  核实日 `2026-10-17`；基线 `4e02c33c1`。
+
 - ✅ **批次三百二十八把 `column` 的残行告警计数补成门，闭合 `COLUMN-TAIL-WARN-COUNT`（本笔不动生产码）**
   （`2026-10-17`，`claim/COLUMN-TAIL-WARN-COUNT-qoder` @ 基线 `4643cab05`，单域三线 commands/textfilter，无跨界）：
   **这一条是什么**：批次三百一十四的测试自审（test-audit 五维）在第 1 维「完备性」上留下的缺口——
@@ -499,7 +539,9 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   `TextError::TooLong` 三支在现有壳里不可达（壳按 `input.len() + 1` 分配输出缓冲）；
   ③ 坏集合面仍「退 1 不打句子」（`bin/tr.rs:run_filter` 与 `expand` 的 `Err(_) => terminate(1)`），
   归 `TR-SET-GRAMMAR-SENTENCES` 同一条待办；④ `%c` 裸字节与非法 UTF-8 argv 两条沿用
-  `TR-NONASCII-OPTLETTER` 与 `BIN-SUPPORT-HOSTED-ARGV-NONUTF8`。
+  `TR-NONASCII-OPTLETTER` 与 `BIN-SUPPORT-HOSTED-ARGV-NONUTF8`（后者已由批次三百二十九闭合：
+  宿主腿改走 `args_os()` + lossy，两条腿同规则；与 C 的字节差不在那笔射程内，仍随
+  `GETOPT-REPORT-BYTE-LETTER` 挂着）。
   核实日 `2026-10-17`；基线 `872948d89`。
 
 - ✅ **批次三百二十二把 `tr` 的选项环、个数判与三条组合判按 C 定形，判定表因此走满，并新立它的第一扇端到端门**

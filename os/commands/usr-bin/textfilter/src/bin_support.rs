@@ -44,9 +44,16 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
 }
 
 /// Hosted twin of [`args`] (see the module header for the seam contract).
+/// `std::env::args()` panics on a non-UTF-8 argument, which would make this leg
+/// diverge from the target leg (which renders lossily); `args_os()` keeps the raw
+/// bytes so both legs apply the same lossy render — C passes argv as bytes and
+/// never validates them.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn args() -> alloc::vec::Vec<alloc::string::String> {
-    std::env::args().collect()
+    use std::os::unix::ffi::OsStrExt as _;
+    std::env::args_os()
+        .map(|raw| alloc::string::String::from_utf8_lossy(raw.as_bytes()).into_owned())
+        .collect()
 }
 
 /// Terminates the process with an exit status (see the module header).
@@ -167,7 +174,11 @@ pub fn read_line_bounded(limit: usize) -> Option<Vec<u8>> {
             _ => break,
         }
     }
-    if line.is_empty() { None } else { Some(line) }
+    if line.is_empty() {
+        None
+    } else {
+        Some(line)
+    }
 }
 
 #[cfg(all(not(test), target_os = "none"))]
@@ -181,7 +192,11 @@ pub fn read_line_bounded(limit: usize) -> Option<Vec<u8>> {
             _ => break,
         }
     }
-    if line.is_empty() { None } else { Some(line) }
+    if line.is_empty() {
+        None
+    } else {
+        Some(line)
+    }
 }
 
 /// Renders `value` in decimal into `out`, returning the written length.
