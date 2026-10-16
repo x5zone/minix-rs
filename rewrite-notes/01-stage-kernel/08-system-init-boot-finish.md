@@ -73,7 +73,7 @@
 
 `boot_cpu_init_timer` 返回非零只有一种情形：定时器编程或处理函数注册失败（`minix3/minix/kernel/clock.c:boot_cpu_init_timer` 的两个 `return -1`）。panic 的措辞把原因说在明处：没有时钟源的内核无法继续。另外两个开关没有这样的运行时守卫——`kernel_may_alloc = 0` 是一次普通赋值，解除循环是一次普通循环，它们不出错的方式只有一种：调用次序本身不出错。第 2 章会看到，C 的防线就是把次序写死在一条直线上。
 
-把两个开关的次序反过来推演，坏点都能落到具体对象上。把 `kernel_may_alloc = 0` 挪到 `switch_to_user()` 之后：VM 是 boot image 里唯一立即可调度者（§1.3 论证），它一上场就可能发 `SYS_VMCTL` 请求做分配（`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`），而内核此刻还在用"直接划拉物理内存"的旧模式记账——`pg_alloc_page` 从 `kinfo.memmap` 里挑页、把页直接从记账里划走（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page`），VM 侧从自己的空闲表里挑页，两边同时分配同一批页，谁也不知道对方划走了哪些。把解除循环挪到定时器之后：记账基线的复位（`cycles_accounting_init`，本篇 §2.3 的第7拍）与定时器编程的先后被拆开——首个 tick 到达时 tick 处理要结算"被打断段"（`minix3/minix/kernel/arch/i386/arch_clock.c:context_stop` 读每 CPU 的 TSC 基线），若基线还没建立，第一段记账把整个 TSC 计数记到当前进程头上。
+把两个开关的次序反过来推演，坏点都能落到具体对象上。把 `kernel_may_alloc = 0` 挪到 `switch_to_user()` 之后：VM 是 boot image 里唯一立即可调度者（§1.3 论证），它一上场就可能发 `SYS_VMCTL` 请求做分配（`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`），而内核此刻还在用"直接划拉物理内存"的旧模式记账——`pg_alloc_page` 从 `kinfo.memmap` 里挑页、把页直接从记账里划走（`minix3/minix/kernel/arch/i386/pg_utils.c:pg_alloc_page`），VM 侧从自己的空闲表里挑页，两边同时分配同一批页，谁也不知道对方划走了哪些。把记账基线的复位（`cycles_accounting_init`，本篇 §2.3 的第7拍）挪到定时器之后：基线与定时器编程的先后被拆开——首个 tick 到达时 tick 处理要结算"被打断段"（`minix3/minix/kernel/arch/i386/arch_clock.c:context_stop` 读每 CPU 的 TSC 基线），若基线还没建立，第一段记账把整个 TSC 计数记到当前进程头上。
 
 ### 1.2 收尾全景：kmain 尾段与十二拍
 
@@ -1184,7 +1184,7 @@ C 的 bootstrap 回收是 kmain 尾段里一条 `add_memmap` 语句——把引�
 | switch + NOT_REACHABLE | 同上终拍 | 改型：`!` 类型吸收哨兵 | `os/kernel/src/lib.rs:fn switch_to_user` |
 | 4GB 截断（LIMIT） | `minix3/minix/kernel/arch/i386/pg_utils.c:add_memmap` | 消失：随 64 位地址空间失去对象；捎带裁掉 mmap_size/mem_high_phys 两个 C 字段（os/kernel/src/memmap.rs 模块注释的核销记录） | `os/kernel/src/memmap.rs:fn add_memmap` |
 
-数一遍消失项：整行消失的只有两个——注册动作（enum 取代）、DEBUG FIXME 三查（无对位）；半个是 4GB 截断（随 64 位失去对象，顺带把两个 C 字段裁成设计 no-op）。其余全部保留或改型。这张表的反向读法是恢复实验：对每个消失项问"恢复它需要哪些配套"——恢复注册表需要堆或静态注册机构，还得给穷尽性检查找替代品；恢复三查需要三套调试检查的实现加编译开关；恢复截断需要回答"64 位下截到哪里"——每个都比删掉它时的理由更重。
+数一遍消失项：整行消失的两个——注册动作（enum 取代）、DEBUG FIXME 三查（无对位）；4GB 截断是第三个，它随 64 位失去对象，两个 C 字段以设计 no-op 的形式留在 Rust 侧（表中同标"消失"，"半个"的说法即指这层区别）。其余全部保留或改型。这张表的反向读法是恢复实验：对每个消失项问"恢复它需要哪些配套"——恢复注册表需要堆或静态注册机构，还得给穷尽性检查找替代品；恢复三查需要三套调试检查的实现加编译开关；恢复截断需要回答"64 位下截到哪里"——每个都比删掉它时的理由更重。
 
 ---
 
