@@ -383,7 +383,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/
   col/column/comm/cmp/jot/unifdef/units/seq/paste/**tr** + pr——**判定表走满**；
   另判 `expand`/`hexdump`/`colcrt`/`lam`（C 各用自己的解析器，句子不许按同族规律抹平）。
-  下一支回 `tmp/todo-loop-PLAN.md` 的 V3-11 起继续。
+  判定表已走满，下一支改按 `tmp/todo-loop-PLAN.md` 的 R 表取：开工前跑 `grep -n "^| R" tmp/todo-loop-PLAN.md` 现读哪几行还没标 ✅，取第一项。
 - ✅ **批次三百二十一把 `paste` 的选项环、`tr` 表与开档两条出口按 C 定形（第十一处读缝缺陷），并重建并行合并**
   （`2026-10-17`，`claim/PASTE-GETOPT-LINE-qoder` @ 基线 `e7e79fa5e`，单域三线 commands/textfilter，无跨界；
   **本轮拆两片落地**：首片 `9f0db881e` 是前门与读缝，末片补 clippy 清零、交叉编译腿与 A/B/负控）：
@@ -444,7 +444,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/
   col/column/comm/cmp/jot/unifdef/units/seq/paste + pr；**只剩 `tr`**（`minix3/usr.bin/tr/tr.c:68`
   用 libc `getopt("cds")`，三个都是旗标），另判 `expand`/`hexdump`/`colcrt`/`lam`。
-  下一支取 `TR-GETOPT-LINE`；其后回 `tmp/todo-loop-PLAN.md` 的 V3-11 起继续。
+  下一支取 `TR-GETOPT-LINE`（已合入，见上一笔）；判定表走满之后改按 R 表取项——`tmp/todo-loop-PLAN.md` 的排期表行号是 R1…R30，「V3-11」这个标签在该表里并不存在，属引用错型，本笔起一并翻正。
 
 - ✅ **批次三百二十把 `seq` 的选项环与三家句子按 C 定形，并新立它的第一扇端到端门**
   （`2026-10-17`，`claim/SEQ-GETOPT-LINE-qoder` @ 基线 `65457036c`，单域三线 commands/textfilter，无跨界）：
