@@ -321,6 +321,69 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十二把 `tr` 的选项环、个数判与三条组合判按 C 定形，判定表因此走满，并新立它的第一扇端到端门**
+  （`2026-10-17`，`claim/TR-GETOPT-LINE-qoder` @ 基线 `c39fd86dc`，单域三线 commands/textfilter，无跨界）：
+  **真源形状**：`tr.c:68` 写的是 `while ((ch = getopt(argc, argv, "cds")) != -1)`——`c`/`d`/`s`
+  三个字母**都不带值**，所以 libc 那句「option requires an argument」（`getopt.c:127-137`）在本支
+  不可达；而 `tr.c:79-81` 的 `case '?': default: usage();` **坐在环里直接退出**，于是集外字母的
+  libc 报文**至多一条**（参照件 `-ZQ` 只报 `Z`、`-Q -Z a` 只报 `Q`），与 `seq`/`jot` 的逐字母累加相反。
+  环后是**四段判据、按固定次序**：`tr.c:86-97` 的 `switch (argc)` 把 0 个与 3 个以上一起打发；
+  `-ds` 要两个集合（`:104-106`）、`-d` 不许两个（`:123-125`）、既无 `-d` 又无 `-s` 时必须两个
+  （`:156-157`），而 `-s` 单带一个集合在 `:139-140` 自成一局——**这条不对称**正是 usage 那四行的来历。
+  `empty string2` 只在翻译段（`:187-188`）且**不接** usage；`usage()`（`:276-282`）打**四行**、
+  程序名 `tr` 写死在串里、退 1。
+  **libc 的三条隐蔽规则**（本支逐形现量到的）：① `getopt.c:79` 取的是短横后的**第一个字节**，
+  `getopt.c:80-85` 只把**恰好**两个短横认作结束标记——所以 `tr --s a` 报的是
+  `unknown option -- -`（第三字节 `s` 让它不被当成 `--`）；② `getopt.c:86-93` 里光杆 `-` 因为
+  optstring 不含 `-` 而**落进操作数**，于是 `tr - a` 是把 `-` 换成 `a`、`tr - -` 原样输出；
+  ③ 非选项 token 收环时**不推进**游标（`getopt.c:74-78`），所以 `tr a - b` 的三个 token 全是操作数、
+  `tr a b -c` 的 `-c` 也是操作数。
+  **改动**：环与四段判据提为库侧 `src/tr.rs:parse_tr_args`（配 `TrArgs`/`TrError`，libc 报文交回
+  `src/lib.rs:GetoptReport` 单源），usage 块成 `src/tr.rs:usage_block`——用 `concat!` 拼是因为
+  Rust 的行末反斜杠续行会吃掉下一行的行首空白，而那七个空格就是对齐本身；壳 `src/bin/tr.rs`
+  重写为「前门 ⇒ 五种派发」，`empty string2` 一句留在壳里走 `errx` 形。**本支没有读操作数档的腿**
+  （数据只从标准输入来），所以「薄壳裸 `open`/`read` 宿主读不到输入」那一家族停在 `paste` 的十一处。
+  门里钉住的一条数据通路事实：`-c` 与 `-s` 齐给时挤压集取的是 **string2**——`tr -cs a b` 对
+  `aabbcc` 打 `aab`，连结尾换行都被挤掉，因为取补后的 string1 把其余一切（含换行）都映射成 `b`。
+  **门测 9 枚**（`tests/tr_face.rs`，本支第一扇端到端门，期望值逐枚取自参照件）+
+  **库测 3 枚**新增（环停在第一个坏字母、个数与组合全走 usage、usage 四行七个空格）。
+  **三件套**：容器整包 `cargo test -p minix-textfilter -j 1` → **893 / 0 / 0**（67 target，
+  比上一笔登记的 881/66 恰多出本笔的 12 枚）；`cargo clippy -p minix-textfilter --all-targets`
+  退码 0、**指向本轮触及件的诊断 0 条**（中途三条：一处 `nonminimal_bool`、两处 `needless_borrow`，
+  都在末片清零——把三条组合判写成 C 那样的三个 `if`，判据与 `tr.c` 的三段代码逐句对齐，
+  也正是 `nonminimal_bool` 想要「合并」的那三条）；`cargo check --workspace -j 1` 0 error；
+  宿主三架构 `cargo build --bins -j 1 --target {x86_64-unknown-none, aarch64-unknown-none,
+  riscv64gc-unknown-none-elf} -p minix-textfilter` 各 `Finished`——**`-p` 不可省**：漏掉它就成了
+  整工作区建 bins，`minix-rt` 带着默认的 `std` feature 去编 none 目标，报出「can't find crate
+  for `std`」一千余条而像是代码崩了，实际是配方错（本笔踩过一次，现记在这里）；
+  `rustfmt --edition 2024 --check` 触及件零漂移——本笔顺手把 `src/tr.rs` 自带的三处排版漂移
+  一并归零（纯排版，不改语义）。
+  **A/B 与参照件** `tmp/tr-322/tr_ref`（`tr.c` 真源 + Minix 的 `getopt.c` + 程序名垫片）比退码、
+  stdout、stderr 三件，65 形里**前门 49 形 SAME=49**、数据通路 14 形 SAME=13、**总 SAME=62 DIFF=3**，
+  三形全属下面登记的集合语法一族（对账表 `tmp/tr-322/ab322.log`，逐形一行以免分行误读）。
+  **八枚变异负控**（`tmp/tr-322/ctl322.py`，跑在最终源码上，每枚跑完即还原并核对 md5；跑法带
+  `--no-fail-fast`，于是库测与端到端门两个目标一定都执行）分别咬 **3 / 6 / 3 / 编译挡住 / 5 / 3 /
+  5 / 1** 枚，其中 **7 枚被端到端门当场咬住**：环改成累加、非选项也推进游标、`--` 不吃自身、
+  光杆 `-` 当选项字母处理、第三个字母错认成 `-c`、去掉「无旗标时必须两个集合」这条判、
+  usage 七个空格改成八个、`empty string2` 判据扩到删除路径。
+  **登记不执行**（三处）：① `TR-SET-GRAMMAR-SENTENCES`——集合语法的两句在 `minix3/usr.bin/tr/str.c`，
+  本层 `src/tr.rs:parse_set` 只回一个 `TextError`，于是四形分歧（参照件现量值已录）：
+  `tr '[x*3]' y` 与 `tr '[a*3]' b` ⇒ 参照件退 1 打 `tr: Sequences only valid in string2`，本层退 0
+  原样输出；`tr z-a y` ⇒ 参照件把 `z-a` 当**三个字面成员**（反向区间不成立就退回字面量）退 0 打
+  `ybc`，本层退 1 且**不打任何句子**；`tr '[:bogus:]' z` ⇒ 参照件退 1 打 `tr: unknown class bogus`，
+  本层退 1 静默。② `TR-NONASCII-OPTLETTER`——C 用 `%c` 打裸字节（`tr -é` 打 `\303`），本层按
+  `char` 渲染成 `Ã` 的两个 UTF-8 字节（与 `SEQ-`/`PASTE-`/`UNITS-` 的同名登记一族）。
+  ③ `BIN-SUPPORT-HOSTED-ARGV-NONUTF8`——**共享缝**缺陷，一次影响全族：宿主侧
+  `os/commands/usr-bin/textfilter/src/bin_support.rs:args` 走 `std::env::args()`，参数含非法
+  UTF-8 字节时当场 panic（实测 `tr`/`seq`/`paste`/`units`/`rev`/`fold` 六支都退 SIGABRT，
+  panic 文案是 `called Result::unwrap() on an Err value: "-\xFF"`），而目标侧同一函数走
+  `from_utf8_lossy` ⇒ 两条双生面在非法字节上**不等价**，②那条也因此在本机量不到真值。
+  **验证边界**：参照件在本机链 glibc 的 `errx`/`fprintf`，本支的句子不含 `strerror` 末段，
+  故无跨库末段差异；真机标准输入腿归 `C-57`/E5。核实日 `2026-10-17`；基线 `c39fd86dc`。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/
+  col/column/comm/cmp/jot/unifdef/units/seq/paste/**tr** + pr——**判定表走满**；
+  另判 `expand`/`hexdump`/`colcrt`/`lam`（C 各用自己的解析器，句子不许按同族规律抹平）。
+  下一支回 `tmp/todo-loop-PLAN.md` 的 V3-11 起继续。
 - ✅ **批次三百二十一把 `paste` 的选项环、`tr` 表与开档两条出口按 C 定形（第十一处读缝缺陷），并重建并行合并**
   （`2026-10-17`，`claim/PASTE-GETOPT-LINE-qoder` @ 基线 `e7e79fa5e`，单域三线 commands/textfilter，无跨界；
   **本轮拆两片落地**：首片 `9f0db881e` 是前门与读缝，末片补 clippy 清零、交叉编译腿与 A/B/负控）：

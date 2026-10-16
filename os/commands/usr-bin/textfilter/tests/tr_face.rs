@@ -1,0 +1,257 @@
+//! End-to-end face for the `tr` binary, checked against
+//! `minix3/usr.bin/tr/tr.c`（选项环 `:68`、`case '?': default: usage();` `:79-81`、
+//! 个数判 `:86-97`、`-ds` 要 string2 `:104-106`、`-d` 不许 string2 `:123-125`、
+//! 单集合挤压 `:139-140`、翻译路径要两个集合 `:156-157`、`empty string2` `:187-188`、
+//! `usage()` `:276-282`）与它驱动的 libc `getopt`（`minix3/lib/libc/stdlib/getopt.c:74-78`、
+//! `:80-85`、`:86-93`、`:94-95`、`:98-106`）。
+//!
+//! 下面每一条期望值都是从参照件 `tmp/tr-322/tr_ref` 现量出来的，逐形对账表在
+//! `tmp/tr-322/ab322.log`（SAME=62 / DIFF=3，三形全属已登记的 `TR-SET-GRAMMAR-SENTENCES`）。
+//! 量出来的形状有六条：
+//! ① optstring `"cds"` 三个字母**都不带值**，libc 的「option requires an argument」在本支不可达；
+//!    而 `:79-81` 把 `?` 与 `default` 直接送进 `usage()`，环当场退出 ⇒ 集外字母**只有一行**
+//!    libc（`-ZQ` 只报 `Z`、`-Q -Z a` 只报 `Q`），与 `seq`/`jot` 的逐字母累加相反。
+//! ② `--s a` 报的字母是 `-`：`getopt.c:79` 取的是短横后的第一个字节，`:80-85` 只把**恰好**
+//!    两横认作结束标记，第三字节非空就往下走，`:98` 在 `"cds"` 里找不到 `-` ⇒ `unknown option -- -`。
+//! ③ 裸 `-` 不是选项也不是操作数游标的一部分：`:86-93` 让 `-` 留在操作数里，
+//!    于是 `tr - a` 是把 `-` 换成 `a`，`tr - -` 原样输出。
+//! ④ usage 那四行的程序名写死在串里（`:278-281`），libc 那一行的名字却跟着 `argv[0]`
+//!    （`getopt.c:103` 的 `getprogname()`）——同一支命令里两行来历不同，下面
+//!    `the_libc_line_follows_argv_zero_but_the_block_is_hardwired` 就是钉这一条。
+//! ⑤ `empty string2` 只在翻译路径上出现且**不接** usage（`:187-188`），
+//!    `-d ''` 与 `-ds a ''` 都不触发它。
+//! ⑥ 本支没有读写操作数档的腿（数据只从标准输入来），所以「薄壳裸 `read` 宿主读不到输入」
+//!    那一家族停在 `paste` 的十一处。
+//!
+//! 集合语法的三形（`tr '[x*3]' y`、`tr '[a*3]' b`、`tr z-a y`）与 `[:bogus:]` 那句
+//! `unknown class` 都在 `str.c` 一侧，本层没有接上，已整族登记为 `TR-SET-GRAMMAR-SENTENCES`
+//! 并在那条上留了参照件的现量值；**它们的期望值不在下面**，此处不钉。
+
+mod face_support;
+
+use face_support::write_stdin;
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Stdio};
+
+const TR: &str = env!("CARGO_BIN_EXE_tr");
+/// `tr.c:276-282`：整块四行，后三行七个空格对齐，程序名写死为 `tr`。
+const USAGE: &str = concat!(
+    "usage: tr [-cs] string1 string2\n",
+    "       tr [-c] -d string1\n",
+    "       tr [-c] -s string1\n",
+    "       tr [-c] -ds string1 string2\n"
+);
+
+fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
+    let mut child = Command::new(TR)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the tr binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn usage_block_is_four_lines_on_stderr() {
+    // 参照件对旗标自身无操作数的每一形都只退这块：rc=1、标准输出空、stderr 恰是四行
+    for args in [
+        &[] as &[&str],
+        &["-"],
+        &["a"],
+        &["-c"],
+        &["-d"],
+        &["-s"],
+        &["-ds"],
+        &["-cd"],
+        &["-cs"],
+        &["-dc"],
+    ] {
+        let (out, code, err) = run(args, b"abc\n");
+        assert_eq!(code, 1, "{args:?}");
+        assert_eq!(out, "", "{args:?} 诊断不许走标准输出");
+        assert_eq!(err, USAGE, "{args:?}");
+    }
+}
+
+#[test]
+fn operand_count_and_combination_all_say_usage_alone() {
+    // 个数判 `:86-97` 与两处组合判 `:104-106`、`:123-125` 全在环**之外**，
+    // 所以这些形只有 usage，没有 libc 那一行
+    for args in [
+        &["a", "b", "c"][..],      // 三个操作数
+        &["a", "b", "c", "d"][..], // 四个
+        &["--", "a"][..],          // `--` 吃掉后只剩一个
+        &["a", "-", "b"][..],      // 环在 `a` 就收，`-` 是第二个操作数 ⇒ 三个
+        &["a", "b", "-c"][..],     // 不重排：`-c` 也是操作数
+        &["-d", "a", "b"][..],     // `-d` 多给一个（`:123-125`）
+        &["-dc", "a", "b"][..],    // 同上，聚簇顺序无关
+        &["-cd", "a", "b"][..],
+        &["-ds", "a"][..],      // `-ds` 少给一个（`:104-106`）
+        &["-s", "-d", "a"][..], // 跨 token 的 -s 与 -d 合成 `-ds`，仍少一个
+        &["-c", "a"][..],       // 无 -d/-s 时一个操作数不够
+    ] {
+        let (out, code, err) = run(args, b"aabbcc\n");
+        assert_eq!(code, 1, "{args:?}");
+        assert_eq!(out, "", "{args:?}");
+        assert_eq!(err, USAGE, "{args:?}");
+    }
+}
+
+#[test]
+fn off_letter_gets_one_libc_line_then_the_block() {
+    // `:79-81` 在环里就退出 ⇒ 报文不累加：`-ZQ` 只报 Z，`-Q -Z a` 只报 Q
+    for (args, letter) in [
+        (vec!["-Z"], "Z"),
+        (vec!["-h"], "h"),
+        (vec!["-0"], "0"),
+        (vec!["-a"], "a"),
+        (vec!["-ZQ"], "Z"),
+        (vec!["-sZ", "a"], "Z"),
+        (vec!["-Q", "-Z", "a"], "Q"),
+    ] {
+        let (out, code, err) = run(&args, b"abc\n");
+        assert_eq!((code, out.as_str()), (1, ""), "{args:?}");
+        assert_eq!(
+            err,
+            format!("tr: unknown option -- {letter}\n{USAGE}"),
+            "{args:?} 一行 libc 必须在整块 usage 之前"
+        );
+    }
+    // `--s a` 报的字母是短横本身：第三字节 `s` 让它不被认作结束标记
+    let (out, code, err) = run(&["--s", "a"], b"aabbcc\n");
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert_eq!(err, format!("tr: unknown option -- -\n{USAGE}"));
+}
+
+#[test]
+fn the_libc_line_follows_argv_zero_but_the_block_is_hardwired() {
+    // `getopt.c:103` 用 `getprogname()`，`tr.c:278-281` 把 `tr` 写死在串里。
+    // 参照件现量：argv[0]="trsweep" 报 `trsweep:`，argv[0]="/some/dir/tr" 报过 basename 的 `tr:`，
+    // 两种情况下那四行都一字不变
+    for argv0 in ["trsweep", "/some/dir/tr"] {
+        let mut child = Command::new(TR)
+            .arg0(argv0)
+            .arg("-Z")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the tr binary should be runnable");
+        write_stdin(&mut child, b"abc\n");
+        let output = child.wait_with_output().expect("the run should finish");
+        assert_eq!(output.status.code(), Some(1), "{argv0:?}");
+        assert_eq!(output.stdout, b"", "{argv0:?}");
+        let err = String::from_utf8_lossy(&output.stderr).into_owned();
+        let name = argv0.rsplit('/').next().unwrap_or(argv0);
+        assert_eq!(
+            err,
+            format!("{name}: unknown option -- Z\n{USAGE}"),
+            "{argv0:?} 实际 stderr={err:?}"
+        );
+    }
+}
+
+#[test]
+fn flag_cluster_is_per_letter_and_order_free() {
+    // 同一组旗标不论聚簇还是分词、不论顺序，落点一致
+    for args in [
+        vec!["-c", "-s", "a", "b"],
+        vec!["-sc", "a", "b"],
+        vec!["-cs", "a", "b"],
+    ] {
+        let (out, code, err) = run(&args, b"aabbcc\n");
+        assert_eq!((code, err), (0, String::new()), "{args:?}");
+        // 挤压集取的是 string2，取补后的 string1 把余下全映射成 `b`，
+        // 于是换行也被挤掉：参照件给出 `aab`，末尾没有换行
+        assert_eq!(out, "aab", "{args:?}");
+    }
+    // `-s -d a b` 与 `-ds a b` 同形；`-ds ab b` 删掉 a、b 再按 string2 挤压
+    for (args, want) in [
+        (vec!["-s", "-d", "a", "b"], "bcc\n"),
+        (vec!["-ds", "a", "b"], "bcc\n"),
+        (vec!["-ds", "ab", "b"], "cc\n"),
+    ] {
+        let (out, code, err) = run(&args, b"aabbcc\n");
+        assert_eq!((code, err), (0, String::new()), "{args:?}");
+        assert_eq!(out, want, "{args:?}");
+    }
+}
+
+#[test]
+fn delete_squeeze_and_complement_shapes_are_the_measured_ones() {
+    for (args, input, want) in [
+        (vec!["-d", "a"], &b"aabbcc\n"[..], "bbcc\n"),
+        (vec!["-d", "ab"], &b"aabbcc\n"[..], "cc\n"),
+        (vec!["-cd", "a"], &b"aabbcc\n"[..], "aa"),
+        (vec!["-s", "a"], &b"aabbcc\n"[..], "abbcc\n"),
+        (vec!["-s", "ab"], &b"aabbcc\n"[..], "abcc\n"),
+        (vec!["-s", "a", "b"], &b"aabbcc\n"[..], "bcc\n"),
+        (vec!["-cs", "a"], &b"aabbcc\n"[..], "aabc\n"),
+        (vec!["-c", "a", "b"], &b"aabbcc\n"[..], "aabbbbb"),
+    ] {
+        let (out, code, err) = run(&args, input);
+        assert_eq!((code, err), (0, String::new()), "{args:?}");
+        assert_eq!(out, want, "{args:?}");
+    }
+}
+
+#[test]
+fn empty_string2_sentence_has_no_usage_block() {
+    // `:187-188` 的 `errx`：一行、退 1、**不接** usage
+    let (out, code, err) = run(&["a", ""], b"abc\n");
+    assert_eq!((code, out), (1, String::new()));
+    assert_eq!(err, "tr: empty string2\n");
+    // 同一条判据不在删除与挤压路径上：空集合都合法
+    for (args, want) in [
+        (vec!["-d", ""], "aabbcc\n"),
+        (vec!["-ds", "a", ""], "bbcc\n"),
+    ] {
+        let (out, code, err) = run(&args, b"aabbcc\n");
+        assert_eq!((code, err), (0, String::new()), "{args:?}");
+        assert_eq!(out, want, "{args:?}");
+    }
+}
+
+#[test]
+fn the_ring_does_not_reorder_operands() {
+    // 裸 `-` 留在操作数里：`tr - a` 把 `-` 换成 `a`，`tr - -` 原样
+    let (out, code, err) = run(&["-", "a"], b"a-b\n");
+    assert_eq!((code, err), (0, String::new()));
+    assert_eq!(out, "aab\n");
+    let (out, code, err) = run(&["-", "-"], b"a-b\n");
+    assert_eq!((code, err), (0, String::new()));
+    assert_eq!(out, "a-b\n");
+    // `--` 吃掉自身：`tr -- a b` 与 `tr a b` 同形
+    let (out, code, err) = run(&["--", "a", "b"], b"aabbcc\n");
+    assert_eq!((code, err), (0, String::new()));
+    assert_eq!(out, "bbbbcc\n");
+}
+
+#[test]
+fn translation_path_is_unchanged_by_the_shell_rewrite() {
+    for (args, input, want) in [
+        (vec!["a", "b"], &b"aabbcc\n"[..], "bbbbcc\n"),
+        (vec!["ab", "xy"], &b"aabbcc\n"[..], "xxyycc\n"),
+        (vec!["a-z", "A-Z"], &b"abc\n"[..], "ABC\n"),
+        (vec!["[:lower:]", "[:upper:]"], &b"abc\n"[..], "ABC\n"),
+        (vec!["a", "[b*3]"], &b"abc\n"[..], "bbc\n"),
+        (vec!["a-z", "z"], &b"abc\n"[..], "zzz\n"),
+        (vec!["-d", "[:alpha:]"], &b"aabbcc12\n"[..], "12\n"),
+        (vec!["a", "b"], &b"a-b\n"[..], "b-b\n"),
+    ] {
+        let (out, code, err) = run(&args, input);
+        assert_eq!((code, err), (0, String::new()), "{args:?}");
+        assert_eq!(out, want, "{args:?}");
+    }
+    // 空输入是成功
+    let (out, code, err) = run(&["a", "b"], b"");
+    assert_eq!((out, code, err), (String::new(), 0, String::new()));
+}
