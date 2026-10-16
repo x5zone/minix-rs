@@ -250,6 +250,54 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十三把 `col` 的选项环按 C 分回四类出口，并新立它的第一扇端到端门（第七处读缝缺陷）**
+  （`2026-10-16`，`claim/COL-GETOPT-LINE-qoder` @ 基线 `6802a77e7`，单域三线 commands/textfilter，无跨界）：
+  判定表第九支（未接的那一组里第一支）。**真源形状**：`col.c:133` 的 optstring 是 `"bfhl:px"`——
+  五个无值字母加一个带值的 `l`，而且 `col` 一个操作数都不接受（`col.c:157-158` 的
+  `if (optind != argc) usage()`，因为它只读标准输入）。四类出口：① 集外字母（libc 一行 + usage 一行）；
+  ② `-l` 缺值（libc 的 `option requires an argument -- l` + usage 两行）；
+  ③ `atoi(optarg) <= 0`（`col.c:145-150` 是裸 `fprintf(stderr, "col: bad -l argument %s.\n", optarg)`
+  加 `exit`：程序名写死、带操作数原文、句尾一个句点，而且**不接 usage**——本壳以前把它当成②的兜底支，
+  于是 `-l` 后面没有那一段时印的是 `col: bad -l argument.`，句子与行数都不对）；
+  ④ 只有 usage（操作数、聚簇里的集外字母走①②那两行）。
+  **`atoi` 的两处接受面**（参照件量，不用 Rust 的严格解析）：值可以附在本串里（`-l3`），
+  尾巴上有杂字符也照收（`-l 3x` 是合法的 3，因为 C 只测 `atoi` 的返回值而 `atoi` 不管余下的是什么）；
+  反过来 `""`、`abc`、`0`、`-2` 都落 `<= 0`。聚簇逐字母生效且后写覆盖先写（`-xb` 两支都算、`-hx` 结束于不压缩）。
+  **第七处同族读写缝缺陷**：`col` 壳拿裸 `minix_sys::read(support::STDIN, …)` 读输入，
+  宿主上读不到任何东西（前六处：`nl`/`fold`/`rev`/`colrm`/`unexpand` 的读腿、`split` 的写腿），
+  所以那台行装配状态机的输出**从来没有被进程级测过**；已改走 `bin_support::read_stdin()` 的双生读缝。
+  选项环提入库侧 `parse_col_flags`（同 `split`/`unexpand` 的分层：句子交回壳，判定住在库）。
+  **门测 9 枚**（`tests/col_face.rs`，新立的 target）+ 库测 1 枚（选项环逐支、附值形、
+  `3x`、三种失败各归一支、`--` 与操作数）：金样逐形取自参照件读数——反向换行被吸收而两行都留、
+  缺省把退格原样透出而 `-b` 只留叠字符最后一个、缺省压空格成制表符而 `-x` 摊平、
+  未知转义序列被吃掉、**末行没有换行时那一行整个不出**（C 攒到换行才 flush，参照件同形）。
+
+  **三件套**：容器整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **746 / 0 / 0**
+  （59 target，基线 `6802a77e7` 为 736/58，+9 是新立的 `col_face`、+1 是库侧选项环那一枚）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、**86 warning 同基线**
+  （本笔一度到 87，一枚是测试里「与 `false` 比相等」，已改成取反）；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`；
+  `rustfmt --edition 2024 --check` 触及件零漂移；A/B 与参照件逐形 **SAME=34 DIFF=0**
+  （`tmp/col-313/ab.log`：29 形比退码/stdout/stderr，另 5 形比整段输入的输出指纹）；
+  变异负控四枚（`tmp/col-313/ctl313.py`，每枚先打印 `mutation applied`、还原后核 md5）：
+  丢 libc 那一行 → 咬 3 枚；缺值并进 `bad -l argument` → 咬 2 枚；
+  改用严格解析替代 `atoi` → 咬 2 枚；读缝退回裸 `read` → 咬 4 枚。
+  核实日 `2026-10-16`；基线 `6802a77e7`。
+  **验证边界**：参照件在本机链 glibc 的 `getopt` 被 Minix 那份覆盖，`err`/`warn` 系列走 glibc，
+  其 `strerror` 句子与 Minix 表可能不同；本笔 34 形里落在报文上的三支（集外字母、缺值、
+  `bad -l`）用的都是不带 `strerror` 的句子，故 `DIFF=0` 是逐字节对账的结果。
+  **登记不执行**：① C 的告警有两句——`col.c:536-541` 的 `dowarn` 按 `line < 0` 分
+  `past first line` 与 `-- line already flushed`，本壳的 `ColOutput.warned` 是一个布尔，
+  只印后一句，前一种形在这一层不可观测（`COL-WARN-KIND`）；② `col.c:528-533` 的 `wrerr`
+  是 `col: write error.` 加 `exit`，本壳的 `emit` 短写不上报（`COL-WRITE-ERRLEG`，同族）；
+  ③ C 读输入用 `getchar`、边读边排版，本壳先收全再过滤（`COL-STREAMING-MEMORY`）；
+  ④ 参照件现量本次输入的告警一次都没触发，那条腿仍只有库测覆盖（`COL-WARN-FACE-CASE`）；
+  ⑤ 07 篇第 155 行的陈旧测试计数仍归 V3-5/V3-6（既有登记）；⑥ 真机腿归 `C-57`/E5。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/**col** + pr
+  （egetopt 措辞）；待接 `column`、`comm`、`cmp`、`jot`、`unifdef`、`units`、`seq`、`paste`、`tr`；
+  另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `COLUMN-GETOPT-LINE`
+  （`minix3/usr.bin/column/column.c:93` 的 optstring 是 `"c:s:tx"`，`c`/`s` 带值）。
+
 - ✅ **批次三百一十二把 `unexpand` 的选项环与档位表按 C 定形，并新立它的第一扇端到端门（第六处读缝缺陷）**
   （`2026-10-16`，`claim/UNEXPAND-GETOPT-LINE-qoder` @ 基线 `6302808e7`，单域三线 commands/textfilter，无跨界）：
   判定表第十一支。**真源形状**：`unexpand.c:86` 的 optstring 是 `"at:"`——一个无值字母加一个带值字母，

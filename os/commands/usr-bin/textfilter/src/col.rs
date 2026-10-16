@@ -6,9 +6,9 @@
 //! counting sort for out-of-order columns, blank-line accounting).
 //! Input is bytes: non-graphic bytes that are not recognized controls
 //! are dropped, exactly like the C locale's `isgraph` gate.
-use alloc::{vec, vec::Vec};
 #[cfg(test)]
 use alloc::string::String;
+use alloc::{vec, vec::Vec};
 
 pub const ESC: u8 = 0o033;
 pub const SI: u8 = 0o017; // shift in to normal character set
@@ -42,11 +42,15 @@ struct Line {
 
 impl Line {
     fn new() -> Line {
-        Line { cells: Vec::new(), needs_sort: false, max_col: 0 }
+        Line {
+            cells: Vec::new(),
+            needs_sort: false,
+            max_col: 0,
+        }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColOptions {
     /// `-b`: output no backspaces (only the last of an overstrike).
     pub no_backspaces: bool,
@@ -70,6 +74,118 @@ impl Default for ColOptions {
             pass_unknown_seqs: false,
         }
     }
+}
+
+/// `col` 的选项环（`col.c:133-158`）各支出口，一支对应 C 的一条路径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColFlagError<'a> {
+    /// 集外字母：libc 先印一行（`getopt.c:101-104`），`col.c:154-156` 的
+    /// `case '?': default: usage()` 再接第二行 —— 两行、退 1。
+    UnknownOption(char),
+    /// `-l` 后面没有那一段：libc 的另一句 `option requires an argument -- l`
+    /// （`getopt.c:132-136`）+ usage，**不是** `bad -l argument`。
+    MissingValue(char),
+    /// `col.c:145-150`：`atoi(optarg) <= 0` 时 C 自己印
+    /// `col: bad -l argument <原文>.` 就退出——这一支不接 usage，程序名也是写死的 `col`。
+    BadLineCount(&'a str),
+    /// `col.c:157-158`：`if (optind != argc) usage()`。`col` 只读标准输入，
+    /// 所以任何操作数都是这一支（裸 `-` 也算操作数，因为它不被 `getopt` 推进）。
+    OperandsPresent,
+}
+
+/// C 的 `getopt(argc, argv, "bfhl:px")` 那一圈：五个无值字母加一个带值的 `l`，
+/// 聚簇要逐字母读（`-bfpx` 是一串、`-xb` 也合法），`-l` 的值可以附在本串里
+/// （`-l3`，参照件量过）也可以另起一段（`-l 3`）。
+///
+/// `--` 结束选项环而自身不是操作数（`getopt.c:81-85` 先 `++optind`）；裸 `-` 与任何
+/// 非选项 token 一到就结束选项环**且不重排**（`getopt.c:74-78`），剩下的都成了操作数——
+/// 而 `col` 一个操作数都不接受。
+pub fn parse_col_flags<'a>(args: &'a [&'a str]) -> Result<ColOptions, ColFlagError<'a>> {
+    let mut options = ColOptions::default();
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index];
+        let bytes = arg.as_bytes();
+        if arg == "--" {
+            if index + 1 < args.len() {
+                return Err(ColFlagError::OperandsPresent);
+            }
+            return Ok(options);
+        }
+        if bytes.len() < 2 || bytes[0] != b'-' {
+            return Err(ColFlagError::OperandsPresent);
+        }
+        let mut pos = 1usize;
+        while pos < bytes.len() {
+            match bytes[pos] {
+                b'b' => options.no_backspaces = true,
+                b'f' => options.fine = true,
+                b'h' => options.compress_spaces = true,
+                b'p' => options.pass_unknown_seqs = true,
+                b'x' => options.compress_spaces = false,
+                b'l' => {
+                    let value = if pos + 1 >= bytes.len() {
+                        index += 1;
+                        match args.get(index) {
+                            Some(next) => *next,
+                            None => return Err(ColFlagError::MissingValue('l')),
+                        }
+                    } else {
+                        &arg[pos + 1..]
+                    };
+                    let lines = atoi(value);
+                    if lines <= 0 {
+                        return Err(ColFlagError::BadLineCount(value));
+                    }
+                    options.max_bufd_lines = lines;
+                    // 值把本串剩下的部分整个吃掉（C 的 `optarg` 就是「本串去掉 `-` 与
+                    // 字母之后的那一段」），所以这一串到此结束。
+                    pos = bytes.len();
+                }
+                _ => {
+                    return Err(ColFlagError::UnknownOption(
+                        arg[pos..].chars().next().unwrap_or('-'),
+                    ));
+                }
+            }
+            pos += 1;
+        }
+        index += 1;
+    }
+    Ok(options)
+}
+
+/// C 的 `atoi`：跳过前导 `isspace`、可带符号、取一串十进制数字，**尾巴上有杂字符不管**，
+/// 一位数字都没有就是 0。所以 `-l 3x` 在 C 是合法的 3（参照件同受），
+/// 而 `-l abc`、`-l 0`、`-l -2` 都被 `<= 0` 那一判挡下。
+fn atoi(text: &str) -> i32 {
+    let bytes = text.as_bytes();
+    let mut cursor = 0usize;
+    while matches!(
+        bytes.get(cursor),
+        Some(b' ') | Some(b'\t') | Some(b'\n') | Some(0x0b) | Some(0x0c) | Some(b'\r')
+    ) {
+        cursor += 1;
+    }
+    let negative = match bytes.get(cursor) {
+        Some(b'+') => {
+            cursor += 1;
+            false
+        }
+        Some(b'-') => {
+            cursor += 1;
+            true
+        }
+        _ => false,
+    };
+    let mut value: i32 = 0;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(i32::from(bytes[cursor] - b'0'));
+        cursor += 1;
+    }
+    if negative { -value } else { value }
 }
 
 /// Outcome of a run: the filtered bytes plus whether the C would have
@@ -255,7 +371,11 @@ pub fn filter(input: &[u8], options: &ColOptions) -> ColOutput {
         } else {
             line.max_col = col;
         }
-        line.cells.push(Cell { col, set: cur_set, ch });
+        line.cells.push(Cell {
+            col,
+            set: cur_set,
+            ch,
+        });
         cur_col += 1;
     }
 
@@ -346,7 +466,14 @@ fn flush_line(line: &Line, out: &mut Vec<u8>, options: &ColOptions, last_set: &m
     // O(n) counting sort by column, stable within a column.
     let sorted_storage: Vec<Cell>;
     let chars: &[Cell] = if line.needs_sort {
-        let mut sorted = vec![Cell { col: 0, set: 0, ch: 0 }; line.cells.len()];
+        let mut sorted = vec![
+            Cell {
+                col: 0,
+                set: 0,
+                ch: 0
+            };
+            line.cells.len()
+        ];
         let mut count = vec![0usize; line.max_col as usize + 1];
         for c in &line.cells {
             count[c.col as usize] += 1;
@@ -437,7 +564,10 @@ mod tests {
 
     #[test]
     fn test_b_flag_keeps_only_last_overstrike() {
-        let o = ColOptions { no_backspaces: true, ..ColOptions::default() };
+        let o = ColOptions {
+            no_backspaces: true,
+            ..ColOptions::default()
+        };
         let out = String::from_utf8(filter(b"a\x08-\n", &o).bytes).unwrap();
         // -b prints only the last char of the column group.
         assert_eq!(out, "-\n");
@@ -453,7 +583,10 @@ mod tests {
     fn test_tab_advances_to_eight_multiple() {
         assert_eq!(run("a\tb\n"), "a\tb\n");
         // Compressed re-emission: 'a' at col 0, 'b' at col 8 → tab.
-        let o = ColOptions { compress_spaces: false, ..ColOptions::default() };
+        let o = ColOptions {
+            compress_spaces: false,
+            ..ColOptions::default()
+        };
         let out = String::from_utf8(filter(b"a\tb\n", &o).bytes).unwrap();
         assert_eq!(out, "a       b\n");
     }
@@ -483,7 +616,10 @@ mod tests {
     #[test]
     fn test_unknown_controls_dropped_unless_p() {
         assert_eq!(run("\u{1}x\n"), "x\n");
-        let o = ColOptions { pass_unknown_seqs: true, ..ColOptions::default() };
+        let o = ColOptions {
+            pass_unknown_seqs: true,
+            ..ColOptions::default()
+        };
         let out = String::from_utf8(filter(b"\x01x\n", &o).bytes).unwrap();
         assert_eq!(out, "\u{1}x\n");
     }
@@ -497,7 +633,10 @@ mod tests {
 
     #[test]
     fn test_forward_half_line_feed_with_f() {
-        let o = ColOptions { fine: true, ..ColOptions::default() };
+        let o = ColOptions {
+            fine: true,
+            ..ColOptions::default()
+        };
         // Text on line 0, ESC-011 moves to half line 1, text there,
         // then \n completes the line: output keeps the half feed.
         let out = String::from_utf8(filter(b"a\x1b\x09b\n", &o).bytes).unwrap();
@@ -537,5 +676,90 @@ mod tests {
         input.push(0o013); // VT: back two half lines — still buffered
         let out = filter(&input, &ColOptions::default());
         assert!(!out.warned);
+    }
+
+    /// 选项环逐支钉：聚簇、附值与另起一段的 `-l`、`--`、操作数、四支点亮的旗标。
+    #[test]
+    fn the_option_ring_reads_letter_by_letter_like_getopt() {
+        let plain = parse_col_flags(&[]).unwrap();
+        assert_eq!(
+            (plain.compress_spaces, plain.no_backspaces, plain.fine),
+            (true, false, false)
+        );
+        assert_eq!(
+            plain.max_bufd_lines, 128,
+            "C 的缺省 128 个缓冲行（`col.c:132`）"
+        );
+
+        let all = parse_col_flags(&["-bfpx"]).unwrap();
+        assert!(
+            (all.no_backspaces && all.fine && !all.compress_spaces && all.pass_unknown_seqs),
+            "聚簇要逐字母生效，`-bfpx` 里那个 `x` 关掉压缩"
+        );
+        // 同一串里后写的字母覆盖先写的：`-xb` 与 `-bx` 都是「不压缩 + 不出退格」。
+        assert!(!parse_col_flags(&["-xb"]).unwrap().compress_spaces);
+        assert!(parse_col_flags(&["-xb"]).unwrap().no_backspaces);
+        assert!(
+            !parse_col_flags(&["-hx"]).unwrap().compress_spaces,
+            "后到的 x 覆盖 h"
+        );
+
+        // `-l` 的值可以附在本串里，也可以另起一段；两者都吃掉那一整段。
+        assert_eq!(parse_col_flags(&["-l3"]).unwrap().max_bufd_lines, 3);
+        assert_eq!(parse_col_flags(&["-l", "3"]).unwrap().max_bufd_lines, 3);
+        assert_eq!(
+            parse_col_flags(&["-b", "-l", "7", "-f"])
+                .unwrap()
+                .max_bufd_lines,
+            7
+        );
+        assert!(parse_col_flags(&["-b", "-l", "7", "-f"]).unwrap().fine);
+        // C 的 `atoi` 不管尾巴上的杂字符，所以 `3x` 是合法的 3（参照件同受）。
+        assert_eq!(parse_col_flags(&["-l", "3x"]).unwrap().max_bufd_lines, 3);
+
+        // 三种失败各自成支，互不混用。
+        assert_eq!(
+            parse_col_flags(&["-Z"]),
+            Err(ColFlagError::UnknownOption('Z'))
+        );
+        assert_eq!(
+            parse_col_flags(&["-Zb"]),
+            Err(ColFlagError::UnknownOption('Z'))
+        );
+        assert_eq!(
+            parse_col_flags(&["--x"]),
+            Err(ColFlagError::UnknownOption('-'))
+        );
+        assert_eq!(
+            parse_col_flags(&["-l"]),
+            Err(ColFlagError::MissingValue('l'))
+        );
+        assert_eq!(
+            parse_col_flags(&["-bl"]),
+            Err(ColFlagError::MissingValue('l'))
+        );
+        for bad in ["0", "-2", "abc", "", " "] {
+            assert_eq!(
+                parse_col_flags(&["-l", bad]),
+                Err(ColFlagError::BadLineCount(bad)),
+                "`-l {bad:?}` 该交回原文去印那句 bad -l argument"
+            );
+        }
+        // `--` 自身不是操作数；它后面有东西才算；裸 `-` 与普通 token 都是操作数。
+        assert_eq!(parse_col_flags(&["--"]).unwrap().max_bufd_lines, 128);
+        assert_eq!(
+            parse_col_flags(&["--", "-b"]),
+            Err(ColFlagError::OperandsPresent)
+        );
+        assert_eq!(parse_col_flags(&["-"]), Err(ColFlagError::OperandsPresent));
+        assert_eq!(
+            parse_col_flags(&["file"]),
+            Err(ColFlagError::OperandsPresent)
+        );
+        // 不重排：操作数一到就结束，后面的合法字母也不再读（`col` 反正不接受操作数）。
+        assert_eq!(
+            parse_col_flags(&["-b", "file", "-f"]),
+            Err(ColFlagError::OperandsPresent)
+        );
     }
 }
