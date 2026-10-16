@@ -321,6 +321,95 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十把 `seq` 的选项环与三家句子按 C 定形，并新立它的第一扇端到端门**
+  （`2026-10-17`，`claim/SEQ-GETOPT-LINE-qoder` @ 基线 `65457036c`，单域三线 commands/textfilter，无跨界）：
+  **真源形状**：`seq.c:101-102` 的环写作 `while ((optind < argc) && !numeric(argv[optind]) &&
+  (c = getopt(argc, argv, "f:hs:t:w")) != -1)`——`f`/`s`/`t` 三个带值、`h`/`w` 两个不带值。
+  句子有**三家、两个退码**：① `errflg` 一族退 1，形如「libc 的零到多行 + **一行** usage」；
+  ② 命令自己的 `errx(1, …)` 一族退 1，各一行且不接 usage（`zero increment`/`zero decrement`
+  的名字随 `first < last` 变、`needs positive increment`、`needs negative decrement`、
+  ``invalid format string: `%q'`` 带原文）；③ 操作数一族走 `e_atof()`（`seq.c:383-400`）退 **2**，
+  判序在 C 里写死：先看 `errno == ERANGE` ⇒ `err(2, "%s", num)` 的三段形，再看尾巴有没有杂字符
+  ⇒ `errx(2, "invalid floating point argument: %s", num)`。**环不在第一个坏字母处停**
+  （BADCH 是 `'?'`，不等于 `-1`，`errflg++` 之后继续扫本 token 剩下的字母）：参照件
+  `-ABC 3` 三行、`-+- 3` 两行、`-Zf` 两句（先 `unknown option -- Z` 后 `option requires an
+  argument -- f`）、`-5e310` 五行（`5`/`e`/`3`/`1`/`0` 各一行）；旧写法在第一个坏字母处退出，
+  少掉整串 libc 的行。`h` 在集内 ⇒ libc 无话可说，而 C 的 `case 'h'`（`seq.c:120`）后面**没有
+  `break`**，直接落 `default: errflg++` ⇒ `seq -h`、`seq -hf 3` 都只有 usage 一行。
+  **五处只能量出来推不出来的形制**（形状逐条现量，落盘在 `tmp/seq-320/measure3.log` 到 `measure6.log`）：
+  (a) 环前那道 `!numeric(argv[optind])` **只在以短横开头的 token 上起作用**——`seq 1e2` 里
+  `numeric("1e2")` 为假（`e` 后必须紧跟符号才算指数，`seq.c:213-219`），但 libc 见首字符不是
+  `-` 就收环且**不推进** `optind`（`getopt.c:74-78`），于是一句不印、`1e2` 就是操作数，
+  参照件打满 1..100；(b) `numeric("")` 反倒为**真**（`while (*s)` 一步不走而判据是
+  `*s == '\0'`），且 `e_atof("")` 也是合法的 0（`strtod` 转不出任何东西时把 endptr 停在起点，
+  而起点就是那个 `\0`）⇒ `seq ""` 打 `1\n0\n`、`seq "" 3` 打 `0\n1\n2\n3\n`；
+  (c) 操作数解析次序是 `last`→`first`→`incr`（`seq.c:139-148`），加上环不重排，
+  `seq 3 -w` 与 `seq -w 3 -s ,` 报的都是最后那个 token 的名字；(d) `-s` 的分隔符打在
+  **每一个数之后**（含最后一个）而 `-t` 只打一次在最后 ⇒ `seq -s , 1 3` 的字节是 `1,2,3,`
+  （有逗号没有换行），`seq -s '' 1 3` 是 `123`，`seq -t '!' 1 3` 是 `1\n2\n3\n!`；
+  (e) `-w` 的两级不对称，因为 C 只是把 `pad` 塞进 printf 的格式串
+  （`sprintf(buf, "%%%c%d%c", pad, MAX(width1, width2), 'g')`，`seq.c:467-469`）：
+  一级是 `%0<宽>g`（零填在符号之后），两级起是 `% <宽>g`——**非负数也占一个符号位**，
+  于是 `seq -w -w 8 10` 打的是三列的 `" 10"`（超宽不截），`seq -w -w -10 10` 里 `0` 得 `"  0"`
+  而 `-9` 得 `" -9"`；宽度又取自**实际被打印的末值**（`generate_format` 先用
+  `first ± incr * floor((first - last) / incr)` 把它折回来，`seq.c:439-442`），
+  所以 `seq -w 1 5 10` 只打 `1`、`6` 两个一位数（宽度 1，不是 `10` 的 2）——
+  这一处是 A/B 第一轮逮出来的（前门三形 DIFF 之一），本轮把宽度与两级一起按 C 重建。
+  C 的 `floor` 与 Rust 的截断除法在异号时差一格，另写 `floor_div`。另两处随码修回：
+  `unescape` 的十六进引导字母**只有小写 `x`**（C 的 `switch` 没有 `case 'X'`，`seq.c:353`），
+  以及 `valid_format` 只把 `A a E e F G g` 记为转换且结尾判 `conversions <= 1`
+  （`seq.c:231-287`）⇒ `%d` 与 `%d\n` **都非法**而 `abc`、`%%`、空串合法。
+  **本支没有读写缝缺陷**：既不读标准输入也不开操作数档，「薄壳裸 `read` 宿主读不到输入」
+  那一家族到 `units` 为止是十处，`seq` 是判定表里第一个纯生成形的命令。
+  选项环提入库侧 `parse_seq_args`，`e_atof`/`numeric`/`unescape`/`valid_format` 全是库侧单源
+  （libc 那两句交回 `lib.rs:GetoptReport`，`errx`/`err` 的句子留在壳里跟着 `getprogname()`）。
+  **门测 15 枚**（`tests/seq_face.rs`，本支第一扇端到端门，期望值逐枚取自参照件现量）+
+  库测 21 枚（`seq.rs`：基线 9 枚，本轮新增 12 枚）。
+  **三件套**：容器整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **866 / 0 / 0**
+  （65 target，基线 `65457036c` 为 839/63）；`cargo clippy -j 1 -p minix-textfilter --all-targets`
+  退码 0、0 error、带 `-->` 的整包诊断 65 条，其中**指向本轮触及件的只有一条**
+  （`src/bin/seq.rs` 的 `unused import: ToString`，已消除 ⇒ 触及件 0 条；其余分布在未触及的件上：
+  `pr.rs` 18、`units.rs` 6、`diff.rs` 6、`jot.rs` 5、`window.rs` 3、`unifdef.rs` 3 等，
+  条数随各 target 的缓存重放而变，故按「本轮触及件诊断数」判零新增，与批次三百一十八同一口径）；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`
+  （riscv 那一支的 target 三重写全称 `riscv64gc-unknown-none-elf`，简名 `…-unknown-none`
+  在本机 toolchain 连 target specification 都找不到，是配方的笔误不是代码问题——见下「工具坑」）；
+  `rustfmt --edition 2024 --check` 触及件零漂移。
+  **A/B 与参照件** `tmp/seq-320/seq`（`seq.c` 真源 + Minix 的 `getopt.c` + 程序名与 `strlcpy`
+  垫片 + 空 `namespace.h`，宿主现链）比退码、stdout、stderr 三件：**前门 64 形 SAME=64 DIFF=0**；
+  另有两形（`1e310`、`1e-40000`）走 `err(2, "%s", num)` 的三段形，句子形状、退码全同而
+  `strerror(ERANGE)` 的末段不同——本层取 Minix `sys_errlist` 的 34 号
+  `Result too large or too small`，本机链的参照件取 glibc 的 `Numerical result out of range`
+  （批次三百一十一记过的同源差），按 Minix 表归一后 SAME=2 DIFF=0；十形 DIFF 全在决定半（下表）。
+  **十三枚变异负控**（`tmp/seq-320/ctl320.py` 九枚 + `ctl320b.py` 四枚，全部跑在最终源码上）
+  分别咬 **5 / 跑不完 / 2 / 4 / 8 / 2 / 2 / 1 / 3** 与 **1 / 2 / 2 / 1** 枚：丢 libc 那一行、
+  第一个坏字母就停环（把环写成死循环，测试进程被 OOM 杀掉——「跑不完」本身就是咬住）、
+  把 `h` 当集外字母、非短横 token 也推进 `optind`、从下一个 token 取值后不再越过它、
+  两级补宽合成一级、空操作数当坏数、十六进接受大写 `X`、缺值那句不报、宽度取自请求的上界、
+  空格级不留符号位、`pad` 永远是 `0`、`floor` 改用截断除法。A/B 排在变异腿**之后**且跑前重链一次。
+  **登记不执行**（五处）：① `SEQ-FORMAT-RENDER`——`-f` 的说明符合法之后按 `%g`/`%e`/`%.2f`
+  渲染浮点、以及非整数操作数的常规输出，都等浮点渲染那处裁决（与 printf 家同一处）；
+  C 在这一形照常打数（参照件 `seq -f 'Z' 3` 打三个 `Z`、`seq 0.5` 打 `1`），本壳交回一行
+  自认的说明并退 1；② `SEQ-NONFINITE-OPERAND`——`inf`/`nan` 在 C 是一路走到底
+  （`seq inf` 因 `first <= last` 永真而刷不完，参照件被 `timeout` 杀掉；`seq nan` 打空退 0），
+  本层的整数引擎把非有限值挡在渲染之前；③ `SEQ-SUBNORMAL-ERANGE`——下溢到**非零**次正规数
+  （`1e-310`）在本机 glibc 的 `strtod` 上仍置 `ERANGE`，而 Minix 用的那份 gdtoa 实现不在本仓库
+  （`minix3/lib/libc/arch/x86_64/gdtoa/` 只有头文件），故「结果为 0」这条判据之外不再推断；
+  ④ `SEQ-NONASCII-OPTLETTER`——C 用 `%c` 打**裸字节**（`-é` 得 `\303`、`\251` 两行），
+  本壳按 `char` 渲染成 `Ã`/`©`（与 `UNITS-NONASCII-OPTLETTER` 同源，行数与退码同）；
+  ⑤ `SEQ-UNESCAPE-NONUTF8`——`unescape` 产出的是按字节解码的串，`\x80` 之类在本层走
+  `from_utf8_lossy` 而非原样字节。核实日 `2026-10-17`；基线 `65457036c`。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/
+  unexpand/col/column/comm/cmp/jot/unifdef/units/**seq** + pr；待接 `paste`、`tr`；
+  另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `PASTE-GETOPT-LINE`
+  （`minix3/usr.bin/paste/paste.c:70` 的 optstring 是 `"d:s"`：`d` 带值、`s` 是旗标，
+  只有 `s` 之后跟不跟值这一处需要现查），其后是 `TR-GETOPT-LINE`
+  （`minix3/usr.bin/tr/tr.c:68` 用 libc `getopt("cds")`，三个都是旗标——
+  早前把 `tr` 记在「另判」是错的，本轮已按现查翻正）。
+  **工具坑新增一条**：宿主三架构这一腿的 riscv 目标名必须写全称 `riscv64gc-unknown-none-elf`；
+  写成 `riscv64gc-unknown-none` 时 rustc 报的是「could not find specification for target」，
+  看起来像代码问题其实是配方笔误，别拿它当交叉编译失败登记。
+
 - ✅ **批次三百一十八把 `unifdef` 的三类出口按 C 定形（第九处读缝缺陷），并新立它的第一扇端到端门**
   （`2026-10-16`，`claim/UNIFDEF-GETOPT-LINE-qoder` @ 基线 `caefad38c`，单域三线 commands/textfilter，无跨界）：
   **真源形状**：`unifdef.c:273` 的 optstring 是 `"i:D:U:I:o:cdeklst"`——`D`/`U`/`i`/`I`/`o` 五个带值、
