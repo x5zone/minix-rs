@@ -86,7 +86,7 @@ impl KeySpec {
 }
 
 /// Global options for one `sort` run.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     /// Key specifications (empty = one whole-line key).
     pub keys: Vec<KeySpec>,
@@ -111,6 +111,11 @@ pub struct Options {
     pub check: bool,
     /// Field delimiter byte (`-t`).
     pub delimiter: Option<u8>,
+    /// 记录分隔符——C 的 `REC_D`（`sort.c:92`，初值 `'\n'`，`main` 在选项环前先
+    /// `d_mask[REC_D = '\n'] = REC_D_F`（`:139`））。`-R` 改它；它同时也决定
+    /// 「`-t` 撞不撞记录分隔符」那一判（C 查的是 `d_mask[c] & REC_D_F`，而
+    /// 这个位只跟着 `REC_D` 跑）。
+    pub record_delim: u8,
     /// Merge already-sorted runs instead of sorting (`-m`, C `sort -m`).
     pub merge: bool,
     /// `-o path`: where the result goes. `None` is C's null `outpath`, which writes
@@ -120,6 +125,87 @@ pub struct Options {
     /// *how* it is written, see [`decide_output`], because C replaces an existing
     /// file through a temporary rather than truncating it in place.
     pub output: Option<Vec<u8>>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            keys: Vec::new(),
+            reverse: false,
+            fold: false,
+            dictionary: false,
+            ignore_nonprint: false,
+            numeric: false,
+            by_length: false,
+            blank_skip: false,
+            unique: false,
+            posix_tiebreak: false,
+            check: false,
+            delimiter: None,
+            // C 的全局初值：`int REC_D = '\n';`（`sort.c:92`）。
+            record_delim: b'\n',
+            merge: false,
+            output: None,
+        }
+    }
+}
+
+/// 把 `-R` 的多字节值按 C 的 `strtol(optarg, &ep, t)` 算成一个字节（`sort.c:229-238`）。
+/// `Some(byte)` 是 C 会继续往下走的形；`None` 就是那句 `invalid record delimiter`。
+/// 三条拒收判据逐句对 C：`*ep != '\0'`（末尾还有任何东西，包括一个空格）、值小于零、
+/// 值超出 `NBINS`（256）。前导空白与一个符号会被吃掉（`strtol` 自己就吃），所以下面
+/// 要求「整个串都被消费」而不是「去掉空白后全就数字」——`"1 "` 在 C 里是错的。
+/// base 0 走 C 的前缀规则：`0x`/`0X` 是十六进制、开头一个 `0` 是八进制、否则十进制。
+fn record_delim_number(digits: &[u8], radix: u32) -> Option<u8> {
+    let mut pos = 0usize;
+    while pos < digits.len() && matches!(digits[pos], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
+        pos += 1;
+    }
+    let mut negative = false;
+    if pos < digits.len() && matches!(digits[pos], b'+' | b'-') {
+        negative = digits[pos] == b'-';
+        pos += 1;
+    }
+    let mut base = radix;
+    if base == 0 {
+        base = 10;
+        if digits.get(pos) == Some(&b'0') {
+            if matches!(digits.get(pos + 1), Some(b'x') | Some(b'X')) {
+                base = 16;
+                pos += 2;
+            } else {
+                base = 8;
+                pos += 1;
+            }
+        }
+    }
+    let mut value: i64 = 0;
+    let mut any = false;
+    while pos < digits.len() {
+        let digit = (digits[pos] as char).to_digit(base)?;
+        value = value
+            .saturating_mul(base as i64)
+            .saturating_add(digit as i64);
+        any = true;
+        pos += 1;
+    }
+    if !any {
+        // C 的 `strtol` 在「一个数字也没转出来」时把 `endptr` 停在**原始起点**（不是跳过
+        // 空白与符号后的位置），所以 `*ep` 只在整个串本来就为空时才是 `\0`。那就是
+        // `-R '\'` 这一形：剩空串 → 不报错且 REC_D = 0；而 `'-x'`、`'q'` 都错。
+        if !digits.is_empty() {
+            return None;
+        }
+        value = 0;
+    } else if pos != digits.len() {
+        // 吃了数字但末尾还有东西（包括一个空格）：C 的 `*ep != '\0'` 那一项。
+        return None;
+    }
+    let value = if negative { -value } else { value };
+    if value < 0 || value > u8::MAX as i64 {
+        return None;
+    }
+    Some(value as u8)
 }
 
 /// Merge several already-sorted runs into one sorted vector, the way C's
@@ -155,7 +241,7 @@ fn merge_two(a: &[String], b: &[String], options: &Options) -> Vec<String> {
 
 /// 一条不可解析的选项参数错。三条出口对位 C 的三条真出路（见各变体注释），
 /// 不是一句「bad option」到底。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// libc 的 `getopt` 自己那一行（集外字母或带值选项缺值），随后才是 `sort.c:252`
     /// 的 `usage(NULL)`——所以真源是两行。两类各自带字母。
@@ -167,6 +253,16 @@ pub enum ParseError {
     /// `-t` 给了第二次：`sort.c:214-215` 的 `usage("multiple field delimiters")`，
     /// 即先一句带程名的话，再接整个 usage 块。
     MultipleFieldDelimiters,
+    /// `-R` 给了第二次且第一次确实改掉了默认值：`sort.c:224-225` 的
+    /// `usage("multiple record delimiters")`（也是「一句话 + usage 块」那族，退 2）。
+    MultipleRecordDelimiters,
+    /// `-R` 的数值形解析不出来、或超出 `d_mask` 的尺寸（`sort.c:233-238` 的
+    /// `errx(2, "invalid record delimiter %s", optarg)`）：只这一句，**不接 usage**，退 2。
+    /// 带的是 C 当时手里那个 `optarg`——反斜缀已被跳过，所以 `\q` 报的是 `q`。
+    InvalidRecordDelimiter(Vec<u8>),
+    /// `-t` 选的字节正是当前的记录分隔符：`sort.c:217-218` 的
+    /// `errx(2, "record/field delimiter clash")`，同样不接 usage、退 2。
+    RecordFieldDelimiterClash,
 }
 
 /// `minix3/usr.bin/sort/init.c` 里 `setcolumn()` 与 `setfield()` 的五句 `errx(2, …)`。
@@ -312,8 +408,63 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                             return Err(ParseError::MultipleFieldDelimiters);
                         }
                         // 空值（`-t ''`）在 C 取到那个 `\0`，不报错。
-                        options.delimiter = Some(value.bytes().next().unwrap_or(0));
+                        let byte = value.bytes().next().unwrap_or(0);
+                        // `:217-218` 紧接着查 `d_mask[byte] & REC_D_F`。那个位只待在
+                        // `REC_D` 身上（默认 `main` 给 `'\n'`，`:139`；`-R x` 之后搬到 `x`），
+                        // 所以判据就是「这个字节正好是当前的记录分隔符」——注意它不必
+                        // 先给过 `-R`：`-t '\n'` 在默认形状下就报（参照件实测同句）。
+                        if byte == options.record_delim {
+                            return Err(ParseError::RecordFieldDelimiterClash);
+                        }
+                        options.delimiter = Some(byte);
                     }
+                    break;
+                }
+                // `-R char`：把记录分隔符从默认的 `'\n'` 改掉（`sort.c:223-242`）。
+                // 次序逐句照 C：① 已经改过且不再等于 `'\n'` 就 `usage("multiple record
+                // delimiters")`——注意判的是「当前值是否仍等于 `'\n'`」而不是「给过几次」，
+                // 所以 `-R '\12' -R ,` 合法（参照件同读数，因为前者把值算回 10）；
+                // ② `*optarg` 先当值，若它就是 `'\n'` 则**直接收尾**，后面的数值形与掩码
+                // 一律不做（`-R $'\nx'` 因此等同于 `-R '\n'`）；③ 值长于一个字节才走
+                // `strtol`：带反斜缀按八进制、否则按 base 0，尾字符未吃尽/负数/超出
+                // `NBINS` 都落 `errx(2, "invalid record delimiter %s", optarg)`。
+                'R' => {
+                    let mut value: String = chars.by_ref().collect();
+                    if value.is_empty() {
+                        index += 1;
+                        match args.get(index) {
+                            Some(word) => value = (*word).to_string(),
+                            None => {
+                                return Err(ParseError::Getopt(crate::GetoptReport::MissingValue(
+                                    flag,
+                                )));
+                            }
+                        }
+                    }
+                    if options.record_delim != b'\n' {
+                        return Err(ParseError::MultipleRecordDelimiters);
+                    }
+                    let bytes = value.into_bytes();
+                    let first = bytes.first().copied().unwrap_or(0);
+                    options.record_delim = first;
+                    if first != b'\n' && bytes.len() > 1 {
+                        // C 先 `optarg++` 跳过反斜缀再用 `optarg` 报错，所以报的是**剩下的**串。
+                        let (digits, radix) = if bytes[0] == b'\\' {
+                            (&bytes[1..], 8u32)
+                        } else {
+                            (&bytes[..], 0u32)
+                        };
+                        match record_delim_number(digits, radix) {
+                            Some(byte) => options.record_delim = byte,
+                            None => {
+                                return Err(ParseError::InvalidRecordDelimiter(digits.to_vec()));
+                            }
+                        }
+                    }
+                    // C 在此还会 `d_mask['\n'] = d_mask[' ']` 与 `d_mask[REC_D] = REC_D_F`，
+                    // 即把换行归到「空白/字段分隔」那一类。本层的字段扫描器不读这张掩码，
+                    // 而参照件对唯一能探到的形（`-R , -k 2`，最后一行含 `\n`）给出的读数与
+                    // 本壳一致（两边都是 `b,a,d,c\n,`），所以本笔不动掩码，形状差已登记。
                     break;
                 }
                 _ => {
@@ -859,7 +1010,6 @@ fn numeric_key(bytes: &[u8]) -> NumericKey<'_> {
     }
 }
 
-
 /// 把键归一到可比形状：整数位去前导零。C 那边是「eat initial zeroes」
 ///（`fields.c:290-292`）加「Add key terminator, deleting any trailing "00"」
 ///（`:373-374`，靠 `last_nz_pos` 把尾零那几字节回退掉）两句做到的。
@@ -1263,6 +1413,95 @@ mod tests {
 
     /// 并列键的规则（批次二百九十按参照件定形）：不开 `-S` 时比较半交回 `Equal`，
     /// 由排序那一步的稳定性保住输入序；开了 `-S` 才拿整条记录拆平行。
+    /// `-R` 与 `-t` 的关系按 C 的掩码判据（`sort.c:217-218` 只在 `-t` 那一支查
+    /// `d_mask[c] & REC_D_F`）：撞车是 `-t` 撞当前记录分隔符，反向不查。
+    /// 参照件同读数（`-R , -t ,` 报 clash 退 2；`-t , -R ,` 安静通过）。
+    #[test]
+    fn dash_r_moves_the_record_delimiter_and_dash_t_clashes_with_it() {
+        let (o, _) = parse_options(&["-R", ","]).unwrap();
+        assert_eq!(o.record_delim, b',');
+        assert_eq!(
+            parse_options(&["-R", ",", "-t", ","]).err(),
+            Some(ParseError::RecordFieldDelimiterClash)
+        );
+        let (o, _) = parse_options(&["-t", ",", "-R", ","]).unwrap();
+        assert_eq!(o.record_delim, b',', "反向在 C 里不查，所以只有后一个生效");
+        assert_eq!(o.delimiter, Some(b','));
+        // 默认记录分隔符就是 '\n'，所以没给 `-R` 时 `-t '\n'` 也撞（参照件同句）。
+        assert_eq!(
+            parse_options(&["-t", "\n"]).err(),
+            Some(ParseError::RecordFieldDelimiterClash)
+        );
+    }
+
+    /// `record_delim_number` 逐句对着 C 的 `strtol` + 三条拒收判据。
+    #[test]
+    fn record_delim_number_mirrors_strtol_and_its_three_refusals() {
+        assert_eq!(record_delim_number(b"011", 8), Some(9), "-R '\\011' → 制表");
+        assert_eq!(record_delim_number(b"12", 8), Some(10), "-R '\\12' → 换行");
+        assert_eq!(
+            record_delim_number(b"011", 0),
+            Some(9),
+            "base 0 的前导 0 走八进制"
+        );
+        assert_eq!(record_delim_number(b"0x10", 0), Some(16));
+        assert_eq!(
+            record_delim_number(b" 12", 0),
+            Some(12),
+            "前导空白被 strtol 吃掉"
+        );
+        assert_eq!(
+            record_delim_number(b"", 8),
+            Some(0),
+            "`-R '\\'` 是零字节不是报错"
+        );
+        assert_eq!(record_delim_number(b"q", 8), None);
+        assert_eq!(record_delim_number(b"300", 0), None, "超出 NBINS(256)");
+        assert_eq!(record_delim_number(b"-5", 0), None, "负数");
+        assert_eq!(
+            record_delim_number(b"1 ", 0),
+            None,
+            "尾空白：`*ep != '\\0'`"
+        );
+    }
+
+    /// 数值形只在「值长于一个字节」时才走，且单字节是**字面字节**：`-R 0` 的字符是 `'0'`。
+    #[test]
+    fn dash_r_single_byte_is_literal_and_newline_short_circuits_the_arm() {
+        let (o, _) = parse_options(&["-R", "0"]).unwrap();
+        assert_eq!(o.record_delim, b'0');
+        let (o, _) = parse_options(&["-R", "\n"]).unwrap();
+        assert_eq!(o.record_delim, b'\n', "C 在 `REC_D == '\\n'` 处直接 break");
+        // 同一支的提前收尾意味着后面的字符整个被忽略。
+        let (o, _) = parse_options(&["-R", "\nxy"]).unwrap();
+        assert_eq!(o.record_delim, b'\n');
+        assert_eq!(
+            parse_options(&["-R"]).err(),
+            Some(ParseError::Getopt(crate::GetoptReport::MissingValue('R')))
+        );
+    }
+
+    /// 「给过第二次」的判据是「当前值已不等于 `'\n'`」而不是次数：第一次被算回 10 时
+    /// 第二次合法（参照件对 `-R '\12' -R ,` 给出的是正常输出）。
+    #[test]
+    fn a_second_dash_r_only_reports_when_the_first_one_stuck() {
+        assert_eq!(
+            parse_options(&["-R", ",", "-R", "x"]).err(),
+            Some(ParseError::MultipleRecordDelimiters)
+        );
+        let (o, _) = parse_options(&["-R", "\\12", "-R", ","]).unwrap();
+        assert_eq!(o.record_delim, b',');
+        assert_eq!(
+            parse_options(&["-R", "300"]).err(),
+            Some(ParseError::InvalidRecordDelimiter(b"300".to_vec()))
+        );
+        // 反斜缀被跳过，所以报文里的是剩下的那串。
+        assert_eq!(
+            parse_options(&["-R", "\\q"]).err(),
+            Some(ParseError::InvalidRecordDelimiter(b"q".to_vec()))
+        );
+    }
+
     #[test]
     fn a_tie_stays_tied_and_capital_s_breaks_it_by_the_record() {
         let mut options = opts("");

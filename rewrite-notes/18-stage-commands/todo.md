@@ -250,6 +250,45 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百零四把 `sort` 的 `-R`（记录分隔符）接上：切分、收尾、与 `-t` 的不对称判据一次做齐**
+  （`2026-10-16`，`claim/SORT-R-OPTION-qoder` @ 基线 `b46ac1baa`，单域三线 commands/textfilter，无跨界）：
+  排期表 V3-3 那条（`sort` 选项面 `D`/`R`/`T` 里的真功能 `R`）。**真源形状**逐句写在下面，因为这一支的
+  判据不是「次数」而是「值」：C 的 `REC_D` 默认 `'\n'`（`sort.c:92`，`main` 在选项环前 `d_mask[REC_D = '\n']
+  = REC_D_F`，`:139`），`-R` 那一支（`:223-242`）先查「当前值是否已不等于 `'\n'`」→ 是就
+  `usage("multiple record delimiters")`（所以 `-R '\12' -R ,` 合法——第一次被算回 10）；再把 `*optarg` 当值，
+  若它就是 `'\n'` **整支提前收尾**（`-R $'\nx'` 等同 `-R '\n'`）；值长于一个字节才 `strtol`：带反斜缀走八进制、
+  否则 base 0，`*ep != '\0'`（含尾随空白）/负值/`>= NBINS`(256) 三条都落
+  `errx(2, "invalid record delimiter %s", optarg)`，而报文用的是**跳过反斜缀后**的 `optarg`（`-R '\q'` 报 `q`）；
+  `-R '\'` 反而合法（`strtol` 没转任何数字时 `endptr` 停在原始起点，空串的 `*ep` 就是 `\0`）→ `REC_D = 0`。
+  **执行侧两件事**：读入按 `REC_D` 切记录（`getrec`，`files.c:113-124`；尾随分隔符不留空记录，所以
+  `b,a,d,` 是三条不是四条）；输出是「每条记录再补一个 `REC_D`」（`putrec`，`:194`/`:215`），**带 `-R` 时
+  输出以分隔符收尾**。换行在这一形里只是普通字节，所以 `b,a,d,c\n` 最后一条记录是 `c\n`。
+  **与 `-t` 的关系是不对称的**：只有 `-t` 那一支查 `d_mask[c] & REC_D_F`（`:217-218`）并落
+  `errx(2, "record/field delimiter clash")`，而那个位只跟在 `REC_D` 上——于是 `-R , -t ,` 退 2、
+  `-t , -R ,` 安静通过（参照件同读数），且默认形状下 `-t '\n'` 也报。
+  三件套（容器现测）：`cargo test -j 1 --no-fail-fast -p minix-textfilter` → **668 passed / 0 failed / 0 ignored**
+  （51 target；基线 `b46ac1baa` 为 658，本笔 +10 = 库测 4 + 门面 6）；`--lib`/`sort_face` = 460 / 21；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` → 退码 0、0 error、86 条 warning 与基线同数（棘轮不动）、
+  `sort.rs`/`bin/sort.rs` 零命中；`cargo check --workspace -j 1` → 0 error；宿主三架构
+  `cargo check -p minix-textfilter --bins --target {x86_64,aarch64,riscv64gc}-unknown-none` → 三者均 `Finished`
+  零 error；rustfmt 触及三文件零漂移；核实日 `2026-10-16`。
+  **与参照件逐形对账**（`tmp/family-diag-ref/sort_ref`，日志 `tmp/sort-r-304/ab.log`）：12 形里
+  **9 形 stdout/stderr/退码全等**，另 3 形只相差参照件自己的程序名段（`sort_ref:` 对 `sort:`，句子与退码逐字
+  相同）——所以实际形状差为零。入门的金样：`-R ,` 对 `b,a,d,c\n` → `a,b,c\n,d,`；尾随分隔符 `b,a,d,` → `a,b,d,`；
+  空输入 → 空；`-R 0` → 按字符 `0` 切（`a0b0c\n` → `a0b0c\n0`）；`-R '\011'` → 制表；`-R , -u` → `a,b\n,`。
+  **三枚变异负控各咬各的承载点**（控制器 `tmp/sort-r-304/ctl304.py`，每枚先打印 `mutation applied`、
+  还原后核 md5）：① 去掉 `-t` 的 clash 判 → 2 枚 FAILED（1 库测 + 1 门面）；② 输出腿忽略 `REC_D` 仍按换行收尾
+  → **5 枚门面 FAILED 而库测 460 全绿**（决定半与执行半分工清楚，没有互相顶班）；③ 去掉「第二次 `-R`」守卫
+  → 2 枚 FAILED（usage 支那枚门面 + 库测）。
+  **本轮两处自纠**：① 第一版把 `-t , -R ,` 的期望按「逗号分开两行」的直觉写成 `a,b,\n`，被门与参照件一起
+  挡下（真形是 `a\n,b,`）——期望值一律要以参照件读数为源，不能从规则推；② `ParseError` 原本 `derive(Copy)`，
+  新变体带 `Vec<u8>` 编不过（E0204），去掉 `Copy` 而不是把串塞成固定长数组；③ 台账/代码注释里的两处形近字
+  （「选顶环」「所它」）在自查中改回。
+  **登记不执行**：① C 在 `-R` 之后还做 `d_mask['\n'] = d_mask[' ']` 与 `d_mask[REC_D] = REC_D_F`（把换行归到
+  空白/字段分隔那一类），本层字段扫描器不读这张掩码；唯一能探到的形 `-R , -k 2` 已实测两边同为 `b,a,d,c\n,`，
+  故本笔不动掩码，若后续要建模 `d_mask` 需单独立项；② `sort` 选项面还剩 `-D`（十进制小数的 locales 形）与
+  `-T dir`（临时目录，属执行层外部归并）；③ 外部归并引擎未做（同前）。
+
 - ✅ **批次三百零三把端到端门的「写标准输入」竞态修掉：16 处收成一件夹具，只放过 `BrokenPipe`**
   （`2026-10-16`，`claim/FACE-GATE-STDIN-RACE-qoder` @ 基线 `66bcd264a`，单域三线 commands 两包的 `tests/`，
   **一行生产码都没动**，无跨界）：清批次二百九十九登记的第③条。

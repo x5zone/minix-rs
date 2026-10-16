@@ -447,3 +447,99 @@ fn a_second_delimiter_option_takes_the_message_plus_the_usage_block() {
     assert_eq!(out, b"a:a\n", "多字节分隔符取首字节，不该报错：{err:?}");
     assert_eq!(status, 0);
 }
+
+// —— 以下六枚钉 `-R`（记录分隔符）与它和 `-t` 的相互判据（批次三百零四）。金样逐形
+// 从参照件 `tmp/family-diag-ref/sort_ref`（`minix3/usr.bin/sort/` 真源 + 垫片链成）
+// 现测抄回：`-R ,` 把输入按逗号切成记录，最后一段保留它自己的换行；输出是
+// 「每条记录 + 一个分隔符」，所以**以分隔符收尾**（`files.c:194`/`:215` 的 `putrec`）。
+
+/// 记录切分与收尾形状：`b,a,d,c\n` 切成 `b`/`a`/`d`/`c\n`，排序后逐条补逗号。
+#[test]
+fn dash_r_splits_records_on_the_given_byte_and_ends_the_output_with_it() {
+    let (out, status, err) = run(&["-R", ","], b"b,a,d,c\n");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, b"a,b,c\n,d,", "最后一条记录带着它内部的换行");
+}
+
+/// 尾随分隔符不留空记录（C 的 `getrec` 在 EOF 前读到零字节就返回 0）。
+#[test]
+fn a_trailing_record_delimiter_does_not_make_an_extra_record() {
+    let (out, status, err) = run(&["-R", ","], b"b,a,d,");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, b"a,b,d,");
+    let (out, status, _) = run(&["-R", ","], b"");
+    assert_eq!(
+        (out.as_slice(), status),
+        (b"".as_ref(), 0),
+        "空输入一条记录也没有"
+    );
+}
+
+/// 单字节值是**字面字节**：`-R 0` 按字符 `0` 切，不是零字节；而 `\NNN` 形走八进制。
+#[test]
+fn dash_r_single_byte_is_literal_while_the_backslash_form_is_octal() {
+    let (out, status, err) = run(&["-R", "0"], b"a0b0c\n");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, b"a0b0c\n0");
+    let (out, status, err) = run(&["-R", "\\011"], b"b,a,d,c\n");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(
+        out, b"b,a,d,c\n\t",
+        "整串只有一个制表符分隔的记录，输出以制表收尾"
+    );
+}
+
+/// `-u` 与 `-c` 走的都是同一批记录，所以去重也按切分后的记录算。
+#[test]
+fn dash_u_dedups_records_not_lines() {
+    let (out, status, err) = run(&["-R", ",", "-u"], b"a,a,b\n");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, b"a,b\n,");
+}
+
+/// 两句 `errx`（`sort.c:217-218`、`:233-238`）：**只有这一行**、不接 usage、退 2。
+/// `invalid` 那支带的是 C 当时手里的 `optarg`——反斜缀已被跳过。
+#[test]
+fn the_clash_and_invalid_legs_print_one_line_and_skip_the_usage_block() {
+    let (out, status, err) = run(&["-R", ",", "-t", ","], b"a\n");
+    assert_eq!(out.as_slice(), b"");
+    assert_eq!(status, 2);
+    assert_eq!(err, "sort: record/field delimiter clash\n");
+    // 反向不查：只有 `-t` 那一支读掩码。参照件对这一形给 `a\n,b,`：换行在这一形里只是
+    // 普通字节，所以它**留在记录内容里**，而输出以记录分隔符收尾。第一版把期望按「逗号
+    // 分开两行」的直觉写成 `a,b,\n`，被本枚门与参照件一起挡下。
+    let (out, status, err) = run(&["-t", ",", "-R", ","], b"b,a\n");
+    assert_eq!(
+        (out.as_slice(), status),
+        (b"a\n,b,".as_ref(), 0),
+        "stderr 是 {err:?}"
+    );
+    let (_, status, err) = run(&["-R", "300"], b"a\n");
+    assert_eq!(status, 2);
+    assert_eq!(err, "sort: invalid record delimiter 300\n");
+    let (_, status, err) = run(&["-R", "\\q"], b"a\n");
+    assert_eq!(status, 2);
+    assert_eq!(err, "sort: invalid record delimiter q\n");
+    let (_, status, err) = run(&["-t", "\n"], b"a\n");
+    assert_eq!(status, 2, "默认记录分隔符就是换行");
+    assert_eq!(err, "sort: record/field delimiter clash\n");
+}
+
+/// `multiple record delimiters` 走 `usage()`，所以是**两行**（一句带程名的话 +
+/// 那个 usage 块）。参照件在宿主走到这一步会崩（它自己那份 `usage()` 依赖的垫片在
+/// 宿主段错误，同 `join_ref` 那一坑），所以这一枚的形状按 C 源码文本钉：
+/// `sort.c:399-412` 的第一条 `fprintf` 不带换行、第二条以十三个空格开头。
+#[test]
+fn a_second_stuck_dash_r_lands_on_the_usage_leg() {
+    let (out, status, err) = run(&["-R", ",", "-R", "x"], b"a\n");
+    assert_eq!(out.as_slice(), b"", "报文只走 stderr");
+    assert_eq!(status, 2, "C 的 usage() 是 exit(2)");
+    assert!(
+        err.starts_with("sort: multiple record delimiters\nusage: sort "),
+        "实际 stderr 是 {err:?}"
+    );
+    assert!(
+        err.contains("[-R char]"),
+        "usage 块里要带得上 `-R` 那一项：{err:?}"
+    );
+}

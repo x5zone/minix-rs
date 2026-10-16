@@ -46,7 +46,7 @@ fn run() -> ! {
     }
     let mut runs: Vec<Vec<String>> = Vec::new();
     if operands.is_empty() {
-        runs.push(split_lines(&support::read_stdin()));
+        runs.push(split_records(&support::read_stdin(), options.record_delim));
     } else {
         for operand in operands {
             let input = if operand == "-" {
@@ -54,7 +54,7 @@ fn run() -> ! {
             } else {
                 read_operand(prog, operand)
             };
-            runs.push(split_lines(&input));
+            runs.push(split_records(&input, options.record_delim));
         }
     }
     let mut lines: Vec<String> = runs.iter().flatten().cloned().collect();
@@ -94,7 +94,10 @@ fn run() -> ! {
     let mut payload: Vec<u8> = Vec::new();
     for line in &lines {
         payload.extend_from_slice(line.as_bytes());
-        payload.push(b'\n');
+        // C 的 `putrec`（`files.c:194`/`:215`）是「写完记录再补一个 `REC_D`」，而不是
+        // 「除最后一条外补分隔符」：带 `-R` 时输出**以分隔符收尾**（参照件对
+        // `b,a,d,c\n` 做 `-R ,` 给 `a,b,c\n,d,`，末尾那个逗号是真源写的）。
+        payload.push(options.record_delim);
     }
     write_output(prog, &options, &payload);
     support::terminate(0);
@@ -210,15 +213,21 @@ fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: 
     }
 }
 
-/// Splits collected input into lines, dropping the trailing newline of
-/// every line and the final empty piece after a terminating newline.
-fn split_lines(input: &[u8]) -> Vec<String> {
+/// Splits collected input into records on C's `REC_D` (`-R`, default `'\n'`),
+/// dropping the delimiter itself and the final empty piece after a terminating
+/// delimiter — that is what C's `getrec`（`files.c:113-124`）do：读到分隔符就收尾这一条，
+/// 而 EOF 前一个字节也没读到就返回 0（所以 `a,b,` 是两条记录不是三条）。
+/// 记录内容本身不去任何东西：`-R ,` 下 `b,a,d,c\n` 的最后一条就是 `c\n`（带着换行），
+/// 因为换行在这一形里只是普通字节。
+fn split_records(input: &[u8], rec_d: u8) -> Vec<String> {
     if input.is_empty() {
         return Vec::new();
     }
-    let text = core::str::from_utf8(input).unwrap_or("");
-    let mut pieces: Vec<String> = text.split('\n').map(String::from).collect();
-    if input.ends_with(b"\n") {
+    let mut pieces: Vec<String> = input
+        .split(|byte| *byte == rec_d)
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect();
+    if input.ends_with(&[rec_d]) {
         pieces.pop();
     }
     pieces
@@ -258,6 +267,19 @@ fn parse_fail(prog: &str, error: ParseError) -> ! {
             support::terminate(2);
         }
         ParseError::MultipleFieldDelimiters => usage(prog, Some("multiple field delimiters")),
+        // 下面三支都是 `sort.c:223-242` 与 `:217-218` 的形状：`multiple record
+        // delimiters` 走 `usage()`（一句话 + 整个 usage 块），而两句 `errx`（clash 与
+        // invalid）只有一行、**不接 usage**；三者都退 2。
+        ParseError::MultipleRecordDelimiters => usage(prog, Some("multiple record delimiters")),
+        ParseError::RecordFieldDelimiterClash => {
+            support::warn(format!("{prog}: record/field delimiter clash\n").as_bytes());
+            support::terminate(2);
+        }
+        ParseError::InvalidRecordDelimiter(value) => {
+            let shown = String::from_utf8_lossy(&value).into_owned();
+            support::warn(format!("{prog}: invalid record delimiter {shown}\n").as_bytes());
+            support::terminate(2);
+        }
     }
 }
 
