@@ -250,6 +250,64 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十五把 `comm` 的两类出口与列前缀发放按 C 定形，并新立它的第一扇端到端门（第八处读缝缺陷）**
+  （`2026-10-16`，`claim/COMM-GETOPT-LINE-qoder` @ 基线 `ed4db08d6`，单域三线 commands/textfilter，无跨界）：
+  判定表第十一支。**真源形状**：`comm.c:80` 的 optstring 是 `"123f"`——`1`/`2`/`3`/`f` 四个
+  **都不带值**的字母。这条决定了本支只有两类可达出口，而且**行数不同**：① 集外字母 = libc 先印
+  一行（`getopt.c:101-104`）再由 `comm.c:91-93` 的 `default: usage()` 接第二行，退 1
+  （`-Z`、聚簇 `-1Z` 报 `Z`、`--x` 报 `-`）；② 操作数不是两个 = **只有 usage 一行**（`comm.c:101`
+  的 `if (argc != 2)`，少一个、多一个都算）。libc 那句 `option requires an argument` 在 `"123f"`
+  下**根本到不了**——可达出口由 optstring 定，不按「同族都有缺值一支」的规律补（判定表立起来后已被
+  反例教育过五回，这一支是又一个：形状像、集合不同）。两处细节：usage 那一行的程序名是**写死在串里**的（`comm.c:197` 没有
+  `getprogname()`），而 ① 那一行的前缀跟着 `getprogname()`——同一支命令里两行的来历不同；
+  打不开的档名是 `err(1, "%s", name)` 三段形且**致命**（`comm.c:181-184`），第一个档名失败时
+  第二个连试都不试，这与 `column`/`rev` 的 warn+继续正相反。
+  **选项环不重排**（`getopt.c:74-78`）：非选项 token 一到环就结束且不推进 `optind`，所以
+  `comm 档 -1 档` 是**三个操作数**（参照件现量：一行 usage、退 1），旧写法扫完操作数还继续扫，
+  把 C 拿去当档名的 `-1` 吃成了旗标。裸 `-` 是合法操作数并且就是标准输入（`comm.c:181` 的
+  `!strcmp(name, "-")` → `stdin`），`--` 结束环而自身不是操作数。
+  **末行没有换行符照样是一条记录**（`getnextln` 只在「EOF 且一个字符都没读到」时才返回 `NULL`，
+  `:211-214`）——这一条与批次三百一十四的 `column` 恰好相反，那边把残行当「长行」丢掉并警告；
+  又一处只能逐支量的形制，别再往同族上套。
+  **第八处同族读写缝缺陷**：`comm` 壳拿裸 `minix_sys::open`/`read`/`close` 读操作数档，
+  宿主上一个档名都读不到（前七处：`nl`/`fold`/`rev`/`colrm`/`unexpand`/`col` 的读腿、`split` 的写腿），
+  所以三列合并的进程级行为从来没被测过；已改走 `bin_support` 的双生读缝，并把报文补回三段形。
+  **这扇新门当场抓到第二处真缺陷**：列前缀要**依次发给真正打出来的列**——C 是
+  `p = tabs; if (flag1) col1 = *p++; if (flag2) col2 = *p++; if (flag3) col3 = *p;`
+  （`comm.c:105-110`），所以压掉列一之后公共行拿的是 `tabs[1]`（一个制表符）而不是 `tabs[2]`；
+  旧写法固定按列号取 `tabs[column - 1]`，于是 `comm -1` 把公共行顶到了两个制表符上、
+  `-2` 把列三顶成两个、`-12` 让唯一的公共行带着两个制表符出场。门测 9 枚 + 库侧新增 1 枚
+  （不重排那一支），金样逐形取自参照件读数。
+  **三件套**：容器整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **772 / 0 / 0**
+  （61 target，基线 `ed4db08d6` 为 762/60，+9 是新立的 `comm_face`、+1 是库侧不重排那一枚）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、**85 warning 同基线**
+  （本笔一度到 86，一枚是新门里一个绑了没用的操作数路径，已改成正面那条「stdin 与档并排走」的断言）；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`；
+  `rustfmt --edition 2024 --check` 触及件零漂移；A/B 与参照件 `tmp/comm-315/comm_ref`
+  （`comm.c` 真源 + Minix 的 `getopt.c` + `getprogname` 垫片，宿主现链）逐形比
+  退码/stdout/stderr 三件，**32 形 SAME=32 DIFF=0**；变异负控四枚
+  （`tmp/comm-315/ctl315.py`）分别咬 **1 / 1 / 3 / 3** 枚：丢 libc 那一行、列前缀按列号固定取、
+  裸 `-` 退回选项环、操作数判据放松成「不少于两个」。核实日 `2026-10-16`；基线 `ed4db08d6`。
+  **test-audit 第 2 维本轮又逮到一处「期望写错而代码对」**：新写的「`-` 与档并排走」那一形，
+  我按「剩下的行属于第一边」推了两条路径，实际 C 是**第一边先见底、剩下的整段落在列二**
+  （参照件现量 `\t\tapple`、`\t\tbanana`、`\tcherry`），代码本来就是对的——按参照件改期望，不改代码。
+  **验证边界**：参照件在本机链 glibc，`err(3)` 走 glibc 而 `strerror` 的 `ENOENT` 句子两边同文，
+  故 `DIFF=0` 是逐字节对账的结果；比较函数一侧 C 先 `setlocale(LC_ALL, "")` 再用 `strcoll`，
+  A/B 在 `LC_ALL=C.UTF-8` 下与字节序一致。
+  **登记不执行**：① 两个操作数都写 `-` 时 C 是**同一条流交错读**（先读两边各一行、比完再读
+  输的那一边），参照件现量 `comm - -` 给的是 `banana`、`\tdate`、`fig`；本层「先收全再合并」
+  的模型没有游标可言，这一形不可复制（`COMM-SHARED-STDIN-CURSOR`）；② 目录当操作数时 C 的
+  `fopen` 成功、`getc` 才失败，于是那一侧直接见底、另一侧整段落在列二且退 0，本层的读缝把
+  「开不了」统一报成致命错退 1（`COMM-DIR-OPERAND`）；③ `MAXLINELEN` 那一判（超长行丢掉多余
+  字符直到换行，`comm.c:205-210`）未建模（`COMM-LINELEN-TRUNCATION`）；④ `strcoll` 随 locale
+  变，本层按字节序（`COMM-LOCALE-COLLATE`）；⑤ C 收尾查 `ferror(stdout) || fclose(stdout)`
+  落 `err(1, "stdout")`，本壳 `emit` 短写不上报（`COMM-WRITE-ERRLEG`，同族）；⑥ 无效 UTF-8
+  整段弃（同族 `SPLIT-NONUTF8-DROP` 一族）；⑦ 真机 open 腿归 `C-57`/E5。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/col/column/**comm** + pr
+  （egetopt 措辞）；待接 `cmp`、`jot`、`unifdef`、`units`、`seq`、`paste`、`tr`；
+  另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `CMP-GETOPT-LINE`
+  （`minix3/usr.bin/cmp/cmp.c:74` 的 optstring 是 `"ls"`，两个字母都不带值）。
+
 - ✅ **批次三百一十四把 `column` 的选项环、四类出口与残行警告按 C 定形，并新立它的第一扇端到端门**
   （`2026-10-16`，`claim/COLUMN-GETOPT-LINE-qoder` @ 基线 `b8dafd773`，单域三线 commands/textfilter，无跨界）：
   判定表第十支。**真源形状**：`column.c:93` 的 optstring 是 `"c:s:tx"`——两个带值字母 `c`/`s`

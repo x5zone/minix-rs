@@ -40,11 +40,7 @@ use alloc::vec::Vec;
 /// Merges two sorted line lists. Lines must be newline-stripped; both
 /// lists are consumed to the end regardless of order violations (the C
 /// assumes sorted input and simply advances the smaller side).
-pub fn comm<'a>(
-    a: &'a [&'a str],
-    b: &'a [&'a str],
-    options: &CommOptions,
-) -> Vec<CommLine<'a>> {
+pub fn comm<'a>(a: &'a [&'a str], b: &'a [&'a str], options: &CommOptions) -> Vec<CommLine<'a>> {
     let mut out = Vec::new();
     let mut ia = 0usize;
     let mut ib = 0usize;
@@ -121,35 +117,42 @@ pub enum CommArgError {
 /// matched only whole `-1`/`-2`/`-3`/`-f` tokens and pushed everything else
 /// (including an unknown `-z`) as an operand, so `comm -z f` opened a file
 /// literally named `-z`; this parser routes that to `UnknownOption`.
+///
+/// 选项环**不重排**（`getopt.c:74-78`）：非选项 token 一到环就结束，它后面的
+/// `-1`/`-f` 都是档名，所以 `comm a -1 b` 是三个操作数而不是两个操作数加一个旗标。
+/// 这一支的 optstring 里没有带值字母，所以 libc 那句 `option requires an argument`
+/// 到不了（同 `rev`/`colrm` 的空 optstring 只有集外字母一形的道理一样：可达出口
+/// 由 optstring 定，不由「同族规律」定）。
 pub fn parse_comm_args<'a>(
     args: &'a [&'a str],
 ) -> Result<(CommOptions, [&'a str; 2]), CommArgError> {
     let mut options = CommOptions::default();
-    let mut operands: Vec<&'a str> = Vec::new();
     let mut index = 0;
-    while index < args.len() {
-        let arg = args[index];
+    let operands: Vec<&'a str> = loop {
+        let Some(&arg) = args.get(index) else {
+            break Vec::new();
+        };
         if arg == "--" {
-            operands.extend_from_slice(&args[index + 1..]);
-            break;
+            // `getopt.c:81-85`：先 `++optind` 再返回 -1，所以 `--` 自身不是操作数。
+            break args[index + 1..].to_vec();
         }
-        if arg.len() > 1 && arg.starts_with('-') {
-            for ch in arg[1..].chars() {
-                match ch {
-                    '1' => options.suppress1 = true,
-                    '2' => options.suppress2 = true,
-                    '3' => options.suppress3 = true,
-                    'f' => options.fold = true,
-                    other => return Err(CommArgError::UnknownOption(other)),
-                }
+        if arg.len() < 2 || !arg.starts_with('-') {
+            // `getopt.c:74-78`：非选项 token 一到就返回 -1 且**不推进** `optind`，
+            // 于是它连同后面的 token 全是操作数（旧写法把它推进了环继续扫，所以
+            // `comm a -1 b` 里的 `-1` 被当旗标吃掉，参照件量的是三个操作数 → usage）。
+            break args[index..].to_vec();
+        }
+        for ch in arg[1..].chars() {
+            match ch {
+                '1' => options.suppress1 = true,
+                '2' => options.suppress2 = true,
+                '3' => options.suppress3 = true,
+                'f' => options.fold = true,
+                other => return Err(CommArgError::UnknownOption(other)),
             }
-        } else {
-            // A file operand; a lone `-` (len 1) and any non-dash token both
-            // name a file (standard input for `-`).
-            operands.push(arg);
         }
         index += 1;
-    }
+    };
     if operands.len() != 2 {
         return Err(CommArgError::NotTwoOperands);
     }
@@ -209,10 +212,7 @@ mod tests {
         };
         assert_eq!(
             texts(&comm(&a, &b, &options)),
-            vec![
-                (3, "Apple".to_string()),
-                (2, "zebra".to_string()),
-            ]
+            vec![(3, "Apple".to_string()), (2, "zebra".to_string()),]
         );
     }
 
@@ -314,6 +314,34 @@ mod tests {
         assert_eq!(
             parse_comm_args(&["a", "b", "c"]),
             Err(CommArgError::NotTwoOperands)
+        );
+    }
+
+    /// 不重排：第一个非选项 token 一到，选项环当场结束，它后面的 `-1` 是**档名**，
+    /// 于是三个 token 全是操作数 → `NotTwoOperands`（参照件 `comm a -1 b` 现量：
+    /// 只一行 usage、退 1，那个 `-1` 既没被当旗标、也没被当成坏选项）。
+    #[test]
+    fn test_parse_stops_at_the_first_operand_without_reordering() {
+        assert_eq!(
+            parse_comm_args(&["a", "-1", "b"]),
+            Err(CommArgError::NotTwoOperands)
+        );
+        // 两个操作数在前、旗标在后也一样：三个 token 全落进操作数。
+        assert_eq!(
+            parse_comm_args(&["-", "b", "-f"]),
+            Err(CommArgError::NotTwoOperands)
+        );
+        // 环内的聚簇仍逐字母生效，且 `--` 之后全是档名。
+        assert_eq!(
+            parse_comm_args(&["-1f", "--", "-2", "-3"]),
+            Ok((
+                CommOptions {
+                    suppress1: true,
+                    fold: true,
+                    ..CommOptions::default()
+                },
+                ["-2", "-3"]
+            ))
         );
     }
 }
