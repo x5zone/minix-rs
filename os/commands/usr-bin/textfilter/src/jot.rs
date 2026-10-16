@@ -768,7 +768,13 @@ mod tests {
         o.prec = None;
         let (f, dox) = get_format(&o).unwrap();
         assert!(!dox);
-        assert_eq!(render(&f, 3.14159), " 3.14|");
+        // 不用 π 的近似当用例：`3.14159` 与 `3.1416` 都会撞上 deny 级
+        // `clippy::approx_constant`——它的常量表含**舍入后的短形**（实测 1.94.0 连四位的
+        // `3.1416` 也报），比的是数值而不是写法，加下划线分隔也挡不住。
+        // 本测要钉的是「`%5.2f` 把值补宽到五列」，与值的来历无关：`9.5` 二进制下精确，
+        // 两个小数位就是 `.50`；`7.9375`（127/16，同样精确）第三位是 `7`，必然进位成 `7.94`。
+        assert_eq!(render(&f, 9.5), " 9.50|");
+        assert_eq!(render(&f, 7.9375), " 7.94|");
         o.word = "%04x".to_string();
         let (f, _) = get_format(&o).unwrap();
         assert!(is_dox(&f));

@@ -250,6 +250,42 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百把 `jot` 用例里的 π 近似字面量换掉，`minix-textfilter` 的 `clippy --all-targets` 腿首次能当门用**
+  （`2026-10-16`，`claim/JOT-APPROX-CONSTANT-qoder` @ 基线 `78dd478fb`，单域三线 commands/textfilter，只动
+  `src/jot.rs` 测试模块里的一枚用例，无跨界）：清批次二百九十八登记的那条卫生项——`src/jot.rs:771` 的 `3.14159`
+  撞上 deny 级 `clippy::approx_constant`，使该包 `cargo clippy --all-targets` 在基线上就编译不过，这条腿因此
+  一直不能当门，此前只能先放宽这条 lint 再取读数。
+  **交接写的那句改法被实测否证两处**：①「如写 `3.1415_9`」无效——clippy 比的是**数值而不是写法**，下划线只是
+  源码分隔符；②换成 `3.1416`（π 舍到四位）仍然报，说明它的常量表**含舍入后的短形**，不是只按截位匹配。
+  两条都有实证：`3.14159` 与 `3.1416` 各触发一次 deny（后者落在 `jot.rs:776:31`，日志
+  `tmp/jot-300-clippy.log`）。
+  **改法**：这一测要钉的是「`%5.2f` 把值补宽到五列」，与值的来历无关，于是换成两个二进制下精确、因此读数不带
+  猜测的形——`9.5` 得 `" 9.50|"`（补宽支）、`7.9375`（127/16）得 `" 7.94|"`（第三位是 `7`，无论何种舍入策略都
+  进位）。两句期望都由**实跑**确认（`--lib` 452/0），不是从格式化规则推的。
+  test-audit 五维度：无冗余（`%5.2f` 的宽度断言全包只此一处，`floatfmt.rs` 的三枚测是 `floor`/`decimal_exponent`/
+  `pow10` 的纯件测，不重复承载）；无无效测（本包该目标无 `#[ignore]`、无空体）；无虚构（07 篇 jot 行既不声明测试名
+  也不声明计数，故 Sync-7 无偏差可比——这本身是个留白，登记见下）；自身正确性由实跑坐实；完备性余缺口登记在末尾。
+  三件套：`cargo clippy -j 1 -p minix-textfilter --all-targets` → **退码 0、0 error、`approx_constant` 零命中**，
+  86 条 warning 与改前**逐编译单元同数**（`generated N warnings` 分布 4/32/2/54 一致，`tools/check-clippy-ratchet.sh`
+  的棘轮不因本笔抬动）；`cargo test -j 1 -p minix-textfilter --lib` → 452 passed / 0 failed；
+  整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **644 passed / 0 failed / 0 ignored**（51 个 target，
+  与上一笔 `78dd478fb` 同数，本笔只换字面量不改测数）；同容器 `cargo check --workspace -j 1` → 0 error（36.85s）；
+  宿主三架构 `cargo check -p minix-textfilter --bins --target {x86_64,aarch64,riscv64gc}-unknown-none`
+  → 三者均 `Finished` 零 error；rustfmt：本笔新增漂移 0 处（见下面的存量登记）；核实日 `2026-10-16`。
+  负控一枚：把 `3.14159` 放回同一句 → clippy 退码 **101**、`approx_constant` 命中 2；还原后 md5 对齐
+  `56423f175f351543c78525075a60ff07`，并**重跑一次取最终读数**（0 error），不让读数对应到旧树。
+  **顺带坐实一条工具事实（值得写进配方说明）**：容器镜像 `minix-ci:1.94` 的 `rustc --print sysroot` 下
+  `lib/rustlib/` 只有 `x86_64-unknown-linux-gnu` 一个 target，**不含三架构 none 目标的 core**——在容器里跑
+  `--target x86_64-unknown-none` 会 E0463（`error: could not compile bitflags`）。所以「权威编译门 = 容器」与
+  「三架构 `--bins` = 宿主现测」并不矛盾：容器管宿主测试与 workspace，交叉 target 只能靠宿主装的三份 std。
+  **登记不执行两处**：① `src/jot.rs` 另有 **10 处存量 rustfmt 漂移**（`git show HEAD:` 副本与工作树同为 10 块，
+  位置 `:6`、`:142`、`:158`、`:165`、`:287`、`:355`、`:368`、`:391`、`:451`、`:785`；本笔新增 0 处）——把它们
+  一并格式化会让一笔卫生提交变成整文件的无关 churn，故只登记；② `jot` 的格式面还有两支没钉：值宽已达/超过
+  指定宽度时的**不补宽支**（如 `%5.2f` 对 `12.375`）与**负值支**，07 篇 jot 行也没有任何测试名或测试计数声称
+  （Sync-7 无从对账），补测归后续轮。
+  **负载条款重申**：本轮全程「一条命令只跑一件事」，容器一律 `-j 1 -m 2g -u`，宿主侧三架构只在容器不在跑时跑，
+  长跑一律落盘再取退码；无任何合成 CPU 压力（上一笔的 WSL 崩溃成因已记入台账与本表）。
+
 - ✅ **批次二百九十九把 `join` 的字段切分按 C 定形：显式 `-t` 保留空段，四处同源错位一起转绿**
   （`2026-10-16`，`claim/JOIN-SPLIT-FIELDS-qoder` @ 基线 `4df3bfc97`，单域三线 commands/textfilter，无跨界）：
   照上一单写死的判据落地。**真源形状**：C 的 `slurp` 用 `strsep(&bp, tabchar)` 切字段（`join.c:378`），
