@@ -250,6 +250,47 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百零五把 `vis` 的集外字母补上 libc `getopt` 那一行，并给出同族缺行的判定表**
+  （`2026-10-16`，`claim/FAMILY-GETOPT-LINE-qoder` @ 基线 `6a9daec0a`，单域三线 commands/textfilter，无跨界）：
+  取排期表 V3-10 那条（批次二百八十登记的「同族缺行核对」）。**判据先对 C**：`minix3/usr.bin/vis/vis.c:73`
+  吃的是 libc `getopt(argc, argv, "bcde:F:fhlMmNnoSstw")`，选项串不以 `:` 开头且 `opterr` 默认为 1，
+  所以集外字母先由 libc 印一行（`minix3/lib/libc/stdlib/getopt.c:101-104`，
+  `"%s: unknown option -- %c\n"`），`getopt` 回 `BADCH`(`'?'`) 后才由 `case '?': default:` 打 usage 退 1
+  （`vis.c:135-140`）——**两行**。带值选项缺值是同一族的另一句（`getopt.c:132-136`，
+  `option requires an argument -- %c`）。本壳此前只打 usage，把这一行丢了。
+  **一个必须分清的岔子**：`-d` **不是**集外字母——C 的选项串里写的是 `d:`（认它、且要带值），只是
+  `case 'd'` 在非 `DEBUG` 构建里被编译掉才落到 `default:`。所以旧写法把 `-d` 与 `-z`/`-1` 塞进同一个
+  `default` 是正确的（都是一行 usage），而我把集外字母一并算成两行就会**把 `-d` 写错**。本笔因此把
+  `-d` 单列一支：`-d x` 只落 usage；`-d` 空到末尾才走 libc 的缺值那句（`getopt` 认它所以要值）。
+  句子单源住在 `minix_textfilter::GetoptReport`（同一份文本已服务 head/tail/uniq/cut/join/sort 六支，
+  它对 `pr` 用的是另一支 `IllegalOption`，因为 `pr` 链的是 `egetopt`——这条区别是批次二百七十几定的）。
+  测面**没有新增枚数**，而是把两处「测不出东西」的断言换成逐字等式：`letters_outside_the_c_optstring_are_refused_with_usage`
+  原来是 `err.contains("Usage: vis [")`（少了首行也过），现按四支逐字钉（`-z`/`-1` 两行、`-d x` 一行、
+  `-d` 两行）；`fold_width_is_read_the_way_atoi_reads_it` 里的 `-F` 缺值同改，并补 `-e` 缺值一支。
+  三件套（容器现测）：整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **668 passed / 0 failed /
+  0 ignored**（51 个 target，与基线 `6a9daec0a` 同数——本笔是收紧断言不是加测）；`--test vis_face` 19/0；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` 0 error 且 `bin/vis.rs` 零命中；同容器
+  `cargo check --workspace -j 1` 0 error；宿主三架构（`cargo check -p minix-textfilter --bin vis --target x86_64-unknown-none`、`aarch64-unknown-none`、`riscv64gc-unknown-none-elf`）三者均 `Finished`；rustfmt 触及两文件零漂移；核实日 `2026-10-16`。
+  **两枚变异负控各咬一枚**（控制器 `tmp/face-getopt-305/ctl305.py`，先打印 `mutation applied`、还原后
+  md5 对齐 `a55e065206e8f2d7d273c5f3c3aed0ff`）：① 把集外字母改回只打 usage → 1 枚 FAILED；② 把 `-d`
+  缺值的句子换成集外字母那句 → 1 枚 FAILED（同一枚测内的不同断言，证明两支护的是两条判据）。
+  **同族判定表**（C 侧看 `getopt(`/`egetopt(` 与选项串首字符，本壳侧看真二进制对 `-Z` 的第一行 stderr；
+  完整表在 `tmp/`，下一轮起逐支取）：
+  ① 已经是两行形（六支）：`head`、`tail`、`uniq`、`cut`、`join`、`sort`；
+  ② 本笔修好：`vis`；
+  ③ C 吃 libc `getopt`、本壳只打自己那句或 usage（**待接，十四支**）：`nl`（今天印的是
+  `nl: unknown option`，连字母都没带——句子本身也不合 libc）、`cksum`（印 `illegal option`，那不是
+  libc 措辞，疑为照抄 `pr` 的 `egetopt` 形）、`fold`、`rev`、`split`、`unexpand`、`col`、`colrm`、
+  `column`、`comm`、`cmp`、`jot`、`unifdef`、`units`、`seq`、`paste`；
+  ④ 另判（C 不用 libc `getopt`，形状各不同）：`pr`（`egetopt` → `illegal option -- %c`，已对）、
+  `expand`/`hexdump`/`colcrt`/`tr`/`lam`（各用自己的解析器，句子得回各自 C 源核，不许按「同族规律」抹平）。
+  每一支都要单独一轮：先判句子再改，别一次扫多支（同族差异已被 `pr`/`lam` 这类反例证明不可外推）。
+  **过程自纠与工具坑一处**：整包跑时 `vis_face` 十九枚全部报 `NotFound`——不是代码问题，而是那枚
+  测试二进制里 `env!("CARGO_BIN_EXE_vis")` 烘的是**另一棵树布局下的旧路径**（`strings` 读到
+  `/work/target/debug/vis`，本次挂载是 `/work/os/target/...`），cargo 又因指纹未变不肯重链；
+  `touch tests/vis_face.rs` 强制重编后同一命令 19/0。判据：门报 `NotFound` 而 `target/debug/<bin>`
+  明明在，先 `strings` 测试二进制看烘进去的路径，别去改代码。
+
 - ✅ **批次三百零四把 `sort` 的 `-R`（记录分隔符）接上：切分、收尾、与 `-t` 的不对称判据一次做齐**
   （`2026-10-16`，`claim/SORT-R-OPTION-qoder` @ 基线 `b46ac1baa`，单域三线 commands/textfilter，无跨界）：
   排期表 V3-3 那条（`sort` 选项面 `D`/`R`/`T` 里的真功能 `R`）。**真源形状**逐句写在下面，因为这一支的

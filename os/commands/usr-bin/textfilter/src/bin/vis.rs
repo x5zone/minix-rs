@@ -33,6 +33,7 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
+use minix_textfilter::GetoptReport;
 use minix_textfilter::vis::{
     VisOptions, copy_doubling_backslashes, encode_chunk, fold_marker, foldit,
 };
@@ -52,7 +53,8 @@ struct Plan<'a> {
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let plan = match parse_vis_args(&argv) {
+    let prog = support::prog_name(&argv);
+    let plan = match parse_vis_args(&argv, prog) {
         Ok(parsed) => parsed,
         Err(message) => {
             support::warn(message.as_bytes());
@@ -136,8 +138,14 @@ fn main() {
     run()
 }
 
-/// C's usage line, `vis.c:136-139` (note the capital `U`; exit status 1).
+/// C 的 usage 文本（`vis.c:136-139`，注意那个大写 `U`；退 1）。
 const USAGE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
+
+/// 把 libc `getopt` 的那一行与自己的 usage 拼成两行（句子单源住在
+/// [`GetoptReport`]，与同族其它壳共用一份文本）。
+fn libc_line(report: GetoptReport, prog: &str) -> String {
+    format!("{}{}", report.line(prog), USAGE)
+}
 
 /// Fold `argv` into a [`Plan`] the way `getopt(argc, argv, "bcde:F:fhlMmNnoSstw")`
 /// does (`vis.c:73-135`): every letter of that string is handled, letters cluster
@@ -146,7 +154,7 @@ const USAGE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [fil
 /// or the following word (`-e x`), `--` ends option scanning, and a lone `-` is
 /// an operand. Each `-e` overwrites the previous one, as C's `extra = optarg`
 /// assignment does; each `-F` overwrites the width the same way.
-fn parse_vis_args(argv: &[String]) -> Result<Plan<'_>, String> {
+fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, String> {
     let mut options = VisOptions::default();
     let mut none = false;
     let mut fold = false;
@@ -228,8 +236,9 @@ fn parse_vis_args(argv: &[String]) -> Result<Plan<'_>, String> {
                     } else if index < argv.len() {
                         argv[index].as_bytes().to_vec()
                     } else {
-                        // C's getopt reports a missing option argument as `?`.
-                        return Err(String::from(USAGE));
+                        // C 的 getopt 在缺值时先自己印一行（`getopt.c:132-136`），
+                        // 才把 `?` 交给开项环落到 `default: usage()`——所以这里是**两行**。
+                        return Err(libc_line(GetoptReport::MissingValue('e'), prog));
                     };
                     pos = bytes.len();
                     continue;
@@ -242,7 +251,7 @@ fn parse_vis_args(argv: &[String]) -> Result<Plan<'_>, String> {
                     } else if index < argv.len() {
                         argv[index].as_bytes()
                     } else {
-                        return Err(String::from(USAGE));
+                        return Err(libc_line(GetoptReport::MissingValue('F'), prog));
                     };
                     // C's check is `atoi(optarg) < 5`, so a word with no digits at
                     // all converts to zero and is refused here too.
@@ -257,7 +266,26 @@ fn parse_vis_args(argv: &[String]) -> Result<Plan<'_>, String> {
                     pos = bytes.len();
                     continue;
                 }
-                _ => return Err(String::from(USAGE)), // includes `-d`: C compiles it out too
+                // `-d` 不在集外：C 的选项串里写的是 `d:`（带值），所以 getopt **不**报
+                // 那一行；但 `case 'd'` 在 `DEBUG` 之外的构建里被编译掉，于是它落到
+                // `default: usage()`（批次二百一十二定下的那一形）。缺值时仍走 libc 那一句。
+                b'd' => {
+                    index += 1;
+                    if pos + 1 >= bytes.len() && index >= argv.len() {
+                        return Err(libc_line(GetoptReport::MissingValue('d'), prog));
+                    }
+                    return Err(String::from(USAGE));
+                }
+                _ => {
+                    // 集外字母：libc 的 `getopt` 先印一行（`getopt.c:101-104`，选项串不以
+                    // `:` 开头所以 `opterr` 生效），再由 `case '?'`/`default` 接 usage。
+                    // 本壳此前只打 usage，把这个命令同族的其它五支（head/tail/uniq/cut/join/sort）
+                    // 都有的那一行弄丢了。
+                    return Err(libc_line(
+                        GetoptReport::UnknownOption(bytes[pos] as char),
+                        prog,
+                    ));
+                }
             }
             pos += 1;
         }

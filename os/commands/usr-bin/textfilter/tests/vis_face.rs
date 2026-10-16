@@ -136,15 +136,35 @@ fn letters_outside_the_c_optstring_are_refused_with_usage() {
     // refusals left are the letters C itself sends to `default:`. `-d` belongs in
     // that group: it is C's debug counter, compiled out of this build, so the
     // answer is the usage line rather than a “not modelled” note about our shell.
-    for flag in ["-d", "-z", "-1"] {
+    // 集外字母是**两行**：libc 的 `getopt`（`minix3/lib/libc/stdlib/getopt.c:101-104`，
+    // 选项串不以 `:` 开头所以 `opterr` 生效）先印 `vis: unknown option -- <字母>`，
+    // 然后 `case '?'`/`default` 才打那一行 usage（`vis.c:135-140`）。旧断言只看
+    // `contains("Usage: vis [")`，所以少了首行也测不出来——现按逐字等式钉。
+    const USAGE_LINE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
+    for (flag, letter) in [("-z", 'z'), ("-1", '1')] {
         let (out, status, err) = run(&[flag], b"a\n");
         assert_eq!(out, Vec::<u8>::new(), "flag {flag} printed {out:?}");
         assert_eq!(status, 1, "flag {flag} stderr was {err:?}");
-        assert!(
-            err.contains("Usage: vis ["),
-            "flag {flag} stderr was {err:?}"
+        assert_eq!(
+            err,
+            format!("vis: unknown option -- {letter}\n{USAGE_LINE}"),
+            "flag {flag} 的两行形与 C 不符"
         );
     }
+    // `-d` 不在集外（C 的选项串里是 `d:`），所以它**没有**首行，只落 usage；
+    // 而它带值：后面什么都没有时才是 libc 的缺值那一句。
+    let (out, status, err) = run(&["-d", "x"], b"a\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1, "stderr was {err:?}");
+    assert_eq!(err, USAGE_LINE, "`-d` 的 case 被 DEBUG 编译掉，只落 usage");
+    let (out, status, err) = run(&["-d"], b"a\n");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1, "stderr was {err:?}");
+    assert_eq!(
+        err,
+        format!("vis: option requires an argument -- d\n{USAGE_LINE}"),
+        "缺值那一支也带 libc 的首行（`getopt.c:132-136`）"
+    );
     // And the one combination C refuses by name: `-h` with `-m`. The check sits
     // after the whole option loop and before any operand is opened
     // (`usr.bin/vis/vis.c:142-144`), so it outranks an unreadable file.
@@ -337,7 +357,19 @@ fn fold_width_is_read_the_way_atoi_reads_it() {
     let (out, status, err) = run(&["-F"], b"a");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 1, "stderr was {err:?}");
-    assert!(err.contains("Usage: vis ["), "stderr was {err:?}");
+    assert_eq!(
+        err,
+        "vis: option requires an argument -- F\nUsage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n",
+        "缺值那一支是两行（libc 首行 + usage）；旧断言只看 `contains`，少了首行也测不出"
+    );
+    // `-e` 的缺值是同一族的另一支，字母跟着换。
+    let (out, status, err) = run(&["-e"], b"a");
+    assert_eq!(out, Vec::<u8>::new());
+    assert_eq!(status, 1, "stderr was {err:?}");
+    assert!(
+        err.starts_with("vis: option requires an argument -- e\nUsage: vis ["),
+        "stderr was {err:?}"
+    );
 }
 
 #[test]
