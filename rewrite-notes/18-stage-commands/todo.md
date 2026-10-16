@@ -250,6 +250,52 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百零六把 `nl` 的选项面按 C 重建：getopt 逐字母扫描 + 两类出口形状，并补上第一扇端到端门**
+  （`2026-10-16`，`claim/NL-OPTION-FACE-qoder` @ 基线 `9b4fbd498`，单域三线 commands/textfilter，无跨界）：
+  排期表 V3-10 判定表的第二支（`nl` 在判定表里连**句子本身**都可疑：今天印的是 `nl: unknown option`，
+  字母都丢了，且后面不接 usage）。**真源形状**：`nl.c:149` 用 libc `getopt(argc, argv, "pb:d:f:h:i:l:n:s:v:w:")`
+  ——只有 `p` 不带值，选项串不以 `:` 开头所以 `opterr` 生效，于是集外字母先由 `getopt.c:101-104` 印
+  `nl: unknown option -- <字母>`、带值缺值由 `:132-136` 印 `nl: option requires an argument -- <字母>`，
+  两句之后都接 `nl.c:230-233` 的 `usage()`（两行，第一行末尾是 `\n\t`，`:400-405`）退 1；而命令自己的
+  那些 `errx` **只有一行且不接 usage**——两类形状此前被压成同一种。
+  **旧写法的三处错**：① 按「整个 token 当一个字母」匹配，`-ba`（值附在本 token）与 `-pb t`（聚簇）都会
+  掉进集外字母那支；② 把 getopt 的错当值非法报，用了被拒值自己的句子；③ 句子多是自创的（`bad numbering
+  type (want a, n or t)`、`-n must be ln, rn or rz`、`width argument must be > 0`、`-i increment must be
+  non-zero`），而 C 的 `parse_numbering` 句子**带段名**（`numbering_properties[]` 的 name 依次是
+  footer/body/header，`nl.c:73-75`）并把整串值打出来（`illegal body line numbering type -- x`），
+  `-n` 的是 `illegal format -- <值>`，`-w` 分两句（`invalid width value -- x` 与
+  `width argument must be > 0 -- 0`，值也打出来），`-i`/`-l`/`-v` 各一句且都带值，且 C 的 `-i` **没有**
+  非零检查（只查 `*ep`）——那句「must be non-zero」是把不存在的守卫当真。**数值解析按 `strtol`/`strtoul`
+  的接受集复刻**：跳前导空白、吃一个符号、只收十进制、末尾剩任何东西（含空白）都拒、溢出也拒。
+  **新增第一扇 `nl` 端到端门 `tests/nl_face.rs`（10 枚）**，钉的都是外面看得见的：三类句子逐字、行数、
+  退码、`-ba`/`-pb t` 被接受、`-d` 收两字符拒第三、`-d ''` 是合法无操作、`-i 0` 被接受、两个操数是裸 usage。
+  门一立就**暴露两处真缺陷**（都不是选项面）：`nl` 自带一个只调裸 `read(0)` 的本地 `read_stdin()`，
+  宿主上读不到标准输入（同批次二百二十四给 games 收过的坑），已改用 `bin_support::read_stdin()` 双生缝；
+  操作数读不到时打的是自创短语 `cannot open input`，而 C 是 `err(EXIT_FAILURE, "Cannot open \`%s'", argv[0])`
+  ——程序名、**带反引号的操作数**、`strerror` 句子三段齐备（`nl.c:244-246`），已改走 `warn_line`。
+  三件套：容器 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **678 passed / 0 failed / 0 ignored**
+  （52 个 target，基线 `9b4fbd498` 为 668 / 51 target，+10 全是新门、+1 是新 target 行）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` → 退码 0、0 error、**86 条 warning 与基线同数**
+  （中途 `match … { Some→, None→return }` 写法招来两条 `unnecessary match` 建议、把 `format!` 引成
+  `alloc::format` 前的交叉门报错都已清掉，棘轮不动）；`cargo check --workspace -j 1` → 0 error；
+  **宿主三架构 `cargo check -p minix-textfilter --bins --target {x86_64,aarch64,riscv64gc}-unknown-none`
+  三者均 `Finished` 零 error**——这三条门抓到了一处宿主全绿也发现不了的错：no_std 下 `format!` 不在
+  预lude，必须 `use alloc::format;`（宿主有 std 预lude 所以整包测与 clippy 都不报）；rustfmt 触及件零漂移；
+  核实日 `2026-10-16`。
+  **三枚变异负控各咬一枚测**（控制器 `tmp/nl-306/ctl306.py`，每枚先打印 `mutation applied`、还原后 md5
+  对齐 `86bf203919517605289fc57d613d788a`）：① 集外字母退回只打 usage → 咬 `an_unknown_letter_prints_the_libc_line_then_the_usage`；
+  ② 把 `-w` 两句并成一句 → 咬 `width_rejects_unparseable_and_nonpositive_with_different_sentences`；
+  ③ 把自创的 `-i` 非零守卫加回去 → 咬 `a_zero_increment_is_accepted`。三支互不顶班，各钉各的判据。
+  **射程边界（如实记，不补空读数）**：`-b p<正则>` 那条腿需要 `regcomp`，本树未接，其拒收文案仍是**自描述**的
+  「not wired」而不是 C 的句子（C 会编译正则并按它编号）；决定半的计数器是 `u64` 而 C 是 `int`（能倒着数），
+  负增量/负起始号也另成一未接腿——两者各自登记为 `NL-REGEX-NUMBERING` 与 `NL-SIGNED-COUNTERS`，
+  不在本笔冒充 C。
+  **文档同步判断**：`nl` 在 18 篇只出现在 `10-doc-man-tools.md:89` 的粗粒度命令表（`| nl | 行编号 | -b 编号模式 | 文本 → 编号文本 | 0 成功 |`），
+  不含诊断面断言，本笔无需改它；选项面的形状与凭据都写在本条台账与代码注释里（按「过程痕迹禁入正文」的分工）。
+  **判定表进度**：待接还剩 `cksum`（句子也可疑：`illegal option` 不是 libc 措辞）、`fold`、`rev`、`split`、
+  `unexpand`、`col`、`colrm`、`column`、`comm`、`cmp`、`jot`、`unifdef`、`units`、`seq`、`paste`；
+  另判 `expand`/`hexdump`/`colcrt`/`tr`/`lam`。已对齐：head/tail/uniq/cut/join/sort/vis/nl + pr（egetopt 措辞）。
+
 - ✅ **批次三百零五把 `vis` 的集外字母补上 libc `getopt` 那一行，并给出同族缺行的判定表**
   （`2026-10-16`，`claim/FAMILY-GETOPT-LINE-qoder` @ 基线 `6a9daec0a`，单域三线 commands/textfilter，无跨界）：
   取排期表 V3-10 那条（批次二百八十登记的「同族缺行核对」）。**判据先对 C**：`minix3/usr.bin/vis/vis.c:73`
