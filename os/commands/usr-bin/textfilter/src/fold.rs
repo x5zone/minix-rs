@@ -137,9 +137,13 @@ pub struct FoldArgs<'a> {
 /// `fold` argument-parsing failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FoldError {
-    /// An option letter outside `0-9`/`b`/`s`/`w`, or a `-w` with no value
-    /// (C `getopt` default → usage, `fold.c:99`).
-    Usage,
+    /// 选项字母不在 `0-9`/`b`/`s`/`w` 里：libc `getopt` 先印一行
+    /// （`minix3/lib/libc/stdlib/getopt.c:101-104`），再由 `default: usage()` 接上那一行 usage
+    /// （`fold.c:99-101`、`:115-121`）——所以旧写法只打 usage 是把首行弄丢了。
+    UnknownOption(char),
+    /// `-w` 后面什么都没有（本 token 没有剩余、下一词也没有）：同一族的另一句
+    /// （`getopt.c:132-136`），也接 usage。旧写法把它当成「非法字母」同句报出。
+    MissingValue(char),
     /// A `-w`/legacy width that is not a positive integer (C `atoi <= 0` →
     /// `errx(1, "illegal width value")`, `fold.c:84-86`).
     IllegalWidth,
@@ -150,11 +154,11 @@ pub enum FoldError {
 /// `-s` cluster in one token (`-bs`, `-bw10`), `-w` takes a value attached
 /// (`-w80`) or as the following argument (`-w 80`), a leading all-digit token is
 /// the obsolete `-N` width form (`fold.c:91-98`), `--` ends option scanning, a
-/// lone `-` is an operand, and any other letter is [`FoldError::Usage`]. A width
-/// that is not a positive integer is [`FoldError::IllegalWidth`] — the old
-/// front door warned and *kept* the default instead of rejecting, diverging from
-/// C's `errx`. The old bin matched only the whole tokens `-b`/`-s`/`-w`, so the
-/// C-legal attached form `fold -w80 file` fell through to a usage error.
+/// lone `-` is an operand, and any other letter is [`FoldError::UnknownOption`]（带值选项
+/// 缺值则走 [`FoldError::MissingValue`]）。A width that is not a positive integer is
+/// [`FoldError::IllegalWidth`] — the old front door warned and *kept* the default instead of
+/// rejecting, diverging from C's `errx`. The old bin matched only the whole tokens
+/// `-b`/`-s`/`-w`, so the C-legal attached form `fold -w80 file` fell through to a usage error.
 pub fn parse_fold_args<'a>(args: &'a [&'a str]) -> Result<FoldArgs<'a>, FoldError> {
     let mut options = FoldOptions::new(80);
     let mut operands: Vec<&'a str> = Vec::new();
@@ -190,14 +194,23 @@ pub fn parse_fold_args<'a>(args: &'a [&'a str]) -> Result<FoldArgs<'a>, FoldErro
                         } else {
                             index += 1;
                             if index >= args.len() {
-                                return Err(FoldError::Usage);
+                                return Err(FoldError::MissingValue('w'));
                             }
                             args[index]
                         };
                         options.width = parse_width(spec)?;
                         pos = bytes.len();
                     }
-                    _ => return Err(FoldError::Usage),
+                    // 聚簇里出现数字：C 的选项串把 `0-9` 列为合法字母（遗留的 `-N` 宽度形），
+                    // 所以它**不**报 unknown option；但 C 在那个 case 里取的是
+                    // `argv[optind - 1]`（`fold.c:91-98`），结果取决于 getopt 内部的 optind 位置，
+                    // 没参照件无法取证。本壳按与 `-N` 同一语义的读法处理：从该位置起的数字串作宽度。
+                    // 这一形已作为**声明差**登记在 18 篇台账。
+                    digit if digit.is_ascii_digit() => {
+                        options.width = parse_width(&arg[pos..])?;
+                        pos = bytes.len();
+                    }
+                    _ => return Err(FoldError::UnknownOption(bytes[pos] as char)),
                 }
             }
         } else {
@@ -329,8 +342,16 @@ mod tests {
         );
         assert_eq!(parse_fold_args(&["-"]).map(|a| a.operands), Ok(vec!["-"]));
         // Unknown letter → usage; `-w` with no value → usage.
-        assert_eq!(parse_fold_args(&["-z", "f"]), Err(FoldError::Usage));
-        assert_eq!(parse_fold_args(&["-w"]), Err(FoldError::Usage));
+        assert_eq!(
+            parse_fold_args(&["-z", "f"]),
+            Err(FoldError::UnknownOption('z'))
+        );
+        assert_eq!(parse_fold_args(&["-w"]), Err(FoldError::MissingValue('w')));
+        // 聚簇里的数字不被当集外字母（C 的选项串包含 `0-9`）。
+        assert_eq!(
+            parse_fold_args(&["-b9"]).map(|a| (a.options.count_bytes, a.options.width)),
+            Ok((true, 9))
+        );
         // A non-positive / non-integer width → IllegalWidth (C errx).
         assert_eq!(parse_fold_args(&["-w", "0"]), Err(FoldError::IllegalWidth));
         assert_eq!(

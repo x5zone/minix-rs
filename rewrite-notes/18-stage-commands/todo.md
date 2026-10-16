@@ -250,6 +250,31 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百零八把 `fold` 的诊断面按 C 分回三类出口，并新立它的第一扇端到端门（顺带修好宿主读不到的读缝）**
+  （`2026-10-16`，`claim/FOLD-GETOPT-LINE-qoder` @ 基线 `c6c6d5cd6`，单域三线 commands/textfilter，无跨界）：
+  判定表第四支。C 的选项串是 0123456789bsw:（`fold.c:76`），只有 `w` 带值、`0-9` 是合法字母、不以 `:` 开头所以
+  `opterr` 生效，于是三类出口的**行数不同**：① 集外字母与 `-w` 缺值由 `getopt.c:101-104`、`:132-136` 先印一行，
+  再接 `usage()` 那一行（`fold.c:99-101`、`:115-121`，程序名跟着 `getprogname()`，退 1）；② 宽度非正是命令自己的
+  errx(1, "illegal width value")（`:84-86`），只有那一行、不接 usage。旧写法把三类压成一类（只打一行 usage、没有
+  libc 首行），usage 文本自创成 `[-b] [-s] [-w width | -width]` 且丢了 `[file ...]`；聚簇里的数字（`-b9`）被当成
+  集外字母（C 里它是合法字母）。`FoldError::Usage` 因此拆成 `UnknownOption(char)` 与 `MissingValue(char)`，
+  `IllegalWidth` 保持单独出口。
+  **新门一立就暴露一处真缺陷（不是诊断面）**：`fold_stream` 直接拿裸 `open`/`read` 的 fd 自己读，宿主上读不到任何
+  输入（同批次三百零六给 `nl` 收的那处同形），所以这扇门前不可能存在；已改走 `bin_support` 的双生读缝
+  （`read_stdin`/`read_file`，宿主 `std::fs`、真机 open+read），顺带把操作数读不到的报文补回 err(3) 的三段形
+  （此前只有 `fold: <操作数>`，缺 strerror 句子；`fold.c:107-109`）。
+  三件套：容器 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **690 passed / 0 failed / 0 ignored**
+  （54 个 target，基线 `c6c6d5cd6` 为 684 / 53，+6 全是新门）；`cargo clippy -j 1 -p minix-textfilter
+  --all-targets` → 退码 0、0 error、86 条 warning 与基线同数（中途新门里一处 `PathBuf::from(temp_dir())` 被
+  `useless_conversion` 抓到、修完回到 86）；`cargo check --workspace -j 1` → 0 error；宿主三架构 `--bins` 各
+  `Finished`；rustfmt 触及件零漂移；核实日 `2026-10-16`。三枚变异负控各咬各支（控制器
+  `tmp/fold-308/ctl308.py`，每枚先打印 `mutation applied`、还原后核 md5）：丢 libc 首行 → 1 枚；把
+  `illegal width value` 也接上 usage → 1 枚；聚簇数字当集外字母 → 2 枚（库测 + 门面）。
+  **登记不执行**：① 聚簇数字与遗留 `-N` 那两形**不照 C 复刻**——C 的 digit case 取的是 argv[optind - 1]
+  （`fold.c:91-98`），结果跟着 getopt 内部的 optind 位置走（对 `-b9` 会算出 0 宽），且 `-0` 在 C 里**不报错**
+  而是把宽度设成 0 照常折行；本壳按「从该位置的数字串作宽度、非正即拒」处理，已在代码注释与门面注释里写明是
+  声明差，要收得先能链出带 Minix3 自带 getopt 的 `fold_ref`（`FOLD-LEGACY-WIDTH`）；② 真机 open 腿仍归 C-57/E5。
+
 - ✅ **批次三百零七把 `cksum` 的选项诊断面按 C 定形：三种句子各归各的出口，usage 补回九行**
   （`2026-10-16`，`claim/CKSUM-GETOPT-LINE-qoder` @ 基线 `5e3c12907`，单域三线 commands/textfilter，无跨界）：
   判定表的第三支，而且它**连措辞都是抄来的**——今天印的是 `cksum: illegal option -- Z`，那属于 `pr` 链的
