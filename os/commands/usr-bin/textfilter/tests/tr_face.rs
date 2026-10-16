@@ -255,3 +255,32 @@ fn translation_path_is_unchanged_by_the_shell_rewrite() {
     let (out, code, err) = run(&["a", "b"], b"");
     assert_eq!((out, code, err), (String::new(), 0, String::new()));
 }
+
+#[test]
+fn an_empty_string1_is_the_identity_map() {
+    // `tr.c:178-181` 的恒等预填 + `:214-215` 的空集合立刻 break ⇒ 谁也没被映射过；
+    // 参照件对这四形都是退 0 且原样照抄（开工前的读数在 `tmp/tr-323/measure_before.log`）
+    for args in [
+        vec!["", "x"],
+        vec!["", "b"],
+        vec!["", "A-Z"],
+        vec!["-s", "", "x"],
+    ] {
+        let (out, code, err) = run(&args, b"aabbcc\n");
+        assert_eq!((code, err), (0, String::new()), "{args:?}");
+        assert_eq!(out, "aabbcc\n", "{args:?}");
+    }
+    // 取补路径不受这条影响：空的 string1 取补是**全体字节**，都映射到 string2 的末字节，
+    // 于是七个输入字节全变 `x`，连结尾换行也被换掉
+    let (out, code, err) = run(&["-c", "", "x"], b"aabbcc\n");
+    assert_eq!((code, err), (0, String::new()));
+    assert_eq!(out, "xxxxxxx");
+    // 而空 string2 仍是那一句 `errx`（`:187-188`），恒等支不会把它吞掉
+    let (out, code, err) = run(&["", ""], b"aabbcc\n");
+    assert_eq!((code, out), (1, String::new()));
+    assert_eq!(err, "tr: empty string2\n");
+    // 三个操作数里带一个空串，判的还是个数（`:86-97`），恒等支管不着
+    let (_, code, err) = run(&["", "x", "extra"], b"aabbcc\n");
+    assert_eq!(code, 1);
+    assert_eq!(err, USAGE);
+}

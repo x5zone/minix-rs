@@ -230,15 +230,21 @@ fn parse_repeat(text: &str) -> Result<(u8, usize), TextError> {
 
 /// Translate `input` through two expanded sets into `out`.
 ///
-/// `set1`/`set2` are the expanded member lists with their lengths; a short
-/// second set repeats its last byte. Returns the used byte count.
+/// `set1`/`set2` are the expanded member lists; a short second set repeats its
+/// last byte. Returns the used byte count.
+///
+/// **一个空的 `set1` 是合法输入**，走的是恒等映射：C 在非取补路径上先把映射表填成
+/// `string1[ch] = ch`（`tr.c:178-181`），随后取 string1 首元素的 `next(s1)` 在空集合上
+/// 当场失败而跳出映射循环（`:214-215`），于是一张谁也没被改过的恒等表被原样用于过滤——
+/// 参照件 `tr '' x` 因此是「退 0 且逐字节照抄标准输入」。空的 `set2` 不在这条例外里：
+/// C 在循环之前就用 `next(s2)` 把它判死成 `empty string2`（`:187-188`），本层那条判据在壳里。
 pub fn translate(
     input: &[u8],
     set1: &[u8],
     set2: &[u8],
     out: &mut [u8],
 ) -> Result<usize, TextError> {
-    if set1.is_empty() || set2.is_empty() {
+    if set2.is_empty() {
         return Err(TextError::InvalidArgument);
     }
     // Build the 256 byte map once: identity, then set1 positions point at
@@ -440,6 +446,16 @@ mod tests {
         let len = translate(b"axbxc", &set1[..len1], &set2[..len2], &mut out).unwrap();
         // Only set members translate; `x` passes through twice.
         assert_eq!(&out[..len], b"XxYxZ");
+    }
+
+    #[test]
+    fn test_empty_first_set_is_the_identity_map() {
+        // `tr.c:178-181` 先把映射表填成恒等，`:214-215` 的空 string1 让循环一次也不进入，
+        // 于是没有任何位置被改写过——参照件 `tr '' x` 因此逐字节照抄标准输入且退 0
+        let (set2, len2) = expanded_set("XYZ");
+        let mut out = [0u8; 16];
+        let len = translate(b"aXb", &[], &set2[..len2], &mut out).unwrap();
+        assert_eq!(&out[..len], b"aXb");
     }
 
     #[test]

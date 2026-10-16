@@ -321,6 +321,44 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十三把 `tr` 的空 string1 按 C 折回恒等映射（P0-code-bug，端到端门第一枚空集合形）**
+  （`2026-10-17`，`claim/TR-EMPTY-SET1-TRANSLATE-qoder` @ 基线 `872948d89`，单域三线 commands/textfilter，无跨界）：
+  **缺口从哪来**：上一笔的代码专项复核翻出库侧 `os/commands/usr-bin/textfilter/src/tr.rs:translate`
+  的判据 `set1.is_empty() || set2.is_empty()`——前半个条件把 C 合法的输入判成了错。
+  开工前现量（`tmp/tr-323/measure_before.log`）：`tr '' x`、`tr '' b`、`tr '' A-Z`、`tr -s '' x`
+  四形参照件都是**退 0 且逐字节照抄标准输入**，本壳却退 1、标准输出空、且**不打任何句子**——
+  退码、数据、诊断三件全错，是 P0-code-bug 而非措辞问题。
+  **真源形状**：C 在非取补路径上先把映射表填成恒等（`tr.c:178-181` 的
+  `for (ch = 0; ch < NCHARS; ch++) string1[ch] = ch;`），随后建 string2 的扫描器并用
+  `next(s2, &ch2)` 把空 string2 当场判死成 `empty string2`（`:184-188`），**之后**才进那个
+  逐字符改映射表的循环；空 string1 让这个循环在第一次 `if (!next(s1, &ch)) break;`
+  （`:214-215`）就退出，于是一张谁也没被改过的恒等表被原样用于过滤。
+  **两条选路**：甲在壳里为空前门短路（`set1` 空就直接照抄），乙删掉库侧那半句判据、
+  让映射表回到它本来就是的恒等初值。**取乙**：C 的恒等初值就在库语义那一层（`string1[]` 的预填），
+  甲等于在本树里再造一条 C 没有的分支，还把同一语义复制到两处；乙改完后
+  `translate` 的分支结构与 C 的三段一一对齐。`set2.is_empty()` 那半句**保留**——
+  它是 `set2[set2.len() - 1]` 这次取值的越界防线，而 C 侧的等价物是循环之前那句 `errx`，
+  本层已经接在壳里（`bin/tr.rs` 的 `empty string2` 判据），两者不是重复而是同一判据的两条腿。
+  **门**：库测 +1 枚 `test_empty_first_set_is_the_identity_map`、端到端门 +1 枚
+  `an_empty_string1_is_the_identity_map`（钉住四形恒等、取补空集是**全体字节**故
+  `tr -c '' x` 得 `xxxxxxx`、空 string2 仍走 `tr: empty string2` 不被恒等支吞掉、
+  `tr '' x extra` 三个操作数仍判个数退 usage）。
+  **读数**：空集合一族 13 形现量对账 **SAME=13 DIFF=0**（开工前是 4 形 DIFF）；
+  上一笔的 65 形全量复跑 **SAME=62 DIFF=3** 不退化（`tmp/tr-322/ab323_full.log`）。
+  **三件套**：容器整包 `cargo test -p minix-textfilter -j 1` → **895 / 0 / 0**（67 target，比上一笔的 893/67 恰多出本笔的 2 枚）；`cargo clippy -p minix-textfilter --all-targets` 退码 0、**指向本轮触及件 0 条**；`cargo check --workspace -j 1` 0 error；宿主三架构 `--bins -j 1 -p minix-textfilter` 各 `Finished`、0 error；`rustfmt --edition 2024 --check` 零漂移。
+  **四枚变异负控**（`tmp/tr-323/ctl323.py`，带 `--no-fail-fast`）**全部咬住**，
+  且四枚都咬到新门那枚 `an_empty_string1_is_the_identity_map`：把判据加回来、去掉恒等预填、
+  取补集算空、让空 string1 挤掉 `empty string2` 的判据。
+  **登记不执行**（复核顺手发现的本支**存量**形状，本笔一律不动）：① `TR-CLASS-OUT-UNUSED`——
+  `CharClass::List`、`CharList`、`MAX_MEMBERS` 只被测试构造，`parse_set` 返回的
+  `[CharClass; 8]` 被每个调用方丢弃（`bin/tr.rs:expand` 取 `(used, _, _)`），
+  而模块头写着调用方要用它；② `TR-TOOLONG-ARMS`——`translate`/`delete`/`squeeze` 的
+  `TextError::TooLong` 三支在现有壳里不可达（壳按 `input.len() + 1` 分配输出缓冲）；
+  ③ 坏集合面仍「退 1 不打句子」（`bin/tr.rs:run_filter` 与 `expand` 的 `Err(_) => terminate(1)`），
+  归 `TR-SET-GRAMMAR-SENTENCES` 同一条待办；④ `%c` 裸字节与非法 UTF-8 argv 两条沿用
+  `TR-NONASCII-OPTLETTER` 与 `BIN-SUPPORT-HOSTED-ARGV-NONUTF8`。
+  核实日 `2026-10-17`；基线 `872948d89`。
+
 - ✅ **批次三百二十二把 `tr` 的选项环、个数判与三条组合判按 C 定形，判定表因此走满，并新立它的第一扇端到端门**
   （`2026-10-17`，`claim/TR-GETOPT-LINE-qoder` @ 基线 `c39fd86dc`，单域三线 commands/textfilter，无跨界）：
   **真源形状**：`tr.c:68` 写的是 `while ((ch = getopt(argc, argv, "cds")) != -1)`——`c`/`d`/`s`
