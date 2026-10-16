@@ -6,8 +6,9 @@
 //! NetBSD random() bit stream is not reproduced (registered in 07
 //! §4.4 as a remaining corner).
 use crate::floatfmt::{decimal_exponent, floor, pow10};
-use alloc::string::{String, ToString};
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// NetBSD jot's default repetitions.
 pub const REPS_DEF: i64 = 100;
@@ -142,7 +143,10 @@ pub use crate::floatfmt::parse_float_prefix;
 pub fn get_prec(num_str: &str) -> usize {
     match num_str.find('.') {
         None => 0,
-        Some(dot) => num_str[dot + 1..].bytes().take_while(|c| c.is_ascii_digit()).count(),
+        Some(dot) => num_str[dot + 1..]
+            .bytes()
+            .take_while(|c| c.is_ascii_digit())
+            .count(),
     }
 }
 
@@ -155,14 +159,187 @@ pub fn operand_to_number(s: &str) -> f64 {
     }
 }
 
+/// 选项环的出口：两类由 libc `getopt` 印，一类由 `jot.c` 自己的 `errx` 印。
+#[derive(Debug, PartialEq)]
+pub enum JotArgError {
+    /// 集外字母或缺值字母。libc 先印一行，`jot.c:151-152` 的 `default: usage()` 紧接一行。
+    Getopt(crate::GetoptReport),
+    /// `jot.c:161-165`：一句 `errx(EXIT_FAILURE, "Bad precision value")`，
+    /// 只有这一行、不接 usage。
+    BadPrecision,
+}
+
+/// 选项环的产物：已定的旗标与**按原序**交回的操作数。
+pub struct JotArgs<'a> {
+    pub options: JotOptions,
+    pub operands: Vec<&'a str>,
+}
+
+/// `jot.c:150` 那句 `getopt(argc, argv, "b:cnp:rs:w:")` 的选项环。
+///
+/// optstring 里 `b`、`p`、`s`、`w` 四个字母带值，`c`、`n`、`r` 三个不带值，
+/// 所以可达的出口是四类而不是一类：①集外字母、②带值字母缺值（各由 libc 先印一行，
+/// C 那边再补 usage 一行）、③`-p` 的值过不了 `strtol` 判定（`errx` 单独一行、不接
+/// usage）、④环正常结束。`-b` 与 `-w` 落进**同一个** `format` 槽位
+/// （`jot.c:172-176` 的 `case 'b': boring = 1; /* FALLTHROUGH */ case 'w':`），
+/// 所以后写的那个词覆盖先写的，而 `boring` 一旦置起就不再落下。
+///
+/// 环不重排：第一个非选项 token 一到，`getopt.c:74-78` 当场返回 -1 且不推进 `optind`，
+/// 于是它自己就是第一个操作数（参照件现量：`jot 3 -Z` 里 `-Z` 是 begin 而不是选项）。
+/// 裸 `-` 同理留在操作数里，而 `jot.c:66` 的 `is_default(s)` 把它当成「这一格用默认值」，
+/// 与同族其它命令里「`-` 是标准输入」的读法无关。
+pub fn parse_jot_args<'a>(args: &'a [&'a str]) -> Result<JotArgs<'a>, JotArgError> {
+    let mut options = JotOptions::default();
+    let mut index = 0usize;
+    let operands = loop {
+        let Some(&arg) = args.get(index) else {
+            break Vec::new();
+        };
+        let bytes = arg.as_bytes();
+        if arg == "--" {
+            // `getopt.c:81-85`：`++optind` 之后才返回 -1，所以 `--` 自身不是操作数。
+            break args[index + 1..].to_vec();
+        }
+        if bytes.len() < 2 || bytes[0] != b'-' {
+            // `getopt.c:74-78`：非选项 token 一到就结束，不推进 `optind`。
+            break args[index..].to_vec();
+        }
+        let mut pos = 1usize;
+        while pos < bytes.len() {
+            match bytes[pos] {
+                b'c' => options.chardata = true,
+                b'n' => options.nofinalnl = true,
+                b'r' => options.randomize = true,
+                ch @ (b'b' | b'p' | b's' | b'w') => {
+                    // 值是「本串去掉 `-` 与字母之后的那一段」，没有剩余就取下一个 token
+                    // （`getopt.c:118-141`）；两种取法都把本串吃到尽头。
+                    let value = if pos + 1 < bytes.len() {
+                        &arg[pos + 1..]
+                    } else {
+                        match args.get(index + 1) {
+                            Some(next) => {
+                                index += 1;
+                                next
+                            }
+                            None => {
+                                return Err(JotArgError::Getopt(
+                                    crate::GetoptReport::MissingValue(ch as char),
+                                ));
+                            }
+                        }
+                    };
+                    match ch {
+                        b'b' => {
+                            options.boring = true;
+                            options.word = value.to_string();
+                        }
+                        b'w' => options.word = value.to_string(),
+                        b's' => options.sep = value.to_string(),
+                        _ => {
+                            let Some(prec) = parse_precision(value) else {
+                                return Err(JotArgError::BadPrecision);
+                            };
+                            options.prec = Some(prec);
+                        }
+                    }
+                    pos = bytes.len();
+                }
+                _ => {
+                    // 报的是**这一处的第一个字节**：C 的 `optopt` 是 `char`，`%c` 打的就是
+                    // 那一个字节。游标 `pos` 是字节下标，非 ASCII 字母时它会落进多字节字符
+                    // 中间，所以这里按字节取而不切字符串（切串当场 panic）。
+                    return Err(JotArgError::Getopt(crate::GetoptReport::UnknownOption(
+                        char::from(bytes[pos]),
+                    )));
+                }
+            }
+            pos += 1;
+        }
+        index += 1;
+    };
+    Ok(JotArgs { options, operands })
+}
+
+/// C 那句 `strtol(optarg, &ep, 0)` 配上 `*ep != 0 || prec < 0` 的合并判定
+/// （`jot.c:161-165`）。四个后果都由它来：
+/// ①base 0 认前导空白与 `+`/`-` 号，`0x` 走十六进、前导 `0` 走八进，所以 `-p 0x2`
+/// 是合法的 2（参照件现量：打出 `1.00 2.00 3.00`）；
+/// ②尾巴上一个字符都不许剩，所以 `3x` 与 `09`（八进吃到 `0` 就停）都拒；
+/// ③一个数字也没转出来时 `strtol` 把 `ep` 留在原起点，故只有空串算合法（值 0，
+/// 参照件现量：`jot -p '' 3` 打整数形），纯空白或单独的 `-` 都拒；
+/// ④值先饱和到 `long` 的边界，再像 C 那样截成 `int` 参与判定——`99999999999999999999`
+/// 截成 `-1` 因而被拒，`4294967298` 截成 `2` 因而被接受。三块目标板与宿主都是 64 位
+/// `long`，这个截断形状在四处一致。
+#[must_use]
+pub fn parse_precision(value: &str) -> Option<usize> {
+    const LONG_MAX: i128 = i64::MAX as i128;
+    let bytes = value.as_bytes();
+    let mut pos = 0usize;
+    while matches!(
+        bytes.get(pos),
+        Some(b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+    ) {
+        pos += 1;
+    }
+    let mut negative = false;
+    match bytes.get(pos) {
+        Some(b'+') => pos += 1,
+        Some(b'-') => {
+            negative = true;
+            pos += 1;
+        }
+        _ => {}
+    }
+    let mut radix = 10u32;
+    if bytes.get(pos) == Some(&b'0') {
+        if matches!(bytes.get(pos + 1), Some(b'x') | Some(b'X'))
+            && bytes.get(pos + 2).is_some_and(|c| c.is_ascii_hexdigit())
+        {
+            radix = 16;
+            pos += 2;
+        } else {
+            radix = 8;
+        }
+    }
+    let mut magnitude: i128 = 0;
+    let mut converted = false;
+    while let Some(&byte) = bytes.get(pos) {
+        let Some(digit) = (byte as char).to_digit(radix) else {
+            break;
+        };
+        magnitude = (magnitude.saturating_mul(radix as i128) + i128::from(digit)).min(LONG_MAX);
+        converted = true;
+        pos += 1;
+    }
+    if !converted {
+        // `ep` 停在原起点：只有整串本来就空时 `*ep` 才是 `\0`。
+        return if value.is_empty() { Some(0) } else { None };
+    }
+    if pos != bytes.len() {
+        return None;
+    }
+    let long = if negative { -magnitude } else { magnitude };
+    let as_int = long as i32;
+    if as_int < 0 {
+        return None;
+    }
+    Some(as_int as usize)
+}
+
 /// Parses `reps`: strtoul semantics with a full-parse check.
 pub fn parse_reps(s: &str) -> Result<i64, JotError> {
     let t = s.trim_start();
-    let digits: String = t.bytes().take_while(|c| c.is_ascii_digit()).map(|c| c as char).collect();
+    let digits: String = t
+        .bytes()
+        .take_while(|c| c.is_ascii_digit())
+        .map(|c| c as char)
+        .collect();
     if digits.is_empty() || digits.len() != t.len() {
         return Err(JotError::BadReps(s.to_string()));
     }
-    digits.parse::<i64>().map_err(|_| JotError::BadReps(s.to_string()))
+    digits
+        .parse::<i64>()
+        .map_err(|_| JotError::BadReps(s.to_string()))
 }
 
 /// Parses `step`/seed: strtod with a full-parse check (`*ep == 0`).
@@ -287,7 +464,11 @@ fn parse_conv_spec(word: &str, pct: usize) -> Result<Conv, JotError> {
         b'E' => ConvKind::Real(RealKind::BigE),
         b'G' => ConvKind::Real(RealKind::BigG),
         b'%' => ConvKind::Percent,
-        b's' => return Err(JotError::BadFormat("cannot convert numeric data to strings")),
+        b's' => {
+            return Err(JotError::BadFormat(
+                "cannot convert numeric data to strings",
+            ));
+        }
         b'd' => ConvKind::Int(IntKind::D),
         b'i' => ConvKind::Int(IntKind::I),
         b'o' => ConvKind::Int(IntKind::O),
@@ -327,7 +508,7 @@ fn parse_conv_spec(word: &str, pct: usize) -> Result<Conv, JotError> {
     })
 }
 
-/// The derivation switch at the end of `getargs` (jot.c:223-291).
+/// The derivation switch at the end of `getargs` (jot.c:247-296).
 pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
     if options.randomize {
         // Randomize takes the operands as given (step is the seed).
@@ -355,7 +536,9 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
         options.begin = options.ender - options.reps as f64 * options.step + options.step;
         return Ok(());
     }
-    if have & HAVE_REPS != 0 && have & HAVE_BEGIN != 0 && have & HAVE_ENDER != 0
+    if have & HAVE_REPS != 0
+        && have & HAVE_BEGIN != 0
+        && have & HAVE_ENDER != 0
         && have & HAVE_STEP == 0
     {
         if options.reps == 0 {
@@ -368,7 +551,9 @@ pub fn derive(options: &mut JotOptions) -> Result<(), JotError> {
         }
         return Ok(());
     }
-    if have & HAVE_REPS != 0 && have & HAVE_BEGIN != 0 && have & HAVE_ENDER != 0
+    if have & HAVE_REPS != 0
+        && have & HAVE_BEGIN != 0
+        && have & HAVE_ENDER != 0
         && have & HAVE_STEP != 0
     {
         if options.step == 0.0 {
@@ -391,7 +576,9 @@ pub struct Lcg(u64);
 
 impl Lcg {
     pub fn new(seed: u64) -> Self {
-        Lcg(seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407))
+        Lcg(seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407))
     }
     pub fn next31(&mut self) -> u32 {
         self.0 = self
@@ -451,7 +638,11 @@ impl Jot {
             })
         } else {
             // Integer display pre-adds 0.5 for sane rounding.
-            let x = if dox { options.begin + 0.5 } else { options.begin };
+            let x = if dox {
+                options.begin + 0.5
+            } else {
+                options.begin
+            };
             Ok(Jot {
                 range: 0.0,
                 rng: None,
@@ -785,7 +976,12 @@ mod tests {
     fn test_string_conversion_rejected() {
         let mut o = opts();
         o.word = "%s".to_string();
-        assert_eq!(get_format(&o), Err(JotError::BadFormat("cannot convert numeric data to strings")));
+        assert_eq!(
+            get_format(&o),
+            Err(JotError::BadFormat(
+                "cannot convert numeric data to strings"
+            ))
+        );
         o.word = "%d %d".to_string();
         assert!(get_format(&o).is_err());
     }
@@ -818,5 +1014,114 @@ mod tests {
         assert_eq!(format_g(0.00001, 8, false), "1e-05");
         assert_eq!(format_g(1e24, 8, false), "1e+24");
         assert_eq!(format_g(-42.0, 8, false), "-42");
+    }
+
+    /// 集外字母与缺值都交回 libc 那两个形状，由壳去接 `usage()`。聚簇只报**第一个**坏字母。
+    #[test]
+    fn an_unreachable_option_shape_is_reported_by_the_libc_line() {
+        assert_eq!(
+            parse_jot_args(&["-Z"]).err().unwrap(),
+            JotArgError::Getopt(crate::GetoptReport::UnknownOption('Z'))
+        );
+        assert_eq!(
+            parse_jot_args(&["-cz"]).err().unwrap(),
+            JotArgError::Getopt(crate::GetoptReport::UnknownOption('z'))
+        );
+        assert_eq!(
+            parse_jot_args(&["-cb"]).err().unwrap(),
+            JotArgError::Getopt(crate::GetoptReport::MissingValue('b'))
+        );
+        // `--x` 报的字母是第二个连字符：optstring 里没有 `-`。
+        assert_eq!(
+            parse_jot_args(&["--x"]).err().unwrap(),
+            JotArgError::Getopt(crate::GetoptReport::UnknownOption('-'))
+        );
+    }
+
+    /// 坏值字母排在前面就先报它：`-p abc` 的 `errx` 与 `-Z` 的 libc 行各走各的出口，
+    /// 而两者都在环里发生，早于任何操作数判定。
+    #[test]
+    fn a_rejected_precision_is_the_bad_value_sentence_not_the_libc_one() {
+        assert_eq!(
+            parse_jot_args(&["-p", "abc"]).err().unwrap(),
+            JotArgError::BadPrecision
+        );
+        assert_eq!(
+            parse_jot_args(&["-p", "abc", "-Z"]).err().unwrap(),
+            JotArgError::BadPrecision
+        );
+        assert_eq!(
+            parse_jot_args(&["-Z", "-p", "abc"]).err().unwrap(),
+            JotArgError::Getopt(crate::GetoptReport::UnknownOption('Z'))
+        );
+    }
+
+    /// 环**不重排**：第一个非选项 token 一到就结束，它自己就是第一个操作数，
+    /// 后面那个 `-Z` 也留在操作数里（参照件 `jot 3 -Z` 打的是 90/91/92，把 `-Z`
+    /// 当成 begin 那个字符，根本没有二次扫描）。
+    #[test]
+    fn the_ring_ends_at_the_first_operand_and_keeps_everything_after_it() {
+        let parsed = parse_jot_args(&["3", "-Z"]).expect("the ring should end at the operand");
+        assert_eq!(parsed.operands, ["3", "-Z"]);
+        assert!(
+            !parsed.options.chardata,
+            "`-Z` 不是选项，`-c` 那一位不该被点起"
+        );
+    }
+
+    /// `--` 结束环且自身不是操作数；裸 `-` 结束环却**留在**操作数里
+    /// （`jot.c:66` 的 `is_default` 把它读成「这一格用默认值」）。
+    #[test]
+    fn the_double_dash_is_dropped_but_a_bare_dash_stays_an_operand() {
+        let parsed = parse_jot_args(&["--", "-Z"]).expect("`--` 之后全是操作数");
+        assert_eq!(parsed.operands, ["-Z"]);
+        let parsed = parse_jot_args(&["--"]).expect("只有 `--` 也是合法的一次扫描");
+        assert!(parsed.operands.is_empty());
+        let parsed = parse_jot_args(&["-", "3"]).expect("裸 `-` 不该被吃掉");
+        assert_eq!(parsed.operands, ["-", "3"]);
+    }
+
+    /// 带值字母取值的两种写法都把下一个 token 吃进选项，绝不当成操作数；
+    /// `-b` 与 `-w` 落进同一个词槽（`jot.c:172-176` 的 FALLTHROUGH）。
+    #[test]
+    fn a_value_letter_consumes_the_next_token_and_b_and_w_share_one_slot() {
+        let parsed = parse_jot_args(&["-p", "0"]).expect("`0` 是 `-p` 的值");
+        assert_eq!(parsed.options.prec, Some(0));
+        assert!(
+            parsed.operands.is_empty(),
+            "被 `-p` 吃掉的 token 不再是操作数"
+        );
+        let parsed = parse_jot_args(&["-bX", "-wY", "3"]).expect("两个词都该收到");
+        assert_eq!(parsed.options.word, "Y", "后写的覆盖先写的");
+        assert!(parsed.options.boring, "`-b` 点起的位不会因 `-w` 落下");
+        assert_eq!(parsed.operands, ["3"]);
+    }
+
+    /// `strtol(optarg, &ep, 0)` 配 `*ep != 0 || prec < 0`：base 0 的两条前缀、
+    /// 尾巴零字符、以及「一个数字都没转出来时 `ep` 留在原起点」都在这张表里。
+    #[test]
+    fn the_precision_follows_strtol_base_zero_with_a_full_parse_check() {
+        for (word, accepted) in [
+            ("2", Some(2)),
+            ("0x2", Some(2)),
+            ("010", Some(8)),
+            ("0", Some(0)),
+            ("", Some(0)),
+            (" 2", Some(2)),
+            ("+2", Some(2)),
+            ("3x", None),
+            ("09", None),
+            ("-1", None),
+            ("abc", None),
+            (" ", None),
+            ("-", None),
+            ("0x", None),
+        ] {
+            assert_eq!(parse_precision(word), accepted, "`-p {word}` 的接受性");
+        }
+        // 值先饱和到 `long`，再像 C 那样截成 `int`：`LONG_MAX` 截成 `-1` 因而被拒，
+        // `2^32+2` 截成 `2` 因而被接受。
+        assert_eq!(parse_precision("99999999999999999999"), None);
+        assert_eq!(parse_precision("4294967298"), Some(2));
     }
 }

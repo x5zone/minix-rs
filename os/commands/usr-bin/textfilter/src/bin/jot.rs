@@ -11,81 +11,56 @@
 //! hosted-versus-target seams are the echo template's
 //! (`os/commands/bin/fileops/src/bin/echo.rs`): argv via
 //! `std::env::args`, termination via the host runtime.
-
+//!
+//! 前门有四类出口，句式各有主人：libc `getopt` 的两行（集外字母、带值字母缺值）由
+//! [`minix_textfilter::GetoptReport`] 单源且后面必接一行 usage（`jot.c:151-152` 的
+//! `default: usage()`）；`-p` 的值坏、`reps`/`step` 坏、操作数超过四个都是 `errx(3)` 的
+//! 单独一行，句子由 `jot.c` 自己写、程序名跟着 `getprogname()`，都不接 usage；
+//! 一个操作数都没有（含光写 `--`）是 usage，没有 libc 那一行。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::format;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::jot::{
-    get_prec, operand_to_number, parse_reps, parse_step, Jot, JotError, JotOptions, HAVE_BEGIN,
-    HAVE_ENDER, HAVE_REPS, HAVE_STEP,
+    HAVE_BEGIN, HAVE_ENDER, HAVE_REPS, HAVE_STEP, Jot, JotArgError, JotError, get_prec,
+    operand_to_number, parse_jot_args, parse_reps, parse_step,
 };
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
-    let mut options = JotOptions::default();
+    let prog = support::prog_name(&argv);
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut seed_word: Option<String> = None;
-    let mut i = 1;
-    while i < argv.len() {
-        let arg = argv[i].clone();
-        if !arg.starts_with('-') || arg.len() == 1 {
-            break;
+    // 选项环（`jot.c:150` 的 `"b:cnp:rs:w:"`）。libc 那两行与 `usage()` 是**两行**，
+    // 而 `-p` 的 `errx` 只有自己那一行——两支不是一支的详略版。
+    let (mut options, operands) = match parse_jot_args(&args[1..]) {
+        Ok(parsed) => (parsed.options, parsed.operands),
+        Err(JotArgError::Getopt(report)) => {
+            support::warn(report.line(prog).as_bytes());
+            usage(prog);
         }
-        let chars: Vec<char> = arg.chars().skip(1).collect();
-        let mut k = 0usize;
-        while k < chars.len() {
-            let c = chars[k];
-            match c {
-                'c' => options.chardata = true,
-                'n' => options.nofinalnl = true,
-                'r' => options.randomize = true,
-                'b' | 'w' => {
-                    let value = flag_value(&argv, &mut i, &chars, &mut k);
-                    if value.is_none() {
-                        usage();
-                    }
-                    options.boring |= c == 'b';
-                    options.word = value.unwrap();
-                }
-                's' => {
-                    let value = flag_value(&argv, &mut i, &chars, &mut k);
-                    if value.is_none() {
-                        usage();
-                    }
-                    options.sep = value.unwrap();
-                }
-                'p' => {
-                    let value = flag_value(&argv, &mut i, &chars, &mut k);
-                    match value.and_then(|v| v.parse::<usize>().ok()) {
-                        Some(p) => options.prec = Some(p),
-                        None => {
-                            support::warn(b"jot: Bad precision value\n");
-                            support::terminate(1);
-                        }
-                    }
-                }
-                _ => usage(),
-            }
-            k += 1;
+        Err(JotArgError::BadPrecision) => {
+            support::warn(format!("{prog}: Bad precision value\n").as_bytes());
+            support::terminate(1);
         }
-        i += 1;
-    }
+    };
 
     // Examine args right to left, falling through the cases
-    // (jot.c:176-220). `-` keeps the default for that slot.
-    let operands: Vec<&str> = argv[i..].iter().map(|s| s.as_str()).collect();
+    // (jot.c:184-226). `-` keeps the default for that slot.
+    // 这个 `switch (argc)` 排在任何操作数被解读之前，所以「一个操作数都没有」走 usage、
+    // 「五个以上」走那句 `Too many arguments`，两者都不先看第一个操作数的脸色。
+    if operands.is_empty() {
+        usage(prog);
+    }
     if operands.len() > 4 {
-        support::warn(
-            format!("jot: Too many arguments.  What do you mean by {}?\n", operands[4]).as_bytes(),
-        );
-        support::terminate(1);
+        too_many_arguments(prog, operands[4]);
     }
     let mut inferred_begin = 0usize;
     let mut inferred_ender = 0usize;
@@ -95,7 +70,7 @@ fn run() -> ! {
                 options.reps = r;
                 options.have |= HAVE_REPS;
             }
-            Err(_) => bad_reps(reps_arg),
+            Err(_) => bad_reps(prog, reps_arg),
         }
     }
     if let Some(begin_arg) = operands.get(1).filter(|s| **s != "-") {
@@ -120,23 +95,28 @@ fn run() -> ! {
                     seed_word = Some(step_arg.to_string());
                 }
             }
-            Err(_) => bad_step(step_arg),
+            Err(_) => bad_step(prog, step_arg),
         }
     }
-    // Maximum precision of begin/ender (jot.c:200-203).
-    options.prec = Some(options.prec.unwrap_or(0).max(inferred_begin).max(inferred_ender));
+    // Maximum precision of begin/ender (jot.c:206-209).
+    options.prec = Some(
+        options
+            .prec
+            .unwrap_or(0)
+            .max(inferred_begin)
+            .max(inferred_ender),
+    );
 
     let seed: u64 = match seed_word {
         Some(s) => match parse_step(&s) {
             Ok(v) if v >= 0.0 => v as u64,
-            _ => bad_step(&s),
+            _ => bad_step(prog, &s),
         },
         None => {
             // Clock + pid mix (C jot seeds from time(2)); the clock half
             // rides the `support::epoch_micros` twin, the pid half the
             // kernel getpid wrapper both sides.
-            support::epoch_micros().unwrap_or(0)
-                ^ ((minix_sys::getpid().unwrap_or(0) as u64) << 16)
+            support::epoch_micros().unwrap_or(0) ^ ((minix_sys::getpid().unwrap_or(0) as u64) << 16)
         }
     };
 
@@ -165,53 +145,55 @@ fn run() -> ! {
             support::terminate(0);
         }
         Err(err) => {
-            support::warn(error_text(err).as_bytes());
+            support::warn(error_text(prog, err).as_bytes());
             support::terminate(1);
         }
     }
 }
 
-/// The value of a value-taking flag: the rest of this argument, or
-/// the next argument (getopt semantics).
-fn flag_value(argv: &[String], i: &mut usize, chars: &[char], k: &mut usize) -> Option<String> {
-    *k += 1;
-    if *k < chars.len() {
-        return Some(chars[*k..].iter().collect());
-    }
-    *i += 1;
-    argv.get(*i).cloned()
-}
-
-fn error_text(err: JotError) -> String {
+/// `errx(3)` 的三段句子里程序名归 `getprogname()`，所以这几支都跟着 `argv[0]`。
+fn error_text(prog: &str, err: JotError) -> String {
     match err {
-        JotError::BadPrecision => "jot: Bad precision value\n".to_string(),
-        JotError::BadReps(s) => format!("jot: Bad reps value:  {}\n", s),
-        JotError::BadStep(s) => format!("jot: Bad step value:  {}\n", s),
-        JotError::BadFormat(m) => format!("jot: {}\n", m),
-        JotError::ImpossibleStepsize => "jot: Impossible stepsize\n".to_string(),
-        JotError::MustSpecifyBegin => "jot: Must specify begin if reps == 0\n".to_string(),
-        JotError::InfiniteUnbounded => "jot: Infinite sequences cannot be bounded\n".to_string(),
-        JotError::TooManyArgs(s) => format!("jot: Too many arguments.  What do you mean by {}?\n", s),
+        JotError::BadPrecision => format!("{prog}: Bad precision value\n"),
+        JotError::BadReps(s) => format!("{prog}: Bad reps value:  {s}\n"),
+        JotError::BadStep(s) => format!("{prog}: Bad step value:  {s}\n"),
+        JotError::BadFormat(m) => format!("{prog}: {m}\n"),
+        JotError::ImpossibleStepsize => format!("{prog}: Impossible stepsize\n"),
+        JotError::MustSpecifyBegin => format!("{prog}: Must specify begin if reps == 0\n"),
+        JotError::InfiniteUnbounded => format!("{prog}: Infinite sequences cannot be bounded\n"),
+        JotError::TooManyArgs(s) => {
+            format!("{prog}: Too many arguments.  What do you mean by {s}?\n")
+        }
     }
 }
 
-fn bad_reps(arg: &str) -> ! {
-    support::warn(error_text(JotError::BadReps(arg.to_string())).as_bytes());
+fn bad_reps(prog: &str, arg: &str) -> ! {
+    support::warn(error_text(prog, JotError::BadReps(arg.to_string())).as_bytes());
     support::terminate(1);
 }
 
-fn bad_step(arg: &str) -> ! {
-    support::warn(error_text(JotError::BadStep(arg.to_string())).as_bytes());
+fn bad_step(prog: &str, arg: &str) -> ! {
+    support::warn(error_text(prog, JotError::BadStep(arg.to_string())).as_bytes());
     support::terminate(1);
 }
 
-fn usage() -> ! {
+/// `jot.c:223-225`：第五个操作数起只有一句 `errx`，报的是**第五个**操作数
+/// （`argv[4]`，即 `argv += optind` 之后的下标 4），前四个一个都不解读。
+fn too_many_arguments(prog: &str, fifth: &str) -> ! {
+    support::warn(error_text(prog, JotError::TooManyArgs(fifth.to_string())).as_bytes());
+    support::terminate(1);
+}
+
+fn usage(prog: &str) -> ! {
     support::warn(
-        b"usage: jot [-cnr] [-b word] [-p precision] [-s string] [-w word] [reps [begin [end [step | seed]]]]\n",
+        format!(
+            "usage: {prog} [-cnr] [-b word] [-p precision] [-s string] [-w word] \
+             [reps [begin [end [step | seed]]]]\n"
+        )
+        .as_bytes(),
     );
     support::terminate(1);
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]

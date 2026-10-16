@@ -250,6 +250,76 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十七把 `jot` 的四类出口按 C 定形，并新立它的第一扇端到端门**
+  （`2026-10-16`，`claim/JOT-GETOPT-LINE-qoder` @ 基线 `4b2a81e4f`，单域三线 commands/textfilter，无跨界）：
+  **真源形状**：`jot.c:150` 的 optstring 是 `"b:cnp:rs:w:"`——`c`/`n`/`r` 三个不带值，
+  `b`/`p`/`s`/`w` **四个带值**（判定表里这一支的带值项最多，`cn` 相连容易被误读成 `c:`+`n`）。
+  可达出口因此是**四类**，句式与行数都不同：① 集外字母 = libc 一行（`getopt.c:101-104`；
+  聚簇 `-cz` 报 `z`、`-ncrZ` 报 `Z`、`--x` 报 `-`）+ `jot.c:151-152` 的 `default: usage()` 一行，退 1；
+  ② 带值字母缺值 = libc 的 `option requires an argument -- <字母>` + usage 一行，四个字母同形
+  （旧写法把 `-b`/`-s`/`-w` 打成只有 usage，把 `-p` 打成 `Bad precision value`——两支的行数与句子都错位）；
+  ③ `-p` 的值过不了 `strtol(optarg, &ep, 0)` 全串检查或为负 = `jot.c:161-165` 的一句 `errx`
+  **单独一行、不接 usage**；④ 环正常结束才轮到操作数：一个都没有（含光写 `--`，也含 `-b X`
+  那种唯一 token 被 `-b` 吃掉的情形）是 usage 且**没有** libc 行，五个以上是
+  `jot.c:223-225` 那句 `Too many arguments.  What do you mean by %s?`，报的是**第五个**操作数
+  （`argv[4]`），前面四个一个都不解读。**两处只能量出来、推不出来的形制**：`-b` 与 `-w`
+  落进同一个 `format` 槽（`jot.c:172-176` 的 `case 'b': boring = 1; /* FALLTHROUGH */ case 'w':`），
+  所以 `-bX -wY` 打的是三个 `Y` 而 `boring` 不落下；环**不重排**，`jot 3 -Z` 里 `-Z` 是 begin
+  那个操作数，`sscanf("%lf")` 不吃它时 C 取它最后一个字符的代码点当值（`jot.c:203-204`），
+  于是打出 90/91/92 而根本不报错。`-p` 的接受集也靠现量钉死：base 0 认 `0x2` 与前导 `0` 的八进
+  （`010` 是 8 位小数），空串转不出数字而 `*ep` 仍是 `\0` 故合法（`jot -p '' 3` 走整数形），
+  `09`/`3x` 因尾巴剩字符被拒，`99999999999999999999` 饱和成 `LONG_MAX` 后截成 `int` 是 `-1`
+  因而被拒、`4294967298` 截成 `2` 因而被接受。**门测 12 枚**（`tests/jot_face.rs`，本支第一扇
+  端到端门）+ 库测 6 枚（libc 两形、坏值字母的先后、不重排、`--` 与裸 `-`、词槽共用、`strtol`
+  接受集）。`jot` 既不读标准输入也不开任何档，所以本支**没有**同族那处「薄壳裸 `read` 宿主读不到
+  输入」的读写缝缺陷（前八处之后的第一个零缺陷支）。**三件套**：容器整包
+  `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **793 / 0 / 0**（62 target，基线
+  `4b2a81e4f` 为 775/61——新增一扇门 12 枚 + 库侧 6 枚）；`cargo clippy -j 1 -p minix-textfilter
+  --all-targets` 退码 0、0 error、**85 warning 同基线**；`cargo check --workspace -j 1` 0 error；
+  宿主三架构 `--bins` 各 `Finished`；`rustfmt --edition 2024 --check` 触及件零漂移
+  （`src/jot.rs` 那 10 处存量漂移一并抹平，台账卫生项里它的名字可以划掉）；A/B 与参照件
+  `tmp/jot-317/jot_ref`（`jot.c` 真源 + Minix 的 `getopt.c` + 程序名与 `strlcpy` 垫片）
+  逐形比退码与 stderr，**前门 36 形 SAME=36 DIFF=0**；再比标准输出的 26 形里
+  **SAME=23 DIFF=3**，那三形全在决定半：`3 1 100 0` 与 `3 100 1 0` 是下面第①条，
+  `-r -p 2 3 1 2 7` 是随机流两边不同（既有登记角落，参照件链的是 glibc `random()`）；
+  五枚变异负控（`tmp/jot-317/ctl317.py`）分别咬 **2 / 1 / 1 / 2 / 1** 枚：缺值那一支借用集外
+  字母的句子、丢掉「无操作数即 usage」、把 `Too many arguments` 改报最后一个操作数、丢掉 `-p` 的
+  全串检查、让 `-b` 不再写词槽。核实日 `2026-10-16`；基线 `4b2a81e4f`。
+  **test-audit 五维读数**（本笔的门自己就是被它救回两次）：第 2 维抓到两处**测试写错**——
+  `-cb 3` 里那个 `3` 会被 `-b` 取走作词值，于是缺值判据根本不成立（参照件现量打的是 usage，
+  旧断言却要求 libc 那一行），`-p 010 3` 的期望是我自己抄错的三行同值；两处都按参照件改期望
+  而不改代码。第 1 维的缺口是一条清单而非本笔的活：`jot.c:247-296` 那三句推导期的 `errx`
+  （`Impossible stepsize`、`Must specify begin if reps == 0`、`Infinite sequences cannot be
+  bounded`）在进程级没有一枚门钉住，库测只测算式分支。第 3、4 维零发现：库测与门测同一形状
+  分住两层（判定态对输出），无空体、无理由忽略。第 5 维对账：07 篇与本条所写「门测 12 枚 +
+  库测 6 枚」与 `grep -c "#\[test\]"` 的 12 与新增 6 个具名函数逐一对上。
+  **登记不执行**（六处：五处在决定半或 libc 侧，一处是门的缺口，本笔不动）：① `JOT-STEP-ZERO-UNBOUNDED`（P0-code-bug）——
+  `jot 3 1 100 0` 在 C 走 `jot.c:281-284` 的 `if (step == 0.0) break;`，reps 保持 3 所以打三行，
+  本壳把 step 为零推成了无限输出，A/B 腿第一次跑它时 `$(...)` 吞到 5 GB 才被发现，现量与
+  `timeout 5` 的截停都在 `tmp/jot-317/ab.log`；② `JOT-PREC-MINUS-ONE-FORMAT`——`prec` 保持 `-1`
+  那一族（`jot 3`、`-n 3`、`3 - 5`、`-s , 3`）在 `jot.c:349-356` 拼出的是坏说明符，宿主 glibc
+  打回字面量 `%.0-1f`（现量）、本壳打整数形 `1 2 3`（现量），Minix 自己的 `printf` 会打什么
+  本机判不了，所以 A/B 只比退码与 stderr，判据要回到 `minix3/lib/libc/stdio` 的旗标循环再定；
+  ③ `JOT-RANDOM-NEGATIVE-SEED`——`-r` 用第四个操作数当种子时 C 只把它交给 `srandom((unsigned long) step)`
+  而无非负判定（`jot.c:118`），本壳 `v >= 0.0` 才收，负种子被报成 `Bad step value`；
+  ④ `JOT-REPS-BASE0-AND-NEGATIVE`——C 那句是 `strtoul(argv[0], &ep, 0)`（`jot.c:213-214`），
+  `0x10` 在 C 是 16 而本壳按十进制全串拒收，且 `reps < 0` 那个判据在 `unsigned long` 上恒假，
+  `jot -3` 在 C 里回绕成极大值而本壳拒；⑤ `JOT-FORMAT-BUFSIZ`——`-b`/`-w` 的值经 `strlcpy`
+  截到 `sizeof(format)`（`jot.c:176`），宿主的 `BUFSIZ` 与 Minix 那张表不同，超长词的截断点不可比；
+  ⑥ `JOT-DERIVATION-ERRX-FACE`——`jot.c:247-296` 推导期的三句 `errx`（`Impossible stepsize`、
+  `Must specify begin if reps == 0`、`Infinite sequences cannot be bounded`）在进程级没有一枚门
+  钉住，本壳的 `error_text` 已备好句子，缺的是那三形的逐句对账。
+  另有一处台账准确性：上一笔在 18 篇台账里留下两条同文的 `批次三百一十五` 标题，本笔合回一条。
+  **验证边界**：参照件在本机链 glibc 的 `strtol`/`sscanf`/`printf`/`random`，所以 `jot -r` 的
+  随机流两边本就不同（只比退码与 stderr），`prec == -1` 一族的标准输出不比（见上），而 `-p` 的
+  接受集按 C 与 glibc 同规则——`0x` 后面不跟十六位数字那一支（`0x`、`0xg`）两边都逐形量过，
+  同为 `Bad precision value`；Minix 自己的 `strtol` 在 libc 的通用 `strto*` 实现里，本笔未逐字读，
+  所以那一支的相同是**量到的相同**而不是**证明的相同**，写在这里而不是写在结论里。真机侧 `jot`
+  无 IO 缝，输出腿归 `C-57`/E5 的 stdout 写面。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/col/column/comm/**jot** + pr；待接 `unifdef`、`units`、`seq`、`paste`、`tr`；
+  另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `UNIFDEF-GETOPT-LINE`
+  （`minix3/usr.bin/unifdef/unifdef.c:273` 的 optstring 是 `"i:D:U:I:o:cdeklst"`，六个带值项）。
+
 - ✅ **批次三百一十六把 `cmp` 的三类出口与「`-s` 压住开档告警」按 C 定形，并新立它的第一扇端到端门**
   （`2026-10-16`，`claim/CMP-GETOPT-LINE-qoder` @ 基线 `005e6a3a2`，单域三线 commands/textfilter，无跨界）：
   判定表里 `cmp` 这一支（历史条目的序号各自按当时的口径写，以每笔末尾那行「判定表进度」为准）。**真源形状**：`cmp.c:74` 的 optstring 是 `"ls"`——两个字母**都不带值**，
@@ -301,8 +371,6 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （egetopt 措辞）；待接 `jot`、`unifdef`、`units`、`seq`、`paste`、`tr`；
   另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `JOT-GETOPT-LINE`
   （`minix3/usr.bin/jot/jot.c:150` 的 optstring 是 `"b:cnp:rs:w:"`，注意 `cn` 两个字母都不带值）。
-
-- ✅ **批次三百一十五把 `comm` 的两类出口与列前缀发放按 C 定形，并新立它的第一扇端到端门（第八处读缝缺陷）**
 
 - ✅ **批次三百一十五把 `comm` 的两类出口与列前缀发放按 C 定形，并新立它的第一扇端到端门（第八处读缝缺陷）**
   （`2026-10-16`，`claim/COMM-GETOPT-LINE-qoder` @ 基线 `ed4db08d6`，单域三线 commands/textfilter，无跨界）：
