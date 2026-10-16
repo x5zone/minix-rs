@@ -274,3 +274,55 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     fs::create_dir_all(&dir).expect("scratch dir");
     dir
 }
+
+/// 超长残行的告警按**来源计数**：两个来源各带一条残行 ⇒ 两句，同一个来源写两遍 ⇒ 还是两句
+/// （一次打开一次计数），好来源 + 残行来源 ⇒ 一句，`-` 这类开不了的来源先一句 `Cannot open`
+/// 再按它的残行补一句。下面四段的句数与退码全部取自参照件 `tmp/column-314/column_ref` 的现量。
+#[test]
+fn each_source_with_a_long_tail_line_warns_once() {
+    let dir = std::env::temp_dir().join(format!("column-face-tail-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("临时目录该能建");
+    let long = "z".repeat(70);
+    let one = dir.join("tail1.txt");
+    let two = dir.join("tail2.txt");
+    let good = dir.join("ok.txt");
+    fs::write(&one, format!("a b c\n{long}")).expect("写第一档");
+    fs::write(&two, format!("d e f\n{long}")).expect("写第二档");
+    fs::write(&good, "a b\nc d\n").expect("写好档");
+    let one = one.to_string_lossy().into_owned();
+    let two = two.to_string_lossy().into_owned();
+    let good = good.to_string_lossy().into_owned();
+
+    // 两档各一条残行 ⇒ 两句，退 1
+    let (_, code, err) = run(&["-c", "20", one.as_str(), two.as_str()], b"x y\n");
+    assert_eq!(code, 1);
+    assert_eq!(
+        err.matches("column: line too long\n").count(),
+        2,
+        "两个来源各该报一句，实际 stderr={err:?}"
+    );
+    // 同一档给两遍 ⇒ 两次打开、还是两句
+    let (_, _, err) = run(&["-c", "20", one.as_str(), one.as_str()], b"x y\n");
+    assert_eq!(err.matches("column: line too long\n").count(), 2);
+    // 好档在前、残行档在后 ⇒ 只有一句
+    let (_, code, err) = run(&["-c", "20", good.as_str(), one.as_str()], b"x y\n");
+    assert_eq!(code, 1);
+    assert_eq!(
+        err.matches("column: line too long\n").count(),
+        1,
+        "实际 {err:?}"
+    );
+    // `-` 不是标准输入的别名：C 先报开不了，再按残行档补一句
+    let (_, code, err) = run(&["-c", "20", "-", one.as_str()], b"x y\n");
+    assert_eq!(code, 1);
+    assert_eq!(
+        err.lines().next().unwrap_or(""),
+        "column: Cannot open `-': No such file or directory"
+    );
+    assert_eq!(
+        err.matches("column: line too long\n").count(),
+        1,
+        "实际 {err:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

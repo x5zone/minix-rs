@@ -321,6 +321,36 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十八把 `column` 的残行告警计数补成门，闭合 `COLUMN-TAIL-WARN-COUNT`（本笔不动生产码）**
+  （`2026-10-17`，`claim/COLUMN-TAIL-WARN-COUNT-qoder` @ 基线 `4643cab05`，单域三线 commands/textfilter，无跨界）：
+  **这一条是什么**：批次三百一十四的测试自审（test-audit 五维）在第 1 维「完备性」上留下的缺口——
+  末行没有换行符时 C 打一句两段的 `warnx` `column: line too long` 并把退码置 1
+  （`minix3/usr.bin/column/column.c:277-283`），而**这句按来源计数**：`column.c:114-123` 对每个
+  操作数各开一次流、各喂同一个条目池，残行是逐流判定的。当时的门只钉了单来源那一形，
+  多来源的句数没有任何东西看着（登记名 `COLUMN-TAIL-WARN-COUNT`）。
+  **现量（参照件 `tmp/column-314/column_ref` 与新层逐形对读，四形全同）**：
+  `-c 20 tail1 tail2`（两档各一条 70 字残行）⇒ 两句、退 1；同一档名写两遍 ⇒ 两句
+  （两次打开、两次判定，不是按档名去重）；`ok.txt tail1.txt` ⇒ 一句、退 1；
+  `- tail1.txt` ⇒ 首句 `column: Cannot open \`-': No such file or directory`，随后仍按 `tail1.txt`
+  的残行补一句，退 1。**生产码本来就按来源循环**（`src/bin/column.rs:86` 的
+  `for _ in 0..pool.dropped_tail` 印这一句），所以本笔是**补门而不是改码**——
+  这一点如实登记，免得把门测的绿读成修过什么。
+  **门**：`tests/column_face.rs:each_source_with_a_long_tail_line_warns_once`（第 13 枚，
+  四段断言各钉上面的一形；句数、首句文本、退码三项都取自参照件读数而非推论）。
+  **六枚负控**（跑在最终源码上，逐枚改回真实形状后复跑）：
+  G2 把句子改成三段形（带 `strerror` 末段）、G3 整句不打、G4 不看有没有残行、每个来源都打、
+  G6 句子前缀漂移 ⇒ **四枚由门咬住**（`an_unterminated_last_line_warns_and_is_dropped` 与新门一起失败）；
+  G5「残行不再置退码位」被借用变量挡住 ⇒ **编译期就没过**，对门的灵敏度既不证明也不否证；
+  G1「整轮只报一句」的替换锚点在源码里没命中 ⇒ **未施加**，不计入咬住数。
+  本轮实得 **4/6**，仍不到六枚门槛，与上一笔同记为欠账（欠账随 `GETOPT-REPORT-BYTE-LETTER`
+  那轮一起做，那轮的调用点是 26 处 / 20 余个薄壳）。
+  三件套：容器整包 `cargo test -p minix-textfilter -j 1` → **904 / 0 / 0**（67 个 target，
+  `tests/column_face.rs` 那格 `running 13 tests`）；`cargo clippy -p minix-textfilter --all-targets`
+  退码 0、`^error` 计数 0，且 `column_face` 零命中——**本笔新增行零诊断**；
+  workspace `cargo check -j 1` 0 error；宿主三架构 `--bins -p minix-textfilter` 各 `Finished`；
+  `rustfmt --check` 零漂移；宿主直跑 516 库测 + 13 门测全绿。
+  核实日 `2026-10-17`；基线 `4643cab05`。
+
 - ✅ **批次三百二十七把 `jot` 的种子转换提到库侧并单测，闭合上一笔登记的 `JOT-SEED-CAST-UNIT-TEST`**
   （`2026-10-17`，`claim/JOT-SEED-CAST-UNIT-TEST-qoder` @ 基线 `06dfabb6e`，单域三线 commands/textfilter，无跨界）：
   **为什么要单独提出来**：上一笔的负控里有一枚**漏网**——把种子整体偏移 +1，端到端门照旧全绿。
@@ -993,7 +1023,8 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   ⑦ 测试自审（test-audit 五维）在第 2 维上**没有发现写错的期望**——门里每一条报文与布局读数
   都回到参照件复核过（`-c ""`、`-c " 30"`、`-t -s,` 的七个空格、`-- -c <档>` 那句 warn 都是
   为这一维现量而补测的）；第 1 维留一处缺口：**两个来源各带一条残行**时 C 打两句
-  `line too long`，本壳的计数循环支持这一形，但门只钉了单来源那一句（`COLUMN-TAIL-WARN-COUNT`）。
+  `line too long`，本壳的计数循环支持这一形，但门只钉了单来源那一句（`COLUMN-TAIL-WARN-COUNT`，
+  已由批次三百二十八按参照件现量补门闭合——补的是门，生产码未动）。
   **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/col/**column** + pr
   （egetopt 措辞）；待接 `comm`、`cmp`、`jot`、`unifdef`、`units`、`seq`、`paste`、`tr`；
   另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `COMM-GETOPT-LINE`。
