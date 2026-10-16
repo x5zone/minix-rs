@@ -1,8 +1,12 @@
 # 08 · 启动完成翻转：从初始化态到运行态
 
-> **C 真值源**：`minix3/minix/kernel/main.c`（`bsp_finish_booting`/`kmain`/`cstart`/`announce`）、`minix3/minix/kernel/system.c`（`system_init`/`kernel_call_dispatch`）、`minix3/minix/kernel/proc.h`（RTS 位族与宏）、`minix3/minix/kernel/clock.c:boot_cpu_init_timer`、`minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init`、`minix3/minix/kernel/arch/i386/arch_system.c:fpu_init`/`cpu_identify`、`minix3/minix/kernel/arch/i386/pg_utils.c`（`add_memmap` 与 `kernel_may_alloc` 的五处断言）、`minix3/minix/kernel/arch/i386/pre_init.c`（`kernel_may_alloc` 定义）、`minix3/minix/include/minix/com.h`（`VM_PROC_NR`/`NR_SYS_CALLS`）。
-> **Rust 实现**：`os/kernel/src/lib.rs`（`kmain` 的 Phase A-F 与 `bsp_finish_booting`）、`os/kernel/src/syscall.rs`（`enum Syscall` 与分派）、`os/kernel/src/memmap.rs`、`os/kernel/src/vm_handoff.rs`、`os/kernel/src/proc_table.rs`、`os/kernel/src/smp.rs`、`os/kernel/src/globals.rs`、`os/kernel/src/kerninfo.rs`、`os/kernel/src/irq_manager.rs`、`os/arch/src/x86_64/cpu_identity.rs`。
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:static NAME`），不使用行号。
+> **C 真值源**：`minix3/minix/kernel/main.c`（`bsp_finish_booting`/`kmain`/`cstart`/`announce`）、`minix3/minix/kernel/system.c`（`system_init`/`kernel_call_dispatch`）、`minix3/minix/kernel/proc.h`（RTS 位族与宏）、`minix3/minix/kernel/clock.c:boot_cpu_init_timer`、`minix3/minix/kernel/arch/i386/arch_clock.c:cycles_accounting_init`、`minix3/minix/kernel/arch/i386/arch_system.c:fpu_init`/`cpu_identify`、`minix3/minix/kernel/arch/i386/pg_utils.c`（`add_memmap` 与 `kernel_may_alloc` 的五处断言）、`minix3/minix/kernel/arch/i386/pre_init.c`（`kernel_may_alloc` 定义）、`minix3/minix/include/minix/com.h`（`VM_PROC_NR`/`NR_SYS_CALLS`）、`minix3/minix/kernel/{config.h,glo.h}`、`minix3/minix/kernel/arch/i386/{acpi.c,oxpcie.c}`、`minix3/minix/kernel/system/do_umap_remote.c`。
+> **Rust 实现**：`os/kernel/src/lib.rs`（`kmain` 的 Phase A-F 与 `bsp_finish_booting`）、`os/kernel/src/syscall.rs`（`enum Syscall` 与分派）、`os/kernel/src/memmap.rs`、`os/kernel/src/vm_handoff.rs`、`os/kernel/src/proc_table.rs`、`os/kernel/src/smp.rs`、`os/kernel/src/globals.rs`、`os/kernel/src/kerninfo.rs`、`os/kernel/src/irq_manager.rs`、`os/arch/src/x86_64/cpu_identity.rs`、`os/kernel/src/{clock,proc,trap_dispatch}.rs`。
+> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:static NAME`），不使用行号；**例外按原样保留**：命令输出与证据清单里的行号、对源码注释坐标的登记，以及 C 侧同一函数内部的阶段定位（如"关窗拍在 `main.c:105`"这类分拍坐标）。
+> **目标读者**：熟悉操作系统基本概念（进程、调度、页表、中断）与 C 语言的开发者；Rust 一侧读到 enum/trait 与 `unsafe` 契约大意即可。
+> **前置知识**：kmain 前半与 Phase 划分（03 篇）、定时器三段语义（05 篇）、进程表与 RTS 位族（06 篇）、Direct Map 与 memory_init（07 篇）——本篇从"表都建完了"接起。
+> **教学目标**：①翻转的三个开关及其次序防线（§1.1）；②kmain 尾段的十二拍全景与交接时刻的进程图景（§1.2、§1.3）；③C 侧收尾序列：system_init 装配、kernel_may_alloc 窗口、bsp_finish_booting 逐拍、smp_init 位次（§2）；④Rust 的重排与消失：分发表编译期穷尽、Phase A–F、两个全局、bootstrap 内存归宿（§3）；⑤实现走查：classify、announce/kerninfo、Step -1..9（§4）；⑥测试与诚实披露（§5）、诊断（§6）。
+> **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构）；本篇无 `[ARCH: ]` 标注。
 > **本篇主题**：内核从"初始化态"翻转为"运行态"的那一段——三个开关（内核分配窗口关死、第一批进程交给调度器、时间开始流动）在 C 与 Rust 各自怎么拨；"分发表建立"这个启动动作在 Rust 里的消失；bootstrap 内存两套归宿。
 > **前置**：[03-kmain-cstart.md](03-kmain-cstart.md)（kmain 前半与 Phase 划分）、[05-clock-interrupt-init.md](05-clock-interrupt-init.md)（定时器三段语义与 pic_init）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（进程表、RTS 位族与 boot 循环）、[07-cross-space-init.md](07-cross-space-init.md)（Direct Map 与 memory_init）。
 > **后续**：handoff 页的协议面与 VM 侧消费（`09-vm-boot-protocol`（VM 启动协议篇，尚未重生成））、调度循环本体（`10-switch-to-user`（切用户与调度循环篇，尚未重生成））、分派全景与 58 项全表（`13-syscall-dispatch`（系统调用分派篇，尚未重生成））、smp_init 本体与 AP 路径（`16-smp`（SMP 篇，尚未重生成））、tick 到达后的记账消费（`17-clock-timer`（时钟与定时器运行篇，尚未重生成））。
@@ -153,7 +157,7 @@
 | 12 关窗 | SMP 段后 | kernel_may_alloc = 0 | VM 即将上场 | 本篇 §2.2 |
 | （终）切换 | 最后一拍 | switch_to_user，不返回 | 以上全部 | `10-switch-to-user`（切用户与调度循环篇，尚未重生成） |
 
-这张表里有一个可以先记下、§2.3 展开的分布：十二拍加一个终拍里，真正改变控制流的只有五处（解除循环、记账基线、定时器、关窗、以及终拍的切换）；四拍是填身份或探测（cpu_identify、krandom、fpu 探针、SMP 标志段），一拍是纯声明（DEBUG FIXME 三查——编译期开关下的打印），三拍是为切换做的准备（vm_running = 0、bill/proc_ptr 指向 idle、announce）。一个收尾函数里，"拨开关"的代码只占一小半，另一半在让开关"敢拨"。
+这张表里有一个可以先记下、§2.3 展开的分布：十二拍加一个终拍里，真正改变控制流的只有五处（解除循环、记账基线、定时器、关窗、以及终拍的切换）；三拍是填身份或探测（cpu_identify、krandom、fpu 探针）；两拍是把状态写明白（DEBUG FIXME 三查——编译期开关下的纯打印；SMP 标志段——写就绪位与 machine 字段）；三拍是为切换做的准备（vm_running = 0、bill/proc_ptr 指向 idle、announce）。一个收尾函数里，"拨开关"的代码只占一小半，另一半在让开关"敢拨"。
 
 ### 1.3 交接时刻的进程图景：谁是唯一站着的人
 
@@ -223,6 +227,21 @@ VM 之所以是"唯一站着的人"，推理链可以完全从代码里走出来
 
 把第 1 章的图按同一框架收一次：三个开关各有一条依赖链——分配窗口的关闭依赖"此后不再有内核侧直接分配"，进程交接依赖"调度函数的指针有着落"，时间起点依赖"记账基线已复位"且是三者中唯一带失败出口的。第 2 章按 C 的调用序把每一拍落在代码上。
 
+### 1.5 本篇的 C 侧覆盖边界
+
+本篇的 C 侧对照物是 Minix3 的两个内核架构实现（i386 与 earm）。Rust 侧多数动作有 C 逐条可对照（§2 走查、§3.6 处置表逐行对账），少数几种形态在 C 树里没有对应物：
+
+| Rust 侧分支 / 机制 | C 对照物 | 判定 |
+|---|---|---|
+| 三个开关、十二拍、SMP 三分支（§1–§2） | i386 `main.c` | **有 C 可对照**（§3.6 逐行对账） |
+| A2 扣减账（`vm_handoff::classify`，§3.5、§4.2） | i386 `kmain` 尾段的一次 `add_memmap` | 有 C 可对照（改型，对照面是"一条语句"的语义） |
+| `vm_running` 的补写（`set_vm_running`，§3.3） | **无**——C 从不置 1（§2.3 的"单向状态"） | **未覆盖（无 C 源）**（增量修正） |
+| 分派 enum 穷尽性与 const 断言（§3.1） | i386 `call_vec` + `map` 宏（声称的防线） | 有对照面（对照物是 C"声称却不复现"的防线，§2.1） |
+| B.5 kerninfo 页的独立页形态（§4.3） | i386 `.usermapped` 段 + `kuserinfo` 字段拷贝 | 部分对照（投影语义同、承载形态新） |
+| aarch64 / riscv64 的 FP 策略与懒陷阱（§4.6 Step 7） | **无**——C 内核没有这两个架构 | **未覆盖（无 C 源）** |
+
+"未覆盖"的含义：这些分支的正确性依据不是 C 对照，而是设计契约（§3）与测试（§5）。本篇对它们的陈述一律写作"无对应物"，不写作"与 C 一致"——这条纪律同时适用于后续修订中的新增段落。
+
 ---
 
 ## 2. C 源码分析
@@ -248,7 +267,7 @@ VM 之所以是"唯一站着的人"，推理链可以完全从代码里走出来
    └─ bsp_finish_booting() ──┐
                              v
    b.1  cpu_identify         （填身份）
-   b.2  vm_running = 0       （声明状态）
+   b.2  vm_running = 0       （切换准备）
    b.3  krandom 两行          （填身份）
    b.4  bill/proc_ptr→idle   （切换准备）
    b.5  announce             （切换准备）
@@ -365,7 +384,7 @@ void system_init(void)
 - **运行时 assert**：宏内第一行 `assert(call_index >= 0 && call_index < NR_SYS_CALLS)`。它在 `NDEBUG` 构建下整体消失——不是恒久防线。
 - **声明注释声称的编译期防线**：声明注释原话 "If an illegal call is given, the array size will be negative and this won't compile."——这条断言对**现行宏形态不复现**。宏把 `call_nr-KERNEL_CALL` 先存进局部变量 `call_index`，再经 `call_vec[call_index]` 访问数组——编译器看到的是一次运行期下标，不做拒绝。本文作者用仓库环境的 gcc 做过最小实验：把 `map(SYS_FOO, ...)`（`SYS_FOO` 偏移 70，越出 58）按宏形态编译，`-c`、`-Wall`、`-O2 -Wall` 三种配置全部干净通过；把越界值直接写成常量下标 `call_vec[SYS_FOO-KERNEL_CALL]` 的旧式形态同样通过。注释描述的"数组长度变负、编译不通过"应是更早宏形状的遗留——按现码，越界注册唯一的守卫是 DEBUG 构建的 assert，release 构建下它是一次静默的越界写。Rust 侧（§3.1）的编译期守卫因此不是"同一防线的重表达"，而是把 C 声明里**声称却没有兑现**的那层防线真正做实。
 
-还有一处只读代码才能发现的事实：`kernel_call_dispatch` 对"表在、槽空"有专门的分支——调用号合法但 `call_vec[call_nr]` 为 NULL 时，打印 `Unused kernel call` 并返回 `EBADREQUEST`（`minix3/minix/kernel/system.c:kernel_call_dispatch` 的 else 分支）。也就是说，NULL 槽不是错误状态，而是注册模型的一部分：58 个槽里只有 46 个被源文本注册（含条件分支），剩下的就是那些 `Unused`。NULL 循环（第三段开头的 `call_vec[i] = NULL`）先于全部注册执行——若没有它，越界注册在 DEBUG 下会被 assert 拦住，但合法范围内的未注册槽会读到栈上垃圾而非 NULL。
+还有一处只读代码才能发现的事实：`kernel_call_dispatch` 对"表在、槽空"有专门的分支——调用号合法但 `call_vec[call_nr]` 为 NULL 时，打印 `Unused kernel call` 并返回 `EBADREQUEST`（`minix3/minix/kernel/system.c:kernel_call_dispatch` 的 else 分支）。也就是说，NULL 槽不是错误状态，而是注册模型的一部分：58 个槽里只有 46 个被源文本注册（含条件分支），剩下的就是那些 `Unused`。NULL 循环（第三段开头的 `call_vec[i] = NULL`）先于全部注册执行——若没有它，合法范围内的未注册槽因 `call_vec` 是 static 数组、缺省落在 `.bss`（初值 0，等价 NULL）而看不出差异——显式清零把这条"空槽=0"的契约从存储事实升级为源文本里的声明面。
 
 反向推演两个替换。若 `call_vec` 改成运行时 `malloc` 后填充：静态数组的边界信息从类型里消失，越界注册连"注释声称的那层防线"都失去作用对象，退化成运行期踩内存，且 no-alloc 的启动环境里 `malloc` 本身无处安放。若改成"每处理器一张表"：`system_init` 的一次装配语义被破坏——每个 CPU 都得装配一遍，或引入复制同步；C 选择全局一张表，前提是内核调用只在 BKL（大内核锁）持有时分派，全局表不会有并发装配问题（分派路径的锁纪律归 `13-syscall-dispatch`（系统调用分派篇，尚未重生成）展开）。
 
@@ -426,7 +445,7 @@ int kernel_may_alloc = 1;
 
 `minix3/minix/kernel/main.c:bsp_finish_booting` 是本篇的主走查对象。全函数分三段逐字读。
 
-第一段（第1-5拍：探身份、声明状态、给调度函数落点）：
+第一段（第1-5拍：探身份与切换准备——给调度函数落点）：
 
 ```c
 // minix3/minix/kernel/main.c:bsp_finish_booting —— 逐字引用（函数头到 announce）
@@ -579,7 +598,7 @@ void fpu_init(void)
 }
 ```
 
-（`minix3/minix/kernel/arch/i386/arch_system.c:fpu_init`。探针的原理是回读比对：`fninit` 把 x87 复位到约定状态——控制字低 6 位全 1（就近舍入、全精度、全部异常屏蔽）、状态字清零；随后 `fnstsw`/`fnstcw` 把两个寄存器读回来，若状态字低 8 位为 0 且控制字低 6 位仍是全 1（比对值 `0x3f`），说明芯片真的执行了 `fninit`，判"存在某种 FPU"。掩码 `0x103f` 里多出来的 `0x1000` 位不参与判定——比对值里没有它，这一位是 0 是 1 都放行。判 existence 之后按 CPUID 特征位补 CR4 的 OSFXSR/OSXMMEXCPT，注释特意提醒"FXSR 可与 SSE 分离存在"。）
+（`minix3/minix/kernel/arch/i386/arch_system.c:fpu_init`。探针的原理是回读比对：`fninit` 把 x87 复位到约定状态——控制字低 6 位全 1（就近舍入、全精度、全部异常屏蔽）、状态字清零；随后 `fnstsw`/`fnstcw` 把两个寄存器读回来，若状态字低 8 位为 0 且控制字低 6 位仍是全 1（比对值 `0x3f`），说明芯片真的执行了 `fninit`，判"存在某种 FPU"。掩码 `0x103f` 里多出来的 `0x1000` 位**参与**判定——它在掩码内，而比对值 `0x3f` 的该位为 0，因此回读控制字的 bit12 必须为 0 才判"通过"（x87 控制字该位是预留位，约定态为 0；三位读者独立命中过这里的一处旧表述）。判 existence 之后按 CPUID 特征位补 CR4 的 OSFXSR/OSXMMEXCPT，注释特意提醒"FXSR 可与 SSE 分离存在"。）
 
 十二拍对照表（拍号沿用 §1.2）：
 
@@ -604,7 +623,7 @@ void fpu_init(void)
 | 读者 | 位置 | 读它决定什么 |
 |---|---|---|
 | `do_umap_remote` | `minix3/minix/kernel/system/do_umap_remote.c` | safecopy 路径：`vm_running` 为真时才用 `vm_lookup_range` 查目标地址空间连续性——VM 起来前不查 |
-| `oxpcie_putc` | `minix3/minix/kernel/arch/i386/oxpcie.c` | PCIe 串口的直写路径只在 VM 未接管映射时可用 |
+| `oxpcie_putc` | `minix3/minix/kernel/arch/i386/oxpcie.c` | PCIe 串口的直写路径只在 `vm_running` 为真且 `oxpcie_vaddr` 已设（VM 已接管映射）时可用（oxpcie.c:52） |
 | `oxpcie_in` | 同上文件 | 同上，读方向的映射决策 |
 | `acpi_phys2vir` | `minix3/minix/kernel/arch/i386/acpi.c` | `!vm_running` 时物理地址直接当虚拟地址用，否则 panic |
 | `acpi_phys_copy` | 同上文件 | 同上，直读硬件的守卫 |
@@ -639,7 +658,7 @@ void fpu_init(void)
 	config_no_smp = 0;
 ```
 
-（`minix3/minix/kernel/main.c:cstart` 的两段参数解析。蕴含关系就写在第一行：`config_no_apic` 非零则 `config_no_smp` 直接置 1——关 APIC 不只是"换个时钟源"，而是把整个 SMP 关掉。另有 `USE_APIC` 未定义的构建形态：`config_no_apic` 保持声明默认、参数解析整段不出现在源里。）
+（`minix3/minix/kernel/main.c:cstart` 的两段参数解析。第一段里 `no_apic` 缺省的 `else` 把 `config_no_apic` 置 1——**默认构建命中单核降级**（§2.4 三分支表的第一支）。第二段的蕴含行（`config_no_apic` 非零把 `config_no_smp` 预置 1）随后被 `no_smp` 解析在两条路径上改写（有参数取参数值、无参数置 0），读这两段要连读——`config_no_smp` 的独立效力只在 `no_apic=0` 时才被消费；判定主线是 `kmain` 的三分支（先判 `config_no_apic`）。另有 `USE_APIC` 未定义的构建形态：`config_no_apic` 保持声明默认、参数解析整段不出现在源里。）
 
 三分支的对照：
 
@@ -659,9 +678,9 @@ void fpu_init(void)
 
 | # | 动作 | 位置 | 依赖前拍 | 若缺失或反序 | 第 3 章接手节 |
 |---|---|---|---|---|---|
-| 1 | boot_procs 回写 | kmain 尾段首句 | boot 循环 | boot image 布局无人记录 | §3.6 |
-| 2 | IPCNAME × 6 | 随后 | 无 | IPC 调用名表缺 6 项 | §3.6 |
-| 3 | arch_post_init | 随后 | 保护结构（03 篇） | DM 前置缺失 | [07-cross-space-init.md](07-cross-space-init.md) §2.1 |
+| 1 | boot_procs 回写 | kmain 尾段首句 | boot 循环 | boot image 布局无人记录 | [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（boot 表装配） |
+| 2 | arch_post_init | 随后 | 保护结构（03 篇） | DM 前置缺失 | [07-cross-space-init.md](07-cross-space-init.md) §2.1 |
+| 3 | IPCNAME × 6 | arch_post_init 之后 | 无 | IPC 调用名表缺 6 项 | §3.1（名称随 enum 取得） |
 | 4 | memory_init | 随后 | arch_post_init | 窗口槽未拨 | [07-cross-space-init.md](07-cross-space-init.md) §2.2 |
 | 5 | system_init | memory_init 后 | 无硬依赖 | 分发表不可用 | §3.1 |
 | 6 | bootstrap 回收 | system_init 后 | 窗口开着 | 引导段泄漏或双记账 | §3.2/§3.5 |
@@ -676,7 +695,7 @@ void fpu_init(void)
 
 ### 3.1 分发表的归宿：运行时装配 → 编译期穷尽（→§2.1）
 
-C 的 `system_init` 在启动末端装配一张 58 槽函数指针表，用 `map` 宏的两层防线保证没人填错格子（§2.1）。Rust 对这张表的回答是：表不再在启动期"装配"——它变成一个枚举加一个 match，在编译期就把分派形状定死。模块注释开头就把对位关系声明出来：
+C 的 `system_init` 在启动末端装配一张 58 槽函数指针表，声明注释声称用 `map` 宏的两层防线保证没人填错格子（§2.1 的核实结论：该防线对现行宏形态**不复现**；Rust 的回答是把防线做实——见本节的 const 断言与分派穷尽性）。Rust 对这张表的回答是：表不再在启动期"装配"——它变成一个枚举加一个 match，在编译期就把分派形状定死。模块注释开头就把对位关系声明出来：
 
 ```rust
 // os/kernel/src/syscall.rs —— 逐字引用（模块注释头部）
@@ -702,7 +721,7 @@ C 的 `system_init` 在启动末端装配一张 58 槽函数指针表，用 `map
 //!   avoiding scattered `#[cfg]` behavior selection in the dispatch match.
 ```
 
-（`os/kernel/src/syscall.rs` 模块注释。一段登记：注释给架构专属这条决策的编号是 D6，而 `os/kernel/src/lib.rs` 的 bsp 文档注释里 D6 指的是 vm_running——两个 D6 在源码注释里撞号；本篇按内容指认这条决策、不沿用注释编号，撞号在此登记。另注：注释的三处 C 坐标均有漂移——`system.c:168-278` 比实际函数体（168-270）多几行，`system.c:103-116`（kernel_call_dispatch 实际起于 :95）与 `system.c:58-90`（kernel_call_finish 实际 :59-96）同族，均按原文引用未改。）
+（`os/kernel/src/syscall.rs` 模块注释。一段登记：注释给架构专属这条决策的编号是 D6，而 `os/kernel/src/lib.rs` 的 bsp 文档注释里 D6 指的是 vm_running——两个 D6 在源码注释里撞号；本篇按内容指认这条决策、不沿用注释编号，撞号在此登记。另注：注释的三处 C 坐标均有漂移——`system.c:168-278` 比实际函数体（168-270）多几行，`system.c:103-116`（kernel_call_dispatch 实际起于 :95）与 `system.c:58-90`（kernel_call_finish 实际 :59-93）同族，均按原文引用未改。）
 
 枚举本体长这样——头部、空洞、尾段各看一段：
 
@@ -768,7 +787,7 @@ const _: () = {
 };
 ```
 
-（`os/kernel/src/syscall.rs` 的 const 断言。块内 `R-16` 是仓库内部记录编号，按原文引用。三个断言钉住"判别值从 0 开始、到 57 结束、全部落在 58 以内"——任何新增变体越过 58，`cargo build` 直接失败。）
+（`os/kernel/src/syscall.rs` 的 const 断言。块内 `R-16` 是仓库内部记录编号，按原文引用。三个断言钉住的是**端点**：判别值从 0 开始、到 57 结束、最后一个变体落在 58 以内；**追加在 Padconf 之后、越出 58 的新变体不会触发这三条断言**——挡住它的是分派 `match` 的穷尽性与 `try_from` 的显式编号表（两条防线各管一段：本块钉端点、穷尽性钉全集）。）
 
 `system_init` 三段在 Rust 里的去向各不相同。IRQ 钩子池清零进了 `IrqManager::new` 的构造（`os/kernel/src/irq_manager.rs:impl IrqManager::new`，构造时把钩子槽初始化为 NONE——与 C 的 `proc_nr_e = NONE` 循环同义），初始化时机在 Phase B（05 篇的中断管理器辖区）；报警定时器不逐特权结构初始化，改成内嵌在时钟状态里的侵入式有序链（[05-clock-interrupt-init.md](05-clock-interrupt-init.md) §4.2 的 ClockState 结构）；注册动作本身消失——Phase E 在 `kmain` 里只剩一段注释：
 
@@ -823,7 +842,9 @@ C 的 `kmain` 尾段是一条从 boot_procs 回写到 `NOT_REACHABLE` 的直线�
 | E | （无启动动作） | system_init | **消失**（§3.1） |
 | F | 守卫回收 + init_smp_state + BKL + smp_init + bsp | bootstrap 回收 + SMP 分支 + bsp_finish_booting | **重排**（回收、BKL） |
 
-第一处重排：bootstrap 回收从"kmain 尾"挪到 Phase F，且恒被守卫跳过。Phase F 的头注释把理由写全了：
+第一处重排：开窗（C `main.c:142` 的对位）从 kmain 前段后移到 Phase A.1b——先完成 kinfo 校验与控制台就绪，再打开分配窗口；初值语义与更早阶段的防御见 §3.3。
+
+第二处重排：bootstrap 回收从"kmain 尾"挪到 Phase F，且恒被守卫跳过。Phase F 的头注释把理由写全了：
 
 ```rust
 // os/kernel/src/lib.rs:fn kmain —— 逐字引用（Phase F 头注释与守卫条件）
@@ -843,7 +864,7 @@ C 的 `kmain` 尾段是一条从 boot_procs 回写到 `NOT_REACHABLE` 的直线�
 
 （`os/kernel/src/lib.rs` 的 `kmain` 的 Phase F 头。块内 `D5`/`TODO-01-1` 是仓库内部编号，按原文引用；`01-boot-shim-bootstrap.md` 是引导篇的文档名。C 回收的是小段恒等映射的未分页区，Rust 从第一条指令起就是高半镜像，引导段长度恒为 0，守卫恒不进入。）
 
-第二处重排：BKL（大内核锁）的取得点从 cstart 之后（C 的 `main.c:149`，kmain 前段、先于 boot 循环）后移到 `smp_init` 之前，一次取得、故意泄漏：
+第三处重排：BKL（大内核锁）的取得点从 cstart 之后（C 的 `main.c:149`，kmain 前段、先于 boot 循环）后移到 `smp_init` 之前，一次取得、故意泄漏：
 
 ```rust
 // os/kernel/src/lib.rs:fn kmain —— 逐字引用（BKL 取得注释与调用）
@@ -858,7 +879,7 @@ C 的 `kmain` 尾段是一条从 boot_procs 回写到 `NOT_REACHABLE` 的直线�
 
 （`os/kernel/src/lib.rs` 的 `kmain` 的 BKL 段。注释里的 UNLOCK→wait→LOCK "舞蹈"指 AP 等待路径的三步——等 AP 时放锁、等待、重新取锁。）
 
-第三处：B.5 的 kerninfo 页是 C 没有的增补——C 的用户态投影是 `.usermapped` 段加结构体字段拷贝，Rust 改成一张独立内核信息页（§4.3 展开两种投影）。
+除三处重排之外，B.5 的 kerninfo 页是 C 没有的增补——C 的用户态投影是 `.usermapped` 段加结构体字段拷贝，Rust 改成一张独立内核信息页（§4.3 展开两种投影）。
 
 取舍表：
 
@@ -868,7 +889,7 @@ C 的 `kmain` 尾段是一条从 boot_procs 回写到 `NOT_REACHABLE` 的直线�
 | BKL 一次取得 + transfer 泄漏 | 在 bsp_finish_booting 里二次取锁（C 形状） | 静态检查看不出"谁负责放"——靠 Step 8.5 的断言兜底（§3.4） |
 | kerninfo 页增补 | 维持 C 的 `.usermapped` 段 | VM 接管地址空间后要复制映射（kerninfo 模块注释自认的后续工作） |
 
-第一行需要单独说清"守卫不是死代码"。`bootstrap_len > 0` 分支是活的验收面：boot-shim 若回退成"报告引导段"的形状，分支立即激活、回收真实发生；分支体对 `add_memmap` 的 Result 做了两种错误的分类处置（调试构建 panic、release 构建带日志继续，`os/kernel/src/lib.rs` 的 `kmain` 的 Phase F 匹配段，§4.5 逐行走）。把它当废代码删掉，等于把这个验收面拆了。
+第一行需要单独说清"守卫不是死代码"。`bootstrap_len > 0` 分支是活的验收面：boot-shim 若回退成"报告引导段"的形状，分支立即激活、回收真实发生；分支体对 `add_memmap` 的 Result 做了两种错误的分类处置（调试构建 panic、release 构建带注释的显式丢弃——`let _ = e;`，不是日志；`os/kernel/src/lib.rs` 的 `kmain` 的 Phase F 匹配段，§4.5 逐行走）。把它当废代码删掉，等于把这个验收面拆了。
 
 反向推演集中在 BKL。若取得点留在 C 的位置（cstart 之后立刻取）：`init_smp_state` 与 `smp_init` 之间的拓扑装配就运行在"锁已持有"的状态下，而 AP 等待路径的第一步是 UNLOCK——等于启动中途放一次锁再取回来；Rust 把取得点放在舞蹈之前一次完成，`transfer` 泄漏守卫是"持有权转移"的类型化表达（§4.5 展开 transfer 的机制）。若回收分支不保留：见上面的取舍表第一行。
 
@@ -886,7 +907,7 @@ pub(crate) static KERNEL_MAY_ALLOC: AtomicBool = AtomicBool::new(false);
 
 （`os/kernel/src/globals.rs:static KERNEL_MAY_ALLOC`。静态初值是 **false**——与 C 的"定义即 1"（§2.2 的 `int kernel_may_alloc = 1;`）相反。）
 
-窗口的翻转序列：`os/kernel/src/lib.rs` 的 `kmain` 的 Phase A.1b 执行 `KERNEL_MAY_ALLOC.store(true, Ordering::Release)`（开窗，对位 C 的 kmain 重申），`os/kernel/src/lib.rs:fn bsp_finish_booting` 的 Step 8 执行 `store(false, ...)`（关窗，对位 §2.3 第12拍）。初值语义的差异是刻意的：Rust 的启动序列比 C 多出 `arch_boot` 等更早的阶段（[02-higher-half-kernel.md](02-higher-half-kernel.md) 的启动前段），"窗口默认关"是对这些更早阶段的防御——任何在 kmain 之前误触分配路径的代码拿到的是保守答案。
+窗口的翻转序列：`os/kernel/src/lib.rs` 的 `kmain` 的 Phase A.1b 执行 `KERNEL_MAY_ALLOC.store(true, Ordering::Release)`（开窗，对位 C 的 kmain 重申），`os/kernel/src/lib.rs:fn bsp_finish_booting` 的 Step 8 执行 `store(false, ...)`（关窗，对位 §2.3 第12拍）。初值语义的差异是刻意的：Rust 的启动序列比 C 多出 `arch_boot` 等更早的阶段（[02-higher-half-kernel.md](02-higher-half-kernel.md) 的启动前段），"窗口默认关"把"开窗"从存储默认升级成显式事件；当前全树没有任何"读取后分支"的消费者（§3.6 的"零运行时消费点"），这条初值目前的可观测差异为零，与 C 的差别是纯声明面的——保留它是为将来出现早阶段消费者时的安全默认。
 
 vm_running 的保留与修正写在 Step 1 的注释里：
 
@@ -1010,7 +1031,7 @@ Rust 还给函数体加了 C 没有的两拍。第一拍在最前：
     debug_assert!(smp::bkl_is_locked(), "bsp_finish_booting requires the BKL (kmain acquires it before smp_init)");
 ```
 
-（`os/kernel/src/lib.rs:fn bsp_finish_booting` 的 Step 8.5。块内 `S-5` 是仓库内部编号，按原文引用。断言钉的不是"要不要取锁"而是"锁必须已经在手上"——取锁动作在 `kmain` 里完成（§3.2 的第二处重排），这里只验证。）
+（`os/kernel/src/lib.rs:fn bsp_finish_booting` 的 Step 8.5。块内 `S-5` 是仓库内部编号，按原文引用。断言钉的不是"要不要取锁"而是"锁必须已经在手上"——取锁动作在 `kmain` 里完成（§3.2 的第三处重排），这里只验证。）
 
 记账落点那一步（对位 C 的第4拍）的账记在进程表上，`os/kernel/src/proc.rs` 的方法文档注释把对位关系写了出来：
 
@@ -1135,7 +1156,7 @@ C 的 bootstrap 回收是 kmain 尾段里一条 `add_memmap` 语句——把引�
 
 ### 3.6 处置表：C 收尾段的每件东西去了哪（→第 2 章各节）
 
-第 3 章的决策到这里齐了，把第 2 章见过的每件东西逐项对账。去向分四档：保留同位（形状相同）、改型（语义保留、机制换）、增补（C 没有）、消失（无对应物）：
+第 3 章的决策到这里齐了，把第 2 章见过的每件东西逐项对账。去向分五档：保留同位（形状相同）、改型（语义保留、机制换）、增补（C 没有）、移位（存活但换到启动的另一阶段）、消失（无对应物）：
 
 | C 项 | C 锚点 | 去向 | Rust 锚点 |
 |---|---|---|---|
@@ -1188,7 +1209,7 @@ C 的 bootstrap 回收是 kmain 尾段里一条 `add_memmap` 语句——把引�
 pub fn kmain(kernel_info: &KernelInfo) -> ! {
 ```
 
-（`os/kernel/src/lib.rs` 的 `kmain` 生产版的文档注释头。块内两处 `D-59` 是仓库内部编号，按原文引用。同名函数还有一个 `#[cfg(feature = "qemu_test")]` 的裸函数包装（`os/kernel/src/lib.rs` 里 `pub extern "C" fn kmain`），它只转发寄存器现场给校验函数，不在本篇走查范围。）
+（`os/kernel/src/lib.rs` 的 `kmain` 生产版的文档注释头。块内两处 `D-59` 是仓库内部编号，按原文引用。同名函数还有一个 `#[cfg(feature = "qemu_test")]` 的裸函数包装（`os/kernel/src/lib.rs` 里 `pub extern "C" fn kmain`），它只转发寄存器现场给校验函数，不在本篇走查范围。另一处登记：块内 `/// C: main.c:115-147` 是**源注释原文**——按 C 源核对，`kmain` 起于 115 而远长于 147 行，本篇正文用到的分拍坐标（142/149/301/311）均在其中；源注释的区间待回修，此处按原文引用并登记。）
 
 C 直线与 Rust Phase 的全链对齐（三处重排用 ◄ 标出，与 §3.2 的表一一对应）：
 
@@ -1330,7 +1351,7 @@ pub fn classify(
     }
 ```
 
-（`os/kernel/src/vm_handoff.rs:fn classify`。文档注释第一段有一处按原文引用的过时陈述："its blob was reclaimed … so it stays free and is not deducted"与函数体对全部模块 blob 全量扣减的现行为矛盾（§3.5 已登记，此处是同族第三处）——注释描述的是回收 VM blob 的形状，现码不是。文档注释第二段就是两种启动形态的说明：UEFI 路径的根页与 bump 区间是 LOADER_DATA、根本不在 conventional memmap 里，切它是 no-op；无 shim 回退路径的 bump 区间才真正从 memmap 切掉——同一段代码服务两种形态，靠 cut 的幂等性自然吸收差异。）
+（`os/kernel/src/vm_handoff.rs:fn classify`。文档注释第一段有一处按原文引用的过时陈述："its blob was reclaimed … so it stays free and is not deducted"与函数体对全部模块 blob 全量扣减的现行为矛盾（§3.5 已登记，此处是同族第二处）——注释描述的是回收 VM blob 的形状，现码不是。文档注释第二段就是两种启动形态的说明：UEFI 路径的根页与 bump 区间是 LOADER_DATA、根本不在 conventional memmap 里，切它是 no-op；无 shim 回退路径的 bump 区间才真正从 memmap 切掉——同一段代码服务两种形态，靠 cut 的幂等性自然吸收差异。）
 
 第二段：bootstrap 已用帧的后缀扣减（第四源；第五源即 §3.5 引过的 VM blob 段）：
 
@@ -1610,7 +1631,7 @@ pub fn kernel_call_dispatch(
 }
 ```
 
-（`os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner` 的权限查表与 match 节选。权限查表是 Option 链：无特权记录直接拒绝，有则过过滤器——C 对位的 `GET_BIT(priv(caller)->s_k_call_mask, call_nr)` 在 system.c 的分派函数里。架构专属臂走 `CurrentArchSyscall` 的默认实现返回 BadCall——§3.1 的决策；块内 `D6` 是注释原稿对这条决策的编号（§3.1 开头的撞号登记即指此处）。）
+（`os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner` 的权限查表与 match 节选。权限查表是 Option 链：无特权记录直接拒绝，有则过过滤器——C 对位的 `GET_BIT(priv(caller)->s_k_call_mask, call_nr)` 在 system.c 的分派函数里。架构专属臂走 `CurrentArchSyscall` 的默认实现返回 BadCall——§3.1 的决策；块内 `D6` 是注释原稿对这条决策的编号（§3.1 开头的撞号登记即指此处）。块内坐标 `system.c:215-216` 按原文引用——核对实源，该 `#if` 现在 :213（同族坐标漂移，登记）。）
 
 三段装配的 Rust 落点收拢成一张表（与 §2.1 的三段对照）：
 
@@ -1620,7 +1641,7 @@ pub fn kernel_call_dispatch(
 | 报警定时器逐 priv 初始化 | ClockState 内嵌链（05 篇） | Phase B 末 |
 | call_vec 清零 + 46 条 map | 无动作（enum + match 即表） | 链接期 |
 
-反向推演两则在 §3.1 已展开（`#[cfg]` 裁剪变体让"拒绝"变"非法"；归一化只收绝对号让宿主测试被迫造偏移、测试与生产分叉）——实现面的对应物是：try_from 的 Err 与 match 的穷尽性是仅有的两道入口守卫，二者都由编译器背书。
+反向推演两则（`#[cfg]` 裁剪变体让"拒绝"变"非法"见 §3.1；归一化只收绝对号让宿主测试被迫造偏移、测试与生产分叉见本节上文的 try_from 走查）——实现面的对应物是：try_from 的 Err 与 match 的穷尽性是仅有的两道入口守卫，二者都由编译器背书。
 
 ### 4.5 Phase F 前置：守卫回收与 SMP 接线（→§3.2、§3.5）
 
@@ -1727,7 +1748,7 @@ pub fn kernel_call_dispatch(
 
 （`os/kernel/src/lib.rs` 的 `kmain` 的 Phase F 尾段。拓扑装配在 `os/kernel/src/lib.rs:fn init_smp_state`，它查平台描述符里的 CPU 拓扑而不是硬编码单核；`os/kernel/src/smp.rs:fn smp_init` 内嵌逐 AP 超时跳过与宽容等待——"smp_init 返回即失败"的 C 语义（§2.4）在这里变成"个别 AP 失败不阻断收尾"。）
 
-第一段为什么值得五十行：分支恒不进入（§3.2），但分支体是 boot-shim 的验收面——shim 回退成"报告引导段"时它激活，两种失败各有处置策略，release 构建也不是静默（带注释的显式丢弃）。对照物是 `os/kernel/src/memmap.rs:fn add_memmap` 文档注释里的核销记录——C 的 `mmap_size`/`mem_high_phys` 两个字段在 Rust 是设计 no-op：
+第一段为什么值得五十行：分支恒不进入（§3.2），但分支体是 boot-shim 的验收面——shim 回退成"报告引导段"时它激活，两种失败各有处置策略：debug 构建 panic；release 构建是带注释的显式丢弃（`let _ = e;`）——丢弃按设计是静默的，可观测性由 debug 构建的 panic 与注释本身承担。对照物是 `os/kernel/src/memmap.rs:fn add_memmap` 文档注释里的核销记录——C 的 `mmap_size`/`mem_high_phys` 两个字段在 Rust 是设计 no-op：
 
 ```rust
 // os/kernel/src/memmap.rs:fn add_memmap（模块文档注释的核销段）—— 逐字引用
@@ -1817,7 +1838,7 @@ fn decode_signature(eax: u32) -> (u8, u8, u8) {
 }
 ```
 
-（`os/arch/src/x86_64/cpu_identity.rs:fn decode_signature`。C 侧的写法在 `minix3/minix/kernel/arch/i386/arch_system.c:cpu_identify`：合并条件写在了 base model 上，而 SDM 的条件是 family——family-6 的现代处理器（Nehalem、Skylake 等）的 model 高位全被截掉。C 时代硬件上无害、目标硬件上必错；这是本篇唯一一处 Rust 明确改变可观测内容（身份表字段值）的拍。四条解码测试钉住它（§5.1）。）
+（`os/arch/src/x86_64/cpu_identity.rs:fn decode_signature`。C 侧的写法在 `minix3/minix/kernel/arch/i386/arch_system.c:cpu_identify`：合并条件写在了 base model 上，而 SDM 的条件是 family——family-6 的现代处理器（Nehalem、Skylake 等）的 model 高位全被截掉。C 时代硬件上无害、目标硬件上必错；这是本篇唯一一处 Rust 明确改变**内核语义值**（身份表字段值）的地方；面向用户的可观测差异另有 §4.3 的横幅措辞改写。四条解码测试钉住它（§5.1）。）
 
 Step 2：记账落点。Rust 不是指针赋值：
 
@@ -1843,7 +1864,7 @@ Step 2：记账落点。Rust 不是指针赋值：
     }
 ```
 
-（`os/kernel/src/proc_table.rs:fn set_bill_to_idle`。按原文引用的坐标 `main.c:50` 已漂移——C 的两行在 56-57（§3.4 已登记同族坐标），注释内 `(see smp.rs:127)` 的行号也已漂移（`set_running` 现在 :132）。C 的 per-CPU `bill_ptr` 指针在 Rust 是记账状态位，由调度循环侧的记账消费读取；两者在"启动期时间记到内核头上"这一点上同义，形状不同。proc_ptr 那一半的落点：注释里指名的 `set_running(IDLE)` 在生产代码里**没有调用者**——调度循环入口（`os/kernel/src/lib.rs` 的 `scheduler_loop` 前段）直接写 CpuLocal 的 `proc_ptr` 字段，"由调度器初始化路径承担"这半句属实，机制名是注释的过时形状，登记。）
+（`os/kernel/src/proc_table.rs:fn set_bill_to_idle`。按原文引用的坐标 `main.c:50` 已漂移——C 的两行在 56-57（§3.4 已登记同族坐标），注释内 `(see smp.rs:127)` 的行号也已漂移（`set_running` 实际在 :226）。C 的 per-CPU `bill_ptr` 指针在 Rust 是记账状态位，由调度循环侧的记账消费读取；两者在"启动期时间记到内核头上"这一点上同义，形状不同。proc_ptr 那一半的落点：注释里指名的 `set_running(IDLE)` 在生产代码里**没有调用者**——调度循环入口（`os/kernel/src/lib.rs` 的 `scheduler_loop` 前段）直接写 CpuLocal 的 `proc_ptr` 字段，"由调度器初始化路径承担"这半句属实，机制名是注释的过时形状，登记。）
 
 Step 3 见 §4.3。Step 4：解除循环：
 
@@ -1951,7 +1972,7 @@ Step 7：FPU 存在性。C 的探针（§2.3 的回读比对）在 Rust 删除�
     }
 ```
 
-（`os/kernel/src/lib.rs:fn bsp_finish_booting` 的 Step 7。块内 `a64-fix-7`/`pm fb201` 是仓库内部实验与问题记号，按原文引用；注释内 `(see smp.rs:134)` 的行号已漂移（`fpu_presence` 字段现在 smp.rs 的 170-171 附近），按原文引用未改。探针删除的理由：三个目标架构的 FPU 是架构保证（§2.3 末尾的"硬件代际遗物"判断在此兑现），aarch64 的 FP 门控由首次 FP 使用时的懒陷阱建立、不依赖这拍。）
+（`os/kernel/src/lib.rs:fn bsp_finish_booting` 的 Step 7。块内 `a64-fix-7`/`pm fb201` 是仓库内部实验与问题记号，按原文引用；注释内 `(see smp.rs:134)` 的行号已漂移（`fpu_presence` 字段实际在 smp.rs:175），按原文引用未改。探针删除的理由：三个目标架构的 FPU 是架构保证（§2.3 末尾的"硬件代际遗物"判断在此兑现），aarch64 的 FP 门控由首次 FP 使用时的懒陷阱建立、不依赖这拍。）
 
 Step 8 与 8.5 见 §3.3 与 §3.4 的引用。Step 9：
 
@@ -1996,7 +2017,7 @@ cargo test -p minix-kernel --features mock --lib
 cargo test -p minix-kernel --features mock --lib vm_handoff
 ```
 
-预期关键行：全量为 `running 839 tests` 与 `test result: ok. 831 passed; 0 failed; 8 ignored`；过滤后为 `running 7 tests` 与 `test result: ok. 7 passed`。两口径的差异来自模块组合：`grep -c` 数的是源文件里的测试函数定义（lib.rs 的 56 个定义经模块树展开后与其他模块的测试一起收集），cargo 的 839 是整个 crate 收集到的全部用例。
+预期关键行：全量为 `running 840 tests` 与 `test result: ok. 832 passed; 0 failed; 8 ignored`；过滤后为 `running 7 tests` 与 `test result: ok. 7 passed`。两口径的差异来自模块组合：`grep -c` 数的是源文件里的测试函数定义（lib.rs 的 56 个定义经模块树展开后与其他模块的测试一起收集），cargo 的 840 是整个 crate 收集到的全部用例（FID 复核：`smp.rs:1952` 的 `test_clear_idle_flag` 系成稿后新增，读数随之上移 1）。
 
 五组的钉点清单：
 
@@ -2110,13 +2131,40 @@ grep -rn 'KERNEL_MAY_ALLOC' os/kernel/src --include='*.rs'
 
 | 没有测试的面 | 现状 | 与正文的关联 |
 |---|---|---|
-| smp 降级分支（fallback 与逐 AP 超时） | 无宿主测试；行为只能真机观察 | §2.4/§4.5 的降级语义只有读码一个证据源 |
+| smp 降级分支（fallback 与逐 AP 超时） | 分支本体无宿主测试（超时常量与单核 `wait_for_aps` 另有两条宿主测试，降级分支不在其中）；行为只能真机观察 | §2.4/§4.5 的降级语义只有读码一个证据源 |
 | announce/横幅内容 | 无断言 | §4.3 的一行横幅没有合同 |
 | panic 钩子注册时点 | 无测试；Step -1 之前的 panic 行为归 minix-rt | §3.4/§6.1 的诊断分界靠读码 |
 | KERNEL_MAY_ALLOC 翻转序列 | 无测试钉住 | 与 §3.3 的"零消费点"披露互为表里——状态无读者，测试也无从断言行为 |
 | kerninfo 页内容与 C 布局的逐字节对齐 | kerninfo 自己的测试模块钉 magic/偏移合同，不钉与 C 的逐字节一致 | §4.3 的"指针关系保留"是读码结论 |
 
 真机门与宿主门的分界也要说清：定时器三段（Step 6）的真机行为——tick 真的到达、放行门真的打开——归 [05-clock-interrupt-init.md](05-clock-interrupt-init.md) §5.2 的 QEMU 载体叙事，宿主测试只覆盖"生产接线被复用"这一层（Step 6 注释里 `test-timer-irq` 复用 `boot_init_timer` 的原话）；本篇的 Step 5/7 副作用测试属于宿主门。
+
+### 5.4 机制 → 需要证明什么（反转核对表）
+
+（同系列先例：从**机制**出发列"要证明它成立需要什么断言"；下表"测试覆盖状态"与 §1.5 的"C 侧边界"是两个维度，读时按列名区分。）
+
+| # | 机制（正文位置） | 需要证明什么（可观测断言） | 测试覆盖状态 | 现有证据 / TODO |
+|---|---|---|---|---|
+| M1 | 三个开关的次序防线（§1.1、§2.2、§2.3） | 关窗先于切换；基线先于定时器；解除先于切换 | 部分覆盖 | 真机启动链全链（能到 `entering scheduler` 即十二拍全过）；**反序负向无载体** → **R08-T01** |
+| M2 | A2 扣减账与空闲表的构造性不相交（§3.5、§4.2） | 全源扣减、重叠即 panic、页对齐 | 已覆盖 | 宿主 `vm_handoff` 七条（含 `test_classification_deducts_all_record_sources`，§5.2） |
+| M3 | KERNEL_MAY_ALLOC 翻转序列（§2.2、§3.3） | 开窗/关窗发生且仅发生（除"零消费点"披露） | 未覆盖 | §5.3 已披露无测试钉住 → **R08-T02** |
+| M4 | smp 降级分支（§2.4、§4.5） | fallback 与逐 AP 超时的行为 | 未覆盖 | §5.3 已披露（分支本体无宿主测试）→ **R08-T03** |
+| M5 | kerninfo 页与 C 布局的对齐（§4.3） | magic/偏移合同；与 C 逐字节一致 | 部分覆盖 | 宿主钉 magic/偏移；**与 C 逐字节对齐无载体** → **R08-T04** |
+| M6 | panic 钩子注册时点（§3.4、§6.1） | Step -1 之前/之后的 panic 行为分界 | 未覆盖 | §5.3 已披露（归 minix-rt 通道）→ 登记（跨篇） |
+| M7 | announce 横幅（§4.3） | —— | 无合同 | §5.3 已披露（一行横幅无断言）→ 登记 |
+| M8 | Step 5/7 副作用（§4.6） | 记账基线复位、`fpu_presence` 置位 | 已覆盖 | 宿主两条（§5.3 末句） |
+| M9 | Phase E 的"无动作"（§3.2、§4.4） | 分发表在链接期就位（无启动动作） | 已覆盖（结构式） | enum + match 的穷尽性由编译器背书（§3.1） |
+
+（§5.3 的披露行分别对到本表 M3/M4/M6/M7 的断言化；两类表互为反转面，任一表更新须同步另一表。）
+
+**新 TODO（对源码/测试 workflow 的需求输入）**：
+
+| ID | 内容 | 分流 |
+|---|---|---|
+| R08-T01 | 三个开关反序的负向载体（构造"关窗晚于切换"的启动序） | **测试侧** |
+| R08-T02 | KERNEL_MAY_ALLOC 翻转序列的断言载体 | **测试侧** |
+| R08-T03 | smp 降级分支的载体（宿主 fallback 场景或真机超时） | **测试侧** |
+| R08-T04 | kerninfo 页与 C 逐字节对齐的核对载体 | **测试侧** |
 
 ---
 
