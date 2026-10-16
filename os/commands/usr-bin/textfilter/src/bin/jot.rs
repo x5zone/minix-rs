@@ -30,7 +30,7 @@ mod support;
 
 use minix_textfilter::jot::{
     HAVE_BEGIN, HAVE_ENDER, HAVE_REPS, HAVE_STEP, Jot, JotArgError, JotError, get_prec,
-    operand_to_number, parse_jot_args, parse_reps, parse_step,
+    operand_to_number, parse_jot_args, parse_reps, parse_step, seed_from_step,
 };
 
 fn run() -> ! {
@@ -113,7 +113,7 @@ fn run() -> ! {
         // `v >= 0.0` 把参照件接受的形报成 `Bad step value` 是自创的判据；`strtod`
         // 的全串检查（`parse_step`）没动，坏值照样报同一句。
         Some(s) => match parse_step(&s) {
-            Ok(v) => (v as i64) as u64,
+            Ok(v) => seed_from_step(v),
             Err(_) => bad_step(prog, &s),
         },
         None => {

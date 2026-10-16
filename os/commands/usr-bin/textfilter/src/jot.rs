@@ -350,6 +350,18 @@ pub fn parse_step(s: &str) -> Result<f64, JotError> {
     }
 }
 
+/// `jot.c:118` 的 `srandom((unsigned long) step)`：先按 C 的规则把 `double` **向零截断**，
+/// 再在负数变无符号那一步**回绕**。所以 `-0.5` 与 `0` 是同一个种子（截成 0），
+/// `-5.9` 与 `-5` 也是同一个（先截成 -5 再回绕）。
+///
+/// C 的 `unsigned long` 在 Minix 的 ILP32 上只有 32 位，本层的随机流由 `Lcg` 承载、
+/// 拿 64 位种子；两边回绕的**位宽**不同，但流的数值本就不是 libc `random()`（登记在
+/// 07 篇 §4.4），可观察的是截断方向与「负数合法」这两点，函数按这两点定形。
+#[must_use]
+pub fn seed_from_step(step: f64) -> u64 {
+    (step as i64) as u64
+}
+
 /// `getformat`: pick or validate the `-w` word and report whether the
 /// conversion is integer (`dox`).
 pub fn get_format(options: &JotOptions) -> Result<(Format, bool), JotError> {
@@ -883,6 +895,24 @@ mod tests {
         assert_eq!(j.next(), Some("2".into()));
         assert_eq!(j.next(), Some("3".into()));
         assert_eq!(j.separator_after(), None);
+    }
+
+    #[test]
+    fn test_seed_cast_truncates_then_wraps() {
+        // 截断是**向零**取整：`-0.5` 与 `0` 同种子（参照件现量两串数逐字节相同，见
+        // `tests/jot_face.rs` 的 `a_negative_or_fractional_seed_is_accepted_like_c`）
+        assert_eq!(seed_from_step(0.0), 0);
+        assert_eq!(seed_from_step(-0.5), 0);
+        assert_eq!(seed_from_step(0.9), 0);
+        assert_eq!(seed_from_step(-0.9), 0);
+        // 负数先截成整数再回绕：`-5` 与 `-5.9` 同种子
+        assert_eq!(seed_from_step(-5.0), u64::MAX - 4);
+        assert_eq!(seed_from_step(-5.9), seed_from_step(-5.0));
+        // 正数不受回绕影响
+        assert_eq!(seed_from_step(5.0), 5);
+        assert_eq!(seed_from_step(2147483648.0), 2147483648);
+        // 这条就是批次三百二十五那枚漏网负控要钉的位置：整幅偏移现在会被测到
+        assert_ne!(seed_from_step(-5.0).wrapping_add(1), seed_from_step(-5.0));
     }
 
     #[test]

@@ -321,6 +321,31 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十七把 `jot` 的种子转换提到库侧并单测，闭合上一笔登记的 `JOT-SEED-CAST-UNIT-TEST`**
+  （`2026-10-17`，`claim/JOT-SEED-CAST-UNIT-TEST-qoder` @ 基线 `06dfabb6e`，单域三线 commands/textfilter，无跨界）：
+  **为什么要单独提出来**：上一笔的负控里有一枚**漏网**——把种子整体偏移 +1，端到端门照旧全绿。
+  原因是种子只在随机流里显形，而本层的 `Lcg` 与 libc `random()` 的数值流本就是另一档登记
+  （07 篇 §4.4），于是「`-0.5` 与 `0` 同串」这类推论对**同幅偏移天然不敏感**。
+  这不是门的期望值写错，而是**可测性缺口**：转换式 `(v as i64) as u64`  inline 在壳里，没法单测。
+  **做法**：提为 `src/jot.rs:seed_from_step`（壳 `src/bin/jot.rs` 改调它），doc 注释写清 C 的两步
+  ——`jot.c:118` 的 `(unsigned long) step` 是**先向零截断**、**再在无符号那一步回绕**，
+  并说明本层种子位宽是 64 而 Minix 的 `unsigned long` 在 ILP32 下是 32，
+  两边可观察的是截断方向与「负数合法」而不是流的数值。
+  **门**：库测 +1 枚 `test_seed_cast_truncates_then_wraps`（钉 `0`、`-0.5`、`0.9`、`-0.9` 都截成 0，
+  `-5` 与 `-5.9` 同种子、且等于 `u64::MAX - 4` 的回绕形状，正数 5/2147483648 不受回绕影响）。
+  **两枚负控**（跑在最终源码上）：**P1 种子加一整幅偏移**——正是上一笔那枚漏网的形状——
+  现在被新库测咬住；**P2 把向零截断换成 `round_ties_even`** 因该方法是 unstable 属性而
+  **编译期就没过**，所以它对门的灵敏度既不证明也不否证，记在这里不当成咬住。
+  **本轮负控只有两枚，不到六枚门槛**，与上一笔同为记账；补齐的活随 `GETOPT-REPORT-BYTE-LETTER`
+  那轮一起做（那轮实测调用点是 **26 处 / 20 余个薄壳**，`src/lib.rs:GetoptReport::line` 要从
+  `String` 改成字节串，且现有若干门里钉的是 `char` 渲染形状，需同步改期望）。
+  三件套：容器整包 `cargo test -p minix-textfilter -j 1` → **903 / 0 / 0**；
+  `cargo clippy -p minix-textfilter --all-targets` 退码 0，指向 `jot.rs` 的四条
+  （`width` 未读、`dox`/`exhausted` 字段未读、`match` 可换 `unwrap_or_default`、`next` 与标准 trait 同名）
+  都是上一笔就登记过的存量行，行号只因本次插入而位移，**本笔新增行零诊断**；
+  workspace 0 error、宿主三架构各 `Finished`、`rustfmt --check` 零漂移、库测 516 与 `jot_face` 14 枚全绿。
+  核实日 `2026-10-17`；基线 `06dfabb6e`。
+
 - ✅ **批次三百二十六把 `col` 的集外字母改回按字节取，并翻正一条量不出来的旧登记**
   （`2026-10-17`，`claim/COL-NONASCII-OPTLETTER-qoder` @ 基线 `c2abf1ea7`，单域三线 commands/textfilter，无跨界）：
   **先说翻正**：批次三百一十四登记的那条叫 `COL-NONASCII-PANIC`，写的是「`col -bé` 即触发 panic」。
