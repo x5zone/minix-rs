@@ -143,9 +143,10 @@ pub fn parse_col_flags<'a>(args: &'a [&'a str]) -> Result<ColOptions, ColFlagErr
                     pos = bytes.len();
                 }
                 _ => {
-                    return Err(ColFlagError::UnknownOption(
-                        arg[pos..].chars().next().unwrap_or('-'),
-                    ));
+                    // libc 的 `getopt.c:103` 用 `%c` 打的是 `optopt` 那个**字节**，
+                    // 所以 `-é`（`c3 a9`）报的是 `c3` 一字节而不是整个字符——与本树
+                    // `src/column.rs:parse_column_args` 同法：按字节取，别按字符切
+                    return Err(ColFlagError::UnknownOption(char::from(bytes[pos])));
                 }
             }
             pos += 1;
@@ -516,6 +517,22 @@ mod tests {
 
     fn run(s: &str) -> String {
         String::from_utf8(filter(s.as_bytes(), &ColOptions::default()).bytes).unwrap()
+    }
+
+    #[test]
+    fn unknown_nonascii_option_letter_reports_the_byte() {
+        // 参照件现量（`tmp/col-313/col_ref`）：`col -bé` 打的是
+        // `col: unknown option -- ` + 裸字节 0xC3 + 换行，退 1。
+        // `é` 是 `c3 a9` 两字节，取**字符**会得到 U+00E9，取**字节**才是 U+00C3
+        let err = parse_col_flags(&["-b\u{e9}"]).expect_err("非 ASCII 字母该报错");
+        assert_eq!(
+            err,
+            ColFlagError::UnknownOption('\u{00c3}'),
+            "该报短横后的第一个字节"
+        );
+        // 聚簇里也一样：`-xé` 的 x 先被吃掉，报错落在 c3 上
+        let err = parse_col_flags(&["-x\u{e9}"]).expect_err("同上");
+        assert_eq!(err, ColFlagError::UnknownOption('\u{00c3}'));
     }
 
     #[test]

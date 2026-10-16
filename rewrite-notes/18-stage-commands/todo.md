@@ -321,6 +321,37 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百二十六把 `col` 的集外字母改回按字节取，并翻正一条量不出来的旧登记**
+  （`2026-10-17`，`claim/COL-NONASCII-OPTLETTER-qoder` @ 基线 `c2abf1ea7`，单域三线 commands/textfilter，无跨界）：
+  **先说翻正**：批次三百一十四登记的那条叫 `COL-NONASCII-PANIC`，写的是「`col -bé` 即触发 panic」。
+  本笔开工前现量六形（`-bé`、`-é`、`-Z`、`-bZ`、`-lé`、`-xé`）**一形都不 panic**——
+  `parse_col_flags` 只在**字节**上步进且一碰到集外字母就 `return`，取 `arg[pos..]` 时 `pos` 必然落在字符起点上，
+  所以那条登记的「panic」不成立。成立的是**取字符而不是取字节**：参照件 `tmp/col-313/col_ref`
+  打 `unknown option -- ` + 裸字节 `0xC3`，本壳打的是整个 `é`（`c3 a9`）。据此把这条改名重登为
+  `COL-NONASCII-OPTLETTER` 并修掉选字母的一半。
+  **修法**：`src/col.rs:parse_col_flags` 的集外字母支改成 `char::from(bytes[pos])`——
+  与本树 `src/column.rs:parse_column_args` 批次三百一十四已定的处置逐字同法，
+  libc 那句 `getopt.c:103` 的 `%c` 拿的本来就是 `optopt` 这个字节而不是一个字符。
+  **门**：库测 +1 枚 `unknown_nonascii_option_letter_reports_the_byte`（钉 `é` 的报错落在 U+00C3 而不是 U+00E9，
+  另钉聚簇 `-xé` 同形）；端到端门 +1 枚 `nonascii_option_letter_is_reported_as_one_byte`
+  （门里比的是 lossy 后的码位 U+00C3，修复前是 `é`，两者不混淆；同枚再钉一遍 ASCII 的 `-Z` 不受影响）。
+  **读数**：A/B 六形 **SAME=3 / DIFF=3**——三形 DIFF 全是本族共有的**编码末段**：
+  C 打一个裸字节 `c3`，本树经 `char` 的 `Display` 打出的是 `c3 83`（两个字节）。
+  这一半不在本笔射程：它要改的是 `src/lib.rs:GetoptReport::line` 的返回类型（`String` ⇒ 字节串）
+  与八处调用方的句子拼装，属共享缝，登记为 `GETOPT-REPORT-BYTE-LETTER`（与既有的
+  `REV-`/`COLRM-`/`COLUMN-`/`UNITS-`/`SEQ-`/`PASTE-`/`TR-` 七条同名登记是同一件事，
+  本笔把 `COL-` 也并入这一族，并把 `COL-NONASCII-PANIC` 这个不成立的名字注销）。
+  三件套：容器整包 `cargo test -p minix-textfilter -j 1` → **902 / 0 / 0**；
+  `cargo clippy -p minix-textfilter --all-targets` 退码 0，指向 `col.rs` 的两条
+  （`:314` 的 `never_loop`、`:450` 的 `needless_range_loop`）都在本笔未触碰的存量行，
+  **本笔新增行零诊断**；`cargo check --workspace -j 1` 0 error；宿主三架构各 `Finished`；
+  `rustfmt --edition 2024 --check` 零漂移；库测 515 枚与 `col_face` 门测 10 枚全绿。
+  **两枚变异负控**（`tmp/col-326-ctl.py` 的等价跑法，日志 `tmp/col-326-ctl.log`）都咬住：
+  改回按字符取被库测与新门各咬一枚，取末字节而不是首字节被库测两枚咬住。
+  **本轮负控只有两枚，不到六枚的门槛**——本笔是单点改动且两枚都命中要害，但这是记账不是达标，
+  下一轮若接续这条（`GETOPT-REPORT-BYTE-LETTER`）需按门槛补齐。
+  核实日 `2026-10-17`；基线 `c2abf1ea7`。
+
 - ✅ **批次三百二十五把 `jot -r` 的种子判据按 C 收回去（闭合三百一十七登记的第③条 `JOT-RANDOM-NEGATIVE-SEED`）**
   （`2026-10-17`，`claim/JOT-RANDOM-NEGATIVE-SEED-qoder` @ 基线 `c40ad74cc`，单域三线 commands/textfilter，无跨界）：
   **缺口**：壳 `src/bin/jot.rs` 算种子处写着 `Ok(v) if v >= 0.0 => v as u64`，其余一律
