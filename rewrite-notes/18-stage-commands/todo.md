@@ -250,6 +250,39 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百零七把 `cksum` 的选项诊断面按 C 定形：三种句子各归各的出口，usage 补回九行**
+  （`2026-10-16`，`claim/CKSUM-GETOPT-LINE-qoder` @ 基线 `5e3c12907`，单域三线 commands/textfilter，无跨界）：
+  判定表的第三支，而且它**连措辞都是抄来的**——今天印的是 `cksum: illegal option -- Z`，那属于 `pr` 链的
+  `egetopt`（`egetopt.c:144-151`），而 `cksum.c:193` 吃的是 libc `getopt("a:cno:pqs:twx")`，正确句子在
+  `getopt.c:101-104` 是 `unknown option`。一次改齐四类出口：
+  ① **getopt 自己报的两支**（集外字母、带值选项缺值 `:132-136`）→ libc 一行 + `usage()`；
+  ② **命令自己的 `warnx`**：值不合法是 `illegal argument to -a option` / `illegal argument to -o option`
+  （`:219`、`:243`），`-p`/`-s`/`-t`/`-x` 在未选到 hash 时走 `requirehash` →
+  `<旗标> flag requires \`-a algorithm'`（`:521-525`）——四类句子**都**再接同一块 usage；
+  ③ **`usage()` 是九行**（`:535-549`：`cksum`/`sum` 各两行、`md2`/`md4`/`md5`/`rmd160`/`sha1` 各一行），
+  此前只剩一行 `usage: cksum [-o 1 | -o 2] `；④ **退码**：C 的 `usage()` 是 `exit(1)`，旧写法一律退 2。
+  扫描器同时改成 getopt 形状（聚簇 `-nq`、附值 `-o2`/`-acrc`、`--` 结束、裸 `-` 是操作数）——旧写法按整个
+  token 匹配字母，`-nq` 会当成集外字母 `n`。`-a` 的接受集也按 C 分家：`crc`/`old1`/`old2` 认、
+  MD5/SHA 家族是「认得但未接」（另句），其余才是 `illegal argument to -a option`。
+  测面：库测 +1（`test_parse_cksum_args_follows_the_getopt_shape`：聚簇、附值、`--`、`-s` 先吃值再 requirehash、
+  聚簇里的集外字母）并把两枚旧断言改成新出口；新增 `tests/cksum_face.rs`（**5 枚**，本包第五十三扇目标），
+  钉句子、行数与退码。三件套：容器 `cargo test -j 1 --no-fail-fast -p minix-textfilter` →
+  **684 passed / 0 failed / 0 ignored**（53 个 target，基线 `5e3c12907` 为 678 / 52，+6 与测数增量相符）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` → 0 error、**86 条 warning 与基线同数**；
+  `cargo check --workspace -j 1` → 0 error；宿主三架构 `--bins` 各 `Finished`；rustfmt 触及件零漂移；
+  核实日 `2026-10-16`。三枚变异负控各咬各支（控制器 `tmp/cksum-307/ctl307.py`，先打印 `mutation applied`、
+  还原后 md5 对齐）：改回 `illegal option` → 1 枚；requirehash 回到自创句且不接 usage → 1 枚；
+  不接受附值形 → 2 枚（库测 + 门面）。
+  **登记不执行**：① 操作数读不到时本壳印的是 `cksum: -o` 这种缺 strerror 的形状，而 C 是
+  `err(1, "Cannot read %s", …)` 一族（`cksum.c:304`），文件腿得单独一轮（`CKSUM-FILE-LEGS`）；
+  ② C 的 `-a` 在已选 hash 时是 `illegal use of -a option`、`-o` 在已选 hash 时是
+  `%s mutually exclusive with sum`（`:196-199`、`:231-234`），本树永远选不到 hash 所以**当前不可达**，
+  等密码原语那轮一起做（`CKSUM-HASH-STATE`）；③ cksum 是多入口名（`sum`/`md5`… 靠 `argv[0]` 选算法），
+  本壳未建模，`prog_name` 目前只影响报文前缀；④ 07 篇 `cksum` 行外，第 155 行还挂着
+  等密码原语那轮一起做（`CKSUM-HASH-STATE`）；③ cksum 是多入口名（`sum`/`md5` 等靠 `argv[0]` 选算法），
+  本壳未建模，`prog_name` 目前只影响报文前缀；④ 07 篇除 `cksum` 行外，第 155 行还挂着一句陈旧的测试计数（写着 229 个测试、截止于九月中），而现值是 684 —— 统计口径归 V3-5/V3-6 那两轮处理，本笔不顺手改。
+  **负载条款**：一条命令只一件事、容器 `-j 1 -m 2g -u`、宿主与容器不交叉用同一 target、无合成压力。
+
 - ✅ **批次三百零六把 `nl` 的选项面按 C 重建：getopt 逐字母扫描 + 两类出口形状，并补上第一扇端到端门**
   （`2026-10-16`，`claim/NL-OPTION-FACE-qoder` @ 基线 `9b4fbd498`，单域三线 commands/textfilter，无跨界）：
   排期表 V3-10 判定表的第二支（`nl` 在判定表里连**句子本身**都可疑：今天印的是 `nl: unknown option`，

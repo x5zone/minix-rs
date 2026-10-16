@@ -180,22 +180,26 @@ pub struct CksumRequest<'a> {
 /// Why argv could not be folded into a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CksumError {
-    /// `-o` (or `-a`) carried a value with no supported sum behind it.
-    InvalidAlgorithm,
+    /// 带值选项（`a`/`o`/`s`）后面什么都没有：libc `getopt` 的
+    /// `option requires an argument -- <字母>`（`getopt.c:132-136`），随后接 usage。
+    MissingValue(char),
+    /// `-a`/`-o` 的值不是可认的名字：C 是 `warnx("illegal argument to -a|-o option")` + `usage()`
+    ///（`cksum.c:219`、`:243`），**不是**一句自创的「invalid algorithm」，也不退 2。
+    IllegalOptionValue(char),
     /// `-a <algo>` named a crypto hash (md5/sha…) — needs primitives we lack.
     CryptoUnsupported,
     /// `-p`/`-s`/`-t`/`-x` call `requirehash` (`cksum.c:149`), which the
-    /// CRC/old-sum path never satisfies.
+    /// CRC/old-sum path never satisfies. C 的那句是 `warnx("%s flag requires `-a algorithm'", flg)`
+    /// 再接 usage（`cksum.c:521-525`）。
     RequiresHash(char),
     /// A flag outside C's optstring; C routes it to `usage()`.
     UnknownOption(char),
 }
 
-/// Fold argv into a [`CksumRequest`]. Recognises every C getopt letter so an
-/// option is never mistaken for a file operand (the previous parser pushed
-/// unrecognised `-n`/`-q`/`-p`/`-s`/`-t`/`-x` straight into the file list).
-/// Options are matched as whole argv entries (`-o 1`/`-a crc` keep their value
-/// in the next entry), matching how C is invoked and the prior bin read argv.
+/// Fold argv into a [`CksumRequest`]，按 libc `getopt` 的形状扫（`cksum.c:193` 的
+/// `"a:cno:pqs:twx"`）：一个 token 里可以聚簇多个字母（`-nq`），带值字母的值可以是
+/// 本 token 的剩余部分（`-ao`、`-sabc`）也可以是下一词（`-a md5`），`--` 结束扫描，
+/// 裸 `-` 是操作数。旧写法把整个 token 当一个字母，`-nq` 会被当成集外字母 `nq`。
 pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumError> {
     let mut request = CksumRequest {
         kind: SumKind::Crc,
@@ -206,51 +210,96 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
         operands: Vec::new(),
     };
     let mut index = 0;
+    let mut scanning = true;
     while index < args.len() {
         let arg = args[index];
         // A lone `-`, an empty string, or anything not starting with `-` is a
         // file operand (C getopt leaves a bare `-` to `argv[optind..]`).
-        if arg.len() <= 1 || !arg.starts_with('-') {
+        if !scanning || arg.len() <= 1 || !arg.starts_with('-') {
             request.operands.push(arg);
             index += 1;
             continue;
         }
-        let flag = arg.as_bytes()[1] as char;
-        match arg {
-            "-o" => {
-                index += 1;
-                let value = *args.get(index).ok_or(CksumError::InvalidAlgorithm)?;
-                request.kind = match value {
-                    "1" => SumKind::Old1,
-                    "2" => SumKind::Old2,
-                    _ => return Err(CksumError::InvalidAlgorithm),
-                };
-            }
-            "-a" => {
-                index += 1;
-                let value = *args.get(index).ok_or(CksumError::InvalidAlgorithm)?;
-                // C's `-a` accepts the non-crypto `crc`/`old1`/`old2` (strcasecmp);
-                // the MD5/SHA family needs primitives we do not carry.
-                if value.eq_ignore_ascii_case("crc") {
-                    request.kind = SumKind::Crc;
-                } else if value.eq_ignore_ascii_case("old1") {
-                    request.kind = SumKind::Old1;
-                } else if value.eq_ignore_ascii_case("old2") {
-                    request.kind = SumKind::Old2;
-                } else {
-                    return Err(CksumError::CryptoUnsupported);
+        if arg == "--" {
+            scanning = false;
+            index += 1;
+            continue;
+        }
+        let bytes = arg.as_bytes();
+        let mut pos = 1usize;
+        while pos < bytes.len() {
+            let flag = bytes[pos] as char;
+            // 带值字母的取值：本 token 剩余部分优先，否则取下一词；两处都没有就是
+            // libc 的缺值那一行（旧写法把它当成「值为空」再报一出自创句）。
+            let take_value = |parser_index: &mut usize| -> Result<&'a str, CksumError> {
+                if pos + 1 < bytes.len() {
+                    let rest = &arg[pos + 1..];
+                    *parser_index += 1;
+                    return Ok(rest);
                 }
+                *parser_index += 1;
+                match args.get(*parser_index) {
+                    Some(word) => {
+                        *parser_index += 1;
+                        Ok(word)
+                    }
+                    None => Err(CksumError::MissingValue(flag)),
+                }
+            };
+            match flag {
+                'o' => {
+                    let value = take_value(&mut index)?;
+                    request.kind = match value {
+                        "1" => SumKind::Old1,
+                        "2" => SumKind::Old2,
+                        _ => return Err(CksumError::IllegalOptionValue('o')),
+                    };
+                    break;
+                }
+                'a' => {
+                    let value = take_value(&mut index)?;
+                    // C 的 `-a` 先按 `strcasecmp` 查名字表，查不到才试 `old1`/`old2`/`crc`，
+                    // 再不行是 `illegal argument to -a option`；MD5/SHA 家族需要我们没有的原语。
+                    if value.eq_ignore_ascii_case("crc") {
+                        request.kind = SumKind::Crc;
+                    } else if value.eq_ignore_ascii_case("old1") {
+                        request.kind = SumKind::Old1;
+                    } else if value.eq_ignore_ascii_case("old2") {
+                        request.kind = SumKind::Old2;
+                    } else if is_crypto_name(value) {
+                        return Err(CksumError::CryptoUnsupported);
+                    } else {
+                        return Err(CksumError::IllegalOptionValue('a'));
+                    }
+                    break;
+                }
+                's' => {
+                    // `-s` 在 C 里先过 `requirehash`（本树永远选不到 hash），所以它的值
+                    // 根本读不到；但 getopt **已经吃了那个值**，缺值时仍是 libc 那一行。
+                    let _ = take_value(&mut index)?;
+                    return Err(CksumError::RequiresHash('s'));
+                }
+                'c' => request.do_check = true,
+                'w' => request.check_warn = true,
+                'n' => request.print_normal = true,
+                'q' => request.print_quiet = true,
+                'p' | 't' | 'x' => return Err(CksumError::RequiresHash(flag)),
+                _ => return Err(CksumError::UnknownOption(flag)),
             }
-            "-c" => request.do_check = true,
-            "-w" => request.check_warn = true,
-            "-n" => request.print_normal = true,
-            "-q" => request.print_quiet = true,
-            "-p" | "-s" | "-t" | "-x" => return Err(CksumError::RequiresHash(flag)),
-            _ => return Err(CksumError::UnknownOption(flag)),
+            pos += 1;
         }
         index += 1;
     }
     Ok(request)
+}
+
+/// C 名字表（`cksum.c` 的 `hashes[]`）里的算法名；它们需要 OpenSSL 原语，本树不实现，
+/// 但区分「认得而未接」与「根本不合法」才能把 `illegal argument to -a option` 用在对的地方。
+fn is_crypto_name(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "md2" | "md4" | "md5" | "rmd160" | "ripemd160" | "sha1"
+    )
 }
 
 #[cfg(test)]
@@ -386,11 +435,54 @@ mod tests {
             Err(CksumError::CryptoUnsupported)
         );
         assert_eq!(parse_cksum_args(&["-o", "2"]).unwrap().kind, SumKind::Old2);
+        // `-o 9` 是「值不合法」（C 的 `illegal argument to -o option`），
+        // 而 `-o` 到量尽头没有值是另一回事（libc 的缺值那一行）。
         assert_eq!(
             parse_cksum_args(&["-o", "9"]),
-            Err(CksumError::InvalidAlgorithm)
+            Err(CksumError::IllegalOptionValue('o'))
         );
-        assert_eq!(parse_cksum_args(&["-o"]), Err(CksumError::InvalidAlgorithm));
+        assert_eq!(
+            parse_cksum_args(&["-o"]),
+            Err(CksumError::MissingValue('o'))
+        );
+        assert_eq!(
+            parse_cksum_args(&["-a", "nosuch"]),
+            Err(CksumError::IllegalOptionValue('a'))
+        );
+    }
+
+    /// getopt 的形状：聚簇、附值、`--` 后的全是操作数。旧写法把整个 token 当一个字母，
+    /// `-nq`、`-o2`、`-a crc -- -f` 这几形都会错。
+    #[test]
+    fn test_parse_cksum_args_follows_the_getopt_shape() {
+        let req = parse_cksum_args(&["-nq", "f"]).unwrap();
+        assert!(req.print_normal && req.print_quiet);
+        assert_eq!(req.operands, vec!["f"]);
+        // 附值形：`-o2` 与 `-o 2` 同效（`optarg` 就是本 token 的剩余部分）。
+        assert_eq!(
+            parse_cksum_args(&["-o2"]).unwrap().kind,
+            parse_cksum_args(&["-o", "2"]).unwrap().kind
+        );
+        assert_eq!(parse_cksum_args(&["-acrc"]).unwrap().kind, SumKind::Crc);
+        // `--` 之后的负向词是操作数，不被当旗标。
+        let req = parse_cksum_args(&["-c", "--", "-o"]).unwrap();
+        assert!(req.do_check);
+        assert_eq!(req.operands, vec!["-o"]);
+        // `-s` 先吃 getopt 的值（本 token 剩余或下一词），再落 `requirehash`；
+        // 没有值时先报缺值而不是 requirehash。
+        assert_eq!(
+            parse_cksum_args(&["-s", "x"]),
+            Err(CksumError::RequiresHash('s'))
+        );
+        assert_eq!(
+            parse_cksum_args(&["-s"]),
+            Err(CksumError::MissingValue('s'))
+        );
+        // 聚簇里的集外字母报的是那个字母本身。
+        assert_eq!(
+            parse_cksum_args(&["-ncZ"]),
+            Err(CksumError::UnknownOption('Z'))
+        );
     }
 
     #[test]

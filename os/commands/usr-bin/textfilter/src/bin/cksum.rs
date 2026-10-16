@@ -19,33 +19,43 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_sys::{close, open, read};
+use minix_textfilter::GetoptReport;
 use minix_textfilter::cksum::{
-    cksum_crc, csum1, csum2, parse_check_line, parse_cksum_args, sum_display_length, CheckEntry,
-    CksumError, SumKind,
+    CheckEntry, CksumError, SumKind, cksum_crc, csum1, csum2, parse_check_line, parse_cksum_args,
+    sum_display_length,
 };
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
+    let prog = support::prog_name(&argv);
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     // `argv[0]` is the program name; C's getopt loop starts at `argv[1]`.
     let request = match parse_cksum_args(&refs[1..]) {
         Ok(request) => request,
-        Err(CksumError::InvalidAlgorithm) => {
-            support::warn(b"cksum: invalid algorithm\n");
-            support::terminate(2);
+        Err(CksumError::IllegalOptionValue(flag)) => {
+            // C：`warnx("illegal argument to -o option")` + `usage()`（`cksum.c:219`、`:243`）。
+            support::warn(format!("{prog}: illegal argument to -{flag} option\n").as_bytes());
+            usage();
         }
         Err(CksumError::CryptoUnsupported) => {
             support::warn(b"cksum: -a crypto algorithms are not modelled yet\n");
             support::terminate(2);
         }
         Err(CksumError::RequiresHash(flag)) => {
-            // C's `requirehash` aborts when `-p/-s/-t/-x` is given without a
-            // hash; the CRC/old-sum path never selects one.
-            support::warn(format!("cksum: -{flag} requires a hash algorithm\n").as_bytes());
-            support::terminate(2);
+            // C 的 `requirehash`（`cksum.c:521-525`）：`<旗标> flag requires `-a algorithm'`
+            // 再接 usage。旧写法把句子自创成「requires a hash algorithm」且不接 usage。
+            support::warn(format!("{prog}: -{flag} flag requires `-a algorithm'\n").as_bytes());
+            usage();
         }
         Err(CksumError::UnknownOption(flag)) => {
-            support::warn(format!("cksum: illegal option -- {flag}\n").as_bytes());
+            // libc 的那一句（`getopt.c:101-104`）是 `unknown option`，不是 `illegal option`——
+            // 后者属于 `pr` 链的 `egetopt`，同一族里不能混用。
+            support::warn(GetoptReport::UnknownOption(flag).line(prog).as_bytes());
+            usage();
+        }
+        Err(CksumError::MissingValue(flag)) => {
+            // 带值选项缺值：libc 的另一句（`getopt.c:132-136`），同样接 usage。
+            support::warn(GetoptReport::MissingValue(flag).line(prog).as_bytes());
             usage();
         }
     };
@@ -189,9 +199,26 @@ fn emit_line(kind: SumKind, data: &[u8], name: Option<&str>) {
     }
 }
 
+/// C 的 `usage()`（`cksum.c:535-550`）：九行——`cksum`/`sum` 各占两行（参数串与
+/// 文件串分列），`md2`/`md4`/`md5`/`rmd160`/`sha1` 各一行。名字在 C 里是**字面量**
+/// （递的是 `sumargs`/`hashargs`/`fileargs` 三个串，不用 `getprogname()`），所以这一
+/// 块的缩进与行项都得逐字抄。`exit(1)`。
 fn usage() -> ! {
-    support::warn(b"usage: cksum [-o 1 | -o 2] \n");
-    support::terminate(2);
+    support::warn(
+        concat!(
+            "usage: cksum [-n] [-a algorithm [-ptx] [-s string]] [-o 1|2]\n",
+            "             [file ... | -c [-w] [sumfile]]\n",
+            "       sum [-n] [-a algorithm [-ptx] [-s string]] [-o 1|2]\n",
+            "           [file ... | -c [-w] [sumfile]]\n",
+            "       md2 [-nptx] [-s string] [file ... | -c [-w] [sumfile]]\n",
+            "       md4 [-nptx] [-s string] [file ... | -c [-w] [sumfile]]\n",
+            "       md5 [-nptx] [-s string] [file ... | -c [-w] [sumfile]]\n",
+            "       rmd160 [-nptx] [-s string] [file ... | -c [-w] [sumfile]]\n",
+            "       sha1 [-nptx] [-s string] [file ... | -c [-w] [sumfile]]\n",
+        )
+        .as_bytes(),
+    );
+    support::terminate(1);
 }
 
 #[cfg(all(not(test), target_os = "none"))]
