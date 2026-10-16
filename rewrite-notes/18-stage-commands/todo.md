@@ -250,6 +250,73 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十二把 `unexpand` 的选项环与档位表按 C 定形，并新立它的第一扇端到端门（第六处读缝缺陷）**
+  （`2026-10-16`，`claim/UNEXPAND-GETOPT-LINE-qoder` @ 基线 `6302808e7`，单域三线 commands/textfilter，无跨界）：
+  判定表第十一支。**真源形状**：`unexpand.c:86` 的 optstring 是 `"at:"`——一个无值字母加一个带值字母，
+  而且两支互斥（`if (nstops) usage()` 与 `if (all) usage()`，`:87-95`）。出口四类：① 集外字母（libc 一行
+  `unexpand: unknown option -- <字母>` + usage 一行，退 1）；② `-t` 缺值（libc 的另一句
+  `option requires an argument -- t` + usage，退 1）；③ 档位非法（`errx` 两句，形制是
+  `<程序名>: Invalid tabstop `原文'` 与 `<程序名>: Bad tabstop spec `原文', must be greater than the
+  previous `前一支'`，都不接 usage）；④ 只印 usage（`-a` 与 `-t` 冲突）。
+  **量形量出一件出人意料的事**：真源在选项环之后、读输入之前，把档位表**逐支打到标准错误**——
+  `unexpand.c:120-121` 的 `for (i = 0; i < nstops; i++) fprintf(stderr, "%lu %zu\n", i, tabstops[i])`。
+  这显然是漏掉的调试输出，但它就在外部行为里（参照件 `-t 4` 的 stderr 就是 `0 4`），
+  所以本壳照搬而不是替 C「修正」；这也说明为什么这类形制只能靠链真源量，看代码猜会得到「谁会把档位打到
+  stderr」的结论。
+  **另两处只有读 C 源才知道的事**：① 档位的数字是 `strtoul(tab, &ep, 0)`，**base 0**——`010` 是 8、
+  `0x10` 是 16（参照件的回显行当场可证），旧写法用 `parse::<usize>()` 把两者都判成非法；
+  ② 分隔符是 `strsep(&optarg, ", \t")` 三种（逗号、空格、制表符），空字段跳过，所以 `-t ""` 与 `-t ,`
+  是「一支都没有」而等于默认档，且**不会**跨 token 取值——`unexpand -t 4 8` 的 `8` 是第二支**档名**
+  （参照件：先回显 `0 4`，再去开 `8` 而报三段形）。
+  **本壳改前的八处失真**（参照件逐形量，读数 `tmp/unexpand-312/golden.log`）：①② 两类 libc 行都缺；
+  `usage()` 那一行三样都不合——C 是**首字母大写**的 `Usage: %s [-a] [-t tabstop] [file ...]`
+  （`unexpand.c:70-71`）而旧壳写的是小写 `usage:`、`[-t tablist]`、还少了 `[file ...]`；
+  档位回显整段缺失；base 0 与三种分隔符不收；两句 `errx` 被抹平成一句自拟的 `bad tab stop spec`；
+  选项环**重排**（非选项 token 之后继续扫）；打不开的档名少了 `strerror` 那一段（C 是
+  `err(EXIT_FAILURE, "Cannot open `%s'")` 三段形）；末行没有换行时旧壳**补**一个换行，而 C 的
+  `putchar` 只写输入里有的字节（参照件：输入 `   ab` 出去仍是无换行的一行）。
+  **第六处同族读缝缺陷**：`unexpand` 壳拿裸 `minix_sys::open`/`read` 读输入与档名，宿主上读不到任何东西
+  （前五处：`nl`/`fold`/`rev`/`colrm` 的读腿、`split` 的写腿），已改走 `bin_support` 的
+  `read_stdin()`/`read_file()` 双生面；顺带说明裸 `-` 在 `unexpand` 这里**不是** stdin 的别名
+  （C 直接把它送去 `freopen`，报三段形），与 `rev`/`split` 各不一样。
+  **门测 11 枚**（`tests/unexpand_face.rs`，新立的 target）+ 库测两处重写：四类出口各一枚、
+  档位回显一枚（含「空表不回显」）、两支 `errx` 句子一枚、base 0 一枚、冲突只印 usage 一枚、
+  不重排一枚、输入腿三段形一枚（含裸 `-`）、输出腿一枚（默认八列、`-a` 行中、末行无换行不补、
+  多支档名依次处理并重置行游标）。
+  **test-audit 第 2 维又一次逮住「期望写错而代码是对的」**：`-ta` 我先按「`-t` 与 `-a` 冲突」写成
+  `Err(Usage)`，实际 C 的 getopt 一见 `t:` 就把同串剩下的 `a` 当 optarg 交回（`getopt.c:120-122`），
+  走 `Invalid tabstop `a'`；参照件现量同一句，于是改期望而不改代码。连同库侧删掉的旧测
+  （`test_parse_stops_rejects_unordered`、`test_parse_unexpand_conflicts_and_errors`）合入两支新测，
+  避免同一事实两处承载。
+
+  **三件套**：容器整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **736 / 0 / 0**
+  （58 target，基线 `6302808e7` 为 725/57，+11 是新立的 `unexpand_face`、+1 是它的 target）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、**86 warning 同基线**
+  （本笔一度把告警推到 92，四处都由门指出并已改掉：可折叠的 `if let` 嵌套、两支
+  「`assert_eq!` 比字面 bool」、输出腿那个双重否定的布尔式）；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`；
+  `rustfmt --edition 2024 --check` 触及件零漂移；A/B 与参照件逐形 **SAME=29 DIFF=0**
+  （`tmp/unexpand-312/ab.log`，比退码、stdout、stderr 三件——stderr 含 C 那圈档位回显）；
+  变异负控四枚（`tmp/unexpand-312/ctl312.py`，每枚先打印 `mutation applied`、还原后核 md5）：
+  丢 libc 那一行 → 咬 3 枚；省掉档位回显 → 咬 3 枚；档位不按 base 0 → 咬 2 枚；
+  取消「不重排」→ 咬 2 枚。核实日 `2026-10-16`；基线 `6302808e7`。
+  **验证边界**：参照件在本机链 glibc 的 `err`/`errx`/`strtoul`/`fgetln`（glibc 没有 `fgetln`，
+  垫片按 BSD 语义实现：返回行内容、长度含换行、EOF 返 `NULL`），其 `strerror` 句子与 Minix 表可能不同，
+  但本笔 29 形里没有一支落在 0 号错误上，`DIFF=0` 是逐字节对账的结果；真机腿归 `C-57`/E5。
+  **登记不执行**：① `unexpand_line` 里退格那两行的 `implicit_saturating_sub` 告警是存量（那是 C 的
+  `if (ocol > 0) ocol--` 如实搬运），本笔不改（`UNEXPAND-SATURATING-DEC`）；
+  ② C 的 `tabify` 在 `putchar` 失败时 `goto out` 静默返回、只有 `err(1, ...)` 之外的写错不上报，
+  本壳的 `emit` 同样短写不可观测（`UNEXPAND-WRITE-ERRLEG`，同 `SPLIT`/`COLRM` 一族）；
+  ③ 输入过 `String::from_utf8_lossy`，非 UTF-8 字节会被替换成 `U+FFFD` 而不是按字节透传
+  （与 `SPLIT-NONUTF8-DROP` 同一类，`UNEXPAND-LOSSY-BYTES`）；④ `-t` 的值若是负数
+  （`unexpand -- -4`）时 C 的 `strtoul` 会回绕成极大值，本壳按 `None` 拒收，需连 C 的
+  `unsigned` 语义一并核（`UNEXPAND-ULONG-WRAP`）；⑤ 07 篇第 155 行的陈旧测试计数仍归 V3-5/V3-6
+  （既有登记）；⑥ 真机腿与 per-command 断言归 `C-57`/E5。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/**unexpand** + pr
+  （egetopt 措辞）；待接 `col`、`column`、`comm`、`cmp`、`jot`、`unifdef`、`units`、`seq`、`paste`、`tr`；
+  另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `COL-GETOPT-LINE`
+  （`minix3/usr.bin/col/col.c:133` 的 optstring 是 `"bfhl:px"`，只有 `l` 带值）。
+
 - ✅ **批次三百一十一把 `split` 的诊断面按 C 分回四类出口，并新立它的第一扇端到端门（顺带修好宿主写不出的写缝）**
   （`2026-10-16`，`claim/SPLIT-GETOPT-LINE-qoder` @ 基线 `589fc4ce0`，单域三线 commands/textfilter，无跨界）：
   判定表第十三支。**真源形状**：`split.c:80` 的 optstring 是 `"0123456789b:l:a:n:"`——`0-9` 六个是

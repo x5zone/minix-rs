@@ -30,19 +30,65 @@ pub struct UnexpandOptions {
 /// Parses a `-t` stop list: the C splits on `", \t"` (`strsep`,
 /// unexpand.c:91-106), each stop parses as a base-zero number and must
 /// be strictly greater than the previous. `None` marks any violation.
-pub fn parse_stops(spec: &str) -> Option<Vec<usize>> {
+/// C 对 `-t` 档位表的两种坏法，各有各的句子，不许抹平成一句。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopRejection<'a> {
+    /// `unexpand.c:101-104`：`strtoul` 剩下尾巴字符，或溢出到 `ULONG_MAX`
+    /// （`errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`）。
+    Invalid(&'a str),
+    /// `unexpand.c:110-114`：不比前一支大
+    /// （`errx(... "Bad tabstop spec `%s', must be greater than the previous `%zu'", ...)`）。
+    NotIncreasing { spec: &'a str, previous: usize },
+}
+
+/// 按 C 的 `strsep(&optarg, ", \t")` 切档位表：逗号、空格、制表符都是分隔符，
+/// 空字段跳过（所以 `-t ""` 与 `-t ,` 都是「一支都没有」，C 那边 `nstops` 保持 0，
+/// 行为与不给 `-t` 相同），每支按 **base 0** 解析（`0x` 是十六进制、`0` 前缀是八进制，
+/// `unexpand.c:98` 的 `strtoul(tab, &ep, 0)`；参照件现量 `-t 010` 得 8、`-t 0x10` 得 16）。
+pub fn parse_stops(spec: &str) -> Result<Vec<usize>, StopRejection<'_>> {
     let mut stops: Vec<usize> = Vec::new();
     for piece in spec.split([',', ' ', '\t']) {
         if piece.is_empty() {
             continue;
         }
-        let value = piece.parse::<usize>().ok()?;
-        if stops.last().is_some_and(|last| *last >= value) {
-            return None;
+        let value = match base_zero(piece) {
+            Some(value) => value,
+            None => return Err(StopRejection::Invalid(piece)),
+        };
+        // 「不比前一支大」只在有前一支时才判，且相等也不算「更大」（参照件 `-t 4,4' 同拒）。
+        if let Some(&last) = stops.last().filter(|&&previous| previous >= value) {
+            return Err(StopRejection::NotIncreasing {
+                spec: piece,
+                previous: last,
+            });
         }
         stops.push(value);
     }
-    Some(stops)
+    Ok(stops)
+}
+
+/// C 的 `strtoul(piece, &ep, 0)` 加上「`*ep` 非零就拒」与「`ERANGE` 且回 `ULONG_MAX` 就拒」。
+/// base 0 的前缀规则照 C：`0x`/`0X` 走十六进制，前导 `0` 走八进制，其余十进制。
+/// 溢出用 `checked_*` 挡（本壳与 C 都是 64 位无符号宽），落回 `None` 即 C 的 Invalid。
+fn base_zero(piece: &str) -> Option<usize> {
+    let bytes = piece.as_bytes();
+    let (radix, rest) = if bytes.len() > 1 && bytes[0] == b'0' {
+        match bytes[1] {
+            b'x' | b'X' => (16usize, &piece[2..]),
+            _ => (8usize, &piece[1..]),
+        }
+    } else {
+        (10usize, piece)
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let mut value: usize = 0;
+    for byte in rest.bytes() {
+        let digit = (byte as char).to_digit(radix as u32)?;
+        value = value.checked_mul(radix)?.checked_add(digit as usize)?;
+    }
+    Some(value)
 }
 
 /// Converts blank runs of the line into tabs.
@@ -163,29 +209,36 @@ pub struct UnexpandArgs<'a> {
 
 /// `unexpand` argument-parsing failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnexpandError {
-    /// An option letter outside `a`/`t`, a `-t` with no value, or the C
-    /// `-a`/`-t` conflict (`unexpand.c:87-95`: `-a` after a stop list, or `-t`
-    /// once `-a` is set, both `usage()`).
+pub enum UnexpandError<'a> {
+    /// C 的 `usage()` 自己那一行：`-a` 与 `-t` 冲突（`unexpand.c:87-95` 的
+    /// `if (nstops) usage()` 与 `if (all) usage()`）。
     Usage,
-    /// A `-t` stop list `parse_stops` rejects (`unexpand.c:113-117`).
-    IllegalStops,
+    /// 集外字母：libc 先印一行（`getopt.c:101-104`），C 的 `default: usage()` 再接一行。
+    UnknownOption(char),
+    /// `-t` 后面没有值：libc 印 `option requires an argument -- t`（`getopt.c:132-136`），
+    /// 再由 `default: usage()` 接第二行。
+    MissingValue(char),
+    /// `-t` 的档位表里有一支坏档位，交回 C 那两种句子的哪一种。
+    BadStops(StopRejection<'a>),
 }
 
-/// Split `unexpand`'s argv tail into [`UnexpandArgs`], faithful to C's
-/// `getopt(argc, argv, "at:")` (`unexpand.c:86`): the valueless `-a` and the
-/// colon `-t` cluster in one token (`-a`, `-t8` attached, `-t 8` separate),
-/// `--` ends option scanning, a lone `-` is an operand, and any other letter is
-/// [`UnexpandError::Usage`]. C makes `-a` and `-t` mutually exclusive — a `-t`
-/// once `-a` is set, or a `-a` once stops are set, is `usage()` (`-at8` is
-/// therefore an error, not a combined form). A rejected stop list is
-/// [`UnexpandError::IllegalStops`]. The old front door matched only the whole
-/// tokens `-a`/`-t`, so the C-legal attached form `unexpand -t8 file` fell
-/// through to a usage error and the conflict was not enforced.
-pub fn parse_unexpand_args<'a>(args: &'a [&'a str]) -> Result<UnexpandArgs<'a>, UnexpandError> {
+/// 把 `unexpand` 的参数尾巴拆成 [`UnexpandArgs`]，照 C 的 `getopt(argc, argv, "at:")`
+/// （`unexpand.c:86`）。三件事必须逐字母按 getopt 的聚簇指针来读而不是整段比对：
+/// ① `-a` 与 `-t` 互斥，两支谁后到谁就 `usage()`（`unexpand.c:87-95`），所以 `-at4`
+/// 是 usage 而不是组合形；② 集外字母先由 libc 印一行（`getopt.c:101-104`），
+/// 交回的是 `-` 后面的**第一个**字符（量过：`-Za` 只报 `Z`）；③ `-t` 的值可以附在
+/// 本 token（`-t4,8`）也可以另起一段（`-t 4,8`），后面没有那一段时 libc 印
+/// `option requires an argument -- t`（`getopt.c:132-136`）而不是直接 usage。
+///
+/// 不重排：非选项 token 一到，`getopt.c:74-78` 当场返回 -1，它和它后面的 token 整个
+/// 落进 `argv += optind` 的那一段，全当**文件操作数**（参照件量过：`unexpand f -a`
+/// 里的 `-a` 是被当第二个档名去 `freopen` 的，报 `Cannot open `-a'`）。
+/// `--` 结束选项环且自身不算操作数（`getopt.c:81-85`），裸 `-` 是操作数
+/// （`getopt.c:87-92` 不推进 `optind`，而 C `unexpand.c:124` 会拿它去 `freopen`）。
+pub fn parse_unexpand_args<'a>(args: &'a [&'a str]) -> Result<UnexpandArgs<'a>, UnexpandError<'a>> {
     let mut options = UnexpandOptions::default();
     let mut operands: Vec<&'a str> = Vec::new();
-    let mut index = 0;
+    let mut index = 0usize;
     while index < args.len() {
         let arg = args[index];
         if arg == "--" {
@@ -193,40 +246,44 @@ pub fn parse_unexpand_args<'a>(args: &'a [&'a str]) -> Result<UnexpandArgs<'a>, 
             break;
         }
         let bytes = arg.as_bytes();
-        if bytes.len() > 1 && bytes[0] == b'-' {
-            let mut pos = 1;
-            while pos < bytes.len() {
-                match bytes[pos] {
-                    b'a' => {
-                        // `-a` after a `-t` stop list is C's conflict → usage.
-                        if !options.stops.is_empty() {
-                            return Err(UnexpandError::Usage);
-                        }
-                        options.all = true;
-                        pos += 1;
+        if bytes.len() < 2 || bytes[0] != b'-' {
+            operands.extend_from_slice(&args[index..]);
+            break;
+        }
+        let mut pos = 1usize;
+        while pos < bytes.len() {
+            match bytes[pos] {
+                b'a' => {
+                    // `-a` 在档位表之后是 C 的冲突 → usage。
+                    if !options.stops.is_empty() {
+                        return Err(UnexpandError::Usage);
                     }
-                    b't' => {
-                        // `-t` once `-a` is set is the same conflict → usage.
-                        if options.all {
-                            return Err(UnexpandError::Usage);
-                        }
-                        let spec = if pos + 1 < bytes.len() {
-                            &arg[pos + 1..]
-                        } else {
-                            index += 1;
-                            if index >= args.len() {
-                                return Err(UnexpandError::Usage);
-                            }
-                            args[index]
-                        };
-                        options.stops = parse_stops(spec).ok_or(UnexpandError::IllegalStops)?;
-                        pos = bytes.len();
+                    options.all = true;
+                    pos += 1;
+                }
+                b't' => {
+                    // `-t` 在 `-a` 之后是同一支冲突 → usage。
+                    if options.all {
+                        return Err(UnexpandError::Usage);
                     }
-                    _ => return Err(UnexpandError::Usage),
+                    let spec = if pos + 1 >= bytes.len() {
+                        index += 1;
+                        match args.get(index) {
+                            Some(value) => *value,
+                            None => return Err(UnexpandError::MissingValue('t')),
+                        }
+                    } else {
+                        &arg[pos + 1..]
+                    };
+                    options.stops = parse_stops(spec).map_err(UnexpandError::BadStops)?;
+                    pos = bytes.len();
+                }
+                _ => {
+                    return Err(UnexpandError::UnknownOption(
+                        arg[pos..].chars().next().unwrap_or('-'),
+                    ));
                 }
             }
-        } else {
-            operands.push(arg);
         }
         index += 1;
     }
@@ -296,11 +353,125 @@ mod tests {
         assert_eq!(unexpand_line("            x", &options), "\t  x");
     }
 
+    /// 档位表的两支句子与 base 0 逐个钉：分隔符三种、空字段跳过、`0x`/前导 `0` 走
+    /// 十六进制与八进制（参照件现量 `-t 010` 得 8、`-t 0x10` 得 16），
+    /// 递减那支报的是**后写的那一支**与前一支的值。
     #[test]
-    fn test_parse_stops_rejects_unordered() {
-        assert_eq!(parse_stops("4,2"), None);
-        assert_eq!(parse_stops("x"), None);
-        assert_eq!(parse_stops("1,2"), Some(vec![1, 2]));
+    fn the_stop_list_follows_strtoul_base_zero_and_two_sentences() {
+        assert_eq!(parse_stops("1,2"), Ok(vec![1, 2]));
+        assert_eq!(parse_stops("4 8"), Ok(vec![4, 8]), "空格也是分隔符");
+        assert_eq!(parse_stops("4,\t8"), Ok(vec![4, 8]), "制表符也是分隔符");
+        assert_eq!(parse_stops(""), Ok(vec![]), "空表合法，行为同不给 -t");
+        assert_eq!(parse_stops(",,"), Ok(vec![]), "空字段跳过");
+        assert_eq!(
+            parse_stops("0"),
+            Ok(vec![0]),
+            "C 不挡零档（参照件印 `0 0`）"
+        );
+        assert_eq!(parse_stops("0x10"), Ok(vec![16]), "base 0 认十六进制");
+        assert_eq!(parse_stops("010"), Ok(vec![8]), "前导零是八进制");
+        // 第一支句子：尾巴有字符、八进制位越界、溢出。
+        assert_eq!(parse_stops("x"), Err(StopRejection::Invalid("x")));
+        assert_eq!(parse_stops("3x"), Err(StopRejection::Invalid("3x")));
+        assert_eq!(parse_stops("08"), Err(StopRejection::Invalid("08")));
+        assert_eq!(
+            parse_stops("18446744073709551616"),
+            Err(StopRejection::Invalid("18446744073709551616")),
+            "溢出在 C 是 ERANGE 且回 ULONG_MAX，同判 Invalid"
+        );
+        // 第二支句子：不比前一支大，报的是后写的那一支与前一支的值。
+        assert_eq!(
+            parse_stops("8,4"),
+            Err(StopRejection::NotIncreasing {
+                spec: "4",
+                previous: 8
+            })
+        );
+        assert_eq!(
+            parse_stops("4,4"),
+            Err(StopRejection::NotIncreasing {
+                spec: "4",
+                previous: 4
+            }),
+            "相等也不算「更大」"
+        );
+    }
+
+    /// 选项环的四支出口与不重排：集外字母只报第一个字符、缺值是另一句、
+    /// `-a` 与 `-t` 谁后到谁触 usage、非选项 token 一到后面的整个当操作数。
+    #[test]
+    fn the_option_ring_reports_libc_letters_and_stops_at_the_first_operand() {
+        assert!(parse_unexpand_args(&["-a"]).unwrap().options.all);
+        assert_eq!(
+            parse_unexpand_args(&["-t", "4"]).unwrap().options.stops,
+            vec![4]
+        );
+        assert_eq!(
+            parse_unexpand_args(&["-t4,8"]).unwrap().options.stops,
+            vec![4, 8],
+            "附值形是 C 合法的（旧前门只整段比对，会把 `-t8 file` 判成 usage）"
+        );
+        assert_eq!(parse_unexpand_args(&["-at4"]), Err(UnexpandError::Usage));
+        // `-ta` 不是「两支冲突」而是「`-t` 取到附值 `a'」：C 的 getopt 一见 `t:` 就把
+        // 同一串里剩下的 `a` 当 optarg 交回（`getopt.c:120-122`），于是走
+        // `Invalid tabstop `a'`（参照件现量同一句）。
+        assert_eq!(
+            parse_unexpand_args(&["-ta"]),
+            Err(UnexpandError::BadStops(StopRejection::Invalid("a")))
+        );
+        // 互斥也管分开的写法：`-a` 之后再来 `-t`，或档位表之后再来 `-a`。
+        assert_eq!(
+            parse_unexpand_args(&["-a", "-t", "8"]),
+            Err(UnexpandError::Usage)
+        );
+        assert_eq!(
+            parse_unexpand_args(&["-t", "8", "-a"]),
+            Err(UnexpandError::Usage)
+        );
+        assert_eq!(
+            parse_unexpand_args(&["-z", "f"]),
+            Err(UnexpandError::UnknownOption('z'))
+        );
+        assert_eq!(
+            parse_unexpand_args(&["-Za"]),
+            Err(UnexpandError::UnknownOption('Z')),
+            "聚簇只报第一个字母"
+        );
+        assert_eq!(
+            parse_unexpand_args(&["--x"]),
+            Err(UnexpandError::UnknownOption('-'))
+        );
+        assert_eq!(
+            parse_unexpand_args(&["-t"]),
+            Err(UnexpandError::MissingValue('t')),
+            "缺值是 libc 的另一句而不是 usage"
+        );
+        assert_eq!(
+            parse_unexpand_args(&["-t", "8,4"]),
+            Err(UnexpandError::BadStops(StopRejection::NotIncreasing {
+                spec: "4",
+                previous: 8
+            }))
+        );
+        // 不重排：`unexpand f -a` 里的 `-a` 是第二支档名（C 会去 freopen 它）。
+        assert_eq!(
+            parse_unexpand_args(&["f", "-a"]).unwrap().operands,
+            vec!["f", "-a"]
+        );
+        assert!(
+            !parse_unexpand_args(&["f", "-a"]).unwrap().options.all,
+            "操作数之后的 -a 不再被当选项读"
+        );
+        // `--` 自身不是操作数，裸 `-` 是。
+        assert_eq!(
+            parse_unexpand_args(&["--", "-a"]).unwrap().operands,
+            vec!["-a"]
+        );
+        assert_eq!(parse_unexpand_args(&["-"]).unwrap().operands, vec!["-"]);
+        assert_eq!(
+            parse_unexpand_args(&["--"]).unwrap().operands,
+            Vec::<&str>::new()
+        );
     }
 
     #[test]
@@ -320,9 +491,11 @@ mod tests {
             Ok((UnexpandOptions::default(), vec!["f"]))
         );
         // `-a` valueless, `-t` separate value.
-        assert!(parse_unexpand_args(&["-a", "f"])
-            .map(|a| a.options.all)
-            .unwrap());
+        assert!(
+            parse_unexpand_args(&["-a", "f"])
+                .map(|a| a.options.all)
+                .unwrap()
+        );
         assert_eq!(
             parse_unexpand_args(&["-t", "8", "f"]).map(|a| a.options.stops),
             Ok(vec![8])
@@ -336,29 +509,6 @@ mod tests {
         assert_eq!(
             parse_unexpand_args(&["--", "-a"]).map(|a| a.operands),
             Ok(vec!["-a"])
-        );
-    }
-
-    #[test]
-    fn test_parse_unexpand_conflicts_and_errors() {
-        // C makes `-a` and `-t` mutually exclusive: `-at8` clusters to an error.
-        assert_eq!(parse_unexpand_args(&["-at8"]), Err(UnexpandError::Usage));
-        // `-a` after a `-t` stop list, and `-t` after `-a`, both conflict.
-        assert_eq!(
-            parse_unexpand_args(&["-t", "8", "-a"]),
-            Err(UnexpandError::Usage)
-        );
-        assert_eq!(
-            parse_unexpand_args(&["-a", "-t", "8"]),
-            Err(UnexpandError::Usage)
-        );
-        // Unknown letter → usage; `-t` with no value → usage; bad stop list →
-        // IllegalStops.
-        assert_eq!(parse_unexpand_args(&["-z", "f"]), Err(UnexpandError::Usage));
-        assert_eq!(parse_unexpand_args(&["-t"]), Err(UnexpandError::Usage));
-        assert_eq!(
-            parse_unexpand_args(&["-t", "4,2"]),
-            Err(UnexpandError::IllegalStops)
         );
     }
 }
