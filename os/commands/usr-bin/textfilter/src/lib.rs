@@ -177,6 +177,47 @@ pub fn empty_optstring_operands<'a>(
     Err(GetoptReport::UnknownOption(letter))
 }
 
+/// C 的 `atoi`：跳过前导 `isspace`、可带符号、取一串十进制数字，**尾巴上有杂字符不管**，
+/// 一位数字都没有就是 0。
+///
+/// 住在 crate 根由几条命令共用（同 [`GetoptReport`] 的处置理由：一份事实只承载一次）——
+/// `col` 的 `-l`（`col.c` 的 `atoi(optarg)`）与 `column` 的 `-c`（`column.c:96`）
+/// 走的是同一个 libc 函数，判据一模一样。
+///
+/// 所以 `3x` 是合法的 3（参照件同受），而 `abc`、`0`、`-2` 分别得到 0、0、-2；
+/// 溢出按 C 的 `strtol` 截到 `i32` 两端（`saturating_*`），因为 `atoi` 的返回值
+/// 本来就是 `int`。
+#[must_use]
+pub fn atoi(text: &str) -> i32 {
+    let bytes = text.as_bytes();
+    let mut cursor = 0usize;
+    while matches!(
+        bytes.get(cursor),
+        Some(b' ') | Some(b'\t') | Some(b'\n') | Some(0x0b) | Some(0x0c) | Some(b'\r')
+    ) {
+        cursor += 1;
+    }
+    let negative = match bytes.get(cursor) {
+        Some(b'+') => {
+            cursor += 1;
+            false
+        }
+        Some(b'-') => {
+            cursor += 1;
+            true
+        }
+        _ => false,
+    };
+    let mut value: i32 = 0;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+        value = value
+            .saturating_mul(10)
+            .saturating_add(i32::from(bytes[cursor] - b'0'));
+        cursor += 1;
+    }
+    if negative { -value } else { value }
+}
+
 #[cfg(test)]
 mod tests {
     use super::GetoptReport;

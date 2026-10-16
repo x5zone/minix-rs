@@ -133,7 +133,7 @@ pub fn parse_col_flags<'a>(args: &'a [&'a str]) -> Result<ColOptions, ColFlagErr
                     } else {
                         &arg[pos + 1..]
                     };
-                    let lines = atoi(value);
+                    let lines = crate::atoi(value);
                     if lines <= 0 {
                         return Err(ColFlagError::BadLineCount(value));
                     }
@@ -153,39 +153,6 @@ pub fn parse_col_flags<'a>(args: &'a [&'a str]) -> Result<ColOptions, ColFlagErr
         index += 1;
     }
     Ok(options)
-}
-
-/// C 的 `atoi`：跳过前导 `isspace`、可带符号、取一串十进制数字，**尾巴上有杂字符不管**，
-/// 一位数字都没有就是 0。所以 `-l 3x` 在 C 是合法的 3（参照件同受），
-/// 而 `-l abc`、`-l 0`、`-l -2` 都被 `<= 0` 那一判挡下。
-fn atoi(text: &str) -> i32 {
-    let bytes = text.as_bytes();
-    let mut cursor = 0usize;
-    while matches!(
-        bytes.get(cursor),
-        Some(b' ') | Some(b'\t') | Some(b'\n') | Some(0x0b) | Some(0x0c) | Some(b'\r')
-    ) {
-        cursor += 1;
-    }
-    let negative = match bytes.get(cursor) {
-        Some(b'+') => {
-            cursor += 1;
-            false
-        }
-        Some(b'-') => {
-            cursor += 1;
-            true
-        }
-        _ => false,
-    };
-    let mut value: i32 = 0;
-    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
-        value = value
-            .saturating_mul(10)
-            .saturating_add(i32::from(bytes[cursor] - b'0'));
-        cursor += 1;
-    }
-    if negative { -value } else { value }
 }
 
 /// Outcome of a run: the filtered bytes plus whether the C would have

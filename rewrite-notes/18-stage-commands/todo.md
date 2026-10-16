@@ -250,6 +250,82 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十四把 `column` 的选项环、四类出口与残行警告按 C 定形，并新立它的第一扇端到端门**
+  （`2026-10-16`，`claim/COLUMN-GETOPT-LINE-qoder` @ 基线 `b8dafd773`，单域三线 commands/textfilter，无跨界）：
+  判定表第十支。**真源形状**：`column.c:93` 的 optstring 是 `"c:s:tx"`——两个带值字母 `c`/`s`
+  加两个旗标 `t`/`x`，而操数是**文件清单**（`:112-123`：开得了就喂同一个条目池，开不了只 `warn(3)`
+  并置 `eval = 1` 然后继续下一个档）。四类出口：① 集外字母（libc 一行 + usage 一行，聚簇 `-tZ`
+  报 `Z`、`--x` 报 `-`）；② `-c`/`-s` 后面没有那一段（libc 的 `option requires an argument -- <字母>`
+  + usage 两行）——旧写法把这两类都压成一行自拟 usage；③ usage 那一行本身：`column.c:302-307` 是
+  **大写 `Usage`、程序名跟着 `getprogname()`、末尾带 `[file ...]`**，旧件写成小写自拟短式且丢了尾部；
+  ④ 操数段的 `warn(3)` 三段形 `Cannot open \`…': <strerror 句子>`（旧件少了 `strerror` 那一段）。
+  **本批补上的两句整个缺失的**：`warnx(3)` 的 `column: line too long`（`column.c:277-283`，
+  两段形、不缀 strerror）——末行没有换行符时 C **既丢掉这一条**又置退出码 1，而整条是空白的末行
+  仍按空行处理、一句警告都没有（C 的判空行排在 `strchr('\n')` 之前）；以及条目池空时
+  `if (!entries) return eval`（`:125-127`）提前返回，不进布局。
+  **`-c` 的宽度是 `atoi`**（`column.c:96` 无守卫）：参照件量出 `0`、`abc`、`-5`、空串**都不是错**，
+  退 0 且每条一行；这翻正了批次一百七十五登记的那处「本层要求解析为 `>0` 否则 usage」的差异。
+  负宽度并到 0 的观察等价性在库侧注释里给判据：条目非空时最长条目取齐后至少 8，非正宽度于是
+  永远走 `maxlength >= termwidth` 那条「每条一行」的腿，而 `numcols` 的除法只在正宽度才到得了。
+  **不重排**：`getopt.c:74-78` 一到非选项 token 就返回 -1 且不推进 `optind`，所以 `column 档 -t`
+  里的 `-t` 是**档名**（参照件 `column: Cannot open \`-t': No such file or directory`），
+  旧件扫完一个非选项 token 还继续扫下一个，把 C 拿去 `fopen` 的串当旗标吃掉了。
+  裸 `-` 是档名而不是标准输入的别名（`:87-92`），`--` 结束选项环而自身不是操数——于是 `column --`
+  落回 `if (!*argv)` 那一判，读的仍是标准输入（参照件同形）。
+  **门测 12 枚**（`tests/column_face.rs`，新立的 target）+ 库侧改写与新增 4 枚；金样逐形取自参照件
+  读数（宽度 20 下 `alpha\tdelta` / `beta\tepsilon` / `gamma`、`-x -c 24` 的横排、`-t -s,` 的补齐、
+  四类出口的句数与退码、残行警告那一句）。
+  **这扇新门第一次跑通布局，当场抓到两处 P0-code-bug**：① `c_columnate`/`r_columnate` 把条目、
+  制表符、换行**当三段各自返回**，壳侧又逐段补一个换行，于是两条布局从来没打出过一行像样的输出
+  （`column` 的五条短行会变成 `alpha\n\t\nbeta\n\t\n\n\n`）——现在与 `table_mode` 同形各交整行，
+  并照 C 补两处次序：`if (!--entries) break`（`column.c:149-150`）与
+  `if ((base += numrows) >= entries) break`（`:178-179`）都排在补齐之前，所以行尾不挂制表符；
+  ② 条目是**整行**——C 存的是行首的 `buf` 而不是跳过前导空白后的 `p`（`:287`），而 `:285` 的
+  `len = p - buf` 也是从行首量的，所以前导空白既进池也占布局宽度；库文档与旧写法都写着
+  「剥掉前导空白」，参照件现量 `  lead` 后面跟着**三个**连续制表符（其中一个是条目自带的制表符）
+  坐实了这一点。第三处是自审抓到的**运行期 panic**：聚簇游标 `pos` 走的是**字节**下标，
+  非 ASCII 字母时它会落进一个多字节字符中间，而 `&arg[pos..]` 在那一刻不是字符边界，切串当场 panic
+  （`column -té` 就是这一形，参照件打的是一个裸字节 0xC3 后退 1）。改成 `char::from(bytes[pos])`
+  按字节取，并把这一形钉了一枚库测；`column -- 多字节`、`-sé` 这类合法值仍按字符边界切，不受影响。
+  **同一枚 panic 住在批次三百一十三交回的 `parse_col_flags` 里**（`col -bé` 即触发，逐字同形），
+  按一次一条的规矩登记为 `COL-NONASCII-PANIC`、列为下一支的顺手项，不在这一笔里改另一条命令的码。
+  `atoi` 从 `col.rs` 提到 crate 根由 `col` 与 `column` 共用（同 `GetoptReport`
+  的单源处置：一份事实只承载一次）。
+  **三件套**：容器整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **762 / 0 / 0**
+  （60 target，基线 `b8dafd773` 为 746/59，+12 是新立的 `column_face`、+4 是库侧残行/宽度/出口/
+  非 ASCII 游标四支）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、**85 warning**
+  （基线 86，本笔少一枚：旧 `parse_column_args` 里 `pos = arg.len()` 那次死赋值随重写消失，零新增）；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`；
+  `rustfmt --edition 2024 --check` 触及的叶子件（`src/column.rs`、`src/bin/column.rs`、
+  `tests/column_face.rs`、`src/col.rs`）零漂移——`src/lib.rs` 上余下的三处 `pub mod` 顺序漂移
+  是既有登记（本笔只往它加了一个 `atoi`，那一段本身干净，整文件重排会把二十多个未接的模块一起
+  拖进这一笔，故不动）；A/B 与参照件 `tmp/column-314/column_ref`
+  （`column.c` 真源 + Minix 的 `getopt.c` + 自写的 `fgetln`/`ecalloc`/`estrndup`/`erealloc`/
+  `getprogname` 垫片，宿主现链）逐形比退码/stdout/stderr 三件，**42 形 SAME=42 DIFF=0**；
+  变异负控四枚（`tmp/column-314/ctl314.py`）分别咬 **2 / 2 / 2 / 3** 枚：丢 libc 那一行、
+  残行照样入库、条目剥掉前导空白、打不开的操数当致命错。核实日 `2026-10-16`；基线 `b8dafd773`。
+  **验证边界**：参照件在本机链 glibc，`err`/`warn` 系列走 glibc，其 `strerror` 句子与 Minix 表
+  可能不同；本笔落在报文上的形里只有操数那三支带 `strerror`，两边都是 `No such file or
+  directory`，故 `DIFF=0` 是逐字节对账的结果。宽度一项：参照件先 `ioctl(TIOCGWINSZ)` 再看
+  `COLUMNS`，A/B 时两者都无、落到默认 80，与本层的固定 80 同读数。
+  **登记不执行**：① 跳前导空白与判空行用的是 `isspace` 全六类（含 `\r`、`\v`、`\f`），
+  本层只认空格与制表符，所以 `  \r` 这样的末行在 C 是空行、在本层是条目（`COLUMN-ISSPACE-SET`）；
+  ② C 的 `strchr(p, '\n')` 在行内 NUL 处停下，所以带 NUL 的行按「长行」丢掉并警告，本层按整行保留
+  （`COLUMN-NUL-TRUNCATES-LINE`）；③ 终端宽度那一腿（`ioctl` 与 `COLUMNS`，`column.c:86-90`）
+  属终端面，本层固定 80（真机腿归 `C-57`/E5）；④ 无效 UTF-8 整段弃（同族 `SPLIT-NONUTF8-DROP`）；
+  ⑤ 07 篇第 155 行的陈旧测试计数仍归 V3-5/V3-6（既有登记）；
+  ⑥ 集外字母是非 ASCII 时 C 的 `%c` 打的是**一个裸字节**（参照件现量 `column: unknown option -- \xC3`），
+  本层按 `char` 渲染成两个 UTF-8 字节——行数、退码、句子其余部分都同，只差那一个字节
+  （`COLUMN-NONASCII-OPTLETTER`，与 `REV-`/`COLRM-` 的同名登记一族）；
+  ⑦ 测试自审（test-audit 五维）在第 2 维上**没有发现写错的期望**——门里每一条报文与布局读数
+  都回到参照件复核过（`-c ""`、`-c " 30"`、`-t -s,` 的七个空格、`-- -c <档>` 那句 warn 都是
+  为这一维现量而补测的）；第 1 维留一处缺口：**两个来源各带一条残行**时 C 打两句
+  `line too long`，本壳的计数循环支持这一形，但门只钉了单来源那一句（`COLUMN-TAIL-WARN-COUNT`）。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/colrm/split/unexpand/col/**column** + pr
+  （egetopt 措辞）；待接 `comm`、`cmp`、`jot`、`unifdef`、`units`、`seq`、`paste`、`tr`；
+  另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `COMM-GETOPT-LINE`。
+
 - ✅ **批次三百一十三把 `col` 的选项环按 C 分回四类出口，并新立它的第一扇端到端门（第七处读缝缺陷）**
   （`2026-10-16`，`claim/COL-GETOPT-LINE-qoder` @ 基线 `6802a77e7`，单域三线 commands/textfilter，无跨界）：
   判定表第九支（未接的那一组里第一支）。**真源形状**：`col.c:133` 的 optstring 是 `"bfhl:px"`——
