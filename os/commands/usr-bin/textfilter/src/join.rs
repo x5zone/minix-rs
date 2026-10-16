@@ -500,9 +500,20 @@ fn split_fields<'l>(line: &'l [u8], tabchars: &[u8], spans: bool) -> Vec<&'l [u8
     fields
 }
 
-/// The key of a field vector at index `f` (empty when the line is too short).
-fn key<'l>(fields: &[&'l [u8]], f: usize) -> &'l [u8] {
-    fields.get(f).copied().unwrap_or(b"")
+/// 比较两侧的连接字段，形状照 C 的 `cmp`（`minix3/usr.bin/join/join.c:405-414`）。
+///
+/// 它有**三种**答案而不是两个：「字段号超出这一行的字段数」与「字段存在但本身是空串」不是一回事
+///（`join.c` 先查 `fieldcnt <= fieldno`，两者都不越界才 `strcmp`）。所以：
+/// 两侧都越界算相等（C 的 `return 0`）；只有一侧越界时，**越界那一侧算大**（C 分别 `return 1` / `return -1`），
+/// 而不是把缺字段当成空串去比——否则一个没有该列的行会与「该列是空串」的行误判为同键，
+/// 不仅连接输出会多拼出根本不存在的配对，**同一档内部按 `cmp != 0` 切组**（`:398`）也会跟着跑偏。
+fn cmp_keys(a: &[&[u8]], fa: usize, b: &[&[u8]], fb: usize) -> core::cmp::Ordering {
+    match (a.get(fa), b.get(fb)) {
+        (None, None) => core::cmp::Ordering::Equal,
+        (None, Some(_)) => core::cmp::Ordering::Greater,
+        (Some(_), None) => core::cmp::Ordering::Less,
+        (Some(x), Some(y)) => x.cmp(y),
+    }
 }
 
 /// Join `f1` and `f2` (byte-line slices, each already newline-stripped) into
@@ -515,9 +526,12 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
     while i < f1.len() && j < f2.len() {
         let g1 = group_end(f1, i, opts.field1, opts);
         let g2 = group_end(f2, j, opts.field2, opts);
-        let k1 = key(&opts.fields_of(f1[i]), opts.field1);
-        let k2 = key(&opts.fields_of(f2[j]), opts.field2);
-        match k1.cmp(k2) {
+        match cmp_keys(
+            &opts.fields_of(f1[i]),
+            opts.field1,
+            &opts.fields_of(f2[j]),
+            opts.field2,
+        ) {
             core::cmp::Ordering::Equal => {
                 // C's `if (joinout) joinlines(F1, F2)` (`join.c:259`): with `-v`
                 // clearing `joinout`, matched groups still advance but emit
@@ -576,11 +590,15 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
 
 /// Index one past the run of lines from `start` sharing the key of `start`.
 /// `field` 是**这一侧文件自己的**连接字段号（C 是 `F->joinf`，`slurp` 按调用方的
-/// `INPUT*` 取，两侧可以不同——`-1 2 -2 1` 就不同）。
+/// `INPUT*` 取，两侧可以不同——`-1 2 -2 1` 就不同）。C 的 `slurp` 是拿新行与**上一行**比
+///（`join.c:398` 的 `cmp(lp, F->joinf, lp - 1, F->joinf)`），本件拿新行与**组首行**比；
+/// 两者在「首个失配位置」上等价：比过的行都等于组首，所以 `key(k-1) == key(start)`。
 fn group_end(lines: &[&[u8]], start: usize, field: usize, opts: &JoinOptions) -> usize {
-    let base = key(&opts.fields_of(lines[start]), field).to_vec();
+    let base = opts.fields_of(lines[start]);
     let mut end = start + 1;
-    while end < lines.len() && key(&opts.fields_of(lines[end]), field).to_vec() == base {
+    while end < lines.len()
+        && cmp_keys(&base, field, &opts.fields_of(lines[end]), field) == core::cmp::Ordering::Equal
+    {
         end += 1;
     }
     end
@@ -831,6 +849,68 @@ mod tests {
         };
         assert_eq!(join("a,", "b", &o), "a,");
         assert_eq!(join("a,,c", "x", &o), "a,,c");
+    }
+
+    /// C 的 `cmp` 有三种答案：越界与空串不是同一回事。四形逐一对着 `join.c:405-414` 钉住：
+    /// 两侧都越界算相等、只有第一侧越界算第一侧大、只有第二侧越界算第二侧大、两边都有字段才比字节。
+    #[test]
+    fn cmp_keys_answers_three_cases_not_two() {
+        let two: &[&[u8]] = &[&b"a"[..], &b""[..]];
+        let one: &[&[u8]] = &[&b"a"[..]];
+        let nine: &[&[u8]] = &[&b"x"[..], &b"9"[..]];
+        assert_eq!(
+            cmp_keys(one, 1, one, 1),
+            core::cmp::Ordering::Equal,
+            "两边都没这一列"
+        );
+        assert_eq!(
+            cmp_keys(one, 1, two, 1),
+            core::cmp::Ordering::Greater,
+            "越界那一侧算大，不是把它当空串去比"
+        );
+        assert_eq!(cmp_keys(two, 1, one, 1), core::cmp::Ordering::Less);
+        assert_eq!(
+            cmp_keys(two, 1, nine, 1),
+            core::cmp::Ordering::Less,
+            "两边都有字段才落到 strcmp：\"\" < \"9\""
+        );
+    }
+
+    /// 「谁越界」决定谁让路，因此两个方向的金样不同：C 对 `solo`/`x 9` 做 `-1 2 -2 2 -a1 -a2`
+    /// 先打 `x 9` 再打 `solo`（`join.c:263-273` 的 `cval < 0` / `> 0` 两支）。
+    /// 两个方向同一事实，所以合在一枚里。
+    #[test]
+    fn join_lines_gives_the_lead_to_the_side_that_has_the_field() {
+        let o = JoinOptions {
+            field1: 1,
+            field2: 1,
+            unmatched1: true,
+            unmatched2: true,
+            ..Default::default()
+        };
+        assert_eq!(join("solo", "x 9", &o), "x 9\nsolo");
+        assert_eq!(join("x 9", "solo", &o), "x 9\nsolo");
+    }
+
+    /// 同一档内部的切组也走 `cmp`（C `slurp` 的 `join.c:398`）：「该列是空串」的行与
+    /// 「根本没有该列」的行不属于同一组，于是不能与另一侧同键的行交叉拼配对。
+    /// 金样 `-t, -1 2 -2 2 -a1 -a2` 对三行档与一行档 → `,a,x,a,x`、`b`、`c,,y`。
+    #[test]
+    fn grouping_breaks_where_the_join_field_is_absent() {
+        let o = JoinOptions {
+            tabchars: b",".to_vec(),
+            spans: false,
+            field1: 1,
+            field2: 1,
+            unmatched1: true,
+            unmatched2: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            join("a,,x\nb\nc,,y", "a,,x", &o),
+            ",a,x,a,x\nb\nc,,y",
+            "旧写法把三行归成一组，会多拼出两行根本不存在的配对"
+        );
     }
 
     #[test]

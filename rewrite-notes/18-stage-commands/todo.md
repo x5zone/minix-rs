@@ -250,6 +250,46 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百零一把 `join` 的比较层按 C 定形：字段号越界不等于空字段，配对与切组两处一起转绿**
+  （`2026-10-16`，`claim/JOIN-CMP-OVERFIELD-qoder` @ 基线 `5daa464b4`，单域三线 commands/textfilter，无跨界）：
+  清批次二百九十九登记的第①条。**真源形状**：C 的 `cmp`（`minix3/usr.bin/join/join.c:405-414`）有**三种**答案
+  而不是两种——先查「字段号超出这一行的字段数」（`lp->fieldcnt <= fieldno`），两侧都越界 `return 0`（相等），
+  只有第一侧越界 `return 1`、只有第二侧越界 `return -1`（**越界那一侧算大**），两边都不越界才 `strcmp`。
+  本壳此前用一个 `key()` 把「越界」与「该字段是空串」都折成空串，因此两个方向都错，而且**后果不止在配对判等**：
+  `slurp` 拿 `cmp != 0` 收尾同一档的分组（`:398`），旧形状会把「没有这一列」的行并进「这一列是空串」的行，
+  于是与另一侧同键的行**多拼出根本不存在的配对**——三行档 `a,,x`/`b`/`c,,y` 对一行档 `a,,x`，C 给
+  `,a,x,a,x`、`b`、`c,,y`，旧壳给三行交叉 `,a,x,a,x`、`,b,a,x`、`,c,y,a,x`。
+  **改法**：`key()` 换成 `cmp_keys(a, fa, b, fb) -> Ordering`（四支 match 逐支对着 C 的三句 return），
+  合并环与 `group_end` 都改用它；`group_end` 拿新行与**组首行**比而 C 与**上一行**比，这一处等价性写在函数注里
+  （比过的行都等于组首，所以首个失配位置相同），不改写成 C 的形状是因为等价、且组首比较少一次重复切分。
+  **金样五形逐形从参照件 `tmp/family-diag-ref/join_ref` 现测抄回**（改前读数记在 `tmp/join-cmp-301/before.log`）：
+  ① `-t, -1 2 -2 2` 对 `a,`/`a` → C 空输出、旧壳 `,a,a`；② `-1 2 -2 2 -a1 -a2` 对 `solo`/`x 9` → C
+  `x 9`、`solo`，旧壳顺序相反；③ 同形两侧对调 → C 仍是 `x 9`、`solo`，**旧壳与②给出同一串**（这正是它没有
+  分辨力的证据，所以两支各入门一枚）；④ `-t, -1 2 -2 2 -a1 -a2` 对三行档/一行档 → 上面那串切组金样；
+  ⑤ `-1 2 -2 2 -a1 -a2` 对 `p 1`/`q`/`r 1` → 改前改后同读数（都等于 C），入门作回归护栏。
+  改后再拿参照件逐形对账 → **SAME=7 DIFF=0**（含两枚未入门的方向与越界组合形，日志
+  `tmp/join-cmp-301/ab.log`）。测面：`tests/join_face.rs` 增至 **25 枚必跑**、库测 +3 枚
+  （`cmp_keys_answers_three_cases_not_two`、`join_lines_gives_the_lead_to_the_side_that_has_the_field`、
+  `grouping_breaks_where_the_join_field_is_absent`）；07 篇 join 行把「比较层与 C 同形」写实，
+  并把「仍与 C 不同」从两形减为一形。
+  三件套：容器 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **652 passed / 0 failed / 0 ignored**
+  （51 个 target；基线 `5daa464b4` 为 644，本笔 +8 与测数增量对得上）；`--lib --test join_face` → 455 / 25 全绿；
+  **`cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、86 条 warning 与基线同数**
+  （上一笔刚把这条腿修成可当门，本笔是它第一次当门用）；容器 `cargo check --workspace -j 1` → 0 error（49.31s）；
+  宿主三架构 `cargo check -p minix-textfilter --bins --target {x86_64,aarch64,riscv64gc}-unknown-none`
+  三者均 `Finished` 零 error（容器无这三份 core，见批次三百那条）；rustfmt 触及两文件零漂移；核实日 `2026-10-16`。
+  **两枚变异负控各咬各的承载点**（控制器 `tmp/join-cmp-301/ctl301.py`，每枚先打印 `mutation applied`、还原后
+  md5 对齐 `071e238ea49f3b3deea61c780556294e`）：① 把「越界」折回空串（改动前的形状）→ **7 枚 FAILED**
+  （3 库测 + 4 门面）；② 只把两个非对称支写反 → **恰好 4 枚 FAILED**，且只有方向敏感的那两枚门面与
+  `cmp_keys_answers_three_cases_not_two` 倒下，而「空输出」那枚与切组那枚仍绿——**读数如实记下**：这两枚对
+  「谁大谁小」没有分辨力，定序的分辨力由方向那两枚承担，所以两支都入门。
+  **登记不执行**：`join` 与本树 C 真源的已知差异只剩一支——`fieldarg`（`:526-527`）从不接受 `-o 0`，
+  参照件实测报 `malformed -o option field`，本壳把 `0` 当连接字段收下（BSD/GNU 约定），`Which::Join`
+  因此是无生产来源的支路；拒收与死码裁决归下一单（`JOIN-OZERO-ACCEPTANCE`）。另：本笔只动 `join`，
+  批次三百登记的两项（`jot.rs` 的 10 处存量 rustfmt 漂移、`%5.2f` 的两支未钉）仍未取。
+  **负载条款**：全程一条命令只跑一件事，容器 `-j 1 -m 2g -u`，宿主三架构只在容器不在跑时跑；
+  探针与参照件挂载只读用 `tmp/`，包测一律容器内跑。
+
 - ✅ **批次三百把 `jot` 用例里的 π 近似字面量换掉，`minix-textfilter` 的 `clippy --all-targets` 腿首次能当门用**
   （`2026-10-16`，`claim/JOT-APPROX-CONSTANT-qoder` @ 基线 `78dd478fb`，单域三线 commands/textfilter，只动
   `src/jot.rs` 测试模块里的一枚用例，无跨界）：清批次二百九十八登记的那条卫生项——`src/jot.rs:771` 的 `3.14159`

@@ -463,3 +463,67 @@ fn dash_t_space_keeps_empties_and_leaves_tabs_alone() {
     );
     let _ = fs::remove_dir_all(dir);
 }
+
+// —— 以下五枚钉的是比较层与 C 同形（批次三百零一）。C 的 `cmp`（`minix3/usr.bin/join/join.c:405-414`）
+// 有**三种**答案：先查「字段号超出这一行的字段数」，两边都不越界才 `strcmp`。本层旧写法用
+// `key()` 把「越界」与「该字段是空串」都折成空串，于是既会误判配对，也会让同一档内部的切组
+//（C `slurp` 的 `:398`）跑偏。金样逐形从参照件 `tmp/family-diag-ref/join_ref` 现测抄回，
+// 改前的读数记在 `tmp/join-cmp-301/before.log`；仍是一形一枚。
+
+/// 「根本没有这一列」的行不等于「这一列是空串」的行：`a,` 有两字段（第二个是空串）、`a` 只有一字段，
+/// 两侧都按字段 2 连接时 C 判为不匹配且不输出，本壳旧写法给 `,a,a`。
+#[test]
+fn an_overfield_join_key_is_not_equal_to_an_empty_one() {
+    let (dir, paths) = scratch("overfield-eq", &[("l", b"a,\n"), ("r", b"a\n")]);
+    let (out, status, err) = run(&["-t,", "-1", "2", "-2", "2", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "", "越界的那侧不当成空串去匹配");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// 第一侧没有连接字段时，C 判它**大**（`:409-410` 的 `return 1`）→ 第二侧先走：金样先打 `x 9` 后打 `solo`。
+/// 旧写法把缺字段折成空串，`"" < "9"` 判成第一侧小，两行顺序整个反过来。
+#[test]
+fn a_line_without_the_join_field_yields_the_lead_to_the_other_side() {
+    let (dir, paths) = scratch("overfield-f1", &[("l", b"solo\n"), ("r", b"x 9\n")]);
+    let (out, status, err) = run(&["-1", "2", "-2", "2", "-a1", "-a2", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "x 9\nsolo\n", "有字段那一侧先出");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// 同一支的另一向：越界发生在第二侧时 C `return -1`（`:411-412`）→ 第一侧先走。
+/// 两枚合看才能定序——旧写法对这两个方向给出**同一串**，正是它没有分辨力的证据。
+#[test]
+fn the_side_that_has_the_field_leads_when_the_other_lacks_it() {
+    let (dir, paths) = scratch("overfield-f2", &[("l", b"x 9\n"), ("r", b"solo\n")]);
+    let (out, status, err) = run(&["-1", "2", "-2", "2", "-a1", "-a2", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "x 9\nsolo\n");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// 切组也走同一把尺：C 的 `slurp` 拿新行与上一行比，`cmp != 0` 就收尾这一组（`:398`）。
+/// 于是 `a,,x`/`b`/`c,,y` 三行是**三个组**（`b` 没有字段 2），只第一行与另一侧的 `a,,x` 成对；
+/// 旧写法把三行并成一组，多拼出两行根本不存在的配对。
+#[test]
+fn grouping_stops_at_a_line_that_lacks_the_join_field() {
+    let (dir, paths) = scratch("grouping", &[("l", b"a,,x\nb\nc,,y\n"), ("r", b"a,,x\n")]);
+    let (out, status, err) = run(&[
+        "-t,", "-1", "2", "-2", "2", "-a1", "-a2", &paths[0], &paths[1],
+    ]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, ",a,x,a,x\nb\nc,,y\n", "缺列那行自成一组");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// 这一形改前改后同读数（都等于 C），入门作回归护栏：切组改动不能把「同键但字段数不同」的
+/// 常规分档弄坏——`p 1`/`q`/`r 1` 里 `q` 没有字段 2，自成一档单独报出。
+#[test]
+fn the_mixed_field_counts_case_still_matches_the_reference() {
+    let (dir, paths) = scratch("mixed-counts", &[("l", b"p 1\nq\nr 1\n"), ("r", b"p 1\n")]);
+    let (out, status, err) = run(&["-1", "2", "-2", "2", "-a1", "-a2", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "1 p p\nq\nr 1\n");
+    let _ = fs::remove_dir_all(dir);
+}
