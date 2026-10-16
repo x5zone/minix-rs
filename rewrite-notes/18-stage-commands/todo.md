@@ -334,7 +334,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   libc 那句 `getopt.c:103` 的 `%c` 拿的本来就是 `optopt` 这个字节而不是一个字符。
   **门**：库测 +1 枚 `unknown_nonascii_option_letter_reports_the_byte`（钉 `é` 的报错落在 U+00C3 而不是 U+00E9，
   另钉聚簇 `-xé` 同形）；端到端门 +1 枚 `nonascii_option_letter_is_reported_as_one_byte`
-  （门里比的是 lossy 后的码位 U+00C3，修复前是 `é`，两者不混淆；同枚再钉一遍 ASCII 的 `-Z` 不受影响）。
+  （门里比的是 lossy 后的码位 U+00C3；按字符取时打出的会是完整的 `é`，两者不混淆；同枚再钉一遍 ASCII 的 `-Z` 不受影响）。
   **读数**：A/B 六形 **SAME=3 / DIFF=3**——三形 DIFF 全是本族共有的**编码末段**：
   C 打一个裸字节 `c3`，本树经 `char` 的 `Display` 打出的是 `c3 83`（两个字节）。
   这一半不在本笔射程：它要改的是 `src/lib.rs:GetoptReport::line` 的返回类型（`String` ⇒ 字节串）
