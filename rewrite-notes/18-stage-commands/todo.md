@@ -250,6 +250,69 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次二百九十九把 `join` 的字段切分按 C 定形：显式 `-t` 保留空段，四处同源错位一起转绿**
+  （`2026-10-16`，`claim/JOIN-SPLIT-FIELDS-qoder` @ 基线 `4df3bfc97`，单域三线 commands/textfilter，无跨界）：
+  照上一单写死的判据落地。**真源形状**：C 的 `slurp` 用 `strsep(&bp, tabchar)` 切字段（`join.c:378`），
+  **一个分隔符字节就是一刀**；`spans`（`:106` 默认为 1，`:200` 给了 `-t` 就清成 0）决定切出来的空段算不算字段。
+  所以 `-t,` 下 `a,,c` 是三个字段（中间那个是空串），行尾那个分隔符还多留一个空字段（`strsep` 到串尾会再返一次），
+  而默认集 `" \t"` 靠 `spans` 把连读的分隔符当一段。**改法**：`JoinOptions` 不再单存一个 `delim` 字节，
+  而是照 C 那两个全局量的形状存 `tabchars`（分隔符集）与 `spans`（跳不跳空段），输出分隔符改由
+  `sep()` 取集子首字节（C 打的是 `printf("%c", *tabchar)`，`:497`）；`-t` 一次改两个量，于是 `-t ' '`
+  只把空格当分隔符、制表符仍是内容（旧写法把「分隔符是空格」当成默认集，这一形两个事实都错）；
+  切分处收成 `JoinOptions::fields_of`，让调用方没法把「集」和「跳不跳空段」配错对（它们在 C 里同源）。
+  另一处承载点在同一条线上：不配对那行走 C 的 `outoneline`（`:447-466`），它把行里**每个**字段送进
+  `outfield`，空字段占一个分隔符槽而不打内容——本树 `onlyline` 的默认布局此前是 `if f.is_empty() { continue; }`，
+  把槽位连同内容一起抹掉，现改为逐字段走 `push_tok`。
+  **金样八形逐形从参照件 `tmp/family-diag-ref/join_ref` 现测抄回**（左 C / 右本壳改前，输入 `a,,c\nb,,d` 与
+  `a,,c\ne,,f`，探针目录 `tmp/join-split-299/`）：`-t,` → `a,,c,,c` vs `a,c,c`；`-t, -o 1.1,1.2,1.3,2.1` →
+  `a,,c,a` vs `a,c,,a`；`-t, -v 1` → `b,,d` vs `b,d`；`-t, -v 2` → `e,,f` vs `e,f`；`-t, -j 2` →
+  四行交叉 `,a,c,a,c`、`,a,c,e,f`、`,b,d,a,c`、`,b,d,e,f` vs 一行 `c,a,a`；`-t, -1 2 -2 2` → 同四行 vs `c,a,a`；
+  `-t, -a1 -a2` → `a,,c,,c`/`b,,d`/`e,,f` vs `a,c,c`/`b,d`/`e,f`；`-t ' ' -j 2` 对 `a  b` → ` a b a b` vs `b a a`。
+  **同读数不当门**：`-t, -1 2`（只改第一侧）两边都给空输出，那是巧合，门改用能区分的 `-1 2 -2 2`；
+  `-t, -o 1.1,1.2` 对 `a,` 与 `-t, -j 2` 对 `a,`/`x,` 也是旧写法经另一条路凑出的同读数（越界落 `-e` 的空串
+  与取到那个空段，输出串一样），仍入门但在注释里标明；能区分的尾部空段形是 `-t, -a1`（旧壳给 `a`、C 给 `a,`）。
+  测面：去掉 `empty_fields_from_the_delimiter_split_keep_their_slots` 的 `#[ignore]`（它已被拆开替掉），
+  门面 `tests/join_face.rs` 由 12 枚必跑 + 1 枚 ignore 增至 **20 枚必跑**，八枚新测**按形分枚**
+  （只有 `-v 1`/`-v 2` 那两形同腿合在一枚，注释里写明为什么合；旧教训：批次二百九十八——三形塞一枚
+  再整体 ignore，负控会「注入成功却全绿」）；库测新增四枚
+  （`split_default_set_spans_runs_and_drops_empty_fields`、`split_with_explicit_dash_t_keeps_every_empty_field`、
+  `dash_t_space_does_not_make_tab_a_delimiter`、`unpaired_line_gives_an_empty_field_its_separator_slot`）。
+  三件套：容器门 `docker run --rm -v "$PWD:/work" -w /work/os -u $(id -u):$(id -g) -m 2g minix-ci:1.94
+  cargo test -j 1 --no-fail-fast -p minix-textfilter` → **644 passed、0 failed、0 ignored**（51 个 `test result` 行、
+  零 `FAILED`/`error[`/`panicked`；基线 633 个条目 = 632 必跑 + 1 ignore，本轮 +11 与此处测数增量对得上）；
+  同容器 `cargo check --workspace -j 1` → 0 error；宿主三架构 `cargo check -p minix-textfilter --bins
+  --target {x86_64,aarch64,riscv64gc}-unknown-none` 三者均 `Finished` 零 error；
+  `cargo clippy -p minix-textfilter --all-targets` 的**唯一** error 仍是存量 `jot.rs:771` 的 deny 级
+  `clippy::approx_constant`（批次二百九十八已登记），故本轮另跑 `… --all-targets -- -A clippy::approx_constant`
+  → **0 error、`join.rs`/`join_face.rs` 零命中**（86 条 warning 全属存量），这条腿修好之前它不能当门；
+  `rustfmt --edition 2024 --check` 触及两文件零漂移（格式化只跑被改的 `src/join.rs` 与 `tests/join_face.rs`，
+  `git status --porcelain` 复核只有这两件加两件文档，无旁观文件被重排）；核实日 `2026-10-16`。
+  **三枚变异负控**（控制器 `tmp/join-split-299/ctl299.py`，每枚先打印 `mutation applied`、还原后 md5 对齐
+  `47f7fa6f3ab11736a3cd77dd6af7abe1`，跑 `--lib --test join_face`）：① `unconditional_span`（跳空段改回无条件套用）
+  → 11 枚 FAILED（四枚库测 + 七门面）；② `dash_t_keeps_spans`（`-t` 不再清 `spans`）→ 9 枚 FAILED，
+  且只有它咬住 `parse_attached_option_values_accepted` 里那句 `!spans` 断言；③ `onlyline_skips_empties`
+  （不配对腿回到整个跳过空字段）→ 恰好 4 枚 FAILED，全在不配对路（成对路的 `-j 2`、`-o` 两枚仍绿），
+  证明「怎么切字段」与「不配对那行怎么打槽」是两个事实、各由各的测钉住，没有互相承载。
+  **本轮两处「测试自身正确性」被当场挡住**：① 第一版库测拿 `join("a,", "a", …)` 想走 `outoneline`，实际两侧键相等
+  走的是成对路，改成 `join("a,", "b", …)` 才落在不配对那条腿上；② 第一版 `-o` 门面测的输入档写成单行 `a,,c`，
+  与现测金样时用的两行 `a,,c\nb,,d` 不一致——金样必须连输入一起钉，已对齐后再取读数。
+  **登记不执行（三条，都不在本单射程）**：① C 的 `cmp`（`join.c:405-414`）把「字段号超出这一行的字段数」与
+  「字段存在但本身是空串」当两种答案（越界那一侧算大），本壳 `key` 两种都给空串因而判等——参照件对 `a,`（两字段）
+  与 `a`（一字段）做 `-t, -1 2 -2 2` 给**零行**，本壳给 `,a,a`；本单的门刻意避开这一形，修法要改 `key` 的返回形状。
+  ② C 的 `fieldarg` 从不接受 `-o 0`（`:526-527` 只看 token 首字符是不是 `1`/`2`；参照件实测 `-o 0,1.1,2.1` 报
+  `malformed -o option field`），本壳把 `0` 当连接字段收下（BSD/GNU 的约定，不是本树 C 真源的），
+  于是 `Which::Join` 是一条无生产来源的支路——按「保持外部行为」这一档应当拒收，拒收后它是否转死码要一并裁。
+  ③ 门自身的竞态：`pr_face` 的 `numeric_option_diagnostics_are_c_named_messages_then_the_usage` 在写子进程标准输入时
+  拿到 `BrokenPipe`（`tests/pr_face.rs:31`，单目标三连跑 1 红 2 绿），`vis_face` 在同一容器里串跑「整包 + workspace
+  check + 三架构 + clippy」那一趟独红，随后纯整包跑 644/0、`--test vis_face --test pr_face` 三连跑全绿（日志
+  `tmp/join-split-299/{gates,flake-probe,gate-test}.log`）。判读：这两枚端到端门把「子进程还没起来或已退出」的窗口
+  交给了 `write` 的成败，属测试自身正确性维度的缺口（test-audit 第 2 维），登记为独立卫生项；本单只动 `join` 面，
+  与该两文件零交集。全程无合成 CPU 压力，包测一律容器内跑。
+  **下一单判据**：`JOIN-CMP-OVERFIELD`——把 `key` 换成能区分「越界」与「空串」的形状（`Option<&[u8]>` 或
+  返回带存在位的元组），按 `join.c:405-414` 的三支定序（两侧都越界算相等、只有一侧越界那一侧算大），
+  金样 `-t, -1 2 -2 2` 对 `a,`/`a` → 零行；同批判 `-o 0` 的接受性（判据：C 拒，参照件句子已量）。
+  卫生项仍在前：`jot.rs:771` 的 `clippy::approx_constant`（改法：别让字面量正好是 π 的近似，如 `3.1415_9`）。
+
 - ✅ **批次二百九十八把 `join` 输出面的分隔符槽位按 C 定形：先占槽、再决定内容**
   （`2026-10-16`，`claim/JOIN-OUTFIELD-SLOTS-qoder` @ 基线 `f675b95a1`，单域三线 commands/doctools，无跨界）：
   照上一单写死的三条判据落地。**①**`push_tok` 改成无条件先占分隔符槽、之后才决定内容（C 的 `outfield()`

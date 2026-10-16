@@ -334,23 +334,132 @@ fn missing_join_field_keeps_its_separator_slot() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-// 已知不通过（不是本轮射程，标 ignore 而不是删掉）：`-t,` 下 C 把空段当字段，
-// 本壳 `split_fields` 把 `-t` 切出的空段也跳掉了，于是 `a,,c` 两侧被拼成 `a,c,c`
-// 而参照件给 `a,,c,,c`。这是字段切分层与 C 的另一处分歧，已登记为下一单。
-#[ignore = "split_fields 丢掉 -t 切出的空字段：C 对 a,,c 两侧给 a,,c,,c，本壳给 a,c,c"]
-#[test]
-fn empty_fields_from_the_delimiter_split_keep_their_slots() {
-    let dir = std::env::temp_dir().join(format!("join-slot-{}", std::process::id()));
+// 以下六枚钉的是「字段切分」这一层与 C 同形（批次二百九十九）。
+// C 的 `slurp` 用 `strsep(&bp, tabchar)`（`join.c:378`）切：**一个分隔符字节就是一刀**，
+// 而 `spans`（默认 1、`-t` 清成 0，`:106`/`:200`）决定空段是不是字段。本层旧写法
+// 把「跳空段」无条件套用，于是 `-t,` 下 `a,,c` 只剩两个字段：字段号、匹配集、`-o`、
+// `-v` 四处一起错位。金样全部从参照件 `join_ref`（`minix3/usr.bin/join/join.c` +
+// `fgetln`/`getprogname` 垫片链成）**逐形现测抄回**，命令与读数记在
+// `rewrite-notes/18-stage-commands/todo.md` 批次二百九十九那条里。
+// **按形分枚**：批次二百九十八的教训是「三形一测 + 整体 `#[ignore]`」会让负控
+// 「注入成功却全绿」，所以一形一枚（只有 `-v 1`/`-v 2` 同一腿的两形合枚，已在测注里写明）、
+// 各自一个临时目录。
+
+/// 每枚测一个独占目录：本文件的测跑在同一进程的不同线程上，共用目录时谁先
+/// `remove_dir_all` 就会把另一枚的输入抽走。
+fn scratch(tag: &str, files: &[(&str, &[u8])]) -> (std::path::PathBuf, Vec<String>) {
+    let dir = std::env::temp_dir().join(format!("join-split-{}-{}", std::process::id(), tag));
     fs::create_dir_all(&dir).expect("scratch dir");
-    let file = |name: &str, body: &[u8]| -> String {
+    let mut paths = Vec::new();
+    for (name, body) in files {
         let path = dir.join(name);
         fs::write(&path, body).expect("scratch file");
-        path.to_str().expect("utf-8 path").to_owned()
-    };
-    let a = file("left", b"a,,c\n");
-    let b = file("right", b"a,,c\n");
-    let (out, status, err) = run(&["-t,", &a, &b]);
+        paths.push(path.to_str().expect("utf-8 path").to_owned());
+    }
+    (dir, paths)
+}
+
+/// 两档只有一列的行，`-t,` 默认连接字段是第一个字段（`a`），两侧相等。
+#[test]
+fn dash_t_keeps_the_empty_field_between_the_two_words() {
+    let (dir, paths) = scratch("default", &[("l", b"a,,c\n"), ("r", b"a,,c\n")]);
+    let (out, status, err) = run(&["-t,", &paths[0], &paths[1]]);
     assert_eq!(status, 0, "stderr 是 {err:?}");
-    assert_eq!(out, "a,,c,,c\n");
-    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(out, "a,,c,,c\n", "空段是字段，槽位也留着");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// `-o` 拿字段号说事：C 的 `1.2` 就是那个空段，本层旧写法把 `1.2` 读成了 `c`、
+/// 把 `1.3` 读成越界（落 `-e` 的空串），两个槽的内容全错位。
+#[test]
+fn dash_t_numbered_output_fields_count_the_empty_field() {
+    let (dir, paths) = scratch("olist", &[("l", b"a,,c\nb,,d\n"), ("r", b"a,,c\ne,,f\n")]);
+    let (out, status, err) = run(&["-t,", "-o", "1.1,1.2,1.3,2.1", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "a,,c,a\n", "1.2 是空段、1.3 才是 `c`");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// `-v` 那一路走 C 的 `outoneline`：它把行里**每个**字段都送进 `outfield`，空字段
+/// 占槽不打字，所以报的是 `b,,d` 而不是 `b,d`。同一事实的两个侧写（`-v 1` 与 `-v 2`）
+/// 合在一枚里，因为它们走的是同一条腿。
+#[test]
+fn dash_v_reports_the_unpaired_line_with_its_empty_field() {
+    let (dir, paths) = scratch("dashv", &[("l", b"a,,c\nb,,d\n"), ("r", b"a,,c\ne,,f\n")]);
+    let (out, status, err) = run(&["-t,", "-v", "1", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "b,,d\n");
+    let (out, _, _) = run(&["-t,", "-v", "2", &paths[0], &paths[1]]);
+    assert_eq!(out, "e,,f\n", "另一侧同形");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// `-j 2` 把两侧的连接字段都指到那个空段：C 里两侧键相等，两行乘两行＝**四行交叉**；
+/// 旧切法下两侧字段 2 是 `c`/`f`，匹配集本身就跑偏了（只给一行 `c,a,a`）。
+/// 同一形的 `-1 2`（只改第一侧）两边读数都是空输出——那是**巧合同读数**，
+/// 不能当门，所以下一枚用 `-1 2 -2 2`。
+#[test]
+fn dash_j_on_the_empty_field_matches_both_groups_and_cross_multiplies() {
+    let (dir, paths) = scratch("dashj", &[("l", b"a,,c\nb,,d\n"), ("r", b"a,,c\ne,,f\n")]);
+    let (out, status, err) = run(&["-t,", "-j", "2", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(
+        out, ",a,c,a,c\n,a,c,e,f\n,b,d,a,c\n,b,d,e,f\n",
+        "两侧字段 2 都是空串→相等并连接"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// 上一枚的同形但分开写，目的是拿它能区分旧实现（旧切法只给一行 `c,a,a`）。
+#[test]
+fn per_file_join_fields_on_the_empty_field_also_cross_multiply() {
+    let (dir, paths) = scratch("dash12", &[("l", b"a,,c\nb,,d\n"), ("r", b"a,,c\ne,,f\n")]);
+    let (out, status, err) = run(&["-t,", "-1", "2", "-2", "2", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, ",a,c,a,c\n,a,c,e,f\n,b,d,a,c\n,b,d,e,f\n");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// `-a1 -a2` 同时出两侧不成对的行，三行金样都是从参照件抄下来的。
+#[test]
+fn dash_a_prints_every_field_of_the_unpaired_lines_including_empties() {
+    let (dir, paths) = scratch("dasha", &[("l", b"a,,c\nb,,d\n"), ("r", b"a,,c\ne,,f\n")]);
+    let (out, status, err) = run(&["-t,", "-a1", "-a2", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "a,,c,,c\nb,,d\ne,,f\n");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// 行尾那个分隔符在 C 里还多给一个空字段（`strsep` 到串尾会再返一次）：
+/// `a,` 是两字段，`-a1` 报 `a,`、`-o 1.1,1.2` 也报 `a,`。
+/// 哪一枚能区分旧写法：`-a1` 那形能（旧壳给 `a`）；`-o 1.1,1.2` 那形**不能**——旧壳把字段 2 读成
+/// 越界、落 `-e` 的空串，输出串凑巧一样。两者都钉住这一形，但区分职责只在前一句。
+#[test]
+fn a_trailing_delimiter_leaves_a_trailing_empty_field() {
+    let (dir, paths) = scratch("trailing", &[("l", b"a,\n"), ("r", b"b\n")]);
+    let (out, status, err) = run(&["-t,", "-a1", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "a,\n", "尾部空字段占最后一个槽");
+    let (out, _, _) = run(&["-t,", "-o", "1.1,1.2", &paths[0], &paths[0]]);
+    assert_eq!(out, "a,\n", "`-o` 指到那个空字段也是同形");
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// `-t ' '` 只把空格当分隔符（C 的 `tabchar` 就是那一字节），tab 不再是分隔符；
+/// 旧写法把「分隔符是空格」当成「默认集」，连跳空段一起套上，两形都错。
+#[test]
+fn dash_t_space_keeps_empties_and_leaves_tabs_alone() {
+    let (dir, paths) = scratch("space", &[("l", b"a  b\n"), ("r", b"a  b\n")]);
+    let (out, status, err) = run(&["-t ", "-j", "2", &paths[0], &paths[1]]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, " a b a b\n", "两个空格中间那个空段就是连接字段");
+    let _ = fs::remove_dir_all(dir);
+
+    let (dir, paths) = scratch("tab", &[("l", b"a\tb\n"), ("r", b"a\tb\n")]);
+    let (out, _, err) = run(&["-t ", "-j", "2", &paths[0], &paths[1]]);
+    assert_eq!(
+        out, " a\tb a\tb\n",
+        "制表符仍是内容：一整串是一个字段，{err:?}"
+    );
+    let _ = fs::remove_dir_all(dir);
 }

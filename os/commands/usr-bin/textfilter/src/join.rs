@@ -5,8 +5,12 @@
 //! merged key by key (`cmp`/`joinlines`, lines 405-450), and each matched pair
 //! prints the join field then the remaining fields of file 1 then of file 2
 //! (`outtwoline` default branch, lines 476-489); unmatched lines print all
-//! their own fields when `-a` asks (`outoneline`, lines 447-466). Fields split
-//! on runs of `tabchar` with empties skipped (`spans`, default on).
+//! their own fields when `-a` asks (`outoneline`, lines 447-466). Fields come
+//! from `strsep(&bp, tabchar)` (`:378`), which cuts **one field per delimiter
+//! byte** — so `a,,c` is three fields and a trailing delimiter leaves a
+//! trailing empty one. `spans` (default on, cleared by `-t`, `:106`/`:200`)
+//! decides whether those empty fields are dropped; dropping them is what makes
+//! the default `" \t"` behave as runs.
 //!
 //! Wired here: the default join (field 1 both sides), `-t` (delimiter +
 //! output separator = that byte), `-1`/`-2` (per-file join field), `-j` (both
@@ -50,11 +54,13 @@ pub struct JoinOptions {
     pub field1: usize,
     /// Field index that keys file 2 (`-2`, minus one).
     pub field2: usize,
-    /// Delimiter byte: both the split character and the output separator
-    /// (`-t`; the C default is `" \t"`, whose first byte — a space — also
-    /// separates output). Modelled as one byte; the default is space with
-    /// tabs treated as separators too via `collapse`.
-    pub delim: u8,
+    /// Delimiter **set** — C's `tabchar` (`join.c:108`): the two bytes `" \t"`
+    /// when no `-t` was given, otherwise the single `-t` byte (C rejects any
+    /// argument that isn't exactly one byte, `:201-204`).
+    pub tabchars: Vec<u8>,
+    /// C's `spans` (`join.c:106`): span runs of the delimiters, i.e. drop the
+    /// empty fields the cut produces. The default sets it; `-t` clears it.
+    pub spans: bool,
     /// Emit unpaired lines from file 1 (`-a 1`).
     pub unmatched1: bool,
     /// Emit unpaired lines from file 2 (`-a 2`).
@@ -74,13 +80,28 @@ impl Default for JoinOptions {
         JoinOptions {
             field1: 0,
             field2: 0,
-            delim: b' ',
+            tabchars: b" \t".to_vec(),
+            spans: true,
             unmatched1: false,
             unmatched2: false,
             output_fields: Vec::new(),
             empty: None,
             joinout: true,
         }
+    }
+}
+
+impl JoinOptions {
+    /// The output separator: C prints `*tabchar` (`join.c:497`), the **first
+    /// byte** of the delimiter set — a space by default, the `-t` byte with `-t`.
+    pub fn sep(&self) -> u8 {
+        self.tabchars.first().copied().unwrap_or(b' ')
+    }
+
+    /// 按本行的 `tabchars` + `spans` 切字段（C `slurp` 里 `strsep` 那一句）。收成方法
+    /// 是为了让调用方没法把「分隔符集」和「跳不跳空段」配错对——它们在 C 里同源。
+    fn fields_of<'l>(&self, line: &'l [u8]) -> Vec<&'l [u8]> {
+        split_fields(line, &self.tabchars, self.spans)
     }
 }
 
@@ -382,7 +403,10 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
                 if bytes.len() != 1 {
                     return Err(JoinError::BadTabChar);
                 }
-                opts.delim = bytes[0];
+                // C 在 `join.c:200-201` 一次做两件事：`spans = 0` 与 `tabchar = optarg`。
+                // 换了分隔符集也就同时关掉了「跳空段」，两者不是两个独立开关。
+                opts.tabchars = bytes.to_vec();
+                opts.spans = false;
             }
             b'a' => {
                 aflag = true;
@@ -454,21 +478,24 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
     Ok(JoinArgs { opts, files })
 }
 
-/// Split a line into fields on runs of space/tab (the C default `tabchar`
-/// `" \t"` with `spans`), or on the single `-t` byte; empty runs are skipped.
-fn split_fields(line: &[u8], delim: u8) -> Vec<&[u8]> {
+/// 把一行切成字段，形状照 C 的 `strsep(&bp, tabchar)`（`join.c:378`）：**每个分隔符字节
+/// 切一刀**，所以 `a,,c` 是三个字段（中间那个是空串）、行尾那个分隔符还留下一个尾部空字段
+/// （`strsep` 在串尾还会多给一次）。`spans` 决定这些空字段要不要丢掉——默认 `" \t"`
+/// 靠它把连读的分隔符当一段，而显式 `-t`（C `join.c:200` 把 `spans` 清成 0）必须**保留**
+/// 空字段，否则字段号、匹配集、`-o`、`-v` 四处会一起错位（金样见 `join_face.rs`）。
+fn split_fields<'l>(line: &'l [u8], tabchars: &[u8], spans: bool) -> Vec<&'l [u8]> {
     let mut fields = Vec::new();
     let mut start = 0usize;
-    for i in 0..=line.len() {
-        let is_delim = i < line.len() && (line[i] == delim || (delim == b' ' && line[i] == b'\t'));
-        if is_delim {
-            if i > start {
-                fields.push(&line[start..i]);
+    let mut i = 0usize;
+    while i <= line.len() {
+        if i == line.len() || tabchars.contains(&line[i]) {
+            let tok = &line[start..i];
+            if !(spans && tok.is_empty()) {
+                fields.push(tok);
             }
             start = i + 1;
-        } else if i == line.len() && i > start {
-            fields.push(&line[start..i]);
         }
+        i += 1;
     }
     fields
 }
@@ -486,10 +513,10 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
     let mut i = 0usize;
     let mut j = 0usize;
     while i < f1.len() && j < f2.len() {
-        let g1 = group_end(f1, i, opts.field1, opts.delim);
-        let g2 = group_end(f2, j, opts.field2, opts.delim);
-        let k1 = key(&split_fields(f1[i], opts.delim), opts.field1);
-        let k2 = key(&split_fields(f2[j], opts.delim), opts.field2);
+        let g1 = group_end(f1, i, opts.field1, opts);
+        let g2 = group_end(f2, j, opts.field2, opts);
+        let k1 = key(&opts.fields_of(f1[i]), opts.field1);
+        let k2 = key(&opts.fields_of(f2[j]), opts.field2);
         match k1.cmp(k2) {
             core::cmp::Ordering::Equal => {
                 // C's `if (joinout) joinlines(F1, F2)` (`join.c:259`): with `-v`
@@ -497,9 +524,9 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
                 // nothing.
                 if opts.joinout {
                     for la in f1[i..g1].iter().copied() {
-                        let fa = split_fields(la, opts.delim);
+                        let fa = opts.fields_of(la);
                         for lb in f2[j..g2].iter().copied() {
-                            let fb = split_fields(lb, opts.delim);
+                            let fb = opts.fields_of(lb);
                             out.push(twoline(&fa, &fb, opts));
                         }
                     }
@@ -510,7 +537,7 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
             core::cmp::Ordering::Less => {
                 if opts.unmatched1 {
                     for la in f1[i..g1].iter().copied() {
-                        out.push(onlyline(&split_fields(la, opts.delim), true, opts));
+                        out.push(onlyline(&opts.fields_of(la), true, opts));
                     }
                 }
                 i = g1;
@@ -518,7 +545,7 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
             core::cmp::Ordering::Greater => {
                 if opts.unmatched2 {
                     for lb in f2[j..g2].iter().copied() {
-                        out.push(onlyline(&split_fields(lb, opts.delim), false, opts));
+                        out.push(onlyline(&opts.fields_of(lb), false, opts));
                     }
                 }
                 j = g2;
@@ -528,18 +555,18 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
     // A file may have trailing groups past the other's end.
     if opts.unmatched1 {
         while i < f1.len() {
-            let g = group_end(f1, i, opts.field1, opts.delim);
+            let g = group_end(f1, i, opts.field1, opts);
             for la in f1[i..g].iter().copied() {
-                out.push(onlyline(&split_fields(la, opts.delim), true, opts));
+                out.push(onlyline(&opts.fields_of(la), true, opts));
             }
             i = g;
         }
     }
     if opts.unmatched2 {
         while j < f2.len() {
-            let g = group_end(f2, j, opts.field2, opts.delim);
+            let g = group_end(f2, j, opts.field2, opts);
             for lb in f2[j..g].iter().copied() {
-                out.push(onlyline(&split_fields(lb, opts.delim), false, opts));
+                out.push(onlyline(&opts.fields_of(lb), false, opts));
             }
             j = g;
         }
@@ -548,10 +575,12 @@ pub fn join_lines(f1: &[&[u8]], f2: &[&[u8]], opts: &JoinOptions) -> Vec<Vec<u8>
 }
 
 /// Index one past the run of lines from `start` sharing the key of `start`.
-fn group_end(lines: &[&[u8]], start: usize, field: usize, delim: u8) -> usize {
-    let base = key(&split_fields(lines[start], delim), field).to_vec();
+/// `field` 是**这一侧文件自己的**连接字段号（C 是 `F->joinf`，`slurp` 按调用方的
+/// `INPUT*` 取，两侧可以不同——`-1 2 -2 1` 就不同）。
+fn group_end(lines: &[&[u8]], start: usize, field: usize, opts: &JoinOptions) -> usize {
+    let base = key(&opts.fields_of(lines[start]), field).to_vec();
     let mut end = start + 1;
-    while end < lines.len() && key(&split_fields(lines[end], delim), field).to_vec() == base {
+    while end < lines.len() && key(&opts.fields_of(lines[end]), field).to_vec() == base {
         end += 1;
     }
     end
@@ -612,7 +641,7 @@ fn twoline(a: &[&[u8]], b: &[&[u8]], opts: &JoinOptions) -> Vec<u8> {
         for entry in &opts.output_fields {
             push_tok(
                 &mut line,
-                opts.delim,
+                opts.sep(),
                 &mut first,
                 &olist_token(entry, Some(a), Some(b), opts),
             );
@@ -629,22 +658,23 @@ fn twoline(a: &[&[u8]], b: &[&[u8]], opts: &JoinOptions) -> Vec<u8> {
             &owned_join
         }
     };
-    push_tok(&mut line, opts.delim, &mut first, join_tok);
+    push_tok(&mut line, opts.sep(), &mut first, join_tok);
     for (idx, f) in a.iter().enumerate() {
         if idx != opts.field1 {
-            push_tok(&mut line, opts.delim, &mut first, f);
+            push_tok(&mut line, opts.sep(), &mut first, f);
         }
     }
     for (idx, f) in b.iter().enumerate() {
         if idx != opts.field2 {
-            push_tok(&mut line, opts.delim, &mut first, f);
+            push_tok(&mut line, opts.sep(), &mut first, f);
         }
     }
     line
 }
 
 /// An unpaired line: with `-o` the other file's fields yield the `-e`
-/// replacement; otherwise all of the line's own fields, joined by `delim`.
+/// replacement; otherwise every one of the line's own fields goes through
+/// C's `outfield`（`join.c:493-509`）——**空字段也占一个分隔符槽**，只是不打内容。
 fn onlyline(fields: &[&[u8]], is_file1: bool, opts: &JoinOptions) -> Vec<u8> {
     let mut line = Vec::new();
     let mut first = true;
@@ -654,7 +684,7 @@ fn onlyline(fields: &[&[u8]], is_file1: bool, opts: &JoinOptions) -> Vec<u8> {
         for entry in &opts.output_fields {
             push_tok(
                 &mut line,
-                opts.delim,
+                opts.sep(),
                 &mut first,
                 &olist_token(entry, a, b, opts),
             );
@@ -662,14 +692,7 @@ fn onlyline(fields: &[&[u8]], is_file1: bool, opts: &JoinOptions) -> Vec<u8> {
         return line;
     }
     for f in fields {
-        if f.is_empty() {
-            continue;
-        }
-        if !first {
-            line.push(opts.delim);
-        }
-        line.extend_from_slice(f);
-        first = false;
+        push_tok(&mut line, opts.sep(), &mut first, f);
     }
     line
 }
@@ -750,11 +773,64 @@ mod tests {
         let f1 = "1:a\n2:b";
         let f2 = "1:x\n3:z";
         let o = JoinOptions {
-            delim: b':',
+            tabchars: b":".to_vec(),
+            // `-t` 在 C 里同时清掉 `spans`（`join.c:200`），所以这一形是「单字节集 +
+            // 保留空字段」，不是只换个分隔符。
+            spans: false,
             ..Default::default()
         };
         // split and join both use ':'; unmatched file lines dropped (no -a).
         assert_eq!(join(f1, f2, &o), "1:a:x");
+    }
+
+    /// 默认分隔符集（`" \t"` + `spans`）：连读的分隔符算一段，空段不成为字段。
+    /// 行首与行尾的分隔符也不留下空字段（C `strsep` 会给，但 `:379` 丢掉了）。
+    #[test]
+    fn split_default_set_spans_runs_and_drops_empty_fields() {
+        let f = split_fields(b"a  b\tc ", b" \t", true);
+        assert_eq!(f, vec![&b"a"[..], &b"b"[..], &b"c"[..]]);
+        assert_eq!(split_fields(b"  a", b" \t", true), vec![&b"a"[..]]);
+        assert_eq!(split_fields(b"", b" \t", true), Vec::<&[u8]>::new());
+    }
+
+    /// 显式 `-t`（`spans = 0`）：每刀都算一个字段，所以 `a,,c` 是三个字段、行尾
+    /// 那个分隔符还多留一个空字段（金样来自参照件 `join_ref`，批次二百九十九）。
+    #[test]
+    fn split_with_explicit_dash_t_keeps_every_empty_field() {
+        assert_eq!(
+            split_fields(b"a,,c", b",", false),
+            vec![&b"a"[..], &b""[..], &b"c"[..]]
+        );
+        assert_eq!(split_fields(b"a,", b",", false), vec![&b"a"[..], &b""[..]]);
+        assert_eq!(split_fields(b",a", b",", false), vec![&b""[..], &b"a"[..]]);
+        assert_eq!(split_fields(b"", b",", false), vec![&b""[..]]);
+    }
+
+    /// `-t ' '` 只把空格当分隔符（C 的 `tabchar` 就是那一字节），tab 仍是内容；
+    /// 旧写法把「分隔符是空格」当成「默认集」，于是制表符也被切开。参照件现测：
+    /// `join -t ' ' -j 2` 对 `a\tb` 给 ` a\tb a\tb`（一整串是一个字段）。
+    #[test]
+    fn dash_t_space_does_not_make_tab_a_delimiter() {
+        assert_eq!(split_fields(b"a\tb", b" ", false), vec![&b"a\tb"[..]]);
+        assert_eq!(
+            split_fields(b"a  b", b" ", false),
+            vec![&b"a"[..], &b""[..], &b"b"[..]]
+        );
+    }
+
+    /// 不配对那一行（C `outoneline`）把**每个**字段送进 `outfield`：空字段占槽不打字，
+    /// 所以 `-t, -a1` 对 `a,` 给 `a,` 而不是 `a`（参照件现测，批次二百九十九）。
+    /// 两行都得让键不相等，否则走的是成对路而不是 `outoneline`。
+    #[test]
+    fn unpaired_line_gives_an_empty_field_its_separator_slot() {
+        let o = JoinOptions {
+            tabchars: b",".to_vec(),
+            spans: false,
+            unmatched1: true,
+            ..Default::default()
+        };
+        assert_eq!(join("a,", "b", &o), "a,");
+        assert_eq!(join("a,,c", "x", &o), "a,,c");
     }
 
     #[test]
@@ -853,14 +929,19 @@ mod tests {
     fn parse_attached_option_values_accepted() {
         // 关键回归：BSD getopt 的附值形不被旧前门接受。
         let a = parse(&["-t,", "f1", "f2"]);
-        assert_eq!(a.opts.delim, b',');
+        assert_eq!(a.opts.sep(), b',');
+        assert_eq!(a.opts.tabchars, b",".to_vec());
+        assert!(
+            !a.opts.spans,
+            "`-t` 在 C 里同时清掉 `spans`（`join.c:200`）"
+        );
         assert_eq!(a.files, vec!["f1", "f2"]);
         let b = parse(&["-a1", "-o0,1.2", "f1", "f2"]);
         assert!(b.opts.unmatched1 && !b.opts.unmatched2);
         assert_eq!(b.opts.output_fields.len(), 2);
         // 分离值仍正确（向后兼容）。
         let c = parse(&["-t", "|", "-1", "2", "f1", "f2"]);
-        assert_eq!(c.opts.delim, b'|');
+        assert_eq!(c.opts.sep(), b'|');
         assert_eq!(c.opts.field1, 1);
     }
 
