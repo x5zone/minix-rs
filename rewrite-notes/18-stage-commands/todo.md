@@ -250,6 +250,69 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百一十把 `colrm` 的选项环与列号段按 C 定形，并新立它的第一扇端到端门（第四处读缝缺陷）**
+  （`2026-10-16`，`claim/COLRM-GETOPT-LINE-qoder` @ 基线 `58ff62978`，单域三线 commands/textfilter，无跨界）：
+  判定表第十二支（按 `tmp/todo-loop-HANDOFF.md` 现查选出的最廉价一支）。**真源形状**：
+  `colrm.c:67` 的 optstring 是空串，与批次三百零九的 `rev.c:70` 逐字同形，所以选项环那三形照搬——
+  集外字母先由 libc 印一行（`getopt.c:95-104`）再由 `:68-72` 的 `default: usage()` 印第二行、
+  `--` 结束选项环而自身不算操作数（`:81-85` 先 `++optind`）、裸 `-` 结束选项环却**不推进**所以它是操作数
+  （`:87-92`）。**但同一个 token 在两条命令里落到完全不同的句子**：`rev` 把操作数当文件走 `fopen`
+  失败支，而 `colrm` 的操作数是列号，裸 `-` 到 `colrm.c:84-86` 就是一句 `illegal column -- -`。
+  **本壳改前的三处失真**（逐形与参照件对出）：① 没有选项环，`-Z` 被当列号拒收，少了 libc 那一行；
+  ② `--` 被当坏选项直接 usage，而 C 拿它结束选项环；③ 列号用 Rust 的 `parse::<usize>()` 解，
+  于是把 C 的 `strtol` 接受面整个收窄（`colrm " 3"`、`colrm +3`、`colrm 03` 在 C 都是合法的列号 3，
+  本壳全拒；`99999999999999999999999` 在 C 溢出饱和后被接受而本壳溢出报错）。
+  **列号段的两处 C 性质值得单独记**（都是参照件现量，不靠同族规律外推）：
+  ① **两个操作数都坏时报后写的那支**——C 的 `case 2:` 先对 `argv[1]` 做 `strtol` 并检查、
+  `/* FALLTHROUGH */` 才轮到 `argv[0]`（`colrm.c:78-87`），所以 `colrm abc def` 印的是 `def`；
+  ② **负数不被拒**——`colrm.c:63` 把 `strtol` 的结果存进 `u_long`，于是 `if (start <= 0 || *p)` 里的
+  `<= 0` 只挡得住 0，`colrm -- -5` 得到回绕后的极大值、整行透传并退 0。本壳如实搬这两条而不替 C 修正。
+  **共件抽出**：空 optstring 的选项环此前只住在 `rev.rs`，现在两处 C 源逐字相同（`rev.c:70` 与
+  `colrm.c:67`），于是提为 `minix_textfilter::empty_optstring_operands`（`src/lib.rs`，与
+  `GetoptReport` 同一处单源），`rev` 侧的 `parse_rev_args` 改成一行委托、行为与句子都不变。
+  **新门一立又暴露同形的第四处读缝缺陷**：`colrm` 壳拿裸 `minix_sys::read(support::STDIN, …)` 读输入，
+  宿主上读不到任何东西（与批次三百零六的 `nl`、三百零八的 `fold`、三百零九的 `rev` 同病），所以它的
+  列走从来没有被进程级测过；已改走 `bin_support::read_stdin()` 的双生读缝。顺带修掉同一条腿上的第二处
+  失真：旧写法把输入过一遍 UTF-8 校验、校验不过就 `unwrap_or("")` 把整个输入当空，非文本字节会无声消失，
+  而 C 的 `getchar` 按字节走列（门测里 `colrm 2 3` 吃 `a\xff\xbccdef` 一例钉住）。
+  **门测 12 枚**（`os/commands/usr-bin/textfilter/tests/colrm_face.rs`，新立的第 56 个 target）：选项环
+  四枚（集外字母两行、聚簇只报第一个、`--x` 报第二个连字符、`--` 不是操作数）、操作数腿六枚
+  （裸 `-` 被当列号、操作数之后的 `-Z` 也是列号、都坏时报后写的那支、`strtol` 的接受面、溢出与负数透传、
+  多于两个只印 usage）、诊断腿一枚（`err(1, ...)` 三段形缀 `strerror` 且不接 usage）、输出腿一枚。
+  **A/B 逐形对账**：参照件 `tmp/colrm-310/colrm_ref`（`colrm.c` 真源 + Minix 的 `getopt.c` +
+  程序名垫片，垫片要自己算 basename 因为 `colrm.c` 不调 `setprogname`，链法同批次三百零九），
+  读数 `tmp/colrm-310/golden.log`，30 形对账 `tmp/colrm-310/ab.log` 得 **SAME=29 DIFF=1**——
+  唯一的差在 `illegal start and stop columns` 那一行缀的 `strerror(0)` 句子：本机 glibc 印 `Success`，
+  而 Minix 的表对 0 号写的是 `Undefined error: 0`（`minix3/lib/libc/compat/gen/compat_errlist.c:53`
+  的 `/* 0 - ENOERROR */`，本仓 `Errno::from_i32(0).message()` 同一句），本壳跟的是 Minix 那张表，
+  所以这一形是**宿主参照件的表差异**而不是本壳的失真，门测因此只钉形状不钉句子。
+  **变异负控四枚**（`tmp/colrm-310/ctl310.py`，每枚先打印 `mutation applied`、还原后核 md5）：
+  丢 libc 那一行 → 咬 3 枚；取消选项环（本批改前形状）→ 咬 4 枚；把「先算 stop」反转成「先算 start」
+  → 咬 6 枚；读缝退回裸 `read` → 咬 4 枚。
+  **登记不执行**：① C 的 `check()`（`colrm.c:97-130`）在 stdin 读错时印 `colrm: stdin: <strerror>`、
+  stdout 写错时印 `colrm: stdout: <strerror>`，本壳的 `read_stdin()` 没有错误通道、`emit()` 的短写
+  也不上报，这两形在壳侧不可观测（`COLRM-IO-ERRLEG`，与 `REV-STDIN-ERRLEG` 同族）；② C 边读边写，
+  本壳先收全再过滤，长输入的内存形状差异是 `bin_support::read_stdin` 已声明的宿主优先取舍
+  （`COLRM-STREAMING-MEMORY`）；③ 集外字母在 C 是 `%c` 打**一个字节**，本壳按 `char` 取第一个字符，
+  只在 `-` 后跟非 ASCII 时分歧（`COLRM-NONASCII-OPTLETTER`，同 `REV-` 那一条的第二例）；
+  ④ 列号的回绕按 `usize` 建模，三块目标板与宿主都是 64 位所以与 C 的 `u_long` 同宽，将来若跑 32 位
+  需重看（`COLRM-ULONG-WIDTH`）；⑤ 真机 open/写腿与 per-command 断言归 `C-57`/E5（既有口径）；
+  ⑥ 07 篇第 155 行那句陈旧的测试计数（写 229 个）仍归 V3-5/V3-6 的口径轮，本笔不顺手改（批次三百零九
+  已登记）。本笔顺手翻正了判定表里的一处分类错：`tr` 原列「另判」，现查 `minix3/usr.bin/tr/tr.c:68`
+  吃的是 libc `getopt(argc, argv, "cds")`，已改列「待接」（见上一笔的判定表行内注）。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/rev/**colrm** + pr（egetopt 措辞）；
+  待接 `split`、`unexpand`、`col`、`column`、`comm`、`cmp`、`jot`、`unifdef`、`units`、`seq`、`paste`、
+  `tr`；另判 `expand`/`hexdump`/`colcrt`/`lam`。下一支取 `SPLIT-GETOPT-LINE`（`minix3/usr.bin/split/split.c:80`
+  的 optstring 是 `"0123456789b:l:a:n:"`：数字是合法字母而四个带值项都在，出口比 `colrm` 多一整层）。
+  **三件套**：容器整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **713 / 0 / 0**
+  （56 target，基线 `58ff62978` 为 699/55，+14 与测数增量相符、+1 是新立的 `colrm_face`）；
+  `cargo clippy -j 1 -p minix-textfilter --all-targets` 退码 0、0 error、**86 warning 同基线**且触及件零命中；
+  `cargo check --workspace -j 1` 0 error；宿主三架构 `--bins` 各 `Finished`；`rustfmt --edition 2024 --check`
+  触及件零漂移（`lib.rs` 的模块声明重排与 `col.rs`/`jot.rs`/`diff.rs` 等处的存量漂移非本笔，未动）；
+  核实日 `2026-10-16`；基线 `58ff62978`。**验证边界**：参照件在本机链 glibc 的 `err`/`errx` 与
+  `strtol`，其 `strerror(0)` 句子与 Minix 表不同（已在上文逐形标明），真机腿归 `C-57`/E5。
+  **负载条款**：一条命令只一件事、容器 `-j 1 -m 2g -u`、宿主与容器不交叉用同一 target、无合成压力。
+
 - ✅ **批次三百零九把 `rev` 的选项环补回来：空 optstring 不等于没有环，并新立它的第一扇端到端门**
   （`2026-10-16`，`claim/REV-GETOPT-LINE-qoder` @ 基线 `ce8536efb`，单域三线 commands/textfilter，无跨界）：
   判定表第五支。**真源形状**：`rev.c:70` 的 optstring 是**空串**，这一条容易被读成「`rev` 没有选项环」——
@@ -290,7 +353,10 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   归 V3-5/V3-6 那两轮处理，本笔不顺手改。
   **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/**rev** + pr（egetopt 措辞）；
   待接 `split`、`unexpand`、`col`、`colrm`、`column`、`comm`、`cmp`、`jot`、`unifdef`、`units`、`seq`、
-  `paste`；另判 `expand`/`hexdump`/`colcrt`/`tr`/`lam`（C 各用自己的解析器，句子不许按同族规律抹平）。
+  `paste`、**`tr`**；另判 `expand`/`hexdump`/`colcrt`/`lam`（C 各用自己的解析器，句子不许按同族规律抹平）。
+  （上表把 `tr` 列在「另判」是记错了：`minix3/usr.bin/tr/tr.c:68` 写的是
+  `while ((ch = getopt(argc, argv, "cds")) != -1)`，吃的就是 libc 的 `getopt`，所以它属于「待接」那一组。
+  这一条由批次三百一十现查翻正，也是「别外推」的又一例——判定表的归类必须逐支读 C 源才算数。）
   **负载条款**：一条命令只一件事、容器 `-j 1 -m 2g -u`、宿主与容器不交叉用同一 target、无合成压力。
 
 - ✅ **批次三百零八把 `fold` 的诊断面按 C 分回三类出口，并新立它的第一扇端到端门（顺带修好宿主读不到的读缝）**

@@ -142,6 +142,41 @@ impl GetoptReport {
     }
 }
 
+/// 空 optstring 的选项环：交回 `argv += optind` 之后的操作数。
+///
+/// `rev.c:70` 与 `colrm.c:67` 写的都是 `getopt(argc, argv, "")`，两处形状逐字相同，
+/// 所以这一支放在这里由两条命令共用（同 [`GetoptReport`] 的处置理由：一份事实只承载一次）。
+/// 空 optstring 不等于「没有选项环」，它的后果有三处，全部由 libc `getopt` 定：
+/// ① `strchr("", <字母>)` 永远是 `NULL`，所以任何 `-` 开头的 token 都落
+/// `minix3/lib/libc/stdlib/getopt.c:95-104` 的集外字母支——libc 先印一行再返回 `'?'`；
+/// ② `--` 在 `:81-85` 结束选项环且**先 `++optind`**，所以它自身不是操作数；
+/// ③ 裸 `-` 在 `:87-92` 因 optstring 里没有 `-` 而结束选项环**却不推进** `optind`，
+/// 于是它自己是操作数（两条命令怎么处理这个操作数各不相同，归各自的壳）。
+///
+/// 不重排：非选项 token 一到，`:74-78` 当场返回 -1，它和它后面的 token 整个交回当操作数。
+/// 只看**第一个** token：调用者的 `while` 圈定不了第二次（拿到 `'?'` 就 `usage()` 退出，
+/// 拿到 -1 就结束），所以这里写单次判定而不写循环。
+///
+/// 这一支不判「带值选项缺值」：空 optstring 里没有任何选项要值，`getopt.c:112-141`
+/// 那整段到不了，所以只可能交回 [`GetoptReport::UnknownOption`]。
+pub fn empty_optstring_operands<'a>(
+    argv: &'a [&'a str],
+) -> Result<alloc::vec::Vec<&'a str>, GetoptReport> {
+    let Some(first) = argv.first() else {
+        return Ok(alloc::vec::Vec::new());
+    };
+    let Some(flag) = first.strip_prefix('-') else {
+        return Ok(argv.to_vec());
+    };
+    if flag == "-" {
+        return Ok(argv[1..].to_vec());
+    }
+    let Some(letter) = flag.chars().next() else {
+        return Ok(argv.to_vec());
+    };
+    Err(GetoptReport::UnknownOption(letter))
+}
+
 #[cfg(test)]
 mod tests {
     use super::GetoptReport;
