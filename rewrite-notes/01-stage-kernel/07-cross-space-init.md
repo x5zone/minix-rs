@@ -1,8 +1,12 @@
 # 07 · 跨空间初始化：Direct Map 取代 32 位临时窗口
 
-> **C 真值源**：`minix3/minix/kernel/main.c`（`arch_post_init`/`memory_init` 的调用位置）、`minix3/minix/kernel/arch/i386/protect.c:arch_post_init`、`minix3/minix/kernel/arch/i386/memory.c:memory_init/createpde/lin_lin_copy/vm_memset/mem_clear_mapcache`、`minix3/minix/kernel/arch/i386/pg_utils.c:pg_info`、`minix3/minix/kernel/system/do_vmctl.c`（`VMCTL_CLEARMAPCACHE` 分支）、`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3`、`minix3/minix/kernel/arch/i386/klib.S`（含 `ENTRY(__switch_address_space)` 入口）。
-> **Rust 模块**：`os/kernel/src/dm_coverage.rs`（`establish_boot_dm` 与四个候选源函数）、`os/arch/src/arch/direct_map.rs`（`DirectMapArch` trait 与三架构实现）、`os/arch/src/arch/dm_coverage.rs`（`DmRange`/`plan_range_units`/`establish_dm_range`）、`os/kernel/src/lib.rs`（`init_post_and_memory`/`switch_address_space`/`arch_boot_impl`）、`os/arch/src/arch/paging.rs`（`map_kernel`/`PageFlags`）。
-> **前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)（boot 期建表，§2.6）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（进程槽与 boot→running 转换，§3.12）。
+> **C 真值源**：`minix3/minix/kernel/main.c`（`arch_post_init`/`memory_init` 的调用位置）、`minix3/minix/kernel/arch/i386/protect.c:arch_post_init`、`minix3/minix/kernel/arch/i386/memory.c:memory_init/createpde/lin_lin_copy/vm_memset/mem_clear_mapcache`、`minix3/minix/kernel/arch/i386/pg_utils.c:pg_info`、`minix3/minix/kernel/system/do_vmctl.c`（`VMCTL_CLEARMAPCACHE` 分支）、`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3`、`minix3/minix/kernel/arch/i386/klib.S`（含 `ENTRY(__switch_address_space)` 入口）、`minix3/minix/kernel/{cpulocals.h,proc.h}`、`minix3/minix/kernel/arch/{i386/include/vm.h,earm/memory.c}`、`minix3/minix/include/minix/{param.h,com.h}`、`minix3/minix/servers/vm/{pagetable,main,pagefaults}.c`。
+> **Rust 模块**：`os/kernel/src/dm_coverage.rs`（`establish_boot_dm` 与四个候选源函数）、`os/arch/src/arch/direct_map.rs`（`DirectMapArch` trait 与三架构实现）、`os/arch/src/arch/dm_coverage.rs`（`DmRange`/`plan_range_units`/`establish_dm_range`）、`os/kernel/src/lib.rs`（`init_post_and_memory`/`switch_address_space`/`arch_boot_impl`）、`os/kernel/src/{syscall,smp,vm_handoff}.rs`、`os/arch/src/arch/paging.rs`（`map_kernel`/`PageFlags`）、`os/arch/src/x86_64/paging.rs`（`X86_64DmCoverage`）。
+> **前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)（boot 期建表，§2.6）、[03-kmain-cstart.md](03-kmain-cstart.md)（Phase A–F 的划分——本篇 Phase D 的位置）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（进程槽与 boot→running 转换，§3.12）。
+> **目标读者**：熟悉操作系统基本概念（地址空间、页表、TLB、特权级）与 C 语言的开发者；Rust 一侧读到 trait 与 `unsafe` 契约大意即可。
+> **前置知识**：boot 期已建好 bootstrap 页表并开启分页（[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6 的建表五步）；进程槽与 boot→running 转换的形状（[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §3.12）；x86 分页的 U/S 位与大页语义听过即可（位表在 01 篇 §2.6.4）。
+> **教学目标**：①C 的临时窗口机制四步生命周期与四条隐性契约（§1.2、§2）；②64 位 Direct Map 的方向性区别与双视图地址空间（§1.3、§3.2）；③阶段 D 的时点保留、三条断言与记录点后移（§3.5、§4.2）；④覆盖建立的实现链：候选四源、窗口裁剪、粒度贪心、安装次序与验证（§4.3–§4.5）；⑤测试面与错误类别的结构性消失（§5）；⑥诊断入口与手算命令（§6）；C 侧覆盖边界见 §1.6。
+> **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构）；`DirectMapArch` 的按架构 trait 化是 Architectural Evolution（C 的双宏族变为按架构 trait 实现），涉及处标注 `[ARCH: A-10]`。
 > **说明**：本篇讲一件事的两代解法——内核没有自己的页表，却要读写别的地址空间里的内存。32 位 C 的答案是"在当前页表里借一个 4 MB 窗口"（记录 → 分配 → 使用 → 清理四步）；64 位 Rust 的答案是"划一段常驻线性窗口，翻译退化为一次加法"，以及随之而来的双视图地址空间与运行期窗口覆盖模型。**与 01 篇的分界**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6 已从 boot 建表角度讲过 `createpde` 借槽位窗口与 `freepde_start` 的语义（含偏移一位后果）、§3.8/§3.9 讲过页表页分配器换手与 `free_upper_idx` 字段保留；本篇从跨空间访问机制的角度接管同一段代码的完整生命周期，引用不重复。
 
 ## 1. 概述
@@ -88,7 +92,7 @@ MMU 做虚拟地址翻译时只看一个东西：当前装在页表根寄存器�
 第 1.1 节的 ptproc 在临时窗口机制里出现过两次，两次的身份不同：
 
 - **用途一（窗口侧）**：`createpde` 要把目标的页目录项写进"当前生效的那张表"，写谁？写 ptproc 指的那张——ptproc 的 `p_cr3_v` 就是写入目标；同时 `pr == ptproc` 又是"目标已可见"的特判条件。窗口机制死后，这个用途没有对应物。
-- **用途二（切表侧）**：`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3` 在 VM 通过 `VMCTL_SETADDRSPACE` 给进程换页表时，要判断"要换上去的表是不是已经装着的这张"，是就不必真写 CR3：
+- **用途二（切表侧）**：`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3` 在 VM 通过 `VMCTL_SETADDRSPACE` 给进程换页表时，要判断"这次更新的是不是当前在位的那张表"，是就立即把新值写进硬件（`write_cr3`），不是就只更新记录：
 
 ```c
 /*
@@ -128,19 +132,33 @@ static void setcr3(struct proc *p, u32_t cr3, u32_t *v)
 | `free_upper_idx` 字段为何保留 | 引用不重复 | [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §3.9 |
 | `init_post_and_memory` 的三条断言（boot→running 侧） | §4.2 讲机制，转换形状引 06 | [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §3.12 |
 | 页表结构本体（`pt_t`、层级、宏族、VM 侧 Direct Map 消费） | 不讲 | `rewrite-notes/02-stage-vm/07-pagetable-struct.md` §1.4、`08-pagetable-ops.md` |
-| 跨空间拷贝的系统调用消费面（`sys_vircopy` 一族谁在调） | 只讲到 `lin_lin_copy` 为止 | `22-syscall-copy`（跨空间拷贝调用面，尚未重生成） |
-| 页错误挂起与恢复协议（`vm_suspend` 之后的事） | 一行指向 | `29-cross-space-runtime`（VMSUSPEND 协议，尚未重生成） |
-| AP（应用处理器）侧的 ptproc 安装路径 | 一段带过 | `10-smp-boot`（SMP 启动，尚未重生成） |
+| 跨空间拷贝的系统调用消费面（`sys_vircopy` 一族谁在调） | 只讲到 `lin_lin_copy` 为止 | `18-syscall-copy`（跨空间拷贝调用面，尚未重生成） |
+| 页错误挂起与恢复协议（`vm_suspend` 之后的事） | 一行指向 | `24-cross-space-runtime`（VMSUSPEND 协议，尚未重生成） |
+| AP（应用处理器）侧的 ptproc 安装路径 | 一段带过 | `16-smp`（SMP 篇，尚未重生成） |
 
 认知减负声明：x86 分页的 U/S 位、PWT/PCD 位这些硬件细节，本篇只用其中一条语义（每个 VA 翻译的 U/S 取值来自它自己的页表项，不存在"一条翻译同时是两种特权"），位表本身不展开——它在 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6.4 已经逐位列过；TLB 的替换与预热策略属于 MMU 通识加 `rewrite-notes/02-stage-vm/07-pagetable-struct.md` 的辖区，本篇不碰。
 
 把第 1 章的图按同一框架收一次：四步机制里，"记录"与"分配"各跑一次、供给全程；"使用"每次访问都改当前表并可能刷 TLB；"清理"等 VM 的显式指令。第 2 章按这个顺序走函数。
 
+### 1.6 本篇的 C 侧覆盖边界
+
+本篇的 C 侧对照物只有 Minix3 的两个内核架构实现：i386 与 earm（临时窗口机制两边各有一份，§3.3）。Rust 侧有两种成分：x86-64 上对窗口机制的替换（有 C 逐条可对照），以及 aarch64/riscv64 的 Direct Map 实现与三架构共享的新机制（C 树里没有对应物）。
+
+| Rust 侧分支 / 机制 | C 对照物 | 判定 |
+|---|---|---|
+| x86-64 的窗口→DM 替换（§2 四步的每一环） | i386：`memory.c` / `protect.c` / `pg_utils.c` / `klib.S` | **有 C 可对照**（§2.1–§2.5 逐处对账；§3.6 的废弃/改型/存活逐行对账） |
+| earm 的窗口机制（§3.3 的"两份实现文件"对照） | earm：`minix3/minix/kernel/arch/earm/memory.c`（`createpde`/`freepdes`/`memory_init` 的等价物） | 有 C 可对照（同形机制的另一侧） |
+| aarch64 / riscv64 的 `DirectMapArch` 实现（基址、尺寸、顶层槽位；Sv39 的 16 GiB 取向，§4.1） | **无**——C 内核没有这两个架构 | **未覆盖（无 C 源）** |
+| 双视图地址空间与双窗权限模型（VM DM U=1 / 内核 DM U=0+GLOBAL，§3.2） | **无**——64 位新决策，C 无此形态 | **未覆盖（无 C 源）** |
+| 覆盖建立三件套与四个候选源（`DmRange`/`plan_range_units`/`DmCoverageArch`、§4.3–§4.5） | **无**——C 只有"借一个窗口"的按次机制，无"按资源区间建覆盖"的常驻模型 | **未覆盖（无 C 源）** |
+
+"未覆盖"的含义：这些分支的正确性依据不是 C 对照，而是设计契约（§3）与真机全链（§5.3 的启动链载体）。本篇对它们的陈述一律写作"无对应物"，不写作"与 C 一致"——这条纪律同时适用于后续修订中的新增段落。
+
 ## 2. C 源码分析
 
 ### 2.0 本章地图：一条四步生命周期
 
-四个阶段的函数与触发点全部在 C 主流程的两个位置上：
+四个阶段的函数、触发点与频率：
 
 | 阶段 | 函数 | 触发点 | 频率 |
 |---|---|---|---|
@@ -208,7 +226,7 @@ void pg_info(reg_t *pagedir_ph, u32_t **pagedir_v)
 
 **不看代码想不到的一条**：`arch_post_init` 全程不分配、不建表，它做的只是"记名字"——但内存管理代码此后的一切跨空间访问都以这两个记录为前提：`createpde` 每次写入的目标是 `ptproc->p_seg.p_cr3_v`，`mem_clear_mapcache` 清的也是它。
 
-如果反过来想：若只记物理地址、不记虚拟地址——`createpde` 与 `mem_clear_mapcache` 都要直接写页目录条目，而写条目需要可解引用的虚拟地址；开分页之后物理地址对 CPU 不可直接寻址，机制在它最需要的那个动作上失效。`p_cr3` 与 `p_cr3_v` 成对存在，是"MMU 用物理、内核用虚拟"这个分工在数据结构上的直接投影。
+把 `p_cr3_v` 这半去掉、只记物理地址会怎样：`createpde` 与 `mem_clear_mapcache` 都要直接写页目录条目，而写条目需要可解引用的虚拟地址；开分页之后物理地址对 CPU 不可直接寻址，机制在它最需要的那个动作上失效。`p_cr3` 与 `p_cr3_v` 成对存在，是"MMU 用物理、内核用虚拟"这个分工在数据结构上的直接投影。
 
 ### 2.2 分配：`memory_init` 拨出两个窗口槽
 
@@ -252,7 +270,7 @@ void memory_init(void)
 
 **不看代码想不到的一条**：这次"分配"拨的不是内存，是**页目录槽位的编号**——`freepdes[]` 里存的只是两个 0–1023 的整数，真正的内存（4 MB 窗口背后的物理页）要到每次"使用"时才由写入的 PDE 值临时指定。分配动作与内存无关，这是"窗口"这个词在实现层的真实含义。
 
-如果反过来想：若把容量扩到 4（`MAXFREEPDES = 4`）并拨四个槽——代码里没有任何消费者使用 2、3 号下标（两处调用点的 `free_pde_idx` 都是字面量 0 或 1），多拨的两个槽永远空转；而 `assert(kinfo.freepde_start < I386_VM_DIR_ENTRIES)` 的上界压力反而翻倍。反过来若容量为 1——`lin_lin_copy` 的目的方向没有槽可用，跨进程拷贝退化成"只能单向"。2 是消费者结构决定的数，不是拍出来的。
+把容量扩到 4（`MAXFREEPDES = 4`）并拨四个槽——代码里没有任何消费者使用 2、3 号下标（两处调用点的 `free_pde_idx` 都是字面量 0 或 1），多拨的两个槽永远空转；而 `assert(kinfo.freepde_start < I386_VM_DIR_ENTRIES)` 的上界压力反而翻倍。反过来若容量为 1——`lin_lin_copy` 的目的方向没有槽可用，跨进程拷贝退化成"只能单向"。2 是消费者结构决定的数，不是拍出来的。
 
 ### 2.3 使用：`createpde` 的一次完整判定
 
@@ -352,14 +370,14 @@ static phys_bytes createpde(
 |---|---|---|
 | 找对方的 PDE 下标 | `0x01234567 >> 22` | `4` |
 | 偏移 | `0x01234567 & 0x003FFFFF` | `0x234567` |
-| 本轮可见量 | `0x400000 - 0x234567` | `0x1CBA99`（约 1.85 MB，16 MB 请求被截到不足两成） |
+| 本轮可见量 | `0x400000 - 0x234567` | `0x1CBA99`（约 1.88 MB，16 MB 请求被截到不足两成） |
 | 返回地址 | `4 MB × 0 + 0x234567` | `0x234567` |
 
-也就是说调用方这一轮只能在 `0x234567` 起拷 `0x1CBA99` 字节，下一轮带着剩余字节数重来——10 MB 的请求约三轮、16 MB 的请求四轮，每轮两次 `createpde` 加一次可能的 `reload_cr3`。
+也就是说调用方这一轮只能在 `0x234567` 起拷 `0x1CBA99` 字节，下一轮带着剩余字节数重来——10 MB 的请求约四轮、16 MB 的请求约五轮（首轮只吃下 1.88 MB），每轮两次 `createpde` 加一次可能的 `reload_cr3`。
 
 **不看代码想不到的一条**：特判分支返回的 `linaddr` 是**对方进程的 VA 原样**——一个看起来"属于别人地址空间"的地址被直接当返回值用出去。它能成立，恰因为对方就是当前页表的主人；这条返回值路径就是第 1.1 节"困难只属于第三行"的代码形态。
 
-如果反过来想：把写入前的旧值比较删掉、每次都置 `changed`——后果不在正确性而在性能结构：`lin_lin_copy` 每轮循环（`memory.c:192`）与 `vm_memset` 每轮（`memory.c:559`）都会执行 `reload_cr3()`，把整张 TLB 里所有非全局项反复作废；跨进程拷贝的热循环因此每次迭代多一次全量 TLB 冷启动。反过来，若既不比较也不清理地复用窗口（见 §2.5 的反向）才是正确性问题。
+把写入前的旧值比较删掉、每次都置 `changed` 会坏在哪：后果不在正确性而在性能结构：`lin_lin_copy` 每轮循环（`memory.c:192`）与 `vm_memset` 每轮（`memory.c:559`）都会执行 `reload_cr3()`，把整张 TLB 里所有非全局项反复作废；跨进程拷贝的热循环因此每次迭代多一次全量 TLB 冷启动。反过来，若既不比较也不清理地复用窗口（见 §2.5 的反向）才是正确性问题。
 
 ### 2.4 两个消费现场：`lin_lin_copy` 与 `vm_memset`
 
@@ -438,11 +456,11 @@ static int lin_lin_copy(struct proc *srcproc, vir_bytes srclinaddr,
 			...
 ```
 
-与拷贝路径的两个差别：只借 0 号槽（单方向）；页错误不走 `EFAULT` 返回而是转 `vm_suspend`，把"目标页还没落位"的现场交给 VM 处理并返回 `VMSUSPEND`——挂起之后如何恢复是另一套协议，归 `29-cross-space-runtime`（VMSUSPEND 协议，尚未重生成），本篇止步于此。
+与拷贝路径的两个差别：只借 0 号槽（单方向）；页错误不走 `EFAULT` 返回而是转 `vm_suspend`，把"目标页还没落位"的现场交给 VM 处理并返回 `VMSUSPEND`——挂起之后如何恢复是另一套协议，归 `24-cross-space-runtime`（VMSUSPEND 协议，尚未重生成），本篇止步于此。
 
 **不看代码想不到的一条**：`lin_lin_copy` 的源与目的若有一个本来就是当前表主人（比如把 A 进程的数据拷给正在当 ptproc 的 VM），对应方向的 `createpde` 走特判直接返回，`changed` 保持另一个方向的状态——两槽设计下"借窗"与"免借"可以按方向独立发生，调用方代码完全一样。
 
-如果反过来想：src 与 dst 共用同一个槽（都传 0）——第二轮 `createpde(dstproc, ...)` 会把 dst 的窗口写进同一个槽位，把 src 刚建立的映射覆盖掉；此后 `srcptr` 指向的翻译已不存在，拷贝实际发生的是"把 dst 的内容拷到 dst"，静默产错。`free_pde_idx` 参数与两个字面量取值（`memory.c:189-190`）就是这条禁令的执行形式。
+把 src 与 dst 共用同一个槽（都传 0）会怎样：第二轮 `createpde(dstproc, ...)` 会把 dst 的窗口写进同一个槽位，把 src 刚建立的映射覆盖掉；此后 `srcptr` 指向的翻译已不存在，拷贝实际发生的是"把 dst 的内容拷到 dst"，静默产错。`free_pde_idx` 参数与两个字面量取值（`memory.c:189-190`）就是这条禁令的执行形式。
 
 ### 2.5 清理：`mem_clear_mapcache` 与它的触发面
 
@@ -492,7 +510,7 @@ VM 在五个位置调用它：`servers/vm/pagetable.c:118`（`pt_assert` 的自�
 
 **不看代码想不到的一条**：清理的"作废"是三级的——条目写 0（本函数）、TLB 失效（推迟到下次借窗的 changed）、语义信任（由 VM 宣告）。内核自己永远不会主动走到这条路上：它不知道 VM 何时换了页目录，`do_vmctl.c` 的注释原文（§2.0 已引）把这条知识边界写成了注释。
 
-如果反过来想：假如没有这个清理、窗口条目也不清零——live update 把进程槽与页目录换绑之后，窗口里缓存的可能是一条指向**已被复用的目录页**的旧翻译；下一次跨空间访问若旧值比较碰巧相等（同槽恰有同值），`changed` 不置位、TLB 不刷，内核把 A 进程的内容当 B 的读写，没有任何报错。清理 + 旧值比较两道闸合起来，把"缓存窗口"的信任窗口收窄到两次 VM 通告之间。
+假如没有这个清理、窗口条目也不清零会怎样：live update 把进程槽与页目录换绑之后，窗口里缓存的可能是一条指向**已被复用的目录页**的旧翻译；下一次跨空间访问若旧值比较碰巧相等（同槽恰有同值），`changed` 不置位、TLB 不刷，内核把 A 进程的内容当 B 的读写，没有任何报错。清理 + 旧值比较两道闸合起来，把"缓存窗口"的信任窗口收窄到两次 VM 通告之间。
 
 ### 2.6 本章归纳
 
@@ -509,7 +527,7 @@ VM 在五个位置调用它：`servers/vm/pagetable.c:118`（`pt_assert` 的自�
 
 ## 3. Rust 设计决策
 
-第 1 章结尾说过，常数加法取代的是四条跨函数契约的全体。本章按决策逐条展开；每个决策的第一句都回到第 2 章里 C 侧真实存在的语义或负担。
+§2.6 收束过：常数加法取代的是四条跨函数契约的全体。本章按决策逐条展开；每个决策的第一句都回到第 2 章里 C 侧真实存在的语义或负担。
 
 ### 3.1 决策一：用常数加法取代借窗口的循环（→§2.3、§2.4）
 
@@ -520,10 +538,10 @@ C 侧的负担（§2.3、§2.4 已走查）：每次跨空间访问要走"写 PD
 | 取舍 | 选了什么 | 否掉了什么 | 代价 |
 |---|---|---|---|
 | 地址换算 | 常数加法（trait default 方法，§3.3） | 保留借窗机制的 64 位版 | 每张进程页表多出两个窗口的映射（§3.4 由 `map_kernel` 复刻承担） |
-| 临时窗口机制 | 整体废弃（含清理协议） | 兼容层（保留 `createpde` 式 API） | 调用面（`22-syscall-copy`，尚未重生成）按新原语重写，无迁移期 |
+| 临时窗口机制 | 整体废弃（含清理协议） | 兼容层（保留 `createpde` 式 API） | 调用面（`18-syscall-copy`，尚未重生成）按新原语重写，无迁移期 |
 | 阶段函数替身 | 不引入 `PostInitArch`/`MemoryInitArch` | 为确认步骤立 trait | 无——确认逻辑本就无架构差异 |
 
-如果反过来想：64 位上保留窗口机制——每张进程页表都得预留两个窗口槽位（否则切表后窗口失效），`map_kernel` 的复刻清单里多一类"内容会变的条目"，而"内容会变的条目"与 §3.4 要建立的"内核窗口 PTE 永不改"不变量直接冲突；同时每次跨空间访问仍要一次全量 TLB 刷新，§2.3 手算过的三轮循环一次不少。常数加法不是把 C 函数改写一遍，是让它服务的循环不再需要存在。
+64 位上保留窗口机制会怎样：每张进程页表都得预留两个窗口槽位（否则切表后窗口失效），`map_kernel` 的复刻清单里多一类"内容会变的条目"，而"内容会变的条目"与 §3.4 要建立的"内核窗口 PTE 永不改"不变量直接冲突；同时每次跨空间访问仍要一次全量 TLB 刷新，§2.3 手算过的三轮循环一次不少。常数加法不是把 C 函数改写一遍，是让它服务的循环不再需要存在。
 
 ### 3.2 决策二：双视图地址空间——U/S 位一次一值逼出两个窗口（→§2.3）
 
@@ -560,16 +578,16 @@ C 侧的语义（§2.3 特判分支）：内核在 CPL0 上读当前表主人的
 
 GLOBAL 位是这条决策里的另一半：它让内核窗口的 TLB 项跨 CR3 切换存活。C 侧对应物是 `vm_enable_paging` 里的 PGE 语义（`minix3/minix/kernel/arch/i386/pg_utils.c:vm_enable_paging`，[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6 讲过置位次序，此处引用）。差别在于范围：C 的全局页语义没有"窗口"可依附，Rust 把"内核映射永不改"收成一个不变量写进了 `map_kernel` 的文档注释——内核 direct map 的 PTE 建成后不再修改，这正是 G=1 安全的前提。
 
-**窗口放在哪**：x86-64 上内核镜像链接着内核半区基址 `0xFFFF_8000_0000_0000`（PML4[256] 槽），而镜像的映射公式是 `VA = kern_virt_base + offset`，**不**遵循 DM 的 `VA = DM基址 + PA`。若把 Kernel DM 也放进 PML4[256]，两条公式在同一条翻译上相撞：DM 建立时的叶安装会与镜像自身的映射冲突。所以内核窗口挪到下一个顶层槽：`0xFFFF_8080_0000_0000` 即 PML4[257]。这里有一处旧稿地址需要裁定：早期文档写过 Kernel DM 基址 `0xFFFF_8000_0000_0000`——那正是内核镜像自己的槽，按 `os/arch/src/arch/direct_map.rs` 的现值为准（x86-64 与 aarch64 均为 `0xFFFF_8080_0000_0000`；riscv64 因 Sv39 的地址宽度不同，见 §4.1，且它的旧值错法与 x86-64 同构——`direct_map.rs` 的 riscv64 文档注释明写旧基址 `0xFFFF_FC00_0000_0000` 的 39 位载荷恰好解码到镜像所在的 VPN[2]=256 槽）。
+**窗口放在哪**：x86-64 上内核镜像链接着内核半区基址 `0xFFFF_8000_0000_0000`（PML4[256] 槽），而镜像的映射公式是 `VA = kern_virt_base + offset`，**不**遵循 DM 的 `VA = DM基址 + PA`。若把 Kernel DM 也放进 PML4[256]，两条公式在同一条翻译上相撞：DM 建立时的叶安装会与镜像自身的映射冲突。所以内核窗口挪到下一个顶层槽：`0xFFFF_8080_0000_0000` 即 PML4[257]。这里有一处旧稿地址需要裁定：早期文档写过 Kernel DM 基址 `0xFFFF_8000_0000_0000`——那正是内核镜像自己的槽，按 `os/arch/src/arch/direct_map.rs` 的现值为准（x86-64 与 aarch64 均为 `0xFFFF_8080_0000_0000`；riscv64 因 Sv39 的地址宽度不同，见 §4.1——riscv64 的旧基址 `0xFFFF_FC00_0000_0000` 是非规范地址（39 位载荷 `0x0`、VPN[2]=0），与 x86-64 旧值"撞镜像槽"不是同一类错法；`direct_map.rs` 的 riscv64 注释按此写明）。
 
-如果反过来想（三问按节逐条）：
+把这几处前提各反过来问一次（按节逐条）：
 
 - 若把两个窗口合成一个、U=1：用户态直读全部物理内存，第 3.1 节"内核窗口 PTE 永不改"的不变量还在，但内核完整性没了——任何 CPL3 代码可以把内核数据窗口当输入。
 - 若把两个窗口合成一个、U=0：VM 的每次页表走查、每次清零都变成一次系统调用，VM 服务器退化成内核的壳。
 - 若 Kernel DM 与镜像共占 PML4[256]：`establish_boot_dm` 向该槽装叶时与镜像映射冲突，或 DM 覆盖静默改写镜像翻译——两种结局都由 §4.3 的 `AlreadyMapped` 拒启或第一次取指失败呈现。
 - 若窗口都放进用户区（省掉内核半区槽位）：U/S 判定要求内核窗口 U=0，而用户区段目录项在 VM 自己建的表里可被 VM 改写——信任边界依赖的是"槽位在内核半区"这一位置事实，不是权限位协商。
 
-还有一处时序事实要按现码说清（`os/kernel/src/lib.rs` 里 `init_post_and_memory` 的 Step 3 注释写"窗口在 Phase C 建立"——该注释与现码有偏离，现码实际是 boot Step 4 建立、Phase C 只记录根地址；偏离的完整登记在 §4.2）：两个窗口都建立在 bootstrap 根上，VM 在运行期认领这张根作为自己的页表，所以"VM 的初始页表里有 VM 窗口"这句话成立，但建立动作不发生在 Phase C。
+一处时序事实按现码说清（`init_post_and_memory` 的 Step 3 注释按现码写明：窗口由 `establish_boot_dm` 在 arch-boot Step 4 建立、Phase C 只记录根地址——与 §4.2 时序图一致）：两个窗口都建立在 bootstrap 根上，VM 在运行期认领这张根作为自己的页表，所以"VM 的初始页表里有 VM 窗口"这句话成立，但建立动作不发生在 Phase C。
 
 ### 3.3 决策三：`DirectMapArch` 只抽象布局差，不抽象机制（→§3.1、§3.2）
 
@@ -577,7 +595,8 @@ C 侧的对应物（§2.6）：临时窗口机制没有任何"每架构一份"�
 
 ```rust
 // 签名示意，os/arch/src/arch/direct_map.rs:DirectMapArch（文档注释有删节；
-// 方法体在 §4.1 逐字给出）。
+// 三个换算方法中 `virt_to_phys` 的体在本节下段逐字给出，另两个是同一
+// 减法换基址的平移，其常量见 §4.1 的地址表）。
 pub trait DirectMapArch {
     const VM_DIRECT_MAP_BASE: u64;
     const KERNEL_DIRECT_MAP_BASE: u64;
@@ -603,9 +622,9 @@ pub trait DirectMapArch {
     }
 ```
 
-判定用一个阈值比较完成：VA 高于等于内核窗口基址就走内核分支，否则走 VM 分支。两个读点：第一，这里**没有**独立的 `is_kernel_va` 谓词——"是不是内核 VA"与"减哪个基址"是同一次比较；落点要按数值算、不能按"属于内核"算：内核镜像与栈地址 `0xFFFF_8000_…` **低于**内核窗口基址 `0xFFFF_8080_…`，它们并不落进第一个分支，而是掉进 VM 分支——§3.2 末尾的基址裁定正是为了避免这类地址被窗口错误接住。第二，判别顺序是载荷正确的关键：内核栈地址（`0xFFFF_8000_…`）低于内核窗口基址，落进 else 的 VM 分支后减出的是垃圾"物理值"——这正是协调记录 E8 那次 `rep movsb` `#GP` 的机制；若再把比较反过来（先判"落在 VM 窗口区间"），一个高于 VM 窗口上限、又低于内核 DM 基址的地址会两头都不命中而减出垃圾物理值。这不是理论边界——协调记录（`rewrite-notes/coordination/edge_todo.md`，其中编号 E8 的条目）里有一轮真机取证：一处内核侧代码把 higher-half 内核栈地址误走了 DM 换算，得到非规范别名，`rep movsb` 直接 `#GP`。
+判定用一个阈值比较完成：VA 高于等于内核窗口基址就走内核分支，否则走 VM 分支。两个读点：第一，这里**没有**独立的 `is_kernel_va` 谓词——"是不是内核 VA"与"减哪个基址"是同一次比较；落点要按数值算、不能按"属于内核"算：内核镜像与栈地址 `0xFFFF_8000_…` **低于**内核窗口基址 `0xFFFF_8080_…`，它们并不落进第一个分支，而是掉进 VM 分支——§3.2 末尾的基址裁定正是为了避免这类地址被窗口错误接住。第二，判别顺序是载荷正确的关键：内核栈地址（`0xFFFF_8000_…`）低于内核窗口基址，落进 else 的 VM 分支后减出的是垃圾"物理值"——这正是协调记录 E8 那次 `rep movsb` `#GP` 的机制；若再把比较反过来（先判"落在 VM 窗口区间"），一个高于 VM 窗口上限、又低于内核 DM 基址的地址会两头都不命中而减出垃圾物理值。这不是理论边界——协调记录（`rewrite-notes/coordination/edge_todo.md`，E8 条目里的第②处根因）里有一轮真机取证：一处内核侧代码把 higher-half 内核栈地址误走了 DM 换算，得到非规范别名，`rep movsb` 直接 `#GP`。
 
-如果反过来想：把"换算函数"升格成"每架构一套换算机制"（比如让某架构用寄存器基址、另一架构用查表）——trait 的常量形状就装不下了，方法得拆进各架构 impl；而现码三架构的换算**就是同一个减法**，唯一的架构差异是常量本身。抽象层与差异的真实大小对齐，是这个 trait 形状的判据：常量能表达的差异不造方法，方法能表达的不立机制。
+把"换算函数"升格成"每架构一套换算机制"会怎样（比如让某架构用寄存器基址、另一架构用查表）：trait 的常量形状就装不下了，方法得拆进各架构 impl；而现码三架构的换算**就是同一个减法**，唯一的架构差异是常量本身。抽象层与差异的真实大小对齐，是这个 trait 形状的判据：常量能表达的差异不造方法，方法能表达的不立机制。
 
 ### 3.4 决策四：`map_kernel` 复刻内核映射，内核无常驻页表（→§2.6）
 
@@ -629,7 +648,7 @@ C 侧的对照（§2.6 终点）：C 里"每张进程页表都映射内核段"�
 - **窗口覆盖量不再是常量**。`dm_pages` 从交接凭证（`VmBootHandoff` 的 `kern_dm_pages` 字段）来，其值由 `os/kernel/src/dm_coverage.rs:kernel_dm_pa_end` 现算：把与 `establish_boot_dm` 完全相同的四个候选源函数再迭代一遍，取最高页对齐终点（函数体走查在 §4.4）。这样保证"VM 复刻的窗口"与"内核 boot 期建成的窗口"覆盖同一片 PA——切换到任何一张 VM 建的表之后，内核经 DM 窗口能访问的物理范围不缩水。
 - **内核自己仍无常驻页表**。boot 期那张 bootstrap 根被 VM 认领后永久存在（没有 destroy 路径，VM 进程槽的 `phys_root` 一直指着它）；内核的运行始终踩在"当前进程的表"上，与 C 同构——变的只是"表里预映射了什么"：从"内核段 + 两个借窗槽"变成"内核映射 + 全量 DM 窗口"。
 
-如果反过来想：`dm_pages` 用一个写死的小值（历史上的实现真用过 4 页哨兵）——第一次切到 VM 建的进程表后，内核经窗口访问 16 KiB 以上的任何物理地址都是 not-present；`kernel_dm_pa_end` 的文档注释记录了这个前科（"the previous hardcoded 4-page sentinel left every address above 16 KiB not-present after the first CR3 switch"，逐字见 §4.4）。反方向（把窗口扩到整个物理地址空间的理论上限）则让每张进程页表背起用不到的映射量，表本身可能大到建不出来。覆盖量跟着"内核实际会访问的 PA"走，是两侧共用候选源的理由。
+`dm_pages` 用一个写死的小值会怎样（历史上的实现真用过 4 页哨兵）：第一次切到 VM 建的进程表后，内核经窗口访问 16 KiB 以上的任何物理地址都是 not-present；`kernel_dm_pa_end` 的文档注释记录了这个前科（"the previous hardcoded 4-page sentinel left every address above 16 KiB not-present after the first CR3 switch"，逐字见 §4.4）。反方向（把窗口扩到整个物理地址空间的理论上限）则让每张进程页表背起用不到的映射量，表本身可能大到建不出来。覆盖量跟着"内核实际会访问的 PA"走，是两侧共用候选源的理由。
 
 ### 3.5 决策五：阶段 D 从两个函数缩成三条断言（→§2.1、§2.2）
 
@@ -649,7 +668,8 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
     //
     // The root was installed in Phase C (`init_proc_and_boot`): for the
     // non-mock path, `p_seg.phys_root` records the bootstrap root and
-    // `p_seg.virt_root` its identity-mapped VA (lib.rs:960-963). Both must
+    // `p_seg.virt_root` its identity-mapped VA (assigned earlier in
+    // `init_proc_and_boot`). Both must
     // be present before VM can be trusted as the page-table process.
     let vm_proc = proc_table.get(crate::proc::proc_nr::VM_PROC_NR)
         .expect("VM process must be initialized before init_post_and_memory");
@@ -662,7 +682,8 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
         "VM page-table root (virt) must be kernel-mapped after stage C"
     );
 
-    // Step 2: Record VM as the kernel-level ptproc.
+    // Step 2: Confirm the kernel-level ptproc is already recorded (this step
+    // itself records nothing — see the note below).
     //
     // C: get_cpulocal_var(ptproc) = vm — protect.c:372 (x86) / protect.c:99 (ARM)
     //
@@ -680,8 +701,9 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
 
     // Step 3: Assert the VM Direct Map base is configured.
     //
-    // The VM Direct Map window is established in Phase C when the kernel
-    // builds VM's initial page table (07-cross-space-init.md §3.2). Its
+    // The VM Direct Map window is established by `establish_boot_dm` at the
+    // arch-boot Step 4 (the “step4 DM coverage” call site); Phase C only
+    // records the page-table root (07-cross-space-init.md §3.2). Its
     // base is a per-architecture compile-time constant; this check is a
     // documented-contract assertion that fails fast at boot if a future
     // architecture ever configures a zero base.
@@ -694,11 +716,11 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
 
 （块内注释含仓库内部编号 `P9-4`、`S-6.1 D-40`、对本篇旧编号 `§3.2` 的引用与两处 C 坐标，均按原文引用。一处坐标偏移照抄未改：注释写 `protect.c:372 (x86) / protect.c:99 (ARM)`，而 `get_cpulocal_var(ptproc) = vm` 的赋值行实际在 protect.c:375 / earm protect.c:102——372/99 是函数体首行注释的位置。）
 
-逐段读，并把两处**注释与函数体的偏离**点出来：
+逐段读：
 
-- Step 1 是两条断言，读 VM 槽的 `p_seg.phys_root` 与 `p_seg.virt_root`（这两个字段由 Phase C 的 `init_proc_and_boot` 在装载 VM ELF 时写入）。注释与函数体一致，但注释里的坐标 `(lib.rs:960-963)` 已陈旧——这两个字段的实际写入点在 `lib.rs:1997/2000`（`init_proc_and_boot` 内），960-963 现在是 kmain 的 rdmsr 探针；与 Step 2/3 的偏离同款登记。
-- Step 2 的注释标题是"Record VM as the kernel-level ptproc"，但**注释下面没有一行代码**——函数体在这里什么都没做。这不是引用错误：`set_current_ptproc_nr` 的生产调用点全部在 `switch_address_space`（下引），[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §3.12 已核实并按"记录在 switch_address_space"的口径改正；本篇沿用同一口径，引用这条注释时注明偏离。
-- Step 3 是第三条断言 `VM_DIRECT_MAP_BASE != 0`。注释自称 documented-contract assertion——它拦的不是现码的 bug，而是"未来某架构把基址配成零"的契约违约。注释里"窗口在 Phase C 建立"的说法与现码有偏离（§3.2 末已记，§4.2 的时序图给准确位置）。
+- Step 1 是两条断言，读 VM 槽的 `p_seg.phys_root` 与 `p_seg.virt_root`（这两个字段由 Phase C 的 `init_proc_and_boot` 在装载 VM ELF 时写入，现码位置 `lib.rs:2059/2062`）。注释与函数体一致。
+- Step 2 的注释自身写明 "this step itself records nothing"——函数体在这里没有一行代码，记录动作的真实落点在 `switch_address_space`（下引）；[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §3.12 已按同一口径核实。
+- Step 3 是第三条断言 `VM_DIRECT_MAP_BASE != 0`。注释自称 documented-contract assertion——它拦的不是现码的 bug，而是"未来某架构把基址配成零"的契约违约；注释并按现码写明窗口由 `establish_boot_dm` 在 arch-boot Step 4 建立、Phase C 只记录根地址（与 §4.2 时序图一致）。
 
 记录点的真实形状（`os/kernel/src/lib.rs:switch_address_space`，节选；省略号处为按索引取槽与根为零时的提前返回）：
 
@@ -716,9 +738,9 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
     crate::set_current_ptproc_nr(nr); // klib.S:622-624
 ```
 
-（`os/kernel/src/lib.rs:switch_address_space`。两条路径——"根已在位，跳过重载"与"真实切换"——都以 `set_current_ptproc_nr` 收尾，对应 C `setcr3` 的 `p == ptproc` 判据与 `klib.S` 的 `__switch_address_space` 入口（汇编入口在真实切表之后把第二个参数指向的槽写为新表主人：`mov 8(%esp), %eax; mov %edx, (%eax)`，即 `*__ptproc = p`——klib.S:622-624）。消费点在 VM 换表请求：`os/kernel/src/syscall.rs` 的 SetAddrSpace 分支以 `current_ptproc_nr() == Some(p.p_nr)` 决定是否只更新软件镜像而跳过硬件重载——C `arch_do_vmctl.c:setcr3` 的对位。）
+（`os/kernel/src/lib.rs:switch_address_space`。两条路径——"根已在位，跳过重载"与"真实切换"——都以 `set_current_ptproc_nr` 收尾，对应 C `setcr3` 的 `p == ptproc` 判据与 `klib.S` 的 `__switch_address_space` 入口（汇编入口在真实切表之后把第二个参数指向的槽写为新表主人：`mov 8(%esp), %eax; mov %edx, (%eax)`，即 `*__ptproc = p`——klib.S:623-624）。消费点在 VM 换表请求：`os/kernel/src/syscall.rs` 的 SetAddrSpace 分支以 `current_ptproc_nr() == Some(p.p_nr)` 决定是否**立即重载硬件根**（经 `set_active_root_tracked`，同时更新 CR3 镜像）——这正是 C `arch_do_vmctl.c:setcr3` 的 `p == ptproc → write_cr3` 判据的对位。）
 
-如果反过来想，两个方向各有一条：
+把两个方向各反一条出来：
 
 - 把 `set_current_ptproc_nr` 放回 `init_post_and_memory`（让注释成真）：boot 期只有 BSP 在跑，写的是 BSP 的 per-CPU 槽；AP 各自的槽仍要靠 AP 尾段安装——同一份"记录"出现两个写入者、两个时机，而 `switch_address_space` 每次切换仍要再写一次。记录点放回 boot 只会多出一个冗余写入点，不会少掉切换点的写入。
 - 删掉三条断言：VM 根无效或窗口基址为零的 boot 布局错误，要到第一次跨空间访问（或 VM 首次自走页表）才以 `#PF` 的形式出现，现场从"Phase D 的断言行号 + panic 文本"变成"运行期 CR2 值 + 调用栈回溯"。保留一个 boot 期确认点的价值就是把这类错误的取证面压回启动阶段。
@@ -740,9 +762,9 @@ pub fn init_post_and_memory(proc_table: &crate::proc_table::ProcessTable) {
 | 4 MB `BIGPAGE` 窗口概念 | `vm.h:I386_BIG_PAGE_SIZE` | 改型 | 粒度选择归 `plan_range_units` 的 1 GiB/2 MiB/4 KiB 贪心（§4.3） |
 | `kinfo.freepde_start` | `minix3/minix/include/minix/param.h:27` | 改型 | 协议字段 `KernelInfo.free_upper_idx`（`Option<usize>`）保留为 boot-shim 镜像契约；内核侧消费者只剩 GET_KINFO 的报告（`os/kernel/src/misc.rs`）——字段语义与保留判据见 [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §3.9 |
 
-表里有两行"改型"要多说一句。`p_cr3` → `phys_root` 不只是改名：C 的记录动作在 Phase D（`arch_post_init`），Rust 的写入点在 Phase C（装载 VM ELF 时），消费点从"内核写窗口条目"变成"调度器切根 + Phase D 断言"。`freepde_start` → `free_upper_idx` 则是**语义孤儿**：机制死了，字段因为跨镜像协议（boot-shim 与内核对同一份 `KernelInfo` 布局的承诺）而保留——这也是全表里唯一"内核侧无消费者仍然存活"的行。
+表里的三行"改型"中，两行要多说一句。`p_cr3` → `phys_root` 不只是改名：C 的记录动作在 Phase D（`arch_post_init`），Rust 的写入点在 Phase C（装载 VM ELF 时），消费点从"内核写窗口条目"变成"调度器切根 + Phase D 断言"。`freepde_start` → `free_upper_idx` 则是**语义孤儿**：机制死了，字段因为跨镜像协议（boot-shim 与内核对同一份 `KernelInfo` 布局的承诺）而保留——字段的内核侧消费者只剩 GET_KINFO 的报告（[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §3.9），是全表里唯一"机制已死、字段因协议保留"的行。
 
-如果反过来想（恢复实验）：恢复表中任何一行，都要连着恢复它的配套组件——恢复 `mem_clear_mapcache` 需要同时恢复窗口槽记录、`VMCTL_CLEARMAPCACHE` 子命令与 VM 侧的四个调用点；恢复 ptproc 的窗口用途需要 `p_cr3_v` 一类的"内核可写目录视图"回到每张进程页表上。反方向的推演确认了这张表不是"删了一些函数"，而是一套机制的四个环节一起退场；单独复活任何一环，缺了其余三环都无法工作。
+做一次恢复实验：复活表中任何一行，都要连着恢复它的配套组件——恢复 `mem_clear_mapcache` 需要同时恢复窗口槽记录、`VMCTL_CLEARMAPCACHE` 子命令与 VM 侧的五个调用点（§2.5 列出的五处）；恢复 ptproc 的窗口用途需要 `p_cr3_v` 一类的"内核可写目录视图"回到每张进程页表上。反方向的推演确认了这张表不是"删了一些函数"，而是一套机制的四个环节一起退场；单独复活任何一环，缺了其余三环都无法工作。
 
 ## 4. 实现详解
 
@@ -790,16 +812,16 @@ const _: () = assert!(
 | aarch64 | `0x0000_1000_0000_0000` | 2 GiB | `0x0000_1000_8000_0000` | `0xFFFF_8080_0000_0000` | L0[257] | 同上 |
 | riscv64 | `0x0000_0010_0000_0000` | 16 GiB | `0x0000_0014_0000_0000` | `0xFFFF_FFC0_4000_0000` | Sv39 VPN[2]=257 | 同上 |
 
-三个尺寸各有一句平台理由，写在各自 impl 块或 `dm_coverage` 模块注释里：x86-64 的 1 GiB 让 VM 窗口恰好落在用户区 2 GiB 处（`[2 GiB, 3 GiB)`），VM 堆紧随其后（编译期断言盯住 `VM_HEAP_BASE == VM_DM_BASE + VM_DM_SIZE`）；aarch64 的 2 GiB 是因为 QEMU virt 的 RAM 基址在 1 GiB——1 GiB 窗口会把整个 RAM 排除在 DM 可表示之外，VM 的物理内存管理就没有可管理的对象；riscv64 的 16 GiB 来自 Sv39 内核半区 256 GiB 的布局（内核 DM 基址在半区顶端之下 16 GiB），`os/kernel/src/dm_coverage.rs` 的模块注释顺手把这条上限讲成了窗口的 PA 边界：当前平台的 RAM 远低于它。
+三个尺寸各有一句平台理由，写在各自 impl 块或 `dm_coverage` 模块注释里：x86-64 的 1 GiB 让 VM 窗口恰好落在用户区 2 GiB 处（`[2 GiB, 3 GiB)`），VM 堆紧随其后（编译期断言盯住 `VM_HEAP_BASE == VM_DM_BASE + VM_DM_SIZE`）；aarch64 的 2 GiB 是因为 QEMU virt 的 RAM 基址在 1 GiB——1 GiB 窗口会把整个 RAM 排除在 DM 可表示之外，VM 的物理内存管理就没有可管理的对象；riscv64 的 16 GiB 是 VM 窗口尺寸（`VM_DIRECT_MAP_SIZE`）本身；`os/kernel/src/dm_coverage.rs` 的模块注释把这条上限与 Sv39 布局联系起来（注释原文写 "kernel DM base sits 16 GiB below its top"——按算术核对，内核 DM 基址 `0xFFFF_FFC0_4000_0000` 落在半区底部（`0xFFFF_FFC0_0000_0000`）之上 1 GiB、距半区顶端约 255 GiB，该处源注释待回修；本篇按算术登记）：当前平台的 RAM 远低于这个界。
 
 手算一遍（用第 4.5 节会再遇到的一个真实 PA）：`PA = 0x1DE0_E000`，x86-64 上——
 
 - 内核别名：`0xFFFF_8080_0000_0000 + 0x1DE0_E000 = 0xFFFF_8080_1DE0_E000`；
 - VM 别名：`0x0000_0000_8000_0000 + 0x1DE0_E000 = 0x9DE0_E000`，且 `0x1DE0_E000 < 0x4000_0000`（1 GiB），在 VM 窗口可表示范围内。
 
-riscv64 的基址错法单独记一行，但要先把数字算对：旧值 `0xFFFF_FC00_0000_0000` 的 39 位载荷是 `0x0`，顶层下标 VPN[2] = **0**——这个值是非规范的、不落在任何合法 Sv39 槽上，与 x86-64 旧值"撞镜像所在的 256 号槽"并不是同一类错法。`os/arch/src/arch/direct_map.rs` 的 riscv64 文档注释把两件事写在了一起（"non-canonical"与"payload decodes to VPN[2] = 256"），这两个说法按算术不能同时成立，属**注释自身待回修**的一处；本篇按算术为准登记。现值 `0xFFFF_FFC0_4000_0000` 的 VPN[2] = 257，与另两个架构的"窗口不与镜像共槽"判据对齐。
+riscv64 的基址错法单独记一行，但要先把数字算对：旧值 `0xFFFF_FC00_0000_0000` 的 39 位载荷是 `0x0`，顶层下标 VPN[2] = **0**——这个值是非规范的、不落在任何合法 Sv39 槽上，与 x86-64 旧值"撞镜像所在的 256 号槽"并不是同一类错法。`os/arch/src/arch/direct_map.rs` 的 riscv64 注释已按算术写明这一点（旧值非规范、39 位载荷 `0x0`、与 x86-64 的撞槽错法不同类；只有内核镜像基址 `0xFFFF_FFC0_0000_0000` 独占 VPN[2]=256）。现值 `0xFFFF_FFC0_4000_0000` 的 VPN[2] = 257，与另两个架构的"窗口不与镜像共槽"判据对齐。
 
-如果反过来想：删掉那条 `VM_HEAP_BASE == VM_DM_BASE + VM_DM_SIZE` 编译期断言——两个常量可以各自漂移，VM 把堆页当 DM 页（或反之）的错误要到运行期的地址解算才暴露；`direct_map.rs` 里的一条注释记录了这个前科：窗口尺寸曾经硬编码在 VM 服务器本地，在大窗口架构上悄悄漂移，后来才收编进 trait。
+删掉那条 `VM_HEAP_BASE == VM_DM_BASE + VM_DM_SIZE` 编译期断言会怎样：两个常量可以各自漂移，VM 把堆页当 DM 页（或反之）的错误要到运行期的地址解算才暴露；`direct_map.rs` 里的一条注释记录了这个前科：窗口尺寸曾经硬编码在 VM 服务器本地，在大窗口架构上悄悄漂移，后来才收编进 trait。
 
 ### 4.2 阶段 D 入口与全链时序（→§3.5）
 
@@ -834,9 +856,9 @@ VM 运行期    init_page_table → map_kernel 复刻四段映射（含内核 DM
 
 - **窗口先于一切消费者**。`establish_boot_dm` 在 Step 4、kmain 之前跑完；Phase C 装载 VM ELF 用的 `paging.map`、VM 运行后的页表走查，用的都是已经建好的窗口。`arch_boot_impl` 里 Step 4 的注释把次序约束写成一行："Must run after `enable()` … and before any VM physical access through the windows"。
 - **BSP 的 ptproc 落在首次调度**。§3.5 说过 Step 2 注释与函数体偏离——真正的落点是图上"首次调度"那一拍；AP 侧则在各自启动尾部直接装 VM（`os/kernel/src/smp.rs` 的 AP 尾段）。换句话说，"ptproc = VM"这个 boot 收尾状态，在 Rust 里由两条路径分别达成：BSP 经首次切换、AP 经启动尾段。
-- **Phase C 只记根、不建窗口**。`os/kernel/src/lib.rs` 里 Step 3 的注释写"窗口在 Phase C 建立"（`init_post_and_memory` 逐字引用块里那段），按图上的真实位置，这句话与现码有偏离：窗口在 Step 4 建立且先于 kmain，Phase C 做的是把根地址记进 VM 槽、写交接帧。引用该注释时以此为准。
+- **Phase C 只记根、不建窗口**。Step 3 的注释按现码写明窗口在 arch-boot Step 4 建立、Phase C 只记录根地址（`init_post_and_memory` 逐字引用块里那段）——与图一致；Phase C 做的是把根地址记进 VM 槽、写交接帧。
 
-如果反过来想：把 `init_post_and_memory` 挪到 Phase F（`bsp_finish_booting` 之后）——此时 VM 已经过首次调度开始运行，"VM 根无效"这类错误的现场从 Phase D 的断言栈（panic 文本直接给出根字段名）变成 VM 用户态首跑的异常，中间多出一个已部分初始化的调度器要排查。确认步骤放在被确认对象投入使用之前，是它仅存的时序价值，也是"三条断言"替代"两个初始化函数"后保留 Phase D 时点的全部理由。
+把 `init_post_and_memory` 挪到 Phase F（`bsp_finish_booting` 之后）会怎样：此时 VM 已经过首次调度开始运行，"VM 根无效"这类错误的现场从 Phase D 的断言栈（panic 文本直接给出根字段名）变成 VM 用户态首跑的异常，中间多出一个已部分初始化的调度器要排查。确认步骤放在被确认对象投入使用之前，是它仅存的时序价值，也是"三条断言"替代"两个初始化函数"后保留 Phase D 时点的全部理由。
 
 **窗口建立这一拍也有同款反推**：把 `establish_boot_dm` 从 Step 4 挪到 Phase C 之后——Phase C 装载 VM ELF 的 `paging.map` 正是窗口的第一个消费者（§3.2 末尾已按现码说明：装页表走的通道依赖窗口已在位）。窗口未建时，`paging.map` 对窗口区虚拟地址的第一次写入命中的是一个尚未建立的翻译：bootstrap 根里那个顶层槽是空的，故障以启动期缺页的形式落在建表循环里；此刻 VM 尚未运行，§2.4 那条"页错误交给 VM 处理"的 `vm_suspend` 协议不存在可调用的对端，引导只能中止。也就是说，窗口建立的位置错后不会产生更隐蔽的静默错误，而是把"Step 4 的次序断言"变成"建表循环里的缺页现场"——两处都拦得住，但后者的故障点在建表逻辑内部、与真正的布局错误混在一起，取证面更大。这正是 Step 4 注释把次序约束写成一行（"before any VM physical access through the windows"）的理由。
 
@@ -947,7 +969,7 @@ pub fn establish_dm_range<P: DmCoverageArch>(
 
 三个读点：**为什么有拆分**——x86-64 的 VM 窗口 `[2 GiB, 3 GiB)` 与恒等映射的 `PDPTE[2]` 是同一个槽，恒等建表在这里写的是一条 1 GiB 大页叶；**为什么换"空表"**——恒等翻译在这个 VA 段被整体退役，新表只保留后续合法 DM 单元写进去的内容，恒等时代的保留区翻译不会借拆分之机回到窗口里；**为什么中间层要带 U 位**——U/S 位跨层级做与运算，恒等建起的中间层是监督态，若不补 USER，VM 窗口叶上的 U=1 走查时仍会被上层抵消（实现里 `branch_flags` 的注释原话："U/S is ANDed across levels"）。
 
-如果反过来想：贪心选择只查对齐不查"剩余量足够"（删掉 `remaining >= TWO_MB` 那半个条件）——候选 `[0x40_0000, 0x50_0000)`（起点 2 MiB 对齐、长度只有 1 MiB）会发出一条 2 MiB 叶，把 `[0x50_0000, 0x60_0000)` 这段候选之外的物理区间一并映射进去，"覆盖跟随资源"的边界被冲开一 MiB。真实的洞形状（x86 PC 的常规 `[0, 0xA0000)` + 洞 `[0xA0000, 0x100000)` + 常规 `[0x100000, …)`，`os/arch/src/arch/dm_coverage.rs` 的测试 `test_legacy_hole_never_swallowed` 用的正是这组数）在正确实现下每条单元都保持精确边界。拆分分支若拷贝恒等叶的映射而不是发空表——保留区翻译整体搬进新表，"洞不被吞"以另一种方式失败。两个方向都收敛到同一条不变量：窗口里只该有候选资源自己。
+贪心选择只查对齐不查"剩余量足够"会怎样（删掉 `remaining >= TWO_MB` 那半个条件）：候选 `[0x40_0000, 0x50_0000)`（起点 2 MiB 对齐、长度只有 1 MiB）会发出一条 2 MiB 叶，把 `[0x50_0000, 0x60_0000)` 这段候选之外的物理区间一并映射进去，"覆盖跟随资源"的边界被冲开一 MiB。真实的洞形状（x86 PC 的常规 `[0, 0xA0000)` + 洞 `[0xA0000, 0x100000)` + 常规 `[0x100000, …)`，`os/arch/src/arch/dm_coverage.rs` 的测试 `test_legacy_hole_never_swallowed` 用的正是这组数）在正确实现下每条单元都保持精确边界。拆分分支若拷贝恒等叶的映射而不是发空表——保留区翻译整体搬进新表，"洞不被吞"以另一种方式失败。两个方向都收敛到同一条不变量：窗口里只该有候选资源自己。
 
 ### 4.4 `establish_boot_dm`：安装次序、验证与调用点（→§3.2、§3.4）
 
@@ -1015,7 +1037,7 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
 - **VM 窗按 `VM_DIRECT_MAP_SIZE` 裁剪**（第三、四个循环）：`vm_pa_limit` 传给 §4.3 的 `clipped_to`，窗外部分不映射、也不进 VM 的资源资格。
 - **第四源只进内核窗**（最后的循环）：保留区（内核镜像与栈所在的非常规内存）的 DM 别名只有内核会用；VM 的资格过滤语义保持"只认常规内存"，不受第四源影响。注释里 "the kernel is the only accessor" 说的就是这条边界。
 
-四个 `.expect` 各自的价值在 §4.3 的合同注释里：叶冲突（`AlreadyMapped`）在单候选趟过新窗口的正常布局下不该发生，发生即 boot 布局 bug，拒启。
+七处 `.expect`（五条消息——源 1 与源 2 共享 "kernel window establishment failed"）各自的价值在 §4.3 的合同注释里：叶冲突（`AlreadyMapped`）在单候选趟过新窗口的正常布局下不该发生，发生即 boot 布局 bug，拒启。
 
 尾部的验证（`os/kernel/src/dm_coverage.rs:validate_bootstrap_tree`，逐字引用）：
 
@@ -1043,11 +1065,11 @@ fn validate_bootstrap_tree(root: PhysBytes) {
 
 | 调用点 | 上下文 |
 |---|---|
-| `os/kernel/src/lib.rs:567`（`arch_boot_impl` Step 4） | 生产主路径：x86-64 与 riscv64 的 `arch_boot`、aarch64 直启路径、宿主 mock 测试都汇到这里 |
-| `os/kernel/src/lib.rs:384`（`arch_boot_resume_high_half`） | 生产 aarch64 内核镜像高半启动路径：根由 boot-shim 建好并已在用，这里把 DM **增量**装上去（调用点上方注释原话："`establish_boot_dm` wraps `root_page` and only writes new PTEs"） |
-| `os/kernel/src/dm_coverage.rs:747`（测试 `test_establish_boot_dm_reserved_is_kernel_window_only` 内） | 宿主测试 |
+| `os/kernel/src/lib.rs:570`（`arch_boot_impl` Step 4） | 生产主路径：x86-64 与 riscv64 的 `arch_boot`、aarch64 直启路径、宿主 mock 测试都汇到这里 |
+| `os/kernel/src/lib.rs:387`（`arch_boot_resume_high_half`） | 生产 aarch64 内核镜像高半启动路径：根由 boot-shim 建好并已在用，这里把 DM **增量**装上去（调用点上方注释原话："`establish_boot_dm` wraps `root_page` and only writes new PTEs"） |
+| `os/kernel/src/dm_coverage.rs:749`（测试 `test_establish_boot_dm_reserved_is_kernel_window_only` 内） | 宿主测试 |
 
-`establish_boot_dm` 的函数文档注释写"Called once from `arch_boot_impl`"——这句在第二条生产路径加入后已过时，以现码的两条生产路径为准。
+`establish_boot_dm` 的函数文档注释按现码写明两条生产路径（原文："Called from both boot paths … `arch_boot_impl` Step 4 and `arch_boot_resume_high_half`"），与上表一致。
 
 窗口覆盖量还派生出交接侧的一个字段：`os/kernel/src/dm_coverage.rs:kernel_dm_pa_end`（逐字引用；函数文档注释含仓库内部记录名与一句关键前科，注释在此省略、要点在块后引用）：
 
@@ -1075,11 +1097,11 @@ pub fn kernel_dm_pa_end(kernel_info: &KernelInfo, root: PhysBytes) -> u64 {
 
 四个候选源再迭代一遍，取最高终点向上页对齐。它的消费者是交接帧：`os/kernel/src/vm_handoff.rs` 里 `kern_dm_pages` 字段的赋值正是 `kernel_dm_pa_end(...) / PAGE_SIZE`，字段注释的要点原文是"base AND coverage must equal what `establish_boot_dm` installed on the bootstrap root (same candidate union …)"。函数文档注释里记着这条链的前科：这个值曾用一个 4 页的哨兵顶替，原文是 "the previous hardcoded 4-page sentinel left every address above 16 KiB not-present after the first CR3 switch"——VM 按 `map_kernel` 复刻的窗口一旦比内核实际建的窄，切表动作本身就是内核窗口的截断。
 
-如果反过来想：保留区若进 VM 窗口——VM 的物理内存资格以候选源为语义边界，非常规内存从此"可表示"，分配器可能把内核镜像或栈所在的物理页发给请求者；安装次序若 VM 先内核后——恒等映射退役发生时内核通道尚未就位，退役瞬间对退役区 PA 的任何内核访问悬空。两条反向都撞在"谁先可用"这同一面墙上，方向不同而已。
+把这两处摆反会怎样：保留区若进 VM 窗口——VM 的物理内存资格以候选源为语义边界，非常规内存从此"可表示"，分配器可能把内核镜像或栈所在的物理页发给请求者；安装次序若 VM 先内核后——恒等映射退役发生时内核通道尚未就位，退役瞬间对退役区 PA 的任何内核访问悬空。两条反向都撞在"谁先可用"这同一面墙上，方向不同而已。
 
 ### 4.5 四个候选源与下溢修复（→§4.4）
 
-候选源函数都在 `os/kernel/src/dm_coverage.rs`，签名一致（返回候选区间的迭代器），过滤规则一致（与更早的源重叠即整段丢弃——并集语义；二次安装同一叶槽会触发 §4.3 的 `AlreadyMapped` 拒启）。逐个过：
+候选源函数都在 `os/kernel/src/dm_coverage.rs`，签名各有其形（三个返回候选区间的迭代器；`bootstrap_tree_candidates` 返回 `[Option<DmRange>; 2]`——根页与 bump 两个槽），过滤规则一致（与更早的源重叠即整段丢弃——并集语义；二次安装同一叶槽会触发 §4.3 的 `AlreadyMapped` 拒启）。逐个过：
 
 - **源 1：常规内存**（`memmap_candidates`）。直接映射 `KernelInfo.memmap()`——boot-shim 已经做过类型过滤，这里不再筛。
 - **源 2：自举页表树**（`bootstrap_tree_candidates`，全函数逐字引用）：
@@ -1115,16 +1137,16 @@ fn bootstrap_tree_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> [Opti
 }
 ```
 
-根页与 bump 区的关系只有两种真实形状：根从 bump 里拨出（升序分配，根是第一页）→ 两候选重叠，bump 候选跳过根页向前裁剪，根叶只装一次；根独立分配且在 bump **上方**（UEFI 垫片的 `MaxAddress` 分配是降序的：根页先拨、落在空闲低内存顶部，bump 在它之下）→ 区间不相交，bump 全量保留。函数的文档注释还记了第三种形状：根页严格落在 bump 中段时区间要裂成两段，而 `DmRange` 槽对表达不了三段——代码选择"发出 `[base, root_base)`、放弃根以上余段并在注释里记形状"，因为没有现行分配器产生这种布局。
+根页与 bump 区的关系只有两种真实形状：根从 bump 里拨出（升序分配，根是第一页）→ 两候选重叠，bump 候选跳过根页向前裁剪，根叶只装一次；根独立分配且在 bump **上方**（UEFI 垫片的 `MaxAddress` 分配是降序的：根页先拨、落在空闲低内存顶部，bump 在它之下）→ 区间不相交，bump 全量保留。函数的文档注释还记了第三种形状：根页严格落在 bump 中段时区间要裂成两段，而 `DmRange` 槽对表达不了三段——代码选择"从根页之后裁剪、发出 `[root_end, end)`（根以下余段舍弃）并在注释里记形状"，因为没有现行分配器产生这种布局。
 
 - **源 3：boot 模块 blob**（`boot_module_candidates`）。模块由垫片以装载器数据页分配装载，不在常规 memmap 快照里；VM 读模块镜像（boot 进程的 exec 路径）直接走 VM 窗口——一个没被覆盖的 blob 页就是窗口上的一个洞，第一次 ELF 魔数读取就在 CPL3 缺页。函数文档注释里记着一次真机取证：缺页地址 `0x9de0e000` 恰是 §4.1 手算里那个 blob 页的 VM 别名（`VM_DM_BASE + PA`）。
 - **源 4：保留区**（`reserved_regions_candidates`）。垫片把 UEFI 内存图里"非常规、非 MMIO"的描述符归进 `reserved_regions`——内核镜像与栈的落点就在其中。没有源 4 时，这些页的恒等翻译活着（取指访存都走它），但 `kernel_phys_to_virt` 一类的 DM 别名访问会撞 not-present；一次多核早期启动的取证里，复现轮次的缺页地址全部落在"已装候选之间的缝隙"上，对应的正是这个缝隙形状。
 
 函数文档注释里另有一条工程约束（原文引用，`os/kernel/src/dm_coverage.rs:boot_module_candidates` 文档注释；含仓库内部记录名 `fix16` 与日期，按原文）："Heap-free by necessity: this runs inside `arch_boot` before the kernel heap exists — a `collect` here is a 64-byte `handle_alloc_error` boot failure"。四个候选函数全部用迭代器 filter 合成，不收集、不排序、不分配。
 
-**下溢修复**是源 2 的核心教学点。把这个比较去掉会怎样：前裁剪被无条件执行（`start = max(base, root_end)`，不看根是否在 bump 之内）；在"根在 bump 上方"的形状下，`start` 被推到根页之上、越过 `end`，`end - start` 以无符号算术回绕成巨数——候选变成一个"空转零叶"的假区间：`establish_dm_range` 收到它，`plan_range_units` 的 `while cur < end` 一次都不进，bump 区零映射。后果链（每环都可从码上指认）：运行期分配的页表页来自 bump 区 → 这些 PA 在内核窗口里没有别名 → 内核走查器第一次经窗口访问运行期页表页就缺页——一次真机取证记录的缺页地址 `0xffff8080_0dfb4ff8` 正是内核别名格式（`0xFFFF_8080_…`）加上一个 bump 区内的 PA（这条缺陷的根因记录见协调文件 `rewrite-notes/coordination/edge_todo.md`，编号 E8 的条目）。修复语义就是现在函数体里的那个分支：**仅当根落在 bump 内才裁剪，且裁剪带 `start < end` 守卫**；不相交时全量保留。`os/kernel/src/dm_coverage.rs` 的测试 `test_union_keeps_full_bump_when_root_above_bump` 用当次真机实测的真实地址（bump `[0x0dfaf000, 0x0dfef000)`、根页 `0x0e789000`）把这条语义钉成回归（§5.2 细读）。
+**下溢修复**是源 2 的核心教学点。把这个比较去掉会怎样：前裁剪被无条件执行（`start = max(base, root_end)`，不看根是否在 bump 之内）；在"根在 bump 上方"的形状下，`start` 被推到根页之上、越过 `end`，`end - start` 以无符号算术回绕成巨数——候选变成一个"空转零叶"的假区间：`establish_dm_range` 收到它，`plan_range_units` 的 `while cur < end` 一次都不进，bump 区零映射。后果链（每环都可从码上指认）：运行期分配的页表页来自 bump 区 → 这些 PA 在内核窗口里没有别名 → 内核走查器第一次经窗口访问运行期页表页就缺页——一次真机取证记录的缺页地址 `0xffff8080_0dfb4ff8` 正是内核别名格式（`0xFFFF_8080_…`）加上一个 bump 区内的 PA（这条缺陷的根因记录见 E8 条目里的第①处根因：`dm_coverage` 下溢）。修复语义就是现在函数体里的那个分支：**仅当根落在 bump 内才裁剪，且裁剪带 `start < end` 守卫**；不相交时全量保留。`os/kernel/src/dm_coverage.rs` 的测试 `test_union_keeps_full_bump_when_root_above_bump` 用当次真机实测的真实地址（bump `[0x0dfaf000, 0x0dfef000)`、根页 `0x0e789000`）把这条语义钉成回归（§5.2 细读）。
 
-如果反过来想，两条：
+把这两条反过来各推一遍：
 
 - 把修复写成"回绕时钳回 `base`"而不是"不相交时全量保留"——bump 的中后段仍然没有候选，洞缩小但还在，走查缺页从必现变偶发（取决于分配器把页表页落在 bump 的哪一段），取证难度反而上升。
 - 候选汇总若用 `Vec` 收集——发生在内核堆存在之前，`handle_alloc_error` 的 boot 失败（前科见上文引用的文档注释）；迭代器 filter 不只是风格，是这个执行点的生存条件。
@@ -1215,7 +1237,36 @@ mock 门怎么接：`os/arch/src/arch/direct_map.rs` 之外的 `MockDmCoverage`�
 
 结构性消失的错误类别：临时窗口机制下的"借窗后忘刷 TLB""两个方向共用槽位""清理后槽位记录错乱"这类错误，在测试清单里没有对应物——不是漏测，是那些状态在常数加法世界里不存在，测试清单因此比 C 侧同类机制短。
 
-诚实披露一条（`os/kernel/src/dm_coverage.rs` 模块注释自述）：源 4 与更早候选部分重叠的描述符被整段丢弃后，**不重叠的尾部**没有内核窗叶——垫片的一条 UEFI 描述符经常同时盖住一个模块 blob 和几页无关内存，丢弃整段保住了并集合法性，尾部成为已知残留缺口；模块注释原文自称 "tracked as an open item, not claimed to be closed"。补齐需要做候选间的区间减法（候选数有界、仍可零堆），属后续工作，本篇如实转记、不宣布已闭。
+诚实披露一条（`os/kernel/src/dm_coverage.rs` 模块注释自述）：源 4 与更早候选部分重叠的描述符被整段丢弃后，**不重叠的尾部**没有内核窗叶——垫片的一条 UEFI 描述符经常同时盖住一个模块 blob 和几页无关内存，丢弃整段保住了并集合法性，尾部成为已知残留缺口；模块注释原文自称 "tracked as an open item, not claimed to be closed"。补齐需要做候选间的区间减法（候选数有界、仍可零堆），属后续工作，本篇如实转记、不宣布已闭（已落 R07-T04，见 §5.4）。
+
+### 5.4 机制 → 需要证明什么（反转核对表）
+
+本节从**机制**出发列出"要证明它成立需要什么断言"，再标注覆盖状态——不是从现有测试出发（那份视角在 §5.1–§5.3；本节是它的反转面）。表中的机制全部是 Rust 侧机制；无 C 源分支的覆盖依据说明见 §1.6。
+
+| # | 机制（正文位置） | 需要证明什么（可观测断言） | 测试覆盖状态 | 现有证据 / TODO |
+|---|---|---|---|---|
+| M1 | 安装次序：内核窗先行、全 PA 跨度（§4.4） | 内核窗在任何 DM 消费之前建成 | 部分覆盖 | Step 4 顺序注释 + 七处 `.expect` + 真机全链（启动链载体）；**"VM 先内核后"的负向无载体** → **R07-T01** |
+| M2 | VM 窗按窗口可表示跨度裁剪（§4.3、§4.4） | 窗外区间不映射、不进 VM 资格 | 已覆盖 | 宿主 `test_window_clipping` |
+| M3 | 第四源只进内核窗（§4.4） | 内核窗有叶 ∧ VM 窗无叶 ∧ 覆盖量跟随 | 已覆盖 | 宿主 `test_establish_boot_dm_reserved_is_kernel_window_only`（三断言） |
+| M4 | 洞不被吞（§4.3） | 真实 x86 布局的 legacy 洞保持精确边界 | 已覆盖 | 宿主 `test_legacy_hole_never_swallowed` + 手排向量（§4.3） |
+| M5 | 粒度贪心三档（§4.3） | 1 GiB/2 MiB/4 KiB 的选择与降级 | 已覆盖 | 宿主三条 arch 测试 |
+| M6 | bump 下溢修复：不相交时全量保留（§4.5） | 根在 bump 上方时 bump 不被裁剪/回绕 | 已覆盖 | 宿主 `test_union_keeps_full_bump_when_root_above_bump`（真机实数） |
+| M7 | 覆盖量派生链 `kern_dm_pages`（§4.4） | 交接帧字段 ≡ 四源并集最高终点 | 部分覆盖 | 宿主算术等式（`test_kernel_dm_pa_end_covers_all_sources`）；**"VM 复刻窗 ≡ 内核建窗"的端到端一致性无载体** → **R07-T02** |
+| M8 | 自举树界复核（§4.4） | 根页与 bump 在 `min(IDENTITY_MAP_END, VM 窗口)` 内 | 部分覆盖 | 断言在位；**越界触发的负向无载体** → **R07-T03** |
+| M9 | 恒等写通道自举约束（§4.3） | 建窗不依赖正在建立的窗口 | 部分覆盖 | 合同注释 + 真机全链；宿主 mock 不碰真表（§5.3 已披露边界） |
+| M10 | 拆分分支：1 GiB 叶→空表 + U 位（§4.3） | VM 窗与恒等 PDPTE[2] 重叠处的退役与重挂 | 部分覆盖 | 真机全链（x86 启动过 `[2 GiB, 3 GiB)`）；宿主 mock 不执行真拆分 |
+| M11 | 源 4 尾部缺口（已知 open item，§5.3） | 候选间区间减法补齐尾部 | 未覆盖（已披露） | 模块注释自称 `tracked as an open item` → **R07-T04** |
+
+（§5.3 的真机/宿主边界与 M9/M10 的"宿主证不了"同源；两类表互为反转面，任一表更新须同步另一表。）
+
+**新 TODO（对源码/测试 workflow 的需求输入）**：
+
+| ID | 内容 | 分流 |
+|---|---|---|
+| R07-T01 | "VM 先内核后"安装次序的负向载体 | **测试侧** |
+| R07-T02 | VM 复刻窗与内核建窗覆盖量的端到端一致性断言（跨 boot/VM 两侧） | **测试侧** |
+| R07-T03 | 自举树越界（root/bump 超界）的负向载体 | **测试侧** |
+| R07-T04 | 源 4 尾部缺口的区间减法补齐 | **源码/测试侧**（模块注释已自称 open item） |
 
 ## 6. 诊断
 
@@ -1227,7 +1278,7 @@ mock 门怎么接：`os/arch/src/arch/direct_map.rs` 之外的 `MockDmCoverage`�
 | 缺页，CR2 落在 VM 窗口区间 `[0x8000_0000, 0xC000_0000)`（x86-64） | VM 窗候选缺口：模块 blob 未覆盖（历史实测值 `0x9de0e000` 即 `VM_DM_BASE + 0x1de0e000`） | 检查 `boot_module_candidates` 的过滤条件与出事模块的 PA；对照 §4.5 源 3 的说明 |
 | 第一次切到 VM 建的进程表后，内核经窗口访问失败 | 交接帧的 `kern_dm_pages` 派生被改窄 | `grep -n 'kern_dm_pages' os/kernel/src/vm_handoff.rs` 应命中 `kernel_dm_pa_end(...) / PAGE_SIZE`；改动后跑 `test_kernel_dm_pa_end_covers_all_sources` |
 | VM 分配器拿到非常规内存的页 | 第四源被误装进 VM 窗 | 跑 `test_establish_boot_dm_reserved_is_kernel_window_only`；VM 窗断言（`source 4 must stay out of the VM window`）变红即拦住 |
-| boot 即拒启，消息 `boot DM: ... failed` | 叶冲突 = 并集过滤被破坏，同叶双装 | 沿消息文本定位是哪个窗口的哪个源循环（四条 `.expect` 消息各标一个源），再查对应候选函数的过滤条件 |
+| boot 即拒启，消息 `boot DM: ... failed` | 叶冲突 = 并集过滤被破坏，同叶双装 | 沿消息文本定位是哪个窗口的哪个源循环（五条 `.expect` 消息按窗口与源命名；源 1/2 共享一条，需结合调用次序分辨），再查对应候选函数的过滤条件 |
 | boot 拒启，消息 `outside DM-admissible bound` | 自举树成员越界（根页或 bump 高于 `min(IDENTITY_MAP_END, VM 窗口)`） | 读 panic 文本里的两个十六进制数（实际值与上界），回 boot-shim 的分配路径 |
 
 ### 6.2 手算与常量核对命令
@@ -1240,12 +1291,12 @@ grep -n 'const VM_DIRECT_MAP_BASE\|const KERNEL_DIRECT_MAP_BASE\|const VM_DIRECT
   os/arch/src/arch/direct_map.rs
 #   → 15 行：trait 声明 3 行 + 四个 impl（x86-64/aarch64/riscv64/Mock）各 3 行；
 #     三个真架构的 KERNEL_DIRECT_MAP_BASE 依次为 0xFFFF_8080_0000_0000、
-#     0xFFFF_8080_0000_0000、0xFFFF_FFC0_4000_0000（direct_map.rs:82/:117/:149）
+#     0xFFFF_8080_0000_0000、0xFFFF_FFC0_4000_0000（direct_map.rs:82/:117/:151）
 
 # 2. establish_boot_dm 的定义与全部调用点（§4.4 的口径）
 grep -n 'establish_boot_dm' os/kernel/src/dm_coverage.rs os/kernel/src/lib.rs
-#   → 10 行命中：定义 dm_coverage.rs:86；生产调用 lib.rs:384、lib.rs:567；
-#     测试调用 dm_coverage.rs:747；其余 6 行为注释与测试名
+#   → 12 行命中：定义 dm_coverage.rs:88；生产调用 lib.rs:387、lib.rs:570；
+#     测试调用 dm_coverage.rs:749；其余 8 行为注释与测试名
 
 # 3. kernel 侧覆盖测试（§5.1 读数）
 cd os && cargo test -p minix-kernel --features mock dm_coverage
@@ -1262,7 +1313,7 @@ grep -n 'arch_post_init();\|memory_init();' minix3/minix/kernel/main.c
 # 6. 候选源函数清单（§4.5 的对象面）
 grep -n 'fn memmap_candidates\|fn bootstrap_tree_candidates\|fn boot_module_candidates\|fn reserved_regions_candidates' \
   os/kernel/src/dm_coverage.rs
-#   → :233 boot_module / :290 reserved_regions / :308 memmap / :340 bootstrap_tree
+#   → :235 boot_module / :292 reserved_regions / :310 memmap / :342 bootstrap_tree
 
 # 7. 手算核对：PA 0x1de0e000 的两个别名（§4.1）
 python3 -c "print(hex(0xFFFF_8080_0000_0000 + 0x1de0e000), hex(0x0000_0000_8000_0000 + 0x1de0e000))"
@@ -1274,14 +1325,14 @@ python3 -c "print(hex(0xFFFF_8080_0000_0000 + 0x1de0e000), hex(0x0000_0000_8000_
 ## 7. 参见
 
 - [01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6（`createpde` 借槽位窗口与 `freepde_start` 语义、恒等/内核映射的建表五步）、§3.8（页表页分配器换手）、§3.9（`free_upper_idx` 字段保留）
-- [02-higher-half-kernel.md](02-higher-half-kernel.md)（内核高半区与链接布局；顶层槽位冲突的同类处理见其 §3.2–§3.3 与 §4.1）
+- [02-higher-half-kernel.md](02-higher-half-kernel.md)（内核高半区与链接布局；顶层槽位冲突的同类处理见其 §4.1）
 - [03-kmain-cstart.md](03-kmain-cstart.md)（Phase A–F 的划分与本篇 Phase D 的位置）
 - [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §3.12（`init_post_and_memory` 的口径与注释偏离登记、boot→running 转换形状）
 - `rewrite-notes/02-stage-vm/07-pagetable-struct.md` §1.4（Direct Map 常量偏移的 VM 侧视角与外部对照）、`08-pagetable-ops.md`（页表操作逐函数语义）
-- `22-syscall-copy`（跨空间拷贝的调用面：谁调 `lin_lin_copy` 一族，尚未重生成）
-- `29-cross-space-runtime`（VMSUSPEND 挂起-恢复协议：`vm_suspend` 之后的事，尚未重生成）
-- `09-system-init-boot-finish`（`memory_init` 在启动收尾里的对应物与 DM 就绪检查的时序位置，尚未重生成）
-- `10-smp-boot`（AP 侧的 ptproc 安装与启动尾段，尚未重生成）
+- `18-syscall-copy`（跨空间拷贝的调用面：谁调 `lin_lin_copy` 一族，尚未重生成）
+- `24-cross-space-runtime`（VMSUSPEND 挂起-恢复协议：`vm_suspend` 之后的事，尚未重生成）
+- [08-system-init-boot-finish.md](08-system-init-boot-finish.md)（`memory_init` 在启动收尾里的对应物与 DM 就绪检查的时序位置）
+- `16-smp`（SMP 篇：AP 侧的 ptproc 安装与启动尾段，尚未重生成）
 
 
 
