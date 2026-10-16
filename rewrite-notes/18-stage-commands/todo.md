@@ -250,6 +250,49 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   本机无 BSD `cal` 逐字对账（真值以 `minix3/usr.bin/cal/cal.c` 为纲）；真机腿归 C-57/E5。
   留白：`-h`/`-r`/`-A`/`-B`/`-C`/`-R` 仍待接。
 
+- ✅ **批次三百零九把 `rev` 的选项环补回来：空 optstring 不等于没有环，并新立它的第一扇端到端门**
+  （`2026-10-16`，`claim/REV-GETOPT-LINE-qoder` @ 基线 `ce8536efb`，单域三线 commands/textfilter，无跨界）：
+  判定表第五支。**真源形状**：`rev.c:70` 的 optstring 是**空串**，这一条容易被读成「`rev` 没有选项环」——
+  本壳当时就把 `argv[1..]` 整个当操作数，于是 `-Z` 变成要打不开的文件。空 optstring 的实际后果有三处，
+  全部由 libc `getopt` 定：① `strchr("", <字母>)` 永远是 `NULL`，任何 `-` 开头的 token（除②③两形）都落
+  `getopt.c:95-104` 的集外字母支——libc 先印一行 `rev: unknown option -- <字母>`，再把 `'?'` 交给
+  `rev.c:72-74` 的 `case '?': default: usage()`，于是**两行**且退 1（`:110-115` 那一行的程序名跟着
+  `getprogname()`）；② `--` 在 `:81-85` 结束选项环且**先 `++optind`**，所以它自身不是操作数；③ 裸 `-` 在
+  `:87-92` 因 optstring 里没有 `-` 而结束选项环**却不推进**，于是它自己是操作数，走 `rev.c:85-89` 的
+  `fopen` 失败支（那一支是 `warn` + `continue` 而**不是致命错**）。选项环不重排（`:74-78` 见非选项即返 -1），
+  所以 `rev <file> -Z` 里的 `-Z` 是个文件名。这三形加输出腿共 16 形逐形与参照件对过（参照件
+  `tmp/rev-309/rev_ref`：`rev.c` 真源 + Minix 的 `getopt.c` + `fgetwln`/`setprogname` 垫片在宿主现链，
+  读数 `tmp/rev-309/golden.log`，对账 `tmp/rev-309/ab.log` 得 **SAME=16 DIFF=0**）。
+  **形状上的一处纠正（由 clippy 挡住）**：选项扫描最初写成 `while` 循环，被 `clippy::never_loop` 当场拒——
+  这个告警是对的：`rev.c:70-75` 那个圈**定不了第二次**（getopt 要么返 -1 结束，要么返 `'?'` 而立刻退出），
+  写循环反而把「报完第一个字母就退」说成「扫完整串」；改成单次判定，句子仍单源于 `lib.rs:GetoptReport`。
+  **新门一立又暴露同形的一处读缝缺陷（不是诊断面）**：`rev` 壳自己拿裸 `open`/`read` 的 fd 读，宿主上读不到
+  任何输入（与批次三百零六的 `nl`、三百零八的 `fold` 同形），所以它的输出从来没有被进程级测过；已改走
+  `bin_support` 的双生读缝（`read_stdin`/`read_file`），顺带把操作数的报文补回 err(3) 三段形（此前只有
+  `rev: <操作数>`，缺 `strerror` 句子；`rev.c:86`）。
+  测面：库测 +1（`the_option_ring_takes_no_letters_and_stops_at_the_first_operand`：聚簇只报首字母、`--x`
+  报的是 `-`、`--` 自身被吃掉、裸 `-` 是操作数、非选项 token 之后不重排、空数组）；新增
+  `tests/rev_face.rs`（**8 枚**，本包第五十五扇目标），钉两行形与退码、只报首字母、`--`/裸 `-` 两种落点、
+  warn 三段形与非致命续做，以及输出腿的四形（多行、末行无换行、空输入、多字节字符不撕裂）。
+  三件套（容器现测）：整包 `cargo test -j 1 --no-fail-fast -p minix-textfilter` → **699 passed / 0 failed /
+  0 ignored**（55 个 target，基线 `ce8536efb` 为 690 / 54，+9 与测数增量相符）；`cargo clippy -j 1
+  -p minix-textfilter --all-targets` → 退码 0、0 error、**86 条 warning 与基线同数**；`cargo check
+  --workspace -j 1` → 0 error；宿主三架构 `cargo build -p minix-textfilter --bins --target
+  {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf} --release` 三者均 `Finished`；
+  rustfmt 触及三件零漂移；核实日 `2026-10-16`。三枚变异负控各咬各支（控制器 `tmp/rev-309/ctl309.py`，
+  每枚先打印 `mutation applied`、还原后核 md5）：丢 libc 首行 → 3 枚；取消选项环（本批改前形状）→ 4 枚
+  （门面 3 + 库测 1）；把打不开的操作数当致命错 → 1 枚。
+  **登记不执行**：① 标准输入自己读出错时 C 打的是 `warn("%s", filename)`且 filename 初值是 `"stdin"`
+  （`rev.c:80-81`、`:101-104`），本壳用的 `bin_support::read_stdin()` 没有错误通道（拿到 `Err` 按 EOF 收），
+  那一形不可观测（`REV-STDIN-ERRLEG`）；② 集外字母在 C 是 `%c` 打**一个字节**，本壳按 `char` 取第一个字符，
+  只在 `-` 后跟非 ASCII 时分歧（`REV-NONASCII-OPTLETTER`）；③ 真机 open 腿与 per-command 断言归 `C-57`/E5
+  （既有口径）；④ 07 篇除 `rev` 行外，第 155 行还挂着一句陈旧的测试计数（写 229 个，现值 699），统计口径
+  归 V3-5/V3-6 那两轮处理，本笔不顺手改。
+  **判定表进度**：已对齐 head/tail/uniq/cut/join/sort/vis/nl/cksum/fold/**rev** + pr（egetopt 措辞）；
+  待接 `split`、`unexpand`、`col`、`colrm`、`column`、`comm`、`cmp`、`jot`、`unifdef`、`units`、`seq`、
+  `paste`；另判 `expand`/`hexdump`/`colcrt`/`tr`/`lam`（C 各用自己的解析器，句子不许按同族规律抹平）。
+  **负载条款**：一条命令只一件事、容器 `-j 1 -m 2g -u`、宿主与容器不交叉用同一 target、无合成压力。
+
 - ✅ **批次三百零八把 `fold` 的诊断面按 C 分回三类出口，并新立它的第一扇端到端门（顺带修好宿主读不到的读缝）**
   （`2026-10-16`，`claim/FOLD-GETOPT-LINE-qoder` @ 基线 `c6c6d5cd6`，单域三线 commands/textfilter，无跨界）：
   判定表第四支。C 的选项串是 0123456789bsw:（`fold.c:76`），只有 `w` 带值、`0-9` 是合法字母、不以 `:` 开头所以
