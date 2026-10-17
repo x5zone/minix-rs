@@ -221,14 +221,22 @@ pub fn parse_args(args: &[&str]) -> Result<TruncatePlan, TruncateArgError> {
     })
 }
 
-/// `truncate.c:117-131` with `:98`: fold a relative size onto the length the
-/// operand already has, then clamp. C's `EFBIG` attempt at line 123 compares
-/// `oflow` against the very expression it was just assigned from, so the branch
-/// cannot fire; the guard that does work is the negative clamp eight lines later.
-/// Saturating arithmetic replaces the wrapped add without changing that clamp's
-/// answer for the wraps that land on the negative side.
+/// `truncate.c:117-132` with `:98`: fold a relative size onto the length the
+/// operand already has, then clamp at zero.
+///
+/// C adds into a signed `off_t` without checking, so an overflow wraps the result
+/// (signed overflow is undefined in C itself; on this platform it wraps) and the
+/// wrap is what the clamp then sees. The `EFBIG` branch at `:123-128` compares
+/// `oflow` against the very expression it was just assigned from, so it cannot
+/// fire — the guard that does work is `if (tsize < 0) tsize = 0;` eight lines
+/// later. `wrapping_add` reproduces both halves of that: `truncate -s
+/// +9223372036854775807` on a one-byte file wraps to the most negative value and
+/// the clamp turns it into **zero**, emptying the file, rather than saturating to
+/// the largest size. Only the positive direction can wrap here: `st_size` is never
+/// negative, so `current >= 0` and any `delta >= i64::MIN` sum to at least
+/// `i64::MIN`.
 pub fn relative_target(current: i64, delta: i64) -> i64 {
-    clamp(current.saturating_add(delta))
+    clamp(current.wrapping_add(delta))
 }
 
 /// `truncate.c:131-132`: `if (tsize < 0) tsize = 0;`. The clamp runs for every
@@ -422,11 +430,29 @@ mod tests {
         assert_eq!(relative_target(100, -30), 70);
         assert_eq!(relative_target(30, -100), 0, "truncate.c:131-132 clamps");
         assert_eq!(relative_target(30, 0), 30);
-        // Saturating add keeps C's clamp answer for a negative-side wrap and
-        // never reaches the EFBIG branch C cannot trigger (truncate.c:123).
-        assert_eq!(relative_target(i64::MAX, 5), i64::MAX);
+        // 这一形正是批次二百四十四登记、本笔闭合的分叉：C 把和写进带符号的
+        // `off_t`（`truncate.c:122`），`MAX + 5` 回绕到 `MIN + 4`，再由 `:131-132`
+        // 的钳位收成 **0**；饱和加会停在 `i64::MAX`，于是同一句命令在 C 那里清空
+        // 文件、在这里却去截出一个荒谬的大值
+        assert_eq!(relative_target(i64::MAX, 5), 0);
         assert_eq!(relative_target(i64::MIN / 2, i64::MIN / 2), 0);
         assert_eq!(clamp(-1), 0);
         assert_eq!(clamp(4096), 4096);
+    }
+
+    #[test]
+    fn a_positive_overflow_wraps_then_clamps_to_zero() {
+        // `truncate.c:122` 把和写进带符号的 `off_t`，溢出是回绕而不是停在顶上；
+        // 回绕落到负侧之后由 `:131-132` 的钳位收成 0。饱和加会把这一形停在
+        // `i64::MAX`，于是同一句命令在 C 那里清空文件、在这里却去截出一个荒谬的大值
+        assert_eq!(relative_target(1, i64::MAX), 0);
+        assert_eq!(relative_target(i64::MAX, i64::MAX), 0);
+        assert_eq!(relative_target(i64::MAX - 5, 10), 0);
+        // 不回绕的形照旧：正的正着加、负的往零钳
+        assert_eq!(relative_target(4096, 4096), 8192);
+        assert_eq!(relative_target(10, -3), 7);
+        assert_eq!(relative_target(3, -10), 0);
+        // `st_size` 非负，所以负方向的回绕不可达：最小加数配上零恰好停在 `i64::MIN`
+        assert_eq!(relative_target(0, i64::MIN), 0);
     }
 }
