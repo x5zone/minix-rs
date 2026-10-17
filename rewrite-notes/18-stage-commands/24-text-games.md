@@ -183,6 +183,6 @@
 
 ## 批次随记（接线状态，批次二十七）
 
-- **已接线**：`wtf`（`-f` 指库、命令行 `is` 词跳过、逐词 `term: expansion` 打印、任一查无退出 1）、`fortune`（数据文件按行切分、时钟秒抽取、`pick_quip` 取模语义）、`random`（操作数那一步已按 C 定形：零枚取分母 2、一枚被拒打 `random: denominator is not valid.`、一枚撞数值范围打三段形 `random: <操作数>: <句子>`、两枚以上打不缀程序名的 `usage: random [-er] [denominator]`，全部退 1；标准输入逐行、LCG 掷 `1/N` 概率后中覆盖先中、播种混时钟与进程号——「中者全部整行写出」的过滤器主体、`-e`/`-r` 两个选项、以及 `strtod` 那片取值域（`1e3`、`inf`、`nan`）三件事仍未接，账在 `todo.md` 的 `RANDOM-DENOM-LEGS` 片2/片3）。三枚薄壳的文件读取走 L10 的 open/read/close 既有路。
+- **已接线**：`wtf`（`-f` 指库、命令行 `is` 词跳过、逐词 `term: expansion` 打印、任一查无退出 1）、`fortune`（数据文件按行切分、时钟秒抽取、`pick_quip` 取模语义）、`random`（操作数那一步已按 C 定形：零枚取分母 2、一枚被拒打 `random: denominator is not valid.`、一枚撞数值范围打三段形 `random: <操作数>: <句子>`、两枚以上打不缀程序名的 `usage: random [-er] [denominator]`，全部退 1；标准输入逐行独立掷、中者**按输入顺序整行写出**、播种混时钟与进程号，读失手走 `err(2, "stdin")` 的三段形与退 2；仍未接的是选项环 `-e`/`-r`（含集外字母那两行，字样要照 Minix 自己的 `lib/libc/stdlib/getopt.c` 而不是宿主 glibc）与 `strtod` 那片取值域（`1e3`、`inf`、`nan`、`--` 之后才算操作数的起点），账在 `todo.md` 的 `RANDOM-DENOM-LEGS` 片2/片3）。三枚薄壳的文件读取走 L10 的 open/read/close 既有路。
 - **声明性留白**：`adventure`/`monop` 的完整游玩循环（世界状态推进与回合交互是执行层批次）、`fish` 的对手回合（要电脑玩家循环）、fortune 索引表版数据文件（现读纯文本行）。
 - **POSIX 基准**：四命令均无 POSIX 条目，行为以 `minix3/games/` 与 `minix3/games/wtf/wtf` 脚本为准绳。

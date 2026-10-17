@@ -97,14 +97,15 @@ fn no_operand_filters_with_denominator_two_instead_of_complaining() {
 
 #[test]
 fn one_operand_still_feeds_the_filter() {
-    // 分母 1 ⇒ 每行必中（`draw` 恒为 0），所以标准输出必然非空、退码必然是 0，
-    // 这一形不受「全不中」那枚发明的影响，因此可以放心验退码
-    // 「中者全部整行写出、按输入顺序」是过滤体那一片的断言，本笔不提前钉：现在这具
-    // 身体只留最后一枚中者（实测 `random 1` 只吐 `ff\n`），那形在参照件里是全部六行
+    // 分母 1 ⇒ 每行必中（`draw` 恒为 0），于是这一形是确定的：输出与输入**逐字节相同**。
+    // 上一笔这条只敢验「非空且是输入行的子集」，因为那时身体只留最后一枚中者（实测只吐
+    // `ff\n`）；过滤体接成 C 的过流形状之后，这里可以钉全等
     let (out, code, err) = run(&["1"], INPUT);
+    assert_eq!((out.as_str(), code, err.as_str()), (INPUT_TEXT, 0, ""));
+    // 分母 6 落在「全中」与「全不中」之间：只要求退 0、不报错、输出是输入行的子集
+    let (out, code, err) = run(&["6"], INPUT);
     assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
-    assert!(!out.is_empty(), "分母 1 时每行都该被掷中，实测输出为空");
-    assert_subset_of_input(&out, INPUT_TEXT, "分母 1");
+    assert_subset_of_input(&out, INPUT_TEXT, "分母 6");
 }
 
 #[test]
@@ -188,5 +189,64 @@ fn a_renamed_invocation_moves_the_err_prefixes_only() {
     assert_eq!(
         (code, err.as_str()),
         (1, "usage: random [-er] [denominator]\n")
+    );
+}
+#[test]
+fn selected_lines_come_out_in_input_order() {
+    // C 是一趟过流（`random.c:126-137`）：选中就 `putchar`，所以输出必然是输入行的
+    // **保序子序列**。「只留最后一枚中者」在这种输入下当场被照出来
+    let text = many_lines(200);
+    let (out, code, err) = run(&[], text.as_bytes());
+    assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
+    let pool: Vec<&str> = text.lines().collect();
+    let printed: Vec<&str> = out.lines().collect();
+    assert!(!printed.is_empty(), "200 行、分母 2 却一行都没掷中");
+    let mut cursor = 0usize;
+    for line in printed {
+        let found = pool[cursor..]
+            .iter()
+            .position(|candidate| *candidate == line)
+            .unwrap_or_else(|| {
+                panic!("输出行 {line:?} 不在游标 {cursor} 之后：顺序被打乱或造了新行")
+            });
+        cursor += found + 1;
+    }
+}
+
+#[test]
+fn an_empty_selection_is_silent_and_exits_zero() {
+    // C 没有「一行都没掷中」这一说：环走完直接 `exit(0)`（`random.c:114-137`）。
+    // 分母 40 亿配一行输入，掷中的概率是 2.5e-10，因此这一形是确定的空输出。
+    // 薄壳曾自创一句 `random: nothing selected` 并退 1，参照件里没有这一形
+    let (out, code, err) = run(&["4000000000"], b"aa\n");
+    assert_eq!((out.as_str(), code, err.as_str()), ("", 0, ""));
+}
+
+#[test]
+fn an_unreadable_stdin_blames_the_stdin_word_and_exits_two() {
+    // `ferror(stdin)` 那一路是 `err(2, "stdin")`（`random.c:135-136`）：三段形，位上是
+    // `stdin` 这个词而不是档名，退码是 2。参照件现量把目录当标准输入递进去 →
+    // `random_ref: stdin: Is a directory`、退 2（`tmp/random-345/ab345-ref.log` 末行）。
+    // 句子在本树取 `minix-types` 的表第 21 项（`errno.rs:413`），与 glibc 同字
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("stdin-is-a-dir");
+    std::fs::create_dir_all(&dir).expect("create dir");
+    let handle = std::fs::File::open(&dir).expect("open a directory read-only");
+    let child = Command::new(random_bin())
+        .arg("3")
+        .stdin(Stdio::from(handle))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn random");
+    let bytes = child.wait_with_output().expect("wait random");
+    let stdout = String::from_utf8_lossy(&bytes.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&bytes.stderr).into_owned();
+    assert_eq!(
+        (
+            stdout.as_str(),
+            bytes.status.code().expect("exit code"),
+            stderr.as_str()
+        ),
+        ("", 2, "random: stdin: Is a directory\n")
     );
 }

@@ -6,16 +6,17 @@
 //! `strtod(*argv, &ep)`、两枚以上 usage（`:89-104`）。播种混入时钟与进程号
 //! （`mix_seed` 的决定半语义，`:106-107`）。
 //!
-//! 本壳当前只把「操作数那一步」接到 C 的形状上；过滤体的多行输出、`-e`/`-r` 两个
-//! 选项、以及 `strtod` 那一片取值域（`1e3`、`1e-3`、`inf`、`nan`）各归各的下一轮，
-//! 登记在 `rewrite-notes/18-stage-commands/todo.md` 的 `RANDOM-DENOM-LEGS` 条目里。
+//! 操作数那一步与过滤器都已按 C 成形。仍敞着的是选项环（`-e` 把一个 `[0, denom]`
+//! 里的数当退码返回、`-r` 关掉 stdio 缓冲、集外字母那两行）与 `strtod` 那片取值域
+//! （`1e3`、`1e-3`、`inf`、`nan`、`--` 之后才算操作数的起点），账在
+//! `rewrite-notes/18-stage-commands/todo.md` 的 `RANDOM-DENOM-LEGS` 条目里（片2b 与片3）。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
@@ -61,36 +62,26 @@ fn run() -> ! {
     let pid = minix_sys::getpid().unwrap_or(0) as u32;
     let mut state = mix_seed(micros / 1_000_000, (micros % 1_000_000) as u32, pid);
 
-    // 逐行读标准输入：每行掷一次 [0, N)，掷中 0 即替换当前选中行。
-    let mut chosen: Option<String> = None;
-    let mut buf = Vec::new();
     let (bytes, read_failure) = support::read_stdin_error();
-    if read_failure.is_some() {
-        // 句子与退码还不是 C 的形状（C 是 `err(2, "stdin")`，`:135-136`）：那一腿归过滤体
-        // 那一片，本笔只把读缝换成带号的双生面，让宿主也能跑到这条路径
-        support::warn(b"random: read error\n");
-        support::terminate(1);
+    if let Some(code) = read_failure {
+        // `ferror(stdin)` 那一路是 `err(2, "stdin")`（`random.c:135-136`）：三段形，位上
+        // 是 `stdin` 这个词而不是档名（C 的 `ifd` 初值就是 0，标准输入与命名档走同一条
+        // `read()` 腿），退码是 2。薄壳这里原来打的是一句自创的 `random: read error` 退 1
+        support::warn_line(prog, "stdin", code);
+        support::terminate(2);
     }
+    // C 是一趟过流（`random.c:126-137`）：掷中就把这一行整行写出去，下一行另掷一次。
+    // 一行都没掷中不是错误——环走完就 `exit(0)`，参照件那一形是空输出、退 0
     let text = String::from_utf8_lossy(&bytes).into_owned();
     for line in text.lines() {
-        // LCG（Numerical Recipes 常数），取模前先掷高位。
+        // LCG（Numerical Recipes 常数），取模前先掷高位。C 掷的是 libc 的 `random()`，
+        // 位序列不复现（这条承载差登记在本支的账上），判据 `1/denom` 照 C
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         let draw = ((state >> 33) as u32) % denominator;
-        buf.clear();
-        buf.extend_from_slice(line.as_bytes());
-        match is_selected(draw, denominator) {
-            Ok(true) => chosen = Some(line.to_string()),
-            Ok(false) => {}
-            Err(_) => {}
-        }
-    }
-    match chosen {
-        Some(line) => support::emit(format!("{line}\n").as_bytes()),
-        None => {
-            support::warn(b"random: nothing selected\n");
-            support::terminate(1);
+        if matches!(is_selected(draw, denominator), Ok(true)) {
+            support::emit(format!("{line}\n").as_bytes());
         }
     }
     support::terminate(0)
