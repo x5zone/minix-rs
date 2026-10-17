@@ -14,7 +14,9 @@
 //! ④ 多于两个操作数只印 usage；`usage()` 那一行的程序名跟着 `getprogname()`，退码是 1；
 //! ⑤ 遗留形取的是整段 token 去掉 `-`（`split.c:86-90` 的 `argv[optind] + 1`），
 //!    所以 `-12x` 与 `-3b5` 都报 `split: <原文>: illegal line count.`；
-//! ⑥ 打不开的输入是 `err(1, "%s")` 三段形、一行、不接 usage。
+//! ⑥ 打不开的输入是 `err(1, "%s")` 三段形、一行、不接 usage；
+//! ⑦ 开得动但读不动的输入（命名档与标准输入同一条腿）标签是 `read`，那句 `strerror`
+//!    里的号来自平台，不是本壳写死的。
 //!
 //! 这扇门以前不存在：`split` 的诊断面少 libc 那两行、usage 文本是本壳自拟的短式而退码写成 2、
 //! 操作数之后的选项还会被重排回选项读。
@@ -196,21 +198,21 @@ fn three_operands_print_only_the_usage() {
 
 /// 打不开的输入是 `err(1, "%s", *argv)`（`split.c:137-138`）：程序名、操作数原文、
 /// `strerror` 句子三段齐备、**一行**、不接 usage、退 1。旧写法少了第三段。
+/// 第三段整句钉死：只比前缀的话，「开档臂把平台那个号换成一个写死的号」这种改动
+/// 仍能打印出一句非空的 strerror，门不会红（参照件现量 `No such file or directory`）。
 #[test]
 fn an_unopenable_input_prints_the_err_shape_in_three_parts() {
     let missing = std::env::temp_dir().join(format!("split311-absent-{}", std::process::id()));
     let (status, err, files, _) = run(&[missing.to_str().unwrap()], INPUT);
     assert_eq!(status, 1);
     assert!(files.is_empty(), "输入打不开就不该写分片文件：{files:?}");
-    let head = format!("split: {}: ", missing.to_str().unwrap());
-    assert!(
-        err.starts_with(&head),
-        "该以 `split: <操作数>: ` 开头，实际 {err:?}"
-    );
-    let tail = err[head.len()..].trim_end();
-    assert!(
-        !tail.is_empty() && !tail.contains('\n'),
-        "缀的应是一句 strerror 文本且只有这一行：{err:?}"
+    assert_eq!(
+        err,
+        format!(
+            "split: {}: No such file or directory\n",
+            missing.to_str().unwrap()
+        ),
+        "三段之外不许多一个字，也不许把 `strerror` 的句子换成别的号"
     );
     assert!(!err.contains("usage:"), "输入腿的 err 不接 usage：{err:?}");
 }
@@ -477,4 +479,70 @@ fn a_chunk_that_cannot_be_created_names_the_path_not_write() {
         "该缀 ENOENT 那一句，实得 {err:?}"
     );
     assert!(!err.contains("usage:"), "这一腿不接 usage：{err:?}");
+}
+
+/// 一枚目录作为输入操作数：开得动、读不动。C 在 `read` 那一步 `err(1, "read")`
+/// （`minix3/usr.bin/split/split.c:185-190`、`:252-257`），标签是 `read` 这个词；
+/// 只有 `fopen` 失手才报操作数名字（`:137-138`）。两臂混成一谈时这里会打印路径。
+/// 参照件同读数：`split_ref: read: Is a directory`、退 1、一枚分片都不生成。
+#[test]
+fn a_directory_operand_blames_read_not_the_operand() {
+    let dir = scratch();
+    let name = dir.to_str().expect("utf-8 scratch path");
+    let (status, err, files, _out) = run(&[name, "out"], b"");
+    assert_eq!(status, 1, "读不动输入必须退 1，实得 {status}");
+    assert!(
+        files.is_empty(),
+        "一枚也读不出的输入不该留下分片：{files:?}"
+    );
+    assert!(
+        err.starts_with("split: read: "),
+        "该报 `read` 那一臂，实得 {err:?}"
+    );
+    assert!(!err.contains(name), "读腿不许把操作数名字当成标签：{err:?}");
+    assert_eq!(err.matches('\n').count(), 1, "一句、不接 usage：{err:?}");
+    assert!(!err.contains("usage:"), "{err:?}");
+}
+
+/// 标准输入本身读不动（把一枚目录的 fd 当作 stdin 递进来）：C 的 `ifd` 默认就是 0，
+/// 失手落在同一句 `err(1, "read")` 上（`minix3/usr.bin/split/split.c:185-190`、
+/// `:252-257`），**标签仍是 `read` 而不是 `stdin`**——这一形与上一形分开钉，
+/// 因为标准输入那条腿一旦退回「拿不到错误号」的读法，就只会静默退 0。
+/// 参照件同读数：`split_ref: read: Is a directory`、退 1、一枚分片都不生成。
+#[test]
+fn an_unreadable_stdin_blames_the_read_arm() {
+    // 递进来的目录放在另一枚临时目录里：`split` 的分片落在当前目录，两者同穴的话
+    // 「目录里有哪些文件」这条断言会把门自己的脚手架数成分片。
+    let dir = scratch();
+    let holder = scratch();
+    let stream = holder.join("not-a-stream");
+    fs::create_dir(&stream).expect("create the directory to hand over as stdin");
+    let handle = fs::File::open(&stream).expect("a directory opens read-only here");
+    let output = Command::new(SPLIT)
+        .current_dir(&dir)
+        .stdin(Stdio::from(handle))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the split binary should be runnable")
+        .wait_with_output()
+        .expect("the run should finish");
+    let err = String::from_utf8_lossy(&output.stderr).into_owned();
+    let files: Vec<String> = fs::read_dir(&dir)
+        .expect("the scratch dir should be readable")
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&holder);
+    assert_eq!(output.status.code(), Some(1), "stderr 是 {err:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        err, "split: read: Is a directory\n",
+        "一句三段形、标签是 `read`，实得 {err:?}"
+    );
+    assert!(files.is_empty(), "读不动的输入不该留下分片：{files:?}");
 }

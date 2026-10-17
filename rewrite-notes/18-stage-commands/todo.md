@@ -321,6 +321,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百三十八把 `split` 的输入拆成开档、读档、标准输入三形各归各句，闭合 `SPLIT-READ-STAT-ERRLEG` 的读腿一片**（`2026-10-17`，`claim/SPLIT-READ-STAT-ERRLEG-qoder` @ 基线 `f780c6614`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/split.rs,tests/split_face.rs}` + 18 篇三份文档，单域三线 commands/textfilter，无跨界）
+  - **这一条是什么**：输入只有三个来源形状：没有操作数读标准输入、裸 `-` 也读标准输入、其余按名字开档。C 把这三形的失手分成两句话打——开不出来是 `err(1, "%s", *argv)`（`minix3/usr.bin/split/split.c:136-138`），读不进去是 `err(1, "read")`（`split1` 的 `:185-190`、`split2` 的 `:252-257`）。**标签是 `read` 这个词，既不是档名也不是 `stdin`**，因为 `ifd` 的初值就是 0，标准输入与命名的档走的是同一条 `read()` 腿。本壳两处都不对：`support::read_file(name)` 把开档与读档折进同一只 `Result`，读失败也报档名；标准输入那条腿走 `read_stdin()`，压根没有错误通道，读失败等于读完，一句话不说退 0。
+  - **改法**：`bin_support.rs` 新立 `InputFailure { Open(Errno), Read(Errno) }` 与 `read_operand(path)`，两条 `cfg` 腿同签名（宿主 `File::open` 加 `read_to_end`，真机 `open` 加逐块 `read`），标准输入复用批次三百三十一那条带号的 `read_stdin_error()`。壳侧把三形分派到位：开档失手当场 `warn_line(prog, name, code)` 退 1；读失手则**把号连同已读到的字节一起往下走**，因为 C 是边读边写、前面的分片已经在盘上，本壳先切完再补那一句，收尾统一进 `finish(prog, read_failure)`。
+  - **两枚负控一开始咬不住，查出来是门自己不够**：其一「开档臂把平台号换成写死的号」不红——`an_unopenable_input_prints_the_err_shape_in_three_parts` 只断言 `split: <操作数>: ` 这个前缀加上「尾巴非空且只有这一行」，写死的号照样能打出一句非空的 `strerror`；改成整句逐字节比（参照件现量 `No such file or directory`）之后咬住。其二「标准输入那条腿退回不带号的读法」不红——**没有任何一门跑过一条读不动的标准输入**；补一枚 `an_unreadable_stdin_blames_the_read_arm`（把一枚目录的文件句柄当标准输入递进去，宿主当场 `EISDIR`）之后咬住。这与批次三百三十六那句经验同源：负控不咬先怀疑断言不够，别把门的瞎说成代码的干净。
+  - **门**：`cargo test -p minix-textfilter` → **1060 passed / 0 failed**（68 个 target，上笔 1058）；`--test split_face` → **20/0**，本笔新立 1 枚、补强 1 枚；**权威容器门 `cargo test -j 1 -p minix-textfilter` → 1060 / 0 / 0、退码 0**，与宿主逐枚一致（这是断了三笔之后第一次跑成，病根、探针与挂载配方已归入本文件 §7；日志两份：`tmp/split-338/container-gate-final.log` 与改动定稿后复跑的 `tmp/split-338/container-gate-committed.log`，同为 1060/0/0）；宿主三架构 `x86_64-unknown-none`/`aarch64-unknown-none`/`riscv64gc-unknown-none-elf` 各 `Finished` 且 `^error` 计数 0；`cargo check --workspace -j 1` 0 error；触及三件 `rustfmt --edition 2021 --check` 零漂移；`cargo clippy -p minix-textfilter --all-targets` 退码 0，指向触及件的只剩 `src/bin/split.rs:225`「test 模块之后还有条目」一条，该形状在基线 `f780c6614` 里就在（`mod tests` 之后是 `usage`/`arg_error`/`main`），不属本支、不顺手改；本笔另清掉两条落在自己行上的告警——宿主写腿的 `let_and_return`、`close_outcome` 上那句无话可说的 `#[must_use]`。
+  - **负控五枚全咬**（`tmp/split-338/ctl338.py`，读数 `tmp/split-338/ctl338.log`）：开档臂的标签换成 `read` → 2 红；读失手不打句子 → 2 红；读失手把退码归零 → 2 红；开档臂丢号 → 1 红；标准输入腿退回无错误通道 → 1 红。baseline 与逐枚还原后同为 20/0。
+  - **本笔自己的一处工具缺陷（记下来防下一次）**：负控脚本原本用「把替身再换回锚点」来还原，而 `support::warn_line(prog, "read", code);` 这一形在 `finish` 与开档臂两处同形，反向替换把另一处一起改了，源文件当场被写坏。改法是变异前把整篇原文存下来、还原时整篇写回，并断言写回后的文本与原文逐字节相等——**还原手段必须比它保护的锚点更粗，否则负控自己就是破坏者**。
+  - **登记不执行（同一条 ID 的第二片）**：`stat` 腿未接。C 的 `-n` 先 `fstat` 输入，失手即 `err(1, "stat")`（`split.c:293-295`），再用 `sb.st_size` 判 `n > size` 报 `can't split into more than %d files`（`:297-300`）；本壳这两处都从已经收全的 `input.len()` 推，`fstat` 的失手在形状上不可达。它与「先收全输入而不是边读边写」是同一根结构问题（`SPLIT-STREAMING-MEMORY`），所以拆到下一轮一起做。
+  - **下一轮首动作**：`tools/claim.sh claim SPLIT-STREAMING-MEMORY qoder`（把 `split` 改成边读边写，同时给 `stat` 腿让出位置）；开工量若超一轮，按本文件惯例切片并在此登记。
+
 - ✅ **批次三百三十七把 `split` 分片文件的 `close` 腿接成第三臂，闭合 `SPLIT-CLOSE-ERRLEG`**（`claim/SPLIT-CLOSE-ERRLEG-qoder` @ 基线 `d52b9f383`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/split.rs}` + 18 篇两份文档，单域三线 commands/textfilter，无跨界）
   - **是什么、为什么**：一枚分片文件在 C 那里有三处会失败，各自一句：开不出来 `err(1, "%s", fname)`（`minix3/usr.bin/split/split.c:331-332`）、写不进去 `err(1, "write")`（`:204`、`:216`、`:225`）、**写完关掉关不掉** `err(1, "%s", fname)`（`newfile()` 在开下一枚之前 `close(ofd)`，`:319-320`；此刻后缀还没往前推，`fname` 仍是刚写完那枚的名字）。上一轮把写腿的号接到位了，`close` 这一腿仍然被丢掉：目标腿 `minix_sys::close` 的返回被 `let _ =` 吞掉，宿主腿连 observable 的机会都没有（`std::fs::File` 的 drop 不交回任何号）。
   - **改法**：`WriteSink::finish` 的返回换成 `SinkFailure { Write(Errno), Close(Errno) }`，两腿的取舍写成一张明表 `close_outcome`——**写失败优先**，因为 C 在 `bigwrite` 失手处当场退出，走不到下一次 `close`。壳侧 `ChunkWrite` 长第三臂 `Close`，标签与开档臂同为路径、与写臂不同；映射从 `write_into` 里拆出纯函数 `sink_failure_of`。
@@ -341,7 +351,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   - **是什么、为什么**：`parse_set` 此前对一切语法失败只回 `TextError::InvalidArgument`，壳里 `Err(_) => terminate(1)` 静默退 1，用户看不见任何一句解释。C 在 `minix3/usr.bin/tr/str.c` 每处都是当场 `errx(1, ...)`：`genclass()` 表外的名字打 `unknown class %.*s`（`:253`），`genseq()` 依次打 `Sequences only valid in string2`（`:353-356`）、`Misplaced sequence asterisk`（`:362-366`）、`illegal sequence count`（`:368-386`）。这三句的**先后次序**本身就是行为，缺一句就是多打一句不该打的。
   - **接法**：`SetSite`（第一串/第二串）做成 `parse_set` 的入参，因为 C 把 `which` 存在 `STR` 结构里由 `genseq()` 自查；`SetGrammar::sentence()` 返回 C 的原文，壳只补 `tr: ` 前缀、走标准错误、退 1 且**不带** usage 块。
   - **被参照件证伪的一条，判据因此改写**：我先按「凡是 `[` 开头就是重复式的尝试」实现，实测 `tr_ref abc '[x]'` 退 0 且原样输出——`bracket()`（`str.c:176-210`）在进 `genseq()` 之前先看 `strpbrk(s->str + 2, "*]")` 是否**先撞上 `*`** 且那枚 `*` 之后还有一个 `]`，否则返回 0，`next()`（`:124-132`）FALLTHROUGH 把这枚 `[` 当字面量。同理 `[:alpha` 缺 `:]` 收尾也是字面量而不是错误，`[=c=]` 是合法的单字符等价类。三条判据照抄之后，A/B 由「多形假报错」收敛到 SAME=20 / DIFF=1（唯一那条见下面的登记）。
-  - **门**：`cargo test -p minix-textfilter --lib tr::` → 18/0；`cargo test -p minix-textfilter --test tr_face` → 14/0，新立四枚（四句报文逐字节、没成形的 `[` 不抱怨、开式与零个数都是满重复、反序区间是三枚字面量且退 0）；`cargo test -p minix-textfilter` 全套件零失败；宿主三架构 `x86_64-unknown-none`/`aarch64-unknown-none`/`riscv64gc-unknown-none-elf` 各 Finished；`cargo check --workspace` 0 error；`rustfmt --edition 2021 --check` 触及三件零漂移；`cargo clippy -p minix-textfilter --all-targets` 触及件零命中。容器门本轮未跑：宿主网络与容器 DNS 两侧都不通（回退口径见本文件「环境与配方」一节），权威读数待网络恢复补跑。
+  - **门**：`cargo test -p minix-textfilter --lib tr::` → 18/0；`cargo test -p minix-textfilter --test tr_face` → 14/0，新立四枚（四句报文逐字节、没成形的 `[` 不抱怨、开式与零个数都是满重复、反序区间是三枚字面量且退 0）；`cargo test -p minix-textfilter` 全套件零失败；宿主三架构 `x86_64-unknown-none`/`aarch64-unknown-none`/`riscv64gc-unknown-none-elf` 各 Finished；`cargo check --workspace` 0 error；`rustfmt --edition 2021 --check` 触及三件零漂移；`cargo clippy -p minix-textfilter --all-targets` 触及件零命中。容器门这三轮未跑：宿主与容器两侧的出站连接都不通，病根、探针与回退口径见本文件 §7；权威读数待网络恢复补跑。
   - **负控七枚、有效六枚**：`sequence_ahead` 恒真 → lib 红 2 / face 红 2；恒假 → 6/4；站点判据永不触发 → 1/1；零个数当空集 → 1/1；反序区间重新并入正向区间 → 1/1；`unknown class` 报文改写 → 1/1。第七枚把星号句与个数句在**枚举定义处**互换，结果没编译过，属无效负控（变异的写法不对，不是门不够弱），如实记录不充数。
   - **登记不执行**（两处）：① `TR-EQUIV-SENTENCES`——`genequiv()` 的 `Misplaced equivalence equals sign` 与 `Misplaced equivalence right bracket`（`str.c:307-330`）未接，本支把 `[=xy=]` 这一形收成单枚成员 `x`；② `TR-EQUIV-OOBCH-SET2`——`tr abc '[=c=]'` 两边都退 0、集合都是单枚 `c`，参照件在 string2 用尽后把后续位置填 `\0`（`od -c` 读数 `c \0 \0 \n`，见 `tmp/tr-335/ab335.log`），本层重复末字节得 `ccc\n`；那是 `tr.c` 的 OOBCH 腿而不是 `bracket()` 的判据。**下一轮首动作**：`tools/claim.sh claim SPLIT-WRITE-ERRNO qoder`。
 
@@ -5799,3 +5809,73 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - 联网实证：Redox `redox-os/coreutils` master 分支 Cargo.toml（单包 + 显式 `[[bin]]` + `src/bin/*.rs`）。
 - grep 实证清单：commands 范围 `minix-types` 仅 init 命中；`src/bin` 零命中；`"commands/bin/fileops"` 计数 2；`plan.md:186` 原文核对。
 - 警告记录：`cargo build -p minix-init` 暴露 `minix-sys/src/pm.rs:30`（unused import `Message`）与 `minix-rt/src/crt0.rs:170`（不必要的 `mut`）——属 14 侧基础设施卫生，随 edge `E-CMDSYSFACE` 顺带清理，不属本 stage。
+
+---
+
+## 7. 环境与配方：权威容器门断网那一串现象、定病根的探针、以及恢复后的挂载配方
+
+> 这一节管的是**承载环境**，不是代码。登记缘由：`AGENTS.md` 定的权威编译门（docker `minix-ci:1.94`）
+> 从批次三百三十五到三百三十七连续三轮没跑成，三轮都按回退口径取宿主读数；
+> `2026-10-17` 批次三百三十八恢复，同日把病根与配方一起写在这里。
+
+### 7.1 断的那三轮，命令与读数按条抄在这里
+
+| 探什么 | 命令 | 读数 |
+|---|---|---|
+| 容器里能不能解析 | `docker run --rm minix-ci:1.94 getent hosts static.crates.io` | `2001:2::fd` |
+| 容器里能不能连上 | `docker run --rm minix-ci:1.94 curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://static.crates.io/` | `000`（`curl` 收不到任何响应才打这个数） |
+| 镜像带没带离线缓存 | `docker run --rm minix-ci:1.94 ls /usr/local/cargo` | 只有 `bin`、`env`，**没有 `registry` 目录** |
+| 宿主自己通不通 | `curl -s -o /dev/null -w '%{http_code}' https://index.crates.io/config.json` | `000` |
+
+cargo 报出来的两句话是同一件事的两个面：`error: failed to get 'bitflags' as a dependency of package minix-kernel`
+是依赖图根本建不起来，`[28] Timeout was reached` 是三架构交叉目标那条腿在等一个不通的连接。
+**最要命的一条是第三行**：镜像里没有 `registry` 目录，意味着任何一次依赖解析都必须走活连接，
+没有「反正缓存里都有」的退路。这也解释了下一小节为什么回退只能退回宿主：宿主自己有一份能用的缓存，
+容器那一份根本不存在，同一条 `--offline` 在容器里连依赖图都建不起来。
+
+同一棵树、同一条命令在断网之前取到过容器读数（批次三百三十二记的 `917 / 0 / 0`），所以断的是承载环境，
+不是代码，也不是配方。判据留一句给下一次遇到同类现象：**先量连接，再怀疑解析**——`2001:2::fd` 这枚地址
+在恢复当日一模一样地出现，而连接是通的（`%{http_code}` 读到 `200` 与 `403`），可见合成出来的地址一直没错。
+
+### 7.2 那三轮用的回退口径
+
+这一条走的是规则里的回退分支（它要求在台账写明回退的理由），理由即上一节的承载环境断网：
+
+```bash
+(ulimit -v 3145728; cargo test -p minix-textfilter --offline -j 1)
+```
+
+`--offline` 走宿主 `~/.cargo` 里已有的缓存；`ulimit -v 3145728` 把地址空间压到 3 GiB，
+让宿主这条腿的内存上限与容器那条腿的 `-m 2g` 可比。凡回退的那几轮，台账里每一项读数都写明是宿主读数。
+
+### 7.3 恢复当日的读数与推荐的挂载配方
+
+四条探针的复探结果（`2026-10-17`）：容器里 `https://index.crates.io/config.json` → `200`，
+`https://static.crates.io/crates/bitflags/bitflags-1.3.2.crate` → `200`，
+`https://static.crates.io/` → `403`（根目录本来就不给列目录，`403` 说明已经连上了），
+`ls /usr/local/cargo` → 仍只有 `bin`、`env`（没有离线缓存这件事并没有变，每一次解析都得走网）。
+
+跑权威门用这一条，在仓库根执行：
+
+```bash
+docker run --rm -u "$(id -u):$(id -g)" \
+  -v "$PWD:/work" -v "$PWD/tmp/ci-cargo:/cargo" -v "$PWD/tmp/ci-target:/tgt" \
+  -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/tgt \
+  -w /work/os -m 2g minix-ci:1.94 cargo test -j 1 -p <pkg>
+```
+
+在认领树里跑就把 `-w` 换成 `/work/.wt/<id>-<owner>/os`。比 `AGENTS.md` 那条多加的三样各管一件事：
+
+- `-u "$(id -u):$(id -g)"`：容器默认以 root 写挂载目录，会在 `.wt/` 里留下 root 属主的构建产物，
+  `tools/claim.sh release` 删不掉，最后要人来 `sudo`。这一条把这笔债消掉。
+- 第二个挂载点是给 cargo 准备的缓存目录：镜像自带的 `/usr/local/cargo` 属 root，非 root 的 cargo 要往里写
+  索引缓存会当场失败，所以把 cargo 找缓存的那个环境变量指到这个挂载点。
+- 第三个挂载点接住编译产物（配方里那个 `CARGO_TARGET_DIR` 的写法照抄即可）：产物落在工作树之外，
+  `os/target` 不会被写脏，也不会混进 root 属主的文件。
+
+批次三百三十八的容器读数：**1060 passed / 0 failed，68 个 target，退码 0**；同一棵树同一条命令在宿主
+也是 1060 / 0，两侧一致。日志 `tmp/split-338/container-gate-final.log`。
+
+**待补的账**：批次三百三十五、三百三十六、三百三十七这三轮只有宿主读数，缺权威读数。下一笔在本目录下
+跑任何一次容器门时，顺手对 `rewrite` 头的同一棵树补一次 `cargo test -j 1 --workspace`，那一句才是覆盖
+三包之外的部分；单包读数不能替它。

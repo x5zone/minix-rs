@@ -427,14 +427,12 @@ impl WriteSink {
     /// 「盘写满」与「真的一次 I/O 错」是两句话，压成一个 `EIO` 就只剩「出错了」。
     pub fn finish(mut self, bytes: &[u8]) -> Result<(), SinkFailure> {
         use std::io::Write as _;
-        let write = self
-            .0
-            .write_all(bytes)
-            .map_err(|failure| SinkFailure::Write(errno_of(&failure)));
         // 宿主这条腿看不见 `close` 的失败：`std::fs::File` 由 drop 关闭且不交回任何号，
         // 而 C 是在开下一枚分片之前 `close(ofd)` 并 `err(1, "%s", fname)`
         // （`minix3/usr.bin/split/split.c:319-322`）。真机那条腿按 `close_outcome` 报。
-        write
+        self.0
+            .write_all(bytes)
+            .map_err(|failure| SinkFailure::Write(errno_of(&failure)))
     }
 }
 
@@ -465,7 +463,6 @@ pub enum SinkFailure {
 
 /// 两腿的取舍写成一张明表，是因为它得能被门钉住：宿主看不见 `close` 的失败，真机才两条都有。
 /// 规则是「写失败优先」——C 在 `bigwrite` 失手处当场 `err` 退出，根本走不到下一次 `close`。
-#[must_use]
 pub fn close_outcome(
     write: Result<(), SinkFailure>,
     close: Result<(), SinkFailure>,
@@ -488,6 +485,56 @@ fn write_loop(fd: minix_sys::Fd, mut left: &[u8]) -> Result<(), minix_sys::Errno
         }
     }
     Ok(())
+}
+
+/// 一枚输入操作数的两条失败腿。C 把它们打在两处：`file(argv[0], "r")` 里 `fopen`
+/// 失手是 `err(1, "%s", *argv)`（`minix3/usr.bin/split/split.c:136-138`），读循环里
+/// `read` 失手是 `err(1, "read")`（`:185-190`、`:252-257`）——同一枚操作数、两句不同
+/// 的话。合成一条就把「档不存在」与「开得了但读不动」混成一谈，而后者在宿主上恰好
+/// 可测：一枚目录开得动、读不动（`EISDIR`）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InputFailure {
+    Open(minix_sys::Errno),
+    Read(minix_sys::Errno),
+}
+
+/// 读一枚操作数：交回**到的字节**与**让它停下来的那一臂**（若有）。
+///
+/// 到的字节要一起交回，因为 C 是边读边切边写——`read` 失手时前面的分片已经在盘上了，
+/// 调用方于是先把那些分片切完写完，再补一句 `err(1, "read")` 并退 1。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn read_operand(path: &str) -> (Vec<u8>, Option<InputFailure>) {
+    use std::io::Read as _;
+    let mut file = match std::fs::File::open(path) {
+        Ok(handle) => handle,
+        Err(failure) => {
+            return (Vec::new(), Some(InputFailure::Open(errno_of(&failure))));
+        }
+    };
+    let mut input = Vec::new();
+    match file.read_to_end(&mut input) {
+        Ok(_) => (input, None),
+        Err(failure) => (input, Some(InputFailure::Read(errno_of(&failure)))),
+    }
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn read_operand(path: &str) -> (Vec<u8>, Option<InputFailure>) {
+    let mut input = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let fd = match minix_sys::open(path, 0, 0) {
+        Ok(handle) => handle,
+        Err(code) => return (input, Some(InputFailure::Open(code))),
+    };
+    let outcome = loop {
+        match read(fd, &mut chunk) {
+            Ok(0) => break Ok(()),
+            Ok(count) => input.extend_from_slice(&chunk[..count]),
+            Err(code) => break Err(InputFailure::Read(code)),
+        }
+    };
+    let _ = minix_sys::close(fd);
+    (input, outcome.err())
 }
 
 /// An input operand that has been opened but not yet read.

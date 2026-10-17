@@ -50,17 +50,22 @@ fn run() -> ! {
     // `split.c:135-139`: `-` reads stdin (split, unlike grep/sed, special-cases
     // it), a named input is opened, no operand reads stdin, and an unopenable
     // input is fatal (`err(1, "%s", *argv)`).
-    let input = match operands.first() {
-        None => support::read_stdin(),
-        Some(name) if *name == "-" => support::read_stdin(),
-        Some(name) => match support::read_file(name) {
-            Ok(data) => data,
-            // C 的 `err(1, "%s", *argv)`（`split.c:137-138`）：程序名、操作数原文、
-            // `strerror` 句子三段齐备。旧写法只印到名字为止（同族第五例）。
-            Err(code) => {
+    // 读腿的三形各归各位：没有操作数是标准输入，裸 `-` 也是标准输入（`split.c:136`
+    // 为它开了特例），其余按名字开档。开档失手当场 `err(1, "%s", *argv)` 退出；
+    // `read` 失手要先把已经读到的切出去、再补一句 `err(1, "read")`（`:185-190`、
+    // `:252-257`），所以那个号带着读到的字节一起往下走。
+    let (input, read_failure) = match operands.first() {
+        None => support::read_stdin_error(),
+        Some(name) if *name == "-" => support::read_stdin_error(),
+        Some(name) => match support::read_operand(name) {
+            (data, None) => (data, None),
+            (_, Some(support::InputFailure::Open(code))) => {
+                // C 的 `err(1, "%s", *argv)`（`split.c:137-138`）：程序名、操作数原文、
+                // `strerror` 句子三段齐备。
                 support::warn_line(prog, name, code);
                 support::terminate(1);
             }
+            (data, Some(support::InputFailure::Read(code))) => (data, Some(code)),
         },
     };
 
@@ -107,7 +112,7 @@ fn run() -> ! {
                 support::terminate(1);
             }
         }
-        support::terminate(0);
+        finish(prog, read_failure);
     }
     for (index, chunk_lines) in chunks_bytes(&lines, lines_per_chunk).iter().enumerate() {
         // `split.c:332`: each chunk lands in `prefix + suffix(index)`, created
@@ -120,7 +125,17 @@ fn run() -> ! {
             write_failure(prog, &path, failure);
         }
     }
-    support::terminate(0);
+    finish(prog, read_failure)
+}
+
+/// 收尾：C 的 `read` 失手是当场 `err(1, "read")`，但它边读边写，前面的分片已在盘上；
+/// 本壳先切完再报，形状同为一行 `split: read: <句子>` 加退 1，无错即退 0。
+fn finish(prog: &str, read_failure: Option<minix_sys::Errno>) -> ! {
+    if let Some(code) = read_failure {
+        support::warn_line(prog, "read", code);
+        support::terminate(1);
+    }
+    support::terminate(0)
 }
 
 /// Output path for chunk `index`: `prefix` + the `width`-letter suffix, or
