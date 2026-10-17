@@ -148,8 +148,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   「值 `inf` 且 `erange` 为假」）、端到端 22/0（新立 4 枚：`0x10` 认、`0x1p3` 认、
   `0x1p99999999` 认下且一行都不掷中、`0x` 与 `0xg` 报「不是有效分母」）；对参照件 A/B 19 形
   **17 同 2 异**（`tmp/random-349/ab349.log`，两异即上面那对 glibc 立号形）；clippy 触及件 0 命中；
-  rustfmt 零漂移；容器门（`minix-ci:1.94`、`-m 2g -j 1`、挂仓库根、工作目录 `os/`）读数见
-  `tmp/random-349/container-gate.log`。
+  rustfmt 零漂移；容器门（`minix-ci:1.94`、`-m 2g -j 1`、挂仓库根、工作目录 `os/`）退码 0、合计 **51 通过 / 0 失败**（6 个 target，逐套读数在 `tmp/random-349/container-gate.log`）。
 - **环境坑（现查证据 `ls -ld tmp/ci-target-349`）**：容器配方里 `CARGO_TARGET_DIR` 指向的宿主目录
   若不存在，docker 会以 **root** 属主自动建它，容器内以 `-u $(id -u)` 跑的 cargo 随即写不进
   `/target/debug`，报 `Permission denied (os error 13)` 退码 1——这是门的脚手架坏了，不是代码坏了。
