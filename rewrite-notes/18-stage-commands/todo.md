@@ -321,6 +321,55 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百三十四定了 `jot` 精度未写那一族的真值判据，并把默认转换从整数支改到浮点支，闭合 `JOT-PREC-MINUS-ONE-FORMAT`**
+  （`2026-10-17`，`claim/JOT-PREC-MINUS-ONE-FORMAT-qoder` @ 基线 `679db151f`，动 `os/commands/usr-bin/textfilter/{src/jot.rs,tests/jot_face.rs}` + 18 篇两件文档，单域三线 commands/textfilter，无跨界）：
+  **这一条当年卡在哪**：C 的 `prec` 初值是 `-1`（`minix3/usr.bin/jot/jot.c:74`），而钳位
+  `if (prec == -1) prec = 0;`（`:229-230`）排在 `getformat()` **之后**——拼说明符那一步它还是 -1，
+  `:349-356` 的条件 `chardata || prec == 0` 不成立，于是走 `"%%.%df"` 那一支，拼出 `%.-1f`。
+  登记当年的判断是「这一形拼出的说明符本身是坏的，被打印成什么由各家 printf 决定，本机不可判定」，
+  所以 A/B 只比退码与标准错误。这一笔把判据定下来，并且结论是：**宿主参照件不能当这一族的真值承载**。
+  **判据由两条独立证据定**：①读 Minix 自己的 libc——`minix3/lib/libc/stdio/vsnprintf_ss.c` 是 NetBSD 血脉
+  （文件头 `$NetBSD: vsnprintf_ss.c,v 1.13 2014-09-29`），其 `case '.':`（`:213-226`）先 `n = 0`，
+  只有 `.` 后紧跟数字才累积精度；遇 `-` 时循环一次不进，于是 `prec = 0`，随后 `goto reswitch` 把剩下的
+  字符重新按旗标/宽度/转换解析——`-` ⇒ 左调，`1` ⇒ 字段宽，`f` ⇒ 转换。所以 Minix 眼里的 `%.-1f`
+  等价于 `%-1.0f`：**精度 0 的浮点，四舍五入**。②本机探针把两家的分歧量出来：`snprintf(f,…,"%%.%df",-1)`
+  得到的串是 `%.-1f`（长度 5），而 `printf(f,1.5)` 在 glibc 下打回字面量 `%.0-1f`（`/tmp/pf2.c` 的读数）。
+  同一串两种结果，说明「参照件打什么」不是判据；Minix 侧由 ① 定。
+  **壳侧错在哪**：`src/jot.rs` 的默认转换写的是 `let prec = options.prec.unwrap_or(0);`，把「从未写过」
+  （C 的 -1）与「显式写成 0」（C 的 `prec == 0`）合并成同一件事，于是这一族落进整数支 `%ld`，
+  而整数渲染走 `(long)floor(x)`（对位 `jot.c:306` 的 `dox`）。两者在整值上同形、在带小数的值上分家：
+  `0.7` 的 C 真值是 `1`（四舍五入），壳侧以前打 `0`（向下取整）。
+  **改法与为什么不做得更厚**：条件改成 `options.prec == Some(0)`，未写精度那一支构造 `%-1.0f`，
+  把 Minix 解析出的三个要素（左调、宽 1、精度 0）都带上；显式 0 仍走 `%ld`。不在这里再写一个通用
+  printf 解释器：本壳只有构造默认转换时会拼这一串，用户经 `-w` 给的说明符走 `parse_conv_spec` 那条
+  既有路径（批次三百一十七已钉），在此处再抄一个解释器等于把 libc 的实现搬进命令层。
+  **门（库测 1 枚 + 面门 1 枚）**：`an_unwritten_precision_rounds_while_an_explicit_zero_floors` 钉四件事——
+  未写精度构造出的说明符确实是 `left=true`、`width=1`、`prec=Some(0)`、转换为 `f`；
+  `render(0.7)="1"`、`render(1.5)="2"`、`render(2.5)="2"`（凑偶，与 NetBSD dtoa 同规则）；
+  显式 `Some(0)` 是 `dox=true` 且 `render(0.7)="0"`，即两支撑得开的值确实分家；
+  外加 `-c` 配未写精度仍走整数支（C 的条件是 `chardata || prec == 0`，字符优先）。
+  `the_unwritten_precision_family_prints_no_decimal_point_and_no_literal` 在进程级钉登记里那四形
+  （`jot 3`、`-n 3`、`3 - 5`、`-s , 3`）退 0、无诊断，输出里既无小数点也无 `%`（后者专防打回字面量那种形态）。
+  **变异负控七枚全部由门咬住**（控制器在 `tmp/jot-334/ctl334.py`，baseline 与还原后同为 38 通过 0 失败，
+  逐枚还原核 md5）：未写精度改回走整数支咬 1、精度写成缺省 6 咬 6、去掉左调与宽度咬 1、浮点支的 `dox`
+  误报为真咬 8、浮点支改用 `%ld` 咬 1、整数支忽略 `chardata` 咬 1、宽度写成 0 咬 1。
+  **第一轮只有 4/6，两枚没咬住的正是断言不够**：`%-1.0f`→`%.0f` 在当时改不动任何输出（左调与宽度只在
+  字段宽真起作用时可见），`chardata` 配未写精度那一形根本没人测——补上旗标/宽度断言与 `-c` 那一形之后
+  变 7/7。与批次三百三十三同一条经验：负控咬不住时先怀疑断言不够，而不是宣布代码没事。
+  **三件套（读数全取自宿主 `ulimit -v 3145728` 加 `--offline`；容器与宿主网络同断，见上一笔登记）**：
+  `cargo test --offline -p minix-textfilter -j 1` → **926 / 0 / 0**（68 个 target，上一笔 924，本笔 +1 库测 +1 面门）；
+  `--lib jot::` 23 通过、`--test jot_face` 15 通过；`cargo check --offline --workspace -j 1` 0 error；
+  三架构 `cargo build --offline --bins -j 1 --target x86_64-unknown-none / aarch64-unknown-none / riscv64gc-unknown-none-elf -p minix-textfilter`
+  各退码 0 且 `^error` 计数 0；`rustfmt --edition 2021 --check` 对两个触及件零漂移（面门那条 `for` 数组
+  过长由 rustfmt 要求换行，格式化后复跑归零）；`cargo clippy --offline -p minix-textfilter --all-targets` 触及件零命中。
+  核实日 `2026-10-17`；基线 `679db151f`。
+  **登记不执行**：① `-r` 随机形是唯一能在进程级造出「带小数值且精度未写」的路径，而它的种子默认取
+  `time * getpid`（`jot.c:232-234`），宿主上不可重复，故这一形的上机对账归 `C-57`/E5
+  （`JOT-PREC-RANDOM-AB-ON-MACHINE`）；② `-w` 用户说明符在两家 libc 下的分歧面同样待真机（本笔只定
+  默认转换这一支）；③ 把「参照件在这一形打回字面量」记为一条判例：凡以宿主 glibc 输出当 C 真值的对账，
+  都要先问一句该形是否经 libc 解析。
+  **下一轮首动作**：`tools/claim.sh claim TR-SET-GRAMMAR-SENTENCES qoder`（排期 v3 的下一行）。
+
 - ✅ **批次三百三十三把 `cksum` 的 hash 选中状态建模，接上 C 由它驱动的两条诊断，并修掉一枚吞操作数的下标缺陷（`CKSUM-HASH-STATE` 的第一片）**
   （`2026-10-17`，`claim/CKSUM-HASH-STATE-qoder` @ 基线 `b6f2f62ea`，动 `os/commands/usr-bin/textfilter/{src/cksum.rs,src/bin/cksum.rs,tests/cksum_face.rs}` + 18 篇两件文档，单域三线 commands/textfilter，无跨界）：
   **这一条是什么**：C 的 `cksum` 有一个状态变量 `const struct hash *hash`（`minix3/usr.bin/cksum/cksum.c:162`），

@@ -386,15 +386,27 @@ pub fn get_format(options: &JotOptions) -> Result<(Format, bool), JotError> {
     }
     match at {
         None => {
-            // Append the default conversion.
-            let prec = options.prec.unwrap_or(0);
-            if options.chardata || prec == 0 {
+            // C 在这里用的是**未经钳位**的 prec：`jot.c:229-230` 的
+            // `if (prec == -1) prec = 0;` 排在 `getformat()` **之后**，所以拼说明符那一步
+            // 它还是 -1。壳侧的 `None` 就是那个 -1，而 `Some(0)` 是另一回事——
+            // 后者对应 C 的 `prec == 0`，走整数支（`%ld`，`(long)floor(x)`，`jot.c:306`）。
+            //
+            // -1 那一支 C 拼出 `%.-1f`（`jot.c:356` 的 `"%%.%df"`）。这个说明符在 Minix 上
+            // 不是坏的：libc 是 NetBSD 血脉，`minix3/lib/libc/stdio/vsnprintf_ss.c:213-226`
+            // 的 `case '.'` 在 `.` 后遇到非数字时把 `n` 留在 0，于是 `prec = 0`，再 `goto reswitch`
+            // 把剩下的 `-` 当左调旗标、`1` 当字段宽、`f` 当转换字符。等价于 `%-1.0f`——
+            // **四舍五入**，不是取整。宿主 glibc 对同一串打回字面量 `%.0-1f`，那是参照件
+            // 所链 libc 的行为，不是 Minix 的真值，所以这一形不能拿宿主参照件定判据。
+            if options.chardata || options.prec == Some(0) {
                 let kind = if options.chardata { "c" } else { "ld" };
                 let full = format!("{}%{}", word, kind);
                 let conv = parse_conv_spec(&full, word.len())?;
                 Ok((Format::Conv(conv), true))
             } else {
-                let full = format!("{}%.{}f", word, prec);
+                let full = match options.prec {
+                    Some(p) => format!("{}%.{}f", word, p),
+                    None => format!("{}%-1.0f", word),
+                };
                 let conv = parse_conv_spec(&full, word.len())?;
                 Ok((Format::Conv(conv), false))
             }
@@ -1022,6 +1034,50 @@ mod tests {
         o.chardata = true;
         let (f, _) = get_format(&o).unwrap();
         assert_eq!(render(&f, 65.0), "xA");
+    }
+
+    /// `prec` 从未被写过（C 的 `-1`，`jot.c:74`）与显式写成 `0`（`-p 0` 或推得 0）
+    /// 是两件事：前者进 C 的 `%%.%df` 支拼出 `%.-1f`，Minix 的 libc 把它解析成
+    /// 精度 0 的浮点（`minix3/lib/libc/stdio/vsnprintf_ss.c:213-226`：`.` 后非数字 ⇒
+    /// `prec = 0`，随后 `-` 是左调旗标、`1` 是宽度、`f` 是转换），**四舍五入**；
+    /// 后者进整数支，`(long)floor(x)`（`jot.c:306`、`dox`），**向下取整**。
+    /// 两支撑得开的值不同，这一枚钉的就是那条分界。
+    #[test]
+    fn an_unwritten_precision_rounds_while_an_explicit_zero_floors() {
+        let mut o = opts();
+        // 未写精度：走浮点支，dox 为假。
+        o.prec = None;
+        let (f, dox) = get_format(&o).unwrap();
+        assert!(!dox, "未写精度不进整数支");
+        // 推导出来的说明符要把 Minix 解析 `%.-1f` 得到的三个要素都带上：左调旗标、
+        // 字段宽 1、精度 0。少任何一个都是把 C 的真值少抄一半。
+        match &f {
+            Format::Conv(c) => {
+                assert!(c.left, "`.` 后那个 `-` 在 Minix 的旗标循环里是 LADJUST");
+                assert_eq!(c.width, 1, "剩下的 `1` 是字段宽");
+                assert_eq!(c.prec, Some(0), "`.` 后非数字 ⇒ 精度 0");
+                assert!(matches!(c.conv, ConvKind::Real(RealKind::F)), "结尾是 `f`");
+            }
+            Format::Literal(_) => panic!("未写精度该构造转换，而不是字面"),
+        }
+        assert_eq!(render(&f, 0.7), "1", "0.7 该四舍五入成 1，不是取整成 0");
+        assert_eq!(render(&f, 1.5), "2", "半数上取");
+        assert_eq!(render(&f, 2.5), "2", "凑偶：与 NetBSD dtoa 同规则");
+        assert_eq!(render(&f, 3.0), "3", "整值两支撑得一样");
+        // `-c` 的字符支优先于精度这一族：C 的条件是 `chardata || prec == 0`，
+        // 所以 `chardata` 为真时**不论 prec 写没写**都走 `%c`。
+        o.chardata = true;
+        let (f, dox) = get_format(&o).unwrap();
+        assert!(dox, "`-c` 在精度未写时仍走整数支");
+        assert_eq!(render(&f, 65.0), "A");
+        o.chardata = false;
+
+        // 显式 0：走整数支，floor。
+        o.prec = Some(0);
+        let (f, dox) = get_format(&o).unwrap();
+        assert!(dox, "显式 0 走 %ld 支");
+        assert_eq!(render(&f, 0.7), "0", "floor 与上面的 round 在此分家");
+        assert_eq!(render(&f, 1.5), "1");
     }
 
     #[test]

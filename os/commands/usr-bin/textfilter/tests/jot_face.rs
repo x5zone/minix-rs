@@ -309,3 +309,27 @@ fn a_negative_or_fractional_seed_is_accepted_like_c() {
     assert_eq!((code, out.as_str()), (1, ""));
     assert_eq!(err, "jot: Bad step value:  5x\n");
 }
+
+/// 登记里的四形（`jot 3`、`-n 3`、`3 - 5`、`-s , 3`）都是 `prec` 从未被写过那一族。
+/// 这一形在进程级能钉的是形状：每行不带小数点（精度 0 的浮点，或取整后的整数），
+/// 也不带 `%`（宿主 glibc 把 `%.-1f` 当坏说明符打回字面量 `%.0-1f`，那是参照件所链
+/// libc 的产物，不是 Minix 的真值，所以本门刻意不拿参照件的这一形当判据）。
+#[test]
+fn the_unwritten_precision_family_prints_no_decimal_point_and_no_literal() {
+    for args in [
+        &["3"][..],
+        &["-n", "3"][..],
+        &["3", "-", "5"][..],
+        &["-s", ",", "3"][..],
+    ] {
+        let (out, status, err) = run(args);
+        assert_eq!(status, 0, "{args:?} 的退码：stderr 是 {err:?}");
+        assert_eq!(err, "", "{args:?} 不该有诊断");
+        assert!(!out.contains('.'), "{args:?} 的输出不该出现小数点：{out:?}");
+        assert!(
+            !out.contains('%'),
+            "{args:?} 的输出不该是打回的说明符：{out:?}"
+        );
+        assert!(!out.is_empty(), "{args:?} 要有输出");
+    }
+}
