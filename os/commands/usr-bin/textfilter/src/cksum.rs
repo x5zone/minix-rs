@@ -163,6 +163,13 @@ pub fn parse_check_line(line: &str) -> CheckEntry<'_> {
 pub struct CksumRequest<'a> {
     /// Which sum to compute (`-a`/`-o` fold this; default `Crc`).
     pub kind: SumKind,
+    /// C's `const struct hash *hash` (`cksum.c:162`): the `hashname` of the crypto
+    /// algorithm `-a` selected, or `None` while the CRC/old-sum path is in force.
+    /// Two of C's diagnostics are driven by this state alone — `-a` a second time
+    /// (`cksum.c:195-199`) and `-o` after a selection (`:228-234`) — and both
+    /// `usage()` before any digest is computed, so they are reachable without the
+    /// primitives themselves.
+    pub hash: Option<&'static str>,
     /// `-c`: verify a check file rather than print sums.
     pub do_check: bool,
     /// `-w`: warn on each bogus/unreadable check line.
@@ -186,8 +193,13 @@ pub enum CksumError {
     /// `-a`/`-o` 的值不是可认的名字：C 是 `warnx("illegal argument to -a|-o option")` + `usage()`
     ///（`cksum.c:219`、`:243`），**不是**一句自创的「invalid algorithm」，也不退 2。
     IllegalOptionValue(char),
-    /// `-a <algo>` named a crypto hash (md5/sha…) — needs primitives we lack.
-    CryptoUnsupported,
+    /// 选中之后再次 `-a`：C 的
+    /// `warnx("illegal use of -a option")` 再接 `usage()`（`cksum.c:195-199`）。
+    IllegalUseOfA,
+    /// `-o` 在一个 hash 已被选中之后出现：C 的
+    /// `warnx("%s mutually exclusive with sum", hash->hashname)` 再接 `usage()`
+    ///（`cksum.c:228-234`），句子里是大写的那个名字。
+    MutuallyExclusiveWithSum(&'static str),
     /// `-p`/`-s`/`-t`/`-x` call `requirehash` (`cksum.c:149`), which the
     /// CRC/old-sum path never satisfies. C 的那句是 `warnx("%s flag requires `-a algorithm'", flg)`
     /// 再接 usage（`cksum.c:521-525`）。
@@ -203,6 +215,7 @@ pub enum CksumError {
 pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumError> {
     let mut request = CksumRequest {
         kind: SumKind::Crc,
+        hash: None,
         do_check: false,
         check_warn: false,
         print_normal: false,
@@ -231,14 +244,15 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
             let flag = bytes[pos] as char;
             // 带值字母的取值：本 token 剩余部分优先，否则取下一词；两处都没有就是
             // libc 的缺值那一行（旧写法把它当成「值为空」再报一出自创句）。
+            // 带值字母的取值：本 token 剩余部分优先（`-amd5`），否则取下一词（`-a md5`）；
+            // 两处都没有就是 libc 的缺值那一行（旧写法把它当成「值为空」再报一出自创句）。
+            // 只有真取了**另一个** token 时才推进下标——当前这个 token 由循环尾统一推进。
+            // 两处都推就会多吞一个词：`-a crc file` 于是把 `file` 跳过去，转去读标准输入。
             let take_value = |parser_index: &mut usize| -> Result<&'a str, CksumError> {
                 if pos + 1 < bytes.len() {
-                    let rest = &arg[pos + 1..];
-                    *parser_index += 1;
-                    return Ok(rest);
+                    return Ok(&arg[pos + 1..]);
                 }
-                *parser_index += 1;
-                match args.get(*parser_index) {
+                match args.get(*parser_index + 1) {
                     Some(word) => {
                         *parser_index += 1;
                         Ok(word)
@@ -249,6 +263,11 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
             match flag {
                 'o' => {
                     let value = take_value(&mut index)?;
+                    // C 在 `case 'o'` 的第一行就查 `hash`（`cksum.c:228-234`），值本身
+                    // 已被 getopt 吃掉，所以缺值那一行仍然先由 libc 印。
+                    if let Some(name) = request.hash {
+                        return Err(CksumError::MutuallyExclusiveWithSum(name));
+                    }
                     request.kind = match value {
                         "1" => SumKind::Old1,
                         "2" => SumKind::Old2,
@@ -258,32 +277,44 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
                 }
                 'a' => {
                     let value = take_value(&mut index)?;
-                    // C 的 `-a` 先按 `strcasecmp` 查名字表，查不到才试 `old1`/`old2`/`crc`，
-                    // 再不行是 `illegal argument to -a option`；MD5/SHA 家族需要我们没有的原语。
-                    if value.eq_ignore_ascii_case("crc") {
+                    // C 的 `case 'a'` 先看 `hash` 是否已被上一次选中（`cksum.c:195-199`），
+                    // 选中过就是 `illegal use of -a option`——哪怕这一枚的名字本身合法。
+                    if request.hash.is_some() {
+                        return Err(CksumError::IllegalUseOfA);
+                    }
+                    // 然后才按 `strcasecmp` 查名字表（`:200-207`），查不到才试
+                    // `old1`/`old2`/`crc`（`:209-224`），再不行是 `illegal argument to -a option`。
+                    if let Some(name) = crypto_hashname(value) {
+                        request.hash = Some(name);
+                    } else if value.eq_ignore_ascii_case("crc") {
                         request.kind = SumKind::Crc;
                     } else if value.eq_ignore_ascii_case("old1") {
                         request.kind = SumKind::Old1;
                     } else if value.eq_ignore_ascii_case("old2") {
                         request.kind = SumKind::Old2;
-                    } else if is_crypto_name(value) {
-                        return Err(CksumError::CryptoUnsupported);
                     } else {
                         return Err(CksumError::IllegalOptionValue('a'));
                     }
                     break;
                 }
                 's' => {
-                    // `-s` 在 C 里先过 `requirehash`（本树永远选不到 hash），所以它的值
-                    // 根本读不到；但 getopt **已经吃了那个值**，缺值时仍是 libc 那一行。
+                    // `-s` 先过 `requirehash`（`cksum.c:521-525`）：没选中 hash 才报那句
+                    // 并要求 `-a algorithm`；选中了则继续走，值本身要等真摘要时用。
                     let _ = take_value(&mut index)?;
-                    return Err(CksumError::RequiresHash('s'));
+                    if request.hash.is_none() {
+                        return Err(CksumError::RequiresHash('s'));
+                    }
                 }
                 'c' => request.do_check = true,
                 'w' => request.check_warn = true,
                 'n' => request.print_normal = true,
                 'q' => request.print_quiet = true,
-                'p' | 't' | 'x' => return Err(CksumError::RequiresHash(flag)),
+                'p' | 't' | 'x' => {
+                    // 这三个旗标也过 `requirehash`：没选中 hash 才报，选中了就收下。
+                    if request.hash.is_none() {
+                        return Err(CksumError::RequiresHash(flag));
+                    }
+                }
                 _ => return Err(CksumError::UnknownOption(flag)),
             }
             pos += 1;
@@ -293,13 +324,27 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
     Ok(request)
 }
 
-/// C 名字表（`cksum.c` 的 `hashes[]`）里的算法名；它们需要 OpenSSL 原语，本树不实现，
-/// 但区分「认得而未接」与「根本不合法」才能把 `illegal argument to -a option` 用在对的地方。
-fn is_crypto_name(value: &str) -> bool {
-    matches!(
-        value.to_ascii_lowercase().as_str(),
-        "md2" | "md4" | "md5" | "rmd160" | "ripemd160" | "sha1"
-    )
+/// The `hashname` C would carry in `hash` once `-a <value>` matches its table, or
+/// `None` when the name is not in it. The table is `minix3/usr.bin/cksum/cksum.c:120-144`
+/// — eight entries, matched with `strcasecmp` against the lower-case `progname`
+/// (`cksum.c:201-207`) while the diagnostics quote the **upper-case** `hashname`
+/// (`hash->hashname`, `cksum.c:231-234`). Names outside these eight are not aliases:
+/// C has no `ripemd160` row, so that spelling falls through to
+/// `illegal argument to -a option`. The digests themselves need the primitives this
+/// tree does not carry yet, which is why selection is modelled here and computation
+/// is not (`CKSUM-HASH-STATE` 的第二片).
+fn crypto_hashname(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "md2" => Some("MD2"),
+        "md4" => Some("MD4"),
+        "md5" => Some("MD5"),
+        "rmd160" => Some("RMD160"),
+        "sha1" => Some("SHA1"),
+        "sha256" => Some("SHA256"),
+        "sha384" => Some("SHA384"),
+        "sha512" => Some("SHA512"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -431,8 +476,94 @@ mod tests {
             SumKind::Old2
         );
         assert_eq!(
-            parse_cksum_args(&["-a", "md5"]),
-            Err(CksumError::CryptoUnsupported)
+            parse_cksum_args(&["-a", "md5"]).unwrap().hash,
+            Some("MD5"),
+            "选中记的是 C 表里的 hashname（大写那一份，`cksum.c:126`）"
+        );
+        // 表里的八项逐个都要认得（`cksum.c:120-144`），且按 `strcasecmp` 匹配：
+        // 名字的大小写不影响选中，但报文里用的是大写那一份。
+        for (word, name) in [
+            ("md2", "MD2"),
+            ("MD4", "MD4"),
+            ("md5", "MD5"),
+            ("rmd160", "RMD160"),
+            ("sha1", "SHA1"),
+            ("SHA256", "SHA256"),
+            ("sha384", "SHA384"),
+            ("sha512", "SHA512"),
+        ] {
+            assert_eq!(
+                parse_cksum_args(&["-a", word]).unwrap().hash,
+                Some(name),
+                "`-a {word}` 该选中 {name}"
+            );
+        }
+        // 表里没有的拼法不是别名：C 没有 `ripemd160` 这一行，所以它落到
+        // `illegal argument to -a option`（`cksum.c:201-224` 的两级查找之后）。
+        assert_eq!(
+            parse_cksum_args(&["-a", "ripemd160"]),
+            Err(CksumError::IllegalOptionValue('a'))
+        );
+        // 选中之后再 `-a`：C 的 `case 'a'` 第一行就是这条（`cksum.c:195-199`），
+        // 第二枚的名字好不好都在所不问——`crc` 也一样被这条挡住。
+        assert_eq!(
+            parse_cksum_args(&["-a", "md5", "-a", "sha1"]),
+            Err(CksumError::IllegalUseOfA)
+        );
+        assert_eq!(
+            parse_cksum_args(&["-a", "md5", "-a", "crc"]),
+            Err(CksumError::IllegalUseOfA)
+        );
+        // 选中之后再 `-o`：句子带的是大写名字（`cksum.c:228-234`）。
+        assert_eq!(
+            parse_cksum_args(&["-a", "md5", "-o", "1"]),
+            Err(CksumError::MutuallyExclusiveWithSum("MD5"))
+        );
+        // 反过来先 `-o` 再 `-a` 就不冲突：`hash` 这时还是空的。
+        assert_eq!(
+            parse_cksum_args(&["-o", "1", "-a", "md5"]).unwrap().hash,
+            Some("MD5"),
+        );
+        assert_eq!(
+            parse_cksum_args(&["-o", "1", "-a", "md5"]).unwrap().kind,
+            SumKind::Old1,
+        );
+        // 选中之后 `-p`/`-s` 不再报 `requires \`-a algorithm'`（C 的 requirehash 放行）；
+        // 没选中时才报，这一形是批次三百零七钉下的。
+        assert!(parse_cksum_args(&["-a", "sha1", "-p"]).is_ok());
+        assert!(parse_cksum_args(&["-a", "sha1", "-s", "abc"]).is_ok());
+        assert_eq!(
+            parse_cksum_args(&["-p"]),
+            Err(CksumError::RequiresHash('p'))
+        );
+        // 缺值仍由 libc 先报，即使此时已有 hash 选中（getopt 在进入 switch 之前就要值）。
+        assert_eq!(
+            parse_cksum_args(&["-a", "md5", "-o"]),
+            Err(CksumError::MissingValue('o'))
+        );
+        // 带值选项**后面**的操作数不能被吞。旧的下标算术在取值处和循环尾各推一次，
+        // 于是 `-a crc file` 会跳过 `file`，让本应算文件的 cksum 转去读标准输入——
+        // 附值形 `-acrc file` 同病。这一组断言钉住「一个 token 只由循环尾推进一次」。
+        assert_eq!(
+            parse_cksum_args(&["-a", "crc", "file"]).unwrap().operands,
+            vec!["file"]
+        );
+        assert_eq!(
+            parse_cksum_args(&["-acrc", "file"]).unwrap().operands,
+            vec!["file"]
+        );
+        assert_eq!(
+            parse_cksum_args(&["-o", "1", "-a", "sha1", "f1", "f2"])
+                .unwrap()
+                .operands,
+            vec!["f1", "f2"]
+        );
+        assert_eq!(
+            parse_cksum_args(&["-a", "crc", "-n", "-"])
+                .unwrap()
+                .operands,
+            vec!["-"],
+            "裸 `-` 仍是操作数，且不被前一个值吞掉"
         );
         assert_eq!(parse_cksum_args(&["-o", "2"]).unwrap().kind, SumKind::Old2);
         // `-o 9` 是「值不合法」（C 的 `illegal argument to -o option`），

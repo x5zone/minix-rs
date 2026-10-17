@@ -321,6 +321,58 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百三十三把 `cksum` 的 hash 选中状态建模，接上 C 由它驱动的两条诊断，并修掉一枚吞操作数的下标缺陷（`CKSUM-HASH-STATE` 的第一片）**
+  （`2026-10-17`，`claim/CKSUM-HASH-STATE-qoder` @ 基线 `b6f2f62ea`，动 `os/commands/usr-bin/textfilter/{src/cksum.rs,src/bin/cksum.rs,tests/cksum_face.rs}` + 18 篇两件文档，单域三线 commands/textfilter，无跨界）：
+  **这一条是什么**：C 的 `cksum` 有一个状态变量 `const struct hash *hash`（`minix3/usr.bin/cksum/cksum.c:162`），
+  四条分支由它驱动：`-a` 进来时若已选中就 `warnx("illegal use of -a option")` 再接 `usage()`（`:195-199`）；
+  `-o` 进来时若已选中就 `warnx("%s mutually exclusive with sum", hash->hashname)` 再接 `usage()`（`:228-234`）；
+  `-p`/`-s`/`-t`/`-x` 走 `requirehash`，而它在 `hash` 非空时**放行**（`:521-525`）；名字表本身是
+  `hashes[]`（`:120-144`）**八项**，匹配用小写 `progname` 的 `strcasecmp`，而报文用的是大写 `hashname` 那一份。
+  本壳以前不建这个状态：`-a <算法>` 在解析阶段就撞上自创的占位句 `cksum: -a crypto algorithms are not modelled yet`
+  并退 2，于是那三条诊断**一行都到不了**（登记时就写明「当前不可达」）。
+  **顺手发现的一枚既有缺陷（本笔最要紧的收获）**：新加的 `-a md5 -a sha1` 断言第一次跑就失败，报的是
+  解析器把第二枚 `-a` **连同它前面的 token 一起跳过**。查下标算术：`take_value` 在取「另一个词」时把
+  `index` 推过了值，而循环尾无条件 `index += 1`，两处都推 ⇒ 每吃到一个带值选项就多吞一个 token；
+  附值形 `-acrc file` 同病（闭包里也有一次 `+= 1`）。后果不是诊断不对，而是**算错了对象**：
+  `cksum -a crc file` 会把 `file` 当作已被消费，操作数清单为空，于是转去读标准输入。
+  该闭包形只在 `cksum.rs` 出现（现查 `grep -rl 'parser_index' os/commands --include=*.rs` → 1 个文件），
+  所以是同族的孤例而不是系统性病灶。修法：闭包只在**真取了另一个词**时推进，当前 token 一律由循环尾推进一次。
+  **表也是错的**：`is_crypto_name` 只列六项且多认一个表里没有的 `ripemd160`——C 只有 `rmd160` 那一行
+  （`:130`），`ripemd160` 的拼法按 C 应落到 `illegal argument to -a option`。改成 `crypto_hashname()`，
+  照表返回大写那一份，缺的三项 `sha256`/`sha384`/`sha512` 补上（`:136-143`）。
+  **这一片切在哪里、为什么能切**：两条状态诊断都在 getopt 环里 `usage()` 结束，**走不到摘要计算**，
+  所以状态建模与摘要原语是两件可以分开做的事实——前者本笔落地，后者仍缺原语，占位句原样保留（句子与退码 2
+  都不改），只是从解析期移到解析成功之后，好让 `-a md5 -a sha1` 这类形先报它自己的那句话。
+  **为什么现在不接摘要**（对照过后的取舍）：本树并非一个原语都没有——`os/libs/minix-crypt/src/md5.rs` 与
+  `sha1.rs` 已在（批次三百三十三现查），所以「等密码原语那轮」这个前提只对外部环境成立、对本仓已部分过期。
+  但表里是八项，只接其中两项会造出「同一条命令有的算法能算、有的报占位」的新分叉，而报文形状
+  （`MD5 (file) = <digest>`，`cksum.c` 的 `hash_digest_file` 一族）也要一起定形——那是一片独立的、
+  比本笔大的工作，按「一次一条」另立条目 `CKSUM-HASH-DIGEST`（八项整批接，不逐项开口子）。
+  **门**：库侧 `test_parse_cksum_args_a_and_o_algorithms` 从 5 条断言扩到 22 条（八项表逐个点过、
+  大小写入口、`ripemd160` 落非法、两条互斥、先 `-o` 后 `-a` 不冲突、放行后的 `-p`/`-s`、缺值仍由 libc 先报、
+  吞操作数四形 `-a crc file`/`-acrc file`/`-o 1 -a sha1 f1 f2`/`-a crc -n -`）；面侧新增 3 枚——
+  `a_second_dash_a_after_a_selection_reports_illegal_use`（含「第二枚名字好不好都在所不问」的 `crc` 对照）、
+  `dash_o_after_a_selection_names_the_hash_and_exits_one`（`md5`/`MD5`/`Md5` 三种入口都报大写 `MD5`，
+  并对照先 `-o` 后 `-a` 不报互斥）、`flags_requiring_a_hash_pass_once_a_hash_is_selected`
+  （`-p`/`-s` 放行后走到占位，且没选中时仍报批次三百零七钉下的那一句——证明放行是由状态决定的）。
+  **变异负控六枚全部由门咬住**（`tmp/cksum-333/ctl333.py`，baseline 与还原后同为 23 通过 0 失败，逐枚还原核 md5）：
+  互斥句改成「值不合法」咬 1、第二次 `-a` 改为清状态放行咬 2、表里摘掉 `sha256` 咬 1、
+  报文名字换成小写咬 2、**下标算术退回「两处都推」咬 3**（这一枚证明吞操作数的断言真有牙）、
+  `-p`/`-t`/`-x` 改回无条件报咬 2。
+  **过程中自己被静态门抓到一次**：新门里 `s_s` 取了不用（只断言了 stderr），`cargo clippy` 报
+  `unused variable`——补上 `assert_eq!(s_s, 2, …)` 后触及件零命中。
+  **三件套（读数全取自宿主 `ulimit -v 3145728` 加 `--offline`；容器与宿主网络同断，见上一笔的登记）**：
+  `cargo test --offline -p minix-textfilter -j 1` → **924 / 0 / 0**（68 个 target，上一笔 921，本笔 +3 面门）；
+  `--lib cksum::` 15 通过、`--test cksum_face` 8 通过；`cargo check --offline --workspace -j 1` 0 error；
+  宿主三架构 `cargo build --offline --bins -j 1 --target x86_64-unknown-none / aarch64-unknown-none / riscv64gc-unknown-none-elf -p minix-textfilter`
+  各 Finished、`^error` 计数 0；`rustfmt --edition 2021 --check` 对 `src/cksum.rs`、`tests/cksum_face.rs` 零漂移，
+  `src/bin/cksum.rs:19` 的 import 序是**存量**（主树那份未改文件同样报，本笔未动那一段），未顺手改；
+  `cargo clippy --offline -p minix-textfilter --all-targets` 触及三件零命中。核实日 `2026-10-17`；基线 `b6f2f62ea`。
+  **登记不执行**：① 摘要计算与 `name (file) = digest` 报文（`CKSUM-HASH-DIGEST`，八项整批）；
+  ② 多入口名 `sum`/`md2`…/`sha1` 靠 `argv[0]` 选算法仍未建模（既有登记，`prog_name` 只影响报文前缀）；
+  ③ 文件腿的 `Cannot read %s` 一族（`CKSUM-FILE-LEGS`，既有登记）。
+  **下一轮首动作**：`tools/claim.sh claim JOT-PREC-MINUS-ONE-FORMAT qoder`（排期 v3 的下一行）。
+
 - ✅ **批次三百三十二把 `colrm` 的读写两根腿都接上 C 的 `check()` 形状，闭合 `COLRM-IO-ERRLEG`**
   （`2026-10-17`，`claim/COLRM-IO-ERRLEG-qoder` @ 基线 `6975cab44`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/colrm.rs,tests/colrm_face.rs}` + 18 篇两件文档，单域三线 commands/textfilter，无跨界）：
   **这一条是什么**：`colrm` 的 C 源把「流上的错」收成同一个函数：`minix3/usr.bin/colrm/colrm.c:123-130` 的

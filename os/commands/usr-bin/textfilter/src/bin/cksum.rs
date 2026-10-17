@@ -37,9 +37,17 @@ fn run() -> ! {
             support::warn(format!("{prog}: illegal argument to -{flag} option\n").as_bytes());
             usage();
         }
-        Err(CksumError::CryptoUnsupported) => {
-            support::warn(b"cksum: -a crypto algorithms are not modelled yet\n");
-            support::terminate(2);
+        Err(CksumError::IllegalUseOfA) => {
+            // C 的 `case 'a'` 第一行（`cksum.c:195-199`）：`warnx` 两段形，不缀 strerror，
+            // 随后 `usage()`。这一形要 hash 已被选中才到得了，所以它跟着状态走。
+            support::warn(format!("{prog}: illegal use of -a option\n").as_bytes());
+            usage();
+        }
+        Err(CksumError::MutuallyExclusiveWithSum(name)) => {
+            // C 的 `warnx("%s mutually exclusive with sum", hash->hashname)`
+            //（`cksum.c:228-234`）：句子里是表里那一份**大写**名字（`MD5` 而不是 `md5`）。
+            support::warn(format!("{prog}: {name} mutually exclusive with sum\n").as_bytes());
+            usage();
         }
         Err(CksumError::RequiresHash(flag)) => {
             // C 的 `requirehash`（`cksum.c:521-525`）：`<旗标> flag requires `-a algorithm'`
@@ -59,6 +67,16 @@ fn run() -> ! {
             usage();
         }
     };
+
+    if request.hash.is_some() {
+        // 选中了算法，接下来要的是一行真摘要，而本树还没有这些原语。这一句是本壳的
+        // 占位而**不是** C 的形状——C 在这里打的是 `MD5 (file) = <digest>` 并退 0——
+        // 退码沿用批次三百零七定下的 2，等原语那一片接上再换（登记 `CKSUM-HASH-STATE`）。
+        // 放在解析之后：`-a` 的两条互斥诊断（C 在 getopt 环里就报完）必须先看状态，
+        // 不能被这一句抢在头里。
+        support::warn(b"cksum: -a crypto algorithms are not modelled yet\n");
+        support::terminate(2);
+    }
 
     if request.do_check {
         // `-c` consumes only the first operand as the check file (extra

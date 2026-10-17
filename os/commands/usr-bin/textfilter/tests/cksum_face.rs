@@ -12,8 +12,8 @@
 
 mod face_support;
 
-use std::process::{Command, Stdio};
 use face_support::write_stdin;
+use std::process::{Command, Stdio};
 
 const CKSUM: &str = env!("CARGO_BIN_EXE_cksum");
 
@@ -77,10 +77,16 @@ fn a_value_taking_letter_without_its_value_prints_the_libc_line() {
 fn an_illegal_option_value_names_its_own_letter_in_warnx() {
     let (_, status, err) = run(&["-o", "9"], b"a");
     assert_eq!(status, 1);
-    assert_eq!(err, format!("cksum: illegal argument to -o option\n{USAGE}"));
+    assert_eq!(
+        err,
+        format!("cksum: illegal argument to -o option\n{USAGE}")
+    );
     let (_, status, err) = run(&["-a", "nosuch"], b"a");
     assert_eq!(status, 1);
-    assert_eq!(err, format!("cksum: illegal argument to -a option\n{USAGE}"));
+    assert_eq!(
+        err,
+        format!("cksum: illegal argument to -a option\n{USAGE}")
+    );
 }
 
 /// C 的 `requirehash`：`<旗标> flag requires `-a algorithm'` 再接 usage。
@@ -111,4 +117,82 @@ fn clustered_and_inline_letters_are_accepted() {
     // `--` 之后的负向词是操作数，不再当旗标（这里它是个读不到的档名）。
     let (_, status, _) = run(&["--", "-o"], b"a");
     assert_eq!(status, 1, "`--` 后该把 -o 当操作数");
+}
+
+/// 状态驱动的第一条诊断：`-a` 在已选中 hash 之后再次出现。C 的 `case 'a'` 第一行就是
+/// 这条（`cksum.c:195-199`），`warnx` 两段形（不缀 strerror）再接同一块九行 usage，退 1。
+/// 本壳以前到不了这一形——`-a md5` 在解析阶段就被自创的占位句挡住，于是第二枚 `-a`
+/// 根本没机会被看到；批次三百三十三把「选中」记成状态之后，这条诊断的先后次序就照 C 走了。
+#[test]
+fn a_second_dash_a_after_a_selection_reports_illegal_use() {
+    let (out, status, err) = run(&["-a", "md5", "-a", "sha1"], b"");
+    assert_eq!(out, "", "诊断形不产出行");
+    assert_eq!(
+        err,
+        format!("cksum: illegal use of -a option\n{USAGE}"),
+        "该是 warnx 那一行接 usage"
+    );
+    assert_eq!(status, 1);
+    // 第二枚的名字好不好都在所不问：这条诊断先看状态，`crc` 同样被它挡住。
+    let (_, _, err2) = run(&["-a", "md5", "-a", "crc"], b"");
+    assert_eq!(err2, err, "报的是「-a 用错了」而不是名字问题");
+}
+
+/// 状态驱动的第二条诊断：`-o` 在已选中 hash 之后出现。C 打的是
+/// `warnx("%s mutually exclusive with sum", hash->hashname)`（`cksum.c:228-234`），
+/// 句子里的名字是 `hashes[]` 表里**大写**那一份（`:126` 的 `"MD5"`），大小写入口不影响它。
+#[test]
+fn dash_o_after_a_selection_names_the_hash_and_exits_one() {
+    for word in ["md5", "MD5", "Md5"] {
+        let (out, status, err) = run(&["-a", word, "-o", "1"], b"");
+        assert_eq!(out, "");
+        assert_eq!(
+            (status, err.as_str()),
+            (
+                1,
+                format!("cksum: MD5 mutually exclusive with sum\n{USAGE}").as_str()
+            ),
+            "`-a {word}` 之后 `-o 1` 该报大写的 MD5"
+        );
+    }
+    // 反过来先 `-o` 再 `-a` 就不冲突：这时状态还是空的，C 也照样走下去
+    // （本壳走到占位那一句，见下一枚门）。
+    let (_, status, err) = run(&["-o", "1", "-a", "md5"], b"");
+    assert_eq!(
+        (status, err.as_str()),
+        (2, "cksum: -a crypto algorithms are not modelled yet\n"),
+        "先 -o 再 -a 不报互斥"
+    );
+}
+
+/// 选中之后到占位之间的那段路：`-p`/`-s` 这类要先过 `requirehash` 的旗标，在 C 里
+/// 一旦 `hash` 已选中就**放行**（`cksum.c:521-525` 的条件不成立），所以它们不该再报
+/// `-p flag requires \`-a algorithm'`；本壳以前无条件报，是因为状态没建模。
+/// 放行之后它们会一路走到占位那一句（原语尚未接，见 `CKSUM-HASH-STATE` 第二片）。
+#[test]
+fn flags_requiring_a_hash_pass_once_a_hash_is_selected() {
+    let (_, s_p, e_p) = run(&["-a", "sha1", "-p"], b"");
+    assert!(
+        !e_p.contains("requires `-a algorithm'"),
+        "选中之后 -p 不该再要求 -a：stderr 是 {e_p:?}"
+    );
+    assert_eq!(
+        (s_p, e_p.as_str()),
+        (2, "cksum: -a crypto algorithms are not modelled yet\n")
+    );
+    let (_, s_s, e_s) = run(&["-a", "sha1", "-s", "abc"], b"");
+    assert!(
+        !e_s.contains("requires `-a algorithm'"),
+        "选中之后 -s 同理：stderr 是 {e_s:?}"
+    );
+    assert_eq!(s_s, 2, "`-s` 的值被吃掉之后一路走到占位句");
+    // 没选中时仍是批次三百零七钉下的那一句（对照，证明放行是由状态决定的）。
+    let (_, s0, e0) = run(&["-p"], b"");
+    assert_eq!(
+        (s0, e0.as_str()),
+        (
+            1,
+            format!("cksum: -p flag requires `-a algorithm'\n{USAGE}").as_str()
+        )
+    );
 }
