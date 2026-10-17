@@ -250,3 +250,60 @@ fn an_unreadable_stdin_blames_the_stdin_word_and_exits_two() {
         ("", 2, "random: stdin: Is a directory\n")
     );
 }
+#[test]
+fn an_unknown_letter_gets_the_libc_line_then_the_usage_line() {
+    // 两句的顺序与前缀各不相同：第一行走 `getprogname()`，第二行的 `random` 写死在串里。
+    // 字样取 Minix 自己的 `minix3/lib/libc/stdlib/getopt.c:101-104`（`unknown option -- %c`，
+    // 字母不带引号）。参照件这一形是宿主 glibc 的 `invalid option -- 'Z'`，不承载真值
+    for args in [&["-Z"][..], &["-eZ"][..], &["-Ze"][..]] {
+        let (out, code, err) = run(args, INPUT);
+        assert_eq!(
+            (out.as_str(), code, err.as_str()),
+            (
+                "",
+                1,
+                "random: unknown option -- Z\nusage: random [-er] [denominator]\n"
+            ),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn dash_dash_ends_the_ring_and_the_rest_are_operands() {
+    // `-- 1`：环在 `--` 处结束，后面那枚才是分母 ⇒ 每行必中，输出与输入逐字节相同
+    let (out, code, err) = run(&["--", "1"], INPUT);
+    assert_eq!((out.as_str(), code, err.as_str()), (INPUT_TEXT, 0, ""));
+    // 光写 `--` 等于零枚操作数：分母取 2，照常过滤；这一形**允许**空输出（掷不中不是错误），
+    // 所以只钉退码与标准错误，不去钉那些随机量
+    let (_, code, err) = run(&["--"], INPUT);
+    assert_eq!((code, err.as_str()), (0, ""));
+    // 裸 `-` 不是结束标记也不是旗标：它就是那枚被否掉的操作数（三百四十三的门里也有这一形）
+    let (_, code, err) = run(&["-e", "-"], INPUT);
+    assert_eq!(
+        (code, err.as_str()),
+        (1, "random: denominator is not valid.\n")
+    );
+}
+
+#[test]
+fn the_e_flag_returns_a_draw_and_reads_nothing() {
+    // `random.c:109-111`：这一支在 `getchar()` 环之前就 return，所以标准输出必然为空、
+    // 标准错误必然为空，退码落在 `(denom * random()) / RANDOM_MAX` 的闭区间 [0, denom] 里
+    let (out, code, err) = run(&["-e", "1"], INPUT);
+    assert_eq!((out.as_str(), code, err.as_str()), ("", 0, ""));
+    for _ in 0..12 {
+        let (out, code, err) = run(&["-e", "4"], INPUT);
+        assert!(
+            (out.is_empty()) && err.is_empty(),
+            "out={out:?} err={err:?}"
+        );
+        assert!(
+            (0..=4).contains(&code),
+            "`-e 4` 打出退码 {code}，越出闭区间 [0, 4]"
+        );
+    }
+    // `-r` 只是关缓冲：写缝本来就逐行落盘，因此它与不加 `-r` 同形（六行全中）
+    let (out, code, err) = run(&["-r", "1"], INPUT);
+    assert_eq!((out.as_str(), code, err.as_str()), (INPUT_TEXT, 0, ""));
+}

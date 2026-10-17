@@ -41,6 +41,78 @@ pub enum OperandLeg {
     TooMany,
 }
 
+/// C 的 optstring `"er"` 走完环之后剩下的事：两个旗标与操作数起点（`random.c:72-87`）。
+///
+/// 两个字母都**不带值**，所以 libc 那句 `option requires an argument` 在本支不可达；可达的
+/// 只有一枚集外字母（`random.c:80-83` 把 `?` 与 `default` 都送进 `usage()`）。裸 `-` 既不是
+/// 选项也不是结束标记：optstring 里没有 `-`，libc 回 `-1` 且**不推进游标**
+/// （`minix3/lib/libc/stdlib/getopt.c:86-93`），于是它留在操作数里由 `strtod` 去否掉。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ring {
+    /// 环正常结束；`operands_at` 是操作数在 `argv[1..]` 里的起点（C 的 `optind` 折算）。
+    Done {
+        /// `-e`：把抽到的数当退码返回，且在读标准输入之前就返回（`random.c:109-111`）。
+        exit_status: bool,
+        /// `-r`：关掉 stdio 的输出缓冲（`random.c:117-118`）。
+        unbuffered: bool,
+        /// 操作数从这一枚起。
+        operands_at: usize,
+    },
+    /// 集外字母：libc 先打一行 `unknown option -- <字母>`，紧接着才是 `usage()` 那一行。
+    Unknown(char),
+}
+
+/// C 的 libc 那一行去掉程序名与换行后的中段（`minix3/lib/libc/stdlib/getopt.c:101-104`
+/// 的字面是 `"%s: unknown option -- %c\n"`）。字母前后**没有**引号——参照件是在宿主上编的，
+/// 它那句 `invalid option -- 'Z'` 是 glibc 的字样，不在这条的射程内。
+pub const UNKNOWN_OPTION: &str = "unknown option -- ";
+
+/// 走完选项环。只认「以 `-` 开头且长度大于一」的 token 为选项；`--` 是结束标记；其余一切
+/// （含裸 `-`）从这一枚起都算操作数。集外字母当场返回，环不再往下走（C 的 `usage()` 即退出）。
+pub fn scan_ring(tokens: &[&str]) -> Ring {
+    let mut exit_status = false;
+    let mut unbuffered = false;
+    let mut index = 0usize;
+    while index < tokens.len() {
+        let Some(body) = tokens[index].strip_prefix('-') else {
+            break;
+        };
+        if body.is_empty() {
+            break;
+        }
+        if body == "-" {
+            index += 1;
+            break;
+        }
+        for letter in body.bytes() {
+            match letter {
+                b'e' => exit_status = true,
+                b'r' => unbuffered = true,
+                other => {
+                    return Ring::Unknown(other as char);
+                }
+            }
+        }
+        index += 1;
+    }
+    Ring::Done {
+        exit_status,
+        unbuffered,
+        operands_at: index,
+    }
+}
+
+/// C 那把标尺：`random()` 的上界（`random.c:111` 与 `:126` 都拿它除）。
+pub const RANDOM_MAX: u64 = 2_147_483_647;
+
+/// C 的 `-e` 那一支：`(denom * random()) / RANDOM_MAX`（`random.c:111`）。
+///
+/// 源码注释写的是「between zero and denom minus one」，可表达式在抽取值到顶时取到的正是
+/// `denom`——**上界是闭的**，门按表达式钉，不按注释。
+pub fn exit_status_value(denominator: u32, draw: u64) -> u64 {
+    (denominator as u64).wrapping_mul(draw) / RANDOM_MAX
+}
+
 /// 判操作数这一步落在哪一出。
 ///
 /// 射程只到「个数 + 两句报文」：取值仍走 [`parse_denominator`] 的十进制整数面，而 C 用的是
@@ -167,5 +239,90 @@ mod tests {
         // 点且不含操作数（`:98-99`）。两处都是逐字节比对，改一个字符就得改这条断言
         assert_eq!(USAGE, "usage: random [-er] [denominator]\n");
         assert_eq!(NOT_VALID_SENTENCE, "denominator is not valid.");
+    }
+
+    #[test]
+    fn the_option_ring_stops_at_the_first_offender() {
+        // 环只认 `e`/`r`；集外字母当场返回。聚簇里报的是**第一个**集外字母，
+        // `-eZ` 与 `-Ze` 都停在 `Z`（C 的环一遇 `?` 就 usage() 退出，不会继续往下扫）
+        assert_eq!(
+            scan_ring(&[]),
+            Ring::Done {
+                exit_status: false,
+                unbuffered: false,
+                operands_at: 0
+            }
+        );
+        assert_eq!(
+            scan_ring(&["-e"]),
+            Ring::Done {
+                exit_status: true,
+                unbuffered: false,
+                operands_at: 1
+            }
+        );
+        assert_eq!(
+            scan_ring(&["-er", "-r", "3"]),
+            Ring::Done {
+                exit_status: true,
+                unbuffered: true,
+                // 下标落在 `argv[1..]` 上：两枚选项 token 吃掉之后，`3` 在第 2 格
+                operands_at: 2
+            }
+        );
+        assert_eq!(scan_ring(&["-Z"]), Ring::Unknown('Z'));
+        assert_eq!(scan_ring(&["-eZ"]), Ring::Unknown('Z'));
+        assert_eq!(scan_ring(&["-Ze"]), Ring::Unknown('Z'));
+    }
+
+    #[test]
+    fn end_of_options_and_a_bare_dash_are_two_different_things() {
+        // `--` 是结束标记：它自己不算操作数，下一枚起才算。裸 `-` 相反——它**就是**操作数
+        assert_eq!(
+            scan_ring(&["--"]),
+            Ring::Done {
+                exit_status: false,
+                unbuffered: false,
+                operands_at: 1
+            }
+        );
+        assert_eq!(
+            scan_ring(&["--", "3"]),
+            Ring::Done {
+                exit_status: false,
+                unbuffered: false,
+                operands_at: 1
+            }
+        );
+        assert_eq!(
+            scan_ring(&["-"]),
+            Ring::Done {
+                exit_status: false,
+                unbuffered: false,
+                operands_at: 0
+            }
+        );
+        assert_eq!(
+            scan_ring(&["-e", "-"]),
+            Ring::Done {
+                exit_status: true,
+                unbuffered: false,
+                operands_at: 1
+            }
+        );
+    }
+
+    #[test]
+    fn the_exit_status_scales_by_the_expression_not_by_the_comment() {
+        // 上界闭着：抽取值到顶时结果就是分母本身
+        assert_eq!(exit_status_value(1, 0), 0);
+        // 折半抽到的是 1 而不是 2：乘法先做再整除，`4 * (RANDOM_MAX/2)` 差一点点才到 2
+        assert_eq!(exit_status_value(4, RANDOM_MAX / 2), 1);
+        // 3/4 处落在 **2** 而不是 3：`RANDOM_MAX * 3` 除不尽 4，整除先截掉一点，乘法再摊不平
+        assert_eq!(exit_status_value(4, RANDOM_MAX * 3 / 4), 2);
+        assert_eq!(exit_status_value(4, RANDOM_MAX / 4), 0);
+        assert_eq!(exit_status_value(4, 0), 0);
+        assert_eq!(exit_status_value(4, RANDOM_MAX), 4);
+        assert_eq!(RANDOM_MAX, u64::from(u32::MAX) / 2);
     }
 }

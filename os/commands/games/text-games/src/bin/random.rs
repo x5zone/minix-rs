@@ -22,8 +22,8 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 use minix_text_games::lottery::{
-    is_selected, judge_operands, mix_seed, OperandLeg, NOT_VALID_SENTENCE, NO_OPERAND_DENOMINATOR,
-    USAGE,
+    exit_status_value, is_selected, judge_operands, mix_seed, scan_ring, OperandLeg, Ring,
+    NOT_VALID_SENTENCE, NO_OPERAND_DENOMINATOR, UNKNOWN_OPTION, USAGE,
 };
 use minix_text_games::TextGameError;
 
@@ -32,7 +32,23 @@ fn run() -> ! {
     let prog = support::prog_name(&argv);
     // C 的 `argc -= optind; switch (argc)`（`random.c:86-104`）。本支的选项环还没接上，
     // 所以操作数就是 `argv[1..]`；判完个数才轮到读输入。
-    let operands: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    // 环先走，操作数才是剩下的那些（C 的 `argc -= optind`）
+    let tokens: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let (exit_status, operands) = match scan_ring(&tokens) {
+        Ring::Done {
+            exit_status,
+            operands_at,
+            ..
+        } => (exit_status, &tokens[operands_at..]),
+        Ring::Unknown(letter) => {
+            // libc 那一行在前、`usage()` 那一行在后，两句都缀不缀名字各不相同：
+            // 第一行走 `getprogname()`，第二行的 `random` 写死在串里
+            support::warn(format!("{prog}: {UNKNOWN_OPTION}{letter}\n").as_bytes());
+            support::warn(USAGE.as_bytes());
+            support::terminate(1);
+        }
+    };
+    let operands: Vec<&str> = operands.to_vec();
     let denominator = match judge_operands(&operands) {
         OperandLeg::NoOperandDefault => NO_OPERAND_DENOMINATOR,
         OperandLeg::Accepted(value) => value,
@@ -61,6 +77,15 @@ fn run() -> ! {
     let micros = support::epoch_micros().unwrap_or(0);
     let pid = minix_sys::getpid().unwrap_or(0) as u32;
     let mut state = mix_seed(micros / 1_000_000, (micros % 1_000_000) as u32, pid);
+
+    if exit_status {
+        // C 的 `if (random_exit) return ((denom * random()) / RANDOM_MAX);`（`:109-111`）：
+        // 这一支在**读标准输入之前**就返回，所以不打任何东西，退码就是抽到的那个数
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        support::terminate(exit_status_value(denominator, (state >> 33) as u64) as i32);
+    }
 
     let (bytes, read_failure) = support::read_stdin_error();
     if let Some(code) = read_failure {
