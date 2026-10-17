@@ -88,10 +88,22 @@ fn run() -> ! {
         support::terminate(0);
     }
     // `-n`: exactly `n` byte chunks (`split3`); the last absorbs the remainder.
-    // `chunks_n` returns `None` when `n > input.len()` (C 的
-    // `errx(1, "can't split into more than %d files", (int)sb.st_size)`，
-    // `split.c:298-299`，报的是输入的**字节数**）或片宽为零。
+    // 块数上限与那句报文里的数都取自**内核给的大小**，不取自已收到的字节数：C 在读之前
+    // `fstat(ifd, &sb)`（`split.c:293-300`），失手是 `err(1, "stat")`，`sb.st_size` 再判
+    // `chunks > st_size`。管道上的 `st_size` 是 0，于是那一形只能报错而不能切。
     if let Some(n) = chunk_count {
+        let source = operands.first().copied().filter(|name| *name != "-");
+        let size = match support::input_size(source) {
+            Ok(size) => size,
+            Err(code) => {
+                support::warn_line(prog, "stat", code);
+                support::terminate(1);
+            }
+        };
+        if (n as u64) > size {
+            support::warn(format!("{prog}: can't split into more than {size} files\n").as_bytes());
+            support::terminate(1);
+        }
         match chunks_n(&input, n) {
             Some(chunks) => {
                 for (index, chunk) in chunks.iter().enumerate() {
@@ -104,10 +116,11 @@ fn run() -> ! {
                     }
                 }
             }
+            // 走到这里 `n <= size`，剩下的只有「收到的字节比问到的少」这一形：
+            // 同一句话、同一个数，与 C 的 `errx` 不分岔。
             None => {
                 support::warn(
-                    format!("{prog}: can't split into more than {} files\n", input.len())
-                        .as_bytes(),
+                    format!("{prog}: can't split into more than {size} files\n").as_bytes(),
                 );
                 support::terminate(1);
             }

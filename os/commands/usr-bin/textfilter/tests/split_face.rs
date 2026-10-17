@@ -546,3 +546,95 @@ fn an_unreadable_stdin_blames_the_read_arm() {
     );
     assert!(files.is_empty(), "读不动的输入不该留下分片：{files:?}");
 }
+
+/// `-n` 的块数上限与那句报文里的数都取自**内核给的大小**，不取自已收到的字节数
+/// （`minix3/usr.bin/split/split.c:293-300`：`fstat(ifd, &sb)`，然后 `chunks > st_size`
+/// 就 `errx(1, "can't split into more than %d files", (int)sb.st_size)`）。管道上的
+/// `st_size` 是 0，所以「切 3 片」只能报错——参照件同读数：`split: can't split into more
+/// than 0 files`、退 1、一枚分片都不生成。本壳以前拿已收到的 96 字节当大小，退 0 切三片。
+#[test]
+fn a_piped_input_refuses_the_chunk_count_it_cannot_count() {
+    let (status, err, files, _) = run(&["-n", "3"], INPUT);
+    assert_eq!(
+        err, "split: can't split into more than 0 files\n",
+        "管道问不到长度，该报 0 而不是报切完，实得 {err:?}"
+    );
+    assert_eq!(status, 1, "退码该是 1，实得 {status}");
+    assert!(files.is_empty(), "报错了就不该有分片：{files:?}");
+}
+
+/// 同一支在命名片上不受影响：文件的大小问得到（96 字节），`-n 3` 还是三片、退 0。
+/// 这条是上一枚的对照组——少了它，「一律报错」也能骗过全套门。
+#[test]
+fn a_named_operand_still_splits_the_chunks_it_can_count() {
+    let dir = scratch();
+    fs::write(dir.join("in.txt"), INPUT).expect("write the 96-byte operand");
+    let output = Command::new(SPLIT)
+        .args(["-n", "3", "in.txt"])
+        .current_dir(&dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the split binary should be runnable")
+        .wait_with_output()
+        .expect("the run should finish");
+    let chunks: Vec<(String, usize)> = fs::read_dir(&dir)
+        .expect("the scratch dir should be readable")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name() != "in.txt")
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let size = fs::metadata(entry.path())
+                .map(|meta| meta.len())
+                .unwrap_or(0);
+            (name, size as usize)
+        })
+        .collect();
+    let err = String::from_utf8_lossy(&output.stderr).into_owned();
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(err, "", "命名片那一形不该有报文：{err:?}");
+    assert_eq!(output.status.code(), Some(0));
+    let mut names: Vec<String> = chunks.iter().map(|(name, _)| name.clone()).collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["xaa".to_string(), "xab".to_string(), "xac".to_string()],
+        "96 字节切 3 片该是三枚"
+    );
+    assert!(
+        chunks.iter().all(|(_, size)| *size == 32),
+        "每片各 32 字节（`split1(96/3, 3)`），实得 {chunks:?}"
+    );
+}
+
+/// 那句报文里的数取自大小而不是取自片数：96 字节的档要切 200 片，报的是 96。
+#[test]
+fn the_chunk_count_complaint_quotes_the_size_not_the_count() {
+    let dir = scratch();
+    fs::write(dir.join("in.txt"), INPUT).expect("write the 96-byte operand");
+    let output = Command::new(SPLIT)
+        .args(["-n", "200", "in.txt"])
+        .current_dir(&dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the split binary should be runnable")
+        .wait_with_output()
+        .expect("the run should finish");
+    let files: Vec<String> = fs::read_dir(&dir)
+        .expect("the scratch dir should be readable")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name() != "in.txt")
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    let err = String::from_utf8_lossy(&output.stderr).into_owned();
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(
+        err, "split: can't split into more than 96 files\n",
+        "报的该是输入的字节数 96，实得 {err:?}"
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(files.is_empty(), "报错了就不该有分片：{files:?}");
+}

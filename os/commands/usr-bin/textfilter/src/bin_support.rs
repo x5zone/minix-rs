@@ -518,6 +518,37 @@ pub fn read_operand(path: &str) -> (Vec<u8>, Option<InputFailure>) {
     }
 }
 
+/// 输入自带的字节数：`-n` 那一支在读之前先问内核要这个数。
+///
+/// C 的形状是 `fstat(ifd, &sb)` 失手即 `err(1, "stat")`，随后 `sb.st_size` 既判块数上限
+/// 又算块宽（`minix3/usr.bin/split/split.c:293-300`）。管道与字符设备的 `st_size` 是 0，
+/// 所以「切 3 片」在那里当场报错——不是读不到数据，是**问不到长度**。`path` 为 `None`
+/// 或 `"-"` 时问的是标准输入。
+///
+/// 宿主这条腿按路径问（标准输入走 `/dev/stdin`，它与 C 的 `fstat(0)` 同数：命名片给长度、
+/// 管道与空设备给 0），因为 std 不给非 root 的进程一个不带 `unsafe` 的「对描述符取状态」通道。
+/// 真机那条腿就是 `fstat`/`stat` 本身。同一件事，两种承载。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn input_size(path: Option<&str>) -> Result<u64, minix_sys::Errno> {
+    std::fs::metadata(path.unwrap_or("/dev/stdin"))
+        .map(|status| status.len())
+        .map_err(|failure| errno_of(&failure))
+}
+
+/// 真机那条腿：标准输入用 `fstat(0)`，命名档用 `stat(path)`——都是 C 在那个位置做的事
+/// （`split.c:293` 拿的是已经打开的那个描述符，命名档的描述符就是 `split.c:137` 开的）。
+#[cfg(all(not(test), target_os = "none"))]
+pub fn input_size(path: Option<&str>) -> Result<u64, minix_sys::Errno> {
+    // `Stat` 的对齐填充位是私有的，crate 外只能按本仓既有的零值形状起身
+    // （同 `commands/bin/fileops/src/bin/test.rs:71`）。
+    let mut status: minix_sys::Stat = unsafe { core::mem::zeroed() };
+    let outcome = match path {
+        None | Some("-") => minix_sys::fstat(STDIN, &mut status),
+        Some(name) => minix_sys::stat(name, &mut status),
+    };
+    outcome.map(|_| status.st_size.max(0) as u64)
+}
+
 #[cfg(all(not(test), target_os = "none"))]
 pub fn read_operand(path: &str) -> (Vec<u8>, Option<InputFailure>) {
     let mut input = Vec::new();
