@@ -112,6 +112,15 @@ pub enum SetGrammar {
     /// 计数段既不是 `]`、也不是「数字紧跟 `]`」时 `errx(1, "illegal sequence count")`
     ///（`str.c:368-386`）。
     IllegalSequenceCount,
+    /// `genequiv()` 取完成员字符后 `if (*s->str != '=') errx(1, "Misplaced equivalence
+    /// equals sign")`（`str.c:307-320`）。成员只吃**一枚**字符（或一枚反斜杠转义），
+    /// 所以 `[=ab=]`、`[==]`、`[=a b=]` 都撞在这一句上——式尾有没有 `=]` 由 `bracket()`
+    /// 事先认过（`str.c:193-199`），它认得形式，`genequiv()` 才负责核形式内部。
+    MisplacedEquivalenceEquals,
+    /// 等号之后 `if (*s->str != ']') errx(1, "Misplaced equivalence right bracket")`
+    ///（`str.c:321-323`）。`[=a=b=]` 走这一句：`bracket()` 找到的第一个 `=]` 在式尾，
+    /// 而 `genequiv()` 逐枚走完 `a`、`=` 之后撞上的是 `b`。
+    MisplacedEquivalenceRightBracket,
 }
 
 impl SetGrammar {
@@ -122,6 +131,12 @@ impl SetGrammar {
             SetGrammar::SequencesOnlyInString2 => "Sequences only valid in string2".to_string(),
             SetGrammar::MisplacedSequenceAsterisk => "Misplaced sequence asterisk".to_string(),
             SetGrammar::IllegalSequenceCount => "illegal sequence count".to_string(),
+            SetGrammar::MisplacedEquivalenceEquals => {
+                "Misplaced equivalence equals sign".to_string()
+            }
+            SetGrammar::MisplacedEquivalenceRightBracket => {
+                "Misplaced equivalence right bracket".to_string()
+            }
         }
     }
 }
@@ -207,17 +222,39 @@ pub fn parse_set(
             }
             pos = end + 2;
         } else if let Some(end) = equiv_end {
-            // `[=c=]`：C 的 `genequiv()` 只取一个字符当集合（`str.c:307-330`，注释写明
-            // 「English doesn't have any equivalence classes」）。它那两句「放错了等号 /
-            // 放错了右括号」要的是「已成形的等价式内部再夹字符」这种形，不在本支射程，
-            // 登记为 `TR-EQUIV-SENTENCES`；这里先把合法的 `[=c=]` 收成一枚成员。
-            let member = bytes[pos + 2];
+            // `[=c=]`：`bracket()`（`str.c:193-199`）只认「式子里有没有一处 `=]`」，
+            // 认过了就交给 `genequiv()`（`str.c:305-330`）逐枚核内部——成员吃**一枚**字符
+            // （或一枚反斜杠转义），然后必须是 `=`，再然后必须是 `]`。C 的注释写明
+            // 「English doesn't have any equivalence classes, so for now we just syntax
+            // check and grab the character」，所以这个类永远只有一枚成员，而式内多塞的
+            // 任何字符都是那两句「放错了等号 / 放错了右括号」之一。
+            let mut cursor = pos + 2;
+            let member = if bytes[cursor] == b'\\' && cursor + 1 < bytes.len() {
+                let escaped = bytes[cursor + 1];
+                cursor += 2;
+                escape_literal(escaped)
+            } else {
+                let ch = bytes[cursor];
+                cursor += 1;
+                ch
+            };
+            if bytes.get(cursor) != Some(&b'=') {
+                return Err(SetError::Grammar(SetGrammar::MisplacedEquivalenceEquals));
+            }
+            cursor += 1;
+            if bytes.get(cursor) != Some(&b']') {
+                return Err(SetError::Grammar(
+                    SetGrammar::MisplacedEquivalenceRightBracket,
+                ));
+            }
             if class_count >= classes.len() {
                 return Err(SetError::Malformed);
             }
             classes[class_count] = CharClass::Range(member, member);
             class_count += 1;
             push_byte(expanded, &mut used, member)?;
+            // 两道核对都过了，`bracket()` 认下的那处 `=]` 必然就是刚核完的这两个字节，
+            // 所以收口仍按 `end + 2`（与 C 的 `s->str = p + 2`，`str.c:200` 同形）。
             pos = end + 2;
         } else if sequence_form {
             // 三句的**先后**本身就是行为，照 `genseq()` 抄：先问「这是哪一串」（吃任何
@@ -766,6 +803,60 @@ mod tests {
         let mut out = [0u8; 8];
         let len = translate(b"aabb", &set1[..len1], &set2[..len2], &mut out).unwrap();
         assert_eq!(&out[..len], b"xxxx");
+    }
+
+    #[test]
+    fn an_equivalence_with_a_second_member_blames_the_equals_sign() {
+        // `genequiv()` 的成员腿只吃**一枚**字符，紧接着那枚必须是 `=`
+        // （`str.c:307-320`）。式尾有没有 `=]` 是 `bracket()` 事先认过的
+        // （`str.c:193-199`），所以 `[=ab=]` 这类「像成形而内部多塞」的式子走到这里，
+        // 报的是这一句。参照件四形现量同一句、同退 1（`tmp/tr-341/measure341.log`）。
+        for text in ["[=ab=]", "[=abc=]", "[=a b=]", "[==]"] {
+            for site in [SetSite::String1, SetSite::String2] {
+                assert_eq!(
+                    grammar(text, site),
+                    SetGrammar::MisplacedEquivalenceEquals,
+                    "{text:?}"
+                );
+            }
+        }
+        assert_eq!(
+            SetGrammar::MisplacedEquivalenceEquals.sentence(),
+            "Misplaced equivalence equals sign"
+        );
+    }
+
+    #[test]
+    fn an_equivalence_bracketed_by_more_than_the_equals_blames_the_right_bracket() {
+        // `[=a=b=]` 撞的是**下一句**（`str.c:321-323`）：成员 `a` 之后确实是 `=`，
+        // 但 `=` 之后是 `b` 而不是 `]`。`bracket()` 找的是式尾那处 `=]`，
+        // 于是「认下过」与「核得过」不是一回事——两串位同判。
+        for site in [SetSite::String1, SetSite::String2] {
+            assert_eq!(
+                grammar("[=a=b=]", site),
+                SetGrammar::MisplacedEquivalenceRightBracket
+            );
+        }
+        assert_eq!(
+            SetGrammar::MisplacedEquivalenceRightBracket.sentence(),
+            "Misplaced equivalence right bracket"
+        );
+    }
+
+    #[test]
+    fn the_equivalence_member_leg_consumes_two_bytes_for_an_escape() {
+        // 成员腿写作 `if (*s->str == '\\') s->equiv[0] = backslash(s);`（`str.c:309-312`），
+        // `backslash()` 一次走过两枚字节。于是 `[=\=]` 在 `\=` 之后剩下的是 `]` 而不是 `=`，
+        // 报等号那一句（参照件同形同句）；`[=\n=]` 则正常收成**换行符**这一枚成员
+        // （参照件现量 `tr '[=\n=]' x` 把输入里的换行换成了 `x`）。
+        assert_eq!(
+            grammar(r"[=\=]", SetSite::String1),
+            SetGrammar::MisplacedEquivalenceEquals
+        );
+        let (set, len) = expanded_set(r"[=\n=]");
+        assert_eq!((len, &set[..len]), (1, &[b'\n'][..]));
+        let (set, len) = expanded_set(r"[=\t=]");
+        assert_eq!((len, &set[..len]), (1, &[b'\t'][..]));
     }
 
     #[test]

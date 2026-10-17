@@ -23,13 +23,15 @@
 //! ⑥ 本支没有读写操作数档的腿（数据只从标准输入来），所以「薄壳裸 `read` 宿主读不到输入」
 //!    那一家族停在 `paste` 的十一处。
 //!
-//! 集合语法的四句报文在本轮接上了（`str.c` 的 `genclass()` 与 `genseq()`），期望值取自
-//! 参照件现量：`tr_ref '[x*3]' y` 与 `tr_ref '[ab*2]' y` 都是 `Sequences only valid in string2`、
-//! `tr_ref abc '[ab*2]'` 是 `Misplaced sequence asterisk`、`tr_ref abc '[x*1a]'` 是
-//! `illegal sequence count`、`tr_ref [:bogus:] y` 是 `unknown class bogus`，全部退 1 且
+//! 集合语法的六句报文在本壳都已接上（`str.c` 的 `genclass()`、`genseq()`、`genequiv()`），
+//! 期望值取自参照件现量：`tr_ref '[x*3]' y` 与 `tr_ref '[ab*2]' y` 都是
+//! `Sequences only valid in string2`、`tr_ref abc '[ab*2]'` 是 `Misplaced sequence asterisk`、
+//! `tr_ref abc '[x*1a]'` 是 `illegal sequence count`、`tr_ref [:bogus:] y` 是
+//! `unknown class bogus`、`tr_ref '[=ab=]' y` 是 `Misplaced equivalence equals sign`、
+//! `tr_ref '[=a=b=]' y` 是 `Misplaced equivalence right bracket`，全部退 1 且
 //! **不跟** usage 块。同一轮里 `bracket()`（`str.c:176-210`）的判据也一并照抄：`[x]`、
 //! `[:alpha`、`[x`、`[x]y*` 这些「没成形」的式子在参照件里是**字面量**且退 0。
-//! 唯一没钉的是 `tr abc '[=c=]'`：两边都退 0、集合都是单枚 `c`，但 string2 用尽之后
+//! 还差一枚的是 `tr abc '[=c=]'`：两边都退 0、集合都是单枚 `c`，但 string2 用尽之后
 //! 参照件把后续位置填成 `\0`（现量 `c\0\0\n`）而我方重复末字节（`ccc\n`）——那是
 //! `tr.c` 的 OOBCH 腿而不是 `bracket()` 的判据，已登记为 `TR-EQUIV-OOBCH-SET2`。
 
@@ -308,6 +310,33 @@ fn the_four_set_grammar_sentences_reach_stderr_verbatim() {
             "[{set1}] [{set2}]"
         );
     }
+}
+
+#[test]
+fn the_two_equivalence_sentences_reach_stderr_verbatim() {
+    // 参照件现量（`tmp/tr-341/measure341.log`）：这两句各一句、退 1、**不跟** usage，
+    // 且两串位同判——`bracket()` 认形式、`genequiv()` 核内部，两处都不分串位。
+    // 本支之前本壳把 `[=ab=]` 悄悄收成单枚成员 `a` 并退 0：假报「能干」比不报更贵。
+    for (set, want) in [
+        ("[=ab=]", "tr: Misplaced equivalence equals sign\n"),
+        ("[=abc=]", "tr: Misplaced equivalence equals sign\n"),
+        ("[==]", "tr: Misplaced equivalence equals sign\n"),
+        (r"[=\=]", "tr: Misplaced equivalence equals sign\n"),
+        ("[=a=b=]", "tr: Misplaced equivalence right bracket\n"),
+    ] {
+        for (a, b) in [(set, "y"), ("y", set)] {
+            let (out, code, err) = run(&[a, b], b"abc\n");
+            assert_eq!(
+                (code, out.as_str(), err.as_str()),
+                (1, "", want),
+                "[{a}] [{b}]"
+            );
+        }
+    }
+    // 成形的那一枚不退化：`[=c=]` 仍是**单枚**成员 `c`、退 0（参照件现量 `abx`，
+    // 因为被换掉的是输入里的 `c` 而不是 `a`）
+    let (out, code, err) = run(&["[=c=]", "x"], b"abc\n");
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "abx\n", ""));
 }
 
 #[test]

@@ -321,6 +321,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百四十一把 `tr` 等价式的两句报文接上，`[=ab=]` 这类式子不再被悄悄收成单枚成员**（`2026-10-18`，`claim/TR-EQUIV-SENTENCES-qoder` @ 基线 `02d83cedf`，动 `os/commands/usr-bin/textfilter/{src/tr.rs,tests/tr_face.rs}` 与本文件、认领板 `new_edge4.md`，单域三线 commands/textfilter，无跨界）
+  - **这一条是什么**：`[=c=]` 是等价类写法。C 分两步判它：`bracket()`（`minix3/usr.bin/tr/str.c:193-199`）只问「式子里有没有一处 `=]`」，有就认定这是等价式并把指针推到那处之后；认定之后才由 `genequiv()`（`:305-330`）逐枚核内部——成员吃**一枚**字符（或一枚反斜杠转义），紧接着必须是 `=`，否则 `errx(1, "Misplaced equivalence equals sign")`，再然后必须是 `]`，否则 `errx(1, "Misplaced equivalence right bracket")`。本壳此前只做了第一步：找到 `=]` 就认定成形，然后取 `pos + 2` 那一枚当成员、直接跳到式尾，**两道核对一句都没接**。于是 `[=ab=]`、`[=abc=]`、`[=a b=]`、`[==]`、`[=a=b=]` 五形在本壳退 0 并交出「成员是首字符」的翻译结果，在参照件那里全部退 1 并报句子。这是 P0-code-bug：把该报错的形判成能干，退码、标准错误、输出三件都错。
+  - **改法**：把 `src/tr.rs` 的等价式分支改成照 `genequiv()` 的次序走——取成员（带反斜杠时按 C 的 `backslash()` 一次走过两枚字节，与既有 `escape_literal` 同形）、核 `=`、核 `]`，两道核对各立一枚 `SetGrammar` 变体与一句逐字照 C 的原文。为什么不选「只补等号那句」：`[=a=b=]` 走的是第二句，两句是同一条腿上的两个位置，接一半就还剩一个假报「能干」的形。对照 Linux/Redox：GNU `tr` 与 NetBSD `tr` 都不检查内部（前者报 `invalid character class syntax`），Minix3 这两句是它自己的血脉，真值只认 `minix3/` 的 C 源。
+  - **门**：库测三枚（`src/tr.rs`）——第一枚把 `[=ab=]`、`[=abc=]`、`[=a b=]`、`[==]` 四形在两个串位各钉一次并钉句子原文；第二枚钉 `[=a=b=]` 报的是右括号那句（不是等号那句，位置本身就是行为）；第三枚钉转义腿一次吃两枚字节——`[=\=]` 因此报等号那句，而 `[=\n=]`、`[=\t=]` 正常收成换行/制表这一枚成员。面门一枚（`tests/tr_face.rs:313`）把五形在两个串位共十次跑出进程，钉退码 1、stdout 为空、stderr 逐字节等于 `tr: <句子>\n`，并钉成形的 `[=c=]` 不退化（参照件现量 `tr '[=c=]' x` 对输入 `abc` 给 `abx`，被换掉的是 `c`）。
+  - **我自己写错过一次期望，靠参照件纠正**：面门最后一形我先写成「`[=c=]` 把 `a` 换成 `x` 得 `xbc`」，门当场跑红（本壳给 `abx`）。查参照件 `printf 'abc' | tr_ref '[=c=]' x` 现量 `abx`——错的是我对「成员是 `c`」的理解，代码是对的。这与批次三百三十八那两条同源：**门红先问 C，别急着改代码**。
+  - **读数**：`cargo test -p minix-textfilter --lib tr::` → **21 passed / 0 failed**（上笔 18）；`--test tr_face` → **15 passed / 0 failed**（上笔 14，新立 1 枚）；宿主整包 `cargo test -p minix-textfilter --offline -j 1` → **1067 passed / 0 failed**、68 个 target（上笔 1063）；宿主三架构 `x86_64-unknown-none`/`aarch64-unknown-none`/`riscv64gc-unknown-none-elf` 各 `Finished` 且错误计数 0；`cargo check --workspace -j 1` 0 error；触及两件 `rustfmt --edition 2021 --check` 零漂移；`cargo clippy -p minix-textfilter --all-targets` 退码 0 且 `src/tr.rs` 零命中；**权威容器门 `cargo test -j 1 -p minix-textfilter` → 1067 passed / 0 failed、68 个 target、退码 0**（`tmp/tr-341/container-gate.log`），与宿主逐枚一致；A/B 对参照件 `tmp/tr-322/tr_ref` 十一形 × 两串位共 22 次 → **SAME=22 DIFF=0**（脚本与读数 `tmp/tr-341/ab341.log`）。
+  - **负控六枚全咬**（`tmp/tr-341/ctl341.py`，读数 `tmp/tr-341/ctl341.log`）：跳过等号核对 → lib 2 红 / 面 1 红；跳过右括号核对 → 1/1；两句标签互换 → 2/1；成员腿退回「不吃转义」→ 1/1；等号那句改报「畸形」→ 2/1；等号判据反号 → 4/1。baseline 与逐枚整篇还原后同为 21/0、15/0。**两枚锚点第一次没命中**：rustfmt 把长句折行、而 `let member = if bytes[cursor] == b'\\' && …` 这一形在等价腿与序列腿各有一处——改法是按 rustfmt 之后的真实排写取锚、并用前一行 `let mut cursor = pos + 2;` 把等价腿那处区分出来。
+  - **登记不执行**：① `TR-EQUIV-OOBCH-SET2` 仍在册——`tr abc '[=c=]'` 两边都退 0、集合都是单枚 `c`，但 string2 用尽后参照件把后续位置填 `\0`（现量 `c\0\0\n`）、本壳重复末字节（`ccc\n`），那是 `tr.c` 的 OOBCH 腿，与 `bracket()`/`genequiv()` 的判据无关，本笔不动；② `genequiv()` 里 `s->equiv[0]` 是长度 1 的数组这一事实（C 注释「English doesn't have any equivalence classes」）意味着等价类永远只有一枚成员，本壳已按同一形状建，若将来接真等价类表就是另一件契约变更，不在射程内；③ 参照件链的是宿主 glibc，`errx` 的前缀取 `getprogname()`，两形都只比句子不比平台，句子逐字取自 C 源。
+  - **顺带记下本轮的选路教训（不是本支的 TODO）**：排期表 `tmp/todo-loop-PLAN.md` 的 R 表状态列与 18 篇里若干条「下一支取 …」的指针**系统性滞后**——本轮先取的 `SEQ-GETOPT-LINE` 实际早在批次三百二十就已闭合，`R10`（primes 的 `-d`/`-h`）在批次二百七十三、`R11`/`R12` 在批次二百七十七、`R13`（join 逐支文案）在批次二百七十四都已闭合。已按代码现查复核出的真敞口两支留作后续：**R16**（`fortune`、`random` 两支的 C `warn`/`err` 腿，`minix3/games/fortune/fortune/fortune.c:525`、`:705`、`:1056` 与 `minix3/games/random/random.c:97`、`:99`；`wtf` 那支没有 C 真源，不能按 C 接）、**R17**（`truncate` 的 `relative_target` 用 `saturating_add` 而 C 是 `off_t` 自然回绕后 `if (tsize < 0) tsize = 0`，`minix3/minix/commands/truncate/truncate.c:121-131`，登记见本文件批次二百四十四、二百四十九两处）。取项规矩随之改一条：**按 R 表取项之前先对代码现查一次**，别信表上的空状态列。
+
 - ✅ **批次三百四十把 `split -n` 要切的字节数改成向内核询问，管道那一形从此报错而不是切得出**（`2026-10-18`，`claim/SPLIT-STREAMING-MEMORY-qoder` @ 基线 `dd77ce7c0`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/split.rs,tests/split_face.rs}` + 18 篇 `07-text-filter.md` 与本文件、认领板 `new_edge4.md`，单域三线 commands/textfilter，无跨界）
   - **这一条是什么**：上一笔量出的分叉是——`-n`（切成固定片数）那一支需要的字节总数，本壳从「已经收进来的字节数」推，C 从内核问。C 的 `split3()` 在读第一块数据之前就 `fstat(ifd, &sb)`，问不到就 `err(1, "stat")`（`minix3/usr.bin/split/split.c:293-295`），随后用 `sb.st_size` 判「片数比字节数还多」并算块宽（`:297-300`）。管道与字符设备的 `st_size` 是 **0**，所以「切 3 片」在 C 那里只能当场撞死在报文上；本壳因为拿的是真实字节数，同一形切得出三枚分片、退 0。这是 P0-code-bug：退码与落盘文件两件都错。
   - **改法（上一笔定下来的那条）**：`src/bin_support.rs` 新立 `input_size(path: Option<&str>) -> Result<u64, minix_sys::Errno>`，两条 `cfg` 腿同签名——宿主腿命名档走 `std::fs::metadata(path).len()`，`None`（没有操作数或裸 `-`）走 `std::fs::metadata("/dev/stdin")`；真机腿 `None` 走 `minix_sys::fstat(STDIN, &mut status)`、命名档走 `minix_sys::stat(name, &mut status)`，取 `st_size` 并夹住负数。选 `/dev/stdin` 这条路径的理由在上一笔已走完判据：std 里没有不带 `unsafe` 的「已打开的标准输入 → 可问大小的对象」通道（`File: From<Stdin>` 未实现），而本机实测这条路径与 C 的 `fstat(0)` 三形同数（命名片重定向喂入给 10、管道给 0、空设备给 0）。**这是承载差异不是语义差异**：两条腿问的都是「内核认为这个输入有多少字节」，只是问法受 std 接口面限制。为什么不选「只把命名档改对、管道那一形先放过」：C 那里命名档与管道是同一次 `fstat`，只改一半等于把一条判据抄成两处。
@@ -5900,3 +5910,19 @@ docker run --rm -u "$(id -u):$(id -g)" \
 **待补的账**：批次三百三十五、三百三十六、三百三十七这三轮只有宿主读数，缺权威读数。下一笔在本目录下
 跑任何一次容器门时，顺手对 `rewrite` 头的同一棵树补一次 `cargo test -j 1 --workspace`，那一句才是覆盖
 三包之外的部分；单包读数不能替它。
+
+**这笔账的结局（`2026-10-18` 补记，批次三百四十一）**：那一条按字面写法跑不成，原因不是门坏了，
+是这条命令本身撞在设计的绊线上。三条读数都附命令取自同一容器镜像与同一挂载配方：
+
+| 命令（`-w /work/os`） | 退码 | 读数 |
+|---|---|---|
+| `cargo test -j 1 --workspace` | 101 | `minix-kernel` (lib) 5 个编译错：`os/kernel/src/lib.rs:84`、`:86` 的形态常量比对、`:1377`、`:1459` 的形参类型不符、`:1926` 找不到的 `default` |
+| `cargo test -j 1 --workspace --exclude minix-kernel` | 101 | 同一个 `minix-kernel` (lib) 编译错——`--exclude` 只把它从「被测包」里摘掉，它仍是别的包的依赖，照样要编 |
+| `cargo test -j 1 -p minix-kernel --features mock` | **0** | **835 passed / 0 failed / 12 ignored**（`tmp/ws-341/container-kernel-mock.log`） |
+
+`AGENTS.md` 的 Build & Test 一节写明 `SD-30` 清空了三包默认形态、裸跑 `cargo test -p minix-kernel`
+会被 `os/kernel/src/lib.rs` 的 `form_contract` 编译期绊线当场挡住，那是设计行为。所以「一条覆盖全仓的
+容器 `--workspace` 命令」在当前契约下**不存在**；权威读数的正确形状是两条腿：需要被测的那个包自己带形态
+特性跑（内核腿即上面第三条），其余包按单包门跑。批次三百三十五~三百三十七那三轮缺的是**单包门**的容器
+读数，那部分不在本条射程内（要回到各自的树才能取），仍留在账上；本条只把「`--workspace` 一句补上」这个
+不成立的口径翻正，并留下上面三行可重跑的读数。
