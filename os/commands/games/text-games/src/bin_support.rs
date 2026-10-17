@@ -90,8 +90,70 @@ pub fn emit(bytes: &[u8]) {
     }
 }
 
-/// Wall-clock microseconds since the epoch, when a clock face answers.
+/// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
+/// `minix3/lib/csu/common/crt0-common.c:156-165`，权威在 `minix-types` 的 `prog_name`）。
+/// `err(3)`/`errx(3)` 那几行都以它开头——但只以它们俩开头：`random` 的 `usage()` 把名字
+/// 写死在串里，两路不同来历，见 `src/lottery.rs` 的 `USAGE`。
+pub fn prog_name(argv: &[alloc::string::String]) -> &str {
+    let raw = argv
+        .first()
+        .map(alloc::string::String::as_str)
+        .unwrap_or("");
+    minix_sys::prog_name(raw)
+}
+
+/// C 的 `err(3)`/`warn(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退
+/// （退不退由调用者定）。形状与句子都住在 `minix-types` 的 `err_line` 那一份权威里
+/// （与 `textfilter` 的同名件同一来源，C 也只有一个 `verrc.c`）。
+pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
+    // 先量一次再按那个数渲染：`err_line` 交回的是「本该写多少字节」，超长操作数不会被截断
+    //（C 的 `vwarnc` 直接把调用者的串整个打到 stderr，长度不受一行栈缓冲限制）。
+    let mut sizing: [u8; 0] = [];
+    let need = minix_sys::err_line(prog, label, code, &mut sizing);
+    let mut line = alloc::vec![0u8; need];
+    let len = minix_sys::err_line(prog, label, code, &mut line);
+    warn(&line[..len.min(line.len())]);
+    warn(b"\n");
+}
+
+/// 把标准输入读到尽，并且**把失手的号交回调用者**，不是把失手当成读到尽头。
 ///
+/// C 的这一路是 `getchar()` 环读到 EOF（`minix3/games/random/random.c:127`），失手由
+/// stdio 记账、收尾用 `err(2, "stdin")` 报。本层只负责拿到号，句子与退码由调用者定。
+/// 宿主腿走 `std::io::stdin`（没有它时退到 `EIO`，与 `textfilter` 那条读缝同一口径），
+/// 真机腿在同一枚描述符上逐块 `read`。有了双生面，薄壳的过滤路径在宿主也可测。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn read_stdin_error() -> (alloc::vec::Vec<u8>, Option<minix_sys::Errno>) {
+    use std::io::Read as _;
+    let mut input = alloc::vec::Vec::new();
+    match std::io::stdin().read_to_end(&mut input) {
+        Ok(_) => (input, None),
+        Err(failure) => (
+            input,
+            Some(minix_sys::Errno::from_i32(
+                failure
+                    .raw_os_error()
+                    .unwrap_or(minix_sys::Errno::EIO.to_i32()),
+            )),
+        ),
+    }
+}
+
+/// Target twin of [`read_stdin_error`] (see the module header for the seam contract).
+#[cfg(all(not(test), target_os = "none"))]
+pub fn read_stdin_error() -> (alloc::vec::Vec<u8>, Option<minix_sys::Errno>) {
+    let mut input = alloc::vec::Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match minix_sys::read(STDIN, &mut chunk) {
+            Ok(0) => return (input, None),
+            Ok(count) => input.extend_from_slice(&chunk[..count]),
+            Err(code) => return (input, Some(code)),
+        }
+    }
+}
+
+/// Wall-clock microseconds since the epoch, when a clock face answers.///
 /// Hosted builds read the host clock; the target build reads the kernel
 /// `SYS_TIMES` face — boot epoch seconds times one million plus real-time
 /// ticks times ten thousand (tick rate `DEFAULT_HZ = 100`,
@@ -125,4 +187,3 @@ pub fn epoch_secs() -> Option<u64> {
     .ok()
     .map(|times| times.boot_time + times.real_ticks / 100)
 }
-
