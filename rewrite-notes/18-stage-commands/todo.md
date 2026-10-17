@@ -157,6 +157,8 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   实现，gdtoa 在 `Avoid_Underflow` 下对某些子正规也立号，差一句话不是差一个值；⑤ 共用的
   `bin_support::emit` 写缝退码（C 是 `err(2, "stdout")` 退 2，`random.c:131-133`；`emit` 被本
   crate 多支共用，改它要单独一条账）。条目状态仍是 **partially fixed**。
+- **本笔的流程失误（现查证据在 `git reflog`）**：合入 `rewrite` 的 `git merge --ff-only` 我在**自己的认领树**里跑了——那棵树的 `HEAD` 是 `claim/RANDOM-DENOM-LEGS-qoder`，不是 `rewrite`，于是它回一句 `Already up to date` 什么也没做；紧接着的 `claim.sh release` 把树与分支删了，分支一删，`3ff3cf5ce` 只剩悬挂对象，`rewrite` 头还停在基线 `ba57665eb`。补救是在主树直接 `git merge --ff-only 3ff3cf5ce`：悬挂对象在 GC 之前照样可达，`git cat-file -t` 先证它在、`git show --stat` 先证六件齐全，再合，合后主树那三件他线程在制品（`AI-chats/daily.todo.md`、`01-stage-kernel/{02,todo}.md`）逐字未动。**规矩**：合入 `rewrite` 只能在主树跑 `git merge --ff-only claim/<ID>-<owner>`，`release` 必须在合入之后，且两步之间要现查一次 `git log --oneline -1 rewrite` 确认头已经前进——「Already up to date」不是成功。
+
 - **下一轮首动作**：`tools/claim.sh claim RANDOM-DENOM-LEGS qoder`，接①（十六进制浮点：
   `strtod.c` 的 `gethex` 那块要连 `p` 指数一起抄，A/B 形列在 `tmp/random-348/ab348.log` 的 `0x10`）。
 
