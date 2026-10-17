@@ -321,6 +321,68 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百三十二把 `colrm` 的读写两根腿都接上 C 的 `check()` 形状，闭合 `COLRM-IO-ERRLEG`**
+  （`2026-10-17`，`claim/COLRM-IO-ERRLEG-qoder` @ 基线 `6975cab44`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/colrm.rs,tests/colrm_face.rs}` + 18 篇两件文档，单域三线 commands/textfilter，无跨界）：
+  **这一条是什么**：`colrm` 的 C 源把「流上的错」收成同一个函数：`minix3/usr.bin/colrm/colrm.c:123-130` 的
+  `check(FILE *stream)` 先看 `feof` 再看 `ferror`，成立就 `err(1, "%s", stream == stdin ? "stdin" : "stdout")`。
+  它有两条来路：`getchar()` 返回 EOF 时查 `stdin`（`:98-100`），`putchar()` 返回 EOF 时查 `stdout`（`:118-120`）。
+  所以真值是**一行带流名的三段形报文加退码 1**，两根腿各报各的流名。本壳这两处都不出声：
+  读缝 `read_stdin()` 把错误当文件末尾（批次三百三十一刚修完这根），写缝 `bin_support::emit()` 失败时
+  直接 `terminate(1)` 而不报任何一行——退码对，句子没有。
+  **开工前的现量**（参照件 `tmp/colrm-310/colrm_ref`，承载件是 `/dev/full` 这个字符设备，写它必拿 `ENOSPC`；
+  读数存 `tmp/colrm-332/`）：标准输入给一个目录的 fd → `colrm_ref: stdin: Is a directory` 退 1 无输出；
+  标准输出接 `/dev/full` 且输出 8192 字节 → `colrm_ref: stdout: No space left on device` 退 1；
+  两腿同时坏 → 报的是 **stdin**（一个字节都没读进来，环里从未调用 `putchar`）。
+  **这里有一个必须量出来的东西**：写腿的观察门槛。参照件在输出很小的一段时间里根本不报——
+  尺寸扫描定出阈值落在 (4096, 4505] 字节之间（4 KiB 输出退 0 且一字不报，4505 字节起报 `stdout`），
+  因为 C 的 `putchar` 写进 stdio 缓冲，只有缓冲在环内被真冲刷失败才返回 EOF；小于一整块缓冲的输出
+  在 `exit()` 冲时出错，而 `exit()` 不报告 `fflush` 的失败。**这个数是所链 libc 的属性，不是 `colrm` 的语义。**
+  **做法（三路对比之后的取舍）**：甲案把阈值抄进本壳（攒够一块再写）——否决，那等于把一个 libc 的机制
+  写进命令层，而真机上 Minix stdio 的缓冲是另一个数，抄了也是错（项目第一原则：抽象语义，不描述机制）；
+  乙案写不进去就立刻报——采纳，它与 C 的意图同（`check()` 存在的理由就是这件事），在 ≥4505 字节那一形与 C
+  逐字同形，只在「小输出配坏设备」这一形比 C 早报；丙案把写腿整个留给真机（`C-57`/E5）——否决，
+  报文形状与退码在宿主就能观测，留给真机等于把钉得住的东西不钉。丙与甲的差别在「要不要报」，
+  甲与乙的差别只在「什么时候报」，所以分叉面只有那一小形，且已由门钉住（见下）。
+  落地三件：① `src/bin_support.rs` 新增 `emit_error(bytes) -> Option<Errno>`，宿主腿把 `write_all` 的
+  `Err` 过 `errno_of` 交回；真机腿按 `write` 的返回值**推余下的字节**直到写完或失败（单次 `write` 可以只吃
+  一部分，`emit()` 以前的 `is_err()` 看不见短写），零字节推进又不报错时按 `EIO` 交回——这个兜底与
+  `errno_of` 对「不带原始码的宿主错误」用的是同一个号，不自造错误码。② `read_stdin_error()` 沿用上一笔那一根。
+  ③ `src/bin/colrm.rs` 按 C 的先后把两根腿分开报：写错先报 `"stdout"`，写干净而读错才报 `"stdin"`，
+  两者都干净就是 `check(stdin)` 走到 `feof` 那一支——`exit(0)`。
+  **门（宿主 4 枚）**：`tests/colrm_face.rs` 的 `a_stdin_that_cannot_be_read_names_the_stream_and_exits_one`
+  钉读腿（stdout 空、stderr 恰一行流名、退 1）；`a_stdout_that_cannot_be_written_names_the_stream_and_exits_one`
+  钉写腿越过阈值那一形（与参照件同形）；`a_small_write_failure_is_reported_instead_of_swallowed_by_a_buffer`
+  钉的就是上面那个刻意分叉——小输出本壳也报，注释写明「参照件此处退 0 不报」，免得日后有人把它当回归「修回去」；
+  `both_streams_broken_reports_the_stream_c_reaches_first` 钉两腿同坏时报文跟着参照件走 `stdin`。
+  句子取自 Minix 的 errno 表（`minix3/lib/libc/compat/gen/compat_errlist.c` 那一张），与参照件的 glibc 表
+  在 `Is a directory`、`No space left on device` 两句上恰好同字，所以这两形可以逐字钉。
+  **变异负控六枚全部由门咬住**（`tmp/colrm-332/ctl332.py`，baseline 与还原后同为 16 通过 0 失败，逐枚还原核 md5）：
+  每枚各咬 2 枚——C1 壳侧丢掉读缝交回的号、C5 宿主读腿把错误擦回 EOF（这两枚咬 `stdin` 那两形）、
+  C2 宿主写腿把失败擦成没有错、C3 写腿流名写成 `stdin`、C4 报了行不置退码（这三枚咬 `stdout` 那两形）、
+  C6 读腿流名写成 `stdout`。**六枚的咬合数都是 2 而不是更多，正好说明两根腿彼此独立**：没有一处的破坏能顺带把另一根腿的门也弄红。
+  **A/B**：`tmp/colrm-332/ab332.py` 九形（列删两形 + 透传 + 坏选项 + 裸 `-` + 读错 + 写错两形 + 两腿同坏）
+  比退码/标准输出/标准错误，**SAME=8 DIFF=1**，唯一那一形就是上面钉住的小输出分叉；比对前把参照件自己的
+  程名 `colrm_ref` 归一回 `colrm`（否则比的是二进制名字而不是行为）。脚本第一版把承载写成 `open(dir,"rb")`，
+  Python 直接抛 `IsADirectoryError`——与批次三百三十一同一枚坑，改成 `os.open(dir, O_RDONLY)` 后通。
+  **登记不执行**：①「写错先于读错」这条先后规则在宿主**不可证**：要观察它得有「字节已在飞、同时读也坏」的承载，
+  而读坏（目录 fd）就不可能有字节在飞，两腿同坏那一形里空写又不失败——门因此只钉观察结果，不宣称钉住了规则本身
+  （`COLRM-ERRLEG-ORDER-UNOBSERVABLE`）；②真机上 `EISDIR`/`ENOSPC` 的句子与读库腿归 `C-57`/E5（既有口径）；
+  ③短写推进那一圈在宿主测不到（宿主走 `std::io` 腿），归真机门；④本 crate 还有 **34 支壳**在用静默的
+  `support::emit()`（现查 `grep -rln 'support::emit(' src/bin/ | wc -l` → 34），它们的 `stdout` 腿同样缺一行报文，
+  按「一次一条」各走一轮（`*-STDOUT-ERRLEG` 家族，与 `COLRM-IO-ERRLEG` 同族的那批登记并行）。
+  **三件套（读数全部取自宿主，原因实录）**：WSL 恢复之后容器与宿主的网络同断——`curl https://index.crates.io/config.json`
+  返回 `HTTP=000`，容器内 `failed to get 'bitflags'`，所以本笔没有容器读数可引；按规则 9 的回退分支走
+  `ulimit -v 3145728` 加 `--offline`（新领的树必须 `--offline`，因为注册表缓存够用而索引刷新要网）。
+  `cargo test --offline -p minix-textfilter -j 1` → **921 / 0 / 0**（68 个 target，上一笔 917，本笔加四枚面门）；
+  四枚新门逐名单跑各 `1 passed`；`cargo check --offline --workspace -j 1` 退码 0 且 `^error` 计数 0；
+  宿主三架构 `cargo build --offline --bins -j 1 --target x86_64-unknown-none / aarch64-unknown-none / riscv64gc-unknown-none-elf -p minix-textfilter`
+  各 `Finished`、退码 0、`^error` 计数 0——新领的树必须带 `--offline`，因为注册表里缓存够用而索引刷新要网；
+  `cargo clippy --offline -p minix-textfilter --all-targets` 触及三件零命中；
+  `rustfmt --edition 2021 --check` 对触及三件只报一处**存量**漂移——`src/bin/colrm.rs:23` 的 `use` 花括号序，
+  同一份未改文件在主树同样报（该文件最后一次改动是批次三百一十 `589fc4ce0`），非本笔引入，不顺手改。
+  核实日 `2026-10-17`；基线 `6975cab44`。
+  **下一轮首动作**：`tools/claim.sh claim CKSUM-HASH-STATE qoder`（排期 v3 的下一行）。
+
 - ✅ **批次三百三十一把 `rev` 的标准输入读错腿接上 C 的 `ferror` 形状，闭合 `REV-STDIN-ERRLEG`**
   （`2026-10-17`，`claim/REV-STDIN-ERRLEG-qoder` @ 基线 `dafbdde28`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/rev.rs,tests/rev_face.rs}` + 18 篇两件文档，单域三线 commands/textfilter，无跨界）：
   **这一条是什么**：C 的行环跑完不是「读不出来就算结束」，它随后试流上的错：

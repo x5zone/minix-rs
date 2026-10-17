@@ -65,9 +65,27 @@ fn run() -> ! {
     // 本文件以前直接拿裸 `minix_sys::read`，**宿主上读不到任何输入**，所以它从来没有
     // 被进程级测过（同批次三百零六的 `nl`、三百零八的 `fold`、三百零九的 `rev`）。
     // C 那边是一边读一边写（`getchar`/`putchar`），输出内容与先收全再过滤同一物。
-    let input = support::read_stdin();
-    support::emit(&filter_column(&input, start, stop));
-    support::terminate(0);
+    //
+    // 两根腿都可能出错，C 都交给同一个 `check()`（`colrm.c:123-130`）：它先看 `feof`
+    // 再看 `ferror`，报错时报的是**流名**——`err(1, "%s", stream == stdin ? "stdin" :
+    // "stdout")`。写错发生在环内（`putchar` 返回 EOF 就当场查流并退出），所以它先于
+    // 「读到头才发现的读错」；本壳把这两件事的先后照搬，各报一行、退码 1。
+    let (input, read_failure) = support::read_stdin_error();
+    let filtered = filter_column(&input, start, stop);
+    match support::emit_error(&filtered) {
+        Some(code) => {
+            support::warn_line(prog, "stdout", code);
+            support::terminate(1);
+        }
+        None => match read_failure {
+            Some(code) => {
+                support::warn_line(prog, "stdin", code);
+                support::terminate(1);
+            }
+            // 读干净、写干净，就是 C 的 `check(stdin)` 走到 `feof` 那一支：`exit(0)`。
+            None => support::terminate(0),
+        },
+    }
 }
 
 /// C 的 `usage()`（`colrm.c:132-137`）：一行、退 1。这一行里的命令名是**写死**的

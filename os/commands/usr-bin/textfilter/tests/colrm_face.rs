@@ -231,3 +231,117 @@ fn the_column_walk_reaches_the_output_end_to_end() {
     let (out, status, _) = run(&["2", "3"], b"a\xff\xbccdef\n");
     assert_eq!((out.as_str(), status), ("acdef\n", 0));
 }
+
+/// 读写两根腿的承载件：把标准输出接到 `/dev/full`（字符设备，写它必拿 `ENOSPC`）。
+/// 参照件 `tmp/colrm-310/colrm_ref` 在这一形上要越过 stdio 缓冲才报——实测阈值落在
+/// (4096, 4505] 字节之间：4 KiB 输出退 0 且一字不报，4505 字节起报
+/// `colrm_ref: stdout: No space left on device` 退 1。本壳没有 stdio 缓冲，
+/// 尺寸无论大小都当场报（下面两枚门各钉一边）。
+fn run_into_sink(args: &[&str], input: &[u8]) -> (i32, String) {
+    let sink = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("/dev/full carries a failing write");
+    let mut child = Command::new(COLRM)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(sink))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the colrm binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// 读腿：把一个**目录**的 fd 交给标准输入，打开成功而读的时候拿 `EISDIR`。
+/// C 的 `check(stdin)`（`colrm.c:123-130`）先看 `feof` 再看 `ferror`，于是走
+/// `err(1, "stdin")`——参照件同形打 `colrm_ref: stdin: Is a directory`、退 1、无输出。
+/// 改前本壳把读失败当文件末尾，一句话不说还退 0。句子取自 Minix 的 errno 表。
+#[test]
+fn a_stdin_that_cannot_be_read_names_the_stream_and_exits_one() {
+    let dir = std::env::temp_dir().join(format!("colrm-stdin-dir-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let handle = std::fs::File::open(&dir).expect("a directory opens read-only here");
+    let output = Command::new(COLRM)
+        .arg("2")
+        .stdin(Stdio::from(handle))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the colrm binary should be runnable")
+        .wait_with_output()
+        .expect("the run should finish");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "",
+        "读不到字节就不该有任何输出"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "colrm: stdin: Is a directory\n",
+        "报文该是程序名、流名 stdin、句子三段的 err 形"
+    );
+    assert_eq!(output.status.code(), Some(1), "读错要把退码置起来");
+}
+
+/// 写腿（越过参照件阈值的那一形，两边同形）：8 KiB 透传写到 `/dev/full`。
+#[test]
+fn a_stdout_that_cannot_be_written_names_the_stream_and_exits_one() {
+    let payload = vec![b'y'; 8192];
+    let (status, err) = run_into_sink(&["--", "-5"], &payload);
+    assert_eq!(
+        (status, err.as_str()),
+        (1, "colrm: stdout: No space left on device\n"),
+        "写错报的是流名 stdout，与读错分得开"
+    );
+}
+
+/// 同一形的小输出：参照件被 glibc 的缓冲吞掉（退 0 不报），本壳无缓冲因此**报**。
+/// 这一枚钉的是刻意的分叉，不是回归——把缓冲尺寸抄进命令层等于把一个 libc 的机制
+/// 写进 OS 语义，而真机上 Minix stdio 的缓冲又是另一个数，抄了也是错。
+#[test]
+fn a_small_write_failure_is_reported_instead_of_swallowed_by_a_buffer() {
+    let (status, err) = run_into_sink(&["--", "-5"], b"abcdefg\nhi\n");
+    assert_eq!(
+        (status, err.as_str()),
+        (1, "colrm: stdout: No space left on device\n"),
+        "本壳写不进去就报，不论尺寸"
+    );
+}
+
+/// 两根腿同时坏：参照件实测报的是 **stdin** 而不是 stdout——C 一个字节都没读进来，
+/// 环里从未调用 `putchar`，写错压根没机会被观察。本壳同样先拿到零字节输入、写出零字节
+/// （空写不失败），于是报读腿。这一枚钉的是「两腿同坏时报哪条」这个**观察结果**；
+/// 先后规则本身在这形上不可证——把顺序反转得到的输出一模一样，因为空写永远不会失败，
+/// 而宿主上又造不出「有字节在飞、同时读也出错」的承载（登记见 18 篇台账）。
+#[test]
+fn both_streams_broken_reports_the_stream_c_reaches_first() {
+    let dir = std::env::temp_dir().join(format!("colrm-both-broken-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let handle = std::fs::File::open(&dir).expect("a directory opens read-only here");
+    let sink = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("/dev/full carries a failing write");
+    let output = Command::new(COLRM)
+        .arg("2")
+        .stdin(Stdio::from(handle))
+        .stdout(Stdio::from(sink))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the colrm binary should be runnable")
+        .wait_with_output()
+        .expect("the run should finish");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "colrm: stdin: Is a directory\n",
+        "两腿同坏时报文该跟着 C 先观察到的那条流"
+    );
+    assert_eq!(output.status.code(), Some(1));
+}

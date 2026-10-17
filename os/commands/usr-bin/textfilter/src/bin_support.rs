@@ -98,6 +98,37 @@ pub fn emit(bytes: &[u8]) {
     }
 }
 
+/// Writes the slice to standard output and hands back the error that stopped it,
+/// if any — the form a program needs when it reports a failed write the way C's
+/// `check()` does (`minix3/usr.bin/colrm/colrm.c:123-130` names the *stream*,
+/// `stdin` or `stdout`, and exits 1). Whatever the device took stays taken;
+/// only the stopping error comes back.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn emit_error(bytes: &[u8]) -> Option<minix_sys::Errno> {
+    use std::io::Write as _;
+    match std::io::stdout().write_all(bytes) {
+        Ok(()) => None,
+        Err(failure) => Some(errno_of(&failure)),
+    }
+}
+
+/// Target leg of [`emit_error`]. A single `write` may take fewer bytes than asked
+/// for, so the remainder is pushed until the device either takes it all or stops
+/// taking it; a write that transfers nothing without failing is reported as `EIO`,
+/// the same fallback [`errno_of`] uses for a hosted error carrying no raw code.
+#[cfg(all(not(test), target_os = "none"))]
+pub fn emit_error(bytes: &[u8]) -> Option<minix_sys::Errno> {
+    let mut left = bytes;
+    while !left.is_empty() {
+        match write(STDOUT, left) {
+            Ok(0) => return Some(minix_sys::Errno::EIO),
+            Ok(count) => left = &left[count..],
+            Err(code) => return Some(code),
+        }
+    }
+    None
+}
+
 /// Writes the slice to standard output, reporting success without
 /// exiting (the form the yes loop's sink needs).
 #[cfg(any(test, not(target_os = "none")))]
