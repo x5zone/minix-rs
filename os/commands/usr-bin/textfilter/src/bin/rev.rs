@@ -44,8 +44,17 @@ fn run() -> ! {
         // 读缝走 `bin_support` 的双生面（宿主 `std::io::stdin`、真机 `read(STDIN)`）：
         // 本文件以前直接拿裸 `minix_sys::read`，**宿主上读不到任何输入**，所以新立的
         // 端到端门一跑就现形（同批次三百零六的 `nl`、三百零八的 `fold`）。
-        emit_reversed(&support::read_stdin());
-        support::terminate(0);
+        //
+        // 读失败不等于文件末尾：C 在行环之后试 `ferror` 并报**流名**，标准输入那一形
+        // 报的是初值 `"stdin"`（`rev.c:80-81`、`:101-104`）。已经读到的部分先照做
+        // （C 在读到时就把它打印掉了），然后一行 `warn`、退码置 1。
+        let (input, failure) = support::read_stdin_error();
+        emit_reversed(&input);
+        if let Some(code) = failure {
+            support::warn_line(prog, "stdin", code);
+            status = 1;
+        }
+        support::terminate(status);
     }
     for operand in operands {
         let input = match support::read_file(operand) {

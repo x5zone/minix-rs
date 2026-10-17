@@ -169,8 +169,70 @@ fn the_reversal_reaches_the_output_end_to_end() {
     assert_eq!(out, "b中éa\n");
 }
 
+/// 标准输入读不出内容时，C 报的是**流名**而不是操作数：`rev.c:80-81` 把 `filename`
+/// 起成 `"stdin"`，`:101-104` 的 `if (ferror(fp)) warn("%s", filename)` 于是印
+/// `rev: stdin: <strerror>` 并把退码置 1。宿主上最省事的读错误承载是让标准输入
+/// 是一个目录的文件描述符：打开成功、读的时候拿 `EISDIR`。参照件在同一形上的读数
+/// （`tmp/rev-331/measure.log`）：`rev_ref: stdin: Is a directory`、退 1、无输出。
+/// 本壳以前把读失败当文件末尾，于是这一形**什么都不说还退 0**。
+/// `Is a directory` 那句取自宿主 `strerror` 表（真机读库腿归 `C-57`/E5）。
+#[test]
+fn a_stdin_that_cannot_be_read_names_the_stream_and_exits_one() {
+    let dir = scratch();
+    let stream = dir.join("not-a-stream");
+    fs::create_dir(&stream).expect("create the directory to hand over as stdin");
+    let handle = fs::File::open(&stream).expect("a directory opens read-only here");
+    let output = Command::new(REV)
+        .stdin(Stdio::from(handle))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the rev binary should be runnable")
+        .wait_with_output()
+        .expect("the run should finish");
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "",
+        "读不到内容就不该有输出"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "rev: stdin: Is a directory\n",
+        "报的该是流名 `stdin`，一行、三段形"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "读失败是致命的吗？不，但要把退码置起来"
+    );
+}
+
+/// 同一条 `warn("%s", filename)` 的另一半：操作数顶掉了 `filename` 的初值
+/// （`rev.c:91`），所以读一个打不开/读不出的操作数时报的是**那个操作数**而不是
+/// `stdin`。这一形本壳已经对（走 `read_file` 的错误通道），留在这里是为了让上一枚
+/// 门钉的「流名跟着流走」有对照，不至于把两件事混成一句泛化的报文。
+#[test]
+fn an_unreadable_operand_names_itself_rather_than_stdin() {
+    let dir = scratch();
+    let stream = dir.join("directory-operand");
+    fs::create_dir(&stream).expect("create the directory operand");
+    let (out, status, err) = run(&[stream.to_str().unwrap()], b"");
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(out, "");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        format!("rev: {}: Is a directory\n", stream.to_str().unwrap())
+    );
+}
+
 fn scratch() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rev-face-{}", std::process::id()));
+    // 每枚门各拿一个目录：这些门结尾都要 `remove_dir_all`，而 cargo 是多线程跑测试的，
+    // 共用同一个按进程号命名的目录就会让先跑完的那枚删掉别人正在用的档。
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("rev-face-{}-{}", std::process::id(), seq));
     fs::create_dir_all(&dir).expect("scratch dir");
     dir
 }

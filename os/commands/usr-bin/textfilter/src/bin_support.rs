@@ -118,35 +118,58 @@ pub fn warn(bytes: &[u8]) {
     let _ = write(STDERR, bytes);
 }
 
-/// Reads all of standard input into one vector.
+/// Reads all of standard input into one vector, **discarding** any read failure.
 ///
 /// The tr semantics are stream-shaped (squeeze runs can cross any read
 /// boundary), so the doing half collects first and transforms once — the
-/// same hosted-first trade the primes bound documents. A read failure
-/// ends collection; the failure itself is not reported (the C filters
-/// exit through their own error paths once the transport reports
-/// honestly). Hosted runs read the process' real standard input, which is
-/// what lets an integration test drive the binary the way a shell would.
+/// same hosted-first trade the primes bound documents. Hosted runs read the
+/// process' real standard input, which is what lets an integration test drive
+/// the binary the way a shell would. A caller that has to report a failed read
+/// the way C does takes [`read_stdin_error`] instead, which hands back the bytes
+/// and the error together.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn read_stdin() -> Vec<u8> {
+    read_stdin_error().0
+}
+
+/// Reads all of standard input and returns what arrived together with the
+/// error that stopped it, if the read stopped for a reason other than end of
+/// file.
+///
+/// C's line readers do not treat a failed read as the end of the input: after
+/// the loop they test the stream and report which stream failed — `rev.c:101-104`
+/// runs `if (ferror(fp)) warn("%s", filename)` against a `filename` that holds
+/// `"stdin"` until an operand takes it away. So the shape is
+/// one `warn` line naming the stream plus a nonzero exit status, and whatever
+/// was read before the failure has already been processed — which is why the
+/// bytes collected so far come back alongside the number instead of being
+/// dropped with it.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn read_stdin_error() -> (Vec<u8>, Option<minix_sys::Errno>) {
     use std::io::Read as _;
     let mut input = Vec::new();
-    let _ = std::io::stdin().read_to_end(&mut input);
-    input
+    match std::io::stdin().read_to_end(&mut input) {
+        Ok(_) => (input, None),
+        Err(failure) => (input, Some(errno_of(&failure))),
+    }
 }
 
 #[cfg(all(not(test), target_os = "none"))]
 pub fn read_stdin() -> Vec<u8> {
+    read_stdin_error().0
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn read_stdin_error() -> (Vec<u8>, Option<minix_sys::Errno>) {
     let mut input = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
         match read(STDIN, &mut chunk) {
-            Ok(0) => break,
+            Ok(0) => return (input, None),
             Ok(count) => input.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
+            Err(code) => return (input, Some(code)),
         }
     }
-    input
 }
 
 /// Reads one line from standard input the way C's `fgets(buf, limit + 1, stdin)` does:

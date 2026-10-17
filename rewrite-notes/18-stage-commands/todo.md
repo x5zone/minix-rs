@@ -321,6 +321,74 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百三十一把 `rev` 的标准输入读错腿接上 C 的 `ferror` 形状，闭合 `REV-STDIN-ERRLEG`**
+  （`2026-10-17`，`claim/REV-STDIN-ERRLEG-qoder` @ 基线 `dafbdde28`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/rev.rs,tests/rev_face.rs}` + 18 篇两件文档，单域三线 commands/textfilter，无跨界）：
+  **这一条是什么**：C 的行环跑完不是「读不出来就算结束」，它随后试流上的错：
+  `minix3/usr.bin/rev/rev.c:101-104` 的 `if (ferror(fp)) { warn("%s", filename); rval = 1; }`，
+  而 `filename` 的初值是 `"stdin"`（`:80-81`），被操作数顶掉之后才换成那个操作数的名字（`:91`）。
+  所以标准输入自己读出错时，真值是**一行报文带流名 `stdin` 加一个非零退码**，不是静默退出。
+  本壳以前拿不到这件事：`bin_support::read_stdin()` 把 `read_to_end` 的 `Err` 直接扔掉
+  （宿主腿 `let _ = ...`，真机腿 `Err(_) => break`），读失败与文件末尾在壳侧长得一模一样。
+  **开工前的现量**（参照件 `tmp/rev-309/rev_ref`，承载用「标准输入是一个目录的 fd」：
+  打开成功、读的时候拿 `EISDIR`；读数存 `tmp/rev-331/measure.log`）：
+  同形下参照件打 `rev: stdin: Is a directory` 退 1，本壳**一句话不说且退 0**。
+  操作数那一形两边本来就相同（`rev: <路径>: Is a directory`、退 1），说明缺的只是流名那条腿。
+  **做法（为什么这么切）**：错误通道加在**承载它的缝**上而不是各壳里——
+  ① `src/bin_support.rs` 新增 `read_stdin_error()`，两条腿同签名
+  `(Vec<u8>, Option<Errno>)`：宿主腿把 `read_to_end` 的 `raw_os_error()` 过 `errno_of` 交回，
+  真机腿把 `read(STDIN)` 的 `Err(code)` 交回；两边都把**已经收到的字节**一起带出来，
+  因为 C 在读到的当时就打印掉了，错误只追加一行报文和一个退码，不回收已完成的输出。
+  ② `read_stdin()` 保持原签名，改为 `read_stdin_error().0`——其余三十多支壳的语义一字未动
+  （`COLRM-IO-ERRLEG`、`SPLIT-READ-STAT-ERRLEG` 那几支同族登记将来各自接这根腿，各走一轮）。
+  ③ `src/bin/rev.rs` 无操作数那一支：先 `emit_reversed(&input)`，再按 `failure` 印
+  `support::warn_line(prog, "stdin", code)` 并把 `status` 置 1，退码从常量 `0` 换成 `status`。
+  **门（宿主 2 枚）**：`tests/rev_face.rs` 的 `a_stdin_that_cannot_be_read_names_the_stream_and_exits_one`
+  钉住 stdout 空、stderr 恰一行 `rev: stdin: Is a directory\n`、退 1；
+  `an_unreadable_operand_names_itself_rather_than_stdin` 钉住另一半——操作数坏了时报的是**它自己的名字**，
+  这一形改前就过，留它是为了让上一枚不至于把「流名」这一件事写成一句泛化报文。
+  `Is a directory` 取自宿主 `strerror` 表，真机读库腿归 `C-57`/E5（既有口径）。
+  **变异负控六枚全部由门咬住**（`tmp/rev-331/ctl331.py`，baseline 与还原后同为 15 通过 0 失败，
+  逐枚改回再复跑、跑完还原并核 md5）：C1 壳侧忽略读缝交回的号咬 1 枚、C2 宿主腿把错擦回 EOF 咬 1 枚、
+  C3 流名擦成空串咬 1 枚、C4 报了行不置退码咬 1 枚、C5 操作数那腿的流名也写成 `stdin` 咬 4 枚
+  （连带三枚原有的操作数门，证明「按流分名」这件事本来就有人在盯）、C6 报文改走标准输出咬 1 枚。
+  **A/B**：`tmp/rev-331/ab331.py` 九形（读错误两形 + 打不开的操作数 + 正常两行 + 末行无换行 +
+  空输入 + 裸 `-` + 坏操作数配好 stdin + 集外字母）比退码/标准输出/标准错误，
+  **SAME=9 DIFF=0**；比对把参照件自己的程名 `rev_ref` 归一回 `rev`（两处：报文行首与 usage 句），
+  否则比的是二进制名字而不是行为。
+  **登记不执行 `REV-FILE-PARTIAL-ON-ERROR`**：`read_file()` 的宿主腿走 `std::fs::read`，
+  中途读错时整个 `Err` 交出、已读到的字节被丢掉，而 C 会把错误之前读到的行**先打印**再报一行
+  （`rev.c:93-104` 的打印在 `ferror` 之前）。本壳的退码与报文都对，缺的是那半截输出；
+  它要改的是 `read_file` 的交回形状（同 `read_stdin_error` 那样带部分），另立一轮。
+  **收尾自审又抓到本笔自己的两处缺陷，一并修掉**：①`src/bin_support.rs` 的两处注释是破碎的中英混排
+  （一句英文尾巴上吊着「keeps the号」，另一处在英文段落中间插了一整句全角括号中文）——按文风规矩改成
+  单语成句并把 C 锚点留在句内；②`tests/rev_face.rs` 的 `scratch()` 只按进程号命名，而本文件有五枚门各取
+  一个目录、结尾都要 `remove_dir_all` 整片，cargo 是多线程跑测试的，先跑完的那枚会把另一枚正在用的档删掉——
+  改成每枚门各拿一个互不相交的目录（进程号加一个自增序号），五处调用点一字未动，判定权在辅助件。
+  这两处都会抬高测试的偶然失败率，属于「测试自身」的问题而不是被测对象的问题。
+  **三件套（复跑后的读数）**：宿主整包 `ulimit -v 3145728; cargo test -p minix-textfilter -j 1`
+  → **917 / 0 / 0**（68 个 target，上一笔 915，本笔加两枚面门、不加库测）；面门逐名
+  `cargo test -p minix-textfilter --test rev_face` → 10 枚全绿，含新立的
+  `a_stdin_that_cannot_be_read_names_the_stream_and_exits_one` 与
+  `an_unreadable_operand_names_itself_rather_than_stdin`；六枚变异负控在改过 `scratch()` 之后复跑
+  `python3 tmp/rev-331/ctl331.py` → **6/6 由门咬住、0 枚编译期被挡**，baseline 与还原后同为 15 通过 0 失败、
+  逐枚还原核 md5；`cargo check --workspace -j 1` 0 error；宿主三架构
+  `cargo build --bins -j 1 --target x86_64-unknown-none / aarch64-unknown-none / riscv64gc-unknown-none-elf -p minix-textfilter`
+  各 `Finished` 且 `^error` 计数 0；`cargo clippy -p minix-textfilter --all-targets` 触及三件零命中
+  （78 行存量告警一条也不落在 `bin_support.rs`、`bin/rev.rs`、`rev_face.rs` 上）；
+  `rustfmt --edition 2021 --check` 对三个触及件零漂移。核实日 `2026-10-17`；基线 `dafbdde28`。
+  **容器腿这次回退到了宿主，原因实录**：WSL 恢复之后 `docker run --rm -v "$PWD:/work" -w /work/os -m 2g minix-ci:1.94
+  cargo test -j 1 -p minix-textfilter` 报 `error: failed to get 'bitflags' as a dependency of package minix-kernel`，
+  三架构交叉目标在容器里则报 `[28] Timeout was reached`；探针三条定住病根——容器内 `getent hosts static.crates.io`
+  解析到一个 `2001:2::fd` 的假地址、`curl https://static.crates.io/` 返回 `000`、镜像的
+  `CARGO_HOME=/usr/local/cargo` 下**没有 `registry` 目录**（缓存全在容器网络的活连接上）。同一棵树、同一条命令在
+  WSL 重启前取到过 **917 / 0 / 0** 的容器读数，所以这是承载环境断了网，不是代码或配方变化。按规则 9 的回退分支
+  走宿主 `ulimit -v 3145728` 加 `-j 1`，上面每一项都注明是宿主读数；容器门待网络恢复后由下一笔复跑。
+  另记一笔配方纪律：中途有一次把 `-v "$PWD"` 指到了 `os/`（工作目录已是 `os/`），那是 `AGENTS.md` 明令的假红挂载点，
+  当场发现并改回仓库根重跑，未采信那次结果。
+  **下一轮首动作**：`tools/claim.sh claim COLRM-IO-ERRLEG qoder`（同族第二例，
+  承载同样是 `read_stdin_error`，另加 `emit()` 的写腿；`minix3/usr.bin/colrm/colrm.c:97-130` 的 `check()`
+  分别打 `colrm: stdin: <strerror>` 与 `colrm: stdout: <strerror>`）。
+
 - ✅ **批次三百三十把 `split` 的行模式改成按字节切、终止符随它自己的行走，闭合 `SPLIT-NONUTF8-DROP`**
   （`2026-10-17`，`claim/SPLIT-NONUTF8-DROP-qoder` @ 基线 `a75583ecc`，单域三线 commands/textfilter，无跨界）：
   **这一条是什么**：上一笔登记的两处分叉同一个根——行模式把输入当文本读。`os/commands/usr-bin/textfilter/src/bin/split.rs`
