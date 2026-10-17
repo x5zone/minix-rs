@@ -391,7 +391,7 @@ pub fn errno_of(error: &std::io::Error) -> minix_sys::Errno {
 /// observable: an input that turns out to be unreadable still leaves the output
 /// empty, exactly as the C's already-opened `FILE *` would at exit.
 #[cfg(any(test, not(target_os = "none")))]
-pub struct WriteSink(std::fs::File);
+pub struct WriteSink(pub(crate) std::fs::File);
 
 #[cfg(all(not(test), target_os = "none"))]
 pub struct WriteSink {
@@ -420,24 +420,43 @@ pub fn create_sink(path: &str) -> Result<WriteSink, minix_sys::Errno> {
 
 #[cfg(any(test, not(target_os = "none")))]
 impl WriteSink {
-    /// Writes the collected bytes; the handle is closed when it drops, matching C
-    /// where stdio flushes at exit and reports nothing.
-    pub fn finish(mut self, bytes: &[u8]) -> Result<(), ()> {
+    /// 写进去的字节在 drop 时释放句柄，与 C 那边 stdio 在退出时冲刷、不回报一致。
+    ///
+    /// 错误腿交回的是**平台那个号**：C 的 `split.c:204`、`:216`、`:225` 三处都是
+    /// `bigwrite()` 对不上数就 `err(1, "write")`，`err` 后缀打的正是 `errno`——
+    /// 「盘写满」与「真的一次 I/O 错」是两句话，压成一个 `EIO` 就只剩「出错了」。
+    pub fn finish(mut self, bytes: &[u8]) -> Result<(), minix_sys::Errno> {
         use std::io::Write as _;
-        self.0.write_all(bytes).map_err(|_| ())
+        self.0
+            .write_all(bytes)
+            .map_err(|failure| errno_of(&failure))
     }
 }
 
 #[cfg(all(not(test), target_os = "none"))]
 impl WriteSink {
-    /// Writes the collected bytes and releases the descriptor. C never checks
-    /// the stdio write, so a caller that wants to report a failure does so with
-    /// its own diagnostic — see the note on `create_sink`.
-    pub fn finish(self, bytes: &[u8]) -> Result<(), ()> {
-        let done = minix_sys::write(self.fd, bytes);
+    /// 一篇写不完就接着写，只有 `write` 交回 0 才算真没进展——这是 C 的
+    /// `bigwrite()`（`minix3/usr.bin/split/split.c:337-351`）的循环形状。错误腿带
+    /// 平台号，因为调用方要的就是 `err(1, "write")` 那一句。描述符在返回前释放；
+    /// `close` 的失败本层不报（`SPLIT-CLOSE-ERRLEG` 已登记）。
+    pub fn finish(self, bytes: &[u8]) -> Result<(), minix_sys::Errno> {
+        let outcome = write_loop(self.fd, bytes);
         let _ = minix_sys::close(self.fd);
-        done.map(|_| ()).map_err(|_| ())
+        outcome
     }
+}
+
+/// 把 `bytes` 写完为止：`Ok(0)` 意味着描述符再也吃不进字节，此时没有平台号可交回，
+/// 才落到 `EIO`。
+fn write_loop(fd: minix_sys::Fd, mut left: &[u8]) -> Result<(), minix_sys::Errno> {
+    while !left.is_empty() {
+        match minix_sys::write(fd, left) {
+            Ok(0) => return Err(minix_sys::Errno::EIO),
+            Ok(count) => left = &left[count..],
+            Err(code) => return Err(code),
+        }
+    }
+    Ok(())
 }
 
 /// An input operand that has been opened but not yet read.
@@ -660,4 +679,36 @@ pub fn remove_path(path: &str) -> Result<(), ()> {
 #[cfg(all(not(test), target_os = "none"))]
 pub fn remove_path(path: &str) -> Result<(), ()> {
     minix_sys::unlink(path).map_err(|_| ())
+}
+
+#[cfg(all(test, not(target_os = "none")))]
+mod write_leg_tests {
+    use super::*;
+
+    /// 这枚门钉的是「号不能被压平」：拿一枚只读句柄包成写腿，宿主的 `write` 当场
+    /// `EBADF`（9 号，Linux 与 Minix 同值——`minix3/sys/include/errno.h` 的
+    /// `EBADF 9`）。若实现把失败折成单位或折成 `EIO`，这里两条断言立刻分家。
+    #[test]
+    fn the_write_leg_keeps_the_platform_number() {
+        let dir = std::env::temp_dir().join(format!("bin-support-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("payload");
+        std::fs::write(&path, b"seed").expect("seed file");
+        let readable = std::fs::File::open(&path).expect("read-only handle");
+        let code = WriteSink(readable)
+            .finish(b"more")
+            .expect_err("只读句柄上的写必然失败");
+        assert_eq!(
+            code.to_i32(),
+            9,
+            "应当原样交回 EBADF，实得 {}",
+            code.to_i32()
+        );
+        assert_ne!(
+            code.to_i32(),
+            minix_sys::Errno::EIO.to_i32(),
+            "又被压成 EIO 了"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

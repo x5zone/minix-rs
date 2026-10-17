@@ -151,10 +151,14 @@ fn render_chunk(chunk_lines: &[&[u8]]) -> Vec<u8> {
 /// 三百一十的 `colrm`）。交回的是 `Errno`，因为 C 那一行是 `err(3)` 三段形。
 fn create_write(path: &str, bytes: &[u8]) -> Result<(), ChunkWrite> {
     let sink = support::create_sink(path).map_err(ChunkWrite::Open)?;
-    // 短写与写错在 C 那边由 `bigwrite` 检出后 `err(1, "write")`；本壳的 `finish`
-    // 不交回平台号，按既有口径退到 `EIO`（`bin_support::errno_of` 同一处置）。
-    sink.finish(bytes)
-        .map_err(|_| ChunkWrite::Write(minix_sys::Errno::EIO))
+    write_into(sink, bytes)
+}
+
+/// 写腿的失败折成 `ChunkWrite::Write`，交回的号一路带到 `write_failure` 打出去。
+/// 拆成这一小函数只为把「失败到号」这一步单独钉住：C 那边是 `bigwrite()` 对不上数
+/// 就 `err(1, "write")`，`err` 后缀打的就是 `errno`，写满与写错是两句话。
+fn write_into(sink: support::WriteSink, bytes: &[u8]) -> Result<(), ChunkWrite> {
+    sink.finish(bytes).map_err(ChunkWrite::Write)
 }
 
 /// 分片文件的两种失败：开不开（C 报路径）与写不写进（C 报 `write`）。
@@ -165,13 +169,21 @@ enum ChunkWrite {
 
 /// 两个失败出口各自的 `err(3)` 三段形，印完即退 1（C 的 `err` 本身就是致命支）。
 fn write_failure(prog: &str, path: &str, failure: ChunkWrite) -> ! {
-    match failure {
-        // `split.c:332-333`：`err(1, "%s", fname)`。
-        ChunkWrite::Open(code) => support::warn_line(prog, path, code),
-        // `split.c:204` 等五处：`err(1, "write")`——标签是 `write` 而不是路径。
-        ChunkWrite::Write(code) => support::warn_line(prog, "write", code),
-    }
+    let code = match failure {
+        ChunkWrite::Open(code) | ChunkWrite::Write(code) => code,
+    };
+    support::warn_line(prog, failure_label(&failure, path), code);
     support::terminate(1);
+}
+
+/// 两臂各打各的标签：开档失败按 `split.c:332-333` 的 `err(1, "%s", fname)` 报**路径**，
+/// 写失败按 `split.c:204` 等五处的 `err(1, "write")` 报**这个词本身**。拆成纯函数是为了
+/// 让「两臂不互换」这一条有门可钉——渲染那一步要打要退出，宿主侧没法看。
+fn failure_label<'a>(failure: &ChunkWrite, path: &'a str) -> &'a str {
+    match failure {
+        ChunkWrite::Open(_) => path,
+        ChunkWrite::Write(_) => "write",
+    }
 }
 
 /// C 的 `errx(1, "too many files.")`（`split.c:326-330`）：后缀空间（26 的 width 次方）
@@ -184,6 +196,45 @@ fn too_many_files() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_two_write_arms_do_not_swap_their_labels() {
+        // 开档臂报路径、写臂报 `write` 这个词（`split.c:332-333` 与 `:204` 是两句不同的
+        // `err`），两臂互换在渲染那一步才看得见，这里钉住选择本身
+        assert_eq!(
+            failure_label(&ChunkWrite::Open(minix_sys::Errno::ENOENT), "xaa"),
+            "xaa"
+        );
+        assert_eq!(
+            failure_label(&ChunkWrite::Write(minix_sys::Errno::from_i32(28)), "xaa"),
+            "write"
+        );
+    }
+
+    /// 门钉的是「失败之后号还在不在」：一枚只读句柄包成写腿，宿主那次 `write` 当场
+    /// `EBADF`（9 号），本壳必须把 9 交回 `ChunkWrite::Write`。若这里又折回 `EIO`
+    /// 或折成单位，`split` 打出去的就不是 C 那一句。
+    #[test]
+    fn a_write_failure_keeps_the_platform_number_for_the_write_leg() {
+        let dir = std::env::temp_dir().join(format!("split-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("payload");
+        std::fs::write(&path, b"seed").expect("seed file");
+        let readable = std::fs::File::open(&path).expect("read-only handle");
+        match write_into(support::WriteSink(readable), b"more") {
+            Err(ChunkWrite::Write(code)) => {
+                assert_eq!(code.to_i32(), 9, "应当原样交回 EBADF");
+                assert_ne!(
+                    code.to_i32(),
+                    minix_sys::Errno::EIO.to_i32(),
+                    "又被压成 EIO"
+                );
+            }
+            Err(ChunkWrite::Open(code)) => panic!("失败被归到了开档腿：{}", code.to_i32()),
+            Ok(()) => panic!("只读句柄上的写不可能成功"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn out_path_prefixes_the_two_letter_suffix() {

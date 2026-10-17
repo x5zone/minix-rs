@@ -321,6 +321,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百三十六让 `split` 的写腿把平台那个号一路带到报文里，闭合 `SPLIT-WRITE-ERRNO`**（`claim/SPLIT-WRITE-ERRNO-qoder` @ 基线 `0021e749f`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/split.rs,src/bin/uniq.rs,tests/split_face.rs}` + 18 篇两份文档，单域三线 commands/textfilter，无跨界）
+  - **是什么、为什么**：`split` 每枚分片都是「开档 + 写完」，C 那两臂各打一句——开不出来是 `err(1, "%s", fname)`（`minix3/usr.bin/split/split.c:332-333`，报**路径**），写不进去是 `err(1, "write")`（`:204`、`:216`、`:225`，报**这个词**），两句的第三段都是 `errno` 对应的句子。这一支的 `WriteSink::finish` 交回 `Result<(), ()>`，壳里再折成 `EIO`，于是「盘写满」与「真的一次 I/O 错」被压成同一句话；目标腿还只 `write` 一次，写不完也当写完了。
+  - **改法与为什么不做得更厚**：`finish` 两条腿都改成交回 `minix_sys::Errno`——宿主腿用既有的 `errno_of`（`raw_os_error()` 就是 C 的 `errno`），目标腿补上 `bigwrite()` 的续写循环（`split.c:337-351`），只有 `write` 交回 0 这种「再也吃不进字节」的情形才落到 `EIO`。壳侧另拆出 `write_into` 与 `failure_label` 两枚纯函数：前者让「失败到号」有门可钉，后者让「两臂不互换标签」有门可钉——渲染那一步要打要退出，宿主侧看不见，不拆就只剩一组无法证伪的说法。
+  - **门**：`cargo test -p minix-textfilter` → **979 passed / 0 failed**；新立三枚——`the_write_leg_keeps_the_platform_number`（只读句柄包成写腿，宿主当场 `EBADF`＝9，钉「号没被压平」）、`the_two_write_arms_do_not_swap_their_labels`（钉两臂各自的标签）、`a_chunk_that_cannot_be_created_names_the_path_not_write`（进程级：前缀落在不存在的目录里，报文是 `split: <前缀>aa: No such file…`，退 1、一行、不接 usage）；宿主三架构各 0 error；`cargo check --workspace` 0 error；触及三件 `rustfmt --edition 2021 --check` 零漂移。
+  - **负控六枚全咬**：写腿又压成 `EIO` → 1 枚红；`errno_of` 丢掉 `raw_os_error` → 3 枚红；宿主写腿直接吞号 → 1 枚红；两臂标签互换 → 1 枚红；写臂标签改名 → 1 枚红；开档腿丢号 → 1 枚红（最后一枚是先发现「门只钉住路径没钉住句子」再补强尾句断言才咬住的，同批次三百三十四那条经验：负控不咬先怀疑断言不够）。
+  - **验证边界与本轮没做的事**：目标腿的续写循环在 `cfg(target_os = "none")` 一侧，宿主门够不着，需真机门（`C-57`/E5 既有口径）；`close` 的失败仍不上报（`SPLIT-CLOSE-ERRLEG`）；`uniq` 的写腿这次只把签名跟到位、报文形状未动（`UNIQ-WRITE-ERRLEG` 一条登记）；`src/bin/uniq.rs` 里两处既存 rustfmt 漂移（`use` 顺序与注释缩进）不属本支，未顺手改。下一轮首动作：`tools/claim.sh claim SPLIT-CLOSE-ERRLEG qoder`。
+
 - ✅ **批次三百三十五把 `tr` 集合语法的四句报文接到标准错误，并照抄 `bracket()` 的三条成形判据，闭合 `TR-SET-GRAMMAR-SENTENCES`**（`claim/TR-SET-GRAMMAR-SENTENCES-qoder` @ 基线 `5a6fbda21`，只动 `os/commands/usr-bin/textfilter/src/tr.rs`、`src/bin/tr.rs`、`tests/tr_face.rs`）
   - **是什么、为什么**：`parse_set` 此前对一切语法失败只回 `TextError::InvalidArgument`，壳里 `Err(_) => terminate(1)` 静默退 1，用户看不见任何一句解释。C 在 `minix3/usr.bin/tr/str.c` 每处都是当场 `errx(1, ...)`：`genclass()` 表外的名字打 `unknown class %.*s`（`:253`），`genseq()` 依次打 `Sequences only valid in string2`（`:353-356`）、`Misplaced sequence asterisk`（`:362-366`）、`illegal sequence count`（`:368-386`）。这三句的**先后次序**本身就是行为，缺一句就是多打一句不该打的。
   - **接法**：`SetSite`（第一串/第二串）做成 `parse_set` 的入参，因为 C 把 `which` 存在 `STR` 结构里由 `genseq()` 自查；`SetGrammar::sentence()` 返回 C 的原文，壳只补 `tr: ` 前缀、走标准错误、退 1 且**不带** usage 块。

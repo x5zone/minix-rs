@@ -108,7 +108,7 @@ fn run() -> ! {
     // the end; either destination gets the same bytes C's stdio would flush.
     match sink {
         Some(sink) => {
-            if let Err(()) = sink.finish(&body) {
+            if let Err(_code) = sink.finish(&body) {
                 support::warn(format!("uniq: {}\n", operands[1]).as_bytes());
                 support::terminate(1);
             }

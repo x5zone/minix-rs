@@ -443,3 +443,38 @@ fn byte_mode_is_untouched_by_the_line_rewrite() {
         ]
     );
 }
+
+/// 分片文件开不出来是 `err(1, "%s", fname)`（`split.c:332-333`）：报的是**路径**与
+/// `strerror` 句子，不是 `write` 那个词——两臂的标签在此分家，本轮的写腿号也由此有路可钉。
+#[test]
+fn a_chunk_that_cannot_be_created_names_the_path_not_write() {
+    let prefix = format!("{}/no-such-dir/x", scratch().display());
+    let (status, err, files, _out) = run(&["-", &prefix], INPUT);
+    assert_eq!(
+        status, 1,
+        "开不出分片文件必须退 1，实得 {status}，文件 {files:?}"
+    );
+    // 分片名是「前缀 + 后缀」，报的是那枚真正开不出来的文件名（`xaa`）
+    let head = format!("split: {prefix}aa: ");
+    assert!(
+        err.starts_with(&head),
+        "该以 `split: <路径>: ` 开头，实际 {err:?}"
+    );
+    assert!(
+        !err.contains(": write: "),
+        "开档臂不许借用写臂的标签：{err:?}"
+    );
+    let tail = err[head.len()..].trim_end();
+    assert!(
+        !tail.is_empty() && !tail.contains('\n'),
+        "缀的应是一句 strerror 且只有这一行：{err:?}"
+    );
+    // 缀的那句就是平台号对应的 strerror：这里失败的是 ENOENT（目录不存在），
+    // 若开档腿把号压成 `EIO` 或别的号，这句会当场换词——门钉的是「号还在不在」，
+    // 不是句子本身（宿主参照件链 glibc，Minix 表同词，见本文件头的验证边界）
+    assert!(
+        tail.contains("No such file"),
+        "该缀 ENOENT 那一句，实得 {err:?}"
+    );
+    assert!(!err.contains("usage:"), "这一腿不接 usage：{err:?}");
+}
