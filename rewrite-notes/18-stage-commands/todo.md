@@ -119,6 +119,71 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百五十三（负控轮，生产码一字未动，且本轮一枚也没跑成）：把三百二十五至三百二十九六枚负控的**盘面锚点**现查到底
+
+- **本轮想做什么**：清「三百二十五~三百二十九连续五轮的六枚负控欠账」。控制机沿用三百五十二那套（判据已修对：
+  失败数大于零、无编译错、且期望的那一枚门出现在变红名单里；每枚跑完立刻整文件还原并校验 md5）。
+- **为什么一枚也没跑**：我按台账里引过的源码形状去定位变异点，四处全不命中——`os/commands/usr-bin/textfilter/src/jot.rs`
+  里搜不到 `(v as i64) as u64`（三百二十七那笔把它写成这个串，盘面另有形状），`bin_support.rs` 里 `args_os`
+  出现两次（一次在文档注释、一次在代码），`col.rs` 只有一处提到裸字节的**注释**而非取字节的表达式，
+  `column.rs` 里 `line too long` 相关行没落在我猜的模式上。**「没看到锚点」不等于「没有锚点」**——这正是
+  三百五十二那枚控制机判据翻过的同一面，这次翻在了我自己手上，所以本轮不下「门没咬」的结论，也不许凭猜改码。
+- **交给下一轮的真锚点（现查，命令与行号都在）**：
+  - **jot 种子转换（三百二十五/三百二十七的门所在）**，现查原文：
+    361: pub fn seed_from_step(step: f64) -> u64 {
+    362:     (step as i64) as u64
+    559:             let reps = ((options.ender - options.begin + options.step) / options.step) as i64;
+    593:         let t = ((options.ender - options.begin + options.step) / options.step) as i64;
+    740:             let v = floor(value) as i64;
+    916:         assert_eq!(seed_from_step(0.0), 0);
+    917:         assert_eq!(seed_from_step(-0.5), 0);
+    918:         assert_eq!(seed_from_step(0.9), 0);
+    919:         assert_eq!(seed_from_step(-0.9), 0);
+    921:         assert_eq!(seed_from_step(-5.0), u64::MAX - 4);
+    922:         assert_eq!(seed_from_step(-5.9), seed_from_step(-5.0));
+    924:         assert_eq!(seed_from_step(5.0), 5);
+    925:         assert_eq!(seed_from_step(2147483648.0), 2147483648);
+    927:         assert_ne!(seed_from_step(-5.0).wrapping_add(1), seed_from_step(-5.0));
+  - **bin_support 宿主 args 腿（三百二十九的门所在）**，现查原文：
+    40: pub fn args() -> alloc::vec::Vec<alloc::string::String> {
+    48: /// diverge from the target leg (which renders lossily); `args_os()` keeps the raw
+    52: pub fn args() -> alloc::vec::Vec<alloc::string::String> {
+    54:     std::env::args_os()
+  - **col 集外字母取字节（三百二十六的门所在）**，现查原文：
+    120:             match bytes[pos] {
+    134:                         &arg[pos + 1..]
+    149:                     return Err(ColFlagError::UnknownOption(char::from(bytes[pos])));
+    467:         let this_col = chars[pos].col;
+    525:         // `col: unknown option -- ` + 裸字节 0xC3 + 换行，退 1。
+  - **column 残行计数（三百二十八的门所在）**，现查原文：
+    5: //! without its newline is dropped with a warning, and every other entry is
+    150:     /// 再 `strchr(p, '\n')` 找不到换行就 `warnx("line too long")`、置 `eval = 1`
+    153:     pub dropped_tail: usize,
+    157: /// unterminated tail line dropped with a warning, and every kept entry the
+    172:     let Some((tail, records)) = lines.split_last() else {
+    175:     let unterminated = !tail.is_empty();
+    178:         pending.push(tail);
+    188:             pool.dropped_tail += 1;
+    375:         assert_eq!(pool.dropped_tail, 0);
+    399:         assert_eq!(pool.dropped_tail, 0);
+    405:     fn test_unterminated_tail_line_is_dropped_and_counted() {
+    408:         assert_eq!(pool.dropped_tail, 1);
+    409:         let blank_tail = scan_entries(&["one", "   "]);
+    410:         assert_eq!(blank_tail.entries, vec!["one"]);
+    411:         assert_eq!(blank_tail.dropped_tail, 0);
+- **重跑配方**：`tools/claim.sh claim NEGATIVE-CONTROL-DEBT qoder`（这个号是本批次自起的**跨件负控占位号**，
+  不属于任何单一条目，只为拿排他树；用完即销，三百五十二与本笔都挂在它下面——这一点如实记在这里），
+  把上面每处的**唯一**表达式替换成它的反面（例：jot 的截断回绕少一步、`std::env::args_os()` 退回
+  `std::env::args()`、col 的取字节退回取字符、column 的按来源计数退回全局一次），
+  跑 `cargo test --offline -j 1 -p minix-textfilter`（在 `os/` 下、`(ulimit -v 3145728; …)` 里），
+  期望变红的门逐枚写在上面四处的旁边：jot 的 `seed` 系、`tests/bin_support_face.rs` 的四枚、
+  col 的 `unknown option` 端到端门、`column` 的残行计数门。日志续到 `tmp/random-352/` 之外另开
+  `tmp/negctl-353/`。跑之前先 `git status --porcelain` 确认为 0 行，跑之后再确认一次并核 md5。
+- **台账状态**：六枚旧欠账**仍在台上**（本轮未清）。三百四十八至三百五十一那九枚已在批次三百五十二
+  跑过并 8 枚咬住；`RANDOM-DENOM-LEGS` 与 `SPLIT-STREAMING-MEMORY` 的状态都未因本笔改变。
+- **下一轮首动作**：按上面配方把六枚旧负控跑掉；再后一轮才是 `SPLIT-STREAMING-MEMORY` 片A
+  （前置阅读与那枚要先查的断言写在批次三百五十一末行）。
+
 ## 批次三百五十二（负控轮，生产码一字未动）：给三百四十八至三百五十一落地的判据补九枚变异控制，并把控制机自己的两处错修对
 
 - **为什么这一轮不动生产码**：台账上挂着「三百二十五~三百二十九连续五轮的六枚负控欠账」，而本会话
