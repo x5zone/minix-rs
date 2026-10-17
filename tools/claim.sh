@@ -10,11 +10,12 @@
 #   tools/claim.sh claim   <ID> <owner>   领取：建锁分支 + 自动建专属工作树
 #   tools/claim.sh verify                  开工/换任务前自检：位置、分支、在制数
 #   tools/claim.sh list                    列出全部领取（按日期，最旧在上=stale 候选）
+#   tools/claim.sh sweep                   盘点 .wt/ 现场（只读：谁在册、谁只剩构建缓存、各占多少磁盘）
 #   tools/claim.sh release <ID> <owner>   释放：合入主线后删工作树+销锁
 # 约定：领取后在本线 new_edgeX.md 状态列标 🔄；完成后合入主线再 release。
 set -eu
 
-usage() { sed -n '2,16p' "$0"; exit 2; }
+usage() { sed -n '2,17p' "$0"; exit 2; }
 cmd="${1:-}"; [ -n "$cmd" ] || usage
 
 # 主工作树根（.wt/ 一律挂在这里；在链接工作树内调用也能解析回主仓）
@@ -87,10 +88,61 @@ case "$cmd" in
     if [ -n "$wt" ]; then
       git worktree remove "$wt" || {
         echo "FAIL: $wt 内仍有未提交改动——先提交并合入主线，或确认弃树后 git worktree remove --force $wt"; exit 1; }
-      echo "OK: 已删除工作树 $wt"
+      # 注销条目不等于目录消失。权威编译门在容器里以另一属主写 os/target 的增量缓存，
+      # git 删不动那些目录，于是留下一整棵 `git worktree list` 里已经查不到的树。
+      if [ -e "$wt" ]; then
+        echo "WARN: $wt 已从 git 注销，但目录仍在磁盘上（树内有当前用户删不掉的条目）"
+        du -sh "$wt" 2>/dev/null || true
+        echo "      这类残骸不报错、不在册，只有 tools/claim.sh sweep 与 df 看得见它。"
+      else
+        echo "OK: 已删除工作树 $wt"
+      fi
     fi
     git branch -D "$branch"
-    echo "OK: 已释放 ${id}（销账请同步本线状态列 ✅ + edge4 里程碑回写）"
+    echo "OK: 已释放 ${id}（销账请同步本线状态列 ✅ + edge4 里程碑回写；跑 tools/claim.sh sweep 确认现场已清）"
+    ;;
+  sweep)
+    # 只读盘点 .wt/：磁盘是各线共用的资源，树删没删要能用一条命令查出来，不能靠记忆。
+    root="$main_root/.wt"
+    me=$(id -un)
+    if [ ! -d "$root" ]; then
+      echo "OK: 没有 $root 目录，现场干净"
+      exit 0
+    fi
+    reg=$(git worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+    n_reg=0; n_free=0; n_check=0
+    for d in "$root"/*/; do
+      [ -d "$d" ] || continue
+      d=${d%/}
+      size=$(du -sh "$d" 2>/dev/null | cut -f1)
+      outside=$(find "$d" -type f 2>/dev/null | grep -vc '/os/target/' || true)
+      if echo "$reg" | grep -qx "$d"; then
+        n_reg=$((n_reg+1))
+        echo "在册    $d  $size  ——工作树仍被 claim 分支持有，属在途，勿删"
+      elif [ "$outside" = "0" ]; then
+        n_free=$((n_free+1))
+        foreign=$(find "$d" ! -user "$me" 2>/dev/null | wc -l | tr -d ' ')
+        echo "可回收  $d  $size  ——$outside 个文件在 os/target 之外（内容只剩构建缓存）"
+        if [ "$foreign" != "0" ]; then
+          echo "        含 $foreign 个非 $me 属主的条目，必须由人执行 sudo 才能删净"
+        fi
+      else
+        n_check=$((n_check+1))
+        echo "需核对  $d  $size  ——os/target 之外还有 $outside 个文件，先做内容对账或救援副本再谈删除"
+      fi
+    done
+    echo "--- 锁与树是否成对 ---"
+    miss=0
+    for b in $(git for-each-ref --format='%(refname:short)' refs/heads/claim/); do
+      wt=$(wt_of "refs/heads/$b")
+      if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+        echo "失配    锁 $b 在册，但工作树 ${wt:-（无）} 不在磁盘上——在这条线上开工前必须补树"
+        miss=$((miss+1))
+      fi
+    done
+    [ "$miss" = "0" ] && echo "OK: 每个 claim 锁都有对应的工作树"
+    echo "--- 判定：在册 $n_reg 棵（在途）/ 可回收 $n_free 棵 / 需核对 $n_check 棵；锁树失配 $miss 处 ---"
+    echo "本命令只读，不执行任何删除。"
     ;;
   *)
     echo "unknown command: $cmd"; usage;;
