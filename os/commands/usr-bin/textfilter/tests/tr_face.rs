@@ -23,9 +23,15 @@
 //! ⑥ 本支没有读写操作数档的腿（数据只从标准输入来），所以「薄壳裸 `read` 宿主读不到输入」
 //!    那一家族停在 `paste` 的十一处。
 //!
-//! 集合语法的三形（`tr '[x*3]' y`、`tr '[a*3]' b`、`tr z-a y`）与 `[:bogus:]` 那句
-//! `unknown class` 都在 `str.c` 一侧，本层没有接上，已整族登记为 `TR-SET-GRAMMAR-SENTENCES`
-//! 并在那条上留了参照件的现量值；**它们的期望值不在下面**，此处不钉。
+//! 集合语法的四句报文在本轮接上了（`str.c` 的 `genclass()` 与 `genseq()`），期望值取自
+//! 参照件现量：`tr_ref '[x*3]' y` 与 `tr_ref '[ab*2]' y` 都是 `Sequences only valid in string2`、
+//! `tr_ref abc '[ab*2]'` 是 `Misplaced sequence asterisk`、`tr_ref abc '[x*1a]'` 是
+//! `illegal sequence count`、`tr_ref [:bogus:] y` 是 `unknown class bogus`，全部退 1 且
+//! **不跟** usage 块。同一轮里 `bracket()`（`str.c:176-210`）的判据也一并照抄：`[x]`、
+//! `[:alpha`、`[x`、`[x]y*` 这些「没成形」的式子在参照件里是**字面量**且退 0。
+//! 唯一没钉的是 `tr abc '[=c=]'`：两边都退 0、集合都是单枚 `c`，但 string2 用尽之后
+//! 参照件把后续位置填成 `\0`（现量 `c\0\0\n`）而我方重复末字节（`ccc\n`）——那是
+//! `tr.c` 的 OOBCH 腿而不是 `bracket()` 的判据，已登记为 `TR-EQUIV-OOBCH-SET2`。
 
 mod face_support;
 
@@ -283,4 +289,58 @@ fn an_empty_string1_is_the_identity_map() {
     let (_, code, err) = run(&["", "x", "extra"], b"aabbcc\n");
     assert_eq!(code, 1);
     assert_eq!(err, USAGE);
+}
+
+#[test]
+fn the_four_set_grammar_sentences_reach_stderr_verbatim() {
+    // 参照件现量：一句、退 1、**不跟** usage 块（`str.c` 每处都是当场 errx(1, ...)）
+    for (set1, set2, want) in [
+        ("[x*3]", "y", "tr: Sequences only valid in string2\n"),
+        ("[ab*2]", "y", "tr: Sequences only valid in string2\n"),
+        ("abc", "[ab*2]", "tr: Misplaced sequence asterisk\n"),
+        ("abc", "[x*1a]", "tr: illegal sequence count\n"),
+        ("[:bogus:]", "y", "tr: unknown class bogus\n"),
+    ] {
+        let (out, code, err) = run(&[set1, set2], b"abc\n");
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (1, "", want),
+            "[{set1}] [{set2}]"
+        );
+    }
+}
+
+#[test]
+fn an_unshaped_bracket_is_a_literal_not_a_complaint() {
+    // `bracket()` 返回假就 FALLTHROUGH 成字面 `[`（`str.c:124-132`），参照件这几形全退 0
+    let (out, code, err) = run(&["[x]", "y"], b"abc\n");
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "abc\n", ""));
+    let (out, code, err) = run(&["abc", "[x]"], b"abc\n");
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "[x]\n", ""));
+    // `[:alpha` 没成形，于是 `[`、`:`、`a`、`l`、`p`、`h`、`a` 全是字面量：集合里含 `a`，
+    // `a` 被换成 `y`——参照件同形现量 `ybc\n`（见 tmp/tr-335/ab335.log）
+    for (set, want) in [("[x", "abc\n"), ("[x]y*", "abc\n"), ("[:alpha", "ybc\n")] {
+        let (out, code, err) = run(&[set, "y"], b"abc\n");
+        assert_eq!((code, out.as_str(), err.as_str()), (0, want, ""), "{set:?}");
+    }
+}
+
+#[test]
+fn an_open_or_zero_repeat_replaces_every_member() {
+    // `[x*]` 与 `[x*0]` 都是 INFINITE，参照件与空集合无关（空 string2 另有那句）
+    for set in ["[x*]", "[x*0]"] {
+        let (out, code, err) = run(&["abc", set], b"abc\n");
+        assert_eq!(
+            (code, out.as_str(), err.as_str()),
+            (0, "xxx\n", ""),
+            "{set:?}"
+        );
+    }
+}
+
+#[test]
+fn a_reversed_range_is_three_literals_and_exits_zero() {
+    // 参照件 `tr_ref z-a y` 退 0：区间退回后 z、-、a 各自入集，`a` 被换成 `y`
+    let (out, code, err) = run(&["z-a", "y"], b"abc\n");
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "ybc\n", ""));
 }

@@ -13,9 +13,10 @@
 //!    libc 那一行的前缀才跟着 `getprogname()`。
 //! ③ 命令自己的 `errx(1, ...)` 句子退 1、各一行且不带 usage：本支有的是
 //!    `tr: empty string2`（`tr.c:187-188`，翻译路径先取 string2 的第一个字符，
-//!    取不到就报）。集合语法那两句（`tr: Sequences only valid in string2`、
-//!    `tr: unknown class <名>`）在 `str.c`，本层的 `parse_set` 目前只回一个
-//!    `TextError`，故那两句登记为 `TR-SET-GRAMMAR-SENTENCES` 而未接。
+//!    取不到就报）。`str.c` 那侧的集合语法句形状相同，由 `parse_set` 回
+//!    `SetError::Grammar` 后在这里逐句原样打出：`unknown class <名>`、
+//!    `Sequences only valid in string2`、`Misplaced sequence asterisk`、
+//!    `illegal sequence count`。`[=c=]` 等价类的两句仍是静默退 1。
 //!
 //! 个数判与组合判全走 usage：0 个操作数、1 个操作数却没给 `-d`/`-s`、3 个及以上、
 //! `-ds` 少给一个、`-d` 多给一个——参照件逐形量出（`tmp/tr-322/ab322.log` 的 A 类）。
@@ -33,7 +34,8 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_textfilter::tr::{
-    TrArgs, TrError, delete, parse_set, parse_tr_args, squeeze, translate, usage_block,
+    delete, parse_set, parse_tr_args, squeeze, translate, usage_block, SetError, SetSite, TrArgs,
+    TrError,
 };
 
 fn run() -> ! {
@@ -50,9 +52,9 @@ fn run() -> ! {
         Err(error) => fail(prog, &error),
     };
 
-    let set1 = expand(operands[0], complement);
+    let set1 = expand(prog, operands[0], SetSite::String1, complement);
     let set2 = if operands.len() == 2 {
-        expand(operands[1], false)
+        expand(prog, operands[1], SetSite::String2, false)
     } else {
         Vec::new()
     };
@@ -105,10 +107,17 @@ fn emit(bytes: Vec<u8>) {
 }
 
 /// 把一个集合式展开成它实际含的字节；`-c` 时列出式子**没**含的一切字节。
-fn expand(text: &str, complement: bool) -> Vec<u8> {
+///
+/// 语法句的形状是 C 的 `errx(1, ...)`：程序名、冒号、空格、原句，走标准错误，退 1，
+/// **不跟** usage 块。式子出在串1 还是串2 决定它撞哪一句，所以串位是入参而不是巧合。
+fn expand(prog: &str, text: &str, site: SetSite, complement: bool) -> Vec<u8> {
     let mut expanded = [0u8; 256];
-    let used = match parse_set(text, &mut expanded) {
+    let used = match parse_set(text, site, &mut expanded) {
         Ok((used, _, _)) => used,
+        Err(SetError::Grammar(grammar)) => {
+            support::warn(format!("{prog}: {}\n", grammar.sentence()).as_bytes());
+            support::terminate(1);
+        }
         Err(_) => {
             support::terminate(1);
         }

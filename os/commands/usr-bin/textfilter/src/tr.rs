@@ -13,6 +13,7 @@
 //! Membership tests go through [`CharClass`] with one implementation per
 //! set shape, so callers never special case ranges versus lists.
 
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -86,26 +87,99 @@ impl CharClass {
 ///
 /// Repeat counts that would overflow the 256 table are an error, matching
 /// the C tool refusing absurd sets rather than wrapping.
+/// C 的 `str2set()` 带一个 `s->which`（`minix3/usr.bin/tr/str.c`），它决定同一串字符在
+/// 两串里各自合法到什么程度：重复式 `[c*n]` 只在第二串合法。壳侧同样把它做成入参，
+/// 而不是让两串共用一条无差别的解析。
+/// 正在解析的是哪一串。C 的 `STRING1`/`STRING2`。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SetSite {
+    String1,
+    String2,
+}
+
+/// `str.c` 里由语法自身触发的 `errx(1, ...)`。句子逐字照 C，因为 `errx` 是两段形
+/// （程序名加句子，不缀 `strerror`），而 C 每处都是当场退出。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SetGrammar {
+    /// `errx(1, "unknown class %.*s", (int)len, class)`（`str.c:253`）。
+    UnknownClass(String),
+    /// `genseq()` 的第一条判断：`if (s->which == STRING1) errx(1, "Sequences only valid in string2")`
+    ///（`str.c:353-356`）——它在吃任何字符之前，所以第二枚字符是什么都无所谓。
+    SequencesOnlyInString2,
+    /// 取完成员字符后 `if (*s->str != '*') errx(1, "Misplaced sequence asterisk")`
+    ///（`str.c:362-366`）。故 `[ab*2]` 报这句：`a` 之后的不是 `*` 而是 `b`。
+    MisplacedSequenceAsterisk,
+    /// 计数段既不是 `]`、也不是「数字紧跟 `]`」时 `errx(1, "illegal sequence count")`
+    ///（`str.c:368-386`）。
+    IllegalSequenceCount,
+}
+
+impl SetGrammar {
+    /// C 打出去的那一句原文（不含程序名与冒号，那两段由 `errx` 的前缀负责）。
+    pub fn sentence(&self) -> String {
+        match self {
+            SetGrammar::UnknownClass(name) => alloc::format!("unknown class {name}"),
+            SetGrammar::SequencesOnlyInString2 => "Sequences only valid in string2".to_string(),
+            SetGrammar::MisplacedSequenceAsterisk => "Misplaced sequence asterisk".to_string(),
+            SetGrammar::IllegalSequenceCount => "illegal sequence count".to_string(),
+        }
+    }
+}
+
+/// 解析一个集合式的全部失败出口：语法句，以及尚未定形的两类（式子没闭合、成员表已满）。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SetError {
+    Grammar(SetGrammar),
+    /// `[...)` 没有闭括号、或 `[:name:]` 没有收尾——C 对这两形走的是
+    /// 「按字面量继续吃」还是另一句尚未逐行核对，故仍按既有的静默退 1 处理
+    /// （登记见 18 篇台账）。
+    Malformed,
+    /// 成员超过 256 个，即 `TextError::TooLong`。
+    TooLong,
+}
+
+impl From<TextError> for SetError {
+    fn from(error: TextError) -> Self {
+        match error {
+            TextError::TooLong => SetError::TooLong,
+            TextError::InvalidArgument => SetError::Malformed,
+        }
+    }
+}
+
+/// C 的名字表（`str.c` 的 `classes[]`）里认得的类名；表外的名字一律是
+/// `unknown class <名>`，不是「当字面量凑合」。
 pub fn parse_set(
     text: &str,
+    site: SetSite,
     expanded: &mut [u8; 256],
-) -> Result<(usize, [CharClass; 8], usize), TextError> {
+) -> Result<(usize, [CharClass; 8], usize), SetError> {
     let bytes = text.as_bytes();
     let mut classes: [CharClass; 8] = [CharClass::Range(0, 0); 8];
     let mut class_count = 0;
     let mut pos = 0;
     let mut used = 0;
     while pos < bytes.len() {
-        if bytes[pos] == b'[' && pos + 1 < bytes.len() && bytes[pos + 1] == b':' {
-            let start = pos + 2;
-            let mut end = start;
-            while end + 1 < bytes.len() && !(bytes[end] == b':' && bytes[end + 1] == b']') {
-                end += 1;
-            }
-            if end + 1 >= bytes.len() {
-                return Err(TextError::InvalidArgument);
-            }
-            let name = &text[start..end];
+        // `next()` 一撞见 `[` 就先问 `bracket()`，它返回假就当场 FALLTHROUGH 成一枚
+        // **左方括号字面量**（`str.c:124-132`）。所以「像特殊形而没成形」的 `[x]`、
+        // `[:alpha`、`[x`、`[x]y*` 在 C 里都是普通字符、退 0——这三条形判据必须逐条
+        // 照 `bracket()` 的 switch 抄（`str.c:176-210`），少抄一条就多一类假报错。
+        let class_end = if marker_at(bytes, pos, b':') {
+            find_pair(bytes, pos + 2, b':', b']')
+        } else {
+            None
+        };
+        let equiv_end = if marker_at(bytes, pos, b'=') {
+            find_pair(bytes, pos + 2, b'=', b']')
+        } else {
+            None
+        };
+        let sequence_form = bytes[pos] == b'['
+            && pos + 1 < bytes.len()
+            && !matches!(bytes[pos + 1], b':' | b'=')
+            && sequence_ahead(bytes, pos + 2);
+        if let Some(end) = class_end {
+            let name = &text[pos + 2..end];
             let class = match name {
                 "alpha" => NamedClass::Alpha,
                 "alnum" => NamedClass::Alnum,
@@ -114,10 +188,14 @@ pub fn parse_set(
                 "space" => NamedClass::Space,
                 "upper" => NamedClass::Upper,
                 "lower" => NamedClass::Lower,
-                _ => return Err(TextError::InvalidArgument),
+                _ => {
+                    return Err(SetError::Grammar(SetGrammar::UnknownClass(
+                        name.to_string(),
+                    )))
+                }
             };
             if class_count >= classes.len() {
-                return Err(TextError::InvalidArgument);
+                return Err(SetError::Malformed);
             }
             classes[class_count] = CharClass::Named(class);
             class_count += 1;
@@ -128,32 +206,99 @@ pub fn parse_set(
                 }
             }
             pos = end + 2;
-        } else if bytes[pos] == b'[' && pos + 2 < bytes.len() {
-            // Repeat `[c*n]`: find the closing bracket first.
-            let mut end = pos + 1;
-            while end < bytes.len() && bytes[end] != b']' {
-                end += 1;
-            }
-            if end >= bytes.len() {
-                return Err(TextError::InvalidArgument);
-            }
-            let (member, count) = parse_repeat(&text[pos..=end])?;
+        } else if let Some(end) = equiv_end {
+            // `[=c=]`：C 的 `genequiv()` 只取一个字符当集合（`str.c:307-330`，注释写明
+            // 「English doesn't have any equivalence classes」）。它那两句「放错了等号 /
+            // 放错了右括号」要的是「已成形的等价式内部再夹字符」这种形，不在本支射程，
+            // 登记为 `TR-EQUIV-SENTENCES`；这里先把合法的 `[=c=]` 收成一枚成员。
+            let member = bytes[pos + 2];
             if class_count >= classes.len() {
-                return Err(TextError::InvalidArgument);
+                return Err(SetError::Malformed);
             }
             classes[class_count] = CharClass::Range(member, member);
             class_count += 1;
-            for _ in 0..count {
+            push_byte(expanded, &mut used, member)?;
+            pos = end + 2;
+        } else if sequence_form {
+            // 三句的**先后**本身就是行为，照 `genseq()` 抄：先问「这是哪一串」（吃任何
+            // 字符之前，`str.c:353-356`），再取成员字符，然后才核星号（`:362-366`），
+            // 最后才是个数（`:368-386`）。于是第一串里的 `[c*n]` 永远轮不到谈内容，
+            // 而第二串里的 `[ab*2]` 报的是星号那句而不是「个数非法」。
+            if site == SetSite::String1 {
+                return Err(SetError::Grammar(SetGrammar::SequencesOnlyInString2));
+            }
+            let mut cursor = pos + 1;
+            let member = if bytes[cursor] == b'\\' && cursor + 1 < bytes.len() {
+                let escaped = bytes[cursor + 1];
+                cursor += 2;
+                escape_literal(escaped)
+            } else {
+                let ch = bytes[cursor];
+                cursor += 1;
+                ch
+            };
+            if bytes.get(cursor) != Some(&b'*') {
+                return Err(SetError::Grammar(SetGrammar::MisplacedSequenceAsterisk));
+            }
+            cursor += 1;
+            let repeat = match bytes.get(cursor) {
+                // `case ']'` 与「数字但值为 0」都汇到 `s->state = s->cnt ? SEQUENCE :
+                // INFINITE` 的 INFINITE 一侧：`[x*]` 与 `[x*0]` 是**无限**重复，不是空集。
+                // 本层把无限落成一枚成员——`translate()` 对短的 set2 一律重复其末字节
+                // （`tr.c:205-211`），那正是 INFINITE 在翻译路径上的效果。
+                Some(b']') => {
+                    cursor += 1;
+                    1
+                }
+                _ => {
+                    let start = cursor;
+                    while matches!(bytes.get(cursor), Some(ch) if ch.is_ascii_digit()) {
+                        cursor += 1;
+                    }
+                    if cursor == start || bytes.get(cursor) != Some(&b']') {
+                        return Err(SetError::Grammar(SetGrammar::IllegalSequenceCount));
+                    }
+                    cursor += 1;
+                    let mut count = 0usize;
+                    for digit in &bytes[start..cursor - 1] {
+                        count = count
+                            .checked_mul(10)
+                            .and_then(|v| v.checked_add((digit - b'0') as usize))
+                            .ok_or(SetError::Malformed)?;
+                    }
+                    if count == 0 {
+                        1
+                    } else {
+                        count
+                    }
+                }
+            };
+            if class_count >= classes.len() {
+                return Err(SetError::Malformed);
+            }
+            classes[class_count] = CharClass::Range(member, member);
+            class_count += 1;
+            for _ in 0..repeat {
                 push_byte(expanded, &mut used, member)?;
             }
-            pos = end + 1;
+            pos = cursor;
         } else if pos + 2 < bytes.len() && bytes[pos + 1] == b'-' {
             let (low, high) = (bytes[pos], bytes[pos + 2]);
             if high < low {
-                return Err(TextError::InvalidArgument);
+                // `genrange()` 的 `if (stopval < s->lastch) { s->str = savestart; return 0; }`
+                // 把整个区间退回给主循环，左端点于是按字面量入集，下一轮再从 `-` 起：
+                // `tr z-a y` 的 set1 是 z、-、a 三枚成员并退 0，不是「非法区间」。
+                if class_count >= classes.len() {
+                    return Err(SetError::Malformed);
+                }
+                classes[class_count] = CharClass::Range(low, low);
+                class_count += 1;
+                push_byte(expanded, &mut used, low)?;
+                pos += 1;
+                continue;
             }
             if class_count >= classes.len() {
-                return Err(TextError::InvalidArgument);
+                return Err(SetError::Malformed);
             }
             classes[class_count] = CharClass::Range(low, high);
             class_count += 1;
@@ -167,15 +312,9 @@ pub fn parse_set(
             }
             pos += 3;
         } else if bytes[pos] == b'\\' && pos + 1 < bytes.len() {
-            let byte = match bytes[pos + 1] {
-                b'n' => b'\n',
-                b't' => b'\t',
-                b'r' => b'\r',
-                b'\\' => b'\\',
-                other => other,
-            };
+            let byte = escape_literal(bytes[pos + 1]);
             if class_count >= classes.len() {
-                return Err(TextError::InvalidArgument);
+                return Err(SetError::Malformed);
             }
             classes[class_count] = CharClass::Range(byte, byte);
             class_count += 1;
@@ -183,7 +322,7 @@ pub fn parse_set(
             pos += 2;
         } else {
             if class_count >= classes.len() {
-                return Err(TextError::InvalidArgument);
+                return Err(SetError::Malformed);
             }
             classes[class_count] = CharClass::Range(bytes[pos], bytes[pos]);
             class_count += 1;
@@ -194,38 +333,53 @@ pub fn parse_set(
     Ok((used, classes, class_count))
 }
 
+/// 这枚 `[` 后面紧跟的是不是那个特殊标记（`bracket()` 的 `switch (s->str[1])`）。
+#[must_use]
+fn marker_at(bytes: &[u8], pos: usize, marker: u8) -> bool {
+    bytes.get(pos) == Some(&b'[') && bytes.get(pos + 1) == Some(&marker)
+}
+
+/// 从 `from` 起找成对的收尾 `ab`（`bracket()` 的 `strstr(s->str + 2, ":]")` 与
+/// `strstr(s->str + 2, "=]")`），返回 `a` 的下标；找不到就说明这枚 `[` 不是特殊形。
+#[must_use]
+fn find_pair(bytes: &[u8], from: usize, a: u8, b: u8) -> Option<usize> {
+    (from..bytes.len().saturating_sub(1)).find(|&i| bytes[i] == a && bytes[i + 1] == b)
+}
+
+/// 序列形的判据是 `strpbrk(s->str + 2, "*]")` **先撞上 `*`**，且那枚 `*` 之后还有一个
+/// `]`（`str.c:200-206`）。任缺其一，C 就把这枚 `[` 当字面量：`[x]` 与 `[x]y*` 都因
+/// 为「先撞上 `]`」而落回普通字符，`[x` 则因为「往后什么都没有」而落回普通字符。
+#[must_use]
+fn sequence_ahead(bytes: &[u8], from: usize) -> bool {
+    let hit = (from..bytes.len())
+        .position(|i| bytes[i] == b'*' || bytes[i] == b']')
+        .map(|i| i + from);
+    match hit {
+        Some(i) => bytes[i] == b'*' && bytes[i..].contains(&b']'),
+        None => false,
+    }
+}
+
+/// `\` 后面那个字符代表谁——`backslash()` 的转义表里本支只接得起这三个命名形，
+/// 八进制那一段（`str.c:398-415` 的循环）登记在 `TR-BACKSLASH-OCTAL` 而未接。
+#[must_use]
+fn escape_literal(escaped: u8) -> u8 {
+    match escaped {
+        b'n' => b'\n',
+        b't' => b'\t',
+        b'r' => b'\r',
+        other => other,
+    }
+}
+
 /// Append one expanded member byte; the 256 table bounds every set.
 fn push_byte(expanded: &mut [u8; 256], used: &mut usize, byte: u8) -> Result<(), TextError> {
     if *used >= expanded.len() {
-        return Err(TextError::InvalidArgument);
+        return Err(TextError::TooLong);
     }
     expanded[*used] = byte;
     *used += 1;
     Ok(())
-}
-
-/// Parse a `[c*n]` repeat expression (brackets included).
-fn parse_repeat(text: &str) -> Result<(u8, usize), TextError> {
-    let inner = text
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .ok_or(TextError::InvalidArgument)?;
-    let (member_text, count_text) = inner.split_once('*').ok_or(TextError::InvalidArgument)?;
-    let member_bytes = member_text.as_bytes();
-    if member_bytes.len() != 1 {
-        return Err(TextError::InvalidArgument);
-    }
-    let mut count: usize = 0;
-    if count_text.is_empty() || !count_text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(TextError::InvalidArgument);
-    }
-    for byte in count_text.bytes() {
-        count = count
-            .checked_mul(10)
-            .and_then(|v| v.checked_add((byte - b'0') as usize))
-            .ok_or(TextError::InvalidArgument)?;
-    }
-    Ok((member_bytes[0], count))
 }
 
 /// Translate `input` through two expanded sets into `out`.
@@ -434,8 +588,24 @@ mod tests {
 
     fn expanded_set(text: &str) -> ([u8; 256], usize) {
         let mut expanded = [0u8; 256];
-        let (used, _, _) = parse_set(text, &mut expanded).unwrap();
+        let (used, _, _) = parse_set(text, SetSite::String2, &mut expanded).unwrap();
         (expanded, used)
+    }
+
+    /// 只取失败出口：本模块的语法句断言都走这里，第二串位（重复式合法的那一侧）。
+    fn set_error(text: &str) -> SetError {
+        let mut expanded = [0u8; 256];
+        parse_set(text, SetSite::String2, &mut expanded)
+            .err()
+            .unwrap_or_else(|| panic!("{text:?} 本应报错"))
+    }
+
+    fn grammar(text: &str, site: SetSite) -> SetGrammar {
+        let mut expanded = [0u8; 256];
+        match parse_set(text, site, &mut expanded) {
+            Err(SetError::Grammar(g)) => g,
+            other => panic!("{text:?} 在 {site:?} 应为语法句，实得 {other:?}"),
+        }
     }
 
     #[test]
@@ -512,21 +682,116 @@ mod tests {
     }
 
     #[test]
-    fn test_bad_sets_rejected() {
-        let mut expanded = [0u8; 256];
+    fn a_reversed_range_is_handed_back_as_literals() {
+        // genrange() 的 `stopval < lastch` 把指针退回 `savestart` 并返回 0，主循环于是
+        // 按字面量吃：`tr z-a y` 的集合是 z、-、a 三枚成员且退 0，不是「非法区间」
+        let (set, len) = expanded_set("z-a");
+        assert_eq!(len, 3);
+        assert_eq!(&set[..len], [b'z', b'-', b'a']);
+    }
+
+    #[test]
+    fn an_unknown_class_says_which_name_it_rejected() {
         assert_eq!(
-            parse_set("z-a", &mut expanded).map(|_| ()),
-            Err(TextError::InvalidArgument)
+            set_error("[:nope:]"),
+            SetError::Grammar(SetGrammar::UnknownClass("nope".to_string()))
         );
         assert_eq!(
-            parse_set("[:nope:]", &mut expanded).map(|_| ()),
-            Err(TextError::InvalidArgument)
-        );
-        assert_eq!(
-            parse_set("[ab*2]", &mut expanded).map(|_| ()),
-            Err(TextError::InvalidArgument)
+            SetGrammar::UnknownClass("nope".to_string()).sentence(),
+            "unknown class nope"
         );
     }
+
+    #[test]
+    fn a_repeat_in_string1_is_refused_before_its_own_shape_is_read() {
+        // genseq() 的第一句判据在吃任何字符之前，所以星号、个数长什么样都轮不到发言
+        for text in ["[a*2]", "[ab*2]", "[x*]", "[x*1a]"] {
+            assert_eq!(
+                grammar(text, SetSite::String1),
+                SetGrammar::SequencesOnlyInString2,
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            SetGrammar::SequencesOnlyInString2.sentence(),
+            "Sequences only valid in string2"
+        );
+        // 同一枚式子在第二串位上合法，证明分流按串位而不是按式子本身
+        let (set, len) = expanded_set("[a*2]");
+        assert_eq!(len, 2);
+        assert_eq!(&set[..len], [b'a', b'a']);
+    }
+
+    #[test]
+    fn the_asterisk_is_checked_before_the_count() {
+        // 星号那一句在前：`[ab*2]` 里 `a` 之后跟着 `b`，谈不上「个数非法」
+        for text in ["[ab*2]", "[abc*2]", "[a b*2]"] {
+            assert_eq!(
+                grammar(text, SetSite::String2),
+                SetGrammar::MisplacedSequenceAsterisk,
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            SetGrammar::MisplacedSequenceAsterisk.sentence(),
+            "Misplaced sequence asterisk"
+        );
+    }
+
+    #[test]
+    fn an_unparsable_count_says_illegal_sequence_count() {
+        for text in ["[x*1a]", "[x**2]", "[x*-1]", "[x*y]"] {
+            assert_eq!(
+                grammar(text, SetSite::String2),
+                SetGrammar::IllegalSequenceCount,
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            SetGrammar::IllegalSequenceCount.sentence(),
+            "illegal sequence count"
+        );
+    }
+
+    #[test]
+    fn an_open_repeat_means_repeat_forever_not_empty() {
+        // `case ']'` 与「数字但值为 0」都汇到 `s->cnt ? SEQUENCE : INFINITE` 的 INFINITE 侧
+        for text in ["[x*]", "[x*0]"] {
+            let (set, len) = expanded_set(text);
+            assert_eq!(len, 1);
+            assert_eq!(&set[..len], [b'x'], "{text:?}");
+        }
+        let (set1, len1) = expanded_set("ab");
+        let (set2, len2) = expanded_set("[x*]");
+        let mut out = [0u8; 8];
+        let len = translate(b"aabb", &set1[..len1], &set2[..len2], &mut out).unwrap();
+        assert_eq!(&out[..len], b"xxxx");
+    }
+
+    #[test]
+    fn an_unshaped_bracket_is_a_literal_bracket() {
+        // `bracket()` 返回假 ⇒ `next()` FALLTHROUGH 成一枚字面 `[`：这四形在参照件里都
+        // 退 0，少抄一条判据就会在这里多报一句假话，所以逐形钉成字面量成员
+        for (text, want) in [
+            ("[x]", "[x]".as_bytes()),
+            ("[x]y*", "[x]y*".as_bytes()),
+            ("[x", "[x".as_bytes()),
+            ("[:alpha", "[:alpha".as_bytes()),
+        ] {
+            let (set, len) = expanded_set(text);
+            assert_eq!(&set[..len], want, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_wellformed_equivalence_is_its_own_single_member() {
+        // 参照件 `tr_ref abc [=c=]` 退 0；它那两句「放错了等号 / 右括号」要的是式内
+        // 再夹字符的形，本支未接，登记为 TR-EQUIV-SENTENCES
+        let (set, len) = expanded_set("[=c=]");
+        assert_eq!(len, 1);
+        assert_eq!(&set[..len], [b'c']);
+    }
+
     #[test]
     fn test_ring_stops_at_the_first_off_letter() {
         // 环里的 usage 直接退出 ⇒ 报文至多一条，且报的是**第一个**坏字母

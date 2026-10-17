@@ -321,6 +321,14 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百三十五把 `tr` 集合语法的四句报文接到标准错误，并照抄 `bracket()` 的三条成形判据，闭合 `TR-SET-GRAMMAR-SENTENCES`**（`claim/TR-SET-GRAMMAR-SENTENCES-qoder` @ 基线 `5a6fbda21`，只动 `os/commands/usr-bin/textfilter/src/tr.rs`、`src/bin/tr.rs`、`tests/tr_face.rs`）
+  - **是什么、为什么**：`parse_set` 此前对一切语法失败只回 `TextError::InvalidArgument`，壳里 `Err(_) => terminate(1)` 静默退 1，用户看不见任何一句解释。C 在 `minix3/usr.bin/tr/str.c` 每处都是当场 `errx(1, ...)`：`genclass()` 表外的名字打 `unknown class %.*s`（`:253`），`genseq()` 依次打 `Sequences only valid in string2`（`:353-356`）、`Misplaced sequence asterisk`（`:362-366`）、`illegal sequence count`（`:368-386`）。这三句的**先后次序**本身就是行为，缺一句就是多打一句不该打的。
+  - **接法**：`SetSite`（第一串/第二串）做成 `parse_set` 的入参，因为 C 把 `which` 存在 `STR` 结构里由 `genseq()` 自查；`SetGrammar::sentence()` 返回 C 的原文，壳只补 `tr: ` 前缀、走标准错误、退 1 且**不带** usage 块。
+  - **被参照件证伪的一条，判据因此改写**：我先按「凡是 `[` 开头就是重复式的尝试」实现，实测 `tr_ref abc '[x]'` 退 0 且原样输出——`bracket()`（`str.c:176-210`）在进 `genseq()` 之前先看 `strpbrk(s->str + 2, "*]")` 是否**先撞上 `*`** 且那枚 `*` 之后还有一个 `]`，否则返回 0，`next()`（`:124-132`）FALLTHROUGH 把这枚 `[` 当字面量。同理 `[:alpha` 缺 `:]` 收尾也是字面量而不是错误，`[=c=]` 是合法的单字符等价类。三条判据照抄之后，A/B 由「多形假报错」收敛到 SAME=20 / DIFF=1（唯一那条见下面的登记）。
+  - **门**：`cargo test -p minix-textfilter --lib tr::` → 18/0；`cargo test -p minix-textfilter --test tr_face` → 14/0，新立四枚（四句报文逐字节、没成形的 `[` 不抱怨、开式与零个数都是满重复、反序区间是三枚字面量且退 0）；`cargo test -p minix-textfilter` 全套件零失败；宿主三架构 `x86_64-unknown-none`/`aarch64-unknown-none`/`riscv64gc-unknown-none-elf` 各 Finished；`cargo check --workspace` 0 error；`rustfmt --edition 2021 --check` 触及三件零漂移；`cargo clippy -p minix-textfilter --all-targets` 触及件零命中。容器门本轮未跑：宿主网络与容器 DNS 两侧都不通（回退口径见本文件「环境与配方」一节），权威读数待网络恢复补跑。
+  - **负控七枚、有效六枚**：`sequence_ahead` 恒真 → lib 红 2 / face 红 2；恒假 → 6/4；站点判据永不触发 → 1/1；零个数当空集 → 1/1；反序区间重新并入正向区间 → 1/1；`unknown class` 报文改写 → 1/1。第七枚把星号句与个数句在**枚举定义处**互换，结果没编译过，属无效负控（变异的写法不对，不是门不够弱），如实记录不充数。
+  - **登记不执行**（两处）：① `TR-EQUIV-SENTENCES`——`genequiv()` 的 `Misplaced equivalence equals sign` 与 `Misplaced equivalence right bracket`（`str.c:307-330`）未接，本支把 `[=xy=]` 这一形收成单枚成员 `x`；② `TR-EQUIV-OOBCH-SET2`——`tr abc '[=c=]'` 两边都退 0、集合都是单枚 `c`，参照件在 string2 用尽后把后续位置填 `\0`（`od -c` 读数 `c \0 \0 \n`，见 `tmp/tr-335/ab335.log`），本层重复末字节得 `ccc\n`；那是 `tr.c` 的 OOBCH 腿而不是 `bracket()` 的判据。**下一轮首动作**：`tools/claim.sh claim SPLIT-WRITE-ERRNO qoder`。
+
 - ✅ **批次三百三十四定了 `jot` 精度未写那一族的真值判据，并把默认转换从整数支改到浮点支，闭合 `JOT-PREC-MINUS-ONE-FORMAT`**
   （`2026-10-17`，`claim/JOT-PREC-MINUS-ONE-FORMAT-qoder` @ 基线 `679db151f`，动 `os/commands/usr-bin/textfilter/{src/jot.rs,tests/jot_face.rs}` + 18 篇两件文档，单域三线 commands/textfilter，无跨界）：
   **这一条当年卡在哪**：C 的 `prec` 初值是 `-1`（`minix3/usr.bin/jot/jot.c:74`），而钳位
