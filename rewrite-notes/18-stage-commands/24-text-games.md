@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第三组——靠故事留住人的游戏，世界能走、骰子能掷、格言能抽的证明
 > **源码**: `minix3/games/adventure/hdr.h`（词汇上限 `HTSIZE 512` 见第 78 行附近、物品描述见第 101 行附近、物品初始位置见第 116 行附近）、`minix3/games/adventure/vocab.c`（物品移动见第 72 行附近）、`minix3/games/monop/`（棋盘玩法见 `monop.c`、牌堆见 `cards.c`、房子见 `houses.c`、监狱见 `jail.c`）、`minix3/games/fortune/fortune/fortune.c`（索引表定位见第 267 行附近、表读取见第 980 行附近）、`minix3/games/fortune/datfiles/`（格言数据文件）、`minix3/games/fish/fish.c`（十三点数 `RANKS` 见第 61 行附近、整副牌见第 64 行附近、成书计数见第 83 行附近、要牌提示见第 160 行附近）、`minix3/games/wtf/wtf`（`-o` 与 `-f` 标志、跳过的 `is` 词）、`minix3/games/random/random.c`（时钟加进程播种见第 107 行附近、分母选中见第 126 行附近）、`minix3/games/wargames/wargames.sh`（战争游戏脚本）
-> **Rust 模块**: `os/commands/games/text-games`（库包 `minix-text-games`：`adventure.rs`、`monop.rs`、`fortune.rs`、`fish.rs`、`acronym.rs`、`lottery.rs`，25 个测试通过）；`wtf`/`fortune`/`random` 三枚薄壳已接线，其中 `random` 另有一枚端到端门在 `os/commands/games/text-games/tests/random_face.rs`（6 枚，批次三百四十三）（各游戏 `src/bin/` 内，数据文件读取与抽取面落地；`adventure`/`monop` 的完整游玩循环归执行层批次）
+> **Rust 模块**: `os/commands/games/text-games`（库包 `minix-text-games`：`adventure.rs`、`monop.rs`、`fortune.rs`、`fish.rs`、`acronym.rs`、`lottery.rs`，25 个测试通过）；`wtf`/`fortune`/`random` 三枚薄壳已接线，其中 `random` 另有一枚端到端门在 `os/commands/games/text-games/tests/random_face.rs`（9 枚：批次三百四十三立 6 枚、三百四十六补 3 枚）（各游戏 `src/bin/` 内，数据文件读取与抽取面落地；`adventure`/`monop` 的完整游玩循环归执行层批次）
 > **前置依赖**: `06-file-ops.md` 与 `10-doc-man-tools.md`（输入输出与文本面先行）
 > **不覆盖（移交）**: 大文本数据文件格式落地（架构演进决策，见 3.5 节）、数据文件读取与玩家交互（各游戏二进制包）、纸牌发牌与战争游戏剧本（后续补齐）
 
