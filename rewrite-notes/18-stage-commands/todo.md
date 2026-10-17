@@ -171,6 +171,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
     409:         let blank_tail = scan_entries(&["one", "   "]);
     410:         assert_eq!(blank_tail.entries, vec!["one"]);
     411:         assert_eq!(blank_tail.dropped_tail, 0);
+- **补记（同一轮内跑成了两枚）**：锚点定准之后，`os/commands/usr-bin/textfilter/src/jot.rs:362`
+  的 `(step as i64) as u64` 是盘面上唯一的一处，两枚变异都编得过、都咬住了：
+  把回绕那一步删掉（`step as u64`）与把种子整体加一（`((step as i64) as u64) + 1`）都让
+  `seed_from_step` 那组单测变红——后者正是三百二十六那笔登记「漏网」的那一枚，三百二十七
+  把转换式提到库侧就是为了让它能红。逐枚读数与还原校验在
+  `tmp/negctl-353/controls.log`，跑完盘面 md5 与跑前一致、`git status --porcelain` 为 0 行。
+  **仍敞着的四枚**：`bin_support` 宿主 args 腿（代码位点在 `src/bin_support.rs:54` 的
+  `std::env::args_os()`，48 行那处是文档注释，所以锚点要按行取而不是按串）、`col` 取字节、
+  `column` 残行计数、`split` 的 `-b` 三处。它们的现查原文行号已在上面列出，下一轮照配方办。
+
 - **重跑配方**：`tools/claim.sh claim NEGATIVE-CONTROL-DEBT qoder`（这个号是本批次自起的**跨件负控占位号**，
   不属于任何单一条目，只为拿排他树；用完即销，三百五十二与本笔都挂在它下面——这一点如实记在这里），
   把上面每处的**唯一**表达式替换成它的反面（例：jot 的截断回绕少一步、`std::env::args_os()` 退回
