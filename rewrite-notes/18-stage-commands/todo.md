@@ -119,6 +119,50 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百四十九：`random` 的片3 收尾——十六进制浮点照 `gethex` 接上
+
+- **是什么**：`RANDOM-DENOM-LEGS` 片3 剩下的那条腿。上一笔的 A/B 把 `0x10` 报成唯一真分叉
+  （`tmp/random-348/ab348.log`），本支过去把它判进「不是有效分母」。真源是
+  `minix3/lib/libc/gdtoa/gethex.c`，由 `strtod.c` 里 `#ifndef NO_HEX_FP` 那块在 `*s == '0'`
+  且 `s[1]` 是 `x`/`X` 时调用——`NO_HEX_FP` 在本仓库从没定义过，所以这条腿是活的。
+- **三处与十进制腿不同，逐条取自源码**：
+  ① 二进制指数**可以省**：`gethex.c:110-112` 的 `switch (*s)` 只有 `p`/`P` 两个 `case`、
+     **没有 `default` 拒绝分支**，没有指数就带着 `e = 0` 往下走，于是 `0x10` 就是 16。
+  ② 这条腿**从不立 `errno`**：`gethex.c` 溢出回 `STRTOG_Overflow`、下溢回 `STRTOG_Underflow`
+     （`gethex.c:250`、`:277`、`:285`），而 `strtod.c` 的十六进制 `switch` 只分
+     `NoNumber`/`Zero`，其余走 `ULtod` 后直接 `goto ret`，一步都不碰十进制那条 `range_err`。
+     所以 `0x1p99999999` 是「认下的无穷大」（退 0、一行不掷中），不是 `err(1, "%s", *argv)`；
+     `0x1p-99999999` 是 0，于是由 `denom == 0` 挡住，报「不是有效分母」而不是三段形。
+  ③ 指数位只收十进制数字，收不满就把游标退回 `p` 之前（`gethex.c:122-126` 的 `s = s1`），
+     所以 `0x1p` 报 1、`ep` 停在 `p` → 否掉。`hexdig[]` 把 `'0'`..`'9'` 排成 `0x10`..`0x19`，
+     那句 `n > 0x19` 就是在说这件事。
+- **为什么不照参照件**：参照件在宿主上编的是 glibc，它对十六进制的溢出/下溢**立** `ERANGE`
+  ——这一对形（`0x1p99999999`、`0x1p-99999999`）在两处 DIFF 里，属承载差异：真值载体是
+  Minix 自己的 gdtoa，不是宿主 libc。这与「选项环那句 `unknown option` 不照 glibc 字样」同一条理。
+- **实现**：新增 `scan_hex`（`gethex` 的形状：跳过 `0x`、折前导零、十六进制数字与一个小数点、
+  可选 `p`/`P` 加十进制指数）与 `hex_value`、`pow2`；分派点在 `scan_strtod` 处理完空白与符号之后、
+  进十进制循环之前——照 C 的顺序，`0x` 一认就整支交给 `gethex`，十进制与 `inf`/`nan` 都不再走。
+  有效数字到 13 位十六进制（52 个二进制位）为止是**精确**的，超过则截尾折进二幂，与十进制腿
+  共用同一条末位单位残差的登记。
+- **门**：宿主库测 29/0（新立 `the_hex_leg_is_gethex_shaped`，11 形读数表 + 溢出那一形单独钉
+  「值 `inf` 且 `erange` 为假」）、端到端 22/0（新立 4 枚：`0x10` 认、`0x1p3` 认、
+  `0x1p99999999` 认下且一行都不掷中、`0x` 与 `0xg` 报「不是有效分母」）；对参照件 A/B 19 形
+  **17 同 2 异**（`tmp/random-349/ab349.log`，两异即上面那对 glibc 立号形）；clippy 触及件 0 命中；
+  rustfmt 零漂移；容器门（`minix-ci:1.94`、`-m 2g -j 1`、挂仓库根、工作目录 `os/`）读数见
+  `tmp/random-349/container-gate.log`。
+- **环境坑（现查证据 `ls -ld tmp/ci-target-349`）**：容器配方里 `CARGO_TARGET_DIR` 指向的宿主目录
+  若不存在，docker 会以 **root** 属主自动建它，容器内以 `-u $(id -u)` 跑的 cargo 随即写不进
+  `/target/debug`，报 `Permission denied (os error 13)` 退码 1——这是门的脚手架坏了，不是代码坏了。
+  要么先 `mkdir -p` 再跑，要么复用上一轮已有的可写 target 目录。
+- **还敞着的**：① `nan(0x…)` 载荷（`strtod.c` 调 `hexnan`，`gdtoa/hexnan.c:56-`）——这一形的载荷
+  位样对 `random` 的可见行为其实无影响（它只被 `denom == 0` 与那两处算式读，所有 NaN 都给同一个
+  答案），差的是「吃掉几个字符、`ep` 落在哪」；② 非有限值/超射程值转整数那一格的 UB 不追平；
+  ③ 超过 13 位十六进制或 17 位十进制的末位单位残差；④ 子正规结果是否立 `ERANGE`；⑤ 共用的
+  `bin_support::emit` 写缝退码（C 是 `err(2, "stdout")` 退 2，`random.c:131-133`，`emit` 被本 crate
+  多支共用，改它要单独一条账）。取值域这条腿到此闭合，条目状态仍是 **partially fixed**（①—⑤）。
+- **下一轮首动作**：`tools/claim.sh claim RANDOM-DENOM-LEGS qoder` 接①（`nan` 载荷的吃掉形状），
+  或换 `SPLIT-STREAMING-MEMORY` 那条独立件。
+
 ## 批次三百四十八：`random` 的片3 落地——分母从 u32 换成 C 的那个 `double`
 
 - **是什么**：`RANDOM-DENOM-LEGS` 的第三片。`minix3/games/random/random.c:67` 把 `denom` 定为

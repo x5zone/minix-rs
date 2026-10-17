@@ -200,6 +200,14 @@ pub fn scan_strtod(word: &str) -> Strtod {
         };
     }
 
+    // C 的 `if (*s == '0')` 之后立刻看一眼 `s[1]`：是 `x`/`X` 就整支交给 `gethex`，
+    // 十进制那条腿与 `inf`/`nan` 都不再走（`strtod.c` 的 `#ifndef NO_HEX_FP` 那块 `goto ret`）
+    if matches!(bytes.get(index), Some(&b'0'))
+        && matches!(bytes.get(index + 1), Some(b'x') | Some(b'X'))
+    {
+        return scan_hex(bytes, index, negative);
+    }
+
     let mut mantissa = 0.0f64;
     let mut kept = 0u32; // 进 mantissa 的位数
     let mut dropped = 0i32; // 超出位数上限被丢掉的位数，折进十幂
@@ -362,6 +370,159 @@ fn pow10(power: u32) -> f64 {
     out
 }
 
+/// 二的整数幂（非负指数），与 [`pow10`] 同形。十六进制浮点的标尺本来就是二幂，
+/// 所以这一支在有效数字不超过 13 位（52 位二进制）时是**精确**的。
+fn pow2(power: u32) -> f64 {
+    let mut base = 2.0f64;
+    let mut out = 1.0f64;
+    let mut rest = power;
+    while rest != 0 {
+        if rest & 1 != 0 {
+            out *= base;
+        }
+        rest >>= 1;
+        if rest != 0 {
+            base *= base;
+        }
+    }
+    out
+}
+
+/// 一维十六进制数字的值，不是十六进制就回 `None`。对应 gdtoa 的 `hexdig[]` 表：
+/// 它把 `'0'`..`'9'` 排成 `0x10`..`0x19`、`'a'`..`'f'` 与 `'A'`..`'F'` 排成 `0x1a`..`0x1f`，
+/// 所以 `gethex.c` 那句 `n > 0x19` 是在说「指数位上只许十进制数字」。
+fn hex_value(byte: u8) -> Option<u32> {
+    match byte {
+        b'0'..=b'9' => Some(u32::from(byte - b'0')),
+        b'a'..=b'f' => Some(u32::from(byte - b'a') + 10),
+        b'A'..=b'F' => Some(u32::from(byte - b'A') + 10),
+        _ => None,
+    }
+}
+
+/// C 的 `gethex` 那条腿（`minix3/lib/libc/gdtoa/gethex.c:54-131`），由 `strtod.c` 里
+/// `#ifndef NO_HEX_FP` 那块在 `*s == '0'` 且 `s[1]` 是 `x`/`X` 时调用。
+///
+/// 三处与十进制腿不同，都照源抄：
+/// ① 二进制指数**可以没有**——`pcheck:` 那个 `switch (*s)` 只有 `p`/`P` 两个 `case`，
+///    没有 `default` 拒绝分支（`gethex.c:110-112`），于是 `0x10` 就是 16。
+/// ② 这条腿**从不立 `errno`**：溢出与下溢在 `gethex.c` 里回 `STRTOG_Overflow`/`STRTOG_Underflow`，
+///    而 `strtod.c` 的十六进制 `switch` 只分 `NoNumber`/`Zero`，其余一支 `ULtod` 完直接
+///    `goto ret`，从不走十进制那条 `range_err`。所以 `0x1p99999999` 是「认下的无穷大」，
+///    不是 `err(1, "%s", *argv)` 那一形——参照件在宿主上编的是 glibc，它给这一形立 ERANGE，
+///    那句「`Numerical result out of range`」不在这条的射程内。
+/// ③ 指数位上只收十进制数字，收不满就把游标退回 `p` 之前（`gethex.c:122-126` 的 `s = s1`），
+///    与十进制腿的 `1e` 同形：`0x1p` 报 1、`ep` 停在 `p`，于是被 `*ep != '\0'` 否掉。
+///
+/// 有效数字超过 13 位时按截尾处理（折进二幂），与十进制那条腿共用同一个末位单位残差的登记。
+fn scan_hex(bytes: &[u8], at: usize, negative: bool) -> Strtod {
+    let mut index = at + 2;
+    while bytes.get(index) == Some(&b'0') {
+        index += 1;
+    }
+    let mut mantissa: u64 = 0;
+    let mut kept = 0u32;
+    let mut extra = 0i32;
+    let mut fraction = 0i32;
+    let mut any_hex_digit = false;
+    let mut nonzero = false;
+    let mut past_dot = false;
+    while let Some(&c) = bytes.get(index) {
+        if c == b'.' && !past_dot {
+            past_dot = true;
+            index += 1;
+            continue;
+        }
+        let Some(digit) = hex_value(c) else {
+            break;
+        };
+        any_hex_digit = true;
+        if nonzero || digit != 0 {
+            nonzero = true;
+            if kept < 13 {
+                mantissa = mantissa * 16 + u64::from(digit);
+                kept += 1;
+            } else {
+                extra += 1;
+            }
+        }
+        if past_dot {
+            fraction += 1;
+        }
+        index += 1;
+    }
+    if !any_hex_digit {
+        // C 的 `if (!havedig) *sp = s0 - 1;` 加 `return STRTOG_Zero`：值 0，游标退回 `x`
+        return Strtod {
+            value: 0.0,
+            rest: at + 1,
+            erange: false,
+        };
+    }
+    let mut exponent = (extra << 2) - (fraction << 2);
+    if matches!(bytes.get(index), Some(b'p') | Some(b'P')) {
+        let mark = index;
+        index += 1;
+        let mut esign = 1i32;
+        match bytes.get(index) {
+            Some(b'-') => {
+                esign = -1;
+                index += 1;
+            }
+            Some(b'+') => index += 1,
+            _ => {}
+        }
+        if matches!(bytes.get(index), Some(&c) if c.is_ascii_digit()) {
+            while matches!(bytes.get(index), Some(&b'0')) {
+                index += 1;
+            }
+            let mut magnitude = 0i32;
+            let mut big = false;
+            while matches!(bytes.get(index), Some(&c) if c.is_ascii_digit()) {
+                if magnitude > 0x07ff_ffff {
+                    big = true;
+                } else {
+                    magnitude = magnitude * 10 + i32::from(bytes[index] - b'0');
+                }
+                index += 1;
+            }
+            if !big {
+                exponent += esign * magnitude;
+            } else if esign < 0 {
+                // `ret_tiny`：值 0，而且照 ② 不立 `errno`
+                return Strtod {
+                    value: 0.0,
+                    rest: index,
+                    erange: false,
+                };
+            } else {
+                // `ret_huge`：值 `±inf`，同样不立 `errno`
+                return Strtod {
+                    value: if negative {
+                        f64::NEG_INFINITY
+                    } else {
+                        f64::INFINITY
+                    },
+                    rest: index,
+                    erange: false,
+                };
+            }
+        } else {
+            index = mark;
+        }
+    }
+    let magnitude = if exponent >= 0 {
+        mantissa as f64 * pow2(exponent as u32)
+    } else {
+        mantissa as f64 / pow2(exponent.unsigned_abs())
+    };
+    Strtod {
+        value: if negative { -magnitude } else { magnitude },
+        rest: index,
+        erange: false,
+    }
+}
+
 /// Mix a clock reading with a process identifier into a seed (mirrors the
 /// seeding blend of time plus process in the original source).
 pub fn mix_seed(seconds: u64, micros: u32, pid: u32) -> u64 {
@@ -414,6 +575,35 @@ mod tests {
     }
 
     #[test]
+    fn the_hex_leg_is_gethex_shaped() {
+        // 三条与十进制腿不同的地方都照 `gethex.c` 钉：二进制指数可省、从不立 `ERANGE`、
+        // 指数位只收十进制数字且收不满就退回 `p` 之前
+        let cases: [(&str, f64, usize); 11] = [
+            ("0x10", 16.0, 4),
+            ("0xff", 255.0, 4),
+            ("0x1p3", 8.0, 5),
+            ("0X1P3", 8.0, 5),
+            ("0x.8p0", 0.5, 6),
+            ("0x1.8p1", 3.0, 7),
+            ("-0x10", -16.0, 5),
+            ("0x1p", 1.0, 3), // 指数位空着：`s = s1` 退回 `p`
+            ("0x", 0.0, 1),   // 一个数字都没有：`*sp = s0 - 1`，游标停在 `x`
+            ("0xg", 0.0, 1),
+            ("0x1p-99999999", 0.0, 13), // `ret_tiny` 那一路：值 0 而**不立** errno
+        ];
+        for (word, value, rest) in cases {
+            let read = scan_strtod(word);
+            assert_eq!(read.value, value, "{word:?} 的值");
+            assert_eq!((read.rest, read.erange), (rest, false), "{word:?}");
+        }
+        // 溢出这一形与十进制的 `18e308` 分流：十六进制那一支整段绕过 `range_err`
+        let huge = scan_strtod("0x1p99999999");
+        assert_eq!(huge.value, f64::INFINITY);
+        assert!(!huge.erange, "十六进制溢出立号就成了另一句报文");
+        assert_eq!(huge.rest, 12);
+    }
+
+    #[test]
     fn the_selection_predicate_is_the_cast_then_compare_itself() {
         // C 的一句是「截成整数再与 0 比」（`random.c:126`）：商向零截为 0 等价于商在 (-1,1)
         assert!(line_selected(1.0, 0));
@@ -454,7 +644,7 @@ mod tests {
     fn a_rejected_operand_and_an_overflowed_one_are_two_different_legs() {
         // `denom == 0 || *ep != '\0'`（`:98`）与 `errno == ERANGE`（`:96`）是两句话：
         // 前者不含操作数，后者把操作数放在位上。把后者并到前者就丢掉了号
-        for word in ["0", "", "abc", "-", "6x", "e5", "1e", "0x10", "infi"] {
+        for word in ["0", "", "abc", "-", "6x", "e5", "1e", "infi"] {
             assert_eq!(judge_operands(&[word]), OperandLeg::NotValid, "{word:?}");
         }
         for word in ["18e308", "1e-400"] {
@@ -464,6 +654,9 @@ mod tests {
         // 哪怕指数大得离谱
         assert_eq!(judge_operands(&["0e99999"]), OperandLeg::NotValid);
         assert_eq!(judge_operands(&["1"]), OperandLeg::Accepted(1.0));
+        // `0x10` 走 `gethex`：`pcheck:` 那个 `switch (*s)` 没有 `default` 拒绝分支
+        // （`gethex.c:110-112`），所以不带二进制指数的十六进制照样认，值 16
+        assert_eq!(judge_operands(&["0x10"]), OperandLeg::Accepted(16.0));
         // `2^32` 在 `double` 里是精确的，不该报溢出
         assert_eq!(
             judge_operands(&["4294967296"]),

@@ -379,3 +379,46 @@ fn leading_whitespace_is_skipped_and_trailing_is_not() {
         ("", 1, "random: denominator is not valid.\n")
     );
 }
+
+#[test]
+fn a_hex_denominator_is_accepted_without_a_binary_exponent() {
+    // `0x10` 是 16：`gethex` 的 `pcheck:` 那个 `switch (*s)` 只有 `p`/`P` 两个 `case`、
+    // 没有 `default` 拒绝分支（`minix3/lib/libc/gdtoa/gethex.c:110-112`），所以省掉指数不扣分
+    let (out, code, err) = run(&["0x10"], INPUT);
+    assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
+    assert_subset_of_input(&out, INPUT_TEXT, "分母 0x10");
+}
+
+#[test]
+fn a_hex_denominator_with_a_binary_exponent_is_accepted() {
+    // `0x1p3` 是 8：二进制指数的权是「二幂」，`gethex.c:111-137` 把指数按十进制数字读、
+    // 再折进二幂
+    let (out, code, err) = run(&["0x1p3"], INPUT);
+    assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
+    assert_subset_of_input(&out, INPUT_TEXT, "分母 0x1p3");
+}
+
+#[test]
+fn a_hex_overflow_is_accepted_rather_than_reported_out_of_range() {
+    // 与十进制的 `18e308` 分流：`strtod.c` 的十六进制那一支 `switch` 只分 `NoNumber`/`Zero`，
+    // 其余走 `ULtod` 后直接 `goto ret`，从不进 `range_err`，所以 `errno` 不动——分母是
+    // 认下的无穷大，一行都不掷中、退 0、不报错。参照件在宿主上编的是 glibc，它给这一形
+    // 立 ERANGE 并报 `Numerical result out of range`，那是承载差异，不是本支该抄的行为
+    let text = many_lines(30);
+    let (out, code, err) = run(&["0x1p99999999"], text.as_bytes());
+    assert_eq!((out.as_str(), code, err.as_str()), ("", 0, ""));
+}
+
+#[test]
+fn a_hex_operand_without_any_digit_is_not_valid() {
+    // `0x` 与 `0xg` 一个十六进制数字都没有：`gethex` 回 `STRTOG_Zero` 且 `*sp = s0 - 1`，
+    // 于是 `denom == 0` 挡住，报 ② 而不是 ③
+    for word in ["0x", "0xg"] {
+        let (out, code, err) = run(&[word], INPUT);
+        assert_eq!(
+            (out.as_str(), code, err.as_str()),
+            ("", 1, "random: denominator is not valid.\n"),
+            "{word:?}"
+        );
+    }
+}
