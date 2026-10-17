@@ -422,3 +422,29 @@ fn a_hex_operand_without_any_digit_is_not_valid() {
         );
     }
 }
+
+#[test]
+fn a_nan_payload_is_consumed_and_never_selects_a_line() {
+    // `nan(0x1f)`：`strtod.c:314` 那块（`#ifndef No_Hex_NaN`，本仓库从没定义过这个宏）把载荷
+    // 交给 `hexnan`，命中右括号就整串吃掉——于是 `*ep == '\0'`、`denom == 0` 恒假，认下。
+    // 载荷的位样对 `random` 不可见：所有 NaN 都不掷中、都退 0
+    let text = many_lines(25);
+    for word in ["nan(0x1f)", "nan()", "nan(xy)"] {
+        let (out, code, err) = run(&[word], text.as_bytes());
+        assert_eq!((out.as_str(), code, err.as_str()), ("", 0, ""), "{word:?}");
+    }
+}
+
+#[test]
+fn an_unclosed_nan_payload_is_rejected_at_the_open_parenthesis() {
+    // 没有右括号时 `hexnan` 不动游标（`gdtoa/hexnan.c:146-147` 那条 `return STRTOG_NaN` 不写
+    // `*sp`），`ep` 留在左括号那一格 → `*ep != '\0'` → 报「不是有效分母」，不报三段形
+    for word in ["nan(0x1f", "nan("] {
+        let (out, code, err) = run(&[word], INPUT);
+        assert_eq!(
+            (out.as_str(), code, err.as_str()),
+            ("", 1, "random: denominator is not valid.\n"),
+            "{word:?}"
+        );
+    }
+}

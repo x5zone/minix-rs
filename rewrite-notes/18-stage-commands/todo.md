@@ -119,6 +119,43 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百五十：`random` 的 `nan(0x…)` 载荷——本支只该复写「吃掉多少」
+
+- **是什么**：三百四十九收尾条里敞着的第一项。`strtod.c:314` 的 `#ifndef No_Hex_NaN`（本仓库
+  从没定义过这个宏，现查 `grep -rn No_Hex_NaN minix3/lib/libc/` 只命中注释与 README）让
+  `nan` 之后跟的一个 `(` 交给 `hexnan`（`minix3/lib/libc/gdtoa/hexnan.c:56-152`），于是
+  `nan(0x1f)`、`nan()`、`nan(xy)`、`nan( 0x1f )` 这些形都算数。
+- **为什么只复写游标不复写位样**：`hexnan` 往 `bits[]` 里填的那几个位，`random` 一个都读不到。
+  这条命令只用 `denom == 0` 与那两处算式读分母，而**所有 NaN 给的答案都相同**：`denom == 0`
+  恒假（`nan(0x1f)` 因此认下），算式里的商是 NaN，`(int)` 与 0 比不为 0（`random.c:126`），
+  一行都不掷中。所以这一形上唯一可见的差别是 `ep` 落在哪——它决定「整串吃掉」还是
+  「剩个左括号」，也就是认下还是「不是有效分母」。把载荷的位样抄进来会是纯机制噪声，
+  违背本仓库「抽象语义、不描述机制」的第一原则，所以 `nan_payload` 只有六行。
+- `ep` 的规则取自源的两个出口：`hexnan.c:105-109` 是数字串撞上 `)`（`*sp = s + 1`）；
+  `:112-118` 是撞上非十六进制字符后那个 `do { … } while` 向前找 `)`，命中也是 `*sp = s + 1`
+  ——本仓库没定义 `GDTOA_NON_PEDANTIC_NANCHECK`（同样只出现在 `gdtoaimp.h:154` 的注释里），
+  所以这条路是活的，于是 `nan(xy)` 也算整串吃掉。落空的两条（`:146-147` 的
+  `if (!havedig) return STRTOG_NaN` 与循环撞上 `'\0'`）都不动 `*sp`，游标留在 `(`：
+  `nan(0x1f`、`nan(` 因此 `*ep != '\0'` → 「不是有效分母」而不是三段形。
+- **载荷里的空白是 C 自己允许的**（`hexnan.c:77-78` 与 `:97-98` 两处 `c <= ' '` 的跳过），
+  glibc 不允许：A/B 里 `nan( 0x1f )` 参照件退 1、本支退 0——这一处**参照件不是真值承载**，
+  与选项环那句措辞、十六进制溢出的 `errno` 同一条理（`tmp/random-350/ab350.log`）。
+- **门**：宿主库测 30/0（新立 `a_nan_payload_is_consumed_and_never_selects_a_line`：五形吃掉
+  到串尾 + 三形留在 `(` + `judge_operands` 那一形落 `Accepted`）、端到端 24/0（新立 2 枚）；
+  对参照件 A/B 12 形 **11 同 1 异**（那一异即上面那形）；clippy 触及件 0 命中；rustfmt 零漂移；
+  容器门（`minix-ci:1.94` + `-m 2g -j 1`，挂仓库根、工作目录 `os/`）退码 0、合计 **54 通过 / 0 失败**（6 个 target，逐套读数在 `tmp/random-349/container-gate-350.log`）。
+- **`RANDOM-DENOM-LEGS` 至此剩下的**：① 非有限值/超射程值转整数那一格在 C 是未定义行为，
+  本支取 `as` 的饱和语义、登记不追平（三架构上 x86-64 的 `cvttsd2si` 给 `0x80000000`、
+  aarch64 的 `fcvtzs` 饱和，本来就不一致）；② 末位单位残差——十进制超过 17 位、十六进制超过
+  13 位的数字串按截尾折进幂，与 gdtoa 的大数精化可能差一个末位单位，只挪动「恰好压在阈值
+  那一格」的选中判定；③ 子正规结果是否立 `ERANGE`（本支照「下溢成 0 才立」，gdtoa 在
+  `Avoid_Underflow` 下对某些子正规也立号）；④ 共用的 `bin_support::emit` 写缝退码（C 是
+  `err(2, "stdout")` 退 2，`random.c:131-133`；`emit` 被本 crate 多支共用，改它要单独一条账）。
+  ①—③ 是**登记在册的不追平与残差**，不是待接的功能缺口；④ 是另一条账。条目状态：分母的
+  取值域（片1/片2/片3）与 `nan` 载荷已全部落地，保持 **partially fixed**，敞口只剩上面四条。
+- **下一轮首动作**：`tools/claim.sh claim SPLIT-STREAMING-MEMORY qoder`（独立件），或把 ④ 的
+  `emit` 写缝单独立项后再动。
+
 ## 批次三百四十九：`random` 的片3 收尾——十六进制浮点照 `gethex` 接上
 
 - **是什么**：`RANDOM-DENOM-LEGS` 片3 剩下的那条腿。上一笔的 A/B 把 `0x10` 报成唯一真分叉

@@ -312,6 +312,13 @@ pub fn scan_strtod(word: &str) -> Strtod {
             _ => None,
         };
         if let Some(rest) = not_a_number {
+            // 载荷这一格：`#ifndef No_Hex_NaN`（本仓库从没定义过这个宏）→ `nan(` 之后交给
+            // `hexnan`，它留给调用者的只有「游标落在哪」
+            let rest = if matches!(bytes.get(rest), Some(&b'(')) {
+                nan_payload(bytes, rest)
+            } else {
+                rest
+            };
             return Strtod {
                 value: f64::NAN,
                 rest,
@@ -386,6 +393,21 @@ fn pow2(power: u32) -> f64 {
         }
     }
     out
+}
+
+/// `hexnan`（`minix3/lib/libc/gdtoa/hexnan.c:56-152`）留给调用者的只有一件事：游标落在哪。
+/// 载荷的位样在 `random` 这一支**看不见**——它只用 `denom == 0` 与那两处算式读这个值，而所有
+/// NaN 给的答案都一样（`denom == 0` 恒假、非有限值一律不掷中）。所以这里复写的是「吃掉多少」，
+/// 不是「往 `bits[]` 里填哪些位」：从 `(` 起吃到**第一个 `)`** 就算吃完；一路没有 `)` 就把游标
+/// 留在 `(` 上。两个出口在源里分别是 `hexnan.c:105-109`（数字串撞上 `)`，`*sp = s + 1`）与
+/// `:112-118`（撞上非十六进制字符后那个 `do { … } while` 向前找 `)`，命中也是 `*sp = s + 1`），
+/// 落空的那条是 `:146-147` 的 `if (!havedig) return STRTOG_NaN` 与循环撞上 `'\0'`，两处都不动
+/// `*sp`。本仓库没定义 `GDTOA_NON_PEDANTIC_NANCHECK`，所以向前找 `)` 那条路是活的。
+fn nan_payload(bytes: &[u8], open: usize) -> usize {
+    match bytes[open..].iter().position(|&byte| byte == b')') {
+        Some(offset) => open + offset + 1,
+        None => open,
+    }
 }
 
 /// 一维十六进制数字的值，不是十六进制就回 `None`。对应 gdtoa 的 `hexdig[]` 表：
@@ -572,6 +594,38 @@ mod tests {
         assert_eq!(scan_strtod("nan").rest, 3);
         // `infi` 那一形 C 不吃 `inity` 的第一格之外的东西：`ep` 停在第 3 格
         assert_eq!(scan_strtod("infi").rest, 3);
+    }
+
+    #[test]
+    fn a_nan_payload_moves_the_end_pointer_and_nothing_else() {
+        // 值永远是 NaN（本支看不出载荷是哪几个位），差别全在 `ep`：吃到 `)` 就算整串消费掉，
+        // 没有 `)` 就留在 `(` 上、由 `*ep != '\0'` 否掉
+        for (word, expected_rest) in [
+            ("nan(0x1f)", 9),
+            ("nan()", 5),
+            ("nan(xy)", 7),
+            ("nan( 0x1f )", 11),
+            ("NAN(0123456789abcdef)", 21),
+        ] {
+            let read = scan_strtod(word);
+            assert!(read.value.is_nan(), "{word:?} 应当是 NaN");
+            assert_eq!((read.rest, read.erange), (expected_rest, false), "{word:?}");
+            assert_eq!(read.rest, word.len(), "{word:?} 应当整串吃掉");
+        }
+        for word in ["nan(0x1f", "nan(", "nan(garbage"] {
+            let open = word.find('(').expect("测试串里就有左括号");
+            let read = scan_strtod(word);
+            assert!(read.value.is_nan(), "{word:?}");
+            assert_eq!(
+                read.rest, open,
+                "{word:?} 没有右括号，游标该留在左括号那一格"
+            );
+            assert_eq!(judge_operands(&[word]), OperandLeg::NotValid, "{word:?}");
+        }
+        assert!(matches!(
+            judge_operands(&["nan(0x1f)"]),
+            OperandLeg::Accepted(value) if value.is_nan()
+        ));
     }
 
     #[test]
