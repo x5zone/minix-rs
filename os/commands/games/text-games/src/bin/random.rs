@@ -6,10 +6,12 @@
 //! `strtod(*argv, &ep)`、两枚以上 usage（`:89-104`）。播种混入时钟与进程号
 //! （`mix_seed` 的决定半语义，`:106-107`）。
 //!
-//! 操作数那一步与过滤器都已按 C 成形。仍敞着的是选项环（`-e` 把一个 `[0, denom]`
-//! 里的数当退码返回、`-r` 关掉 stdio 缓冲、集外字母那两行）与 `strtod` 那片取值域
-//! （`1e3`、`1e-3`、`inf`、`nan`、`--` 之后才算操作数的起点），账在
-//! `rewrite-notes/18-stage-commands/todo.md` 的 `RANDOM-DENOM-LEGS` 条目里（片2b 与片3）。
+//! 操作数那一步、过滤器与选项环都已按 C 成形，分母也换成了 C 的那个 `double`：`strtod`
+//! 的十进制腿（前导空白、符号、小数点、指数、`inf`/`nan`）与 `errno == ERANGE` 的两条腿
+//! （溢出、下溢成 0）都接上了。仍敞着的是十六进制浮点 `0x1p3` 与 `nan(0x…)` 载荷两形，
+//! 以及共用的 `bin_support::emit` 写缝退码（C 是 `err(2, "stdout")` 退 2，
+//! `random.c:131-133`），账在 `rewrite-notes/18-stage-commands/todo.md` 的
+//! `RANDOM-DENOM-LEGS` 条目里。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -22,7 +24,7 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 use minix_text_games::lottery::{
-    exit_status_value, is_selected, judge_operands, mix_seed, scan_ring, OperandLeg, Ring,
+    exit_status_value, judge_operands, line_selected, mix_seed, scan_ring, OperandLeg, Ring,
     NOT_VALID_SENTENCE, NO_OPERAND_DENOMINATOR, UNKNOWN_OPTION, USAGE,
 };
 use minix_text_games::TextGameError;
@@ -84,7 +86,7 @@ fn run() -> ! {
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
-        support::terminate(exit_status_value(denominator, (state >> 33) as u64) as i32);
+        support::terminate(exit_status_value(denominator, (state >> 33) as u64));
     }
 
     let (bytes, read_failure) = support::read_stdin_error();
@@ -104,8 +106,8 @@ fn run() -> ! {
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
-        let draw = ((state >> 33) as u32) % denominator;
-        if matches!(is_selected(draw, denominator), Ok(true)) {
+        let draw = (state >> 33) & 0x7fff_ffff;
+        if line_selected(denominator, draw) {
             support::emit(format!("{line}\n").as_bytes());
         }
     }

@@ -12,10 +12,9 @@
 //!    也不动，而 ② 与 ③ 的前缀会跟着动——`a_renamed_invocation_moves_the_err_prefixes_only`
 //!    钉的就是这一对差异。
 //!
-//! 射程止于操作数那一步。参照件认 `1e3`、`1e-3`、`inf`、`nan` 这些 `strtod` 形
-//! （现量退 0），本壳按十进制整数面把它们判进 ② —— 那是「分母的取值域」一件事，
-//! 登记在同一条目的第三片；`-e`/`-r` 与「每行独立掷、中者整行写出」的过滤体是第二片，
-//! 本文件不提前给它们下结论。
+//! 分母那一枚读的是 C 的 `double`（`strtod` 的十进制腿）：`1e3`、`1e-3`、`.5`、`-2`、
+//! `inf`、`nan` 都认；`18e308`（溢出）与 `1e-400`（下溢成 0）都立 `errno == ERANGE`
+//! 走 ③。还敞着的是十六进制浮点 `0x1p3` 与 `nan(0x…)` 载荷两形，以及 `emit` 写缝的退码。
 
 use std::io::Write as _;
 use std::os::unix::process::CommandExt;
@@ -120,13 +119,17 @@ fn a_rejected_operand_says_the_errx_sentence_without_naming_itself() {
             "{word:?}"
         );
     }
-    // 取值域那一腿还没接：`1e3` 在参照件里退 0（现量见 `ab343-ref.log`），本壳报 ②
-    let (out, code, err) = run(&["1e3"], INPUT);
-    assert_eq!(
-        (out.as_str(), code, err.as_str()),
-        ("", 1, "random: denominator is not valid.\n"),
-        "登记在第三片的取值域分叉，此断言翻红就是那一腿落地的时刻"
-    );
+    // ② 的射程由 C 的两判据划定：`e5`（一个字符都没吃）、`1e`（指数位空着、`ep` 停在
+    // `e`）、`infi`（`inity` 比到第一格就退回）、`3 `（尾巴不吃）、`0e99999`（全零不立
+    // ERANGE，落回「不是有效分母」而不是 ③）
+    for word in ["e5", "1e", "infi", "3 ", "0e99999"] {
+        let (out, code, err) = run(&[word], INPUT);
+        assert_eq!(
+            (out.as_str(), code, err.as_str()),
+            ("", 1, "random: denominator is not valid.\n"),
+            "{word:?}"
+        );
+    }
 }
 
 #[test]
@@ -135,17 +138,24 @@ fn an_overflowed_operand_uses_the_three_part_err_shape() {
     // 句子出自 `minix-types` 的 `SYS_ERRLIST`（`os/libs/minix-types/src/types/errno.rs:426`
     // 的第 34 项 `Result too large or too small`）；宿主上的参照件走 glibc 那张表
     // （`Numerical result out of range`），那是承载差异，`errno.rs:383` 已把这一对写下
-    let (out, code, err) = run(&["4294967296"], INPUT);
-    assert_eq!(
-        (out.as_str(), code, err.as_str()),
-        ("", 1, "random: 4294967296: Result too large or too small\n")
-    );
-    // 只有一行：三段形之后不跟 usage 块，也不追加第二句
-    assert_eq!(
-        err.lines().filter(|line| !line.is_empty()).count(),
-        1,
-        "三段形应当只有一行：{err:?}"
-    );
+    // 溢出（`strtod.c` 的 `ovfl`）与非零数字串下溢成 0（`undfl`）汇到同一个 `range_err`，
+    // 两形都报 ③。`4294967296` 不在这一列：它是 `double` 里精确的 2^32，参照件现量退 0
+    // （`tmp/random-343/ab343-ref.log`）——这条门过去钉的是实现的 u32 溢出，不是参照件
+    for word in ["18e308", "1e-400"] {
+        let (out, code, err) = run(&[word], INPUT);
+        let want = format!("random: {word}: Result too large or too small\n");
+        assert_eq!(
+            (out.as_str(), code, err.as_str()),
+            ("", 1, want.as_str()),
+            "{word:?}"
+        );
+        // 只有一行：三段形之后不跟 usage 块，也不追加第二句
+        assert_eq!(
+            err.lines().filter(|line| !line.is_empty()).count(),
+            1,
+            "三段形应当只有一行：{err:?}"
+        );
+    }
 }
 
 #[test]
@@ -177,13 +187,11 @@ fn a_renamed_invocation_moves_the_err_prefixes_only() {
         (code, err.as_str()),
         (1, "renamed-random: denominator is not valid.\n")
     );
-    let (_, code, err) = run_with_argv0("renamed-random", &["4294967296"], INPUT);
+    // 溢出那一枚换成 `18e308`：`4294967296` 在 `double` 里是精确的 2^32，认下了不报错
+    let (_, code, err) = run_with_argv0("renamed-random", &["18e308"], INPUT);
     assert_eq!(
         (code, err.as_str()),
-        (
-            1,
-            "renamed-random: 4294967296: Result too large or too small\n"
-        )
+        (1, "renamed-random: 18e308: Result too large or too small\n")
     );
     let (_, code, err) = run_with_argv0("renamed-random", &["3", "4"], INPUT);
     assert_eq!(
@@ -306,4 +314,68 @@ fn the_e_flag_returns_a_draw_and_reads_nothing() {
     // `-r` 只是关缓冲：写缝本来就逐行落盘，因此它与不加 `-r` 同形（六行全中）
     let (out, code, err) = run(&["-r", "1"], INPUT);
     assert_eq!((out.as_str(), code, err.as_str()), (INPUT_TEXT, 0, ""));
+}
+
+#[test]
+fn a_scientific_denominator_is_accepted_as_a_double() {
+    // `1e3` 走 C 的指数分支（`strtod.c` 的 `if (c == 'e' || c == 'E')`）：认下之后照常
+    // 过滤。1/1000 的掷中率下六行输入可能一行都不中，所以钉的是「不退 1、不报错」这一对
+    let (out, code, err) = run(&["1e3"], INPUT);
+    assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
+    assert_subset_of_input(&out, INPUT_TEXT, "分母 1e3");
+}
+
+#[test]
+fn a_small_fraction_denominator_prints_every_line() {
+    // `1e-3`：`(int)(1e-3 * random() / RANDOM_MAX)` 商最大约 4.7e-13，向零截恒为 0，
+    // 于是每一行都掷中——输出与输入逐字节相同。分母小于 1 在 C 里是一条合法的「全通过」
+    let text = many_lines(60);
+    let (out, code, err) = run(&["1e-3"], text.as_bytes());
+    assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
+    assert_eq!(out, text);
+}
+
+#[test]
+fn a_negative_denominator_is_accepted_and_prints_every_line() {
+    // 负数不是「非法分母」：C 从没说过 `denom` 必须为正，只说它不能为 0、尾巴必须吃干净。
+    // `-1e-3` 的商落进 [-4.7e-13, 0]，向零截恒为 0 → 每行都掷中
+    let text = many_lines(60);
+    let (out, code, err) = run(&["--", "-1e-3"], text.as_bytes());
+    assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
+    assert_eq!(out, text);
+}
+
+#[test]
+fn a_big_integer_denominator_is_not_out_of_range() {
+    // `2^32` 在 `double` 里精确表示，`strtod` 不立 ERANGE：本支过去按 u32 面判成溢出，
+    // 于是把参照件退 0 的一形报成了三段形
+    let (out, code, err) = run(&["4294967296"], INPUT);
+    assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
+    assert_subset_of_input(&out, INPUT_TEXT, "分母 2^32");
+}
+
+#[test]
+fn infinity_and_nan_are_accepted_and_never_select_a_line() {
+    // `inf`/`nan` 靠 `INFNAN_CHECK`（`gdtoaimp.h:191` 与 `:643-645` 都开着）认下。
+    // C 的判据是「截成整数再与 0 比」：非有限值→整数在 C 是未定义行为，参照件所在的
+    // x86-64 给 `0x80000000`，不为 0 → 一行都不掷中，但退码仍是 0、不报错
+    let text = many_lines(40);
+    for word in ["inf", "nan"] {
+        let (out, code, err) = run(&[word], text.as_bytes());
+        assert_eq!((out.as_str(), code, err.as_str()), ("", 0, ""), "{word:?}");
+    }
+}
+
+#[test]
+fn leading_whitespace_is_skipped_and_trailing_is_not() {
+    // C 的开头 `switch (*s)` 吃掉空白，尾巴上的不吃：`" 3"` 认下、`"3 "` 因 `*ep != '\0'`
+    // 落到 ②。两形只差一个空格，走的是两条出口
+    let (out, code, err) = run(&[" 3"], INPUT);
+    assert_eq!((code, err.as_str()), (0, ""), "stdout={out:?}");
+    assert_subset_of_input(&out, INPUT_TEXT, "前导空白");
+    let (out, code, err) = run(&["3 "], INPUT);
+    assert_eq!(
+        (out.as_str(), code, err.as_str()),
+        ("", 1, "random: denominator is not valid.\n")
+    );
 }

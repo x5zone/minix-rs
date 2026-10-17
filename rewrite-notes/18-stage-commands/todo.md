@@ -119,6 +119,47 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百四十八：`random` 的片3 落地——分母从 u32 换成 C 的那个 `double`
+
+- **是什么**：`RANDOM-DENOM-LEGS` 的第三片。`minix3/games/random/random.c:67` 把 `denom` 定为
+  `double`，`:95` 用 `strtod(*argv, &ep)` 读它，`:96` 只看 `errno == ERANGE`，`:98` 只看
+  `denom == 0 || *ep != '\0'`。本支此前把分母按十进制整数面收在 `u32` 里，于是 C 认下的
+  `1e3`、`1e-3`、`.5`、`-2`、`inf`、`nan` 全被判成「不是有效分母」，而 C 认不出的
+  `4294967296`（`2^32` 在 `double` 里是精确的）反被判成溢出。
+- **为什么是 P0-code-bug 而不是取值偏好**：参照件现量给出两侧的实际退码
+  （`tmp/random-343/ab343-ref.log` 那七形），本支当时是「该退 0 的退 1、该退 0 的报了三段形」。
+  更硬的一层是：`os/commands/games/text-games/tests/random_face.rs` 里那枚
+  `an_overflowed_operand_uses_the_three_part_err_shape` 与 `a_rejected_operand_says_the_errx_sentence_without_naming_itself`
+  把 `4294967296` 钉成三段形、把 `1e3` 钉成「不是有效分母」——**门钉的是实现，不是参照件**，
+  与三百四十三、三百四十四、三百四十六那三次同类失误同形，这是第四次。
+- **怎么修**：决定半新增 `Strtod`（值 / `ep` 下标 / `erange` 三读数）、`scan_strtod`（`minix3/lib/libc/gdtoa/strtod.c`
+  的 `_int_strtod_l` 那条十进制腿：前导空白、符号、小数点、`e`/`E` 指数、指数位数闸 19999、
+  `#ifdef INFNAN_CHECK` 的 `inf`/`nan`）、`match_fold`（`gdtoa/smisc.c:123-140` 折小写）、`pow10`
+  （平方累乘，与 gdtoa 的 `tens[]`/`bigtens[]` 同形）、`line_selected`。`OperandLeg::Accepted` 与
+  `NO_OPERAND_DENOMINATOR` 随之改 `f64`，`exit_status_value` 改按 C 的表达式在 `f64` 上算再向零截。
+  判据这一处刻意写成开区间比较 `scaled > -1.0 && scaled < 1.0`，与 C 的「截成整数再与 0 比」在
+  一切有限值上等价，而对 `inf`/`nan` 给出的答案与参照件所在的 x86-64 一致（都不为 0，即都不掷中）；
+  C 在那两形上是未定义行为（aarch64 的 `fcvtzs` 饱和、x86-64 的 `cvttsd2si` 给 `0x80000000`），
+  这一格**登记为不追平**，只对退码那一支的饱和语义写明。为什么不照 glibc 的大小写不敏感之外的
+  形去猜：`INFNAN_CHECK` 与 `NO_HEX_FP` 都按本仓库自己的配置取——`gdtoa/gdtoaimp.h:191` 明写
+  `#define INFNAN_CHECK`、`:643-645` 在 IEEE 上再立一次，`NO_HEX_FP` 全树没有定义，所以
+  `inf`/`nan`/`0x…p…` 在 Minix 里都是认的（这一点上参照件与 Minix 同源，A/B 可直接引）。
+- **门**：宿主库测 28/0、端到端 18/0（新立 6 枚：`1e3` 认下、`1e-3` 全通过、`--` 之后 `-1e-3`
+  全通过、`4294967296` 不退 1、`inf`/`nan` 认下一行都不掷中、前导空白吃掉而尾巴不吃；翻正 2 枚、
+  换示例数 1 枚）；容器门（`minix-ci:1.94` + `-m 2g -j 1`，挂仓库根、工作目录 `os/`）退码 0、合计 **46 通过 / 0 失败**（6 个 target，逐套读数在 `tmp/random-348/container-gate.log`）；对参照件的 A/B
+  38 形 **36 同 2 异**（`tmp/random-348/ab348.log`：一异是十六进制浮点，登记在下；二异是
+  `-inf` 走选项环那行的宿主字样与程序名来历，属承载差异）；clippy 触及件 0 命中；rustfmt 零漂移。
+  A/B 只比退码与标准错误：标准输出由随机掷决定，不可比。
+- **还敞着的**：① 十六进制浮点 `0x10`/`0x1p3`（同一函数 `#ifndef NO_HEX_FP` 那块，含 `gethex`
+  的二进制指数）与 `nan(0x…)` 载荷；② 非有限值/超射程值转整数那一格的 UB 不追平；③ 与 gdtoa
+  大数精化相比只按 `有效数字 × 10^指数` 乘出的末位单位残差（超过 17 位的数字串丢尾巴），只可能
+  挪动「恰好压在阈值那一格」的选中判定；④ 子正规结果是否立 `ERANGE` 这一格照「下溢成 0 才立」
+  实现，gdtoa 在 `Avoid_Underflow` 下对某些子正规也立号，差一句话不是差一个值；⑤ 共用的
+  `bin_support::emit` 写缝退码（C 是 `err(2, "stdout")` 退 2，`random.c:131-133`；`emit` 被本
+  crate 多支共用，改它要单独一条账）。条目状态仍是 **partially fixed**。
+- **下一轮首动作**：`tools/claim.sh claim RANDOM-DENOM-LEGS qoder`，接①（十六进制浮点：
+  `strtod.c` 的 `gethex` 那块要连 `p` 指数一起抄，A/B 形列在 `tmp/random-348/ab348.log` 的 `0x10`）。
+
 ## 6. 2026-09-17 架构审查追加：代码侧查漏补缺与二进制面收敛（cmd-04 + code-excellence）
 
 > **来源**：对 18-stage-commands 全部 Rust 实现（`os/commands/*` 的 58 个 workspace 成员，另含其依赖的 `os/libs/minix-sys` 与 `os/libs/minix-rt` 消费面）的架构级审查。先查漏补缺，再结构收敛。规范依据：`prompt/review-rules/review-cmds.md` §四（code-excellence：分层审视 + 每个改进点至少两个候选方案对比）与 §一（通用强制门）；对照先例：Redox coreutils（联网实证，见 §6.1）、uutils/coreutils（Rust 社区惯例，[待验证]）。
