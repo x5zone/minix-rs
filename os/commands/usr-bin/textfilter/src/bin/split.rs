@@ -7,24 +7,26 @@
 //! stdin) and writes each chunk to `prefix<suffix>` created with
 //! `O_WRONLY|O_CREAT|O_TRUNC` at DEFFILEMODE (`split.c:332`). The input
 //! operand special-cases `-` as stdin (`split.c:136`, unlike grep/sed);
-//! the second operand is the output prefix (default `x`). `-a` (suffix width)、
-//! `-b` (bytes)、`-n` (chunk count) 都由决定半解析，模式互斥照 C。
-//! Real-machine file creation is gated at C-57/E5.
+//! the second operand is the output prefix (default `x`). All three modes
+//! address the input by **byte**: `split.c:185`/`:252` hand the same
+//! `read`-filled buffer to `split1`/`split2`, which never look at an
+//! encoding. `-a` (suffix width)、`-b` (bytes)、`-n` (chunk count) 都由决定半
+//! 解析，模式互斥照 C。Real-machine file creation is gated at C-57/E5.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 use alloc::format;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::GetoptReport;
 use minix_textfilter::split::{
-    SplitError, chunk_bytes, chunks, chunks_n, parse_split_args, suffix,
+    chunk_bytes, chunks_bytes, chunks_n, lines_bytes, parse_split_args, suffix, SplitError,
 };
+use minix_textfilter::GetoptReport;
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -62,11 +64,10 @@ fn run() -> ! {
         },
     };
 
-    let text = core::str::from_utf8(&input).unwrap_or("");
-    let mut lines: Vec<String> = text.split('\n').map(ToString::to_string).collect();
-    if lines.last().is_some_and(|line| line.is_empty()) {
-        lines.pop();
-    }
+    // 行模式吃的是原始字节：`split2` 在读进来的缓冲里数换行（`split.c:252`、
+    // `:262-267`），从不校验编码，所以不可解码的字节只是普通数据；换行留在
+    // 它结束的那一行上，末行不带换行就不带。
+    let lines = lines_bytes(&input);
     // `-b`: byte-addressed split (`split1`) over the raw input, no line
     // reconstruction — each fixed-size chunk is written verbatim.
     if let Some(n) = byte_size {
@@ -108,7 +109,7 @@ fn run() -> ! {
         }
         support::terminate(0);
     }
-    for (index, chunk_lines) in chunks(&lines, lines_per_chunk).iter().enumerate() {
+    for (index, chunk_lines) in chunks_bytes(&lines, lines_per_chunk).iter().enumerate() {
         // `split.c:332`: each chunk lands in `prefix + suffix(index)`, created
         // with O_WRONLY|O_CREAT|O_TRUNC at DEFFILEMODE.
         let path = match out_path(prefix, index, sfxlen) {
@@ -128,13 +129,13 @@ fn out_path(prefix: &str, index: usize, width: usize) -> Option<String> {
     suffix(index, width).map(|suffix| format!("{prefix}{suffix}"))
 }
 
-/// Renders one chunk back into bytes: each line followed by a newline (the
-/// chunk lines carry no terminator; `split` writes whole lines).
-fn render_chunk(chunk_lines: &[String]) -> Vec<u8> {
+/// Renders one chunk back into bytes: the chunk's lines concatenated, each
+/// already carrying the terminator it had in the input. Adding one here would
+/// invent a newline the input never had（C 搬的是 `Ce - Cs + 1` 个原字节）。
+fn render_chunk(chunk_lines: &[&[u8]]) -> Vec<u8> {
     let mut data = Vec::new();
     for line in chunk_lines {
-        data.extend_from_slice(line.as_bytes());
-        data.push(b'\n');
+        data.extend_from_slice(line);
     }
     data
 }
@@ -202,9 +203,9 @@ mod tests {
     }
 
     #[test]
-    fn render_chunk_terminates_each_line() {
-        let lines = ["a".to_string(), "b".to_string()];
-        assert_eq!(render_chunk(&lines), b"a\nb\n".to_vec());
+    fn render_chunk_writes_its_lines_as_they_came() {
+        let lines: &[&[u8]] = &[b"a\n", b"b"];
+        assert_eq!(render_chunk(lines), b"a\nb".to_vec());
     }
 
     #[test]

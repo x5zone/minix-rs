@@ -321,6 +321,54 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百三十把 `split` 的行模式改成按字节切、终止符随它自己的行走，闭合 `SPLIT-NONUTF8-DROP`**
+  （`2026-10-17`，`claim/SPLIT-NONUTF8-DROP-qoder` @ 基线 `a75583ecc`，单域三线 commands/textfilter，无跨界）：
+  **这一条是什么**：上一笔登记的两处分叉同一个根——行模式把输入当文本读。`os/commands/usr-bin/textfilter/src/bin/split.rs`
+  决定行模式的第一步是 `core::str::from_utf8(&input).unwrap_or("")`，整档不可解码就折成空串，行切分拿到空输入，
+  于是一不分片、二不写文件、三退 0（静默丢数据，P0 级）；另一半是同一段把输入切成**不带**终止符的行、
+  再把尾部空片丢弃、写出时逐行补一个 `\n`，往返一次就把「末行本来有没有换行」这件事丢了。
+  **C 那一侧的形状**：`minix3/usr.bin/split/split.c:252` 把 `read` 进来的缓冲直接交给换行扫描，
+  `:262-267` 每遇到一个 `\n` 就写出 `Ce - Cs + 1` 个字节——换行是随它结束的那一行一起搬走的，
+  程序从不校验编码；`:276-280` 写的是缓冲末尾剩下的那段，原样、不补换行。
+  **做法（三处，全在行模式这条路上）**：① `os/commands/usr-bin/textfilter/src/split.rs` 加
+  `lines_bytes`（交出**带**终止符的行：每个换行连同它前面的字节算一行，末尾不带换行的那截原样算最后一行，
+  以换行收尾的输入不产尾空行）并把 `chunks(&[String], …)` 改成 `chunks_bytes(&[&[u8]], …)`——
+  分组只看条目数，形状照 `chunk_bytes`；留下 String 形的旧签名会变成无人使用的死面，所以直接换掉。
+  ② 壳侧删掉 `from_utf8` 那一行与「尾部空片 pop」，行模式改吃 `lines_bytes(&input)`。
+  ③ 写出侧 `render_chunk` 不再补 `\n`，各片原样串接即为该档内容。
+  **门（宿主 7 枚）**：`tests/split_face.rs` 新立五枚，期望全部取自参照件 `tmp/split-311/split_ref` 的
+  `od -An -c` 读数（`tmp/split-330/r/`，本轮现跑四形各退 0）——非法字节留在它自己那片（`-l 1` 对
+  `aa\xffbb␊cc\xfe␊dd␊` 出三片）、末行不带换行就不带（`a␊b` 出 `xaa`=`a ␊` 与 `xab`=`b`）、
+  空行是自己的一行（`a␊␊b␊` 出 `a ␊`/`␊`/`b ␊`）、一片装多行时逐行各带各的终止符（`-l 2` 对 `a␊b␊c`）、
+  同一输入的 `-b 6` 腿逐字节不变（对照腿，证明这一刀只落在行模式）；库侧另补两枚
+  `lines_bytes_carries_the_terminator_with_its_line` 与 `lines_bytes_is_not_an_encoding_check`，
+  并把三枚原 `chunks` 测翻成字节形、`render_chunk` 的两枚改钉「按原样串接」。
+  五枚门走的是新加的 `run_chunk_bytes` 腿——`run` 把首个分片转成了 lossy 字符串，
+  非法字节会被折成替换字符，正好把本轮要钉的东西遮掉。
+  **变异负控六枚全部由门咬住**（`tmp/split-330/ctl330.py`，逐枚改回再复跑、跑完还原并核 md5；
+  baseline 与还原后同为 32 通过 0 失败）：C1 把「不可解码就整档丢光」那行装回去咬 1 枚、
+  C2 写出侧补回换行咬 7 枚、C3 丢掉不带终止符的末段咬 3 枚、C4 分组时忽略行数咬 8 枚、
+  C5 切行时剥掉终止符咬 11 枚、C6 换行扫描改按别的字节咬 11 枚。**六枚门槛首次达成**，
+  三百二十五~三百二十九连续五轮的欠账到此清账。
+  **A/B**：`tmp/split-330/ab330.py` 十八形比退码/报文/生成文件的字节内容，**SAME=16 DIFF=2**，
+  两枚 DIFF 都是 `-n` 读标准输入那一形且**与本笔无关**（见下条登记），
+  同一形换成文件操作数后两侧逐字节相同（现跑：`-n 4` 对十二行文件，四片 `line001␊…` 完全一致）。
+  **新登记不执行 `SPLIT-N-STDIN-FSTAT-SIZE`**：C 的 `split3` 用 `fstat(ifd)` 拿输入字节数
+  （`minix3/usr.bin/split/split.c:290-300`），标准输入是管道时 `st_size` 为 0，
+  参照件于是报 `split: can't split into more than 0 files` 退 1 且不产文件；
+  本壳读尽输入后用 `input.len()`，同一形退 0 出四片。真值取决于 Minix 自己管道 `fstat` 的读数，
+  且这条腿在 `-n` 上，不在本轮射程内（一次一条），登记保留。
+  **三件套**：核实命令与读数——容器整包 `docker run --rm -v "$PWD:/work" -w /work/os -m 2g minix-ci:1.94 cargo test -j 1 -p minix-textfilter`
+  → **915 / 0 / 0**（68 个 target，上一笔 908，本笔 +5 枚面门 +2 枚库测）；
+  `cargo clippy -p minix-textfilter --all-targets` 退码 0、`^error` 计数 0、触及件零命中
+  （两条 `unused import` 属 `src/window.rs` 存量）；`cargo check --workspace -j 1` 0 error；
+  宿主三架构 `cargo build --bins -j 1 --target x86_64-unknown-none / aarch64-unknown-none / riscv64gc-unknown-none-elf -p minix-textfilter`
+  各 `Finished`；`rustfmt --edition 2021 --check` 对 `src/bin/split.rs`、`tests/split_face.rs` 零漂移，
+  `src/split.rs` 另报两处**存量**注释对齐漂移（主树同一份文件同样报，非本笔引入，未顺手改）；
+  `tools/pattern-gate.sh` PASS=16 FAIL=0 SKIP=0。核实日 `2026-10-17`；基线 `a75583ecc`。
+  **判定表进度**：本轮不动判定表（已对齐 20 支 + pr 不变）；下一支仍取 `SEQ-GETOPT-LINE`
+  （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`）。
+
 - ✅ **批次三百二十九收尾：翻正一条陈旧射程数字，并把 `split` 行模式的两处分叉登记入台账**
   （`2026-10-17`，无认领——纯台账笔，只动本文件）：
   **翻正的那个数**：批次三百二十七与本文件另一处都把 `GETOPT-REPORT-BYTE-LETTER` 的射程写成

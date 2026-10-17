@@ -327,3 +327,119 @@ fn the_split_reaches_the_chunk_files_end_to_end() {
     );
     let _ = fs::remove_file(&input);
 }
+
+/// 行模式的**原始字节**读数。上面那扇 `run` 把首个分片转成了 lossy 字符串，
+/// 非法字节会被折成 U+FFFD，正好把这几枚要钉的东西遮掉，所以这条腿直接交回
+/// 每个分片的字节内容（按文件名排序）。
+fn run_chunk_bytes(args: &[&str], input: &[u8]) -> (i32, Vec<(String, Vec<u8>)>) {
+    let dir = scratch();
+    let mut child = Command::new(SPLIT)
+        .args(args)
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the split binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    let mut chunks: Vec<(String, Vec<u8>)> = fs::read_dir(&dir)
+        .expect("the scratch dir should be readable")
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let data = fs::read(entry.path()).expect("the chunk file should be readable");
+            Some((name, data))
+        })
+        .collect();
+    chunks.sort();
+    fs::remove_dir_all(&dir).expect("clean the scratch dir");
+    (output.status.code().unwrap_or(-1), chunks)
+}
+
+/// 行模式以前把整档过一次 UTF-8 校验，整档不可解码就折成空串：于是一个分片都不产、
+/// 还退 0（静默丢数据，P0 级）。C 的行模式数的是读缓冲里的换行（`split.c:252` 的
+/// `read` 与 `:262-267` 的换行扫描），从不校验编码。期望取自参照件
+/// `tmp/split-311/split_ref -l 1 tmp/split-330/in.bin x` 的 `od -An -c` 读数
+/// （`tmp/split-330/a/`：三片，非法字节原样留在片里）。
+#[test]
+fn line_mode_keeps_undecodable_bytes() {
+    let (status, chunks) = run_chunk_bytes(&["-l", "1"], b"aa\xffbb\ncc\xfe\ndd\n");
+    assert_eq!(status, 0);
+    assert_eq!(
+        chunks,
+        vec![
+            ("xaa".to_string(), b"aa\xffbb\n".to_vec()),
+            ("xab".to_string(), b"cc\xfe\n".to_vec()),
+            ("xac".to_string(), b"dd\n".to_vec()),
+        ],
+        "不可解码的字节必须留在它原来那一片里"
+    );
+}
+
+/// 末行没有换行就不补：C 只有见到 `\n` 才把 `Ce - Cs + 1` 个字节整行搬走，缓冲末尾
+/// 剩下的那段按原样写出（`split.c:276-280`）。旧写法切成不带终止符的行、写出时逐行
+/// 补 `\n`，往返一次就把「末行有没有换行」丢了。参照件同形给 `xaa`=`a \n`、
+/// `xab`=`b`（`tmp/split-330/r/`，`split -l 1 nonl.bin`）。
+#[test]
+fn line_mode_does_not_invent_a_final_newline() {
+    let (status, chunks) = run_chunk_bytes(&["-l", "1"], b"a\nb");
+    assert_eq!(status, 0);
+    assert_eq!(
+        chunks,
+        vec![
+            ("xaa".to_string(), b"a\n".to_vec()),
+            ("xab".to_string(), b"b".to_vec()),
+        ],
+        "不带换行的末行就不能带出换行"
+    );
+}
+
+/// 空行是自己的一行，内容就是那一个换行（`tmp/split-330/t/` 的 `zaa`/`zab`/`zac`
+/// 三形对照）；这一形两侧本来就相同，留在这里是为了让「终止符随行走」这件事有
+/// 一枚不带非法字节的对照，不至于把两件事钉在一枚门上。
+#[test]
+fn line_mode_makes_a_blank_line_its_own_chunk() {
+    let (status, chunks) = run_chunk_bytes(&["-l", "1"], b"a\n\nb\n");
+    assert_eq!(status, 0);
+    assert_eq!(
+        chunks,
+        vec![
+            ("xaa".to_string(), b"a\n".to_vec()),
+            ("xab".to_string(), b"\n".to_vec()),
+            ("xac".to_string(), b"b\n".to_vec()),
+        ]
+    );
+}
+
+/// 一片装多行时逐行各带各的终止符，末行的形状也跟着整片走：`split -l 2` 对
+/// `a\nb\nc`（末行不带换行）给 `xaa`=`a\nb\n`、`xab`=`c`。
+#[test]
+fn line_mode_keeps_each_line_terminator_inside_a_multi_line_chunk() {
+    let (status, chunks) = run_chunk_bytes(&["-l", "2"], b"a\nb\nc");
+    assert_eq!(status, 0);
+    assert_eq!(
+        chunks,
+        vec![
+            ("xaa".to_string(), b"a\nb\n".to_vec()),
+            ("xab".to_string(), b"c".to_vec()),
+        ]
+    );
+}
+
+/// 对照腿：同一份非法输入走 `-b 6`，改前改后逐字节不变（参照件
+/// `split -b 6 tmp/split-330/in.bin x` 给 `xaa`=`aa 377 bb \n`、`xab`=`cc 376 \n d d`、
+/// `xac`=`\n`，`tmp/split-330/d/`）。它证明这一刀只落在行模式，`-b` 两条腿本来就按字节读。
+#[test]
+fn byte_mode_is_untouched_by_the_line_rewrite() {
+    let (status, chunks) = run_chunk_bytes(&["-b", "6"], b"aa\xffbb\ncc\xfe\ndd\n");
+    assert_eq!(status, 0);
+    assert_eq!(
+        chunks,
+        vec![
+            ("xaa".to_string(), b"aa\xffbb\n".to_vec()),
+            ("xab".to_string(), b"cc\xfe\ndd".to_vec()),
+            ("xac".to_string(), b"\n".to_vec()),
+        ]
+    );
+}

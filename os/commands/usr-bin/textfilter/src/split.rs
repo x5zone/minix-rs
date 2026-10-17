@@ -9,7 +9,10 @@
 //! wait for the gated create/write face on the host, so the doing half
 //! can only report what it would create. The `-a` suffix-length, `-b` byte
 //! count (`split.c:99-108`), and `-n` chunk-count (`split.c:123-127`) flags are
-//! all wired here (`chunks` / `chunk_bytes` / `chunks_n`).
+//! all wired here (`lines_bytes` / `chunks_bytes` / `chunk_bytes` / `chunks_n`).
+//! Both line-mode faces are byte-addressed, as `split2` is: it scans the read
+//! buffer for `\n` and never checks an encoding, so undecodable bytes are
+//! ordinary data.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -20,10 +23,29 @@ pub const DEFAULT_LINES: usize = 1000;
 /// Default suffix length (`sfxlen`, split.c:61).
 pub const DEFAULT_SFXLEN: usize = 2;
 
-/// Computes the chunks: each entry holds that chunk's lines (the last
-/// one may be short). `lines_per_chunk` of zero is a caller error the
-/// doing half rejects.
-pub fn chunks(lines: &[String], lines_per_chunk: usize) -> Vec<Vec<String>> {
+/// Splits raw input into lines, each one **keeping** the `\n` that ends it
+/// (`split.c:262-267`: `split2` writes `Ce - Cs + 1` bytes, so the terminator
+/// travels with its line). A tail without a terminator stays without one, and
+/// input ending in a newline yields no empty trailing line.
+pub fn lines_bytes(data: &[u8]) -> Vec<&[u8]> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (index, byte) in data.iter().enumerate() {
+        if *byte == b'\n' {
+            out.push(&data[start..index + 1]);
+            start = index + 1;
+        }
+    }
+    if start < data.len() {
+        out.push(&data[start..]);
+    }
+    out
+}
+
+/// Computes the chunks: each entry holds that chunk's lines, terminators and
+/// all (the last one may be short). `lines_per_chunk` of zero is a caller error
+/// the doing half rejects.
+pub fn chunks_bytes<'a>(lines: &[&'a [u8]], lines_per_chunk: usize) -> Vec<Vec<&'a [u8]>> {
     let mut chunks = Vec::new();
     if lines_per_chunk == 0 {
         return chunks;
@@ -38,8 +60,8 @@ pub fn chunks(lines: &[String], lines_per_chunk: usize) -> Vec<Vec<String>> {
 }
 
 /// Splits raw input into fixed-size byte chunks of `n` bytes (the last may be
-/// short); `n == 0` or empty input yields no chunks. The byte-addressed cousin
-/// of [`chunks`], mirroring `split.c` `split1(bytecnt, …)` behind `-b`.
+/// short); `n == 0` or empty input yields no chunks. The fixed-size cousin
+/// of [`chunks_bytes`], mirroring `split.c` `split1(bytecnt, …)` behind `-b`.
 pub fn chunk_bytes(data: &[u8], n: usize) -> Vec<&[u8]> {
     let mut out = Vec::new();
     if n == 0 {
@@ -346,27 +368,55 @@ mod tests {
 
     #[test]
     fn test_default_chunks_of_thousand() {
-        let lines: Vec<String> = (1..=2500).map(|n| n.to_string()).collect();
-        let chunks = chunks(&lines, DEFAULT_LINES);
+        let mut data = Vec::new();
+        for _ in 0..2500 {
+            data.extend_from_slice(b"line\n");
+        }
+        let lines = lines_bytes(&data);
+        let chunks = chunks_bytes(&lines, DEFAULT_LINES);
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].len(), 1000);
         assert_eq!(chunks[1].len(), 1000);
         assert_eq!(chunks[2].len(), 500);
+        assert_eq!(chunks[2][499], &data[data.len() - 5..]);
     }
 
     #[test]
     fn test_explicit_count_and_empty_input() {
-        let lines: Vec<String> = (1..=5).map(|n| n.to_string()).collect();
-        let groups = chunks(&lines, 2);
+        let data = *b"1\n2\n3\n4\n5\n";
+        let lines = lines_bytes(&data);
+        let groups = chunks_bytes(&lines, 2);
         assert_eq!(groups.len(), 3);
-        assert_eq!(groups[2], vec!["5".to_string()]);
-        assert!(chunks(&[], 10).is_empty());
+        assert_eq!(groups[2], vec![&b"5\n"[..]]);
+        assert!(chunks_bytes(&[], 10).is_empty());
     }
 
     #[test]
     fn test_zero_count_is_no_chunks() {
-        let lines = vec!["a".to_string()];
-        assert!(chunks(&lines, 0).is_empty());
+        let lines = lines_bytes(b"a\n");
+        assert!(chunks_bytes(&lines, 0).is_empty());
+    }
+
+    #[test]
+    fn lines_bytes_carries_the_terminator_with_its_line() {
+        assert_eq!(lines_bytes(b"a\nb\n"), vec![&b"a\n"[..], &b"b\n"[..]]);
+        // 空行是它自己的一行，终止符就是它的全部内容；末行不带换行则保持不带。
+        assert_eq!(
+            lines_bytes(b"a\n\nb\n"),
+            vec![&b"a\n"[..], &b"\n"[..], &b"b\n"[..]]
+        );
+        assert_eq!(lines_bytes(b"a\nb"), vec![&b"a\n"[..], &b"b"[..]]);
+        assert_eq!(lines_bytes(b"a"), vec![&b"a"[..]]);
+        assert!(lines_bytes(b"").is_empty());
+    }
+
+    #[test]
+    fn lines_bytes_is_not_an_encoding_check() {
+        // 不可解码的字节只是普通数据（C 数的是读缓冲里的换行）。
+        assert_eq!(
+            lines_bytes(b"aa\xffbb\ncc\xfe\n"),
+            vec![&b"aa\xffbb\n"[..], &b"cc\xfe\n"[..]]
+        );
     }
 
     #[test]
