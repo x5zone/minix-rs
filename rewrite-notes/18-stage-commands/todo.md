@@ -119,6 +119,46 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百五十二（负控轮，生产码一字未动）：给三百四十八至三百五十一落地的判据补九枚变异控制，并把控制机自己的两处错修对
+
+- **为什么这一轮不动生产码**：台账上挂着「三百二十五~三百二十九连续五轮的六枚负控欠账」，而本会话
+  新落地的四片（三百四十八的分母值域、三百四十九的十六进制浮点、三百五十的 `nan` 载荷、三百五十一
+  之前三百五十那批门）同样一枚负控都没有。门会不会咬人，只能靠把判据改坏来证明；不证明的门等于
+  没有的门。这一轮跑的是**新落这四片**的门，那六枚旧欠账仍在台上。
+- **控制机的第一处错（记成规矩：负控的裁判自己也要有负控）**：初版脚本要求「六套 `test result:`
+  摘要全部到达」才算咬住。库测一红，cargo 就不再往下跑，摘要只有 1 套——于是七枚明明让门变红的
+  变异被我全记成「没咬」，读数是 `咬住数 = 0 / 7`。判据改对之后同一批变异的结果是 `8 / 9`。
+  这与三百四十四那次「控制机没跑到摘要就被当成 0 失败」是同族错，两次都错在**把「没看到红」当成
+  「没有红」**。新判据三件事：失败数大于零、无编译错、**期望的那一枚门**出现在变红名单里。
+- **控制机的第二处错**：「退码从向零截改成四舍五入」那一枚我写成 `.round()`，本 crate 是 `no_std`
+  （`f64::round` 属 std），报编译错。编译错不是门有效，是变异不合法——换成加 `0.5` 再截断，同一件
+  事、能编过、门随即变红。
+- **九枚读数**（脚本 `tmp/random-352/ctl352.py`，日志 `tmp/random-352/ctl352.log`；盘面
+  `os/commands/games/text-games/src/lottery.rs` 的 md5 `3c44b46623df469f0aff6ab3b5748900`，
+  每枚跑完即整文件还原并校验该 md5，跑完 `git status --porcelain` 行数为 0）：
+  | 改坏的那条判据 | 变红的门 | 读数 |
+  |---|---|---|
+  | 下溢不立号（只认溢出） | `the_decimal_grammar_is_the_one_strtod_reads` 与 `a_rejected_operand_…` | 咬住（2 红） |
+  | 大写 `0X` 不分派给 `gethex` | `the_hex_leg_is_gethex_shaped` | 咬住 |
+  | 没有右括号也把 `nan(` 载荷当吃完 | `a_nan_payload_moves_the_end_pointer_and_nothing_else` | 咬住 |
+  | 选中判据从开区间改成闭区间 | `the_selection_predicate_is_the_cast_then_compare_itself` | 咬住 |
+  | 集外字母不再报 | `the_option_ring_stops_at_the_first_offender` | 咬住 |
+  | 退码从向零截改成加半再截 | `the_exit_status_scales_by_the_expression_not_by_the_comment` | 咬住 |
+  | 丢掉「整串吃掉」那半句判据 | `a_rejected_operand_and_an_overflowed_one_are_two_different_legs` 等 | 咬住（2 红） |
+  | 那句 `errx` 报文丢掉句尾的点 | 先红的是决定半那枚逐字节比对门 `the_two_hardwired_lines_keep_c_spelling` | 按预期未中，见下 |
+  | 集外字母那行加上引号（照宿主字样） | 端到端门 `an_unknown_letter_gets_the_libc_line_then_the_usage_line` | 咬住 |
+- **唯一没按预期红的那一枚给出的不是漏、是排序信息**：`NOT_VALID_SENTENCE` 句尾的点被改掉时，先变红
+  的是决定半那枚逐字节比对的门，端到端那枚没轮到跑（cargo 遇红即停）。两条门都在，紧的那条在前——
+  这正是想要的层次：常量层钉字面，端到端层钉「拼出来的整行报文」。
+- **欠账清到哪一步**：三百四十八至三百五十一的门全部有了负控；**三百二十五~三百二十九那六枚旧欠账
+  仍在台上**（本轮预算只够覆盖新落的这几片）。
+- **下一轮首动作**：`tools/claim.sh claim SPLIT-STREAMING-MEMORY qoder` 落片A（`-b` 的边读边写，
+  落账前要先按三百五十一那条读 `minix3/usr.bin/split/split.c:245-320` 与 `MAXBSIZE` 定义处、
+  并现查 `os/commands/usr-bin/textfilter/tests/split_face.rs` 里读失手那一形对「已落盘文件」的断言）；
+  若那一轮的预算不足，先做旧六枚负控（`tmp/random-325/`~`tmp/random-329/` 的锚点按同法改坏）。
+- **条目状态**：`RANDOM-DENOM-LEGS` 不变——敞口仍是三百五十末登记的四条（非有限值转整数的未定义
+  行为那一格不追平、超位数的末位单位残差、子正规是否立号、共用的 `bin_support::emit` 写缝退码）。
+
 ## 批次三百五十一（纯测量笔，生产码一字未动）：把 `SPLIT-STREAMING-MEMORY` 量成三片，并指出一处会变的可见行为
 
 - **为什么这一笔不动码**：剩下的轮次预算不足以再走一遍「码 → 门 → 容器 → 台账」的闭环，而
