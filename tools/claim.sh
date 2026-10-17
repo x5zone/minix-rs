@@ -29,6 +29,10 @@ wt_of() {
     /^branch /{if($0=="branch "b){print w;exit}}'
 }
 
+# 领取时工作树的命名约定：分支名去掉 claim/ 前缀后整段小写。claim 建它、release 与
+# sweep 判它，三处共用一个定义，免得哪天命名改了而判定还留在旧写法上。
+wt_path() { echo "$main_root/.wt/$(echo "${1#claim/}" | tr 'A-Z' 'a-z')"; }
+
 case "$cmd" in
   claim)
     id="${2:?用法: tools/claim.sh claim <ID> <owner>}"
@@ -43,7 +47,7 @@ case "$cmd" in
       echo "FAIL: ${id} 已被领取："; echo "$others" | sed 's/^/  /'; exit 1
     fi
     git branch "$branch"
-    wt="$main_root/.wt/$(echo "${branch#claim/}" | tr 'A-Z' 'a-z')"
+    wt=$(wt_path "$branch")
     if git worktree add "$wt" "$branch" 2>/dev/null; then
       echo "OK: 已领取 ${id}（锁分支 $branch @ $(git rev-parse --short HEAD)）"
       echo "    专属工作树已建：$wt"
@@ -84,13 +88,34 @@ case "$cmd" in
     id="${2:?用法: tools/claim.sh release <ID> <owner>}"
     owner="${3:?用法: tools/claim.sh release <ID> <owner>}"
     branch="claim/${id}-${owner}"
+    guess=$(wt_path "$branch")
     wt=$(wt_of "refs/heads/$branch")
+    if [ -z "$wt" ] && [ -d "$guess" ]; then
+      # 登记表里已经没有条目、目录却还在——上一次 release 注销成功而删除失败留下的下场。
+      # 这一支绝不能只打「已释放」：锁一销，再没有别的命令会提起这棵不在册的树。
+      echo "WARN: $branch 无登记条目，但 $guess 仍在磁盘上"
+      du -sh "$guess" 2>/dev/null || true
+      echo "      git 早就看不见它，回收判定见 tools/claim.sh sweep。"
+    fi
     if [ -n "$wt" ]; then
-      git worktree remove "$wt" || {
-        echo "FAIL: $wt 内仍有未提交改动——先提交并合入主线，或确认弃树后 git worktree remove --force $wt"; exit 1; }
-      # 注销条目不等于目录消失。权威编译门在容器里以另一属主写 os/target 的增量缓存，
-      # git 删不动那些目录，于是留下一整棵 `git worktree list` 里已经查不到的树。
-      if [ -e "$wt" ]; then
+      # 注销条目与物理删除是两步，第二步能单独失败，而且失败时第一步已经生效。所以
+      # `git worktree remove` 报错有两种截然不同的下场，必须分开处置：条目仍在册＝树里
+      # 有在制品，锁必须留着才保得住；条目已注销而目录还在＝容器（不带 -u，内部是 root）
+      # 写进来的 os/target 缓存删不净，这时锁照销，否则不在册的树会让 claim 与 sweep
+      # 都读到假信号。权威编译门的配方见 AGENTS.md。
+      if ! rm_msg=$(git worktree remove "$wt" 2>&1); then
+        if [ -e "$wt" ] && ! git worktree list --porcelain | grep -qxF "worktree $wt"; then
+          echo "WARN: $wt 已从 git 注销，但目录删不净（树内有当前用户删不掉的条目）"
+          echo "      git 原文: $rm_msg"
+          du -sh "$wt" 2>/dev/null || true
+          echo "      锁照销；残骸由 tools/claim.sh sweep 追，回收需要人执行 sudo。"
+        else
+          echo "FAIL: 未能删除 $wt"
+          echo "      git 原文: $rm_msg"
+          echo "      条目仍在册时不销锁——先提交并合入主线，或确认弃树后 git worktree remove --force $wt"
+          exit 1
+        fi
+      elif [ -e "$wt" ]; then
         echo "WARN: $wt 已从 git 注销，但目录仍在磁盘上（树内有当前用户删不掉的条目）"
         du -sh "$wt" 2>/dev/null || true
         echo "      这类残骸不报错、不在册，只有 tools/claim.sh sweep 与 df 看得见它。"
@@ -135,13 +160,21 @@ case "$cmd" in
     miss=0
     for b in $(git for-each-ref --format='%(refname:short)' refs/heads/claim/); do
       wt=$(wt_of "refs/heads/$b")
-      if [ -z "$wt" ] || [ ! -d "$wt" ]; then
-        echo "失配    锁 $b 在册，但工作树 ${wt:-（无）} 不在磁盘上——在这条线上开工前必须补树"
+      guess=$(wt_path "$b")
+      if [ -z "$wt" ]; then
+        if [ -d "$guess" ]; then
+          echo "残骸    锁 $b 在册，登记表里已无条目，而目录 $guess 仍在磁盘上——release 删不净的形态，按上表判定回收"
+        else
+          echo "失配    锁 $b 在册，磁盘上既无登记条目也无目录——在这条线上开工前必须补树"
+        fi
+        miss=$((miss+1))
+      elif [ ! -d "$wt" ]; then
+        echo "失配    锁 $b 的登记条目指向 $wt，但目录不在——在这条线上开工前必须补树"
         miss=$((miss+1))
       fi
     done
     [ "$miss" = "0" ] && echo "OK: 每个 claim 锁都有对应的工作树"
-    echo "--- 判定：在册 $n_reg 棵（在途）/ 可回收 $n_free 棵 / 需核对 $n_check 棵；锁树失配 $miss 处 ---"
+    echo "--- 判定：在册 $n_reg 棵（在途）/ 可回收 $n_free 棵 / 需核对 $n_check 棵；锁树待处理 $miss 处 ---"
     echo "本命令只读，不执行任何删除。"
     ;;
   *)
