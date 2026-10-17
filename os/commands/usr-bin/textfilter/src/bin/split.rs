@@ -158,19 +158,32 @@ fn create_write(path: &str, bytes: &[u8]) -> Result<(), ChunkWrite> {
 /// 拆成这一小函数只为把「失败到号」这一步单独钉住：C 那边是 `bigwrite()` 对不上数
 /// 就 `err(1, "write")`，`err` 后缀打的就是 `errno`，写满与写错是两句话。
 fn write_into(sink: support::WriteSink, bytes: &[u8]) -> Result<(), ChunkWrite> {
-    sink.finish(bytes).map_err(ChunkWrite::Write)
+    sink.finish(bytes).map_err(sink_failure_of)
 }
 
-/// 分片文件的两种失败：开不开（C 报路径）与写不写进（C 报 `write`）。
+/// 两臂的对号入座是纯映射，拆出来才能被门钉住：真机那条腿才会交回 `Close`，
+/// 宿主跑不到，于是映射本身必须有门（`split.c:204` 与 `:319-322` 的分工）。
+fn sink_failure_of(failure: support::SinkFailure) -> ChunkWrite {
+    match failure {
+        support::SinkFailure::Write(code) => ChunkWrite::Write(code),
+        support::SinkFailure::Close(code) => ChunkWrite::Close(code),
+    }
+}
+
+/// 分片文件的三种失败：开不开（C 报路径）、写不写进（C 报 `write`）、
+/// 写完关不关得掉（C 报路径）。带 `Debug` 是为了让门的 panic 消息说得出是哪一臂。
+#[derive(Debug, PartialEq, Eq)]
 enum ChunkWrite {
     Open(minix_sys::Errno),
     Write(minix_sys::Errno),
+    /// `close` 失败：`fname` 还停在刚写完的那枚分片上，报的是路径（`split.c:319-322`）。
+    Close(minix_sys::Errno),
 }
 
 /// 两个失败出口各自的 `err(3)` 三段形，印完即退 1（C 的 `err` 本身就是致命支）。
 fn write_failure(prog: &str, path: &str, failure: ChunkWrite) -> ! {
     let code = match failure {
-        ChunkWrite::Open(code) | ChunkWrite::Write(code) => code,
+        ChunkWrite::Open(code) | ChunkWrite::Write(code) | ChunkWrite::Close(code) => code,
     };
     support::warn_line(prog, failure_label(&failure, path), code);
     support::terminate(1);
@@ -181,7 +194,7 @@ fn write_failure(prog: &str, path: &str, failure: ChunkWrite) -> ! {
 /// 让「两臂不互换」这一条有门可钉——渲染那一步要打要退出，宿主侧没法看。
 fn failure_label<'a>(failure: &ChunkWrite, path: &'a str) -> &'a str {
     match failure {
-        ChunkWrite::Open(_) => path,
+        ChunkWrite::Open(_) | ChunkWrite::Close(_) => path,
         ChunkWrite::Write(_) => "write",
     }
 }
@@ -197,6 +210,22 @@ fn too_many_files() -> ! {
 mod tests {
     use super::*;
 
+    /// 三臂各归各的：写失败对 `write`，close 失败对**这一枚分片的名字**（开档臂
+    /// 报的也是名字，两者同句形）。若两臂折成一臂、或号被压平，这一枚当场变红。
+    #[test]
+    fn the_sink_arms_land_on_their_own_chunk_arms() {
+        let write = minix_sys::Errno::from_i32(28);
+        let close = minix_sys::Errno::from_i32(5);
+        assert_eq!(
+            sink_failure_of(support::SinkFailure::Write(write)),
+            ChunkWrite::Write(write)
+        );
+        assert_eq!(
+            sink_failure_of(support::SinkFailure::Close(close)),
+            ChunkWrite::Close(close)
+        );
+    }
+
     #[test]
     fn the_two_write_arms_do_not_swap_their_labels() {
         // 开档臂报路径、写臂报 `write` 这个词（`split.c:332-333` 与 `:204` 是两句不同的
@@ -208,6 +237,11 @@ mod tests {
         assert_eq!(
             failure_label(&ChunkWrite::Write(minix_sys::Errno::from_i32(28)), "xaa"),
             "write"
+        );
+        // close 臂报的是**这一枚分片的名字**，与写臂不同（`split.c:319-322`）
+        assert_eq!(
+            failure_label(&ChunkWrite::Close(minix_sys::Errno::from_i32(28)), "xaa"),
+            "xaa"
         );
     }
 
@@ -230,7 +264,7 @@ mod tests {
                     "又被压成 EIO"
                 );
             }
-            Err(ChunkWrite::Open(code)) => panic!("失败被归到了开档腿：{}", code.to_i32()),
+            Err(arm) => panic!("失败被归到了别的臂：{arm:?}"),
             Ok(()) => panic!("只读句柄上的写不可能成功"),
         }
         let _ = std::fs::remove_dir_all(&dir);

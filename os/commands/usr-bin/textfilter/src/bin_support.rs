@@ -425,11 +425,16 @@ impl WriteSink {
     /// 错误腿交回的是**平台那个号**：C 的 `split.c:204`、`:216`、`:225` 三处都是
     /// `bigwrite()` 对不上数就 `err(1, "write")`，`err` 后缀打的正是 `errno`——
     /// 「盘写满」与「真的一次 I/O 错」是两句话，压成一个 `EIO` 就只剩「出错了」。
-    pub fn finish(mut self, bytes: &[u8]) -> Result<(), minix_sys::Errno> {
+    pub fn finish(mut self, bytes: &[u8]) -> Result<(), SinkFailure> {
         use std::io::Write as _;
-        self.0
+        let write = self
+            .0
             .write_all(bytes)
-            .map_err(|failure| errno_of(&failure))
+            .map_err(|failure| SinkFailure::Write(errno_of(&failure)));
+        // 宿主这条腿看不见 `close` 的失败：`std::fs::File` 由 drop 关闭且不交回任何号，
+        // 而 C 是在开下一枚分片之前 `close(ofd)` 并 `err(1, "%s", fname)`
+        // （`minix3/usr.bin/split/split.c:319-322`）。真机那条腿按 `close_outcome` 报。
+        write
     }
 }
 
@@ -439,10 +444,36 @@ impl WriteSink {
     /// `bigwrite()`（`minix3/usr.bin/split/split.c:337-351`）的循环形状。错误腿带
     /// 平台号，因为调用方要的就是 `err(1, "write")` 那一句。描述符在返回前释放；
     /// `close` 的失败本层不报（`SPLIT-CLOSE-ERRLEG` 已登记）。
-    pub fn finish(self, bytes: &[u8]) -> Result<(), minix_sys::Errno> {
-        let outcome = write_loop(self.fd, bytes);
-        let _ = minix_sys::close(self.fd);
-        outcome
+    pub fn finish(self, bytes: &[u8]) -> Result<(), SinkFailure> {
+        let write = write_loop(self.fd, bytes).map_err(SinkFailure::Write);
+        let close = minix_sys::close(self.fd)
+            .map(|_| ())
+            .map_err(SinkFailure::Close);
+        close_outcome(write, close)
+    }
+}
+
+/// 一枚输出文件的两种失败：写不进去，与写完关掉时失败。标签不同是 C 定的——
+/// `bigwrite()` 对不上数是 `err(1, "write")`（`minix3/usr.bin/split/split.c:204`、`:216`、
+/// `:225`），`newfile()` 里 `close(ofd) != 0` 是 `err(1, "%s", fname)`（`:319-322`，此时
+/// 后缀还没往前推进，`fname` 还是**上一枚**分片的名字）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SinkFailure {
+    Write(minix_sys::Errno),
+    Close(minix_sys::Errno),
+}
+
+/// 两腿的取舍写成一张明表，是因为它得能被门钉住：宿主看不见 `close` 的失败，真机才两条都有。
+/// 规则是「写失败优先」——C 在 `bigwrite` 失手处当场 `err` 退出，根本走不到下一次 `close`。
+#[must_use]
+pub fn close_outcome(
+    write: Result<(), SinkFailure>,
+    close: Result<(), SinkFailure>,
+) -> Result<(), SinkFailure> {
+    match (write, close) {
+        (Err(failure), _) => Err(failure),
+        (Ok(()), Err(failure)) => Err(failure),
+        (Ok(()), Ok(())) => Ok(()),
     }
 }
 
@@ -695,20 +726,52 @@ mod write_leg_tests {
         let path = dir.join("payload");
         std::fs::write(&path, b"seed").expect("seed file");
         let readable = std::fs::File::open(&path).expect("read-only handle");
-        let code = WriteSink(readable)
-            .finish(b"more")
-            .expect_err("只读句柄上的写必然失败");
-        assert_eq!(
-            code.to_i32(),
-            9,
-            "应当原样交回 EBADF，实得 {}",
-            code.to_i32()
-        );
-        assert_ne!(
-            code.to_i32(),
-            minix_sys::Errno::EIO.to_i32(),
-            "又被压成 EIO 了"
-        );
+        match WriteSink(readable).finish(b"more") {
+            Err(SinkFailure::Write(code)) => {
+                assert_eq!(code.to_i32(), 9, "应当原样交回 EBADF");
+                assert_ne!(
+                    code.to_i32(),
+                    minix_sys::Errno::EIO.to_i32(),
+                    "又被压成 EIO"
+                );
+            }
+            Err(SinkFailure::Close(code)) => {
+                panic!("写失败被记成了 close 失败：{}", code.to_i32())
+            }
+            Ok(()) => panic!("只读句柄上的写不可能成功"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod close_outcome_tests {
+    use super::close_outcome;
+    use super::SinkFailure::{Close, Write};
+
+    /// 写失败赢：C 在 `bigwrite` 失手处当场退出，压根到不了下一次 `close`
+    /// （`minix3/usr.bin/split/split.c:204` 与 `:319-322` 的先后）。
+    #[test]
+    fn a_write_failure_outranks_a_close_failure() {
+        let write = Err(Write(minix_sys::Errno::from_i32(28)));
+        let close = Err(Close(minix_sys::Errno::from_i32(5)));
+        assert_eq!(
+            close_outcome(write, close),
+            Err(Write(minix_sys::Errno::from_i32(28)))
+        );
+    }
+
+    #[test]
+    fn a_clean_write_still_reports_the_close_failure() {
+        let close = Err(Close(minix_sys::Errno::from_i32(28)));
+        assert_eq!(
+            close_outcome(Ok(()), close),
+            Err(Close(minix_sys::Errno::from_i32(28)))
+        );
+        assert_eq!(
+            close_outcome(Ok(()), Ok(())),
+            Ok(()),
+            "两腿都干净时不许凭空造出失败"
+        );
     }
 }

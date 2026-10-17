@@ -321,6 +321,15 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`minix3/usr.bin/seq/seq.c:102` 的 optstring 是 `"f:hs:t:w"`——`f`/`t` 带值，`s`/`w` 不带，
   `w` 排在串尾容易被误读成带值）。
 
+- ✅ **批次三百三十七把 `split` 分片文件的 `close` 腿接成第三臂，闭合 `SPLIT-CLOSE-ERRLEG`**（`claim/SPLIT-CLOSE-ERRLEG-qoder` @ 基线 `d52b9f383`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/split.rs}` + 18 篇两份文档，单域三线 commands/textfilter，无跨界）
+  - **是什么、为什么**：一枚分片文件在 C 那里有三处会失败，各自一句：开不出来 `err(1, "%s", fname)`（`minix3/usr.bin/split/split.c:331-332`）、写不进去 `err(1, "write")`（`:204`、`:216`、`:225`）、**写完关掉关不掉** `err(1, "%s", fname)`（`newfile()` 在开下一枚之前 `close(ofd)`，`:319-320`；此刻后缀还没往前推，`fname` 仍是刚写完那枚的名字）。上一轮把写腿的号接到位了，`close` 这一腿仍然被丢掉：目标腿 `minix_sys::close` 的返回被 `let _ =` 吞掉，宿主腿连 observable 的机会都没有（`std::fs::File` 的 drop 不交回任何号）。
+  - **改法**：`WriteSink::finish` 的返回换成 `SinkFailure { Write(Errno), Close(Errno) }`，两腿的取舍写成一张明表 `close_outcome`——**写失败优先**，因为 C 在 `bigwrite` 失手处当场退出，走不到下一次 `close`。壳侧 `ChunkWrite` 长第三臂 `Close`，标签与开档臂同为路径、与写臂不同；映射从 `write_into` 里拆出纯函数 `sink_failure_of`。
+  - **为什么非要拆这两枚纯函数**：真机那条腿才会交回 `Close`，宿主测试跑不到，于是「臂没接错」这件事在宿主侧本来无门可钉。拆成 `close_outcome` 与 `sink_failure_of` 之后，表与映射各有一枚门，负控才咬得动——这是本轮实测出来的：拆之前三枚变异（close 折成 write、折成开档、写臂折成 close）全部静默通过，拆之后三枚全红。
+  - **门**：`cargo test -p minix-textfilter` → **1058 passed / 0 failed**；新立三枚（`close_outcome` 的两枚表门：写失败赢、写干净时仍报 close 失败且不许凭空造失败；`sink_failure_of` 的一枚映射门）；宿主三架构 `x86_64-unknown-none`/`aarch64-unknown-none`/`riscv64gc-unknown-none-elf` 各 0 error；`cargo check --workspace` 0 error；触及件 `rustfmt --edition 2021 --check` 零漂移；`cargo clippy -p minix-textfilter --all-targets` 触及件零命中。
+  - **负控六枚、五枚咬**：close 折成写失败 → 1 红；close 折成开档并压号 → 1 红；两腿优先级反过来 → 1 红；close 臂报成 `write` → 1 红；写臂折成 close → 2 红。第六枚（目标腿丢掉 close 的失败）改的是 `cfg(not(test))` 那一侧的接线，宿主测试到不了，因此不红——这是本轮的**验证边界**，接线本身归真机门（`C-57`/E5 既有口径）。
+  - **顺带钉住的一处既存风险**：三架构编译在本轮中途报过一次 `E0308`（`write_loop` 交回 `Errno` 而 `close_outcome` 要 `SinkFailure`）——宿主全套当时是绿的，因为它跑的是 `cfg(test)` 那条腿。这条教训值得记：**只跑宿主测试不足以证明 `cfg` 双生面的一侧编得过**，三架构编译必须在同一轮里跑，不能留到最后。
+  - **本轮没做的**：宿主腿看不见 `close` 失败这件事未修（`std::fs::File` 不交回号；要看得见得改成自己 `close` 一次，属另一笔的取舍，登记为 `SPLIT-CLOSE-HOST-VISIBILITY`）；`uniq`/`sort` 的输出腿只跟随签名，报文形状未动（`UNIQ-WRITE-ERRLEG` 已在册）。**下一轮首动作**：`tools/claim.sh claim SPLIT-READ-STAT-ERRLEG qoder`。
+
 - ✅ **批次三百三十六让 `split` 的写腿把平台那个号一路带到报文里，闭合 `SPLIT-WRITE-ERRNO`**（`claim/SPLIT-WRITE-ERRNO-qoder` @ 基线 `0021e749f`，动 `os/commands/usr-bin/textfilter/{src/bin_support.rs,src/bin/split.rs,src/bin/uniq.rs,tests/split_face.rs}` + 18 篇两份文档，单域三线 commands/textfilter，无跨界）
   - **是什么、为什么**：`split` 每枚分片都是「开档 + 写完」，C 那两臂各打一句——开不出来是 `err(1, "%s", fname)`（`minix3/usr.bin/split/split.c:332-333`，报**路径**），写不进去是 `err(1, "write")`（`:204`、`:216`、`:225`，报**这个词**），两句的第三段都是 `errno` 对应的句子。这一支的 `WriteSink::finish` 交回 `Result<(), ()>`，壳里再折成 `EIO`，于是「盘写满」与「真的一次 I/O 错」被压成同一句话；目标腿还只 `write` 一次，写不完也当写完了。
   - **改法与为什么不做得更厚**：`finish` 两条腿都改成交回 `minix_sys::Errno`——宿主腿用既有的 `errno_of`（`raw_os_error()` 就是 C 的 `errno`），目标腿补上 `bigwrite()` 的续写循环（`split.c:337-351`），只有 `write` 交回 0 这种「再也吃不进字节」的情形才落到 `EIO`。壳侧另拆出 `write_into` 与 `failure_label` 两枚纯函数：前者让「失败到号」有门可钉，后者让「两臂不互换标签」有门可钉——渲染那一步要打要退出，宿主侧看不见，不拆就只剩一组无法证伪的说法。
