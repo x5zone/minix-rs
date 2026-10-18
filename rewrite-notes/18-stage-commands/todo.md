@@ -1,6 +1,6 @@
 # 18-stage-commands 实施规格缺口 TODO
 
-> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 2 + 占位 5：命令面尚未接真实系统调用返回，命令全集口径按 `OQ-N1` 以规划文件的实测三百二十八为准。
+> **台账状态摘要**（对照代码重数于 `2026-10-18`，快照 `f28847e10`；取代快照 `9f752834c` 那一版）：命令面**没有占位壳**。`find os/commands -path '*/src/bin/*.rs' | wc -l` → **113** 枚真实 bin；其中小于 1 KB 的 **0** 枚，`unimplemented!` 与 `todo!` 各 **0** 处（最小的两枚 `os/commands/bin/fileops/src/bin/true.rs` 与 `false.rs` 各 30 行——C 的 `true`/`false` 本来就是一句话的程序，短不等于空壳）。真实的缺口是**选项级的未接线报文 23 处**，摊在 15 枚 bin、6 个 crate 上（`bin/fileops` 6、`bin/proctools` 3、`usr-bin/textfilter` 2、`usr-bin/doctools` 2、`usr-bin/compress` 1、`sbin/mountinfo` 1；判据 `find os/commands -path '*/src/bin/*.rs' -exec grep -l 'not wired' {} + | wc -l` → 15）。命令全集口径不变：按 `plan.md` 的 328 个命令归属，脚本比对 328/328 通过。未闭合项**不再用一个整数表示**——逐行状态在 `../coordination/PARALLEL-20261018-A-CMD.md` 的 §1 与 §1b，跨阶段联动项在 `../coordination/TODO-LEDGER-OPEN.md`；旧口径「`open` 2 + 占位 5：命令面尚未接真实系统调用返回」两说都被上面的读数否证（命令面早已接真实系统调用返回，见 `bin_support` 的双生读缝与各壳的 `err(3)` 三段形）。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > 来源：2026-09-17 设计讨论。讨论从"命令如何获得标准库支持"出发，逐层确认了三件事：POSIX 规定的是接口契约而不是系统调用清单；Minix3 的库分层是 `minix3/lib/libc/`（C 库）与 `minix3/minix/lib/libsys/`（消息层）两个目录；Redox 用 relibc（Rust 写的 C 标准库 + POSIX）承接 Rust std 的调用。讨论结论随后与 18-stage-commands 现有文档逐条对账。
@@ -118,6 +118,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - `ls 18-stage-commands/.design/`：`00` 与 `99` 没有 outline 与 design 快照（Gate H.6）。本轮只补契约三节不是完整改写，快照随 `99-global-concepts.md` 完整改写补齐。
 
 ---
+
+## 批次三百七十四（`CMD-LEDGER-RECOUNT` 闭，A10 台账卫生）：本账第一行那句摘要双重滞后，逐壳清点把它重立成现数
+
+- **这一轮量什么**：批次三百六十七 `:179` 把本文件第一行的状态摘要登记为「待一次逐壳清点重立」，并写明「一轮改摘要等于拿一轮的口径覆盖另一轮的账，所以本笔不动那行」。本轮就是那次清点。**只动台账与本板两件事，`os/` 一字未改。**
+- **重立的三条读数（全部 L1，任何检出可重跑）**：① `find os/commands -path '*/src/bin/*.rs' | wc -l` → **113**。② 占位判据三条并查：`find os/commands -path '*/src/bin/*.rs' -size -1k | wc -l` → **0**；`grep -rlE 'unimplemented!|todo!\(' os/commands --include='*.rs' | wc -l` → **0**；最小的两枚是 `os/commands/bin/fileops/src/bin/true.rs` 与 `false.rs`（各 30 行），而 C 的 `true`/`false` 本身就是一句话的程序，**短不等于空壳**——这一条单独写出来是因为「按行数判占位」正是 `TODO-LEDGER-OPEN.md:149` 那轮用过的判据，它会把这两枚真壳误伤。③ 真实缺口是选项级未接线：`find os/commands -path '*/src/bin/*.rs' -exec grep -l 'not wired' {} + | wc -l` → **15** 枚 bin 里共 **23** 处，摊在 6 个 crate 上（`bin/fileops` 6 处、`bin/proctools` 3、`usr-bin/textfilter` 2、`usr-bin/doctools` 2、`usr-bin/compress` 1、`sbin/mountinfo` 1），另有 `ENOSYS` 4 处。
+- **为什么旧摘要两处都不成立**：它写「未闭合 `open` 2 + 占位 5：命令面尚未接真实系统调用返回」。第一，占位那半：上面三条读数都是 0，且这口径早在 `TODO-LEDGER-OPEN.md:149` 那轮实测（68 枚 bin、0 占位壳）就被否证过一次，本轮是第二次否证且数字又涨了 45 枚——**账面计数会随代码前进而失真，所以摘要里必须留命令本身，不只留数字**（这正是本行 `:179` 立过的规矩）。第二，「尚未接真实系统调用返回」那半：命令面此后接的缝一条比一条实（`os/commands/usr-bin/textfilter/src/bin_support.rs` 的双生读缝宿主走 `std::io::Read`、真机走 `minix_sys::read`；各壳的 `err(3)` 三段形），这句话今天已无从成立。
+- **改后的写法**：摘要不再挂一个「未闭合 `open` N」的整数——逐行状态已由 A 板 `../coordination/PARALLEL-20261018-A-CMD.md` §1/§1b 承接，跨阶段联动项在 `../coordination/TODO-LEDGER-OPEN.md`，本账再用一个自造的整数覆盖它们就是越权。旧数字以快照号 `9f752834c` 指代而不复述其日期。
+- **本轮自己的坑（控制机那侧，值得记）**：`grep --include` 的模式是**对文件名求值，不是对路径求值**——第一次写 `--include='*/src/bin/*.rs'` 想让「not wired」只数 bin 源，结果一条都没匹配上（读数 0），差点被当成「命令面已无未接线报文」这个假结论。改成 `find … -exec grep -l … {} +` 才是 15 枚 / 23 处。**凡是靠 `--include` 收窄的计数，先单独验它匹配到了东西**，否则「零」这个读数毫无意义。
+- **不动的东西**：`TODO-LEDGER-OPEN.md` §6 的「18 命令」索引行照抄旧摘要这件事，本轮不代改——按并发协议 §2，那本总账由编排线自持，多写者必覆盖。本轮把它的行号（`:133` 为索引行、`:149` 为那轮实测行）与失配事实留在本账，交编排线一次改齐。
+- **三件套**：核实命令即上面三条加 `wc -l` 那两枚；核实日 `2026-10-18`；快照基线 `f28847e10`。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim COLRM-ERRLEG-ORDER-UNOBSERVABLE qoder`（A8 收尾型，判据在宿主不可观测，按「判据不适用」收尾并保留证据，同 A9 的 `wtf` 半一个路子；两枚可连做但按一次一条分两轮）。
 
 ## 批次三百七十三（`BSD-HEADER-COMPAT-REF` 闭）：参照件第一次能在宿主真链出来，顺手量出「空库那一形 C 根本不出报文」
 
