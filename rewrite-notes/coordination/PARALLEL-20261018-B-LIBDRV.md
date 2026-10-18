@@ -49,7 +49,7 @@
 | i2c 客户端族 | `bmp085` ✅、`sht21` ✅、`tsl2550` ✅、总线本体 `i2c` ✅、`cat24c256` ✅（五片，数据面裁决后首台消费者） | 客户端与总线两侧都已在树：`minix-i2cdriver::client` + 总线 `service.rs` + `minix_driver_rt::plane` | **已闭**：`face.rs` 的 i2c 读写腿走 plane，`service.rs` 负责总线解析/预留/DS 刷新 | — |
 | 音频族 | `es1371`、`sb16` | `AudioHooks` 十四钩子、`SubDevice` 分片机、`SpecialFile` | 数据面归属未裁决：C 由框架持有 DMA 缓冲并把地址交给 `drv_set_dma`，Rust 无 DMA 分配器（见 B11）；把缓冲放卡侧要改钩子签名 = 架构演进，需用户批准 | 设计裁决后再动 |
 | USB 族 | `usbd`、`usb_hub`、`usb_storage` | 协议/枚举/端口观察/BOT 状态各有模型 | C 全经 DDEkit 宿主抽象；Rust 无对应层，`HostController` 缝（URB 调度、端口复位、地址分配）未设计 | 宿主缝设计后再动 |
-| 存储代理族 | `fbd`、`filter`、`vnd` | 规则/镜像健康/布局模型齐 | **框架阻塞已解除（数据面裁决：`transfer` 收 `&mut dyn TransferPlane`，转发腿所需的 grant/sendrec 已在手）**；剩「下游转发腿 + 真循环」两件，逐台可落 | 逐台接线轮 |
+| 存储代理族 | `fbd`、`filter`、`vnd` | 规则/镜像健康/布局模型齐 | **框架侧已备**（数据面裁决后 `transfer` 收 `&mut dyn TransferPlane`；下游块客户端在树 = `minix-bdev::client` 的 `transfer` + `GrantIssuer`）。**但「下游转发腿」自身还剩一个形态裁决**：C 的 `fbd_transfer_direct` 用 `cpf_grant_indirect` 把调用方 grant 直接转发（Rust 无间接授权动词），且转发用 GATHER/SCATTER 的 iovec 数组（与 `E-BLK-VEC` 同一缺口）；可行形态 = 走 C 的**拷贝路径**（`fbd_transfer_copy`：暂存→转发）并**逐元素发连续请求**（语义等价、多一次拷贝，须逐台具名登记）。`vnd` 另需 VFS 客户端（已在树：`minix-sys::vfs` 的 open/read/write/stat/lseek） | 逐台接线轮（先 `vnd`：C 603 行、下游是文件） |
 | 存储硬件族 | `mmc`、`floppy` | 命令序列/几何模型 | 传输腿（寄存器/DMA/IRQ）未建模（C 源 1267/1355 行），需逐卡硬件缝 | 逐卡建模轮 |
 | 空 stub（6） | 音频 5（als4000/cmi8738/cs4281/es1370/trident）、电源 1（acpi） | 15 行 stub | 无任何 Rust 模型，需从 C 源整台建模 | 逐台建模轮 |
 | net 变体（9） | 3c90x/atl2/dec21140a/dpeth/fxp/ip1000/lan8710a/rtl8169/vt6105 | 15 行 stub | **edge2 L13 裁决维持占位**（无芯片语义，face 只能是空壳） | 不排期 |
