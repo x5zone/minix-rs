@@ -54,7 +54,11 @@ fn run() -> ! {
     let parsed = match parse_units_args(&args[1..]) {
         Ok(parsed) => parsed,
         Err(UnitsArgError::Getopt(report)) => {
-            support::warn(report.line(prog).as_bytes());
+            // 走字节形：libc 那一行的字母位是一个裸字节（`getopt.c:79` 的
+            // `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出）。参照件
+            // `tmp/units-319/units` 现量 `units -é` 打 `unknown option -- ` + `c3` + 换行，
+            // 而按 `char` 渲染会多出第二个字节（U+00C3 的 UTF-8 是 `c3 83`）。
+            support::warn(&report.line_bytes(prog));
             usage();
         }
         Err(UnitsArgError::Version) => {

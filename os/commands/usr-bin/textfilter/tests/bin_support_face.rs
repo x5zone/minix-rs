@@ -70,7 +70,9 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         ("paste", PASTE, 1, b"paste: unknown option -- \xc3\xaf\n"),
         ("fold", FOLD, 1, b"fold: unknown option -- \xc3\xaf\n"),
         ("rev", REV, 1, b"rev: unknown option -- \xef\n"),
-        ("units", UNITS, 3, b"units: unknown option -- \xc3\xaf\n"),
+        // units 已于批次三百九十九换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD
+        // 的第一字节），比仍按 char 渲染的 `c3 af` 少一个字节；C 那一侧是原字节 `ff`。
+        ("units", UNITS, 3, b"units: unknown option -- \xef\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");

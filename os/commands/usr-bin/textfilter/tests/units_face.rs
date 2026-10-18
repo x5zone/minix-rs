@@ -433,14 +433,34 @@ km\t1000 m\ncm\t0.01 m\nmin\t60 sec\n"
 
 #[test]
 fn off_letter_outside_the_charset_is_reported_by_its_first_byte() {
-    // 参照件对 `-é` 报的是首字节（libc 的 `%c` 打那一个字节）。本壳的游标按字节走，
-    // 所以不会在非 ASCII 上越出字符边界（`column -té` 那种当场 panic 的同形），
-    // 报文里把它渲染成 Latin-1 码点而非原始字节——这一处失真登记为 UNITS-NONASCII-OPTLETTER。
-    let (_, code, err) = run(&["-é"], b"");
+    // 参照件对 `-é` 报的是**首字节**（libc 的 `%c` 打那一个字节）：
+    // `tmp/units-319/units -é` 与 `-qé` 都打 `units: unknown option -- ` + `c3` + 换行
+    // + 那份九行 usage，退 3。本壳的游标本来就按字节走（所以不会有 `column -té`
+    // 那种越出字符边界的 panic），曾经差的只剩渲染：按 `char` 打的是 Latin-1 码点
+    // U+00C3，即 `c3 83` 两个字节——那一处失真登记为 `UNITS-NONASCII-OPTLETTER`，
+    // 随批次三百九十九换 `GetoptReport::line_bytes` 闭合，断言因此改成逐字节。
+    // 文本夹具在这里已经不够用：`String::from_utf8_lossy` 会把裸 `c3` 与 `c3 83`
+    // 都渲染成替换字符，所以比的是 stderr 的原始字节。
+    let want: Vec<u8> = [
+        b"units: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-q\u{e9}"] {
+        let out = Command::new(UNITS)
+            .args([form])
+            .stdin(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("units 该能起");
+        assert_eq!(out.stdout, Vec::new(), "{form} 的报文只走 stderr");
+        assert_eq!(out.status.code(), Some(3), "{form} 走 usage 那支退 3");
+        assert_eq!(out.stderr, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    // ASCII 那一形两个入口一字不差
+    let (_, code, err) = run(&["-Z"], b"");
     assert_eq!(code, 3);
-    assert!(
-        err.starts_with("units: unknown option -- \u{00c3}"),
-        "实际 stderr={err:?}"
-    );
-    assert!(err.ends_with(USAGE));
+    assert_eq!(err, format!("units: unknown option -- Z\n{USAGE}"));
 }
