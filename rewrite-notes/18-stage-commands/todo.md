@@ -119,6 +119,15 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百七十一（残骸回收）：判据是三方对账，不是目录属主——我在路上连错三次
+
+- **这一轮清什么**：`.wt` 里两棵「销了账却没从磁盘消失」的树，`claim.sh sweep` 长期判「需核对」：`.wt/rev-stdin-errleg-qoder`（3.5G，`os/target` 之外 1528 个文件）与 `.wt/docgen2-01-doc01iter2`（144K，之外 3 个文件）。批次三百六十八曾把它们记成「`xzhao` 属主、不需要 sudo」，那条纠正是**半对的**，本笔纠回来。
+- **有效判据（三方对账）**：逐文件 `git hash-object` 与两个基准比——① 该路径在 `git ls-tree -r HEAD` 里的 blob，② 主树同路径工作副本的 blob。两头都不 equal 才需要人看内容。实测读数：`rev` 树 1528 个非缓存文件里**与 HEAD 同文 1502 个、与主树工作副本同文 1507 个、比主树旧且不同 20 个**，只剩 `os/Cargo.lock` 一个两头都不中——而 `.gitignore:78` 就是 `.wt/`，整目录被忽略，构建生成物本不进历史。⇒ 这棵树里**没有在途工作**，全是旧快照。`docgen2` 树 3 个文件全部「比主树现版旧」：`rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 树内 77177 字节 / `10-09 03:05`，主树工作副本 265300 字节 / 今天 `14:22`（`diff` 读数 4119 行不同，主树那份才是活的）。
+- **回收动作与救援**：把 24 个「既非 HEAD 版也非主树现版」的文件按原相对路径抄进 `tmp/wt-rescue/reclaim-20261018/`（读数 560K），随后 `rm -rf` 两棵树。`docgen2` 一棵整棵消失；`rev` 一棵的非 `os/target` 文件已清零（`find .wt -type f -not -path '*/os/target/*'` 读数 0），但 `os/target/debug/incremental/` 里大批 `.o` 与 `work-products.bin` 报 `Permission denied`——**目录属主不等于其内条目属主**，这些正是 C-103 记下的「不带 `-u` 的容器把构建缓存写成 root 属主」的现场遗留。剩余回收需人执行 `sudo rm -rf .wt/rev-stdin-errleg-qoder`。
+- **我在对账路上连错三次，逐条写明**：① 第一次跑 `git rev-list --objects --all --use-parent-stage`，那面旗标是我凭空写的，命令直接失败、名单为空，于是报出「26 枚真独有」——一个凭空的旗标就能造出一条假 P0。② 第二次用 `git hash-object --stdin-paths` 批量哈希，输出每行只有哈希不含路径，与文件表一旦错位，判定就整体失真，`docgen2` 因此被误报成「3 枚全独有」。③ 第三次只看 `stat -c %U` 的目录属主就下「不需要 sudo」的结论，方向反了。⇒ 立规矩：**残骸回收前的判据是「逐文件与 HEAD 及主树现版三方对账」加上「按条目查 root 属主」，两样都得做；批量哈希要么逐文件跑，要么先校验行数对齐**。
+- **台账状态**：`.wt` 残骸一件已清空、一件降为「只剩 root 属主构建缓存，等人提权」。这条不是代码账，是现场卫生账。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim BSD-HEADER-COMPAT-REF qoder`（与批次三百六十八、三百七十同一口径）。
+
 ## 批次三百七十（负控轮）：三百二十五至三百二十九欠的六枚全部跑成并咬住，控制机自己先错两处
 
 - **这一轮清什么账**：批次三百五十三把六枚旧负控的锚点现查到底、跑成两枚（jot 那两处），留下四枚敞着：`bin_support` 的宿主 args 腿、`col` 集外字母取字节、`column` 残行计数、`split` 的 `-b`。本笔把这四枚逐枚跑成，六枚欠账到此清空。
