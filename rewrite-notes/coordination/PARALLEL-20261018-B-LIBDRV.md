@@ -38,7 +38,23 @@
 | B8 | `SD-19` 余下库 crate 的静默吞错门 | `TODO-LEDGER-OPEN.md:66`（本片进度注记在 §3 表后） | `✅`（`2026-10-18` 选项①执行） | `minix-vtreefs`/`minix-sffs`/`minix-types`/`minix-driver-rt` 四片早前已落；本笔按选项①把 `os/libs` 剩余十二家接上同款头门（`audiodriver`/`bdev`/`blockdriver`/`boot`/`chardriver`/`elf`/`i2cdriver`/`netdriver`/`platform`/`sockdriver`/`usb`/`virtio`），**二十一家全带门**。真重检新暴露 5 处真触发（`netdriver` 泵 3、`blockdriver` 泵 2，均为回复/状态发送尽力而为），逐站 `//[SD19-gate]`+语句级 `#[allow]` 收编；其余十家自有文件 must_use 真触发 0。**行内旧断言「均非 must_use」被本笔证伪**（旧记未对两家泵代码真跑门）。选项②所需的 B7/G7/B5 亦已全收口。`commands/*` 零散站归 A 板；**不升 `deny`** | 每 crate `cargo clippy -j 1 -p <pkg> --tests` 读数 + 处置表（本笔表见 §3 表后注）；无理由的新 `let _ =` 为 0 |
 | B9 | 共享 wire/查询桩：`E-RSWIRE`、`E-KERNINFO`、`E-MINTYPES-RS`、`E-MINTYPES-RUNTIME`、`E-DSWIRE` 客户端半、`E-DMWIRE` 客户端半（边界登记见 C 板 §6）、`E-DEVWIRE` 常量 | `TODO-LEDGER-OPEN.md:80`、`:83`；`16-stage-drivers/todo.md:120`；`14-stage-runtime/todo.md:10` | `✅`（`2026-10-18` 逐项对账收口） | 七项逐项终态：`E-RSWIRE` ✅（DS 侧 shadow 半与 VM 侧 `403e47022` 两段进度注记）；`E-KERNINFO` ✅（字面「余项仅剩归档注记」）；`E-MINTYPES-RS` ✅（观察一/三闭环，观察二随 E7 执行轮）；`E-MINTYPES-RUNTIME` 🚫 执行半按 edge_todo 对账归 14-stage-runtime 轨道；`E-DSWIRE` ✅ 客户端半（DS 传输链真机通电注记）；`E-DMWIRE` ✅ 客户端/RS 半（`b05905406` 落地客户端生产传输与 RS publish 臂；本笔修 grant 收方——原按 `NONE` 签发会被内核 who_to 检查拒为 EPERM，改为按 C `cpf_grant_direct(devman_ep,…)` 绑定收方）；`E-DEVWIRE` ✅（edge2 L5）。**B 侧零剩余**：devman 请求分类器等服务端半按板行归 A（A17/A18）；typed 消息臂由 runtime 轨道接 | 本笔 `cargo test -p minix-sys` → 327/0、clippy 自有文件本门告警 0；其余条目宿主门见各提交 |
 | B10 | `P-ALL-08` 信号代理循环与按号分派的消费方盘点 | `TODO-LEDGER-OPEN.md:45` | `✅`（`2026-10-18`，本笔提交） | B 侧收口：框架核与 `PD-27` 逃生门已闭（`cargo test -p minix-sef` → 19/0 + 集成门 3/0）；`SIGKSIG` 代理循环的对位在 PM 自己的 `process_sigmgr_signals`（`os/servers/pm/src/signal.rs:670`，已接线且带测试），minix-sef 零对位是设计边界（搬入即与 PM 双实现）；消费方盘点：`fs-rt`、`minix-driver-rt`、`net/lwip`、`net/uds`、`servers/devman`。B 侧无剩余代码；发方链通电归 A 板 T2 | 台账已同步；QEMU 用量 0 |
-| B11 | `E-DMABUF` 与 `E-SDEVOWN` 的驱动侧归属 | `TODO-LEDGER-OPEN.md:83`；`16-stage-drivers/todo.md:145`、`:123` | `⏸ 先确权` | `E-DMABUF` 是 DMA 契约；`E-SDEVOWN` 是 sdev/sockevent 的归属（`minix-netdriver` 零引用，`os/servers/vfs` 另有 923 行独立副本）。**先与 A 板确权再动**，不擅自删任何一份 | 确权结论进 C 板 §6；每 crate 门；两份副本的去留要有文字依据 |
+| B11 | `E-DMABUF` 与 `E-SDEVOWN` 的驱动侧归属 | `TODO-LEDGER-OPEN.md:83`；`16-stage-drivers/todo.md:145`、`:123` | `⏸ 等 A 板（余项已无可做动作）` | `E-SDEVOWN` 已由 edge2 L8（`907e65f79`）收口：sdev/sockevent 单点进 `minix-sockdriver`，vfs 副本 923→233 行；B 侧无剩余。`E-DMABUF` 的契约半（`minix-types` 的 DMA trait）已在树，驱动侧消费者（音频 `set_dma`、virtio 连续页）等 VM 侧的 `DmaMemory` 实现（A14/S37）；在那之前任何驱动都无法诚实拿到 DMA 地址。**B 侧无待做代码**，等 A 线实现后按族接线 | 确权已由 edge 裁决给出；实现侧门在 A 板 VM 测试 |
+
+## 1c. `G6` 余下 36 台的分类（`2026-10-19` 盘点，供逐族领取）
+
+清点在 `main` 的 `2026-10-19`（`20e6ce95c`）：36 台 = **12 台有模型无服务壳** + **24 台空 stub**（其中 9 台 net 变体依 edge2 L13 维持占位）。每类的真实缺什么：
+
+| 类 | crate | 已有模型 | 缺什么（决定为何现在不能直接接线） | 建议轮次 |
+|---|---|---|---|---|
+| i2c 客户端族 | `bmp085`、`cat24c256` | `minix-i2cdriver` 的键名/地址校验/寄存器操作序列；bmp085 的 `convert.rs`、cat24c256 的 `pages.rs` | `libi2cdriver` 的**客户端半**未建模：巴士端点查找（DS 标签 `i2c.<bus>`）、`BUSC_I2C_RESERVE`/`BUSC_I2C_EXEC` 的 typed 消息与 `minix_i2c_ioctl_exec_t` 载荷；且 bmp085 的采样事务（校准/温度/压力多步）尚未建模 | 先补 `minix-i2cdriver::client`，再逐台接（bmp085 char 泵 / cat24c256 块泵） |
+| 音频族 | `es1371`、`sb16` | `AudioHooks` 十四钩子、`SubDevice` 分片机、`SpecialFile` | 数据面归属未裁决：C 由框架持有 DMA 缓冲并把地址交给 `drv_set_dma`，Rust 无 DMA 分配器（见 B11）；把缓冲放卡侧要改钩子签名 = 架构演进，需用户批准 | 设计裁决后再动 |
+| USB 族 | `usbd`、`usb_hub`、`usb_storage` | 协议/枚举/端口观察/BOT 状态各有模型 | C 全经 DDEkit 宿主抽象；Rust 无对应层，`HostController` 缝（URB 调度、端口复位、地址分配）未设计 | 宿主缝设计后再动 |
+| 存储代理族 | `fbd`、`filter`、`vnd` | 规则/镜像健康/布局模型齐 | 三者都是代理块驱动：transfer 需转发下游；现 `BlockDriver` trait 的 transfer 不带传输句柄，代理腿无接缝（扩 trait 或在泵里开转发槽） | 框架裁决后再动 |
+| 存储硬件族 | `mmc`、`floppy` | 命令序列/几何模型 | 传输腿（寄存器/DMA/IRQ）未建模（C 源 1267/1355 行），需逐卡硬件缝 | 逐卡建模轮 |
+| 空 stub（15） | 音频 5（als4000/cmi8738/cs4281/es1370/trident）、电源 3（acpi/tps65217/tps65950）、视频 2（tda19988/vbox）、传感器 2（sht21/tsl2550）、`i2c` 总线本体、`ti1225`、`amddev` | 15 行 stub | 无任何 Rust 模型，需从 C 源整台建模 | 逐台建模轮 |
+| net 变体（9） | 3c90x/atl2/dec21140a/dpeth/fxp/ip1000/lan8710a/rtl8169/vt6105 | 15 行 stub | **edge2 L13 裁决维持占位**（无芯片语义，face 只能是空壳） | 不排期 |
+
+已接的十九台（`log`/`readclock`/`random`/`fb`/`pty`/net 五台/存储三台/`printer`/`pci`/`gpio`）之外的 36 台，**没有一台是“只差把现有 face 接到泵上”**——这是本轮清点的结论，后续领取按上表选类，别再按“占位计数”直接接。
 
 ## 2. ⛔ 禁碰清单
 
