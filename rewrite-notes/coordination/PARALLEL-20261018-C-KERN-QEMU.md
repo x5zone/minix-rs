@@ -201,6 +201,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `SB16` 片收尾（音频族第二台，占位 19→18）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `22→21` —— 随 sb16 接线（`os/drivers` 19→18）的机械过账。**minix-audiodriver 增补**：`AudioService::open_sub_dev` 支持控制型子设备（无碎片几何 = C 的 `NO_DMA`，跳过 DMA 上线）+ 一枚新门；sb16 四模块（三特殊文件表与通道几何照 `sb16.c:46-68`，lib/main 真循环）。登记缝同 es1371（分片数据面）—— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `USBD` 片收尾（USB 族首台，占位 18→17）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `21→20` —— 随 usbd 接线（`os/drivers` 18→17）的机械过账。**裁决更正**：原「C 全经 DDEkit 宿主抽象」方向反了（依据 `hcd_ddekit.c`）——DDEkit 的 USB 客户端 API 是 usbd **对外实现**的，usbd 下面那层才是控制器；故缝建在控制器（`HcdLeg`），随 usbd 落地（`UnboundHcd` 诚实拒绝）。usbd 四模块（hcd 缝/service 五请求派发与 URB 名册清理/main 真循环）。登记缝：控制器（`musb/` 约一千行）—— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。

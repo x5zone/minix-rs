@@ -24,7 +24,14 @@ extern crate alloc;
 
 pub mod char_face;
 pub mod enumerate;
+pub mod hcd;
 pub mod protocol;
+pub mod service;
 
-/// Service initialization entry (wires the daemon table; packet traffic stays out).
-pub fn init() {}
+use hcd::HcdLeg;
+use service::UsbdService;
+
+/// Builds the service for the binary.
+pub fn init<H: HcdLeg>(hcd: H) -> UsbdService<H> {
+    UsbdService::new(hcd)
+}
