@@ -6,8 +6,9 @@
 > **前置知识**：08 篇的启动收尾、07 篇的 DM 双窗口与 bootstrap 根、06 篇的进程表与 RTS 位族（VMINHIBIT/BOOTINHIBIT 两道闸的置位）。
 > **教学目标**：①协商问题与 VM 的出生家当（§1.1）；②五步协商与两条放行路径（§1.2）；③交接页的内容与版本门（§1.3、§3.1）；④setcr3/SETADDRSPACE 支点与其余子命令族（§2）；⑤Rust 的一页契约与分派（§3、§4）；⑥测试与诊断（§5、§6）；C 侧覆盖边界见 §1.5。
 > **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构）；`[ARCH: riscv-vmddm]`（PteRead/PteWrite/PteZero 三臂）是 Architectural Evolution（riscv64 专属，文档/注释/代码三处一致标注）。
+> **补充清单**：正文另引用 `minix3/minix/include/arch/i386/include/archtypes.h`、`minix3/minix/include/minix/{param.h,syslib.h}`、`minix3/minix/kernel/main.c`、`minix3/minix/kernel/system/{do_exec.c,do_getinfo.c,do_umap_remote.c}`、`os/kernel/src/lib.rs`、`os/servers/vm/src/{exit,fork}.rs`、`os/qemu-tests/README.md`。
 > **编号说明**：正文与引文里出现的 `NK4-C`、`fix2x`、`gh*`、`T8`、`D-40`、`X-7` 等编号是本仓的开发工作条目号与评审记录编号——原文保留，溯源按编号在本仓检索。
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:static NAME`），不使用行号。
+> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:static NAME`），**行号不作锚点**——行号只出现在三类场合：被引注释内部（随原文保留）、漂移登记（§3.6/§4.4 对齐现码）、符号名旁为短小事实注明的取证行号。
 > **本篇主题**：VM 出生时只拿着内核建的 bootstrap 根，却要接管全系统的内存管理——中间的协商怎么完成。两件交接物（一页世界状态快照 + 一条 SYS_VMCTL 通道）与两道闸的两条放行路径（SETADDRSPACE 清 VMINHIBIT 不入队、BOOTINHIBIT_CLEAR 才入队）。
 > **前置**：[08-system-init-boot-finish.md](08-system-init-boot-finish.md)（三开关与 bsp 收尾；其 §3.3 预告的 set_vm_running 补写兑现于本篇 SETADDRSPACE 臂，§3.5 预告的凭证随页交付兑现于本篇 reconcile，§5.1 移交的 identity_windows 与 handoff 协议面归本篇）、[07-cross-space-init.md](07-cross-space-init.md)（DM 双窗口与 bootstrap 根的来历）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（VMINHIBIT/BOOTINHIBIT 的置位——本篇讲它们的解除者）。
 > **后续**：调度循环本体（`10-switch-to-user`，切用户与调度循环篇，尚未重生成）、分派入口与 kernel_call_finish（`13-syscall-dispatch`，系统调用分派篇，尚未重生成）、VMSUSPEND 挂起-恢复运行时（`24-cross-space-runtime`，跨空间运行时篇，尚未重生成）、VM 服务器内部本体（`rewrite-notes/02-stage-vm/`，init_page_table/map_kernel/PMM）。
@@ -58,7 +59,7 @@
           boot 进程逐台可被调度（10 方向接管）
 ```
 
-这张图里先记两件事，第 2 章逐一对到代码。第一，交接是**单向一次性**的：VM 读到的是自己地址空间里的一页快照，之后内核状态再变也不影响已读副本——C 侧的对应行为是 `sys_getkinfo` 的一次整块拷贝（`sys_getkinfo` 是 `minix3/minix/include/minix/syslib.h` 里转发 `sys_getinfo(GET_KINFO, …)` 的宏，内核侧拷出点在 `minix3/minix/kernel/system/do_getinfo.c:do_getinfo` 的 GET_KINFO 臂，消费在 `minix3/minix/servers/vm/main.c:init_vm`），拷完之后内核与这份副本再无联系。第二，两条清腿分属两个不同的子命令：SETADDRSPACE 清 VMINHIBIT 但进程仍不可调度（BOOTINHIBIT 还在），BOOTINHIBIT_CLEAR 才是入队时刻。
+这张图里先记两件事，第 2 章逐一对到代码。第一，交接是**单向一次性**的：VM 读到的是自己地址空间里的一页快照，之后内核状态再变也不影响已读副本——C 侧的对应行为是 `sys_getkinfo` 的一次整块拷贝（`sys_getkinfo` 是 `minix3/minix/include/minix/syslib.h` 里转发 `sys_getinfo(GET_KINFO, …)` 的宏，内核侧拷出点在 `minix3/minix/kernel/system/do_getinfo.c:do_getinfo` 的 GET_KINFO 臂，消费在 `minix3/minix/servers/vm/main.c:init_vm`），拷完之后内核与这份副本再无联系。第二，两条放行路径分属两个不同的子命令：SETADDRSPACE 清 VMINHIBIT 但进程仍不可调度（BOOTINHIBIT 还在），BOOTINHIBIT_CLEAR 才是入队时刻。
 
 把"单向一次性"反过来推演，坏点落在状态一致性上。设想协商是双向多轮的：内核随时更新那页交接数据，VM 分多次读。bootstrap 期没有锁，也没有"读到一半内核改了"的重读协议——VM 的每一步决策都依赖"我读到的是哪一版"，而它无从得知版本，两边对同一字段各持一个值，状态撕裂无从裁定。一次性快照让核对成为可能：内核把扣减记录连同空闲区间一起交付，VM 在消费端对账（§3.2 的四检查），账对不上就在入口停机，而不是带着一份没人能验证的账本往前跑。
 
@@ -432,12 +433,12 @@ static void exec_bootproc(struct vmproc *vmp, struct boot_image *ip)
 | 4 | `libexec_load_elf` 装载 | 回调注入后调用 | 段字节经回调搬进目标地址空间 |
 | 5 | `minix_stack_params`/`minix_stack_fill` 算栈帧 | 栈段 | argc/argv/envp/ps_strings 摆进一页帧缓冲 |
 | 6 | `handle_memory_once` + `sys_datacopy` | 栈帧落地 | 栈区间映射确认、帧字节拷进目标空间 |
-| 7 | `sys_exec` | 收尾前 | PC/SP/ps_str 写进内核的进程框 |
+| 7 | `sys_exec` | 收尾前 | PC/SP/ps_str 写进内核的进程框；程序名进 `p_name` |
 | 8 | `VMCTL_BOOTINHIBIT_CLEAR` | 最后一行 | BOOTINHIBIT 清除；进程入队（腿二） |
 
 第 4 步的回调注入要先说清形状：libexec 是一个与内存后端无关的装载库，它不直接碰内核——`execi->copymem`/`clearmem`/`allocmem_*` 三族函数指针由 VM 填入自己的实现（physcopy 搬字节、sys_memset 清零、boot_alloc 分配），libexec 只负责按 ELF 语义驱动这些回调。装载的"怎么搬"是 VM 的知识，"搬什么"是 libexec 的知识。
 
-步 7 有一个和直觉不同的形状：**`sys_exec` 本身不装载**。它只把 PC、SP、ps_str 三样写进内核的进程框（内核侧的落点是 do_exec 的 arch_proc_init 路径），段字节早在第 4 步就由 VM 搬完了。装载在服务器、切换在内核——这个分工让内核不需要理解 ELF，也让"装载失败"停留在 VM 侧，不会把半装好的现场留给内核。
+步 7 有一个和直觉不同的形状：**`sys_exec` 本身不装载**。它只把 PC、SP、ps_str 三样写进内核的进程框、把程序名写进 `p_name`（内核侧的落点都在 do_exec 的 arch_proc_init 路径；名字经 `minix3/minix/kernel/system/do_exec.c:37-42` 的 `data_copy` 从调用者地址空间拷出，失败不致命、落 `<unset>`），段字节早在第 4 步就由 VM 搬完了。装载在服务器、切换在内核——这个分工让内核不需要理解 ELF，也让"装载失败"停留在 VM 侧，不会把半装好的现场留给内核。
 
 步序的次序是硬的。把步 8 挪到步 7 之前：进程在 PC/SP 就位前入队，首个调度切片执行的是旧框里的垃圾现场——进程框在 exec 之前装的是 fork 语义留下的旧值，不是任何合法入口。把步 2 删掉直接装载：SETADDRSPACE 没发，VMINHIBIT 不清，后面全白做——进程停在"表没就绪"那道闸后面。
 
@@ -712,7 +713,7 @@ VM 自己的条目在这张表里是另一个形状。内核在启动期装载 V
 | 2 | pt_init：建共享页目录表、绑自己的根 | VM | `pagetable.c:pt_bind`（对 VM） | setcr3 走 VM 分支：开分页；VM 根自此恒定 |
 | 3 | 每 boot 进程：pt_new + pt_bind | VM | `pagetable.c:pt_bind` | SETADDRSPACE：双记录 + 在位特判；清 VMINHIBIT（腿一，不入队） |
 | 4 | 每 boot 进程：读头、装载段、摆栈 | VM | `main.c:exec_bootproc` | 段字节进目标空间；帧字节进栈页 |
-| 5 | 每 boot 进程：sys_exec | VM | `main.c:exec_bootproc` | PC/SP/ps_str 进内核进程框 |
+| 5 | 每 boot 进程：sys_exec | VM | `main.c:exec_bootproc` | PC/SP/ps_str 进内核进程框；程序名进 `p_name` |
 | 6 | 每 boot 进程：BOOTINHIBIT_CLEAR | VM | `main.c:exec_bootproc` 收尾 | 清 BOOTINHIBIT；rts 入队（腿二） |
 | — | 运行期：MEMREQ GET/REPLY、inhibit、TLB 维护 | VM | `do_vmctl.c` 各臂 | 故障裁决、抑制控制、翻译维护 |
 
@@ -1073,6 +1074,8 @@ fn vmctl_set_addr_space(
 | `RTS_UNSET(p, RTS_VMINHIBIT)` | 步 5：`rts_unset(VMINHIBIT)` | boot 路唯一清腿；BOOTINHIBIT 仍在故不入队 |
 
 步 1 的位型保真要单独说。消息字段是 `i32`，C 把它赋给 `u32_t` 形参（模运算截断）；Rust 若直接 `as u64` 会做符号扩展——物理根 ≥0x8000_0000 时会变成 0xFFFFFFFF_8xxxxxxx，翻译必错。`as u32 as u64` 先截断再零扩展，保住 C 的位型；这不是多余的转换，是踩过的坑（步 1 注释原文与 §4.3 引用块）。
+
+同族的 `as` 转换在现码还有两处未登记（都在零调用者的臂里，接线前按同法处理）：`GetPdbr` 臂的 `phys_root.0 as i32`（`os/kernel/src/syscall.rs:2503`）——u64→i32 截断低 32 位；C 侧该值来自 32 位字段（`reg_t p_cr3`，`minix3/minix/include/arch/i386/include/archtypes.h:33`）赋进 int，位宽由类型封死，Rust 侧没有这道封，正确性依赖"根值恒在 4 GiB 以下"这条没有写进契约的值域现实。`InvlPg` 臂的 `value_raw as u64`（`os/kernel/src/syscall.rs:2526`）——i32→u64 符号扩展；C 的 `i386_invlpg(m_ptr->SVMCTL_VALUE)`（`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:58`）把 int 交给 32 位宽的 `phys_bytes`（i386 构建下 `unsigned long`），位型原样保留——位型差出在宿主位宽：Rust 的 64 位符号扩展没有 C 这层 32 位封。两处待接线时按步 1 同法处理（位型保真式 `as u32 as u64` 与值域核对），源码侧记 SRC-40。
 
 步 2 是 C 没有的动作：内核在唯一提交点把 kerninfo 页以用户只读映射装进每个新根。它的对位物是 §2.3 的 KERN_PHYSMAP 协议——C 里这段"用户可见内核数据进每个进程空间"由 VM 逐区协商完成；重写把协议收进内核单点。反向推演：若 kerninfo 映射交给 VM 自己做，每个新根都要一次额外的通道往返，且"kerninfo 对所有进程可见"这一契约的执行点从一个函数散开到 VM 的每条建表路径——C 的 KERN_PHYSMAP 协议正是这个散开形状的代价样本。
 
@@ -1490,7 +1493,7 @@ fn vmctl_clear_page_fault(
 
 两个非显然点。其一，C 的 assert 转 EINVAL：C 里对"位本来就没置"的调用直接断言死机，Rust 转成错误返回——契约违规的两种表达，停机与报错，选了不拖累调用方的那个。其二，注释里那段 TLB 失效时点说明：INVLPG 只击落当前 CR3 标签的非全局项，clear 的时点执行在 VM 的 CR3 上下文里，杀不到故障进程自己的陈旧项；真正的单页失效在恢复路径（被恢复进程的 CR3 已激活、返回用户态之前）以它自己的故障地址执行。反向推演：若把 InvlPg 放在本臂（VM 的 CR3 上下文）执行——失效动作打在 VM 的翻译集上，故障进程的陈旧项原封不动，恢复后第一条访问重新页错误，故障环闭合不上。环的另一半（恢复路径的失效点）归 `13-syscall-dispatch`（系统调用分派篇，尚未重生成）。
 
-抑制控制族的两臂与 §2.3 的 C 形状对照：SET 臂的跨 CPU 判定用目标记录的 CPU 字段比较当前 CPU，不同则走 IPI、相同则本地置位，两臂之后**无条件**置 FLUSH_TLB 标记（C 的 set 臂在 if/else 之外置这个标记，注释对位了这一点）；CLEAR 臂的 MF_SENDA_VM_MISS 补投与 stale_tlb 全填未实现——stale_tlb 全填的缺失是 §3.6 表里的"收窄"：64 位 DM 下翻译恒定，全填没有需要服务的对象。
+抑制控制族的两臂与 §2.3 的 C 形状对照：SET 臂的跨 CPU 判定用目标记录的 CPU 字段比较当前 CPU，不同则走 IPI、相同则本地置位，IPI 与本地两条路径汇合后**无条件**置 FLUSH_TLB 标记（C 的 `VMINHIBIT_SET` case 里这一位在 if/else 之外置、CLEAR 臂不置——`minix3/minix/kernel/system/do_vmctl.c:133-135`；置点在调用方一侧、落在共享的进程记录上，远程路径的停车处理只置 VMINHIBIT、不碰这个标记——§5.1 的 `test_vmctl_vminhibit_park_helper_does_not_touch_flush_tlb` 锁的就是这条分工）；CLEAR 臂的 MF_SENDA_VM_MISS 补投与 stale_tlb 全填未实现——stale_tlb 全填的缺失是 §3.6 表里的"收窄"：64 位 DM 下翻译恒定，全填没有需要服务的对象。
 
 TLB 维护族的三个臂，注释是本节的主块——它把"零调用者是有意设计"讲全了：
 
@@ -2071,8 +2074,9 @@ minix-types 侧 11 条（复算命令：`grep -c '#\[test\]' os/libs/minix-types
 | M10 | boot-OOM 帧池读数（§4.4） | 12×1041 与 14319 的闭合口径 | ⑤证据不足（读数口径未闭合） | 登记 → **R09-T05** |
 | M11 | res_rejected 分诊（§4.5） | 计数器有消费者 | 未覆盖（现码丢弃，`let _ = res_rejected;`） | 文档已按现码改写；源侧 → **SRC-39** |
 | M12 | deduct 单遍未排序减法（§4.5） | 防御场景下不漏减模块区 | 未覆盖（低置信） | → **SRC-38**（源码侧核实） |
+| M13 | 两条 `as` 转换（§3.4 步 1 族：GetPdbr/InvlPg 臂） | 接线时按同法保位型 | 未覆盖（零调用者臂，现码未按步 1 同法处理） | → **SRC-40**（源码侧） |
 
-（§5.3 的披露项分别对到 M6/M7/M8；M9/M11/M12 为本轮新增披露与转出；两类表互为反转面。）
+（§5.3 的披露项分别对到 M6/M7/M8；M9/M11/M12/M13 为新增披露与转出；两类表互为反转面。）
 
 **新 TODO（对源码/测试 workflow 的需求输入）**：
 
