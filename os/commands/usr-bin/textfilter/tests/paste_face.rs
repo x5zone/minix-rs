@@ -51,6 +51,26 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
+/// 与 `run` 同一条命令缝，但**逐字节**交回：文本形经 `from_utf8_lossy` 会把一个裸
+/// `c3` 变成三字节 U+FFFD，于是「一个字节」与「两个字节」在 `String` 里看不出差别。
+/// 批次四百零一之前本文件没有这类需求——所有期望都是 ASCII 报文。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(PASTE)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the paste binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
 fn scratch(tag: &str) -> PathBuf {
     let mut dir = std::env::temp_dir();
     dir.push(format!("paste321-{}-{}", tag, std::process::id()));
@@ -87,6 +107,38 @@ fn off_letter_gets_one_libc_line_and_the_hardcoded_usage() {
             "{flag}"
         );
     }
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/paste-321/paste_ref` 现量
+/// `paste -é` 与 `paste -sé` 都是 `paste: unknown option -- ` + `c3` + 换行，再跟那行
+/// 写死的 usage、退 1（机制在 `getopt.c:79` 的 `optopt = *place++` 与 `:103` 的 `%c`）。
+/// `s` 是 `paste.c:70` 的 optstring `"d:s"` 里的合法字母，所以聚簇会继续吃到 `é` 的第一字节；
+/// `-Zé` 反而停在 `Z` 上——`paste.c:79-81` 的 `default: usage()` 坐在环里，第二个字母轮不到，
+/// 这一形也是「多字节旗标根本进不到字母位」的正面证据。ASCII 的 `-Z` 与缺值的 `-d` 两形
+/// 本文件各已有主人（`off_letter_gets_one_libc_line_and_the_hardcoded_usage`、
+/// `missing_value_for_d_is_a_libc_line_then_usage`），这里不重复承载同一件事。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_ends_at_its_first_byte() {
+    let multibyte: Vec<u8> = [
+        b"paste: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-s\u{e9}"] {
+        let (out, code, err) = run_bytes(&[form], b"");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走 stderr");
+        assert_eq!(code, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, multibyte, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_, code, err) = run_bytes(&["-Z\u{e9}"], b"");
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        [b"paste: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，`é` 根本不该被读到"
+    );
 }
 
 #[test]

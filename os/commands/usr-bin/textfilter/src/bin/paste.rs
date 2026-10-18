@@ -107,11 +107,16 @@ fn run() -> ! {
 }
 
 /// 三家句子各走各的出口与退码；libc 那一行交回 [`minix_textfilter::GetoptReport`] 单源。
+///
+/// 字母位走 `line_bytes` 而不是 `line`：`src/paste.rs` 的取法本就按字节（`token[k]` 是一枚
+/// `u8`，再 `char::from`），非 ASCII 字母经 `line` 会被 UTF-8 编码成两字节。参照件
+/// `tmp/paste-321/paste_ref` 现量 `paste -é` 与 `paste -sé` 都是 `paste: unknown option -- ` +
+/// 单个 `c3` + 换行，机制在 `getopt.c:79` 的 `optopt = *place++` 与 `:103` 的 `%c`。
 fn fail(prog: &str, error: &PasteError) -> ! {
     match error {
         PasteError::Usage { reports } => {
             for report in reports {
-                support::warn(report.line(prog).as_bytes());
+                support::warn(&report.line_bytes(prog));
             }
             support::warn(b"paste: [-s] [-d delimiters] file ...\n");
             support::terminate(1);
