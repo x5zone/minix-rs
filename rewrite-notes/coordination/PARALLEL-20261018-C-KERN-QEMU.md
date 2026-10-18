@@ -189,6 +189,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `FBD` 片收尾（存储代理族第二台，占位 24→23）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `27→26` —— 随 fbd 接线（`os/drivers` 24→23）的机械过账。**minix-blockdriver 公共面新增**（A 板是下游）：`BlockService::note_open`（转发型服务的 open 记账入口：代理的 open 钩子无传输，服务代转后告知泵的 restart 门）；**minix-bdev 公共面新增**：`Transport`/`GrantIssuer` 对 `&mut L` 的 blanket impl（客户端按值取传输，持有引用者可交出）；fbd 本体四模块（protocol/face/service/main，28 枚新门）—— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `FILTER` 片收尾（存储代理族第三台，占位 23→22）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `26→25` —— 随 filter 接线（`os/drivers` 23→22）的机械过账。filter 本体四模块（face 顶层面：对齐门/暂存/转发重试环/尺寸控制 + service 的 DIOCGETP 解码 + main 真循环，13 枚新门）；**登记缝**：中层面（`driver.c` 的校验引擎、镜像策略与异步重试/重启/超时）以 `LowerLeg` 缝承载，生产腿未落时以 `UnboundLeg` 诚实拒绝（不伪造通过） —— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。
