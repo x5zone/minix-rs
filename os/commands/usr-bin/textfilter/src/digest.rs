@@ -722,23 +722,39 @@ pub enum Algo {
 }
 
 impl Algo {
+    /// C 的 `hashes[]` 那张表里的八枚，**顺序照表**（`minix3/usr.bin/cksum/cksum.c:120-144`：
+    /// md2、md4、md5、rmd160、sha1、sha256、sha384、sha512）。顺序不是讲究：`cksum -c` 认行首
+    /// 算法名时是照这张表逐项 `strncmp`、第一个前缀命中就收（`:343-352`）。
+    pub const ALL: [Algo; 8] = [
+        Algo::Md2,
+        Algo::Md4,
+        Algo::Md5,
+        Algo::Rmd160,
+        Algo::Sha1,
+        Algo::Sha256,
+        Algo::Sha384,
+        Algo::Sha512,
+    ];
+
     /// `hashname` → 算法。**大小写不敏感**：C 的 `case 'a'` 用
     /// `strcasecmp(hashes[i].hashname, optarg)`（`cksum.c:201-207`），所以 `-a md5`、`-a MD5`、
     /// `-a Md5` 在 C 里是同一个入口。全仓只有这一张名字表——`src/cksum.rs` 的 `-a` 腿、诊断里
     /// 那句大写的名字、以及报文头都从这里出；两处各抄一份的话，「哪一份是真的」就又回来了。
     pub fn from_hashname(hashname: &str) -> Option<Algo> {
-        [
-            Algo::Md2,
-            Algo::Md4,
-            Algo::Md5,
-            Algo::Rmd160,
-            Algo::Sha1,
-            Algo::Sha256,
-            Algo::Sha384,
-            Algo::Sha512,
-        ]
-        .into_iter()
-        .find(|algo| algo.hashname().eq_ignore_ascii_case(hashname))
+        Self::ALL
+            .into_iter()
+            .find(|algo| algo.hashname().eq_ignore_ascii_case(hashname))
+    }
+
+    /// 校验档里一行的**行首前缀** → 算法。这条判据与上一条**不同**：C 在 `do_check` 里用的是
+    /// `strncmp(buf, nhash->hashname, strlen(nhash->hashname))`（`cksum.c:343-352`），
+    /// **大小写敏感**、只认表里那一份大写名。参照件 g-10 形实测：`md5 (f) = <摘要>` 这一行
+    /// 认不出算法，走的是 `unknown hash`（`:358`）而不是 forgiving 的 `-a` 那一腿。
+    /// 两处若共用一份匹配规则，`-a` 的大小写不敏感就会渗进校验档——那是 C 没有的行为。
+    pub fn by_line_prefix(line: &str) -> Option<Algo> {
+        Self::ALL
+            .into_iter()
+            .find(|algo| line.starts_with(algo.hashname()))
     }
 
     /// C 的 `hashes[]` 表里 `hashname` 那一列（大写那一份）。诊断句子与缺省报文头用的都是它
@@ -771,9 +787,72 @@ impl Algo {
     }
 }
 
+/// C 的 `MD5TestSuite` 打的那八枚固定串（`minix3/usr.bin/cksum/md5.c:118-133`，八条调用在 `:122-132`）。
+/// **八枚算法共用同一份**：`md2.c`/`md4.c`/`md5.c`/`rmd160.c`/`sha1.c`/`sha256.c`/
+/// `sha384.c`/`sha512.c` 里除了 `HASHTYPE`/`HASHLEN` 与一句 `#include "md5.c"` 没有别的
+///（现查八份各 21–25 行），所以 C 的 `-x` 是「同一串文字 × 八种摘要」。最后一枚在 C 里是
+/// 一条反斜杠续行的字符串拼接（`:131-132`），合起来 80 个字符。
+pub const TEST_SUITE: [&str; 8] = [
+    "",
+    "a",
+    "abc",
+    "message digest",
+    "abcdefghijklmnopqrstuvwxyz",
+    "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+    "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+];
+
+/// C 的 `-t` 那一腿的块长（`md5.c:53` 的 `TEST_BLOCK_LEN`）。
+pub const TIME_TRIAL_BLOCK_LEN: usize = 1000;
+/// C 的 `-t` 那一腿折叠的次数（`md5.c:54` 的 `TEST_BLOCK_COUNT`）。
+pub const TIME_TRIAL_BLOCK_COUNT: usize = 1000;
+
+/// C 的 `-t` 喂给摘要本体的字节：`md5.c:86-87` 先造一块 `block[i] = i & 0xff`（1000 字节），
+/// 再把**同一枚块**连续 `Update` 一千次（`:94-95`），合计 1000 × 1000 字节，于是第 `j` 个字节是
+/// `(j % 1000) & 0xff`。本壳的摘要本体是一次喂入的 `hex_digest`，所以这里把那一千次
+/// 摊平成一条序列——与 `CKSUM-DIGEST-STREAMING` 那条登记是同一件事（值是同一份，
+/// 差别只在内存占用）。
+pub fn time_trial_data() -> alloc::vec::Vec<u8> {
+    (0..TIME_TRIAL_BLOCK_LEN * TIME_TRIAL_BLOCK_COUNT)
+        .map(|index| (index % TIME_TRIAL_BLOCK_LEN) as u8)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Algo, hex, md2, md4, md5, rmd160, sha1, sha256, sha384, sha512};
+    use super::{
+        hex, md2, md4, md5, rmd160, sha1, sha256, sha384, sha512, time_trial_data, Algo,
+        TIME_TRIAL_BLOCK_LEN,
+    };
+
+    /// `-t` 那一腿喂的 1000 × 1000 字节必须是 C 的形状（`md5.c:86-87` 造块、`:94-95` 折叠一千次：块里 `block[i] = i & 0xff`，
+    /// 同一枚块折叠一千次）。期望摘要取自本仓 C 原件编出的完整参照件
+    ///（`tmp/cksum-hash-state/readings.log` 的 t-1 与 t-2 两形，配方 `bash tmp/cksum-hash-state/build-cksum-ref.sh`）。
+    #[test]
+    fn the_time_trial_payload_matches_the_c_block_pattern() {
+        let data = time_trial_data();
+        assert_eq!(
+            data.len(),
+            TIME_TRIAL_BLOCK_LEN * 1000,
+            "一千枚一千字节的块"
+        );
+        assert_eq!(
+            (data[0], data[255], data[256], data[999]),
+            (0, 255, 0, 231),
+            "块内是 `i & 0xff`，第 999 个字节是 999 % 256"
+        );
+        assert_eq!(
+            hex(&md5(&data)),
+            "f217fb0b8599c956eaeb81611e7a8758",
+            "MD5 那一行 `Digest = …` 的期望值"
+        );
+        assert_eq!(
+            hex(&sha512(&data)),
+            "0b7912f30c0528ee0a481dd1087068b908c9c4f5a908271e0760f7abacd52a95523a9a5e3c0ef0e9b29a04326a723c2d5410e1f1a116228400aeeb532d3a9619",
+            "SHA512 同一形：块长 128 与 1000 不整除，摆错就立刻分叉"
+        );
+    }
 
     /// 本模块的门只认两类出处：仓库里的 C 期望值文件，以及**用本仓 C 原件编出来的参照件**
     /// 的读数（配方记在 `rewrite-notes/18-stage-commands/todo.md` 批次三百八十四、三百八十五与三百八十六；

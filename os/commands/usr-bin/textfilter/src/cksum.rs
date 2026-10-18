@@ -115,28 +115,45 @@ pub fn sum_display_length(kind: SumKind, bytes: u64) -> u64 {
     }
 }
 
-/// One classified line of a `cksum -c` check file. C's `do_check`
-/// (`cksum.c:283-460`) reads a line, strips the newline, and branches on
-/// whether it carries the crypto-hash grammar (`… (file) = digest`) or the
-/// sum/cksum grammar (`<checksum> [length] name`).
+/// C 的 `do_check`（`cksum.c:283-465`）对校验档里一行的分类结果。
+///
+/// 分类只用两条判据——这一行有没有 `(`，以及**当前的 `hash` 状态**——后一条会让同一形的两行
+/// 走不同的路：`hash` 一旦被某一行认定（`hash = nhash`，`:363`），后面那些没有 `(` 的普通行
+/// 也走摘要那一支（`:373-389`），拿第一个词整串去和重算的摘要比。参照件 h-1/h-3/h-4 三形
+/// 实测都是这样判失败并带 `(MD5) ` 前缀，其中 h-4 **没有给 `-a`**：档里第一行的行首前缀
+/// 自己就把算法定了。
 #[derive(Debug, PartialEq, Eq)]
-pub enum CheckEntry<'a> {
-    /// sum/cksum line: C takes the checksum from the first token (`buf` up to
-    /// the first space) and the file name from after the **last** space
-    /// (`strrchr(buf, ' ') + 1`); the printed length column is not compared —
-    /// C checks only `val == strtoul(cksum)` (`cksum.c:443`). Names containing
-    /// spaces therefore resolve to their trailing word, matching C.
-    Checksum { crc: u32, name: &'a str },
-    /// The line contains `(` — the `name (file) = digest` hash grammar. It
-    /// needs a crypto primitive we do not carry, so it cannot be verified.
-    Hash,
-    /// No space to split on — C's "bogus format: … Skipping…" case.
+pub enum CheckLine<'a> {
+    /// 摘要形 `NAME (档) = 摘要`。档名取「第一个 `(` 之后」（`strchr`，`:314`）到「最后一个
+    /// `)` 之前」（`strrchr`，`:322`），所以 `MD5 (a (f1) = …` 的档名是 `a (f1`（参照件 g-7 形）、
+    /// `MD5 (f1)) = …` 的档名是 `f1)`（g-6 形）。摘要从最后一个 `)` **之后第四个字符**起
+    ///（`:331` 的 `p_cksum += 4`，跳的就是 `) = ` 那四个字符），因此 `) =x` 这种少一个空格的
+    /// 写法取到空串、`)` 后面不足四个字符时也取到空串（g-3/g-4 两形实测都是 `FAILED`）。
+    /// `algo` 是行首前缀在 `hashes[]` 里认出来的那一枚（大小写敏感，见 `Algo::by_line_prefix`）；
+    /// `None` 就是 C 那句 `unknown hash: <整行>`（`:358`，参照件 g-1/g-5?/g-10/h-12 四形）。
+    Hash {
+        algo: Option<Algo>,
+        name: &'a str,
+        digest: &'a str,
+    },
+    /// 两列形 `<校验和> <档名>`。`token` 恒为第一个空格之前那一段（C 的两支都是，`:404` 与
+    /// `:389`）；`name` 的取法**跟着 `hash` 状态分叉**：未选中时取**最后一个**空格之后
+    ///（`strrchr`，`:406`），所以 `123 f1 x` 的档名是 `x`（参照件 h-6 形）；已选中时取开头那段
+    /// 空白之后（`while (isspace((int)*++p_filename))`，`:386-387`），所以带空格的档名整串留下。
+    Token { token: &'a str, name: &'a str },
+    /// C 的 `bogus format: %s. Skipping...`：有 `(` 却没有 `)`（`:322-328`），
+    /// 或者没有 `(` 也没有空格而 `hash` 又没选中（`:395-401`）。两见同一句。
     Malformed,
+    /// C 的另一句 `no filename in %s? Skipping...`（`:377-383`）：**只有 `hash` 已选中那条路
+    /// 才到得了**——同一形在 `hash` 未选中时报的是上一条（`:406-412` 那一支只在有空格但档名为空
+    /// 时才走到，实测见参照件 h-7 对 h-8/h-9）。两句不同，`-w` 下的读数也就不同。
+    NoFilename,
 }
 
 /// Parse the leading base-10 digits of `token`, mirroring C `strtoul(…, 10)`:
-/// digits up to the first non-digit, `0` when it starts with a non-digit.
-fn leading_u32(token: &str) -> u32 {
+/// digits up to the first non-digit, `0` when it starts with a non-digit（`cksum.c:442`）。
+/// 校验腿里只有 `hash` 未选中那一支用它；选中那一支比的是整串（`:424-426` 的 `strcmp`）。
+pub fn leading_u32(token: &str) -> u32 {
     let digits: &str = {
         let end = token
             .find(|c: char| !c.is_ascii_digit())
@@ -146,17 +163,51 @@ fn leading_u32(token: &str) -> u32 {
     digits.parse::<u32>().unwrap_or(0)
 }
 
-/// Classify one check-file `line` (the trailing newline already removed).
-pub fn parse_check_line(line: &str) -> CheckEntry<'_> {
-    if line.contains('(') {
-        return CheckEntry::Hash;
+/// 按 C 的行分类把校验档里的一行分开（换行已由调用方剥掉）。`hash` 是 C 那个**跨行留存**的
+/// `hash` 指针，所以本函数必须带着当前状态调用；返回的 `Hash { algo: Some(..) }` 就是调用方
+/// 接下来要采用的新状态（C 在同一处既改状态又用它判失败行的前缀，`:363` 与 `:454`）。
+pub fn classify_check_line(line: &str, hash: Option<Algo>) -> CheckLine<'_> {
+    if let Some(open) = line.find('(') {
+        let rest = &line[open + 1..];
+        let Some(close) = rest.rfind(')') else {
+            return CheckLine::Malformed;
+        };
+        let after = &rest[close + 1..];
+        CheckLine::Hash {
+            algo: Algo::by_line_prefix(line),
+            name: &rest[..close],
+            // C 那句 `p_cksum += 4` 把指针从右括号本身推到摘要的第一个字符：`)`、` `、`=`、` `
+            // 四步（`cksum.c:331`），而 `after` 已经跳过了 `)` 本身，所以这里剥掉的是三个字符。
+            // 不足三个（`) ` 后面没有 ` = `）时 C 的指针走到串尾，取到的就是空串（参照件
+            // g-3/g-4 两形实测判 `FAILED`），本壳同一口径。
+            digest: if after.len() >= 3 { &after[3..] } else { "" },
+        }
+    } else if let Some(first_space) = line.find(' ') {
+        let token = &line[..first_space];
+        if hash.is_some() {
+            // C 先把指针推过一个空格、再吃掉整段空白（`:386-387`），第一个非空白起就是档名。
+            let bytes = line.as_bytes();
+            let mut index = first_space;
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            CheckLine::Token {
+                token,
+                name: &line[index..],
+            }
+        } else {
+            // 未选中那一支用的是 `strrchr`（`:406`）：最后一个空格之后。
+            let last_space = line.rfind(' ').unwrap_or(first_space);
+            CheckLine::Token {
+                token,
+                name: &line[last_space + 1..],
+            }
+        }
+    } else if hash.is_some() {
+        CheckLine::NoFilename
+    } else {
+        CheckLine::Malformed
     }
-    let Some(first_space) = line.find(' ') else {
-        return CheckEntry::Malformed;
-    };
-    let crc = leading_u32(&line[..first_space]);
-    let name = &line[line.rfind(' ').unwrap() + 1..];
-    CheckEntry::Checksum { crc, name }
 }
 
 /// Everything `cksum` was asked to do, folded out of argv by the C `main`
@@ -220,11 +271,36 @@ pub enum CksumError {
     UnknownOption(char),
 }
 
+/// C 的 `-s`/`-t`/`-x` 三条**自己在 getopt 环里就把话印完**的腿（`cksum.c:255-274` 分别
+/// 调 `stringfunc`/`timetrialfunc`/`testsuitefunc`，三者的本体都在 `minix3/usr.bin/cksum/md5.c`，
+/// 八枚算法靠 `#include "md5.c"` 共用）。带上算法是因为 C 用的就是当时那个 `hash`：
+/// `-p`/`-s`/`-t`/`-x` 都要先过 `requirehash`，所以走到这里时算法必定已选中。
+///
+/// 次序跟着 argv 走，而且**后面选项报错也追不回来**：参照件 e-1 形
+/// （`-a md5 -s abc -Z`）的 stdout 有那一行串摘要，stderr 是 libc 的 `unknown option`，退码 1。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CksumAction<'a> {
+    /// `-s <串>`：C 的 `MD5String`（`md5.c:60-67`），一行 `NAME ("<串>") = <摘要>`。
+    String(Algo, &'a str),
+    /// `-t`：C 的 `MD5TimeTrial`（`md5.c:73-112`），四行；后两行随墙钟变。
+    TimeTrial(Algo),
+    /// `-x`：C 的 `MD5TestSuite`（`md5.c:118-133`），`NAME test suite:` 加八行固定串。
+    TestSuite(Algo),
+}
+
 /// Fold argv into a [`CksumRequest`]，按 libc `getopt` 的形状扫（`cksum.c:193` 的
 /// `"a:cno:pqs:twx"`）：一个 token 里可以聚簇多个字母（`-nq`），带值字母的值可以是
 /// 本 token 的剩余部分（`-ao`、`-sabc`）也可以是下一词（`-a md5`），`--` 结束扫描，
 /// 裸 `-` 是操作数。旧写法把整个 token 当一个字母，`-nq` 会被当成集外字母 `nq`。
-pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumError> {
+///
+/// `-s`/`-t`/`-x` 这三条腿在 C 里是**边扫边印**的（`cksum.c:255-274` 直接调
+/// `stringfunc`/`timetrialfunc`/`testsuitefunc`），于是它们的先后跟着 argv，而且后面
+/// 某个选项报错也拦不住已经印出去的那几行。采集面因此放在这里交给调用方，而不是
+/// 塞进 [`CksumRequest`]：报错那一条路上没有 request 可挂。
+pub fn parse_cksum_args_into<'a>(
+    args: &[&'a str],
+    actions: &mut Vec<CksumAction<'a>>,
+) -> Result<CksumRequest<'a>, CksumError> {
     let mut request = CksumRequest {
         kind: SumKind::Crc,
         hash: None,
@@ -312,16 +388,23 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
                     break;
                 }
                 's' => {
-                    // `-s` 先过 `requirehash`（`cksum.c:521-525`）：没选中 hash 才报那句
-                    // 并要求 `-a algorithm`；选中了则继续走，值本身要等真摘要时用。
-                    let _ = take_value(&mut index)?;
-                    if request.hash.is_none() {
+                    // `-s` 先过 `requirehash`（`cksum.c:255-259` + `:521-525`）：没选中才报那句
+                    // 并要求 `-a algorithm`。值本身已由 getopt 取走，所以缺值那一行仍先由 libc 印。
+                    let value = take_value(&mut index)?;
+                    let Some(algo) = request.hash else {
                         return Err(CksumError::RequiresHash('s'));
-                    }
-                    // 放行之后 C 立刻置 `nohashstdin`（`cksum.c:258`）。它不是「这条腿做完
-                    // 了」的记号，而是「末尾那一次对标准输入的摘要别再做了」的记号——
-                    // `-s` 已经把这一串摘要印过了。
+                    };
+                    // 放行之后 C **当场**调 `stringfunc(optarg)`（`cksum.c:258-259`）并把
+                    // `nohashstdin` 置真（`:258`）。`nohashstdin` 不是「这条腿做完了」的记号，
+                    // 而是「末尾那一次对标准输入的摘要别再做了」的记号（`:489`）。
+                    actions.push(CksumAction::String(algo, value));
                     request.nohash_stdin = true;
+                    // 本 token 的剩余部分一旦当了值，这个 token 就扫完了（libc 把本 token 的剩余部分当值交回之后
+                    // 就把待扫指针清空（`getopt.c:116-117` 与 `:140` 的 `place = EMSG`）。`-a`/`-o` 两臂本来就 break，
+                    // 这一臂以前不 break：`-sabc` 于是把 `a`、`b`、`c` 又当旗标扫一遍，
+                    // 撞上 `case 'a'` 去取「bc」当算法名——参照件 s-5 形是 `MD5 ("abc") = …`，
+                    // 本壳旧读数是一条 `illegal argument to -a option`。本轮新门把它咬出来了。
+                    break;
                 }
                 'c' => request.do_check = true,
                 'w' => request.check_warn = true,
@@ -336,11 +419,17 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
                     request.pipe = true;
                 }
                 't' | 'x' => {
-                    // 这两个也过 `requirehash`，放行后各自置 `nohashstdin`（`cksum.c:264`、
-                    // `:273`）：定时试验与测试套件自己就把话印完了。
-                    if request.hash.is_none() {
+                    // 这两个也过 `requirehash`，放行后 C 当场调 `timetrialfunc`/`testsuitefunc`
+                    //（`cksum.c:261-266`、`:270-275`）并各自置 `nohashstdin`：定时试验与测试
+                    // 套件自己就把话印完了，末尾那一次标准输入摘要不再做。
+                    let Some(algo) = request.hash else {
                         return Err(CksumError::RequiresHash(flag));
-                    }
+                    };
+                    actions.push(if flag == 't' {
+                        CksumAction::TimeTrial(algo)
+                    } else {
+                        CksumAction::TestSuite(algo)
+                    });
                     request.nohash_stdin = true;
                 }
                 _ => return Err(CksumError::UnknownOption(flag)),
@@ -355,6 +444,69 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 这些门判的是**状态折叠**（哪个字母把哪个字段改成什么），不关心三条自印腿的打印
+    /// 次序；采集面自己的门直接叫 `parse_cksum_args_into`。
+    fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumError> {
+        parse_cksum_args_into(args, &mut Vec::new())
+    }
+
+    /// 三条自印腿按 **argv 次序**进采集面，且 `-x -s abc` 这种同现不合并、不重排
+    ///（参照件 s-9 形：先 `MD5 test suite:` 那九行，再 `MD5 ("abc") = …`）。
+    #[test]
+    fn the_self_printing_legs_are_collected_in_argv_order() {
+        let mut actions = Vec::new();
+        assert!(parse_cksum_args_into(&["-a", "md5", "-x", "-s", "abc"], &mut actions).is_ok());
+        assert_eq!(
+            actions,
+            [
+                CksumAction::TestSuite(Algo::Md5),
+                CksumAction::String(Algo::Md5, "abc")
+            ],
+            "`-x` 在 argv 里在前，采集就必须在先"
+        );
+
+        // 重复出现就重复采集：C 的 getopt 环每命中一次调一次（参照件 x-5 形印了两套十六行）。
+        let mut twice = Vec::new();
+        assert!(parse_cksum_args_into(&["-a", "sha1", "-x", "-x"], &mut twice).is_ok());
+        assert_eq!(
+            twice,
+            [
+                CksumAction::TestSuite(Algo::Sha1),
+                CksumAction::TestSuite(Algo::Sha1)
+            ]
+        );
+
+        // 附值与聚簇两形取到的值都是那一串：`-sabc` 与 `-sa` 都印 `("abc")`/`("a")`。
+        let mut inline = Vec::new();
+        assert!(parse_cksum_args_into(&["-a", "md5", "-sabc"], &mut inline).is_ok());
+        assert_eq!(inline, [CksumAction::String(Algo::Md5, "abc")]);
+
+        // 三条腿都动 `nohashstdin`，而 `-p` 不动（`cksum.c:247-251` 里只有 `pflag = 1`）。
+        assert!(parse_cksum_args_into(&["-a", "md5", "-t"], &mut Vec::new()).is_ok());
+        assert!(!parse_cksum_args(&["-a", "md5", "-p"]).unwrap().nohash_stdin);
+    }
+
+    /// 报错那一形也要把已经印出去的行留下：C 在 getopt 环里就调了 `stringfunc`，
+    /// 之后的 `usage()` 追不回来（参照件 e-1/e-2/e-3 三形的 stdout 都有 `MD5 ("abc") = …`
+    /// 那一行，退码仍是 1）。采集面写在返回之前，正是为了这条路径。
+    #[test]
+    fn actions_survive_a_later_option_error() {
+        for tail in [vec!["-Z"], vec!["-o", "1"], vec!["-a", "sha1"]] {
+            let mut actions = Vec::new();
+            let mut argv = vec!["-a", "md5", "-s", "abc"];
+            argv.extend(tail.iter());
+            assert!(
+                parse_cksum_args_into(&argv, &mut actions).is_err(),
+                "{argv:?} 该报错"
+            );
+            assert_eq!(
+                actions,
+                [CksumAction::String(Algo::Md5, "abc")],
+                "{argv:?} 报错之前那一行已经印出去了"
+            );
+        }
+    }
 
     #[test]
     fn test_crc_table_matches_the_polynomial() {
@@ -389,60 +541,153 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_check_line_sum_and_cksum_format() {
+    fn test_classify_check_line_sum_and_cksum_format() {
         // "<crc> <length> <name>" — length is present but not compared by C.
         assert_eq!(
-            parse_check_line("1219131554 3 abc"),
-            CheckEntry::Checksum {
-                crc: 1219131554,
+            classify_check_line("1219131554 3 abc", None),
+            CheckLine::Token {
+                token: "1219131554",
                 name: "abc"
             }
         );
         // Two tokens: first is the crc, the rest-after-last-space is the name.
         assert_eq!(
-            parse_check_line("4294967295 a.txt"),
-            CheckEntry::Checksum {
-                crc: 4294967295,
+            classify_check_line("4294967295 a.txt", None),
+            CheckLine::Token {
+                token: "4294967295",
                 name: "a.txt"
             }
         );
     }
 
+    /// `hash` 未选中那一支用 `strrchr`（`cksum.c:406`）取档名，所以带空格的名字被截成
+    /// 最后一个词；而 `hash` 已选中那一支用「跳过开头那段空白」（`:386-387`），整串留着。
+    /// 同一行两判，是参照件 h-5/h-6 两形的分别。
     #[test]
-    fn test_parse_check_line_name_is_after_the_last_space() {
-        // C uses strrchr(' ')+1, so a name with spaces resolves to its trailing
-        // word — a documented C limitation, not a bug we diverge on.
+    fn the_filename_rule_follows_the_hash_state() {
         assert_eq!(
-            parse_check_line("123 456 my file.txt"),
-            CheckEntry::Checksum {
-                crc: 123,
+            classify_check_line("123 456 my file.txt", None),
+            CheckLine::Token {
+                token: "123",
                 name: "file.txt"
+            },
+            "未选中取最后一个空格之后"
+        );
+        assert_eq!(
+            classify_check_line("123 456 my file.txt", Some(Algo::Md5)),
+            CheckLine::Token {
+                token: "123",
+                name: "456 my file.txt"
+            },
+            "选中之后取开头那段空白之后"
+        );
+        // 多个空格只影响 C 的 `nspaces`，`token` 仍是第一个空格之前那一段（`:389`）。
+        assert_eq!(
+            classify_check_line("12345    f1", None),
+            CheckLine::Token {
+                token: "12345",
+                name: "f1"
+            }
+        );
+        assert_eq!(
+            classify_check_line("12345    f1", Some(Algo::Sha1)),
+            CheckLine::Token {
+                token: "12345",
+                name: "f1"
             }
         );
     }
 
+    /// 摘要形 `NAME (档) = 摘要`：C 的档名是「第一个 `(` 之后」到「最后一个 `)` 之前」，
+    /// 摘要是最后一个 `)` 之后第四个字符起（`cksum.c:314`/`:322`/`:331`）。三处畸形都实测过：
+    /// 少一个空格、`=` 后空、行首前缀认不出。
     #[test]
-    fn test_parse_check_line_classifies_hash_and_malformed() {
-        // The crypto hash grammar carries a '(' — unverifiable without primitives.
-        assert_eq!(parse_check_line("md5 (f) = d41d8cd98f00"), CheckEntry::Hash);
-        // A single token with no space is "bogus format".
-        assert_eq!(parse_check_line("nospace"), CheckEntry::Malformed);
+    fn the_hash_grammar_splits_at_the_first_open_and_last_close() {
+        assert_eq!(
+            classify_check_line("MD5 (f1) = d41d8cd98f00b204e9800998ecf8427e", None),
+            CheckLine::Hash {
+                algo: Some(Algo::Md5),
+                name: "f1",
+                digest: "d41d8cd98f00b204e9800998ecf8427e"
+            }
+        );
+        // 档名里带括号：前取到最后一个 `)` 之前（参照件 g-6/g-7 两形）。
+        assert_eq!(
+            classify_check_line("MD5 (a (f1) = xyz", None),
+            CheckLine::Hash {
+                algo: Some(Algo::Md5),
+                name: "a (f1",
+                digest: "xyz"
+            }
+        );
+        assert_eq!(
+            classify_check_line("MD5 (f1)) = xyz", None),
+            CheckLine::Hash {
+                algo: Some(Algo::Md5),
+                name: "f1)",
+                digest: "xyz"
+            }
+        );
+        // `) =x` 这种少一个空格的写法：C 那句 `+= 4` 是不看空格的硬位移，四个字符数过去
+        // 已经越过 `x` 本身，取到的仍是空串（参照件 g-3 形实测判 `FAILED`）。
+        assert_eq!(
+            classify_check_line("MD5 (f1) =x", None),
+            CheckLine::Hash {
+                algo: Some(Algo::Md5),
+                name: "f1",
+                digest: ""
+            }
+        );
+        // `)` 后面不足 ` = `：C 的指针走到串尾，取到空串（g-4 形实测 `FAILED`）。
+        assert_eq!(
+            classify_check_line("MD5 (f1)", None),
+            CheckLine::Hash {
+                algo: Some(Algo::Md5),
+                name: "f1",
+                digest: ""
+            }
+        );
+        // 行首前缀是**大小写敏感**的（`strncmp`，`:343-352`）：小写 `md5` 认不出，
+        // 与 `-a` 那一腿的 `strcasecmp` 正相反（参照件 g-10 形）。
+        assert_eq!(
+            classify_check_line("md5 (f1) = d41d8cd98f00b204e9800998ecf8427e", None),
+            CheckLine::Hash {
+                algo: None,
+                name: "f1",
+                digest: "d41d8cd98f00b204e9800998ecf8427e"
+            }
+        );
+        // 有 `(` 没有 `)` 走 `bogus format`（`:322-328`）。
+        assert_eq!(
+            classify_check_line("MD5 (f1 = abc", None),
+            CheckLine::Malformed
+        );
+    }
+
+    /// 「没有空格」这一形在两条路上报的是**两句不同的话**：`hash` 已选中时
+    /// `no filename in %s?`（`:377-383`），未选中时 `bogus format: %s.`（`:395-401`）。
+    /// 参照件 h-7 对 h-8/h-9 的分别正在这里。
+    #[test]
+    fn a_spaceless_line_reports_two_different_sentences_depending_on_state() {
+        assert_eq!(classify_check_line("12345", None), CheckLine::Malformed);
+        assert_eq!(
+            classify_check_line("12345", Some(Algo::Md5)),
+            CheckLine::NoFilename
+        );
+        assert_eq!(classify_check_line("", None), CheckLine::Malformed);
+        assert_eq!(
+            classify_check_line("", Some(Algo::Md5)),
+            CheckLine::NoFilename
+        );
     }
 
     #[test]
-    fn test_parse_check_line_leading_digits_only() {
+    fn leading_u32_follows_strtoul() {
         // strtoul stops at the first non-digit; a non-numeric start yields 0.
-        assert_eq!(
-            parse_check_line("1234abc 9 f"),
-            CheckEntry::Checksum {
-                crc: 1234,
-                name: "f"
-            }
-        );
-        assert_eq!(
-            parse_check_line("abc 9 f"),
-            CheckEntry::Checksum { crc: 0, name: "f" }
-        );
+        assert_eq!(leading_u32("1234abc"), 1234);
+        assert_eq!(leading_u32("abc"), 0);
+        assert_eq!(leading_u32(""), 0);
+        assert_eq!(leading_u32("4294967295"), 4294967295);
     }
 
     #[test]

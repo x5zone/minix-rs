@@ -326,6 +326,24 @@ pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, minix_sys::Errno> {
     Ok(out)
 }
 
+/// C 的 `time(2)`：秒粒度的墙钟。`cksum` 的 `-t` 那一腿用它算 `Time = %ld seconds` 与
+/// `Speed = %lld bytes/second` 两行（`minix3/usr.bin/cksum/md5.c:93`、`:107-113`）。
+/// 宿主侧走 `std::time`，真机侧走 `minix_sys::gettimeofday` 的秒位——与 `read_file` 那对
+/// cfg 双生面同一口径：判据是同一条「宿主门要能跑、真机门要能取到号」。
+/// 取不到号时交回 0 而不是 `-1`：C 的 `time()` 失败交回 `(time_t)-1` 而 `cksum.c` 从不查它，
+/// 这一腿印的是诊断性数字，不值得为它加一条错腿；`0` 与 `-1` 的差别只在失败时的读数上。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn wall_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn wall_seconds() -> i64 {
+    minix_sys::gettimeofday().map_or(0, |(seconds, _)| seconds)
+}
+
 /// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
 /// `minix3/lib/csu/common/crt0-common.c:156-165`，权威在 `minix-types` 的 `prog_name`）。
 /// `err(3)`/`warn(3)`/`usage()` 的那几行都以它开头。
