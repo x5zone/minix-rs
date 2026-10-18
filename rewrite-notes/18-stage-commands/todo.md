@@ -119,6 +119,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百九十九（A2 渲染半切片 5：`units`）：第五支壳换到字节形；一枚「先加门」的冲动被既有的门挡了回去
+
+- **这一轮干什么**：A2 渲染半第五次落地，选 `units`（批次三百一十九那笔已给它立了登记名 `UNITS-NONASCII-OPTLETTER`，取法半当时就按字节走，差的只剩渲染那一寸）。落码三件：`os/commands/usr-bin/textfilter/src/bin/units.rs`（`UnitsArgError::Getopt` 那一处出口改 `line_bytes`）、`tests/units_face.rs`（**翻正**既有门，不新增）、`tests/bin_support_face.rs`（`units` 那枚跨支期望从 `c3 af` 翻成单字节 `ef`）；共件与 `src/units.rs` 一字未动。进度：`rev`、`colrm`、`col`、`column`、`units` 五支壳，渲染半余 **24 处调用点 / 20 个源文件**。
+- **既有的门先挡住了一次重复加门**：本轮第一反应是照 `col`/`colrm` 的样子新立一枚逐字节的门，写完跑起来才发现 `units_face.rs` 里**早就有**一枚 `off_letter_outside_the_charset_is_reported_by_its_first_byte`——它当初就是为这处失真立的（注释明写「报文里把它渲染成 Latin-1 码点而非原始字节——这一处失真登记为 `UNITS-NONASCII-OPTLETTER`」），断的是 lossy 后的 U+00C3。于是**撤掉新加的那枚，改翻正既有的**：一条事实一枚门，两枚同断一件事的门以后有一处被抹平都不会改变行为，却会让红名清单含糊（这是门数没涨、仍是 20 枚的原因，也是 `column_face`/`colrm_face` 那两枚门命名彼此刻意区分的原因）。
+- **门现在的形状**：`-é` 与 `-qé` 两形逐字节比 stderr（`units: unknown option -- ` + `c3` + 换行 + 那份九行 usage，退 3），末尾再钉一遍 ASCII 的 `-Z` 走文本夹具（两入口同串，说明这次改动不碰 ASCII）。`units` 的 usage 是**九行**且首尾各有一枚空行，所以逐字节断言比别的壳更容易被无关空白伤到——这也是把它单列一形的理由。
+- **A/B 十形不一致 0**：`MINE=… bash tmp/units-399/ab.sh > tmp/units-399/ab.log`（`-é`、`-qé`、`-éq`、`-Z`、`-h`、`-f` 缺值、`-lq -f` 缺值、`-:`、`-L`、`-v`）。**两形非法 UTF-8 仍差一个字节**（`-\xff`、`-\x80`），属射程②。
+- **读数**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1138 passed / 0 failed**（68 段，与起点同数——本轮翻正门而不加门）；容器权威门同读数 **1138 / 0 / 68**、退码 0；三架构 `cargo build -p minix-textfilter --bins --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} --release` 全退 0；clippy 整包 **154** 与基线同数、按告警位置判触及三件零命中；`rustfmt --edition 2024` 触及件新增长零漂移（`src/bin/units.rs` 那三块是 `#[path]` 递归到的 `bin_support.rs` 存量，主树同数）。
+- **上一笔立的并发纪律本轮照办了**：`negctl.py` 跑完并核过 `git status --porcelain` 只剩本轮三件真改动之后，才单跑容器权威门（批次三百九十八那次是两者并跑，容器把**注入态**的树编了出来，报出六个假红靶）。这次容器一次过。
+- **负控七枚全咬住**（`python3 tmp/units-399/negctl.py`，日志 `tmp/units-399/negctl.log`）：U1 出口退回 `line()` ⇒ 咬 2（units 的门 + `bin_support_face` 的跨支门，后者正是本轮翻正过期望的那枚）；U2 字节位仍按 UTF-8 写 ⇒ 咬 6（五支壳的门加库门全红，是这一族「共件真单源」的横向证据）；U3 无条件取低字节 ⇒ 咬 1；U4 丢行尾换行 ⇒ 咬 22；U5 报完 libc 行不走 usage ⇒ 咬 6；U6 带值项缺值时误报成集外字母 ⇒ 咬 2（`missing_value_is_reachable_only_through_f` 与 units_face 的同名面门，证两个变体不可互换）；U7 把 `units` 的取法退回按字符取（对字节再做一次 UTF-8 解码）⇒ 咬 3。逐枚编得过、失败数 > 0、期望门在红名清单里、先还原再读回比 md5、复跑 0 失败。
+- **登记与闭合**：**`UNITS-NONASCII-OPTLETTER` 两半全闭**（取法批次三百一十九、渲染本笔）。同族的 `SEQ-NONASCII-OPTLETTER`（见 `:2215` 与 `:2300` 两处引用）里 `seq` 那一支仍开着——它是累加型环（`seq -\xff5` 把 lossy 后的三个字节当三个字母连报三行），换渲染只解决一半，另一半在射程②。板上 A2 记到**切片 5**。
+- **三件套**：核实命令与读数——`MINE=$PWD/.wt/getopt-report-byte-letter-qoder/os/target/debug/units bash tmp/units-399/ab.sh > tmp/units-399/ab.log`（10 形 0 分叉 + 两形残差）、`python3 tmp/units-399/negctl.py`（七枚各咬住 2/6/1/22/6/2/3 枚、复跑 0 失败）、参照件 `tmp/units-319/units`（→ `units_ref` 软链，程序名与本壳一致所以可逐字节比）、宿主与容器各 **1138 / 0 / 68**、三架构全退 0、`clippy` 154 同数、`rustfmt --edition 2024` 新增长零漂移、剩余调用点现量 **24 处 / 20 个源文件**；核实日 `2026-10-19`；基线快照 `75557148a`；代码笔 `32d0c6306`。
+- **下一轮首动作**：`bash tools/claim.sh claim GETOPT-REPORT-BYTE-LETTER qoder`（切片 6：`seq` 或 `paste`/`tr`/`fold` 里挑一支；`seq` 那支要同时说明累加型环为什么仍会报三行，另一半在射程②，别把它的门当成本轮可闭）。
+
 ## 批次三百九十八（A2 渲染半切片 4：`column`）：第四支壳换到字节形；顺带被自己的容器门抓出一处并发错——负控注入器与权威门不能同树并跑
 
 - **这一轮干什么**：A2 渲染半第四次落地，选 `column`（`col` 的邻支：它的取法半在批次三百一十四就按字节定了，只差壳侧那一行）。落码两件：`os/commands/usr-bin/textfilter/src/bin/column.rs`（`run` 里的 `Err(report)` 出口改调 `GetoptReport::line_bytes`）与门 `tests/column_face.rs`；`src/column.rs` 与共件一字未动。进度：`rev`、`colrm`、`col`、`column`，渲染半余 **25 处调用点 / 21 个源文件**（现量命令与本行末的「三件套」同一条 grep）。
