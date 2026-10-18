@@ -1,15 +1,18 @@
 #!/bin/bash
 # test-smp-aps-aarch64.sh — P-A64RV-01 aarch64 半专用门（§续-405/406）。
 #
-# 判据：-smp 2 下次级核经停车邮箱交付（kernel-image `_start` 选举＋
-# AP_GO 发布），起桩装 BSP 的 TTBR/MAIR/TCR、开 MMU 跳汇聚点置
+# 判据：-smp 2 下次级核经 PSCI CPU_ON 交付（内核 smp_init 填记录后
+# 点火），起桩装 BSP 的 TTBR/MAIR/TCR、开 MMU 跳汇聚点置
 # AP_ARRIVED——BSP 侧打印 `nk4c: ap-arrived cpu=<hw>` 为准。
+# （SD-37 乙案 `2026-10-18`：本门判据头旧写「经停车邮箱交付」，与实况
+# 不符——内核从不写 AP_GO 而门常绿，交付通道实测＝PSCI；停车邮箱已删，
+# kernel-image 落选臂改本地 wfi。判据本体 `ap-arrived` 计数不变。）
 #
 # §续-406 起走 QEMU 直核 `-kernel` ELF 引导（§续-88 甲案 aarch64 形）：
-# 非 Linux ELF 走 do_cpu_reset 的 !is_linux 臂＝全 CPU 进同一入口（与
-# riscv fw_dynamic 同模型），无 AAVMF/TF-A——§续-405 定谳的 UEFI 链
-# 次级核交付缺陷（EDK2 早年唤醒、EBS 后覆写、CPU_ON 交付不了已 ON 的
-# 核）整段绕开。五段对位 test-smp-aps-riscv64.sh。
+# 非 Linux ELF 走 do_cpu_reset 的 !is_linux 臂——门读数坐实次级核不进
+# ELF 入口（复位悬挂，由 QEMU 内建 PSCI 交付），无 AAVMF/TF-A——
+# §续-405 定谳的 UEFI 链次级核交付缺陷（EDK2 早年唤醒、EBS 后覆写、
+# CPU_ON 交付不了已 ON 的核）整段绕开。五段对位 test-smp-aps-riscv64.sh。
 #
 # 物理内存布局（RAM 512M：0x40000000..0x60000000）：
 #   kernel-image   0x40200000 + 4MiB     （镜像 LMA，QEMU -kernel ELF 装载）

@@ -143,32 +143,28 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .globl _start
     _start:
-        // ── 早期 hart 选举（§续-406：QEMU 直核 `-kernel` ELF 走
-        // do_cpu_reset 的 !is_linux 臂＝全 CPU 进同一入口，与 riscv
-        // fw_dynamic 同模型）。MPIDR+1 存选举格（LD/EXCL 独占语义），
-        // 落选者停 AP_GO 邮箱。UEFI/boot-shim 链只派一个 CPU 进本入口，
-        // 选举恒由它赢——两链共用本入口，无 cfg 分叉。
+        // ── 早期 hart 选举（§续-406 起的保留格）：MPIDR+1 存选举格
+        //（LD/EXCL 独占语义），落选者本地停车。UEFI/boot-shim 链只派
+        // 一个 CPU 进本入口，选举恒由它赢；直核链的门读数（test-smp-aps-
+        // aarch64，ap-arrived=1）坐实 PSCI CPU_ON 是唯一次级核交付通道、
+        // 链上无落选者——选举格退为身份记录，落选臂只作防御性兜底。
         mrs x8, mpidr_el1
         and x8, x8, #0xffffff        // Aff2:1:0
         add x10, x8, #1              // 存 hartid+1：与「未选 0」恒可区分
         adrp x9, BOOT_HART_ELECTED
         add x9, x9, :lo12:BOOT_HART_ELECTED
     1:  ldaxr w11, [x9]
-        cbnz w11, park               // 旧值非 0 ⇒ 已有 BSP ⇒ 停车邮箱
+        cbnz w11, park               // 旧值非 0 ⇒ 已有 BSP ⇒ 落选停车
         stlxr w12, w10, [x9]
         cbnz w12, 1b
         b 4f
     park:
-        // 等 AP_GO=1（内核 smp_init 填记录后发布），独占读清语义；
-        // 发布后跳架构桩（装根/开 MMU/跳汇聚点，全在桩内）。
-        adrp x9, AP_GO
-        add x9, x9, :lo12:AP_GO
-    2:  ldaxr w11, [x9]
-        cbz w11, 2b
-        dmb ish
-        adrp x8, {ap_stub}
-        add x8, x8, :lo12:{ap_stub}
-        br x8
+        // 落选核本地停车（SD-37 乙案）：次级核交付＝内核 PSCI CPU_ON，
+        // 它只作用于仍持在固件手的核；进过 payload 的落选者没有任何
+        // 可投递通道——wfi 常驻与旧「无人发布的 AP_GO 邮箱」可观测
+        // 行为逐位一致，仅去掉永不兑现的 GO 契约（SD-37 台账乙案原文）。
+    2:  wfi
+        b 2b
     4:
         // SD-7 / P-X86-03（2026-10-06）：防御性 .bss 清零，镜像 riscv64
         // 甲案（同 x86_64 注释：loader 已清是现行 UEFI 路径事实，入口
@@ -192,7 +188,6 @@ core::arch::global_asm!(
         b 3b
     "#,
     rust_image_main = sym rust_image_main,
-    ap_stub = sym ap_early_entry_start,
 );
 
 #[cfg(target_arch = "riscv64")]
@@ -202,15 +197,17 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .globl _start
     _start:
-        # ── 早期 hart 选举（§续-400 定谳：OpenSBI QEMU virt＝全 hart 进
-        # payload，每个 hart 都带着 a0=自身 hartid 进 _start——谁来当 BSP
-        # 由先到者当选，其余进停车邮箱等内核发布记录）。选举格在 .data
-        #（loader 按 filesz 写过初值 0，非 NOBITS 侥幸）。amoswap.aq 给
-        # 当选者 acquire 序。
+        # ── 早期 hart 选举（§续-400 起的保留格）：每个进 _start 的 hart
+        # 带着自身 hartid（a0），先到者当选存 hartid+1，落选者本地停车。
+        # 次级核的实际交付通道是内核 smp_init 的 SBI HSM hart_start（它
+        # 只作用于仍留在 OpenSBI 的 hart）；门读数（test-smp-aps-riscv64，
+        # ap-arrived=1）坐实现链无落选者——选举格退为身份记录，落选臂
+        # 只作防御性兜底。选举格在 .data（loader 按 filesz 写过初值 0，
+        # 非 NOBITS 侥幸）。amoswap.aq 给当选者 acquire 序。
         la t0, BOOT_HART_ELECTED
         addi t5, a0, 1          # 存 hartid+1：hart 0 存 1，与「未选 0」恒可区分
         amoswap.d.aq t2, t5, (t0)
-        bnez t2, park           # t2=旧值非 0 ⇒ 已有 BSP ⇒ 次级核停车路径
+        bnez t2, park           # t2=旧值非 0 ⇒ 已有 BSP ⇒ 落选停车路径
 
         # ── 当选 BSP：NK4-C 续-88 甲案 .bss 清零（原注释全保留）。
         # OpenSBI 递入的是裸 RAM（NOBITS 不写），而镜像的 bump 分配器
@@ -238,27 +235,15 @@ core::arch::global_asm!(
     3:  wfi
         j 3b
 
-    # ── 次级核停车邮箱（§续-399/400：寄存器态纯轮询，零栈、零 .bss 写）。
-    # 等 AP_GO=1（内核 smp_init 填 ApBootstrap 后 Release 发布），fence 消费，
-    # 从记录装根/栈/汇聚点，MMU on 后跳 Rust 汇聚点。 hartid 留在 a0 兜底
-    #（若未来 per-hart 邮箱化，用它索引）。
+    # ── 落选 hart 本地停车（SD-37 乙案）：次级核交付＝SBI HSM hart_start，
+    # 只作用于仍留在 OpenSBI 的 hart；进过 payload 的落选者没有任何可
+    # 投递通道——wfi 常驻与旧「无人发布的 AP_GO 邮箱」可观测行为一致，
+    # 仅去掉永不兑现的 GO 契约（旧 park 跳汇聚点时 a0 未按桩契约换成
+    # 记录 VA，本身残缺，从未被踩过）。
     .align 2
 park:
-    la t0, AP_GO
-1:  ld t2, 0(t0)
-    beqz t2, 1b
-    fence rw, rw
-    la t2, AP_BOOTSTRAP_RECORD
-    ld t3, 16(t2)               # page_table_root_pa
-    ld t4, 24(t2)               # kernel_stack_top_va
-    ld t5, 32(t2)               # rust_entry_va
-    srli t3, t3, 12
-    li t6, 0x8000000000000000   # SATP_MODE_SV39
-    or t3, t3, t6
-    csrw satp, t3
-    sfence.vma
-    mv sp, t4
-    jr t5                       # 汇聚点（记录高半 VA，内核根映射）
+    wfi
+    j park
     "#,
     rust_image_main = sym rust_image_main,
 );
@@ -268,13 +253,6 @@ mod bootface;
 
 #[cfg(target_arch = "aarch64")]
 mod bootface_a64;
-
-/// aarch64 架构桩物理入口符号（kernel-image 停车邮箱的跳转目标；符号
-/// 属 minix-arch 的 global_asm，本声明只为 `sym` 引用出作用域）。
-#[cfg(target_arch = "aarch64")]
-unsafe extern "C" {
-    fn ap_early_entry_start();
-}
 
 /// Rust 面入口（x86_64 形态；aarch64/riscv64 各有接线版见下）：横幅 +
 /// 触达锚点 + 驻留。

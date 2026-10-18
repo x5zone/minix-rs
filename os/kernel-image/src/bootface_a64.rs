@@ -4,12 +4,17 @@
 //! # 引导模型（与 riscv 半的差异全部源自固件，不是设计分叉）
 //!
 //! QEMU mach-virt 对非 Linux ELF `-kernel` 走 `do_cpu_reset` 的
-//! `!info->is_linux` 路径（hw/arm/boot.c:693-723）：**全部 CPU 都进 ELF
-//! 入口**，与 OpenSBI fw_dynamic「全 hart 进 payload」同模型。因此：
+//! `!info->is_linux` 路径（hw/arm/boot.c）。**次级核不进 ELF 入口**：只有
+//! first_cpu 被 `cpu_set_pc` 送进入口，其余保持复位悬挂，由内核经 QEMU
+//! 内建 PSCI CPU_ON（conduit 按 DTB `/psci/method`，直核链＝hvc）交付
+//! ——门读数为准：`test-smp-aps-aarch64` 在 `AP_GO` 写入为 0 的前提下
+//! `ap-arrived=1 / ap-timeout=0`（`2026-10-18` 基线，交付通道＝PSCI 的
+//! 实证）。因此：
 //!
-//! - BSP 由 `_start` 的早期选举选出（MPIDR+1 存 [`BOOT_HART_ELECTED`]，
-//!   与 riscv 半同格同名）；落选者停 [`AP_GO`] 邮箱，内核接线填记录后
-//!   发布——PSCI 全程不参与（AAVMF/TF-A 链的次级核交付缺陷见 §续-405）。
+//! - BSP 由 `_start` 的早期选举格记录（MPIDR+1 存 [`BOOT_HART_ELECTED`]，
+//!   与 riscv 半同格同名）；落选者本地 wfi 停车（SD-37 乙案：`AP_GO`
+//!   停车邮箱已删——它以「全部 CPU 进入口」为前提，该前提被上读数
+//!   否证；见本仓库 `PARALLEL-20261018-C-KERN-QEMU.md` C2 行）。
 //! - DTB 由 QEMU `arm_load_dtb` 放在 RAM 基址（`info->dtb_start =
 //!   loader_start`，hw/arm/boot.c ELF 臂源码锚定）＝[`DTB_PA`] 定值。
 //! - `x0` 在直核入口为 0（QEMU 不设参）；boot-shim UEFI 链则以 `x0` 递
@@ -116,7 +121,8 @@ static mut BUMP_PTR: u64 = BUMP_BASE;
 /// 取 `num_pages` 页；0 页请求拒绝（防重复地址破坏不重叠不变量）。
 fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
     assert!(num_pages > 0, "bump_alloc: num_pages must be > 0");
-    // SAFETY: 单线程 boot 面（次级核停 AP_GO 邮箱，不进本面）。
+    // SAFETY: 单线程 boot 面（次级核经 PSCI CPU_ON 交付后停内核汇聚点，
+    // 不进本面；落选者即使出现也本地 wfi 停车）。
     unsafe {
         let need = (num_pages as u64) * 4096;
         let ptr = core::ptr::addr_of_mut!(BUMP_PTR);

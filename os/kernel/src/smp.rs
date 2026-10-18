@@ -1163,11 +1163,13 @@ pub fn smp_init() {
             // （§续-406）：QEMU 直核 `-kernel` 的 !is_linux 臂只派
             // first_cpu 进入口（QEMU 侧 `hw/arm/boot.c:731`，非 minix3 仓内
             // 文件——次级核走未设置的
-            // secondary_cpu_reset_hook＝保持复位 PC），停车邮箱无人消费；
+            // secondary_cpu_reset_hook＝保持复位 PC）；
             // 直核链的次级核交付＝QEMU 内建 PSCI CPU_ON（无固件记账层，
             // §续-405 的 UEFI 链 ret=0-但-不动 是 EDK2/TF-A 特有，且其
-            // 真根因 KPHYS 错位已在桩侧修复）。AP_GO 邮箱与选举 asm
-            // 保留：UEFI 链单 CPU 恒赢选举，邮箱无人发布＝惰性格。
+            // 真根因 KPHYS 错位已在桩侧修复）。kernel-image 的 AP_GO 停车
+            // 邮箱已按 SD-37 乙案删除（`2026-10-18`：门基线 ap-arrived=1
+            // 坐实本通道是唯一交付面，邮箱零消费者、零停车者；kernel-image
+            // 落选臂改本地 wfi 兜底）。
             unsafe { core::arch::asm!("dmb ish", options(nomem, nostack)) };
             <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, entry_pa);
 

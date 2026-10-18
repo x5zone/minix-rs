@@ -60,13 +60,6 @@ use crate::arch::ap_early_entry::ApBootstrap;
 pub static BOOT_HART_ELECTED: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
-/// 次级核停车邮箱的 GO 格（§续-406 直核链的 AP 交付通道：内核接线填记
-/// 录后 Release 发布，停车者独占读清后跳桩；UEFI 链无人发布＝停车者不
-/// 醒，与 riscv 半的 §续-400 停车邮箱同格名同语义）。.data 同上。
-#[unsafe(link_section = ".data")]
-#[unsafe(no_mangle)]
-pub static AP_GO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
 /// Per-AP bootstrap record — arch-local static storage (v7 #4; the arm
 /// form has no <1MiB copy constraint, firmware starts the AP directly at
 /// an image physical address). BSP fills via [`record`] before

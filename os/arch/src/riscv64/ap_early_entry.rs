@@ -59,12 +59,6 @@ use crate::arch::ap_early_entry::ApBootstrap;
 #[unsafe(no_mangle)]
 pub static BOOT_HART_ELECTED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-/// 次级核停车邮箱的 GO 格（§续-400 停车邮箱设计）：0=等待；1=记录已填、
-/// 可跳汇聚点。.data 同上（初值由 loader 写入，非 NOBITS 侥幸）。
-#[unsafe(link_section = ".data")]
-#[unsafe(no_mangle)]
-pub static AP_GO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
 #[unsafe(no_mangle)]
 pub static mut AP_BOOTSTRAP_RECORD: ApBootstrap = ApBootstrap {
     logical_id: 0,
