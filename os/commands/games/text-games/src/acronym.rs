@@ -1,22 +1,14 @@
 //! Acronym lookup.
 //!
 //! Ground truth: `minix3/games/wtf/wtf` (flags `-o` for the offensive file
-//! and `-f` for extra database files, the word `is` skipped between the
-//! command name and the terms). Database lines follow `term: expansion`
-//! shape. File reading stays with the execution layer; this module owns line
-//! parsing and term lookup.
+//! and `-f` for extra database files). The word `is` is not this module's
+//! business: the script drops one leading `is` among the operands (`:32-34`)
+//! and queries everything else, including any later `is`. That is argument
+//! handling, so it lives with the shell. Database lines follow
+//! `term: expansion` shape. File reading stays with the execution layer;
+//! this module owns line parsing and term lookup.
 
 use crate::TextGameError;
-
-/// Words skipped between the command name and the terms.
-pub const SKIPPED_WORDS: &[&str] = &["is"];
-
-/// True when `word` is skipped (case insensitive).
-pub fn is_skipped_word(word: &str) -> bool {
-    SKIPPED_WORDS
-        .iter()
-        .any(|known| known.eq_ignore_ascii_case(word))
-}
 
 /// Parse one database line (`term: expansion`, both sides non empty).
 pub fn parse_acronym_line(line: &str) -> Result<(&str, &str), TextGameError> {
@@ -103,13 +95,6 @@ mod tests {
             lookup_acronym(&lines, "definitely-not-an-acronym").err(),
             Some(TextGameError::NotFound)
         );
-    }
-
-    #[test]
-    fn test_skipped_words() {
-        assert!(is_skipped_word("is"));
-        assert!(is_skipped_word("IS"));
-        assert!(!is_skipped_word("lol"));
     }
 
     #[test]

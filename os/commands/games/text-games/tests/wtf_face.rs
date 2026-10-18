@@ -130,3 +130,70 @@ fn no_operand_prints_usage_and_exits_one() {
     assert_eq!(err, "", "stderr 该是空的");
     assert_eq!(code, 1, "usage 那支退 1");
 }
+
+/// 脚本对 `is` 只做一件事（`minix3/games/wtf/wtf:32-34`）：`if [ "$1" = "is" ]; then
+/// shift; fi`——移走**开头**那一枚，一次，比的是字面量。之后的每个 token 都是查询词，
+/// 包括后面再出现的 `is`。四形的期望全部现量自
+/// `sh minix3/games/wtf/wtf -f minix3/share/misc/acronyms <形>`（读数存
+/// `tmp/wtf-393/script-readings.log`）：
+/// `is lol` → 一行命中、退 0；`lol is` → 一行命中加一句 `is` 查无、退 1；
+/// `is is lol` → 只移走第一枚，第二枚照查（一句查无加一行命中）；
+/// `-- is lol` → 选项环之后的那一枚 `is` 同样被移走。
+/// 旧写法在查询循环里跳过**任意位置**的 `is`，所以后三形都少一行报文且退码也差。
+#[test]
+fn only_the_leading_is_word_is_dropped() {
+    let db = fixture("isword", b"LOL\tlaughing out loud\n");
+    let db = db.to_string_lossy().into_owned();
+
+    let (out, code, err) = run(&["-f", &db, "is", "lol"]);
+    assert_eq!(out, "LOL: laughing out loud\n");
+    assert_eq!(err, "");
+    assert_eq!(code, 0, "开头那枚 is 被移走，剩下的照查");
+
+    let (out, code, err) = run(&["-f", &db, "lol", "is"]);
+    assert_eq!(
+        out, "LOL: laughing out loud\n",
+        "尾部的 is 不影响前面命中那行"
+    );
+    assert_eq!(err, "wtf: I don't know what `is' means!\n");
+    assert_eq!(code, 1, "尾部 is 是个查询词，查无就把退码置 1");
+
+    let (out, code, err) = run(&["-f", &db, "is", "is", "lol"]);
+    assert_eq!(out, "LOL: laughing out loud\n");
+    assert_eq!(
+        err, "wtf: I don't know what `is' means!\n",
+        "只移走开头那一枚"
+    );
+    assert_eq!(code, 1);
+
+    let (out, code, err) = run(&["-f", &db, "--", "is", "lol"]);
+    assert_eq!(out, "LOL: laughing out loud\n");
+    assert_eq!(err, "");
+    assert_eq!(code, 0, "`--` 之后的 is 仍是开头那个操作数");
+}
+
+/// 移走那一枚 `is` 比的是**字面量**（`[ "$1" = "is" ]`），不是大小写不敏感的比较：
+/// `IS` 是个普通查询词。参照件现量 `IS lol` → 一句 ``I don't know what `IS' means!``
+/// 加一行 `LOL: laughing out loud`，退 1。旧写法的库面判据 `is_skipped_word` 是
+/// 大小写不敏感的，于是这一形少一行报文、退码也差。
+#[test]
+fn the_dropped_is_word_is_matched_case_sensitively() {
+    let db = fixture("iscase", b"LOL\tlaughing out loud\n");
+    let (out, code, err) = run(&["-f", &db.to_string_lossy(), "IS", "lol"]);
+    assert_eq!(out, "LOL: laughing out loud\n");
+    assert_eq!(err, "wtf: I don't know what `IS' means!\n");
+    assert_eq!(code, 1);
+    let _ = std::fs::remove_file(&db);
+}
+
+/// 单给一枚 `is`：移走之后没有操作数，走 `usage()`（脚本 `:36-38` 的 `[ -z "$1" ]`）。
+/// 参照件现量 usage 走 **stdout**、退 1、stderr 空。
+#[test]
+fn a_lone_is_word_leaves_no_operand_and_prints_usage() {
+    let db = fixture("islone", b"LOL\tlaughing out loud\n");
+    let (out, code, err) = run(&["-f", &db.to_string_lossy(), "is"]);
+    assert_eq!(out, "usage: wtf [-o] [-f dbfile] [is] term ...\n");
+    assert_eq!(err, "");
+    assert_eq!(code, 1);
+    let _ = std::fs::remove_file(&db);
+}
