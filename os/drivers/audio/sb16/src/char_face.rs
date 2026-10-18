@@ -33,7 +33,11 @@ impl Sb16Face {
         Sb16Face {
             rate_hz: 22_050,
             running: false,
-            frag_size: 512,
+            // `drv_init_hw` sets `DspFragmentSize` from the geometry
+            // (`sb16.c:110`): a 64 KiB buffer over two fragments. This is
+            // the value `drv_get_frag_size` reports (`sb16.c:258-262`),
+            // which is what the framework's per-request size gate reads.
+            frag_size: 32 * 1024,
         }
     }
 
@@ -106,6 +110,6 @@ mod tests {
     #[test]
     fn test_frag_size_reports_the_negotiated_value() {
         let face = Sb16Face::new();
-        assert_eq!(face.get_frag_size(0), 512);
+        assert_eq!(face.get_frag_size(0), 32 * 1024);
     }
 }

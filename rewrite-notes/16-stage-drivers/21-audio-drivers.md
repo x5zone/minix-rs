@@ -2,7 +2,7 @@
 
 > **分类**：显示音频第 2 篇（声卡七兄弟，采样率只定范围）
 > **源码**：`minix3/minix/lib/libaudiodriver/audio_fw.c`（八百六十八行的音频框架）、`minix3/minix/drivers/audio/es1371/es1371.c`（六百五十六行的参考实现）与 `SRC.c`（一百九十六行的采样率转换）与 `codec.c`（二百六十四行的编解码器）与 `sample_rate_converter.c`（二百四十行的转换新封装）、`minix3/minix/drivers/audio/sb16/sb16.c`（四百四十九行的老声卡）与 `mixer.c`（二百五十四行的混音器）、`minix3/minix/include/minix/audio_fw.h`（九十一行的驱动钩子定义）、`minix3/minix/include/sys/ioc_sound.h`（第十二行到第二十二行的十一的声音控制请求）
-> **Rust 模块**：`os/libs/minix-audiodriver`（音频框架：十四钩子行为定义、子设备直接存取分片环、特殊文件表——对账 edge E-DMCLIENT 同款"框架归框架库"纪律）、`os/drivers/audio/es1371/src/rate.rs`（采样率范围与通道路由）、`os/drivers/audio/sb16/src/dsp.rs`（处理器命令与速率分字节）
+> **Rust 模块**：`os/libs/minix-audiodriver`（音频框架：十四钩子行为定义、子设备直接存取分片环、特殊文件表、服务层的开合与输入输出控制闸门、声音控制请求号——对账 edge E-DMCLIENT 同款"框架归框架库"纪律）、`os/drivers/audio/es1371/src/rate.rs`（采样率范围与通道路由）、`os/drivers/audio/sb16/src/dsp.rs`（处理器命令与速率分字节）、`os/drivers/audio/cmi8738/src/registers.rs`（寄存器图与命令掩码）、`os/drivers/audio/cmi8738/src/mixer.rs`（混音器寄存器对与音量表）、`os/drivers/audio/cmi8738/src/ports.rs`（端口流量缝，生产腿走内核调用）、`os/drivers/audio/cmi8738/src/device.rs`（卡的寄存器时序）、`os/drivers/audio/cmi8738/src/probe.rs`（外设互连探针）
 > **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（字符框架，七兄弟挂靠的框架）、`rewrite-notes/16-stage-drivers/20-fb-driver.md`（帧缓冲，同为字符设备的变体）
 > **说明**：声卡七兄弟是字符设备的发声变体：框架定十四钩子，声卡各填各的寄存器。本篇讲钩子是什么、采样率怎么谈、老声卡命令怎么发。寄存器写入与端口流量在服务层，本库只定范围与命令。
 
@@ -59,7 +59,10 @@
 | `minix3/minix/drivers/audio/es1371/sample_rate_converter.c` | 二百四十行 | 转换新封装 |
 | `minix3/minix/drivers/audio/sb16/sb16.c` | 四百四十九行 | 老声卡：复位、启停、速率 |
 | `minix3/minix/drivers/audio/sb16/mixer.c` | 二百五十四行 | 混音器 |
-| 其余五家驱动与混音器 | 各约六百行加二百七十二行 | 见第 2.6 节差异矩阵 |
+| `minix3/minix/drivers/audio/cmi8738/cmi8738.c` | 五百九十五行 | 第三张实现卡：寄存器时序、混音器调用、探针 |
+| `minix3/minix/drivers/audio/cmi8738/mixer.c` | 二百七十二行 | 混音器：三种寄存器族三选一，本卡用声霸十六型 |
+| `minix3/minix/drivers/audio/cmi8738/io.h` | 八十四行 | 端口读写宏（`sdr_in8` 到 `sdr_out32`） |
+| 其余四家驱动与混音器 | 各约六百行加二百七十二行 | 见第 2.6 节差异矩阵 |
 
 ### 2.2 十四钩子与五个字符回调（`audio_fw.h` 第九行到第二十二行，`audio_fw.c` 第六十四行到第八十一行）
 
@@ -85,7 +88,7 @@
 | 老卡 | `sb16.c` 四百四十九行 | `mixer.c` 二百五十四行 | 处理器命令字节 | 本篇详讲 |
 | 同门甲 | `es1370.c` 六百五十四行 | 独立编解码文件 | 同参考思路 | 寄存器不同 |
 | 同门乙 | `als4000.c` 六百三十九行 | `mixer.c` 二百七十二行 | 同框架钩子 | 寄存器不同 |
-| 同门丙 | `cmi8738.c` 五百九十五 行 | `mixer.c` 二百七十二行 | 同框架钩子 | 寄存器不同 |
+| 同门丙 | `cmi8738.c` 五百九十五行 | `mixer.c` 二百七十二行 | 同框架钩子 | 本篇详讲寄存器图与混音器（`os/drivers/audio/cmi8738/src/device.rs`） |
 | 同门丁 | `cs4281.c` 六百七十行 | `mixer.c` 二百七十二行 | 同框架钩子 | 寄存器不同 |
 | 同门戊 | `trident.c` 六百零三行 | `mixer.c` 二百七十二行 | 同框架钩子 | 寄存器不同 |
 
@@ -95,23 +98,33 @@
 |--------|----------|-----------|------|
 | 十四钩子 | 第 2.2 节 | `minix-audiodriver` 的 `AudioHooks` 十四方法（默认体对齐 C 空钩子回退）与 `SubDevice` 分片环 | 已覆盖 |
 | 五字符回调 | 第 2.2 节 | 框架挂靠声明 | 已覆盖 |
-| 十一控制请求 | 第 2.3 节 | `speed_bytes` 的速率字节；十一个 ioctl 码未建模（`ioc_sound.h:12-22`，归服务层） | 部分覆盖 |
+| 十一控制请求 | 第 2.3 节 | `minix-audiodriver::sound` 的请求号与载荷（`_IOC` 算式重导）加服务层的输入输出控制腿，卡的 `io_ctl` 钩子按号分派 | 已覆盖 |
 | 速率上下限 | 第 2.4 节 | `MIN_RATE_HZ` 与 `MAX_RATE_HZ` | 已覆盖 |
 | 通道路由 | 第 2.4 节 | `Channel` 与 `converter_base` | 已覆盖 |
 | 处理器命令字节 | 第 2.5 节 | `CMD_SPEAKER_ON`/`CMD_SPEAKER_OFF` 两项；DMA 停/续四字节未建模（`sb16.h:106-109`） | 部分覆盖 |
 | 速率分字节 | 第 2.5 节 | `speed_bytes` | 已覆盖 |
 | 七兄弟文件 | 第 2.6 节 | 差异矩阵 | 已覆盖 |
-| 寄存器写入 | 各节 | 服务层（写入在服务层） | 已记录，不管实现 |
-| 混音器细节 | 第 2.6 节 | 服务层（混音在服务层） | 已记录，不管实现 |
+| 寄存器写入 | 各节 | `cmi8738` 卡内建模（`device.rs` 的寄存器时序经 `ports.rs` 的端口缝），另两卡仍在服务层 | 已覆盖（第三卡） |
+| 混音器细节 | 第 2.6 节 | `cmi8738` 卡内建模（`mixer.rs` 的设备表与十六项默认音量），另两卡仍在服务层 | 已覆盖（第三卡） |
+| 端口读写宏 | `io.h` 八十四行 | `ports.rs` 的 `PortIo` 缝：六种读写加微秒延时；生产腿走内核的端口调用 | 已覆盖 |
+| 外设互连探针 | 第 2.5 节同款五步 | `probe.rs`：找设备、预留、使能、读基址与中断线 | 已覆盖 |
 | 热升级钩子 | 第 2.1 节 | 存在性记录 | 已记录，不管实现 |
 
 ### 2.8 与 C 约九千行的差异说明
 
 | 差异 | C 做法 | Rust 做法 | 分类 |
 |------|--------|-----------|------|
-| 寄存器写入 | 七家全实现 | 只定范围 | 设计决策：写入在服务层 |
-| 混音器 | 六份全实现 | 服务层 | 设计决策：混音在服务层 |
+| 寄存器写入 | 七家全实现 | 参考实现与老卡只定范围（写入在服务层），第三卡按寄存器时序建模（`device.rs`） | 设计决策：能测的时序留在卡内 |
+| 混音器 | 六份全实现 | 参考实现与老卡在服务层，第三卡按寄存器对与音量表建模（`mixer.rs`） | 设计决策：同上 |
 | 直接存取搬运 | 边播边搬 | 服务层 | 设计决策：搬运在服务层 |
+
+### 2.9 C 源的缺陷与两处忠实性勘误
+
+第三卡带来三件需要写明的读数。
+
+第一件是 C 源自身的缺陷：混音器的线路输入支（`minix3/minix/drivers/audio/cmi8738/mixer.c` 第一百一十三行到第一百一十四行）把左声道寄存器变量连赋两次，第二行赋的是右声道常量。后果是线路输入的音量请求左右两声道都打到右寄存器，左寄存器从不被写。这显然是笔误（同族八个设备支都是一左一右），但它是 C 的既成行为；重写按观测行为保留，并在此具名，免得后来者顺手"修好"它。
+
+第二件与第三件是两处分片大小的读数，两张卡都必须取三十二千字节。参考实现的 DMA 缓冲是六十四千字节对两片，故分片大小为三十二千字节（`es1371.c` 第一百六十四行到第一百六十五行按缓冲除以片数播种）；老卡同法（`sb16.c` 第一百一十行写 `DspFragmentSize`）。这个读数之所以要紧，原因在框架侧：框架的读写闸门按 C 的做法每次请求现读卡的分片大小（`audio_fw.c` 第四百一十二行与第四百六十二行调 `drv_get_frag_size`），再与请求长度比较（同两处的下一行）；尺寸读数错了，合法请求就会被闸门拒掉。
 
 ---
 
@@ -177,11 +190,11 @@
 | 分字节正确 | 四万四千一百与四千高低字节 | 速率设置 |
 | 超限返回空 | 三千九百九十九与四万四千一百零一返回空 | 越限检查 |
 
-### 5.3 测试统计（截至 2026-09-05）
+### 5.3 测试统计
 
-- 本篇直接相关：七个（速率三个，命令四个），全部通过。
-- 复现命令：`cargo test -p minix-driver-es1371 -p minix-driver-sb16 --lib`（工作目录 `os/`）。
-- 完整测试清单：`rg "fn test_" os/drivers/audio/es1371/src/ os/drivers/audio/sb16/src/`。
+`2026-09-05` 的读数：本篇直接相关七个（速率三个，命令四个），全部通过；复现命令 `cargo test -p minix-driver-es1371 -p minix-driver-sb16 --lib`（工作目录 `os/`）；完整清单 `rg "fn test_" os/drivers/audio/es1371/src/ os/drivers/audio/sb16/src/`。
+
+`2026-10-19` 的读数（第三卡落地与框架服务层、输入输出控制腿就位之后）：音频框架库 `minix-audiodriver` 二十一枚、第三卡 `minix-driver-cmi8738` 二十二枚、参考实现 `minix-driver-es1371` 六枚、老卡 `minix-driver-sb16` 七枚，四包共五十六枚，全绿。复现命令 `cargo test -j 1 -p minix-audiodriver -p minix-driver-cmi8738 -p minix-driver-es1371 -p minix-driver-sb16`（工作目录 `os/`，权威编译门是容器 `minix-ci:1.94`）。框架侧本轮新增的门覆盖输入输出控制全流程（通道解析、未开闸门、载荷进出、钩子派发）、字符请求车道钉值、分片尺寸门现读钩子值；卡侧覆盖寄存器图钉值、复位与启停时序、采样率与格式写入、直接存取长度折帧、混音器音量往返、探针五步与空总线。
 
 ---
 
@@ -200,5 +213,8 @@
 - `rewrite-notes/16-stage-drivers/99-global-concepts.md`：协议常量值的全局汇总。
 - `os/drivers/audio/es1371/src/rate.rs`：采样率范围与通道路由的实现。
 - `os/drivers/audio/sb16/src/dsp.rs`：处理器命令与速率分字节的实现。
+- `os/drivers/audio/cmi8738/src/device.rs`：第三张卡的寄存器时序（复位、配置、启停、直接存取、输入输出控制）。
+- `os/drivers/audio/cmi8738/src/mixer.rs`：第三张卡的混音器寄存器对与音量表。
+- `os/libs/minix-audiodriver/src/sound.rs`：声音控制请求号与音量载荷的编码。
 - `minix3/minix/lib/libaudiodriver/audio_fw.c`：音频框架的原始实现（八百六十八行）。
 - `minix3/minix/drivers/audio/es1371/es1371.c`：参考实现的原始实现（六百五十六行）。
