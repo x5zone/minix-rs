@@ -1,5 +1,8 @@
 # coordination/ 目录说明
 
+> **并发任务板三块（`2026-10-18` 切分，领地互斥）**：`PARALLEL-20261018-A-CMD.md`（三线 命令面 `os/commands/`，owner `qoder`）、`PARALLEL-20261018-B-LIBDRV.md`（二线 `os/libs/` 逐 crate 与 `os/drivers/`，owner `zcode-ds`）、`PARALLEL-20261018-C-KERN-QEMU.md`（一线 `os/kernel`/`arch`/`plat`/`boot-shim`/`qemu-tests`/`os/libs/minix-boot`，owner `zcode-glm`，**并持有真机窗**）。三块板各自自带任务表、禁碰清单、门配方与收尾顺序；跨板要动别人领地时先登记进 C 板 §6 的跨界登记行。切分依据是 `CONCURRENT-WORK-PROTOCOL.md` §2 的四线所有权清单。
+
+
 本目录管三件事：**待办在哪里记、结论在哪里裁、过程在哪里查**。共 29 个文件（清理后 28，追加待裁新清单 1；明细见 `TODO-LEDGER-INDEX.md` §1；另有 3 篇知识类已移入 `../concepts/`，54 个被删文件全文可在 git 历史回捞）。
 
 ## 先回答两个操作问题
@@ -47,7 +50,7 @@
 | `NK4A-TODO.md` | 第一轮任务书（x86_64 生产启动链，`Task A`—`E`）。条目多已闭，当时的技术陷阱与记录格式仍被引用。 |
 | `NK4B-TODO.md` | 第二轮任务书（三架构启动 + 命令面，`P0`—`P6`）。`NK4A-TODO.md` §5—§8 在此继续有效。 |
 
-## 案卷（单个缺陷或专项的取证现场）
+## 案卷（单个缺陷或专项的取证记录）
 
 | 文件 | 作用 |
 |---|---|
