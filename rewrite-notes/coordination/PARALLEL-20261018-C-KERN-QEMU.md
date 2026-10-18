@@ -158,6 +158,7 @@ run_with_qemu_lock() (
 - `2026-10-18` B / `SD11-MFS2`：再改 `os/fs/mfs/src/main.rs`（同一跨线文件）——U-5 对照读数②的「出生段池峰值」探针（安装点前 `nk4a: mfs pre-install pool pages used=<n> total=<n>`），不改迁移语义；三架构 none 构建与宿主 178/0 已过 —— `✅`（本笔）
 - `2026-10-18` B / `G6-PRINTER` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `42→41` —— 随 printer 族接线（`os/drivers` 39→38）的机械过账；printer 包清单新增 `minix-chardriver`/`minix-driver-rt` 两行依赖（本体非共享件），不涉其它线 —— `✅`
 - `2026-10-19` B / `G6-PCI` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `41→40` —— 随 pci 族接线（`os/drivers` 38→37）的机械过账；pci 包清单新增 `minix-chardriver`/`minix-driver-rt` 两行依赖（本体非共享件），不涉其它线 —— `✅`
+- `2026-10-19` B / `G6-GPIO` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `40→39` —— 随 gpio 族接线（`os/drivers` 37→36）的机械过账；`minix-vtreefs` 补 `lookup_child`（框架缺口，自有件）、gpio 清单新增 `minix-vtreefs`/`minix-fs-rt` 依赖（本体非共享件），不涉其它线 —— `✅`
 
 ## 7. 每轮收尾（顺序固定）
 

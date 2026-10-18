@@ -87,6 +87,20 @@ impl<H: FsHooks> FsDriver for TreeServer<H> {
         self.tree.release_batch(inode, count).map_err(node_error)
     }
 
+    fn lookup_child(&mut self, directory: u64, name: &str) -> Result<(FileNode, bool), Errno> {
+        // C: `fs_lookup` (`vtreefs.c`) resolves the name through the path
+        // walk (`path.c`), which bumps the node's reference count
+        // (`inode.c`); ".." and "." are answered by the same walk. The
+        // `lookup_hook` runs first for live directories.
+        let parent = self.tree.find(directory).map_err(node_error)?;
+        let node = self
+            .tree
+            .lookup(&mut self.hooks, parent, name.as_bytes())
+            .map_err(node_error)?;
+        // Virtual trees never carry mount points below the root.
+        Ok((self.describe(node)?, false))
+    }
+
     fn is_mount_point(&mut self, _inode: u64) -> Result<(), Errno> {
         // Virtual trees never carry mount points below the root: the C
         // tree answers `fs_mountpt` from the framework's mount state.
