@@ -2,7 +2,7 @@
 
 > **分类**：显示音频第 2 篇（声卡七兄弟，采样率只定范围）
 > **源码**：`minix3/minix/lib/libaudiodriver/audio_fw.c`（八百六十八行的音频框架）、`minix3/minix/drivers/audio/es1371/es1371.c`（六百五十六行的参考实现）与 `SRC.c`（一百九十六行的采样率转换）与 `codec.c`（二百六十四行的编解码器）与 `sample_rate_converter.c`（二百四十行的转换新封装）、`minix3/minix/drivers/audio/sb16/sb16.c`（四百四十九行的老声卡）与 `mixer.c`（二百五十四行的混音器）、`minix3/minix/include/minix/audio_fw.h`（九十一行的驱动钩子定义）、`minix3/minix/include/sys/ioc_sound.h`（第十二行到第二十二行的十一的声音控制请求）
-> **Rust 模块**：`os/libs/minix-audiodriver`（音频框架：十四钩子行为定义、子设备直接存取分片环、特殊文件表、服务层的开合与输入输出控制闸门、声音控制请求号——对账 edge E-DMCLIENT 同款"框架归框架库"纪律）、`os/drivers/audio/es1371/src/rate.rs`（采样率范围与通道路由）、`os/drivers/audio/sb16/src/dsp.rs`（处理器命令与速率分字节）、`os/drivers/audio/cmi8738/src/registers.rs`（寄存器图与命令掩码）、`os/drivers/audio/cmi8738/src/mixer.rs`（混音器寄存器对与音量表）、`os/drivers/audio/cmi8738/src/ports.rs`（端口流量缝，生产腿走内核调用）、`os/drivers/audio/cmi8738/src/device.rs`（卡的寄存器时序）、`os/drivers/audio/cmi8738/src/probe.rs`（外设互连探针）、`os/drivers/audio/es1370/src/registers.rs`（第四张卡的寄存器图）、`os/drivers/audio/es1370/src/codec.rs`（AK4531 编解码器与音量影子表）、`os/drivers/audio/es1370/src/device.rs`（第四张卡的寄存器时序）、`os/drivers/audio/es1370/src/probe.rs`（外设互连探针）
+> **Rust 模块**：`os/libs/minix-audiodriver`（音频框架：十四钩子行为定义、子设备直接存取分片环、特殊文件表、服务层的开合与输入输出控制闸门、声音控制请求号——对账 edge E-DMCLIENT 同款"框架归框架库"纪律）、`os/drivers/audio/es1371/src/rate.rs`（采样率范围与通道路由）、`os/drivers/audio/sb16/src/dsp.rs`（处理器命令与速率分字节）、`os/drivers/audio/cmi8738/src/registers.rs`（寄存器图与命令掩码）、`os/drivers/audio/cmi8738/src/mixer.rs`（混音器寄存器对与音量表）、`os/drivers/audio/cmi8738/src/ports.rs`（端口流量缝，生产腿走内核调用）、`os/drivers/audio/cmi8738/src/device.rs`（卡的寄存器时序）、`os/drivers/audio/cmi8738/src/probe.rs`（外设互连探针）、`os/drivers/audio/es1370/src/registers.rs`（第四张卡的寄存器图）、`os/drivers/audio/es1370/src/codec.rs`（AK4531 编解码器与音量影子表）、`os/drivers/audio/es1370/src/device.rs`（第四张卡的寄存器时序）、`os/drivers/audio/es1370/src/probe.rs`（外设互连探针）、`os/drivers/audio/als4000/src/registers.rs`（第五张卡的寄存器图与命令字节）、`os/drivers/audio/als4000/src/mixer.rs`（第五张卡的混音器与音量表）、`os/drivers/audio/als4000/src/device.rs`（第五张卡的寄存器时序）
 > **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（字符框架，七兄弟挂靠的框架）、`rewrite-notes/16-stage-drivers/20-fb-driver.md`（帧缓冲，同为字符设备的变体）
 > **说明**：声卡七兄弟是字符设备的发声变体：框架定十四钩子，声卡各填各的寄存器。本篇讲钩子是什么、采样率怎么谈、老声卡命令怎么发。寄存器写入与端口流量在服务层，本库只定范围与命令。
 
@@ -65,6 +65,9 @@
 | `minix3/minix/drivers/audio/es1370/es1370.c` | 六百五十四行 | 第四张实现卡：寄存器时序、编解码器调用、探针 |
 | `minix3/minix/drivers/audio/es1370/ak4531.c` | 一百七十七行 | AK4531 编解码器：写完成轮询与音量影子表 |
 | `minix3/minix/drivers/audio/es1370/pci_helper.c` | 六十三行 | 端口读写宏（`pci_inb` 到 `pci_outl`） |
+| `minix3/minix/drivers/audio/als4000/als4000.c` | 六百三十九行 | 第五张实现卡：声霸命令引擎、全局控制寄存器、探针 |
+| `minix3/minix/drivers/audio/als4000/io.h` | 八十四行 | 端口读写宏（`sdr_in8` 到 `sdr_out32`） |
+| `minix3/minix/drivers/audio/als4000/mixer.c` | 二百七十二行 | 混音器（与第三卡同族的声霸十六型） |
 | 其余四家驱动与混音器 | 各约六百行加二百七十二行 | 见第 2.6 节差异矩阵 |
 
 ### 2.2 十四钩子与五个字符回调（`audio_fw.h` 第九行到第二十二行，`audio_fw.c` 第六十四行到第八十一行）
@@ -90,7 +93,7 @@
 | 参考实现 | `es1371.c` 六百五十六行 | 编解码器初始化 | 转换器三路 | 本篇详讲 |
 | 老卡 | `sb16.c` 四百四十九行 | `mixer.c` 二百五十四行 | 处理器命令字节 | 本篇详讲 |
 | 同门甲 | `es1370.c` 六百五十四行 | 独立编解码文件（AK4531） | 同框架钩子（只认四千到四万四千一百） | 本篇详讲寄存器图与编解码器（`os/drivers/audio/es1370/src/`） |
-| 同门乙 | `als4000.c` 六百三十九行 | `mixer.c` 二百七十二行 | 同框架钩子 | 寄存器不同 |
+| 同门乙 | `als4000.c` 六百三十九行 | `mixer.c` 二百七十二行 | 声霸命令字节（等忙位后逐字节发） | 本篇详讲寄存器图与混音器（`os/drivers/audio/als4000/src/`） |
 | 同门丙 | `cmi8738.c` 五百九十五行 | `mixer.c` 二百七十二行 | 同框架钩子 | 本篇详讲寄存器图与混音器（`os/drivers/audio/cmi8738/src/device.rs`） |
 | 同门丁 | `cs4281.c` 六百七十行 | `mixer.c` 二百七十二行 | 同框架钩子 | 寄存器不同 |
 | 同门戊 | `trident.c` 六百零三行 | `mixer.c` 二百七十二行 | 同框架钩子 | 寄存器不同 |
@@ -113,6 +116,8 @@
 | 外设互连探针 | 第 2.5 节同款五步 | `probe.rs`：找设备、预留、使能、读基址与中断线（两张卡各自取值，掩码与命令位不同） | 已覆盖 |
 | 编解码器（AK4531） | 第 2.6 节同门甲 | `es1370/src/codec.rs`：写完成轮询、寄存器装载、音量影子表 | 已覆盖（第四卡） |
 | 端口读写宏（第二份） | `pci_helper.c` 六十三行 | `es1370/src/ports.rs` 的 `PortIo` 缝，生产腿同走内核端口调用 | 已覆盖 |
+| 声霸命令引擎 | 第 2.6 节同门乙 | `als4000/src/device.rs` 的 `command`：等忙位（一千次上限）后写命令 | 已覆盖（第五卡） |
+| 全局控制寄存器对 | 第 2.6 节同门乙 | `als4000/src/device.rs` 的 `gcr_read`/`gcr_write`（索引加数据） | 已覆盖 |
 | 热升级钩子 | 第 2.1 节 | 存在性记录 | 已记录，不管实现 |
 
 ### 2.8 与 C 约九千行的差异说明
@@ -128,6 +133,8 @@
 第三卡带来三件需要写明的读数。
 
 第一件是 C 源自身的缺陷：混音器的线路输入支（`minix3/minix/drivers/audio/cmi8738/mixer.c` 第一百一十三行到第一百一十四行）把左声道寄存器变量连赋两次，第二行赋的是右声道常量。后果是线路输入的音量请求左右两声道都打到右寄存器，左寄存器从不被写。这显然是笔误（同族八个设备支都是一左一右），但它是 C 的既成行为；重写按观测行为保留，并在此具名，免得后来者顺手"修好"它。
+
+第五张卡带来两条缺陷读数。第一条是混音器线路输入支的连赋两次（`minix3/minix/drivers/audio/als4000/mixer.c` 第一百零四行到第一百零五行），与第三卡的副本同源，重写按观测行为保留。第二条在格式设置里：有符号单声道一支写的是**立体声**命令字节（`minix3/minix/drivers/audio/als4000/als4000.c` 第一百五十三行到第一百五十四行：另外三支都取对应常量，只有这一支取 `CMD_SIGN_STEREO`）。同样保留并在此具名。
 
 第四张卡带来一条端口读的缺陷读数：`pci_helper.c` 的六个读写宏里，读宏在系统调用失败时打印一行警告，然后**返回一个从未写入的局部量**（`minix3/minix/drivers/audio/es1370/pci_helper.c` 第十九行到第二十四行）。重写不复制这条路径：端口读失败会报给调用方，卡的面把失败变成错误而不是拿着一个未定义的值继续配置寄存器。这是有意差异，记在此处。
 
@@ -203,7 +210,9 @@
 
 `2026-10-19` 的读数（第三卡落地与框架服务层、输入输出控制腿就位之后）：音频框架库 `minix-audiodriver` 二十一枚、第三卡 `minix-driver-cmi8738` 二十二枚、参考实现 `minix-driver-es1371` 六枚、老卡 `minix-driver-sb16` 七枚，四包共五十六枚，全绿。复现命令 `cargo test -j 1 -p minix-audiodriver -p minix-driver-cmi8738 -p minix-driver-es1371 -p minix-driver-sb16`（工作目录 `os/`，权威编译门是容器 `minix-ci:1.94`）。框架侧本轮新增的门覆盖输入输出控制全流程（通道解析、未开闸门、载荷进出、钩子派发）、字符请求车道钉值、分片尺寸门现读钩子值；卡侧覆盖寄存器图钉值、复位与启停时序、采样率与格式写入、直接存取长度折帧、混音器音量往返、探针五步与空总线。
 
-同日第四卡的读数：`minix-driver-es1370` 二十八枚，连同上面四包共八十四枚，全绿；复现命令在四包列表后追加 `-p minix-driver-es1370`。第四卡的门覆盖寄存器图钉值（含通道位互斥与两张卡掩码不同）、初始化序列（全关、编解码器使能、十六页内存清零）、启停时序（格式四设与中断计数折半两次）、直接存取（选页与长字 − 1）、音量影子表的往返与拒绝设备、暂停位只在播放通道、探针五步与空总线。
+同日第四卡的读数：`minix-driver-es1370` 二十八枚，连同上面四包共八十四枚，全绿；复现命令在四包列表后追加 `-p minix-driver-es1370`。
+
+同日第五卡的读数：`minix-driver-als4000` 二十六枚，连同上面五包共一百一十枚，全绿；复现命令在五包列表后追加 `-p minix-driver-als4000`。第五卡的门覆盖声霸命令序列（等忙位、复位回声的三态）、全局控制寄存器对的索引与数据、格式与采样计数（有符号单声道支的缺陷在门里钉住）、直接存取不折帧且播放长度带标志位、混音器在任意通道可达。第四卡的门覆盖寄存器图钉值（含通道位互斥与两张卡掩码不同）、初始化序列（全关、编解码器使能、十六页内存清零）、启停时序（格式四设与中断计数折半两次）、直接存取（选页与长字 − 1）、音量影子表的往返与拒绝设备、暂停位只在播放通道、探针五步与空总线。
 
 ---
 
@@ -227,5 +236,7 @@
 - `os/libs/minix-audiodriver/src/sound.rs`：声音控制请求号与音量载荷的编码。
 - `os/drivers/audio/es1370/src/device.rs`：第四张卡的寄存器时序（初始化、启停、直接存取、输入输出控制）。
 - `os/drivers/audio/es1370/src/codec.rs`：AK4531 编解码器的写协议与音量影子表。
+- `os/drivers/audio/als4000/src/device.rs`：第五张卡的寄存器时序（声霸命令引擎、复位、启停、直接存取）。
+- `os/drivers/audio/als4000/src/mixer.rs`：第五张卡的混音器索引与数据对、音量表。
 - `minix3/minix/lib/libaudiodriver/audio_fw.c`：音频框架的原始实现（八百六十八行）。
 - `minix3/minix/drivers/audio/es1371/es1371.c`：参考实现的原始实现（六百五十六行）。
