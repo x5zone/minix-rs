@@ -269,9 +269,10 @@ pub extern "C" fn bootface_a64() -> ! {
 
 // ── DTB 面 ──────────────────────────────────────────────────────
 
-/// 把 `/memory*` 的 `reg` 写进存储格，返回条数（0 = 无可用）。走
-/// `find_node` 的 Option 形态（`Fdt::memory` 缺节点会 expect panic，
-/// 甲案要诚实停机——riscv 半同款）。
+/// 把 `/memory*` 的 `reg` 写进存储格，返回条数（0 = 无可用）。查找走
+/// `all_nodes` 全树遍历：既避开 `Fdt::memory` 缺节点时的 `expect` panic
+/// （甲案要诚实停机），也避开 `find_node` 对直核链重建 blob 漏节点的
+/// 上游缺陷（见本文件 `fdt_table_pa` 注；SD-38 两半统一绕行形）。
 fn fill_memmap(fdt: &fdt::Fdt<'_>) -> usize {
     let mut n = 0;
     let mut cursor = Some(fdt.all_nodes());

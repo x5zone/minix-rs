@@ -286,7 +286,10 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
 
 /// 把 `/memory*` 节点的 `reg` 写进 `.bss` 存储格，返回条数（0 = 无可用
 /// 条目）。不用 `Fdt::memory()`——它在缺 `/memory` 时 `expect` panic，
-/// 甲案要的是诚实停机；这里走 `find_node` 的 Option 形态。
+/// 甲案要的是诚实停机；查找走 `all_nodes` 全树遍历而非 `find_node`：
+/// 上游 fdt 0.1.5 的 `find_node` 对部分固件重建 blob 会漏节点（aarch64
+/// 直核链实证，见 `bootface_a64.rs::fdt_table_pa` 注），全树遍历是两半
+/// 统一的绕行形（SD-38）。
 fn fill_memmap(fdt: &fdt::Fdt<'_>) -> usize {
     let mut n = 0;
     let mut cursor = Some(fdt.all_nodes());
@@ -364,9 +367,18 @@ const _: () = assert!(
     matches!(clip_firmware(0x8020_0000, 0x1000), Some((0x8020_0000, 0x1000)))
 );
 
-/// 读 `/chosen` 的 `opensbi,boot-file-table`（大端 cell；4/8 字节都认）。
+/// 读 `/chosen` 的 `opensbi,boot-file-table`（大端 cell；4/8 字节都认；
+/// 属性名沿用 riscv 门装配工具的同一约定，门脚本 fdtput 同形）。
+///
+/// 查找走 `all_nodes` 而非 `find_node`，与 aarch64 半同形（SD-38）：
+/// 本函数是 OpenSBI 链的承重读（表址主通道），上游 fdt 0.1.5 的
+/// `find_node` 在姊妹链上对固件重建 blob 返回 None（aarch64 直核链
+/// 实证）；riscv 现链门读数证明 find_node 在本链 blob 上可用，换
+/// 全树遍历属零行为变化的兜底统一，防未来 DTB 形态漂移踩同一缺陷。
 fn fdt_table_pa(fdt: &fdt::Fdt<'_>) -> Option<u64> {
-    let chosen = fdt.find_node("/chosen")?;
+    let chosen = fdt
+        .all_nodes()
+        .find(|n| n.name.split('@').next() == Some("chosen"))?;
     let prop = chosen.property("opensbi,boot-file-table")?;
     be_cell(prop.value)
 }
