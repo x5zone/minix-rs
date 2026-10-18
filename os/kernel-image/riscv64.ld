@@ -63,6 +63,9 @@ SECTIONS
 
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)
     {
+        /* PD-22/SD-12 第一步：RX/RW 分界标记（内核侧 link_section 同名格，
+           KEEP 钉 .data 节首——分界=标记地址，见 kernel/src/lib.rs）。 */
+        KEEP(*(.data.__data_start_marker))
         /* .ldata = rustc 大数据拆分节（同 .lbss 家族），漏匹配即成孤儿节
            排到 ALIGN 之后、撑破镜像跨距对齐（NK4-A 首亮实证）。
            .sdata = riscv 小可写数据拆分节，同样不被 `.data.*` 通配命中。 */
