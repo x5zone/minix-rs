@@ -279,7 +279,10 @@ smoltcp = { version = "0.14", default-features = false, features = [
 
 # Device Tree Blob parser (no_std, zero-copy) — used by minix-platform
 # for DTB-based hardware discovery on ARM64/RISC-V.
-fdt = "0.1"
+# 钉死 0.1.5（SD-38）：0.1.5 的 find_node 对固件重建 blob 会漏节点
+# （绕行见 kernel-image 两 bootface 的 all_nodes 走查），升级或 fork
+# 等下一个 DTB 消费者出现时再裁——精确 pin 防同族小版本静默换入。
+fdt = "=0.1.5"
 
 # 构建工具
 clap = { version = "4.5", features = ["derive"] }
