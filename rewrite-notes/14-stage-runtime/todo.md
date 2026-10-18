@@ -1,6 +1,6 @@
 # 14-stage-runtime Rust 实现架构级 Review TODO
 
-> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`；`2026-10-09` 回勾）：需真机 2。旧记的"未闭合 open 1：内核信息魔术失配的错误码选型需先对 C 裁决"属**账面滞后**——`V1-P1-4` 已于 `2026-09-16` 裁决并落地（Fix #5，对齐 C 容错：`os/libs/minix-rt/src/init.rs:fn KerninfoAvailability` 三态枚举在位、`InitError`/`InitOutcome` 二元组已删——`grep -rn "KerninfoAvailability" os/libs/minix-rt/src/init.rs` 现算有命中，`grep -rn "InitError" os/libs/minix-rt/src` 现算零命中），详节见本文件 §3.2 `V1-P1-4` 的落地段。
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`；`2026-10-09` 回勾）：需真机 2 经对账为账面滞后：`real-trap` 已改按目标平台判定（`os/libs/minix-rt/src/init.rs` 的 `target_os = "none"` cfg；feature 只剩宿主侧显式强制，见 `rt-birth/Cargo.toml` 的 `T-STAB-1` 注），`panic-handler` 已由 `rt-birth`/`pfs`/`mfs` 等 freestanding 二进制消费（真机上的 panic 阶梯执行归 E1 切片 5 同场验收）；14 篇阶段内无待真机项。旧记的"未闭合 open 1：内核信息魔术失配的错误码选型需先对 C 裁决"属**账面滞后**——`V1-P1-4` 已于 `2026-09-16` 裁决并落地（Fix #5，对齐 C 容错：`os/libs/minix-rt/src/init.rs:fn KerninfoAvailability` 三态枚举在位、`InitError`/`InitOutcome` 二元组已删——`grep -rn "KerninfoAvailability" os/libs/minix-rt/src/init.rs` 现算有命中，`grep -rn "InitError" os/libs/minix-rt/src` 现算零命中），详节见本文件 §3.2 `V1-P1-4` 的落地段。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > 来源：2026-09-16 首轮架构级代码审查（V1 轮）。查漏补缺优先，其次整体/分层架构深审（code-excellence 口径：整体 → crate → 模块 → trait）。
