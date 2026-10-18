@@ -18,6 +18,14 @@
 #if defined(__GLIBC__)
 char *fgetln(FILE *stream, size_t *len);
 #endif
+/* Minix 的 getopt 与 glibc 的两处差异（非选项就停 vs 重排并交回字符码 1；孤零零一枚
+ * `-` 只在 optstring 含 `-` 时才当选项）会让宿主参照件带文件操作数直接走 usage()。
+ * 补面见同目录 `bsd-getopt.c`，改名走宏，避免与系统实现撞符号。 */
+#if defined(__GLIBC__)
+int bsd_getopt(int, char *const *, const char *);
+#define getopt bsd_getopt
+#endif
+
 
 /* 有些 BSD 源直接调 `fstat`/`stat` 而不含 `<sys/stat.h>`（NetBSD 的包含链把这层替它做掉，
  * `minix3/usr.bin/split/split.c:293` 正是这种：它只含到 `<sys/param.h>` 与 `<unistd.h>`）。

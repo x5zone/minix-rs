@@ -119,6 +119,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百八十一（A6e `BSD-GETOPT-DASH-OPTSTRING` 闭）：参照件从此能吃文件操作数——但真值不是我上一轮猜的那条，是「非选项就停」
+
+- **这一轮干什么**：上一轮（批次三百八十）立了 A6e，说宿主参照件带任何文件操作数都跑不动，得补一枚 BSD 语义的 `getopt`。本轮补完了，**顺带把上一轮对成因的判断纠正了一半**——那半句判断写在板上、也写在本账里，必须先纠正再谈成果。生产码一字未动，动的只有工具面。
+- **上一轮的理由不完整**。我写的是「BSD `getopt` 用 `-` 表示非选项原样交回，glibc 的 `-` 语义是按字符码 1 交回，于是 `case '-'` 永不命中」。方向对，但**真值不在别处的 BSD 手册里，就在本仓**：`minix3/lib/libc/stdlib/getopt.c:63-143`（Minix 自己 libc 的实现，本轮逐行读完）。它的语义是三条：① **非选项就停**——`if (optind >= nargc || *place++ != '-') { place = EMSG; return (-1); }`，**既不重排 argv、也不把非选项当选项交回**；② optstring 里那个 `-` 只管**孤零零一枚 `-`**：`if (strchr(ostr, '-') == NULL) return -1; optopt = '-';`——`uniq.c:79-81` 的 `case '-': --optind; goto done;` 是为这一形写的，不是为「非选项交回」写的；③ 其余（`--` 结束、`BADCH`/`BADARG`、optstring 首字符 `:` 静默、`x::` 可选参数的 GNU 扩展）与经典 BSD 版一致。⇒ glibc 的偏离有**两处**：非选项交回字符码 1（撞 `case '?'`），以及它会**重排 argv**（把非选项挪到尾部，`optind` 的语义随之不同）。补面按 Minix 那份照抄，不按手册抄。
+- **落了什么**：新文件 `tools/atf-c-compat/host-ref/bsd-getopt.c`（`int bsd_getopt(...)`，带 `#if defined(__GLIBC__)` 判据，别的 libc 上整件退化成空翻译单元），复用 glibc 的 `optind`/`optarg`/`optopt`/`opterr` 四个全局只换扫描算法；`bsd-compat-proto.h` 里 `#define getopt bsd_getopt` 走改名，**不去硬碰系统符号**（直接同名定义会与 glibc 的数据符号纠缠）。`tools/build-bsd-ref.sh` 上一轮已改成「链上 `host-ref/bsd-*.c` 全部」，所以这枚补面**不需要再改脚本**就自动生效。
+- **效果与读数**（全部现跑，`tmp/getopt-381/`）：`uniq` 参照件六形——① 两操作数：退 0、产物 `a|b|c|`；② `-c` 带文件操作数：`   2 a|   1 b|   2 c|` 退 0（宽度 4，与本壳的 `%4d` 同形）；③ 输出档开不了：`uniq_ref: <路径>: Permission denied` 退 1；④ **输出档写不进（`/dev/full`）：退 0、一字不报**；⑤ stdout 写不进：退 0、一字不报；⑥ 坏选项：`uniq_ref: unknown option -- Z` + usage 行退 1。
+- **两处收获值得单独点出**：
+  1. **上一轮 A6c 从源码推断的那一格，这一轮成了实测**。批次三百八十写「输出操作数那形的真值取自源码缺省行为（全文件 `ferror`/`fflush` 零命中），而不是取自参照件读数」，因为那时参照件跑不动文件操作数；形 ④ 现在直接量出**退 0 且不说话**，与推断一致——本壳改前那句 `uniq: /dev/full` 加退 1 是错的，已由 `a10f32a10` 修掉。推断被独立验证，比当初只凭源码更硬。
+  2. **坏选项的句子换了家**：补面生效前，参照件印的是 glibc 的 `invalid option -- 'Z'`；现在是 Minix 自己那句 `<prog>: unknown option -- %c`（`getopt.c:101-104` 的格式串）。A2/A11 那族 `getopt` 报文形的判据本来就要对这一句，以前对的是宿主 libc 的句子——**那种比对是无效的**，现在才真的可对。
+- **回归**：`uniq`、`split`、`fortune`、`colrm` 四支参照件都用同一枚补面重编，全部 `-Wall` 零告警；`split` 两形抽查（文件操作数 `-n 2` 出两片退 0；stdin 走规则文件重定向也退 0——这与批次三百七十八记的「管道 → `can't split into more than 0 files` 退 1」不冲突，那是管道 `st_size` 为 0 那一形，不是 getopt 形）。
+- **三件套**：核实命令 `grep -n "if (optind >= nargc" minix3/lib/libc/stdlib/getopt.c`（→ `:74`，非选项就停那一支）、`sed -n '85,96p' minix3/lib/libc/stdlib/getopt.c`（孤零零 `-` 一支）、`bash tools/build-bsd-ref.sh -o tmp/getopt-381/uniq_ref minix3/usr.bin/uniq/uniq.c`、`./tmp/getopt-381/uniq_ref tmp/getopt-381/in.txt tmp/getopt-381/o.txt`（改前同样命令报 usage 退 1）、`./tmp/getopt-381/uniq_ref tmp/getopt-381/in.txt /dev/full`（退 0 无输出）；核实日 `2026-10-19`；基线快照 `ce4793e48`。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim CKSUM-HASH-DIGEST qoder`（A4）。理由是拦路件清了：A4 的判据写着「参照件读数走 A1 的补位面」，而 `cksum` 与 `uniq` 同族地依赖 `getopt` 与 BSD 家姓的库件——现在 getopt 与 `fgetln` 都有了，逐字节对参照件这条路第一次真能走。
+
 ## 批次三百八十（A6c `UNIQ-WRITE-ERRLEG` 闭）：`uniq` 的输出腿**从不查写失手**——本壳两形都把它报成退 1，其中一形还印了句 C 没有的两段报文
 
 - **这一轮干什么**：批次三百三十把这条登记成「`uniq` 的写腿这次只把签名跟到位、报文形状未动」。本轮对着参照件把两形都量了，结论比「形状未动」更严重：**C 根本不报写失手，而本壳两形都报**，其中输出操作数那一形还印了一句 C 世界里不存在的两段形。**这是 `Rewrite` 档的行为分叉，本轮落码修掉。**
