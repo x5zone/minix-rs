@@ -183,6 +183,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `VFS-WRAPPERS` 片收尾（vnd 控制腿解锁）：**minix-sys 公共面新增**（A 板是下游，按挂账约定登记）：`vfs::fsync_via`（VFS_FSYNC = 0x100+32，`mess_lc_vfs_fsync.fd` 首字，用户协议）、`vfs::copyfd_via`（VFS_COPYFD = 0x100+46，`mess_lsys_vfs_copyfd {endpt,fd,what}` 三字，**服务端协议**——回复类型即结果，`COPYFD_FROM` 返回新描述符）与 `COPYFD_FROM/TO/CLOSE` 三常量；两枚新门（minix-sys 331/0）。**vnd 的两处登记缝就此闭**：`VfsBackend::copyfd/fsync` 改走真实包装，VNDIOCSET 的 fd 窃取腿与 force-write/DIOCFLUSH 的落盘腿在真机上可走（真机验收仍待 B3 窗）—— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `FBD` 片**前置定性**（本轮未落码，登记下一片开工件）：`fbd` 的下游客户端腿差两件，其中一件是**已定性缺口**——`minix-bdev::Destination` 只表达 C `mess_lbdev_lblockdriver_msg` 九条车道里的五条（缺 `access`/`flags`/`user`/`request`），而 `fbd` 的 open/transfer/ioctl 恰好各要一条（P0-design-missing，B 线自有 lib，已登记在 B 板 §1c）；另一件是 `Transport`/`GrantIssuer` 的生产实现（树里只有测试替身）。两件落完才写 `fbd` face/service/main —— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。
