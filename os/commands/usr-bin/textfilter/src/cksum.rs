@@ -180,6 +180,15 @@ pub struct CksumRequest<'a> {
     pub print_normal: bool,
     /// `-q`: `PRINT_QUIET`, same hash-output-only role as `-n`.
     pub print_quiet: bool,
+    /// C 的 `pflag`（`cksum.c:247-251`，`:250` 置真）：选中算法之后它让标准输入那一腿
+    /// 把读到的字节**原样转抄**到标准输出，再在末尾印摘要（`md5.c` 的 `MD5Filter` 里
+    /// `if (pipe && (len != fwrite(buffer, 1, len, stdout))) err(1, "stdout")`）。
+    /// 只在算法已选中时才可能被读到这里，所以它不进诊断分支。
+    pub pipe: bool,
+    /// C 的 `nohashstdin`（`cksum.c:258`、`:264`、`:273`）：`-s`/`-t`/`-x` 任一出现即置真。
+    /// 它同时是两件事——「这一条腿自己已经把话印完了」与「末尾那一次对标准输入的摘要
+    /// 不要再做」（`cksum.c:489` 的 `else if (hash && !nohashstdin)`）。
+    pub nohash_stdin: bool,
     /// The file operands (or `-`/stdin marker), in argv order.
     pub operands: Vec<&'a str>,
 }
@@ -220,6 +229,8 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
         check_warn: false,
         print_normal: false,
         print_quiet: false,
+        pipe: false,
+        nohash_stdin: false,
         operands: Vec::new(),
     };
     let mut index = 0;
@@ -304,16 +315,30 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
                     if request.hash.is_none() {
                         return Err(CksumError::RequiresHash('s'));
                     }
+                    // 放行之后 C 立刻置 `nohashstdin`（`cksum.c:258`）。它不是「这条腿做完
+                    // 了」的记号，而是「末尾那一次对标准输入的摘要别再做了」的记号——
+                    // `-s` 已经把这一串摘要印过了。
+                    request.nohash_stdin = true;
                 }
                 'c' => request.do_check = true,
                 'w' => request.check_warn = true,
                 'n' => request.print_normal = true,
                 'q' => request.print_quiet = true,
-                'p' | 't' | 'x' => {
-                    // 这三个旗标也过 `requirehash`：没选中 hash 才报，选中了就收下。
+                'p' => {
+                    // `-p` 同样过 `requirehash`，但它**不**动 `nohashstdin`（`cksum.c:247-251`
+                    // 里只有 `pflag = 1`）：转抄标准输入那一腿照旧要跑。
+                    if request.hash.is_none() {
+                        return Err(CksumError::RequiresHash('p'));
+                    }
+                    request.pipe = true;
+                }
+                't' | 'x' => {
+                    // 这两个也过 `requirehash`，放行后各自置 `nohashstdin`（`cksum.c:264`、
+                    // `:273`）：定时试验与测试套件自己就把话印完了。
                     if request.hash.is_none() {
                         return Err(CksumError::RequiresHash(flag));
                     }
+                    request.nohash_stdin = true;
                 }
                 _ => return Err(CksumError::UnknownOption(flag)),
             }

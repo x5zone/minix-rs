@@ -13,6 +13,9 @@ path = "src/lib.rs"
 # stays free of any system-call imports (pure deciding half).
 [dependencies]
 minix-sys = { workspace = true }
+# `src/digest.rs` 的 MD5 与 SHA1 走这一份现成的实现，不在命令面另译一遍
+# （判据与出处见那个模块的模块头）。
+minix-crypt = { workspace = true }
 # `err(3)`/`warn(3)` 那一行的渲染与 errno 句子表住在 `minix-types`，但命令层不直引它：
 # 本 crate 只走 `minix-sys` 顶层的同名再导出（`err_line`/`prog_name`），与 `fileops` 同形
 # （边界守卫 `tools/check-command-boundary.sh`，判例：批次一百零九的 `df`）。

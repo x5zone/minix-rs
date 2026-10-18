@@ -5,8 +5,9 @@
 //! length, and the `%lu %lld` output format (`print.c` `pcrc`/`psum1`/`psum2`)
 //! — is the library's `cksum` module. This program reads each file operand (or
 //! standard input when none) and prints `{crc} {length}` plus ` {name}` for a
-//! file; the C's `-a` crypto algorithms (md5/sha1/sha256/sha384/sha512) need
-//! crypto primitives and are declared unsupported.
+//! file. `-a` 的摘要那条腿现在走 `minix_textfilter::digest` 的真本体（MD5/SHA1/
+//! SHA256 三族），报文形是 C 的 `MD5 (file) = <digest>` 与它的 `-n`/`-q` 两个变体；
+//! 其余五枚算法、`-s`/`-t`/`-x` 三条腿与 hash 在里的 `-c` 校验腿仍在占位句上。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -21,9 +22,10 @@ mod support;
 use minix_sys::{close, open, read};
 use minix_textfilter::GetoptReport;
 use minix_textfilter::cksum::{
-    CheckEntry, CksumError, SumKind, cksum_crc, csum1, csum2, parse_check_line, parse_cksum_args,
-    sum_display_length,
+    CheckEntry, CksumError, CksumRequest, SumKind, cksum_crc, csum1, csum2, parse_check_line,
+    parse_cksum_args, sum_display_length,
 };
+use minix_textfilter::digest;
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -68,14 +70,10 @@ fn run() -> ! {
         }
     };
 
-    if request.hash.is_some() {
-        // 选中了算法，接下来要的是一行真摘要，而本树还没有这些原语。这一句是本壳的
-        // 占位而**不是** C 的形状——C 在这里打的是 `MD5 (file) = <digest>` 并退 0——
-        // 退码沿用批次三百零七定下的 2，等原语那一片接上再换（登记 `CKSUM-HASH-STATE`）。
-        // 放在解析之后：`-a` 的两条互斥诊断（C 在 getopt 环里就报完）必须先看状态，
-        // 不能被这一句抢在头里。
-        support::warn(b"cksum: -a crypto algorithms are not modelled yet\n");
-        support::terminate(2);
+    if let Some(name) = request.hash {
+        // 选中了算法：摘要本体已经接了三族（`src/digest.rs`），剩下五枚与 `-s`/`-t`/`-x`
+        // 三条腿、以及 hash 在里的 `-c` 校验腿仍在 `CKSUM-HASH-*` 的后一片。
+        support::terminate(hash_run(&request, name));
     }
 
     if request.do_check {
@@ -108,6 +106,74 @@ fn run() -> ! {
         emit_line(request.kind, &input, Some(operand));
     }
     support::terminate(status)
+}
+
+/// C 的 `hash` 那条路：`cksum.c:474-491` 的循环体加上 `hash_digest_file`（`:506-524`）。
+/// 有操作数就逐档印一行摘要，没有操作数就把标准输入读尽——`-p` 时先把字节原样转抄到
+/// 标准输出——末尾印那一行摘要（`md5.c` 的 `MD5Filter`，摘要那行恒在转抄之后）。
+///
+/// 三条形状在 C 里由 `print_flags` 决定，`-q` 赢 `-n`（`cksum.c:515-520` 是
+/// `if QUIET … else if NORMAL … else …`）：
+///
+/// * 缺省 `MD5 (file) = <digest>`；
+/// * `-n` `<digest> file`；
+/// * `-q` 只有 `<digest>`。
+///
+/// 退路三条，都落在批次三百零七定下的占位句上（退 2）：算法本体未接的那五枚
+///（`MD2`/`MD4`/`RMD160`/`SHA384`/`SHA512`）、`-s`/`-t`/`-x` 三条腿、以及 hash 在里的
+/// `-c` 校验腿——C 在那条腿里用 `hash->filefunc` 重算比对（`cksum.c:421-441`），并在
+/// 失败行前缀 `(MD5) `（`:451-456`），那是另一片报文形。
+///
+/// 读档走的是 `support::read_file`/`support::read_stdin` 这一对 cfg 双生面，不是本支
+/// 另一条腿上那个直接 `minix_sys` 的 `read_all`：后者在宿主上开不了也读不到（现跑
+/// `printf 'abc' | cksum` → `4294967295 0`，即零字节；`cksum <真实档>` → `cksum: <档名>`
+/// 退 1），摘要若走那条缝，宿主门就只能钉住空输入的摘要。已登记 `CKSUM-HOSTED-READ-SEAM`。
+fn hash_run(request: &CksumRequest<'_>, name: &'static str) -> i32 {
+    let Some(algo) = digest::Algo::from_hashname(name) else {
+        not_modelled();
+    };
+    if request.do_check || request.nohash_stdin {
+        not_modelled();
+    }
+
+    if request.operands.is_empty() {
+        // 读失手在 C 那边就是「读到尽头」（`MD5Filter` 的 `while ((len = fread(…)) > 0)`
+        // 不看 `ferror`），本壳的 `read_stdin` 同一口径，所以这里没有错腿可报。
+        let input = support::read_stdin();
+        if request.pipe {
+            support::emit(&input);
+        }
+        support::emit(format!("{}\n", algo.hex_digest(&input)).as_bytes());
+        return 0;
+    }
+
+    let mut status = 0;
+    for operand in request.operands.iter().copied() {
+        let Ok(input) = support::read_file(operand) else {
+            // C 的 `filefunc` 交回 `NULL` 时 `hash_digest_file` 退 1，`main` 于是
+            // `warn("%s", fn)` 并把整体 `rval` 置 1（`cksum.c:477-483`），不印摘要行。
+            // 那句 `warn` 的第三段（`: strerror`）在 `CKSUM-FILE-LEGS` 那一行里对账。
+            support::warn(format!("cksum: {operand}\n").as_bytes());
+            status = 1;
+            continue;
+        };
+        let digest = algo.hex_digest(&input);
+        let line = if request.print_quiet {
+            format!("{digest}\n")
+        } else if request.print_normal {
+            format!("{digest} {operand}\n")
+        } else {
+            format!("{name} ({operand}) = {digest}\n")
+        };
+        support::emit(line.as_bytes());
+    }
+    status
+}
+
+/// 本壳的占位报文：`CKSUM-HASH-*` 后一片的三条退路共用它，退码沿用批次三百零七定下的 2。
+fn not_modelled() -> ! {
+    support::warn(b"cksum: -a crypto algorithms are not modelled yet\n");
+    support::terminate(2);
 }
 
 /// `cksum -c`: verify the checksums listed in a check file (the first operand,

@@ -44,6 +44,7 @@ pub mod colrm;
 pub mod column;
 pub mod comm;
 pub mod count;
+pub mod digest;
 pub mod diff;
 pub mod expand;
 pub mod jot;
