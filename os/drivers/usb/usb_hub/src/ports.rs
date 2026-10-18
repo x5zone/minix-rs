@@ -71,7 +71,10 @@ pub struct HubPort {
 impl HubPort {
     /// A fresh port starts disconnected with a full reset budget.
     pub fn new() -> Self {
-        HubPort { belief: PortBelief::Disconnected, resets_used: 0 }
+        HubPort {
+            belief: PortBelief::Disconnected,
+            resets_used: 0,
+        }
     }
 
     /// Current belief about this port.
@@ -79,42 +82,42 @@ impl HubPort {
         self.belief
     }
 
-/// Fold one poll observation into the belief (`hub_handle_change`,
-/// `usb_hub.c:693`, with the `hub_task` switch at `usb_hub.c:440-491`).
-///
-/// Two C details this keeps faithful: a status-error port is blocked
-/// until the hub itself is detached — the poll loop skips blocked ports
-/// before reading status (`usb_hub.c:444-446`), so a departure on a
-/// blocked port is unreachable and cannot clear the block. A
-/// communication error is not a port state at all: it hangs the whole
-/// task (`usb_hub.c:465-468`).
-pub fn observe(&mut self, observation: PortObservation) -> PortEffect {
-    match observation {
-        PortObservation::None => PortEffect::Continue,
-        PortObservation::Arrived => {
-            if self.belief != PortBelief::Broken {
-                self.belief = PortBelief::Connected;
+    /// Fold one poll observation into the belief (`hub_handle_change`,
+    /// `usb_hub.c:693`, with the `hub_task` switch at `usb_hub.c:440-491`).
+    ///
+    /// Two C details this keeps faithful: a status-error port is blocked
+    /// until the hub itself is detached — the poll loop skips blocked ports
+    /// before reading status (`usb_hub.c:444-446`), so a departure on a
+    /// blocked port is unreachable and cannot clear the block. A
+    /// communication error is not a port state at all: it hangs the whole
+    /// task (`usb_hub.c:465-468`).
+    pub fn observe(&mut self, observation: PortObservation) -> PortEffect {
+        match observation {
+            PortObservation::None => PortEffect::Continue,
+            PortObservation::Arrived => {
+                if self.belief != PortBelief::Broken {
+                    self.belief = PortBelief::Connected;
+                    self.resets_used = 0;
+                }
+                PortEffect::Continue
+            }
+            PortObservation::Left => {
+                if self.belief == PortBelief::Broken {
+                    // Unreachable in C (blocked ports are skipped); refuse to
+                    // model an un-block that cannot happen.
+                    return PortEffect::Continue;
+                }
+                self.belief = PortBelief::Disconnected;
                 self.resets_used = 0;
+                PortEffect::Continue
             }
-            PortEffect::Continue
-        }
-        PortObservation::Left => {
-            if self.belief == PortBelief::Broken {
-                // Unreachable in C (blocked ports are skipped); refuse to
-                // model an un-block that cannot happen.
-                return PortEffect::Continue;
+            PortObservation::StatusError => {
+                self.belief = PortBelief::Broken;
+                PortEffect::Continue
             }
-            self.belief = PortBelief::Disconnected;
-            self.resets_used = 0;
-            PortEffect::Continue
+            PortObservation::CommError => PortEffect::SuspendTask,
         }
-        PortObservation::StatusError => {
-            self.belief = PortBelief::Broken;
-            PortEffect::Continue
-        }
-        PortObservation::CommError => PortEffect::SuspendTask,
     }
-}
 
     /// Spend one reset attempt (`hub_handle_connection`, `usb_hub.c:826`):
     /// true while attempts remain, false once the budget is exhausted.

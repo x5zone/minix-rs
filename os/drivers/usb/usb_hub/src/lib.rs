@@ -15,10 +15,21 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 extern crate alloc;
 
 pub mod char_face;
+pub mod hub_class;
 pub mod ports;
+pub mod service;
+pub mod usbd;
 
-/// Service initialization entry (wires the hub table; control traffic stays out).
-pub fn init() {}
+use service::HubService;
+use usbd::UsbdClient;
+
+/// Builds the service for the binary.
+pub fn init<U: UsbdClient>(usbd: U) -> HubService<U> {
+    HubService::new(usbd)
+}

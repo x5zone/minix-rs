@@ -10,7 +10,7 @@
 //! URB transport (the actual host-controller messages) stays with the
 //! service; this face is the admission and bookkeeping half.
 
-use crate::enumerate::{Enumeration, EnumStage};
+use crate::enumerate::{EnumStage, Enumeration};
 use crate::protocol::{decode_daemon_message, decode_driver_request};
 use minix_usb::urb::{PendingUrb, TransferKind};
 use minix_usb::wire::{fill_complete_urb, fill_send_urb, split_complete_urb, split_send_urb};
@@ -65,6 +65,12 @@ impl UsbdFace {
         // Fill the completion report for the service's reply path.
         fill_complete_urb(msg, id, result);
         matched
+    }
+
+    /// Drop one roster entry by identifier (the service cleans up when a
+    /// submission is refused by the controller seam).
+    pub fn pending_remove(&mut self, id: u32) -> Option<PendingUrb> {
+        minix_usb::urb::remove_pending(&mut self.pending, id)
     }
 
     /// Whether the enumeration walk finished.

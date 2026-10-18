@@ -39,7 +39,9 @@ pub struct Enumeration {
 impl Enumeration {
     /// A device the port has just noticed.
     pub fn new() -> Self {
-        Enumeration { stage: EnumStage::Detected }
+        Enumeration {
+            stage: EnumStage::Detected,
+        }
     }
 
     /// Current stage of the sequence.

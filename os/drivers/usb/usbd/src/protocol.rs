@@ -98,7 +98,10 @@ mod tests {
     fn test_decode_round_trips_and_rejects_foreign() {
         assert_eq!(decode_driver_request(0x1102), Some(DriverRequest::SendUrb));
         assert_eq!(decode_driver_request(0x1105), None);
-        assert_eq!(decode_daemon_message(0x1107), Some(DaemonMessage::AnnounceDevice));
+        assert_eq!(
+            decode_daemon_message(0x1107),
+            Some(DaemonMessage::AnnounceDevice)
+        );
         assert_eq!(decode_daemon_message(0x1102), None);
         assert_eq!(decode_driver_request(0x400), None);
     }

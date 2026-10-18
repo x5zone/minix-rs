@@ -72,7 +72,10 @@ pub struct TagPairing {
 impl TagPairing {
     /// No transfer in flight yet.
     pub fn new() -> Self {
-        TagPairing { next_tag: 1, awaiting_tag: None }
+        TagPairing {
+            next_tag: 1,
+            awaiting_tag: None,
+        }
     }
 
     /// Open a transfer: mint the next tag and remember it.
@@ -162,7 +165,11 @@ impl Cbw {
             signature: CBW_SIGNATURE,
             tag,
             data_transfer_length,
-            flags: if to_device { CBW_FLAGS_OUT } else { CBW_FLAGS_IN },
+            flags: if to_device {
+                CBW_FLAGS_OUT
+            } else {
+                CBW_FLAGS_IN
+            },
             lun,
             cdb_length,
             cdb,
@@ -260,7 +267,12 @@ mod tests {
         assert_eq!(&bytes[17..21], &0x1234_5678u32.to_be_bytes()); // LBA
         assert_eq!(&bytes[22..24], &4u16.to_be_bytes()); // block count
         // CSW: signature, tag, residue, failed status.
-        let csw = Csw { signature: CSW_SIGNATURE, tag: 9, data_residue: 0, status: CommandStatus::Failed as u8 };
+        let csw = Csw {
+            signature: CSW_SIGNATURE,
+            tag: 9,
+            data_residue: 0,
+            status: CommandStatus::Failed as u8,
+        };
         let csw_bytes: &[u8; 13] = unsafe { &*(&csw as *const Csw as *const [u8; 13]) };
         assert_eq!(&csw_bytes[..4], &0x5342_5355u32.to_le_bytes());
         assert_eq!(csw_bytes[12], 1);
@@ -284,7 +296,6 @@ mod tests {
         assert_eq!(cdb_request_sense(18)[4], 18);
         assert_eq!(cdb_read_capacity()[0], 0x25);
     }
-
 
     #[test]
     fn test_signatures_match_bulk_header() {

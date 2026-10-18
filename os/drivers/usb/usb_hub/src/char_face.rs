@@ -11,7 +11,7 @@
 
 use minix_usb::urb::{Direction, PendingUrb, TransferKind};
 
-use crate::ports::{HubPort, PortBelief, PortObservation, PortEffect, PORT_LIMIT};
+use crate::ports::{HubPort, PORT_LIMIT, PortBelief, PortEffect, PortObservation};
 
 /// The hub's poll-round outcome: what the service does between rounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +77,10 @@ impl HubFace {
 
     /// Whether a port still wants its reset budget.
     pub fn try_reset(&mut self, port: usize) -> bool {
-        self.ports.get_mut(port).map(|p| p.try_reset()).unwrap_or(false)
+        self.ports
+            .get_mut(port)
+            .map(|p| p.try_reset())
+            .unwrap_or(false)
     }
 
     /// Belief of one port.

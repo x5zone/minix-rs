@@ -85,8 +85,14 @@ mod tests {
 
     #[test]
     fn test_speed_splits_high_low_bytes() {
-        assert_eq!(speed_bytes(StreamDirection::Output, 44100), Some((0x41, 0xAC, 0x44)));
-        assert_eq!(speed_bytes(StreamDirection::Input, 4000), Some((0x42, 0x0F, 0xA0)));
+        assert_eq!(
+            speed_bytes(StreamDirection::Output, 44100),
+            Some((0x41, 0xAC, 0x44))
+        );
+        assert_eq!(
+            speed_bytes(StreamDirection::Input, 4000),
+            Some((0x42, 0x0F, 0xA0))
+        );
     }
 
     #[test]

@@ -10,6 +10,8 @@ name = "minix-driver-usb_storage"
 path = "src/main.rs"
 
 [dependencies]
+minix-driver-rt = { workspace = true }
+minix-blockdriver = { workspace = true }
 minix-usb = { workspace = true }
 minix-types = { workspace = true }
 minix-sys = { workspace = true }

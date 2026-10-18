@@ -11,9 +11,9 @@
 //! pairs against the same authority the completion path uses. Bulk
 //! transport stays with the service.
 
+use minix_types::Message;
 use minix_usb::urb::{Direction, PendingUrb, TransferKind};
 use minix_usb::wire::{fill_send_urb, split_complete_urb};
-use minix_types::Message;
 
 use crate::cbw::{COMMAND_BLOCK_LENGTH, TagPairing, cdb_read10, cdb_write10, transfer_allowed};
 
@@ -98,7 +98,10 @@ mod tests {
         assert_eq!(face.pending.len(), 1);
         assert!(face.pairing.is_busy());
         // The wire slots carry the grant id (the tag) and the byte size.
-        assert_eq!(minix_usb::wire::split_send_urb(&msg), Some((tag as i64, 4096)));
+        assert_eq!(
+            minix_usb::wire::split_send_urb(&msg),
+            Some((tag as i64, 4096))
+        );
     }
 
     #[test]
