@@ -20,7 +20,6 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read};
 use minix_textfilter::cksum::{
     cksum_crc, classify_check_line, csum1, csum2, leading_u32, parse_cksum_args_into,
     sum_display_length, CheckLine, CksumAction, CksumError, CksumRequest, SumKind,
@@ -84,6 +83,7 @@ fn run() -> ! {
         // 走的是校验腿；`-s`/`-t`/`-x` 已经在选项环那趟把各自的行印出去了。
         // `-c` 只吃第一个操作数当校验档（多余的忽略），对位 C 的 `argv[0]`-或-标准输入。
         support::terminate(check_files(
+            prog,
             &request.operands,
             request.check_warn,
             request.hash,
@@ -93,30 +93,32 @@ fn run() -> ! {
     if let Some(algo) = request.hash {
         // 选中了算法：八枚的本体与 `-s`/`-t`/`-x` 三条腿都已接成真读数（`src/digest.rs` 与
         // 上面的 `emit_action`），这一腿只剩摘要本体。
-        support::terminate(hash_run(&request, algo));
+        support::terminate(hash_run(prog, &request, algo));
     }
 
     let mut status = 0;
     if request.operands.is_empty() {
         // C computes over stdin and prints the line with no filename.
-        let input = read_all(support::STDIN);
+        let input = support::read_stdin();
         emit_line(request.kind, &input, None);
         support::terminate(status);
     }
     for operand in request.operands.iter().copied() {
-        let fd = match open(operand, 0, 0) {
-            Ok(fd) => fd,
-            Err(_) => {
-                // C warns and skips the file, no output line for it.
-                support::warn(format!("cksum: {operand}\n").as_bytes());
+        // 读缝走 `bin_support` 那对 cfg 双生面，不再直写 `minix_sys::open`/`read`：
+        // 直写的那条腿在宿主上恒读不到（批次三百八十四现跑 `printf 'abc' | cksum` 得
+        // `4294967295 0`，即零字节的 CRC），于是「三段句子齐不齐」这件事在宿主上根本
+        // 无法比对——报文形的门会钉住占位传输交回的那句话，而不是内核的那一句。
+        // 这一步同时销掉登记 `CKSUM-HOSTED-READ-SEAM`（修法就是那一批给摘要腿定的那条）。
+        // C 的 `warn("%s", fn)`（`cksum.c:491-495`）是 `warn(3)` 而不是 `warnx(3)`：
+        // 程序名、操作数、`strerror` 句子三个成分缺一不可（旧写法把第三段擦了）。
+        let input = match support::read_file(operand) {
+            Ok(input) => input,
+            Err(code) => {
+                support::warn_line(prog, operand, code);
                 status = 1;
                 continue;
             }
         };
-        let input = read_all(fd);
-        //[SD19-gate] SD-19: close 后 fd 不再使用
-        #[allow(clippy::let_underscore_must_use)]
-        let _ = close(fd);
         emit_line(request.kind, &input, Some(operand));
     }
     support::terminate(status)
@@ -133,16 +135,15 @@ fn run() -> ! {
 /// * `-n` `<digest> file`；
 /// * `-q` 只有 `<digest>`。
 ///
-/// 只剩一条退路落在批次三百零七定下的占位句上（退 2）：hash 在里的 `-c` 校验腿——C 在
-/// 那条腿里用 `hash->filefunc` 重算比对（`cksum.c:421-441`），并在失败行前缀 `(MD5) `
-///（`:451-456`），那是另一片报文形（`CKSUM-HASH-STATE` 的收尾片）。`-s`/`-t`/`-x` 三条
-/// 自印腿已经接成真读数，它们的行在 `emit_action` 里。
+/// 这一腿没有退路了：`-s`/`-t`/`-x` 三条自印腿的行在 `emit_action` 里，hash 在里的 `-c`
+/// 校验腿在 `check_files` 里，本壳那句占位报文（`cksum: -a crypto algorithms are not
+/// modelled yet` 退 2）已经随批次三百八十八整条删除。
 ///
-/// 读档走的是 `support::read_file`/`support::read_stdin` 这一对 cfg 双生面，不是本支
-/// 另一条腿上那个直接 `minix_sys` 的 `read_all`：后者在宿主上开不了也读不到（现跑
-/// `printf 'abc' | cksum` → `4294967295 0`，即零字节；`cksum <真实档>` → `cksum: <档名>`
-/// 退 1），摘要若走那条缝，宿主门就只能钉住空输入的摘要。已登记 `CKSUM-HOSTED-READ-SEAM`。
-fn hash_run(request: &CksumRequest<'_>, algo: Algo) -> i32 {
+/// 读档走 `support::read_file`/`support::read_stdin` 这一对 cfg 双生面，与 crc 那条腿同一缝
+///（批次三百八十四把摘要腿换过来、批次三百八十九把 crc 腿也换过来）。直写 `minix_sys::open`
+/// 的那条缝在宿主上开不了也读不到（现跑 `printf 'abc' | cksum` → `4294967295 0`，即零字节），
+/// 于是宿主门只能钉住空输入的摘要与占位传输交回的错号——那种门比没有门更坏。
+fn hash_run(prog: &str, request: &CksumRequest<'_>, algo: Algo) -> i32 {
     if request.operands.is_empty() {
         // C 的 `else if (hash && !nohashstdin)`（`cksum.c:489`）：`-s`/`-t`/`-x` 任一出现过，
         // 这一腿就整个跳过——它们自己的行已经在诊断之前由 `emit_action` 排出去了
@@ -162,13 +163,18 @@ fn hash_run(request: &CksumRequest<'_>, algo: Algo) -> i32 {
 
     let mut status = 0;
     for operand in request.operands.iter().copied() {
-        let Ok(input) = support::read_file(operand) else {
-            // C 的 `filefunc` 交回 `NULL` 时 `hash_digest_file` 退 1，`main` 于是
-            // `warn("%s", fn)` 并把整体 `rval` 置 1（`cksum.c:477-483`），不印摘要行。
-            // 那句 `warn` 的第三段（`: strerror`）在 `CKSUM-FILE-LEGS` 那一行里对账。
-            support::warn(format!("cksum: {operand}\n").as_bytes());
-            status = 1;
-            continue;
+        let input = match support::read_file(operand) {
+            Ok(input) => input,
+            Err(code) => {
+                // C 的 `filefunc` 交回 `NULL` 时 `hash_digest_file` 退 1，`main` 于是
+                // `warn("%s", fn)` 并把整体 `rval` 置 1（`cksum.c:477-483`），**不印摘要行**。
+                // 参照件 f-1 形：`cksum_ref: <路径>: No such file or directory`；目录那一形是
+                // `.: Is a directory`（f-3），句子由承载的 `strerror` 表给，本壳走同一张表
+                //（`bin_support::warn_line` → `minix_sys::err_line`）。
+                support::warn_line(prog, operand, code);
+                status = 1;
+                continue;
+            }
         };
         let digest = algo.hex_digest(&input);
         let line = if request.print_quiet {
@@ -254,16 +260,17 @@ fn emit_action(action: &CksumAction<'_>) {
 /// `bogus format: <整行>. Skipping...`（`:325` 与 `:398` 两处同句）、
 /// `no filename in <整行>? Skipping...`（`:381` 与 `:409`）。三句都只在 `-w` 下打
 ///（C 的 `if (check_warn)` 包着每一句），但**都记一次失败**（`rval = 1`）。
-fn check_files(operands: &[&str], check_warn: bool, selected: Option<Algo>) -> i32 {
+fn check_files(prog: &str, operands: &[&str], check_warn: bool, selected: Option<Algo>) -> i32 {
     let from_operand = !operands.is_empty();
     let path = operands.first().copied().unwrap_or("");
     let bytes = if from_operand {
         match support::read_file(path) {
             Ok(bytes) => bytes,
-            Err(_) => {
-                // 校验档本身打不开在 C 是 `err(1, "Cannot read %s", …)`（`:302-303`）——
-                // 那句的第三段（`: <strerror>`）归 A5b `CKSUM-FILE-LEGS`。
-                support::warn(format!("cksum: Cannot read {path}\n").as_bytes());
+            // 校验档本身打不开在 C 是 `err(1, "Cannot read %s", argc>0?argv[0]:"stdin")`
+            //（`cksum.c:301-303`）：`err(3)` = 那三段句子再加 `exit(1)`。参照件 c-9 形实测
+            // `cksum_ref: Cannot read <路径>: No such file or directory`，退 1、stdout 空。
+            Err(code) => {
+                support::warn_line(prog, &format!("Cannot read {path}"), code);
                 return 1;
             }
         }
@@ -329,9 +336,13 @@ fn check_files(operands: &[&str], check_warn: bool, selected: Option<Algo>) -> i
                         // crc 那支：第一个词按 `strtoul` 取前导十进制（`:442`），档读不到时
                         // 在 `-w` 下 warn 那一句（`:432`）。
                         None => match support::read_file(name) {
-                            Err(_) => {
+                            // crc 那一支读不到档时 C 打的是 `warn("%s", filename)`（`:432`），
+                            // 也是三段形，而且只在 `-w` 下打（`if (check_warn)` 包着它）。
+                            // 摘要那一支的同一格**不**打这一句（`access` 短路，`:424`），
+                            // 那一格的门在 `an_unreadable_operand_in_a_digest_line_fails_without_warning`。
+                            Err(code) => {
                                 if check_warn {
-                                    support::warn(format!("cksum: {name}\n").as_bytes());
+                                    support::warn_line(prog, name, code);
                                 }
                                 false
                             }
@@ -362,20 +373,6 @@ fn verify_digest(algo: Algo, name: &str, expected: &str) -> bool {
         Ok(data) => algo.hex_digest(&data) == expected,
         Err(_) => false,
     }
-}
-
-/// Read a descriptor to the end (the C `crc`/`csum` read the whole input).
-fn read_all(fd: i32) -> Vec<u8> {
-    let mut input = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(count) => input.extend_from_slice(&chunk[..count]),
-            Err(_) => break,
-        }
-    }
-    input
 }
 
 /// Compute the selected sum over `data` and print C's `"%lu %lld"` line (with a

@@ -359,7 +359,11 @@ fn an_unreadable_operand_prints_no_digest_line_and_makes_the_run_fail() {
         out, "1ffe2b0635d3964e20f149a90572adfb\nb6273b589df2dfdbd8fe35b1011e3183\n",
         "坏档占一行位置但不产出行，好档按 argv 次序"
     );
-    assert_eq!(err, format!("cksum: {missing}\n"), "报的是那枚操作数本身");
+    assert_eq!(
+        err,
+        format!("cksum: {missing}: No such file or directory\n"),
+        "C 那句是 `warn(\"%s\", fn)`（`cksum.c:479`）：程序名、操作数、`strerror` 句子三段齐全"
+    );
     assert_eq!(status, 1, "任一操作数读不到就整体退 1");
 
     for path in [&first, &second] {
@@ -885,4 +889,120 @@ fn the_two_format_sentences_follow_the_hash_state() {
     let _ = fs::remove_file(&good);
     let _ = fs::remove_file(&switched);
     let _ = fs::remove_file(&unclosed);
+}
+
+/// 文件腿的三形逐字对参照件（`tmp/cksum-hash-state/readings.log` 的 f-1/f-3/c-9 三节）：
+/// 操作数读不到是 `<程序名>: <操作数>: <strerror>`，目录那一形是 `.: Is a directory`，
+/// 校验档打不开是 `<程序名>: Cannot read <路径>: <strerror>` 并退 1。三句都走 `err(3)`/`warn(3)`
+/// 那一条缝（`bin_support::warn_line` → `minix_sys::err_line`），不是把 `warn(3)` 当 `warnx(3)` 用。
+#[test]
+fn the_three_file_legs_carry_the_strerror_segment() {
+    let missing = scratch("fileleg-missing").to_str().unwrap().to_owned();
+    let here = ".";
+
+    // f-1：`-a md5 <读不到的档>`，摘要行一行不出、退 1。
+    let (out, status, err) = run(&["-a", "md5", &missing], b"");
+    assert_eq!(out, "", "读不到的那档不产行");
+    assert_eq!(
+        (status, err.as_str()),
+        (
+            1,
+            format!("cksum: {missing}: No such file or directory\n").as_str()
+        )
+    );
+
+    // f-3：目录当操作数——句子由 `strerror` 表给，不是自创的「Is a directory」文案。
+    let (_, status, err) = run(&["-a", "md5", here], b"");
+    assert_eq!((status, err.as_str()), (1, "cksum: .: Is a directory\n"));
+
+    // c-9：校验档本身打不开是 `err(1, "Cannot read %s", …)`——三段句子加退 1。
+    let (out, status, err) = run(&["-a", "md5", "-c", &missing], b"");
+    assert_eq!(out, "");
+    assert_eq!(
+        (status, err.as_str()),
+        (
+            1,
+            format!("cksum: Cannot read {missing}: No such file or directory\n").as_str()
+        )
+    );
+
+    // 不带 `-a` 的摘要档校验也走同一句（`err(1, …)` 在选项环之外，与算法无关）。
+    let (_, status, err) = run(&["-c", &missing], b"");
+    assert_eq!(
+        (status, err.as_str()),
+        (
+            1,
+            format!("cksum: Cannot read {missing}: No such file or directory\n").as_str()
+        )
+    );
+}
+
+/// 校验档里那一行的档读不到时，两条路的句子数不同：crc 那支在 `-w` 下打
+/// `<程序名>: <档>: <strerror>`（`cksum.c:432` 的 `warn("%s", filename)`），不带 `-w` 就一句不出；
+/// 摘要那支根本不打这一句（`access` 短路，`:424`）。参照件 h-13 与 f-1 两形的对比。
+#[test]
+fn the_crc_check_leg_warns_with_three_segments_only_under_w() {
+    let missing = scratch("crcwarn-missing").to_str().unwrap().to_owned();
+    let sums = scratch("crcwarn-sums");
+    fs::write(&sums, format!("3827948814 6 {missing}\n")).unwrap();
+    let sums_name = sums.to_str().unwrap().to_owned();
+
+    let (out, status, err) = run(&["-c", sums_name.as_str()], b"");
+    assert_eq!(
+        out,
+        format!("{missing}: FAILED\n"),
+        "不带 -w 时只有 FAILED 行"
+    );
+    assert_eq!((status, err.as_str()), (1, ""), "一句不报");
+
+    let (out, status, err) = run(&["-w", "-c", sums_name.as_str()], b"");
+    assert_eq!(out, format!("{missing}: FAILED\n"));
+    assert_eq!(
+        (status, err.as_str()),
+        (
+            1,
+            format!("cksum: {missing}: No such file or directory\n").as_str()
+        ),
+        "-w 下那一句也是三段形"
+    );
+
+    let _ = fs::remove_file(&sums);
+}
+
+/// crc 那条腿（不带 `-a` 的操作数）现在也走双生面，所以句子钉得住：C 在 `cksum.c:491-495`
+/// 打的是 `warn("%s", fn)`——程序名、操作数、`strerror` 三段。直写 `minix_sys::open` 的时候
+/// 这一形在宿主上只能钉住占位传输交回的 `Input/output error`（那是载体不是行为），换缝之后
+/// 参照件与本体交回同一句（A/B 232 形不一致 0）。
+#[test]
+fn the_crc_operand_leg_prints_the_same_three_segments_as_the_hash_leg() {
+    let missing = scratch("crcshape-missing").to_str().unwrap().to_owned();
+    let (out, status, err) = run(&[&missing], b"");
+    assert_eq!((out.as_str(), status), ("", 1), "读不到就没有校验和行");
+    assert_eq!(
+        err,
+        format!("cksum: {missing}: No such file or directory\n"),
+        "不带 -a 也是三段形"
+    );
+
+    // 目录那一形（参照件 f-3）：句子来自承载的 strerror 表，不是自创文案。
+    let (_, status, err) = run(&["."], b"");
+    assert_eq!((status, err.as_str()), (1, "cksum: .: Is a directory\n"));
+
+    // 好档与坏档混在一起：坏档占一个位置但不产行，好档按 argv 次序照出（参照件 f-2 的推论）。
+    let good = scratch("crcshape-good");
+    fs::write(&good, "abc\n").unwrap();
+    let good_name = good.to_str().unwrap().to_owned();
+    let (out, status, err) = run(&[&missing, &good_name], b"");
+    assert_eq!(
+        err,
+        format!("cksum: {missing}: No such file or directory\n")
+    );
+    assert_eq!(
+        out,
+        format!("1112837078 4 {good_name}\n"),
+        "abc 加换行的 POSIX CRC 与字节数（读数取自参照件：`cksum_ref <abc+换行>` 交回 `1112837078 4`）"
+    );
+    assert_eq!(status, 1);
+
+    let _ = fs::remove_file(&good);
 }
