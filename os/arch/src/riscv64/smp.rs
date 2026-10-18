@@ -270,3 +270,28 @@ impl SmpArch for Riscv64SmpArch {
         hartid as u32
     }
 }
+
+/// 本 hart SSIP 软件中断挂起位的直写原语（SD-41 SWI 臂）。
+///
+/// 特权规范卷 II：`sip.SSIP` 是 S 模式**可写**位——`csrs sip, 2` 置起、
+/// `csrc sip, 2` 清除，无需任何设备通道。这是本平台（aclint-mswi，
+/// 无 SSWI 设备）上唯一可用的 S 模式软中断通道：跨 hart 发送仍走
+/// SBI `send_ipi`/ACLINT SSWI（其 S 模式转换缺口见 K10 轮 3 取证，
+/// 撤钳后由 C2b 一并裁），本原语只服务「本 hart 自环」与「收到即
+/// 清」两处。
+///
+/// # Safety
+///
+/// CSR 写，仅动本 hart 的 SSIP 位，无其他副作用。
+pub unsafe fn raise_self_ssip() {
+    core::arch::asm!("csrs sip, {m}", m = const 2, options(nomem, nostack));
+}
+
+/// 清本 hart 的 SSIP 挂起位（SWI 臂的 ack 半）。
+///
+/// # Safety
+///
+/// CSR 写，仅动本 hart 的 SSIP 位。
+pub unsafe fn clear_self_ssip() {
+    core::arch::asm!("csrc sip, {m}", m = const 2, options(nomem, nostack));
+}

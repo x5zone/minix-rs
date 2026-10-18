@@ -1262,6 +1262,10 @@ const KERNEL_CALL_TRAP: u64 = 0;
 /// interrupt code 5 under the interrupt bit).
 #[cfg(target_arch = "riscv64")]
 const RISCV64_CAUSE_SUPERVISOR_TIMER: u64 = 5;
+/// riscv64 scause: Supervisor Software interrupt (privileged spec §5.2.1,
+/// interrupt code 1 under the interrupt bit) —— IPI 车道（SD-41 SWI 臂）。
+#[cfg(target_arch = "riscv64")]
+const RISCV64_CAUSE_SUPERVISOR_SOFTWARE: u64 = 1;
 /// riscv64 scause: Environment Call from U-mode (exception code 8).
 #[cfg(target_arch = "riscv64")]
 const RISCV64_CAUSE_ECALL_UMODE: u64 = 8;
@@ -1329,6 +1333,12 @@ pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::tr
         riscv64_timer_arm();
         return;
     }
+    if scause & RISCV64_SCAUSE_INTERRUPT != 0
+        && scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_SOFTWARE
+    {
+        riscv64_swi_arm();
+        return;
+    }
     riscv64_diag_panic(frame, scause, "kernel-leg trap");
 }
 
@@ -1380,6 +1390,10 @@ pub unsafe extern "C" fn riscv64_user_body(
         // would pollute uptime and never EOI a PLIC line).
         if scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_TIMER {
             riscv64_timer_arm();
+            return PARK_NONE;
+        }
+        if scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_SOFTWARE {
+            riscv64_swi_arm();
             return PARK_NONE;
         }
         return riscv64_diag_panic(frame, scause, "user-leg trap");
@@ -1713,6 +1727,45 @@ unsafe fn riscv64_pagefault_body(
 ///    controller claim — see the `dispatch_claimed_hardware_irq` note below),
 /// 3. quantum enforcement for this CPU's running process
 ///    (C proc.c:418-424).
+/// SD-41 SWI 臂（scause=1，Supervisor Software interrupt）：先清本 hart
+/// 的 CLINT msip 挂起位（ssip 对 S 模式只读，ack 必须写回 msip 存储
+/// 格），再在 BKL 继承/获取下排空本 CPU 的调度 IPI 数据。计数打印封顶
+/// 8（与 tf-guard 同纪律）；boot 自环自检（smp_init 尾一次性
+/// send→trap→本臂）给出可 grep 的执行记录行。取证边界：钳位期无
+/// producer，排空恒空——本臂先于撤钳落地，保证 SSI 不再误入诊断
+/// panic 或被当 tick 计数（SD-41 台账的 registered gap 之一就此闭）。
+#[cfg(target_arch = "riscv64")]
+fn riscv64_swi_arm() {
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+    static ACKS: AtomicU64 = AtomicU64::new(0);
+    static PRINTED: AtomicUsize = AtomicUsize::new(0);
+    let topo = minix_platform::platform_desc().cpu_topology();
+    let cpu = crate::current_cpu_id().index();
+    let _ = topo;
+    // SAFETY: CSR 写，仅清本 hart 的 SSIP 挂起位（特权规范许可的 S 模式
+    // 自清；本平台 aclint-mswi 无 SSWI 设备，CLINT msip 不可由 S 模式
+    // 依赖——见 arch 侧 clear_self_ssip 的契约注）。
+    unsafe {
+        minix_arch::riscv64::smp::clear_self_ssip();
+    }
+    let n = ACKS.fetch_add(1, AtomicOrd::AcqRel);
+    let acquired = crate::smp::bkl_lock_or_inherit();
+    {
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        let smp = crate::smp_state_with(&section);
+        let cur = crate::current_cpu_id();
+        while let Some((flags, _nr)) = smp.handle_sched_ipi(cur) {
+            let _ = flags; // 撤钳（C2b）前 flags 恒空；收到即消费，防积压
+        }
+    }
+    if PRINTED.fetch_add(1, AtomicOrd::AcqRel) < 8 {
+        use crate::kmess::{EarlyConsole, KernelConsole as Console};
+        Console::write_str("nk4c: swi-ack n=");
+        Console::write_hex(n + 1);
+        Console::write_str("\n");
+    }
+}
+
 fn riscv64_timer_arm() {
     crate::clock::local_tick(crate::clock::current_cpuid());
     // The riscv S-mode timer is a CPU-local interrupt (`sip.STIP`) that never
