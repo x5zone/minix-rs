@@ -43,7 +43,6 @@ use minix_types::{PhysBytes, VirBytes};
 use minix_types::{VM_BOOT_HANDOFF_VA, VmBootHandoff};
 use minix_boot::{KernelInfo, MemoryRegion};
 use minix_arch::paging::PageFlags;
-use minix_arch::paging::Paging as _;
 // `PhysAccess` is exercised only by the non-mock VM-loading path
 // (`access.frame_virt`, cfg'd out under `feature = "mock"`); a plain
 // import would be an unused-import error in mock builds.
@@ -588,67 +587,7 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
     root_page: PhysBytes,
     kern_huge: u64,
 ) {
-    // PD-22/SD-12 第一步：RX/RW 分界。三个链接脚本导出 `__data_start`
-    //（.data 节起点的 link-view VA）；换算成 PA 后，镜像段内按 4K 分片——
-    // 界下（text+rodata）RX 去 W、界上（data+bss）RW 去 X。镜像段外维持
-    // 原大块宽映射（本步只收内核文本的写权限，不动启动契约的其余面）。
-    //
-    // 静态核验（行定义前置）：内核非 PIE 静态链接、无运行期重定位；全树
-    // 无向 .text 取可变引用或运行期补丁的代码路径——text 段在运行期没有
-    // 合法写者，去 W 不损失任何能力（取证 grep 记录见本轮台账）。
-    // 分界标记住 .data 节首（三脚本 KEEP(*(.data.__data_start_marker))
-    // 钉位）——标记地址即 .data 起点，不需要任何链接脚本符号外泄，
-    // 一切消费方（含测试载体链接）自然可用。
-    #[unsafe(no_mangle)]
-    #[unsafe(link_section = ".data.__data_start_marker")]
-    static __DATA_START_MARKER: u64 = 0;
-    // 换算按符号值落域判定（三链接布局各异）：高半链接（riscv/x86，
-    // 符号值 ∈ [kv, kv+ks)）→ pa = va - kv + kp；恒等链接（aarch64，
-    // 符号值本身是镜像 PA）→ pa = va；都不在（mock 夹具替身符号的
-    // 宿主地址）→ 界=镜像起点＝全部镜像页落 RW 侧（保守，等价改动
-    // 前行为）。
-    let data_pa = {
-        let (kv, kp, ks) = (
-            kernel_info.kern_virt_base().0,
-            kernel_info.kern_phys_base().0,
-            kernel_info.kern_size(),
-        );
-        // 符号值取法 = PC 相对（lea/la/adrp），回避小代码模型下对高 VA
-        // 符号的 32S 绝对重定位越界（本轮真机链接实证）。
-        #[cfg(target_arch = "x86_64")]
-        let va = {
-            let v: u64;
-            // SAFETY: lea 只取地址不访存。手写 [rip+sym] 强制 PC32 重定位
-            //（x86-none 非 PIC 小模型下，sym 操作数形式会被 LLVM 降成
-            // 32S 绝对而越界——本轮真机链接实证）。
-            unsafe { core::arch::asm!("lea {}, [rip + {sym}]", out(reg) v, sym = sym __DATA_START_MARKER, options(nomem, nostack)) };
-            v
-        };
-        #[cfg(target_arch = "riscv64")]
-        let va = {
-            let v: u64;
-            // SAFETY: la 只取地址不访存。
-            unsafe { core::arch::asm!("la {}, {sym}", out(reg) v, sym = sym __DATA_START_MARKER, options(nomem, nostack)) };
-            v
-        };
-        // aarch64 恒等链接：符号值本身即镜像 PA，addr_of 读取即可
-        //（adrp+:lo12 模板参数复用在 LLVM 里非法——本轮编译实证）。
-        let va = core::ptr::addr_of!(__DATA_START_MARKER) as usize as u64;
-        if va >= kv && va < kv.wrapping_add(ks) {
-            va - kv + kp
-        } else if va >= kp && va < kp + ks {
-            va
-        } else {
-            kp
-        }
-    };
-
     let mut paging = P::new_from_page(root_page);
-    // SD12_PROBE（验证轮临时）：分段定位挂死点，过门即撤。
-    {
-        use minix_plat::{CurrentEarlyConsole as C, EarlyConsole as _};
-        C::write_str("nk4c: sd12 build enter\n");
-    }
 
     // Step 1: Identity mapping — VA = PA for the first 4GB of address space.
     // C: pg_identity(&kinfo) — pg_utils.c:162
@@ -709,93 +648,21 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
             };
             #[cfg(not(target_arch = "aarch64"))]
             let piece_flags = id_flags;
-            // SD-12 第一步：该大块若与镜像 PA 段重叠，只把「镜像域」细分成
-            // 4K 分片（RX/RW 按分界），域外前后段仍按原大块映射——绝不能把
-            // 整块（riscv 是 1GiB）退成 4K：26 万次 map 会耗尽 PT bump 且
-            // 错误被吞、页表残缺（本轮真机挂死实证）。
-            let img_lo = kernel_info.kern_phys_base().0;
-            let img_hi = img_lo + kernel_info.kern_size();
-            let ov_lo = piece_addr.max(img_lo) & !0xFFF;
-            let ov_hi = (piece_addr + piece_size).min(img_hi);
-            if ov_lo < ov_hi {
-                // 域前段（大块）
-                if piece_addr < ov_lo {
-                    #[allow(clippy::let_underscore_must_use)]
-                    let _ = paging.map_huge(
-                        VirBytes(piece_addr),
-                        PhysBytes(piece_addr),
-                        (ov_lo - piece_addr) as usize,
-                        piece_flags,
-                    );
-                }
-                // SD12_PROBE：pre 段完成后一行（分辨挂死在 map_huge(2MiB)
-                // 还是首个 4K map——验证轮临时，过门即撤）。
-                {
-                    use minix_plat::{CurrentEarlyConsole as C, EarlyConsole as _};
-                    C::write_str("nk4c: sd12 pre done\n");
-                }
-                // 镜像域（4K 分片，RX 界下 / RW 界上）
-                let mut page = ov_lo;
-                // SD12_PROBE：每 256 页一行进度（验证轮临时，过门即撤）。
-                let mut probe = 0u32;
-                while page < ov_hi {
-                    let flags = if page < data_pa {
-                        PageFlags::kernel_executable()
-                    } else {
-                        PageFlags::kernel_read_write()
-                    };
-                    #[allow(clippy::let_underscore_must_use)]
-                    let r = paging.map(VirBytes(page), PhysBytes(page), flags);
-                    if r.is_err() {
-                        use minix_plat::{CurrentEarlyConsole as C, EarlyConsole as _};
-                        C::write_str("nk4c: sd12 map ERR (see counters)\n");
-                    }
-                    if page % (0x1000 * 256) == 0 && probe < 8 {
-                        use minix_plat::{CurrentEarlyConsole as C, EarlyConsole as _};
-                        let mut hb = [0u8; 16];
-                        let mut v = page;
-                        for byte in hb.iter_mut().rev() {
-                            *byte = b"0123456789abcdef"[(v & 0xf) as usize];
-                            v >>= 4;
-                        }
-                        C::write_str("nk4c: sd12 page ");
-                        C::write_str(core::str::from_utf8(&hb).unwrap_or("?"));
-                        C::write_str("\n");
-                        probe += 1;
-                    }
-                    page += 0x1000;
-                }
-                // 域后段（大块）
-                if ov_hi < piece_addr + piece_size {
-                    #[allow(clippy::let_underscore_must_use)]
-                    let _ = paging.map_huge(
-                        VirBytes(ov_hi),
-                        PhysBytes(ov_hi),
-                        (piece_addr + piece_size - ov_hi) as usize,
-                        piece_flags,
-                    );
-                }
-            } else {
-                // Ignore errors — some ranges may not be backed by physical memory,
-                // but that's fine; the CPU won't access them.
-                //[SD19-gate] 恒等映射：无 backing 的区间属正常（map_huge 失败即跳过，紧邻注释已陈明）
-                #[allow(clippy::let_underscore_must_use)]
-                let _ = paging.map_huge(
-                    VirBytes(piece_addr),
-                    PhysBytes(piece_addr),
-                    piece_size as usize,
-                    piece_flags,
-                );
-            }
+            // Ignore errors — some ranges may not be backed by physical memory,
+            // but that's fine; the CPU won't access them.
+            //[SD19-gate] 恒等映射：无 backing 的区间属正常（map_huge 失败即跳过，紧邻注释已陈明）
+            #[allow(clippy::let_underscore_must_use)]
+            let _ = paging.map_huge(
+                VirBytes(piece_addr),
+                PhysBytes(piece_addr),
+                piece_size as usize,
+                piece_flags,
+            );
             piece_addr += piece_size;
         }
         addr = block_end;
     }
 
-    {
-        use minix_plat::{CurrentEarlyConsole as C, EarlyConsole as _};
-        C::write_str("nk4c: sd12 step1 done\n");
-    }
     // Step 2: Kernel high-address mapping.
     // C: pg_mapkernel() — pg_utils.c:186
     //
@@ -809,50 +676,17 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
     let kern_virt = kernel_info.kern_virt_base().0;
     let kern_phys = kernel_info.kern_phys_base().0;
     if kern_virt != kern_phys {
-        // SD-12 第一步：高半镜像段按 4K 分片——界下（text+rodata）RX 去 W、
-        // 界上（data+bss）RW 去 X（与 Step 1 的恒等别名同分界同权限）。
-        // BISECT：aarch64 暂不分片（SD12_BISECT：真机定谳其 4K 高半分片
-        // 致 boot 静默死，见本轮台账；riscv/x86 已实证）。
-        if cfg!(target_arch = "aarch64") {
-            let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
-            let mut offset = 0u64;
-            while offset < kernel_info.kern_size() {
-                paging
-                    .map_huge(
-                        VirBytes(kern_virt + offset),
-                        PhysBytes(kern_phys + offset),
-                        kern_huge as usize,
-                        kern_flags,
-                    )
-                    .expect("kernel map: map_huge failed — kernel image mismatch");
-                offset += kern_huge;
-            }
-        } else {
-        let kern_flags_rx = PageFlags::kernel_executable();
-        let kern_flags_rw = PageFlags::kernel_read_write();
+        let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
         let mut offset = 0u64;
-        let data_off = data_pa - kern_phys;
         while offset < kernel_info.kern_size() {
-            let flags = if offset < data_off {
-                kern_flags_rx
-            } else {
-                kern_flags_rw
-            };
-            paging.map(
-                VirBytes(kern_virt + offset),
-                PhysBytes(kern_phys + offset),
-                flags,
-            )
-            .expect("kernel map: map failed — kernel image mismatch");
-            offset += 0x1000;
-        }
+            paging.map_huge(
+                VirBytes(kern_virt + offset), PhysBytes(kern_phys + offset),
+                kern_huge as usize, kern_flags,
+            ).expect("kernel map: map_huge failed — kernel image mismatch");
+            offset += kern_huge;
         }
     }
 
-    {
-        use minix_plat::{CurrentEarlyConsole as C, EarlyConsole as _};
-        C::write_str("nk4c: sd12 step2 done\n");
-    }
     // Step 2b (§1.114, aarch64 only): map the device MMIO window into the
     // kernel high half (TTBR1) of the bootstrap root.
     //
