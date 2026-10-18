@@ -21,6 +21,7 @@
 
 extern crate alloc;
 
+pub mod dma;
 pub mod hooks;
 pub mod special;
 pub mod subdev;
