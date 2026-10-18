@@ -29,7 +29,9 @@
 extern crate alloc;
 
 pub mod client;
+pub mod driver;
 pub mod transport;
 
 pub use client::{BdevClient, Device, Major, TransferDirection};
+pub use driver::{Link, PlaneLink, transfer_type};
 pub use transport::{Destination, GrantIssuer, Reply, Transport, TransportError};

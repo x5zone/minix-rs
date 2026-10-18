@@ -39,6 +39,15 @@ pub struct Destination {
     /// Grant id exposing the caller's buffer (data lanes; else
     /// [`NO_GRANT`]).
     pub grant: i32,
+    /// Access mode of an open request (`mess_lbdev_lblockdriver_msg.access`).
+    pub access: i32,
+    /// Request flags of a transfer (`...flags`: force-write and friends).
+    pub flags: i32,
+    /// Endpoint the request ultimately came from (`...user`); the block
+    /// framework forwards it for a control that carries a caller identity.
+    pub user: i32,
+    /// The ioctl request code (`...request`); zero for every other request.
+    pub request: u64,
 }
 
 /// Grant id meaning "no buffer granted" (control requests, and transfers
@@ -48,7 +57,19 @@ pub const NO_GRANT: i32 = -1;
 impl Destination {
     /// A control destination: endpoint, type, minor, id; data lanes zeroed.
     pub const fn control(endpoint: i32, message_type: i32, minor: u32, id: i32) -> Self {
-        Destination { endpoint, message_type, minor, id, position: 0, bytes: 0, grant: NO_GRANT }
+        Destination {
+            endpoint,
+            message_type,
+            minor,
+            id,
+            position: 0,
+            bytes: 0,
+            grant: NO_GRANT,
+            access: 0,
+            flags: 0,
+            user: 0,
+            request: 0,
+        }
     }
 
     /// A data destination for one read/write transfer.
@@ -61,7 +82,39 @@ impl Destination {
         bytes: u32,
         grant: i32,
     ) -> Self {
-        Destination { endpoint, message_type, minor, id, position, bytes, grant }
+        Destination {
+            endpoint,
+            message_type,
+            minor,
+            id,
+            position,
+            bytes,
+            grant,
+            access: 0,
+            flags: 0,
+            user: 0,
+            request: 0,
+        }
+    }
+
+    /// The same destination with the transfer flags set.
+    pub const fn with_flags(mut self, flags: i32) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    /// The same destination with the open access mode set.
+    pub const fn with_access(mut self, access: i32) -> Self {
+        self.access = access;
+        self
+    }
+
+    /// The same destination as an ioctl: request code, grant and caller.
+    pub const fn as_ioctl(mut self, request: u64, grant: i32, user: i32) -> Self {
+        self.request = request;
+        self.grant = grant;
+        self.user = user;
+        self
     }
 }
 
