@@ -119,6 +119,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百七十九（A6b `SPLIT-CLOSE-HOST-VISIBILITY` 现查）：分不清的两件事分开之后就清楚了——**响应逻辑宿主测得到，载体造不出来**
+
+- **这一轮量什么**：批次三百三十把这条登记成「宿主腿看不见 `close` 失败这件事未修」。本轮去核「看不见」到底指什么，结论是这句话把两件事混成一件：**`close` 的号怎么被回应**（映射成哪条腿、报哪个档名、退几）是宿主**已经测得到**的；**造一次真的 `close` 失手**才是宿主做不到的。生产码一字未动，也没新造门。
+- **响应逻辑这一半早有成品的门，且是宿主跑的**。链条在 `os/commands/usr-bin/textfilter/src/bin/split.rs`：`support::SinkFailure::Close(code)` → `ChunkWrite::Close(code)`（`:185`），退码取号在 `:202`，而**报的档名是刚写完那一枚分片**而不是 `write`/`stdout` 之类的别名（`:213` 的 `ChunkWrite::Open(_) | ChunkWrite::Close(_) => path`），这正是 C 的形状——`newfile()` 里 `else if (close(ofd) != 0) err(1, "%s", fname);`，此时 `fname` 还是上一枚（`minix3/usr.bin/split/split.c:321-322`）。钉这两点的门：`src/bin/split.rs:406` 的 `the_sink_arms_land_on_their_own_chunk_arms`（三条 sink 臂各落到自己的 chunk 臂，防 `Close` 被并成 `Write`）与 `:420` 的 `the_two_write_arms_do_not_swap_their_labels`（`Write` 报流名、`Open`/`Close` 报档名，两形不许互换标签）。现跑读数：`cd os && cargo test --offline -j 1 -p minix-textfilter --bin split` → **10 passed / 0 failed**，两枚门都点名 `ok`。⇒ 「未修」这句若指响应逻辑，它不成立。
+- **载体那一半确实是宿主做不到的，而且原因很具体**：宿主这条腿的开档走 `std::fs::File`（`bin_support.rs:409-413` 的 `create_sink` 宿主面，`:430` 的 `append`），而 **`std::fs::File` 由 drop 关闭且不交回任何号**——std 没有「关闭并拿错误」的公开接口（`sync_all` 交回的是冲刷错，不是 `close` 错，两者不等价：ENOSPC 常挂在下刷上，但 close 失败还有别的来源）。所以宿主上写不出一次真的 `close` 失手。要写得出来只有两条路，都不在本板射程：① 给宿主腿引一个能调 `close(2)` 的外部依赖（现查本 workspace **没有 `libc`**：`grep -rn libc os/*/*/Cargo.toml` 零命中，`os/Cargo.lock` 在这棵树里也不存在）——新增外部依赖要动依赖面与锁，按 §2 属共读共享件，得先登记；② 在 `os/libs/` 造一枚宿主 `close` 缝——那是 B 板领地。**两条都不划算**，因为出货那一侧不需要它们。
+- **出货那一侧本来就把 `close` 的号交回并报了**：真机腿 `bin_support.rs:467-471` 的 `seal()` 走 `minix_sys::close(self.fd).map_err(SinkFailure::Close)`（`:477` 的 `finish` 同形），`close` 失败会带档名报出去——这一格由 `SPLIT-CLOSE-ERRLEG` 闭合（板上第 1 节「不在本板的已闭项」列着它），本轮复核到源码头对得上（`split.c:321-322` 与上面那条注释链一致）。
+- **所以这条账怎么结**：按 A 板 A6 行自己写的口径——「宿主看不见的那几形要按判据写明，不硬造门」。判据已写明如上：响应逻辑有两枚宿主门；载体的不可造有具体原因（std 无接口）与两条越界出路；真机面已闭。现在补一枚门只会钉住我为了造错误而搭的假缝（比如塞一个可注入的 closer 让宿主「看起来」报了 close 错），那测的是我自己的注入件，不是 `split` 的行为——与批次三百七十三记的那条同类教训（门跑绿不等于门有牙）。⇒ A6b 翻 `✅`。
+- **另记一件顺带查到的、值得单独一笔的事**：宿主 `seal()` 目前是 `Ok(())`（`bin_support.rs:439-441`，其注释也承认与 `finish` 同一条已登记差异），也就是说**宿主跑出来的 `split` 分片，其最后一枚的 close 错被无声吞掉**。这在真机不会发生（走真机腿），但在宿主 A/B 对账时会造成「宿主侧多产出一片而参照件报错」的假分叉——`SPLIT-N-STDIN-FSTAT-SIZE` 那枚读数件（批次三百七十八）如果将来在宿主跑同一形，就会撞上它。处理方式不是注入假 closer，而是**给宿主腿加一次显式冲刷并把冲刷错按 `Close` 报**（`std::io::Write::flush` 可达、且 ENOSPC 类错误在冲刷时就会浮现，正是 C 在 `close` 里拿到的那一类），这一改动会同时影响 `append`/`seal`/`finish` 三处与既有门，属单独一条账，登记为 `SPLIT-HOST-FLUSH-AT-SEAL`，按一次一条不在本笔动。
+- **三件套**：核实命令 `grep -n "SinkFailure::Close" os/commands/usr-bin/textfilter/src/bin/split.rs os/commands/usr-bin/textfilter/src/bin_support.rs`、`sed -n '400,436p' os/commands/usr-bin/textfilter/src/bin/split.rs`、`sed -n '427,480p' os/commands/usr-bin/textfilter/src/bin_support.rs`、`sed -n '315,325p' minix3/usr.bin/split/split.c`、`grep -rn libc os/*/*/Cargo.toml`（零命中即「宿主造不出」那条出路的现状依据）、`cd os && cargo test --offline -j 1 -p minix-textfilter --bin split`；核实日 `2026-10-18`；基线快照 `28250fe6f`。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim UNIQ-WRITE-ERRLEG qoder`（A6c，拆行后第三枚）。
+
 ## 批次三百七十八（A6 第一枚 `SPLIT-N-STDIN-FSTAT-SIZE`）：把「取决于 Minix 管道 fstat」追到可证的边界——PFS 不在这棵树里，于是这形的出路只有一条：带上真机窗的现跑件
 
 - **这一轮量什么**：批次三百三十登记这条时说「真值取决于 Minix 自己管道 `fstat` 的读数」，然后就停在“登记保留”。本轮把这句话追到底：到底能不能在仓库内判出来。结论是**判不出来，而且现在说得清为什么判不出来**；顺带把 A1 那套宿主参照件补位面补到 `split` 能编，并交出一枚到真机上可直接跑的读数件。生产码一字未动。
