@@ -1,4 +1,5 @@
-//! `cksum -a` 的摘要本体：八枚算法里已经接上六枚——MD4、MD5、SHA1、SHA256、SHA384、SHA512。
+//! `cksum -a` 的摘要本体：C 的 `hashes[]` 表里那八枚全部接齐——MD2、MD4、MD5、RMD160、
+//! SHA1、SHA256、SHA384、SHA512。
 //!
 //! 其中两族**不在这里重写**，因为本仓已经有它们：`os/libs/minix-crypt` 的
 //! [`md5`](minix_crypt::md5) 与 [`sha1`](minix_crypt::sha1)，两份的真源同样是本仓 C 原件
@@ -12,8 +13,11 @@
 //!   `SHA256_Transform` 与 `SHA512_Transform`（SHA384 与 SHA512 共用后一颗芯，只换初值
 //!   并截去尾部 16 字节，`sha2.c` 自己就是这么写的）。
 //!
-//! 还差的只有 `md2` 与 `rmd160`（真源 `minix3/lib/libc/hash/md2/md2.c` 与
-//! `minix3/common/lib/libc/hash/rmd160/rmd160.c`），在 `CKSUM-HASH-DIGEST` 的第三片里。
+//! 最后两枚是真源各一份的独立结构：MD2 按 `minix3/lib/libc/hash/md2/md2.c`（它的 256 项 S 表
+//! 与 18 轮混淆步是 RFC 1319 那一套，源文件注释自称 `cut-n-pasted from rfc1319`；它不按
+//! 「64 字节块 + 末尾比特数」的骨架走，而是 32 字节一块、先算校验和再随消息一起折叠），
+//! RMD160 按 `minix3/common/lib/libc/hash/rmd160/rmd160.c`（左右两条线各 80 轮，同族里只有
+//! 它的右线要把函数组**倒过来**用而常数组不倒，见下表注释）。
 //!
 //! 把多族接进同一道缝的收益不只是少几份实现：**向量门从此一次覆盖全部已接的族**，而
 //! `minix-crypt` 那两份自带的判据并不等重——`sha1.rs` 有 `test_sha1_vectors`，`md5.rs` 一枚
@@ -82,6 +86,55 @@ static MD4_SHIFT: [u32; 48] = [
 
 /// `md4c.c` 的 `MD4Init` 四枚初值。它与 MD5 的四枚同值，两份 C 源各自写了一遍，这里也写两份。
 static MD4_H0: [u32; 4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+
+// 下面五张表全部由 `tmp/cksum-384/gen_tables3.py` 从 C 源机械摘出：MD2 的 S 表取自
+// `minix3/lib/libc/hash/md2/md2.c:51-70`，RMD160 的四张表取自该文件 160 条 `R(...)` 行的
+// 第 8、9 个实参（轮移量与消息字下标）。生成器同时核对了「每 16 轮换一次函数/常数组」
+// 与「目标寄存器按 a,e,d,c,b 循环」两件事在**两条线上都成立**，所以下面只按 `i / 16`
+// 取组号、按 `(-i) mod 5` 取目标寄存器，不必再各抄一张 80 项的组号表。
+// 右线唯一与直觉相反的地方：它的**函数**组是倒着走的（第 0..15 轮用 `F4`、
+// 最后 16 轮用 `F0`），而**常数**组正着走（`KK0 → KK4`）——这是从 `rmd160.c` 的行里
+// 读出来的，不是从教科书记的。
+/// `md2.c:51-70` 那张 256 项 S 表（源文件注释自称 `cut-n-pasted from rfc1319`）。
+static MD2_S: [u8; 256] = [
+    41, 46, 67, 201, 162, 216, 124, 1, 61, 54, 84, 161, 236, 240, 6, 19, 98, 167, 5, 243, 192, 199,
+    115, 140, 152, 147, 43, 217, 188, 76, 130, 202, 30, 155, 87, 60, 253, 212, 224, 22, 103, 66,
+    111, 24, 138, 23, 229, 18, 190, 78, 196, 214, 218, 158, 222, 73, 160, 251, 245, 142, 187, 47,
+    238, 122, 169, 104, 121, 145, 21, 178, 7, 63, 148, 194, 16, 137, 11, 34, 95, 33, 128, 127, 93,
+    154, 90, 144, 50, 39, 53, 62, 204, 231, 191, 247, 151, 3, 255, 25, 48, 179, 72, 165, 181, 209,
+    215, 94, 146, 42, 172, 86, 170, 198, 79, 184, 56, 210, 150, 164, 125, 182, 118, 252, 107, 226,
+    156, 116, 4, 241, 69, 157, 112, 89, 100, 113, 135, 32, 134, 91, 207, 101, 230, 45, 168, 2, 27,
+    96, 37, 173, 174, 176, 185, 246, 28, 70, 97, 105, 52, 64, 126, 15, 85, 71, 163, 35, 221, 81,
+    175, 58, 195, 92, 249, 206, 186, 197, 234, 38, 44, 83, 13, 110, 133, 40, 132, 9, 211, 223, 205,
+    244, 65, 129, 77, 82, 106, 220, 55, 200, 108, 193, 171, 250, 36, 225, 123, 8, 12, 189, 177, 74,
+    120, 136, 149, 139, 227, 99, 232, 109, 233, 203, 213, 254, 59, 0, 29, 57, 242, 239, 183, 14,
+    102, 88, 208, 228, 166, 119, 114, 248, 235, 117, 75, 10, 49, 68, 80, 180, 143, 237, 31, 26,
+    219, 153, 141, 51, 159, 17, 131, 20,
+];
+
+static RMD_LEFT_WORD: [usize; 80] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5,
+    2, 14, 11, 8, 3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12, 1, 9, 11, 10, 0, 8, 12, 4,
+    13, 3, 7, 15, 14, 5, 6, 2, 4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13,
+];
+
+static RMD_LEFT_SHIFT: [u32; 80] = [
+    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8, 7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15,
+    9, 11, 7, 13, 12, 11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5, 11, 12, 14, 15, 14,
+    15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12, 9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6,
+];
+
+static RMD_RIGHT_WORD: [usize; 80] = [
+    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12, 6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12,
+    4, 9, 1, 2, 15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13, 8, 6, 4, 1, 3, 11, 15, 0, 5,
+    12, 2, 13, 9, 7, 10, 14, 12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11,
+];
+
+static RMD_RIGHT_SHIFT: [u32; 80] = [
+    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6, 9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12,
+    7, 6, 15, 13, 11, 9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5, 15, 5, 8, 11, 14, 14,
+    6, 14, 6, 9, 12, 9, 12, 5, 15, 8, 8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11,
+];
 
 /// `sha2.c` 的 `K512[80]`。
 static SHA512_K: [u64; 80] = [
@@ -462,6 +515,183 @@ fn md4(data: &[u8]) -> [u8; 16] {
     digest
 }
 
+/// MD2 的 32 字节一块折叠（`md2.c` 的 `MD2Transform`）。状态里 `X[0..16)` 是链接值、
+/// `X[16..32)` 是正在 accumulation 的输入块、`X[32..48)` 是两者的异或；`index` 初值是 16 而不是
+/// 0——前 16 格住着上一块的链接值，这一步错了 MD2 就变成另一个函数。
+struct Md2 {
+    x: [u8; 48],
+    checksum: [u8; 16],
+    index: usize,
+}
+
+impl Md2 {
+    fn new() -> Self {
+        Self {
+            x: [0u8; 48],
+            checksum: [0u8; 16],
+            index: 16,
+        }
+    }
+
+    /// `MD2Update`：填满 32 字节就折叠，折叠把写指针拉回 16（不是 0）。
+    fn feed(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.x[self.index] = *byte;
+            self.index += 1;
+            if self.index == 32 {
+                self.transform();
+            }
+        }
+    }
+
+    fn transform(&mut self) {
+        let mut last = self.checksum[15];
+        for j in 0..16 {
+            self.x[32 + j] = self.x[j] ^ self.x[16 + j];
+            self.checksum[j] ^= MD2_S[usize::from(self.x[16 + j] ^ last)];
+            last = self.checksum[j];
+        }
+        let mut t = 0usize;
+        for j in 0..18 {
+            for k in 0..48 {
+                let value = self.x[k] ^ MD2_S[t];
+                self.x[k] = value;
+                t = usize::from(value);
+            }
+            t = (t + j) % 256;
+        }
+        self.index = 16;
+    }
+
+    /// `MD2Final`：先按缺几个字节就补几个「值为缺数的字节」，再把**当前**校验和整个喂进去；
+    /// 最后交回 `X[0..16)`。补码长度落在 1..=16，因为写指针从不在 0。
+    fn finish(mut self) -> [u8; 16] {
+        let padlen = 32 - self.index;
+        let pad = [padlen as u8; 16];
+        self.feed(&pad[..padlen]);
+        let checksum = self.checksum;
+        self.feed(&checksum);
+        let mut digest = [0u8; 16];
+        digest.copy_from_slice(&self.x[..16]);
+        digest
+    }
+}
+
+/// `rmd160.c` 的 `H0`…`H4`（与 MD5/MD4 的四枚同值，第五枚与 SHA1 那族的第五枚同值——
+/// 三份源文件各写了一遍，这里也写三份，见各自的注释）。
+static RMD_H0: [u32; 5] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0];
+
+/// 左线五组的常数 `K0`…`K4`。
+static RMD_K: [u32; 5] = [0x00000000, 0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xa953fd4e];
+
+/// 右线五组的常数 `KK0`…`KK4`：**与左线不同序**，而且右线的函数组是倒着用的（见上表注释）。
+static RMD_KK: [u32; 5] = [0x50a28be6, 0x5c4dd124, 0x6d703ef3, 0x7a6d76e9, 0x00000000];
+
+/// `rmd160.c` 的五个布尔函数（左线按组号 `i / 16` 顺着用，右线倒着用）。
+fn rmd_f(group: usize, x: u32, y: u32, z: u32) -> u32 {
+    match group {
+        0 => x ^ y ^ z,
+        1 => (x & y) | (!x & z),
+        2 => (x | !y) ^ z,
+        3 => (x & z) | (y & !z),
+        _ => x ^ (y | !z),
+    }
+}
+
+/// 一条线 80 轮（`rmd160.c` 的 `R` 宏：`a = ROL(s, a + F(b,c,d) + x[r] + K) + e; c = ROL(10, c);`）。
+/// 目标寄存器按 `a,e,d,c,b` 循环，等价于数组下标 `(-i) mod 5`；三个操作数是它后面三个、
+/// 末尾加的是再后面那个。左线用常数表 `K`、函数组顺走；右线用 `KK`、函数组倒走。
+fn rmd160_line(
+    state: &[u32; 5],
+    words: &[u32; 16],
+    order: &[usize; 80],
+    shifts: &[u32; 80],
+    constants: &[u32; 5],
+    reversed: bool,
+) -> [u32; 5] {
+    let mut r = *state;
+    for i in 0..80 {
+        let (word, shift) = (order[i], shifts[i]);
+        let group = i / 16;
+        let target = (5 - i % 5) % 5;
+        let f_group = if reversed { 4 - group } else { group };
+        let mixed = rmd_f(
+            f_group,
+            r[(target + 1) % 5],
+            r[(target + 2) % 5],
+            r[(target + 3) % 5],
+        );
+        r[target] = r[target]
+            .wrapping_add(mixed)
+            .wrapping_add(words[word])
+            .wrapping_add(constants[group])
+            .rotate_left(shift)
+            .wrapping_add(r[(target + 4) % 5]);
+        let third = (target + 2) % 5;
+        r[third] = r[third].rotate_left(10);
+    }
+    r
+}
+
+/// RMD160 的一枚块变换：左右两条线各 80 轮，最后按下式合并（`rmd160.c` 的
+/// `t = state[1] + cc + d; …` 那六行）。两条线各自把「本线的寄存器组」加回**初始**状态，
+/// 所以合并式里出现的六个值是「新左五元组、新右五元组与旧状态」三者混用的——照抄源文件。
+fn rmd160_transform(state: &mut [u32; 5], block: &[u8]) {
+    let mut words = [0u32; 16];
+    for (index, slot) in words.iter_mut().enumerate() {
+        *slot = u32::from_le_bytes(block[index * 4..index * 4 + 4].try_into().unwrap());
+    }
+
+    let l = rmd160_line(
+        state,
+        &words,
+        &RMD_LEFT_WORD,
+        &RMD_LEFT_SHIFT,
+        &RMD_K,
+        false,
+    );
+    let r = rmd160_line(
+        state,
+        &words,
+        &RMD_RIGHT_WORD,
+        &RMD_RIGHT_SHIFT,
+        &RMD_KK,
+        true,
+    );
+
+    // 合并那六行的两个加数**来自不同的线**：`t = state[1] + cc + d;` 里的 `cc` 是左线存进
+    // `aa`…`ee` 的第三个寄存器，`d` 是右线当前的第四个——源文件先跑完左线把结果存档，再把
+    // `a`…`e` 重新装成初始状态跑右线。把两者的下标对调不会报错，只会换一个摘要：本仓第一次
+    // 跑空输入那形就是这样错的，被 `rmdtest.c` 第一条抓出来。
+    let old = *state;
+    state[0] = old[1].wrapping_add(l[2]).wrapping_add(r[3]);
+    state[1] = old[2].wrapping_add(l[3]).wrapping_add(r[4]);
+    state[2] = old[3].wrapping_add(l[4]).wrapping_add(r[0]);
+    state[3] = old[4].wrapping_add(l[0]).wrapping_add(r[1]);
+    state[4] = old[0].wrapping_add(l[1]).wrapping_add(r[2]);
+}
+
+/// MD2 的 16 字节摘要。
+fn md2(data: &[u8]) -> [u8; 16] {
+    let mut context = Md2::new();
+    context.feed(data);
+    context.finish()
+}
+
+/// RMD160 的 20 字节摘要：块长 64、末尾比特数记 8 字节**小端**（`RMD160Final` 的
+/// `PUT_64BIT_LE`），状态按小端摊开——与 MD5 同一条填充规则，因此共用 [`feed_blocks`]。
+fn rmd160(data: &[u8]) -> [u8; 20] {
+    let mut state = RMD_H0;
+    feed_blocks(data, 64, Counter::Le64, &mut |block| {
+        rmd160_transform(&mut state, block);
+    });
+    let mut digest = [0u8; 20];
+    for (index, word) in state.iter().enumerate() {
+        digest[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    digest
+}
+
 /// C 的 `End`（`mdXhl.c:44-66`、`hashhl.c` 的同名函数）排版摘要的那一步：逐字节取高
 /// 四位再取低四位，查 `0123456789abcdef`，**小写**。大写的那一份只出现在报文头的算法
 /// 名里（`cksum.c` 的 `hash->hashname`），别把两处混成一种。
@@ -475,14 +705,16 @@ fn hex(digest: &[u8]) -> String {
     text
 }
 
-/// 已经接了摘要本体的算法。名字用 C 的 `hashes[]` 表里 `hashname` 那一列（大写）来认，
-/// 因为选择半已经把用户输入归一成它了（`src/cksum.rs` 的 `crypto_hashname`）。
-/// 只剩 `md2` 与 `rmd160` 两枚还在这个枚举之外（`CKSUM-HASH-DIGEST` 的第三片）：薄壳拿到
-/// `None` 才保留自己的占位报文，而不是印一枚空输入的摘要冒充结果。
+/// C 的 `hashes[]` 表里那八枚算法（`minix3/usr.bin/cksum/cksum.c:120-144`）。**全仓唯一的
+/// 名字表**：`-a` 的匹配、`MD5 mutually exclusive with sum` 那句里的名字、以及报文头
+/// `MD5 (file) = …` 都从这里取，所以「选没选中算法」与「这一族能不能算」在类型上就是同一件事
+///——不存在「认得名字但算不出」的中间态，薄壳因此不可能印一枚空输入的摘要冒充结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Algo {
+    Md2,
     Md4,
     Md5,
+    Rmd160,
     Sha1,
     Sha256,
     Sha384,
@@ -490,26 +722,48 @@ pub enum Algo {
 }
 
 impl Algo {
-    /// `hashname` → 已接本体的算法；认不出的一律 `None`（包括那五枚没接的，也包括
-    /// `crc`/`old1`/`old2` 这种非摘要名字——它们根本不该走到这条缝上）。
+    /// `hashname` → 算法。**大小写不敏感**：C 的 `case 'a'` 用
+    /// `strcasecmp(hashes[i].hashname, optarg)`（`cksum.c:201-207`），所以 `-a md5`、`-a MD5`、
+    /// `-a Md5` 在 C 里是同一个入口。全仓只有这一张名字表——`src/cksum.rs` 的 `-a` 腿、诊断里
+    /// 那句大写的名字、以及报文头都从这里出；两处各抄一份的话，「哪一份是真的」就又回来了。
     pub fn from_hashname(hashname: &str) -> Option<Algo> {
-        match hashname {
-            "MD4" => Some(Algo::Md4),
-            "MD5" => Some(Algo::Md5),
-            "SHA1" => Some(Algo::Sha1),
-            "SHA256" => Some(Algo::Sha256),
-            "SHA384" => Some(Algo::Sha384),
-            "SHA512" => Some(Algo::Sha512),
-            _ => None,
+        [
+            Algo::Md2,
+            Algo::Md4,
+            Algo::Md5,
+            Algo::Rmd160,
+            Algo::Sha1,
+            Algo::Sha256,
+            Algo::Sha384,
+            Algo::Sha512,
+        ]
+        .into_iter()
+        .find(|algo| algo.hashname().eq_ignore_ascii_case(hashname))
+    }
+
+    /// C 的 `hashes[]` 表里 `hashname` 那一列（大写那一份）。诊断句子与缺省报文头用的都是它
+    ///（`cksum.c:231-234` 的 `warnx("%s mutually exclusive with sum", hash->hashname)`）。
+    pub fn hashname(self) -> &'static str {
+        match self {
+            Algo::Md2 => "MD2",
+            Algo::Md4 => "MD4",
+            Algo::Md5 => "MD5",
+            Algo::Rmd160 => "RMD160",
+            Algo::Sha1 => "SHA1",
+            Algo::Sha256 => "SHA256",
+            Algo::Sha384 => "SHA384",
+            Algo::Sha512 => "SHA512",
         }
     }
 
     /// 小写十六进制的那一行摘要正文，长度是 `2 * 摘要字节数`。
     pub fn hex_digest(self, data: &[u8]) -> String {
         match self {
+            Algo::Md2 => hex(&md2(data)),
             Algo::Md4 => hex(&md4(data)),
             Algo::Md5 => hex(&md5(data)),
             Algo::Sha1 => hex(&sha1(data)),
+            Algo::Rmd160 => hex(&rmd160(data)),
             Algo::Sha256 => hex(&sha256(data)),
             Algo::Sha384 => hex(&sha384(data)),
             Algo::Sha512 => hex(&sha512(data)),
@@ -519,10 +773,10 @@ impl Algo {
 
 #[cfg(test)]
 mod tests {
-    use super::{Algo, hex, md4, md5, sha1, sha256, sha384, sha512};
+    use super::{Algo, hex, md2, md4, md5, rmd160, sha1, sha256, sha384, sha512};
 
     /// 本模块的门只认两类出处：仓库里的 C 期望值文件，以及**用本仓 C 原件编出来的参照件**
-    /// 的读数（配方记在 `rewrite-notes/18-stage-commands/todo.md` 批次三百八十四与三百八十五；
+    /// 的读数（配方记在 `rewrite-notes/18-stage-commands/todo.md` 批次三百八十四、三百八十五与三百八十六；
     /// 参照件先复现了下面这些仓库内期望值——`md5test-out`/`sha1test-out`/`sha1test2-out`、
     /// `md4test.c` 那七条、`t_sha2.c` 那两张表——才被用来出别的长度上的读数）。
     /// 宿主 libc 或宿主 OpenSSL 的任何哈希实现都不作真值。
@@ -923,6 +1177,225 @@ mod tests {
         );
     }
 
+    /// 最后两族的块边界读数（`md2` 与 `rmd160`）。MD2 的「块」是 32 字节、且末尾还要再折进
+    /// 16 字节校验和，所以它的边界是 15/16/17、31/32/33、47/48/49 那一组；RMD160 与 MD5 同一条
+    /// 填充规则，55/56/57 与 63/64/65 那两组照用。一张表把两种块长一起取，是因为
+    /// 「补码长度恰好等于缺的字节数」这件事在 MD2 上是 1..=16、在 64 字节族上是 1..=56——
+    /// 两个范围错一个都不报错，只会换一个摘要。
+    const VECTORS_TAIL: &[(usize, &str, &str)] = &[
+        (
+            0,
+            "8350e5a3e24c153df2275c9f80692773",
+            "9c1185a5c5e9fc54612808977ee8f548b2258d31",
+        ),
+        (
+            1,
+            "32ec01ec4a6dac72c0ab96fb34c0b5d1",
+            "0bdc9d2d256b3ee9daae347be6f4dc835a467ffe",
+        ),
+        (
+            3,
+            "da853b0d3f88d99b30283a69e6ded6bb",
+            "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc",
+        ),
+        (
+            15,
+            "879f1ddf42343b52e24e125a0f341b2f",
+            "da5bb9bb038e9a19345f51fa09687ba5a65c1a26",
+        ),
+        (
+            16,
+            "7f17759865db3f1cd4f77daa7b203a72",
+            "b82fdad53d6b15ed6c9eee1f5efd6a223ac762eb",
+        ),
+        (
+            17,
+            "1dad5ac3d40d6d941ba781a6ef3e5dfe",
+            "6ce79bb3b6d8d55522cbeb3b5194dad0053f6a79",
+        ),
+        (
+            31,
+            "e652e240b56075db2a006652a7351dd0",
+            "5405faeba95403c669288bea4eb1959fdc528c61",
+        ),
+        (
+            32,
+            "658390b7b7a6fbd1d86a820d8787a8e1",
+            "6091165d09650c4a59c5d5b5646992a12886c51e",
+        ),
+        (
+            33,
+            "b28343990d2b602363dd30992c729349",
+            "f85c0b6abf96e62f14149d2cd2e140da9cac0094",
+        ),
+        (
+            47,
+            "d4c57c25bac72da7c9434ebd7d6e9a93",
+            "903049b5b68a75703c7cbf4279e2797ab6054482",
+        ),
+        (
+            48,
+            "b69100212e9f0ad816852e0a8f8f57e8",
+            "b1bc0ab0dd5b9d000dc8e12b5c3026a10cbfe2eb",
+        ),
+        (
+            49,
+            "20d3ef47cf3a984a67ab247390b43606",
+            "e1930d52eeb588b95bf7064347c719340ebcdc42",
+        ),
+        (
+            55,
+            "c69942e2b09034f44f00badb84fa2d93",
+            "75f6e327c514be052bdd410fdc0f6bed2e703249",
+        ),
+        (
+            56,
+            "52cea32a938fe11167af0c14eb824482",
+            "056b3f24e189536f8819b8e6be02a4376288de08",
+        ),
+        (
+            57,
+            "9ce0ec64745cddfdd11cde24d67406e0",
+            "34a7a407763c224a3a9c8be376d3fbedb853d367",
+        ),
+        (
+            63,
+            "f54b7cd8a0598976a44138eb836e7f60",
+            "88d3b31ea17bd3487da4352d8d44e72843f4c112",
+        ),
+        (
+            64,
+            "dfa7b1d0481876a8902e22edbdae6503",
+            "c5c50e8d87bdc081dd5c2c1e6dbf541e8f502416",
+        ),
+        (
+            65,
+            "5d27d6854dda5d309da354fc96acce68",
+            "4bc74cbe399ab68263d76278f0e4bc341696f4ea",
+        ),
+        (
+            111,
+            "db7bb40da17ef36616fea12dc4df38a2",
+            "0464125dd495e65551867f9a106ebdbf63fdffea",
+        ),
+        (
+            112,
+            "54cee6c6c675e50e7f736833dc479f17",
+            "906d6edba6ed56e6d6e44456a7fffff4ccdddad6",
+        ),
+        (
+            119,
+            "123714d861789dd37ed88b6ff62bafc5",
+            "4db8e511326bd50148834c0b8edc61b2a123f114",
+        ),
+        (
+            120,
+            "79e8b570be5d506b33fd70a6747cfffe",
+            "25c3b35237a91a73093a0b82142c1789e7f39868",
+        ),
+        (
+            127,
+            "af72f8dedd211bddeb9bf299f0628685",
+            "c2210f16f11f40cfb6eb660f39434cad7b889f14",
+        ),
+        (
+            128,
+            "f1c82e64f50236da95c6c618c7fca169",
+            "b217edb651754da3f74fa62b9f456575fa64988b",
+        ),
+        (
+            129,
+            "657c06f81ce10dc88ae5e075a2d9bd08",
+            "5c7857de1bc7d0a144e4597766c2214b58c5f53a",
+        ),
+        (
+            247,
+            "c73ce70dd56a0de57a0dac032a3958f6",
+            "775b1ec7c35e62c621a9c86ba71c1f16921411d5",
+        ),
+        (
+            248,
+            "43abc86913912acd721d675c85895f0e",
+            "b64ac4576de1dfb605908f6807f33a7c668918fe",
+        ),
+        (
+            1000,
+            "0b856b8132a9fc1c126e91198fa3c057",
+            "05cb46d08ac400a31a37844dcccf9811c68c3d1a",
+        ),
+        (
+            1024,
+            "f6ea4c6e7b34e714d89ee04a10db2f91",
+            "7120c2405e6fbf44b791f71ac4bf322f8cdcbdf7",
+        ),
+        (
+            1025,
+            "a049f1aae1f5b610875570dc43610015",
+            "023b7d84dfdbc86f3de4f2482c40eded0b631654",
+        ),
+        (
+            1152,
+            "6a2e7bcc14b5033ca29373fe5156758f",
+            "96fe50949dc1f41eeefb98996d6dc96008a93cd2",
+        ),
+    ];
+
+    #[test]
+    fn md2_and_rmd160_match_the_reference_at_their_own_block_boundaries() {
+        for (length, expected_md2, expected_rmd160) in VECTORS_TAIL {
+            let data = payload(*length);
+            assert_eq!(hex(&md2(&data)), *expected_md2, "md2 长度 {length}");
+            assert_eq!(
+                hex(&rmd160(&data)),
+                *expected_rmd160,
+                "rmd160 长度 {length}"
+            );
+        }
+    }
+
+    /// 仓库内的 RMD160 期望值：`minix3/crypto/external/bsd/openssl/dist/crypto/ripemd/rmdtest.c:85-103`
+    /// 那八条（输入串与 MD5/MD4 的套件同源，最后一行这里是**九十**个数字字符，比 MD5 那七行的
+    /// 八十个多十个——各文件的套件本来就不完全相同，不能一把梳子推过去）。参照件在出别的读数
+    /// 之前先把这八条逐条比过（`tmp/cksum-384/gen_vectors3.py`，八条全合）。
+    #[test]
+    fn rmd160_matches_the_vendored_suite() {
+        for (text, expected) in [
+            ("", "9c1185a5c5e9fc54612808977ee8f548b2258d31"),
+            ("a", "0bdc9d2d256b3ee9daae347be6f4dc835a467ffe"),
+            ("abc", "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc"),
+            ("message digest", "5d0689ef49d2fae572b881b123a85ffa21595f36"),
+            (
+                "abcdefghijklmnopqrstuvwxyz",
+                "f71c27109c692c1b56bbdceb5b9d2865b3708dbc",
+            ),
+            (
+                "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+                "12a053384a9c0c88e405a06c27dcf49ada62eb2b",
+            ),
+            (
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+                "b0e20b6e3116640286ed3a87a5713079b21f5189",
+            ),
+            (
+                "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+                "9b752e45573d4b39f4dbd3323cab82bf63326bfb",
+            ),
+        ] {
+            assert_eq!(hex(&rmd160(text.as_bytes())), expected, "rmd160 {text:?}");
+        }
+    }
+
+    /// 一百万个 `a` 在最后两族上的读数（同一条输入，八族全部横向可比）。
+    #[test]
+    fn the_megabyte_input_covers_the_last_two_families_too() {
+        let million = alloc::vec![b'a'; 1_000_000];
+        assert_eq!(hex(&md2(&million)), "8c0a09ff1216ecaf95c8130953c62efd");
+        assert_eq!(
+            hex(&rmd160(&million)),
+            "52783243c1697bdbe16d37f97f68f08325dc1528"
+        );
+    }
+
     /// 仓库里的期望值文件：`md5test-in` 的七行逐行去换行后对应 `md5test-out` 的七串
     /// （长度 0/1/3/14/26/62/80 一并写在这里，因为这七行的形状正是驱动 `h_hash.c` 的读法：
     /// 它的 `CHOMP` 只剥行尾那**一个**换行，所以被摘要的输入**不含**换行）。
@@ -1010,33 +1483,57 @@ mod tests {
         assert_eq!(hex(&[0x0a, 0xff, 0x00]), "0aff00");
         assert_eq!(Algo::Md5.hex_digest(b"abc").len(), 32);
         assert_eq!(Algo::Sha1.hex_digest(b"abc").len(), 40);
+        assert_eq!(Algo::Md2.hex_digest(b"abc").len(), 32);
         assert_eq!(Algo::Md4.hex_digest(b"abc").len(), 32);
+        assert_eq!(Algo::Rmd160.hex_digest(b"abc").len(), 40);
         assert_eq!(Algo::Sha256.hex_digest(b"abc").len(), 64);
         assert_eq!(Algo::Sha384.hex_digest(b"abc").len(), 96);
         assert_eq!(Algo::Sha512.hex_digest(b"abc").len(), 128);
     }
 
-    /// 名字表认六枚已接的，`MD2` 与 `RMD160` 还认不出，非摘要名字也认不出。
-    /// 小写的 `md5` 也认不出是**契约的一部分**：归一大小写是
-    /// 选择半（`src/cksum.rs` 的 `crypto_hashname`）的活，两道缝各管一段，这里再归一一次
-    /// 就等于允许调用方把两个口径都走一遍。
+    /// 八枚全认；表外的拼法一个都不认。`ripemd160` 这个常见写法**不在** C 的表里
+    /// （`cksum.c:120-144` 只有 `rmd160`），所以它落 `None` 是判据而不是疏漏——C 对它报的是
+    /// `illegal argument to -a option`。大小写**不敏感**也是照 C 来的：它的 `case 'a'` 用
+    /// `strcasecmp`（`cksum.c:201-207`），所以 `-a md5`、`-a MD5`、`-a Md5` 在 C 里就是同一个
+    /// 入口——名字表全仓只有这一张，归一大小写的活也在这里做，没有第二道缝再归一次。
     #[test]
-    fn only_the_ported_families_answer_and_the_rest_decline() {
+    fn all_eight_names_answer_and_no_other_spelling_does() {
         assert_eq!(
             Algo::from_hashname("MD5")
                 .map(|algo| algo.hex_digest(b"abc"))
                 .as_deref(),
             Some("900150983cd24fb0d6963f7d28e17f72")
         );
-        for name in ["MD2", "RMD160", "CRC", "OLD1", "md5", "md4", "SHA224", ""] {
+        for name in [
+            "RIPEDM160",
+            "ripemd160",
+            "CRC",
+            "OLD1",
+            "SHA224",
+            "MD1",
+            "SHA2",
+            "",
+        ] {
             assert!(
                 Algo::from_hashname(name).is_none(),
                 "{name} 的本体没接或不是摘要名，不该给出算法"
             );
         }
+        // 同一个名字的多种拼法指到同一枚算法，而 `hashname()` 交回的是表里大写那一份。
+        for spelling in ["md5", "MD5", "Md5", "sHa1", "rmd160", "RMD160"] {
+            let Some(algo) = Algo::from_hashname(spelling) else {
+                panic!("{spelling} 该按 C 的 strcasecmp 认出来");
+            };
+            assert_eq!(
+                algo.hashname().to_ascii_lowercase(),
+                spelling.to_ascii_lowercase()
+            );
+        }
         for (name, width) in [
+            ("MD2", 32),
             ("MD4", 32),
             ("MD5", 32),
+            ("RMD160", 40),
             ("SHA1", 40),
             ("SHA256", 64),
             ("SHA384", 96),

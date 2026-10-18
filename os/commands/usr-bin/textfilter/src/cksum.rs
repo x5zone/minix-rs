@@ -13,12 +13,14 @@
 //!
 //! `-o 1` selects the historic 16-bit rotating sum (`sum1.c:44-56`:
 //! rotate right, add, mask to 16 bits); `-o 2` the additive sum folded
-//! twice (`sum2.c:48-65`). The MD5/SHA family of the C (`-a` algorithms)
-//! needs crypto primitives and is declared unsupported.
+//! twice (`sum2.c:48-65`). C 的 `-a` 那八枚摘要算法（`cksum.c:120-144` 的 `hashes[]`）全在
+//! `src/digest.rs` 里有本体，所以本模块只负责**选出哪一枚**与**排版**；C 里剩下的
+//! `-s`/`-t`/`-x` 三条腿与 hash 在里的 `-c` 校验腿还没接，那两条腿的话由薄壳说。
 //!
 //! The table builds as a `const` from the polynomial — 256 entries with
 //! no runtime cost, no transcription risk.
 
+use crate::digest::Algo;
 use alloc::vec::Vec;
 
 /// One entry per byte value, MSB-first CRC-32 over the polynomial
@@ -163,13 +165,14 @@ pub fn parse_check_line(line: &str) -> CheckEntry<'_> {
 pub struct CksumRequest<'a> {
     /// Which sum to compute (`-a`/`-o` fold this; default `Crc`).
     pub kind: SumKind,
-    /// C's `const struct hash *hash` (`cksum.c:162`): the `hashname` of the crypto
-    /// algorithm `-a` selected, or `None` while the CRC/old-sum path is in force.
+    /// C's `const struct hash *hash` (`cksum.c:162`): the algorithm `-a` selected, or
+    /// `None` while the CRC/old-sum path is in force. 名字表全仓只有一份，在 `src/digest.rs` 的
+    /// `Algo::from_hashname`；要那句大写的名字时用 `Algo::hashname()`。
     /// Two of C's diagnostics are driven by this state alone — `-a` a second time
     /// (`cksum.c:195-199`) and `-o` after a selection (`:228-234`) — and both
     /// `usage()` before any digest is computed, so they are reachable without the
     /// primitives themselves.
-    pub hash: Option<&'static str>,
+    pub hash: Option<Algo>,
     /// `-c`: verify a check file rather than print sums.
     pub do_check: bool,
     /// `-w`: warn on each bogus/unreadable check line.
@@ -276,8 +279,8 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
                     let value = take_value(&mut index)?;
                     // C 在 `case 'o'` 的第一行就查 `hash`（`cksum.c:228-234`），值本身
                     // 已被 getopt 吃掉，所以缺值那一行仍然先由 libc 印。
-                    if let Some(name) = request.hash {
-                        return Err(CksumError::MutuallyExclusiveWithSum(name));
+                    if let Some(algo) = request.hash {
+                        return Err(CksumError::MutuallyExclusiveWithSum(algo.hashname()));
                     }
                     request.kind = match value {
                         "1" => SumKind::Old1,
@@ -295,8 +298,8 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
                     }
                     // 然后才按 `strcasecmp` 查名字表（`:200-207`），查不到才试
                     // `old1`/`old2`/`crc`（`:209-224`），再不行是 `illegal argument to -a option`。
-                    if let Some(name) = crypto_hashname(value) {
-                        request.hash = Some(name);
+                    if let Some(algo) = Algo::from_hashname(value) {
+                        request.hash = Some(algo);
                     } else if value.eq_ignore_ascii_case("crc") {
                         request.kind = SumKind::Crc;
                     } else if value.eq_ignore_ascii_case("old1") {
@@ -347,29 +350,6 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
         index += 1;
     }
     Ok(request)
-}
-
-/// The `hashname` C would carry in `hash` once `-a <value>` matches its table, or
-/// `None` when the name is not in it. The table is `minix3/usr.bin/cksum/cksum.c:120-144`
-/// — eight entries, matched with `strcasecmp` against the lower-case `progname`
-/// (`cksum.c:201-207`) while the diagnostics quote the **upper-case** `hashname`
-/// (`hash->hashname`, `cksum.c:231-234`). Names outside these eight are not aliases:
-/// C has no `ripemd160` row, so that spelling falls through to
-/// `illegal argument to -a option`. 名字与摘要各归两道缝：这里只管「选中了哪一个」，
-/// 摘要本体在 `src/digest.rs`（八枚里已接六枚，`md2` 与 `rmd160` 在 `CKSUM-HASH-DIGEST`
-/// 的第三片；`-s`/`-t`/`-x` 三条腿的句子归 `CKSUM-HASH-STATE`）。
-fn crypto_hashname(value: &str) -> Option<&'static str> {
-    match value.to_ascii_lowercase().as_str() {
-        "md2" => Some("MD2"),
-        "md4" => Some("MD4"),
-        "md5" => Some("MD5"),
-        "rmd160" => Some("RMD160"),
-        "sha1" => Some("SHA1"),
-        "sha256" => Some("SHA256"),
-        "sha384" => Some("SHA384"),
-        "sha512" => Some("SHA512"),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -502,7 +482,7 @@ mod tests {
         );
         assert_eq!(
             parse_cksum_args(&["-a", "md5"]).unwrap().hash,
-            Some("MD5"),
+            Some(Algo::Md5),
             "选中记的是 C 表里的 hashname（大写那一份，`cksum.c:126`）"
         );
         // 表里的八项逐个都要认得（`cksum.c:120-144`），且按 `strcasecmp` 匹配：
@@ -518,9 +498,12 @@ mod tests {
             ("sha512", "SHA512"),
         ] {
             assert_eq!(
-                parse_cksum_args(&["-a", word]).unwrap().hash,
+                parse_cksum_args(&["-a", word])
+                    .unwrap()
+                    .hash
+                    .map(Algo::hashname),
                 Some(name),
-                "`-a {word}` 该选中 {name}"
+                "`-a {word}` 该选中诊断与报文里那一个大写的 {name}"
             );
         }
         // 表里没有的拼法不是别名：C 没有 `ripemd160` 这一行，所以它落到
@@ -547,7 +530,7 @@ mod tests {
         // 反过来先 `-o` 再 `-a` 就不冲突：`hash` 这时还是空的。
         assert_eq!(
             parse_cksum_args(&["-o", "1", "-a", "md5"]).unwrap().hash,
-            Some("MD5"),
+            Some(Algo::Md5),
         );
         assert_eq!(
             parse_cksum_args(&["-o", "1", "-a", "md5"]).unwrap().kind,

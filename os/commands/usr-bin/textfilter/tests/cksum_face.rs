@@ -284,10 +284,46 @@ fn md4_sha384_sha512_print_c_shapes_for_a_file_operand() {
         ),
     ] {
         let (out, status, err) = run(&["-a", word, &name], b"");
-        assert_eq!((status, err.as_str()), (0, ""), "-a {word} 的 stderr 是 {err:?}");
+        assert_eq!(
+            (status, err.as_str()),
+            (0, ""),
+            "-a {word} 的 stderr 是 {err:?}"
+        );
         assert_eq!(out, format!("{hashname} ({name}) = {digest}\n"), "缺省形");
         let (out, status, _) = run(&["-a", word, "-n", &name], b"");
         assert_eq!(status, 0);
+        assert_eq!(out, format!("{digest} {name}\n"), "-n 形");
+        let (out, _, _) = run(&["-a", word, "-q", &name], b"");
+        assert_eq!(out, format!("{digest}\n"), "-q 形");
+    }
+
+    let _ = fs::remove_file(&file);
+}
+
+/// 最后两族走同一张形状表：`MD2` 与 `RMD160`。到这一枚门为止，C 的八枚算法都能从命令行
+/// 产出真摘要，`cksum -a <八枚任一> <档>` 三形各有一处端到端依据。
+#[test]
+fn md2_and_rmd160_print_c_shapes_for_a_file_operand() {
+    let file = scratch("digest-tail");
+    fs::write(&file, "a\na\nb\n").unwrap();
+    let name = file.to_str().unwrap().to_owned();
+
+    for (word, hashname, digest) in [
+        ("md2", "MD2", "f3fd5f9e3538568d40ab75d46a6a3d01"),
+        (
+            "rmd160",
+            "RMD160",
+            "d51324ce5bd89642721486d3c81f0bda4a94f489",
+        ),
+    ] {
+        let (out, status, err) = run(&["-a", word, &name], b"");
+        assert_eq!(
+            (status, err.as_str()),
+            (0, ""),
+            "-a {word} 的 stderr 是 {err:?}"
+        );
+        assert_eq!(out, format!("{hashname} ({name}) = {digest}\n"), "缺省形");
+        let (out, _, _) = run(&["-a", word, "-n", &name], b"");
         assert_eq!(out, format!("{digest} {name}\n"), "-n 形");
         let (out, _, _) = run(&["-a", word, "-q", &name], b"");
         assert_eq!(out, format!("{digest}\n"), "-q 形");
@@ -344,18 +380,19 @@ fn the_passthrough_copies_the_input_verbatim_before_the_digest() {
     assert_eq!(out, "1271ed5ef305aadabc605b1609e24c52\n");
 }
 
-/// 占位句的剩余射程要说得出名目：本体未接的两枚算法（这里试 `md2`）、`-s`/`-t`/`-x`
-/// 三条腿（试 `-t`）、以及 hash 在里的 `-c` 校验腿（C 用它重算比对，`cksum.c:421-441`）。
-/// 三形都是同一句、同一个退码 2；已接的三枚不给这些旗标时**不得**再走这一句。
+/// 占位句的剩余射程：八枚算法本体都已接，所以它**只**为两条腿服务——`-s`/`-t`/`-x` 三条自己
+/// 要印一整套的腿（这里试 `-t`），以及 hash 在里的 `-c` 校验腿（C 用 `hash->filefunc` 重算比对，
+/// `cksum.c:421-441`，并在失败行前缀 `(MD5) `，`:451-456`）。两形同一句、同一退码 2；
+/// 不给这些旗标时**不得**再走这一句（上面几枚门已按真摘要钉住）。
 #[test]
-fn the_placeholder_now_covers_only_the_three_remaining_legs() {
+fn the_placeholder_now_covers_only_the_two_remaining_legs() {
     let file = scratch("placeholder");
     fs::write(&file, "a\na\nb\n").unwrap();
     let name = file.to_str().unwrap().to_owned();
 
     for args in [
-        vec!["-a", "md2", name.as_str()],
         vec!["-a", "md5", "-t"],
+        vec!["-a", "md5", "-s", "abc"],
         vec!["-a", "md5", "-c", name.as_str()],
     ] {
         let (out, status, err) = run(&args, b"");
