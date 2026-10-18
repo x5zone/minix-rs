@@ -9,6 +9,7 @@
 //! `18-usb-framework.md` in
 //! `rewrite-notes/16-stage-drivers/`.
 #![no_std]
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

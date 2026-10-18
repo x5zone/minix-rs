@@ -19,6 +19,11 @@
 //! - [`portio`] — the port-access abstraction (document section 3).
 //! - [`driver`] — the driver trait, routing rules, and the server state
 //!   machine (document sections 3 and 4).
+//! - [`pump`] — the shared receive-classify-dispatch pump every card
+//!   binary runs (C `netdriver_task`/`netdriver_process`), plus the
+//!   pending transfer queues and status pacing.
+//! - [`wire`] — the NDEV message layouts: field offsets for requests and
+//!   replies, pinned by C-layout mirrors in its tests.
 //!
 //! Socket-device (SDEV) side, owned by stage 17-stage-net (the wire
 //! vocabulary lives in `minix-sockdriver`, edge E-SDEVOWN):
@@ -37,12 +42,15 @@
 //! message at a time, no shared mutable state across threads.
 
 #![no_std]
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 
 pub mod driver;
 pub mod portio;
 pub mod protocol;
+pub mod pump;
 pub mod service;
 pub mod sockid;
 pub mod socktable;
+pub mod wire;

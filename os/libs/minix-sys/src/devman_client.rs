@@ -83,8 +83,10 @@ pub enum ClientError {
 
 /// Kernel crossings the client needs, injected (test fakes provided).
 pub trait ClientTransport {
-    /// Issue a read grant for `buf` (C: `cpf_grant_direct(…, CPF_READ)`).
-    fn grant(&mut self, buf: &[u8]) -> Result<i32, ClientError>;
+    /// Issue a read grant for `buf` to `who_to` (C: `cpf_grant_direct(who_to,
+    /// …, CPF_READ)`, generic.c:113 — the recipient is devman, the only process
+    /// that safecopies the serialized device out of this buffer).
+    fn grant(&mut self, who_to: Endpoint, buf: &[u8]) -> Result<i32, ClientError>;
     /// Revoke it (C: `cpf_revoke`).
     fn revoke(&mut self, grant: i32);
     /// Round trip with devman (C: `ipc_sendrec(devman_ep, &msg)`).
@@ -134,14 +136,16 @@ impl Default for SysClientTransport {
 }
 
 impl ClientTransport for SysClientTransport {
-    fn grant(&mut self, buf: &[u8]) -> Result<i32, ClientError> {
-        // C: `cpf_grant_direct(who, buf, len, CPF_READ)` —— `who_to` 是
-        // 收方（devman）端点，由调用方在 sendrec 时给出；这里的表项按
-        // C 的形态记 `who_to = NONE`（direct grant 允许任意收方读取）。
+    fn grant(&mut self, who_to: Endpoint, buf: &[u8]) -> Result<i32, ClientError> {
+        // C: `cpf_grant_direct(devman_ep, buf, len, CPF_READ)` —— 收方
+        // 写进表项的 `cp_who_to`。`NONE` 不是通配：内核拒绝
+        // `cp_who_to` 既不等于调用者也不等于 `ANY` 的 direct grant
+        // （`do_safecopy.c:195-196`），而 `NONE != ANY`——按 NONE 签发的
+        // 授权在 devman 侧 safecopy 时必然 EPERM。
         self.grants
             .grant_direct(
                 &self.kernel,
-                minix_types::Endpoint::NONE.get(),
+                who_to.get(),
                 buf.as_ptr() as u64,
                 buf.len() as u64,
                 minix_types::CpFlags::READ,
@@ -216,7 +220,7 @@ pub fn add_device(
     dev: &mut ClientDevice,
 ) -> Result<i32, ClientError> {
     let buf = encode_device(dev);
-    let gid = t.grant(&buf)?;
+    let gid = t.grant(devman, &buf)?;
     let mut msg = Message {
         m_source: Endpoint(0),
         m_type: DEVMAN_ADD_DEV,
@@ -337,7 +341,7 @@ mod tests {
     fn test_sys_client_transport_hosted_errors_are_honest() {
         use super::{ClientError, ClientTransport, SysClientTransport};
         let mut t = SysClientTransport::new();
-        assert_eq!(t.grant(b"abc"), Err(ClientError::Transport));
+        assert_eq!(t.grant(minix_types::Endpoint(9), b"abc"), Err(ClientError::Transport));
         t.revoke(1); // 未登记的 id：C `cpf_revoke` 回 EINVAL，这里静默
         let mut m = minix_types::Message::default();
         assert_eq!(
@@ -356,6 +360,7 @@ mod tests {
         script: Vec<(i32, i32, i32)>,
         pub log: Vec<Message>,
         pub grants: i32,
+        pub granted_to: Vec<Endpoint>,
         pub revoked: Vec<i32>,
     }
 
@@ -365,14 +370,16 @@ mod tests {
                 script,
                 log: Vec::new(),
                 grants: 0,
+                granted_to: Vec::new(),
                 revoked: Vec::new(),
             }
         }
     }
 
     impl ClientTransport for FakeTransport {
-        fn grant(&mut self, _buf: &[u8]) -> Result<i32, ClientError> {
+        fn grant(&mut self, who_to: Endpoint, _buf: &[u8]) -> Result<i32, ClientError> {
             self.grants += 1;
+            self.granted_to.push(who_to);
             Ok(self.grants)
         }
 
@@ -424,7 +431,10 @@ mod tests {
         let id = add_device(&mut t, Endpoint(2), &mut dev).unwrap();
         assert_eq!(id, 7);
         assert_eq!(dev.dev_id, Some(7));
-        // Grant issued and revoked (C: cpf_grant_direct + cpf_revoke).
+        // Grant issued to devman and revoked (C: cpf_grant_direct(devman_ep, …)
+        // + cpf_revoke). The recipient matters: a direct grant bound to NONE
+        // is rejected by the kernel's who_to check (do_safecopy.c:195-196).
+        assert_eq!(t.granted_to, std::vec![Endpoint(2)]);
         assert_eq!(t.revoked, std::vec![1]);
         // Request shape: ADD + grant words.
         let sent = &t.log[0];

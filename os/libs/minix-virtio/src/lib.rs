@@ -13,6 +13,7 @@
 //! path, which the C code also uses first).
 
 #![no_std]
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

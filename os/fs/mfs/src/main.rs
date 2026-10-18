@@ -84,6 +84,62 @@ fn real_main() {
         let driver = minix_fs_mfs::server::MfsServer::new(
             minix_fs_rt::source::BootBlockSource::from_boot_image(BOOT_IMGRD, BOOT_BLOCK_SIZE),
         );
+
+        // SD-11 U-5 对照读数②（迁移前出生段池峰值）：安装点之前读一次全局
+        // 分配器诊断，把「出生到安装点」这段仍走固定池的消耗页数与池总量打到
+        // 串口。U-5 执行清单第 2 项要求量化这段峰值，这一行就是它的机器读数；
+        // 格式沿用 nk4a 探针族前缀，便于真机日志抓取。
+        #[cfg(target_os = "none")]
+        {
+            let diag = minix_rt::global_alloc_diag();
+            let mut line = [0u8; 96];
+            let mut at = 0;
+            let head = b"nk4a: mfs pre-install pool pages used=";
+            line[..head.len()].copy_from_slice(head);
+            at += head.len();
+            at += minix_rt::diag::format_decimal(diag.pages_consumed as i32, &mut line[at..]);
+            let mid = b" total=";
+            line[at..at + mid.len()].copy_from_slice(mid);
+            at += mid.len();
+            at += minix_rt::diag::format_decimal(diag.total_pages as i32, &mut line[at..]);
+            line[at] = b'\n';
+            at += 1;
+            use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兜底（panic.c:66）
+            let _ = sys_diagctl_write(
+                &DirectKernelCallTransport,
+                core::str::from_utf8(&line[..at]).unwrap_or(""),
+            );
+        }
+
+        // SD-11 U-5 迁移（第九台，首个文件服务器）：MFS 是缓存大头（块缓存与
+        // inode 表，src/ 内 Vec/Box 工作集），也是 x86 2048 页档的运行时理由
+        // 所在。把全局堆供给从焊死固定池切到 VM_BRK 增长堆。安装点在 server
+        // 构造（fresh 体已建表与缓存，仍在固定池）之后、`serve` 主循环之前——
+        // 此刻 VM（boot 序第 2 位，早于 MFS 第 11 位）主循环已在收请求，
+        // `install_vm_supplier` 内的 VM_BRK 直连有应答；EINVAL fail-fast；与
+        // DS(T3)/SCHED(T3b)/MIB/VFS/PM/PFS/TTY/memory 同法，整块
+        // #[cfg(target_os="none")] 不影响宿主测试。
+        #[cfg(target_os = "none")]
+        minix_rt::install_vm_supplier(minix_rt::image_end())
+            .expect("mfs: install_vm_supplier(镜像尾) 不得失败");
+
+        // SD-11 真机取证探针：安装后立即从 VM 腿取一页（8 字节 slab 请求触发
+        // add_slab → supply_page → VM_BRK），失败即 fail-fast；成功打一行串口
+        // 标记作 VM_BRK 增长腿端到端贯通的 L1 证据（与 VFS 同款）。
+        #[cfg(target_os = "none")]
+        {
+            let probe = minix_rt::alloc(8);
+            assert!(!probe.is_null(), "mfs: vm-brk probe 分配失败");
+            minix_rt::free(probe);
+            use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+            #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兜底（panic.c:66）
+            let _ = sys_diagctl_write(
+                &DirectKernelCallTransport,
+                "nk4a: mfs-vmbrk probe ok pages=1 via=VM_BRK\n",
+            );
+        }
+
         // C registers a signal handler for this server (`mfs/main.c:38`);
         // its body (`main.c:70-78`) ignores everything but SIGTERM and, on
         // SIGTERM, syncs the file system before asking the framework to stop

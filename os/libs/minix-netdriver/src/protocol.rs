@@ -171,6 +171,28 @@ pub const RECV_QUEUE_BOUND: usize = 2;
 /// more, the driver is told to receive all multicast packets instead.
 pub const MULTICAST_LIST_MAX: usize = 16;
 
+/// Minimum Ethernet packet size the framework keeps.
+///
+/// C: `NDEV_ETH_PACKET_MIN 60` (`const.h:179`).
+pub const NDEV_ETH_PACKET_MIN: usize = 60;
+
+/// Maximum untagged Ethernet packet size.
+///
+/// C: `NDEV_ETH_PACKET_MAX 1514` (`const.h:180`).
+pub const NDEV_ETH_PACKET_MAX: usize = 1514;
+
+/// Ethernet VLAN tag size.
+///
+/// C: `NDEV_ETH_PACKET_TAG 4` (`const.h:181`).
+pub const NDEV_ETH_PACKET_TAG: usize = 4;
+
+/// Maximum tagged Ethernet packet size.
+///
+/// C: `NDEV_ETH_PACKET_MAX_TAGGED (NDEV_ETH_PACKET_MAX +
+/// NDEV_ETH_PACKET_TAG)` (`const.h:183`). A receive buffer must hold at
+/// least this much; the framework refuses smaller vectors.
+pub const NDEV_ETH_PACKET_MAX_TAGGED: usize = NDEV_ETH_PACKET_MAX + NDEV_ETH_PACKET_TAG;
+
 /// Configuration subtype: set mode and multicast list.
 ///
 /// C: `NDEV_SET_MODE 0x01` (`com.h:1111`).
@@ -454,6 +476,15 @@ mod tests {
         assert_eq!(SEND_QUEUE_BOUND, 8);
         assert_eq!(RECV_QUEUE_BOUND, 2);
         assert_eq!(MULTICAST_LIST_MAX, 16);
+    }
+
+    #[test]
+    fn test_packet_size_constants_match_const_header() {
+        // const.h:179-183 — the framework's packet-size guard values.
+        assert_eq!(NDEV_ETH_PACKET_MIN, 60);
+        assert_eq!(NDEV_ETH_PACKET_MAX, 1514);
+        assert_eq!(NDEV_ETH_PACKET_TAG, 4);
+        assert_eq!(NDEV_ETH_PACKET_MAX_TAGGED, 1518);
     }
 
     #[test]
