@@ -90,7 +90,6 @@ pub fn pop(path: &mut alloc::string::String) {
 mod tests {
     use super::*;
     use alloc::string::ToString;
-    use alloc::vec::Vec;
 
     #[test]
     fn test_join_prefix_and_chain() {
@@ -127,6 +126,5 @@ mod tests {
         // no parent to name).
         pop(&mut path);
         assert_eq!(path, "");
-        let _ = Vec::<u8>::new();
     }
 }

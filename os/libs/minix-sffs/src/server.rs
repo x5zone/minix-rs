@@ -266,6 +266,10 @@ impl<T: SffsTable> FsDriver for SffsServer<T> {
     fn unmounted(&mut self) {
         for node in &self.nodes {
             if let Some(handle) = node.handle {
+                //[SD19-gate] C put_handle（libsffs/handle.c:57-77）对 close 失败
+                // 只打一行诊断后照常清位；本框架的 unmounted 返回 ()、无诊断
+                // 通道，按 C 的忽略档收编。
+                #[allow(clippy::let_underscore_must_use)]
                 let _ = self.table.close(handle);
             }
         }

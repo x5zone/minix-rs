@@ -525,6 +525,9 @@ pub fn perror_line(label: &str, code: Errno, out: &mut [u8]) -> usize {
     }
     let separator = if label.is_empty() { "" } else { ": " };
     let mut written = 0usize;
+    //[SD19-gate] 本地 Sink 的 write_str 恒回 Ok(())（超容量静默截断），
+    // write! 无失败面；C 对同类渲染是 (void)strerror_r（perror.c:66）。
+    #[allow(clippy::let_underscore_must_use)]
     let _ = write!(
         Sink(out, &mut written),
         "{label}{separator}{std}",
@@ -565,6 +568,9 @@ pub fn err_line(prog: &str, label: &str, code: Errno, out: &mut [u8]) -> usize {
         }
     }
     let mut written = 0usize;
+    //[SD19-gate] 本地 Sink 的 write_str 恒回 Ok(())（超容量静默截断），
+    // write! 无失败面；C verrc.c 的渲染同样不检查写入结果。
+    #[allow(clippy::let_underscore_must_use)]
     let _ = write!(
         Sink(out, &mut written),
         "{prog}: {label}: {std}",
