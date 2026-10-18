@@ -85,7 +85,9 @@ fn run() -> ! {
                 write_failure(prog, &path, failure);
             }
         }
-        support::terminate(0);
+        // 读腿那一形与行模式同一个主人：C 的 `split1` 在 `case -1:` 当场
+        // `err(1, "read")`（`split.c:188-190`），退 1 而不是退 0。
+        finish(prog, read_failure);
     }
     // `-n`: exactly `n` byte chunks (`split3`); the last absorbs the remainder.
     // 块数上限与那句报文里的数都取自**内核给的大小**，不取自已收到的字节数：C 在读之前

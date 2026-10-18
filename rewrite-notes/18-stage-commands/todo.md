@@ -119,6 +119,65 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百五十五（`SPLIT-STREAMING-MEMORY` 片甲的第一步）：`split -b` 把读失手那个号丢在地上，先修正确性再动流式
+
+- **做什么**：领 `tools/claim.sh claim SPLIT-STREAMING-MEMORY qoder`，落三片里的第一片（`-b` 流式化）。
+  开工第一步不是改读法，而是先在 `os/commands/usr-bin/textfilter/src/bin/split.rs` 抓到一个
+  **P0 代码缺陷**：`-b` 那一支收尾写的是 `support::terminate(0)`，把前面读腿收回来的
+  `read_failure` 那个号整块丢掉。C 的 `split1` 在 `minix3/usr.bin/split/split.c:188-190` 是
+  `case -1: err(1, "read")`——退 1、并打一句 `程序名: read: <strerror 句子>`；同一文件的行模式与
+  `-n` 两支都走本壳那个 `finish(prog, read_failure)`（`src/bin/split.rs:146`，它正是照着
+  `err(1, "read")` 写的）。所以这是一条腿漏接收尾、另两条腿接了的分岔，不是设计选择。
+  修法一行：`-b` 支收尾改用同一个 `finish(prog, read_failure)`。
+
+- **为什么门以前抓不住它**：两枚读失手门 `tests/split_face.rs:489`
+  `a_directory_operand_blames_read_not_the_operand` 与 `:513` `an_unreadable_stdin_blames_the_read_arm`
+  跑的都是默认行模式，一次 `-b` 都没有；全文件搜 `-b` 只有 `:437`
+  `byte_mode_is_untouched_by_the_line_rewrite` 一枚，它喂的是能读完的标准输入。
+  本轮补两枚，把 `-b` 的两形（命名档读不动、标准输入读不动）各钉一次：
+  `byte_mode_blames_an_unreadable_operand_and_exits_one`（退 1、标签是 `read`、分片一枚不生成）、
+  `byte_mode_blames_an_unreadable_stdin_and_exits_one`（同一句 `split: read: Is a directory`）。
+
+- **门有牙的凭据（变异控制）**：把 `-b` 的收尾改回 `support::terminate(0)` 再跑
+  `cargo test --offline -j 1 -p minix-textfilter --test split_face`，两枚新门**双双变红**
+  （`byte_mode_blames_an_unreadable_operand_and_exits_one`、
+  `byte_mode_blames_an_unreadable_stdin_and_exits_one`），改回即复绿。
+  读数：修好后该套件 `25 passed / 0 failed`（此前 23），整包 `-p minix-textfilter` 全绿；
+  `rustfmt --check` 对触及两件零漂移。
+
+- **本轮自己踩的一个坑（值得记，因为它是负控方法的口径问题）**：还原变异时我用了
+  `git checkout -- <文件>`，而这轮的修复本身**还没提交**，`HEAD` 里那份是没有修复的旧码——
+  于是「还原」把修复一起抹掉，md5 当场报 `MISMATCH`（`a5218c64` → `31ed61ba`），我按上面的
+  锚点把那一行重新落回并复跑才复绿。**规矩**：负控要还原的必须是「本轮工作态」，
+  在工作态尚未提交时，还原源只能是改坏之前留在内存里的那份原文，不能是 git。
+
+- **片甲剩下的部分（下一轮）**：真正的流式化——把 `-b` 从「整档读进一个 `Vec` 再切」改成
+  「按 `MAXBSIZE`（`minix3/tools/compat/compat_defs.h:1151` 给的是 `64 * 1024`）一块一块读、
+  边读边写」。需要给 `bin_support.rs` 的双生面加一条分块读缝（宿主与真机各一腿），
+  决定半侧新增一个只带「当前分片已写字节数」这一计数器的切块函数（C 的 `split1` 跨读留下的
+  就是这一个计数器，见 `split.c:196-236`，不留数据）。批次三百五十四已证：
+  现有两枚读失手门钉的是「第一次读就失手」，而 C 的首个输出文件只在读到非零字节之后才打开
+  （`split.c:195-200`），所以流式化不改这两枚门的可见结果；本轮补的两枚同理。
+  「先读成功若干次、再读失手」那一形目前仍无门可造（宿主上难以稳定注入中途读错），
+  继续登记为覆盖空洞，不许用「行为差不多」糊过去。
+
+- **门读数（本轮，含一次门自己失手）**：容器权威门第一次跑挂了，退码 101，
+  报 `failed to create directory /cargo/registry/cache/... Permission denied (os error 13)`——
+  原因是我把 `CARGO_HOME` 挂到了**本棵认领树**的 `tmp/ci-cargo`，而认领树里没有这个目录
+  （`tmp/` 不入库），Docker 给它建成了 root 属主。这与批次三百五十记过的同一面（挂载目录要预先
+  备好且当前用户可写）是同一个坑。第二次改用主树那份可写的 cargo 缓存重跑，命令是
+  `docker run --rm -v "$PWD:/work" -w /work/os -m 2g -u $(id -u):$(id -g) -e CARGO_HOME=/cargo
+  -v /home/xzhao/github/minix-rs/tmp/ci-cargo:/cargo -e CARGO_TARGET_DIR=/target
+  -v "$PWD/tmp/ci-target-356:/target" minix-ci:1.94 cargo test -j 1 -p minix-textfilter`，
+  日志 `tmp/split-355/container-gate-2.log`（结果按该文件的实际读数为准，不凭记忆填写）。
+  宿主侧已实测：`cargo test --offline -j 1 -p minix-textfilter --test split_face` →
+  `25 passed / 0 failed`；整包 `-p minix-textfilter` 全绿；`rustfmt --edition 2021 --check`
+  对触及两件零漂移；`cargo clippy -p minix-textfilter --all-targets` 在触及文件里只有一条
+  `items after a test module`（`src/bin/split.rs:240`，位于本文件既有的 `#[cfg(test)] mod tests`
+  之后，与本轮改动无关，本轮只动了 `run()` 里的一行收尾）。
+
+---
+
 ## 批次三百五十四（负控轮，生产码一字未动）：三百二十五至三百二十九欠账里的四枚旧负面控制全部跑成并咬住，控制机的裁判第三次翻在同一面上
 
 - **本轮做什么**：把批次三百五十三留下的四处现查位点逐枚改坏再跑测试。认领件

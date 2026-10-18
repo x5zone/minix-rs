@@ -638,3 +638,64 @@ fn the_chunk_count_complaint_quotes_the_size_not_the_count() {
     assert_eq!(output.status.code(), Some(1));
     assert!(files.is_empty(), "报错了就不该有分片：{files:?}");
 }
+
+/// `-b` 那条腿的读失手与行模式同一个形状：`split1` 的 `case -1:` 当场 `err(1, "read")`
+/// （`minix3/usr.bin/split/split.c:188-190`），退 1。本壳以前在 `-b` 分支收尾直接退 0，
+/// 把那个号丢在地上；三条腿（行模式、`-n`、`-b`）共用同一个收尾，这一枚钉的就是
+/// 「不许有一条例外」。
+#[test]
+fn byte_mode_blames_an_unreadable_operand_and_exits_one() {
+    let holder = scratch();
+    let unreadable = holder.join("not-a-stream");
+    fs::create_dir(&unreadable).expect("create the directory to hand over as an operand");
+    let name = unreadable.to_str().expect("utf-8 path");
+    let (status, err, files, _out) = run(&["-b", "4", name, "out"], b"");
+    let _ = fs::remove_dir_all(&holder);
+    assert_eq!(status, 1, "`-b` 读不动输入也必须退 1，实得 {status}");
+    assert!(
+        err.starts_with("split: read: "),
+        "标签该是 `read`，实得 {err:?}"
+    );
+    assert!(
+        files.is_empty(),
+        "一枚也读不出的输入不该留下分片：{files:?}"
+    );
+}
+
+/// 同一形改走标准输入那条腿（把一枚目录的 fd 当作 stdin 递进来）：C 的 `ifd` 默认就是 0，
+/// 失手落在同一句 `err(1, "read")` 上，分片一枚不生成。
+#[test]
+fn byte_mode_blames_an_unreadable_stdin_and_exits_one() {
+    let dir = scratch();
+    let holder = scratch();
+    let stream = holder.join("not-a-stream");
+    fs::create_dir(&stream).expect("create the directory to hand over as stdin");
+    let handle = fs::File::open(&stream).expect("a directory opens read-only here");
+    let output = Command::new(SPLIT)
+        .args(["-b", "4"])
+        .current_dir(&dir)
+        .stdin(Stdio::from(handle))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the split binary should be runnable")
+        .wait_with_output()
+        .expect("the run should finish");
+    let err = String::from_utf8_lossy(&output.stderr).into_owned();
+    let files: Vec<String> = fs::read_dir(&dir)
+        .expect("the scratch dir should be readable")
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&holder);
+    assert_eq!(output.status.code(), Some(1), "stderr 是 {err:?}");
+    assert_eq!(
+        err, "split: read: Is a directory\n",
+        "一句三段形，实得 {err:?}"
+    );
+    assert!(files.is_empty(), "读不动的标准输入不该留下分片：{files:?}");
+}
