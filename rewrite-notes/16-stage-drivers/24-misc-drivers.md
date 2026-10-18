@@ -2,7 +2,7 @@
 
 > **分类**：杂项（家家一件小事，状态页数公式各管一件）
 > **源码**：`minix3/minix/drivers/printer/printer/printer.c`（四百二十四行的打印机）、`minix3/minix/drivers/eeprom/cat24c256/cat24c256.c`（五百零五行的存储器）、`minix3/minix/drivers/sensors/bmp085/bmp085.c`（五百八十三行的气压传感器）、`minix3/minix/drivers/examples/hello/hello.c`（一百五十八行的最小示例）与其余速览（见第 2.6 节矩阵，电源高级配置接口一百五十七文件八万三千二百七十九行系第三方移植）
-> **Rust 模块**：`os/drivers/printer/printer/src/status.rs`（状态位与重试预算）、`os/drivers/printer/printer/src/hardware.rs`（并行口缝：探针、初始化、状态读、字节输出与延时；`NullPrinter` 按 C 的 `ENODEV` 诚实缺席）、`os/drivers/printer/printer/src/service.rs`（char 泵：在线等待、分块授权拷贝、忙态挂起等中断续跑、取消）、`os/drivers/eeprom/cat24c256/src/pages.rs`（分片与地址宽度）、`os/drivers/sensors/bmp085/src/convert.rs`（温度校准换算）、`os/drivers/sensors/bmp085/src/measure.rs`（芯片号、校准十一项、温度/压力触发与补偿）、`os/drivers/sensors/bmp085/src/service.rs`（char 读泵：测样、格式化、position/count 夹取、grant 拷贝）、`os/drivers/sensors/sht21/src/driver.rs`（软复位/用户寄存器门、CRC-8 测样与线性换算）、`os/drivers/sensors/sht21/src/service.rs`（每秒采样缓存 + char 读泵）、`os/drivers/sensors/tsl2550/src/driver.rs`（上电/量程检查、有效位轮询、两张查找表与 lux 公式）、`os/drivers/sensors/tsl2550/src/service.rs`（char 读泵）
+> **Rust 模块**：`os/drivers/printer/printer/src/status.rs`（状态位与重试预算）、`os/drivers/printer/printer/src/hardware.rs`（并行口缝：探针、初始化、状态读、字节输出与延时；`NullPrinter` 按 C 的 `ENODEV` 诚实缺席）、`os/drivers/printer/printer/src/service.rs`（char 泵：在线等待、分块授权拷贝、忙态挂起等中断续跑、取消）、`os/drivers/eeprom/cat24c256/src/pages.rs`（分片与地址宽度）、`os/drivers/sensors/bmp085/src/convert.rs`（温度校准换算）、`os/drivers/sensors/bmp085/src/measure.rs`（芯片号、校准十一项、温度/压力触发与补偿）、`os/drivers/sensors/bmp085/src/service.rs`（char 读泵：测样、格式化、position/count 夹取、grant 拷贝）、`os/drivers/sensors/sht21/src/driver.rs`（软复位/用户寄存器门、CRC-8 测样与线性换算）、`os/drivers/sensors/sht21/src/service.rs`（每秒采样缓存 + char 读泵）、`os/drivers/sensors/tsl2550/src/driver.rs`（上电/量程检查、有效位轮询、两张查找表与 lux 公式）、`os/drivers/sensors/tsl2550/src/service.rs`（char 读泵）、`os/drivers/power/acpi/src/`（翻译团外壳：桥树与路由表、请求循环、解释器缝）
 > **框架补充（`2026-09-17`）**：`os/libs/minix-i2cdriver` 承载 libi2cdriver（366 行）的宣告键、地址校验与寄存器操作序列——plan §5.1 原映射本篇但从未落地，现由该 crate 归属；cat24c256/bmp085/sht21/tsl2550 同为 i2c 底盘，服务层接线时共用。**共用件增补（`2026-10-19`）**：该 crate 新增 `client` 模块——巴士标签查找、`BUSC_I2C_RESERVE`/`BUSC_I2C_EXEC` 消息与 280 字节执行块、`i2creg_*` 读写序列；执行块按 `cpf_grant_direct` 授权，`DriverTransport` 为此补了 `grant_direct`/`grant_revoke`/`delay_micros`/`now_seconds`/`label_name` 五条带默认动词。**巴士本体（`2026-10-19`）**：`os/drivers/bus/i2c/src/controller.rs`（SoC `process` 缝）与 `service.rs`（预留表、执行块校验、typed 与 ioctl 两条腿）。**卡桥（`2026-10-19`）**：`os/drivers/bus/ti1225/src/registers.rs`（PCI 属性偏移与 CardBus CSR 块）、`socket.rs`（插槽电源协商）、`controller.rs`（配置/CSR/重扫缝）、`service.rs`（init 序列与插槽过场）。**电源（`2026-10-19`）**：`os/drivers/power/tps65217/src/registers.rs`（寄存器与位掩码）、`device.rs`（芯片识别与电源键判定）、`service.rs`（init 与通知泵；电源键经 `DriverTransport::signal` 通知 init）。**PMIC/RTC（`2026-10-19`）**：`os/drivers/power/tps65950/src/registers.rs`、`rtc.rs`（BCD 与读写序列）、`device.rs`（IDCODE 三版本门）、`service.rs`（RTCDEV 三腿 + 身份门）。**内存管理单元（`2026-10-19`）**：`os/drivers/iommu/amddev/src/registers.rs`、`device.rs`（能力解码与清位算术）、`controller.rs`（能力表/寄存器/翻译/清位缝）、`service.rs`（init 与控制字 + `IOMMU_MAP` 泵）。**高清桥（`2026-10-19`）**：`os/drivers/video/tda19988/src/registers.rs`（CEC 与 HDMI 页）、`hdmi.rs`（页缓存访问器与 EDID 读）、`service.rs`（自备块泵：EDID 读腿 + 授权拷贝；共享块泵 face 无传输句柄的登记缝）。**EEPROM（`2026-10-19`）**：`os/drivers/eeprom/cat24c256/src/face.rs`（块面全腿：读 128/写 16 切片、`BDEV_NOPAGE` 单字节地址、4 KiB 暂存分片、openct 计数、OTHER 类型与 ENOTTY）、`service.rs`（总线解析/预留、DS 通知刷新、泵包装）、`pages.rs`（原有切片模型）。**框架增补（同笔，数据面裁决）**：`minix-driver-rt` 新增 `plane` 模块（`GrantIpc`/`TransferPlane`/`Plane`/`NullPlane`），`BlockDriver::transfer` 首参收 `&mut dyn TransferPlane`（对位 C 的 hook 收 `endpt`+`iov` 并自拷贝），`minix-i2cdriver::client::exec` 放宽到 `GrantIpc`。**虚拟机客（`2026-10-19`）**：`os/drivers/vmm_guest/vbox/src/vmmdev.rs`（设备协议常量与请求页 `#[repr(C)]` 镜像，尺寸与偏移由 `offset_of!` 派生并逐项钉 C 值；参数数组与页表按字节读写）、`device.rs`（`err.c` 的二百零三项结果码表、`convert_result` 六码映射与时钟漂移规则）、`backdoor.rs`（`Backdoor` 缝与 `KernelBackdoor`，含按 C 五步的 PCI 探针腿）、`service.rs`（设备腿：报告来宾、时钟漂移、事件确认与 HGCM 检查；HGCM 腿：连接配额、参数重写、页表构造、异步完成经中断回路、取消与关闭语义）。共用件增补（`2026-10-19`）：`minix-sys` 新增 `sys_vumap`（SYS_VUMAP 的库层包装）与 `pm::stime_via`（PM_STIME），各带线格式门。
 > **前置**：`rewrite-notes/16-stage-drivers/00-drivers-overview.md`（驱动子系统全景，杂项在其中的位置）、`rewrite-notes/16-stage-drivers/23-net-driver-variants.md`（变体查表思想对照）
 > **说明**：杂项是全阶段收尾：家家只管一件小事（打印机看状态位，存储器切分片，传感器套公式，示例当课本）。本篇讲三家详例加余家矩阵，不重复讲各类别核心语义。端口总线流量在服务层，本库只定状态页数公式。
@@ -89,7 +89,7 @@
 | 虚拟机客 | `vbox.c` 二百四十八行 | 更新时间初始化中断三件，主机通信另文件 |
 | 电源甲 | `tps65217.c` 四百零二行 | 查版本使能断电中断关机四件 |
 | 电源乙 | `tps65950.c` 三百五十二行 | 取存函数查版本，时钟另文件 |
-| 翻译团 | `power/acpi` 八万三千二百七十九行 | 第三方移植，只包三文件外壳 |
+| 翻译团 | `power/acpi` 八万三千二百七十九行 | 第三方移植；外壳（三文件一千五百四十八行）已建模：桥树与路由表、请求循环、解释器缝 |
 
 ### 2.7 符号覆盖矩阵
 
@@ -107,14 +107,31 @@
 | 设备请求与结果码（`vmmdev.h`、`err.c`） | 第 2.6 节 | `vmmdev::wire` 与 `device::ERR_TABLE` | 已覆盖 |
 | HGCM 连接状态机（`hgcm.c`） | 第 2.6 节 | `service::VboxService` | 已覆盖 |
 | 页表构造与授权映射（`store_pages`、`sys_vumap`） | 第 2.6 节 | `service::store_pages` 与 `minix-sys::syscall::sys_vumap` | 已覆盖 |
+| 桥树与两式查找（`struct pci_bridge`、`find_bridge`） | 第 2.6 节 | `acpi::bridge::PciBridge` 与 `find`/`find_mut` | 已覆盖 |
+| 路由表与资源走查（`get_pci_irq_routing`、`add_irq`） | 第 2.6 节 | `acpi::bridge::fill_routing`（缝提供路由表与资源） | 已覆盖 |
+| 两条请求与答复（`do_get_irq`、`do_map_bridge`） | 第 2.6 节 | `acpi::service::AcpiService::{get_irq, map_bridge}` 与 `protocol` 的车道 | 已覆盖 |
+| 启动闸门与五连初始化（`init_acpi`、`init_acpica`） | 第 2.6 节 | `AcpiService::init` 与 `init_acpica`（缝的五个调用） | 已覆盖 |
+| 解释器全文（八万三千行） | 第 1.5 节 | `acpi::interpreter::AcpiInterpreter` 缝（十三个调用），生产腿未落 | 部分覆盖（登记 `E-ACPICA`） |
 
 ### 2.8 与 C 约九万行的差异说明
 
 | 差异 | C 做法 | Rust 做法 | 分类 |
 |------|--------|-----------|------|
 | 端口总线流量 | 各家全实现 | 只定状态页数公式 | 设计决策：流量在服务层 |
-| 翻译团全文 | 八万三千行移植 | 外壳适配 | 架构演进：移植策略 |
+| 翻译团全文 | 八万三千行移植 | 外壳建模 + 解释器缝（第 2.9 节的裁决） | 架构演进：移植策略 |
 | 压力光照算法 | 各家全实现 | 服务层 | 设计决策：算法在服务层 |
+
+### 2.9 翻译团的移植裁决（`E-ACPICA`）
+
+C 的电源目录里，属于本项目语义的只有一千五百四十八行（`acpi.c` 一百六十七行的闸门与请求循环、`pci.c` 三百二十五行的桥树与路由表、`osminixxf.c` 一千零四十九行的操作系统服务层），其余八万三千行是英特尔 ACPICA 解释器整棵移植进来的（`hardware/`、`parser/`、`executer/`、`namespace/`、`utilities/`、`dispatcher/`、`events/`、`tables/`、`resources/` 九个目录）。三者要分开决定，裁决如下。
+
+**方案 A（本轮落地）：外壳建模，解释器入缝。** 桥树、路由表、两条请求、启动闸门与请求循环都按 C 逐条建模（`os/drivers/power/acpi/src/`），解释器抽成 `AcpiInterpreter` 缝的十三个调用（五次初始化、`_PIC` 评估、设备枚举、父节点、路由表、对象信息、句柄、资源走查）。生产腿未落时以诚实空解释器拒绝每次调用，驱动因此报"ACPI 失败"（C 的 `ACPI: ACPI failed with err %d`），两条请求分别答"无路由"与"无设备"，而不是假装读过表。选它的理由：外壳是**本项目的语义**，解释器是第三方资产；把两者分开，外壳现在就能被门覆盖（十五枚），而解释器的移植策略可以独立排期。
+
+**方案 B（生产腿的首选）：把 ACPICA 原样编成库链进驱动。** 保留整棵 C 树与它自带的测试，Rust 侧只补操作系统服务层（`osminixxf.c` 的四十八个函数：内存、互斥、输入输出、外设互连配置、时钟、线程）。选它的理由：解释器是硬件兼容性的载体，逐行重写等于把"能不能在真机读到 `_PRT` 路由"这件事从零押一遍；Linux 也是整棵移植 ACPICA 而不重写。代价是驱动构建要带 C 工具链，且解释器的内存分配要接进驱动的堆。
+
+**方案 C（否决，留作后路）：重写所用子集。** 表解析（根指针、系统描述表、固定表）不难，难的是"所用子集"其实包含一个反汇编器——`_PIC`、`_PRT`、`_CRS` 都是要执行的 AML 方法，C 树里 `parser/`、`executer/`、`namespace/` 三个目录合计约四万行。否决理由：成本与方案 B 同量级而上限更低（真机上任何新固件都可能用到没实现的操作码）。后路的含义是：若生态里出现质量足够的 Rust 实现（如 `acpi` 一类的表解析库加上成熟的 AML 求值器），它可以替换缝的生产腿而不动外壳。
+
+**登记**：本条以 `E-ACPICA` 记入协调账（缺口 = 解释器的生产腿；拥有者 = 本线；消费者 = 电源驱动与任何要读 `_PRT` 路由的机器）。
 
 ---
 
@@ -187,11 +204,11 @@
 | 例题换算 | 数据手册例题得十五度整 | 体温公式 |
 | 单调性 | 原始值小结果小 | 公式单调 |
 
-### 5.4 测试统计（截至 2026-09-05）
+### 5.4 测试统计
 
-- 本篇直接相关：九个（状态三个，分片四个，换算两个），全部通过。
-- 复现命令：`cargo test -p minix-driver-printer -p minix-driver-cat24c256 -p minix-driver-bmp085 --lib`（工作目录 `os/`）。
-- 完整测试清单：`rg "fn test_" os/drivers/printer/printer/src/ os/drivers/eeprom/cat24c256/src/ os/drivers/sensors/bmp085/src/`。
+`2026-09-05` 的读数：本篇直接相关九个（状态三个，分片四个，换算两个），全部通过；复现命令 `cargo test -p minix-driver-printer -p minix-driver-cat24c256 -p minix-driver-bmp085 --lib`（工作目录 `os/`）；完整清单 `rg "fn test_" os/drivers/printer/printer/src/ os/drivers/eeprom/cat24c256/src/ os/drivers/sensors/bmp085/src/`。
+
+`2026-10-19` 的读数（翻译团外壳落地之后）：`minix-driver-acpi` 十五枚，全绿；复现命令 `cargo test -j 1 -p minix-driver-acpi`（工作目录 `os/`，权威编译门是容器 `minix-ci:1.94`）。这十五枚覆盖：协议车道的叠位（请求槽即消息类型、答复槽）、桥树的两式查找与子桥自带路由表、多根告警、空表初值、启动闸门的三种否决（无根指针、无内存特权、初始化链首环失败）、五连初始化的次序与参数、模式报告、两条请求的答复（含越界针脚不中止而答"无路由"）、未知请求原样回复。
 
 ---
 
@@ -212,3 +229,6 @@
 - `os/drivers/sensors/bmp085/src/convert.rs`：校准换算的实现。
 - `minix3/minix/drivers/printer/printer/printer.c`：打印机的原始实现（四百二十四行）。
 - `minix3/minix/drivers/examples/hello/hello.c`：最小示例的原始实现（一百五十八行）。
+- `os/drivers/power/acpi/src/bridge.rs`：桥树与中断路由表的实现。
+- `os/drivers/power/acpi/src/interpreter.rs`：解释器缝与诚实空解释器（登记 `E-ACPICA`）。
+- `os/drivers/power/acpi/src/service.rs`：启动闸门、五连初始化与两条请求的实现。
