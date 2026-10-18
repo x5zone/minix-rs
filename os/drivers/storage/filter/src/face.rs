@@ -126,7 +126,7 @@ impl<L: LowerLeg> FilterFace<L> {
         count: u64,
     ) -> i64 {
         // The caller's request must be sector-aligned (`main.c:160-164`).
-        if position % SECTOR_SIZE != 0 || count % SECTOR_SIZE != 0 {
+        if !position.is_multiple_of(SECTOR_SIZE) || !count.is_multiple_of(SECTOR_SIZE) {
             return EINVAL as i64;
         }
         if count as usize > BUF_SIZE {
