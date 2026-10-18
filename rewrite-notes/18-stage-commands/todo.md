@@ -119,6 +119,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百六十四（`SPLIT-TAIL-NOEOL-NEGCTL` 闭）：上一轮那枚只跑绿没验牙的门，现在有了咬得住的变异
+
+- **补的是什么账**。批次三百六十三留下一条明账：新门 `line_mode_does_not_invent_a_final_line_terminator` 只算跑绿、不算有牙，因为第一次试的变异（在 `lines_bytes` 里用 `Box::leak` 造一个自带换行的尾部切片）直接编译不过——`lines_bytes` 的返回类型是 `Vec<&[u8]>`，借用的生命周期没有着落，那根本不构成一次变异。本轮换一个**能编译**的注入点，把牙补上。
+- **注入点选在写侧而不是切侧**。`os/commands/usr-bin/textfilter/src/bin/split.rs:150` 那一格是 `create_write(&path, &render_chunk(chunk_lines))`，改成先取 `render_chunk` 的结果再无条件 `buf.push(b'\n')`：等价于「每个分片末尾都补一个换行」，正是 C 的 `split2` 不会做的事（尾段是 `if (Cs < Ce) bigwrite(ofd, Cs, Ce - Cs)`，原样写出）。
+- **变异的读数（L1，`2026-10-18`）**。`cargo test -j 1 --offline -p minix-textfilter --test split_face` ⇒ **8 红 / 18 绿**，红名单里既有本轮要钉的那枚 `line_mode_does_not_invent_a_final_line_terminator`，也有 `line_mode_does_not_invent_a_final_newline`、`line_mode_keeps_each_line_terminator_inside_a_multi_line_chunk`、`line_mode_keeps_undecodable_bytes`、`line_mode_makes_a_blank_line_its_own_chunk`、`the_obsolete_digit_form_takes_the_whole_token_as_the_count`、`the_solitary_dash_reads_stdin_and_the_marker_is_not_an_operand`、`the_split_reaches_the_chunk_files_end_to_end`——一枚补换行的变异能同时让八枚门变红，说明这一族门确实在数终止符。日志 `tmp/split-364/control1.log`。还原用改前留在同目录的 `split.rs.bak`（**不是 `git checkout`**，规矩见批次三百五十五），md5 `5453999e…` 前后一致；还原后 `--test split_face` 复绿 **26 passed / 0 failed**，整包 **1076 passed / 0 failed**。
+- **本轮不动生产码**，所以容器权威门没有新读数；同码的权威读数是批次三百六十三那一笔（`05e9be678`）容器退码 0、整包 1076 / 0。门的位置也没挪，定位命令：`grep -n "line_mode_does_not_invent_a_final_line_terminator" os/commands/usr-bin/textfilter/tests/split_face.rs`。
+- **台账状态**：`SPLIT-TAIL-NOEOL-NEGCTL` 由 `open` 翻成 **closed**；批次三百六十三那条「只算跑绿不算有牙」的保留语就此销掉。核实命令、读数、日期如上，快照提交号见本笔落地那一号。
+- **下一轮首动作**：`bash tools/claim.sh claim FORTUNE-READ-ERRLEG qoder`（`fortune` 读臂那句自创的 `read error` 对 C 的判据——先确认 C 的读腿到底走不走 `err`，判据出处已在批次三百六十二「不动的那一半」里写明）。
+
+---
+
 ## 批次三百六十三（`SPLIT-NONUTF8-DROP` 复测翻状态）：两半分叉都已在代码里闭着，补齐末行的端到端门，一枚没跑成的负控记账
 
 - **复测而不是新修**。批次三百三十记的那枚 P0 有两半分叉：行模式遇非法 UTF-8 整档静默丢弃、末行终止符被补。本轮在 `rewrite` 头 `f24fe6c69` 的认领树里现量，两半都已经闭着——决定半是字节面的 `lines_bytes`（`os/commands/usr-bin/textfilter/src/split.rs:30`），行切分不碰解码，`split2` 的尾段是 `if (Cs < Ce) bigwrite(ofd, Cs, Ce - Cs)`（`minix3/usr.bin/split/split.c`，C 补不出一个字节）。可重跑读数两条：
