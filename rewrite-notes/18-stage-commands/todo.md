@@ -119,6 +119,52 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百五十六（`SPLIT-STREAMING-MEMORY` 片甲的第二步）：先把流式切块的语义单独坐实，再接读缝
+
+- **本轮落的是决定半，不是整片**。真流式还缺两样东西：`bin_support.rs` 双生面里一条**分块读**的缝
+  （现在只有 `read_operand`/`read_stdin_error` 这种「读到尽头再交回」的形状），以及输出侧一条
+  **能续写**的缝（`bin_support::WriteSink::finish(self, bytes)` 消费 `self`，一枚文件只能一次写完）。
+  这两处都要动两个面，还要把已经登记在册的 `SPLIT-CLOSE-ERRLEG`（关闭失手那一句报的是**上一枚**
+  分片的名字，`minix3/usr.bin/split/split.c:319-322`）一并接上。所以本轮先把最容易写错、
+  也最该有门的那一块——**跨读切块语义**——独立落地并钉死，下一轮接缝时只需把缝喂给它。
+
+- **新增的形状**（都在 `os/commands/usr-bin/textfilter/src/split.rs`）：`pub struct ByteCutter`
+  带三个字段 `size`（每片字节数）、`filled`（当前分片已写多少）、`open`（当前分片还开着没有）；
+  `pub fn take(&mut self, piece: &[u8]) -> Vec<CutPiece>` 交回一串片段，每段带
+  `bytes` 与 `opens_new_file`（为真就要先关上一枚、后缀推进一位再新建，对位 C 的 `newfile()`）。
+  这四条逐条来自 C：跨读留下的只有 `bcnt` 这一个计数器（`split.c:196-236`，不留数据）；
+  `split.c:228-230` 的 `else file_open = 0` 让**正好切满**之后当前分片就算关掉，
+  下一次读到的头几个字节属于新的一枚；`split.c:221-230` 的 `if (len)` 意味着
+  一次读横跨好几片时**不留零长度的尾巴**；`size == 0` 与 [`chunk_bytes`] 对 `n == 0`
+  交出空结果同一个口径，是调用方的错而不是本层自己发明行为。
+
+- **五枚新门**（宿主单测，`cargo test -p minix-textfilter --lib`）：
+  ① `the_cutter_agrees_with_the_whole_buffer_cut_at_any_read_boundary`——同一份 40 字节输入，
+  六种片长（1/3/5/8/40/41）乘八种读边界（一次读完、逐字节、7 起步、正好五片、13/13/14 等），
+  按 `opens_new_file` 把片段归成文件，必须与 `chunk_bytes` 一次切完的结果**逐字节相同**。
+  这一枚就是流式化「不改可见行为」的证明，也是下一轮接线时唯一需要守住的等价式。
+  ② `an_exact_fill_closes_the_file_so_the_next_read_starts_a_new_one`（钉 `:228-230`）。
+  ③ `one_read_spanning_several_chunks_leaves_no_empty_tail`（钉 `if (len)`）。
+  ④ `a_short_read_continues_inside_the_same_chunk_file`（跨读续在同一枚）。
+  ⑤ `a_zero_sized_cutter_produces_no_pieces`（零大小与 `chunk_bytes` 同口径）。
+
+- **门有牙的凭据（两枚变异控制，各自跑各自红）**：把「切满即关档」写成 `self.open = true`
+  → 四枚变红（①③④与②那枚本身）；把「每一段都另起一枚」写成 `let opens_new_file = true;`
+  → ①④两枚变红。两枚跑完都按**改坏前留在内存里的那份原文**整文件复原并核 md5
+  （`4a27f441…` 前后一致），`git status --porcelain` 只剩本轮该动的 `src/split.rs`。
+  这条口径是批次三百五十五记下的规矩：工作态未提交时不许用 `git checkout` 当还原源。
+
+- **门读数（本轮）**：宿主 `--lib` `534 passed / 0 failed`（本轮起点 529，新增 5 枚）；
+  `rustfmt --edition 2021 --check` 对触及件零漂移；容器权威门日志
+  `tmp/split-356/container-gate.log`（结果按该文件实际读数为准）。
+
+- **下一轮首动作**：`tools/claim.sh claim SPLIT-STREAMING-MEMORY qoder`，给 `bin_support.rs`
+  加一条分块读缝与一个可续写的输出缝（两面各一腿），把 `src/bin/split.rs` 的 `-b` 分支从
+  `chunk_bytes(&input, n)` 换成 `ByteCutter` + 缝喂进来的块，并把 `SPLIT-CLOSE-ERRLEG`
+  一并接上；可见行为由门①那条等价式守着，中途读失手那一形仍要补门（登记在册的覆盖空洞）。
+
+---
+
 ## 批次三百五十五（`SPLIT-STREAMING-MEMORY` 片甲的第一步）：`split -b` 把读失手那个号丢在地上，先修正确性再动流式
 
 - **做什么**：领 `tools/claim.sh claim SPLIT-STREAMING-MEMORY qoder`，落三片里的第一片（`-b` 流式化）。

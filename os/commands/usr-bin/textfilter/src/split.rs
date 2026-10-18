@@ -362,6 +362,68 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
     })
 }
 
+/// 按字节定长切分的**流式**切块器：把一块一块读进来的输入切成「写给当前分片」与
+/// 「另起一枚分片」两种片段，语义照 `minix3/usr.bin/split/split.c:175-236` 的 `split1`。
+///
+/// C 跨两次 `read` 留下的只有一个计数器（`bcnt`：当前分片已经写了多少字节），
+/// 不留任何数据，所以这一层要复写的也只有这两个数：已写字节与「当前分片是否还开着」。
+/// 一条关键细节来自 C 的 `else file_open = 0`（`split.c:228-230`）：**正好切满**之后当前
+/// 分片就算关掉了，下一次读到的头几个字节属于**新的一枚**分片，而不是接着往刚写完的文件里灌。
+pub struct ByteCutter {
+    size: usize,
+    filled: usize,
+    open: bool,
+}
+
+/// 一段要写出去的字节，以及它该落在哪一枚分片：`opens_new_file` 为真就先把上一枚
+/// 关掉、后缀推进一位再新建（C 的 `newfile()`，`split.c:309-335`）。
+#[derive(Debug, PartialEq, Eq)]
+pub struct CutPiece<'a> {
+    pub bytes: &'a [u8],
+    pub opens_new_file: bool,
+}
+
+impl ByteCutter {
+    /// 以每片 `size` 字节建一个切块器。`size` 为零按调用方的错处理，
+    /// 与 [`chunk_bytes`] 对 `n == 0` 交出空结果同一个口径。
+    pub fn new(size: usize) -> Self {
+        Self {
+            size,
+            filled: 0,
+            open: false,
+        }
+    }
+
+    /// 把一次读到的 `piece` 切成若干片段，顺序就是写出顺序。
+    pub fn take<'a>(&mut self, piece: &'a [u8]) -> Vec<CutPiece<'a>> {
+        let mut out = Vec::new();
+        if self.size == 0 {
+            return out;
+        }
+        let mut rest = piece;
+        while !rest.is_empty() {
+            let opens_new_file = !self.open;
+            if opens_new_file {
+                self.open = true;
+                self.filled = 0;
+            }
+            let room = self.size - self.filled;
+            let give = room.min(rest.len());
+            out.push(CutPiece {
+                bytes: &rest[..give],
+                opens_new_file,
+            });
+            self.filled += give;
+            rest = &rest[give..];
+            if self.filled == self.size {
+                self.open = false;
+                self.filled = 0;
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,7 +503,7 @@ mod tests {
         assert_eq!(suffix(1, 3).as_deref(), Some("aab"));
         assert_eq!(suffix(26 * 26 - 1, 3).as_deref(), Some("azz"));
         assert_eq!(suffix(26 * 26 * 26, 3), None); // 超 26^3 穷举
-        // width 0 非法 → None。
+                                                   // width 0 非法 → None。
         assert_eq!(suffix(0, 0), None);
     }
 
@@ -554,7 +616,7 @@ mod tests {
         assert_eq!(c[0], b"abc"); // 10/3 = 3
         assert_eq!(c[1], b"def");
         assert_eq!(c[2], b"ghij"); // 末段吸收余数
-        // n == len：逐字节。
+                                   // n == len：逐字节。
         assert_eq!(
             chunks_n(b"abc", 3).unwrap(),
             vec![&b"a"[..], &b"b"[..], &b"c"[..]]
@@ -674,5 +736,116 @@ mod tests {
             parse_split_args(&["a", "b", "c"]).err(),
             Some(SplitError::Usage)
         ); // >2 操数
+    }
+
+    /// 切块器与整档切块必须逐字节等价：同一份输入，随便按哪些边界切成几次读，
+    /// 把片段按 `opens_new_file` 归成文件，结果要与 `chunk_bytes` 一次切完完全相同。
+    /// 这一枚就是流式化「不改可见行为」的证明，读边界取的是「跨片」「正好切满」
+    /// 「一次读横跨好几片」三种形状。
+    #[test]
+    fn the_cutter_agrees_with_the_whole_buffer_cut_at_any_read_boundary() {
+        let data: Vec<u8> = (0u8..40).collect();
+        for size in [1usize, 3, 5, 8, 40, 41] {
+            for boundaries in [
+                vec![data.len()],
+                vec![1, 1, 1, data.len() - 3],
+                vec![7, 7, 7, 7, 7, 5],
+                vec![5, 5, 5, 5, 5, 5, 5, 5],
+                vec![13, 13, 14],
+                vec![40],
+                vec![20, 20],
+                vec![41],
+            ] {
+                let mut cutter = ByteCutter::new(size);
+                let mut files: Vec<Vec<u8>> = Vec::new();
+                let mut offset = 0usize;
+                for step in &boundaries {
+                    let piece = &data[offset..(offset + step).min(data.len())];
+                    offset += step;
+                    for part in cutter.take(piece) {
+                        if part.opens_new_file || files.is_empty() {
+                            files.push(Vec::new());
+                        }
+                        files.last_mut().unwrap().extend_from_slice(part.bytes);
+                    }
+                    if offset >= data.len() {
+                        break;
+                    }
+                }
+                let whole = chunk_bytes(&data, size)
+                    .into_iter()
+                    .map(|chunk| chunk.to_vec())
+                    .collect::<Vec<Vec<u8>>>();
+                assert_eq!(files, whole, "size={size} boundaries={boundaries:?}");
+            }
+        }
+    }
+
+    /// 正好切满之后当前分片就算关掉：下一次读到的头几个字节必须属于**新的一枚**分片。
+    /// 这条来自 `split.c:228-230` 的 `else file_open = 0`，是本层最容易写错的一形。
+    #[test]
+    fn an_exact_fill_closes_the_file_so_the_next_read_starts_a_new_one() {
+        let head = [1u8, 2, 3, 4];
+        let tail = [5u8, 6];
+        let mut cutter = ByteCutter::new(4);
+        let first = cutter.take(&head);
+        assert_eq!(
+            first,
+            vec![CutPiece {
+                bytes: &[1, 2, 3, 4],
+                opens_new_file: true
+            }]
+        );
+        let second = cutter.take(&tail);
+        assert_eq!(
+            second,
+            vec![CutPiece {
+                bytes: &[5, 6],
+                opens_new_file: true
+            }],
+            "切满之后再读，不许接着灌上一枚分片"
+        );
+    }
+
+    /// 一次读横跨好几片时每片各起一枚文件，且**不留零长度的尾巴**
+    /// （C 的 `if (len)` 就是这个意思，`split.c:221-230`）。
+    #[test]
+    fn one_read_spanning_several_chunks_leaves_no_empty_tail() {
+        let mut cutter = ByteCutter::new(4);
+        let ten: Vec<u8> = (0u8..10).collect();
+        let pieces = cutter.take(&ten);
+        assert_eq!(pieces.len(), 3, "10 字节按 4 切是 4/4/2 三段");
+        assert!(pieces.iter().all(|p| p.opens_new_file));
+        assert_eq!(pieces[0].bytes.len(), 4);
+        assert_eq!(pieces[1].bytes.len(), 4);
+        assert_eq!(pieces[2].bytes.len(), 2);
+        assert!(!pieces.iter().any(|p| p.bytes.is_empty()));
+    }
+
+    /// 读进来的不足一片时，后来的那一块要**接在同一枚**分片里：
+    /// 这是跨读留存面唯一真正起作用的一形（C 用 `bcnt` 记这一步）。
+    #[test]
+    fn a_short_read_continues_inside_the_same_chunk_file() {
+        let head = [1u8, 2, 3];
+        let rest = [4u8, 5, 6, 7, 8, 9, 10];
+        let mut cutter = ByteCutter::new(8);
+        let first = cutter.take(&head);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].opens_new_file);
+        let second = cutter.take(&rest);
+        assert_eq!(second.len(), 2, "补足 8 之后再起新的一枚");
+        assert!(!second[0].opens_new_file);
+        assert_eq!(second[0].bytes, &[4, 5, 6, 7, 8]);
+        assert!(second[1].opens_new_file);
+        assert_eq!(second[1].bytes, &[9, 10]);
+    }
+
+    /// `size` 为零是调用方的错，与 `chunk_bytes` 同一个口径：什么都切不出来，
+    /// 而不是把输入静默吃掉或原地打转。
+    #[test]
+    fn a_zero_sized_cutter_produces_no_pieces() {
+        let mut cutter = ByteCutter::new(0);
+        assert!(cutter.take(&[1, 2, 3]).is_empty());
+        assert_eq!(chunk_bytes(&[1u8, 2, 3], 0), Vec::<&[u8]>::new());
     }
 }
