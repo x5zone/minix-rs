@@ -340,7 +340,7 @@ mod tests {
     }
 
     impl ClientTransport for FakeTransport {
-        fn grant(&mut self, _buf: &[u8]) -> Result<i32, ClientError> {
+        fn grant(&mut self, _who_to: Endpoint, _buf: &[u8]) -> Result<i32, ClientError> {
             Ok(1)
         }
 

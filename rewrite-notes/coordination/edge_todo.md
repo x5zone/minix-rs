@@ -722,6 +722,7 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 ## E-DMWIRE devman 生产接线四缺：server transport、请求分类器、装配半、client/RS 侧生产传输（11-stage-devman 首轮架构审查登记，2026-09-15）
 
 > **复核进度（2026-09-21，qorder_3，LEDGER-AUDIT）**：四缺其二已落地：server transport（main.rs:39 MinixTransport::new）+ 装配半（hooks.rs:117 DevmanSef 生产 SefHooks，09-16 E-MIBPROD 收口注记同批）。**请求分类器与 client/RS 侧 devman_client 生产传输未落**（rs/src grep devman_client 零命中），本条维持开放。
+> **进度（`2026-10-18`，`claim/E-DMWIRE-CLI-zcode-ds`，B 板 B9 客户端半）**：上一条「client/RS 侧 `devman_client` 生产传输未落」是**假阴性**——客户端生产传输 `SysClientTransport`（grant 表 + `DirectKernelCallTransport` + `DirectTrapTransport`）与 RS publish 的 devman 臂已在 `2026-09-19 b05905406` 落地；`grep devman_client os/servers/rs/src` 零命中是因为 RS 臂用自己的消息助手（`publish.rs` 的 `should_bind_devman`/`devman_bind_message`/`devman_result`），不引用客户端库。本笔同时修掉客户端传输的一处 P0：`grant()` 原按 `Endpoint::NONE` 签发 direct grant，与 C `cpf_grant_direct(devman_ep, …)`（generic.c:113）不符；内核 `do_safecopy.c:195-196` 只认 `who_to == grantee` 或 `who_to == ANY`，而 `NONE != ANY`，故按 NONE 签发的授权在 devman 侧 safecopy 时必然 EPERM。修法：`ClientTransport::grant` 增收方参数、`add_device` 传 devman、`SysClientTransport` 写 `who_to.get()`；回归断言 `granted_to == [devman]`。核实：`cargo test -p minix-sys` → 327/0；`cargo clippy -p minix-sys --tests` 自有文件本门告警 0。余项不变：devman 服务器侧的请求分类器（raw IPC → `Request`/`DevmanMsg`）归 A 板（A17/A18），本板零剩余。
 
 
 **问题**：devman 语义面 84 个测试全部跑在注入 seam 上（78 server + 6 client），生产执行半整层缺席，四个落点分属不同域：
