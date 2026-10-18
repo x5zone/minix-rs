@@ -19,6 +19,8 @@
 //! - [`portio`] — the port-access abstraction (document section 3).
 //! - [`driver`] — the driver trait, routing rules, and the server state
 //!   machine (document sections 3 and 4).
+//! - [`wire`] — the NDEV message layouts: field offsets for requests and
+//!   replies, pinned by C-layout mirrors in its tests.
 //!
 //! Socket-device (SDEV) side, owned by stage 17-stage-net (the wire
 //! vocabulary lives in `minix-sockdriver`, edge E-SDEVOWN):
@@ -46,3 +48,4 @@ pub mod protocol;
 pub mod service;
 pub mod sockid;
 pub mod socktable;
+pub mod wire;

@@ -13,8 +13,22 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 pub mod char_face;
 pub mod ring;
+pub mod service;
 
-/// Service initialization entry (wires the card table; register traffic stays out).
-pub fn init() {}
+use char_face::LanceFace;
+use service::LanceService;
+
+/// Build the driver's service for the binary.
+///
+/// The chip identity comes from the version register, which is the
+/// register-traffic seam this crate does not model yet; without a probe
+/// result the face carries `None`, the same fallback the C probe reports
+/// when its version gate fails (`lance_probe`, `lance.c:707-722`).
+pub fn init() -> LanceService<LanceFace> {
+    LanceService::new(LanceFace::new(None))
+}
