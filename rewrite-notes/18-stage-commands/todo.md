@@ -119,6 +119,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百八十（A6c `UNIQ-WRITE-ERRLEG` 闭）：`uniq` 的输出腿**从不查写失手**——本壳两形都把它报成退 1，其中一形还印了句 C 没有的两段报文
+
+- **这一轮干什么**：批次三百三十把这条登记成「`uniq` 的写腿这次只把签名跟到位、报文形状未动」。本轮对着参照件把两形都量了，结论比「形状未动」更严重：**C 根本不报写失手，而本壳两形都报**，其中输出操作数那一形还印了一句 C 世界里不存在的两段形。**这是 `Rewrite` 档的行为分叉，本轮落码修掉。**
+- **参照件先要编得出来**：`minix3/usr.bin/uniq/uniq.c` 的行读入口是 BSD 的 `fgetln(3)`，glibc 从未有过这个名字，链接期直接 `undefined reference to 'fgetln'`。按批次二百六十七/二百六十九的「按符号拆独立补面」手法新增 `tools/atf-c-compat/host-ref/bsd-fgetln.c`（带 `#if defined(__GLIBC__)` 判据，别的 libc 上整件退化成空翻译单元），原型进同目录 `bsd-compat-proto.h`，并把 `tools/build-bsd-ref.sh` 从「写死一枚 `bsd-progname.c`」改成**链上 `host-ref/bsd-*.c` 全部**——以后每添一枚函数级补面都不用再改脚本。回归：`uniq`、`fortune`、`split` 三支参照件都 `-Wall` 零告警链出。
+- **一处必须写明的载体限制（它影响的不止本支）**：`uniq.c:77` 的 optstring 是 `"-cdf:s:u"`。BSD `getopt` 用 `-` 表示「非选项参数原样交回」，程序里对应 `case '-': goto done;`（`:79-81`）；**glibc 的 `-` 语义是「非选项按字符码 1 交回」**，于是 `case '-'` 永不命中，落到 `case '?'` → `usage()`。实测：`uniq_ref < 输入`（stdin 形）正常出 `a|b|c|` 退 0，而 `uniq_ref 输入 输出`、`uniq_ref 输入`、甚至 `uniq_ref -c 输入` **全部报 usage 退 1**。⇒ **宿主参照件带任何文件操作数都跑不动**，本轮只能对 stdin 那一形取真值。这条限制对 A2/A11 的 `getopt` 族、以及板上「报文形逐字节对参照件」那条判据同样成立——文件操作数那一半要么在真机上对，要么先给参照件配一枚 BSD 语义的 `getopt` 补面（那是独立一笔的活）。因此输出操作数那形的真值取自**源码的缺省行为**（`uniq.c` 全文没有一处 `ferror`/`fflush`，现查 `grep -nE "ferror|fflush" minix3/usr.bin/uniq/uniq.c` 零命中），而不是取自参照件的读数。
+- **C 的真值**：开档失败才报，且报的是三段形 `uniq: <名字>: <errno 句子>`（`file()` 里 `err(1, "%s", name)`，`uniq.c:216-221`）；一旦开档成功，`fprintf`/`fputs` 的返回值一律不看，退出时 stdio 的冲刷失败也被咽掉 ⇒ **写失手既不多一句话也不改退码**。参照件实测：`uniq_ref < in.txt >/dev/full` → 退 **0**、stderr 空。
+- **本壳改前的两形**（现跑读数）：① 无输出操作数、stdout 挂 `/dev/full` → 静默但**退 1**（走 `support::emit`，它失手即 `terminate(1)`）；② 输出操作数指向写不进的落点 → 印一句**只有两段的** `uniq: /dev/full` 并退 1——句子不是 C 的句子（C 的两段形只出现在 `errx` 那一族），退码也不是 C 的退码。③ 开不了那一形本来就是对的（`bin/uniq.rs:86` 的 `warn_line(prog, path, code)` 三段形 + 退 1，实测 `uniq: tmp/uniq-380/rodir/out: Permission denied` 退 1）；④ 正常两操作数 `a|b|c|` 退 0 ✓。
+- **修法**（`os/commands/usr-bin/textfilter/src/bin/uniq.rs:107-126`）：两条出路都改成「把写失手咽下去、退 0」——`Some(sink) => { let _ = sink.finish(&body); }`、`None => { let _ = support::emit_error(&body); }`，末尾仍是 `terminate(0)`。用 `emit_error` 而不是 `emit` 是关键一步：`emit` 的语义就是「失手替调用方退 1」，而本支要的正是**不**替它退。这与批次三百六十一给 `fortune` 定下的口径同型（C 不查 `ferror(stdout)` ⇒ 写失手不新增句子也不改退码），属 `Rewrite` 档。
+- **两枚新门与两枚负控**：`uniq_face.rs` 的 `a_stdout_that_stops_taking_bytes_stays_silent_and_exits_zero` 与 `an_output_operand_that_cannot_be_written_stays_silent_and_exits_zero`（13 枚 → **15 枚**，全绿）。负控两枚各自咬住（`tmp/uniq-380/negctl.py`）：M1 把 stdout 那形改回「失手即退 1」→ 失败数 1、命中第一枚新门；M2 把 sink 那形改回「失手即退 1」→ 失败数 1、命中第二枚新门；注入编译通过、日志含 `Compiling minix-textfilter`、还原用内存原文且 md5 前后一致、复跑失败数 0。
+- **读数汇总**：`cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1087 passed / 0 failed**（起点 1085，净增即这两枚）；三架构裸机 `cargo build --bins`（`x86_64-unknown-none`、`aarch64-unknown-none`、`riscv64gc-unknown-none-elf`）退码全 0、0 条 error；`cargo clippy --all-targets -p minix-textfilter` 告警 **154** 与片乙记录的基线同数未增；rustfmt 对本支两件零漂移——`bin_support.rs:228` 那处既存漂移不属本支，按「一次一条」未顺手改。
+- **三件套**：核实命令 `bash tools/build-bsd-ref.sh -o tmp/uniq-380/uniq_ref minix3/usr.bin/uniq/uniq.c`、`./tmp/uniq-380/uniq_ref < tmp/uniq-380/in.txt >/dev/full; echo $?`（→ 0）、`grep -nE "ferror|fflush" minix3/usr.bin/uniq/uniq.c`（→ 零命中）、`grep -n '"-cdf:s:u"' minix3/usr.bin/uniq/uniq.c`、`cd os && cargo test --offline -j 1 -p minix-textfilter --test uniq_face`、`python3 tmp/uniq-380/negctl.py`；核实日 `2026-10-19`；基线快照 `9f1b3cae7`。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim BSD-GETOPT-DASH-OPTSTRING qoder`——给参照件配一枚 BSD 语义的 `getopt` 补面（认 `-` 交回 `'-'`），把「宿主参照件带文件操作数跑不动」这面墙拆掉；拆掉之后 A2/A11 的 `getopt` 族与 `uniq` 输出操作数那形才谈得上逐字节对参照件。
+
 ## 批次三百七十九（A6b `SPLIT-CLOSE-HOST-VISIBILITY` 现查）：分不清的两件事分开之后就清楚了——**响应逻辑宿主测得到，载体造不出来**
 
 - **这一轮量什么**：批次三百三十把这条登记成「宿主腿看不见 `close` 失败这件事未修」。本轮去核「看不见」到底指什么，结论是这句话把两件事混成一件：**`close` 的号怎么被回应**（映射成哪条腿、报哪个档名、退几）是宿主**已经测得到**的；**造一次真的 `close` 失手**才是宿主做不到的。生产码一字未动，也没新造门。
