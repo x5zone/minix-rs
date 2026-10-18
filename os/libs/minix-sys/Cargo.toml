@@ -24,7 +24,8 @@ devman = []
 input = []
 usb = ["devman"]
 socket = []
-default = ["ds", "rmib", "devman", "input", "usb", "socket"]
+pci = []
+default = ["ds", "rmib", "devman", "input", "usb", "socket", "pci"]
 
 [dependencies]
 minix-types = { workspace = true }

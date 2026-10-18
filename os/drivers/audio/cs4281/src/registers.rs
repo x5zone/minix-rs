@@ -11,6 +11,13 @@
 //! volatile load or store to an address the driver mapped out of the PCI
 //! BAR (`cs4281.c:305-318`), not a port I/O call.
 
+/// PCI command bit: SERR# driver (`SERR_EN`, `cs4281.h:23`).
+pub const SERR_EN: u16 = 0x0100;
+/// PCI command bit: bus mastering (`PCI_MASTER`, `cs4281.h:24`).
+pub const PCI_MASTER: u16 = 0x0004;
+/// PCI command bit: I/O space access (`IO_ACCESS`, `cs4281.h:25`).
+pub const IO_ACCESS: u16 = 0x0001;
+
 /// PCI vendor identifier (`VENDOR_ID`).
 pub const VENDOR_ID: u16 = 0x1013;
 /// PCI device identifier (`DEVICE_ID`).
@@ -207,6 +214,7 @@ mod tests {
         assert_eq!(REG_DAC_DMR, 0x0150);
         assert_eq!(REG_ADC_DCR, 0x015c);
         assert_eq!(REG_DAC_DMA_LEN, 0x011c);
+        assert_eq!(SERR_EN | PCI_MASTER | IO_ACCESS, 0x0105);
         assert_eq!(INTR_STS_DAC, 0x0100);
         assert_eq!(INTR_STS_ADC, 0x0200);
     }
