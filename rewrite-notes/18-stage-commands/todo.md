@@ -136,6 +136,9 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 
 
+- **正确性回归补记（同线第二轮，`full-review` 限定本批 diff）**：P0 六类零发现；C 的 `if (len) newfile(); else file_open = 0;`（`split.c:271-274`）与壳侧「切点片段带 `opens_new_file: !self.open`、随后清开档位」（`os/commands/usr-bin/textfilter/src/split.rs:fn LineCutter::take`）逐形对过：空输入零枚、切点压在读末不提前开下一枚、一行跨两读续写同一枚、一片内多切点各起一枚，四形同出路。**本轮写破的一条**：「流式不改可见行为」是两段链——等价门证「流式 ≡ 整档一次切完」，而「整档一次切完 ≡ C」靠 `split_face` 既有的 `line_mode_keeps_undecodable_bytes`、`line_mode_makes_a_blank_line_its_own_chunk`、`line_mode_does_not_invent_a_final_line_terminator` 三枚端到端门钉住，本批台账先前只写破前一段。产物在 `.review/qoder/18-stage-commands/07-text-filter/scan.md` 与同目录 `VERIFY-CHECK.md`（同 agent 复验，已逐条重跑命令）。
+- **新立敞口 `TEXTFILTER-DOC-CARRY-GAP`（P1-docStyle，存量非本批引入）**：`tools/doc-code-density-check.sh --check rewrite-notes/18-stage-commands/07-text-filter.md` 报 **2 个承载章阻断项**；同一命令对本批改前那份（`git show f0fe84209~1:` 导出件）复跑读数**同样是 2 个**，故与本批无关，只是被本批的文档同步一笔带到眼前。修法属 `style-fix`（给承载章补贴码与调用图），不在 todo-fix 射程，登记不动手。**下一轮首动作**因此有两条候选：`claim SPLIT-STREAMING-MEMORY` 做片C，或 `claim TEXTFILTER-DOC-CARRY-GAP` 补本文承载面。
+
 ## 批次三百七十一（残骸回收）：判据是三方对账，不是目录属主——我在路上连错三次
 
 - **这一轮清什么**：`.wt` 里两棵「销了账却没从磁盘消失」的树，`claim.sh sweep` 长期判「需核对」：`.wt/rev-stdin-errleg-qoder`（3.5G，`os/target` 之外 1528 个文件）与 `.wt/docgen2-01-doc01iter2`（144K，之外 3 个文件）。批次三百六十八曾把它们记成「`xzhao` 属主、不需要 sudo」，那条纠正是**半对的**，本笔纠回来。
