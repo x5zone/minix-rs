@@ -203,6 +203,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `USBD` 片收尾（USB 族首台，占位 18→17）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `21→20` —— 随 usbd 接线（`os/drivers` 18→17）的机械过账。**裁决更正**：原「C 全经 DDEkit 宿主抽象」方向反了（依据 `hcd_ddekit.c`）——DDEkit 的 USB 客户端 API 是 usbd **对外实现**的，usbd 下面那层才是控制器；故缝建在控制器（`HcdLeg`），随 usbd 落地（`UnboundHcd` 诚实拒绝）。usbd 四模块（hcd 缝/service 五请求派发与 URB 名册清理/main 真循环）。登记缝：控制器（`musb/` 约一千行）—— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `USB-HUB` 片收尾（USB 族第二台，占位 17→16）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `20→19` —— 随 usb_hub 接线（`os/drivers` 17→16）的机械过账。usb_hub 六模块（`hub_class` 的类请求编码与 C 的四特征校验、`usbd` 客户端缝（init/控制传输/取消/描述符）、service 的轮询环（逐口状态读→观察推导→上电与复位预算）、main 真循环）。登记缝：usbd 客户端腿（生产需 IPC 到 usbd）与控制器（`musb/`）—— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。
