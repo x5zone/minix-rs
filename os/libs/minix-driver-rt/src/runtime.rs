@@ -131,6 +131,25 @@ impl<T: DriverTransport> DriverRuntime<T> {
         }
     }
 
+    /// [`DriverRuntime::serve`] without the data-store announce.
+    ///
+    /// Some drivers publish no key at all: the ti1225 CardBus controller
+    /// has no client protocol and its C startup (`sef_cb_init_fresh`)
+    /// never calls an announce. The birth handshake and the loop are
+    /// otherwise identical; the runtime's label is unused on this path.
+    pub fn serve_quiet<H, F>(&mut self, handler: &mut H, init: F) -> Result<(), i32>
+    where
+        H: DriverHandler<T>,
+        F: FnOnce(InitKind) -> Result<(), i32>,
+    {
+        self.run_birth(init)?;
+        loop {
+            let mut msg = Message::default();
+            self.transport.receive(&mut msg)?;
+            handler.handle(&mut self.transport, &msg);
+        }
+    }
+
     /// Consume RS's init request: run `init` for its kind and report
     /// `RS_INIT` with the result back to RS. Returns `Ok(())` only when
     /// the fresh-start callback succeeded; a stateful kind or a failed
@@ -272,8 +291,10 @@ mod tests {
     impl DriverHandler<Canned> for Counter {
         fn handle(&mut self, transport: &mut Canned, msg: &Message) {
             self.handled += 1;
-            let mut reply = Message::default();
-            reply.m_type = msg.m_type + 1;
+            let mut reply = Message {
+                m_type: msg.m_type + 1,
+                ..Message::default()
+            };
             //[SD19-gate] Counter 夹具只计数并回一条消息，断言消费的是
             // `handled` 与运输日志；回发结果按夹具忽略。
             #[allow(clippy::let_underscore_must_use)]
@@ -282,9 +303,10 @@ mod tests {
     }
 
     fn scripted(id: u32) -> Message {
-        let mut msg = Message::default();
-        msg.m_type = id as i32;
-        msg
+        Message {
+            m_type: id as i32,
+            ..Message::default()
+        }
     }
 
     #[test]
@@ -352,6 +374,27 @@ mod tests {
         // The birth reply is the first send: RS_INIT back to RS.
         assert_eq!(runtime.transport.sent[0], (Endpoint::RS, minix_types::RS_INIT));
         assert_eq!(runtime.transport.sent.len(), 3);
+    }
+
+    /// `serve_quiet` runs the same birth handshake and loop but publishes
+    /// no label (the ti1225 path: C's startup announces nothing).
+    #[test]
+    fn test_serve_quiet_skips_the_announce() {
+        let transport = Canned::new(vec![
+            Ok(birth_request(0)), // SEF_INIT_FRESH
+            Ok(scripted(301)),
+            Err(-minix_types::EIO), // transport dies: the loop returns
+        ]);
+        let mut runtime = DriverRuntime::new(transport, "unused.label");
+        let mut handler = Counter { handled: 0 };
+        assert_eq!(runtime.serve_quiet(&mut handler, |_| Ok(())), Err(-minix_types::EIO));
+        assert_eq!(handler.handled, 1);
+        assert!(
+            runtime.transport.labels.is_empty(),
+            "no label is published on the quiet path"
+        );
+        // The birth reply is still RS_INIT back to RS.
+        assert_eq!(runtime.transport.sent[0], (Endpoint::RS, minix_types::RS_INIT));
     }
 
     /// A stateful (live-update) kind is refused honestly: the result is
