@@ -128,7 +128,7 @@
 | 13 进程间通信 | [`todo.md`](../13-stage-ipc/todo.md) | 阶段内 0 | 残余为 `E-IPCWIRE` 的装配面 |
 | 14 运行时 | [`todo.md`](../14-stage-runtime/todo.md) | 阶段内 0；「真机 2」对账为账面滞后 | 旧记的 `open` 1（内核信息魔术失配错误码选型）经现场核实为**账面滞后**——`V1-P1-4` 已于 `2026-09-16` 裁决落地（Fix #5：`KerninfoAvailability` 三态枚举在位、`InitError` 零命中，`2026-10-09` 核），阶段内 `open` 归零。**对账（`2026-10-18`）：**「两件真机面」具名为 `real-trap` 与 `panic-handler` 两个 feature 面——`real-trap` 已改按 `target_os = "none"` 判定（feature 只剩宿主侧强制，`os/libs/minix-rt/src/init.rs` 的 cfg），`panic-handler` 已由 `rt-birth`/`pfs`/`mfs` 等 freestanding 二进制消费；二者不再是 14 篇的独立缺口，真机验证归 §4 的 `E1` 行；`V1-P1-1` 自身余项 `fini_array`/`init_array`（无消费方）归 csu 链（B 板 B4） |
 | 15 文件系统 | [`todo.md`](../15-stage-fs/todo.md) | `partially fixed` 2 | 八个文件服务器入口未接事件循环 |
-| 16 驱动 | [`todo.md`](../16-stage-drivers/todo.md) | `open` 2（G6、A4）+ `stopgap landed` 3 | 二十六个纯占位 crate（G6）；协议常量单一来源（A4）；两套字符驱动收敛。G7 文档覆盖声明已收口（`2026-10-18`，doc 04/13/21 共 8 处） |
+| 16 驱动 | [`todo.md`](../16-stage-drivers/todo.md) | `open` 1（G6）+ `stopgap landed` 3 | 二十六个纯占位 crate（G6）；两套字符驱动收敛。A4 协议常量单一来源已收口（`2026-10-18`，跨消费者族上收 `minix-types::types::device`、blockdriver 四条本地副本清零）；G7 文档覆盖声明已收口（`2026-10-18`，doc 04/13/21 共 8 处） |
 | 17 网络 | [`todo.md`](../17-stage-net/todo.md) | `open` 2 | 协议栈本体与传输未实现；缺设计条目。原记的第三项"套接字标识基值缺 Rust 侧权威"经现场核实为**账面滞后**（`os/libs/minix-netdriver/src/sockid.rs` 已于 `2026-09-17` 落地，`cargo test -p minix-netdriver --lib sockid` → 5 passed，`2026-10-09` 核）——本行旧计数未跟上，已同步 |
 | 18 命令 | [`todo.md`](../18-stage-commands/todo.md) | `open` 2 + 占位 5 | 命令面尚未接真实系统调用返回 |
 
