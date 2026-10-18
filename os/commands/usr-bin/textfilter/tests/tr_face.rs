@@ -69,6 +69,54 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
+/// 逐字节比 stderr 的夹具：这一族要钉的是「字母位是一个裸字节」，而
+/// `String::from_utf8_lossy` 会把裸 `c3` 与 `c3 83` 都读成替换字符。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(TR)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the tr binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/tr-322/tr` 现量
+/// `tr -é a b` 与 `tr -cé a b` 都打 `tr: unknown option -- ` + `c3` + 换行，
+/// 再跟那块四行 usage、退 1（`tr.c:79-81` 的 `default: usage()`）。`c` 是合法字母，
+/// 所以聚簇会继续走到 `é` 的第一个字节。ASCII 的 `-Z`、`-dZ` 两形同时钉住：
+/// 换渲染不许改动它们，也不许把 usage 那块挤掉。
+#[test]
+fn an_off_letter_of_a_multibyte_flag_prints_one_raw_byte() {
+    let want: Vec<u8> = [
+        b"tr: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-c\u{e9}"] {
+        let (out, code, err) = run_bytes(&[form, "a", "b"], b"");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走 stderr");
+        assert_eq!(code, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, code, err) = run_bytes(&["-Z", "a", "b"], b"");
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        [b"tr: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "ASCII 那一形两个入口一字不差"
+    );
+}
+
 #[test]
 fn usage_block_is_four_lines_on_stderr() {
     // 参照件对旗标自身无操作数的每一形都只退这块：rc=1、标准输出空、stderr 恰是四行

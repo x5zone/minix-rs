@@ -65,7 +65,9 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
     let cases: [(&str, &str, i32, &[u8]); 6] = [
-        ("tr", TR, 1, b"tr: unknown option -- \xc3\xaf\n"),
+        // tr 已于批次四百换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD 的第一字节），
+        // 比仍按 char 渲染的那几支少一个字节；C 那一侧是原字节 `ff`。
+        ("tr", TR, 1, b"tr: unknown option -- \xef\n"),
         ("seq", SEQ, 1, b"seq: unknown option -- \xc3\xaf\n"),
         ("paste", PASTE, 1, b"paste: unknown option -- \xc3\xaf\n"),
         ("fold", FOLD, 1, b"fold: unknown option -- \xc3\xaf\n"),

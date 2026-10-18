@@ -145,7 +145,11 @@ fn fail(prog: &str, error: &TrError) -> ! {
     match error {
         TrError::Usage { reports } => {
             for report in reports {
-                support::warn(report.line(prog).as_bytes());
+                // 字节形：libc 那一行的字母位是一个裸字节（`getopt.c:79` 的
+                // `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出）。参照件
+                // `tmp/tr-322/tr` 现量 `tr -é a b` 打 `tr: unknown option -- ` + `c3` + 换行，
+                // 按 `char` 渲染会多出第二个字节（U+00C3 的 UTF-8 是 `c3 83`）。
+                support::warn(&report.line_bytes(prog));
             }
             support::warn(usage_block());
             support::terminate(1);
