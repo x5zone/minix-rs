@@ -29,7 +29,9 @@ impl Es1371Face {
         Es1371Face {
             rates: [44_100; 2],
             running: [false; 2],
-            frag_size: [1024; 2],
+            // `drv_init_hw` seeds `fragment_size` from the geometry
+            // (`es1371.c:165`): a 64 KiB buffer over two fragments.
+            frag_size: [32 * 1024; 2],
         }
     }
 
@@ -98,6 +100,6 @@ mod tests {
     #[test]
     fn test_frag_size_reports_the_negotiated_value() {
         let face = Es1371Face::new();
-        assert_eq!(face.get_frag_size(0), 1024);
+        assert_eq!(face.get_frag_size(0), 32 * 1024);
     }
 }

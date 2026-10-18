@@ -33,10 +33,15 @@ use minix_audiodriver::subdev::DmaMode;
 /// write side is the DAC pair and whose read side is the capture side).
 pub const AUDIO_MINOR: i32 = 0;
 
-/// The channel geometry the card reports at `drv_init`: two sub-devices,
-/// four fragments of 1 KiB each with two extra buffers.
-pub const CHANNEL_GEOMETRY: [(DmaMode, u32, u32, u32); 2] =
-    [(DmaMode::Write, 4, 1024, 2), (DmaMode::Read, 4, 1024, 2)];
+/// The channel geometry the card reports at `drv_init`
+/// (`es1371.c:69-72`, `:76-79`): a 64 KiB DMA buffer split into two
+/// fragments of 32 KiB each, with four extra buffers. The fragment size
+/// is the seeded one (`DmaSize / NrOfDmaFragments`, `es1371.c:165`),
+/// which is what the framework's per-request size gate compares against.
+pub const CHANNEL_GEOMETRY: [(DmaMode, u32, u32, u32); 2] = [
+    (DmaMode::Write, 2, 32 * 1024, 4),
+    (DmaMode::Read, 2, 32 * 1024, 4),
+];
 
 /// Builds the service for the binary: the card's hooks, the DMA allocator
 /// seam (registered `E-DMABUF`), and the special-file table.
