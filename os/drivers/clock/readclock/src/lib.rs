@@ -20,6 +20,18 @@ pub mod char_face;
 pub mod clock;
 pub mod device;
 pub mod protocol;
+pub mod service;
 
-/// Service initialization entry (wires the clock; transport stays out).
-pub fn init() {}
+use clock::NullClock;
+use service::{PmIdentity, ReadclockService};
+
+/// Build the driver's service for the binary.
+///
+/// The chip is the service's hardware seam: until an architecture clock
+/// (CMOS or the forward target) lands, [`NullClock`] answers every
+/// operation with `EIO` honestly. The identity source queries PM
+/// (`getnuid`) and compares the power-manager endpoint the same way C
+/// does (`readclock.c:85,103`).
+pub fn init() -> ReadclockService<NullClock, PmIdentity> {
+    ReadclockService::new(NullClock, PmIdentity)
+}

@@ -8,7 +8,7 @@
 
 use minix_sys::ds::DsClient;
 use minix_sys::ipc::{AsyncSendQueue, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
-use minix_sys::syscall::{DirectKernelCallTransport, sys_safecopyfrom, sys_safecopyto};
+use minix_sys::syscall::{DirectKernelCallTransport, sys_datacopy, sys_safecopyfrom, sys_safecopyto};
 use minix_sys::{receive, send, sendrec};
 use minix_types::{Endpoint, Message};
 
@@ -106,6 +106,30 @@ impl DriverTransport for KernelTransport {
             grant,
             offset,
             buf.as_ptr() as u64,
+            buf.len() as u64,
+        )
+    }
+
+    fn copy_to_addr(&mut self, dest: Endpoint, addr: u64, buf: &[u8]) -> Result<(), i32> {
+        // C `store_t`（readclock.c:185-189）：sys_datacopy(SELF, &t, who_e, addr, n)。
+        sys_datacopy(
+            &DirectKernelCallTransport,
+            self.self_endpoint.get(),
+            buf.as_ptr() as u64,
+            dest.get(),
+            addr,
+            buf.len() as u64,
+        )
+    }
+
+    fn copy_from_addr(&mut self, src: Endpoint, addr: u64, buf: &mut [u8]) -> Result<(), i32> {
+        // C `fetch_t`（readclock.c:179-183）：sys_datacopy(who_e, addr, SELF, &t, n)。
+        sys_datacopy(
+            &DirectKernelCallTransport,
+            src.get(),
+            addr,
+            self.self_endpoint.get(),
+            buf.as_mut_ptr() as u64,
             buf.len() as u64,
         )
     }
