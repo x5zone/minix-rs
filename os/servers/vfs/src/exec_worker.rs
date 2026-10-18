@@ -30,9 +30,10 @@
 //! * `VM_MMAP` 载荷走 `MessMmap` 的 64 位车道（NS5-A 已修，曾经是 u32 截
 //!   断阻塞位）：C `mess_mmap`（ipc.h:1583-1593）受 56 字节载荷断言约束
 //!   只有 i386 形态（addr/len/retaddr 32 位），LP64 下同一字段表 72 字节
-//!   断言必炸——minix-rs 用户态是 LP64（栈顶 `0x7fff_ffff_f000` 一族），
-//!   线载诚实 64 位值，与 `m_vm_pagefault`/E-VMMCPWIRE 同一裁决。车道图
-//!   单点权威在 minix-types `MessMmap` 注释。
+//!   断言必炸——minix-rs 用户态线载诚实 64 位值（用户半区上界随架构：
+//!   x86-64 四级 2^47、aarch64 T0SZ=16 ⇒ 2^48、riscv64 Sv39 2^38，权威
+//!   常量见 `minix_types::USER_STACK_TOP`），与 `m_vm_pagefault`/
+//!   E-VMMCPWIRE 同一裁决。车道图单点权威在 minix-types `MessMmap` 注释。
 
 extern crate alloc;
 
@@ -458,8 +459,9 @@ where
 
     // ── 栈分配（exec_elf.c:308-313 的 `allocmem_ondemand(stacklow,
     // stack_size)`；execi.stack_high/stack_size 的页整，exec_elf.c:156-158）。
-    // 栈顶 0x7fff_ffff_f000 一族 > 4 GiB：VM_MMAP 的 NS5-A 64 位车道
-    // 承载，无截断（u32 臂时代这里是真机阻塞位）。
+    // 栈顶（分架构上界，权威 `minix_types::USER_STACK_TOP`；三架构值均
+    // > 4 GiB）：VM_MMAP 的 NS5-A 64 位车道承载，无截断（u32 臂时代这里
+    // 是真机阻塞位）。
     let stack_high_paged = req.stack_high - req.stack_high % PAGE_SIZE;
     let stack_size_paged = roundup(exec::DEFAULT_STACK_LIMIT, PAGE_SIZE);
     let stacklow = stack_high_paged - stack_size_paged;
@@ -995,7 +997,8 @@ where
 /// `VM_MMAP` 的 ANON 分配（`minix_mmap_for` 的 VM_MMAP 腿；m_mmap 联合臂
 /// 布局与 VM 侧 `VmMmapIn::decode_message` 对偶）。地址/长度走 NS5-A 的
 /// 64 位车道——C 头是 i386 指针宽（56 字节断言在 LP64 必炸），minix-rs
-/// 用户态是 LP64，栈顶 0x7fff_ffff_f000 一族只有 64 位车道装得下。
+/// 用户半区上界随架构（权威 `minix_types::USER_STACK_TOP`），64 位车道
+/// 三架构都装得下。
 fn vm_mmap<T: IpcTransport>(
     ipc: &T,
     forwhom: Endpoint,

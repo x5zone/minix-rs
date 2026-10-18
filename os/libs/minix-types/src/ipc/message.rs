@@ -2378,9 +2378,12 @@ impl Default for MessLcVmBrk {
 /// ipcconst.h:17-19), and that assert only compiles on i386 — with LP64
 /// pointers the same field list is 72 bytes. Minix3 therefore never had a
 /// 64-bit `mess_mmap` to copy: its userspace could not produce a VA above
-/// 4 GiB. minix-rs userspace is LP64 — the exec stack top lives at
-/// `0x7fff_ffff_f000` — so the `addr`/`len`/`retaddr` lanes carry honest
-/// 64-bit values; a u32 lane silently truncates every stack mapping. Field
+/// 4 GiB. The minix-rs user-half ceiling is architecture-dependent
+/// (x86-64 4-level 2^47, aarch64 T0SZ=16 ⇒ 2^48, riscv64 Sv39 2^38 —
+/// authority: `minix_types::USER_STACK_TOP`), and all of them sit above
+/// 4 GiB — so the `addr`/`len`/`retaddr` lanes carry honest 64-bit
+/// values; a u32 lane silently truncates every stack mapping on every
+/// supported architecture. Field
 /// order and semantics stay 1:1 with the C header, and the 56-byte payload
 /// size (kernel IPC copy invariant) is preserved: the C i386 layout spent
 /// the width on `padding[5]`, this layout spends it on the pointer lanes.
@@ -2397,7 +2400,7 @@ pub struct MessMmap {
     pub offset: u64,
     /// Requested address hint. C: `mess_mmap.addr` (payload offset 8;
     /// 64-bit on the x86_64 wire — a u32 here truncates the exec stack
-    /// mapping at `0x7fff_ffff_f000`).
+    /// mapping — see the arch-dependent ceiling note above).
     pub addr: u64,
     /// Mapping length in bytes. C: `mess_mmap.len` (payload offset 16;
     /// 64-bit on the x86_64 wire).
