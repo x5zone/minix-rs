@@ -11,7 +11,7 @@
 
 use minix_audiodriver::hooks::AudioHooks;
 
-use crate::dsp::{rate_command, StreamDirection};
+use crate::dsp::{StreamDirection, rate_command};
 
 /// The sb16 card's framework face.
 pub struct Sb16Face {

@@ -144,8 +144,14 @@ impl<H: AudioHooks, A: DmaAlloc> AudioService<H, A> {
         // C arms the dry flag on every open (`audio_fw.c:266`).
         self.channels[chan].dev.set_out_of_data(true);
         // Arrange DMA: allocate the buffer and program the card
-        // (`audio_fw.c:271-277`).
+        // (`audio_fw.c:271-277`). A channel with no fragment geometry is
+        // a control-only sub-device (C's `NO_DMA` mode) and skips the
+        // bring-up entirely (`audio_fw.c:271`: `if (dma_mode != NO_DMA)`).
         let dma_size = u64::from(fragments) * u64::from(frag_size);
+        if dma_size == 0 {
+            self.channels[chan].plan = None;
+            return OK;
+        }
         let buffer = match self.alloc.alloc_contig(dma_size + 64 * 1024) {
             Ok(buffer) => buffer,
             Err(status) => return status,
@@ -515,6 +521,29 @@ mod tests {
         // channel on this file would answer EIO; here channel 1 exists).
         assert_eq!(svc.write(9, 1024, parked), EIO);
         assert_eq!(AudioService::<FakeCard, FakeAlloc>::DONT_REPLY, EDONTREPLY);
+    }
+
+    #[test]
+    fn test_a_control_only_channel_skips_the_dma_bring_up() {
+        let files = vec![SpecialFile {
+            minor: 2,
+            read_chan: NO_CHANNEL,
+            write_chan: NO_CHANNEL,
+            ioctl_chan: 0,
+        }];
+        // A channel with no fragment geometry (C's `NO_DMA` sub-device).
+        let geometry = [(DmaMode::Write, 0, 0, 0)];
+        let mut svc = AudioService::new(
+            FakeCard::new(),
+            FakeAlloc { next: 0x1000 },
+            files,
+            &geometry,
+        );
+        svc.init();
+        assert_eq!(svc.open(2), OK);
+        assert!(svc.hooks().set_dma.is_empty(), "nothing programmed");
+        assert!(svc.ring(0).is_none());
+        assert_eq!(svc.close(2), OK);
     }
 
     #[test]

@@ -1,7 +1,33 @@
-//! driver (audio/sb16) 入口（占位）。
+//! The SB16 (SoundBlaster 16) driver binary.
+//!
+//! C: `main` runs the SEF startup (`sef_cb_init_fresh`: the DSP probe and
+//! reset, `drv_init`/`drv_init_hw` — `sb16.c`), then the audio framework's
+//! task loop (`audio_fw.c:73-87`). The loop shell and the RS birth
+//! handshake live in the shared driver runtime; this binary builds the
+//! service.
+//!
+//! The DMA allocator is the registered seam (`E-DMABUF`): with the unbound
+//! allocator in place the card comes up, answers its three file nodes, and
+//! refuses every DMA open honestly rather than programming an address it
+//! does not own. The mixer node (control-only) opens without DMA.
+
+use minix_driver_rt::kernel::KernelTransport;
+use minix_driver_rt::runtime::DriverRuntime;
 
 fn main() {
-    // TODO: 实装为真实服务进程（事件循环 + RS 启动协议）。
-    minix_driver_sb16::init();
-    loop {}
+    // C `sef_startup` asks the kernel who we are (`sef.c:76-87`).
+    let who = minix_sys::syscall::sys_whoami(&minix_sys::syscall::DirectKernelCallTransport)
+        .unwrap_or_else(|r| panic!("sb16: sys_whoami failed: {r}"));
+    let transport = KernelTransport::new(who.endpoint);
+    let mut service = minix_driver_sb16::init();
+    // C's fresh-start init: a card that cannot initialize must not serve.
+    if service.init() < 0 {
+        return;
+    }
+
+    // C announces the character key (`chardriver_announce`).
+    let mut runtime = DriverRuntime::new(transport, "drv.chr.sb16");
+    // `serve`: birth handshake then the receive loop forever; it returns
+    // only when startup is refused or the transport dies.
+    let _birth = runtime.serve(&mut service, |_| Ok(()));
 }
