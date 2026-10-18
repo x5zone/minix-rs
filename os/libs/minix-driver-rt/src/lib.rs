@@ -26,6 +26,11 @@
 //! built on it).
 
 #![no_std]
+// SD-19 静默吞错家族机械化门（本 crate 接手）：运行时与内核传输里的
+// `Result` 返回被 `let _ =` 掉空时，这个 restriction lint 让它在
+// `cargo clippy` 当场现形。已定性的站点按同族惯例写 `//[SD19-gate] <理由>`
+// + 语句级 `#[allow]`。
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

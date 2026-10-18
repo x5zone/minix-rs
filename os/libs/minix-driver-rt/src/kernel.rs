@@ -176,7 +176,11 @@ mod kernel_transport_tests {
         let mut m1 = Message::default();
         let mut m2 = Message::default();
         m2.m_type = 7;
+        //[SD19-gate] 本测试钉的是两次 asynsend 都入队且互不冲刷（断言
+        // pending_count 为 2）；单次调用结果按夹具忽略。
+        #[allow(clippy::let_underscore_must_use)]
         let _ = t.asynsend(Endpoint::DS, &mut m1);
+        #[allow(clippy::let_underscore_must_use)]
         let _ = t.asynsend(Endpoint::VM, &mut m2);
         assert_eq!(
             t.senda_queue.pending_count(),

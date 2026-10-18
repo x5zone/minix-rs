@@ -274,6 +274,9 @@ mod tests {
             self.handled += 1;
             let mut reply = Message::default();
             reply.m_type = msg.m_type + 1;
+            //[SD19-gate] Counter 夹具只计数并回一条消息，断言消费的是
+            // `handled` 与运输日志；回发结果按夹具忽略。
+            #[allow(clippy::let_underscore_must_use)]
             let _ = transport.send(msg.m_source, &mut reply);
         }
     }
