@@ -209,6 +209,15 @@ impl DriverTransport for KernelTransport {
         // C `cpf_revoke` (safecopies.c:218-263).
         self.grants.revoke(grant).map(|_| ()).map_err(|error| -error)
     }
+
+    fn now_seconds(&mut self) -> Result<i64, i32> {
+        // C `time(NULL)` → `gettimeofday` through PM
+        // (`libc/sys/gettimeofday.c`); the IPC leg is the same direct trap
+        // the DS client uses.
+        minix_sys::pm::gettimeofday_via(&DirectTrapTransport)
+            .map(|(sec, _nsec)| sec)
+            .map_err(|error| -error.to_i32())
+    }
 }
 
 #[cfg(test)]

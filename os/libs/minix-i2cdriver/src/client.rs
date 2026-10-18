@@ -203,6 +203,23 @@ pub fn read_bytes<T: DriverTransport>(
     Ok(())
 }
 
+/// Write one raw byte without a register address (`i2creg_raw_write8`).
+///
+/// The whole payload is the value (`i2cdriver.c:292-296`).
+pub fn write_raw_byte<T: DriverTransport>(
+    transport: &mut T,
+    bus: Endpoint,
+    address: u16,
+    value: u8,
+) -> Result<(), i32> {
+    let mut block = ExecBlock::zeroed();
+    block.op = I2C_OP_WRITE_WITH_STOP;
+    block.address = address;
+    block.buf[0] = value;
+    block.buf_len = 1;
+    exec(transport, bus, &mut block)
+}
+
 /// Write one register with one byte (`__i2creg_write`).
 ///
 /// Both the register address and the value travel in the buffer array

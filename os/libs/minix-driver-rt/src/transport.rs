@@ -130,4 +130,14 @@ pub trait DriverTransport {
         let _ = micros;
         Err(-minix_types::ENOSYS)
     }
+
+    /// Wall-clock seconds (`time(NULL)`; C `gettimeofday` through PM).
+    ///
+    /// Used by drivers whose sampling rate is throttled by the clock (the
+    /// SHT21 cache samples at most once per second). Additive with an
+    /// honest default: a transport without a clock reports `ENOSYS`, and
+    /// the caller must not fabricate a timestamp.
+    fn now_seconds(&mut self) -> Result<i64, i32> {
+        Err(-minix_types::ENOSYS)
+    }
 }
