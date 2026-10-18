@@ -623,11 +623,18 @@ where
 
 /// `stream_input` 宿主腿的两个读源：标准输入与一枚按名开好的档。它们只差 `Read` 是谁，
 /// 读循环只此一份，这样门能直接喂给 `drive_reads` 而去开真档。
+///
+/// 这三件（读源、它的 `Read` 实现、`drive_reads`）都点名 `std`，所以必须与宿主腿同一个
+/// `cfg` 门：本文件是每个 bin 用 `#[path]` 收进去的，裸机形态下 `no_std` 的 bin 一旦看见
+/// 无门的 `std` 就编不过（判例：批次三百五十八抽出这一层时漏了门，三架构 bin 编译门
+/// 自 `2026-10-18` 起红，直到本轮现跑 `cargo build --bins --target x86_64-unknown-none`）。
+#[cfg(any(test, not(target_os = "none")))]
 enum HostedInput {
     Stdin(std::io::Stdin),
     File(std::fs::File),
 }
 
+#[cfg(any(test, not(target_os = "none")))]
 impl std::io::Read for HostedInput {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         match self {
@@ -641,6 +648,7 @@ impl std::io::Read for HostedInput {
 /// 中途失手则**先把已经攒下的那段交出去**再把错误报回去——这条顺序契约正是
 /// C 的 `split1` 边读边写的形状（`minix3/usr.bin/split/split.c:184-204`），
 /// 也是真机上没法造出「读两次成功、第三次失手」的输入时唯一能钉住它的办法。
+#[cfg(any(test, not(target_os = "none")))]
 pub fn drive_reads<R, F>(reader: &mut R, chunk_len: usize, mut take: F) -> std::io::Result<()>
 where
     R: std::io::Read,
