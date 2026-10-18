@@ -51,7 +51,11 @@ pub fn derive_geometry(sectors: u64) -> Geometry {
             sectors_per_track: FALLBACK_SECTORS_PER_TRACK,
         }
     } else {
-        Geometry { cylinders: sectors.max(1) as u32, heads: 1, sectors_per_track: 1 }
+        Geometry {
+            cylinders: sectors.max(1) as u32,
+            heads: 1,
+            sectors_per_track: 1,
+        }
     }
 }
 

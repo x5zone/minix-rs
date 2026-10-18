@@ -1,9 +1,12 @@
 # 17-storage-misc-driver：存储杂项五个变体
 
 > **分类**：存储第 4 篇（五个变体，慢卡小盘代理各讲怪癖）
+
 > **源码**：`minix3/minix/drivers/storage/floppy/floppy.c`（一千三百五十五行的软盘驱动）、`minix3/minix/drivers/storage/mmc/mmcblk.c`（六百六十四行的闪存卡块层）与 `emmc.c`（一千零三十行的卡协议）与 `mmchost_mmchs.c`（一千二百六十七行的主机控制器），`minix3/minix/drivers/storage/fbd/fbd.c`（四百四十二行的故障注入代理）与 `action.c`（三百零二行的故障动作）与 `rule.c`（一百八十四行的规则匹配），`minix3/minix/drivers/storage/filter/driver.c`（一千零五十一行的过滤传输）与 `main.c`（四百一十二行的驱动主循环）与 `sum.c`（六百二十行的校验计算），`minix3/minix/drivers/storage/vnd/vnd.c`（六百零三行的回环设备，单文件）
 > **Rust 模块**：`os/drivers/storage/floppy/src/geometry.rs`（密度表与重试策略）、`os/drivers/storage/mmc/src/commands.rs`（命令集与上电顺序）、`os/drivers/storage/fbd/src/rules.rs`（规则匹配与三个拦截点）、`os/drivers/storage/filter/src/checksum.rs`（校验策略与镜像健康）、`os/drivers/storage/vnd/src/layout.rs`（分块复制与几何推导）
 > **前置**：`rewrite-notes/16-stage-drivers/02-blockdriver-framework.md`（块框架，五个驱动都挂靠在块驱动主循环上）、`rewrite-notes/16-stage-drivers/16-ahci-ata-driver.md`（真盘两兄弟，超时复位哲学对照）
+
+> **框架补充（`2026-10-19`）**：`vnd` 的服务层已落 —— `os/drivers/storage/vnd/src/`的 `protocol.rs`（ioctl 号按 `_IOC` 算式重导 + `struct vnd_ioctl`/`vnd_user` 偏移钉值）、`backend.rs`（`FileBackend` 缝；生产 `VfsBackend` 走 `minix-sys::vfs` 客户端，`pread`/`pwrite` 照 C 库的三步 lseek 实现）、`face.rs`（open 三闸与首开后重解析分区表、64 KiB 分片传输、force-write 落 fsync、MBR 经自身 transfer 解析）、`service.rs`（控制请求在服务侧解码——ioctl 钩子无数据面的缺口用服务代劳）。两处登记缝：`copyfd` 与 `fsync` 的客户端包装未落，生产后端诚实报 ENOSYS。
 > **说明**：五个变体是存储批的下半：软盘最老最慢，闪存卡命令最碎，故障注入盘专门捣乱，过滤盘专门校验，回环盘把文件当磁盘。本篇讲五个变体各自的怪癖，不重复讲块框架与超时复位。寄存器细节与传输流量在服务层，本库只定顺序与算法。
 
 > **本篇不讲什么**：

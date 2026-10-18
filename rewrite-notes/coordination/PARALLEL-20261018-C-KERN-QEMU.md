@@ -179,6 +179,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `BLK-DATAPLANE` 片收尾（块框架数据面裁决 + `cat24c256` 首台消费者）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `29→28` —— 随 cat24c256 接线（`os/drivers` 26→25）的机械过账。**签名变更（A 板是下游，按 B1/B2 行挂账约定登记）**：`minix-blockdriver::driver::BlockDriver::transfer` 首参新增 `plane: &mut dyn TransferPlane`（原七参不变）——**仅 4 处实现者**（ahci/at_wini 无 override、virtio_blk、memory 及其自备泵）已在本笔同步，workspace check 绿；**新增公共面**：`minix-driver-rt::plane` 的 `GrantIpc`（grant/revoke/sendrec，含对 `DriverTransport` 的 blanket impl）、`TransferPlane`（caller + copy_from_caller/copy_to_caller）、`Plane<'a,T>`、`NullPlane`，以及 `minix-i2cdriver::client::exec` 的 bound 从 `DriverTransport` 放宽到 `GrantIpc + ?Sized`（既有调用点不变）。**新登记缺口 `E-BLK-VEC`（P0-design-missing，B 线自有）**：gather/scatter 的 iovec 数组未建模（C `do_rdwt` 从 grant 拷 `count` 个 iovec 再传 hook；Rust 泵把元素数当字节数直传）——修法留后续片，本笔在泵与 cat24c256 的 transfer 处具名登记 —— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `VND` 片收尾（存储代理族首台接线）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `28→27` —— 随 vnd 接线（`os/drivers` 25→24）的机械过账；vnd 清单新增两行依赖（本体非共享件）。**新登记缺口（B 线自有）**：`copyfd` 客户端包装未落——VFS 服务端 `do_copyfd` 已在树，`minix-sys::vfs` 无对应客户端包装，故 `VfsBackend::copyfd` 诚实报 ENOSYS（VNDIOCSET 真机腿待它落地）；同笔 `fsync` 客户端包装亦缺（DIOCFLUSH/`BDEV_FORCEWRITE` 报 ENOSYS）—— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。
