@@ -50,13 +50,13 @@ const fn capacity_bytes(geometry: &DriveGeometry) -> u64 {
 
 impl BlockDriver for VirtioBlkFace {
     fn open(&mut self, minor: DeviceMinor, _access: i32) -> i32 {
-        self.opens = self.opens.clone().opened();
+        self.opens = self.opens.opened();
         self.opened.insert_raw(minor.0);
         0
     }
 
     fn close(&mut self, _minor: DeviceMinor) -> i32 {
-        self.opens = self.opens.clone().closed();
+        self.opens = self.opens.closed();
         0
     }
 

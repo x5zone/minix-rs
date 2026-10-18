@@ -19,5 +19,25 @@ pub mod block_face;
 pub mod identify;
 pub mod port;
 
-/// Service initialization entry (wires the ports; transport stays out).
-pub fn init() {}
+use block_face::AhciFace;
+use minix_blockdriver::pump::BlockService;
+
+/// Build the driver's service for the binary.
+///
+/// The port capacity comes from the IDENTIFY exchange, which is the
+/// register-traffic seam this crate does not model yet; without a probe
+/// result the face reports zero sectors rather than a fabricated size.
+pub fn init() -> BlockService<AhciFace> {
+    BlockService::new(AhciFace::new(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init_builds_the_block_service() {
+        let service = init();
+        assert!(service.opened().is_empty());
+    }
+}

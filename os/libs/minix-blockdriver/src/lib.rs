@@ -18,6 +18,11 @@
 //!   partition styles, queue bounds (document sections 1 and 2).
 //! - [`driver`] — the driver trait, routing rules, and the server state
 //!   machine (document sections 3 and 4).
+//! - [`pump`] — the shared receive-classify-dispatch pump every block
+//!   binary runs (C `blockdriver_task`/`blockdriver_process`), including
+//!   the restart gate and the character-open refusal.
+//! - [`wire`] — the block message layouts: request and reply field
+//!   offsets, pinned by C-layout mirrors in its tests.
 //!
 //! All drivers built on this framework are single-threaded event loops in
 //! this rendering: one message at a time, no shared mutable state across
@@ -32,3 +37,5 @@ extern crate alloc;
 pub mod driver;
 pub mod partition;
 pub mod protocol;
+pub mod pump;
+pub mod wire;
