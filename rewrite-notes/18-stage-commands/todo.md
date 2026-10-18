@@ -119,6 +119,21 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百八十三（A9b `WTF-SCRIPT-PARITY` 落地）：`wtf` 与它的真源逐形对齐——五形改完，剩下的都归到「shell 印的那句不归程序」与一条新行
+
+- **这一轮干什么**：批次三百七十六把 `wtf` 与真源 `minix3/games/wtf/wtf`（POSIX shell script）的四处不同形立成 A9b。本轮逐形改掉，并**先用脚本本身量出每一形的读数**再动手——真源不是 C，能直接跑，这比读源码更硬。落码在 `os/commands/games/text-games/src/bin/wtf.rs` 与它的门 `tests/wtf_face.rs`。
+- **五形改完，全部与脚本实测一致**（脚本侧读数：`ACRONYMDB=/tmp/acr383.txt sh minix3/games/wtf/wtf <形>`）：
+  1. **命中打印跟着大写化走**——脚本 `:75` 先 `tr '[a-z]' '[A-Z]'` 再用 `$target` 输出，实测 `nasa` → `NASA: National Aeronautics and Space Administration`；改前本壳原样输出 `nasa: …`。改法 `let shown = word.to_ascii_uppercase();` 只用在命中那支。
+  2. **查无此词的句子**——脚本 `:105` 印的是**操作数原样**：`wtf: I don't know what \`zzz' means!`（不是大写化的 `$target`，也不只是句子不同：本壳原句是自创的 `wtf: <词>: nothing appropriate`）。这里有个自己差点踩的坑：第一次改把两句都用了 `shown`，于是印成 `` `ZZZ' ``，与脚本不符——**同一条报文里两个变量各有其形，不能一把梳子推过去**。
+  3. **库开不了**——脚本 `:67` 的 `wtf: cannot open acronym database file \`<路径>'`；改前是本壳自创的 `wtf: <路径>: cannot open`（把档名摆在前面、少了 `acronym database file` 那半句）。
+  4. **usage 走标准输出**——脚本 `usage()`（`:11-14`）是 `echo` 到 stdout 再退 1；实测分路读数 stdout 收到整句、stderr **空**。改前本壳发到 stderr，且文本少了 `[-o]`。
+  5. **未知选项与缺参数不再自创句子**——脚本对 `-Z` 与裸 `-f` 都是走 `usage`；实测那两形额外那行 `Illegal option -Z` / `No arg for -f option` **是 shell 的 getopts 印的，不是 wtf 印的**，与本壳无关，所以本壳只复用自家的 usage（改前 `-Z` 被当查询词咽下去，等于少一次拒收）。
+- **门与负控**：`wtf_face.rs` 五枚门全部按脚本形重写（命中形大写、句子逐字、usage 分路 + 退码）；三枚变异控制各咬住——M1 去掉大写化 → 恰好咬 2 枚（`a_real_database_resolves_a_term_and_exits_zero`、`the_lookup_ignores_case`）；M2 把 usage 改回 stderr → 恰好咬 1 枚；M3 把「查无此词」句子改回自创形 → 恰好咬 1 枚。三枚都编得过、失败数与预期等值、还原用内存原文且 md5 一致、复跑归零（`tmp/wtf-383/negctl.py`）。
+- **读数**：`cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-text-games` → **66 passed / 0 failed**（lib 31、`random_face` 25、`fortune_face` 5、`wtf_face` 5）；三架构 `cargo build --bins`（x86_64/aarch64/riscv64 的 `-none`）全退 0、0 条 error；rustfmt 零漂移；**我触及路径的 clippy 告警 0 条**（整包那 15 条全落在 `os/libs/` 的既存件上——记这条时要连带说明：`cargo clippy` 的告警计数会随「这次重编了哪些 crate」变化，用总数当棘轮会自己骗自己，**要按「告警位置是否落在本次触及件」判**，本轮就是这么定性的，也是这么差点让我把库里的既存告警当成自己添的）。
+- **新立 A9c 收剩下的四条**（都不属于「改一句报文」的量级）：① `ACRONYMDB` 环境变量——脚本 `:54-56` 认它，本壳不认（现查 `grep -c ACRONYMDB` 在 `wtf.rs` 只有注释里那一次），要做得有环境变量可取的路子；② `-o` 的真语义——脚本 `:42-53` 是把 `/usr/share/misc/acronyms*` **通配展开**、`*-o` 那批只在 `-o` 时纳入，本壳只认单一档名、`-o` 是空操作；③ 三级退化查找 `whatis(1)` → `pkg_info(1)` → pkgsrc `make help`（`:83-104`），本壳一条都没有，而这三枚程序在本仓的命令面里还不存在；④ `is` 词的规则——脚本只移走**开头**那一枚（`:32-34`），本壳在查询循环里按 `is_skipped_word` 跳过任意位置的 `is`（末轮实测 `[is y2k]` 两侧同形，但反序 `[y2k is]` 就分叉：脚本会去查 `is`）。四条里 ②③ 要动功能面、① 要动环境读取，都不适合塞进本笔。
+- **三件套**：核实命令 `ACRONYMDB=/tmp/acr383.txt sh minix3/games/wtf/wtf nasa` 等六形（脚本侧）、`W=tmp/host-target/debug/wtf; $W -f /tmp/acr383.txt nasa` 等六形（本壳侧）、`timeout 400 cargo clippy --offline -j 1 --all-targets -p minix-text-games 2>&1 | grep -E "^\\s+--> commands/"`（零命中）、`python3 tmp/wtf-383/negctl.py`；核实日 `2026-10-19`；基线快照 `f39e57f58`。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim CKSUM-HASH-DIGEST qoder`（A4，板上第一条真正的多轮工程量；参照件与 getopt 的拦路件都已在批次三百七十八/三百八十一清掉）。
+
 ## 批次三百八十二（A6d `SPLIT-HOST-FLUSH-AT-SEAL` 现查撤销）：我上一轮提的修法是一枚空操作——宿主这条缝**没有缓冲可刷**
 
 - **这一轮干什么**：批次三百七十九立新行 A6d 时，我写的修法是「给宿主腿加一次显式冲刷并把冲刷错按 `Close` 报（`std::io::Write::flush` 可达，ENOSPC 类错正是在冲刷时浮现）」。本轮动手之前先去验这句话，**验否了**：那条路什么都刷不出来，本行因此撤销，生产码一字未动。
