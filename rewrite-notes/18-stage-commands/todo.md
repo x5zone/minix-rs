@@ -186,6 +186,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   - 参照件不在台面：`tmp/split-330/` 里只有输入件 `in.bin`/`blank.bin`/`nonl.bin` 与读数目录，
     没有可执行的主机参照件；片甲开工先重建它（批次三百三十那批 A/B 读数的来源目录同名不同物）。
 
+- **补记（同一轮内把残留①也关掉）**：把上面两枚改坏各自单独跑那一套集成测试
+  （`cd os` 后 `(ulimit -v 3145728; cargo test --offline -j 1 -p minix-textfilter --test col_face)`，
+  第二条把 `--test` 换成 `split_face`），两扇台账点名的端到端门**都咬**：
+  `tests/col_face.rs:199` 的 `nonascii_option_letter_is_reported_as_one_byte` 红 1 枚、
+  `tests/split_face.rs:436` 的 `byte_mode_is_untouched_by_the_line_rewrite` 红 1 枚；
+  跑完各自整文件还原并核 md5（`col.rs` 仍 `a3eb44f1…`、`split.rs` 仍 `c226bdda…`），
+  `git status --porcelain` 0 行。日志 `tmp/negctl-354/controls-suite.log`，配方 `tmp/negctl-354/ctl354c.py`。
+  如实记一句：`-b` 那一枚改坏只让 `byte_mode_is_untouched_by_the_line_rewrite` 变红，同一套件里的
+  `the_split_reaches_the_chunk_files_end_to_end` 没有红——它走的是行模式默认千行一档，
+  本来就不受定长切点影响，这不是漏网。至此三百二十五至三百二十九的六枚欠账全部清完。
+
 - **下一轮首动作**：`tools/claim.sh claim SPLIT-STREAMING-MEMORY qoder`，先按残留①补跑两扇端到端门的
   单套件判定（一次改坏一枚，跑 `--test col_face` / `--test split_face`），再落片甲：
   `-b` 走「读到多少就切多少」的流式循环，同时补「先读成功再失手」那一形的门。
