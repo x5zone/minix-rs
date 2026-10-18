@@ -699,3 +699,21 @@ fn byte_mode_blames_an_unreadable_stdin_and_exits_one() {
     );
     assert!(files.is_empty(), "读不动的标准输入不该留下分片：{files:?}");
 }
+
+/// C 的行模式把读缓冲里剩下的字节原样写出：`minix3/usr.bin/split/split.c` 的 `split2` 在
+/// 换行扫描之后是 `if (Cs < Ce) bigwrite(ofd, Cs, Ce - Cs)`，**不给末行补终止符**。
+/// 本壳的行腿曾过一遍 lossy 解码再按 `\n` 重拼，于是末尾没有换行的那一行会被补上一个——
+/// 多写一个字节也是可见行为分叉。期望取自现跑：末片是 `cc\ndd`，结尾没有换行。
+#[test]
+fn line_mode_does_not_invent_a_final_line_terminator() {
+    let (status, chunks) = run_chunk_bytes(&["-l", "2"], b"aa\nbb\ncc\ndd");
+    assert_eq!(status, 0);
+    assert_eq!(
+        chunks,
+        vec![
+            ("xaa".to_string(), b"aa\nbb\n".to_vec()),
+            ("xab".to_string(), b"cc\ndd".to_vec()),
+        ],
+        "末行没有终止符时，分片里不该出现被补上的那个换行"
+    );
+}

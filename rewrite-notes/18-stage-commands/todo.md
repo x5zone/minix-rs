@@ -119,6 +119,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百六十三（`SPLIT-NONUTF8-DROP` 复测翻状态）：两半分叉都已在代码里闭着，补齐末行的端到端门，一枚没跑成的负控记账
+
+- **复测而不是新修**。批次三百三十记的那枚 P0 有两半分叉：行模式遇非法 UTF-8 整档静默丢弃、末行终止符被补。本轮在 `rewrite` 头 `f24fe6c69` 的认领树里现量，两半都已经闭着——决定半是字节面的 `lines_bytes`（`os/commands/usr-bin/textfilter/src/split.rs:30`），行切分不碰解码，`split2` 的尾段是 `if (Cs < Ce) bigwrite(ofd, Cs, Ce - Cs)`（`minix3/usr.bin/split/split.c`，C 补不出一个字节）。可重跑读数两条：
+  - `./target/debug/split -l 2 /tmp/nonutf.bin x`（输入 `aa\n\xff\xfe\nbb\n`）⇒ `xaa` 是 `aa\n377376\n`、`xab` 是 `bb\n`，退码 0，非法字节原样留在它那一行；
+  - `./target/debug/split -l 2 /tmp/tail.bin y`（输入 `aa\nbb`，末行无终止符）⇒ 一片 `yaa`，内容 `aa\nbb` 五个字节，**没有被补上换行**。
+- **补的门**。`os/commands/usr-bin/textfilter/tests/split_face.rs` 新增 `line_mode_does_not_invent_a_final_line_terminator`（`-l 2` 吃 `aa\nbb\ncc\ndd`，期望两片：`aa\nbb\n` 与 `cc\ndd`）。非法字节那一半早有门钉着，不必重复造：端到端一枚 `line_mode_keeps_undecodable_bytes`（`tests/split_face.rs:368`）、`-b` 一枚（`:437`）、决定半一枚（`src/split.rs:479`）。
+- **读数**。`cargo test -j 1 --offline -p minix-textfilter --test split_face` ⇒ **26 passed / 0 failed**（起点 25，+1）；整包 `cargo test -j 1 --offline -p minix-textfilter` ⇒ **1076 passed / 0 failed**；容器权威门（`minix-ci:1.94`、`-m 2g -j 1`、可写缓存）⇒ 退码 **0**（日志 `tmp/split-363/container-gate.log`）；`rustfmt --edition 2021 --check` 零漂移。
+- **一枚没跑成的负控，记成欠账不冒充**。想把末行补上换行时，我写的是在 `lines_bytes` 尾部造一个自带换行的 `Vec` 再 `Box::leak`——这条**编译就过不去**（返回类型是 `Vec<&[u8]>`，借用的生命周期没有着落），所以它根本不是一次变异，谈不上咬合。日志 `tmp/split-363/control1.log`（空）。可行的下一枚：把 `if start < data.len()` 那一判据改成 `start <= data.len()` 并在推入前统一补 `\n`，或改壳里写片那一段（`src/bin/split.rs` 的行腿把每片按 `\n` 重拼）——**登记 `SPLIT-TAIL-NOEOL-NEGCTL`，下一轮补**，本轮这枚门只算「跑绿」不算「有牙」。
+- **台账状态**：`SPLIT-NONUTF8-DROP` 由 `open` 翻成 **closed**（两半分叉经复测坐实已闭，且各有一枚端到端门在套件里跑绿；末行那一枚的负控欠账单列，不影响分叉已闭这一事实）。核实命令与读数如上，核实日 `2026-10-18`，快照提交号见本条落地的那一笔。
+- **下一轮首动作**：`bash tools/claim.sh claim SPLIT-TAIL-NOEOL-NEGCTL qoder` 补上面那枚负控；随后 `GETOPT-REPORT-BYTE-LETTER` 的乙路切片（现量 114 构造点 / 23 文件 / 39 薄壳 / 97 行门断言，需拆多轮）。
+
+---
+
 ## 批次三百六十二（`FORTUNE-OPEN-ERRLEG` 闭）：`fortune` 开不了档那一行改成 C 的 `err(1, ...)` 形
 
 - **是什么**。批次三百六十一留下的一句自创话：`fortune: <操作数>: cannot open`。C 在这一路是 `err(1, "Cannot open \`%s'", fp->path)`（`minix3/games/fortune/fortune/fortune.c:1056`，另有 `:1067` 与 `:1116` 两条同一句式的 `.dat` 腿）：`err` 的三段形里，中间那位是**格式串代入档名之后的整句**（档名用反引号与单引号包住），尾巴是号对应的句子，退码 1。两处差别：句子位置换了、句子内容与大小写了换了、还少了那一对引号，另外自创句里没有号对应的句子。属 P0-code-bug（可见输出与真值优先序第一格不符）。
