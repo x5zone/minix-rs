@@ -119,6 +119,18 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百七十八（A6 第一枚 `SPLIT-N-STDIN-FSTAT-SIZE`）：把「取决于 Minix 管道 fstat」追到可证的边界——PFS 不在这棵树里，于是这形的出路只有一条：带上真机窗的现跑件
+
+- **这一轮量什么**：批次三百三十登记这条时说「真值取决于 Minix 自己管道 `fstat` 的读数」，然后就停在“登记保留”。本轮把这句话追到底：到底能不能在仓库内判出来。结论是**判不出来，而且现在说得清为什么判不出来**；顺带把 A1 那套宿主参照件补位面补到 `split` 能编，并交出一枚到真机上可直接跑的读数件。生产码一字未动。
+- **判据链（每一环都在树里可重跑）**：C 的 `split3` 在读任何字节之前就 `fstat(ifd, &sb)`，然后 `if (chunks > sb.st_size) errx(1, "can't split into more than %d files", (int)sb.st_size)`（`minix3/usr.bin/split/split.c:290-300`）。Minix 的 `do_fstat` **自己不算任何字段**，它把请求原样转给该 vnode 所属的文件系统：`req_stat(rfilp->filp_vno->v_fs_e, rfilp->filp_vno->v_inode_nr, who_e, statbuf)`（`minix3/minix/servers/vfs/stadir.c:185-187`）。管道的 vnode 归 **PFS**，而 **PFS 的源码不在本仓 vendor 的树里**：现查 `ls minix3/fs` 无输出、`find minix3 -path "*pfs*" -name "*.c"` 只命中无关的 tcpdump 打印件；VFS 侧全仓 `grep -rn "st_size" minix3/minix/servers/vfs/*.c` 也是**零命中**（VFS 从不填这个字段）。⇒ 「Minix 的管道 `st_size` 是 0 还是已缓冲字节数」在仓库内**没有真值来源**，只能真机读数。
+- **但不是白跑一趟——VFS 里有一条反向线索**：关闭最后一个读者/写者时，VFS 会 `truncate_vnode(vp, vp->v_size)`，注释写的是「Tell PFS about latest pipe size」（`minix3/minix/servers/vfs/filedes.c:494-500`）。也就是说 Minix 自己给管道**记着尺寸**，所以那一格完全可能是「已缓冲字节数」而不是 0；若真是如此，它就是**竞态语义**（取决于写者抢前多少），本壳无论怎么改都不可能在启动时对齐——这条读法已写进读数件的结尾说明，免得下一轮拿到读数后重新推一遍。
+- **宿主侧读数**（本轮把仪器验通）：`sh tools/atf-c-compat/probes/split_n_stdin_size.sh tmp/split-378/split_ref` → 形 1「管道 + 200 字节已在飞」`split_ref: can't split into more than 0 files` 退 **1** 且不产物；形 3「管道 + 写者先睡 1 秒」同样报 0 files；形 2「同内容换成规则文件操作数」退 0。⇒ glibc 这一侧管道 `st_size` 恒 0，与批次三百三十记的分叉一致（本壳读尽后按 `input.len()` 分片，同一形退 0 出四片）。全文 `tmp/split-378/host_readings.log`。
+- **顺路把 A1 的补位面补到 `split` 编得过**：`minix3/usr.bin/split/split.c` 缺两枚 BSD 常量——`MAXBSIZE`（`:179`、`:249` 定读缓冲用）与 `DEFFILEMODE`（`:332` 建档的模式），且它**只含到 `<sys/param.h>`/`<unistd.h>` 就直接调 `fstat`**（NetBSD 的包含链替它做掉这层）。新增两枚补面头并挂一处：`tools/atf-c-compat/host-ref/sys/param.h`（`#include_next` 接住 glibc 再补 `MAXBSIZE (64 * 1024)`，真值出处就是本仓 vendor 的 `minix3/tools/compat/compat_defs.h:1150-1151`，与片甲/片乙落 Rust 侧时同一个数）、`tools/atf-c-compat/host-ref/sys/stat.h`（补 `DEFFILEMODE 0666`）、`bsd-compat-proto.h` 里加一行 `#include <sys/stat.h>` 替那些不自含的源补上这层。回归：`split` 与 `fortune` 两支参照件都 `-Wall` 零告警链出（`tmp/split-378/`）。
+- **这枚门为什么不硬造**：板上 A6 行本来就写着「宿主看不见的那几形要按判据写明，不硬造门」。这一形的判据要等真机读数，现在造门只能是钉住**我猜的**那一种语义（恒 0 还是竞态），钉错就把错的语义固化成回归基线——那是比不钉更坏的结果。所以本轮交出去的是**仪器与判读规则**，不是门。
+- **A 板那一行的处理**：`SPLIT-N-STDIN-FSTAT-SIZE` 从组合行里拆出来单独成行（板上原本把三枚 ID 塞在一行），状态 `⏸ 等 C 板真机窗`，等的是**这条读数**而不是裁决；另两枚 `SPLIT-CLOSE-HOST-VISIBILITY`、`UNIQ-WRITE-ERRLEG` 各自成行保持 `☐`。
+- **三件套**：核实命令 `bash tools/build-bsd-ref.sh -o tmp/split-378/split_ref minix3/usr.bin/split/split.c`、`sh tools/atf-c-compat/probes/split_n_stdin_size.sh tmp/split-378/split_ref`、`sed -n '290,300p' minix3/usr.bin/split/split.c`、`sed -n '185,187p' minix3/minix/servers/vfs/stadir.c`、`grep -rn "st_size" minix3/minix/servers/vfs/*.c`（零命中即结论）、`ls minix3/fs`（无输出即结论）；核实日 `2026-10-18`；基线快照 `e55d58135`。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim SPLIT-CLOSE-HOST-VISIBILITY qoder`（A6 拆行后的第二枚）。另：本轮新增的两枚补面头让 `split`/`cksum` 这类宿主参照件第一次能编出来，A4/A5/A5b 的「报文形逐字节对参照件」那条判据从此可执行。
+
 ## 批次三百七十七（A12 `RANDOM-DENOM-LEGS` 对账）：板上写 `🚫`、账上写 `partially fixed`，两条都不准——四条敞口里已经有一条闭合了
 
 - **这一轮量什么**：A 板 A12 行挂着 `🚫 维持登记但不排期`，并写着「要动就得先给『为什么不追』的裁决；否则保持现状并写明理由」。本轮去核对那三条理由到底写过没有、以及这条账到今天该用什么状态词。**纯对账笔，生产码一字未动。**

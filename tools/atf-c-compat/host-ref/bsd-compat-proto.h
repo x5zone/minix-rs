@@ -11,6 +11,12 @@
 #include <sys/types.h>
 #include <features.h>
 
+/* 有些 BSD 源直接调 `fstat`/`stat` 而不含 `<sys/stat.h>`（NetBSD 的包含链把这层替它做掉，
+ * `minix3/usr.bin/split/split.c:293` 正是这种：它只含到 `<sys/param.h>` 与 `<unistd.h>`）。
+ * 宿主上这会退化成隐式声明，`struct stat` 也拿不全，于是把这一枚头统一挂在补面上——
+ * 补面里的 `sys/stat.h` 先接住 glibc 的原头，再补 BSD 的 `DEFFILEMODE`。 */
+#include <sys/stat.h>
+
 #if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
 #if !__GLIBC_PREREQ(2, 40)
 const char *getprogname(void);
