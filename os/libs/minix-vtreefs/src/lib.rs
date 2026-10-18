@@ -16,6 +16,12 @@
 //! filesystem instance, so tests can build several side by side.
 
 #![no_std]
+// SD-19 静默吞错家族机械化门（本 crate 接手）：目录列举曾把
+// `DentryEncoder::add` 的 `Result` 掉空，停/错两个分支与尾批落盘一并丢失。
+// 这个 restriction lint 让无理由的 `let _ =` 在 `cargo clippy` 当场现形；
+// 已接回返回值的站点不再需要注释，今后新写一处带理由的按同族惯例写
+// `//[SD19-gate] <理由>` + 语句级 `#[allow]`。
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

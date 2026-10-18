@@ -1,11 +1,16 @@
 # 11 · 调度原语：可运行状态与就绪队列的强一致
 
-> **C 真值源**：`minix3/minix/kernel/proc.c`（`enqueue`/`enqueue_head`/`dequeue`/`pick_proc`/`notify_scheduler`/`proc_no_time`）、`minix3/minix/kernel/proc.h`（RTS_SET/RTS_UNSET 宏、可运行判据、`proc_kernel_scheduler`）、`minix3/minix/kernel/system.c:sched_proc`、`minix3/minix/kernel/system/do_schedule.c:do_schedule`、`minix3/minix/kernel/system/do_schedctl.c:do_schedctl`、`minix3/minix/include/minix/config.h`（优先级常量）、`minix3/minix/kernel/cpulocals.h`（每 CPU 队列声明）、`minix3/minix/include/minix/priv.h`（权限模板）、`minix3/minix/kernel/debug.c`（`runqueues_ok_cpu`）。
-> **Rust 实现**：`os/kernel/src/sched.rs`（`Scheduler` 纯队列操作、`EnqueueInfo`、`sched_proc`、`SchedParams`）、`os/kernel/src/proc_table.rs`（`rts_set`/`rts_unset` 队列半、`sched_enqueue`/`sched_enqueue_with`/`sched_enqueue_head`、`sched_dequeue`、`sched_proc_no_time`、`check_quantum`、`preemptible`）、`os/kernel/src/lib.rs`（`pick_and_bill`/`requeue_if_preempted`——循环侧调用点，[10-switch-to-user.md](10-switch-to-user.md) §4.3 已立）、`os/kernel/src/proc.rs`（`priority` 常量、`Accounting`）、`os/kernel/src/debug.rs`（`runqueues_ok_cpu`）。
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:struct NAME`），不使用行号；逐字引用块的块级区间题注带行区间与复算命令。
-> **本篇主题**：一条不变量——进程在就绪队列里 ⇔ 它可运行——与维护它的四个原语（入队两条路、出队、选人）；量子耗尽后的两条分支（内核原地续量 vs 交还用户态调度服务器）；三个已登记的实现缺口（每 CPU 队列恒 BSP、PREEMPTIBLE 门的现状形状、niced 链路）。
+> **C 真值源**：`minix3/minix/kernel/proc.c`（`enqueue`/`enqueue_head`/`dequeue`/`pick_proc`/`notify_scheduler`/`proc_no_time`）、`minix3/minix/kernel/proc.h`（RTS_SET/RTS_UNSET 宏、可运行判据、`proc_kernel_scheduler`）、`minix3/minix/kernel/system.c:sched_proc`、`minix3/minix/kernel/system/do_schedule.c:do_schedule`、`minix3/minix/kernel/system/do_schedctl.c:do_schedctl`、`minix3/minix/include/minix/config.h`（优先级常量）、`minix3/minix/include/minix/const.h`（`PREEMPTIBLE` 位值）、`minix3/minix/kernel/cpulocals.h`（每 CPU 队列声明与 `get_cpulocal_var` 宏）、`minix3/minix/include/minix/priv.h`（权限模板与调度者槽）、`minix3/minix/kernel/debug.c`（`runqueues_ok_cpu`）、`minix3/minix/kernel/proto.h`（`runqueues_ok_local` 宏）、`minix3/minix/kernel/arch/i386/arch_clock.c`（`CP_NICE` 消费链）、`minix3/minix/kernel/main.c`（`proc_ptr` 早期置位）。
+> **Rust 实现**：`os/kernel/src/sched.rs`（`Scheduler` 纯队列操作、`EnqueueInfo`、`sched_proc`、`SchedParams`）、`os/kernel/src/proc_table.rs`（`rts_set`/`rts_unset` 队列半、`sched_enqueue`/`sched_enqueue_with`/`sched_enqueue_head`、`sched_dequeue`、`sched_proc_no_time`、`check_quantum`、`preemptible`）、`os/kernel/src/lib.rs`（`pick_and_bill`/`requeue_if_preempted`——循环侧调用点，[10-switch-to-user.md](10-switch-to-user.md) §4.3 已立）、`os/kernel/src/proc.rs`（`priority` 常量、`Accounting`）、`os/kernel/src/syscall.rs`（`dispatch_schedule` 的 niced 线）、`os/kernel/src/capability.rs`（`PREEMPTIBLE` 与模板组合常量）、`os/kernel/src/clock.rs`（`classify_cpu_state`）、`os/kernel/src/debug.rs`（`runqueues_ok_cpu`）、`os/kernel/Cargo.toml`（`sanity-checks` feature）。
+> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:struct NAME`），**行号不作锚点**——行号只出现在四类场合：逐字引用块的块级区间题注（带复算命令）、被引注释内部（随原文保留）、§6.2 的核对命令、以及符号名旁为短小事实注明的取证行号。
+> **本篇主题**：一条不变量——进程在就绪队列里 ⇔ 它可运行——与维护它的四个原语（入队两条路、出队、选人）；量子耗尽后的两条分支（内核原地续量 vs 交还用户态调度服务器）；两个已登记的实现缺口（每 CPU 队列恒 BSP、PREEMPTIBLE 门的现状形状）与一条已闭合链路（niced 记账消费）。
 > **前置**：[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（§1.4 的 boot 期按住、§2.2 的 RTS 位族表、§2.3 的权限模板族）、[10-switch-to-user.md](10-switch-to-user.md)（§2.1 的循环五拍——四原语的最大调用方、§4.3 的循环侧调用点）、[08-system-init-boot-finish.md](08-system-init-boot-finish.md)（§3.2 的 BKL 取得点与持锁约定）。
-> **后续**：`12-ipc-core`（IPC 核心篇，尚未重生成）、`16-smp`（SMP 篇，尚未重生成）、`17-clock-timer`（时钟与定时器运行篇，尚未重生成）、`02-stage-sched` 方向（SCHED 服务器用户态本体，边界句见 §1.4）。
+> **后续**：`12-ipc-core`（IPC 核心篇）、`16-smp`（SMP 篇，尚未重生成）、`17-clock-timer`（时钟与定时器运行篇，尚未重生成）、`02-stage-sched` 方向（SCHED 服务器用户态本体，边界句见 §1.4）。
+> **目标读者**：熟悉操作系统基本概念（进程、就绪队列、优先级调度、内核/用户态边界）与 C 语言的开发者；Rust 一侧读到 `Option`/原子类型/借用切片大意即可。
+> **前置知识**：[10-switch-to-user.md](10-switch-to-user.md) 的循环五拍（四原语的最大调用方）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §1.4/§2.2（boot 期按住与 RTS 位族）、[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §3.2（BKL 取得点）。
+> **教学目标**：①能说出 INV-1 与 RTS 宏的跃迁检测形状；②能按 16 条优先级链复述队列结构与"挂在被指派 CPU"；③能复述量子耗尽两分支的判据与各自语义；④能按舞步复述 `sched_proc` 的改参往返；⑤能说出两个现状缺口（每 CPU 队列恒 BSP、PREEMPTIBLE 门现状）与 niced 链已闭合的边界。
+> **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构：机制/策略的类型级拆分、回执数据流）；`priority` 上界收紧等偏离在 §3.4 处置表单独占行；无 `[ARCH: ...]` 标注对象。
+> **编号说明**：正文与引文里出现的 `R-15`、`U-2`、`S-6`、`D-52` 等编号是本仓的开发工作条目号与评审记录编号——原文保留，溯源按编号在本仓检索；`R11-T*` 为本文 §5.4 自含的交接编号。
 
 [10-switch-to-user.md](10-switch-to-user.md) 的循环每一拍都在向本篇的四个函数要答案：PREEMPTED 清位后的重排问"头插还是尾插"，`while (!(p = pick_proc())) idle();` 问"下一个是谁"，拍五的量子检查问"时间用完了之后呢"。循环是调用方，本篇是被调用侧的本体：内核用什么数据结构表达"谁能跑"，用什么装置保证这份结构与"标志位说它能跑"永远一致，以及在时间片耗尽这个最常见的调度时刻，策略从哪里分岔。
 
@@ -79,7 +84,7 @@
                   在队列里 ⇔ 可运行（两份记录同真同假）
 ```
 
-两条反方向的推演，各坏在一个能指认的对象上。其一，设想 `RTS_UNSET` 只清位、忘了入队：进程的 `p_rts_flags` 归零，判据说它可运行；但 `run_q_head`/`run_q_tail` 的每一条链上都没有它。此后每一拍调度，`pick_proc` 从 0 号队列扫到 15 号，扫描只看队列数组（`minix3/minix/kernel/proc.c:pick_proc`），这个进程永远不在扫描结果里——没有断言触发、没有输出、没有 panic，一个判据上可运行的进程被永久饿死。其二，设想 `RTS_SET` 只置位、忘了出队：一个已经阻塞的进程还挂在链上，`pick_proc` 会选中它，循环照样切给它 CPU——恢复出来的是一个 blocked 现场，它根本跑不动下一步。
+两条反方向的推演，各坏在一个能指认的对象上。其一，设想 `RTS_UNSET` 只清位、忘了入队：进程的 `p_rts_flags` 归零，判据说它可运行；但 `run_q_head`/`run_q_tail` 的每一条链上都没有它。此后每一拍调度，`pick_proc` 从 0 号队列扫到 15 号，扫描只看队列数组（`minix3/minix/kernel/proc.c:pick_proc`），这个进程永远不在扫描结果里——默认构建下没有断言触发、没有输出、没有 panic，一个判据上可运行的进程被永久饿死（`sanity-checks` 开启时检查 5 会报，见 §2.4 同款推演的限定）。其二，设想 `RTS_SET` 只置位、忘了出队：一个已经阻塞的进程还挂在链上，`pick_proc` 会选中它，循环照样切给它 CPU——恢复出来的是一个 blocked 现场，它根本跑不动下一步（debug 构建下，坏进程一旦成为队首就会被 §2.2 的队首可运行断言拦下；未到队首则由 `sanity-checks` 的 unready-on-runq 检查报出）。
 
 ### 1.2 队列的形状：16 条优先级链挂在每颗 CPU 上
 
@@ -112,7 +117,7 @@ INV-1 里的"队列"具体长什么样？常量表是入口：
 
 （区间复算：`sed -n '57,60p' minix3/minix/kernel/cpulocals.h | wc -l` = 4。）
 
-两组事实藏在常量表里，各单独说一句。第一，`USER_Q` 不是拍脑袋定的常数，它是**算出来的**：`(MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q`，代入 15 和 0 得 `(15 - 0) / 2 + 0`，C 的整数除法向下取整，值是 7——默认用户优先级在队列 7，注释自述"should correspond to nice 0"。推论跟着算式走：改 `NR_SCHED_QUEUES` 会改 `MIN_USER_Q`，再连带改 `USER_Q`，默认用户优先级随之漂移。表头那句 "MUST equal minimum priority + 1" 是约束声明：队列数必须恰好容纳 0 到最低优先级的每一档，少一档则 `MIN_USER_Q` 指向不存在的队列。第二，`USER_QUANTUM 200` 是默认时间片的毫秒数，boot 期从权限模板批量下发（模板族归 [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.3）。
+两组事实藏在常量表里，各单独说一句。第一，`USER_Q` 不是拍脑袋定的常数，它是**算出来的**：`(MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q`，代入 15 和 0 得 `(15 - 0) / 2 + 0`，C 的整数除法向下取整，值是 7——默认用户优先级在队列 7，注释自述"should correspond to nice 0"。推论跟着算式走：改 `NR_SCHED_QUEUES` 会改 `MIN_USER_Q`，再连带改 `USER_Q`，默认用户优先级随之漂移。表头那句 "MUST equal minimum priority + 1" 是约束声明：队列数必须恰好容纳 0 到最低优先级的每一档，少一档则 `MIN_USER_Q` 指向不存在的队列。第二，`USER_QUANTUM 200` 是默认时间片的毫秒数。内核 boot 只给 VM 与 root sys proc 下发 `SRV_QT`（`main.c:210`/`:233`），其余进程的量子由用户态链路落定（RS 与 minix-service 解析器读 `SRV_QT`/`DSRV_QT`/`USR_QT` 模板常量；PM 对用户进程直接传 `USER_QUANTUM`）（模板族归 [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.3）。
 
 队列挂在哪里，由入队与出队的公共注释给出答案——`minix3/minix/kernel/proc.c:enqueue` 的头注释写明 "This function can be used x-cpu as it always uses the queues of the cpu the process is assigned to"（§2.0 逐字引用）：队列挂在**进程被指派的 CPU** 上，不是当前执行代码的 CPU。跨 CPU 的代码路径因此天然可用：无论哪个 CPU 上的内核代码唤醒了一个进程，`RTS_UNSET` 触发的入队都按 `rp->p_cpu` 落到它自己的队列组里。
 
@@ -120,7 +125,7 @@ INV-1 里的"队列"具体长什么样？常量表是入口：
 
 | 来源 | 时机 | 锚点 |
 |---|---|---|
-| boot 期特权模板 | 进程表初始化时按模板写 `p_priority`/`p_quantum_size_ms`（`p_scheduler` 的槽位初值来自 `minix3/minix/include/minix/priv.h` 的调度者槽定义，§3.3 逐字） | [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.3（模板族，不含调度者槽组） |
+| boot 期特权模板 | 进程表初始化时按模板写 `p_priority`/`p_quantum_size_ms`（内核 `p_scheduler` 的初值是硬编码 NULL〔`minix3/minix/kernel/proc.c:134`〕；调度者槽模板（`priv.h` 的 `SRV_SCH`/`DSRV_SCH`/`USR_SCH`）由用户态 RS 消费、经 `sched_start→SYS_SCHEDCTL` 链路落到内核，§3.3 按名引用） | [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.3（模板族，不含调度者槽组） |
 | SYS_SCHEDULE / SYS_SCHEDCTL 改参 | 用户态调度服务器运行期改优先级与时间片 | 本篇 §2.3（`minix3/minix/kernel/system.c:sched_proc`） |
 | 调度服务器策略 | SCHED 服务器的 MLFQ 降级与回升决策，经上一行落到内核 | `02-stage-sched` 方向（SCHED 服务器用户态本体，尚未重生成） |
 
@@ -172,19 +177,38 @@ void proc_no_time(struct proc * p)
 | 主题 | 本篇怎么办 | 去处 |
 |---|---|---|
 | switch_to_user 循环本体 | 只以调用方身份出现（拍二重排、拍五量子检查） | [10-switch-to-user.md](10-switch-to-user.md) §2.1/§4.3 |
-| IPC 阻塞/唤醒引起的队列出入语义 | 只讲"位变 → 队列动"的装置半（RTS 宏与包装层）；SEND/RECEIVE 何时置位不展开 | `12-ipc-core`（IPC 核心篇，尚未重生成） |
+| IPC 阻塞/唤醒引起的队列出入语义 | 只讲"位变 → 队列动"的装置半（RTS 宏与包装层）；SEND/RECEIVE 何时置位不展开 | `12-ipc-core`（IPC 核心篇） |
 | tick 到达后的 quantum 递减 | 只讲扣到 0 之后的分支；递减本体不讲 | `17-clock-timer`（时钟与定时器运行篇，尚未重生成） |
 | IPI 跨 CPU 唤醒 | 只讲 C 入队里 SMP 半段的形状与现状（§3.3） | `16-smp`（SMP 篇，尚未重生成） |
 | SCHED 服务器用户态本体 | 只给边界句：策略算法、消息协议在服务器侧 | `02-stage-sched` 方向（尚未重生成） |
 | RTS 位族全表与 boot 期按住 | 引用不重复 | [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.2/§1.4 |
 
-认知减负声明：本章不必深究 IPC 阻塞/唤醒的语义——本篇只保证读者能回答"标志位翻转的那一刻队列发生了什么"，至于哪个内核路径因为什么原因翻转它，归 `12-ipc-core`（IPC 核心篇，尚未重生成）。也不必深究 tick 怎么把剩余时间扣到 0、IPI 怎么横跨 CPU、SCHED 服务器在用户态怎么决策——分别是 `17-clock-timer`、`16-smp`（两篇，均尚未重生成）与 `02-stage-sched` 方向的辖区。
+认知减负声明：本章不必深究 IPC 阻塞/唤醒的语义——本篇只保证读者能回答"标志位翻转的那一刻队列发生了什么"，至于哪个内核路径因为什么原因翻转它，归 `12-ipc-core`（IPC 核心篇）。也不必深究 tick 怎么把剩余时间扣到 0、IPI 怎么横跨 CPU、SCHED 服务器在用户态怎么决策——分别是 `17-clock-timer`、`16-smp`（两篇，均尚未重生成）与 `02-stage-sched` 方向的辖区。
+
+### 1.5 C 侧覆盖边界（本篇叙述面逐项对账）
+
+本篇的叙述面横跨三类材料，C 侧有无对照逐项列清——**无 C 对应物的分支不得读作"与 C 一致"**：
+
+| 叙述面 | C 侧对照 | 边界说明 |
+|---|---|---|
+| 四原语（`enqueue`/`enqueue_head`/`dequeue`/`pick_proc`）与 RTS 宏 | **有**：`proc.c`/`proc.h` 是架构通用 C 代码 | 逐段走查以 i386 构建的行号定位（第 2 章） |
+| 优先级常量与权限模板（`config.h`/`priv.h`） | **有** | 模板槽的运行期接管链在用户态（PM/RS/SCHED），见 §3.3 缺口二 |
+| per-CPU 队列（`cpulocals.h` 双数组） | **有（CONFIG_SMP 构建）**：调用点按 `rp->p_cpu` 把 CPU 号传给 `get_cpu_var` | Rust 收拢成 `Scheduler` 结构、队列恒 BSP（§3.3 缺口一） |
+| 机制/策略的类型级拆分（`Scheduler`/`EnqueueInfo`/回执数据流） | **无**：C 是注释级约定 | Rust 独有设计（§3.1） |
+| `Option` 哨兵与 `SchedProcError` 枚举 | **无**：C 用 `-1` 哨兵与 errno | 改型（§3.4 处置表） |
+| priority 上界收紧（Rust 拒 16） | **有意偏离**：C 放行 16（`rdy_head[16]` 越界缺陷） | 改型（修正），§3.4 表单独占行 |
+| `enter_queue` 写入对象改指被入队进程 | **有意偏离**：C 写 `proc_ptr` 的账 | 改型（修正），§3.4 表单独占行 |
+| `dequeue` 未命中 panic / 摘链后清 `p_nextready` | **有意偏离**：C 静默通过、不清被摘节点自己的 `p_nextready` | 审计更严面（§4.1 披露） |
+| 抢占门空置跳过（`proc_ptr` 为空） | **无 C 对位**：C 保证 `proc_ptr` 非空（`main.c:57`/`:259-261`） | Rust 宿主/早启窗口的防御性新增（§3.3 缺口二登记） |
+| `sanity-checks` feature 与 debug 断言两档 | **部分**：C 是 `#if DEBUG_SANITYCHECKS` 单档 | 形态对位、档位不同（§4.3） |
+
+纪律：凡本表标"无 C 对位/有意偏离"的面，正文一律不写"与 C 一致"；偏离面的登记以 §3.4 处置表为主，另有几处只在 §3.3 缺口二/§4.1 披露（抢占门空置跳过、摘链清 `p_nextready`）。
 
 ---
 
 ## 2. C 源码分析
 
-### 2.0 本章地图：四原语与两个调用方
+### 2.0 本章地图：四原语与两个策略面
 
 本章的演员表：四个原语函数——`enqueue`（尾插，`minix3/minix/kernel/proc.c:enqueue`）、`enqueue_head`（头插，`minix3/minix/kernel/proc.c:enqueue_head`）、`dequeue`（摘链，`minix3/minix/kernel/proc.c:dequeue`）、`pick_proc`（选人，`minix3/minix/kernel/proc.c:pick_proc`）；两个策略面——RTS 宏（位变化触发的自动队列半，§1.1 已引）与 `proc_no_time`/`sched_proc`（时间与参数变化触发的策略函数）。四原语的函数头注释各自声明了职责边界，先看信息量最大的那条——`enqueue` 的：
 
@@ -200,7 +224,7 @@ void proc_no_time(struct proc * p)
  */
 ```
 
-（区间复算：`sed -n '1599,1606p' minix3/minix/kernel/proc.c | wc -l` = 8。其余三个原语的头注释在 §2.1/§2.2 的全函数引用里逐字可见。）
+（区间复算：`sed -n '1599,1606p' minix3/minix/kernel/proc.c | wc -l` = 8。其余三个原语的函数体在 §2.1/§2.2 的全函数引用里逐字可见；`enqueue_head` 的引导注释（"to be fair"）在 §2.1 正文转述。）
 
 这条注释把机制与策略的分界写在明处：`enqueue` 只管"怎么放进队列"——接尾、修指针、记账；"放哪个队列"不归它决定，那是调用方已经写进 `p->p_priority` 的策略结果。`minix3/minix/kernel/proc.c:pick_proc` 的头注释对称地声明了另一半："Decide who to run now"，并且点出 `bill_ptr` 这个记账副作用。机制/策略分界画成图：
 
@@ -216,7 +240,7 @@ void proc_no_time(struct proc * p)
    sched_proc                        改参请求 ─────►  NO_QUANTUM 置位-清位舞步
    （SYS_SCHEDULE / SYS_SCHEDCTL）                    （借宏制造一次合法的出队-入队往返）
                                               │
-   pick_proc                        每一拍循环 ─────►  从 0 号链扫到 15 号，取队首
+   （原语侧）pick_proc              每一拍循环 ─────►  从 0 号链扫到 15 号，取队首
 ```
 
 这个地图回答"四原语各自的接口与职责边界"：`enqueue`/`enqueue_head` 只在尾部/头部插入；`dequeue` 只负责摘链；`pick_proc` 只负责扫描选人；所有"为什么、什么时机"都留在策略面。顺着这张图，§2.1 走入队的两条路，§2.2 走出队与选人，§2.3 走策略面三函数。
@@ -291,6 +315,7 @@ void enqueue(
 #if DEBUG_SANITYCHECKS
   assert(runqueues_ok_local());
 #endif
+}
 ```
 
 按执行顺序拆成五段读。第一段，断言与定位：`assert(proc_is_runnable(rp))`——入队的先决是位已经清干净（位先变、队列后动，这个次序由 §1.1 的 `RTS_UNSET` 宏保证）；随后 `get_cpu_var(rp->p_cpu, run_q_head)` 按**被指派的 CPU** 取队列组（§1.2 的 x-cpu 注释在这里落成代码）。第二段，尾插本体：队列为空则头尾都指向自己，`rp->p_nextready = NULL` 标记新链尾；非空则旧尾接上新进程、尾指针挪过来。第三段，内嵌抢占判定——`if (cpuid == rp->p_cpu)` 只在"入队落在当前 CPU"时触发：`p->p_priority > rp->p_priority` 比较的是优先级数值，数值大意味着优先级低，所以这个条件读作"当前进程排不过新来的"；再过 `priv(p)->s_flags & PREEMPTIBLE` 的特权门，两关都过就 `RTS_SET(p, RTS_PREEMPTED)` 给**当前进程**置抢占位。注释 "calls dequeue()" 点名了原语之间的调用关系：`RTS_SET` 的跃迁检测成立时会在 `enqueue` 的执行途中递归调进 `dequeue`——原语不是一条直线，是网状的。第四段，SMP 半段：入队落在**别的** CPU 且那颗 CPU 正 idle（`cpu_is_idle`）时，`smp_schedule(rp->p_cpu)` 唤醒它来调度这个新进程。第五段，记账：`read_tsc_64` 把当前时刻写进 `enter_queue`。
@@ -487,7 +512,7 @@ static struct proc * pick_proc(void)
 
 ### 2.3 proc_no_time、notify_scheduler 与 sched_proc：策略面
 
-三个函数把"什么时刻、按什么规则动队列"讲完。`proc_no_time` 的全函数已在 §1.3 逐字引过（18 行，两分支），这里补它调用的另一半——`notify_scheduler` 全函数（`minix3/minix/kernel/proc.c:notify_scheduler`，32 行，`sed -n '1860,1891p' minix3/minix/kernel/proc.c | wc -l` 复算）：
+策略面的三个函数把"什么时刻、按什么规则动队列"讲完。`proc_no_time` 的全函数已在 §1.3 逐字引过（18 行，两分支），这里补它调用的另一半——`notify_scheduler` 全函数（`minix3/minix/kernel/proc.c:notify_scheduler`，32 行，`sed -n '1860,1891p' minix3/minix/kernel/proc.c | wc -l` 复算）：
 
 ```c
 // minix3/minix/kernel/proc.c:notify_scheduler —— 逐字引用（1860-1891 行，未删节）
@@ -527,10 +552,10 @@ static void notify_scheduler(struct proc *p)
 
 进门先断言 `!proc_kernel_scheduler(p)`——这个函数只为"有外部调度者"的进程存在。第一个动作 `RTS_SET(p, RTS_NO_QUANTUM)` 借宏完成出队：置位前的进程可运行，置位后不可运行，跃迁检测成立，`dequeue` 执行——注释 "this dequeues the process"（§1.3 的 `proc_no_time` 里）说的就是这一下。随后装配消息：`m_source` 填**耗尽进程自己的端点**（服务器收到的消息看起来是被调度进程发来的），`m_type` 是 `SCHEDULING_NO_QUANTUM`，七个 `acnt_*` 字段把记账快照（排队时长换算成毫秒、出队次数、IPC 同步/异步计数、被抢次数、CPU 号、负载）一并交给服务器。`reset_proc_accounting(p)` 清账本，最后 `mini_send(p, p->p_scheduler->p_endpoint, &m_no_quantum, FROM_KERNEL)`——以进程 `p` 的身份、从内核发到它的调度者。发送失败的处置是 panic：内核代发的消息送不出去，说明调度者端点已死或表已坏，无可恢复。注释 "on the process's behalf" 把这次代发的法律关系说清了：消息在协议上是进程发的，内核只是邮差。
 
-策略面的第三个函数是 `sched_proc`（`minix3/minix/kernel/system.c:sched_proc`，58 行，`sed -n '642,699p' minix3/minix/kernel/system.c | wc -l` 复算）——SYS_SCHEDULE 与 SYS_SCHEDCTL 两个系统调用的共同落点（`minix3/minix/kernel/system/do_schedule.c:do_schedule` 尾行与 `minix3/minix/kernel/system/do_schedctl.c:do_schedctl` 各自调进来，见后）：
+策略面的第三个函数是 `sched_proc`（`minix3/minix/kernel/system.c:sched_proc`，59 行，`sed -n '642,700p' minix3/minix/kernel/system.c | wc -l` 复算）——SYS_SCHEDULE 与 SYS_SCHEDCTL 两个系统调用的共同落点（`minix3/minix/kernel/system/do_schedule.c:do_schedule` 尾行与 `minix3/minix/kernel/system/do_schedctl.c:do_schedctl` 各自调进来，见后）：
 
 ```c
-// minix3/minix/kernel/system.c:sched_proc —— 逐字引用（642-699 行，未删节；内含源码自带的 FIXME 注释，按原文引用）
+// minix3/minix/kernel/system.c:sched_proc —— 逐字引用（642-700 行，59 行，未删节；内含源码自带的 FIXME 注释，按原文引用）
 int sched_proc(struct proc *p, int priority, int quantum, int cpu, int niced)
 {
 	/* Make sure the values given are within the allowed range.*/
@@ -589,6 +614,7 @@ int sched_proc(struct proc *p, int priority, int quantum, int cpu, int niced)
 	RTS_UNSET(p, RTS_NO_QUANTUM);
 
 	return OK;
+}
 ```
 
 校验段先立规矩：`priority < TASK_Q && priority != -1` 或 `priority > NR_SCHED_QUEUES` → `EINVAL`；`quantum < 1 && quantum != -1` → `EINVAL`；`-1` 是"保持现值"的哨兵。核心是中间那段**置位-清位舞步**：注释开头自述动机——"In some cases, we might be rescheduling a runnable process"；对可运行进程，先 `RTS_SET(p, RTS_NO_QUANTUM)`（借宏出队），中间放心改 `p_priority`/`p_quantum_size_ms`/`p_cpu`，最后 `RTS_UNSET(p, RTS_NO_QUANTUM)`（跃迁检测成立，按**新**优先级重新入队）。源码自带两条 FIXME，第一条自问 "this preempts the process, do we really want to do that ?"——置位 NO_QUANTUM 的动作本身若触发抢占判定（改参的正是当前进程时），进程会被自己这次改参掐断；第二条承认 SMP 场景下进程在别的 CPU 上运行时这里没有防护。两条都是源码作者留给后人的未决题，本篇照录不裁决。舞步的时序画出来：
@@ -645,7 +671,7 @@ int sched_proc(struct proc *p, int priority, int quantum, int cpu, int niced)
 SYS_SCHEDCTL 的门在接管方向：`minix3/minix/kernel/system/do_schedctl.c:do_schedctl` 的 `SCHEDCTL_FLAG_KERNEL` 臂决定调度权归谁：
 
 ```c
-// minix3/minix/kernel/system/do_schedctl.c:do_schedctl —— 逐字引用（33-48 行，未删节）
+// minix3/minix/kernel/system/do_schedctl.c:do_schedctl —— 逐字引用（33-46 行，未删节；文件全长 46 行）
 		quantum = m_ptr->m_lsys_krn_schedctl.quantum;
 		cpu = m_ptr->m_lsys_krn_schedctl.cpu;
 
@@ -662,7 +688,7 @@ SYS_SCHEDCTL 的门在接管方向：`minix3/minix/kernel/system/do_schedctl.c:d
 }
 ```
 
-带 `SCHEDCTL_FLAG_KERNEL` 标志：先按普通改参走一遍 `sched_proc`（注意实参 `FALSE`——这条路径从不写 niced 位），然后把 `p->p_scheduler = NULL`——调度权收回内核默认策略。不带标志：`p->p_scheduler = caller`——调用者成为这个进程的调度服务器，此后它的量子耗尽消息（§2.3 的 `notify_scheduler`）发给这个调用者。
+带 `SCHEDCTL_FLAG_KERNEL` 标志：先按普通改参走一遍 `sched_proc`（注意实参 `FALSE`——这条路径不置位、但会清位：`sched_proc` 的 else 分支执行 `MF_NICED &= ~`，内核收权顺带清掉历史 NICED），然后把 `p->p_scheduler = NULL`——调度权收回内核默认策略。不带标志：`p->p_scheduler = caller`——调用者成为这个进程的调度服务器，此后它的量子耗尽消息（§2.3 的 `notify_scheduler`）发给这个调用者。调用者身份门在系统调用的权限侧（SCHED 服务器经 `sys_schedctl` 发起；完整身份链归 `13-syscall-dispatch`），与 `do_schedule` 的 `caller != p->p_scheduler` 门不同向。
 
 ### 2.4 本章归纳：原语总表与 INV-1 的完整推演
 
@@ -681,7 +707,8 @@ SYS_SCHEDCTL 的门在接管方向：`minix3/minix/kernel/system/do_schedctl.c:d
 
 INV-1 的一致性靠三环咬合。第一环，宏的跃迁检测：只有"可运行状态真的翻转了"才动队列，重复置位/重复清位都是空操作，不会重复出队入队。第二环，原语的断言方向：入队断言可运行、出队断言不可运行，谁想绕过宏直接调原语，DEBUG 构建下断言立即暴露方向错误。第三环，记账与队列同步更新：`enter_queue` 与摘链同函数完成、`dequeues` 与头插的 `--` 做平——账本不落后于结构。
 
-完整推演走一遍验收题："rts_set 忘 enqueue，故障表现是什么？"设某个路径直接清了 `p_rts_flags` 的一位（比如 `RTS_SENDING`），没经过 `RTS_UNSET`。清完后 `p_rts_flags == 0`，判据说它可运行；但 `run_q_head` 的 16 条链上没有它。此后每一拍，`switch_to_user` 调 `pick_proc`，扫描 `if(!(rp = rdy_head[q]))` 只看队列数组——这个进程永远不在任何一条链上，永远不被选中。它的进程槽字段全部合法、端点有效、内存映射完好，没有任何一处断言会触发：没有 panic、没有输出，一个系统认为可以运行的进程被静默地排除在 CPU 之外，直到某个 debug 工具翻进程表才会发现它。这就是"隐性饿死"的完整形状，它的落点在 `pick_proc` 的扫描那一行。第 3 章带着这张表和这条推演链，看 Rust 怎么接。
+完整推演走一遍验收题："rts_unset 忘 enqueue，故障表现是什么？"设某个路径直接清了 `p_rts_flags` 的一位（比如 `RTS_SENDING`），没经过 `RTS_UNSET`。清完后 `p_rts_flags == 0`，判据说它可运行；但 `run_q_head` 的 16 条链上没有它。此后每一拍，`switch_to_user` 调 `pick_proc`，扫描 `if(!(rp = rdy_head[q]))` 只看队列数组——这个进程永远不在任何一条链上，永远不被选中。它的进程槽字段全部合法、端点有效、内存映射完好，默认构建下没有任何一处断言会触发：没有 panic、没有输出，一个系统认为可以运行的进程被静默地排除在 CPU 之外（`sanity-checks` 开启时 `runqueues_ok_cpu` 的检查 5 会当场报出——审计点正是为这一路设的），否则直到某个 debug 工具翻进程表才会发现它。这就是"隐性饿死"的完整形状，它的落点在 `pick_proc` 的扫描那一行。第 3 章带着这张表和这条推演链，看 Rust 怎么接。
+
 ---
 
 ## 3. Rust 设计决策
@@ -797,7 +824,7 @@ C 的查找式摘链用二级指针 `struct proc **xpp` 记接缝（§2.2）；R
 | 方案 | 用于 | 得到 | 付出 |
 |---|---|---|---|
 | C 式单体：原语直接改指针链 | （被否决的默认） | 与 C 同形，无双向数据流 | `Scheduler` 要同时持有队列与进程两个数组的访问权，机制/策略在签名上重新耦合 |
-| 纯操作 + 回执（`EnqueueInfo`） | `enqueue_queue_tail` | 原语零进程知识，可独立单测；接链动作显式可见 | 调用方多一步"消费回执"，漏消费编译器不管（`old_tail` 未用会被命名遮蔽警告兜住） |
+| 纯操作 + 回执（`EnqueueInfo`） | `enqueue_queue_tail` | 原语零进程知识，可独立单测；接链动作显式可见 | 调用方多一步"消费回执"，漏消费编译器不管（`old_tail` 是返回值字段，未读取不产生警告；当前由 `test_enqueue_*` 与 `runqueues_ok_cpu` 的链走查（last-element-not-tail）与检查 5（可运行者必在队）兜住） |
 | 原语带走进程切片 | `dequeue_from_queue` | 摘链的前驱修正、尾修正、清链一次做完，与 C 的二级指针走查逐行对得上 | 原语签名挂上 `&mut [KProcess]`，独立测试要先造进程表 |
 
 两张回执形状不对称的理由藏在动作本身里：尾插只需要"旧尾是谁"一个信息，回执就一个字段；摘链要读写链上每一个路过节点的前驱接缝，把每一步都拆成回执等于发明第二个二级指针——复杂度转移而非消失，不如把切片交出去。包装层 `os/kernel/src/proc_table.rs:fn sched_dequeue` 的注释把这层借用关系点明：`&mut self.sched[idx]` 与 `&mut self.procs` 是互不相交的字段借用，原语一次拿两个正好。
@@ -808,7 +835,7 @@ C 的查找式摘链用二级指针 `struct proc **xpp` 记接缝（§2.2）；R
 
 ### 3.2 量子耗尽两分支的 Rust 形态与判据核对（→§2.3）
 
-C 的 `proc_no_time` 用一个宏决定分支归属：`minix3/minix/kernel/proc.h:proc_kernel_scheduler` 展开为 `p_scheduler == NULL || p_scheduler == p`（§1.3 已引）——"没有调度服务器"或"自己调度自己"都归内核默认策略。Rust 侧的同名判据与宏逐项对应：
+C 的 `proc_no_time` 用一个宏决定分支归属：`minix3/minix/kernel/proc.h:proc_kernel_scheduler` 展开为 `p_scheduler == NULL || p_scheduler == p`（§1.3 已引）——"没有调度服务器"或"自己调度自己"都归内核默认策略。（`p_sched` 是进程槽内的调度子结构：优先级/量子/归属 CPU/调度者四组字段——本节与 §3.3 的 `p_sched.*` 访问都指它。）Rust 侧的同名判据与宏逐项对应：
 
 ```rust
 // os/kernel/src/proc_table.rs:fn sched_proc_no_time —— 逐字引用（1067-1104 行，未删节；注释含仓库内部编号，按原文引用）
@@ -885,15 +912,15 @@ C 的 `priv(p)` 是进程结构里现成的指针，一步解引用；Rust 要 `
 
 循环侧的量子检查在 Rust 里折叠成一个函数——`os/kernel/src/proc_table.rs:fn check_quantum`：C 在 `switch_to_user` 拍五先判 `p_cpu_time_left` 是否耗尽、耗尽则调 `proc_no_time`、然后重验可运行（三步散在循环里，[10-switch-to-user.md](10-switch-to-user.md) §1.3 的拍五）；Rust 把"耗尽判断 + 调 `sched_proc_no_time` + 重验"折成一个返回 `bool` 的调用（被调侧走查在 §4.2）。折叠不改变语义，改变的是循环代码的形状：调用方一行 `if !table.check_quantum(...)` 完成三步。
 
-抢占位判据的双向对账（C `minix3/minix/kernel/proc.c:1895` 的判据行 / Rust 本节引文的 `self.preemptible(nr, priv_table)` 一行）：C 判 `priv(p)->s_flags & PREEMPTIBLE`，Rust 判特权表项的 `is_preemptible()`——位的归属面（哪些进程带它）在 §3.3 与置位面一起如实披露。
+抢占位判据的双向对账（C `minix3/minix/kernel/proc.c:1895` 的判据行 / Rust 本节引文的 `self.preemptible(nr, priv_table)` 一行）：C 判 `priv(p)->s_flags & PREEMPTIBLE`，Rust 判特权表项的 `is_preemptible()`——位的归属面（哪些进程真的带位）是本节判据核对的滞后前提，与 per-CPU 队列现状一并给在 §3.3。
 
 反向推演：设想 `preemptible` 不查特权表、改读进程字段。`PREEMPTIBLE` 是特权模板位——`minix3/minix/include/minix/priv.h:USR_F` 的组成成分，进程表里没有这个字段可读；硬要在进程上表达，就得在每个进程初始化与特权变更路径上多维护一份拷贝，而两份拷贝必有一份先过期。
 
-### 3.3 per-CPU 队列的现状与三个缺口（→§1.2/§2.3）
+### 3.3 现状与三个缺口：per-CPU 队列、PREEMPTIBLE 置位面、niced 链（→§1.2/§2.3）
 
-§1.2 说队列挂在进程被指派的 CPU 上。Rust 的承接把每 CPU 结构原样搬了过来：`ProcessTable` 持有一组 `Scheduler`，按 CPU 号索引取用——`os/kernel/src/proc_table.rs:fn sched_for_cpu`（包装层所有队列操作都按 `p_sched.cpu` 或当前 CPU 落位）；`os/kernel/src/proc_table.rs:fn sched_idx` 对越界号做回退（回退到 0 号 BSP，防的是损坏的 `p_sched.cpu` 值）。结构是齐的，流量不是。以下三个缺口是**已登记的现状**——写在这里是给读者一张诚实的地图：哪些分支今天走不通、当前真实路径是什么。它们不是待修 bug 清单，登记归属与修复排期在协调台账里，本篇只对码。
+§1.2 说队列挂在进程被指派的 CPU 上。Rust 的承接把每 CPU 结构原样搬了过来：`ProcessTable` 持有一组 `Scheduler`，按 CPU 号索引取用——`os/kernel/src/proc_table.rs:fn sched_for_cpu`（包装层所有队列操作都按 `p_sched.cpu` 或当前 CPU 落位）；`os/kernel/src/proc_table.rs:fn sched_idx` 对越界号做回退（回退到 0 号 BSP，防的是损坏的 `p_sched.cpu` 值）。结构是齐的，流量不是。以下两个缺口是**已登记的现状**（第三个主题 niced 链今天已闭合，一并给出）——写在这里是给读者一张诚实的地图：哪些分支今天走不通、当前真实路径是什么。它们不是待修 bug 清单——登记归属与修复排期不在本篇裁决范围，本篇只对码。
 
-**缺口一：每 CPU 队列恒 BSP。** 全部进程的 `p_sched.cpu` 都是 BSP（0 号），`sched_for_cpu` 拿到的永远是同一组队列——AP 的队列组是死结构。现状的真实路径：`os/kernel/src/sched.rs:fn sched_proc` 收到指派 AP 的请求时，范围与就绪校验照 C 做（`validate_cpu_param`，越界 `EINVAL`、未就绪 `EBADCPU`），随后 `os/kernel/src/sched.rs:fn clamp_cpu_to_bsp` 把目标一律钳回 BSP——请求被接受（返回 `Ok`），进程实际留在 BSP。钳制的过渡语义在 C 的非 SMP 构建里有对应物：`system.c:sched_proc` 的 `CONFIG_SMP` 段整段在条件编译里，非 SMP 构建对 cpu 参数照单全收、忽略不写——"接受请求、进程留原地"。C 入队里的跨 CPU 半段（§2.1 第四段的 `else if cpu_is_idle → smp_schedule`）在 Rust 没有对应分支：检索 `smp_schedule` 在 `os/kernel/src/` 命中 15 处、6 个符号（`smp_schedule`/`smp_schedule_sync`/`smp_schedule_stop_proc`/`smp_schedule_vminhibit`/`smp_schedule_stop_proc_save_ctx`/`smp_schedule_migrate_proc`），全部属迁移、停进程族与 C 映射注释——没有"目标 CPU idle 则唤醒它来调度"的入队臂。§2.1 讲的 SMP 半段，在 Rust 是"没有这半段"，不是"有而不可达"。
+**缺口一：每 CPU 队列恒 BSP。** 全部进程的 `p_sched.cpu` 都是 BSP（0 号），`sched_for_cpu` 拿到的永远是同一组队列——AP 的队列组是死结构。现状的真实路径：`os/kernel/src/sched.rs:fn sched_proc` 收到指派 AP 的请求时，范围与就绪校验照 C 做（`validate_cpu_param`，越界 `EINVAL`、未就绪 `EBADCPU`），随后 `os/kernel/src/sched.rs:fn clamp_cpu_to_bsp` 把目标一律钳回 BSP——请求被接受（返回 `Ok`），进程实际留在 BSP。钳制的过渡语义在 C 的非 SMP 构建里有对应物：`system.c:sched_proc` 的 `CONFIG_SMP` 段整段在条件编译里，非 SMP 构建对 cpu 参数照单全收、忽略不写——"接受请求、进程留原地"。C 入队里的跨 CPU 半段（§2.1 第四段的 `else if cpu_is_idle → smp_schedule`）在 Rust 没有对应分支：检索 `smp_schedule` 在 `os/kernel/src/` 命中 15 处（匹配 token 7 个，含 `arch_send_smp_schedule_ipi` 注释里的 `smp_schedule_ipi`），全部属迁移、停进程族与 C 映射注释——没有"目标 CPU idle 则唤醒它来调度"的入队臂。§2.1 讲的 SMP 半段，在 Rust 是"没有这半段"，不是"有而不可达"。
 
 **缺口二：PREEMPTIBLE 门的现状形状。** §3.2 的对账给出装置，这里给"哪些进程真的带位"的置位面。位值与模板（C 侧逐字）：
 
@@ -909,18 +936,18 @@ C 的 `priv(p)` 是进程结构里现成的指针，一步解引用；Rust 要 `
 
 （位值 `PREEMPTIBLE 0x002` 定义在 `minix3/minix/include/minix/const.h:PREEMPTIBLE`；Rust 侧同值同模板：`os/kernel/src/capability.rs` 的 `ProcessCapability::PREEMPTIBLE = 0x0000_0002` 与 `TSK_F`/`SRV_F`/`USR_F` 组合常量。）
 
-读模板：用户进程（`USR_F = BILLABLE | PREEMPTIBLE`）与系统服务（`SRV_F = SYS_PROC | PREEMPTIBLE`）带位；内核任务（`TSK_F = SYS_PROC`）不带；动态系统服务（`DSRV_F`）以 `SRV_F` 为底故也带。再看"谁的 `p_scheduler` 非空"：模板族的调度者槽定义在 `minix3/minix/include/minix/priv.h:DSRV_SCH`——动态系统服务的调度者指向 SCHED 服务器进程号，用户进程的调度者槽是 `NONE`（`USR_SCH`），系统服务的调度者是内核（`SRV_SCH`）。两个面相交，notify 分支（§1.3 左支）的真实可达面 = **被 SCHED 服务器接管且带 PREEMPTIBLE 位的进程** = 动态系统服务。Rust 侧装置已对齐（§3.2）：`check_quantum` ← 调度主循环是生产路径，`preemptible()` 查的是特权表。抢占门的另一半（§2.1 的 enqueue 内嵌判定）在 Rust 的现状是"门在、读不到当前进程时跳过"：`os/kernel/src/proc_table.rs:fn sched_enqueue` 自己读 CPU 本地的 `proc_ptr` 取当前进程（C 同位行为），SMP 状态未安装（早期启动、宿主测试）或 `proc_ptr` 还是空时跳过评估——跳过即"不抢占"，与 C 在同场景下的"无当前进程可比"行为一致。
+读模板：用户进程（`USR_F = BILLABLE | PREEMPTIBLE`）与系统服务（`SRV_F = SYS_PROC | PREEMPTIBLE`）带位；内核任务（`TSK_F = SYS_PROC`）不带；动态系统服务（`DSRV_F`）以 `SRV_F` 为底故也带。再看"谁的 `p_scheduler` 非空"：模板族的调度者槽定义在 `minix3/minix/include/minix/priv.h:DSRV_SCH`——动态系统服务的调度者指向 SCHED 服务器进程号，用户进程的调度者槽是 `NONE`（`USR_SCH`），系统服务的调度者是内核（`SRV_SCH`）。两个面相交，notify 分支（§1.3 左支）的真实可达面 = **被 SCHED 服务器接管且带 PREEMPTIBLE 位的进程**——运行期主体是**用户进程**：PM 在 boot（`sched_init` 对非特权进程调 `sched_start`）与 fork（子进程 `mp_scheduler = SCHED_PROC_NR`）两条路径把用户进程交给 SCHED，SCHED 经 `sys_schedctl` 让内核 `p->p_scheduler = caller`；动态系统服务（`DSRV_SCH` 槽）只是其中一类。模板槽口径与运行期接管路径两笔合起来才是全貌。Rust 侧装置已对齐（§3.2）：`check_quantum` ← 调度主循环是生产路径，`preemptible()` 查的是特权表。抢占门的另一半（§2.1 的 enqueue 内嵌判定）在 Rust 的现状是"门在、读不到当前进程时跳过"：`os/kernel/src/proc_table.rs:fn sched_enqueue` 自己读 CPU 本地的 `proc_ptr` 取当前进程（C 同位行为），SMP 状态未安装（早期启动、宿主测试）或 `proc_ptr` 还是空时跳过评估——跳过即"不抢占"。**登记**：C 侧不存在这个场景——`bsp_finish_booting()` 早期就把 `proc_ptr` 置为 idle（`main.c:57`）、`kmain()` 再兜底（`main.c:259-261`，注释原文 "scheduling functions depend on proc_ptr pointing somewhere."），enqueue 的抢占臂还带 `assert(p)`；Rust 的空置跳过是宿主/早启窗口的**防御性新增**（无 C 对位）。
 
-**缺口三：niced 链路。** C 的链路三段：SYS_SCHEDULE 消息带的 niced 字段（`minix3/minix/kernel/system/do_schedule.c:do_schedule` 里 `niced = !!(m_ptr->m_lsys_krn_schedule.niced)`）→ `sched_proc` 置/清 `MF_NICED`（`minix3/minix/kernel/system.c:sched_proc`）→ 时钟记账分类时消费（`minix3/minix/kernel/arch/i386/arch_clock.c` 的 counter 选择链：`MF_NICED` → `CP_NICE`）。Rust 侧现状：前两段已端到端接通——`os/kernel/src/syscall.rs` 的 `dispatch_schedule` 读线上值做布尔强转（C 那行的直译），`os/kernel/src/sched.rs:fn sched_proc` 的 Step 8 置/清 `MiscFlagsBits::NICED`，并有测试钉住线上位到标志位的传递（§5.2 的细读二之一）。第三段是半成品：`os/kernel/src/clock.rs` 的记账分类器已备 `CP_NICE` 桶并读 `MF_NICED` 位，但生产记账路径尚未调用这个分类器（登记不实现——生产记账路径的结构与 C 的 counter 选择链不同，接线归时钟记账的重构窗口）。如实写：**位从线上到进程标志是通的，位在记账里的消费还没挂上**。
+**已闭合的链路：niced。** C 的链路三段：SYS_SCHEDULE 消息带的 niced 字段（`minix3/minix/kernel/system/do_schedule.c:do_schedule` 里 `niced = !!(m_ptr->m_lsys_krn_schedule.niced)`）→ `sched_proc` 置/清 `MF_NICED`（`minix3/minix/kernel/system.c:sched_proc`）→ 时钟记账分类时消费（`minix3/minix/kernel/arch/i386/arch_clock.c` 的 counter 选择链：`MF_NICED` → `CP_NICE`）。Rust 侧现状：前两段已端到端接通——`os/kernel/src/syscall.rs` 的 `dispatch_schedule` 读线上值做布尔强转（C 那行的直译），`os/kernel/src/sched.rs:fn sched_proc` 的 Step 8 置/清 `MiscFlagsBits::NICED`，并有测试钉住线上位到标志位的传递（`os/kernel/src/syscall.rs` 的 `test_dispatch_schedule_niced_wire_bit_sets_mf_niced`）。第三段今天已闭合：`os/kernel/src/clock.rs:fn classify_cpu_state`（读 `MF_NICED` → `CP_NICE` 桶）由 `account_process_stop` 在**生产路径**调用（中断入口/idle/`finish_and_restore` 三站，`os/kernel/src/lib.rs`），状态桶经 `account_tsc_per_state` 落账——线上位 → 进程标志 → 记账分类三段全通。C 的 counter 选择链在 Rust 换了形状（分类器 + 状态桶），消费端接口（GET_CPU_TICKS 一族）的展示面归 `17-clock-timer`。
 
-三个缺口的边界一句话：单 CPU 现状下三者都不可观察——cpu 恒 0、SCHED 接管的进程尚未参战、记账分类未挂接。把它们读丢的代价在将来：缺口一若不登记，读者会把每 CPU 队列读成"已支持多核负载均衡"，把 AP 队列当活路径排障；缺口二若不登记，notify 分支会被当成所有用户进程的通用路径；缺口三若不登记，niced 位会被当成已生效的记账分类。
+三个缺口的边界一句话：单 CPU 现状下缺口一与缺口二不可观察——cpu 恒 0、SCHED 接管的进程尚未参战；缺口三已闭合（见上段）。把它们读丢的代价在将来：缺口一若不登记，读者会把每 CPU 队列读成"已支持多核负载均衡"，把 AP 队列当活路径排障；缺口二若不登记，notify 分支会被两种误读夹住——要么当成所有用户进程的通用路径、要么当成只服务动态系统服务的窄路径。
 
 ### 3.4 处置表（→Ch2 各节）
 
 | C 侧（锚点） | 去向 | Rust 侧（锚点） | 说明 |
 |---|---|---|---|
 | `minix3/minix/kernel/proc.h:RTS_SET`/`:RTS_UNSET` 宏 | 改型 | `os/kernel/src/proc_table.rs:fn rts_set`/`:fn rts_unset`（§4.2） | 宏展开 → 方法；跃迁检测同形，另增 `is_in_scheduler` 守卫 |
-| `minix3/minix/kernel/proc.h:RTS_SETFLAGS` | 改型 | `os/kernel/src/proc_table.rs:fn rts_setflags` | 整体赋值语义 + 先出队半 |
+| `minix3/minix/kernel/proc.h:RTS_SETFLAGS` | 改型 | `os/kernel/src/proc_table.rs:fn rts_setflags` | 整体赋值语义（不做跃迁检测）+ 先出队半；由 `test_rts_setflags_wipes_other_bits` 钉住（§4.2 未逐字引） |
 | `minix3/minix/kernel/proc.c:enqueue` | 拆分 | `os/kernel/src/proc_table.rs:fn sched_enqueue`/`:fn sched_enqueue_with`（§4.2） | 队列半归 `Scheduler` 纯操作，字段半与抢占判定在包装层；SMP idle 唤醒臂无对应（§3.3 缺口一） |
 | `minix3/minix/kernel/proc.c:enqueue_head` | 拆分 | `os/kernel/src/proc_table.rs:fn sched_enqueue_head`（§4.2） | 同上拆分；`dequeues--`/`preempted++` 保留 |
 | `minix3/minix/kernel/proc.c:dequeue` | 拆分 | `os/kernel/src/proc_table.rs:fn sched_dequeue`（§4.2） | 查找式摘链 → 切片链手术；C 的"未命中静默"改为 panic（§4.1 披露） |
@@ -933,8 +960,9 @@ C 的 `priv(p)` 是进程结构里现成的指针，一步解引用；Rust 要 `
 | `#if DEBUG_SANITYCHECKS` 的 `runqueues_ok_local()`（`minix3/minix/kernel/proto.h`：非 SMP 构建映射到 `runqueues_ok`，SMP 构建映射到 `runqueues_ok_cpu(cpuid)`；本体 `minix3/minix/kernel/debug.c:runqueues_ok_cpu`） | 改型 | `os/kernel/src/debug.rs:fn runqueues_ok_cpu`（§4.3） | 完整移植（头尾配对、尾的 next 为空、成员可运行且优先级对号、无重复挂队、可运行者必在队）+ 三个包装层尾部的显式断言点，由 `sanity-checks` feature 门控；另配 debug 构建的 `debug_assert` 散点（`pick_proc` 队首可运行等） |
 | `p_accounting`（`enter_queue`/`time_in_queue`/`dequeues`/`preempted`） | 保留 + 补齐 | `os/kernel/src/proc.rs:struct Accounting`（§4.3） | 另含 `ipc_sync`/`ipc_async`（notify 消息的字段源，§2.3） |
 | `enter_queue` 写入对象 | 改型（修正） | `sched_enqueue_with` 的 Phase 4（§4.2） | C 写 `proc_ptr` 的账（§2.1 辨析），Rust 写被入队进程的账 |
+| priority 上界 | 改型（修正） | `os/kernel/src/sched.rs` 的 Step 1 校验（§4.2；测试 `test_sched_proc_priority_overflow_rejected`） | C 判 `> NR_SCHED_QUEUES` 放行 16（随后 `enqueue` 以 `rdy_head[16]` 越界索引——C 的 off-by-one 缺陷）；Rust 收紧到 `> MIN_USER_Q` 拒绝 16 |
 
-表里两处"改型（修正）"值得重读：记账写入对象与 niced（§3.3 缺口三的已闭合半）都是"Rust 与 C 行为不同、且 Rust 声称 C 是错的/待改的"——这类偏离在本表单独占行，不藏在"保留"里。
+表里"改型（修正）"的偏离逐处单独占行、不藏在"保留"里：记账写入对象（`enter_queue`）与 priority 上界（本表新增行）两处；niced 的偏离在 `do_schedule/do_schedctl` 行内注明（§3.3 缺口三，今天三段已闭合）。
 
 ---
 
@@ -983,7 +1011,7 @@ C 的 `priv(p)` 是进程结构里现成的指针，一步解引用；Rust 要 `
     }
 ```
 
-空队列与 C 同（头尾都指自己）；非空时只挪头指针。注意它与尾插的**回执不对称**：头插没有 `EnqueueInfo` 返回值——§3.1 的取舍表说过，头插需要的接链信息（旧队首）在被插入进程自己的 `p_nextready` 里就能表达（新头指向旧头），包装层拿 `queue_head(q)` 读一下旧值即可（§4.2 的 Phase 2 前一行正是这么做的），无需回执。
+空队列与 C 同（头尾都指自己）；非空时只挪头指针。注意它与尾插的**回执不对称**：头插没有 `EnqueueInfo` 返回值——§3.1 的取舍表说过，头插需要的接链信息（旧队首）在被插入进程自己的 `p_nextready` 里就能表达（新头指向旧头），包装层拿 `queue_head(q)` 读一下旧值即可（`os/kernel/src/proc_table.rs:fn sched_enqueue_head` 先读旧头再调本原语），无需回执。
 
 出队的包装层入口（对照 §2.2 的 `dequeue`）：
 
@@ -1022,7 +1050,7 @@ C 的 `priv(p)` 是进程结构里现成的指针，一步解引用；Rust 要 `
     }
 ```
 
-三段与 C 逐行对上：Phase 1 调纯操作做链手术（`dequeue_from_queue`，§3.1 已逐字引）；Phase 2 记账（`record_dequeue` 结算排队时长 + `p_dequeued` 写单调时钟，§4.3 对账字段）；尾部是 `sanity-checks` feature 门控的 `runqueues_ok_cpu` 断言（§4.3）。一个两侧行为**不同**的点必须单独披露：C 的摘链是查找式的，注释明说"找不到就落空静默通过"（§2.2 的被杀信号辨析）；Rust 的 `dequeue_from_queue` 在 `!found` 时 `panic!("dequeue: process not found in its priority queue")`。C 容忍的异常状态在 Rust 被当成内核 bug 当场暴露——审计更严的一面是故障提前到出错点；代价是若真出现"被杀信号竞态把进程弄到既不可运行又不在队列"的状态，C 静默续行、Rust 停机。当前生产路径上，摘链只由 RTS 包装层在跃迁检测成立后调用（§4.2），"位已置却不在队列"本就是 INV-1 破坏态，panic 的方向与 INV-1 的审计语义一致。
+三段与 C 逐行对上：Phase 1 调纯操作做链手术（`dequeue_from_queue`，§3.1 已逐字引）；Phase 2 记账（`record_dequeue` 结算排队时长 + `p_dequeued` 写单调时钟，§4.3 对账字段）；尾部是 `sanity-checks` feature 门控的 `runqueues_ok_cpu` 断言（§4.3）。一个两侧行为**不同**的点必须单独披露：C 的摘链是查找式的，注释明说"找不到就落空静默通过"（§2.2 的被杀信号辨析）；Rust 的 `dequeue_from_queue` 在 `!found` 时 `panic!("dequeue: process not found in its priority queue")`。C 容忍的异常状态在 Rust 被当成内核 bug 当场暴露——审计更严的一面是故障提前到出错点；代价是若真出现"被杀信号竞态把进程弄到既不可运行又不在队列"的状态，C 静默续行、Rust 停机。当前生产路径上，摘链只由 RTS 包装层在跃迁检测成立后调用（§4.2），"位已置却不在队列"本就是 INV-1 破坏态，panic 的方向与 INV-1 的审计语义一致。第二处差异：Rust 在摘链后把被摘进程自己的 `p_nextready` 清零（`store(NONE_PROC_NR)`），C 不写这一笔（被摘节点的旧值留到下次入队才被覆盖）——Rust 的清零让"不在链上"在字段层面也可审计。
 
 ### 4.2 包装层与两分支走查（→§3.2/§3.3）
 
@@ -1051,7 +1079,7 @@ C 的 `priv(p)` 是进程结构里现成的指针，一步解引用；Rust 要 `
 宏的三步（存旧值、置位、跃迁检测）展开成方法的四步：读旧态、写位、读新态、跃迁成立且进程还在队列里才出队。多出的守卫是 `is_in_scheduler(nr)`——C 的 `dequeue` 靠查找落空来容忍"位已置但不在队列"，Rust 的摘链会 panic（§4.1），所以包装层先做一次保守的成员检查（扫该进程所属 CPU 的 16 条队列头链，`os/kernel/src/proc_table.rs:fn is_in_scheduler`；注释自述保守性：纯队尾成员要靠扫到它才能确认）。清位侧对称（对照 `RTS_UNSET` 宏）：
 
 ```rust
-// os/kernel/src/proc_table.rs:fn rts_unset —— 逐字引用（583-589 行，出队/入队半；省略 560-582 行的标志清写与一段调试探针，省略内容为非队列语义的串口输出）
+// os/kernel/src/proc_table.rs:fn rts_unset —— 逐字引用（583-589 行，出队/入队半；省略 560-582 行的标志清写与调试探针——标志清写是跃迁半的前置、队列动作为其下游）
         if !was_runnable && is_runnable {
             let cpu_id = self.get(nr).map_or(CpuId::BSP, |p| {
                 CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire))
@@ -1222,6 +1250,8 @@ pub fn sched_proc(
         }
 ```
 
+**登记（上界口径差）**：C 的 `priority` 上界是 `NR_SCHED_QUEUES`（16）——`priority=16` 会被 C 放行并以 `rdy_head[16]` 越界索引（C 的 off-by-one 缺陷）；Rust 收紧到 15 拒绝（改型（修正），§3.4 表单独占行）。
+
 ```rust
 // os/kernel/src/sched.rs:fn sched_proc —— 逐字引用（Step 4，459-469 行，未删节）
     // Step 4: preemption hint (RTS_NO_QUANTUM toggle).
@@ -1260,7 +1290,7 @@ pub fn sched_proc(
 }
 ```
 
-舞步与 §2.3 时序图逐拍对应：Step 4 对可运行进程 `rts_set(nr, NO_QUANTUM)`——§4.2 的置位侧跃迁成立，进程从旧优先级队列摘下；Step 5-7 改字段（§2.3 的中间段）；Step 8 置/清 NICED 位（§3.3 缺口三的已闭合半）；Step 9 `rts_unset(nr, NO_QUANTUM)`——跃迁反向成立，进程按**新**优先级挂回队列。对照读法有一处细节偏差要如实记：C 在 SMP 迁移（`smp_schedule_migrate_proc`）**之后**还有第二个 `if (proc_is_runnable(p)) RTS_SET(...)`——迁移可能改变可运行态，第二次是迁移后的补置位；Rust 的 Step 4 用的是迁移**前**算好的 `runnable` 值。迁移分支在当前生产路径不可达（§3.3 缺口一的 BSP 钳制把改派请求全部钳回原 CPU，单 CPU 上 `homed != cpuid` 恒假），该偏差今天没有观测面，登记为 SMP 接线时需要对齐的差异。
+（Step 编号在引文里跳档：引的是 Step 1/2/4/8/9——Step 3 是 CPU 范围与就绪校验、Step 3.5 是迁移门、Step 5-7 是字段改写段，未逐字引；完整 Step 注释见 `os/kernel/src/sched.rs:fn sched_proc`。）舞步与 §2.3 时序图逐拍对应：Step 4 对可运行进程 `rts_set(nr, NO_QUANTUM)`——§4.2 的置位侧跃迁成立，进程从旧优先级队列摘下；Step 5-7 改字段（§2.3 的中间段）；Step 8 置/清 NICED 位（§3.3 的 niced 链，三段全通）；Step 9 `rts_unset(nr, NO_QUANTUM)`——跃迁反向成立，进程按**新**优先级挂回队列。对照读法有一处要如实记：C 在第一个 `if` 块之后还有**第二个** `if (proc_is_runnable(p)) RTS_SET(p, RTS_NO_QUANTUM)`（引文内可见）。按控制流它**恒假**——第一次置位已把进程变成不可运行，第二次检查必然不成立（迁移发生在第一处置位**之前**，不会把状态改回可运行）；按现码读是防御性重复/历史遗留，行为等价于只置位一次。Rust 侧没有这第二处（Step 4 单次置位）。迁移分支在当前生产路径不可达（§3.3 缺口一的 BSP 钳制把改派请求全部钳回原 CPU——单 CPU 上进程的归属 CPU `homed`（即 `p_sched.cpu`）与 `cpuid` 恒同，迁移门恒假）。
 
 指派 CPU 的过渡钳制（§3.3 缺口一的装置）：
 
@@ -1347,7 +1377,7 @@ pub fn runqueues_ok_cpu(
 ) -> bool {
 ```
 
-C 的本体在 `minix3/minix/kernel/debug.c:runqueues_ok_cpu`（92 行），调用点挂在 `enqueue`/`enqueue_head`/`dequeue` 三个函数尾部、由 `#if DEBUG_SANITYCHECKS` 门控（§2.1/§2.2 的引用块尾部各有一段）；`runqueues_ok_local` 是个按构建形态换名的宏——非 SMP 构建映射到全机检查、SMP 构建映射到本 CPU 检查（`minix3/minix/kernel/proto.h`）。Rust 的对位是同一条链：完整移植的 `runqueues_ok_cpu`（检查项清单见上面引用块的文档注释，与 C 的五项一致）挂在 `sched_enqueue_with`/`sched_enqueue_head`/`sched_dequeue` 三个包装层尾部，由 `sanity-checks` feature 门控（`os/kernel/Cargo.toml` 的 feature 表；生产默认关闭，显式开启时每次队列操作后自检）。叠加的第二层是 debug 构建的 `debug_assert` 散点：`Scheduler::pick_proc` 的队首可运行断言（§4.1）、`is_in_scheduler` 范围断言、优先级范围断言——INV-1 的运行时审计在 C 是一组条件编译，在 Rust 是"debug 构建常开 + sanity-checks 显式开"两档。
+C 的本体在 `minix3/minix/kernel/debug.c:runqueues_ok_cpu`（92 行），调用点挂在 `enqueue`/`enqueue_head`/`dequeue` 三个函数尾部、由 `#if DEBUG_SANITYCHECKS` 门控（§2.1/§2.2 的引用块尾部各有一段）；`runqueues_ok_local` 是个按构建形态换名的宏——非 SMP 构建映射到全机检查、SMP 构建映射到本 CPU 检查（`minix3/minix/kernel/proto.h`）。Rust 的对位是同一条链：完整移植的 `runqueues_ok_cpu`（检查项清单见上面引用块的文档注释，与 C 的五项一致）挂在 `sched_enqueue_with`/`sched_enqueue_head`/`sched_dequeue` 三个包装层尾部，由 `sanity-checks` feature 门控（`os/kernel/Cargo.toml` 的 feature 表；生产默认关闭，显式开启时每次队列操作后自检）。叠加的第二层是 debug 构建的 `debug_assert` 散点：`Scheduler::pick_proc` 的队首可运行断言（§4.1）、`Scheduler` 队列访问器与 `sched_idx` 的范围断言、优先级范围断言——INV-1 的运行时审计在 C 是一组条件编译，在 Rust 是"debug 构建常开 + sanity-checks 显式开"两档。
 
 ---
 
@@ -1360,14 +1390,14 @@ C 的本体在 `minix3/minix/kernel/debug.c:runqueues_ok_cpu`（92 行），调�
 ```bash
 $ cargo test -p minix-kernel --features mock
      Running unittests src/lib.rs
-test result: ok. 831 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 7.58s
+test result: ok. 832 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 7.58s
      Running tests/boot_integration.rs
 test result: ok. 3 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.82s
    Doc-tests minix_kernel
 test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
 ```
 
-三段读数全绿；下文所有"通过/失败"的读数一律以这套件为准。理由在 §5.3：本篇的队列相关测试有两条实测的过滤运行陷阱，单过滤跑会因共享全局态给出与全套件不同的结果。
+三段读数全绿（主测试二进制读数随测试集增长，以现跑为准）；下文所有"通过/失败"的读数一律以这套件为准。理由在 §5.3：本篇的队列相关测试有两条实测的过滤运行陷阱，单过滤跑会因共享全局态给出与全套件不同的结果。
 
 队列侧测试清单（复算：`grep -c 'fn test_' os/kernel/src/sched.rs` = 29；`grep -c 'fn test_' os/kernel/src/proc_table.rs` = 41，其中队列侧 7 条）。sched.rs 的 29 条全部落在本篇三个主题上，每组钉点一句话：
 
@@ -1424,7 +1454,7 @@ proc_table.rs 的 7 条队列侧：`test_check_quantum_with_time_left_is_noop`�
     }
 ```
 
-断言解码：夹具给 0 号特权槽位填 `USR_F`（带 `PREEMPTIBLE`）、把进程 0 放队列 7（`USER_Q`）当"当前进程"、再把进程 1 以队列 0（`MAX_USER_Q`）入队——通过 `sched_enqueue_with` 的 `Some((ProcNr(0), true))` 显式注入"当前进程与它的可抢占标志"。断言只查一件事：进程 0 的 `p_rts_flags` 带上 `PREEMPTED`。变红条件逐条：Phase 3 的同 CPU 条件被删（此测试的夹具里两者同在 BSP，删了它另有 `test_enqueue_preemption_skipped_for_other_cpu` 兜住异 CPU 反例）、优先级比较方向写反（`cur_prio < new_prio` 则 7 > 0 不成立，不置位）、`rts_set(PREEMPTED)` 那一行没执行。这个测试的存在还钉住一个历史教训（注释里写明）：曾有一版实现用"优先级非 0"近似 PREEMPTIBLE，队列 0 的用户进程（`MAX_USER_Q == TASK_Q == 0`，合法登顶）被永久挡在抢占之外。
+断言解码：夹具给 0 号特权槽位填 `USR_F`（带 `PREEMPTIBLE`）、把进程 0 放队列 7（`USER_Q`）当"当前进程"、再把进程 1 以队列 0（`MAX_USER_Q`）入队——通过 `sched_enqueue_with` 的 `Some((ProcNr(0), true))` 显式注入"当前进程与它的可抢占标志"。断言只查一件事：进程 0 的 `p_rts_flags` 带上 `PREEMPTED`。变红条件逐条：Phase 3 的同 CPU 条件被删（此测试的夹具里两者同在 BSP，删了它另有 `test_enqueue_preemption_skipped_for_other_cpu` 兜住异 CPU 反例）、优先级比较方向写反（若写成 `cur_prio < new_prio`：7 < 0 为假，不置位）、`rts_set(PREEMPTED)` 那一行没执行。这个测试的存在还钉住一个历史教训（注释里写明）：曾有一版实现用"优先级非 0"近似 PREEMPTIBLE，队列 0 的用户进程（`MAX_USER_Q == TASK_Q == 0`，合法登顶）被永久挡在抢占之外。
 
 细读二：位判据对优先级判据的钉子（`test_proc_no_time_priority_zero_preemptible_notifies_scheduler`）：
 
@@ -1457,22 +1487,36 @@ proc_table.rs 的 7 条队列侧：`test_check_quantum_with_time_left_is_noop`�
     }
 ```
 
-断言解码：夹具把进程 0 放**队列 0**（`MAX_USER_Q`）、挂 `USR_F` 特权、调度者设为 SYSTEM 槽，量子清零后调 `sched_proc_no_time`；断言 `NO_QUANTUM` 位已置——即通知分支被走到。变红条件：`preemptible` 判据退回"优先级非 0"近似（队列 0 的进程被判不可抢占，走进续量分支，`NO_QUANTUM` 不置位——正是该行注释描述的那个近似判据的行为）；或特权表查空误判为 true（另一个方向的错误，由姊妹测试 `test_proc_no_time_non_preemptible_priv_renews_quantum` 用 `TSK_F` 无位夹具从反方向钉住）。
+断言解码：夹具把进程 0 放**队列 0**（`MAX_USER_Q`）、挂 `USR_F` 特权、调度者设为 SYSTEM 槽，量子清零后调 `sched_proc_no_time`；断言 `NO_QUANTUM` 位已置——即通知分支被走到。变红条件：`preemptible` 判据退回"优先级非 0"近似——队列 0 的进程被判不可抢占、走进续量分支，`NO_QUANTUM` 不置位（正是该行注释描述的那个近似判据的行为）。另一方向的错误（特权表查空误判为 true）不在本条的守卫面内——由姊妹测试 `test_proc_no_time_non_preemptible_priv_renews_quantum` 用 `TSK_F` 无位夹具从反方向钉住。
 
 ### 5.3 测试边界与诚实披露（→Ch3）
 
 宿主测不到的面，按缺口列：
 
-- **跨 CPU 入队**：C 的 SMP idle 唤醒臂在 Rust 没有对应分支（§3.3 缺口一），宿主测无从构造。反证：`grep -rn 'smp_schedule' os/kernel/src/` 只命中 `smp_schedule_migrate_proc`（迁移）的注释与调用，没有"目标 idle 则唤醒"的入队臂。
+- **跨 CPU 入队**：C 的 SMP idle 唤醒臂在 Rust 没有对应分支（§3.3 缺口一），宿主测无从构造。反证：`grep -rn 'smp_schedule' os/kernel/src/` 的 15 处命中均为迁移/停进程族实现与 C 映射注释（无"目标 idle 则唤醒"的入队臂）。
 - **notify 分支的真实消息投递**：单测把调度者指到表内槽位、走完 `IpcEngine::send` 的内核侧路径并断言标志位（§5.2 细读二）；但"调度服务器收到 NO_QUANTUM 后降级、再经 SYS_SCHEDULE 回写"的端到端回环需要 SCHED 服务器参战，属该服务器的 stage 验收面（`02-stage-sched` 方向），内核宿主测只保证到"消息发得出去、标志位对"为止。
 - **抢占门的真机形态**：门读 CPU 本地 `proc_ptr`（§3.3 缺口二），宿主测试要么显式注入（`sched_enqueue_with` 的元组参数）、要么接受"SMP 状态未装 → 跳过评估"的空转形态；真机上的完整行为要靠带 `sanity-checks` 的真机跑观测（§4.3）。
 
 过滤运行的两条实测陷阱（本篇所有读数因此只给全套件口径）：
 
-1. `cargo test -p minix-kernel --features mock test_sched_proc_niced_flag_set_and_clear` 单过滤跑：**FAILED**，panic 点在 `os/kernel/src/lib.rs:2186`（全局时钟态未初始化的 TSC 读取路径）。全套件运行时同一测试通过——靠的是时钟组的测试先跑、先把全局态初始化了。单独复跑这一条得不到全套件结论。
-2. `cargo test -p minix-kernel --features mock test_proc_no_time` 过滤跑：全套件 7.58 秒跑完的同一批测试，单过滤观察超过 10 分钟未返回（按挂起处理，终止了观察进程）。两族测试共享全局态（BKL 记分板、时钟、进程表静态），单过滤改变的是初始化次序与并发前提。
+1. `cargo test -p minix-kernel --features mock test_sched_proc_niced_flag_set_and_clear` 单过滤跑：**FAILED**，panic 点是时钟态的未初始化 expect（现码在 `os/kernel/src/lib.rs` 的 `CLOCK_STATE not initialized — init_clock_and_interrupts must run first` 三处之一：:2217/:2223/:2235；行号随源码演进，以现码为准）。全套件运行时同一测试通过——靠的是时钟组的测试先跑、先把全局态初始化了。单独复跑这一条得不到全套件结论。
+2. `cargo test -p minix-kernel --features mock test_proc_no_time` 过滤跑：全套件 7.58 秒跑完的同一批测试，单过滤观察超过 10 分钟未返回（按挂起处理，终止了观察进程）。两族测试共享全局态（BKL 记分板、时钟、进程表静态），单过滤改变的是初始化次序与并发前提——**没有安全的单跑子集**，诊断一律以全套件为准。
 
 真机/宿主分界：宿主测覆盖四原语的纯逻辑、跃迁装置、两分支判据、改参往返；真机门（三架构回归，`os/qemu-tests/README.md` 的配方）覆盖的才是"循环真的调用了它们"的完整路径——宿主侧 `pick_proc`/`requeue_if_preempted` 的循环侧消费已在 [10-switch-to-user.md](10-switch-to-user.md) §5 的真机门里跑过，本篇不重复立同一道验证。
+
+### 5.4 覆盖状态反转表（→Ch4；宿主测试面的反面）
+
+本章的测试面在宿主可证的边界之外还有五块，逐块给出状态与去向（"已覆盖"只指宿主测试；真机面的披露见 §5.3）：
+
+| # | 面 | 现状 | 去向 |
+|---|---|---|---|
+| M1 | 跨 CPU 入队（C 的 SMP idle 唤醒臂） | Rust 无对应分支（§3.3 缺口一：`sched_enqueue_with` 无 idle 臂） | SMP 接线时同批 → **R11-T01**（测试侧：目标 CPU idle 唤醒臂） |
+| M2 | notify 分支的真实消息投递端到端（SCHED 降级 → SYS_SCHEDULE 回写） | 宿主只到"消息发得出去、标志位对"（§5.3） | `02-stage-sched` 的 stage 验收面 → **R11-T02** |
+| M3 | 抢占门的真机形态（读 CPU 本地 `proc_ptr`） | 宿主靠注入或空转形态（§5.3） | 真机 `sanity-checks` 观测 → **R11-T03** |
+| M4 | 单过滤运行的共享态陷阱（两条实测） | 无安全单跑子集（§5.3） | 测试基建治理（全局态初始化次序）→ **R11-T04** |
+| M5 | 每 CPU 队列的真激活（AP 队列组参战） | 队列恒 BSP（§3.3 缺口一） | SMP 接线时同批 → **R11-T05** |
+
+（§5.3 的三条披露分别对到 M1/M2/M3；M4/M5 为本轮新增披露。两类表互为反转面。`R11-T01~05` 为本表定义的交接编号。）
 
 ---
 
@@ -1484,8 +1528,8 @@ proc_table.rs 的 7 条队列侧：`test_check_quantum_with_time_left_is_noop`�
 
 | 症状 | 怀疑对象（§回指） | 确认命令与预期关键行 |
 |---|---|---|
-| 某进程永不运行：判据上可运行（标志位归零）却永远轮不到 | INV-1 结构层破坏——位被直接改写、没走 RTS 包装层，进程不在任何队列（§1.1 推演一、§2.4 完整推演） | `cargo test -p minix-kernel --features mock`（全套件须全绿，831 passed）；判别读数是审计断言串：debug 构建下 `pick_proc: head of queue {} not runnable`（`os/kernel/src/sched.rs:fn pick_proc`）或真机 `sanity-checks` 下的 `runqueues_ok` 系打印（`os/kernel/src/debug.rs:fn runqueues_ok_cpu` 的失败分支：`head but no tail in queue`/`tail but no head in queue` 等） |
-| 某进程被重复调度/队列出现幽灵节点 | 摘链未走或尾指针未修正——孤儿节点、自环（§2.2 推演二） | 同上一行命令；真机 `sanity-checks` 关键行：`tail and tail->next not null in queue`、`loop in schedule queue`（五项检查的后两项，§4.3 引文的清单 2/4）；宿主侧以 `test_enqueue_*` 十条与 `test_dequeue_only_process` 钉住链形状 |
+| 某进程永不运行：判据上可运行（标志位归零）却永远轮不到 | INV-1 结构层破坏——位被直接改写、没走 RTS 包装层，进程不在任何队列（§1.1 推演一、§2.4 完整推演） | `cargo test -p minix-kernel --features mock`（全套件须全绿，832 passed；读数随测试集增长，以现跑为准）；**判别读数需要审计开启**（默认构建下这一路静默）：`sanity-checks` feature 下 `runqueues_ok_cpu` 的检查 5（可运行者必在队）会报（`os/kernel/src/debug.rs`）；debug 构建的 `pick_proc` 队首断言只拦"在队却不可运行"的反方向 |
+| 某进程被重复调度/队列出现幽灵节点 | 摘链未走或尾指针未修正——孤儿节点、自环（§2.2 推演二） | 同上一行命令；真机 `sanity-checks` 关键行：`runqueues_ok: tail->next not null in queue`、`runqueues_ok: loop in schedule queue`（§4.3 引文的清单第 2 项与队列循环上限守卫）；宿主侧以入队/出队/选人组十条（其中 `test_enqueue_*` 七条）钉住链形状 |
 | 改优先级不生效：改参后进程仍按旧优先级被选出 | 改参舞步缺失——字段改了、队列没动，旧队列滞留（§2.3 反向推演） | `cargo test -p minix-kernel --features mock`（全套件）；钉点 `test_sched_proc_runnable_reenqueue_on_update`：可运行进程改参后必须可运行且 `NO_QUANTUM` 已清——舞步两端都在 |
 | quantum 耗尽行为异常：该续量的被通知、该通知的被续量 | 两分支判据——`kernel_scheduled`（调度者字段）与 `preemptible`（特权表）各错一半（§3.2） | `cargo test -p minix-kernel --features mock`（全套件）；钉点 `test_proc_no_time` 四条（§5.1 表第二组）：通知分支置 `NO_QUANTUM`、续量分支 `cpu_time_left > 0`，判据常量在 `minix3/minix/include/minix/config.h` 与 `minix3/minix/include/minix/priv.h`（§3.3 的置位面） |
 
@@ -1506,7 +1550,7 @@ $ grep -n 'void proc_no_time\|static void notify_scheduler' minix3/minix/kernel/
 $ sed -n '66,74p' minix3/minix/include/minix/config.h
 #define NR_SCHED_QUEUES   16	/* MUST equal minimum priority + 1 */
 #define TASK_Q		   0	/* highest, used for kernel tasks */
-#define MAX_USER_Q  	   0    /* highest priority for user processes */
+#define MAX_USER_Q  	   0    /* highest priority for user processes */   
 #define USER_Q  	  ((MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q) /* default
 						(should correspond to nice 0) */
 #define MIN_USER_Q	  (NR_SCHED_QUEUES - 1)	/* minimum priority for user
@@ -1535,11 +1579,11 @@ pub mod priority {
 }
 ```
 
-四原语的区间行数复算（逐段 64 + 42 + 65 + 29 = 200 行）：
+四原语的区间行数复算（逐段 65 + 42 + 65 + 29 = 201 行）：
 
 ```bash
-$ sed -n '1595,1658p' minix3/minix/kernel/proc.c | wc -l
-64
+$ sed -n '1595,1659p' minix3/minix/kernel/proc.c | wc -l
+65
 $ sed -n '1670,1711p' minix3/minix/kernel/proc.c | wc -l
 42
 $ sed -n '1716,1780p' minix3/minix/kernel/proc.c | wc -l
@@ -1566,7 +1610,7 @@ $ wc -l os/kernel/src/sched.rs
 - [06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §2.2（RTS 位族 16 位逐位表——判据层 owning 篇）、§1.4（boot 期按住与 `RTS_UNSET` 解除语义）、§2.3（权限模板族——`USR_F`/`SRV_F` 的 `PREEMPTIBLE` 置位面；调度者槽初值的真值锚点是 `minix3/minix/include/minix/priv.h` 的槽位定义）
 - [10-switch-to-user.md](10-switch-to-user.md) §2.1（循环拍二的 PREEMPTED 重排调用点）、§4.3（`pick_and_bill` 薄接口与 `requeue_if_preempted` 头/尾选择——循环侧 owning 篇）
 - [08-system-init-boot-finish.md](08-system-init-boot-finish.md) §3.2（BKL 取得点与持锁约定——包装层 `&BklSection` 见证的来源）
-- `12-ipc-core`（IPC 核心篇，尚未重生成）——阻塞/唤醒侧的位变化语义
+- `12-ipc-core`（IPC 核心篇）——阻塞/唤醒侧的位变化语义
 - `16-smp`（SMP 篇，尚未重生成）——IPI 跨 CPU 唤醒与每 CPU 队列的激活
 - `17-clock-timer`（时钟与定时器运行篇，尚未重生成）——tick 递减 quantum 的时钟半
 - `02-stage-sched` 方向（SCHED 服务器用户态本体，尚未重生成）——NO_QUANTUM 消息的消费端与 MLFQ 策略
