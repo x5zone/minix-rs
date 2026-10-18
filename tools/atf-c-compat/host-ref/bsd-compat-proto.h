@@ -1,0 +1,24 @@
+/* 参照件构建统一 force-include 的原型补面（由 `tools/build-bsd-ref.sh` 以 `-include` 挂上）。
+ *
+ * 只放「BSD 有、宿主 libc 到某个版本才有」的函数原型，不放任何宏——宏一律走 `-D`，
+ * 这样源码里自带的 `#ifndef` 守卫（`fortune.c:186` 的 `#ifndef NAMLEN` 即是一例）仍由
+ * 源码自己决定是否接受补值，补面不越过源码的门槛去改写它的定义。
+ */
+
+#ifndef _HOST_REF_BSD_COMPAT_PROTO_H
+#define _HOST_REF_BSD_COMPAT_PROTO_H
+
+#include <sys/types.h>
+#include <features.h>
+
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#if !__GLIBC_PREREQ(2, 40)
+const char *getprogname(void);
+void setprogname(const char *);
+#endif
+#else
+const char *getprogname(void);
+void setprogname(const char *);
+#endif
+
+#endif /* _HOST_REF_BSD_COMPAT_PROTO_H */
