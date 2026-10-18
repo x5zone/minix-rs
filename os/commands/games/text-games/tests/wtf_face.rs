@@ -54,11 +54,11 @@ fn a_real_database_resolves_a_term_and_exits_zero() {
     assert_eq!(
         (out.as_str(), code, err.as_str()),
         (
-            "nasa: National Aeronautics and Space Administration\n",
+            "NASA: National Aeronautics and Space Administration\n",
             0,
             ""
         ),
-        "命中的词该原样打出去"
+        "脚本 `:75` 先把查询词转大写再输出，打印形态跟着大写化的 target 走"
     );
     let _ = std::fs::remove_file(&db);
 }
@@ -71,7 +71,10 @@ fn the_lookup_ignores_case() {
         let (out, code, _) = run(&["-f", &db.to_string_lossy(), term]);
         assert_eq!(
             (out.as_str(), code),
-            (format!("{term}: Year 2000 problem\n").as_str(), 0),
+            (
+                format!("{}: Year 2000 problem\n", term.to_ascii_uppercase()).as_str(),
+                0
+            ),
             "词条 {want}"
         );
     }
@@ -89,8 +92,11 @@ fn a_missing_database_names_the_path_and_exits_one() {
     assert_eq!(out, "", "失败时不该往标准输出写东西");
     assert_eq!(
         err,
-        format!("wtf: {}: cannot open\n", db.display()),
-        "报文该带上打不开的那条路径"
+        format!(
+            "wtf: cannot open acronym database file `{}'\n",
+            db.display()
+        ),
+        "脚本 `:67` 的原句：反引号与单引号包住档名"
     );
     assert_eq!(code, 1);
 }
@@ -105,18 +111,22 @@ fn an_unknown_term_exits_one_with_the_sentence_on_stderr() {
     let (out, code, err) = run(&["-f", &db.to_string_lossy(), "zzznotaword"]);
     assert_eq!(out, "");
     assert_eq!(
-        err, "wtf: zzznotaword: nothing appropriate\n",
-        "句子本身与脚本不同形，那是 `WTF-SCRIPT-PARITY` 的账；这里钉走 stderr 且退 1"
+        err, "wtf: I don't know what `zzznotaword' means!\n",
+        "脚本 `:105` 印操作数原样（大写化只用在命中那支），走 stderr 且 rv=1"
     );
     assert_eq!(code, 1);
     let _ = std::fs::remove_file(&db);
 }
 
-/// 没有操作数：用法句加退 1（脚本的 `usage` 也是这一形）。
+/// 没有操作数：用法句走**标准输出**并退 1（脚本 `usage()` 是 `echo` 到 stdout）。
 #[test]
 fn no_operand_prints_usage_and_exits_one() {
     let (out, code, err) = run(&["-f", "/dev/null"]);
-    assert_eq!(out, "");
-    assert!(err.starts_with("usage: wtf"), "stderr 是 {err:?}");
-    assert_eq!(code, 1);
+    // 脚本的 usage() 是 echo 到**标准输出**再退 1（`:11-14`，实测 stderr 空）。
+    assert_eq!(
+        out, "usage: wtf [-o] [-f dbfile] [is] term ...\n",
+        "usage 走 stdout"
+    );
+    assert_eq!(err, "", "stderr 该是空的");
+    assert_eq!(code, 1, "usage 那支退 1");
 }
