@@ -119,6 +119,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百六十一（`FORTUNE-HOSTED-FILE-SEAM` 闭 + `TEXTGAMES-EMIT-ERRLEG` 的 fortune 一半落地）：`fortune` 第一次能在宿主跑起来，写腿随它的门一起落地
+
+- **是什么**。批次三百六十量到的前置：`os/commands/games/text-games/src/bin/fortune.rs` 把开档与读档直接写成 `minix_sys::{open, read, close}`，没有宿主与真机的双生面，于是宿主上 `./target/debug/fortune /tmp/fdb.txt` 对一枚真实存在的档报 `cannot open` 退 1——这一支的任何端到端门都造不出来，写腿那处分叉（C 不查失手、我们退 1）只能挂在账上。本轮先把缝立起来，再让修法与它的门同批落地。
+- **怎么修（对比与取舍）**。甲：给 `fortune.rs` 直接加 `#[cfg]` 分岔的内联读档——两处形态各写一遍开档/读档/关档，壳里同时养两条 syscall 序列。乙：在本 crate 已有的 `bin_support.rs` 里加一条 `slurp_operand`，宿主面走 `std::fs::File::open` + `read_to_end`，真机面走 `minix_sys::open` + 逐块 `read` + 两条出路都 `close`；开档与读档分两个返回臂（`OperandFailure::Open` / `OperandFailure::Read`），句子仍由壳里定。**采乙**——与同文件既有的 `emit`/`emit_error`/`read_stdin_error` 同一手法（本层只把「哪条腿失手」交出去，措辞与退码归调用者），也是 `textfilter` 那侧 `stream_input` 立过的分工；壳里从此看不见 syscall 序列，只看见一次读尽。三档术语：Rewrite。
+- **落地点**。`os/commands/games/text-games/src/bin_support.rs` 新增 `OperandFailure` 与双生面 `slurp_operand`（定位命令：`grep -n "pub fn slurp_operand\|pub enum OperandFailure" os/commands/games/text-games/src/bin_support.rs`）；`src/bin/fortune.rs` 的开档臂换成一次 `slurp_operand`，两句待报的话与两处退 1 一字未动（那句对 C 的 `err(1, "Cannot open \`%s'", ...)` 形状尚未齐平，不在本轮射程）。**顺带把批次三百六十定好的写腿修法一并落地**：掷中那一格从 `support::emit`（失手退 1、一字不报）换成 `let _ = support::emit_error(...)`——C 的输出腿 `minix3/games/fortune/fortune/fortune.c:272` 是 `fputs(line, stdout)`、`:274` 是 `(void) fflush(stdout)`，返回值丢掉、全文件无 `ferror(stdout)`，退码只由 `:202` 与 `:377` 那两条 `exit` 决定。这两格同批是因为它们共用同一枚门：没有宿主读档，那枚门就红在开档臂，写腿永远量不到。
+- **门（L1 读数，核实日 `2026-10-18`）**。新建 `os/commands/games/text-games/tests/fortune_face.rs` 四枚：`a_one_line_database_prints_that_line_and_exits_zero`（单行库必掷中、原样写出、退 0，也是第四枚的对照）、`an_unopenable_operand_is_named_and_exits_one`、`an_empty_database_is_blamed_by_name_and_exits_one`、`a_stdout_that_stops_taking_bytes_adds_no_word_and_no_status`（标准输出接 `/dev/full`，断言退 0 且 stderr 空）。命令：`cargo test -j 1 --offline -p minix-text-games`（在 `os/` 执行）⇒ **59 passed / 0 failed**（lib 30、`random_face` 25、`fortune_face` 4），日志 `tmp/fortune-361/host-test.log`；权威容器门（`minix-ci:1.94`、`-m 2g -j 1`、可写 cargo 缓存与 target）读数见 `tmp/fortune-361/container-gate.log`。`rustfmt --edition 2021 --check` 三件零漂移；`cargo clippy --all-targets -p minix-text-games` 对本包文件零命中（只剩 `minix-types`/`minix-sys`/`minix-rt` 的旧警告）。
+- **变异控制有牙**（`tmp/fortune-361/control1.log`）。把写腿那一格换回 `support::emit(...)` ⇒ 四枚里恰 `a_stdout_that_stops_taking_bytes_adds_no_word_and_no_status` 独红，失败读数 `left: ("", 1)`——多出来的正是那个 C 不给的退 1。还原用改前留在 `tmp/fortune-361/fortune.rs.bak` 的原文（不是 `git checkout`），md5 `b2fc1b44…` 前后一致。
+- **本轮自己的坑（第三次同族，记下来免得再犯）**：第一次写 `fortune_face.rs` 时我塞了一枚「通向真文件」的辅助函数，宿主跑出来三枚绿、第四枚红；第二次用 Edit 想把那枚辅助函数删掉，锚点却把下一枚门的函数签名一并吞了——一套门直接编译不过。结论是**改结构用整件重写，不用局部替换**：锚点跨过两个构件的边界时，Edit 的删除面比预期大。生产码没受影响（改的是测试文件，且随后整套重跑）。
+- **残留（登记不执行）**。① `fortune` 那两句待报的话是自创句形，C 走 `err(1, "Cannot open \`%s'", ...)` / `err(1, \`%s\'', ...)` 一类三段形，本轮按「一次只修一条」不动它，登记为 `FORTUNE-OPEN-ERRLEG`。② `TEXTGAMES-EMIT-ERRLEG` 只剩 `wtf` 一半，而批次三百六十已判它真源是 shell 脚本、不在 C 口径射程内——这条可以按「判据不适用」收尾，但要留一句明确的判据出处（`file` 的读数），不能默默删行。③ `bin_support::emit` 现在只被 `wtf.rs:90` 一处使用，是否该随 `wtf` 的判据一起处置，留给该判据落地时定。
+- **下一轮首动作**：`bash tools/claim.sh claim FORTUNE-OPEN-ERRLEG qoder`——先去 `minix3/games/fortune/fortune/fortune.c` 读那几句 `err` 的真形（含 `getprogname()` 前缀与档名位），再决定句形与门的期望值。
+
+---
+
 ## 批次三百六十（`TEXTGAMES-EMIT-ERRLEG` 现查）：两支的判据都查到底，一支改标、一支撞出新的前置
 
 本轮只查判据、只登记，生产码一字未动（`os/` 下没有任何改动，`git status --porcelain` 只剩本目录与本板）。批次三百五十九把这一条留给下一轮时写的是「`wtf` 与 `fortune` 两支的写腿判据待去 C 源核」，两条都查完了，结论一正一反：

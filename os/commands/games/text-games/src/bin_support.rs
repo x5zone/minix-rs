@@ -188,6 +188,61 @@ pub fn read_stdin_error() -> (alloc::vec::Vec<u8>, Option<minix_sys::Errno>) {
     }
 }
 
+/// Which of the two legs of opening and draining an operand failed. Keeping them
+/// apart is what lets a shell say "cannot open" and "read error" as different
+/// sentences while both legs stay reachable in a hosted run.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OperandFailure {
+    /// The path could not be opened.
+    Open,
+    /// The operand opened, but a read failed partway through.
+    Read,
+}
+
+/// Reads an operand file to the end, reporting which leg failed. Hosted twin:
+/// real `std::fs` — without it a file-reading game binary cannot be run, and so
+/// cannot be checked, on the host at all (the target face below is the one the
+/// kernel actually serves).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path).map_err(|_| OperandFailure::Open)?;
+    let mut image = alloc::vec::Vec::new();
+    match file.read_to_end(&mut image) {
+        Ok(_) => Ok(image),
+        Err(_) => Err(OperandFailure::Read),
+    }
+}
+
+/// Target twin of [`slurp_operand`] (see the module header for the seam contract):
+/// `minix_sys::open` then repeated `minix_sys::read` on the same descriptor, and the
+/// descriptor is closed on both ways out.
+#[cfg(all(not(test), target_os = "none"))]
+pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> {
+    let fd = match minix_sys::open(path, 0, 0) {
+        Ok(fd) => fd,
+        Err(_) => return Err(OperandFailure::Open),
+    };
+    let mut image = alloc::vec::Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut failure = None;
+    loop {
+        match minix_sys::read(fd, &mut chunk) {
+            Ok(0) => break,
+            Ok(count) => image.extend_from_slice(&chunk[..count]),
+            Err(_) => {
+                failure = Some(OperandFailure::Read);
+                break;
+            }
+        }
+    }
+    let _ = minix_sys::close(fd);
+    match failure {
+        None => Ok(image),
+        Some(failure) => Err(failure),
+    }
+}
+
 /// Wall-clock microseconds since the epoch, when a clock face answers.///
 /// Hosted builds read the host clock; the target build reads the kernel
 /// `SYS_TIMES` face — boot epoch seconds times one million plus real-time
