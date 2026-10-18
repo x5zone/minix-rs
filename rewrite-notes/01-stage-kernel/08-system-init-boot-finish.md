@@ -2017,7 +2017,7 @@ cargo test -p minix-kernel --features mock --lib
 cargo test -p minix-kernel --features mock --lib vm_handoff
 ```
 
-预期关键行：全量为 `running 840 tests` 与 `test result: ok. 832 passed; 0 failed; 8 ignored`；过滤后为 `running 7 tests` 与 `test result: ok. 7 passed`。两口径的差异来自模块组合：`grep -c` 数的是源文件里的测试函数定义（lib.rs 的 56 个定义经模块树展开后与其他模块的测试一起收集），cargo 的 840 是整个 crate 收集到的全部用例（FID 复核：`smp.rs:1952` 的 `test_clear_idle_flag` 系成稿后新增，读数随之上移 1）。
+预期关键行：全量为 `running 840 tests` 与 `test result: ok. 832 passed; 0 failed; 8 ignored`；过滤后为 `running 7 tests` 与 `test result: ok. 7 passed`。两口径的差异来自模块组合：`grep -c` 数的是源文件里的测试函数定义（lib.rs 的 56 个定义经模块树展开后与其他模块的测试一起收集），cargo 的 840 是整个 crate 收集到的全部用例（复核：`smp.rs:1952` 的 `test_clear_idle_flag` 系成稿后新增，读数随之上移 1）。
 
 五组的钉点清单：
 
