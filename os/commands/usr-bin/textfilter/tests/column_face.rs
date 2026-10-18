@@ -38,6 +38,62 @@ const COLUMN: &str = env!("CARGO_BIN_EXE_column");
 /// `column.c:304-305` 的那一行：大写 `Usage`、程序名跟着 `getprogname()`。
 const USAGE: &str = "Usage: column [-tx] [-c columns] [-s sep] [file ...]\n";
 /// 参照件在无 `-c` 时用的默认宽度 80 下的布局（五条 5 字节条目一行放得下）。
+/// 逐字节比三条通道的夹具：`col`/`rev`/`colrm`/`column` 这一族要钉的都是
+/// 「字母位是一个裸字节」，而 `String::from_utf8_lossy` 会把裸 `c3` 与 `c3 83`
+/// 都渲染成替换字符，文本夹具分不开这两种错法。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(COLUMN)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the column binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/column-314/column`
+/// （`column.c` 真源 + Minix 的 `getopt.c`，经软链起，程序名与本壳一致）现量
+/// `column -é` 与 `column -té` 都打 `unknown option -- ` + `c3` + 换行 + usage、退 1
+/// （optstring 是 `"c:s:tx"`，`t` 合法所以聚簇继续吃到 `é` 的第一字节）。
+/// ASCII 的 `-Z` 与缺值的 `-c` 两形同时钉住：换渲染不许改动它们。
+#[test]
+fn the_option_line_of_a_nonascii_letter_carries_one_raw_byte() {
+    let want: Vec<u8> = [
+        b"column: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-t\u{e9}"] {
+        let (out, code, err) = run_bytes(&[form], FIVE);
+        assert_eq!(out, Vec::new(), "{form} 的报文只走 stderr");
+        assert_eq!(code, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, code, err) = run_bytes(&["-Z"], FIVE);
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        b"column: unknown option -- Z\nUsage: column [-tx] [-c columns] [-s sep] [file ...]\n"
+            .to_vec()
+    );
+
+    let (_out, code, err) = run_bytes(&["-c"], FIVE);
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        b"column: option requires an argument -- c\nUsage: column [-tx] [-c columns] [-s sep] [file ...]\n".to_vec()
+    );
+}
+
 const FIVE: &[u8] = b"alpha\nbeta\ngamma\ndelta\nepsilon\n";
 const FIVE_LINE: &str = "alpha\tbeta\tgamma\tdelta\tepsilon\n";
 

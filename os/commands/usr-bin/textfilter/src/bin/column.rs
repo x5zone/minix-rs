@@ -34,10 +34,13 @@ fn run() -> ! {
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     // C 的选项环把 `'?'` 与集外一切交回 `default: usage()`（`column.c:107-109`），
     // 而 libc 在返回 `'?'` 之前自己先印一行（`getopt.c:101-104`、`:132-136`）。
+    // 那一行走字节形 `line_bytes`：libc 的字母位是一个裸字节（`getopt.c:79` 的
+    // `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出），参照件
+    // `tmp/column-314/column` 现量 `column -é` 打 `c3` 一个字节，按 `char` 渲染会多一个。
     let (options, operands) = match parse_column_args(&args[1..]) {
         Ok(a) => (a.options, a.operands),
         Err(report) => {
-            support::warn(report.line(prog).as_bytes());
+            support::warn(&report.line_bytes(prog));
             usage(prog);
         }
     };
