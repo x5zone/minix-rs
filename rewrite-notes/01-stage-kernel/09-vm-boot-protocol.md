@@ -2,8 +2,13 @@
 
 > **C 真值源**：`minix3/minix/include/minix/com.h`（SYS_VMCTL 调用号与 VMCTL_* 子命令常量、SVMCTL_* 消息字段）、`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`、`minix3/minix/kernel/arch/i386/arch_do_vmctl.c`（`setcr3`/`arch_do_vmctl`）、`minix3/minix/servers/vm/main.c`（`exec_bootproc`/`init_vm`/`is_first_time`）、`minix3/minix/servers/vm/pagetable.c`（`pt_bind`/`pt_mapkernel`/`pt_allocate_kernel_mapped_pagetables`）、`minix3/minix/servers/vm/glo.h`（BSS 全局 `kernel_boot_info`）、`minix3/minix/lib/libsys/sys_vmctl.c:sys_vmctl_set_addrspace`、`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc`、`minix3/minix/kernel/arch/i386/pre_init.c`（模块表装配）、`minix3/minix/kernel/arch/i386/memory.c`（`createpde`/`mem_clear_mapcache`/`arch_phys_map`）。
 > **Rust 实现**：`os/libs/minix-types/src/types/boot.rs`（`VmBootHandoff` 与交接页常量）、`os/kernel/src/syscall.rs`（`dispatch_vmctl` 与 `vmctl_*` 子函数）、`os/kernel/src/vm.rs:enum VmCtlParam`、`os/kernel/src/vm_handoff.rs`（`classify`/`build_vm_handoff`/`build_identity_windows`）、`os/servers/vm/src/boot.rs`（`read_boot_params`/`reconcile`/`BootParams`）、`os/servers/vm/src/pagetable/vm_self_map.rs:fn init_vm_self_pt`、`os/servers/vm/src/vm_server.rs`（`init`/`init_global_state`/`exec_bootproc`/`init_boot_procs`）、`os/servers/vm/src/main.rs`（启动链）。
+> **目标读者**：熟悉操作系统基本概念（进程、页表、IPC、内核/用户态边界）与 C 语言的开发者；Rust 一侧读到 repr(C) 结构体、enum 与 `unsafe` 契约大意即可。
+> **前置知识**：08 篇的启动收尾、07 篇的 DM 双窗口与 bootstrap 根、06 篇的进程表与 RTS 位族（VMINHIBIT/BOOTINHIBIT 两道闸的置位）。
+> **教学目标**：①协商问题与 VM 的出生家当（§1.1）；②五步协商与两条放行路径（§1.2）；③交接页的内容与版本门（§1.3、§3.1）；④setcr3/SETADDRSPACE 支点与其余子命令族（§2）；⑤Rust 的一页契约与分派（§3、§4）；⑥测试与诊断（§5、§6）；C 侧覆盖边界见 §1.5。
+> **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构）；`[ARCH: riscv-vmddm]`（PteRead/PteWrite/PteZero 三臂）是 Architectural Evolution（riscv64 专属，文档/注释/代码三处一致标注）。
+> **编号说明**：正文与引文里出现的 `NK4-C`、`fix2x`、`gh*`、`T8`、`D-40`、`X-7` 等编号是本仓的开发工作条目号与评审记录编号——原文保留，溯源按编号在本仓检索。
 > **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:static NAME`），不使用行号。
-> **本篇主题**：VM 出生时只拿着内核建的 bootstrap 根，却要接管全系统的内存管理——中间的协商怎么完成。两件交接物（一页世界状态快照 + 一条 SYS_VMCTL 通道）与两道闸的两条清腿（SETADDRSPACE 清 VMINHIBIT 不入队、BOOTINHIBIT_CLEAR 才入队）。
+> **本篇主题**：VM 出生时只拿着内核建的 bootstrap 根，却要接管全系统的内存管理——中间的协商怎么完成。两件交接物（一页世界状态快照 + 一条 SYS_VMCTL 通道）与两道闸的两条放行路径（SETADDRSPACE 清 VMINHIBIT 不入队、BOOTINHIBIT_CLEAR 才入队）。
 > **前置**：[08-system-init-boot-finish.md](08-system-init-boot-finish.md)（三开关与 bsp 收尾；其 §3.3 预告的 set_vm_running 补写兑现于本篇 SETADDRSPACE 臂，§3.5 预告的凭证随页交付兑现于本篇 reconcile，§5.1 移交的 identity_windows 与 handoff 协议面归本篇）、[07-cross-space-init.md](07-cross-space-init.md)（DM 双窗口与 bootstrap 根的来历）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（VMINHIBIT/BOOTINHIBIT 的置位——本篇讲它们的解除者）。
 > **后续**：调度循环本体（`10-switch-to-user`，切用户与调度循环篇，尚未重生成）、分派入口与 kernel_call_finish（`13-syscall-dispatch`，系统调用分派篇，尚未重生成）、VMSUSPEND 挂起-恢复运行时（`24-cross-space-runtime`，跨空间运行时篇，尚未重生成）、VM 服务器内部本体（`rewrite-notes/02-stage-vm/`，init_page_table/map_kernel/PMM）。
 
@@ -18,7 +23,7 @@
 先把困难本身摆清楚。VM 出生时是全系统唯一可调度的用户进程，但它的地址空间是内核造的 bootstrap 根：这张表里只有内核自己的映射和一段恒等映射，没有任何一条"用户内存归谁"的记录。VM 要接管的职责却需要三类它此刻没有的信息——自己能用的内存在哪（不然分配器无从建起）、内核的映射长什么样（不然给每个进程复刻内核映射时只能猜）、其他进程的镜像在哪（不然无从装载）。协商就是补齐这三类信息的过程，它由三件交换物构成：
 
 1. **一页世界状态快照**。内核在调度 VM 之前，把 VM 需要的全部启动参数写进一页内存，映射进 VM 的地址空间让 VM 自己读。C 的对应物是一组 BSS 全局：`kernel_boot_info`（声明在 `minix3/minix/servers/vm/glo.h`），`minix3/minix/servers/vm/main.c:init_vm` 里一次 `sys_getkinfo` 把内核的 kinfo 整块拷进来。
-2. **一条控制通道**。SYS_VMCTL 内核调用（`minix3/minix/include/minix/com.h` 里 `SYS_VMCTL = KERNEL_CALL + 43`），带 15 个子命令常量，覆盖"建表绑根、装载放行、故障处置、抑制控制、TLB 维护"五类动作。VM 之后做的每一件事，几乎都要经这条通道在内核侧落下对应的状态。
+2. **一条控制通道**。SYS_VMCTL 内核调用（`minix3/minix/include/minix/com.h` 里 `SYS_VMCTL = KERNEL_CALL + 43`），带 15 个子命令常量，覆盖装载协商、故障处置、抑制控制、TLB 维护与 32 位遗留五族（§2.3 的分类）。VM 之后做的每一件事，几乎都要经这条通道在内核侧落下对应的状态。
 3. **两道闸**。每个非 VM 的 boot 进程出生时就带着 VMINHIBIT 和 BOOTINHIBIT 两个位（[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §1.4）；协商的收尾动作就是把这两个位按正确的次序、由正确的子命令清掉。
 
 三件交换物的方向与次序画在一起是这样的：
@@ -59,7 +64,7 @@
 
 ### 1.2 五步协商（C 视角时序）
 
-一个 boot 进程从"被装载"到"可调度"隔着哪几道门、每道门由哪个子命令打开？C 的答案是一条五步的直线，每步都有明确的 C 锚点：
+一个 boot 进程从"被装载"到"可调度"隔着哪几道门、每道门由哪个子命令打开？C 的答案是一条五步的直线，每步都有明确的 C 锚点。两条闸各自的清除动作本文称作一条**清腿**——腿一清 `VMINHIBIT`、腿二清 `BOOTINHIBIT`（"腿"是闸的比喻，不是源码术语）：
 
 ```
  switch_to_user（08 篇收尾，CPU 落到 VM）
@@ -121,6 +126,20 @@ VM 在做任何事之前需要知道世界的哪些事实？按"没有它哪一�
 认知减负声明：本章不必深究 MEMREQ 的运行时挂起-恢复协议——GET/REPLY 两臂在本篇只讲形状（谁停车、谁取走、谁放回），进程停车期间内核怎么继续跑别的、恢复时现场怎么接回去，属 `24-cross-space-runtime`（跨空间运行时篇，尚未重生成）的辖区。也不必深究 map_kernel 如何把内核映射复刻进每张进程表——那套机制的实现细节在 `rewrite-notes/02-stage-vm/07-pagetable-struct.md`，本篇只关心"清单从哪里来"。
 
 把第 1 章的图按同一框架收一次：内核写一页（单向、一次性），VM 读一页、走一条通道、按两条腿放行——腿一在 SETADDRSPACE 里清 VMINHIBIT，腿二在 BOOTINHIBIT_CLEAR 里清 BOOTINHIBIT。第 2 章按这张图走 C 代码：先看通道的分派结构，再看支点（setcr3 与 pt_bind）、全序（exec_bootproc）、其余子命令族、VM 侧的取数与计费。
+
+### 1.5 本篇的 C 侧覆盖边界
+
+本篇的 C 侧对照物是 Minix3 的两个内核架构实现（i386 与 earm 分支）。Rust 侧多数动作有 C 逐条可对照（§2 走查、§3.6 处置表逐行对账），少数形态在 C 树里没有对应物：
+
+| Rust 侧分支 / 机制 | C 对照物 | 判定 |
+|---|---|---|
+| x86-64 主链（setcr3、exec_bootproc、MEMREQ/inhibit/TLB 三族） | i386：`do_vmctl.c` / `arch_do_vmctl.c` / `vm/main.c` | **有 C 可对照**（§2 逐处对账） |
+| earm 分支（引文里的 arm 侧） | earm 同名文件 | 有 C 可对照（引文按原样） |
+| `VmBootHandoff` 的 repr(C) 独立页（§3.1） | C 的 `kernel_boot_info` 结构 + 多次 `sys_getkinfo` 取数 | 改型对照（投影语义同、承载形态新：一页一次拷贝 vs 十几次取数） |
+| `identity_windows` 一次性清单（§3.5） | C 的 per-space 恒等映射协商（`arch_phys_map` / `VMCTL_*` 族） | 改型对照（协议面有 C 形态，清单形态为 Rust 重组） |
+| **PteRead/PteWrite/PteZero 三臂（`[ARCH: riscv-vmddm]`，§3.3/§4.2）** | **无**——C 内核没有 riscv64 版本，也没有页表直读写的核内旁路 | **未覆盖（无 C 源）** |
+
+"未覆盖"的含义：Pte 三臂的正确性依据不是 C 对照，而是设计契约（§3.3）与三处一致的 `[ARCH]` 标注。本篇对它一律写作"无对应物"，不写作"与 C 一致"——纪律适用于后续修订中的新增段落。
 
 ---
 
@@ -437,7 +456,7 @@ static void exec_bootproc(struct vmproc *vmp, struct boot_image *ip)
 
 （`minix3/minix/kernel/system/do_vmctl.c:do_vmctl` 的 CLEAR_PAGEFAULT 臂，逐字引用。）
 
-后者是本节的主块。要读懂它，先补一个概念的首现：**VMREQUEST**。一个进程在用户态碰到了 VM 必须裁决的内存事件（越界访问、缺页之类），内核把它的请求挂进全局的 vmrequest 链、给它置 RTS_VMREQUEST、把 vmresult 记为 VMSUSPEND——进程停车，等 VM 裁决。GET 臂就是 VM 来取单：
+后者是本节的主块。要读懂它，先补一个概念的首现：**VMREQUEST**。一个进程在用户态碰到了 VM 必须裁决的内存事件（越界访问、缺页之类），内核把它的请求挂进全局的 vmrequest 链、给它置 RTS_VMREQUEST——进程停车，等 VM 裁决（`vmresult` 记为 `VMSUSPEND` 的动作在 MEMREQ_GET 臂里，见下文引用）。GET 臂就是 VM 来取单：
 
 ```c
 	case VMCTL_MEMREQ_GET:
@@ -865,7 +884,7 @@ validate 是契约的执行点：`os/libs/minix-types/src/types/boot.rs:fn valid
 
 §2.1 的共享页目录给出的是一种"VM 不换根"的机制——CR3 恒定，靠别名页目录够到所有进程的表；§2.4 的取数面给出的是一种"信内核记账"的姿态——账目拿来就用。Rust 对这两件事各给了一个显式形状：采纳（adopt）与核验（reconcile）。
 
-A1 采纳：`os/servers/vm/src/pagetable/vm_self_map.rs:init_vm_self_pt` 把交接页里的 `root_paddr` 直接包成 VM 自己的页表句柄——VM 不建新根，bootstrap 根"本来就是你建的"，采纳即认领。与 C 殊途同归但机制不同：C 靠共享 PDE 别名让 VM 永不换根，Rust 靠"根是内核替你建的、采纳它"达到同一结果；C 的别名机制在 64 位 DM 下没有存在理由（翻译恒定，VM 够别的进程内存走 DM 或内核代拷），随 32 位一起消失。采纳函数的完整性约束只有一条——只能调一次：
+A1 采纳：`os/servers/vm/src/pagetable/vm_self_map.rs:init_vm_self_pt` 把交接页里的 `root_paddr` 直接包成 VM 自己的页表句柄——VM 不建新根，bootstrap 根"本来就是你建的"，采纳即认领。与 C 殊途同归但机制不同：C 靠共享 PDE 别名让 VM 永不换根，Rust 靠"根是内核替你建的、采纳它"达到同一结果；C 的别名机制在 64 位 DM 下没有存在理由（翻译恒定，VM 够别的进程内存走 DM 或内核代拷），随 32 位一起消失。采纳函数的完整性约束写在注释里（其中一条是"只能调一次"）：
 
 ```rust
 /// Initialize VM's own page table by adopting the bootstrap root.
@@ -999,7 +1018,7 @@ impl TryFrom<i32> for VmCtlParam {
 
 这里有一处注释与行为的偏离要登记：块尾注释写 18/19 "return ENOSYS"，实际 `try_from` 返回 Err，`dispatch_vmctl` 的 Err 臂返回 EINVAL——分派侧的注释（§4.2 引用）把这层演进写明了：上游 C 对"未识别"与"合法未实现"一律 EINVAL，按 EINVAL 对齐。以现码行为为准：18/19 在 Rust 的答案是 EINVAL，与 C 一致。
 
-32 位遗留命令的去向同样是对齐问题而不是裁剪问题。NOPAGEZERO/I386_KERNELLIMIT（18/19）落 Err→EINVAL；KERN_PHYSMAP/KERN_MAP_REPLY（27/28）保留枚举值、臂返回 ENOSYS——保留的理由是语义：C 里这两个调用号是"活着但 64 位无实现"，答案应是 ENOSYS（合法但未实现）而非 EINVAL（参数不认识）；若为对齐 C 的"精简"而 `#[cfg]` 裁掉这两个变体，调用号 27/28 的答案就从"ENOSYS 拒绝"变成"非法"，违反 C 的 EINVAL/ENOSYS 语义划分（[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §3.1 对同族论证的复用）。
+32 位遗留命令的去向同样是对齐问题而不是裁剪问题。NOPAGEZERO/I386_KERNELLIMIT（18/19）落 Err→EINVAL；KERN_PHYSMAP/KERN_MAP_REPLY（27/28）保留枚举值、臂返回 ENOSYS——保留的理由是语义：C 里这两个调用号是"活着但 64 位无实现"，答案应是 ENOSYS（合法但本实现不提供）而非 EINVAL（参数不认识）——这一区分是 Rust 侧的决定（C 的 vmctl 线对未识别参数一律 EINVAL，没有 ENOSYS 分支）；若为对齐 C 的"精简"而 `#[cfg]` 裁掉这两个变体，调用号 27/28 的答案就从"ENOSYS 拒绝"变成"非法（EINVAL）"（[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §3.1 对同族论证的复用）。
 
 新增的一族没有 C 对位：PteRead/PteWrite/PteZero（wire 20/21/22）。它是 riscv64 上 VM 的页表直读直写旁路——内核经 KDM（内核直映窗口）代读/代写指定物理地址处的 PTE 并刷 TLB。[ARCH: riscv-vmddm] 标注（文档、注释、代码三处一致）。
 
@@ -1057,7 +1076,7 @@ fn vmctl_set_addr_space(
 
 步 2 是 C 没有的动作：内核在唯一提交点把 kerninfo 页以用户只读映射装进每个新根。它的对位物是 §2.3 的 KERN_PHYSMAP 协议——C 里这段"用户可见内核数据进每个进程空间"由 VM 逐区协商完成；重写把协议收进内核单点。反向推演：若 kerninfo 映射交给 VM 自己做，每个新根都要一次额外的通道往返，且"kerninfo 对所有进程可见"这一契约的执行点从一个函数散开到 VM 的每条建表路径——C 的 KERN_PHYSMAP 协议正是这个散开形状的代价样本。
 
-步 3 的判等用 proc-nr 而非指针同一性：进程槽在 ProcessTable 里一一对应，proc-nr 判等与指针判等等价，而跨数据结构的指针判等在 Rust 的借用模型下反而做不出 C 的形状。`set_active_root_tracked` 是 C 的 `write_cr3` 加一层 CR3 镜像维护——镜像不同步，调度器切表时会把同一根重装一遍。
+步 3 的判等用 proc-nr 而非指针同一性：进程槽在 ProcessTable 里一一对应，proc-nr 判等与指针判等等价，而跨数据结构的指针判等在 Rust 的借用模型下反而做不出 C 的形状。`set_active_root_tracked` 是 C 的 `write_cr3` 加一层 CR3 镜像维护——调度器的 `switch_address_space` 现码用活寄存器做比较（`CurrentTlbArch::get_active_root()`），镜像失步不会造成"同一根重装一遍"；镜像只服务诊断读数。
 
 步 4' 的 `set_vm_running(true)` 是对 C 缺口的补写：C 源码里 `vm_running` 只在启动时被写成 0（`minix3/minix/kernel/main.c:bsp_finish_booting`），从不写 1；读它的一方（`minix3/minix/kernel/system/do_umap_remote.c` 一类远程 umap 路径）拿到的永远是"VM 未起"。Rust 在 target==VM 的 SETADDRSPACE 里置位——这正是 [08-system-init-boot-finish.md](08-system-init-boot-finish.md) §3.3 预告的补写点，兑现于此。
 
@@ -1099,7 +1118,7 @@ fn vmctl_set_addr_space(
 
 为什么逐区协商能被一张清单取代？两件事变了。其一，协议要回答的问题只有一个——"哪些物理区间在真实执行中被内核踩着"——这答案内核在 bootstrap 收尾时就能一次性算出（UEFI 内存图的非常规区快照 + 固定低地址 MMIO 两源），不需要 VM 参与发现。其二，64 位下每个进程表的安装动作是同一份（map_kernel 照单恒等映射），没有 32 位借窗口下"每个空间各自映射、各自回报"的多样性。协议的双向性只服务于发现，发现可以前置，清单就是前置的产物。
 
-清单怎么防"把不该恒等映射的东西也装进去"？四道工序（§4.5 逐行走查）：页对齐出界、地板裁剪（`USER_IDENTITY_FLOOR = 0x40_0000`——用户态 boot 镜像链在 2-4 MiB 处，地板之下的条目整条丢、跨地板的裁上半段）、排序合并、双上限（条目数与总页数）。总页数上限 128Ki 页（512 MiB）的意义在常量注释里：occupied 快照吞了巨大东西（固件图碎片化或 MMIO 窗口回归）时 fail-fast，而不是把每个进程表撑爆。容量 256 的候选数组来自一次真机读数——OVMF 的 4 KiB 碎片图比"几十条"的预估忙得多，实测 127 条保留描述符后上限从 128 提到 256（§4.5 引用块里有原文）。
+清单怎么防"把不该恒等映射的东西也装进去"？四道工序（§4.5 逐行走查）：页对齐出界、地板裁剪（`USER_IDENTITY_FLOOR = 0x40_0000`——用户态 boot 镜像链在 2-4 MiB 处，地板之下的条目整条丢、跨地板的裁上半段）、排序合并、双上限（条目数与总页数）。总页数上限 128Ki 页（512 MiB）的意义在常量注释里：occupied 快照吞了巨大东西（固件图碎片化或 MMIO 窗口回归）时 fail-fast，而不是把每个进程表撑爆。容量 256 的候选数组来自一次真机读数——OVMF 的 4 KiB 碎片图比"几十条"的预估忙得多，实测 128 条保留描述符后上限从 128 提到 256（§4.5 引用块里有原文："128 reserved descriptors after the above-RAM filter"）。
 
 清单漏一区与多一区各坏在哪。漏一区：链入执行的代码或表在首次 CR3 切换后落在 not-present 页——v6 版本史记录的三重故障就是清单缺失的实弹。多一区：每个进程表平白多映射一段，512 MiB 上限是爆炸前的闸——闸触发说明快照本身坏了，停下修快照比带着一张巨大的表继续跑正确。
 
@@ -1133,7 +1152,7 @@ fn vmctl_set_addr_space(
 
 表末行要单独展开，因为它和 §2.4 的解码连着：C 的 -1 跳过的是**追加在模块表末尾的内核条目**（内核内存另由 `kernel_allocated_bytes` 补计费），Rust 的 `handoff.modules` 表里本来就没有内核条目（内核足迹走 `kernel_allocated` 字段），于是 -1 上界落在**表内最后一个保留模块**上——C 的 -1 跳内核、Rust 的 -1 跳最后一个模块，两个被排除对象不同。这是移植时循环形状对齐、指称对象错位的如实登记：现码行为以 `os/servers/vm/src/boot.rs:fn extra_pages` 与其测试为准，差异的处置（改上界或在表头补一个占位条目）留给后续轮次。
 
-还有一处注释族登记（§3.1/§3.2 两处偏离的汇总）：扣减记录与模块表"两张表"的旧叙事在注释里出现了多处——`os/servers/vm/src/boot.rs:reconcile` 检查 3 的注释（§3.2 已引原文）、`VmBootHandoff::modules` 字段注释（§3.1 已引）、以及 `os/kernel/src/lib.rs:init_proc_and_boot` 交接页构建段的同族句子。三处讲的都是"VM 的 blob 被回收所以不在账上"，而现码的 `classify` 对 VM 模块无差别计入扣减记录（注释原文 INCLUDING VM's own）。处理原则全篇一致：**表本身的行为以现码为准（modules 表排除 VM、deducted 记录包含 VM），理由句的旧叙事登记不采用**。与注释坐标相关的还有两笔：其一，`os/kernel/src/syscall.rs:fn vmctl_set_addr_space` 的文档注释把 vm_running 补写指向"09-vm-boot-protocol.md §3 decision4"——本篇没有设 decision4 这个编号锚（补写的内容在 §3.4 步 4'），断锚如实登记；其二，被引注释里的几处 C 行号已漂移——`kernel/src/lib.rs` 的 VMINHIBIT|BOOTINHIBIT 置位注释写 :1666（现码在 :2033）、`main.c:372`（user_sp 读取实为 :362）、`main.c:101-108`（实为 :100-103）、`main.c:522-572`（CALLMAP 实到 :575）——引文按原文保留，行号以现码为准。恢复实验留一个：若要恢复 C 的逐区协商形状，需要重建 per-space 协议通道与内核侧物理映射登记器——两件东西在现码里都没有存活形态。
+还有一处注释族登记（§3.1/§3.2 两处偏离的汇总）：扣减记录与模块表"两张表"的旧叙事在注释里出现了多处——`os/servers/vm/src/boot.rs:reconcile` 检查 3 的注释（§3.2 已引原文）、`VmBootHandoff::modules` 字段注释（§3.1 已引）、以及 `os/kernel/src/lib.rs:init_proc_and_boot` 交接页构建段的同族句子。三处讲的都是"VM 的 blob 被回收所以不在账上"，而现码的 `classify` 对 VM 模块无差别计入扣减记录（注释原文 INCLUDING VM's own）。处理原则全篇一致：**表本身的行为以现码为准（modules 表排除 VM、deducted 记录包含 VM），理由句的旧叙事登记不采用**。与注释坐标相关的还有两笔：其一，`os/kernel/src/syscall.rs:fn vmctl_set_addr_space` 的文档注释把 vm_running 补写指向"09-vm-boot-protocol.md §3 decision4"——本篇没有设 decision4 这个编号锚（补写的内容在 §3.4 步 4'），断锚如实登记；其二，被引注释里的几处 C 行号已漂移——`kernel/src/lib.rs` 的 VMINHIBIT|BOOTINHIBIT 置位注释写 :1666（现码在 :2085）、`main.c:372`（user_sp 读取实为 :362）、`main.c:101-108`（实为 :100-103）、`main.c:522-572`（CALLMAP 实到 :575）——引文按原文保留，行号以现码为准。同族未列的坐标另有五处：`arch_do_vmctl.c:56`/:38-40/:52-54、`do_vmctl.c:105-118`、`main.c:428-584`——同按原文保留、以现码为准。恢复实验留一个：若要恢复 C 的逐区协商形状，需要重建 per-space 协议通道与内核侧物理映射登记器——两件东西在现码里都没有存活形态。
 
 ---
 
@@ -1708,7 +1727,7 @@ ClearMapCache 的 no-op 也要留个原文（§3.6 的"no-op 返回 OK"行的依
 
 ### 4.4 VM 侧 exec_bootproc 与 init()（→§3.4、§3.2）
 
-VM 侧把协商走完的最后一公里分两段：init() 的启动步序与 exec_bootproc 的单台装载。init 的 C 步序对照表（十二行，C 的 `init_vm` 步序逐行映射到 Rust 的调用点）：
+VM 侧把协商走完的最后一公里分两段：init() 的启动步序与 exec_bootproc 的单台装载。init 的 C 步序对照表（十一行，C 的 `init_vm` 步序逐行映射到 Rust 的调用点）：
 
 ```rust
         // C: init_vm() — main.c:428-584. Step order mirrors C exactly:
@@ -1816,7 +1835,7 @@ sys_exec 与腿二收尾：
             .map_err(|_| "VMCTL_BOOTINHIBIT_CLEAR failed")?;
 ```
 
-（`os/servers/vm/src/vm_server.rs:fn install_boot_stack` 尾段（sys_exec 与 BOOTINHIBIT_CLEAR），逐字引用。内含仓库内部编号，按原文引用；注释里 `kernel/src/lib.rs:1666` 的行号已漂移——VMINHIBIT|BOOTINHIBIT 的置位语句现码在 lib.rs 的 :2033 附近，以现码为准。）
+（`os/servers/vm/src/vm_server.rs:fn install_boot_stack` 尾段（sys_exec 与 BOOTINHIBIT_CLEAR），逐字引用。内含仓库内部编号，按原文引用；注释里 `kernel/src/lib.rs:1666` 的行号已漂移——VMINHIBIT|BOOTINHIBIT 的置位语句现码在 lib.rs 的 :2085 附近，以现码为准。）
 
 BOOTINHIBIT_CLEAR 是入队时刻——§1.2 的腿二在 VM 侧的发出点。此前的 sys_exec 已携带完整现场：初始栈帧由 `os/servers/vm/src/vm_server.rs:fn install_boot_stack` 构造（`minix_sys::stack::stack_fill` 在一页帧内摆好 argc/argv/envp 与 ps_strings，得出虚拟栈顶），sys_exec 以真实 vsp 与 ps_str 调用（E-BOOTFRAME 边已落地——函数文档注释写明"then sys_exec with the **real** stack/ps_str values"）。清腿之后 rts 逻辑才把进程放进就绪队列；没有这一腿的取证形状注释里写着：11 台 exec 全部报成，无一到达用户入口。
 
@@ -1932,9 +1951,9 @@ pub(crate) fn build_identity_windows(
 
 （`os/kernel/src/vm_handoff.rs:fn build_identity_windows` 排序合并段，逐字引用。）
 
-生成管线五步手排一个样例（用 §3.5 的两源形状）：设保留区快照给 `{[0x1da0_0000, 0x1da3_0000), [0x1da2_8000, 0x1da4_0000), [0x1000, 0x2000)}`，MMIO 源给 `{(0xFEE0_0000, 4096)}`。第一步页对齐：三段本已页对齐（若不是，基址向下取整、终点向上取整）。第二步地板裁剪：`[0x1000,0x2000)` 整段在 0x40_0000 之下，整条丢；其余保留。第三步排序：`0x1da0_0000`、`0x1da2_8000`、`0xFEE0_0000` 升序。第四步合并：前两段相邻重叠（第二段基址 0x1da2_8000 ≤ 第一段终点 0x1da3_0000），并为 `[0x1da0_0000, 0x1da4_0000)`；MMIO 段不相邻，独立成条——两条进清单。第五步上限：合计 20 页 + 1 页，远小于 128Ki 页闸。这份清单随后随交接页交付，VM 侧 map_kernel 照单把每区以 VA=PA、监管者只读装进每张进程表（消费在 `rewrite-notes/02-stage-vm/07-pagetable-struct.md`）。
+生成管线五步手排一个样例（用 §3.5 的两源形状）：设保留区快照给 `{[0x1da0_0000, 0x1da3_0000), [0x1da2_8000, 0x1da4_0000), [0x1000, 0x2000)}`，MMIO 源给 `{(0xFEE0_0000, 4096)}`。第一步页对齐：三段本已页对齐（若不是，基址向下取整、终点向上取整）。第二步地板裁剪：`[0x1000,0x2000)` 整段在 0x40_0000 之下，整条丢；其余保留。第三步排序：`0x1da0_0000`、`0x1da2_8000`、`0xFEE0_0000` 升序。第四步合并：前两段相邻重叠（第二段基址 0x1da2_8000 ≤ 第一段终点 0x1da3_0000），并为 `[0x1da0_0000, 0x1da4_0000)`；MMIO 段不相邻，独立成条——两条进清单。第五步上限：合计 64 页 + 1 页，远小于 128Ki 页闸。这份清单随后随交接页交付，VM 侧 map_kernel 照单把每区以 VA=PA、内核可执行可写（`kernel_executable_writable`：PRESENT|WRITABLE|EXECUTABLE|GLOBAL）装进每张进程表（消费在 `rewrite-notes/02-stage-vm/07-pagetable-struct.md`）。
 
-计数器（zeroed/below_floor）是分诊器：真机读到 127 条保留描述符进来、候选只剩 2 条时，两个计数器回答"是载荷被清零（悬垂切片）还是全在地板下"——分诊失败模式而不是吞掉它。若清单漏区或乱序安装：漏区的后果是 §3.5 的 not-present 三重故障；乱序直接装叶会让重复安装撞 AlreadyMapped 拒启（[07-cross-space-init.md](07-cross-space-init.md) §4.4 的安装次序与验证同族）。
+计数器（zeroed/below_floor）是分诊**意图**的载体：真机读到 128 条保留描述符进来、候选只剩 2 条时，两个计数器本应回答"是载荷被清零（悬垂切片）还是全在地板下"——但现码在求和后即丢弃（`let _ = res_rejected;`，`vm_handoff.rs` 里两处同形），**分诊目前没有消费者**；失败模式只能靠候选清单读数与调用方的错误路径观察（与 §5.3 的诚实披露同族，源注释的"分诊"措辞待回修）。若清单漏区或乱序安装：漏区的后果是 §3.5 的 not-present 三重故障；乱序直接装叶会让重复安装撞 AlreadyMapped 拒启（[07-cross-space-init.md](07-cross-space-init.md) §4.4 的安装次序与验证同族）。
 
 ---
 
@@ -2034,6 +2053,37 @@ minix-types 侧 11 条（复算命令：`grep -c '#\[test\]' os/libs/minix-types
 
 没有测试的面，逐项给反证命令：SETADDRSPACE 五步的端到端（`grep -n 'fn test_.*addr_space' os/kernel/src/syscall.rs` 无命中，实跑验证）——宿主测试跑不了真 CR3 语义，五步的正确性靠 §4.3 的逐行对位与真机门；exec_bootproc 全序（`grep -rn 'fn test.*exec_boot' os/servers/vm/src/` 无命中）——真装载走真机；温启动拒绝路径——拒绝分支在 `os/servers/vm/src/main.rs` 的 cfg(not(test)) 块里宿主不可达（`grep -n 'is_first_time' os/servers/vm/src/boot.rs` 的命中只是字段初始化与测试构造，没有温启动路径测试）；kerninfo 代映射的幂等分支——依赖真页表（`grep -n 'kerninfo' os/kernel/src/syscall.rs` 命中的三条测试都是 IPC 入口臂的，不覆盖"查后装"分支）。真机/宿主分界：上述四项全在真机门覆盖（`os/qemu-tests/README.md` 的三架构回归），宿主单测只保住纯逻辑面（validate/reconcile/extra_pages/try_from/identity_windows 变换）。
 
+### 5.4 机制 → 需要证明什么（反转核对表）
+
+（同系列先例：从**机制**出发列"要证明它成立需要什么断言"；"测试覆盖状态"与 §1.5 的"C 侧边界"是两个维度，读时按列名区分。）
+
+| # | 机制（正文位置） | 需要证明什么（可观测断言） | 测试覆盖状态 | 现有证据 / TODO |
+|---|---|---|---|---|
+| M1 | BootParams validate + reconcile 四检查（§3.2、§4.1） | 合法过；四类拒绝各一条 | 已覆盖 | `boot.rs` 12 条（validate 5 + extra_pages 2 + reconcile 5） |
+| M2 | 版本门 v2/v3/v5/v6（§3.1） | 四版本分支各一断言 | 已覆盖 | minix-types `kernel_layout_tests` 四条 |
+| M3 | identity_windows 变换（§3.5） | 裁剪/排序/合并；空保留区仍有 MMIO | 已覆盖 | `vm_handoff.rs` 七条（含 clip_sort_merge、empty_reserved_still_has_mmio） |
+| M4 | VmCtlParam 解析与结果变体（§3.3） | wire 值往返；结果变体互异 | 已覆盖 | `vm.rs` 两条 |
+| M5 | VMINHIBIT 置位与 park-helper（§4.2） | 本地臂置两旗标；park-helper 不触 FLUSH_TLB；ClearPageFault 重入队 | 已覆盖 | `syscall.rs` 三条 |
+| M6 | SETADDRSPACE 五步端到端（§4.3） | 五步在真 CR3 下的时序 | 未覆盖（宿主） | §5.3 已披露（真机门承担）→ **R09-T01** |
+| M7 | exec_bootproc 全序与温启动拒绝（§4.4） | 装载→放行全序；重启路径拒绝 | 未覆盖（宿主） | §5.3 已披露 → **R09-T02** |
+| M8 | kerninfo 代映射幂等分支（§4.2） | "查后装"分支 | 未覆盖（宿主） | §5.3 已披露 → **R09-T03** |
+| M9 | 交接页自身的 validate（§3.1、§3.2） | 页内校验器自身的负向样例 | 未覆盖（未披露） | 本轮新增披露 → **R09-T04** |
+| M10 | boot-OOM 帧池读数（§4.4） | 12×1041 与 14319 的闭合口径 | ⑤证据不足（读数口径未闭合） | 登记 → **R09-T05** |
+| M11 | res_rejected 分诊（§4.5） | 计数器有消费者 | 未覆盖（现码丢弃，`let _ = res_rejected;`） | 文档已按现码改写；源侧 → **SRC-39** |
+| M12 | deduct 单遍未排序减法（§4.5） | 防御场景下不漏减模块区 | 未覆盖（低置信） | → **SRC-38**（源码侧核实） |
+
+（§5.3 的披露项分别对到 M6/M7/M8；M9/M11/M12 为本轮新增披露与转出；两类表互为反转面。）
+
+**新 TODO（对源码/测试 workflow 的需求输入）**：
+
+| ID | 内容 | 分流 |
+|---|---|---|
+| R09-T01 | SETADDRSPACE 五步的端到端载体（真 CR3 语义） | **真机/测试侧** |
+| R09-T02 | exec_bootproc 全序与温启动拒绝的真机载体 | **真机/测试侧** |
+| R09-T03 | kerninfo 代映射"查后装"分支的测试 | **测试侧** |
+| R09-T04 | 交接页自身 validate 的负向样例 | **测试侧** |
+| R09-T05 | boot-OOM 帧池读数口径（12×1041 vs 14319）登记 | **登记型**（待真机日志口径） |
+
 ---
 
 ## 6. 诊断
@@ -2044,7 +2094,7 @@ minix-types 侧 11 条（复算命令：`grep -c '#\[test\]' os/libs/minix-types
 |---|---|---|
 | VM 起不来，串口停在交接页读取前后 | 交接页 validate：版本错配、magic 错、根页为零/未对齐 | 看串口最后的 boot_stage 路标（`grep -n 'boot_stage!' os/kernel/src/lib.rs` 列出全部路标，如 "kernel: kmain A.1 validate ok"）定位内核走到的步；VM 侧 panic 消息带字段名（"VmBootHandoff: unsupported version {}" / "bad magic" / "root_paddr"），对照 §3.1 的 validate 逐项 |
 | VM 起来了但 reconcile panic | 四检查各对应一种内核侧回归：空记录=分类没交付；根页不在=扣减漏根；模块不在=漏扣镜像；重叠=切割错 | panic 串前缀 "reconcile:" 加检查名（§3.2 引用块的四条断言串即关键字）；回查 `os/kernel/src/vm_handoff.rs:classify` 的对应 push |
-| boot 进程 exec 完不跑 | 两道闸的腿：SETADDRSPACE 没发（VMINHIBIT 按着）或 BOOTINHIBIT_CLEAR 没发（BOOTINHIBIT 按着） | 串口搜各 boot 服务器名——VM 每台 exec 有路标；内核侧调度计数确认无一入队即腿二缺失（§4.4 引用块里的记录：exec 全部报成、无一到入口） |
+| boot 进程 exec 完不跑 | 两道闸的腿：SETADDRSPACE 没发（VMINHIBIT 按着）或 BOOTINHIBIT_CLEAR 没发（BOOTINHIBIT 按着） | 串口搜各 boot 服务器名与 `boot_stage` 路标（VM 的每台 exec 路标已在源中滚除）；内核侧调度计数确认无一入队即腿二缺失（§4.4 引用块里的记录：exec 全部报成、无一到入口） |
 | 某服务首指令取指错位/#GP | 段基未按页对齐取整（§4.4 第一处对位）或可执行位没从 PF_X 承接 | 核对入口段 vaddr 低 12 位与装载区域基址；对照 `os/servers/vm/src/vm_server.rs:fn exec_bootproc` 的对齐与旗标两段 |
 
 症状一的判别特征：串口最后出现的 boot_stage 路标给出内核侧死点，VM 侧 panic 消息里的字段名给出契约校验的失败项——两边一对照，错配方向（内核没写/VM 读错位）即出。
