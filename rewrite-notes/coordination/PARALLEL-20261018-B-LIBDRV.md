@@ -46,7 +46,7 @@
 
 | 类 | crate | 已有模型 | 缺什么（决定为何现在不能直接接线） | 建议轮次 |
 |---|---|---|---|---|
-| i2c 客户端族 | `bmp085`、`cat24c256` | `minix-i2cdriver` 的键名/地址校验/寄存器操作序列；bmp085 的 `convert.rs`、cat24c256 的 `pages.rs` | `libi2cdriver` 的**客户端半**未建模：巴士端点查找（DS 标签 `i2c.<bus>`）、`BUSC_I2C_RESERVE`/`BUSC_I2C_EXEC` 的 typed 消息与 `minix_i2c_ioctl_exec_t` 载荷；且 bmp085 的采样事务（校准/温度/压力多步）尚未建模 | 先补 `minix-i2cdriver::client`，再逐台接（bmp085 char 泵 / cat24c256 块泵） |
+| i2c 客户端族 | `bmp085`、`cat24c256` | `minix-i2cdriver` 的键名/地址校验/寄存器操作序列；bmp085 的 `convert.rs`、cat24c256 的 `pages.rs` | `libi2cdriver` 的**客户端半**未建模：巴士端点查找（`DriverTransport::lookup_label` 已有）、`BUSC_I2C_RESERVE`/`BUSC_I2C_EXEC` 的 typed 消息与 `minix_i2c_ioctl_exec_t` 载荷；exec 走 `cpf_grant_direct`/`cpf_revoke`，而 `DriverTransport` 只有授权拷贝、没有授权分配/撤销动词（`minix-sys::grant` 有宿主侧实现，需按 READCLOCK 加 `copy_to_addr` 的先例补两条带默认的传输动词）；bmp085 的采样事务（校准/温度/压力多步 + 压力过采样模式）尚未建模 | 先补 `DriverTransport` 的 grant 分配/撤销 + `minix-i2cdriver::client`，再逐台接（bmp085 char 泵可自拷数据；cat24c256 还受块泵数据面缺传输句柄所限） |
 | 音频族 | `es1371`、`sb16` | `AudioHooks` 十四钩子、`SubDevice` 分片机、`SpecialFile` | 数据面归属未裁决：C 由框架持有 DMA 缓冲并把地址交给 `drv_set_dma`，Rust 无 DMA 分配器（见 B11）；把缓冲放卡侧要改钩子签名 = 架构演进，需用户批准 | 设计裁决后再动 |
 | USB 族 | `usbd`、`usb_hub`、`usb_storage` | 协议/枚举/端口观察/BOT 状态各有模型 | C 全经 DDEkit 宿主抽象；Rust 无对应层，`HostController` 缝（URB 调度、端口复位、地址分配）未设计 | 宿主缝设计后再动 |
 | 存储代理族 | `fbd`、`filter`、`vnd` | 规则/镜像健康/布局模型齐 | 三者都是代理块驱动：transfer 需转发下游；现 `BlockDriver` trait 的 transfer 不带传输句柄，代理腿无接缝（扩 trait 或在泵里开转发槽） | 框架裁决后再动 |
