@@ -59,10 +59,17 @@ case "$out" in
 esac
 mkdir -p "$(dirname "$out")"
 
+# 补面里的函数级单元全部一起链上（一枚 `.c` 一个 BSD 家姓的函数族，都带自己的 libc 判据，
+# 在有的 libc 上整件退化成空 translation unit，不会与系统实现撞符号）。
+compat_units=()
+for unit in "$compat"/bsd-*.c; do
+	[ -e "$unit" ] && compat_units+=("$unit")
+done
+
 cmd=(gcc -O0 -Wall
 	-I"$compat"
 	-include "$compat/bsd-compat-proto.h"
-	"$compat/bsd-progname.c"
+	"${compat_units[@]}"
 	"${sources[@]}"
 	"${extra[@]}"
 	-o "$out")

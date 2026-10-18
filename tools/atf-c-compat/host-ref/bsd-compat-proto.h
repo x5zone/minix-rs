@@ -10,6 +10,14 @@
 
 #include <sys/types.h>
 #include <features.h>
+#include <stdio.h>
+
+/* BSD 的 `fgetln(3)`：glibc 从未提供（它只有 `getline`/`getdelim`），而
+ * `minix3/usr.bin/uniq/uniq.c` 的行读入口就是它。实现见同目录 `bsd-fgetln.c`，
+ * 那件带同样的 glibc 判据。 */
+#if defined(__GLIBC__)
+char *fgetln(FILE *stream, size_t *len);
+#endif
 
 /* 有些 BSD 源直接调 `fstat`/`stat` 而不含 `<sys/stat.h>`（NetBSD 的包含链把这层替它做掉，
  * `minix3/usr.bin/split/split.c:293` 正是这种：它只含到 `<sys/param.h>` 与 `<unistd.h>`）。
