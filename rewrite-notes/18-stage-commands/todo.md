@@ -119,6 +119,21 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百六十六（`FORTUNE-EMPTY-ERRLEG` 现查）：参照件在宿主与仓库内都造不出来，且这一支真正卡的是设计级前置
+
+本轮只量两件事，生产码一字未动；结论把这条账从「换一句措辞」改成了「先要一个设计裁决」，所以仍留 `open`，不换状态词、不降级。
+
+- **第一件：参照件造不出来，因由可重跑**。想按批次三百六十五定的路子量 `fortune <空档>` / `fortune <目录>` 的三样绝对读数，就得先编一枚 C 参照件，两次尝试都撞在仓库里那棵 `minix3/` 的不完整上：
+  - `gcc -O0 -I minix3/include -o /tmp/fortuneref minix3/games/fortune/fortune/fortune.c` ⇒ `__COPYRIGHT`/`__RCSID` 未定义（`:37`、`:45` 两处 `error: expected declaration specifiers or '...' before string constant`），再往后 `minix3/include/stddef.h:38` 要 `sys/featuretest.h`；
+  - 补上 `-D'__COPYRIGHT(x)=' -D'__RCSID(x)=' -D'__IDSTRING(a,b)='`（这套带尾等号的写法是批次二百六十四立过的）再 `-include minix3/include/sys/cdefs.h` ⇒ `fatal error: minix3/include/sys/cdefs.h: No such file or directory`。
+  - 现查根因两条，都可在树里重跑：`ls minix3/include/sys/featuretest.h` 与 `ls minix3/include/sys/cdefs.h` 均 `No such file`——本仓 vendor 的 `minix3/include/` 只有部分头，宿主 `/usr/include/x86_64-linux-gnu/sys/param.h` 一被拉进来就与这半套头互相指错。⇒ 参照件这条路要先把「BSD 头的补位面」建起来（与批次二百六十九给 `strerror` 族、批次二百六十七给 `stresep`/位计数族做的事同一类工程），不是一轮能顺手做完的。
+- **第二件：更要紧的一条，C 根本不接受一枚纯文本档当格言库**。`minix3/games/fortune/fortune/fortune.c` 的读档前置是 `.dat`：`open_dat`（`:1064-1068`）里 `if ((fp->datfd = open(fp->datfile, O_RDONLY)) < 0) err(1, "Cannot open \`%s'", fp->datfile)`，装载前还要 `fp->tbl` 那个定界串（`:268-269` 的 `!STR_ENDSTRING(line, fp->tbl)`）；`:1116-1118` 那条是 `Database \`%s' corrupted`。也就是说 C 的世界里没有「一枚空文本档」这一形——它必须先有配对的 `.dat`，没有就是那句 `Cannot open` 报在 `.dat` 的名字上。而本支的 Rust 壳是一枚**重新设计过的简易过滤器**（`os/commands/games/text-games/src/bin/fortune.rs` 把操作数按行切成格言、`pick_quip` 取模抽取，没有 `.dat`、没有 `%` 定界、没有 `-f/-o/-a` 的概率表）。⇒ 于是「空库那句要不要齐平成 C 的 `err(1, "Cannot open \`%s'", ...)`」不是一个措辞问题：要么承认本支是另一套外部形状（那就是 `Refactor`/`[ARCH]` 级别的决定，要在文档、设计、代码三处一致标注），要么先把 `.dat` 与定界串这套数据格式实现出来再谈对齐。这一步需要设计裁决，不是我能替项目定的。
+- **本轮据实留下**：`FORTUNE-EMPTY-ERRLEG` 仍 `open`，并把它的**前置拆成两条各自可单独立项的**：其一 `FORTUNE-DAT-FORMAT`（实现 `.dat` 与定界串，使 C 的报文有形可对；工程量大，含 `strfile` 那侧），其二 `BSD-HEADER-COMPAT-REF`（参照件构建所需的 BSD 头补位面，按批次二百六十七/二百六十九的手法做）。核实命令（可重跑）：上面那两条 `gcc` 命令行、两条 `ls minix3/include/sys/*.h`、以及 `sed -n '1064,1068p;268,269p' minix3/games/fortune/fortune/fortune.c`。核实日 `2026-10-18`，快照提交号为 `9cee84dbb`（本轮基线）。
+- **不做的事**（免得下一轮重蹈）：不换状态词、不把那句 `empty database` 随手改成任何我以为像 C 的句子、不拿宿主 Rust 壳的输出冒充参照件读数。批次三百六十五留下的 `an_operand_that_opens_but_cannot_be_read_is_an_empty_database` 只钉「读断不成其一形」，与这一支的整体外形裁决无关，不需要回退。
+- **下一轮首动作**：`bash tools/claim.sh claim REV-STDIN-ERRLEG qoder`（台账上仍挂着的一条已登记项，不依赖本轮这两条前置）；`FORTUNE-DAT-FORMAT` 需要设计裁决，若无人裁决就先按 `open` 挂着，不降级为 DEFERRED 充数。
+
+---
+
 ## 批次三百六十五（`FORTUNE-READ-ERRLEG` 闭）：`fortune` 的读腿不再自成一形，读断了就是读到尽头
 
 - **判据**（批次三百六十四记在交接件里，本笔据以动手）。`minix3/games/fortune/fortune/fortune.c:268` 与 `:293` 的装载都是 `for (...; fgets(line, sizeof line, fp->inf) != NULL && ...)`；**整个文件没有一次 `ferror`**（`grep -n "fgetc\|fgets\|fread\|ferror\|feof\|read(" minix3/games/fortune/fortune/fortune.c` 只命中这两处 `fgets`、`:1312` 的输出腿，以及对 `.dat` 与位置档的三处裸 `read`（`:981`、`:1086`、`:1117`），它们的返回值只用来判断取到多少字节）。⇒ C 眼里读失手与读到尽头是同一件事：停止装载，不新增一句话，也不改退码。我们以前给读臂单立一句 `fortune: <操作数>: read error` 并退 1——句子与退码两处自造（批次三百六十二「不动的那一半」记的就是这一笔）。
