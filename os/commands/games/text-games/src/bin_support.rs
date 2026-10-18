@@ -196,11 +196,13 @@ pub enum OperandFailure {
     /// The path could not be opened; the number is what C's `err(1, ...)` appends
     /// as the trailing sentence, so the caller can render the whole line.
     Open(minix_sys::Errno),
-    /// The operand opened, but a read failed partway through.
-    Read,
 }
 
-/// Reads an operand file to the end, reporting which leg failed. Hosted twin:
+/// Reads an operand file, reporting only a failure to open it; a read that breaks
+/// partway is reported as the end of the file. That is C's shape: `fortune` loads
+/// with `fgets(line, sizeof line, fp->inf) != NULL`（`minix3/games/fortune/fortune/fortune.c:268`、
+/// `:293`）and the file never asks `ferror`, so a broken read looks exactly like an
+/// ordinary end of input — no extra sentence, and no different exit code. Hosted twin:
 /// real `std::fs` — without it a file-reading game binary cannot be run, and so
 /// cannot be checked, on the host at all (the target face below is the one the
 /// kernel actually serves).
@@ -215,10 +217,11 @@ pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> 
         ))
     })?;
     let mut image = alloc::vec::Vec::new();
-    match file.read_to_end(&mut image) {
-        Ok(_) => Ok(image),
-        Err(_) => Err(OperandFailure::Read),
+    // 读到失手就当作读到尽头：C 只看到 `fgets` 回了 NULL
+    if file.read_to_end(&mut image).is_err() {
+        return Ok(image);
     }
+    Ok(image)
 }
 
 /// Target twin of [`slurp_operand`] (see the module header for the seam contract):
@@ -232,22 +235,15 @@ pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> 
     };
     let mut image = alloc::vec::Vec::new();
     let mut chunk = [0u8; 4096];
-    let mut failure = None;
     loop {
         match minix_sys::read(fd, &mut chunk) {
             Ok(0) => break,
             Ok(count) => image.extend_from_slice(&chunk[..count]),
-            Err(_) => {
-                failure = Some(OperandFailure::Read);
-                break;
-            }
+            Err(_) => break,
         }
     }
     let _ = minix_sys::close(fd);
-    match failure {
-        None => Ok(image),
-        Some(failure) => Err(failure),
-    }
+    Ok(image)
 }
 
 /// Wall-clock microseconds since the epoch, when a clock face answers.///

@@ -119,6 +119,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百六十五（`FORTUNE-READ-ERRLEG` 闭）：`fortune` 的读腿不再自成一形，读断了就是读到尽头
+
+- **判据**（批次三百六十四记在交接件里，本笔据以动手）。`minix3/games/fortune/fortune/fortune.c:268` 与 `:293` 的装载都是 `for (...; fgets(line, sizeof line, fp->inf) != NULL && ...)`；**整个文件没有一次 `ferror`**（`grep -n "fgetc\|fgets\|fread\|ferror\|feof\|read(" minix3/games/fortune/fortune/fortune.c` 只命中这两处 `fgets`、`:1312` 的输出腿，以及对 `.dat` 与位置档的三处裸 `read`（`:981`、`:1086`、`:1117`），它们的返回值只用来判断取到多少字节）。⇒ C 眼里读失手与读到尽头是同一件事：停止装载，不新增一句话，也不改退码。我们以前给读臂单立一句 `fortune: <操作数>: read error` 并退 1——句子与退码两处自造（批次三百六十二「不动的那一半」记的就是这一笔）。
+- **改法**。把「读失手」这一臂整个取消，而不是给它换一句措辞：`os/commands/games/text-games/src/bin_support.rs` 的 `OperandFailure` 只剩 `Open(minix_sys::Errno)` 一体，`slurp_operand` 两面（宿主 `read_to_end` 失手→交出已收到的字节继续走；真机 `read` 失手→同样 `break` 出去）都把读断当 EOF。壳里那条 `Err(OperandFailure::Read)` 分支随之删除。三档术语：Rewrite。
+- **门（L1，核实日 `2026-10-18`）**。`tests/fortune_face.rs` 加 `an_operand_that_opends_but_cannot_be_read_is_an_empty_database`（正名 `an_operand_that_opens_but_cannot_be_read_is_an_empty_database`）：目录作操作数在宿主正是「开得了、读不断」（`File::open` 成功、`read` 回「是一个目录」），断言它的**报文形状与退码与空库同一形**——这一枚不猜 C 的绝对措辞，只钉「读失手不成其一形」，把上一轮交接件里「必须先量目录那一形」的顾虑绕开。套件：`cargo test -j 1 --offline -p minix-text-games` ⇒ **60 passed / 0 failed**（lib 30、`random_face` 25、`fortune_face` 5，起点 4 枚）；容器权威门退码 101、`test result:` 摘要合计 **60 passed / 0 failed**（与宿主同读数，日志 `tmp/fortune-365/container-gate.log`）；`rustfmt --edition 2021 --check` 三件零漂移。
+- **变异控制有牙**（读数 `/tmp/ctl2.log`）。把宿主腿的读断改回致命（复用 `Open` 变体以免编译不过——上一轮那次 `Box::leak` 的教训就在这次避开了）⇒ 五枚里独 `an_operand_that_opens_but_cannot_be_read_is_an_empty_database` 红，其余四枚不动，红因是目录那一形多了一句 `Cannot open ...`。还原用改前留在 `/tmp/bs2.bak` 的原文，md5 `8331389e…` 前后一致，复绿 60 / 0。
+- **残留（登记不执行）**。`fortune` 那两句报文（开档走 C 的三段形已齐平；空库那句 `empty database` 仍是自创，C 的空库路径要连 `pick` 之后的 `exit` 码一起量参照件才定得准）——登记 `FORTUNE-EMPTY-ERRLEG`。另外批次三百六十登记、批次三百六十二改判的 `TEXTGAMES-EMIT-ERRLEG` 的 `wtf` 一半仍待按「判据不适用」收尾。
+- **下一轮首动作**：`bash tools/claim.sh claim FORTUNE-EMPTY-ERRLEG qoder`——先在容器里按 `AGENTS.md` 配方编一枚 `fortune.c` 参照件，量 `fortune <空档>` 与 `fortune <目录>` 各一次的三样读数（stdout / stderr / 退码），再决定那句怎么写。
+
+---
+
 ## 批次三百六十四（`SPLIT-TAIL-NOEOL-NEGCTL` 闭）：上一轮那枚只跑绿没验牙的门，现在有了咬得住的变异
 
 - **补的是什么账**。批次三百六十三留下一条明账：新门 `line_mode_does_not_invent_a_final_line_terminator` 只算跑绿、不算有牙，因为第一次试的变异（在 `lines_bytes` 里用 `Box::leak` 造一个自带换行的尾部切片）直接编译不过——`lines_bytes` 的返回类型是 `Vec<&[u8]>`，借用的生命周期没有着落，那根本不构成一次变异。本轮换一个**能编译**的注入点，把牙补上。

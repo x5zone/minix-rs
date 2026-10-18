@@ -107,3 +107,26 @@ fn a_stdout_that_stops_taking_bytes_adds_no_word_and_no_status() {
     );
     let _ = std::fs::remove_file(&db);
 }
+
+/// 开得了、读不断的操作数（目录：`open` 成功、`read` 回「是一个目录」）在 C 里就是
+/// 装载到零条格言——`fgets` 回 NULL 与 EOF 同形，且从不查 `ferror`（`fortune.c:268`、`:293`）。
+/// 本壳以前给它单独一句 `read error` 并退 1，那句与那个退码都是自造的。改完之后它必须走
+/// 与空库**同一条路**：同一句报文（换掉操作数）、同一个退码。这条断言不猜 C 的绝对措辞，
+/// 只钉「读失手不成其一形」——两形的报文与退码必须一致。
+#[test]
+fn an_operand_that_opens_but_cannot_be_read_is_an_empty_database() {
+    let dir = std::env::temp_dir().join("minix-fortune-face-dir-as-db.db");
+    std::fs::create_dir_all(&dir).expect("make a directory operand");
+    let (dir_out, dir_code, dir_err) = run(&dir, Stdio::piped());
+    let empty = fixture("dirfold", b"");
+    let (_empty_out, empty_code, empty_err) = run(&empty, Stdio::piped());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&empty);
+    assert_eq!(dir_out, "");
+    assert_eq!(dir_code, empty_code, "读不断与空库的退码必须同形");
+    assert_eq!(
+        dir_err.replace(dir.display().to_string().as_str(), "<操作数>"),
+        empty_err.replace(empty.display().to_string().as_str(), "<操作数>"),
+        "读不断与空库的报文必须同形：目录得 {dir_err:?}，空库得 {empty_err:?}"
+    );
+}

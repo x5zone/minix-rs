@@ -24,7 +24,9 @@ fn run() -> ! {
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let path = args.get(1).copied().unwrap_or(DEFAULT_DB);
 
-    // 开档与读档分两条臂各回各的失手，走的是 `support::slurp_operand` 的双生面：
+    // 开档失手单独报（C 的 `err(1, "Cannot open `%s'", ...)`），读档失手不报：
+    // C 装载用的是 `fgets(...) != NULL`（`fortune.c:268`、`:293`），从不查 `ferror`，
+    // 所以读断了和读到尽头是同一件事。缝见 `support::slurp_operand` 的双生面：
     // 真机腿落在 `minix_sys::{open, read, close}`，宿主腿落在 `std::fs`。句子沿用本壳
     // 已有的两句（对 C 的 `err(1, "Cannot open `%s'", ...)` 形状尚未齐平，那笔账在
     // `rewrite-notes/18-stage-commands/todo.md`），本轮只把两条臂接可达、不改口径
@@ -37,12 +39,6 @@ fn run() -> ! {
             //（目录腿在 C 走 `warn`（`:525`、`:705`）不退场，本壳现在还不走目录，不在这一形里）
             let prog = support::prog_name(&argv);
             support::warn_line(prog, &format!("Cannot open `{path}'"), code);
-            support::terminate(1);
-        }
-        Err(support::OperandFailure::Read) => {
-            // 这一句还是本壳自创的：C 的读腿走 stdio，没有与它对应的 `err` 句形，
-            // 齐平要等读腿判据单独立项（`FORTUNE-READ-ERRLEG`），本轮不动它
-            support::warn(format!("fortune: {path}: read error\n").as_bytes());
             support::terminate(1);
         }
     };
