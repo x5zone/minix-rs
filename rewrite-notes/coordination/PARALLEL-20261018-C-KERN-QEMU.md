@@ -150,6 +150,7 @@ run_with_qemu_lock() (
 - `2026-10-18` B / `G6-RANDOM` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `53→52` —— 随 random 族接线（`os/drivers` 50→49）的机械过账，不涉语义 —— `✅`
 - `2026-10-18` B / `G6-FB` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `52→51` —— 随 fb 族接线（`os/drivers` 49→48）的机械过账，不涉语义 —— `✅`
 - `2026-10-18` B / `G6-PTY` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `51→50` —— 随 pty 族接线（`os/drivers` 48→47）的机械过账，不涉语义 —— `✅`
+- `2026-10-18` B / `A7` 收口：改共享件 `os/Cargo.toml`（`members` 与 `[workspace.dependencies]` 各加一行 `minix-nic-policy`），另新增 `os/libs/minix-nic-policy` 与两卡清单各一行依赖（本体非共享件）—— NIC 环策略库入工作区，不涉其它线语义 —— `✅`
 
 ## 7. 每轮收尾（顺序固定）
 

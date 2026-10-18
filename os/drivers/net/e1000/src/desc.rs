@@ -8,7 +8,10 @@
 //!
 //! Register writes stay in the service binary; this module owns the
 //! pure ring half: how many descriptors, how big each buffer, and
-//! where head and tail sit.
+//! where head and tail sit. The modulo walk itself comes from
+//! `minix-nic-policy` (shared with the other NIC rings).
+
+use minix_nic_policy::ModuloCursor;
 
 /// Receive descriptors in the ring (`RXDESC_NR`).
 pub const RX_DESC_COUNT: usize = 256;
@@ -23,37 +26,36 @@ pub const BUFFER_SIZE: usize = 2048;
 /// driver has consumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DescRing {
-    /// Descriptors in this ring.
-    count: usize,
-    /// Next descriptor the driver will consume.
-    tail: usize,
+    /// Next descriptor the driver will consume, wrapping at the ring
+    /// count.
+    tail: ModuloCursor,
 }
 
 impl DescRing {
     /// Receive ring with 256 descriptors.
     pub fn receive() -> Self {
-        DescRing { count: RX_DESC_COUNT, tail: 0 }
+        DescRing { tail: ModuloCursor::new(RX_DESC_COUNT) }
     }
 
     /// Transmit ring with 256 descriptors.
     pub fn transmit() -> Self {
-        DescRing { count: TX_DESC_COUNT, tail: 0 }
+        DescRing { tail: ModuloCursor::new(TX_DESC_COUNT) }
     }
 
     /// Current tail position.
     pub fn tail(&self) -> usize {
-        self.tail
+        self.tail.index()
     }
 
     /// Advance past one consumed descriptor, wrapping at the end.
     pub fn advance(&mut self) {
-        self.tail = (self.tail + 1) % self.count;
+        self.tail.advance();
     }
 
     /// Whether the ring holds no unconsumed descriptor (tail caught
     /// up with head).
     pub fn is_empty(&self, head: usize) -> bool {
-        head % self.count == self.tail
+        head % self.tail.modulus() == self.tail.index()
     }
 }
 
