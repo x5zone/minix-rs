@@ -7,22 +7,19 @@
 //!
 //! 库默认 `/usr/share/misc/acronyms`（NetBSD wtf 的缺省路径）。
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
 #[path = "../bin_support.rs"]
 mod support;
 use minix_text_games::acronym::{is_skipped_word, lookup_acronym};
-use minix_sys::{open, read, Fd};
 
 const DEFAULT_DB: &str = "/usr/share/misc/acronyms";
-
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -54,26 +51,22 @@ fn run() -> ! {
         support::terminate(1);
     }
 
-    let fd: Fd = match open(db_path, 0, 0) {
-        Ok(fd) => fd,
-        Err(_) => {
+    // 开档读档走 `support::slurp_operand` 的双生面（真机腿 `minix_sys::{open, read, close}`、
+    // 宿主腿 `std::fs`）。改前这里直接写死 `minix_sys::open`，**宿主上任何真实存在的库档都报
+    // `cannot open` 退 1**——与批次三百六十一给 `fortune` 治的是同一枚缺陷，只是本壳当时没有
+    // 端到端门，所以一直没被发现。
+    //
+    // 顺手去掉的是本壳自创的 `{db_path}: read error` 那一句：这条缝按 C 与脚本共同的形状，
+    // 把「读断」当作「读到尽头」（脚本那侧是 `fgrep … 2>/dev/null`，库读断只会退化成
+    // 「查无此词」而不是另一句报文，见 `minix3/games/wtf/wtf:76-77`）。句子本身的齐平另立
+    // `WTF-SCRIPT-PARITY`，本笔不动口径。
+    let image = match support::slurp_operand(db_path) {
+        Ok(image) => image,
+        Err(support::OperandFailure::Open(_)) => {
             support::warn(format!("wtf: {db_path}: cannot open\n").as_bytes());
             support::terminate(1);
         }
     };
-    let mut image = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(n) => image.extend_from_slice(&chunk[..n]),
-            Err(_) => {
-                support::warn(format!("wtf: {db_path}: read error\n").as_bytes());
-                support::terminate(1);
-            }
-        }
-    }
-    let _ = minix_sys::close(fd);
 
     let text = String::from_utf8_lossy(&image).into_owned();
     let lines: Vec<&str> = text.lines().collect();
@@ -96,7 +89,6 @@ fn run() -> ! {
     }
     support::terminate(status)
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
