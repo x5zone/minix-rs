@@ -8,9 +8,9 @@
 //!
 //! 操作数那一步、过滤器与选项环都已按 C 成形，分母也换成了 C 的那个 `double`：`strtod`
 //! 的十进制腿（前导空白、符号、小数点、指数、`inf`/`nan`）与 `errno == ERANGE` 的两条腿
-//! （溢出、下溢成 0）都接上了。仍敞着的是十六进制浮点 `0x1p3` 与 `nan(0x…)` 载荷两形，
-//! 以及共用的 `bin_support::emit` 写缝退码（C 是 `err(2, "stdout")` 退 2，
-//! `random.c:131-133`），账在 `rewrite-notes/18-stage-commands/todo.md` 的
+//! （溢出、下溢成 0）都接上了。写标准输出那一腿也照了 C：每行写完查一次失手，失手报
+//! `err(2, "stdout")` 退 2（`random.c:131-133`）。仍敞着的是十六进制浮点 `0x1p3` 与
+//! `nan(0x…)` 载荷两形，账在 `rewrite-notes/18-stage-commands/todo.md` 的
 //! `RANDOM-DENOM-LEGS` 条目里。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -108,7 +108,13 @@ fn run() -> ! {
             .wrapping_add(1_442_695_040_888_963_407);
         let draw = (state >> 33) & 0x7fff_ffff;
         if line_selected(denominator, draw) {
-            support::emit(format!("{line}\n").as_bytes());
+            // C 在每一行写完之后查一次 `ferror(stdout)`，失手走 `err(2, "stdout")`
+            //（`random.c:131-133`）：三段形的位上是 `stdout` 这个词而不是档名，退码是 2。
+            // 写缝交回号（`support::emit_error`），句子与退码由这一支自己定
+            if let Some(code) = support::emit_error(format!("{line}\n").as_bytes()) {
+                support::warn_line(prog, "stdout", code);
+                support::terminate(2);
+            }
         }
     }
     support::terminate(0)

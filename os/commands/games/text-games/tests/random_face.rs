@@ -14,8 +14,11 @@
 //!
 //! 分母那一枚读的是 C 的 `double`（`strtod` 的十进制腿）：`1e3`、`1e-3`、`.5`、`-2`、
 //! `inf`、`nan` 都认；`18e308`（溢出）与 `1e-400`（下溢成 0）都立 `errno == ERANGE`
-//! 走 ③。还敞着的是十六进制浮点 `0x1p3` 与 `nan(0x…)` 载荷两形，以及 `emit` 写缝的退码。
+//! 走 ③。还敞着的是十六进制浮点 `0x1p3` 与 `nan(0x…)` 载荷两形。写标准输出那一腿已经
+//! 按 C 落定：失手报 `random: stdout: <句子>` 退 2（`random.c:131-133`），门是
+//! `a_stdout_that_stops_taking_bytes_is_blamed_by_name_and_exits_two`。
 
+use std::fs::File;
 use std::io::Write as _;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -447,4 +450,36 @@ fn an_unclosed_nan_payload_is_rejected_at_the_open_parenthesis() {
             "{word:?}"
         );
     }
+}
+
+#[test]
+fn a_stdout_that_stops_taking_bytes_is_blamed_by_name_and_exits_two() {
+    // C 每写完一行查一次 `ferror(stdout)`，失手走 `err(2, "stdout")`（`random.c:131-133`）：
+    // 三段形的位上是 `stdout` 这个词而不是档名（这一支的输出腿只有标准输出），退码 2。
+    // 宿主用 `/dev/full` 注入这一形——写它必回「设备没有空间」，句子由号表渲染。
+    // 分母取 1：`denom * draw / RANDOM_MAX` 恒小于 1，每行都掷中，第一行就撞上去。
+    // 期望读数取自现跑（`od -c` 见 rewrite-notes/18-stage-commands/todo.md 批次三百五十九）
+    let mut child = Command::new(random_bin())
+        .arg0("random")
+        .args(["1"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(
+            File::create("/dev/full").expect("open /dev/full"),
+        ))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn random against /dev/full");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin pipe")
+        .write_all(INPUT)
+        .expect("feed stdin");
+    let out = child.wait_with_output().expect("wait random");
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        (out.status.code(), err.as_str()),
+        (Some(2), "random: stdout: No space left on device\n"),
+        "{err}"
+    );
 }

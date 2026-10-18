@@ -119,6 +119,56 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百五十九（`RANDOM-STDOUT-EMIT-RC`）：`random` 写标准输出失手，按 C 报名字退 2
+
+- **是什么**。`minix3/games/random/random.c:131-133` 在每写完一行之后查一次 `ferror(stdout)`，
+  失手走 `err(2, "stdout")`：三段形的位上是 `stdout` 这个词（这一支的输出腿只有标准输出，
+  没有档名可报），退码 2。读腿早已同形（`random.c:135-136` 的 `err(2, "stdin")` 对位
+  `os/commands/games/text-games/src/bin/random.rs` 的 `warn_line(prog, "stdin", code)` 加
+  `terminate(2)`），写腿却共用一条会自己退场的缝：改前那一格是 `support::emit(...)`，
+  而 `emit` 的两面（宿主面 `os/commands/games/text-games/src/bin_support.rs:73`、真机面 `:87`）
+  都写成「失手即 `terminate(1)`，一个字都不报」。分叉两处分叉得一样彻底：退码 1 对 2，
+  空手而归对一段可读的话。属 P0-code-bug（可见行为与 C 不符），不是结构债。
+- **怎么修（两条路选一条）**。**甲**：直接改共用缝 `emit` 的退码。**否**——同 crate 还有两支用它
+  （`src/bin/wtf.rs:90`、`src/bin/fortune.rs:55`），那两支的 C 真源写腿是不是同一判据本批未核，
+  改共用缝等于把 `random` 一支持有的口径套到另外两支上。**乙**：新增一条「只交回号、不退场」的缝，
+  句子与退码由调用者定。**采**——这不是新发明，是本仓已确立的分工：同一文件里读腿那条
+  `read_stdin_error`（`:161` 宿主面、`:179` 真机面）就是「缝交回号、壳里定句子」，
+  `textfilter` 那侧也早有同名的 `emit_error`
+  （`os/commands/usr-bin/textfilter/src/bin_support.rs:107-130`）。
+- **实施**。`bin_support.rs` 添 `emit_error` 双生面（`:99` 宿主面走 `std::io::stdout().write_all`，
+  没有原始号的错误按 `EIO` 交回，与 `read_stdin_error` 同一口径；`:116` 真机面逐段推进 `write`，
+  没搬走字节又没报错的那一形按 `EIO` 交回，与 `textfilter` 那条同形）。`random.rs` 的写腿换成
+  「拿号 → `warn_line(prog, "stdout", code)` → `terminate(2)`」。三档术语：Rewrite（外部行为对 C，
+  内部不换语义）。共用缝 `emit` 一字未动。
+- **门（L1 读数，核实日 `2026-10-18`）**。新门一枚：`tests/random_face.rs` 的
+  `a_stdout_that_stops_taking_bytes_is_blamed_by_name_and_exits_two`——分母取 1（每行必掷中）、
+  标准输出接到 `/dev/full`（宿主写它必回「设备没有空间」），断言退码 2 与那句
+  `random: stdout: No space left on device`。命令与读数：
+  `cargo test -j 1 --offline -p minix-text-games`（在 `os/` 执行）⇒ **55 passed / 0 failed**
+  （`random_face` 一套 30 枚，起点 29 加本枚），日志 `tmp/random-359/host-test.log`；
+  权威容器门 `docker run --rm -u $(id -u):$(id -g) -v "$PWD:/work" -v "$PWD/tmp/ci-cargo:/cargo"
+  -v "$PWD/tmp/ci-target-359:/tgt" -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/tgt
+  -w /work/.wt/random-stdout-emit-rc-qoder/os -m 2g minix-ci:1.94 cargo test -j 1 -p minix-text-games`
+  ⇒ 退码 **0**，`test result:` 摘要 6 套合计 **55 passed / 0 failed**，与宿主同读数
+  （`tmp/random-359/container-gate.log`）。`rustfmt --edition 2021 --check` 三件零漂移；
+  `cargo clippy --all-targets -p minix-text-games` 对本包**零命中**（只剩 `minix-types`/`minix-sys`/
+  `minix-rt` 的旧警告）。门定位命令：`grep -n "pub fn emit_error" os/commands/games/text-games/src/bin_support.rs`。
+- **两枚变异控制都有牙**（`tmp/random-359/control1.log`、`control2.log`）。ⅰ. 写腿退回
+  `support::emit(...)` ⇒ 变红的恰是新增那一枚，其余 24 枚不动，失败读数
+  `left: (Some(1), "")`——退 1、一个字不报，正是上面记的那两处分叉。ⅱ. `warn_line` 的位词 `stdout` 改成
+  `write` ⇒ 同一枚独红，说明句子那一半也在门的射程里。两次还原都用改前留在
+  `tmp/random-359/random.rs.bak` 的原文（不是 `git checkout`——本批修复提交前工作态不干净，
+  判例见批次三百五十五），md5 `58fa9432…` 前后一致。
+- **残留（登记不执行，一次只修一条）**。`src/bin/wtf.rs:90` 与 `src/bin/fortune.rs:55` 仍走
+  `support::emit`：写失手退 1、不报名字。这两支的 C 真源在 `minix3/games/fortune/` 与
+  `minix3/games/` 下对应目录（下一轮先 `ls` 定位再读写腿），有没有「写完查一次」这一形**本批未核**，
+  因此不能断言它们也是缺陷——登记为 `TEXTGAMES-EMIT-ERRLEG`。
+- **下一轮首动作**：`bash tools/claim.sh claim TEXTGAMES-EMIT-ERRLEG qoder`，先读 `fortune` 与
+  `wtf` 两支 C 源的写腿判据，再决定要不要把这两支也接到 `emit_error`。
+
+---
+
 ## 批次三百五十八（`SPLIT-MIDSTREAM-READERR-GATE`）：把「失手前那块不许丢」变成一扇能造出来的门
 
 - **补的是上一轮记下的洞**。批次三百五十七说：`-b` 流式化之后「先读成功若干次、再读失手」那一形

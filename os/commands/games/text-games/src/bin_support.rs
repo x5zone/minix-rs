@@ -90,6 +90,41 @@ pub fn emit(bytes: &[u8]) {
     }
 }
 
+/// Writes the slice to standard output and **hands the failing number back** to the
+/// caller instead of exiting: the sentence and the exit code belong to the caller,
+/// this layer only picks up the number. Hosted twin goes through `std::io::stdout`
+/// and reports an error that carries no raw code as `EIO`, the same fallback
+/// [`read_stdin_error`] uses on the reading side.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn emit_error(bytes: &[u8]) -> Option<minix_sys::Errno> {
+    use std::io::Write as _;
+    match std::io::stdout().write_all(bytes) {
+        Ok(()) => None,
+        Err(failure) => Some(minix_sys::Errno::from_i32(
+            failure
+                .raw_os_error()
+                .unwrap_or(minix_sys::Errno::EIO.to_i32()),
+        )),
+    }
+}
+
+/// Target twin of [`emit_error`] (see the module header for the seam contract).
+/// A single `write` may take fewer bytes than asked for, so the remainder is pushed
+/// until the device either takes it all or stops taking it; a write that transfers
+/// nothing without failing is reported as `EIO`.
+#[cfg(all(not(test), target_os = "none"))]
+pub fn emit_error(bytes: &[u8]) -> Option<minix_sys::Errno> {
+    let mut left = bytes;
+    while !left.is_empty() {
+        match minix_sys::write(STDOUT, left) {
+            Ok(0) => return Some(minix_sys::Errno::EIO),
+            Ok(count) => left = &left[count..],
+            Err(code) => return Some(code),
+        }
+    }
+    None
+}
+
 /// C 的 `getprogname()`：`argv[0]` 去掉目录的最后一段（规则在
 /// `minix3/lib/csu/common/crt0-common.c:156-165`，权威在 `minix-types` 的 `prog_name`）。
 /// `err(3)`/`errx(3)` 那几行都以它开头——但只以它们俩开头：`random` 的 `usage()` 把名字
