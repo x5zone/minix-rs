@@ -60,6 +60,97 @@ pub(crate) fn nk4a_walk_reconcile(root: u64, va: u64, pa1: u64, pa2: u64) {
     N.fetch_add(1, AtomicOrd::Relaxed);
 }
 
+
+/// SD-10 仪器轮二（C1 下一片）：跨空间拷贝通道的逐次内容校验观测点。
+///
+/// 与 §续-367 双走表对账并排：对账探针抓「同一次拷贝内两次走表不一致」，
+/// 本仪器抓「走表一致但字节没落对」——拷贝完成后经同一条 chunk 迭代把
+/// src/dst 字节重读比对（2× 读流量，诊断期可接受）。不一致 = 走表/搬运
+/// 层的直接现行线索（打印 拷贝序号/chunk 序号/首异偏移/期望/实际，封顶
+/// 8 次；打印不消费被测数据流）。命中是线索不是判决：src 在诊断窗口内
+/// 被第三方改写也会命中，需与对账探针/陷帧守卫读数共同定性。
+///
+/// 判据边界：只覆盖 Completed(Ok) 全量完成路径（Suspended 半程的
+/// src/dst 生命周期语义不同，不覆盖）。
+#[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+fn nk4a_copy_verify(
+    src: &AddressRef,
+    dst: &AddressRef,
+    bytes: usize,
+    proc_table: &crate::proc_table::ProcessTable,
+    proc_cr3: &impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
+) {
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+    static COPIES: AtomicU64 = AtomicU64::new(0);
+    static HITS: AtomicUsize = AtomicUsize::new(0);
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+    let src_side = match CopySide::resolve(src, proc_table, proc_cr3) {
+        Some(s) => s,
+        None => return,
+    };
+    let dst_side = match CopySide::resolve(dst, proc_table, proc_cr3) {
+        Some(d) => d,
+        None => return,
+    };
+    let n = COPIES.fetch_add(1, AtomicOrd::AcqRel);
+    if LIVE.fetch_add(1, AtomicOrd::AcqRel) == 0 {
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+        Console::write_str("nk4c: csc-verify armed (SD-10 instrument round 2)\n");
+    }
+    let mut done = 0usize;
+    let mut chunk_no = 0u64;
+    while done < bytes {
+        let remaining = bytes - done;
+        let (sp, srun) = src_side.chunk::<minix_arch::CurrentDirectMap>(done, remaining);
+        let (dp, drun) = dst_side.chunk::<minix_arch::CurrentDirectMap>(done, remaining);
+        let chunk = core::cmp::min(srun, drun);
+        if chunk == 0 {
+            return; // 半程挂起形态不覆盖
+        }
+        let sv = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(sp);
+        let dv = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(dp);
+        // SAFETY: DM 别名只读，与拷贝主路径同一窗口来源。
+        let srcb = unsafe { core::slice::from_raw_parts(sv.0 as *const u8, chunk) };
+        let dstb = unsafe { core::slice::from_raw_parts(dv.0 as *const u8, chunk) };
+        if srcb != dstb {
+            let hits = HITS.fetch_add(1, AtomicOrd::AcqRel);
+            if hits < 8 {
+                let mut diff = 0usize;
+                for (i, (a, b)) in srcb.iter().zip(dstb.iter()).enumerate() {
+                    if a != b {
+                        diff = i;
+                        break;
+                    }
+                }
+                use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+                fn hx(mut v: u64) -> [u8; 16] {
+                    let mut b = [0u8; 16];
+                    for byte in b.iter_mut().rev() {
+                        *byte = b"0123456789abcdef"[(v & 0xf) as usize];
+                        v >>= 4;
+                    }
+                    b
+                }
+                Console::write_str("nk4c: csc-verify MISMATCH copy=");
+                Console::write_str(core::str::from_utf8(&hx(n)).unwrap_or("?"));
+                Console::write_str(" chunk=");
+                Console::write_str(core::str::from_utf8(&hx(chunk_no)).unwrap_or("?"));
+                Console::write_str(" off=");
+                Console::write_str(core::str::from_utf8(&hx(done as u64 + diff as u64)).unwrap_or("?"));
+                Console::write_str(" exp=");
+                Console::write_str(core::str::from_utf8(&hx(srcb[diff] as u64)).unwrap_or("?"));
+                Console::write_str(" got=");
+                Console::write_str(core::str::from_utf8(&hx(dstb[diff] as u64)).unwrap_or("?"));
+                Console::write_str("\n");
+            }
+            return; // 每次拷贝只报首异
+        }
+        done += chunk;
+        chunk_no += 1;
+    }
+}
+
 // ── 02-page-table-kernel types ──
 
 pub struct PageTableRef {
@@ -579,6 +670,11 @@ pub fn cross_space_copy<D: DirectMapArch>(
         }
         done += chunk;
     }
+
+    // SD-10 仪器轮二：内容级逐次校验（riscv 真机形态；对账探针抓走表
+    // 不一致，本仪器抓字节未落对——两观测点并排互补）。
+    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+    nk4a_copy_verify(src, dst, bytes, proc_table, &proc_cr3);
 
     CrossSpaceResult::Completed(Ok(()))
 }
