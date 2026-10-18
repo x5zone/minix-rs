@@ -1,11 +1,16 @@
 # 10 · 调度循环：所有内核工作流的唯一出口
 
-> **C 真值源**：`minix3/minix/kernel/proc.c`（`switch_to_user`/`idle`/`switch_address_space_idle`/`pick_proc`/`delivermsg`/`copr_not_available_handler`）、`minix3/minix/kernel/proc.h`（MF_* 杂项标志全表）、`minix3/minix/kernel/system.c:kernel_call_resume`、`minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context`、`minix3/minix/kernel/arch/i386/arch_clock.c:context_stop`（BKL 释放点）、`minix3/minix/kernel/arch/i386/mpx.S`（进入时的风格记录与三条恢复腿）、`minix3/minix/kernel/arch/i386/include/archconst.h`（KTS_* 常量）。
-> **Rust 实现**：`os/kernel/src/lib.rs`（`switch_to_user`/`scheduler_loop`/`finish_and_restore`/`idle`/`pick_and_bill`/`requeue_if_preempted`/`switch_address_space`）、`os/kernel/src/proc_table.rs:fn process_misc_flags`、`os/kernel/src/proc_table.rs:fn check_quantum`、`os/kernel/src/sched.rs:fn pick_proc`、`os/kernel/src/vm.rs:fn kernel_call_resume`、`os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner`、`os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl`、`os/arch/src/arch/trap_style.rs:enum TrapStyle`、`os/arch/src/x86_64/trap_return.rs:fn restore_to_user`。
-> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:enum NAME`），不使用行号。
-> **本篇主题**：所有内核工作流处理完毕后汇入的同一个出口——调度循环。为什么调度器不是一个线程；循环的每一拍在做什么、哪两处可能推倒重来；出口的三条恢复腿怎么选。
+> **C 真值源**：`minix3/minix/kernel/proc.c`（`switch_to_user`/`idle`/`switch_address_space_idle`/`pick_proc`/`delivermsg`/`copr_not_available_handler`）、`minix3/minix/kernel/proc.h`（MF_* 杂项标志全表）、`minix3/minix/kernel/main.c`（`bsp_finish_booting` 的种子与收尾）、`minix3/minix/include/minix/config.h`（`NR_SCHED_QUEUES`）、`minix3/minix/kernel/arch/i386/arch_smp.c`（AP 收尾调用）、`minix3/minix/kernel/system.c:kernel_call_resume`、`minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context`、`minix3/minix/kernel/arch/i386/arch_clock.c:context_stop`（BKL 释放点）、`minix3/minix/kernel/arch/i386/mpx.S`（进入时的风格记录与三条恢复路径）、`minix3/minix/kernel/arch/i386/include/archconst.h`（KTS_* 常量）。
+> **Rust 实现**：`os/kernel/src/lib.rs`（`switch_to_user`/`scheduler_loop`/`finish_and_restore`/`idle`/`pick_and_bill`/`requeue_if_preempted`/`switch_address_space`）、`os/kernel/src/proc_table.rs:fn process_misc_flags`、`os/kernel/src/proc_table.rs:fn check_quantum`、`os/kernel/src/sched.rs:fn pick_proc`、`os/kernel/src/vm.rs:fn kernel_call_resume`、`os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner`、`os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl`、`os/kernel/src/smp.rs`（`BklSection`/`assume_held`/`sched_loop_entered`）、`os/kernel/src/trap_dispatch.rs`（三架构风格写点）、`os/arch/src/arch/trap_style.rs:enum TrapStyle`、`os/arch/src/x86_64/trap_return.rs:fn restore_to_user`。
+> **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:enum NAME`），**行号不作锚点**——行号只出现在三类场合：被引注释内部（随原文保留）、漂移登记（§3.5 对齐现码）、符号名旁为短小事实注明的取证行号（§6.2 的核对命令即此类）。
+> **本篇主题**：所有内核工作流处理完毕后汇入的同一个出口——调度循环。为什么调度器不是一个线程；循环的每一拍在做什么、哪两处可能推倒重来；出口的三条恢复路径怎么选。
 > **前置**：[08-system-init-boot-finish.md](08-system-init-boot-finish.md)（§4.6 的终拍把 CPU 交进本篇；§3.4 的 BKL 约定）、[09-vm-boot-protocol.md](09-vm-boot-protocol.md)（VM 先行被调度；其 §2.3 的 MEMREQ 臂与本篇 §3.3 的循环侧消费互为两端）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §1.4（RTS 位族与 boot 进程按住）、[07-cross-space-init.md](07-cross-space-init.md) §1.4（ptproc 的切表侧判据——`switch_address_space` 的根切换语义）。
-> **后续**：`11-scheduling-primitives`（调度原语篇，尚未重生成）、`12-ipc-core`（IPC 核心篇，尚未重生成）、`13-syscall-dispatch`（系统调用分派篇，尚未重生成）、`14-exception-interrupt`（异常与中断入口篇，尚未重生成）、`16-smp`（SMP 篇，尚未重生成）、`17-clock-timer`（时钟与定时器运行篇，尚未重生成）。
+> **后续**：`11-scheduling-primitives`（调度原语篇）、`12-ipc-core`（IPC 核心篇）、`13-syscall-dispatch`（系统调用分派篇）、`14-exception-interrupt`（异常与中断入口篇）、`16-smp`（SMP 篇，尚未重生成）、`17-clock-timer`（时钟与定时器运行篇，尚未重生成）。
+> **目标读者**：熟悉操作系统基本概念（进程、页表、中断、内核/用户态边界）与 C 语言的开发者；Rust 一侧读到 `-> !`、RAII 守卫与 `unsafe` 契约大意即可。
+> **前置知识**：[08-system-init-boot-finish.md](08-system-init-boot-finish.md) 的启动收尾与 BKL 约定、[09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3（MEMREQ 臂——本篇 §3.3 的对端）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §1.4（RTS 位族）、[07-cross-space-init.md](07-cross-space-init.md) §1.4（ptproc 判据）。
+> **教学目标**：①能说出"调度器不是一个线程"的形状与两个后果（无独立栈、持锁到尾段）；②能按五拍复述循环并指出两处回跳；③能解释进出配对的载体与三条恢复路径的分派；④能说出两条硬次序及其反例代价；⑤能按七步复述终段并定位 BKL 释放点。
+> **三档术语**：本篇的 Rust 实现相对 Minix3 C 属 Rewrite（保持外部行为）与 Refactor（不改语义的重构：`-> !` 类型化、`BklSection` 见证、Stage 3a 四防护）；无 `[ARCH: ...]` 标注对象。
+> **编号说明**：正文与引文里出现的 `NK4-A`、`NK4-C`、`S-7`、`D-10`、`c8a`、`B6`、`F10b`、`I-6`、`C-25` 等编号是本仓的开发工作条目号与取证记录编号——原文保留，溯源按编号在本仓检索。
 
 [08-system-init-boot-finish.md](08-system-init-boot-finish.md) 的最后一步，`minix3/minix/kernel/main.c:bsp_finish_booting` 的终拍执行了一句 `switch_to_user()`，CPU 从此离开启动代码，内核再也不回到 `kmain`——那一句交出的控制权，落点就是本篇的循环。`minix3/minix/kernel/arch/i386/arch_smp.c` 的 AP 收尾段里也有一句同样的调用：每个新 CPU 跑完自己的启动序列，末尾同样把 CPU 交给这条循环。从这一拍起，内核里不再有"调度器在运行"这回事：运行着的是一个个中断、陷入与系统调用的处理过程，它们各自办完自己的事后走进同一段代码，由它决定下一个上 CPU 的是谁、以哪种方式把 CPU 交出去。[09-vm-boot-protocol.md](09-vm-boot-protocol.md) 里 VM 拿到第一个 CPU，是这条循环的第一次分派；此后每一次回到用户态，都要再过一遍它。
 
@@ -42,7 +47,7 @@ void switch_to_user(void)
 
 （`minix3/minix/kernel/proc.c:switch_to_user`，全函数 176 行，`sed -n '299,474p' minix3/minix/kernel/proc.c | wc -l` 复算。函数体尾部的 `NOT_REACHABLE;` 哨兵与 `restore_user_context` 调用在 §2.1 的终段逐字出现。）
 
-把三条来路、一个出口、三条恢复腿画在一张图上，就是全篇的行进地图：
+出口一侧有三条恢复路径，各对应一种进入方式；本文把它们称作三条**恢复腿**——腿一 sysenter、腿二 syscall、腿三 int（"腿"是比喻，不是源码术语）。把三条来路、一个出口、三条恢复腿画在一张图上，就是全篇的行进地图：
 
 ```
    用户态                                        内核态
@@ -76,9 +81,9 @@ void switch_to_user(void)
 
 这张图回答了本节的验收问题：为什么调度器不是一个线程。假想另一种设计——一个独立运行的调度器线程，谁该上 CPU 由它裁决。那么每次调度决策都要付出两次额外的切换：先把 CPU 从刚处理完事件的上下文切给调度器线程，再由调度器切给目标进程；调度器线程自己的栈与状态成为第三份需要维护的上下文，它跟其他内核活动的并发关系还要额外的锁来管。MINIX3 的形状把"决策"折叠进"返回"里：处理过程办完事，就地走进循环，循环的最后一拍直接落到目标进程的用户态——两次切换变成零次，也不存在第三份上下文。
 
-两个后果跟着这个形状一起成立，它们都不是显然的，单独说出来。其一，循环永远运行在"刚刚处理完某个事件"的那个内核栈上：调度器复用上一个陷入的栈，自己没有栈——哪个进程的陷入把内核带进来，循环就踩着哪个进程的内核栈做决策。其二，BKL（大内核锁）从陷入入口一路持有到记账点（§2.4 与 [08-system-init-boot-finish.md](08-system-init-boot-finish.md) §3.4 的约定），"调度中"与"处理中断中"之间没有锁状态的分界——循环不是"拿到锁再干活"的另一段代码，它就是持锁处理过程的尾段。释放点的位置在 `minix3/minix/kernel/arch/i386/arch_clock.c:context_stop`：为内核段记完账才放锁，§2.4 逐字对它。
+两个后果跟着这个形状一起成立，它们都不是显然的，单独说出来。其一，循环永远运行在"刚刚处理完某个事件"的那个内核栈上：调度器复用上一个陷入的栈，自己没有栈——哪个进程的陷入把内核带进来，循环就踩着哪个进程的内核栈做决策。其二，BKL（大内核锁）在进入内核时取得——入口宏先调 `context_stop`，它的用户/空闲记账分支里的 `BKL_LOCK()`（`minix3/minix/kernel/arch/i386/arch_clock.c`）就是取锁点——一路持有到同一函数的 KERNEL 分支放锁（§2.4 逐字；[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §3.4 的约定），"调度中"与"处理中断中"之间没有锁状态的分界——循环不是"拿到锁再干活"的另一段代码，它就是持锁处理过程的尾段。释放点的位置在 `minix3/minix/kernel/arch/i386/arch_clock.c:context_stop`：为内核段记完账才放锁，§2.4 逐字对它。
 
-还有一个边界要说准，免得"唯一出口"被读过头：`restore_user_context`（真正执行模式切换的那个函数）在 C 里有两个调用点。一个是 `switch_to_user` 的最后一拍；另一个在 `minix3/minix/kernel/proc.c:copr_not_available_handler`——FPU 陷阱处理发现陷阱的进程本该拥有 FPU 时，保存旧拥有者的状态、装上它的状态，然后直接恢复同一个进程继续跑，它的注释写着 "do not schedule!"：那次恢复不做"下一个是谁"的决策，只是让被打断的执行接续。调度决策本身只发生在这条循环里；无决策的续跑不在此列。
+还有一个边界要说准，免得"唯一出口"被读过头：`restore_user_context`（真正执行模式切换的那个函数）在 C 里有三个调用点：`switch_to_user` 的最后一拍、`minix3/minix/kernel/proc.c:copr_not_available_handler`，以及 `minix3/minix/kernel/arch/i386/mpx.S` 里未识别系统调用号的错误腿（置 `-1` 返回码后直接恢复）——前两处之外的第三处同样不做决策。`copr_not_available_handler` 这条：FPU 陷阱处理发现陷阱的进程本该拥有 FPU 时，保存旧拥有者的状态、装上它的状态，然后直接恢复同一个进程继续跑，它的注释写着 "do not schedule!"：那次恢复不做"下一个是谁"的决策，只是让被打断的执行接续。调度决策本身只发生在这条循环里；无决策的续跑不在此列。
 
 ### 1.2 三条进入路径，一个出口
 
@@ -104,13 +109,14 @@ void switch_to_user(void)
 |---|---|---|---|
 | 硬件中断 / 异常（14 方向） | `KTS_INT_HARD` | `restore_user_context_int` | `minix3/minix/kernel/arch/i386/mpx.S:restore_user_context_int` |
 | IPC 软陷入（12 方向，libc 的 trap 指令） | `KTS_INT_ORIG` | `restore_user_context_int` | 同上 |
+| usermapped 软陷入（内核内 usermapped 段的 trap 指令；32 位特性） | `KTS_INT_UM` | `restore_user_context_int` | 同上（64 位不建模——§3.5 处置表） |
 | 快速系统调用（13 方向） | `KTS_SYSCALL` 或 `KTS_SYSENTER` | `restore_user_context_syscall` / `restore_user_context_sysenter` | `minix3/minix/kernel/arch/i386/mpx.S:restore_user_context_syscall`、`minix3/minix/kernel/arch/i386/mpx.S:restore_user_context_sysenter` |
 | 进程重置/初建经 `arch_proc_setcontext` 记全上下文（`minix3/minix/kernel/arch/i386/arch_system.c:arch_proc_reset` 写 FULLCONTEXT）；信号返回经同一函数重录 sigcontext 里保存的原风格 | `KTS_FULLCONTEXT` 或原风格 | `restore_user_context_int` | 同 INT 腿 |
 | 无记录 | `KTS_NONE` | —— | `panic("no entry trap style known")` |
 
 这张表里藏着本节的非显然事实：恢复腿不由调度器挑。循环在出口处只做一件事——照录。怎么进的，就怎么出；腿是在**上一次进入时**就定下的，出口的 `restore_user_context` 只是把配对执行完。三个 ENTRY 的定位命令与行号读数在 §6.2 给出（`grep -n 'ENTRY(restore_user_context' minix3/minix/kernel/arch/i386/mpx.S`）。
 
-把配对机制反过来推演：设想调度器统一选最快的一条腿（sysenter 腿）返回，不看记录。sysenter 腿的期望帧布局是"瘦帧"——它只从保存帧里取 EIP、ESP、EAX、EBX 与 PSW，其余寄存器假定用户态自我保存（§2.3 逐字可见）；而从 int 陷入进来的帧是全上下文帧，段寄存器与完整标志位都在帧里。拿全上下文帧喂瘦帧恢复序列，寄存器恢复错位：段寄存器没人装、PSW 的恢复位置对不上，恢复出来的用户态带着半个旧现场。进出配对让帧布局与恢复序列一一对应——记录位就是两边唯一共享的契约。
+把配对机制反过来推演：设想调度器统一选最快的一条腿（sysenter 腿）返回，不看记录。sysenter 腿的期望帧布局是"瘦帧"——它只从保存帧里取 EIP、ESP、EAX、EBX 与 PSW，其余寄存器假定用户态自我保存（§2.3 逐字可见）；而从 int 陷入进来的帧是全上下文帧，段寄存器与完整标志位都在帧里。拿全上下文帧喂瘦帧恢复序列，瘦腿只装它承诺的那几件——段寄存器与其余通用寄存器没人装回，内核替它保存的整批现场被丢掉，恢复出来的用户态带着半个旧现场。进出配对让帧布局与恢复序列一一对应——记录位就是两边唯一共享的契约。
 
 ### 1.3 循环总览：C 五拍与它的形态
 
@@ -139,16 +145,36 @@ void switch_to_user(void)
 
 | 主题 | 本篇怎么办 | 去处 |
 |---|---|---|
-| 就绪队列的维护、enqueue 头/尾插本体、优先级算法 | 只讲循环怎么调用 `pick_proc`（接口一行、返回一个进程号） | `11-scheduling-primitives`（调度原语篇，尚未重生成） |
-| 五标志各臂的完整 callee 语义 | 只讲循环在哪个时机消费它们（§2.1 每臂一句话） | `12-ipc-core`（IPC 核心篇，尚未重生成）、`13-syscall-dispatch`（系统调用分派篇，尚未重生成） |
-| trap 入口与异常处理的完整链路 | 只讲进入时的风格记录（§1.2） | `14-exception-interrupt`（异常与中断入口篇，尚未重生成） |
+| 就绪队列的维护、enqueue 头/尾插本体、优先级算法 | 只讲循环怎么调用 `pick_proc`（接口一行、返回一个进程号） | `11-scheduling-primitives`（调度原语篇） |
+| 五标志各臂的完整 callee 语义（`MF_KCALL_RESUME` 臂例外——它的循环侧重派是 §3.3 的设计决策） | 只讲循环在哪个时机消费它们（§2.1 每臂一句话；§3.3 另讲重派） | `12-ipc-core`（IPC 核心篇）、`13-syscall-dispatch`（系统调用分派篇） |
+| trap 入口与异常处理的完整链路 | 只讲进入时的风格记录（§1.2） | `14-exception-interrupt`（异常与中断入口篇） |
 | tick 到达后的 quantum 递减与 bill 记账本体 | 只讲循环侧的记账调用点与 BKL 释放点 | `17-clock-timer`（时钟与定时器运行篇，尚未重生成） |
 | SMP 的 AP 启动与 IPI | 只讲 AP 收尾也进同一条循环（§1.1） | `16-smp`（SMP 篇，尚未重生成） |
 | VM 地址空间的建立与 bootstrap 根 | 引用不重复 | [07-cross-space-init.md](07-cross-space-init.md)、[09-vm-boot-protocol.md](09-vm-boot-protocol.md) |
 
-认知减负声明：本章不必深究就绪队列怎么维护、五标志各臂 callee 内部做什么、tick 递减 quantum 的细节——本篇只保证读者能回答"循环在什么时机、以什么前提调用它们"；队列算法归 `11-scheduling-primitives`（调度原语篇，尚未重生成），IPC 与系统调用语义归 `12-ipc-core`/`13-syscall-dispatch`（两篇，均尚未重生成），记账本体归 `17-clock-timer`（时钟与定时器运行篇，尚未重生成）。
+认知减负声明：上表就是本章的跳过清单——本篇只保证读者能回答"循环在什么时机、以什么前提调用它们"，各臂与记账的语义本体归表内去向篇目。
 
 把第 1 章的图按同一框架收一次：三扇门进来（硬件中断、IPC 软陷入、系统调用），各自把"怎么进来的"记进保存帧；各自的 handler 办完事，顺路走进 `switch_to_user`；循环五拍走完，按帧里的记录照录进出配对，从三条恢复腿之一回到用户态。调度器不是一个线程——它是每个内核出口的公共段。第 2 章按五拍逐字走 C 代码：先看全函数的分段，再看主走查。
+
+### 1.5 C 侧覆盖边界（本篇叙述面逐项对账）
+
+本篇的叙述面横跨三类材料，C 侧有无对照逐项列清——**无 C 对应物的分支不得读作"与 C 一致"**：
+
+| 叙述面 | C 侧对照 | 边界说明 |
+|---|---|---|
+| 循环骨架（`switch_to_user`/`pick_proc`/`idle`/`delivermsg`） | **有**：`minix3/minix/kernel/proc.c` 是架构通用 C 代码 | 逐段走查以 i386 构建的行号定位（第 2 章） |
+| 恢复腿与 KTS 配对（三条腿、`restore_user_context`） | **有（i386 专属）**：`mpx.S`/`arch_system.c` | earm 侧恢复机制不同、本文不覆盖；aarch64/riscv64 的恢复（`eret`/`sret`）**无 C 对位**——64 位自有实现 |
+| `TrapStyle` 枚举与 `ReturnSequence` | **部分**：KTS 编号对位 C（`test_trap_style_raw_matches_c_kts_numbering`） | 枚举化与序列分类是 Rust 设计，**无 C 对位** |
+| 64 位 `sigcontext` 结构（`trap_style` 往返载体） | **部分**：C 有 i386 `sigcontext`（布局不同） | 结构形状是 64 位自有；原始值编号对位见上一行 |
+| `arch_finish_switch_to_user` 的 TRACEBIT 装配（`MF_STEP` 单步位） | **有**：`minix3/minix/kernel/arch/i386/arch_system.c:514-518` | 现码未见对应物——恢复帧装配不写单步位（§4.2 折算注登记） |
+| `-> !` 类型化、`BklSection` 持锁见证 | **无**：C 是注释哨兵与宏约定 | Rust 独有的设计层选择（§3.1） |
+| Stage 3a 重派与四道防护 | **无直接对位**：C 的 `kernel_call_resume` 形状不同（无状态守卫、无打包取锁问题） | Rust 类型/锁环境派生的独有约束（§3.3） |
+| Fault 臂的 SIGSEGV 投递 | **无直接对位**：C 走错误码交付（`check_resumed_caller`） | 与 C 的 kernel-call 语义不同，待源码侧裁决（SRC-41；§3.3 防护点四） |
+| BKL 的取放点 | **有（CONFIG_SMP 构建）**：`context_stop` 的取/放锁分支 | 单核构建无 BKL；Rust 侧恒有（§1.1/§2.4/§4.3） |
+| riscv64 FS 位载体（§3.4 步 3 修正） | **无 C 对位**：RISC-V 私有 ISA 语义 | 依据规范与 `sstatus.FS` 语义，非 C 移植 |
+| SMP idle 切 VM 表 | **有（CONFIG_SMP）**：`switch_address_space_idle` | Rust 用运行时 `ncpus > 1` 门控（§4.3） |
+
+纪律：凡本表标"无 C 对位"的面，正文一律不写"与 C 一致/同形"；对照表（§4.4）只对"有"的面建行。
 
 ## 2. C 源码分析
 
@@ -211,9 +237,9 @@ not_runnable_pick_new:
 
 （`minix3/minix/kernel/proc.c:switch_to_user` 的 `not_runnable_pick_new` 段，从标签到 `switch_address_space`。）
 
-PREEMPTED 的重排值得逐行读。被抢占的进程带着 `RTS_PREEMPTED` 位站在原地，重排时先把这个位清掉，再看它是否因此回到可运行；可运行的话，按**剩余量子**决定插队位置——`p_cpu_time_left` 非零（量子没用完，是被更急的事打断的）就 `enqueue_head` 插到本优先级队列的队首，把剩下的时间片跑完；为零（时间片自然耗尽）就 `enqueue` 排到队尾。队列与优先级本身归 `11-scheduling-primitives`（调度原语篇，尚未重生成），这里只需要看到：重排决策发生在调度循环内，且头/尾的选择依据是余时。把头/尾决策反过来推演：若统一用尾插，一个只跑了半拍的交互进程会排到一整批满量子进程的后面，被抢占反而比正常让出等得更久——响应性反转；头/尾按余时决策是优先级队列之外的补偿。
+PREEMPTED 的重排值得逐行读。被抢占的进程带着 `RTS_PREEMPTED` 位站在原地，重排时先把这个位清掉，再看它是否因此回到可运行；可运行的话，按**剩余量子**决定插队位置——`p_cpu_time_left` 非零（量子没用完，是被更急的事打断的）就 `enqueue_head` 插到本优先级队列的队首，把剩下的时间片跑完；为零（时间片自然耗尽）就 `enqueue` 排到队尾。队列与优先级本身归 `11-scheduling-primitives`（调度原语篇），这里只需要看到：重排决策发生在调度循环内，且头/尾的选择依据是余时。把头/尾决策反过来推演：若统一用尾插，一个只跑了半拍的交互进程会排到一整批满量子进程的后面，被抢占反而比正常让出等得更久——响应性反转；头/尾按余时决策是优先级队列之外的补偿。
 
-接下去的 `while (!(p = pick_proc())) idle();` 是 idle 兜底：队列空了就把 CPU 交给 IDLE 进程停机等中断，醒来再试。`pick_proc` 与 `idle` 的函数体在 §2.2/§2.3。`proc_ptr` 更新之后是 SMP 分支的 `tlb_must_refresh` 预计算——这个临时变量为什么必须在切表**之前**算，§2.4 的硬次序里说。
+接下去的 `while (!(p = pick_proc())) idle();` 是 idle 兜底：队列空了就把 CPU 交给 IDLE 进程停机等中断，醒来再试。`pick_proc` 与 `idle` 的函数体在 §2.2/§2.3。`proc_ptr` 更新之后是 SMP 分支的 `tlb_must_refresh` 预计算——这个临时变量为什么必须在切表**之前**算，§4.1 的次序约束里说。
 
 **第三段：五标志循环。** `check_misc_flags` 标签起，这是全函数最长的一段，也是本篇主走查的核心：
 
@@ -298,7 +324,7 @@ check_misc_flags:
 | `MF_SC_TRACE` | 0x400 | 清两标志位 + `cause_sig(SIGTRAP)` | 跟踪语义的"离开系统调用"事件：发 SIGTRAP 把进程停下交给跟踪者 |
 | `MF_SC_ACTIVE` | 0x100 | 清位 + `break` | 跟踪语义的另一半：正处于系统调用中，出循环前把位清掉 |
 
-这五臂有一个共同的形状，也是本段的非显然事实：**五标志的处理发生在用户态恢复之前**。被挂起的内核调用（KCALL_RESUME）、待拷贝的消息（DELIVERMSG），都在进程重新见到用户态之前补完——进程下一次运行时，欠它的事已经办完，用户态看到的世界是连贯的。SC_TRACE 与 SC_ACTIVE 是跟踪语义的进出配对：SC_TRACE 臂开头的 `if (!(p->p_misc_flags & MF_SC_ACTIVE)) break;` 依赖 SC_ACTIVE 先清——若 SC_ACTIVE 还没被消费过，"离开事件"无从谈起，直接出循环。而 SC_DEFER 臂开头的 `assert (!(p->p_misc_flags & MF_SC_ACTIVE))` 从反面钉住同一件事：推迟的系统调用补执行时，不可能同时处于"系统调用活动"状态。
+这五臂有一个共同的形状，也是本段的非显然事实：**五标志的处理发生在用户态恢复之前**。被挂起的内核调用（KCALL_RESUME）、待拷贝的消息（DELIVERMSG），都在进程重新见到用户态之前补完——进程下一次运行时，欠它的事已经办完，用户态看到的世界是连贯的。SC_TRACE 与 SC_ACTIVE 是跟踪语义的进出配对：SC_TRACE 臂开头的 `if (!(p->p_misc_flags & MF_SC_ACTIVE)) break;` 要求 SC_ACTIVE 仍在位（正处于系统调用中）才发"离开事件"——SC_ACTIVE 不在位（不在系统调用中）就直接出循环，事件无从谈起。而 SC_DEFER 臂开头的 `assert (!(p->p_misc_flags & MF_SC_ACTIVE))` 从反面钉住同一件事：推迟的系统调用补执行时，不可能同时处于"系统调用活动"状态。
 
 每轮末尾的重验是这段的第二件非显然事实：任一臂的 callee 都可能把进程变得不可运行——KCALL_RESUME 臂的 `kernel_call_resume` 补完时可能再次挂起等 VM、DELIVERMSG 臂拷贝遇到坏指针会 `cause_sig(SIGSEGV)` 停掉进程、SC_DEFER 臂补执行的系统调用可能阻塞在 SEND 上。重验不过就 `goto not_runnable_pick_new`，整个"选人"过程推倒重来。C 用两个标签和两条 goto 表达这件事；这个控制流形状 Rust 怎么接，§3.3/§4.1 说。
 
@@ -369,7 +395,7 @@ check_misc_flags:
 
 （`minix3/minix/kernel/proc.c:switch_to_user` 的量子检查与终段，到函数收尾。）
 
-量子检查的位置有注释自答：必须在五标志循环**之后**查余时，因为"量子耗尽"要给调度器发一条消息，这条消息若早于五标志消费发出，会跟常规 IPC 撞车。查完还要再验一次 runnable（第三重验），之后是终段六连，逐项列表：
+量子检查的位置有注释自答：必须在五标志循环**之后**查余时，因为"量子耗尽"要给调度器发一条消息（收件方是调度服务——与 §1.1"调度器不是线程"不冲突：那是发给调度服务的常规 IPC；量子通知的语义本体归 `17-clock-timer`），这条消息若早于五标志消费发出，会跟常规 IPC 撞车。查完还要再验一次 runnable（第三重验），之后是终段六连，逐项列表：
 
 | 步 | 动作 | 依据 |
 |---|---|---|
@@ -467,7 +493,7 @@ static void switch_address_space_idle(void)
 
 （`minix3/minix/kernel/proc.c:switch_address_space_idle`，全函数逐字。）
 
-非显然事实在注释里：idle 停机前把地址空间切到 **VM 的页表**。停机指令醒来靠中断，而中断处理需要内核映射在位；单核构型里这整段被 `CONFIG_SMP` 编译掉——C 注释给的理由是"这只在多于一个 CPU 时才是问题"（单核没有"别的 CPU 换了表"这回事），而不是"切表是空操作"。多核时上一个进程的表可能在位、但 VM 的页可能正被换出——注释原话 "VM is always alive" 承认这是个赌注：赌 VM 活着且它的页可用，切到 VM 的表保证唤醒中断的内核半与 VM 页同时可达。反向推演：若 idle 不切表直接停机——停机时在位的是上一个用户进程的表，内核映射每张表都有，所以唤醒中断的内核半还能跑；但"VM 的页可用"这个前提断了——VM 可能正被换出，多核唤醒路径里任何要摸 VM 页的代码踩空。切 VM 表把这个赌注收敛到一处，赌输的范围只剩"VM 不在"这一种情况。
+非显然事实在注释里：idle 停机前把地址空间切到 **VM 的页表**。停机指令醒来靠中断，而中断处理需要内核映射在位；单核构型里这整段被 `CONFIG_SMP` 编译掉——C 注释给的理由是"这只在多于一个 CPU 时才是问题"（单核没有"别的 CPU 换了表"这回事），而不是"切表是空操作"。多核时上一个进程的表可能在位、但 VM 的页可能正被换出——注释原话 "VM is always alive" 承认这是个赌注：赌 VM 活着且它的页可用，切到 VM 的表保证唤醒中断的内核半与 VM 页同时可达。反向推演：若 idle 不切表直接停机——停机时在位的是上一个用户进程的表；内核高半每张表都有，唤醒中断的内核半还能跑，但 VM 的用户态页只在 VM 自己的表里映射（VM 的数据不属于任何"内核映射"）。多核唤醒路径若要摸 VM 的页（消息投递一类），当前空间里没有这层映射，访问踩空。切到 VM 的表把"当前空间含 VM 映射"这条前提显式钉住——C 注释那句 "VM is always alive" 指向的正是"一张不会被回收的表"这个锚点性质；赌输的范围只剩"VM 不在"这一种情况。
 
 ### 2.3 pick_proc 与 restore_user_context：选人与出去
 
@@ -508,7 +534,7 @@ static struct proc * pick_proc(void)
 
 （`minix3/minix/kernel/proc.c:pick_proc`，全函数逐字。`NR_SCHED_QUEUES` 的值是 16，`minix3/minix/include/minix/config.h` 定义。）
 
-选人的接口就是一层扫描：本 CPU 的队列数组按优先级从 0 号（最高）扫起，第一个非空队列取队首，可计账的顺手把 `bill_ptr` 记上，返回；全空返回 NULL，调用方进 idle。优先级与队列的算法本体归 `11-scheduling-primitives`（调度原语篇，尚未重生成）；本篇只需要看到循环拿到的接口形状——一行调用、一个返回值、账随人选出。
+选人的接口就是一层扫描：本 CPU 的队列数组按优先级从 0 号（最高）扫起，第一个非空队列取队首，可计账的顺手把 `bill_ptr` 记上，返回；全空返回 NULL，调用方进 idle。优先级与队列的算法本体归 `11-scheduling-primitives`（调度原语篇）；本篇只需要看到循环拿到的接口形状——一行调用、一个返回值、账随人选出。
 
 然后是出去。`minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context` 全函数 47 行（`sed -n '566,612p' … | wc -l` 复算），函数头是一段 `#if 0` 的统计代码（调试遗存，编译器不编译），真正的工作从读取记录开始：
 
@@ -610,7 +636,7 @@ ENTRY(restore_user_context_int)
 
 ### 2.4 本章归纳：C 循环总表
 
-把 §2.1-§2.3 的五拍收进一张表——拍、锚点、状态后果、回跳条件：
+把 §2.1-§2.3 的五拍收进一张表（拍五在表里拆成"量子检查"与"终段六连"两行）——拍、锚点、状态后果、回跳条件：
 
 | 拍 | 锚点 | 状态后果 | 回跳条件 |
 |---|---|---|---|
@@ -621,7 +647,7 @@ ENTRY(restore_user_context_int)
 | 量子检查 | 同上 `proc_no_time` 调用 | 量子耗尽则通知调度器并按策略处理 | 不可运行 → 跳回拍二 |
 | 终段六连 | `minix3/minix/kernel/arch/i386/arch_clock.c:context_stop` 与 `minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context` | 记账、放 BKL、FPU 归属、清 CONTEXT_SET、刷 TLB、重启定时器 | ——（恢复即离开） |
 
-全表的硬次序两条，每条都有反面的代价。第一条：**地址空间切换先于标志处理**。五标志消费的 callee 可能经 VM 补页（KCALL_RESUME 臂挂起等 VM、DELIVERMSG 臂页失败挂起），补页要看的是目标进程自己的表——切表在先，处理中的页表访问才落在正确的翻译上。第二条：**BKL 记账释放先于 restore**。`context_stop` 为内核段记完账就放锁，`restore_user_context` 是最后的动作；恢复之后的路径（用户态）不持内核锁，锁的持有期到记账点为止。第一条若反过来——先处理标志后切表——处理中补页查的是旧表的翻译，补出来的页映射进错误的地址空间；第二条若反过来——带着锁恢复用户态——锁要到下一次陷入才有人放，期间所有其他 CPU 的内核活动全部堵死。
+全表的硬次序两条，每条都有反面的代价。第一条：**地址空间切换先于标志处理**。五标志消费的 callee 可能经 VM 补页（KCALL_RESUME 臂挂起等 VM、DELIVERMSG 臂页失败挂起），补页要看的是目标进程自己的表——切表在先，处理中的页表访问才落在正确的翻译上。第二条：**BKL 记账释放先于 restore**。`context_stop` 为内核段记完账就放锁，`restore_user_context` 是最后的动作；恢复之后的路径（用户态）不持内核锁，锁的持有期到记账点为止。第一条若反过来——先处理标志后切表——处理中补页查的是旧表的翻译，补出来的页映射进错误的地址空间；第二条若反过来——带着锁恢复用户态——锁要到下一次陷入才有人放，期间所有其他 CPU 的内核活动全部堵死。同属终段次序的还有第三条：FPU 归属先于恢复——陷阱使能要到恢复后的用户态里才第一次生效（§2.1 第四段）。
 
 放锁点的证据是 `context_stop` 的 KERNEL 分支：
 
@@ -664,7 +690,7 @@ void context_stop(struct proc * p)
 
 ### 3.1 汇聚点的类型化：`-> !` 与持锁见证（→§1.1、[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §3.4）
 
-C 里真实存在的语义是（§1.1/§2.1）：`switch_to_user` 永不返回——`NOT_REACHABLE` 是写给人看的注释哨兵，编译器不做任何检查；BKL 从陷入入口一路持有到 `context_stop` 的记账点（§2.4），循环的整个执行期都在锁内。这两个事实 Rust 都换成了更硬的表达。先看入口：
+C 里真实存在的语义是（§1.1/§2.1）：`switch_to_user` 永不返回——`NOT_REACHABLE` 是写给人看的注释哨兵，编译器不做任何检查；BKL 从陷入入口一路持有到 `context_stop` 的记账点（§2.4），循环的常规执行期都在锁内（唯一例外是 idle 停机窗口的放锁-重取，§4.3）。这两个事实 Rust 都换成了更硬的表达。先看入口：
 
 ```rust
 // os/kernel/src/lib.rs —— 逐字引用（switch_to_user 的文档注释头）
@@ -694,7 +720,7 @@ pub fn switch_to_user() -> ! {
 }
 ```
 
-（两块内含仓库内部编号（D10-1、T1、S-7 等），按原文引用。`os/kernel/src/lib.rs:fn switch_to_user` 是薄入口：一条串口路标 + 取 BSP 号 + 进共享循环。"永不返回"三层贯通——`switch_to_user`、`os/kernel/src/lib.rs:fn scheduler_loop`、`os/kernel/src/lib.rs:fn finish_and_restore` 的签名都是 `-> !`，类型系统替代注释哨兵。）
+（两块内含仓库内部编号（D10-1、T1、S-7 等），按原文引用。`os/kernel/src/lib.rs:fn switch_to_user` 是薄入口：一条串口路标 + 取 BSP 号 + 进共享循环。"永不返回"三层贯通——`switch_to_user`、`os/kernel/src/lib.rs:fn scheduler_loop`、`os/kernel/src/lib.rs:fn finish_and_restore` 的签名都是 `-> !`，类型系统替代注释哨兵。另注：注释里的 "CPU exception" 即 §1.2 的 IPC 软陷入所在的一类——软陷入经陷阱指令进入；异常与中断入口的完整链路归 14 篇。）
 
 持锁这件事，Rust 没有照搬"C 约定 + 大家自觉"，而是把约定变成编译器能看的见证：
 
@@ -736,7 +762,7 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
 
 ### 3.2 首次分派合并进每次分派（→§2.1、[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §4.6 的 Step 2）
 
-C 里真实存在的形状是（§2.1 第二段）：第一次分派不走特殊分支——`minix3/minix/kernel/main.c:bsp_finish_booting` 的第 4 拍把 `bill_ptr` 与 `proc_ptr` 两个每 CPU 变量都指到 idle（`minix3/minix/kernel/main.c` 的种子两行），而 idle 在 `minix3/minix/kernel/proc.c:proc_init` 里被按死 `RTS_PROC_STOP`（注释原话 "must not let idle ever get scheduled"）且永不入队。于是第一次进 `switch_to_user` 时，直通检查看 idle 不可运行，落进重挑路径，挑出 VM——"第一次"与"第 N 次"是同一条代码路径。Rust 保留这个形状，把种子挪到循环头：
+C 里真实存在的形状是（§2.1 第二段）：第一次分派不走特殊分支——`minix3/minix/kernel/main.c:bsp_finish_booting` 的第 4 拍把 `bill_ptr` 与 `proc_ptr` 两个每 CPU 变量都指到 idle（`minix3/minix/kernel/main.c` 的种子两行；C 的拍号与 [08-system-init-boot-finish.md](08-system-init-boot-finish.md) §4.6 的 Step 编号是两套口径，逐拍对照见 08 篇），而 idle 在 `minix3/minix/kernel/proc.c:proc_init` 里被按死 `RTS_PROC_STOP`（注释原话 "must not let idle ever get scheduled"）且永不入队。于是第一次进 `switch_to_user` 时，直通检查看 idle 不可运行，落进重挑路径，挑出 VM——"第一次"与"第 N 次"是同一条代码路径。Rust 保留这个形状，把种子挪到循环头：
 
 ```rust
 // os/kernel/src/lib.rs:fn scheduler_loop —— 逐字引用（种子段）
@@ -758,11 +784,11 @@ C 里真实存在的形状是（§2.1 第二段）：第一次分派不走特殊
 | 种子 `proc_ptr = IDLE`，首轮自然走 pick | 首轮写一个"从队列取第一个进程"的特殊分支 | 循环体多两行种子代码 |
 | `current: Option<ProcNr>` 表达"没挑过" | 引入独立的"已初始化"标志位 | `None` 的语义负担：它只表达"没挑过"一个意思 |
 
-反向推演：若没有种子、`current` 初始为 `None` 且处理不齐——循环第一拍解引用当前进程就会 panic， panic 点在第一次分派而非任何可诊断的位置；种子让 `None` 只承载"这颗 CPU 还没挑过进程"一个语义，首轮与后续轮次共用全部代码。
+反向推演：种子把"首轮"折进"第 N 轮"——`None` 只承载"这颗 CPU 还没挑过进程"一个语义，首轮与后续轮次共用全部代码；若没有种子、又给首轮加一条"从队列取第一个进程"的特判（上表否掉的替代），特判分支里的任何错误都落在第一次分派而非可诊断的公共路径上。
 
 ### 3.3 Stage 3a：被挂起内核调用的循环侧重派（→§2.1 的 KCALL_RESUME 臂、[09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3 的对端）
 
-C 里真实存在的语义是（§2.1 第三段）：五标志循环的 `MF_KCALL_RESUME` 臂在用户态恢复之前补完被挂起的内核调用——`minix3/minix/kernel/system.c:kernel_call_resume` 重派那次调用、清位、做完成半。[09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3 讲了这条链的 VM 一端（MEMREQ 请求怎么停车、VM 怎么服务）；本节讲循环这端怎么接。Rust 把它立为循环里一个独立的阶段（Stage 3a），因为重派在 Rust 的类型与锁环境下多出四个防护点，每个都对应一段真实踩过的坑。先看阶段头与状态守卫：
+C 里真实存在的语义是（§2.1 第三段）：五标志循环的 `MF_KCALL_RESUME` 臂在用户态恢复之前补完被挂起的内核调用——`minix3/minix/kernel/system.c:kernel_call_resume` 重派那次调用、清位、做完成半。[09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3 讲了这条链的 VM 一端（MEMREQ 请求怎么停车、VM 怎么服务）；本节讲循环这端怎么接。Rust 把它立为循环里一个独立的阶段（Stage 3a），因为重派在 Rust 的类型与锁环境下多出四道防护，另加一条禁令，每个都对应一段真实踩过的坑。先看阶段头与状态守卫：
 
 ```rust
 // os/kernel/src/lib.rs:fn scheduler_loop —— 逐字引用（Stage 3a 阶段头与状态守卫）
@@ -818,9 +844,9 @@ C 里真实存在的语义是（§2.1 第三段）：五标志循环的 `MF_KCAL
                     );
 ```
 
-（内含仓库内部编号（c8a），按原文引用。注释里那句"真机实证"记录的挂死现象——memreq 服务完成后 RS 停在恢复前、无任何输出——正是非重入自死锁的现场形状。C 没有这个问题：`minix3/minix/kernel/system.c:kernel_call_resume` 重派用的 `kernel_call_dispatch` 本体不取 BKL，取锁在 `minix3/minix/kernel/arch/i386/mpx.S` 的陷入入口；Rust 的打包版分派入口改变了这个前提，于是重派必须换 `inner` 变体。）
+（第二块接第一块：中间省略若干行——`resumed` 走 `Ok` 分支后，`msg` 从挂起上下文的 `saved_msg` 取出（取不到则 `continue`）。内含仓库内部编号（c8a），按原文引用。注释里那句"真机实证"记录的挂死现象——memreq 服务完成后 RS 停在恢复前、无任何输出——正是非重入自死锁的现场形状。C 没有这个问题：`minix3/minix/kernel/system.c:kernel_call_resume` 重派用的 `kernel_call_dispatch` 本体不取 BKL——取锁发生在陷入入口宏先调的 `context_stop` 里（`minix3/minix/kernel/arch/i386/arch_clock.c` 的用户/空闲记账分支 `BKL_LOCK()`；放锁在同函数 KERNEL 分支的 `must_bkl_unlock`）。**登记**：上面引文里那句源注释"（BKL_LOCK 只在 mpx.S 陷入入口）"与 C 树现码不符——`minix3/minix/kernel/arch/i386/mpx.S` 里没有任何 BKL 调用，取锁点的真值以 `context_stop` 为准（源注释待源码侧修正）。Rust 的打包版分派入口改变了这个前提，于是重派必须换 `inner` 变体。）
 
-**防护点三：完成半用持锁变体，门归属从挂起上下文读。** 重派完成后的 reply 处理由 `os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl` 承担——持锁变体，因为它内部不再放锁（放锁只会发生在 `finish_and_restore` 的记账点，§3.4）。"门归属"参数决定补完成的 reply 是否立即直写：IPC 腿挂起的调用补完成时不 eager 直写（门标记从挂起上下文读出后传给 finish）；重派再次挂起时，finish 的 VmSuspend 臂在新挂起上下文上凭该参数重新置位，多段挂起路径由此闭合：
+**防护点三：完成半用持锁变体，门归属从挂起上下文读。** 重派完成后的 reply 处理由 `os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl` 承担——Stage 3a 以 `release_bkl=false` 调用它，重派链内不放锁（该函数自身的放锁开关供其它调用方用）；本循环的放锁点是 `finish_and_restore` 步 2 与 idle 停机窗口（§4.3 步 5）。（术语先行：**门**指内核调用 reply 的投递通道；**eager 直写**指补完成时立刻把 reply 写回用户缓冲，不 eager 则压到调用者真正返回时再投；**门归属**参数把挂起上下文里记下的门标记传给完成半。）"门归属"参数决定补完成的 reply 是否立即直写：IPC 腿挂起的调用补完成时不 eager 直写（门标记从挂起上下文读出后传给 finish）；重派再次挂起时，finish 的 VmSuspend 臂在新挂起上下文上凭该参数重新置位，多段挂起路径由此闭合：
 
 ```rust
 // os/kernel/src/lib.rs:fn scheduler_loop —— 逐字引用（Stage 3a 的完成半与再挂起臂）
@@ -871,7 +897,7 @@ C 里真实存在的语义是（§2.1 第三段）：五标志循环的 `MF_KCAL
 
 `reply_wire()` 返回 `None` 的分支就是"重派再次挂起"：注释同时立了一条禁令——此处不得递归重入 `scheduler_loop`。反向推演这条禁令：每层挂起若重入一次循环，内核栈上就叠一整层调度器帧（循环体、各阶段局部变量、见证对象）；多段拷贝挂起几层，栈就耗尽几层深。`continue` 是平级重挑——不加深栈，靠下一轮循环接续。
 
-**防护点四：Fault 臂发 SIGSEGV。** VM 若判定地址确实无效，重派返回 `Fault`，进程收到 SIGSEGV——对位 C 里 `minix3/minix/kernel/system.c:kernel_call_resume` 的完成半在 vmresult 非 OK 时的信号路径：
+**防护点四：Fault 臂发 SIGSEGV。** VM 若判定地址确实无效，重派返回 `Fault`，进程收到 SIGSEGV。**登记（对位不成立）**：C 的 `kernel_call_resume`（`minix3/minix/kernel/system.c:612`）与 `check_resumed_caller`（`minix3/minix/kernel/arch/i386/memory.c:135`）在 VM 回复非 OK 时把错误码交付调用者（结果消息），不发信号；C 树里 SIGSEGV 的落点包括：delivermsg 二次拷贝失败（`minix3/minix/kernel/proc.c:271-278`）、kernel-call 路径上的两处拷贝失败（`minix3/minix/kernel/system.c:89`/`:154`）、以及 VM 用户态对直接故障的 `sys_kill`（`minix3/minix/servers/vm/pagefaults.c:102`/`:113`/`:146`）。Rust 的 `Fault→SIGSEGV` 与 C 的 kernel-call 语义不同——按登记口径待源码侧裁决（SRC-41），§1.5 边界表同步：
 
 ```rust
 // os/kernel/src/lib.rs:fn scheduler_loop —— 节选（Fault 臂；注释有删节）
@@ -898,7 +924,7 @@ C 里真实存在的语义是（§2.1 第三段）：五标志循环的 `MF_KCAL
 
 （本块为节选：原码在这段代码上方有一条多行注释、块内还有一个 `if` 的空体——那是一条诊断探针，专供 riscv64 非 mock 构建生效，计数上限 16 次，读出的 `(ep, pdmv, root)` 三个绑定值在块内没有消费者（`let` 之后未使用）。探针注释内含仓库内部编号，按本篇纪律不转录，要点如实登记于此：它是取证残迹，不是功能逻辑；删去它不影响行为。除删去其上方那条注释外，本块与源文件逐行一致——块内的空探针体是源码原样保留，不是删除项。）
 
-四处防护与 C 的对应关系收进一张表：
+四道防护（外加表中"再挂起不递归"一条禁令）与 C 的对应关系收进一张表：
 
 | 防护点 | C 侧对应 | Rust 的额外约束来源 |
 |---|---|---|
@@ -906,7 +932,7 @@ C 里真实存在的语义是（§2.1 第三段）：五标志循环的 `MF_KCAL
 | `kernel_call_dispatch_inner` + 环境锁见证 | C 的 dispatch 本体不取 BKL，重派天然安全 | Rust 打包版入口自带取锁，重派必须绕开 |
 | `kernel_call_finish_holding_bkl` + 门归属参数 | C 的 `kernel_call_finish` 完成半 | 持锁变体避免中途放锁；门归属封多段挂起的 reply 直写时序 |
 | 再挂起不递归（continue 平级重挑） | C 无此形状——C 的恢复不重入调度循环 | 递归会按嵌套层数消耗内核栈 |
-| Fault 臂发 SIGSEGV | C 的完成半在 vmresult 非 OK 时走信号路径 | 重派的 Fault 变体在类型上可辨，信号在循环侧补发 |
+| Fault 臂发 SIGSEGV | **无直接对位**：C 走错误码交付（`check_resumed_caller`）；C 的 SIGSEGV 落点在 delivermsg 二次失败与 VM 侧 `sys_kill` | 重派的 Fault 变体在类型上可辨，信号在循环侧补发；差异待源码侧裁决（SRC-41） |
 
 ### 3.4 finish_and_restore 的步骤化与 BKL 释放点（→§2.1 终段）
 
@@ -989,7 +1015,7 @@ C 里真实存在的负担是（§2.1 第四段）：终段六连挤在 `switch_
     }
 ```
 
-（本块为节选：`...` 处省略一条多行注释——那条注释登记了 riscv FS 位修正的另一个来源记录，内含仓库内部编号，不转录；其结论与下面保留的修正注释一致：非 owner 必须写 FS=Off。内含仓库内部编号（AF-8）与日期，按原文引用。）
+（本块为节选：`...` 处省略一条多行注释——那条注释登记了 riscv FS 位修正的另一个来源记录，内含仓库内部编号，不转录；其结论与下面保留的修正注释一致：非 owner 必须写 FS=Off。内含仓库内部编号（AF-8）与日期，按原文引用。另注：块内"对位 C proc.c:443-446"是**语义对位**——aarch64/riscv64 在 C 树无对应实现（C 侧真值源是 i386），见 §1.5。）
 
 这条修正值得读全：riscv 的 FPU 使能位不住在独立的硬件开关里，而是住在 `sstatus` 的 FS 字段——而 `sstatus` 会被陷阱出口的帧回装冲销，所以活写没有载体，FPU 门控的载体必须是进程的 CPU 上下文（ctx）。归属策略因此是：拥有者写 FS=Dirty（活寄存器延续、不陷阱），非拥有者写 FS=Off（首条浮点指令陷阱，进 C `minix3/minix/kernel/proc.c:copr_not_available_handler` 对应的轮转腿——保存旧拥有者、装回自己、移交归属）。反向推演修正前的形状：非拥有者若写 FS=Initial——FS=Initial 的语义是"FPU 可用、不陷阱"，非拥有者的首条浮点指令直接执行，轮转腿永远不被触发成死代码，用户态之间的浮点保护失效。x86_64 与 aarch64 的载体不同（CR0 的 TS 位 / CPACR 寄存器都不在恢复帧内），活写有效——同一语义、三种载体，差异留在各自的 arch 层。
 
@@ -1014,15 +1040,15 @@ C 循环里的每件东西，去向如下。每行给出验证方式——测试
 | `switch_address_space` 与 `tlb_must_refresh` 预计算（§2.1 第二段） | 保留（含次序） | Stage 1+2 内先算后切 | §4.1 走查 |
 | 五标志 while 循环（§2.1 第三段） | 保留 | `os/kernel/src/proc_table.rs:fn process_misc_flags` | §4.1 走查 |
 | `MF_KCALL_RESUME` 臂（§2.1 第三段） | 拆分 | Stage 3a 全量重派 + `process_misc_flags` 同名臂兜底 | §3.3 四防护 |
-| 其余四臂 callee（§2.1 第三段） | 保留 | `process_misc_flags` 的 DELIVERMSG/SC_DEFER/SC_TRACE/SC_ACTIVE 臂 | 语义归 `12-ipc-core`/`13-syscall-dispatch`（两篇，尚未重生成） |
+| 其余四臂 callee（§2.1 第三段） | 保留 | `process_misc_flags` 的 DELIVERMSG/SC_DEFER/SC_TRACE/SC_ACTIVE 臂 | 语义归 `12-ipc-core`/`13-syscall-dispatch` |
 | 量子检查 `proc_no_time`（§2.1 第四段） | 折叠 | `os/kernel/src/proc_table.rs:fn check_quantum`（含量子后重验） | §4.1 走查 |
 | 终段六连（§2.1 第四段） | 步骤化 | `os/kernel/src/lib.rs:fn finish_and_restore` 七步 | §4.2 走查 |
-| `p_kern_trap_style` 记录位与 KTS 常量（§1.2） | 改型 | `os/arch/src/arch/trap_style.rs:enum TrapStyle`（枚举化） | `test_trap_style_*` 五条 |
+| `p_kern_trap_style` 记录位与 KTS 常量（§1.2） | 改型 | `os/arch/src/arch/trap_style.rs:enum TrapStyle`（枚举化） | `test_trap_style_*` 五条（在 `os/arch` 测试模块，不在 §5.1 的循环口径内） |
 | `NOT_REACHABLE` 哨兵（§2.1 第四段） | 消失 | 被三层 `-> !` 吸收 | §3.1 |
 | 函数头 `#if 0` 统计块（§2.3） | 消失 | 无对应（调试遗存不继承） | —— |
-| `KTS_INT_UM`/`KTS_SYSENTER`（§1.2） | 消失 | 64 位无 usermapped 入口，枚举不建模（`os/arch/src/arch/trap_style.rs` 的模块注释明言） | `test_trap_style_from_raw_rejects_unknown_and_unmodeled` |
+| `KTS_INT_UM`/`KTS_SYSENTER`（§1.2） | 消失 | 两者都是 32 位入口（usermapped 段软陷入 / 快速入口），64 位世界无对位，枚举不建模（`os/arch/src/arch/trap_style.rs` 的模块注释明言）；`KTS_SYSCALL` 保留——64 位 x86 的 `syscall` 指令正是这一族 | `test_trap_style_from_raw_rejects_unknown_and_unmodeled` |
 
-一处披露口径要汇总登记：本篇逐字引用的 Rust 注释里带着多处 C 坐标，其中一批已与现码漂移——`main.c:54`（proc_ptr/bill 的种子两行现码在 :56-57，[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §4.6 已登记同族）、注释里的 `C main.c:73`（bsp 尾部的 switch_to_user 调用现码在 :107 附近）、idle 注释里的 `C:185`/`C:186-187`（现码顺延一行）、`C:207`（context_stop 现码 :208）、Stage 3a 注释里的 `system.c:636`（kernel_call_finish 现码 :637）、恢复分派注释里的 `arch_system.c:597-598`（panic 语句现码 :599）。引文按原文保留、坐标以现码为准——与 08/09 两篇的登记口径一致。
+一处披露口径要汇总登记：本篇逐字引用的 Rust 注释里带着多处 C 坐标，其中一批已与现码漂移——`main.c:54`（proc_ptr/bill 的种子两行现码在 :56-57，[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §4.6 已登记同族）、注释里的 `C main.c:73`（bsp 尾部的 switch_to_user 调用现码在 :107 附近）、idle 注释里的 `C:185`/`C:186-187`（现码顺延一行）、`C:207`（context_stop 现码 :208）、Stage 3a 注释里的 `system.c:612-638`（函数实界 :612-637；`kernel_call_finish` 调用仍在 :636）、恢复分派注释里的 `arch_system.c:597-598`（panic 语句现码 :599）、`arch_system.c:577-610`（函数实界 :566-612）、idle 步 2 注释里的 "released only at step 4 below"（现码放锁在步 5——注释的步号随步骤拆分过期）。引文按原文保留、坐标以现码为准——与 08/09 两篇的登记口径一致。
 
 ## 4. 实现详解
 
@@ -1048,6 +1074,8 @@ C 循环里的每件东西，去向如下。每行给出验证方式——测试
 ```
 
 （节选自 `os/kernel/src/lib.rs:fn scheduler_loop` 的文档注释，对应决策见 §3.1。表内的 C 行号区间是源码注释原文，按原文引用。）
+
+五拍与 Stage 编号的换算是：拍一 = Stage 1+2 的直通判定（源码注释没有独立的 "Stage 1" 标签——它与重排合记为 Stage 1+2）；拍二、拍三 = Stage 1+2 的重排与切表；拍四 = Stage 3a（KCALL_RESUME 重派，逐段走查在 §3.3）+ Stage 3（其余四臂）；拍五 = Stage 4（量子）+ Stage 5（终段）。源码注释里那张五阶段表写于 Stage 3a 加入之前，不含它——3a 的位置在挑人与五标志之间；本节按含 3a 的次序走查，3a 一段不重复（见 §3.3）。
 
 循环体从种子（§3.2 已引）后的 `loop {` 开始。Stage 1+2 对应 C 的前三拍：
 
@@ -1146,11 +1174,13 @@ Stage 3 的 `os/kernel/src/proc_table.rs:fn process_misc_flags` 把 C 的五标�
 |---|---|---|---|
 | 1 | 量子断言（`debug_assert`：余时必须为正） | `minix3/minix/kernel/proc.c:switch_to_user` 终段的 `assert(p->p_cpu_time_left)` | 走到这里的每条路径都已保证有余时——内核调度进程的量子已被重置，耗尽的可抢占进程已被出队重挑 |
 | 2 | 记账四连（同一 delta）+ `bkl_unlock()` | `minix3/minix/kernel/arch/i386/arch_clock.c:context_stop` 的 KERNEL 分支 | §3.4 逐字；delta 拆开则四笔账不重不漏被破坏——四笔都是"同一内核段时长"的分摊，各算各的 delta 就各量各的段 |
-| 3 | FPU 归属（owner→enable，非 owner→disable；riscv FS 位走 ctx） | 同上 `enable/disable_fpu_exception` 对 | §3.4 逐字（含修正记录） |
+| 3 | FPU 归属（非 owner→打开 FPU 异常〔Rust `fpu.disable()`；C 名 `enable_fpu_exception`〕，owner→关闭〔Rust `fpu.enable()`；C 名 `disable_fpu_exception`〕；riscv FS 位走 ctx） | 同上 `enable/disable_fpu_exception` 对（注意 C 的命名与效果相反：enable 的是"异常"） | §3.4 逐字（含修正记录） |
 | 4 | 清 `MF_CONTEXT_SET` | C 终段的 `p->p_misc_flags &= ~MF_CONTEXT_SET` | 置位点在 `minix3/minix/kernel/arch/i386/arch_system.c:arch_proc_setcontext` |
 | 5 | `MF_FLUSH_TLB` 消费（`tlb_must_refresh` 为真才真刷，位一律清） | C 终段的 `MF_FLUSH_TLB` 分支 | 预计算来自 Stage 1+2（§4.1） |
 | 6 | `restart_local_timer()` | C 终段的同名调用 | 自动重装时钟源上是空操作 |
 | 7 | 读进入风格 → 消费记录 → 分派恢复 | `minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context` | 本节逐字 |
+
+C 终段第 1 项 `arch_finish_switch_to_user` 在 Rust 侧不成行：它的三件事分别折算——进程指针改由参数显式传递（不再写内核栈顶）；PSW 的中断允许位在步 7 的帧装配里置位（`restore_to_user` 的 `or rax, {if_mask}`，注释 "interrupts-enabled guarantee"）；按 `MF_STEP` 置/清保存 PSW 的 `TRACEBIT`（`minix3/minix/kernel/arch/i386/arch_system.c:514-518`）在现码里**未见对应物**（Rust 的 `MF_STEP` 设置点在 `os/kernel/src/misc.rs` 的 T_STEP 臂，恢复帧装配不写单步位）——按覆盖边界登记（§1.5 补行）。
 
 步 4-6 的代码：
 
@@ -1250,7 +1280,7 @@ fn pick_and_bill(
 }
 ```
 
-（内含仓库内部编号（无），按原文引用。队列扫描本体在 `os/kernel/src/sched.rs:fn pick_proc`——按优先级从 0 号队列扫到 15 号（`NR_SCHED_QUEUES = 16`），取第一个非空队列的队首；算法本体归 `11-scheduling-primitives`（调度原语篇，尚未重生成），循环拿到的就是这一层接口。）
+（内含仓库内部编号（无），按原文引用。队列扫描本体在 `os/kernel/src/sched.rs:fn pick_proc`——按优先级从 0 号队列扫到 15 号（`NR_SCHED_QUEUES = 16`），取第一个非空队列的队首；算法本体归 `11-scheduling-primitives`（调度原语篇），循环拿到的就是这一层接口。）
 
 再是被抢占进程的重排（§2.1 第二段的头/尾决策）：
 
@@ -1356,7 +1386,7 @@ fn requeue_if_preempted(
     }
 ```
 
-（本块为节选：步 3 注释自"停掉的 AP 若无掩码会一直收 tick"之后的部分省略——那句登记了 AP 定时器掩码与相邻步骤的补齐关系，内含仓库内部编号；`if` 分支上方还有一整段 CONTRACT 注释（启用 AP 跑用户工作前必须先落地的三个配套臂的契约清单），同样内含仓库内部编号，两处一并省略，契约要点转述于下段。其余与源文件逐行一致。）
+（本块为节选：步 3 注释自"停掉的 AP 若无掩码会一直收 tick"之后的部分省略——那句登记了 AP 定时器掩码与相邻步骤的补齐关系，内含仓库内部编号；`if` 分支体内、`stop_local_timer()` 上方还有一整段 CONTRACT 注释（启用 AP 跑用户工作前必须先落地的三个配套臂的契约清单），同样内含仓库内部编号，两处一并省略，契约要点转述于下段。其余与源文件逐行一致。）
 
 被省略的 CONTRACT 清单的要点：停掉 AP 本地定时器只是 C 设计的一半，C 还给它配了三个臂——中断入口的 `minix3/minix/kernel/arch/i386/arch_clock.c:context_stop_idle`（清 idle 标志并重启定时器）、入队唤醒臂（往空闲 CPU 的队列放可运行进程时发 IPI 叫醒它）、以及一个把非 BSP 请求钳到 BSP 的守卫；三个臂的现有落地状态与启用条件以源码注释为准。今天的形状下每个进程都固定在 BSP，AP 只会走到 idle，掩码因此安全。
 
@@ -1401,9 +1431,9 @@ fn requeue_if_preempted(
     crate::smp::bkl_lock().transfer();
 ```
 
-（内含仓库内部编号（I-6、D-34、S-6.4、I-16、C-25、C-26、D-9），按原文引用。步 4 的记账四连与 `finish_and_restore` 步 2 同构（§3.4）；步 5 的放锁对应 C 的 `minix3/minix/kernel/arch/i386/arch_clock.c:context_stop`（§2.4 逐字），停机窗口放锁、唤醒中断重新取锁——循环的其余状态访问重新持锁后才开始。步 4 注释里 `kernel_ticks[cpu]` 不接线的理由是注释原文：全 C 树检索无读者，接了就是只写不读的状态。）
+（内含仓库内部编号（I-6、D-34、S-6.4、I-16、C-25、C-26、D-9），按原文引用。步 4 的记账四连与 `finish_and_restore` 步 2 同构（§3.4）；步 5 的放锁对应 C 的 `minix3/minix/kernel/arch/i386/arch_clock.c:context_stop`（§2.4 逐字），停机窗口放锁、唤醒中断重新取锁——循环的其余状态访问重新持锁后才开始。锁交接的三件事交代如下：唤醒中断的处理程序按 §1.1 的取锁形状自己取放锁（入口宏的 `context_stop` 取、记账点放），返回前不会把锁留给自己；`bkl_lock().transfer()` 把"新取的守卫"转成循环头那次 `assume_held` 的持久见证（`transfer()` 即 `mem::forget`——故意泄漏守卫让锁保持持有，见 `os/kernel/src/smp.rs` 的 `BklSection::transfer`）；放锁-重取窗口内旧见证按"停机窗口"语义暂时失效，唤醒后以新守卫重建。步 4 注释里 `kernel_ticks[cpu]` 不接线的理由是注释原文：全 C 树检索无读者，接了就是只写不读的状态。）
 
-idle 的四件事与 C 的四件事逐项对上（§2.2 的四件事表）：指针安放、切 VM 表（`ncpus > 1` 门控，对应 C 的 `CONFIG_SMP`）、idle 标志与 AP 定时器分支、记账后停机。函数返回后回到 §4.1 Stage 1+2 的 pick-or-idle 内层循环，重挑再试——idle 是循环里的普通调用，不是独立调度状态。
+idle 的四件事与 C 的四件事逐项对上（§2.2 的四件事）：指针安放、切 VM 表（`ncpus > 1` 运行时门控——C 是编译期 `#ifdef CONFIG_SMP`，单核启动里程碑下两者行为等价）、idle 标志与 AP 定时器分支、记账后停机。函数返回后回到 §4.1 Stage 1+2 的 pick-or-idle 内层循环，重挑再试——idle 是循环里的普通调用，不是独立调度状态。
 
 ### 4.4 恢复的三条腿（→§1.2；决策回指 §3.4 的步 7）
 
@@ -1439,7 +1469,7 @@ pub enum ReturnSequence {
 }
 ```
 
-（内含仓库内部编号（S-8），按原文引用。C 的五类值收成三个分支：INT 族三种风格共用 `FullContext`——对应 C 的 switch 落穿；`Syscall` 对应瘦帧腿；`NoEntry` 对应 `KTS_NONE` 的 panic。三个原始值的划分与判定测试见第 5 章。）
+（内含仓库内部编号（S-8），按原文引用。C 的七个 KTS 原始值收成两条恢复序列：INT 族四种（`INT_HARD`/`INT_UM`/`FULLCONTEXT`/`INT_ORIG`）共用 `FullContext`——对应 C 的 switch 落穿；`SYSENTER`/`SYSCALL` 对应瘦帧腿（Rust 侧不建模前者，§1.2 表）；`NoEntry` 对位 `KTS_NONE` 的 panic。枚举的划分与判定测试在 `os/arch` 测试模块（`test_trap_style_*` 五条），不在 §5.1 的循环口径内。）
 
 x86_64 的恢复实现是 `FullContext` 序列的样本——iretq 载荷在内核栈上重建，寄存器从统一上下文成批装回：
 
@@ -1475,18 +1505,18 @@ x86_64 的恢复实现是 `FullContext` 序列的样本——iretq 载荷在内�
             "or  rax, {if_mask}",                 // interrupts-enabled guarantee
 ```
 
-（节选到 iretq 载荷装配的头两条指令；随后的成批装回与 `iretq` 本体按原文继续。SAFETY 注释里的"BKL has been released by the caller"与 §3.4 步 2 的放锁点互为印证。aarch64 的同位实现以 `eret` 收尾、riscv64 以 `sret` 收尾（`os/arch/src/arm64/trap_return.rs:fn restore_to_user`、`os/arch/src/riscv64/trap_return.rs:fn restore_to_user`）——`ReturnSequence::FullContext` 文档注释里"iretq/eret/sret class"的三个成员。三架构的进入风格记录位随陷入入口工作落地，落地前每个进程都携带 `NoEntry`，恢复门的 `None` 臂把无记录的分派挡成停机。）
+（节选到 iretq 载荷装配的头两条指令；随后的成批装回与 `iretq` 本体按原文继续。SAFETY 注释里的"BKL has been released by the caller"与 §3.4 步 2 的放锁点互为印证。aarch64 的同位实现以 `eret` 收尾、riscv64 以 `sret` 收尾（`os/arch/src/arm64/trap_return.rs:fn restore_to_user`、`os/arch/src/riscv64/trap_return.rs:fn restore_to_user`）——`ReturnSequence::FullContext` 文档注释里"iretq/eret/sret class"的三个成员。进入风格记录位的现状按架构与路径分开说：x86_64 的用户陷阱入口已经写记录（`os/kernel/src/trap_dispatch.rs:fn mirror_irq_frame_into_proc` 把用户帧记成 `FullContext`，异常入口同记——这条记录是返回门的前置，缺了会在返回门撞 panic）；复位与 fork 在三种架构都种/继承 `FullContext`（`os/kernel/src/proc.rs:fn set_boot_cpu_context`）；aarch64/riscv64 的 IPC 入口、内核调用挂起腿与页故障体已有局部写点（`os/kernel/src/trap_dispatch.rs` 的 `riscv64_*`/`aarch64_*` 各函数），**通用中断/异常分派尚无入口写点**（信号上下文的 `trap_style` 往返三架构齐备）。快速腿专用的 `Syscall` 风格还没有生产写者，`FastSyscall` 臂因此仍是响亮占位；`None` 臂把无记录的分派挡成停机。）
 
 与 C 的对照收成一张表（§1.2 的进出配对表在 Rust 侧的落位）：
 
 | C 的形状 | Rust 的形状 | 配对语义 |
 |---|---|---|
-| `p_kern_trap_style` 裸整数 + 7 个 `KTS_*` 常量 | `TrapStyle` 枚举（5 个变体；`KTS_INT_UM`/`KTS_SYSENTER` 不建模——64 位无 usermapped 入口） | 记录位即 ABI：原始值进 sigcontext 往返，编号与 C 一致 |
-| 入口宏写帧、`restore_user_context` 读帧 | 陷入入口（待落地）写、`finish_and_restore` 步 7 读 | 读后即清保留：步 7 消费后记录回 `NoEntry`，同一次进入不会二次恢复 |
+| `p_kern_trap_style` 裸整数 + 7 个 `KTS_*` 常量 | `TrapStyle` 枚举（5 个变体；`KTS_INT_UM`/`KTS_SYSENTER` 不建模——64 位无对位入口） | 编号与 C 的 KTS 值一致（`test_trap_style_raw_matches_c_kts_numbering`）；sigcontext 的结构是 64 位自有形状（无 C 对位，见 §1.5） |
+| 入口宏写帧、`restore_user_context` 读帧 | 陷入入口写（x86_64 已落地；aarch64/riscv64 待落地）、`finish_and_restore` 步 7 读 | 读后即清保留：步 7 消费后记录回 `NoEntry`，同一次进入不会二次恢复 |
 | `KTS_NONE` → `panic("no entry trap style known")` | `None` → 同文 panic | 无记录到出口 = 内核不变量破坏，宁可停机 |
 | 三条汇编腿（sysenter/syscall/int） | 两个 `ReturnSequence` + 三架构恢复实现 | 快速腿的配对恢复随陷入入口工作落地，落地前 `FastSyscall` 臂响亮停机 |
 
-反向推演两头（§2.3 的推演在此的 Rust 对应）：记录不清——步 7 若不把 `trap_style` 写回 `NoEntry`，下一次分派会拿上一次进入的帧布局卸载这一次的现场，过期帧复用；`None` 若静默返回——没有现场的"恢复"放跑，破坏比崩溃难查。
+两头的反面推演与 §2.3 同构，Rust 侧的对应物就是步 7 的两行代码（读后即清、`None` 臂 panic）——结论不重复展开。
 
 ## 5. 测试要点
 
@@ -1507,11 +1537,11 @@ x86_64 的恢复实现是 `FullContext` 序列的样本——iretq 载荷在内�
 
 kbill 标记的置位端（分派后、finish 前置标记）已在 [08-system-init-boot-finish.md](08-system-init-boot-finish.md) §5.1 的测试表对过账；上表最后一组是消费端——`consume_kbill_ipc`/`consume_kbill_kcall` 用与 `context_stop` 等价的同一 delta 记账（§3.4 步 2），两条 attribute 测试各钉一笔，第三条钉两笔账互不串位。
 
-观测点有二。其一，`os/kernel/src/smp.rs` 的 `sched_loop_entered` 字段：循环头置位（§3.1 的引块），SMP 测试据此断言 BSP 确实进过循环。其二，`boot_stage!("entering scheduler\n")` 串口路标（§3.1 引块）：真机门 `os/qemu-tests/test-cmd-smoke.sh` 在串口日志里检索这个字样作为通过判据——内核进了调度循环、CPU 交给了用户态进程。三架构的真机门是三份 boot 测试（`os/qemu-tests/test-rt-birth.sh` 与 `-aarch64`/`-riscv64` 变体）：跑完生产启动阶段后以与生产 `kmain` 尾段相同的方式调 `switch_to_user()`（测试内核 `os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs` 的收尾两行打印同款路标再进循环）。
+观测点有二。其一，`os/kernel/src/smp.rs` 的 `sched_loop_entered` 字段：循环头置位（§3.1 的引块），消费点在真机 SMP 门——`os/qemu-tests/test-kernels/kernel/bootstrap/test-smp-aps` 与 `test-smp-ipi` 的测试内核逐 CPU 读取该标志断言进过循环（BSP 跑测试体、AP 逐个断言）。其二，`boot_stage!("entering scheduler\n")` 串口路标（§3.1 引块）：真机门 `os/qemu-tests/test-cmd-smoke.sh` 在串口日志里检索这个字样作为通过判据——这条判据证明内核进了调度循环；"用户态往返真的发生"在判据射程之外（真机面的分界见 §5.3，覆盖状态见 §5.4）。三架构的真机门是三份 boot 测试（`os/qemu-tests/test-rt-birth.sh` 与 `-aarch64`/`-riscv64` 变体）：跑完生产启动阶段后以与生产 `kmain` 尾段相同的方式调 `switch_to_user()`（测试内核 `os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs` 的收尾两行打印同款路标再进循环）。
 
 ### 5.2 关键测试细读（→§4.1/§4.4）
 
-第一条：全循环端到端。生产主循环在宿主测试里真实可达——这条测试驱动的就是 §4.1 走查的那个 `switch_to_user` 本体，不是替身；现行 `os/kernel/src/lib.rs` 里不存在占位自旋形态的调度循环（反证：`grep -n 'spin_loop' os/kernel/src/lib.rs` 仅命中 mock `kmain` 的发散替身与一条测试内的等待循环，都不是循环本体）。测试的"成功信号"是一条 panic——恢复分派到 mock 实现时按契约停机：
+第一条：全循环端到端。生产主循环在宿主测试里真实可达——这条测试驱动的就是 §4.1 走查的那个 `switch_to_user` 本体，不是替身；现行 `os/kernel/src/lib.rs` 里不存在占位自旋形态的调度循环（旁证：`grep -n 'spin_loop' os/kernel/src/lib.rs` 仅命中 mock `kmain` 的发散替身与一条测试内的等待循环，都不是循环本体；正面证据是下条：全循环测试驱动的是真本体）。测试的"成功信号"是一条 panic——恢复分派到 mock 实现时按契约停机：
 
 ```rust
 // os/kernel/src/lib.rs —— 节选（test_switch_to_user_full_loop_dispatches_first_runnable_process；
@@ -1599,13 +1629,28 @@ kbill 标记的置位端（分派后、finish 前置标记）已在 [08-system-i
 
 真机与宿主的分界线由此清楚：**状态的形状与门的判定归宿主，指令的语义与时序归真机**。三架构 boot 门（§5.1）是两类测试之间的桥——它在真机上把循环跑到第一次恢复，宿主测试则把循环每一拍的判定逻辑钉死。
 
+### 5.4 覆盖状态反转表（→第 4 章；宿主测试面的反面）
+
+本章的测试面在宿主可证的边界之外还有五块，逐块给出状态与去向（"已覆盖"只指宿主测试；真机面的披露见 §5.3）：
+
+| # | 面 | 现状 | 去向 |
+|---|---|---|---|
+| M1 | 调度循环端到端（真机首次分派到用户态） | 宿主只到 mock 恢复的停机点（§5.2 第一条）；真机门（§5.1）证到"进入循环" | 真机往返证据 → **R10-T01**（测试侧：恢复腿落地后的端到端门） |
+| M2 | 恢复腿的真实语义（iretq/eret/sret 模式切换） | 宿主不存在（§5.3 第 1 条） | 真机门承担 → **R10-T02** |
+| M3 | idle 停机-唤醒闭环与 AP 定时器掩码 | 宿主只钉标志与账本（§5.3 第 2 条） | 真机门承担 → **R10-T03** |
+| M4 | Stage 3a 真机挂起重派全链（Pending→Completed 跨服务器时序） | 宿主手工摆挂起态（§5.3 第 3 条） | 真机取证 → **R10-T04** |
+| M5 | aarch64/riscv64 的通用中断/异常分派入口记录 | 该路径尚无写点（IPC 入口/内核调用挂起腿/页故障体已有局部写点，§4.4 现状） | 入口工作补齐时同批 → **R10-T05**（测试侧：该架构多往返回归） |
+| M6 | Fault→SIGSEGV 与 C 的语义差异（§3.3 防护点四） | 文档已按 C 真值改写并登记（C 走错误码交付） | 源码侧裁决 → **SRC-41** |
+
+（§5.3 的三条披露分别对到 M1/M2/M3；M4/M5/M6 为本轮新增披露与转出。两类表互为反转面。）
+
 ## 6. 诊断
 
 ### 6.1 症状 → 怀疑对象 → 确认命令
 
 | 症状 | 怀疑对象 | 确认命令与预期关键行 |
 |---|---|---|
-| 串口出现 "entering scheduler" 后无进展 | Stage 1+2 的挑人/idle 环节（就绪队列空且唤醒失败）或量子异常 | 跑 `bash os/qemu-tests/test-cmd-smoke.sh` 抓串口日志；预期关键行 `entering scheduler`。有路标无后续：查 `os/kernel/src/lib.rs:fn idle` 的停机-唤醒路径与队列非空性。宿主侧注意运行口径：`cd os && cargo test -p minix-kernel --features mock`（全套件）预期 `831 passed; 0 failed`——循环相关测试依赖套件内先行测试初始化的共享全局态（`os/.cargo/config.toml` 自述 SMP_STATE 等由套件共享），**单过滤运行会因全局态未初始化而失败**，这不是被诊断代码的错。全套件通过后，循环全链已通（全循环测试的恢复分派在套件内走到 mock 恢复的停机点，panic 消息含 `MockTrapReturn::restore_to_user`） |
+| 串口出现 "entering scheduler" 后无进展 | Stage 1+2 的挑人/idle 环节（就绪队列空且唤醒失败）或量子异常 | 跑 `bash os/qemu-tests/test-cmd-smoke.sh` 抓串口日志；预期关键行 `entering scheduler`。有路标无后续：查 `os/kernel/src/lib.rs:fn idle` 的停机-唤醒路径与队列非空性。宿主侧注意运行口径：`cd os && cargo test -p minix-kernel --features mock`（全套件）预期 `832 passed; 0 failed; 8 ignored`（主测试二进制；读数随测试集增长，以现跑为准）——循环相关测试依赖套件内先行测试初始化的共享全局态（`os/.cargo/config.toml` 自述 SMP_STATE 等由套件共享），**单过滤运行会因全局态未初始化而失败**，这不是被诊断代码的错（共享态由套件内测试链初始化，目前没有可单独执行的最小前置链——按名定位以上表列出的测试为准）。全套件通过后，宿主侧循环全链已通（全循环测试的恢复分派在套件内走到 mock 恢复的停机点，panic 消息含 `MockTrapReturn::restore_to_user`；真机面见 §5.3/§5.4） |
 | 进程装载完成但不被调度，或跑过一次不再被调度 | 五标志臂把进程弄停（DELIVERMSG 坏指针发 SIGSEGV、SC_DEFER 阻塞在 SEND）；Stage 3a 守卫 `continue` 后 VM 侧未服务完 | 宿主：全套件内 `test_finish_and_restore` 三条与 `test_switch_to_user_full_loop_*` 一条通过（运行口径同上——单独过滤会因共享态未初始化而红，不代表恢复门有问题）；真机串口查进程是否带挂起态（`p_vm_suspend` 非 None 即在等 VM——判别读数：串口路标停在 `entering scheduler` 之后且无进程名打印，对照 §4.1 Stage 3a 的守卫注释） |
 | 浮点指令行为异常（该陷阱的不陷阱，或不该陷阱的陷阱） | riscv64 的 FS 位载体与归属策略 | 全套件内 `test_riscv_lazy_fs_field_gating` 通过（四条断言：非 owner 的 FS 字段为 `0b00`（Off，首条 FP 陷阱）、owner 为 `0b11`（Dirty，不陷阱）、非 owner 的 FS 会被判成 FP 门控陷阱（轮转腿可达）、owner 不陷阱——§3.4 步 3 的修正） |
 | 切进程后取指错位 / 反复同一页故障 | `tlb_must_refresh` 预计算漏算或次序颠倒；故障页失效点不对 | 全套件内 `test_needs_tlb_refresh_*` 与 `test_consume_flush_tlb_flag_*` 四条通过（"旗标+ptproc"两半判定与消费三态无恙，§4.1 的次序约束：预计算在 `switch_address_space` 之前）；真机反复同地址故障对照 §4.2 步 7 的 `fault_flush_va` 消费点 |
@@ -1635,23 +1680,25 @@ Rust 五阶段锚点定位（对照 §4.1 的走查次序）：
 
 ```bash
 grep -n '── Stage [0-9]' os/kernel/src/lib.rs
-# 预期关键行：4011（Stage 1+2）/ 4058（Stage 3a）/ 4183（Stage 3）/ 4192（Stage 4）/ 4201（Stage 5）
+# 预期关键行：4060（Stage 1+2）/ 4107（Stage 3a）/ 4232（Stage 3）/ 4241（Stage 4）/ 4250（Stage 5）
 # （更宽的 pattern 'Stage [0-9]' 还会命中测试与注释里的 3 处，不作为锚点用）
 ```
 
-C 侧三个区间读数（对照 §2.0/§2.2/§2.3）：
+C 侧四个区间读数（对照 §2.0/§2.2/§2.3）：
 
 ```bash
 grep -n 'void switch_to_user' minix3/minix/kernel/proc.c                 # 预期 :299
 sed -n '299,474p' minix3/minix/kernel/proc.c | wc -l                     # 预期 176（全函数行数）
 grep -n 'static struct proc \* pick_proc' minix3/minix/kernel/proc.c     # 预期两行：:60（前向声明）/:1785（定义）
+grep -n 'static void idle(void)' minix3/minix/kernel/proc.c                # 预期两行：:45（前向声明）/:176（定义）
+sed -n '176,229p' minix3/minix/kernel/proc.c | wc -l                      # 预期 54（idle 全函数行数）
 sed -n '566,612p' minix3/minix/kernel/arch/i386/arch_system.c | wc -l    # 预期 47（restore_user_context 行数）
 ```
 
 ## 7. 参见
 
 - 前后篇：[08-system-init-boot-finish.md](08-system-init-boot-finish.md) §4.6（终拍与 BKL 交付——本篇开头的回指对象）、[09-vm-boot-protocol.md](09-vm-boot-protocol.md) §2.3（MEMREQ GET/REPLY 臂——REPLY 置 MF_KCALL_RESUME，与本篇 §3.3 互为两端）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §1.4（RTS 位族——PREEMPTED/PROC_STOP 的语义基座）、[07-cross-space-init.md](07-cross-space-init.md) §1.4（ptproc 的切表侧判据——`switch_address_space` 的根切换语义）。
-- 相邻方向（均尚未重生成）：`11-scheduling-primitives`（调度原语篇——就绪队列与优先级算法本体）、`12-ipc-core`（IPC 核心篇——DELIVERMSG 臂的 callee 语义）、`13-syscall-dispatch`（系统调用分派篇——`kernel_call_resume` 本体与 SC_DEFER 腿）、`14-exception-interrupt`（异常与中断入口篇——trap 入口与风格记录的写入半）、`16-smp`（SMP 篇——AP 收尾与 IPI）、`17-clock-timer`（时钟与定时器运行篇——tick 递减与记账本体）。
+- 相邻方向：`11-scheduling-primitives`（调度原语篇——就绪队列与优先级算法本体）、`12-ipc-core`（IPC 核心篇——DELIVERMSG 臂的 callee 语义）、`13-syscall-dispatch`（系统调用分派篇——`kernel_call_resume` 本体与 SC_DEFER 腿）、`14-exception-interrupt`（异常与中断入口篇——trap 入口与风格记录的写入半）、`16-smp`（SMP 篇，尚未重生成——AP 收尾与 IPI）、`17-clock-timer`（时钟与定时器运行篇，尚未重生成——tick 递减与记账本体）。
 - C 源码：`minix3/minix/kernel/proc.c:switch_to_user`、`minix3/minix/kernel/proc.c:idle`、`minix3/minix/kernel/proc.c:switch_address_space_idle`、`minix3/minix/kernel/proc.c:pick_proc`、`minix3/minix/kernel/proc.c:delivermsg`、`minix3/minix/kernel/proc.c:copr_not_available_handler`、`minix3/minix/kernel/system.c:kernel_call_resume`、`minix3/minix/kernel/arch/i386/arch_system.c:restore_user_context`、`minix3/minix/kernel/arch/i386/arch_clock.c:context_stop`、`minix3/minix/kernel/arch/i386/mpx.S`（三条恢复腿）、`minix3/minix/kernel/proc.h`（MF_* 全表）。
 - Rust：`os/kernel/src/lib.rs:fn switch_to_user`、`os/kernel/src/lib.rs:fn scheduler_loop`、`os/kernel/src/lib.rs:fn finish_and_restore`、`os/kernel/src/lib.rs:fn idle`、`os/kernel/src/lib.rs:fn pick_and_bill`、`os/kernel/src/lib.rs:fn requeue_if_preempted`、`os/kernel/src/lib.rs:fn switch_address_space`、`os/kernel/src/proc_table.rs:fn process_misc_flags`、`os/kernel/src/proc_table.rs:fn check_quantum`、`os/kernel/src/sched.rs:fn pick_proc`、`os/kernel/src/vm.rs:fn kernel_call_resume`、`os/kernel/src/syscall.rs:fn kernel_call_dispatch_inner`、`os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl`、`os/arch/src/arch/trap_style.rs:enum TrapStyle`、`os/arch/src/x86_64/trap_return.rs:fn restore_to_user`。
 
