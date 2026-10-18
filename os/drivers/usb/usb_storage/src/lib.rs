@@ -17,10 +17,20 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 extern crate alloc;
 
 pub mod block_face;
 pub mod cbw;
+pub mod service;
+pub mod usbd;
 
-/// Service initialization entry (wires the storage table; endpoint traffic stays out).
-pub fn init() {}
+use service::StorageService;
+use usbd::UsbdClient;
+
+/// Builds the service for the binary.
+pub fn init<U: UsbdClient>(usbd: U) -> StorageService<U> {
+    StorageService::new(usbd)
+}
