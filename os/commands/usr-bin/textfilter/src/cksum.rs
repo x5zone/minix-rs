@@ -355,9 +355,9 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
 /// (`cksum.c:201-207`) while the diagnostics quote the **upper-case** `hashname`
 /// (`hash->hashname`, `cksum.c:231-234`). Names outside these eight are not aliases:
 /// C has no `ripemd160` row, so that spelling falls through to
-/// `illegal argument to -a option`. The digests themselves need the primitives this
-/// tree does not carry yet, which is why selection is modelled here and computation
-/// is not (`CKSUM-HASH-STATE` 的第二片).
+/// `illegal argument to -a option`. 名字与摘要各归两道缝：这里只管「选中了哪一个」，
+/// 摘要本体在 `src/digest.rs`（八枚里已接六枚，`md2` 与 `rmd160` 在 `CKSUM-HASH-DIGEST`
+/// 的第三片；`-s`/`-t`/`-x` 三条腿的句子归 `CKSUM-HASH-STATE`）。
 fn crypto_hashname(value: &str) -> Option<&'static str> {
     match value.to_ascii_lowercase().as_str() {
         "md2" => Some("MD2"),

@@ -227,7 +227,7 @@ fn flags_requiring_a_hash_pass_once_a_hash_is_selected() {
 /// （配方见 `rewrite-notes/18-stage-commands/todo.md` 批次三百八十四），内容是同一份
 /// `a\na\nb\n`，三族各一行，一枚算法对一次形状表。
 #[test]
-fn the_three_ported_families_print_c_shapes_for_a_file_operand() {
+fn md5_sha1_sha256_print_c_shapes_for_a_file_operand() {
     let file = scratch("digest-body");
     fs::write(&file, "a\na\nb\n").unwrap();
     let name = file.to_str().unwrap().to_owned();
@@ -256,6 +256,41 @@ fn the_three_ported_families_print_c_shapes_for_a_file_operand() {
         assert_eq!(out, format!("{digest}\n"), "-q 形");
         let (out, _, _) = run(&["-a", word, "-nq", &name], b"");
         assert_eq!(out, format!("{digest}\n"), "-q 与 -n 同给时 quiet 赢");
+    }
+
+    let _ = fs::remove_file(&file);
+}
+
+/// 第二片新接的三族走同一张形状表：`MD4`、`SHA384`、`SHA512`。摘要值同样出自参照件，
+/// 内容与上一枚门用的是同一份 `a\na\nb\n`，所以两枚门横向还能互校（同一份输入、六串
+/// 摘要、两套形状）。
+#[test]
+fn md4_sha384_sha512_print_c_shapes_for_a_file_operand() {
+    let file = scratch("digest-wide");
+    fs::write(&file, "a\na\nb\n").unwrap();
+    let name = file.to_str().unwrap().to_owned();
+
+    for (word, hashname, digest) in [
+        ("md4", "MD4", "26dadbd6300e9593a7f8e7d6610de0c5"),
+        (
+            "sha384",
+            "SHA384",
+            "86e588c45b29eb502b79da83ba48fb82bc3592935a82ec29b201e7bbfa6739af4f0ea4a7dd1a3c2b0a49f2eb42f2515c",
+        ),
+        (
+            "sha512",
+            "SHA512",
+            "1b856a944be0f8196449e8250b6525ec1c52aa5e08803a31cb165388846e2197c49b0a261b8f5ee9b3d7a6369c9f034ec843e93275521889ff335adfeb917dad",
+        ),
+    ] {
+        let (out, status, err) = run(&["-a", word, &name], b"");
+        assert_eq!((status, err.as_str()), (0, ""), "-a {word} 的 stderr 是 {err:?}");
+        assert_eq!(out, format!("{hashname} ({name}) = {digest}\n"), "缺省形");
+        let (out, status, _) = run(&["-a", word, "-n", &name], b"");
+        assert_eq!(status, 0);
+        assert_eq!(out, format!("{digest} {name}\n"), "-n 形");
+        let (out, _, _) = run(&["-a", word, "-q", &name], b"");
+        assert_eq!(out, format!("{digest}\n"), "-q 形");
     }
 
     let _ = fs::remove_file(&file);
@@ -309,7 +344,7 @@ fn the_passthrough_copies_the_input_verbatim_before_the_digest() {
     assert_eq!(out, "1271ed5ef305aadabc605b1609e24c52\n");
 }
 
-/// 占位句的剩余射程要说得出名目：本体未接的五枚算法（这里试 `md2`）、`-s`/`-t`/`-x`
+/// 占位句的剩余射程要说得出名目：本体未接的两枚算法（这里试 `md2`）、`-s`/`-t`/`-x`
 /// 三条腿（试 `-t`）、以及 hash 在里的 `-c` 校验腿（C 用它重算比对，`cksum.c:421-441`）。
 /// 三形都是同一句、同一个退码 2；已接的三枚不给这些旗标时**不得**再走这一句。
 #[test]

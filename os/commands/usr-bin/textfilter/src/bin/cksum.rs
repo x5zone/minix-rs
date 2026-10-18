@@ -7,7 +7,7 @@
 //! standard input when none) and prints `{crc} {length}` plus ` {name}` for a
 //! file. `-a` 的摘要那条腿现在走 `minix_textfilter::digest` 的真本体（MD5/SHA1/
 //! SHA256 三族），报文形是 C 的 `MD5 (file) = <digest>` 与它的 `-n`/`-q` 两个变体；
-//! 其余五枚算法、`-s`/`-t`/`-x` 三条腿与 hash 在里的 `-c` 校验腿仍在占位句上。
+//! 剩下两枚算法（`md2`/`rmd160`）、`-s`/`-t`/`-x` 三条腿与 hash 在里的 `-c` 校验腿仍在占位句上。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -71,7 +71,7 @@ fn run() -> ! {
     };
 
     if let Some(name) = request.hash {
-        // 选中了算法：摘要本体已经接了三族（`src/digest.rs`），剩下五枚与 `-s`/`-t`/`-x`
+        // 选中了算法：摘要本体已经接了六枚（`src/digest.rs`），剩下 `md2`/`rmd160` 与 `-s`/`-t`/`-x`
         // 三条腿、以及 hash 在里的 `-c` 校验腿仍在 `CKSUM-HASH-*` 的后一片。
         support::terminate(hash_run(&request, name));
     }
@@ -119,8 +119,8 @@ fn run() -> ! {
 /// * `-n` `<digest> file`；
 /// * `-q` 只有 `<digest>`。
 ///
-/// 退路三条，都落在批次三百零七定下的占位句上（退 2）：算法本体未接的那五枚
-///（`MD2`/`MD4`/`RMD160`/`SHA384`/`SHA512`）、`-s`/`-t`/`-x` 三条腿、以及 hash 在里的
+/// 退路三条，都落在批次三百零七定下的占位句上（退 2）：算法本体未接的那两枚
+///（`MD2`/`RMD160`）、`-s`/`-t`/`-x` 三条腿、以及 hash 在里的
 /// `-c` 校验腿——C 在那条腿里用 `hash->filefunc` 重算比对（`cksum.c:421-441`），并在
 /// 失败行前缀 `(MD5) `（`:451-456`），那是另一片报文形。
 ///
