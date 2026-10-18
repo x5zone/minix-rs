@@ -4,7 +4,7 @@
 
 > **分类**：系统服务第 4 篇（引脚即文件，驱动侧注册）
 > **源码**：`minix3/minix/drivers/system/gpio/gpio.c`（二百九十行，引脚导出）、`minix3/minix/lib/libdevman/generic.c`（二百七十五 行，通用增删与序列化）、`minix3/minix/lib/libdevman/usb.c`（三百零一行，通用串行总线设备跟踪）、`minix3/minix/include/minix/devman.h`（注册接口声明）
-> **Rust 模块**：`os/drivers/system/gpio/src/pins.rs`（引脚认领与电平）、`os/drivers/system/gpio/src/files.rs`（导出命名与渲染）、`os/libs/minix-sys/src/devman_client.rs`（驱动侧客户端：通用记录、注册与消息面）、`os/libs/minix-sys/src/usb_model.rs`（通用串行总线跟踪）
+> **Rust 模块**：`os/drivers/system/gpio/src/pins.rs`（引脚认领与电平）、`os/drivers/system/gpio/src/files.rs`（导出命名与渲染）、`os/drivers/system/gpio/src/server.rs`（vtreefs 服务壳：建树、认领、读钩子）、`os/libs/minix-sys/src/devman_client.rs`（驱动侧客户端：通用记录、注册与消息面）、`os/libs/minix-sys/src/usb_model.rs`（通用串行总线跟踪）
 > **前置**：`rewrite-notes/16-stage-drivers/11-pci-driver.md`（名单门禁思想）、`rewrite-notes/16-stage-drivers/00-drivers-overview.md`（如已写；否则以计划为准）
 > **说明**：引脚驱动把板上的通用输入输出引脚变成文件：读文件看电平，读特制文件开关电平。设备注册库是驱动侧的户籍申报处：新设备来了登记，走了注销，通用串行总线设备还要跟踪接口绑定。本篇讲这两块：引脚的三件事（认领、读写、导出）与注册的两张表（通用记录、总线跟踪）。注意库名事实：计划写的注册库名已被设备管理服务占用，本库命名为设备注册客户端并在第 3.6 节说明理由。
 
