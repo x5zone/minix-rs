@@ -66,6 +66,23 @@ pub trait DriverTransport {
     /// must not serve.
     fn publish_label(&mut self, label: &str) -> Result<(), i32>;
 
+    /// Copy bytes into a caller's address space (the classic
+    /// `sys_datacopy` path; the readclock family's plain requests carry a
+    /// buffer address instead of a grant).
+    ///
+    /// Additive with an honest default: a transport that only speaks
+    /// grants reports `ENOSYS` rather than pretending the copy happened.
+    fn copy_to_addr(&mut self, dest: Endpoint, addr: u64, buf: &[u8]) -> Result<(), i32> {
+        let _ = (dest, addr, buf);
+        Err(-minix_types::ENOSYS)
+    }
+
+    /// Copy bytes out of a caller's address space (`sys_datacopy`).
+    fn copy_from_addr(&mut self, src: Endpoint, addr: u64, buf: &mut [u8]) -> Result<(), i32> {
+        let _ = (src, addr, buf);
+        Err(-minix_types::ENOSYS)
+    }
+
     /// Resolve a published label back to its endpoint through the data
     /// store (a label lookup): an input driver finds its server this way
     /// before trusting a configuration (`do_conf` looks up `"input"` and

@@ -143,8 +143,13 @@ run_with_qemu_lock() (
 - `2026-10-18` A / 第 1b 节服务器线与第 5 节真机项：要碰自己的 `os/servers/`、`os/fs/`、`os/net/`、`os/commands/`，但**需要 C 板真机窗** —— `⏸ 等窗`
 - `2026-10-18` A / `A4` 常量的消费者侧：`os/servers/vfs/src/cdev.rs`、`bdev.rs` 的重述归 A，B 只做定义侧 —— `✅`（vfs 两处前轮已收敛为 `use minix_types::…`；余 `os/net/lwip/src/bpfdev.rs:60` 一行引用随 B 割接）
 - `2026-10-18` B / `A4` 割接：改 `os/net/lwip/src/bpfdev.rs:60` 一行引用（`BDEV_REQUEST_BASE`→`BDEV_RQ_BASE`，随 blockdriver 常量上收；A 板知悉）—— `✅`（随本笔落地）
-- `2026-10-18` B / `B1` 的 `os/fs` 两个 `loop {}`：归 A 板（A20），B 只做 `os/drivers` 的 52 个 —— `☐`
+- `2026-10-18` B / `B1` 的 `os/fs` 两个 `loop {}`：归 A 板（A20），B 只做 `os/drivers` 的占位（readclock 片后 50 个） —— `☐`
 - `2026-10-18` B / `SD-19` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的 AP_GO 基线 `11→5` —— 随 C 线 `SD-37` 闭账（`c0d5f2b6c` 删邮箱死码）后的机械过账，台账 DONE 行已记新读数，不涉语义 —— `✅`
+- `2026-10-18` B / `G6-LOG` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `55→54` —— 随 log 族接线（`os/drivers` 52→51）的机械过账，不涉语义 —— `✅`
+- `2026-10-18` B / `G6-READCLOCK` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `54→53`（随 readclock 族接线，`os/drivers` 51→50）；并给 `os/libs/minix-driver-rt/src/transport.rs`/`kernel.rs` 加两条地址拷贝（带默认 + `sys_datacopy`）——RTCDEV 族 `fetch_t`/`store_t` 的载体，不涉 A 线语义 —— `✅`
+- `2026-10-18` B / `G6-RANDOM` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `53→52` —— 随 random 族接线（`os/drivers` 50→49）的机械过账，不涉语义 —— `✅`
+- `2026-10-18` B / `G6-FB` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `52→51` —— 随 fb 族接线（`os/drivers` 49→48）的机械过账，不涉语义 —— `✅`
+- `2026-10-18` B / `G6-PTY` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `51→50` —— 随 pty 族接线（`os/drivers` 48→47）的机械过账，不涉语义 —— `✅`
 
 ## 7. 每轮收尾（顺序固定）
 

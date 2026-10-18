@@ -20,6 +20,14 @@ pub mod char_face;
 pub mod device;
 pub mod diag;
 pub mod ring;
+pub mod service;
 
-/// Service initialization entry (wires the device; transport stays out).
-pub fn init() {}
+use service::LogService;
+
+/// Build the driver's service for the binary.
+///
+/// The face is built here; the transport (announce, birth handshake,
+/// grant copies) stays in the binary via [`minix_driver_rt`].
+pub fn init() -> LogService {
+    LogService::new()
+}

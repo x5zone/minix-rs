@@ -17,9 +17,21 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod char_face;
 pub mod display;
 pub mod mode;
+pub mod service;
 
-/// Service initialization entry (wires the display table; register traffic stays out).
-pub fn init() {}
+use char_face::FbFace;
+use service::{FbService, NullFramebuffer};
+
+/// Build the driver's service for the binary.
+///
+/// No framebuffer is mapped yet (the mode and its memory arrive with the
+/// board's video device); [`NullFramebuffer`] answers `EIO` honestly on
+/// every access, and the device size is zero until a mode is chosen.
+pub fn init() -> FbService<NullFramebuffer> {
+    FbService::new(FbFace::new(0, 0), NullFramebuffer)
+}

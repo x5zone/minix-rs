@@ -20,6 +20,14 @@ pub mod char_face;
 pub mod pair;
 pub mod ptyfs;
 pub mod select;
+pub mod service;
 
-/// Service initialization entry (wires the pair table; transport stays out).
-pub fn init() {}
+use service::PtyService;
+
+/// Build the driver's service for the binary.
+///
+/// The pair table and the output rings are built here; the transport and
+/// the slave-side integration (the tty line sharing the pairs) stay out.
+pub fn init() -> PtyService {
+    PtyService::new()
+}
