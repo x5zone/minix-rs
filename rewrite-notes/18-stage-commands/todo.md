@@ -155,8 +155,11 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   这条口径是批次三百五十五记下的规矩：工作态未提交时不许用 `git checkout` 当还原源。
 
 - **门读数（本轮）**：宿主 `--lib` `534 passed / 0 failed`（本轮起点 529，新增 5 枚）；
-  `rustfmt --edition 2021 --check` 对触及件零漂移；容器权威门日志
-  `tmp/split-356/container-gate.log`（结果按该文件实际读数为准）。
+  `rustfmt --edition 2021 --check` 对触及件零漂移；容器权威门
+  `docker run --rm -v "$PWD:/work" -w /work/os -m 2g -u $(id -u):$(id -g) minix-ci:1.94
+  cargo test -j 1 -p minix-textfilter` **转绿**：`test result:` 摘要 68 套，
+  合计 `1074 passed / 0 failed`，退码 `rc=0`，日志 `tmp/split-356/container-gate.log`
+  （上一笔同配方读数是 `1069 passed`，本笔多出的正是这五枚新门）。
 
 - **下一轮首动作**：`tools/claim.sh claim SPLIT-STREAMING-MEMORY qoder`，给 `bin_support.rs`
   加一条分块读缝与一个可续写的输出缝（两面各一腿），把 `src/bin/split.rs` 的 `-b` 分支从
