@@ -177,6 +177,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `B6` 前置件登记请求（**请 A/C 线接手**）：`at_wini`（IDE 块驱动）真机腿的两段（`w_probe` PCI 枚举 + 读设备→暂存→grant 拷贝→每扇区 IRQ/超时）需要它先进 boot 模块表，而三处现状均空：`os/servers/rs/src/table.rs`（A 线：label/endpoint/flags 条目）、`os/xtask/src/image.rs` 模块清单（C 线）、`os/qemu-tests/` 腿脚本（C 线）。本线服务壳已在树（`drv.blk.at_wini`，泵 `minix-blockdriver::pump`，`--lib` 49/0）；两件入表后本线按 C 板 §4 取窗复跑并回执 —— `✅`
 
+- `2026-10-19` B / `BLK-DATAPLANE` 片收尾（块框架数据面裁决 + `cat24c256` 首台消费者）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `29→28` —— 随 cat24c256 接线（`os/drivers` 26→25）的机械过账。**签名变更（A 板是下游，按 B1/B2 行挂账约定登记）**：`minix-blockdriver::driver::BlockDriver::transfer` 首参新增 `plane: &mut dyn TransferPlane`（原七参不变）——**仅 4 处实现者**（ahci/at_wini 无 override、virtio_blk、memory 及其自备泵）已在本笔同步，workspace check 绿；**新增公共面**：`minix-driver-rt::plane` 的 `GrantIpc`（grant/revoke/sendrec，含对 `DriverTransport` 的 blanket impl）、`TransferPlane`（caller + copy_from_caller/copy_to_caller）、`Plane<'a,T>`、`NullPlane`，以及 `minix-i2cdriver::client::exec` 的 bound 从 `DriverTransport` 放宽到 `GrantIpc + ?Sized`（既有调用点不变）。**新登记缺口 `E-BLK-VEC`（P0-design-missing，B 线自有）**：gather/scatter 的 iovec 数组未建模（C `do_rdwt` 从 grant 拷 `count` 个 iovec 再传 hook；Rust 泵把元素数当字节数直传）——修法留后续片，本笔在泵与 cat24c256 的 transfer 处具名登记 —— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。

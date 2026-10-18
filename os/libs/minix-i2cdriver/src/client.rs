@@ -14,6 +14,7 @@
 //! 128-byte arrays, granted read-write to the bus driver for the duration
 //! of the call (`cpf_grant_direct`, `i2cdriver.c:179-181`).
 
+use minix_driver_rt::plane::GrantIpc;
 use minix_driver_rt::transport::DriverTransport;
 use minix_types::{Endpoint, Message};
 
@@ -153,23 +154,28 @@ pub fn reserve<T: DriverTransport>(
 /// The block is granted read-write to the bus driver, its grant id rides
 /// the request, and the reply type carries the transaction status. The
 /// grant is revoked whether or not the call succeeded, as in C.
-pub fn exec<T: DriverTransport>(
-    transport: &mut T,
+///
+/// Generic over the grant-and-IPC surface rather than the transport, so a
+/// block driver's transfer hook can run the same leg from its data plane
+/// (`minix_driver_rt::plane::TransferPlane`); a plain transport satisfies
+/// the bound through the blanket impl.
+pub fn exec<T: GrantIpc + ?Sized>(
+    ipc: &mut T,
     bus: Endpoint,
     block: &mut ExecBlock,
 ) -> Result<(), i32> {
     let address = block as *mut ExecBlock as u64;
-    let grant = transport.grant_direct(bus, address, ::core::mem::size_of::<ExecBlock>(), true)?;
+    let grant = ipc.grant_direct(bus, address, ::core::mem::size_of::<ExecBlock>(), true)?;
     let mut msg = Message {
         m_type: BUSC_I2C_EXEC,
         ..Message::default()
     };
     write_i32_slot(&mut msg, grant);
-    let outcome = transport.send_rec(bus, &mut msg);
+    let outcome = ipc.send_rec(bus, &mut msg);
     //[SD19-gate] C ignores the revoke answer (`i2cdriver.c:186-187`); the
     // transaction outcome is decided by the call above.
     #[allow(clippy::let_underscore_must_use)]
-    let _ = transport.grant_revoke(grant);
+    let _ = ipc.grant_revoke(grant);
     outcome?;
     if msg.m_type == 0 {
         Ok(())

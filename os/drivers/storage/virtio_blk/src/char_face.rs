@@ -11,6 +11,7 @@
 use minix_blockdriver::driver::BlockDriver;
 use minix_blockdriver::protocol::DeviceMinor;
 use minix_chardriver::protocol::OpenDeviceSet;
+use minix_driver_rt::plane::TransferPlane;
 
 use crate::geometry::{DriveGeometry, OpenCount};
 use crate::request::{ChainPlan, plan_transfer};
@@ -62,6 +63,7 @@ impl BlockDriver for VirtioBlkFace {
 
     fn transfer(
         &mut self,
+        _plane: &mut dyn TransferPlane,
         _minor: DeviceMinor,
         do_write: bool,
         position: u64,
@@ -124,6 +126,7 @@ mod tests {
         face.open(DeviceMinor(0), 0);
         let moved = BlockDriver::transfer(
             &mut face,
+            &mut minix_driver_rt::plane::NullPlane,
             DeviceMinor(0),
             true,
             0,
@@ -139,6 +142,7 @@ mod tests {
         // Straddling the end truncates to the sector-aligned remainder.
         let moved = BlockDriver::transfer(
             &mut face,
+            &mut minix_driver_rt::plane::NullPlane,
             DeviceMinor(0),
             true,
             (1024 - 2) * 512,
@@ -157,6 +161,7 @@ mod tests {
         assert_eq!(
             BlockDriver::transfer(
                 &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
                 DeviceMinor(0),
                 true,
                 0,
@@ -171,6 +176,7 @@ mod tests {
         assert_eq!(
             BlockDriver::transfer(
                 &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
                 DeviceMinor(0),
                 false,
                 0,

@@ -15,6 +15,7 @@
 use minix_blockdriver::driver::BlockDriver;
 use minix_blockdriver::protocol::{DeviceExtent, DeviceMinor};
 use minix_chardriver::protocol::OpenDeviceSet;
+use minix_driver_rt::plane::TransferPlane;
 
 use crate::port::Port;
 
@@ -51,6 +52,7 @@ impl BlockDriver for AhciFace {
 
     fn transfer(
         &mut self,
+        _plane: &mut dyn TransferPlane,
         _minor: DeviceMinor,
         _do_write: bool,
         position: u64,
@@ -97,6 +99,7 @@ mod tests {
         assert_eq!(
             BlockDriver::transfer(
                 &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
                 DeviceMinor(0),
                 true,
                 0,
@@ -115,6 +118,7 @@ mod tests {
         assert_eq!(
             BlockDriver::transfer(
                 &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
                 DeviceMinor(0),
                 true,
                 1023 * 512,
@@ -128,6 +132,7 @@ mod tests {
         assert_eq!(
             BlockDriver::transfer(
                 &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
                 DeviceMinor(0),
                 true,
                 1024 * 512,
@@ -153,6 +158,7 @@ mod tests {
         assert_eq!(
             BlockDriver::transfer(
                 &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
                 DeviceMinor(0),
                 true,
                 0,
@@ -173,6 +179,7 @@ mod tests {
         assert_eq!(
             BlockDriver::transfer(
                 &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
                 DeviceMinor(0),
                 true,
                 0,
@@ -187,6 +194,7 @@ mod tests {
         assert_eq!(
             BlockDriver::transfer(
                 &mut face,
+                &mut minix_driver_rt::plane::NullPlane,
                 DeviceMinor(0),
                 true,
                 0,

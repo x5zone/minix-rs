@@ -24,6 +24,7 @@
 //! that was not opened since the restart is answered `ERESTART`, except
 //! the open itself, which records the device and then runs the hook.
 
+use minix_driver_rt::plane::Plane;
 use minix_driver_rt::runtime::DriverHandler;
 use minix_driver_rt::transport::DriverTransport;
 use minix_types::{Endpoint, Message, BDEV_REPLY, CDEV_REPLY_BASE, CDEV_REQUEST_BASE, EDONTREPLY, EINVAL, ENXIO, ERESTART};
@@ -104,7 +105,7 @@ impl<D: BlockDriver> BlockService<D> {
         let id = wire::read_i32(msg, wire::request::ID);
         match classify(false, None, msg.m_type, Some(minor), &self.opened) {
             Route::Request(request) => {
-                let status = self.handle_request(request, minor, id, msg);
+                let status = self.handle_request(transport, request, minor, id, msg);
                 // C runs the cleanup hook after every served request
                 // (`driver.c:451-454`).
                 self.face.cleanup();
@@ -118,7 +119,14 @@ impl<D: BlockDriver> BlockService<D> {
     }
 
     /// Run one decoded block request and answer its status.
-    fn handle_request(&mut self, request: BdevRequest, minor: DeviceMinor, id: i32, msg: &Message) -> i32 {
+    fn handle_request<T: DriverTransport>(
+        &mut self,
+        transport: &mut T,
+        request: BdevRequest,
+        minor: DeviceMinor,
+        id: i32,
+        msg: &Message,
+    ) -> i32 {
         match request {
             BdevRequest::Open => {
                 // C records the device before running the hook
@@ -143,8 +151,25 @@ impl<D: BlockDriver> BlockService<D> {
                 let vectored = matches!(request, BdevRequest::Gather | BdevRequest::Scatter);
                 // C folds the vector forms into one hook with the vectored
                 // flag, and truncates the ssize_t answer into the int reply
-                // (`driver.c:441-451`).
+                // (`driver.c:441-451`). C's hook also receives the caller
+                // and the grant (`driver.c:447`); the rewrite hands both as
+                // the request's data plane.
+                //
+                // `E-BLK-VEC` (registered gap): for the vectored pair C
+                // first copies `count` iovec elements out of the request
+                // grant and passes the array to the hook (`do_rdwt`,
+                // `driver.c:226-254`); the rewrite passes the element count
+                // through unchanged and has no iovec model yet, so a hook
+                // that reads `count` as bytes answers the wrong length. A
+                // driver whose transfer leg cannot honestly serve the
+                // vectored forms should refuse them (cat24c256 does).
+                let mut plane = Plane::new(
+                    transport,
+                    msg.m_source,
+                    wire::read_i32(msg, wire::request::GRANT),
+                );
                 self.face.transfer(
+                    &mut plane,
                     minor,
                     do_write,
                     position,
@@ -261,7 +286,7 @@ mod tests {
         transfer_result: i64,
         opens: Vec<(u32, i32)>,
         closes: Vec<u32>,
-        transfers: Vec<(u32, bool, u64, u64, i32, i32, bool)>,
+        transfers: Vec<(Endpoint, u32, bool, u64, u64, i32, i32, bool)>,
         ioctls: Vec<(u32, u64, u64, i64)>,
         interrupts: u32,
         alarms: Vec<i64>,
@@ -297,6 +322,7 @@ mod tests {
         }
         fn transfer(
             &mut self,
+            plane: &mut dyn minix_driver_rt::plane::TransferPlane,
             minor: DeviceMinor,
             do_write: bool,
             position: u64,
@@ -305,8 +331,16 @@ mod tests {
             id: RequestId,
             vectored: bool,
         ) -> i64 {
-            self.transfers
-                .push((minor.0, do_write, position, count, flags, id.0, vectored));
+            self.transfers.push((
+                plane.caller(),
+                minor.0,
+                do_write,
+                position,
+                count,
+                flags,
+                id.0,
+                vectored,
+            ));
             self.transfer_result
         }
         fn ioctl(&mut self, minor: DeviceMinor, request: u64, grant: u64, user: i64) -> i32 {
@@ -441,13 +475,16 @@ mod tests {
             let msg = transfer_message(*request, Endpoint(5), 7, 10 + index as i32, 512, 4096, 3);
             service.dispatch(&mut transport, &msg);
             let last = service.face().transfers.last().unwrap();
-            assert_eq!(last.0, 7);
-            assert_eq!(last.1, *do_write);
-            assert_eq!(last.2, 4096);
-            assert_eq!(last.3, 512);
-            assert_eq!(last.4, 3);
-            assert_eq!(last.5, 10 + index as i32);
-            assert_eq!(last.6, *vectored);
+            // The hook now sees the caller through the plane as well
+            // (C's `bdr_transfer` receives `endpt`).
+            assert_eq!(last.0, Endpoint(5));
+            assert_eq!(last.1, 7);
+            assert_eq!(last.2, *do_write);
+            assert_eq!(last.3, 4096);
+            assert_eq!(last.4, 512);
+            assert_eq!(last.5, 3);
+            assert_eq!(last.6, 10 + index as i32);
+            assert_eq!(last.7, *vectored);
         }
     }
 

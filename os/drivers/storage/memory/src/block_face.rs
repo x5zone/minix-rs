@@ -16,6 +16,7 @@
 use minix_blockdriver::driver::BlockDriver;
 use minix_blockdriver::protocol::{DeviceExtent, DeviceMinor};
 use minix_chardriver::protocol::OpenDeviceSet;
+use minix_driver_rt::plane::TransferPlane;
 
 use crate::device::{resize_policy, DeviceTable, ResizeVerdict};
 
@@ -108,6 +109,7 @@ impl<B: RamBackend> BlockDriver for MemoryBlock<B> {
 
     fn transfer(
         &mut self,
+        _plane: &mut dyn TransferPlane,
         minor: DeviceMinor,
         _do_write: bool,
         position: u64,
@@ -213,17 +215,17 @@ mod tests {
         assert_eq!(face.apply_resize(DeviceMinor(7), false, 4096), 0);
         // Whole request inside: moves everything.
         assert_eq!(
-            BlockDriver::transfer(&mut face, DeviceMinor(7), true, 4096 - 512, 512, 0, minix_blockdriver::protocol::RequestId(1), false),
+            BlockDriver::transfer(&mut face, &mut minix_driver_rt::plane::NullPlane, DeviceMinor(7), true, 4096 - 512, 512, 0, minix_blockdriver::protocol::RequestId(1), false),
             512
         );
         // Straddles the end: clipped to the surviving bytes.
         assert_eq!(
-            BlockDriver::transfer(&mut face, DeviceMinor(7), true, 4096 - 100, 512, 0, minix_blockdriver::protocol::RequestId(1), false),
+            BlockDriver::transfer(&mut face, &mut minix_driver_rt::plane::NullPlane, DeviceMinor(7), true, 4096 - 100, 512, 0, minix_blockdriver::protocol::RequestId(1), false),
             100
         );
         // Entirely past the end: zero moved.
         assert_eq!(
-            BlockDriver::transfer(&mut face, DeviceMinor(7), true, 8192, 512, 0, minix_blockdriver::protocol::RequestId(1), false),
+            BlockDriver::transfer(&mut face, &mut minix_driver_rt::plane::NullPlane, DeviceMinor(7), true, 8192, 512, 0, minix_blockdriver::protocol::RequestId(1), false),
             0
         );
     }

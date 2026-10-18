@@ -7,6 +7,8 @@
 //! dispatch in `driver_mt.c:70-200` (modeled, not replicated), and the
 //! partition entry `partition()` in `drvlib.c`.
 
+use minix_driver_rt::plane::TransferPlane;
+
 use super::protocol::{
     BdevRequest, BlockDriverType, DeviceExtent, DeviceId, DeviceMinor, NO_IOCTL_HOOK,
     NO_TRANSFER_HOOK, OpenDeviceSet, PartitionGeometry, PartitionStyle, RequestId, SUCCESS,
@@ -80,13 +82,23 @@ pub trait BlockDriver {
     ///
     /// `do_write` selects the direction; `vectored` selects the
     /// gather/scatter pair; `count` is bytes for the contiguous pair and
-    /// element count for the vectored pair. The seven parameters mirror the
-    /// C callback signature one-to-one so call sites stay comparable with
-    /// the C adapters; packing them into a struct would hide that
-    /// correspondence.
+    /// element count for the vectored pair. Together with `plane` the
+    /// parameters mirror the C callback signature one-to-one so call sites
+    /// stay comparable with the C adapters: C's `endpt` and `iov` arrive as
+    /// the plane, which also carries the copy calls the C hook issues
+    /// itself (`sys_safecopyfrom`/`sys_safecopyto`) and the grant-and-IPC
+    /// surface a device leg needs when the bytes travel through another
+    /// server (an i2c bus driver, a downstream block driver). See
+    /// [`minix_driver_rt::plane`] for why the plane is narrower than the
+    /// transport.
+    ///
+    /// A driver whose device backend cannot yet produce or consume bytes
+    /// answers a count without copying, and says so at its own site: the
+    /// plane makes the copy *possible*, not automatic.
     #[allow(clippy::too_many_arguments)]
     fn transfer(
         &mut self,
+        plane: &mut dyn TransferPlane,
         minor: DeviceMinor,
         do_write: bool,
         position: u64,
@@ -95,7 +107,7 @@ pub trait BlockDriver {
         id: RequestId,
         vectored: bool,
     ) -> i64 {
-        let _ = (minor, do_write, position, count, flags, id, vectored);
+        let _ = (plane, minor, do_write, position, count, flags, id, vectored);
         NO_TRANSFER_HOOK as i64
     }
 
@@ -208,7 +220,66 @@ pub const fn needs_table_parse(style: PartitionStyle, has_part: bool) -> bool {
 mod tests {
     use super::super::protocol::{BdevRequest, BlockDriverType, DeviceMinor, RequestId};
     use super::*;
+    use alloc::vec::Vec;
+    use minix_driver_rt::plane::{GrantIpc, TransferPlane};
     use minix_types::{EINTR, EINVAL, OK};
+    use minix_types::{Endpoint, Message};
+
+    /// A data plane that records what a hook asks of the caller's grant.
+    ///
+    /// The framework's own tests need one to call `transfer`; a device
+    /// driver's tests script their own (see the storage faces).
+    struct RecordingPlane {
+        caller: Endpoint,
+        from_bytes: Vec<u8>,
+        to_bytes: Vec<u8>,
+        copies: Vec<(u64, usize)>,
+    }
+
+    impl RecordingPlane {
+        fn new() -> Self {
+            RecordingPlane {
+                caller: Endpoint(20),
+                from_bytes: Vec::new(),
+                to_bytes: Vec::new(),
+                copies: Vec::new(),
+            }
+        }
+    }
+
+    impl GrantIpc for RecordingPlane {
+        fn grant_direct(
+            &mut self,
+            _dest: Endpoint,
+            _address: u64,
+            _len: usize,
+            _write: bool,
+        ) -> Result<i32, i32> {
+            Err(-minix_types::ENOSYS)
+        }
+        fn grant_revoke(&mut self, _grant: i32) -> Result<(), i32> {
+            Err(-minix_types::ENOSYS)
+        }
+        fn send_rec(&mut self, _dst: Endpoint, _msg: &mut Message) -> Result<(), i32> {
+            Err(-minix_types::ENOSYS)
+        }
+    }
+
+    impl TransferPlane for RecordingPlane {
+        fn caller(&self) -> Endpoint {
+            self.caller
+        }
+        fn copy_from_caller(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), i32> {
+            self.copies.push((offset, buf.len()));
+            buf.copy_from_slice(&self.from_bytes[..buf.len()]);
+            Ok(())
+        }
+        fn copy_to_caller(&mut self, offset: u64, buf: &[u8]) -> Result<(), i32> {
+            self.copies.push((offset, buf.len()));
+            self.to_bytes.extend_from_slice(buf);
+            Ok(())
+        }
+    }
 
     /// Minimal disk: implements nothing, keeps C defaults.
     struct SilentDisk;
@@ -227,6 +298,7 @@ mod tests {
 
         fn transfer(
             &mut self,
+            _plane: &mut dyn TransferPlane,
             _minor: DeviceMinor,
             _do_write: bool,
             position: u64,
@@ -259,8 +331,18 @@ mod tests {
         assert_eq!(device.driver_type(), BlockDriverType::Disk);
         assert_eq!(device.open(DeviceMinor(0), 0), OK);
         assert_eq!(device.close(DeviceMinor(0)), OK);
+        let mut plane = RecordingPlane::new();
         assert_eq!(
-            device.transfer(DeviceMinor(0), false, 0, 512, 0, RequestId(0), false),
+            device.transfer(
+                &mut plane,
+                DeviceMinor(0),
+                false,
+                0,
+                512,
+                0,
+                RequestId(0),
+                false
+            ),
             NO_TRANSFER_HOOK as i64
         );
         assert_eq!(device.ioctl(DeviceMinor(0), 0, 0, 0), NO_IOCTL_HOOK);
@@ -271,11 +353,32 @@ mod tests {
     #[test]
     fn test_memory_disk_serves_inside_geometry_and_refuses_outside() {
         let mut device = MemoryDisk { blocks: 8 };
+        let mut plane = RecordingPlane::new();
         assert_eq!(
-            device.transfer(DeviceMinor(0), false, 0, 512, 0, RequestId(1), false),
+            device.transfer(
+                &mut plane,
+                DeviceMinor(0),
+                false,
+                0,
+                512,
+                0,
+                RequestId(1),
+                false
+            ),
             512
         );
-        assert!(device.transfer(DeviceMinor(0), false, 8 * 512, 512, 0, RequestId(1), false) < 0);
+        assert!(
+            device.transfer(
+                &mut plane,
+                DeviceMinor(0),
+                false,
+                8 * 512,
+                512,
+                0,
+                RequestId(1),
+                false
+            ) < 0
+        );
         let extent = device.partition(DeviceMinor(0)).unwrap();
         assert!(extent.contains(0, 512));
         assert_eq!(device.partition(DeviceMinor(3)), None);

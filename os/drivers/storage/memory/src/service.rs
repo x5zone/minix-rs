@@ -47,6 +47,7 @@ use minix_chardriver::driver::{
 };
 use minix_chardriver::protocol::{CdevRequest, DeviceMinor, RequestId};
 use minix_driver_rt::runtime::DriverHandler;
+use minix_driver_rt::plane::Plane;
 use minix_driver_rt::transport::DriverTransport;
 use minix_types::{Endpoint, Message, BDEV_REPLY, CDEV_REPLY_BASE};
 
@@ -336,10 +337,17 @@ impl<CB: MemBackend, RB: RamBackend> MemoryService<CB, RB> {
                             minix_types::EINVAL
                         } else {
                             // The transfer hook answers the byte total; the
-                            // grant copy of those bytes is the registered
-                            // data-plane seam (module note). C clips the
-                            // reply to an int.
+                            // grant copy of those bytes stays a registered
+                            // seam until the RAM backing store lands (module
+                            // note) — the plane now carries everything the
+                            // copy needs. C clips the reply to an int.
+                            let mut plane = Plane::new(
+                                transport,
+                                msg.m_source,
+                                read_i32(msg, wire::request::GRANT),
+                            );
                             self.blk.transfer(
+                                &mut plane,
                                 minor,
                                 do_write,
                                 position,
