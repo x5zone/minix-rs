@@ -11,9 +11,9 @@
 > **路径约定**：本篇所有 `minix3/...` 与 `os/...` 路径都相对仓库根目录。引用位置由符号名定位（`path:func`、`path:fn NAME`、`path:static NAME`），**行号不作锚点**——行号只出现在三类场合：被引注释内部（随原文保留）、漂移登记（§3.6/§4.4 对齐现码）、符号名旁为短小事实注明的取证行号。
 > **本篇主题**：VM 出生时只拿着内核建的 bootstrap 根，却要接管全系统的内存管理——中间的协商怎么完成。两件交接物（一页世界状态快照 + 一条 SYS_VMCTL 通道）与两道闸的两条放行路径（SETADDRSPACE 清 VMINHIBIT 不入队、BOOTINHIBIT_CLEAR 才入队）。
 > **前置**：[08-system-init-boot-finish.md](08-system-init-boot-finish.md)（三开关与 bsp 收尾；其 §3.3 预告的 set_vm_running 补写兑现于本篇 SETADDRSPACE 臂，§3.5 预告的凭证随页交付兑现于本篇 reconcile，§5.1 移交的 identity_windows 与 handoff 协议面归本篇）、[07-cross-space-init.md](07-cross-space-init.md)（DM 双窗口与 bootstrap 根的来历）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（VMINHIBIT/BOOTINHIBIT 的置位——本篇讲它们的解除者）。
-> **后续**：调度循环本体（`10-switch-to-user`，切用户与调度循环篇，尚未重生成）、分派入口与 kernel_call_finish（`13-syscall-dispatch`，系统调用分派篇，尚未重生成）、VMSUSPEND 挂起-恢复运行时（`24-cross-space-runtime`，跨空间运行时篇，尚未重生成）、VM 服务器内部本体（`rewrite-notes/02-stage-vm/`，init_page_table/map_kernel/PMM）。
+> **后续**：调度循环本体（`10-switch-to-user`，切用户与调度循环篇）、分派入口与 kernel_call_finish（`13-syscall-dispatch`，系统调用分派篇）、VMSUSPEND 挂起-恢复运行时（`24-cross-space-runtime`，跨空间运行时篇，尚未重生成）、VM 服务器内部本体（`rewrite-notes/02-stage-vm/`，init_page_table/map_kernel/PMM）。
 
-[08-system-init-boot-finish.md](08-system-init-boot-finish.md) 的结尾，`bsp_finish_booting` 拨完三个开关，一句 `switch_to_user()` 把 CPU 交了出去。此刻 boot image 里能跑的用户进程只有 VM——其余每个 boot 进程都被 VMINHIBIT 和 BOOTINHIBIT 两个位按住（[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §1.4 的置位），等着有人给它们建页表、装镜像、放行。干这件事的人就是 VM 自己，而 VM 拿到的全部家当是一张内核替它建好的 bootstrap 页表根：它不知道自己能用的内存在哪、内核映射长什么样、其他进程的表该建给谁。**本协议是 switch_to_user 之后的第一个用户态动作。**CPU 此刻怎么落到 VM 的入口，由调度循环的第一次切用户完成（`10-switch-to-user`，切用户与调度循环篇，尚未重生成）；VM 发出的内核调用怎么穿过陷入与分派入口抵达本篇的 handler，由分派入口与 kernel_call_finish 管（`13-syscall-dispatch`，系统调用分派篇，尚未重生成）。本篇从 handler 收到消息、从 VM 读到第一个字节开始：内核把"世界状态"交出去（一页），VM 把"我为别人做的事"申报回来（一条通道），双方按两道闸放行进程。
+[08-system-init-boot-finish.md](08-system-init-boot-finish.md) 的结尾，`bsp_finish_booting` 拨完三个开关，一句 `switch_to_user()` 把 CPU 交了出去。此刻 boot image 里能跑的用户进程只有 VM——其余每个 boot 进程都被 VMINHIBIT 和 BOOTINHIBIT 两个位按住（[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §1.4 的置位），等着有人给它们建页表、装镜像、放行。干这件事的人就是 VM 自己，而 VM 拿到的全部家当是一张内核替它建好的 bootstrap 页表根：它不知道自己能用的内存在哪、内核映射长什么样、其他进程的表该建给谁。**本协议是 switch_to_user 之后的第一个用户态动作。**CPU 此刻怎么落到 VM 的入口，由调度循环的第一次切用户完成（`10-switch-to-user`，切用户与调度循环篇）；VM 发出的内核调用怎么穿过陷入与分派入口抵达本篇的 handler，由分派入口与 kernel_call_finish 管（`13-syscall-dispatch`，系统调用分派篇）。本篇从 handler 收到消息、从 VM 读到第一个字节开始：内核把"世界状态"交出去（一页），VM 把"我为别人做的事"申报回来（一条通道），双方按两道闸放行进程。
 
 ---
 
@@ -118,8 +118,8 @@ VM 在做任何事之前需要知道世界的哪些事实？按"没有它哪一�
 | 主题 | 本篇怎么办 | 去处 |
 |---|---|---|
 | VM 服务器内部本体：init_page_table / map_kernel / PMM / region 管理 | 只讲到"清单交付、凭证核验"为止 | `rewrite-notes/02-stage-vm/07-pagetable-struct.md`、`rewrite-notes/02-stage-vm/05-physical-memory.md` |
-| 调度循环与 VM 如何被首次调度 | 一句完成式带过 | `10-switch-to-user`（切用户与调度循环篇，尚未重生成） |
-| 分派入口与 kernel_call_finish | 一句完成式带过 | `13-syscall-dispatch`（系统调用分派篇，尚未重生成） |
+| 调度循环与 VM 如何被首次调度 | 一句完成式带过 | `10-switch-to-user`（切用户与调度循环篇） |
+| 分派入口与 kernel_call_finish | 一句完成式带过 | `13-syscall-dispatch`（系统调用分派篇） |
 | VMSUSPEND 挂起-恢复运行时 | §2.3 只讲 GET/REPLY 两臂形状与 VMREQUEST 概念首现 | `24-cross-space-runtime`（跨空间运行时篇，尚未重生成） |
 | kerninfo 页本体 | 只讲"kerninfo 页被内核代映射进每个新根"这一个动作 | [08-system-init-boot-finish.md](08-system-init-boot-finish.md) §4.3 |
 | direct_map 建立 | 引用不重复 | [07-cross-space-init.md](07-cross-space-init.md) §4.4 |
@@ -1491,7 +1491,7 @@ fn vmctl_clear_page_fault(
 
 （`os/kernel/src/syscall.rs:fn vmctl_clear_page_fault`，逐字引用。）
 
-两个非显然点。其一，C 的 assert 转 EINVAL：C 里对"位本来就没置"的调用直接断言死机，Rust 转成错误返回——契约违规的两种表达，停机与报错，选了不拖累调用方的那个。其二，注释里那段 TLB 失效时点说明：INVLPG 只击落当前 CR3 标签的非全局项，clear 的时点执行在 VM 的 CR3 上下文里，杀不到故障进程自己的陈旧项；真正的单页失效在恢复路径（被恢复进程的 CR3 已激活、返回用户态之前）以它自己的故障地址执行。反向推演：若把 InvlPg 放在本臂（VM 的 CR3 上下文）执行——失效动作打在 VM 的翻译集上，故障进程的陈旧项原封不动，恢复后第一条访问重新页错误，故障环闭合不上。环的另一半（恢复路径的失效点）归 `13-syscall-dispatch`（系统调用分派篇，尚未重生成）。
+两个非显然点。其一，C 的 assert 转 EINVAL：C 里对"位本来就没置"的调用直接断言死机，Rust 转成错误返回——契约违规的两种表达，停机与报错，选了不拖累调用方的那个。其二，注释里那段 TLB 失效时点说明：INVLPG 只击落当前 CR3 标签的非全局项，clear 的时点执行在 VM 的 CR3 上下文里，杀不到故障进程自己的陈旧项；真正的单页失效在恢复路径（被恢复进程的 CR3 已激活、返回用户态之前）以它自己的故障地址执行。反向推演：若把 InvlPg 放在本臂（VM 的 CR3 上下文）执行——失效动作打在 VM 的翻译集上，故障进程的陈旧项原封不动，恢复后第一条访问重新页错误，故障环闭合不上。环的另一半（恢复路径的失效点）归 `13-syscall-dispatch`（系统调用分派篇）。
 
 抑制控制族的两臂与 §2.3 的 C 形状对照：SET 臂的跨 CPU 判定用目标记录的 CPU 字段比较当前 CPU，不同则走 IPI、相同则本地置位，IPI 与本地两条路径汇合后**无条件**置 FLUSH_TLB 标记（C 的 `VMINHIBIT_SET` case 里这一位在 if/else 之外置、CLEAR 臂不置——`minix3/minix/kernel/system/do_vmctl.c:133-135`；置点在调用方一侧、落在共享的进程记录上，远程路径的停车处理只置 VMINHIBIT、不碰这个标记——§5.1 的 `test_vmctl_vminhibit_park_helper_does_not_touch_flush_tlb` 锁的就是这条分工）；CLEAR 臂的 MF_SENDA_VM_MISS 补投与 stale_tlb 全填未实现——stale_tlb 全填的缺失是 §3.6 表里的"收窄"：64 位 DM 下翻译恒定，全填没有需要服务的对象。
 
@@ -2145,6 +2145,6 @@ grep -n 'arch_enable_paging\|RTS_VMINHIBIT' minix3/minix/kernel/arch/i386/arch_d
 ## 7. 参见
 
 - [08-system-init-boot-finish.md](08-system-init-boot-finish.md)（三开关与收尾；§3.3/§3.5 预告的兑现处）、[07-cross-space-init.md](07-cross-space-init.md) §2.1/§2.2/§3.2（bootstrap 根的记录、memory_init 拨槽与 DM 双窗口）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §1.4/§2.6（inhibit 置位与 boot 循环）、[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)（保留区与链入执行的来历）
-- `10-switch-to-user`（VM 如何被首次调度，尚未重生成）、`13-syscall-dispatch`（分派入口与 finish/resume，尚未重生成）、`24-cross-space-runtime`（VMSUSPEND 运行时，尚未重生成）、`rewrite-notes/02-stage-vm/`（init_page_table/map_kernel/PMM 本体）
+- `10-switch-to-user`（VM 如何被首次调度）、`13-syscall-dispatch`（分派入口与 finish/resume）、`24-cross-space-runtime`（VMSUSPEND 运行时，尚未重生成）、`rewrite-notes/02-stage-vm/`（init_page_table/map_kernel/PMM 本体）
 - C 源码：`minix3/minix/kernel/system/do_vmctl.c:do_vmctl`、`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3`、`minix3/minix/servers/vm/main.c:exec_bootproc`、`minix3/minix/servers/vm/main.c:init_vm`、`minix3/minix/servers/vm/pagetable.c:pt_bind`
 - Rust：`os/libs/minix-types/src/types/boot.rs`（`VmBootHandoff`）、`os/kernel/src/syscall.rs`（`dispatch_vmctl`/`vmctl_set_addr_space`）、`os/kernel/src/vm_handoff.rs`（`build_identity_windows`）、`os/servers/vm/src/boot.rs`、`os/servers/vm/src/vm_server.rs`、`os/servers/vm/src/pagetable/vm_self_map.rs`
