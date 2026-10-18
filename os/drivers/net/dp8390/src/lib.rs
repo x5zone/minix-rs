@@ -18,5 +18,26 @@
 pub mod char_face;
 pub mod ring;
 
-/// Service initialization entry (wires the card table; register traffic stays out).
-pub fn init() {}
+use char_face::Dp8390Face;
+use minix_netdriver::pump::NetService;
+
+/// Build the driver's service for the binary.
+///
+/// Register traffic stays in the card seam this crate documents; the pump
+/// and its queues live in the shared framework.
+pub fn init() -> NetService<Dp8390Face> {
+    NetService::new(Dp8390Face::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minix_netdriver::driver::NetDriver;
+
+    #[test]
+    fn test_init_builds_the_card_service() {
+        let service = init();
+        assert_eq!(service.face().name(), "dp8390");
+        assert!(service.server().is_running());
+    }
+}

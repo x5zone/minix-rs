@@ -152,6 +152,7 @@ run_with_qemu_lock() (
 - `2026-10-18` B / `G6-PTY` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `51→50` —— 随 pty 族接线（`os/drivers` 48→47）的机械过账，不涉语义 —— `✅`
 - `2026-10-18` B / `A7` 撤销：共享件 `os/Cargo.toml` 的 `minix-nic-policy` 两行（`members` 与 `[workspace.dependencies]`）随 revert 撤回、文件回归原样 —— 原 `A7` 条目经 `edge2.md` L13（`2026-09-19`）裁决否决建 crate，板行未内联裁决致一轮误执行，净改动归零，不涉其它线 —— `✅`
 - `2026-10-18` B / `G6-LANCE` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `50→49` —— 随 lance 族接线（`os/drivers` 47→46）的机械过账；另在自有件 `minix-netdriver` 新增 `wire.rs`（NDEV 消息偏移）并给 `NetServer` 加 `media()`/`clear_stats()` 两个只读/复位访问器，不涉其它线语义 —— `✅`
+- `2026-10-18` B / `G6-NET` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `49→45` —— 随 e1000/rtl8139/dp8390/virtio_net 四卡接线（`os/drivers` 46→42）的机械过账；泵上收进自有件 `minix-netdriver::pump`（`NetService<D>`），四卡 `init()` 与 `main.rs` 随动，不涉其它线语义 —— `✅`
 
 ## 7. 每轮收尾（顺序固定）
 

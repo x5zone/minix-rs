@@ -1,12 +1,15 @@
-//! Service assembly: the lance driver's receive-classify-dispatch pump.
+//! The shared network driver pump: one message at a time, one pump for
+//! every card.
 //!
 //! C correspondence: `netdriver_task` and `netdriver_process`
 //! (`netdriver.c:763-993`) plus the request handlers (`do_init`,
 //! `do_conf`, `do_transfer`, `do_status_reply`, `netdriver_send`,
-//! `netdriver_recv`, `send_status`). The loop shell and the RS birth
-//! handshake live in [`minix_driver_rt::runtime::DriverRuntime`]; this
-//! module owns the one-message-at-a-time policy and the pending transfer
-//! queues.
+//! `netdriver_recv`, `send_status`). In C the pump lives once in
+//! `libnetdriver` and every card calls `netdriver_task` with its callback
+//! table; this module is that shared pump in Rust. The loop shell and the
+//! RS birth handshake stay in [`minix_driver_rt::runtime::DriverRuntime`];
+//! a card binary builds [`NetService`] over its [`NetDriver`] face and
+//! hands it to the runtime.
 //!
 //! Where the C framework's shapes do not survive the Rust face contract,
 //! the deviation is stated at the site: the face's `receive` reports zero
@@ -19,26 +22,26 @@
 //! statistics; this pump owns the pending entries (caller, request id,
 //! byte count) because the C queue stores `netdriver_data`, not just the
 //! id. The data-plane vector copies stay with the card behind the
-//! [`NetDriver`](minix_netdriver::driver::NetDriver) face, except the
-//! configuration's multicast list, which the framework copies itself
-//! (`do_conf`, `netdriver.c:494-510`).
+//! [`NetDriver`] face, except the configuration's multicast list, which
+//! the framework copies itself (`do_conf`, `netdriver.c:494-510`).
 
 use minix_driver_rt::runtime::DriverHandler;
 use minix_driver_rt::transport::DriverTransport;
-use minix_netdriver::driver::{
+use minix_types::{Endpoint, Message, EINTR, OK, SUSPEND};
+
+use crate::driver::{
     classify, multicast_fallback, InitReport, LinkReport, NetDriver, NetServer, NotifyKind, Route,
 };
-use minix_netdriver::protocol::{
+use crate::protocol::{
     HardwareAddress, NdevReply, NdevRequest, StatKind, MULTICAST_LIST_MAX,
     NDEV_ETH_PACKET_MAX_TAGGED, NDEV_ETH_PACKET_MIN, NDEV_HWADDR_MAX, NDEV_IOV_MAX,
     NDEV_MODE_DOWN, NDEV_MODE_MCAST_ALL, NDEV_MODE_MCAST_LIST, NDEV_NAME_MAX, NDEV_SET_CAPS,
     NDEV_SET_FLAGS, NDEV_SET_HWADDR, NDEV_SET_MEDIA, NDEV_SET_MODE, RECV_QUEUE_BOUND,
     SEND_QUEUE_BOUND,
 };
-use minix_netdriver::wire;
-use minix_types::{Endpoint, Message, EINTR, OK, SUSPEND};
+use crate::wire;
 
-/// The instance number this pump reports.
+/// The instance number every pump reports.
 ///
 /// C reads it from the environment (`env_parse("instance", ...)`,
 /// `netdriver.c:889`) and appends it to the device name; the boot-table
@@ -136,8 +139,8 @@ fn device_name(base: &str, instance: u32) -> [u8; NDEV_NAME_MAX] {
     name
 }
 
-/// The lance driver's service: card face plus framework state.
-pub struct LanceService<D: NetDriver> {
+/// A card's service: the face plus the framework state.
+pub struct NetService<D: NetDriver> {
     face: D,
     server: NetServer,
     init_report: InitReport,
@@ -151,7 +154,7 @@ pub struct LanceService<D: NetDriver> {
     recvs: PendingQueue<RECV_QUEUE_BOUND>,
 }
 
-impl<D: NetDriver> LanceService<D> {
+impl<D: NetDriver> NetService<D> {
     /// Build the service, running the card's initialization callback once.
     ///
     /// C: `netdriver_init` calls `ndr_init` before the loop starts and
@@ -161,7 +164,7 @@ impl<D: NetDriver> LanceService<D> {
         let init_report = face.init(INSTANCE);
         let mut server = NetServer::new();
         server.mark_running();
-        LanceService {
+        NetService {
             face,
             server,
             init_report,
@@ -554,7 +557,7 @@ impl<D: NetDriver> LanceService<D> {
     }
 }
 
-impl<D: NetDriver, T: DriverTransport> DriverHandler<T> for LanceService<D> {
+impl<D: NetDriver, T: DriverTransport> DriverHandler<T> for NetService<D> {
     fn handle(&mut self, transport: &mut T, msg: &Message) {
         self.dispatch(transport, msg);
     }
@@ -563,9 +566,9 @@ impl<D: NetDriver, T: DriverTransport> DriverHandler<T> for LanceService<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::vec::Vec;
+    use alloc::vec::Vec;
 
-    use minix_netdriver::protocol::{LinkState, NDEV_MODE_UP};
+    use crate::protocol::{LinkState, NDEV_MODE_UP};
 
     /// Scripted transport recording every reply and multicast copy.
     struct Scripted {
@@ -668,7 +671,7 @@ mod tests {
 
     impl NetDriver for TestCard {
         fn name(&self) -> &str {
-            "lance"
+            "testcard"
         }
         fn init(&mut self, _instance: u32) -> InitReport {
             InitReport {
@@ -780,7 +783,7 @@ mod tests {
 
     #[test]
     fn test_non_init_request_before_init_is_dropped_silently() {
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         let msg = transfer_message(NdevRequest::Send, Endpoint(5), 1, &[100]);
         service.dispatch(&mut transport, &msg);
@@ -789,7 +792,7 @@ mod tests {
 
     #[test]
     fn test_init_reply_reports_identity_and_queue_bounds() {
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         let msg = init_message(Endpoint(5), 0xAB);
         service.dispatch(&mut transport, &msg);
@@ -803,8 +806,8 @@ mod tests {
         assert_eq!(wire::read_u32(reply, wire::init_reply::MEDIA), 3);
         assert_eq!(wire::read_u32(reply, wire::init_reply::CAPS), 0x01);
         assert_eq!(
-            &wire::read_array::<16>(reply, wire::init_reply::NAME)[..7],
-            b"lance0\0"
+            &wire::read_array::<16>(reply, wire::init_reply::NAME)[..10],
+            b"testcard0\0"
         );
         assert_eq!(
             wire::read_array::<6>(reply, wire::init_reply::HWADDR),
@@ -817,7 +820,7 @@ mod tests {
 
     #[test]
     fn test_interrupt_and_tick_notifications_reach_the_card() {
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         let msg = notification(Endpoint::HARDWARE, 0b1010);
         service.dispatch(&mut transport, &msg);
@@ -831,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_send_while_down_answers_eintr() {
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         service.dispatch(&mut transport, &init_message(Endpoint(5), 1));
         service.dispatch(
@@ -850,7 +853,7 @@ mod tests {
 
     #[test]
     fn test_send_while_up_sums_the_vector_and_reaches_the_card() {
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         service.dispatch(&mut transport, &init_message(Endpoint(5), 1));
         service.dispatch(
@@ -867,7 +870,7 @@ mod tests {
 
     #[test]
     fn test_recv_reply_carries_the_packet_length() {
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         service.dispatch(&mut transport, &init_message(Endpoint(5), 1));
         service.dispatch(
@@ -887,7 +890,7 @@ mod tests {
 
     #[test]
     fn test_short_packet_is_dropped_and_the_request_stays() {
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         service.dispatch(&mut transport, &init_message(Endpoint(5), 1));
         service.dispatch(
@@ -908,7 +911,7 @@ mod tests {
 
     #[test]
     fn test_conf_multicast_fallback_beyond_sixteen() {
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         service.dispatch(&mut transport, &init_message(Endpoint(5), 1));
         let mut msg = conf_message(
@@ -929,7 +932,7 @@ mod tests {
 
     #[test]
     fn test_conf_multicast_list_is_copied_from_the_grant() {
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         service.dispatch(&mut transport, &init_message(Endpoint(5), 1));
         let mut msg = conf_message(
@@ -951,7 +954,7 @@ mod tests {
     #[test]
     fn test_status_report_waits_for_its_acknowledgement() {
         let caller = Endpoint(5);
-        let mut service = LanceService::new(TestCard::new());
+        let mut service = NetService::new(TestCard::new());
         let mut transport = Scripted::new();
         service.dispatch(&mut transport, &init_message(caller, 1));
         assert_eq!(transport.sent.len(), 1);
