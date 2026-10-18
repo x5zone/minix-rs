@@ -119,6 +119,79 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百五十四（负控轮，生产码一字未动）：三百二十五至三百二十九欠账里的四枚旧负面控制全部跑成并咬住，控制机的裁判第三次翻在同一面上
+
+- **本轮做什么**：把批次三百五十三留下的四处现查位点逐枚改坏再跑测试。认领件
+  `tools/claim.sh claim NEGATIVE-CONTROL-DEBT qoder`（这个号是跨件负面控制批次的占位号，不对应任何单一条目，
+  只为拿一棵排他工作树；用完即销，三百五十二、三百五十三与本笔都挂在它下面）。
+  跑法：`cd os` 之后 `(ulimit -v 3145728; cargo test --offline -j 1 -p minix-textfilter)`；
+  每枚跑完立刻整文件还原并核对该文件跑前的 md5。日志 `tmp/negctl-354/controls.log`，
+  每一枚的完整原始输出留在 `tmp/negctl-354/raw-1.txt` 至 `raw-4.txt`，基线在 `raw-0-baseline.txt`。
+  核实日期 `2026-10-18`，当时的快照提交号 `e9e12fc7f`。
+
+- **四枚的读数（每一枚都编得过、都有门变红）**：
+  1. `os/commands/usr-bin/textfilter/src/bin_support.rs:54` 的宿主参数腿：把 `std::env::args_os()` 换成
+     `std::env::args()`（后者遇到非 UTF-8 实参会直接惊叫）。变红四枚，全在 `tests/bin_support_face.rs`：
+     `no_command_aborts_on_a_nonutf8_option_letter`、`a_raw_byte_inside_an_operand_is_ordinary_data`、
+     `a_raw_byte_consumed_as_an_option_value_is_not_an_error`、`the_lossy_render_expands_one_bad_byte_into_three_option_letters`。
+     还原后 md5 `f0084793ebd6856aae248edc1bf34688` 与跑前一致。
+  2. `os/commands/usr-bin/textfilter/src/col.rs:149` 的集外字母：把「按字节取」`char::from(bytes[pos])` 换成
+     「按字符切」`arg[pos..].chars().next().unwrap()`（也就是三百二十六改回之前的那一形）。变红一枚：
+     `col::tests::unknown_nonascii_option_letter_reports_the_byte`。还原后 md5 `a3eb44f1dda5fc2350f88f0a58c5d311` 一致。
+  3. `os/commands/usr-bin/textfilter/src/bin/column.rs:85-88` 的残行告警：把「每条残行打一句、按来源各数各的」
+     换成「整趟运行只打第一句」（加一枚进程内的一次性开关，`*rval = 1` 那一步保留，这样退码不变、只有句数变）。
+     变红一枚，正是三百二十八补的那扇端到端门 `each_source_with_a_long_tail_line_warns_once`。
+     还原后 md5 `427af38af94224ca7aab3e889304569e` 一致。
+  4. `os/commands/usr-bin/textfilter/src/split.rs:72` 的定长切点：把 `let end = (cursor + n).min(data.len());`
+     改成 `(cursor + n + 1).min(data.len())`（每片多切一个字节）。变红一枚：
+     `split::tests::chunk_bytes_splits_fixed_and_last_short`。还原后 md5 `c226bddaac4753118d2971ab8fe3d303` 一致。
+  四枚跑完再确认一次现场：`git status --porcelain` 为 0 行。
+
+- **裁判第三次翻在同一面（本轮最重要的收获，也是本轮自己的错）**：第一次跑这六枚时四枚明明都变红了，
+  日志却写着「没有咬」。根因不是门，是我这次**重写了**计数正则而没有沿用三百五十二已经修对的那一套：
+  cargo 的摘要行长成 `test result: FAILED. 24 passed; 1 failed; 0 ignored; …`，失败数在 `passed;` 之后，
+  而我写的模式要求紧跟在 `FAILED.` 后面，于是永远匹配不到、失败数恒为零，判据的「失败数大于零」这一条
+  就把一枚明明红的控制判成了没咬。这是「把『没看到红』当成『没有红』」这一类的第三次（前两次见
+  批次三百四十四与三百五十二）。修法两条，都已落进 `tmp/negctl-354/ctl354b.py`：
+  一是判据以**变红测试名清单非空**为主信号，摘要行的计数只作旁证；二是给裁判自己加一枚负面控制——
+  拿一份已知变红的转录与全绿基线各回同一套 `score()` 判一次，要求前者判出红、后者判出零，
+  本轮读数 `known-red transcript -> red=4 summary=4 ; baseline -> red=0 summary=0 ; JUDGE OK`。
+
+- **残留①（本轮没能跑到的那两扇端到端门）**：cargo 默认在第一个变红的测试套件处停下不再往下跑，
+  所以第 2 枚与第 4 枚里库内单测先红，台账点名的那两扇端到端门（`tests/col_face.rs:199`
+  `nonascii_option_letter_is_reported_as_one_byte`、`tests/split_face.rs:436`
+  `byte_mode_is_untouched_by_the_line_rewrite`）**这一轮根本没被执行到**。
+  「没看到它红」不等于「它不咬」，也不等于「它咬」——这两扇门对本缺陷的覆盖度仍是未知，
+  下一轮用 `cargo test --offline -j 1 -p minix-textfilter --test col_face`（以及 `--test split_face`）
+  单独把那一套件跑到，或整体加 `--no-fail-fast` 再判一次。
+
+- **残留②（一处真实的覆盖空洞，下面片甲前置里论证）**：`split` 现在没有任何一枚门覆盖
+  「先读成功若干次、再读失手」这一形；两枚在跑的读失手门都是第一次读就失手。
+
+- **片甲（`SPLIT-STREAMING-MEMORY` 三片里的第一片：把 `-b` 改成流式）的开工前置，本轮现查完毕**：
+  - 缓冲大小的真源：`split.c` 自己不含 `MAXBSIZE` 的定义，它取自 `sys/param.h`；本树里能翻到的定义在
+    `minix3/tools/compat/compat_defs.h:1151`，写作 `#define MAXBSIZE (64 * 1024)`。
+  - 按字节那一支 `minix3/usr.bin/split/split.c:175-236`：跨两次 `read` 留下的只有一个**计数器** `bcnt`
+    （当前分片已经写了多少字节），不是数据本身——每一片要写的字节都在那次读到的缓冲区里当场写完。
+    所以 `-b` 改成流式不需要任何跨缓冲的留存面，这与行模式那一支不同。
+  - 输出文件的第一次打开只发生在「已经读到非零字节」之后：`split.c:195-200` 的 `if (!file_open) newfile()`
+    在 `switch (read(...))` 的 `default:` 分支里，而 `case 0:` 直接 `exit(0)`、`case -1:` 直接 `err(1, "read")`。
+  - 现有两枚读失手门 `os/commands/usr-bin/textfilter/tests/split_face.rs:490`
+    `a_directory_operand_blames_read_not_the_operand` 与 `:513` `an_unreadable_stdin_blames_the_read_arm`
+    都断言 `files.is_empty()`。这两形的读失手都落在**第一次** `read`（输入是一枚目录），
+    按上一条 C 的打开时机，参照件同样一枚分片都不生成 —— 所以流式化**不会**改这两枚门的可见结果，
+    批次三百五十一担心的「门钉住实现而非参照件」在这里不成立。
+  - 但这也就暴露了残留②：没有任何一形是「读到一半再失手」，而那正是流式与整档两种做法唯一会分形的地方。
+    片甲落地时要一并补这一形，否则「流式」这个改动没有任何门能证。
+  - 参照件不在台面：`tmp/split-330/` 里只有输入件 `in.bin`/`blank.bin`/`nonl.bin` 与读数目录，
+    没有可执行的主机参照件；片甲开工先重建它（批次三百三十那批 A/B 读数的来源目录同名不同物）。
+
+- **下一轮首动作**：`tools/claim.sh claim SPLIT-STREAMING-MEMORY qoder`，先按残留①补跑两扇端到端门的
+  单套件判定（一次改坏一枚，跑 `--test col_face` / `--test split_face`），再落片甲：
+  `-b` 走「读到多少就切多少」的流式循环，同时补「先读成功再失手」那一形的门。
+
+---
+
 ## 批次三百五十三（负控轮，生产码一字未动，且本轮一枚也没跑成）：把三百二十五至三百二十九六枚负控的**盘面锚点**现查到底
 
 - **本轮想做什么**：清「三百二十五~三百二十九连续五轮的六枚负控欠账」。控制机沿用三百五十二那套（判据已修对：
