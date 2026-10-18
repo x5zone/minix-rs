@@ -119,6 +119,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百八十二（A6d `SPLIT-HOST-FLUSH-AT-SEAL` 现查撤销）：我上一轮提的修法是一枚空操作——宿主这条缝**没有缓冲可刷**
+
+- **这一轮干什么**：批次三百七十九立新行 A6d 时，我写的修法是「给宿主腿加一次显式冲刷并把冲刷错按 `Close` 报（`std::io::Write::flush` 可达，ENOSPC 类错正是在冲刷时浮现）」。本轮动手之前先去验这句话，**验否了**：那条路什么都刷不出来，本行因此撤销，生产码一字未动。
+- **否证它的读数**（一枚三十行的 `rustc` 小探针，`/tmp/flush_probe.rs`，现跑）：对 `/dev/full`——`write_all(b"hello")` 回 `Err(Os { code: 28, kind: StorageFull, message: "No space left on device" })`，紧接着一句 `flush()` 回 **`Ok(()))`**。也就是说**写错在写的那一刻就已经交回来了，`flush` 什么都不知道**。
+- **为什么必然如此**：宿主那条缝的落点是 `bin_support.rs:394` 的 `pub struct WriteSink(pub(crate) std::fs::File);`——**`std::fs::File` 在 Rust 里是不缓冲的**，它的 `write` 直接落到 `write(2)`，`flush` 是 std 给的默认空实现（`Ok(())`）。缓冲只存在于 `BufWriter`/`LineWriter` 这类包装里，而本壳没有包。⇒ 「冲刷时浮现」这件事发生在 **C 的 stdio** 那一侧，不是宿主 Rust 这一侧；我把两边的模型混了。
+- **所以剩下的是什么**：宿主唯一真正看不见的仍然只有 `close(2)` 本身的失败（延迟分配的 ENOSPC、NFS 提交失败那一类），而 std 从头到尾不给拿它的号——这与 A6b 已写明的**是同一条限制的两个名字**，出路也只有那两条且都越界（引能调 `close(2)` 的外部依赖：现查本 workspace 无 `libc`、这棵树也没有 `os/Cargo.lock`；或在 `os/libs/` 造宿主 `close` 缝：B 板领地）。既然 A6b 已经把那条载体限制登记并结掉，A6d 就不再作为独立一行留着——留着只会让人以为有个「加一次 flush」的便宜修法可做。
+- **另两处副产物值得记**：① 本笔的探针顺带证实了批次三百八十一从 `uniq` 那侧看到的同件事（写错在 `write_all` 就交回，故 `uniq: /dev/full` 那句是**写**失败而非 `close` 失败被误报成 `Close` 语义），两笔读数互不矛盾；② 上一轮我在 A6b 行写「真机那条腿按 `close_outcome` 报」，与本轮探针无涉——真机腿确实交回 `close` 的号（`bin_support.rs:467-471`），那是 `minix_sys::close`，不是 std。
+- **处置**：A 板 A6d 行翻 `🚫`，理由与本轮读数写进行内，并指向 A6b 那一格作为同一限制的正式登记处。**批次三百七十九「另记」段里那句修法被本笔否证**，以本笔为准（那一段的文字不回头改，按规矩过程痕迹留在新条目里）。
+- **三件套**：核实命令 `export PATH="$HOME/.cargo/bin:$PATH"; rustc --edition 2021 -o /tmp/flush_probe /tmp/flush_probe.rs && /tmp/flush_probe`（读数：`write_all -> Err(code 28)` 与 `flush -> Ok(())`）、`grep -n "pub struct WriteSink" os/commands/usr-bin/textfilter/src/bin_support.rs`（→ `:394`，落点是裸 `std::fs::File`）、`grep -n "BufWriter\|LineWriter" os/commands/usr-bin/textfilter/src/bin_support.rs`（→ 零命中，佐证「没有缓冲可刷」）；核实日 `2026-10-19`；基线快照 `dd5e5d764`。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim CKSUM-HASH-DIGEST qoder`（A4；上一轮拆掉的 getopt 墙与 `fgetln` 补面都是为它铺的路）。
+
 ## 批次三百八十一（A6e `BSD-GETOPT-DASH-OPTSTRING` 闭）：参照件从此能吃文件操作数——但真值不是我上一轮猜的那条，是「非选项就停」
 
 - **这一轮干什么**：上一轮（批次三百八十）立了 A6e，说宿主参照件带任何文件操作数都跑不动，得补一枚 BSD 语义的 `getopt`。本轮补完了，**顺带把上一轮对成因的判断纠正了一半**——那半句判断写在板上、也写在本账里，必须先纠正再谈成果。生产码一字未动，动的只有工具面。
