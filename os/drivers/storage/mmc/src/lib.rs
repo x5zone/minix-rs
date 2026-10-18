@@ -16,7 +16,58 @@
 
 #![no_std]
 
-pub mod commands;
+#[cfg(test)]
+extern crate std;
 
-/// Service initialization entry (wires the card table; host traffic stays out).
-pub fn init() {}
+extern crate alloc;
+
+pub mod commands;
+pub mod face;
+pub mod service;
+
+use face::{MmcFace, MmcHost};
+use service::MmcService;
+
+/// The host layer's default: no controller is bound, so every card
+/// operation is refused honestly.
+///
+/// The production host (the MMC/SD controller registers, the command and
+/// response engine, the card bring-up sequence, and the data transfers —
+/// `mmchost_mmchs.c` and `emmc.c`) is the registered seam; the binary
+/// replaces this host when it lands.
+pub struct UnboundHost;
+
+impl MmcHost for UnboundHost {
+    fn card_detect(&mut self, _slot: usize) -> bool {
+        false
+    }
+    fn card_initialize(&mut self, _slot: usize) -> bool {
+        false
+    }
+    fn block_size(&mut self, _slot: usize) -> u32 {
+        0
+    }
+    fn read_blocks(
+        &mut self,
+        _slot: usize,
+        _block: u64,
+        _count: u32,
+        _buf: &mut [u8],
+    ) -> Result<(), i32> {
+        Err(-minix_types::ENOSYS)
+    }
+    fn write_blocks(
+        &mut self,
+        _slot: usize,
+        _block: u64,
+        _count: u32,
+        _buf: &[u8],
+    ) -> Result<(), i32> {
+        Err(-minix_types::ENOSYS)
+    }
+}
+
+/// Builds the service for the binary.
+pub fn init<H: MmcHost>(face: MmcFace<H>) -> MmcService<H> {
+    MmcService::new(face)
+}
