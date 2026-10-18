@@ -297,6 +297,52 @@ fn close_chunk(prog: &str, chunk: Option<(String, support::WriteSink)>) {
     }
 }
 
+/// 读缝的顺序契约：中途失手**之前**交出去的块不收回。真机上造不出「读两次成功、
+/// 第三次失手」的输入，所以把读循环抽成对任意 `Read` 通用的
+/// `bin_support::drive_reads`，用一枚脚本报错的读源喂它——这正是 `split -b`
+/// 流式化之后与 C 同形（`minix3/usr.bin/split/split.c:184-204` 边读边写，
+/// 失手才 `err(1, "read")`）、以前没有门可钉的那一形。
+#[test]
+fn pieces_handed_before_a_midstream_read_error_are_not_withdrawn() {
+    use std::io::{Error, ErrorKind, Read, Result};
+    struct Scripted {
+        blocks: Vec<&'static [u8]>,
+        next: usize,
+    }
+    impl Read for Scripted {
+        fn read(&mut self, out: &mut [u8]) -> Result<usize> {
+            if let Some(block) = self.blocks.get(self.next) {
+                self.next += 1;
+                let give = block.len().min(out.len());
+                out[..give].copy_from_slice(&block[..give]);
+                return Ok(give);
+            }
+            Err(Error::new(ErrorKind::Other, "mid-stream failure"))
+        }
+    }
+    // 每片要 5 字节，而读源每次只给 2 字节：失手来临时缓冲里正攒着 4 字节，
+    // 那一截必须**先交出去**再报错（C 的 `split1` 已经把它写给当前分片了）。
+    let mut handed: Vec<Vec<u8>> = Vec::new();
+    let outcome = support::drive_reads(
+        &mut Scripted {
+            blocks: vec![b"ab".as_slice(), b"cd".as_slice()],
+            next: 0,
+        },
+        5,
+        |piece| handed.push(piece.to_vec()),
+    );
+    assert_eq!(
+        handed,
+        vec![b"abcd".to_vec()],
+        "失手之前攒在缓冲里的四字节必须已经交出去，不许随错误一起丢"
+    );
+    assert_eq!(
+        outcome.err().map(|failure| failure.kind()),
+        Some(ErrorKind::Other),
+        "中途失手必须报回去，而不是当成读到尽头"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

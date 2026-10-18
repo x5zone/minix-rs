@@ -605,43 +605,73 @@ pub fn read_operand(path: &str) -> (Vec<u8>, Option<InputFailure>) {
 /// 开档失手与读失手分两臂交回，因为 C 的句式不同：前者 `err(1, "%s", *argv)` 报操作数，
 /// 后者 `err(1, "read")` 报这个词（`:137-138` 与 `:188-190`）。
 #[cfg(any(test, not(target_os = "none")))]
-pub fn stream_input<F>(path: Option<&str>, chunk_len: usize, mut take: F) -> Option<InputFailure>
+pub fn stream_input<F>(path: Option<&str>, chunk_len: usize, take: F) -> Option<InputFailure>
 where
     F: FnMut(&[u8]),
 {
-    use std::io::Read;
-    if chunk_len == 0 {
-        return None;
-    }
-    let mut buffer = vec![0u8; chunk_len];
-    let mut handle: Box<dyn Read> = match path {
-        None | Some("-") => Box::new(std::io::stdin()),
+    let mut reader = match path {
+        None | Some("-") => HostedInput::Stdin(std::io::stdin()),
         Some(name) => match std::fs::File::open(name) {
-            Ok(opened) => Box::new(opened),
+            Ok(opened) => HostedInput::File(opened),
             Err(failure) => return Some(InputFailure::Open(errno_of(&failure))),
         },
     };
+    drive_reads(&mut reader, chunk_len, take)
+        .err()
+        .map(|failure| InputFailure::Read(errno_of(&failure)))
+}
+
+/// `stream_input` 宿主腿的两个读源：标准输入与一枚按名开好的档。它们只差 `Read` 是谁，
+/// 读循环只此一份，这样门能直接喂给 `drive_reads` 而去开真档。
+enum HostedInput {
+    Stdin(std::io::Stdin),
+    File(std::fs::File),
+}
+
+impl std::io::Read for HostedInput {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Stdin(stdin) => stdin.read(out),
+            Self::File(file) => file.read(out),
+        }
+    }
+}
+
+/// 从任意 `Read` 上按 `chunk_len` 一块一块取，交给 `take`；读到尽头就收尾，
+/// 中途失手则**先把已经攒下的那段交出去**再把错误报回去——这条顺序契约正是
+/// C 的 `split1` 边读边写的形状（`minix3/usr.bin/split/split.c:184-204`），
+/// 也是真机上没法造出「读两次成功、第三次失手」的输入时唯一能钉住它的办法。
+pub fn drive_reads<R, F>(reader: &mut R, chunk_len: usize, mut take: F) -> std::io::Result<()>
+where
+    R: std::io::Read,
+    F: FnMut(&[u8]),
+{
+    use std::io::Read as _;
+    if chunk_len == 0 {
+        return Ok(());
+    }
+    let mut buffer = vec![0u8; chunk_len];
     let mut filled = 0usize;
     loop {
         if filled == chunk_len {
             take(&buffer[..filled]);
             filled = 0;
         }
-        match handle.read(&mut buffer[filled..]) {
+        match reader.read(&mut buffer[filled..]) {
             Ok(0) => break,
             Ok(count) => filled += count,
             Err(failure) => {
                 if filled > 0 {
                     take(&buffer[..filled]);
                 }
-                return Some(InputFailure::Read(errno_of(&failure)));
+                return Err(failure);
             }
         }
     }
     if filled > 0 {
         take(&buffer[..filled]);
     }
-    None
+    Ok(())
 }
 
 /// 真机那条腿走 `minix_sys::read`，其余形状与宿主腿一字同意：交出去的块不收回，

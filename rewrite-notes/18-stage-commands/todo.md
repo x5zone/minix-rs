@@ -119,6 +119,34 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百五十八（`SPLIT-MIDSTREAM-READERR-GATE`）：把「失手前那块不许丢」变成一扇能造出来的门
+
+- **补的是上一轮记下的洞**。批次三百五十七说：`-b` 流式化之后「先读成功若干次、再读失手」那一形
+  语义已与 C 同形，但**没有门**能钉它——真机上造不出中途读错的输入。这轮的解法不是放弃那条断言，
+  而是**挪动注入点**：把宿主读循环从 `stream_input` 里抽成对任意 `Read` 通用的
+  `bin_support::drive_reads(reader, chunk_len, take)`，`stream_input` 的宿主腿只剩
+  「按操作数选读源（标准输入或命名档）＋把 `io::Error` 折成 `InputFailure`」，
+  于是门可以用一枚脚本读源喂它：给两块、第三次报错。真机腿一字未动（它按 `minix_sys::read` 自己转圈）。
+  C 侧对位仍是 `minix3/usr.bin/split/split.c:184-204`：读到的字节当场写给当前分片，
+  之后才在 `case -1:` 那里 `err(1, "read")`，所以**已经写出去的不随错误收回**。
+
+- **门**：`src/bin/split.rs` 的 `pieces_handed_before_a_midstream_read_error_are_not_withdrawn`。
+  形状是每片 5 字节、读源每次只给 2 字节，报错时缓冲里正攒着 4 字节；
+  断言这 4 字节**已经交出**且错误照实报回（不把中途失手当成读到尽头）。
+
+- **这轮最值得记的一件事（门自己的负控）**：第一次写这枚门我把读源设成「每次正好给满一片」，
+  于是负控（把 `if filled > 0 { take(...) }` 删掉）**没能让它变红**——那一支路径根本没被执行到。
+  改不成「给不满一片」的形状之后，同一枚变异让这枚门变红，复原即复绿。
+  这与本会话在控制机上翻过的三面同一根：**门跑绿不等于门有牙**，每枚新门都要配一枚变异。
+
+- **门读数（本轮）**：宿主 `--bin split` 11 通过 / 0 失败（含新门）；整包
+  `cargo test --offline -j 1 -p minix-textfilter` → 68 套 `1075 passed / 0 failed`；
+  容器权威门同读数 `1075 / 0`、退码 0，日志 `tmp/split-358/container-gate-2.log`
+  （第一次 `container-gate.log` 是门形状改对之前那版源码的读数，同数，但不作数）；
+  `rustfmt --edition 2021 --check` 对触及两文件零漂移；`SPLIT-MIDSTREAM-READERR-GATE` 至此闭。
+
+---
+
 ## 批次三百五十七（`SPLIT-STREAMING-MEMORY` 片甲收口）：两条缝接上，`-b` 真的边读边写
 
 - **这一步做什么**：批次三百五十六欠的两条缝补齐，`-b` 那条腿从「整档读进一个 `Vec` 再切」
