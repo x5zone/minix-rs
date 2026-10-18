@@ -717,3 +717,49 @@ fn line_mode_does_not_invent_a_final_line_terminator() {
         "末行没有终止符时，分片里不该出现被补上的那个换行"
     );
 }
+
+/// 一行横跨两次读：C 每次 `read` 一个 `MAXBSIZE`（`split.c:252`，`compat_defs.h:1151`
+/// 写作 64 KiB），跨读留下的只是行数与「当前分片是否还开着」，所以横跨读边界的那一行
+/// 分两次写进**同一枚**分片（`:276-280`）。行模式流式化之后这是最容易写错的一形：
+/// 给横跨的行造了拼接缓存、或按片段另起一枚，都会在一行超过 64 KiB 时当场分叉。
+#[test]
+fn a_line_longer_than_the_read_block_stays_in_one_chunk() {
+    let mut input: Vec<u8> = vec![b'k'; 70 * 1024];
+    input.push(b'\n');
+    input.extend_from_slice(b"tail\n");
+    let (status, chunks) = run_chunk_bytes(&["-l", "1"], &input);
+    assert_eq!(status, 0);
+    assert_eq!(chunks.len(), 2, "两行按一行一片是两枚：{chunks:?}");
+    assert_eq!(
+        chunks[0].1,
+        input[..70 * 1024 + 1],
+        "长行必须完整地留在第一枚分片里，不许被读边界劈成两枚"
+    );
+    assert_eq!(chunks[1].1, b"tail\n".to_vec());
+}
+
+/// 切点正好压在两次的读边界上：128 KiB 的 1 KiB 行按 64 行一片，切点落在 64 KiB 与
+/// 128 KiB——正是 C 的 `if (len) newfile(); else file_open = 0;`（`split.c:271-274`）
+/// 管的那一形。多出第三枚空尾巴，就是把「切点占满片段末」写成了立刻开下一枚。
+#[test]
+fn a_cut_exactly_at_the_read_block_makes_two_chunks_not_three() {
+    let mut input: Vec<u8> = Vec::with_capacity(128 * 1024);
+    for _ in 0..128 {
+        input.extend_from_slice(&[b'z'; 1023]);
+        input.push(b'\n');
+    }
+    let (status, chunks) = run_chunk_bytes(&["-l", "64"], &input);
+    assert_eq!(status, 0);
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<&str>>(),
+        vec!["xaa", "xab"],
+        "128 KiB 的 1 KiB 行按 64 行切只有两枚，不该有空尾分片"
+    );
+    assert!(
+        chunks.iter().all(|(_, data)| data.len() == 64 * 1024),
+        "两枚各装 64 行 = 64 KiB"
+    );
+}

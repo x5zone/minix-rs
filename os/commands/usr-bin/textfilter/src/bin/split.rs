@@ -27,7 +27,7 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_textfilter::split::{
-    chunks_bytes, chunks_n, lines_bytes, parse_split_args, suffix, ByteCutter, SplitError,
+    chunks_n, parse_split_args, suffix, ByteCutter, CutPiece, LineCutter, SplitError,
 };
 use minix_textfilter::GetoptReport;
 
@@ -62,23 +62,22 @@ fn run() -> ! {
     // 「内存里有整个输入」这件事会把这条腿的用量重新拉回去。
     if let Some(n) = byte_size {
         let source = operands.first().copied();
-        match split_bytes(prog, prefix, source, n, sfxlen) {
-            Some(support::InputFailure::Open(code)) => {
-                // 开档失手是 `err(1, "%s", *argv)`（`split.c:137-138`），报操作数原文；
-                // 标准输入那一形不 open，所以永远不会走到这里。
-                if let Some(name) = source.filter(|name| *name != "-") {
-                    support::warn_line(prog, name, code);
-                }
-                support::terminate(1);
-            }
-            Some(support::InputFailure::Read(code)) => {
-                // 读失手与行模式同一个主人：`case -1:` 当场 `err(1, "read")`，退 1，
-                // 而此前已经写出去的分片照旧留在盘上（C 也是边读边写）。
-                support::warn_line(prog, "read", code);
-                support::terminate(1);
-            }
-            None => support::terminate(0),
-        }
+        stream_outcome(prog, source, split_bytes(prog, prefix, source, n, sfxlen));
+    }
+
+    // 默认与 `-l` 走 C 的 `split2` 那条**流式**腿：一次读一块，跨读只留「当前分片已数到
+    // 几整行」与「当前分片是否还开着」两个数（`split.c:242-282`）。行模式吃的是原始字节，
+    // `split2` 只在缓冲里数换行、从不校验编码，所以不可解码的字节只是普通数据；换行留在
+    // 它结束的那一行上，末行不带换行就不带。分岔位置与 `-b` 同一条理由：整档读会把这条腿
+    // 的用量重新拉回「内存里有整个输入」。判据取「不是 `-n`」而不是「有列数」，否则 `-n`
+    // 会误入这条腿——它的规模要先问内核（见下面的全量腿）。
+    if chunk_count.is_none() {
+        let source = operands.first().copied();
+        stream_outcome(
+            prog,
+            source,
+            split_lines(prog, prefix, source, lines_per_chunk, sfxlen),
+        );
     }
 
     let (input, read_failure) = match operands.first() {
@@ -96,10 +95,6 @@ fn run() -> ! {
         },
     };
 
-    // 行模式吃的是原始字节：`split2` 在读进来的缓冲里数换行（`split.c:252`、
-    // `:262-267`），从不校验编码，所以不可解码的字节只是普通数据；换行留在
-    // 它结束的那一行上，末行不带换行就不带。
-    let lines = lines_bytes(&input);
     // `-n`: exactly `n` byte chunks (`split3`); the last absorbs the remainder.
     // 块数上限与那句报文里的数都取自**内核给的大小**，不取自已收到的字节数：C 在读之前
     // `fstat(ifd, &sb)`（`split.c:293-300`），失手是 `err(1, "stat")`，`sb.st_size` 再判
@@ -140,17 +135,8 @@ fn run() -> ! {
         }
         finish(prog, read_failure);
     }
-    for (index, chunk_lines) in chunks_bytes(&lines, lines_per_chunk).iter().enumerate() {
-        // `split.c:332`: each chunk lands in `prefix + suffix(index)`, created
-        // with O_WRONLY|O_CREAT|O_TRUNC at DEFFILEMODE.
-        let path = match out_path(prefix, index, sfxlen) {
-            Some(path) => path,
-            None => too_many_files(),
-        };
-        if let Err(failure) = create_write(&path, &render_chunk(chunk_lines)) {
-            write_failure(prog, &path, failure);
-        }
-    }
+    // `-n` 那一支在上面自己收尾，行模式与 `-b` 更是当场就退；这一句是给
+    // `run() -> !` 的形状兜底——编译器看不出那几条腿已经不会回到这里。
     finish(prog, read_failure)
 }
 
@@ -168,17 +154,6 @@ fn finish(prog: &str, read_failure: Option<minix_sys::Errno>) -> ! {
 /// `None` once the suffix space (`26^width`) is exhausted.
 fn out_path(prefix: &str, index: usize, width: usize) -> Option<String> {
     suffix(index, width).map(|suffix| format!("{prefix}{suffix}"))
-}
-
-/// Renders one chunk back into bytes: the chunk's lines concatenated, each
-/// already carrying the terminator it had in the input. Adding one here would
-/// invent a newline the input never had（C 搬的是 `Ce - Cs + 1` 个原字节）。
-fn render_chunk(chunk_lines: &[&[u8]]) -> Vec<u8> {
-    let mut data = Vec::new();
-    for line in chunk_lines {
-        data.extend_from_slice(line);
-    }
-    data
 }
 
 /// Creates (or truncates) `path` and writes `bytes` into it, mirroring
@@ -247,10 +222,74 @@ fn too_many_files() -> ! {
     support::terminate(1);
 }
 
+/// 两条流式腿共用的收尾：`stream_input` 交回失手就按 C 的两句话分别报，无失手即退 0。
+/// 开档失手是 `err(1, "%s", *argv)`（`split.c:137-138`）报操作数原文，而标准输入那一形
+/// 不 open，所以永远不会走到这一臂；读失手是 `case -1:` 当场 `err(1, "read")`（`:188-190`），
+/// 此前已经写出去的分片照旧留在盘上——C 也是边读边写。
+fn stream_outcome(prog: &str, source: Option<&str>, failure: Option<support::InputFailure>) -> ! {
+    match failure {
+        Some(support::InputFailure::Open(code)) => {
+            if let Some(name) = source.filter(|name| *name != "-") {
+                support::warn_line(prog, name, code);
+            }
+            support::terminate(1);
+        }
+        Some(support::InputFailure::Read(code)) => {
+            support::warn_line(prog, "read", code);
+            support::terminate(1);
+        }
+        None => support::terminate(0),
+    }
+}
+
+/// 分片文件的落盘管线：切块器说「另起一枚」就先把上一枚关掉、后缀推进一位、再开下一枚，
+/// 然后把这段字节灌进去。关档发生在开下一枚**之前**，报的是**上一枚**的名字（C 的
+/// `newfile()`，`split.c:309-322`：`close(ofd) != 0` 就 `err(1, "%s", fname)`，此时
+/// `fname` 还没推进）。两条流式腿共用这一份：这套次序与三种失败臂只能有一处定义。
+struct ChunkWriter<'a> {
+    prog: &'a str,
+    prefix: &'a str,
+    width: usize,
+    index: usize,
+    current: Option<(String, support::WriteSink)>,
+}
+
+impl ChunkWriter<'_> {
+    /// 把一段字节写给当前分片。
+    fn write(&mut self, part: &CutPiece<'_>) {
+        if part.opens_new_file {
+            self.close_current();
+            let path = match out_path(self.prefix, self.index, self.width) {
+                Some(path) => path,
+                None => too_many_files(),
+            };
+            self.index += 1;
+            let sink = match support::create_sink(&path) {
+                Ok(sink) => sink,
+                Err(code) => write_failure(self.prog, &path, ChunkWrite::Open(code)),
+            };
+            self.current = Some((path, sink));
+        }
+        let (path, sink) = self.current.as_mut().expect("刚开过的分片必有落点");
+        if let Err(failure) = sink.append(part.bytes) {
+            write_failure(self.prog, path, sink_failure_of(failure));
+        }
+    }
+
+    /// 关掉还开着的那一枚；`close` 失手按 C 报**路径**（`split.c:319-322`）。
+    /// 宿主这条腿看不见 `close` 的失败，两腿差异已在 `SPLIT-CLOSE-ERRLEG` 登记。
+    fn close_current(&mut self) {
+        let Some((path, sink)) = self.current.take() else {
+            return;
+        };
+        if let Err(failure) = sink.seal() {
+            write_failure(self.prog, &path, sink_failure_of(failure));
+        }
+    }
+}
+
 /// `-b` 那条流式腿的驱动：把 `bin_support::stream_input` 交回来的每一块喂给
-/// [`ByteCutter`]，按片段的「另起一枚」信号关上一枚、推进后缀、开下一枚。
-/// 关档发生在开下一枚**之前**，报的是**上一枚**的名字（C 的 `newfile()`，
-/// `split.c:309-322`：`close(ofd) != 0` 就 `err(1, "%s", fname)`，此时 `fname` 还没推进）。
+/// [`ByteCutter`]，交回的片段由 [`ChunkWriter`] 落盘。
 fn split_bytes(
     prog: &str,
     prefix: &str,
@@ -259,41 +298,70 @@ fn split_bytes(
     width: usize,
 ) -> Option<support::InputFailure> {
     let mut cutter = ByteCutter::new(size);
-    let mut current: Option<(String, support::WriteSink)> = None;
-    let mut index = 0usize;
+    let mut writer = ChunkWriter {
+        prog,
+        prefix,
+        width,
+        index: 0,
+        current: None,
+    };
     let outcome = support::stream_input(source, STREAM_CHUNK, |piece| {
         for part in cutter.take(piece) {
-            if part.opens_new_file {
-                close_chunk(prog, current.take());
-                let path = match out_path(prefix, index, width) {
-                    Some(path) => path,
-                    None => too_many_files(),
-                };
-                index += 1;
-                let sink = match support::create_sink(&path) {
-                    Ok(sink) => sink,
-                    Err(code) => write_failure(prog, &path, ChunkWrite::Open(code)),
-                };
-                current = Some((path, sink));
-            }
-            let (path, sink) = current.as_mut().expect("刚开过的分片必有落点");
-            if let Err(failure) = sink.append(part.bytes) {
-                write_failure(prog, path, sink_failure_of(failure));
-            }
+            writer.write(&part);
         }
     });
-    close_chunk(prog, current.take());
+    writer.close_current();
     outcome
 }
 
-/// 关掉一枚分片文件；`close` 失手按 C 报**路径**（`split.c:319-322`）。
-/// 宿主这条腿看不见 `close` 的失败，两腿差异已在 `SPLIT-CLOSE-ERRLEG` 登记。
-fn close_chunk(prog: &str, chunk: Option<(String, support::WriteSink)>) {
-    let Some((path, sink)) = chunk else {
-        return;
+/// 行模式那条流式腿的驱动：读缝与落盘管线与 `-b` 同一份，只把切块器换成 [`LineCutter`]。
+/// 跨两次读留下的还是两个数——当前分片已数到几整行、当前分片是否还开着——一段数据都不留，
+/// 所以横跨读块的那一行是分两次写进**同一枚**还开着的分片（`split.c:276-280`）。
+fn split_lines(
+    prog: &str,
+    prefix: &str,
+    source: Option<&str>,
+    numlines: usize,
+    width: usize,
+) -> Option<support::InputFailure> {
+    let mut cutter = LineCutter::new(numlines);
+    let mut writer = ChunkWriter {
+        prog,
+        prefix,
+        width,
+        index: 0,
+        current: None,
     };
-    if let Err(failure) = sink.seal() {
-        write_failure(prog, &path, sink_failure_of(failure));
+    let outcome = support::stream_input(source, STREAM_CHUNK, |piece| {
+        for part in cutter.take(piece) {
+            writer.write(&part);
+        }
+    });
+    writer.close_current();
+    outcome
+}
+
+/// 只此一份的脚本化读源：把 `blocks` 给完就报错。真机上造不出「读两次成功、
+/// 第三次失手」的输入，所以「中途失手」那两形都由它喂给 `drive_reads`。
+#[cfg(test)]
+struct Scripted {
+    blocks: Vec<&'static [u8]>,
+    next: usize,
+}
+
+#[cfg(test)]
+impl std::io::Read for Scripted {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(block) = self.blocks.get(self.next) {
+            self.next += 1;
+            let give = block.len().min(out.len());
+            out[..give].copy_from_slice(&block[..give]);
+            return Ok(give);
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "mid-stream failure",
+        ))
     }
 }
 
@@ -304,22 +372,7 @@ fn close_chunk(prog: &str, chunk: Option<(String, support::WriteSink)>) {
 /// 失手才 `err(1, "read")`）、以前没有门可钉的那一形。
 #[test]
 fn pieces_handed_before_a_midstream_read_error_are_not_withdrawn() {
-    use std::io::{Error, ErrorKind, Read, Result};
-    struct Scripted {
-        blocks: Vec<&'static [u8]>,
-        next: usize,
-    }
-    impl Read for Scripted {
-        fn read(&mut self, out: &mut [u8]) -> Result<usize> {
-            if let Some(block) = self.blocks.get(self.next) {
-                self.next += 1;
-                let give = block.len().min(out.len());
-                out[..give].copy_from_slice(&block[..give]);
-                return Ok(give);
-            }
-            Err(Error::new(ErrorKind::Other, "mid-stream failure"))
-        }
-    }
+    use std::io::ErrorKind;
     // 每片要 5 字节，而读源每次只给 2 字节：失手来临时缓冲里正攒着 4 字节，
     // 那一截必须**先交出去**再报错（C 的 `split1` 已经把它写给当前分片了）。
     let mut handed: Vec<Vec<u8>> = Vec::new();
@@ -424,15 +477,69 @@ mod tests {
         assert_eq!(out_path("x", 676, 2), None);
     }
 
+    /// 流式化之后新出现的可见行为：**读失手浮出来的那一刻，前面的分片已经在盘上了**
+    /// （C 的 `split2` 边读边写，`minix3/usr.bin/split/split.c:252-257`）。这一形端到端
+    /// 造不出来——目录操作数第一圈 `read` 就失手，全量版与流式版都不落盘，所以两版都得
+    /// 那枚旧门绿——于是按 `split_lines` 用的同一台机器（`drive_reads` + `LineCutter` +
+    /// `ChunkWriter`）在驱动层钉，与批次三百五十八为读缝立的门同一层。
     #[test]
-    fn render_chunk_writes_its_lines_as_they_came() {
-        let lines: &[&[u8]] = &[b"a\n", b"b"];
-        assert_eq!(render_chunk(lines), b"a\nb".to_vec());
-    }
-
-    #[test]
-    fn render_chunk_of_no_lines_is_empty() {
-        assert!(render_chunk(&[]).is_empty());
+    fn chunk_files_are_already_on_disk_when_the_read_fails_midstream() {
+        let dir = std::env::temp_dir().join(format!("split-midstream-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let prefix = dir
+            .join("x")
+            .to_str()
+            .expect("临时路径可作前缀")
+            .to_string();
+        let mut cutter = LineCutter::new(1);
+        let mut writer = ChunkWriter {
+            prog: "split",
+            prefix: &prefix,
+            width: 2,
+            index: 0,
+            current: None,
+        };
+        // 一次读要 8 字节，读源只给 3 字节就报错：攒下的 `a\nb` 必须先交出去再报。
+        let outcome = support::drive_reads(
+            &mut Scripted {
+                blocks: vec![b"a\nb".as_slice()],
+                next: 0,
+            },
+            8,
+            |piece| {
+                for part in cutter.take(piece) {
+                    writer.write(&part);
+                }
+            },
+        );
+        assert_eq!(
+            outcome.err().map(|failure| failure.kind()),
+            Some(std::io::ErrorKind::Other),
+            "中途失手必须报回去，而不是当成读到尽头"
+        );
+        // 报错浮出的这一刻：`xaa` 已经切满并关上，`xab` 还开着但那半行已在档里。
+        assert_eq!(
+            std::fs::read(dir.join("xaa")).expect("`xaa` 该在失手之前就落盘"),
+            b"a\n"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("xab")).expect("`xab` 该带着已交出的半行落盘"),
+            b"b",
+            "已经交出去的片段不许随错误一起收回"
+        );
+        writer.close_current();
+        let mut names = std::fs::read_dir(&dir)
+            .expect("临时目录读得出")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect::<Vec<String>>();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["xaa".to_string(), "xab".to_string()],
+            "收尾之后只剩这两枚分片，不许多出一枚空的"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
