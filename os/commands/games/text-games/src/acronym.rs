@@ -29,31 +29,31 @@ pub fn parse_acronym_line(line: &str) -> Result<(&str, &str), TextGameError> {
     Ok((term, expansion))
 }
 
-/// Look up `term` in `lines` (first match wins). File reading stays with the
-/// execution layer.
+/// Every expansion stored under `term`, in the order the lines were given.
 ///
-/// C 的大小写规则只抹平**查询**那一侧：脚本 `:75` 先把操作数整个大写
-/// （`tr '[a-z]' '[A-Z]'`），`:76-77` 的 `fgrep -h "$target"` 与
-/// `sed -ne "\|^$target[[:space:]]*||"` 再拿这个大写形**逐字**比库档行首。所以库里
-/// 行首带小写字母的条目永远取不到——现量（库行 `abc<TAB>lower term entry`）：查 `abc`
-/// 与查 `ABC` 都落进 ``I don't know what `…' means!``；而 `DEF<TAB>upper` 查 `def`
-/// 命中 `DEF: upper`。
+/// C 的取法是一条管线而不是一次查表：`:75` 先把操作数整个大写（`tr '[a-z]' '[A-Z]'`），
+/// `:76` 的 `fgrep -h "$target" $acronyms` 把**所有库档当一个流**搜出所有含该串的行，
+/// `:77` 的 `sed -ne "\|^$target[[:space:]]*||"` 只留行首正是 `$target` 加空白的行，
+/// 并把这段前缀削掉。所以一个词可以命中**多行**（同档重复词条，或多档各有该词），
+/// 全部交回、顺序就是列表顺序与档内行序。
 ///
-/// 「与 `term` 大小写不敏感地相等」再叠一条「`name` 自身已是全大写形」，与「先把查询
-/// 词大写、再逐字比」等价，且不必造一个临时的 `String`。
-pub fn lookup_acronym<'a>(lines: &[&'a str], term: &str) -> Result<&'a str, TextGameError> {
+/// 大小写规则是**单向**的：查询侧被大写化抹平，词条侧不抹平，所以库里行首带小写字母的
+/// 条目永远取不到——现量（库行 `abc<TAB>lower term entry`）：查 `abc` 与查 `ABC` 都是查无，
+/// 而 `DEF<TAB>upper` 查 `def` 命中。「与 `term` 大小写不敏感地相等」再叠一条「`name` 自身
+/// 已是全大写形」，与「先把查询词大写、再逐字比」等价，且不必造一个临时的 `String`。
+#[must_use]
+pub fn matching_expansions<'a>(lines: &[&'a str], term: &str) -> alloc::vec::Vec<&'a str> {
     if term.is_empty() {
-        return Err(TextGameError::InvalidArgument);
+        return alloc::vec::Vec::new();
     }
-    for line in lines {
-        if let Ok((name, expansion)) = parse_acronym_line(line)
-            && name.eq_ignore_ascii_case(term)
-            && !name.bytes().any(|byte| byte.is_ascii_lowercase())
-        {
-            return Ok(expansion);
-        }
-    }
-    Err(TextGameError::NotFound)
+    lines
+        .iter()
+        .filter_map(|line| parse_acronym_line(line).ok())
+        .filter(|(name, _)| {
+            name.eq_ignore_ascii_case(term) && !name.bytes().any(|byte| byte.is_ascii_lowercase())
+        })
+        .map(|(_, expansion)| expansion)
+        .collect()
 }
 
 #[cfg(test)]
@@ -97,26 +97,35 @@ mod tests {
         let text = std::fs::read_to_string(db).expect("the shipped acronyms database");
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
         assert!(lines.len() > 400, "真库应有数百条目，实测 {}", lines.len());
-        assert_eq!(
-            lookup_acronym(&lines, "10Q").ok(),
-            Some("thank you"),
-            "`10Q' 该在库里解得出"
-        );
-        assert_eq!(lookup_acronym(&lines, "10q").ok(), Some("thank you"));
-        assert_eq!(
-            lookup_acronym(&lines, "definitely-not-an-acronym").err(),
-            Some(TextGameError::NotFound)
-        );
+        assert_eq!(matching_expansions(&lines, "10Q"), ["thank you"]);
+        assert_eq!(matching_expansions(&lines, "10q"), ["thank you"]);
+        assert!(matching_expansions(&lines, "definitely-not-an-acronym").is_empty());
     }
 
     #[test]
     fn test_lookup_finds_first() {
         let lines = ["LOL\tlaughing out loud", "BRB\tbe right back"];
-        assert_eq!(lookup_acronym(&lines, "lol").unwrap(), "laughing out loud");
-        assert_eq!(lookup_acronym(&lines, "zzz"), Err(TextGameError::NotFound));
+        assert_eq!(matching_expansions(&lines, "lol"), ["laughing out loud"]);
+        assert!(matching_expansions(&lines, "zzz").is_empty());
+        assert!(matching_expansions(&lines, "").is_empty());
+    }
+
+    /// 一个词命中多行时**全部交回**，顺序是列表顺序与档内行序：脚本 `:76` 的
+    /// `fgrep -h $acronyms` 把所有档当一个流搜，`:77` 的 `sed` 逐行留下。现量
+    /// （同档两行 `LOL`）→ `LOL: first match` 换行 `second match`；
+    /// （两档各有 `LOL`，`-f w1 -f w2` 因**前插**而先搜 w2）→ `LOL: second file`
+    /// 换行 `first file`。
+    #[test]
+    fn every_matching_line_comes_back_in_list_order() {
+        let dup = ["LOL\tfirst match", "LOL\tsecond match"];
         assert_eq!(
-            lookup_acronym(&lines, ""),
-            Err(TextGameError::InvalidArgument)
+            matching_expansions(&dup, "lol"),
+            ["first match", "second match"]
+        );
+        let two_files = ["LOL\tsecond file", "LOL\tfirst file"];
+        assert_eq!(
+            matching_expansions(&two_files, "LOL"),
+            ["second file", "first file"]
         );
     }
 
@@ -127,9 +136,9 @@ mod tests {
     #[test]
     fn a_database_term_written_in_lowercase_is_unreachable() {
         let lines = ["abc\tlower term entry", "DEF\tupper"];
-        assert_eq!(lookup_acronym(&lines, "abc"), Err(TextGameError::NotFound));
-        assert_eq!(lookup_acronym(&lines, "ABC"), Err(TextGameError::NotFound));
-        assert_eq!(lookup_acronym(&lines, "def").unwrap(), "upper");
-        assert_eq!(lookup_acronym(&lines, "DEF").unwrap(), "upper");
+        assert!(matching_expansions(&lines, "abc").is_empty());
+        assert!(matching_expansions(&lines, "ABC").is_empty());
+        assert_eq!(matching_expansions(&lines, "def"), ["upper"]);
+        assert_eq!(matching_expansions(&lines, "DEF"), ["upper"]);
     }
 }

@@ -222,3 +222,142 @@ fn a_lowercase_database_term_is_not_reachable_end_to_end() {
     assert_eq!(err, "");
     assert_eq!(code, 0);
 }
+
+/// 同上但能带环境：`wtf` 的库档列表有一半来自 `ACRONYMDB`（脚本 `:47-53`）。
+/// 父进程里那一枚不能漏进来，所以每一形都把它显式写成想要的值或空串。
+fn run_env(args: &[&str], vars: &[(&str, &str)]) -> (String, i32, String) {
+    let mut command = Command::new(wtf_bin());
+    command
+        .args(args)
+        .env("ACRONYMDB", "")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in vars {
+        command.env(key, value);
+    }
+    let out = command
+        .spawn()
+        .expect("spawn wtf")
+        .wait_with_output()
+        .expect("wait wtf");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code().expect("exit code"),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// 库档是个**列表**，而且每一枚 `-f` 插到**最前面**（脚本 `:21` 的
+/// `acronyms="$OPTARG $acronyms"`）：`-f alpha -f beta` 先搜 beta。
+/// 两档各有 `LOL` 时现量（`sh minix3/games/wtf/wtf -f alpha -f beta lol`）→
+/// `LOL: from beta` 换行 `from alpha`——**只有第一行带 `LOL: ` 前缀**，
+/// 因为 `:80` 是 `echo "$target: $ans"` 而 `$ans` 是多行串。
+#[test]
+fn the_database_list_is_prepended_and_its_extra_answers_print_bare() {
+    let alpha = fixture("list-alpha", b"LOL\tfrom alpha\nAAA\tonly alpha\n");
+    let beta = fixture("list-beta", b"LOL\tfrom beta\nBBB\tonly beta\n");
+    let (out, code, err) = run(&[
+        "-f",
+        &alpha.to_string_lossy(),
+        "-f",
+        &beta.to_string_lossy(),
+        "lol",
+    ]);
+    assert_eq!(
+        out, "LOL: from beta\nfrom alpha\n",
+        "beta 先、alpha 后，第二行裸出"
+    );
+    assert_eq!(err, "");
+    assert_eq!(code, 0);
+
+    // 只在一档里有的词条照样查得到（列表是「所有档当一个流」，不是只读第一档）
+    let (out, code, _err) = run(&[
+        "-f",
+        &alpha.to_string_lossy(),
+        "-f",
+        &beta.to_string_lossy(),
+        "aaa",
+    ]);
+    assert_eq!(out, "AAA: only alpha\n");
+    assert_eq!(code, 0);
+    let (out, code, _err) = run(&[
+        "-f",
+        &alpha.to_string_lossy(),
+        "-f",
+        &beta.to_string_lossy(),
+        "bbb",
+    ]);
+    assert_eq!(out, "BBB: only beta\n");
+    assert_eq!(code, 0);
+}
+
+/// 同一档里重复词条也是多行答案（脚本 `:76` 的 `fgrep -h` 不留第一枚就完事）：
+/// 现量 `-f <两行 LOL 的档> lol` → `LOL: first match` 换行 `second match`。
+#[test]
+fn a_duplicated_entry_prints_every_line() {
+    let db = fixture("dup", b"LOL\tfirst match\nLOL\tsecond match\n");
+    let (out, code, err) = run(&["-f", &db.to_string_lossy(), "lol"]);
+    assert_eq!(out, "LOL: first match\nsecond match\n");
+    assert_eq!(err, "");
+    assert_eq!(code, 0);
+}
+
+/// 列表里的每一档**先**过一遍存在性检查（脚本 `:64-69` 是独立的一圈），任何一档
+/// 开不了就在**那一档**报一句并当场退 1——**后面的好档不查、也不印命中行**。
+/// 现量 `-f <含 LOL 的档> -f <不存在> lol` 与反序都只出那一句。
+#[test]
+fn an_unreadable_entry_in_the_list_stops_before_any_lookup() {
+    let good = fixture("precheck", b"LOL\tfrom good\n");
+    let missing = "/tmp/minix-wtf-face-definitely-absent.db";
+    let (out, code, err) = run(&["-f", &good.to_string_lossy(), "-f", missing, "lol"]);
+    assert_eq!(out, "", "前置检查没过就不该有任何命中行");
+    assert_eq!(
+        err,
+        format!("wtf: cannot open acronym database file `{missing}'\n"),
+        "报的是那一档自己"
+    );
+    assert_eq!(code, 1);
+
+    // 反序同形：坏档在前也一样，且不会因为好档在前就退 0
+    let (out, code, err) = run(&["-f", missing, "-f", &good.to_string_lossy(), "lol"]);
+    assert_eq!(out, "");
+    assert_eq!(
+        err,
+        format!("wtf: cannot open acronym database file `{missing}'\n")
+    );
+    assert_eq!(code, 1);
+}
+
+/// `ACRONYMDB` 的语义（脚本 `:47-53`）：只有**一枚 `-f` 都没给**时才有它的位置，
+/// 而且整串**按空白断词**成列表（`acronyms="$ACRONYMDB"` 之后 `for f in $acronyms`），
+/// 连排空格与尾部空格都不影响。现量 `ACRONYMDB="alpha  beta " sh … bbb` → 命中 beta 档。
+/// `-f` 一旦给过，`ACRONYMDB` **整支不看**：`ACRONYMDB=<含 LOL 的档> sh … -f /etc/hostname lol`
+/// 落进查无。
+#[test]
+fn the_environment_names_the_list_only_when_no_flag_was_given() {
+    let alpha = fixture("env-alpha", b"LOL\tfrom alpha\nAAA\tonly alpha\n");
+    let beta = fixture("env-beta", b"LOL\tfrom beta\nBBB\tonly beta\n");
+    let both = format!("{}  {} ", alpha.display(), beta.display());
+
+    let (out, code, err) = run_env(&["bbb"], &[("ACRONYMDB", &both)]);
+    assert_eq!(out, "BBB: only beta\n", "整串断词后第二档也在列表里");
+    assert_eq!(err, "");
+    assert_eq!(code, 0);
+
+    // 一枚 `-f` 就把环境那串顶掉了（查 `aaa` 会命中环境里的 alpha 档，此处应查无）
+    let (out, code, err) = run_env(
+        &["-f", &beta.to_string_lossy(), "aaa"],
+        &[("ACRONYMDB", &both)],
+    );
+    assert_eq!(out, "");
+    assert_eq!(err, "wtf: I don't know what `aaa' means!\n");
+    assert_eq!(code, 1);
+
+    // 空串等于没有（`[ -z "$ACRONYMDB" ]`），落到缺省档名那支
+    let (_out, code, err) = run_env(&["lol"], &[("ACRONYMDB", "")]);
+    assert_eq!(code, 1, "本机没有缺省库档时该报开不了");
+    assert!(
+        err.starts_with("wtf: cannot open acronym database file `"),
+        "实际 {err:?}"
+    );
+}

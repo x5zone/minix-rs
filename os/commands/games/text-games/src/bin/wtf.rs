@@ -17,14 +17,14 @@ use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
 mod support;
-use minix_text_games::acronym::lookup_acronym;
+use minix_text_games::acronym::matching_expansions;
 
 const DEFAULT_DB: &str = "/usr/share/misc/acronyms";
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let mut db_path = DEFAULT_DB;
+    let mut db_files: Vec<&str> = Vec::new();
     let mut at = 1;
     // 真源 `minix3/games/wtf/wtf:16-27` 走 `getopts f:o`，认不出来的旗标一律 `usage`
     // 退 1（实测 `sh minix3/games/wtf/wtf -Z nasa` → 先一句 shell 自己的
@@ -40,7 +40,10 @@ fn run() -> ! {
                 at += 1;
                 match args.get(at).copied() {
                     Some(path) => {
-                        db_path = path;
+                        // 脚本 `:21` 是 `acronyms="$OPTARG $acronyms"`——每一枚 `-f` 都
+                        // **插到列表最前面**，所以 `-f w1 -f w2` 的搜索次序是 w2 先。
+                        // 现量两档各有 `LOL` 时输出 `LOL: second file` 换行 `first file`。
+                        db_files.insert(0, path);
                         at += 1;
                     }
                     // 实测 `sh … -f` → shell 一句 `No arg for -f option` + 程序的 usage
@@ -78,22 +81,52 @@ fn run() -> ! {
         usage();
     }
 
+    // 脚本 `:42-56` 造那个档列表：`-f` 给过就用 `-f` 的（`ACRONYMDB` 此时**整支不看**，
+    // 现量 `ACRONYMDB=<有该词的库> sh … -f /etc/hostname lol` → 查无）；否则 `ACRONYMDB`
+    // 非空时把它的整串当列表（`acronyms="$ACRONYMDB"`，随后 `for f in $acronyms` 按
+    // **空白断词**，现量 `ACRONYMDB="w1  w2 "` 这种连排与尾部空格都能命中 w2 里的条目）；
+    // 两者都空才去对 `/usr/share/misc/acronyms*` 做通配展开——那一支要目录枚举，本 crate
+    // 现在拿不到（`dents` 住在 `minix-fileops`），所以退回单档缺省名，这一形已登记。
+    let env_list = if db_files.is_empty() {
+        env_value("ACRONYMDB").unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let mut files: Vec<&str> = db_files;
+    if files.is_empty() {
+        files.extend(env_list.split_ascii_whitespace());
+    }
+    if files.is_empty() {
+        files.push(DEFAULT_DB);
+    }
+
+    // 列表里每一档都要**先**过一遍：脚本 `:64-69` 是一条独立的前置圈，逐档
+    // `[ ! -f $f ]`，第一档开不了就打 `cannot open acronym database file \`<档>'` 并
+    // **当场退 1**——后面还有好档也不查、也不印任何命中行（现量
+    // `-f <含 LOL 的档> -f <不存在> lol` 只出那一句、退 1；反序同）。
+    // 前置圈过了之后才逐档读进同一个行池（`:76` 的 `fgrep -h $acronyms` 是把所有档
+    // 当一个流搜），顺序就是列表顺序。
     // 开档读档走 `support::slurp_operand` 的双生面（真机腿 `minix_sys::{open, read, close}`、
     // 宿主腿 `std::fs`）。改前这里直接写死 `minix_sys::open`，**宿主上任何真实存在的库档都报
     // `cannot open` 退 1**——与批次三百六十一给 `fortune` 治的是同一枚缺陷。
-    let image = match support::slurp_operand(db_path) {
-        Ok(image) => image,
-        Err(support::OperandFailure::Open(_)) => {
-            // 脚本原句 `wtf: cannot open acronym database file \`<路径>'`（`:67`，实测同）。
-            support::warn(
-                format!("wtf: cannot open acronym database file `{db_path}'\n").as_bytes(),
-            );
-            support::terminate(1);
-        }
-    };
-
-    let text = String::from_utf8_lossy(&image).into_owned();
-    let lines: Vec<&str> = text.lines().collect();
+    let mut lines: Vec<&str> = Vec::new();
+    let mut pool: Vec<String> = Vec::new();
+    for path in &files {
+        let image = match support::slurp_operand(path) {
+            Ok(image) => image,
+            Err(support::OperandFailure::Open(_)) => {
+                // 脚本原句 `wtf: cannot open acronym database file \`<路径>'`（`:67`，实测同）。
+                support::warn(
+                    format!("wtf: cannot open acronym database file `{path}'\n").as_bytes(),
+                );
+                support::terminate(1);
+            }
+        };
+        pool.push(String::from_utf8_lossy(&image).into_owned());
+    }
+    for text in &pool {
+        lines.extend(text.lines());
+    }
 
     let mut status = 0;
     for term in &terms {
@@ -101,20 +134,38 @@ fn run() -> ! {
         // `ACRONYMDB=<库> sh … nasa` → `NASA: National Aeronautics and Space Administration`。
         // 改前本壳原样输出查询词，等于把「打印哪个形态」这件真值漏掉了。
         let shown = term.to_ascii_uppercase();
-        match lookup_acronym(&lines, term) {
-            Ok(expansion) => support::emit(format!("{shown}: {expansion}\n").as_bytes()),
-            Err(_) => {
-                // 脚本原句走的是**操作数原样**而不是大写化的 target：`:105` 写的是
-                // `echo "$PROGNAME: I don't know what \`$i' means!"`（`$i` 是移位后的
-                // 实参，`$target` 只在命中那支用）。实测 `… zzz` → ``I don't know what
-                // `zzz' means!``，本壳一度印成 `ZZZ` 已经改回。句子本身走 stderr、
-                // 末了 `rv=1`（`:106-107`）。
-                support::warn(format!("wtf: I don't know what `{term}' means!\n").as_bytes());
-                status = 1;
-            }
+        let expansions = matching_expansions(&lines, term);
+        if !expansions.is_empty() {
+            // 一个词命中**多行**时（同档重复词条，或两档各有该词），`:77` 的 `sed` 把所有
+            // 匹配行都留下、`:80` 的 `echo "$target: $ans"` 只在**第一行**前面加 `TARGET: `，
+            // 后面的行裸着出。现量：同档两行 `LOL` → `LOL: first match` 换行 `second match`。
+            let joined = expansions.join("\n");
+            support::emit(format!("{shown}: {joined}\n").as_bytes());
+            continue;
+        }
+        {
+            // 脚本原句走的是**操作数原样**而不是大写化的 target：`:105` 写的是
+            // `echo "$PROGNAME: I don't know what \`$i' means!"`（`$i` 是移位后的
+            // 实参，`$target` 只在命中那支用）。实测 `… zzz` → ``I don't know what
+            // `zzz' means!``，本壳一度印成 `ZZZ` 已经改回。句子本身走 stderr、
+            // 末了 `rv=1`（`:106-107`）。
+            support::warn(format!("wtf: I don't know what `{term}' means!\n").as_bytes());
+            status = 1;
         }
     }
     support::terminate(status)
+}
+
+/// 环境里 `NAME` 的值：按 C 的 `getenv` 取**第一条**带 `NAME=` 前缀的串并去掉前缀。
+/// 与 `os/commands/bin/fileops/src/bin/du.rs:env_value` 同法——两处的宿主/真机双生面
+/// 各自住在自己的 `bin_support`，所以这份扫描也跟着各留一份（提到共件要跨 crate，
+/// 那属 `os/libs/` 的归属决定，不在本轮射程）。
+fn env_value(name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    support::envs().iter().find_map(|entry| {
+        let text = core::str::from_utf8(entry).ok()?;
+        text.strip_prefix(prefix.as_str()).map(String::from)
+    })
 }
 
 /// 脚本的 `usage()`（`minix3/games/wtf/wtf:11-14`）是 `echo` 到**标准输出**再退 1，

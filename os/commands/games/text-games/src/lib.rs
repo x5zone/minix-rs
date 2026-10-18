@@ -11,8 +11,9 @@
 //! 267 and 980, data files in `datfiles/`), card fishing
 //! (`minix3/games/fish/fish.c` with thirteen `RANKS` near line 61, the full
 //! deck near line 64, and book counting near line 83), acronym lookup
-//! (`minix3/games/wtf/wtf` with the `-o` and `-f` flags and the skipped `is`
-//! word), random filtering (`minix3/games/random/random.c` with time plus
+//! (`minix3/games/wtf/wtf` with the `-o` and `-f` flags, the one leading
+//! `is` operand dropped, the acronym-file list and the case rule that folds only
+//! the query side), random filtering (`minix3/games/random/random.c` with time plus
 //! process seeding near line 107 and the one over denominator selection near
 //! line 126), and the war games script (`minix3/games/wargames/wargames.sh`).
 //!
@@ -42,6 +43,7 @@
 //! `no_std` throughout. File reads and player prompts stay with the execution
 //! layer.
 
+extern crate alloc;
 pub mod acronym;
 pub mod adventure;
 pub mod fish;

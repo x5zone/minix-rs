@@ -43,6 +43,27 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
     std::env::args().collect()
 }
 
+/// Every environment string as raw `KEY=VALUE` bytes, in order (C `environ`).
+/// `minix3/games/wtf/wtf:47-53` 读的 `ACRONYMDB` 就是这么一个串，脚本先取整串、
+/// 再按空白断词。真机腿与 [`args`] 同一条出生链，宿主腿 re-join 成同一种形状。
+#[cfg(all(not(test), target_os = "none"))]
+pub fn envs() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+    minix_rt::crt0::envs().map(|raw| raw.to_vec()).collect()
+}
+
+/// Hosted twin of [`envs`].
+#[cfg(any(test, not(target_os = "none")))]
+pub fn envs() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+    std::env::vars()
+        .map(|(key, value)| {
+            let mut bytes = key.into_bytes();
+            bytes.push(b'=');
+            bytes.extend(value.into_bytes());
+            bytes
+        })
+        .collect()
+}
+
 /// Terminates the process with an exit status (see the module header).
 #[cfg(all(not(test), target_os = "none"))]
 pub fn terminate(code: i32) -> ! {
