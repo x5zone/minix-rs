@@ -122,6 +122,20 @@ impl GrantIssuer for PlaneLink<'_> {
     }
 }
 
+/// A borrowed link is itself a link: the client takes its transport by
+/// value, so a caller that holds `&mut L` hands the reference over.
+impl<L: Transport + GrantIssuer> Transport for &mut L {
+    fn exchange(&mut self, destination: Destination) -> Result<Reply, TransportError> {
+        (**self).exchange(destination)
+    }
+}
+
+impl<L: Transport + GrantIssuer> GrantIssuer for &mut L {
+    fn issue_grant(&mut self, endpoint: i32, address: u64, bytes: u32, write: bool) -> i32 {
+        (**self).issue_grant(endpoint, address, bytes, write)
+    }
+}
+
 /// The request type of one forwarded transfer: `BDEV_READ`/`BDEV_WRITE`
 /// (a proxy sends contiguous requests, see the crate's module note on the
 /// direct/vectored forms).

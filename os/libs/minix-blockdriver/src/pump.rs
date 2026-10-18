@@ -69,6 +69,15 @@ impl<D: BlockDriver> BlockService<D> {
         &self.opened
     }
 
+    /// Record an open this service forwarded itself: a proxy's open hook
+    /// has no transport, so the service forwards the request to the lower
+    /// driver and then tells the pump, which owns the restart gate's open
+    /// set (`driver.c`'s open bookkeeping runs in the framework, not in the
+    /// hook).
+    pub fn note_open(&mut self, minor: DeviceMinor) {
+        self.opened.insert_raw(minor.0);
+    }
+
     /// Handle one delivered message: notifications first, then the
     /// character-open refusal, then the block request gate and switch.
     pub fn dispatch<T: DriverTransport>(&mut self, transport: &mut T, msg: &Message) {

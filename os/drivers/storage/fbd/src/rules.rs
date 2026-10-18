@@ -145,12 +145,7 @@ impl FaultRule {
 ///
 /// C: `rule_find` (`rule.c:123-148`) aggregates ALL matches — not just
 /// the first — because two rules may both want a say about one request.
-pub fn find_rules(
-    rules: &mut [FaultRule],
-    pos: u64,
-    size: u64,
-    flag: u32,
-) -> (Vec<usize>, u32) {
+pub fn find_rules(rules: &mut [FaultRule], pos: u64, size: u64, flag: u32) -> (Vec<usize>, u32) {
     let mut matched = Vec::new();
     let mut hooks = 0;
     for (index, rule) in rules.iter_mut().enumerate() {
@@ -258,9 +253,9 @@ pub const fn torn_result(result: i32, original_size: u64) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use alloc::vec;
     use minix_types::EIO;
-    use super::*;
 
     fn rule(start: u64, end: u64, action: FaultAction) -> FaultRule {
         FaultRule::new(start, end, FLAG_READ | FLAG_WRITE, action)
@@ -390,11 +385,15 @@ mod tests {
             PRE_HOOK | POST_HOOK
         );
         assert_eq!(
-            rule(0, 0, FaultAction::Misdirect {
-                start: 0,
-                end: 100,
-                align: 4
-            })
+            rule(
+                0,
+                0,
+                FaultAction::Misdirect {
+                    start: 0,
+                    end: 100,
+                    align: 4
+                }
+            )
             .hook_mask(),
             PRE_HOOK
         );

@@ -187,6 +187,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `BDEV-DRIVER-LINK` 片收尾（fbd 前置①②落地）：**minix-bdev 公共面新增**（A 板是下游，按挂账约定登记）：`Destination` 补 `access`/`flags`/`user`/`request` 四条车道（补齐 C `mess_lbdev_lblockdriver_msg` 九车道）+ `with_flags`/`with_access`/`as_ioctl` 三个 const 构造器；`client::transfer_full`（带 flags 的传输，`transfer` 委托它、flags=0）；新模块 `driver.rs`：`Link<'a,T: DriverTransport>` 与 `PlaneLink<'a>`（数据面侧）双双实现 `Transport`+`GrantIssuer`，转发九车道填法与 `BDEV_REPLY`+id 校验按 `minix_blockdriver::wire` 对齐；四枚新门（minix-bdev 25/0）。`Destination` 四车道与 `transfer_full` 均为**新增**、既有构造点全用 `..Default::default()` 故零破坏 —— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `FBD` 片收尾（存储代理族第二台，占位 24→23）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `27→26` —— 随 fbd 接线（`os/drivers` 24→23）的机械过账。**minix-blockdriver 公共面新增**（A 板是下游）：`BlockService::note_open`（转发型服务的 open 记账入口：代理的 open 钩子无传输，服务代转后告知泵的 restart 门）；**minix-bdev 公共面新增**：`Transport`/`GrantIssuer` 对 `&mut L` 的 blanket impl（客户端按值取传输，持有引用者可交出）；fbd 本体四模块（protocol/face/service/main，28 枚新门）—— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。
