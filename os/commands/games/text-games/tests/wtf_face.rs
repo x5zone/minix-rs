@@ -197,3 +197,28 @@ fn a_lone_is_word_leaves_no_operand_and_prints_usage() {
     assert_eq!(code, 1);
     let _ = std::fs::remove_file(&db);
 }
+
+/// 词条那一侧的大小写是**逐字**比的：C 先把操作数大写（脚本 `:75` 的
+/// `tr '[a-z]' '[A-Z]'`），再拿这个大写形去比库档行首（`:76-77` 的 `fgrep -h` 加
+/// `sed "\|^$target[[:space:]]*||"`）。于是库里行首带小写字母的条目永远取不到——
+/// 参照件现量（`ACRONYMDB=<库> sh minix3/games/wtf/wtf <形>`，库行 `abc<TAB>lower term entry`
+/// 与 `DEF<TAB>upper`）：查 `abc` 与查 `ABC` 都落进「I don't know what …」并退 1，
+/// 而查 `def` 命中并印 `DEF: upper`。旧写法在库件里按 `eq_ignore_ascii_case` 比词条，
+/// 前两形会错报命中。
+#[test]
+fn a_lowercase_database_term_is_not_reachable_end_to_end() {
+    let db = fixture("termcase", b"abc\tlower term entry\nDEF\tupper\n");
+    let db = db.to_string_lossy().into_owned();
+
+    for query in ["abc", "ABC"] {
+        let (out, code, err) = run(&["-f", &db, query]);
+        assert_eq!(out, "", "查 {query} 不该有命中行");
+        assert_eq!(err, format!("wtf: I don't know what `{query}' means!\n"));
+        assert_eq!(code, 1);
+    }
+
+    let (out, code, err) = run(&["-f", &db, "def"]);
+    assert_eq!(out, "DEF: upper\n", "查询侧的大写化照旧生效");
+    assert_eq!(err, "");
+    assert_eq!(code, 0);
+}
