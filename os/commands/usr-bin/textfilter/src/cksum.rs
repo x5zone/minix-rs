@@ -220,11 +220,36 @@ pub enum CksumError {
     UnknownOption(char),
 }
 
+/// C 的 `-s`/`-t`/`-x` 三条**自己在 getopt 环里就把话印完**的腿（`cksum.c:255-274` 分别
+/// 调 `stringfunc`/`timetrialfunc`/`testsuitefunc`，三者的本体都在 `minix3/usr.bin/cksum/md5.c`，
+/// 八枚算法靠 `#include "md5.c"` 共用）。带上算法是因为 C 用的就是当时那个 `hash`：
+/// `-p`/`-s`/`-t`/`-x` 都要先过 `requirehash`，所以走到这里时算法必定已选中。
+///
+/// 次序跟着 argv 走，而且**后面选项报错也追不回来**：参照件 e-1 形
+/// （`-a md5 -s abc -Z`）的 stdout 有那一行串摘要，stderr 是 libc 的 `unknown option`，退码 1。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CksumAction<'a> {
+    /// `-s <串>`：C 的 `MD5String`（`md5.c:60-67`），一行 `NAME ("<串>") = <摘要>`。
+    String(Algo, &'a str),
+    /// `-t`：C 的 `MD5TimeTrial`（`md5.c:73-112`），四行；后两行随墙钟变。
+    TimeTrial(Algo),
+    /// `-x`：C 的 `MD5TestSuite`（`md5.c:118-133`），`NAME test suite:` 加八行固定串。
+    TestSuite(Algo),
+}
+
 /// Fold argv into a [`CksumRequest`]，按 libc `getopt` 的形状扫（`cksum.c:193` 的
 /// `"a:cno:pqs:twx"`）：一个 token 里可以聚簇多个字母（`-nq`），带值字母的值可以是
 /// 本 token 的剩余部分（`-ao`、`-sabc`）也可以是下一词（`-a md5`），`--` 结束扫描，
 /// 裸 `-` 是操作数。旧写法把整个 token 当一个字母，`-nq` 会被当成集外字母 `nq`。
-pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumError> {
+///
+/// `-s`/`-t`/`-x` 这三条腿在 C 里是**边扫边印**的（`cksum.c:255-274` 直接调
+/// `stringfunc`/`timetrialfunc`/`testsuitefunc`），于是它们的先后跟着 argv，而且后面
+/// 某个选项报错也拦不住已经印出去的那几行。采集面因此放在这里交给调用方，而不是
+/// 塞进 [`CksumRequest`]：报错那一条路上没有 request 可挂。
+pub fn parse_cksum_args_into<'a>(
+    args: &[&'a str],
+    actions: &mut Vec<CksumAction<'a>>,
+) -> Result<CksumRequest<'a>, CksumError> {
     let mut request = CksumRequest {
         kind: SumKind::Crc,
         hash: None,
@@ -312,16 +337,23 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
                     break;
                 }
                 's' => {
-                    // `-s` 先过 `requirehash`（`cksum.c:521-525`）：没选中 hash 才报那句
-                    // 并要求 `-a algorithm`；选中了则继续走，值本身要等真摘要时用。
-                    let _ = take_value(&mut index)?;
-                    if request.hash.is_none() {
+                    // `-s` 先过 `requirehash`（`cksum.c:255-259` + `:521-525`）：没选中才报那句
+                    // 并要求 `-a algorithm`。值本身已由 getopt 取走，所以缺值那一行仍先由 libc 印。
+                    let value = take_value(&mut index)?;
+                    let Some(algo) = request.hash else {
                         return Err(CksumError::RequiresHash('s'));
-                    }
-                    // 放行之后 C 立刻置 `nohashstdin`（`cksum.c:258`）。它不是「这条腿做完
-                    // 了」的记号，而是「末尾那一次对标准输入的摘要别再做了」的记号——
-                    // `-s` 已经把这一串摘要印过了。
+                    };
+                    // 放行之后 C **当场**调 `stringfunc(optarg)`（`cksum.c:258-259`）并把
+                    // `nohashstdin` 置真（`:258`）。`nohashstdin` 不是「这条腿做完了」的记号，
+                    // 而是「末尾那一次对标准输入的摘要别再做了」的记号（`:489`）。
+                    actions.push(CksumAction::String(algo, value));
                     request.nohash_stdin = true;
+                    // 本 token 的剩余部分一旦当了值，这个 token 就扫完了（libc 把本 token 的剩余部分当值交回之后
+                    // 就把待扫指针清空（`getopt.c:116-117` 与 `:140` 的 `place = EMSG`）。`-a`/`-o` 两臂本来就 break，
+                    // 这一臂以前不 break：`-sabc` 于是把 `a`、`b`、`c` 又当旗标扫一遍，
+                    // 撞上 `case 'a'` 去取「bc」当算法名——参照件 s-5 形是 `MD5 ("abc") = …`，
+                    // 本壳旧读数是一条 `illegal argument to -a option`。本轮新门把它咬出来了。
+                    break;
                 }
                 'c' => request.do_check = true,
                 'w' => request.check_warn = true,
@@ -336,11 +368,17 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
                     request.pipe = true;
                 }
                 't' | 'x' => {
-                    // 这两个也过 `requirehash`，放行后各自置 `nohashstdin`（`cksum.c:264`、
-                    // `:273`）：定时试验与测试套件自己就把话印完了。
-                    if request.hash.is_none() {
+                    // 这两个也过 `requirehash`，放行后 C 当场调 `timetrialfunc`/`testsuitefunc`
+                    //（`cksum.c:261-266`、`:270-275`）并各自置 `nohashstdin`：定时试验与测试
+                    // 套件自己就把话印完了，末尾那一次标准输入摘要不再做。
+                    let Some(algo) = request.hash else {
                         return Err(CksumError::RequiresHash(flag));
-                    }
+                    };
+                    actions.push(if flag == 't' {
+                        CksumAction::TimeTrial(algo)
+                    } else {
+                        CksumAction::TestSuite(algo)
+                    });
                     request.nohash_stdin = true;
                 }
                 _ => return Err(CksumError::UnknownOption(flag)),
@@ -355,6 +393,69 @@ pub fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 这些门判的是**状态折叠**（哪个字母把哪个字段改成什么），不关心三条自印腿的打印
+    /// 次序；采集面自己的门直接叫 `parse_cksum_args_into`。
+    fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumError> {
+        parse_cksum_args_into(args, &mut Vec::new())
+    }
+
+    /// 三条自印腿按 **argv 次序**进采集面，且 `-x -s abc` 这种同现不合并、不重排
+    ///（参照件 s-9 形：先 `MD5 test suite:` 那九行，再 `MD5 ("abc") = …`）。
+    #[test]
+    fn the_self_printing_legs_are_collected_in_argv_order() {
+        let mut actions = Vec::new();
+        assert!(parse_cksum_args_into(&["-a", "md5", "-x", "-s", "abc"], &mut actions).is_ok());
+        assert_eq!(
+            actions,
+            [
+                CksumAction::TestSuite(Algo::Md5),
+                CksumAction::String(Algo::Md5, "abc")
+            ],
+            "`-x` 在 argv 里在前，采集就必须在先"
+        );
+
+        // 重复出现就重复采集：C 的 getopt 环每命中一次调一次（参照件 x-5 形印了两套十六行）。
+        let mut twice = Vec::new();
+        assert!(parse_cksum_args_into(&["-a", "sha1", "-x", "-x"], &mut twice).is_ok());
+        assert_eq!(
+            twice,
+            [
+                CksumAction::TestSuite(Algo::Sha1),
+                CksumAction::TestSuite(Algo::Sha1)
+            ]
+        );
+
+        // 附值与聚簇两形取到的值都是那一串：`-sabc` 与 `-sa` 都印 `("abc")`/`("a")`。
+        let mut inline = Vec::new();
+        assert!(parse_cksum_args_into(&["-a", "md5", "-sabc"], &mut inline).is_ok());
+        assert_eq!(inline, [CksumAction::String(Algo::Md5, "abc")]);
+
+        // 三条腿都动 `nohashstdin`，而 `-p` 不动（`cksum.c:247-251` 里只有 `pflag = 1`）。
+        assert!(parse_cksum_args_into(&["-a", "md5", "-t"], &mut Vec::new()).is_ok());
+        assert!(!parse_cksum_args(&["-a", "md5", "-p"]).unwrap().nohash_stdin);
+    }
+
+    /// 报错那一形也要把已经印出去的行留下：C 在 getopt 环里就调了 `stringfunc`，
+    /// 之后的 `usage()` 追不回来（参照件 e-1/e-2/e-3 三形的 stdout 都有 `MD5 ("abc") = …`
+    /// 那一行，退码仍是 1）。采集面写在返回之前，正是为了这条路径。
+    #[test]
+    fn actions_survive_a_later_option_error() {
+        for tail in [vec!["-Z"], vec!["-o", "1"], vec!["-a", "sha1"]] {
+            let mut actions = Vec::new();
+            let mut argv = vec!["-a", "md5", "-s", "abc"];
+            argv.extend(tail.iter());
+            assert!(
+                parse_cksum_args_into(&argv, &mut actions).is_err(),
+                "{argv:?} 该报错"
+            );
+            assert_eq!(
+                actions,
+                [CksumAction::String(Algo::Md5, "abc")],
+                "{argv:?} 报错之前那一行已经印出去了"
+            );
+        }
+    }
 
     #[test]
     fn test_crc_table_matches_the_polynomial() {
