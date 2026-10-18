@@ -119,6 +119,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百七十五（A8 `COLRM-ERRLEG-ORDER-UNOBSERVABLE` 现查）：那句「宿主造不出承载」是错的——承载造得出，代价是要不要复刻 libc 缓冲，这才是真正待裁的一问
+
+- **这一轮量什么**：A 板 A8 行让人按「判据在宿主不可观测」收尾（判据原文：`os/commands/usr-bin/textfilter/tests/colrm_face.rs:320-321` 的注释，说「宿主上造不出『有字节在飞、同时读也出错』的承载」）。本轮先去造那个承载。造出来了，所以**这一行不能按原口径收尾**——但它也没变成「当场修」，原因在下面第三条。生产码一字未动。
+- **载体怎么造的**：pty 的 master 端在 slave 关闭后，会先把已缓冲的字节交出去、下一口才回 `EIO`。于是 `fd0 = master` 就是一根宿主给的、**先读得通随后失手**的真读源，不是脚本注入的假读源。写洞用 `/dev/full`。探针已入册：`tools/atf-c-compat/probes/colrm_leg_order.py`（用法：`python3 tools/atf-c-compat/probes/colrm_leg_order.py <C 参照件> <本壳>`；参照件用本轮刚立的 `tools/build-bsd-ref.sh` 现编）。顺带记一枚自己踩的坑：第一版先把载荷写进 slave 再起子进程，pty 缓冲很小，写方直接堵死——**先起子进程再喂**。
+- **四形矩阵读数**（C 参照件 `tmp/colrm-374/colrm_ref` 对 本壳 `tmp/host-target/debug/colrm`， stdout 一律 `/dev/full`；全文在 `tmp/colrm-374/matrix_readings.log`）。① 读坏 + 输出约 140 字节：C `退码=1 [colrm_ref: stdin: Input/output error]`，本壳 `退码=1 [colrm: stdout: No space left on device]`——**报的腿不同**。② 读净 + 输出约 140 字节：C **`退码=0` 且一字不报**，本壳 `退码=1 [colrm: stdout: ...]`——**连退码都不同**。③ 读坏 + 输出约 6300 字节：C 报 stdout 退 1，本壳同形。④ 读净 + 输出约 6300 字节：两侧都报 stdout 退 1。
+- **为什么批次三百三十二会判成「不可证」**：当时只试了「stdin 是目录」那一形，那里一个字节都没读进来、输出的字节数也是零，而**空写永不失败**，所以把两条腿的顺序反转得到的读数一模一样，确实分辨不出。加上 pty 这根载体才第一次把「有字节在飞、读随后失手、写也在失手」摆在一起，分叉就露出来了：本壳是**收全输入→过滤→一次写出**，所以任何写失手都在最后那一次写出时撞上，且永远先于读腿的报文。
+- **为什么不当场修**（这是本轮真正的结论，两种改法各撞一堵墙）。甲案「把读腿提到写之前先报」：能把形 ① 对齐成 stdin，但会**破坏形 ③**——那一形 C 报的是 stdout，因为它的写错是在环内刷缓冲时撞上的，发生在读失手之前。乙案「改成边读边写」：小输出的形 ② 仍然会当场撞上写错并退 1，而 C 在那一形是**退 0 不报**——C 的沉默来自 libc 只在缓冲攒满时才真的写。要四形全对，唯一办法是在命令层复刻 stdio 的缓冲阈值与策略：Minix 这边 `BUFSIZ`＝1024（`minix3/include/stdio.h:182`）、`__swhatbuf` 在非 tty 上按 `BUFSIZ` 建缓冲（`minix3/lib/libc/stdio/makebuf.c:168-178`），而且**字符设备走行缓冲**（同一处 `*couldbetty = S_ISCHR(st.st_mode)`）——`/dev/full` 恰是字符设备，所以阈值还随落点类型变。把「1024 还是 4096、按落点类型选行/全缓冲」这套 libc 机制抄进命令层，正是本项目第一原则所禁（`AGENTS.md`：抽象语义，不描述机制）；但不抄，形 ①② 的外部行为（含退码）就与真源不符。两条原则在这里正面冲突，且**影响面不止 colrm**：同 crate 还有 34 支壳在用静默的 `support::emit()`（批次三百三十二 `:1366` 已数过），裁决一并管它们。⇒ 挂 A 板 §6 待人裁决，本轮把两个选项与各自的后果摆全，不替项目定，也不把这一行降级成「不做」。
+- **本轮落了什么**：① 探针入册（上列路径），它同时是裁决后**验收用的矩阵**——任何一侧改完都该用这条命令复跑四形；② `colrm_face.rs` 那枚门（`both_streams_broken_reports_the_stream_c_reaches_first`）的注释里被否证的那半句就地纠正，并写明该枚门维持现状的理由与出处；③ A 板 A8 行改标 `⏸ 等人裁决` 并注明等什么、为什么不是不可观测；④ A 板 §6 新增一行决策项。门读数：`cd os && ulimit -v 3145728; cargo test --offline -j 1 -p minix-textfilter --test colrm_face` → **16 passed / 0 failed**（注释改动，断言未动，全套仍绿）。
+- **三件套**：核实命令 `bash tools/build-bsd-ref.sh -o tmp/colrm-374/colrm_ref minix3/usr.bin/colrm/colrm.c`、`python3 tools/atf-c-compat/probes/colrm_leg_order.py tmp/colrm-374/colrm_ref <本壳二进制>`；核实日 `2026-10-18`；基线快照 `4040e610c`。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim TEXTGAMES-EMIT-ERRLEG qoder`（A9 的 `wtf` 半，收尾型：真源 `minix3/games/wtf/wtf` 经 `file` 判为 POSIX shell script，「C 源码行为」这一格对它不适用，按批次三百六十已定的判据收口，不动码不立项）。
+
 ## 批次三百七十四（`CMD-LEDGER-RECOUNT` 闭，A10 台账卫生）：本账第一行那句摘要双重滞后，逐壳清点把它重立成现数
 
 - **这一轮量什么**：批次三百六十七 `:179` 把本文件第一行的状态摘要登记为「待一次逐壳清点重立」，并写明「一轮改摘要等于拿一轮的口径覆盖另一轮的账，所以本笔不动那行」。本轮就是那次清点。**只动台账与本板两件事，`os/` 一字未改。**
