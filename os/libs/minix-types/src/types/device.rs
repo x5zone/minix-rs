@@ -99,6 +99,16 @@ pub const BDEV_R_BIT: i32 = 0x01;
 /// Open access bit: write (`BDEV_W_BIT`, `com.h:983`).
 pub const BDEV_W_BIT: i32 = 0x02;
 
+/// Transfer flags: no flags set (`BDEV_NOFLAGS`, `com.h:986`).
+pub const BDEV_NOFLAGS: i32 = 0x00;
+
+/// Transfer flag: force the write through to the medium (`BDEV_FORCEWRITE`,
+/// `com.h:987`).
+pub const BDEV_FORCEWRITE: i32 = 0x01;
+
+/// Transfer flag: do not send a page address (`BDEV_NOPAGE`, `com.h:988`).
+pub const BDEV_NOPAGE: i32 = 0x02;
+
 /// `mess_vfs_lchardriver_openclose` 的 LP64 域偏移（VFS → 字符驱动）。
 ///
 /// C: `{ endpoint_t id; endpoint_t user; devminor_t minor; int access; }`
@@ -200,7 +210,7 @@ mod tests {
         assert_eq!(CDEV_NOCTTY, 0x04);
     }
 
-    /// Block family pinned to `com.h:963-983`.
+    /// Block family pinned to `com.h:963-988`.
     #[test]
     fn test_bdev_numbers_match_com_header() {
         assert_eq!(BDEV_RQ_BASE, 0x500);
@@ -208,6 +218,9 @@ mod tests {
         assert_eq!(BDEV_REPLY, 0x580);
         assert_eq!(BDEV_R_BIT, 0x01);
         assert_eq!(BDEV_W_BIT, 0x02);
+        assert_eq!(BDEV_NOFLAGS, 0x00);
+        assert_eq!(BDEV_FORCEWRITE, 0x01);
+        assert_eq!(BDEV_NOPAGE, 0x02);
     }
 
     /// The two families stay in disjoint ranges: a reply base of one must

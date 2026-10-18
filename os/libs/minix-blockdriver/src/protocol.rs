@@ -9,10 +9,12 @@
 
 use minix_types::{EINVAL, EIO, ENOTTY, ENXIO, OK};
 
-/// Base of the block request range.
+/// Block-family wire constants, single source in `minix-types` — the
+/// framework re-exports the C names so driver authors import one module.
 ///
-/// C: `BDEV_RQ_BASE 0x500` (`com.h:963`).
-pub const BDEV_REQUEST_BASE: i32 = 0x500;
+/// [ARCH: 设备族常量单点] 权威住 `minix_types::types::device`（com.h 逐值
+/// 钉值测试随库）；本模块不再定义本地副本。
+pub use minix_types::{BDEV_FORCEWRITE, BDEV_R_BIT, BDEV_RQ_BASE, BDEV_W_BIT};
 
 /// Maximum number of minor devices remembered as opened.
 ///
@@ -48,21 +50,6 @@ pub const DMA_SECTORS: u64 = 1;
 
 /// Bytes in the DMA staging buffer.
 pub const DMA_BUFFER_SIZE: u64 = DMA_SECTORS * SECTOR_SIZE;
-
-/// Open access flag: read access requested.
-///
-/// C: `BDEV_R_BIT 0x01` (`com.h:982`).
-pub const BDEV_READ_ACCESS: i32 = 0x01;
-
-/// Open access flag: write access requested.
-///
-/// C: `BDEV_W_BIT 0x02` (`com.h:983`).
-pub const BDEV_WRITE_ACCESS: i32 = 0x02;
-
-/// Transfer flag: force the write through to the medium immediately.
-///
-/// C: `BDEV_FORCEWRITE 0x01` (`com.h:987`).
-pub const BDEV_FORCE_WRITE: i32 = 0x01;
 
 /// Bound on queued messages in the shared message-queue module.
 ///
@@ -109,12 +96,12 @@ impl BdevRequest {
 
     /// Full message type of the request (base plus index).
     pub const fn message_type(self) -> i32 {
-        BDEV_REQUEST_BASE + self.index()
+        BDEV_RQ_BASE + self.index()
     }
 
     /// Decode a raw message type; `None` means "not a block request".
     pub const fn decode(message_type: i32) -> Option<BdevRequest> {
-        match message_type - BDEV_REQUEST_BASE {
+        match message_type - BDEV_RQ_BASE {
             0 => Some(BdevRequest::Open),
             1 => Some(BdevRequest::Close),
             2 => Some(BdevRequest::Read),
@@ -140,7 +127,7 @@ impl BdevRequest {
 ///
 /// C: `IS_BDEV_RQ(type)` (`com.h:966`).
 pub const fn is_block_request(message_type: i32) -> bool {
-    (message_type & !0x7f) == BDEV_REQUEST_BASE
+    (message_type & !0x7f) == BDEV_RQ_BASE
 }
 
 /// Minor device number of a block device.

@@ -57,7 +57,7 @@ pub fn version_allowed(major: u32, minor: u32) -> bool {
 /// frameworks, not re-declared here.
 pub fn is_filter_request(m_type: i32) -> bool {
     minix_chardriver::protocol::is_char_request(m_type)
-        || (m_type & !0x7f) == minix_blockdriver::protocol::BDEV_REQUEST_BASE
+        || (m_type & !0x7f) == minix_blockdriver::protocol::BDEV_RQ_BASE
 }
 
 #[cfg(test)]
