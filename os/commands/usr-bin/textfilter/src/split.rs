@@ -12,7 +12,9 @@
 //! all wired here (`lines_bytes` / `chunks_bytes` / `chunk_bytes` / `chunks_n`).
 //! Both line-mode faces are byte-addressed, as `split2` is: it scans the read
 //! buffer for `\n` and never checks an encoding, so undecodable bytes are
-//! ordinary data.
+//! ordinary data. The two streaming cutters below ([`ByteCutter`] for `-b`,
+//! [`LineCutter`] for the line face) carry only counters across reads, so
+//! neither one needs the whole input resident.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -419,6 +421,66 @@ impl ByteCutter {
                 self.open = false;
                 self.filled = 0;
             }
+        }
+        out
+    }
+}
+
+/// 按行数定长切分的**流式**切块器：把一块一块读进来的输入切成「写给当前分片」与
+/// 「另起一枚分片」两种片段，语义照 `minix3/usr.bin/split/split.c:242-282` 的 `split2`。
+///
+/// 与 [`ByteCutter`] 同一个协议，只是切点从字节计数换成换行计数。跨两次 `read`
+/// 留下的还是两个数（当前分片已数到几整行、当前分片是否还开着），**一段数据都不留**：
+/// 横跨两个缓冲的那一行分两次写进同一枚还开着的分片，所以这里没有、也不该有
+/// 拼接缓存——那会把驻留量重新拉回「最长那一行」。
+pub struct LineCutter {
+    numlines: usize,
+    lines: usize,
+    open: bool,
+}
+
+impl LineCutter {
+    /// 以每片 `numlines` 行建一个切块器。`numlines` 为零按调用方的错处理，
+    /// 与 [`ByteCutter::new`] 对 `size` 为零同一个口径。
+    pub fn new(numlines: usize) -> Self {
+        Self {
+            numlines,
+            lines: 0,
+            open: false,
+        }
+    }
+
+    /// 把一次读到的 `piece` 切成若干片段，顺序就是写出顺序。
+    pub fn take<'a>(&mut self, piece: &'a [u8]) -> Vec<CutPiece<'a>> {
+        let mut out = Vec::new();
+        if self.numlines == 0 {
+            return out;
+        }
+        let mut start = 0usize;
+        for (index, byte) in piece.iter().enumerate() {
+            if *byte != b'\n' {
+                continue;
+            }
+            self.lines += 1;
+            if self.lines != self.numlines {
+                continue;
+            }
+            self.lines = 0;
+            out.push(CutPiece {
+                bytes: &piece[start..index + 1],
+                opens_new_file: !self.open,
+            });
+            // 切点之后就不再有「还开着的分片」了：下一段自己按 `!open` 决定要不要
+            // 另起一枚，于是「切点落在片段正中」与「切点正好压在片段末」共用一条路。
+            self.open = false;
+            start = index + 1;
+        }
+        if start < piece.len() {
+            out.push(CutPiece {
+                bytes: &piece[start..],
+                opens_new_file: !self.open,
+            });
+            self.open = true;
         }
         out
     }
@@ -847,5 +909,250 @@ mod tests {
         let mut cutter = ByteCutter::new(0);
         assert!(cutter.take(&[1, 2, 3]).is_empty());
         assert_eq!(chunk_bytes(&[1u8, 2, 3], 0), Vec::<&[u8]>::new());
+    }
+
+    /// 把 [`LineCutter`] 逐片交回的片段**严格按 `opens_new_file`** 归成文件。字节腿那枚
+    /// 等价门留了 `|| files.is_empty()` 的逃逸，这里不留：第一片就该自己说得出「另起
+    /// 一枚」，否则「一枚文件都没开」与「开档时机写错了」在门里长得一样。
+    fn streaming_files(data: &[u8], piece_len: usize, numlines: usize) -> Vec<Vec<u8>> {
+        let mut cutter = LineCutter::new(numlines);
+        let mut files: Vec<Vec<u8>> = Vec::new();
+        let mut offset = 0usize;
+        while offset < data.len() {
+            let piece = &data[offset..(offset + piece_len).min(data.len())];
+            offset += piece_len;
+            for part in cutter.take(piece) {
+                assert!(!part.bytes.is_empty(), "切块器不许交回零长度的片段");
+                if part.opens_new_file {
+                    files.push(Vec::new());
+                }
+                files
+                    .last_mut()
+                    .expect("片段必属某一枚分片")
+                    .extend_from_slice(part.bytes);
+            }
+        }
+        files
+    }
+
+    /// 整档一次切完的文件序列，即流式那条腿的参照半（与 `chunk_bytes` 给字节腿
+    /// 当参照同一个办法）。
+    fn whole_files(data: &[u8], numlines: usize) -> Vec<Vec<u8>> {
+        chunks_bytes(&lines_bytes(data), numlines)
+            .into_iter()
+            .map(|chunk| chunk.concat())
+            .collect()
+    }
+
+    /// 形状集合：空、无换行的一行、单个空行、末行不带换行、正好切在换行上、
+    /// 空行夹在中间、不可解码的字节当数据。这一组长度都在 40 字节以内，
+    /// 所以下面那枚门能把片长**逐个**试过来。
+    fn small_shapes() -> Vec<Vec<u8>> {
+        vec![
+            Vec::new(),
+            b"a".to_vec(),
+            b"\n".to_vec(),
+            b"a\nb\nc".to_vec(),
+            b"a\nb\nc\n".to_vec(),
+            b"a\n\nb\n".to_vec(),
+            b"aa\xffbb\ncc\xfe\ndd\n".to_vec(),
+            (0..40u8)
+                .map(|i| if i % 4 == 3 { b'\n' } else { b'x' })
+                .collect(),
+        ]
+    }
+
+    /// 等价门（流式化「不改可见行为」的证明，小形状逐个片长扫）：同一份输入，
+    /// 随便按哪个边界成块读进来，交回的文件必须与整档一次切完**逐字节**相同。
+    /// 片长取遍 `1..=len+1`，于是「切点正好压在片段末」「一行跨两片」「末字节就是
+    /// 换行」这些形状不需要人挨个点。
+    #[test]
+    fn the_line_cutter_agrees_with_the_whole_buffer_cut_at_any_read_boundary() {
+        for data in small_shapes() {
+            for numlines in [1usize, 2, 3, 5] {
+                let expected = whole_files(&data, numlines);
+                for piece_len in 1..=data.len() + 1 {
+                    assert_eq!(
+                        streaming_files(&data, piece_len, numlines),
+                        expected,
+                        "numlines={numlines} piece_len={piece_len} len={}",
+                        data.len()
+                    );
+                }
+            }
+        }
+    }
+
+    /// 同一件事在大形状上再走一遍：这些形状长到没法逐个试片长，于是取一组
+    /// 有代表性的读边界——一字节一读、跨过切点、正好压在行末、跨读块、比输入还长。
+    /// 其中 97 字节一行与 60 字节一行是专门留给「一行横跨两次读」的。小形状不在
+    /// 此列：上一枚门已把它们按每个片长扫过，重复扫一遍只是把同一件事测两次。
+    #[test]
+    fn the_line_cutter_agrees_on_the_big_shapes_at_the_awkward_read_sizes() {
+        let lines = |width: usize, count: usize, mark: u8| -> Vec<u8> {
+            (0..(width * count))
+                .map(|i| if i % width == width - 1 { b'\n' } else { mark })
+                .collect()
+        };
+        let shapes = vec![
+            (0..401u32)
+                .map(|i| if i % 100 == 99 { b'\n' } else { b'q' })
+                .collect(),
+            lines(97, 41, b'l'),
+            lines(60, 1200, b'w'),
+        ];
+        for data in &shapes {
+            for numlines in [1usize, 3, 64, 100, 1000] {
+                let expected = whole_files(data, numlines);
+                for piece_len in [
+                    1usize,
+                    2,
+                    3,
+                    5,
+                    7,
+                    8,
+                    13,
+                    16,
+                    40,
+                    64,
+                    97,
+                    100,
+                    128,
+                    1000,
+                    4096,
+                    65536,
+                    65537,
+                    data.len(),
+                    data.len() + 1,
+                ] {
+                    assert_eq!(
+                        streaming_files(data, piece_len, numlines),
+                        expected,
+                        "numlines={numlines} piece_len={piece_len} len={}",
+                        data.len()
+                    );
+                }
+            }
+        }
+    }
+
+    /// 真实读块形状：C 每次 `read` 一个 `MAXBSIZE`（本壳 `STREAM_CHUNK` = 64 KiB），
+    /// 1 KiB 的行凑满 64 行正好是 64 KiB。于是切点**恰好**压在两次的读边界上——
+    /// 这一形只能有两枚分片，多出第三枚（空尾）就是把「切点占末字节」写错了。
+    #[test]
+    fn the_real_read_block_shape_makes_two_files_not_three() {
+        let data: Vec<u8> = (0..(1024 * 128u32))
+            .map(|i| if i % 1024 == 1023 { b'\n' } else { b'z' })
+            .collect();
+        let files = streaming_files(&data, 64 * 1024, 64);
+        assert_eq!(files.len(), 2, "128 KiB 的 1 KiB 行按 64 行切是两枚");
+        assert!(files.iter().all(|file| file.len() == 64 * 1024));
+        assert_eq!(files, whole_files(&data, 64));
+    }
+
+    /// 一行横跨两次读：两截必须写进**同一枚**还开着的分片（C 的 `if (Cs < Ce)`
+    /// 就是这一形，`split.c:276-280`），不许因为换行还没来就另起一枚。
+    #[test]
+    fn a_line_straddling_two_reads_stays_in_one_chunk_file() {
+        let mut cutter = LineCutter::new(1);
+        let head = cutter.take(b"a");
+        assert_eq!(
+            head,
+            vec![CutPiece {
+                bytes: b"a",
+                opens_new_file: true
+            }]
+        );
+        let body = cutter.take(b"b");
+        assert_eq!(
+            body,
+            vec![CutPiece {
+                bytes: b"b",
+                opens_new_file: false
+            }],
+            "行还没结束，不许另起一枚"
+        );
+        let tail = cutter.take(b"c\n");
+        assert_eq!(
+            tail,
+            vec![CutPiece {
+                bytes: b"c\n",
+                opens_new_file: false
+            }],
+            "换行落在这一次读里，收尾仍属同一枚分片"
+        );
+    }
+
+    /// 切点正好压在片段末：此刻下一枚分片**还不该开**，要等下一次真读到字节才开
+    /// （C 的 `if (len) newfile(); else file_open = 0;`，`split.c:271-274`）。
+    /// 读到这里就失手也就停在这一枚上，不会多出一枚空文件。
+    #[test]
+    fn a_cut_on_the_last_byte_of_a_read_leaves_the_next_file_unopened() {
+        let mut cutter = LineCutter::new(1);
+        assert_eq!(
+            cutter.take(b"a\n"),
+            vec![CutPiece {
+                bytes: b"a\n",
+                opens_new_file: true
+            }]
+        );
+        assert!(
+            cutter.take(b"").is_empty(),
+            "没有字节进来就不该开下一枚分片"
+        );
+        assert_eq!(
+            cutter.take(b"b\n"),
+            vec![CutPiece {
+                bytes: b"b\n",
+                opens_new_file: true
+            }],
+            "下一次真读到字节，才由那一段自己宣布另起一枚"
+        );
+    }
+
+    /// 一次读里没有换行：整段灌进当前分片，且只有当前没有开着的分片时才另起一枚。
+    #[test]
+    fn a_piece_without_any_newline_fills_the_open_chunk() {
+        let mut cutter = LineCutter::new(2);
+        assert_eq!(
+            cutter.take(b"ab"),
+            vec![CutPiece {
+                bytes: b"ab",
+                opens_new_file: true
+            }]
+        );
+        assert_eq!(
+            cutter.take(b"cd"),
+            vec![CutPiece {
+                bytes: b"cd",
+                opens_new_file: false
+            }]
+        );
+    }
+
+    /// 一次读横跨好几个切点时每个切点各起一枚文件，且段段非空
+    /// （`numlines` 为一是最容易写出零长度尾巴的形状）。
+    #[test]
+    fn several_cuts_in_one_piece_open_one_file_each() {
+        let mut cutter = LineCutter::new(1);
+        let pieces = cutter.take(b"a\nb\nc\n");
+        assert_eq!(pieces.len(), 3);
+        assert!(
+            pieces.iter().all(|part| part.opens_new_file),
+            "三个切点各起一枚"
+        );
+        assert!(pieces.iter().all(|part| !part.bytes.is_empty()));
+        assert_eq!(
+            pieces.iter().map(|part| part.bytes).collect::<Vec<_>>(),
+            vec![&b"a\n"[..], &b"b\n"[..], &b"c\n"[..]]
+        );
+    }
+
+    /// `numlines` 为零是调用方的错，与字节腿同一个口径：什么都切不出来。
+    #[test]
+    fn a_zero_line_count_cutter_produces_no_pieces() {
+        let mut cutter = LineCutter::new(0);
+        assert!(cutter.take(b"a\nb\n").is_empty());
+        assert!(whole_files(b"a\nb\n", 0).is_empty());
     }
 }
