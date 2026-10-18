@@ -18,13 +18,16 @@
 extern crate alloc;
 use alloc::format;
 
+/// 一次读进来的字节数，取自 C 的 `MAXBSIZE`（`minix3/tools/compat/compat_defs.h:1151` 写作 `64 * 1024`）。
+const STREAM_CHUNK: usize = 64 * 1024;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::split::{
-    chunk_bytes, chunks_bytes, chunks_n, lines_bytes, parse_split_args, suffix, SplitError,
+    chunks_bytes, chunks_n, lines_bytes, parse_split_args, suffix, ByteCutter, SplitError,
 };
 use minix_textfilter::GetoptReport;
 
@@ -54,6 +57,30 @@ fn run() -> ! {
     // 为它开了特例），其余按名字开档。开档失手当场 `err(1, "%s", *argv)` 退出；
     // `read` 失手要先把已经读到的切出去、再补一句 `err(1, "read")`（`:185-190`、
     // `:252-257`），所以那个号带着读到的字节一起往下走。
+    // `-b`: 按字节定长切分，走 C 的 `split1` 那条**流式**腿——一次读一块、边读边写，
+    // 跨读只留一个计数器（`split.c:175-236`）。它必须在整档读之前分岔，否则
+    // 「内存里有整个输入」这件事会把这条腿的用量重新拉回去。
+    if let Some(n) = byte_size {
+        let source = operands.first().copied();
+        match split_bytes(prog, prefix, source, n, sfxlen) {
+            Some(support::InputFailure::Open(code)) => {
+                // 开档失手是 `err(1, "%s", *argv)`（`split.c:137-138`），报操作数原文；
+                // 标准输入那一形不 open，所以永远不会走到这里。
+                if let Some(name) = source.filter(|name| *name != "-") {
+                    support::warn_line(prog, name, code);
+                }
+                support::terminate(1);
+            }
+            Some(support::InputFailure::Read(code)) => {
+                // 读失手与行模式同一个主人：`case -1:` 当场 `err(1, "read")`，退 1，
+                // 而此前已经写出去的分片照旧留在盘上（C 也是边读边写）。
+                support::warn_line(prog, "read", code);
+                support::terminate(1);
+            }
+            None => support::terminate(0),
+        }
+    }
+
     let (input, read_failure) = match operands.first() {
         None => support::read_stdin_error(),
         Some(name) if *name == "-" => support::read_stdin_error(),
@@ -73,22 +100,6 @@ fn run() -> ! {
     // `:262-267`），从不校验编码，所以不可解码的字节只是普通数据；换行留在
     // 它结束的那一行上，末行不带换行就不带。
     let lines = lines_bytes(&input);
-    // `-b`: byte-addressed split (`split1`) over the raw input, no line
-    // reconstruction — each fixed-size chunk is written verbatim.
-    if let Some(n) = byte_size {
-        for (index, chunk) in chunk_bytes(&input, n).iter().enumerate() {
-            let path = match out_path(prefix, index, sfxlen) {
-                Some(path) => path,
-                None => too_many_files(),
-            };
-            if let Err(failure) = create_write(&path, chunk) {
-                write_failure(prog, &path, failure);
-            }
-        }
-        // 读腿那一形与行模式同一个主人：C 的 `split1` 在 `case -1:` 当场
-        // `err(1, "read")`（`split.c:188-190`），退 1 而不是退 0。
-        finish(prog, read_failure);
-    }
     // `-n`: exactly `n` byte chunks (`split3`); the last absorbs the remainder.
     // 块数上限与那句报文里的数都取自**内核给的大小**，不取自已收到的字节数：C 在读之前
     // `fstat(ifd, &sb)`（`split.c:293-300`），失手是 `err(1, "stat")`，`sb.st_size` 再判
@@ -234,6 +245,56 @@ fn failure_label<'a>(failure: &ChunkWrite, path: &'a str) -> &'a str {
 fn too_many_files() -> ! {
     support::warn(b"split: too many files.\n");
     support::terminate(1);
+}
+
+/// `-b` 那条流式腿的驱动：把 `bin_support::stream_input` 交回来的每一块喂给
+/// [`ByteCutter`]，按片段的「另起一枚」信号关上一枚、推进后缀、开下一枚。
+/// 关档发生在开下一枚**之前**，报的是**上一枚**的名字（C 的 `newfile()`，
+/// `split.c:309-322`：`close(ofd) != 0` 就 `err(1, "%s", fname)`，此时 `fname` 还没推进）。
+fn split_bytes(
+    prog: &str,
+    prefix: &str,
+    source: Option<&str>,
+    size: usize,
+    width: usize,
+) -> Option<support::InputFailure> {
+    let mut cutter = ByteCutter::new(size);
+    let mut current: Option<(String, support::WriteSink)> = None;
+    let mut index = 0usize;
+    let outcome = support::stream_input(source, STREAM_CHUNK, |piece| {
+        for part in cutter.take(piece) {
+            if part.opens_new_file {
+                close_chunk(prog, current.take());
+                let path = match out_path(prefix, index, width) {
+                    Some(path) => path,
+                    None => too_many_files(),
+                };
+                index += 1;
+                let sink = match support::create_sink(&path) {
+                    Ok(sink) => sink,
+                    Err(code) => write_failure(prog, &path, ChunkWrite::Open(code)),
+                };
+                current = Some((path, sink));
+            }
+            let (path, sink) = current.as_mut().expect("刚开过的分片必有落点");
+            if let Err(failure) = sink.append(part.bytes) {
+                write_failure(prog, path, sink_failure_of(failure));
+            }
+        }
+    });
+    close_chunk(prog, current.take());
+    outcome
+}
+
+/// 关掉一枚分片文件；`close` 失手按 C 报**路径**（`split.c:319-322`）。
+/// 宿主这条腿看不见 `close` 的失败，两腿差异已在 `SPLIT-CLOSE-ERRLEG` 登记。
+fn close_chunk(prog: &str, chunk: Option<(String, support::WriteSink)>) {
+    let Some((path, sink)) = chunk else {
+        return;
+    };
+    if let Err(failure) = sink.seal() {
+        write_failure(prog, &path, sink_failure_of(failure));
+    }
 }
 
 #[cfg(test)]

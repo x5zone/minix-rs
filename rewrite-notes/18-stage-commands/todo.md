@@ -119,6 +119,55 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百五十七（`SPLIT-STREAMING-MEMORY` 片甲收口）：两条缝接上，`-b` 真的边读边写
+
+- **这一步做什么**：批次三百五十六欠的两条缝补齐，`-b` 那条腿从「整档读进一个 `Vec` 再切」
+  换成 C 的 `split1` 形状——一次读一块、边读边写、跨读只留一个计数器。
+  新缝两条，都在 `os/commands/usr-bin/textfilter/src/bin_support.rs` 的双生面上：
+  `stream_input(path, chunk_len, take)`（宿主 `std::io::Read`、真机 `minix_sys::read`，
+  开档失手与读失手分两臂交回，**已经交出去的块不收回**）；
+  `WriteSink` 长出 `append(&mut self, bytes)` 与 `seal(self)`，一枚文件因此可以分段写完再关，
+  不再只能一次灌满。C 的对位：`read` 一圈一圈在 `split.c:184-190`，
+  `bigwrite(ofd, Cs, bcnt)` 在 `:204`，`newfile()` 里先 `close(ofd)` 再 `open` 在 `:309-335`。
+
+- **驱动放在壳里，判断仍在库**：`src/bin/split.rs::split_bytes` 拿着批次三百五十六那枚
+  `ByteCutter`，把 `stream_input` 交回来的每一块切成片段，按 `opens_new_file` 的信号
+  **先关掉上一枚再开下一枚**，并带着上一枚的名字——这正是 `SPLIT-CLOSE-ERRLEG` 登记的形状
+  （`split.c:319-322` 的 `err(1, "%s", fname)` 此时 `fname` 还没推进）。
+  每次读的块大小 `STREAM_CHUNK` 取 C 的 `MAXBSIZE`（`minix3/tools/compat/compat_defs.h:1151`
+  写作 `64 * 1024`）。`-b` 的分岔挪到整档读**之前**，否则「内存里先有整个输入」这件事
+  会把这条腿的用量原样拉回去。开档失手仍报操作数原文、读失手仍报 `read` 且退 1，
+  两条臂与行模式不再各写一遍。
+
+- **不改可见行为的凭据**：`tests/split_face.rs` 那 25 枚门一字未改全绿
+  （`cargo test -p minix-textfilter --test split_face` → `25 passed / 0 failed`），
+  里面就含分片内容逐字节、分片文件名、`-b` 与行模式各形、两枚读失手形；
+  宿主 `--lib` `534 passed / 0 failed`，整包无失败。库侧那枚等价门
+  （六种片长乘八种读边界与 `chunk_bytes` 逐字节相同）从另一头钉住同一件事。
+  **负面控制**一枚：把「另起一枚分片」的信号改成永不起（`if part.opens_new_file` → `if false`），
+  `byte_mode_is_untouched_by_the_line_rewrite` 变红；跑完按改坏前留在内存里的那份原文复原，
+  md5 `d2be80d9…` 前后一致，复原后该套件复绿 25 枚。
+
+- **仍未闭的一处（如实记着，不当作已解决）**：「先读成功若干次、再读失手」那一形
+  现在**语义**上已与 C 同形（读失手前写出去的分片留在盘上），但**没有一门**能钉它——
+  宿主上造不出一枚「读两次成功、第三次失手」的稳定输入。要钉住它得换注入点：
+  把 `split_bytes` 的读源抽成可注入的闭合并加一枚宿主单测（脚本化两块后失手，
+  断言前两块已写出的文件仍在）。这条登记为 `SPLIT-MIDSTREAM-READERR-GATE`，下一轮做。
+
+- **门读数（本轮）**：容器权威门在**改完 clippy 两处小瑕疵之后**重跑一次为准 ——
+  `docker run --rm -v "$PWD:/work" -w /work/os -m 2g -u $(id -u):$(id -g) minix-ci:1.94
+  cargo test -j 1 -p minix-textfilter` → `test result:` 摘要 68 套，
+  合计 `1074 passed / 0 failed`，退码 0，日志 `tmp/split-357/container-gate-2.log`
+  （第一次跑的 `container-gate.log` 同读数，只差那两处措辞级修正）。
+  总数与批次三百五十六的 `1074` 持平，正是「流式化不改可见行为」的门侧证据。
+  宿主侧：`--lib` `534 passed / 0 failed`，`--test split_face` `25 passed / 0 failed`，整包无失败。
+  `rustfmt --edition 2021 --check` 对触及文件零漂移；`cargo clippy -p minix-textfilter --all-targets`
+  在触及文件里只剩一条既有的 `items after a test module`（`src/bin/split.rs:301`，
+  本轮之前就在，只因插入把行号从 240 推到 301），本轮新引入的两条
+  （可省略的显式生命周期、可合并的 `if`）已当场改掉。
+
+---
+
 ## 批次三百五十六（`SPLIT-STREAMING-MEMORY` 片甲的第二步）：先把流式切块的语义单独坐实，再接读缝
 
 - **本轮落的是决定半，不是整片**。真流式还缺两样东西：`bin_support.rs` 双生面里一条**分块读**的缝

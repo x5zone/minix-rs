@@ -425,6 +425,21 @@ impl WriteSink {
     /// 错误腿交回的是**平台那个号**：C 的 `split.c:204`、`:216`、`:225` 三处都是
     /// `bigwrite()` 对不上数就 `err(1, "write")`，`err` 后缀打的正是 `errno`——
     /// 「盘写满」与「真的一次 I/O 错」是两句话，压成一个 `EIO` 就只剩「出错了」。
+    /// 往同一枚已打开的输出文件里再写一段：`split -b` 流式化之后，一次读到的字节
+    /// 属于当前分片的哪一截就写哪一截（C 的 `bigwrite(ofd, Cs, bcnt)` 就是这个形状）。
+    pub fn append(&mut self, bytes: &[u8]) -> Result<(), SinkFailure> {
+        use std::io::Write as _;
+        self.0
+            .write_all(bytes)
+            .map_err(|failure| SinkFailure::Write(errno_of(&failure)))
+    }
+
+    /// 写完收尾。宿主这条腿看不见 `close` 的失败（`std::fs::File` 由 drop 关闭且不交回号），
+    /// 与 `finish` 同一条已登记的差异（`SPLIT-CLOSE-ERRLEG`）。
+    pub fn seal(self) -> Result<(), SinkFailure> {
+        Ok(())
+    }
+
     pub fn finish(mut self, bytes: &[u8]) -> Result<(), SinkFailure> {
         use std::io::Write as _;
         // 宿主这条腿看不见 `close` 的失败：`std::fs::File` 由 drop 关闭且不交回任何号，
@@ -442,6 +457,19 @@ impl WriteSink {
     /// `bigwrite()`（`minix3/usr.bin/split/split.c:337-351`）的循环形状。错误腿带
     /// 平台号，因为调用方要的就是 `err(1, "write")` 那一句。描述符在返回前释放；
     /// `close` 的失败本层不报（`SPLIT-CLOSE-ERRLEG` 已登记）。
+    /// 往同一枚已打开的输出文件里再写一段，形状照 C 的 `bigwrite()`。
+    pub fn append(&mut self, bytes: &[u8]) -> Result<(), SinkFailure> {
+        write_loop(self.fd, bytes).map_err(SinkFailure::Write)
+    }
+
+    /// 写完收尾并交回 `close` 的号：C 在 `newfile()` 里 `close(ofd) != 0` 就
+    /// `err(1, "%s", fname)`（`split.c:319-322`），此时 `fname` 还是刚写完那一枚。
+    pub fn seal(self) -> Result<(), SinkFailure> {
+        minix_sys::close(self.fd)
+            .map(|_| ())
+            .map_err(SinkFailure::Close)
+    }
+
     pub fn finish(self, bytes: &[u8]) -> Result<(), SinkFailure> {
         let write = write_loop(self.fd, bytes).map_err(SinkFailure::Write);
         let close = minix_sys::close(self.fd)
@@ -566,6 +594,102 @@ pub fn read_operand(path: &str) -> (Vec<u8>, Option<InputFailure>) {
     };
     let _ = minix_sys::close(fd);
     (input, outcome.err())
+}
+
+/// 分块读的双生缝：每次最多读 `chunk_len` 字节，读到的原样交给 `take`，读到尽头或读失手就停。
+///
+/// 这是 `split -b` 那一支要的读法：C 的 `split1` 一圈一圈 `read(ifd, bfr, MAXBSIZE)`，
+/// 跨读留下的只有「当前分片已写多少字节」这一个计数器，不留数据
+/// （`minix3/usr.bin/split/split.c:175-236`）。交回 `Some(InputFailure)` 时，
+/// 已经交出去的那几块**不收回**——C 是边读边写，读失手之前落盘的分片照旧在盘上。
+/// 开档失手与读失手分两臂交回，因为 C 的句式不同：前者 `err(1, "%s", *argv)` 报操作数，
+/// 后者 `err(1, "read")` 报这个词（`:137-138` 与 `:188-190`）。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn stream_input<F>(path: Option<&str>, chunk_len: usize, mut take: F) -> Option<InputFailure>
+where
+    F: FnMut(&[u8]),
+{
+    use std::io::Read;
+    if chunk_len == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u8; chunk_len];
+    let mut handle: Box<dyn Read> = match path {
+        None | Some("-") => Box::new(std::io::stdin()),
+        Some(name) => match std::fs::File::open(name) {
+            Ok(opened) => Box::new(opened),
+            Err(failure) => return Some(InputFailure::Open(errno_of(&failure))),
+        },
+    };
+    let mut filled = 0usize;
+    loop {
+        if filled == chunk_len {
+            take(&buffer[..filled]);
+            filled = 0;
+        }
+        match handle.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(count) => filled += count,
+            Err(failure) => {
+                if filled > 0 {
+                    take(&buffer[..filled]);
+                }
+                return Some(InputFailure::Read(errno_of(&failure)));
+            }
+        }
+    }
+    if filled > 0 {
+        take(&buffer[..filled]);
+    }
+    None
+}
+
+/// 真机那条腿走 `minix_sys::read`，其余形状与宿主腿一字同意：交出去的块不收回，
+/// 开档臂与读臂各归各的号。标准输入（含裸 `-`）不 `open` 也不 `close`。
+#[cfg(all(not(test), target_os = "none"))]
+pub fn stream_input<F>(path: Option<&str>, chunk_len: usize, mut take: F) -> Option<InputFailure>
+where
+    F: FnMut(&[u8]),
+{
+    if chunk_len == 0 {
+        return None;
+    }
+    let mut buffer = alloc::vec![0u8; chunk_len];
+    let name = match path {
+        None | Some("-") => None,
+        Some(name) => Some(name),
+    };
+    let fd = match name {
+        None => STDIN,
+        Some(name) => match minix_sys::open(name, 0, 0) {
+            Ok(handle) => handle,
+            Err(code) => return Some(InputFailure::Open(code)),
+        },
+    };
+    let mut filled = 0usize;
+    let failure = loop {
+        if filled == chunk_len {
+            take(&buffer[..filled]);
+            filled = 0;
+        }
+        match read(fd, &mut buffer[filled..]) {
+            Ok(0) => break None,
+            Ok(count) => filled += count,
+            Err(code) => {
+                if filled > 0 {
+                    take(&buffer[..filled]);
+                }
+                break Some(InputFailure::Read(code));
+            }
+        }
+    };
+    if filled > 0 {
+        take(&buffer[..filled]);
+    }
+    if name.is_some() {
+        let _ = minix_sys::close(fd);
+    }
+    failure
 }
 
 /// An input operand that has been opened but not yet read.
