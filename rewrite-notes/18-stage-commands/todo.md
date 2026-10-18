@@ -119,6 +119,18 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百（A2 渲染半切片 6：`tr`）：第六支壳换到字节形；`tr` 的 usage 是四行硬编码块，逐字节门因此比别的壳更怕多余空白
+
+- **这一轮干什么**：A2 渲染半第六次落地，选 `tr`（`src/tr.rs:609` 的取法自始就是 `char::from(letter)`，登记里那条失真只指渲染）。落码三件：`os/commands/usr-bin/textfilter/src/bin/tr.rs`（`fail` 里那个 `for report in reports` 循环改调 `line_bytes`）、`tests/tr_face.rs`（新立逐字节门一枚，`tr_face` 里没有现成的同类门可翻正——与 `units` 那一笔相反，那笔是**找到既有门就翻正、不新增**）、`tests/bin_support_face.rs`（`tr` 的跨支期望从 `c3 af` 翻正为 `ef`）。进度 **6 支壳、余 23 处调用点 / 19 个源文件**。
+- **`tr` 这一支的两个形状特点**：① 它的 libc 行是**循环**交回的（`TrError::Usage { reports }` 是一个报告向量，`seq` 那种累加型环同构），所以渲染半对每一枚报告都生效；② usage 那块是**四行硬编码**（`tr.c:276-282`，后三行七个空格对齐、程序名写死 `tr`，批次三百五十已定），所以逐字节断言里连一个多余换行都会被看见——T4（丢行尾换行）在 `tr` 这一支咬出的红名比别支多，正是这个原因。参照件 `tmp/tr-322/tr` 现量：`tr -é a b` 与 `tr -cé a b` 都打 `tr: unknown option -- ` + `c3` + 换行 + 那块四行、退 1（`c` 是合法字母，聚簇继续走到 `é` 的第一字节）。
+- **门**：面侧 +1 `an_off_letter_of_a_multibyte_flag_prints_one_raw_byte`（两形逐字节 + ASCII 的 `-Z` 一形同钉），`tr_face` 18 → **19**；`bin_support_face` 那枚 `tr` 期望有意识翻正。
+- **A/B 十一形不一致 0**：`MINE=… bash tmp/tr-400/ab.sh > tmp/tr-400/ab.log`，形集里带数据面回归（`a b`、`-d a`、`-s a`、`a-z X`、单操作数、`--`）与 `-dZ`。两形非法 UTF-8（`-\xff`、`-\x80`）仍差一个字节，属射程②。
+- **读数**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1139 passed / 0 failed**（68 段，起点 1138）；容器权威门同读数 **1139 / 0 / 68**、退码 0（**跑之前核过 `git status --porcelain` 只剩本轮四件真改动**，批次三百九十八立的纪律照办）；三架构 `cargo build -p minix-textfilter --bins --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} --release` 全退 0；clippy 整包 **154** 与基线同数、按告警位置判触及三件零命中；`rustfmt --edition 2024` 触及件新增长零漂移（`src/bin/tr.rs` 四块是 `bin_support.rs` 的存量，主树同数）。
+- **负控七枚全咬住**（`python3 tmp/tr-400/negctl.py`，日志 `tmp/tr-400/negctl.log`）：T1 出口退回 `line()` ⇒ 咬 2；T2 仍按 UTF-8 写 ⇒ 咬 7（**六支壳的门一次全红**，共件单源最直接的横向证据）；T3 无条件取低字节 ⇒ 咬 1；T4 丢行尾换行 ⇒ 咬 25；T5 报完 libc 行不接 usage 块 ⇒ 咬 6；T6 措辞漂到 glibc 的 `invalid option` ⇒ 咬 24；T7 取法把字母先小写化（`-Z` 会报成 `z`）⇒ 咬 4。逐枚编得过、期望门全在红名清单里、先还原再读回比 md5、复跑 0 失败。**第一遍跑有两枚未达标，两处都是判据自己的错**：T6 的期望里我列了 `flag_cluster_is_per_letter_and_order_free`——那枚门比的是字母集合的语义而非句子文本，措辞改它不会红（红了 24 枚里不含它是可解释的），换成 `off_letter_gets_one_libc_line_then_the_block`；T7 的第一版注入直接把 `String::from_utf8_lossy` 塞进 `Vec` 初始化处，**编译就没过**（那样对门的灵敏度既不证明也不否证），换成「字母先 `to_ascii_lowercase`」这种编得过的形状。这与批次三百九十四 V4、三百九十五「锚点跟着最终形态走」同族：**一枚未达标的负控要先归因到注入还是门**。
+- **登记与闭合**：`TR-NONASCII-OPTLETTER` 闭合：登记那句失真（「C 用 `%c` 打裸字节，本层按 `char` 渲染成 `Ã` 的两个 UTF-8 字节」）本来就只指渲染——`src/tr.rs` 的取法自始就是 `char::from(letter)`，所以这一支不存在「取法半」，本笔把它闭死。板上 A2 记到**切片 6**。未动的相邻登记：`TR-BACKSLASH-OCTAL`、`TR-EQUIV-SENTENCES`（在册，另轮）、`CKSUM-*` 五条、探针族漂移（归编排线）。
+- **三件套**：核实命令与读数——`MINE=$PWD/.wt/getopt-report-byte-letter-qoder/os/target/debug/tr bash tmp/tr-400/ab.sh > tmp/tr-400/ab.log`（11 形 0 分叉 + 两形残差）、`python3 tmp/tr-400/negctl.py`（七枚各咬住 2/7/1/25/6/24/4 枚、复跑 0 失败）、参照件 `tmp/tr-322/tr`（→ `tr_ref` 软链）、宿主与容器各 **1139 / 0 / 68**、三架构全退 0、`clippy` 154 同数、`rustfmt --edition 2024` 新增长零漂移、剩余调用点现量 **23 处 / 19 个源文件**；核实日 `2026-10-19`；基线快照 `a05115101`；代码笔 `7cb6f41bf`。
+- **下一轮首动作**：`bash tools/claim.sh claim GETOPT-REPORT-BYTE-LETTER qoder`（切片 7：`paste`——`src/paste.rs:88` 已按字节取；`seq` 那支留到与射程②一起做，因为它是累加型环，只换渲染闭不掉）。
+
 ## 批次三百九十九（A2 渲染半切片 5：`units`）：第五支壳换到字节形；一枚「先加门」的冲动被既有的门挡了回去
 
 - **这一轮干什么**：A2 渲染半第五次落地，选 `units`（批次三百一十九那笔已给它立了登记名 `UNITS-NONASCII-OPTLETTER`，取法半当时就按字节走，差的只剩渲染那一寸）。落码三件：`os/commands/usr-bin/textfilter/src/bin/units.rs`（`UnitsArgError::Getopt` 那一处出口改 `line_bytes`）、`tests/units_face.rs`（**翻正**既有门，不新增）、`tests/bin_support_face.rs`（`units` 那枚跨支期望从 `c3 af` 翻成单字节 `ef`）；共件与 `src/units.rs` 一字未动。进度：`rev`、`colrm`、`col`、`column`、`units` 五支壳，渲染半余 **24 处调用点 / 20 个源文件**。
