@@ -46,10 +46,30 @@ pub struct Density {
 
 /// The four densities from `fdensity` (`floppy.c:161-177`).
 pub const DENSITIES: [Density; 4] = [
-    Density { name: "360K", sectors_per_track: 9, cylinders: 40, heads: 2 },
-    Density { name: "720K", sectors_per_track: 9, cylinders: 80, heads: 2 },
-    Density { name: "1.2M", sectors_per_track: 15, cylinders: 80, heads: 2 },
-    Density { name: "1.44M", sectors_per_track: 18, cylinders: 80, heads: 2 },
+    Density {
+        name: "360K",
+        sectors_per_track: 9,
+        cylinders: 40,
+        heads: 2,
+    },
+    Density {
+        name: "720K",
+        sectors_per_track: 9,
+        cylinders: 80,
+        heads: 2,
+    },
+    Density {
+        name: "1.2M",
+        sectors_per_track: 15,
+        cylinders: 80,
+        heads: 2,
+    },
+    Density {
+        name: "1.44M",
+        sectors_per_track: 18,
+        cylinders: 80,
+        heads: 2,
+    },
 ];
 
 /// Total 512-byte blocks one density holds.
@@ -145,7 +165,10 @@ mod tests {
         let mut policy = RetryPolicy::new();
         assert_eq!(policy.record_failure(true), RetryAction::Retry);
         assert_eq!(policy.record_failure(true), RetryAction::Retry);
-        assert_eq!(policy.record_failure(true), RetryAction::RecalibrateAndRetry);
+        assert_eq!(
+            policy.record_failure(true),
+            RetryAction::RecalibrateAndRetry
+        );
         assert_eq!(policy.record_failure(true), RetryAction::Retry);
     }
 

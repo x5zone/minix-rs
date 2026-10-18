@@ -191,6 +191,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `FILTER` 片收尾（存储代理族第三台，占位 23→22）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `26→25` —— 随 filter 接线（`os/drivers` 23→22）的机械过账。filter 本体四模块（face 顶层面：对齐门/暂存/转发重试环/尺寸控制 + service 的 DIOCGETP 解码 + main 真循环，13 枚新门）；**登记缝**：中层面（`driver.c` 的校验引擎、镜像策略与异步重试/重启/超时）以 `LowerLeg` 缝承载，生产腿未落时以 `UnboundLeg` 诚实拒绝（不伪造通过） —— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `FLOPPY` 片收尾（存储硬件族首台，占位 22→21）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `25→24` —— 随 floppy 接线（`os/drivers` 22→21）的机械过账。floppy 本体四模块（face 顶层面：f_prepare 的盘/密度/分区选择、f_do_open 的介质探测与格式化门、扇区循环与四个门、f_geometry/f_part 报告、f_cleanup 忘头位；service 泵；main 真循环，15 枚新门）；**登记缝**：FDC 设备层（dma_setup/seek/fdc_transfer/fdc_results/fdc_command/recalibrate/reset/read_id/test_read，C 约七百行）以 `FdcLeg` 缝承载，生产腿未落时 `UnboundFdc` 诚实拒绝；格式化腿的 `disk_parameter_s` 线格式未建模（同缝） —— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。
