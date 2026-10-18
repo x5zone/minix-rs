@@ -916,11 +916,11 @@ C 的 `priv(p)` 是进程结构里现成的指针，一步解引用；Rust 要 `
 
 反向推演：设想 `preemptible` 不查特权表、改读进程字段。`PREEMPTIBLE` 是特权模板位——`minix3/minix/include/minix/priv.h:USR_F` 的组成成分，进程表里没有这个字段可读；硬要在进程上表达，就得在每个进程初始化与特权变更路径上多维护一份拷贝，而两份拷贝必有一份先过期。
 
-### 3.3 现状与三个缺口：per-CPU 队列、PREEMPTIBLE 置位面、niced 链（→§1.2/§2.3）
+### 3.3 现状盘点：per-CPU 队列、PREEMPTIBLE 置位面与 niced 链（→§1.2/§2.3）
 
 §1.2 说队列挂在进程被指派的 CPU 上。Rust 的承接把每 CPU 结构原样搬了过来：`ProcessTable` 持有一组 `Scheduler`，按 CPU 号索引取用——`os/kernel/src/proc_table.rs:fn sched_for_cpu`（包装层所有队列操作都按 `p_sched.cpu` 或当前 CPU 落位）；`os/kernel/src/proc_table.rs:fn sched_idx` 对越界号做回退（回退到 0 号 BSP，防的是损坏的 `p_sched.cpu` 值）。结构是齐的，流量不是。以下两个缺口是**已登记的现状**（第三个主题 niced 链今天已闭合，一并给出）——写在这里是给读者一张诚实的地图：哪些分支今天走不通、当前真实路径是什么。它们不是待修 bug 清单——登记归属与修复排期不在本篇裁决范围，本篇只对码。
 
-**缺口一：每 CPU 队列恒 BSP。** 全部进程的 `p_sched.cpu` 都是 BSP（0 号），`sched_for_cpu` 拿到的永远是同一组队列——AP 的队列组是死结构。现状的真实路径：`os/kernel/src/sched.rs:fn sched_proc` 收到指派 AP 的请求时，范围与就绪校验照 C 做（`validate_cpu_param`，越界 `EINVAL`、未就绪 `EBADCPU`），随后 `os/kernel/src/sched.rs:fn clamp_cpu_to_bsp` 把目标一律钳回 BSP——请求被接受（返回 `Ok`），进程实际留在 BSP。钳制的过渡语义在 C 的非 SMP 构建里有对应物：`system.c:sched_proc` 的 `CONFIG_SMP` 段整段在条件编译里，非 SMP 构建对 cpu 参数照单全收、忽略不写——"接受请求、进程留原地"。C 入队里的跨 CPU 半段（§2.1 第四段的 `else if cpu_is_idle → smp_schedule`）在 Rust 没有对应分支：检索 `smp_schedule` 在 `os/kernel/src/` 命中 15 处（匹配 token 7 个，含 `arch_send_smp_schedule_ipi` 注释里的 `smp_schedule_ipi`），全部属迁移、停进程族与 C 映射注释——没有"目标 CPU idle 则唤醒它来调度"的入队臂。§2.1 讲的 SMP 半段，在 Rust 是"没有这半段"，不是"有而不可达"。
+**缺口一：每 CPU 队列恒 BSP。** 全部进程的 `p_sched.cpu` 都是 BSP（0 号），`sched_for_cpu` 拿到的永远是同一组队列——AP 的队列组是死结构。现状的真实路径：`os/kernel/src/sched.rs:fn sched_proc` 收到指派 AP 的请求时，范围与就绪校验照 C 做（`validate_cpu_param`，越界 `EINVAL`、未就绪 `EBADCPU`），随后 `os/kernel/src/sched.rs:fn clamp_cpu_to_bsp` 把目标一律钳回 BSP——请求被接受（返回 `Ok`），进程实际留在 BSP。钳制的过渡语义在 C 的非 SMP 构建里有对应物：`system.c:sched_proc` 的 `CONFIG_SMP` 段整段在条件编译里，非 SMP 构建对 cpu 参数照单全收、忽略不写——"接受请求、进程留原地"。C 入队里的跨 CPU 半段（§2.1 第四段的 `else if cpu_is_idle → smp_schedule`）在 Rust 没有对应分支：检索 `smp_schedule` 在 `os/kernel/src/` 命中 15 处（复算：`grep -rn 'smp_schedule' os/kernel/src/ | wc -l` 实跑；匹配 token 7 个，含 `arch_send_smp_schedule_ipi` 注释里的 `smp_schedule_ipi`），全部属迁移、停进程族与 C 映射注释——没有"目标 CPU idle 则唤醒它来调度"的入队臂。§2.1 讲的 SMP 半段，在 Rust 是"没有这半段"，不是"有而不可达"。
 
 **缺口二：PREEMPTIBLE 门的现状形状。** §3.2 的对账给出装置，这里给"哪些进程真的带位"的置位面。位值与模板（C 侧逐字）：
 
@@ -940,7 +940,7 @@ C 的 `priv(p)` 是进程结构里现成的指针，一步解引用；Rust 要 `
 
 **已闭合的链路：niced。** C 的链路三段：SYS_SCHEDULE 消息带的 niced 字段（`minix3/minix/kernel/system/do_schedule.c:do_schedule` 里 `niced = !!(m_ptr->m_lsys_krn_schedule.niced)`）→ `sched_proc` 置/清 `MF_NICED`（`minix3/minix/kernel/system.c:sched_proc`）→ 时钟记账分类时消费（`minix3/minix/kernel/arch/i386/arch_clock.c` 的 counter 选择链：`MF_NICED` → `CP_NICE`）。Rust 侧现状：前两段已端到端接通——`os/kernel/src/syscall.rs` 的 `dispatch_schedule` 读线上值做布尔强转（C 那行的直译），`os/kernel/src/sched.rs:fn sched_proc` 的 Step 8 置/清 `MiscFlagsBits::NICED`，并有测试钉住线上位到标志位的传递（`os/kernel/src/syscall.rs` 的 `test_dispatch_schedule_niced_wire_bit_sets_mf_niced`）。第三段今天已闭合：`os/kernel/src/clock.rs:fn classify_cpu_state`（读 `MF_NICED` → `CP_NICE` 桶）由 `account_process_stop` 在**生产路径**调用（中断入口/idle/`finish_and_restore` 三站，`os/kernel/src/lib.rs`），状态桶经 `account_tsc_per_state` 落账——线上位 → 进程标志 → 记账分类三段全通。C 的 counter 选择链在 Rust 换了形状（分类器 + 状态桶），消费端接口（GET_CPU_TICKS 一族）的展示面归 `17-clock-timer`。
 
-三个缺口的边界一句话：单 CPU 现状下缺口一与缺口二不可观察——cpu 恒 0、SCHED 接管的进程尚未参战；缺口三已闭合（见上段）。把它们读丢的代价在将来：缺口一若不登记，读者会把每 CPU 队列读成"已支持多核负载均衡"，把 AP 队列当活路径排障；缺口二若不登记，notify 分支会被两种误读夹住——要么当成所有用户进程的通用路径、要么当成只服务动态系统服务的窄路径。
+边界一句话：单 CPU 现状下缺口一与缺口二不可观察——cpu 恒 0、SCHED 接管的进程尚未参战；niced 链已闭合（见上段）。把它们读丢的代价在将来：缺口一若不登记，读者会把每 CPU 队列读成"已支持多核负载均衡"，把 AP 队列当活路径排障；缺口二若不登记，notify 分支会被两种误读夹住——要么当成所有用户进程的通用路径、要么当成只服务动态系统服务的窄路径。
 
 ### 3.4 处置表（→Ch2 各节）
 

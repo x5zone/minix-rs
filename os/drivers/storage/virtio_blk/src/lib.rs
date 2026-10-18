@@ -19,5 +19,26 @@ pub mod char_face;
 pub mod geometry;
 pub mod request;
 
-/// Service initialization entry (wires the drive; transport stays out).
-pub fn init() {}
+use char_face::VirtioBlkFace;
+use minix_blockdriver::pump::BlockService;
+
+/// Build the driver's service for the binary.
+///
+/// The drive capacity, read-only flag, and flush capability come from the
+/// virtio device configuration, which is the queue-traffic seam this crate
+/// does not model yet; without a probe result the face reports zero
+/// sectors, not a fabricated size.
+pub fn init() -> BlockService<VirtioBlkFace> {
+    BlockService::new(VirtioBlkFace::new(0, false, false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init_builds_the_block_service() {
+        let service = init();
+        assert!(service.opened().is_empty());
+    }
+}

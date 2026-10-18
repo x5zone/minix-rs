@@ -72,7 +72,27 @@ misc：nanosleep/svrctl 只有纯函数判定半，发送半缺失（V1-P1-3）�
 
 ### 2.5 csu/crt0 与 libsys 共享子集
 
-csu 链缺口整体见 V1-P1-1（13 项清单：ps_strings/environ/progname 全局、atexit/fini_array、`_libc_init`、argv 入 main、入口寄存器、IPC 向量整表安装等）。libsys 共享子集对账：kernel_call ✓（`syscall.rs` 三协议精确）；asynsend → SENDA 队列 ✓（`ipc.rs`，`&mut self` 替代 C `inside` 标志是合理的 Rust 化）；kputc/diagctl 缓冲与操作码 ✓ 发射 ✗（V1-P1-2）；panic/assert 阶梯形状 ✓ 执行器 ✗（同上）；getticks/getuptime/clock_time ✓；getsysinfo/getepinfo/getprocnr ✓；srv_fork/srv_kill ✓；vm_* 客户端库 3/7 文件（见 2.3）。
+csu 链逐项对账（`2026-10-18`，B 板 B4 收口）。C 真源 `minix3/lib/csu/common/crt0-common.c:144-192`，Rust 真源 `os/libs/minix-rt/src/crt0.rs`：
+
+| # | C `___start` 步骤 | Rust 面 | 消费者与裁决 |
+|---|---|---|---|
+| 1 | `ps_strings == NULL` → `_FATAL` | stage 1 描述符检查：零址回 ENOEXEC、`birth_fail` 退 1（`crt0.rs:97-106`、`:298-302`） | 已落（rt-birth 与 boot 装机模块同链） |
+| 2 | 发布 `__ps_strings` 全局 | 无 C 全局；`BIRTH` 单元 + `ProcessStrings`，经访问器读（`crt0.rs:143-147`、`:323-331`） | Rust 等价面（无 C ABI 消费方） |
+| 3 | `environ = ps_envstr` | 无全局；`env_bytes`/`envs` 直读描述结构（`crt0.rs:206-236`） | Rust 等价面（命令层经 minix-sys 环境访问器消费） |
+| 4 | `__progname` 短名（逐字节扫斜杠） | `progname_of` + `progname()`（`crt0.rs:108-121`、`:164-173`） | 已落 |
+| 5 | 动态链接分支（`rtld_DYNAMIC`） | 静态链接；RDX/RCX 恒零，桩只搬 RBX（`crt0.rs:8-18`、`:374-398`） | 静态不可达（已文档化） |
+| 6 | `_libc_init()` 单次守卫 | stage 2 分配器一次性守卫（`crt0.rs:304-305`）；auxv/TLS/线程本仓无 | 裁掉（ARCH：只保留分配器守卫） |
+| 7 | `_preinit()`（preinit_array 正序） | 无 | 维持登记（消费者为零） |
+| 8 | `atexit(_fini)` 登记 fini_array | 无 | 维持登记（消费者为零：unknown-none 不链 crt 对象，无 `.fini_array` 条目） |
+| 9 | `_init()`（init_array 正序） | 无 | 维持登记（消费者为零） |
+| 10 | `main(argc, argv, environ)` | 无参 `main() -> i32` + 访问器（`crt0.rs:333-347`） | 已落（消费者合约已文档化） |
+| 11 | 入口寄存器（rdx/rcx/rbx） | 三架构裸桩（`crt0.rs:385-440`） | 已落（K12b 三架构真机） |
+| 12 | `exit(main(...))` | stage 6 `minix_sys::exit`（`crt0.rs:349-350`） | 已落 |
+| 13 | `MCRT0` 分支（`atexit(_mcleanup)`/`monstartup`） | 无 | 静态不可达（C 侧仅 `#ifdef MCRT0` 编译） |
+
+**结论（`2026-10-18`）：** 13 项中 8 项已有 Rust 等价面或已落（#1/#2/#3/#4/#6/#10/#11/#12），2 项静态不可达（#5/#13），3 项维持登记（#7/#8/#9，消费者为零）。按板行「先有消费者再有面」的规则，本项无可实施项，收口；将来若引入 C 对象库或构造器登记，再按本表 #7–#9 接线。
+
+libsys 共享子集对账：kernel_call ✓（`syscall.rs` 三协议精确）；asynsend → SENDA 队列 ✓（`ipc.rs`，`&mut self` 替代 C `inside` 标志是合理的 Rust 化）；kputc/diagctl 缓冲与操作码 ✓ 发射 ✗（诊断双轨，修复记录见本节下文）；panic/assert 阶梯形状 ✓ 执行器 ✗（同上）；getticks/getuptime/clock_time ✓；getsysinfo/getepinfo/getprocnr ✓；srv_fork/srv_kill ✓；vm_* 客户端库 3/7 文件（见 2.3）。
 
 ### 2.6 常量 ABI
 

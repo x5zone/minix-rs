@@ -24,6 +24,7 @@
 //! a time, so the call table needs no locking.
 
 #![no_std]
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

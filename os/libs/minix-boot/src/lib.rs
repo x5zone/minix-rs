@@ -1,4 +1,5 @@
 #![no_std]
+#![warn(clippy::let_underscore_must_use)]
 
 //! Minix3 boot protocol types.
 //!

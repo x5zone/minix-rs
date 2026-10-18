@@ -11,10 +11,7 @@
 //!
 //! Register writes stay in the service binary; this module owns the
 //! pure cursor half: which transmit slot is next and where the
-//! receive read cursor wraps. The modulo walk itself comes from
-//! `minix-nic-policy` (shared with the other NIC rings).
-
-use minix_nic_policy::{wrapped_offset, ModuloCursor};
+//! receive read cursor wraps.
 
 /// Transmit slots (`RL_N_TX`).
 pub const TX_SLOT_COUNT: usize = 4;
@@ -25,24 +22,24 @@ pub const RX_BUFFER_SIZE: usize = 65536;
 /// Transmit slot picker: round-robin over four slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TxSlots {
-    /// Next slot to use, wrapping at the slot count.
-    head: ModuloCursor,
+    /// Next slot to use.
+    head: usize,
 }
 
 impl TxSlots {
     /// All slots free, starting at slot zero.
     pub fn new() -> Self {
-        TxSlots { head: ModuloCursor::new(TX_SLOT_COUNT) }
+        TxSlots { head: 0 }
     }
 
     /// Current head slot.
     pub fn head(&self) -> usize {
-        self.head.index()
+        self.head
     }
 
     /// Move to the next slot, wrapping after the fourth.
     pub fn advance(&mut self) {
-        self.head.advance();
+        self.head = (self.head + 1) % TX_SLOT_COUNT;
     }
 }
 
@@ -55,7 +52,7 @@ impl Default for TxSlots {
 /// Advance a receive read cursor by `consumed` bytes inside the 64K
 /// buffer, wrapping at the end.
 pub fn rx_advance(cursor: usize, consumed: usize) -> usize {
-    wrapped_offset(cursor, consumed, RX_BUFFER_SIZE)
+    (cursor + consumed) % RX_BUFFER_SIZE
 }
 
 #[cfg(test)]

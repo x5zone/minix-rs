@@ -378,7 +378,7 @@ mod tests {
             sub_device: 0x5678,
         });
         db.set_acl(100, acl);
-        assert_eq!(db.is_visible(100, 0), true);
+        assert!(db.is_visible(100, 0));
         let mut acl = PciAcl::default();
         acl.devices.push(AclDevice {
             vendor: 0x8086,
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_out_of_range_index_is_invisible() {
-        let mut db = DeviceDb::new();
+        let db = DeviceDb::new();
         assert!(!db.is_visible(100, 7));
     }
 

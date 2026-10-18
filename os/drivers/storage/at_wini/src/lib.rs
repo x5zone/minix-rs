@@ -22,5 +22,25 @@ pub mod dma;
 pub mod pio;
 pub mod service;
 
-/// Service initialization entry (wires the controller; transport stays out).
-pub fn init() {}
+use block_face::WiniBlock;
+use minix_blockdriver::pump::BlockService;
+
+/// Build the driver's service for the binary.
+///
+/// Nothing is probed yet: the identify exchange and partition scan are the
+/// register-traffic seam the controller modules own; the block face
+/// answers refusals honestly until `install_probe` runs.
+pub fn init() -> BlockService<WiniBlock> {
+    BlockService::new(WiniBlock::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init_builds_the_block_service() {
+        let service = init();
+        assert!(service.opened().is_empty());
+    }
+}

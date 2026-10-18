@@ -316,9 +316,16 @@ fn a_small_write_failure_is_reported_instead_of_swallowed_by_a_buffer() {
 
 /// 两根腿同时坏：参照件实测报的是 **stdin** 而不是 stdout——C 一个字节都没读进来，
 /// 环里从未调用 `putchar`，写错压根没机会被观察。本壳同样先拿到零字节输入、写出零字节
-/// （空写不失败），于是报读腿。这一枚钉的是「两腿同坏时报哪条」这个**观察结果**；
-/// 先后规则本身在这形上不可证——把顺序反转得到的输出一模一样，因为空写永远不会失败，
-/// 而宿主上又造不出「有字节在飞、同时读也出错」的承载（登记见 18 篇台账）。
+/// （空写不失败），于是报读腿。这一枚钉的是「两腿同坏时报哪条」这个**观察结果**。
+///
+/// 本注释以前还写着「先后规则本身在这形上不可证……宿主上造不出『有字节在飞、同时读也
+/// 出错』的承载」，那半句已被批次三百七十五**否证**：pty 的 master 端在 slave 关闭后
+/// 会先交出已缓冲的字节、下一口才回 `EIO`，正是一根宿主可造的真读源。四形矩阵读数与
+/// 判据说见 `tools/atf-c-compat/probes/colrm_leg_order.py`。先后规则本身仍未钉住，但
+/// 原因换了：不是造不出承载，而是要钉它就得在命令层复刻 libc 的缓冲阈值（Minix 的
+/// `BUFSIZ`＝1024，见 `minix3/include/stdio.h:182` 与 `minix3/lib/libc/stdio/makebuf.c:170`），
+/// 而「该不该复刻」是原则冲突，已挂 A 板 §6 待人裁决——裁决未落之前本枚门维持现状，
+/// 不去动它。
 #[test]
 fn both_streams_broken_reports_the_stream_c_reaches_first() {
     let dir = std::env::temp_dir().join(format!("colrm-both-broken-{}", std::process::id()));

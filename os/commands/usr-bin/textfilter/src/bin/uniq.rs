@@ -106,14 +106,20 @@ fn run() -> ! {
     }
     // The whole report is assembled first because the input is already read to
     // the end; either destination gets the same bytes C's stdio would flush.
+    //
+    // C 的输出腿**从不查写失手**：`file(argv[1], "w")` 只在**开档**失败时
+    // `err(1, "%s", name)`（`minix3/usr.bin/uniq/uniq.c:216-221`），此后 `fprintf`
+    // 与 `fputs` 的返回值一律不看，全文件没有一处 `ferror`/`fflush`（现查读数见
+    // 18 篇批次三百八十）。参照件同形实测：`uniq_ref < 输入 >/dev/full` 一字不报、
+    // **退 0**。改前两形都把写失手报成退 1（标准输出那形还不说话），输出档那形更错——
+    // 它印的是只有两段的 `uniq: <路径>`，既不是 C 的句子也不是 C 的退码。
     match sink {
         Some(sink) => {
-            if let Err(_code) = sink.finish(&body) {
-                support::warn(format!("uniq: {}\n", operands[1]).as_bytes());
-                support::terminate(1);
-            }
+            let _ = sink.finish(&body);
         }
-        None => support::emit(&body),
+        None => {
+            let _ = support::emit_error(&body);
+        }
     }
     support::terminate(0);
 }

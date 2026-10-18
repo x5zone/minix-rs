@@ -40,6 +40,7 @@ use minix_blockdriver::driver::{classify as classify_block, BlockDriver, Route a
 use minix_blockdriver::protocol::{
     is_block_request, BdevRequest, DeviceMinor as BlockMinor, RequestId as BlockReqId,
 };
+use minix_blockdriver::wire;
 use minix_chardriver::driver::{
     classify as classify_char, reply_decision, CharDriver, NotifySource, ReplyDecision,
     Route as CharRoute,
@@ -109,27 +110,6 @@ mod cwire {
     }
 }
 
-/// Block-request wire offsets.
-///
-/// C: `mess_lbdev_lblockdriver_msg` (`ipc.h:338-353`), a flat struct whose
-/// every field is present on every block request (unlike the character
-/// family's per-request structs). Offsets assume natural alignment:
-/// `pos` (off_t, 8) at 0, then the four `int`s and the grant and flags
-/// (`minor` 8, `id` 12, `access` 16, `count` 20, `grant` 24, `flags` 28),
-/// `user` (endpoint_t, 2) at 32, and `request` (unsigned long, 8) padded to
-/// 40. The `{ status; id; }` reply shares the character reply's shape.
-/// Pinned byte offset, same interim as the character arm above.
-mod bwire {
-    use super::PAYLOAD;
-    pub const POS: usize = PAYLOAD;
-    pub const MINOR: usize = PAYLOAD + 8;
-    pub const ID: usize = PAYLOAD + 12;
-    pub const ACCESS: usize = PAYLOAD + 16;
-    pub const COUNT: usize = PAYLOAD + 20;
-    pub const GRANT: usize = PAYLOAD + 24;
-    pub const FLAGS: usize = PAYLOAD + 28;
-    pub const REQUEST: usize = PAYLOAD + 40;
-}
 
 /// The shared `{ status; id; }` reply payload (`wire::reply` for both
 /// families: `m_lblockdriver_lbdev_reply`, `ipc.h:356-361`).
@@ -330,46 +310,66 @@ impl<CB: MemBackend, RB: RamBackend> MemoryService<CB, RB> {
     /// C: `blockdriver_process` — decode the request, run the matching table
     /// entry behind the restart gate, and answer the general block reply.
     fn dispatch_block<T: DriverTransport>(&mut self, transport: &mut T, msg: &Message) {
-        let minor = BlockMinor(read_u32(msg, bwire::MINOR));
-        let id = read_i32(msg, bwire::ID);
+        let minor = BlockMinor(read_u32(msg, wire::request::MINOR));
+        let id = read_i32(msg, wire::request::ID);
         let caller = msg.m_source;
         let route = classify_block(false, None, msg.m_type, Some(minor), &self.blk.opened);
         let status: i32 = match route {
-            BlockRoute::Request(request) => match request {
-                BdevRequest::Open => self.blk.open(minor, read_i32(msg, bwire::ACCESS)),
-                BdevRequest::Close => self.blk.close(minor),
-                BdevRequest::Read
-                | BdevRequest::Write
-                | BdevRequest::Gather
-                | BdevRequest::Scatter => {
-                    let position = read_u64(msg, bwire::POS);
-                    let count = read_u64(msg, bwire::COUNT) as i64;
-                    let flags = read_i32(msg, bwire::FLAGS);
-                    let do_write = matches!(request, BdevRequest::Write | BdevRequest::Scatter);
-                    let vectored = matches!(request, BdevRequest::Gather | BdevRequest::Scatter);
-                    // The transfer hook answers the byte total; the grant
-                    // copy of those bytes is the registered data-plane seam
-                    // (module note). C clips the reply to an int.
-                    self.blk.transfer(
-                        minor,
-                        do_write,
-                        position,
-                        count as u64,
-                        flags,
-                        BlockReqId(id),
-                        vectored,
-                    ) as i32
-                }
-                BdevRequest::Ioctl => {
-                    let request_code = read_u64(msg, bwire::REQUEST);
-                    let grant = read_u64(msg, bwire::GRANT);
-                    let user = read_i32(msg, cwire::openclose::USER) as i64;
-                    self.blk.ioctl(minor, request_code, grant, user)
-                }
-            },
-            // A block notification or stale/unrecognized message answers
-            // nothing on the C block path.
-            BlockRoute::Notify(_) | BlockRoute::Stale | BlockRoute::Other => return,
+            BlockRoute::Request(request) => {
+                let status = match request {
+                    BdevRequest::Open => {
+                        self.blk.open(minor, read_i32(msg, wire::request::ACCESS))
+                    }
+                    BdevRequest::Close => self.blk.close(minor),
+                    BdevRequest::Read
+                    | BdevRequest::Write
+                    | BdevRequest::Gather
+                    | BdevRequest::Scatter => {
+                        let position = read_u64(msg, wire::request::POS);
+                        // C carries `count` as an int and refuses a negative
+                        // count before any transfer runs (`do_rdwt`).
+                        let count = read_i32(msg, wire::request::COUNT);
+                        let flags = read_i32(msg, wire::request::FLAGS);
+                        let do_write = matches!(request, BdevRequest::Write | BdevRequest::Scatter);
+                        let vectored = matches!(request, BdevRequest::Gather | BdevRequest::Scatter);
+                        if count < 0 {
+                            minix_types::EINVAL
+                        } else {
+                            // The transfer hook answers the byte total; the
+                            // grant copy of those bytes is the registered
+                            // data-plane seam (module note). C clips the
+                            // reply to an int.
+                            self.blk.transfer(
+                                minor,
+                                do_write,
+                                position,
+                                count as u64,
+                                flags,
+                                BlockReqId(id),
+                                vectored,
+                            ) as i32
+                        }
+                    }
+                    BdevRequest::Ioctl => {
+                        let request_code = read_u64(msg, wire::request::REQUEST);
+                        let grant = read_i32(msg, wire::request::GRANT) as u64;
+                        let user = read_i32(msg, wire::request::USER) as i64;
+                        self.blk.ioctl(minor, request_code, grant, user)
+                    }
+                };
+                // C runs the cleanup hook after every served request.
+                self.blk.cleanup();
+                status
+            }
+            // C answers ERESTART to requests on devices nobody opened since
+            // the restart (`driver.c:425-433`).
+            BlockRoute::Stale => minix_types::ERESTART,
+            // Notifications and unknown messages take the generic hook and
+            // answer nothing on the C block path.
+            BlockRoute::Notify(_) | BlockRoute::Other => {
+                self.blk.other(msg.m_type);
+                return;
+            }
         };
         self.reply(caller, BDEV_REPLY, status, id, transport);
     }
@@ -549,12 +549,8 @@ mod tests {
             m_source: Endpoint(21),
             ..Message::default()
         };
-        let base = core::ptr::addr_of_mut!(msg) as *mut u8;
-        // SAFETY: pinned offsets inside the fixed-size message body.
-        unsafe {
-            core::ptr::copy_nonoverlapping(minor.to_le_bytes().as_ptr(), base.add(bwire::MINOR), 4);
-            core::ptr::copy_nonoverlapping(id.to_le_bytes().as_ptr(), base.add(bwire::ID), 4);
-        }
+        wire::write_u32(&mut msg, wire::request::MINOR, minor);
+        wire::write_i32(&mut msg, wire::request::ID, id);
         msg
     }
 
@@ -613,15 +609,35 @@ mod tests {
         assert!(svc.blk.opened.contains_raw(7));
     }
 
-    /// A block read for a device nobody opened since startup is dropped by
-    /// the restart gate: no reply rides back.
+    /// A block read for a device nobody opened since startup is refused by
+    /// the restart gate with ERESTART, echoing its id (C `driver.c:425-433`).
     #[test]
-    fn test_stale_block_request_takes_no_reply() {
+    fn test_stale_block_request_answers_erestart() {
         let mut svc = service();
         let mut transport = Scripted::new();
         let msg = block_msg(BdevRequest::Read, 7, 9); // never opened
         svc.dispatch(&mut transport, &msg);
-        assert!(transport.replies.is_empty());
+        assert_eq!(transport.replies.len(), 1);
+        assert_eq!(transport.replies[0].1, BDEV_REPLY);
+        assert_eq!(transport.replies[0].2, minix_types::ERESTART);
+        assert_eq!(transport.replies[0].3, 9);
+    }
+
+    /// The count and the grant are separate wire fields: a nonzero grant
+    /// must not bleed into the transfer's byte count.
+    #[test]
+    fn test_block_transfer_reads_count_and_grant_separately() {
+        let mut svc = service();
+        let mut transport = Scripted::new();
+        svc.dispatch(&mut transport, &block_msg(BdevRequest::Open, 7, 1));
+        svc.blk.apply_resize(BlockMinor(7), false, 4096);
+        let mut msg = block_msg(BdevRequest::Read, 7, 2);
+        wire::write_i32(&mut msg, wire::request::COUNT, 512);
+        wire::write_i32(&mut msg, wire::request::GRANT, 77);
+        svc.dispatch(&mut transport, &msg);
+        // A byte-wise read of count would answer 4096 here (count and grant
+        // folded into one number, then clipped to the device extent).
+        assert_eq!(transport.replies[1].2, 512);
     }
 
     /// A block transfer clips at the device end and answers the byte count.
@@ -633,15 +649,7 @@ mod tests {
         svc.blk.apply_resize(BlockMinor(7), false, 4096);
         // A read of 512 bytes entirely inside the resized device.
         let mut msg = block_msg(BdevRequest::Read, 7, 2);
-        let base = core::ptr::addr_of_mut!(msg) as *mut u8;
-        // SAFETY: pinned offsets inside the message body.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                512u64.to_le_bytes().as_ptr(),
-                base.add(bwire::COUNT),
-                8,
-            );
-        }
+        wire::write_i32(&mut msg, wire::request::COUNT, 512);
         svc.dispatch(&mut transport, &msg);
         // Third entry (after the open reply) is the transfer: 512 bytes.
         assert_eq!(transport.replies[1].1, BDEV_REPLY);

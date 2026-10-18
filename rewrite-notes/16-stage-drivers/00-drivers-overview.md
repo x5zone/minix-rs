@@ -42,7 +42,7 @@ init 起，/etc/rc 放开其余驱动（RS 运行时加载）：
 
 ### 3.3 框架库按协议家族分立
 
-字符、块、网络、音频、I2C 五族各有框架库（`minix-chardriver`/`minix-blockdriver`/`minix-netdriver`/`minix-audiodriver`/`minix-i2cdriver`），每族一套钩子表：C 的函数指针表在 Rust 里变成带默认体的行为定义，缺省钩子的行为与 C 的空指针逐一对应。块的调用方一侧另有 `minix-bdev` 客户端库（04）。共享的服务器状态机（打开设备表、循环动作、收包结果策略）在 `minix-driver-rt::core` 单点实现。网卡驱动共享的环游标算术（取模推进、绕回偏移）在 `minix-nic-policy` 单点实现，各卡几何常量留在属主卡 crate（A7）。
+字符、块、网络、音频、I2C 五族各有框架库（`minix-chardriver`/`minix-blockdriver`/`minix-netdriver`/`minix-audiodriver`/`minix-i2cdriver`），每族一套钩子表：C 的函数指针表在 Rust 里变成带默认体的行为定义，缺省钩子的行为与 C 的空指针逐一对应。块的调用方一侧另有 `minix-bdev` 客户端库（04）。共享的服务器状态机（打开设备表、循环动作、收包结果策略）在 `minix-driver-rt::core` 单点实现。
 
 ### 3.4 线格式归策略库
 

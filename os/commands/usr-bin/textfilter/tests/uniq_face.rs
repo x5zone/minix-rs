@@ -281,3 +281,56 @@ fn agrees_with_the_host_uniq_where_the_two_specs_coincide() {
         }
     }
 }
+
+/// 把标准输出接到一枚已打开的落点上跑一腿（`/dev/full` 用得上：写它必回 `ENOSPC`）。
+fn run_into_sink(args: &[&str], input: &str, sink_path: &str) -> (i32, String) {
+    let sink = fs::OpenOptions::new()
+        .write(true)
+        .open(sink_path)
+        .expect("/dev/full carries a failing write");
+    let mut child = Command::new(UNIQ)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(sink))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the uniq binary should be runnable");
+    face_support::write_stdin(&mut child, input.as_bytes());
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// 写腿第一形（标准输出写不进）：C 的输出腿从不查失手——`file(argv[1], "w")` 只在**开档**
+/// 失败时 `err(1, "%s", name)`（`minix3/usr.bin/uniq/uniq.c:216-221`），此后 `fprintf`
+/// 的返回值一律不看，全文件没有一处 `ferror`/`fflush`。参照件同形实测一字不报、**退 0**。
+/// 改前本壳经 `support::emit` 静默退 1：一句话不说是对的，退码不对。
+#[test]
+fn a_stdout_that_stops_taking_bytes_stays_silent_and_exits_zero() {
+    let (status, err) = run_into_sink(&[], "a\na\nb\n", "/dev/full");
+    assert_eq!(
+        (status, err.as_str()),
+        (0, ""),
+        "C 查不到写失手，本壳也不该因此改退码或添句子"
+    );
+}
+
+/// 写腿第二形（输出操作数写不进）：宿主上 `File::create("/dev/full")` 这一层是成功的
+/// （字符设备的截断是空操作），失败只落在写与收尾——正是 C 不看的那两处。改前本壳印一句
+/// 只有两段的 `uniq: <路径>` 并退 1：句子不是 C 的句子（C 的两段形只出现在 `errx`），
+/// 退码也不是 C 的退码。
+#[test]
+fn an_output_operand_that_cannot_be_written_stays_silent_and_exits_zero() {
+    let input = scratch("sink-in");
+    fs::write(&input, "a\na\nb\n").unwrap();
+    let name = input.to_str().unwrap().to_owned();
+    let (status, err) = run_into_sink(&[&name, "/dev/full"], "", "/dev/full");
+    assert_eq!(
+        (status, err.as_str()),
+        (0, ""),
+        "写失手在 C 那侧不可观察，本壳两形都要一致地静默退 0"
+    );
+    let _ = fs::remove_file(&input);
+}

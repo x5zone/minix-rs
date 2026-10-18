@@ -150,7 +150,17 @@ run_with_qemu_lock() (
 - `2026-10-18` B / `G6-RANDOM` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `53→52` —— 随 random 族接线（`os/drivers` 50→49）的机械过账，不涉语义 —— `✅`
 - `2026-10-18` B / `G6-FB` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `52→51` —— 随 fb 族接线（`os/drivers` 49→48）的机械过账，不涉语义 —— `✅`
 - `2026-10-18` B / `G6-PTY` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `51→50` —— 随 pty 族接线（`os/drivers` 48→47）的机械过账，不涉语义 —— `✅`
-- `2026-10-18` B / `A7` 收口：改共享件 `os/Cargo.toml`（`members` 与 `[workspace.dependencies]` 各加一行 `minix-nic-policy`），另新增 `os/libs/minix-nic-policy` 与两卡清单各一行依赖（本体非共享件）—— NIC 环策略库入工作区，不涉其它线语义 —— `✅`
+- `2026-10-18` B / `A7` 撤销：共享件 `os/Cargo.toml` 的 `minix-nic-policy` 两行（`members` 与 `[workspace.dependencies]`）随 revert 撤回、文件回归原样 —— 原 `A7` 条目经 `edge2.md` L13（`2026-09-19`）裁决否决建 crate，板行未内联裁决致一轮误执行，净改动归零，不涉其它线 —— `✅`
+- `2026-10-18` B / `G6-LANCE` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `50→49` —— 随 lance 族接线（`os/drivers` 47→46）的机械过账；另在自有件 `minix-netdriver` 新增 `wire.rs`（NDEV 消息偏移）并给 `NetServer` 加 `media()`/`clear_stats()` 两个只读/复位访问器，不涉其它线语义 —— `✅`
+- `2026-10-18` B / `G6-NET` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `49→45` —— 随 e1000/rtl8139/dp8390/virtio_net 四卡接线（`os/drivers` 46→42）的机械过账；泵上收进自有件 `minix-netdriver::pump`（`NetService<D>`），四卡 `init()` 与 `main.rs` 随动，不涉其它线语义 —— `✅`
+- `2026-10-18` B / `G6-BLK` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `45→42` —— 随 ahci/at_wini/virtio_blk 三卡接线（`os/drivers` 42→39）的机械过账；泵上收进自有件 `minix-blockdriver::pump` 并新增 `wire.rs`，memory 泵随动改用共享 wire 与 C 的 `ERESTART` 重启门语义，不涉其它线 —— `✅`
+- `2026-10-18` B / `SD11-MFS`：要改 `os/fs/mfs/src/main.rs`（A 板领地，一句目的）——SD-11 U-5 迁移第九台（最后一个缓存大头）的 `install_vm_supplier` 安装点与 `mfs-vmbrk` 探针，交付面同前八台；宿主 178/0、三架构 none 构建已过，真机门与迁移前后对照挂本板窗 —— `✅`（本笔）
+- `2026-10-18` B / `SD11-MFS2`：再改 `os/fs/mfs/src/main.rs`（同一跨线文件）——U-5 对照读数②的「出生段池峰值」探针（安装点前 `nk4a: mfs pre-install pool pages used=<n> total=<n>`），不改迁移语义；三架构 none 构建与宿主 178/0 已过 —— `✅`（本笔）
+- `2026-10-18` B / `G6-PRINTER` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `42→41` —— 随 printer 族接线（`os/drivers` 39→38）的机械过账；printer 包清单新增 `minix-chardriver`/`minix-driver-rt` 两行依赖（本体非共享件），不涉其它线 —— `✅`
+- `2026-10-19` B / `G6-PCI` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `41→40` —— 随 pci 族接线（`os/drivers` 38→37）的机械过账；pci 包清单新增 `minix-chardriver`/`minix-driver-rt` 两行依赖（本体非共享件），不涉其它线 —— `✅`
+- `2026-10-19` B / `G6-GPIO` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `40→39` —— 随 gpio 族接线（`os/drivers` 37→36）的机械过账；`minix-vtreefs` 补 `lookup_child`（框架缺口，自有件）、gpio 清单新增 `minix-vtreefs`/`minix-fs-rt` 依赖（本体非共享件），不涉其它线 —— `✅`
+- `2026-10-19` B / `G6-BMP085` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `39→38` —— 随 bmp085 族接线（`os/drivers` 36→35）的机械过账；**跨驱动公开面**：`minix-driver-rt` 的 `DriverTransport` 新增三条带默认动词 `grant_direct`/`grant_revoke`/`delay_micros`（B 线自有件，默认拒答，`KernelTransport` 用 `minix-sys::grant` 实现前两条），`minix-i2cdriver` 新增 `client` 模块，bmp085 清单新增三行依赖（本体非共享件）—— 不涉 A/C 线语义 —— `✅`
+- `2026-10-19` B / `G6-SHT21` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `38→37` —— 随 sht21 族接线（`os/drivers` 35→34）的机械过账；**跨驱动公开面**：`DriverTransport` 再补一条带默认动词 `now_seconds`（默认拒答，`KernelTransport` 走 PM `gettimeofday`），`minix-i2cdriver::client` 补 `write_raw_byte`，sht21 清单新增三行依赖（本体非共享件）—— 不涉 A/C 线语义 —— `✅`
 
 ## 7. 每轮收尾（顺序固定）
 

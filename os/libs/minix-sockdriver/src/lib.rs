@@ -17,6 +17,7 @@
 //! VFS fproc and smap state, so it remains there over this vocabulary.
 
 #![no_std]
+#![warn(clippy::let_underscore_must_use)]
 
 pub mod sdev;
 pub mod sockevent;

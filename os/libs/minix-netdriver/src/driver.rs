@@ -354,6 +354,20 @@ impl NetServer {
         self.link
     }
 
+    /// Active media (the second half of the link report).
+    pub const fn media(&self) -> u32 {
+        self.media
+    }
+
+    /// Zero the four counters after a status report left.
+    ///
+    /// C: `send_status` zeroes `stat_oerror`/`stat_coll`/`stat_ierror`/
+    /// `stat_iqdrop` once the report is on its way (`netdriver.c`), so the
+    /// next report carries increments rather than totals.
+    pub fn clear_stats(&mut self) {
+        self.stats = NetStats::default();
+    }
+
     /// Handle one receive outcome from the transport (fail-stop policy).
     pub fn note_receive(&mut self, result: Result<(), i32>) -> LoopAction {
         // Shared receive-outcome policy (fail-stop; interrupt while

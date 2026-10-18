@@ -7,10 +7,11 @@
 //! (`servers/input/src/serve.rs`), which is the field-proven template.
 
 use minix_sys::ds::DsClient;
+use minix_sys::grant::GrantTable;
 use minix_sys::ipc::{AsyncSendQueue, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
 use minix_sys::syscall::{DirectKernelCallTransport, sys_datacopy, sys_safecopyfrom, sys_safecopyto};
 use minix_sys::{receive, send, sendrec};
-use minix_types::{Endpoint, Message};
+use minix_types::{CpFlags, Endpoint, Message};
 
 use crate::transport::DriverTransport;
 
@@ -28,14 +29,20 @@ pub struct KernelTransport {
     /// `DriverRuntime<T>` owns this transport for the driver's whole
     /// lifetime, so the slots outlive each `asynsend` call.
     senda_queue: AsyncSendQueue<16>,
+    /// The process's grant table (`cpf_grant_direct` / `cpf_revoke` are
+    /// pure table edits; `sys_setgrant` registers the table with the
+    /// kernel on growth). Drivers that hand their own request block to
+    /// another process (the i2c exec request) allocate grants here.
+    grants: GrantTable,
 }
 
 impl KernelTransport {
     /// Transport bound to this process's endpoint.
-    pub const fn new(self_endpoint: Endpoint) -> Self {
+    pub fn new(self_endpoint: Endpoint) -> Self {
         KernelTransport {
             self_endpoint,
             senda_queue: AsyncSendQueue::new(),
+            grants: GrantTable::new(),
         }
     }
 }
@@ -172,6 +179,45 @@ impl DriverTransport for KernelTransport {
             .map(|(endpoint, _)| endpoint)
             .ok()
     }
+
+    fn grant_direct(
+        &mut self,
+        dest: Endpoint,
+        address: u64,
+        len: usize,
+        write: bool,
+    ) -> Result<i32, i32> {
+        // C `cpf_grant_direct` (safecopies.c:148-172): a pure table edit on
+        // this process's own memory, registered with the kernel on growth.
+        let access = if write {
+            CpFlags::READ | CpFlags::WRITE
+        } else {
+            CpFlags::READ
+        };
+        self.grants
+            .grant_direct(
+                &DirectKernelCallTransport,
+                dest.0,
+                address,
+                len as u64,
+                access,
+            )
+            .map_err(|error| -error)
+    }
+
+    fn grant_revoke(&mut self, grant: i32) -> Result<(), i32> {
+        // C `cpf_revoke` (safecopies.c:218-263).
+        self.grants.revoke(grant).map(|_| ()).map_err(|error| -error)
+    }
+
+    fn now_seconds(&mut self) -> Result<i64, i32> {
+        // C `time(NULL)` → `gettimeofday` through PM
+        // (`libc/sys/gettimeofday.c`); the IPC leg is the same direct trap
+        // the DS client uses.
+        minix_sys::pm::gettimeofday_via(&DirectTrapTransport)
+            .map(|(sec, _nsec)| sec)
+            .map_err(|error| -error.to_i32())
+    }
 }
 
 #[cfg(test)]
@@ -198,8 +244,10 @@ mod kernel_transport_tests {
     fn test_asynsend_accumulates_without_flush() {
         let mut t = KernelTransport::new(Endpoint::PM);
         let mut m1 = Message::default();
-        let mut m2 = Message::default();
-        m2.m_type = 7;
+        let mut m2 = Message {
+            m_type: 7,
+            ..Message::default()
+        };
         //[SD19-gate] 本测试钉的是两次 asynsend 都入队且互不冲刷（断言
         // pending_count 为 2）；单次调用结果按夹具忽略。
         #[allow(clippy::let_underscore_must_use)]
