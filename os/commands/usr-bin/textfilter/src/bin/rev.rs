@@ -28,10 +28,12 @@ fn run() -> ! {
     // C 的选项环只有一条出口：拿到 `'?'` 就 `usage()`（`rev.c:72-74`），而那一行
     // `unknown option -- <字母>` 是 libc 在返回之前自己印的（`getopt.c:101-104`）。
     // 旧写法没有选项环，`-Z` 被当成文件操作数，句子也少了 `strerror` 那一段。
+    // 走字节形 `line_bytes`：libc 那一行的字母是一个裸字节（`optopt = *place++`），
+    // 参照件现量 `rev -é` 打 `c3` 一个字节，按 `char` 渲染会多出一个字节。
     let operands = match parse_rev_args(&refs[1..]) {
         Ok(rest) => rest,
         Err(report) => {
-            support::warn(report.line(prog).as_bytes());
+            support::warn(&report.line_bytes(prog));
             usage(prog);
         }
     };

@@ -40,6 +40,27 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
+/// 同上，但三条通道交回**原始字节**。
+///
+/// 报文里要钉住一个裸字节时只能用这一条：`String::from_utf8_lossy` 会把 `c3` 和
+/// `c3 83` 都渲染成替换字符 U+FFFD，上面那个夹具区分不了这两种错法。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(REV)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the rev binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
 /// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`rev.c:72-74` 的 `case '?': default`）。
 /// 参照件读数 `rev: unknown option -- Z` + `usage: rev [file ...]`。
 #[test]
@@ -58,6 +79,36 @@ fn a_cluster_reports_only_its_first_letter() {
     assert_eq!(out, "");
     assert_eq!(status, 1);
     assert_eq!(err, format!("rev: unknown option -- b\n{USAGE}"));
+}
+
+/// 非 ASCII 的集外字母打的是**一个裸字节**：参照件 `tmp/rev-309/rev_ref` 现量
+/// `rev -é` → `rev: unknown option -- ` + `c3` + 换行，再一行 usage，退 1。
+/// 本壳在这一形上错过两次：按字符取时报 `c3 a9`（整个 `é`），按字节取但仍用 `char`
+/// 渲染时报 `c3 83`（U+00C3 的 UTF-8）——两种都比 C 多一个字节，而 lossy 的 `String`
+/// 夹具把这两种都读成替换字符，所以这一枚逐字节比 stderr。
+/// 只有一行 libc 报文也是断言的一部分：`rev.c:72-74` 拿到 `'?'` 就退出，
+/// 不会像 `getopt` 的累加型调用者那样把 `a9` 再报一次。
+#[test]
+fn an_unknown_nonascii_letter_prints_one_raw_byte() {
+    let want: Vec<u8> = [
+        b"rev: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    let (out, status, err) = run_bytes(&["-\u{e9}"], b"abc");
+    assert_eq!(out, Vec::new(), "报文只走 stderr");
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(err, want, "字母该是一个裸字节 c3");
+
+    // 聚簇里非 ASCII 排在第二位：报错仍落在第一个字节上，且仍是**一行**。
+    let (out, status, err) = run_bytes(&["-x\u{e9}"], b"abc");
+    assert_eq!(out, Vec::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"rev: unknown option -- x\nusage: rev [file ...]\n".to_vec()
+    );
 }
 
 /// `--x` 报的字母是第二个连字符：optstring 里没有 `-`，所以它也是集外字符

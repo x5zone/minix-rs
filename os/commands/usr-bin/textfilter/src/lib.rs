@@ -121,25 +121,52 @@ pub enum GetoptReport {
 }
 
 impl GetoptReport {
+    /// 那一行的措辞与它要报的字母——两个渲染入口共用这一份，措辞只承载一次。
+    fn wording(self) -> (&'static str, char) {
+        match self {
+            GetoptReport::UnknownOption(letter) => ("unknown option -- ", letter),
+            GetoptReport::IllegalOption(letter) => ("illegal option -- ", letter),
+            GetoptReport::MissingValue(letter) => ("option requires an argument -- ", letter),
+        }
+    }
+
     /// 那一行的完整文本（带换行）。调用方把它写到标准错误，随后接自己的 usage。
     ///
     /// 前缀都是程序名：libc 那两句递的是 `getprogname()`，而 `egetopt` 自己拿
     /// `strrchr(*nargv, '/')` 现算 `argv[0]` 的最后一段（`egetopt.c:145-147`、
     /// `:159-161`、`:197-199`），结果同一物。
+    ///
+    /// 字母按 `char` 的 `Display` 渲染，于是 `0x80..=0xFF` 这一段会得到**两个**字节
+    /// （UTF-8 编码），而 C 打的是一个裸字节——差在渲染，见 [`GetoptReport::line_bytes`]。
     #[must_use]
     pub fn line(self, prog: &str) -> alloc::string::String {
-        use alloc::format;
-        match self {
-            GetoptReport::UnknownOption(letter) => {
-                format!("{prog}: unknown option -- {letter}\n")
-            }
-            GetoptReport::IllegalOption(letter) => {
-                format!("{prog}: illegal option -- {letter}\n")
-            }
-            GetoptReport::MissingValue(letter) => {
-                format!("{prog}: option requires an argument -- {letter}\n")
-            }
+        let (wording, letter) = self.wording();
+        alloc::format!("{prog}: {wording}{letter}\n")
+    }
+
+    /// 同一行的**字节**形：把字母当**一个裸字节**写出去。
+    ///
+    /// C 那一行递的是 `optopt`，而 `optopt = *place++`（`getopt.c:79`、`:95`）取的是 argv 里的
+    /// **一个字节**，`fprintf` 的 `%c` 再把这个字节原样写出（`getopt.c:101-104`）。参照件
+    /// `tmp/rev-309/rev_ref` 现量：`rev -é`（`é` 是 `c3 a9` 两字节）打的是
+    /// `rev: unknown option -- ` + 裸字节 `c3` + 换行，只此一行（`rev.c:72-74` 拿到 `'?'`
+    /// 就 `usage()` 退出，不会再回到 `getopt` 读第二个字节）。
+    ///
+    /// 码位落在 `0x00..=0xFF` 就当**那一个字节**写——C 的字母位本来就是一个字节，
+    /// 这一段与本方法的用途完全对上。码位**高于** `0xFF` 时 C 无字节可打：那种码位只可能
+    /// 来自「解析那半还按字符取」的壳，这里退回该字符的 UTF-8 编码，与
+    /// [`GetoptReport::line`] 一字不差。这条退路是为**分轮迁移**留的：`line` 的调用方散在
+    /// 二十多支壳里，一轮只能换一支，换渲染的那一轮不该顺带改动还没换取法的壳的报文。
+    #[must_use]
+    pub fn line_bytes(self, prog: &str) -> alloc::vec::Vec<u8> {
+        let (wording, letter) = self.wording();
+        let mut out = alloc::format!("{prog}: {wording}").into_bytes();
+        match u8::try_from(u32::from(letter)) {
+            Ok(byte) => out.push(byte),
+            Err(_) => out.extend_from_slice(letter.encode_utf8(&mut [0u8; 4]).as_bytes()),
         }
+        out.push(b'\n');
+        out
     }
 }
 
@@ -160,6 +187,10 @@ impl GetoptReport {
 ///
 /// 这一支不判「带值选项缺值」：空 optstring 里没有任何选项要值，`getopt.c:112-141`
 /// 那整段到不了，所以只可能交回 [`GetoptReport::UnknownOption`]。
+///
+/// 报的是短横后的**第一个字节**，不是第一个字符：`getopt.c:79` 的 `optopt = *place++`
+/// 步进在 `char *` 上，一次一个字节。参照件现量 `rev -é` 报裸字节 `c3`（`é` 的后半 `a9`
+/// 根本不进报文），按字符取会报 U+00E9。同法先例见 `src/col.rs:parse_col_flags`。
 pub fn empty_optstring_operands<'a>(
     argv: &'a [&'a str],
 ) -> Result<alloc::vec::Vec<&'a str>, GetoptReport> {
@@ -172,10 +203,10 @@ pub fn empty_optstring_operands<'a>(
     if flag == "-" {
         return Ok(argv[1..].to_vec());
     }
-    let Some(letter) = flag.chars().next() else {
+    let Some(byte) = flag.as_bytes().first().copied() else {
         return Ok(argv.to_vec());
     };
-    Err(GetoptReport::UnknownOption(letter))
+    Err(GetoptReport::UnknownOption(char::from(byte)))
 }
 
 /// C 的 `atoi`：跳过前导 `isspace`、可带符号、取一串十进制数字，**尾巴上有杂字符不管**，
@@ -221,7 +252,7 @@ pub fn atoi(text: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::GetoptReport;
+    use super::{GetoptReport, empty_optstring_operands};
 
     /// 那两行的原文逐字钉在这里（单源），因为壳侧的门只能证明「渲染出来了」，
     /// 证明不了措辞。真值取 `minix3/lib/libc/stdlib/getopt.c:101-104` 与
@@ -253,5 +284,80 @@ mod tests {
             GetoptReport::MissingValue('w').line("pr"),
             "pr: option requires an argument -- w\n"
         );
+    }
+
+    /// 字节形那一支：字母是**一个裸字节**，不是它的 UTF-8。
+    ///
+    /// 真值是参照件现量（`tmp/rev-309/rev_ref` 打 `rev -é` 得 `unknown option -- ` + `c3`），
+    /// 机制在 `getopt.c:79` 的 `optopt = *place++` 与 `:103` 的 `%c`。
+    #[test]
+    fn getopt_report_bytes_write_the_letter_as_one_byte() {
+        assert_eq!(
+            GetoptReport::UnknownOption('\u{00c3}').line_bytes("rev"),
+            b"rev: unknown option -- \xc3\n".to_vec(),
+            "0xC3 只能是一个字节；按 char 渲染会多出第二个字节 0x83"
+        );
+        assert_eq!(
+            GetoptReport::IllegalOption('\u{0080}').line_bytes("pr"),
+            b"pr: illegal option -- \x80\n".to_vec()
+        );
+        assert_eq!(
+            GetoptReport::MissingValue('f').line_bytes("tail"),
+            b"tail: option requires an argument -- f\n".to_vec(),
+            "另外两句的措辞与 line 同一份来源"
+        );
+        // ASCII 那一形两个入口一字不差：迁移不许动它。
+        assert_eq!(
+            GetoptReport::UnknownOption('Z').line_bytes("rev"),
+            GetoptReport::UnknownOption('Z').line("rev").into_bytes()
+        );
+        // 落在 `0x00..=0xFF` 的码位一律当**那一个字节**写：U+00E9 打 `e9`，比 `line` 的
+        // UTF-8 形（`c3 a9`）少一个字节。
+        assert_eq!(
+            GetoptReport::UnknownOption('\u{00e9}').line_bytes("rev"),
+            b"rev: unknown option -- \xe9\n".to_vec()
+        );
+        // 分叉的另一侧也钉住：`line` 对同一个码位打两个字节，这就是登记的那处偏差。
+        assert_eq!(
+            GetoptReport::UnknownOption('\u{00c3}')
+                .line("rev")
+                .into_bytes(),
+            b"rev: unknown option -- \xc3\x83\n".to_vec(),
+            "`line` 的 char 渲染比 C 多一个字节——A2 的射程"
+        );
+        // 高于 0xFF 的码位（只有解析那半还按字符取时才拿得到）退回 UTF-8，与 `line` 同串——
+        // 所以「换渲染」这一轮不会改动还没「换取法」的壳的报文。
+        assert_eq!(
+            GetoptReport::UnknownOption('\u{fffd}').line_bytes("rev"),
+            GetoptReport::UnknownOption('\u{fffd}')
+                .line("rev")
+                .into_bytes()
+        );
+    }
+
+    /// 空 optstring 那一支报的是短横后的第一个**字节**。
+    #[test]
+    fn empty_optstring_names_the_first_byte_of_the_flag() {
+        assert_eq!(
+            empty_optstring_operands(&["-\u{e9}"]),
+            Err(GetoptReport::UnknownOption('\u{00c3}')),
+            "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
+        );
+        // 聚簇仍报第一个字节：ASCII 的 x 排在前面就落在 x 上。
+        assert_eq!(
+            empty_optstring_operands(&["-x\u{e9}"]),
+            Err(GetoptReport::UnknownOption('x'))
+        );
+        // ASCII 与三形（`--` 吃掉自身、裸 `-` 与 `--x`）不受这条改法影响。
+        assert_eq!(
+            empty_optstring_operands(&["-Z"]),
+            Err(GetoptReport::UnknownOption('Z'))
+        );
+        assert_eq!(
+            empty_optstring_operands(&["--x"]),
+            Err(GetoptReport::UnknownOption('-'))
+        );
+        assert_eq!(empty_optstring_operands(&["--", "f"]), Ok(vec!["f"]));
+        assert_eq!(empty_optstring_operands(&["-"]), Ok(vec!["-"]));
     }
 }

@@ -10,12 +10,14 @@
 //! 与 `tmp/bin-support-329/measure_after.log`（改后），参照件那一侧读数是
 //! `tmp/tr-322/tr_ref`、`tmp/seq-320/seq_ref`、`tmp/paste-321/paste_ref`。
 //!
-//! **与 C 仍差在哪，本笔不掩盖**：C 打的是原字节 `ff` 一行
+//! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
 //! （`tr_ref: unknown option -- \xff`），本层先 lossy 成 U+FFFD 再按各支自己的取法渲染，
-//! 于是按字节取的那几支得到 `c3 af`（U+00EF），按 `char` 取的 `rev` 得到 `ef bf bd`，
-//! 累加型的 `seq` 更把替换字符的三个字节当成三个字母连报三行。这一族已登记为
-//! `GETOPT-REPORT-BYTE-LETTER` 与 argv 字节化，不在本笔射程内——因此下面的断言既钉住
-//! 「不再 abort、两条腿一致」，也钉住**当前那一串字节**：等字节化的那笔落地，这几枚会当场变红，
+//! 于是按字节取、按 `char` 渲染的那几支得到 `c3 af`（U+00EF 的 UTF-8 两字节），已换字节
+//! 渲染的 `rev` 得到单字节 `ef`，累加型的 `seq` 更把替换字符的三个字节当成三个字母连报三行。
+//! 还差的是**两个字节**：lossy 之前的那个原字节在 argv 缝上就没有了
+//! （`bin_support::args` 两条腿都渲染成 `String`），加上 `GETOPT-REPORT-BYTE-LETTER`
+//! 里其余各支壳的渲染还没换——因此下面的断言既钉住「不再 abort、两条腿一致」，
+//! 也钉住**当前那一串字节**：等 argv 字节化的那笔落地，这几枚会当场变红，
 //! 由改的人有意识地翻正，而不是让门静默跟着漂。
 
 use std::ffi::OsStr;
@@ -67,7 +69,7 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         ("seq", SEQ, 1, b"seq: unknown option -- \xc3\xaf\n"),
         ("paste", PASTE, 1, b"paste: unknown option -- \xc3\xaf\n"),
         ("fold", FOLD, 1, b"fold: unknown option -- \xc3\xaf\n"),
-        ("rev", REV, 1, b"rev: unknown option -- \xef\xbf\xbd\n"),
+        ("rev", REV, 1, b"rev: unknown option -- \xef\n"),
         ("units", UNITS, 3, b"units: unknown option -- \xc3\xaf\n"),
     ];
     for (name, exe, want_code, want_first) in cases {

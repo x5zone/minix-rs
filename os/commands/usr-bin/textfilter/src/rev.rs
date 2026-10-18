@@ -42,6 +42,9 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 /// [`crate::empty_optstring_operands`] 描述的那三形：任何 `-` 开头的 token 都算集外字母
 /// 并由 libc 先印一行、`--` 自身不算操作数、裸 `-` 算操作数。`rev` 拿到操作数后把它们
 /// 当文件逐个 `fopen`（`rev.c:83-106`），这一段是 `rev` 自己的事，归壳。
+///
+/// 报的字母是短横后的**第一个字节**（`getopt.c:79` 的 `optopt = *place++` 步进在字节上），
+/// 壳侧那一行要用 [`crate::GetoptReport::line_bytes`] 才打得出 C 的那个裸字节。
 pub fn parse_rev_args<'a>(argv: &'a [&'a str]) -> Result<Vec<&'a str>, GetoptReport> {
     crate::empty_optstring_operands(argv)
 }
@@ -98,5 +101,22 @@ mod tests {
         assert_eq!(parse_rev_args(&["f", "g"]), Ok(vec!["f", "g"]));
         let nothing: [&str; 0] = [];
         assert_eq!(parse_rev_args(&nothing), Ok(vec![]));
+    }
+
+    /// 集外字母落在**字节**上：`é`（`c3 a9`）报 U+00C3 而不是 U+00E9。
+    /// 参照件 `tmp/rev-309/rev_ref` 现量 `rev -é` → `unknown option -- ` + 裸字节 `c3`
+    /// 一行，再 `usage` 一行、退 1（`getopt.c:79` 的 `optopt = *place++` 一次只进一个字节）。
+    #[test]
+    fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
+        assert_eq!(
+            parse_rev_args(&["-\u{e9}"]),
+            Err(GetoptReport::UnknownOption('\u{00c3}')),
+            "两字节的字符不能整个当字母报"
+        );
+        // 聚簇里非 ASCII 排在第二位时，报错仍落在第一个字节上（调用者拿到 '?' 就退出）。
+        assert_eq!(
+            parse_rev_args(&["-x\u{e9}"]),
+            Err(GetoptReport::UnknownOption('x'))
+        );
     }
 }
