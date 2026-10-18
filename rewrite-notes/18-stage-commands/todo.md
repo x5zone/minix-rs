@@ -119,6 +119,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百六十（`TEXTGAMES-EMIT-ERRLEG` 现查）：两支的判据都查到底，一支改标、一支撞出新的前置
+
+本轮只查判据、只登记，生产码一字未动（`os/` 下没有任何改动，`git status --porcelain` 只剩本目录与本板）。批次三百五十九把这一条留给下一轮时写的是「`wtf` 与 `fortune` 两支的写腿判据待去 C 源核」，两条都查完了，结论一正一反：
+
+- **`fortune` 这一支确有分叉，但不是 `random` 那一形**。真源是 `minix3/games/fortune/fortune/fortune.c`（不在 `games/fortune/fortune.c`；同级 `strfile/`、`unstr/` 是另外两枚独立工具）。它的输出腿只有两行：`fortune.c:272` 的 `fputs(line, stdout);` 与 `:274` 的 `(void) fflush(stdout);`，`fflush` 的返回值被 `(void)` 丢掉，全文件没有一次 `ferror(stdout)`——那句 `if (ferror(outf))` 在 `minix3/games/fortune/strfile/strfile.c:255`，属于 strfile 写数据档的腿，与 fortune 无关。C 的退场是 `:202` 的 `exit(find_matches() != 0)` 与 `:377` 的 `exit(0)`。⇒ 我们要对的是「写失手不可见、也不改退码」，而 `bin_support::emit` 的两面（`os/commands/games/text-games/src/bin_support.rs:73` 宿主面、`:87` 真机面）都是失手即 `terminate(1)`，多出来的正是那个 1。修法已定：`fortune.rs` 的输出格从 `support::emit(...)` 换成 `let _ = support::emit_error(...)`（号拿在手里不接，句子与退码都不受写失手影响）。
+- **本项改标为「有前置」：`fortune` 在宿主根本跑不起来，因而这一支现在一枚端到端门都造不出**。不是门写错了，是壳的档名访问没有宿主面：`os/commands/games/text-games/src/bin/fortune.rs:20` 直接 `use minix_sys::{open, read, Fd};`，`:29` 的 `open(path, 0, 0)`、`:39` 的 `read(fd, &mut chunk)`、`:48` 的 `minix_sys::close(fd)` 都没有 `cfg` 双生面。L1 读数（`2026-10-18`，认领树 `os/` 下现跑）：`printf 'only-quip\n' > /tmp/fdb.txt; cargo build -j 1 --offline -p minix-text-games --bin fortune; ./target/debug/fortune /tmp/fdb.txt` ⇒ `fortune: /tmp/fdb.txt: cannot open` 退码 **1**，而那枚档真实存在且可读。本轮试写的两枚门（`tests/fortune_face.rs` 的 `a_one_line_database_prints_that_line_and_exits_zero` 与 `a_stdout_that_stops_taking_bytes_adds_no_word_and_no_status`）都在**开档臂**就红、没有一枚走到写臂——撞不开档，就量不到写腿。两枚试验门与那份未证实的码改动都已撤回，不留半成品。
+- **`wtf` 这一支改判：它不是对 C 的一致性问题**。真源 `minix3/games/wtf/wtf` 经 `file` 判为 **POSIX shell script, ASCII text executable**（首行 `#!/bin/sh`，头注带 `$NetBSD: wtf,v 1.21 2015-04-21`），不是 C。真值优先序里 `Minix3 C 源码行为` 这一格对它不适用：它是脚本，脚本的写腿由 `echo`/`sed`/`grep` 与 shell 的错误处理决定，没有 `err(2,"stdout")` 这类判据可对标。⇒ 本条从「两支待核」缩成「只剩 `fortune` 一支，且需先立档名访问的宿主面」，`wtf` 的 `support::emit`（`os/commands/games/text-games/src/bin/wtf.rs:90`）留在原状，不动码也不立项——要动它得先把「脚本的哪句是可对标的外部行为」逐句判出来，那是另一件事。
+- **新立的前置项**：`FORTUNE-HOSTED-FILE-SEAM`。内容是把 `fortune.rs` 的 open/read/close 三处换成宿主与真机的双生面（同文件已有的 `emit`、`read_stdin_error` 就是同一手法：宿主腿走 `std::fs`/`std::io`，真机腿走 `minix_sys`）。这一条不做，`fortune` 的任何端到端门都写不出来；做了它，本条上面那份已经定好的写腿修法才能与它的门一起落地。
+- **下一轮首动作**：`bash tools/claim.sh claim FORTUNE-HOSTED-FILE-SEAM qoder`——先接双生面，再补 `tests/fortune_face.rs` 那两枚门（形已拟好，红在开档臂的读数就是本轮的证据），然后按上面定的修法把写腿换成 `emit_error` 并配变异控制。
+- **现场读数（可重跑）**：撤回后 `cd .wt/textgames-emit-errleg-qoder && git status --porcelain` ⇒ 空（本轮只动 `rewrite-notes/18-stage-commands/todo.md` 与本板之前的状态）；本轮试验日志 `tmp/textgames-360/host-test.log`（30 枚 lib 门全绿、`fortune_face` 两枚试验门红在开档臂）。
+
+---
+
 ## 批次三百五十九（`RANDOM-STDOUT-EMIT-RC`）：`random` 写标准输出失手，按 C 报名字退 2
 
 - **是什么**。`minix3/games/random/random.c:131-133` 在每写完一行之后查一次 `ferror(stdout)`，
