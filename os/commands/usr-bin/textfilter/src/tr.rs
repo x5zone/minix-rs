@@ -168,10 +168,10 @@ pub fn parse_set(
     text: &str,
     site: SetSite,
     expanded: &mut [u8; 256],
-) -> Result<(usize, [CharClass; 8], usize), SetError> {
+) -> Result<(usize, Set2Tail), SetError> {
     let bytes = text.as_bytes();
-    let mut classes: [CharClass; 8] = [CharClass::Range(0, 0); 8];
-    let mut class_count = 0;
+    // 式子里最后一项的种类，决定 string2 耗尽之后补什么（见 `Set2Tail`）。
+    let mut tail = Set2Tail::LastByte;
     let mut pos = 0;
     let mut used = 0;
     while pos < bytes.len() {
@@ -209,11 +209,7 @@ pub fn parse_set(
                     )))
                 }
             };
-            if class_count >= classes.len() {
-                return Err(SetError::Malformed);
-            }
-            classes[class_count] = CharClass::Named(class);
-            class_count += 1;
+            tail = Set2Tail::Oobch;
             for byte in 0..=255u16 {
                 let byte = byte as u8;
                 if CharClass::Named(class).contains(byte) {
@@ -247,11 +243,7 @@ pub fn parse_set(
                     SetGrammar::MisplacedEquivalenceRightBracket,
                 ));
             }
-            if class_count >= classes.len() {
-                return Err(SetError::Malformed);
-            }
-            classes[class_count] = CharClass::Range(member, member);
-            class_count += 1;
+            tail = Set2Tail::Oobch;
             push_byte(expanded, &mut used, member)?;
             // 两道核对都过了，`bracket()` 认下的那处 `=]` 必然就是刚核完的这两个字节，
             // 所以收口仍按 `end + 2`（与 C 的 `s->str = p + 2`，`str.c:200` 同形）。
@@ -310,11 +302,7 @@ pub fn parse_set(
                     }
                 }
             };
-            if class_count >= classes.len() {
-                return Err(SetError::Malformed);
-            }
-            classes[class_count] = CharClass::Range(member, member);
-            class_count += 1;
+            tail = Set2Tail::LastByte;
             for _ in 0..repeat {
                 push_byte(expanded, &mut used, member)?;
             }
@@ -325,20 +313,12 @@ pub fn parse_set(
                 // `genrange()` 的 `if (stopval < s->lastch) { s->str = savestart; return 0; }`
                 // 把整个区间退回给主循环，左端点于是按字面量入集，下一轮再从 `-` 起：
                 // `tr z-a y` 的 set1 是 z、-、a 三枚成员并退 0，不是「非法区间」。
-                if class_count >= classes.len() {
-                    return Err(SetError::Malformed);
-                }
-                classes[class_count] = CharClass::Range(low, low);
-                class_count += 1;
+                tail = Set2Tail::LastByte;
                 push_byte(expanded, &mut used, low)?;
                 pos += 1;
                 continue;
             }
-            if class_count >= classes.len() {
-                return Err(SetError::Malformed);
-            }
-            classes[class_count] = CharClass::Range(low, high);
-            class_count += 1;
+            tail = Set2Tail::LastByte;
             let mut byte = low;
             loop {
                 push_byte(expanded, &mut used, byte)?;
@@ -350,24 +330,16 @@ pub fn parse_set(
             pos += 3;
         } else if bytes[pos] == b'\\' && pos + 1 < bytes.len() {
             let byte = escape_literal(bytes[pos + 1]);
-            if class_count >= classes.len() {
-                return Err(SetError::Malformed);
-            }
-            classes[class_count] = CharClass::Range(byte, byte);
-            class_count += 1;
+            tail = Set2Tail::LastByte;
             push_byte(expanded, &mut used, byte)?;
             pos += 2;
         } else {
-            if class_count >= classes.len() {
-                return Err(SetError::Malformed);
-            }
-            classes[class_count] = CharClass::Range(bytes[pos], bytes[pos]);
-            class_count += 1;
+            tail = Set2Tail::LastByte;
             push_byte(expanded, &mut used, bytes[pos])?;
             pos += 1;
         }
     }
-    Ok((used, classes, class_count))
+    Ok((used, tail))
 }
 
 /// 这枚 `[` 后面紧跟的是不是那个特殊标记（`bracket()` 的 `switch (s->str[1])`）。
@@ -409,6 +381,24 @@ fn escape_literal(escaped: u8) -> u8 {
     }
 }
 
+/// C 的 `extern.h:39` 的 `#define OOBCH (UCHAR_MAX + 1)`：一个**装不进气表**的值当哨兵。
+/// 本层把它留在 `u16` 域里（`translate_squeeze` 的挤压判据要比的就是这个 256），
+/// 只在写出的那一刻截成 `unsigned char`，也就是 `0`。
+const OOBCH: u16 = 256;
+
+/// 式子耗尽之后 `next()` 还会不会给出新东西——`tr.c:205-211` 那句注释说的「重复末字节」
+/// 只对**普通**式子成立，而以一枚集合类收尾的式子交回的是 `OOBCH`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Set2Tail {
+    /// 最后一项是普通字符、区间或 `[x*n]`：`lastch` 停在那枚成员上，所以耗尽之后重复末字节。
+    LastByte,
+    /// 最后一项是 `[:class:]` 或 `[=c=]`：`str.c:158-166` 的 `SET` 分支先做
+    /// `s->lastch = s->set[s->cnt++]`，走到哨兵时把 `lastch` 顶成 `OOBCH`，随后
+    /// `case '\0'` 那一支交回的就是这个 256（`:110-122`）。`tr.c:217` 存进映射表、
+    /// `putchar` 截成 `0`；而 `-s` 那条腿在 `int` 域里比较，所以 256 与普通 0 是两回事。
+    Oobch,
+}
+
 /// Append one expanded member byte; the 256 table bounds every set.
 fn push_byte(expanded: &mut [u8; 256], used: &mut usize, byte: u8) -> Result<(), TextError> {
     if *used >= expanded.len() {
@@ -419,10 +409,35 @@ fn push_byte(expanded: &mut [u8; 256], used: &mut usize, byte: u8) -> Result<(),
     Ok(())
 }
 
+/// C 那张映射表：`int string1[NCHARS]`（`tr.c:55`）先填恒等（`:178-181`），再按 string1
+/// 的每一位写入 string2 交回的值（`:217`）。**值域是 `int` 而不是字节**，因为一枚集合类
+/// 耗尽之后交回的是 `OOBCH`（256）；`translate` 与 `translate_and_squeeze` 共用这张表，
+/// 差别只在下半场要不要按「交回过的值」挤压。
+fn build_map(set1: &[u8], set2: &[u8], tail: Set2Tail) -> [u16; 256] {
+    let mut map = [0u16; 256];
+    for (index, slot) in map.iter_mut().enumerate() {
+        *slot = index as u16;
+    }
+    for (index, byte) in set1.iter().enumerate() {
+        map[*byte as usize] = if index < set2.len() {
+            u16::from(set2[index])
+        } else {
+            // string2 比 string1 短：C 不再取新值，而是把 `next()` 当时那个 `lastch` 一路重复
+            //（`tr.c:205-211` 的注释说的就是这件事）。普通式子停在末字节，集合类停在 OOBCH。
+            match tail {
+                Set2Tail::Oobch => OOBCH,
+                Set2Tail::LastByte => u16::from(*set2.last().unwrap_or(&0)),
+            }
+        };
+    }
+    map
+}
+
 /// Translate `input` through two expanded sets into `out`.
 ///
 /// `set1`/`set2` are the expanded member lists; a short second set repeats its
-/// last byte. Returns the used byte count.
+/// last byte **unless it ends with a character class**, in which case C repeats
+/// `OOBCH` and `putchar` writes that as a NUL byte. Returns the used byte count.
 ///
 /// **一个空的 `set1` 是合法输入**，走的是恒等映射：C 在非取补路径上先把映射表填成
 /// `string1[ch] = ch`（`tr.c:178-181`），随后取 string1 首元素的 `next(s1)` 在空集合上
@@ -433,32 +448,63 @@ pub fn translate(
     input: &[u8],
     set1: &[u8],
     set2: &[u8],
+    tail: Set2Tail,
     out: &mut [u8],
 ) -> Result<usize, TextError> {
     if set2.is_empty() {
         return Err(TextError::InvalidArgument);
     }
-    // Build the 256 byte map once: identity, then set1 positions point at
-    // the corresponding (or repeated last) set2 byte.
-    let mut map = [0u8; 256];
-    for (index, slot) in map.iter_mut().enumerate() {
-        *slot = index as u8;
-    }
-    for (index, byte) in set1.iter().enumerate() {
-        let replacement = if index < set2.len() {
-            set2[index]
-        } else {
-            set2[set2.len() - 1]
-        };
-        map[*byte as usize] = replacement;
-    }
+    let map = build_map(set1, set2, tail);
     if input.len() > out.len() {
         return Err(TextError::TooLong);
     }
     for (index, byte) in input.iter().enumerate() {
-        out[index] = map[*byte as usize];
+        // `putchar(string1[ch])`：C 的实参是 `int`，落到 `putchar` 时被截成 `unsigned char`，
+        // 所以 OOBCH(256) 打出去就是 `\0`（参照件 `tr abc '[=c=]'` ← `abc` 交回 `c\0\0`）。
+        out[index] = map[*byte as usize] as u8;
     }
     Ok(input.len())
+}
+
+/// `tr [-c] -s string1 string2` 那一腿（`tr.c:239-246`）：**映射与挤压在同一趟里做**，
+/// 而且挤压判据比的是映射**之后**的 `int` 值——`lastch` 初值就是 `OOBCH`，被记进
+/// `string2[]` 的也恰恰是那一路交回过的值（`tr.c:222-224` 记在映射那一趟里）。
+///
+/// 这两句合起来解释了一格看着矛盾的现象：`tr -s abc '[=c=]'` ← `abc` 交回 `c\0`，
+/// 即那两枚由 OOBCH 变来的 NUL **互相挤压成一枚**，而输入里本来就有的 NUL 不受影响。
+/// 将本腿拆成「先 translate 再 squeeze」两步就会丢掉这个区别——两步之间 256 已经被截成 0，
+/// 于是 0 与真 NUL 混为一谈，挤压判据也换到了字节域上。
+pub fn translate_and_squeeze(
+    input: &[u8],
+    set1: &[u8],
+    set2: &[u8],
+    tail: Set2Tail,
+    out: &mut [u8],
+) -> Result<usize, TextError> {
+    if set2.is_empty() {
+        return Err(TextError::InvalidArgument);
+    }
+    let map = build_map(set1, set2, tail);
+    // C 的 `string2[ch2] = 1` 坐在映射循环里（`tr.c:222-224`），记的是**交回过的值**；
+    // 值域含那枚哨兵，所以表比映射表宽一格。
+    let mut yielded = [false; 257];
+    for byte in set1 {
+        yielded[map[*byte as usize] as usize] = true;
+    }
+    if input.len() > out.len() {
+        return Err(TextError::TooLong);
+    }
+    let mut written = 0;
+    let mut lastch = OOBCH;
+    for byte in input {
+        let ch = map[*byte as usize];
+        if !yielded[ch as usize] || lastch != ch {
+            lastch = ch;
+            out[written] = ch as u8;
+            written += 1;
+        }
+    }
+    Ok(written)
 }
 
 /// Delete every byte of `set` from `input` into `out`.
@@ -625,8 +671,125 @@ mod tests {
 
     fn expanded_set(text: &str) -> ([u8; 256], usize) {
         let mut expanded = [0u8; 256];
-        let (used, _, _) = parse_set(text, SetSite::String2, &mut expanded).unwrap();
+        let (used, _) = parse_set(text, SetSite::String2, &mut expanded).unwrap();
         (expanded, used)
+    }
+
+    /// 只取尾部判据：式子以什么收尾，决定 string2 耗尽之后补什么。
+    fn tail_of(text: &str) -> Set2Tail {
+        let mut expanded = [0u8; 256];
+        parse_set(text, SetSite::String2, &mut expanded).unwrap().1
+    }
+
+    /// string2 耗尽之后补什么，判据是**式子的最后一项**而不是整条式子里有没有集合类：
+    /// `[:digit:]x` 停在普通字符上（重复 `x`），`x[:digit:]` 停在集合类上（重复 OOBCH）。
+    /// 参照件八形逐一核过（`tmp/tr-343/ref-padding.log`）。
+    #[test]
+    fn only_a_class_at_the_end_changes_what_exhaustion_yields() {
+        assert_eq!(tail_of("[=c=]"), Set2Tail::Oobch, "等价类收尾");
+        assert_eq!(tail_of("[:digit:]"), Set2Tail::Oobch, "名字类收尾");
+        assert_eq!(tail_of("x[:digit:]"), Set2Tail::Oobch, "集合类是最后一项");
+        assert_eq!(tail_of("[=c=][=d=]"), Set2Tail::Oobch, "两枚等价类");
+        assert_eq!(
+            tail_of("[:digit:]x"),
+            Set2Tail::LastByte,
+            "集合类之后还有普通字符"
+        );
+        assert_eq!(tail_of("xy"), Set2Tail::LastByte, "普通两枚");
+        assert_eq!(tail_of("a-z"), Set2Tail::LastByte, "区间收尾");
+        assert_eq!(tail_of("[x*2]"), Set2Tail::LastByte, "重复式收尾");
+    }
+
+    /// 集合类把 string2 用尽之后，映射表里存的是 OOBCH、打出去是 NUL；
+    /// 普通 string2 短了则一路重复末字节。两形各一枚对照，差的就是这一格。
+    #[test]
+    fn the_class_tail_maps_to_nul_bytes_while_a_plain_tail_repeats_its_last_byte() {
+        let mut out = [0u8; 32];
+        let (set1, len1) = expanded_set("abcdefghijklmnop");
+        let (digits, len2) = expanded_set("[:digit:]");
+        let len = translate(
+            b"abcdefghijklmnop",
+            &set1[..len1],
+            &digits[..len2],
+            tail_of("[:digit:]"),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(
+            &out[..len],
+            b"0123456789\0\0\0\0\0\0",
+            "十枚数字之后是六枚 NUL（OOBCH 被 putchar 截成 0）"
+        );
+
+        let (plain, plain_len) = expanded_set("xy");
+        let (set3, len3) = expanded_set("abc");
+        let len = translate(
+            b"abc",
+            &set3[..len3],
+            &plain[..plain_len],
+            tail_of("xy"),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(&out[..len], b"xyy", "普通式子仍按末字节重复");
+    }
+
+    /// `-s` 那一腿在 `int` 域里挤压：相邻两枚由 OOBCH 变来的 NUL **挤成一枚**，
+    /// 而输入里本来就有的 NUL 不参与挤压（它映射到自身，从没被记进「交回过」那张表）。
+    /// 把这条腿拆成 translate + squeeze 两步就会把两者混为一谈——那两步之间 256 已经没了。
+    /// 四形期望值全部取自参照件（`tmp/tr-390/ab.log`，26 形不一致 0）：本枚门第一次跑
+    /// 就把自己的期望写错了（写成 `c\0\0`），是参照件的 `c\0\0\0` 纠正的。
+    #[test]
+    fn the_squeeze_leg_collapses_padded_nuls_but_leaves_a_real_nul_alone() {
+        let mut out = [0u8; 32];
+        let (set1, len1) = expanded_set("abc");
+        let (class, len2) = expanded_set("[=c=]");
+        for (input, expected) in [
+            (&b"abc"[..], &b"c\0"[..]),
+            (&b"abbc"[..], &b"c\0"[..]),
+            (&b"ab\0c"[..], &b"c\0\0\0"[..]),
+            (&b"a\0b\0c"[..], &b"c\0\0\0\0"[..]),
+            // `tr.c:240` 的 `lastch` 初值就是 `OOBCH`，所以**开头**那枚 OOBCH 也算「与前一枚相同」
+            // 而被挤掉——把初值写成任何真字节都会让它多打一枚 `\0`（参照件 `tr -s ab [=c=]` ← `b`
+            // 交回**空串**，本枚门第一版没测这一格，负控 P4 因此空咬）。
+            (&b"b"[..], &b""[..]),
+        ] {
+            let len = translate_and_squeeze(
+                input,
+                &set1[..len1],
+                &class[..len2],
+                tail_of("[=c=]"),
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(&out[..len], expected, "{input:?}");
+        }
+    }
+
+    /// 本层原先给集合表留了八格，并让**每一枚**成员都占一格，于是九枚字面量
+    /// （`tr 'abcdefghi' 'x'`）就是一条静默的退 1——C 侧没有这个上限：字面量、区间、
+    /// 转义都只是 `lastch` 的一次赋值，只有 `[:class:]`/`[=c=]` 才用到 SET 状态。
+    /// 参照件同形交回 `xxx` 退 0。
+    #[test]
+    fn a_literal_set_is_bounded_by_256_members_not_by_an_eight_slot_class_table() {
+        for text in [
+            "abcdefghi",
+            "abcdefghijklmnopqrstuvwxyz",
+            "1234567890 abcdefgh",
+        ] {
+            let (expanded, used) = expanded_set(text);
+            assert_eq!(used, text.len(), "{text:?} 该按字面量整串展开");
+            assert_eq!(
+                &expanded[..used],
+                text.as_bytes(),
+                "{text:?} 成员顺序照式子"
+            );
+        }
+        let mut out = [0u8; 8];
+        let (set1, len1) = expanded_set("abcdefghi");
+        let (set2, len2) = expanded_set("x");
+        let len = translate(b"abc", &set1[..len1], &set2[..len2], tail_of("x"), &mut out).unwrap();
+        assert_eq!(&out[..len], b"xxx", "九枚成员不是错误，是一枚都不少地映射");
     }
 
     /// 只取失败出口：本模块的语法句断言都走这里，第二串位（重复式合法的那一侧）。
@@ -650,7 +813,14 @@ mod tests {
         let (set1, len1) = expanded_set("abc");
         let (set2, len2) = expanded_set("XYZ");
         let mut out = [0u8; 16];
-        let len = translate(b"axbxc", &set1[..len1], &set2[..len2], &mut out).unwrap();
+        let len = translate(
+            b"axbxc",
+            &set1[..len1],
+            &set2[..len2],
+            Set2Tail::LastByte,
+            &mut out,
+        )
+        .unwrap();
         // Only set members translate; `x` passes through twice.
         assert_eq!(&out[..len], b"XxYxZ");
     }
@@ -661,7 +831,7 @@ mod tests {
         // 于是没有任何位置被改写过——参照件 `tr '' x` 因此逐字节照抄标准输入且退 0
         let (set2, len2) = expanded_set("XYZ");
         let mut out = [0u8; 16];
-        let len = translate(b"aXb", &[], &set2[..len2], &mut out).unwrap();
+        let len = translate(b"aXb", &[], &set2[..len2], Set2Tail::LastByte, &mut out).unwrap();
         assert_eq!(&out[..len], b"aXb");
     }
 
@@ -670,7 +840,14 @@ mod tests {
         let (set1, len1) = expanded_set("abc");
         let (set2, len2) = expanded_set("X");
         let mut out = [0u8; 16];
-        let len = translate(b"abc", &set1[..len1], &set2[..len2], &mut out).unwrap();
+        let len = translate(
+            b"abc",
+            &set1[..len1],
+            &set2[..len2],
+            Set2Tail::LastByte,
+            &mut out,
+        )
+        .unwrap();
         assert_eq!(&out[..len], b"XXX");
     }
 
@@ -801,7 +978,14 @@ mod tests {
         let (set1, len1) = expanded_set("ab");
         let (set2, len2) = expanded_set("[x*]");
         let mut out = [0u8; 8];
-        let len = translate(b"aabb", &set1[..len1], &set2[..len2], &mut out).unwrap();
+        let len = translate(
+            b"aabb",
+            &set1[..len1],
+            &set2[..len2],
+            Set2Tail::LastByte,
+            &mut out,
+        )
+        .unwrap();
         assert_eq!(&out[..len], b"xxxx");
     }
 

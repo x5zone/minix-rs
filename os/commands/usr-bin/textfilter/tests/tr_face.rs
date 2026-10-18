@@ -31,9 +31,11 @@
 //! `tr_ref '[=a=b=]' y` 是 `Misplaced equivalence right bracket`，全部退 1 且
 //! **不跟** usage 块。同一轮里 `bracket()`（`str.c:176-210`）的判据也一并照抄：`[x]`、
 //! `[:alpha`、`[x`、`[x]y*` 这些「没成形」的式子在参照件里是**字面量**且退 0。
-//! 还差一枚的是 `tr abc '[=c=]'`：两边都退 0、集合都是单枚 `c`，但 string2 用尽之后
-//! 参照件把后续位置填成 `\0`（现量 `c\0\0\n`）而我方重复末字节（`ccc\n`）——那是
-//! `tr.c` 的 OOBCH 腿而不是 `bracket()` 的判据，已登记为 `TR-EQUIV-OOBCH-SET2`。
+//! `tr.c` 的 OOBCH 腿（批次三百九十，登记名 `TR-EQUIV-OOBCH-SET2`）现在也接上了：
+//! string2 以一枚集合类（`[:alpha:]`/`[=c=]`）收尾时，耗尽之后重复的是 `OOBCH`（256），
+//! 经 `putchar` 截成 `\0`；以普通字符、区间或 `[x*n]` 收尾时才重复末字节。
+//! `-s` 那一腿另有一条：C 在**同一趟**里映射并挤压（`tr.c:239-246`），判据在 `int` 域上，
+//! 所以两枚相邻的 OOBCH-NUL 会挤成一枚，而输入里本来就有的 NUL 不参与挤压。
 
 mod face_support;
 
@@ -372,4 +374,74 @@ fn a_reversed_range_is_three_literals_and_exits_zero() {
     // 参照件 `tr_ref z-a y` 退 0：区间退回后 z、-、a 各自入集，`a` 被换成 `y`
     let (out, code, err) = run(&["z-a", "y"], b"abc\n");
     assert_eq!((code, out.as_str(), err.as_str()), (0, "ybc\n", ""));
+}
+
+/// string2 用尽之后补什么，C 的判据是「式子的最后一项是不是集合类」，不是「短了就重复末字节」：
+/// 名字类与等价类都把 `lastch` 顶成 `OOBCH`（`minix3/usr.bin/tr/str.c:158-166` 对 `:110-122`），
+/// `tr.c:217` 存进映射表的是 256，`putchar` 再截成 `\0`。期望值逐字取自参照件
+/// （`tmp/tr-322/tr_ref`，同一轮把八形一并量在 `tmp/tr-390/ab.log`）。
+#[test]
+fn an_exhausted_character_class_pads_with_nul_bytes() {
+    let (out, status, err) = run(&["abc", "[=c=]"], b"abc\n");
+    assert_eq!(
+        out, "c\0\0\n",
+        "等价类收尾：b、c 两格填 NUL，不是重复末字节 `ccc`"
+    );
+    assert_eq!((status, err.as_str()), (0, ""));
+
+    let (out, status, _) = run(&["abcdefghijklmnop", "[:digit:]"], b"abcdefghijklmnop\n");
+    assert_eq!(out, "0123456789\0\0\0\0\0\0\n", "名字类同理");
+    assert_eq!(status, 0);
+
+    // 集合类之后还有普通字符，就回到「重复末字节」——这是同一判据的反面。
+    let (out, _, _) = run(&["abcdefghijklmnop", "[:digit:]x"], b"abcdefghijklmnop\n");
+    assert_eq!(out, "0123456789xxxxxx\n");
+    let (out, _, _) = run(&["abc", "xy"], b"abc\n");
+    assert_eq!(out, "xyy\n", "普通式子仍重复末字节");
+}
+
+/// 本层原先给「集合」留了八格并让每枚成员都占一格，于是九枚字面量（`tr 'abcdefghi' 'x'`）
+/// 成了一条**不说一句话**的退 1。C 侧没有这个上限：字面量、区间、转义都只是 `lastch`
+/// 的一次赋值，只有 `[:class:]`/`[=c=]` 才进 SET 状态。参照件同形交回 `xxx` 退 0。
+#[test]
+fn a_long_literal_set_is_translated_instead_of_vanishing_silently() {
+    let (out, status, err) = run(&["abcdefghi", "x"], b"abc\n");
+    assert_eq!((out.as_str(), status, err.as_str()), ("xxx\n", 0, ""));
+
+    // 26 枚区间成员本来就是 `tr a-z A-Z` 的日常形；九枚字面量不该比它更特殊。
+    let (out, status, err) = run(&["abcdefghijklmnopqrstuvwxyz", "[=q=]"], b"abcz\n");
+    assert_eq!(
+        out, "q\0\0\0\n",
+        "长 set1 配单成员集合类：除第一格外全部填 NUL，stderr 是 {err:?}"
+    );
+    assert_eq!((status, err.as_str()), (0, ""));
+
+    let (out, status, _) = run(&["-d", "abcdefghij"], b"abcj\n");
+    assert_eq!(
+        (out.as_str(), status),
+        ("\n", 0),
+        "-d 那条腿同样按字节表走，不该有格数上限"
+    );
+}
+
+/// `-s` 与翻译同趟（`tr.c:239-246`），挤压判据在 `int` 域：相邻两枚 OOBCH 挤成一枚，
+/// 而输入里本来就有的 NUL 映射到自身、从没被记进「交回过」那张表，所以不挤。
+/// 四形期望值全部取自参照件（含 `ab\0c` 那形——本枚门第一版把期望写成 `c\0\0`，
+/// 参照件现量是 `c\0\0\0`，纠正过程记在 18 篇批次三百九十三）。
+#[test]
+fn the_squeeze_leg_collapses_padded_nuls_but_not_real_ones() {
+    for (input, expected) in [
+        (&b"abc\n"[..], "c\0\n"),
+        (&b"abbc\n"[..], "c\0\n"),
+        (&b"ab\0c\n"[..], "c\0\0\0\n"),
+        (&b"a\0b\0c\n"[..], "c\0\0\0\0\n"),
+        // `lastch` 的初值就是 OOBCH（`tr.c:240`），所以开头那枚 OOBCH 也被挤掉：整趟输出
+        // 只剩那一枚换行（参照件 `tr -s ab [=c=]` ← `b\n` 现量）。
+        (&b"b\n"[..], "\n"),
+        (&b"ba\n"[..], "c\n"),
+    ] {
+        let (out, status, err) = run(&["-s", "abc", "[=c=]"], input);
+        assert_eq!(out, expected, "{input:?}");
+        assert_eq!((status, err.as_str()), (0, ""), "{input:?}");
+    }
 }

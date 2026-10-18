@@ -34,8 +34,8 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_textfilter::tr::{
-    delete, parse_set, parse_tr_args, squeeze, translate, usage_block, SetError, SetSite, TrArgs,
-    TrError,
+    delete, parse_set, parse_tr_args, squeeze, translate, translate_and_squeeze, usage_block,
+    Set2Tail, SetError, SetSite, TrArgs, TrError,
 };
 
 fn run() -> ! {
@@ -52,11 +52,13 @@ fn run() -> ! {
         Err(error) => fail(prog, &error),
     };
 
-    let set1 = expand(prog, operands[0], SetSite::String1, complement);
-    let set2 = if operands.len() == 2 {
+    // string1 用不到尾部判据（它决定的是「谁是定义域」），string2 才需要：式子以集合类
+    // 收尾时耗尽之后补的是 OOBCH，不是末字节。
+    let (set1, _) = expand(prog, operands[0], SetSite::String1, complement);
+    let (set2, set2_tail) = if operands.len() == 2 {
         expand(prog, operands[1], SetSite::String2, false)
     } else {
-        Vec::new()
+        (Vec::new(), Set2Tail::LastByte)
     };
     // `tr.c:187-188`：只有翻译路径（含 `-s` 翻译）会先取 string2 的首字符，取不到就报错；
     // `-ds` 与 `-d` 路径不碰这条判据。
@@ -75,11 +77,14 @@ fn run() -> ! {
     } else if sflag && operands.len() == 1 {
         emit(run_filter(&input, |buf, out| squeeze(buf, &set1, out)));
     } else if sflag {
-        let stage = run_filter(&input, |buf, out| translate(buf, &set1, &set2, out));
-        emit(run_filter(&stage, |buf, out| squeeze(buf, &set2, out)));
+        // C 的这一腿是**一趟**：映射之后的 `int` 值直接与 `string2[]`、`lastch` 比
+        //（`tr.c:239-246`），所以拆成 translate + squeeze 两步会把 OOBCH 与真 NUL 混掉。
+        emit(run_filter(&input, |buf, out| {
+            translate_and_squeeze(buf, &set1, &set2, set2_tail, out)
+        }));
     } else {
         emit(run_filter(&input, |buf, out| {
-            translate(buf, &set1, &set2, out)
+            translate(buf, &set1, &set2, set2_tail, out)
         }));
     }
     support::terminate(0)
@@ -110,10 +115,10 @@ fn emit(bytes: Vec<u8>) {
 ///
 /// 语法句的形状是 C 的 `errx(1, ...)`：程序名、冒号、空格、原句，走标准错误，退 1，
 /// **不跟** usage 块。式子出在串1 还是串2 决定它撞哪一句，所以串位是入参而不是巧合。
-fn expand(prog: &str, text: &str, site: SetSite, complement: bool) -> Vec<u8> {
+fn expand(prog: &str, text: &str, site: SetSite, complement: bool) -> (Vec<u8>, Set2Tail) {
     let mut expanded = [0u8; 256];
-    let used = match parse_set(text, site, &mut expanded) {
-        Ok((used, _, _)) => used,
+    let (used, tail) = match parse_set(text, site, &mut expanded) {
+        Ok((used, tail)) => (used, tail),
         Err(SetError::Grammar(grammar)) => {
             support::warn(format!("{prog}: {}\n", grammar.sentence()).as_bytes());
             support::terminate(1);
@@ -123,13 +128,16 @@ fn expand(prog: &str, text: &str, site: SetSite, complement: bool) -> Vec<u8> {
         }
     };
     if !complement {
-        return expanded[..used].to_vec();
+        return (expanded[..used].to_vec(), tail);
     }
     let mut member = [false; 256];
     for &byte in &expanded[..used] {
         member[byte as usize] = true;
     }
-    (0..=255u8).filter(|byte| !member[*byte as usize]).collect()
+    (
+        (0..=255u8).filter(|byte| !member[*byte as usize]).collect(),
+        tail,
+    )
 }
 
 /// 两个出错出口共用一块四行 usage，区别只在前面的 libc 行有无。
