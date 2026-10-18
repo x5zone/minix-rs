@@ -45,13 +45,16 @@ fn flag_error(prog: &str, error: ColFlagError<'_>) -> ! {
     match error {
         ColFlagError::OperandsPresent => usage(),
         // 集外字母与 `-l` 缺值：libc 那一行由 `getprogname()` 打头（真机是 `col`），
-        // 随后才是 `col.c:154-156` 的 `usage()` —— 两行。
+        // 随后才是 `col.c:154-156` 的 `usage()` —— 两行。走字节形 `line_bytes`：
+        // libc 那一行的字母位是一个裸字节（`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、
+        // `:103` 用 `%c` 原样写出），参照件 `tmp/col-313/col` 现量 `col -bé` 打 `c3` 一个字节，
+        // 而按 `char` 渲染会多出第二个字节（U+00C3 的 UTF-8 是 `c3 83`）。
         ColFlagError::UnknownOption(letter) => {
-            support::warn(GetoptReport::UnknownOption(letter).line(prog).as_bytes());
+            support::warn(&GetoptReport::UnknownOption(letter).line_bytes(prog));
             usage()
         }
         ColFlagError::MissingValue(letter) => {
-            support::warn(GetoptReport::MissingValue(letter).line(prog).as_bytes());
+            support::warn(&GetoptReport::MissingValue(letter).line_bytes(prog));
             usage()
         }
         // `col.c:145-150` 是裸 `fprintf(stderr, "col: bad -l argument %s.\n", optarg)`

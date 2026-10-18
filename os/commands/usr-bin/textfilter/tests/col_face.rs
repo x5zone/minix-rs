@@ -43,6 +43,25 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
+/// 同上但交回**原始字节**：字母位要钉的是「一个字节」，`String::from_utf8_lossy`
+/// 把 `c3` 与 `c3 83` 都渲染成替换字符，文本夹具区分不了这两种错法。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(COL)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the col binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
 /// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`col.c:154-156`）。旧写法少了 libc 那一行。
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
@@ -197,13 +216,43 @@ fn the_reverse_feed_filter_reaches_the_output_end_to_end() {
 /// 这一判（同 `column` 已有的处置）。
 #[test]
 fn nonascii_option_letter_is_reported_as_one_byte() {
-    let (out, code, err) = run(&["-b\u{e9}"], b"a\n");
-    assert_eq!((code, out.as_str()), (1, ""), "stderr={err:?}");
-    assert_eq!(err, format!("col: unknown option -- \u{c3}\n{USAGE}"));
-    // ASCII 那一形不受影响：报的就是 `Z` 本体
-    let (_, code, err) = run(&["-Z"], b"a\n");
+    // 参照件 `tmp/col-313/col` 现量三形都打**裸字节 `c3`** 一个字节 + usage、退 1：
+    // `-bé`（`b` 合法，继续吃到 `é` 的第一字节）、`-é`、`-xé`。
+    // 这一枚曾钉的是 lossy 后的码位 U+00C3——那对应的是「按字节取但仍按 `char` 渲染」
+    // 那一版（打 `c3 83` 两字节）；换成字节形之后期望改成逐字节，
+    // 因为 lossy 会把裸 `c3` 与 `c3 83` 都读成替换字符，文本夹具已无力分辨。
+    let want: Vec<u8> = [
+        b"col: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-b\u{e9}", "-\u{e9}", "-x\u{e9}"] {
+        let (out, code, err) = run_bytes(&[form], b"a\n");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走 stderr");
+        assert_eq!(code, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    // ASCII 那一形两个入口一字不差：报的就是 `Z` 本体
+    let (_out, code, err) = run_bytes(&["-Z"], b"a\n");
+    assert_eq!(code, 1);
     assert_eq!(
-        (code, err),
-        (1, format!("col: unknown option -- Z\n{USAGE}"))
+        err,
+        b"col: unknown option -- Z\nusage: col [-bfpx] [-l nline]\n".to_vec()
+    );
+}
+
+/// `-l` 的缺值那一形也走字节形：`l` 是 ASCII，两个入口同串（参照件现量
+/// `col: option requires an argument -- l` + usage、退 1）。这枚门防的是
+/// 「换渲染时把缺值那句的措辞一起漂走」。
+#[test]
+fn the_missing_value_line_of_l_is_ascii_and_unchanged() {
+    let (out, code, err) = run_bytes(&["-l"], b"a\n");
+    assert_eq!(out, Vec::new());
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        b"col: option requires an argument -- l\nusage: col [-bfpx] [-l nline]\n".to_vec()
     );
 }
