@@ -113,6 +113,12 @@ impl SubDevice {
         self.out_of_data
     }
 
+    /// Set the dry flag (`open_sub_dev` sets `OutOfData = TRUE` on every
+    /// open, `audio_fw.c:266`).
+    pub fn set_out_of_data(&mut self, out_of_data: bool) {
+        self.out_of_data = out_of_data;
+    }
+
     /// How many fragments are in flight (`DmaLength`).
     pub const fn dma_length(&self) -> u32 {
         self.dma_length

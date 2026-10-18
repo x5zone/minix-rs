@@ -189,6 +189,16 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `FBD` 片收尾（存储代理族第二台，占位 24→23）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `27→26` —— 随 fbd 接线（`os/drivers` 24→23）的机械过账。**minix-blockdriver 公共面新增**（A 板是下游）：`BlockService::note_open`（转发型服务的 open 记账入口：代理的 open 钩子无传输，服务代转后告知泵的 restart 门）；**minix-bdev 公共面新增**：`Transport`/`GrantIssuer` 对 `&mut L` 的 blanket impl（客户端按值取传输，持有引用者可交出）；fbd 本体四模块（protocol/face/service/main，28 枚新门）—— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `FILTER` 片收尾（存储代理族第三台，占位 23→22）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `26→25` —— 随 filter 接线（`os/drivers` 23→22）的机械过账。filter 本体四模块（face 顶层面：对齐门/暂存/转发重试环/尺寸控制 + service 的 DIOCGETP 解码 + main 真循环，13 枚新门）；**登记缝**：中层面（`driver.c` 的校验引擎、镜像策略与异步重试/重启/超时）以 `LowerLeg` 缝承载，生产腿未落时以 `UnboundLeg` 诚实拒绝（不伪造通过） —— 不涉 A/C 线语义 —— `✅`
+
+- `2026-10-19` B / `FLOPPY` 片收尾（存储硬件族首台，占位 22→21）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `25→24` —— 随 floppy 接线（`os/drivers` 22→21）的机械过账。floppy 本体四模块（face 顶层面：f_prepare 的盘/密度/分区选择、f_do_open 的介质探测与格式化门、扇区循环与四个门、f_geometry/f_part 报告、f_cleanup 忘头位；service 泵；main 真循环，15 枚新门）；**登记缝**：FDC 设备层（dma_setup/seek/fdc_transfer/fdc_results/fdc_command/recalibrate/reset/read_id/test_read，C 约七百行）以 `FdcLeg` 缝承载，生产腿未落时 `UnboundFdc` 诚实拒绝；格式化腿的 `disk_parameter_s` 线格式未建模（同缝） —— 不涉 A/C 线语义 —— `✅`
+
+- `2026-10-19` B / `MMC` 片收尾（存储硬件族最后一台，占位 21→20）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `24→23` —— 随 mmc 接线（`os/drivers` 21→20）的机械过账。mmc 本体四模块（face：minor→槽位映射与 5+16 设备方案、开时的卡检测/上电/分区解析、块大小与对齐四门、逐块循环、分区/几何报告、alarm 空钩；service：DIOCOPENCT 的服务侧解码 + 泵；main 真循环，11 枚新门）；**登记缝**：主机/卡层（`mmchost_mmchs.c` 的控制器寄存器与命令引擎、`emmc.c` 的卡上电与数据传输）以 `MmcHost` 缝承载，`UnboundHost` 诚实拒绝 —— 不涉 A/C 线语义 —— `✅`
+
+- `2026-10-19` B / `AUDIO-DMA` 片收尾（音频族设计裁决，占位不变 20）：**minix-audiodriver 公共面新增**（A 板是下游）：`dma` 模块——`dma_bytes_left`（C 宏逐字）、`DmaBuffer`/`RingPlan`、`ring_start`/`plan_ring`（`audio_fw.c:791-796` 的 64K 边界规则）、`DmaAlloc` 缝与 `UnboundDma`（诚实 ENOSYS）；四枚新门（audiodriver 9/0）。**裁决**：DMA 缓冲归框架服务层（与 C 同），卡侧只收地址；阻塞项 = `E-DMABUF`（连续 + 64K 对齐 + <16M 的分配，VM 侧拥有）——已在 B 板音频行写明取证与两个原语的现状 —— 不涉 A/C 线语义 —— `✅`
+
+- `2026-10-19` B / `ES1371` 片收尾（音频族首台，占位 20→19）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `23→22` —— 随 es1371 接线（`os/drivers` 20→19）的机械过账。**minix-audiodriver 公共面新增**（A 板是下游）：`service` 模块（`AudioService`：子设备开合闸门、DMA 上线经 `DmaAlloc` 缝、字符请求派发与回复、读写闸门与驻留记录）与 `SubDevice::set_out_of_data`；es1371 四模块（lib/main 真循环，占位归零）。**登记缝**：分片数据面（`audio_fw.c:500-752` 的 `data_from_user`/`data_to_user`/`get_started` 与中断处理）——读写过闸后诚实报 ENOSYS 而不是把调用方挂在不会来的回复上 —— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。

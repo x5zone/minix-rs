@@ -16,7 +16,45 @@
 
 #![no_std]
 
-pub mod checksum;
+#[cfg(test)]
+extern crate std;
 
-/// Service initialization entry (wires the filter table; digest math stays out).
-pub fn init() {}
+extern crate alloc;
+
+pub mod checksum;
+pub mod face;
+pub mod service;
+
+use face::{FilterFace, LowerLeg};
+use service::FilterService;
+
+/// The middle layer's default: no lower driver is bound yet, so every
+/// transfer is refused honestly.
+///
+/// The production leg (the block client over the two lower drivers, with
+/// the checksum engine and the async retry machinery) is the registered
+/// seam; the binary replaces this leg when it lands.
+pub struct UnboundLeg;
+
+impl LowerLeg for UnboundLeg {
+    fn transfer(
+        &mut self,
+        _position: u64,
+        _buf: &mut [u8],
+        _size: u64,
+        _do_write: bool,
+    ) -> Result<u64, i32> {
+        Err(-minix_types::ENOSYS)
+    }
+    fn check_drivers(&mut self) -> Result<(), i32> {
+        Err(-minix_types::ENOSYS)
+    }
+    fn raw_size(&mut self) -> u64 {
+        0
+    }
+}
+
+/// Builds the service for the binary.
+pub fn init<L: LowerLeg>(face: FilterFace<L>) -> FilterService<L> {
+    FilterService::new(face)
+}

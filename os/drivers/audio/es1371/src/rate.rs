@@ -61,7 +61,10 @@ mod tests {
 
     #[test]
     fn test_rate_band_matches_header_limits() {
-        assert_eq!((MIN_RATE_HZ, DEFAULT_RATE_HZ, MAX_RATE_HZ), (4000, 44100, 44100));
+        assert_eq!(
+            (MIN_RATE_HZ, DEFAULT_RATE_HZ, MAX_RATE_HZ),
+            (4000, 44100, 44100)
+        );
         assert_eq!(CONVERTER_RATE_HZ, 48000);
         assert!(rate_allowed(4000));
         assert!(rate_allowed(44100));

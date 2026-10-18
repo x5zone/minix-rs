@@ -55,7 +55,9 @@ pub struct GroupLayout {
 impl GroupLayout {
     /// Standard layout: eight data sectors plus one sum sector.
     pub fn standard() -> Self {
-        GroupLayout { data_sectors: SECTORS_PER_GROUP }
+        GroupLayout {
+            data_sectors: SECTORS_PER_GROUP,
+        }
     }
 
     /// Total sectors stored per group (data plus the sum sector).
