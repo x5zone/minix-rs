@@ -542,17 +542,19 @@ impl Tree {
     /// gaps that produce no output: dot is position zero, dot-dot is
     /// position one, indexed slots follow in index order, then plain
     /// children in table order (indexed children skipped, since they
-    /// already had their slots). A full caller buffer stops the walk with
-    /// the position rewound to the blocking entry; otherwise the position
-    /// runs past the last child. The server's refresh hook runs first on
-    /// live directories.
+    /// already had their slots). The entry cap `capacity` and a callback
+    /// returning `false` both stop the walk with the position rewound to
+    /// the blocking entry; otherwise the position runs past the last
+    /// child. The byte-accurate limit lives in the caller's encoder, which
+    /// drives the callback's return value. The server's refresh hook runs
+    /// first on live directories.
     pub fn list<H: FsHooks>(
         &mut self,
         hooks: &mut H,
         dir: NodeId,
         position: &mut u64,
         capacity: usize,
-        out: &mut dyn FnMut(DirEntry),
+        out: &mut dyn FnMut(DirEntry) -> bool,
     ) -> Result<usize, TreeError> {
         self.check(dir)?;
         if *position == u64::MAX {
@@ -581,7 +583,16 @@ impl Tree {
                         *position = pos;
                         break;
                     }
-                    out(entry);
+                    if !out(entry) {
+                        // The caller refused this entry (its buffer is full
+                        // or the write failed). C `fs_getdents` breaks on a
+                        // zero return as well (`file.c:290-291`), but its
+                        // position has already moved past the entry; this
+                        // walk rewinds so the next call resumes with it and
+                        // no entry is skipped.
+                        *position = pos;
+                        break;
+                    }
                     emitted += 1;
                 }
             }
@@ -690,7 +701,12 @@ impl Tree {
         }
         if pos == 1 {
             let parent = self.nodes[dir.0].parent.map(NodeId).unwrap_or(dir);
-            return Ok(Some(self.describe(parent)?));
+            // C `fs_getdents` (`file.c:238-245`) reports the parent's
+            // number under the fixed name ".."; describing the parent
+            // directly would yield its own name ("." for the root).
+            let mut entry = self.describe(parent)?;
+            entry.name = alloc::vec![b'.', b'.'];
+            return Ok(Some(entry));
         }
         if pos - 2 < indexed {
             let index = (pos - 2) as i32;
@@ -1030,14 +1046,42 @@ mod tests {
         let mut position = 0u64;
         let mut names = Vec::new();
         tree.list(&mut hooks, Tree::root(), &mut position, 16, &mut |entry| {
-            names.push(entry.name.clone())
+            names.push(entry.name.clone());
+            true
         })
         .unwrap();
         // Dot, dot-dot, indexed gap zero skipped silently, indexed one,
         // then the plain child.
         assert_eq!(names.len(), 4);
+        assert_eq!(names[0], b".".to_vec());
+        assert_eq!(names[1], b"..".to_vec());
         assert_eq!(names[2], b"indexed".to_vec());
         assert_eq!(names[3], b"plain".to_vec());
+    }
+
+    #[test]
+    fn test_list_stops_and_rewinds_when_the_callback_refuses() {
+        let mut tree = tree();
+        let mut hooks = ClosedHooks;
+        tree.add(Tree::root(), b"first", NO_INDEX, file_stat(), 0, 0).unwrap();
+        tree.add(Tree::root(), b"second", NO_INDEX, file_stat(), 0, 0).unwrap();
+        let mut position = 0u64;
+        let mut names = Vec::new();
+        let emitted = tree
+            .list(&mut hooks, Tree::root(), &mut position, 16, &mut |entry| {
+                if entry.name == b"second" {
+                    return false;
+                }
+                names.push(entry.name.clone());
+                true
+            })
+            .unwrap();
+        // The walk hands out dot and dot-dot, passes the root's four
+        // indexed slots silently, then refuses "second" (the head-inserted
+        // newest child) at position six and rewinds onto it.
+        assert_eq!(emitted, 2);
+        assert_eq!(position, 6);
+        assert_eq!(names, alloc::vec![b".".to_vec(), b"..".to_vec()]);
     }
 
     #[test]

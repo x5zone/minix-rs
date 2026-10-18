@@ -143,6 +143,7 @@ run_with_qemu_lock() (
 - `2026-10-18` A / 第 1b 节服务器线与第 5 节真机项：要碰自己的 `os/servers/`、`os/fs/`、`os/net/`、`os/commands/`，但**需要 C 板真机窗** —— `⏸ 等窗`
 - `2026-10-18` A / `A4` 常量的消费者侧：`os/servers/vfs/src/cdev.rs`、`bdev.rs` 的重述归 A，B 只做定义侧 —— `☐`
 - `2026-10-18` B / `B1` 的 `os/fs` 两个 `loop {}`：归 A 板（A20），B 只做 `os/drivers` 的 52 个 —— `☐`
+- `2026-10-18` B / `SD-19` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的 AP_GO 基线 `11→5` —— 随 C 线 `SD-37` 闭账（`c0d5f2b6c` 删邮箱死码）后的机械过账，台账 DONE 行已记新读数，不涉语义 —— `✅`
 
 ## 7. 每轮收尾（顺序固定）
 

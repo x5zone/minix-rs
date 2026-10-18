@@ -142,12 +142,15 @@ impl<H: FsHooks> FsDriver for TreeServer<H> {
         }
         // Listing stages through the directory-entry encoder exactly like
         // the framework's data path: the tree yields typed entries and the
-        // encoder packs them for the virtual file system.
+        // encoder packs them for the virtual file system. The staging
+        // buffer keeps C's `GETDENTS_BUFSIZ` floor (`file.c:11,21-23`); a
+        // smaller one could not hold a full `NAME_MAX` record.
         let mut caller = alloc::vec![0u8; capacity.max(1)];
-        let mut staging = alloc::vec![0u8; 64];
+        let mut staging = alloc::vec![0u8; crate::LISTING_BUFFER_MINIMUM];
         let dir_node = self.tree.find(inode).map_err(node_error)?;
         let mut resume = *position as u64;
-        {
+        let mut failure = None;
+        let total = {
             let mut backend = MemoryBackend {
                 storage: &mut caller,
                 fail_with: None,
@@ -167,21 +170,32 @@ impl<H: FsHooks> FsDriver for TreeServer<H> {
                     &mut resume,
                     capacity,
                     &mut |entry: DirEntry| {
-                        // Entries past a full caller buffer are dropped
-                        // here: the tree enumeration completes, the packed
-                        // prefix is what the caller sees.
-                        let _ = encoder.add(
+                        // C `fs_getdents` (`file.c:285-292`) returns an
+                        // error, stops on zero (the entry did not fit), or
+                        // continues on a positive record length.
+                        match encoder.add(
                             entry.number,
                             &entry.name,
                             DirentType::from_raw(entry.file_type),
-                        );
+                        ) {
+                            Ok(0) => false,
+                            Ok(_) => true,
+                            Err(error) => {
+                                failure = Some(error.to_errno());
+                                false
+                            }
+                        }
                     },
                 )
                 .map_err(node_error)?;
-        }
+            if let Some(error) = failure {
+                return Err(error);
+            }
+            encoder.finish()?
+        };
         *position = resume as i64;
-        out(&caller);
-        Ok(caller.len().min(capacity))
+        out(&caller[..total]);
+        Ok(total)
     }
 
     fn truncate(&mut self, inode: u64, start: i64, end: i64) -> Result<(), Errno> {
@@ -471,5 +485,161 @@ mod tests {
         server.mount(1, flags(false), &mut capabilities).unwrap();
         let error = server.read(99, 0, 4, &mut |_| {}).unwrap_err();
         assert_eq!(error.to_i32(), minix_types::EINVAL);
+    }
+
+    /// Header bytes every record carries: inode number, record length, name
+    /// length, and file-type byte (`dirent.h` `_DIRENT_NAMEOFF`).
+    const DIRENT_HEADER: usize = 13;
+
+    /// Add one regular file under the root (child numbering follows the
+    /// tree's slot order, which is what the listing walks).
+    fn add_child(server: &mut TreeServer<NoHooks>, name: &[u8]) {
+        server
+            .tree_mut()
+            .add(
+                Tree::root(),
+                name,
+                -1,
+                NodeStat {
+                    mode: 0o100644,
+                    uid: 0,
+                    gid: 0,
+                    size: 0,
+                    device: 0,
+                },
+                -1,
+                0,
+            )
+            .unwrap();
+    }
+
+    /// Decode a packed listing into the names it carries.
+    fn dirent_names(bytes: &[u8]) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+        let mut names = alloc::vec::Vec::new();
+        let mut offset = 0usize;
+        while offset + DIRENT_HEADER <= bytes.len() {
+            let record = u16::from_ne_bytes([bytes[offset + 8], bytes[offset + 9]]) as usize;
+            let name_length =
+                u16::from_ne_bytes([bytes[offset + 10], bytes[offset + 11]]) as usize;
+            if record < DIRENT_HEADER || offset + DIRENT_HEADER + name_length > bytes.len() {
+                break;
+            }
+            names.push(bytes[offset + DIRENT_HEADER..offset + DIRENT_HEADER + name_length].to_vec());
+            offset += record;
+        }
+        names
+    }
+
+    #[test]
+    fn test_get_dents_flushes_the_staging_tail() {
+        let mut server = server();
+        let mut capabilities = CapabilityFlags::EMPTY;
+        server.mount(1, flags(false), &mut capabilities).unwrap();
+        for name in [&b"a"[..], b"bb", b"ccc", b"dddd"] {
+            add_child(&mut server, name);
+        }
+        let mut position = 0i64;
+        let mut seen = alloc::vec::Vec::new();
+        let moved = server
+            .get_dents(1, &mut position, 4096, &mut |bytes| {
+                seen.extend_from_slice(bytes)
+            })
+            .unwrap();
+        assert_eq!(moved, seen.len());
+        // Children come out in C's insertion order: `add_inode` inserts at
+        // the head of the child list (`inode.c:236`), so the listing walks
+        // them newest first.
+        assert_eq!(
+            dirent_names(&seen),
+            alloc::vec![
+                b".".to_vec(),
+                b"..".to_vec(),
+                b"dddd".to_vec(),
+                b"ccc".to_vec(),
+                b"bb".to_vec(),
+                b"a".to_vec(),
+            ]
+        );
+        // The count is the packed record length, not the caller capacity:
+        // dot, dot-dot, then the four children.
+        let expected: usize = [1usize, 2, 4, 3, 2, 1]
+            .iter()
+            .map(|length| minix_fs::dentry::record_length(*length))
+            .sum();
+        assert_eq!(moved, expected);
+    }
+
+    #[test]
+    fn test_get_dents_stops_on_a_full_buffer_and_resumes_without_gaps() {
+        let mut server = server();
+        let mut capabilities = CapabilityFlags::EMPTY;
+        server.mount(1, flags(false), &mut capabilities).unwrap();
+        for name in [&b"a"[..], b"bb", b"ccc"] {
+            add_child(&mut server, name);
+        }
+        let mut position = 0i64;
+        let mut first = alloc::vec::Vec::new();
+        let moved = server
+            .get_dents(1, &mut position, 40, &mut |bytes| {
+                first.extend_from_slice(bytes)
+            })
+            .unwrap();
+        // Dot and dot-dot (sixteen bytes each) fit; the first child record
+        // would need forty-eight. The walk stops on that child and leaves
+        // the position there for the next call.
+        assert_eq!(moved, 32);
+        assert_eq!(position, 2);
+        assert_eq!(
+            dirent_names(&first),
+            alloc::vec![b".".to_vec(), b"..".to_vec()]
+        );
+        let mut rest = alloc::vec::Vec::new();
+        let resumed = server
+            .get_dents(1, &mut position, 4096, &mut |bytes| {
+                rest.extend_from_slice(bytes)
+            })
+            .unwrap();
+        assert_eq!(resumed, rest.len());
+        // The head-insertion order again: the first plain child is the
+        // newest one, then the older ones.
+        assert_eq!(
+            dirent_names(&rest),
+            alloc::vec![b"ccc".to_vec(), b"bb".to_vec(), b"a".to_vec()]
+        );
+    }
+
+    #[test]
+    fn test_get_dents_reports_invalid_when_no_record_fits() {
+        let mut server = server();
+        let mut capabilities = CapabilityFlags::EMPTY;
+        server.mount(1, flags(false), &mut capabilities).unwrap();
+        let mut position = 0i64;
+        let mut seen = alloc::vec::Vec::new();
+        let error = server
+            .get_dents(1, &mut position, 8, &mut |bytes| {
+                seen.extend_from_slice(bytes)
+            })
+            .unwrap_err();
+        assert_eq!(error.to_i32(), minix_types::EINVAL);
+        assert!(seen.is_empty());
+        assert_eq!(position, 0);
+    }
+
+    #[test]
+    fn test_get_dents_lists_a_name_at_the_name_maximum() {
+        let mut server = server();
+        let mut capabilities = CapabilityFlags::EMPTY;
+        server.mount(1, flags(false), &mut capabilities).unwrap();
+        let name = alloc::vec![b'x'; crate::NAME_MAX];
+        add_child(&mut server, &name);
+        let mut position = 0i64;
+        let mut seen = alloc::vec::Vec::new();
+        let moved = server
+            .get_dents(1, &mut position, 4096, &mut |bytes| {
+                seen.extend_from_slice(bytes)
+            })
+            .unwrap();
+        assert_eq!(moved, seen.len());
+        assert!(dirent_names(&seen).contains(&name));
     }
 }
