@@ -386,7 +386,7 @@ fn escape_literal(escaped: u8) -> u8 {
 /// 只在写出的那一刻截成 `unsigned char`，也就是 `0`。
 const OOBCH: u16 = 256;
 
-/// 式子耗尽之后 `next()` 还会不会给出新东西——`tr.c:205-211` 那句注释说的「重复末字节」
+/// 式子耗尽之后 `next()` 还会不会给出新东西——`tr.c:226-232` 那句注释说的「重复末字节」
 /// 只对**普通**式子成立，而以一枚集合类收尾的式子交回的是 `OOBCH`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Set2Tail {
@@ -394,7 +394,7 @@ pub enum Set2Tail {
     LastByte,
     /// 最后一项是 `[:class:]` 或 `[=c=]`：`str.c:158-166` 的 `SET` 分支先做
     /// `s->lastch = s->set[s->cnt++]`，走到哨兵时把 `lastch` 顶成 `OOBCH`，随后
-    /// `case '\0'` 那一支交回的就是这个 256（`:110-122`）。`tr.c:217` 存进映射表、
+    /// `case '\0'` 那一支交回的就是这个 256（`:103-121`）。`tr.c:220` 存进映射表、
     /// `putchar` 截成 `0`；而 `-s` 那条腿在 `int` 域里比较，所以 256 与普通 0 是两回事。
     Oobch,
 }
@@ -423,7 +423,7 @@ fn build_map(set1: &[u8], set2: &[u8], tail: Set2Tail) -> [u16; 256] {
             u16::from(set2[index])
         } else {
             // string2 比 string1 短：C 不再取新值，而是把 `next()` 当时那个 `lastch` 一路重复
-            //（`tr.c:205-211` 的注释说的就是这件事）。普通式子停在末字节，集合类停在 OOBCH。
+            //（`tr.c:226-232` 的注释说的就是这件事）。普通式子停在末字节，集合类停在 OOBCH。
             match tail {
                 Set2Tail::Oobch => OOBCH,
                 Set2Tail::LastByte => u16::from(*set2.last().unwrap_or(&0)),
@@ -468,7 +468,7 @@ pub fn translate(
 
 /// `tr [-c] -s string1 string2` 那一腿（`tr.c:239-246`）：**映射与挤压在同一趟里做**，
 /// 而且挤压判据比的是映射**之后**的 `int` 值——`lastch` 初值就是 `OOBCH`，被记进
-/// `string2[]` 的也恰恰是那一路交回过的值（`tr.c:222-224` 记在映射那一趟里）。
+/// `string2[]` 的也恰恰是那一路交回过的值（`tr.c:224` 记在映射那一趟里）。
 ///
 /// 这两句合起来解释了一格看着矛盾的现象：`tr -s abc '[=c=]'` ← `abc` 交回 `c\0`，
 /// 即那两枚由 OOBCH 变来的 NUL **互相挤压成一枚**，而输入里本来就有的 NUL 不受影响。

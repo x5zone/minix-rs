@@ -34,7 +34,7 @@
 //! `tr.c` 的 OOBCH 腿（批次三百九十，登记名 `TR-EQUIV-OOBCH-SET2`）现在也接上了：
 //! string2 以一枚集合类（`[:alpha:]`/`[=c=]`）收尾时，耗尽之后重复的是 `OOBCH`（256），
 //! 经 `putchar` 截成 `\0`；以普通字符、区间或 `[x*n]` 收尾时才重复末字节。
-//! `-s` 那一腿另有一条：C 在**同一趟**里映射并挤压（`tr.c:239-246`），判据在 `int` 域上，
+//! `-s` 那一腿另有一条：C 在**同一趟**里映射并挤压（`tr.c:240-246`），判据在 `int` 域上，
 //! 所以两枚相邻的 OOBCH-NUL 会挤成一枚，而输入里本来就有的 NUL 不参与挤压。
 
 mod face_support;
@@ -378,7 +378,7 @@ fn a_reversed_range_is_three_literals_and_exits_zero() {
 
 /// string2 用尽之后补什么，C 的判据是「式子的最后一项是不是集合类」，不是「短了就重复末字节」：
 /// 名字类与等价类都把 `lastch` 顶成 `OOBCH`（`minix3/usr.bin/tr/str.c:158-166` 对 `:110-122`），
-/// `tr.c:217` 存进映射表的是 256，`putchar` 再截成 `\0`。期望值逐字取自参照件
+/// `tr.c:220` 存进映射表的是 256，`putchar` 再截成 `\0`。期望值逐字取自参照件
 /// （`tmp/tr-322/tr_ref`，同一轮把八形一并量在 `tmp/tr-390/ab.log`）。
 #[test]
 fn an_exhausted_character_class_pads_with_nul_bytes() {
@@ -424,7 +424,7 @@ fn a_long_literal_set_is_translated_instead_of_vanishing_silently() {
     );
 }
 
-/// `-s` 与翻译同趟（`tr.c:239-246`），挤压判据在 `int` 域：相邻两枚 OOBCH 挤成一枚，
+/// `-s` 与翻译同趟（`tr.c:240-246`），挤压判据在 `int` 域：相邻两枚 OOBCH 挤成一枚，
 /// 而输入里本来就有的 NUL 映射到自身、从没被记进「交回过」那张表，所以不挤。
 /// 四形期望值全部取自参照件（含 `ab\0c` 那形——本枚门第一版把期望写成 `c\0\0`，
 /// 参照件现量是 `c\0\0\0`，纠正过程记在 18 篇批次三百九十三）。
