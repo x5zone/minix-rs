@@ -94,7 +94,11 @@ UEFI 侧还有一条更早的边界：系统表与配置表在 `exit_boot_servic
      riscv64: OpenSBI 的 a1 寄存器 → DTB
         │
         ▼
-② 引导阶段只取地址（不解析）——窗口内动作最小化（§1.3）
+② 引导阶段只取地址（不解析）——窗口内动作最小化（§1.3）。例外注记
+   （I-22）：boot-shim（OpenSBI/U-Boot 腿）与 bootface（直核腿）为装配
+   `KernelInfo.memmap` 各自解 DTB 的 `/memory` 子集——经 minix-boot 的
+   `DtbMemoryMap` 单源共享，不属「引导阶段不解析」的违反；除 `/memory`
+   外的节点仍归内核平台发现层（本篇）
         │
         ▼
 ③ 内核按格式分派到对应解析器

@@ -52,16 +52,15 @@ use core::slice;
 
 use minix_types::{PhysBytes, VirBytes};
 use minix_boot::{
-    BootPrepareResult, BootShim, DTB, KernelInfo, MemoryRegion, PlatformDescSource,
+    BootPrepareResult, BootShim, DTB, DtbMemoryMap, KernelInfo, MemoryMapSource as _,
+    MemoryRegion, PlatformDescSource,
 };
 
 use crate::loader::{self, FileLoader};
 
 /// QEMU virt DRAM base address.
-const DRAM_BASE: u64 = 0x8000_0000;
 
 /// Default QEMU virt RAM size (128 MB).
-const DEFAULT_RAM_SIZE: u64 = 0x800_0000;
 
 /// Bump-allocation region for boot modules in OpenSBI path.
 ///
@@ -69,7 +68,7 @@ const DEFAULT_RAM_SIZE: u64 = 0x800_0000;
 /// in low DRAM. To avoid clashing with them we carve a region high in
 /// DRAM for boot-module pages. The exact start address is conservative;
 /// the boot script controls actual U-Boot allocations.
-const MODULE_REGION_BASE: u64 = DRAM_BASE + 0x0200_0000; // DRAM + 32 MB
+const MODULE_REGION_BASE: u64 = 0x8000_0000 + 0x0200_0000; // DRAM + 32 MB
 const MODULE_REGION_SIZE: u64 = 0x0200_0000;             // 32 MB
 
 /// Magic number identifying a valid [`BootFileTable`] in memory.
@@ -203,7 +202,25 @@ impl BootShim for OpenSbiBootShim {
             .expect("boot-shim: U-Boot did not pass a BootFileTable in a0");
         let file_loader = UbootFileLoader::new(table);
 
-        let memmap = build_memmap();
+        // I-22 丁案 C：memmap 源 = DTB（OpenSBI/U-Boot 经 a1 递 DTB，
+        // `install_dtb_ptr` 已在位；`fw_end = 0` 不削——该腿 OpenSBI 区
+        // 可回收、模块域由内核侧 `cut_memmap` 自切，行为与原单区硬编码
+        // 等价、源由硬编码换 DTB 真值）。缺 DTB = 诚实停机（无回退，
+        // 单区硬编码正是本条要收口的泄漏面）。
+        let (memmap, _reserved) = {
+            let dtb_pa = dtb_ptr().expect(
+                "boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）",
+            );
+            // SAFETY: a1 由固件递入；头 8 字节读 totalsize（bootface
+            // 同款），`Fdt::new` 过 magic/size 闸，坏 blob → expect 停机。
+            let head = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, 8) };
+            let total = u32::from_be_bytes(head[4..8].try_into().expect("dtb header totalsize"))
+                as usize;
+            let bytes = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, total) };
+            let fdt = fdt::Fdt::new(bytes)
+                .expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
+            minix_boot::DtbMemoryMap::new(&fdt, 0).collect()
+        };
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
 
@@ -415,17 +432,6 @@ pub const fn boot_file_table_magic() -> u64 {
     BOOT_FILE_TABLE_MAGIC
 }
 
-/// Build a hardcoded memory map for QEMU virt.
-///
-/// Returns a static slice with one CONVENTIONAL region covering DRAM.
-pub fn build_memmap() -> &'static [MemoryRegion] {
-    const REGION: MemoryRegion = MemoryRegion {
-        base: PhysBytes(DRAM_BASE),
-        len: DEFAULT_RAM_SIZE as usize,
-    };
-    &[REGION]
-}
-
 /// Allocate a single physical page for the root page table.
 pub fn alloc_root_page() -> PhysBytes {
     PhysBytes(bump_alloc(1).expect("boot-shim: out of bump memory (root page)"))
@@ -606,7 +612,7 @@ mod tests {
         let info = build_kernel_info(
             &[],
             VirBytes(0xFFFF_FFFF_8000_0000),
-            PhysBytes(DRAM_BASE),
+            PhysBytes(0x8000_0000),
             0x100_000,
             &[],
             PhysBytes(0x80000000), // bootstrap_start
@@ -617,7 +623,7 @@ mod tests {
         // riscv 分支=48 位值；Sv39 取值范围由 minix_types 的编译期
         // 不变式在 riscv64 目标上钉扎，§续-338b CodeReview P0 修正）。
         assert_eq!(info.user_sp.0, minix_types::USER_STACK_TOP);
-        assert_eq!(info.kern_phys_base, PhysBytes(DRAM_BASE));
+        assert_eq!(info.kern_phys_base, PhysBytes(0x8000_0000));
         assert!(info.platform_sources.is_empty());
     }
 
@@ -649,30 +655,6 @@ mod tests {
     // 真实集成测试（QEMU+OpenSBI+U-Boot）需要外部工具链 + 串口监控，
     // 见 01-boot-shim-bootstrap.md §5.1.1 B。
     // ─────────────────────────────────────────────────────────────────
-
-    /// `build_memmap()` 返回 OpenSBI 平台的默认 DRAM 单区域：
-    /// `[DRAM_BASE, DRAM_BASE + 128MB)`。
-    ///
-    /// **注意**：此 memmap **不排除** `MODULE_REGION_BASE = DRAM_BASE + 32MB`
-    /// 区域。boot-shim 负责报告"全部 DRAM 是 free"；内核侧的 `cut_memmap()`
-    /// （C：`pre_init.c:cut_memmap`）在 handover 后切除 module 区域。这与 C
-    /// 版语义一致——boot-shim 不感知 module 地址。`cut_memmap` 的 Rust 实现
-    /// 已落地（`os/kernel/src/memmap.rs:174`，pg_utils.c:86-125 语义）并在
-    /// VM handoff 分类中真实接线（`os/kernel/src/vm_handoff.rs:188`），不在
-    /// boot-shim 范围内。
-    #[test]
-    fn test_build_memmap_default_region() {
-        let memmap = build_memmap();
-        assert_eq!(memmap.len(), 1, "OpenSBI default memmap is a single region");
-        let r = memmap[0];
-        assert_eq!(r.base, PhysBytes(DRAM_BASE));
-        assert_eq!(r.len, DEFAULT_RAM_SIZE as usize);
-        // region 覆盖 module region（DRAM_BASE + 32MB 在内部）
-        assert!(
-            r.base.0 + r.len as u64 > MODULE_REGION_BASE,
-            "memmap should cover module region (intentionally; kernel cuts later)"
-        );
-    }
 
     /// `build_kernel_info` 8 个字段全部按入参精确映射。
     ///
@@ -731,7 +713,7 @@ mod tests {
         let info = build_kernel_info(
             &[],
             VirBytes(0xFFFF_FFFF_8000_0000),
-            PhysBytes(DRAM_BASE),
+            PhysBytes(0x8000_0000),
             0x100_000,
             &[],
             PhysBytes(0), // 生产路径值（见 §3.5.1）
