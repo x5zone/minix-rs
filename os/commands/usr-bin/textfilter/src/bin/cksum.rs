@@ -7,7 +7,7 @@
 //! standard input when none) and prints `{crc} {length}` plus ` {name}` for a
 //! file. `-a` 的摘要那条腿现在走 `minix_textfilter::digest` 的真本体（MD5/SHA1/
 //! SHA256 三族），报文形是 C 的 `MD5 (file) = <digest>` 与它的 `-n`/`-q` 两个变体；
-//! 剩下两枚算法（`md2`/`rmd160`）、`-s`/`-t`/`-x` 三条腿与 hash 在里的 `-c` 校验腿仍在占位句上。
+//! 八枚的本体都已接，仍在占位句上的只剩 `-s`/`-t`/`-x` 三条腿与 hash 在里的 `-c` 校验腿。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -25,7 +25,7 @@ use minix_textfilter::cksum::{
     CheckEntry, CksumError, CksumRequest, SumKind, cksum_crc, csum1, csum2, parse_check_line,
     parse_cksum_args, sum_display_length,
 };
-use minix_textfilter::digest;
+use minix_textfilter::digest::Algo;
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -70,10 +70,10 @@ fn run() -> ! {
         }
     };
 
-    if let Some(name) = request.hash {
-        // 选中了算法：摘要本体已经接了六枚（`src/digest.rs`），剩下 `md2`/`rmd160` 与 `-s`/`-t`/`-x`
-        // 三条腿、以及 hash 在里的 `-c` 校验腿仍在 `CKSUM-HASH-*` 的后一片。
-        support::terminate(hash_run(&request, name));
+    if let Some(algo) = request.hash {
+        // 选中了算法：八枚的本体都已接（`src/digest.rs`），只剩 `-s`/`-t`/`-x` 三条腿与
+        // hash 在里的 `-c` 校验腿仍在 `CKSUM-HASH-*` 的后一片。
+        support::terminate(hash_run(&request, algo));
     }
 
     if request.do_check {
@@ -119,8 +119,8 @@ fn run() -> ! {
 /// * `-n` `<digest> file`；
 /// * `-q` 只有 `<digest>`。
 ///
-/// 退路三条，都落在批次三百零七定下的占位句上（退 2）：算法本体未接的那两枚
-///（`MD2`/`RMD160`）、`-s`/`-t`/`-x` 三条腿、以及 hash 在里的
+/// 退路两条，都落在批次三百零七定下的占位句上（退 2）：`-s`/`-t`/`-x` 这三条自己要把一整套
+/// 印完的腿、以及 hash 在里的
 /// `-c` 校验腿——C 在那条腿里用 `hash->filefunc` 重算比对（`cksum.c:421-441`），并在
 /// 失败行前缀 `(MD5) `（`:451-456`），那是另一片报文形。
 ///
@@ -128,10 +128,7 @@ fn run() -> ! {
 /// 另一条腿上那个直接 `minix_sys` 的 `read_all`：后者在宿主上开不了也读不到（现跑
 /// `printf 'abc' | cksum` → `4294967295 0`，即零字节；`cksum <真实档>` → `cksum: <档名>`
 /// 退 1），摘要若走那条缝，宿主门就只能钉住空输入的摘要。已登记 `CKSUM-HOSTED-READ-SEAM`。
-fn hash_run(request: &CksumRequest<'_>, name: &'static str) -> i32 {
-    let Some(algo) = digest::Algo::from_hashname(name) else {
-        not_modelled();
-    };
+fn hash_run(request: &CksumRequest<'_>, algo: Algo) -> i32 {
     if request.do_check || request.nohash_stdin {
         not_modelled();
     }
@@ -163,7 +160,7 @@ fn hash_run(request: &CksumRequest<'_>, name: &'static str) -> i32 {
         } else if request.print_normal {
             format!("{digest} {operand}\n")
         } else {
-            format!("{name} ({operand}) = {digest}\n")
+            format!("{} ({operand}) = {digest}\n", algo.hashname())
         };
         support::emit(line.as_bytes());
     }
