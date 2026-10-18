@@ -31,10 +31,13 @@ fn run() -> ! {
     // 集外字母（`getopt.c:101-104`），再由 `:68-72` 的 `default: usage()` 印 usage，
     // 而裸 `-` 与 `--` 之后的 token 都落回操作数（操作数是列号，不是文件名）。
     // 旧写法没有这一环，`-Z` 直接被当列号拒收，少了 libc 那一行；`--` 也被当坏选项。
+    // 那一行走字节形 `line_bytes`：libc 的字母位是一个裸字节（`getopt.c:79` 的
+    // `optopt = *place++` 一次进一个字节，`:103` 用 `%c` 原样写出），参照件现量
+    // `colrm -é` 打 `c3` 一个字节，按 `char` 渲染会多出一个字节。
     let operands = match empty_optstring_operands(&refs[1..]) {
         Ok(rest) => rest,
         Err(report) => {
-            support::warn(report.line(prog).as_bytes());
+            support::warn(&report.line_bytes(prog));
             usage();
         }
     };

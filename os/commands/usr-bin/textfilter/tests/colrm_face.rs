@@ -45,6 +45,25 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
+/// 同上但交回**原始字节**：字母位要钉的是「一个字节」，`String::from_utf8_lossy`
+/// 把 `c3` 与 `c3 83` 都渲染成替换字符，文本夹具区分不了这两种错法。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(COLRM)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the colrm binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
 /// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`colrm.c:67-72` 的 `case '?': default`）。
 /// 参照件读数 `colrm: unknown option -- Z` + usage。旧写法少了 libc 那一行。
 #[test]
@@ -53,6 +72,42 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     assert_eq!(out, "", "报文只走 stderr");
     assert_eq!(status, 1, "stderr 是 {err:?}");
     assert_eq!(err, format!("colrm: unknown option -- Z\n{USAGE}"));
+}
+
+/// 非 ASCII 的集外字母打的是**一个裸字节**：参照件 `tmp/colrm-310/colrm` 现量
+/// `colrm -é` → `colrm: unknown option -- ` + `c3` + 换行 + usage，退 1。
+/// 取法（短横后的第一个字节，`getopt.c:79`）与渲染（字节而不是 UTF-8 的两个字节）
+/// 两半缺一都还是分叉：只改取法打 `c3 83`，只改渲染打 `c3 a9`。
+#[test]
+fn the_option_line_of_a_nonascii_letter_carries_one_raw_byte() {
+    let want: Vec<u8> = [
+        b"colrm: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    let (out, status, err) = run_bytes(&["-\u{e9}"], INPUT);
+    assert_eq!(out, Vec::new(), "报文只走 stderr");
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(err, want, "字母该是一个裸字节 c3");
+
+    // 聚簇里非 ASCII 排第二位：报错仍落在第一个字节上，且仍只有一行 libc 报文
+    // （`colrm.c:68-72` 的 `default: usage()` 拿到 '?' 就退，不会再回 getopt）。
+    let (out, status, err) = run_bytes(&["-x\u{e9}"], INPUT);
+    assert_eq!(out, Vec::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"colrm: unknown option -- x\nusage: colrm [start [stop]]\n".to_vec()
+    );
+
+    // ASCII 那一形两个入口一字不差。
+    let (_out, status, err) = run_bytes(&["-Z"], INPUT);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"colrm: unknown option -- Z\nusage: colrm [start [stop]]\n".to_vec()
+    );
 }
 
 /// 聚簇只报**第一个**字符：调用者拿到 `'?'` 就 `usage()` 退出，不回到 getopt 读第二个
