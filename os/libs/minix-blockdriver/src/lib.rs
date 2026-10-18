@@ -31,6 +31,7 @@
 //! bounded [`protocol::PendingQueue`] type.
 
 #![no_std]
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

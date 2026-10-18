@@ -246,6 +246,8 @@ impl<D: NetDriver> NetService<D> {
         wire::write_u32(&mut message, wire::status::COLL, stats.collisions);
         wire::write_u32(&mut message, wire::status::IERROR, stats.input_errors);
         wire::write_u32(&mut message, wire::status::IQDROP, stats.input_drops);
+        //[SD19-gate] 回复/状态发送发后即忘：C 的 send_reply 失败即 panic；单线程泵按文档丢弃而不是卡死。
+        #[allow(clippy::let_underscore_must_use)]
         let _ = transport.asynsend(endpoint, &mut message);
         self.pending_status = true;
         self.server.note_status_sent();
@@ -267,6 +269,8 @@ impl<D: NetDriver> NetService<D> {
         };
         wire::write_u32(&mut message, wire::ndev_reply::ID, id);
         wire::write_i32(&mut message, wire::ndev_reply::RESULT, result);
+        //[SD19-gate] 回复/状态发送发后即忘：C 的 send_reply 失败即 panic；单线程泵按文档丢弃而不是卡死。
+        #[allow(clippy::let_underscore_must_use)]
         let _ = transport.asynsend(caller, &mut message);
     }
 
@@ -347,6 +351,8 @@ impl<D: NetDriver> NetService<D> {
         wire::write_u8(&mut reply, wire::init_reply::HWADDR_LEN, hardware.len as u8);
         wire::write_u8(&mut reply, wire::init_reply::MAX_SEND, SEND_QUEUE_BOUND as u8);
         wire::write_u8(&mut reply, wire::init_reply::MAX_RECV, RECV_QUEUE_BOUND as u8);
+        //[SD19-gate] 回复/状态发送发后即忘：C 的 send_reply 失败即 panic；单线程泵按文档丢弃而不是卡死。
+        #[allow(clippy::let_underscore_must_use)]
         let _ = transport.asynsend(caller, &mut reply);
 
         // C pushes a pending statistics report to the new stack

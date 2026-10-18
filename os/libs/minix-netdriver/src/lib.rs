@@ -42,6 +42,7 @@
 //! message at a time, no shared mutable state across threads.
 
 #![no_std]
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

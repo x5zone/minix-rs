@@ -17,6 +17,7 @@
 //! Single-threaded event loop: one message at a time.
 
 #![no_std]
+#![warn(clippy::let_underscore_must_use)]
 
 extern crate alloc;
 

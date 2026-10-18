@@ -33,6 +33,7 @@
 #![no_std]
 #![cfg_attr(test, allow(internal_features))]
 #![allow(clippy::identity_op)]
+#![warn(clippy::let_underscore_must_use)]
 
 #[cfg(test)]
 extern crate std;
