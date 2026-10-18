@@ -197,6 +197,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `AUDIO-DMA` 片收尾（音频族设计裁决，占位不变 20）：**minix-audiodriver 公共面新增**（A 板是下游）：`dma` 模块——`dma_bytes_left`（C 宏逐字）、`DmaBuffer`/`RingPlan`、`ring_start`/`plan_ring`（`audio_fw.c:791-796` 的 64K 边界规则）、`DmaAlloc` 缝与 `UnboundDma`（诚实 ENOSYS）；四枚新门（audiodriver 9/0）。**裁决**：DMA 缓冲归框架服务层（与 C 同），卡侧只收地址；阻塞项 = `E-DMABUF`（连续 + 64K 对齐 + <16M 的分配，VM 侧拥有）——已在 B 板音频行写明取证与两个原语的现状 —— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `ES1371` 片收尾（音频族首台，占位 20→19）：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `23→22` —— 随 es1371 接线（`os/drivers` 20→19）的机械过账。**minix-audiodriver 公共面新增**（A 板是下游）：`service` 模块（`AudioService`：子设备开合闸门、DMA 上线经 `DmaAlloc` 缝、字符请求派发与回复、读写闸门与驻留记录）与 `SubDevice::set_out_of_data`；es1371 四模块（lib/main 真循环，占位归零）。**登记缝**：分片数据面（`audio_fw.c:500-752` 的 `data_from_user`/`data_to_user`/`get_started` 与中断处理）——读写过闸后诚实报 ENOSYS 而不是把调用方挂在不会来的回复上 —— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。
