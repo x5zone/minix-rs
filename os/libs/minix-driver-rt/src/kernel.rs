@@ -229,6 +229,13 @@ impl DriverTransport for KernelTransport {
         let len = ds.retrieve_label_name(&mut grants, endpoint, &mut buf).ok()?;
         alloc::string::String::from_utf8(buf[..len].to_vec()).ok()
     }
+
+    fn signal(&mut self, pid: i32, signal: i32) -> Result<(), i32> {
+        // C `kill` → PM's kill call (`gettimeofday`'s sibling on the same
+        // direct-trap IPC leg).
+        minix_sys::pm::kill_via(&DirectTrapTransport, pid, signal)
+            .map_err(|error| -error.to_i32())
+    }
 }
 
 #[cfg(test)]

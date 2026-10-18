@@ -153,4 +153,14 @@ pub trait DriverTransport {
         let _ = endpoint;
         None
     }
+
+    /// Send a signal to a process (`kill(pid, sig)`; C's PM round-trip):
+    /// the TPS65217 power button tells init to shut down.
+    ///
+    /// Additive with an honest default: a transport without the signal
+    /// path reports `ENOSYS` rather than pretending the signal landed.
+    fn signal(&mut self, pid: i32, signal: i32) -> Result<(), i32> {
+        let _ = (pid, signal);
+        Err(-minix_types::ENOSYS)
+    }
 }
