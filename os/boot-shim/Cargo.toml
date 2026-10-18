@@ -27,6 +27,9 @@ fw-x86-uefi = ["fw-uefi-image"]
 fw-aarch64-uefi = ["fw-uefi-image"]
 
 [dependencies]
+# I-22 丁案 C：opensbi/U-Boot 腿 memmap 源=DTB（DtbMemoryMap 消费），
+# 解析在 boot-shim 侧完成（版本钉见工作区 SD-38 注）。
+fdt = { workspace = true }
 minix-types = { path = "../libs/minix-types" }
 minix-boot = { path = "../libs/minix-boot" }
 minix-arch = { path = "../arch", default-features = false }

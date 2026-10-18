@@ -1013,8 +1013,10 @@ impl VmServer {
         // frame page, 2026-09-22).
         const DEFAULT_STACK_LIMIT: u64 = 4 * 1024 * 1024;
         // 下溢防护（NK4 回归评审 P2-2）：user_sp 低于限额时裸减回绕会把
-        // region 基址推到地址空间顶端。生产 user_sp=0x7ffffffff000 远高于
-        // 限额；宿主测试的 mock user_sp 同样须满足该不变量。
+        // region 基址推到地址空间顶端。生产 user_sp 随架构（x86-64
+        // 0x7ffffffff000、riscv64 0x3fe0000000 一族，权威
+        // `minix_types::USER_STACK_TOP`）但都远高于限额；宿主测试的 mock
+        // user_sp 同样须满足该不变量。
         debug_assert!(
             self.ctx.user_sp.0 > DEFAULT_STACK_LIMIT,
             "user_sp {:#x} leaves no room for the {}-byte stack window",

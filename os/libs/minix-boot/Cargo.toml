@@ -7,3 +7,6 @@ license.workspace = true
 
 [dependencies]
 minix-types = { workspace = true }
+# I-22 丁案 B：DtbMemoryMap 解 DTB /memory（no_std、零拷贝；版本钉见根
+# Cargo.toml SD-16 注）。
+fdt = { workspace = true }

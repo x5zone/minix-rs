@@ -190,7 +190,7 @@ impl BootShim for UefiBootShim {
         // fix27: one snapshot, two lists — conventional (free) plus the
         // non-conventional remainder that hosts everything the kernel
         // executes and touches through low addresses at runtime.
-        let (memmap, reserved_regions) = build_memmaps();
+        let (memmap, reserved_regions) = UefiMemoryMap.collect();
         uefi::println!("boot-shim: memmap ok (final pre-EBS snapshot)");
         // D-64②: wire the bootstrap-outside-memmap defense (it existed as
         // an uncalled helper). The two LOADER_DATA allocations above must
@@ -292,6 +292,20 @@ impl BootShim for UefiBootShim {
 /// BEFORE its `GetMemoryMap` call, so it is LOADER_DATA-classified in the
 /// snapshot and conservatively absent from the free list. Keep both
 /// orderings if this function is ever restructured.
+/// I-22 丁案 B：UEFI 腿的 `MemoryMapSource` 实现——委托
+/// [`build_memmaps`]（GetMemoryMap 快照 → conventional + reserved 两表）。
+/// 类型住 boot-shim（`uefi` crate 依赖不得反向进 minix-boot，孤儿规则
+/// 下由本 crate 本地类型实现外来 trait）。
+use minix_boot::MemoryMapSource as _;
+
+pub struct UefiMemoryMap;
+
+impl minix_boot::MemoryMapSource for UefiMemoryMap {
+    fn collect(&self) -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
+        build_memmaps()
+    }
+}
+
 pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let mmap = boot::memory_map(MemoryType::LOADER_DATA)
         .expect("Failed to get UEFI memory map");
