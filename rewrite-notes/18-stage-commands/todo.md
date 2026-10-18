@@ -119,6 +119,16 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百六十八（容器门复跑）：断的从来不是 Docker，是宿主那侧透明代理的假 IP 面
+
+- **这一轮量什么**：台账连着几笔把容器门记成「宿主与容器 DNS 两侧不通，用 `--offline` 回退」。本笔把它从一句环境抱怨改成一条十秒能判的门面，并把在线权威门真跑回来。
+- **分层读数（本轮现跑，全部 L1）**。① 宿主腿：`curl -sS -o /dev/null -w '%{http_code}' https://index.crates.io/config.json` → **200**；`https://static.crates.io/` → **403**（那是桶根目录禁止列举的正常回码，不是故障，容易被误读成断网）。② 容器腿：同两条命令在 `minix-ci:1.94` 内跑出同样的 200 与 403，容器 `/etc/resolv.conf` 的 `nameserver` 与宿主同为一枚 `10.255.255.254`（`wslinfo --networking-mode` 读数 `nat`，即 WSL 自建的 DNS 代理）。③ 决定性的那一层：容器内 `getent ahosts static.crates.io` 回 **198.18.1.89**、`index.crates.io` 回 **198.18.1.88**——`198.18.0.0/15` 是透明代理占用的假 IP 段。⇒ 结论不是「容器网坏了」而是「容器与宿主共用同一枚代理面」：宿主代理一停（或 WSL 重启后没跟上），假 IP 立刻不可路由，两侧一起哑火；批次三百三十一记下的 `curl` 退码 28 与「HTTPS 返回 000」正是这一形的两种读数。
+- **秒判配方（下一轮先跑它，再决定走哪条腿）**：`docker run --rm minix-ci:1.94 sh -lc 'curl -sS -o /dev/null -w "%{http_code}\n" --max-time 10 https://index.crates.io/config.json'` → 读数 **200** 就走在线权威门；读数 **000** 或 curl 退码 **28** 就是宿主代理面没起来，去等它或修它，**不动 `AGENTS.md` 的门配方，也不要把 `--offline` 的读数写成权威门**。
+- **在线门的两枚读数**（都在容器内用全新 `CARGO_HOME=/tmp/ch`、不带 `--offline`、带 `-u "$(id -u):$(id -g)"` 现跑）：`cargo test -j 1 -p minix-text-games` → 退码 0、**60 passed / 0 failed**（7 个 target 段，即 lib 30 + `random_face` 25 + `fortune_face` 5）；`cargo test -j 1 -p minix-textfilter` → 退码 0、**1076 passed / 0 failed**（68 个 target 段）。在线腿真跑的铁证不在合计数里，在日志里那一行 `Downloaded bitflags v2.11.0`——这枚 crate 不在任何挂载缓存中。日志 `tmp/online-gate/online.log`、`tmp/online-gate/tf-online.log`。
+- **配方侧的一处纠正**：镜像的 `/usr/local/cargo` 只有 `bin` 与 `env` 两项（`docker run --rm minix-ci:1.94 sh -lc 'ls /usr/local/cargo'` 读数即这两行），**不带任何 `registry` 缓存**——所以 `--offline` 只有在额外挂载一枚已填满的 `CARGO_HOME` 时才跑得动，那是断网期的降级观测，永远不能顶替在线门。
+- **顺带核掉交接件的一处不实**：`tmp/todo-loop-HANDOFF.md` 把 `.wt/rev-stdin-errleg-qoder` 与 `.wt/docgen2-01-doc01iter2` 记成「root 属主、需人执行 sudo」。本轮 `stat -c %U` 读数两者皆 `xzhao`（`du -sh` 读数 3.5G 与 144K），`bash tools/claim.sh sweep` 判两棵都是**需核对**（`os/target` 之外还有 1528 与 3 个文件），所以本笔既不提权也不删除；逐文件对账做到删除那一轮再做。真正还需要提权的只剩三枚空目录 `tmp/ci-target-349`、`tmp/ci-target-340`、`tmp/ci-target-365`（`du -sh` 各 4.0K）。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim BSD-HEADER-COMPAT-REF qoder`。
+
 ## 批次三百六十七（`REV-STDIN-ERRLEG` 的账面复测）：上一轮留的首动作指向的是一条已闭的账
 
 - **这一轮量什么**：上一轮写下的首动作是「领 `REV-STDIN-ERRLEG`」，而这条账在 `2026-10-17` 的批次三百三十一就已闭合（本文件 `:1291`），总账里也查无此条（`grep -n "REV-STDIN-ERRLEG" rewrite-notes/coordination/TODO-LEDGER-OPEN.md` 读数空）。指针既然指向一条已闭的账，就先把它复测清楚，再决定下一轮真正领哪条；本轮生产码一字未动，动的只有 18 篇这一件与认领板一行。
