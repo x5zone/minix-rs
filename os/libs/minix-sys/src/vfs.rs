@@ -31,7 +31,7 @@
 //! synchronization questions.
 
 use crate::ipc::IpcTransport;
-use crate::syscall::perform_syscall;
+use crate::syscall::{perform_syscall, perform_taskcall};
 use minix_types::{Endpoint, Errno, Message};
 
 /// File system endpoint.
@@ -55,6 +55,10 @@ pub const VFS_CALL_CLOSE: i32 = 0x105;
 pub const VFS_CALL_STAT: i32 = 0x100 + 21;
 /// File status by descriptor. C: `VFS_FSTAT (VFS_BASE + 22)` (`callnr.h:94`).
 pub const VFS_CALL_FSTAT: i32 = 0x100 + 22;
+/// `VFS_FSYNC` (`call_table.rs`: `VfsCallNum::Fsync` = base + 32).
+pub const VFS_CALL_FSYNC: i32 = 0x100 + 32;
+/// `VFS_COPYFD` (`call_table.rs`: `VfsCallNum::Copyfd` = base + 46).
+pub const VFS_CALL_COPYFD: i32 = 0x100 + 46;
 /// File status, no symlink follow. C: `VFS_LSTAT (VFS_BASE + 23)` (`callnr.h:95`).
 pub const VFS_CALL_LSTAT: i32 = 0x100 + 23;
 /// Filesystem statistics by path. C: `VFS_STATVFS1 (VFS_BASE + 40)`
@@ -206,6 +210,62 @@ struct ClosePayload {
 ///
 /// C: `close` (`minix3/minix/lib/libc/sys/close.c`): clear a message, store
 /// the descriptor with a zero no-block flag, and run the protocol.
+/// Flush one file to its medium (C: `fsync`,
+/// `minix3/minix/lib/libc/sys/fsync.c:12-18` — `_syscall(VFS_PROC_NR,
+/// VFS_FSYNC, &m)` with `mess_lc_vfs_fsync.fd` at the payload's first
+/// word).
+///
+/// The VFS server routes it through the mount's sync path
+/// (`do_fsync`, `misc.c:229-267`), which is what a block driver's
+/// force-write request needs before it reports the data as written.
+pub fn fsync_via(transport: &impl IpcTransport, fd: i32) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: the payload's first word is the descriptor
+    // (mess_lc_vfs_fsync, ipc.h:673-677); the server reads the same offset.
+    unsafe {
+        message.m_u.raw[0..4].copy_from_slice(&fd.to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_FSYNC, &mut message).map(|_| ())
+}
+
+/// Steal a descriptor between two processes (C: `copyfd`,
+/// `minix3/minix/lib/libsys/copyfd.c:7-19` — `_taskcall(VFS_PROC_NR,
+/// VFS_COPYFD, &m)` with `mess_lsys_vfs_copyfd {endpt, fd, what}` at the
+/// payload's first three words).
+///
+/// The server-side protocol returns the outcome as the reply type, so a
+/// failure comes back as a negative errno. `what` is one of the
+/// [`COPYFD_FROM`]/[`COPYFD_TO`]/[`COPYFD_CLOSE`] operations; the result of
+/// `COPYFD_FROM` is the *new* descriptor in the calling process.
+pub fn copyfd_via(
+    transport: &impl IpcTransport,
+    endpt: i32,
+    fd: i32,
+    what: i32,
+) -> Result<i32, Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: endpt@0, fd@4, what@8 (mess_lsys_vfs_copyfd); the server
+    // decodes the same three words (`syscalls.rs`'s Copyfd arm).
+    unsafe {
+        message.m_u.raw[0..4].copy_from_slice(&endpt.to_le_bytes());
+        message.m_u.raw[4..8].copy_from_slice(&fd.to_le_bytes());
+        message.m_u.raw[8..12].copy_from_slice(&what.to_le_bytes());
+    }
+    let reply = perform_taskcall(transport, vfs_endpoint(), VFS_CALL_COPYFD, &mut message)?;
+    if reply < 0 {
+        Err(Errno::from_i32(-reply))
+    } else {
+        Ok(reply)
+    }
+}
+
+/// Copy a descriptor from another process (`COPYFD_FROM`, `syslib.h:281`).
+pub const COPYFD_FROM: i32 = 0;
+/// Copy a descriptor to another process (`COPYFD_TO`).
+pub const COPYFD_TO: i32 = 1;
+/// Close a descriptor in another process (`COPYFD_CLOSE`).
+pub const COPYFD_CLOSE: i32 = 2;
+
 pub fn close_via(transport: &impl IpcTransport, fd: i32) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     let packed = ClosePayload {
@@ -2608,5 +2668,47 @@ mod time_sync_wire_tests {
             futimens_via(&transport, 4, 1, 2, 3, 4),
             Err(Errno::from_i32(minix_types::EPERM))
         );
+    }
+
+    #[test]
+    fn test_fsync_writes_the_descriptor_and_uses_the_fsync_call() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(fsync_via(&transport, 7), Ok(()));
+        let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, vfs_endpoint());
+        assert_eq!(sent.m_type, VFS_CALL_FSYNC);
+        assert_eq!(VFS_CALL_FSYNC, 0x100 + 32);
+        // SAFETY: the payload's first word.
+        let fd = unsafe { i32::from_le_bytes(sent.m_u.raw[0..4].try_into().unwrap()) };
+        assert_eq!(fd, 7);
+    }
+
+    #[test]
+    fn test_copyfd_encodes_three_words_and_returns_the_new_descriptor() {
+        let mut transport = CannedTransport::new();
+        // The server-side protocol answers the outcome as the reply type.
+        transport.reply_sendrec(Ok(reply_with_type(12)));
+        assert_eq!(copyfd_via(&transport, 21, 3, COPYFD_FROM), Ok(12));
+        let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, vfs_endpoint());
+        assert_eq!(sent.m_type, VFS_CALL_COPYFD);
+        assert_eq!(VFS_CALL_COPYFD, 0x100 + 46);
+        // SAFETY: endpt@0, fd@4, what@8.
+        let raw = unsafe { sent.m_u.raw };
+        assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 21);
+        assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), 3);
+        assert_eq!(
+            i32::from_le_bytes(raw[8..12].try_into().unwrap()),
+            COPYFD_FROM
+        );
+
+        // A refusal comes back as a negative reply type.
+        let mut denied = CannedTransport::new();
+        denied.reply_sendrec(Ok(reply_with_type(-minix_types::EPERM)));
+        assert_eq!(copyfd_via(&denied, 21, 3, COPYFD_FROM), Err(Errno::EPERM));
+        assert_eq!(COPYFD_FROM, 0);
+        assert_eq!(COPYFD_TO, 1);
+        assert_eq!(COPYFD_CLOSE, 2);
     }
 }

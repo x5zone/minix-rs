@@ -14,13 +14,12 @@
 //! Single-threaded event loop: one message at a time, no shared mutable
 //! state across threads.
 //!
-//! Registered seams: the backing-file operations that need VFS client
-//! wrappers which have not landed (`copyfd` — the VFS server implements
-//! `do_copyfd`, the client wrapper does not — and `fsync`; both report
-//! `ENOSYS` in [`backend::VfsBackend`]), the `instance` environment parse
-//! (the binary uses the documented default), and the termination-signal
-//! handler (C's `vnd_signal` parks until the last close; the rewrite
-//! records the intent and the loop's owner decides).
+//! Registered seams: the `instance` environment parse (the binary uses the
+//! documented default) and the termination-signal handler (C's `vnd_signal`
+//! parks until the last close; the rewrite records the intent and the
+//! loop's owner decides). The backing-file legs are all real: `copyfd` and
+//! `fsync` reach VFS through the client wrappers that landed with this
+//! slice (`minix-sys::vfs::copyfd_via`/`fsync_via`).
 
 #![no_std]
 

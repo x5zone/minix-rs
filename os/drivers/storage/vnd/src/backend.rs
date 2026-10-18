@@ -65,12 +65,15 @@ pub struct VfsBackend;
 
 impl FileBackend for VfsBackend {
     fn copyfd(&mut self, user_endpoint: i32, fd: i32) -> Result<i32, i32> {
-        // Registered seam: the VFS server answers this call (its
-        // `do_copyfd` is in the tree), but `minix-sys` has no client
-        // wrapper for it yet. Failing here keeps the device unconfigured
-        // instead of serving a file the driver never received.
-        let _ = (user_endpoint, fd);
-        Err(-minix_types::ENOSYS)
+        // The VFS backcall (`copyfd.c:7-19`); the server-side protocol
+        // answers the new descriptor as the reply type.
+        minix_sys::vfs::copyfd_via(
+            &DirectTrapTransport,
+            user_endpoint,
+            fd,
+            minix_sys::vfs::COPYFD_FROM,
+        )
+        .map_err(|error| -error.to_i32())
     }
 
     fn pread(&mut self, fd: i32, offset: u64, buf: &mut [u8]) -> Result<usize, i32> {
@@ -105,12 +108,7 @@ impl FileBackend for VfsBackend {
     }
 
     fn fsync(&mut self, fd: i32) -> Result<(), i32> {
-        // Registered seam: `fsync` reaches VFS through a call whose client
-        // wrapper has not landed (`minix-sys::vfs` covers open/read/write/
-        // seek/stat/close today). A force-write request therefore reports
-        // ENOSYS instead of claiming the data reached the medium.
-        let _ = fd;
-        Err(-minix_types::ENOSYS)
+        minix_sys::vfs::fsync_via(&DirectTrapTransport, fd).map_err(|error| -error.to_i32())
     }
 
     fn fstat(&mut self, fd: i32) -> Result<FileInfo, i32> {
@@ -161,9 +159,13 @@ mod tests {
     }
 
     #[test]
-    fn test_production_backend_reports_its_two_seams_honestly() {
+    fn test_production_backend_reaches_the_vfs_calls() {
+        // The backend goes through the real trap transport, so in a host
+        // test the call cannot complete (no kernel answers the trap) and
+        // the failure is the transport's, not a stand-in: the two legs are
+        // wired to `minix-sys`'s VFS client wrappers.
         let mut backend = VfsBackend;
-        assert_eq!(backend.copyfd(7, 3), Err(-minix_types::ENOSYS));
-        assert_eq!(backend.fsync(3), Err(-minix_types::ENOSYS));
+        assert_eq!(backend.copyfd(7, 3), Err(-minix_types::EIO));
+        assert_eq!(backend.fsync(3), Err(-minix_types::EIO));
     }
 }
