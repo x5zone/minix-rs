@@ -118,14 +118,15 @@
 | 寄存器写入 | 各节 | `cmi8738` 卡内建模（`device.rs` 的寄存器时序经 `ports.rs` 的端口缝），另两卡仍在服务层 | 已覆盖（第三卡） |
 | 混音器细节 | 第 2.6 节 | `cmi8738` 卡内建模（`mixer.rs` 的设备表与十六项默认音量），另两卡仍在服务层 | 已覆盖（第三卡） |
 | 端口读写宏 | `io.h` 八十四行 | `ports.rs` 的 `PortIo` 缝：六种读写加微秒延时；生产腿走内核的端口调用 | 已覆盖 |
-| 外设互连探针 | 第 2.5 节同款五步 | `probe.rs`：找设备、预留、使能、读基址与中断线（两张卡各自取值，掩码与命令位不同） | 已覆盖 |
+| 外设互连探针 | 第 2.5 节同款五步 | 五步腿在共用件 `minix-sys::pci`（照 C 的 libsys 归属）；各卡 `probe.rs` 只留标识号、基址掩码与命令寄存器写法 | 已覆盖 |
 | 编解码器（AK4531） | 第 2.6 节同门甲 | `es1370/src/codec.rs`：写完成轮询、寄存器装载、音量影子表 | 已覆盖（第四卡） |
 | 端口读写宏（第二份） | `pci_helper.c` 六十三行 | `es1370/src/ports.rs` 的 `PortIo` 缝，生产腿同走内核端口调用 | 已覆盖 |
+| 探针的共用腿（`2026-10-19` 上收） | 六份同构的五步 | `minix-sys::pci` 的 `find_and_reserve`/`read_attribute8/32`/`write_attribute16`/`get_bar`/`map_bar` | 已覆盖 |
 | 声霸命令引擎 | 第 2.6 节同门乙 | `als4000/src/device.rs` 的 `command`：等忙位（一千次上限）后写命令 | 已覆盖（第五卡） |
 | 全局控制寄存器对 | 第 2.6 节同门乙 | `als4000/src/device.rs` 的 `gcr_read`/`gcr_write`（索引加数据） | 已覆盖 |
 | 内存映射寄存器窗口 | 第 2.6 节同门丁 | `cs4281/src/window.rs` 的 `RegisterWindow` 缝与 `MappedWindow` 生产腿（易失读写） | 已覆盖（第六卡） |
 | 编解码器协议（AC97） | 第 2.6 节同门丁 | `cs4281/src/mixer.rs`：地址/数据/控制三元组与两次轮询 | 已覆盖 |
-| 基址寄存器获取与映射 | `cs4281.c:305-318` | `cs4281/src/probe.rs`：`pci_get_bar` 加 `vm_map_phys` 包装 | 已覆盖 |
+| 基址寄存器获取与映射 | `cs4281.c:305-318` | 共用件 `minix-sys::pci::get_bar` 与 `map_bar`（`vm_map_phys` 包装），`cs4281/src/probe.rs` 只做转发 | 已覆盖 |
 | 通道寄存器块 | 第 2.6 节同门戊 | `trident/src/device.rs` 的 `write_chan_reg`（五个长字按 C 的位域拼） | 已覆盖（第七卡） |
 | 编解码器命令字 | `trident.c:58-86` | `trident/src/mixer.rs`：忙位轮询与命令字拼装 | 已覆盖 |
 | 热升级钩子 | 第 2.1 节 | 存在性记录 | 已记录，不管实现 |

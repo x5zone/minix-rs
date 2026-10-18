@@ -18,7 +18,7 @@
 
 use minix_sys::ipc::{DirectTrapTransport, IpcTransport};
 use minix_sys::syscall::{DirectKernelCallTransport, sys_outl, sys_setalarm, sys_vumap};
-use minix_types::{ENODEV, ENOSYS, Endpoint, VirBytes};
+use minix_types::{ENOSYS, Endpoint, VirBytes};
 
 /// One physical span of a mapped grant (`struct vumap_phys`), re-exported
 /// from the kernel-call wrapper that fills it.
@@ -34,22 +34,11 @@ pub const PCI_BAR_IO_MASK: u32 = 0xFFFF_FFFC;
 /// `pci.h:52`).
 pub const PCI_ILR: u32 = 0x3C;
 
-/// The bus-controller call numbers the PCI probe uses
-/// (`com.h:103-122`, `BUSC_PCI_*`).
-pub mod busc {
-    /// The request range's base (`BUSC_RQ_BASE`).
-    pub const REQUEST_BASE: i32 = 0x300;
-    /// First visible device (`BUSC_PCI_FIRST_DEV`).
-    pub const FIRST_DEV: i32 = REQUEST_BASE + 1;
-    /// Next visible device (`BUSC_PCI_NEXT_DEV`).
-    pub const NEXT_DEV: i32 = REQUEST_BASE + 2;
-    /// Reserve a device (`BUSC_PCI_RESERVE`).
-    pub const RESERVE: i32 = REQUEST_BASE + 7;
-    /// Read an eight-bit attribute (`BUSC_PCI_ATTR_R8`).
-    pub const ATTR_R8: i32 = REQUEST_BASE + 8;
-    /// Read a thirty-two-bit attribute (`BUSC_PCI_ATTR_R32`).
-    pub const ATTR_R32: i32 = REQUEST_BASE + 10;
-}
+/// The bus-controller call numbers the PCI probe uses (`com.h:103-122`,
+/// `BUSC_PCI_*`). The five-step leg itself lives in `minix_sys::pci` (the
+/// C's own libsys placement); this driver keeps only its identifiers, its
+/// BAR mask, and the fact that it writes no command register.
+pub use minix_sys::pci::busc;
 
 /// The backdoor mechanism: what the driver cannot do without a device.
 pub trait Backdoor {
@@ -215,140 +204,46 @@ pub struct Probed {
 /// configuration-space passthrough lands), so a machine that runs this
 /// probe gets an honest failure rather than a fabricated port.
 pub fn probe_device(ipc: &impl IpcTransport, pci: Endpoint) -> Result<Probed, i32> {
-    // First device: the reply's message type is 1 when one exists, 0 when
-    // the bus is empty, and a negative errno otherwise; the index and the
-    // two identifiers ride m1i1..m1i3.
-    let mut message = minix_types::Message {
-        m_type: busc::FIRST_DEV,
-        ..minix_types::Message::default()
-    };
-    sendrec(ipc, pci, &mut message)?;
-    let mut index = match message.m_type {
-        1 => read_i32(&message, M1_I1),
-        0 => return Err(-ENODEV),
-        error => return Err(error),
-    };
-    let mut vendor = read_i32(&message, M1_I2) as u16;
-    let mut device = read_i32(&message, M1_I3) as u16;
-    while vendor != crate::vmmdev::PCI_VENDOR || device != crate::vmmdev::PCI_DEVICE {
-        message = minix_types::Message {
-            m_type: busc::NEXT_DEV,
-            ..minix_types::Message::default()
-        };
-        write_i32(&mut message, M1_I1, index);
-        sendrec(ipc, pci, &mut message)?;
-        match message.m_type {
-            1 => {
-                index = read_i32(&message, M1_I1);
-                vendor = read_i32(&message, M1_I2) as u16;
-                device = read_i32(&message, M1_I3) as u16;
-            }
-            0 => return Err(-ENODEV),
-            error => return Err(error),
-        }
-    }
-
-    // Reserve the device so nobody else binds it.
-    message = minix_types::Message {
-        m_type: busc::RESERVE,
-        ..minix_types::Message::default()
-    };
-    write_i32(&mut message, M1_I1, index);
-    sendrec(ipc, pci, &mut message)?;
-    if message.m_type != 0 {
-        return Err(message.m_type);
-    }
-
+    // The five-step leg: find and reserve (`pci_first_dev`/`pci_next_dev`
+    // then `pci_reserve`), then the BAR and the interrupt line.
+    let index = minix_sys::pci::find_and_reserve(
+        ipc,
+        pci,
+        crate::vmmdev::PCI_VENDOR,
+        crate::vmmdev::PCI_DEVICE,
+    )?;
     // The port: the BAR holds the I/O address in its high bits.
-    let bar = read_attribute32(ipc, pci, index, PCI_BAR)?;
-    let irq = read_attribute8(ipc, pci, index, PCI_ILR)?;
+    let bar = minix_sys::pci::read_attribute32(ipc, pci, index, PCI_BAR)?;
+    let irq = minix_sys::pci::read_attribute8(ipc, pci, index, PCI_ILR)?;
     Ok(Probed {
         port: (bar & PCI_BAR_IO_MASK) as u16,
         irq,
     })
 }
 
-/// The `m1i1` slot inside the message union (C `m1_i1`).
-const M1_I1: usize = 8;
-/// The `m1i2` slot (C `m1_i2`).
-const M1_I2: usize = 12;
-/// The `m1i3` slot (C `m1_i3`).
-const M1_I3: usize = 16;
-/// The `m2i1` slot (C `m2_i1`).
-const M2_I1: usize = 8;
-/// The `m2i2` slot (C `m2_i2`).
-const M2_I2: usize = 12;
-/// The `m2l1` slot (C `m2_l1`, the attribute reply's value).
-const M2_L1: usize = 32;
-
-fn read_i32(message: &minix_types::Message, offset: usize) -> i32 {
-    // SAFETY: byte-level read of the union payload at a documented offset.
-    let raw = unsafe { message.m_u.raw };
-    i32::from_ne_bytes(raw[offset..offset + 4].try_into().unwrap())
-}
-
-fn write_i32(message: &mut minix_types::Message, offset: usize, value: i32) {
-    // SAFETY: byte-level write of the union payload at a documented offset.
-    unsafe {
-        message.m_u.raw[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
-    }
-}
-
-fn sendrec(
-    ipc: &impl IpcTransport,
-    pci: Endpoint,
-    message: &mut minix_types::Message,
-) -> Result<(), i32> {
-    ipc.sendrec(pci, message).map_err(|status| -status.0)
-}
-
-/// Reads one thirty-two-bit PCI attribute (C `pci_attr_r32`): the index
-/// and the configuration offset go in `m2i1`/`m2i2`, the value comes back
-/// in `m2l1` with a zero message type.
-fn read_attribute32(
-    ipc: &impl IpcTransport,
-    pci: Endpoint,
-    index: i32,
-    attribute: u32,
-) -> Result<u32, i32> {
-    let mut message = minix_types::Message {
-        m_type: busc::ATTR_R32,
-        ..minix_types::Message::default()
-    };
-    write_i32(&mut message, M2_I1, index);
-    write_i32(&mut message, M2_I2, attribute as i32);
-    sendrec(ipc, pci, &mut message)?;
-    if message.m_type != 0 {
-        return Err(message.m_type);
-    }
-    Ok(read_i32(&message, M2_L1) as u32)
-}
-
-/// Reads one eight-bit PCI attribute (C `pci_attr_r8`).
-fn read_attribute8(
-    ipc: &impl IpcTransport,
-    pci: Endpoint,
-    index: i32,
-    attribute: u32,
-) -> Result<u8, i32> {
-    let mut message = minix_types::Message {
-        m_type: busc::ATTR_R8,
-        ..minix_types::Message::default()
-    };
-    write_i32(&mut message, M2_I1, index);
-    write_i32(&mut message, M2_I2, attribute as i32);
-    sendrec(ipc, pci, &mut message)?;
-    if message.m_type != 0 {
-        return Err(message.m_type);
-    }
-    Ok(read_i32(&message, M2_L1) as u8)
-}
+/// The lane constants the tests pin the outgoing wire with, re-exported
+/// from the shared leg.
+#[cfg(test)]
+use minix_sys::pci::{M1_I1, M1_I2, M1_I3, M2_I1, M2_I2, M2_L1};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use minix_sys::ipc::CannedTransport;
-    use minix_types::Message;
+    use minix_types::{ENODEV, Message};
+
+    fn read_i32(message: &minix_types::Message, offset: usize) -> i32 {
+        // SAFETY: byte-level read of the union payload at a documented offset.
+        let raw = unsafe { message.m_u.raw };
+        i32::from_ne_bytes(raw[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn write_i32(message: &mut minix_types::Message, offset: usize, value: i32) {
+        // SAFETY: byte-level write of the union payload at a documented offset.
+        unsafe {
+            message.m_u.raw[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+        }
+    }
 
     /// A reply message whose type is the bus answer and whose `m1i1..m1i3`
     /// slots carry the device triple.

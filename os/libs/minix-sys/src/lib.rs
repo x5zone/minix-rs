@@ -32,6 +32,7 @@
 //! | `usb_model`      | `usb`     | 11-stage-devman (11-usb-device-model.md)   | E-DMWIRE           |
 //! | `inputdriver`    | `input`   | 12-stage-input (12-libinputdriver.md)      | E-INWIRE           |
 //! | `socket`         | `socket`  | 17-stage-net (23-libc-socket.md)           | — (policy only)    |
+//! | `pci`            | `pci`     | 16-stage-drivers (11-pci-driver.md)        | E-DEVWIRE          |
 
 #![no_std]
 // SD-19 静默吞错家族机械化门（本 crate 先行）：`ipc::IpcTransport`/各服务
@@ -105,6 +106,11 @@ pub mod rs;
 /// device fallback is documented but never taken ([ARCH] N-2).
 #[cfg(feature = "socket")]
 pub mod socket;
+
+/// The PCI server's client leg (`libsys/pci_*.c`): the five-step probe
+/// every PCI device driver runs before it touches its card.
+#[cfg(feature = "pci")]
+pub mod pci;
 /// Initial-stack frame construction (E-BOOTFRAME — `minix_stack_params`/
 /// `minix_stack_fill`, libc stack_utils.c).
 pub mod stack;
