@@ -163,6 +163,8 @@ run_with_qemu_lock() (
 - `2026-10-19` B / `G6-SHT21` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `38→37` —— 随 sht21 族接线（`os/drivers` 35→34）的机械过账；**跨驱动公开面**：`DriverTransport` 再补一条带默认动词 `now_seconds`（默认拒答，`KernelTransport` 走 PM `gettimeofday`），`minix-i2cdriver::client` 补 `write_raw_byte`，sht21 清单新增三行依赖（本体非共享件）—— 不涉 A/C 线语义 —— `✅`
 - `2026-10-19` B / `G6-TSL2550` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `37→36` —— 随 tsl2550 族接线（`os/drivers` 34→33）的机械过账；`minix-i2cdriver::client` 补 `read_raw_byte`（自有件），tsl2550 清单新增三行依赖（本体非共享件）—— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `G6-VBOX` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `30→29` —— 随 vbox 接线（`os/drivers` 27→26）的机械过账；**minix-sys 公共面新增（A 板是下游，按 B1/B2 行的挂账约定登记）**：`syscall::sys_vumap`（SYS_VUMAP 库层包装，单元素输入向量，返回填充元素数）、`syscall::{VumapVir, VumapPhys}`（`type.h` 两个向量的调用方镜像，`VUA_READ`/`VUA_WRITE` 两位）、`pm::stime_via`（PM_STIME，载荷 `sec` u64@0，与 PM 侧 `decode.rs` 同偏移）—— 全部为**新增**，不改任何既有签名，A 线可直接消费；vbox 本体清单新增一行依赖（本体非共享件），第三处 `serve_quiet` 消费（C 无 announce）—— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。

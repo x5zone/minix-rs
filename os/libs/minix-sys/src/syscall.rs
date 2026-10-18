@@ -583,6 +583,90 @@ pub fn sys_vircopy(
     perform_kernel_call(transport, SYS_VIRCOPY_CALL, &mut msg, |_| {})
 }
 
+/// VUMAP 输入向量元素：`struct vumap_vir` 的调用方镜像
+/// （C `minix3/minix/include/minix/type.h:40-46`：grant/addr 联合 + 大小）。
+///
+/// 联合在 64 位下 8 字节（`u_addr` 撑起宽度），本镜像按 8 字节存整
+/// （grant 取低 32 位，与内核 `VumapVir::vv_grant()` 的读法一致）。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VumapVir {
+    /// grant ID（低 32 位）或虚拟地址（C `vv_u`）。
+    pub u: u64,
+    /// 该元素的字节长度（C `vv_size`）。
+    pub size: u64,
+}
+
+/// VUMAP 输出向量元素：`struct vumap_phys` 的调用方镜像
+/// （C `type.h:50-53`：`vp_addr`/`vp_size`）。
+///
+/// 内核侧有一份私有同构体（`os/kernel/src/syscall_copy.rs` 的
+/// `VumapPhys`）；这里定义的是库层可见的那份，两字段均为 64 位、16 字节，
+/// 与内核写出向量时的逐元素拷贝形状一致。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VumapPhys {
+    /// 物理地址（C `vp_addr`）。
+    pub addr: u64,
+    /// 该段字节数（C `vp_size`）。
+    pub size: u64,
+}
+
+/// VUMAP 的访问位：读（C `VUA_READ`，type.h）。
+pub const VUA_READ: i32 = 0x01;
+/// VUMAP 的访问位：写（C `VUA_WRITE`，type.h）。
+pub const VUA_WRITE: i32 = 0x02;
+
+/// SYS_VUMAP：把一个 grant 映射成物理向量（C: libsys `sys_vumap`，
+/// `sys_vumap.c:7-40`；内核 `do_vumap.c`）。
+///
+/// 输入向量固定为单元素 `{grant, size}`——这是 C 树内唯一调用方
+/// （vbox 的 `store_pages`）使用的形状，故包装成两个标量。`offset` 是向量
+/// 内起始偏移（C `offset`），`access` 取 [`VUA_READ`]/[`VUA_WRITE`] 位；
+/// `out` 的容量即 C 的 `pmax` 入值，成功返回实际填充的元素数（C 出值
+/// `pcount`）。
+///
+/// 内核读入向量、写出物理向量的两处拷贝都以调用方（本进程）的虚拟地址为
+/// 源/目的：C 传 `(vir_bytes) vvec` 与 `(vir_bytes) pvec`
+///（`sys_vumap.c:30,35`），内核侧对 caller 做 `data_copy`
+///（`syscall_copy.rs:1141-1157`、`:1270-1285`）。
+pub fn sys_vumap(
+    transport: &impl KernelCallTransport,
+    endpt: Endpoint,
+    grant: i32,
+    size: u64,
+    offset: u64,
+    access: i32,
+    out: &mut [VumapPhys],
+) -> Result<usize, i32> {
+    let vvec = [VumapVir {
+        // 低 32 位是 grant；高位补零，内核按 i32 读该联合（`vv_grant()`）。
+        u: u64::from(grant as u32),
+        size,
+    }];
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_vumap 是 SYS_VUMAP 的文档化请求布局
+        //（kernel/src/syscall_copy.rs:1063-1071 读
+        // endpt/vaddr/vcount/offset/access/paddr/pmax）。
+        let v = unsafe { &mut msg.m_u.m_lsys_krn_sys_vumap };
+        v.endpt = endpt.0;
+        v.vaddr = vvec.as_ptr() as u64;
+        v.vcount = 1;
+        v.paddr = out.as_mut_ptr() as u64;
+        v.pmax = out.len() as i32;
+        v.access = access;
+        v.offset = offset;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_VUMAP, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    // SAFETY: 内核经 m_krn_lsys_sys_vumap 回填 pcount
+    //（kernel/src/syscall_copy.rs:1288 附近；C ipc.h mess_krn_lsys_sys_vumap）。
+    let pcount = unsafe { msg.m_u.m_krn_lsys_sys_vumap }.pcount;
+    Ok(pcount.max(0) as usize)
+}
 
 /// 通知内核回收已退出的进程（C: libsys `sys_clear`，`sys_clear.c:8-14`）。
 ///
@@ -1578,6 +1662,50 @@ mod tests {
         assert_eq!(cp.dst_endpt, 9);
         assert_eq!(cp.dst_addr, 0x7000);
         assert_eq!(cp.nr_bytes, 144);
+    }
+
+    #[test]
+    fn test_sys_vumap_encodes_request_and_decodes_pcount() {
+        // C: libsys sys_vumap.c:14-38 — 请求臂填 endpt/vaddr/vcount/offset/
+        // access/paddr/pmax，应答经 m_krn_lsys_sys_vumap.pcount 回填。单元素
+        // 输入向量是树内唯一调用方（vbox store_pages）的形状。
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        // SAFETY(test):构造应答臂镜像内核回填 pcount。
+        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_vumap };
+        arm.pcount = 2;
+        canned.reply_message(reply);
+
+        let mut out = [VumapPhys::default(); 8];
+        let r = sys_vumap(&canned, Endpoint(7), 42, 0x2000, 0x100, VUA_READ, &mut out);
+
+        assert_eq!(r, Ok(2));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_VUMAP);
+        let v = unsafe { &sent[0].m_u.m_lsys_krn_sys_vumap };
+        assert_eq!(v.endpt, 7);
+        assert_eq!(v.vcount, 1);
+        assert_eq!(v.offset, 0x100);
+        assert_eq!(v.access, VUA_READ);
+        assert_eq!(v.pmax, 8);
+        // vaddr/paddr 是调用方虚拟地址（C 同形传 vir_bytes），只验证非零。
+        assert_ne!(v.vaddr, 0);
+        assert_ne!(v.paddr, 0);
+        // 两个向量元素的 C 布局（type.h:40-53）：64 位下各 16 字节。
+        assert_eq!(core::mem::size_of::<VumapVir>(), 16);
+        assert_eq!(core::mem::size_of::<VumapPhys>(), 16);
+        assert_eq!(core::mem::offset_of!(VumapVir, size), 8);
+        assert_eq!(core::mem::offset_of!(VumapPhys, size), 8);
+
+        // 负 errno 不吞：原样返回。
+        let mut denied = CannedKernelCallTransport::new();
+        denied.reply(-minix_types::EFAULT);
+        let mut out = [VumapPhys::default(); 4];
+        assert_eq!(
+            sys_vumap(&denied, Endpoint(7), 42, 0x1000, 0, VUA_WRITE, &mut out),
+            Err(-minix_types::EFAULT)
+        );
     }
 
     #[test]

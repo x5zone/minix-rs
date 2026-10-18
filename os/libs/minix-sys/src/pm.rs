@@ -703,6 +703,32 @@ pub fn gettimeofday_via(transport: &impl IpcTransport) -> Result<(i64, i64), Err
     Ok((sec, nsec))
 }
 
+/// Sets the system time (C: `stime`,
+/// `minix3/minix/lib/libc/sys/stime.c:12-18` — `_syscall(PM_PROC_NR,
+/// PM_STIME, &m)` with the new time in `mess_lc_pm_time.sec`).
+///
+/// PM's `do_stime` (`time.c:110-131`) re-anchors the boot time from the
+/// given seconds and writes it through `sys_stime`; the permission gate is
+/// SUPER_USER (a non-superuser caller gets EPERM). The payload is written
+/// as raw bytes at the offset PM's decoder reads (`sec` u64 at zero —
+/// `os/servers/pm/src/ipc/decode.rs:246-256`), the same way
+/// [`gettimeofday_via`] reads its reply.
+pub fn stime_via(transport: &impl IpcTransport, seconds: i64) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: the payload's first field is `sec` (time_t, 8 bytes on
+    // LP64) per mess_lc_pm_time (ipc.h:574-583); PM reads the same offset.
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&(seconds as u64).to_ne_bytes());
+    }
+    perform_syscall(
+        transport,
+        pm_endpoint(),
+        minix_types::PM_STIME,
+        &mut message,
+    )
+    .map(|_| ())
+}
+
 /// Starts a system service with dropped privileges (server-side call).
 ///
 /// C: `srv_fork` (`minix3/minix/lib/libsys/srv_fork.c:5-14`): clear a
@@ -1472,6 +1498,26 @@ mod gettimeofday_wire_tests {
         let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(dest, pm_endpoint());
         assert_eq!(sent.m_type, PM_CALL_GETTIMEOFDAY);
+    }
+
+    /// 设置时间的请求把新秒数写在载荷首字段（mess_lc_pm_time.sec@0，
+    /// PM 侧 decode.rs:253 同偏移读）；调用号 PM_STIME=7，回复 OK。
+    #[test]
+    fn test_stime_writes_seconds_and_uses_pm_stime() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(stime_via(&transport, 1_700_000_123), Ok(()));
+        let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, pm_endpoint());
+        assert_eq!(sent.m_type, minix_types::PM_STIME);
+        // SAFETY: byte-level read of the request's first payload field.
+        let sec = unsafe { i64::from_ne_bytes(sent.m_u.raw[0..8].try_into().unwrap()) };
+        assert_eq!(sec, 1_700_000_123);
+
+        // 权限门由 PM 判：EPERM 原样回来。
+        let mut denied = CannedTransport::new();
+        denied.reply_sendrec(Ok(reply_with_type(-minix_types::EPERM)));
+        assert_eq!(stime_via(&denied, 1), Err(Errno::EPERM));
     }
 }
 
