@@ -2,7 +2,7 @@
 
 > **分类**：系统服务第 3 篇（设备枚举、配置空间、访问名单）
 > **源码**：`minix3/minix/drivers/bus/pci/main.c`（七百四十行，查询协议与控制码）、`minix3/minix/drivers/bus/pci/pci.c`（二千五百五十九行，枚举、桥、中断路由）、`minix3/minix/drivers/bus/pci/pci_table.c`（三十七行，桥标识表）、`minix3/minix/include/minix/com.h`（第九十五 行到第一百六十行，总线查询号段）
-> **Rust 模块**：`os/drivers/bus/pci/src/protocol.rs`（查询号与控制码）、`os/drivers/bus/pci/src/config.rs`（配置空间抽象）、`os/drivers/bus/pci/src/database.rs`（设备库与访问名单）
+> **Rust 模块**：`os/drivers/bus/pci/src/protocol.rs`（查询号与控制码）、`os/drivers/bus/pci/src/config.rs`（配置空间抽象）、`os/drivers/bus/pci/src/database.rs`（设备库与访问名单）、`os/drivers/bus/pci/src/scan.rs`（枚举：配置空间读入设备库）、`os/drivers/bus/pci/src/service.rs`（查询泵：BUSC typed 消息与 char 开闭）
 > **前置**：`rewrite-notes/16-stage-drivers/01-chardriver-framework.md`（字符框架，本篇挂靠其通用挂钩）、`rewrite-notes/16-stage-drivers/10-readclock-driver.md`（权限门思想）
 > **说明**：总线驱动是全系统设备的户籍警：哪条总线上有几张卡、每张卡是谁（厂商设备号）、中断走哪根线、地址窗口怎么开，全归它管。设备驱动加载前先问它：我要找的卡在吗，在哪，我能碰吗。本篇讲户籍管理的三件套：枚举建档、配置读写、名单门禁。桥窗口与寄存器探测的力学细节在服务层实现，本库只定策略。
 
