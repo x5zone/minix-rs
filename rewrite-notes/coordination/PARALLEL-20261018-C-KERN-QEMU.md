@@ -161,6 +161,7 @@ run_with_qemu_lock() (
 - `2026-10-19` B / `G6-GPIO` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `40→39` —— 随 gpio 族接线（`os/drivers` 37→36）的机械过账；`minix-vtreefs` 补 `lookup_child`（框架缺口，自有件）、gpio 清单新增 `minix-vtreefs`/`minix-fs-rt` 依赖（本体非共享件），不涉其它线 —— `✅`
 - `2026-10-19` B / `G6-BMP085` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `39→38` —— 随 bmp085 族接线（`os/drivers` 36→35）的机械过账；**跨驱动公开面**：`minix-driver-rt` 的 `DriverTransport` 新增三条带默认动词 `grant_direct`/`grant_revoke`/`delay_micros`（B 线自有件，默认拒答，`KernelTransport` 用 `minix-sys::grant` 实现前两条），`minix-i2cdriver` 新增 `client` 模块，bmp085 清单新增三行依赖（本体非共享件）—— 不涉 A/C 线语义 —— `✅`
 - `2026-10-19` B / `G6-SHT21` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `38→37` —— 随 sht21 族接线（`os/drivers` 35→34）的机械过账；**跨驱动公开面**：`DriverTransport` 再补一条带默认动词 `now_seconds`（默认拒答，`KernelTransport` 走 PM `gettimeofday`），`minix-i2cdriver::client` 补 `write_raw_byte`，sht21 清单新增三行依赖（本体非共享件）—— 不涉 A/C 线语义 —— `✅`
+- `2026-10-19` B / `G6-TSL2550` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `37→36` —— 随 tsl2550 族接线（`os/drivers` 34→33）的机械过账；`minix-i2cdriver::client` 补 `read_raw_byte`（自有件），tsl2550 清单新增三行依赖（本体非共享件）—— 不涉 A/C 线语义 —— `✅`
 
 ## 7. 每轮收尾（顺序固定）
 
