@@ -119,6 +119,20 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百七十（负控轮）：三百二十五至三百二十九欠的六枚全部跑成并咬住，控制机自己先错两处
+
+- **这一轮清什么账**：批次三百五十三把六枚旧负控的锚点现查到底、跑成两枚（jot 那两处），留下四枚敞着：`bin_support` 的宿主 args 腿、`col` 集外字母取字节、`column` 残行计数、`split` 的 `-b`。本笔把这四枚逐枚跑成，六枚欠账到此清空。
+- **四枚的注入位点与读数**（全在专属树 `claim/NEGATIVE-CONTROL-DEBT-qoder` 内做；每枚注入前取整文件 md5、跑完立刻整文件还原并复验 md5，再复跑同一目标确认基线归零）：
+  - **A 宿主 args 腿**：`os/commands/usr-bin/textfilter/src/bin_support.rs:56` 把 `alloc::string::String::from_utf8_lossy(raw.as_bytes()).into_owned()` 换成 `raw.to_str().unwrap_or("").to_owned()`（丢掉 lossy，非 UTF-8 直接变空串）。`cargo test -p minix-textfilter --test bin_support_face` → 退码 101、**5 枚变红**，名单里有期望的那一枚 `no_command_aborts_on_a_nonutf8_option_letter`。
+  - **B `col` 集外字母**：`src/col.rs:149` 的 `char::from(bytes[pos])` 换成 `core::str::from_utf8(&bytes[pos..])` 解出的第一个 char（失手落 `\u{fffd}`），即改按解码字符取而不是打 C 的那一枚裸字节。`--test col_face` → 退码 101、**2 枚变红**，命中 `nonascii_option_letter_is_reported_as_one_byte`。
+  - **C `column` 残行计数**：`src/column.rs:188` 的 `pool.dropped_tail += 1;` 换成 `+= 0;`（残行照丢、不计数，那条按来源计数的依据就空了）。`--lib` → 退码 101、**2 枚变红**，命中 `column::tests::test_unterminated_tail_line_is_dropped_and_counted`。
+  - **D `split` 的 `-b` 片长**：`src/split.rs:73` 的 `let end = (cursor + n).min(data.len());` 换成 `(cursor + n + 1)`（每片多取一枚字节）。`--lib` → 退码 101、**3 枚变红**，命中 `split::tests::chunk_bytes_splits_fixed_and_last_short`。
+  四枚还原后该树 `git status --porcelain` 零输出、`git diff --name-only -- os` 读数 0；还原复跑的宿主整包归位为 **1076 passed / 0 failed**（68 个 target 段，日志 `tmp/negctl-369/host-after-restore.log`），逐枚日志在 `tmp/negctl-369/<名>.mutated.log` 与 `.restored.log`，控制机 `tmp/negctl-369/ctl369.py`。
+- **控制机自己错两处（本笔最要紧的收获）**。① **判据按裸名比对**：cargo 报的是带模块前缀的全名（`column::tests::test_...`、`split::tests::chunk_bytes_...`），拿裸名求交集必然落空，于是第一轮把 C、D 报成「未咬住」——同一份日志里那两行明明写着 `FAILED`。改成按 `::裸名` 后缀匹配后才看清实况：第一轮 A、C、D 都咬住了，只有 B 真没成像。② **把详情行算进变红名单**：`---- 名字 stdout ----` 也是缩进行，被 `^\s{4,}\S` 收了进来，「变红 30 枚」这种数就是这么虚高出来的；收紧成 `^ {4}[A-Za-z_]` 之后读数才是 5/2/2/3 这个真实规模。**两处都不是生产码的问题，是判定装置的问题**，与「一枚编不过的注入不是负控」同一族，这轮翻在了匹配器上。
+- **一处必须写明的未成像**：B 的第一版注入写成 `String::from_utf8_lossy(...)`，在这个 `no_std` 件里根本编不过（`error[E0433]: use of undeclared type String`，落点 `src/col.rs:150`）——控制机当场判「未成像（注入编不过）」，既没把它当成「门没咬」，也没当成「咬住」。换成 `core::str::from_utf8` 才成第二版。⇒ 判据三条里「编得过」那一条不是形式：它一次挡住假阳性，一次挡住假阴性。
+- **台账状态**：六枚旧欠账（批次三百二十五~三百二十九登记）**全部清空**——三百五十三跑成 jot 两枚、本笔跑成 A/B/C/D 四枚；跨件占位号 `NEGATIVE-CONTROL-DEBT` 可销。容器门一侧的欠账已在批次三百六十八复跑回账（在线 1076/0 与 60/0），本轮宿主整包读数与它一致。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim BSD-HEADER-COMPAT-REF qoder`（与批次三百六十八同一口径，未被别笔闭合）。
+
 ## 批次三百六十八（容器门复跑）：断的从来不是 Docker，是宿主那侧透明代理的假 IP 面
 
 - **这一轮量什么**：台账连着几笔把容器门记成「宿主与容器 DNS 两侧不通，用 `--offline` 回退」。本笔把它从一句环境抱怨改成一条十秒能判的门面，并把在线权威门真跑回来。
