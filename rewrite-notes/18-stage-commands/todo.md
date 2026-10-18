@@ -169,7 +169,8 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   `docker run --rm -v "$PWD:/work" -w /work/os -m 2g -u $(id -u):$(id -g) -e CARGO_HOME=/cargo
   -v /home/xzhao/github/minix-rs/tmp/ci-cargo:/cargo -e CARGO_TARGET_DIR=/target
   -v "$PWD/tmp/ci-target-356:/target" minix-ci:1.94 cargo test -j 1 -p minix-textfilter`，
-  日志 `tmp/split-355/container-gate-2.log`（结果按该文件的实际读数为准，不凭记忆填写）。
+  日志 `tmp/split-355/container-gate-2.log`，**读数为绿**：`test result:` 摘要共 68 套，
+  合计 `1069 passed / 0 failed`，脚本记的退码行 `rc=0`。
   宿主侧已实测：`cargo test --offline -j 1 -p minix-textfilter --test split_face` →
   `25 passed / 0 failed`；整包 `-p minix-textfilter` 全绿；`rustfmt --edition 2021 --check`
   对触及两件零漂移；`cargo clippy -p minix-textfilter --all-targets` 在触及文件里只有一条
