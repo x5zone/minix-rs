@@ -185,6 +185,8 @@ run_with_qemu_lock() (
 
 - `2026-10-19` B / `FBD` 片**前置定性**（本轮未落码，登记下一片开工件）：`fbd` 的下游客户端腿差两件，其中一件是**已定性缺口**——`minix-bdev::Destination` 只表达 C `mess_lbdev_lblockdriver_msg` 九条车道里的五条（缺 `access`/`flags`/`user`/`request`），而 `fbd` 的 open/transfer/ioctl 恰好各要一条（P0-design-missing，B 线自有 lib，已登记在 B 板 §1c）；另一件是 `Transport`/`GrantIssuer` 的生产实现（树里只有测试替身）。两件落完才写 `fbd` face/service/main —— 不涉 A/C 线语义 —— `✅`
 
+- `2026-10-19` B / `BDEV-DRIVER-LINK` 片收尾（fbd 前置①②落地）：**minix-bdev 公共面新增**（A 板是下游，按挂账约定登记）：`Destination` 补 `access`/`flags`/`user`/`request` 四条车道（补齐 C `mess_lbdev_lblockdriver_msg` 九车道）+ `with_flags`/`with_access`/`as_ioctl` 三个 const 构造器；`client::transfer_full`（带 flags 的传输，`transfer` 委托它、flags=0）；新模块 `driver.rs`：`Link<'a,T: DriverTransport>` 与 `PlaneLink<'a>`（数据面侧）双双实现 `Transport`+`GrantIssuer`，转发九车道填法与 `BDEV_REPLY`+id 校验按 `minix_blockdriver::wire` 对齐；四枚新门（minix-bdev 25/0）。`Destination` 四车道与 `transfer_full` 均为**新增**、既有构造点全用 `..Default::default()` 故零破坏 —— 不涉 A/C 线语义 —— `✅`
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。

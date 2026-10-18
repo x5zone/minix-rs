@@ -518,13 +518,16 @@ impl<T: Transport> BdevClient<T> {
         let Some(endpoint) = self.drivers.get(major) else {
             return -EINVAL;
         };
-        let reply = self.transport.exchange(Destination {
-            endpoint,
-            message_type: BdevOp::Open.message_type(),
-            minor: device.minor(),
-            id: NO_ID,
+        let reply = self.transport.exchange(
+            Destination {
+                endpoint,
+                message_type: BdevOp::Open.message_type(),
+                minor: device.minor(),
+                id: NO_ID,
                 ..Default::default()
-            });
+            }
+            .with_access(access),
+        );
         // Sync requests carry NO_ID and expect NO_ID back (ipc.c:184-189):
         // a reply with any other identifier is a bad reply, not a status.
         let status = check_reply(reply, NO_ID);
@@ -582,6 +585,20 @@ impl<T: Transport> BdevClient<T> {
         bytes: u32,
         grant: i32,
     ) -> i32 {
+        self.transfer_full(device, direction, position, bytes, grant, 0)
+    }
+
+    /// One data transfer with request flags (a proxy forwards the flags it
+    /// was given: `BDEV_FORCEWRITE` and friends, `mess_lbdev_lblockdriver_msg.flags`).
+    pub fn transfer_full(
+        &mut self,
+        device: Device,
+        direction: TransferDirection,
+        position: u64,
+        bytes: u32,
+        grant: i32,
+        flags: i32,
+    ) -> i32 {
         let major = Major(device.major());
         let Some(endpoint) = self.drivers.get(major) else {
             return -EINVAL;
@@ -590,15 +607,10 @@ impl<T: Transport> BdevClient<T> {
             TransferDirection::Read => BdevOp::Read.message_type(),
             TransferDirection::Write => BdevOp::Write.message_type(),
         };
-        let reply = self.transport.exchange(Destination::data(
-            endpoint,
-            message_type,
-            device.minor(),
-            NO_ID,
-            position,
-            bytes,
-            grant,
-        ));
+        let reply = self.transport.exchange(
+            Destination::data(endpoint, message_type, device.minor(), NO_ID, position, bytes, grant)
+                .with_flags(flags),
+        );
         check_reply(reply, NO_ID)
     }
 
