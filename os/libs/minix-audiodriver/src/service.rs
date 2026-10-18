@@ -15,18 +15,20 @@
 //! payload length, and the in/out copies around the card's `drv_io_ctl`),
 //! and `init_buffers` (`audio_fw.c:753-810`) as [`crate::dma`] models it.
 //!
-//! Registered seam: the fragment data plane (`data_from_user`,
-//! `data_to_user`, `get_started`, and the two interrupt handlers,
-//! `audio_fw.c:500-752`) is not modeled yet, so a read or write is
-//! refused with `ENOSYS` rather than parking the caller on a reply that
-//! would never come (C answers `EDONTREPLY` and revives the caller from
-//! the interrupt path). The open/close, DMA bring-up, and ioctl paths are
-//! real.
+//! The fragment data plane is modeled (`data_from_user`/`data_to_user`/
+//! `get_started` and the two interrupt handlers, `audio_fw.c:500-752`):
+//! a read or write parks its caller the way C does (`EDONTREPLY`), the
+//! copy happens into the ring or the extra buffer, and the caller is
+//! revived with the fragment size — from the request's own path when
+//! there is room, or from the interrupt path when the card frees a slot.
+//! What is still missing is the allocator the ring comes from
+//! (registered `E-DMABUF`): with [`crate::dma::UnboundDma`] a channel's
+//! bring-up refuses, so no transfer is ever attempted.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
-use minix_types::{EBUSY, EDONTREPLY, EINVAL, EIO, ENOSYS, OK};
+use minix_types::{EBUSY, EDONTREPLY, EINVAL, EIO, OK};
 
 use crate::dma::{DmaAlloc, RingPlan, plan_ring};
 use crate::hooks::AudioHooks;
@@ -47,6 +49,17 @@ struct Channel {
     plan: Option<RingPlan>,
     /// The caller waiting for a transfer to finish (`RevivePending`).
     parked: Option<Parked>,
+}
+
+/// A parked caller whose transfer finished: the deferred reply C sends
+/// with `chardriver_reply_task` (the byte count in `status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Revive {
+    /// Who to answer.
+    pub parked: Parked,
+    /// The status to carry (the fragment size, or zero when the capture
+    /// side gave up).
+    pub bytes: i32,
 }
 
 /// The caller a deferred reply belongs to (`ReviveId`/`ReviveGrant`/
@@ -242,24 +255,44 @@ impl<H: AudioHooks, A: DmaAlloc> AudioService<H, A> {
         result
     }
 
-    /// A write request's gates (`msg_write`, `audio_fw.c:394-442`).
+    /// A write request (`msg_write`, `audio_fw.c:394-442`): the gates,
+    /// then the fragment copy and the card's start when it is idle.
     ///
-    /// The data plane that would follow the gates (the fragment copy, the
-    /// DMA start, and the deferred reply) is the registered seam, so a
-    /// request that passes the gates is refused with `ENOSYS` rather than
-    /// parked.
-    pub fn write(&mut self, minor: i32, size: u64, parked: Parked) -> i32 {
-        self.transfer_gates(minor, size, parked, true)
+    /// Returns the status to reply to *this* request with (`EDONTREPLY`
+    /// in the normal case — the answer rides the revive below, as C's
+    /// `chardriver_reply_task` does) and the parked caller to wake, if
+    /// one could be served.
+    pub fn write(
+        &mut self,
+        minor: i32,
+        size: u64,
+        parked: Parked,
+        plane: &mut dyn TransferPlane,
+    ) -> (i32, Option<Revive>) {
+        self.transfer(minor, size, parked, true, plane)
     }
 
-    /// A read request's gates (`msg_read`, `audio_fw.c:444-495`).
-    pub fn read(&mut self, minor: i32, size: u64, parked: Parked) -> i32 {
-        self.transfer_gates(minor, size, parked, false)
+    /// A read request (`msg_read`, `audio_fw.c:444-495`).
+    pub fn read(
+        &mut self,
+        minor: i32,
+        size: u64,
+        parked: Parked,
+        plane: &mut dyn TransferPlane,
+    ) -> (i32, Option<Revive>) {
+        self.transfer(minor, size, parked, false, plane)
     }
 
-    fn transfer_gates(&mut self, minor: i32, size: u64, parked: Parked, do_write: bool) -> i32 {
+    fn transfer(
+        &mut self,
+        minor: i32,
+        size: u64,
+        parked: Parked,
+        do_write: bool,
+        plane: &mut dyn TransferPlane,
+    ) -> (i32, Option<Revive>) {
         let Some(file) = get_special_file(&self.files, minor).copied() else {
-            return EIO;
+            return (EIO, None);
         };
         let chan = if do_write {
             file.write_chan
@@ -267,30 +300,257 @@ impl<H: AudioHooks, A: DmaAlloc> AudioService<H, A> {
             file.read_chan
         };
         if chan == NO_CHANNEL {
-            return EIO;
+            return (EIO, None);
         }
         let chan = chan as usize;
         // C pulls the card's current fragment size per request
-        // (`drv_get_frag_size` into `sub_dev_ptr->FragSize`,
-        // `audio_fw.c:412-417`), so a `DSPIOSIZE` that ran after the open
-        // is what the gate compares against.
+        // (`drv_get_frag_size`, `audio_fw.c:412-417`).
         let frag_size = self.hooks.get_frag_size(chan as i32) as u64;
         if size != frag_size {
-            return EINVAL;
+            return (EINVAL, None);
         }
-        let channel = &mut self.channels[chan];
         let wanted = if do_write {
             DmaMode::Write
         } else {
             DmaMode::Read
         };
-        if channel.dev.is_dma_busy() && channel.mode != wanted {
-            return EBUSY;
+        if self.channels[chan].dev.is_dma_busy() && self.channels[chan].mode != wanted {
+            return (EBUSY, None);
         }
-        // C records the caller and answers EDONTREPLY: the reply comes
-        // from the interrupt path. That path is the registered seam.
-        channel.parked = Some(parked);
-        -(ENOSYS)
+        // The revive record (`audio_fw.c:428-432`).
+        self.channels[chan].parked = Some(parked);
+        let revive = if do_write {
+            // The write path copies first, then starts the card if it is
+            // idle (`audio_fw.c:434-441`).
+            let revive = self.data_from_user(chan, plane);
+            if !self.channels[chan].dev.is_dma_busy() {
+                self.get_started(chan);
+                self.channels[chan].mode = DmaMode::Write;
+            }
+            revive
+        } else {
+            if !self.channels[chan].dev.is_dma_busy() {
+                self.get_started(chan);
+                self.channels[chan].mode = DmaMode::Read;
+                // C returns without looking at the ring: a capture
+                // channel has nothing to hand over yet
+                // (`audio_fw.c:487-489`).
+                return (Self::DONT_REPLY, None);
+            }
+            self.data_to_user(chan, plane)
+        };
+        (Self::DONT_REPLY, revive)
+    }
+
+    /// Serve the parked caller from the application side
+    /// (`data_from_user`, `audio_fw.c:649-704`).
+    ///
+    /// A fragment goes into the ring when there is room there, otherwise
+    /// into the extra buffer; when the device had run dry the card is
+    /// resumed. The caller is answered with the fragment size.
+    fn data_from_user(&mut self, chan: usize, plane: &mut dyn TransferPlane) -> Option<Revive> {
+        // The channel's record first, then its ring: the two borrows
+        // cannot overlap.
+        let parked = self.channels[chan].parked?;
+        let plan = self.channels[chan].plan?;
+        let dev = &mut self.channels[chan].dev;
+        // No space at all: nothing to do (`audio_fw.c:654-656`).
+        if dev.dma_length() == dev.fragments() && dev.buf_length() == dev.extra_buffers() {
+            return None;
+        }
+        let frag = dev.frag_size() as usize;
+        let copied = if dev.dma_length() < dev.fragments() {
+            let slot = dev.dma_fill_next() as u64;
+            let copied = Self::copy_in(plane, plan.address + slot * frag as u64, frag);
+            dev.fill_fragment();
+            copied
+        } else {
+            let slot = dev.buf_fill_next() as u64;
+            // The extra buffer lives after the ring inside the same
+            // allocation (`audio_fw.c:673-678`).
+            let base = plan.address + plan.size;
+            let copied = Self::copy_in(plane, base + slot * frag as u64, frag);
+            dev.queue_extra();
+            copied
+        };
+        if !copied {
+            // C prints and carries on; the caller is still answered so it
+            // does not hang on a transfer that never started.
+        }
+        let was_dry = dev.is_out_of_data();
+        if was_dry {
+            dev.set_out_of_data(false);
+        }
+        if was_dry {
+            let _ = self.hooks.resume(chan as i32);
+        }
+        self.channels[chan].parked = None;
+        Some(Revive {
+            parked,
+            bytes: frag as i32,
+        })
+    }
+
+    /// Hand one fragment to the parked caller (`data_to_user`,
+    /// `audio_fw.c:706-751`).
+    ///
+    /// The extra buffer is drained first; a fragment from the ring
+    /// follows.
+    fn data_to_user(&mut self, chan: usize, plane: &mut dyn TransferPlane) -> Option<Revive> {
+        let parked = self.channels[chan].parked?;
+        let plan = self.channels[chan].plan?;
+        let dev = &mut self.channels[chan].dev;
+        if dev.buf_length() == 0 && dev.dma_length() == 0 {
+            return None;
+        }
+        let frag = dev.frag_size() as usize;
+        if dev.buf_length() != 0 {
+            let slot = dev.buf_read_next() as u64;
+            let base = plan.address + plan.size;
+            let copied = Self::copy_out(plane, base + slot * frag as u64, frag);
+            dev.consume_extra();
+            if !copied {
+                // C prints and carries on.
+            }
+        } else {
+            let slot = dev.dma_read_next() as u64;
+            let copied = Self::copy_out(plane, plan.address + slot * frag as u64, frag);
+            let _ = dev.consume_fragment();
+            if !copied {
+                // C prints and carries on.
+            }
+        }
+        self.channels[chan].parked = None;
+        Some(Revive {
+            parked,
+            bytes: frag as i32,
+        })
+    }
+
+    /// The card's start sequence (`get_started`, `audio_fw.c:630-646`):
+    /// the card's own start hook, then the busy flag and a rewound read
+    /// cursor.
+    fn get_started(&mut self, chan: usize) {
+        let _ = self.hooks.start(chan as i32, 0);
+        let dev = &mut self.channels[chan].dev;
+        dev.set_dma_busy(true);
+        dev.rewind_read_cursor();
+    }
+
+    /// Copy one fragment from the caller into the ring (`sys_safecopyfrom`
+    /// at `DmaPtr`/`ExtraBuf`, `audio_fw.c:663-681`).
+    ///
+    /// # Safety
+    ///
+    /// `address` must name a `frag`-byte span inside the channel's ring
+    /// allocation, which is the plan the channel was brought up with.
+    fn copy_in(plane: &mut dyn TransferPlane, address: u64, frag: usize) -> bool {
+        // SAFETY: the address comes from the channel's own ring plan.
+        let target = unsafe { core::slice::from_raw_parts_mut(address as *mut u8, frag) };
+        plane.copy_from_caller(0, target).is_ok()
+    }
+
+    /// Copy one fragment out of the ring to the caller (`sys_safecopyto`,
+    /// `audio_fw.c:715-737`).
+    ///
+    /// # Safety
+    ///
+    /// As [`AudioService::copy_in`], for the read direction.
+    fn copy_out(plane: &mut dyn TransferPlane, address: u64, frag: usize) -> bool {
+        // SAFETY: the address comes from the channel's own ring plan.
+        let source = unsafe { core::slice::from_raw_parts(address as *const u8, frag) };
+        plane.copy_to_caller(0, source).is_ok()
+    }
+
+    /// The hardware notify (`msg_hardware`, `audio_fw.c:498-517`): one
+    /// interrupt summary read, then each busy channel's handler.
+    ///
+    /// Returns the callers that could be revived; the caller of this
+    /// method sends their replies.
+    pub fn handle_hardware(&mut self, plane: &mut dyn TransferPlane) -> alloc::vec::Vec<Revive> {
+        let mut revived = alloc::vec::Vec::new();
+        if self.hooks.int_sum() == 0 {
+            return revived;
+        }
+        for chan in 0..self.channels.len() {
+            let dev = &self.channels[chan].dev;
+            if self.hooks.interrupt(chan as i32) == 0 || !dev.is_dma_busy() {
+                continue;
+            }
+            match self.channels[chan].mode {
+                DmaMode::Write => {
+                    if let Some(revive) = self.handle_int_write(chan, plane) {
+                        revived.push(revive);
+                    }
+                }
+                DmaMode::Read => {
+                    if let Some(revive) = self.handle_int_read(chan, plane) {
+                        revived.push(revive);
+                    }
+                }
+            }
+        }
+        revived
+    }
+
+    /// The playback interrupt (`handle_int_write`, `audio_fw.c:519-560`).
+    fn handle_int_write(&mut self, chan: usize, plane: &mut dyn TransferPlane) -> Option<Revive> {
+        let outcome = self.channels[chan].dev.consume_fragment();
+        let revive = self.data_from_user(chan, plane);
+        if matches!(outcome, crate::subdev::FragmentOutcome::OutOfData) {
+            // The ring ran dry: C pauses the card, or closes the channel
+            // when nobody holds it open (`audio_fw.c:546-554`).
+            if !self.channels[chan].dev.is_opened() {
+                let _ = self.close_sub_dev(chan);
+            } else {
+                let _ = self.hooks.pause(chan as i32);
+            }
+            return revive;
+        }
+        let _ = self.hooks.reenable_int(chan as i32);
+        revive
+    }
+
+    /// The capture interrupt (`handle_int_read`, `audio_fw.c:561-610`).
+    fn handle_int_read(&mut self, chan: usize, plane: &mut dyn TransferPlane) -> Option<Revive> {
+        let plan = self.channels[chan].plan;
+        let dev = &mut self.channels[chan].dev;
+        let produced = dev.produce_fragment();
+        let full = dev.dma_length() == dev.fragments();
+        if full {
+            // The ring filled up while the caller was not draining it
+            // (`audio_fw.c:580-607`).
+            if dev.buf_length() == dev.extra_buffers() {
+                // Every buffer is full: stop the card and answer the
+                // waiting caller with zero bytes (`audio_fw.c:583-591`).
+                let parked = self.channels[chan].parked.take();
+                let _ = self.hooks.stop(chan as i32);
+                self.channels[chan].dev.set_dma_busy(false);
+                return parked.map(|parked| Revive { parked, bytes: 0 });
+            }
+            // The bytes move inside the allocation first
+            // (`audio_fw.c:594-600`), then the cursors follow.
+            if let Some(plan) = plan {
+                let frag = dev.frag_size() as usize;
+                let source = plan.address + dev.dma_read_next() as u64 * frag as u64;
+                let target = plan.address + plan.size + dev.buf_fill_next() as u64 * frag as u64;
+                // SAFETY: both spans live inside the channel's ring
+                // allocation; the cursors keep them in range and the two
+                // regions never overlap (the extra buffer follows the
+                // ring).
+                unsafe {
+                    core::ptr::copy(source as *const u8, target as *mut u8, frag);
+                }
+            }
+            dev.move_ring_to_extra();
+        }
+        let revive = self.data_to_user(chan, plane);
+        let _ = self.hooks.reenable_int(chan as i32);
+        if !produced {
+            // A full ring cannot take another fragment; C's handler
+            // still confirms the interrupt.
+        }
+        revive
     }
 
     /// The caller parked on a channel, if any (`RevivePending`).
@@ -379,8 +639,18 @@ impl<H: AudioHooks, A: DmaAlloc> AudioService<H, A> {
         use minix_chardriver::protocol::CdevRequest;
         let is_notify = (msg.m_type & !0xff) == 0x1000;
         if is_notify {
-            // The hardware notify drives the interrupt path, which is the
-            // registered data-plane seam; nothing to do yet.
+            // The hardware notify drives the interrupt path
+            // (`msg_hardware`): each busy channel's handler runs and the
+            // callers it served get their deferred replies.
+            let mut plane = minix_driver_rt::plane::NullPlane;
+            for revive in self.handle_hardware(&mut plane) {
+                self.reply(
+                    transport,
+                    minix_types::Endpoint(revive.parked.caller),
+                    revive.bytes,
+                    revive.parked.id,
+                );
+            }
             return;
         }
         let Some(request) = CdevRequest::decode(msg.m_type) else {
@@ -426,12 +696,30 @@ impl<H: AudioHooks, A: DmaAlloc> AudioService<H, A> {
                     grant,
                     caller: msg.m_source.0,
                 };
-                let status = if matches!(request, CdevRequest::Write) {
-                    self.write(minor, size, parked)
-                } else {
-                    self.read(minor, size, parked)
+                let (status, revive) = {
+                    let mut plane =
+                        minix_driver_rt::plane::Plane::new(transport, msg.m_source, grant);
+                    if matches!(request, CdevRequest::Write) {
+                        self.write(minor, size, parked, &mut plane)
+                    } else {
+                        self.read(minor, size, parked, &mut plane)
+                    }
                 };
-                self.reply(transport, msg.m_source, status, id);
+                // A finished transfer answers its own caller with the
+                // byte count (`chardriver_reply_task`).
+                if let Some(revive) = revive {
+                    self.reply(
+                        transport,
+                        minix_types::Endpoint(revive.parked.caller),
+                        revive.bytes,
+                        revive.parked.id,
+                    );
+                }
+                // The request's own answer is deferred (`EDONTREPLY`):
+                // C sends nothing here.
+                if status != Self::DONT_REPLY {
+                    self.reply(transport, msg.m_source, status, id);
+                }
             }
             CdevRequest::Ioctl => {
                 let minor = read_i32(cwire::readwrite::MINOR);
@@ -531,18 +819,33 @@ mod cwire {
     }
 }
 
+/// The playback interrupt bit the test card reports (`INTR_STS_DAC`).
+#[cfg(test)]
+const INTR_STS_DAC: i32 = 0x80;
+/// The capture interrupt bit (`INTR_STS_ADC`).
+#[cfg(test)]
+const INTR_STS_ADC: i32 = 0x40;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dma::{DmaBuffer, dma_bytes_left};
+    use alloc::boxed::Box;
     use alloc::vec;
+    use minix_types::ENOSYS;
+    use alloc::vec::Vec;
+    use minix_driver_rt::plane::TransferPlane;
     use minix_types::Endpoint;
 
-    /// A card whose DMA programming is recorded.
+    /// A card whose DMA programming and interrupt state are recorded.
     struct FakeCard {
         frag: u32,
         set_dma: Vec<(u32, u32, i32)>,
         stops: Vec<i32>,
+        pauses: Vec<i32>,
+        resumes: Vec<i32>,
+        /// The interrupt summary the next hardware notify reports.
+        intr_status: i32,
     }
 
     impl FakeCard {
@@ -551,6 +854,9 @@ mod tests {
                 frag: 1024,
                 set_dma: Vec::new(),
                 stops: Vec::new(),
+                pauses: Vec::new(),
+                resumes: Vec::new(),
+                intr_status: 0,
             }
         }
     }
@@ -561,6 +867,24 @@ mod tests {
         }
         fn start(&mut self, _sub_dev: i32, _dma_mode: i32) -> i32 {
             0
+        }
+        fn pause(&mut self, chan: i32) -> i32 {
+            self.pauses.push(chan);
+            0
+        }
+        fn resume(&mut self, chan: i32) -> i32 {
+            self.resumes.push(chan);
+            0
+        }
+        fn int_sum(&mut self) -> i32 {
+            self.intr_status
+        }
+        fn interrupt(&mut self, chan: i32) -> i32 {
+            match chan {
+                0 => self.intr_status & INTR_STS_DAC,
+                1 => self.intr_status & INTR_STS_ADC,
+                _ => 0,
+            }
         }
         fn stop(&mut self, sub_dev: i32) -> i32 {
             self.stops.push(sub_dev);
@@ -575,7 +899,11 @@ mod tests {
         }
     }
 
-    /// An allocator over a fixed physical block.
+    /// An allocator that hands out a **real** buffer, the way the
+    /// production allocator hands out a mapped one: the data plane copies
+    /// through the returned address, so a synthetic one would fault. The
+    /// buffer is leaked to keep it alive for the test's lifetime, and the
+    /// physical address stays synthetic.
     struct FakeAlloc {
         next: u64,
     }
@@ -584,8 +912,10 @@ mod tests {
         fn alloc_contig(&mut self, size: u64) -> Result<DmaBuffer, i32> {
             let physical = self.next;
             self.next += 0x10_0000;
+            let buffer = vec![0u8; size as usize].into_boxed_slice();
+            let address = Box::leak(buffer).as_mut_ptr() as u64;
             Ok(DmaBuffer {
-                address: 0x1000_0000 + physical,
+                address,
                 physical,
                 size,
             })
@@ -640,27 +970,225 @@ mod tests {
         assert_eq!(svc.close(9), EIO);
     }
 
-    #[test]
-    fn test_the_transfer_gates_match_c() {
-        let mut svc = service();
-        svc.init();
-        svc.open(0);
-        let parked = Parked {
+    /// A plane over two scratch buffers: what the caller lent, and what
+    /// the driver hands back.
+    struct FakePlane {
+        from: Vec<u8>,
+        to: Vec<u8>,
+        copies_in: usize,
+        copies_out: usize,
+    }
+
+    impl FakePlane {
+        fn new() -> Self {
+            FakePlane {
+                from: alloc::vec![0x5a; 4096],
+                to: Vec::new(),
+                copies_in: 0,
+                copies_out: 0,
+            }
+        }
+    }
+
+    impl minix_driver_rt::plane::GrantIpc for FakePlane {
+        fn grant_direct(
+            &mut self,
+            _dest: Endpoint,
+            _address: u64,
+            _len: usize,
+            _write: bool,
+        ) -> Result<i32, i32> {
+            Ok(1)
+        }
+        fn grant_revoke(&mut self, _grant: i32) -> Result<(), i32> {
+            Ok(())
+        }
+        fn send_rec(&mut self, _dst: Endpoint, _msg: &mut minix_types::Message) -> Result<(), i32> {
+            Ok(())
+        }
+    }
+
+    impl TransferPlane for FakePlane {
+        fn caller(&self) -> Endpoint {
+            Endpoint(20)
+        }
+        fn copy_from_caller(&mut self, _offset: u64, buf: &mut [u8]) -> Result<(), i32> {
+            self.copies_in += 1;
+            let n = buf.len().min(self.from.len());
+            buf[..n].copy_from_slice(&self.from[..n]);
+            Ok(())
+        }
+        fn copy_to_caller(&mut self, _offset: u64, buf: &[u8]) -> Result<(), i32> {
+            self.copies_out += 1;
+            self.to.extend_from_slice(buf);
+            Ok(())
+        }
+    }
+
+    fn parked() -> Parked {
+        Parked {
             id: 7,
             grant: 5,
             caller: 20,
-        };
+        }
+    }
+
+    #[test]
+    fn test_the_transfer_gates_match_c() {
+        let mut svc = service();
+        let mut plane = FakePlane::new();
+        svc.init();
+        svc.open(0);
         // The fragment size must match exactly.
-        assert_eq!(svc.write(0, 100, parked), EINVAL);
-        // A correct-sized write passes the gates and is refused by the
-        // data-plane seam (never parked on a reply that cannot come).
-        assert_eq!(svc.write(0, 1024, parked), -(ENOSYS));
-        assert_eq!(svc.parked(0), Some(parked));
-        assert_eq!(svc.read(0, 1024, parked), -(ENOSYS));
-        // A write channel serving a read request is refused (no read
-        // channel on this file would answer EIO; here channel 1 exists).
-        assert_eq!(svc.write(9, 1024, parked), EIO);
+        assert_eq!(svc.write(0, 100, parked(), &mut plane).0, EINVAL);
+        // A correct-sized write is copied and answered with the fragment
+        // size; the request itself is not replied to (`EDONTREPLY`).
+        let (status, revive) = svc.write(0, 1024, parked(), &mut plane);
+        assert_eq!(status, EDONTREPLY);
+        assert_eq!(
+            revive,
+            Some(Revive {
+                parked: parked(),
+                bytes: 1024
+            })
+        );
+        assert_eq!(plane.copies_in, 1, "one fragment was pulled");
+        assert_eq!(svc.parked(0), None, "the revive record was cleared");
+        // The write started the card (`get_started`).
+        assert!(svc.channels[0].dev.is_dma_busy());
+        assert_eq!(svc.channels[0].mode, DmaMode::Write);
+        // An unknown minor is refused.
+        assert_eq!(svc.write(9, 1024, parked(), &mut plane).0, EIO);
         assert_eq!(AudioService::<FakeCard, FakeAlloc>::DONT_REPLY, EDONTREPLY);
+    }
+
+    #[test]
+    fn test_a_second_write_waits_in_the_extra_buffer() {
+        let mut svc = service();
+        let mut plane = FakePlane::new();
+        svc.init();
+        svc.open(0);
+        // The ring holds four fragments; the two after that land in the
+        // extra buffer.
+        for _ in 0..4 {
+            let (_, revive) = svc.write(0, 1024, parked(), &mut plane);
+            assert!(revive.is_some());
+        }
+        assert_eq!(svc.channels[0].dev.dma_length(), 4, "the ring is full");
+        assert_eq!(svc.channels[0].dev.buf_length(), 0);
+        let (_, revive) = svc.write(0, 1024, parked(), &mut plane);
+        assert!(revive.is_some(), "the extra buffer took it");
+        assert_eq!(svc.channels[0].dev.buf_length(), 1);
+        assert_eq!(svc.channels[0].dev.dma_length(), 4);
+        // One more fills the last extra buffer; a third finds no room and
+        // stays parked with no revive.
+        assert!(svc.write(0, 1024, parked(), &mut plane).1.is_some());
+        assert_eq!(svc.channels[0].dev.buf_length(), 2);
+        let (status, revive) = svc.write(0, 1024, parked(), &mut plane);
+        assert_eq!(status, EDONTREPLY);
+        assert!(
+            revive.is_none(),
+            "no room: the caller waits for an interrupt"
+        );
+        assert_eq!(svc.parked(0), Some(parked()));
+    }
+
+    #[test]
+    fn test_a_playback_interrupt_drains_the_extra_buffer_and_revives() {
+        let mut svc = service();
+        let mut plane = FakePlane::new();
+        svc.init();
+        svc.open(0);
+        // Six fragments fill the ring and the extra buffer; each write
+        // serves its own caller, so the seventh has to wait.
+        for _ in 0..6 {
+            let (_, revive) = svc.write(0, 1024, parked(), &mut plane);
+            assert!(revive.is_some(), "there was room for each of the six");
+        }
+        assert_eq!(svc.channels[0].dev.buf_length(), 2);
+        let (status, revive) = svc.write(0, 1024, parked(), &mut plane);
+        assert_eq!(status, EDONTREPLY);
+        assert!(revive.is_none(), "no room: the caller waits");
+        assert_eq!(svc.parked(0), Some(parked()));
+        // The card consumed a fragment and the summary says playback.
+        svc.hooks.intr_status = INTR_STS_DAC;
+        let revived = svc.handle_hardware(&mut plane);
+        assert_eq!(revived.len(), 1, "the waiting caller was served");
+        assert_eq!(revived[0].bytes, 1024);
+        // The extra buffer moved into the ring and the waiting fragment
+        // filled the freed extra slot.
+        assert_eq!(svc.channels[0].dev.dma_length(), 4);
+        assert_eq!(svc.channels[0].dev.buf_length(), 2);
+        assert_eq!(svc.parked(0), None);
+    }
+
+    #[test]
+    fn test_a_dry_ring_pauses_the_card_and_a_late_write_resumes_it() {
+        let mut svc = service();
+        let mut plane = FakePlane::new();
+        svc.init();
+        svc.open(0);
+        // One fragment in the ring; the card consumes it.
+        let _ = svc.write(0, 1024, parked(), &mut plane);
+        svc.hooks.intr_status = INTR_STS_DAC;
+        let revived = svc.handle_hardware(&mut plane);
+        assert!(revived.is_empty(), "nobody was waiting");
+        assert_eq!(svc.channels[0].dev.dma_length(), 0);
+        assert!(svc.channels[0].dev.is_out_of_data());
+        assert_eq!(svc.hooks.pauses, vec![0], "the card was paused");
+        // A later write finds the device dry and resumes it.
+        let (_, revive) = svc.write(0, 1024, parked(), &mut plane);
+        assert!(revive.is_some());
+        assert!(!svc.channels[0].dev.is_out_of_data());
+        // Two resumes: the open arms the dry flag, so the very first
+        // write already resumed the card.
+        assert_eq!(svc.hooks.resumes, vec![0, 0]);
+    }
+
+    #[test]
+    fn test_a_capture_interrupt_hands_a_fragment_to_the_waiting_reader() {
+        let mut svc = service();
+        let mut plane = FakePlane::new();
+        svc.init();
+        svc.open(0);
+        // The first read starts the card and parks without data (minor
+        // zero's read channel is the capture channel).
+        let (status, revive) = svc.read(0, 1024, parked(), &mut plane);
+        assert_eq!(status, EDONTREPLY);
+        assert!(revive.is_none(), "nothing to hand over yet");
+        assert!(svc.channels[1].dev.is_dma_busy());
+        // The card fills a fragment and the summary says capture.
+        svc.hooks.intr_status = INTR_STS_ADC;
+        let revived = svc.handle_hardware(&mut plane);
+        assert_eq!(revived.len(), 1);
+        assert_eq!(revived[0].bytes, 1024);
+        assert_eq!(plane.copies_out, 1, "one fragment went to the caller");
+        // The fragment left the ring again with the caller's copy.
+        assert_eq!(svc.channels[1].dev.dma_length(), 0);
+    }
+
+    #[test]
+    fn test_a_full_capture_ring_parks_the_caller_until_it_drains() {
+        let mut svc = service();
+        let mut plane = FakePlane::new();
+        svc.init();
+        svc.open(0);
+        // Start the card and fill the ring: the first fragment revives the
+        // waiting caller, the following ones stay in the ring.
+        let _ = svc.read(0, 1024, parked(), &mut plane);
+        svc.hooks.intr_status = INTR_STS_ADC;
+        for _ in 0..4 {
+            let _ = svc.handle_hardware(&mut plane);
+        }
+        // The first interrupt served the waiting reader (its fragment
+        // left the ring again); the other three stayed.
+        assert_eq!(svc.channels[1].dev.dma_length(), 3);
+        // A new reader is parked; the next interrupt finds the ring full
+        // and the extra buffer empty, so the fragment moves there and the
+        // reader is served from it.
+        let (_, revive) = svc.read(0, 1024, parked(), &mut plane);
+        assert!(revive.is_some(), "the ring had data to hand over");
+        assert_eq!(plane.copies_out, 2);
     }
 
     #[test]
@@ -881,8 +1409,10 @@ mod tests {
             grant: 2,
             caller: 20,
         };
-        assert_eq!(svc.write(0, 8192, parked), EINVAL);
-        assert_eq!(svc.write(0, 0x1f40, parked), -(ENOSYS));
+        let mut plane = FakePlane::new();
+        assert_eq!(svc.write(0, 8192, parked, &mut plane).0, EINVAL);
+        // The size the card stored is accepted, and the transfer runs.
+        assert_eq!(svc.write(0, 0x1f40, parked, &mut plane).0, EDONTREPLY);
         // A get request copies the hook's answer back to the caller.
         let mut ipc = FakeIpc::new(Vec::new());
         assert_eq!(

@@ -129,6 +129,32 @@ impl SubDevice {
         self.buf_length
     }
 
+    /// How many extra buffers the channel has (`NrOfExtraBuffers`).
+    pub const fn extra_buffers(&self) -> u32 {
+        self.extra_buffers
+    }
+
+    /// The ring slot the next application fragment fills
+    /// (`DmaFillNext`).
+    pub const fn dma_fill_next(&self) -> u32 {
+        self.dma_fill_next
+    }
+
+    /// The ring slot the card reads next (`DmaReadNext`).
+    pub const fn dma_read_next(&self) -> u32 {
+        self.dma_read_next
+    }
+
+    /// The extra-buffer slot the next fragment fills (`BufFillNext`).
+    pub const fn buf_fill_next(&self) -> u32 {
+        self.buf_fill_next
+    }
+
+    /// The extra-buffer slot the next fragment leaves (`BufReadNext`).
+    pub const fn buf_read_next(&self) -> u32 {
+        self.buf_read_next
+    }
+
     /// Fill one fragment from the application side (playback path).
     ///
     /// Advances the fill cursor modulo the fragment count and grows the
@@ -181,6 +207,37 @@ impl SubDevice {
         self.dma_fill_next = (self.dma_fill_next + 1) % self.fragments;
         self.dma_length += 1;
         true
+    }
+
+    /// Rewind the card's read cursor (`get_started`, `audio_fw.c:644`:
+    /// `DmaReadNext = 0`).
+    pub fn rewind_read_cursor(&mut self) {
+        self.dma_read_next = 0;
+    }
+
+    /// Take one fragment out of the extra buffer (`data_to_user`'s first
+    /// branch, `audio_fw.c:723-729`): the read cursor advances and the
+    /// queued length drops.
+    pub fn consume_extra(&mut self) {
+        if self.buf_length == 0 {
+            return;
+        }
+        self.buf_read_next = (self.buf_read_next + 1) % self.extra_buffers;
+        self.buf_length -= 1;
+    }
+
+    /// Move one ring fragment into the extra buffer (`handle_int_read`'s
+    /// full-ring branch, `audio_fw.c:594-606`), cursors only: the bytes
+    /// themselves travel inside the allocation, which only the service
+    /// knows about.
+    pub fn move_ring_to_extra(&mut self) {
+        if self.dma_length == 0 || self.buf_length == self.extra_buffers {
+            return;
+        }
+        self.dma_length -= 1;
+        self.dma_read_next = (self.dma_read_next + 1) % self.fragments;
+        self.buf_length += 1;
+        self.buf_fill_next = (self.buf_fill_next + 1) % self.extra_buffers;
     }
 
     /// Queue one fragment into the extra buffer (application side).
