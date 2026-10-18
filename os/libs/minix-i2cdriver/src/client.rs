@@ -178,6 +178,23 @@ pub fn exec<T: DriverTransport>(
     }
 }
 
+/// Read one raw byte without sending a command (`i2creg_raw_read8`).
+///
+/// The read carries no command bytes (`i2cdriver.c:210-219`).
+pub fn read_raw_byte<T: DriverTransport>(
+    transport: &mut T,
+    bus: Endpoint,
+    address: u16,
+) -> Result<u8, i32> {
+    let mut block = ExecBlock::zeroed();
+    block.op = I2C_OP_READ_WITH_STOP;
+    block.address = address;
+    block.cmd_len = 0;
+    block.buf_len = 1;
+    exec(transport, bus, &mut block)?;
+    Ok(block.buf[0])
+}
+
 /// Read `data.len()` bytes from a register (`__i2creg_read`).
 ///
 /// The register address travels in the command array; the data comes back
@@ -201,6 +218,23 @@ pub fn read_bytes<T: DriverTransport>(
     exec(transport, bus, &mut block)?;
     data.copy_from_slice(&block.buf[..data.len()]);
     Ok(())
+}
+
+/// Write one raw byte without a register address (`i2creg_raw_write8`).
+///
+/// The whole payload is the value (`i2cdriver.c:292-296`).
+pub fn write_raw_byte<T: DriverTransport>(
+    transport: &mut T,
+    bus: Endpoint,
+    address: u16,
+    value: u8,
+) -> Result<(), i32> {
+    let mut block = ExecBlock::zeroed();
+    block.op = I2C_OP_WRITE_WITH_STOP;
+    block.address = address;
+    block.buf[0] = value;
+    block.buf_len = 1;
+    exec(transport, bus, &mut block)
 }
 
 /// Write one register with one byte (`__i2creg_write`).

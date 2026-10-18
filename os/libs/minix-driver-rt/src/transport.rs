@@ -130,4 +130,27 @@ pub trait DriverTransport {
         let _ = micros;
         Err(-minix_types::ENOSYS)
     }
+
+    /// Wall-clock seconds (`time(NULL)`; C `gettimeofday` through PM).
+    ///
+    /// Used by drivers whose sampling rate is throttled by the clock (the
+    /// SHT21 cache samples at most once per second). Additive with an
+    /// honest default: a transport without a clock reports `ENOSYS`, and
+    /// the caller must not fabricate a timestamp.
+    fn now_seconds(&mut self) -> Result<i64, i32> {
+        Err(-minix_types::ENOSYS)
+    }
+
+    /// The label name an endpoint registered with the data store
+    /// (`ds_retrieve_label_name`): the i2c bus driver keys a device
+    /// reservation by the owner's label so a restarted owner can reclaim
+    /// the same device.
+    ///
+    /// Additive with an honest default: a transport that cannot reach the
+    /// data store reports `None`, which the caller treats as a failed
+    /// lookup (C's `do_reserve` fails the request).
+    fn label_name(&mut self, endpoint: Endpoint) -> Option<alloc::string::String> {
+        let _ = endpoint;
+        None
+    }
 }

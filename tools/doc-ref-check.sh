@@ -2,7 +2,9 @@
 # doc-ref-check.sh — 文档内部章节引用对账（doc-commit-review bagging：longcat 3.3 / Muse F-9）
 #
 # 查内部引用 `第 N 章` / `第 N.M`(节，节/章字可省) / `§N.M`（数字编号）是否指向本文存在的标题。
-# 跳过：同一行该引用左侧邻近出现 `.md`（外部引用）；CJK 编号（§一/§六）。
+# 跳过：同一行该引用左侧邻近出现 `.md`（外部引用）；CJK 编号（§一/§六）；
+#       栅栏块（``` 围栏）内不扫描——引文/命令块内容是引用物，不是本文内部引用
+#       （判例：14 篇引文块内源码注释「see §3.6 in 14-exception-interrupt.md」，2026-10-19）。
 # 字节安全：不假设 `§` 占 1 字节（mawk 按字节走），用 gsub 剔除非数字字符取编号。
 # report 恒 exit0（存量 134/369 有误报，未基线前只作人工分诊读数）；--check 命中 exit1（供已基线文档用）。
 # 用法： tools/doc-ref-check.sh [--check] <doc.md> | --self-test
@@ -36,6 +38,9 @@ run_check() {
     }
     {
       line=$0; gsub(/\r$/,"",line)
+      # 栅栏块状态：``` 开/闭行翻转；块内不扫描（引文/命令块内容是引用物）
+      if (line ~ /^[ \t]*```/) { infence = !infence; next }
+      if (infence) next
       # §N.M（可 §N.M.K）：按数字串取，字节安全
       s=line
       while (match(s, /§[0-9]+(\.[0-9]+)+/)) {
@@ -81,6 +86,11 @@ self_test() {
   if run_check "$tmp/chap.md" check >/dev/null 2>&1; then echo "  FAIL: 无子节章号未被登记（第 7 章应坏、第 5 章应过）"; fail=1; else echo "  OK: 无子节章号已登记(第 5 章过/第 7 章拦)"; fi
   run_check "$tmp/bad.md" check >/dev/null 2>&1 && { echo "  FAIL: bad 未被拦"; fail=1; } || echo "  OK: bad 被拦(§9.9/第7章/第8.8)"
   run_check "$tmp/good.md" check >/dev/null 2>&1 && echo "  OK: good 通过" || { echo "  FAIL: good 误拦"; fail=1; }
+  # 栅栏块豁免（14 篇判例）：块内 §9.9 应过；块外坏引用仍拦
+  printf '# t\n## 第 1 章 概念\n### 1.1 小节\n```c\n// see §9.9 in other.md\n```\n正文见 §1.1 正常。\n' > "$tmp/fence.md"
+  run_check "$tmp/fence.md" check >/dev/null 2>&1 && echo "  OK: 栅栏块内引用豁免" || { echo "  FAIL: 栅栏块内引用未豁免"; fail=1; }
+  printf '# t\n## 第 1 章 概念\n```\n§9.9\n```\n坏引用见 §8.8。\n' > "$tmp/fence2.md"
+  run_check "$tmp/fence2.md" check >/dev/null 2>&1 && { echo "  FAIL: 栅栏外坏引用未拦"; fail=1; } || echo "  OK: 栅栏外仍拦(§8.8)"
   rm -rf "$tmp"
   [ "$fail" = 0 ] && { echo "SELF-TEST PASS"; return 0; } || { echo "SELF-TEST FAIL"; return 1; }
 }

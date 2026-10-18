@@ -209,6 +209,26 @@ impl DriverTransport for KernelTransport {
         // C `cpf_revoke` (safecopies.c:218-263).
         self.grants.revoke(grant).map(|_| ()).map_err(|error| -error)
     }
+
+    fn now_seconds(&mut self) -> Result<i64, i32> {
+        // C `time(NULL)` → `gettimeofday` through PM
+        // (`libc/sys/gettimeofday.c`); the IPC leg is the same direct trap
+        // the DS client uses.
+        minix_sys::pm::gettimeofday_via(&DirectTrapTransport)
+            .map(|(sec, _nsec)| sec)
+            .map_err(|error| -error.to_i32())
+    }
+
+    fn label_name(&mut self, endpoint: Endpoint) -> Option<alloc::string::String> {
+        // C `ds_retrieve_label_name` (`ds.c:92-101`) through the same
+        // double-carrier client as the forward lookup; the name is a
+        // NUL-terminated string in the store's answer.
+        let mut ds = DsClient::new(DirectTrapTransport, DirectKernelCallTransport, Endpoint::DS);
+        let mut grants = minix_sys::grant::GrantTable::new();
+        let mut buf = [0u8; 80];
+        let len = ds.retrieve_label_name(&mut grants, endpoint, &mut buf).ok()?;
+        alloc::string::String::from_utf8(buf[..len].to_vec()).ok()
+    }
 }
 
 #[cfg(test)]
