@@ -65,7 +65,8 @@ fn real_main() {
         assert!(!probe.is_null(), "tty: vm-brk probe 分配失败");
         minix_rt::free(probe);
         use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
-        #[allow(clippy::let_underscore_must_use)] // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
+        #[allow(clippy::let_underscore_must_use)]
+        // [SD19-gate] 报告通道自坏时 park 兑底（panic.c:66）
         let _ = sys_diagctl_write(
             &DirectKernelCallTransport,
             "nk4a: tty-vmbrk probe ok pages=1 via=VM_BRK\n",
