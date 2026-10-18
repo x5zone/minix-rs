@@ -150,6 +150,7 @@ run_with_qemu_lock() (
 - `2026-10-18` B / `G6-RANDOM` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `53→52` —— 随 random 族接线（`os/drivers` 50→49）的机械过账，不涉语义 —— `✅`
 - `2026-10-18` B / `G6-FB` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `52→51` —— 随 fb 族接线（`os/drivers` 49→48）的机械过账，不涉语义 —— `✅`
 - `2026-10-18` B / `G6-PTY` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `51→50` —— 随 pty 族接线（`os/drivers` 48→47）的机械过账，不涉语义 —— `✅`
+- `2026-10-18` B / `A7` 撤销：共享件 `os/Cargo.toml` 的 `minix-nic-policy` 两行（`members` 与 `[workspace.dependencies]`）随 revert 撤回、文件回归原样 —— 原 `A7` 条目经 `edge2.md` L13（`2026-09-19`）裁决否决建 crate，板行未内联裁决致一轮误执行，净改动归零，不涉其它线 —— `✅`
 
 ## 7. 每轮收尾（顺序固定）
 
