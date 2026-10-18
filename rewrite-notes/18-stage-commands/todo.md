@@ -119,6 +119,14 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百六十七（`REV-STDIN-ERRLEG` 的账面复测）：上一轮留的首动作指向的是一条已闭的账
+
+- **这一轮量什么**：上一轮写下的首动作是「领 `REV-STDIN-ERRLEG`」，而这条账在 `2026-10-17` 的批次三百三十一就已闭合（本文件 `:1291`），总账里也查无此条（`grep -n "REV-STDIN-ERRLEG" rewrite-notes/coordination/TODO-LEDGER-OPEN.md` 读数空）。指针既然指向一条已闭的账，就先把它复测清楚，再决定下一轮真正领哪条；本轮生产码一字未动，动的只有 18 篇这一件与认领板一行。
+- **复测的三件证据（全部 L1）**。① 代码腿：`os/commands/usr-bin/textfilter/src/bin/rev.rs:51-56` 把标准输入交给 `support::read_stdin_error()`，已读到的行先打出去，随后拿到号就 `support::warn_line(prog, "stdin", code)` 并把退码置 1。这与 `minix3/usr.bin/rev/rev.c:101-104` 的 `if (ferror(fp)) { warn("%s", filename); rval = 1; }` 同形，而 `filename` 的初值就是 `"stdin"`（`:80-81`），被操作数顶掉之后才换成那个操作数的名字（`:91`）。② 门腿：`os/commands/usr-bin/textfilter/tests/rev_face.rs:180` 的 `a_stdin_that_cannot_be_read_names_the_stream_and_exits_one`，同文件 `:216` 另有 `an_unreadable_operand_names_itself_rather_than_stdin`——两枚合起来才把「报流名」与「报操作数名」分成两条车道，而不是只证「有一句报文」。③ 本轮亲手跑的读数：`cd .wt/rev-stdin-errleg-qodel-check-qoder/os && cargo test --offline -j 1 -p minix-textfilter --test rev_face` → **10 passed / 0 failed**（日志 `tmp/rev-367/rev_face.log`）。⇒ `REV-STDIN-ERRLEG` 的 `closed` 成立，无需翻任何状态词（它本就不在总账的开放清单上）。
+- **顺带量出的另一处滞后，登记不处理**：本文件 `:3` 的状态摘要停在 `2026-10-08` 快照 `9f752834c` 的口径「未闭合 `open` 2 + 占位 5：命令面尚未接真实系统调用返回」，`TODO-LEDGER-OPEN.md` §6 的「18 命令」行照抄这个摘要。命令面此后接的缝一条比一条实（`bin_support` 的双生面、各壳的 `err(3)` 三段形），「占位 5」与「尚未接真实系统调用返回」两说都得靠一次逐壳清点重立；一轮改摘要等于拿一轮的口径覆盖另一轮的账，所以本笔不动那行，只登记为待核。
+- **据实立下的规矩**：「下一轮首动作」只能写本轮现查得到的条目，写之前先 `grep` 一遍总账与阶段账——指针指向的条目若已在别笔闭合，那本身就是账面滞后，本笔即是一例。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim BSD-HEADER-COMPAT-REF qoder`。批次三百六十六拆出两条前置，这一条不依赖设计裁决（补位面手法照批次二百六十七/二百六十九），它成了才有办法把 `fortune` 的参照件真链出来，也就才谈得上 `FORTUNE-EMPTY-ERRLEG` 那句的齐平；`FORTUNE-DAT-FORMAT` 需要人裁决，按 `open` 挂着，不降级充数。
+
 ## 批次三百六十六（`FORTUNE-EMPTY-ERRLEG` 现查）：参照件在宿主与仓库内都造不出来，且这一支真正卡的是设计级前置
 
 本轮只量两件事，生产码一字未动；结论把这条账从「换一句措辞」改成了「先要一个设计裁决」，所以仍留 `open`，不换状态词、不降级。
@@ -130,7 +138,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - **第二件：更要紧的一条，C 根本不接受一枚纯文本档当格言库**。`minix3/games/fortune/fortune/fortune.c` 的读档前置是 `.dat`：`open_dat`（`:1064-1068`）里 `if ((fp->datfd = open(fp->datfile, O_RDONLY)) < 0) err(1, "Cannot open \`%s'", fp->datfile)`，装载前还要 `fp->tbl` 那个定界串（`:268-269` 的 `!STR_ENDSTRING(line, fp->tbl)`）；`:1116-1118` 那条是 `Database \`%s' corrupted`。也就是说 C 的世界里没有「一枚空文本档」这一形——它必须先有配对的 `.dat`，没有就是那句 `Cannot open` 报在 `.dat` 的名字上。而本支的 Rust 壳是一枚**重新设计过的简易过滤器**（`os/commands/games/text-games/src/bin/fortune.rs` 把操作数按行切成格言、`pick_quip` 取模抽取，没有 `.dat`、没有 `%` 定界、没有 `-f/-o/-a` 的概率表）。⇒ 于是「空库那句要不要齐平成 C 的 `err(1, "Cannot open \`%s'", ...)`」不是一个措辞问题：要么承认本支是另一套外部形状（那就是 `Refactor`/`[ARCH]` 级别的决定，要在文档、设计、代码三处一致标注），要么先把 `.dat` 与定界串这套数据格式实现出来再谈对齐。这一步需要设计裁决，不是我能替项目定的。
 - **本轮据实留下**：`FORTUNE-EMPTY-ERRLEG` 仍 `open`，并把它的**前置拆成两条各自可单独立项的**：其一 `FORTUNE-DAT-FORMAT`（实现 `.dat` 与定界串，使 C 的报文有形可对；工程量大，含 `strfile` 那侧），其二 `BSD-HEADER-COMPAT-REF`（参照件构建所需的 BSD 头补位面，按批次二百六十七/二百六十九的手法做）。核实命令（可重跑）：上面那两条 `gcc` 命令行、两条 `ls minix3/include/sys/*.h`、以及 `sed -n '1064,1068p;268,269p' minix3/games/fortune/fortune/fortune.c`。核实日 `2026-10-18`，快照提交号为 `9cee84dbb`（本轮基线）。
 - **不做的事**（免得下一轮重蹈）：不换状态词、不把那句 `empty database` 随手改成任何我以为像 C 的句子、不拿宿主 Rust 壳的输出冒充参照件读数。批次三百六十五留下的 `an_operand_that_opens_but_cannot_be_read_is_an_empty_database` 只钉「读断不成其一形」，与这一支的整体外形裁决无关，不需要回退。
-- **下一轮首动作**：`bash tools/claim.sh claim REV-STDIN-ERRLEG qoder`（台账上仍挂着的一条已登记项，不依赖本轮这两条前置）；`FORTUNE-DAT-FORMAT` 需要设计裁决，若无人裁决就先按 `open` 挂着，不降级为 DEFERRED 充数。
+- ~~**下一轮首动作**：`bash tools/claim.sh claim REV-STDIN-ERRLEG qoder`（台账上仍挂着的一条已登记项，不依赖本轮这两条前置）~~——本行由批次三百六十七作废：`REV-STDIN-ERRLEG` 已在批次三百三十一闭合，复测读数见该笔。改按该笔现查结论领 `BSD-HEADER-COMPAT-REF`。
 
 ---
 
