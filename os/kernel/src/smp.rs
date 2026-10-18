@@ -1249,6 +1249,13 @@ pub fn smp_init() {
             })
             .expect("smp_init: BSP hart not found in topology") as u32;
         smp.seed_bsp_masks(bsp_logical);
+        // SD-41 SWI 臂真机定谳（2026-10-18，本行注释保留取证结论）：SSI 在本
+        // 固件不可交付——自环三通道全实证（SBI send_ipi 不转换[K10 轮 3]；
+        // sip.SSIP 直写置位成功但 SIE=1 窗内不取入、wfi 永不唤醒[本轮，
+        // 门 300s 超时 FAIL 实证]）＝SSI 未获 mideleg 委派。SWI 分发臂与
+        // ack 原语保持在位（对误入 SSI 不 panic、不误计 tick），交付恢复
+        // 依赖固件委派或 SSWI 设备；EI(PLIC) 臂为下一片。
+
 
         // BSP 当前根（§3.2：交给 AP 的就是 BSP 正在用的这张表）。
         let root = crate::current_root_phys().expect("riscv64 smp_init: active root");
