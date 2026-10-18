@@ -55,7 +55,10 @@ fn a_one_line_database_prints_that_line_and_exits_zero() {
 }
 
 #[test]
-fn an_unopenable_operand_is_named_and_exits_one() {
+fn an_unopenable_operand_reports_the_c_err_line_and_exits_one() {
+    // C 是 `err(1, "Cannot open `%s'", fp->path)`（`minix3/games/fortune/fortune/fortune.c:1056`）：
+    // 三段形，中间那位是句子连着用反引号与单引号包住的档名，尾巴是号对应的句子，退码 1。
+    // 期望读数取自现跑（同一条命令换档名即可复现，见批次三百六十二）
     let db = std::env::temp_dir().join("minix-fortune-face-does-not-exist.db");
     let _ = std::fs::remove_file(&db);
     let (out, code, err) = run(&db, Stdio::piped());
@@ -64,7 +67,10 @@ fn an_unopenable_operand_is_named_and_exits_one() {
         (
             "",
             1,
-            &format!("fortune: {}: cannot open\n", db.display())[..]
+            &format!(
+                "fortune: Cannot open `{db}': No such file or directory\n",
+                db = db.display()
+            )[..]
         ),
         "stderr={err}"
     );

@@ -30,11 +30,18 @@ fn run() -> ! {
     // `rewrite-notes/18-stage-commands/todo.md`），本轮只把两条臂接可达、不改口径
     let image = match support::slurp_operand(path) {
         Ok(image) => image,
-        Err(support::OperandFailure::Open) => {
-            support::warn(format!("fortune: {path}: cannot open\n").as_bytes());
+        Err(support::OperandFailure::Open(code)) => {
+            // C 的这一路是 `err(1, "Cannot open `%s'", fp->path)`（`fortune.c:1056`，另有
+            // `:1067` 与 `:1116` 两条同一句式的 `.dat` 腿）：三段形，中间那位是「句子 + 带反引号
+            // 与单引号包住的档名」，尾巴是号对应的句子，退码 1。本壳的档名访问失败正是这一路
+            //（目录腿在 C 走 `warn`（`:525`、`:705`）不退场，本壳现在还不走目录，不在这一形里）
+            let prog = support::prog_name(&argv);
+            support::warn_line(prog, &format!("Cannot open `{path}'"), code);
             support::terminate(1);
         }
         Err(support::OperandFailure::Read) => {
+            // 这一句还是本壳自创的：C 的读腿走 stdio，没有与它对应的 `err` 句形，
+            // 齐平要等读腿判据单独立项（`FORTUNE-READ-ERRLEG`），本轮不动它
             support::warn(format!("fortune: {path}: read error\n").as_bytes());
             support::terminate(1);
         }

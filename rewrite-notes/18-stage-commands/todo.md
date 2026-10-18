@@ -119,6 +119,18 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百六十二（`FORTUNE-OPEN-ERRLEG` 闭）：`fortune` 开不了档那一行改成 C 的 `err(1, ...)` 形
+
+- **是什么**。批次三百六十一留下的一句自创话：`fortune: <操作数>: cannot open`。C 在这一路是 `err(1, "Cannot open \`%s'", fp->path)`（`minix3/games/fortune/fortune/fortune.c:1056`，另有 `:1067` 与 `:1116` 两条同一句式的 `.dat` 腿）：`err` 的三段形里，中间那位是**格式串代入档名之后的整句**（档名用反引号与单引号包住），尾巴是号对应的句子，退码 1。两处差别：句子位置换了、句子内容与大小写了换了、还少了那一对引号，另外自创句里没有号对应的句子。属 P0-code-bug（可见输出与真值优先序第一格不符）。
+- **怎么修**。要让中间那位带上号对应的句子，缝必须把**号**交回来：`OperandFailure::Open` 从空变体改成带一枚 `minix_sys::Errno`（宿主面从 `std::io::Error::raw_os_error` 取，取不到按 `EIO`，与同文件 `read_stdin_error` 同一口径；真机面直接交回 `minix_sys::open` 的错误）。壳里那一格换成 `support::warn_line(prog, &format!("Cannot open \`{path}'"), code)`，`prog` 由 `support::prog_name(&argv)` 取（C 的 `err` 前缀走 `getprogname()`）。退码沿用现有的 `terminate(1)`，正是 C 的 `err(1, ...)`。
+- **不动的那一半**。读臂那句 `fortune: <操作数>: read error` 仍是自创：C 的读腿走 stdio（`fopen`/`fread`/`fgets`），没有一处与它对应的 `err` 句形——`fortune.c` 里的 `err(1, NULL)` 是 `do_malloc`（`:845`），`warn("Cannot open \`%s'", ...)` 的两处（`:525`、`:705`）是目录腿且不退场。硬造一句就等于把猜测写成口径，故登记为 `FORTUNE-READ-ERRLEG` 单独立项，本批不碰。
+- **门（L1 读数，核实日 `2026-10-18`）**。`tests/fortune_face.rs` 里那枚改名的门 `an_unopenable_operand_reports_the_c_err_line_and_exits_one`：期望整行 `fortune: Cannot open \`<路径>': No such file or directory` 退 1，取自现跑（`./target/debug/fortune /tmp/nope-362.db` 同一条命令换档名即可复现）。套件读数：宿主 `cargo test -j 1 --offline -p minix-text-games` ⇒ **59 passed / 0 failed**（lib 30、`random_face` 25、`fortune_face` 4，`tmp/fortune-362/host-test.log`）；权威容器门（`minix-ci:1.94`、`-m 2g -j 1`、可写 cargo 缓存与 target 挂载）⇒ 退码 **0**、`test result:` 摘要 7 套合计 **59 passed / 0 failed**，与宿主同读数（`tmp/fortune-362/container-gate.log`）。`rustfmt --edition 2021 --check` 三件零漂移；`cargo clippy --all-targets -p minix-text-games` 对触及的三件文件零命中。
+- **变异控制有牙**（`tmp/fortune-362/control1.log`）。把中间那位换回自创的 `cannot open` ⇒ 四枚里恰这枚独红，其余三枚不动；失败读数 `fortune: cannot open': No such file or directory` 还顺带暴露一件事：**这一枚门钉的是整行的形状**（句子、引号对、号句子三段都在断言里），少一个词都会红。还原用改前留在 `tmp/fortune-362/fortune.rs.bak` 的原文，md5 `aa4bad2e…` 前后一致。
+- **残留（登记不执行）**。`FORTUNE-READ-ERRLEG`（上面「不动的那一半」给出去向与判据）；另外 `wtf` 一支的写腿按批次三百六十的判据（真源是 POSIX shell 脚本）不在 C 口径射程内，`TEXTGAMES-EMIT-ERRLEG` 可以按「判据不适用」收尾，收尾时要留那句判据出处，不能默默删行。
+- **下一轮首动作**：`bash tools/claim.sh claim SPLIT-NONUTF8-DROP qoder`（P0 级，改动清单与四枚门的期望值都写在批次三百二十九收尾那一条里，可跳过现查直接开工）。
+
+---
+
 ## 批次三百六十一（`FORTUNE-HOSTED-FILE-SEAM` 闭 + `TEXTGAMES-EMIT-ERRLEG` 的 fortune 一半落地）：`fortune` 第一次能在宿主跑起来，写腿随它的门一起落地
 
 - **是什么**。批次三百六十量到的前置：`os/commands/games/text-games/src/bin/fortune.rs` 把开档与读档直接写成 `minix_sys::{open, read, close}`，没有宿主与真机的双生面，于是宿主上 `./target/debug/fortune /tmp/fdb.txt` 对一枚真实存在的档报 `cannot open` 退 1——这一支的任何端到端门都造不出来，写腿那处分叉（C 不查失手、我们退 1）只能挂在账上。本轮先把缝立起来，再让修法与它的门同批落地。

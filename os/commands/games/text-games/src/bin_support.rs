@@ -193,8 +193,9 @@ pub fn read_stdin_error() -> (alloc::vec::Vec<u8>, Option<minix_sys::Errno>) {
 /// sentences while both legs stay reachable in a hosted run.
 #[derive(Debug, PartialEq, Eq)]
 pub enum OperandFailure {
-    /// The path could not be opened.
-    Open,
+    /// The path could not be opened; the number is what C's `err(1, ...)` appends
+    /// as the trailing sentence, so the caller can render the whole line.
+    Open(minix_sys::Errno),
     /// The operand opened, but a read failed partway through.
     Read,
 }
@@ -206,7 +207,13 @@ pub enum OperandFailure {
 #[cfg(any(test, not(target_os = "none")))]
 pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> {
     use std::io::Read as _;
-    let mut file = std::fs::File::open(path).map_err(|_| OperandFailure::Open)?;
+    let mut file = std::fs::File::open(path).map_err(|failure| {
+        OperandFailure::Open(minix_sys::Errno::from_i32(
+            failure
+                .raw_os_error()
+                .unwrap_or(minix_sys::Errno::EIO.to_i32()),
+        ))
+    })?;
     let mut image = alloc::vec::Vec::new();
     match file.read_to_end(&mut image) {
         Ok(_) => Ok(image),
@@ -221,7 +228,7 @@ pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> 
 pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> {
     let fd = match minix_sys::open(path, 0, 0) {
         Ok(fd) => fd,
-        Err(_) => return Err(OperandFailure::Open),
+        Err(code) => return Err(OperandFailure::Open(code)),
     };
     let mut image = alloc::vec::Vec::new();
     let mut chunk = [0u8; 4096];
