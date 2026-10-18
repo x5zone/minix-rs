@@ -154,6 +154,7 @@ run_with_qemu_lock() (
 - `2026-10-18` B / `G6-LANCE` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `50→49` —— 随 lance 族接线（`os/drivers` 47→46）的机械过账；另在自有件 `minix-netdriver` 新增 `wire.rs`（NDEV 消息偏移）并给 `NetServer` 加 `media()`/`clear_stats()` 两个只读/复位访问器，不涉其它线语义 —— `✅`
 - `2026-10-18` B / `G6-NET` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `49→45` —— 随 e1000/rtl8139/dp8390/virtio_net 四卡接线（`os/drivers` 46→42）的机械过账；泵上收进自有件 `minix-netdriver::pump`（`NetService<D>`），四卡 `init()` 与 `main.rs` 随动，不涉其它线语义 —— `✅`
 - `2026-10-18` B / `G6-BLK` 片收尾：把共享件 `tools/todo-reconcile-scan.sh` 的「服务入口空转占位」基线 `45→42` —— 随 ahci/at_wini/virtio_blk 三卡接线（`os/drivers` 42→39）的机械过账；泵上收进自有件 `minix-blockdriver::pump` 并新增 `wire.rs`，memory 泵随动改用共享 wire 与 C 的 `ERESTART` 重启门语义，不涉其它线 —— `✅`
+- `2026-10-18` B / `SD11-MFS`：要改 `os/fs/mfs/src/main.rs`（A 板领地，一句目的）——SD-11 U-5 迁移第九台（最后一个缓存大头）的 `install_vm_supplier` 安装点与 `mfs-vmbrk` 探针，交付面同前八台；宿主 178/0、三架构 none 构建已过，真机门与迁移前后对照挂本板窗 —— `✅`（本笔）
 
 ## 7. 每轮收尾（顺序固定）
 
