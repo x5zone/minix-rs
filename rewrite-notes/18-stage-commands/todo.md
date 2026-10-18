@@ -119,6 +119,18 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次三百七十七（A12 `RANDOM-DENOM-LEGS` 对账）：板上写 `🚫`、账上写 `partially fixed`，两条都不准——四条敞口里已经有一条闭合了
+
+- **这一轮量什么**：A 板 A12 行挂着 `🚫 维持登记但不排期`，并写着「要动就得先给『为什么不追』的裁决；否则保持现状并写明理由」。本轮去核对那三条理由到底写过没有、以及这条账到今天该用什么状态词。**纯对账笔，生产码一字未动。**
+- **账上现在的说法**（`todo.md:824-832`，批次三百五十末登记）把敞口列成四条：① 非有限值/超射程值转整数那一格；② 末位单位残差；③ 子正规结果是否立 `ERANGE`；④ 共用的 `bin_support::emit` 写缝退码。并写明「①—③ 是登记在册的不追平与残差，不是待接的功能缺口；④ 是另一条账」，条目状态取 `partially fixed`。
+- **对账结果，两处要改**：
+  1. **④ 已经闭合**，不再是「另一条账」。落地笔是批次三百五十九（`todo.md:325` 起）：`os/commands/games/text-games/src/bin/random.rs:113-114` 换成 `support::emit_error` 并由这一支自己定句子与退码，判据是 C 的 `if (ferror(stdout)) err(2, "stdout")`（`minix3/games/random/random.c:131-133`，本轮实读复核）。门在 `tests/random_face.rs:456` 的 `a_stdout_that_stops_taking_bytes_is_blamed_by_name_and_exits_two`。所以敞口从四条缩到三条。
+  2. **剩下的 ①—③ 不是待办**。三条都带着由何处得出的理由，且理由的出处本轮逐条复核过：① C 那一格本身是未定义行为，三架构上 x86-64 的 `cvttsd2si` 给 `0x80000000` 而 aarch64 的 `fcvtzs` 饱和，本来就没有一个「真值」可追（`todo.md:825-826`、另处 `:899` 复述同一判据）；② 末位单位残差源于本支按「有效数字 × 10^指数」乘出而不做 gdtoa 的大数精化，只可能挪动「恰好压在阈值那一格」的选中判定（`:826-828`）；③ 子正规立号与否，gdtoa 在 `Avoid_Underflow` 配置下对某些子正规也立号（`:828-829`）。三条都属**承载/配置差异**，不是缺口。
+- **这条账的状态词**：取值域三片与 `nan` 载荷早已落地（`:832`），④ 本轮确认闭合，①—③ 属登记在册的不追平——按六值词表，这条条目该记 **`closed`**，并把 ①—③ 作为**三行「登记不追」继续留在账上**（它们不是待办，但必须留名以免后来者当成缺口重做）。这不是「把 TODO 改成 DEFERRED 充数」：闭合的依据是每一条都有可复核的出处，而不是本轮新造的理由。另：本条不在 `TODO-LEDGER-OPEN.md` 里（现查 `grep -n "RANDOM-DENOM-LEGS" rewrite-notes/coordination/TODO-LEDGER-OPEN.md` 读数空），所以状态权威就在本阶段账，不存在越权改总账的问题。
+- **板上那一行**：`🚫 不排期` 改成 `✅`，并把「三条不追平的理由出处 + ④ 已由批次三百五十九闭合」写进行内，这样后来人不需要再去翻两处的行号。
+- **三件套**：核实命令 `grep -n "RANDOM-DENOM-LEGS" rewrite-notes/18-stage-commands/todo.md`、`sed -n '129,134p' minix3/games/random/random.c`、`grep -n "emit_error" os/commands/games/text-games/src/bin/random.rs`、`grep -rn "a_stdout_that_stops_taking_bytes_is_blamed_by_name_and_exits_two" os/commands/games/text-games/tests/random_face.rs`、`grep -n "RANDOM-DENOM-LEGS" rewrite-notes/coordination/TODO-LEDGER-OPEN.md`（空读数即结论）；核实日 `2026-10-18`；基线快照 `e2aefd803`。
+- **下一轮首动作（现查得来）**：`bash tools/claim.sh claim SPLIT-N-STDIN-FSTAT-SIZE qoder`（A6 行的第一枚，按板上写定的顺序 `SPLIT-N-STDIN-FSTAT-SIZE` → `SPLIT-CLOSE-HOST-VISIBILITY` → `UNIQ-WRITE-ERRLEG` 逐个领）。
+
 ## 批次三百七十六（A9 `TEXTGAMES-EMIT-ERRLEG` 的 `wtf` 半）：判据没有不适用，只是载体是 shell；顺着查下去抓到两枚让 `wtf` 对真库完全失效的缺陷
 
 - **这一轮量什么**：A9 行让人按「真源不是 C，所以『C 源码行为』那一格不适用」收尾（判据是 `file` 判 `minix3/games/wtf/wtf` 为 POSIX shell script）。本轮先把 `wtf` 真跑起来对账，结果收尾没做成，反倒抓到两枚 P0：**`wtf` 对本仓自带的那份缩略语库一条都解不开**。
