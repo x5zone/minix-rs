@@ -602,36 +602,287 @@ fn the_self_printing_legs_come_before_operands_and_before_errors() {
     );
 }
 
-/// 占位句的剩余射程：八枚算法本体都已接，`-s`/`-t`/`-x` 三条也改成真读数，所以现在
-/// **只**剩 hash 在里的 `-c` 校验腿走这一句（C 在那条腿里用 `hash->filefunc` 重算比对，
-/// `cksum.c:421-441`，并在失败行前缀 `(MD5) `，`:451-456`）。不给这些旗标时**不得**
-/// 再走这一句（上面几枚门已按真摘要钉住）。
+/// 占位句已经全部退场：八枚算法本体、`-s`/`-t`/`-x` 三条自印腿与 hash 在里的 `-c` 校验腿
+/// 都按参照件读数接成真相，所以 `cksum: -a crypto algorithms are not modelled yet`（退 2）
+/// 这一句在本壳里已经不存在——这枚门钉的是「没有任何一形再落回那句占位」。
+/// 判据出处：`cksum.c` 的三条自印腿 `:255-275`、`do_check` 的摘要腿 `:424-426` 与 `:454`。
 #[test]
-fn the_placeholder_now_covers_only_the_hash_check_leg() {
-    let file = scratch("placeholder");
-    fs::write(&file, "a\na\nb\n").unwrap();
+fn no_hash_shape_lands_on_the_retired_placeholder() {
+    let file = scratch("placeholder-none");
+    fs::write(&file, "hello\n").unwrap();
     let name = file.to_str().unwrap().to_owned();
+    let placeholder = "cksum: -a crypto algorithms are not modelled yet\n";
 
-    for args in [vec!["-a", "md5", "-c", name.as_str()]] {
-        let (out, status, err) = run(&args, b"");
-        assert_eq!(out, "", "{args:?} 不该产出");
-        assert_eq!(
-            (status, err.as_str()),
-            (2, "cksum: -a crypto algorithms are not modelled yet\n"),
-            "{args:?} 的 stderr 是 {err:?}"
-        );
-    }
-
-    // 三条自印腿都不再走这一句：同一份输入下它们各印各的形、退 0。
     for args in [
+        vec!["-a", "md5", "-c", name.as_str()],
         vec!["-a", "md5", "-t"],
         vec!["-a", "md5", "-x"],
         vec!["-a", "md5", "-s", "abc"],
+        vec!["-a", "sha512", "-c", name.as_str()],
+        vec!["-a", "rmd160", "-x"],
     ] {
         let (_, status, err) = run(&args, b"");
-        assert_ne!(status, 2, "{args:?} 不该再落占位句：stderr 是 {err:?}");
-        assert_eq!(err, "", "{args:?} 的 stderr 是 {err:?}");
+        assert_ne!(status, 2, "{args:?} 不该再退 2：stderr 是 {err:?}");
+        assert_ne!(err, placeholder, "{args:?} 不该再落占位句");
     }
 
     let _ = fs::remove_file(&file);
+}
+
+/// `cksum -c` 遇上 `NAME (档) = 摘要` 这一形：C 用 `hash->filefunc` 把档重算一遍再逐字比
+///（`cksum.c:424-426`），**全对就一声不出**（参照件 c-1），而且这一形不需要 `-a`——
+/// 算法名是从行首前缀认出来的（`:343-352`，参照件 c-7 形同值）。摘要期望值取自参照件
+/// f-4 形（同一份内容 `hello\n`）。
+#[test]
+fn a_matching_digest_line_says_nothing_and_exits_zero() {
+    let file = scratch("check-good");
+    fs::write(&file, "hello\n").unwrap();
+    let name = file.to_str().unwrap().to_owned();
+    let sums = scratch("check-good-sums");
+    fs::write(
+        &sums,
+        format!("MD5 ({name}) = b1946ac92492d2347c6235b4d2611184\n"),
+    )
+    .unwrap();
+    let sums_name = sums.to_str().unwrap().to_owned();
+
+    for args in [
+        vec!["-a", "md5", "-c", sums_name.as_str()],
+        vec!["-c", sums_name.as_str()],
+    ] {
+        let (out, status, err) = run(&args, b"");
+        assert_eq!(
+            (out.as_str(), status, err.as_str()),
+            ("", 0, ""),
+            "{args:?} 全对的档该是无声退 0"
+        );
+    }
+
+    // 换算法就换摘要：同一份字节配 SHA256 的 64 位十六进制（参照件 f-4 同族读数）。
+    let sha = scratch("check-good-sha");
+    fs::write(
+        &sha,
+        format!(
+            "SHA256 ({name}) = 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03\n"
+        ),
+    )
+    .unwrap();
+    let (out, status, err) = run(&["-c", sha.to_str().unwrap()], b"");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 0, ""),
+        "不带 `-a` 也从行首前缀认出了 SHA256：stdout {out:?} stderr {err:?}"
+    );
+
+    let _ = fs::remove_file(&file);
+    let _ = fs::remove_file(&sums);
+    let _ = fs::remove_file(&sha);
+}
+
+/// 摘要不对的那一行：C 打 `(MD5) <档>: FAILED`（`:454` 的 `printf("(%s) ", hash->hashname)`
+/// 再接 `:455` 那句），整趟退 1（`badcnt > 0 ⇒ rval = 1`，`:463-464`）。前缀里的名字跟着
+/// **行首那一枚**，不跟着 `-a`：参照件 g-11 形是 `-a md5` 配 `SHA1 (...)` 一行，报的是 `(SHA1) `。
+#[test]
+fn a_mismatched_digest_line_fails_with_the_line_own_hash_name() {
+    let file = scratch("check-bad");
+    fs::write(&file, "hello\n").unwrap();
+    let name = file.to_str().unwrap().to_owned();
+    let sums = scratch("check-bad-sums");
+    fs::write(
+        &sums,
+        format!("MD5 ({name}) = 00000000000000000000000000000000\n"),
+    )
+    .unwrap();
+    let sums_name = sums.to_str().unwrap().to_owned();
+
+    let (out, status, err) = run(&["-a", "md5", "-c", sums_name.as_str()], b"");
+    assert_eq!(out, format!("(MD5) {name}: FAILED\n"), "stderr 是 {err:?}");
+    assert_eq!((status, err.as_str()), (1, ""), "摘要不对要退 1");
+
+    // 行首名字压过 `-a`：这一行按 SHA1 重算，所以报的也是 `(SHA1) `（参照件 g-11/g-12 两形）。
+    let other = scratch("check-other-sums");
+    fs::write(
+        &other,
+        format!("SHA1 ({name}) = b1946ac92492d2347c6235b4d2611184\n"),
+    )
+    .unwrap();
+    let (out, status, _) = run(&["-a", "md5", "-c", other.to_str().unwrap()], b"");
+    assert_eq!(out, format!("(SHA1) {name}: FAILED\n"));
+    assert_eq!(status, 1);
+
+    let _ = fs::remove_file(&file);
+    let _ = fs::remove_file(&sums);
+    let _ = fs::remove_file(&other);
+}
+
+/// 档读不到时的两条路**分叉**：`hash` 在里那一支走 `access(filename, R_OK)`（`:424`），
+/// 失败只把这一行判红、一句 warn 都没有；crc 那一支才 warn（`:432`，且只在 `-w` 下）。
+/// 参照件 c-5 与 h-13 两形（后者带 `-w`）实测都是只有 `(MD5) <档>: FAILED` 一行。
+#[test]
+fn an_unreadable_operand_in_a_digest_line_fails_without_warning() {
+    let missing = scratch("check-missing-target");
+    let sums = scratch("check-missing-sums");
+    fs::write(
+        &sums,
+        format!(
+            "MD5 ({}) = 900150983cd24fb0d6963f7d28e17f72\n",
+            missing.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let sums_name = sums.to_str().unwrap().to_owned();
+
+    for flag in [None, Some("-w")] {
+        let mut args = vec!["-a", "md5", "-c"];
+        if let Some(w) = flag {
+            args.push(w);
+        }
+        args.push(sums_name.as_str());
+        let (out, status, err) = run(&args, b"");
+        assert_eq!(
+            out,
+            format!("(MD5) {}: FAILED\n", missing.to_str().unwrap()),
+            "{args:?} 的 stdout"
+        );
+        assert_eq!(
+            (status, err.as_str()),
+            (1, ""),
+            "{args:?}：hash 那一支读不到档也不 warn（crc 那一支才 warn）"
+        );
+    }
+
+    let _ = fs::remove_file(&sums);
+}
+
+/// 认不出的算法名：C 找完 `hashes[]` 没命中就 `rval = 1` 并 `continue`（`:356-366`），
+/// **不打 FAILED 行**；那句 `unknown hash: <整行>` 只在 `-w` 下打（参照件 c-3 与 c-4 两形：
+/// 前者 stdout/stderr 全空，后者 stderr 收到整行原文）。
+#[test]
+fn an_unknown_hash_prefix_fails_the_run_and_only_names_the_line_under_w() {
+    let sums = scratch("check-unknown-sums");
+    fs::write(&sums, "FOO (/nope) = 900150983cd24fb0d6963f7d28e17f72\n").unwrap();
+    let name = sums.to_str().unwrap().to_owned();
+
+    let (out, status, err) = run(&["-a", "md5", "-c", name.as_str()], b"");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 1, ""),
+        "不带 -w 时这一行只把整趟压成败"
+    );
+    let (out, status, err) = run(&["-a", "md5", "-w", "-c", name.as_str()], b"");
+    assert_eq!(out, "", "不该有 FAILED 行");
+    assert_eq!(
+        (status, err.as_str()),
+        (
+            1,
+            "cksum: unknown hash: FOO (/nope) = 900150983cd24fb0d6963f7d28e17f72\n"
+        ),
+        "句子带的是整行原文"
+    );
+
+    // 大小写敏感：`md5` 这种小写行首同样认不出（参照件 g-10 形），与 `-a` 那一腿正好相反。
+    let lower = scratch("check-lower-sums");
+    fs::write(&lower, "md5 (/nope) = d41d8cd98f00b204e9800998ecf8427e\n").unwrap();
+    let (_, status, err) = run(&["-w", "-c", lower.to_str().unwrap()], b"");
+    assert_eq!(
+        (status, err.as_str()),
+        (
+            1,
+            "cksum: unknown hash: md5 (/nope) = d41d8cd98f00b204e9800998ecf8427e\n"
+        )
+    );
+
+    let _ = fs::remove_file(&sums);
+    let _ = fs::remove_file(&lower);
+}
+
+/// `hash` 状态**跨行留存**：C 在认出一行摘要时把 `hash` 指过去（`hash = nhash`，`:363`），
+/// 于是同一档里后面那些没有 `(` 的普通行也走摘要那一支（`:373-389`），第一个词整串被拿去和
+/// 重算的摘要比——参照件 c-6/h-1/h-4 三形实测：普通行一律判红并带 `(MD5) ` 前缀，
+/// 而且 h-4 **没给 `-a`**（算法是第一行自己认的）。
+#[test]
+fn a_digest_line_switches_the_rest_of_the_file_to_digest_compare() {
+    let good = scratch("mixed-good");
+    fs::write(&good, "hello\n").unwrap();
+    let good_name = good.to_str().unwrap().to_owned();
+    let sums = scratch("mixed-sums");
+    fs::write(
+        &sums,
+        format!("MD5 ({good_name}) = b1946ac92492d2347c6235b4d2611184\n12345 {good_name}\n"),
+    )
+    .unwrap();
+    let sums_name = sums.to_str().unwrap().to_owned();
+
+    for args in [
+        vec!["-a", "md5", "-c", sums_name.as_str()],
+        vec!["-c", sums_name.as_str()],
+    ] {
+        let (out, status, _) = run(&args, b"");
+        assert_eq!(
+            out,
+            format!("(MD5) {good_name}: FAILED\n"),
+            "{args:?}：只有第二行判红"
+        );
+        assert_eq!(status, 1, "{args:?}");
+    }
+
+    // 反过来的次序（普通行在前）也一样：那时 `hash` 还没被认定，走的是 crc 那一支，
+    // 报的是不带前缀的 `<档>: FAILED`（参照件 c-8 形）。
+    let reversed = scratch("mixed-reversed");
+    fs::write(&reversed, format!("12345 {good_name}\n")).unwrap();
+    let (out, status, _) = run(&["-c", reversed.to_str().unwrap()], b"");
+    assert_eq!(out, format!("{good_name}: FAILED\n"), "不带前缀");
+    assert_eq!(status, 1);
+
+    let _ = fs::remove_file(&good);
+    let _ = fs::remove_file(&sums);
+    let _ = fs::remove_file(&reversed);
+}
+
+/// 两句格式诊断按状态分叉，`-w` 下的句子不同：没有 `(` 又没有空格时，
+/// `hash` 未选中报 `bogus format: <行>. Skipping...`（`:395-401`，参照件 h-9 形），
+/// 已选中报 `no filename in <行>? Skipping...`（`:377-383`）。有 `(` 缺 `)` 用的还是前一句
+///（`:322-328`）。三形都记一次失败。
+#[test]
+fn the_two_format_sentences_follow_the_hash_state() {
+    let no_space = scratch("sentence-nospace");
+    fs::write(&no_space, "12345\n").unwrap();
+    let (out, status, err) = run(&["-w", "-c", no_space.to_str().unwrap()], b"");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 1, "cksum: bogus format: 12345. Skipping...\n"),
+        "hash 未选中那支的句子"
+    );
+
+    // 同一行，但让 `hash` 先被前面一行认定 → 报的是另一句。
+    let good = scratch("sentence-state");
+    fs::write(&good, "hello\n").unwrap();
+    let good_name = good.to_str().unwrap().to_owned();
+    let switched = scratch("sentence-switched");
+    fs::write(
+        &switched,
+        format!("MD5 ({good_name}) = b1946ac92492d2347c6235b4d2611184\n12345\n"),
+    )
+    .unwrap();
+    let (out, status, err) = run(&["-w", "-c", switched.to_str().unwrap()], b"");
+    assert_eq!(out, "", "这一行不产 FAILED 行");
+    assert_eq!(
+        (status, err.as_str()),
+        (1, "cksum: no filename in 12345? Skipping...\n"),
+        "hash 已选中那支的另一句"
+    );
+
+    // 有 `(` 缺 `)`：还是 `bogus format` 那一句（`:322-328`）。
+    let unclosed = scratch("sentence-unclosed");
+    fs::write(&unclosed, "MD5 (/nope = abc\n").unwrap();
+    let (_, status, err) = run(&["-w", "-c", unclosed.to_str().unwrap()], b"");
+    assert_eq!(
+        (status, err.as_str()),
+        (1, "cksum: bogus format: MD5 (/nope = abc. Skipping...\n")
+    );
+
+    let _ = fs::remove_file(&no_space);
+    let _ = fs::remove_file(&good);
+    let _ = fs::remove_file(&switched);
+    let _ = fs::remove_file(&unclosed);
 }

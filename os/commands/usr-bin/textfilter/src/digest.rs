@@ -722,23 +722,39 @@ pub enum Algo {
 }
 
 impl Algo {
+    /// C 的 `hashes[]` 那张表里的八枚，**顺序照表**（`minix3/usr.bin/cksum/cksum.c:120-144`：
+    /// md2、md4、md5、rmd160、sha1、sha256、sha384、sha512）。顺序不是讲究：`cksum -c` 认行首
+    /// 算法名时是照这张表逐项 `strncmp`、第一个前缀命中就收（`:343-352`）。
+    pub const ALL: [Algo; 8] = [
+        Algo::Md2,
+        Algo::Md4,
+        Algo::Md5,
+        Algo::Rmd160,
+        Algo::Sha1,
+        Algo::Sha256,
+        Algo::Sha384,
+        Algo::Sha512,
+    ];
+
     /// `hashname` → 算法。**大小写不敏感**：C 的 `case 'a'` 用
     /// `strcasecmp(hashes[i].hashname, optarg)`（`cksum.c:201-207`），所以 `-a md5`、`-a MD5`、
     /// `-a Md5` 在 C 里是同一个入口。全仓只有这一张名字表——`src/cksum.rs` 的 `-a` 腿、诊断里
     /// 那句大写的名字、以及报文头都从这里出；两处各抄一份的话，「哪一份是真的」就又回来了。
     pub fn from_hashname(hashname: &str) -> Option<Algo> {
-        [
-            Algo::Md2,
-            Algo::Md4,
-            Algo::Md5,
-            Algo::Rmd160,
-            Algo::Sha1,
-            Algo::Sha256,
-            Algo::Sha384,
-            Algo::Sha512,
-        ]
-        .into_iter()
-        .find(|algo| algo.hashname().eq_ignore_ascii_case(hashname))
+        Self::ALL
+            .into_iter()
+            .find(|algo| algo.hashname().eq_ignore_ascii_case(hashname))
+    }
+
+    /// 校验档里一行的**行首前缀** → 算法。这条判据与上一条**不同**：C 在 `do_check` 里用的是
+    /// `strncmp(buf, nhash->hashname, strlen(nhash->hashname))`（`cksum.c:343-352`），
+    /// **大小写敏感**、只认表里那一份大写名。参照件 g-10 形实测：`md5 (f) = <摘要>` 这一行
+    /// 认不出算法，走的是 `unknown hash`（`:358`）而不是 forgiving 的 `-a` 那一腿。
+    /// 两处若共用一份匹配规则，`-a` 的大小写不敏感就会渗进校验档——那是 C 没有的行为。
+    pub fn by_line_prefix(line: &str) -> Option<Algo> {
+        Self::ALL
+            .into_iter()
+            .find(|algo| line.starts_with(algo.hashname()))
     }
 
     /// C 的 `hashes[]` 表里 `hashname` 那一列（大写那一份）。诊断句子与缺省报文头用的都是它
