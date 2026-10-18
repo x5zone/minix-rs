@@ -1,6 +1,6 @@
 # 09-stage-init Rust 实现架构级 Review TODO
 
-> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1：崩溃处理器的提供形式（归编排线 `C-21`）；另有加密后端的余量。
+> **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 1：崩溃处理器的提供形式（归编排线 `C-21`）——它挡着两处执行面：`login_tty` 的 dup2/TIOCSCTTY 封装（下表 E-INITSYS ②）与 panic 那支的执行半（下表 ③）。**「另有加密后端的余量」这半句已于 `2026-10-19` 注销**：正文没有任何条目承接它，代码侧也无这条依赖（`os/commands/sbin/init/` 里搜 `arc4random`/`crypto`/`rand_bytes` 为空，C 的 `minix3/servers/init/` 同空），本仓唯一的 `arc4random` 使用面在 `rm -x` 那一族（`os/commands/bin/fileops/src/rm.rs`），与 init 无关。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 
 > 来源：2026-09-17 第一轮扫描（code-excellence：查漏补缺先行 + 分层设计审视；对照 Redox init 与 nix WaitStatus）+ 2026-09-18 修复迭代轮。
