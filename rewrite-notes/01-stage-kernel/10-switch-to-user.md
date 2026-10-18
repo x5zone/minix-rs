@@ -844,7 +844,7 @@ C 里真实存在的语义是（§2.1 第三段）：五标志循环的 `MF_KCAL
                     );
 ```
 
-（第二块接第一块：中间省略若干行——`resumed` 走 `Ok` 分支后，`msg` 从挂起上下文的 `saved_msg` 取出（取不到则 `continue`）。内含仓库内部编号（c8a），按原文引用。注释里那句"真机实证"记录的挂死现象——memreq 服务完成后 RS 停在恢复前、无任何输出——正是非重入自死锁的现场形状。C 没有这个问题：`minix3/minix/kernel/system.c:kernel_call_resume` 重派用的 `kernel_call_dispatch` 本体不取 BKL——取锁发生在陷入入口宏先调的 `context_stop` 里（`minix3/minix/kernel/arch/i386/arch_clock.c` 的用户/空闲记账分支 `BKL_LOCK()`；放锁在同函数 KERNEL 分支的 `must_bkl_unlock`）。**登记**：上面引文里那句源注释"（BKL_LOCK 只在 mpx.S 陷入入口）"与 C 树现码不符——`minix3/minix/kernel/arch/i386/mpx.S` 里没有任何 BKL 调用，取锁点的真值以 `context_stop` 为准（源注释待源码侧修正）。Rust 的打包版分派入口改变了这个前提，于是重派必须换 `inner` 变体。）
+（第二块接第一块：中间省略若干行——`resumed` 走 `Ok` 分支后，`msg` 从挂起上下文的 `saved_msg` 取出（取不到则 `continue`）。内含仓库内部编号（c8a），按原文引用。注释里那句"真机实证"记录的挂死现象——memreq 服务完成后 RS 停在恢复前、无任何输出——正是非重入自死锁的现场形状。C 没有这个问题：`minix3/minix/kernel/system.c:kernel_call_resume` 重派用的 `kernel_call_dispatch` 本体不取 BKL——取锁发生在陷入入口宏先调的 `context_stop` 里（`minix3/minix/kernel/arch/i386/arch_clock.c` 的用户/空闲记账分支 `BKL_LOCK()`；放锁由 KERNEL 分支置起的 `must_bkl_unlock` 标志在函数尾执行 `BKL_UNLOCK()`）。**登记**：上面引文里那句源注释"（BKL_LOCK 只在 mpx.S 陷入入口）"与 C 树现码不符——`minix3/minix/kernel/arch/i386/mpx.S` 里没有任何 BKL 调用，取锁点的真值以 `context_stop` 为准（源注释待源码侧修正）。Rust 的打包版分派入口改变了这个前提，于是重派必须换 `inner` 变体。）
 
 **防护点三：完成半用持锁变体，门归属从挂起上下文读。** 重派完成后的 reply 处理由 `os/kernel/src/syscall.rs:fn kernel_call_finish_holding_bkl` 承担——Stage 3a 以 `release_bkl=false` 调用它，重派链内不放锁（该函数自身的放锁开关供其它调用方用）；本循环的放锁点是 `finish_and_restore` 步 2 与 idle 停机窗口（§4.3 步 5）。（术语先行：**门**指内核调用 reply 的投递通道；**eager 直写**指补完成时立刻把 reply 写回用户缓冲，不 eager 则压到调用者真正返回时再投；**门归属**参数把挂起上下文里记下的门标记传给完成半。）"门归属"参数决定补完成的 reply 是否立即直写：IPC 腿挂起的调用补完成时不 eager 直写（门标记从挂起上下文读出后传给 finish）；重派再次挂起时，finish 的 VmSuspend 臂在新挂起上下文上凭该参数重新置位，多段挂起路径由此闭合：
 
@@ -922,7 +922,7 @@ C 里真实存在的语义是（§2.1 第三段）：五标志循环的 `MF_KCAL
                 }
 ```
 
-（本块为节选：原码在这段代码上方有一条多行注释、块内还有一个 `if` 的空体——那是一条诊断探针，专供 riscv64 非 mock 构建生效，计数上限 16 次，读出的 `(ep, pdmv, root)` 三个绑定值在块内没有消费者（`let` 之后未使用）。探针注释内含仓库内部编号，按本篇纪律不转录，要点如实登记于此：它是取证残迹，不是功能逻辑；删去它不影响行为。除删去其上方那条注释外，本块与源文件逐行一致——块内的空探针体是源码原样保留，不是删除项。）
+（本块为节选：原码在 `Fault` 臂开括号之后、`#[cfg]` 之前有一条多行注释、块内还有一个 `if` 的探针体——那是一条诊断探针，专供 riscv64 非 mock 构建生效，计数上限 16 次，读出的 `(ep, pdmv, root)` 三个绑定值在块内没有消费者（`let` 之后未使用）。探针注释内含仓库内部编号，按本篇纪律不转录，要点如实登记于此：它是取证残迹，不是功能逻辑；删去它不影响行为。除删去那条注释外，本块与源文件逐行一致——块内的探针体（含两条 `let`）是源码原样保留，不是删除项。）
 
 四道防护（外加表中"再挂起不递归"一条禁令）与 C 的对应关系收进一张表：
 
