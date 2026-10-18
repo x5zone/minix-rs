@@ -19,7 +19,11 @@
 #![no_std]
 #![warn(clippy::let_underscore_must_use)]
 
+#[cfg(test)]
+extern crate std;
+
 extern crate alloc;
 
+pub mod client;
 pub mod keys;
 pub mod ops;

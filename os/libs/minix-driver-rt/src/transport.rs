@@ -96,4 +96,38 @@ pub trait DriverTransport {
         let _ = label;
         None
     }
+
+    /// Allocate a direct grant over this process's own memory
+    /// (`cpf_grant_direct`): the i2c exec request hands the bus driver a
+    /// grant on the request block.
+    ///
+    /// Additive with an honest default: a transport without a grant table
+    /// reports `ENOSYS` rather than fabricating a grant id.
+    fn grant_direct(
+        &mut self,
+        dest: Endpoint,
+        address: u64,
+        len: usize,
+        write: bool,
+    ) -> Result<i32, i32> {
+        let _ = (dest, address, len, write);
+        Err(-minix_types::ENOSYS)
+    }
+
+    /// Release a grant (`cpf_revoke`). The default refuses like
+    /// [`DriverTransport::grant_direct`].
+    fn grant_revoke(&mut self, grant: i32) -> Result<(), i32> {
+        let _ = grant;
+        Err(-minix_types::ENOSYS)
+    }
+
+    /// Wait for a hardware conversion (`micro_delay`), in microseconds.
+    ///
+    /// Additive with an honest default: a transport without the kernel
+    /// delay call reports `ENOSYS`, so a sensor read fails instead of
+    /// sampling a conversion that has not finished.
+    fn delay_micros(&mut self, micros: u32) -> Result<(), i32> {
+        let _ = micros;
+        Err(-minix_types::ENOSYS)
+    }
 }

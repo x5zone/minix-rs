@@ -57,7 +57,7 @@ n=$(grep -rn "todo!()\|unimplemented!()" os/kernel/src os/arch/src 2>/dev/null |
                                         row "内核与架构层静默占位" "$n" 0 "$(verdict "$n" 0)"
 n=$(rs "UnimplementedTransport");        row "占位传输实现" "$n" 0 "$(verdict "$n" 0)"
 n=$(grep -rln "loop {}" os --include=main.rs 2>/dev/null | grep -v '^os/target' | wc -l | tr -d ' ')
-                                        row "服务入口空转占位（文件）" "$n" 39 "$(verdict "$n" 39)"
+                                        row "服务入口空转占位（文件）" "$n" 38 "$(verdict "$n" 38)"
 n=$(rs "clamp_cpu_to_bsp");             row "主核钳位（行）" "$n" 14 "$(verdict "$n" 14)"
 n=$(rs "fn context_stop_idle");         row "空闲核唤醒臂本体" "$n" 0 "$(verdict "$n" 0)"
 n=$(rs "AP_GO");                        row "次级核放行邮箱（行）" "$n" 5 "$(verdict "$n" 5)"
