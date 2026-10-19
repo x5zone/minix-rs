@@ -326,6 +326,9 @@ const ESR_EC_SHIFT: u64 = 26;
 const ESR_EC_MASK: u64 = 0x3F;
 /// EC 0x15 = SVC instruction execution in AArch64 state.
 const EC_SVC_AARCH64: u64 = 0x15;
+/// EC=0b000111：SIMD/FP 访问陷阱（FPEN 门控时报；对位生产
+/// `trap_dispatch.rs::aarch64_fpu_trap_body` 接的同一 EC）。
+const EC_FP_TRAP: u64 = 0x07;
 
 static mut KMSG: [u8; 64] = [0u8; 64];
 static mut DIAGBUF: [u8; DIAGBUF_MAX] = [0u8; DIAGBUF_MAX];
@@ -343,6 +346,22 @@ unsafe extern "C" fn rt_birth_svc_dispatch(frame: *mut u64) {
         asm!("mrs {}, esr_el1", out(reg) esr, options(nomem, nostack));
     }
     let ec = (esr >> ESR_EC_SHIFT) & ESR_EC_MASK;
+    if ec == EC_FP_TRAP {
+        // FPEN 懒陷阱臂（单进程载体形状）：生产模型下用户类 FPEN=0b01、
+        // 首次 FP 访问陷阱后由内核懒接管（生产臂=
+        // `trap_dispatch.rs::aarch64_fpu_trap_body`，含归属切换）。本载体
+        // 自装 VBAR 绕开生产向量表，且只有一个用户任务——服务即置
+        // FPEN=0b11 后返回，asm 尾部恢复寄存器并 eret 重执行陷阱指令，
+        // 无归属切换可言。此前本 EC 落 fatal（rt-birth-aarch64 腿红的
+        // 第三层签名）。
+        unsafe {
+            let mut cpacr: u64;
+            core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr, options(nomem, nostack));
+            cpacr |= 0x0030_0000; // FPEN = 0b11
+            core::arch::asm!("msr cpacr_el1, {}", in(reg) cpacr, options(nomem, nostack));
+        }
+        return;
+    }
     if ec != EC_SVC_AARCH64 {
         let far: u64;
         unsafe {
@@ -609,6 +628,20 @@ fn main() -> Status {
     early_console::write_str("  VM boot proc (rt-birth): runnable\n");
 
     // 7. Hand the CPU over — eret into the ELF entry at 5 GiB, EL0.
+    //
+    // CPACR_EL1.FPEN = 0b11（续-406 生产同语义，非新语义）：本载体的极简
+    // 启动不走 `arch_init`（CPACR 写点在 `arch_init::init`，见
+    // arch/src/arm64/arch_init.rs:41），而 rt-birth 的 crt0 序言
+    // `stp d8-d15`（AArch64 ABI FP callee-saves）与预编译 core 的 NEON
+    // memset 残差（SD-23 build-std 待办，smpd5 实证 elr=memset+0xe0、
+    // EC=0x7）都会在 FPEN 门控下抛 EC=0x7——生产脸由 arch_init 兜住，
+    // 本脸在交棒前补同一写。懒门（FPEN=0b01+陷阱臂）仍按续-130 待未来。
+    unsafe {
+        let mut cpacr: u64;
+        core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr, options(nomem, nostack));
+        cpacr |= 0x0030_0000; // FPEN = 0b11
+        core::arch::asm!("msr cpacr_el1, {}", in(reg) cpacr, options(nomem, nostack));
+    }
     early_console::write_str("  entering scheduler (switch_to_user)\n");
     minix_kernel::switch_to_user();
 }
