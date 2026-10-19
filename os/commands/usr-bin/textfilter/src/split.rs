@@ -342,11 +342,11 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
         break;
     }
 
-    // C reads one input operand then the output prefix (`split.c:135-143`);
-    // more than two operands is rejected here (the old shell's guard, kept).
-    if operands.len() > 2 {
-        return Err(SplitError::Usage);
-    }
+    // 第三支操作数在这一腿**不判**。C 的先后是：先把输入开出来（`split.c:135-139`，
+    // 开不成当场 `err(1, "%s", *argv)`），再取前缀（`:143`），最后才
+    // `if (*argv != NULL) usage()`（`:148-149`）。取数这一层看不见开档的成败，
+    // 在这里判就会把 `split 开不了的档名 前缀 第三支` 报成 usage，而参照件报的是那个档名
+    // （读数 `tmp/split-427/ref-shapes.log`）。这一判因此在壳侧、开档之后。
     // C: `if (numlines == 0) numlines = DEFLINE; else if (bytecnt || chunks) usage()`;
     // `if (bytecnt && chunks) usage()` — the three modes are mutually exclusive.
     if set && (byte_size.is_some() || chunk_count.is_some()) {
@@ -799,14 +799,16 @@ mod tests {
             "没被当选项读就不改列数（C 的 `getopt` 见非选项即返 -1）"
         );
         assert_eq!(
-            parse_split_args(&["in", "-l", "3"]).err(),
-            Some(SplitError::Usage),
-            "不重排之后这是**三个**操作数：档名、前缀、多出来的一支（`split.c:148-149`）"
+            parse_split_args(&["in", "-l", "3"]).unwrap().operands,
+            vec!["in", "-l", "3"],
+            "不重排之后这是**三个**操作数：档名、前缀、多出来的一支。取数这一层不判它，\
+             因为 C 的 `usage()`（`split.c:148-149`）排在开档（`:135-139`）之后，\
+             而开档的成败只有壳侧知道"
         );
         assert_eq!(
-            parse_split_args(&["a", "b", "c"]).err(),
-            Some(SplitError::Usage),
-            "多于两个操作数才是 usage 那一支"
+            parse_split_args(&["a", "b", "c"]).unwrap().operands,
+            vec!["a", "b", "c"],
+            "多于两个操作数在库里只是三个操作数，那一记 usage 由壳侧在开档之后落下"
         );
         assert_eq!(
             parse_split_args(&["-l0"]).err(),
@@ -824,10 +826,6 @@ mod tests {
             parse_split_args(&["-5", "-l", "3"]).err(),
             Some(SplitError::Usage)
         );
-        assert_eq!(
-            parse_split_args(&["a", "b", "c"]).err(),
-            Some(SplitError::Usage)
-        ); // >2 操数
     }
 
     /// 切块器与整档切块必须逐字节等价：同一份输入，随便按哪些边界切成几次读，

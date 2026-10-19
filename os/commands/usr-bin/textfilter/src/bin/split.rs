@@ -26,10 +26,10 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_textfilter::split::{
-    chunks_n, parse_split_args, suffix, ByteCutter, CutPiece, LineCutter, SplitError,
-};
 use minix_textfilter::GetoptReport;
+use minix_textfilter::split::{
+    ByteCutter, CutPiece, LineCutter, SplitError, chunks_n, parse_split_args, suffix,
+};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -49,6 +49,20 @@ fn run() -> ! {
     let operands: Vec<&str> = parsed.operands;
     // `split.c:143`: the second operand is the output prefix, default "x".
     let prefix = operands.get(1).copied().unwrap_or("x");
+
+    // 第三支操作数的判据在 C 那里排在开档之后（`split.c:135-148`）：先 `open(*argv)`，
+    // 开不成是 `err(1, "%s", *argv)` 带着档名退出，开成了才轮到 `usage()`。
+    // `-` 不走开档（`:136` 为它开特例），所以它那一形直接落进 usage。
+    // 探测只在这条错误腿里发生，正常切分仍是后面各腿自己开一次档。
+    if operands.len() > 2 {
+        if let Some(name) = operands.first().filter(|name| **name != "-")
+            && let Err(code) = support::open_input(name)
+        {
+            support::warn_line(prog, name, code);
+            support::terminate(1);
+        }
+        usage(prog);
+    }
 
     // `split.c:135-139`: `-` reads stdin (split, unlike grep/sed, special-cases
     // it), a named input is opened, no operand reads stdin, and an unopenable

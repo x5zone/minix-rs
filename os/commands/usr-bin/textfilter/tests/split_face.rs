@@ -267,6 +267,39 @@ fn three_operands_print_only_the_usage() {
     let _ = fs::remove_dir_all(dir);
 }
 
+/// 「开不了的输入」与「第三支操作数」同时在场时报的是**那个档名**，不是 usage：
+/// C 先 `open(*argv)`（`split.c:135-139`，开不成即 `err(1, "%s", *argv)`）再
+/// `if (*argv != NULL) usage()`（`:148-149`）。参照件四条形都如此
+/// （默认腿与 `-l`/`-b`/`-n`，读数 `tmp/split-427/ref-shapes.log`）；裸 `-` 不开档
+/// （`:136` 的特例），那一形没有开档失败可报，才直接落进 usage。
+#[test]
+fn an_unopenable_input_outranks_the_third_operand() {
+    let missing = std::env::temp_dir().join(format!("split427-absent-{}", std::process::id()));
+    let name = missing.to_str().unwrap();
+    let expected = format!("split: {name}: No such file or directory\n");
+    for argv in [
+        vec![name, "pp", "qq"],
+        vec!["-l", "1", name, "pp", "qq"],
+        vec!["-b", "1", name, "pp", "qq"],
+        vec!["-n", "2", name, "pp", "qq"],
+    ] {
+        let (status, err, files, _) = run(&argv, b"");
+        assert_eq!(
+            (status, err.as_str()),
+            (1, expected.as_str()),
+            "形 {argv:?}：先开档，开不成就用档名说话"
+        );
+        assert!(files.is_empty(), "报错的那一形不该落下分片：{files:?}");
+    }
+    let (status, err, files, _) = run(&["-", "pp", "qq"], b"");
+    assert_eq!(
+        (status, err.as_str()),
+        (1, USAGE),
+        "裸 `-` 不开档，于是轮到 usage"
+    );
+    assert!(files.is_empty());
+}
+
 /// 打不开的输入是 `err(1, "%s", *argv)`（`split.c:137-138`）：程序名、操作数原文、
 /// `strerror` 句子三段齐备、**一行**、不接 usage、退 1。旧写法少了第三段。
 /// 第三段整句钉死：只比前缀的话，「开档臂把平台那个号换成一个写死的号」这种改动
