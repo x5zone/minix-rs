@@ -259,7 +259,8 @@ fn read_operand(prog: &str, path: &str) -> Vec<u8> {
 fn parse_fail(prog: &str, error: ParseError) -> ! {
     match error {
         ParseError::Getopt(report) => {
-            support::warn(report.line(prog).as_bytes());
+            // 字母位走 `line_bytes`：取法已在 `src/sort.rs` 的环里改成按字节，两边同形才成立。
+            support::warn(&report.line_bytes(prog));
             usage(prog, None)
         }
         ParseError::KeySpec(spec) => {

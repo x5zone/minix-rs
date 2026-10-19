@@ -255,6 +255,56 @@ fn a_lone_dash_names_standard_input() {
 /// 十三个空格开头（从 `sort.o` 的 `.rodata` 数出来的）。这里逐字钉住，间距也算。
 const USAGE: &str = "usage: sort [-bcdfHilmnrSsu] [-k field1[,field2]] [-o output] [-R char] [-T dir]             [-t char] [file ...]\n";
 
+/// 与 `run` 同一条命令缝，但标准错误也**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_streams(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(SORT)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the sort binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**。这一支的绝对读数有两处来源：机制层是本轮编的
+/// Minix `getopt.c` 探针（`tmp/sort-411/probe.c`，按 `sort.c:148` 的选项串跑，交回
+/// `optopt=303` 即 `c3`，且它把 `é` 的**两个字节各报一次**——真实 `sort.c:250-252` 的
+/// `case '?': default: usage(NULL);` 在第一个就退出，所以报文只有一行），同族十五支参照件
+/// （`tmp/rev-309/rev_ref`、`tmp/paste-321/paste_ref`、`tmp/cmp-410/cmp_ref` 等）对 `-é`
+/// 一致交回单个 `c3`。`l` 是选项串里合法且不带值的字母，聚簇继续吃到第一字节；`-Zé` 停在 `Z`。
+/// ASCII 那一形既有门已钉（`an_unknown_letter_prints_the_libc_line_then_the_usage`），不重复承载。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_sort() {
+    let want: Vec<u8> = [
+        b"sort: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-l\u{e9}"] {
+        let (out, status, err) = run_streams(&[form], b"a\n");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 2, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_streams(&["-Z\u{e9}"], b"a\n");
+    assert_eq!(status, 2);
+    assert_eq!(
+        err,
+        [b"sort: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，第二个字节根本不该被读到"
+    );
+}
+
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     let (out, status, err) = run(&["-Z"], b"a\n");

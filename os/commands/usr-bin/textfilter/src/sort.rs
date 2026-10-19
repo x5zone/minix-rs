@@ -332,47 +332,55 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
             index += 1;
             continue;
         }
-        let mut chars = arg[1..].chars().peekable();
-        while let Some(flag) = chars.next() {
+        // 环走**字节**并记下标：C 的 `optopt` 是一枚 `char`（`getopt.c:79` 的 `optopt = *place++`
+        // 一次进一个字节、`:103` 的 `%c` 原样写出），所以 `-é`（`c3 a9`）报的是 `c3`。之前过
+        // `chars()` 时一个字符的两字节被当成一枚字母，报文再经 UTF-8 渲染就成了两个字节。
+        // 带值字母的「本 token 剩余部分」因此按字节下标切，语义与原来的 `chars.by_ref()` 一致。
+        let tail = &arg[1..];
+        let letters = tail.as_bytes();
+        let mut at = 0usize;
+        while at < letters.len() {
+            let flag = letters[at];
+            at += 1;
             match flag {
-                'r' => options.reverse = true,
-                'f' => options.fold = true,
-                'd' => options.dictionary = true,
-                'i' => options.ignore_nonprint = true,
-                'n' => options.numeric = true,
+                b'r' => options.reverse = true,
+                b'f' => options.fold = true,
+                b'd' => options.dictionary = true,
+                b'i' => options.ignore_nonprint = true,
+                b'n' => options.numeric = true,
                 // `-l` 在 C 里与 `-d`/`-f`/`-i`/`-n` 同臂（`sort.c:168`），效果也是那一句
                 // `fldtab[0].flags |= optval(ch, 0)`（`:172`），所以它是一个全局默认标志。
-                'l' => options.by_length = true,
-                'b' => options.blank_skip = true,
-                'u' => options.unique = true,
-                'c' => options.check = true,
-                'm' => options.merge = true,
+                b'l' => options.by_length = true,
+                b'b' => options.blank_skip = true,
+                b'u' => options.unique = true,
+                b'c' => options.check = true,
+                b'm' => options.merge = true,
                 // `-H`: a documented no-op in C — `sort.c:174-176` comments that
                 // `-H` "was; use merge sort for blocks of large files — that is
                 // now the default", so it accepts the flag and does nothing. We
                 // match that: accept, no effect (previously it errored as bad).
-                'H' => {}
+                b'H' => {}
                 // `-s`（`sort.c:194-201`）与 `-S`（`:202-212`）是同一个开关的两面：前者把
                 // `posix_sort` 归零，后者置一。归零就是 C 的默认（并列键不再拿整条记录
                 // 再排，稳定保输入序），所以 `-s` 在这里确实是无操作；而 `-S` **不是**——
                 // 它打开的是下面那枚 `posix_tiebreak`，本树之前把两者都当 no-op，等于把
                 // `-S` 的那一半语义丢了（参照件：四行同键时 `-k 2,2` 给输入序 `b a c d`，
                 // `-S -k 2,2` 给记录序 `a b c d`）。
-                's' => {}
-                'S' => options.posix_tiebreak = true,
+                b's' => {}
+                b'S' => options.posix_tiebreak = true,
                 // `-o` takes a value, inline (`-oNAME`) or as the next word
                 // (`sort.c:188-190`); a missing one is C's `?` and lands on the
                 // usage path. A later `-o` overwrites the earlier one, as C's
                 // `outpath = optarg` assignment does.
-                'o' => {
-                    let mut value: String = chars.by_ref().collect();
+                b'o' => {
+                    let mut value: String = tail[at..].to_string();
                     if value.is_empty() {
                         index += 1;
                         match args.get(index) {
                             Some(word) => value = (*word).to_string(),
                             None => {
                                 return Err(ParseError::Getopt(crate::GetoptReport::MissingValue(
-                                    flag,
+                                    char::from(flag),
                                 )));
                             }
                         }
@@ -380,20 +388,20 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                     options.output = Some(value.into_bytes());
                     break;
                 }
-                'k' | 't' => {
-                    let mut value: String = chars.by_ref().collect();
+                b'k' | b't' => {
+                    let mut value: String = tail[at..].to_string();
                     if value.is_empty() {
                         index += 1;
                         match args.get(index) {
                             Some(word) => value = (*word).to_string(),
                             None => {
                                 return Err(ParseError::Getopt(crate::GetoptReport::MissingValue(
-                                    flag,
+                                    char::from(flag),
                                 )));
                             }
                         }
                     }
-                    if flag == 'k' {
+                    if flag == b'k' {
                         match parse_key(&value, &options) {
                             // C 这一支不写 usage：`setfield`/`setcolumn` 里是那五句
                             // `errx(2, …)` 之一（`init.c:160-216`），句子逐句不同。
@@ -428,15 +436,15 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                 // 一律不做（`-R $'\nx'` 因此等同于 `-R '\n'`）；③ 值长于一个字节才走
                 // `strtol`：带反斜缀按八进制、否则按 base 0，尾字符未吃尽/负数/超出
                 // `NBINS` 都落 `errx(2, "invalid record delimiter %s", optarg)`。
-                'R' => {
-                    let mut value: String = chars.by_ref().collect();
+                b'R' => {
+                    let mut value: String = tail[at..].to_string();
                     if value.is_empty() {
                         index += 1;
                         match args.get(index) {
                             Some(word) => value = (*word).to_string(),
                             None => {
                                 return Err(ParseError::Getopt(crate::GetoptReport::MissingValue(
-                                    flag,
+                                    char::from(flag),
                                 )));
                             }
                         }
@@ -468,7 +476,9 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                     break;
                 }
                 _ => {
-                    return Err(ParseError::Getopt(crate::GetoptReport::UnknownOption(flag)));
+                    return Err(ParseError::Getopt(crate::GetoptReport::UnknownOption(
+                        char::from(flag),
+                    )));
                 }
             }
         }
@@ -1142,6 +1152,29 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
+    /// `char` 域里是 U+00C3。绝对读数见 `tests/sort_face.rs` 那枚面门注释里的探针说明
+    /// （`tmp/sort-411/probe.c` 编的是 Minix 的 `getopt.c`，交回 `optopt=0303`）。
+    #[test]
+    fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
+        let unknown = |args: &[&str]| match parse_options(args) {
+            Err(ParseError::Getopt(crate::GetoptReport::UnknownOption(letter))) => letter,
+            other => panic!("应该是集外字母那一支，实际 {other:?}"),
+        };
+        assert_eq!(
+            unknown(&["-\u{e9}"]),
+            '\u{00c3}',
+            "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
+        );
+        // 聚簇：`l` 合法先吃掉，报的是其后第一个字节。
+        assert_eq!(unknown(&["-l\u{e9}"]), '\u{00c3}', "-l\u{e9}");
+        // ASCII 那一形不许被这次改动波及。
+        assert_eq!(unknown(&["-q"]), 'q', "-q");
+        // 带值字母把多字节当值收走，不是字母位。
+        let (options, _) = parse_options(&["-o\u{e9}out"]).unwrap();
+        assert_eq!(options.output, Some("éout".as_bytes().to_vec()));
+    }
+
     use core::cmp::Ordering;
 
     fn opts(extra: &str) -> Options {
