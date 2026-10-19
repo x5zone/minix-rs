@@ -200,6 +200,42 @@ impl BootShim for UefiBootShim {
         // §6.0-A2). Fail fast while the boot-shim can still print.
         assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
         assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
+        // ── SD-3 D1（aarch64 UEFI 链 DTB 描述符源，blob 腿）──
+        // ESP /dumpdtb.dtb 存在时：经 `DtbMemoryMap` 解 /memory 得 DRAM
+        // 全景，对 GetMemoryMap 快照的每条 conventional 段做出界闸
+        // （`minix_boot::dtb_covers_conventional`）——出界=固件快照与
+        // 平台真值打架，趁 shim 还能打印 fail-fast。v1 语义=闸+源打印，
+        // 不换 conventional 源（DTB 全景含 shim 自占 LOADER_DATA 页，直
+        // 换会把自占区交给内核 PMM——self-allocation 记账为待裁项，见
+        // C 板 C17 行）；blob 缺省=现行为原样（按形态 opt-in 灰度）。
+        #[cfg(target_arch = "aarch64")]
+        match file_loader.read(loader::DUMPDTB_PATH) {
+            Some(blob) => {
+                let fdt = fdt::Fdt::new(&blob)
+                    .unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
+                let (dtb_free, _) =
+                    <minix_boot::DtbMemoryMap as minix_boot::MemoryMapSource>::collect(
+                        &minix_boot::DtbMemoryMap::new(&fdt, 0),
+                    );
+                if let Err((base, len)) =
+                    minix_boot::dtb_covers_conventional(dtb_free, memmap)
+                {
+                    panic!(
+                        "boot-shim: conventional [{base:#x},+{len:#x}) 在 DTB /memory 全景之外（SD-3 D1 出界闸）"
+                    );
+                }
+                uefi::println!(
+                    "boot-shim: memmap source: uefi-getmemorymap gated by dtb /memory (conv={} dtb_regions={})",
+                    memmap.len(),
+                    dtb_free.len()
+                );
+            }
+            None => {
+                uefi::println!(
+                    "boot-shim: memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)"
+                );
+            }
+        }
         // F8 更正（NK4-C 阶段1 真机 d1a 证伪）：kernel 段与 boot 模块段
         // **不在**本断言范围——本装载模型是「shim 直写 conventional RAM
         // （不经 UEFI 分配），内核 A2 分类按 boot 占用逐段扣除」

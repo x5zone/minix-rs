@@ -348,6 +348,90 @@ pub mod vmdm {
     }
 }
 
+/// SD-10 候选 3 改形仪器的静点排水（riscv64 timer 臂每 tick 调用；
+/// 纯逻辑见 `crate::ptwb` 模块文档）。预算内取走查级样本从 root 重走、
+/// 槽级样本 KDM 复读；分歧按类打印（封顶 8），首个有核验的排水打一行
+/// 活性证据。单 hart + BKL 下 tick 与 kcall 串行，页表写者必然不在飞；
+/// tick 嵌套进 kcall 的重入由 `ptwb::drain_guard_enter` 挡住（失败试形
+/// 的教训正是重入）。
+#[cfg(target_arch = "riscv64")]
+pub fn ptwb_drain_budgeted() {
+    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+    if !crate::ptwb::drain_guard_enter() {
+        return;
+    }
+    let mut leaf_buf = [[0u64; 4]; crate::ptwb::DRAIN_WALK_BUDGET];
+    let n_leaf = crate::ptwb::take_leaf_batch(&mut leaf_buf);
+    let mut slot_buf = [[0u64; 2]; crate::ptwb::DRAIN_SLOT_BUDGET];
+    let n_slot = crate::ptwb::take_slot_batch(&mut slot_buf);
+    let mut hits = 0usize;
+
+    // 走查级：从记录的 root 重走（内核 S 态走 KernelDm，与写者通道无
+    // 关——root 是同一份物理表）；巨叶表态给原始 PTE，不命中折叠 0。
+    for e in leaf_buf.iter().take(n_leaf) {
+        let (root, vaddr, want, op) = (e[0], e[1], e[2], e[3]);
+        let got = match walk_read(root, vaddr, PteChannel::KernelDm) {
+            WalkResult::Leaf(_, pte) => pte,
+            WalkResult::Huge1G(_, pte) | WalkResult::Huge2M(_, pte) => pte,
+            WalkResult::NotPresent => 0,
+        };
+        if let Some(class) = crate::ptwb::classify_leaf(want, got) {
+            hits += 1;
+            if crate::ptwb::take_print_permit() {
+                Console::write_str("nk4c: ptwb HIT op=");
+                Console::write_str(match op {
+                    0 => crate::ptwb::LeafOp::Map.name(),
+                    1 => crate::ptwb::LeafOp::Remap.name(),
+                    2 => crate::ptwb::LeafOp::Unmap.name(),
+                    _ => crate::ptwb::LeafOp::UpdateFlags.name(),
+                });
+                Console::write_str(" va=");
+                Console::write_hex(vaddr);
+                Console::write_str(" want=");
+                Console::write_hex(want);
+                Console::write_str(" got=");
+                Console::write_hex(got);
+                Console::write_str(" ");
+                Console::write_str(class.name());
+                Console::write_str("\n");
+            }
+        }
+    }
+
+    // 槽级：网关写下的槽 KDM 复读，值漂移即 HIT。
+    for e in slot_buf.iter().take(n_slot) {
+        let (pa, want) = (e[0], e[1]);
+        // SAFETY: 槽址来自网关 PteWrite 的 m1p1（合法 PTE 槽物理址），
+        // 内核 DM 常开；对已回收页的复读只是读，无副作用。
+        let got = unsafe { read_pte_dm(pa, PteChannel::KernelDm) };
+        if let Some(class) = crate::ptwb::classify_slot(want, got) {
+            hits += 1;
+            if crate::ptwb::take_print_permit() {
+                Console::write_str("nk4c: ptwb HIT slot_pa=");
+                Console::write_hex(pa);
+                Console::write_str(" want=");
+                Console::write_hex(want);
+                Console::write_str(" got=");
+                Console::write_hex(got);
+                Console::write_str(" ");
+                Console::write_str(class.name());
+                Console::write_str("\n");
+            }
+        }
+    }
+
+    // 活性行：首个有核验的排水打一行（证明排水在真机真跑；全 boot 一行）。
+    if (n_leaf + n_slot) > 0 && crate::ptwb::first_live() {
+        Console::write_str("nk4c: ptwb live (first drain leaf=");
+        Console::write_hex(n_leaf as u64);
+        Console::write_str(" slot=");
+        Console::write_hex(n_slot as u64);
+        Console::write_str(")\n");
+    }
+    crate::ptwb::note_drain(n_leaf, n_slot, hits);
+    crate::ptwb::drain_guard_exit();
+}
+
 /// Walk the 3-level Sv39 table read-only, returning the leaf PTE address
 /// and raw value, or the huge-page mapping if encountered.
 ///
@@ -676,6 +760,11 @@ impl Paging for Riscv64Paging {
         // SAFETY: see above. Flush TLB for the target vaddr in case a
         // stale entry lingers from a prior unmap.
         unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
+        // SD-10 候选 3 改形仪器（记录-静点走查）：只记 KernelDm（内核侧
+        // 静态才被内核排水看见；VM 副本经网关臂记录，见 syscall.rs PteWrite）。
+        if matches!(self.channel, PteChannel::KernelDm) {
+            crate::ptwb::record_leaf(self.root_paddr, vaddr.0, new_pte, crate::ptwb::LeafOp::Map);
+        }
         Ok(())
     }
 
@@ -699,6 +788,14 @@ impl Paging for Riscv64Paging {
                 let new_pte = paddr_to_pte(paddr.0) | flags_to_pte(flags);
                 // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
                 unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
+                if matches!(self.channel, PteChannel::KernelDm) {
+                    crate::ptwb::record_leaf(
+                        self.root_paddr,
+                        vaddr.0,
+                        new_pte,
+                        crate::ptwb::LeafOp::Remap,
+                    );
+                }
                 Ok(old)
             }
             // Not mapped and no leaf table — overwrite requires allocation,
@@ -714,6 +811,9 @@ impl Paging for Riscv64Paging {
                 // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
                 // Clear the PTE (set to 0 = invalid) and flush TLB.
                 unsafe { write_pte_dm(leaf_paddr, 0, vaddr.0, self.channel) };
+                if matches!(self.channel, PteChannel::KernelDm) {
+                    crate::ptwb::record_leaf(self.root_paddr, vaddr.0, 0, crate::ptwb::LeafOp::Unmap);
+                }
                 Ok(old_paddr)
             }
             _ => Err(PageTableError::NotMapped),
@@ -732,6 +832,14 @@ impl Paging for Riscv64Paging {
                 let new_pte = (pte & PTE_PPN_MASK) | flags_to_pte(flags);
                 // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
                 unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
+                if matches!(self.channel, PteChannel::KernelDm) {
+                    crate::ptwb::record_leaf(
+                        self.root_paddr,
+                        vaddr.0,
+                        new_pte,
+                        crate::ptwb::LeafOp::UpdateFlags,
+                    );
+                }
                 Ok(())
             }
             _ => Err(PageTableError::NotMapped),

@@ -24,6 +24,13 @@
 #
 # 本脚本**不注册进 run_all.sh**（按 NK4B-TODO §6，接线归 P6）。
 #
+# SD-3 D1 切片（2026-10-19，C 板领地；xtask 构建侧正式注入待 A 板让路）：
+# `D1_DUMPDTB=1` 时在 Stage 1.5 用 `qemu-system-aarch64 -machine
+# virt,dumpdtb=` 产一份机器 DTB、mcopy 进盘副本 ::/dumpdtb.dtb，再点火
+# ——shim 侧应打印「memmap source: uefi-getmemorymap gated by dtb
+# /memory」。缺省（不带旋钮）断言「…(no dumpdtb.dtb on ESP)」行，作
+# blob 缺省腿的回归钉（两腿路标判据不变）。
+#
 # Exit codes: 0 = PASS（两行都在）, 1 = FAIL, 2 = SKIP（前置条件缺失）。
 
 set -uo pipefail
@@ -33,6 +40,12 @@ RUN="${RUN:-m33a}"
 TIMEOUT_BOOT="${TIMEOUT_BOOT:-90}"
 MARK1="boot-shim: kernel loaded (entry staged)"
 MARK2="boot-shim: 12 boot modules loaded"
+# SD-3 D1 两腿的 memmap 源行（shim 侧 uefi_helpers.rs 打印）
+if [ "${D1_DUMPDTB:-0}" = "1" ]; then
+    MARK3="boot-shim: memmap source: uefi-getmemorymap gated by dtb /memory"
+else
+    MARK3="boot-shim: memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)"
+fi
 
 if ! command -v qemu-system-aarch64 &>/dev/null; then
     echo "SKIP: qemu-system-aarch64 not found"; exit 2
@@ -81,6 +94,24 @@ for m in ds rs pm sched vfs memory tty mib vm pfs mfs init; do
 done
 echo "ESP verified: BOOTAA64.EFI + kernel.elf + all 12 module names present"
 
+# ── Stage 1.5（SD-3 D1 切片）：D1_DUMPDTB=1 时产机器 DTB 并注入盘副本。──
+# 不动调用方给的 IMG 与装配成品——拷一份 run 专属副本再 mcopy。
+if [ "${D1_DUMPDTB:-0}" = "1" ]; then
+    command -v mcopy &>/dev/null || { echo "SKIP: mtools (mcopy) not found"; exit 2; }
+    WORK="$ROOT/target/image/aarch64"
+    DTB="$WORK/d1_dumpdtb_$RUN.dtb"
+    qemu-system-aarch64 -machine virt,gic-version=3,dumpdtb="$DTB" \
+        -cpu cortex-a57 -m 512M -display none >/dev/null 2>&1
+    [ -s "$DTB" ] || { echo "FAIL: dumpdtb not produced"; exit 1; }
+    IMG_COPY="$WORK/minix_d1_$RUN.img"
+    cp "$IMG" "$IMG_COPY"
+    mcopy -i "$IMG_COPY" "$DTB" "::/dumpdtb.dtb" || { echo "FAIL: mcopy dumpdtb into ESP"; exit 1; }
+    mdir -i "$IMG_COPY" "::/" 2>/dev/null | grep -qi 'dumpdtb' || {
+        echo "FAIL: ::/dumpdtb.dtb missing after mcopy"; exit 1; }
+    echo "D1 slice: dumpdtb.dtb injected into image copy: $IMG_COPY"
+    IMG="$IMG_COPY"
+fi
+
 if [ "${SMOKE_SKIP_BOOT:-0}" = "1" ]; then
     echo "RESULT: PASS (stages 1-2; SMOKE_SKIP_BOOT=1 — boot stage not run)"
     exit 0
@@ -121,7 +152,8 @@ both=0
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
     if [ -f "$SERIAL_LOG" ] \
         && grep -qaF "$MARK1" "$SERIAL_LOG" \
-        && grep -qaF "$MARK2" "$SERIAL_LOG"; then
+        && grep -qaF "$MARK2" "$SERIAL_LOG" \
+        && grep -qaF "$MARK3" "$SERIAL_LOG"; then
         both=1
         break
     fi

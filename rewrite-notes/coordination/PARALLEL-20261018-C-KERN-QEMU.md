@@ -134,6 +134,7 @@ run_with_qemu_lock() (
 `<日期> <线> / <条目ID>：要改的文件清单前 3 个 + 一句话目的 —— 状态 ☐/🔄/✅`
 
 当前登记：
+- `2026-10-19` C / `C11`（`SD-12` 换形裁决申请）：不改文件，只交裁决申请给编排线（正文见本文件附录一）—— minix-boot `KernelInfo` 契约 +1 分界字段需编排线裁 —— `🔄 已提交`
 - `2026-10-19` C / `SD-4/A6`：要改 `os/servers/vm/src/vm_server.rs`（A 板领地）——mock 内核布局回退臂加拒绝断言（审计 A6：x86 形、v5 handoff 下不可达，需 fail-fast 防静默错布局），纯测试语义零生产行为 —— `🔄`
 - `2026-10-18` C / `P-X86-01`：要改 `os/xtask/src/image.rs`（A 板领地）与 `tools/build-atf-test.sh`（共享件），目的为 x86_64 装配白名单与 ATF 门；A 板让路后才动 —— `☐`
 - `2026-10-18` C / `SD-20`+`SD-42` 文档同步：要改 `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md`、`04-platform-discovery.md`（本板领地，但文档线程正在改该目录）—— `⏸ 等文档线程`
@@ -218,6 +219,25 @@ run_with_qemu_lock() (
 - `2026-10-19` B / `FREESTANDING` 片（真机形态收口，占位不变 9）：**驱动侧前置已清**。五十五个驱动二进制现在都持有 freestanding 形态：`no_main` 属性、`extern crate minix_rt`（保链接——`_start`/`#[panic_handler]`/`#[global_allocator]` 三件随 rlib 一起留下）、双形入口（none 侧 `extern "Rust" fn main() -> i32`，宿主侧 `()`）与清单双 seam（宿主 `minix-rt` 带 `std`／真机带 `alloc-global` 加 `panic-handler`），两处导入也一并落位。**读数**：三目标（`x86_64-unknown-none`／`aarch64-unknown-none`／`riscv64gc-unknown-none-elf`）× 五十五包全部零错构建（宿主构建走 `ulimit -v` 回退——容器 `minix-ci:1.94` 未装 none 目标；宿主门五十五包测试与 clippy 全绿、workspace check 绿）。**真机验收的剩余触点（全在别线，逐件具名）**：① `os/etc/rc`（A 板）——Rust 侧启动脚本今天是五十七行的只读探针集，没有任何 `up` 行，驱动无从被 RS 运行时拉起（C 对位是 `minix3/etc/usr/rc` 的 `up <driver> -dev … -period …` 矩阵）；② `os/xtask/src/image.rs` 的 imgrd 播种（A 板）——`/bin` 今天只播 sh/echo 与探针命令，驱动二进制没有进盘通道；③ RS 服务表与 `os/etc/` 的服务配置（A 板）；④ `os/qemu-tests/*.sh`（C 板）——需要 `-device ES1370`（对 es1370）、`-device sb16`（对 sb16）一类声卡参数，现有脚本只跑最小启动集。**真机窗状态**：`tmp/qemu.lock` 于 `2026-10-19` 查为空闲，本线随时配合上述任一件落地后的验收跑（按 §4 取窗函数）—— 不涉 A/C 线语义 —— `✅`
 - `2026-10-19` B / `AUDIO-DATAPLANE` 片（音频框架最后一道缝闭合，占位不变 9）：**minix-audiodriver 公共面**（A 板是下游，七张音频卡是消费者）：`AudioService` 的 `write`/`read` 收 `&mut dyn TransferPlane` 并按 `audio_fw.c:394-495` 全流程落片（驻留记录 → 环或额外缓冲 → 分片大小答复），新增 `handle_hardware`（`msg_hardware` + 两个中断处理：播放侧搬额外缓冲回环、干涸暂停/无人持有则关通道；采集侧满环搬运、缓冲全满停卡并以零字节答复）与 `Revive` 记录；`SubDevice` 补六条访问器与三条游标操作（`rewind_read_cursor`/`consume_extra`/`move_ring_to_extra`）。派发腿把「本请求答复」与「唤醒答复」分开（前者 `EDONTREPLY` 不回，后者照 `chardriver_reply_task` 语义回）。**登记缝至此只剩两处、都在别线**：`E-DMABUF`（VM 侧连续分配）与微秒延时（内核 TSC 校准）。门：`minix-audiodriver` 26/0（新增五枚数据面门）、音频七包 160/0 —— 不涉 A/C 线语义 —— `✅`
 - `2026-10-19` B / `SD11-GATES` 复核跑（B3 的验收门，真机窗按 §4 取到、跑完即释放）：x86_64 冒烟门读数——stage 1（镜像装配，宿主侧在 claim 树内跑）✓、stage 2（ESP 十二模块点名）✓、stage 3（调度器交接）✓、stage 4（`/etc/rc` 命令面标记到串口）✓、**stage 5（`du /etc` 总行）FAIL**：目录读腿仍是输入输出错误，与 01:17 那次同一条；同批串口里 `stat` 三形、`find /etc/rc`、`e5-ds` 十二标签全过。**结论**：B3 的「迁移前后对照 + 全量 boot 门」仍门控在 A 板 `C-57`（A23 行）的目录读腿上，本线侧无可做动作；日志在 `tmp/sd11-qemu/`（会话产物，不入库）。**顺带一条配方修正**：宿主跑 `xtask image` 必须在 claim 树内——主树 `os/target` 混装过 docker 与宿主的构建脚本输出，直接跑会撞 `cannot find linker script /w/os/...` —— 不涉 A/C 线语义 —— `✅`
+## 附录一：C11 / `SD-12` 第一步换形裁决申请（2026-10-19，`claim/SD-10-zcode-glm` 代交）
+
+**申请事项**：`PD-22` 第一步（进程根内核文本段去写）的第一试形已被三架构真机否决，换形二案请编排线裁决。
+
+**被否试形（案底）**：4K 分片——链接标记分界（RX/RW 于内核镜像内），恒等+高半两别名各按 4K 页上 RX/RW，分片动作发生在 **root 构建段**（shim/bootface 引导期）。三架构真机全数否决：riscv/aarch64 root 构建段静默挂死（探针定位：首个 4K `Paging::map` 内部、pre 段 2 MiB `map_huge` 成功之后——引导期 pt_alloc/走表分配状态的时序嫌疑，根因未诊断）；x86 uefi 载体 IP 异常转储。已全量还原，riscv ATF 36/36 复活坐实还原干净（台账 `SD-12` 行）。静态半前置已满足：无运行期文本写者的 grep 证据随行留档。
+
+**甲案：bootface 装载侧按 ELF 节段分页映射**——装载器按 PT_LOAD 旗标给 RX/RW，内核侧零改动。
+- 失败面分析：分节动作仍发生在 **root 构建段的同一阶段、用同一 4K map 原语**——被否试形本质就是对这套机制的探针，三架构全红。领做者换成装载器不改机制。
+- 走甲案的前置：必须先立专项诊断「root 构建期 4K map 挂死根因」（新开一债行，探针深度超过上一轮）。
+- 优点（若根因解除）：W^X 从第一条指令起成立（强形态验收零折让）。
+
+**乙案（推荐）：`KernelInfo` 增文本分界字段 + 内核 init 期自分割**——引导保持已证的 2 MiB 粗映射不动；`KernelInfo` +1 字段（文本段上界/RX-RW 分界，装载器各形态填写）；内核在 init（satp 已活、KernelDm、单 hart BKL）用 **split_huge(分界)** + **update_flags(RX) 扫文本区** 完成分割。
+- 机制全用真机已证原语在已证阶段：`split_huge` 三架构在案（riscv 镜像=续-90，boot ELF 装载驱逐腿真机在用）；`update_flags` 运行期原语 ATF 每例千次量级在烤。
+- 进程根继承：`inherit_supervisor_half` 逐条复制高半，内核根分割后所有进程根自动获得 RX 文本——`PD-22` ①「进程根里的内核文本映射去写」射程满足。
+- 诚实边界：内核自身 bootstrap 根在一个 init 窗内仍是粗 RWX（进程根不受影响）——「must not exist」强形态验收在**进程根**射程内成立，内核自根留一窗折让，需编排线明示接受或拒绝。
+- 成本：`minix-boot` `KernelInfo` 公共 API +1 字段（C20 同族契约纪律→故须裁决）；`ALL_BOOT_FORMS` 电池 + 字段填写 + 负控（字段缺省=不分割=现行为，按形态 opt-in 灰度）；x86 UEFI 腿同字段路径；01 篇 §3.x 与 KernelInfo 字段来源表 Doc Code Sync 同批。
+
+**请编排线裁三点**：① 乙案的 `KernelInfo` 加字段是否准（契约变更）；② `PD-22` ① 的验收允许「init 窗后成立」形态与否；③ 甲案处置（挂起等根因专项 vs 立即立债行诊断）。
+
 ## 7. 每轮收尾（顺序固定）
 
 claim 树内一笔提交 → 主树 `git merge --ff-only claim/<ID>-zcode-glm` → `bash tools/claim.sh release <ID> zcode-glm` → 五道收尾校验（命令见 A 板第 7 节）→ `bash tools/claim.sh sweep` 确认自己的树真的从磁盘消失。**主树内禁 `checkout`/`reset --force`**（C-35 判例）；要暂存自己的东西时用带唯一 tag 的方式，别用裸 `git stash`——工作树是所有人共用的，裸 stash 会连别人的在制品一起卷走。

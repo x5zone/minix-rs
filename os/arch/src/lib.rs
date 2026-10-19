@@ -30,6 +30,10 @@ pub mod riscv64;
 // 特性）单编译，供 walk_read 对抗测试（NK4C §续-349）。
 #[cfg(any(target_arch = "riscv64", all(test, feature = "runtime-window")))]
 pub mod riscv64_walk;
+// SD-10 候选 3 改形仪器纯逻辑层（记录-静点走查）：真机随 riscv64 编译；
+// 宿主测试单编译（环/分类/预算纯逻辑，无 DM 与 CSR 依赖）。
+#[cfg(any(target_arch = "riscv64", test))]
+pub mod ptwb;
 
 // ── Re-export board-level platform abstractions from minix-plat ──
 pub use minix_plat::{
