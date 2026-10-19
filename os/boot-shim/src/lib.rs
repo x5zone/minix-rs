@@ -54,9 +54,9 @@ pub mod opensbi_helpers;
 // ── Convenience re-export of the active implementation ──
 // Re-exports the *active firmware implementation's* type — callers still
 // write the concrete type (e.g. `UefiBootShim::prepare_boot(...)` in
-// src/main.rs); see I-20 (01-stage-kernel/todo.md) for the two options.
-// knowing which firmware is active. The Cargo.toml feature selection
-// determines which impl is compiled.
+// src/main.rs). The Cargo.toml feature selection determines which impl is
+// compiled (I-20: resolved by fixing this comment; the forwarding-fn
+// alternative was not taken).
 
 #[cfg(feature = "uefi")]
 pub use uefi_helpers::{find_platform_sources, UefiBootShim};
@@ -159,6 +159,4 @@ fn emit_byte(b: u8) {
 
 /// 其余目标：空实现（与 [`raw_serial`] 同调）。
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-fn emit_byte(_b: u8) {}// Re-exports the *active firmware implementation's* type — callers still
-// write the concrete type (`UefiBootShim::prepare_boot(...)` in main.rs);
-// see I-20 in 01-stage-kernel/todo.md for the alternative (forwarding fn).
+fn emit_byte(_b: u8) {}

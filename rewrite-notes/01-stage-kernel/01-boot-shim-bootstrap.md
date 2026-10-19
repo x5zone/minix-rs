@@ -1301,19 +1301,21 @@ pub fn exit_boot_services() {
 }
 ```
 
+> `LOADER_DATA` 是 UEFI 内存类型标签，意思是"引导程序向固件分配器租下的内存"（loader 是属格——引导程序的所有物，不是"被加载的数据"——这里只给这次取内存图的缓冲区定标签）；返回的 `_mmap` 可以丢弃，因为内核要的内存清单已由上文 `build_memmaps()` 的两份列表交付，这只是规范要求的"EBS 前最后一次取图"，取完即弃。
+
 被"否决"的三种替代路径与理由：
 
 | 方案 | 否决理由（可复核） |
 |---|---|
 | 保留 Multiboot，做 64 位扩展（Multiboot2） | 两个新架构没有等价协议；`head.S` 那套"引导器填结构体 + 寄存器传参"在 aarch64/riscv64 上要各写一份，等于三份引导协议 |
 | 各架构独立引导（x86 用 Multiboot、ARM 用 PSCI、RISC-V 用 SBI） | 引导准备的代码要按架构分叉，而 2.7 展示的正是"这一步的语义与硬件无关"——分叉会把它重新绑回硬件 |
-| 内核自带 stub（把 UEFI 形态的 boot-shim 链接进内核镜像，内核自己读文件再自举） | 否决它靠的是**依赖方向**，不是"能不能编译"：boot-shim 与内核并成同一个二进制的两个入口，内核就得认识固件类型、把 `uefi` 拉进自己的依赖表，与 §3.3「内核不依赖引导层」的单向边界冲突。riscv64 上没有 UEFI 目标（`riscv64-unknown-uefi` 不是 Rust 支持的目标），可那挡的是"UEFI 形态这一条腿"，不是"内核构建"——boot-shim 是兼容层（`trait BootShim`），每种固件各写一份实现，opensbi 就实现了一份，riscv64 照它构建，内核并非不可构建。riscv64/aarch64 的 `kernel-image` 自引导面复用 boot-shim 的 opensbi 取件库、不引入 `uefi`，本就不在否决之列；它是为嵌入式环境的硬件特性保留的一条特殊路径（方向差异见 §3.3），不是"内核建不起来"的退让 |
+| 内核自带 stub（把 UEFI 形态的 boot-shim 链接进内核镜像，内核自己读文件再自举） | 否决理由是**依赖方向**：boot-shim 与内核并成一个二进制，内核就得认识固件类型、把 `uefi` 拉进自己的依赖表，与 §3.3「内核不依赖引导层」的单向边界冲突——屏蔽固件差异正是 boot-shim 的职责。此外，riscv64 目前没有 Rust 支持的 UEFI 目标，只挡住 stub 的 UEFI 形态；opensbi 形态不受此限（opensbi 实现了同一个 `trait BootShim`）。riscv64/aarch64 的 `kernel-image` 自引导面复用 boot-shim 的 opensbi 取件库、不引入 `uefi`，是为嵌入式环境的硬件特性保留的特殊路径（方向差异见 §3.3），不在本条否决之列 |
 
 ### 3.2 一个 trait 两种固件：`BootShim`
 
 C 里"同一串函数名、两套实现"的机制见 2.7：两种架构各自写 `head.S` 与 `pre_init.c`，靠命名与语义约定保持一致，编译期不会检查它们是否真的对应。
 
-Rust 侧把这件事显式化：固件相关的部分收进一个只有**一个方法**的 trait（`boot_shim.rs` 的 [`trait BootShim`](os/libs/minix-boot/src/boot_shim.rs:trait BootShim)），其余全部共享。
+Rust 侧把这件事显式化：固件相关的部分收进一个只有**一个方法**的 trait（`boot_shim.rs` 的 [`trait BootShim`](os/libs/minix-boot/src/boot_shim.rs)），其余全部共享。
 
 ```rust
 // 代码引用，os/libs/minix-boot/src/boot_shim.rs:trait BootShim 与 struct BootPrepareResult。
@@ -1341,7 +1343,7 @@ pub trait BootShim {
 }
 ```
 
-差异被压到一个更小的接口上（`loader.rs` 的 [`trait FileLoader`](os/boot-shim/src/loader.rs:trait FileLoader)）：两条路径都要拿到"文件字节"，唯一不同的是字节从哪来。
+差异被压到一个更小的接口上（`loader.rs` 的 [`trait FileLoader`](os/boot-shim/src/loader.rs)）：两条路径都要拿到"文件字节"，唯一不同的是字节从哪来。
 
 ```rust
 // 代码引用（省略号处为 trait 文档注释），os/boot-shim/src/loader.rs:trait FileLoader。
@@ -1362,24 +1364,16 @@ pub trait FileLoader {
 
 `read_required` 是"缺件必须致命"这件事的**唯一**落点：它把"文件不存在"从 `None` 变成一个带路径的 panic。两个实现各自只提供 `read`：UEFI 走 `SimpleFileSystem`（并把正斜杠转成 UEFI 要求的分隔符），OpenSBI 走 U-Boot 预先落在 RAM 里的 `BootFileTable`。除此之外的全部装载逻辑（解析、段拷贝、模块页分配、结构体构造）只有一份。
 
-trait 相对"纯 feature gate + 散落条件编译"的收益，只列能在代码里指认的四条：
+trait 相对"纯 feature gate + 散落条件编译"的收益，只列能给出代码依据的四条：
 
-- **入口与形状统一**：`trait BootShim` 只有一个方法 `prepare_boot(bump_pages)`（`boot_shim.rs` 的 [`trait BootShim`](os/libs/minix-boot/src/boot_shim.rs:trait BootShim)），两种固件都返回同一个 `BootPrepareResult`（`kernel_info`、`root_page`、`bump_base`、`bump_end`），而这些类型住在第三方 `minix-boot`（为什么必须住在第三方，§3.3 讲）。于是交接与自举那几步不必为两种固件各写一套，新增实现也照同一个入口名与签名写。
-- **可测试性**：`FileLoader` 同样是 trait——[`loader.rs`](os/boot-shim/src/loader.rs) 的 tests 里有一个内存表实现 `MockLoader`（`struct MockLoader` 定义、`impl FileLoader for MockLoader` 交出 `read`），涉及装载的单元测试都经由它喂文件字节。
-- **条件编译的落点收敛**：与 feature 有关的 `cfg` 属性只出现在 `lib.rs` 的模块与再导出声明处（口径：`grep -c 'cfg(feature' os/boot-shim/src/lib.rs` 计三处，另有 1 处 `cfg(all(feature = "opensbi", not(feature = "uefi")))`，合计四条），业务逻辑里没有条件编译。
-- **boot-shim 是一个独立可执行体**：换一种固件形态时，改动落在 boot-shim 侧的一个新 `impl BootShim for …`，`kernel.elf` 不必重新构建（内核与 boot-shim 分属 `os/kernel-image` 与 `os/boot-shim` 两个产物，这条分界的后果在 §3.7 与 §4.8）。边界要说准：boot-shim 屏蔽的是**固件差异**，板级差异还会落到内核侧的平台发现（[`boot.rs`](os/arch/src/arch/boot.rs)），不能把它说成"新板子只需写 boot-shim"。
+- **入口与形状统一**：入口只有一个——[`trait BootShim`](os/libs/minix-boot/src/boot_shim.rs) 的 `prepare_boot(bump_pages)`，返回也统一为 `BootPrepareResult`。于是交接与自举不必为两种固件各写一套，新增实现照同一个入口名与签名写（这些类型住在第三方 `minix-boot`，为什么必须，§3.3 讲）。
+- **可测试性**：`FileLoader` 同样是 trait——[`loader.rs`](os/boot-shim/src/loader.rs) 的 tests 里有内存表实现 `MockLoader`（`impl FileLoader for MockLoader`），涉及装载的单元测试都经由它喂文件字节。
+- **条件编译的落点收敛**：feature 相关的 `cfg` 只出现在 `lib.rs` 的模块与再导出声明处（口径：`grep -c 'cfg(feature' os/boot-shim/src/lib.rs` 三处，另有 `cfg(all(feature = "opensbi", not(feature = "uefi")))` 一处，合计四条），业务逻辑里没有条件编译。
+- **换固件不动内核**：新增一种固件形态，改动是 boot-shim 侧的一个新 `impl BootShim for …`，`kernel.elf` 不必重新构建（两者分属 `os/kernel-image` 与 `os/boot-shim` 两个产物，这条分界的后果在 §3.7 与 §4.8）。边界要说准：boot-shim 屏蔽的是**固件差异**，板级差异仍落到内核侧的平台发现（[`boot.rs`](os/arch/src/arch/boot.rs)），不能把它说成"新板子只需写 boot-shim"。
 
-这里故意不列"类型安全"与"封装"——它们常被当成本 trait 的优点，其实来自 feature 门控：`uefi_helpers` 与 `opensbi_helpers` 两个模块各由 [`lib.rs`](os/boot-shim/src/lib.rs) 的 `#[cfg(feature = ...)]` 门控，feature 关掉的构建里另一个类型根本不存在，**纯 feature gate 同样会在编译期挡住写错的固件名**，"否则要等运行时才发现走错分支"这个对手并不存在。实况还相反：调用点仍按具体类型写，`main.rs` 的 [`fn main`](os/boot-shim/src/main.rs:fn main) 里就是 `UefiBootShim::prepare_boot(1024)`。
+这里故意不列"类型安全"与"封装"——这两条常被记在 trait 头上，实际来自 feature 门控：`uefi_helpers` 与 `opensbi_helpers` 各由 [`lib.rs`](os/boot-shim/src/lib.rs) 的 `#[cfg(feature = ...)]` 门控，开启哪个 feature 就只有哪个固件类型存在，**写错固件名本来就编译不过**，trait 没有为此多提供什么。调用点也没有借 trait 做抽象：[`fn main`](os/boot-shim/src/main.rs:fn main) 按具体类型写——`UefiBootShim::prepare_boot(1024)`。这不是把固件写死在产品里：boot-shim 这个可执行文件只在 UEFI 形态下构建（bin 的 `required-features = ["fw-uefi-image"]` 隐含 `uefi`），固件选择发生在"构建哪个二进制"，不是运行期分派；opensbi 形态的生产路径是 `kernel-image` 自引导面（§3.7），复用 opensbi_helpers 的库函数、不经这份 main.rs。
 
-否决的方案：
-
-| 方案 | 否决理由 |
-|---|---|
-| 把引导逻辑做成 kernel 内部的一个模块 | 内核会永久依赖 UEFI crate（`uefi`），而它没有 riscv64 目标；内核的依赖面被引导需求污染 |
-| 只做 feature gate，不定义 trait | 调用方直接依赖具体函数名，新增一种固件时没人强制它交出**同名同签名的入口与同一个返回形状**（`trait BootShim` 立的正是这条契约：实现它就必须提供 `prepare_boot`）；宿主侧也难以用一个假实现替换固件来测上层逻辑 |
-| 业务代码里散落 `#[cfg(uefi)]` | 加一种固件要在多处补条件编译，且每处都可能漏；`lib.rs` 里现有的 feature 门只有四条（口径见上一条 bullet） |
-
-**把这三个数字改成由调用者传入会怎样**：把"内核物理/虚拟基址与大小"改成 `prepare_boot(kern_virt_base, kern_phys_base, kern_size, bump_pages)` 由调用者传入。这三个数字必须与内核镜像的链接布局一致，而它们现在的来源是 ELF 的 PT_LOAD 段（`loader.rs:compute_kernel_layout` 取所有 PT_LOAD 的 `min(paddr)`、`min(vaddr)`、`max(paddr+memsz)-min(paddr)`）。改成调用者传参后，写错的地方不会被 `check-layout.sh` 拦住：那个脚本校验的是**镜像自身**（首段 VMA/LMA、段间平移一致、跨距对齐），不校验调用者手里的常量。错值进入 `arch_boot_impl` 之后，Step 2 会按错误的 `kern_virt_base` 建映射，症状是开启分页后取指失败——一个"参数错了"的问题表现为"页表建错了"。
+> **TODO（2026-10-19 登记）**：本节与 §3.1 把 opensbi 腿讲成 `BootShim` trait 的常规第二实现，实况是 `OpenSbiBootShim::prepare_boot` 在仓内没有调用方——boot-shim 可执行体只在 UEFI 形态构建（bin 的 `required-features = ["fw-uefi-image"]`），riscv64 的生产装机面是 `kernel-image` 自引导面（§3.7 第三形态「直核自引导」；NK4C 续-88 甲案裁决，[`bootface.rs`](os/kernel-image/src/bootface.rs)），复用 opensbi_helpers 的**库函数**（`BootFileTable`、`bump_alloc_pages`、`build_kernel_info`）而不经 `prepare_boot`。收敛方向已在台账定谳：I-22 丁案 F 条裁决**不合并引导形态层**（`BootShim` 独立可执行体与 bootface 自举对应不同机器状态），I-24 甲案要求把 §3.1 否决表拆成「UEFI 形态 stub 被否 / opensbi 形态 stub 采纳」两行；本条与 I-24 同批落地（受影响处：§3.1 交接表 OpenSBI 列、§3.1 否决表第三行、本节 bullet 与上句）。
 
 ### 3.3 crate 依赖方向：boot-shim 依赖内核，内核不依赖 boot-shim
 
@@ -1453,6 +1447,8 @@ pub struct KernelInfo {
 | 升为字段 | `kern_phys_base`、`kern_size` | C 里这两个值不是 `kinfo_t` 的字段，而是链接脚本导出的符号 `_kern_phys_base`、`_kern_size`（取值见 §3.5 引文；§2.3 未列过这两个）；Rust 把它们放进交接结构，来源改为 boot-shim 解析内核 ELF 的 PT_LOAD 段（§4.4 的字段表）；`kern_size` 用 `u64` 而不是 `usize`，避免 32 位目标上的截断 |
 | 删除 | 17 个字段：`mbi`、`mem_high_phys`、`mods_with_kernel`、`kern_mod`、`kmessages`、`do_serial_debug`、`serial_debug_baud`、`minix_panicing`、`user_end`、`boot_procs[]`、`nr_procs`、`nr_tasks`、`release[]`、`version[]`、`vm_allocated_bytes`、`kernel_allocated_bytes`、`kernel_allocated_bytes_dynamic` | 逐个的去向见下表 |
 | 新增 | `reserved_regions`、`kern_stack_top`、`syscall_entry`、`platform_sources` | 各自来源见下 |
+
+**"升为字段"行的一个设计细节：为什么三个布局数字由 shim 从 ELF 算出，而不是由调用者传入**。设想把接口改成 `prepare_boot(kern_virt_base, kern_phys_base, kern_size, bump_pages)`。这三个数字必须与内核镜像的链接布局一致，而它们现在的来源是 ELF 的 PT_LOAD 段（`loader.rs:compute_kernel_layout` 取所有 PT_LOAD 的 `min(paddr)`、`min(vaddr)`、`max(paddr+memsz)-min(paddr)`）。改成调用者传参后，写错的地方不会被 `check-layout.sh` 拦住：那个脚本校验的是**镜像自身**（首段 VMA/LMA、段间平移一致、跨距对齐），不校验调用者手里的常量。错值进入 `arch_boot_impl` 之后，Step 2 会按错误的 `kern_virt_base` 建映射，症状是开启分页后取指失败——一个"参数错了"的问题表现为"页表建错了"。让 shim 自己解析镜像，"数字与镜像一致"就不再是调用者的责任，而是唯一数据来源（镜像本身）的自然结果。
 
 被删的 17 个字段逐个的去向（"接管者"一栏里给的都是本篇可核的落点）：
 
