@@ -130,7 +130,14 @@ static mut BOOT_MODULES: [BootModule; 12] = [
 /// builds `rt-birth` for aarch64-unknown-none first and passes the artifact
 /// path in `RT_BIRTH_ELF_PATH`). The kernel identity-maps its own image, so
 /// the blob is readable through VA = PA during `load_vm_elf`.
-static RT_BIRTH_ELF: &[u8] = include_bytes!(env!("RT_BIRTH_ELF_PATH"));
+/// 页对齐包裹（vm_handoff 扣减契约：boot module 起址必须页对齐——
+/// 修正 run_all rt-birth-aarch64 腿的 `deduction start 0x4c42c43e must
+/// be page-aligned`；riscv 姊妹载体同款修复）。
+#[repr(C, align(4096))]
+struct PageAlignedElf<const N: usize>([u8; N]);
+static RT_BIRTH_ELF_BYTES: PageAlignedElf<{ include_bytes!(env!("RT_BIRTH_ELF_PATH")).len() }> =
+    PageAlignedElf(*include_bytes!(env!("RT_BIRTH_ELF_PATH")));
+static RT_BIRTH_ELF: &[u8] = &RT_BIRTH_ELF_BYTES.0;
 
 // ── EL0 SVC vector table (the K12b aarch64 trap leg) ──
 //
