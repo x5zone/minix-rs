@@ -123,7 +123,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 - **这一轮干什么**：闭批次四百零六登记的 `CUT-SUPPRESS-STILL-PRINTS-NEWLINE`——`cut -f <列表> -s` 遇到不含分隔符的行时，参照件**一个字节都不写**，本壳写了一枚换行。判据在 `minix3/usr.bin/cut/cut.c:246-254`：`f_cut` 先在扫描里判定 `isdelim`，走到行末时 `if (!isdelim && !sflag)` 才把整行交给 `fwrite`（`:248-249`，那一行自带终止符），紧接着 `:253-254` 的 `if (!isdelim) continue;` 让这一行**跳过**字段抽取与 `:279` 那句 `putchar('\n')`。也就是说在 C 那里，「这一行有没有分隔符」决定的不是它的内容而是它的**存在**；`-s` 把这行抹掉之后，连它的终止符都不该留下。
 
-- **与它最像、却又必须相反的那一形**：有分隔符而选不出字段。`-f 9 -s` 对 `a\tb\tc` 走的是另一条腿——`isdelim` 成立，于是照常走到最后写一行，只是那一行没内容，参照件交回一枚换行（逐形读数 `tmp/cut-428/ref-s.log`：`-f 3 -s` 对 `x\na\tb\tc` 交 `c\n`、`-f 9 -s` 对 `a\tb\tc` 交 `\n`、不带 `-s` 时 `x\nc\n`、末行无换行的 `nosep` 加 `-s` 交零字节）。库里原先用同一个 `Ok(0)` 表示这两形，壳侧于是无条件补一枚换行：`-f3 -s` 交出 `c\n\n`。两形共用一个返回值是这次缺陷的根，不是漏了一个 `if`。
+- **与它最像、却又必须相反的那一形**：有分隔符而选不出字段。`-f 9 -s` 对 `a\tb\tc` 走的是另一条腿——`isdelim` 成立，于是照常走到最后写一行，只是那一行没内容，参照件交回一枚换行（逐形读数 `tmp/cut-428/ref-s.log`：`-f 3 -s` 对 `x\na\tb\tc` 交 `c\n`、`-f 9 -s` 对 `a\tb\tc` 交 `\n`、不带 `-s` 时 `x\nc\n`、末行无换行的 `nosep` 加 `-s` 交零字节）。两形在库里因此必须是两个值：若共用一个 `Ok(0)`，壳侧就无从分辨该不该补那一枚换行，`-f3 -s` 于是交出 `c\n\n`。共用返回值是这一形出错的根，不是漏了一个 `if`。
 
 - **落码（代码笔 `a4ea99e74`）**：`os/commands/usr-bin/textfilter/src/cut.rs:select_fields` 的返回改成 `Result<Option<usize>, TextError>`，`None` 专门表示「这一行整行不存在」；壳侧 `os/commands/usr-bin/textfilter/src/bin/cut.rs:fn run` 只在 `Some` 时写正文与换行。字节腿（`select_bytes`）经 `.map(Some)` 并进同一个 `match`——`-s` 与 `-b`/`-c` 本就不并存（`cut.c:124` 的 `dflag || sflag` 那道 post-check 走裸 usage），所以那条腿永远交出「要写的一行」，形状统一而语义不掺水。
 
