@@ -119,6 +119,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百零八（A2 渲染半切片 14：`uniq`）：第十四支壳换到字节形；「复用参照件前先验 getopt 归属」这条规矩第二次执行，一次过零判据自错
+
+- **这一轮干什么**：A2 渲染半第十四次落地，选 `uniq`（取法在 `bin/uniq.rs:272` 就是 `bytes[j] as char`——本支的选项环整个住在薄壳里，不在 `src/` 的库里）。落码两件：`os/commands/usr-bin/textfilter/src/bin/uniq.rs`（`Err(UniqArgError::Getopt(report))` 那一处出口改调 `line_bytes`）、`tests/uniq_face.rs`（新立逐字节门 + `run_bytes` 夹具，15 → **16**）。跨支表没有 `uniq` 行 ⇒ 无期望要翻正。进度 **14 支壳、余 14 处调用点 / 11 个源文件**。
+- **上一笔那条规矩当场兑现**：`tmp/family-diag-ref/uniq_ref` 存在，但打 `-Z` 交回 `invalid option -- 'Z'`——glibc 的 `getopt`，措辞与引号都不是 Minix 那一句 ⇒ 重配 `tmp/uniq-408/uniq_ref`（`uniq.c` + Minix `getopt.c` + 同一套垫片，软链名 `uniq` 与本壳一致，报文逐字节直比）。**复用参照件那一步现在是硬前置**，不验就用会把措辞差读成字母差。
+- **本轮是三笔以来第一次零判据自错**：期望全部先在参照件上打过再写进门（`-é`/`-cé`/`-ué` 三形都是 `c3`；`-Zé` 停在 `Z`；ASCII 的 `-i` 与缺值两形本文件已有主人 `unknown_option_and_missing_value_take_two_lines`，按冗余判据不重复承载），负控八枚的锚点与类型也都一次对上。上一笔那处 `-a`/`-v` 写 file、`-1`/`-2`/`-j` 写 field 的教训直接改了写法：**门注释里把 C 的原句抄出来对照**，不凭同类错的印象造句子。
+- **A/B 二十三形全同**：`python3 tmp/uniq-408/ab.py > tmp/uniq-408/ab.log` 对 `tmp/uniq-408/uniq`（脚本一开始就带 `timeout=5`，那是批次四百零六立的规矩）。选项环十四形（集外字母三形、多字节四形含三个不带值字母的聚簇、`-s`/`-f` 缺值、两个坏值、`--`、裸 `-`、无旗标）+ 数据面九形（`-c`/`-d`/`-u`/`-s 1`/`-f 1`、单档、两档出档、开不了的档名）：**SAME=23 / DIFF=0 / 已知分叉 0**，第二支连数据面都零分叉的壳。出档那一形比的是**写进档的内容**（两边各跑一次、跑完立刻读回，不比对进程标准输出）。另两形非法 UTF-8 仍是射程②在册残差（`ff`/`80` 对 `ef`，退码两侧同为 1）。
+- **负控八枚全咬住**（`python3 tmp/uniq-408/negctl.py`，日志 `tmp/uniq-408/negctl.log`）：Z1 出口退回 `line()` ⇒ 咬 1；Z2 字母位仍按 UTF-8 写 ⇒ 咬 13（**十三支已迁壳的门 + 共件门一次全红**）；Z3 无条件取低字节 ⇒ 咬 1；Z4 丢行尾换行 ⇒ 咬 50；Z5 libc 行后不接 usage ⇒ 咬 2；Z6 措辞漂到 glibc ⇒ 咬 42；Z7 取法按字符取 ⇒ 咬 1；Z8 取法取错字节 ⇒ 咬 1。逐枚编得过、期望门全在红名清单里、先还原再读回比 md5、复跑 0 失败。Z7/Z8 两枚的注入点都落在 `bin/uniq.rs`（本支的环在壳里），与「注入必须在真正读字母的那一层」一致。
+- **读数**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1147 passed / 0 failed**（68 段，起点 1146）；容器权威门同读数 **1147 / 0 / 68**、退码 0（跑前核 `git status --porcelain` 只剩本轮两件）；三架构 `cargo build -p minix-textfilter --bins --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} --release` 全退 0、`^error` 计数 0；clippy 整包 **154** 与基线同数、按告警位置判触及两件零新增；`rustfmt --edition 2024` 只在 `src/bin_support.rs` 报存量，触及两件零漂移（上一笔那条「插注释会改变同文件其它臂排版」的现象本轮没出现）。
+- **登记与闭合**：`uniq` 的字母位失真归零（此前无独立登记号）。板上 A2 记到**切片 14**。
+- **三件套**：核实命令与读数——`python3 tmp/uniq-408/ab.py`（23 形全同 + 两形射程②残差）、`python3 tmp/uniq-408/negctl.py`（八枚各咬住 1/13/1/50/2/42/1/1、复跑 0 失败）、`./tmp/family-diag-ref/uniq_ref -Z` 现量 `invalid option -- 'Z'`（glibc 血脉的第二次证据）、参照件 `tmp/uniq-408/uniq_ref`、宿主与容器各 **1147 / 0 / 68**、三架构全退 0、`clippy` 154 同数、`rustfmt --edition 2024` 触及件零漂移、剩余调用点现量 **14 处 / 11 个源文件**；核实日 `2026-10-19`；基线快照 `8f9441c68`。
+- **下一轮首动作**：`bash tools/claim.sh claim GETOPT-REPORT-BYTE-LETTER qoder`（切片 15：`comm` 或 `cmp`——两支的 `letter` 都从 `chars()` 来（`src/comm.rs:151`、`src/cmp.rs:158` 的 `other` 是 `char`），**要两半一起做**：先让环按字节取（与 A11 那笔 `rev` 同型），再换 `line_bytes`。剩余 11 支里 `sort`/`unexpand`/`split`/`cksum` 同型，`nl`/`head`/`tail`/`pr` 的字母来源逐个现查（`pr` 走自带 `egetopt`，措辞是 `illegal option`，单列一支），`seq` 是累加环、仍与射程②同轮。参照件现成与否先按上一笔那条验法测一枚 `-Z`。）
+
+
 ## 批次四百零七（A2 渲染半切片 13：`join`）：第十三支壳换到字节形；既有参照件用的是 glibc 的 getopt，这一族的差分腿必须重配
 
 - **这一轮干什么**：A2 渲染半第十三次落地，选 `join`（`src/join.rs:463` 的取法是 `b[1] as char`，按字节）。落码两件：`os/commands/usr-bin/textfilter/src/bin/join.rs`（`JoinError::Getopt(report)` 那一处出口改调 `line_bytes`）、`tests/join_face.rs`（新立逐字节门 + `run_bytes` 夹具，29 → **30**）。跨支表 `bin_support_face` 里没有 `join`，所以本轮没有期望要翻正。进度 **13 支壳、余 15 处调用点 / 12 个源文件**。
