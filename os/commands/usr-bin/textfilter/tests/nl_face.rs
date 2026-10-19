@@ -10,8 +10,8 @@
 
 mod face_support;
 
-use std::process::{Command, Stdio};
 use face_support::write_stdin;
+use std::process::{Command, Stdio};
 
 const NL: &str = env!("CARGO_BIN_EXE_nl");
 
@@ -36,6 +36,67 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
         output.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&output.stderr).into_owned(),
     )
+}
+
+/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(NL)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the nl binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**。期望逐形取自本轮新配的参照件
+/// `tmp/nl-417/nl_ref`（`minix3/usr.bin/nl/nl.c` + Minix 的 `getopt.c` + 垫片，经同名软链
+/// `nl` 起 ⇒ 程序名段与本壳一致；本族此前没有 Minix 血脉的 nl 参照件，批次三百零六那批
+/// 读数是直接回 C 源推的）：`-é` 与 `-pé` 都是 `nl: unknown option -- ` + 单个 `c3` +
+/// 换行再跟那**两行** usage、退 1；`-Zé` 停在 `Z`；反面的 `-dé` 里 `é` 是**值**（选项串
+/// `"pb:d:f:h:i:l:n:s:v:w:"` 里只有 `p` 不带值），当正则用，退 0 且一句不报。
+/// 这一支的环整个住在薄壳里（`src/bin/nl.rs:136` 的 `bytes[pos] as char`），没有可单测的
+/// 库函数 ⇒ 取法半与渲染半都由这一枚面门承载（与批次四百零八的 `uniq` 同形，那轮的
+/// 结论是「环不在库里就不硬造库门」）。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_nl() {
+    let want: Vec<u8> = [
+        b"nl: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-p\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form], b"a\n");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"nl: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，第二个字节根本不该被读到"
+    );
+
+    let (out, status, err) = run_bytes(&["-d\u{e9}"], b"a\n");
+    assert_eq!(status, 0, "带值字母把两字节整个当值收走，退码是成功的");
+    assert_eq!(err, Vec::new(), "那一形不报案：{err:?}");
+    assert_eq!(
+        out,
+        b"     1\ta\n".to_vec(),
+        "分隔符正则用不上就不改行（参照件同形）"
+    );
 }
 
 /// 集外字母：libc 先印 `nl: unknown option -- <字母>`（`getopt.c:101-104`），随后
@@ -99,7 +160,10 @@ fn inline_and_clustered_letters_parse_like_getopt() {
 #[test]
 fn width_rejects_unparseable_and_nonpositive_with_different_sentences() {
     let (_, status, err) = run(&["-w", "x"], b"a\n");
-    assert_eq!((status, err.as_str()), (1, "nl: invalid width value -- x\n"));
+    assert_eq!(
+        (status, err.as_str()),
+        (1, "nl: invalid width value -- x\n")
+    );
     let (_, status, err) = run(&["-w", "0"], b"a\n");
     assert_eq!(
         (status, err.as_str()),

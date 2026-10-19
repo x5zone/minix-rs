@@ -51,7 +51,10 @@ fn usage(prog: &str) -> ! {
 /// `:132-136` 带值选项缺值；两句都递 `getprogname()`）。这是本族共同的形状：
 /// 一句话属于 libc，命令自己的 usage 跟在后面。
 fn getopt_leg(report: GetoptReport, prog: &str) -> ! {
-    support::warn(report.line(prog).as_bytes());
+    // 字母位走 `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、
+    // `:103` 的 `%c` 原样写出，所以 `-é`（`c3 a9`）报的是 `c3`。取法在这一支本来就是
+    // `bytes[pos] as char`（`:136`，环整个住在薄壳里），两边同形才成立。
+    support::warn(&report.line_bytes(prog));
     usage(prog)
 }
 
