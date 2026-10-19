@@ -154,7 +154,10 @@ static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
 /// test-timer-irq rationale: Phase C bookkeeping succeeds, VM is never
 /// scheduled. e_machine = EM_RISCV (243).
 #[unsafe(link_section = ".rodata")]
-static VM_ELF_STUB: [u8; 64] = {
+#[repr(C, align(4096))]
+struct PageAlignedStub([u8; 64]);
+#[unsafe(link_section = ".rodata")]
+static VM_ELF_STUB: PageAlignedStub = PageAlignedStub({
     let mut e = [0u8; 64];
     e[0] = 0x7F;
     e[1] = b'E';
@@ -177,7 +180,7 @@ static VM_ELF_STUB: [u8; 64] = {
     e[56] = 0;
     e[57] = 0; // e_phnum = 0
     e
-};
+});
 
 const PASS_TICKS: u64 = 5;
 

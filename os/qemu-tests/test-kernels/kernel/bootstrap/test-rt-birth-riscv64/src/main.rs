@@ -121,7 +121,14 @@ static MEMMAP: [MemoryRegion; 1] = [MemoryRegion {
 /// builds `rt-birth` for riscv64gc-unknown-none-elf first and passes the
 /// artifact path in `RT_BIRTH_ELF_PATH`). The kernel identity-maps its own
 /// image, so the blob is readable through VA = PA during `load_vm_elf`.
-static RT_BIRTH_ELF: &[u8] = include_bytes!(env!("RT_BIRTH_ELF_PATH"));
+/// 页对齐包裹（vm_handoff 扣减契约：boot module 起址必须页对齐——真
+/// bootloader 放置的模块皆页对齐，carrier 内嵌镜像同契约；修正
+/// run_all 两 riscv 腿的 `deduction start … must be page-aligned`）。
+#[repr(C, align(4096))]
+struct PageAlignedElf<const N: usize>([u8; N]);
+static RT_BIRTH_ELF_BYTES: PageAlignedElf<{ include_bytes!(env!("RT_BIRTH_ELF_PATH")).len() }> =
+    PageAlignedElf(*include_bytes!(env!("RT_BIRTH_ELF_PATH")));
+static RT_BIRTH_ELF: &[u8] = &RT_BIRTH_ELF_BYTES.0;
 
 // ── Boot assembly (K10 carrier shape: BSS zero before any flag read) ──
 core::arch::global_asm!(
