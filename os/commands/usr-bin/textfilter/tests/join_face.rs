@@ -46,6 +46,75 @@ fn run(args: &[&str]) -> (String, i32, String) {
     run_at(Path::new(env!("CARGO_BIN_EXE_join")), args)
 }
 
+/// 与 `run` 同一条命令缝，但两路输出都**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(args: &[&str]) -> (Vec<u8>, i32, Vec<u8>) {
+    let output = Command::new(env!("CARGO_BIN_EXE_join"))
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the join binary should be runnable");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/join-407/join_ref`（本轮新配：
+/// `minix3/usr.bin/join/join.c` + Minix 的 `getopt.c` + 程序名垫片，经 `join` 软链起，
+/// 报文逐字节直比）现量 `-\u{e9}` 是 `join: unknown option -- ` + `c3` + 换行，再跟那两行
+/// usage、退 1；`-Z\u{e9}` 停在 `Z`（`join.c:226-228` 的 `case '?'` 直落 `usage()`，报文不累加）。
+/// join 的选项串 `"\01a:e:j:1:2:o:t:v:"` 里**每个字母都带值**，所以没有「合法字母后接多字节」
+/// 这一形可钉；反面形是 `-a\u{e9}`——`é` 被当 `-a` 的值收走，答的是命令自己那句
+/// `-a option field number not 1 or 2`，换渲染不许碰它。ASCII 的集外字母与缺值两形本文件
+/// 已有主人，按冗余判据不重复承载。**那句自答的措辞也得照 C 逐字钉**：`-a` 这一支 C 写的是
+/// `-a option **file** number not 1 or 2`（`join.c:171`，`-v` 同形 `:217`），而 `-1`/`-2`/`-j`
+/// 三句写的是 **field**（`:141`、`:152`、`:186`）——同一支命令里两种措辞，本笔最初按邻居的
+/// `field` 代入了 `file` 那一支，门红之后照 `join.c` 的原句改回。
+#[test]
+fn the_unknown_letter_of_a_multibyte_flag_is_written_as_one_byte() {
+    let want: Vec<u8> = [
+        b"join: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE_FIRST.as_bytes(),
+        USAGE_SECOND.as_bytes(),
+    ]
+    .concat();
+    let (out, status, err) = run_bytes(&["-\u{e9}"]);
+    assert_eq!(out, Vec::new(), "报文只走标准错误");
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(err, want, "字母该是一个裸字节 c3");
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}"]);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"join: unknown option -- Z\n".as_slice(),
+            USAGE_FIRST.as_bytes(),
+            USAGE_SECOND.as_bytes(),
+        ]
+        .concat(),
+        "环停在第一个坏字母上，`é` 根本不该被读到"
+    );
+
+    let (_out, status, err) = run_bytes(&["-a\u{e9}"]);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"join: -a option file number not 1 or 2\n".as_slice(),
+            USAGE_FIRST.as_bytes(),
+            USAGE_SECOND.as_bytes(),
+        ]
+        .concat(),
+        "`-a` 带值，`\u{e9}` 整个被当值收走，答的是命令自己那句"
+    );
+}
+
 /// C's `err(3)` line: `<prog>: <operand>: <sentence>`.
 fn assert_err_line(err: &str, prog: &str, operand: &str) {
     let head = format!("{prog}: {operand}: ");

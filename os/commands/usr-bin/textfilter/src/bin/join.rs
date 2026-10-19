@@ -87,7 +87,11 @@ fn join_error_fail(prog: &str, e: JoinError<'_>) -> ! {
         // 表外字母与带值选项缺值：libc 先印自己那一句（`getopt.c:101-104`、
         // `:132-136`），再落 `join.c:226-228` 的 `case '?'` → 同样那两行 usage。
         JoinError::Getopt(report) => {
-            support::warn(report.line(prog).as_bytes());
+            // 字母位走 `line_bytes`：`src/join.rs` 的取法本就按字节（`b[1] as char`），而 libc
+            // 那一行的字母位本来是一个字节（`getopt.c:79` 的 `optopt = *place++`、`:103` 的
+            // `%c`）。参照件 `tmp/join-407/join_ref` 现量 `-é` 是 `join: unknown option -- ` +
+            // 单个 `c3` + 换行，再跟那两行 usage。
+            support::warn(&report.line_bytes(prog));
             usage(prog)
         }
         // 句子把选项字母写在前面（`"-1 option field number less than 1"`）。
@@ -112,9 +116,7 @@ fn join_error_fail(prog: &str, e: JoinError<'_>) -> ! {
         JoinError::AAndVMutuallyExclusive => fail(prog, "-a and -v options mutually exclusive"),
         // legacy `-j` 的畸形形：C 在 `obsolete()` 里 `errx(1, "illegal option -- %s", ap)`
         // （`join.c:592`），句子带整个 token，**不接 usage**（errx 已经走了），退 1。
-        JoinError::IllegalOptionToken(token) => {
-            fail(prog, &format!("illegal option -- {token}"))
-        }
+        JoinError::IllegalOptionToken(token) => fail(prog, &format!("illegal option -- {token}")),
     }
 }
 
