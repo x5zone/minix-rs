@@ -119,6 +119,28 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百二十八（P0 独立轮 `CUT-SUPPRESS-STILL-PRINTS-NEWLINE`：`-s` 抹掉的是那一行，不是那一行的内容）
+
+- **这一轮干什么**：闭批次四百零六登记的 `CUT-SUPPRESS-STILL-PRINTS-NEWLINE`——`cut -f <列表> -s` 遇到不含分隔符的行时，参照件**一个字节都不写**，本壳写了一枚换行。判据在 `minix3/usr.bin/cut/cut.c:246-254`：`f_cut` 先在扫描里判定 `isdelim`，走到行末时 `if (!isdelim && !sflag)` 才把整行交给 `fwrite`（`:248-249`，那一行自带终止符），紧接着 `:253-254` 的 `if (!isdelim) continue;` 让这一行**跳过**字段抽取与 `:279` 那句 `putchar('\n')`。也就是说在 C 那里，「这一行有没有分隔符」决定的不是它的内容而是它的**存在**；`-s` 把这行抹掉之后，连它的终止符都不该留下。
+
+- **与它最像、却又必须相反的那一形**：有分隔符而选不出字段。`-f 9 -s` 对 `a\tb\tc` 走的是另一条腿——`isdelim` 成立，于是照常走到最后写一行，只是那一行没内容，参照件交回一枚换行（逐形读数 `tmp/cut-428/ref-s.log`：`-f 3 -s` 对 `x\na\tb\tc` 交 `c\n`、`-f 9 -s` 对 `a\tb\tc` 交 `\n`、不带 `-s` 时 `x\nc\n`、末行无换行的 `nosep` 加 `-s` 交零字节）。库里原先用同一个 `Ok(0)` 表示这两形，壳侧于是无条件补一枚换行：`-f3 -s` 交出 `c\n\n`。两形共用一个返回值是这次缺陷的根，不是漏了一个 `if`。
+
+- **落码（代码笔 `a4ea99e74`）**：`os/commands/usr-bin/textfilter/src/cut.rs:select_fields` 的返回改成 `Result<Option<usize>, TextError>`，`None` 专门表示「这一行整行不存在」；壳侧 `os/commands/usr-bin/textfilter/src/bin/cut.rs:fn run` 只在 `Some` 时写正文与换行。字节腿（`select_bytes`）经 `.map(Some)` 并进同一个 `match`——`-s` 与 `-b`/`-c` 本就不并存（`cut.c:124` 的 `dflag || sflag` 那道 post-check 走裸 usage），所以那条腿永远交出「要写的一行」，形状统一而语义不掺水。
+
+- **门（库侧 +1、面侧 +1）**：`src/cut.rs` 新增 `a_suppressed_line_is_absent_rather_than_empty`（三形对照：`-f 9 -s` 有分隔符 → `Some(0)`；无分隔符加 `-s` → `None`；无分隔符不带 `-s` → `Some(5)`），存量那枚 `test_missing_delimiter_policy` 的第二条断言随返回类型由「空串」翻成 `None`；`tests/cut_face.rs` 新增 `a_suppressed_line_leaves_nothing_behind`（四形逐字节：`-f3 -s` 交 `c\n`、不带 `-s` 交 `x\nc\n`、`-f9 -s` 交 `\n`、末行无换行的 `nosep` 交空）。`--lib` 582→583、`cut_face` 16→17，整包 **1186→1188**。
+
+- **读数（按最终形态）**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1188 passed / 0 failed**（68 段，`tmp/cut-428/cf-host.log`）；容器权威门同读数 **1188 / 0 / 68 段**、退码 0（`tmp/cut-428/cf-container.log`）；三架构 `cargo build --offline -j 1 --bins -p minix-textfilter --target {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf}` 全退 0、`^error` 计数 0；clippy 整包（不加抑制腿）**154** 与基线同数，触及件里那一处命中是存量的 `tests/cut_face.rs` 那枚 `iter().copied().collect()`（基线同一构造在 `:170`，被本轮新门顶到 `:197`），本轮新增代码零告警；`rustfmt` 本轮新写的行零漂移、整包 **98** 与主树同数——`src/cut.rs` 里剩下的两条漂移是存量的 `select_bytes` 签名与 `in_ranges` 那一处链式调用（基线同文件同样是这两处，本轮没有把它们卷进来重排）。回归面：本轮 17 形 A/B **SAME=17 / DIFF=0**（`tmp/cut-428/ab.log`，含 `-b`/`-c`、自定义 `-d`、末行无换行、空输入、纯空白行六类对照形）。
+
+- **参照件归属现量核验**：`tmp/cut-428/cut`（指向批次四百零六那份 `cut_ref` 的软链，令 argv[0] 与本壳同名，报文程序名段直接可比）跑 `-Z` 交回的是 `cut_ref: unknown option -- Z` 那句 BSD 写法，不是 glibc 的 `invalid option -- 'Z'`——承真值。
+
+- **负控（读数 `tmp/cut-428/negctl-N1.log`…`negctl-N4.log`）**：注入前三个锚点各数得 1 次。三枚咬住：N1 壳侧把「整行跳过」写成「打一枚空行」→ 失败 1（新面门）；N2 库里把被抑制的行交成 `Some(0)`（与选空同行）→ 失败 3（两枚库门 + 面门）；N4 库里把抑制判据反过来（`if !suppress`）→ 失败 3。N3 是**等价变异**（`Ok(None) => {}` 写成 `Ok(None) => continue`）→ 600 passed / 0 failed，全绿。这一轮的判据是「返回值必须能区分不存在与为空」，四枚注入都落在这一条上，没有多余的形状检查。
+
+- **本轮 17 形没覆盖到的一形，另测之后登记不执行**：`-d` 的分隔符若就是换行（`cut -d $'\n' -f1 -s`），参照件把换行当普通分隔符看——C 在扫描里先比 `ch == sep` 再比 `ch == '\n'`（`cut.c:244-251`，那里头一句注释就写着 `this should work if newline is delimiter`），于是每一行都「有分隔符」；本壳的行腿先按换行切行、剥掉终止符，行体里再没有那一枚，`-s` 之下就变成「整行没有分隔符」。现量（`tmp/cut-428/newline-delim.log`）：不带 `-s` 两侧同形（`-d $'\n' -f 1` 对 `a\nb c\n` 都是 `a\nb c\n`），带 `-s` 分叉（同一形参照件 `a\nb c\n`、本壳零字节；`-f 2 -s` 参照件 `\n\n`、本壳零字节），而换成 `-d ';'` 两侧又同形（`a;b\nc\n` → `a\n`）——分叉只在「分隔符恰好是换行」这一形上。本轮没有顺手改它：要让 `-d $'\n'` 成立，就得让字段扫描看见终止符，这与批次四百二十六登记的 `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`、板上「末行换行状态」那一族是同一道题（行腿到底保不保留输入的终止符）。**新登记** `CUT-NEWLINE-DELIMITER-NEEDS-TERMINATOR`，读数与三形对照一并写进板 A2 行；本轮修复没有让它变好也没有让它变坏——`-s` 那一形改前是「多打换行」（本壳 `\n\n`、参照件 `a\nb c\n`），改后是「整行不打」（本壳零字节），两侧同不同形都要等那道题裁完才见分晓。
+
+- **登记与闭合**：闭 `CUT-SUPPRESS-STILL-PRINTS-NEWLINE`（板 A2 行、07 篇 `cut` 行同步；07 篇那行里那句「端到端门十五枚」与本轮之后的门数不符，一并按测试名对账改成十七枚）。**新登记不执行**：`CUT-NEWLINE-DELIMITER-NEEDS-TERMINATOR`（三形读数在案，与行末终止符那道未裁的题同源）。在册未动：`CUT-EMPTY-BYTE-LIST-RUNAWAY`（需一次裁决）、`UNEXPAND-C-COMMENT-ANCHOR-DRIFT`、`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`、`LINES-OF-NONUTF8-DROPS-ALL`、`NL-DELIM-LENGTH-RULE`（待裁决）、八支 `*-NON-PERMUTE-OPERAND-TAIL` 族余量、参数缝半（射程②）。
+
+---
+
 ## 批次四百二十七（P0 独立轮 `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`：操作数超数不是取数那一层能判的事）
 
 - **这一轮干什么**：闭上一轮登记的 `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`——`split` 给三支操作数时报的是哪一句。判据在 `minix3/usr.bin/split/split.c:132-149`，那是一段**顺序**：`argv += optind`（`:132`）之后先开第一支（`:135-139`，`-` 在 `:136` 走特例不开档，开不成当场 `err(1, "%s", *argv)` 带着档名退 1），再取输出前缀（`:143` 的 `base = (*argv != NULL) ? *argv++ : "x"`），最后才 `if (*argv != NULL) usage()`（`:148-149`）。也就是说「还剩一支」这一判排在「那支档名开不开得开」之后：两件事同时不成立时，用户看到的是档名。
