@@ -57,7 +57,10 @@ fn fail(prog: &str, error: &SeqError) -> ! {
     match error {
         SeqError::Usage { reports } => {
             for report in reports {
-                support::warn(report.line(prog).as_bytes());
+                // 字母位走 `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个
+                // 字节，而 `seq` 的环是**累加形**（`errflg` 累加、不在第一个坏字母处停，
+                // `seq.c:101-113`），所以 `-é`（`c3 a9`）交回**两行**、每行一个裸字节。
+                support::warn(&report.line_bytes(prog));
             }
             support::warn(
                 format!(

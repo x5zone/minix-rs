@@ -65,10 +65,15 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
     let cases: [(&str, &str, i32, &[u8]); 6] = [
-        // tr 已于批次四百换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD 的第一字节），
-        // 比仍按 char 渲染的那几支少一个字节；C 那一侧是原字节 `ff`。
+        // tr 已于批次四百换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD 的第一字节）；
+        // C 那一侧是原字节 `ff`。到批次四百二十为止，本表六支全部已是字节形。
         ("tr", TR, 1, b"tr: unknown option -- \xef\n"),
-        ("seq", SEQ, 1, b"seq: unknown option -- \xc3\xaf\n"),
+        // seq 已于批次四百二十换字节形，与 tr/paste/fold/rev/units 同形：一个裸字节 `ef`。
+        // 它是本族唯一的**累加环**（`errflg` 累加、不在第一个坏字母处停），所以 lossy 后的
+        // `ef bf bd` 三个字节各报一行——这一形里 C 打的是**原字节** `ff` 一行，差距从
+        // 「一行的字母位」变成「行数与字母位都差」，仍属射程②（`bin_support::args` 的
+        // `from_utf8_lossy`）在册，不是渲染半的账。
+        ("seq", SEQ, 1, b"seq: unknown option -- \xef\n"),
         // paste 已于批次四百零一换字节形，与 tr 同形。
         ("paste", PASTE, 1, b"paste: unknown option -- \xef\n"),
         // fold 已于批次四百零五换字节形，同 tr/paste。

@@ -566,6 +566,52 @@ mod tests {
         assert_eq!(generate_words(&["3"]), Ok("1\n2\n3\n".to_string()));
     }
 
+    /// 集外字母交回的是短横后的**每一个字节**，而且这一支的环是累加形：`-\u{e9}`
+    /// （`c3 a9`）交回**两枚**报告（U+00C3、U+00A9），与参照件
+    /// `tmp/seq-320/seq_ref` 现量的两行 `303`/`251` 同形（`getopt.c:79` 的
+    /// `optopt = *place++` 一次进一个字节、`seq.c:101-113` 的 `errflg` 累加不叫环停）。
+    /// 环那一侧本来就是 `token = args[i].as_bytes()` + `char::from(letter)`，所以这一枚
+    /// 钉的是**已经是那样**的取法；逐字节面门在 `tests/seq_face.rs`。
+    #[test]
+    fn the_unknown_letters_are_the_first_bytes_not_the_first_characters() {
+        use crate::GetoptReport;
+        assert_eq!(
+            parse_seq_args(&["-\u{e9}"]).err(),
+            Some(SeqError::Usage {
+                reports: vec![
+                    GetoptReport::UnknownOption('\u{00c3}'),
+                    GetoptReport::UnknownOption('\u{00a9}')
+                ]
+            }),
+            "`é` 是两个字节，libc 两行各报一枚"
+        );
+        // 坏字母在前也一样：`-Zé` 三行（`Z`、`c3`、`a9`）。
+        assert_eq!(
+            parse_seq_args(&["-Z\u{e9}"]).err(),
+            Some(SeqError::Usage {
+                reports: vec![
+                    GetoptReport::UnknownOption('Z'),
+                    GetoptReport::UnknownOption('\u{00c3}'),
+                    GetoptReport::UnknownOption('\u{00a9}')
+                ]
+            }),
+            "-Z\u{e9}"
+        );
+        // ASCII 那一形不许被波及。
+        assert_eq!(
+            parse_seq_args(&["-v"]).err(),
+            Some(SeqError::Usage {
+                reports: vec![GetoptReport::UnknownOption('v')]
+            })
+        );
+        // 反面：带值字母把其后的字节整个当值收走（`-s` 的值可以是任意串）。
+        assert_eq!(
+            parse_seq_args(&["-s\u{e9}", "3"]).err(),
+            None,
+            "`-sé 3` 里 é 是分隔符的值，不该叫环报错"
+        );
+    }
+
     #[test]
     fn test_ring_keeps_going_after_a_bad_letter() {
         use crate::GetoptReport;

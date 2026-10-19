@@ -64,6 +64,56 @@ fn run(args: &[&str]) -> (String, i32, String) {
     )
 }
 
+/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(args: &[&str]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(SEQ)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the seq binary should be runnable");
+    write_stdin(&mut child, b"");
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母的每一行字母位都是**一个裸字节**，而且 `seq` 的环是累加形 ⇒ 一个多字节字母
+/// 交回**几行**。期望逐形取自参照件 `tmp/seq-320/seq_ref`（本轮经同名软链 `seq` 起，
+/// 归属先前已验：打 `-Z` 交回 `unknown option -- Z`，是 Minix 的 `getopt.c`）：
+/// `-é`（`c3 a9`）是 `seq: unknown option -- ` + `303` + 换行、再来一行同样的句子带
+/// `251`、再跟那一行 usage，退 1；`-Zé` 是三行（`Z`、`303`、`251`）；`-aé` 也是三行
+/// （`a` 不在选项串里，环照旧往后扫）。这与批次四百零三给 `jot` 纠正的那处家族错判同形——
+/// `seq` 是本族唯一累加的环，别把「停在第一个坏字母」的结论套过来。ASCII 那几形
+/// （`-Z`、`-+-`、`-ABC`、`-wZ`）本文件已有主人，不重复承载。
+#[test]
+fn the_libc_lines_of_a_multibyte_flag_are_one_byte_each_for_seq() {
+    let usage = USAGE.as_bytes();
+    let cases: [(&str, &[&[u8]]); 3] = [
+        ("-\u{e9}", &[b"\xc3", b"\xa9"]),
+        ("-Z\u{e9}", &[b"Z", b"\xc3", b"\xa9"]),
+        ("-a\u{e9}", &[b"a", b"\xc3", b"\xa9"]),
+    ];
+    for (form, letters) in cases {
+        let mut want: Vec<u8> = Vec::new();
+        for letter in letters {
+            want.extend_from_slice(b"seq: unknown option -- ");
+            want.extend_from_slice(letter);
+            want.push(b'\n');
+        }
+        want.extend_from_slice(usage);
+        let (out, code, err) = run_bytes(&[form]);
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(code, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的每一行字母位都该是一个裸字节");
+    }
+}
+
 #[test]
 fn off_letter_gets_one_libc_line_and_the_single_usage_line() {
     let (out, code, err) = run(&["-Z"]);
@@ -155,15 +205,23 @@ fn operand_count_face_is_usage_alone() {
 
 #[test]
 fn every_byte_of_a_nonascii_cluster_is_reported() {
-    // `-é` 是两个字节（0xC3 0xA9）：参照件对**每个字节**各打一行（`%c` 打裸字节，
-    // `tmp/seq-320/measure3.log` 里是 `\303` 与 `\251`），本壳按 `char` 渲染成
-    // `Ã`/`©` 两个可打印字符——句子其余部分、行数与退码同，字节形状的差登记为
-    // `SEQ-NONASCII-OPTLETTER`（与 `UNITS-NONASCII-OPTLETTER` 同源）。
-    let (_, code, err) = run(&["-é"]);
+    // `-é` 是两个字节（`c3 a9`），参照件对**每个字节**各打一行（`%c` 打裸字节，
+    // `tmp/seq-320/measure3.log` 里是 `\303` 与 `\251`）。批次四百二十把本壳也换到那一形：
+    // 之前按 `char` 渲染成 `Ã`/`©` 两个可打印字符（各两字节），那句登记为
+    // `SEQ-NONASCII-OPTLETTER`，**本轮闭合**，所以这一枚门的期望**有意识翻正**成
+    // 逐字节的 `c3`/`a9`（翻正前后的差别正是这一族的全部要点：文本形里 `c3` 会被
+    // `from_utf8_lossy` 变成替换字符，断不出字节，故这里改用 `run_bytes`）。
+    let (out, code, err) = run_bytes(&["-\u{e9}"]);
+    assert_eq!(out, Vec::new());
     assert_eq!(code, 1);
     assert_eq!(
         err,
-        format!("seq: unknown option -- \u{00c3}\nseq: unknown option -- \u{00a9}\n{USAGE}")
+        [
+            b"seq: unknown option -- \xc3\n".as_slice(),
+            b"seq: unknown option -- \xa9\n".as_slice(),
+            USAGE.as_bytes(),
+        ]
+        .concat()
     );
 }
 
