@@ -110,10 +110,10 @@ fn head_stream(input: &[u8], count: usize, bytecnt: usize) {
         window.push(line);
     }
     let want = (window.seen() as usize).min(count);
-    let mut survivors: Vec<Line> = vec![Line::new(""); want];
+    let mut survivors: Vec<Line> = vec![Line::new(b""); want];
     let drained = window.drain(&mut survivors);
     for line in &survivors[..drained] {
-        let mut out = line.text().as_bytes().to_vec();
+        let mut out = line.bytes().to_vec();
         // C 的行形是逐字符搬运（`head.c:169-172`），末行没有换行就不造一枚。
         out.extend_from_slice(line.eol());
         support::emit(&out);

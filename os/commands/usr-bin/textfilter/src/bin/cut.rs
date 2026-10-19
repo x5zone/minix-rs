@@ -64,7 +64,7 @@ fn run() -> ! {
             // `\n`，参照件 `tmp/cut-406/cut_ref` 对无尾换行的输入也交回三行带换行
             // （读数 `alp\nbet\ngam\n`，见 18 篇批次四百二十三）。所以这里取 `text()`
             // 而**不取** `eol()`——不是漏改，是这一支的 C 就这么做。
-            let line = line.text();
+            let line = line.bytes();
             let mut out = vec![0u8; line.len() + 1];
             let selection = if selecting_bytes {
                 // 字节腿没有「整行跳过」这一说：`-s` 只与 `-f` 并存（`cut.c:124`），

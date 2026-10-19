@@ -123,7 +123,7 @@ impl<'a> Uniq<'a> {
     /// Offer one line; returns a completed run when the run breaks.
     pub fn push(&mut self, line: impl Into<crate::window::Line<'a>>) -> Option<Run<'a>> {
         let line = line.into();
-        let key = comparison_key(line.text().as_bytes(), self.skip_fields, self.skip_chars);
+        let key = comparison_key(line.bytes(), self.skip_fields, self.skip_chars);
         match self.previous_key {
             Some(previous_key) if previous_key == key => {
                 self.count += 1;
@@ -173,7 +173,7 @@ impl<'a> Uniq<'a> {
             written = write_decimal(run.count, out, written)?;
             written = write_byte(out, written, b' ')?;
         }
-        for byte in run.line.text().as_bytes() {
+        for byte in run.line.bytes() {
             written = write_byte(out, written, *byte)?;
         }
         Ok(written)
@@ -224,19 +224,27 @@ mod tests {
     use super::*;
     use crate::window::Line;
 
+    /// 库里交回的行是字节，测试要的是可比对的 `String`。本文件的夹具全是 ASCII，
+    /// 所以解不出来就是夹具写错，当场停而不是替换字符。
+    fn shown(run: &Run<'_>) -> String {
+        core::str::from_utf8(run.line.bytes())
+            .expect("测试夹具都是 ASCII")
+            .to_string()
+    }
+
     fn collect(flags: UniqFlags, lines: &[&str]) -> Vec<(String, u64)> {
         let mut handler = Uniq::new(flags);
         let mut runs = Vec::new();
         for line in lines {
             if let Some(run) = handler.push(Line::from(*line)) {
                 if handler.keep(&run) {
-                    runs.push((run.line.text().to_string(), run.count));
+                    runs.push((shown(&run), run.count));
                 }
             }
         }
         if let Some(run) = handler.finish() {
             if handler.keep(&run) {
-                runs.push((run.line.text().to_string(), run.count));
+                runs.push((shown(&run), run.count));
             }
         }
         runs
@@ -263,7 +271,7 @@ mod tests {
     /// One run of the line `a` with `count` copies, for the format tests.
     fn run_of(count: u64) -> Run<'static> {
         Run {
-            line: Line::new("a"),
+            line: Line::from("a"),
             count,
         }
     }
@@ -369,15 +377,24 @@ mod tests {
         let mut runs: Vec<(String, u64)> = Vec::new();
         for line in ["foo SAME", "bar SAME", "baz OTHER"] {
             if let Some(run) = handler.push(Line::from(line)) {
-                runs.push((run.line.text().to_string(), run.count));
+                runs.push((shown(&run), run.count));
             }
         }
         if let Some(run) = handler.finish() {
-            runs.push((run.line.text().to_string(), run.count));
+            runs.push((shown(&run), run.count));
         }
         assert_eq!(
             runs,
             [("foo SAME".to_string(), 2), ("baz OTHER".to_string(), 1)]
         );
+    }
+
+    /// 比较键的位移按字节走，不按字符：C 的 `skip` 收的是 `const char *`
+    /// （`minix3/usr.bin/uniq/uniq.c:61`，用在 `:148-149`），一步就是一个字节。
+    /// 一枚解不出 UTF-8 的字节既不会让整行消失，也不会被当成两格。
+    #[test]
+    fn a_byte_that_is_not_utf8_counts_as_one_skip_step() {
+        assert_eq!(comparison_key(b"a\xffbc", 0, 2), b"bc");
+        assert_eq!(comparison_key(b"a\xffbc", 0, 3), b"c");
     }
 }

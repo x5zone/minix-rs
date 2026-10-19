@@ -541,7 +541,7 @@ fn tail_stream(input: &[u8], style: TailStyle) {
             // requested count: `tail -n 1000000` on ten lines holds ten.
             let want = (window.seen() as usize).min(off);
             let mut survivors: Vec<minix_textfilter::window::Line> =
-                vec![minix_textfilter::window::Line::new(""); want];
+                vec![minix_textfilter::window::Line::new(b""); want];
             let drained = window.drain(&mut survivors);
             for line in &survivors[..drained] {
                 emit_line(*line);
@@ -568,7 +568,7 @@ fn tail_stream(input: &[u8], style: TailStyle) {
 }
 
 fn emit_line(line: minix_textfilter::window::Line<'_>) {
-    let mut out = line.text().as_bytes().to_vec();
+    let mut out = line.bytes().to_vec();
     // C `reverse.c:133-144` 记录的行区间本来就含那枚换行，末行没有就不补；`tail -r`
     // 会把没换行的末行翻到输出的**最前面**，所以这件事只能记在行上，不能问行号。
     out.extend_from_slice(line.eol());
@@ -754,13 +754,17 @@ mod tests {
     }
 
     /// 这些单测比的是「哪些行、什么顺序」；末行换行状态由面门逐字节钉，不在这里重复承载。
+    /// 行现在是字节，而本文件的夹具全是 ASCII：解不出来就是夹具写错了，不当静默替换。
     fn texts<'a>(lines: &[minix_textfilter::window::Line<'a>]) -> Vec<&'a str> {
-        lines.iter().map(|line| line.text()).collect()
+        lines
+            .iter()
+            .map(|line| core::str::from_utf8(line.bytes()).expect("测试夹具都是 ASCII"))
+            .collect()
     }
 
     #[test]
     fn reversed_lines_all_reverses_every_line() {
-        let lines = [Line::new("1"), Line::new("2"), Line::new("3")];
+        let lines = [Line::from("1"), Line::from("2"), Line::from("3")];
         assert_eq!(texts(&reversed_lines(&lines, None)), ["3", "2", "1"]);
     }
 
@@ -768,17 +772,17 @@ mod tests {
     fn reversed_lines_last_n_reversed() {
         // -r -n 2 on [1,2,3,4] -> last 2 (3,4) reversed -> 4,3.
         let lines = [
-            Line::new("1"),
-            Line::new("2"),
-            Line::new("3"),
-            Line::new("4"),
+            Line::from("1"),
+            Line::from("2"),
+            Line::from("3"),
+            Line::from("4"),
         ];
         assert_eq!(texts(&reversed_lines(&lines, Some(2))), ["4", "3"]);
     }
 
     #[test]
     fn reversed_lines_count_exceeding_input_is_all() {
-        let lines = [Line::new("a"), Line::new("b")];
+        let lines = [Line::from("a"), Line::from("b")];
         assert_eq!(texts(&reversed_lines(&lines, Some(5))), ["b", "a"]);
     }
 
@@ -787,7 +791,7 @@ mod tests {
         // C `reverse.c:79-80`: a non-`REVERSE` style with `off == 0` returns
         // before printing, so `tail -r -n +1` prints nothing rather than the
         // whole file.
-        let lines = [Line::new("a"), Line::new("b")];
+        let lines = [Line::from("a"), Line::from("b")];
         assert!(reversed_lines(&lines, Some(0)).is_empty());
     }
 

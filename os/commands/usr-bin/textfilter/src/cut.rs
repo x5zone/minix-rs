@@ -141,11 +141,11 @@ fn scan_number(token: &str, from: usize) -> (u32, usize) {
 ///
 /// Returns the used byte count. Overlapping ranges print each byte once.
 pub fn select_bytes(
-    line: &str,
+    line: &[u8],
     ranges: &[Range],
     out: &mut [u8],
 ) -> Result<usize, TextError> {
-    let bytes = line.as_bytes();
+    let bytes = line;
     let mut written = 0;
     let mut next = 1u32;
     for range in ranges {
@@ -178,23 +178,23 @@ pub fn select_bytes(
 /// that does carry the delimiter but selects nothing is the opposite case and
 /// stays `Some(0)` (参照件对 `-f 9 -s` 的 `a\tb\tc` 交回一枚换行).
 pub fn select_fields(
-    line: &str,
+    line: &[u8],
     ranges: &[Range],
     delimiter: u8,
     suppress: bool,
     out: &mut [u8],
 ) -> Result<Option<usize>, TextError> {
-    if !line.as_bytes().contains(&delimiter) {
+    if !line.contains(&delimiter) {
         if suppress {
             return Ok(None);
         }
         if line.len() > out.len() {
             return Err(TextError::TooLong);
         }
-        out[..line.len()].copy_from_slice(line.as_bytes());
+        out[..line.len()].copy_from_slice(line);
         return Ok(Some(line.len()));
     }
-    let bytes = line.as_bytes();
+    let bytes = line;
     let mut written = 0;
     let mut field: u32 = 1;
     let mut start = 0;
@@ -402,15 +402,32 @@ mod tests {
     fn bytes_of(line: &str, list: &str) -> String {
         let ranges = parse_list(list).unwrap();
         let mut out = [0u8; 64];
-        let len = select_bytes(line, &ranges, &mut out).unwrap();
+        let len = select_bytes(line.as_bytes(), &ranges, &mut out).unwrap();
         String::from_utf8_lossy(&out[..len]).into_owned()
+    }
+
+    /// 取列的腿数的是字节：C 把 `-b` 单独编成一份 `b_cut`，它的取放宏就是 `getc`/`putchar`
+    /// （`minix3/usr.bin/cut/x_cut.c:45-50`；同一文件的 `c_cut` 腿才是 `getwc`/`putwchar`，
+    /// `:52-57`）。所以一枚解不出 UTF-8 的字节与任何别的字节一样占一格，也必须原样交回。
+    #[test]
+    fn a_byte_that_is_not_utf8_occupies_one_position() {
+        let ranges = [Range { low: 2, high: 2 }];
+        let mut out = [0u8; 8];
+        let len = select_bytes(b"a\xffb", &ranges, &mut out).unwrap();
+        assert_eq!(&out[..len], b"\xff");
+        // 行里没有分隔符且 `-s` 关着：整行搬运，那枚字节照原样带着走。
+        let mut copied = [0u8; 8];
+        let whole = select_fields(b"a\xffb", &ranges, b'\t', false, &mut copied)
+            .unwrap()
+            .expect("整行搬运，不是跳过这一行");
+        assert_eq!(&copied[..whole], b"a\xffb");
     }
 
     /// `None` 交回的是「这一行整行没写」，与空串（写了、但选不出字段）不是同一件事。
     fn fields_of(line: &str, list: &str, delimiter: u8, suppress: bool) -> Option<String> {
         let ranges = parse_list(list).unwrap();
         let mut out = [0u8; 64];
-        let len = select_fields(line, &ranges, delimiter, suppress, &mut out).unwrap()?;
+        let len = select_fields(line.as_bytes(), &ranges, delimiter, suppress, &mut out).unwrap()?;
         Some(String::from_utf8_lossy(&out[..len]).into_owned())
     }
 
@@ -454,17 +471,17 @@ mod tests {
         let ranges = parse_list("9").unwrap();
         let mut out = [0u8; 16];
         assert_eq!(
-            select_fields("a\tb\tc", &ranges, b'\t', true, &mut out).unwrap(),
+            select_fields(b"a\tb\tc", &ranges, b'\t', true, &mut out).unwrap(),
             Some(0),
             "第 9 档选空：这一行写了，只是写不出字段"
         );
         assert_eq!(
-            select_fields("alone", &ranges, b'\t', true, &mut out).unwrap(),
+            select_fields(b"alone", &ranges, b'\t', true, &mut out).unwrap(),
             None,
             "没有分隔符：这一行整行不存在"
         );
         assert_eq!(
-            select_fields("alone", &ranges, b'\t', false, &mut out).unwrap(),
+            select_fields(b"alone", &ranges, b'\t', false, &mut out).unwrap(),
             Some(5),
             "不带 `-s` 时原行照抄"
         );

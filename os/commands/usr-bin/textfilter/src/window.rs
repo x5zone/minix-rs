@@ -17,41 +17,46 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// 一行：内容加上它在输入里到底有没有那枚换行。
+/// 一行：内容（**按字节**）加上它在输入里到底有没有那枚换行。
 ///
 /// C 的行腿把串尾的换行连同内容一起交回，从不替输入补：`nl.c:288` 的 `fgets` 连着换行
 /// 一起读进缓冲、`:340` 的 `printf("%s%s", sep, buffer)` 原样打出；`head.c:169-172` 干脆
 /// 逐字符 `getc`/`putchar` 搬运；`reverse.c:133-144` 记录的行区间也含那枚换行。所以
 /// 「末行没有换行」是**输入的属性**，不是程序要填的空。
 ///
-/// 中间行一定带着换行，只有输入的最后一行可能没有。把这件事做成一行数据之后，取法侧
-/// （取列、比较、计数）只看 [`Line::text`]，写出侧只看 [`Line::eol`]，谁都不必再问
-/// 「我现在写的这行是不是输入的末行」——`tail -r` 会把末行翻到输出的最前面，靠行号问
-/// 这句话正好会问错。参照件现量读数（`tmp/head-415`、`tmp/tail-416`、`tmp/nl-417`、
-/// `tmp/uniq-408`）与两个例外（`cut`/`rev` 在 C 里**确实**归一化补换行）见 18 篇批次四百二十三。
+/// 内容为什么是 `&[u8]` 而不是 `&str`：C 的这些行腿一个字节也不解读——`fgetln`、`fgets`、
+/// `getc` 交回的就是字节。行一旦变成 `&str`，一枚非法 UTF-8 字节就要求先做一次解码，而那一步
+/// 无论怎么取舍都在改输入：整份解失败就一份也交不出，逐行解失败就把那一行换成别的东西。
+/// 字节没有这个问题，所以取法侧（切列、比较、计数）与写出侧都在同一份字节上工作。
+///
+/// 中间行一定带着换行，只有输入的最后一行可能没有。把终止状态做成一行数据之后，写出侧只看
+/// [`Line::eol`]，谁都不必再问「我现在写的这行是不是输入的末行」——`tail -r` 会把末行翻到
+/// 输出的最前面，靠行号问这句话正好会问错。参照件现量读数（`tmp/head-415`、`tmp/tail-416`、
+/// `tmp/nl-417`、`tmp/uniq-408`）与两个例外（`cut`/`rev` 在 C 里**确实**归一化补换行）见
+/// 18 篇批次四百二十三。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Line<'a> {
-    text: &'a str,
+    bytes: &'a [u8],
     terminated: bool,
 }
 
 impl<'a> Line<'a> {
     /// 内容（不含换行）加上「输入里有那枚换行」。
-    pub fn new(text: &'a str) -> Line<'a> {
+    pub fn new(bytes: &'a [u8]) -> Line<'a> {
         Line {
-            text,
+            bytes,
             terminated: true,
         }
     }
 
     /// 按输入原样交回一行：末行没有换行时 `terminated` 为假。
-    pub fn raw(text: &'a str, terminated: bool) -> Line<'a> {
-        Line { text, terminated }
+    pub fn raw(bytes: &'a [u8], terminated: bool) -> Line<'a> {
+        Line { bytes, terminated }
     }
 
-    /// 行的内容。
-    pub fn text(&self) -> &'a str {
-        self.text
+    /// 行的内容，按字节。
+    pub fn bytes(&self) -> &'a [u8] {
+        self.bytes
     }
     /// 写出这一行时该跟的字节：输入里有就原样交回，没有就**不造**。
     pub fn eol(&self) -> &'static [u8] {
@@ -64,9 +69,9 @@ impl<'a> Line<'a> {
 }
 
 impl<'a> From<&'a str> for Line<'a> {
-    /// 借一个字符串当「带着换行的行」：测试与只会造内容的调用方走这条。
+    /// 借一段文本当「带着换行的行」：测试与只会造内容的调用方走这条。
     fn from(text: &'a str) -> Line<'a> {
-        Line::new(text)
+        Line::new(text.as_bytes())
     }
 }
 
@@ -77,23 +82,27 @@ pub fn final_line_terminated(input: &[u8]) -> bool {
     input.is_empty() || input.ends_with(b"\n")
 }
 
-/// 按字节切输入、按 UTF-8 解码，交回每一行与它在输入里的终止状态。
+/// 按字节切输入，交回每一行与它在输入里的终止状态——**不做任何解码**。
 ///
 /// `input` 为空交回空表（没有行）。输入以换行结尾时，`split` 多交回的那片空串是
 /// 换行之后的东西、不是行；两枚相邻换行之间那片空串仍是真行。
+///
+/// 这里为什么不先把整份输入解成 `&str` 再切：解一次就要求「整份都是合法 UTF-8」，
+/// 一枚非法字节会让整份输入变成空串，于是每一行都消失——参照件对同样的输入照旧逐行
+/// 交回（`tmp/head-415/head_ref`、`tmp/nl-417/nl_ref` 现量：含 `\xff` 的行连字节一起打）。
+/// 按字节切则行是输入自己的切分，与内容是不是 UTF-8 无关。
 pub fn lines_of(input: &[u8]) -> Vec<Line<'_>> {
     if input.is_empty() {
         return Vec::new();
     }
-    let text = core::str::from_utf8(input).unwrap_or("");
-    let mut pieces: Vec<Line<'_>> = text.split('\n').map(Line::new).collect();
+    let mut pieces: Vec<Line<'_>> = input.split(|byte| *byte == b'\n').map(Line::new).collect();
     if final_line_terminated(input) {
         // 换行结尾时 `split` 多交回一片空串，它是换行**之后**的东西，不是行；
         // 内部那片空串（两枚相邻换行之间）仍是真行。
         pieces.pop();
     } else if let Some(last) = pieces.last_mut() {
         // 末行在输入里没有换行：把这件事记在行上，写出的腿就不会去造它。
-        *last = Line::raw(last.text(), false);
+        *last = Line::raw(last.bytes(), false);
     }
     pieces
 }
@@ -821,17 +830,21 @@ mod tests {
 
     fn feed<'a, W: LineWindow<'a>>(window: &mut W, lines: &[&'a str]) -> [Line<'a>; 8] {
         for line in lines {
-            window.push(Line::new(line));
+            window.push(Line::from(*line));
         }
-        let mut out: [Line<'a>; 8] = [Line::new(""); 8];
+        let mut out: [Line<'a>; 8] = [Line::from(""); 8];
         let count = window.drain(&mut out);
         assert!(count <= 8);
         out
     }
 
-    /// 比内容时只看 `text`——终止状态由另两枚门专门钉，不在这里重复承载。
+    /// 比内容时只看文本——终止状态由另两枚门专门钉，不在这里重复承载。行现在是字节，
+    /// 而本文件的夹具全是 ASCII，所以这里直接 expect：真出现非 ASCII 就是夹具写错了。
     fn texts<'a>(lines: &[Line<'a>]) -> Vec<&'a str> {
-        lines.iter().map(|line| line.text()).collect()
+        lines
+            .iter()
+            .map(|line| core::str::from_utf8(line.bytes()).expect("测试夹具都是 ASCII"))
+            .collect()
     }
 
     /// 换档比较的四个字段与「不问 fflag」的分工（对位 `forward.c:255` 与 `:257-260`）。
@@ -909,10 +922,10 @@ mod tests {
         assert!(HeadWindow::new(33).is_ok());
         let mut tail = TailWindow::new(1000).unwrap();
         for line in ["a", "b"] {
-            tail.push(Line::new(line));
+            tail.push(Line::from(line));
         }
         // A count far above the input yields the whole input, in order.
-        let mut out: [Line; 2] = [Line::new(""); 2];
+        let mut out: [Line; 2] = [Line::from(""); 2];
         assert_eq!(tail.drain(&mut out), 2);
         assert_eq!(texts(&out), ["a", "b"]);
     }
@@ -924,15 +937,15 @@ mod tests {
         {
             let windows: [&mut dyn LineWindow<'_>; 2] = [&mut head, &mut tail];
             for window in windows {
-                window.push(Line::new("x"));
-                window.push(Line::new("y"));
+                window.push(Line::from("x"));
+                window.push(Line::from("y"));
             }
         }
-        let mut out = [Line::new(""); 2];
+        let mut out = [Line::from(""); 2];
         assert_eq!(head.drain(&mut out), 1);
-        assert_eq!(out[0].text(), "x");
+        assert_eq!(out[0].bytes(), b"x");
         assert_eq!(tail.drain(&mut out), 1);
-        assert_eq!(out[0].text(), "y");
+        assert_eq!(out[0].bytes(), b"y");
     }
 
     fn operands(words: &[&str]) -> Vec<String> {
@@ -1660,9 +1673,13 @@ mod tests {
         assert_eq!(
             marked
                 .iter()
-                .map(|line| (line.text(), line.terminated()))
+                .map(|line| (line.bytes(), line.terminated()))
                 .collect::<Vec<_>>(),
-            vec![("alpha", true), ("beta", true), ("gamma", false)]
+            vec![
+                (b"alpha".as_slice(), true),
+                (b"beta".as_slice(), true),
+                (b"gamma".as_slice(), false)
+            ]
         );
         // 换行结尾时多交回的那片空串不是行，两枚相邻换行之间那片才是真行。
         assert_eq!(lines_of(b"alpha\n").len(), 1);
@@ -1670,18 +1687,44 @@ mod tests {
         assert_eq!(
             blanks
                 .iter()
-                .map(|line| (line.text(), line.terminated()))
+                .map(|line| (line.bytes(), line.terminated()))
                 .collect::<Vec<_>>(),
-            vec![("a", true), ("", true), ("b", false)]
+            vec![
+                (b"a".as_slice(), true),
+                (b"".as_slice(), true),
+                (b"b".as_slice(), false)
+            ]
         );
         assert!(lines_of(b"").is_empty());
+    }
+
+    /// 一枚解不出 UTF-8 的字节不是「这一行没了」，更不是「这份输入没了」。C 的行腿
+    /// （`nl.c:288` 的 `fgets`、`head.c:169-172` 的 `getc`）读的是字节，参照件对同样的
+    /// 输入连字节一起交回（`tmp/head-415/head_ref`、`tmp/nl-417/nl_ref` 现量）。
+    /// 行一旦先解码再切，一枚非法字节就让整份输入变成空串，这里交出的是零行。
+    #[test]
+    fn an_undecodable_byte_is_still_a_line() {
+        let marked = lines_of(b"a\xffb\nc\n");
+        assert_eq!(
+            marked
+                .iter()
+                .map(|line| (line.bytes(), line.terminated()))
+                .collect::<Vec<_>>(),
+            vec![(b"a\xffb".as_slice(), true), (b"c".as_slice(), true)],
+            "含非法字节的行必须留在行里，且两行都带着输入里那枚换行"
+        );
+        // 末行只剩一枚非法字节、且没有换行：行还在，终止状态也还得如实记。
+        let tail = lines_of(b"\xff");
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].bytes(), b"\xff");
+        assert!(!tail[0].terminated());
     }
 
     /// `eol` 是写出侧唯一的取字节处：带着换行就交回换行，没有就交回空。
     #[test]
     fn a_line_writes_back_the_newline_it_had() {
-        assert_eq!(Line::new("a").eol(), b"\n");
-        assert_eq!(Line::raw("a", false).eol(), b"");
+        assert_eq!(Line::from("a").eol(), b"\n");
+        assert_eq!(Line::raw(b"a", false).eol(), b"");
         assert!(final_line_terminated(b""));
         assert!(final_line_terminated(b"a\n"));
         assert!(!final_line_terminated(b"a"));
