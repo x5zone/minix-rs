@@ -184,7 +184,12 @@ pub fn select_fields(
     suppress: bool,
     out: &mut [u8],
 ) -> Result<Option<usize>, TextError> {
-    if !line.contains(&delimiter) {
+    // 分隔符恰好是换行时，C 眼里每一行都「带着分隔符」：它交给扫描的那一串**总是以换行结尾**
+    // （`minix3/usr.bin/cut/cut.c:235-241`——末行没有换行就 `malloc(len + 1)` 补一枚），扫描里
+    // `if (ch == sep)` 于是总在这一格命中（`cut.c:242-251`），`isdelim` 成立，`-s` 抹不掉这一行，
+    // 「整行原样搬运」那一腿也不走。本库的行体里没有那枚字节是**切行**的结果，不是 C 看到的内容。
+    let carries_delimiter = delimiter == b'\n' || line.contains(&delimiter);
+    if !carries_delimiter {
         if suppress {
             return Ok(None);
         }
@@ -421,6 +426,30 @@ mod tests {
             .unwrap()
             .expect("整行搬运，不是跳过这一行");
         assert_eq!(&copied[..whole], b"a\xffb");
+    }
+
+    /// 分隔符恰好是换行：每一行都算「带着分隔符」，于是走字段腿、第二格是空的一格，
+    /// 而 `-s` 没有可抹的行。参照件对 `a\nb c\n` 的 `-f 2` 与 `-f 2 -s` 都交回 `\n\n`
+    /// （每行一枚换行、字段为空），逐字节读数见 `tmp/cut-432/ab.log`。
+    #[test]
+    fn a_newline_delimiter_makes_every_line_a_fielded_line() {
+        let second = [Range { low: 2, high: 2 }];
+        let mut out = [0u8; 8];
+        assert_eq!(
+            select_fields(b"a", &second, b'\n', false, &mut out).unwrap(),
+            Some(0),
+            "第二格存在但是空的：这一行走的是字段腿，不是整行搬运"
+        );
+        assert_eq!(
+            select_fields(b"a", &second, b'\n', true, &mut out).unwrap(),
+            Some(0),
+            "这里没有「整行不带分隔符」可供 `-s` 抹掉"
+        );
+        // 换成别的面分隔符，行体里找不到它，才回到「整行没有分隔符」那一形。
+        assert_eq!(
+            select_fields(b"a", &second, b';', true, &mut out).unwrap(),
+            None
+        );
     }
 
     /// `None` 交回的是「这一行整行没写」，与空串（写了、但选不出字段）不是同一件事。

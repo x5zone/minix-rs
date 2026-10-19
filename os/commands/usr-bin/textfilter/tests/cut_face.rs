@@ -361,3 +361,19 @@ fn cut_normalizes_every_line_with_a_newline_even_the_last() {
         ("alp\nbet\ngam\n", 0, "")
     );
 }
+
+/// 换行当分隔符时的**壳侧**读数：`-d $'\n'` 的 `-f 2` 每行交回一枚换行、字段内容为空，
+/// 加上 `-s` 也一样（C 先给末行补上换行再扫，`cut.c:235-241`）；`-f 1` 则是通常的那一形。
+/// 对照参照件 `tmp/cut-406/cut_ref` 同形。
+#[test]
+fn a_newline_delimiter_keeps_every_line_in_the_field_leg() {
+    let (out, code, _) = run(&["-d", "\n", "-f", "2"], "a\nb c\n");
+    assert_eq!(out, "\n\n");
+    assert_eq!(code, 0);
+    let (suppressed, code, _) = run(&["-d", "\n", "-f", "2", "-s"], "a\nb c\n");
+    assert_eq!(suppressed, "\n\n", "加 `-s` 也照打每行一枚换行");
+    assert_eq!(code, 0);
+    let (first, code, _) = run(&["-d", "\n", "-f", "1"], "a\nb c\n");
+    assert_eq!(first, "a\nb c\n");
+    assert_eq!(code, 0);
+}
