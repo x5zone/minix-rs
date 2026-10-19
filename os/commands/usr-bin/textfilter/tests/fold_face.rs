@@ -47,6 +47,56 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     assert_eq!(err, format!("fold: unknown option -- Z\n{USAGE}"));
 }
 
+/// 与 `run` 同一条命令缝，但**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3` 渲染成三字节
+/// U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法（`rev`/`paste`/`jot` 那几支同此）。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(FOLD)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the fold binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/fold-405/fold_ref`（`fold.c` 真源 +
+/// Minix 的 `getopt.c` + 程序名垫片，本轮新配）现量 `-é` 与 `-bé` 都是
+/// `fold: unknown option -- ` + `c3` + 换行再跟 usage、退 1（`fold.c:76` 的选项串是
+/// `"0123456789bsw:"`，`b` 是合法字母且不带值，所以聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`，
+/// `fold.c:99-101` 的 `default` 直接 `usage()`，报文不累加）。
+/// ASCII 的 `-Z` 本文件已有主人（`an_unknown_letter_prints_the_libc_line_then_the_usage`），
+/// 按冗余判据不重复承载。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_folds_to_one_byte() {
+    let want: Vec<u8> = [
+        b"fold: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-b\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form], b"abc");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}"], b"abc");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"fold: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，`é` 根本不该被读到"
+    );
+}
+
 /// `-w` 后面没有值是 libc 的另一句；与「值不是正数」那句**不同形**，也不同行数。
 #[test]
 fn a_missing_width_value_prints_the_libc_line_then_the_usage() {

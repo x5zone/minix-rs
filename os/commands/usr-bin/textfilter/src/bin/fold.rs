@@ -29,12 +29,17 @@ fn run() -> ! {
         Ok(parsed) => parsed,
         // 两支 getopt 自己的错（集外字母、`-w` 缺值）：先 libc 那一行，再 `usage()`。
         // 旧写法只打 usage，把首行丢了；而 usage 的文本与退码当时也不合 C。
+        //
+        // 字母位走 `line_bytes`：`src/fold.rs` 的取法本就按字节（`bytes[pos] as char`），而
+        // libc 那一行的字母位本来是一个字节（`getopt.c:79` 的 `optopt = *place++`、`:103` 的
+        // `%c`）——`-é`（`c3 a9`）只打 `c3`，参照件 `tmp/fold-405/fold_ref` 现量同此。缺值那一支
+        // 的字母来自选项串 `"0123456789bsw:"`，本来就是 ASCII 的 `w`，两个入口同串。
         Err(FoldError::UnknownOption(flag)) => {
-            support::warn(GetoptReport::UnknownOption(flag).line(prog).as_bytes());
+            support::warn(&GetoptReport::UnknownOption(flag).line_bytes(prog));
             usage(prog);
         }
         Err(FoldError::MissingValue(flag)) => {
-            support::warn(GetoptReport::MissingValue(flag).line(prog).as_bytes());
+            support::warn(&GetoptReport::MissingValue(flag).line_bytes(prog));
             usage(prog);
         }
         Err(FoldError::IllegalWidth) => {
