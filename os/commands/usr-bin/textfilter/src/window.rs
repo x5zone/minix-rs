@@ -55,11 +55,7 @@ impl<'a> Line<'a> {
     }
     /// 写出这一行时该跟的字节：输入里有就原样交回，没有就**不造**。
     pub fn eol(&self) -> &'static [u8] {
-        if self.terminated {
-            b"\n"
-        } else {
-            b""
-        }
+        if self.terminated { b"\n" } else { b"" }
     }
     /// 这一行在输入里是否带着换行。
     pub fn terminated(&self) -> bool {
@@ -79,6 +75,27 @@ impl<'a> From<&'a str> for Line<'a> {
 /// 空输入没有行，交回 `true`（补与不补都走不到任何一行）。
 pub fn final_line_terminated(input: &[u8]) -> bool {
     input.is_empty() || input.ends_with(b"\n")
+}
+
+/// 按字节切输入、按 UTF-8 解码，交回每一行与它在输入里的终止状态。
+///
+/// `input` 为空交回空表（没有行）。输入以换行结尾时，`split` 多交回的那片空串是
+/// 换行之后的东西、不是行；两枚相邻换行之间那片空串仍是真行。
+pub fn lines_of(input: &[u8]) -> Vec<Line<'_>> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+    let text = core::str::from_utf8(input).unwrap_or("");
+    let mut pieces: Vec<Line<'_>> = text.split('\n').map(|piece| Line::new(piece)).collect();
+    if final_line_terminated(input) {
+        // 换行结尾时 `split` 多交回一片空串，它是换行**之后**的东西，不是行；
+        // 内部那片空串（两枚相邻换行之间）仍是真行。
+        pieces.pop();
+    } else if let Some(last) = pieces.last_mut() {
+        // 末行在输入里没有换行：把这件事记在行上，写出的腿就不会去造它。
+        *last = Line::raw(last.text(), false);
+    }
+    pieces
 }
 
 /// One line selection strategy: feed lines in order, drain survivors.
@@ -1514,5 +1531,41 @@ mod tests {
             parse_tail_args(&["-r", "-n", "3"]).unwrap().style,
             TailStyle::ReverseLines { off: 3 }
         );
+    }
+
+    /// 行腿的终止状态：中间行永远带着输入里那枚换行，只有输入的最后一行可能没有。
+    /// 判据来自参照件对 `head`/`tail`/`nl`/`uniq` 四支壳的无尾换行读数（18 篇批次
+    /// 四百二十三），C 的行腿从不像旧写法那样替输入补一枚换行。
+    #[test]
+    fn lines_of_marks_only_the_final_line_as_unterminated() {
+        let marked = lines_of(b"alpha\nbeta\ngamma");
+        assert_eq!(
+            marked
+                .iter()
+                .map(|line| (line.text(), line.terminated()))
+                .collect::<Vec<_>>(),
+            vec![("alpha", true), ("beta", true), ("gamma", false)]
+        );
+        // 换行结尾时多交回的那片空串不是行，两枚相邻换行之间那片才是真行。
+        assert_eq!(lines_of(b"alpha\n").len(), 1);
+        let blanks = lines_of(b"a\n\nb");
+        assert_eq!(
+            blanks
+                .iter()
+                .map(|line| (line.text(), line.terminated()))
+                .collect::<Vec<_>>(),
+            vec![("a", true), ("", true), ("b", false)]
+        );
+        assert!(lines_of(b"").is_empty());
+    }
+
+    /// `eol` 是写出侧唯一的取字节处：带着换行就交回换行，没有就交回空。
+    #[test]
+    fn a_line_writes_back_the_newline_it_had() {
+        assert_eq!(Line::new("a").eol(), b"\n");
+        assert_eq!(Line::raw("a", false).eol(), b"");
+        assert!(final_line_terminated(b""));
+        assert!(final_line_terminated(b"a\n"));
+        assert!(!final_line_terminated(b"a"));
     }
 }

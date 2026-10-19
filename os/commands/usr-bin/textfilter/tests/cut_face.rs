@@ -321,3 +321,16 @@ fn an_unopenable_operand_prints_program_operand_and_errno_sentence() {
     );
     let _ = fs::remove_file(&good);
 }
+
+/// `cut` 是这一族里 C **确实**归一化补换行的那支：每处理完一行都写一枚换行，
+/// 无尾换行的输入也被补上。参照件 `tmp/cut-406/cut_ref` 对 `alpha\nbeta\ngamma`
+/// 现量 `alp\nbet\ngam\n`。这一枚钉的是「归一化」本身，免得后来把 `head`/`tail`/
+/// `nl`/`uniq` 那条「不造换行」的判据顺手统一到 `cut` 上，反而与真源不符。
+#[test]
+fn cut_normalizes_every_line_with_a_newline_even_the_last() {
+    let (out, code, err) = run(&["-c", "1-3"], "alpha\nbeta\ngamma");
+    assert_eq!(
+        (out.as_str(), code, err.as_str()),
+        ("alp\nbet\ngam\n", 0, "")
+    );
+}

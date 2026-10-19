@@ -2,11 +2,11 @@
 //! files, checked against expectations derived from `minix3/usr.bin/head/head.c`
 //! (NetBSD).
 //!
-//! Two deliberate limits on the differential leg against the host's GNU `head`:
-//! inputs are newline-terminated, because this shell rebuilds every printed line
-//! with its newline (a declared simplification shared with `tail`) while C and
-//! GNU copy bytes; and the `-n 0`/`-c 0` cases are pinned to C alone, since
-//! `head.c:90-103` rejects a non-positive count where GNU accepts zero.
+//! Two limits on the differential leg against the host's GNU `head`: the
+//! `-n 0`/`-c 0` cases are pinned to C alone, since `head.c:90-103` rejects a
+//! non-positive count where GNU accepts zero. 末行的换行状态不再是限制：行腿把「输入里
+//! 有没有那枚换行」记在行上（`minix_textfilter::window::Line`），与 C 的逐字符搬运同形，
+//! 参照件 `tmp/head-415/head_ref` 的无尾换行读数已进门。
 
 mod face_support;
 
@@ -263,4 +263,20 @@ fn agrees_with_the_host_head_on_the_shared_forms() {
         );
         assert_eq!(ours.1, theirs.1, "options {options:?}");
     }
+}
+
+/// 无尾换行的末行原样交回，本壳不给它造一枚换行。C 的行形是逐字符搬运
+/// （`minix3/usr.bin/head/head.c:169-172` 的 `getc`/`putchar`），参照件
+/// `tmp/head-415/head_ref` 对 `alpha\nbeta\ngamma` 现量交回的正是这串、末尾没有换行；
+/// 中间行仍各带一枚换行。登记项 `HEAD-FINAL-LINE-ADDS-NEWLINE` 由此闭合。
+#[test]
+fn an_unterminated_final_line_reaches_stdout_without_a_newline() {
+    let (out, code, err) = run(&[], "alpha\nbeta\ngamma");
+    assert_eq!(
+        (out.as_str(), code, err.as_str()),
+        ("alpha\nbeta\ngamma", 0, "")
+    );
+    // 计数截到中间行时，那一行本来带着换行，所以照样有。
+    let (two, _, _) = run(&["-n", "2"], "alpha\nbeta\ngamma");
+    assert_eq!(two, "alpha\nbeta\n");
 }

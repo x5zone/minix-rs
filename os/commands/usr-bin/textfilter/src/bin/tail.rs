@@ -691,8 +691,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use minix_textfilter::window::Line;
     use super::{bytes_after_lines, bytes_from, last_bytes_of, reverse_bytes, reversed_lines};
+    use minix_textfilter::window::Line;
 
     #[test]
     fn last_bytes_truncates_to_count() {
@@ -767,7 +767,12 @@ mod tests {
     #[test]
     fn reversed_lines_last_n_reversed() {
         // -r -n 2 on [1,2,3,4] -> last 2 (3,4) reversed -> 4,3.
-        let lines = [Line::new("1"), Line::new("2"), Line::new("3"), Line::new("4")];
+        let lines = [
+            Line::new("1"),
+            Line::new("2"),
+            Line::new("3"),
+            Line::new("4"),
+        ];
         assert_eq!(texts(&reversed_lines(&lines, Some(2))), ["4", "3"]);
     }
 

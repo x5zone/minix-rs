@@ -387,3 +387,14 @@ fn an_output_operand_that_cannot_be_written_stays_silent_and_exits_zero() {
     );
     let _ = fs::remove_file(&input);
 }
+
+/// `uniq` 不给无尾换行的末行补换行，而且印的是一个连续段的第一行——那一行的终止状态
+/// 跟着它自己走。C 的 `uniq` 用 `fgetln` 得到含换行的行、比较时剥掉换行、打印时原样
+/// 交回（`minix3/usr.bin/uniq/uniq.c`）；参照件 `tmp/uniq-408/uniq_ref` 对
+/// `x\nx\ny`（末尾无换行）现量交回 `x\ny`：两枚 `x` 并成一个段、印带换行的第一枚，
+/// `y` 没有换行就原样结束。
+#[test]
+fn uniq_does_not_supply_a_newline_the_input_lacked() {
+    let (out, code, err) = run(&[], "x\nx\ny");
+    assert_eq!((out.as_str(), code, err.as_str()), ("x\ny", 0, ""));
+}

@@ -269,3 +269,17 @@ fn an_unreadable_operand_names_the_operand_and_the_number_sentence() {
         "自创短语顶替了 strerror 句子：{err:?}"
     );
 }
+
+/// 编号腿不给无尾换行的末行补换行。C 用 `fgets` 连着串尾换行一起读、再用
+/// `printf("%s%s", sep, buffer)` 原样打出（`minix3/usr.bin/nl/nl.c:288`、`:340`），
+/// 参照件 `tmp/nl-417/nl_ref` 现量 `     1\talpha\n     2\tbeta\n     3\tgamma`
+/// （末尾无换行）。登记项 `NL-FINAL-LINE-ADDS-NEWLINE` 由此闭合；本支上一枚门刻意只断
+/// `starts_with`（当时补换行是分叉），现在按逐字节断言钉住。
+#[test]
+fn an_unterminated_final_line_is_numbered_without_a_newline() {
+    let (out, code, err) = run(&[], b"alpha\nbeta\ngamma");
+    assert_eq!(
+        (out.as_str(), code, err.as_str()),
+        ("     1\talpha\n     2\tbeta\n     3\tgamma", 0, "")
+    );
+}

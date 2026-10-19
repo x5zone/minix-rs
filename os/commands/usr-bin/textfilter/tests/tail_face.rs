@@ -644,3 +644,31 @@ fn agrees_with_the_host_tail_on_the_shared_forms() {
         assert_eq!(ours.1, theirs.1, "options {options:?}");
     }
 }
+
+/// 缺省形（`tail -n 10`）不把无尾换行的末行改成带换行。C 的 `RLINES` 记录的行区间
+/// 本来就含那枚换行（`minix3/usr.bin/tail/reverse.c:133-144`），参照件
+/// `tmp/tail-416/tail_ref` 现量 `alpha\nbeta\ngamma`（末尾无换行）。
+/// 登记项 `TAIL-FINAL-LINE-ADDS-NEWLINE` 由此闭合。
+#[test]
+fn tail_leaves_an_unterminated_final_line_unterminated() {
+    let (out, code, err) = run(&[], "alpha\nbeta\ngamma");
+    assert_eq!(
+        (out.as_str(), code, err.as_str()),
+        ("alpha\nbeta\ngamma", 0, "")
+    );
+    let (two, _, _) = run(&["-n", "2"], "alpha\nbeta\ngamma");
+    assert_eq!(two, "beta\ngamma");
+}
+
+/// `-r` 把没有换行的末行翻到输出的最前面，那一行仍不带换行：终止状态记在行上，
+/// 跟着行走，不问输出里的位置。参照件现量 `gammabeta\nalpha\n`。
+#[test]
+fn reversed_output_carries_the_unterminated_line_to_the_front() {
+    let (out, code, err) = run(&["-r"], "alpha\nbeta\ngamma");
+    assert_eq!(
+        (out.as_str(), code, err.as_str()),
+        ("gammabeta\nalpha\n", 0, "")
+    );
+    let (bytes, _, _) = run(&["-r", "-c", "5"], "alpha\nbeta\ngamma");
+    assert_eq!(bytes, "gamma");
+}

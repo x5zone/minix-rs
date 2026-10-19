@@ -228,11 +228,7 @@ pub fn read_line_bounded(limit: usize) -> Option<Vec<u8>> {
             _ => break,
         }
     }
-    if line.is_empty() {
-        None
-    } else {
-        Some(line)
-    }
+    if line.is_empty() { None } else { Some(line) }
 }
 
 #[cfg(all(not(test), target_os = "none"))]
@@ -246,11 +242,7 @@ pub fn read_line_bounded(limit: usize) -> Option<Vec<u8>> {
             _ => break,
         }
     }
-    if line.is_empty() {
-        None
-    } else {
-        Some(line)
-    }
+    if line.is_empty() { None } else { Some(line) }
 }
 
 /// Renders `value` in decimal into `out`, returning the written length.
@@ -277,24 +269,10 @@ pub fn utoa_u64(mut value: u64, out: &mut [u8]) -> usize {
 /// Splits collected input into lines, dropping the trailing newline of
 /// every line and the final empty piece after a terminating newline (the
 /// comparison shape C `uniq` and `cut` work in).
+/// 行腿住在库侧：`minix_textfilter::window::lines_of` 交回的每一行都带着「输入里有没有
+/// 那枚换行」，壳侧只从这一个入口拿，不在五支壳里各表一遍末行判据。
 pub fn lines_of(input: &[u8]) -> Vec<minix_textfilter::window::Line<'_>> {
-    if input.is_empty() {
-        return Vec::new();
-    }
-    let text = core::str::from_utf8(input).unwrap_or("");
-    let mut pieces: Vec<minix_textfilter::window::Line<'_>> = text
-        .split('\n')
-        .map(|piece| minix_textfilter::window::Line::new(piece))
-        .collect();
-    if minix_textfilter::window::final_line_terminated(input) {
-        // 换行结尾时 `split` 多交回一片空串，它是换行**之后**的东西，不是行；
-        // 内部那片空串（两枚相邻换行之间）仍是真行。
-        pieces.pop();
-    } else if let Some(last) = pieces.last_mut() {
-        // 末行在输入里没有换行：把这件事记在行上，写出的腿就不会去造它。
-        *last = minix_textfilter::window::Line::raw(last.text(), false);
-    }
-    pieces
+    minix_textfilter::window::lines_of(input)
 }
 
 /// Reads a whole file's bytes (the `-f`/operand file face).
@@ -1010,8 +988,8 @@ mod write_leg_tests {
 
 #[cfg(test)]
 mod close_outcome_tests {
-    use super::close_outcome;
     use super::SinkFailure::{Close, Write};
+    use super::close_outcome;
 
     /// 写失败赢：C 在 `bigwrite` 失手处当场退出，压根到不了下一次 `close`
     /// （`minix3/usr.bin/split/split.c:204` 与 `:319-322` 的先后）。

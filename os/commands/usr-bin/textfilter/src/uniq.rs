@@ -24,7 +24,6 @@
 //! without buffering.
 
 use crate::TextError;
-use crate::window::Line;
 
 /// C `uniq`'s three flag variables (`cflag`, `dflag`, `uflag`), kept separate
 /// because C composes them in `show()` rather than collapsing them into one
@@ -222,6 +221,7 @@ fn write_decimal(mut value: u64, out: &mut [u8], mut written: usize) -> Result<u
 
 #[cfg(test)]
 mod tests {
+    use crate::window::Line;
     use super::*;
 
     fn collect(flags: UniqFlags, lines: &[&str]) -> Vec<(String, u64)> {
@@ -262,14 +262,21 @@ mod tests {
 
     /// One run of the line `a` with `count` copies, for the format tests.
     fn run_of(count: u64) -> Run<'static> {
-        Run { line: Line::new("a"), count }
+        Run {
+            line: Line::new("a"),
+            count,
+        }
     }
 
     #[test]
     fn test_collapses_adjacent() {
         assert_eq!(
             collect(NONE, &["a", "a", "b", "a"]),
-            [("a".to_string(), 2), ("b".to_string(), 1), ("a".to_string(), 1)]
+            [
+                ("a".to_string(), 2),
+                ("b".to_string(), 1),
+                ("a".to_string(), 1)
+            ]
         );
     }
 
