@@ -88,11 +88,11 @@ fn arg_error(prog: &str, error: UnexpandError<'_>) -> ! {
         // 集外字母与缺值：libc 那一行在前（`getopt.c:101-104`、`:132-136`），
         // C 的 `default: usage()` 在后（`unexpand.c:115-117`）—— 两行。
         UnexpandError::UnknownOption(letter) => {
-            support::warn(GetoptReport::UnknownOption(letter).line(prog).as_bytes());
+            support::warn(&GetoptReport::UnknownOption(letter).line_bytes(prog));
             usage(prog)
         }
         UnexpandError::MissingValue(letter) => {
-            support::warn(GetoptReport::MissingValue(letter).line(prog).as_bytes());
+            support::warn(&GetoptReport::MissingValue(letter).line_bytes(prog));
             usage(prog)
         }
         UnexpandError::BadStops(StopRejection::Invalid(piece)) => {

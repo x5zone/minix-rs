@@ -279,9 +279,10 @@ pub fn parse_unexpand_args<'a>(args: &'a [&'a str]) -> Result<UnexpandArgs<'a>, 
                     pos = bytes.len();
                 }
                 _ => {
-                    return Err(UnexpandError::UnknownOption(
-                        arg[pos..].chars().next().unwrap_or('-'),
-                    ));
+                    // 环本身按字节走（`pos` 是字节下标），交回的字母也必须是那一枚字节：
+                    // `getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 的 `%c`
+                    // 原样写出，所以 `-é`（`c3 a9`）报的是 `c3` 而不是整个字符。
+                    return Err(UnexpandError::UnknownOption(char::from(bytes[pos])));
                 }
             }
         }
@@ -397,7 +398,7 @@ mod tests {
         );
     }
 
-    /// 选项环的四支出口与不重排：集外字母只报第一个字符、缺值是另一句、
+    /// 选项环的四支出口与不重排：集外字母只报短横后的第一个字节、缺值是另一句、
     /// `-a` 与 `-t` 谁后到谁触 usage、非选项 token 一到后面的整个当操作数。
     #[test]
     fn the_option_ring_reports_libc_letters_and_stops_at_the_first_operand() {
@@ -471,6 +472,41 @@ mod tests {
         assert_eq!(
             parse_unexpand_args(&["--"]).unwrap().operands,
             Vec::<&str>::new()
+        );
+    }
+
+    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
+    /// `char` 域里是 U+00C3（参照件 `tmp/unexpand-312/unexpand_ref` 现量报文里那一个字节
+    /// 就是 `303`，见 `tests/unexpand_face.rs` 的同形门）。本支的环本就按字节下标走，
+    /// 所以这一枚钉的是「交回的那一刻不要把字节升格成字符」。
+    #[test]
+    fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
+        assert_eq!(
+            parse_unexpand_args(&["-\u{e9}"]),
+            Err(UnexpandError::UnknownOption('\u{00c3}')),
+            "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
+        );
+        // `a` 是选项串里合法且不带值的字母，聚簇继续吃到下一字节。
+        assert_eq!(
+            parse_unexpand_args(&["-a\u{e9}"]),
+            Err(UnexpandError::UnknownOption('\u{00c3}')),
+            "-a\u{e9}"
+        );
+        // 环停在第一个坏字母上：`-Zé` 只报 `Z`。
+        assert_eq!(
+            parse_unexpand_args(&["-Z\u{e9}"]),
+            Err(UnexpandError::UnknownOption('Z'))
+        );
+        // ASCII 那一形不许被这次改动波及。
+        assert_eq!(
+            parse_unexpand_args(&["-q"]),
+            Err(UnexpandError::UnknownOption('q'))
+        );
+        // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
+        // `Invalid tabstop `a\303\251'`）。
+        assert_eq!(
+            parse_unexpand_args(&["-t\u{e9}"]),
+            Err(UnexpandError::BadStops(StopRejection::Invalid("é")))
         );
     }
 
