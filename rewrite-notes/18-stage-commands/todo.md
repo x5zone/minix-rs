@@ -119,6 +119,58 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十三（预研轮 `TEXTFILTER-NONUTF8-DECODE-SITE-CENSUS`：普查分三组，每组要的是不同的东西）
+
+**为什么先普查再动手**。批次四百三十把行腿改成按字节之后，同一族还留着一批「先解一次 UTF-8 再干活」的
+地方。它们看着一样，处置却分三类：有的必须按字节保真，有的 C 自己就是宽字符向（遇到非法字节**报错退场**，
+照字节改反而错），有的压根不是生产代码。不分类就动手，会把第二类改坏。本轮不落码，只做量清与施工顺序。
+
+**量法**。夹具 `tmp/census-433/in` = 字面字节 `a\xffb\nc\n`（一枚裸 `\xff`，不是 `\xff` 的 UTF-8 转义）；
+本壳现量与参照件现量并排记在 `tmp/census-433/ref-readout.log`。参照件是各支在册的那批（`tmp/rev-309/rev_ref`、
+`tmp/pr-419/pr_ref`、`tmp/column-314/column_ref`、`tmp/comm-409/comm_ref`、`tmp/paste-321/paste_ref`）。
+
+### 甲组：行内容必须按字节保真（参照件连 `\xff` 一起打）
+
+| 壳 | 站点（函数签名就是病灶形状） | 本壳 | 参照件 |
+|---|---|---|---|
+| `pr` | `src/bin/pr.rs:fn split_lines`（`input: &[u8]` → `Vec<String>`，`:162-166`） | 空 | `a 377 b \n c \n` |
+| `column` | `src/bin/column.rs:fn collect`（`bytes: &[u8]` → `text`，`:83-84`） | 空 | `a 377 b \t c \n` |
+| `comm` | `src/bin/comm.rs:fn split_lines`（`input: &[u8]` → `Vec<String>`，`:100-104`） | 只剩 `\t x \n`（整个非 UTF-8 文件当空文件） | `a 377 b \n c \n \t x \n` |
+| `paste` | `src/bin/paste.rs:fn split_lines`（同上形状，`:134-138`） | `\t x \n`（非 UTF-8 那份的行全丢） | `a 377 b \t x \n c \t \n` |
+
+四处形状相同：**收 `&[u8]`、第一句就 `core::str::from_utf8(...).unwrap_or("")`、再按 `\n` 切**。这就是批次四百三十
+在 `lines_of` 上修掉的那个缺陷换了个函数名——一枚非法字节让解出来的串变成空串，于是整份输入消失。修法是既定的：
+切分交给字节（`split(|b| *b == b'\n')`），行的内容一路按 `&[u8]` 传到写出侧。**施工顺序**：`pr`、`column` 各一支
+（各自的面腿独立，改动局限在 `split_lines`/`collect` 与其下游）；`comm`、`paste` 并一支（两处的 `split_lines`
+签名与用途相同，一次改完并让两支的门同批翻）。四支的参照件都在册，A/B 现量可比。
+
+### 乙组：C 自己就是宽字符向，照字节改会改坏
+
+`rev`：本壳交回空、无报文；参照件 `tmp/rev-309/rev_ref` 交回**空 stdout + 一句 stderr**
+`rev_ref: stdin: Invalid or incomplete multibyte or wide character`。C 的 `rev.c` 走的是宽字符腿，非法序列
+是**报错**而不是忽略——与 `x_cut.c` 的 `c_cut`（`getwc`/`putwchar`，`:52-57`）同族，也就是板上在册的
+`CUT-C-LEG-CHARACTER-ORIENTED` 的姊妹形。这一支不能并入甲组的字节保真改法：要么建模「遇到非法序列即报错退场」
+（含报文与非零退码），要么明确决定不建模并把它登记成已知差异。这属于**要人裁决**的一类，本轮只把形状钉清楚。
+
+### 丙组：普查里被我算错的两笔（本笔更正）
+
+批次四百三十的登记句写着「直接 `.unwrap()` 的 2 处（`nl.rs:240`、`join.rs:723`，非 UTF-8 输入即 panic）」——
+**这句不成立**：两行都在 `mod tests` 之内（`src/nl.rs:mod tests` 起于 `:224`，`src/join.rs:mod tests` 起于 `:708`），
+是测试助手把输出的字节转回 `String` 用来比对，panic 条件是**夹具写错**，不是输入里的字节。生产腿不受影响。
+另有一处也不是缺陷：`src/unexpand.rs:fn unexpand` 里那句
+`core::str::from_utf8(input.as_bytes()).unwrap_or("")`（`:208-209`）——它的入参本来就是 `&str`，
+把自己的字节再解一次**永不失败**，属可以删掉的死防御；`unexpand` 真正可能整份丢字节的位置在壳侧读入路径，
+不在这一句。
+
+于是 census 的真实规模是：**甲组 4 处**（生产、修法既定）、**乙组 1 处**（`rev`，待裁决）、
+**丙组 3 处**（2 处测试腿 + 1 处死防御，前两处无需修、第三处可顺手删）；`units`、`tsort` 两处本轮**未测**——
+`units` 要的是单位表达式而非普通行（本壳现量是 `units: Can't find units file`），`tsort` 需要成对的边表夹具，
+两者的夹具形状与甲组不同，单列。`from_utf8_lossy` 那 22 处也单列：里面有一类是选项字母的兜底（参数缝半的口径，
+保留），一类是内容被改写（要按甲组口径换成字节），得分开看，不能一把替换。
+
+**本轮登记**：甲组拆成三支施工（`pr`／`column`／`comm`+`paste` 并轮），乙组 `REV-MULTIBYTE-ERROR-LEG` 与
+`CUT-C-LEG-CHARACTER-ORIENTED` 并成一族**待裁决**，丙组里 `unexpand.rs:fn unexpand` 的死防御可随手并入任一轮，
+`units`、`tsort` 与 `lossy` 一族维持在册待测。
 ## 批次四百三十二（P0 独立轮 `CUT-NEWLINE-DELIMITER-NEEDS-TERMINATOR`：`-d $'\n'` 时那一行的分隔符就是它的行末）
 
 **缺陷的形状**。`select_fields` 判断「这一行带不带分隔符」用的是 `line.contains(&delimiter)`，而它的
