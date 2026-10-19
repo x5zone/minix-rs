@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的日常操作第二组——文件里面的行：取头取尾、排序去重、计数切割、字符转换
 > **源码**: `minix3/usr.bin/` 三十五个（`head` 204 行、`sort` 418 行、`wc` 354 行、`tr` 283 行、`uniq` 257 行、`cut` 306 行，及 `cksum`、`cmp`、`col`、`colrm`、`column`、`comm`、`csplit`、`expand`、`fold`、`hexdump`、`join`、`jot`、`lam`、`paste`、`patch`、`rev`、`sdiff`、`seq`、`shuffle`、`split`、`tail`、`tee`、`unexpand`、`unifdef`、`units`、`unvis`、`uuidgen`、`vis`、`yes`）、`minix3/minix/commands/` 三个（`look`、`ifdef`、`crc`）、`minix3/minix/usr.bin/diff/`
-> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`、`sort.rs`、`cmp.rs`、`seq.rs`、`pr.rs`、`rev.rs`、`comm.rs`、`expand.rs`、`unexpand.rs`、`fold.rs`、`cksum.rs`、`digest.rs`、`paste.rs`、`split.rs`、`tsort.rs`、`colrm.rs`、`vis.rs`、`column.rs`，库测试 577 个）；同 crate `src/bin/` 薄壳二十四个已接线：tr、cut、uniq、head、tail、wc、sort、cmp、seq、pr、yes、rev、comm、expand、unexpand、fold、cksum、paste、split、tsort、vis、unvis（yes 为纯执行半无限循环；rev 走 stdin；comm 双流同源自检；cksum 走 stdin，`-a` 的八枚摘要本体全接（`src/digest.rs`），`-s`/`-t`/`-x` 三条自印腿已按参照件读数接真（批次三百八十七），只剩 hash 在里的 `-c` 校验腿走占位句；cmp/pr/expand/unexpand/fold 的文件操作数待开放路径）（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；原占位壳随 34 壳删除移除，见 todo.md §6.1 步骤 3）
+> **Rust 模块**: `os/commands/usr-bin/textfilter`（库包 `minix-textfilter`：`window.rs`、`count.rs`、`cut.rs`、`tr.rs`、`uniq.rs`、`sort.rs`、`cmp.rs`、`seq.rs`、`pr.rs`、`rev.rs`、`comm.rs`、`expand.rs`、`unexpand.rs`、`fold.rs`、`cksum.rs`、`digest.rs`、`paste.rs`、`split.rs`、`tsort.rs`、`colrm.rs`、`vis.rs`、`column.rs`，库测试 586 个）；同 crate `src/bin/` 薄壳二十四个已接线：tr、cut、uniq、head、tail、wc、sort、cmp、seq、pr、yes、rev、comm、expand、unexpand、fold、cksum、paste、split、tsort、vis、unvis（yes 为纯执行半无限循环；rev 走 stdin；comm 双流同源自检；cksum 走 stdin，`-a` 的八枚摘要本体全接（`src/digest.rs`），`-s`/`-t`/`-x` 三条自印腿已按参照件读数接真（批次三百八十七），只剩 hash 在里的 `-c` 校验腿走占位句；cmp/pr/expand/unexpand/fold 的文件操作数待开放路径）（执行半经 `minix-sys` 顶层 `read`/`write`，宿主的输入通道因 edge E-SYSCALL-SIGN 的假成功尚未出现文件末尾，真机与修复后正常；原占位壳随 34 壳删除移除，见 todo.md §6.1 步骤 3）
 > **前置依赖**: `06-file-ops.md`（搬文件在先）、`08-grep-sed.md`（正则概念在后——阅读顺序先本篇后 08，但概念上 08 是本篇部分工具的理论基础，见 1.5 节说明）
 > **不覆盖（移交）**: 正则引擎（见 `08-grep-sed.md`）、编辑器（见 `09-editors.md`）、排序的缓冲策略与比较器（后续阶段）
 
@@ -25,7 +25,7 @@
 
 ### 1.1 取段家族：头、尾、切、拼
 
-- **取头取尾**（`head`、`tail`）：保留前 N 行或后 N 行。前者是"读一点就停"（管道上游可提前终止），后者必须看完全部输入（最后 N 行在哪，不看到文件尾无从知道）——这个不对称是理解两者实现差异的钥匙：前者是丢弃器，后者是环形缓冲。本库 `window.rs` 的 `HeadWindow` 与 `TailWindow` 正是这两种结构。
+- **取头取尾**（`head`、`tail`）：保留前 N 行或后 N 行。前者是"读一点就停"（管道上游可提前终止），后者必须看完全部输入（最后 N 行在哪，不看到文件尾无从知道）——这个不对称是理解两者实现差异的钥匙：前者是丢弃器，后者是环形缓冲。本库 `window.rs` 的 `HeadWindow` 与 `TailWindow` 正是这两种结构。两者取的都是**字节行**：一行的内容字段就是 `&[u8]`（`os/commands/usr-bin/textfilter/src/window.rs:fn lines_of`）。C 的行腿从不解读内容——`minix3/usr.bin/nl/nl.c:288` 的 `fgets` 连着换行读进缓冲、`minix3/usr.bin/head/head.c:169-172` 逐字符 `getc`/`putchar` 搬运。如果先把整份输入解成 UTF-8 再切行，一枚读不懂的字节就会让解出来的串变成空串，于是每一行都消失；按字节切则行是输入自己的切分，与内容编的是什么无关（18 篇批次四百三十把这条口径落到`Line`、`lines_of`、`cut.rs:fn select_bytes`、`cut.rs:fn select_fields`、`uniq.rs:fn comparison_key` 五处）。
 - **切分**（`split` 按行数或字节切文件、`csplit` 按上下文切）：大文件拆小，"拆了还能拼回去"是基本契约（`cat` 拼回须与原文一致）。
 - **切割**（`cut`：选项串 `b:c:d:f:sn` 在 `cut.c` 第 88 行）：按字节、按字符、按分隔字段三选一。字段模式的分隔符可定制（`-d`），无分隔符的行默认原样通过（除非 `-s` 要求丢弃）——"整行没有分隔符"的处置是 `cut` 最常见的踩坑点。
 - **拼接**（`paste` 横向并列、`join` 按关键列连接、`column` 对齐成表、`lam` 交错、`comm` 比较已排序文件的三列输出）：关系代数在文本上的投影，`join` 要求输入已排序（未排序输入的结果未定义——文档必须写明前置条件）。

@@ -119,6 +119,72 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十（P0 独立轮 `LINES-OF-NONUTF8-DROPS-ALL`：行是按字节切出来的，不是解出来的——一枚读不懂的字节不该吃掉整份输入）
+
+**缺陷的形状**。`lines_of`（`os/commands/usr-bin/textfilter/src/window.rs:fn lines_of`）改前先把整份
+输入 `core::str::from_utf8(input).unwrap_or("")` 解一次，再按 `\n` 切。解失败交回空串，于是**一片也
+切不出**：夹具 `a\xffb\nc\n\xff\nplain\nlast`（`tmp/lines-430/in.bin`）在 `head -n 2` 下本壳交回零字节，
+而参照件 `tmp/head-415/head_ref` 连那枚 `\xff` 一起把两行打出来。这不是「那一行怎么办」的问题，是
+「整份输入都没了」的问题——所以它比逐行替换更严重，也更便宜就能钉死。
+
+**真源为什么不解读**。C 的这几条行腿交回的都是字节：`minix3/usr.bin/nl/nl.c:288` 的 `fgets` 连着换行
+读进缓冲、`minix3/usr.bin/head/head.c:169-172` 逐字符 `getc`/`putchar` 搬运、
+`minix3/usr.bin/unexpand/unexpand.c:133` 的 `fgetln` 直接给长度与指针。字节从不需要"解码成功"才存在。
+
+**改法**。`Line<'a>` 的内容字段换成 `&'a [u8]`，访问口 `text()` 换成 `bytes()`；`lines_of` 用
+`input.split(|byte| *byte == b'\n')` 直接切字节，末行有没有那枚换行仍按批次四百二十三定的口径记在行上
+（写出侧只看 `eol()`）。取法侧的三处入口同步收字节：`cut.rs:fn select_bytes`、`cut.rs:fn select_fields`、
+`uniq.rs:fn comparison_key`。`From<&'a str>` 保留——测试与只会造内容的调用方走它，代价是把 ASCII 夹具
+的方便留给测试而不是留给生产代码。
+
+**为什么不逐行解码再换成替换字符**。那样等于替输入改写内容：参照件打的是原字节，而 `uniq` 的比较、
+`cut` 的位置都是**按字节**定义的，把 `\xff` 换成 U+FFFD 会让本来不等的两行变得相等，也会让一格的字节
+变成三格。字节承载把这两件事同时关掉；代价只有一点——凡是还想拿 `&str` 的下游腿，都得自己说明它拿的
+是「内容」还是「字节」，这正是 `tail.rs` 与 `uniq.rs` 的测试助手现在显式做 UTF-8 转换并 expect 的地方。
+
+**门 +3**（库 584→586、包 1188→1191）：`window::tests::an_undecodable_byte_is_still_a_line`（含非法字节
+的行留在行里、两行都带着输入自己那枚换行；末行只剩一枚非法字节且没有换行时终止状态也如实记）、
+`cut::tests::a_byte_that_is_not_utf8_occupies_one_position`（第 2 格就是那枚字节本身，行里没有分隔符且
+`-s` 关着时整行原样搬运）、`uniq::tests::a_byte_that_is_not_utf8_counts_as_one_skip_step`（`-s 2`/`-s 3`
+的位移按字节）。
+
+**门读数（L1，命令与日志同批落 `tmp/lines-430/`）**：宿主 `cargo test --offline -j 1 --no-fail-fast -p
+minix-textfilter` **1191 passed / 0 failed**（68 段，`host-final.log`）；容器 `minix-ci:1.94` 同配方
+**1191 / 0**、退码 0（`container-gate2.log`）；三架构 `--bins` 全退 0；`clippy --all-targets` 与主树基线
+按「告警文本 + 文件」逐条对读，**新增 0 条**（`window.rs` 三条、`uniq.rs` 两条是基线存量，见
+`clip-claim.txt` 与 `clip-main.txt` 的 `comm` 结果）；`rustfmt --check` 与主树基线比，**新增漂移 0 件**
+（本轮自己的 `lines_of` 那条链式调用已由 `rustfmt --edition 2024` 收回到一行）。
+
+**负控 5 枚**（`tmp/lines-430/negctl.py`：每枚注入后立即跑 `--lib`，红名必须点名本轮那三枚新门之一，
+`finally` 里无条件还原）：N1 `lines_of` 退回「先整份解码再切」——咬住（缺陷原形复活）；N2 `lines_of`
+把解不出 UTF-8 的那一行整行丢掉——咬住；N3 `select_bytes` 解码后再数位置——咬住；N4 `comparison_key`
+把高位字节当成一个字符的第二格——咬住；N5 等价注入（`Line::new` 展开成同样的字段构造）——全绿，证明
+门不是见什么都咬。
+
+**容器门的时序教训**。容器门与宿主门并发跑时报 **83 红**：两者共用同一个 `os/target`，前一份构建的产物
+在后一份执行途中被替换，红的是执行环境不是代码。串行复跑即 1191/0。判据：**容器权威门不得与任何 cargo
+构建或测试并发**；见到「宿主绿、容器成片的红」先查是否同靶并发，再查代码。
+
+**A/B 现量与唯一残差**。`tmp/lines-430/ab.py` 对五支参照件（`head_ref`、`tail_ref`、`nl_ref`、`uniq_ref`、
+`cut_ref`）跑 19 形：**18 形逐字节同、1 形不同**——`cut -c 2` 本壳交回 `ff 0a 0a 0a 6c 0a 61 0a`，参照件
+交回空，退码同为 0。差异不在行腿，在 C 的 `-c` 腿本身：`minix3/usr.bin/cut/x_cut.c` 把同一份代码编成两
+份，`b_cut` 的取放宏是 `getc`/`putchar`（`:45-50`），`c_cut` 的是 `getwc`/`putwchar`（`:52-57`），也就是
+`-c` 数的是**字符位置**，撞上非法字节后整条腿交回空。本壳现在 `-c` 与 `-b` 同走字节——这是「按字节 vs
+按字符」的选项语义差，不是本轮的行腿问题，改它要连着定「字符位置」在 `no_std` 下按什么算，属独立一轮。
+
+**本轮登记（在册未动，不执行）**：
+① `CUT-C-LEG-CHARACTER-ORIENTED`——`cut -c` 应数字符位置（C 的 `c_cut` 走 `getwc`/`putwchar`，
+`x_cut.c:52-57`），本壳 `-c` 目前与 `-b` 同为字节；现场读数见 `tmp/lines-430/ab.log`。
+② `TEXTFILTER-NONUTF8-DECODE-SITE-CENSUS`——同类解码站点普查（本轮现量）：整份
+`core::str::from_utf8(...).unwrap_or("")` 还剩 **8 处**（`bin/comm.rs:104`、`bin/column.rs:84`、
+`bin/pr.rs:166`、`bin/units.rs:207`、`bin/tsort.rs:43`、`bin/paste.rs:138`、`unexpand.rs:199`、
+`rev.rs:31`）；直接 `.unwrap()` 的 **2 处**（`nl.rs:240`、`join.rs:723`，非 UTF-8 输入即 panic，比交回空
+更早退场）；`from_utf8_lossy` **22 处**散在 14 件（含 `bin_support.rs` 的参数缝与若干件的写出侧）。
+这三族不是一次机械替换：`unwrap()` 那两处要先定「panic 还是交回原字节」，`lossy` 那 22 处要分清哪一处是
+选项字母的兜底（参数缝半的口径，保留）、哪一处是内容被改写（要按本轮口径换成字节）。
+③ 07 篇表头「库测试 577 个」是批次四百二十四以来的累计漂移，本轮按现量改为 **586**；后续每轮动库测试数
+就在 07 篇表头同笔回写，别攒。
+
 ## 批次四百二十九（P0 独立轮 `UNEXPAND-C-COMMENT-ANCHOR-DRIFT`：锚点是给下一回去核对真源的人用的，号数错了它就把人往隔壁带）
 
 - **这一轮干什么**：闭批次四百二十五登记的 `UNEXPAND-C-COMMENT-ANCHOR-DRIFT`。射程是 unexpand 一支的三个件（`os/commands/usr-bin/textfilter/src/unexpand.rs`、`src/bin/unexpand.rs`、`tests/unexpand_face.rs`）里**每一处**写着 `unexpand.c:NNN` 或 `getopt.c:NNN` 的注释，逐条与 `minix3/usr.bin/unexpand/unexpand.c`、`minix3/lib/libc/stdlib/getopt.c` 对读，只改数字，不动一个字的语义。真源只有一个提交（`ce9f2c7b5` 的 vendored 导入），所以号数与真源之间的每一格差都是锚点自己漂出去的，不是 C 动过。
