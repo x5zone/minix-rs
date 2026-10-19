@@ -1953,6 +1953,39 @@ mod tests {
         assert_eq!(g.options.columns, 2);
     }
 
+    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
+    /// `char` 域里是 U+00C3。本支的字母来自 `:522` 的 `bytes[pos] as char`，机制层证据在
+    /// `minix3/usr.bin/pr/egetopt.c:110`（`eoptopt = (int)*place++` 一次进一个字节）与
+    /// `:148`（`%c` 原样写出），参照件 `tmp/pr-419/pr_ref` 现量 `-é` 与 `-dé` 都打单个
+    /// `303`（`d` 在 `"#adFfmrte?h:i?l:n?o:ps?T:w:"` 里不带值，聚簇继续吃到 `é` 的第一字节）。
+    /// 逐字节面门在 `tests/pr_face.rs`。
+    #[test]
+    fn the_illegal_letter_is_the_first_byte_not_the_first_character() {
+        assert_eq!(
+            parse_pr_args(&["-\u{e9}"]).err(),
+            Some(PrError::Getopt(GetoptReport::IllegalOption('\u{00c3}'))),
+            "`é` 是 c3 a9 两字节，egetopt 报 c3 而不是整个字符"
+        );
+        // `d` 合法且不带值 ⇒ 聚簇继续吃到第一字节（参照件同读数）。
+        assert_eq!(
+            parse_pr_args(&["-d\u{e9}"]).err(),
+            Some(PrError::Getopt(GetoptReport::IllegalOption('\u{00c3}'))),
+            "-d\u{e9}"
+        );
+        // 环停在第一个坏字母上。
+        assert_eq!(
+            parse_pr_args(&["-Z\u{e9}"]).err(),
+            Some(PrError::Getopt(GetoptReport::IllegalOption('Z'))),
+            "-Z\u{e9}"
+        );
+        // 反面：带值字母把其后的字节整个当值收走（`w` 的值首位不是数字 ⇒ 自己那句）。
+        assert_eq!(
+            parse_pr_args(&["-w\u{e9}"]).err(),
+            Some(PrError::WidthValue),
+            "-w\u{e9} 走的是 `-w width must be 1 or more ' 那一句"
+        );
+    }
+
     #[test]
     fn parse_error_paths() {
         // 集外/未建模字母、缺值、C 为每个数值选项单写的判据消息、`-a` 与 `-m`

@@ -237,6 +237,70 @@ fn numeric_option_diagnostics_are_c_named_messages_then_the_usage() {
 /// 会正好吃掉那十个空格。
 const USAGE: &str = "usage: pr [+page] [-col] [-adFfmprt] [-e[ch][gap]] [-h header]\n          [-i[ch][gap]] [-l line] [-n[ch][width]] [-o offset]\n          [-s[ch]] [-T timefmt] [-w width] [-] [file ...]\n";
 
+/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(PR)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the pr binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**，而且这一支的机制层证据不在 libc：`pr` 链的是
+/// 它自带的 `egetopt.c`（`:110` 的 `eoptopt = (int)*place++` 一次进一个字节、`:148` 的
+/// `%c` 原样写出），措辞也是它自己的 `illegal option -- <字母>`（不是同族其它命令的
+/// `unknown option`）。期望逐形取自本轮新配的参照件 `tmp/pr-419/pr_ref`（`pr.c` +
+/// `egetopt.c` + 垫片，含 `raise_default_signal` 的 NetBSD 四步语义；经同名软链 `pr` 起
+/// ⇒ 程序名段与本壳一致）：`-é` 与 `-dé` 都是 `pr: illegal option -- ` + 单个 `c3` +
+/// 换行再跟那**三行** usage（第二三行各带十个前导空格）、退 1；`-Zé` 停在 `Z`；反面的
+/// `-wé` 里 `é` 是**值**（`w` 带值）⇒ 命令自己那句以空格结尾的
+/// `pr: -w width must be 1 or more ` 再接三行 usage。ASCII 那几形本文件已有主人，不重复承载。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_pr() {
+    let want: Vec<u8> = [
+        b"pr: illegal option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-d\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form], b"a\n");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"pr: illegal option -- Z\n".as_slice(), USAGE.as_bytes()].concat(),
+        "环停在第一个坏字母上，第二个字节根本不该被读到"
+    );
+
+    let (_out, status, err) = run_bytes(&["-w\u{e9}"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"pr: -w width must be 1 or more \n".as_slice(),
+            USAGE.as_bytes(),
+        ]
+        .concat(),
+        "带值字母把两字节整个当值收走，句子是命令自己的那一句（结尾那个空格也是 C 的原文）"
+    );
+}
+
 #[test]
 fn letters_outside_the_c_optstring_print_the_egetopt_line_then_the_usage() {
     // `egetopt` 对不在 `"#adFfmrte?h:i?l:n?o:ps?T:w:"` 里的字母先印自己那一句

@@ -182,8 +182,11 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 fn arg_error(prog: &str, e: PrError) -> ! {
     match e {
         // `egetopt` 那一行（`egetopt.c:144-151` 或 `:196-205`）紧跟 usage 三行。
+        // 字母位走 `line_bytes`：`egetopt.c:110` 的 `eoptopt = (int)*place++` 一次进一个
+        // 字节、`:148` 的 `%c` 原样写出，所以 `-é`（`c3 a9`）报的是 `c3`——这一支不走
+        // libc 的 `getopt`，取法的证据要落在 `egetopt.c` 上而不是 `getopt.c:79`。
         PrError::Getopt(report) => {
-            support::warn(report.line(prog).as_bytes());
+            support::warn(&report.line_bytes(prog));
             usage()
         }
         PrError::PlusPage => fail(b"pr: +page number must be 1 or more\n"),
