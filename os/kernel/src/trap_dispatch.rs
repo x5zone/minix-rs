@@ -1266,6 +1266,10 @@ const RISCV64_CAUSE_SUPERVISOR_TIMER: u64 = 5;
 /// interrupt code 1 under the interrupt bit) —— IPI 车道（SD-41 SWI 臂）。
 #[cfg(target_arch = "riscv64")]
 const RISCV64_CAUSE_SUPERVISOR_SOFTWARE: u64 = 1;
+/// riscv64 scause: Supervisor External interrupt（privileged spec §5.2.4，
+/// interrupt code 9 under the interrupt bit）——PLIC 外设中断车道（SD-41）。
+#[cfg(target_arch = "riscv64")]
+const RISCV64_CAUSE_SUPERVISOR_EXTERNAL: u64 = 9;
 /// riscv64 scause: Environment Call from U-mode (exception code 8).
 #[cfg(target_arch = "riscv64")]
 const RISCV64_CAUSE_ECALL_UMODE: u64 = 8;
@@ -1339,6 +1343,12 @@ pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::tr
         riscv64_swi_arm();
         return;
     }
+    if scause & RISCV64_SCAUSE_INTERRUPT != 0
+        && scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_EXTERNAL
+    {
+        riscv64_external_arm();
+        return;
+    }
     riscv64_diag_panic(frame, scause, "kernel-leg trap");
 }
 
@@ -1394,6 +1404,10 @@ pub unsafe extern "C" fn riscv64_user_body(
         }
         if scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_SOFTWARE {
             riscv64_swi_arm();
+            return PARK_NONE;
+        }
+        if scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_EXTERNAL {
+            riscv64_external_arm();
             return PARK_NONE;
         }
         return riscv64_diag_panic(frame, scause, "user-leg trap");
@@ -1763,6 +1777,47 @@ fn riscv64_swi_arm() {
         Console::write_str("nk4c: swi-ack n=");
         Console::write_hex(n + 1);
         Console::write_str("\n");
+    }
+}
+
+/// SD-41 EI 臂（scause=9，Supervisor External interrupt）：PLIC claim 读
+/// （源号即 IRQ 号）→ 按向量走 `dispatch_claimed` 完整握手（mask→链→
+/// unmask→complete，D-61）。PLIC 窗已进用户根（I-22 前置 `c63b08058`），
+/// claim/complete 的 MMIO 读写在双腿地址空间皆可达。无链源 → Spurious
+/// 计数（PLIC claim 读已消源挂起，无风暴风险，同 timer 臂 Spurious 打印
+/// 口径）；源使能由首个设备驱动经 IRQ 管理器 unmask 自选（本臂为通道，
+/// 不自开源）。
+#[cfg(target_arch = "riscv64")]
+fn riscv64_external_arm() {
+    use core::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
+    static ACKS: AtomicU64 = AtomicU64::new(0);
+    let Some(id) = crate::irq_manager::claim_hardware_irq() else {
+        return; // claim=0：假中断（无线索），静默吞同 timer 口径
+    };
+    let irq = minix_plat::IrqVector::new(id as u8);
+    match crate::irq_manager::dispatch_claimed_hardware_irq(irq, Some(id)) {
+        Ok(()) => {
+            let n = ACKS.fetch_add(1, AtomicOrd::AcqRel);
+            if n < 4 {
+                use crate::kmess::{EarlyConsole, KernelConsole as Console};
+                Console::write_str("nk4c: sei-ack src=");
+                let mut hb = [0u8; 8];
+                let mut v = id as u64;
+                for byte in hb.iter_mut().rev() {
+                    *byte = b"0123456789abcdef"[(v & 0xf) as usize];
+                    v >>= 4;
+                }
+                Console::write_str(core::str::from_utf8(&hb).unwrap_or("?"));
+                Console::write_str("\n");
+            }
+        }
+        Err(crate::irq_manager::IrqError::Spurious(irq)) => {
+            use crate::kmess::{EarlyConsole, KernelConsole as Console};
+            Console::write_str("spurious irq ");
+            Console::write_hex(irq.get() as u64);
+            Console::write_str("\n");
+        }
+        Err(e) => panic!("riscv64 external arm: IRQ dispatch error {e:?}"),
     }
 }
 
