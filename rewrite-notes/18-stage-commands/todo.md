@@ -119,6 +119,33 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百二十九（P0 独立轮 `UNEXPAND-C-COMMENT-ANCHOR-DRIFT`：锚点是给下一回去核对真源的人用的，号数错了它就把人往隔壁带）
+
+- **这一轮干什么**：闭批次四百二十五登记的 `UNEXPAND-C-COMMENT-ANCHOR-DRIFT`。射程是 unexpand 一支的三个件（`os/commands/usr-bin/textfilter/src/unexpand.rs`、`src/bin/unexpand.rs`、`tests/unexpand_face.rs`）里**每一处**写着 `unexpand.c:NNN` 或 `getopt.c:NNN` 的注释，逐条与 `minix3/usr.bin/unexpand/unexpand.c`、`minix3/lib/libc/stdlib/getopt.c` 对读，只改数字，不动一个字的语义。真源只有一个提交（`ce9f2c7b5` 的 vendored 导入），所以号数与真源之间的每一格差都是锚点自己漂出去的，不是 C 动过。
+
+- **为什么这件事值得单独一轮，而不是顺手改**：注释里的行号唯一的用途是让下一回核对的人跳过搜索直接落到那一句。号数漂了，那一处注释就从「可核对」变成「反向误导」：按 `unexpand.c:120-121` 去读，落到的是 `}` 与 `argc -= optind;`，而句子讲的是档位表回显——读到那里的人会把「回显」这件事实误挂到选项环的收尾上，甚至据此认为回显发生在 `optind` 结算之前。更麻烦的一类是**区间罩住了但罩歪**：`:91-106` 里确实有 `strsep`（`:96`），可它的起点 `:91` 是 `-a` 那一臂的 `all++`，而句子明说的「必须严格大于前一支」那一判在 `:108`，落在区间之外——这样的锚点看着对，实际两头都不在那句上。
+
+- **量法**：不靠肉眼逐条数，写一道机械门 `tmp/unexpand-429/anchor-check.py`。行表每行一枚引用，带三样断言：① 区间**之内**必须有句子声称的那一句；② 区间**首行**必须是那句的起点；③ 区间**末行**必须是那句的终点。首末两栏是专治上面那种「罩住了但罩歪」。行表还先核对「该 Rust 行确实写着表里那个行号」，因为行表自己也会漂，不核对就是拿一张过期的表去盖章。读数：**修正前 51 条里 20 条不成立**（`tmp/unexpand-429/anchor-check-before.log`，跑在领用树基线 `3c8e66bba` 的件形快照 `tmp/unexpand-429/before-tree/` 上），**修正后 51/51 全绿**（`anchor-check-after.log`）。
+
+- **二十条漂移分成三族**（逐条改后区间见码笔 `3320040f3` 的 diff）：
+  - **同族一起漂**：档位表回显那一圈是 `unexpand.c:124-125`（`for (i = 0; i < nstops; i++)` 加那句 `fprintf(stderr, "%lu %zu\n", i, tabstops[i])`），四个件里五处引用都写成 `:120-121`——一个错误被抄来抄去的样子。同一族里 `:122-136` 被当成「操作数循环」，而 `do {` 在 `:127`、`} while (argc > 0);` 在 `:135`，`:122` 是 `argv += optind;`。
+  - **边界差一位**：`Invalid tabstop` 那句 `errx` 跨 `:102-103`，引用报到 `:104`，而 `:104` 是 `if (nstops >= maxstops) {`（档位表扩容那一判）；`case '?':`/`default:`/`usage();` 三行是 `:116-118`，引用写成 `:115-117`，两头各偏一位（`:115` 是 `break;`）。
+  - **罩歪**：`-t` 那一臂是 `:93-115`；`-a` 与 `-t` 互斥的两句 `if (…) usage()` 是 `:89-90` 与 `:94-95`（合起来 `:89-95`），说「两支」时该给两支的 `:88-95`；`strtoul(tab, &ep, 0)` 在 `:100` 而不是 `:98`（`:98` 是空字段那一支的 `continue;`）；`tabify` 那段注释还讲「无 `-a` 时行末原样交回」，那一腿是 `:207-213`，于是循环区间取到 `:214` 而不是 `:205`。
+  - 顺带抓到一处**跨源**的同型错：`-ta` 那条注释说「同串剩下的 `a` 当 optarg 交回」，那一腿是 `getopt.c:117-118`（`if (*place)` → `optarg = __UNCONST(place)`），而引用 `:120-122` 罩住的是 GNU 可选值那一段注释——句子本身对，号数指着隔壁。
+
+- **门（本轮无行为改动，所以门打在门自己上）**：注入四枚漂移看对账门咬不咬（`tmp/unexpand-429/negctl.py`、读数 `negctl.log`）。四枚全咬住，且第一轮的读数把门自己的两个洞挖了出来：① 行号核对第一版只要求区间的**首位**数字出现，于是把 `101-103` 改成 `101-102` 这种「收窄一位」的漂移照样过闸——门当场从「核对区间」退化成「核对首位」，改成整对数字必须出现才咬得住；② 判「咬住」如果只看退码，被注入脚本自己崩溃时那份**空 stdout** 冒充成一次红（第一版 N1 就是这么记绿的，现场还留着注入）。于是两条一并立：区间必须整对出现，且红行必须点到被注入的那一件那一行，注入后一律在 `finally` 里复原。
+
+- **07 篇同族那一枚随本轮改掉**：`rewrite-notes/18-stage-commands/07-text-filter.md` 的 `unexpand` 行里，档位表回显同样写着 `unexpand.c:120-121` ⇒ 改 `:124-125`。该行的 `:160-165`、`:146`、`:214-215`、`getopt.c:79` 四枚经同一套断言核过，未漂。
+
+- **顺手把整个 18-stage-commands 的文档侧锚点扫了一遍**（`tmp/unexpand-429/doc-anchor-sweep.py`，判据同上一段；它扫的是主树 `rewrite-notes/18-stage-commands/` 各篇，读数 `doc-anchor-sweep.log`）：**113 条区间引用**，其中 1 条号数越出真源（`todo.md:842` 的 `getopt.c:63-143`，`minix3/lib/libc/stdlib/getopt.c` 只有 142 行）、10 条区间跨空行（`getopt.c:62-142` 是整个 `getopt` 函数、`unexpand.c:167-192` 是 `/* Output our tabs */` 那一整块——块级题注本来就罩着带空行的整块，属合法，不动），其余 102 条落在连续语句段内。扫描脚本第一轮用 `(unexpand|getopt)\.c` 去套 `egetopt.c:144-151`，把 `pr/egetopt.c` 那支援切成「libc 越界」，是脚本自己的形状错（正则补整词后那四条消失）——**「注入/扫描多咬先怀疑自己形状」这条判据在文档侧也兑现了一次**。
+
+- **读数（按最终形态）**：本轮只动注释，测试计数与基线同数——宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` 与容器权威门（`minix-ci:1.94`，`-m 2g -j 1`，挂载仓库根并 `-w /work/os`）各 **1188 passed / 0 failed**、68 段、退码 0（`tmp/unexpand-429/final-host.log`、`final-gates.log`）；三架构 `cargo build --offline -j 1 --bins -p minix-textfilter --target {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf}` 全退 0、`^error` 计数 0；clippy 整包 **154** 与基线同数（按告警位置判），触及件两处命中是批次四百二十五在册那一对存量 `implicitly performing saturating subtraction`（`src/unexpand.rs:172`、`:175`，本轮不增删行所以位置未动）；`rustfmt` 领用树与主树同法（`cargo fmt --offline -p minix-textfilter -- --check`）各 **0** 处 `Diff in`，即触及件零漂移且整包与主树同数。`git diff -U0` 逐行确认 19 增 19 删**全部落在注释行**（非注释行命中数 0）。
+
+- **登记与闭合**：闭 `UNEXPAND-C-COMMENT-ANCHOR-DRIFT`（板 A2 行同步记闭）。**新登记不执行**：① `TEXTFILTER-COMMENT-ANCHOR-AUDIT-REST`——同一个机械门尚未用在 textfilter 其余件上（`cut.rs` 引 `cut.c`、`seq.rs` 引 `seq.c` 与 `getopt.c`、`split.rs`/`unexpand.rs` 之外的真源各一族），本轮射程按板上登记只覆盖 unexpand；② `LEDGER-ANCHOR-OFFBYONE`——`todo.md:842` 那条越界一行的处置，以及「台账里的锚点要不要与正式文档吃同一套门」需要一次口径裁决。在册未动：`CUT-EMPTY-BYTE-LIST-RUNAWAY`（需一次裁决）、`CUT-NEWLINE-DELIMITER-NEEDS-TERMINATOR`、`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`（与板上「末行换行状态」那一族同一道题）、`LINES-OF-NONUTF8-DROPS-ALL`、`NL-DELIM-LENGTH-RULE`（待裁决）、八支 `*-NON-PERMUTE-OPERAND-TAIL` 族余量（`sort`/`cksum` 的参照件需重链）、参数缝半（射程②）。
+
+---
+
+
 ## 批次四百二十八（P0 独立轮 `CUT-SUPPRESS-STILL-PRINTS-NEWLINE`：`-s` 抹掉的是那一行，不是那一行的内容）
 
 - **这一轮干什么**：闭批次四百零六登记的 `CUT-SUPPRESS-STILL-PRINTS-NEWLINE`——`cut -f <列表> -s` 遇到不含分隔符的行时，参照件**一个字节都不写**，本壳写了一枚换行。判据在 `minix3/usr.bin/cut/cut.c:246-254`：`f_cut` 先在扫描里判定 `isdelim`，走到行末时 `if (!isdelim && !sflag)` 才把整行交给 `fwrite`（`:248-249`，那一行自带终止符），紧接着 `:253-254` 的 `if (!isdelim) continue;` 让这一行**跳过**字段抽取与 `:279` 那句 `putchar('\n')`。也就是说在 C 那里，「这一行有没有分隔符」决定的不是它的内容而是它的**存在**；`-s` 把这行抹掉之后，连它的终止符都不该留下。
