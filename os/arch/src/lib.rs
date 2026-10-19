@@ -271,9 +271,20 @@ pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
     ]
 }
 
-/// Non-x86-64: no fixed low-VA MMIO the kernel dereferences yet
-/// (see the x86-64 doc).
-#[cfg(not(target_arch = "x86_64"))]
+/// riscv64: QEMU virt PLIC（2 MiB 窗）。SD-41 EI 臂前置：S 外中断的
+/// claim/complete 必须经 PLIC MMIO（`0x0C00_0000 + PLIC_CLAIM(0x200004)
+/// + context*0x1000`），而用户进程根此窗未映射 → S 陷阱臂内读 claim
+/// 即 Load fault（续-105 stval=0xc201004 实证）。窗口随
+/// `kernel_identity_mmio_regions` 进 A2 分类 → 用户根恒等映射，与 x86
+/// IO-APIC/LAPIC 同机制。
+#[cfg(target_arch = "riscv64")]
+pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
+    &[(0x0C00_0000, 0x0020_0000)]
+}
+
+/// aarch64: 本仓 aarch64 中断控制器走系统寄存器（GIC 系统寄存器接口），
+/// 无固定低 VA MMIO 引用面（见 x86-64 doc）。
+#[cfg(target_arch = "aarch64")]
 pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
     &[]
 }
