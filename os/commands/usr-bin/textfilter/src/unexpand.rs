@@ -121,22 +121,23 @@ pub fn unexpand_line(line: &str, options: &UnexpandOptions) -> String {
             continue;
         }
         if byte == b'\t' {
-            // C 量不到下一档时会走 fall-through，把输入里这个制表符原样 `putchar`；
-            // 本壳在这一支把它吞掉，那是**另一处已登记的偏离**（`UNEXPAND-LAST-STOP-TAB-DROPPED`，
-            // 读数 `tmp/unexpand-425/tab-drop.log`），与本轮的「0 这一档不许崩」不是同一件事。
             if options.stops.is_empty() {
                 dcol = (1 + dcol / DEFAULT_STOP) * DEFAULT_STOP;
-            } else {
-                let mut n = 0usize;
-                while n < options.stops.len() && options.stops[n].wrapping_sub(1) < dcol {
-                    n += 1;
-                }
-                if n + 1 < options.stops.len() && options.stops[n].wrapping_sub(1) < limit {
-                    dcol = options.stops[n];
-                }
+                cursor += 1;
+                continue;
             }
-            cursor += 1;
-            continue;
+            let mut n = 0usize;
+            while n < options.stops.len() && options.stops[n].wrapping_sub(1) < dcol {
+                n += 1;
+            }
+            if n + 1 < options.stops.len() && options.stops[n].wrapping_sub(1) < limit {
+                dcol = options.stops[n];
+                cursor += 1;
+                continue;
+            }
+            // 够不着下一档时 C 不 `continue`：`unexpand.c:160-165` 那一判不成立就落到
+            // 下面「先冲档、再 `putchar(*p)`」那一腿（`:195`），制表符因此被原样交回，
+            // 两列各进一格。这里也必须落到同一腿，不能把它当已消费的空白跳过。
         }
 
         // Non-blank byte: flush the gap as tabs then spaces.
@@ -182,7 +183,7 @@ pub fn unexpand_line(line: &str, options: &UnexpandOptions) -> String {
         if !options.all {
             // Without `-a` the first non-blank byte ends the
             // tabification; the remainder passes through verbatim
-            // (unexpand.c:199-205).
+            // (unexpand.c:207-213).
             while cursor < bytes.len() {
                 out.push(bytes[cursor] as char);
                 cursor += 1;
@@ -582,5 +583,62 @@ mod tests {
         // 这一支只为走进制表符那两处的 `wrapping_sub`（`  ` 之后已是第 2 列，档位 0 是最后一档）：
         // 它的**输出形状**属另一处已登记的偏离（吞掉制表符），本轮不钉它的值，只要求不崩。
         let _ = unexpand_line("  \tx", &zero_then_eight);
+    }
+    /// 参照件读数 `tmp/unexpand-426/ref-shapes.log`：够不着下一档时 C 不 `continue`，
+    /// 那个制表符落到同一腿的 `putchar(*p)`（`unexpand.c:160-165` 那一判不成立 → `:195`）。
+    #[test]
+    fn a_tab_beyond_the_last_stop_is_handed_back_like_c_does() {
+        let eight = UnexpandOptions {
+            stops: vec![8],
+            all: false,
+        };
+        assert_eq!(unexpand_line("\ta", &eight), "\ta");
+        assert_eq!(unexpand_line("  \tx", &eight), "  \tx");
+        // 八个空格先把列推到第 8 档，随后那个制表符够不着下一档，于是也原样交回：两枚制表符
+        assert_eq!(unexpand_line("        \ty", &eight), "\t\ty");
+        assert_eq!(unexpand_line("   \t   \tw", &eight), "   \t   \tw");
+        let four_then_eight = UnexpandOptions {
+            stops: vec![4, 8],
+            all: false,
+        };
+        // 这一形的制表符够得着第 1 档（停在第 0 档而它不是最后一档），于是被折进档里：
+        // 参照件同形交回 `\tx`，与上面那几形的「原样交回」正相反
+        assert_eq!(unexpand_line("  \tx", &four_then_eight), "\tx");
+        assert_eq!(unexpand_line("    \ty", &four_then_eight), "\t\ty");
+        let zero = UnexpandOptions {
+            stops: vec![0],
+            all: false,
+        };
+        assert_eq!(unexpand_line("\ta", &zero), "\ta");
+        assert_eq!(unexpand_line("  \tx", &zero), "  \tx");
+    }
+
+    /// 参照件读数 `tmp/unexpand-426/eol.log`：C 的间隙只由「非空白字节」冲出，循环走到缓冲区
+    /// 末尾就 `return`（`unexpand.c:214-215`），一行只剩空白时交出的是**无字节**。本函数拿到的
+    /// 是剥掉换行的行体，于是它与「末行没有换行」那一族同形；带换行的那一半（参照件交出成档的
+    /// 制表符而不是空行）属已登记的 `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`，本轮不改。
+    #[test]
+    fn a_blank_run_is_collapsed_only_by_a_non_blank_byte() {
+        let eight = UnexpandOptions {
+            stops: vec![8],
+            all: false,
+        };
+        assert_eq!(unexpand_line("        ", &eight), "");
+        assert_eq!(unexpand_line("        \ty", &eight), "\t\ty");
+        let four_then_eight = UnexpandOptions {
+            stops: vec![4, 8],
+            all: false,
+        };
+        assert_eq!(unexpand_line("        ", &four_then_eight), "");
+        assert_eq!(unexpand_line("    ", &four_then_eight), "");
+        let default = UnexpandOptions {
+            stops: Vec::new(),
+            all: false,
+        };
+        assert_eq!(unexpand_line("        ", &default), "");
+        // 不足一档的间隙连「由非空白冲出」这一腿也不折：两列不到就照原样留着
+        assert_eq!(unexpand_line("  x", &default), "  x");
+        assert_eq!(unexpand_line("   x", &default), "   x");
+        assert_eq!(unexpand_line("", &default), "");
     }
 }

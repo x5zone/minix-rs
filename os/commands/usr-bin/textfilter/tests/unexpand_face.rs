@@ -354,3 +354,33 @@ fn a_zero_tabstop_reaches_the_line_unchanged() {
         (b"x\t y"[..].to_vec(), 0, b"0 0\n".to_vec())
     );
 }
+
+/// 参照件 `tmp/unexpand-312/unexpand_ref` 现量（读数 `tmp/unexpand-426/ref-shapes.log`
+/// 与 `tmp/unexpand-426/eol.log`）：制表符够不着下一档时它被原样交回；末行只剩空白且
+/// 输入没有换行时参照件交出**零字节**（C 的循环走到缓冲区末尾直接 `return`）。
+/// 带换行的那一半（`b"    \n"` 对 `\t\n`）属已登记的
+/// `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`，本轮不钉。
+#[test]
+fn a_tab_past_the_last_stop_and_a_blank_final_line_reach_stdout() {
+    let (out, status, err) = run(&["-t", "8"], b"  \tx\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("  \tx\n", 0, "0 8\n")
+    );
+    let (out, status, err) = run(&["-t", "8"], b"        \ty\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("\t\ty\n", 0, "0 8\n")
+    );
+    let (out, status, err) = run(&["-t", "4,8"], b"    \ty\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("\t\ty\n", 0, "0 4\n1 8\n")
+    );
+    let (out, status, err) = run_bytes(&["-t", "8"], b"        ");
+    assert_eq!((out, status, err), (Vec::new(), 0, b"0 8\n".to_vec()));
+    let (out, status, err) = run_bytes(&[], b"   ");
+    assert_eq!((out, status, err), (Vec::new(), 0, Vec::new()));
+    let (out, status, err) = run_bytes(&["-t", "8"], b"\t");
+    assert_eq!((out, status, err), (b"\t".to_vec(), 0, b"0 8\n".to_vec()));
+}
