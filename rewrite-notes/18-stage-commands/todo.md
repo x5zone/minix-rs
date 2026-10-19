@@ -119,6 +119,122 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十四（甲组第一支：`paste` 与 `comm` 的行腿、分隔符腿、折叠腿一起改回字节）
+
+**这一轮在做的事**。批次四百三十三的普查把「先把整份输入解一次 UTF-8、再按换行切」这个形状量成三组，
+其中甲组四处是同一件缺陷的四个现场，并定了拆三支施工：`pr` 一支、`column` 一支、`comm` 与 `paste` 并一支。
+本轮落第三支——并一支的理由是两处的切分函数逐字同形（同名同体：都是「非空输入 → 解一次 UTF-8 →
+按 `\n` 切 → 末位是换行就弹掉空尾」），一次改完让两支的门在同一批里翻，不必给同一个形状写两遍判据。
+
+**C 的那一侧长什么样**（三处都是「按长度搬字节」，没有一处解码）。
+
+`paste` 的并行腿 `minix3/usr.bin/paste/paste.c:119-140`：
+
+```c
+			line = fgetln(fp, &line_len);
+			if (line == NULL) {
+				/* Assume EOF */
+				if (fp != stdin)
+					fclose(fp);
+				fpp[cnt] = NULL;
+				continue;
+			}
+			/* Output enough separators to catch up */
+			do {
+				ch = *dp++;
+				if (ch)
+					putchar(ch);
+				if (dp >= delim + delimcnt)
+					dp = delim;
+			} while (++output <= cnt);
+			/* Remove any trailing newline - check for last line */
+			if (line[line_len - 1] == '\n')
+				line_len--;
+			printf("%.*s", (int)line_len, line);
+```
+
+三件事都在这段里：`fgetln`（`:121`）交回的是**指针加长度**，长度由内核数出来，不是由编码算出来；
+分隔符腿（`:131-133`）是 `ch = *dp++; if (ch) putchar(ch);`——表项本身就是那个字节，`if (ch)` 只压掉
+值为 0 的那一位；行内容腿（`:138-140`）先减掉末尾那枚换行，再按 `%.*s` 的**精度**发出。
+顺序腿 `paste.c:175-191` 同理：`fgets` 进缓冲、`strchr(buf, '\n')` 找到换行就把它改写成串尾、
+`printf("%s", buf)` 发出。`comm` 的行腿 `comm.c:195-212` 更直白：`while ((c = getc(fp)) != '\n' && c != EOF) buf[i++] = c;`。
+
+**改前是什么形状**（现量见 `tmp/paste-comm-434/ab.log`，两支参照件都先过了 `-Z` 归属验字样）。夹具
+`raw.txt` 是字面字节 `61 ff 62 0a 63 0a`：
+
+| 形 | 参照件 | 本壳改前 |
+|---|---|---|
+| `paste raw.txt raw.txt` | `61 ff 62 09 61 ff 62 0a 63 09 63 0a` | 零字节 |
+| `paste ok.txt raw.txt`（好档在前） | `78 09 61 ff 62 0a 79 09 63 0a` | `78 09 0a 79 09 0a`（好档的行在，坏档那一格空） |
+| `paste -s raw.txt` | `61 ff 62 09 63 0a` | 零字节 |
+| `comm araw.txt braw.txt`（共有行含 `ff`） | `09 09 61 ff 62 0a 63 6f 6d 6d 6f 6e 0a 09 6f 74 68 65 72 0a 7a 0a` | 零字节 |
+| `comm -f acase.txt bcase.txt`（`c3 89` 对 `c3 a9`） | 四行，两行各落自己那列 | 两行都落第三列（判成公共行） |
+
+第一列与第二列的区别值得停一下：坏档**整档消失**（因为解一次 UTF-8 得到空串、`"".split('\n')` 又交回
+一个空 piece、末位换行把它弹掉，于是零条记录），而好档里的行照打，所以混合形打的是「好档的行 + 空那一格」。
+这正是批次四百三十给 `lines_of` 定下的那条判据的另一面：一枚读不懂的字节不该吃掉整份输入。
+
+**改法三处**：
+
+1. 两个壳的 `split_lines` 都改成按 `b'\n'` 切字节、交回 `Vec<Vec<u8>>`（`os/commands/usr-bin/textfilter/src/bin/paste.rs:fn split_lines`、
+   `os/commands/usr-bin/textfilter/src/bin/comm.rs:fn split_lines`），末尾那枚换行的处置不变——它是切分符，不是行内容；
+   末行没有换行照样是一条记录。
+2. `os/commands/usr-bin/textfilter/src/paste.rs:fn join_serial` 与 `:fn join_parallel` 的入参改成
+   `&[&[u8]]`、出口改成 `Vec<u8>`；`delimiter_char` 换名 `delimiter_byte` 并交回 `Option<u8>`。这一步顺带修掉
+   一处独立失真：旧写法 `slots[dp] as char` 把一枚裸 `ff` 升成 U+00FF，落进 `String` 就是 `c3 bf` **两字节**，
+   而 C 的 `putchar(ch)` 写的就是那**一**字节。
+3. `os/commands/usr-bin/textfilter/src/comm.rs:fn line_cmp` 的 `-f` 折叠从 `str::to_lowercase` 换成逐字节
+   `to_ascii_lowercase`。判据在 C 的实现里：`strcasecmp` 两侧各按 `unsigned char` 取 `tolower`
+   （`minix3/common/lib/libc/string/strcasecmp.c:58-67`），C locale 下那张 ctype 表只把 `A`–`Z` 换成 `a`–`z`，
+   `0x80`–`0xFF` 原样返回。字符域的小写是 **Unicode** 的表：`c3 89`（É）与 `c3 a9`（é）在它眼里是同一对字符，
+   在 C 的那张表里差一位——所以旧写法把两个非 ASCII 行判成公共行，落进第三列。
+   不带 `-f` 的那一腿本来就走 `strcoll`，而 `strcoll` 无条件转到 `strcmp`——源文件自己写着
+   「LC_COLLATE 未实现，因此永远是 C」（`minix3/lib/libc/string/strcoll.c:56-72`），字节序比较与之同形。
+
+**反过来做会怎样**（两处，都可回查源码）。若第 2 步留着 `char`：`paste -d` 的表项一旦超出 ASCII，
+发出的字节数就比 C 多，而表项的**位数**是按字节数的（`tr()` 数的是 `char`），于是「几位」与「几字节」
+在两种语言里天然错开，补齐环（`paste.c:147-152`）会按错的位数补。若第 3 步留着 Unicode 小写：
+`comm -f` 的比较键与 C 的 ctype 表分叉，`É` 与 `é` 判等，归并环（`comm.c:118-145`）就会在同一处
+同时**吃掉两行**（公共行只打一次、两个游标各进一格），输出比 C 少一行。
+
+**门 1195→1201**（库 +4、面 +2）：
+库侧 `paste::tests::a_delimiter_slot_is_one_byte_not_a_codepoint`（钉分隔符按字节发出）、
+`paste::tests::a_byte_that_is_not_utf8_is_still_part_of_the_line`（钉两种模式的行内容按字节走）、
+`comm::tests::a_byte_that_is_not_utf8_is_still_a_comparable_line`（钉 comm 的行按字节可比可打）、
+`comm::tests::the_fold_is_a_per_byte_ctype_lookup_not_a_unicode_lowercase`（钉 `-f` 那张表，
+门内同时留了 ASCII 的 `Apple`/`apple` 判等这一半，免得「把折叠整个撤掉」被当成修好了）；
+面侧 `an_operand_line_that_is_not_utf8_keeps_every_byte`（`tests/paste_face.rs`，四形：同档两列、
+好档带坏档、`-s`、`-` 走标准输入）与 `a_nonutf8_line_is_a_record_and_the_fold_is_per_byte`
+（`tests/comm_face.rs`，三形：非 UTF-8 共有行、不折叠、`-f`）。库内既有夹具全部改写字面字节
+（`b"..."`），因为门测的就是字节语义——`str` 再 `.encode()` 会把 `\xff` 变成两字节而假绿。
+
+**门读数**：宿主 **1201/0**（68 段）、容器 **1201/0**（68 段，单独跑，不与任何 cargo 并发）、
+三架构 `x86_64`/`aarch64`/`riscv64gc` 退 0、触及六件 clippy 告警 0 条（主树同法读数 0 条）、
+`rustfmt` 新增漂移 0 件（本树与主树同为 21 处 `Diff in`，全部在未触及件）。
+
+**负控六枚**（`tmp/paste-comm-434/negctl.log`，5 咬 + 1 等价）：N1 把 `bin/paste.rs` 的切分退回解码
+→ 咬面门；N2 同法改 `bin/comm.rs` → 咬 comm 面门；N3 把 `delimiter_byte` 的零值那判撤掉
+→ 咬 `test_serial_cycles_from_the_first_slot` 与 `-d '\0'` 那枚门；N4 把折叠退回 `to_lowercase`
+（旧缺陷本体）→ 咬新立的 ctype 门；N5 让顺序模式在发出前按解码过滤行内容 → 咬新立的字节行门；
+N6 等价注入（`out.push(b'\n')` 写成 `out.push(10u8)`）→ 全绿，证注入机器本身无偏。
+
+**A/B 终读数**：15 形 **14 同 1 异**（改前 2 同 12 异）。唯一残差是 `paste -d` 的分隔符里塞一枚裸 `ff`：
+参照件打 `apple\xffbanana`，本壳打 `apple\xefbanana`——`from_utf8_lossy` 把参数里那一字节变成
+`ef bf bd` 三字节，于是分隔符表成了**三位**（本壳按位循环取到第一位 `ef`）。这是已登记的
+`PASTE-NONUTF8-DELIM`，属板 A2 的参数缝半（射程②），不归本轮。
+
+**本轮新登记（只登记，未执行）**：`PASTE-COMM-NUL-TRUNCATES-PRINT-LEG`。C 这两条发出腿都以
+NUL 结尾（`paste.c:180` 把换行改写成 `\0`、`comm.c:210` 写串尾），而 `%s`/`%.*s` 都停在串尾，
+于是**行体内含值为 0 的字节时 C 在那里截断**。现量：`tmp/paste-321/paste_ref -` 吃
+`61 00 62 0a 63 0a` 打 `61 0a 63 0a`；`tmp/comm-409/comm_ref /dev/stdin nul.txt` 打
+`09 09 61 0a 63 0a 09 7a 0a`（共有行只剩一个 `61`）。本壳按字节原样发出整行，改前则是零字节——
+两边都不是 C 的形状，所以这不是本轮改坏的一条，而是本轮把行腿理顺之后**新暴露出来**的一条差异；
+修法要的是「发出腿按 C 的串尾截断」而不是「切分腿改回文本」，另册。
+
+**余量**：甲组还剩 `pr` 一支（`Page`/`render_page`/`merge_body_rows` 三处是 `String`，改起来是一次库面重构）
+与 `column` 一支（`bin/column.rs:fn collect` 单点）；`units`、`tsort` 两支要各自的夹具形状；
+`from_utf8_lossy` 那 22 处按批次四百三十三的分组各归各的口径。
+
 ## 批次四百三十三（预研轮 `TEXTFILTER-NONUTF8-DECODE-SITE-CENSUS`：普查分三组，每组要的是不同的东西）
 
 **为什么先普查再动手**。批次四百三十把行腿改成按字节之后，同一族还留着一批「先解一次 UTF-8 再干活」的
