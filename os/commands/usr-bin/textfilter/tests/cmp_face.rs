@@ -91,6 +91,56 @@ fn run(dir: &Path, args: &[&str], input: &[u8]) -> (String, i32, String) {
     )
 }
 
+/// 与 `run` 同一条命令缝，但两路输出**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3` 渲染成
+/// 三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(dir: &Path, args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(CMP)
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the cmp binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/cmp-410/cmp_ref` 现量 `-é` 与 `-lé`
+/// 都是 `cmp: unknown option -- ` + `c3` + 换行再跟 usage、退 **2**（`ERR_EXIT`；`l` 是 `"ls"`
+/// 里合法且不带值的字母，聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`）。这一形要**两半一起对**：
+/// 取法按字节（库侧门 `the_unknown_letter_is_the_first_byte_not_the_first_character`）与报文按
+/// 字节写各钉一处，只改一半都会红——本支与 `comm` 同型（批次四百零九立的那条「一支两半」节奏）。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_cmp() {
+    let dir = std::env::temp_dir();
+    let want: Vec<u8> = [
+        b"cmp: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-l\u{e9}"] {
+        let (out, status, err) = run_bytes(&dir, &[form, "a.txt", "b.txt"], b"");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 2, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&dir, &["-Z\u{e9}", "a.txt", "b.txt"], b"");
+    assert_eq!(status, 2);
+    assert_eq!(
+        err,
+        [b"cmp: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，`é` 根本不该被读到"
+    );
+}
+
 /// 集外字母：libc 那一行在前、usage 在后，退 2（旧写法少了 libc 那一行）。
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {

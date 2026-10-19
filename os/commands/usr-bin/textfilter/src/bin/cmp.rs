@@ -49,7 +49,8 @@ fn run() -> ! {
     let flags = match parse_cmp_flags(&refs[1..]) {
         Ok(flags) => flags,
         Err(CmpArgError::UnknownOption(letter)) => {
-            support::warn(GetoptReport::UnknownOption(letter).line(prog).as_bytes());
+            // 字母位走 `line_bytes`：取法已在 `src/cmp.rs` 改成按字节，两边同形才成立。
+            support::warn(&GetoptReport::UnknownOption(letter).line_bytes(prog));
             usage();
         }
     };
