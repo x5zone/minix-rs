@@ -78,17 +78,33 @@ build_pkg() {
     fi
 }
 
+# ── rt-birth 用户镜像先行（三架构）——三个内嵌载体（test-rt-birth/
+# test-rt-birth-{aarch64,riscv64}）用 `include_bytes!(env!(
+# "RT_BIRTH_ELF_PATH"))` 吃各自目标的用户 ELF，env 缺失=构建段恒红
+# （此前 run_all 的 2 个 build-fail 即此）；先建三份再按段导出 env，
+# 脚本腿（test-rt-birth*.sh）自建的重复构建由 cargo 缓存吸收。
+build_rt_birth_user() {
+    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p rt-birth \
+        --target "$1" --features fw-user-none --release >/dev/null 2>&1
+}
+build_rt_birth_user x86_64-unknown-none
+build_rt_birth_user aarch64-unknown-none
+build_rt_birth_user riscv64gc-unknown-none-elf
+
 # ── x86_64 (UEFI) ──
+export RT_BIRTH_ELF_PATH="$OS_ROOT/target/x86_64-unknown-none/release/rt-birth"
 for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq test-smp-aps test-smp-ipi test-smp-shutdown test-user-trap test-paging-faultloop; do
     build_pkg x86_64-unknown-uefi fw-x86-uefi "$pkg"
 done
 
 # ── aarch64 (UEFI) ──
+export RT_BIRTH_ELF_PATH="$OS_ROOT/target/aarch64-unknown-none/release/rt-birth"
 for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 test-kernel-map-aarch64 test-higher-half-aarch64 test-protection-aarch64 test-smp-topo-aarch64 test-rt-birth-aarch64 test-shutdown-aarch64 test-timer-irq-aarch64; do
     build_pkg aarch64-unknown-uefi fw-aarch64-uefi "$pkg"
 done
 
 # ── riscv64 (OpenSBI, bare-metal) ──
+export RT_BIRTH_ELF_PATH="$OS_ROOT/target/riscv64gc-unknown-none-elf/release/rt-birth"
 for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64 test-smp-ipi-riscv64 test-rt-birth-riscv64 test-shutdown-riscv64 test-timer-irq-riscv64; do
     build_pkg riscv64gc-unknown-none-elf fw-riscv64-none "$pkg"
 done
