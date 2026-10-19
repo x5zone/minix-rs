@@ -3,10 +3,10 @@
 //! (`tail.c`, `forward.c`, `reverse.c`).
 //!
 //! The host's GNU `tail` is used only where the two specifications agree. It is
-//! deliberately not compared on: `-b` (GNU has no block mode), `-r` (GNU has no
-//! reverse), and the line shapes on input whose last line is unterminated — this
-//! shell rebuilds each printed line with its newline (a declared simplification
-//! shared with the reverse path), while C and GNU copy bytes.
+//! deliberately not compared on: `-b` (GNU has no block mode) and `-r` (GNU has no
+//! reverse). Line shapes are copied, not rebuilt: a line carries whether its
+//! input had a newline, so an unterminated last line stays unterminated on the
+//! way out, exactly as C's `WR`/`reverse.c` range copy does.
 //!
 //! The follow legs are pinned against the loop the C actually runs on Minix, not
 //! against GNU: `forward.c`'s kqueue arm is excluded by `#if !defined(__minix)`
@@ -671,4 +671,31 @@ fn reversed_output_carries_the_unterminated_line_to_the_front() {
     );
     let (bytes, _, _) = run(&["-r", "-c", "5"], "alpha\nbeta\ngamma");
     assert_eq!(bytes, "gamma");
+}
+
+#[test]
+fn an_operand_ends_option_scanning_like_c() {
+    // 与 `head` 同一条判据（`minix3/lib/libc/stdlib/getopt.c:71-74`：第一个非选项
+    // token 上 `getopt` 交回 -1 且不推进 `optind`，`tail.c:110` 的 `argv += optind`
+    // 于是把那个 token 与其后的全部当操作数）。参照件现量
+    // `tail_ref a.txt -r`：`==> a.txt <==` 加正序后十行，再
+    // `tail: -r: No such file or directory` 退 1——反序**不**发生。
+    let good = scratch("operand-first");
+    fs::write(&good, "g1\ng2\n").unwrap();
+    let good_text = good.to_str().unwrap().to_owned();
+    let (out, status, err) = run(&[&good_text, "-r"], "");
+    assert_eq!(out, format!("==> {good_text} <==\ng1\ng2\n"));
+    assert_eq!(status, 1);
+    assert_eq!(err, "tail: -r: No such file or directory\n");
+
+    // 旗标在前才生效，且其后的 token 一律是操作数：`-r` 反序打两行，`-n 3` 只是
+    // 两个打不开的档名（参照件 `-r a.txt -n 3` 同形）。
+    let (out, status, err) = run(&["-r", &good_text, "-n", "3"], "");
+    assert_eq!(out, format!("==> {good_text} <==\ng2\ng1\n"));
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        "tail: -n: No such file or directory\ntail: 3: No such file or directory\n"
+    );
+    let _ = fs::remove_file(&good);
 }

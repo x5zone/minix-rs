@@ -251,14 +251,24 @@ pub enum HeadArgError {
 /// - `obsolete` rewrites only the **leading run** of `-<digit>…` tokens into
 ///   `-n<digit>…`; its `while` returns at the first token that is not one (a
 ///   file, `--`, or a non-digit flag). So `head -5 f` becomes `head -n5 f`,
-///   while `head f -5` is *not* rewritten and stays a usage error.
-/// - `getopt` permutes options among operands: letters cluster (`-qv` ≡ `-q -v`),
-///   a colon option's value attaches to its token (`-n5`) or follows it
-///   (`-n 5`), `--` ends option scanning so everything after is an operand, and
-///   a lone `-` is itself an operand.
+///   while `head f -5` is not rewritten at all.
+/// - `getopt` **does not permute**: it looks at one token per call and, when
+///   that token is absent or does not start with `-`, ends option scanning right
+///   there (`getopt.c:69-75` returns `-1` with `optind` left in place). The
+///   caller then takes `argv + optind` as its operands (`head.c:118-119`), so
+///   **every token from the first non-option on is an operand** — a later `-q`
+///   never sets `qflag`, a later `-x` never reaches the unknown-letter arm, a
+///   later `-n 3` never changes the count, and a later `--` is a file named
+///   `--`. Only inside a leading option cluster does `getopt` keep consuming:
+///   letters cluster (`-qv` ≡ `-q -v`), a colon option's value attaches to its
+///   own token (`-n5`) or is the next token (`-n 5`), a bare `--` as the leading
+///   token ends scanning so everything after it is an operand, and a solitary
+///   `-` is treated as a non-option (`getopt.c:96-104`: `head` does not list `-`
+///   in its option string) and therefore becomes an operand too.
 /// - `-q`/`-v` are mutually exclusive with the last one winning
-///   (`head.c:105-113`); any other letter is [`HeadArgError::Getopt`] with that
-///   letter, because libc prints its own line before `usage()` runs.
+///   (`head.c:105-113`); any other letter inside a leading option token is
+///   [`HeadArgError::Getopt`] with that letter, because libc prints its own line
+///   before `usage()` runs.
 pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
     // Phase 1 — obsolete(): rewrite the leading `-<digit>…` run, stop at the
     // first non-matching token and copy the remainder verbatim.
@@ -349,7 +359,12 @@ pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
                 }
             }
         } else {
-            result.operands.push(String::from(token));
+            // C 的 `getopt` 在这里交回 -1 且不推进 `optind`（`getopt.c:71-74`），
+            // 于是 `head.c:118-119` 的 `argv += optind` 把这个 token **和它后面的
+            // 全部**当成操作数：后面的 `-q` 不再置旗标、`-x` 不再走未知字母那一句、
+            // `-n 3` 不再改计数、`--` 也不再是「选项结束」而是一个叫 `--` 的档名。
+            result.operands.extend_from_slice(&scanned[index..]);
+            break;
         }
         index += 1;
     }
@@ -573,7 +588,10 @@ fn obsolete_step(arg: &str) -> ObsoleteStep {
 /// colon option's value attaches to its token (`-n10`, `-c100`) or follows it
 /// (`-n 10`); `--` ends option scanning; a lone `-` is an operand. `-f`/`-F` are
 /// reported, never silently leaked as an operand (as the old whole-token matcher
-/// did with `-n10`).
+/// did with `-n10`). Like `head`, `getopt` here **does not permute** (see
+/// [`parse_head_args`]): the first non-option token ends option scanning and
+/// every token from there on is an operand, so `tail f -r` reads two files and
+/// never reverses (`tail_ref f -r` 现量 `tail: -r: No such file or directory`).
 ///
 /// A `+N` value takes the `forward` arm of C's `ARG` macro (`tail.c:91-96`),
 /// which is a *different* style, not a negated count: `tail -n +20` starts at
@@ -709,7 +727,12 @@ pub fn parse_tail_args(args: &[&str]) -> Result<TailArgs, TailError> {
                 }
             }
         } else {
-            operands.push(String::from(token));
+            // 与 `head` 同一条判据：`getopt` 在第一个非选项 token 上收 -1 且不推进
+            // `optind`（`getopt.c:71-74`），`tail.c:110` 的 `argv += optind` 于是把
+            // 这个 token 与其后的全部当操作数——参照件现量 `tail a.txt -r` 只出
+            // 「`tail: -r: No such file or directory`」而**不**反序。
+            operands.extend_from_slice(&scanned[index..]);
+            break;
         }
         index += 1;
     }
@@ -1076,13 +1099,86 @@ mod tests {
                 'z'
             )))
         );
-        // obsolete() only rewrites the LEADING run, so `f -5` is not `-n5`;
-        // `-5` after a file is an unknown option letter '5'.
+        // obsolete() 只折前导那一串，所以 `f -5` 不写成 `-n5`；而 `getopt` 不重排，
+        // 第一个操作数一到就叫环结束（`getopt.c:71-74`），`-5` 于是**连着**成为操作数
+        // ——参照件 `head_ref a.txt -5` 现量：`==> a.txt <==` 十行，再 `head: -5: No
+        // such file or directory` 退 1，一个字母都不报。
         assert_eq!(
             parse_head_args(&["f", "-5"]),
-            Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
-                '5'
-            )))
+            Ok(HeadArgs {
+                count: 10,
+                bytecnt: 0,
+                qflag: false,
+                vflag: false,
+                operands: vec![String::from("f"), String::from("-5")],
+            })
+        );
+        // 操作数之后的旗标也不再生效：`-q` 在这里是一个叫 `-q` 的档名（参照件同形，
+        // 报 `head: -q: No such file or directory`），集外字母同理（不再有那句
+        // `unknown option`），带值选项连它的值一起落进操作数。
+        assert_eq!(
+            parse_head_args(&["f", "-q"]),
+            Ok(HeadArgs {
+                count: 10,
+                bytecnt: 0,
+                qflag: false,
+                vflag: false,
+                operands: vec![String::from("f"), String::from("-q")],
+            })
+        );
+        assert_eq!(
+            parse_head_args(&["f", "-x"]),
+            Ok(HeadArgs {
+                count: 10,
+                bytecnt: 0,
+                qflag: false,
+                vflag: false,
+                operands: vec![String::from("f"), String::from("-x")],
+            })
+        );
+        assert_eq!(
+            parse_head_args(&["f", "-n", "3"]),
+            Ok(HeadArgs {
+                count: 10,
+                bytecnt: 0,
+                qflag: false,
+                vflag: false,
+                operands: vec![String::from("f"), String::from("-n"), String::from("3")],
+            })
+        );
+        // 选项在前仍照常生效，只是环一撞上操作数就再也回不来（参照件
+        // `head_ref -n 3 a.txt -5`：三行 + `-5` 那一句）。
+        assert_eq!(
+            parse_head_args(&["-n", "3", "f", "-5"]),
+            Ok(HeadArgs {
+                count: 3,
+                bytecnt: 0,
+                qflag: false,
+                vflag: false,
+                operands: vec![String::from("f"), String::from("-5")],
+            })
+        );
+        // 操作数之后的 `--` 不是「选项结束」而是一个档名（C 的环根本没走到它）；
+        // 单个 `-` 也在同一处收 -1，于是它自己与后面的都是操作数。
+        assert_eq!(
+            parse_head_args(&["f", "--", "-5"]),
+            Ok(HeadArgs {
+                count: 10,
+                bytecnt: 0,
+                qflag: false,
+                vflag: false,
+                operands: vec![String::from("f"), String::from("--"), String::from("-5")],
+            })
+        );
+        assert_eq!(
+            parse_head_args(&["f", "-"]),
+            Ok(HeadArgs {
+                count: 10,
+                bytecnt: 0,
+                qflag: false,
+                vflag: false,
+                operands: vec![String::from("f"), String::from("-")],
+            })
         );
         // A colon option with no value argument → the libc 缺值那一行。
         assert_eq!(
@@ -1117,6 +1213,25 @@ mod tests {
                 style: TailStyle::LastLines { off: 10 },
                 follow: Follow::Off,
                 operands: Vec::new(),
+            })
+        );
+        // `getopt` 不重排：第一个操作数之后的 `-r` 不是旗标而是档名（参照件
+        // `tail_ref a.txt -r` 现量 `tail: -r: No such file or directory`，输出仍按
+        // 正序取后十行）。
+        assert_eq!(
+            parse_tail_args(&["f", "-r"]),
+            Ok(TailArgs {
+                style: TailStyle::LastLines { off: 10 },
+                follow: Follow::Off,
+                operands: vec![String::from("f"), String::from("-r")],
+            })
+        );
+        assert_eq!(
+            parse_tail_args(&["-r", "f", "-n", "3"]),
+            Ok(TailArgs {
+                style: TailStyle::ReverseAll,
+                follow: Follow::Off,
+                operands: vec![String::from("f"), String::from("-n"), String::from("3")],
             })
         );
         // `-n` attached (regression: the old matcher leaked `-n10` to operands)
@@ -1411,19 +1526,22 @@ mod tests {
     fn test_parse_tail_args_obsolete_stops_at_first_non_match() {
         // C `obsolete()` returns from the whole pre-pass at the first token it
         // does not recognise, so a later old-style token is *not* rewritten. A
-        // `+<digit>` token then reaches `getopt` as a plain operand, exactly as C
-        // permutes it.
+        // `+<digit>` token then reaches the tail as a plain operand, and because
+        // `getopt` does not permute (`getopt.c:71-74`) the operand run ends
+        // option scanning there — everything after it is a file name too.
         let frozen = parse_tail_args(&["f", "+10"]).unwrap();
         assert_eq!(frozen.style, TailStyle::LastLines { off: 10 });
         assert_eq!(
             frozen.operands,
             alloc::vec![String::from("f"), String::from("+10")]
         );
-        // A frozen `-3c` keeps its dash, so `getopt` sees the unknown letter `3`
-        // and takes C's `getopt.c:101-104` report plus `case '?'` → usage.
+        // 冻在环里的 `-3c` 也不再是「未知字母 3」：参照件 `tail_ref f -3c` 现量
+        // `tail: -3c: No such file or directory` 退 1，一句选项错都不打。
+        let after = parse_tail_args(&["f", "-3c"]).unwrap();
+        assert_eq!(after.style, TailStyle::LastLines { off: 10 });
         assert_eq!(
-            parse_tail_args(&["f", "-3c"]).err(),
-            Some(TailError::Getopt(crate::GetoptReport::UnknownOption('3')))
+            after.operands,
+            alloc::vec![String::from("f"), String::from("-3c")]
         );
         // Before the freeze point the rewrite does apply, and the operand list is
         // just the file name.

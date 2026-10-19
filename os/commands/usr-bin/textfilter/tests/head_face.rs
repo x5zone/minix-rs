@@ -181,14 +181,56 @@ fn unknown_option_prints_the_libc_line_then_the_usage_line() {
         err,
         format!("head: option requires an argument -- n\n{USAGE}")
     );
-    // 集外字母不靠位置：`obsolete()` 只折前导那一串，所以文件名之后的 `-5`
-    // 走到 getopt 那里就是字母 `5`。
-    let good = written("letter-after-operand", b"a1\n");
+}
+
+#[test]
+fn an_operand_ends_option_scanning_like_c() {
+    // C 的 `getopt` **不重排**：`minix3/lib/libc/stdlib/getopt.c:71-74` 在第一个
+    // 非选项 token 上直接交回 -1 且不推进 `optind`，`head.c:118-119` 的
+    // `argv += optind` 于是把那个 token 与其后的**全部**当操作数。参照件八形现量
+    // （`python3 tmp/head-424/matrix.py`，读数 `tmp/head-424/matrix-ref.log`）：
+    // `head a.txt -5` 打 `==> a.txt <==` 加十行内容，再 `head: -5: No such file or
+    // directory` 退 1——`unknown option` 那一句根本不会出现。改前本壳报的是那句
+    // 加 usage，且**一行内容都不打**。
+    let good = written("operand-first", b"a1\na2\n");
     let good_text = text(good.as_path());
     let (out, status, err) = run(&[&good_text, "-5"], "");
-    assert_eq!(out, "", "不该把 -5 当成操作数去读");
+    assert_eq!(out, format!("==> {good_text} <==\na1\na2\n"));
     assert_eq!(status, 1);
-    assert_eq!(err, format!("head: unknown option -- 5\n{USAGE}"));
+    assert_eq!(err, "head: -5: No such file or directory\n");
+
+    // 真旗标也一样落不进选项面：`-q` 在此是一个叫 `-q` 的档名，横幅照打（操作数
+    // 两个），静默旗标不生效。
+    let (out, status, err) = run(&[&good_text, "-q"], "");
+    assert_eq!(out, format!("==> {good_text} <==\na1\na2\n"));
+    assert_eq!(status, 1);
+    assert_eq!(err, "head: -q: No such file or directory\n");
+
+    // 选项在前仍照常生效，只是环撞上操作数就再也回不来：`-n 1` 取了一行，
+    // 其后的 `-5` 只是又一个档名。
+    let (out, status, err) = run(&["-n", "1", &good_text, "-5"], "");
+    assert_eq!(out, format!("==> {good_text} <==\na1\n"));
+    assert_eq!(status, 1);
+    assert_eq!(err, "head: -5: No such file or directory\n");
+
+    // 操作数之后的 `--` 不是「选项结束」而是一个档名（C 的环没走到它）；单个 `-`
+    // 也在同一处收 -1（`getopt.c:96-104`：`head` 的选项串里没有 `-`），于是它与
+    // 后面的都是操作数。两形参照件读数同形。
+    let (out, status, err) = run(&[&good_text, "--", "-5"], "");
+    assert_eq!(
+        out,
+        format!("==> {good_text} <==\na1\na2\n"),
+        "-- 之后的 -5 不该被当成旗标"
+    );
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        "head: --: No such file or directory\nhead: -5: No such file or directory\n"
+    );
+    let (out, status, err) = run(&[&good_text, "-"], "");
+    assert_eq!(out, format!("==> {good_text} <==\na1\na2\n"));
+    assert_eq!(status, 1);
+    assert_eq!(err, "head: -: No such file or directory\n");
     let _ = fs::remove_file(&good);
 }
 
