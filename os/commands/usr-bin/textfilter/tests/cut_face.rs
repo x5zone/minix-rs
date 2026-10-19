@@ -47,6 +47,69 @@ fn run(args: &[&str], input: &str) -> (String, i32, String) {
     )
 }
 
+/// Same seam as `run`, but the two streams stay **bytes**: `from_utf8_lossy` turns a
+/// bare `c3` into the three-byte replacement character, so a text form cannot tell
+/// "one byte" from "two bytes" (same reason `rev`/`paste`/`jot` carry a `run_bytes`).
+fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(CUT)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the cut binary should be runnable");
+    face_support::write_stdin(&mut child, input.as_bytes());
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// The letter position of the libc line is **one raw byte**: the reference
+/// `tmp/cut-406/cut_ref` prints `cut: unknown option -- ` + `c3` + newline for both
+/// `-\u{e9}` and `-s\u{e9}` (`s` is one of the two *valueless* letters of C's `"b:c:d:f:sn"` —
+/// `b`/`c`/`d`/`f` all take a value — so the cluster keeps scanning into the first byte of
+/// `\u{e9}`), then the three tabbed usage lines, exit 1. `-Z\u{e9}` stops at `Z`: `cut.c` sends
+/// `'?'` straight to `usage()`, so reports never accumulate. The reverse-side form
+/// `-c\u{e9}` is here for the opposite reason: `c` *takes* a value, so `\u{e9}` becomes the list
+/// and C answers with its own list complaint — the render switch must not touch that leg.
+/// ASCII forms are already pinned by `usage_goes_to_stderr_as_three_tabbed_lines` and the
+/// unknown-letter gates in this file, so this gate carries the byte-width fact, the
+/// cluster-stop shape, and the untouched value path.
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_before_the_three_line_usage() {
+    let want: Vec<u8> = [
+        b"cut: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-s\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form], "abc\n");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}"], "abc\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"cut: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，第二个字节根本不该被读到"
+    );
+
+    let (_out, status, err) = run_bytes(&["-c\u{e9}"], "abc\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"cut: [-bcf] list: illegal list value\n".to_vec(),
+        "`c` 带值，`\u{e9}` 整个被当列表收走 ⇒ 那是命令自己的一句 errx，不接 usage"
+    );
+}
+
 fn scratch(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!("cut-face-{}-{}", std::process::id(), name));
