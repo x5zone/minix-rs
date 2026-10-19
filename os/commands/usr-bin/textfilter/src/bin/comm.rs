@@ -45,8 +45,8 @@ fn run() -> ! {
 
     let lines1 = operand_lines(prog, files[0]);
     let lines2 = operand_lines(prog, files[1]);
-    let a: Vec<&str> = lines1.iter().map(String::as_str).collect();
-    let b: Vec<&str> = lines2.iter().map(String::as_str).collect();
+    let a: Vec<&[u8]> = lines1.iter().map(Vec::as_slice).collect();
+    let b: Vec<&[u8]> = lines2.iter().map(Vec::as_slice).collect();
     let merged = comm(&a, &b, &options);
     // 列前缀按 C 那样**只发给真正打出来的列**（`comm.c:105-110`：`p = tabs;` 然后
     // `if (flag1) col1 = *p++; if (flag2) col2 = *p++; if (flag3) col3 = *p;`）。
@@ -69,7 +69,7 @@ fn run() -> ! {
     }
     for entry in &merged {
         let mut out = prefix[entry.column as usize].as_bytes().to_vec();
-        out.extend_from_slice(entry.text.as_bytes());
+        out.extend_from_slice(entry.text);
         out.push(b'\n');
         support::emit(&out);
     }
@@ -81,7 +81,7 @@ fn run() -> ! {
 ///
 /// 末行没有换行符也照样是一条记录（`getnextln` 只在「EOF 且一个字符都没读到」时才
 /// 返回 `NULL`，`comm.c:211-214`）——这一点与 `column` 相反，那边把残行当「长行」丢掉。
-fn operand_lines(prog: &str, name: &str) -> Vec<String> {
+fn operand_lines(prog: &str, name: &str) -> Vec<Vec<u8>> {
     let input = if name == "-" {
         support::read_stdin()
     } else {
@@ -97,12 +97,17 @@ fn operand_lines(prog: &str, name: &str) -> Vec<String> {
     split_lines(&input)
 }
 
-fn split_lines(input: &[u8]) -> Vec<String> {
+/// 按字节切行：C 的 `getnextln` 逐 `getc` 填缓冲（`comm.c:204-215`），非 UTF-8 字节
+/// 只是那一行里的一个字节。旧写法 `from_utf8(input).unwrap_or("")` 让一枚坏字节抹掉
+/// 整个档的记录（现量见 `tmp/paste-comm-434/ab.log`：参照件打三列，旧本壳交回空）。
+fn split_lines(input: &[u8]) -> Vec<Vec<u8>> {
     if input.is_empty() {
         return Vec::new();
     }
-    let text = core::str::from_utf8(input).unwrap_or("");
-    let mut pieces: Vec<String> = text.split('\n').map(String::from).collect();
+    let mut pieces: Vec<Vec<u8>> = input
+        .split(|&byte| byte == b'\n')
+        .map(<[u8]>::to_vec)
+        .collect();
     if input.ends_with(b"\n") {
         pieces.pop();
     }

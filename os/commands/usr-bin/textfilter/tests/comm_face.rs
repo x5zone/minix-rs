@@ -287,6 +287,46 @@ fn an_empty_operand_drains_the_other_side_into_its_own_column() {
     assert_eq!((out.as_str(), status, err.as_str()), ("", 0, ""));
 }
 
+/// 两腿一起按字节：① 非 UTF-8 的行照样是记录、逐字节打回（C 的 `getnextln` 逐 `getc`
+/// 读，`comm.c:204-215`）；② `-f` 的折叠是逐字节的 ctype 表，`c3 89`（É）与 `c3 a9`（é）
+/// **不**相等（`strcasecmp` `minix3/common/lib/libc/string/strcasecmp.c:58-67`）。
+/// 期望逐形取自参照件 `tmp/comm-409/comm_ref` 的现量读数（`tmp/paste-comm-434/ab.log`）。
+#[test]
+fn a_nonutf8_line_is_a_record_and_the_fold_is_per_byte() {
+    let dir = scratch("nonutf8");
+    let a = dir.join("a.txt");
+    let b = dir.join("b.txt");
+    let upper = dir.join("upper.txt");
+    let lower = dir.join("lower.txt");
+    fs::write(&a, b"a\xffb\ncommon\nz\n").expect("write a.txt");
+    fs::write(&b, b"a\xffb\nother\n").expect("write b.txt");
+    fs::write(&upper, b"\xc3\x89\nApple\n").expect("write upper.txt");
+    fs::write(&lower, b"\xc3\xa9\napple\n").expect("write lower.txt");
+
+    let (out, status, err) = run_bytes(&[a.to_str().unwrap(), b.to_str().unwrap()], b"");
+    assert_eq!((status, err), (0, Vec::new()));
+    assert_eq!(
+        out, b"\t\ta\xffb\ncommon\n\tother\nz\n",
+        "共有的那一行带 ff，两半都该留住"
+    );
+
+    // 不折叠：按字节序，`c3 89` 与 `c3 a9` 在第二位分开 ⇒ 各落自己那一列
+    let (out, status, err) = run_bytes(&[upper.to_str().unwrap(), lower.to_str().unwrap()], b"");
+    assert_eq!((status, err), (0, Vec::new()));
+    assert_eq!(out, b"\xc3\x89\nApple\n\t\xc3\xa9\n\tapple\n");
+
+    // `-f` 之后**形状不变**：C 的 ctype 表只折 `A`–`Z`，非 ASCII 字节原样返回，
+    // 而 ASCII 那一对 `Apple`/`apple` 折完相同、照旧落列一（因为 `A` < `c3`）。
+    // 旧写法经 `str::to_lowercase` 把 É/é 折成同一个字符，这两行被判成公共行落列三，
+    // 现量见 `tmp/paste-comm-434/ab.log` 的「comm -f」一行。
+    let (out, status, err) = run_bytes(
+        &["-f", upper.to_str().unwrap(), lower.to_str().unwrap()],
+        b"",
+    );
+    assert_eq!((status, err), (0, Vec::new()));
+    assert_eq!(out, b"\xc3\x89\nApple\n\t\xc3\xa9\n\tapple\n");
+}
+
 fn scratch(tag: &str) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

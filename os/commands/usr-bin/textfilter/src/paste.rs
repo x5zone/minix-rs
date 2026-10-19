@@ -13,7 +13,6 @@
 //! 值为 0 的那项照样占一个位但什么都不打（`if (ch) putchar(ch)`），所以
 //! `-d '\0'` 是「两列之间不留任何东西」而不是「少一列」。
 
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -155,27 +154,32 @@ pub fn tr_delims(list: &str) -> Result<Vec<u8>, PasteError> {
     Ok(out)
 }
 
-/// 第 `gap` 个分隔符位的字符（表按位循环）。值为 0 的那位与空表都返回 `None`——
-/// C 的 `if (ch) putchar(ch)` 就是「占一位而不打任何东西」。
-fn delimiter_char(delimiters: &[u8], gap: usize) -> Option<char> {
+/// 第 `gap` 个分隔符位的**字节**（表按位循环）。值为 0 的那位与空表都返回 `None`——
+/// C 的 `if (ch) putchar(ch)`（`paste.c:131-133`、`:146-150`、`:183-185`）就是
+/// 「占一位而不打任何东西」。交回 `u8` 而不是 `char`：`putchar` 收的是那一字节本身，
+/// 经 `char` 域再落进 `String` 会把裸 `ff` 写成 `c3 bf` 两字节。
+fn delimiter_byte(delimiters: &[u8], gap: usize) -> Option<u8> {
     let byte = *delimiters.get(gap % delimiters.len())?;
-    char::from_u32(u32::from(byte)).filter(|ch| *ch != '\0')
+    if byte == 0 { None } else { Some(byte) }
 }
 
 /// 顺序模式（`-s`）：把一个流的行用循环的分隔符并成一行（`paste.c:177-191`）。
 ///
 /// 这里的游标从表的**第一项**开始（与并行模式不同，见 [`join_parallel`]），
 /// 且每发出一个分隔符就前进一位、走满一轮回到表头；值为 0 的位不打印但仍然占位。
-pub fn join_serial(lines: &[&str], options: &PasteOptions) -> String {
-    let mut out = String::new();
+///
+/// 行与分隔符都是字节：C 的 `sequential` 用 `fgets` 拿行、`putchar` 发行内容
+/// （`paste.c:171-190`），全程不解码，所以一个非 UTF-8 字节照样留在它那一行的原位。
+pub fn join_serial(lines: &[&[u8]], options: &PasteOptions) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         if index > 0 {
-            out.extend(delimiter_char(&options.delimiters, index - 1));
+            out.extend(delimiter_byte(&options.delimiters, index - 1));
         }
-        out.push_str(line);
+        out.extend_from_slice(line);
     }
     if !lines.is_empty() {
-        out.push('\n');
+        out.push(b'\n');
     }
     out
 }
@@ -193,10 +197,14 @@ pub fn join_serial(lines: &[&str], options: &PasteOptions) -> String {
 /// 「追平」环按列号而不是按实际发出数走），行尾再给剩下的每一列各补一个
 /// （`paste.c:144-150`）。参照件 `paste -d '+:' a.txt b.txt a.txt`（a 三行、b 两行）
 /// 的第三行是 `3+:3`：`+` 是给见底的 b 补的，`:` 才是第三列自己前面的那一位。
-pub fn join_parallel(columns: &[usize], sources: &[&[&str]], options: &PasteOptions) -> String {
+///
+/// 行与分隔符都是字节（同 [`join_serial`]）：`parallel` 的 `fgetln` 拿到含换行的整行、
+/// 减掉换行后 `fwrite(line, len)` 原样发出（`paste.c:121-126`、`:137`），长度是量出来的
+/// 而不是编码算出来的。
+pub fn join_parallel(columns: &[usize], sources: &[&[&[u8]]], options: &PasteOptions) -> Vec<u8> {
     let slots = &options.delimiters;
     let count = slots.len();
-    let mut out = String::new();
+    let mut out: Vec<u8> = Vec::new();
     let mut cursor: Vec<usize> = vec![0; sources.len()];
     loop {
         // C 的 `dp`：从「表尾之后」开始，读到那里就当作 NUL 并回卷到表头
@@ -216,7 +224,7 @@ pub fn join_parallel(columns: &[usize], sources: &[&[&str]], options: &PasteOpti
                     dp = 0;
                 } else {
                     if slots[dp] != 0 {
-                        out.push(slots[dp] as char);
+                        out.push(slots[dp]);
                     }
                     dp += 1;
                 }
@@ -228,7 +236,7 @@ pub fn join_parallel(columns: &[usize], sources: &[&[&str]], options: &PasteOpti
                     break;
                 }
             }
-            out.push_str(line);
+            out.extend_from_slice(line);
             cnt += 1;
         }
         if output == 0 {
@@ -239,12 +247,12 @@ pub fn join_parallel(columns: &[usize], sources: &[&[&str]], options: &PasteOpti
                 dp = 0;
             }
             if slots[dp] != 0 {
-                out.push(slots[dp] as char);
+                out.push(slots[dp]);
             }
             dp += 1;
             output += 1;
         }
-        out.push('\n');
+        out.push(b'\n');
     }
     out
 }
@@ -365,44 +373,49 @@ mod tests {
             delimiters: vec![b'+', b':'],
             serial: true,
         };
-        assert_eq!(join_serial(&["a", "b", "c", "d"], &options), "a+b:c+d\n");
+        let four: [&[u8]; 4] = [b"a", b"b", b"c", b"d"];
+        assert_eq!(join_serial(&four, &options), b"a+b:c+d\n".as_slice());
         // 值为 0 的一位照样占位但什么都不打
         let options = PasteOptions {
             delimiters: vec![0],
             serial: true,
         };
-        assert_eq!(join_serial(&["a", "b", "c"], &options), "abc\n");
+        let three: [&[u8]; 3] = [b"a", b"b", b"c"];
+        assert_eq!(join_serial(&three, &options), b"abc\n".as_slice());
         // 空流：C 的 sequential 一个字符都不打（连换行也没有）
         let options = PasteOptions::default();
-        assert_eq!(join_serial(&[], &options), "");
+        assert_eq!(join_serial(&[], &options), b"".as_slice());
     }
 
     #[test]
     fn test_parallel_catches_up_for_a_finished_stream() {
-        let a = ["1", "2", "3"];
-        let b = ["a", "b"];
+        let a: [&[u8]; 3] = [b"1", b"2", b"3"];
+        let b: [&[u8]; 2] = [b"a", b"b"];
         let options = PasteOptions {
             delimiters: vec![b'+', b':'],
             serial: false,
         };
         // 第三行：b 见底 ⇒ `+` 是给 b 补的，`:` 才是第三列前面那一位（参照件同形）
-        let c = ["x", "y", "z"];
+        let c: [&[u8]; 3] = [b"x", b"y", b"z"];
         assert_eq!(
             join_parallel(&[0, 1, 2], &[&a[..], &b[..], &c[..]], &options),
-            "1+a:x\n2+b:y\n3+:z\n"
+            b"1+a:x\n2+b:y\n3+:z\n".as_slice()
         );
         // 两列共用一个流（`paste - -` 的形状）：游标只有一个
-        assert_eq!(join_parallel(&[0, 0], &[&a[..]], &options), "1+2\n3+\n");
+        assert_eq!(
+            join_parallel(&[0, 0], &[&a[..]], &options),
+            b"1+2\n3+\n".as_slice()
+        );
     }
 
     #[test]
     fn test_parallel_default_is_one_tab() {
         let options = PasteOptions::default();
-        let a = ["1", "2", "3"];
-        let b = ["a", "b"];
+        let a: [&[u8]; 3] = [b"1", b"2", b"3"];
+        let b: [&[u8]; 2] = [b"a", b"b"];
         assert_eq!(
             join_parallel(&[0, 1], &[&a[..], &b[..]], &options),
-            "1\ta\n2\tb\n3\t\n"
+            b"1\ta\n2\tb\n3\t\n".as_slice()
         );
     }
 
@@ -413,11 +426,11 @@ mod tests {
             delimiters: vec![0],
             serial: false,
         };
-        let a = ["1", "2", "3"];
-        let b = ["a", "b"];
+        let a: [&[u8]; 3] = [b"1", b"2", b"3"];
+        let b: [&[u8]; 2] = [b"a", b"b"];
         assert_eq!(
             join_parallel(&[0, 1], &[&a[..], &b[..]], &options),
-            "1a\n2b\n3\n"
+            b"1a\n2b\n3\n".as_slice()
         );
         // `a\0b` 三位时，两列的第一位是 'a' ⇒ `1aa`（b 的首行本身就是一个 `a`）
         let options = PasteOptions {
@@ -426,7 +439,46 @@ mod tests {
         };
         assert_eq!(
             join_parallel(&[0, 1], &[&a[..], &b[..]], &options),
-            "1aa\n2ab\n3a\n"
+            b"1aa\n2ab\n3a\n".as_slice()
+        );
+    }
+
+    /// 分隔符位发出的是一**字节**：`putchar` 收下表项本身（`paste.c:131-133`、`:183-185`），
+    /// 裸 `ff` 写出去就是 `ff`。旧写法 `slots[dp] as char` 把它升成 U+00FF，落进 `String`
+    /// 变成 `c3 bf` 两字节——比 C 多一字节。
+    #[test]
+    fn a_delimiter_slot_is_one_byte_not_a_codepoint() {
+        let left: [&[u8]; 1] = [b"p"];
+        let right: [&[u8]; 1] = [b"q"];
+        let options = PasteOptions {
+            delimiters: vec![0xff],
+            serial: false,
+        };
+        assert_eq!(
+            join_parallel(&[0, 1], &[&left[..], &right[..]], &options),
+            b"p\xffq\n".as_slice()
+        );
+        let both: [&[u8]; 2] = [b"p", b"q"];
+        let options = PasteOptions {
+            delimiters: vec![0xff],
+            serial: true,
+        };
+        assert_eq!(join_serial(&both, &options), b"p\xffq\n".as_slice());
+    }
+
+    /// 行内容里的非 UTF-8 字节照常是那一行的字节：旧写法在壳里
+    /// `from_utf8(input).unwrap_or("")` 让整个档的行一起消失（现量见
+    /// `tmp/paste-comm-434/ab.log`：参照件打 `a\xffb\ta\xffb`，本壳交回空）。
+    #[test]
+    fn a_byte_that_is_not_utf8_is_still_part_of_the_line() {
+        let options = PasteOptions::default();
+        let lines: [&[u8]; 2] = [b"a\xffb", b"c"];
+        assert_eq!(join_serial(&lines, &options), b"a\xffb\tc\n".as_slice());
+        let left: [&[u8]; 2] = [b"a\xffb", b"c"];
+        let right: [&[u8]; 1] = [b"x"];
+        assert_eq!(
+            join_parallel(&[0, 1], &[&left[..], &right[..]], &options),
+            b"a\xffb\tx\nc\t\n".as_slice()
         );
     }
 

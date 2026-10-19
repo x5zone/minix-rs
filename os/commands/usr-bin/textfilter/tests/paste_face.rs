@@ -292,6 +292,38 @@ fn parallel_catches_up_for_a_finished_stream() {
     assert_eq!(out, "\t1\n\t2\n\t3\n");
 }
 
+/// 操作数档与标准输入里的非 UTF-8 字节**逐字节**走完两条合并腿：C 的行腿
+/// （`fgetln` `paste.c:121`、`fgets` `:171`）从不解码。期望逐形取自参照件
+/// `tmp/paste-321/paste_ref` 的现量读数（`tmp/paste-comm-434/ab.log`），
+/// 旧本壳在 `from_utf8(...).unwrap_or("")` 那一行上把整个档抹成空。
+#[test]
+fn an_operand_line_that_is_not_utf8_keeps_every_byte() {
+    let dir = scratch("nonutf8");
+    let raw = dir.join("raw.txt");
+    let ok = dir.join("ok.txt");
+    fs::write(&raw, b"a\xffb\nc\n").expect("write raw.txt");
+    fs::write(&ok, b"x\ny\n").expect("write ok.txt");
+    let raw = path(&raw);
+    let ok = path(&ok);
+
+    // 同一个档开两次：两列各自读到那一枚 ff
+    let (out, status, err) = run_bytes(&[raw.as_str(), raw.as_str()], b"");
+    assert_eq!((status, err), (0, Vec::new()));
+    assert_eq!(out, b"a\xffb\ta\xffb\nc\tc\n");
+
+    // 坏档与好档并排：坏档的行不许把好档的行拽空
+    let (out, _, _) = run_bytes(&[ok.as_str(), raw.as_str()], b"");
+    assert_eq!(out, b"x\ta\xffb\ny\tc\n");
+
+    // 顺序模式同样按字节
+    let (out, _, _) = run_bytes(&["-s", raw.as_str()], b"");
+    assert_eq!(out, b"a\xffb\tc\n");
+
+    // 标准输入这一腿也一样：末行没有换行照样是一行
+    let (out, _, _) = run_bytes(&["-", raw.as_str()], b"p\n\xffq\n");
+    assert_eq!(out, b"p\ta\xffb\n\xffq\tc\n");
+}
+
 #[test]
 fn serial_mode_joins_each_operand_onto_one_line() {
     let (a, b, _) = operands("serial");

@@ -7,7 +7,7 @@
 //! either end of input the remaining lines drain into the surviving
 //! column. Columns carry tab offsets: one tab for column two, two for
 //! column three (comm.c:56, 105-110). `-1`/`-2`/`-3` suppress a column;
-//! `-f` compares case-insensitively (`strcasecmp`). Both files always
+//! `-f` compares case-insensitively (`strcasecmp`, 一张**按字节**的 ctype 表). Both files always
 //! reach end of input (the loop reads on). [`parse_comm_args`] mirrors
 //! C's `getopt` option scanning (`comm.c:80`): clustered letters, the `--`
 //! terminator, a lone `-` operand, and an `UnknownOption` for any letter
@@ -31,8 +31,9 @@ pub struct CommOptions {
 pub struct CommLine<'a> {
     /// 1, 2, or 3 — the column the line prints in.
     pub column: u8,
-    /// The line itself.
-    pub text: &'a str,
+    /// The line itself, **as bytes**: C 的行腿 `getnextln` 用 `getc` 一字节一字节读
+    /// （`comm.c:204-215`）再 `printf("%s%s\n", col, line)`，全程不解码。
+    pub text: &'a [u8],
 }
 
 use alloc::vec::Vec;
@@ -40,7 +41,7 @@ use alloc::vec::Vec;
 /// Merges two sorted line lists. Lines must be newline-stripped; both
 /// lists are consumed to the end regardless of order violations (the C
 /// assumes sorted input and simply advances the smaller side).
-pub fn comm<'a>(a: &'a [&'a str], b: &'a [&'a str], options: &CommOptions) -> Vec<CommLine<'a>> {
+pub fn comm<'a>(a: &'a [&'a [u8]], b: &'a [&'a [u8]], options: &CommOptions) -> Vec<CommLine<'a>> {
     let mut out = Vec::new();
     let mut ia = 0usize;
     let mut ib = 0usize;
@@ -75,7 +76,7 @@ pub fn comm<'a>(a: &'a [&'a str], b: &'a [&'a str], options: &CommOptions) -> Ve
     out
 }
 
-fn push<'a>(out: &mut Vec<CommLine<'a>>, column: u8, options: &CommOptions, text: &'a str) {
+fn push<'a>(out: &mut Vec<CommLine<'a>>, column: u8, options: &CommOptions, text: &'a [u8]) {
     let allowed = match column {
         1 => !options.suppress1,
         2 => !options.suppress2,
@@ -88,9 +89,16 @@ fn push<'a>(out: &mut Vec<CommLine<'a>>, column: u8, options: &CommOptions, text
 
 /// The comparison: case-folded bytes with `-f`, plain bytes otherwise
 /// (the C's `strcoll` is byte order in the C locale).
-fn line_cmp(a: &str, b: &str, fold: bool) -> core::cmp::Ordering {
+///
+/// `-f` 走的是 `strcasecmp`：两侧各取一字节、按 `unsigned char` 查 `tolower` 表比
+/// （`minix3/common/lib/libc/string/strcasecmp.c:58-67`），C locale 下那张表只把
+/// `A`–`Z` 换成 `a`–`z`，`0x80`–`0xFF` 原样返回。字符域的 `to_lowercase` 是 **Unicode**
+/// 的大小写表：`c3 89`（É）与 `c3 a9`（é）在它眼里是同一对字符，在 C 的那张表里差一位。
+fn line_cmp(a: &[u8], b: &[u8], fold: bool) -> core::cmp::Ordering {
     if fold {
-        a.to_lowercase().cmp(&b.to_lowercase())
+        a.iter()
+            .map(u8::to_ascii_lowercase)
+            .cmp(b.iter().map(u8::to_ascii_lowercase))
     } else {
         a.cmp(b)
     }
@@ -166,82 +174,118 @@ pub fn parse_comm_args<'a>(
 mod tests {
     use super::*;
 
-    fn texts(result: &[CommLine<'_>]) -> Vec<(u8, String)> {
+    fn texts(result: &[CommLine<'_>]) -> Vec<(u8, Vec<u8>)> {
         result
             .iter()
-            .map(|line| (line.column, line.text.to_string()))
+            .map(|line| (line.column, line.text.to_vec()))
             .collect()
     }
 
     #[test]
     fn test_three_way_merge() {
-        let a = ["apple", "banana", "cherry"];
-        let b = ["banana", "date", "fig"];
+        let a: [&[u8]; 3] = [b"apple", b"banana", b"cherry"];
+        let b: [&[u8]; 3] = [b"banana", b"date", b"fig"];
         let options = CommOptions::default();
         assert_eq!(
             texts(&comm(&a, &b, &options)),
             vec![
-                (1, "apple".to_string()),
-                (3, "banana".to_string()),
-                (1, "cherry".to_string()),
-                (2, "date".to_string()),
-                (2, "fig".to_string()),
+                (1, b"apple".to_vec()),
+                (3, b"banana".to_vec()),
+                (1, b"cherry".to_vec()),
+                (2, b"date".to_vec()),
+                (2, b"fig".to_vec()),
             ]
         );
     }
 
     #[test]
     fn test_suppression_flags() {
-        let a = ["common", "only1"];
-        let b = ["common", "only2"];
+        let a: [&[u8]; 2] = [b"common", b"only1"];
+        let b: [&[u8]; 2] = [b"common", b"only2"];
         let options = CommOptions {
             suppress1: true,
             suppress3: true,
             ..CommOptions::default()
         };
-        assert_eq!(
-            texts(&comm(&a, &b, &options)),
-            vec![(2, "only2".to_string())]
-        );
+        assert_eq!(texts(&comm(&a, &b, &options)), vec![(2, b"only2".to_vec())]);
     }
 
     #[test]
     fn test_fold_compares_case_insensitively() {
-        let a = ["Apple"];
-        let b = ["apple", "zebra"];
+        let a: [&[u8]; 1] = [b"Apple"];
+        let b: [&[u8]; 2] = [b"apple", b"zebra"];
         let options = CommOptions {
             fold: true,
             ..CommOptions::default()
         };
         assert_eq!(
             texts(&comm(&a, &b, &options)),
-            vec![(3, "Apple".to_string()), (2, "zebra".to_string()),]
+            vec![(3, b"Apple".to_vec()), (2, b"zebra".to_vec())]
         );
     }
 
     #[test]
     fn test_drains_surviving_file_at_either_end() {
-        let a = ["early"];
-        let b = ["mid1", "mid2", "mid3"];
+        let a: [&[u8]; 1] = [b"early"];
+        let b: [&[u8]; 3] = [b"mid1", b"mid2", b"mid3"];
         let options = CommOptions::default();
         assert_eq!(
             texts(&comm(&a, &b, &options)),
             vec![
-                (1, "early".to_string()),
-                (2, "mid1".to_string()),
-                (2, "mid2".to_string()),
-                (2, "mid3".to_string()),
+                (1, b"early".to_vec()),
+                (2, b"mid1".to_vec()),
+                (2, b"mid2".to_vec()),
+                (2, b"mid3".to_vec()),
             ]
         );
-        let a = ["late1", "late2"];
-        let b = ["early"];
+        let a: [&[u8]; 2] = [b"late1", b"late2"];
+        let b: [&[u8]; 1] = [b"early"];
         assert_eq!(
             texts(&comm(&a, &b, &options)),
             vec![
-                (2, "early".to_string()),
-                (1, "late1".to_string()),
-                (1, "late2".to_string()),
+                (2, b"early".to_vec()),
+                (1, b"late1".to_vec()),
+                (1, b"late2".to_vec()),
             ]
+        );
+    }
+
+    /// 行是字节串：一枚非 UTF-8 字节让**整个档**的行消失是旧写法
+    /// （壳里 `from_utf8(input).unwrap_or("")`）的失败形状，C 那边那一行照样是记录
+    /// （`comm.c:204-215` 的 `getnextln` 逐 `getc` 读，不解码）。
+    #[test]
+    fn a_byte_that_is_not_utf8_is_still_a_comparable_line() {
+        let left: [&[u8]; 2] = [b"a\xffb", b"common"];
+        let right: [&[u8]; 1] = [b"a\xffb"];
+        assert_eq!(
+            texts(&comm(&left, &right, &CommOptions::default())),
+            vec![(3, b"a\xffb".to_vec()), (1, b"common".to_vec())]
+        );
+    }
+
+    /// `-f` 的折叠是**逐字节查 ctype 表**，不是 Unicode 小写：`strcasecmp` 两侧各按
+    /// `unsigned char` 取 `tolower`（`minix3/common/lib/libc/string/strcasecmp.c:58-67`），
+    /// 于是 `c3 89`（É）与 `c3 a9`（é）在第二位分开——参照件
+    /// `tmp/comm-409/comm_ref` 现量这两行**不**相等（各落自己那列），旧写法经
+    /// `str::to_lowercase` 判成公共行落在列三。
+    #[test]
+    fn the_fold_is_a_per_byte_ctype_lookup_not_a_unicode_lowercase() {
+        let left: [&[u8]; 1] = [b"\xc3\x89"];
+        let right: [&[u8]; 1] = [b"\xc3\xa9"];
+        let fold = CommOptions {
+            fold: true,
+            ..CommOptions::default()
+        };
+        assert_eq!(
+            texts(&comm(&left, &right, &fold)),
+            vec![(1, b"\xc3\x89".to_vec()), (2, b"\xc3\xa9".to_vec())]
+        );
+        // ASCII 那一半不许被波及：`Apple` 与 `apple` 折叠后仍是同一行。
+        let left: [&[u8]; 1] = [b"Apple"];
+        let right: [&[u8]; 1] = [b"apple"];
+        assert_eq!(
+            texts(&comm(&left, &right, &fold)),
+            vec![(3, b"Apple".to_vec())]
         );
     }
 

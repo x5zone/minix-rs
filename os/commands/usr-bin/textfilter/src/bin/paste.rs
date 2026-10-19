@@ -53,7 +53,7 @@ fn run() -> ! {
 
     // 一列 = 一个**已打开的流**：档名各开一次（所以 `paste a.txt a.txt` 是两个游标），
     // 而所有 `-` 共用标准输入这一个流（参照件 `paste - -` 对三行打的是两列各取一行）。
-    let mut sources: Vec<Vec<String>> = Vec::new();
+    let mut sources: Vec<Vec<Vec<u8>>> = Vec::new();
     let mut columns: Vec<usize> = Vec::new();
     let mut stdin_source: Option<usize> = None;
     for operand in &operands {
@@ -92,16 +92,16 @@ fn run() -> ! {
             let source = *column;
             let rest = &sources[source][taken[source]..];
             taken[source] = sources[source].len();
-            let lines: Vec<&str> = rest.iter().map(String::as_str).collect();
-            support::emit(join_serial(&lines, &options).as_bytes());
+            let lines: Vec<&[u8]> = rest.iter().map(Vec::as_slice).collect();
+            support::emit(&join_serial(&lines, &options));
         }
     } else {
-        let lines: Vec<Vec<&str>> = sources
+        let lines: Vec<Vec<&[u8]>> = sources
             .iter()
-            .map(|source| source.iter().map(String::as_str).collect())
+            .map(|source| source.iter().map(Vec::as_slice).collect())
             .collect();
-        let slices: Vec<&[&str]> = lines.iter().map(Vec::as_slice).collect();
-        support::emit(join_parallel(&columns, &slices, &options).as_bytes());
+        let slices: Vec<&[&[u8]]> = lines.iter().map(Vec::as_slice).collect();
+        support::emit(&join_parallel(&columns, &slices, &options));
     }
     support::terminate(0)
 }
@@ -128,15 +128,22 @@ fn fail(prog: &str, error: &PasteError) -> ! {
     }
 }
 
-/// Split bytes into newline-stripped lines, dropping the empty piece after a
-/// trailing newline (interior blank lines stay as empty cells)——C 用 `fgetln`
+/// Split bytes into newline-stripped **byte** lines, dropping the empty piece after
+/// a trailing newline (interior blank lines stay as empty cells)——C 用 `fgetln`
 /// 拿到含换行的整行再把换行减掉（`paste.c:134-136`），末行没有换行照样是一行。
-fn split_lines(input: &[u8]) -> Vec<String> {
+///
+/// 行是字节不是文本：C 的行腿从不解码，一个非 UTF-8 字节只是那一行里的一个字节。
+/// 旧写法 `from_utf8(input).unwrap_or("")` 让一枚坏字节把**整个档**的行抹掉——
+/// 参照件对 `paste raw.txt raw.txt`（`raw.txt` 是 `a\xffb\nc\n`）打
+/// `a\xffb\ta\xffb\nc\tc\n`，旧本壳交回空（`tmp/paste-comm-434/ab.log`）。
+fn split_lines(input: &[u8]) -> Vec<Vec<u8>> {
     if input.is_empty() {
         return Vec::new();
     }
-    let text = core::str::from_utf8(input).unwrap_or("");
-    let mut pieces: Vec<String> = text.split('\n').map(String::from).collect();
+    let mut pieces: Vec<Vec<u8>> = input
+        .split(|&byte| byte == b'\n')
+        .map(<[u8]>::to_vec)
+        .collect();
     if input.ends_with(b"\n") {
         pieces.pop();
     }
