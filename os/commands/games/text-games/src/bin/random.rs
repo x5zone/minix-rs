@@ -23,11 +23,11 @@ use alloc::vec::Vec;
 
 #[path = "../bin_support.rs"]
 mod support;
-use minix_text_games::lottery::{
-    exit_status_value, judge_operands, line_selected, mix_seed, scan_ring, OperandLeg, Ring,
-    NOT_VALID_SENTENCE, NO_OPERAND_DENOMINATOR, UNKNOWN_OPTION, USAGE,
-};
 use minix_text_games::TextGameError;
+use minix_text_games::lottery::{
+    NO_OPERAND_DENOMINATOR, NOT_VALID_SENTENCE, OperandLeg, Ring, USAGE, exit_status_value,
+    judge_operands, line_selected, mix_seed, scan_ring, unknown_option_line,
+};
 
 fn run() -> ! {
     let argv: Vec<String> = support::args();
@@ -44,8 +44,10 @@ fn run() -> ! {
         } => (exit_status, &tokens[operands_at..]),
         Ring::Unknown(letter) => {
             // libc 那一行在前、`usage()` 那一行在后，两句都缀不缀名字各不相同：
-            // 第一行走 `getprogname()`，第二行的 `random` 写死在串里
-            support::warn(format!("{prog}: {UNKNOWN_OPTION}{letter}\n").as_bytes());
+            // 第一行走 `getprogname()`，第二行的 `random` 写死在串里。字母位走
+            // `unknown_option_line` 的字节出口：`getopt.c:79` 的 `optopt = *place++`
+            // 一次进一个字节，把 `c3` 当字符装进 `String` 就会多带一个 `83`。
+            support::warn(&unknown_option_line(prog, letter));
             support::warn(USAGE.as_bytes());
             support::terminate(1);
         }

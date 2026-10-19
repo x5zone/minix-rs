@@ -21,10 +21,26 @@
 use std::fs::File;
 use std::io::Write as _;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 fn random_bin() -> &'static str {
     env!("CARGO_BIN_EXE_random")
+}
+
+/// 喂标准输入。**只有 `BrokenPipe` 可以容忍**：`random` 有若干形在碰到输入之前就先退
+/// （`-Z` 落 `usage()` 退 1、`-e` 在 `random.c:109-111` 读标准输入之前就返回），于是父子
+/// 谁先被调度决定这一写拿不拿得到 EPIPE——那是夹克的时序，不是被测代码的缺陷。其余写错
+/// 仍然当场失败。textfilter 那边同一件事已经定过口径（`tests/face_support/mod.rs::write_stdin`），
+/// 这里按同一判据落本 crate 的一份（两个 crate 之间没有共件测试模块可引）。
+fn feed_stdin(child: &mut Child, input: &[u8]) {
+    let mut stdin = child.stdin.take().expect("stdin pipe");
+    if let Err(err) = stdin.write_all(input) {
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "写标准输入只该因为「子进程已退出」而失败，实际是 {err}"
+        );
+    }
 }
 
 /// 用给定的 `argv[0]` 跑一腿：标准输入喂 `input`，收回三路。文本按 lossy 收——报文本身
@@ -38,12 +54,7 @@ fn run_with_argv0(arg0: &str, args: &[&str], input: &[u8]) -> (String, i32, Stri
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn random");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin pipe")
-        .write_all(input)
-        .expect("feed stdin");
+    feed_stdin(&mut child, input);
     let out = child.wait_with_output().expect("wait random");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -54,6 +65,27 @@ fn run_with_argv0(arg0: &str, args: &[&str], input: &[u8]) -> (String, i32, Stri
 
 fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     run_with_argv0("random", args, input)
+}
+
+/// 同 `run_with_argv0`，但三路都按**原始字节**收回。逐字节的字母位与 lossy 后的码位
+/// 在文本形态里分不开：`c3` 与 `c3 83` 经 `from_utf8_lossy` 都是「一个字符」，
+/// 拿 `String` 断言的门钉不住多出来的那一个字节（textfilter 那边同一课，见 18 篇批次四百二十）。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(random_bin())
+        .arg0("random")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn random");
+    feed_stdin(&mut child, input);
+    let out = child.wait_with_output().expect("wait random");
+    (
+        out.stdout,
+        out.status.code().expect("exit code"),
+        out.stderr,
+    )
 }
 
 const INPUT: &[u8] = b"aa\nbb\ncc\ndd\nee\nff\n";
@@ -265,7 +297,10 @@ fn an_unreadable_stdin_blames_the_stdin_word_and_exits_two() {
 fn an_unknown_letter_gets_the_libc_line_then_the_usage_line() {
     // 两句的顺序与前缀各不相同：第一行走 `getprogname()`，第二行的 `random` 写死在串里。
     // 字样取 Minix 自己的 `minix3/lib/libc/stdlib/getopt.c:101-104`（`unknown option -- %c`，
-    // 字母不带引号）。参照件这一形是宿主 glibc 的 `invalid option -- 'Z'`，不承载真值
+    // 字母不带引号）。本仓早期的参照件 `tmp/random-342/random_ref` 链的是宿主 glibc 的
+    // `getopt`，那句是 `invalid option -- 'Z'`，承不了这条真值；批次四百二十一重链了一份
+    // 带 Minix `getopt.c` 的参照件 `tmp/random-421/random`（经同名软链起，程序名与本壳一致），
+    // 现量 `-Z`/`-eZ`/`-Ze` 三形都是这一句 + usage 一行、退 1。
     for args in [&["-Z"][..], &["-eZ"][..], &["-Ze"][..]] {
         let (out, code, err) = run(args, INPUT);
         assert_eq!(
@@ -276,6 +311,58 @@ fn an_unknown_letter_gets_the_libc_line_then_the_usage_line() {
                 "random: unknown option -- Z\nusage: random [-er] [denominator]\n"
             ),
             "{args:?}"
+        );
+    }
+}
+
+/// 字母位是短横后的**第一个字节**：参照件 `tmp/random-421/random` 现量 `-é`（`c3 a9`）
+/// 与 `-eé` 都是 `random: unknown option -- ` + `303`（=`c3`）+ 换行 + usage 一行、退 1
+/// （`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出）。
+/// 本支的环是「停在第一个坏字母」那一族（`random.c:80-83` 的 `default: case '?': usage();`
+/// 坐在环里当场退出），所以与 `seq` 相反，这里只有**一行** libc。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_random() {
+    let want: Vec<u8> = [
+        b"random: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        b"usage: random [-er] [denominator]\n",
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-e\u{e9}"] {
+        let (out, code, err) = run_bytes(&[form], INPUT);
+        assert_eq!(out, Vec::new(), "{form} 的报文只走 stderr");
+        assert_eq!(code, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    // U+0080 那一格是这条渲染规则的判据位：它的 UTF-8 编码是 `c2 80` 两个字节，
+    // C 打的是第一个 `c2`；按字符装会打成 `c2 80` 两个字节都出来（差一个字节）。
+    let (out, code, err) = run_bytes(&["-\u{80}"], INPUT);
+    assert_eq!(out, Vec::new());
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        [
+            b"random: unknown option -- ".as_slice(),
+            b"\xc2\n",
+            b"usage: random [-er] [denominator]\n",
+        ]
+        .concat()
+    );
+
+    // ASCII 那一形不许被换渲染波及；聚簇里合法字母在先、坏字母在后也仍停在第一个坏的上
+    for (form, letter) in [("-x", b"x"), ("-Z\u{e9}", b"Z")] {
+        let (_out, code, err) = run_bytes(&[form], INPUT);
+        assert_eq!(code, 1, "{form}");
+        assert_eq!(
+            err,
+            [
+                b"random: unknown option -- ".as_slice(),
+                letter.as_slice(),
+                b"\nusage: random [-er] [denominator]\n".as_slice(),
+            ]
+            .concat(),
+            "{form}"
         );
     }
 }
@@ -469,12 +556,7 @@ fn a_stdout_that_stops_taking_bytes_is_blamed_by_name_and_exits_two() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn random against /dev/full");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin pipe")
-        .write_all(INPUT)
-        .expect("feed stdin");
+    feed_stdin(&mut child, INPUT);
     let out = child.wait_with_output().expect("wait random");
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(
