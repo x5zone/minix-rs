@@ -42,10 +42,15 @@ fn run() -> ! {
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     // 选项环（`unifdef.c:273` 的 `"i:D:U:I:o:cdeklst"`）。libc 那两行后面必接 usage，
     // 而 `-i` 的后随字母坏了、符号名不合 `addsym` 的形这两支，C 只有 usage 一行。
+    //
+    // 字母位走 `line_bytes`：`src/unifdef.rs` 的取法本就按字节（`char::from(bytes[pos])`），
+    // 非 ASCII 字母经 `line` 会被 UTF-8 编成两字节。参照件 `tmp/unifdef-318/unifdef_ref` 现量
+    // `-é` 与 `-cé` 都是 `unifdef: unknown option -- ` + 单个 `c3` + 换行再跟 usage，
+    // 机制在 `getopt.c:79` 的 `optopt = *place++` 与 `:103` 的 `%c`。
     let (options, operands) = match parse_unifdef_args(&args[1..]) {
         Ok(parsed) => (parsed.options, parsed.operands),
         Err(UnifdefArgError::Getopt(report)) => {
-            support::warn(report.line(prog).as_bytes());
+            support::warn(&report.line_bytes(prog));
             usage();
         }
         Err(UnifdefArgError::Usage) => usage(),

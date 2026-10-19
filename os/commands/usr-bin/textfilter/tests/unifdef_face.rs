@@ -59,6 +59,59 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
+/// 与 `run` 同一条命令缝，但**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3` 渲染成三字节
+/// U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法（`rev`/`paste`/`jot` 那几支同此）。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(UNIFDEF)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the unifdef binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/unifdef-318/unifdef_ref` 现量
+/// `-é` 与 `-cé` 都是 `unifdef: unknown option -- ` + `c3` + 换行再跟 usage、退 2
+/// （`c` 是 `"i:D:U:I:o:cdeklst"` 里合法且不带值的字母，聚簇继续吃到 `é` 的第一字节；
+/// `-Zé` 停在 `Z`，`unifdef.c:322-323` 拿到 `'?'` 就 `usage()`）。ASCII 的 `-z` 与「聚簇只报
+/// 第一枚」两形本文件各已有主人（`an_unknown_letter_prints_the_libc_line_then_the_usage`、
+/// `the_case_of_a_letter_is_part_of_the_option_set`），按冗余判据不重复承载。
+#[test]
+fn a_multibyte_flag_letter_reaches_the_libc_line_as_one_byte() {
+    let want: Vec<u8> = [
+        b"unifdef: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-c\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form], SOURCE);
+        assert_eq!(out, Vec::new(), "{form} 的报文只走 stderr");
+        assert_eq!(status, 2, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_, status, err) = run_bytes(&["-Z\u{e9}"], SOURCE);
+    assert_eq!(status, 2);
+    assert_eq!(
+        err,
+        [
+            b"unifdef: unknown option -- Z\n".as_slice(),
+            USAGE.as_bytes(),
+        ]
+        .concat(),
+        "环停在第一个坏字母上，`é` 根本不该被读到"
+    );
+}
+
 /// 集外字母：libc 那一行在前、usage 在后，退 **2**（`unifdef.c:322-323` 加 `:378`）。
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
