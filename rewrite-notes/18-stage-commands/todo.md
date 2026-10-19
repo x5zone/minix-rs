@@ -119,6 +119,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百零三（A2 渲染半切片 9：`unifdef`）：第九支壳换到字节形；一枚门名跨壳重复被自己在写负控时抓住——红名清单分不出是谁红
+
+- **这一轮干什么**：A2 渲染半第九次落地，选 `unifdef`（`src/unifdef.rs:215` 的取法按字节 `char::from(bytes[pos])`，环也与 `paste`/`jot` 同形：`unifdef.c:322-323` 拿到 `'?'` 就 `default: usage()`）。落码两件：`os/commands/usr-bin/textfilter/src/bin/unifdef.rs`（`Err(UnifdefArgError::Getopt(report))` 那一处出口改调 `line_bytes`）、`tests/unifdef_face.rs`（新立逐字节门 + `run_bytes` 夹具）。进度 **9 支壳、余 20 处调用点 / 16 个源文件**。本支的字母位此前也没有独立登记号，失真记在 A2 总量里，本笔归零。
+- **门名跨壳重复是自己写负控时抓住的**：新门初版照抄 `jot` 那笔的枚名 `the_libc_line_of_a_multibyte_flag_is_a_single_raw_byte`，两枚门同名落在两个集成测试二进制里；写 `negctl.py` 的期望清单时才发现红名清单**无法区分是谁红**（V1 只动 `unifdef`，期望里却出现 jot 那枚的同名字串）。改名 `a_multibyte_flag_letter_reaches_the_libc_line_as_one_byte` 后才对得上账——这正是批次三百九十二立那条「枚名与邻壳刻意不同」的用途。**教训的形状**：跨壳唯一这件事在写门时看不出问题（两枚门各自都绿），到要用红名清单做归因时才暴露；凡是靠「名字」做对账的机制，命名纪律要在新增那一步执行，不能等归因时补。
+- **本支的一个少见处顺带进了 A/B 的归一化**：`unifdef.c:375-377` 的 usage 那行**程序名写死在串里**（没有 `getprogname()`），而 libc 行与 `err`/`warnx` 的前缀跟着 `getprogname()` ⇒ 参照件里两行来历不同：`unifdef_ref: unknown option -- c3` 后面跟的是 `usage: unifdef …`。脚本因此只替换 `unifdef_ref: ` 前缀，usage 行两侧本来就同文。**同一支命令里两种程序名来源**是本板见过第一次，判据只能照 `unifdef_face.rs` 头部那句既有陈述复核一遍，结论一致。
+- **读数**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1142 passed / 0 failed**（68 段，起点 1141）；容器权威门同读数 **1142 / 0 / 68**、退码 0（跑前核 `git status --porcelain` 只剩本轮两件）；三架构 `cargo build -p minix-textfilter --bins --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} --release` 全退 0、`^error` 计数 0；clippy 整包 **154** 与基线同数、按告警位置判触及两件零命中；`rustfmt --edition 2024` 本轮**新写过一处漂移并当场修掉**——`err` 那枚 `[.., ..].concat()` 的单行形超宽，`rustfmt` 要拆成多行；对触及件就地跑一次 `rustfmt --edition 2024 <file>` 后归零，复跑该靶 14/0。
+- **负控八枚全咬住**（`python3 tmp/unifdef-403/negctl.py`，日志 `tmp/unifdef-403/negctl.log`）：V1 出口退回 `line()` ⇒ 咬 1；V2 字母位仍按 UTF-8 写 ⇒ 咬 9（**八支已迁壳的门加共件门一次全红**，横向证据随切片增加在涨）；V3 无条件取低字节 ⇒ 咬 1；V4 丢行尾换行 ⇒ 咬 42；V5 报完 libc 行不接 usage ⇒ 咬 4（本支的 ASCII 三枚门同红，与 `jot` 那笔的 J5 五枚同型）；V6 措辞漂到 glibc ⇒ 咬 37；V7 取法退回按字符取整簇 ⇒ 咬 1；V8 取法取错字节（吃 `a9`）⇒ 咬 3。逐枚编得过、期望门全在红名清单里、先还原再读回比 md5、复跑 0 失败。八枚**一遍过**，本轮没有判据自错（改名那处是命名纪律，不是判据错）。
+- **A/B 二十六形**：`python3 tmp/unifdef-403/ab.py > tmp/unifdef-403/ab.log`，对 `tmp/unifdef-318/unifdef_ref` 现量（选项环十形含 `-é`/`-cé`/`-Zé`/`-i`/`-ix`/`-D`/`-o` 缺值、符号名坏形、`--`、裸 `-`、两操数、开不了的操数档、数据面八形含 `-iDA` 与 `-DA=1`、`-k`/`-l`/`-o` 写档）。**SAME=23 / 非预期 DIFF=0 / 已知分叉 1 形**：`unifdef -s` 在一枚 `-D`/`-U` 都没给时，参照件把档里的条件符号名逐行打到标准输出（`findsym` 在查表的同时 `printf`，`unifdef.c:930-931`）而本壳打空——**在册条目 `UNIFDEF-SYMLIST-OUTPUT`**，本轮只换渲染不碰它，按已知分叉分类。另两形非法 UTF-8（`-ÿ`、`-`）单列射程②残差：`ff`/`80` 对 `ef`，退码两侧同为 2（本支 usage 退 **2** 不是 1，`unifdef.c:378`）。
+- **登记与闭合**：`unifdef` 的字母位失真归零；`UNIFDEF-SYMLIST-OUTPUT`、`UNIFDEF-D-DEBUG-OUTPUT` 在册未动（本轮的 A/B 是 `UNIFDEF-SYMLIST-OUTPUT` 第二次现量到，读数与批次三百一十八那次一致：C 打 `A`/`B` 两行、本壳空、退码一致）。板上 A2 记到**切片 9**。
+- **三件套**：核实命令与读数——`python3 tmp/unifdef-403/ab.py`（23 形同文 + 一形在册分叉 + 两形射程②残差）、`python3 tmp/unifdef-403/negctl.py`（八枚各咬住 1/9/1/42/4/37/1/3、复跑 0 失败）、参照件 `tmp/unifdef-318/unifdef_ref`、宿主与容器各 **1142 / 0 / 68**、三架构全退 0、`clippy` 154 同数、`rustfmt --edition 2024` 触及件零漂移（修后）、剩余调用点现量 **20 处 / 16 个源文件**；核实日 `2026-10-19`；基线快照 `0fe88b3cd`。
+- **下一轮首动作**：`bash tools/claim.sh claim GETOPT-REPORT-BYTE-LETTER qoder`（切片 10：`vis`——`src/vis.rs` 的取法已按字节，但 `bin/vis.rs:146` 的 `libc_line()` 把 libc 行与 usage 拼成**一个** `String` 并在六处当错误值返回，要先把那条通道换成字节向量；`seq` 仍与射程②同轮；`cksum` 那两处的 `flag` 来自按字符的取法，得两半一起做）。
+
+
 ## 批次四百零二（A2 渲染半切片 8：`jot`）：第八支壳换到字节形；顺带纠正一处把 `jot` 归进「累加环」的家族错判——四件产物里都带着它
 
 - **这一轮干什么**：A2 渲染半第八次落地，选 `jot`（`src/jot.rs:215` 的取法按字节 `char::from(bytes[pos])`，缺值那一支是 `ch as char`，都是字母的一个字节）。落码两件：`os/commands/usr-bin/textfilter/src/bin/jot.rs`（`Err(JotArgError::Getopt(report))` 那一处出口改调 `line_bytes`）、`tests/jot_face.rs`（新立逐字节门一枚 + `run_bytes` 夹具）。进度 **8 支壳、余 21 处调用点 / 17 个源文件**。jot 的字母位此前没有独立登记号，失真一直记在 A2 的总量里，本笔归零。
