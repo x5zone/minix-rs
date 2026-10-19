@@ -119,6 +119,26 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百二十六（P0 独立轮 `UNEXPAND-LAST-STOP-TAB-DROPPED`：够不着下一档的制表符不是「已经消费掉的空白」）
+
+- **这一轮干什么**：闭上一轮登记的 `UNEXPAND-LAST-STOP-TAB-DROPPED`——档位表里够得着的那一档被折进输出，够不着的那一档却把输入里的制表符**吞掉**了。判据在 `minix3/usr.bin/unexpand/unexpand.c:152-165`：制表符那一支只有「`n < nstops - 1` 且 `tabstops[n] - 1 < limit`」成立时才 `continue`（`:161-162` 把列推到那一档），不成立就顺着控制流落到 `:167` 的 `/* Output our tabs */`，最后由 `:195` 那句 `putchar(*p)` 把**制表符自己**交出去，`:203-204` 再让两列各进一格。也就是说在 C 那里，制表符是空白，但「这一格空白」和「被折进档位的那几格空白」不是一件事：前者在够不着档时是一枚普通字节。
+
+- **为什么这一形在 `unexpand` 里比在 `expand` 里难看见**：`-t` 给的最后一档通常就是行的目的地，`unexpand` 只在「列已经超过最后一档」时才走到这一支，所以参照件对 `-t 8` 的 `\ta` 交回的是原样的 `\ta`，本壳在这一支把制表符**整枚丢掉**（同一枚形在负控 N1 的读数里现量：`left: "a"` 对 `right: "\ta"`，`tmp/unexpand-426/negctl-b1.log`），列也少进一格，且差数随制表符枚数累积。上一轮的 35 形矩阵把这一族量成 `DIFF=6`（`tmp/unexpand-425/ref-matrix.log`），本轮按形逐条对读 `tmp/unexpand-426/ref-shapes.log`。
+
+- **落码（代码笔 `295859e75`）**：`os/commands/usr-bin/textfilter/src/unexpand.rs:133-140`——制表符那一支的 `cursor += 1; continue;` 收回 `if` 体内，不成立时让控制流落到同一个冲洗出口；注释写明它落到的是 `unexpand.c:167-192` 那一腿以及 `:195` 那句 `putchar(*p)`，因此「不能把它当已消费的空白跳过」。
+
+- **门（面侧 +1、库侧 +1）**：`tests/unexpand_face.rs` 新增 `a_tab_past_the_last_stop_and_a_blank_final_line_reach_stdout`（`unexpand_face` 13→14），逐字节钉 `-t 8` 的 `  \tx\n`→`  \tx\n`、`        \ty\n`→`\t\ty\n` 与 `-t 4,8` 的 `    \ty\n`→`\t\ty\n`，另钉末行只剩空白且输入无换行时的零字节输出；`src/unexpand.rs` 的 `mod tests` 新增 `a_tab_beyond_the_last_stop_is_handed_back_like_c_does`（八形：`-t 8` 四形、`-t 4,8` 两形、`-t 0` 两形，含「够得着第 1 档就被折进档」这一反形，`  \tx` 对 `\tx`）。库侧另有一枚 `a_blank_run_is_collapsed_only_by_a_non_blank_byte`（下面那条登记项的现量钉子）。`--lib` 580→582，整包 **1182→1185**。
+
+- **中途量出的一件事，以及为什么它不该在这一轮落码**：`unexpand.c:214-215` 是循环走完后**直接 `return`**——C 在行末不冲任何档。只剩空白的一行在参照件里交出成档的制表符，靠的是 `fgetln` 交回的字节里那个换行符自己走 `:167-195` 那一腿（换行符是「非空白」）。本壳的 `unexpand_line` 拿到的是**剥掉换行的行体**，于是「行末该不该冲档」这一问在这层没有答案：按无信息处理（不冲）与「末行没有换行」那一家同形、与带换行那半分叉；无条件冲则反过来。两侧逐字节现量把这件事钉清楚（`tmp/unexpand-426/eol.log` 十二形：无换行的末行只剩空白 → 参照件零字节、本壳同为零；带换行的末行只剩空白 → 参照件 `\t\n`、本壳 `\n`）。本轮先按「不冲」落，也就是把 `UNEXPAND-ZERO-STOP-PANIC` 那一家遗留的分叉**维持原状并登记**（`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`，六形读数在案），不在这一轮顺手改签——它要么给 `unexpand_line` 加一枚「本行是否以换行结束」的参数（31 处库内测调用点全要跟着改），要么把换行留在行体里让这一层变成 C 的 `tabify` 同形（要改 `unexpand()` 的返回值契约与壳侧写口，与板上「末行换行状态」那一族是同一个决定）。两条路各动什么，写进板 A2 行当下一轮的施工依据。
+
+- **读数（按最终形态）**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1185 passed / 0 failed**（68 段，日志 `tmp/unexpand-426/final-host2.log`，等式 1182+2 枚库门+1 枚面门=1185）；容器权威门同读数 **1185 / 0 / 68 段**、退码 0（`tmp/unexpand-426/final-gates-run2.log`）；三架构 `cargo build --offline -j 1 --bins -p minix-textfilter --target {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf}` 全退 0、`^error` 计数 0；clippy 整包 **154** 与基线同数（按告警位置判），触及件里两处命中是存量那一对 `implicitly performing saturating subtraction`（批次四百二十五的日志里是同一件同两句，行号因本轮增删而位移）；`rustfmt` 触及件零漂移、整包 99 与主树同数。回归面：上一轮那 35 形矩阵复跑 **SAME=35 / DIFF=0**（`tmp/unexpand-426/ab-425-matrix-final.log`），本轮 17 形 **SAME=13 / DIFF=4**（`tmp/unexpand-426/ab-final.log`）＋末行 12 形 **SAME=10 / DIFF=2**，那 6 形全属上面登记的行末冲洗一家。
+
+- **负控（读数 `tmp/unexpand-426/negctl-b1.log`…`negctl-b4.log`）**：注入前先数锚点，四处各 1 次。四枚里三枚咬住：N1 把 `cursor += 1; continue;` 挪回 `if` 外（即退成「制表符总是被消费掉」）→ 失败 3（库内两枚 + 面侧那一枚）；N2 够得着档时不推进 `dcol` → 失败 1（`a_tab_beyond_the_last_stop_is_handed_back_like_c_does`）；N4 冲洗那一腿的档位判据由「够到档」收紧成「越过档」→ 失败 6（连档位表回显与 `base_zero` 两枚都受影响，因为它们的输入行里有制表符）；N3 是**等价变异**（`n + 1 < len` 写成 `n < len - 1`，这一支的档位表非空所以无符号减法安全）→ 596 passed / 0 failed，全绿。第一轮另有两枚（撤掉当时的行末冲洗、把它改写成 `as_slice()` 传参）**没跑成注入**：锚点串的前导四空格是循环内那一次调用八空格缩进的子串，计数为 2 而非 1，脚本按判据当场判「不成立，跳过」——「注入多咬/空咬先怀疑注入自己的形状」这条判据这一轮以「锚点先数次数」的形式兑现了一次，随后那两个改动随行末冲洗一起被撤，不再需要注入。
+
+- **登记与闭合**：闭 `UNEXPAND-LAST-STOP-TAB-DROPPED`（板 A2 行、07 篇 `unexpand` 行同步）。**新登记不执行**：`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`（六形读数在案，两条施工路一并写明）。在册未动：`UNEXPAND-C-COMMENT-ANCHOR-DRIFT`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`LINES-OF-NONUTF8-DROPS-ALL`、`NL-DELIM-LENGTH-RULE`（待裁决）、八支 `*-NON-PERMUTE-OPERAND-TAIL` 族余量、参数缝半（射程②）。
+
+---
+
 ## 批次四百二十五（P0 独立轮 `UNEXPAND-ZERO-STOP-PANIC`：档位 0 是一支合法档位，减法不许替它停下）
 
 - **这一轮干什么**：闭板上在册的 `UNEXPAND-ZERO-STOP-PANIC`——`unexpand -t 0` 让本壳在一步减法上崩掉（参照件回显档位表 `0 0` 之后整行原样交回、退 0）。判据在 C 那三步减法的类型上：`minix3/usr.bin/unexpand/unexpand.c:146` 写 `limit = nstops == 0 ? UINT_MAX : tabstops[nstops - 1] - 1;`，制表符那两支又各有 `tabstops[n] - 1`（`:157`、`:160`），三者减的都是 `size_t`——档位是 0 时它们回绕成一个极大的值而不是报错，循环照旧走到头，所以「0 这一档」在 C 里是一支**合法但谁也够不着**的档位。Rust 的 `usize` 减法在带溢出检查的构建里先触发 trap，同一支档位就把整个命令崩掉。修法只有一条对得上 C：那三处换成 `wrapping_sub(1)`。
