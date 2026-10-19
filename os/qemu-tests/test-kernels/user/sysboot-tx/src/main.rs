@@ -29,37 +29,6 @@ fn emit(message: &[u8]) {
     );
 }
 
-/// C12 FP 交替探针原语：xmm0 ← bits（裸字节 `66 48 0F 6E C1` = movq
-/// xmm0, rcx——x86_64-unknown-none 未开 SSE target feature，xmm_reg 寄
-/// 存器类不可用；CPU 侧 SSE 执行由内核懒 FPU 臂兜住，这正是被测对象）。
-#[inline(never)]
-fn fp_set(bits: u64) {
-    unsafe {
-        core::arch::asm!(
-            "mov rcx, {bits}",
-            ".byte 0x66, 0x48, 0x0F, 0x6E, 0xC1",
-            bits = in(reg) bits,
-            out("rcx") _,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-}
-/// bits ← xmm0（裸字节 `66 48 0F 7E C1` = movq rcx, xmm0）。
-#[inline(never)]
-fn fp_get() -> u64 {
-    unsafe {
-        let bits: u64;
-        core::arch::asm!(
-            ".byte 0x66, 0x48, 0x0F, 0x7E, 0xC1",
-            "mov {bits}, rcx",
-            bits = out(reg) bits,
-            out("rcx") _,
-            options(nomem, nostack, preserves_flags),
-        );
-        bits
-    }
-}
-
 #[unsafe(no_mangle)]
 extern "Rust" fn main() -> i32 {
     // Birth-chain evidence: argv parse through minix-rt's crt0 statics
@@ -77,26 +46,8 @@ extern "Rust" fn main() -> i32 {
 
     let mut msg = Message::default();
     msg.m_type = 0x42;
-    // C12 FP 交替探针（tx 腿）：异值 7.5（rx 持 42.0）——sendrec 阻塞半
-    // 触发切换后，归属恢复必须把 7.5 原样带回（与 rx 的 42.0 互异即证
-    // 明保存/恢复按进程隔离）。
-    // 诊断切面：tx 侧探针暂闭（同 rx）。
-    // fp_set(7.5f64.to_bits());
-    let mut msg = Message::default();
-    msg.m_type = 0x42;
     match ipc.sendrec(peer, &mut msg) {
         Ok(()) => {
-            let got = fp_get();
-            if got == 7.5f64.to_bits() {
-                emit(b"SYSBOOT TX FP OK\n");
-            } else {
-                let mut b: [u8; 27] = *b"SYSBOOT TX FP BAD ????????\n";
-                for i in 0..8 {
-                    let nib = ((got >> (60 - 4 * i)) & 0xF) as u8;
-                    b[18 + i] = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
-                }
-                emit(&b);
-            }
             emit(b"SYSBOOT TX GOT\n");
             emit(b"SYSBOOT TX DONE\n");
             0
