@@ -97,10 +97,39 @@ fn base_zero(piece: &str) -> Option<usize> {
 /// walks the input — spaces add one, tabs quantize to the next stop —
 /// and each non-blank byte flushes the accumulated gap as tabs (only
 /// where a stop boundary is crossed and the gap is at least two
+/// 把攒下的空白冲成「制表符 + 空格」：C 在 `unexpand.c:167-205` 的 Output-tabs 与
+/// Output-spaces 两腿里做这件事，而触发它的必须是**一个非空白字节**。
+fn flush_gap(out: &mut String, ocol: &mut usize, dcol: usize, stops: &[usize], limit: usize) {
+    if stops.is_empty() {
+        while (*ocol + DEFAULT_STOP) / DEFAULT_STOP <= dcol / DEFAULT_STOP && dcol - *ocol >= 2 {
+            out.push('\t');
+            *ocol = (1 + *ocol / DEFAULT_STOP) * DEFAULT_STOP;
+        }
+        while *ocol < dcol {
+            out.push(' ');
+            *ocol += 1;
+        }
+        return;
+    }
+    let mut n = 0usize;
+    while n < stops.len() && stops[n] <= *ocol {
+        n += 1;
+    }
+    while n < stops.len() && stops[n] <= dcol && *ocol < dcol && *ocol < limit {
+        out.push('\t');
+        *ocol = stops[n];
+        n += 1;
+    }
+    while *ocol < dcol && *ocol < limit {
+        out.push(' ');
+        *ocol += 1;
+    }
+}
+
 /// columns) followed by spaces. A backspace pulls both columns back.
 /// Without `-a` the first non-blank byte ends the tabification and the
 /// rest of the line passes through verbatim.
-pub fn unexpand_line(line: &str, options: &UnexpandOptions) -> String {
+pub fn unexpand_line(line: &str, options: &UnexpandOptions, terminated: bool) -> String {
     let bytes = line.as_bytes();
     // C 这里减的是 `size_t`（`unexpand.c:146`），档位为 0 时它回绕成最大值而不是停下，
     // 所以 `wrapping_sub` 才是 C 的那一步；裸减法在宿主调试构建里先触 trap，`-t 0` 就崩了。
@@ -141,31 +170,7 @@ pub fn unexpand_line(line: &str, options: &UnexpandOptions) -> String {
         }
 
         // Non-blank byte: flush the gap as tabs then spaces.
-        if options.stops.is_empty() {
-            while (ocol + DEFAULT_STOP) / DEFAULT_STOP <= dcol / DEFAULT_STOP && dcol - ocol >= 2 {
-                out.push('\t');
-                ocol = (1 + ocol / DEFAULT_STOP) * DEFAULT_STOP;
-            }
-            while ocol < dcol {
-                out.push(' ');
-                ocol += 1;
-            }
-        } else {
-            let mut n = 0usize;
-            while n < options.stops.len() && options.stops[n] <= ocol {
-                n += 1;
-            }
-            while n < options.stops.len() && options.stops[n] <= dcol && ocol < dcol && ocol < limit
-            {
-                out.push('\t');
-                ocol = options.stops[n];
-                n += 1;
-            }
-            while ocol < dcol && ocol < limit {
-                out.push(' ');
-                ocol += 1;
-            }
-        }
+        flush_gap(&mut out, &mut ocol, dcol, &options.stops, limit);
 
         out.push(byte as char);
         if byte == 0x08 {
@@ -191,19 +196,27 @@ pub fn unexpand_line(line: &str, options: &UnexpandOptions) -> String {
             break;
         }
     }
+    // 行以换行结束：那枚换行就是结束空白串的那个非空白字节，C 在这一刻冲档。输入末尾
+    // 没有换行时 `tabify` 走到缓冲末尾直接 `return`（`unexpand.c:214-215`），一个字节也不冲。
+    if terminated {
+        flush_gap(&mut out, &mut ocol, dcol, &options.stops, limit);
+    }
     out
 }
 
 /// Converts every line of the collected input.
 pub fn unexpand(input: &str, options: &UnexpandOptions) -> Vec<String> {
     let text = alloc::str::from_utf8(input.as_bytes()).unwrap_or("");
-    let mut pieces: Vec<String> = text.split('\n').map(String::from).collect();
+    let mut pieces: Vec<&str> = text.split('\n').collect();
     if input.as_bytes().ends_with(b"\n") {
         pieces.pop();
     }
+    let last = pieces.len().saturating_sub(1);
+    let tail_terminated = crate::window::final_line_terminated(input.as_bytes());
     pieces
         .iter()
-        .map(|line| unexpand_line(line, options))
+        .enumerate()
+        .map(|(index, line)| unexpand_line(line, options, index != last || tail_terminated))
         .collect()
 }
 
@@ -309,8 +322,8 @@ mod tests {
         let options = UnexpandOptions::default();
         // Eight blanks land exactly on the stop: one tab. Four blanks
         // stay spaces — the tab loop requires crossing a stop boundary.
-        assert_eq!(unexpand_line("        x", &options), "\tx");
-        assert_eq!(unexpand_line("    x", &options), "    x");
+        assert_eq!(unexpand_line("        x", &options, true), "\tx");
+        assert_eq!(unexpand_line("    x", &options, true), "    x");
     }
 
     #[test]
@@ -318,13 +331,13 @@ mod tests {
         let options = UnexpandOptions::default();
         // Without `-a` the first non-blank byte ends the conversion, so
         // the interior blank run passes through untouched.
-        assert_eq!(unexpand_line("ab        c", &options), "ab        c");
+        assert_eq!(unexpand_line("ab        c", &options, true), "ab        c");
     }
 
     #[test]
     fn test_single_space_stays_a_space() {
         let options = UnexpandOptions::default();
-        assert_eq!(unexpand_line("a b", &options), "a b");
+        assert_eq!(unexpand_line("a b", &options, true), "a b");
     }
 
     #[test]
@@ -333,7 +346,7 @@ mod tests {
         // Four leading blanks stay spaces (no stop crossed); everything
         // after the first non-blank passes verbatim.
         assert_eq!(
-            unexpand_line("    ab        cd", &options),
+            unexpand_line("    ab        cd", &options, true),
             "    ab        cd"
         );
     }
@@ -347,7 +360,7 @@ mod tests {
         // following blanks then reach the stop 8 and become one tab.
         let mut options = options;
         options.all = true;
-        let result = unexpand_line("ab\x08\x08        c", &options);
+        let result = unexpand_line("ab\x08\x08        c", &options, true);
         assert_eq!(result, "ab\x08\x08\tc");
     }
 
@@ -358,9 +371,9 @@ mod tests {
             all: false,
         };
         // Five leading blanks stay spaces: the first stop is 10.
-        assert_eq!(unexpand_line("     x", &options), "     x");
+        assert_eq!(unexpand_line("     x", &options, true), "     x");
         // Twelve blanks cross the 10 stop: one tab then two spaces.
-        assert_eq!(unexpand_line("            x", &options), "\t  x");
+        assert_eq!(unexpand_line("            x", &options, true), "\t  x");
     }
 
     /// 档位表的两支句子与 base 0 逐个钉：分隔符三种、空字段跳过、`0x`/前导 `0` 走
@@ -569,20 +582,20 @@ mod tests {
             stops: vec![0],
             all: false,
         };
-        assert_eq!(unexpand_line("    abc", &zero), "    abc");
-        assert_eq!(unexpand_line("  ab", &zero), "  ab");
-        assert_eq!(unexpand_line("a\tb\tc", &zero), "a\tb\tc");
+        assert_eq!(unexpand_line("    abc", &zero, true), "    abc");
+        assert_eq!(unexpand_line("  ab", &zero, true), "  ab");
+        assert_eq!(unexpand_line("a\tb\tc", &zero, true), "a\tb\tc");
         let zero_then_eight = UnexpandOptions {
             stops: vec![0, 8],
             all: false,
         };
         // 参照件现量 `-t 0,8` 对八空格是 `	x`（第 1 档 8 仍可用作 tab 出口），
         // 而 `-t 0` 只有一档且它就是当前列，八空格原样交回（`tmp/unexpand-425/tab-drop.log`）。
-        assert_eq!(unexpand_line("        x", &zero_then_eight), "\tx");
-        assert_eq!(unexpand_line("        x", &zero), "        x");
+        assert_eq!(unexpand_line("        x", &zero_then_eight, true), "\tx");
+        assert_eq!(unexpand_line("        x", &zero, true), "        x");
         // 这一支只为走进制表符那两处的 `wrapping_sub`（`  ` 之后已是第 2 列，档位 0 是最后一档）：
         // 它的**输出形状**属另一处已登记的偏离（吞掉制表符），本轮不钉它的值，只要求不崩。
-        let _ = unexpand_line("  \tx", &zero_then_eight);
+        let _ = unexpand_line("  \tx", &zero_then_eight, true);
     }
     /// 参照件读数 `tmp/unexpand-426/ref-shapes.log`：够不着下一档时 C 不 `continue`，
     /// 那个制表符落到同一腿的 `putchar(*p)`（`unexpand.c:160-165` 那一判不成立 → `:195`）。
@@ -592,25 +605,58 @@ mod tests {
             stops: vec![8],
             all: false,
         };
-        assert_eq!(unexpand_line("\ta", &eight), "\ta");
-        assert_eq!(unexpand_line("  \tx", &eight), "  \tx");
+        assert_eq!(unexpand_line("\ta", &eight, true), "\ta");
+        assert_eq!(unexpand_line("  \tx", &eight, true), "  \tx");
         // 八个空格先把列推到第 8 档，随后那个制表符够不着下一档，于是也原样交回：两枚制表符
-        assert_eq!(unexpand_line("        \ty", &eight), "\t\ty");
-        assert_eq!(unexpand_line("   \t   \tw", &eight), "   \t   \tw");
+        assert_eq!(unexpand_line("        \ty", &eight, true), "\t\ty");
+        assert_eq!(unexpand_line("   \t   \tw", &eight, true), "   \t   \tw");
         let four_then_eight = UnexpandOptions {
             stops: vec![4, 8],
             all: false,
         };
         // 这一形的制表符够得着第 1 档（停在第 0 档而它不是最后一档），于是被折进档里：
         // 参照件同形交回 `\tx`，与上面那几形的「原样交回」正相反
-        assert_eq!(unexpand_line("  \tx", &four_then_eight), "\tx");
-        assert_eq!(unexpand_line("    \ty", &four_then_eight), "\t\ty");
+        assert_eq!(unexpand_line("  \tx", &four_then_eight, true), "\tx");
+        assert_eq!(unexpand_line("    \ty", &four_then_eight, true), "\t\ty");
         let zero = UnexpandOptions {
             stops: vec![0],
             all: false,
         };
-        assert_eq!(unexpand_line("\ta", &zero), "\ta");
-        assert_eq!(unexpand_line("  \tx", &zero), "  \tx");
+        assert_eq!(unexpand_line("\ta", &zero, true), "\ta");
+        assert_eq!(unexpand_line("  \tx", &zero, true), "  \tx");
+    }
+    /// 行末那枚换行就是「结束空白串的非空白字节」：纯空白行**带着换行**时要冲档。参照件
+    /// `tmp/unexpand-312/unexpand_ref` 现量（`tmp/unexpand-431/eol.log`）——`-t 4,8` 的 `    \n`
+    /// 交回 `\t\n`；`-t 8` 的 `   \n` 交回 `   \n`（够不着 8 这一档就只落空格，不折成制表符）。
+    /// 上面那枚门测的是同样这几串空白、但输入里没有那枚换行，两形只差终止符。
+    #[test]
+    fn a_blank_line_ending_in_a_newline_flushes_its_gap() {
+        let four_then_eight = UnexpandOptions {
+            stops: vec![4, 8],
+            all: false,
+        };
+        assert_eq!(unexpand_line("    ", &four_then_eight, true), "\t");
+        assert_eq!(unexpand_line("   ", &four_then_eight, true), "   ");
+        let default = UnexpandOptions {
+            stops: Vec::new(),
+            all: true,
+        };
+        assert_eq!(unexpand_line("        ", &default, true), "\t");
+    }
+
+    /// 整份输入的取舍落在终止符上而不是行号上：末行带着换行就冲，末行没有换行就不冲。
+    #[test]
+    fn the_last_line_flushes_only_when_the_input_terminated_it() {
+        let four_then_eight = UnexpandOptions {
+            stops: vec![4, 8],
+            all: false,
+        };
+        assert_eq!(unexpand("    \n", &four_then_eight), vec!["\t".to_string()]);
+        assert_eq!(unexpand("    ", &four_then_eight), vec!["".to_string()]);
+        assert_eq!(
+            unexpand("    \n    ", &four_then_eight),
+            vec!["\t".to_string(), "".to_string()]
+        );
     }
 
     /// 参照件读数 `tmp/unexpand-426/eol.log`：C 的间隙只由「非空白字节」冲出，循环走到缓冲区
@@ -623,22 +669,22 @@ mod tests {
             stops: vec![8],
             all: false,
         };
-        assert_eq!(unexpand_line("        ", &eight), "");
-        assert_eq!(unexpand_line("        \ty", &eight), "\t\ty");
+        assert_eq!(unexpand_line("        ", &eight, false), "");
+        assert_eq!(unexpand_line("        \ty", &eight, true), "\t\ty");
         let four_then_eight = UnexpandOptions {
             stops: vec![4, 8],
             all: false,
         };
-        assert_eq!(unexpand_line("        ", &four_then_eight), "");
-        assert_eq!(unexpand_line("    ", &four_then_eight), "");
+        assert_eq!(unexpand_line("        ", &four_then_eight, false), "");
+        assert_eq!(unexpand_line("    ", &four_then_eight, false), "");
         let default = UnexpandOptions {
             stops: Vec::new(),
             all: false,
         };
-        assert_eq!(unexpand_line("        ", &default), "");
+        assert_eq!(unexpand_line("        ", &default, false), "");
         // 不足一档的间隙连「由非空白冲出」这一腿也不折：两列不到就照原样留着
-        assert_eq!(unexpand_line("  x", &default), "  x");
-        assert_eq!(unexpand_line("   x", &default), "   x");
-        assert_eq!(unexpand_line("", &default), "");
+        assert_eq!(unexpand_line("  x", &default, true), "  x");
+        assert_eq!(unexpand_line("   x", &default, true), "   x");
+        assert_eq!(unexpand_line("", &default, true), "");
     }
 }
