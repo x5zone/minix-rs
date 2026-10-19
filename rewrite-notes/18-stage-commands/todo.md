@@ -125,7 +125,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 - **为什么这一形在 `unexpand` 里比在 `expand` 里难看见**：`-t` 给的最后一档通常就是行的目的地，`unexpand` 只在「列已经超过最后一档」时才走到这一支，所以参照件对 `-t 8` 的 `\ta` 交回的是原样的 `\ta`，本壳在这一支把制表符**整枚丢掉**（同一枚形在负控 N1 的读数里现量：`left: "a"` 对 `right: "\ta"`，`tmp/unexpand-426/negctl-b1.log`），列也少进一格，且差数随制表符枚数累积。上一轮的 35 形矩阵把这一族量成 `DIFF=6`（`tmp/unexpand-425/ref-matrix.log`），本轮按形逐条对读 `tmp/unexpand-426/ref-shapes.log`。
 
-- **落码（代码笔 `295859e75`）**：`os/commands/usr-bin/textfilter/src/unexpand.rs:133-140`——制表符那一支的 `cursor += 1; continue;` 收回 `if` 体内，不成立时让控制流落到同一个冲洗出口；注释写明它落到的是 `unexpand.c:167-192` 那一腿以及 `:195` 那句 `putchar(*p)`，因此「不能把它当已消费的空白跳过」。
+- **落码（代码笔 `deb2654b9`）**：`os/commands/usr-bin/textfilter/src/unexpand.rs:133-140`——制表符那一支的 `cursor += 1; continue;` 收回 `if` 体内，不成立时让控制流落到同一个冲洗出口；注释写明它落到的是 `unexpand.c:167-192` 那一腿以及 `:195` 那句 `putchar(*p)`，因此「不能把它当已消费的空白跳过」。
 
 - **门（面侧 +1、库侧 +1）**：`tests/unexpand_face.rs` 新增 `a_tab_past_the_last_stop_and_a_blank_final_line_reach_stdout`（`unexpand_face` 13→14），逐字节钉 `-t 8` 的 `  \tx\n`→`  \tx\n`、`        \ty\n`→`\t\ty\n` 与 `-t 4,8` 的 `    \ty\n`→`\t\ty\n`，另钉末行只剩空白且输入无换行时的零字节输出；`src/unexpand.rs` 的 `mod tests` 新增 `a_tab_beyond_the_last_stop_is_handed_back_like_c_does`（八形：`-t 8` 四形、`-t 4,8` 两形、`-t 0` 两形，含「够得着第 1 档就被折进档」这一反形，`  \tx` 对 `\tx`）。库侧另有一枚 `a_blank_run_is_collapsed_only_by_a_non_blank_byte`（下面那条登记项的现量钉子）。`--lib` 580→582，整包 **1182→1185**。
 
