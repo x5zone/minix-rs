@@ -119,6 +119,26 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百二十七（P0 独立轮 `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`：操作数超数不是取数那一层能判的事）
+
+- **这一轮干什么**：闭上一轮登记的 `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`——`split` 给三支操作数时报的是哪一句。判据在 `minix3/usr.bin/split/split.c:132-149`，那是一段**顺序**：`argv += optind`（`:132`）之后先开第一支（`:135-139`，`-` 在 `:136` 走特例不开档，开不成当场 `err(1, "%s", *argv)` 带着档名退 1），再取输出前缀（`:143` 的 `base = (*argv != NULL) ? *argv++ : "x"`），最后才 `if (*argv != NULL) usage()`（`:148-149`）。也就是说「还剩一支」这一判排在「那支档名开不开得开」之后：两件事同时不成立时，用户看到的是档名。
+
+- **为什么这一形在本壳里落在错了的一层**：`os/commands/usr-bin/textfilter/src/split.rs:fn parse_split_args` 的契约是**取数**——把选项环停下来、把剩下的操作数按顺序交回，它看不见文件系统，自然也不知道第一支开不开得开。把超数那一判写在这一层，等于让「取数」替「开档」决定谁先报错：`split 开不了的档名 前缀 第三支` 交出的是 usage，而参照件交出的是那个档名（现量 `tmp/split-427/ref-shapes.log`：`nope.txt pfx third`、`-l 1 nope.txt pfx third`、`-b 1 …`、`-n 2 …` 四形都是 `split_ref: nope.txt: No such file or directory`、退 1，而开得开的 `in.txt pfx third` 才是 `usage: split …`；裸 `-` 不开档，那一形没有开档失败可报，于是直接落进 usage）。反过来说，如果判据留在库里，报档名这一腿就得让取数层去开档——一个纯计算函数从此有了 I/O 副作用，且和壳侧真正开档那一腿重复。
+
+- **落码（代码笔 `978fa3890`）**：库里那一判撤掉（`src/split.rs:342-349` 现在是一段说明为什么它不在这里判的注释，交回的操作数按 C 的原样保留），改由壳侧 `os/commands/usr-bin/textfilter/src/bin/split.rs:fn run` 在取到前缀之后补一次探测：`operands.len() > 2` 时先看第一支是不是 `-`（不是才 `support::open_input`），开不成就 `support::warn_line` + `support::terminate(1)`，否则 `usage(prog)`。探测只在这条错误腿里发生——正常切分仍是后面各腿自己开一次档，与 C 的 `freopen` 同形（C 开成功后一路用到退出，也不关）。
+
+- **门（面侧 +1）**：`tests/split_face.rs:an_unopenable_input_outranks_the_third_operand` 逐字节钉四形（默认腿与 `-l`/`-b`/`-n` 各一）报的是 `split {档名}: No such file or directory`、退 1、且**不落下任何分片**，另钉裸 `-` 那一形仍落 usage。库侧两支断言随判据挪位而翻转（`src/split.rs:mod tests` 的 `parse_error_paths`：`["in","-l","3"]` 与 `["a","b","c"]` 现在断言 `unwrap().operands` 三支全在），并撤掉同一函数里一枚与之重复的旧断言。`split_face` 29→30，整包 **1185→1186**。
+
+- **读数（按最终形态）**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1186 passed / 0 failed**（68 段，`tmp/split-427/sf-host.log`）；容器权威门 `docker run --rm -v "$WT:/work" -w /work/os -m 2g … minix-ci:1.94 cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` 同读数 **1186 / 0 / 68 段**、退码 0（`tmp/split-427/final-gates-run2.log`）；三架构 `cargo build --offline -j 1 --bins -p minix-textfilter --target {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf}` 全退 0、`^error` 计数 0。clippy 整包（不加抑制腿）`cargo clippy --offline -j 1 -p minix-textfilter --all-targets` → **154**，与基线同数（`tmp/split-427/sf-clippy-default.log`），按告警位置看，触及件里的两处命中是存量那一对——测试用的 `std::io::Error::new(ErrorKind::Other, …)` 与 `#[cfg(test)] mod tests` 之后仍有条目，两者在代码笔之前的同一文件里就在（那一版里是 `:361` 与 `:400`，本笔净增 14 行把它们推到 `:375` 与 `:414`），本轮新增的那一小段零告警；带 `-A clippy::all -W correctness -W suspicious` 的过滤腿整包读数 **96**（同一形状，只留 rustc 那几条），所以整包数只作旁证，判据一律按告警位置。`rustfmt` 触及件零漂移、整包 98 与主树同数。回归面：本轮 10 形 A/B **SAME=10 / DIFF=0**（`tmp/split-427/ab-final.log`）。
+
+- **A/B 归一化又踩了一次同一坑**：第一轮跑成 0 SAME / 11 DIFF，差的全是报文里的**程序名**——参照件那条腿打的是 `split_ref: …` / `usage: split_ref …`，本壳是 `split`。归一化原先只换二进制路径、没换行首的程序名，于是每一形都「差一点」。按行首归一后到 SAME=10 / DIFF=0（`tmp/split-427/ab.py`）。这与批次四百二十四那次的教训同源：**归一化必须两侧同覆盖，且要用现量证明它覆盖到了报文正文**，不能只假定「路径换了就够了」。
+
+- **负控（读数 `tmp/split-427/negctl-N1.log`…`negctl-N4.log`）**：注入前先数锚点，壳侧两枚各 1 次、库侧注释块 1 次。四枚里三枚咬住：N1 把「多于两支即错」放宽成「多于三支才错」（`operands.len() > 2` → `> 3`）→ 失败 2（新面门 + 存量那一枚 `three_operands_print_only_the_usage`）；N2 探测开档却不看结果（把 `warn_line`/`terminate` 换成 `let _ = …`，等于退成「先报 usage」）→ 失败 1；N4 把超数那一判搬回库里的取数腿 → 失败 2（`split::tests::parse_error_paths` + 新面门）。N3 是**等价变异**（`> 2` 写成 `>= 3`）→ 612 passed / 0 failed，全绿。N1 的第一次跑**没咬住**：锚点串本身当时已是 `>= 3`，那条腿的 `replace("> 2", ">= 3")` 是空替换，注入出来的形状与 N3 一模一样——「注入多咬/空咬先怀疑注入自己的形状」这条判据在这一轮又一次以「先怀疑自己的脚本」的形式兑现，改成 `> 3` 后按预期转红。
+
+- **登记与闭合**：闭 `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`（板 A2 行、07 篇 `split` 行同步）。在册未动：`UNEXPAND-C-COMMENT-ANCHOR-DRIFT`、`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`（两条施工路已在批次四百二十六写明）、`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`LINES-OF-NONUTF8-DROPS-ALL`、`NL-DELIM-LENGTH-RULE`（待裁决）、八支 `*-NON-PERMUTE-OPERAND-TAIL` 族余量（`sort`/`cksum` 的参照件需重链）、参数缝半（射程②）。
+
+---
+
 ## 批次四百二十六（P0 独立轮 `UNEXPAND-LAST-STOP-TAB-DROPPED`：够不着下一档的制表符不是「已经消费掉的空白」）
 
 - **这一轮干什么**：闭上一轮登记的 `UNEXPAND-LAST-STOP-TAB-DROPPED`——档位表里够得着的那一档被折进输出，够不着的那一档却把输入里的制表符**吞掉**了。判据在 `minix3/usr.bin/unexpand/unexpand.c:152-165`：制表符那一支只有「`n < nstops - 1` 且 `tabstops[n] - 1 < limit`」成立时才 `continue`（`:161-162` 把列推到那一档），不成立就顺着控制流落到 `:167` 的 `/* Output our tabs */`，最后由 `:195` 那句 `putchar(*p)` 把**制表符自己**交出去，`:203-204` 再让两列各进一格。也就是说在 C 那里，制表符是空白，但「这一格空白」和「被折进档位的那几格空白」不是一件事：前者在够不着档时是一枚普通字节。
