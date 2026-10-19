@@ -119,6 +119,20 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百零九（A2 切片 15：`comm`，取法半 + 渲染半同轮）：第一支「两半一起做」的壳；负控脚本自己错了四轮，四轮都归因到脚本而不是门
+
+- **这一轮干什么**：A2 从这一支起进入「取法也按字符」的那一批。`comm` 的环在 `src/comm.rs` 里写的是 `for ch in arg[1..].chars()`，把 `é` 的一个字符当成一枚字母交回，所以只换渲染会留下「字母是 U+00E9 → 打 `e9`」这种半对半错。落码三件：`src/comm.rs`（环改 `for byte in arg[1..].bytes()`，报错时 `char::from(other)`——ASCII 四个字母 `1`/`2`/`3`/`f` 的行为一字不变，非 ASCII 从「一个字符」改成「它的第一字节」）、`src/bin/comm.rs`（那一处出口改 `line_bytes`）、`tests/comm_face.rs`（面门 + `run_bytes` 夹具）。门两侧各一枚：**库侧 +1** `the_unknown_letter_is_the_first_byte_not_the_first_character`（钉 `parse_comm_args` 交回 U+00C3）、**面侧 +1** `the_libc_line_of_a_multibyte_flag_is_one_byte_after_the_cluster`（钉整条缝）。整包 **1147 → 1149**。进度 **15 支壳、余 13 处调用点 / 10 个源文件**。
+- **为什么两半各处一枚门而不是合一枚**：这一族前十四支只有渲染要改，一枚门够；本支起有两半，**只改一半也必须红**。负控把这件事钉成事实：X1 只把 `line_bytes` 换回 `line()` ⇒ 只红面门；X7 只把环换回 `chars()` ⇒ 面门与库门同红（U+00E9 与 U+00C3 两种读数都过不了面门）。这与批次四百零五 Q7「渲染轮的门对取法也有牙」是同一条的另一侧——**牙长在哪儿，注入就要打在哪儿**。
+- **一次自造的账面噪声，被门数对账逮住**：库侧新门插入时多留了一枚 `#[test]` 属性（`#[test] /// 文档 … #[test] fn …`），编译器不报错，但测试框架把同一枚函数**注册了两遍**，整包读数当场从 1148 变 1149。发现方式是老规矩：结案前对门数——库里 `comm::` 前缀跑出 12 条而新增只 1 条。**判据**：`#[test]` 重复不违反任何编译规则，所以门数对账不能省；插入式改动收尾时看一眼 `git diff` 里的属性行有没有重复。
+- **负控脚本自己也错了四轮，四轮都归因到脚本**：① 复用上一支脚本时 `SITE` 锚点忘改（uniq 的 `report.line_bytes(prog)` 在 comm 里根本不存在）⇒ 两枚注入「未施加」；② 标签 `Z5` 忘了改名，红名清单里看不出是哪一枚；③ X7 的替换串把 `u8` 直接塞进 `Option<char>`，**没编过**；④ X1/X5 的替换串还留着 uniq 的 `report` 变量名，也没编过。逐条改完八枚全咬。**教训**：换壳复用负控脚本时，**锚点、变量名、标签三样必须逐条对**——一枚没编过的注入对门的灵敏度既不证明也不否证（与批次四百 T7、四百零二 J7、四百零五同族，这是第四、五次）。
+- **A/B 二十一形全同**：`python3 tmp/comm-409/ab.py > tmp/comm-409/ab.log` 对 `tmp/comm-409/comm`（新配；`tmp/comm-315/comm_ref` 打 `-Z` 交回 Minix 措辞 `unknown option -- Z`，验过也可用——**上一笔那条「先验 getopt 归属」的规矩这次既排除了 glibc 货，也确认了一支现成的**）。第三支连数据面都零分叉的壳：选项环九形 + 三列合并与抑制六形 + 操作数判形三形 + 开档两支。**SAME=21 / DIFF=0**；两形非法 UTF-8 仍是射程②在册残差（`ff`/`80` 对 `ef`，退码同为 1）。
+- **读数**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1149 passed / 0 failed**（68 段）；容器权威门同读数、退码 0（跑前核 `git status` 只剩本轮三件）；三架构全退 0、`^error` 计数 0；clippy 整包 **154** 与基线同数、按告警位置判触及三件零新增；`rustfmt --edition 2024` 只在 `src/bin_support.rs` 报存量，触及三件零漂移。
+- **负控八枚全咬住**（`python3 tmp/comm-409/negctl.py`，日志 `tmp/comm-409/negctl.log`）：X1 只撤渲染 ⇒ 咬 1（面门）；X2 共件仍按 UTF-8 写 ⇒ 咬 13（**十四支已迁壳的门 + 共件门一次全红**）；X3 无条件取低字节 ⇒ 咬 1；X4 丢行尾换行 ⇒ 咬 50；X5 libc 行后不接 usage ⇒ 咬 2；X6 措辞漂到 glibc ⇒ 咬 42；X7 只撤取法 ⇒ 咬 3；X8 取法取错字节（取 token 最后一个字节）⇒ 咬 3。逐枚编得过、期望门全在红名清单里、先还原再读回比 md5、复跑 0 失败。
+- **登记与闭合**：`comm` 的字母位失真**两半全闭**（此前没有独立登记号，两条射程各占一半）。板上 A2 记到**切片 15**，并注明从本支起「一支两半」的新节奏。
+- **三件套**：核实命令与读数——`python3 tmp/comm-409/ab.py`（21 形全同 + 两形射程②残差）、`python3 tmp/comm-409/negctl.py`（八枚各咬住 1/13/1/50/2/42/3/3、复跑 0 失败）、`./tmp/comm-315/comm_ref -Z` 与 `./tmp/family-diag-ref/uniq_ref -Z` 两种归属证据、宿主与容器各 **1149 / 0 / 68**、三架构全退 0、`clippy` 154 同数、`rustfmt --edition 2024` 触及件零漂移、剩余调用点现量 **13 处 / 10 个源文件**；核实日 `2026-10-19`；基线快照 `d97905fe9`。
+- **下一轮首动作**：`bash tools/claim.sh claim GETOPT-REPORT-BYTE-LETTER qoder`（切片 16：`cmp`——现查 `src/cmp.rs:158` 的 `other` 来自 `chars()`，与 `comm` 同型，两半一起做、两侧各立一枚门；`sort`/`unexpand`/`split`/`cksum` 同型在后，`nl`/`head`/`tail` 的字母来源逐个现查，`pr` 走自带 `egetopt` 单列，`seq` 与射程②同轮）。
+
+
 ## 批次四百零八（A2 渲染半切片 14：`uniq`）：第十四支壳换到字节形；「复用参照件前先验 getopt 归属」这条规矩第二次执行，一次过零判据自错
 
 - **这一轮干什么**：A2 渲染半第十四次落地，选 `uniq`（取法在 `bin/uniq.rs:272` 就是 `bytes[j] as char`——本支的选项环整个住在薄壳里，不在 `src/` 的库里）。落码两件：`os/commands/usr-bin/textfilter/src/bin/uniq.rs`（`Err(UniqArgError::Getopt(report))` 那一处出口改调 `line_bytes`）、`tests/uniq_face.rs`（新立逐字节门 + `run_bytes` 夹具，15 → **16**）。跨支表没有 `uniq` 行 ⇒ 无期望要翻正。进度 **14 支壳、余 14 处调用点 / 11 个源文件**。
