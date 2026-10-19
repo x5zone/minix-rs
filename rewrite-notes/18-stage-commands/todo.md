@@ -119,6 +119,58 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十一（P0 独立轮 `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`：冲档的钥匙是「这一行有没有以换行结束」，不是行号）
+
+**缺陷的形状**。`unexpand` 的行腿拿到的是**剥掉换行之后的行体**，于是「这一行在输入里到底以换行结束
+没有」这个问题在这层没有答案——`unexpand_line` 只能对每一个空白串做同一个决定。批次四百二十六把这枚
+差异量清并按「不冲」登记（板上原句：无条件冲那一版落地后被 12 形现量否掉），本轮把它按 C 的机制补全。
+
+**真源怎么决定冲与不冲**。C 的 `tabify`（`minix3/usr.bin/unexpand/unexpand.c:139-218`）只在**非空白字节**
+上冲档：`unexpand.c:167-205` 那两腿 Output-tabs、Output-spaces 由「遇到一个不是空白的字节」触发，然后
+`:195` 的 `putchar(*p)` 把那个字节自己打出去。走到缓冲末尾时它不冲任何东西，直接 `return`
+（`unexpand.c:214-215`）。关键在一枚字节：**换行自己就是那个非空白字节**。`unexpand.c:133` 的 `fgetln`
+把换行连同内容一起交回，所以一串结尾空白后面跟着换行时，是这枚换行把它们冲了出来；而输入的最后一行
+没有换行，就永远等不到触发者。
+
+**改法**。`unexpand_line` 多收一枚 `terminated: bool`（板上登记的两条施工路里的第①条；第②条「把换行留在
+行体里」要改 `unexpand()` 的返回值契约与壳侧写口，本轮不走）。循环内与行末共用同一份冲档实现，抽成
+`flush_gap(out, ocol, dcol, stops, limit)`——这一步是必须的：两处各写一遍就会各错一遍。行末只在
+`terminated` 为真时调用它。`unexpand()` 那一层按 `window::final_line_terminated(input.as_bytes())` 给末行
+定终止状态，其余每一行都带着换行；这个判断落在**输入的字节**上而不是落在行号上，因此换行结尾时末行
+仍然是「带换行」的那一形。
+
+**门 +2，另翻 4 处旧断言**。新门
+`unexpand::tests::a_blank_line_ending_in_a_newline_flushes_its_gap`（`-t 4,8` 的 `    ` 带着换行冲成
+`\t`；`   ` 带着换行够不着 8 这一档，就照原样落三枚空格，不折成制表符）、
+`unexpand::tests::the_last_line_flushes_only_when_the_input_terminated_it`（同一份选项下
+`"    \n"`、`"    "`、`"    \n    "` 三形的分岔完全由终止符决定）。
+`a_blank_run_is_collapsed_only_by_a_non_blank_byte` 里那四枚「纯空白行交回空」的断言改成
+`terminated = false`——它们建模的正是「输入末尾没有那枚换行」这一形，名字说的机制与新增那枚门是同一件
+事的两半：**触发者是非空白字节，而行末的换行就是这样一个字节**。
+
+**门读数（L1，日志同批落 `tmp/unexpand-431/`）**：宿主 `cargo test --offline -j 1 --no-fail-fast -p
+minix-textfilter` **1193 passed / 0 failed**（68 段）；容器 `minix-ci:1.94` 同配方 **1193 / 0**、退码 0
+（本轮容器门单独跑，不与任何 cargo 任务并发，这是批次四百三十定下的判据）；三架构 `--bins` 全退 0；
+`clippy --all-targets` 与主树基线逐条对读**新增 0 条**；`rustfmt --check` 与基线比**新增漂移 0 件**。
+
+**负控 5 枚**（`tmp/unexpand-431/negctl.py`、`negctl2.py`）：N1 无条件冲（`if terminated` 改 `if true`）
+咬住；N2 永不冲（改 `if false`）咬住；N3 plumbing 丢终止符（`unexpand()` 里每行都传 `true`）咬住；
+N5 等价注入（`&options.stops` 写作 `options.stops.as_slice()`）全绿。N4 一枚按判据当场作废：等价注入的
+锚点 `flush_gap(...)` 那一行在文件里出现两次（循环内与行末各一次），脚本按「锚点先数次数」拒绝注入并
+报出计数，改用带注释行的长锚点后成为 N5。
+
+**A/B 现量**。`tmp/unexpand-431/eol.py` 对 `tmp/unexpand-312/unexpand_ref` 跑 15 形（12 形沿用批次四百二十
+六那张矩阵，另加三形把「带换行/不带换行」这两半都覆盖到 `-a` 与 `-t 4,8` 上）：**改前 11 同 4 异、
+改后 15 形全同**（读数 `eol.log`）。四形差异原本全是本壳少打一个冲出来的制表符或空格——方向与批次四百
+二十六那次相反，那轮的量清记录的是「无条件冲」那一版的过冲，本轮修的是「一律不冲」的欠冲；两端都被现
+量钉过，所以中间的判据才成立。
+
+**在册未动**：`CUT-NEWLINE-DELIMITER-NEEDS-TERMINATOR` 与本轮同族（也吃「行腿保不保留终止符」这道裁决），
+但它的修法不在这一层——C 的 `b_cut` 是**逐字节**读并把 `'\n'` 也当普通字段内容比（
+`minix3/usr.bin/cut/cut.c:244-251`），要让 `-d $'\n'` 同形就得让 `select_fields` 看得见那枚终止符，属
+独立一轮；`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`NL-DELIM-LENGTH-RULE`（待裁决）与八支
+`*-NON-PERMUTE-OPERAND-TAIL` 族余量维持原登记。
+
 ## 批次四百三十（P0 独立轮 `LINES-OF-NONUTF8-DROPS-ALL`：行是按字节切出来的，不是解出来的——一枚读不懂的字节不该吃掉整份输入）
 
 **缺陷的形状**。`lines_of`（`os/commands/usr-bin/textfilter/src/window.rs:fn lines_of`）改前先把整份
