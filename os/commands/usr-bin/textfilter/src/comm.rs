@@ -142,13 +142,16 @@ pub fn parse_comm_args<'a>(
             // `comm a -1 b` 里的 `-1` 被当旗标吃掉，参照件量的是三个操作数 → usage）。
             break args[index..].to_vec();
         }
-        for ch in arg[1..].chars() {
-            match ch {
-                '1' => options.suppress1 = true,
-                '2' => options.suppress2 = true,
-                '3' => options.suppress3 = true,
-                'f' => options.fold = true,
-                other => return Err(CommArgError::UnknownOption(other)),
+        // 环走**字节**：C 的 `optopt` 是一个 `char`（`getopt.c:79` 的 `optopt = *place++` 一次
+        // 进一个字节），所以 `-é`（`c3 a9`）报的是 `c3` 而不是整个字符。之前这里过 `chars()`，
+        // 把一个字符的两个字节当成一枚字母交回，报文经 UTF-8 渲染后比 C 多一个字节。
+        for byte in arg[1..].bytes() {
+            match byte {
+                b'1' => options.suppress1 = true,
+                b'2' => options.suppress2 = true,
+                b'3' => options.suppress3 = true,
+                b'f' => options.fold = true,
+                other => return Err(CommArgError::UnknownOption(char::from(other))),
             }
         }
         index += 1;
@@ -289,6 +292,29 @@ mod tests {
         assert_eq!(
             parse_comm_args(&["--", "-1", "-2"]),
             Ok((CommOptions::default(), ["-1", "-2"]))
+        );
+    }
+
+    /// 集外字母交回的是短横后的**第一个字节**，不是第一个字符：`-\u{e9}`（`c3 a9`）落在
+    /// `char` 域里是 U+00C3。参照件 `tmp/comm-409/comm_ref` 现量那一行的字母位是单个 `c3`。
+    #[test]
+    fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
+        assert_eq!(
+            parse_comm_args(&["-\u{e9}", "a", "b"]),
+            Err(CommArgError::UnknownOption('\u{00c3}')),
+            "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
+        );
+        // 聚簇同理：`1` 合法先吃掉，报的是其后第一个字节。
+        assert_eq!(
+            parse_comm_args(&["-1\u{e9}", "a", "b"]),
+            Err(CommArgError::UnknownOption('\u{00c3}')),
+            "-1é"
+        );
+        // ASCII 不许被这次改动波及。
+        assert_eq!(
+            parse_comm_args(&["-Z", "a", "b"]),
+            Err(CommArgError::UnknownOption('Z')),
+            "-Z"
         );
     }
 

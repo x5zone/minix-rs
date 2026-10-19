@@ -35,6 +35,54 @@ const COMM: &str = env!("CARGO_BIN_EXE_comm");
 /// `comm.c:197` 那一行：程序名写死在串里。
 const USAGE: &str = "usage: comm [-123f] file1 file2\n";
 
+/// 与 `run` 同一条命令缝，但两路输出**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(COMM)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the comm binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/comm-409/comm_ref` 现量 `-é` 与
+/// `-1é` 都是 `comm: unknown option -- ` + `c3` + 换行再跟那行 usage、退 1
+/// （`1` 是 `"123f"` 里的合法字母，聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`）。
+/// 这一形要**两半一起对**才成立：取法按字节 + 报文按字节写，所以本枚与库里那枚
+/// `the_unknown_letter_is_the_first_byte_not_the_first_character` 各钉一半。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_after_the_cluster() {
+    let want: Vec<u8> = [
+        b"comm: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-1\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form, "/dev/null", "/dev/null"], b"");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}", "/dev/null", "/dev/null"], b"");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"comm: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，`é` 根本不该被读到"
+    );
+}
+
 fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     let mut child = Command::new(COMM)
         .args(args)

@@ -36,7 +36,8 @@ fn run() -> ! {
     let (options, files): (CommOptions, [&str; 2]) = match parse_comm_args(&refs[1..]) {
         Ok(parsed) => parsed,
         Err(CommArgError::UnknownOption(letter)) => {
-            support::warn(GetoptReport::UnknownOption(letter).line(prog).as_bytes());
+            // 字母位走 `line_bytes`：取法已在 `src/comm.rs` 改成按字节，两边同形才成立。
+            support::warn(&GetoptReport::UnknownOption(letter).line_bytes(prog));
             usage();
         }
         Err(CommArgError::NotTwoOperands) => usage(),
