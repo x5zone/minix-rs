@@ -231,7 +231,7 @@ run_with_qemu_lock() (
 - 优点（若根因解除）：W^X 从第一条指令起成立（强形态验收零折让）。
 
 **乙案（推荐）：`KernelInfo` 增文本分界字段 + 内核 init 期自分割**——引导保持已证的 2 MiB 粗映射不动；`KernelInfo` +1 字段（文本段上界/RX-RW 分界，装载器各形态填写）；内核在 init（satp 已活、KernelDm、单 hart BKL）用 **split_huge(分界)** + **update_flags(RX) 扫文本区** 完成分割。
-- 机制全用真机已证原语在已证阶段：`split_huge` 三架构在案（riscv 镜像=续-90，boot ELF 装载驱逐腿真机在用）；`update_flags` 运行期原语 ATF 每例千次量级在烤。
+- 机制全用真机已证原语在已证阶段：`split_huge` 三架构在案（riscv 镜像在 `os/arch/src/riscv64/paging.rs::split_huge`，boot ELF 装载驱逐腿真机在用）；`update_flags` 运行期原语 ATF 每例千次量级在烤。
 - 进程根继承：`inherit_supervisor_half` 逐条复制高半，内核根分割后所有进程根自动获得 RX 文本——`PD-22` ①「进程根里的内核文本映射去写」射程满足。
 - 诚实边界：内核自身 bootstrap 根在一个 init 窗内仍是粗 RWX（进程根不受影响）——「must not exist」强形态验收在**进程根**射程内成立，内核自根留一窗折让，需编排线明示接受或拒绝。
 - 成本：`minix-boot` `KernelInfo` 公共 API +1 字段（C20 同族契约纪律→故须裁决）；`ALL_BOOT_FORMS` 电池 + 字段填写 + 负控（字段缺省=不分割=现行为，按形态 opt-in 灰度）；x86 UEFI 腿同字段路径；01 篇 §3.x 与 KernelInfo 字段来源表 Doc Code Sync 同批。
