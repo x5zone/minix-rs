@@ -119,6 +119,48 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十二（P0 独立轮 `CUT-NEWLINE-DELIMITER-NEEDS-TERMINATOR`：`-d $'\n'` 时那一行的分隔符就是它的行末）
+
+**缺陷的形状**。`select_fields` 判断「这一行带不带分隔符」用的是 `line.contains(&delimiter)`，而它的
+`line` 是**切行之后的行体**——里面永远没有换行。于是把换行当分隔符时（`-d $'\n'`），每一行都被判成
+「不带分隔符」：`-s` 把整行抹掉，不加 `-s` 则整行原样搬运。参照件两种都不同形：`a\nb c\n` 的
+`-f 2` 与 `-f 2 -s` 都交回 `\n\n`（每行一枚换行、字段为空），本壳分别是 `a\nb c\n` 与零字节。
+
+**真源为什么必然命中**。C 扫一行是这样一个循环：`if (ch == sep) isdelim = 1;`，`if (ch == '\n')` 就收尾
+（`minix3/usr.bin/cut/cut.c:242-251`，注释 `this should work if newline is delimiter` 正好写在这一判上）。
+关键在于**交给这个循环的那一串总是以换行结尾**：`fgetln` 交回的行长包含换行，而末行没有换行时 C 当场
+`malloc(len + 1)` 补一枚（`cut.c:235-241`）。所以 `sep == '\n'` 时循环一定在末尾那一格同时命中两个判据，
+`isdelim` 成立，`!isdelim && !sflag` 那一腿（整行搬运）不走，`if (!isdelim) continue;`（`-s` 抹行）也不走，
+剩下的就是通常的字段扫描：第一格是行体，第二格之后没有内容，行末照旧打一枚换行。
+
+**改法**（一行判据加一段注释）：`let carries_delimiter = delimiter == b'\n' || line.contains(&delimiter);`。
+本库的行体里没有那枚字节是**切行**的结果，不是 C 看到的内容——这一层的行体与终止符分开承载（`Line` 的
+`terminated`，批次四百二十三定），而 `cut.c` 的这一段要求把「行末有换行」当成内容的一部分来扫，所以在
+判据上补回这一格，而不是把换行塞回行体去改切行。
+
+**门 +2**。库侧 `cut::tests::a_newline_delimiter_makes_every_line_a_fielded_line`：`-f 2` 交回 `Some(0)`
+（走的是字段腿、第二格为空，不是整行搬运的 `Some(len)`），加 `-s` 也是 `Some(0)`（没有「整行不带分隔符」
+可供抹掉，与批次四百二十八那枚 `None` 语义相反），而换成 `;` 时同一行仍是 `None`。壳侧
+`cut_face::a_newline_delimiter_keeps_every_line_in_the_field_leg`：`-d $'\n'` 的 `-f 2`、`-f 2 -s` 都交回
+`\n\n`，`-f 1` 交回 `a\nb c\n`。
+
+**门读数（L1，日志落 `tmp/cut-432/`）**：宿主 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter`
+**1195 passed / 0 failed**（68 段，`host2.log`）；容器 `minix-ci:1.94` 同配方单独跑（批次四百三十定的判据：
+容器权威门不与任何 cargo 任务并发）；三架构 `--bins` 全退 0；`clippy --all-targets` 与主树基线逐条对读
+**新增 0 条**；`rustfmt --check` 与基线比**新增漂移 0 件**（自己那条长 `assert_eq!` 由 `rustfmt --edition 2024`
+收回多行形态，`tests/cut_face.rs` 一并格式化）。负控 3 枚：N1 撤掉判据（回到 `line.contains(...)` 单判）
+咬住本轮新门；N2 一律算带分隔符（`true || ...`，把面分隔符那一腿也抹掉）咬住批次四百二十八那枚 `None`
+语义门；N3 等价注入（两个判据换个顺序写）全绿。
+
+**A/B 现量**。14 形（换行与面分隔符各 7 形：`-f 1`、`-f 1-2`、`-f 2`、`-f 2-3`、`-f 2 -s`、
+`-f 2 -s -n`、`-b 2`）对 `tmp/cut-406/cut_ref` **逐字节全同**；改前三形红（`-f 2`、`-f 2 -s`、`-f 2 -s -n`
+在换行分隔符下），读数 `ab.log`。
+
+**与同族另两枚的关系**（都吃「行腿保不保留终止符」这道裁决，裁决本身在批次四百二十三/四十三十/四百三十一
+已落定）：`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR` 已在批次四百三十一闭；`CUT-C-LEG-CHARACTER-ORIENTED`
+维持在册——那一枚是 `-c` 该按字符位置数（`x_cut.c:52-57` 的 `getwc`/`putwchar`），与终止符无关。07 篇表头
+库测试数按现量对账 588→**589**。
+
 ## 批次四百三十一（P0 独立轮 `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`：冲档的钥匙是「这一行有没有以换行结束」，不是行号）
 
 **缺陷的形状**。`unexpand` 的行腿拿到的是**剥掉换行之后的行体**，于是「这一行在输入里到底以换行结束
