@@ -249,6 +249,29 @@ P6（禁用）  [`lin_lin_copy`](minix3/…/memory.c)
 
 **复现基线的命令（逐条可重放）**：`bash tools/doc-code-map.sh rewrite-notes/01-stage-kernel/{doc}.md --check --format=plain | grep -c '^os/'`、`bash tools/anchor-resolve.sh --check {doc}.md | tail -1`、`grep -cE '^( *(#|//|/\*)).*逐字引用' {doc}.md`；预演副本：`python3 tmp/docfmt-01/mk_target.py`。
 
+### W-12 W-11 的 P1b 形态对 Rust 带 kind 前缀符号破坏渲染（链接目标含空格 → CommonMark 链接失效）（状态 OPEN，2026-10-18 登记，待用户裁决修复形态）
+
+- **现象**：人审 01 篇 §3.2（第 1344 行）发现 ` [`trait FileLoader`](os/boot-shim/src/loader.rs:trait FileLoader) ` 在 PDF 渲染后**整条链接退化为字面文本**——方括号、圆括号、长路径全部暴露给读者。恰好与第 1316 行 ` [`trait BootShim`](os/libs/minix-boot/src/boot_shim.rs) `（纯路径目标、无 `:symbol`）对比：后者正常隐藏。这**直接推翻 W-11/R6 的目标**「渲染后长路径被隐藏」。
+- **根因（工具与 CommonMark 的结构性冲突）**：CommonMark 链接目标 `(...)` 的 non-pointy 形式**不允许含空格**；而 `anchor-resolve.sh` 的抽取正则（[:173](tools/anchor-resolve.sh)）要求 `.rs:(fn|struct|enum|trait|const|...)` + `[[:space:]]+` + 符号名——**Rust 符号锚点必带 kind 前缀、kind 与名之间必有空格**。于是「锚点被工具识别」与「链接能渲染」在 Rust 符号上互斥。C 裸符号（`path:func`，无空格）恰好两全，所以 W-11 的全部探针（`tmp/docfmt-01/probe-*.md` 用 `lin_lin_copy`）从未暴露此失败模式。
+- **规模（现算，2026-10-18）**：全 `rewrite-notes/` 树「链接目标含空格」= **341 处 / 7 篇**（01=38、02=47、03=48、05=80、06=29、12=54、13=40）；「目标带 `:symbol` 但无空格（可渲染，多为 C 裸符号）」= 323 处；纯路径目标 = 2365 处。即破坏面**全部是 Rust `:kind Name` 锚点**。
+- **四方案实测**（探针 `tmp/anchor-render/probe.md`、`probe2.md`）：
+  - **甲**（符号放链接文字、目标纯路径）→ `anchor-resolve --extract` **抽不到**（P6 型静默丢锚），**否决**；
+  - **丁**（裸符号 `path:FileLoader` 无 kind）→ `anchors=0`，工具自弹提示「Rust 锚点必须用 keyword 形态」，**否决**；
+  - **丙**（现状 P1b 裸写带空格目标）→ 锚点门绿、**渲染坏**；
+  - **乙**（尖括号目标 `<path:trait FileLoader>`）→ `anchor-resolve` 能解析（resolved，唯抽取 token 带一个尾 `>`）、`notes-link-check` 报 0 断链，**唯一同时过两门的形态**。
+- **乙 的待核项（落地前必测，勿凭绿读数放行）**：① 目标渲染器（GitHub、mdbook/pulldown-cmark、用户所用的 PDF 管线）是否真吃 `<...>` 目标——`notes-link-check` 报 0 断链**可能只是跳过了它不认识的形态**，非「已正确解析」，须人工看渲染产物确认；② `anchor-resolve.sh` 抽取 token 带尾 `>`（`...FileLoader>`），当前靠解析容错通过，宜把 `>` 加入符号名终止字符类 `[^\`（）()>]+` 以消除隐患；③ `notes-link-check.py` 需显式支持 `<...>` 目标（剥壳后再剥 `:symbol`）并补 self-test 正/反例。
+- **与 W-11/R6 的关系**：R6 的「链接可点性不在射程内」判断本身成立，但**低估了后果**——不是「点不动」而是「整条链接退化、长路径全暴露」，正好反噬 P1b 的立项动机。W-11 的落地工序表 S5 子步 5「正文链接化采 P1b」在 Rust 符号上必须改用乙形态（或按下方处置降级），否则轮 1–7 会把 341 处渲染破坏铺满七篇。
+- **处置建议（三选一，待用户裁决）**：① 采乙形态，先补上述三项验证与两把工具的 `<...>` 支持，再让 W-11 迁移采用；② 降级——Rust 带 kind 前缀的符号锚点**不做链接化**，保持 P0 行内反引号裸锚（` `os/…/loader.rs:trait FileLoader` `，可渲染、工具可解析，只是长路径可见），仅对 C 裸符号与纯路径做 P1b；③ 把符号锚点从链接目标彻底移出到 `.review` 底账（属 W-1 降噪射程，改动最大）。**本轮仅登记 W-12，不动工具、不动规范源、不动任何文档。**
+
+### W-13 正文里的案卷/工单编号（`I-22` 型）不该暴露给读者，冻结前统一清理（状态 OPEN，2026-10-19 登记）
+
+- 缘起：人审 `rewrite-notes/01-stage-kernel/01-boot-shim-bootstrap.md` 第 1265 行「内存布局」表格单元——`...三链共享 MemoryMapSource trait（minix-boot，I-22）`。`I-22` 是跨阶段案卷编号（真源在 `rewrite-notes/coordination/TODO-LEDGER-DONE.md` 的「I-22 丁案」行，管的是内存图三链收口的裁决与落地进度），属**审查/协作坐标**，读者顺着它无处可查，把它留在正文里与把行号 `/* 33 */` 留在代码里是同一类噪声（受众分层：坐标归审查、讲解归读者）。
+- 门盲区（这是本条要立的核心事实，属 Step 5.7 Rule Discovery 的新发现）：`tools/doc-style-lint.sh` 现有编号族判据为 SL-1（`VNN-...`）、SL-2（`FIX-NN`）、SL-3（`P-N-N / D-NN / R-NN / W-NN`）、SL-11（`fixNN / 续-N / 首亮 / （…现场/取证/工单）`）——**`I-NN` 与 `SD-NN` 两族不在任何一条的匹配集里**，所以带这类编号的行 SL 全绿、门拦不住，才漏到正文。即这不是「有人违规」，是「规则没覆盖到这一族」。
+- 规模（01-stage-kernel 正式篇现算，命令 `grep -rohE '\b<pattern>\b' rewrite-notes/01-stage-kernel/*.md | wc -l`，可重跑）：`I-[0-9]+` 155 处（`I-1` 30、`I-22` 17、`I-6` 19…）、`SD-[0-9]+` 13 处；同口径 `D-[0-9]+` 401、`R-[0-9]+` 75、`W-[0-9]+` 41、`P[0-9]+-[0-9]+` 116 属 SL-3 已覆盖族（存量按 W-1「增量阻断 + 存量报告」只报告不阻断）。读数只是暴露面规模，**不等于待删清单**——`E5`/`R5` 等短号可能与其它合法用法撞车，逐处要读句子判是否真为案卷引用。
+- 拟处置（两步，都不在本轮做）：一、**清理落点**——冻结前把这些编号从正文里摘掉：读者需要的信息写全（如把「（minix-boot，I-22）」的落点讲清楚），纯溯源坐标移进 `.review/{tool}/{stage}/{doc-stem}.anchors.md` 底账或对应 `todo.md`/案卷行，正文不留裸编号；随各篇审阅轮次顺手清，符合 W-1 的「增量阻断 + 存量报告」口径，不开独立批量。二、**补门**——给 `doc-style-lint.sh` 增一条案卷编号族判据（至少收 `\bI-[0-9]+\b`、`\bSD-[0-9]+\b`），self-test 补正/反例，与 SL-3 同走增量阻断；须先解决 `I-NN` 与罗马数字/其它「I-」开头的撞车（用词边界与上下文收紧，别误伤合法文本）。两项改动都要走 `prompt/README.md` 三端同步与四道派生门。
+- 与既有条目的关系：本条与 W-1（存量锚点降噪）、W-11/R6（受众分层）同源——都治「审查坐标混进读者正文」；不同处只在治的是**案卷编号族**且当前**门根本没这条判据**。单篇清理属文档内容层，落到各 stage 的 `todo.md`；本台账只承接「门缺口 + 冻结前须统一清理」这一工作流层裁决。
+- 本轮未做：不动 `doc-style-lint.sh`、不动规范源、不动任何正式文档；仅登记本条。
+
 ## 二、被活规则引用、必须留存的格式/纪律定义
 
 ### F-A `gate-evidence-*` 统一格式（原 todo_plan 0.5；`review-process.md` Step 3.6 指向本定义）

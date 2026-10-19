@@ -1307,7 +1307,7 @@ pub fn exit_boot_services() {
 |---|---|
 | 保留 Multiboot，做 64 位扩展（Multiboot2） | 两个新架构没有等价协议；`head.S` 那套"引导器填结构体 + 寄存器传参"在 aarch64/riscv64 上要各写一份，等于三份引导协议 |
 | 各架构独立引导（x86 用 Multiboot、ARM 用 PSCI、RISC-V 用 SBI） | 引导准备的代码要按架构分叉，而 2.7 展示的正是"这一步的语义与硬件无关"——分叉会把它重新绑回硬件 |
-| 内核自带 stub（把 UEFI 形态的 boot-shim 链接进内核镜像，内核自己读文件再自举） | boot-shim 与内核变成同一个二进制的两个入口，内核要依赖固件类型才能编译；riscv64 上 UEFI 目标不存在（`riscv64-unknown-uefi` 不是 Rust 支持的目标），这条路径会让内核在该架构上不可构建（riscv64/aarch64 的 `kernel-image` 自引导面复用 opensbi 取件库、不引入 `uefi` 依赖，不在否决之列——方向差异见 §3.3） |
+| 内核自带 stub（把 UEFI 形态的 boot-shim 链接进内核镜像，内核自己读文件再自举） | 否决它靠的是**依赖方向**，不是"能不能编译"：boot-shim 与内核并成同一个二进制的两个入口，内核就得认识固件类型、把 `uefi` 拉进自己的依赖表，与 §3.3「内核不依赖引导层」的单向边界冲突。riscv64 上没有 UEFI 目标（`riscv64-unknown-uefi` 不是 Rust 支持的目标），可那挡的是"UEFI 形态这一条腿"，不是"内核构建"——boot-shim 是兼容层（`trait BootShim`），每种固件各写一份实现，opensbi 就实现了一份，riscv64 照它构建，内核并非不可构建。riscv64/aarch64 的 `kernel-image` 自引导面复用 boot-shim 的 opensbi 取件库、不引入 `uefi`，本就不在否决之列；它是为嵌入式环境的硬件特性保留的一条特殊路径（方向差异见 §3.3），不是"内核建不起来"的退让 |
 
 ### 3.2 一个 trait 两种固件：`BootShim`
 
@@ -1409,11 +1409,11 @@ kernel-image ─┬─→ minix-kernel
 - `os/libs/minix-boot/Cargo.toml` 只依赖 `minix-types`。
 - `os/kernel-image/Cargo.toml` 依赖 `minix-kernel`、`minix-boot`、`minix-arch`、`minix-plat`、`minix-types`；另有两条**按目标注入**的依赖：`cfg(target_arch = "riscv64")` 与 `cfg(target_arch = "aarch64")` 下各加 `boot-shim`（`opensbi` feature）与 `fdt`。所以"内核不依赖 boot-shim"这条边界对 `minix-kernel` 成立，而 `kernel-image` 的自引导面按目标反向依赖 boot-shim 的库——这是同一份代码的两个产物，方向不同。
 
-"内核不依赖 boot-shim"挡的是一件具体的事：`boot_shim` 包在 `uefi` feature 打开时会把外部 crate `uefi` 拉进来，而 UEFI 目标在 Rust 里只有 `x86_64`/`aarch64`/`i686` 三个（`rustc --print target-list`），riscv64 没有对应目标。内核若依赖引导层，riscv64 上就没法构建。
+"内核不依赖 boot-shim"挡的是**依赖方向**这条边界（§3.1 否决"内核自带 stub"用的是同一个理由）：内核不该认识固件形态。硬约束只落在 UEFI 这一条腿上——`boot_shim` 包在 `uefi` feature 打开时会把外部 crate `uefi` 拉进来，而 UEFI 目标在 Rust 里只有 `x86_64`/`aarch64`/`i686` 三个（`rustc --print target-list`），riscv64 没有对应目标，所以把内核绑到 boot-shim 的 UEFI 形态上，riscv64 就编译不过。但这不是"内核建不起来"：boot-shim 是兼容层，opensbi 腿不拉 `uefi`，换那条腿照样构建（`kernel-image` 的自引导面正是按目标挂它的 `opensbi` feature，见上一条依赖表）。
 
 `KernelInfo`、`BootShim`、`BootPrepareResult` 之所以住在第三方 `minix-boot` 而不是住在内核或引导层里，就是为了让两侧都能引用同一份定义而不引入反向依赖。这一层只有类型与 trait，没有实现（`minix-boot` 的依赖表只有 `minix-types`），所以谁依赖它都不会被拖进固件代码。
 
-**让 `minix-kernel` 去依赖 `boot-shim` 会怎样**（理由是"想复用 `BootPrepareResult` 的定义"）。构建 riscv64 内核时会连 `uefi` crate 一起编译，而它没有该架构的编译目标——直接后果是内核在 riscv64 上不可构建；把共享类型抽到 `minix-boot` 得到的收益正是"不必让内核认识固件"。这条边界不是风格洁癖的产物：`os/kernel/Cargo.toml` 的依赖表里没有 `boot-shim`、也没有 `uefi`，用上面那条 `grep` 就能一次验证。
+**让 `minix-kernel` 去依赖 `boot-shim` 会怎样**（理由是"想复用 `BootPrepareResult` 的定义"）。按 boot-shim 的默认 feature（`uefi`）依赖它，构建 riscv64 内核时会连 `uefi` crate 一起编译，而它没有该架构的编译目标——卡的是 UEFI 这一条腿；换 opensbi 腿就能过，所以"内核在 riscv64 上不可构建"并不成立。真正站得住的理由是依赖方向：共享类型该由一个不含固件实现的中间层提供，而不是让内核去认识引导层。把 `BootPrepareResult` 等类型抽到 `minix-boot` 得到的收益正是"不必让内核认识固件"。这条边界不是风格洁癖的产物：`os/kernel/Cargo.toml` 的依赖表里没有 `boot-shim`、也没有 `uefi`，用上面那条 `grep` 就能一次验证。
 
 ### 3.4 从全局 `kinfo` 到按值交接的 `KernelInfo`
 
