@@ -28,15 +28,15 @@ pub struct UnexpandOptions {
 }
 
 /// Parses a `-t` stop list: the C splits on `", \t"` (`strsep`,
-/// unexpand.c:91-106), each stop parses as a base-zero number and must
+/// unexpand.c:93-115), each stop parses as a base-zero number and must
 /// be strictly greater than the previous. `None` marks any violation.
 /// C 对 `-t` 档位表的两种坏法，各有各的句子，不许抹平成一句。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopRejection<'a> {
-    /// `unexpand.c:101-104`：`strtoul` 剩下尾巴字符，或溢出到 `ULONG_MAX`
+    /// `unexpand.c:101-103`：`strtoul` 剩下尾巴字符，或溢出到 `ULONG_MAX`
     /// （`errx(EXIT_FAILURE, "Invalid tabstop `%s'", tab)`）。
     Invalid(&'a str),
-    /// `unexpand.c:110-114`：不比前一支大
+    /// `unexpand.c:108-112`：不比前一支大
     /// （`errx(... "Bad tabstop spec `%s', must be greater than the previous `%zu'", ...)`）。
     NotIncreasing { spec: &'a str, previous: usize },
 }
@@ -44,7 +44,7 @@ pub enum StopRejection<'a> {
 /// 按 C 的 `strsep(&optarg, ", \t")` 切档位表：逗号、空格、制表符都是分隔符，
 /// 空字段跳过（所以 `-t ""` 与 `-t ,` 都是「一支都没有」，C 那边 `nstops` 保持 0，
 /// 行为与不给 `-t` 相同），每支按 **base 0** 解析（`0x` 是十六进制、`0` 前缀是八进制，
-/// `unexpand.c:98` 的 `strtoul(tab, &ep, 0)`；参照件现量 `-t 010` 得 8、`-t 0x10` 得 16）。
+/// `unexpand.c:100` 的 `strtoul(tab, &ep, 0)`；参照件现量 `-t 010` 得 8、`-t 0x10` 得 16）。
 pub fn parse_stops(spec: &str) -> Result<Vec<usize>, StopRejection<'_>> {
     let mut stops: Vec<usize> = Vec::new();
     for piece in spec.split([',', ' ', '\t']) {
@@ -93,7 +93,7 @@ fn base_zero(piece: &str) -> Option<usize> {
 
 /// Converts blank runs of the line into tabs.
 ///
-/// Faithful to `tabify` (unexpand.c:148-205): a display column (`dcol`)
+/// Faithful to `tabify` (unexpand.c:148-214): a display column (`dcol`)
 /// walks the input — spaces add one, tabs quantize to the next stop —
 /// and each non-blank byte flushes the accumulated gap as tabs (only
 /// where a stop boundary is crossed and the gap is at least two
@@ -219,7 +219,7 @@ pub struct UnexpandArgs<'a> {
 /// `unexpand` argument-parsing failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnexpandError<'a> {
-    /// C 的 `usage()` 自己那一行：`-a` 与 `-t` 冲突（`unexpand.c:87-95` 的
+    /// C 的 `usage()` 自己那一行：`-a` 与 `-t` 冲突（`unexpand.c:89-95` 的
     /// `if (nstops) usage()` 与 `if (all) usage()`）。
     Usage,
     /// 集外字母：libc 先印一行（`getopt.c:101-104`），C 的 `default: usage()` 再接一行。
@@ -233,7 +233,7 @@ pub enum UnexpandError<'a> {
 
 /// 把 `unexpand` 的参数尾巴拆成 [`UnexpandArgs`]，照 C 的 `getopt(argc, argv, "at:")`
 /// （`unexpand.c:86`）。三件事必须逐字母按 getopt 的聚簇指针来读而不是整段比对：
-/// ① `-a` 与 `-t` 互斥，两支谁后到谁就 `usage()`（`unexpand.c:87-95`），所以 `-at4`
+/// ① `-a` 与 `-t` 互斥，两支谁后到谁就 `usage()`（`unexpand.c:88-95`），所以 `-at4`
 /// 是 usage 而不是组合形；② 集外字母先由 libc 印一行（`getopt.c:101-104`），
 /// 交回的是 `-` 后面的**第一个**字符（量过：`-Za` 只报 `Z`）；③ `-t` 的值可以附在
 /// 本 token（`-t4,8`）也可以另起一段（`-t 4,8`），后面没有那一段时 libc 印
@@ -243,7 +243,7 @@ pub enum UnexpandError<'a> {
 /// 落进 `argv += optind` 的那一段，全当**文件操作数**（参照件量过：`unexpand f -a`
 /// 里的 `-a` 是被当第二个档名去 `freopen` 的，报 `Cannot open `-a'`）。
 /// `--` 结束选项环且自身不算操作数（`getopt.c:81-85`），裸 `-` 是操作数
-/// （`getopt.c:87-92` 不推进 `optind`，而 C `unexpand.c:124` 会拿它去 `freopen`）。
+/// （`getopt.c:87-92` 不推进 `optind`，而 C `unexpand.c:129` 会拿它去 `freopen`）。
 pub fn parse_unexpand_args<'a>(args: &'a [&'a str]) -> Result<UnexpandArgs<'a>, UnexpandError<'a>> {
     let mut options = UnexpandOptions::default();
     let mut operands: Vec<&'a str> = Vec::new();
@@ -423,7 +423,7 @@ mod tests {
         );
         assert_eq!(parse_unexpand_args(&["-at4"]), Err(UnexpandError::Usage));
         // `-ta` 不是「两支冲突」而是「`-t` 取到附值 `a'」：C 的 getopt 一见 `t:` 就把
-        // 同一串里剩下的 `a` 当 optarg 交回（`getopt.c:120-122`），于是走
+        // 同一串里剩下的 `a` 当 optarg 交回（`getopt.c:117-118`），于是走
         // `Invalid tabstop `a'`（参照件现量同一句）。
         assert_eq!(
             parse_unexpand_args(&["-ta"]),

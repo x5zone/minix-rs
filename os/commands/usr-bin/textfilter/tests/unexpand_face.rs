@@ -1,6 +1,6 @@
 //! End-to-end face for the `unexpand` binary, checked against
-//! `minix3/usr.bin/unexpand/unexpand.c`（选项环 `:85-118`、档位回显 `:120-121`、
-//! 操作数循环 `:122-136`、`tabify` `:141-215`、`usage()` `:69-73`）与它驱动的 libc
+//! `minix3/usr.bin/unexpand/unexpand.c`（选项环 `:86-120`、档位回显 `:124-125`、
+//! 操作数循环 `:127-135`、`tabify` `:141-215`、`usage()` `:69-73`）与它驱动的 libc
 //! `getopt`（`minix3/lib/libc/stdlib/getopt.c:74-78`、`:81-92`、`:95-104`、`:132-136`）。
 //!
 //! `unexpand.c:86` 的 optstring 是 `"at:"`：一个无值字母加一个带值字母，两支互斥。
@@ -8,7 +8,7 @@
 //! 程序名与 `fgetln`/`erealloc` 垫片，宿主现链）逐形量出的形状是：
 //! ① 集外字母 = libc 一行 + usage 一行，退 1（`-Z`、`-Za` 报 `Z`、`--x` 报 `-`）；
 //! ② `-t` 缺值 = libc 的 `option requires an argument -- t` + usage 一行，退 1；
-//! ③ 档位表在选项环之后被**打到标准错误**（`unexpand.c:120-121` 那圈 `fprintf(stderr,
+//! ③ 档位表在选项环之后被**打到标准错误**（`unexpand.c:124-125` 那圈 `fprintf(stderr,
 //!    "%lu %zu\n", i, tabstops[i])`）——真源里留着的一行调试输出，但它就在外部行为里；
 //! ④ 档位的数字是 `strtoul(..., 0)`：`010` 是 8、`0x10` 是 16；坏档位有两支不同的句子
 //!    （`Invalid tabstop`与 `Bad tabstop spec …, must be greater than the previous …`）；
@@ -76,7 +76,7 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
 /// `getopt.c` 而不是 glibc 那句带引号的 `invalid option -- 'Z'`）：`-é` 与 `-aé` 都是
 /// `unexpand: unknown option -- ` + 单个 `303` + 换行再跟那一行 usage、退 **1**；`-Zé` 停在
 /// `Z`（环不越过第一个坏字母）；反面的 `-té` 里 `é` 是**值**而不是字母，走命令自己的
-/// `unexpand: Invalid tabstop `303 251'` **单独一行、不接 usage**（`unexpand.c:101-104`）。
+/// `unexpand: Invalid tabstop `303 251'` **单独一行、不接 usage**（`unexpand.c:101-103`）。
 /// ASCII 那几形（`-Z`、`-Za`、`--x`、`-t` 缺值）本文件已有主人，不重复承载。
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_unexpand() {
@@ -114,7 +114,7 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_unexpand() {
     );
 }
 
-/// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`unexpand.c:115-117` 的 `default:`）。
+/// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`unexpand.c:116-118` 的 `default:`）。
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     let (out, status, err) = run(&["-Z"], INPUT);
@@ -150,7 +150,7 @@ fn a_missing_tabstop_value_prints_the_other_libc_line() {
     );
 }
 
-/// 档位表在选项环之后、读输入之前打到 stderr（`unexpand.c:120-121`）。
+/// 档位表在选项环之后、读输入之前打到 stderr（`unexpand.c:124-125`）。
 /// 这一形容易被当成「真源里的噪声」而省掉，但参照件就是把它印出来，退码还是 0。
 #[test]
 fn the_stop_list_is_echoed_to_stderr_before_any_output() {

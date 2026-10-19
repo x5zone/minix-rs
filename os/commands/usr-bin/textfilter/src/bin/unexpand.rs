@@ -4,7 +4,7 @@
 //! deciding half (the tabify walk, `-t` stop lists, the `-a`
 //! whole-line form) is the library's `unexpand` module. With no operand the
 //! program tabifies standard input; with operands it tabifies each file in turn
-//!（C `unexpand.c:122-136` 的 `do … while (argc > 0)`：每支档名 `freopen` 进 stdin、
+//!（C `unexpand.c:127-135` 的 `do … while (argc > 0)`：每支档名 `freopen` 进 stdin、
 //! 逐行走 `tabify`，行游标按档重置），打不开的档是致命的
 //! `err(EXIT_FAILURE, "Cannot open `%s'", …)`。
 
@@ -31,7 +31,7 @@ fn run() -> ! {
         Ok(parsed) => parsed,
         Err(error) => arg_error(prog, error),
     };
-    // C 在选项环之后、读输入之前把档位表打到 stderr（`unexpand.c:120-121` 的
+    // C 在选项环之后、读输入之前把档位表打到 stderr（`unexpand.c:124-125` 的
     // `for (i = 0; i < nstops; i++) fprintf(stderr, "%lu %zu\n", i, tabstops[i])`）——
     // 那是真源里留着的一行调试输出，但它就在外部行为里，参照件逐形量过
     // （`-t 4` → `0 4`；`-t 4,8` → `0 4` 加 `1 8`），所以本壳照搬而不替 C「修正」。
@@ -48,7 +48,7 @@ fn run() -> ! {
     }
     for operand in &operands {
         // C 的 `freopen(argv[0], "r", stdin)` 失败是 `err(EXIT_FAILURE, "Cannot open `%s'")`
-        // （`unexpand.c:124-126`）：程序名、带反引号的档名、`strerror` 句子三段齐备
+        // （`unexpand.c:129-130`）：程序名、带反引号的档名、`strerror` 句子三段齐备
         // （旧写法少了第三段），退 1。
         match support::read_file(operand) {
             Ok(input) => emit_tabified(&input, &options),
@@ -86,7 +86,7 @@ fn arg_error(prog: &str, error: UnexpandError<'_>) -> ! {
     match error {
         UnexpandError::Usage => usage(prog),
         // 集外字母与缺值：libc 那一行在前（`getopt.c:101-104`、`:132-136`），
-        // C 的 `default: usage()` 在后（`unexpand.c:115-117`）—— 两行。
+        // C 的 `default: usage()` 在后（`unexpand.c:116-118`）—— 两行。
         UnexpandError::UnknownOption(letter) => {
             support::warn(&GetoptReport::UnknownOption(letter).line_bytes(prog));
             usage(prog)
