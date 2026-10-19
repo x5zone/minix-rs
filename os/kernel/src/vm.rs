@@ -679,6 +679,88 @@ pub fn cross_space_copy<D: DirectMapArch>(
     CrossSpaceResult::Completed(Ok(()))
 }
 
+/// SD-10 候选 4 观测点（C1 下一片，帧复用残留族）：SYS_MEMSET 通道的
+/// 内容级校验。VM 分配器带 CLEAR 位的帧清零走本通道——fresh 帧必须读回
+/// 全零（`cow_exec_pf.rs` 注记钉死的不变量）；本仪器抓「填充写了但字节
+/// 没落对」，与 csc-verify（拷贝通道）同族并排。Completed(Ok) 全量完成
+/// 路径逐 chunk 重读比对（2× 读流量，诊断期可接受，同 csc-verify 论证）；
+/// 大区（>1 MiB）只核头尾各 64 KiB，读流量有界。命中是线索不是判决：
+/// 诊断窗内第三方改写也会命中，需与对账探针/tf-guard/ptwb 读数共同定性。
+/// 打印封顶 8（全 boot 全局，房规同 tf-guard/ptwb）。
+#[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+pub(crate) fn nk4a_memset_verify(
+    dst: &AddressRef,
+    pattern: u8,
+    bytes: usize,
+    proc_table: &crate::proc_table::ProcessTable,
+    proc_cr3: &impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
+) {
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+    static SETS: AtomicU64 = AtomicU64::new(0);
+    static HITS: AtomicUsize = AtomicUsize::new(0);
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+    static PRINTED: AtomicUsize = AtomicUsize::new(0);
+
+    let Some(side) = CopySide::resolve(dst, proc_table, proc_cr3) else {
+        return;
+    };
+    let _n = SETS.fetch_add(1, AtomicOrd::AcqRel);
+    if LIVE.fetch_add(1, AtomicOrd::AcqRel) == 0 {
+        use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+        Console::write_str("nk4c: mset-verify armed (SD-10 candidate-4 observation)\n");
+    }
+    // 大区只核头尾各 64 KiB（读流量有界）；常规帧（≤1 MiB）全量核。
+    const TAIL_WINDOW: usize = 64 * 1024;
+    let (verify_bytes, skip_tail) = if bytes > 1024 * 1024 {
+        (bytes.min(TAIL_WINDOW), bytes.saturating_sub(TAIL_WINDOW))
+    } else {
+        (bytes, 0)
+    };
+    let mut verify_range = |side: &CopySide,
+                            from: usize,
+                            to: usize,
+                            hits: &AtomicUsize,
+                            printed: &AtomicUsize| {
+        let mut done = from;
+        while done < to {
+            let remaining = to - done;
+            let (dp, drun) = side.chunk::<minix_arch::CurrentDirectMap>(done, remaining);
+            if drun == 0 {
+                return; // 半程形态不覆盖（同 csc-verify 边界）
+            }
+            let dv = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(dp);
+            // SAFETY: DM 别名只读，与 memset 主路径同一窗口来源。
+            let dstb = unsafe { core::slice::from_raw_parts(dv.0 as *const u8, drun) };
+            if let Some(off) = dstb.iter().position(|&b| b != pattern) {
+                let h = hits.fetch_add(1, AtomicOrd::AcqRel);
+                if printed.fetch_add(1, AtomicOrd::AcqRel) < 8 {
+                    use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
+                    let abs = done + off;
+                    let got = dstb[off];
+                    Console::write_str("nk4c: mset-verify HIT at=");
+                    let mut hb = [0u8; 16];
+                    let mut v = abs as u64;
+                    for byte in hb.iter_mut().rev() {
+                        *byte = b"0123456789abcdef"[(v & 0xf) as usize];
+                        v >>= 4;
+                    }
+                    Console::write_str(core::str::from_utf8(&hb).unwrap_or("?"));
+                    Console::write_str(" want=");
+                    Console::write_hex(pattern as u64);
+                    Console::write_str(" got=");
+                    Console::write_hex(got as u64);
+                    Console::write_str("\n");
+                }
+            }
+            done += drun;
+        }
+    };
+    verify_range(&side, 0, verify_bytes, &HITS, &PRINTED);
+    if skip_tail != 0 {
+        verify_range(&side, skip_tail, bytes, &HITS, &PRINTED);
+    }
+}
+
 /// Perform a cross-address-space memory set.
 ///
 /// Resolves destination physical address via Direct Map, then fills

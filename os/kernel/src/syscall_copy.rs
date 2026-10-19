@@ -1458,7 +1458,29 @@ pub fn dispatch_memset(
     );
 
     match result {
-        CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
+        CrossSpaceResult::Completed(Ok(())) => {
+            // SD-10 候选 4 观测点：memset 通道内容级校验（riscv 真机形态；
+            // 帧清零「写了但没落对」的直接暴露面，与 csc-verify 并排）。
+            #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+            {
+                let verify_dst = if process == NONE {
+                    crate::vm::AddressRef::Physical(PhysBytes(base))
+                } else {
+                    crate::vm::AddressRef::Process {
+                        endpoint: Endpoint(process),
+                        offset: VirBytes(base),
+                    }
+                };
+                crate::vm::nk4a_memset_verify(
+                    &verify_dst,
+                    pattern_byte,
+                    count as usize,
+                    proc_table,
+                    &proc_cr3,
+                );
+            }
+            KcallResult::Ok(OK)
+        }
         CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)) => KcallResult::Ok(EINVAL),
         CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
