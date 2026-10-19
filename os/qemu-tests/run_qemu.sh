@@ -122,7 +122,7 @@ case "$ARCH" in
             DISK_DRIVE="file=fat:rw:$STAGING,format=raw,media=disk"
         fi
         QEMU_ARGS=(
-            -machine virt
+            -machine virt,gic-version=3
             -cpu cortex-a72
             -smp 4
             -drive "if=pflash,format=raw,unit=0,file=$FW,readonly=on"
