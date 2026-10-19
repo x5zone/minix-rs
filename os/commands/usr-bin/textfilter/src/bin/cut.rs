@@ -112,8 +112,13 @@ fn arg_error(e: CutError, prog: &str) -> ! {
     match e {
         CutError::Usage => usage(),
         // libc 的那一行排在前面，usage 的三行在后面。
+        //
+        // 字母位走 `line_bytes`：`src/cut.rs` 的取法本就按字节（`bytes[pos] as char`），而 libc
+        // 那一行的字母位本来是一个字节（`getopt.c:79` 的 `optopt = *place++`、`:103` 的 `%c`）。
+        // 参照件 `tmp/cut-406/cut_ref` 现量 `-é` 与 `-cé` 都是 `cut: unknown option -- ` +
+        // 单个 `c3` + 换行，再跟那三行制表符对齐的 usage、退 1。
         CutError::Getopt(report) => {
-            support::warn(report.line(prog).as_bytes());
+            support::warn(&report.line_bytes(prog));
             usage()
         }
         // C 的两句 errx（`cut.c:196`、`:198`）：走 `vwarnx`，所以后面不缀 `errno`
