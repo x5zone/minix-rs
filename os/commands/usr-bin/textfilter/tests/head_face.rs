@@ -101,6 +101,67 @@ fn non_positive_counts_reject_with_c_wording() {
     }
 }
 
+/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(HEAD)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the head binary should be runnable");
+    face_support::write_stdin(&mut child, input.as_bytes());
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**。期望逐形取自本轮新配的参照件
+/// `tmp/head-415/head_ref`（`minix3/usr.bin/head/head.c` + Minix 的 `getopt.c` + 垫片，
+/// 经同名软链 `head` 起 ⇒ 程序名段与本壳一致、整条 stderr 直比）：`-é` 与 `-qé` 都是
+/// `head: unknown option -- ` + 单个 `c3` + 换行再跟那一行 usage（`head.c:199-203`）、
+/// 退 **1**；`-Zé` 停在 `Z`；反面的 `-cé` 里 `é` 是**值**而不是字母，走命令自己的
+/// `head: illegal byte count -- é`（`head.c:92-102`）**单独一行、不接 usage**。
+/// 现成的 `tmp/family-diag-ref/head_ref` 不能用：它打 `-Z` 交回 glibc 那句带引号的
+/// `invalid option -- 'Z'`，usage 里的程序名还是 `?`（批次四百零七那条验归属规矩第三次兑现）。
+/// ASCII 那几形（`-x`、`-5`、`-n` 缺值）本文件已有主人，不重复承载。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_head() {
+    const USAGE: &[u8] = b"usage: head [-n lines] [file ...]\n";
+    let want: Vec<u8> = [b"head: unknown option -- ".as_slice(), b"\xc3\n", USAGE].concat();
+    for form in ["-\u{e9}", "-q\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form], "a\n");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}"], "a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"head: unknown option -- Z\n".as_slice(), USAGE].concat(),
+        "环停在第一个坏字母上，第二个字节根本不该被读到"
+    );
+
+    let (_out, status, err) = run_bytes(&["-c\u{e9}"], "a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"head: illegal byte count -- ".as_slice(),
+            "\u{e9}".as_bytes(),
+            b"\n".as_slice(),
+        ]
+        .concat(),
+        "带值字母把两字节整个当值收走，句子是命令自己的那一句、不接 usage"
+    );
+}
+
 #[test]
 fn unknown_option_prints_the_libc_line_then_the_usage_line() {
     // C 是**两行**：`getopt` 先印 `"<prog>: unknown option -- <字母>"`

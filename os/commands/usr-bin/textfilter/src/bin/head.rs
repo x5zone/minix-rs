@@ -40,9 +40,12 @@ fn run() -> ! {
         operands,
     } = match parse_head_args(&refs[1..]) {
         Ok(parsed) => parsed,
-        // libc 的那一行在前，usage 在后（`getopt.c:101-104`、`:132-136`）。
+        // libc 的那一行在前，usage 在后（`getopt.c:101-104`、`:132-136`）。字母位走
+        // `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 的
+        // `%c` 原样写出，所以 `-é`（`c3 a9`）报的是 `c3`；取法在 `src/window.rs` 的环里
+        // 已经是 `bytes[pos] as char`，两边同形才成立。
         Err(HeadArgError::Getopt(report)) => {
-            support::warn(report.line(prog).as_bytes());
+            support::warn(&report.line_bytes(prog));
             usage(prog)
         }
         Err(HeadArgError::IllegalCount { byte, value }) => {

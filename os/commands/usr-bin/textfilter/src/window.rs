@@ -901,6 +901,48 @@ mod tests {
         );
     }
 
+    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
+    /// `char` 域里是 U+00C3。环那一侧本来就是 `bytes[pos] as char`（`getopt.c:79` 的
+    /// `optopt = *place++` 一次进一个字节），所以这一枚钉的是**已经是那样**的取法，
+    /// 免得将来有人把它改回按字符取时只有面门红、说不清坏的是哪一半；参照件
+    /// `tmp/head-415/head_ref` 现量 `-é` 报单个 `303`，逐字节门在 `tests/head_face.rs`。
+    #[test]
+    fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
+        use alloc::string::String;
+        assert_eq!(
+            parse_head_args(&["-\u{e9}"]),
+            Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
+                '\u{00c3}'
+            ))),
+            "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
+        );
+        // `q` 是选项串里合法且不带值的字母（`head.c:87` 的 `"c:n:qv"`），聚簇继续吃到第一字节。
+        assert_eq!(
+            parse_head_args(&["-q\u{e9}"]),
+            Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
+                '\u{00c3}'
+            ))),
+            "-q\u{e9}"
+        );
+        // 环停在第一个坏字母上。
+        assert_eq!(
+            parse_head_args(&["-Z\u{e9}"]),
+            Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
+                'Z'
+            ))),
+            "-Z\u{e9}"
+        );
+        // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
+        // `head: illegal byte count -- é`，单独一行、不接 usage）。
+        assert_eq!(
+            parse_head_args(&["-c\u{e9}"]),
+            Err(HeadArgError::IllegalCount {
+                byte: true,
+                value: String::from("é")
+            })
+        );
+    }
+
     #[test]
     fn test_parse_head_args_errors() {
         use alloc::string::String;
