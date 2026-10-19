@@ -55,10 +55,14 @@ core::arch::global_asm!(
     // Exception vector table with recoverable sync exception handler.
     // Entry 4 (offset 0x200): Current EL with SPx, synchronous
     //   — this is where HCR_EL2 / SP_EL1 traps land when SPSel=1
+    // 符号名带 _probe 后缀：minix-arch 的生产 K9 表（trap_stub.rs）同名
+    // `.globl exc_vector_table` 会与本载体的测试表在链接期撞重复符号
+    // （rust-lld duplicate symbol，run_all 基线的既有 build-fail 红根因）；
+    // 本测试装自己的可恢复探针表，生产表不被引用，改名即分家。
     ".section .text",
     ".balign 2048",
-    ".global exc_vector_table",
-    "exc_vector_table:",
+    ".global exc_vector_table_probe",
+    "exc_vector_table_probe:",
 
     // Entries 0-3: Current EL SP0 — recoverable, same handler as Entry 4.
     // The SP_EL1 probe runs with SPSel=0 (SP0 active), so a sync trap in
@@ -182,7 +186,7 @@ fn main() -> Status {
     // UEFI boot services run at EL1 with their own trap expectations, and
     // our minimal table (IRQ entries spin) would break them.
     unsafe extern "C" {
-        static exc_vector_table: u8;
+        static exc_vector_table_probe: u8;
         static mut exc_trap_flag: u64;
     }
     let saved_vbar: u64;
@@ -195,7 +199,7 @@ fn main() -> Status {
         // would enter the spinning IRQ entry and hang the test
         // non-deterministically. Sync traps stay recoverable (entries 0/4).
         asm!("msr DAIFSet, #0xF", options(nomem, nostack, preserves_flags));
-        asm!("msr VBAR_EL1, {}", in(reg) &exc_vector_table as *const u8 as u64, options(nomem, nostack, preserves_flags));
+        asm!("msr VBAR_EL1, {}", in(reg) &exc_vector_table_probe as *const u8 as u64, options(nomem, nostack, preserves_flags));
         asm!("isb");
     }
 
@@ -370,9 +374,9 @@ fn main() -> Status {
     // (when SPSel=1, SP_EL1 IS the current SP), not by EL2 trapping.
     {
         unsafe extern "C" {
-            static exc_vector_table: u8;
+            static exc_vector_table_probe: u8;
         }
-        let vbar = unsafe { &exc_vector_table as *const u8 as u64 };
+        let vbar = unsafe { &exc_vector_table_probe as *const u8 as u64 };
         unsafe {
             asm!("msr vbar_el1, {}", in(reg) vbar);
             asm!("isb");
