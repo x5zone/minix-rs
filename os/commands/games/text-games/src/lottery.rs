@@ -60,7 +60,26 @@ pub enum Ring {
         operands_at: usize,
     },
     /// 集外字母：libc 先打一行 `unknown option -- <字母>`，紧接着才是 `usage()` 那一行。
-    Unknown(char),
+    ///
+    /// 装的是**一个字节**而不是一个字符：`minix3/lib/libc/stdlib/getopt.c:79` 的
+    /// `optopt = *place++` 一次只进一个字节，`:103` 再用 `%c` 把它原样写出。同一枚
+    /// UTF-8 多字节旗子（`-é` 是 `c3 a9`）在 C 里报的是第一个字节 `c3`，按字符装就
+    /// 会经 UTF-8 编码多出第二个字节 `83`（`GETOPT-REPORT-BYTE-LETTER` 的渲染半）。
+    Unknown(u8),
+}
+
+/// libc 那一整行：`<程序名>: unknown option -- <一个字节>\n`（`getopt.c:101-104`）。
+///
+/// 交回字节串而不是 `String` 正是这条缺陷的形状：句子中段是 ASCII，末了那一枚字母位
+/// 却是**未经编码的原字节**，把它塞进 `String` 再 `.as_bytes()` 就等于让 Rust 的
+/// UTF-8 规则去决定它占几个字节。参照件 `tmp/random-421/random`（`random.c` 链 Minix
+/// 自己的 `getopt.c`、经同名软链起）现量 `-é` 打的是 `303` 一个字节后紧跟换行。
+#[must_use]
+pub fn unknown_option_line(prog: &str, letter: u8) -> alloc::vec::Vec<u8> {
+    let mut line = alloc::format!("{prog}: {UNKNOWN_OPTION}").into_bytes();
+    line.push(letter);
+    line.push(b'\n');
+    line
 }
 
 /// C 的 libc 那一行去掉程序名与换行后的中段（`minix3/lib/libc/stdlib/getopt.c:101-104`
@@ -90,7 +109,7 @@ pub fn scan_ring(tokens: &[&str]) -> Ring {
                 b'e' => exit_status = true,
                 b'r' => unbuffered = true,
                 other => {
-                    return Ring::Unknown(other as char);
+                    return Ring::Unknown(other);
                 }
             }
         }
@@ -761,9 +780,44 @@ mod tests {
                 operands_at: 2
             }
         );
-        assert_eq!(scan_ring(&["-Z"]), Ring::Unknown('Z'));
-        assert_eq!(scan_ring(&["-eZ"]), Ring::Unknown('Z'));
-        assert_eq!(scan_ring(&["-Ze"]), Ring::Unknown('Z'));
+        assert_eq!(scan_ring(&["-Z"]), Ring::Unknown(b'Z'));
+        assert_eq!(scan_ring(&["-eZ"]), Ring::Unknown(b'Z'));
+        assert_eq!(scan_ring(&["-Ze"]), Ring::Unknown(b'Z'));
+    }
+
+    /// 集外那一枚交回的是短横后的**第一个字节**，不是第一个字符：`-é` 的字节串是
+    /// `c3 a9`，参照件 `tmp/random-421/random` 现量报的是单个 `303`（=`c3`）后紧跟换行。
+    /// 取法那一侧本来就按字节（`for letter in body.bytes()`），这一枚钉的是它已经是那样，
+    /// 让日后改回按字符取能被单独归因；逐字节面门在 `tests/random_face.rs`。
+    #[test]
+    fn the_off_letter_is_a_byte_and_not_a_character() {
+        // `é` 是两个 UTF-8 字节，环停在第一个上
+        assert_eq!(scan_ring(&["-\u{e9}"]), Ring::Unknown(0xc3));
+        // 合法字母在先也一样：`-eé` 报的还是 `c3`（`e` 被吃掉，环继续走到下一字节）
+        assert_eq!(scan_ring(&["-e\u{e9}"]), Ring::Unknown(0xc3));
+        // U+0080 那一格是这条渲染规则的判据位：它按 UTF-8 编码要占两个字节，
+        // 而 C 打的是一个裸字节（`-\u{80}` 的字节串是 `c2 80`，报第一个 `c2`）
+        assert_eq!(scan_ring(&["-\u{80}"]), Ring::Unknown(0xc2));
+        // 反面：`--` 是结束标记，不当集外字母报（`getopt.c:81-85`）
+        assert_ne!(scan_ring(&["--"]), Ring::Unknown(b'-'));
+    }
+
+    /// 句子那一侧只有一种装法：字母位是原字节，不经过任何再编码。
+    #[test]
+    fn the_libc_line_writes_the_letter_as_the_byte_it_was_given() {
+        assert_eq!(
+            unknown_option_line("random", b'Z'),
+            b"random: unknown option -- Z\n".to_vec()
+        );
+        // 同一枚 U+00C3：按字节写是两个字节里的第一个，按字符写会多一个 `83`
+        assert_eq!(
+            unknown_option_line("random", 0xc3),
+            b"random: unknown option -- \xc3\n".to_vec()
+        );
+        assert_eq!(
+            unknown_option_line("random", 0xff),
+            b"random: unknown option -- \xff\n".to_vec()
+        );
     }
 
     #[test]
