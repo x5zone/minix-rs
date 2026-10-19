@@ -1822,6 +1822,10 @@ fn riscv64_external_arm() {
 }
 
 fn riscv64_timer_arm() {
+    // SD-10 候选 3 改形仪器：静点排水（写窗外的走查与槽复读；见
+    // minix_arch::ptwb 模块文档与 riscv64::paging::ptwb_drain_budgeted）。
+    #[cfg(target_arch = "riscv64")]
+    minix_arch::riscv64::paging::ptwb_drain_budgeted();
     crate::clock::local_tick(crate::clock::current_cpuid());
     // The riscv S-mode timer is a CPU-local interrupt (`sip.STIP`) that never
     // crosses the PLIC — its dispatch identity is the reserved pseudo-vector

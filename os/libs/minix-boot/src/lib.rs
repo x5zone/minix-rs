@@ -21,7 +21,7 @@ pub use kernel_info::*;
 pub use boot_form::{BootForm, ALL_BOOT_FORMS};
 pub use boot_shim::*;
 pub use handoff::BootHandoff;
-pub use memmap_source::{DtbMemoryMap, MemoryMapSource, MultibootMemoryMap};
+pub use memmap_source::{DtbMemoryMap, MemoryMapSource, MultibootMemoryMap, dtb_covers_conventional};
 pub use platform::{
     PlatformDescKind, PlatformDescSource, PlatformDesc, PlatformSource,
     InterruptControllerDesc, TimerDesc, ConsoleDesc,

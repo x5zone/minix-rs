@@ -173,6 +173,34 @@ impl MemoryMapSource for MultibootMemoryMap {
     }
 }
 
+/// SD-3 D1（aarch64 UEFI 链 DTB 描述符源）的出界闸（纯函数，宿主可测）：
+/// 固件 `GetMemoryMap` 快照的每一条 conventional 段必须被 DTB `/memory`
+/// 全景（`DtbMemoryMap` 产出，`firmware_reserve_end=0`＝不削）完全覆盖；
+/// 出界＝固件快照与平台真值打架（自占区记账缺失或固件谎报），调用方
+/// fail-fast（shim 还能打印的窗口里）。返回 `Err(出界段基址, 长度)`。
+///
+/// v1 语义=闸+源打印，不换源——DTB `/memory` 是 DRAM 全景（含 shim 自占
+/// 的 LOADER_DATA 页），直接当 conventional 源会把自占页交给内核 PMM
+/// （C17 行登记的 self-allocation 记账风险）；换源待记账方案另裁。
+pub fn dtb_covers_conventional(
+    dtb_free: &[MemoryRegion],
+    conventional: &[MemoryRegion],
+) -> Result<(), (u64, usize)> {
+    for r in conventional {
+        let r_start = r.base.0;
+        let r_end = r.base.0 + r.len as u64;
+        let covered = dtb_free.iter().any(|d| {
+            let d_start = d.base.0;
+            let d_end = d.base.0 + d.len as u64;
+            d_start <= r_start && r_end <= d_end
+        });
+        if !covered {
+            return Err((r.base.0, r.len));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +331,47 @@ mod tests {
         let (conv, res) = DtbMemoryMap::new(&fdt, 0).collect();
         assert!(conv.is_empty(), "无 /memory → 空（诚实停机由消费方判）");
         assert!(res.is_empty());
+    }
+
+    #[test]
+    fn dtb_gate_covers_contained_and_multi_region() {
+        // conventional 两段都落在 /memory [0x4000_0000, +512MiB) 内 → Ok
+        let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x2000_0000 }];
+        let conv = [
+            MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x1000_0000 },
+            MemoryRegion { base: PhysBytes(0x5000_0000), len: 0x800_0000 },
+        ];
+        assert_eq!(dtb_covers_conventional(&dtb, &conv), Ok(()));
+    }
+
+    #[test]
+    fn dtb_gate_reports_out_of_bounds_region() {
+        // 出界段（ conventional 高于 /memory 上界）→ Err(基址, 长度)
+        let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x1000_0000 }];
+        let conv = [
+            MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 },
+            MemoryRegion { base: PhysBytes(0x5000_0000), len: 0x1000 },
+        ];
+        assert_eq!(
+            dtb_covers_conventional(&dtb, &conv),
+            Err((0x5000_0000, 0x1000))
+        );
+    }
+
+    #[test]
+    fn dtb_gate_rejects_partial_overlap() {
+        // 跨界段（下半在 /memory 内、上半在外）不算覆盖
+        let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x800_0000 }];
+        let conv = [MemoryRegion { base: PhysBytes(0x4040_0000), len: 0x800_0000 }];
+        assert_eq!(
+            dtb_covers_conventional(&dtb, &conv),
+            Err((0x4040_0000, 0x800_0000))
+        );
+    }
+
+    #[test]
+    fn dtb_gate_empty_conventional_is_ok() {
+        let dtb = [MemoryRegion { base: PhysBytes(0x4000_0000), len: 0x1000 }];
+        assert_eq!(dtb_covers_conventional(&dtb, &[]), Ok(()));
     }
 }

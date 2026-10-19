@@ -2434,6 +2434,9 @@ fn dispatch_vmctl(
                 let val = unsafe { msg.m_u.m_m1.m1p2 } as u64;
                 unsafe { ((KDM + pa) as *mut u64).write_volatile(val) };
                 unsafe { core::arch::asm!("sfence.vma zero, zero") };
+                // SD-10 候选 3 改形仪器：网关代写槽级记录（静点由 timer
+                // 臂排水复读；见 minix_arch::ptwb 模块文档）。
+                minix_arch::ptwb::record_slot(pa, val);
                 KcallResult::Ok(0)
             }
             #[cfg(not(all(target_arch = "riscv64", not(test))))]
