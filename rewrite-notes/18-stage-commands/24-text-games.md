@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第三组——靠故事留住人的游戏，世界能走、骰子能掷、格言能抽的证明
 > **源码**: `minix3/games/adventure/hdr.h`（词汇上限 `HTSIZE 512` 见第 78 行附近、物品描述见第 101 行附近、物品初始位置见第 116 行附近）、`minix3/games/adventure/vocab.c`（物品移动见第 72 行附近）、`minix3/games/monop/`（棋盘玩法见 `monop.c`、牌堆见 `cards.c`、房子见 `houses.c`、监狱见 `jail.c`）、`minix3/games/fortune/fortune/fortune.c`（索引表定位见第 267 行附近、表读取见第 980 行附近）、`minix3/games/fortune/datfiles/`（格言数据文件）、`minix3/games/fish/fish.c`（十三点数 `RANKS` 见第 61 行附近、整副牌见第 64 行附近、成书计数见第 83 行附近、要牌提示见第 160 行附近）、`minix3/games/wtf/wtf`（`-o` 与 `-f` 标志、跳过的 `is` 词）、`minix3/games/random/random.c`（时钟加进程播种见第 107 行附近、分母选中见第 126 行附近）、`minix3/games/wargames/wargames.sh`（战争游戏脚本）
-> **Rust 模块**: `os/commands/games/text-games`（库包 `minix-text-games`：`adventure.rs`、`monop.rs`、`fortune.rs`、`fish.rs`、`acronym.rs`、`lottery.rs`，30 个测试通过）；`wtf`/`fortune`/`random` 三枚薄壳已接线，其中 `random` 另有一枚端到端门在 `os/commands/games/text-games/tests/random_face.rs`（24 枚：三百四十三立 6 枚、三百四十六补 3 枚、三百四十七补 3 枚、三百四十八补 6 枚、三百四十九补 4 枚、三百五十补 2 枚）（各游戏 `src/bin/` 内，数据文件读取与抽取面落地；`adventure`/`monop` 的完整游玩循环归执行层批次）
+> **Rust 模块**: `os/commands/games/text-games`（库包 `minix-text-games`：`adventure.rs`、`monop.rs`、`fortune.rs`、`fish.rs`、`acronym.rs`、`lottery.rs`，34 个测试通过）；`wtf`/`fortune`/`random` 三枚薄壳已接线，其中 `random` 另有一枚端到端门在 `os/commands/games/text-games/tests/random_face.rs`（25 枚：三百四十三立 6 枚、三百四十六补 3 枚、三百四十七补 3 枚、三百四十八补 6 枚、三百四十九补 4 枚、三百五十补 2 枚、四百二十一补 1 枚）（各游戏 `src/bin/` 内，数据文件读取与抽取面落地；`adventure`/`monop` 的完整游玩循环归执行层批次）
 > **前置依赖**: `06-file-ops.md` 与 `10-doc-man-tools.md`（输入输出与文本面先行）
 > **不覆盖（移交）**: 大文本数据文件格式落地（架构演进决策，见 3.5 节）、数据文件读取与玩家交互（各游戏二进制包）、纸牌发牌与战争游戏剧本（后续补齐）
 
@@ -108,7 +108,7 @@
 | `fortune.rs` | `fortune.c` 第 267 行与第 980 行附近 | 格言库接口（切片库加空库）、取余抽签、分隔符切分 |
 | `fish.rs` | `fish.c` 第 61 行与第 83 行附近 | 点数解析、成书计数、要牌选择 |
 | `acronym.rs` | `wtf` 脚本的库行 | 行解析、按词条交回**全部**命中行（开头那一枚 `is` 的移走、库档列表与前置检查都属参数收法，在壳 `src/bin/wtf.rs`） |
-| `lottery.rs` | `random.c` 第 89-104 行、第 107 行与第 126 行附近 | 操作数个数分派、分母解析、选中条件、种子混合；两条报文文本（`USAGE` 与 `NOT_VALID_SENTENCE`）也住这里 |
+| `lottery.rs` | `random.c` 第 89-104 行、第 107 行与第 126 行附近 | 操作数个数分派、分母解析、选中条件、种子混合；两条报文文本（`USAGE` 与 `NOT_VALID_SENTENCE`）也住这里；libc 那一句的字节出口 `unknown_option_line`（`getopt.c:101-104` 的字面加 `:79` 的一枚原字节）与选项环 `scan_ring`（交回 `Ring::Unknown(u8)`） |
 
 ### 4.2 关键类型与不变量
 
@@ -184,6 +184,6 @@
 
 ## 批次随记（接线状态，批次二十七）
 
-- **已接线**：`wtf`（`-f` 指库、操作数开头那一枚 `is` 移走而后续出现的 `is` 照查、逐词 `term: expansion` 打印、任一查无退出 1）、`fortune`（数据文件按行切分、时钟秒抽取、`pick_quip` 取模语义）、`random`（操作数那一步已按 C 定形：零枚取分母 2、一枚被拒打 `random: denominator is not valid.`、一枚撞数值范围打三段形 `random: <操作数>: <句子>`、两枚以上打不缀程序名的 `usage: random [-er] [denominator]`，全部退 1；标准输入逐行独立掷、中者**按输入顺序整行写出**、播种混时钟与进程号，读失手走 `err(2, "stdin")` 的三段形与退 2；选项环已接上（`-e` 把 `(denom * random()) / RANDOM_MAX` 当退码、`-r` 关缓冲、集外字母那两行照 Minix 自己的 `lib/libc/stdlib/getopt.c:101-104` 而不是参照件那句 glibc 字样）；分母那一枚也已换成 C 的 `double`——`strtod` 的十进制腿（前导空白、符号、小数点、`e`/`E` 指数、`inf`/`nan`）与 `errno == ERANGE` 的溢出、下溢两条腿都接上，于是 `1e-3` 与负分母是「每行都掷中」的正常形，`4294967296` 不再报溢出；十六进制浮点也已接上（`0x10` 这种省掉二进制指数的形照 `gethex.c:110-112` 认，且这一整支不立 `errno`，故 `0x1p99999999` 是认下的无穷大而非「撞数值范围」）；`nan(0x…)` 载荷也已接上——它在这一支可见的只有「吃到哪」：`hexnan` 撞上右括号就把整串吃掉，一路没有右括号就把游标留在左括号上（`minix3/lib/libc/gdtoa/hexnan.c:105-118`、`:146-147`）；载荷的位样本支读不到，因为所有 NaN 都让 `denom == 0` 为假、让 `(int)` 那一步不为 0，以及本 crate 共用的 `emit` 写缝退码（C 是 `err(2, "stdout")` 退 2），账在 `todo.md` 的 `RANDOM-DENOM-LEGS` 片3 之后的收尾条）。三枚薄壳的文件读取走 L10 的 open/read/close 既有路。
+- **已接线**：`wtf`（`-f` 指库、操作数开头那一枚 `is` 移走而后续出现的 `is` 照查、逐词 `term: expansion` 打印、任一查无退出 1）、`fortune`（数据文件按行切分、时钟秒抽取、`pick_quip` 取模语义）、`random`（操作数那一步已按 C 定形：零枚取分母 2、一枚被拒打 `random: denominator is not valid.`、一枚撞数值范围打三段形 `random: <操作数>: <句子>`、两枚以上打不缀程序名的 `usage: random [-er] [denominator]`，全部退 1；标准输入逐行独立掷、中者**按输入顺序整行写出**、播种混时钟与进程号，读失手走 `err(2, "stdin")` 的三段形与退 2；选项环已接上（`-e` 把 `(denom * random()) / RANDOM_MAX` 当退码、`-r` 关缓冲、集外字母那两行照 Minix 自己的 `lib/libc/stdlib/getopt.c:101-104` 而不是参照件那句 glibc 字样——字母位是短横后的**第一个字节**（`:79` 的 `optopt = *place++` 一次进一个字节），报文走字节出口 `lottery::unknown_option_line`，`-é`（`c3 a9`）与参照件 `tmp/random-421/random` 逐字节同是 `303` 一枚字节后紧跟 usage；本仓早期那份参照件 `tmp/random-342/random_ref` 链的是宿主 glibc 的 getopt（`invalid option -- 'Z'`），承不了这条真值，四百二十一重链了一份带 Minix `getopt.c` 的；宿主腿的 argv 接缝在非 UTF-8 参数上会 `panic`（`std::env::args()` 的 unwrap），登记 `TEXTGAMES-ARGV-HOSTLEG-PANIC`）；分母那一枚也已换成 C 的 `double`——`strtod` 的十进制腿（前导空白、符号、小数点、`e`/`E` 指数、`inf`/`nan`）与 `errno == ERANGE` 的溢出、下溢两条腿都接上，于是 `1e-3` 与负分母是「每行都掷中」的正常形，`4294967296` 不再报溢出；十六进制浮点也已接上（`0x10` 这种省掉二进制指数的形照 `gethex.c:110-112` 认，且这一整支不立 `errno`，故 `0x1p99999999` 是认下的无穷大而非「撞数值范围」）；`nan(0x…)` 载荷也已接上——它在这一支可见的只有「吃到哪」：`hexnan` 撞上右括号就把整串吃掉，一路没有右括号就把游标留在左括号上（`minix3/lib/libc/gdtoa/hexnan.c:105-118`、`:146-147`）；载荷的位样本支读不到，因为所有 NaN 都让 `denom == 0` 为假、让 `(int)` 那一步不为 0，以及本 crate 共用的 `emit` 写缝退码（C 是 `err(2, "stdout")` 退 2），账在 `todo.md` 的 `RANDOM-DENOM-LEGS` 片3 之后的收尾条）。三枚薄壳的文件读取走 L10 的 open/read/close 既有路。
 - **声明性留白**：`adventure`/`monop` 的完整游玩循环（世界状态推进与回合交互是执行层批次）、`fish` 的对手回合（要电脑玩家循环）、fortune 索引表版数据文件（现读纯文本行）。
 - **POSIX 基准**：四命令均无 POSIX 条目，行为以 `minix3/games/` 与 `minix3/games/wtf/wtf` 脚本为准绳。
