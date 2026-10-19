@@ -835,6 +835,44 @@ mod tests {
         );
     }
 
+    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
+    /// `char` 域里是 U+00C3。环那一侧本来就是 `bytes[pos] as char`（`getopt.c:79` 的
+    /// `optopt = *place++` 一次进一个字节），所以这一枚钉的是**已经是那样**的取法，
+    /// 免得将来有人把它改回按字符取；参照件 `tmp/cksum-hash-state/cksum_ref` 现量
+    /// `-é` 报单个 `303`，逐字节门在 `tests/cksum_face.rs`。
+    #[test]
+    fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
+        assert_eq!(
+            parse_cksum_args(&["-\u{e9}"]),
+            Err(CksumError::UnknownOption('\u{00c3}')),
+            "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
+        );
+        // 聚簇：`n` 合法先吃掉，报的是其后第一字节。
+        assert_eq!(
+            parse_cksum_args(&["-n\u{e9}"]),
+            Err(CksumError::UnknownOption('\u{00c3}')),
+            "-n\u{e9}"
+        );
+        // 环停在第一个坏字母上。
+        assert_eq!(
+            parse_cksum_args(&["-Z\u{e9}"]),
+            Err(CksumError::UnknownOption('Z')),
+            "-Z\u{e9}"
+        );
+        // ASCII 那一形不许被波及。取 `z`：`cksum.c:193` 的选项串是 `"a:cno:pqs:twx"`，
+        // 里面没有 `z`（本支的 `q` 反倒是合法字母，它自己那句被这枚门的第一版当过反例）。
+        assert_eq!(
+            parse_cksum_args(&["-z"]),
+            Err(CksumError::UnknownOption('z'))
+        );
+        // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
+        // `cksum: illegal argument to -a option` 再接 usage）。
+        assert_eq!(
+            parse_cksum_args(&["-a\u{e9}"]),
+            Err(CksumError::IllegalOptionValue('a'))
+        );
+    }
+
     /// getopt 的形状：聚簇、附值、`--` 后的全是操作数。旧写法把整个 token 当一个字母，
     /// `-nq`、`-o2`、`-a crc -- -f` 这几形都会错。
     #[test]

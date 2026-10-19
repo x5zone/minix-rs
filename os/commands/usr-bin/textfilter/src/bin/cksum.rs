@@ -67,13 +67,14 @@ fn run() -> ! {
         }
         Err(CksumError::UnknownOption(flag)) => {
             // libc 的那一句（`getopt.c:101-104`）是 `unknown option`，不是 `illegal option`——
-            // 后者属于 `pr` 链的 `egetopt`，同一族里不能混用。
-            support::warn(GetoptReport::UnknownOption(flag).line(prog).as_bytes());
+            // 后者属于 `pr` 链的 `egetopt`，同一族里不能混用。字母位走 `line_bytes`：
+            // `getopt.c:79` 的 `optopt = *place++` 一次进一个字节，`-é`（`c3 a9`）报的是 `c3`。
+            support::warn(&GetoptReport::UnknownOption(flag).line_bytes(prog));
             usage();
         }
         Err(CksumError::MissingValue(flag)) => {
             // 带值选项缺值：libc 的另一句（`getopt.c:132-136`），同样接 usage。
-            support::warn(GetoptReport::MissingValue(flag).line(prog).as_bytes());
+            support::warn(&GetoptReport::MissingValue(flag).line_bytes(prog));
             usage();
         }
     };

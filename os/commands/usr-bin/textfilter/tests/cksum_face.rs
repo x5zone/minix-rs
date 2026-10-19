@@ -71,6 +71,70 @@ fn an_unknown_letter_prints_the_libc_line_then_the_nine_line_usage() {
     assert_eq!(err, format!("cksum: unknown option -- Z\n{USAGE}"));
 }
 
+/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(CKSUM)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the cksum binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**。期望逐形取自参照件
+/// `tmp/cksum-hash-state/cksum_ref`（经同名软链 `tmp/cksum-414/cksum` 起 ⇒ 程序名段与本壳
+/// 一致、整条 stderr 直比；本轮先按批次四百零七那条规矩打 `-Z` 验过归属：交回
+/// `unknown option -- Z`，是 Minix 的 `getopt.c` 而不是 glibc 那句带引号的
+/// `invalid option -- 'Z'`）：`-é` 与 `-né` 都是 `cksum: unknown option -- ` + 单个 `c3` +
+/// 换行再跟那**九行** usage（`cksum.c:535-549`）、退 **1**；`-Zé` 停在 `Z`；反面的 `-aé`
+/// 里 `é` 是**值**而不是字母，走命令自己的 `illegal argument to -a option` 再接 usage
+/// （字母位是写死的 `a`，两处渲染同形）。ASCII 那几形（`-Z`、`-q`、`--x`、缺值两句）
+/// 本文件已有主人，不重复承载。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_cksum() {
+    let want: Vec<u8> = [
+        b"cksum: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-n\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form], b"a");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}"], b"a");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"cksum: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，第二个字节根本不该被读到"
+    );
+
+    let (_out, status, err) = run_bytes(&["-a\u{e9}"], b"a");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"cksum: illegal argument to -a option\n".as_slice(),
+            USAGE.as_bytes(),
+        ]
+        .concat(),
+        "带值字母把两字节整个当值收走，句子是命令自己的那一句"
+    );
+}
+
 /// 带值选项缺值是 libc 的另一句，同样接 usage；两个字母都要试（`-a` 与 `-o`）。
 #[test]
 fn a_value_taking_letter_without_its_value_prints_the_libc_line() {
