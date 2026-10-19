@@ -705,10 +705,19 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             if let Some(local) = smp.cpu_local_mut(cpu) {
                 local.fpu_owner = Some(cur_fpu);
             }
+            // SD-41/C12 修复（sysboot 脸冻结定案）：本臂经 stub 的 iretq
+            // **直返用户**——不经 switch_to_user 的「持锁移交/释放」惯例。
+            // BklSection 是不随 drop 释放的见证（smp.rs must_use 注），
+            // 用户源入口 bkl_lock_section acquire 的 BKL 若不在此显式释放
+            // 将跨 iretq 持有（BKL=me=0）：下一 int-33 的 park/resched
+            // 分支 fresh `bkl_lock()` 自旋死锁（sysboot 脸实测冻结，gdb
+            // 三抓 [BKL]=0=BSP 自持、IF=0 自旋无时钟救援）。用户期 BKL
+            // 空闲=文档语义（finish_and_restore 在 context restore 前释放
+            // ——arch_clock.c:226-233 parity，同 Signal 臂经
+            // switch_to_user 释放的净效果）。
+            crate::smp::bkl_unlock();
             // Fall through: the stub's iretq re-executes the FP instruction
-            // against the now-enabled FPU. The BKL section guard drops here
-            // (user-origin entry acquired it — the scheduling/resume path
-            // re-takes it, same as the sibling acting arms).
+            // against the now-enabled FPU.
         }
     }
 }

@@ -123,6 +123,11 @@ grep -q "SYSBOOT TX UP" "$SERIAL_LOG" || { pass=0; echo "FAIL: TX never reached 
 grep -q "SYSBOOT RX GOT" "$SERIAL_LOG" || { pass=0; echo "FAIL: RX never received the message (user receive half broken)"; }
 grep -q "SYSBOOT RX DONE" "$SERIAL_LOG" || { pass=0; echo "FAIL: RX reply never left (user sendnb half broken)"; }
 grep -q "SYSBOOT TX GOT" "$SERIAL_LOG" || { pass=0; echo "FAIL: TX never got the reply (sendrec round trip broken)"; }
+# C12 FP 交替探针：两进程异值 xmm0（42.0/7.5）经 IPC 阻塞往返后必须
+# 原样幸存——x86 懒 FPU 归属保存/恢复臂（trap_dispatch old_owner save
+# + restore）的真机验收。
+grep -q "SYSBOOT RX FP OK" "$SERIAL_LOG" || { pass=0; echo "FAIL: RX FP context did not survive the switch (C12)"; }
+grep -q "SYSBOOT TX FP OK" "$SERIAL_LOG" || { pass=0; echo "FAIL: TX FP context did not survive the switch (C12)"; }
 grep -q "SYSBOOT TX DONE" "$SERIAL_LOG" || { pass=0; echo "FAIL: exchange incomplete"; }
 
 if [ "$pass" -eq 1 ]; then
