@@ -272,9 +272,17 @@ fn run() -> ! {
             } else {
                 // C 是 `err(EXIT_FAILURE, "Cannot open `%s'", argv[0])`：程序名、**带反引号的
                 // 操作数**、`strerror` 句子三件齐备（`nl.c:244-246`），退 1、不接 usage。
-                if let Err(code) = support::read_file(f) {
-                    support::warn_line(prog, &format!("Cannot open `{f}'"), code);
-                    support::terminate(1);
+                // 成功那一侧必须把字节接进 `input`：C 是 `if (!(fp = fopen(...))) err(...)`
+                // 之后整条流水线都读这个 `fp`（`nl.c:241-252`），档名内容与标准输入走同一条
+                // 编号腿。这里以前只写 `if let Err(...)`，`Ok` 的 `Vec` 被当场丢弃，于是
+                // `nl file` 什么都不输出还退 0（批次四百一十八按参照件 `tmp/nl-417/nl_ref`
+                // 逐字节对出来的一形，登记 `NL-OPERAND-CONTENT-DROPPED`）。
+                match support::read_file(f) {
+                    Ok(bytes) => input.extend(bytes),
+                    Err(code) => {
+                        support::warn_line(prog, &format!("Cannot open `{f}'"), code);
+                        support::terminate(1);
+                    }
                 }
             }
         }

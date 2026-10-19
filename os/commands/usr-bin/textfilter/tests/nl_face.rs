@@ -217,6 +217,42 @@ fn more_than_one_operand_is_plain_usage_without_the_libc_line() {
     assert_eq!(err, USAGE);
 }
 
+/// 操作数腿：读得动的档名，其内容要进标准输出并被编号。这一枚门是批次四百一十八补的——
+/// 此前与操作数有关的两枚只钉「开不了报 `Cannot open …`」与「多于一个操作数是 usage」，
+/// **没有任何一枚断言可读档名的编号输出**，于是 `src/bin/nl.rs` 里 `read_file` 成功那一侧
+/// 的字节被丢弃这种缺陷可以静默通过（`nl file` 什么都不输出还退 0）。金样按参照件
+/// `tmp/nl-417/nl_ref` 的读法：两行各得 `     1\t`/`     2\t` 前缀，退 0 且不报案。
+/// 标准输入这里给空，输出仍有内容才算「内容确实来自档名」。
+#[test]
+fn a_readable_operand_is_numbered_into_stdout() {
+    let path = format!("/tmp/nl-face-{}-operand.txt", std::process::id());
+    std::fs::write(&path, b"alpha\nbeta\n").expect("the operand file should be writable");
+    let (out, status, err) = run(&[path.as_str()], b"");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(err, "", "正常编号不该报案");
+    assert_eq!(
+        out, "     1\talpha\n     2\tbeta\n",
+        "档名内容必须进输出：读不到内容就是操作数腿被丢弃"
+    );
+}
+
+/// 末行不带换行的档名：参照件 `tmp/nl-417/nl_ref` 打的是 `     1\tx`（**不补换行**），
+/// 本壳在这一形上与参照件不同（`NL-FINAL-LINE-ADDS-NEWLINE` 在册待修，同 `head`/`tail`
+/// 那一族），所以这枚门只钉「内容进了输出」这一件本笔修的事，末行的换行差另由登记跟踪。
+#[test]
+fn an_operand_without_a_trailing_newline_still_reaches_the_output() {
+    let path = format!("/tmp/nl-face-{}-noeol.txt", std::process::id());
+    std::fs::write(&path, b"x").expect("the operand file should be writable");
+    let (out, status, err) = run(&[path.as_str()], b"");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert!(
+        out.starts_with("     1\tx"),
+        "编号内容要来自档名，实际 {out:?}"
+    );
+}
+
 /// 读不到的操作数走 `err(3)`：程序名、**带反引号的操作数**、`strerror` 的句子三件齐备
 /// （`nl.c:244-246` 的 `err(EXIT_FAILURE, "Cannot open `%s'", argv[0])`），退 1。
 #[test]
