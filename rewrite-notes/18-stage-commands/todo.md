@@ -119,6 +119,19 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百一十（A2 切片 16：`cmp`，两半同轮第二例）：负控脚本改为手写之后，八枚一遍过、零判据自错
+
+- **这一轮干什么**：A2 第二次做「两半同轮」，选 `cmp`（环在 `src/cmp.rs:155` 也是 `for ch in arg[1..].chars()`，取法按字符；选项串 `"ls"` 两个字母都不带值）。落码三件：`src/cmp.rs`（环改 `arg[1..].bytes()` + `char::from(other)`）、`src/bin/cmp.rs`（那一处出口改 `line_bytes`）、`tests/cmp_face.rs`（面门 + `run_bytes` 夹具）。门两侧各一枚：库侧 `the_unknown_letter_is_the_first_byte_not_the_first_character`、面侧 `the_libc_line_of_a_multibyte_flag_is_one_byte_for_cmp`。整包 **1149 → 1151**（两枚，本轮没有上一笔那枚重复 `#[test]` 的噪声——**门数对账当场对平**）。进度 **16 支壳、余 12 处调用点 / 9 个源文件**。
+- **上一笔的教训直接改了做法，并被读数验证**：那轮换壳复用负控脚本，锚点/变量名/标签三样没逐条对，四轮才对齐。本轮**整份 negctl 手写**（脚本头写着这件事），锚点全部从本支源码抄、变量名只用本支真有的 `letter`/`other`/`arg`——结果**八枚一遍过、零判据自错**（1/4/15/1/54/2/46/4）。**判据被数据支持**：复用脚本省下的时间小于它制造的错判时间；换壳时宁可手写一遍锚点。
+- **`cmp` 的一枚门名共享问题顺手记下**：`an_unknown_letter_prints_the_libc_line_then_the_usage` 这枚 ASCII 门的名字在 `cmp_face`/`uniq_face`/`nl_face`/`fold_face` 四文件里逐字相同（历史遗留，比批次三百九十二那条「枚名跨壳唯一」的规矩早）。本轮新立的门都不同名，所以归因清楚；但**共享名字的既有门**要让负控清单失去分辨力——脚本里为此改成「以本支新门 + 失败总数为准，同名门只当旁证」（K6 那行旁证输出就是这么写的）。**待办一枚**：`CMP/UNIQ/NL/FOLD-ascii-gate-rename`（把四枚同名门各自改名，跨壳唯一），登记不执行，属门的命名整理不属渲染射程。
+- **A/B 二十一形全同**：`python3 tmp/cmp-410/ab.py > tmp/cmp-410/ab.log` 对 `tmp/cmp-410/cmp`（本轮配，四个真源一起链）。**SAME=21 / DIFF=0**：第四支连数据面都零分叉的壳——选项环六形、操作数判形三形、数据面十形含 `-l` 全列、`-s` 静默、两者同给的 `errx`、短档 EOF、一个与两个 `skip`、坏 `skip` 值、开不了的档名、`-` 当标准输入。另两形非法 UTF-8 仍是射程②在册残差（`ff`/`80` 对 `ef`，退码两侧同为 **2**——`cmp` 的 `ERR_EXIT`，不是 1）。
+- **读数**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1151 passed / 0 failed**（68 段）；容器权威门同读数、退码 0（跑前核 `git status --porcelain` 只剩本轮三件）；三架构全退 0、`^error` 计数 0；clippy 整包 **154** 与基线同数——**基线是把本轮改动 `git stash` 后同题重跑量出来的，也是 154**，所以落在 `src/cmp.rs:78`（`write!` 的格式串以换行结尾）与 `src/bin/cmp.rs:261`（test 模块之后还有条目）那两条都在既有构造上、只是行号偏移，非新增；`rustfmt --edition 2024` 只在 `src/bin_support.rs` 报存量，触及三件零漂移。
+- **负控八枚全咬住**（`python3 tmp/cmp-410/negctl.py`，日志 `tmp/cmp-410/negctl.log`）：K1 只撤渲染 ⇒ 咬 1（面门）；K2 只撤取法 ⇒ 咬 4（面门 + 库门 + 两枚旁证）；K3 共件仍按 UTF-8 写 ⇒ 咬 15（**十四支已迁壳的门 + 共件门一次全红**）；K4 无条件取低字节 ⇒ 咬 1；K5 丢行尾换行 ⇒ 咬 54；K6 libc 行后不接 usage ⇒ 咬 2；K7 措辞漂到 glibc ⇒ 咬 46；K8 取法取错字节 ⇒ 咬 4。逐枚编得过、期望门全在红名清单里、先还原再读回比 md5、复跑 0 失败。K1/K2 这对就是上一笔立的「牙长在哪儿注入打在哪儿」在本支的复现：**渲染与取法分开注入，两半各自有牙**。
+- **登记与闭合**：`cmp` 的字母位失真**两半全闭**；新登记门的命名整理 `CMP/UNIQ/NL/FOLD-ascii-gate-rename`（未动）。板上 A2 记到**切片 16**。
+- **三件套**：核实命令与读数——`python3 tmp/cmp-410/ab.py`（21 形全同 + 两形射程②残差）、`python3 tmp/cmp-410/negctl.py`（八枚各咬住 1/4/15/1/54/2/46/4、一遍过、复跑 0 失败）、参照件 `tmp/cmp-410/cmp_ref`、宿主与容器各 **1151 / 0 / 68**、三架构全退 0、`clippy` 154 与 stash 后基线同数、`rustfmt --edition 2024` 触及件零漂移、剩余调用点现量 **12 处 / 9 个源文件**；核实日 `2026-10-19`；基线快照 `fdad2cd10`。
+- **下一轮首动作**：`bash tools/claim.sh claim GETOPT-REPORT-BYTE-LETTER qoder`（切片 17：`sort`——现查 `src/sort.rs:336` 是 `while let Some(flag) = chars.next()`，两半同轮的第三例，环改按字节 + 出口改 `line_bytes`，两侧各立一枚门；负控照本笔手写，不复用脚本。`unexpand`/`split`/`cksum` 同型在后，`nl`/`head`/`tail` 逐个现查，`pr` 走自带 `egetopt` 单列，`seq` 与射程②同轮）。
+
+
 ## 批次四百零九（A2 切片 15：`comm`，取法半 + 渲染半同轮）：第一支「两半一起做」的壳；负控脚本自己错了四轮，四轮都归因到脚本而不是门
 
 - **这一轮干什么**：A2 从这一支起进入「取法也按字符」的那一批。`comm` 的环在 `src/comm.rs` 里写的是 `for ch in arg[1..].chars()`，把 `é` 的一个字符当成一枚字母交回，所以只换渲染会留下「字母是 U+00E9 → 打 `e9`」这种半对半错。落码三件：`src/comm.rs`（环改 `for byte in arg[1..].bytes()`，报错时 `char::from(other)`——ASCII 四个字母 `1`/`2`/`3`/`f` 的行为一字不变，非 ASCII 从「一个字符」改成「它的第一字节」）、`src/bin/comm.rs`（那一处出口改 `line_bytes`）、`tests/comm_face.rs`（面门 + `run_bytes` 夹具）。门两侧各一枚：**库侧 +1** `the_unknown_letter_is_the_first_byte_not_the_first_character`（钉 `parse_comm_args` 交回 U+00C3）、**面侧 +1** `the_libc_line_of_a_multibyte_flag_is_one_byte_after_the_cluster`（钉整条缝）。整包 **1147 → 1149**。进度 **15 支壳、余 13 处调用点 / 10 个源文件**。
