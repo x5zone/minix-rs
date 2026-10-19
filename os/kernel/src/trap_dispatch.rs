@@ -1292,6 +1292,39 @@ const RISCV64_CAUSE_ILLEGAL_INSN: u64 = 2;
 pub(crate) fn riscv64_illegal_insn_is_fpu_trap(entry_sstatus: u64) -> bool {
     entry_sstatus & (0b11 << 13) == 0
 }
+/// Misaligned fetch (scause=0)。C i386: "Alignment check" → SIGBUS。
+#[cfg(any(target_arch = "riscv64", test))]
+const RISCV64_CAUSE_MISALIGNED_FETCH: u64 = 0;
+/// Breakpoint (scause=3)。C i386: "Debug exception" → SIGTRAP。
+#[cfg(any(target_arch = "riscv64", test))]
+const RISCV64_CAUSE_BREAKPOINT: u64 = 3;
+/// Misaligned load (scause=4) / store (scause=6)。C: "Alignment check" → SIGBUS。
+#[cfg(any(target_arch = "riscv64", test))]
+const RISCV64_CAUSE_MISALIGNED_LOAD: u64 = 4;
+#[cfg(any(target_arch = "riscv64", test))]
+const RISCV64_CAUSE_MISALIGNED_STORE: u64 = 6;
+
+/// SD-41（C3 信号腿）：riscv64 用户同步异常 → 信号映射（纯函数，宿主
+/// 可测，先例 `riscv64_pf_error_code`）。C 真源=exception.c 异常表的用户
+/// 源 parity：user 起源即 `cause_sig(proc_nr(saved_proc), ep->signum)`
+/// （exception.c:275），非内核 panic。None = 非用户可投递面（管理态
+/// 成因/保留编码），保持诊断 panic 车道。页故障三因与 FP 门控（scause=2
+/// 且 FS=Off）在更早的臂已处理，不进本映射。
+#[cfg(any(target_arch = "riscv64", test))]
+fn riscv64_sync_fault_signal(scause: u64) -> Option<u32> {
+    use crate::syscall_signal::{SIGBUS, SIGILL, SIGTRAP};
+    match scause {
+        // Misaligned fetch/load/store → C "Alignment check" → SIGBUS。
+        RISCV64_CAUSE_MISALIGNED_FETCH
+        | RISCV64_CAUSE_MISALIGNED_LOAD
+        | RISCV64_CAUSE_MISALIGNED_STORE => Some(SIGBUS),
+        // 真非法指令（FS≠Off 的门内 FP 已在更早臂接管）→ C "Invalid opcode" → SIGILL。
+        RISCV64_CAUSE_ILLEGAL_INSN => Some(SIGILL),
+        // Breakpoint → C "Debug exception" → SIGTRAP。
+        RISCV64_CAUSE_BREAKPOINT => Some(SIGTRAP),
+        _ => None,
+    }
+}
 #[cfg(any(target_arch = "riscv64", test))]
 const RISCV64_CAUSE_LOAD_PF: u64 = 13;
 #[cfg(any(target_arch = "riscv64", test))]
@@ -1433,9 +1466,45 @@ pub unsafe extern "C" fn riscv64_user_body(
     {
         return riscv64_fpu_trap_body(frame);
     }
-    // Remaining synchronous user faults (misalign, illegal, breakpoint…)
-    // land on the diagnostics panic — the acting SIGSEGV/SIGILL arms
-    // arrive with the next three-arch wave, same registered gap.
+    // SD-41（C3 信号腿）：剩余用户同步异常的 acting 臂（C:
+    // exception.c:275 `cause_sig(proc_nr(saved_proc), ep->signum)` 用户源
+    // parity——此前的 registered gap「acting SIGSEGV/SIGILL arms arrive
+    // with the next three-arch wave」本笔落地）。形状镜像 aarch64 Segv
+    // 臂（本文件 aarch64 页故障腿）：BKL 获取 → 存帧到 cpu_context +
+    // FullContext（信号管理器 SYS_SIGSEND 在其上建 handler 帧）→
+    // cause_signal → 解锁 → PARK_RESCHEDULE（cause_signal 置 RTS_SIGNALED
+    // 已出队，eret 回用户会活锁同一陷阱；x86 孪生腿落在 scheduler_loop）。
+    // None 映射（管理态成因/保留编码）保持诊断 panic 车道。
+    if let Some(sig) = riscv64_sync_fault_signal(scause) {
+        use minix_arch::riscv64::trap_stub::PARK_RESCHEDULE;
+        let ipc_bkl = crate::smp::bkl_lock_or_inherit();
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        let cpu = crate::current_cpu_id();
+        let cur_nr = smp.cpu_local(cpu).and_then(|l| l.proc_ptr).unwrap_or_else(|| {
+            panic!(
+                "riscv64 user sync fault before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+        let table = unsafe { crate::proc_table_boot_unchecked() };
+        {
+            let proc = table
+                .get_mut(cur_nr)
+                .unwrap_or_else(|| panic!("riscv64 sync fault from invalid proc nr {cur_nr:?}"));
+            minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+            proc.trap_style = TrapStyle::FullContext;
+        }
+        crate::syscall_signal::cause_signal(
+            cur_nr,
+            sig,
+            table,
+            unsafe { crate::priv_table_boot_unchecked() },
+        );
+        if ipc_bkl {
+            crate::smp::bkl_unlock();
+        }
+        return PARK_RESCHEDULE;
+    }
     riscv64_diag_panic(frame, scause, "user-leg trap")
 }
 
@@ -2433,7 +2502,59 @@ pub unsafe extern "C" fn aarch64_user_body(
     if ec == EC_SIMD_FP_LOWER_EL {
         return aarch64_fpu_trap_body();
     }
+    // SD-41（C3 信号腿）：剩余用户同步 EC 的 acting 臂（C:
+    // exception.c:275 用户源 cause_sig parity）。形状镜像本腿 Segv 臂。
+    // EC=0x2f（SError）等异步/硬件级保持诊断 panic 车道（C: "Machine
+    // check" → SIGBUS 的 i386 语义在本项目的旧取证里归内核停止）。
+    if let Some(sig) = aarch64_sync_ec_signal(ec) {
+        use minix_arch::arm64::trap_stub::PARK_RESCHEDULE;
+        let ipc_bkl = crate::smp::bkl_lock_or_inherit();
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        let cpu = crate::current_cpu_id();
+        let cur_nr = smp.cpu_local(cpu).and_then(|l| l.proc_ptr).unwrap_or_else(|| {
+            panic!(
+                "aarch64 user sync fault before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+        let table = unsafe { crate::proc_table_boot_unchecked() };
+        {
+            let proc = table
+                .get_mut(cur_nr)
+                .unwrap_or_else(|| panic!("aarch64 sync fault from invalid proc nr {cur_nr:?}"));
+            minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+            proc.trap_style = TrapStyle::FullContext;
+        }
+        crate::syscall_signal::cause_signal(
+            cur_nr,
+            sig,
+            table,
+            unsafe { crate::priv_table_boot_unchecked() },
+        );
+        if ipc_bkl {
+            crate::smp::bkl_unlock();
+        }
+        return PARK_RESCHEDULE;
+    }
     aarch64_diag_panic(frame, "user sync exception");
+}
+
+/// SD-41（C3 信号腿）：aarch64 用户同步 EC → 信号映射（纯函数，宿主可
+/// 测）。C 真源=exception.c 异常表用户源 parity：EC 0x00（Unknown）/
+/// 0x0e（Illegal execution state）→ "Invalid opcode" → SIGILL；0x26
+/// （SP alignment）/0x27（PC alignment）→ "Alignment check" → SIGBUS；
+/// 0x3c（BRK）→ "Debug exception" → SIGTRAP。None = 保持诊断 panic
+/// 车道（SError 0x2f、管理态/保留 EC）。页故障（0x20/0x24）、FP 门控
+/// （0x07）、SVC（0x15）在更早臂处理，不进本映射。
+#[cfg(any(target_arch = "aarch64", test))]
+fn aarch64_sync_ec_signal(ec: u64) -> Option<u32> {
+    use crate::syscall_signal::{SIGBUS, SIGILL, SIGTRAP};
+    match ec {
+        0x00 | 0x0e => Some(SIGILL),
+        0x26 | 0x27 => Some(SIGBUS),
+        0x3c => Some(SIGTRAP),
+        _ => None,
+    }
 }
 
 /// How a lower-EL synchronous abort resolved through
@@ -2563,6 +2684,45 @@ mod abort_classification_tests {
         assert!(!riscv64_illegal_insn_is_fpu_trap(
             (0b11 << 13) | 0x8000000000000000
         ));
+    }
+
+    #[test]
+    fn riscv64_sync_fault_signal_maps_c_exception_table() {
+        // SD-41（C3 信号腿）：映射对 C exception.c 异常表用户源 parity。
+        use crate::syscall_signal::{SIGBUS, SIGILL, SIGTRAP};
+        // Misaligned fetch/load/store → SIGBUS（C "Alignment check"）。
+        assert_eq!(riscv64_sync_fault_signal(0), Some(SIGBUS));
+        assert_eq!(riscv64_sync_fault_signal(4), Some(SIGBUS));
+        assert_eq!(riscv64_sync_fault_signal(6), Some(SIGBUS));
+        // 真非法指令 → SIGILL（C "Invalid opcode"）；FS=Off 门控 FP 陷阱
+        // 在更早臂接管，不经本映射。
+        assert_eq!(riscv64_sync_fault_signal(2), Some(SIGILL));
+        // Breakpoint → SIGTRAP（C "Debug exception"）。
+        assert_eq!(riscv64_sync_fault_signal(3), Some(SIGTRAP));
+        // 页故障三因在更早臂走 VM 前转；管理态成因/保留编码 → None（保
+        // 持诊断 panic 车道）。
+        for handled in [12u64, 13, 15, 8] {
+            assert_eq!(riscv64_sync_fault_signal(handled), None, "scause {handled}");
+        }
+        assert_eq!(riscv64_sync_fault_signal(16), None);
+        assert_eq!(riscv64_sync_fault_signal(u64::MAX), None);
+    }
+
+    #[test]
+    fn aarch64_sync_ec_signal_maps_c_exception_table() {
+        use crate::syscall_signal::{SIGBUS, SIGILL, SIGTRAP};
+        // EC 0x00（Unknown）/0x0e（Illegal execution state）→ SIGILL。
+        assert_eq!(aarch64_sync_ec_signal(0x00), Some(SIGILL));
+        assert_eq!(aarch64_sync_ec_signal(0x0e), Some(SIGILL));
+        // EC 0x26（SP alignment）/0x27（PC alignment）→ SIGBUS。
+        assert_eq!(aarch64_sync_ec_signal(0x26), Some(SIGBUS));
+        assert_eq!(aarch64_sync_ec_signal(0x27), Some(SIGBUS));
+        // EC 0x3c（BRK）→ SIGTRAP。
+        assert_eq!(aarch64_sync_ec_signal(0x3c), Some(SIGTRAP));
+        // 已有专臂的 EC 与 SError/保留编码 → None。
+        for handled in [0x15u64, 0x07, 0x20, 0x24, 0x2f, 0x01] {
+            assert_eq!(aarch64_sync_ec_signal(handled), None, "ec {handled:#x}");
+        }
     }
 
     #[test]
