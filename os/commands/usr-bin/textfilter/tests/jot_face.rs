@@ -42,6 +42,63 @@ fn run(args: &[&str]) -> (String, i32, String) {
     )
 }
 
+/// 与 `run` 同一条命令缝，但**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3` 渲染成三字节
+/// U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法（`rev`/`paste` 那几支同此）。
+fn run_bytes(args: &[&str]) -> (Vec<u8>, i32, Vec<u8>) {
+    let output = Command::new(JOT)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the jot binary should be runnable");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/jot-317/jot_ref` 现量 `-é` 与 `-cé`
+/// 都是 `jot: unknown option -- ` + `c3` + 换行，再跟 usage、退 1（`c` 是 `"b:cnp:rs:w:"` 里
+/// 合法且不带值的字母，聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`，`jot.c:151-152` 拿到
+/// `'?'` 就 `usage()`，第二个字母轮不到）。`-bé 3` 是这一族的反面：`b` 带值，`é` 整个被当值
+/// 收走，退 0 把那枚词按 `reps` 重复三行——换渲染不许碰取值那半。ASCII 的 `-Z` 与聚簇只报第一枚两形本文件
+/// 各已有主人（`an_unknown_letter_prints_the_libc_line_then_the_usage`、
+/// `a_cluster_reports_only_its_first_bad_letter`），这里不重复承载。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_a_single_raw_byte() {
+    let multibyte: Vec<u8> = [
+        b"jot: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-c\u{e9}"] {
+        let (out, code, err) = run_bytes(&[form, "3"]);
+        assert_eq!(out, Vec::new(), "{form} 的报文只走 stderr");
+        assert_eq!(code, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, multibyte, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_, code, err) = run_bytes(&["-Z\u{e9}", "3"]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        [b"jot: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，`é` 根本不该被读到"
+    );
+
+    let (out, code, err) = run_bytes(&["-b\u{e9}", "3"]);
+    // 参照件 `jot_ref -bé 3` 现量三行 `c3 a9 0a`（`-b` 把那枚词重复 reps 次），退 0 且不写 stderr。
+    assert_eq!(
+        (out.as_slice(), code),
+        ("\u{e9}\n\u{e9}\n\u{e9}\n".as_bytes(), 0),
+        "{err:?}"
+    );
+    assert_eq!(err, Vec::new(), "`-b` 的值不是字母位，多字节字符照原样出去");
+}
+
 /// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`jot.c:151-152`）。旧写法少了 libc 那一行。
 #[test]
 fn an_unknown_letter_prints_the_libc_line_then_the_usage() {

@@ -40,10 +40,15 @@ fn run() -> ! {
     let mut seed_word: Option<String> = None;
     // 选项环（`jot.c:150` 的 `"b:cnp:rs:w:"`）。libc 那两行与 `usage()` 是**两行**，
     // 而 `-p` 的 `errx` 只有自己那一行——两支不是一支的详略版。
+    //
+    // 字母位走 `line_bytes`：`src/jot.rs` 的取法本就按字节（`char::from(bytes[pos])`、
+    // 缺值那一支是 `ch as char`），非 ASCII 字母经 `line` 会被 UTF-8 编成两字节。参照件
+    // `tmp/jot-317/jot_ref` 现量 `-é`、`-cé` 都是 `jot: unknown option -- ` + 单个 `c3` +
+    // 换行，机制在 `getopt.c:79` 的 `optopt = *place++` 与 `:103` 的 `%c`。
     let (mut options, operands) = match parse_jot_args(&args[1..]) {
         Ok(parsed) => (parsed.options, parsed.operands),
         Err(JotArgError::Getopt(report)) => {
-            support::warn(report.line(prog).as_bytes());
+            support::warn(&report.line_bytes(prog));
             usage(prog);
         }
         Err(JotArgError::BadPrecision) => {

@@ -8,7 +8,7 @@
 //! 逐形量出的形状是：
 //! ① 环在**第一个**坏字母处退出（`case '?': default: usage();` 就坐在 `switch` 里），
 //!    所以 `paste -sZ` 与 `paste -ZQ` 都只有一行 libc 再加一行 usage，退 1——这与同族
-//!    `seq`/`jot`（BADCH 之后环继续扫、报文累加）正相反；
+//!    `seq`（BADCH 之后环继续扫、报文累加）正相反；`jot` 与本支同形，参照件 `-ZQ` 只报 `Z`；
 //! ② 错误的**先后**就是扫描的先后：`paste -d '' -Z` 报「没有分隔符」（`tr()` 在 `case 'd'`
 //!    里就地跑），`paste -Z -d ''` 报集外字母；
 //! ③ usage 那行的程序名写死在串里（`paste.c:231`），libc 那行跟着 `getprogname()`；

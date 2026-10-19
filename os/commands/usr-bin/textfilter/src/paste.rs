@@ -4,7 +4,8 @@
 //! `paste [-s] [-d list] file ...`. 环写作 `paste.c:70` 的
 //! `while ((ch = getopt(argc, argv, "d:s")) != -1)`，而 `paste.c:80-82` 的
 //! `case '?': default: usage();` 是**在环里直接退出**的——这一点让它与同族的
-//! `seq`/`jot`（`errflg++` 之后环继续扫）正相反：本支的环**只可能累积一行** libc 报文。
+//! `seq`（`errflg++` 之后环继续扫）正相反：本支的环**只可能累积一行** libc 报文——`jot` 也在这
+//! 一列里（`jot.c:150-152` 是 `default: usage();`，参照件现量 `-ZQ` 与 `-Z -Q` 都只报 `Z`）。
 //!
 //! 分隔符表由 `tr()`（`paste.c:199-226`）就地转换并计数：`\n`、`\t`、`\0` 三个转义，
 //! **认不出的转义把反斜杠丢掉**（`default: *arg = ch;`，与 `seq` 的 `unescape` 相反），
