@@ -540,10 +540,11 @@ fn tail_stream(input: &[u8], style: TailStyle) {
             // Size the output by what the input actually offered, never by the
             // requested count: `tail -n 1000000` on ten lines holds ten.
             let want = (window.seen() as usize).min(off);
-            let mut survivors: Vec<&str> = vec![""; want];
+            let mut survivors: Vec<minix_textfilter::window::Line> =
+                vec![minix_textfilter::window::Line::new(""); want];
             let drained = window.drain(&mut survivors);
             for line in &survivors[..drained] {
-                emit_line(line);
+                emit_line(*line);
             }
         }
         TailStyle::ReverseAll => {
@@ -566,9 +567,11 @@ fn tail_stream(input: &[u8], style: TailStyle) {
     }
 }
 
-fn emit_line(line: &str) {
-    let mut out = line.as_bytes().to_vec();
-    out.push(b'\n');
+fn emit_line(line: minix_textfilter::window::Line<'_>) {
+    let mut out = line.text().as_bytes().to_vec();
+    // C `reverse.c:133-144` 记录的行区间本来就含那枚换行，末行没有就不补；`tail -r`
+    // 会把没换行的末行翻到输出的**最前面**，所以这件事只能记在行上，不能问行号。
+    out.extend_from_slice(line.eol());
     support::emit(&out);
 }
 
@@ -576,8 +579,11 @@ fn emit_line(line: &str) {
 /// `off` lines then reverses them (`reverse.c:138-141` stops the backward walk
 /// after `off` lines); `REVERSE` (`None`) reverses every line. `Some(0)` selects
 /// no line at all, matching C's early return.
-fn reversed_lines<'a>(lines: &[&'a str], take: Option<usize>) -> Vec<&'a str> {
-    let selected: &[&'a str] = match take {
+fn reversed_lines<'a>(
+    lines: &[minix_textfilter::window::Line<'a>],
+    take: Option<usize>,
+) -> Vec<minix_textfilter::window::Line<'a>> {
+    let selected: &[minix_textfilter::window::Line<'a>] = match take {
         Some(off) => &lines[lines.len().saturating_sub(off)..],
         None => lines,
     };
@@ -588,7 +594,7 @@ fn reversed_lines<'a>(lines: &[&'a str], take: Option<usize>) -> Vec<&'a str> {
 /// trailing `off`-byte window, printed bottom-up. The window can begin mid-line;
 /// r_reg still emits that leading fragment (its leftover `WR`), which is
 /// precisely what a byte-window line split yields, so the reverse is exact.
-fn reverse_bytes(input: &[u8], off: usize) -> Vec<&str> {
+fn reverse_bytes(input: &[u8], off: usize) -> Vec<minix_textfilter::window::Line<'_>> {
     let window = last_bytes_of(input, off);
     let lines = support::lines_of(window);
     reversed_lines(&lines, None)
@@ -685,6 +691,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use minix_textfilter::window::Line;
     use super::{bytes_after_lines, bytes_from, last_bytes_of, reverse_bytes, reversed_lines};
 
     #[test]
@@ -746,23 +753,28 @@ mod tests {
         assert_eq!(bytes_after_lines(b"only\n", 5), b"");
     }
 
+    /// 这些单测比的是「哪些行、什么顺序」；末行换行状态由面门逐字节钉，不在这里重复承载。
+    fn texts<'a>(lines: &[minix_textfilter::window::Line<'a>]) -> Vec<&'a str> {
+        lines.iter().map(|line| line.text()).collect()
+    }
+
     #[test]
     fn reversed_lines_all_reverses_every_line() {
-        let lines = ["1", "2", "3"];
-        assert_eq!(reversed_lines(&lines, None), ["3", "2", "1"]);
+        let lines = [Line::new("1"), Line::new("2"), Line::new("3")];
+        assert_eq!(texts(&reversed_lines(&lines, None)), ["3", "2", "1"]);
     }
 
     #[test]
     fn reversed_lines_last_n_reversed() {
         // -r -n 2 on [1,2,3,4] -> last 2 (3,4) reversed -> 4,3.
-        let lines = ["1", "2", "3", "4"];
-        assert_eq!(reversed_lines(&lines, Some(2)), ["4", "3"]);
+        let lines = [Line::new("1"), Line::new("2"), Line::new("3"), Line::new("4")];
+        assert_eq!(texts(&reversed_lines(&lines, Some(2))), ["4", "3"]);
     }
 
     #[test]
     fn reversed_lines_count_exceeding_input_is_all() {
-        let lines = ["a", "b"];
-        assert_eq!(reversed_lines(&lines, Some(5)), ["b", "a"]);
+        let lines = [Line::new("a"), Line::new("b")];
+        assert_eq!(texts(&reversed_lines(&lines, Some(5))), ["b", "a"]);
     }
 
     #[test]
@@ -770,7 +782,7 @@ mod tests {
         // C `reverse.c:79-80`: a non-`REVERSE` style with `off == 0` returns
         // before printing, so `tail -r -n +1` prints nothing rather than the
         // whole file.
-        let lines = ["a", "b"];
+        let lines = [Line::new("a"), Line::new("b")];
         assert!(reversed_lines(&lines, Some(0)).is_empty());
     }
 
@@ -778,13 +790,13 @@ mod tests {
     fn reverse_bytes_reverses_lines_of_trailing_window() {
         // -r -c on "aaa\nbbb\nccc\n": last 8 bytes = "bbb\nccc\n" -> ccc,bbb.
         let input = b"aaa\nbbb\nccc\n";
-        assert_eq!(reverse_bytes(input, 8), ["ccc", "bbb"]);
+        assert_eq!(texts(&reverse_bytes(input, 8)), ["ccc", "bbb"]);
         // window starts mid-line (last 7 = "bb\nccc\n"); r_reg emits the leading
         // fragment too, so "bb" survives as its own line.
-        assert_eq!(reverse_bytes(input, 7), ["ccc", "bb"]);
+        assert_eq!(texts(&reverse_bytes(input, 7)), ["ccc", "bb"]);
         // byte offset past the input reverses the whole file's lines.
-        assert_eq!(reverse_bytes(input, 99), ["ccc", "bbb", "aaa"]);
+        assert_eq!(texts(&reverse_bytes(input, 99)), ["ccc", "bbb", "aaa"]);
         // -r -c +1 folds to RBYTES with off 0, whose empty window holds no line.
-        assert_eq!(reverse_bytes(input, 0), Vec::<&str>::new());
+        assert!(reverse_bytes(input, 0).is_empty());
     }
 }

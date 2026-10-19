@@ -17,20 +17,84 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// 一行：内容加上它在输入里到底有没有那枚换行。
+///
+/// C 的行腿把串尾的换行连同内容一起交回，从不替输入补：`nl.c:288` 的 `fgets` 连着换行
+/// 一起读进缓冲、`:340` 的 `printf("%s%s", sep, buffer)` 原样打出；`head.c:169-172` 干脆
+/// 逐字符 `getc`/`putchar` 搬运；`reverse.c:133-144` 记录的行区间也含那枚换行。所以
+/// 「末行没有换行」是**输入的属性**，不是程序要填的空。
+///
+/// 中间行一定带着换行，只有输入的最后一行可能没有。把这件事做成一行数据之后，取法侧
+/// （取列、比较、计数）只看 [`Line::text`]，写出侧只看 [`Line::eol`]，谁都不必再问
+/// 「我现在写的这行是不是输入的末行」——`tail -r` 会把末行翻到输出的最前面，靠行号问
+/// 这句话正好会问错。参照件现量读数（`tmp/head-415`、`tmp/tail-416`、`tmp/nl-417`、
+/// `tmp/uniq-408`）与两个例外（`cut`/`rev` 在 C 里**确实**归一化补换行）见 18 篇批次四百二十三。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Line<'a> {
+    text: &'a str,
+    terminated: bool,
+}
+
+impl<'a> Line<'a> {
+    /// 内容（不含换行）加上「输入里有那枚换行」。
+    pub fn new(text: &'a str) -> Line<'a> {
+        Line {
+            text,
+            terminated: true,
+        }
+    }
+
+    /// 按输入原样交回一行：末行没有换行时 `terminated` 为假。
+    pub fn raw(text: &'a str, terminated: bool) -> Line<'a> {
+        Line { text, terminated }
+    }
+
+    /// 行的内容。
+    pub fn text(&self) -> &'a str {
+        self.text
+    }
+    /// 写出这一行时该跟的字节：输入里有就原样交回，没有就**不造**。
+    pub fn eol(&self) -> &'static [u8] {
+        if self.terminated {
+            b"\n"
+        } else {
+            b""
+        }
+    }
+    /// 这一行在输入里是否带着换行。
+    pub fn terminated(&self) -> bool {
+        self.terminated
+    }
+}
+
+impl<'a> From<&'a str> for Line<'a> {
+    /// 借一个字符串当「带着换行的行」：测试与只会造内容的调用方走这条。
+    fn from(text: &'a str) -> Line<'a> {
+        Line::new(text)
+    }
+}
+
+/// 输入的末行在输入里有没有那枚换行——一行判据。按字节自己切行的腿（`nl` 的编号腿要容忍
+/// 非 UTF-8，不走 [`Line`]）用它，`lines_of` 也用它给末行定 `terminated`，两边同源于此。
+/// 空输入没有行，交回 `true`（补与不补都走不到任何一行）。
+pub fn final_line_terminated(input: &[u8]) -> bool {
+    input.is_empty() || input.ends_with(b"\n")
+}
+
 /// One line selection strategy: feed lines in order, drain survivors.
 pub trait LineWindow<'a> {
     /// Offer one line (1 based number for diagnostics); survivors stay
     /// inside the window.
-    fn push(&mut self, line: &'a str);
+    fn push(&mut self, line: Line<'a>);
     /// Survivors in original order; call once after the last push.
-    fn drain(&mut self, out: &mut [&'a str]) -> usize;
+    fn drain(&mut self, out: &mut [Line<'a>]) -> usize;
     /// How many lines were offered in total.
     fn seen(&self) -> u64;
 }
 
 /// Keep the first N lines (`head -n`).
 pub struct HeadWindow<'a> {
-    lines: Vec<&'a str>,
+    lines: Vec<Line<'a>>,
     kept: usize,
     limit: usize,
     seen: u64,
@@ -54,7 +118,7 @@ impl<'a> HeadWindow<'a> {
 }
 
 impl<'a> LineWindow<'a> for HeadWindow<'a> {
-    fn push(&mut self, line: &'a str) {
+    fn push(&mut self, line: Line<'a>) {
         self.seen += 1;
         if self.kept < self.limit {
             self.lines.push(line);
@@ -62,7 +126,7 @@ impl<'a> LineWindow<'a> for HeadWindow<'a> {
         }
     }
 
-    fn drain(&mut self, out: &mut [&'a str]) -> usize {
+    fn drain(&mut self, out: &mut [Line<'a>]) -> usize {
         let count = self.kept.min(out.len());
         out[..count].copy_from_slice(&self.lines[..count]);
         count
@@ -75,7 +139,7 @@ impl<'a> LineWindow<'a> for HeadWindow<'a> {
 
 /// Keep the last N lines (`tail -n`): a ring holding the most recent N.
 pub struct TailWindow<'a> {
-    ring: Vec<&'a str>,
+    ring: Vec<Line<'a>>,
     limit: usize,
     seen: u64,
 }
@@ -97,7 +161,7 @@ impl<'a> TailWindow<'a> {
 }
 
 impl<'a> LineWindow<'a> for TailWindow<'a> {
-    fn push(&mut self, line: &'a str) {
+    fn push(&mut self, line: Line<'a>) {
         // Fill before wrapping, so a count larger than the input costs the
         // input's size and not the count.
         if self.ring.len() < self.limit {
@@ -108,7 +172,7 @@ impl<'a> LineWindow<'a> for TailWindow<'a> {
         self.seen += 1;
     }
 
-    fn drain(&mut self, out: &mut [&'a str]) -> usize {
+    fn drain(&mut self, out: &mut [Line<'a>]) -> usize {
         let kept = (self.seen as usize).min(self.limit).min(out.len());
         if kept == 0 {
             return 0;
@@ -715,14 +779,19 @@ pub fn reopen_needed(opened: &StatIdentity, current: &StatIdentity) -> bool {
 mod tests {
     use super::*;
 
-    fn feed<'a, W: LineWindow<'a>>(window: &mut W, lines: &[&'a str]) -> [&'a str; 8] {
+    fn feed<'a, W: LineWindow<'a>>(window: &mut W, lines: &[&'a str]) -> [Line<'a>; 8] {
         for line in lines {
-            window.push(line);
+            window.push(Line::new(line));
         }
-        let mut out: [&'a str; 8] = [""; 8];
+        let mut out: [Line<'a>; 8] = [Line::new(""); 8];
         let count = window.drain(&mut out);
         assert!(count <= 8);
         out
+    }
+
+    /// 比内容时只看 `text`——终止状态由另两枚门专门钉，不在这里重复承载。
+    fn texts<'a>(lines: &[Line<'a>]) -> Vec<&'a str> {
+        lines.iter().map(|line| line.text()).collect()
     }
 
     /// 换档比较的四个字段与「不问 fflag」的分工（对位 `forward.c:255` 与 `:257-260`）。
@@ -765,7 +834,7 @@ mod tests {
     fn test_head_keeps_first() {
         let mut window = HeadWindow::new(2).unwrap();
         let out = feed(&mut window, &["a", "b", "c"]);
-        assert_eq!(&out[..2], &["a", "b"]);
+        assert_eq!(texts(&out[..2]), ["a", "b"]);
         assert_eq!(window.seen(), 3);
     }
 
@@ -773,7 +842,7 @@ mod tests {
     fn test_tail_keeps_last() {
         let mut window = TailWindow::new(2).unwrap();
         let out = feed(&mut window, &["a", "b", "c", "d"]);
-        assert_eq!(&out[..2], &["c", "d"]);
+        assert_eq!(texts(&out[..2]), ["c", "d"]);
         assert_eq!(window.seen(), 4);
     }
 
@@ -781,7 +850,7 @@ mod tests {
     fn test_tail_short_input() {
         let mut window = TailWindow::new(5).unwrap();
         let out = feed(&mut window, &["a", "b"]);
-        assert_eq!(&out[..2], &["a", "b"]);
+        assert_eq!(texts(&out[..2]), ["a", "b"]);
     }
 
     #[test]
@@ -800,12 +869,12 @@ mod tests {
         assert!(HeadWindow::new(33).is_ok());
         let mut tail = TailWindow::new(1000).unwrap();
         for line in ["a", "b"] {
-            tail.push(line);
+            tail.push(Line::new(line));
         }
         // A count far above the input yields the whole input, in order.
-        let mut out: [&str; 2] = ["", ""];
+        let mut out: [Line; 2] = [Line::new(""); 2];
         assert_eq!(tail.drain(&mut out), 2);
-        assert_eq!(out, ["a", "b"]);
+        assert_eq!(texts(&out), ["a", "b"]);
     }
 
     #[test]
@@ -815,15 +884,15 @@ mod tests {
         {
             let windows: [&mut dyn LineWindow<'_>; 2] = [&mut head, &mut tail];
             for window in windows {
-                window.push("x");
-                window.push("y");
+                window.push(Line::new("x"));
+                window.push(Line::new("y"));
             }
         }
-        let mut out = [""; 2];
+        let mut out = [Line::new(""); 2];
         assert_eq!(head.drain(&mut out), 1);
-        assert_eq!(out[0], "x");
+        assert_eq!(out[0].text(), "x");
         assert_eq!(tail.drain(&mut out), 1);
-        assert_eq!(out[0], "y");
+        assert_eq!(out[0].text(), "y");
     }
 
     fn operands(words: &[&str]) -> Vec<String> {

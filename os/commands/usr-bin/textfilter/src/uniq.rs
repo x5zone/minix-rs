@@ -24,6 +24,7 @@
 //! without buffering.
 
 use crate::TextError;
+use crate::window::Line;
 
 /// C `uniq`'s three flag variables (`cflag`, `dflag`, `uflag`), kept separate
 /// because C composes them in `show()` rather than collapsing them into one
@@ -53,8 +54,10 @@ impl UniqFlags {
 /// One completed run handed to the reporter: the line plus its count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Run<'a> {
-    /// The repeated line.
-    pub line: &'a str,
+    /// The repeated line（内容加它在输入里的那枚换行——C `uniq` 印的是**一个 run 的
+    /// 第一行**，而只有输入的末行可能没有换行，所以这个状态必须跟着行走：
+    /// `printf 'x\nx'` 里被印出的是第一行 `x\n`，不是末行那个 `x`）。
+    pub line: crate::window::Line<'a>,
     /// How many adjacent copies formed the run.
     pub count: u64,
 }
@@ -93,7 +96,7 @@ pub struct Uniq<'a> {
     flags: UniqFlags,
     skip_fields: usize,
     skip_chars: usize,
-    previous: Option<&'a str>,
+    previous: Option<crate::window::Line<'a>>,
     previous_key: Option<&'a [u8]>,
     count: u64,
 }
@@ -119,8 +122,9 @@ impl<'a> Uniq<'a> {
     }
 
     /// Offer one line; returns a completed run when the run breaks.
-    pub fn push(&mut self, line: &'a str) -> Option<Run<'a>> {
-        let key = comparison_key(line.as_bytes(), self.skip_fields, self.skip_chars);
+    pub fn push(&mut self, line: impl Into<crate::window::Line<'a>>) -> Option<Run<'a>> {
+        let line = line.into();
+        let key = comparison_key(line.text().as_bytes(), self.skip_fields, self.skip_chars);
         match self.previous_key {
             Some(previous_key) if previous_key == key => {
                 self.count += 1;
@@ -170,7 +174,7 @@ impl<'a> Uniq<'a> {
             written = write_decimal(run.count, out, written)?;
             written = write_byte(out, written, b' ')?;
         }
-        for byte in run.line.as_bytes() {
+        for byte in run.line.text().as_bytes() {
             written = write_byte(out, written, *byte)?;
         }
         Ok(written)
@@ -224,15 +228,15 @@ mod tests {
         let mut handler = Uniq::new(flags);
         let mut runs = Vec::new();
         for line in lines {
-            if let Some(run) = handler.push(line) {
+            if let Some(run) = handler.push(Line::from(*line)) {
                 if handler.keep(&run) {
-                    runs.push((run.line.to_string(), run.count));
+                    runs.push((run.line.text().to_string(), run.count));
                 }
             }
         }
         if let Some(run) = handler.finish() {
             if handler.keep(&run) {
-                runs.push((run.line.to_string(), run.count));
+                runs.push((run.line.text().to_string(), run.count));
             }
         }
         runs
@@ -258,7 +262,7 @@ mod tests {
 
     /// One run of the line `a` with `count` copies, for the format tests.
     fn run_of(count: u64) -> Run<'static> {
-        Run { line: "a", count }
+        Run { line: Line::new("a"), count }
     }
 
     #[test]
@@ -357,12 +361,12 @@ mod tests {
         let mut handler = Uniq::new_with_skip(NONE, 1, 0);
         let mut runs: Vec<(String, u64)> = Vec::new();
         for line in ["foo SAME", "bar SAME", "baz OTHER"] {
-            if let Some(run) = handler.push(line) {
-                runs.push((run.line.to_string(), run.count));
+            if let Some(run) = handler.push(Line::from(line)) {
+                runs.push((run.line.text().to_string(), run.count));
             }
         }
         if let Some(run) = handler.finish() {
-            runs.push((run.line.to_string(), run.count));
+            runs.push((run.line.text().to_string(), run.count));
         }
         assert_eq!(
             runs,

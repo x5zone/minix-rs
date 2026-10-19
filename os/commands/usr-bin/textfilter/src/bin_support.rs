@@ -277,16 +277,22 @@ pub fn utoa_u64(mut value: u64, out: &mut [u8]) -> usize {
 /// Splits collected input into lines, dropping the trailing newline of
 /// every line and the final empty piece after a terminating newline (the
 /// comparison shape C `uniq` and `cut` work in).
-pub fn lines_of(input: &[u8]) -> Vec<&str> {
+pub fn lines_of(input: &[u8]) -> Vec<minix_textfilter::window::Line<'_>> {
     if input.is_empty() {
         return Vec::new();
     }
     let text = core::str::from_utf8(input).unwrap_or("");
-    let mut pieces: Vec<&str> = text.split('\n').collect();
-    if input.ends_with(b"\n") {
-        // The piece after the final newline is empty, not a line; interior
-        // empty lines stay real lines.
+    let mut pieces: Vec<minix_textfilter::window::Line<'_>> = text
+        .split('\n')
+        .map(|piece| minix_textfilter::window::Line::new(piece))
+        .collect();
+    if minix_textfilter::window::final_line_terminated(input) {
+        // 换行结尾时 `split` 多交回一片空串，它是换行**之后**的东西，不是行；
+        // 内部那片空串（两枚相邻换行之间）仍是真行。
         pieces.pop();
+    } else if let Some(last) = pieces.last_mut() {
+        // 末行在输入里没有换行：把这件事记在行上，写出的腿就不会去造它。
+        *last = minix_textfilter::window::Line::raw(last.text(), false);
     }
     pieces
 }

@@ -60,6 +60,11 @@ fn run() -> ! {
 
     let process = |input: &[u8]| {
         for line in support::lines_of(input) {
+            // `cut` 是 C 里**归一化补换行**的那一支：`cut.c` 每处理完一行都写一枚
+            // `\n`，参照件 `tmp/cut-406/cut_ref` 对无尾换行的输入也交回三行带换行
+            // （读数 `alp\nbet\ngam\n`，见 18 篇批次四百二十三）。所以这里取 `text()`
+            // 而**不取** `eol()`——不是漏改，是这一支的 C 就这么做。
+            let line = line.text();
             let mut out = vec![0u8; line.len() + 1];
             let selection = if selecting_bytes {
                 select_bytes(line, &ranges, &mut out)

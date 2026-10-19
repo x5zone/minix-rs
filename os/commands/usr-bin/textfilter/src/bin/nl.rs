@@ -294,10 +294,16 @@ fn run() -> ! {
     }
 
     let out = nl_lines(&lines, &opts);
+    // C 的编号腿是 `fgets` 连着串尾换行一起读、`printf("%s%s", sep, buffer)` 原样打
+    // （`nl.c:288`、`:340`），末行没有换行就没有。这一支按字节自己切行（要容忍非
+    // UTF-8），所以用与 `lines_of` 同源的判据，而不是在这里另表一遍。
+    let keep_final_newline = minix_textfilter::window::final_line_terminated(&input);
     let mut rendered = Vec::new();
-    for line in &out {
+    for (index, line) in out.iter().enumerate() {
         rendered.extend_from_slice(line);
-        rendered.push(b'\n');
+        if index + 1 < out.len() || keep_final_newline {
+            rendered.push(b'\n');
+        }
     }
     support::emit(&rendered);
     support::terminate(0);

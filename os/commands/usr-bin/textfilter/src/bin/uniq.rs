@@ -101,7 +101,7 @@ fn run() -> ! {
     let mut body: Vec<u8> = Vec::new();
     let mut out = [0u8; 4096];
     for line in &lines {
-        if let Some(run) = handler.push(line) {
+        if let Some(run) = handler.push(*line) {
             report(&mut handler, &run, &mut out, &mut body);
         }
     }
@@ -143,7 +143,10 @@ fn report(
     match handler.format(run, out) {
         Ok(len) => {
             body.extend_from_slice(&out[..len]);
-            body.push(b'\n');
+            // C `uniq` 印的是一个 run 的**第一行**，那行的换行状态跟着行走：
+            // `printf 'x\nx'` 里被印的是带换行的第一行，末行那个没有换行的 `x`
+            // 只是让它并进了同一个 run（参照件 `tmp/uniq-408/uniq_ref` 现量 `x\ny`）。
+            body.extend_from_slice(run.line.eol());
         }
         Err(_) => support::terminate(1),
     }
