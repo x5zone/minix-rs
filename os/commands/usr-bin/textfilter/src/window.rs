@@ -901,6 +901,42 @@ mod tests {
         );
     }
 
+    /// `tail` 的环同样交回短横后的**第一个字节**（`bytes[pos] as char`，`getopt.c:79` 的
+    /// `optopt = *place++` 一次进一个字节）。选项串是 `"Fb:c:fn:r"`（`tail.c:108`），
+    /// `b`/`c`/`n` 三个都带值，所以反面的 `-né` 里 `é` 是**值**、走
+    /// `tail: illegal offset -- é`（参照件 `tmp/tail-416/tail_ref` 现量）。这一枚钉的是
+    /// **已经是那样**的取法；逐字节门在 `tests/tail_face.rs`。
+    #[test]
+    fn the_tail_unknown_letter_is_the_first_byte_not_the_first_character() {
+        assert_eq!(
+            parse_tail_args(&["-\u{e9}"]).err(),
+            Some(TailError::Getopt(crate::GetoptReport::UnknownOption(
+                '\u{00c3}'
+            ))),
+            "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
+        );
+        // `r` 在选项串里合法且不带值，聚簇继续吃到第一字节。
+        assert_eq!(
+            parse_tail_args(&["-r\u{e9}"]).err(),
+            Some(TailError::Getopt(crate::GetoptReport::UnknownOption(
+                '\u{00c3}'
+            ))),
+            "-r\u{e9}"
+        );
+        // 环停在第一个坏字母上。
+        assert_eq!(
+            parse_tail_args(&["-Z\u{e9}"]).err(),
+            Some(TailError::Getopt(crate::GetoptReport::UnknownOption('Z'))),
+            "-Z\u{e9}"
+        );
+        // 反面：`n` 是带值字母，其后的字节整个被当值收走，轮不到字母位。
+        assert_eq!(
+            parse_tail_args(&["-n\u{e9}"]).err(),
+            Some(TailError::IllegalCount("\u{e9}".to_string())),
+            "-n\u{e9} 走的是 `illegal offset` 那一句"
+        );
+    }
+
     /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
     /// `char` 域里是 U+00C3。环那一侧本来就是 `bytes[pos] as char`（`getopt.c:79` 的
     /// `optopt = *place++` 一次进一个字节），所以这一枚钉的是**已经是那样**的取法，

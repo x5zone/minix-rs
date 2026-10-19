@@ -216,13 +216,75 @@ fn reverse_forms_walk_the_input_bottom_up() {
     assert_eq!(run(&["-r", "-n", "+3"], "a\nb\n").0, "b\na\n");
 }
 
+/// 与 `run` 同一条命令缝，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(TAIL)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the tail binary should be runnable");
+    face_support::write_stdin(&mut child, input.as_bytes());
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**。期望逐形取自本轮新配的参照件
+/// `tmp/tail-416/tail_ref`（五件真源 + Minix 的 `getopt.c` + 垫片，`-D__minix` 关掉 BSD 的
+/// kqueue 腿，经同名软链 `tail` 起 ⇒ 程序名段与本壳一致）：`-é` 与 `-ré` 都是
+/// `tail: unknown option -- ` + 单个 `c3` + 换行再跟那一行 usage（大写 `Usage:`，
+/// `tail.c:299-305`）、退 **1**；`-Zé` 停在 `Z`；反面的 `-né` 里 `é` 是**值**——
+/// `tail.c:108` 的选项串 `"Fb:c:fn:r"` 里 `n` 带值，所以走 `tail: illegal offset -- é`
+/// **单独一行、不接 usage**。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_tail() {
+    const USAGE: &[u8] = b"Usage: tail [-f | -F | -r] [-b # | -c # | -n #] [file ...]\n";
+    let want: Vec<u8> = [b"tail: unknown option -- ".as_slice(), b"\xc3\n", USAGE].concat();
+    for form in ["-\u{e9}", "-r\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form], "a\n");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}"], "a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"tail: unknown option -- Z\n".as_slice(), USAGE].concat(),
+        "环停在第一个坏字母上，第二个字节根本不该被读到"
+    );
+
+    let (_out, status, err) = run_bytes(&["-n\u{e9}"], "a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"tail: illegal offset -- ".as_slice(),
+            "\u{e9}".as_bytes(),
+            b"\n".as_slice(),
+        ]
+        .concat(),
+        "带值字母把两字节整个当值收走，句子是命令自己的那一句、不接 usage"
+    );
+}
+
 #[test]
 fn unknown_letters_and_bad_counts_are_refused_not_leaked() {
     // `-x` 是 C 的 `case '?'` → `usage()`（`tail.c:128-130`），但前面还有一行是
     // `getopt` 自己印的：`"<prog>: unknown option -- <字母>"`
-    // （`minix3/lib/libc/stdlib/getopt.c:101-104`，字母不带引号）。本仓的
+    // （`minix3/lib/libc/stdlib/getopt.c:101-104`，字母不带引号）。本仓**旧的**
     // 宿主参照件比不了这一行——它跑的是 glibc 的 `getopt`，那句写的是
-    // `invalid option -- 'x'`；这一句的真值只能来自 C 源本身。
+    // `invalid option -- 'x'`。批次四百一十六配了链 Minix `getopt.c` 的
+    // `tmp/tail-416/tail_ref`（`tmp/tail-follow-ref/tail_ref` 同样
+    // 是 glibc 血脉，按批次四百零七那条规矩先验归属后判为不可用），所以这一句
+    // 现在有逐字节的差分腿可依——字母位那一枚门就用 `run_bytes` 钉在它上面。
     // 而 usage 行本身是大写 `Usage:`、带程序名、选项里本来就有 `-f | -F`
     // （`tail.c:299-305`），此前本壳那行小写且只列 `-r` 的写法是自创的。
     const USAGE: &str = "Usage: tail [-f | -F | -r] [-b # | -c # | -n #] [file ...]\n";

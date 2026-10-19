@@ -634,8 +634,11 @@ fn arg_error(e: TailError, prog: &str) -> ! {
         TailError::Usage => usage(prog),
         TailError::Getopt(report) => {
             // libc 的那一句（`getopt.c:101-104` 或 `:132-136`）在前，usage 行在后。
-            // 句子单源住在 `GetoptReport`，本族其它命令拿到的是同一份文本。
-            support::warn(report.line(prog).as_bytes());
+            // 句子单源住在 `GetoptReport`，本族其它命令拿到的是同一份文本。字母位走
+            // `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103`
+            // 与 `:134` 的 `%c` 原样写出，所以 `-é`（`c3 a9`）报的是 `c3`；取法在
+            // `src/window.rs` 的环里已经是 `bytes[pos] as char`，两边同形才成立。
+            support::warn(&report.line_bytes(prog));
             usage(prog)
         }
         TailError::FollowMultiFile => {
