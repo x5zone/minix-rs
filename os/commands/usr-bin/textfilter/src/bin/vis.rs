@@ -57,7 +57,7 @@ fn run() -> ! {
     let plan = match parse_vis_args(&argv, prog) {
         Ok(parsed) => parsed,
         Err(message) => {
-            support::warn(message.as_bytes());
+            support::warn(&message);
             support::terminate(1);
         }
     };
@@ -143,8 +143,12 @@ const USAGE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [fil
 
 /// 把 libc `getopt` 的那一行与自己的 usage 拼成两行（句子单源住在
 /// [`GetoptReport`]，与同族其它壳共用一份文本）。
-fn libc_line(report: GetoptReport, prog: &str) -> String {
-    format!("{}{}", report.line(prog), USAGE)
+///
+/// 交回的是**字节串**而不是 `String`：libc 那一行的字母位是一个裸字节（`getopt.c:79` 的
+/// `optopt = *place++` 一次进一个字节、`:103` 的 `%c` 原样写出），参照不了 `vis` 的宿主没有
+/// `vis(3)`，所以这一支的判据来源是同族已用参照件钉过的九支壳与 C 源本身。
+fn libc_line(report: GetoptReport, prog: &str) -> Vec<u8> {
+    [report.line_bytes(prog), USAGE.as_bytes().to_vec()].concat()
 }
 
 /// Fold `argv` into a [`Plan`] the way `getopt(argc, argv, "bcde:F:fhlMmNnoSstw")`
@@ -154,7 +158,7 @@ fn libc_line(report: GetoptReport, prog: &str) -> String {
 /// or the following word (`-e x`), `--` ends option scanning, and a lone `-` is
 /// an operand. Each `-e` overwrites the previous one, as C's `extra = optarg`
 /// assignment does; each `-F` overwrites the width the same way.
-fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, String> {
+fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, Vec<u8>> {
     let mut options = VisOptions::default();
     let mut none = false;
     let mut fold = false;
@@ -257,7 +261,9 @@ fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, String
                     // all converts to zero and is refused here too.
                     let width = parse_atoi(word);
                     if width < 5 {
-                        return Err(String::from("vis: can't fold lines to less than 5 cols\n"));
+                        return Err("vis: can't fold lines to less than 5 cols\n"
+                            .as_bytes()
+                            .to_vec());
                     }
                     foldwidth = width as usize;
                     // The same case also runs `markeol++`: `-F` marks end of line,
@@ -274,7 +280,7 @@ fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, String
                     if pos + 1 >= bytes.len() && index >= argv.len() {
                         return Err(libc_line(GetoptReport::MissingValue('d'), prog));
                     }
-                    return Err(String::from(USAGE));
+                    return Err(USAGE.as_bytes().to_vec());
                 }
                 _ => {
                     // 集外字母：libc 的 `getopt` 先印一行（`getopt.c:101-104`，选项串不以
@@ -294,9 +300,9 @@ fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, String
     // `vis.c:142-144`: the two styles are refused *after* the option loop and
     // before any operand is opened, so this error outranks an unreadable file.
     if options.http && options.mime {
-        return Err(String::from(
-            "vis: Can't specify -m and -h at the same time\n",
-        ));
+        return Err("vis: Can't specify -m and -h at the same time\n"
+            .as_bytes()
+            .to_vec());
     }
     Ok(Plan {
         options,

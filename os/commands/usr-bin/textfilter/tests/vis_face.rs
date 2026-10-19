@@ -130,6 +130,53 @@ fn operands_are_encoded_into_one_stream_and_a_bad_one_only_warns() {
     }
 }
 
+/// 与 `run` 同一条命令缝，但标准错误也**逐字节**交回：文本形经 `from_utf8_lossy` 之后，
+/// 一个裸 `c3` 是替换字符 U+FFFD、`c3 83` 是 `Ã`，两种错法虽然不同串，却都不如直接比字节。
+fn run_streams(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(VIS)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the vis binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**（`-\u{e9}` 交回 `c3`，不是 `c3 a9` 也不是 `c3 83`）。
+/// 本支没有差分腿（宿主没有 `vis(3)`，篇首那句「byte-exact expectations are what the C source
+/// says」是既定口径），判据两处：机制在 `minix3/lib/libc/stdlib/getopt.c:79`（`optopt = *place++`
+/// 一次进一个字节）与 `:103`（`%c` 原样写出），同族九支壳的参照件读数（`tmp/rev-309/rev_ref`、
+/// `tmp/paste-321/paste_ref`、`tmp/jot-317/jot_ref` 等）对 `-é` 全部交回单个 `c3`。
+/// `c` 是 C 选项串里合法且不带值的字母，所以聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`——
+/// `vis.c:135-140` 的 `case '?'`/`default` 打完 usage 就 `return 1`，第二个字母轮不到。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_the_first_byte_of_the_flag() {
+    const USAGE_LINE: &[u8] =
+        b"Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
+    let want: Vec<u8> = [b"vis: unknown option -- ".as_slice(), b"\xc3\n", USAGE_LINE].concat();
+    for form in ["-\u{e9}", "-c\u{e9}"] {
+        let (out, status, err) = run_streams(&[form], b"a\n");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_streams(&["-Z\u{e9}"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"vis: unknown option -- Z\n".as_slice(), USAGE_LINE,].concat(),
+        "环停在第一个坏字母上，`é` 根本不该被读到"
+    );
+}
+
 #[test]
 fn letters_outside_the_c_optstring_are_refused_with_usage() {
     // Every letter of C's `"bcde:F:fhlMmNnoSstw"` is now modelled, so the only
