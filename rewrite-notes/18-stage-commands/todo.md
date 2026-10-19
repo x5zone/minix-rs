@@ -119,6 +119,28 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百二十五（P0 独立轮 `UNEXPAND-ZERO-STOP-PANIC`：档位 0 是一支合法档位，减法不许替它停下）
+
+- **这一轮干什么**：闭板上在册的 `UNEXPAND-ZERO-STOP-PANIC`——`unexpand -t 0` 让本壳在一步减法上崩掉（参照件回显档位表 `0 0` 之后整行原样交回、退 0）。判据在 C 那三步减法的类型上：`minix3/usr.bin/unexpand/unexpand.c:146` 写 `limit = nstops == 0 ? UINT_MAX : tabstops[nstops - 1] - 1;`，制表符那两支又各有 `tabstops[n] - 1`（`:157`、`:160`），三者减的都是 `size_t`——档位是 0 时它们回绕成一个极大的值而不是报错，循环照旧走到头，所以「0 这一档」在 C 里是一支**合法但谁也够不着**的档位。Rust 的 `usize` 减法在带溢出检查的构建里先触发 trap，同一支档位就把整个命令崩掉。修法只有一条对得上 C：那三处换成 `wrapping_sub(1)`。
+
+- **动手前把 C 含 0 档位的逐形行为量了一遍**（`tmp/unexpand-425/ref-matrix.log`；参照件 `tmp/unexpand-312/unexpand_ref` 先按批次四百零七那条规矩打 `-Z` 验归属 ⇒ 交回 Minix 那句不带引号的 `unknown option -- Z`）：`-t 0` 对六形输入全部退 0、档位表回显 `0 0`，`-t 0,8` 再多回显一行 `1 8`。矩阵里另外两支边界一并量了：`-t 4,0` 被单调性检查挡下（参照件那句 `Bad tabstop spec '0', must be greater than the previous '4'`，退 1，`unexpand.c:108-112`）⇒ 0 作首档合法、作后档非法；`-a` 与 `-t` 互斥，谁后到谁 `usage()` 退 1（`unexpand.c:87-95`）。改完再跑一次两侧逐字节 A/B（`python3 tmp/unexpand-425/ab.py`，读数 `tmp/unexpand-425/ab.log`）：**35 形 SAME=29 / DIFF=6**，崩掉的形态清零；那六形是 `\ta` 与 `  \tx` 各配 `-t 0`/`-t 0,8`/`-t 8`，属另一件事（见末段登记）。程序名参与 usage 那一行（C 用 `getprogname()`），比对时两侧都要归一成一个占位——第一版只归一了参照件那一侧，于是 20 形被误判成 DIFF，那批读数作废重跑。
+
+- **落码**：`os/commands/usr-bin/textfilter/src/unexpand.rs:110`（`limit` 那一处）、`:131`（制表符往前找档的那个 `while`）、`:134`（判断这一档还可用的那个 `if`）三处换成 `wrapping_sub(1)`；注释里写「C 减的是 `size_t`，0 档回绕不停下」，并在制表符那一支点明它自己还有一处已登记的偏离（吞掉制表符），免得下一个读代码的人把两件事当成一件。
+
+- **门（库侧一枚 + 面侧一枚）**：库侧 `a_zero_tabstop_wraps_its_limit_the_way_c_does` 钉 `parse_stops` 收 0（`"0"` ⇒ `vec![0]`、`"0,8"` ⇒ `vec![0, 8]`）与四形输入在 0 档下的逐字节形态，另走一形 `  \tx` 只要求不崩——它的输出形状属下面登记的偏离，本轮不钉它的值。面侧 `a_zero_tabstop_reaches_the_line_unchanged` 钉 `unexpand -t 0` 三形的标准输入输出与退码逐字节，含一枚无尾换行的裸字节输入。`--lib` 579→**580**、`unexpand_face` 12→**13**、整包 1180→**1182**。
+
+- **读数（按最终形态）**：宿主 `cd os && ulimit -v 3145728; cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **1182 passed / 0 failed**（68 段，`tmp/unexpand-425/f-host.log`，等式 1180+1 枚库门+1 枚面门=1182）；容器权威门同读数 **1182 / 0 / 68 段**、退码 0（`tmp/unexpand-425/f-container.log`，配方照旧要把宿主仓库缓存挂进去才解得开 `fdt`）；三架构 `cargo build --offline -j 1 --bins -p minix-textfilter --target {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf}` 全退 0；clippy 整包 **154** 与基线同数（按告警位置判），触及件两处命中是存量那两枚 `implicit_saturating_sub`——本轮在它们前面加了八行注释，位置从 `:163`/`:166` 位移到 `:171`/`:174`，与 `tmp/head-424/final-clippy.log` 的同一句同形对读；`rustfmt` 触及三件零漂移、整包 **99** 与主树同数。
+
+- **本轮门腿自己有两处形状问题，都在拿到读数之前被抓住**：① `tmp/unexpand-425/gates.sh` 逐件那一圈把 rustfmt 写成 `RFMT --edition 2024 --check …`（漏了 `$`），shell 报的是「命令不存在」，而 `2>&1 | grep -c '^Diff in'` 把这句错误吞成计数 0，于是三件全报零漂移；同一份日志里 `cargo fmt -p minix-textfilter -- --check` 报整包 100 处（基线 99），按文件名列出来才看见多的那一处正是本轮新写的面门 `tests/unexpand_face.rs:338`（一条 `assert_eq!` 该拆成多行）。改用 `"$RFMT"` 并就地归正，门腿另起一份 `tmp/unexpand-425/final-gates.sh` 按最终形态复跑。② 负控脚本第一版把 cargo 在测试正常失败时印的 `error: test failed, to rerun pass` 当成编译器错误计数，于是三枚**真咬住**的读数全被判成「编译失败、不算读数」；改成只数 `error[E…]`、`could not compile`、`aborting` 之后才拿到下面那四枚的对应读数。判据「注入或夹具空咬/多咬，先怀疑它自己的形状」在本线第八次、第九次兑现，两次的形状分别是**变量名当命令名写**与**失败信息里带 error 字样**。
+
+- **负控四枚（读数 `tmp/unexpand-425/negctl-run2.log` 与 `negctl-1.log`…`negctl-4.log`）**：注入前先数锚点，三处 `wrapping_sub(1)` 各自全文出现 1 次。N1 把 `limit` 那一处退回裸减法 → 失败 2（库门 + 面门，`limit` 每支 `-t 0` 都要算）；N2 找档那个 `while` 退回裸减法 → 失败 1；N3 判断可用那个 `if` 退回裸减法 → 失败 1——这两枚只咬库门，因为面门那三形都不进制表符支：没有 `-a` 时首个非空白字节就收尾，`a\tb\tc` 里的制表符属「原样交回」那半，只有库侧 `  \tx` 那一形走得到（这是读数的边界，不是漏钉）。N4 是**等价改写**（`checked_sub(1).unwrap_or(usize::MAX)`，0 档同样落回最大值）→ 593 passed / 0 failed 全绿。
+
+- **登记与闭合**：闭 `UNEXPAND-ZERO-STOP-PANIC`（板 A2 行、07 篇 `unexpand` 行同步）。**新登记不执行两枚**：① `UNEXPAND-LAST-STOP-TAB-DROPPED`——档位表的最后一档已经越过当前列时，C 走 fall-through 把输入里那个制表符原样 `putchar`（`unexpand.c:160-165` 那一支判断不成立之后落到 `:195` 的 `putchar(*p)`），本壳在这一支把它吞掉；现量六形：`-t 0` 对 `\ta` 参照件交回 `\ta` 而本壳交回 `a`，对 `  \tx` 参照件交回 `  \tx` 而本壳交回 `  x`（`-t 0,8`、`-t 8` 同形，读数 `tmp/unexpand-425/ab.log` 与 `tmp/unexpand-425/tab-drop.log`）。它与本轮那件事不是同一件：档位不含 0 也一样吞，所以不在这一轮顺手改。② `UNEXPAND-C-COMMENT-ANCHOR-DRIFT`——本轮触及的两件里**既有的** C 行号锚点有四处与 `minix3/usr.bin/unexpand/unexpand.c` 现量不符：讲 `strtoul` 的那句引 `:98`（真行 `:100`）、讲 `tabify` 整函数范围引 `:148-205`（函数体从 `:139` 起）、讲 `freopen` 的那处引 `:124`（真行 `:129`）、面侧两处讲档位表回显引 `:120-121`（真行 `:124-125`）；逐条对账读数 `tmp/unexpand-425/anchor-audit.log`，那份 C 源只有一个导入提交（`ce9f2c7b5`），所以差值不是文件漂移而是锚点自身。本轮只把自己新写的四处按现量改对（`:146`/`:157`/`:160`/`:124-125`），存量的四条留给一次专项对账——顺手改会把本轮射程搅浑，也不是一枚负控能归因的。
+
+- **在册未动**：`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`LINES-OF-NONUTF8-DROPS-ALL`、八支 `*-NON-PERMUTE-OPERAND-TAIL` 族（`sort`/`cksum` 两支还需重链参照件）、`NL-DELIM-LENGTH-RULE`（待裁决）、参数缝半（射程②）。
+
+---
+
 ## 批次四百二十四（P0 独立轮 `HEAD-NON-PERMUTE-OPERAND-TAIL`：操作数一到，选项环就收口）
 
 - **这一轮干什么**：闭板上在册的 `HEAD-NON-PERMUTE-OPERAND-TAIL`——`head`/`tail` 的选项环撞上第一个非选项 token 之后还在往下扫，于是 `head f -5` 走成「字母 `5` 集外」那句、`tail f -r` 会反序，而 Minix 的参照件把 `-5`/`-r` 当**档名**。判据在库不在壳：`minix3/lib/libc/stdlib/getopt.c:71-74` 见到不是选项的 token 就交回 `-1` 且**不推进** `optind`，`getopt.c:96-104` 又把裸 `-` 算非选项，壳侧 `head.c:118-119`、`tail.c:110` 的 `argc -= optind; argv += optind` 因此把「这个 token 与其后的全部」一起交成操作数——`--` 在这条线之后也不再是「选项结束」，而是一个叫 `--` 的档名。
