@@ -72,7 +72,7 @@ cp "$FW_SRC_VARS" "$FW_VARS"
 SERIAL_LOG="$(mktemp /tmp/rt_birth_a64_serial.XXXXXX.log)"
 
 qemu-system-aarch64 \
-    -machine virt \
+    -machine virt,gic-version=3 \
     -cpu cortex-a57 \
     -smp 1 \
     -m 256M \
