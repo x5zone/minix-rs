@@ -561,11 +561,11 @@ fn arg_error(prog: &str, e: SplitError<'_>) -> ! {
     match e {
         SplitError::Usage => usage(prog),
         SplitError::UnknownOption(letter) => {
-            support::warn(GetoptReport::UnknownOption(letter).line(prog).as_bytes());
+            support::warn(&GetoptReport::UnknownOption(letter).line_bytes(prog));
             usage(prog)
         }
         SplitError::MissingValue(letter) => {
-            support::warn(GetoptReport::MissingValue(letter).line(prog).as_bytes());
+            support::warn(&GetoptReport::MissingValue(letter).line_bytes(prog));
             usage(prog)
         }
         SplitError::IllegalLineCount(v) => {

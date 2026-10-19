@@ -83,6 +83,77 @@ fn scratch() -> std::path::PathBuf {
     dir
 }
 
+/// 与 `run` 走同一个临时目录，但标准错误**逐字节**交回：`from_utf8_lossy` 把一个裸 `c3`
+/// 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「两个字节」这两种错法。
+fn run_bytes(args: &[&str], input: &[u8]) -> (i32, Vec<u8>, Vec<String>) {
+    let dir = scratch();
+    let mut child = Command::new(SPLIT)
+        .args(args)
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the split binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    let mut files: Vec<String> = fs::read_dir(&dir)
+        .expect("the scratch dir should be readable")
+        .filter_map(|entry| {
+            entry
+                .ok()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    files.sort();
+    let status = output.status.code().unwrap_or(-1);
+    fs::remove_dir_all(&dir).expect("clean the scratch dir");
+    (status, output.stderr, files)
+}
+
+/// 集外字母那一行的字母位是**一个裸字节**。期望逐形取自参照件 `tmp/split-413/split_ref`
+/// （`tmp/split-311/split_ref` 经同名软链 `split` 起 ⇒ 程序名段与本壳一致、逐字节直比；
+/// 本轮按批次四百零七那条规矩先打 `-Z` 验过归属：交回 `unknown option -- Z`，是 Minix 的
+/// `getopt.c` 而不是 glibc 那句带引号的 `invalid option -- 'Z'`）：`-é` 是
+/// `split: unknown option -- ` + 单个 `303` + 换行再跟那一行 usage、退 **1**；`-Zé` 停在
+/// `Z`；反面的 `-lé` 里 `é` 是**值**而不是字母，走命令自己的
+/// `split: é: illegal line count.`（`split.c:96-99` 的 `strtoull` 尾巴判据）**单独一行、
+/// 不接 usage**。ASCII 那几形（`-Z`、`-Zb`、`--x`、四个缺值）本文件已有主人，不重复承载。
+#[test]
+fn the_libc_line_of_a_multibyte_flag_is_one_byte_for_split() {
+    let want: Vec<u8> = [
+        b"split: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    let (status, err, files) = run_bytes(&["-\u{e9}"], INPUT);
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert!(files.is_empty(), "报错了就不该写分片文件：{files:?}");
+    assert_eq!(err, want, "字母该是一个裸字节 c3");
+
+    let (status, err, _files) = run_bytes(&["-Z\u{e9}"], INPUT);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"split: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，第二个字节根本不该被读到"
+    );
+
+    let (status, err, _files) = run_bytes(&["-l\u{e9}"], INPUT);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"split: ".as_slice(),
+            "\u{e9}".as_bytes(),
+            b": illegal line count.\n".as_slice(),
+        ]
+        .concat(),
+        "带值字母把两字节整个当值收走，句子是命令自己的那一句、不接 usage"
+    );
+}
+
 /// 集外字母：libc 那一行在前、`usage()` 在后，退 1（`split.c:128-129` 的 `default:`）。
 /// 旧写法少了 libc 那一行。
 #[test]
@@ -93,7 +164,7 @@ fn an_unknown_letter_prints_the_libc_line_then_the_usage() {
     assert_eq!(err, format!("split: unknown option -- Z\n{USAGE}"));
 }
 
-/// 聚簇只报**第一个**字符（参照件：`-Zb` → `unknown option -- Z`）。
+/// 聚簇只报**第一个字节**（参照件：`-Zb` → `unknown option -- Z`）。
 #[test]
 fn a_cluster_reports_only_its_first_letter() {
     let (status, err, files, _) = run(&["-Zb"], INPUT);

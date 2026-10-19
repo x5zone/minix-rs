@@ -322,12 +322,12 @@ pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitE
                     }
                 }
                 // 集外字母：`getopt.c:95-104` 先印一行，再由 `split.c:128-129` 的
-                // `default: usage()` 接第二行。递出去的是 `-` 后面的**第一个字符**
-                // （聚簇与 `--x` 都只报第一个：量过 `-Zb` 报 `Z`、`--x` 报 `-`）。
+                // `default: usage()` 接第二行。递出去的是 `-` 后面的**第一个字节**
+                // （聚簇与 `--x` 都只报第一个：量过 `-Zb` 报 `Z`、`--x` 报 `-`；
+                // `getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 的 `%c`
+                // 把它原样写出，所以 `é`（`c3 a9`）报的是 `c3`）。
                 _ => {
-                    return Err(SplitError::UnknownOption(
-                        tail.chars().next().unwrap_or('-'),
-                    ));
+                    return Err(SplitError::UnknownOption(char::from(bytes[1])));
                 }
             }
             index += 1;
@@ -565,7 +565,7 @@ mod tests {
         assert_eq!(suffix(1, 3).as_deref(), Some("aab"));
         assert_eq!(suffix(26 * 26 - 1, 3).as_deref(), Some("azz"));
         assert_eq!(suffix(26 * 26 * 26, 3), None); // 超 26^3 穷举
-                                                   // width 0 非法 → None。
+        // width 0 非法 → None。
         assert_eq!(suffix(0, 0), None);
     }
 
@@ -678,7 +678,7 @@ mod tests {
         assert_eq!(c[0], b"abc"); // 10/3 = 3
         assert_eq!(c[1], b"def");
         assert_eq!(c[2], b"ghij"); // 末段吸收余数
-                                   // n == len：逐字节。
+        // n == len：逐字节。
         assert_eq!(
             chunks_n(b"abc", 3).unwrap(),
             vec![&b"a"[..], &b"b"[..], &b"c"[..]]
@@ -709,6 +709,36 @@ mod tests {
         );
     }
 
+    /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
+    /// `char` 域里是 U+00C3。绝对读数有两处：机制层是 `getopt.c:79` 的
+    /// `optopt = *place++`（步进在 `char *` 上，一次一个字节）与 `:103` 的 `%c`，
+    /// 参照件那侧是 `tmp/split-413/split_ref` 现量 `-é` 打的是单个 `303`
+    /// （逐字节门在 `tests/split_face.rs`）。
+    #[test]
+    fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
+        assert_eq!(
+            parse_split_args(&["-\u{e9}"]).err(),
+            Some(SplitError::UnknownOption('\u{00c3}')),
+            "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
+        );
+        // 环停在第一个坏字母上：`-Zé` 只报 `Z`。
+        assert_eq!(
+            parse_split_args(&["-Z\u{e9}"]).err(),
+            Some(SplitError::UnknownOption('Z'))
+        );
+        // ASCII 那一形不许被这次改动波及。
+        assert_eq!(
+            parse_split_args(&["-q"]).err(),
+            Some(SplitError::UnknownOption('q'))
+        );
+        // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
+        // `split: é: illegal line count.`，退 1、不接 usage）。
+        assert_eq!(
+            parse_split_args(&["-l\u{e9}"]).err(),
+            Some(SplitError::IllegalLineCount("é"))
+        );
+    }
+
     #[test]
     fn parse_error_paths() {
         // 集外字母交回字母本身，由壳先印 libc 那一行再接 usage（参照件：`-Z` 两行）。
@@ -716,7 +746,7 @@ mod tests {
             parse_split_args(&["-z", "f"]).err(),
             Some(SplitError::UnknownOption('z'))
         );
-        // 聚簇与 `--x` 只报第一个字符（参照件：`-Zb` 报 `Z`、`--x` 报 `-`）。
+        // 聚簇与 `--x` 只报第一个字节（参照件：`-Zb` 报 `Z`、`--x` 报 `-`）。
         assert_eq!(
             parse_split_args(&["-Zb"]).err(),
             Some(SplitError::UnknownOption('Z'))
