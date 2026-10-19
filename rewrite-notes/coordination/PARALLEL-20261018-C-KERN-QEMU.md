@@ -134,6 +134,7 @@ run_with_qemu_lock() (
 `<日期> <线> / <条目ID>：要改的文件清单前 3 个 + 一句话目的 —— 状态 ☐/🔄/✅`
 
 当前登记：
+- `2026-10-19` C / `SD-4/A6`：要改 `os/servers/vm/src/vm_server.rs`（A 板领地）——mock 内核布局回退臂加拒绝断言（审计 A6：x86 形、v5 handoff 下不可达，需 fail-fast 防静默错布局），纯测试语义零生产行为 —— `🔄`
 - `2026-10-18` C / `P-X86-01`：要改 `os/xtask/src/image.rs`（A 板领地）与 `tools/build-atf-test.sh`（共享件），目的为 x86_64 装配白名单与 ATF 门；A 板让路后才动 —— `☐`
 - `2026-10-18` C / `SD-20`+`SD-42` 文档同步：要改 `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md`、`04-platform-discovery.md`（本板领地，但文档线程正在改该目录）—— `⏸ 等文档线程`
 - `2026-10-18` B / `E-DMWIRE`：主线改由 A 板持有；B 只做 `minix-sys` 的 client 半与 `minix-types` 解码 —— `☐`
