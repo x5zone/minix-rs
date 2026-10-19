@@ -105,7 +105,14 @@ static MEMMAP: [MemoryRegion; 2] = [
 /// docs for the build contract). The kernel identity-maps its own image,
 /// so the blob is readable through VA = PA during `load_vm_elf` — the same
 /// mechanism the UEFI stub relied on in the other bootstrap tests.
-static RT_BIRTH_ELF: &[u8] = include_bytes!(env!("RT_BIRTH_ELF_PATH"));
+/// 页对齐包裹（vm_handoff/DM 覆盖安装契约：boot module 起址必须页对齐
+/// ——修正 run_all rt-birth-x86 腿的 `boot DM: VM window module coverage
+/// failed: InvalidAddress`；riscv/aarch64 姊妹载体同款修复）。
+#[repr(C, align(4096))]
+struct PageAlignedElf<const N: usize>([u8; N]);
+static RT_BIRTH_ELF_BYTES: PageAlignedElf<{ include_bytes!(env!("RT_BIRTH_ELF_PATH")).len() }> =
+    PageAlignedElf(*include_bytes!(env!("RT_BIRTH_ELF_PATH")));
+static RT_BIRTH_ELF: &[u8] = &RT_BIRTH_ELF_BYTES.0;
 
 
 #[entry]
