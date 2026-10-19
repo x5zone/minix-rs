@@ -221,8 +221,8 @@ fn write_decimal(mut value: u64, out: &mut [u8], mut written: usize) -> Result<u
 
 #[cfg(test)]
 mod tests {
-    use crate::window::Line;
     use super::*;
+    use crate::window::Line;
 
     fn collect(flags: UniqFlags, lines: &[&str]) -> Vec<(String, u64)> {
         let mut handler = Uniq::new(flags);

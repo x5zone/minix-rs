@@ -86,7 +86,7 @@ pub fn lines_of(input: &[u8]) -> Vec<Line<'_>> {
         return Vec::new();
     }
     let text = core::str::from_utf8(input).unwrap_or("");
-    let mut pieces: Vec<Line<'_>> = text.split('\n').map(|piece| Line::new(piece)).collect();
+    let mut pieces: Vec<Line<'_>> = text.split('\n').map(Line::new).collect();
     if final_line_terminated(input) {
         // 换行结尾时 `split` 多交回一片空串，它是换行**之后**的东西，不是行；
         // 内部那片空串（两枚相邻换行之间）仍是真行。
