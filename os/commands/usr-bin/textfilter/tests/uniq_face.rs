@@ -20,6 +20,59 @@ fn run(args: &[&str], input: &str) -> (String, i32, String) {
     run_with(UNIQ, args, input)
 }
 
+/// Same seam as `run` but both streams stay **bytes**: `from_utf8_lossy` renders a bare
+/// `c3` as the three-byte replacement character, so a text form cannot tell "one byte" from
+/// "two bytes" apart.
+fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(UNIQ)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the uniq binary should be runnable");
+    face_support::write_stdin(&mut child, input.as_bytes());
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// The letter position of the libc line is **one raw byte**: the reference
+/// `tmp/uniq-408/uniq_ref` (`uniq.c` + Minix's `getopt.c` + the progname/`util.h` shim set,
+/// started through the `uniq` symlink so both binaries carry the same `getprogname()`) prints
+/// `uniq: unknown option -- ` + `c3` + newline for `-\u{e9}`, `-c\u{e9}` and `-u\u{e9}`
+/// (`c`/`d`/`u` are C's valueless letters in `"-cdf:s:u"`, so clusters keep scanning into the
+/// first byte of `\u{e9}`), then the single usage line, exit 1. `-Z\u{e9}` stops at `Z`.
+/// ASCII refusals are already pinned by the neighbouring gate, so this one carries only the
+/// byte-width fact and the cluster-stop shape.
+#[test]
+fn a_multibyte_flag_letter_is_emitted_as_a_single_byte_by_uniq() {
+    const USAGE: &str = "usage: uniq [-cdu] [-f fields] [-s chars] [input_file [output_file]]\n";
+    let want: Vec<u8> = [
+        b"uniq: unknown option -- ".as_slice(),
+        b"\xc3\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in ["-\u{e9}", "-c\u{e9}", "-u\u{e9}"] {
+        let (out, status, err) = run_bytes(&[form], "a\n");
+        assert_eq!(out, Vec::new(), "{form} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "{form} 的字母该是一个裸字节 c3");
+    }
+
+    let (_out, status, err) = run_bytes(&["-Z\u{e9}"], "a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"uniq: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
+        "环停在第一个坏字母上，第二个字节根本不该被读到"
+    );
+}
+
 /// The same run for any program name, so the differential leg can drive the host's
 /// `uniq` through the identical pipe and comparison.
 fn run_with(program: &str, args: &[&str], input: &str) -> (String, i32, String) {

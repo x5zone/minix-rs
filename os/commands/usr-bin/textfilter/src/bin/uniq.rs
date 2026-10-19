@@ -41,7 +41,11 @@ fn run() -> ! {
         Ok(parsed) => parsed,
         // libc 先印一行，再由 `case '?'` → usage（`uniq.c:102-104`）。
         Err(UniqArgError::Getopt(report)) => {
-            support::warn(report.line(prog).as_bytes());
+            // 字母位走 `line_bytes`：取法本就按字节（`bytes[j] as char`），而 libc 那一行的
+            // 字母位本来是一个字节（`getopt.c:79` 的 `optopt = *place++`、`:103` 的 `%c`）。
+            // 参照件 `tmp/uniq-408/uniq_ref` 现量 `-é`、`-cé`、`-ué` 都是
+            // `uniq: unknown option -- ` + 单个 `c3` + 换行再跟 usage、退 1。
+            support::warn(&report.line_bytes(prog));
             usage(prog)
         }
         // C 的两句 errx（`uniq.c:91`、`:97`）：走 `vwarnx`，不缀 `errno` 句子，
