@@ -102,7 +102,12 @@ fn base_zero(piece: &str) -> Option<usize> {
 /// rest of the line passes through verbatim.
 pub fn unexpand_line(line: &str, options: &UnexpandOptions) -> String {
     let bytes = line.as_bytes();
-    let limit = options.stops.last().map_or(usize::MAX, |stop| stop - 1);
+    // C 这里减的是 `size_t`（`unexpand.c:146`），档位为 0 时它回绕成最大值而不是停下，
+    // 所以 `wrapping_sub` 才是 C 的那一步；裸减法在宿主调试构建里先触 trap，`-t 0` 就崩了。
+    let limit = options
+        .stops
+        .last()
+        .map_or(usize::MAX, |stop| stop.wrapping_sub(1));
     let mut out = String::new();
     let mut dcol = 0usize;
     let mut ocol = 0usize;
@@ -116,14 +121,17 @@ pub fn unexpand_line(line: &str, options: &UnexpandOptions) -> String {
             continue;
         }
         if byte == b'\t' {
+            // C 量不到下一档时会走 fall-through，把输入里这个制表符原样 `putchar`；
+            // 本壳在这一支把它吞掉，那是**另一处已登记的偏离**（`UNEXPAND-LAST-STOP-TAB-DROPPED`，
+            // 读数 `tmp/unexpand-425/tab-drop.log`），与本轮的「0 这一档不许崩」不是同一件事。
             if options.stops.is_empty() {
                 dcol = (1 + dcol / DEFAULT_STOP) * DEFAULT_STOP;
             } else {
                 let mut n = 0usize;
-                while n < options.stops.len() && options.stops[n] - 1 < dcol {
+                while n < options.stops.len() && options.stops[n].wrapping_sub(1) < dcol {
                     n += 1;
                 }
-                if n + 1 < options.stops.len() && options.stops[n] - 1 < limit {
+                if n + 1 < options.stops.len() && options.stops[n].wrapping_sub(1) < limit {
                     dcol = options.stops[n];
                 }
             }
@@ -546,5 +554,33 @@ mod tests {
             parse_unexpand_args(&["--", "-a"]).map(|a| a.operands),
             Ok(vec!["-a"])
         );
+    }
+
+    #[test]
+    fn a_zero_tabstop_wraps_its_limit_the_way_c_does() {
+        // `unexpand.c:146` 的 `limit = tabstops[nstops - 1] - 1` 与 `:157`/`:160`
+        // 那两处 `tabstops[n] - 1` 都是 `size_t` 的减法：档位给 0 时它们回绕成最大值，
+        // C 不停下也不报错。参照件现量 `-t 0` 与 `-t 0,8` 都是**整行原样交回、退 0**
+        // （`tmp/unexpand-425/ref-matrix.log`），所以本壳也不许在 0 这一档上崩掉。
+        assert_eq!(parse_stops("0"), Ok(vec![0]));
+        assert_eq!(parse_stops("0,8"), Ok(vec![0, 8]));
+        let zero = UnexpandOptions {
+            stops: vec![0],
+            all: false,
+        };
+        assert_eq!(unexpand_line("    abc", &zero), "    abc");
+        assert_eq!(unexpand_line("  ab", &zero), "  ab");
+        assert_eq!(unexpand_line("a\tb\tc", &zero), "a\tb\tc");
+        let zero_then_eight = UnexpandOptions {
+            stops: vec![0, 8],
+            all: false,
+        };
+        // 参照件现量 `-t 0,8` 对八空格是 `	x`（第 1 档 8 仍可用作 tab 出口），
+        // 而 `-t 0` 只有一档且它就是当前列，八空格原样交回（`tmp/unexpand-425/tab-drop.log`）。
+        assert_eq!(unexpand_line("        x", &zero_then_eight), "\tx");
+        assert_eq!(unexpand_line("        x", &zero), "        x");
+        // 这一支只为走进制表符那两处的 `wrapping_sub`（`  ` 之后已是第 2 列，档位 0 是最后一档）：
+        // 它的**输出形状**属另一处已登记的偏离（吞掉制表符），本轮不钉它的值，只要求不崩。
+        let _ = unexpand_line("  \tx", &zero_then_eight);
     }
 }

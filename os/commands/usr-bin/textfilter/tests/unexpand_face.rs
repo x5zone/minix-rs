@@ -330,3 +330,27 @@ fn scratch() -> std::path::PathBuf {
     fs::create_dir_all(&dir).expect("scratch dir");
     dir
 }
+
+/// 参照件 `tmp/unexpand-312/unexpand_ref` 现量（矩阵 `tmp/unexpand-425/ref-matrix.log`）：
+/// 档位为 `0` 不是一支「坏档位」，C 的 `strtoul` 收下它，`limit` 与两处 `tabstops[n] - 1`
+/// 都是 `size_t` 回绕，于是整行原样交回、退 0，而档位表照 `unexpand.c:124-125` 打到
+/// 标准错误。本壳以前在这里崩掉（`src/unexpand.rs` 里三处无符号减法在回绕前先触 trap）。
+#[test]
+fn a_zero_tabstop_reaches_the_line_unchanged() {
+    let (out, status, err) = run(&["-t", "0"], b"a\tb\tc\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("a\tb\tc\n", 0, "0 0\n")
+    );
+    let (out, status, err) = run(&["-t", "0,8"], b"    abc\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("    abc\n", 0, "0 0\n1 8\n")
+    );
+    // 无尾换行的输入也照 C 交回（`fgetln` 只给输入里有的字节）。
+    let (out, status, err) = run_bytes(&["-t", "0"], b"x\t y");
+    assert_eq!(
+        (out, status, err),
+        (b"x\t y"[..].to_vec(), 0, b"0 0\n".to_vec())
+    );
+}
