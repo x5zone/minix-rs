@@ -71,7 +71,8 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         ("seq", SEQ, 1, b"seq: unknown option -- \xc3\xaf\n"),
         // paste 已于批次四百零一换字节形，与 tr 同形。
         ("paste", PASTE, 1, b"paste: unknown option -- \xef\n"),
-        ("fold", FOLD, 1, b"fold: unknown option -- \xc3\xaf\n"),
+        // fold 已于批次四百零五换字节形，同 tr/paste。
+        ("fold", FOLD, 1, b"fold: unknown option -- \xef\n"),
         ("rev", REV, 1, b"rev: unknown option -- \xef\n"),
         // units 已于批次三百九十九换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD
         // 的第一字节），比仍按 char 渲染的 `c3 af` 少一个字节；C 那一侧是原字节 `ff`。
