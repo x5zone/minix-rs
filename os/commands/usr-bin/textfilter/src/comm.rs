@@ -31,8 +31,8 @@ pub struct CommOptions {
 pub struct CommLine<'a> {
     /// 1, 2, or 3 — the column the line prints in.
     pub column: u8,
-    /// The line itself, **as bytes**: C 的行腿 `getnextln` 用 `getc` 一字节一字节读
-    /// （`comm.c:204-215`）再 `printf("%s%s\n", col, line)`，全程不解码。
+    /// The line itself, **as bytes**: C 的行腿 `getnextln` 用 `getc` 一字节一字节填缓冲
+    /// （`comm.c:200-205`）再 `printf("%s%s\n", col, line)`（`:140`），全程不解码。
     pub text: &'a [u8],
 }
 

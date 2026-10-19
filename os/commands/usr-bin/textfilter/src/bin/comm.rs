@@ -97,7 +97,7 @@ fn operand_lines(prog: &str, name: &str) -> Vec<Vec<u8>> {
     split_lines(&input)
 }
 
-/// 按字节切行：C 的 `getnextln` 逐 `getc` 填缓冲（`comm.c:204-215`），非 UTF-8 字节
+/// 按字节切行：C 的 `getnextln` 逐 `getc` 填缓冲（`comm.c:200-205`），非 UTF-8 字节
 /// 只是那一行里的一个字节。旧写法 `from_utf8(input).unwrap_or("")` 让一枚坏字节抹掉
 /// 整个档的记录（现量见 `tmp/paste-comm-434/ab.log`：参照件打三列，旧本壳交回空）。
 fn split_lines(input: &[u8]) -> Vec<Vec<u8>> {

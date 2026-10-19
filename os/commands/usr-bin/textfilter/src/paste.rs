@@ -155,7 +155,7 @@ pub fn tr_delims(list: &str) -> Result<Vec<u8>, PasteError> {
 }
 
 /// 第 `gap` 个分隔符位的**字节**（表按位循环）。值为 0 的那位与空表都返回 `None`——
-/// C 的 `if (ch) putchar(ch)`（`paste.c:131-133`、`:146-150`、`:183-185`）就是
+/// C 的 `if (ch) putchar(ch)`（`paste.c:131-133`、`:148-150`、`:184-185`）就是
 /// 「占一位而不打任何东西」。交回 `u8` 而不是 `char`：`putchar` 收的是那一字节本身，
 /// 经 `char` 域再落进 `String` 会把裸 `ff` 写成 `c3 bf` 两字节。
 fn delimiter_byte(delimiters: &[u8], gap: usize) -> Option<u8> {
@@ -168,8 +168,9 @@ fn delimiter_byte(delimiters: &[u8], gap: usize) -> Option<u8> {
 /// 这里的游标从表的**第一项**开始（与并行模式不同，见 [`join_parallel`]），
 /// 且每发出一个分隔符就前进一位、走满一轮回到表头；值为 0 的位不打印但仍然占位。
 ///
-/// 行与分隔符都是字节：C 的 `sequential` 用 `fgets` 拿行、`putchar` 发行内容
-/// （`paste.c:171-190`），全程不解码，所以一个非 UTF-8 字节照样留在它那一行的原位。
+/// 行与分隔符都是字节：C 的 `sequential` 用 `fgets` 拿行、`printf("%s", buf)` 发行内容
+/// （`paste.c:175-191`），全程不解码，所以一个非 UTF-8 字节照样留在它那一行的原位
+/// （值为 0 的字节是那一条腿的另一件事：`%s` 在那里截断，另册登记）。
 pub fn join_serial(lines: &[&[u8]], options: &PasteOptions) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     for (index, line) in lines.iter().enumerate() {
@@ -198,9 +199,9 @@ pub fn join_serial(lines: &[&[u8]], options: &PasteOptions) -> Vec<u8> {
 /// （`paste.c:144-150`）。参照件 `paste -d '+:' a.txt b.txt a.txt`（a 三行、b 两行）
 /// 的第三行是 `3+:3`：`+` 是给见底的 b 补的，`:` 才是第三列自己前面的那一位。
 ///
-/// 行与分隔符都是字节（同 [`join_serial`]）：`parallel` 的 `fgetln` 拿到含换行的整行、
-/// 减掉换行后 `fwrite(line, len)` 原样发出（`paste.c:121-126`、`:137`），长度是量出来的
-/// 而不是编码算出来的。
+/// 行与分隔符都是字节（同 [`join_serial`]）：`parallel` 的 `fgetln` 拿到含换行的整行
+/// （`paste.c:121`），减掉末尾那枚换行（`:138-139`），再按**量出来的长度**发出
+/// （`:140` 的 `printf("%.*s", (int)line_len, line)`）——长度由 `fgetln` 交回，不由编码算出。
 pub fn join_parallel(columns: &[usize], sources: &[&[&[u8]]], options: &PasteOptions) -> Vec<u8> {
     let slots = &options.delimiters;
     let count = slots.len();
@@ -443,7 +444,7 @@ mod tests {
         );
     }
 
-    /// 分隔符位发出的是一**字节**：`putchar` 收下表项本身（`paste.c:131-133`、`:183-185`），
+    /// 分隔符位发出的是一**字节**：`putchar` 收下表项本身（`paste.c:131-133`、`:148-150`、`:184-185`），
     /// 裸 `ff` 写出去就是 `ff`。旧写法 `slots[dp] as char` 把它升成 U+00FF，落进 `String`
     /// 变成 `c3 bf` 两字节——比 C 多一字节。
     #[test]
