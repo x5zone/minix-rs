@@ -119,6 +119,17 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百二十二（P0 独立轮：`TEXTGAMES-ARGV-HOSTLEG-PANIC` 闭）：上一轮 A/B 现量逮住的 crash——宿主腿在校验它本该照单全收的 argv
+
+- **这一轮干什么**：批次四百二十一的 A/B 两形 DIFF 里，参照件打 `unknown option -- \xff`、本壳**直接 panic 退 134**——根因不在选项环，在 `src/bin_support.rs:43` 宿主腿的 `std::env::args()`（对非 UTF-8 参数 unwrap 即炸）；真机腿是 `minix_rt::crt0::args()` + `from_utf8_lossy`，从来不会炸。修法照 textfilter `bin_support.rs:51-57` 已定过口径的那条缝：宿主腿换 `args_os()` 保原字节、两条腿各自 lossy——**C 把 argv 当字节传，从不校验**，校验是 Rust 标准库强加的。`TEXTGAMES-ARGV-HOSTLEG-PANIC` 随本轮闭。
+- **缝的契约由一枚新门承载，报文归各壳自己的面门**：新 target `tests/argv_seam_face.rs` 一枚 `a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent`——给 wtf/fortune/random 各喂一枚裸 `\xff` 字节参数（`OsStr::from_bytes`，不经 UTF-8）与它的 lossy 等价串，**三样（退码、stdout、stderr）逐字节相同**，且哪支都不得以信号退出（`code() == None` 即崩）。三支壳吃这枚 token 的位置各不相同（random/wtf 走选项环、fortune 当档名），缝契约对三种位置都得成立。现量（修后）：random `unknown option -- \xef` + usage 退 1（lossy 后 U+FFFD 三字节的第一枚）、wtf usage 走 stdout 退 1、fortune `Cannot open \`-\xef\xbf\xbd'` 三段形退 1——三形的真值各自由 `random_face`/`wtf_face`/`fortune_face` 承载，这枚门只断两路相等。
+- **A/B 复跑**（`tmp/argv-422/ab.log`，同一份 `tmp/random-421/ab.py`）：**panic 消失**（`rc=-6` 零处），SAME 7 / DIFF 2 维持——但两形 DIFF 的**性质变了**：从「崩 vs 报文」变成「字母字节差一位」（参照件 `\xff`、本壳 lossy 后第一枚 `\xef`），这正是板上 A2 行参数缝半（射程②）的在册残差，本轮不动它。**交接 prompt 里预估的「SAME=8/DIFF=1」是错的**：两形 `\xff` 各自仍 DIFF（raw argv 的 `\xff` 一枚、`-e\xff` 一枚），登记的期望值也要按现量改，顺手修正于此。
+- **负控三枚：两枚咬住 + 一枚声明等价**（`tmp/argv-422/negctl.py`，读数 `negctl3.log`；整包 9 段 79 枚）。N1 宿主腿退回 `std::env::args()`（缺陷原样）⇒ 门咬（子进程 134）；N2 宿主腿撤 lossy（`from_utf8(...).unwrap_or_default()`，解不出就空串——真机腿的对应变异 `cfg(target_os="none")` 编译不进宿主套件，这是它的宿主代形）⇒ 门咬；N3 等价注入：lossy 换 `to_string_lossy()`（同一映射的另一种写法）⇒ 79 全绿是正确读数，证门钉的是契约不是表达式。**只有三枚是有意的**：本枚门的可观察面只有这条缝，各壳报文/环形状的注入批次四百二十一已在三份面门上做过，改环咬不到缝、硬塞就是制造未达标。注入形状错了一次被自查拦住：替换块把 `use OsStrExt` 一并换掉后 `into_vec` 找不到（它住在 `OsStringExt`），变异体自带 use 后过门。
+- **三件套**：① 真值锚点 `minix3/lib/libc/stdlib/getopt.c:79`/`:101-104`（argv 按字节走到选项环）、textfilter `os/commands/usr-bin/textfilter/src/bin_support.rs:51-57`（同一条缝的既定修法与注释）；② 门 +1（新 target `argv_seam_face`），负控 3 枚（2 咬 + 1 等价），A/B 复跑 9 形；③ 读数 宿主与容器各 **79 / 0 / 9 段**、三架构 `--bins` 全退 0、clippy 13 条且触及件零告警、rustfmt 零自漂移。读数全在 `tmp/argv-422/`。
+- **登记与余量**：本 P0 闭后，text-games 侧的 argv 话题只剩**参数缝半（射程②）**——lossy 让 `\xff` 变 U+FFFD，字母位差一位、fortune 的档名报文里是 `\xef\xbf\bd` 而不是原字节；它是 `GETOPT-REPORT-BYTE-LETTER` 的另一半（板上 A2 行），需要把 `args()` 改成交回字节（`Vec<Vec<u8>>`）或提供字节访问口，牵动 textfilter 与 text-games 两个 crate 的全部壳，非单轮量级，仍按板上行推进。
+
+---
+
 ## 批次四百二十一（A2 切片 26：text-games 的 `random`，自印 libc 句子的第一支）：这一支没有 `GetoptReport`，度量口径放宽才看得见它
 
 - **这一轮干什么**：A2 第二十六方落地，也是切片 25 放宽度量口径后新抓到的第一族。`os/commands/games/text-games` 不走 textfilter 的 `GetoptReport`：`src/lottery.rs:93` 的环交回 `Ring::Unknown(other as char)`、`src/bin/random.rs:48` 用 `format!("{prog}: {UNKNOWN_OPTION}{letter}\n")` 渲染——取法那半本就按字节（`for letter in body.bytes()`，`other` 是一枚 `u8`），渲染那半与 textfilter 那 25 支同错。改法两条：`Ring::Unknown(char)` 换成 **`Ring::Unknown(u8)`**（类型本身把「这是一枚字节」说出来），句子收进字节出口 **`lottery::unknown_option_line(prog, letter) -> Vec<u8>`**（`getopt.c:101-104` 的字面 + `:79` 的一枚原字节 + 换行），薄壳只负责接线。门两枚：库侧 `the_off_letter_is_a_byte_and_not_a_character` + `the_libc_line_writes_the_letter_as_the_byte_it_was_given`（`--lib` 32 → **34**）、面侧 `the_libc_line_of_a_multibyte_flag_is_one_byte_for_random`（`random_face` 24 → **25**，`-é`/`-eé` 逐字节 + U+0080 判据位 + `-x`/`-Zé` 两枚 ASCII 反面）。整包 **75 → 78 passed / 0 failed**（宿主与容器同读数，8 段）。
