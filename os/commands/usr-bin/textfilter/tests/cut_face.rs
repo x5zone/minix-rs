@@ -116,6 +116,33 @@ fn scratch(name: &str) -> PathBuf {
     path
 }
 
+/// 参照件读数 `tmp/cut-428/ref-s.log`：`-s` 之下「没有分隔符的行」整行消失（不是
+/// 一枚空行），而「有分隔符但选不出字段」的行仍留下一枚换行——两形只在换行上差一字节，
+/// 却正好是「这一行到底算不算被写过」。
+#[test]
+fn a_suppressed_line_leaves_nothing_behind() {
+    let (out, status, err) = run(&["-f", "3", "-s"], "x\na\tb\tc\n");
+    assert_eq!((out.as_str(), status, err.as_str()), ("c\n", 0, ""));
+    let (out, status, err) = run(&["-f", "3"], "x\na\tb\tc\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("x\nc\n", 0, ""),
+        "不带 `-s` 时那一行原样照抄，连自己的换行一起"
+    );
+    let (out, status, err) = run(&["-f", "9", "-s"], "a\tb\tc\n");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("\n", 0, ""),
+        "有分隔符而第 9 档选空：写了这一行，只是没写出字段"
+    );
+    let (out, status, err) = run(&["-f", "1", "-s"], "nosep");
+    assert_eq!(
+        (out.as_str(), status, err.as_str()),
+        ("", 0, ""),
+        "末行不带换行也一样不写"
+    );
+}
+
 #[test]
 fn usage_goes_to_stderr_as_three_tabbed_lines() {
     // C writes it with `fprintf(stderr, ...)`, and the string is three lines.

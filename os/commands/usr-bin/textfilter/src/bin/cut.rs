@@ -67,15 +67,20 @@ fn run() -> ! {
             let line = line.text();
             let mut out = vec![0u8; line.len() + 1];
             let selection = if selecting_bytes {
-                select_bytes(line, &ranges, &mut out)
+                // 字节腿没有「整行跳过」这一说：`-s` 只与 `-f` 并存（`cut.c:124`），
+                // 所以那一边的返回一律是「要写的一行」。
+                select_bytes(line, &ranges, &mut out).map(Some)
             } else {
                 select_fields(line, &ranges, delimiter, suppress, &mut out)
             };
             match selection {
-                Ok(len) => {
+                Ok(Some(len)) => {
                     support::emit(&out[..len]);
                     support::emit(b"\n");
                 }
+                // `-s` 且这一行没有分隔符：C 连换行都不打——`cut.c:248` 那一判不成立，
+                // `:253-254` 又跳过 `:279` 那句 `putchar('\n')`。
+                Ok(None) => {}
                 Err(_) => support::terminate(1),
             }
         }

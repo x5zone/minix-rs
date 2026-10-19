@@ -167,25 +167,32 @@ pub fn select_bytes(
 
 /// Select delimiter separated fields from `line`.
 ///
-/// Fields are 1 based; `ranges` reuse the same grammar. Lines without the
-/// delimiter print whole unless `suppress` (`-s`) is set. The delimiter is
-/// one byte.
+/// Fields are 1 based; `ranges` reuse the same grammar. The delimiter is one
+/// byte. The return says **how much of this line exists at all**: `Some(len)`
+/// is the selected bytes, and the caller terminates them as it terminates any
+/// output line; `None` means this line has no delimiter and `-s` is set, so C
+/// skips it whole — `cut.c:248` only hands the line to `fwrite` when `!sflag`,
+/// and `:253-254`'s `if (!isdelim) continue;` then jumps past the
+/// `putchar('\n')` at `:279`, so the line contributes **zero bytes**, not an
+/// empty line. A line
+/// that does carry the delimiter but selects nothing is the opposite case and
+/// stays `Some(0)` (参照件对 `-f 9 -s` 的 `a\tb\tc` 交回一枚换行).
 pub fn select_fields(
     line: &str,
     ranges: &[Range],
     delimiter: u8,
     suppress: bool,
     out: &mut [u8],
-) -> Result<usize, TextError> {
+) -> Result<Option<usize>, TextError> {
     if !line.as_bytes().contains(&delimiter) {
         if suppress {
-            return Ok(0);
+            return Ok(None);
         }
         if line.len() > out.len() {
             return Err(TextError::TooLong);
         }
         out[..line.len()].copy_from_slice(line.as_bytes());
-        return Ok(line.len());
+        return Ok(Some(line.len()));
     }
     let bytes = line.as_bytes();
     let mut written = 0;
@@ -218,7 +225,7 @@ pub fn select_fields(
         }
         pos += 1;
     }
-    Ok(written)
+    Ok(Some(written))
 }
 
 fn in_ranges(ranges: &[Range], field: u32) -> bool {
@@ -399,11 +406,12 @@ mod tests {
         String::from_utf8_lossy(&out[..len]).into_owned()
     }
 
-    fn fields_of(line: &str, list: &str, delimiter: u8, suppress: bool) -> String {
+    /// `None` 交回的是「这一行整行没写」，与空串（写了、但选不出字段）不是同一件事。
+    fn fields_of(line: &str, list: &str, delimiter: u8, suppress: bool) -> Option<String> {
         let ranges = parse_list(list).unwrap();
         let mut out = [0u8; 64];
-        let len = select_fields(line, &ranges, delimiter, suppress, &mut out).unwrap();
-        String::from_utf8_lossy(&out[..len]).into_owned()
+        let len = select_fields(line, &ranges, delimiter, suppress, &mut out).unwrap()?;
+        Some(String::from_utf8_lossy(&out[..len]).into_owned())
     }
 
     #[test]
@@ -421,15 +429,45 @@ mod tests {
 
     #[test]
     fn test_field_selection() {
-        assert_eq!(fields_of("a:b:c", "2", b':', false), "b");
-        assert_eq!(fields_of("a:b:c", "1,3", b':', false), "a:c");
-        assert_eq!(fields_of("a:b:c", "2-", b':', false), "b:c");
+        assert_eq!(fields_of("a:b:c", "2", b':', false).as_deref(), Some("b"));
+        assert_eq!(
+            fields_of("a:b:c", "1,3", b':', false).as_deref(),
+            Some("a:c")
+        );
+        assert_eq!(
+            fields_of("a:b:c", "2-", b':', false).as_deref(),
+            Some("b:c")
+        );
     }
 
     #[test]
     fn test_missing_delimiter_policy() {
-        assert_eq!(fields_of("abc", "1", b':', false), "abc");
-        assert_eq!(fields_of("abc", "1", b':', true), "");
+        assert_eq!(fields_of("abc", "1", b':', false).as_deref(), Some("abc"));
+        // `-s` 且这一行没有分隔符：整行跳过，一个字节都不交（`cut.c:248`/`:253-254`）。
+        assert_eq!(fields_of("abc", "1", b':', true), None);
+    }
+
+    /// 参照件读数 `tmp/cut-428/ref-s.log`：`-s` 吞的是「没有分隔符的那一行」，
+    /// 「有分隔符而选不出字段」那一行仍交一枚换行——两形在库里必须是两个值。
+    #[test]
+    fn a_suppressed_line_is_absent_rather_than_empty() {
+        let ranges = parse_list("9").unwrap();
+        let mut out = [0u8; 16];
+        assert_eq!(
+            select_fields("a\tb\tc", &ranges, b'\t', true, &mut out).unwrap(),
+            Some(0),
+            "第 9 档选空：这一行写了，只是写不出字段"
+        );
+        assert_eq!(
+            select_fields("alone", &ranges, b'\t', true, &mut out).unwrap(),
+            None,
+            "没有分隔符：这一行整行不存在"
+        );
+        assert_eq!(
+            select_fields("alone", &ranges, b'\t', false, &mut out).unwrap(),
+            Some(5),
+            "不带 `-s` 时原行照抄"
+        );
     }
 
     #[test]
