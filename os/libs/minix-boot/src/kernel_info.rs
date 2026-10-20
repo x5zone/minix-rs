@@ -405,6 +405,7 @@ pub struct BootModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minix_types::USER_STACK_TOP;
 
     /// R-07: Helper to build a valid KernelInfo for testing.
     fn make_valid_info() -> KernelInfo {
@@ -415,7 +416,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
             free_upper_idx: Some(256),
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[BootModule {

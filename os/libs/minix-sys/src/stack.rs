@@ -38,7 +38,7 @@
 //! kernel_utils.c:40-52). The boot path has `KernelInfo.user_sp` at hand,
 //! and the pure function stays testable without a mapped kernel page.
 
-use minix_types::{PMEF_AUXVECTORS, PMEF_EXECNAMELEN1, PsStrings};
+use minix_types::{PMEF_AUXVECTORS, PMEF_EXECNAMELEN1, PsStrings, USER_STACK_TOP};
 
 /// Pointer/word size in the frame — one slot per argv/envp entry.
 const WORD: usize = core::mem::size_of::<usize>();
@@ -269,7 +269,7 @@ mod stack_frame_tests {
     /// ps_strings content — the whole `_start` contract.
     #[test]
     fn test_stack_fill_boot_path_bytes() {
-        const USER_SP: u64 = 0x7fff_ffff_f000;
+        const USER_SP: u64 = USER_STACK_TOP as u64;
         let path = "/sbin/rs";
         let params = stack_params(&[path], &[]);
         assert_eq!(params.argc, 1);

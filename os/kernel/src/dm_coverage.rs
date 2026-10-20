@@ -398,7 +398,7 @@ use crate::IDENTITY_MAP_END;
 mod tests {
     use super::*;
     use minix_boot::{KernelInfo, MemoryRegion};
-    use minix_types::VirBytes;
+    use minix_types::{USER_STACK_TOP, VirBytes};
 
     /// Mock-mode regression: establishment over a synthetic memmap runs
     /// through the registry-backed MockDmCoverage without touching real
@@ -418,7 +418,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
             free_upper_idx: None,
-            user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
+            user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: minix_types::VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: minix_types::VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
@@ -461,7 +461,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
             free_upper_idx: None,
-            user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
+            user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: minix_types::VirBytes(0xFFFF_8000_0020_0000),
             syscall_entry: minix_types::VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
@@ -503,7 +503,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: modules,
@@ -547,7 +547,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: MODS,
@@ -606,7 +606,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: MODS,
@@ -659,7 +659,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
@@ -731,7 +731,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200_000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
@@ -790,7 +790,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
@@ -816,7 +816,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x4020_0000),
             kern_size: 0x200_000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x0000_7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],

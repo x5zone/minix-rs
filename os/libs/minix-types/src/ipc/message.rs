@@ -3927,6 +3927,8 @@ impl Default for MessLcIpcShmctl {
 }
 
 #[cfg(test)]
+    // 本模块测试内的 0x0000_7fff_ffff_f000 字面量为 wire 编码语义
+    //（64 位车道装得下），非翻译语义——A9 清扫豁免（ADDRESS-CONSTANT-AUDIT A9）。
 mod tests {
     use super::*;
     use core::mem::size_of;
