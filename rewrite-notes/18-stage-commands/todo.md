@@ -119,6 +119,42 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十七（在册项落地：`column` 的空行集补回 C locale `isspace` 的三枚）
+
+**这一轮在做的事**。批次四百三十五收尾时登记了一项未执行的差异：`column` 判空行的那一跳只认空格与
+制表符，而 C 认的是 `isspace` 整张表。本轮把它落地——差异本身只有一行判据，但它决定一条记录到底
+算不算存在。
+
+**C 的那一侧长什么样**。`minix3/usr.bin/column/column.c:input` 在 `fgetln` 之后先扫前导空白：
+`for (p = buf; *p && isspace((unsigned char)*p); ++p);` 紧跟 `if (!*p) { free(buf); continue; }`。
+C locale 的 `isspace` 表里有六枚：空格、制表、换行、垂直制表（`0b`）、换页（`0c`）、回车（`0d`）。
+判空的次序也在意：它排在「找行内换行符」那一判**之前**，所以一条整是空白的末行先被认定为空行、
+静默丢弃，轮不到「末行没有换行符」那句 `column: line too long` 警告，退码也不置一。
+
+**如果按窄集判会怎样**。一条只由垂直制表符组成的末行会被当成条目收进池子，收进池子之后它撑不起
+任何布局宽度，却已经让 `maxlength` 与条目数变了；更要紧的是它走的是「残行」那一支，于是本壳多打
+一句警告、退码由 0 变 1——同一份输入，参照件交一张白页，本壳交一条错误。
+
+**改了什么**（`os/commands/usr-bin/textfilter/src/column.rs:scan_entries`）。前导空白那一跳的判据由
+`b' ' | b'\t'` 扩到与 `isspace` 同集的六枚字节；判空仍排在残行判之前（这一条次序本壳已按 C 摆好，
+本轮只是把字节表补齐）。
+
+**门与读数**。库门新增 `a_blank_line_is_any_run_of_isspace_bytes_not_just_space_and_tab`：夹具写字面
+字节，`0b 0c` 一条、`0d` 一条、末尾空串一条，三条全被丢弃且残行计数为零；反面对照 `0b` 加一枚 `x`
+与 `y` 加一枚 `0d` 仍按原字节入池。现量对照经同名软链起的参照件（`-Z` 先验归属，字样是
+`column: unknown option -- Z`）：空白集六形全部 `rc=0` 且输出为空，与本壳逐字节一致
+（`tmp/column-437/blankset.log`；登记时那一轮的读数是四形 `rc=1` 带 `line too long`，
+存 `tmp/column-435/blankset.log`）。`column` 全谱 A/B 十二形仍全同（`tmp/column-437/ab.log`）。
+宿主与容器各 68 段 1208 通过 / 0 失败（`tmp/column-437/host.log`、`tmp/column-437/container.log`）；
+三架构 `cargo build --bins` 退 0；`rustfmt` 零漂移；`clippy` 在 `column.rs` 上零告警。
+负控四枚咬住、一枚等价全绿（`tmp/column-437/negctl.log`）：窄集、用 `is_ascii_whitespace`（它不含
+垂直制表）、去掉换页符三形都咬在新门上；把空白整条改判成残行那一形咬在既有门
+`test_unterminated_tail_line_is_dropped_and_counted` 上——判空与判残的次序本来就有主人看着；
+等价形（判据里去掉换行符）全绿，因为行早已按 `\n` 切开，那一枚在该处不可达。
+
+**余量**。普查的乙组（`from_utf8_lossy` 一族 22 处）与丙组（`units`、`tsort` 自带夹具的支）仍未执行；
+`PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`（批次四百三十六登记）在册。
+
 ## 批次四百三十六（甲组最后一支：`pr` 的行腿、分页腿、跨列腿、并排腿一起按字节）
 
 **这一轮在做的事**。批次四百三十三的普查把「先把整份输入解一次 UTF-8、再按换行切」这个形状量成三组，
