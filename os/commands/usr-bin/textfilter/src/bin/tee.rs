@@ -9,18 +9,17 @@
 //! signal face (ignore SIGINT) is not wired in this no_std userland and
 //! stays deferred. Real-machine file creation is gated at C-57/E5.
 
-
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{close, open, read, write, Fd};
+use minix_sys::{Fd, close, open, read, write};
 
 // `open` flags from `minix3/sys/sys/fcntl.h` (the Minix values, not the
 // Linux ones): O_WRONLY 0x1 (:65), O_APPEND 0x8 (:82), O_CREAT 0x200 (:99),
@@ -45,17 +44,17 @@ enum TeeArgError {
 /// pending), any other letter is a usage error. `--` ends option scanning; every
 /// remaining word is an output file. tee's input is always stdin, so a bare `-`
 /// operand is just a file named `-` (`tee.c:102` `open`s it literally).
-fn parse_tee_args<'a>(argv: &'a [&'a str]) -> Result<(bool, Vec<&'a str>), TeeArgError> {
+fn parse_tee_args<'a>(argv: &[&'a [u8]]) -> Result<(bool, Vec<&'a [u8]>), TeeArgError> {
     let mut append = false;
-    let mut operands: Vec<&'a str> = Vec::new();
+    let mut operands: Vec<&'a [u8]> = Vec::new();
     let mut index = 0usize;
     while index < argv.len() {
         let arg = argv[index];
-        if arg == "--" {
+        if arg == b"--" {
             operands.extend_from_slice(&argv[index + 1..]);
             break;
         }
-        let bytes = arg.as_bytes();
+        let bytes = arg;
         if bytes.len() > 1 && bytes[0] == b'-' {
             // Scan the token's option letters (getopt clusters them).
             for &letter in &bytes[1..] {
@@ -84,8 +83,8 @@ fn open_flags(append: bool) -> i32 {
 }
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let words: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let words: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let (append, operands) = match parse_tee_args(&words[1..]) {
         Ok(parsed) => parsed,
         Err(TeeArgError::SignalPending) => {
@@ -103,10 +102,13 @@ fn run() -> ! {
     let mut files: Vec<(Fd, String)> = Vec::new();
     let mut rval = 0;
     for operand in &operands {
-        match open(operand, open_flags(append), 0o666) {
-            Ok(fd) => files.push((fd, (*operand).to_string())),
+        // 开档与回显那两句要文本形：`minix_sys::open` 的路径参数收 `&str`
+        // （`ARGV-BYTE-PATH-IN-LIBS` 在册），所以非 UTF-8 的档名在这一句被折叠。
+        let name = String::from_utf8_lossy(operand).into_owned();
+        match open(&name, open_flags(append), 0o666) {
+            Ok(fd) => files.push((fd, name)),
             Err(_) => {
-                support::warn(format!("tee: {operand}\n").as_bytes());
+                support::warn(format!("tee: {name}\n").as_bytes());
                 rval = 1;
             }
         }
@@ -170,25 +172,31 @@ mod tests {
 
     #[test]
     fn operands_collected_in_order() {
-        let (append, operands) = parse_tee_args(&["a.txt", "b.txt"]).unwrap();
+        let (append, operands) = parse_tee_args(&["a.txt".as_bytes(), "b.txt".as_bytes()]).unwrap();
         assert!(!append);
-        assert_eq!(operands, ["a.txt", "b.txt"]);
+        assert_eq!(operands, ["a.txt".as_bytes(), "b.txt".as_bytes()]);
     }
 
     #[test]
     fn dash_a_selects_append() {
-        let (append, _) = parse_tee_args(&["-a", "f"]).unwrap();
+        let (append, _) = parse_tee_args(&["-a".as_bytes(), "f".as_bytes()]).unwrap();
         assert!(append);
     }
 
     #[test]
     fn dash_i_is_deferred() {
-        assert_eq!(parse_tee_args(&["-i", "f"]), Err(TeeArgError::SignalPending));
+        assert_eq!(
+            parse_tee_args(&["-i".as_bytes(), "f".as_bytes()]),
+            Err(TeeArgError::SignalPending)
+        );
     }
 
     #[test]
     fn unknown_flag_is_a_usage_error() {
-        assert_eq!(parse_tee_args(&["-z", "f"]), Err(TeeArgError::BadFlag));
+        assert_eq!(
+            parse_tee_args(&["-z".as_bytes(), "f".as_bytes()]),
+            Err(TeeArgError::BadFlag)
+        );
     }
 
     #[test]
@@ -196,39 +204,49 @@ mod tests {
         // 关键回归：C getopt("ai") 接受聚簇，旧整 token 匹配把 `-ai` 误拒。
         // `-a` 后接 `-i`：聚簇命中 -i → 仍按信号未接报 SignalPending。
         assert_eq!(
-            parse_tee_args(&["-ai", "f"]),
+            parse_tee_args(&["-ai".as_bytes(), "f".as_bytes()]),
             Err(TeeArgError::SignalPending)
         );
         assert_eq!(
-            parse_tee_args(&["-ia", "f"]),
+            parse_tee_args(&["-ia".as_bytes(), "f".as_bytes()]),
             Err(TeeArgError::SignalPending)
         );
         // 纯聚簇 -a 两次幂等仍为 append。
-        let (append, operands) = parse_tee_args(&["-aa", "f"]).unwrap();
+        let (append, operands) = parse_tee_args(&["-aa".as_bytes(), "f".as_bytes()]).unwrap();
         assert!(append);
-        assert_eq!(operands, ["f"]);
+        assert_eq!(operands, ["f".as_bytes()]);
         // 聚簇里混入集外字母 → BadFlag（C `default:`）。
-        assert_eq!(parse_tee_args(&["-az", "f"]), Err(TeeArgError::BadFlag));
+        assert_eq!(
+            parse_tee_args(&["-az".as_bytes(), "f".as_bytes()]),
+            Err(TeeArgError::BadFlag)
+        );
     }
 
     #[test]
     fn double_dash_ends_option_scanning() {
-        let (append, operands) = parse_tee_args(&["-a", "--", "-i", "f"]).unwrap();
+        let (append, operands) = parse_tee_args(&[
+            "-a".as_bytes(),
+            "--".as_bytes(),
+            "-i".as_bytes(),
+            "f".as_bytes(),
+        ])
+        .unwrap();
         assert!(append);
-        assert_eq!(operands, ["-i", "f"]);
+        assert_eq!(operands, ["-i".as_bytes(), "f".as_bytes()]);
     }
 
     #[test]
     fn flags_and_files_mix_in_any_order() {
-        let (append, operands) = parse_tee_args(&["f1", "-a", "f2"]).unwrap();
+        let (append, operands) =
+            parse_tee_args(&["f1".as_bytes(), "-a".as_bytes(), "f2".as_bytes()]).unwrap();
         assert!(append);
-        assert_eq!(operands, ["f1", "f2"]);
+        assert_eq!(operands, ["f1".as_bytes(), "f2".as_bytes()]);
     }
 
     #[test]
     fn bare_dash_is_a_literal_output_file() {
-        let (_, operands) = parse_tee_args(&["-"]).unwrap();
-        assert_eq!(operands, ["-"]);
+        let (_, operands) = parse_tee_args(&["-".as_bytes()]).unwrap();
+        assert_eq!(operands, ["-".as_bytes()]);
     }
 
     #[test]
@@ -237,7 +255,6 @@ mod tests {
         assert_eq!(open_flags(true), O_WRONLY | O_CREAT | O_APPEND);
     }
 }
-
 
 #[cfg(all(not(test), target_os = "none"))]
 #[unsafe(no_mangle)]
