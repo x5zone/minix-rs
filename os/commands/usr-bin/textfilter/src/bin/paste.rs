@@ -38,12 +38,12 @@ mod support;
 use minix_textfilter::paste::{PasteError, join_parallel, join_serial, parse_paste_args};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let words: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let parsed = match parse_paste_args(&words) {
         Ok(parsed) => parsed,
-        Err(error) => fail(prog, &error),
+        Err(error) => fail(&prog, &error),
     };
     let options = parsed.options;
     let operands = parsed.operands;
@@ -57,7 +57,7 @@ fn run() -> ! {
     let mut columns: Vec<usize> = Vec::new();
     let mut stdin_source: Option<usize> = None;
     for operand in &operands {
-        if *operand == "-" {
+        if *operand == b"-" {
             let index = match stdin_source {
                 Some(index) => index,
                 None => {
@@ -69,13 +69,17 @@ fn run() -> ! {
             columns.push(index);
             continue;
         }
-        match support::read_file(operand) {
+        // 开档与 echo 那两句要文本形：`read_file` 落到 `minix_sys` 的 `open(2)`，
+        // `warn_line` 的 label 是 `&str`（`ARGV-BYTE-PATH-IN-LIBS` 在册）。于是非 UTF-8 的
+        // 档名在这一句被折叠、报文里打出的也是折叠后的字节——行内容不经过这一步。
+        let path = String::from_utf8_lossy(operand).into_owned();
+        match support::read_file(&path) {
             Ok(data) => {
                 sources.push(split_lines(&data));
                 columns.push(sources.len() - 1);
             }
             Err(errno) => {
-                support::warn_line(prog, operand, errno);
+                support::warn_line(&prog, &path, errno);
                 if options.serial {
                     // `sequential` 的那一支是 `warn` + `continue`（`paste.c:166-169`）
                     continue;

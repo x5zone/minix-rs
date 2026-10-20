@@ -41,7 +41,7 @@ pub struct PasteArgs<'a> {
     pub options: PasteOptions,
     /// 环**不重排**：第一个不是选项的 token 及其后所有 token 都是操作数
     /// （`paste.c:85-86` 的 `argc -= optind; argv += optind;`）。
-    pub operands: Vec<&'a str>,
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// 前门的错，按 C 的出口分两支。
@@ -63,12 +63,12 @@ pub enum PasteError {
 ///    而不是集外字母——错误出口的**先后**就是扫描的先后；
 /// ② 操作数**没有个数判**：`paste` 不带操作数既不读标准输入也不报错，退 0 打空；
 /// ③ `-d` 的值可以紧贴本 token（`-d,`、`-ds` 的 `s` 是值而不是旗标）。
-pub fn parse_paste_args<'a>(args: &'a [&'a str]) -> Result<PasteArgs<'a>, PasteError> {
+pub fn parse_paste_args<'a>(args: &[&'a [u8]]) -> Result<PasteArgs<'a>, PasteError> {
     const OPTSTRING: &[u8] = b"d:s";
     let mut options = PasteOptions::default();
     let mut i = 0usize;
     while i < args.len() {
-        let token = args[i].as_bytes();
+        let token = args[i];
         // `getopt.c:74-78`：首字符不是 `-`（或整个 token 就是一个 `-`）⇒ 收环且不推进 `optind`；
         // `getopt.c:81-85`：`--` 结束环并吃掉自身。
         if token.len() < 2 || token[0] != b'-' {
@@ -126,8 +126,8 @@ pub fn parse_paste_args<'a>(args: &'a [&'a str]) -> Result<PasteArgs<'a>, PasteE
 
 /// C 的 `tr()`：就地转换 `\n`、`\t`、`\0`，认不出的转义**丢掉反斜杠**留下后随字符，
 /// 返回**位数**（值 0 的那项照样计一位）。空串 ⇒ [`PasteError::NoDelimiters`]。
-pub fn tr_delims(list: &str) -> Result<Vec<u8>, PasteError> {
-    let bytes = list.as_bytes();
+pub fn tr_delims(list: &[u8]) -> Result<Vec<u8>, PasteError> {
+    let bytes = list;
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0usize;
     while i < bytes.len() {
@@ -259,7 +259,7 @@ pub fn join_parallel(columns: &[usize], sources: &[&[&[u8]]], options: &PasteOpt
 }
 
 /// 只要选项的一瞥（操作数由前门 [`parse_paste_args`] 给出）。
-pub fn parse_args(args: &[&str]) -> Result<PasteOptions, PasteError> {
+pub fn parse_args(args: &[&[u8]]) -> Result<PasteOptions, PasteError> {
     Ok(parse_paste_args(args)?.options)
 }
 
@@ -267,7 +267,7 @@ pub fn parse_args(args: &[&str]) -> Result<PasteOptions, PasteError> {
 mod tests {
     use super::*;
 
-    fn args<'a>(list: &'a [&'a str]) -> PasteArgs<'a> {
+    fn args<'a>(list: &[&'a [u8]]) -> PasteArgs<'a> {
         parse_paste_args(list).expect("the front door should accept")
     }
 
@@ -275,21 +275,21 @@ mod tests {
     fn test_ring_only_says_once() {
         // 集外字母：libc 一行 + usage，且**只有一行 libc**（`usage()` 在环里就退出）
         assert_eq!(
-            parse_paste_args(&["-Z", "-h"]),
+            parse_paste_args(&["-Z".as_bytes(), "-h".as_bytes()]),
             Err(PasteError::Usage {
                 reports: vec![crate::GetoptReport::UnknownOption('Z')]
             })
         );
         // `-d` 缺值走的是 libc 的第二种报文
         assert_eq!(
-            parse_paste_args(&["-d"]),
+            parse_paste_args(&["-d".as_bytes()]),
             Err(PasteError::Usage {
                 reports: vec![crate::GetoptReport::MissingValue('d')]
             })
         );
         // 坏字母排在好字母之后也一样只报坏的那个
         assert_eq!(
-            parse_paste_args(&["-sZ", "a.txt"]),
+            parse_paste_args(&["-sZ".as_bytes(), "a.txt".as_bytes()]),
             Err(PasteError::Usage {
                 reports: vec![crate::GetoptReport::UnknownOption('Z')]
             })
@@ -300,12 +300,12 @@ mod tests {
     fn test_error_order_follows_the_scan() {
         // `-d ''` 在环内就撞上 `tr()` ⇒ 「没有分隔符」先报，后面的集外字母轮不到
         assert_eq!(
-            parse_paste_args(&["-d", "", "-Z"]),
+            parse_paste_args(&["-d".as_bytes(), "".as_bytes(), "-Z".as_bytes()]),
             Err(PasteError::NoDelimiters)
         );
         // 反过来，坏字母在前时就轮不到 `-d`
         assert_eq!(
-            parse_paste_args(&["-Z", "-d", ""]),
+            parse_paste_args(&["-Z".as_bytes(), "-d".as_bytes(), "".as_bytes()]),
             Err(PasteError::Usage {
                 reports: vec![crate::GetoptReport::UnknownOption('Z')]
             })
@@ -315,15 +315,15 @@ mod tests {
     #[test]
     fn test_operands_are_not_reordered() {
         // 第一个非选项 token 及其后一切全是操作数：`paste a.txt -s` 的 `-s` 是第二个档名
-        let parsed = args(&["a.txt", "-s"]);
-        assert_eq!(parsed.operands, vec!["a.txt", "-s"]);
+        let parsed = args(&["a.txt".as_bytes(), "-s".as_bytes()]);
+        assert_eq!(parsed.operands, vec!["a.txt".as_bytes(), "-s".as_bytes()]);
         assert!(!parsed.options.serial);
         // `--` 结束环且自身不是操作数
-        let parsed = args(&["--", "-s"]);
-        assert_eq!(parsed.operands, vec!["-s"]);
+        let parsed = args(&["--".as_bytes(), "-s".as_bytes()]);
+        assert_eq!(parsed.operands, vec!["-s".as_bytes()]);
         // 裸 `-` 是操作数（C 拿它当标准输入），且它**不**结束环之前的扫描
-        let parsed = args(&["-", "b.txt"]);
-        assert_eq!(parsed.operands, vec!["-", "b.txt"]);
+        let parsed = args(&["-".as_bytes(), "b.txt".as_bytes()]);
+        assert_eq!(parsed.operands, vec!["-".as_bytes(), "b.txt".as_bytes()]);
     }
 
     #[test]
@@ -332,40 +332,49 @@ mod tests {
         let parsed = args(&[]);
         assert!(parsed.operands.is_empty());
         assert_eq!(parsed.operands.len(), 0);
-        let parsed = args(&["--"]);
+        let parsed = args(&["--".as_bytes()]);
         assert!(parsed.operands.is_empty());
     }
 
     #[test]
     fn test_attached_values_and_clusters() {
         // `-d,` 的值紧贴本 token
-        let parsed = args(&["-d,", "a.txt"]);
+        let parsed = args(&["-d,".as_bytes(), "a.txt".as_bytes()]);
         assert_eq!(parsed.options.delimiters, vec![b',']);
         // `-ds`：`s` 是 `d` 的值，不是旗标
-        let parsed = args(&["-ds", "a.txt"]);
+        let parsed = args(&["-ds".as_bytes(), "a.txt".as_bytes()]);
         assert_eq!(parsed.options.delimiters, vec![b's']);
         assert!(!parsed.options.serial);
         // 值取自下一个 token 时，`optind` 要越过它
-        let parsed = args(&["-s", "-d", "+:", "a.txt", "b.txt"]);
+        let parsed = args(&[
+            "-s".as_bytes(),
+            "-d".as_bytes(),
+            "+:".as_bytes(),
+            "a.txt".as_bytes(),
+            "b.txt".as_bytes(),
+        ]);
         assert!(parsed.options.serial);
         assert_eq!(parsed.options.delimiters, vec![b'+', b':']);
-        assert_eq!(parsed.operands, vec!["a.txt", "b.txt"]);
+        assert_eq!(
+            parsed.operands,
+            vec!["a.txt".as_bytes(), "b.txt".as_bytes()]
+        );
     }
 
     #[test]
     fn test_tr_matches_the_c_table() {
-        assert_eq!(tr_delims("\\n").unwrap(), vec![b'\n']);
-        assert_eq!(tr_delims("\\t").unwrap(), vec![b'\t']);
+        assert_eq!(tr_delims(b"\\n".as_slice()).unwrap(), vec![b'\n']);
+        assert_eq!(tr_delims(b"\\t".as_slice()).unwrap(), vec![b'\t']);
         // `\0` 是一**位**，值为 0
-        assert_eq!(tr_delims("\\0").unwrap(), vec![0]);
+        assert_eq!(tr_delims(b"\\0".as_slice()).unwrap(), vec![0]);
         // 认不出的转义丢掉反斜杠（与 `seq` 的 unescape 相反）
-        assert_eq!(tr_delims("\\q").unwrap(), vec![b'q']);
+        assert_eq!(tr_delims(b"\\q".as_slice()).unwrap(), vec![b'q']);
         // `a\0b` 是三位：'a'、值为 0 的一位、'b'
-        assert_eq!(tr_delims("a\\0b").unwrap(), vec![b'a', 0, b'b']);
+        assert_eq!(tr_delims(b"a\\0b".as_slice()).unwrap(), vec![b'a', 0, b'b']);
         // 串尾孤零零一个反斜杠：反斜杠不成位
-        assert_eq!(tr_delims("x\\").unwrap(), vec![b'x']);
-        assert_eq!(tr_delims(""), Err(PasteError::NoDelimiters));
-        assert_eq!(tr_delims("\\"), Err(PasteError::NoDelimiters));
+        assert_eq!(tr_delims(b"x\\".as_slice()).unwrap(), vec![b'x']);
+        assert_eq!(tr_delims(b"".as_slice()), Err(PasteError::NoDelimiters));
+        assert_eq!(tr_delims(b"\\".as_slice()), Err(PasteError::NoDelimiters));
     }
 
     #[test]
@@ -486,12 +495,63 @@ mod tests {
     #[test]
     fn test_parse_keeps_the_options_only_view() {
         assert_eq!(
-            parse_args(&["-s", "-d", ","]),
+            parse_args(&["-s".as_bytes(), "-d".as_bytes(), ",".as_bytes()]),
             Ok(PasteOptions {
                 delimiters: vec![b','],
                 serial: true
             })
         );
-        assert_eq!(parse_args(&["-d", ""]), Err(PasteError::NoDelimiters));
+        assert_eq!(
+            parse_args(&["-d".as_bytes(), "".as_bytes()]),
+            Err(PasteError::NoDelimiters)
+        );
+    }
+
+    /// 集外字母那一行的字母位是 argv 里的**那一枚字节**：`minix3/lib/libc/stdlib/getopt.c:79`
+    /// 的 `optopt = *place++` 取的是字节，`minix3/usr.bin/paste/paste.c:80-82` 的
+    /// `default: usage()` 就地退出，所以一枚裸 `ff` 只有一个字母位可报。参数缝按字节交回之后
+    /// 这一条腿不再经过 `from_utf8_lossy`——旧写法把 `ff` 折叠成 `ef bf bd`，报文里因此是 `ef`；
+    /// 参照件 `tmp/paste-321/paste_ref` 现量同为单个 `ff`（`tmp/argv-441/measure-ref.log`）。
+    #[test]
+    fn parse_paste_names_a_raw_ff_option_letter_by_that_byte() {
+        let flag: Vec<u8> = [b"-".as_slice(), b"\xff".as_slice()].concat();
+        assert_eq!(
+            parse_paste_args(&[flag.as_slice()]),
+            Err(PasteError::Usage {
+                reports: vec![crate::GetoptReport::UnknownOption('\u{00ff}')]
+            })
+        );
+        assert_eq!(
+            crate::GetoptReport::UnknownOption('\u{00ff}').line_bytes("paste"),
+            [
+                b"paste: unknown option -- ".as_slice(),
+                b"\xff".as_slice(),
+                b"\n".as_slice()
+            ]
+            .concat()
+        );
+    }
+
+    /// `-d` 的**值**同样是一串字节：C 的 `tr()` 按位扫过那张表（`paste.c:199-226`），
+    /// 非 UTF-8 字节只是表里的**一位**。旧写法经 lossy 把一枚 `ff` 变成 `ef bf bd` **三位**，
+    /// 于是 `paste -d\xff a.txt b.txt` 交出 `1\xefa`（`ef` 用在这一行，`bf`、`bd` 轮到后面
+    /// 两行），参照件现量是每行一枚 `ff`。
+    #[test]
+    fn parse_paste_keeps_a_nonutf8_delimiter_byte_as_one_slot() {
+        let attached: Vec<u8> = [b"-d".as_slice(), b"\xff".as_slice()].concat();
+        let parsed = args(&[attached.as_slice(), "a.txt".as_bytes(), "b.txt".as_bytes()]);
+        assert_eq!(parsed.options.delimiters, vec![0xff]);
+        assert_eq!(
+            parsed.operands,
+            vec!["a.txt".as_bytes(), "b.txt".as_bytes()]
+        );
+        // 紧贴 ASCII 时是**两位**：一枚 `ff`、一个 `+`
+        let two: Vec<u8> = [b"-d".as_slice(), b"\xff".as_slice(), b"+".as_slice()].concat();
+        let parsed = args(&[two.as_slice(), "a.txt".as_bytes()]);
+        assert_eq!(parsed.options.delimiters, vec![0xff, b'+']);
+        // 值取自下一个 token 时同样按字节
+        let separate: Vec<u8> = [b"\xff".as_slice(), b"+".as_slice()].concat();
+        let parsed = args(&["-d".as_bytes(), separate.as_slice(), "a.txt".as_bytes()]);
+        assert_eq!(parsed.options.delimiters, vec![0xff, b'+']);
     }
 }

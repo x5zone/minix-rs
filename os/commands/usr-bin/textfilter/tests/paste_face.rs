@@ -26,7 +26,9 @@
 mod face_support;
 
 use face_support::write_stdin;
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -57,6 +59,26 @@ fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
 fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(PASTE)
         .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the paste binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 同一条命令缝，但 argv **逐字节**交回：`OsString::from_vec` 不经 UTF-8 校验，
+/// 所以一枚裸 `ff` 能原样到达 `paste` 的 `argv`——这是 `bin_support::args_bytes` 那条腿
+/// 唯一的可观察面（`run`/`run_bytes` 的 `&str` 形只能交出合法字节）。
+fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(PASTE)
+        .args(args.iter().map(|raw| OsString::from_vec(raw.clone())))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -322,6 +344,83 @@ fn an_operand_line_that_is_not_utf8_keeps_every_byte() {
     // 标准输入这一腿也一样：末行没有换行照样是一行
     let (out, _, _) = run_bytes(&["-", raw.as_str()], b"p\n\xffq\n");
     assert_eq!(out, b"p\ta\xffb\n\xffq\tc\n");
+}
+
+/// 集外字母那一行的字母位是 argv 里的**那一枚裸字节** `ff`：`bin_support::args_bytes`
+/// 把 argv 原样交回，`src/paste.rs` 取的是那一字节，`line_bytes` 把它一枚一枚写出去。
+/// 参照件 `tmp/paste-321/paste_ref` 现量同形（`tmp/argv-441/measure-ref.log`），
+/// 改前的本壳交回的是折叠后的第一字节 `ef`（`tmp/argv-441/before-probe.log`）。
+#[test]
+fn a_raw_ff_option_letter_is_reported_as_that_byte() {
+    let flag: Vec<u8> = [b"-".as_slice(), b"\xff"].concat();
+    let (out, code, err) = run_raw(&[flag], b"");
+    assert_eq!((out, code), (Vec::new(), 1));
+    assert_eq!(
+        err,
+        [
+            b"paste: unknown option -- ".as_slice(),
+            b"\xff",
+            b"\n".as_slice(),
+            USAGE.as_bytes()
+        ]
+        .concat()
+    );
+}
+
+/// `-d` 的**值**里那枚非 UTF-8 字节是分隔符表的**一位**：改前经 lossy 折叠成
+/// `ef bf bd` 三位，于是 `paste -d\xff a.txt b.txt` 打的是 `1\xefa`（`ef` 用在第一行，
+/// `bf`、`bd` 轮到后面两行）；参照件现量是每行一枚 `ff`（`tmp/argv-441/measure-ref.log`）。
+#[test]
+fn a_raw_nonutf8_delimiter_byte_is_one_slot() {
+    let (a, b, _) = operands("delimbyte");
+    let attached: Vec<u8> = [b"-d".as_slice(), b"\xff"].concat();
+    let (out, code, err) = run_raw(
+        &[attached, a.as_bytes().to_vec(), b.as_bytes().to_vec()],
+        b"",
+    );
+    assert_eq!((code, err), (0, Vec::new()));
+    assert_eq!(out, b"1\xffa\n2\xffb\n3\xff\n");
+
+    // 顺序模式同一枚表：三行之间两枚 `ff`（一位表按位循环）
+    let attached: Vec<u8> = [b"-d".as_slice(), b"\xff"].concat();
+    let (out, code, err) = run_raw(
+        &[
+            b"-s".to_vec(),
+            attached,
+            a.as_bytes().to_vec(),
+            b.as_bytes().to_vec(),
+        ],
+        b"",
+    );
+    assert_eq!((code, err), (0, Vec::new()));
+    assert_eq!(out, b"1\xff2\xff3\na\xffb\n");
+
+    // 值取自下一个 token 时同样按字节：`ff` 与 `+` 是两位。两列时每行的第二列都落在
+    // 表的首位（并行的游标每行从表尾那个 NUL 起，`paste.c:112`），所以第二行也是 `ff`；
+    // 第三列才用到 `+`——两形皆参照件现量（`tmp/argv-441/measure-three.log`）。
+    let value: Vec<u8> = [b"\xff".as_slice(), b"+"].concat();
+    let (out, code, err) = run_raw(
+        &[
+            b"-d".to_vec(),
+            value.clone(),
+            a.as_bytes().to_vec(),
+            b.as_bytes().to_vec(),
+        ],
+        b"",
+    );
+    assert_eq!((code, err), (0, Vec::new()));
+    assert_eq!(out, b"1\xffa\n2\xffb\n3\xff\n");
+    let (out, _, _) = run_raw(
+        &[
+            b"-d".to_vec(),
+            value,
+            a.as_bytes().to_vec(),
+            b.as_bytes().to_vec(),
+            a.as_bytes().to_vec(),
+        ],
+        b"",
+    );
+    assert_eq!(out, b"1\xffa+1\n2\xffb+2\n3\xff+3\n");
 }
 
 #[test]

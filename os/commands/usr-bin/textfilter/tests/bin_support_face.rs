@@ -12,8 +12,9 @@
 //!
 //! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
 //! （`tr_ref: unknown option -- \xff`），本层先 lossy 成 U+FFFD 再按各支自己的取法渲染，
-//! 于是按字节取、按 `char` 渲染的那几支得到 `c3 af`（U+00EF 的 UTF-8 两字节），已换字节
-//! 渲染的 `rev` 得到单字节 `ef`，累加型的 `seq` 更把替换字符的三个字节当成三个字母连报三行。
+//! 于是按字节取、按 `char` 渲染的那几支得到 `c3 af`（U+00EF 的 UTF-8 两字节）；本表里
+//! 走 `bin_support::args_bytes` 的 `rev` 与 `paste` 已是单字节 `ff`（与参照件同形），
+//! 累加型的 `seq` 则把替换字符的三个字节当成三个字母连报三行。
 //! 还差的是**两个字节**：lossy 之前的那个原字节在 argv 缝上就没有了
 //! （`bin_support::args` 两条腿都渲染成 `String`），加上 `GETOPT-REPORT-BYTE-LETTER`
 //! 里其余各支壳的渲染还没换——因此下面的断言既钉住「不再 abort、两条腿一致」，
@@ -74,8 +75,9 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         // 「一行的字母位」变成「行数与字母位都差」，仍属射程②（`bin_support::args` 的
         // `from_utf8_lossy`）在册，不是渲染半的账。
         ("seq", SEQ, 1, b"seq: unknown option -- \xef\n"),
-        // paste 已于批次四百零一换字节形，与 tr 同形。
-        ("paste", PASTE, 1, b"paste: unknown option -- \xef\n"),
+        // paste 已于批次四百四十一走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
+        // 与参照件同形（本表余下四支 tr/seq/fold/units 的字母位仍是折叠后的 `ef`）。
+        ("paste", PASTE, 1, b"paste: unknown option -- \xff\n"),
         // fold 已于批次四百零五换字节形，同 tr/paste。
         ("fold", FOLD, 1, b"fold: unknown option -- \xef\n"),
         // rev 已于批次四百四十走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
