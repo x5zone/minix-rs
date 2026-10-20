@@ -119,6 +119,52 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百四十九（`units` 裁决轮，不落码：表键换字节，不在查询边界折一次 lossy）
+
+- **落点**：只动文档（`rewrite-notes/18-stage-commands/todo.md`、
+  `rewrite-notes/coordination/PARALLEL-20261018-A-CMD.md`）；代码一笔不落。裁决轮的理由是
+  `units` 的参数缝与决定半共用同一串字节，两条路的改动面差一个量级，选错了要整片回退
+  （预研读数见批次四百四十六段那条）。
+- **C 那一侧比的是字节，三处证据**：
+  ① 表项比对用 `strcmp`（`minix3/usr.bin/units/units.c:503`、`:511`、`:523`、`:532`），
+  前缀用 `strncmp(prefixtable[i].prefixname, unit, strlen(prefixtable[i].prefixname))`
+  （`:542`）。`strcmp` 的语义就是逐字节相等，没有任何字符解码参与。
+  ② 前缀那一支的返回值是**用输入余部拼出来的串**：`strlcpy(buffer, prefixtable[i].prefixval)`、
+  `strlcat(buffer, " ")`、`strlcat(buffer, unit)`（`:546-549`），而 `buffer` 随后成为单位乘积里的
+  一个名字，被输出腿原样打印（`printf(" %s", *ptr)`，`:299`、`:318`）。也就是说**命令行递进来的字节
+  能走到 stdout**——这是本族此前没遇到过的形状：操作数不只是查询键，它还是被回显的内容。
+  ③ `-f` 的选项值被两句错误按 `%s` 回显：`err(1, "Unable to open units file '%s'", userfile)`
+  （`:146`）与 `errx(1, "Can't find units file '%s'", ...)`（`:179`）。这与批次四百四十八里
+  `col` 的 `-l` 是同一型——回显位取自**选项值**，不是操作数。
+- **裁决（采甲路）**：**表键换成字节**。`os/commands/usr-bin/textfilter/src/units.rs:fn read_units`
+  现在收 `&[&str]`、把键值 `to_string()` 进 `UnitsTable.units` 与 `UnitsTable.prefixes`
+  （`src/units.rs` 的 `Vec<(String, String)>`），`lookup_unit` 收 `&str` 并回 `Option<String>`，
+  单位乘积的名字是 `Vec<String>`，输出与 `listunits` 都往 `String` 里 `push_str`。
+  乙路（缝按字节、在查询边界折一次 lossy 再查文本表）被上面三条同时否证：
+  它改不了「表内容也来自字节」这一事实——`-f` 指向的用户自定义表文件里可以有任意字节，
+  把表读成 `String` 就已经折叠过一次，两处折叠还不在同一位置发生（一处折 argv、一处折表行），
+  结果连「同一串字节两边相等」这条最低要求都不保；而且 ② 的回显位仍要字节才能与参照件同形。
+  甲路的代价要如实记下：它动的是决定半（表、查询、乘积名字、两条输出腿），
+  `src/units.rs` 里 `&str`/`String` 共 30 处（批次四百四十六现量），比既往任何一支参数缝半都宽。
+- **拆两片施工（写进板 A2 行当顺序）**：
+  **切片 36 = 表与读表腿换字节键**：`read_units` 收字节切片、`UnitsTable` 的键值改 `Vec<u8>`、
+  `lookup_unit` 收 `&[u8]` 并回字节串、`UnitType` 的分子分母与两条输出腿（普通输出与 `listunits`）
+  改成字节缓冲。**这一片不碰 argv**，所以对既有 ASCII 夹具应当逐字同形——它是一次可以独立收敛的
+  类型迁移，库门里那 10 枚 `units` 决定半门随迁（期望值不改，改的是类型）。
+  **切片 37 = argv 与 `-f` 回显**：`parse_units_args` 收 `&[&'a [u8]]`、`UnitsArgs.userfile` 改
+  `Option<&'a [u8]>`，两句错误按字节拼，壳走 `bin_support::args_bytes`；
+  跨壳表 `tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter` 的 `units`
+  行随之由折叠形 `ef` 翻正为原字节 `ff`——翻正之后跨壳表七支全是原字节，「表里几支」与
+  「迁了几支」这两个名单才第一次对齐（批次四百四十八手法那条说的就是这件事）。
+- **可观察面的边界要说清**：非 ASCII 的单位名在 C 里也是**查不到**（`lookupunit` 返回空指针），
+  所以 ② 那条「输入余部被回显」的路径只在**前缀 + 已知余部**时才走得到，而已知余部是表里的
+  ASCII 文本——纯 `ff` 字节进不了那条路径。这意味着 A/B 能钉住的字节语义是**字母位**
+  （集外字母那一行）与 **`-f` 的选项值回显**两处，不能拿「单位名回显」当门。
+  这条判断本身就是裁决轮要产出的东西：省得切片 37 去钉一门钉不住的形状。
+- **登记与余量**：`units` 两支的射程已定，`ARGV-BYTE-PATH-IN-LIBS` 在 `units` 这一支多一条腿——
+  `userfile` 既是回显位也是打开文件的路径腿，路径那一半仍受库侧两个 `&str` 口限制；
+  `textfilter` 余三十支（含 `units` 两支）、`text-games` 三支壳与族终笔维持在册。
+
 ## 批次四百四十八（A2 参数缝半第九对：`col` 的字母位与被它拒收的 `-l` 值都按字节交回）
 
 - **落点**：`os/commands/usr-bin/textfilter/src/col.rs`、`src/lib.rs`、`src/column.rs`、
