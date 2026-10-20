@@ -77,12 +77,21 @@ extern "Rust" fn main() -> i32 {
         // 译器不可知、不可溢出）——阻塞 receive 触发调度切换后，懒 FPU
         // 臂的归属保存/恢复必须把 42.0 原样带回来。TX 腿持异值 7.5：两
         // 进程异值即证明状态确按进程保存，而非全局恒开。
-        // 诊断切面：rx 侧探针暂闭（定位「#NM 后 receive 泊」冻结）。
-        // fp_set(42.0f64.to_bits());
+        fp_set(42.0f64.to_bits());
         let mut msg = Message::default();
         match ipc.receive(Endpoint::ANY, &mut msg) {
             Ok(_status) => {
-                emit(b"SYSBOOT RX FP SKIP\n");
+                let got = fp_get();
+                if got == 42.0f64.to_bits() {
+                    emit(b"SYSBOOT RX FP OK\n");
+                } else {
+                    let mut b: [u8; 27] = *b"SYSBOOT RX FP BAD ????????\n";
+                    for i in 0..8 {
+                        let nib = ((got >> (60 - 4 * i)) & 0xF) as u8;
+                        b[18 + i] = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+                    }
+                    emit(&b);
+                }
         emit(b"SYSBOOT RX GOT\n");
                 // The peer sits in sendrec's receive half: a non-blocking
                 // full-message send delivers the reply and wakes it.

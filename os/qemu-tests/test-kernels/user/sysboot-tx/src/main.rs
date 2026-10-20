@@ -80,8 +80,18 @@ extern "Rust" fn main() -> i32 {
     // C12 FP 交替探针（tx 腿）：异值 7.5（rx 持 42.0）——sendrec 阻塞半
     // 触发切换后，归属恢复必须把 7.5 原样带回（与 rx 的 42.0 互异即证
     // 明保存/恢复按进程隔离）。
-    // 诊断切面：tx 侧探针暂闭（同 rx）。
-    // fp_set(7.5f64.to_bits());
+    fp_set(7.5f64.to_bits());
+    {
+        // C12 诊断切面：同 stint 立即回读（切开「写即失」vs「excursion 丢」）。
+        let chk = fp_get();
+        let mut b: [u8; 27] = *b"SYSBOOT TX SETCHK ????????\n";
+        let bits = chk;
+        for i in 0..8 {
+            let nib = ((bits >> (60 - 4 * i)) & 0xF) as u8;
+            b[19 + i] = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+        }
+        emit(&b);
+    }
     let mut msg = Message::default();
     msg.m_type = 0x42;
     match ipc.sendrec(peer, &mut msg) {
