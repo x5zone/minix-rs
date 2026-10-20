@@ -119,6 +119,115 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百四十三（A2 参数缝半第五对：`seq` 的值、报文与行数都由字节决定）
+
+**这一轮干什么**。参数缝半（射程②）第五对：`seq` 一支，从命令行到输出与报文全程按字节。
+它不是本族里「又一支把字母位折掉一字节」的重复劳动，而是**同一处折叠第一次改到程序
+打出去的内容**——`seq` 有两个选项的值直接成为输出（`minix3/usr.bin/seq/seq.c` 的
+`separator` 与 `terminator`，渲染在 `:174-186`），还有一个操作数直接成为报文（`e_atof`
+那句 `invalid floating point argument: %s`，`seq.c:394-396`）。所以这一对落地之后，
+`seq` 与参照件 `tmp/seq-320/seq_ref` 的逐字节对账从「六形差」变成「六形全同」。
+
+**为什么这一支最脏，先说清形状**。同一枚裸 `ff` 在 `seq` 里会坏三处，而别支只坏一处：
+
+- **分隔符与结尾符**是内容。C 把 `optarg` 原样交给 `unescape`，再 `fputs` 到标准输出，
+  全程不解码；本壳的缝原先交回 `Vec<String>`，`ff` 到这里已经是 `ef bf bd` 三字节，于是
+  `seq -s$'\xff' 1 3` 打的是 `1\xef\xbf\xbd2\xef\xbf\xbd3\xef\xbf\xbd`，而参照件打 `1\xff2\xff3\xff`
+  （现量 `tmp/argv-443/measure.log`）。这与批次四百四十一 `paste -d` 那处是同一类缺陷：
+  折叠的不是报文而是**数据**。
+- **操作数回显**是报文。`seq $'1\xff3'` 在 C 里是「尾巴有杂字符」那支出错并把参数原样
+  打回（退 2）；本壳折过之后打出 `1\xef\xbf\xbd3`。
+- **行数**。`seq` 的选项环是本族唯一的**累加形**（`errflg` 累加、不在第一个坏字母处停，
+  `seq.c:101-113`），所以一枚 `ff` 在文本缝上被当成三个字母，各报一行 libc 报文——
+  参照件只有一行。折叠在别支只改字母位，在这一支连**行数**一起改。
+
+**代码形状**（四件，全在 `os/commands/usr-bin/textfilter`）。
+
+- `src/seq.rs:fn parse_seq_args`——前门换取字节形 `args: &[&'a [u8]]`（外层借用与元素寿命
+  解耦，测试夹具才能把临时 `Vec` 交进来），`SeqArgs` 的 `fmt`/`operands` 随之是
+  `&'a [u8]`，`separator`/`terminator` 是 `Vec<u8>`/`Option<Vec<u8>>`。
+- `src/seq.rs:fn unescape`、`fn numeric`、`fn valid_format`、`fn e_atof`——四件**本来就按字节
+  扫**（内部早已 `let bytes = …`），这次只是把入口与出口换成字节：`unescape` 交回
+  `Vec<u8>`，`e_atof` 只在调用 `floatfmt::parse_float_prefix` 那一步折一次（数字文法在
+  ASCII 上，一枚不属于任何数字的字节必然落进「尾巴有杂字符」那一支，判定不受折叠影响），
+  交回的错携带 `Vec<u8>` 原字节。
+- `src/seq.rs:fn render_output`——交回 `Vec<u8>`：数字是 ASCII，分隔符按 `extend_from_slice`
+  发出，一枚 `ff` 就是一位。
+- `src/bin/seq.rs:run`/`fail`/`sentence`——第一句换成 `support::args_bytes()`；新增
+  `fn sentence` 拼「程序名 + 句子 + **原字节** + 后随字符 + 换行」，因为这一族的句子
+  要把参数嵌进句中，而 `format!` 的 `{}` 只能收文本。仍折一次的只有一处：
+  `OutOfRange` 走 `err` 的三段形，那句要借 `minix_sys` 的 `strerror`，而它的口收 `&str`
+  （`os/libs/minix-sys/src/lib.rs:299`、`os/libs/minix-types/src/types/errno.rs:556`）——
+  这一腿的账在 `ARGV-BYTE-PATH-IN-LIBS` 里在册。
+
+**门读数**（宿主与容器）。`cargo build -p minix-textfilter` 通过；
+`cargo test -p minix-textfilter --no-fail-fast` 宿主 **69 段 / 1222 通过 / 0 失败**（容器同一
+读数、以 `tmp/argv-443/container.log` 为权威）；三架构（`x86_64-unknown-none`、
+`aarch64-unknown-none`、`riscv64gc-unknown-none-elf`）各自 `cargo build --target …` 退 0、
+编译错 0（这三枚 bare-metal target 只装在宿主工具链，容器镜像里跑同一条命令会报 E0463，
+那是配方差异不是代码缺陷）；触及件 `rustfmt --check` 零漂移；`cargo clippy` 在触及件上
+零告警。
+
+**门的新增与翻正**。库 +2（`seq.rs:fn a_raw_ff_separator_and_terminator_are_one_byte_each`
+把 `-s\xff`/`-t\xff` 钉成一位分隔符并连带钉渲染结果 `1\xff2\xff3\xff`；
+`seq.rs:fn parse_seq_names_a_raw_ff_option_letter_by_that_byte` 钉一枚原字节只换一个字母、
+报文是一位裸 `ff`），面 +2（`seq_face.rs:fn a_raw_nonutf8_separator_byte_is_written_as_one_byte`
+新增 `run_raw` 用 `OsString::from_vec` 起子进程——`&str` 夹具交不出裸 `ff`；
+`seq_face.rs:fn a_raw_nonutf8_operand_is_echoed_as_its_own_bytes` 钉退 2 那句的原字节回显）。
+跨壳表 `bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter` 里 `seq` 那一行的
+期望由 `ef` **翻正**为 `ff`；同文件里原先钉「三行」的那枚门改名承接
+`the_accumulating_ring_names_the_raw_byte_once`，断言改成**一行一个原字节**——
+「三行」是折叠缝的产物而不是 C 的形状，留着它反而会把错误形状钉成真值。
+翻正进度条现状：六行里 `rev`、`paste`、`seq` 三行已是 `ff`，`tr`、`fold`、`units` 三行仍钉 `ef`。
+
+**A/B 逐字节对参照件**（`tmp/argv-443/ab-after.log`；参照件先跑 `-Z` 验字样，打出的是
+Minix 的 `unknown option` 而不是 glibc 的 `invalid option`；两侧都用 `executable=` 起，
+程序名才可比）。十二形读数 **SAME=11 DIFF=1**：`seq` 的六形全部转 SAME（分隔符、结尾符、
+`-t` 取下一 token、`-w` 与 `-t` 合用、集外字母、坏操作数回显），`tr` 的五形本来就同
+（它的两个集合早就是按字节走的），唯一残差是 `tr` 的字母位 `ef` 对 `ff`——那就是下一对。
+
+**负控四枚**（`tmp/argv-443/negctl.log`，逐枚自带还原）：N1 把壳的缝退回文本形
+（`support::args()` 再取字节）→ 4 枚红（两枚面门 + 跨壳表 + 累加环门）；N2 把 `-s` 的值
+改成先 lossy 再取字节 → 3 枚红（含一枚既有的 `separator_and_terminator_values_pass_through_unescape`，
+说明这枚门本来就管着这件事）；N3 把回显折一次 → 1 枚红（操作数回显那枚）；N4 是等价改写
+（`|&b|` 换成 `|b| *b`），应全绿，实测 **0 红**——证门钉的是判据而不是写法。
+
+**本轮自己捉出来的两件事**（都是手法问题，记下来防重犯）。其一：对
+`src/bin/seq.rs` 跑 `rustfmt` 会**顺带重排 `src/bin_support.rs`**——后者是经
+`#[path = "../bin_support.rs"]` 挂进模块树的，rustfmt 跟着 `mod` 声明走。本批没改那件，
+却在工作树里留下了 14 行格式差；已 `git checkout` 还原。判据：**格式化门只落在本批真正
+改动的件上，凡由 `#[path]`/`mod` 连带重排的件要逐件还原**，否则「触及件」的定义会被工具
+行为悄悄放大。其二：负控脚本的还原句写成
+`open(path,"w").write(open(path).read().replace(new,old))` 时，**外层 `open(...,"w")` 会先把
+文件清空**，内层再读到空串——两件源码当场归零。幸而本轮所有代码改动都有可重放的补丁脚本
+（`tmp/argv-443/patch2.py`、`fix_tests.py`、`libgates.py`），`git checkout` 回 HEAD 再依次重放
+即复原。判据：**注入类脚本必须先读进内存再动文件**（本轮改成「读→改→跑→用内存原文写回」），
+且重放链要能一条命令跑通，否则现场不可复原。
+
+**判据（本轮新增三条）**。
+
+- 一处折叠坏**几层**要现量分类：字母位（报文）、数据位（输出内容）、行数（累加环）。
+  只按「字母位差一字节」预估体量，会漏掉 `seq` 这类「同一枚字节把行数也改掉」的支。
+- 门类门名的承接要如实改写：钉错形状的门（此处是「三行」门）不能留着当历史证据，
+  改名为「一字节一行」并在注释里写明旧的三行是折叠缝的产物。
+- 数字文法与字节回显可以分居两侧：`e_atof` 内部为共享的 `parse_float_prefix` 折一次是
+  合法的，因为「非 ASCII 字节必然不是数字的一部分」这条判据成立；错误对象仍须携带原字节。
+  判据是：**折在那一步不影响判定、只影响表示，就折在表示之外**。
+
+**登记（只登记未执行）**。`ARGV-BYTE-PATH-IN-LIBS` 在本支新增一条腿：`OutOfRange` 那句
+三段形的操作数位（要借 `strerror` 的 `&str` 口）。余量现量：`textfilter` 三十九支壳已迁
+五支（`rev`、`paste`、`yes`、`tee`、`seq`）、余三十四支；跨壳表还剩 `tr`、`fold`、`units`
+三行等翻正；`text-games` 三支（`wtf`、`fortune`、`random`）未动。下一对建议 `tr`——
+它的字母位是本支唯一残差，且 `tr` 的集合已是字节形，迁移只需换缝。
+
+**复现清单**：`python3 tmp/argv-443/patch2.py`（重放前门字节化的 24 处类型与签名改动）、
+`python3 tmp/argv-443/fix_tests.py`（文本夹与单串入口的字节化）、
+`python3 tmp/argv-443/libgates.py`（库侧两枚门）；
+`python3 tmp/argv-443/measure.py`（改前六形差、改后十二形 SAME=11/DIFF=1，
+日志 `measure.log` 与 `ab-after.log`）；`python3 tmp/argv-443/negctl2.py`（四枚负控，
+日志 `negctl.log`）；`bash tmp/argv-443/container-gate.sh`（容器权威门，日志
+`container.log`）；宿主与三架构日志 `host-*.log`、`arch-*.log`。
+
 ## 批次四百四十二（A2 参数缝半第三、四对：`yes` 的输出内容按字节，`tee` 随队迁入）
 
 **这一轮干什么**。同一条缝上连做两对：`yes` 与 `tee`。两对的选择不同——`yes` 有可观察的
