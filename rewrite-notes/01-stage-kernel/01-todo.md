@@ -72,6 +72,7 @@ grep -n "BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END" os/kernel/src/lib.rs
 ## 3. B 批——设计裁决类（先裁决后动码）
 
 > 本批每条的设计要点、候选方案与待裁决问题清单见 `01-code-design.md`（自包含简报 T1–T5）；既有条目的完整登记（现状读数、修法、DoD、现算命令）在 `todo.md` §7.1/§7.4，本节只摘与本轮审查相关的**增量**。
+> **2026-10-21 外部首轮裁决已回填简报 v2**：T1 改题（wire 协议冻结为主、信封合一降为次级）、T3 的 UEFI 取参来源改判（当前镜像 `LoadOptions`，非 `Boot####` 枚举）、T4 已裁（独立小批，`fw_end=0` 带形态前提）、T5 已裁（案 1，先于 D-66 实施）、T2 补入口状态契约。实施次序裁定：**T4 → T1(wire) → T5 → T3 → T2**。各条目状态以下方行内标注为准。
 
 ### D-67 boot 信封合一 + 跨镜像布局全钉死（既有，`todo.md` §7.1）
 
@@ -81,7 +82,7 @@ grep -n "BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END" os/kernel/src/lib.rs
 2. **`MemoryRegion.len: usize` 与 `kern_size/bootstrap_len: u64` 宽度不一致**：`kernel_info.rs` 对 `kern_size` 的注释明说 "Uses u64 instead of usize to avoid truncation on 32-bit targets"，而同文件 `os/libs/minix-boot/src/kernel_info.rs:struct MemoryRegion` 的 `len` 是 `usize`——跨镜像 blob 与 `#[repr(C)]` 布局钉死的射程内，`usize` 的宽度随 target 变，同一逻辑字段两种宽度没有理由。随 D-67 的切片 newtype 一并钉死（`u64`）。
 3. **`KernelInfo` getter 家族缺 `param_buf`**：R-07 约定 getter 是推荐 API，14 个字段里 13 个有 getter，唯 `param_buf` 没有（`kernel_info.rs:impl KernelInfo`）。随 D-66/D-67 实施补齐。
 
-**设计载体**：`01-code-design.md` T1（信封合一 + 切片/Option 钉死 + 宽度统一 + builder 统一 D-69 联动）。
+**设计载体**：`01-code-design.md` T1 v2（**已改题**：主问题 = 跨镜像 wire 协议冻结——`BootSlice<T>` 显式 `(ptr,len)`、`free_upper_idx` 用 `u64::MAX` 哨兵、`MemoryRegion.len`→u64、协议头 magic/version/size、跨目标布局构建门；**信封合一降为次级**——`BootPrepareResult` 去留待 wire 冻结后按语义边界裁决，不以减少结构体数量为独立目标；builder 统一 D-69 联动保留）。
 
 ### D-66 `param_buf` 生产侧接入（既有，`todo.md` §7.1）
 
@@ -90,7 +91,7 @@ grep -n "BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END" os/kernel/src/lib.rs
 1. **「内核侧零改动」的登记结论需要修正**：D-66 条目写「接入只动生产侧（boot-shim/bootface），`KernelInfo` 结构与内核零改动」。本轮审查发现 param_buf 一旦非空，UEFI 腿的参数字节将落在 UEFI 池堆——与 `memmap`/`reserved_regions`/`boot_modules` 三块切片**同病**（真机取证：池堆页在切根后读回零，见 `os/kernel/src/lib.rs:fn store_kernel_info` 的 NK4-C 注释与 vh1 读数），而 `GET_MONPARAMS` 消费点在 syscall 期（远晚于首次切根）。因此 D-66 落地**必须**同时在 `store_kernel_info` 增加 param_buf 落地区（= 本轮 D-70 的 param_buf 半）。
 2. **SBI 腿来源裁决的输入**：`opensbi_helpers.rs:fn prepare_boot` 现有注释把来源标为 "SBI boot hart argument"，但 bootface 直核腿的实参是 `a0`=hartid、`a1`=DTB、`a2`=BootFileTable（`os/kernel-image/src/main.rs:fn rust_image_main` riscv64 签名）——没有命令行通道。三案裁决见简报 T3。
 
-**设计载体**：`01-code-design.md` T3（生产侧三案）+ T5（落地区联动）。
+**设计载体**：`01-code-design.md` T3 v2（**已裁**：UEFI 腿读当前镜像 `EFI_LOADED_IMAGE_PROTOCOL` 的 `LoadOptions`/`LoadOptionsSize`——非 `Boot####` 变量枚举（后者降为排查备用）；文本编码是 Minix-RS 自有契约、非 UEFI 规范承诺；参数规范化四步统一规则（先生成内部必备键 ARCH/BOARD，再并入外部输入）；SBI 腿 DTB `/chosen/bootargs`，验收须实测本仓 QEMU 启动链的 `-append` → DTB 节点通路；截断按**整条记录**丢弃、不留半截 key=value）+ T5 v2（落地区已定案，**实施顺序先于本条**）。
 
 ### D-59 大页能力/选页策略四层抽象收口（既有，`todo.md` §7.1）
 
@@ -104,7 +105,7 @@ grep -n "BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END" os/kernel/src/lib.rs
 2. **01 篇两处叙述与台账口径不一致**：L1422「跨镜像跳转协议还没裁决（NK1/OQ-N6，§4.8 交付边界）」与 L2624「跳转协议尚未定案（镜像头注释如此说明）」——「还没裁决」应对齐为「OQ-N6 已裁（每进程独立根原语），x86 腿的实施收口（NK1/C-29）待认领」；`os/kernel-image/src/main.rs` 头注「交付边界（诚实登记）」段的同款表述一并更新。
 3. **x86 切换的存量资产**：`os/kernel-image/x86_64.ld` 布局产出与 `os/kernel-image/check-layout.sh` 的 L0–L9 校验已在位；aarch64 已把 `bootstrap_to_kernel_image`（shim 侧）与 `arch_boot_resume_high_half`（镜像侧）做成 `#[cfg(target_arch = "aarch64")]` 单架构实现——x86 版基本是把这两段的 cfg 泛化 + asm 寄存器换 SysV（`rdi` 递 blob 指针）。
 
-**设计载体**：`01-code-design.md` T2（x86 跳转协议落地设计，含 aarch64 参考实现逐段摘录与 x86 待裁问题清单）。
+**设计载体**：`01-code-design.md` T2 v2（**已裁方向**：独立镜像方案推进、`rdi` 交接、QEMU 先行短期双轨；**v2 补齐**——x86 入口状态契约成文：`_start` 是机器入口 trampoline（裸汇编）而非被 `call` 的普通函数，须自建内核栈/`cld`/`IF=0`/CR3 断言/长模式断言清单；源数据映射两证明分离（物理内容所有权 ≠ 虚拟可访问性，blob 可访问 ≠ 切片指针可访问）；`reserved_regions` 复核答复：字段保留，退场的只是 x86 内联窗口半——UEFI 腿 T2 后仍传非空表（固件占用区语义），D-69 统一签名据此保留该形参）。
 
 ### D-68（新登记）`bootface_a64` 的 memmap 链未迁 `DtbMemoryMap`——I-22 迁移漏掉的第四链
 
@@ -122,7 +123,7 @@ grep -n "fn fill_memmap\|const fn clip_firmware\|MEMMAP_STORAGE\|DtbMemoryMap" o
 grep -n "clip_reserved" os/libs/minix-boot/src/memmap_source.rs
 ```
 
-**验收**：bootface_a64 构建（aarch64 target）通过；`test-kernel-image-riscv64-bootface` 类比测试或真机 aarch64 `-kernel` 直核冒烟通过；`grep -n "MEMMAP_STORAGE\|clip_firmware" os/kernel-image/src/bootface_a64.rs` 归零。
+**验收**：bootface_a64 构建（aarch64 target）通过；`test-kernel-image-riscv64-bootface` 类比测试或真机 aarch64 `-kernel` 直核冒烟通过；`grep -n "MEMMAP_STORAGE\|clip_firmware" os/kernel-image/src/bootface_a64.rs` 归零。**2026-10-21 外部首轮裁决：采纳，独立小批实施（五项中最先）；`fw_end=0` 可接受但必须带形态前提成文——「此引导腿不存在需固件前缀裁剪的区间」，且与内核侧 `cut_memmap`（镜像自占排除）是两个机制、不互相替岗；不为它单独引入策略抽象。**
 
 **边界**：不合并 bootface.rs 与 bootface_a64.rs 的其余重复（名字池、常量——模块头注已登记为独立清理增量，超出本条）。
 
@@ -167,7 +168,7 @@ grep -n "PLATFORM_SOURCE_STORE\|PARAM_BUF_STORE" os/kernel/src/globals.rs   # �
 grep -n "monparams_snapshot\|param_buf" os/kernel/src/misc.rs | head
 ```
 
-**验收**：案 1 落地后 `store_kernel_info` 五块切片全部 repoint 到 `.bss`；`test_store_kernel_info_lands_firmware_slices` 扩断言（platform_sources/param_buf 指针变化）；`cargo test -p minix-kernel --features mock` 全绿。
+**验收**：案 1 落地后 `store_kernel_info` 五块切片全部 repoint 到 `.bss`；`test_store_kernel_info_lands_firmware_slices` 扩断言（platform_sources/param_buf 指针变化）；`cargo test -p minix-kernel --features mock` 全绿。**2026-10-21 外部首轮裁决：采案 1；`PLATFORM_SOURCE_STORE_LEN=4` 为候选值——须先核实「最多两源」是类型与生产路径的真实上限还是常见情况，容量作为有意设计的上限写入并配超容量测试；param_buf 落地保持「清零再复制」语义（幂等重存不得暴露上次输入遗留）；本条为 D-66 的硬前置，实施顺序 T4 → T1(wire) → **T5** → T3 → T2。**
 
 ### D-71（新登记）`BootForm::source_path()` 悬空引用 + 形态登记测试无存在性检查
 
