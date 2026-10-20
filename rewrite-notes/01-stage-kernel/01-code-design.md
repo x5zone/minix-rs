@@ -3,6 +3,7 @@
 > **本文的用途**：`01-stage-kernel` 引导链里每个「需要设计与裁决才能动码」的 TODO，逐条写成自包含简报。目标读者是**看不到本仓库的第三方评审**（网页端 GPT）：每个论断所需的代码、C 源对照片段、既有裁决原文都已内嵌，不需要任何仓库内引用就能完整理解问题与候选方案。
 > **与仓库的关系**：每节标题括号里的编号是 `01-todo.md` 的条目号；裁决结论回填 `01-todo.md` 对应条目后由仓库侧实施。已有专门设计文件的主题**不进**本文（大页能力收口 → `boot-dm-hugepage-design.md`，独立线程迭代中）。
 > **版本记录**：v2（2026-10-21）按外部首轮评审裁决重写——T1 改题（wire 协议冻结为主问题，信封合一降为次级）、T2 补完整入口状态契约与源数据映射两证明、T3 的 UEFI 取参来源修正为当前镜像 `LoadOptions`、T4/T5 定案、新增跨主题 wire 规则 / 实施次序 / 三条硬性验收条件。各条目内的裁决项标 **【已裁】**，仍开放的标 **【待裁】**。
+> **v3（2026-10-21 二轮评审，定向增补不改结构）**：四个针对性裁决——① T1 解码边界改三层模型（wire → `KernelInfoView<'a>` → 内核自有），废弃会伪造 `'static` 的 `decode() -> KernelInfo`；② 源切片可读性给出具体机制（UEFI 池地址上界三层：AllocateMaxAddress 构造 / pre-EBS 断言 / 解码重验）；③ wire 布局递归闭合（`Wire*` 元素类型，`BootModule.name` 定长字节槽）+ `BootSlice.ptr` 改 `addr: u64` 物理地址语义；④ T4 补 DTB 生命周期前提。T2 双契约拆分、入口清单细化；T3 的 ARCH/BOARD 语义归属经仓库取证收窄；状态收紧表见 §10。
 > **背景速览（三结构体一句话版）**：`KernelInfo` 是引导期语义载荷本体（内存图、内核位置、启动模块……，对应 C 的 `kinfo_t`）；`BootPrepareResult` 是 `BootShim::prepare_boot` 的**进程内返回值信封**（KernelInfo + 根页 + bump 区间，不跨二进制）；`BootHandoff` 是 aarch64 跨镜像跳转的 `#[repr(C)]` **线格式载荷**（KernelInfo + 根页 + bump 区间 + 游标，按裸指针解引用）。前两个的设计有历史可查；`BootHandoff` 是 aarch64 方案 A 跑通途中的救火产物，留下「两信封 90% 重叠」的债——本文 T1 收这条。其余四节（T2–T5）是 x86 跳转协议、启动参数通道、直核腿第四链、内核落地区，各有独立问题。
 
 ---
@@ -27,6 +28,8 @@ T2  x86 切换独立镜像               —— 最后收口交接/首次读取�
 ```
 
 不把 T1/T2/T3/T5 捆成一个大实现批次：四者共享概念但验证边界不同，拆批利于定位故障，也符合本项目在引导与内存问题上的取证方式。
+
+**v3 补充（二轮评审最终建议）**：不推翻次序，收紧门槛——T4 独立先行实施；T1 的解码边界（§1.4 三层模型）与 T2 的映射证明（§1.5（四）+ §2.8）先落成可审查的短设计补充（本文即承载），再按 T5 → T3 → T2 推进；不让两个未闭合的安全条件（伪造 `'static`、未证明的首读可读性）成为后续实现的错误假设。
 
 ---
 
@@ -123,39 +126,84 @@ const _: () = assert!(core::mem::size_of::<BootHandoff>() <= 4096);
 | 3 | `MemoryRegion.len` | `usize` → `u64`（与 `kern_size`/`bootstrap_len` 同宽；64 位目标上是一轮语义不变的类型统一，将来加 32 位目标不再出现协议字段宽度随目标改变） |
 | 4 | 协议头 | wire 格式加轻量协议头（`magic`/`version`/`size`），接收端**先验证协议头再解释后续字段**。收益不是支持混版本镜像（同批构建要求不变），而是产物混用或布局意外变化时尽早报错，不进内核才炸 |
 | 5 | 布局验证层级 | 布局断言（`size_of`/`align_of`/关键字段 `offset_of`）必须在**各受支持架构的交叉编译检查**中运行，而不是只在宿主机；作为构建门禁而非文档里的布局表 |
-| 6 | ptr 宽度 | `BootSlice.ptr` 宽度随目标架构变**不算缺陷**：当前是同一目标架构下的两个镜像交换，要钉死的是同目标架构内的字段布局，不是宣称一份 wire blob 跨 32/64 位传递 |
+| 6 | ptr 宽度 | `BootSlice.ptr` 宽度随目标架构变**不算缺陷**：当前是同一目标架构下的两个镜像交换，要钉死的是同目标架构内的字段布局，不是宣称一份 wire blob 跨 32/64 位传递（v3 收口：ptr 改定宽 `addr: u64` 后此自由度整体消失，见 §1.5（二）；本行原则仍是协议版本演进的边界） |
 
-`BootSlice<T>` 的 wire 形状与验证要求：
+`BootSlice<T>` 的 wire 形状与验证要求（v3 定形）：
 
 ```rust
 #[repr(C)]
 pub struct BootSlice<T> {
-    ptr: *const T,
+    addr: u64,   // physical address of the payload — wire semantics, same as root_page/bump_*
     len: u64,
 }
 ```
 
-**wire 读出的 `ptr`/`len` 不得未经验证就转成 Rust slice**（§0.1 规则的落地）。解码边界（收敛在 minix-boot，不扩散到消费点）至少验证：① 指针与长度符合该字段的语义约束；② 长度转换与 `base + len` 类地址区间计算不溢出；③ 非空数据满足对齐要求；④ 对应物理页已被当前根映射、可读（与 T2 §2.4 的两证明联动）；⑤ 长度不超过该载荷的合法上限。
+**wire 里的地址值承载物理地址**（见 §1.5（二））；**wire 读出的 `addr`/`len` 不得未经验证就转成 Rust slice**（§0.1 规则的落地）。解码边界（收敛在 minix-boot，不扩散到消费点）至少验证：① 地址与长度符合该字段的语义约束；② 长度转换与 `base + len` 类地址区间计算不溢出；③ 非空数据满足对齐要求；④ `addr < BOOT_IDENTITY_MAP_END`（物理地址落在恒等窗口内、VA==PA 可直读；编译期常量唯一权威 `os/arch/src/lib.rs:pub const BOOT_IDENTITY_MAP_END`——与 T2 §2.4 的两证明联动）；⑤ 长度不超过该载荷的合法上限。
 
 `free_upper_idx` 哨兵的配套前提（裁决附带条件）：有效的页目录索引永远不可能等于 `u64::MAX`；解码时先识别哨兵、再做合法索引范围检查；转 `usize` 用检查式转换；文档写明 `None` ↔ 哨兵的编码对应关系。
 
 `MemoryRegion.len` → `u64` 的配套边界检查（裁决附带条件）：u64 长度到宿主索引/slice 长度的转换、`base + len` 溢出、内存图裁剪与合并、VM 内存分类与物理帧计数/位图大小计算——当前均为 64 位目标，大概率语义不变，但边界点逐一过。
 
-### 1.4 待裁项 **【待裁】**（wire 冻结时收口）
+### 1.4 解码与落地的三层模型（v3 二轮 P0 裁决，原「进程内信封去留」的解答）**【已裁框架；生命周期细节冻结为实施门槛】**
 
-1. **进程内信封去留**（评审明令后置：先冻结 wire 协议，再决定此项，不要倒过来）。两个实现形状：
-   - **形状一（评审倾向）**：`KernelInfo` 保持现状（进程内语义对象，切片字段是 `&'static [T]`），另立专门的 wire 类型（如 `BootHandoffV1`）——字段与 `KernelInfo` 一一镜像但用 `BootSlice<T>` 原始表示；生产侧 `BootHandoffV1::from_kernel_info(&KernelInfo, …)`，接收侧验证后 `decode() -> KernelInfo`。转换函数枚举全部字段，新增字段必须同时触碰两侧（编译期防漂移）。好处：跨镜像指针的有效性责任不扩散到几十个普通内核消费点——只有解码边界一个地方处理裸 `ptr/len`。
-   - **形状二（v1 方案甲残形）**：`KernelInfo` 自身转为全固定布局类型（字段就地换 `BootSlice<T>`）。省一层镜像结构，但所有进程内消费点被迫面对显式指针长度描述符。
-2. **`BootPrepareResult` 的最终去留**：取决于问题 1 的答案。若走形状一，`BootPrepareResult` 可保留为进程内结果（它本来就是进程内对象，加不加 `#[repr(C)]` 不再是跨镜像问题）；若走形状二，它与 `BootHandoff` 合一的收益才成立。评审原文：「不要为了合一而把跨镜像指针的有效性责任扩散到几十个普通消费点」。
-3. 协议头字段的具体值（magic 常量、version 起始值 1、size 校验语义）。
-4. `BootShim::prepare_boot` 返回类型的最终形态（随 1/2 联动）。
-5. D-69 的 `build_kernel_info` 双版本统一：统一签名（带 `reserved_regions` 形参，各腿显式传空或非空表）vs per-leg builder trait（三腿构造逻辑同构，trait 无行为差异，倾向否）——随 1/2 同批。
+v2 的形状一草图（`decode() -> KernelInfo`）有生命周期伪造问题：`KernelInfo` 的切片字段是 `&'static [T]`，而源数据来自 boot-shim 的 UEFI 池堆，首次进程根切换后原映射不保证存在——wire 解码器把地址直接恢复成 `&'static [T]`，等于让类型声称「永久有效」；调用方即使承诺马上复制，也改变不了类型表达的生命周期。这与 T5 的落地区规则（源切片不得作为内核永久数据来源）直接矛盾。裁决：解码边界改三层，**不经由 `'static`**：
 
-### 1.5 影响面（供评估工作量）
+| 层 | 类型 | 生命周期语义 |
+|---|---|---|
+| wire 层 | `BootHandoffV1`（+ §1.5（一）的 `Wire*` 元素类型） | 固定布局原始字节：`BootSlice.addr: u64` 物理地址、定宽数值、协议头。不暴露任何安全引用 |
+| 视图层 | `KernelInfoView<'a>` | 已验证的启动视图。仅在源数据确实可访问的阶段存在（bootstrap 根活跃、首次切根之前），生命周期诚实绑定该阶段，不伪装 `'static` |
+| 内核层 | `KernelInfo`（内核自有） | `store_kernel_info` 深拷五块切片后构造；切片指针全部指向内核落地区（T5），供之后全部阶段使用 |
+
+示意 API（边界形状，非最终签名）：
+
+```rust
+impl BootHandoffV1 {
+    /// Decode the wire blob into a validated boot view. SAFETY contract:
+    /// blob 位于已知可访问区间且满足对齐；`BootMappingContext` 携带
+    /// 「源数据有效范围」证据（每块切片 addr < BOOT_IDENTITY_MAP_END、
+    /// 尚未被复用——见 §1.5（四）），视图生命周期由此界定。
+    unsafe fn decode_view<'a>(
+        blob: &'a BootHandoffV1,
+        context: &BootMappingContext,
+    ) -> Result<KernelInfoView<'a>, DecodeError>;
+}
+
+/// Landed copy: five slices repointed into kernel-owned storage.
+fn store_kernel_info(info: &KernelInfoView<'_>) -> Result<KernelInfo, StoreError>;
+```
+
+**实施门槛（生命周期细节，冻结前收口）**：源切片不一定与 blob 同一分配区——不能仅凭 `blob: &'a Self` 推出全部源数据活到 `'a`；`BootMappingContext`（或视图内部逐字段区间记录）必须显式表达源数据有效范围与视图失效时机。剩余细节：`KernelInfoView` 的精确形状（整体视图 vs 逐字段视图）、context 的证据承载方式、宿主测试构造 context 的途径。
+
+**T2 resume 流程审计结论（二轮质询，仓库侧已核）**：内存相关消费面已读落地副本——`arch_boot`/`arch_boot_resume_high_half` 在 `store_kernel_info` 之后经 `crate::kernel_info()` 取全局副本，`establish_boot_dm(kinfo, root_page)`、kmain、VM 交接分类都消费该副本。但两个未落地字段是例外：`platform_sources` 的全局 getter 返回的仍是指向 UEFI 池堆的原指针（平台发现在首次切根前消费——时序巧合），`param_buf` 消费点在 syscall 期。这正是 T5 要消除的混合状态；三层模型落地后 `store_kernel_info` 成为「解码 → 落地」唯一收口。
+
+### 1.5 v3 增补裁决（二轮评审：递归闭合 / 地址语义 / 可读性机制）
+
+**（一）wire 布局递归闭合**：固定切片描述符不等于固定被描述数据的布局。规则成文：
+
+> wire 布局必须递归闭合。固定 `BootSlice<T>` 的同时，必须固定其全部元素类型与嵌套字段的 wire 表示；不得让未固定布局的 Rust 类型仅凭被 `BootSlice<T>` 包装，就成为跨镜像协议的一部分。
+
+仓库侧取证（三个元素类型各有缺口）：`MemoryRegion`（`PhysBytes` + `usize`）字段简单但 `PhysBytes` 是 newtype，其 repr 需显式钉或 wire 侧改裸 `u64`；`BootModule.name: &'static str` **含引用**——字符串载荷需定长字节表示（wire 侧用 `[u8; 16]` NUL 填充定长名槽，恰与内核 `BOOT_MODULE_NAME_STORE` 的 16B strlcpy 池、bootface `NAME_POOL` 三方同形）；`PlatformDescSource = (PlatformDescKind, PhysBytes)`（`os/libs/minix-boot/src/platform.rs:pub struct PlatformDescSource`）中 `PlatformDescKind` 是 Rust 默认布局枚举——判别值宽度与表示 toolchain-defined。实现方式二选一，**裁决方式一**：
+
+1. 独立 wire 元素类型（`WireMemoryRegion`/`WireBootModule`/`WirePlatformDescSource`）：字段全定宽、枚举判别用 `#[repr(u32)]` 或裸 `u32`、名字用定长字节槽；显式转换到内核内部类型。ABI 约束与领域模型分离。
+2. 证明现有元素类型已满足完整 wire 布局并用断言钉死——但 `BootModule.name` 的间接引用与 `PlatformDescKind` 的枚举布局使方式二同样要改类型定义，改造量与方式一相当而边界混合，不如方式一干净。
+
+**（二）`BootSlice` 地址语义**：wire 里的地址值必须写明语义，不能靠读代码的人推断。裁决：**wire 全部地址字段承载物理地址**（与 `root_page`/`bump_base`/`bump_next` 一致），切片描述符从 `ptr: *const T` 改定宽 `addr: u64`；接收方验证 `addr` 落在恒等窗口（PA < `BOOT_IDENTITY_MAP_END`，VA==PA）后才转裸指针。§1.3 验证项第 ④ 条的判据由此唯一化。
+
+**（三）布局门禁两层 + 协议头验证顺序**：布局门禁从「单条 assert」升为两层——① **协议固定值**：每个受支持目标上，wire 类型（含全部 `Wire*` 元素类型）的 size/align/关键字段 offset 都有确定基准值，交叉编译检查逐目标比对（`assert!(size_of::<BootHandoffV1>() <= 4096)` 只证明装得进页，不证明字段没挪位）；② **版本演进规则**：字段布局或语义变化必须显式升级协议版本，「恰好同批构建」不豁免变更记录。协议头 `magic`/`version`/`size` 有价值但不能代替布局检查。接收端读取顺序成文：先验证 blob 地址在已知可访问区间、满足对齐、足以容纳协议头 → 读头字段 → 版本与长度检查通过 → 才把地址按 `&BootHandoffV1` 解释——**头验证之前不得形成任何引用**。
+
+**（四）源切片可读性的具体机制（二轮 P0：恒等映射上界 ≠ UEFI 池分配都在上界内）**：UEFI 规范不承诺池分配落在低地址——「bootstrap 根覆盖 [0,4GiB)」本身不构成「五块切片载荷都可读」的证明；aarch64 的既有实测（池页存活到首次切根）是现象记录，不是保证。裁决三层机制，使条件**成立而非被假设**：
+
+1. **构造层（主要保证）**：五块切片载荷的存储分配改走 `AllocatePages(AllocateMaxAddress, …, 上界 = BOOT_IDENTITY_MAP_END)`——UEFI 的 AllocateMaxAddress 分配类型使「载荷在恒等窗口内」由分配器构造保证，不再依赖固件恰好把池放在低地址。memmap 快照缓冲与 `Box::leak` 载荷同改。实施细节（`uefi` crate 对该分配类型的暴露形状、现有 `Vec` 分配路径的改法）待实施确认。
+2. **防线层（fail-fast）**：`prepare_boot` 在 EBS 前对五块载荷逐一断言 `addr + len <= BOOT_IDENTITY_MAP_END`，越界即停机（趁 shim 还能打印，信息含载荷区间与窗口上界两个坐标）。
+3. **解码层（收口）**：`decode_view` 经 `BootMappingContext` 对每块切片重验同一判据——与（二）的 `addr` 语义、§9.1 的读取契约共用一份判据。
+
+**（五）进程内信封的收尾口径（随三层模型更新）**：`BootPrepareResult` 保留为进程内结果类型（它是进程内对象，是否加 `#[repr(C)]` 不再是跨镜像问题）；「删除它以消除冗余」不再是 T1 的目标——跨镜像唯一权威定义是 `BootHandoffV1`，进程内消费面是否复用其字段由语义边界决定。D-69 的 `build_kernel_info` 双版本统一仍随本条同批（统一签名带 `reserved_regions` 形参）。
+
+### 1.6 影响面（供评估工作量）
 
 - 定义侧：`os/libs/minix-boot/src/{kernel_info,boot_shim,handoff}.rs`。
 - 构造侧：boot-shim 两腿（`uefi_helpers.rs`/`opensbi_helpers.rs`）、kernel-image 两面（`bootface.rs`/`bootface_a64.rs`）、内核与 qemu 测试内核的手工构造点（仓库内 `param_buf: &[]` 形状的构造点约 30+ 处，多数在测试）。
-- 消费侧：形状一 = 只在解码边界加一次转换；形状二 = 每个读切片处一次 `as_slice()`。
+- 消费侧：三层模型下只在解码/落地边界（`decode_view` + `store_kernel_info`）加转换；内核普通消费点继续读 `KernelInfo` 的 `&[T]` 字段，不接触裸 `addr/len`。
 - 文档：01 篇 §3.4（两信封叙述 + 「同一次构建产出」让步句）与 §3.9（`free_upper_idx` 语义）同步。
 
 ---
@@ -289,6 +337,24 @@ T5 的深拷解决生命周期问题，但**不能弥补第一次读取前就缺
 - §4.8 L2624「跳转协议尚未定案」→ 同口径。
 - §3.4 `reserved_regions` 双语义拆分叙述（§2.5 答复落点）。
 
+### 2.8 v3 增补（二轮评审：契约拆分 / 入口清单细化 / 可读性机制接线）
+
+**契约拆分（纠正 v2 的混写）**：v2 把「blob 写入后不得再分配」写成 `build_bootstrap_root_and_enable` 调用后的约束，与参考实现时序不符（blob 页分配发生在该函数返回**之后**）。拆成两条独立契约：
+
+1. **建表返回契约**：`build_bootstrap_root_and_enable` 返回后，bootstrap 根已满足该阶段所需映射（恒等 + 高半 + MMIO），根页基址已装入 CR3。
+2. **blob 写入后契约**：blob 写入完成起、到绝对跳转为止，**不得有任何可能分配、释放或复用源载荷页面的操作**——这是 handoff 数据生命周期的关键约束，落在 shim 侧跳转流程（`bootstrap_to_kernel_image` 的 blob 构造段与 `br` 之间的代码行集合），不是建表函数的属性。
+
+**入口状态清单细化（§2.3 补四项）**：
+
+- `cli` 显式关中断写在 trampoline 内（不依赖「EBS 后固件已关中断」的推断）；
+- trampoline 切到的内核栈必须已映射于当前 bootstrap 根（`kern_stack_top` 落在高半窗口——该映射住 bootstrap 根，切进程根不换它）；
+- `call` 前 `rsp` 调整到 16 字节对齐、由 `call` 自身建立返回地址与栈状态——trampoline 以普通调用者身份满足 SysV 前提，Rust 入口不承担机器入口职责；
+- 编译器栈使用前提成文为**内核构建约束**：no-red-zone（Rust 侧禁用 red zone 的构建旗标按工具链版本核实后写入构建配方），段状态前提（CS/SS 沿用 shim 的 GDT 段、内核在自身 prot_init 阶段重建）写进契约表。
+
+**可读性机制接线**：§2.4 两证明的「虚拟可访问性」半，由 T1 §1.5（四）的三层机制承载——AllocateMaxAddress 构造使载荷必然落入恒等窗口、pre-EBS 断言防线、解码层逐切片重验；aarch64 的既有实测降级为**现象记录**，不再充当论证依据。
+
+**blob 页与游标的附加验收**（并入 §9.3）：x86 handoff 的 `bump_next` 必须已越过 blob 页本身，且 blob 页不会被接收方恢复分配时重复发出。
+
 ---
 
 ## T3（D-66）：`param_buf` 生产侧接入
@@ -317,7 +383,11 @@ v1 候选一是「枚举 `Boot####` 变量、取 `BootCurrent` 对应项的 `Opt
 3. 所有输入规范化为 C 侧预期的 `key=value\0` 序列（两条腿共用同一规则，不允许 UEFI/SBI 产出两种格式）；
 4. 写入最终载荷前执行容量与边界检查。
 
-**待裁细节**：重复键策略（用户参数能否覆盖内部生成的 `ARCH`/`BOARD`——必须显式裁决，不能留给拼接顺序的偶然）；LoadOptions 的文本编码契约成文（ASCII vs UTF-8、分隔语法）。
+**v3 增补裁决（二轮评审）**：
+
+- **ARCH/BOARD 的语义归属（仓库侧取证）**：写入侧——C 两架构生产路径（`minix3/minix/kernel/arch/i386/pre_init.c:149-150` 硬编码 `BOARD_ID_INTEL`、`minix3/minix/kernel/arch/earm/pre_init.c:274-275` 由 `machine.board_id` 推导）都必写 `ARCHVARNAME`/`BOARDVARNAME`，属**全架构生产者共同行为**；消费侧——`minix3/minix/lib/libsys/env_get_param`（用户态服务器经 `GET_MONPARAMS` 读 boot 变量，`env_get_prm.c`），即 **ARCH/BOARD 是用户态 boot 变量契约，内核本身不消费**。裁定：通道形状是内核契约（已定）；ARCH/BOARD 键生成是「为用户态消费方保持 C 兼容」的义务——Rust 用户态 env 层尚未重写，**写入时点与 BOARD 值来源按腿实施时取证定案**（ARCH 取目标架构常量即可；UEFI 腿的 BOARD 取值源需给出证据），不允许静默缺键——宁可写占位值也不留缺键，与 C 消费方 `find_key` 的查不到返回错误语义对齐。
+- **重复键规则（定案）**：内部权威键（生产侧自生成的 ARCH/BOARD 等）**禁止被外部输入覆盖**——外部输入含同名键时拒绝该键并给诊断（不整体 fail-fast，保留其余参数）；其余普通键的覆盖优先级显式列表，不靠拼接顺序的偶然。
+- **LoadOptions 编码契约（定案）**：Minix-RS 输入约定 = ASCII 文本、`\0` 分隔 `key=value`、整条记录粒度截断（§3.5）；不符合约定的输入（非 ASCII 字节、无 `=` 的裸记录）按逐记录拒绝 + 诊断处理，不猜测编码。
 
 ### 3.4 SBI 腿 **【已裁方向，验收条件成文】**
 
@@ -364,6 +434,12 @@ const fn clip_firmware(base: u64, len: u64) -> Option<(u64, u64)> {  // L315：�
 - 删除 `bootface_a64.rs` 的 `fill_memmap`/`clip_firmware`/`MEMMAP_STORAGE`，改调 `DtbMemoryMap::new(&fdt, fw_end).collect()`；让库内既有测试覆盖统一后的逻辑。独立小批实施，不与 T1/T2 捆批。
 - **`fw_end = 0` 可以接受，但必须带着明确的引导形态前提成文**：此引导形态不存在需要经 `DtbMemoryMap` 固件前缀裁剪保留的区间（aarch64 QEMU 直核不在 DRAM 放固件常驻区：DTB 在 RAM 基址 `0x4000_0000`、镜像在 `0x4020_0000`，均为内核自用）。对照：bootface.rs（riscv）传 `KERN_PHYS_BASE = 0x8020_0000`——OpenSBI 常驻 `[0x8000_0000, 0x8020_0000)` 必须削出。
 - **两个机制分开，不互相替岗**：`DtbMemoryMap` 的固件前缀裁剪（aarch64 直核腿为空）≠ 内核自身镜像占用的排除（后者始终由内核侧 `cut_memmap` 负责）。`fw_end = 0` 只表示「该路径没有固件保留前缀」，这个约定要写进文档；不为这一项单独引入策略抽象。
+
+**DTB 自身的生命周期（v3 补充前提，二轮评审）**：`fw_end = 0` 只回答「固件前缀裁剪在该腿为空」，**不回答 DTB 字节本身是否被妥善保留**。仓库侧取证：aarch64 直核腿的 `KernelInfo.reserved_regions = &[]`（opensbi 版 `build_kernel_info` 硬编码），内核 Phase A.2 的 `cut_memmap` 只切内核镜像与模块（D-64①），**DTB 物理区间不在任何保留清单里**（全仓 grep 无 dtb×cut/reserve 命中）——它落在 conventional 空闲账内，最早的复用者是 VM PMM（VM 启动后）。当前 DTB 最后一次访问是平台发现（kmain Phase A–D），早于 VM PMM——次序今天成立，但这是与 `platform_sources` 同类的**相位次序巧合**，不是结构保证。补充前提成文（验收必查）：
+
+> `fw_end = 0` 仅表示该引导形态没有需要由固件前缀裁剪机制处理的保留区。DTB 数据本身是否需要暂时保留，另由其消费时序和内存所有权规则决定，不由 `fw_end = 0` 自动保证。
+
+验收补充两项：① 核对 aarch64 直核腿 DTB 最后访问点（平台发现）与最早复用点（VM PMM）的次序证据；② 结构化修复候选——Phase A.2 对 DTB 区间补一笔 `cut_memmap`（与 D-64① 内核镜像自切同型），或等价地把 DTB 区间纳入 VM handoff 的 `deducted` 记录，使「复用不得早于最后访问」从次序巧合变成结构排除；实施时对照 C earm 侧 DTB 预留行为定案。此澄清落地后 T4 维持独立小批实施、不等 T1/T2。
 
 ---
 
@@ -416,6 +492,11 @@ pub(crate) static PARAM_BUF_STORE: SyncUnsafeCell<[u8; MULTIBOOT_PARAM_BUF_SIZE]
 - **param_buf 落地的零填充语义**：重复调用不得暴露上一次输入的遗留内容——即使最终切片较短，也保持「清零再复制」的明确语义。
 - 实施顺序：**先于 T3**（T3 的硬前置，见 §0.2）。
 
+**v3 补充两核实（二轮评审，实施前完成）**：
+
+1. **容量 4 必须是已核实上限而非经验值**：生产路径取证——UEFI 腿 `find_platform_sources` 每架构至多推 1 条 DTB + 1 条 RSDP（每类首个命中即 `break`，`os/boot-shim/src/uefi_helpers.rs:fn find_platform_sources`），opensbi/bootface 各腿恒 1 条 DTB——今天真实上限 2，容量 4 = 2 × 有意余量。核实义务：确认未来无「同类多实例」场景（多 RSDP/嵌套描述符）后，把「上限 2、容量 4 的构成」写进容量常量文档。
+2. **深拷覆盖全部间接数据**：`PlatformDescSource` 已核为纯数据 `(PlatformDescKind, PhysBytes)`（`os/libs/minix-boot/src/platform.rs:pub struct PlatformDescSource`），无嵌套指针，直接复制成立；`BootModule.name` 的间接引用由既有名字池承接（strlcpy 语义，已在三块落地区中）；`param_buf` 为平铺字节。`PlatformDescKind` 的枚举布局疑虑归 T1 递归闭合（§1.5（一））处理，不属本条。
+
 ### 5.3 测试要求（随验收条件 §9.3）
 
 正常来源全部复制、落地后指针已 repoint、幂等重存、超容量明确失败（不静默截断不越界）——四类断言补进既有测试族；落地区容量断言与 01 篇 §5.3 TODO-03 的溢出臂测试同批。
@@ -449,7 +530,34 @@ wire 布局验证必须是**构建门禁**，不是文档里的布局表：每�
 | `store_kernel_info` 对超容量输入明确失败 | T5（兼 TODO-03） |
 | `param_buf` 超长不得生成不完整参数记录 | T3 |
 | T4 的固件裁剪测试在实际调用路径中仍然生效 | T4 |
-| x86 handoff 游标必须越过 blob 页本身，且 blob 分配不被恢复时重复分配 | T2 |
+| x86 handoff 游标必须越过 blob 页本身，且 blob 分配不会被恢复时重复分配 | T2 |
+
+### 9.4 v3 增补验收（二轮评审）
+
+- **三层解码模型是 T1/T2 的实施门槛**：宿主测试必须能构造 `KernelInfoView<'a>` 与 `BootMappingContext`；「视图不得伪造 `'static`」以类型签名保证（`decode_view` 返回的视图生命周期绑定输入引用，不提供任何 `into_static()` 出口）。
+- **逐切片首读可读性**：T1 §1.5（四）三层机制各就其位——构造层（AllocateMaxAddress）宿主不可测（UEFI 专属），防线层与解码层宿主可测（构造越界 `MemoryRegion` 输入 → 断言拒绝 / 解码拒绝）。
+- **wire 递归闭合进布局门禁**：`Wire*` 元素类型与 `BootHandoffV1` 同等对待（size/align/offset 基准值逐目标检查）。
+- **协议头验证顺序**：接收端「先验头、后解引用」做成单元测试——坏 magic / 坏 version / size 不足三案拒绝，且拒绝路径不发生任何解引用副作用。
+- **DTB 生命周期**：T4 §4.3 的两项验收（次序证据 + 结构化修复裁决）落盘。
+
+### 10. v3 状态收紧表（二轮评审裁定回填）
+
+| 条目 | 状态 |
+|---|---|
+| T1：wire 作为唯一权威定义 | 已裁（维持） |
+| T1：`BootSlice<T>` 固定字段布局 | 补充后冻结（v3 已补：递归闭合 §1.5（一）+ `addr` 语义 §1.5（二）；冻结待 §1.4 生命周期细节） |
+| T1：`decode() -> KernelInfo` | **已改设计** → 三层模型（§1.4），生命周期细节冻结为实施门槛 |
+| T1：跨目标布局门禁 | 已裁（维持），基准值 + 版本演进规则成文（§1.5（三）） |
+| T2：x86 独立镜像与 `rdi` 交接 | 已裁（维持） |
+| T2：所有源切片首读前已映射 | 阻塞性待裁 → **机制已裁**（T1 §1.5（四）三层机制），实施与验收随 T2 |
+| T2：`IF=0` 与栈契约 | 补充后冻结（§2.8：显式 `cli`、`call` 前对齐、no-red-zone 构建约束、段状态前提） |
+| T3：读取当前镜像 Load Options | 已裁（维持） |
+| T3：`ARCH`/`BOARD` 兼容规则 | 待裁收窄 → 语义归属已核（用户态 `env_get_param` 契约），BOARD 值来源随腿实施取证（§3.3 v3） |
+| T4：删除 aarch64 重复实现 | 已裁（维持，独立小批最先） |
+| T4：`fw_end = 0` | 补充前提后冻结（§4.3 DTB 生命周期前提 + 两项验收已写入） |
+| T5：五块切片全部落地 | 已裁（维持），容量与嵌套引用两核实成文（§5.2 v3） |
+
+实施次序维持 §0.2；二轮补充：T4 先行独立实施，T1 解码边界（§1.4）与 T2 映射证明（§1.5（四）+ §2.8）以本文件为可审查的短设计补充，随后按 T5 → T3 → T2 推进。
 
 ---
 
