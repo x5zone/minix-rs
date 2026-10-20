@@ -579,3 +579,25 @@
   本笔新增 markdown 链接 0 条、`doc-style-lint --diff` error 级 0、`check-staged-inflight` 暂存区无
   在制文件。新固化一条实验纪律：翻转签名取编译面读数必须备份-还原-`git status --short` 空输出收尾，
   预研轮不在领用树留实验残留。提交：本笔里程碑笔一笔（文档笔在前）。
+
+- **里程碑第一百五十四笔（批次四百四十，A2 板，qoder）**：A2 行「参数缝半（射程②）」第一次落到一支壳
+  ——`rev` 的命令行参数全程按字节（切片 27）。**施工粒度重新定**：批次四百三十九那条「整族一次改」的
+  读数是「原地改缝的签名」取到的（39/39 支壳各红一处），本轮换「新增双生口 + 逐对迁移」再取一次——
+  `os/commands/usr-bin/textfilter/src/bin_support.rs:fn args_bytes`（真机腿直取 `minix_rt::crt0::args()`
+  原始字节、宿主腿取 `args_os()` 的 `as_bytes()`）与 `fn prog_name_bytes`（basename 那一跳在壳侧复现，
+  因为 `minix_sys::prog_name` 收 `&str` 且在 A 板 §2 禁碰清单内）、共件 `src/lib.rs:fn
+  empty_optstring_operands_bytes`、`src/rev.rs:fn parse_rev_args` 换取字节形、`src/bin/rev.rs` 用字节缝；
+  其余 38 支仍走旧口，同一次构建编得过。门读数：宿主与容器各 68 段 / 1211 通过 / 0 失败；三架构退 0（x86_64-unknown-none、aarch64-unknown-none、riscv64gc-unknown-none-elf 走宿主交叉编译——这三枚 bare-metal target 装在宿主工具链里，容器镜像 minix-ci:1.94 未装，同一条命令在容器里报 E0463，是配方差异不是代码缺陷）；clippy 与 rustfmt 在触及件的新代码位零告警零漂移（`bin_support.rs:fn drive_reads` 的 unused import、`rev.rs` 头行的 doc-list 告警、`col.rs`/`jot.rs` 的 value-assigned 与 `bin/cksum.rs` 的 fmt 漂移都按 `git show HEAD` 逐处核对为既存）。 跨壳表
+  `tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter` 的 `rev` 行由 `ef` **翻正**
+  为 `ff`（字母位与参照件同形，`rev: unknown option -- \xff`），其余五支仍钉 `ef`，这张表逐行翻正即本族
+  进度条；门 库 +2（`lib.rs` 一枚把折叠腿与字节形的差别钉成对照断言、`rev.rs` 一枚钉原字节字母）
+  面 +1（`rev_face.rs` 用 `OsString::from_vec` 传裸 `ff`，`&str` 夹具传不出）。A/B SAME=8 DIFF=1（九形，日志 `tmp/argv-440/ab.log`）：唯一残差是
+  **操作数**那一腿（打不开 `no\xffpe.txt` 时回显 `efbfbd` 而参照件回显 `ff`），卡在
+  `os/libs/minix-sys/src/lib.rs:299` 的 `open` 与 `os/libs/minix-types/src/types/errno.rs:556` 的
+  `err_line` 都收 `&str`，即 `ARGV-BYTE-PATH-IN-LIBS` 在册的边界，不是本轮漏改。负控四枚 → 退回折叠腿咬住跨壳表 1 枚、字母判据取小写咬住 2 枚、短横判据改双横咬住 4 枚、等价改写全绿 rc=0：
+  另捉两处自身形状——`prog_name_bytes` 首版交回整个 `argv[0]`，程序名就成了全路径，跨壳表面门当场钉红；
+  一枚注入自身编译不过（`Cow<str>` 无 `into_bytes`）被误读成「空咬」，判据落定为**注入必须先过编译，
+  红名清单要连构建退出码与编译错计数一起看**。分轮改为「壳与它的解析入口一对一笔」，末笔删 `args()`、
+  `prog_name`、`empty_optstring_operands` 的 `&str` 形并迁 `text-games` 三支、把
+  `tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 的期望升级为
+  逐字节等于原字节，该笔闭 A2 行。提交：码笔 + 本笔里程碑笔（文档笔在两者之间）。
