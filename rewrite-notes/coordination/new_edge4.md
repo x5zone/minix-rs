@@ -1117,3 +1117,31 @@ C 自己印一句带 `%s` 的 `errx`（`minix3/usr.bin/uniq/uniq.c:90-98`），�
 **提交与账**：文档笔为 `todo.md` 新段 + 板 A2 行体量核实句；本轮零源码改动，故不跑宿主与容器门，
 五道收尾门读数见 `tmp/units-453/closeout.log`。板 A 余量：参数缝半二十九支（`units` 按改后两片切法）+
 `text-games` 三支壳 + 族终笔 + 登记不执行清单。
+### 第一百六十八笔（批次四百五十四 · 名单对账轮：`HEAD-NON-PERMUTE-OPERAND-TAIL` 核销为闭，族名数翻正为六个具名 ID）
+
+**这一轮没有改一行码，做的是把两条台账读数拉回现状**，判据沿用「同类相比」：门名对门名、登记项对登记项，
+不拿旧读数当现状。
+
+**第一条订正**：`HEAD-NON-PERMUTE-OPERAND-TAIL` 早已落地。承载门是
+`os/commands/usr-bin/textfilter/tests/head_face.rs:an_operand_ends_option_scanning_like_c`（现跑 11 passed /
+0 failed），钉的正是参照件那一形——`head <档> -5` 打横幅加整份内容、再 `head: -5: No such file or directory`
+退 1，`unknown option` 那一句根本不出现；同枚门里还钉了 `-q` 在此是个叫 `-q` 的档名（横幅照打、静默不生效），
+以及选项写在前头照常生效、但环撞上操作数就再也回不来。真源判据 `minix3/lib/libc/stdlib/getopt.c:71-74`
+的非选项即停，加 `minix3/usr.bin/head/head.c:118-119` 的 `argv += optind`。板上与批次四百五十那两处
+「维持在册」因此是台账滞后，本笔翻正为闭。
+
+**第二条订正**：这一族的「八枚」是个复现不了的数。按 ID 数两个台账的实际写法，具名项六个：
+`HEAD`/`FOLD`/`CUT`/`CKSUM`/`NL`/`PR` 各配 `-NON-PERMUTE-OPERAND-TAIL`；余下一处通配写法
+`*-NON-PERMUTE-OPERAND-TAIL` 被反复引用（18 篇十处、板一处），「八枚」是把通配与重复引用一并算进去得到的。
+复现命令 `grep -o "[A-Za-z*]*-NON-PERMUTE-OPERAND-TAIL" ... | sort | uniq -c`（读数
+`tmp/nonpermute-454/census.log`）。翻正后的现状：`head`、`tail` 各有一枚同名终结门（11/0、24/0），
+故六枚里**两枚闭**；`fold`、`cut`、`cksum`、`nl`、`pr` 五支没有对应门，维持在册，逐支做时照 `head` 那枚的
+形状——先用 `-Z` 验过归属的参照件量出「操作数在前」那一形，再落一枚面门，不另造跨壳门。
+
+**读数**：本轮零源码改动，故不跑宿主与容器门；五道收尾门全过（门 1 仅存已知探针族漂移、门 2 断链 131 同基线、
+门 3 PASS、门 4 error级 0、门 5 干净，`tmp/nonpermute-454/closeout.log`）。A2 参数缝半余量复核：
+`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/` 现量 **29**，与批次四百五十二记的数相符。
+
+**提交与账**：`6c950fbe2`（文档笔：18 篇新段 + 板 A2 行两处订正）、本页为里程碑笔。板 A 余量：A2 参数缝半
+二十九支 + `text-games` 三支壳 + 族终笔 + 登记不执行清单（`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`、
+余五支终结门、`UNIQ-CLIPPY-COLLAPSIBLE-IF-STOCK` 等）。
