@@ -5,9 +5,11 @@
 //! pulls one back, carriage return resets to zero, tab rounds up to the
 //! next multiple of eight, and every other character adds one (byte
 //! counts with `-b`); when the column passes the width the buffered
-//! segment flushes — breaking after the last space unless `-s`
-//! (split-words, fold.c:150-178) — the carried tail replays for its
-//! column, and a newline flushes the buffer (fold.c:140-149). The
+//! segment flushes, and only `-s` (split-words) first looks back for the
+//! last space in the buffer and drops that space from the carried tail
+//! (fold.c:152-176) — without it the break is a hard one wherever the
+//! column lands, so a space stays at the end of the line it filled.
+//! A newline flushes the buffer (fold.c:140-149). The
 //! default width is 80 (`DEFLINEWIDTH`, fold.c:56); `-w` sets it.
 //! Multibyte characters each occupy one column in this slice (the C
 //! counts wide characters the same way without `-b`).
@@ -72,35 +74,30 @@ pub fn fold_line(line: &str, options: &FoldOptions) -> Vec<String> {
         }
         column = advance_column(column, character, options.count_bytes);
         if column > options.width {
-            if options.split_words {
-                out.push(buffer.iter().collect());
-                buffer.clear();
-                column = advance_column(0, character, options.count_bytes);
+            // `fold.c:152-176`：回找缓冲里最后一个空格是 `-s` 独有的腿；不开 `-s` 时列位一过宽度
+            // 就把整块缓冲吐出，空格留在它落到的那一行。找到空格那一支把空格本身丢掉
+            // （`last_space++` 之后才 `wmemmove`），续行的列位由剩下的字符重算。
+            let last_space = if options.split_words {
+                buffer.iter().rposition(|&ch| ch == ' ')
             } else {
-                // Break after the last space in the buffer; the carried
-                // tail replays for its column.
-                let last_space = buffer.iter().rposition(|&ch| ch == ' ');
-                match last_space {
-                    // C: print buf[0..last_space] — the blank itself
-                    // moves to the head of the carried tail
-                    // (fold.c:163-172).
-                    Some(space) => {
-                        out.push(buffer[..space].iter().collect());
-                        let tail: Vec<char> = buffer[space..].to_vec();
-                        buffer = tail;
-                        column = 0;
-                        for &carried in &buffer {
-                            column = advance_column(column, carried, options.count_bytes);
-                        }
-                        column = advance_column(column, character, options.count_bytes);
-                    }
-                    None => {
-                        out.push(buffer.iter().collect());
-                        buffer.clear();
-                        column = advance_column(0, character, options.count_bytes);
+                None
+            };
+            match last_space {
+                Some(space) => {
+                    out.push(buffer[..space].iter().collect());
+                    buffer.drain(..=space);
+                    column = 0;
+                    for &carried in &buffer {
+                        column = advance_column(column, carried, options.count_bytes);
                     }
                 }
+                None => {
+                    out.push(buffer.iter().collect());
+                    buffer.clear();
+                    column = 0;
+                }
             }
+            column = advance_column(column, character, options.count_bytes);
         }
         buffer.push(character);
     }
@@ -258,11 +255,44 @@ mod tests {
 
     #[test]
     fn test_break_after_the_last_space() {
+        // 参照件 `tmp/fold-405/fold_ref -s -w 10` 现量：`one two` / `three four`。
+        // 空格被丢掉（C 把 `last_space` 加一之后才回移缓冲），所以续行不带前导空格。
+        let options = FoldOptions {
+            width: 10,
+            split_words: true,
+            ..FoldOptions::default()
+        };
+        assert_eq!(
+            fold_input("one two three four\n", &options),
+            vec!["one two", "three four"]
+        );
+    }
+
+    #[test]
+    fn without_split_words_the_break_is_a_hard_one_and_spaces_stay() {
+        // 同一串输入不开 `-s`：`fold.c:152-176` 不回找空格，列位一过宽度就整块吐出，
+        // 空格留在它填到的那一行末尾——参照件现量 `one two th` / `ree four`。
         let options = FoldOptions::new(10);
-        let folded = fold_input("one two three four\n", &options);
-        // The carried " three four" replays past width 10 and folds
-        // again at its own space — the C's buffer replay does the same.
-        assert_eq!(folded, vec!["one two", " three", " four"]);
+        assert_eq!(
+            fold_input("one two three four\n", &options),
+            vec!["one two th", "ree four"]
+        );
+    }
+
+    #[test]
+    fn split_words_drops_the_space_and_carries_the_rest_as_the_next_line() {
+        // `-s -w 4` 对 `abcdefghij klmnop`（参照件现量同此六行）：空格被丢，
+        // 剩下的字符留在缓冲里当下一行的开头，列位从它们重算——`ij` 之后是
+        // `klmn`，不是带前导空格的 ` klmn`，也不是多一行空行。
+        let options = FoldOptions {
+            width: 4,
+            split_words: true,
+            ..FoldOptions::default()
+        };
+        assert_eq!(
+            fold_input("abcdefghij klmnop\n", &options),
+            vec!["abcd", "efgh", "ij", "klmn", "op"]
+        );
     }
 
     #[test]
