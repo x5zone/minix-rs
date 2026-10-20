@@ -119,6 +119,117 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百五十八（A2 参数缝半切片 40：`cmp` 的两条报文名字位与操作数一起交回原字节，跨壳表十行至此全是原字节）
+
+- **这一轮做的是同一族参数缝半的下一支，射程比 cksum 那一片窄而更硬**：`cmp` 的档名同时是
+  回显位——C 把两个操作数原样交给 `printf`（`minix3/usr.bin/cmp/misc.c:81` 的
+  `printf("%s %s differ: char %lld, line %lld\n", file1, file2, byte, line)`）和
+  `warnx`（`misc.c:64`、`:67`、`:70` 那三条 `EOF on %s`），全程没有一步问编码；同一串字节还要
+  交给 `fopen`。所以在此前的文本缝上，一枚裸 `ff` 折成三字节替换字符之后会**同时**错在两处：
+  按折叠名去找档（找不到），以及万一找到了、报出来的档名与真源差两字节。
+- **落码三层同一支壳**：库侧 `os/commands/usr-bin/textfilter/src/cmp.rs` 的 `CmpFlags` 把
+  `operands` 改成 `Vec<&'a [u8]>`、`fn parse_cmp_flags` 收 `&'a [&'a [u8]]`（环里那句
+  `for &byte in &arg[1..]` 一直是按字节走的，本轮没动），两处报文构造点
+  `fn report_first_diff` 与 `fn report_eof` 从「交 `&str` 再取 `as_bytes()`」改成交回
+  `Vec<u8>`、名字位按字节 `extend_from_slice`。壳侧 `os/commands/usr-bin/textfilter/src/bin/cmp.rs`
+  改走 `support::args_bytes()` 与 `support::prog_name_bytes()`，`fn parse_skip` 按字节读
+  C 的 `strtoq(…, 0)` 那个形（`minix3/usr.bin/cmp/cmp.c:125` 与 `:130` 把 `argv[2]`/`argv[3]`
+  原样交出去），`fn eof_line` 与 `fn skip_eof` 跟着交回字节，`-` 那一形的标签也换成字节形
+  `b"stdin"`。门面 `tests/cmp_face.rs` 新增两枚逐字节门（differ 行两支档名、`EOF on` 那一行档名），
+  配两件字节形夹具 `fn run_argv`（参数经 `OsStr::from_bytes` 交下去）与 `fn write_raw_named`
+  （按折叠名落盘、交回原字节名）；跨壳表 `tests/bin_support_face.rs` 补 `cmp` 一行。
+- **两条仍要 `&str` 的腿登记在册、本轮不碰**：两支操作数的开档腿要交给 `support::read_file`
+  （真机臂即 `minix_sys::open`），程序名那一腿要交给 `support::warn_line` 与
+  `minix_types::errno::err_line` 的名字段——都在 `os/libs/`，那是二线的领地
+  （`coordination/CONCURRENT-WORK-PROTOCOL.md` §2 的「不许替别人实现他的前置」）。于是壳内
+  留下三处臂内折叠，现量 `grep -c from_utf8_lossy os/commands/usr-bin/textfilter/src/bin/cmp.rs`
+  → **3**（程序名一处、两支开档腿各一处），与其余各支同一条既定口径。
+- **门账按现跑取数**：面侧 `cmp_face` 12 → **14**（新立
+  `a_raw_byte_in_operand_names_is_echoed_as_those_bytes_by_cmp` 与
+  `a_raw_byte_in_the_eof_report_name_is_echoed_as_that_byte_by_cmp`）；库内 `cmp` 模块门
+  **10 → 10**，本轮只把夹具的字面量从 `"-\xc3\xa9"` 这类文本形改成 `b"-\xc3\xa9"` 字节形，
+  期望串逐字未动，所以门数不涨——与批次四百五十五、四百五十七那条「找到既有门就翻正、
+  不新增双胞胎」同一处置；`bin_support_face` 门 **4 → 4**，但表体从九行变成十行；
+  整包 **1246 → 1248**。跨壳表 `cmp` 行钉的是 `cmp: unknown option -- \xff` 加退出码 **2**
+  （`ERR_EXIT`；这一支的 `usage()` 退 2，与 `cksum` 那行的 1 不同），**本表十行至此全是原字节**。
+- **一处自己的记忆错，被现量纠正**：交接摘要里我带着「上一笔的整包基线是 1244」这个数开工，而本轮
+  新增两枚门却读到 1248，减法差两枚，于是当场把上一笔那棵树复跑一遍：
+  `git checkout HEAD~1 -- <本轮触及的四件> && (cd os && cargo test --offline -j 1 --no-fail-fast -p minix-textfilter)`
+  → `passed 1246 / failed 0`；随后 `git checkout HEAD -- <四件>` 还原、复跑本轮 → `passed 1248 / failed 0`。
+  台账本来就写的是 1244 → **1246**（本段上面那条门账就是照它走的）；手里那个 1244 是**批次四百五十六**
+  那笔的整包读数，隔了一笔被我当成了上一笔。错的是我手里的数，不是账。
+  判据一条：**开工前把基线当场复跑一次，别拿任何转述来的数字当基线**——减法不平的时候，先怀疑
+  被减数，再怀疑减数，最后才怀疑台账。
+- **A/B 对 `tmp/cmp-410/cmp` 跑十四形，SAME=14 / DIFF=0**（`tmp/cmp-458/ab.log`）。参照件先按交接
+  那条验法打 `-Z` 验归属：交回 `cmp: unknown option -- Z` 一行再跟 usage 一行、退 2，说明它链的
+  是 Minix 的 `getopt.c` 而不是宿主 glibc 那一份。十四形覆盖字母位三形（ASCII `Z`、裸 `ff`、
+  多字节 `c3 a9`）、聚簇 `-l\xff`、两支档名含 `ff` 的 differ 行、档名含 `ff` 的 EOF 行、`-l`
+  逐字节清单、开档失败、`-l -s` 互斥、单操作数、skip 两枚（`2` 与 `0x4`）、skip 越界、`--`
+  终结符、`-` 读标准输入。逐字节比之前把两侧的程序名 token **全部**归一（`usage` 行与报文行各
+  出现一次，只替换第一次会造假红）。
+  **这一支是本族头一回 A/B 全等**，而上一支 cksum 是三 SAME 三 DIFF——差别不在这条缝做得更干净，
+  而在 `cmp` 的报文就是档名的回显，没有第二条消耗参数的腿；cksum 那三处 DIFF 全在摘要算法侧
+  与 `-c` 校验腿那两条独立轮上。
+  **裸字节档名那一形在盘上同时放两份**（原字节名与它的 `from_utf8_lossy` 折叠名，内容相同），
+  理由写进了取证脚本的注释里：开档腿还在 `&str` 上（在册 `ARGV-BYTE-PATH-IN-LIBS`），只放原名的
+  话 have 侧必然 `ENOENT`，读数里混进来的就不是参数缝而是那条在册依赖。判据一条：**A/B 想量哪条腿，
+  就得先把另一条腿的失败排除掉，而排除的方式必须写进取证件本身**，否则下一个读者会把「全等」
+  读成「开档腿也已按原字节可用」。
+- **负控四枚**（`tmp/cmp-458/negctl.py`，逐枚读数在 `tmp/cmp-458/negctl-W*.log`）。基线：库内 616、
+  跨壳表 4、`cmp_face` 14 全绿。W1（`fn report_first_diff` 里第一支档名折一次 lossy）咬住 **1** 枚
+  （differ 那枚门）；W2（`fn report_eof` 的档名折一次）咬住 **1** 枚（EOF 那枚门）——**两枚各只咬
+  自己那一条**，说明 differ 腿与 EOF 腿是分开钉住的，只改一处不会让另一处也跟着红；
+  W3（argv 退回文本缝，即 `support::args()` 那条）咬住 **3** 枚（两枚新面门 + 跨壳表
+  `no_command_aborts_on_a_nonutf8_option_letter`）；W4（字母位退回按字符取整簇）咬住 **3** 枚
+  （库内 `the_unknown_letter_is_the_first_byte_not_the_first_character`、面侧
+  `the_libc_line_of_a_multibyte_flag_is_one_byte_for_cmp`、跨壳表那一行）。负控只跑射程内三段
+  （`cargo test --offline -j 1 --no-fail-fast -p minix-textfilter --lib --test cmp_face --test bin_support_face`，
+  即库内 616 枚、跨壳表 4 枚、面侧 14 枚，基线三段全 `0 failed`），不跑整包——注入只动 `cmp`
+  那一支，射程外的段跑起来只是等。每枚注入前后按整文件 md5 复核还原。
+- **夹具自身错了一处，归因到夹具而不是门**：EOF 那枚门的第一版拿 `abc\n` 对 `abcd\n`，两支在第
+  四个字节就不同，程序走的是 differ 腿而不是 EOF 腿，当场红；改成严格前缀关系（`abc\n` 对
+  `abc\nd\n`）之后才落到 `cmp: EOF on <短档>` 那一支。那次失败的读数本身反倒是一条旁证——它报的是
+  `short\xff longer\xff differ: char 4, line 1`，说明回显位拿到的确实是 argv 里那串原字节。
+- **一处自己造的事故，被容器门抓个正着**（这是本轮最该记下来的东西）：做 clippy 前后比对时，
+  我把改动四件按文件名收进 `tmp/cmp-458/mine/`，而 `src/cmp.rs` 与 `src/bin/cmp.rs` 的**文件名
+  相同**，后者把前者盖掉；随后那个目录被当成还原源回写，库件就被壳件写了进去。混写之前的宿主整包
+  是绿的（1248/0），红的是紧接着的容器权威门：
+  `error: couldn't read commands/usr-bin/textfilter/src/../bin_support.rs: No such file or directory`，
+  指向 `src/cmp.rs:31` 那句 `mod support;`。原因就在 `#[path = "../bin_support.rs"]` 的相对解法上：
+  同一个声明在壳件里解出 `src/bin_support.rs`（对），在库件位置上也按同一目录规则去解，就指到了
+  不存在的地方。三条判据：**（一）跨同名文件的备份与还原必须按完整相对路径建目录树，不许用
+  文件名拍平；（二）任何「临时把树换成别的版本再换回来」的循环结束后，第一件事是重跑一道会编译
+  全部 target 的门，不能直接进下一道门；（三）像 `#[path]` 这种依赖所在目录的声明是免费的形状
+  探针——文件被认错身份时它第一个炸。** 恢复源是 `tmp/cmp-458/cmp.rs.orig`（本轮开工前的字节形
+  库件），恢复后 `rustfmt --edition 2024` 补一次格式化，再重跑整包 1248/0 与 A/B 十四形，仍全等。
+- **门读数**：宿主与容器权威门各 **69 段 / 1248 passed / 0 failed** 退 0（容器按板 §7.3 那条配方，
+  带 `-u $(id -u):$(id -g)` 与两个缓存挂载点，跑时未与其他 cargo 并发，`tmp/cmp-458/container-gate.log`）；
+  三架构 `cargo check --offline -j 1 --target … -p minix-textfilter --bins`（x86_64-unknown-none、
+  aarch64-unknown-none、riscv64gc-unknown-none-elf）各退 0；`rustfmt --edition 2024 --check` 触及
+  四件各退 0 零漂移；`cargo clippy --offline -j 1 --all-targets -p minix-textfilter` 在改动前后各跑
+  一次（`tmp/cmp-458/clippy-before.log` 与 `tmp/cmp-458/clippy-final.log`），各 **151** 条、**零新增**；
+  触及本轮四件的只有 2 条，且与 HEAD 那 2 条同一对——`src/cmp.rs` 里 `fn format_list_entry` 的
+  `write!` 尾换行，以及 `src/bin/cmp.rs` 的「test 模块之后还有条目」（后者在 HEAD 报在第 261 行、
+  本轮位移到第 298 行，是位移不是新增）。
+- **进度与余量（全部现量）**：参数缝半**已落十三支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`）；
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **26** 支；
+  按整个命令面口径 `grep -rl "support::args()" os/commands --include=*.rs | grep -v tests/ | grep -v bin_support.rs | wc -l` → **95** 支。
+  渲染半仍归零：`grep -rn "\.line(prog\|\.line(&prog" os/commands --include=*.rs | grep -v tests/` 现量
+  **0** 行。字节形报文口 `line_bytes` 的调用点本轮按命令复跑是 **40 处 / 29 个源文件**
+  （`grep -rn "\.line_bytes(" os/commands --include=*.rs | grep -v /tests/ | wc -l` 与
+  `grep -rl "line_bytes(" os/commands --include=*.rs | grep -v /tests/ | grep -v bin_support.rs | wc -l`
+  两个取法同数），上一笔那句「41 处」拿不到可复跑的命令，按现量订正为 40。
+  族余量：`textfilter` 二十六支的参数缝 + `text-games` 三支壳 + 族终笔（删 `bin_support` 那三个
+  文本口、把 `tests/argv_seam_face.rs` 里那枚门升级成逐字节等于原字节）。
+- **独立轮在册（本轮不碰，按「一次只修一条」）**：`ARGV-BYTE-PATH-IN-LIBS`（`cmp` 的两条开档腿与
+  程序名腿都挂在它上面）、`CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-DASH-REWRITE-AT-FIRST-CHAR`、
+  `UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、
+  五枚 `*-NON-PERMUTE-OPERAND-TAIL`（`CKSUM`、`CUT`、`FOLD`、`NL`、`PR`；`HEAD` 那枚已在批次四百五十四
+  按现量核销为闭）；`REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE` 待裁决。
+
+---
+
 ## 批次四百五十七（A2 参数缝半切片 39：`cksum` 的 argv 与取值链路交回原字节，参照件那一侧补齐了程序名的声明）
 
 - **这一轮做的是批次四百五十一那张施工名单里的第一支**（字母序 `cksum` 打头）。现状证据两条：跨壳表
