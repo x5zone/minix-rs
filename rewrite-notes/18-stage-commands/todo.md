@@ -119,6 +119,106 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十九（A2 参数缝半：操作数这一路的现量，与「施工粒度是 crate」这条结论）
+
+**这一轮干什么**。板 A 行 A2 只剩参数缝半（射程②）这一族：`bin_support::args()` 交回的是
+`Vec<String>`，命令行上的原始字节在走到任何一条腿之前就已经被 `String::from_utf8_lossy` 折过
+一次。批次四百三十八量清了两种改法各自的施工面并裁了全量迁移那一路，本轮为该路做落地前置，按可
+观察面与可编译面各拿一次现量：前者定「这一族改完之后用户看得见什么」的验收形，后者定「一次能改
+多大一片」的施工粒度。
+
+**第一件现量：操作数（档名）这一路今天实际打成什么样**。一具探针把同一枚带裸 `ff` 的操作数
+（`no\xffpe.txt`，目录里不存在）交给 `os/commands` 下 28 支壳，逐字节收 stderr 首行
+（日志 `tmp/argv-439/operand-bytes-probe.log`）。19 支把那一枚字节打成三字节 `ef bf bd`（U+FFFD
+的 UTF-8 编码），9 支的用法腿在碰到操作数之前就先退出，因此看不见这条腿。四形逐字节摘自日志：
+
+| 壳 | 报文里的操作数 | 退码 | 首行字节 |
+|---|---|---|---|
+| `head` | 折成 `efbfbd` | 1 | `head: no\xef\xbf\xbdpe.txt: No such file or directory` |
+| `column` | 折成 `efbfbd` | 1 | `column: Cannot open \`no\xef\xbf\xbdpe.txt': No such file or directory` |
+| `wc` | 折成 `efbfbd` | 1 | `wc: no\xef\xbf\xbdpe.txt` |
+| `colrm` | 折成 `efbfbd` | 1 | `colrm: illegal column -- no\xef\xbf\xbdpe.txt` |
+
+C 的那一侧同一枚输入打的是 `ff` 本身，因为报错腿印的就是 `argv` 里那个指针：
+`minix3/usr.bin/head/head.c:main` 在 `fopen(*argv, "r")` 返回空时打 `warn("%s", *argv)`；
+`minix3/usr.bin/wc/wc.c:cnt` 在 `open(file, O_RDONLY, 0)` 失败时打 `warn("%s", file)`；
+`minix3/usr.bin/column/column.c:main` 打 `warn("Cannot open \`%s'", *argv)`。`%s` 进的是
+`char *`，一路没有编码这一步。于是折进那三个字节带来两处可观察偏差：**报文里操作数变长**，以及操
+作数若继续流向开档腿，**找的是另一个名字**。
+
+夹具自身的两条形状要先立住，否则读数会假：
+
+- 传原始参数要用 `os.fsdecode(b"no\xffpe.txt")`，并把 `os.fsencode(arg)` 断言回
+  `b"no\xffpe.txt"` 再发车。用 `b"...".decode("latin-1")` 造出来的字符串会被子进程按 UTF-8 再编
+  一次，探针读到的是自己造成的 `c3 bf`，而不是壳折出来的 `ef bf bd`。
+- 无界输出的壳（`yes`、`jot`、`seq` 一类）必须 `stdin=DEVNULL`、`stdout=DEVNULL` 且带超时，否则
+  探针自己被输出撑爆——本线记录到过触发内存上限的退出码 137，那不是被测对象的读数。
+
+**第二件现量：缝的签名一改，红的范围不是「试点那几支」**。按全量迁移那一路只改缝本体——
+`os/commands/usr-bin/textfilter/src/bin_support.rs:fn args` 的两条腿都改成交回 `Vec<Vec<u8>>`，
+其余一律不动——然后编译：
+
+```
+cargo build -p minix-textfilter --keep-going -j 2
+→ 39 枚 error[E0308]，落在 39 个文件；`could not compile minix-textfilter (bin …)` 同样 39 条；
+  lib 目标 0 错（日志 tmp/argv-439/flip-args-keepgoing.log）
+```
+
+红的那一行在每支壳里都是同一句 `let argv: Vec<String> = support::args();`
+（`os/commands/usr-bin/textfilter/src/bin/col.rs` 的 `run` 首句形）。原因是缝不是链接期共享的一份
+对象，而是被每支壳各自内联的同一份源码：`src/bin/col.rs` 用 `#[path = "../bin_support.rs"] mod
+support;` 把 `bin_support.rs` 编进每一支壳，于是改签名这一动作对 39 支壳同时生效。想只让四支先迁、
+其余照旧，就必须让 `args()` 的旧签名继续存在——那是批次四百三十八列的「字节访问口 + 保留 `String`
+腿」那一路，不是全量迁移。
+
+**由此定的施工粒度**：参数缝半的最小可编译单位是 **crate**，不是支、也不是模块。这一族因此按 crate
+分两笔收尾——
+
+1. `textfilter` 一笔：缝的两条腿 + 39 支壳的 `argv` 绑定与 `prog_name` 调用形 + 29 个解析入口的
+   `&[&str]` 换成 `&[&[u8]]`（`String::as_str` 那 11 处桥随之消失）+ 面级夹具里喂参数的数组改写
+   字面字节。这一笔之内选项字母与操作数同时归到字节，A/B 的集外字母残差（`\xef` 对参照件的
+   `\xff`）应在这一笔清零。
+2. `text-games` 一笔：同一口径迁 `wtf`/`fortune`/`random` 三支，并把跨壳表门
+   `os/commands/games/text-games/tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent`
+   的期望从「raw 与 lossy 同形」升级为「逐字节等于原字节」——这枚门翻正的那一形就是 A2 行的验收
+   凭据。
+
+批次四百三十八量体表里的六项读数不受影响（壳侧入口 42 处、解析层 `&[&str]` 29 处、`as_str()` 桥
+11 处、操作数当路径 14 处、操作数进报文 39 个壳文件、面级非 UTF-8 夹具 42 行）；本轮把该表配套的
+「四支试点」这一档切分收掉，依据就是上面那段编译读数。
+
+**库侧的前置（在册，本线不动）**。操作数按字节还有第三条腿在别的领地：把字节操作数交给内核开档要
+`os/libs/minix-sys/src/lib.rs:299` 的 `pub fn open(path: &str, flags: i32, mode: u32)` 先有字节形
+入口（`os/commands/usr-bin/textfilter/src/bin_support.rs:fn read_file` 两条腿都收 `&str`，往下调的
+就是这个口）；把字节操作数交给 `err(3)` 渲染要 `os/libs/minix-types/src/types/errno.rs:556` 的
+`pub fn err_line(prog: &str, label: &str, code: Errno, out: &mut [u8]) -> usize` 先允许 `label`
+是字节串（同文件 `fn warn_line` 的 `label: &str` 就是从它那里来的）。这两处在 `os/libs/`，属并行
+任务 A 板 §2 的禁碰清单，本线只登记不改——`textfilter` 那一笔能做到「操作数在壳侧一路按字节走到
+边界」，边界之外要另线接。
+
+**本轮登记（只登记未执行）**：
+
+- `ARGV-OPERAND-BYTES-NEEDS-PARSE-LAYER-AT-ONCE`——参数缝半的施工粒度是 crate：缝签名一改，
+  `textfilter` 39/39 支壳各红一处；因此不能按支试点，`textfilter` 必须一次带走 39 支壳 + 29 个解
+  析入口 + 面级夹具形状，`text-games` 另笔。
+- `ARGV-BYTE-PATH-IN-LIBS`——操作数字节的「开档」与「报文」两条边界腿分别卡在
+  `os/libs/minix-sys/src/lib.rs:299`（`open` 收 `&str`）与
+  `os/libs/minix-types/src/types/errno.rs:556`（`err_line` 的 `label` 收 `&str`），二者都在 A 板
+  §2 禁碰清单内，需库侧先行或另线裁决。
+
+**判据补一条（实验的收尾纪律）**。做「改签名看编译面」这类实验，必须先把被测件备份、跑完立刻逐字节
+还原，并以 `git status --short` 空输出收尾——预研轮的交付物只有台账与日志，领用树里不能留实验残留，
+否则收尾门判的是实验形态而不是基线形态。本轮两次翻转（`tmp/argv-439/flip-args.py`、
+`tmp/argv-439/flip-keepgoing.py`）都以 `restore: CLEAN` 结束。
+
+**复现清单**：
+
+- 操作数探针：日志 `tmp/argv-439/operand-bytes-probe.log`（逐壳首行与退码都在里面）；重跑要点即上
+  面夹具两坑。
+- 缝翻转读数：`python3 tmp/argv-439/flip-keepgoing.py`（脚本自带备份、编译、统计、还原四步；日志
+  `tmp/argv-439/flip-args-keepgoing.log`）。
+- 库侧口形：`grep -n "pub fn open(\|pub fn err_line(\|pub fn read_file(\|pub fn warn_line(" os/libs/minix-sys/src/lib.rs os/libs/minix-types/src/types/errno.rs os/commands/usr-bin/textfilter/src/bin_support.rs`。
+
 ## 批次四百三十八（A2 行「参数缝半（射程②）」预研轮：只量体，不落码）
 
 **这一轮干什么**。板 A 行 A2 只剩参数缝半这一族：`bin_support::args()` 把命令行参数交回的是
