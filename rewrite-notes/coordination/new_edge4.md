@@ -651,3 +651,53 @@
   等价改写全绿（清单带 `--no-fail-fast`，沿用上轮判据）。余量：`textfilter` 三十九支已迁四支、
   余三十五支，共件 `empty_optstring_operands` 的 `&str` 形只剩 `colrm` 一个消费者。
   提交：码笔 + 本笔里程碑笔（文档笔在两者之间）。
+
+### 第一百五十七笔（并发任务 A 板 · A2 切片 31 · seq 的 argv 全程按字节，参数缝折叠第一次被证实会改输出内容与报文行数）
+
+**里程碑**。板 A 行 A2（GETOPT-REPORT-BYTE-LETTER）参数缝半第五对 `seq` 落地。这是本族
+第一处「折叠不在报文面上而在数据面上」的缺陷被闭：`seq` 的 `-s`/`-t` 值直接成为打出去的
+字节，`-f` 与操作数直接成为报文里的字节，而它又是唯一按 `errflg` **累加**的选项环，所以
+同一枚裸 `ff` 在文本缝上会同时坏**字母位、数据位、行数**三层（参照件 `tmp/seq-320/seq_ref`
+对 `seq -s<ff> 1 3` 打 `1\xff2\xff3\xff`，折叠形打 `1\xef\xbf\xbd2…`；对 `seq -<ff> 3` 打一行，
+折叠形打三行）。A/B 十二形由 SAME=6/DIFF=6 变 **SAME=11/DIFF=1**（唯一残差 `tr` 的字母位，
+下一对）。
+
+**提交与账**。码笔 25a8312c9（前门 `parse_seq_args`/`parse` 取 `&[&[u8]]`，
+`separator`/`terminator`/`fmt`/`operands` 全字节，`e_atof` 只在数字文法那一步折一次并交回
+原字节，壳侧新增 `sentence` 拼「程序名+句子+原字节+换行」）；文档笔 58e57afb3（18 篇立批次
+四百四十三段、07 篇三处口径：库测试 604、`seq.rs` 决定半 24 枚、`seq_face.rs` 十八枚、
+`ARGV-LOSSY-VALUE-PLANE` 闭）；文档笔补 aa3231459（文风门 SL-5 咬住两处「原先」的修复史
+叙事，改写为直接表述，`doc-style-lint --diff rewrite` 的 error级由 2 归 0）。
+
+**门证据（L1，命令+读数）**。宿主 `cargo test -p minix-textfilter --no-fail-fast` →
+**69 段 / 1222 通过 / 0 失败**；容器权威门 `docker run --rm -v $PWD:/work -w /work/os -m 2g
+minix-ci:1.94 cargo test -j 1 -p minix-textfilter` → 同一读数、编译错 0、`rc=0`
+（`tmp/argv-443/container.log`）；三架构 `cargo build --target {x86_64,aarch64,riscv64gc}…`
+各退 0、错误 0；触及件 `rustfmt --check` 零漂移；`cargo clippy` 触及件零告警；
+负控四枚 **N1 咬 4 / N2 咬 3 / N3 咬 1 / N4 等价 0 咬**；五道收尾门：门1 仅存已知
+「探针命名族 31-vs-18」漂移，门2 断链 131（=基线），门3 PASS，门4 error级=0，门5 无在制。
+门的新增与翻正：库 +2、面 +2、跨壳表 `seq` 行由 `ef` 翻正为 `ff`，原钉「三行」的门改名为
+`the_accumulating_ring_names_the_raw_byte_once` 并断言一行一个原字节。
+
+**新判据（三条 + 一条手法）**。① 同一处折叠在一支里可能坏三层（字母位/数据位/行数），
+体量必须按现量分类后再定，不能按「字母位差一字节」统一预估；② 钉住错误形状的门不能留作
+历史证据，要改名承接正确形状并在注释里写明旧形状是缝的产物；③ 数字文法与字节回显可以分居
+两侧——「非 ASCII 字节必然不是数字的一部分」这条判据成立时，折在 `parse_float_prefix` 那一步
+不影响判定，只影响表示，而错对象必须携带原字节；④ 手法：`rustfmt` 会经
+`#[path = "../bin_support.rs"]` 连带重排被包含的模块件，触及件之外的格式差必须逐件还原，
+否则「本次触及件」的定义被工具行为悄悄放大。
+
+**本轮自己踩的坑（记法不记史）**：注入类负控脚本若写成
+`open(path,"w").write(open(path).read().replace(new,old))`，外层 `open(...,"w")` 会先清空文件，
+内层读到空串——两件源码当场归零。判据：**先读进内存再动文件**；且代码改动必须有可重放的
+补丁链（本轮 `patch2.py` → `fix_tests.py` → `libgates.py` 三步行得通，现场才能复原）。
+
+**A 板余量**。A2 参数缝半：`textfilter` 三十九支壳已迁五支（`rev`、`paste`、`yes`、`tee`、
+`seq`）、余三十四支；跨壳表余 `tr`/`fold`/`units` 三行待翻正；`text-games` 三支未动；
+族末笔要删 `bin_support::args`/`prog_name`/`empty_optstring_operands` 的 `&str` 共件并把
+`os/commands/games/text-games/tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent`
+升级为逐字节。在册未执行：`ARGV-BYTE-PATH-IN-LIBS`（本支新增 `strerror` 那条腿）、
+`UNEXPAND-*`、`CUT-*`、`NL-*`、`PASTE-COMM-NUL-*`、`PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`、
+八条 `*-NON-PERMUTE-OPERAND-TAIL`、`SEQ-FORMAT-RENDER`、普查乙/丙两组。下一对建议 `tr`
+（唯一 A/B 残差所在，且它的两个集合已是字节形）。
+
