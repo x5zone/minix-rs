@@ -66,7 +66,7 @@ fn run() -> ! {
             }
         }
     }
-    // `column.c:125-127`：条目池空则按 `eval` 直接返回，不进布局——布局里的
+    // `column.c:125-126`：条目池空则按 `eval` 直接返回，不进布局——布局里的
     // `maxlength` 是 0 条时算出来的那个取齐值，与 C 的「根本没进这几个函数」不同形。
     if entries.is_empty() {
         support::terminate(rval);

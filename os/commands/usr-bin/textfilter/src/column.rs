@@ -73,7 +73,7 @@ pub struct ColumnArgs<'a> {
 /// 还继续扫下一个，于是 `foo -t` 里的 `-t` 被偷偷当旗标吃掉，C 却是去开那个叫 `-t` 的档）。
 ///
 /// `-c` 的宽度走 [`crate::atoi`]，与 `column.c:96` 的 `atoi(optarg)` 逐字同形：非数字、
-/// 空串、负数都不是错。宽度非正时 C 的 `maxlength >= termwidth` 那一判（`:130`）在
+/// 空串、负数都不是错。宽度非正时 C 的 `maxlength >= termwidth` 那一判（`:131`）在
 /// 条目池非空时**永远成立**（最长条目至少 1 字节，取齐到制表位后是 8），于是布局退成
 /// 每条一行；这里把负宽度并到 0 是为了让 `termwidth` 留一个 `usize`——两者在上面的
 /// 判定下观察等价，而 `numcols` 的除法只在 `maxlength < termwidth` 时才走到，
