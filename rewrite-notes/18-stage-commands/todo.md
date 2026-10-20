@@ -119,6 +119,92 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百四十一（A2 参数缝半第二对落地：`paste` 的 argv 按字节，顺带把分隔符表那一腿的折叠修掉）
+
+**这一轮干什么**。按批次四百四十定下的粒度——「一支壳 + 它自己的解析入口」算一对——迁第二对：
+`paste`。选它的理由是它的解析入口本来就已经按字节步进（`src/paste.rs:fn parse_paste_args` 里
+`let letter = token[k];` 取的是 `u8`，再 `char::from(letter)` 收进报告），缺的只是 argv 到达它之前
+那一层折叠。迁完之后这一支的三样东西都是字节形：选项字母、`-d` 的值的**长度**、操作数本身。
+
+**为什么这一对不只是「字母位差一位」**。`minix3/usr.bin/paste/paste.c:199-226` 的 `tr()` 是按字节
+扫那张分隔符表的：它一次读一字节，遇到反斜杠才看下一个字节，最后返回**位数**。所以 `-d` 给一枚裸
+`ff` 就是**一位**。旧形状里 argv 先经 `String::from_utf8_lossy`，那一枚 `ff` 进门时已经是
+`ef bf bd` 三字节，`tr_delims` 如实数成**三位**——于是 `paste -d$'\xff' a.txt b.txt` 交出
+`1\xefa`（第一行用掉 `ef`，`bf` 与 `bd` 顺延到后面两行），参照件 `tmp/paste-321/paste_ref` 现量
+是每行一枚 `ff`（`tmp/argv-441/measure-ref.log`）。改前的本壳读数在
+`tmp/argv-441/before-probe.log` 里留着：`1\xefa\n2\xefb\n3\xef\n`。这一形不是报文渲染问题，
+是**输出内容**错，参数缝半在这一支上比「字母位」多修了一处真缺陷。
+
+**代码形状**（三件，全在 `os/commands/usr-bin/textfilter`）。
+
+- `src/paste.rs:fn parse_paste_args` 取 `&[&[u8]]`、`PasteArgs.operands` 是 `Vec<&[u8]>`，
+  `fn tr_delims` 与 `fn parse_args` 同批换字节形。入口内的步进逻辑一字未动——它本来就是字节步进。
+- `src/bin/paste.rs:run` 第一句换成 `support::args_bytes()`（批次四百四十加的缝双生口），
+  `prog` 取 `support::prog_name_bytes()` 再折一次；裸 `-` 与操作数比较改成 `b"-"`。到了
+  `read_file` 与 `warn_line` 这两个边界仍折一次，因为库侧的口只收 `&str`——这一腿的账在
+  `ARGV-BYTE-PATH-IN-LIBS` 里在册，批次四百四十已经现量过。
+- 寿命写法：字节形解析入口的签名定在 `&[&'a [u8]]`，**不**写成 `&'a [&'a [u8]]`。后一种把外层
+  引用与元素的寿命绑成同一个，于是十处夹具（`let parsed = args(&[...])` 那种就地数组）当场编不过：
+  数组是临时值，而返回的 `PasteArgs<'a>` 还在借它。`&str` 形当年不受这一约束，因为元素是指向
+  常量字符串的胖指针，拷出来就不依赖那个数组；`&[u8]` 一旦与外层同寿就把这条自由路走掉了。
+
+**门读数**。`cargo test -p minix-textfilter` 宿主 68 段 / 1215 通过 / 0 失败（本轮 +4：库 2 枚、
+面 2 枚）；容器权威门 同读数 **68 段 / 1215 通过 / 0 失败、退 0**（`tmp/argv-441/container.log`）。三架构 `cargo build --target …`
+（x86_64-unknown-none、aarch64-unknown-none、riscv64gc-unknown-none-elf）各自退 0、零编译错，
+在宿主跑并用独立的 `--target-dir`——容器门会把挂载树里的 `os/target` 变成 root 属主，所以容器门排在
+所有宿主 cargo 之后。clippy 触及件零告警，`cargo fmt --check` 零漂移。
+
+**A/B 逐字节对参照件**（`tmp/argv-441/ab.log`；先跑 `-Z` 验字样，参照件打的是 Minix 的
+`unknown option` 而不是 glibc 的 `invalid option`；两侧都用 `executable=` 以同一个 `argv[0]` 起）。
+十一形读数 SAME=10 DIFF=1。唯一那形 `DIFF` 是**操作数档名**那一腿：档名 `"\xff.txt"` 参照件打得开
+（它按原字节 `open`），本壳报 `paste: \xef\xbf\xbd.txt: No such file or directory`——档名在
+`minix_sys` 的 `open(2)` 口上被折了一次，属 `ARGV-BYTE-PATH-IN-LIBS` 的边界，不是本轮漏改。
+
+**余量现量**（`grep -l 'support::args()' os/commands/usr-bin/textfilter/src/bin/*.rs | wc -l` 与
+`ls src/bin/*.rs | wc -l`）：`textfilter` 三十九支壳里三十七支仍走文本缝，两支已走字节缝
+（`rev`、`paste`）；共件 `empty_optstring_operands` 的 `&str` 形只剩 `colrm` 一个消费者。
+
+**门**：库 +2（`paste.rs:fn parse_paste_names_a_raw_ff_option_letter_by_that_byte` 钉住
+`UnknownOption('\u{00ff}')` 与 `line_bytes` 交出的那一枚裸字节；
+`paste.rs:fn parse_paste_keeps_a_nonutf8_delimiter_byte_as_one_slot` 钉住表位数——紧贴的 `-d\xff`
+是一位、`-d\xff+` 是两位、值取自下一个 token 时也是两位），面 +2
+（`paste_face.rs:fn a_raw_ff_option_letter_is_reported_as_that_byte`、
+`paste_face.rs:fn a_raw_nonutf8_delimiter_byte_is_one_slot`，参数一律经 `OsString::from_vec` 传，
+`&str` 夹具传不出裸 `ff`）。跨壳表 `bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter`
+里 `paste` 那一行的期望由 `ef` **翻正**为 `ff`；该表余下四支（`tr`/`seq`/`fold`/`units`）仍钉 `ef`。
+
+**负控四枚**（`tmp/argv-441/negctl.log`）：N1 把缝退回折叠形（壳先取 `args()` 再 `.into_bytes()`）
+→ 三枚门咬住（跨壳表 + 两枚新面门）；N2 把 `-d` 的值在进表之前折一次 → 两枚分隔符门咬住（库 + 面）；
+N3 把字母位退回文本渲染 `line` → 三枚咬住（两枚裸 `ff` 门加批次四百零一那枚 `c3` 门）；
+N4 是等价改写（`*operand == b"-"` 换成 `*operand == b"-".as_slice()`），实测全绿。
+
+**判据（本轮新增两条、复现一条）**。
+
+- 取红名清单必须带 `--no-fail-fast`：`cargo test` 在第一个红的测试目标处收摊，本轮 N1 不带这个旗标
+  时只报出 1 枚，带上之后同一注入报出 3 枚——多腿改动时「咬了几枚」会被系统性读少。
+- 字节形解析入口的寿命写在元素上（`&[&'a [u8]]`），外层引用不绑同一个寿命参数，否则夹具必须全部
+  先 `let` 出来。这一条对族内其余各支都成立，逐支迁时会反复撞上。
+- 复现批次四百四十那条：注入必须先过编译。本轮 N4 的第一版把比较写成 `operand == &b"-"[..]`，
+  类型不符当场编不过，读出来是「零红名 + 一枚编译错」，与「门没咬」长得一样。
+- 格式化门只跑触及件（`rustfmt --check <那几件>`），不跑 `cargo fmt -p`：这个包的既有内容并不
+  全是 rustfmt 规范形，包级一次格式化会连带重排数十支不相干文件（本轮一度波及 23 支，已还原并
+  把宿主门、三架构门、A/B 全部按还原后的形态重跑一遍）。
+
+**本轮登记与余量**。
+
+- `PASTE-NONUTF8-DELIM`（07 篇在册项）按现量**收窄**：`-d` 的分隔符表那一腿随本轮闭（表按原字节
+  建位），剩余的只有档名那一腿，而它已经归在 `ARGV-BYTE-PATH-IN-LIBS` 里，不另立册。
+- 参数缝半余量：`textfilter` 侧还剩三十七支壳（含 `colrm` 那支用共件 `&str` 出口的），
+  `text-games` 侧三支；每迁一对，跨壳表里翻正一行，族内全迁完的那一笔删掉 `&str` 旧出口，并把
+  `os/commands/games/text-games/tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent`
+  从「与 lossy 等价」升级成「逐字节等于原字节」。
+
+**复现清单**：`python3 tmp/argv-441/measure-ref.py`（参照件逐形现量）、
+`python3 tmp/argv-441/probe.py <本壳路径>`（改前/改后同形对照）、
+`python3 tmp/argv-441/ab.py`（十一形 A/B）、`python3 tmp/argv-441/negctl.py`（四枚负控，逐枚自带
+还原，`--no-fail-fast`）、`bash tmp/argv-441/container-gate.sh`（容器权威门）；日志
+`tmp/argv-441/{measure-ref.log,before-probe.log,ab.log,negctl.log,host-test-final.log,archhost-*.log,container.log}`。
+
 ## 批次四百四十（A2 参数缝半第一次落地：`rev` 一支持字节 argv，并把施工粒度重新定在「一对」上）
 
 **这一轮干什么**。参数缝半（射程②）要的是 `bin_support::args()` 不再把命令行折成 `String`。
