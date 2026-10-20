@@ -745,3 +745,44 @@ libc 那一行继续走 `GetoptReport::line_bytes`（`os/commands/usr-bin/textfi
 `ARGV-BYTE-PATH-IN-LIBS`（本支未新增腿）、`UNEXPAND-*`、`CUT-*`、`NL-*`、`PASTE-COMM-NUL-*`、
 `SEQ-FLOAT-RENDER`、`TR-SET-GRAMMAR-SENTENCES`、八条 `*-NON-PERMUTE-OPERAND-TAIL` 与
 `PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`。
+
+### 第一百五十九笔（并发任务 A 板 · A2 切片 33 · `colrm` 的 argv 全程按字节，共件 `empty_optstring_operands` 的 `&str` 形自此无人使用）
+
+**里程碑**。板 A 行 A2（GETOPT-REPORT-BYTE-LETTER）参数缝半第七对 `colrm` 落地。这一支的缺陷面比
+`tr` 窄、比 `seq` 干净：坏在两张嘴——
+
+① **回显位**：`minix3/usr.bin/colrm/colrm.c:80-86` 的 `errx(1, "illegal column -- %s", argv[..])`
+   打的是**操作数原字节**。参照件 `tmp/colrm-310/colrm_ref` 现量 `colrm 1<ff>3` →
+   `colrm: illegal column -- 1<ff>3`；参数缝先折一次的读数是 `1<ef bf bd>3`，句子结构完全正确，
+   坏的只是那三枚替换字符。
+② **字母位**：optstring 是空串（`colrm.c:67`），`-<ff>` 那一行由 libc 印（`getopt.c:79`、`:103`），
+   字母位是短横后的一枚裸字节；折叠形取到的是 `ef`（lossy 后替换字符的第一个字节）。
+
+改法与前两对同口径：`parse_columns` 收 `&[&'a [u8]]`、`ColrmOperand::IllegalColumn` 的载荷是
+`&'a [u8]`，`column_value` 直接吃字节（它的空白跳、符号、十进制扫描本来就按字节做，迁移只是把
+`as_bytes()` 那一步从函数里挪到了调用方看不见的地方），壳用共件的
+`empty_optstring_operands_bytes`，非法列号那一行走新的字节出口 `illegal_column`。
+
+**结构性收获**：`colrm` 是 `empty_optstring_operands` 的 `&str` 形的最后一个使用者，本支之后那一形
+**无人使用**——参数缝族收尾那一笔可以直接删除它，连同 `bin_support::args()` 与 `prog_name`。
+
+**读数（L1）**：A/B 八形逐字节对参照件 = SAME=7 / DIFF=1（`tmp/argv-445/ab.log`），唯一残差是
+`colrm 4 2` 那句 `err(1, ...)` 尾巴上的 `strerror` 表内容（本壳 `Undefined error: 0` 对参照件
+`Success`）——`errno` 为 0 时 strerror 表随 libc 而不同，属已登记的 `COLRM-STRERROR-ZERO-TEXT`，
+本支不动。门 库 +2、面 +2（`tests/colrm_face.rs` 十七枚→十九枚，两枚以 `OsString::from_vec`
+交原始字节）；宿主单包 `cargo test -p minix-textfilter --no-fail-fast` = 69 段 / 1231 / 0，容器
+`minix-ci:1.94`（`-m 2g`、`-j 1`、挂领用树绝对路径、工作目录 `os/`）两包合跑 = 78 段 / 1310 / 0；
+三架构 `--bin colrm` 裸编各退 0；clippy 触及件零告警、rustfmt 三件零漂移；负控四枚三咬 + 一枚
+等价全绿、还原后 632 / 0。五道收尾门全过（门 1 仅存已知探针命名族漂移 31 对 18、门 2 断链 131
+等于基线、门 3 PASS、门 4 `--diff rewrite` error级 0、门 5 无在制文件）。
+
+**手法两条入档**：`empty_optstring_operands_bytes` 交回 `Vec<&[u8]>` 而不是切片，壳里要传 `&operands`；
+原始字节参的夹具用 `OsString::from_vec` 必须先 `use std::os::unix::ffi::OsStringExt;`——这个构造子
+挂在 trait 上、不在预导出集里，漏掉就是 `E0599 no associated function`。另订正一处陈旧读数：
+07 篇库测试口径那行的总数早已不成立，且带着正文日期（SL-4 咬住），现改为「按模块拆分只是代表性
+节选、不求加总等于总数」。
+
+**提交与账**：`8dd45cebe`（码）、`f922164bb`（文档）、`031cd5920`（文档笔补 · 文风门与陈旧读数）。
+板 A2 行余量：`textfilter` 三十九支已迁七支、余三十二支；跨壳表仍余 `fold`/`units` 两行的字母位是
+折叠形 `ef`；`tests/bin_support_face.rs` 三处注释把 `tr`/`seq` 仍列为未换字节形，登记为待订正；
+`tr`/`seq`/`colrm` 的 `prog` 那处程序名 lossy 属全族共件，留给收尾那一笔。
