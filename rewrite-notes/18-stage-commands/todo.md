@@ -119,6 +119,65 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百四十六（A2 参数缝半第八对：`fold` 的集外字母位落到原字节，顺带量出拆行腿的一处分支写反）
+
+- **落点**：`os/commands/usr-bin/textfilter/src/fold.rs`、`src/bin/fold.rs`、`tests/fold_face.rs`、
+  `tests/bin_support_face.rs`、`src/colrm.rs`（注释归位）（码笔 `eb0d0e427`，领用 `GETOPT-REPORT-BYTE-LETTER`，
+  基线是批次四百四十五合入后的 `rewrite` 头）。
+- **这一支只坏一张脸，但那张脸有两处**：
+  ① **字母位**：选项串是 `"0123456789bsw:"`（`minix3/usr.bin/fold/fold.c:76`），集外字母那一行由 libc 印
+  （`minix3/lib/libc/stdlib/getopt.c:79` 的 `optopt = *place++`、`:103` 的 `%c`），字母位是短横后的**一枚裸字节**。
+  命令行递进一枚不属于任何合法序列的 `ff` 时，旧的 `bin_support::args` 先过一次 `from_utf8_lossy`，
+  那枚字节在到达选项环之前就成了三字节的替换字符，环取到的第一字节是 `ef`——参照件 `tmp/fold-405/fold_ref`
+  现量交回的是 `ff`。批次四百零五那次只换了渲染半，所以合法序列 `c3 a9`（`é`）一直是对的，
+  **不属于任何合法序列的字节**才露出这一位——这是本族反复出现的那类「门钉的是 lossy 之后的形状」。
+  ② **聚簇腿**：`b` 是合法且不带值的字母，环吃完 `b` 继续吃下一位，所以 `-b<ff>` 的字母位同样来自聚簇扫描，
+  与跨壳表那行的单字母腿不是同一条缝，`tests/fold_face.rs` 因此新立一枚专钉聚簇腿的门。
+- **数据位不受影响**：`fold` 的操作数只有两个去处——宽度值的判断（`illegal width value` 那句不带操作数）
+  与文件路径。路径那条腿在 `os/libs/minix-sys/src/lib.rs:fn open` 与
+  `os/libs/minix-types/src/types/errno.rs:fn err_line` 两个 `&str` 口上必须折一次，属已登记的
+  `ARGV-BYTE-PATH-IN-LIBS`，本支不新增腿也不动它。
+- **改法**：`parse_fold_args` 收 `&[&'a [u8]]`、`FoldArgs.operands` 是 `Vec<&'a [u8]>`（外层借用与元素借用解耦，
+  测试适配器才能交本地 `Vec`）；双横杠终止、遗留数字形 `-N`、聚簇扫描一律按字节比较；`parse_width` 重写为
+  字节形（逐位 `is_ascii_digit` + 饱和累加，空串与非数字都归 `IllegalWidth`，对位 C 的 `atoi` 给 0 再 `<= 0`
+  那一支，`fold.c:84-86`）；壳走 `bin_support::args_bytes` 与 `prog_name_bytes`，程序名那一腿折一次
+  `String::from_utf8_lossy`（全族共件）。字母的载荷仍是 `char`：取值是 `bytes[pos] as char`，码位不超过
+  `0xFF`，经 `GetoptReport::line_bytes`（`os/commands/usr-bin/textfilter/src/lib.rs:fn line_bytes`）原样写回一枚字节。
+- **门**：库 +2——`parse_fold_args_keeps_a_raw_ff_operand_as_its_own_bytes`、
+  `parse_fold_args_names_a_raw_ff_option_letter_as_one_byte`；面 +1——`tests/fold_face.rs` 七枚→八枚，
+  新增 `a_raw_nonutf8_letter_after_a_cluster_flag_is_one_byte`（枚名与 `colrm_face`、`rev_face` 的同族门刻意不同，
+  否则负控红名清单分不出是谁），配套夹具 `run_raw` 用 `OsString::from_vec` 交原始字节；
+  跨壳表 `tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter` 的 `fold` 行由 `ef` 翻正为 `ff`。
+- **A/B 现量**：`python3 tmp/argv-446/ab.py > tmp/argv-446/ab.log` 十三形逐字节对 `tmp/fold-405/fold_ref`
+  （开工先跑 `-Z` 验字样：那句是 `fold_ref: unknown option -- Z`，Minix 措辞，承真值），
+  读数 === SAME=11 DIFF=2。两形残差都在册：
+  ① `fold a<ff>.txt` 的报文回显——路径腿的 lossy 折叠（`ARGV-BYTE-PATH-IN-LIBS`）；
+  ② `fold -w 4` 遇空格行的拆行形状——见下面「新登记」。
+- **新登记不执行 `FOLD-SPLIT-BRANCH-SWAPPED`（P0-code-bug + 文档失真一处）**：`fold.c:152-176` 的分支条件是
+  `if (split_words && last_space != -1)`——**只有开了 `-s` 才回找缓冲里最后一个空格**，不开 `-s` 时列位一过
+  宽度就把整块缓冲吐出、空格留在它落到的那一行。`os/commands/usr-bin/textfilter/src/fold.rs:fn fold_line`
+  把两臂写反了：`options.split_words` 为真时整块吐出，为假时去 `rposition` 找最后一个空格，于是
+  `space == 0` 那一形吐出**空行**。现量两形（`tmp/argv-446/ab.log`）：`-w 4` 对 `abcdefghij klmnop`
+  参照件 `abcd`/`efgh`/`ij k`/`lmno`/`p`，本壳 `abcd`/`efgh`/`ij`/空/空/空/` klmnop`；
+  `-w 4` 对 `one two three four` 参照件 `one `/`two `/`thre`/`e fo`/`ur`，本壳 `one`/空/` two`/空/空/空/` three`/空。
+  同一条失真也写在 07 篇的 `fold` 行（「缺省最后空格断行且空格留在续行头」）与本件模块头注释里，文档随本笔订正，
+  代码留给专轮（改一臂要连库测三形的期望一起翻正，不属参数缝半这一轮）。
+- **门读数（L1 证据）**：宿主 `cargo test -p minix-textfilter --no-fail-fast` + `cargo test -p minix-text-games --no-fail-fast`
+  两包各跑 = 78 段 / 1313 通过 / 0 失败（`tmp/argv-446/host-final.log`），其中 `--lib` 611、`fold_face` 8、`colrm_face` 19；
+  容器 `docker run --rm -v <领用树绝对路径>:/work -w /work/os -m 2g minix-ci:1.94 cargo test -j 1 -p minix-textfilter -p minix-text-games`
+  读数见「容器门」段；三架构 `cargo build -p minix-textfilter --bin fold --target
+  {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` 各退 0（`tmp/argv-446/arch.log`）；
+  clippy 触及件零告警、rustfmt 五件零漂移（`tmp/argv-446/rustfmt.log`）；
+  负控五枚四咬 + 一枚等价全绿、还原后三段全绿（`tmp/argv-446/negctl446.log`）。
+- **手法一条入档**：`rustfmt -p <包>` 会连同**未触及**的件一起重排（本笔 `src/bin_support.rs` 里一处
+  `if/else` 被折成多行），所以格式化只能逐件点名；混进工作区的别件格式差要 `git checkout --` 单独还原，
+  别把它算进本轮的触及件。
+- **登记与余量**：`textfilter` 三十九支已迁八支（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`、`fold`）、余三十一支；
+  跨壳表只余 `units` 一行的字母位是折叠形 `ef`（批次四百四十五登记的那处过时注释随本笔订正完毕）；
+  `FOLD-SPLIT-BRANCH-SWAPPED`、`FOLD-DIGIT-NOT-FIRST-IN-CLUSTER`、`FOLD-NON-PERMUTE-OPERAND-TAIL`、
+  `COLRM-STRERROR-ZERO-TEXT`、`ARGV-BYTE-PATH-IN-LIBS` 与 `UNEXPAND-*`/`CUT-*`/`NL-*`/`PASTE-COMM-NUL-*`/
+  `SEQ-FLOAT-RENDER`/`TR-SET-GRAMMAR-SENTENCES` 各条维持已登记不执行；`fold` 支的 `prog` 那处程序名 lossy 属全族共件。
+
 ## 批次四百四十五（A2 参数缝半第七对：`colrm` 把操作数原文与集外字母都按字节交回）
 
 - **落点**：`os/commands/usr-bin/textfilter/src/colrm.rs`、`src/bin/colrm.rs`、`tests/colrm_face.rs`（码笔 `8dd45cebe`，领用 `GETOPT-REPORT-BYTE-LETTER`，基线是批次四百四十四合入后的 `rewrite` 头）。
