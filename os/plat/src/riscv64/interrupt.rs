@@ -68,11 +68,16 @@ pub struct Riscv64InterruptController {
 
 impl Riscv64InterruptController {
     fn threshold_offset(context: usize) -> usize {
-        PLIC_THRESHOLD + context * 0x1000
+        // SD-41/C3 修复（UART 首源实测定案）：PLIC context 寄存器步长=
+        // 0x2000（规范+QEMU 实现；ctx0 M=0x200000/0x200004、ctx1 S=
+        // 0x202000/0x202004）。旧值 0x1000 读到保留区 0x201004——claim
+        // 恒 0（假中断静默吞）、真源永不 complete，首个真实 PLIC 设备线
+        // （UART IER 使能）即 SEI 风暴（ecall↔SEI ping-pong，-d int 实锤）。
+        PLIC_THRESHOLD + context * 0x2000
     }
 
     fn claim_offset(context: usize) -> usize {
-        PLIC_CLAIM + context * 0x1000
+        PLIC_CLAIM + context * 0x2000
     }
 
     /// PLIC MMIO base (read-only accessor).
@@ -149,6 +154,18 @@ impl InterruptRouter for Riscv64InterruptController {
             unsafe {
                 self.plic_write32(PLIC_ENABLE + self.context * 0x80 + word * 4, 0);
             }
+        }
+    }
+
+    /// SD-41/C3 首源触发：写 PLIC priority（0=永不投递；QEMU 复位值 0，
+    /// 不写则线即使 unmask 也永不上升）。
+    fn set_irq_priority(&mut self, irq: IrqVector, priority: u32) {
+        let irq_num = irq.get() as usize;
+        if irq_num == 0 {
+            return;
+        }
+        unsafe {
+            self.plic_write32(PLIC_PRIORITY + irq_num * 4, priority);
         }
     }
 }
