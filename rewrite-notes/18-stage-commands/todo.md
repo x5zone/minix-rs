@@ -119,6 +119,100 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百五十七（A2 参数缝半切片 39：`cksum` 的 argv 与取值链路交回原字节，参照件那一侧补齐了程序名的声明）
+
+- **这一轮做的是批次四百五十一那张施工名单里的第一支**（字母序 `cksum` 打头）。现状证据两条：跨壳表
+  `os/commands/usr-bin/textfilter/tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter`
+  里根本没有 `cksum` 这一行（无行可钉就是无人负责），而
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` 给的是 28——
+  `cksum` 的命令行在进选项环之前先过一层 `from_utf8_lossy`，一枚裸 `ff` 变成三字节 `ef bf bd`，
+  于是字母位、`-a` 的算法名、`-s` 的串、操作数名这四处的回显位都与参照件差几字节。
+- **落码分三层，同一条判据：C 问不问编码，本层就不许问**。
+  薄壳 `src/bin/cksum.rs:run` 改走 `support::args_bytes()` 与 `support::prog_name_bytes()`；
+  参数层 `src/cksum.rs:fn parse_cksum_args_into` 收 `&[&'a [u8]]`，
+  `CksumRequest::operands` 与 `CksumAction::String` 的载荷随之改成 `&'a [u8]`，
+  取值那一步交回的是 `&bytes[pos + 1..]` 而不是一个 `String`；
+  算法名层 `src/digest.rs:fn from_hashname_bytes` 按字节做 ASCII 大小写不敏感比对。
+  依据都在 C 里：`minix3/usr.bin/cksum/cksum.c:202` 是 `strcasecmp(hashes[i].hashname, optarg)`，
+  `:209`、`:212`、`:215` 那三支 `old1`/`old2`/`crc` 同样按字节比；`:259` 把 `optarg` 原样交给
+  `hash->stringfunc`；`minix3/usr.bin/cksum/md5.c:60-67` 的 `MD5String` 用
+  `printf("%s (\"%s\") = %s\n", …)` 把串逐字回显；档名那一腿是
+  `minix3/usr.bin/cksum/print.c:54`（以及 `:64`、`:74` 同族两支）那句 `printf(" %s", fn)`，
+  `fn` 就是 `argv` 里那串字节。反过来做会怎样：把比较边界折一次 lossy（本族早已否证的乙路），
+  `MD5` 与 `M\U+FFFD5` 这两串不同字节会折成同一串，`-a` 就把一个没人写过的算法认成真的。
+- **`-o` 与 `-a` 用的是两套规则，本轮把这条不对称照搬下来**：`-a` 走 `strcasecmp`，
+  而 `-o` 在 `cksum.c:236`、`:239` 是 `strcmp(optarg, "1")`/`strcmp(optarg, "2")`——大小写敏感、
+  只认这两个字面量。若两处共用一份匹配函数，`-o 1` 与 `-o 2` 之外的东西就会多出一个能被认下的形状。
+- **一条参照件的承载教训，值得单独记**：`tmp/cksum-457/cksum_ref` 编出来每次运行都段错误，
+  `gdb` 的栈停在 `__strcmp_avx2 ← main`。根因不在 C 也不在门：构建脚本没带
+  `tools/atf-c-compat/host-ref/bsd-compat-proto.h`，而宿主 glibc 2.39 还没有 `getprogname()`，
+  于是 `cksum.c:175` 那句 `progname = getprogname()` 退化成隐式声明——返回的指针被截成 `int`，
+  第一次 `strcmp` 就踩空。补上 `-include bsd-compat-proto.h` 之后 `cc` 退 0、程序跑通，
+  `-Z` 交回的确实是 Minix `getopt.c:101-104` 那句 `unknown option -- Z`。
+  判据：**参照件段错误先怀疑承载，别把它记成 C 的行为差异**。
+- **A/B 六形，SAME=3 / DIFF=3（`tmp/cksum-457/ab.log`）**，程序名不用归一：参照件经同名软链
+  `tmp/cksum-457/cksum` 起，`getprogname()` 交回的就是 `cksum`。三形 SAME 全是本轮的射程——
+  集外字母 `-\xff` 与多字节字母 `-\xc3\xa9`（两者都只报第一枚字节 `c3`）、`-a md5 -s ab<ff>cd`
+  那行 `MD5 ("ab\xffcd") = fc13ad52…` 逐字节相同。三形 DIFF 同源且都在册：`ARGV-BYTE-PATH-IN-LIBS`
+  说的是档名进 `minix_sys::open` 的 `&str` 口就非折一次不可，于是按原字节名落盘的档**根本打不开**——
+  `weird<ff>lib` 那一形参照件出 `1112837078 4 <work>/weird\xfflib`，本层出
+  `cksum: <work>/weird\xef\xbf\xbdlib: No such file or directory` 退 1；报文腿那一形同理。
+  这三形不是「回显位没改成字节」，而是回显位所在的腿没走到——两个说法差一步修法，账面必须分清。
+- **门账按现跑取数**：`cksum_face` 28 → **30**（新立两枚逐字节门
+  `a_raw_byte_in_the_s_string_is_echoed_as_that_byte_by_cksum` 与
+  `a_raw_byte_in_an_operand_name_is_echoed_as_that_byte_by_cksum`，并配 argv 字节形夹具
+  `fn run_argv`/`fn scratch_bytes`）；跨壳表补 `cksum` 一行，**本表九行至此全是原字节**
+  （门本身仍是一枚，涨的是行数）；库内 `--lib` 段 616 → 616——本轮把 `src/cksum.rs` 测试里
+  130 处字面量从 `"…"` 改写成 `b"…"`/`"…".as_bytes()`，期望串逐字未动，所以不涨门数；
+  整包 1244 → **1246**。第二枚新门的夹具把临时档写在**折叠后的名字**上：开档腿仍折一次，
+  按原字节名落盘就打不开，那样只能退到报文腿，回显位永远走不到。夹具因此把两条腿隔开，
+  注释里写明了 `ARGV-BYTE-PATH-IN-LIBS` 落地之后要改回原字节名、断言不动。
+- **负控两枚各咬中一枚、零误伤（`tmp/cksum-457/negctl.log`）**：W1 把 `fn emit_line` 的名字位改回
+  折一次 lossy → `a_raw_byte_in_an_operand_name_…` 红，其余 29 绿；W2 把 `fn string_line` 的串位
+  同样折一次 → `a_raw_byte_in_the_s_string_…` 红，其余 29 绿；两次注入之间用整文件比对确认还原。
+  这轮没有等价声明：两枚变异都改得出红，所以不必解释「为什么允许存在」。
+- **门读数（命令同记，按批次四百五十六那条判据）**：宿主与容器权威门各 **69 段 / 1246 passed / 0 failed**
+  退 0（容器 `docker run --rm -u $(id -u):$(id -g) -v $PWD:/work -v …/tmp/ci-cargo:/cargo -v
+  …/tmp/ci-target:/tgt -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/tgt -w /work/os -m 2g
+  minix-ci:1.94 cargo test -j 1 -p minix-textfilter`，`tmp/cksum-457/container-gate.log`，跑时
+  `pgrep -a cargo` 只有一条 dockerd 守护进程在）；三架构
+  `cargo build --offline -j 1 --target {x86_64-unknown-none,aarch64-unknown-none,riscv64gc-unknown-none-elf}
+  -p minix-textfilter --bins` 各退 0、零 error 行（`tmp/cksum-457/arch-*.log`）；
+  clippy 用同一条命令 `cargo clippy --offline -j 1 -p minix-textfilter --all-targets` 现跑 **151** 条，
+  与上一轮同数、**归属 `cksum.rs`/`digest.rs` 的 0 条**——中途确实冒出过两枚
+  `manual_ignore_case_cmp`（本轮新写的两处逐字节大小写不敏感比对），改用 `eq_ignore_ascii_case`
+  之后归零，所以 151 不是「碰巧同数」而是把自增的两条清掉之后的读数。
+  `rustfmt --edition 2024` 就地格式化本轮三枚源件后，`cargo fmt --check -p minix-textfilter`
+  仍报 21 枚文件有 diff，全部不在本轮改过的文件里——那是本包既有的排版债，登记不执行。
+- **订正两处账面**：`07-text-filter.md` 的 `cksum` 行原写端到端门「现 27 枚」，现量 30
+  （本轮之前就已经是 28，那句是批次三百八十九之后没人重数）；跨壳表头部注释原写
+  「只余 `units` 一行仍是折叠形 `ef`」，而 `units` 那行的 `ef`→`ff` 已在批次四百五十五翻正——
+  注释与表体不同源，本轮一并订正成九行全为原字节。
+- **顺手补一处会让整张表画坏的账面板结构**：`coordination/PARALLEL-20261018-A-CMD.md` §1 的 `A2` 那一行
+  有 5 枚**未转义**的管道符（三枚是历轮追加留下的 ` |。`，两枚在码段 `` `-o 1|2|3` `` 里），
+  而表头是六列七枚分隔符——GFM 里码段中的裸管道符同样会切格，所以这一行的列数一直比表头多，
+  读者看到的 `A2` 行是被切碎或整行退出表格的。判据：**往多列表格里追加长文本，落笔后必须数一遍
+  未转义管道符**（复现命令 `python3 -c` 以负向后视查 `(?<!\\)\|`，表头 7、`A1` 7、`A3` 7，
+  本轮把 `A2` 从 11 修回 7）。同一行还有一段历轮切分留下的散行（中间那行只剩一个分页符 `\f`，
+  尾巴在下一行的「甲组余 `pr`、`column` 两支」处收口）——本轮不动它：把两段文字重新接续必然要重排
+  历轮追加的次序，那是独立轮的活，登记进下面的独立轮名单。
+- **进度与余量（全部现量）**：参数缝半**已落十二支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`、`cksum`）；`textfilter` 余
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **27** 支；
+  整个命令面口径 → **96** 支。族终笔的前置不变：全部走完才删 `bin_support` 的三个文本口
+  （`args`、`prog_name`、`empty_optstring_operands`），并把
+  `os/commands/games/text-games/tests/argv_seam_face.rs` 那枚「raw 与 lossy 等价」的门升级成
+  「逐字节等于原字节」。
+- **独立轮在册（本轮不碰，按「一次只修一条」）**：`ARGV-BYTE-PATH-IN-LIBS`（本轮 A/B 三形 DIFF 的
+  根因，修法在 `os/libs/minix-sys` 与 `os/libs/minix-types` 那一侧，是二线领地）、
+  `CKSUM-CHECK-LEG-TEXTSEAM`（`-c` 校验腿整条仍按 `&str` 走，档名与摘要行前缀都不在字节形链路上）、
+  `UNITS-DASH-REWRITE-AT-FIRST-CHAR`、`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、
+  `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、五枚 `*-NON-PERMUTE-OPERAND-TAIL`；
+  板 §1 `A2` 行那段被分页符劈开的散行（本轮只补齐了未转义管道符，没有重排文字）；
+  `REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE` 待裁决。
+
+---
+
 ## 批次四百五十六（A2 参数缝半切片 38：`units` 的 argv 交回原字节，跨壳表八行至此全是原字节）
 
 - **这一轮做的是批次四百五十三那条切法的第二片**：动 argv 那条缝，不碰单位名链路（上一片已按字节）。
