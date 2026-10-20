@@ -119,6 +119,41 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百四十五（A2 参数缝半第七对：`colrm` 把操作数原文与集外字母都按字节交回）
+
+- **落点**：`os/commands/usr-bin/textfilter/src/colrm.rs`、`src/bin/colrm.rs`、`tests/colrm_face.rs`（码笔 `8dd45cebe`，领用 `GETOPT-REPORT-BYTE-LETTER`，基线是批次四百四十四合入后的 `rewrite` 头）。
+- **这一支坏两处、可观察面不同**：
+  ① **回显位**：`minix3/usr.bin/colrm/colrm.c:80-86` 的 `errx(1, "illegal column -- %s", argv[..])` 把
+     **操作数的原字节**打回去。`colrm 1<ff>3` 参照件现量 `colrm: illegal column -- 1<ff>3`，
+     而参数缝先折一次的读数是 `1<ef bf bd>3`——句子本身合法，坏在字节被替换字符顶掉。
+  ② **字母位**：optstring 是空串（`colrm.c:67`），集外字母那一行由 libc 印（`getopt.c:79`、`:103`），
+     字母位是短横后的**一枚裸字节**；`colrm -<ff> 3` 参照件打 `unknown option -- <ff>`，折叠形打的是 `ef`。
+- **改法**：`parse_columns` 收 `&[&'a [u8]]`、`ColrmOperand::IllegalColumn` 的载荷是 `&'a [u8]`，
+  `column_value` 直接吃字节（它的空白跳、符号、十进制扫描本来就按字节做）；壳用
+  `empty_optstring_operands_bytes`（`os/commands/usr-bin/textfilter/src/lib.rs:fn empty_optstring_operands_bytes`），
+  非法列号那一行走新的字节出口 `illegal_column`（程序名 + 句子 + 原字节 + 换行），
+  libc 那一行继续走 `GetoptReport::line_bytes`。
+- **门**：库 +2——`parse_columns_names_a_raw_ff_operand_by_its_own_bytes`、`column_value_rejects_a_raw_ff_byte`；
+  面 +2——`tests/colrm_face.rs` 十七枚→十九枚，新增 `a_raw_nonutf8_operand_is_echoed_as_its_own_bytes` 与
+  `a_raw_nonutf8_option_letter_is_named_as_one_byte`（两枚都以 `OsString::from_vec` 交原始字节）。
+  `colrm` 不在 `tests/bin_support_face.rs` 的跨壳表内，它的字母位由本篇这两枚门钉住。
+- **A/B 现量**：`tmp/argv-445/ab.log` 八形逐字节对参照件 `tmp/colrm-310/colrm_ref`，读数 === SAME=7 DIFF=1。
+  唯一残差是 `colrm 4 2` 那句 `err(1, ...)` 尾巴上的 `strerror` 表内容（本壳 `Undefined error: 0`
+  对参照件 `Success`），属已登记的「`errno` 为 0 时 strerror 表随 libc 而不同」那一形，本支不动。
+- **门读数（L1 证据）**：宿主 `cargo test -p minix-textfilter --no-fail-fast` = 69 段 / 1231 通过 / 0 失败（`tmp/argv-445/host-textfilter.log`）；
+  容器 `docker run --rm -v <领用树绝对路径>:/work -w /work/os -m 2g minix-ci:1.94 cargo test -j 1 -p minix-textfilter -p minix-text-games`
+  = 78 段 / 1310 / 0（`tmp/argv-445/container.log`）；三架构 `cargo build -p minix-textfilter --bin colrm --target
+  {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` 各退 0（`tmp/argv-445/negctl445.log` 首三行）；
+  clippy 触及件零告警、rustfmt 三件零漂移；负控四枚三咬 + 一枚等价全绿、还原后 632 / 0。
+- **手法两条入档**：`empty_optstring_operands_bytes` 交回的是 `Vec<&[u8]>` 而不是切片，壳里要传 `&operands`；
+  原始字节参的夹具用 `OsString::from_vec` 必须先 `use std::os::unix::ffi::OsStringExt;`——
+  这个构造子挂在 trait 上而不在预导出集里，漏掉就是 `E0599 no associated function`。
+- **登记与余量**：`textfilter` 三十九支已迁七支（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`）、余三十二支；
+  共件 `empty_optstring_operands` 的 `&str` 形自此**无人使用**，删除它属参数缝半族收尾那一笔；
+  跨壳表仍余 `fold`/`units` 两行的字母位是折叠形 `ef`；`tests/bin_support_face.rs` 里三处注释把
+  `tr`/`seq` 仍列为「字母位未换字节形」的支，与批次四百四十三、四百四十四之后的现场不符，登记为待订正；
+  `colrm` 支的 `prog` 仍是程序名那一处 `from_utf8_lossy`（全族共件）；`COLRM-STRERROR-ZERO-TEXT` 维持已登记不执行。
+
 ## 批次四百四十四（A2 参数缝半第六对：`tr` 的集合、映射值与集名回显都由字节决定）
 
 - **落点**：`os/commands/usr-bin/textfilter/src/tr.rs`、`src/bin/tr.rs`、`tests/tr_face.rs`、`tests/bin_support_face.rs`（码笔 `d936e7ead`，领用 `GETOPT-REPORT-BYTE-LETTER`，基线是批次四百四十三合入后的 `rewrite` 头；轮内 `rewrite` 被别板推进一笔（`1502f2e9e`，只动 `01-stage-kernel/todo.md`），领用树内 rebase 后按新基线复跑门）。
