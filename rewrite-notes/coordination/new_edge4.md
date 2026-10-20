@@ -983,3 +983,40 @@ lossy」，不是既有的字母位/数据位/回显位三条腿能直接套的�
 那两片）、`text-games` 三支壳、族终笔（删 `bin_support::args`/`prog_name`/`empty_optstring_operands`
 三个文本口，把 `os/commands/games/text-games/tests/argv_seam_face.rs:fn
 a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 升级成逐字节相等）。
+
+### 第一百六十四笔（并发任务 A 板 · 名单对账轮 · 「末行换行状态」四条在册 P0 核销为闭）
+
+台账比代码慢了一族：板上与 18 篇的余量段仍把 `NL-FINAL-LINE-ADDS-NEWLINE`、
+`TAIL-FINAL-LINE-ADDS-NEWLINE` 写成在册待修，而裁决早已落地并且四支壳各有一枚面门钉着。
+判据是「同类相比」——登记项要对门名与现量，不能拿旧读数当现状；这一轮做的就是这笔对账。
+
+**裁决本身一句话说清**：行腿保留输入末行的换行状态——末行没有那枚换行，输出就不许补。
+承载点在 `os/commands/usr-bin/textfilter/src/window.rs:fn lines_of` 与同模块的 `final_line_*`：
+终止状态随行走完这条腿，所以「补不补」不由各支壳的写出循环各自决定。当初之所以裂成四条登记项，
+正是因为四支壳各写各的无条件 `push(b'\n')`；把决定收进行腿，四条同轮归零，也就不用「三处各改一遍」。
+
+**现量证据（L1）**：`python3` 逐字节比 本壳 × 参照件 × 三种选项 × 七形末行状态 = **98 形
+SAME=98 / DIFF=0**（`tmp/finalnl-450/ab.log`）。七形是 `a\nb`（末行无换行）、`a\nb\n`、单行无换行、
+空档、中间空行、纯空格无换行、三行带换行。三个参照件开工先跑 `-Z` 验归属，都交回 Minix 那句
+`unknown option -- Z`（`tmp/nl-417/nl_ref`、`tmp/tail-416/tail_ref`、`tmp/head-415/head_ref`），
+承真值——这条规矩又拦了一次，只是这次拦的是「别把不是 Minix 血脉的读数当裁决依据」。
+
+**四枚钉子**：`tests/head_face.rs:fn an_unterminated_final_line_reaches_stdout_without_a_newline`、
+`tests/tail_face.rs:fn tail_leaves_an_unterminated_final_line_unterminated`（同文件另有
+`reversed_output_carries_the_unterminated_line_to_the_front` 钉 `-r`）、
+`tests/uniq_face.rs:fn uniq_does_not_supply_a_newline_the_input_lacked`、
+`tests/nl_face.rs:fn an_unterminated_final_line_is_numbered_without_a_newline`。
+本笔**没有**再造一枚跨壳门：同一裁决的第五份重复断言不增加覆盖，只会让负控红名更难归因
+（批次四百四十八那句「门名同类相比」的反面用法）。
+
+**两处明确不扩**：`HEAD-NON-PERMUTE-OPERAND-TAIL` 是多操作数要不要置换的旧约定问题，与末行终止符
+无关；`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR` 问的是只剩空白的末行要不要冲制表档，
+比「补不补换行」深一层（批次四百二十六已把两条路各动什么写进板 A2 行）。两条都维持在册，
+并把「末行」两字相同、层次不同的这两件事的区别写进 18 篇，免得下一个读台账的人并成一件。
+
+**提交与账**：`eb77c0201`（文档笔：18 篇新段 + 板 A2 行核销）、本页为里程碑笔。本轮零源码改动，
+宿主与容器门不重跑；五道收尾门全过（门 1 仅存已知探针族漂移、门 2 断链 131 与基线同、门 3 PASS、
+门 4 error级 0、门 5 干净）。板 A 余量：参数缝半 `textfilter` 三十支（含 `units` 两片）+
+`text-games` 三支壳 + 族终笔；在册 P0 只剩 `HEAD-NON-PERMUTE-OPERAND-TAIL` 一条——
+交接 prompt 里列的四条 P0 至此核销完三条（另两条 `UNEXPAND-ZERO-STOP-PANIC`、
+`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE` 分别随批次四百二十五、四百二十七闭）。
