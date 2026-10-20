@@ -187,9 +187,14 @@ pub fn scan_entries(lines: &[&[u8]]) -> EntryPool {
         pending.push(tail);
     }
     for (index, line) in pending.iter().enumerate() {
-        // 前导空白一段段跳过去（本工具链的 `&[u8]` 没有 `trim_start_matches`，手动走）
+        // 前导空白一段段跳过去（本工具链的 `&[u8]` 没有 `trim_start_matches`，手动走）。
+        // 哪些字节算空白照 C locale 的 `isspace` 表：空格、制表、换行、垂直制表、
+        // 换页、回车六枚——只认前两枚会把一枚垂直制表符当条目收下。
         let mut blank = 0usize;
-        while matches!(line.get(blank), Some(&b' ') | Some(&b'\t')) {
+        while matches!(
+            line.get(blank),
+            Some(&byte) if matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+        ) {
             blank += 1;
         }
         let head = &line[blank..];
@@ -379,6 +384,19 @@ mod tests {
         // (width - len + 2) spaces, the trailing run trimmed.
         assert_eq!(out[0], *b"a     bb  ccc");
         assert_eq!(out[1], *b"dddd  e   ff");
+    }
+
+    #[test]
+    fn a_blank_line_is_any_run_of_isspace_bytes_not_just_space_and_tab() {
+        // C 的 `input` 先按 `isspace` 扫前导空白，扫到串尾就整条空行、静默丢弃，
+        // 连「末行没有换行符」那一判都轮不到（`column.c:274-278` 的次序在此）。
+        // 夹具写字面字节：垂直制表 `0b`、换页 `0c`、回车 `0d` 各一枚都该被丢。
+        let pool = scan_entries(&[b"\x0b\x0c", b"\r", b""]);
+        assert!(pool.entries.is_empty(), "got {:?}", pool.entries);
+        assert_eq!(pool.dropped_tail, 0, "整条空白不是残行，不该计数");
+        // 反面照旧：真内容之前的空白整段跳过，条目本身一个字节都不动。
+        let pool = scan_entries(&[b"\x0bx", b"y\r", b""]);
+        assert_eq!(pool.entries, [b"\x0bx".to_vec(), b"y\r".to_vec()]);
     }
 
     #[test]
