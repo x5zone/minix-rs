@@ -1020,3 +1020,31 @@ SAME=98 / DIFF=0**（`tmp/finalnl-450/ab.log`）。七形是 `a\nb`（末行无�
 `text-games` 三支壳 + 族终笔；在册 P0 只剩 `HEAD-NON-PERMUTE-OPERAND-TAIL` 一条——
 交接 prompt 里列的四条 P0 至此核销完三条（另两条 `UNEXPAND-ZERO-STOP-PANIC`、
 `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE` 分别随批次四百二十五、四百二十七闭）。
+
+### 第一百六十五笔（并发任务 A 板 · 施工名单轮 · 余量从整数变成一张带顺序的名单）
+
+「余三十支」作为一个整数对下一个接手的人没有用：他还得自己再数一遍才知道是谁、哪些支换了缝之后跨壳表
+看得见。这一轮把三档名单一次点清（`grep` 现量，逐名进 `tmp/uniq-census-451/census.log`）：
+`os/commands/usr-bin/textfilter/src/bin/` 共 39 枚 bin，已走 `args_bytes` 的 9 枚
+（`col colrm fold paste rev seq tee tr yes`），仍走 `support::args()` 的 30 枚；按可观察面再分一档——
+诊断层构造 `UnknownOption`（集外字母那一行由 libc 印）的 16 枚，换完缝字母位从 `ef` 回到 `ff`；
+剩下 14 枚的 optstring 为空或根本没有选项环（`head`/`tail`/`wc`/`unvis`/`diff`/`patch`/`pr` 那一型），
+换缝只影响路径与操作数腿。**「跨壳表能不能钉」不是缝的属性，是各支契约的属性**——这与批次四百四十八
+那条「零残差因 `col` 不收操作数」是同一件事的两面。
+
+**下一支点名为 `uniq`**，三条理由都来自现量：它是本族唯一一支有两个**选项值回显位**的壳（`-f` 与 `-s`
+的坏值各由 C 自己印一句带 `%s` 的 `errx`，`minix3/usr.bin/uniq/uniq.c:90-98`；参照件
+`tmp/uniq-408/uniq_ref` 本轮按 `-Z` 验过归属，交回 Minix 那句 `uniq_ref: unknown option -- Z`）；
+它把 `obsolete()` 的旧式改写（`-2`→`-f2`、`+3`→`-s3`）也带在参数层里，那一腿非 ASCII 的尾巴不能被折；
+而这三样都长在同一个文件 `os/commands/usr-bin/textfilter/src/bin/uniq.rs`
+（`fn obsolete_args` 与 `fn parse_uniq_args`，连文件内 `mod tests` 的夹具也在同一件），
+改一个文件即可收口——低风险、高面值。
+
+**顺序定案已写进板 A2 行**：`units` 两片（裁决见批次四百四十九）→ `uniq` → 字母位可观察的其余各支按字母序 →
+无字母位的一批放最后。族终笔的前置一并写明：三十支走完才删 `bin_support` 的三个文本口
+（`args`、`prog_name`、`empty_optstring_operands`），才把 `os/commands/games/text-games/tests/argv_seam_face.rs:fn
+a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 从「raw 与 lossy 等价」升级成「逐字节等于原字节」。
+
+**提交与账**：`3d8e082cc`（文档笔：18 篇新段 + 板 A2 行）、本页为里程碑笔。本轮零源码改动，
+宿主与容器门不重跑；五道收尾门全过（门 1 仅存已知探针族漂移、门 2 断链 131 与基线同、门 3 PASS、
+门 4 error级 0、门 5 干净）。板 A 余量：参数缝半三十支 + `text-games` 三支壳 + 族终笔 + 登记不执行清单。
