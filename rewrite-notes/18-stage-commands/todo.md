@@ -288,6 +288,7 @@ support;` 把 `bin_support.rs` 编进每一支壳，于是改签名这一动作�
   面夹具两坑。
 - 缝翻转读数：`python3 tmp/argv-439/flip-keepgoing.py`（脚本自带备份、编译、统计、还原四步；日志
   `tmp/argv-439/flip-args-keepgoing.log`）。
+- 判据再加一条（容器门的落地顺序）：容器权威门挂载的是工作树本身，跑完 `os/target` 里会多出以 root 属主存在的中间产物，之后同一棵树上的宿主 `cargo` 会撞 `Permission denied (os error 13)`，而 `claim.sh release` 只能删掉它管得着的部分、残骸要人来回收。所以两件事要固定下来：**容器门放在所有宿主 cargo 步骤之后**，需要同时取两套读数时给宿主构建单独指一个 `--target-dir`（本轮三架构就是在宿主上跑的，`tmp/argv-440/tgt`）。
 - 库侧口形：`grep -n "pub fn open(\|pub fn err_line(\|pub fn read_file(\|pub fn warn_line(" os/libs/minix-sys/src/lib.rs os/libs/minix-types/src/types/errno.rs os/commands/usr-bin/textfilter/src/bin_support.rs`。
 
 ## 批次四百三十八（A2 行「参数缝半（射程②）」预研轮：只量体，不落码）
