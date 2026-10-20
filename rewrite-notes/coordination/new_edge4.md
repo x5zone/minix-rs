@@ -1048,3 +1048,45 @@ a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 从「raw 与 lossy �
 **提交与账**：`3d8e082cc`（文档笔：18 篇新段 + 板 A2 行）、本页为里程碑笔。本轮零源码改动，
 宿主与容器门不重跑；五道收尾门全过（门 1 仅存已知探针族漂移、门 2 断链 131 与基线同、门 3 PASS、
 门 4 error级 0、门 5 干净）。板 A 余量：参数缝半三十支 + `text-games` 三支壳 + 族终笔 + 登记不执行清单。
+### 第一百六十六笔（批次四百五十二 · A2 参数缝半切片 36：`uniq` 的 argv 交回原字节）
+
+**这一支为什么在名单上排得靠前**：`uniq` 是本族**唯一一支有两个选项值回显位**的壳。`-f` 与 `-s` 的坏值各由
+C 自己印一句带 `%s` 的 `errx`（`minix3/usr.bin/uniq/uniq.c:90-98`），而这两句里的值取的是 `optarg`——也就
+是 argv 的原字节；同一支里还叠着 `obsolete()` 那段旧式改写（`-2`→`-f2`、`+3`→`-s3`），那一腿非 ASCII 的
+尾巴不能被折掉。字母位、两个回显位、折叠尾巴共用同一串字节，所以它按「一对」一次做完：改动全在
+`os/commands/usr-bin/textfilter/src/bin/uniq.rs` 一个文件里（连文件内 `mod tests` 的夹具也在同一件）。
+
+**落地的形状**：argv 从 `support::args()`（两条腿都先把字节过一遍 `String::from_utf8_lossy`，非法字节在走到
+选项环之前就已经没了）换成 `support::args_bytes()` 交回 `Vec<Vec<u8>>`；`obsolete_args`、`parse_uniq_args`、
+`skip_count` 随之收字节形，`UniqArgError::IllegalField` 与 `IllegalChar` 的载荷从 `String` 改成 `Vec<u8>`；
+坏值那句由新的 `fn illegal_value(prog, kind, value) -> Vec<u8>` 逐段拼。程序名与源/汇两条路径腿仍按既定口径
+在臂内折一次 lossy——路径口径的字节化是另一条在册项（`ARGV-BYTE-PATH-IN-LIBS`），本轮不动它。
+
+**门**：文件内 +1 枚 `a_raw_byte_is_kept_by_the_ring_and_by_the_obsolete_fold`（`--bin uniq` 12→13），
+跨壳表 `tests/bin_support_face.rs` 补 `uniq` 一行（七行→八行；表仍是 4 枚门，行数不是门数）。库测试总数
+不变：新枚长在二进制自己的测试模块里，不在 `--lib` 那一侧（现量 614）。
+
+**读数（L1）**：宿主与容器权威门同读数 **78 段 / 1318 passed / 0 failed**；三架构 `--bin uniq` 各退 0；
+触及件 clippy 严格名过滤为空。逐字节对真源 11 形 **SAME=11 / DIFF=0**（`tmp/uniq-452/ab.log`，参照件
+`tmp/uniq-408/uniq_ref` 已按 `-Z` 验过归属）。负控六枚：五枚各咬住（N4 一次咬住六枚红名，连库侧
+`tests::parse_obsolete_skip_forms` 一起红，证折叠那条腿被两侧同时钉着），一枚等价注入全绿；注入前基线与
+复原复跑均全绿（`tmp/uniq-452/negctl452.log`）。
+
+**两条新判据**（都来自本轮的现量，不是先验）。其一：**程序名那一腿跟着 argv[0]**，本壳叫 `uniq`、参照件那份
+二进制叫 `uniq_ref`，逐字节比对前必须把名字 token **全部**替换成同一个占位。上一版脚本只替换 stderr 里第一次
+出现的 `uniq:`，usage 行里那个名字漏了，于是三形报成假红——「按第一次出现归一」在有多处程序名的报文里必然漏。
+其二：`rustfmt --check` 与 `clippy --tests` 都会**顺带**报告未触及件——`src/bin/uniq.rs` 经 `#[path]` 带出
+`bin_support.rs` 的三处既有排版漂移，`--bin uniq --tests` 报的两枚 `collapsible_if` 位置在未触及的库件
+`src/uniq.rs:239`、`:245`（与本轮改的二进制同名不同件）。归属办法是按**路径全名**过滤，并拿主树同一条命令
+复现；两条 stock 项登记为 `BIN_SUPPORT-FMT-DRIFT-STOCK` 与 `UNIQ-CLIPPY-COLLAPSIBLE-IF-STOCK`，
+本轮不顺手格式化，因为 `cargo fmt -p` 会把二十四个未触及件一起重排。
+
+**顺序与编号按现量翻正**：`uniq` 先于 `units` 落地，切片号取 36；批次四百四十九裁决的 `units` 甲路两片
+维持，编号顺延为 37（表与读表腿换字节键）与 38（argv 与 `-f` 回显）。参数缝半至此**已落十支**
+（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`、`fold`、`col`、`uniq`），余 `textfilter` 二十九支 +
+`text-games` 三支壳 + 族终笔。
+
+**提交与账**：`6d5cdcf77`（代码笔）、文档笔随本页同笔（18 篇新段 + 07 篇 `uniq` 行 + 板 A2 行三处）。
+五道收尾门读数见 `tmp/uniq-452/closeout.log`。板 A 余量：参数缝半二十九支 + `text-games` 三支壳 +
+族终笔 + 登记不执行清单（`HEAD-NON-PERMUTE-OPERAND-TAIL`、
+`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR` 等各条维持）。
