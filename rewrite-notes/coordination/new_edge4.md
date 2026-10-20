@@ -835,7 +835,7 @@ libc 那一行继续走 `GetoptReport::line_bytes`（`os/commands/usr-bin/textfi
 `if/else` 被折成多行却与本轮无关，所以格式化只能逐件点名（`rustfmt --edition 2021 <文件…>`），
 混进工作区的别件格式差要 `git checkout --` 单独还原，别把它算进本轮的触及件。
 
-**提交与账**：`eb0d0e427`（码）、`bf6ab5bdd`（文档）。板 A2 行余量：`textfilter` 三十九支已迁八支、
+**提交与账**：`22ac29d4d`（码）、`04e6454ea`（文档）。板 A2 行余量：`textfilter` 三十九支已迁八支、
 余三十一支；跨壳表只余 `units` 一行的字母位是折叠形 `ef`；`FOLD-SPLIT-BRANCH-SWAPPED` 与
 `FOLD-DIGIT-NOT-FIRST-IN-CLUSTER`、`FOLD-NON-PERMUTE-OPERAND-TAIL`、`COLRM-STRERROR-ZERO-TEXT`、
 `ARGV-BYTE-PATH-IN-LIBS` 各条维持已登记不执行；`fold` 支的 `prog` 那处程序名 lossy 属全族共件，

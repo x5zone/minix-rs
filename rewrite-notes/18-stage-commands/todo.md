@@ -122,7 +122,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 ## 批次四百四十六（A2 参数缝半第八对：`fold` 的集外字母位落到原字节，顺带量出拆行腿的一处分支写反）
 
 - **落点**：`os/commands/usr-bin/textfilter/src/fold.rs`、`src/bin/fold.rs`、`tests/fold_face.rs`、
-  `tests/bin_support_face.rs`、`src/colrm.rs`（注释归位）（码笔 `eb0d0e427`，领用 `GETOPT-REPORT-BYTE-LETTER`，
+  `tests/bin_support_face.rs`、`src/colrm.rs`（注释归位）（码笔 `22ac29d4d`，领用 `GETOPT-REPORT-BYTE-LETTER`，
   基线是批次四百四十五合入后的 `rewrite` 头）。
 - **这一支只坏一张脸，但那张脸有两处**：
   ① **字母位**：选项串是 `"0123456789bsw:"`（`minix3/usr.bin/fold/fold.c:76`），集外字母那一行由 libc 印
