@@ -119,6 +119,90 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百五十五（A2 参数缝半切片 37：`units` 的单位名全链路按字节走）
+
+- **这一轮做的是批次四百五十三那条切法的第一片**：单位名所在的每一条腿都换成字节形，不碰 argv。
+  改动落在四件：`os/commands/usr-bin/textfilter/src/units.rs`（决定半）、`src/bin/units.rs`（壳侧两条喂字节的腿）、
+  `src/floatfmt.rs`（共用浮点前缀扫描加一个字节形入口，`&str` 那一个转为委托它，所以 `jot`/`diff`/`seq` 三支
+  的调用形一字未动）、`tests/units_face.rs`（面门）。签名逐项如下：`fn read_units` 收 `&[&[u8]]`；
+  `UnitsTable.units`/`UnitsTable.prefixes` 与 `UnitType.numerator`/`UnitType.denominator` 四处字段是
+  `Vec<Vec<u8>>` 与 `Vec<(Vec<u8>, Vec<u8>)>`；`fn add_unit`、`fn lookup_unit` 收 `&[u8]`；
+  `UnitsError::UnknownUnit` 的载荷是 `Vec<u8>`；`fn units_error_line`、`fn show_unit`、`fn render_answer`、
+  `fn list_units` 交回 `Vec<u8>`。真源判据是同一串的字节在 C 里从来只有一种身份：
+  `minix3/usr.bin/units/units.c` 的 `readunits` 用 `strspn`/`strcspn` 切字节、`lookupunit` 用
+  `strcmp`/`strncmp` 比字节、`mywarnx("Unknown unit '%s'", *product)` 与 `showunit`/`listunits` 的
+  `printf("%s", …)` 按字节发出。
+- **不能只换表键、必须在每个边界折一次 lossy**，这一句在批次四百五十三是推理，本轮有了读数：把
+  `fn lookup_unit` 的表键比较改成两侧各折一次 `String::from_utf8_lossy` 再比（负控 U3），新立的库门当场红，
+  红在「两串不同的字节折完之后长得一样」那一形——词典里 `weird` 加裸 `ff` 与 `weird` 加字面替换字符
+  `ef bf bd` 是两枚不同的键，按字节查前者命中后者查不到，折一次 lossy 则两边同形、命中排在前面的那一枚，
+  于是把定义读错。逐字节比是唯一与真源同形的做法，这条判据从此有现量而不只是论证。
+- **顺带闭掉两条在册失真**（登记处 `18` 篇批次三百一十九段，本轮按现量核销）：
+  ① `UNITS-NONUTF8-DROP` 的两条腿一起闭——词典档的 `fn split_file_lines` 原先把整份档解一次 UTF-8、
+  解不过去就 `unwrap_or("")` 交回空串，一枚非法字节能让整份词典消失；交互那一行原先过
+  `String::from_utf8_lossy`，名字里的裸字节在进链路之前就被改写。两处现在都按字节交给
+  `fn read_units` 与 `fn add_unit`。核实命令 `python3 tmp/units-455/ab.py`（读数见下面第 5 条），
+  核实日 `2026-10-20`，当时快照 `1b4175e99`。
+  ② 单位名回显位与参照件的字节差归零：参照件对 `café` 那一枚未知名打的是 `c3 a9` 两个字节，
+  本壳换字节形之前打 `c3 83 a9`（`char` 形状的 Latin-1 码点再编一次 UTF-8），现在逐字节同串。
+- **门**：库侧 +2 枚 `units::tests::a_unit_name_keeps_its_raw_bytes_through_the_table_and_the_warning` 与
+  `units::tests::a_units_line_with_a_raw_byte_still_reaches_the_table`；面侧 +2 枚
+  `a_raw_byte_in_a_dictionary_name_reaches_the_listing` 与 `a_raw_byte_in_a_typed_name_comes_back_in_the_warning`，
+  并新增面侧的逐字节夹具 `fn run_bytes`（既有的 `fn run` 把两路输出交回 lossy `String`，
+  文本形分不清裸 `ff` 与折出来的 `ef bf bd`，而那正是本轮要比的东西）。门数对账按现跑取数：
+  `cargo test -p minix-textfilter --lib units::` 现跑 **21** 枚（`1b4175e99` 那版同一条命令是 19 枚），
+  `cargo test -p minix-textfilter --bin units --tests` 之外新两枚面门在 `units_face` 段现跑 **22** 枚
+  （`git show HEAD` 那版 20 枚）；`--lib` 段 614 → **616**，整包 1239 → **1243**。
+  **订正一处账面**：批次四百五十三写「库内 units 门 20 枚」，按 `git show HEAD` 的同一口径现量是 **19** 枚
+  （判据同批次四百二十那条：门清单由跑出来的结果列，不由 `grep` 的印象列）。
+  跨壳表 `tests/bin_support_face.rs` 的 `units` 行仍钉 `ef` 未动——那是切片 38 的活。
+- **验收面兑现**：ASCII 夹具与既有用例的期望串逐字未改（本轮翻动的期望只有夹具的写法，
+  由 `"meter !m!"` 这类串改写成 `b"meter !m!"` 这类字面字节），改完仍全绿，说明语义没动。
+- **A/B**：对 `tmp/units-319/units_ref`（先按批次四百零七那条验法打 `-Z`，现量交回
+  `unknown option -- Z` 即 Minix 的 `getopt.c` 那一句，不是 glibc 带引号的 `invalid option -- 'Z'`；
+  经同名软链 `tmp/units-319/units` 起，程序名同为 `units`，报文逐字节直比不需归一化）跑十八形，
+  **SAME=14 / DIFF=4**（`tmp/units-455/ab.log`）。**本轮射程内的六形裸字节腿全部 SAME**：
+  词典名含 `c3 a9` 的 `-l` 清单、含裸 `ff` 的 `-l` 清单、同一份含裸字节词典的 `-L` 展开、
+  交互输入 `café` 与 `weird<ff>` 的两句回显（分单行与两行三形）。四处 DIFF 全部归因到既有在册项，
+  本轮不碰：三形落在 `UNITS-PARTIAL-UNIT-ON-ERROR`（C 忽略 `addunit`/`completereduce` 的返回值，
+  拿半成品照样出一个答案块，本壳交回 `Err` 就没有半成品可展示），一形落在 `UNITS-LEADING-DASH-NAME`。
+- **`UNITS-LEADING-DASH-NAME` 的根因本轮现量到，新登记 `UNITS-DASH-REWRITE-AT-FIRST-CHAR` 待独立一轮**：
+  `minix3/usr.bin/units/units.c:344-348` 那段把短横改成空格的循环，游标写的是
+  `for (slash = scratch + 1; *slash; slash++)`——**从第二个字符起**，所以行首那一枚短横不会被改；
+  本壳 `src/units.rs:fn add_into` 的条件里 `i == 0` 那一支把它算了进去，于是 `units -f <档> - m` 的
+  操作数 `-` 被折成空格、名字段变空串（现量参照件报 `Unknown unit '-'` 并出 `\t1 -`，本壳不打报文、
+  出的是 `\t1`）。修法是把 `i == 0` 那一支从条件里去掉（改成只改第二字符往后的短横），牵动
+  `add_into` 一处条件与三枚门（`-` 作操作数、环不重排的 `-l` 尾巴、裸 `-` 的换算），按「一次只修一条」
+  不进本射程。判据一条：**登记语的措辞不等于根因**——那条登记从参照件读数出发写的是「名字段少前导短横」，
+  而真正坏的是改写循环的起点，本轮才对到源码。
+- **两处夹具与期望的自错都被读数当场抓住**（同族「期望必须逐形从读数来」的又一次现量）：
+  ① 新库门第一版把 `fn read_units` 的两个元素当成「一行的两个字段」传入，于是查表命中不了——
+  这个口的元素是**一行**，名字与定义要在同一串字节里；② 同一枚门里 `weird<ff> = 2 m` 的因子我按
+  「定义会被继续展开」推演成 2.0 之外的形状，实际上 `reduceproduct` 在定义含 `PRIMITIVECHAR` 那一格
+  就 `break`（`units.c:583-585`），所以因子是 2、名字剩 `m`——两处都改到读数而不是推演。
+  另有一枚负控（U3 第一版）判为未达标并**归因到注入**：那一版注入把非法字节的分支写成「解不开就算相等」，
+  与按字节比恰好同果，换成「两侧各折一次 lossy 再比」的本体形之后咬住。
+- **负控六枚**：五枚各咬住一枚新门（U1 撤交互腿的字节形、U2 撤文件腿的字节切分、U3 查表边界折 lossy、
+  U4 回显位折替换字符、U5 清单名字退回 lossy 打印，失败数各 1），一枚**声明等价**（U6：分母那一串
+  由扫描保证全是 ASCII，把它折回 lossy 无可观察差，零枚红是正确读数，与批次四百二十的 S8 同形）。
+  每枚注入前后都先证「这套门真的被执行过」（基线打印执行门数 1243、注入期 1242/1243），还原按整文件
+  md5 复核，复跑基线 1243 / 0（`tmp/units-455/negctl-final.log`）。
+- **门读数**：宿主与容器权威门各 **69 段 / 1243 passed / 0 failed** 退 0（容器按 §7.3 三挂载形带
+  `-u $(id -u):$(id -g)`，与宿主门未并发）；三架构 `cargo build --target … -p minix-textfilter`
+  （x86_64-unknown-none、aarch64-unknown-none、riscv64gc-unknown-none-elf）各退 0；
+  clippy 整包 150 条，落在本轮触及四件里的三条（`units.rs:148` 的手写大小写不敏感比较、
+  `units.rs:197` 的 `loop`、`floatfmt.rs:66` 的「测试模块之后还有条目」）都在本轮改动之前的既有构造上、
+  只是行号位移，**零新增**；`rustfmt --edition 2024` 触及四件零漂移，`git status --porcelain` 只剩这四件。
+- **进度与余量**：按 argv 口径计，参数缝半**已落十支、余二十九支**（现量
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` 为 29，含 `units`）——
+  本轮动的是 `units` 的单位名链路，`src/bin/units.rs:run` 的 `support::args()` 与
+  `fn parse_units_args` 还没换字节形，所以跨壳表那一行的 `ef` 要等切片 38。
+  `text-games` 三支壳与族终笔（删 `bin_support` 三个文本口、把 `tests/argv_seam_face.rs`
+  那枚门升级成逐字节等于原字节）在册。独立轮另在册三条：`UNITS-DASH-REWRITE-AT-FIRST-CHAR`（本轮新量根因）、
+  `UNITS-PARTIAL-UNIT-ON-ERROR`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`，`NL-DELIM-LENGTH-RULE` 待裁决。
+
+---
+
 ## 批次四百五十四（名单对账轮：`HEAD-NON-PERMUTE-OPERAND-TAIL` 经现量核销为闭，族名数从「八枚」翻正为六个具名 ID）
 
 - **判据沿用「同类相比」**：门名对门名、登记项对登记项，不拿旧读数当现状。这一轮把「操作数终结选项扫描」
