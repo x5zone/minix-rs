@@ -526,3 +526,20 @@
   （`tmp/pr-436/negctl.log` 第一版四条「构建失败」实为解析空咬）。
   提交：`cb3edcee4`（码笔）、`f0ceb0d34`（文档笔）、`c9d7dfff4` 与 `dedd9442b`（文档笔续，文风门 SL-5）。
   甲组三支至此全部落地；板 A 的 A2 行仍余参数缝半（射程②），其余在册项未动。
+
+- **里程碑第一百五十一笔（批次四百三十七，A2 板，qoder）**：板 A 在册项 `COLUMN-BLANK-SET-NARROWER-THAN-ISSPACE`
+  落地（批次四百三十五收尾时登记的普查甲组残留）。`column` 判空行的那一跳只认空格与制表符，而
+  `minix3/usr.bin/column/column.c:input` 扫前导空白用的是 `isspace`，C locale 表里有六枚：空格、制表、
+  换行、垂直制表 `0b`、换页 `0c`、回车 `0d`。差异的可观察面不止「少丢一条空行」：一条整是空白的末行
+  若没被认定为空行，就会走「末行无换行符」那一支，多打一句 `column: line too long` 并把退码置 1，
+  而参照件交的是白页、退 0。判序本身（判空在判残行之前）本壳已按 C 摆好，本轮只补字节表。
+  门：库新增 `a_blank_line_is_any_run_of_isspace_bytes_not_just_space_and_tab`（夹具写字面字节）。
+  现量：空白集六形经同名软链起的参照件逐字节同形（`tmp/column-437/blankset.log`，`-Z` 先验归属）；
+  `column` 全谱 A/B 十二形仍全同（`tmp/column-437/ab.log`）；宿主与容器各 68 段 1208/0；三架构退 0；
+  `rustfmt` 零漂移；`clippy` 在 `column.rs` 上零告警；负控四枚咬住加一枚等价全绿
+  （`tmp/column-437/negctl.log`）。**负控读法补一条**：一枚「把空白整条改判成残行」的注入咬在既有门
+  `test_unterminated_tail_line_is_dropped_and_counted` 上而非新门上——这既说明判序已有主人看着，
+  也说明「按预期门名判咬合」会把真咬误记成未咬，读数要按红门清单记、不按预设名记。
+  提交：`3a4adeec4`（码笔）、`cf67bccd3`（文档笔）、`b60835a9f`（文档笔续，补板 A2 段落那一处漏落）。
+  板 A 余量：普查乙组（`from_utf8_lossy` 22 处）与丙组（`units`、`tsort` 自带夹具）、
+  `PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`、八支 `*-NON-PERMUTE-OPERAND-TAIL` 族余量、参数缝半（射程②）。
