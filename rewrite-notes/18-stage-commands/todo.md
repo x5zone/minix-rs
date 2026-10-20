@@ -119,6 +119,41 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百五十三（体量核实轮：`units` 表键字节化的真实射程，现量推翻「只换表键」的预估）
+
+- **这一轮不写代码**，做的是把批次四百四十九那条裁决落成可施工的切片边界。原裁决说 `units` 走甲路
+  （表键换字节）并拆两片，第一片「表与读表腿换字节键、不碰 argv、既有 ASCII 夹具逐字同形」——把
+  `os/commands/usr-bin/textfilter/src/units.rs` 按现量数一遍，这个体量预估不成立，原因不在工作量而在
+  **改动对象的同一性**。
+- **为什么拆不开**：`units` 里被比较的串只有一批，就是单位名。它同时是表键与表达式节点：
+  `UnitsTable.units` 与 `UnitsTable.prefixes` 是 `Vec<(String, String)>`（`src/units.rs:26-27`，存的是
+  名字与定义原文），`UnitType.numerator` 与 `UnitType.denominator` 是 `Vec<String>`（`:45-46`，存的是
+  约分后剩下的单位名），查表 `fn lookup_unit`（`:225`）拿表达式里的词去比表键，未知单位那句
+  `UnknownUnit(String)`（`:34`、构造点 `:285`、渲染点 `:731`）又把同一个名字回显出去。C 侧这几处全是
+  `strcmp`/`strncmp` 逐字节比（`minix3/usr.bin/units/units.c:503`、`:511`、`:542`），也就是说**表键与表达式
+  节点在真源里本来就是同一种东西**。若只把表键换成字节而表达式节点留着 `String`，每一次比较边界都得折
+  一次 lossy——那正是批次四百四十九已经否证掉的乙路（否证理由：表文件内容本身也是字节，两处折叠不在同一
+  位置，折出来的形态与 C 的 `strcmp` 不一致）。
+- **现量（L1，`tmp/units-453/census.log`）**：`src/units.rs` 里 `String`/`&str` 出现 **30** 处；比较、
+  切分、前后缀判定点（`==`、`iter().any`、`starts_with`、`strip_suffix`、`split`）**44** 处；
+  `read_units`/`lookup_unit`/`add_unit`/`list_units`/`complete_reduce` 这五个口在 `src/` 与 `tests/` 的
+  调用与定义点合计 **37** 处；库内 units 门 **20** 枚、面侧 `tests/units_face.rs` **23** 枚函数。
+  跨壳表 `tests/bin_support_face.rs` 里 `units` 那一行仍是折叠形
+  （`("units", UNITS, 3, b"units: unknown option -- \xef\n")`，`:87`），它是本表唯一未换的一支。
+- **改后的两片切法**（编号接批次四百五十二：`uniq` 占了切片 36，`units` 顺延）：
+  **切片 37 = 单位名全链路字节化**，一次做完 `fn read_units` 收 `&[&[u8]]`、`UnitsTable` 两字段与
+  `UnitType` 两字段改 `Vec<Vec<u8>>`、`fn lookup_unit` 收 `&[u8]` 并交回定义原文的字节、
+  `fn add_unit` 收 `&[u8]`、`UnitsError::UnknownUnit` 载荷改 `Vec<u8>`、
+  `fn units_error_line` 里 `Unknown unit '<原字节>'` 那句逐字节拼、`fn list_units` 的输出改字节串；
+  ASCII 夹具与既有用例的期望串逐字不变（这是这片的验收面：改完仍全绿才说明语义没动）。
+  **切片 38 = argv 与 `-f` 回显**（原裁决维持）：`src/bin/units.rs:51-53` 的 `support::args()` 换
+  `args_bytes`、`parse_units_args` 收 `&[&[u8]]`、`userfile` 改字节，跨壳表那一行由 `ef` 翻正成 `ff`。
+  两片仍各是一支可收敛的改动，只是第一片的射程从「表与读表腿」扩成「单位名所在的每一条腿」。
+- **本轮登记与余量**：参数缝半已落十支不变，余 `textfilter` 二十九支（其中 `units` 两片按上述改后切法）、
+  `text-games` 三支壳、族终笔。本轮零源码改动，门只跑五道收尾门。
+
+---
+
 ## 批次四百五十二（A2 参数缝半切片 36：`uniq` 的 argv 交回原字节，回显位与旧式折叠同一条腿）
 
 - **这一轮做的是批次四百五十一那张施工表上的第②支**——`uniq` 的参数缝半。它排在这个位置不是因为字母序，
