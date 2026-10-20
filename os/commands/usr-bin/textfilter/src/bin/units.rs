@@ -30,7 +30,7 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
@@ -78,7 +78,7 @@ fn run() -> ! {
             PRECISION
         };
         let (listing, errors) = list_units(&table, parsed.listexpand, prec);
-        support::emit(listing.as_bytes());
+        support::emit(&listing);
         support::terminate(if errors > 0 { 1 } else { 0 });
     }
 
@@ -90,19 +90,25 @@ fn run() -> ! {
 
 /// 两个或三个操作数那一路（`units.c:855-875`）。三个时前两个用空格并成 have 侧；
 /// 环不重排，所以 `units -f <档> m sec -l` 的 `-l` 是**第三个操作数**而不是选项。
+///
+/// 操作数这一轮仍从文本缝来（`support::args()`，登记在册的 argv 半），所以这里
+/// 只在交给单位名链路的那一步取字节；argv 交回原字节是下一片（切片 38）。
 fn convert_operands(prog: &str, table: &UnitsTable, operands: &[&str]) -> ! {
-    let have_expr = if operands.len() == 3 {
-        format!("{} {}", operands[0], operands[1])
+    let have_expr: Vec<u8> = if operands.len() == 3 {
+        let mut joined = operands[0].as_bytes().to_vec();
+        joined.push(b' ');
+        joined.extend_from_slice(operands[1].as_bytes());
+        joined
     } else {
-        operands[0].to_string()
+        operands[0].as_bytes().to_vec()
     };
     let have = build_unit(prog, table, &have_expr);
-    let want = build_unit(prog, table, operands[operands.len() - 1]);
+    let want = build_unit(prog, table, operands[operands.len() - 1].as_bytes());
     // C 不看 `addunit`/`completereduce` 的返回值，拿半成品照样出一个答案块再退 0
     // （`units.c:864-875`）；本壳这两支交回 `Err` 时没有半成品可展示，于是报文照 C、
     // 退码照 C，只有答案块那一行缺——登记为 UNITS-PARTIAL-UNIT-ON-ERROR。
     if let (Some(have), Some(want)) = (have, want) {
-        support::emit(render_answer(&show_answer(&have, &want), PRECISION).as_bytes());
+        support::emit(&render_answer(&show_answer(&have, &want), PRECISION));
     }
     support::terminate(0);
 }
@@ -122,12 +128,15 @@ fn interactive(prog: &str, table: &UnitsTable, quiet: bool) -> ! {
     loop {
         let have = read_unit(prog, table, quiet, b"You have: ");
         let want = read_unit(prog, table, quiet, b"You want: ");
-        support::emit(render_answer(&show_answer(&have, &want), PRECISION).as_bytes());
+        support::emit(&render_answer(&show_answer(&have, &want), PRECISION));
     }
 }
 
 /// C 的 `do { 提示; fgets; } while (addunit || completereduce)`（`units.c:876-893`）：
 /// 一行不认就**重问同一格**，而不是跳到对面那一格。EOF 时非 `-q` 先补一个换行再退 0。
+///
+/// 那一行交出的字节原样进单位名链路：C 的 `fgets` 之后从不解码，
+/// `addunit`→`lookupunit` 的 `strcmp` 与 `mywarnx` 的 `'%s'` 都按字节走。
 fn read_unit(prog: &str, table: &UnitsTable, quiet: bool, prompt: &[u8]) -> UnitType {
     loop {
         if !quiet {
@@ -139,10 +148,7 @@ fn read_unit(prog: &str, table: &UnitsTable, quiet: bool, prompt: &[u8]) -> Unit
             }
             support::terminate(0);
         };
-        // C 从不校验编码，词典名也是 ASCII；非 UTF-8 的字节在这里按 lossy 渲染，
-        // 整段丢弃那一类失真与 `split` 同形，登记为 UNITS-NONUTF8-DROP。
-        let text = String::from_utf8_lossy(&bytes);
-        let mut unit = match add_unit(&text, false) {
+        let mut unit = match add_unit(&bytes, false) {
             Ok(unit) => unit,
             Err(error) => {
                 report(prog, &error);
@@ -156,7 +162,7 @@ fn read_unit(prog: &str, table: &UnitsTable, quiet: bool, prompt: &[u8]) -> Unit
     }
 }
 
-fn build_unit(prog: &str, table: &UnitsTable, expr: &str) -> Option<UnitType> {
+fn build_unit(prog: &str, table: &UnitsTable, expr: &[u8]) -> Option<UnitType> {
     let mut unit = match add_unit(expr, false) {
         Ok(unit) => unit,
         Err(error) => {
@@ -177,7 +183,7 @@ fn build_unit(prog: &str, table: &UnitsTable, expr: &str) -> Option<UnitType> {
 /// 整句走 `vwarnx` 到标准错误。
 fn report(prog: &str, error: &minix_textfilter::units::UnitsError) {
     if let Some(line) = units_error_line(prog, error) {
-        support::warn(line.as_bytes());
+        support::warn(&line);
     }
 }
 
@@ -203,13 +209,13 @@ fn load_units_file(prog: &str, path: Option<&str>) -> Vec<u8> {
     }
 }
 
-fn split_file_lines(bytes: &[u8]) -> Vec<&str> {
-    let text = core::str::from_utf8(bytes).unwrap_or("");
-    let mut lines: Vec<&str> = Vec::new();
-    for line in text.split_inclusive('\n') {
-        lines.push(line.strip_suffix('\n').unwrap_or(line));
-    }
-    lines
+/// 词典的换行切分按字节走（C 的 `fgets(line, 79, unitfile)` 从不解码）。
+/// 旧写法先解一次整档 UTF-8、解不过去就把**整份**词典当空串，一枚裸字节能让
+/// 全部单位消失——登记 `UNITS-NONUTF8-DROP` 的那一格，本片随 `read_units` 换字节键消掉。
+fn split_file_lines(bytes: &[u8]) -> Vec<&[u8]> {
+    // `split` 在档尾那个换行之后多给一个空项；`read_units` 对空名一律跳过，
+    // 与 C 的 `fgets` 在 EOF 处不再产生一行等效。
+    bytes.split(|&byte| byte == b'\n').collect()
 }
 
 /// `units.c:793-807` 的 `usage()`：两个 `fprintf` 合起来九行，退码 3。

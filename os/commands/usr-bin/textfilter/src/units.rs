@@ -7,7 +7,16 @@
 //! conformability check and the `\t* \t/` answer rendering. The
 //! interactive prompt face and units-file path search stay in the
 //! bin (registered as 待开放路径 for the file operand).
-use crate::floatfmt::{decimal_exponent, parse_float_prefix, pow10};
+//!
+//! Unit names are bytes, never text. The C compares them with
+//! `strcmp`/`strncmp` (`units.c:503`, `:511`, `:542`), prints them with
+//! `%s` (`units.c:554`'s `mywarnx("Unknown unit '%s'")`, `showunit`,
+//! `listunits`) and splits the expression with `strtok(scratch, " *\t\n/")`
+//! — no step ever asks what a byte means in UTF-8. So the table keys, the
+//! reduced product's entries, the `UnknownUnit` payload and the listings
+//! all carry `Vec<u8>`: one kind of object for the whole chain, because in
+//! the C the table key and the expression node are the same bytes.
+use crate::floatfmt::{decimal_exponent, parse_float_prefix_bytes, pow10};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -16,22 +25,24 @@ use alloc::vec::Vec;
 pub const PRECISION: usize = 8;
 /// `-L` uses DBL_DIG.
 pub const PRECISION_LIST_EXPAND: usize = 15;
-/// Definitions with a leading `!` are primitives.
-pub const PRIMITIVECHAR: char = '!';
-pub const POWERSTRING: &str = "^";
+/// Definitions with a leading `!` are primitives (`units.c:64`'s
+/// `PRIMITIVECHAR`, tested as `thedefn[0] == PRIMITIVECHAR`).
+pub const PRIMITIVECHAR: u8 = b'!';
+pub const POWERSTRING: &[u8] = b"^";
 
-/// The parsed units database.
+/// The parsed units database: name and definition, both as the bytes the
+/// units file carried.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UnitsTable {
-    pub units: Vec<(String, String)>,
-    pub prefixes: Vec<(String, String)>,
+    pub units: Vec<(Vec<u8>, Vec<u8>)>,
+    pub prefixes: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 /// Errors mirroring the C warnings (which go to stderr, or stdout as
 /// `/ ` comments in list mode).
 #[derive(Debug, PartialEq)]
 pub enum UnitsError {
-    UnknownUnit(String),
+    UnknownUnit(Vec<u8>),
     ReducesToZero,
     JunkBeforeBar,
     ReadError(usize),
@@ -39,56 +50,85 @@ pub enum UnitsError {
 }
 
 /// A reduced unit: factor times numerator/denominator products.
-/// Cancelled entries hold the empty string (the C's NULLUNIT).
+/// Cancelled entries hold no bytes at all (the C's NULLUNIT).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UnitType {
-    pub numerator: Vec<String>,
-    pub denominator: Vec<String>,
+    pub numerator: Vec<Vec<u8>>,
+    pub denominator: Vec<Vec<u8>>,
     pub factor: f64,
+}
+
+/// The bytes that separate two items, `" *\t\n/"` in
+/// `strtok(scratch, " *\t\n/")` (units.c:357).
+fn is_item_break(byte: &u8) -> bool {
+    matches!(byte, b' ' | b'*' | b'\t' | b'\n' | b'/')
+}
+
+/// The bytes `strspn`/`strcspn` skip in `readunits` (`" \n\t"`,
+/// units.c:188-190).
+fn is_space_tab_newline(byte: &u8) -> bool {
+    matches!(byte, b' ' | b'\n' | b'\t')
 }
 
 /// Parses the units file line by line (readunits, units.c:134-229):
 /// lines starting with `/` are comments; a first token ending in `-`
 /// defines a prefix; otherwise `name definition`.
-pub fn read_units(lines: &[&str]) -> UnitsTable {
+pub fn read_units(lines: &[&[u8]]) -> UnitsTable {
     let mut table = UnitsTable::default();
     for line in lines {
-        if line.starts_with('/') {
+        if line.first() == Some(&b'/') {
             continue;
         }
-        let trimmed = line.trim_matches(|c: char| c == ' ' || c == '\n' || c == '\t');
-        let mut parts = trimmed.splitn(2, |c: char| c == ' ' || c == '\n' || c == '\t');
-        let name = match parts.next() {
-            Some(n) => n,
-            None => continue,
-        };
-        let rest = match parts.next() {
-            Some(r) => r.trim_start_matches(|c: char| c == ' ' || c == '\n' || c == '\t'),
-            None => "",
+        let trimmed = strip_bytes(line, is_space_tab_newline);
+        let (name, rest) = match trimmed.iter().position(is_space_tab_newline) {
+            Some(split) => (
+                &trimmed[..split],
+                strip_leading(&trimmed[split..], is_space_tab_newline),
+            ),
+            None => (trimmed, &[][..]),
         };
         if name.is_empty() {
             continue;
         }
-        if let Some(stem) = name.strip_suffix('-') {
+        // `lineptr[strlen(lineptr) - 1] == '-'` — the last **byte** decides
+        // whether this line names a prefix (units.c:200).
+        if name.last() == Some(&b'-') {
+            let stem = &name[..name.len() - 1];
             // A prefix definition; duplicates are ignored.
             if stem.is_empty() || rest.is_empty() {
                 continue;
             }
             if !table.prefixes.iter().any(|(n, _)| n == stem) {
-                table.prefixes.push((stem.to_string(), rest.to_string()));
+                table.prefixes.push((stem.to_vec(), rest.to_vec()));
             }
         } else if rest.is_empty() {
             continue;
         } else if !table.units.iter().any(|(n, _)| n == name) {
-            table.units.push((name.to_string(), rest.to_string()));
+            table.units.push((name.to_vec(), rest.to_vec()));
         }
     }
     table
 }
 
+/// `strspn` then `strcspn` from the left: drop leading matched bytes.
+fn strip_leading(bytes: &[u8], pred: fn(&u8) -> bool) -> &[u8] {
+    let start = bytes.iter().position(|b| !pred(b)).unwrap_or(bytes.len());
+    &bytes[start..]
+}
+
+/// Trim on both ends by a byte predicate.
+fn strip_bytes(bytes: &[u8], pred: fn(&u8) -> bool) -> &[u8] {
+    let start = bytes.iter().position(|b| !pred(b)).unwrap_or(bytes.len());
+    let mut end = bytes.len();
+    while end > start && pred(&bytes[end - 1]) {
+        end -= 1;
+    }
+    &bytes[start..end]
+}
+
 /// addunit: parses one unit expression into `theunit`, flipping into
 /// the denominator past `/` (units.c:332-424).
-pub fn add_unit(expr: &str, flip: bool) -> Result<UnitType, UnitsError> {
+pub fn add_unit(expr: &[u8], flip: bool) -> Result<UnitType, UnitsError> {
     let mut unit = UnitType {
         factor: 1.0,
         ..UnitType::default()
@@ -97,27 +137,26 @@ pub fn add_unit(expr: &str, flip: bool) -> Result<UnitType, UnitsError> {
     Ok(unit)
 }
 
-fn add_into(unit: &mut UnitType, expr: &str, flip: bool) -> Result<(), UnitsError> {
+fn add_into(unit: &mut UnitType, expr: &[u8], flip: bool) -> Result<(), UnitsError> {
     // The C rewrites '-' to ' ' unless it is an exponent sign
     // (preceded by e/E and followed by a digit or dot).
-    let bytes: Vec<u8> = expr.as_bytes().to_vec();
-    let mut scratch = String::with_capacity(bytes.len());
-    for i in 0..bytes.len() {
-        let c = bytes[i];
+    let mut scratch = Vec::with_capacity(expr.len());
+    for i in 0..expr.len() {
+        let c = expr[i];
         if c == b'-'
             && (i == 0
-                || bytes[i - 1].to_ascii_lowercase() != b'e'
-                || i + 1 >= bytes.len()
-                || !(bytes[i + 1].is_ascii_digit() || bytes[i + 1] == b'.'))
+                || expr[i - 1].to_ascii_lowercase() != b'e'
+                || i + 1 >= expr.len()
+                || !(expr[i + 1].is_ascii_digit() || expr[i + 1] == b'.'))
         {
-            scratch.push(' ');
+            scratch.push(b' ');
         } else {
-            scratch.push(c as char);
+            scratch.push(c);
         }
     }
-    let (top, bottom) = match scratch.find('/') {
+    let (top, bottom) = match scratch.iter().position(|&b| b == b'/') {
         Some(slash) => (&scratch[..slash], Some(&scratch[slash + 1..])),
-        None => (scratch.as_str(), None),
+        None => (scratch.as_slice(), None),
     };
     // C `addunit` (`minix3/usr.bin/units/units.c:359-436`) 是 `do { …; doingtop--;
     // if (slash) { scratch = slash + 1; } else doingtop--; } while (doingtop >= 0);`
@@ -134,29 +173,40 @@ fn add_into(unit: &mut UnitType, expr: &str, flip: bool) -> Result<(), UnitsErro
     Ok(())
 }
 
+/// `strtod` on a window the scan already proved to be digits and a dot.
+fn ascii_float(bytes: &[u8]) -> f64 {
+    core::str::from_utf8(bytes)
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
 /// One product side: items split on spaces/`*`/tabs.
-fn add_product(unit: &mut UnitType, product: &str, top: bool) -> Result<(), UnitsError> {
-    for item in product.split(|c: char| c == ' ' || c == '*' || c == '\t' || c == '\n' || c == '/')
-    {
+fn add_product(unit: &mut UnitType, product: &[u8], top: bool) -> Result<(), UnitsError> {
+    for item in product.split(is_item_break) {
         if item.is_empty() {
             continue;
         }
-        if item.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+        // `strchr("0123456789.", *item)` (units.c:365) inspects the **first
+        // byte**, so a multi-byte name never enters the numeric branch by
+        // accident.
+        if item[0].is_ascii_digit() || item[0] == b'.' {
             // Numeric factor, possibly "6|2" rational, possibly with
             // trailing unit names ("3foo" is "3 foo").
             let mut rest = item;
             loop {
                 // strtod-shaped numeric head: digits, dot, exponent.
-                let (num, used) = match parse_float_prefix(rest) {
+                let (num, used) = match parse_float_prefix_bytes(rest) {
                     Some(x) => x,
                     None => break,
                 };
                 let tail = &rest[used..];
-                if let Some(after) = tail.strip_prefix('|') {
+                if tail.first() == Some(&b'|') {
                     // Rational: num|den.
+                    let after = &tail[1..];
                     let den_len = after
-                        .bytes()
-                        .take_while(|b| b.is_ascii_digit() || *b == b'.')
+                        .iter()
+                        .take_while(|&&b| b.is_ascii_digit() || b == b'.')
                         .count();
                     if den_len == 0 || num == 0.0 {
                         if num == 0.0 {
@@ -164,8 +214,8 @@ fn add_product(unit: &mut UnitType, product: &str, top: bool) -> Result<(), Unit
                         }
                         return Err(UnitsError::JunkBeforeBar);
                     }
-                    let (den_str, tail2) = after.split_at(den_len);
-                    let den: f64 = den_str.parse().unwrap_or(0.0);
+                    let (den_bytes, tail2) = after.split_at(den_len);
+                    let den = ascii_float(den_bytes);
                     if den == 0.0 {
                         return Err(UnitsError::ReducesToZero);
                     }
@@ -179,7 +229,7 @@ fn add_product(unit: &mut UnitType, product: &str, top: bool) -> Result<(), Unit
                     if num == 0.0 {
                         return Err(UnitsError::ReducesToZero);
                     }
-                    if tail.contains('|') {
+                    if tail.contains(&b'|') {
                         // "6x|2" — junk between the number and the bar.
                         return Err(UnitsError::JunkBeforeBar);
                     }
@@ -190,7 +240,7 @@ fn add_product(unit: &mut UnitType, product: &str, top: bool) -> Result<(), Unit
                     }
                     rest = tail;
                 }
-                if rest.is_empty() || !rest.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+                if rest.is_empty() || !(rest[0].is_ascii_digit() || rest[0] == b'.') {
                     break;
                 }
             }
@@ -205,16 +255,16 @@ fn add_product(unit: &mut UnitType, product: &str, top: bool) -> Result<(), Unit
 }
 
 /// A symbolic item: trailing digit 2-9 means a repeat count.
-fn add_names(unit: &mut UnitType, item: &str, top: bool) -> Result<(), UnitsError> {
-    let (name, repeat) = match item.as_bytes().last() {
+fn add_names(unit: &mut UnitType, item: &[u8], top: bool) -> Result<(), UnitsError> {
+    let (name, repeat) = match item.last() {
         Some(c) if (b'2'..=b'9').contains(c) => (&item[..item.len() - 1], c - b'0'),
         _ => (item, 1),
     };
     for _ in 0..repeat {
         if top {
-            unit.numerator.push(name.to_string());
+            unit.numerator.push(name.to_vec());
         } else {
-            unit.denominator.push(name.to_string());
+            unit.denominator.push(name.to_vec());
         }
     }
     Ok(())
@@ -222,39 +272,39 @@ fn add_names(unit: &mut UnitType, item: &str, top: bool) -> Result<(), UnitsErro
 
 /// lookupunit: exact name, `^`-stripped, singular (`s`/`es`), then
 /// prefix expansion (units.c:470-537). Returns the definition text.
-pub fn lookup_unit<'a>(table: &'a UnitsTable, unit: &str) -> Option<String> {
-    for (n, v) in &table.units {
-        if n == unit {
-            return Some(v.clone());
+pub fn lookup_unit(table: &UnitsTable, unit: &[u8]) -> Option<Vec<u8>> {
+    if let Some((_, defn)) = table.units.iter().find(|(n, _)| n == unit) {
+        return Some(defn.clone());
+    }
+    if unit.last() == Some(&b'^') {
+        let stem = &unit[..unit.len() - 1];
+        if table.units.iter().any(|(n, _)| n == stem) {
+            return Some(stem.to_vec());
         }
     }
-    if let Some(stem) = unit.strip_suffix('^') {
-        for (n, _) in &table.units {
-            if n == stem {
-                return Some(stem.to_string());
+    if unit.last() == Some(&b's') {
+        let stem = &unit[..unit.len() - 1];
+        if table.units.iter().any(|(n, _)| n == stem) {
+            return Some(stem.to_vec());
+        }
+        if stem.last() == Some(&b'e') {
+            let stem2 = &stem[..stem.len() - 1];
+            if table.units.iter().any(|(n, _)| n == stem2) {
+                return Some(stem2.to_vec());
             }
         }
     }
-    if let Some(stem) = unit.strip_suffix('s') {
-        for (n, _) in &table.units {
-            if n == stem {
-                return Some(stem.to_string());
-            }
-        }
-        if let Some(stem2) = stem.strip_suffix('e') {
-            for (n, _) in &table.units {
-                if n == stem2 {
-                    return Some(stem2.to_string());
-                }
-            }
-        }
-    }
-    for (p, pv) in &table.prefixes {
-        if unit.starts_with(p.as_str()) {
+    for (prefix, value) in &table.prefixes {
+        // `strncmp(prefixname, unit, strlen(prefixname))` (units.c:535).
+        if unit.starts_with(prefix.as_slice()) {
             // A bare prefix name is legal: the rest may be empty.
-            let rest = &unit[p.len()..];
+            let rest = &unit[prefix.len()..];
             if rest.is_empty() || lookup_unit(table, rest).is_some() {
-                return Some(format!("{} {}", pv, rest));
+                // `strlcpy(buffer, prefixval) + strlcat(" ") + strlcat(unit)`
+                let mut def = value.clone();
+                def.push(b' ');
+                def.extend_from_slice(rest);
+                return Some(def);
             }
         }
     }
@@ -270,7 +320,7 @@ pub fn reduce_unit(table: &UnitsTable, unit: &mut UnitType) -> Result<(), UnitsE
     while changed {
         changed = false;
         'outer: for side in [true, false] {
-            let names: Vec<String> = (if side {
+            let names: Vec<Vec<u8>> = (if side {
                 &unit.numerator
             } else {
                 &unit.denominator
@@ -284,7 +334,7 @@ pub fn reduce_unit(table: &UnitsTable, unit: &mut UnitType) -> Result<(), UnitsE
                     Some(d) => d,
                     None => return Err(UnitsError::UnknownUnit(name)),
                 };
-                if def.contains(PRIMITIVECHAR) {
+                if def.contains(&PRIMITIVECHAR) {
                     continue;
                 }
                 let product = if side {
@@ -294,7 +344,7 @@ pub fn reduce_unit(table: &UnitsTable, unit: &mut UnitType) -> Result<(), UnitsE
                 };
                 for p in product.iter_mut() {
                     if *p == name {
-                        *p = String::new();
+                        *p = Vec::new();
                         break;
                     }
                 }
@@ -360,28 +410,28 @@ pub fn cancel_unit(unit: &mut UnitType) {
 
 /// compareunits: zero when numerator and denominator products match.
 pub fn compare_units(a: &UnitType, b: &UnitType) -> bool {
-    let an: Vec<&str> = a
+    let an: Vec<&[u8]> = a
         .numerator
         .iter()
-        .map(|s| s.as_str())
+        .map(Vec::as_slice)
         .filter(|s| !s.is_empty())
         .collect();
-    let bn: Vec<&str> = b
+    let bn: Vec<&[u8]> = b
         .numerator
         .iter()
-        .map(|s| s.as_str())
+        .map(Vec::as_slice)
         .filter(|s| !s.is_empty())
         .collect();
-    let ad: Vec<&str> = a
+    let ad: Vec<&[u8]> = a
         .denominator
         .iter()
-        .map(|s| s.as_str())
+        .map(Vec::as_slice)
         .filter(|s| !s.is_empty())
         .collect();
-    let bd: Vec<&str> = b
+    let bd: Vec<&[u8]> = b
         .denominator
         .iter()
-        .map(|s| s.as_str())
+        .map(Vec::as_slice)
         .filter(|s| !s.is_empty())
         .collect();
     an == bn && ad == bd
@@ -389,28 +439,28 @@ pub fn compare_units(a: &UnitType, b: &UnitType) -> bool {
 
 /// compareunitsreciprocal: a's numerator matches b's denominator.
 pub fn compare_units_reciprocal(a: &UnitType, b: &UnitType) -> bool {
-    let an: Vec<&str> = a
+    let an: Vec<&[u8]> = a
         .numerator
         .iter()
-        .map(|s| s.as_str())
+        .map(Vec::as_slice)
         .filter(|s| !s.is_empty())
         .collect();
-    let bd: Vec<&str> = b
+    let bd: Vec<&[u8]> = b
         .denominator
         .iter()
-        .map(|s| s.as_str())
+        .map(Vec::as_slice)
         .filter(|s| !s.is_empty())
         .collect();
-    let ad: Vec<&str> = a
+    let ad: Vec<&[u8]> = a
         .denominator
         .iter()
-        .map(|s| s.as_str())
+        .map(Vec::as_slice)
         .filter(|s| !s.is_empty())
         .collect();
-    let bn: Vec<&str> = b
+    let bn: Vec<&[u8]> = b
         .numerator
         .iter()
-        .map(|s| s.as_str())
+        .map(Vec::as_slice)
         .filter(|s| !s.is_empty())
         .collect();
     an == bd && ad == bn
@@ -474,27 +524,29 @@ pub fn format_g(value: f64, prec: usize) -> String {
 }
 
 /// showunit: `\t<factor>` + ` name^2` products and ` / name` denominators.
-pub fn show_unit(unit: &UnitType, prec: usize) -> String {
-    let mut out = format!("\t{}", format_g(unit.factor, prec));
+/// The names go out as the bytes that carried them (`showunit` prints each
+/// with `printf("%s", …)`, units.c:426-460).
+pub fn show_unit(unit: &UnitType, prec: usize) -> Vec<u8> {
+    let mut out = format!("\t{}", format_g(unit.factor, prec)).into_bytes();
     let mut counter = 1;
     for (i, name) in unit.numerator.iter().enumerate() {
         if i > 0 && !name.is_empty() && name == &unit.numerator[i - 1] {
             counter += 1;
         } else {
             if counter > 1 {
-                out.push_str(POWERSTRING);
-                out.push_str(&counter.to_string());
+                out.extend_from_slice(POWERSTRING);
+                out.extend_from_slice(counter.to_string().as_bytes());
             }
             if !name.is_empty() {
-                out.push(' ');
-                out.push_str(name);
+                out.push(b' ');
+                out.extend_from_slice(name);
             }
             counter = 1;
         }
     }
     if counter > 1 {
-        out.push_str(POWERSTRING);
-        out.push_str(&counter.to_string());
+        out.extend_from_slice(POWERSTRING);
+        out.extend_from_slice(counter.to_string().as_bytes());
     }
     let mut printed_slash = false;
     counter = 1;
@@ -503,64 +555,68 @@ pub fn show_unit(unit: &UnitType, prec: usize) -> String {
             counter += 1;
         } else {
             if counter > 1 {
-                out.push_str(POWERSTRING);
-                out.push_str(&counter.to_string());
+                out.extend_from_slice(POWERSTRING);
+                out.extend_from_slice(counter.to_string().as_bytes());
             }
             if !name.is_empty() {
                 if !printed_slash {
-                    out.push_str(" /");
+                    out.extend_from_slice(b" /");
                     printed_slash = true;
                 }
-                out.push(' ');
-                out.push_str(name);
+                out.push(b' ');
+                out.extend_from_slice(name);
             }
             counter = 1;
         }
     }
     if counter > 1 {
-        out.push_str(POWERSTRING);
-        out.push_str(&counter.to_string());
+        out.extend_from_slice(POWERSTRING);
+        out.extend_from_slice(counter.to_string().as_bytes());
     }
-    out.push('\n');
+    out.push(b'\n');
     out
 }
 
-/// Renders an Answer into the exact stdout text.
-pub fn render_answer(answer: &Answer, prec: usize) -> String {
+/// Renders an Answer into the exact stdout bytes.
+pub fn render_answer(answer: &Answer, prec: usize) -> Vec<u8> {
     match answer {
         Answer::Factor(mul, div) => format!(
             "\t* {}\n\t/ {}\n",
             format_g(*mul, prec),
             format_g(*div, prec)
-        ),
+        )
+        .into_bytes(),
         Answer::Reciprocal(mul, div) => format!(
             "\treciprocal conversion\n\t* {}\n\t/ {}\n",
             format_g(*mul, prec),
             format_g(*div, prec)
-        ),
+        )
+        .into_bytes(),
         Answer::Conformability(have, want) => {
-            format!(
-                "conformability error\n{}{}",
-                show_unit(have, prec),
-                show_unit(want, prec)
-            )
+            let mut out = Vec::from(&b"conformability error\n"[..]);
+            out.extend_from_slice(&show_unit(have, prec));
+            out.extend_from_slice(&show_unit(want, prec));
+            out
         }
     }
 }
 
 /// listunits (`-l`/`-L`): dump primitives, prefixes, then all other
 /// units; `expand` reduces each definition to primitive form
-/// (units.c:694-779). Returns the printed text and the error count.
-pub fn list_units(table: &UnitsTable, expand: bool, prec: usize) -> (String, usize) {
-    let mut out = String::new();
+/// (units.c:694-779). Returns the printed bytes and the error count.
+pub fn list_units(table: &UnitsTable, expand: bool, prec: usize) -> (Vec<u8>, usize) {
+    let mut out = Vec::new();
     let mut errors = 0usize;
-    out.push_str("/ Primitive units\n");
+    out.extend_from_slice(b"/ Primitive units\n");
     for (name, defn) in &table.units {
-        if defn.starts_with(PRIMITIVECHAR) {
-            out.push_str(&format!("{}\t{}\n", name, defn));
+        if defn.first() == Some(&PRIMITIVECHAR) {
+            out.extend_from_slice(name);
+            out.push(b'\t');
+            out.extend_from_slice(defn);
+            out.push(b'\n');
         }
     }
-    out.push_str("/ Prefixes\n");
+    out.extend_from_slice(b"/ Prefixes\n");
     for (name, defn) in &table.prefixes {
         let mut printable = true;
         if expand {
@@ -573,18 +629,23 @@ pub fn list_units(table: &UnitsTable, expand: bool, prec: usize) -> (String, usi
                     printable = false;
                 }
                 Ok(u) => {
-                    out.push_str(&format!("{}-{}", name, show_unit(&u, prec)));
+                    out.extend_from_slice(name);
+                    out.push(b'-');
+                    out.extend_from_slice(&show_unit(&u, prec));
                     continue;
                 }
             }
         }
         if printable {
-            out.push_str(&format!("{}-\t{}\n", name, defn));
+            out.extend_from_slice(name);
+            out.extend_from_slice(b"-\t");
+            out.extend_from_slice(defn);
+            out.push(b'\n');
         }
     }
-    out.push_str("/ Other units\n");
+    out.extend_from_slice(b"/ Other units\n");
     for (name, defn) in &table.units {
-        if defn.starts_with(PRIMITIVECHAR) {
+        if defn.first() == Some(&PRIMITIVECHAR) {
             continue;
         }
         let mut printable = true;
@@ -599,13 +660,17 @@ pub fn list_units(table: &UnitsTable, expand: bool, prec: usize) -> (String, usi
                     printable = false;
                 }
                 Ok(u) => {
-                    out.push_str(&format!("{name}{}", show_unit(&u, prec)));
+                    out.extend_from_slice(name);
+                    out.extend_from_slice(&show_unit(&u, prec));
                     continue;
                 }
             }
         }
         if printable {
-            out.push_str(&format!("{}\t{}\n", name, defn));
+            out.extend_from_slice(name);
+            out.push(b'\t');
+            out.extend_from_slice(defn);
+            out.push(b'\n');
         }
     }
     (out, errors)
@@ -723,18 +788,31 @@ pub fn parse_units_args<'a>(args: &'a [&'a str]) -> Result<UnitsArgs<'a>, UnitsA
 /// `UnitsError` 对应到 C 侧那一句 `mywarnx`（`units.c:109-124`）。
 ///
 /// 非列表模式下 `errprefix` 是 `NULL`，所以句子走 `vwarnx` 到**标准错误**，
-/// 形如 `<prog>: Unknown unit '<名字>'`。列表模式下同一句换成走标准输出并带
+/// 形如 `<prog>: Unknown unit '<原字节>'`。列表模式下同一句换成走标准输出并带
 /// `/ ` 前缀，那一段归 `list_units`（登记未做）。
+///
+/// 交回字节串而不是 `String`：`mywarnx("Unknown unit '%s'", *product)` 把
+/// 单位名按原字节交出去（`units.c:554`），名字里有什么字节就打印什么字节。
 #[must_use]
-pub fn units_error_line(prog: &str, error: &UnitsError) -> Option<String> {
-    let text = match error {
-        UnitsError::UnknownUnit(name) => format!("Unknown unit '{name}'"),
-        UnitsError::ReducesToZero => "Unit reduces to zero".to_string(),
-        UnitsError::JunkBeforeBar => "Junk before '|'".to_string(),
-        // 词典行的错误由 `read_units` 那半处理，操作数推导这一路交不出这一句。
+pub fn units_error_line(prog: &str, error: &UnitsError) -> Option<Vec<u8>> {
+    // 词典行的错误由 `read_units` 那半处理，操作数推导这一路交不出这一句。
+    if matches!(error, UnitsError::ReadError(_) | UnitsError::Conformability) {
+        return None;
+    }
+    let mut line = Vec::with_capacity(prog.len() + 32);
+    line.extend_from_slice(prog.as_bytes());
+    line.extend_from_slice(b": ");
+    match error {
+        UnitsError::UnknownUnit(name) => {
+            line.extend_from_slice(b"Unknown unit '");
+            line.extend_from_slice(name);
+            line.extend_from_slice(b"'\n");
+        }
+        UnitsError::ReducesToZero => line.extend_from_slice(b"Unit reduces to zero\n"),
+        UnitsError::JunkBeforeBar => line.extend_from_slice(b"Junk before '|'\n"),
         UnitsError::ReadError(_) | UnitsError::Conformability => return None,
-    };
-    Some(format!("{prog}: {text}\n"))
+    }
+    Some(line)
 }
 
 #[cfg(test)]
@@ -742,22 +820,23 @@ mod tests {
     use super::*;
 
     fn table() -> UnitsTable {
-        read_units(&[
-            "meter !m!",
-            "centimeter meter 0.01",
-            "inch centimeter 2.54",
-            "foot inch 12",
-            "yard foot 3",
-            "mile yard 1760",
-            "second !s!",
-            "minute 60 second",
-            "hour 60 minute",
-            "mph mile / hour",
-            "grams !gm!",
-            "gram grams",
-            "kilogram- 1000 grams",
-            "g grams",
-        ])
+        let lines: &[&[u8]] = &[
+            b"meter !m!",
+            b"centimeter meter 0.01",
+            b"inch centimeter 2.54",
+            b"foot inch 12",
+            b"yard foot 3",
+            b"mile yard 1760",
+            b"second !s!",
+            b"minute 60 second",
+            b"hour 60 minute",
+            b"mph mile / hour",
+            b"grams !gm!",
+            b"gram grams",
+            b"kilogram- 1000 grams",
+            b"g grams",
+        ];
+        read_units(lines)
     }
 
     #[test]
@@ -765,20 +844,20 @@ mod tests {
         let t = table();
         assert!(
             t.units
-                .contains(&("inch".to_string(), "centimeter 2.54".to_string()))
+                .contains(&(b"inch".to_vec(), b"centimeter 2.54".to_vec()))
         );
         assert_eq!(
             t.prefixes,
-            vec![("kilogram".to_string(), "1000 grams".to_string())]
+            vec![(b"kilogram".to_vec(), b"1000 grams".to_vec())]
         );
     }
 
     #[test]
     fn test_simple_conversion_meters_to_feet_shape() {
         let t = table();
-        let mut have = add_unit("meter", false).unwrap();
+        let mut have = add_unit(b"meter", false).unwrap();
         complete_reduce(&t, &mut have).unwrap();
-        let mut want = add_unit("inch", false).unwrap();
+        let mut want = add_unit(b"inch", false).unwrap();
         complete_reduce(&t, &mut want).unwrap();
         // meter = 1 primitive (named "meter"); inch = 0.0254 m.
         let ans = show_answer(&have, &want);
@@ -794,29 +873,29 @@ mod tests {
     #[test]
     fn test_rational_and_repeat_parsing() {
         let t = table();
-        let mut u = add_unit("3|4 inch2", false).unwrap();
+        let mut u = add_unit(b"3|4 inch2", false).unwrap();
         assert!((u.factor - 3.0 / 4.0).abs() < 1e-12);
-        assert_eq!(u.numerator, vec!["inch".to_string(), "inch".to_string()]);
+        assert_eq!(u.numerator, vec![b"inch".to_vec(), b"inch".to_vec()]);
         complete_reduce(&t, &mut u).unwrap();
         // 3/4 in² reduced to meters: 0.75 × 0.0254².
         assert!((u.factor - 0.75 * 0.0254 * 0.0254).abs() < 1e-12);
-        assert_eq!(u.numerator, vec!["meter".to_string(), "meter".to_string()]);
+        assert_eq!(u.numerator, vec![b"meter".to_vec(), b"meter".to_vec()]);
     }
 
     #[test]
     fn test_exponent_sign_kept() {
         // "1e-3 meter": the '-' after 'e' stays an exponent sign.
         let t = table();
-        let mut u = add_unit("1e-3 meter", false).unwrap();
+        let mut u = add_unit(b"1e-3 meter", false).unwrap();
         complete_reduce(&t, &mut u).unwrap();
         assert!((u.factor - 0.001).abs() < 1e-15);
-        assert_eq!(u.numerator, vec!["meter".to_string()]);
+        assert_eq!(u.numerator, vec![b"meter".to_vec()]);
     }
 
     #[test]
     fn test_prefix_expansion() {
         let t = table();
-        let mut u = add_unit("kilogram", false).unwrap();
+        let mut u = add_unit(b"kilogram", false).unwrap();
         complete_reduce(&t, &mut u).unwrap();
         assert!((u.factor - 1000.0).abs() < 1e-9);
     }
@@ -824,19 +903,19 @@ mod tests {
     #[test]
     fn test_plural_fallback() {
         let t = table();
-        let mut u = add_unit("grams", false).unwrap();
+        let mut u = add_unit(b"grams", false).unwrap();
         complete_reduce(&t, &mut u).unwrap();
         // The exact table entry wins, so grams stays "grams".
-        assert_eq!(u.numerator, vec!["grams".to_string()]);
+        assert_eq!(u.numerator, vec![b"grams".to_vec()]);
         assert!((u.factor - 1.0).abs() < 1e-12);
     }
 
     #[test]
     fn test_speed_conformability_with_denominators() {
         let t = table();
-        let mut mph = add_unit("mph", false).unwrap();
+        let mut mph = add_unit(b"mph", false).unwrap();
         complete_reduce(&t, &mut mph).unwrap();
-        let mut mps = add_unit("mile / minute", false).unwrap();
+        let mut mps = add_unit(b"mile / minute", false).unwrap();
         complete_reduce(&t, &mut mps).unwrap();
         let ans = show_answer(&mph, &mps);
         match ans {
@@ -848,17 +927,103 @@ mod tests {
     #[test]
     fn test_conformability_error() {
         let t = table();
-        let mut a = add_unit("meter", false).unwrap();
+        let mut a = add_unit(b"meter", false).unwrap();
         complete_reduce(&t, &mut a).unwrap();
-        let mut b = add_unit("second", false).unwrap();
+        let mut b = add_unit(b"second", false).unwrap();
         complete_reduce(&t, &mut b).unwrap();
         match show_answer(&a, &b) {
             Answer::Conformability(h, w) => {
-                assert_eq!(h.numerator, vec!["meter".to_string()]);
-                assert_eq!(w.numerator, vec!["second".to_string()]);
+                assert_eq!(h.numerator, vec![b"meter".to_vec()]);
+                assert_eq!(w.numerator, vec![b"second".to_vec()]);
             }
             other => panic!("unexpected {:?}", other),
         }
+    }
+
+    /// 单位名的每一条腿都交回原字节：表键、表达式节点、`UnknownUnit` 载荷、
+    /// `units_error_line` 那句的 `'%s'` 回显位。真源判据是 `units.c:503`/`:511`/
+    /// `:542` 的 `strcmp`/`strncmp` 逐字节比，与 `units.c:554` 的
+    /// `mywarnx("Unknown unit '%s'", *product)`——C 从不问这串字节是什么编码。
+    #[test]
+    fn a_unit_name_keeps_its_raw_bytes_through_the_table_and_the_warning() {
+        // `café` 写作字面字节 `63 61 66 c3 a9`（表里没有这一名）。
+        let name: &[u8] = &[b'c', b'a', b'f', 0xc3, 0xa9];
+        let t = table();
+        let mut u = add_unit(name, false).unwrap();
+        assert_eq!(
+            complete_reduce(&t, &mut u),
+            Err(UnitsError::UnknownUnit(name.to_vec()))
+        );
+        assert_eq!(
+            units_error_line("units", &UnitsError::UnknownUnit(name.to_vec())).as_deref(),
+            Some(&b"units: Unknown unit 'caf\xc3\xa9'\n"[..])
+        );
+        // 表键同一串字节时命中：`strcmp` 只比字节。词典的一行是「名 定义」，
+        // 所以这一枚夹具把两个字段拼在同一串里（一个元素就是一行）。
+        let mut line = name.to_vec();
+        line.extend_from_slice(b" !k!");
+        // 第二枚表键含**非法** UTF-8 的裸 `ff`：只有逐字节比才认得它。任何在比较
+        // 边界折一次 lossy 的写法（批次四百四十九否证的乙路）在非法侧解不开，
+        // 于是查不到。
+        let mut bad_line = Vec::from(&b"weird\xff"[..]);
+        bad_line.extend_from_slice(b" 2 m");
+        let raw_table = read_units(&[b"m !a!".as_slice(), line.as_slice(), bad_line.as_slice()]);
+        assert_eq!(
+            raw_table.units,
+            vec![
+                (b"m".to_vec(), b"!a!".to_vec()),
+                (name.to_vec(), b"!k!".to_vec()),
+                (b"weird\xff".to_vec(), b"2 m".to_vec())
+            ]
+        );
+        assert_eq!(lookup_unit(&raw_table, name).as_deref(), Some(&b"!k!"[..]));
+        assert_eq!(
+            lookup_unit(&raw_table, b"weird\xff").as_deref(),
+            Some(&b"2 m"[..]),
+            "表键是非法 UTF-8 时也要按字节命中"
+        );
+        // 命中之后按字节继续换算：`weird\xff` = `2 m`，而 `m` 的定义带
+        // PRIMITIVECHAR，`reduceproduct` 在这一格停下（`units.c:583-585` 的
+        // `if (strchr(toadd, PRIMITIVECHAR)) break;`），所以因子是 2、名字剩 `m`。
+        let mut u = add_unit(b"weird\xff", false).unwrap();
+        complete_reduce(&raw_table, &mut u).unwrap();
+        assert!((u.factor - 2.0).abs() < 1e-12);
+        assert_eq!(u.numerator, vec![b"m".to_vec()]);
+        // 第三道形：两串**不同**的字节折成 lossy 之后会同副面孔，而 `strcmp` 不上当
+        // （这正是批次四百四十九否证乙路的那条理由）。表里先放字面替换字符那一枚
+        // （`weird` + `ef bf bd`，定义 `5 m`），再放裸 `ff` 那一枚（定义 `2 m`）：
+        // 按字节查 `weird\xff` 该命中后者；任何在比较边界折一次 lossy 的写法都会先
+        // 撞上前者，把因子查成 5。
+        let mut twin = Vec::from(&b"weird"[..]);
+        twin.extend_from_slice("\u{fffd}".to_string().as_bytes());
+        twin.extend_from_slice(b" 5 m");
+        let colliding = read_units(&[b"m !a!".as_slice(), twin.as_slice(), bad_line.as_slice()]);
+        assert_eq!(
+            colliding.units.len(),
+            3,
+            "两枚键在 C 里是两串不同字节，都该进表"
+        );
+        assert_eq!(
+            lookup_unit(&colliding, b"weird\xff").as_deref(),
+            Some(&b"2 m"[..]),
+            "查 `weird` + 裸 ff 该命中按字节那一枚，而不是折出来同形的字面替换字符那枚"
+        );
+    }
+
+    /// 一行的**第二个**字段（定义原文）也按字节进表并按字节回显在 `-l` 清单里；
+    /// `read_units` 不做任何解码，所以一枚裸字节不会让整份词典消失。
+    #[test]
+    fn a_units_line_with_a_raw_byte_still_reaches_the_table() {
+        // 裸 `ff` 不是任何 UTF-8 序列的开头；旧写法在调用方解一次 UTF-8，
+        // 解不过去就把**整份**词典丢掉（登记 UNITS-NONUTF8-DROP 的那一格）。
+        let t = read_units(&[b"weird! 1\xff meter".as_slice()]);
+        assert_eq!(t.units, vec![(b"weird!".to_vec(), b"1\xff meter".to_vec())]);
+        let (listing, errors) = list_units(&t, false, PRECISION);
+        assert_eq!(errors, 0);
+        assert_eq!(
+            listing,
+            b"/ Primitive units\n/ Prefixes\n/ Other units\nweird!\t1\xff meter\n".as_slice()
+        );
     }
 
     #[test]
@@ -875,11 +1040,11 @@ mod tests {
     #[test]
     fn test_show_unit_shapes() {
         let u = UnitType {
-            numerator: vec!["m".to_string(), "m".to_string()],
-            denominator: vec!["s".to_string()],
+            numerator: vec![b"m".to_vec(), b"m".to_vec()],
+            denominator: vec![b"s".to_vec()],
             factor: 2.5,
         };
-        assert_eq!(show_unit(&u, 8), "\t2.5 m^2 / s\n");
+        assert_eq!(show_unit(&u, 8), b"\t2.5 m^2 / s\n".as_slice());
     }
 
     #[test]
@@ -1042,16 +1207,16 @@ mod tests {
         // 非列表模式下 `errprefix` 是 `NULL`，所以 `mywarnx` 走 `vwarnx`：两段形、
         // 前缀是程序名、不带 `strerror`。三句的措辞各自抄 `units.c`。
         assert_eq!(
-            units_error_line("units", &UnitsError::UnknownUnit("bogus".to_string())).as_deref(),
-            Some("units: Unknown unit 'bogus'\n")
+            units_error_line("units", &UnitsError::UnknownUnit(b"bogus".to_vec())).as_deref(),
+            Some(&b"units: Unknown unit 'bogus'\n"[..])
         );
         assert_eq!(
             units_error_line("units", &UnitsError::ReducesToZero).as_deref(),
-            Some("units: Unit reduces to zero\n")
+            Some(&b"units: Unit reduces to zero\n"[..])
         );
         assert_eq!(
             units_error_line("units", &UnitsError::JunkBeforeBar).as_deref(),
-            Some("units: Junk before '|'\n")
+            Some(&b"units: Junk before '|'\n"[..])
         );
         // 词典行与可折算这两支不由 `mywarnx` 在推导路径上句子，交回 `None` 让调用方不印。
         assert_eq!(units_error_line("units", &UnitsError::Conformability), None);

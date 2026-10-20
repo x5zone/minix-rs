@@ -95,7 +95,15 @@ mod tests {
 /// only a string with no leading number fails. Returns the value and
 /// the consumed byte count. Hex floats are a registered corner.
 pub fn parse_float_prefix(s: &str) -> Option<(f64, usize)> {
-    let b = s.as_bytes();
+    parse_float_prefix_bytes(s.as_bytes())
+}
+
+/// The same scan on bytes, for the callers whose input never enters the
+/// text domain (`units` takes its expression as raw bytes, `units.c:346`
+/// rewrites `scratch` in place on `char`). The scanned prefix is digits,
+/// dot and sign by construction, so the final conversion always has a
+/// valid UTF-8 window to hand to `parse`.
+pub fn parse_float_prefix_bytes(b: &[u8]) -> Option<(f64, usize)> {
     let mut i = 0;
     if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
         i += 1;
@@ -131,5 +139,8 @@ pub fn parse_float_prefix(s: &str) -> Option<(f64, usize)> {
             end = j;
         }
     }
-    s[..end].parse::<f64>().ok().map(|v| (v, end))
+    core::str::from_utf8(&b[..end])
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|v| (v, end))
 }

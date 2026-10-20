@@ -464,3 +464,76 @@ fn off_letter_outside_the_charset_is_reported_by_its_first_byte() {
     assert_eq!(code, 3);
     assert_eq!(err, format!("units: unknown option -- Z\n{USAGE}"));
 }
+
+/// 逐字节的夹具腿：`run` 把两路输出交回 lossy `String`，而文本形分不清裸 `ff` 与
+/// 折出来的 `ef bf bd`——那正是本文件这两枚门要比的东西（同 `col_face` 的 `run_bytes`）。
+fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, Vec<u8>, Option<i32>) {
+    let mut child = Command::new(UNITS)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the units binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (output.stdout, output.stderr, output.status.code())
+}
+
+#[test]
+fn a_raw_byte_in_a_dictionary_name_reaches_the_listing() {
+    // 词典行的名字与定义都按字节进表（C 的 `fgets(line, 79, unitfile)` 从不解码，
+    // `readunits` 用 `strspn`/`strcspn` 切字节）。旧写法在壳侧先把**整份**档解一次
+    // UTF-8，解不过去就当空串——一枚裸字节能让全部单位消失，那一格登记为
+    // `UNITS-NONUTF8-DROP`，随单位名链路换字节形闭合。
+    let dir = scratch("raw-name-listing");
+    let path = dir.join("raw.lib");
+    fs::write(
+        &path,
+        [
+            b"m\t!a!\n".as_slice(),
+            b"caf\xc3\xa9\t2 m\n".as_slice(),
+            b"weird\xff\t3 m\n".as_slice(),
+        ]
+        .concat(),
+    )
+    .expect("write raw.lib");
+    let name = path.to_str().expect("utf-8 scratch path");
+    let (out, err, code) = run_bytes(&["-l", "-f", name], b"");
+    assert_eq!(code, Some(0), "两份词典行都在表里，退码不该是错误");
+    assert_eq!(err, Vec::new(), "-l 的句子走 stdout 且本形没有句子");
+    assert_eq!(
+        out,
+        [
+            b"/ Primitive units\nm\t!a!\n/ Prefixes\n/ Other units\n".as_slice(),
+            b"caf\xc3\xa9\t2 m\n".as_slice(),
+            b"weird\xff\t3 m\n".as_slice(),
+        ]
+        .concat(),
+        "清单里的名字该是词典里那串原字节"
+    );
+}
+
+#[test]
+fn a_raw_byte_in_a_typed_name_comes_back_in_the_warning() {
+    // 交互那一行的字节原样进单位名链路：`addunit` 的 `strtok` 与 `lookupunit` 的
+    // `strcmp` 都在字节上走，`mywarnx("Unknown unit '%s'")`（`units.c:554`）把名字
+    // 按 `%s` 交回。旧写法在壳侧折一次 `from_utf8_lossy`，于是裸 `c3` 变成三个替换
+    // 字节、裸 `ff` 变成 `ef bf bd`——与参照件差一整串。
+    let (_dir, db) = database("raw-name-warning");
+    let (out, err, code) = run_bytes(
+        &["-q", "-f", &db],
+        &[b"caf\xc3\xa9\n".as_slice(), b"weird\xff\n".as_slice()].concat(),
+    );
+    assert_eq!(code, Some(0), "EOF 退 0（`units.c:876-893`）");
+    assert_eq!(out, Vec::new(), "-q 不打提示也不出答案块");
+    assert_eq!(
+        err,
+        [
+            b"units: Unknown unit 'caf\xc3\xa9'\n".as_slice(),
+            b"units: Unknown unit 'weird\xff'\n".as_slice(),
+        ]
+        .concat(),
+        "回显位该逐字节交出用户打的那串字节"
+    );
+}
