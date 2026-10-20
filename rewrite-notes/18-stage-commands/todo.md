@@ -119,6 +119,37 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百五十（名单对账轮：「末行换行状态」那四条 P0 经现量核销，台账跟上代码）
+
+- **这一轮不写代码，做的是名单对账**：板上与 18 篇的余量段把 `NL-FINAL-LINE-ADDS-NEWLINE`、
+  `TAIL-FINAL-LINE-ADDS-NEWLINE` 还写成在册待修，而代码与门早已按裁决落地。判据是「同类相比」——
+  门名对门名、登记项对登记项，别拿旧读数当现状。核完的结论是**四条全部闭**，两处的在册措辞随本笔订正。
+- **裁决本身**：行腿保留输入末行的换行状态——末行没有那枚换行，输出就不许补。承载点是
+  `os/commands/usr-bin/textfilter/src/window.rs:fn lines_of` 与同模块的 `final_line_*`：每行的终止状态
+  随行走完这条腿，所以「补不补换行」不在各支壳的写出循环里各自决定（那正是当初分叉成四条登记项的原因：
+  四支壳各写各的 `push(b'\n')`）。07 篇 `tail` 行与 `nl` 行已经写成这个口径，本笔只把板与 18 篇
+  的余量段拉齐。
+- **现量矩阵（L1 证据）**：`python3` 逐字节比 本壳 × 参照件 × 三种选项 × 七形末行状态
+  （`a\nb` 无末换行、`a\nb\n` 有、单行无换行、空文件、中间空行、纯空格无换行、三行带换行）
+  = **98 形 SAME=98 / DIFF=0**（`tmp/finalnl-450/ab.log`）。三个参照件开工先跑 `-Z` 验归属：
+  `nl_ref: unknown option -- Z`、`tail_ref: unknown option -- Z`、`head_ref: unknown option -- Z`，
+  都是 Minix 措辞，承真值（`tmp/nl-417/nl_ref`、`tmp/tail-416/tail_ref`、`tmp/head-415/head_ref`）。
+- **四枚钉子（门名，负控时红名分得清是谁）**：`tests/head_face.rs:fn
+  an_unterminated_final_line_reaches_stdout_without_a_newline`、`tests/tail_face.rs:fn
+  tail_leaves_an_unterminated_final_line_unterminated`（同文件还有
+  `reversed_output_carries_the_unterminated_line_to_the_front` 钉 `-r` 那一形）、
+  `tests/uniq_face.rs:fn uniq_does_not_supply_a_newline_the_input_lacked`、
+  `tests/nl_face.rs:fn an_unterminated_final_line_is_numbered_without_a_newline`
+  （同文件另有 `an_operand_without_a_trailing_newline_still_reaches_the_output`）。
+  四支壳各钉各的面，没有再造一枚跨壳门——同一裁决的第四份重复断言只会让负控红名更难归因。
+- **本轮没有顺手扩的两处**：① `HEAD-NON-PERMUTE-OPERAND-TAIL` 不在这条裁决的射程里（那是多操作数
+  要不要置换的旧约定问题，与末行终止符无关），维持在册；②
+  `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR` 也不因本笔闭——它问的是「只剩空白的末行要不要冲
+  制表档」，比「补不补换行」深一层（批次四百二十六已把两条路各动什么写进板 A2 行）。这条区别记下来，
+  免得下一个读台账的人把「末行」两字相同的两件事并成一件。
+- **门读数**：本轮零源码改动，故不跑宿主与容器门；五道收尾门全过（门 1 仅存已知探针族漂移、
+  门 2 断链 131 与基线同、门 3 PASS、门 4 `doc-style-lint --diff rewrite` error级 0、门 5 干净）。
+
 ## 批次四百四十九（`units` 裁决轮，不落码：表键换字节，不在查询边界折一次 lossy）
 
 - **落点**：只动文档（`rewrite-notes/18-stage-commands/todo.md`、
