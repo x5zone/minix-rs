@@ -119,6 +119,77 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百四十（A2 参数缝半第一次落地：`rev` 一支持字节 argv，并把施工粒度重新定在「一对」上）
+
+**这一轮干什么**。参数缝半（射程②）要的是 `bin_support::args()` 不再把命令行折成 `String`。
+批次四百三十九按「原地改缝的签名」取过一次编译面读数，那次读数是 39 支壳全红，于是当时把施工
+粒度定在 crate。本轮换一种切法再取一次：**新增一个字节出口，把「一支壳 + 它自己的解析入口」当作
+一对来迁**，旧出口先留着、族内迁完的那一笔再删。这个切法能不能编译得过，就是本轮要回答的问题——
+它决定这一族是「一次改完」还是「可以逐支收尾」。
+
+**先说 C 的那一侧为什么必须是字节**。`minix3/lib/libc/stdlib/getopt.c` 的字母取自字节步进
+（`optopt = *place++`，一次只进一个字节），所以 `-` 后面那一枚裸 `ff` 就是字母本身；而本壳的缝
+经 `String::from_utf8_lossy` 之后，`ff` 变成三字节 `ef bf bd`，取第一个字节就得到 `ef`——
+批次四百二十与四百二十二在 A/B 里留下的那条「字母位差一位」残差就是这么来的。渲染半早已全收
+（`GetoptReport::line_bytes` 把 Latin-1 那一码位打回一个裸字节），缺的正是让字母以原字节到达渲染。
+
+**代码形状**（四件，全在 `os/commands/usr-bin/textfilter`）。
+
+- `src/bin_support.rs:fn args_bytes`——缝的字节双生口。真机腿直取 `minix_rt::crt0::args()` 的原始
+  字节；宿主腿取 `args_os()` 的 `as_bytes()`（`std::env::args()` 会在非 UTF-8 上 panic，两腿必须
+  同口径）。与之配套的是 `fn prog_name_bytes`：交回 `argv[0]` 的**最后一个斜杠之后**那串字节。
+  basename 这一跳要在壳侧自己复现，因为现成的 `minix_sys::prog_name` 收 `&str`、住在禁碰清单里。
+- `src/lib.rs:fn empty_optstring_operands_bytes`——空 optstring 那一支的字节形双生：三形判据一字
+  不动，字母取短横后的第一个字节再以 `char::from(byte)` 收进报告（这正是 C 里 `unsigned char`
+  提升为 `int` 的形状）。共件的 `&str` 形仍归 `colrm` 用，故先并存。
+- `src/rev.rs:fn parse_rev_args`——**原地**换取字节形（`&[&[u8]]` → `Vec<&[u8]>`），它是 `rev`
+  专用的解析入口，单一消费者，改签名不牵连别处。
+- `src/bin/rev.rs:run`——第一句改用 `support::args_bytes()`，`prog` 与操作数由此拿到原字节；
+  到了 `read_file` 与 `warn_line` 这两个边界仍折一次，因为库侧的口只收 `&str`
+  （`os/libs/minix-sys/src/lib.rs:299`、`os/libs/minix-types/src/types/errno.rs:556`），
+  这一腿的账在 `ARGV-BYTE-PATH-IN-LIBS` 里在册。
+
+**编译面与门读数**（决定分轮口径的那一条）。`cargo build -p minix-textfilter` 通过：38 支还在用旧
+出口的壳与这一支用新出口的壳**同时**编得过。`cargo test -p minix-textfilter` 宿主
+宿主 68 段 / 1211 通过 / 0 失败，容器同一读数（退 0），三架构退 0（x86_64-unknown-none、aarch64-unknown-none、riscv64gc-unknown-none-elf 各自 `cargo build --target … -p minix-textfilter`；这三枚 bare-metal target 装在宿主工具链里，容器镜像 minix-ci:1.94 未装，同一条命令在容器里报 E0463「can't find crate for `core`」，那是配方差异不是代码缺陷）。所以「必须整族一次改」这句结论要收窄：**原地改签名确实要求整族一起动，但新增双生口再
+逐对迁移不要求**——每迁完一对，那一对就有类型挡着（它的解析入口只收字节），而旧口只在族内还有
+未迁者时暂存，末笔删掉。这样甲路的编译期保证不打折，轮子却能一支一支收。
+
+**A/B 逐字节对参照件**（`tmp/argv-440/ab.log`；参照件 `tmp/rev-309/rev`，先跑 `-Z` 验字样，打出
+的是 Minix 的 `unknown option`，不是 glibc 的 `invalid option`；两侧都用 `executable=` 以同一个
+`argv[0]` 起，程序名才可比）。九形读数 SAME=8 DIFF=1。唯一那形 `DIFF` 是**操作数**那一腿：不存在的档名
+`no\xffpe.txt`，参照件回显原字节 `ff`，本壳回显 `efbfbd`——字母位已经同形，档名位仍受库侧那个
+`&str` 口约束。这正是 `ARGV-BYTE-PATH-IN-LIBS` 的边界，不是本轮漏改。
+
+**门**：库 +2（`lib.rs:fn empty_optstring_bytes_name_an_invalid_utf8_option_byte` 把两形的差别直接
+钉进断言——同一枚参数走字节形得到 `ff`、走折叠形得到 `ef`；`rev.rs:fn a_raw_ff_option_letter_is_named_by_that_byte_not_the_replacement_char`
+钉住壳侧报告里那一枚字节），面 +1（`rev_face.rs:fn a_raw_nonutf8_option_letter_is_reported_as_that_byte`，
+参数用 `OsString::from_vec` 传，`&str` 夹具传不出裸 `ff`）。跨壳表 `bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter`
+里 `rev` 那一行的期望由 `ef` **翻正**为 `ff`；该表其余五支（`tr`/`seq`/`paste`/`fold`/`units`）仍
+钉 `ef`，这张表逐行翻正的进度就是本族的进度条。
+
+**负控四枚**（`tmp/argv-440/negctl.log`）：N1 把缝的宿主腿退回折叠形 → 跨壳表那枚门咬住；
+N2 把字母判据改成小写 → `rev.rs` 两枚门咬住；N3 把短横判据改成双横 → 库侧与壳侧四枚门咬住；
+N4 是等价改写（`flag == &b"-"[..]` 换成 `flag.len() == 1 && flag[0] == b'-'`），应全绿，实测全绿
+——证门钉的是判据而不是写法。
+
+**本轮自己捉出来的两件事**（都是形状问题，记下来防重犯）。其一，`prog_name_bytes` 第一版把整个
+`argv[0]` 交回，报文里的程序名就成了全路径，跨壳表那枚面门当场把它钉红；basename 那一跳必须在
+壳侧复现，因为现成的 `minix_sys::prog_name` 在禁碰清单里且收 `&str`。其二，负控 N1 的第一版注入
+自身编译不过（`Cow<str>` 没有 `into_bytes`），把「构建失败」误读成「空咬」——判据：注入必须先过
+编译，红名清单要连构建退出码与编译错计数一起看，否则分不清是门没咬还是根本没跑成门。
+
+**判据（本轮新增两条）**。
+
+- 分轮口径要按「改法形状」重新取一次编译面：同一族上「原地改签名」与「新增双生口逐对迁」是两件
+  事，前者的读数不能拿来给后者定规模。
+- 跨壳表门逐行翻正即进度条：一张表里几支壳各钉各的期望，翻正一行=收一支，不动的行仍如实记着
+  未收的余量。
+
+**复现清单**：`python3 tmp/argv-440/verify.py`（翻正跨壳表期望 → 全包门 → 九形 A/B → 四枚负控，
+逐枚自带还原）；`bash tmp/argv-440/container-gate.sh`（容器权威门 + 三架构编译，逐条串行，不与
+宿主 cargo 并发）；日志 `tmp/argv-440/{host-test.log,ab.log,negctl.log,container.log,arch-*.log}`。
+
 ## 批次四百三十九（A2 参数缝半：操作数这一路的现量，与「施工粒度是 crate」这条结论）
 
 **这一轮干什么**。板 A 行 A2 只剩参数缝半（射程②）这一族：`bin_support::args()` 交回的是
