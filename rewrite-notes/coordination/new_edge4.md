@@ -738,7 +738,7 @@ libc 那一行继续走 `GetoptReport::line_bytes`（`os/commands/usr-bin/textfi
 切」来算——包名只出现在 lib 段路径里，集成测那几段切不出来（本轮首次落笔因此把 textfilter 记成
 76 段，已由文档笔补订正为单包现量）。
 
-**提交与账**：`19ce30ce0`（码）、`302de9f48`（文档）、`28e4a347f`（文档笔补 · 读数订正）。
+**提交与账**（领用树内 rebase 到新基线 `1502f2e9e` 后的哈希）：`d936e7ead`（码）、`4dc666f88`（文档）、`b6362e3d8`（文档笔补 · 读数订正）。rebase 前的三笔哈希不再有效。
 板 A2 行余量：`textfilter` 三十九支已迁六支（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`）、余三十三支；
 跨壳表余 `fold`/`units` 两行；共件 `empty_optstring_operands` 的 `&str` 形只剩 `colrm`；`tr`/`seq`
 的 `prog` 那处程序名 lossy 属全族共件，留给参数缝半收尾那一笔。登记未执行项维持：

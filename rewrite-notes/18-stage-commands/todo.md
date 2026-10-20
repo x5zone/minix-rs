@@ -121,7 +121,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ## 批次四百四十四（A2 参数缝半第六对：`tr` 的集合、映射值与集名回显都由字节决定）
 
-- **落点**：`os/commands/usr-bin/textfilter/src/tr.rs`、`src/bin/tr.rs`、`tests/tr_face.rs`、`tests/bin_support_face.rs`（码笔 `19ce30ce0`，领用 `GETOPT-REPORT-BYTE-LETTER`，基线是批次四百四十三合入后的 `rewrite` 头）。
+- **落点**：`os/commands/usr-bin/textfilter/src/tr.rs`、`src/bin/tr.rs`、`tests/tr_face.rs`、`tests/bin_support_face.rs`（码笔 `d936e7ead`，领用 `GETOPT-REPORT-BYTE-LETTER`，基线是批次四百四十三合入后的 `rewrite` 头；轮内 `rewrite` 被别板推进一笔（`1502f2e9e`，只动 `01-stage-kernel/todo.md`），领用树内 rebase 后按新基线复跑门）。
 - **这一支的缺陷面比 `seq` 宽**：参数缝折叠在 `tr` 上同时坏三处，三处的可观察面各不相同——
   ① **数据位**：`tr -d 'a\xffb'`、`tr -c 'a\xff' y`、`tr -s '\xff\xff'` 三形的成员判据都拿折叠后的串去比对输入字节，折叠串里没有 `ff` 这一枚成员，于是该删的删不掉、该取补的补错、该挤的挤不动；`tr a '\xff'` 更直白——映射值本身就是写往 stdout 的字节，折叠后写出去的是 `ef bf bd` 三枚。
   ② **回显位**：`minix3/usr.bin/tr/str.c:253` 的 `errx(1, "unknown class %.*s", …)` 把**集合式里的原字节**按长度打回去（`'[:\xfffoo:]'` → `tr: unknown class \xfffoo`），句子借 `&str` 口就先折一次。
