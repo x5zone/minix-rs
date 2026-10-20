@@ -121,8 +121,8 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ## 批次四百四十七（P0 专轮：`fold` 拆行两臂按 C 翻正，`FOLD-SPLIT-BRANCH-SWAPPED` 闭）
 
-- **落点**：`os/commands/usr-bin/textfilter/src/fold.rs`（码笔 `411a6cac6`，领用 `GETOPT-REPORT-BYTE-LETTER`，
-  基线是批次四百四十六合入后的 `rewrite` 头 `614c1260f`）。
+- **落点**：`os/commands/usr-bin/textfilter/src/fold.rs`（码笔 `a9bb4e814`，领用 `GETOPT-REPORT-BYTE-LETTER`，
+  基线是批次四百四十六合入后的 `rewrite` 头 `614c1260f`；轮内 `rewrite` 被别板推进两笔，领用树内 rebase 后按新基线复跑门，台账哈希指向 rebase 后的 `a9bb4e814`）。
 - **真源定形**：`minix3/usr.bin/fold/fold.c:152-176` 的分支条件是 `if (split_words && last_space != -1)`。
   两件事由此决定：**只有 `-s` 打开才回找缓冲里最后一个空格**；找到之后 `last_space++` 才 `wmemmove`，
   所以**那个空格被丢掉**，既不印在行尾也不带到续行头。不开 `-s` 时列位一过宽度就整块吐出缓冲，

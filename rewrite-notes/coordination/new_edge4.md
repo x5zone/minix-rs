@@ -840,3 +840,55 @@ libc 那一行继续走 `GetoptReport::line_bytes`（`os/commands/usr-bin/textfi
 `FOLD-DIGIT-NOT-FIRST-IN-CLUSTER`、`FOLD-NON-PERMUTE-OPERAND-TAIL`、`COLRM-STRERROR-ZERO-TEXT`、
 `ARGV-BYTE-PATH-IN-LIBS` 各条维持已登记不执行；`fold` 支的 `prog` 那处程序名 lossy 属全族共件，
 留给族收尾那一笔（同笔还要删 `bin_support::args` 与 `prog_name` 的文本形）。
+
+### 第一百六十一笔（并发任务 A 板 · P0 专轮 · `fold` 拆行两臂按 C 翻正，`FOLD-SPLIT-BRANCH-SWAPPED` 闭）
+
+**落点**：`os/commands/usr-bin/textfilter/src/fold.rs` 一枚文件。领用 `GETOPT-REPORT-BYTE-LETTER`，
+基线是批次四百四十六合入后的 `rewrite` 头 `614c1260f`；轮内 `rewrite` 被别板推进两笔
+（`f5de222d6` 内核测试与抽象收口的合并笔、`f81ba5e76` 01 篇三结构体答疑轮），在领用树内 rebase 后
+按新基线复跑全部门，台账与本页哈希指向 rebase 后的 `a9bb4e814` / `82adb1049` / `bd6482d48`。
+
+**这一枚 P0 是上一轮 A/B 顺手量出来的**（批次四百四十六登记，本轮执行）。真源一句话定形：
+`minix3/usr.bin/fold/fold.c:152-176` 的条件是 `if (split_words && last_space != -1)`——
+**只有 `-s` 打开才回找缓冲里最后一个空格**，且找到之后 `last_space++` 才 `wmemmove`，那个空格本身被丢掉；
+不开 `-s` 时列位一过宽度就把整块缓冲吐出，空格留在它填到的那一行末尾。
+`os/commands/usr-bin/textfilter/src/fold.rs:fn fold_line` 此前把两臂写反（`split_words` 为真时整块吐出、
+为假时去 `rposition` 找空格），并且找到空格后按 `buffer[space..]` 带走续行，把本该丢掉的空格留在行首。
+后果是用户可直接看到的：不开 `-s` 的普通文本被按空格拆开，空格恰在缓冲首位时还多吐空行。
+
+**改法**：空格搜索收进 `split_words` 条件里；`Some(space)` 一支吐 `buffer[..space]` 后
+`drain(..=space)`，续行列位由剩下的字符重算；`None` 一支整块吐出并把列位置零；
+两支合流后再为当前字符推进一列（对位 C 那行 `col = new_column_position (col, ch)` 的
+「calculate the column position for the next line」），随后才把字符存进缓冲。
+模块头注释那句「breaking after the last space unless `-s`」是与参照件相反的失真，同笔按 C 改写。
+
+**门**：库 +2——`without_split_words_the_break_is_a_hard_one_and_spaces_stay`、
+`split_words_drops_the_space_and_carries_the_rest_as_the_next_line`；`test_break_after_the_last_space`
+从「不开 `-s` 也能在空格后断」的错误期望改按 `-s` 形。`--lib` 611→613，`fold_face` 八枚不退。
+**三形期望全部取自参照件 `tmp/fold-405/fold_ref` 的现量，不取自推演**——本轮第一次就按推演写了一枚
+「中间该有一行空行」的期望，被参照件当场否掉（真形没有那一行），这条判据因此再补一条证据。
+
+**A/B 二十五形**（`python3 tmp/argv-447/ab.py > tmp/argv-447/ab.log`，在原十三形上新增十二形拆行：
+空格落在宽内、空格在行首、制表位、退格回拉、回车重置、连续空格、一行变多行、`-b` 逐字节，
+各分 `-s` 与不开）逐字节对参照件：**SAME=24 / DIFF=1**。批次四百四十六那一形
+（`ij` 之后三行空行再带前导空格）归零；唯一残差是 `fold a<ff>.txt` 的报文回显，属路径腿的
+`from_utf8_lossy`（`ARGV-BYTE-PATH-IN-LIBS`，在册不动）。
+
+**门读数（L1 证据）**：rebase 前宿主两包各跑 78 段 / 1315 通过 / 0 失败，rebase 后按新基线复跑同读数
+（`tmp/argv-447/host.log`、`tmp/argv-447/host-rebase.log`）；容器 78 段 / 1315 / 0 退 0
+（`tmp/argv-447/container.log`）；三架构 `cargo build -p minix-textfilter --bin fold --target
+{x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` 两轮各退 0；
+`rustfmt --edition 2021 --check` 触及件零漂移、clippy 触及件零告警；
+负控四枚三咬 + 一枚等价全绿（`tmp/argv-447/negctl447.log`）：两臂再写反咬住三形、
+续行少丢一位空格咬住两形、撤掉 `-s` 条件咬住不开 `-s` 那一形、闭包形等价改写不动色，还原后复跑全绿。
+
+**门 4 的归因记一笔**：`doc-style-lint.sh --diff rewrite` 报了 error级 3，三处全在
+`rewrite-notes/01-stage-kernel/todo.md`（别板新增的 `[SL-3] P9-1` 与两处 `[SL-4]` 正文日期），
+`git diff --name-only rewrite...HEAD` 证明本轮只触及 `fold.rs` 与 18 篇、07 篇、板三个文档件，
+本线触及件内零命中——按板的禁碰清单不动别板文件，只把归因写清。
+
+**提交与账**：`a9bb4e814`（码）、`82adb1049`（文档笔）、`bd6482d48`（文档笔补：前一笔只落了 18 篇，
+07 篇与板没跟上，本笔补齐并修掉批次四百四十六改写 07 篇 `fold` 行时留下的一个游离反引号）。
+板 A 在册余量：`FOLD-SPLIT-BRANCH-SWAPPED` 闭合；余 `FOLD-DIGIT-NOT-FIRST-IN-CLUSTER`、
+`FOLD-NON-PERMUTE-OPERAND-TAIL`、`ARGV-BYTE-PATH-IN-LIBS` 与各条登记不执行项；
+参数缝半余 `textfilter` 三十一支，跨壳表只余 `units` 一行（其裁决要点见批次四百四十六段那条预研读数）。
