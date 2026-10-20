@@ -555,3 +555,27 @@
   `tests/argv_seam_face.rs` 的期望升级为逐字节等于原字节，该轮闭 A2 行。本轮生产码零改动
   （`git diff --stat` 只含 `rewrite-notes/`），故宿主/容器/三架构门无需复跑，五道收尾门照跑。
   提交：本笔文档笔一笔（无码笔）。
+
+- **里程碑第一百五十三笔（批次四百三十九，A2 板，qoder）**：A2 行「参数缝半（射程②）」的落地前置轮，
+  生产码零改动（`git diff --stat` 只含 `rewrite-notes/`）。两件现量各定一件事。**可观察形**：一枚带裸
+  `ff` 的档名交给 `os/commands` 下 28 支壳，19 支把该字节折成三字节 `efbfbd` 打进报文（`head`、
+  `column`、`wc`、`colrm` 四形逐字节入 18 篇表），9 支的用法腿在碰到操作数前退出故不可观察；C 侧同一
+  形打原字节，依据 `minix3/usr.bin/head/head.c:main` 的 `warn("%s", *argv)`、
+  `minix3/usr.bin/wc/wc.c:cnt` 的 `warn("%s", file)`、`minix3/usr.bin/column/column.c:main` 的
+  `warn("Cannot open \`%s'", *argv)`。**最小可编译单位**：只把缝本体
+  `os/commands/usr-bin/textfilter/src/bin_support.rs:fn args` 两条腿改成 `Vec<Vec<u8>>`、其余不动，
+  `cargo build -p minix-textfilter --keep-going -j 2` 报 39 枚 E0308、39 支壳各红一处、lib 目标 0 错
+  ——每支壳都以 `#[path = "../bin_support.rs"] mod support;` 内联同一份缝源码，改签名对全族同时生效，
+  所以参数缝半的施工粒度是 crate 不是支；批次四百三十八设想的「缝本体加四支试点」不成立（要留住旧
+  签名就回到乙路），A2 行的分轮据此收为两笔：`textfilter` 一笔带走缝 + 39 支壳 + 29 个解析入口换
+  `&[&[u8]]` + 面门夹具字面字节，`text-games` 一笔迁三支并把
+  `tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 的期望升级为
+  逐字节等于原字节，该笔闭 A2 行。另登记两条在册未执行：`ARGV-OPERAND-BYTES-NEEDS-PARSE-LAYER-AT-ONCE`
+  （整族一次改）、`ARGV-BYTE-PATH-IN-LIBS`（操作数字节的开档腿与报文腿分别卡在
+  `os/libs/minix-sys/src/lib.rs:299` 的 `open(path: &str, …)` 与
+  `os/libs/minix-types/src/types/errno.rs:556` 的 `err_line(…, label: &str, …)`，二者在 A 板 §2 禁碰
+  清单内，需库侧先行或另线裁决）。五道收尾门读数：`todo-reconcile-scan` 仅存已知探针命名族 31 对 18
+  漂移、`todo-staleness-check` PASS(0)、`notes-link-check rewrite-notes` 760 篇 131 断链与基线同数且
+  本笔新增 markdown 链接 0 条、`doc-style-lint --diff` error 级 0、`check-staged-inflight` 暂存区无
+  在制文件。新固化一条实验纪律：翻转签名取编译面读数必须备份-还原-`git status --short` 空输出收尾，
+  预研轮不在领用树留实验残留。提交：本笔里程碑笔一笔（文档笔在前）。
