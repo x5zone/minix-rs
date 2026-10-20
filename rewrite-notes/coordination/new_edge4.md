@@ -701,3 +701,47 @@ minix-ci:1.94 cargo test -j 1 -p minix-textfilter` → 同一读数、编译错 
 八条 `*-NON-PERMUTE-OPERAND-TAIL`、`SEQ-FORMAT-RENDER`、普查乙/丙两组。下一对建议 `tr`
 （唯一 A/B 残差所在，且它的两个集合已是字节形）。
 
+
+### 第一百五十八笔（并发任务 A 板 · A2 切片 32 · `tr` 的 argv 全程按字节，参数缝折叠在本族第一次做到与参照件零残差）
+
+**里程碑**。板 A 行 A2（GETOPT-REPORT-BYTE-LETTER）参数缝半第六对 `tr` 落地。`tr` 把「折叠坏在哪
+一层」这件事摊全了：`seq` 那一对证明折叠会同时改报文与输出内容，`tr` 这一对里三张脸一起坏——
+
+① **数据位**：`-d`/`-c`/`-s` 三个操作都以集合成员判据为准，成员判据拿的是式子里的字节。折叠把
+`a\xffb` 变成 `a<ef bf bd>b`，于是 `tr -d 'a\xffb'` 删不掉输入里那枚 `ff`、`tr -c 'a\xff' y` 的
+补集算错、`tr -s '\xff\xff'` 挤不动；`tr a '\xff'` 更直白——映射值本身就是写往 stdout 的字节。
+② **回显位**：`minix3/usr.bin/tr/str.c:253` 用 `%.*s` 带长度把未知类名原样打回（`'[:\xfffoo:]'`
+→ `tr: unknown class \xfffoo`），句子只要借文本口过一遍，回显就变成替换字符。
+③ **字母位**：环 `tr.c:68-82` 不重排、三字母都不带值，`getopt.c:79` 一次进一个字节，所以集外
+字母那一行的字母位必须是一枚裸 `ff`。
+
+改法与 `seq` 同一口径：`parse_tr_args` 收 `&[&'a [u8]]`（片段生命周期与外层借用解绑，测试适配器
+才能交本地 `Vec`），`TrArgs.operands` 存原字节片，`parse_set` 与壳侧 `expand` 的集合式入参收
+`&[u8]`，命名类按字节字面量匹配，未知类名载荷是 `Vec<u8>` 且句子出口是字节口
+`SetGrammar::sentence_bytes()`，壳侧新增 `grammar_line` 按字节拼「程序名 + 冒号 + 句子」那一行，
+libc 那一行继续走 `GetoptReport::line_bytes`（`os/commands/usr-bin/textfilter/src/lib.rs:fn line_bytes`）。
+
+**读数（L1）**：`tr` 的 A/B 八形逐字节对参照件 `tmp/tr-322/tr_ref` = **SAME=8 / DIFF=0**——本族
+第一支做到零残差（`seq` 那轮是 SAME=11/DIFF=1，唯一残差正是 `tr` 的字母位，本轮把它收了）。
+门 库 +3（`a_raw_ff_set_member_is_one_byte_of_the_set`、`an_unknown_class_name_is_echoed_as_its_own_bytes`、
+`parse_tr_names_a_raw_ff_option_letter_by_that_byte`）、面 +2（`tests/tr_face.rs` 十九枚→二十一枚，
+两枚以 `OsString::from_vec` 交原始字节）、跨壳表 `tr` 行的字母位读数是一枚裸 `ff`。宿主单包现量
+`minix-textfilter` 69 段 / 1227 / 0、`minix-text-games` 9 段 / 79 / 0（两包合跑 78 段 / 1306 / 0）；
+容器 `minix-ci:1.94`（`-m 2g`、`-j 1`、挂领用树根、工作目录 `os/`）同读数 78 段 / 1306 / 0；三架构
+`--bin tr` 裸编各退 0；clippy 触及件零告警；rustfmt 四件零漂移；负控四枚三咬 + 一枚等价全绿
+（`tmp/argv-444/negctl444.log`）。五道收尾门全过：门 1 仅存已知探针命名族漂移（31 对 18）、门 2
+断链 131 等于基线、门 3 PASS、门 4 `--diff rewrite` error级=0、门 5 无在制文件。
+
+**取证手法三条入档**：负控脚本判「编译失败」不能用裸 `^error`（cargo 在测试失败段也打
+`error: test failed`，会把真咬住误标成 BUILD-ERR）；容器门的挂载根必须写领用树的绝对路径（靠脚本
+自身位置 `cd ../..` 的写法在归档副本里会指到主树）；分账读数别拿「两包合跑再按 `Running` 行的包名
+切」来算——包名只出现在 lib 段路径里，集成测那几段切不出来（本轮首次落笔因此把 textfilter 记成
+76 段，已由文档笔补订正为单包现量）。
+
+**提交与账**：`19ce30ce0`（码）、`302de9f48`（文档）、`28e4a347f`（文档笔补 · 读数订正）。
+板 A2 行余量：`textfilter` 三十九支已迁六支（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`）、余三十三支；
+跨壳表余 `fold`/`units` 两行；共件 `empty_optstring_operands` 的 `&str` 形只剩 `colrm`；`tr`/`seq`
+的 `prog` 那处程序名 lossy 属全族共件，留给参数缝半收尾那一笔。登记未执行项维持：
+`ARGV-BYTE-PATH-IN-LIBS`（本支未新增腿）、`UNEXPAND-*`、`CUT-*`、`NL-*`、`PASTE-COMM-NUL-*`、
+`SEQ-FLOAT-RENDER`、`TR-SET-GRAMMAR-SENTENCES`、八条 `*-NON-PERMUTE-OPERAND-TAIL` 与
+`PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`。
