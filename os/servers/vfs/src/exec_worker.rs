@@ -48,7 +48,7 @@ use alloc::vec::Vec;
 use core::cell::Cell;
 use minix_sys::ipc::IpcTransport;
 use minix_sys::syscall::{KernelCallTransport, sys_datacopy, sys_memset};
-use minix_types::{CpFlags, Endpoint, Message};
+use minix_types::{CpFlags, Endpoint, Message, USER_STACK_TOP};
 
 /// 首读缓冲的页数：`static char hdr[10*PAGE_SIZE] __aligned(8)`（exec.c:738）。
 const HEADER_BUF_PAGES: usize = 10;
@@ -1522,8 +1522,8 @@ mod tests {
     #[test]
     fn test_vm_mmap_stack_lanes_carry_above_4gib() {
         let ipc = ExecScriptedIpc::new();
-        // 缺省栈顶 0x7fff_ffff_f000 − DEFAULT_STACK_LIMIT(4 MiB)，页整。
-        let stack_low = 0x7fff_ffff_f000 - exec::DEFAULT_STACK_LIMIT;
+        // 缺省栈顶 USER_STACK_TOP − DEFAULT_STACK_LIMIT(4 MiB)，页整。
+        let stack_low = USER_STACK_TOP as u64 - exec::DEFAULT_STACK_LIMIT;
         assert_eq!(stack_low % PAGE_SIZE, 0);
         assert!(stack_low > 4 * 1024 * 1024 * 1024);
         vm_mmap(
@@ -1569,7 +1569,7 @@ mod tests {
             1000,
             100,
             true,
-            0x7fff_ffff_f000,
+            USER_STACK_TOP as u64,
             4 * 1024 * 1024,
             256,
         )
@@ -1605,7 +1605,7 @@ mod tests {
             frame_addr: 0x8000,
             frame_len: 16,
             ps_str: 0x1234,
-            stack_high: 0x7fff_ffff_f000,
+            stack_high: USER_STACK_TOP as u64,
         };
         // fetch_name 的 sys_datacopy 在宿主 canned 内核下拿到的路径缓冲
         // 是零填充 → 空路径 → 诚实拒（这一步就断开，三步舞的线形状由
@@ -1639,7 +1639,7 @@ mod tests {
             frame_addr: 0,
             frame_len: exec::ARG_MAX + 1,
             ps_str: 0,
-            stack_high: 0x7fff_ffff_f000,
+            stack_high: USER_STACK_TOP as u64,
         };
         assert_eq!(
             pm_exec(&mut state, &kernel, &ipc, req),
@@ -1663,7 +1663,7 @@ mod tests {
             frame_addr: 0,
             frame_len: 8,
             ps_str: 0,
-            stack_high: 0x7fff_ffff_f000,
+            stack_high: USER_STACK_TOP as u64,
         };
         // 死目标走 `enoexec` 裸正腿（inner 体），公共边界 `pm_exec` 折负（B33a）：
         // 断言 -ENOEXEC（原固化成 +8 的泄漏已消除）。
@@ -1690,7 +1690,7 @@ mod tests {
             frame_addr: 0,
             frame_len: 8,
             ps_str: 0,
-            stack_high: 0x7fff_ffff_f000,
+            stack_high: USER_STACK_TOP as u64,
         };
         match pm_exec(&mut state, &kernel, &ipc, req) {
             // 折叠点前 inner 返 +8（真机 bn28p 实测），折叠后必为负。

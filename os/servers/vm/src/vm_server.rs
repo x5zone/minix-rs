@@ -42,7 +42,7 @@ use minix_types::PhysBytes;
 #[cfg(test)]
 use minix_types::VM_PROCCTL;
 use minix_types::{
-    BootImage, Endpoint, Message, NR_BOOT_PROCS, UserSlot, VM_RQ_BASE, VmError, VmPagefaultIn,
+    BootImage, Endpoint, Message, NR_BOOT_PROCS, USER_STACK_TOP, UserSlot, VM_RQ_BASE, VmError, VmPagefaultIn,
     VmProcctlIn, VmReply, reply_status,
 };
 #[cfg(test)]
@@ -3634,7 +3634,7 @@ mod tests {
             vm_allocated_bytes: 0,
             is_first_time: true,
             kernel_layout: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
         }
     }
 

@@ -7,7 +7,7 @@
 //! Run:
 //!   cargo test -p minix-kernel --test boot_integration -- --nocapture
 
-use minix_types::{PhysBytes, VirBytes};
+use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 use minix_boot::{MemoryRegion, KernelInfo};
 
 #[test]
@@ -25,7 +25,7 @@ fn boot_simulation_full_flow() {
         kern_phys_base: PhysBytes(0x100000),              // loaded at 1MB
         kern_size: 0x400000,                              // 4MB kernel
         free_upper_idx: Some(256),                              // user space PML4 idx 0-255
-        user_sp: VirBytes(0x0000_7fff_ffff_f000),         // user stack top
+        user_sp: VirBytes(USER_STACK_TOP as u64),         // user stack top
         kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),   // kernel stack top
         syscall_entry: VirBytes(0xFFFF_8000_0010_0000),    // syscall entry point
         boot_modules: &[],                                // no boot modules yet

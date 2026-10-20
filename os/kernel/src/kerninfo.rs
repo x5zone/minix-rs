@@ -38,7 +38,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use minix_arch::paging::PageFlags;
 use minix_arch::{CurrentPaging, paging::Paging as _};
 use minix_boot::KernelInfo;
-use minix_types::{KuserInfo, MinixKerninfo, KERNINFO_MAGIC, MINIX_KIF_USERINFO, VirBytes};
+use minix_types::{KuserInfo, MinixKerninfo, KERNINFO_MAGIC, MINIX_KIF_USERINFO, USER_STACK_TOP, VirBytes};
 
 use crate::globals::{SyncUnsafeCell, MINIX_KERNINFO_USER};
 
@@ -204,7 +204,7 @@ mod kerninfo_tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],

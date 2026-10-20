@@ -70,7 +70,7 @@ impl BootForm {
 mod tests {
     use super::*;
     use crate::kernel_info::{BootModule, MemoryRegion};
-    use minix_types::{PhysBytes, VirBytes};
+    use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 
     /// PD-07 债①：形态计数在一处记账。五是从 §SD-1 Current state 数出来的；
     /// 任何「悄悄长了第六形态而没改登记」都会让此测红。
@@ -120,7 +120,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
             free_upper_idx: Some(256),
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[BootModule {

@@ -40,7 +40,7 @@ use minix_arch::arch::frame::VmBootAllocator;
 use minix_arch::DirectMapArch;
 use minix_boot::{KernelInfo, MemoryRegion};
 use minix_types::{
-    BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS,
+    BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS, USER_STACK_TOP,
     PhysBytes, VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED,
     VM_BOOT_HANDOFF_MAX_IDENT, VM_BOOT_HANDOFF_MAX_MODULES,
     VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VERSION, VmBootHandoff,
@@ -802,7 +802,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
             free_upper_idx: None,
-            user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
+            user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: minix_types::VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: minix_types::VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
