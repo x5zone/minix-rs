@@ -626,3 +626,28 @@
   常量字符串的胖指针）；③ 包级 `cargo fmt -p` 会连带重排全包既有漂移件（本轮一度波及 23 支不相干
   文件，已全部还原并复跑门），触及件的格式门只跑 `rustfmt --check <那几件>`。
   提交：码笔 + 本笔里程碑笔（文档笔在两者之间）。
+- **里程碑第一百五十六笔（批次四百四十二，A2 板，qoder）**：A2 行「参数缝半（射程②）」第三、四对
+  落到 `yes` 与 `tee`（切片 29—30）。`yes` 这一对修的是**输出内容**：`minix3/usr.bin/yes/yes.c` 的
+  `main` 把 `argv[1]` 存成 `const char *`，`while (puts(yes) >= 0)` 每轮把那串字节原样发出再补一个
+  换行——参数既不是档名也不是旗标，它就是被无限重复打出的那些字节，所以旧形状在参数缝上先
+  `String::from_utf8_lossy` 一次，`yes $'\xff'` 的每一行就成了 `ef bf bd` 三字节（改前现量
+  `tmp/argv-442/before-yes.log`），改后是一枚 `ff`（`tmp/argv-442/after-yes.log`）。这一支不需要宿主
+  参照件：字节语义由 C 的那一句 `puts` 直接决定，证据是改前后同形对照加 C 源那一处，
+  不写 A/B 读数。面门 +3，新文件 `os/commands/usr-bin/textfilter/tests/yes_face.rs`
+  （`the_repeated_word_is_the_raw_bytes_of_the_argument`、
+  `a_nonutf8_byte_inside_the_word_does_not_disturb_its_neighbours`、
+  `no_argument_repeats_a_lone_y`），argv 一律经 `OsString::from_vec` 传——`&str` 夹具传不出裸 `ff`；
+  无限循环的夹具只取前若干字节再 `kill`，而取多少要按**整行**数：`a\xffb` 一行是四字节
+  （`a`、`ff`、`b`、换行），期望第一次按可见字符数成七字节，被门当场钉红。
+  `tee` 这一对**没有可观察差**：`tee.c:80` 的 `getopt("ai")` 只有两枚旗标且字母取法本就按字节
+  （`src/bin/tee.rs:parse_tee_args` 里 `for &letter in &bytes[1..]`），档名那条腿折叠在
+  `minix_sys::open` 的 `&str` 口上（`ARGV-BYTE-PATH-IN-LIBS`），所以 `tee -\xff` 与
+  `tee $'\xff'` 两形逐字节与改前相同；它只把 `parse_tee_args` 与壳的 argv 挪到字节形，
+  让族末笔删共件 `&str` 出口时少一个障碍，**不新增门也不冒充修了一处**。同轮两类必须分别记账。
+  门：宿主与容器各 69 段 / 1218 通过 / 0 失败（新增一个面段），三架构退 0（宿主跑、独立
+  `--target-dir`），触及件 `rustfmt --check` 零漂移；clippy 只有一条属本轮（`tee.rs` 的
+  `ToString` 随 `.to_string()` 作废，已收），`items_after_test_module` 那条改前同一结构上就有。
+  负控四枚：`yes` 缝退回折叠形咬住 2、去掉 `puts` 那个换行咬住 3、`tee` 聚簇只看第一个字母咬住 1、
+  等价改写全绿（清单带 `--no-fail-fast`，沿用上轮判据）。余量：`textfilter` 三十九支已迁四支、
+  余三十五支，共件 `empty_optstring_operands` 的 `&str` 形只剩 `colrm` 一个消费者。
+  提交：码笔 + 本笔里程碑笔（文档笔在两者之间）。
