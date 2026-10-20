@@ -1264,3 +1264,83 @@ want 侧的 `"m"`（ASCII，折与不折同果）、W3 第一版锚在薄壳而�
 独立轮在册 `UNITS-DASH-REWRITE-AT-FIRST-CHAR`、`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、
 `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、五枚 `*-NON-PERMUTE-OPERAND-TAIL`，
 `REV-MULTIBYTE-ERROR-LEG` 与 `NL-DELIM-LENGTH-RULE` 待裁决。
+
+### 第一百七十一笔（批次四百五十七 · A2 参数缝半切片 39：`cksum` 的 argv 与取值链路交回原字节）
+
+**这一笔做的是施工名单（批次四百五十一板 A2 行第③项）的字母序第一支**。落码三层：薄壳
+`os/commands/usr-bin/textfilter/src/bin/cksum.rs:run` 走 `bin_support::args_bytes`/`prog_name_bytes`；
+参数层 `src/cksum.rs` 的 `CksumRequest::operands` 与 `CksumAction::String` 的载荷改成 `&'a [u8]`、
+`fn parse_cksum_args_into` 收 `&[&'a [u8]]`、取值那一步交回 `&bytes[pos + 1..]`；
+算法名层 `src/digest.rs:fn from_hashname_bytes` 按字节做 ASCII 大小写不敏感比对。真源依据是
+`minix3/usr.bin/cksum/cksum.c:202` 的 `strcasecmp(hashes[i].hashname, optarg)`、`:259` 把 `optarg`
+原样交给 `stringfunc`、`md5.c:60-67` 与 `print.c:54` 的 `%s` 逐字回显——C 全程不问编码。
+另一条**不对称照搬下来**：`-a` 不敏感而 `-o` 在 `cksum.c:236`、`:239` 是 `strcmp(optarg, "1")`/`"2"`，
+两套规则若共用一份匹配函数，`-o` 就会认下 C 不认的取值。
+
+**A/B 六形 SAME=3 / DIFF=3**（`tmp/cksum-457/ab.log`，参照件经同名软链起，程序名与本体同源不需归一）：
+SAME 是本轮射程——字母位 `-\xff`、多字节字母 `-\xc3\xa9` 只报第一枚 `c3`、`-a md5 -s ab<ff>cd` 那行
+摘要逐字节相同；DIFF 三形同一根因且在册 `ARGV-BYTE-PATH-IN-LIBS`：档名进 `os/libs` 那个 `&str` 的
+`open` 口就非折一次不可，按原字节名落的档在宿主上根本打不开，回显位所在的腿走不到。
+**判据一条：DIFF 的归因必须写到腿**。同样三形写成「回显位没改成字节」就会把修法指向本层，
+而真实的修法在 `minix_sys::open` 与 `minix_types::errno::err_line` 收 `&[u8]`——那是二线领地，本族不许替别人实现前置。
+
+**参照件那侧的承载教训**：`tmp/cksum-457/cksum_ref` 此前每次运行都段错误（`gdb` 栈停在
+`__strcmp_avx2 ← main`），根因不在 C 也不在门：构建脚本漏了
+`-include tools/atf-c-compat/host-ref/bsd-compat-proto.h`，宿主 glibc 2.39 没有 `getprogname()`，
+`cksum.c:175` 那句退化成隐式声明、返回的指针被截成 `int`，第一次 `strcmp` 就踩空。补上之后 `cc` 退 0、
+`-Z` 交回 Minix `getopt.c:101-104` 那句 `unknown option -- Z`。**判据：参照件段错误先查承载再查 C**，
+否则会把一次编译选项缺失记成一处行为差异。
+
+**门账**：`cksum_face` 28 → **30**（两枚逐字节门 + `fn run_argv`/`fn scratch_bytes` 字节形夹具；
+其中档名那一枚把临时档按**折叠名**落盘，为的是绕开开档腿那层在册的折损、只钉回显腿，注释写明
+`ARGV-BYTE-PATH-IN-LIBS` 落地后要改回原字节名而断言不动）；跨壳表 `tests/bin_support_face.rs` 补
+`cksum` 一行，**本表九行至此全是原字节**；整包 69 段 / 1244 → **1246** passed / 0 failed，
+`--lib` 616 → 616（本轮把 `src/cksum.rs` 测试里 130 处字面量改写成字节形，期望串逐字未动，
+所以门数不涨——与「找到既有门就翻正、不新增双胞胎」同一处置）。
+**负控两枚各咬中一枚、零误伤**（`tmp/cksum-457/negctl.log`）：把 `fn emit_line` 的名字位改回折一次
+lossy → 档名那一枚红、其余 29 绿；把 `fn string_line` 的串位折一次 → 串那一枚红、其余 29 绿；
+两次注入之间整文件比对确认还原。
+
+**五道收尾门读数**：① `tools/todo-reconcile-scan.sh` 退 1，**1 项漂移**＝「探针命名族（行）」读数 31
+对基线 18，测的是内核里 `nk4[ac]:` 那一族日志名；本轮 `git diff HEAD~2 HEAD | grep -c 'nk4'` = **0**，
+该条目属一线在制（`rewrite-notes/01-stage-kernel/todo.md` 正在别人的避让清单里），本族不代改台账也不改脚本基线。
+② `python3 tools/notes-link-check.py rewrite-notes/` 断链数 131；与批次四百五十六那份
+`tmp/units-456/links-after.txt` 按（文件, 链接文本）做集合差——94 个键两侧全等，**新增零**。
+按 `文件:行号` 那口径会有 5 增 5 删的假差异，那是本篇新增 94 行造成的位移，判据：**断链集合差要按
+（文件, 链接文本）为键**，行号会随内容漂移。③ `tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md` 退 0、PASS。
+④ `tools/doc-style-lint.sh --diff` 首跑用默认 `RANGE=HEAD` 报「0 个文件 / 0 个新增行」——那是**空转读数**
+（本笔文档已提交，`HEAD..HEAD` 自然为空）；改用显式 `--diff HEAD~2..HEAD` 得 3 个文件 / 106 个新增行，
+抓到本行一处 `[SL-4] 正文日期`（我在 A2 状态列写了个日期），删掉日期后复跑 **error级=0**。
+**判据：`--diff` 必须在提交之后带显式 range 复跑**，否则这道门会在刚提交过的改动上空转。
+⑤ `tools/check-staged-inflight.sh` 退 0（避让清单 1 条，本轮未触碰）。
+
+**门读数补全**：宿主与容器权威门各 69 段 / 1246 / 0 退 0（容器 `docker run --rm -u $(id -u):$(id -g)
+-v $PWD:/work -v …/tmp/ci-cargo:/cargo -v …/tmp/ci-target:/tgt -e CARGO_HOME=/cargo
+-e CARGO_TARGET_DIR=/tgt -w /work/os -m 2g minix-ci:1.94 cargo test -j 1 -p minix-textfilter`，
+`tmp/cksum-457/container-gate.log`；跑前 `pgrep -a cargo` 无并发 cargo）；三架构
+`cargo build --offline -j 1 --target {x86_64-unknown-none, aarch64-unknown-none,
+riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0 零 error 行。
+clippy 同一条命令 `cargo clippy --offline -j 1 -p minix-textfilter --all-targets` 现跑 **151** 与上一笔同数，
+且**归属本轮两件源件的 0 条**——中途确实自增过两枚 `manual_ignore_case_cmp`（本轮新写的逐字节大小写不敏感比对），
+改用 `eq_ignore_ascii_case` 后归零，所以这个 151 是清掉自增之后的读数而不是巧合。
+`cargo fmt --check -p minix-textfilter` 残留 21 枚文件有 diff，全部不在本轮改过的文件里——本包既有排版债，登记不执行。
+
+**顺手修了一处会让整张表画坏的结构缺陷**：板 §1 的 `A2` 行有 5 枚**未转义**管道符（三枚是历轮追加留下的
+` |。`，两枚在码段 `-o 1|2|3` 里），未转义分隔符 11 枚而表头是 7 枚——GFM 里码段中的裸管道符同样切格，
+所以这一行一直在被切碎或整行退出表格。本轮补转义并补回收尾的 ` |`，复现命令
+`python3 -c` 以负向后视 `(?<!\\)\|` 计数：表头 7、`A1` 7、`A2` 7、`A3` 7。
+**判据：往多列表格里追加长文本，落笔后必须数一遍未转义管道符。** 同一行还有一段历轮切分留下的散行
+（中间那行只剩一个分页符 `\f`，尾巴在「甲组余 `pr`、`column` 两支」处收口）——本轮只补结构符号，
+没有重排文字次序，登记进独立轮名单。
+
+**提交四笔**：码笔 `ce6065339`（三件源件 + 两件门）、文档笔 `4ef4ad6c9`（18 篇批次四百五十七段、
+07 篇 cksum 行、板 A2 行）、本页为里程碑笔（含 A2 状态列那处正文日期的删除）。
+**进度与余量（全部现量）**：参数缝半已落**十二支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`、
+`fold`、`col`、`uniq`、`units`、`cksum`）；`textfilter` 余 **27** 支
+（`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l`），按整个命令面口径 **96** 支；
+族终笔前置不变（删 `bin_support` 三个文本口 + 把 `text-games/tests/argv_seam_face.rs` 那枚门升级成
+逐字节等于原字节）。下一支按字母序是 `cmp`。
+独立轮在册：`ARGV-BYTE-PATH-IN-LIBS`、`CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-DASH-REWRITE-AT-FIRST-CHAR`、
+`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、
+五枚 `*-NON-PERMUTE-OPERAND-TAIL`、板 `A2` 行的分页符散行；`REV-MULTIBYTE-ERROR-LEG`、
+`NL-DELIM-LENGTH-RULE` 待裁决。
