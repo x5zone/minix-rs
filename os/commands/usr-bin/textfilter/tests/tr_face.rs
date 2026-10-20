@@ -493,3 +493,56 @@ fn the_squeeze_leg_collapses_padded_nuls_but_not_real_ones() {
         assert_eq!((status, err.as_str()), (0, ""), "{input:?}");
     }
 }
+
+/// 与 `run` 同一条进程缝，但参数是**原始字节**：`&str` 交不出裸 `ff`，集合式与类名
+/// 的字节语义只有这样才量得出来。标准输入按夹具口径喂，写不进不算被测缺陷。
+fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+    let mut child = Command::new(TR)
+        .args(args.iter().map(|word| OsString::from_vec(word.clone())))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the tr binary should be runnable");
+    {
+        use std::io::Write as _;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(input);
+        }
+    }
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().expect("被信号杀掉就是双生面又分叉了"),
+        output.stderr,
+    )
+}
+
+/// 集合式按字节到位：`-d a<ff>b` 删的是那**一枚** `ff`。期望取自参照件
+/// `tmp/tr-322/tr_ref` 现量（`tmp/argv-444/ab-after.log`）：输入 `a\xffbq` 打回 `q`；
+/// 折叠形把式子数成 `a ef bf bd b` 五位，于是 `ff` 留在输出里。
+#[test]
+fn a_raw_nonutf8_set_member_deletes_that_byte() {
+    let (out, code, err) = run_raw(&[b"-d".to_vec(), b"a\xffb".to_vec()], b"a\xffbq\n");
+    assert_eq!((code, err), (0, Vec::new()));
+    assert_eq!(out, b"q\n");
+    // 逆序集合同理：`-c a<ff>` 的定义域里 `ff` 是一员，所以它原样通过而 `z` 被换成 `y`
+    let (out, code, err) = run_raw(
+        &[b"-c".to_vec(), b"a\xff".to_vec(), b"y".to_vec()],
+        b"a\xffz\n",
+    );
+    assert_eq!((code, err), (0, Vec::new()));
+    assert_eq!(out, b"a\xffyy");
+}
+
+/// 认不出的类名按**原字节**回显（`str.c:253` 的 `%.*s` 带长度）：参照件对
+/// `tr $'[:\xfffoo:]' x` 打 `tr: unknown class \xfffoo` 并退 1。
+#[test]
+fn an_unknown_class_name_with_a_raw_byte_is_echoed_by_that_byte() {
+    let (out, code, err) = run_raw(&[b"[:\xfffoo:]".to_vec(), b"x".to_vec()], b"a\n");
+    assert_eq!(code, 1, "实际 stdout {out:?}");
+    assert_eq!(out, Vec::new());
+    assert_eq!(err, b"tr: unknown class \xfffoo\n");
+}

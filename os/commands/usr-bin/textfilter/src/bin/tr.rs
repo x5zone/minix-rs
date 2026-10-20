@@ -34,14 +34,14 @@ use alloc::vec::Vec;
 mod support;
 
 use minix_textfilter::tr::{
-    delete, parse_set, parse_tr_args, squeeze, translate, translate_and_squeeze, usage_block,
-    Set2Tail, SetError, SetSite, TrArgs, TrError,
+    Set2Tail, SetError, SetSite, TrArgs, TrError, delete, parse_set, parse_tr_args, squeeze,
+    translate, translate_and_squeeze, usage_block,
 };
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let words: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let TrArgs {
         complement,
         delete: dflag,
@@ -49,14 +49,14 @@ fn run() -> ! {
         operands,
     } = match parse_tr_args(&words) {
         Ok(parsed) => parsed,
-        Err(error) => fail(prog, &error),
+        Err(error) => fail(&prog, &error),
     };
 
     // string1 用不到尾部判据（它决定的是「谁是定义域」），string2 才需要：式子以集合类
     // 收尾时耗尽之后补的是 OOBCH，不是末字节。
-    let (set1, _) = expand(prog, operands[0], SetSite::String1, complement);
+    let (set1, _) = expand(&prog, operands[0], SetSite::String1, complement);
     let (set2, set2_tail) = if operands.len() == 2 {
-        expand(prog, operands[1], SetSite::String2, false)
+        expand(&prog, operands[1], SetSite::String2, false)
     } else {
         (Vec::new(), Set2Tail::LastByte)
     };
@@ -115,12 +115,12 @@ fn emit(bytes: Vec<u8>) {
 ///
 /// 语法句的形状是 C 的 `errx(1, ...)`：程序名、冒号、空格、原句，走标准错误，退 1，
 /// **不跟** usage 块。式子出在串1 还是串2 决定它撞哪一句，所以串位是入参而不是巧合。
-fn expand(prog: &str, text: &str, site: SetSite, complement: bool) -> (Vec<u8>, Set2Tail) {
+fn expand(prog: &str, text: &[u8], site: SetSite, complement: bool) -> (Vec<u8>, Set2Tail) {
     let mut expanded = [0u8; 256];
     let (used, tail) = match parse_set(text, site, &mut expanded) {
         Ok((used, tail)) => (used, tail),
         Err(SetError::Grammar(grammar)) => {
-            support::warn(format!("{prog}: {}\n", grammar.sentence()).as_bytes());
+            support::warn(&grammar_line(prog, &grammar));
             support::terminate(1);
         }
         Err(_) => {
@@ -138,6 +138,17 @@ fn expand(prog: &str, text: &str, site: SetSite, complement: bool) -> (Vec<u8>, 
         (0..=255u8).filter(|byte| !member[*byte as usize]).collect(),
         tail,
     )
+}
+
+/// 「程序名 + 语法句」那一行：句子按字节拼，因为 `unknown class <名>` 把**式子里的字节**
+/// 打回去（`str.c:253` 的 `%.*s` 带长度），文本缝折过一次就把那一串字节改成了替换字符。
+fn grammar_line(prog: &str, grammar: &minix_textfilter::tr::SetGrammar) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(prog.as_bytes());
+    out.extend_from_slice(b": ");
+    out.extend_from_slice(&grammar.sentence_bytes());
+    out.push(b'\n');
+    out
 }
 
 /// 两个出错出口共用一块四行 usage，区别只在前面的 libc 行有无。

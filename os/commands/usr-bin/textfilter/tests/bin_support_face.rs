@@ -66,9 +66,9 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
     let cases: [(&str, &str, i32, &[u8]); 6] = [
-        // tr 已于批次四百换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD 的第一字节）；
-        // C 那一侧是原字节 `ff`。到批次四百二十为止，本表六支全部已是字节形。
-        ("tr", TR, 1, b"tr: unknown option -- \xef\n"),
+        // tr 已于批次四百四十四走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
+        // 与参照件同形（本表其余两支 fold/units 的字母位仍是折叠后的 `ef`）。
+        ("tr", TR, 1, b"tr: unknown option -- \xff\n"),
         // seq 已于批次四百四十三走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
         // 且那一行只有一行——累加环吃到的是一个字节就是一个字母，不再把折叠出来的
         // `ef bf bd` 三个字节当三个字母连报三行（本表其余四支 tr/fold/units 与本支

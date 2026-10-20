@@ -13,7 +13,6 @@
 //! Membership tests go through [`CharClass`] with one implementation per
 //! set shape, so callers never special case ranges versus lists.
 
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -102,7 +101,7 @@ pub enum SetSite {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SetGrammar {
     /// `errx(1, "unknown class %.*s", (int)len, class)`（`str.c:253`）。
-    UnknownClass(String),
+    UnknownClass(Vec<u8>),
     /// `genseq()` 的第一条判断：`if (s->which == STRING1) errx(1, "Sequences only valid in string2")`
     ///（`str.c:353-356`）——它在吃任何字符之前，所以第二枚字符是什么都无所谓。
     SequencesOnlyInString2,
@@ -125,17 +124,19 @@ pub enum SetGrammar {
 
 impl SetGrammar {
     /// C 打出去的那一句原文（不含程序名与冒号，那两段由 `errx` 的前缀负责）。
-    pub fn sentence(&self) -> String {
+    pub fn sentence_bytes(&self) -> Vec<u8> {
         match self {
-            SetGrammar::UnknownClass(name) => alloc::format!("unknown class {name}"),
-            SetGrammar::SequencesOnlyInString2 => "Sequences only valid in string2".to_string(),
-            SetGrammar::MisplacedSequenceAsterisk => "Misplaced sequence asterisk".to_string(),
-            SetGrammar::IllegalSequenceCount => "illegal sequence count".to_string(),
-            SetGrammar::MisplacedEquivalenceEquals => {
-                "Misplaced equivalence equals sign".to_string()
+            SetGrammar::UnknownClass(name) => {
+                let mut out = b"unknown class ".to_vec();
+                out.extend_from_slice(name);
+                out
             }
+            SetGrammar::SequencesOnlyInString2 => b"Sequences only valid in string2".to_vec(),
+            SetGrammar::MisplacedSequenceAsterisk => b"Misplaced sequence asterisk".to_vec(),
+            SetGrammar::IllegalSequenceCount => b"illegal sequence count".to_vec(),
+            SetGrammar::MisplacedEquivalenceEquals => b"Misplaced equivalence equals sign".to_vec(),
             SetGrammar::MisplacedEquivalenceRightBracket => {
-                "Misplaced equivalence right bracket".to_string()
+                b"Misplaced equivalence right bracket".to_vec()
             }
         }
     }
@@ -165,11 +166,11 @@ impl From<TextError> for SetError {
 /// C 的名字表（`str.c` 的 `classes[]`）里认得的类名；表外的名字一律是
 /// `unknown class <名>`，不是「当字面量凑合」。
 pub fn parse_set(
-    text: &str,
+    text: &[u8],
     site: SetSite,
     expanded: &mut [u8; 256],
 ) -> Result<(usize, Set2Tail), SetError> {
-    let bytes = text.as_bytes();
+    let bytes = text;
     // 式子里最后一项的种类，决定 string2 耗尽之后补什么（见 `Set2Tail`）。
     let mut tail = Set2Tail::LastByte;
     let mut pos = 0;
@@ -196,18 +197,14 @@ pub fn parse_set(
         if let Some(end) = class_end {
             let name = &text[pos + 2..end];
             let class = match name {
-                "alpha" => NamedClass::Alpha,
-                "alnum" => NamedClass::Alnum,
-                "digit" => NamedClass::Digit,
-                "blank" => NamedClass::Blank,
-                "space" => NamedClass::Space,
-                "upper" => NamedClass::Upper,
-                "lower" => NamedClass::Lower,
-                _ => {
-                    return Err(SetError::Grammar(SetGrammar::UnknownClass(
-                        name.to_string(),
-                    )))
-                }
+                b"alpha" => NamedClass::Alpha,
+                b"alnum" => NamedClass::Alnum,
+                b"digit" => NamedClass::Digit,
+                b"blank" => NamedClass::Blank,
+                b"space" => NamedClass::Space,
+                b"upper" => NamedClass::Upper,
+                b"lower" => NamedClass::Lower,
+                _ => return Err(SetError::Grammar(SetGrammar::UnknownClass(name.to_vec()))),
             };
             tail = Set2Tail::Oobch;
             for byte in 0..=255u16 {
@@ -295,11 +292,7 @@ pub fn parse_set(
                             .and_then(|v| v.checked_add((digit - b'0') as usize))
                             .ok_or(SetError::Malformed)?;
                     }
-                    if count == 0 {
-                        1
-                    } else {
-                        count
-                    }
+                    if count == 0 { 1 } else { count }
                 }
             };
             tail = Set2Tail::LastByte;
@@ -564,7 +557,7 @@ pub struct TrArgs<'a> {
     /// 环不重排：第一个不是选项的 token 及其后一切**都是操作数**
     /// （`tr.c:83-84` 的 `argc -= optind; argv += optind;`）。所以 `tr a -d` 的 `-d`
     /// 是第二个集合名而不是旗标。
-    pub operands: Vec<&'a str>,
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// 前门的错：本支所有出错出口打的都是**同一块四行 usage** 并退 1（`tr.c:276-282`），
@@ -578,7 +571,7 @@ pub enum TrError {
 /// 环 + 个数判 + 组合判，按 `tr.c` 的**先后次序**执行：环里的集外字母 ⇒ 带 libc 行的 usage；
 /// `tr.c:86-97` 的 `switch (argc)` 判 0 个与 3 个以上；`-ds` 要两个操作数（`:104-106`）；
 /// `-d` 给了两个就报错（`:123-125`）；既没 `-d` 也没 `-s` 时必须恰好两个（`:156-157`）。
-pub fn parse_tr_args<'a>(args: &'a [&'a str]) -> Result<TrArgs<'a>, TrError> {
+pub fn parse_tr_args<'a>(args: &[&'a [u8]]) -> Result<TrArgs<'a>, TrError> {
     const OPTSTRING: &[u8] = b"cds";
     let mut parsed = TrArgs {
         complement: false,
@@ -588,7 +581,7 @@ pub fn parse_tr_args<'a>(args: &'a [&'a str]) -> Result<TrArgs<'a>, TrError> {
     };
     let mut i = 0usize;
     while i < args.len() {
-        let token = args[i].as_bytes();
+        let token = args[i];
         // `getopt.c:74-78` 首字符不是 `-` ⇒ 收环且**不推进**游标；`getopt.c:86-93` 里
         // 一个光杆 `-` 因为 optstring 不含 `-` 也走同一收法，于是它落进操作数。
         if token.len() < 2 || token[0] != b'-' {
@@ -668,17 +661,27 @@ pub const fn usage_block() -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 文本夹具交给字节前门的那一跳：`str` 字面量的字节形就是命令行上的字节。
+    fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
+        list.iter().map(|word| word.as_bytes()).collect()
+    }
+
+    fn tr_args<'w>(list: &[&'w str]) -> Result<TrArgs<'w>, TrError> {
+        parse_tr_args(&argv_of(list))
+    }
 
     fn expanded_set(text: &str) -> ([u8; 256], usize) {
         let mut expanded = [0u8; 256];
-        let (used, _) = parse_set(text, SetSite::String2, &mut expanded).unwrap();
+        let (used, _) = parse_set(text.as_bytes(), SetSite::String2, &mut expanded).unwrap();
         (expanded, used)
     }
 
     /// 只取尾部判据：式子以什么收尾，决定 string2 耗尽之后补什么。
     fn tail_of(text: &str) -> Set2Tail {
         let mut expanded = [0u8; 256];
-        parse_set(text, SetSite::String2, &mut expanded).unwrap().1
+        parse_set(text.as_bytes(), SetSite::String2, &mut expanded)
+            .unwrap()
+            .1
     }
 
     /// string2 耗尽之后补什么，判据是**式子的最后一项**而不是整条式子里有没有集合类：
@@ -795,14 +798,14 @@ mod tests {
     /// 只取失败出口：本模块的语法句断言都走这里，第二串位（重复式合法的那一侧）。
     fn set_error(text: &str) -> SetError {
         let mut expanded = [0u8; 256];
-        parse_set(text, SetSite::String2, &mut expanded)
+        parse_set(text.as_bytes(), SetSite::String2, &mut expanded)
             .err()
             .unwrap_or_else(|| panic!("{text:?} 本应报错"))
     }
 
     fn grammar(text: &str, site: SetSite) -> SetGrammar {
         let mut expanded = [0u8; 256];
-        match parse_set(text, site, &mut expanded) {
+        match parse_set(text.as_bytes(), site, &mut expanded) {
             Err(SetError::Grammar(g)) => g,
             other => panic!("{text:?} 在 {site:?} 应为语法句，实得 {other:?}"),
         }
@@ -908,11 +911,11 @@ mod tests {
     fn an_unknown_class_says_which_name_it_rejected() {
         assert_eq!(
             set_error("[:nope:]"),
-            SetError::Grammar(SetGrammar::UnknownClass("nope".to_string()))
+            SetError::Grammar(SetGrammar::UnknownClass("nope".as_bytes().to_vec()))
         );
         assert_eq!(
-            SetGrammar::UnknownClass("nope".to_string()).sentence(),
-            "unknown class nope"
+            SetGrammar::UnknownClass("nope".as_bytes().to_vec()).sentence_bytes(),
+            b"unknown class nope".as_slice()
         );
     }
 
@@ -927,8 +930,8 @@ mod tests {
             );
         }
         assert_eq!(
-            SetGrammar::SequencesOnlyInString2.sentence(),
-            "Sequences only valid in string2"
+            SetGrammar::SequencesOnlyInString2.sentence_bytes(),
+            b"Sequences only valid in string2".as_slice()
         );
         // 同一枚式子在第二串位上合法，证明分流按串位而不是按式子本身
         let (set, len) = expanded_set("[a*2]");
@@ -947,8 +950,8 @@ mod tests {
             );
         }
         assert_eq!(
-            SetGrammar::MisplacedSequenceAsterisk.sentence(),
-            "Misplaced sequence asterisk"
+            SetGrammar::MisplacedSequenceAsterisk.sentence_bytes(),
+            b"Misplaced sequence asterisk".as_slice()
         );
     }
 
@@ -962,8 +965,8 @@ mod tests {
             );
         }
         assert_eq!(
-            SetGrammar::IllegalSequenceCount.sentence(),
-            "illegal sequence count"
+            SetGrammar::IllegalSequenceCount.sentence_bytes(),
+            b"illegal sequence count".as_slice()
         );
     }
 
@@ -1005,8 +1008,8 @@ mod tests {
             }
         }
         assert_eq!(
-            SetGrammar::MisplacedEquivalenceEquals.sentence(),
-            "Misplaced equivalence equals sign"
+            SetGrammar::MisplacedEquivalenceEquals.sentence_bytes(),
+            b"Misplaced equivalence equals sign".as_slice()
         );
     }
 
@@ -1022,8 +1025,8 @@ mod tests {
             );
         }
         assert_eq!(
-            SetGrammar::MisplacedEquivalenceRightBracket.sentence(),
-            "Misplaced equivalence right bracket"
+            SetGrammar::MisplacedEquivalenceRightBracket.sentence_bytes(),
+            b"Misplaced equivalence right bracket".as_slice()
         );
     }
 
@@ -1071,21 +1074,21 @@ mod tests {
     fn test_ring_stops_at_the_first_off_letter() {
         // 环里的 usage 直接退出 ⇒ 报文至多一条，且报的是**第一个**坏字母
         assert_eq!(
-            parse_tr_args(&["-ZQ"]),
+            tr_args(&["-ZQ"]),
             Err(TrError::Usage {
                 reports: vec![crate::GetoptReport::UnknownOption('Z')]
             })
         );
         assert_eq!(
-            parse_tr_args(&["-sZ", "a"]),
+            tr_args(&["-sZ", "a"]),
             Err(TrError::Usage {
                 reports: vec![crate::GetoptReport::UnknownOption('Z')]
             })
         );
         // 三个字母都是旗标 ⇒ 缺值那一支到不了，`-d` 的 `d` 不是「带值字母」
         assert_eq!(
-            parse_tr_args(&["-d", "a"]).map(|p| (p.delete, p.operands)),
-            Ok((true, vec!["a"]))
+            tr_args(&["-d", "a"]).map(|p| (p.delete, p.operands)),
+            Ok((true, argv_of(&["a"])))
         );
     }
 
@@ -1101,7 +1104,7 @@ mod tests {
             &["-c"][..],
         ] {
             assert_eq!(
-                parse_tr_args(args).map(|_| ()),
+                tr_args(args).map(|_| ()),
                 Err(TrError::Usage {
                     reports: Vec::new()
                 }),
@@ -1110,32 +1113,32 @@ mod tests {
         }
         // 合法的形：`-s` 配一个、`-ds` 配两个、`-c` 配两个、裸 `-` 是集合名
         assert_eq!(
-            parse_tr_args(&["-s", "a"]).map(|p| (p.squeeze, p.operands.len())),
+            tr_args(&["-s", "a"]).map(|p| (p.squeeze, p.operands.len())),
             Ok((true, 1))
         );
         assert_eq!(
-            parse_tr_args(&["-ds", "a", "b"]).map(|p| (p.delete, p.squeeze, p.operands.len())),
+            tr_args(&["-ds", "a", "b"]).map(|p| (p.delete, p.squeeze, p.operands.len())),
             Ok((true, true, 2))
         );
         assert_eq!(
-            parse_tr_args(&["-", "a"]).map(|p| p.operands),
-            Ok(vec!["-", "a"])
+            tr_args(&["-", "a"]).map(|p| p.operands),
+            Ok(argv_of(&["-", "a"]))
         );
         // `--` 被吃掉且自身不是操作数；只给 `--` 时操作数为零 ⇒ usage（参照件同形）
         assert_eq!(
-            parse_tr_args(&["--", "a", "b"]).map(|p| p.operands),
-            Ok(vec!["a", "b"])
+            tr_args(&["--", "a", "b"]).map(|p| p.operands),
+            Ok(argv_of(&["a", "b"]))
         );
         assert_eq!(
-            parse_tr_args(&["--"]).map(|p| p.operands),
+            tr_args(&["--"]).map(|p| p.operands),
             Err(TrError::Usage {
                 reports: Vec::new()
             })
         );
         // 环不重排：`a -d` 的两个 token 都是集合名
         assert_eq!(
-            parse_tr_args(&["a", "-d"]).map(|p| (p.delete, p.operands)),
-            Ok((false, vec!["a", "-d"]))
+            tr_args(&["a", "-d"]).map(|p| (p.delete, p.operands)),
+            Ok((false, argv_of(&["a", "-d"])))
         );
     }
 
@@ -1151,5 +1154,42 @@ mod tests {
                 "续行是七个空格对齐：{line:?}"
             );
         }
+    }
+
+    /// 集合式里的一枚裸 `ff` 是**一位成员**，不是折叠后的三字节。C 的 `str.c` 按字节
+    /// 吃式子（`escape()` 与 `nextch()` 都走 `unsigned char`），而参照件
+    /// `tmp/tr-322/tr_ref` 现量 `tr -d a<ff>b` 对输入 `a\xffbq` 打 `q`（`ff` 被删掉了）；
+    /// 文本缝在同一形上交回 `\xffq`——它删的是 `ef`、`bf`、`bd` 三位，而输入里没有它们。
+    #[test]
+    fn a_raw_ff_set_member_is_one_byte_of_the_set() {
+        let mut expanded = [0u8; 256];
+        let (used, _) = parse_set(b"a\xffb".as_slice(), SetSite::String1, &mut expanded).unwrap();
+        assert_eq!(used, 3, "式子该交出三枚字节成员");
+        assert_eq!(&expanded[..used], b"a\xffb".as_slice());
+    }
+
+    /// 类名回显是式子里的**原字节**：`str.c:253` 的 `errx(1, "unknown class %.*s",
+    /// (int)len, class)` 带长度打回那一串字节，参照件对 `tr $'[:\xfffoo:]' x` 交
+    /// `tr: unknown class \xfffoo`。句子交回 `Vec<u8>` 就是为了让这一枚能钉得住。
+    #[test]
+    fn an_unknown_class_name_is_echoed_as_its_own_bytes() {
+        assert_eq!(
+            SetGrammar::UnknownClass(b"\xfffoo".to_vec()).sentence_bytes(),
+            b"unknown class \xfffoo".as_slice()
+        );
+    }
+
+    /// 集外字母交回的是短横后的那一枚字节（`getopt.c:79` 的 `optopt = *place++`），
+    /// 报文是一位裸 `ff`：文本缝在此折成 `ef`，参照件 `tr -<ff> a b` 打的是 `ff`。
+    #[test]
+    fn parse_tr_names_a_raw_ff_option_letter_by_that_byte() {
+        use crate::GetoptReport;
+        let error = parse_tr_args(&[b"-\xff".as_slice(), b"a".as_slice(), b"b".as_slice()]).err();
+        assert_eq!(
+            error,
+            Some(TrError::Usage {
+                reports: vec![GetoptReport::UnknownOption('\u{00ff}')]
+            })
+        );
     }
 }
