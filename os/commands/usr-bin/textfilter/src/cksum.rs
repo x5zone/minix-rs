@@ -243,8 +243,10 @@ pub struct CksumRequest<'a> {
     /// 它同时是两件事——「这一条腿自己已经把话印完了」与「末尾那一次对标准输入的摘要
     /// 不要再做」（`cksum.c:489` 的 `else if (hash && !nohashstdin)`）。
     pub nohash_stdin: bool,
-    /// The file operands (or `-`/stdin marker), in argv order.
-    pub operands: Vec<&'a str>,
+    /// The file operands (or `-`/stdin marker), in argv order. C hands `argv`
+    /// to `filefunc`/`hash_digest_file` as raw bytes, so these are the bytes the
+    /// shell received, not a decoded view of them.
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// Why argv could not be folded into a request.
@@ -281,7 +283,8 @@ pub enum CksumError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CksumAction<'a> {
     /// `-s <串>`：C 的 `MD5String`（`md5.c:60-67`），一行 `NAME ("<串>") = <摘要>`。
-    String(Algo, &'a str),
+    /// 串是 argv 的原字节——C 把它直接交给 `printf("…\"%s\"…")`，不问编码。
+    String(Algo, &'a [u8]),
     /// `-t`：C 的 `MD5TimeTrial`（`md5.c:73-112`），四行；后两行随墙钟变。
     TimeTrial(Algo),
     /// `-x`：C 的 `MD5TestSuite`（`md5.c:118-133`），`NAME test suite:` 加八行固定串。
@@ -297,8 +300,16 @@ pub enum CksumAction<'a> {
 /// `stringfunc`/`timetrialfunc`/`testsuitefunc`），于是它们的先后跟着 argv，而且后面
 /// 某个选项报错也拦不住已经印出去的那几行。采集面因此放在这里交给调用方，而不是
 /// 塞进 [`CksumRequest`]：报错那一条路上没有 request 可挂。
+fn name_matches_ignore_case(value: &[u8], want: &[u8]) -> bool {
+    value.len() == want.len()
+        && value
+            .iter()
+            .zip(want)
+            .all(|(got, expected)| got.eq_ignore_ascii_case(expected))
+}
+
 pub fn parse_cksum_args_into<'a>(
-    args: &[&'a str],
+    args: &[&'a [u8]],
     actions: &mut Vec<CksumAction<'a>>,
 ) -> Result<CksumRequest<'a>, CksumError> {
     let mut request = CksumRequest {
@@ -318,17 +329,17 @@ pub fn parse_cksum_args_into<'a>(
         let arg = args[index];
         // A lone `-`, an empty string, or anything not starting with `-` is a
         // file operand (C getopt leaves a bare `-` to `argv[optind..]`).
-        if !scanning || arg.len() <= 1 || !arg.starts_with('-') {
+        if !scanning || arg.len() <= 1 || arg[0] != b'-' {
             request.operands.push(arg);
             index += 1;
             continue;
         }
-        if arg == "--" {
+        if arg == b"--" {
             scanning = false;
             index += 1;
             continue;
         }
-        let bytes = arg.as_bytes();
+        let bytes = arg;
         let mut pos = 1usize;
         while pos < bytes.len() {
             let flag = bytes[pos] as char;
@@ -338,9 +349,9 @@ pub fn parse_cksum_args_into<'a>(
             // 两处都没有就是 libc 的缺值那一行（旧写法把它当成「值为空」再报一出自创句）。
             // 只有真取了**另一个** token 时才推进下标——当前这个 token 由循环尾统一推进。
             // 两处都推就会多吞一个词：`-a crc file` 于是把 `file` 跳过去，转去读标准输入。
-            let take_value = |parser_index: &mut usize| -> Result<&'a str, CksumError> {
+            let take_value = |parser_index: &mut usize| -> Result<&'a [u8], CksumError> {
                 if pos + 1 < bytes.len() {
-                    return Ok(&arg[pos + 1..]);
+                    return Ok(&bytes[pos + 1..]);
                 }
                 match args.get(*parser_index + 1) {
                     Some(word) => {
@@ -358,10 +369,12 @@ pub fn parse_cksum_args_into<'a>(
                     if let Some(algo) = request.hash {
                         return Err(CksumError::MutuallyExclusiveWithSum(algo.hashname()));
                     }
-                    request.kind = match value {
-                        "1" => SumKind::Old1,
-                        "2" => SumKind::Old2,
-                        _ => return Err(CksumError::IllegalOptionValue('o')),
+                    request.kind = if value == b"1".as_slice() {
+                        SumKind::Old1
+                    } else if value == b"2".as_slice() {
+                        SumKind::Old2
+                    } else {
+                        return Err(CksumError::IllegalOptionValue('o'));
                     };
                     break;
                 }
@@ -374,13 +387,13 @@ pub fn parse_cksum_args_into<'a>(
                     }
                     // 然后才按 `strcasecmp` 查名字表（`:200-207`），查不到才试
                     // `old1`/`old2`/`crc`（`:209-224`），再不行是 `illegal argument to -a option`。
-                    if let Some(algo) = Algo::from_hashname(value) {
+                    if let Some(algo) = Algo::from_hashname_bytes(value) {
                         request.hash = Some(algo);
-                    } else if value.eq_ignore_ascii_case("crc") {
+                    } else if name_matches_ignore_case(value, b"crc") {
                         request.kind = SumKind::Crc;
-                    } else if value.eq_ignore_ascii_case("old1") {
+                    } else if name_matches_ignore_case(value, b"old1") {
                         request.kind = SumKind::Old1;
-                    } else if value.eq_ignore_ascii_case("old2") {
+                    } else if name_matches_ignore_case(value, b"old2") {
                         request.kind = SumKind::Old2;
                     } else {
                         return Err(CksumError::IllegalOptionValue('a'));
@@ -447,7 +460,7 @@ mod tests {
 
     /// 这些门判的是**状态折叠**（哪个字母把哪个字段改成什么），不关心三条自印腿的打印
     /// 次序；采集面自己的门直接叫 `parse_cksum_args_into`。
-    fn parse_cksum_args<'a>(args: &[&'a str]) -> Result<CksumRequest<'a>, CksumError> {
+    fn parse_cksum_args<'a>(args: &[&'a [u8]]) -> Result<CksumRequest<'a>, CksumError> {
         parse_cksum_args_into(args, &mut Vec::new())
     }
 
@@ -456,19 +469,42 @@ mod tests {
     #[test]
     fn the_self_printing_legs_are_collected_in_argv_order() {
         let mut actions = Vec::new();
-        assert!(parse_cksum_args_into(&["-a", "md5", "-x", "-s", "abc"], &mut actions).is_ok());
+        assert!(
+            parse_cksum_args_into(
+                &[
+                    "-a".as_bytes(),
+                    "md5".as_bytes(),
+                    "-x".as_bytes(),
+                    "-s".as_bytes(),
+                    "abc".as_bytes()
+                ],
+                &mut actions
+            )
+            .is_ok()
+        );
         assert_eq!(
             actions,
             [
                 CksumAction::TestSuite(Algo::Md5),
-                CksumAction::String(Algo::Md5, "abc")
+                CksumAction::String(Algo::Md5, "abc".as_bytes())
             ],
             "`-x` 在 argv 里在前，采集就必须在先"
         );
 
         // 重复出现就重复采集：C 的 getopt 环每命中一次调一次（参照件 x-5 形印了两套十六行）。
         let mut twice = Vec::new();
-        assert!(parse_cksum_args_into(&["-a", "sha1", "-x", "-x"], &mut twice).is_ok());
+        assert!(
+            parse_cksum_args_into(
+                &[
+                    "-a".as_bytes(),
+                    "sha1".as_bytes(),
+                    "-x".as_bytes(),
+                    "-x".as_bytes()
+                ],
+                &mut twice
+            )
+            .is_ok()
+        );
         assert_eq!(
             twice,
             [
@@ -479,12 +515,28 @@ mod tests {
 
         // 附值与聚簇两形取到的值都是那一串：`-sabc` 与 `-sa` 都印 `("abc")`/`("a")`。
         let mut inline = Vec::new();
-        assert!(parse_cksum_args_into(&["-a", "md5", "-sabc"], &mut inline).is_ok());
-        assert_eq!(inline, [CksumAction::String(Algo::Md5, "abc")]);
+        assert!(
+            parse_cksum_args_into(
+                &["-a".as_bytes(), "md5".as_bytes(), "-sabc".as_bytes()],
+                &mut inline
+            )
+            .is_ok()
+        );
+        assert_eq!(inline, [CksumAction::String(Algo::Md5, "abc".as_bytes())]);
 
         // 三条腿都动 `nohashstdin`，而 `-p` 不动（`cksum.c:247-251` 里只有 `pflag = 1`）。
-        assert!(parse_cksum_args_into(&["-a", "md5", "-t"], &mut Vec::new()).is_ok());
-        assert!(!parse_cksum_args(&["-a", "md5", "-p"]).unwrap().nohash_stdin);
+        assert!(
+            parse_cksum_args_into(
+                &["-a".as_bytes(), "md5".as_bytes(), "-t".as_bytes()],
+                &mut Vec::new()
+            )
+            .is_ok()
+        );
+        assert!(
+            !parse_cksum_args(&["-a".as_bytes(), "md5".as_bytes(), "-p".as_bytes()])
+                .unwrap()
+                .nohash_stdin
+        );
     }
 
     /// 报错那一形也要把已经印出去的行留下：C 在 getopt 环里就调了 `stringfunc`，
@@ -492,9 +544,18 @@ mod tests {
     /// 那一行，退码仍是 1）。采集面写在返回之前，正是为了这条路径。
     #[test]
     fn actions_survive_a_later_option_error() {
-        for tail in [vec!["-Z"], vec!["-o", "1"], vec!["-a", "sha1"]] {
+        for tail in [
+            vec!["-Z".as_bytes()],
+            vec!["-o".as_bytes(), "1".as_bytes()],
+            vec!["-a".as_bytes(), "sha1".as_bytes()],
+        ] {
             let mut actions = Vec::new();
-            let mut argv = vec!["-a", "md5", "-s", "abc"];
+            let mut argv = vec![
+                "-a".as_bytes(),
+                "md5".as_bytes(),
+                "-s".as_bytes(),
+                "abc".as_bytes(),
+            ];
             argv.extend(tail.iter());
             assert!(
                 parse_cksum_args_into(&argv, &mut actions).is_err(),
@@ -502,7 +563,7 @@ mod tests {
             );
             assert_eq!(
                 actions,
-                [CksumAction::String(Algo::Md5, "abc")],
+                [CksumAction::String(Algo::Md5, "abc".as_bytes())],
                 "{argv:?} 报错之前那一行已经印出去了"
             );
         }
@@ -695,38 +756,49 @@ mod tests {
         // `-n`/`-q` are C print modes (no-op on the crc path) and must be
         // recognised, not pushed as file operands — the previous parser leaked
         // them into the file list.
-        let req = parse_cksum_args(&["-n", "-q", "f"]).unwrap();
+        let req = parse_cksum_args(&["-n".as_bytes(), "-q".as_bytes(), "f".as_bytes()]).unwrap();
         assert!(req.print_normal);
         assert!(req.print_quiet);
-        assert_eq!(req.operands, ["f"]);
+        assert_eq!(req.operands, ["f".as_bytes()]);
     }
 
     #[test]
     fn test_parse_cksum_args_requires_hash_flags() {
         // `-p/-s/-t/-x` call requirehash; they error instead of leaking as files.
         assert_eq!(
-            parse_cksum_args(&["-p"]),
+            parse_cksum_args(&["-p".as_bytes()]),
             Err(CksumError::RequiresHash('p'))
         );
         assert_eq!(
-            parse_cksum_args(&["-x", "y"]),
+            parse_cksum_args(&["-x".as_bytes(), "y".as_bytes()]),
             Err(CksumError::RequiresHash('x'))
         );
     }
 
     #[test]
     fn test_parse_cksum_args_a_and_o_algorithms() {
-        assert_eq!(parse_cksum_args(&["-a", "crc"]).unwrap().kind, SumKind::Crc);
         assert_eq!(
-            parse_cksum_args(&["-a", "OLD1"]).unwrap().kind,
+            parse_cksum_args(&["-a".as_bytes(), "crc".as_bytes()])
+                .unwrap()
+                .kind,
+            SumKind::Crc
+        );
+        assert_eq!(
+            parse_cksum_args(&["-a".as_bytes(), "OLD1".as_bytes()])
+                .unwrap()
+                .kind,
             SumKind::Old1
         );
         assert_eq!(
-            parse_cksum_args(&["-a", "old2"]).unwrap().kind,
+            parse_cksum_args(&["-a".as_bytes(), "old2".as_bytes()])
+                .unwrap()
+                .kind,
             SumKind::Old2
         );
         assert_eq!(
-            parse_cksum_args(&["-a", "md5"]).unwrap().hash,
+            parse_cksum_args(&["-a".as_bytes(), "md5".as_bytes()])
+                .unwrap()
+                .hash,
             Some(Algo::Md5),
             "选中记的是 C 表里的 hashname（大写那一份，`cksum.c:126`）"
         );
@@ -743,7 +815,7 @@ mod tests {
             ("sha512", "SHA512"),
         ] {
             assert_eq!(
-                parse_cksum_args(&["-a", word])
+                parse_cksum_args(&["-a".as_bytes(), word.as_bytes()])
                     .unwrap()
                     .hash
                     .map(Algo::hashname),
@@ -754,83 +826,141 @@ mod tests {
         // 表里没有的拼法不是别名：C 没有 `ripemd160` 这一行，所以它落到
         // `illegal argument to -a option`（`cksum.c:201-224` 的两级查找之后）。
         assert_eq!(
-            parse_cksum_args(&["-a", "ripemd160"]),
+            parse_cksum_args(&["-a".as_bytes(), "ripemd160".as_bytes()]),
             Err(CksumError::IllegalOptionValue('a'))
         );
         // 选中之后再 `-a`：C 的 `case 'a'` 第一行就是这条（`cksum.c:195-199`），
         // 第二枚的名字好不好都在所不问——`crc` 也一样被这条挡住。
         assert_eq!(
-            parse_cksum_args(&["-a", "md5", "-a", "sha1"]),
+            parse_cksum_args(&[
+                "-a".as_bytes(),
+                "md5".as_bytes(),
+                "-a".as_bytes(),
+                "sha1".as_bytes()
+            ]),
             Err(CksumError::IllegalUseOfA)
         );
         assert_eq!(
-            parse_cksum_args(&["-a", "md5", "-a", "crc"]),
+            parse_cksum_args(&[
+                "-a".as_bytes(),
+                "md5".as_bytes(),
+                "-a".as_bytes(),
+                "crc".as_bytes()
+            ]),
             Err(CksumError::IllegalUseOfA)
         );
         // 选中之后再 `-o`：句子带的是大写名字（`cksum.c:228-234`）。
         assert_eq!(
-            parse_cksum_args(&["-a", "md5", "-o", "1"]),
+            parse_cksum_args(&[
+                "-a".as_bytes(),
+                "md5".as_bytes(),
+                "-o".as_bytes(),
+                "1".as_bytes()
+            ]),
             Err(CksumError::MutuallyExclusiveWithSum("MD5"))
         );
         // 反过来先 `-o` 再 `-a` 就不冲突：`hash` 这时还是空的。
         assert_eq!(
-            parse_cksum_args(&["-o", "1", "-a", "md5"]).unwrap().hash,
+            parse_cksum_args(&[
+                "-o".as_bytes(),
+                "1".as_bytes(),
+                "-a".as_bytes(),
+                "md5".as_bytes()
+            ])
+            .unwrap()
+            .hash,
             Some(Algo::Md5),
         );
         assert_eq!(
-            parse_cksum_args(&["-o", "1", "-a", "md5"]).unwrap().kind,
+            parse_cksum_args(&[
+                "-o".as_bytes(),
+                "1".as_bytes(),
+                "-a".as_bytes(),
+                "md5".as_bytes()
+            ])
+            .unwrap()
+            .kind,
             SumKind::Old1,
         );
         // 选中之后 `-p`/`-s` 不再报 `requires \`-a algorithm'`（C 的 requirehash 放行）；
         // 没选中时才报，这一形是批次三百零七钉下的。
-        assert!(parse_cksum_args(&["-a", "sha1", "-p"]).is_ok());
-        assert!(parse_cksum_args(&["-a", "sha1", "-s", "abc"]).is_ok());
+        assert!(parse_cksum_args(&["-a".as_bytes(), "sha1".as_bytes(), "-p".as_bytes()]).is_ok());
+        assert!(
+            parse_cksum_args(&[
+                "-a".as_bytes(),
+                "sha1".as_bytes(),
+                "-s".as_bytes(),
+                "abc".as_bytes()
+            ])
+            .is_ok()
+        );
         assert_eq!(
-            parse_cksum_args(&["-p"]),
+            parse_cksum_args(&["-p".as_bytes()]),
             Err(CksumError::RequiresHash('p'))
         );
         // 缺值仍由 libc 先报，即使此时已有 hash 选中（getopt 在进入 switch 之前就要值）。
         assert_eq!(
-            parse_cksum_args(&["-a", "md5", "-o"]),
+            parse_cksum_args(&["-a".as_bytes(), "md5".as_bytes(), "-o".as_bytes()]),
             Err(CksumError::MissingValue('o'))
         );
         // 带值选项**后面**的操作数不能被吞。旧的下标算术在取值处和循环尾各推一次，
         // 于是 `-a crc file` 会跳过 `file`，让本应算文件的 cksum 转去读标准输入——
         // 附值形 `-acrc file` 同病。这一组断言钉住「一个 token 只由循环尾推进一次」。
         assert_eq!(
-            parse_cksum_args(&["-a", "crc", "file"]).unwrap().operands,
-            vec!["file"]
-        );
-        assert_eq!(
-            parse_cksum_args(&["-acrc", "file"]).unwrap().operands,
-            vec!["file"]
-        );
-        assert_eq!(
-            parse_cksum_args(&["-o", "1", "-a", "sha1", "f1", "f2"])
+            parse_cksum_args(&["-a".as_bytes(), "crc".as_bytes(), "file".as_bytes()])
                 .unwrap()
                 .operands,
-            vec!["f1", "f2"]
+            vec!["file".as_bytes()]
         );
         assert_eq!(
-            parse_cksum_args(&["-a", "crc", "-n", "-"])
+            parse_cksum_args(&["-acrc".as_bytes(), "file".as_bytes()])
                 .unwrap()
                 .operands,
-            vec!["-"],
+            vec!["file".as_bytes()]
+        );
+        assert_eq!(
+            parse_cksum_args(&[
+                "-o".as_bytes(),
+                "1".as_bytes(),
+                "-a".as_bytes(),
+                "sha1".as_bytes(),
+                "f1".as_bytes(),
+                "f2".as_bytes()
+            ])
+            .unwrap()
+            .operands,
+            vec!["f1".as_bytes(), "f2".as_bytes()]
+        );
+        assert_eq!(
+            parse_cksum_args(&[
+                "-a".as_bytes(),
+                "crc".as_bytes(),
+                "-n".as_bytes(),
+                "-".as_bytes()
+            ])
+            .unwrap()
+            .operands,
+            vec!["-".as_bytes()],
             "裸 `-` 仍是操作数，且不被前一个值吞掉"
         );
-        assert_eq!(parse_cksum_args(&["-o", "2"]).unwrap().kind, SumKind::Old2);
+        assert_eq!(
+            parse_cksum_args(&["-o".as_bytes(), "2".as_bytes()])
+                .unwrap()
+                .kind,
+            SumKind::Old2
+        );
         // `-o 9` 是「值不合法」（C 的 `illegal argument to -o option`），
         // 而 `-o` 到量尽头没有值是另一回事（libc 的缺值那一行）。
         assert_eq!(
-            parse_cksum_args(&["-o", "9"]),
+            parse_cksum_args(&["-o".as_bytes(), "9".as_bytes()]),
             Err(CksumError::IllegalOptionValue('o'))
         );
         assert_eq!(
-            parse_cksum_args(&["-o"]),
+            parse_cksum_args(&["-o".as_bytes()]),
             Err(CksumError::MissingValue('o'))
         );
         assert_eq!(
-            parse_cksum_args(&["-a", "nosuch"]),
+            parse_cksum_args(&["-a".as_bytes(), "nosuch".as_bytes()]),
             Err(CksumError::IllegalOptionValue('a'))
         );
     }
@@ -843,32 +973,32 @@ mod tests {
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
-            parse_cksum_args(&["-\u{e9}"]),
+            parse_cksum_args(&["-\u{e9}".as_bytes()]),
             Err(CksumError::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
         // 聚簇：`n` 合法先吃掉，报的是其后第一字节。
         assert_eq!(
-            parse_cksum_args(&["-n\u{e9}"]),
+            parse_cksum_args(&["-n\u{e9}".as_bytes()]),
             Err(CksumError::UnknownOption('\u{00c3}')),
             "-n\u{e9}"
         );
         // 环停在第一个坏字母上。
         assert_eq!(
-            parse_cksum_args(&["-Z\u{e9}"]),
+            parse_cksum_args(&["-Z\u{e9}".as_bytes()]),
             Err(CksumError::UnknownOption('Z')),
             "-Z\u{e9}"
         );
         // ASCII 那一形不许被波及。取 `z`：`cksum.c:193` 的选项串是 `"a:cno:pqs:twx"`，
         // 里面没有 `z`（本支的 `q` 反倒是合法字母，它自己那句被这枚门的第一版当过反例）。
         assert_eq!(
-            parse_cksum_args(&["-z"]),
+            parse_cksum_args(&["-z".as_bytes()]),
             Err(CksumError::UnknownOption('z'))
         );
         // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
         // `cksum: illegal argument to -a option` 再接 usage）。
         assert_eq!(
-            parse_cksum_args(&["-a\u{e9}"]),
+            parse_cksum_args(&["-a\u{e9}".as_bytes()]),
             Err(CksumError::IllegalOptionValue('a'))
         );
     }
@@ -877,48 +1007,57 @@ mod tests {
     /// `-nq`、`-o2`、`-a crc -- -f` 这几形都会错。
     #[test]
     fn test_parse_cksum_args_follows_the_getopt_shape() {
-        let req = parse_cksum_args(&["-nq", "f"]).unwrap();
+        let req = parse_cksum_args(&["-nq".as_bytes(), "f".as_bytes()]).unwrap();
         assert!(req.print_normal && req.print_quiet);
-        assert_eq!(req.operands, vec!["f"]);
+        assert_eq!(req.operands, vec!["f".as_bytes()]);
         // 附值形：`-o2` 与 `-o 2` 同效（`optarg` 就是本 token 的剩余部分）。
         assert_eq!(
-            parse_cksum_args(&["-o2"]).unwrap().kind,
-            parse_cksum_args(&["-o", "2"]).unwrap().kind
+            parse_cksum_args(&["-o2".as_bytes()]).unwrap().kind,
+            parse_cksum_args(&["-o".as_bytes(), "2".as_bytes()])
+                .unwrap()
+                .kind
         );
-        assert_eq!(parse_cksum_args(&["-acrc"]).unwrap().kind, SumKind::Crc);
+        assert_eq!(
+            parse_cksum_args(&["-acrc".as_bytes()]).unwrap().kind,
+            SumKind::Crc
+        );
         // `--` 之后的负向词是操作数，不被当旗标。
-        let req = parse_cksum_args(&["-c", "--", "-o"]).unwrap();
+        let req = parse_cksum_args(&["-c".as_bytes(), "--".as_bytes(), "-o".as_bytes()]).unwrap();
         assert!(req.do_check);
-        assert_eq!(req.operands, vec!["-o"]);
+        assert_eq!(req.operands, vec!["-o".as_bytes()]);
         // `-s` 先吃 getopt 的值（本 token 剩余或下一词），再落 `requirehash`；
         // 没有值时先报缺值而不是 requirehash。
         assert_eq!(
-            parse_cksum_args(&["-s", "x"]),
+            parse_cksum_args(&["-s".as_bytes(), "x".as_bytes()]),
             Err(CksumError::RequiresHash('s'))
         );
         assert_eq!(
-            parse_cksum_args(&["-s"]),
+            parse_cksum_args(&["-s".as_bytes()]),
             Err(CksumError::MissingValue('s'))
         );
         // 聚簇里的集外字母报的是那个字母本身。
         assert_eq!(
-            parse_cksum_args(&["-ncZ"]),
+            parse_cksum_args(&["-ncZ".as_bytes()]),
             Err(CksumError::UnknownOption('Z'))
         );
     }
 
     #[test]
     fn test_parse_cksum_args_check_warn_and_edge_forms() {
-        let req = parse_cksum_args(&["-w", "-c", "ck.txt"]).unwrap();
+        let req =
+            parse_cksum_args(&["-w".as_bytes(), "-c".as_bytes(), "ck.txt".as_bytes()]).unwrap();
         assert!(req.do_check);
         assert!(req.check_warn);
-        assert_eq!(req.operands, ["ck.txt"]);
+        assert_eq!(req.operands, ["ck.txt".as_bytes()]);
         assert_eq!(
-            parse_cksum_args(&["-Z"]),
+            parse_cksum_args(&["-Z".as_bytes()]),
             Err(CksumError::UnknownOption('Z'))
         );
         // A bare `-` is a file/stdin operand, not an option letter.
-        assert_eq!(parse_cksum_args(&["-"]).unwrap().operands, ["-"]);
+        assert_eq!(
+            parse_cksum_args(&["-".as_bytes()]).unwrap().operands,
+            ["-".as_bytes()]
+        );
     }
 
     #[test]

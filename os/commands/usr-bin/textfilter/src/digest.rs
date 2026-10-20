@@ -741,9 +741,21 @@ impl Algo {
     /// `-a Md5` 在 C 里是同一个入口。全仓只有这一张名字表——`src/cksum.rs` 的 `-a` 腿、诊断里
     /// 那句大写的名字、以及报文头都从这里出；两处各抄一份的话，「哪一份是真的」就又回来了。
     pub fn from_hashname(hashname: &str) -> Option<Algo> {
-        Self::ALL
-            .into_iter()
-            .find(|algo| algo.hashname().eq_ignore_ascii_case(hashname))
+        Self::from_hashname_bytes(hashname.as_bytes())
+    }
+
+    /// 同一张表的**字节入口**。C 的 `strcasecmp(hashes[i].hashname, optarg)`
+    /// （`cksum.c:201-207`）比的是两串字节，`optarg` 就是 argv 里的那一段，不问编码；
+    /// 所以 argv 按字节交上来时查表也要按字节查。名字表仍只有一份。
+    pub fn from_hashname_bytes(hashname: &[u8]) -> Option<Algo> {
+        Self::ALL.into_iter().find(|algo| {
+            let want = algo.hashname().as_bytes();
+            want.len() == hashname.len()
+                && want
+                    .iter()
+                    .zip(hashname)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        })
     }
 
     /// 校验档里一行的**行首前缀** → 算法。这条判据与上一条**不同**：C 在 `do_check` 里用的是
@@ -822,8 +834,8 @@ pub fn time_trial_data() -> alloc::vec::Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        hex, md2, md4, md5, rmd160, sha1, sha256, sha384, sha512, time_trial_data, Algo,
-        TIME_TRIAL_BLOCK_LEN,
+        Algo, TIME_TRIAL_BLOCK_LEN, hex, md2, md4, md5, rmd160, sha1, sha256, sha384, sha512,
+        time_trial_data,
     };
 
     /// `-t` 那一腿喂的 1000 × 1000 字节必须是 C 的形状（`md5.c:86-87` 造块、`:94-95` 折叠一千次：块里 `block[i] = i & 0xff`，

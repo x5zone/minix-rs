@@ -13,11 +13,10 @@
 //! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
 //! （`tr_ref: unknown option -- \xff`），而文本缝先把命令行 lossy 成 U+FFFD，各支再按自己的
 //! 取法渲染：按字节取到的是 `ef`（U+FFFD 的第一字节），按 `char` 取再渲染的是 `c3 af` 两字节。
-//! 参数缝半逐支把这一位翻正——本表里 `rev`、`paste`、`seq`、`tr`、`fold`、`col` 六支已走
-//! `bin_support::args_bytes`，字母位交回原字节 `ff`（与参照件同形），只余 `units` 一行仍是
-//! 折叠形 `ef`：那一支的参数缝与单位表键共用同一串字节，得先裁决表键换字节还是在查询边界
-//! 折一次 lossy。字母位之外还有一条**操作数当文件路径**的腿：路径进了 `os/libs` 里的
-//! `&str` 口就非折一次不可（在册 `ARGV-BYTE-PATH-IN-LIBS`）。因此下面的断言既钉住
+//! 参数缝半逐支把这一位翻正——本表里 `rev`、`paste`、`seq`、`tr`、`fold`、`col`、`uniq`、
+//! `units`、`cksum` 九支已走 `bin_support::args_bytes`，字母位交回原字节 `ff`（与参照件同形）。
+//! 字母位之外还有一条**操作数当文件路径**的腿：路径进了 `os/libs` 里的 `&str` 口就非折
+//! 一次不可（在册 `ARGV-BYTE-PATH-IN-LIBS`）。因此下面的断言既钉住
 //! 「不再 abort、两条腿一致」，也钉住**当前那一串字节**：等这些腿落地，这几枚会当场变红，
 //! 由改的人有意识地翻正，而不是让门静默跟着漂。
 
@@ -33,6 +32,7 @@ const REV: &str = env!("CARGO_BIN_EXE_rev");
 const COL: &str = env!("CARGO_BIN_EXE_col");
 const UNIQ: &str = env!("CARGO_BIN_EXE_uniq");
 const UNITS: &str = env!("CARGO_BIN_EXE_units");
+const CKSUM: &str = env!("CARGO_BIN_EXE_cksum");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
 const FF: u8 = 0xFF;
@@ -63,13 +63,13 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     (code, output.stdout, output.stderr)
 }
 
-/// 八支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
+/// 九支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
 /// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
 /// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 8] = [
+    let cases: [(&str, &str, i32, &[u8]); 9] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
         // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
         // 字母位是原字节 `ff`。
@@ -83,9 +83,12 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         ("col", COL, 1, b"col: unknown option -- \xff\n"),
         // units 的 `ef` 残留随批次四百五十五的 argv 字节缝翻正：`from_utf8_lossy` 在
         // 参数缝上把一枚裸 `ff` 折成 U+FFFD，字母位因此看着像 `ef`；换 `args_bytes`
-        // 之后环拿到的就是那一枚 `ff`，与 C 同形。至此本表八行全是原字节。
+        // 之后环拿到的就是那一枚 `ff`，与 C 同形。
         ("uniq", UNIQ, 1, b"uniq: unknown option -- \xff\n"),
         ("units", UNITS, 3, b"units: unknown option -- \xff\n"),
+        // cksum 随批次四百五十七落地：C 的 `usage()` 是 `exit(1)`（`cksum.c:549`），
+        // 与 `units` 的 `myexit(3)` 不同，所以这一行的退码仍是 1。
+        ("cksum", CKSUM, 1, b"cksum: unknown option -- \xff\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");

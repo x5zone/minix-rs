@@ -1070,3 +1070,76 @@ fn the_crc_operand_leg_prints_the_same_three_segments_as_the_hash_leg() {
 
     let _ = fs::remove_file(&good);
 }
+
+/// argv 形态的字节形夹具：一枚裸 `ff` 写不成 `&str`，所以参数按字节交下去
+/// （`OsStr::from_bytes`），比的是子进程实际收到的那串字节。
+fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, Vec<u8>, Option<i32>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut child = Command::new(CKSUM)
+        .args(args.iter().map(|a| std::ffi::OsStr::from_bytes(a)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the cksum binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (output.stdout, output.stderr, output.status.code())
+}
+
+/// 临时档的**字节形**名字：`scratch` 那支交回 `PathBuf`，而这里要在名字里放一枚裸 `ff`。
+fn scratch_bytes(suffix: &[u8]) -> Vec<u8> {
+    let mut name = std::env::temp_dir()
+        .as_os_str()
+        .to_string_lossy()
+        .into_owned()
+        .into_bytes();
+    name.extend_from_slice(format!("/cksum-face-{}-", std::process::id()).as_bytes());
+    name.extend_from_slice(suffix);
+    name
+}
+
+#[test]
+fn a_raw_byte_in_the_s_string_is_echoed_as_that_byte_by_cksum() {
+    // C 的 `MD5String` 把串交给 `printf("%s (\"%s\") = ", …)`（`md5.c:60-67`），逐字回显
+    // 不转义。这一形不钉摘要值（算法本体另有门钉），钉的是回显位里那一枚裸字节：
+    // 取值链路只要还过一层 `from_utf8_lossy`，这里就成了 `ef bf bd` 三字节。
+    let value = [b"ab".as_slice(), b"\xff", b"cd"].concat();
+    let args: [&[u8]; 4] = [
+        b"-a".as_slice(),
+        b"md5".as_slice(),
+        b"-s".as_slice(),
+        value.as_slice(),
+    ];
+    let (out, err, code) = run_argv(&args, b"");
+    assert_eq!(err, b"", "选中算法且给了串，不该有报文，实读 {err:?}");
+    assert_eq!(code, Some(0));
+    assert!(
+        out.starts_with(b"MD5 (\"ab\xffcd\") = "),
+        "串的回显位该逐字节等于 argv 里那一串，实读 {out:?}"
+    );
+}
+
+#[test]
+fn a_raw_byte_in_an_operand_name_is_echoed_as_that_byte_by_cksum() {
+    // C 的摘要行是 `printf("%lu %llu %s\n", v, len, fn)`（`cksum.c:486` 的 `printfile`），
+    // 那个 `fn` 就是 argv 里的一串字节。参数缝半此前在 `support::args()` 里把它折成
+    // 替换字符（一枚 `ff` 变三字节 `ef bf bd`），回显位因此与真源差两字节。
+    // `1112837078 4` 是 `abc` 加换行的 POSIX CRC 与字节数，读数取自本页那枚 crc 形状门。
+    //
+    // 档名**按折叠形落盘**只为把两条腿隔开：开档那一腿仍要 `&str`（在册
+    // `ARGV-BYTE-PATH-IN-LIBS`），本壳因此在开档前折一次；按原字节名落盘的话，宿主上
+    // 只会得到 `ENOENT`，那就退到报文腿、回显位根本走不到。落 `ARGV-BYTE-PATH-IN-LIBS`
+    // 的那一轮该把这里改成原字节名，断言本身不动。
+    let raw = scratch_bytes(b"raw\xfflib");
+    let folded = String::from_utf8_lossy(&raw).into_owned();
+    fs::write(&folded, b"abc\n").expect("折叠名的临时档该落得下去");
+    let (out, err, code) = run_argv(&[&raw], b"");
+    assert_eq!(err, b"", "开得到就不该有报文，实读 {err:?}");
+    assert_eq!(code, Some(0));
+    let mut want = b"1112837078 4 ".to_vec();
+    want.extend_from_slice(&raw);
+    want.push(b'\n');
+    assert_eq!(out, want, "摘要行的名字位该是 argv 里那串原字节");
+    let _ = fs::remove_file(&folded);
+}

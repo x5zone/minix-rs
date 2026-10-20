@@ -20,20 +20,24 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
+use minix_textfilter::GetoptReport;
 use minix_textfilter::cksum::{
-    cksum_crc, classify_check_line, csum1, csum2, leading_u32, parse_cksum_args_into,
-    sum_display_length, CheckLine, CksumAction, CksumError, CksumRequest, SumKind,
+    CheckLine, CksumAction, CksumError, CksumRequest, SumKind, cksum_crc, classify_check_line,
+    csum1, csum2, leading_u32, parse_cksum_args_into, sum_display_length,
 };
 use minix_textfilter::digest::{self, Algo};
-use minix_textfilter::GetoptReport;
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    // `argv[0]` is the program name; C's getopt loop starts at `argv[1]`.
+    // argv 按字节交回：C 的 `crt0` 给的是字节数组，`cksum.c:193` 的选项环把 `argv`
+    // 原样交给 `getopt`，取值腿与操作数腿拿到的都是那些字节。
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名那一腿要交给 `warn_line` 的 `&str` 口（登记 `ARGV-BYTE-PATH-IN-LIBS`），
+    // 所以在臂内折一次 lossy，与其余各支同一条既定口径。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let prog = prog.as_str();
+    let args: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let mut actions: Vec<CksumAction> = Vec::new();
-    let parsed = parse_cksum_args_into(&refs[1..], &mut actions);
+    let parsed = parse_cksum_args_into(&args, &mut actions);
     // C 的 `-s`/`-t`/`-x` 三条腿在 getopt 环**里**就把话印完（`cksum.c:255-274`），后面
     // 选项报错追不回来：参照件 e-1/e-2/e-3 三形的 stdout 都有那一行，退码仍是 1。
     // 所以这一趟在诊断之前，不在 `hash_run` 里。
@@ -112,10 +116,13 @@ fn run() -> ! {
         // 这一步同时销掉登记 `CKSUM-HOSTED-READ-SEAM`（修法就是那一批给摘要腿定的那条）。
         // C 的 `warn("%s", fn)`（`cksum.c:491-495`）是 `warn(3)` 而不是 `warnx(3)`：
         // 程序名、操作数、`strerror` 句子三个成分缺一不可（旧写法把第三段擦了）。
-        let input = match support::read_file(operand) {
+        // 档名那一腿的两个 `&str` 口（打开与三段报文的那一句）都在库里，登记
+        // `ARGV-BYTE-PATH-IN-LIBS`；摘要行里的文件名回显走原字节。
+        let path = String::from_utf8_lossy(operand);
+        let input = match support::read_file(&path) {
             Ok(input) => input,
             Err(code) => {
-                support::warn_line(prog, operand, code);
+                support::warn_line(prog, &path, code);
                 status = 1;
                 continue;
             }
@@ -164,7 +171,8 @@ fn hash_run(prog: &str, request: &CksumRequest<'_>, algo: Algo) -> i32 {
 
     let mut status = 0;
     for operand in request.operands.iter().copied() {
-        let input = match support::read_file(operand) {
+        let path = String::from_utf8_lossy(operand);
+        let input = match support::read_file(&path) {
             Ok(input) => input,
             Err(code) => {
                 // C 的 `filefunc` 交回 `NULL` 时 `hash_digest_file` 退 1，`main` 于是
@@ -172,20 +180,27 @@ fn hash_run(prog: &str, request: &CksumRequest<'_>, algo: Algo) -> i32 {
                 // 参照件 f-1 形：`cksum_ref: <路径>: No such file or directory`；目录那一形是
                 // `.: Is a directory`（f-3），句子由承载的 `strerror` 表给，本壳走同一张表
                 //（`bin_support::warn_line` → `minix_sys::err_line`）。
-                support::warn_line(prog, operand, code);
+                support::warn_line(prog, &path, code);
                 status = 1;
                 continue;
             }
         };
+        // 三条形状的行名位都是操作数的原字节：C 交出去的是 `printf("…%s…", fn)`，
+        // 那个 `fn` 就是 argv 里那一串，从不问编码。
         let digest = algo.hex_digest(&input);
-        let line = if request.print_quiet {
-            format!("{digest}\n")
+        if request.print_quiet {
+            support::emit(format!("{digest}\n").as_bytes());
         } else if request.print_normal {
-            format!("{digest} {operand}\n")
+            let mut line = format!("{digest} ").into_bytes();
+            line.extend_from_slice(operand);
+            line.push(b'\n');
+            support::emit(&line);
         } else {
-            format!("{} ({operand}) = {digest}\n", algo.hashname())
-        };
-        support::emit(line.as_bytes());
+            let mut line = format!("{} (", algo.hashname()).into_bytes();
+            line.extend_from_slice(operand);
+            line.extend_from_slice(format!(") = {digest}\n").as_bytes());
+            support::emit(&line);
+        }
     }
     status
 }
@@ -194,23 +209,22 @@ fn hash_run(prog: &str, request: &CksumRequest<'_>, algo: Algo) -> i32 {
 /// 串是**原样回显**的，不转义也不加别的标点（参照件 s-2 带空格、s-3 空串两形同此形）；
 /// 这一行不受 `-n`/`-q`/`-p` 影响，因为 `printf` 的格式串在 `md5.c` 里写死，`print_flags`
 /// 只在 `hash_digest_file`（`cksum.c:506-524`）那条腿里被读。
-fn string_line(algo: Algo, text: &str) -> String {
-    format!(
-        "{} (\"{text}\") = {}\n",
-        algo.hashname(),
-        algo.hex_digest(text.as_bytes())
-    )
+fn string_line(algo: Algo, text: &[u8]) -> Vec<u8> {
+    let mut line = format!("{} (\"", algo.hashname()).into_bytes();
+    line.extend_from_slice(text);
+    line.extend_from_slice(format!("\") = {}\n", algo.hex_digest(text)).as_bytes());
+    line
 }
 
 /// 排出一条自印腿的字节。三条腿各印几行、行首是什么，判据都在 `md5.c` 的那三个函数里，
 /// 八枚算法共用同一份（`digest::TEST_SUITE` 的注释记了为什么共用）。
 fn emit_action(action: &CksumAction<'_>) {
     match action {
-        CksumAction::String(algo, text) => support::emit(string_line(*algo, text).as_bytes()),
+        CksumAction::String(algo, text) => support::emit(&string_line(*algo, text)),
         CksumAction::TestSuite(algo) => {
             support::emit(format!("{} test suite:\n", algo.hashname()).as_bytes());
             for text in digest::TEST_SUITE {
-                support::emit(string_line(*algo, text).as_bytes());
+                support::emit(&string_line(*algo, text.as_bytes()));
             }
         }
         CksumAction::TimeTrial(algo) => {
@@ -261,11 +275,13 @@ fn emit_action(action: &CksumAction<'_>) {
 /// `bogus format: <整行>. Skipping...`（`:325` 与 `:398` 两处同句）、
 /// `no filename in <整行>? Skipping...`（`:381` 与 `:409`）。三句都只在 `-w` 下打
 ///（C 的 `if (check_warn)` 包着每一句），但**都记一次失败**（`rval = 1`）。
-fn check_files(prog: &str, operands: &[&str], check_warn: bool, selected: Option<Algo>) -> i32 {
+fn check_files(prog: &str, operands: &[&[u8]], check_warn: bool, selected: Option<Algo>) -> i32 {
     let from_operand = !operands.is_empty();
-    let path = operands.first().copied().unwrap_or("");
+    // 校验档这一整条腿（打开、`Cannot read` 那句里的档名、档内容逐行解析）仍走文本缝，
+    // 登记 `CKSUM-CHECK-LEG-TEXTSEAM` 待独立一轮；本片的射程是选项环与摘要回显。
+    let path = String::from_utf8_lossy(operands.first().copied().unwrap_or(b""));
     let bytes = if from_operand {
-        match support::read_file(path) {
+        match support::read_file(&path) {
             Ok(bytes) => bytes,
             // 校验档本身打不开在 C 是 `err(1, "Cannot read %s", argc>0?argv[0]:"stdin")`
             //（`cksum.c:301-303`）：`err(3)` = 那三段句子再加 `exit(1)`。参照件 c-9 形实测
@@ -378,7 +394,7 @@ fn verify_digest(algo: Algo, name: &str, expected: &str) -> bool {
 
 /// Compute the selected sum over `data` and print C's `"%lu %lld"` line (with a
 /// trailing ` name` for a file operand), the length folded per `print.c`.
-fn emit_line(kind: SumKind, data: &[u8], name: Option<&str>) {
+fn emit_line(kind: SumKind, data: &[u8], name: Option<&[u8]>) {
     let (value, bytes) = match kind {
         SumKind::Crc => cksum_crc(data),
         SumKind::Old1 => csum1(data),
@@ -386,7 +402,12 @@ fn emit_line(kind: SumKind, data: &[u8], name: Option<&str>) {
     };
     let shown = sum_display_length(kind, bytes);
     match name {
-        Some(n) => support::emit(format!("{value} {shown} {n}\n").as_bytes()),
+        Some(n) => {
+            let mut line = format!("{value} {shown} ").into_bytes();
+            line.extend_from_slice(n);
+            line.push(b'\n');
+            support::emit(&line)
+        }
         None => support::emit(format!("{value} {shown}\n").as_bytes()),
     }
 }
