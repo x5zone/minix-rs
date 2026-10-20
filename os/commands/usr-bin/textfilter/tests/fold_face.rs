@@ -15,7 +15,9 @@
 mod face_support;
 
 use face_support::write_stdin;
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::ffi::OsStringExt;
 use std::process::{Command, Stdio};
 
 const FOLD: &str = env!("CARGO_BIN_EXE_fold");
@@ -95,6 +97,44 @@ fn the_libc_line_of_a_multibyte_flag_folds_to_one_byte() {
         [b"fold: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
         "环停在第一个坏字母上，`é` 根本不该被读到"
     );
+}
+
+/// 参数缝按字节交回之后，聚簇里那一枚**不是合法 UTF-8 前缀**的字母位也只剩一个字节。
+/// 上一枚门用的是合法序列 `c3 a9`，lossy 不改它，所以旧缝也能过；这一枚用的是裸 `ff`：
+/// 旧的 `String::from_utf8_lossy` 缝把它渲染成三字节 U+FFFD，环取到的第一字节就成了
+/// `ef`，比参照件多一位。`-b` 是合法字母且不带值（选项串 `"0123456789bsw:"`），环继续
+/// 吃到下一位，所以这一形走的是聚簇腿，与跨壳表那行的单字母腿不是同一条缝。
+#[test]
+fn a_raw_nonutf8_letter_after_a_cluster_flag_is_one_byte() {
+    let want: Vec<u8> = [
+        b"fold: unknown option -- ".as_slice(),
+        b"\xff\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    let (out, status, err) = run_raw(&[b"-b\xff".to_vec()], b"abc");
+    assert_eq!(out, Vec::new(), "报文只走 stderr");
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(err, want, "字母该是原字节 ff，不是 lossy 的第一字节 ef");
+}
+
+/// 同 `run_bytes`，但参数交回**原始字节**：`&str` 夹具写不出裸 `ff`，
+/// 写成 `\u{fffd}` 会被编码成 `ef bf bd`，测的就不是这一位了。
+fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(FOLD)
+        .args(args.iter().map(|word| OsString::from_vec(word.clone())))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the fold binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
 }
 
 /// `-w` 后面没有值是 libc 的另一句；与「值不是正数」那句**不同形**，也不同行数。

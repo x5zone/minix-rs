@@ -62,28 +62,23 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
 }
 
 /// 六支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
+/// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
+/// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
     let cases: [(&str, &str, i32, &[u8]); 6] = [
-        // tr 已于批次四百四十四走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
-        // 与参照件同形（本表其余两支 fold/units 的字母位仍是折叠后的 `ef`）。
+        // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
+        // fold（四百四十六）都走 `bin_support::args_bytes`，字母位是原字节 `ff`。
+        // seq 那一支还多钉一层：它的环是累加型，一枚裸字节只该报一行
+        // （`the_accumulating_ring_names_the_raw_byte_once`）。
         ("tr", TR, 1, b"tr: unknown option -- \xff\n"),
-        // seq 已于批次四百四十三走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
-        // 且那一行只有一行——累加环吃到的是一个字节就是一个字母，不再把折叠出来的
-        // `ef bf bd` 三个字节当三个字母连报三行（本表其余四支 tr/fold/units 与本支
-        // 旧形仍属射程②的在册余量）。
         ("seq", SEQ, 1, b"seq: unknown option -- \xff\n"),
-        // paste 已于批次四百四十一走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
-        // 与参照件同形（本表余下四支 tr/seq/fold/units 的字母位仍是折叠后的 `ef`）。
         ("paste", PASTE, 1, b"paste: unknown option -- \xff\n"),
-        // fold 已于批次四百零五换字节形，同 tr/paste。
-        ("fold", FOLD, 1, b"fold: unknown option -- \xef\n"),
-        // rev 已于批次四百四十走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
-        // 与参照件同形（本表其余五支的字母位仍是折叠后的第一字节 `ef`，属射程②的在册余量）。
+        ("fold", FOLD, 1, b"fold: unknown option -- \xff\n"),
         ("rev", REV, 1, b"rev: unknown option -- \xff\n"),
-        // units 已于批次三百九十九换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD
-        // 的第一字节），比仍按 char 渲染的 `c3 af` 少一个字节；C 那一侧是原字节 `ff`。
+        // units 是本表唯一仍走文本缝的一支（批次三百九十九只换了渲染半：按 `char` 渲染
+        // 会是 `c3 af` 两字节，字节形后是 `ef` 一字节），C 那一侧是原字节 `ff`。
         ("units", UNITS, 3, b"units: unknown option -- \xef\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
@@ -97,7 +92,8 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
 }
 
 /// 非法字节落在**操作数**里时只是普通数据：参照件 `tr a\xffb c` 退 0 打 `cccccc`，
-/// 本层同形。这一条形下 `args()` 是否 lossy 都过不了 panic 那一关，所以它是这条缝的正面证据。
+/// 本层同形。操作数被当数据收走时，文本缝与字节缝给出的都是同一串字节，所以这一条
+/// 钉的是「不炸」而不是「字母位」——后者归上面那张表。
 #[test]
 fn a_raw_byte_inside_an_operand_is_ordinary_data() {
     let set1 = [b"a".as_slice(), &[FF][..], b"b"].concat();

@@ -131,7 +131,7 @@ pub struct FoldArgs<'a> {
     /// `-w` width (default 80), `-b`, `-s`.
     pub options: FoldOptions,
     /// File operands in order.
-    pub operands: Vec<&'a str>,
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// `fold` argument-parsing failure.
@@ -159,17 +159,17 @@ pub enum FoldError {
 /// [`FoldError::IllegalWidth`] — the old front door warned and *kept* the default instead of
 /// rejecting, diverging from C's `errx`. The old bin matched only the whole tokens
 /// `-b`/`-s`/`-w`, so the C-legal attached form `fold -w80 file` fell through to a usage error.
-pub fn parse_fold_args<'a>(args: &'a [&'a str]) -> Result<FoldArgs<'a>, FoldError> {
+pub fn parse_fold_args<'a>(args: &[&'a [u8]]) -> Result<FoldArgs<'a>, FoldError> {
     let mut options = FoldOptions::new(80);
-    let mut operands: Vec<&'a str> = Vec::new();
+    let mut operands: Vec<&'a [u8]> = Vec::new();
     let mut index = 0;
     while index < args.len() {
         let arg = args[index];
-        if arg == "--" {
+        if arg == b"--" {
             operands.extend_from_slice(&args[index + 1..]);
             break;
         }
-        let bytes = arg.as_bytes();
+        let bytes = arg;
         if bytes.len() > 1 && bytes[0] == b'-' {
             if bytes[1].is_ascii_digit() {
                 // Obsolete `-N`: the whole token is the width (`fold.c:91-98`).
@@ -223,16 +223,32 @@ pub fn parse_fold_args<'a>(args: &'a [&'a str]) -> Result<FoldArgs<'a>, FoldErro
 
 /// A width is a positive integer; `0`, a non-integer, or overflow is rejected
 /// exactly as C's `atoi(optarg) <= 0` guard (`fold.c:84-86`).
-fn parse_width(spec: &str) -> Result<usize, FoldError> {
-    match spec.parse::<usize>() {
-        Ok(width) if width > 0 => Ok(width),
-        _ => Err(FoldError::IllegalWidth),
+fn parse_width(spec: &[u8]) -> Result<usize, FoldError> {
+    // C 的 `atoi`：一串十进制数字、空串与非数字都归 0，随后 `<= 0` 报 `illegal width value`。
+    if spec.is_empty() || !spec.iter().all(u8::is_ascii_digit) {
+        return Err(FoldError::IllegalWidth);
     }
+    let mut width: usize = 0;
+    for digit in spec {
+        width = width
+            .saturating_mul(10)
+            .saturating_add(usize::from(digit - b'0'));
+    }
+    if width == 0 {
+        return Err(FoldError::IllegalWidth);
+    }
+    Ok(width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GetoptReport;
+
+    /// 字节形入口的测试适配器：夹具仍写文本，只在进解析口前折一次。
+    fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
+        list.iter().map(|word| word.as_bytes()).collect()
+    }
 
     #[test]
     fn test_short_lines_pass_through() {
@@ -301,25 +317,25 @@ mod tests {
         use alloc::vec;
         // No options → width 80 default, one operand.
         assert_eq!(
-            parse_fold_args(&["f"]),
+            parse_fold_args(&argv_of(&["f"])),
             Ok(FoldArgs {
                 options: FoldOptions::new(80),
-                operands: vec!["f"]
+                operands: vec![b"f".as_slice()]
             })
         );
         // `-w 20` value as the next token.
         assert_eq!(
-            parse_fold_args(&["-w", "20", "f"]).map(|a| a.options.width),
+            parse_fold_args(&argv_of(&["-w", "20", "f"])).map(|a| a.options.width),
             Ok(20)
         );
         // The regression: attached `-w20` is accepted (was a usage error).
         assert_eq!(
-            parse_fold_args(&["-w20", "f"]).map(|a| (a.options.width, a.operands)),
-            Ok((20, vec!["f"]))
+            parse_fold_args(&argv_of(&["-w20", "f"])).map(|a| (a.options.width, a.operands)),
+            Ok((20, vec![b"f".as_slice()]))
         );
         // Obsolete leading all-digit `-40` sets the width.
         assert_eq!(
-            parse_fold_args(&["-40", "f"]).map(|a| a.options.width),
+            parse_fold_args(&argv_of(&["-40", "f"])).map(|a| a.options.width),
             Ok(40)
         );
     }
@@ -328,35 +344,70 @@ mod tests {
     fn test_parse_fold_cluster_and_errors() {
         // `-b` and `-s` cluster; `-bw30` clusters `-b` then attached `-w30`.
         assert_eq!(
-            parse_fold_args(&["-bs"]).map(|a| (a.options.count_bytes, a.options.split_words)),
+            parse_fold_args(&argv_of(&["-bs"]))
+                .map(|a| (a.options.count_bytes, a.options.split_words)),
             Ok((true, true))
         );
         assert_eq!(
-            parse_fold_args(&["-bw30"]).map(|a| (a.options.count_bytes, a.options.width)),
+            parse_fold_args(&argv_of(&["-bw30"])).map(|a| (a.options.count_bytes, a.options.width)),
             Ok((true, 30))
         );
         // `--` ends options; a lone `-` is an operand.
         assert_eq!(
-            parse_fold_args(&["--", "-w"]).map(|a| a.operands),
-            Ok(vec!["-w"])
+            parse_fold_args(&argv_of(&["--", "-w"])).map(|a| a.operands),
+            Ok(vec![b"-w".as_slice()])
         );
-        assert_eq!(parse_fold_args(&["-"]).map(|a| a.operands), Ok(vec!["-"]));
+        assert_eq!(
+            parse_fold_args(&argv_of(&["-"])).map(|a| a.operands),
+            Ok(vec![b"-".as_slice()])
+        );
         // Unknown letter → usage; `-w` with no value → usage.
         assert_eq!(
-            parse_fold_args(&["-z", "f"]),
+            parse_fold_args(&argv_of(&["-z", "f"])),
             Err(FoldError::UnknownOption('z'))
         );
-        assert_eq!(parse_fold_args(&["-w"]), Err(FoldError::MissingValue('w')));
+        assert_eq!(
+            parse_fold_args(&argv_of(&["-w"])),
+            Err(FoldError::MissingValue('w'))
+        );
         // 聚簇里的数字不被当集外字母（C 的选项串包含 `0-9`）。
         assert_eq!(
-            parse_fold_args(&["-b9"]).map(|a| (a.options.count_bytes, a.options.width)),
+            parse_fold_args(&argv_of(&["-b9"])).map(|a| (a.options.count_bytes, a.options.width)),
             Ok((true, 9))
         );
         // A non-positive / non-integer width → IllegalWidth (C errx).
-        assert_eq!(parse_fold_args(&["-w", "0"]), Err(FoldError::IllegalWidth));
         assert_eq!(
-            parse_fold_args(&["-w", "abc"]),
+            parse_fold_args(&argv_of(&["-w", "0"])),
             Err(FoldError::IllegalWidth)
+        );
+        assert_eq!(
+            parse_fold_args(&argv_of(&["-w", "abc"])),
+            Err(FoldError::IllegalWidth)
+        );
+    }
+    #[test]
+    fn parse_fold_args_keeps_a_raw_ff_operand_as_its_own_bytes() {
+        assert_eq!(
+            parse_fold_args(&[&b"a\xffb"[..]]),
+            Ok(FoldArgs {
+                options: FoldOptions::new(80),
+                operands: vec![b"a\xffb".as_slice()]
+            }),
+            "操作数带的是原字节，不是替换字符的三字节"
+        );
+    }
+
+    #[test]
+    fn parse_fold_args_names_a_raw_ff_option_letter_as_one_byte() {
+        // 取法取一枚字节（`bytes[pos] as char`），渲染口 `line_bytes` 把它原样写回：
+        // 这一对合起来才让字母位只有一枚 `ff`。
+        assert_eq!(
+            parse_fold_args(&[&b"-\xff"[..]]),
+            Err(FoldError::UnknownOption('\u{ff}'))
+        );
+        assert_eq!(
+            GetoptReport::UnknownOption('\u{ff}').line_bytes("fold"),
+            b"fold: unknown option -- \xff\n".as_slice()
         );
     }
 }

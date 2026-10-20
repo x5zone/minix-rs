@@ -155,7 +155,6 @@ fn column_value(word: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// 字节形入口的测试适配器：夹具仍写文本，只在进解析口前折一次。
     #[test]
     fn parse_columns_names_a_raw_ff_operand_by_its_own_bytes() {
         assert_eq!(
@@ -174,6 +173,7 @@ mod tests {
         );
     }
 
+    /// 字节形入口的测试适配器：夹具仍写文本，只在进解析口前折一次。
     fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
         list.iter().map(|word| word.as_bytes()).collect()
     }
