@@ -155,9 +155,9 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   `core::iter::repeat_n(b' ', …)`，列分隔符本身也是单字节。
 - 剪格函数 `clip_to_width` 由「回退到字符边界」改为 `&s[..n.min(s.len())]`，即照 `inln` 的字节预算
   硬截。回退那条规则是本壳自造的：它让同一份输入少交几个字节，还会把页宽算歪。
-- 编号腿 `src/bin/pr.rs` 里 `-n` 的前缀拼接原先写作 `format!("{}{}{}", 编号字段, number_char as char, 行)`，
-  一枚制表符经 `as char` 进 `String` 会被重新编码成两字节；现改为字节拼接
-  （`Vec<u8>` + `push(options.number_char)`），`number_char` 本身就是 `u8`。
+- 编号腿 `src/bin/pr.rs` 里 `-n` 的前缀如果按 `format!("{}{}{}", 编号字段, number_char as char, 行)` 拼字符串，
+  `as char` 会把一枚制表符重新编码成两字节，行号与正文之间凭空多出一个字节宽；所以这一腿直接拼字节
+  （`Vec<u8>` 加 `push(options.number_char)`），`number_char` 本身就是 `u8`。
 
 **门与读数**。库门新增 `a_cell_is_cut_at_bytes_even_mid_code_point`：`ab` 加一个两字节的重音符号
 （`c3 a9`）在列宽 3 时交出 `ab` 加那个悬空的引导字节 `c3`，一枚 `a\xff\xfez` 交出 `a\xff\xfe`——
@@ -168,8 +168,8 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 三架构 `cargo build --bins` 全退 0；`rustfmt` 零漂移；`clippy` 按告警位置对账，触及件在主树与本树
 同为 32 枚 `field assignment outside of initializer` 加 2 枚其它存量，零新增
 （`tmp/pr-436/clip-wt.log`、`tmp/pr-436/clip-main.log`）；负控四枚咬住、一枚等价注入全绿
-（`tmp/pr-436/negctl.log`）。A/B 对同名软链起的参照件从修复前 6 同 7 异走到 12 同 1 异
-（`tmp/pr-436/ab.log`、`tmp/pr-436/ab-postfix.log`）。
+（`tmp/pr-436/negctl.log`）。A/B 对同名软链起的参照件共 13 形，其中 12 形逐字节同参照件（`tmp/pr-436/ab-postfix.log`）；
+同一夹具的基线读数 6 同 7 异存于 `tmp/pr-436/ab.log`，两读之差正是本支射程覆盖的那几形。
 
 **本轮登记（在册未执行）**。唯一残差是缺省页眉少一段时间字段：参照件印
 `Oct 20 12:12 2026 <文件> Page 1`，本壳印 `<文件> Page 1`。C 侧的依据是
