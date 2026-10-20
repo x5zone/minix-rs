@@ -36,7 +36,7 @@ extern crate alloc;
 extern crate std;
 
 use minix_arch::paging_ext::HugePages;
-use minix_types::{PhysBytes, VirBytes};
+use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 // Handoff types are exercised only by the non-mock VM-loading path
 // (same reason as the `PhysAccess` import below).
 #[cfg(not(feature = "mock"))]
@@ -48,15 +48,13 @@ use minix_arch::paging::PageFlags;
 // import would be an unused-import error in mock builds.
 #[cfg(not(feature = "mock"))]
 use minix_arch::arch::frame::PhysAccess;
-use minix_arch::{DirectMapArch, ReturnSequence, TrapStyle, pt_alloc};
+use minix_arch::{
+    BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END, DirectMapArch, ReturnSequence, TrapStyle, pt_alloc,
+};
 // E1 slice 5: QEMU test kernels build a user context directly and must
 // record the full-context return style (`test-user-trap`).
 pub use minix_arch::TrapStyle as PublicTrapStyle;
 pub use kerninfo::init_kerninfo;
-
-/// End of identity-mapped region during boot (4 GB).
-/// C: pg_identity() maps 1024 × 4MB = 4GB (I386_BIG_PAGE_SIZE × 1024).
-const IDENTITY_MAP_END: u64 = 0x1_0000_0000;
 
 pub mod vm;
 pub mod proc;
@@ -4385,7 +4383,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000, // 2MB kernel
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
@@ -4464,7 +4462,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: MODULES,
@@ -4513,7 +4511,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],

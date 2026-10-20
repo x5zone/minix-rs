@@ -1023,6 +1023,30 @@ unsafe fn free_child_tables(&self, table_paddr: u64, level: u8) {
 }
 }
 
+/// Single CPUID probe for 1 GiB page support.
+///
+/// Both the runtime paging-handle face
+/// (`HugePages::supports_1gb_page`) and the boot-time DM-establishment face
+/// (`DmCoverageArch::supports_1gb_page`) forward here, so the hardware
+/// question is answered in one place even though the two traits keep
+/// separate lifecycles.
+fn probe_1gb_page_support() -> bool {
+    let mut edx: u32;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov eax, 0x80000001",
+            "cpuid",
+            "pop rbx",
+            out("edx") edx,
+            out("eax") _,
+            out("ecx") _,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    (edx & (1 << 26)) != 0
+}
+
 impl HugePages for X86_64Paging {
     const HUGE_PAGE_SIZES: &'static [usize] = &[1 << 30, 1 << 21];
     const HUGE_PAGE_SIZE: u64 = 1 << 30;
@@ -1088,20 +1112,7 @@ impl HugePages for X86_64Paging {
 
     /// Whether the CPU supports 1 GB huge pages (CPUID.80000001H:EDX.GBPAGES bit 26).
     fn supports_1gb_page() -> bool {
-        let mut edx: u32;
-        unsafe {
-            asm!(
-                "push rbx",
-                "mov eax, 0x80000001",
-                "cpuid",
-                "pop rbx",
-                out("edx") edx,
-                out("eax") _,
-                out("ecx") _,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-        (edx & (1 << 26)) != 0
+        probe_1gb_page_support()
     }
 }
 
@@ -1146,7 +1157,7 @@ pub struct X86_64DmCoverage;
 impl crate::arch::dm_coverage::DmCoverageArch for X86_64DmCoverage {
     /// CPUID.80000001H:EDX.GBPAGES — same probe as [`X86_64Paging`].
     fn supports_1gb_page() -> bool {
-        X86_64Paging::supports_1gb_page()
+        probe_1gb_page_support()
     }
 
     unsafe fn dm_install_leaf(
@@ -1398,6 +1409,20 @@ unsafe fn is_identity_table(pdpt: u64, i3: usize, vaddr: u64) -> bool { unsafe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The runtime and boot-time capability faces must answer the same
+    /// hardware question. This catches a future edit that stops forwarding
+    /// one of them to the shared CPUID probe.
+    #[test]
+    fn test_1gb_capability_faces_agree() {
+        let runtime = <X86_64Paging as HugePages>::supports_1gb_page();
+        let boot =
+            <X86_64DmCoverage as crate::arch::dm_coverage::DmCoverageArch>::supports_1gb_page();
+        assert_eq!(
+            runtime, boot,
+            "HugePages and DmCoverageArch disagree on 1 GiB support"
+        );
+    }
 
     /// F7 防回归（NK4-C 阶段0）：`leaf_pa + i << SHIFT` 在 Rust 里解析为
     /// `(leaf_pa + i) << SHIFT`（`+` 结合紧于 `<<`），对非零对齐 leaf_pa
