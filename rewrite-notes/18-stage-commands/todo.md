@@ -119,6 +119,35 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百五十四（名单对账轮：`HEAD-NON-PERMUTE-OPERAND-TAIL` 经现量核销为闭，族名数从「八枚」翻正为六个具名 ID）
+
+- **判据沿用「同类相比」**：门名对门名、登记项对登记项，不拿旧读数当现状。这一轮把「操作数终结选项扫描」
+  这一族登记项逐条对到代码与门上，两处措辞随之订正。
+- **第一条订正：`HEAD-NON-PERMUTE-OPERAND-TAIL` 其实早已闭**。承载点是 `os/commands
+  /usr-bin/textfilter/tests/head_face.rs:an_operand_ends_option_scanning_like_c`（现跑 11 passed / 0 failed），
+  它钉的正是参照件那一形：`head <档> -5` 打 `==> 档 <==` 横幅加整份内容、随后
+  `head: -5: No such file or directory` 退 1，`unknown option` 那一句根本不出现；同枚门里 `-q` 在此是一个
+  叫 `-q` 的档名（横幅照打、静默旗标不生效），而选项写在前头仍照常生效，只是环撞上操作数就再也回不来。
+  真源判据是 `minix3/lib/libc/stdlib/getopt.c:71-74`（非选项 token 上直接交回 `-1` 且不推进 `optind`）加
+  `head.c:118-119` 的 `argv += optind`。参照件八形读数在 `tmp/head-424/matrix-ref.log`，脚本
+  `tmp/head-424/matrix.py`。板上与批次四百五十那句「维持在册」因此是台账滞后，本笔翻正为**闭**。
+- **第二条订正：这一族的「八枚」是个凭印象的数**。按 ID 逐个数两个台账里的实际写法，具名项是
+  **六个**：`HEAD-NON-PERMUTE-OPERAND-TAIL`、`FOLD-NON-PERMUTE-OPERAND-TAIL`、`CUT-NON-PERMUTE-OPERAND-TAIL`、
+  `CKSUM-NON-PERMUTE-OPERAND-TAIL`、`NL-NON-PERMUTE-OPERAND-TAIL`、`PR-NON-PERMUTE-OPERAND-TAIL`；此外还有一处
+  通配写法 `*-NON-PERMUTE-OPERAND-TAIL` 被反复引用（18 篇十处、板一处），「八枚」是把通配与重复引用一起
+  算进去得到的，复现不了。这正是「名单类读数必须能用同一条命令复现」要防的形状，读数取
+  `grep -o "[A-Za-z*]*-NON-PERMUTE-OPERAND-TAIL" | sort | uniq -c`（`tmp/nonpermute-454/census.log`）。
+- **翻正后的现状**：`head`、`tail` 两支各有一枚同名门 `an_operand_ends_option_scanning_like_c`
+  （`head_face` 11/0、`tail_face` 24/0，`tmp/nonpermute-454/evidence.log`），所以六个具名 ID 里 **两枚已闭**；
+  余 `fold`、`cut`、`cksum`、`nl`、`pr` 五支没有对应的终结门，维持在册，逐支做时照 `head` 那枚的形状：
+  先拿 `-Z` 验过归属的参照件量出「操作数在前的那一形」，再落一枚面门，别再造一枚跨壳门——同一裁决在各支
+  的重复断言只会让负控红名更难归因（批次四百五十同一判据）。
+- **本轮零源码改动**，门只跑五道收尾门。登记与余量：A2 参数缝半仍余 `textfilter` 二十九支（现量
+  `grep -rl "support::args()" src/bin/` = 29，与批次四百五十二记的数相符）+ `text-games` 三支壳 + 族终笔；
+  `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR` 等其余登记项维持在册。
+
+---
+
 ## 批次四百五十三（体量核实轮：`units` 表键字节化的真实射程，现量推翻「只换表键」的预估）
 
 - **这一轮不写代码**，做的是把批次四百四十九那条裁决落成可施工的切片边界。原裁决说 `units` 走甲路
