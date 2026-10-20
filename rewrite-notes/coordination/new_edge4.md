@@ -786,3 +786,57 @@ libc 那一行继续走 `GetoptReport::line_bytes`（`os/commands/usr-bin/textfi
 板 A2 行余量：`textfilter` 三十九支已迁七支、余三十二支；跨壳表仍余 `fold`/`units` 两行的字母位是
 折叠形 `ef`；`tests/bin_support_face.rs` 三处注释把 `tr`/`seq` 仍列为未换字节形，登记为待订正；
 `tr`/`seq`/`colrm` 的 `prog` 那处程序名 lossy 属全族共件，留给收尾那一笔。
+
+### 第一百六十笔（并发任务 A 板 · A2 切片 34 · `fold` 的 argv 全程按字节，A/B 顺手量出拆行腿两臂写反）
+
+**落点**：`os/commands/usr-bin/textfilter/src/fold.rs`、`src/bin/fold.rs`、`tests/fold_face.rs`、
+`tests/bin_support_face.rs`（另把批次四百四十五挂错位置的适配器注释在 `src/colrm.rs` 里归位）。
+领用 `GETOPT-REPORT-BYTE-LETTER`，基线是批次四百四十五合入后的 `rewrite` 头。
+
+**这一支只坏字母位那一张脸，但那张脸有两条腿**：跨壳表里 `-<ff>` 那一形走单字母腿，
+而 `b` 是选项串 `"0123456789bsw:"`（`minix3/usr.bin/fold/fold.c:76`）里合法且不带值的字母，
+环吃完 `b` 继续吃下一位，所以 `-b<ff>` 的字母来自聚簇扫描——`tests/fold_face.rs` 因此新立一枚专钉聚簇腿的门，
+与跨壳表那行不重复承载。批次四百零五那次只换了渲染半，合法序列 `c3 a9`（`é`）一直是对的，
+**不属于任何合法序列的字节**才把这一位露出来：旧的 `bin_support::args` 先过一遍 `from_utf8_lossy`，
+一枚 `ff` 在到达选项环之前就成了三字节的替换字符，环取到的第一字节是 `ef`，参照件交回的是 `ff`。
+数据位这一支无处可坏：操作数只有宽度值与文件路径两个去处，宽度那句 `illegal width value` 不带操作数，
+路径腿要在 `os/libs/minix-sys/src/lib.rs:fn open` 与 `os/libs/minix-types/src/types/errno.rs:fn err_line`
+两个 `&str` 口上折一次，属已登记的 `ARGV-BYTE-PATH-IN-LIBS`，本支不新增腿。
+
+**门**：库 +2（`parse_fold_args_keeps_a_raw_ff_operand_as_its_own_bytes`、
+`parse_fold_args_names_a_raw_ff_option_letter_as_one_byte`）、面 +1（`fold_face` 七枚→八枚，新枚名与
+`colrm_face`/`rev_face` 的同族门刻意不同名，否则负控红名清单分不出是谁）、跨壳表 `fold` 行由 `ef` 翻正为 `ff`。
+跨壳表的表头注释按现量重写：六支里五支已走 `bin_support::args_bytes`，只余 `units` 一支仍走文本缝；
+批次四百四十五登记的那三处过时注释（把 `tr`/`seq` 列为未换字节形）随本笔订正完毕。
+
+**A/B 十三形**（`python3 tmp/argv-446/ab.py > tmp/argv-446/ab.log`，参照件 `tmp/fold-405/fold_ref`
+开工先跑 `-Z` 验字样：那句是 `fold_ref: unknown option -- Z`，Minix 措辞，承真值）：
+**SAME=11 / DIFF=2**，两形都在册——① `fold a<ff>.txt` 的报文回显差是路径腿的 lossy 折叠；
+② `-w 4` 遇空格行的拆行形状差是**本轮新量出的真码缺陷**。
+
+**新登记不执行 `FOLD-SPLIT-BRANCH-SWAPPED`（P0-code-bug + 文档失真一处）**：`minix3/usr.bin/fold/fold.c:152-176`
+的分支条件是 `if (split_words && last_space != -1)`——**只有开了 `-s` 才回找缓冲里最后一个空格**，
+不开 `-s` 时列位一过宽度就把整块缓冲吐出、空格留在它落到的那一行。
+`os/commands/usr-bin/textfilter/src/fold.rs:fn fold_line` 把两臂写反了：`split_words` 为真时整块吐出，
+为假时去 `rposition` 找最后一个空格，于是空格位于缓冲首位那一形吐出**空行**。现量两形：
+`-w 4` 对 `abcdefghij klmnop` 参照件 `abcd`/`efgh`/`ij k`/`lmno`/`p`，本壳 `abcd`/`efgh`/`ij`/空/空/空/` klmnop`；
+`-w 4` 对 `one two three four` 参照件 `one `/`two `/`thre`/`e fo`/`ur`，本壳 `one`/空/` two`/空/空/空/` three`/空。
+同一条失真也写在 07 篇的 `fold` 行（「缺省最后空格断行且空格留在续行头」）与本件模块头注释里，
+文档随本笔订正，代码留给专轮：改一臂要连库测三形的期望一起翻正，不属参数缝半这一轮。
+
+**门读数**：宿主两包各跑 78 段 / 1313 通过 / 0 失败（`tmp/argv-446/host-final.log`，其中 `--lib` 611、
+`fold_face` 8、`colrm_face` 19）、容器 78 段 / 1313 / 0（`tmp/argv-446/container.log`）、三架构退 0
+（`tmp/argv-446/arch.log`）、clippy 触及件零告警、rustfmt 触及五件零漂移（`tmp/argv-446/rustfmt.log`）、
+负控五枚四咬 + 一枚等价全绿（`tmp/argv-446/negctl446.log`，四枚红名分别落在新立的聚簇门、跨壳表门、
+库测 `test_parse_fold_cluster_and_errors` 与翻正前的 `ef` 期望）、五道收尾门全过（门 1 仅存已知探针命名族
+漂移 31 对 18、门 2 断链 131 等于基线、门 3 PASS、门 4 `--diff rewrite` error级 0、门 5 无在制文件）。
+
+**手法一条入档**：`rustfmt -p <包>` 会连同**未触及**的件一起重排——本笔 `src/bin_support.rs` 里一处
+`if/else` 被折成多行却与本轮无关，所以格式化只能逐件点名（`rustfmt --edition 2021 <文件…>`），
+混进工作区的别件格式差要 `git checkout --` 单独还原，别把它算进本轮的触及件。
+
+**提交与账**：`eb0d0e427`（码）、`bf6ab5bdd`（文档）。板 A2 行余量：`textfilter` 三十九支已迁八支、
+余三十一支；跨壳表只余 `units` 一行的字母位是折叠形 `ef`；`FOLD-SPLIT-BRANCH-SWAPPED` 与
+`FOLD-DIGIT-NOT-FIRST-IN-CLUSTER`、`FOLD-NON-PERMUTE-OPERAND-TAIL`、`COLRM-STRERROR-ZERO-TEXT`、
+`ARGV-BYTE-PATH-IN-LIBS` 各条维持已登记不执行；`fold` 支的 `prog` 那处程序名 lossy 属全族共件，
+留给族收尾那一笔（同笔还要删 `bin_support::args` 与 `prog_name` 的文本形）。

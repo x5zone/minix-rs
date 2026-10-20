@@ -165,7 +165,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 - **门读数（L1 证据）**：宿主 `cargo test -p minix-textfilter --no-fail-fast` + `cargo test -p minix-text-games --no-fail-fast`
   两包各跑 = 78 段 / 1313 通过 / 0 失败（`tmp/argv-446/host-final.log`），其中 `--lib` 611、`fold_face` 8、`colrm_face` 19；
   容器 `docker run --rm -v <领用树绝对路径>:/work -w /work/os -m 2g minix-ci:1.94 cargo test -j 1 -p minix-textfilter -p minix-text-games`
-  读数见「容器门」段；三架构 `cargo build -p minix-textfilter --bin fold --target
+  = 78 段 / 1313 通过 / 0 失败（`tmp/argv-446/container.log`，与宿主两包各跑的读数一致）；三架构 `cargo build -p minix-textfilter --bin fold --target
   {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` 各退 0（`tmp/argv-446/arch.log`）；
   clippy 触及件零告警、rustfmt 五件零漂移（`tmp/argv-446/rustfmt.log`）；
   负控五枚四咬 + 一枚等价全绿、还原后三段全绿（`tmp/argv-446/negctl446.log`）。
