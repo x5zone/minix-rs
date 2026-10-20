@@ -119,6 +119,37 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百五十一（施工名单轮：把「余三十支」变成一张按可观察面排好顺序的名单）
+
+- **这一轮不写代码，做的是把余量变成可执行的顺序**。「余三十支」只是个整数，接手的会话得自己再数一遍
+  才知道是谁；现量一次点清三支名单，写进板 A2 行当施工表。判据同「名单对账」：数的是**同一类东西**
+  （bin 文件名对 bin 文件名），且每个数都能用同一条命令复现。
+- **读数（L1）**：`os/commands/usr-bin/textfilter/src/bin/` 下共 **39** 枚 bin；
+  其中 `grep -l "support::args()"` 命中 **30** 枚仍走文本缝，已走 `args_bytes` 的是 **9** 枚。
+  再按可观察面分类：该支的诊断层会构造 `UnknownOption`（集外字母那一行由 libc 印）的有 **16** 枚——
+  这些支换完缝，字母位从折叠形 `ef` 回到原字节 `ff`，跨壳表里看得见；剩下 **14** 枚的 optstring
+  是空的或根本没有选项环（`head`/`tail`/`wc`/`unvis` 那一型），换缝的效果只落在**操作数那一腿**
+  （路径与回显位），跨壳表帮不上忙。逐名单见 `tmp/uniq-census-451/census.log`。
+- **顺序建议（写进板 A2 行，接手会话按此走）**：① `units` 两片先走（批次四百四十九已裁决：
+  切片 36 表与读表腿换字节键、切片 37 argv 与 `-f` 回显）；② 然后是 `uniq`——它是本族**唯一一支有两个
+  选项值回显位**的壳（`-f` 与 `-s` 的坏值各由 C 自己印一句带 `%s` 的 `errx`，
+  `minix3/usr.bin/uniq/uniq.c:90-98`，参照件 `tmp/uniq-408/uniq_ref` 已按 `-Z` 验过归属），
+  同一支里还叠着 `obsolete()` 那一段旧式改写（`-2`→`-f2`、`+3`→`-s3`，按字节改写才不会把非 ASCII
+  的尾巴折掉），所以它应当作为「一对」一次做完，不要拆；它的参数层整个长在
+  `os/commands/usr-bin/textfilter/src/bin/uniq.rs`（`fn obsolete_args` 与 `fn parse_uniq_args`
+  连文件内的 `mod tests` 都在同一件里），改一个文件就能收口，属低风险高面值的下一支；
+  ③ 再往后按 ``cksum`、`cmp`、`column`、`comm`、`cut`、`join`、`jot`、`nl`、`sort`、`split`、`tsort`、`unexpand`、`unifdef`、`uniq`、`units`、`vis`` 的字母序逐支做，每支照「一对」的既有配方（parse 层收 `&[&'a [u8]]`、
+  回显载荷改 `&'a [u8]`、壳走 `args_bytes`/`prog_name_bytes`、面门 +1 枚、跨壳表补一行）；
+  ④ ``asa`、`colcrt`、`diff`、`expand`、`fmt`、`head`、`hexdump`、`lam`、`look`、`patch`、`pr`、`tail`、`unvis`、`wc`` 那一批放最后，它们没有字母位可钉，只需要路径腿与操作数回显的核对。
+- **族终笔的前置**：三十支全走完，才谈得上删 `bin_support` 的三个文本口（`args`、`prog_name`、
+  `empty_optstring_operands`）并把 `os/commands/games/text-games/tests/argv_seam_face.rs:fn
+  a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 从「raw 与 lossy 等价」升级成
+  「逐字节等于原字节」——那是本族的收官笔，现在还不能动。
+- **登记与余量**：`textfilter` 仍走文本缝 30 支（名单已入板 A2 行）；`units` 两片的裁决维持
+  批次四百四十九那条；`HEAD-NON-PERMUTE-OPERAND-TAIL`、`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`
+  与既有 `*-NON-PERMUTE-OPERAND-TAIL` 等各条维持登记不执行。本轮零源码改动，
+  门只跑五道收尾门。
+
 ## 批次四百五十（名单对账轮：「末行换行状态」那四条 P0 经现量核销，台账跟上代码）
 
 - **这一轮不写代码，做的是名单对账**：板上与 18 篇的余量段把 `NL-FINAL-LINE-ADDS-NEWLINE`、
