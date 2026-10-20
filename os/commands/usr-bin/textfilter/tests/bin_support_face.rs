@@ -31,6 +31,7 @@ const PASTE: &str = env!("CARGO_BIN_EXE_paste");
 const FOLD: &str = env!("CARGO_BIN_EXE_fold");
 const REV: &str = env!("CARGO_BIN_EXE_rev");
 const COL: &str = env!("CARGO_BIN_EXE_col");
+const UNIQ: &str = env!("CARGO_BIN_EXE_uniq");
 const UNITS: &str = env!("CARGO_BIN_EXE_units");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
@@ -62,15 +63,16 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     (code, output.stdout, output.stderr)
 }
 
-/// 七支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
+/// 八支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
 /// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
 /// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 7] = [
+    let cases: [(&str, &str, i32, &[u8]); 8] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
-        // fold（四百四十六）、col（四百四十八）都走 `bin_support::args_bytes`，字母位是原字节 `ff`。
+        // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
+        // 字母位是原字节 `ff`。
         // seq 那一支还多钉一层：它的环是累加型，一枚裸字节只该报一行
         // （`the_accumulating_ring_names_the_raw_byte_once`）。
         ("tr", TR, 1, b"tr: unknown option -- \xff\n"),
@@ -81,6 +83,7 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         ("col", COL, 1, b"col: unknown option -- \xff\n"),
         // units 是本表唯一仍走文本缝的一支（批次三百九十九只换了渲染半：按 `char` 渲染
         // 会是 `c3 af` 两字节，字节形后是 `ef` 一字节），C 那一侧是原字节 `ff`。
+        ("uniq", UNIQ, 1, b"uniq: unknown option -- \xff\n"),
         ("units", UNITS, 3, b"units: unknown option -- \xef\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
