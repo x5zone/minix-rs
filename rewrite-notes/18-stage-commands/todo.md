@@ -119,6 +119,77 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百五十六（A2 参数缝半切片 38：`units` 的 argv 交回原字节，跨壳表八行至此全是原字节）
+
+- **这一轮做的是批次四百五十三那条切法的第二片**：动 argv 那条缝，不碰单位名链路（上一片已按字节）。
+  现状证据是跨壳表 `os/commands/usr-bin/textfilter/tests/bin_support_face.rs` 的 `units` 行钉着
+  `units: unknown option -- \xef`，而参照件 `tmp/units-319/units` 对同一形交回的是 `\xff`——
+  一枚裸字节在 `bin_support::args()` 的 `from_utf8_lossy` 上就换成了替换字符，走到选项环之前已经没了。
+- **落码四处同一支壳**：`src/bin/units.rs:run` 改走 `support::args_bytes()` 与 `support::prog_name_bytes()`；
+  `src/units.rs` 的 `UnitsArgs<'a>` 两个字段 `userfile`/`operands` 改成 `&'a [u8]`，
+  `fn parse_units_args` 收 `&'a [&'a [u8]]`（环里那句 `let bytes = arg.as_bytes()` 随之收成 `let bytes = arg`）；
+  `fn convert_operands` 与 `fn load_units_file` 的签名跟着外改。真源依据是 C 的 `crt0` 交的就是字节数组，
+  `minix3/usr.bin/units/units.c:855-875` 把 `argv` 原样交给 `addunit`、`-f` 的值原样交给 `open`，
+  全程没有一步问编码。
+- **两条仍要 `&str` 的腿登记 `ARGV-BYTE-PATH-IN-LIBS`，本轮不碰**：`-f` 的档名要交给
+  `minix_sys::open` 与 `minix_types::errno::err_line`，程序名要交给 `warn_line` 与
+  `fn units_error_line` 的名字段——两个口都在 `os/libs/`，那是二线的领地
+  （`coordination/CONCURRENT-WORK-PROTOCOL.md` §2 的「不许替别人实现他的前置」）。
+  于是这两腿在臂内各折一次 `from_utf8_lossy`，与其余各支同一条既定口径。
+- **门账按现跑取数**：面侧 `units_face` 22 → **23**（新立
+  `an_operand_with_a_raw_byte_is_warned_about_in_raw_bytes`，并配 argv 字节形夹具 `fn run_argv`，
+  参数经 `OsStr::from_bytes` 交下去——一枚裸 `ff` 写不成 `&str`，这是本族第二处「文本形夹具承载不了
+  本轮要比的字节」，判据同批次四百四十）；库内 units 门 21 → **21**，本轮只改夹具写法
+  （`"-f"` 这类串改成 `b"-f"` 以及随之而来的多行数组排版），期望串逐字未动，所以门数不涨——
+  与批次四百五十五那条「找到既有门就翻正、不新增双胞胎」同一处置；`--lib` 段 616 → 616；整包 1243 → **1244**。
+  跨壳表 `units` 行 `ef` → `ff`，**本表八行至此全是原字节**。
+- **A/B**：对 `tmp/units-319/units`（先按批次四百零七那条验法打 `-Z` 验它链的是 Minix 的 `getopt.c`）
+  跑十一形，**SAME=9 / DIFF=2**（`tmp/units-456/ab.log`）。本轮新增的两形裸字节腿
+  （选项字母位吃 `ff`、操作数含 `weird<ff>`）都是 **SAME**，而上一片跑这两形时是 DIFF（`ef` 对 `ff`）——
+  这就是参数缝半落地的直接读数。两处 DIFF 与上一片同因，都归 `UNITS-PARTIAL-UNIT-ON-ERROR`，
+  且**`Unknown unit` 那一行现在逐字节相同**，差的只是 C 拿半成品照样吐出的那个答案块。
+- **负控五枚**（`tmp/units-456/negctl.py`，读数 `negctl-final.log`）：W1（argv 退回文本缝）咬住 **2** 枚
+  （新面门 + 跨壳表 `no_command_aborts_on_a_nonutf8_option_letter`，后者是跨支期望的横向证据）；
+  W2（have 侧操作数交给链路前折一次 lossy）咬住 **1**；W3（字母位退回按字符取整簇）红 3 枚、命中新门 1；
+  W4（程序名那一腿的两种取法）与 W5（三操作数拼接那枚空格换成切片写）**零红＝等价声明**——
+  W4 之所以允许等价：门里的程序名全是 ASCII 且 `units_error_line` 的名字段本来就收 `&str`；
+  W5 是同一个 `0x20` 换了写法。**判据一条：声明等价的负控必须写清这形为什么不允许存在**，
+  否则「零红」读起来像门没牙。基线执行门数 1244、注入期 1241/1242/1243、复跑基线 1244 / 0；
+  每枚注入前后按整文件 md5 复核还原。
+- **两处注入端自错，都归因到注入而不是门**（与批次四百二十四、四百零五同族）：W2 第一版把 lossy
+  折在 want 侧的 `"m"` 上，那是 ASCII，折与不折同果，零红是注入的形状不对；W3 第一版锚在薄壳文件里，
+  而字母位取自库件的选项环，锚点出现 0 次被脚本当场挡下。
+- **一处编译期教训重演**：字节形的 `fn parse_units_args` 把生命周期绑在**元素**上而不是外层数组，
+  于是 `parse_units_args(&[b"-f".as_slice(), b"db".as_slice()])` 这种临时数组写法报 E0716
+  （临时值在借用结束前释放）；改法是每处先 `let argv: &[&[u8]] = &[…]` 绑定再交出去——
+  与批次四百四十一那条同一课，本轮在库内多枚门里重演一遍。
+- **门读数**：宿主与容器权威门各 **69 段 / 1244 passed / 0 failed** 退 0（容器按板 §7.3 的三挂载形带
+  `-u $(id -u):$(id -g)` 与两个缓存挂载点，跑时未与其他 cargo 并发，`tmp/units-456/container.log`）；
+  三架构 `cargo check --target … -p minix-textfilter --bins`（x86_64-unknown-none、aarch64-unknown-none、
+  riscv64gc-unknown-none-elf）各退 0；`rustfmt --edition 2024 --check` 触及四件各退 0 零漂移；
+  clippy 用同一条命令 `cargo clippy --offline -j 1 --all-targets -p minix-textfilter` 在改动前后各跑一次，
+  各 **151** 条、**零新增**——比对法是把两份日志的 `warning:` 行去掉数字后排序做集合差，
+  唯一两处文字差是 `colrm` 与 `sort` 两行的「(1 duplicate)」后缀位置，即同一枚警告在哪个 target 先报的差别。
+- **订正一处不可比的账面并立一条判据**：批次四百五十五记 clippy「整包 150 条」却没留命令，
+  本轮的 151 无法与之直接比。判据：**clippy/rustfmt 的计数必须与命令同记**，
+  否则「同数」是一个不可核对的说法；本轮起按「同一条命令在改动前后各跑一次」取证。
+- **进度与余量（全部现量）**：参数缝半**已落十一支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`）；`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l`
+  → **28** 支（上一笔含 `units` 是 29）；按整个命令面口径
+  `grep -rl "support::args()" os/commands --include=*.rs | grep -v tests/ | grep -v bin_support.rs | wc -l` → **97** 支。
+  **渲染半已归零**：`grep -rn "\.line(prog\|\.line(&prog" os/commands --include=*.rs | grep -v tests/` 现量 **0** 行，
+  `GetoptReport::line_bytes` 有 41 处调用点、29 个源文件（全在 `usr-bin/textfilter`），
+  `text-games` 那三支走 `lottery.rs` 自己的字节口（切片 26 落的一半）。板 A2 状态列此前那句
+  「余 N 处调用点 / N 个源文件」是滞后数，本轮一并翻正。
+  族余量：`textfilter` 二十八支的参数缝 + 族终笔（删 `bin_support` 三个文本口、把
+  `tests/argv_seam_face.rs` 那枚门升级成逐字节等于原字节）。
+- **独立轮在册（本轮不碰，按「一次只修一条」）**：`UNITS-DASH-REWRITE-AT-FIRST-CHAR`（上一笔现量根因）、
+  `UNITS-PARTIAL-UNIT-ON-ERROR`（本轮 A/B 两形再次现量）、`UNITS-PATH-SEARCH`、
+  `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、五枚 `*-NON-PERMUTE-OPERAND-TAIL`；
+  `REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE` 待裁决。
+
+---
+
 ## 批次四百五十五（A2 参数缝半切片 37：`units` 的单位名全链路按字节走）
 
 - **这一轮做的是批次四百五十三那条切法的第一片**：单位名所在的每一条腿都换成字节形，不碰 argv。
