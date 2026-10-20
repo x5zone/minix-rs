@@ -119,6 +119,68 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百四十八（A2 参数缝半第九对：`col` 的字母位与被它拒收的 `-l` 值都按字节交回）
+
+- **落点**：`os/commands/usr-bin/textfilter/src/col.rs`、`src/lib.rs`、`src/column.rs`、
+  `src/bin/col.rs`、`tests/col_face.rs`、`tests/bin_support_face.rs`（码笔 `3ad9308cc` 与
+  `61ca27450`，领用 `GETOPT-REPORT-BYTE-LETTER`，基线是批次四百四十七合入后的 `rewrite` 头 `c7183f964`）。
+- **这一支有两条腿，第二条是本族头一次遇到的形状**：
+  ① **字母位**：optstring 是 `"bfhl:px"`（`minix3/usr.bin/col/col.c`），集外字母那一行由 libc 印
+  （`minix3/lib/libc/stdlib/getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出），
+  所以字母位是短横后的**一枚裸字节**。旧的 `bin_support::args` 先过一次 `from_utf8_lossy`，命令行上那枚
+  不属于任何合法序列的 `ff` 在到达选项环之前就成了替换字符，环取到的第一字节是 `ef`。
+  ② **回显位来自选项值，不是来自操作数**：`col.c:145-150` 是
+  `fprintf(stderr, "col: bad -l argument %s.\n", optarg)`，`%s` 打回去的是 `-l` 那一段原文。此前各支的
+  回显位取的都是命令行**操作数**（`colrm` 的非法列、`cut` 的非法列表），`col` 取的是**选项的值**——同一串
+  字节流经的是 `optarg` 那一型，于是这一支要把 `ColFlagError::BadLineCount` 的载荷从 `&str` 换成 `&[u8]`，
+  而且 `atoi` 也得按字节吃：C 的 `atoi` 本来就是逐字节扫描（可选空白、可选符号、十进制前缀），
+  把它留在 `&str` 上就等于让「值能不能被解析」这件事先过一遍字符解码。
+- **改法**：`os/commands/usr-bin/textfilter/src/col.rs:fn parse_col_flags` 收 `&[&'a [u8]]`、
+  `BadLineCount(&'a [u8])`；`os/commands/usr-bin/textfilter/src/lib.rs:fn atoi` 的入参从 `&str` 改 `&[u8]`
+  （`os/commands/usr-bin/textfilter/src/column.rs` 的调用点跟着交 `value.as_bytes()`）；壳走
+  `bin_support::args_bytes` 与 `prog_name_bytes`，那句报文由新增的
+  `os/commands/usr-bin/textfilter/src/bin/col.rs:fn bad_line_count` 按字节拼。程序名那一腿仍折一次
+  `String::from_utf8_lossy`，属已登记的 `ARGV-BYTE-PATH-IN-LIBS`。
+- **门**：库 +1 枚 `col::tests::a_raw_nonutf8_line_count_is_named_by_its_own_bytes`（`--lib` 613→614）；
+  面 +1 枚 `tests/col_face.rs` 的 `a_raw_nonutf8_letter_and_line_count_keep_their_own_bytes`
+  （十一枚→十二枚，枚名与 `colrm_face`、`fold_face` 的同族门刻意不同，否则负控红名清单分不出是谁）；
+  跨壳表 `tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter` **补上 `col` 一行**
+  （六支→七支），该行的 `ff` 期望取自现量：本壳与参照件 `tmp/col-313/col` 对 `col -<ff>` 的 stderr
+  逐字节相同（`cmp` 无输出）。
+- **A/B 现量**：`python3 tmp/argv-448/ab.py` 二十三形逐字节对 `tmp/col-313/col`（开工先跑 `-Z` 验字样：
+  那句是 `col: unknown option -- Z`，Minix 措辞，承真值），读数 **SAME=23 / DIFF=0**。这一支是本族第一支
+  **零残差**的，原因在 `col` 自己的契约：它一个操作数都不收（`col.c:157-158` 的 `if (optind != argc) usage()`），
+  所以路径腿 `ARGV-BYTE-PATH-IN-LIBS` 在这里根本没有可观察面——不是那条腿修好了，是这一支碰不到它。
+  这也解释了一个此前没写清的事实：跨壳表里「残差有几形」从来不是缝的质量计，而是各支契约的形状计。
+- **门读数（L1 证据）**：宿主 `cargo test -p minix-textfilter -p minix-text-games --no-fail-fast`
+  = 78 段 / 1317 通过 / 0 失败（`tmp/argv-448/final-gates.log`、跨壳表补行后的复跑
+  `tmp/argv-448/host-table.log` 同读数）；容器 `docker run --rm -v <领用树绝对路径>:/work -w /work/os
+  -m 2g minix-ci:1.94 cargo test -j 1 -p minix-textfilter -p minix-text-games` = 78 段 / 1317 / 0
+  （`tmp/argv-448/container.log`，退 0，与宿主同读数）；三架构 `cargo build -p minix-textfilter --bin col
+  --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` 各退 0；
+  `cargo fmt -p minix-textfilter -- --check` 对本轮触及的六件零漂移（该包存量漂移件不计——判据见批次四百四十六
+  那条手法入档：格式化只能逐件点名）；clippy 触及件只余 `src/col.rs` 两枚**基线既有**告警
+  （`src/col.rs:fn filter` 里一处 `idx` 赋值之后读不到、`src/col.rs:fn flush_line` 里循环变量 `i` 只用来索引），
+  主树同位置同文案现量在案，属存量 lint 债，本轮不扩范围去动状态机。
+- **负控五枚（四咬 + 一枚等价）**：`tmp/argv-448/negctl448.log` 里四枚——N1 参数缝退回文本缝，咬住
+  `tests/col_face.rs` 那枚新门；N2 字母位退回按 `char` 渲染的文本口（锚点 `.line_bytes(prog)` 两处），
+  咬住面门与 `nonascii_option_letter_is_reported_as_one_byte`；N3 句子丢掉原字节载荷，咬住面门与
+  `a_rejected_line_count_quotes_the_operand_and_skips_the_usage`；N4 闭包形等价改写全绿。另在跨壳表补行后
+  单放一枚 N5：把 `col` 行的期望退回 `ef`，咬住 `no_command_aborts_on_a_nonutf8_option_letter`
+  （`tmp/argv-448/negctl448-table.log`）；各枚还原后复跑全绿。
+- **手法两条入档**：① **注入脚本必须在异常路径也还原**。本轮 `suite()` 的仓库路径拼错抛了异常，N1 的注入
+  留在工作区没被还原，源码带着一条假缝跑完剩下的门，靠 `git status` + `git diff` 现量才逮到——脚本改成先备份、
+  `try/finally` 还原，并加一枚「注入前基线」读数，基线不绿就不谈注入结果。② **已迁的壳必须在跨壳表里有一行**。
+  `col` 改完才发现表里没有它：「表里几支」与「迁了几支」两个名单对不上账，属覆盖率漏项而非代码缺陷；
+  补行之后「跨壳表已交回原字节的支数」才等于参数缝半已落支数里那些有字母位可观察的支。
+- **登记与余量**：`textfilter` 三十九支已迁九支（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`、`fold`、
+  `col`）、余三十支；新登记 `COL-CLIPPY-STOCK-LINT`（上面那两枚存量告警，只登记未执行）；
+  `ARGV-BYTE-PATH-IN-LIBS`、`FOLD-DIGIT-NOT-FIRST-IN-CLUSTER`、`FOLD-NON-PERMUTE-OPERAND-TAIL`、
+  `COLRM-STRERROR-ZERO-TEXT` 与 `UNEXPAND-*`/`CUT-*`/`NL-*`/`PASTE-COMM-NUL-*`/`SEQ-FLOAT-RENDER`/
+  `TR-SET-GRAMMAR-SENTENCES`/八条 `*-NON-PERMUTE-OPERAND-TAIL`/`PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`/
+  `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`/`UNEXPAND-ZERO-STOP-PANIC` 维持登记不执行；
+  跨壳表仍只余 `units` 一行的字母位是折叠形 `ef`，它的裁决要点见批次四百四十六段那条预研读数。
+
 ## 批次四百四十七（P0 专轮：`fold` 拆行两臂按 C 翻正，`FOLD-SPLIT-BRANCH-SWAPPED` 闭）
 
 - **落点**：`os/commands/usr-bin/textfilter/src/fold.rs`（码笔 `a9bb4e814`，领用 `GETOPT-REPORT-BYTE-LETTER`，
