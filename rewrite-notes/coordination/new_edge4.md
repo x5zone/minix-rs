@@ -505,3 +505,24 @@
   **新登记一条不执行**：`COLUMN-BLANK-SET-NARROWER-THAN-ISSPACE`。C 的空行判 `for (p = buf; *p && isspace((unsigned char)*p); ++p); if (!*p) continue;`（`:274-278`）里 `isspace` 含 `' ' \t \n \v \f \r` 六枚，本壳只跳空格与制表两枚（该集合本轮之前就如此）。差别落在「整条空白又没有换行符」的末行：参照件静默丢弃退 0，本壳当残行打 `column: line too long` 并退 1。现量 `tmp/column-435/blankset.log`（复跑 `python3 tmp/column-435/blankset.py`）：`0b`、`0b 0b`、`0c 0d`、`0d` 四形参照件 rc=0 零输出、本壳 rc=1 加警告；`0d 0a` 参照件连换行一起当空白丢、本壳交回一行；对照形 `20 09` 两边同形，证明差别确实只在 `\v \f \r` 三枚。修法是把跳过集合换成 C 的 ctype 判，属另一条口径，与「字节 vs 文本」无关。
   **本轮顺带归位的锚点**：写注释时一并回数，订正五处——`strtok` 在 `:224-225`（旧注 `214-231` 落在声明与 realloc 段）、`input` 循环 `:272-296`（旧注 `266-299`/`270-297` 越到 `usage` 头上）、补齐腿 `:249-251`（旧注 `252-256` 把末列那句算了进去）、`maketbl` 字段环 `:223-247`、`maxlength >= termwidth` 判在 `:131`（旧注 `:130` 是 `maketbl();`）。单独一笔 `734aec68a`，`git diff -U0` 逐行确认非注释行改动 0 处。
   **五道收尾门**：`todo-reconcile-scan.sh` 唯一 DRIFT 仍是 C 板「探针命名族 31 对 18」（与本线无关）；`notes-link-check.py rewrite-notes/` 断链 **131**（基线不变）；`todo-staleness-check.sh` PASS 0 项；`doc-style-lint.sh --diff 5ef29f10f..HEAD`（3 文件 / 168 新增行）**error 级 0**；`check-staged-inflight.sh` 无在制文件。**余量**：甲组只剩 `pr` 一支（`Page`/`render_page`/`merge_body_rows` 三处是 `String`，是一次库面重构）；`units`/`tsort` 要各自夹具形状；`from_utf8_lossy` 那 22 处分两类口径；`CUT-C-LEG-CHARACTER-ORIENTED` 与 `REV-MULTIBYTE-ERROR-LEG` 待人裁决；板 A2 的参数缝半（射程②）仍在册。
+
+- **里程碑第一百五十笔（批次四百三十六，A2 板，qoder）**：普查甲组的最后一支 `pr` 落地，
+  `os/commands/usr-bin/textfilter` 的行腿至此全部按字节。`Page` 的三个行池、`paginate` 家族、
+  三条列腿与并排腿 `merge_body_rows` 携带 `Vec<u8>`，壳侧 `split_lines` 按 `b'\n'` 切而不解码；
+  `clip_to_width` 改照 `minix3/usr.bin/pr/pr.c:inln` 的字节预算硬截（若把剪点回退到字符边界，
+  同一份输入会比 C 少交几个字节、页宽随之算歪）；`-n` 编号腿改为直接拼字节，因为一枚制表符经
+  `as char` 进 `String` 会被重新编成两字节。门：库新增
+  `a_cell_is_cut_at_bytes_even_mid_code_point`、面新增
+  `a_nonutf8_line_keeps_its_bytes_through_the_line_legs`，宿主与容器各 68 段 1207/0，三架构退 0，
+  `rustfmt` 零漂移，`clippy` 按告警位置与主树对账同为 34 枚存量、零新增，负控四枚咬住加一枚等价全绿
+  （`tmp/pr-436/negctl.log`）。A/B 对同名软链起的参照件共 13 形，12 形逐字节同参照件
+  （`tmp/pr-436/ab-postfix.log`）；基线读数 6 同 7 异存 `tmp/pr-436/ab.log`，两读之差即本支射程。
+  **本轮登记（在册未执行）**：唯一残差是缺省页眉少一段时间字段——`prhead` 打印的 `buf` 前段由同文件
+  `:1412` 的 `strftime` 按缺省宏 `TIMEFMT`（`:105`，该宏定义未见于仓内 `minix3/` 快照 [待验证]）造好，
+  本壳 `PrOptions` 的 `time_prefix` 缺省为空串；登记 `PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`，
+  射程要拿操作数的修改时间与本地时区，非单轮量级，与字节口径无关。
+  **判据补一条**：宿主门全绿的另一面是产物形状——上一轮已记下「先验二进制再信红」，本轮负控读数同样
+  走了两次才准：解析器取 cargo 摘要块取不到红名时，改取 `test <名> ... FAILED` 行才是无歧义的读法
+  （`tmp/pr-436/negctl.log` 第一版四条「构建失败」实为解析空咬）。
+  提交：`cb3edcee4`（码笔）、`f0ceb0d34`（文档笔）、`c9d7dfff4` 与 `dedd9442b`（文档笔续，文风门 SL-5）。
+  甲组三支至此全部落地；板 A 的 A2 行仍余参数缝半（射程②），其余在册项未动。
