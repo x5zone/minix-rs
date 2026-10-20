@@ -117,7 +117,7 @@ pub fn parse_column_args<'a>(args: &'a [&'a str]) -> Result<ColumnArgs<'a>, Geto
                         }
                     };
                     if ch == b'c' {
-                        options.termwidth = crate::atoi(value).max(0) as usize;
+                        options.termwidth = crate::atoi(value.as_bytes()).max(0) as usize;
                     } else {
                         options.separator = value.to_string();
                     }

@@ -44,32 +44,32 @@ pub mod colrm;
 pub mod column;
 pub mod comm;
 pub mod count;
-pub mod digest;
+pub mod cut;
 pub mod diff;
+pub mod digest;
 pub mod expand;
-pub mod jot;
-pub mod join;
-pub mod lam;
-pub mod look;
-pub mod nl;
-pub mod patch;
-pub mod paste;
-pub mod split;
 pub mod floatfmt;
 pub mod fmt;
 pub mod fold;
 pub mod hexdump;
-pub mod unexpand;
-pub mod cut;
+pub mod join;
+pub mod jot;
+pub mod lam;
+pub mod look;
+pub mod nl;
+pub mod paste;
+pub mod patch;
 pub mod pr;
 pub mod rev;
 pub mod seq;
 pub mod sort;
-pub mod tsort;
+pub mod split;
 pub mod tr;
+pub mod tsort;
+pub mod unexpand;
 pub mod unifdef;
-pub mod units;
 pub mod uniq;
+pub mod units;
 pub mod vis;
 pub mod window;
 
@@ -241,8 +241,8 @@ pub fn empty_optstring_operands_bytes<'a>(
 /// 溢出按 C 的 `strtol` 截到 `i32` 两端（`saturating_*`），因为 `atoi` 的返回值
 /// 本来就是 `int`。
 #[must_use]
-pub fn atoi(text: &str) -> i32 {
-    let bytes = text.as_bytes();
+pub fn atoi(text: &[u8]) -> i32 {
+    let bytes = text;
     let mut cursor = 0usize;
     while matches!(
         bytes.get(cursor),

@@ -10,7 +10,6 @@
 
 extern crate alloc;
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
@@ -20,12 +19,14 @@ use minix_textfilter::GetoptReport;
 use minix_textfilter::col::{ColFlagError, filter, parse_col_flags};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let options = match parse_col_flags(&refs[1..]) {
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名那一腿的渲染口仍是 `&str`（`GetoptReport::line_bytes` 收 `&str`），库侧字节口
+    // 在册未动：`ARGV-BYTE-PATH-IN-LIBS`。字母位与 `-l` 的值这两腿从这里开始是原字节。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let words: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
+    let options = match parse_col_flags(&words[1..]) {
         Ok(options) => options,
-        Err(error) => flag_error(prog, error),
+        Err(error) => flag_error(&prog, error),
     };
 
     // 读缝走 `bin_support` 的双生面（宿主 `std::io::stdin`、真机 `read(STDIN)`）：
@@ -61,10 +62,20 @@ fn flag_error(prog: &str, error: ColFlagError<'_>) -> ! {
         // 加 `exit`：程序名写死、带操作数原文、有个句点，而且**不接 usage**。
         // 旧写法少了操作数原文与句点，还在 `-l` 后面没有那一段时错走了这一支。
         ColFlagError::BadLineCount(value) => {
-            support::warn(format!("col: bad -l argument {value}.\n").as_bytes());
+            support::warn(&bad_line_count(value));
             support::terminate(1);
         }
     }
+}
+
+/// `col.c:145-150` 那句按字节拼：`optarg` 来自 argv 的原字节，回显位不该被任何
+/// 字符解码改写过（`col: bad -l argument <原字节>.`）。
+fn bad_line_count(value: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"col: bad -l argument ");
+    out.extend_from_slice(value);
+    out.extend_from_slice(b".\n");
+    out
 }
 
 /// C 的 `usage()`（`col.c:520-526`）：程序名是**写死**的 `col`（不像 `rev` 那样跟着

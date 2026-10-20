@@ -21,6 +21,8 @@
 mod face_support;
 
 use face_support::write_stdin;
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::process::{Command, Stdio};
 
 const COL: &str = env!("CARGO_BIN_EXE_col");
@@ -254,5 +256,38 @@ fn the_missing_value_line_of_l_is_ascii_and_unchanged() {
     assert_eq!(
         err,
         b"col: option requires an argument -- l\nusage: col [-bfpx] [-l nline]\n".to_vec()
+    );
+}
+/// 参数缝交回原字节之后，`col` 的两张脸同时归位：字母位是一枚裸 `ff`（libc 的
+/// `%c` 打的是 `optopt` 那个字节，`minix3/lib/libc/stdlib/getopt.c:103`），
+/// `bad -l argument` 那句的原文也是一枚 `ff`（`col.c:145-150` 的 `%s`）。
+/// 旧的文本缝把两处都折成三字节 U+FFFD 再取第一字节 `ef`。
+#[test]
+fn a_raw_nonutf8_letter_and_line_count_keep_their_own_bytes() {
+    let child = Command::new(COL)
+        .arg(OsString::from_vec(b"-\xff".to_vec()))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the col binary should be runnable");
+    let output = child.wait_with_output().expect("the run should finish");
+    assert_eq!(
+        output.stderr,
+        b"col: unknown option -- \xff\nusage: col [-bfpx] [-l nline]\n".as_slice()
+    );
+
+    let child = Command::new(COL)
+        .arg(OsString::from_vec(b"-l\xff".to_vec()))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the col binary should be runnable");
+    let output = child.wait_with_output().expect("the run should finish");
+    assert_eq!(
+        output.stderr,
+        b"col: bad -l argument \xff.\n".as_slice(),
+        "句子带的是原字节，也不接 usage"
     );
 }
