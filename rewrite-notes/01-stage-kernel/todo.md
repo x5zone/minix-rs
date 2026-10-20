@@ -40,6 +40,7 @@
 | 2026-10-12 01 篇 CH1-CH2 人审 | 3 项登记 | I-17（§2.6 拆节）/I-18（章头与巨节体检）/I-19（讲解条续扫）；同轮正文修正另见台账 `prompt/WORKFLOW-OPEN-ITEMS.md` 第四节第三轮 |
 | 2026-10-13 01 篇 §2.3–§3.2 人审续 | 1 项登记 + 读数刷新 | I-20（boot-shim 再导出注释与调用点不符）；I-17/I-18 体量读数现算刷新（提交 `8dc20636b`）；同轮正文修正见提交 `2eac4586e` |
 | `2026-10-13` SD-20/SD-42 落地（代码侧） | 文档同步 2 篇 | 装载器尾的指令缓存同步契约（`[ARCH: cache-sync]`）与 aarch64 设备内存属性（`[ARCH: mmio-device]`）已进代码并带形状钉；文档半待补：`06-proc-init-boot-proc.md` §2.7（`arch_boot_proc` 与 VM ELF 装载）需补「装载器尾部做指令缓存同步」一段与标注，`04-platform-discovery.md` 的 MMIO 高半窗口/§1.114 段需补「设备窗口按 2 MiB 分片映射为 Device、恒等与高点两别名同属性」一段与标注（三处一致纪律的文档半；代码半见 `coordination/TODO-LEDGER-OPEN.md` §1 同日行） |
+| 2026-10-20 01 篇 `reserved_regions` 答疑派生 | 2 项登记 | D-59（`supports_1gb_page` 双 trait 入口收口：`HugePages` 的 latent 方法 vs `DmCoverageArch` 的生产路径）/ D-60（`IDENTITY_MAP_END` 与 `BOOT_IDENTITY_MAP_END` 同值双定义）；两项均为抽象收口、不改行为，详见 §7.1 |
 | 📌 保持 DEFERRED（依赖仍成立） | — | **I-1**（kernel ELF 构建无引导路径）、**I-5**（ACPI RSDP 无消费方）、**T-10**（U-Boot 工具链，`PD-15` 已裁放弃）、**profiling deferred 体**（等 S-8/S-9）；Edge 表旧 12 项中 SMP 块的 `D-36`/`D-37`/`D-38①`/`D-39` 四条已于 S-4/S-5/S-7 收官时闭合（§23/§24 在案，`2026-10-09` 按代码回勾本行与 §7.1/§10——真正仍开的 SMP 残项是**次级核承载进程**，那是另一件事，不能用"多核未做"盖住四条已完成的账） |
 
 ## 0. 审查基线 — 已确认的良好架构（无需改动）
@@ -146,6 +147,13 @@ D-14（SIGKMESS 随 W-7 演进不可达）、D-24（VMSTYPE_MAP C 本身无此�
 | D-39 | ~~x86_64 `init_ap` panic 占位~~ ✅ S-4（2026-09-14 真实现：AP 侧装载 + GS/MSR；16 字节 TSS 描述符布局 bug 同步修复——见 smp_todo §22） | S-4 ✅ |
 | D-40 | ~~ptproc per-CPU（现由 `CURRENT_PTPROC_NR` 全局单核承担）~~ ✅ S-6.1（全局原子退役 → CpuLocal.ptproc；身份锚 gs:0x10） | S-6a ✅ |
 | D-41 | ~~`PLATFORM` AssumeSyncCell SMP 替换~~ ✅ S-6.2（Frozen<T> 冻结原语，minix-types；PLATFORM 已迁移） | S-6b ✅ |
+
+**⬜ `2026-10-20` 新登记（待修，抽象收口；均不改行为）**：
+
+| # | 项 | 状态与修法 |
+|---|-----|-----------|
+| D-59 | 1 GiB 页能力查询双 trait 入口收口（`HugePages::supports_1gb_page` vs `DmCoverageArch::supports_1gb_page`） | ⏳ open（2026-10-20 01 篇 `reserved_regions` 答疑派生，低优）：**现状读数**——`os/arch/src/arch/paging_ext.rs:125` 的 `HugePages::supports_1gb_page` 标 `[latent capability]`、目前无生产调用者；`os/arch/src/arch/dm_coverage.rs:151` 的 `DmCoverageArch::supports_1gb_page` 被 `establish_dm_range`（`:209`）实际使用；x86_64 的 DM 实现（`os/arch/src/x86_64/paging.rs:1148`）已经委托 `X86_64Paging::supports_1gb_page`，所以重复的是 **trait 入口**，不是 CPUID 探针本身。**修法（二选一，落地时裁决）**：a. 抽一个架构级自由函数或最小能力 trait 作为唯一探针，两个 trait 方法都转发，保留“运行时大页服务 / boot 期 DM 建立”两个消费面；b. 若确认短期内没有 `HugePages` 泛型消费者，删除 latent 方法，只留 `DmCoverageArch`，等未来用户态大页需求出现再按需加回。**不建议**让 `DmCoverageArch` 继承 `HugePages`：后者是运行时 `Paging` 句柄服务，DM 建立是 bootstrap root 上的单线程静态操作（`dm_coverage.rs:143` 已明确这条边界），继承会把两种生命周期绑死。**解除条件（DoD）**：全仓 `supports_1gb_page` 只剩一个探针定义 + 明确的转发/消费点；`rg -n 'supports_1gb_page' os --include='*.rs'` 读数与裁决一致；若保留双入口，注释必须写清各自生命周期与转发关系。**现算命令**：`rg -n 'supports_1gb_page' os --include='*.rs'` |
+| D-60 | 恒等映射上界常量双定义（`IDENTITY_MAP_END` vs `BOOT_IDENTITY_MAP_END`） | ⏳ open（2026-10-20 同上，低优）：**现状读数**——`os/kernel/src/lib.rs:59` 私有 `const IDENTITY_MAP_END: u64 = 0x1_0000_0000`；`os/arch/src/lib.rs:231` 公开 `pub const BOOT_IDENTITY_MAP_END: u64 = 0x1_0000_0000`，`boot_dm_pa_limit()`（`:246`）用它；两处同值、跨 crate 手工同步。**风险**：改一处不改另一处会让“内核恒等映射范围”与“boot DM 分配上界”脱节，表现为 bump 页越过恒等窗口，或反向浪费可分配空间。**修法（推荐）**：kernel 侧改为 `use minix_arch::BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END;`（依赖方向 kernel → arch 已存在），删除本地字面量；boot-shim 继续引用 arch 的公开常量。**备选**：若认为 arch 不应拥有 kernel 的恒等上界，把常量下沉到 `minix-types`/`minix-boot` 后两处 re-export，但这会扩大改动面，需先证明 arch 的值不属于 boot 契约。**解除条件（DoD）**：全仓该字面量只剩一处定义；`rg -n '0x1_0000_0000|IDENTITY_MAP_END|BOOT_IDENTITY_MAP_END' os --include='*.rs'` 中无第二个 `= 0x1_0000_0000`；`cargo test -p minix-kernel --features mock` 保持通过。**现算命令**：`rg -n '0x1_0000_0000|IDENTITY_MAP_END|BOOT_IDENTITY_MAP_END' os --include='*.rs'` |
 
 ### 7.2 WONTFIX 设计排除清单（有 rationale，非缺口，防重查）
 
