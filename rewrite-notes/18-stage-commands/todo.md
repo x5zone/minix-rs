@@ -147,7 +147,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   再带前导空格」的残差归零，唯一残差是 `fold a<ff>.txt` 的路径腿（`ARGV-BYTE-PATH-IN-LIBS`，在册不动）。
 - **门读数（L1 证据）**：宿主 `cargo test -p minix-textfilter --no-fail-fast` + `cargo test -p minix-text-games
   --no-fail-fast` 两包各跑 = 78 段 / 1315 通过 / 0 失败（`tmp/argv-447/host.log`）；容器同两包
-  = 读数见下（`tmp/argv-447/container.log`）；三架构 `cargo build -p minix-textfilter --bin fold --target
+  = 78 段 / 1315 通过 / 0 失败（`tmp/argv-447/container.log`，退 0）；三架构 `cargo build -p minix-textfilter --bin fold --target
   {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` 各退 0；`rustfmt --edition 2021 --check`
   触及件零漂移（`tmp/argv-447/rustfmt.log`）、clippy 触及件零告警；负控四枚（三咬 + 一枚等价，
   `tmp/argv-447/negctl447.log`）：两臂再写反咬住三形、续行少丢一位空格咬住两形、撤掉 `-s` 条件咬住
