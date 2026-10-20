@@ -514,6 +514,48 @@ fn a_raw_byte_in_a_dictionary_name_reaches_the_listing() {
     );
 }
 
+/// argv 形态的字节形夹具：一枚裸 `ff` 没法写成 `&str`，所以参数按字节交
+/// （`OsStr::from_bytes`），比的是子进程实际收到的那串字节。
+fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, Vec<u8>, Option<i32>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut child = Command::new(UNITS)
+        .args(args.iter().map(|a| std::ffi::OsStr::from_bytes(a)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the units binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (output.stdout, output.stderr, output.status.code())
+}
+
+#[test]
+fn an_operand_with_a_raw_byte_is_warned_about_in_raw_bytes() {
+    // 操作数就是单位名表达式，C 在 `units.c:855-875` 把 `argv` 原样交给 `addunit`，
+    // 未知时由 `mywarnx("Unknown unit '%s'", *product)` 按字节回显。参数缝半此前
+    // 在 `support::args()` 里就把它折成 U+FFFD（三字节），本壳与参照件差三位。
+    let (_dir, db) = database("raw-operand");
+    let operand = [b"weird".as_slice(), b"\xff"].concat();
+    let args: Vec<&[u8]> = vec![
+        b"-f".as_slice(),
+        db.as_bytes(),
+        operand.as_slice(),
+        b"m".as_slice(),
+    ];
+    let (_, err, code) = run_argv(&args, b"");
+    assert_eq!(code, Some(0), "C 不看推导返回值，坏名也退 0");
+    assert_eq!(
+        err,
+        [
+            b"units: Unknown unit 'weird".as_slice(),
+            b"\xff'\n".as_slice(),
+        ]
+        .concat(),
+        "回显位该是 argv 里那一枚裸 ff"
+    );
+}
+
 #[test]
 fn a_raw_byte_in_a_typed_name_comes_back_in_the_warning() {
     // 交互那一行的字节原样进单位名链路：`addunit` 的 `strtok` 与 `lookupunit` 的

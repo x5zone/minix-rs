@@ -6,7 +6,8 @@
 //! the `^`/plural/prefix fallbacks), sorting+cancellation, the
 //! conformability check and the `\t* \t/` answer rendering. The
 //! interactive prompt face and units-file path search stay in the
-//! bin (registered as 待开放路径 for the file operand).
+//! bin. The `-f` operand is the one byte-valued argument that still
+//! needs a `&str` to be opened (`ARGV-BYTE-PATH-IN-LIBS`).
 //!
 //! Unit names are bytes, never text. The C compares them with
 //! `strcmp`/`strncmp` (`units.c:503`, `:511`, `:542`), prints them with
@@ -679,16 +680,18 @@ pub fn list_units(table: &UnitsTable, expand: bool, prec: usize) -> (Vec<u8>, us
 /// 前门跑完那个选项环之后手上有的东西（`units.c:818-833` 的 `switch` 各支置的变量）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UnitsArgs<'a> {
-    /// `-f` 的值，C 的 `userfile`。
-    pub userfile: Option<&'a str>,
+    /// `-f` 的值，C 的 `userfile`。它是**路径**：真正打开那一档的腿要等库侧的
+    /// 字节口（登记 `ARGV-BYTE-PATH-IN-LIBS`），本层只保证不再提前折成文本。
+    pub userfile: Option<&'a [u8]>,
     /// `-l` 或 `-L` 都置它（C 的 `list`）。
     pub list: bool,
     /// `-L` 才置它（C 的 `listexpand`）。
     pub listexpand: bool,
     /// `-q`（C 的 `quiet`）。
     pub quiet: bool,
-    /// 环结束后的操作数，即 C 的 `argv += optind`。
-    pub operands: Vec<&'a str>,
+    /// 环结束后的操作数，即 C 的 `argv += optind`。它们就是单位名表达式，
+    /// 所以与原字节直接接上 `fn add_unit`（C 在 `units.c:855-875` 把 `argv` 原样交出去）。
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// 前门的三类出口。句式各有主人，所以不是一支的详略版：
@@ -714,13 +717,13 @@ pub enum UnitsArgError {
 /// 游标走**字节**而非 `chars()`：参照件对 `-é` 报的是首字节 `\303`
 /// （libc 的 `%c` 打的是那个字节本身），按字符走会在非 ASCII 字节上越出字符边界
 /// （与 `column`/`col` 那两处同形）。
-pub fn parse_units_args<'a>(args: &'a [&'a str]) -> Result<UnitsArgs<'a>, UnitsArgError> {
+pub fn parse_units_args<'a>(args: &'a [&'a [u8]]) -> Result<UnitsArgs<'a>, UnitsArgError> {
     const OPTSTRING: &[u8] = b"lLvqf:";
     let mut parsed = UnitsArgs::default();
     let mut i = 0usize;
     while i < args.len() {
         let arg = args[i];
-        let bytes = arg.as_bytes();
+        let bytes = arg;
         // 不以 `-` 开头的 token、以及单破折号本身，都在 `getopt.c:74-78` 与 `:87-92`
         // 结束选项环且**不被吃掉**，于是它自己就是第一个操作数（不重排）。
         if bytes.len() < 2 || bytes[0] != b'-' {
@@ -1050,20 +1053,21 @@ mod tests {
     #[test]
     fn test_ring_only_f_takes_a_value() {
         // `"lLvqf:"` 里 `l`/`L`/`q` 都不带值，所以「带值选项缺值」那一支在本支只有 `f` 可达。
-        let parsed = parse_units_args(&["-lq", "-L"]).expect("-l/-q/-L 都不缺值");
+        let argv: &[&[u8]] = &[b"-lq".as_slice(), b"-L".as_slice()];
+        let parsed = parse_units_args(argv).expect("-l/-q/-L 都不缺值");
         assert!(parsed.list);
         assert!(parsed.listexpand);
         assert!(parsed.quiet);
         assert!(parsed.operands.is_empty());
         assert_eq!(
-            parse_units_args(&["-f"]).err(),
+            parse_units_args(&[b"-f".as_slice()]).err(),
             Some(UnitsArgError::Getopt(crate::GetoptReport::MissingValue(
                 'f'
             )))
         );
         // 缺值那一行只由 libc 印，句子后面接的是调用方的 usage（`units.c:843-845`）。
         assert_eq!(
-            parse_units_args(&["-lq", "-f"]).err(),
+            parse_units_args(&[b"-lq".as_slice(), b"-f".as_slice()]).err(),
             Some(UnitsArgError::Getopt(crate::GetoptReport::MissingValue(
                 'f'
             )))
@@ -1076,21 +1080,22 @@ mod tests {
         // 差别只在 `q`/`l` 有没有先被置上——那一支走到 usage 就退出了，所以只有字母可见。
         use crate::GetoptReport;
         assert_eq!(
-            parse_units_args(&["-Z"]).err(),
+            parse_units_args(&[b"-Z".as_slice()]).err(),
             Some(UnitsArgError::Getopt(GetoptReport::UnknownOption('Z')))
         );
         assert_eq!(
-            parse_units_args(&["-qZ"]).err(),
+            parse_units_args(&[b"-qZ".as_slice()]).err(),
             Some(UnitsArgError::Getopt(GetoptReport::UnknownOption('Z')))
         );
         assert_eq!(
-            parse_units_args(&["-Zq"]).err(),
+            parse_units_args(&[b"-Zq".as_slice()]).err(),
             Some(UnitsArgError::Getopt(GetoptReport::UnknownOption('Z')))
         );
-        // 游标按字节走：`-é` 交回的是首字节 0xC3（libc 的 `%c` 打的就是那个字节）。
-        // 报文里它渲染成 Latin-1 码点而非原始字节，这一处失真与 `rev`/`colrm` 同形。
+        // 游标按字节走：短横后那一枚字节就是字母，`2d c3 a9` 交回的是 `c3`
+        // （`getopt.c:79` 的 `optopt = *place++` 一次进一个字节）。载荷是 `char`，
+        // 到报文那一步由 `GetoptReport::line_bytes` 把 `<= 0xFF` 的码位写回那一枚原字节。
         assert_eq!(
-            parse_units_args(&["-é"]).err(),
+            parse_units_args(&[b"-\xc3\xa9".as_slice()]).err(),
             Some(UnitsArgError::Getopt(GetoptReport::UnknownOption(
                 '\u{00c3}'
             )))
@@ -1102,19 +1107,19 @@ mod tests {
         // `-v` 那两行打完就 `usage()`，所以它后面的字母永远扫不到；
         // 反过来 `-Zv` 只能看到集外字母那一行。两支都经参照件现量。
         assert_eq!(
-            parse_units_args(&["-v"]).err(),
+            parse_units_args(&[b"-v".as_slice()]).err(),
             Some(UnitsArgError::Version)
         );
         assert_eq!(
-            parse_units_args(&["-q", "-v"]).err(),
+            parse_units_args(&[b"-q".as_slice(), b"-v".as_slice()]).err(),
             Some(UnitsArgError::Version)
         );
         assert_eq!(
-            parse_units_args(&["-vZ"]).err(),
+            parse_units_args(&[b"-vZ".as_slice()]).err(),
             Some(UnitsArgError::Version)
         );
         assert_eq!(
-            parse_units_args(&["-Z", "-v"]).err(),
+            parse_units_args(&[b"-Z".as_slice(), b"-v".as_slice()]).err(),
             Some(UnitsArgError::Getopt(crate::GetoptReport::UnknownOption(
                 'Z'
             )))
@@ -1124,23 +1129,32 @@ mod tests {
     #[test]
     fn test_attached_value_and_next_token_value_both_work() {
         assert_eq!(
-            parse_units_args(&["-fmy.lib"]).expect("紧贴的值").userfile,
-            Some("my.lib")
+            parse_units_args(&[b"-fmy.lib".as_slice()])
+                .expect("紧贴的值")
+                .userfile,
+            Some(b"my.lib".as_slice())
         );
         assert_eq!(
-            parse_units_args(&["-f", "my.lib"])
+            parse_units_args(&[b"-f".as_slice(), b"my.lib".as_slice()])
                 .expect("分开的值")
                 .userfile,
-            Some("my.lib")
+            Some(b"my.lib".as_slice())
         );
         // 值取自下一个 token 时**不看它的脸色**：`-f -` 的档名就是 `-`。
-        let parsed = parse_units_args(&["-f", "-", "m", "sec"]).expect("- 可以被 -f 取走");
-        assert_eq!(parsed.userfile, Some("-"));
-        assert_eq!(parsed.operands, vec!["m", "sec"]);
+        let argv: &[&[u8]] = &[
+            b"-f".as_slice(),
+            b"-".as_slice(),
+            b"m".as_slice(),
+            b"sec".as_slice(),
+        ];
+        let parsed = parse_units_args(argv).expect("- 可以被 -f 取走");
+        assert_eq!(parsed.userfile, Some(b"-".as_slice()));
+        assert_eq!(parsed.operands, vec![b"m".as_slice(), b"sec".as_slice()]);
         // 值取走之后，同一 token 剩下的字节不再当字母扫：`-fql` 的档名是整条尾巴 `ql`，
         // 而不是「`-f` 取 `q` 当值、`l` 再置列表」。
-        let parsed = parse_units_args(&["-fql"]).expect("尾巴整段是值");
-        assert_eq!(parsed.userfile, Some("ql"));
+        let argv: &[&[u8]] = &[b"-fql".as_slice()];
+        let parsed = parse_units_args(argv).expect("尾巴整段是值");
+        assert_eq!(parsed.userfile, Some(b"ql".as_slice()));
         assert!(!parsed.list);
     }
 
@@ -1149,26 +1163,26 @@ mod tests {
         // `getopt.c:81-85`：`--` 结束环且自身被推进掉；`:87-92`：裸 `-` 结束环却不推进，
         // 于是它自己是操作数（参照件对 `-f <档> - sec` 报的是 `Unknown unit '-'`）。
         assert!(
-            parse_units_args(&["--"])
+            parse_units_args(&[b"--".as_slice()])
                 .expect("光写 -- 是零操作数")
                 .operands
                 .is_empty()
         );
         assert_eq!(
-            parse_units_args(&["-", "m", "sec"])
+            parse_units_args(&[b"-".as_slice(), b"m".as_slice(), b"sec".as_slice()])
                 .expect("裸 - 算操作数")
                 .operands,
-            vec!["-", "m", "sec"]
+            vec![b"-".as_slice(), b"m".as_slice(), b"sec".as_slice()]
         );
         assert_eq!(
-            parse_units_args(&["--", "m", "sec"])
+            parse_units_args(&[b"--".as_slice(), b"m".as_slice(), b"sec".as_slice()])
                 .expect("-- 之后的两个是操作数")
                 .operands,
-            vec!["m", "sec"]
+            vec![b"m".as_slice(), b"sec".as_slice()]
         );
         // `--` 之后的 `-Z` 不是选项，于是这一形只剩一个操作数——走 usage 且没有 libc 那一行。
         assert_eq!(
-            parse_units_args(&["--", "-Z"]).err(),
+            parse_units_args(&[b"--".as_slice(), b"-Z".as_slice()]).err(),
             Some(UnitsArgError::Usage)
         );
     }
@@ -1178,28 +1192,57 @@ mod tests {
         // C 的判据 `(argc != 3 && argc != 2 && argc != 0) || (list && argc != 0)`
         // 排在 `readunits` 之前，所以坏档加一个操作数报的是 usage 而不是开档失败。
         assert_eq!(
-            parse_units_args(&["-f", "db", "m"]).err(),
+            parse_units_args(&[b"-f".as_slice(), b"db".as_slice(), b"m".as_slice()]).err(),
             Some(UnitsArgError::Usage)
         );
         assert_eq!(
-            parse_units_args(&["-f", "db", "m", "sec", "km", "cm"]).err(),
+            parse_units_args(&[
+                b"-f".as_slice(),
+                b"db".as_slice(),
+                b"m".as_slice(),
+                b"sec".as_slice(),
+                b"km".as_slice(),
+                b"cm".as_slice()
+            ])
+            .err(),
             Some(UnitsArgError::Usage)
         );
         assert_eq!(
-            parse_units_args(&["-l", "m", "sec"]).err(),
+            parse_units_args(&[b"-l".as_slice(), b"m".as_slice(), b"sec".as_slice()]).err(),
             Some(UnitsArgError::Usage)
         );
-        assert!(parse_units_args(&["-f", "db", "m", "sec"]).is_ok());
-        assert!(parse_units_args(&["-f", "db", "3", "km", "cm"]).is_ok());
+        assert!(
+            parse_units_args(&[
+                b"-f".as_slice(),
+                b"db".as_slice(),
+                b"m".as_slice(),
+                b"sec".as_slice()
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse_units_args(&[
+                b"-f".as_slice(),
+                b"db".as_slice(),
+                b"3".as_slice(),
+                b"km".as_slice(),
+                b"cm".as_slice()
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
     fn test_ring_does_not_rearrange() {
         // `m -l sec`：环在第一个非选项 token 就结束，`-l` 落进操作数（参照件把
         // `units -f <档> m sec -l` 的 `-l` 当成了 want 侧的单位名并报 `Unknown unit '-l'`）。
-        let parsed = parse_units_args(&["m", "-l", "sec"]).expect("三个都是操作数");
+        let argv: &[&[u8]] = &[b"m".as_slice(), b"-l".as_slice(), b"sec".as_slice()];
+        let parsed = parse_units_args(argv).expect("三个都是操作数");
         assert!(!parsed.list);
-        assert_eq!(parsed.operands, vec!["m", "-l", "sec"]);
+        assert_eq!(
+            parsed.operands,
+            vec![b"m".as_slice(), b"-l".as_slice(), b"sec".as_slice()]
+        );
     }
 
     #[test]
@@ -1229,16 +1272,18 @@ mod tests {
         // 字母那一支；而 `-f:` 的冒号是**值**（值取自本 token 的尾巴，不查字母集合）。
         use crate::GetoptReport;
         assert_eq!(
-            parse_units_args(&["-:"]).err(),
+            parse_units_args(&[b"-:".as_slice()]).err(),
             Some(UnitsArgError::Getopt(GetoptReport::UnknownOption(':')))
         );
         assert_eq!(
-            parse_units_args(&["-l:"]).err(),
+            parse_units_args(&[b"-l:".as_slice()]).err(),
             Some(UnitsArgError::Getopt(GetoptReport::UnknownOption(':')))
         );
         assert_eq!(
-            parse_units_args(&["-f:"]).expect("冒号是值").userfile,
-            Some(":")
+            parse_units_args(&[b"-f:".as_slice()])
+                .expect("冒号是值")
+                .userfile,
+            Some(b":".as_slice())
         );
     }
 }

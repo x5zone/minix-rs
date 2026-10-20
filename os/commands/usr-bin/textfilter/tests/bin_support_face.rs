@@ -81,10 +81,11 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         ("fold", FOLD, 1, b"fold: unknown option -- \xff\n"),
         ("rev", REV, 1, b"rev: unknown option -- \xff\n"),
         ("col", COL, 1, b"col: unknown option -- \xff\n"),
-        // units 是本表唯一仍走文本缝的一支（批次三百九十九只换了渲染半：按 `char` 渲染
-        // 会是 `c3 af` 两字节，字节形后是 `ef` 一字节），C 那一侧是原字节 `ff`。
+        // units 的 `ef` 残留随批次四百五十五的 argv 字节缝翻正：`from_utf8_lossy` 在
+        // 参数缝上把一枚裸 `ff` 折成 U+FFFD，字母位因此看着像 `ef`；换 `args_bytes`
+        // 之后环拿到的就是那一枚 `ff`，与 C 同形。至此本表八行全是原字节。
         ("uniq", UNIQ, 1, b"uniq: unknown option -- \xff\n"),
-        ("units", UNITS, 3, b"units: unknown option -- \xef\n"),
+        ("units", UNITS, 3, b"units: unknown option -- \xff\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");

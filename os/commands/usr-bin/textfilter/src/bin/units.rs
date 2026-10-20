@@ -22,6 +22,10 @@
 //! file '%s'", …)` 的两段形（不带）。操作数个数的检查排在读库**之前**
 //! （`units.c:849-857`），所以「坏档加一个操作数」报的是 usage 而不是开档失败。
 //!
+//! argv 与交互行都按字节进链路（批次四百五十五两片）：选项字母、操作数里的单位名、
+//! `-l` 清单与 `Unknown unit` 那句的回显位交回的都是原字节；只有 `-f` 的档名两条腿
+//! （打开与回显）还过库侧的 `&str` 口，登记在册。
+//!
 //! 交互面的每一行都走 `bin_support::read_line_bounded`：宿主与目标各一条腿，
 //! 这是同族第十处「薄壳裸 `read` 宿主读不到输入」的修复。
 
@@ -48,10 +52,15 @@ const UNITSFILE: &str = "/usr/share/misc/units.lib";
 const LINE_LIMIT: usize = 79;
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let parsed = match parse_units_args(&args[1..]) {
+    // argv 按字节交回：C 的 `crt0` 把 `argv` 当字节数组、`getopt` 的字母取自字节步进，
+    // 所以短横后那一枚 `ff` 到报文里还得是那一枚 `ff`（批次四百四十定的字节缝）。
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名那一腿要交给 `warn_line` 与 `units_error_line` 的 `&str` 口（登记
+    // `ARGV-BYTE-PATH-IN-LIBS`），所以在臂内折一次 lossy——与其余各支同一条既定口径。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let prog = prog.as_str();
+    let args: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
+    let parsed = match parse_units_args(&args) {
         Ok(parsed) => parsed,
         Err(UnitsArgError::Getopt(report)) => {
             // 走字节形：libc 那一行的字母位是一个裸字节（`getopt.c:79` 的
@@ -91,19 +100,18 @@ fn run() -> ! {
 /// 两个或三个操作数那一路（`units.c:855-875`）。三个时前两个用空格并成 have 侧；
 /// 环不重排，所以 `units -f <档> m sec -l` 的 `-l` 是**第三个操作数**而不是选项。
 ///
-/// 操作数这一轮仍从文本缝来（`support::args()`，登记在册的 argv 半），所以这里
-/// 只在交给单位名链路的那一步取字节；argv 交回原字节是下一片（切片 38）。
-fn convert_operands(prog: &str, table: &UnitsTable, operands: &[&str]) -> ! {
+/// 操作数交回的是 argv 的原字节（`support::args_bytes()`），非法 UTF-8 也照样进链路。
+fn convert_operands(prog: &str, table: &UnitsTable, operands: &[&[u8]]) -> ! {
     let have_expr: Vec<u8> = if operands.len() == 3 {
-        let mut joined = operands[0].as_bytes().to_vec();
+        let mut joined = operands[0].to_vec();
         joined.push(b' ');
-        joined.extend_from_slice(operands[1].as_bytes());
+        joined.extend_from_slice(operands[1]);
         joined
     } else {
-        operands[0].as_bytes().to_vec()
+        operands[0].to_vec()
     };
     let have = build_unit(prog, table, &have_expr);
-    let want = build_unit(prog, table, operands[operands.len() - 1].as_bytes());
+    let want = build_unit(prog, table, operands[operands.len() - 1]);
     // C 不看 `addunit`/`completereduce` 的返回值，拿半成品照样出一个答案块再退 0
     // （`units.c:864-875`）；本壳这两支交回 `Err` 时没有半成品可展示，于是报文照 C、
     // 退码照 C，只有答案块那一行缺——登记为 UNITS-PARTIAL-UNIT-ON-ERROR。
@@ -188,15 +196,21 @@ fn report(prog: &str, error: &minix_textfilter::units::UnitsError) {
 }
 
 /// 读词典档。`-f` 与默认档的失败句子分属 `err` 与 `errx` 两支，见模块头的对照。
-fn load_units_file(prog: &str, path: Option<&str>) -> Vec<u8> {
+fn load_units_file(prog: &str, path: Option<&[u8]>) -> Vec<u8> {
     match path {
-        Some(name) => match support::read_file(name) {
-            Ok(bytes) => bytes,
-            Err(code) => {
-                support::warn_line(prog, &format!("Unable to open units file '{name}'"), code);
-                support::terminate(1);
+        Some(raw) => {
+            // `-f` 的档名两条腿（打开、回显）都还过库侧的 `&str` 口：
+            // `minix_sys::open` 与 `minix_types::errno::err_line` 都收 `&str`，
+            // 登记 `ARGV-BYTE-PATH-IN-LIBS`，库侧换字节形之前在这里折一次 lossy。
+            let name = String::from_utf8_lossy(raw);
+            match support::read_file(&name) {
+                Ok(bytes) => bytes,
+                Err(code) => {
+                    support::warn_line(prog, &format!("Unable to open units file '{name}'"), code);
+                    support::terminate(1);
+                }
             }
-        },
+        }
         None => match support::read_file(UNITSFILE) {
             Ok(bytes) => bytes,
             // C 在这里先按 `PATH` 逐个目录找一遍（`units.c:146-176`），那一段登记为
