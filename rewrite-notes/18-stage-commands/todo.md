@@ -119,6 +119,64 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百四十二（A2 参数缝半第三、四对：`yes` 的输出内容按字节，`tee` 随队迁入）
+
+**这一轮干什么**。同一条缝上连做两对：`yes` 与 `tee`。两对的选择不同——`yes` 有可观察的
+真缺陷要修，`tee` 没有，它只是族内进度条上必须先走过的格。分开记账，避免把「没有差分」
+误记成「修好了一处」。
+
+**`yes`：参数就是输出内容**。`minix3/usr.bin/yes/yes.c` 的 `main` 里
+`yes = (argc > 1) ? argv[1] : "y"` 存的是 `const char *`，`while (puts(yes) >= 0)` 每轮把那串
+字节原样发出再加一个换行。这一支的参数既不是档名也不是旗标，它就是被无限重复打出的那些字节；
+旧形状里 argv 先过 `String::from_utf8_lossy`，于是 `yes $'\xff'` 打出的每一行都是 `ef bf bd`
+三字节（改前现量 `tmp/argv-442/before-yes.log`），改后是 `ff` 一字节
+（`tmp/argv-442/after-yes.log`）。这一形与参照件无关——`yes` 的字节语义不需要外部实现来作证，
+C 的 `puts` 只发字节，不校验。
+
+**`tee`：这一对没有任何可观察差**。`tee.c:80` 的 `getopt("ai")` 只有两枚旗标，字母取法本就按字节
+（`src/bin/tee.rs:parse_tee_args` 内 `for &letter in &bytes[1..]`）；操作数是输出档名，而开档口
+`minix_sys::open` 收 `&str`，折叠发生在这一句上（`ARGV-BYTE-PATH-IN-LIBS` 在册）。所以换字节缝之后
+`tee -\xff`、`tee $'\xff'` 两形的报文与改前逐字节相同。这一对的产出是把 `parse_tee_args` 与
+壳的 argv 挪到字节形上，让族末笔删共件 `&str` 出口时少一个障碍；不冒充成修了一处缺陷。
+
+**代码形状**。`src/bin/yes.rs:run` 取 `support::args_bytes()`，`word` 是 `&[u8]`（默认那枚写成
+`b"y"`），拼出的 `line` 直接是要发的字节；`src/bin/tee.rs` 的 `parse_tee_args` 取 `&[&'a [u8]]`
+（沿用批次四百四十一那条寿命判据：外层借用不与元素同寿，夹具才能继续就地写数组字面量），
+`--` 判据换成 `b"--"`，档名进 `open` 与回显那两句前折一次。
+
+**门**。面 +3（新文件 `tests/yes_face.rs`：`the_repeated_word_is_the_raw_bytes_of_the_argument`、
+`a_nonutf8_byte_inside_the_word_does_not_disturb_its_neighbours`、`no_argument_repeats_a_lone_y`）。
+`yes` 是无限循环，夹具只能取前若干字节再 `kill`——取字节数按**每行的字节数**算：
+`a\xffb` 一行是四字节（`a`、`ff`、`b`、换行），所以「取八字节」的第二行末尾那个换行必须在期望里，
+这条期望我第一次写成七字节的内容，被门当场钉红。`tee` 侧不新增门：这一对没有可观察面，
+它由既有的 `parse_tee_args` 五枚测（夹具随之换成字节面量）与全包门覆盖。
+
+**门读数**。宿主 `cargo test -p minix-textfilter` 69 段 / 1218 通过 / 0 失败（新增一个面段）；
+容器权威门 同读数 **69 段 / 1218 通过 / 0 失败、退 0**（`tmp/argv-442/container.log`）。三架构 `cargo build --target …` 各自退 0、零编译错（宿主跑，独立
+`--target-dir`；容器镜像未装 bare-metal target 这条配方差异沿用批次四百四十的记录）。
+clippy 触及件只有一条真属本轮的：`tee.rs` 的 `ToString` 随 `.to_string()` 一并作废，已收；
+`items_after_test_module` 那一条在改前的同一结构上就有（`mod tests` 之后仍留着 `main` 的双生入口），
+不属本轮射程。触及件 `rustfmt --check` 零漂移。
+
+**负控四枚**（`tmp/argv-442/negctl.log`，带 `--no-fail-fast`）：N1 把 `yes` 的缝退回折叠形 →
+两枚裸字节门咬住；N2 去掉 `puts` 那个换行 → 三枚全咬（说明这几枚同时钉住了行尾）；
+N3 把 `tee` 的聚簇扫描改成只看第一个字母 → `option_letters_cluster_within_a_token` 咬住；
+N4 等价改写（`arg == b"--"` 换成 `arg == b"--".as_slice()`）全绿。
+
+**判据**。
+- 「一对」可以两对同轮做，但**必须按可观察性分别记账**：同一轮里既有真缺陷修复又有纯 preparatory
+  迁移时，台账若只写「两支已迁」会把读者引向「两处都修好了」的错误结论。
+- 无参照件时怎么取证：`yes` 的字节语义由 C 的一句 `puts` 直接决定，不需要宿主参照件；此时
+  证据是「改前后同形对照 + C 源那一句」，而不是「A/B SAME=n」——本轮没有参照件那一侧，就不写 A/B。
+- 期望里的字节数要按**整行**数（含行尾换行），不能按可见字符数。
+
+**余量现量**：`textfilter` 三十九支壳已迁四支（`rev`、`paste`、`yes`、`tee`），余三十五支；
+共件 `empty_optstring_operands` 的 `&str` 形仍只剩 `colrm` 一个消费者。
+
+**复现清单**：`python3 tmp/argv-442/negctl.py`（四枚负控，逐枚自带还原）、
+`bash tmp/argv-442/container-gate.sh`（容器权威门）；日志
+`tmp/argv-442/{before-yes.log,after-yes.log,host-test2.log,clippy.log,negctl.log,archhost-*.log,container.log}`。
+
 ## 批次四百四十一（A2 参数缝半第二对落地：`paste` 的 argv 按字节，顺带把分隔符表那一腿的折叠修掉）
 
 **这一轮干什么**。按批次四百四十定下的粒度——「一支壳 + 它自己的解析入口」算一对——迁第二对：
