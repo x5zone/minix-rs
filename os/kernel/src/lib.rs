@@ -36,7 +36,7 @@ extern crate alloc;
 extern crate std;
 
 use minix_arch::paging_ext::HugePages;
-use minix_types::{PhysBytes, VirBytes};
+use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 // Handoff types are exercised only by the non-mock VM-loading path
 // (same reason as the `PhysAccess` import below).
 #[cfg(not(feature = "mock"))]
@@ -4383,7 +4383,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000, // 2MB kernel
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
@@ -4462,7 +4462,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: MODULES,
@@ -4511,7 +4511,7 @@ mod tests {
             kern_phys_base: PhysBytes(0x200_000),
             kern_size: 0x200000,
             free_upper_idx: None,
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            user_sp: VirBytes(USER_STACK_TOP as u64),
             kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
             syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
             boot_modules: &[],
