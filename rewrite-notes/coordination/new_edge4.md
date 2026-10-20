@@ -892,3 +892,56 @@ libc 那一行继续走 `GetoptReport::line_bytes`（`os/commands/usr-bin/textfi
 板 A 在册余量：`FOLD-SPLIT-BRANCH-SWAPPED` 闭合；余 `FOLD-DIGIT-NOT-FIRST-IN-CLUSTER`、
 `FOLD-NON-PERMUTE-OPERAND-TAIL`、`ARGV-BYTE-PATH-IN-LIBS` 与各条登记不执行项；
 参数缝半余 `textfilter` 三十一支，跨壳表只余 `units` 一行（其裁决要点见批次四百四十六段那条预研读数）。
+
+### 第一百六十二笔（并发任务 A 板 · A2 参数缝半第九对 · `col` 的字母位与被它拒收的 `-l` 值都按字节交回）
+
+**这一支换的是缝，量出来的却是一条契约事实**：`col` 是本族第一支 **A/B 零残差**的壳。
+不是因为路径腿修好了——`ARGV-BYTE-PATH-IN-LIBS` 仍在册——而是因为 `col` 一个操作数都不收
+（`minix3/usr.bin/col/col.c:157-158` 的 `if (optind != argc) usage()`），那条腿在这一支
+根本没有可观察面。于是「残差有几形」从来不是缝的质量计，而是各支契约的形状计：一支壳能把
+操作数用在哪儿（打开文件、当单位名、当列表），它的残差就长在哪儿。
+
+**回显位第一次落在选项值上**：此前各支的 `%s` 回显的都是命令行**操作数**（`colrm` 的非法列、
+`cut` 的非法列表），`col` 那句 `col.c:145-150` 的 `col: bad -l argument %s.` 打回的是
+`optarg`——`-l` 那一段的**选项值**。同一串字节流经不同的型，改动面因此比既往任何一支都深一处：
+`ColFlagError::BadLineCount` 的载荷从 `&str` 换成 `&[u8]`，`src/lib.rs:fn atoi` 也从 `&str` 改吃
+`&[u8]`。后者不是顺手改：C 的 `atoi` 逐字节扫描（可选空白、可选符号、十进制前缀），把它留在
+`&str` 上等于让「这个值能不能被解析」先过一遍字符解码——那是把决定半挂到缝的裁决之后。
+
+**门**：库 +1 枚 `col::tests::a_raw_nonutf8_line_count_is_named_by_its_own_bytes`（`--lib` 613→614）、
+面 +1 枚 `tests/col_face.rs::a_raw_nonutf8_letter_and_line_count_keep_their_own_bytes`
+（十一枚→十二枚，枚名与 `colrm_face`、`fold_face` 的同族门不同，负控红名才分得清是谁），
+跨壳表 `tests/bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter` **补上 `col` 一行**
+（六支→七支，该行期望 `ff` 有现量：本壳与参照件 `tmp/col-313/col` 对 `col -<ff>` 的 stderr 逐字节
+`cmp` 相同）。
+
+**A/B 二十三形**（`python3 tmp/argv-448/ab.py`，逐字节对 `tmp/col-313/col`；开工先跑 `-Z` 验字样，
+那句是 `col: unknown option -- Z`，Minix 措辞，承真值）：**SAME=23 / DIFF=0**。
+
+**门读数（L1 证据）**：宿主两包各跑 78 段 / 1317 通过 / 0 失败（`tmp/argv-448/final-gates.log`，
+跨壳表补行后复跑 `tmp/argv-448/host-table.log` 同读数）；容器 78 段 / 1317 / 0 退 0
+（`tmp/argv-448/container.log`）；三架构 `cargo build -p minix-textfilter --bin col --target
+{x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` 各退 0；
+`cargo fmt -p minix-textfilter -- --check` 对触及六件零漂移；负控五枚（四咬 + 一枚等价）见
+`tmp/argv-448/negctl448.log` 与 `tmp/argv-448/negctl448-table.log`，还原后复跑全绿。
+
+**两条手法入档**：① **注入脚本必须在异常路径也还原**。本轮 `suite()` 的仓库路径拼错抛异常，
+N1 的注入留在工作区没被还原，源码带着一条假缝跑完了后面的门，靠 `git status` + `git diff` 现量
+才逮到——脚本改成先备份、`try/finally` 还原，并加一枚「注入前基线」读数，基线不绿就别谈注入结果。
+② **已迁的壳必须在跨壳表里有一行**。`col` 改完才发现表里没有它：「表里几支」与「迁了几支」两个
+名单对不上账，属覆盖率漏项而非代码缺陷。
+
+**clippy 的归因**：触及件 `src/col.rs` 报两枚告警（`fn filter` 里一处赋值后读不到、`fn flush_line`
+里循环变量只用来索引），主树同位置同文案现量在案——**基线既有**，属存量 lint 债，本轮不扩范围去动
+那台行装配状态机，新登记 `COL-CLIPPY-STOCK-LINT`（只登记未执行）。
+
+**门 4 的一次真红**：`doc-style-lint.sh --diff rewrite` 首跑报 error级 1，命中的是板 A2 行一处括号里的
+「取证」二字（SL-11 把过程标记列进射程）——事实没错，措辞越界，改笔复跑 error级 0。这是文风门咬住
+本轮自己的例子，不是别板存量。
+
+**提交与账**：`3ad9308cc`（码笔：缝与句子）、`61ca27450`（码笔二：跨壳表补行）、`ff8076c8b`（文档笔：
+18 篇新段 + 07 篇三处口径 + 板 A2 行）、里程碑笔与门 4 措辞订正笔。板 A2 参数缝半已落九支
+（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`、`fold`、`col` = 切片 27—35），
+余 `textfilter` 三十支 + `text-games` 三支壳 + 族终笔（删文本缝三口、把 `argv_seam_face` 那枚门
+升级成逐字节相等）。下一支按板上顺序仍是 `units`：它要先裁决「表键换字节」还是「查询边界折一次
+lossy」，不是既有的字母位/数据位/回显位三条腿能直接套的形。
