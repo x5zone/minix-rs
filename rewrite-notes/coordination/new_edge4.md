@@ -1090,3 +1090,30 @@ C 自己印一句带 `%s` 的 `errx`（`minix3/usr.bin/uniq/uniq.c:90-98`），�
 五道收尾门读数见 `tmp/uniq-452/closeout.log`。板 A 余量：参数缝半二十九支 + `text-games` 三支壳 +
 族终笔 + 登记不执行清单（`HEAD-NON-PERMUTE-OPERAND-TAIL`、
 `UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR` 等各条维持）。
+### 第一百六十七笔（批次四百五十三 · 体量核实轮：`units` 表键字节化的真实射程）
+
+**为什么要先量这一刀**：批次四百四十九裁决 `units` 走甲路（表键换字节）并拆两片，第一片写着「表与读表腿
+换字节键、不碰 argv、既有 ASCII 夹具应逐字同形」。按这句话直接动工，会在一半的时候发现收不住——所以先
+把 `os/commands/usr-bin/textfilter/src/units.rs` 数一遍，再定切片边界。
+
+**结论：那片拆不开，原因在对象的同一性而不是工作量**。`units` 里被比较的串只有一批，就是单位名，而它
+同时扮演三个角色：表键（`UnitsTable.units` 与 `UnitsTable.prefixes`，`src/units.rs:26-27`）、表达式节点
+（`UnitType.numerator` 与 `UnitType.denominator`，`:45-46`）、报错回显（`UnitsError::UnknownUnit(String)`，
+`:34`；构造点 `:285`，渲染点 `:731`）。真源里这三处本来就是同一种东西——C 用 `strcmp`/`strncmp` 逐字节比
+（`minix3/usr.bin/units/units.c:503`、`:511`、`:542`）。只换表键而表达式节点留 `String`，则每次比较边界都要
+折一次 lossy，那就是批次四百四十九已经否证的乙路（否证理由：表文件内容本身也是字节，两处折叠不在同一位置）。
+
+**现量（L1，`tmp/units-453/census.log`）**：`String`/`&str` 在该件出现 **30** 处；比较/切分/前后缀判定
+**44** 处；`read_units`、`lookup_unit`、`add_unit`、`list_units`、`complete_reduce` 五个口的定义与调用点
+跨 `src/` 与 `tests/` 共 **37** 处；库内 units 门 **20** 枚、面侧 `tests/units_face.rs` **23** 枚函数。
+跨壳表里 `units` 那一行（`tests/bin_support_face.rs:87`）仍是折叠形 `ef`，是该表唯一未换的一行。
+
+**改后的两片**：切片 37 = 单位名全链路字节化（`fn read_units` 收 `&[&[u8]]`、`UnitsTable` 与 `UnitType`
+四处字段改 `Vec<Vec<u8>>`、`fn lookup_unit` 收 `&[u8]` 并交回字节定义、`fn add_unit` 收 `&[u8]`、
+`UnknownUnit` 载荷与 `fn units_error_line` 那句逐字节、`fn list_units` 输出改字节串；ASCII 夹具期望逐字不变
+即这片的验收面）。切片 38 = argv 与 `-f` 回显（`src/bin/units.rs:51-53` 换 `args_bytes`、
+`parse_units_args` 收 `&[&[u8]]`、`userfile` 改字节，跨壳表那行 `ef`→`ff` 翻正）。
+
+**提交与账**：文档笔为 `todo.md` 新段 + 板 A2 行体量核实句；本轮零源码改动，故不跑宿主与容器门，
+五道收尾门读数见 `tmp/units-453/closeout.log`。板 A 余量：参数缝半二十九支（`units` 按改后两片切法）+
+`text-games` 三支壳 + 族终笔 + 登记不执行清单。
