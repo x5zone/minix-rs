@@ -59,7 +59,7 @@ fn run() -> ! {
     // Read each operand into a logical file (name, lines). No operands means
     // standard input alone, titled `""` (pr.h:63 `FNAME`); an unopenable
     // operand warns and is skipped, turning the exit status nonzero.
-    let mut files: Vec<(&str, Vec<String>)> = Vec::new();
+    let mut files: Vec<(&str, Vec<Vec<u8>>)> = Vec::new();
     let mut had_error = false;
     if operands.is_empty() {
         let input = support::read_stdin();
@@ -98,7 +98,7 @@ fn run() -> ! {
     // the merge page header unspecified (`pr.c:848-849`), so the title is the
     // first operand's name unless `-h` overrides it.
     if merge && files.len() >= 2 {
-        let streams: Vec<Vec<String>> = files.iter().map(|(_, ls)| ls.clone()).collect();
+        let streams: Vec<Vec<Vec<u8>>> = files.iter().map(|(_, ls)| ls.clone()).collect();
         let n = streams.len();
         let (colwd, _) = match column_width(options.page_width, n) {
             Some(widths) => widths,
@@ -146,8 +146,8 @@ fn emit_page(page: &minix_textfilter::pr::Page, options: &minix_textfilter::pr::
     for (index, line) in render_page(page, options.offset).iter().enumerate() {
         let body_line = index >= header && index < body_end;
         let mut out = match (body_line, options.contract) {
-            (true, Some((character, gap))) => contract_tabs(line.as_bytes(), character, gap),
-            _ => line.as_bytes().to_vec(),
+            (true, Some((character, gap))) => contract_tabs(line, character, gap),
+            _ => line.to_vec(),
         };
         out.push(b'\n');
         support::emit(&out);
@@ -159,12 +159,14 @@ fn emit_page(page: &minix_textfilter::pr::Page, options: &minix_textfilter::pr::
     }
 }
 
-fn split_lines(input: &[u8]) -> Vec<String> {
+fn split_lines(input: &[u8]) -> Vec<Vec<u8>> {
     if input.is_empty() {
         return Vec::new();
     }
-    let text = core::str::from_utf8(input).unwrap_or("");
-    let mut pieces: Vec<String> = text.split('\n').map(String::from).collect();
+    let mut pieces: Vec<Vec<u8>> = input
+        .split(|&byte| byte == b'\n')
+        .map(<[u8]>::to_vec)
+        .collect();
     if input.ends_with(b"\n") {
         pieces.pop();
     }

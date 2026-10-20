@@ -576,9 +576,9 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
 /// page ends with a form-feed byte.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
-    pub header_lines: Vec<String>,
-    pub body_lines: Vec<String>,
-    pub trailer_lines: Vec<String>,
+    pub header_lines: Vec<Vec<u8>>,
+    pub body_lines: Vec<Vec<u8>>,
+    pub trailer_lines: Vec<Vec<u8>>,
     /// `-F`: `prtail` writes one `\f` and returns (`pr.c:1555-1561`), which replaces
     /// both the blank padding lines and the five-line trailer. It carries no newline
     /// of its own, which is why it is a page property rather than one more line.
@@ -590,7 +590,7 @@ pub struct Page {
 
 impl Page {
     /// All lines in print order.
-    pub fn lines(&self) -> impl Iterator<Item = &String> {
+    pub fn lines(&self) -> impl Iterator<Item = &Vec<u8>> {
         self.header_lines
             .iter()
             .chain(self.body_lines.iter())
@@ -609,21 +609,18 @@ impl Page {
 /// `width` columns, space-padded. A number wider than `width` keeps its last
 /// `width` digits (C `addnum` writes from the right and stops at the field's
 /// left edge, so it truncates leading digits rather than growing the field).
-fn number_field(n: usize, width: usize) -> String {
-    let digits = alloc::format!("{n}");
+fn number_field(n: usize, width: usize) -> Vec<u8> {
+    let digits = alloc::format!("{n}").into_bytes();
     if digits.len() >= width {
-        String::from(&digits[digits.len() - width..])
+        digits[digits.len() - width..].to_vec()
     } else {
-        let mut s = String::new();
-        for _ in 0..(width - digits.len()) {
-            s.push(' ');
-        }
-        s.push_str(&digits);
+        let mut s = vec![b' '; width - digits.len()];
+        s.extend_from_slice(&digits);
         s
     }
 }
 
-pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
+pub fn paginate(lines: &[Vec<u8>], options: &PrOptions) -> Vec<Page> {
     if options.columns > 1 {
         return paginate_columns(lines, options);
     }
@@ -663,7 +660,7 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
     let mut cursor = skip;
     loop {
         let body_end = (cursor + content_per_page).min(lines.len());
-        let mut body: Vec<String> = if options.number_width == 0 {
+        let mut body: Vec<Vec<u8>> = if options.number_width == 0 {
             lines[cursor..body_end].to_vec()
         } else {
             // Running line number per file (`cursor` is the global index, and
@@ -671,12 +668,10 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
             // matching C's per-file `lncnt`).
             (cursor..body_end)
                 .map(|idx| {
-                    alloc::format!(
-                        "{}{}{}",
-                        number_field(idx + 1, options.number_width),
-                        options.number_char as char,
-                        lines[idx]
-                    )
+                    let mut line = number_field(idx + 1, options.number_width);
+                    line.push(options.number_char);
+                    line.extend_from_slice(&lines[idx]);
+                    line
                 })
                 .collect()
         };
@@ -685,7 +680,7 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
             let mut spaced = Vec::with_capacity(body.len() * 2);
             for line in body {
                 spaced.push(line);
-                spaced.push(String::new());
+                spaced.push(Vec::new());
             }
             body = spaced;
         }
@@ -694,7 +689,7 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
         // (`pr.c:1555-1561`).
         if !options.no_header && !options.form_feed {
             while body.len() < body_capacity {
-                body.push(String::new());
+                body.push(Vec::new());
             }
         }
         let (header_lines, trailer_lines) = if options.no_header {
@@ -702,18 +697,19 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
         } else {
             (
                 vec![
-                    String::new(),
-                    String::new(),
+                    Vec::new(),
+                    Vec::new(),
                     alloc::format!(
                         "{}{} Page {}",
                         options.time_prefix,
                         options.header,
                         page_number
-                    ),
-                    String::new(),
-                    String::new(),
+                    )
+                    .into_bytes(),
+                    Vec::new(),
+                    Vec::new(),
                 ],
-                vec![String::new(); TAILLEN],
+                vec![Vec::new(); TAILLEN],
             )
         };
         // Under `-F` the trailer block disappears entirely; the form-feed byte is
@@ -754,7 +750,7 @@ pub fn paginate(lines: &[String], options: &PrOptions) -> Vec<Page> {
 /// header/trailer as the single-column path (body padded to `rows` while headers
 /// show). `column_width` is assumed valid; the `doing` half rejects an
 /// over-narrow page before here.
-fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
+fn paginate_columns(lines: &[Vec<u8>], options: &PrOptions) -> Vec<Page> {
     let (colwd, _) = column_width(options.page_width, options.columns)
         .unwrap_or((options.page_width, options.page_width));
     let rows = if options.no_header {
@@ -799,23 +795,24 @@ fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
             // blank run, which the form-feed arm does not write.
             if !options.form_feed {
                 while body.len() < rows {
-                    body.push(String::new());
+                    body.push(Vec::new());
                 }
             }
             (
                 vec![
-                    String::new(),
-                    String::new(),
+                    Vec::new(),
+                    Vec::new(),
                     alloc::format!(
                         "{}{} Page {}",
                         options.time_prefix,
                         options.header,
                         page_number
-                    ),
-                    String::new(),
-                    String::new(),
+                    )
+                    .into_bytes(),
+                    Vec::new(),
+                    Vec::new(),
                 ],
-                vec![String::new(); TAILLEN],
+                vec![Vec::new(); TAILLEN],
             )
         };
         // Under `-F` the trailer block disappears entirely; the form-feed byte is
@@ -853,7 +850,7 @@ fn paginate_columns(lines: &[String], options: &PrOptions) -> Vec<Page> {
 /// = "" for standard input). Per-file options inherit `base` (page length,
 /// `-t`, time prefix).
 pub fn paginate_files(
-    files: &[(&str, Vec<String>)],
+    files: &[(&str, Vec<Vec<u8>>)],
     base: &PrOptions,
     title_override: Option<&str>,
 ) -> Vec<Page> {
@@ -890,19 +887,13 @@ pub fn column_width(pgwd: usize, clcnt: usize) -> Option<(usize, usize)> {
     Some((colwd, (colwd + 1) * clcnt - 1))
 }
 
-/// Clip `s` to at most `n` bytes at a `char` boundary. C's `inln` truncates a
-/// line to `colwd` raw bytes; this floors to the last whole code point so a
-/// clipped cell stays valid UTF-8 (the byte-vs-code-point divergence is the
-/// documented localisation residual, never a panic).
-fn clip_to_width(s: &str, n: usize) -> &str {
-    if s.len() <= n {
-        return s;
-    }
-    let mut end = n;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+/// Clip `s` to at most `n` **bytes**. C's `inln` truncates a line at `colwd` raw
+/// bytes and `stp` then writes exactly that many, so a cell may end mid-code-point;
+/// flooring to a code-point boundary (the old shape) was a self-inflicted
+/// divergence. With the line carried as bytes end to end there is no `str`
+/// invariant left to protect.
+fn clip_to_width(s: &[u8], n: usize) -> &[u8] {
+    &s[..n.min(s.len())]
 }
 
 /// One multi-column page's body rows, down-filled the way `vertcol` is (the
@@ -915,36 +906,34 @@ fn clip_to_width(s: &str, n: usize) -> &str {
 /// column (`pr.c:608`'s `<= offst break`). Inter-column padding is kept exactly
 /// as C emits it (no trailing trim); only the last column omits padding.
 pub fn vertcol_body_rows(
-    lines_block: &[String],
+    lines_block: &[Vec<u8>],
     rows: usize,
     columns: usize,
     colwd: usize,
     sep: Option<u8>,
-) -> Vec<String> {
+) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     if rows == 0 || columns == 0 {
         return out;
     }
     for row in 0..rows {
-        let mut line = String::new();
+        let mut line: Vec<u8> = Vec::new();
         let mut any = false;
         for column in 0..columns {
             let idx = column * rows + row;
-            let raw = lines_block.get(idx).map(String::as_str).unwrap_or("");
+            let raw = lines_block.get(idx).map(Vec::as_slice).unwrap_or(&[]);
             if !raw.is_empty() {
                 any = true;
             }
             let cell = clip_to_width(raw, colwd);
-            line.push_str(cell);
+            line.extend_from_slice(cell);
             if column + 1 == columns {
                 break; // last column: no trailing pad
             }
             match sep {
-                Some(byte) => line.push(byte as char),
+                Some(byte) => line.push(byte),
                 None => {
-                    for _ in 0..(colwd + 1 - cell.len()) {
-                        line.push(' ');
-                    }
+                    line.extend(core::iter::repeat_n(b' ', colwd + 1 - cell.len()));
                 }
             }
         }
@@ -973,11 +962,11 @@ pub fn vertcol_body_rows(
 /// reorder path is only reached with no line-number field (`nmwd == 0`), the
 /// multi-column `-n` face this module does not model.
 pub fn vertcol_body_rows_balanced(
-    lines_block: &[String],
+    lines_block: &[Vec<u8>],
     columns: usize,
     colwd: usize,
     sep: Option<u8>,
-) -> Vec<String> {
+) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let count = lines_block.len();
     if count == 0 || columns == 0 {
@@ -985,28 +974,26 @@ pub fn vertcol_body_rows_balanced(
     }
     let pln = count.div_ceil(columns);
     for row in 0..pln {
-        let mut line = String::new();
+        let mut line: Vec<u8> = Vec::new();
         let mut any = false;
         for column in 0..columns {
             let idx = column * pln + row;
             let raw = match lines_block.get(idx) {
-                Some(s) => s.as_str(),
+                Some(s) => s.as_slice(),
                 None => break, // C `tvc >= cvc`: this balanced column ran dry
             };
             if !raw.is_empty() {
                 any = true;
             }
             let cell = clip_to_width(raw, colwd);
-            line.push_str(cell);
+            line.extend_from_slice(cell);
             if column + 1 == columns {
                 break; // last column: never padded (C's `mclcnt` arm)
             }
             match sep {
-                Some(byte) => line.push(byte as char),
+                Some(byte) => line.push(byte),
                 None => {
-                    for _ in 0..(colwd + 1 - cell.len()) {
-                        line.push(' ');
-                    }
+                    line.extend(core::iter::repeat_n(b' ', colwd + 1 - cell.len()));
                 }
             }
         }
@@ -1027,39 +1014,37 @@ pub fn vertcol_body_rows_balanced(
 /// `lstdat - buf <= offst` break at `pr.c:755`). The row count is derived from
 /// the block (`ceil(len / columns)`), capped by the caller's `rows` chunk.
 pub fn horzcol_body_rows(
-    lines_block: &[String],
+    lines_block: &[Vec<u8>],
     columns: usize,
     colwd: usize,
     sep: Option<u8>,
-) -> Vec<String> {
+) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     if columns == 0 {
         return out;
     }
     let rows = lines_block.len().div_ceil(columns);
     for row in 0..rows {
-        let mut line = String::new();
+        let mut line: Vec<u8> = Vec::new();
         let mut any = false;
         for column in 0..columns {
             let idx = row * columns + column;
             let raw = match lines_block.get(idx) {
-                Some(s) => s.as_str(),
+                Some(s) => s.as_slice(),
                 None => break, // EOF: stop this row here (C `inln < 0`)
             };
             if !raw.is_empty() {
                 any = true;
             }
             let cell = clip_to_width(raw, colwd);
-            line.push_str(cell);
+            line.extend_from_slice(cell);
             if column + 1 == columns {
                 break; // last column: no trailing pad
             }
             match sep {
-                Some(byte) => line.push(byte as char),
+                Some(byte) => line.push(byte),
                 None => {
-                    for _ in 0..(colwd + 1 - cell.len()) {
-                        line.push(' ');
-                    }
+                    line.extend(core::iter::repeat_n(b' ', colwd + 1 - cell.len()));
                 }
             }
         }
@@ -1077,7 +1062,7 @@ pub fn horzcol_body_rows(
 /// entirely (C's `fproc >= actf` break — no trailing empty columns), a stream
 /// that ran out earlier contributes an empty cell with its inter-column pad.
 /// The pad/separator and last-column rules match [`horzcol_body_rows`].
-pub fn merge_body_rows(streams: &[Vec<String>], colwd: usize, sep: Option<u8>) -> Vec<String> {
+pub fn merge_body_rows(streams: &[Vec<Vec<u8>>], colwd: usize, sep: Option<u8>) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let columns = streams.len();
     if columns == 0 {
@@ -1089,20 +1074,18 @@ pub fn merge_body_rows(streams: &[Vec<String>], colwd: usize, sep: Option<u8>) -
         let Some(last) = (0..columns).filter(|&j| streams[j].len() > row).next_back() else {
             break;
         };
-        let mut line = String::new();
+        let mut line: Vec<u8> = Vec::new();
         for j in 0..=last {
-            let raw = streams[j].get(row).map(String::as_str).unwrap_or("");
+            let raw = streams[j].get(row).map(Vec::as_slice).unwrap_or(&[]);
             let cell = clip_to_width(raw, colwd);
-            line.push_str(cell);
+            line.extend_from_slice(cell);
             if j == last {
                 break;
             }
             match sep {
-                Some(byte) => line.push(byte as char),
+                Some(byte) => line.push(byte),
                 None => {
-                    for _ in 0..(colwd + 1 - cell.len()) {
-                        line.push(' ');
-                    }
+                    line.extend(core::iter::repeat_n(b' ', colwd + 1 - cell.len()));
                 }
             }
         }
@@ -1118,13 +1101,10 @@ pub fn merge_body_rows(streams: &[Vec<String>], colwd: usize, sep: Option<u8>) -
 /// C writes those with bare `putchar('\n')` (`prhead` `pr.c:1493-1496`, `prtail`).
 /// `offset == 0` reproduces the plain [`Page::lines`] order exactly, so the
 /// default path is unchanged.
-pub fn render_page(page: &Page, offset: usize) -> Vec<String> {
-    let pad = |s: &str| -> String {
-        let mut out = String::new();
-        for _ in 0..offset {
-            out.push(' ');
-        }
-        out.push_str(s);
+pub fn render_page(page: &Page, offset: usize) -> Vec<Vec<u8>> {
+    let pad = |s: &[u8]| -> Vec<u8> {
+        let mut out = vec![b' '; offset];
+        out.extend_from_slice(s);
         out
     };
     let mut out = Vec::new();
@@ -1145,13 +1125,13 @@ mod tests {
     use super::*;
 
     fn paginate_lines(lines: &[&str], options: &PrOptions) -> Vec<Page> {
-        let owned: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        let owned: Vec<Vec<u8>> = lines.iter().map(|s| s.as_bytes().to_vec()).collect();
         paginate(&owned, options)
     }
 
     #[test]
     fn test_page_geometry_is_66_lines() {
-        let lines: Vec<String> = (1..=100).map(|n| n.to_string()).collect();
+        let lines: Vec<Vec<u8>> = (1..=100).map(|n| n.to_string().into_bytes()).collect();
         let pages = paginate(&lines, &PrOptions::default());
         assert_eq!(pages.len(), 2);
         for page in &pages {
@@ -1167,9 +1147,9 @@ mod tests {
         let mut options = PrOptions::default();
         options.header = "my file".to_string();
         let pages = paginate_lines(&["one"], &options);
-        assert_eq!(pages[0].header_lines[2], "my file Page 1");
+        assert_eq!(pages[0].header_lines[2], b"my file Page 1");
         // The body starts right after the five header lines.
-        assert_eq!(pages[0].body_lines[0], "one");
+        assert_eq!(pages[0].body_lines[0], b"one");
     }
 
     #[test]
@@ -1177,7 +1157,7 @@ mod tests {
         let mut options = PrOptions::default();
         options.time_prefix = "2026-09-17 12:00:00 ".to_string();
         let pages = paginate_lines(&["one"], &options);
-        assert_eq!(pages[0].header_lines[2], "2026-09-17 12:00:00  Page 1");
+        assert_eq!(pages[0].header_lines[2], b"2026-09-17 12:00:00  Page 1");
     }
 
     #[test]
@@ -1185,7 +1165,7 @@ mod tests {
         let pages = paginate_lines(&["one"], &PrOptions::default());
         let body_empty = pages[0].body_lines[1..].iter().all(|line| line.is_empty());
         assert!(body_empty);
-        assert_eq!(pages[0].body_lines[0], "one");
+        assert_eq!(pages[0].body_lines[0], b"one");
     }
 
     #[test]
@@ -1195,10 +1175,7 @@ mod tests {
         let pages = paginate_lines(&["one", "two"], &options);
         assert!(pages[0].header_lines.is_empty());
         assert!(pages[0].trailer_lines.is_empty());
-        assert_eq!(
-            pages[0].body_lines,
-            vec!["one".to_string(), "two".to_string()]
-        );
+        assert_eq!(pages[0].body_lines, vec![b"one".to_vec(), b"two".to_vec()]);
     }
 
     #[test]
@@ -1216,15 +1193,15 @@ mod tests {
     fn test_paginate_files_titles_each_file_independently() {
         let base = PrOptions::default();
         let files = [
-            ("a.txt", vec![String::from("x1"), String::from("x2")]),
-            ("b.txt", vec![String::from("y")]),
+            ("a.txt", vec![b"x1".to_vec(), b"x2".to_vec()]),
+            ("b.txt", vec![b"y".to_vec()]),
         ];
         let pages = paginate_files(&files, &base, None);
         assert_eq!(pages.len(), 2);
-        assert_eq!(pages[0].header_lines[2], "a.txt Page 1");
-        assert_eq!(pages[0].body_lines[0], "x1");
-        assert_eq!(pages[1].header_lines[2], "b.txt Page 1");
-        assert_eq!(pages[1].body_lines[0], "y");
+        assert_eq!(pages[0].header_lines[2], b"a.txt Page 1");
+        assert_eq!(pages[0].body_lines[0], b"x1");
+        assert_eq!(pages[1].header_lines[2], b"b.txt Page 1");
+        assert_eq!(pages[1].body_lines[0], b"y");
     }
 
     #[test]
@@ -1232,28 +1209,28 @@ mod tests {
         // A 57-line first file spans Page 1 and Page 2 (body cap 56); the
         // second file restarts at Page 1 (pr.c:233 `pagecnt = 1`).
         let base = PrOptions::default();
-        let many: Vec<String> = (1..=57).map(|n| n.to_string()).collect();
-        let files = [("f1", many), ("f2", vec![String::from("z")])];
+        let many: Vec<Vec<u8>> = (1..=57).map(|n| n.to_string().into_bytes()).collect();
+        let files = [("f1", many), ("f2", vec![b"z".to_vec()])];
         let pages = paginate_files(&files, &base, None);
-        assert_eq!(pages[0].header_lines[2], "f1 Page 1");
-        assert_eq!(pages[1].header_lines[2], "f1 Page 2");
-        assert_eq!(pages[2].header_lines[2], "f2 Page 1");
+        assert_eq!(pages[0].header_lines[2], b"f1 Page 1");
+        assert_eq!(pages[1].header_lines[2], b"f1 Page 2");
+        assert_eq!(pages[2].header_lines[2], b"f2 Page 1");
     }
 
     #[test]
     fn test_paginate_files_header_override_applies_to_all() {
         let base = PrOptions::default();
         let files = [
-            ("a.txt", vec![String::from("x")]),
-            ("b.txt", vec![String::from("y")]),
+            ("a.txt", vec![b"x".to_vec()]),
+            ("b.txt", vec![b"y".to_vec()]),
         ];
         let pages = paginate_files(&files, &base, Some("TITLE"));
-        assert_eq!(pages[0].header_lines[2], "TITLE Page 1");
-        assert_eq!(pages[1].header_lines[2], "TITLE Page 1");
+        assert_eq!(pages[0].header_lines[2], b"TITLE Page 1");
+        assert_eq!(pages[1].header_lines[2], b"TITLE Page 1");
     }
 
-    fn block(lines: &[&str]) -> Vec<String> {
-        lines.iter().map(|s| String::from(*s)).collect()
+    fn block(lines: &[&str]) -> Vec<Vec<u8>> {
+        lines.iter().map(|s| s.as_bytes().to_vec()).collect()
     }
 
     #[test]
@@ -1278,14 +1255,11 @@ mod tests {
         // …and a mixed run of files still prints the non-empty one.
         let files = [
             ("empty.txt", Vec::new()),
-            ("two.txt", vec!["a".to_string(), "b".to_string()]),
+            ("two.txt", vec![b"a".to_vec(), b"b".to_vec()]),
         ];
         let pages = paginate_files(&files, &options, None);
         assert_eq!(pages.len(), 1);
-        assert_eq!(
-            pages[0].body_lines[..2],
-            [String::from("a"), String::from("b")]
-        );
+        assert_eq!(pages[0].body_lines[..2], [b"a".to_vec(), b"b".to_vec()]);
     }
 
     #[test]
@@ -1298,13 +1272,16 @@ mod tests {
             no_header: true,
             ..PrOptions::default()
         };
-        let lines: Vec<String> = (1..=10).map(|n| n.to_string()).collect();
+        let lines: Vec<Vec<u8>> = (1..=10).map(|n| n.to_string().into_bytes()).collect();
         let pages = paginate(&lines, &options);
         assert_eq!(pages.len(), 3);
-        assert_eq!(pages[0].body_lines, ["1", "2", "3", "4"]);
+        assert_eq!(
+            pages[0].body_lines,
+            [b"1".to_vec(), b"2".to_vec(), b"3".to_vec(), b"4".to_vec()]
+        );
         assert_eq!(
             pages[2].body_lines,
-            ["9", "10"],
+            [b"9".to_vec(), b"10".to_vec()],
             "a short last page is not padded"
         );
         assert!(pages.iter().all(|page| page.header_lines.is_empty()));
@@ -1316,7 +1293,10 @@ mod tests {
         };
         let pages = paginate(&lines, &from_two);
         assert_eq!(pages.len(), 2);
-        assert_eq!(pages[0].body_lines, ["5", "6", "7", "8"]);
+        assert_eq!(
+            pages[0].body_lines,
+            [b"5".to_vec(), b"6".to_vec(), b"7".to_vec(), b"8".to_vec()]
+        );
         // Beyond the last page C prints nothing.
         let past_end = PrOptions {
             start_page: 4,
@@ -1336,19 +1316,19 @@ mod tests {
             no_header: true,
             ..PrOptions::default()
         };
-        let lines: Vec<String> = (1..=24).map(|n| n.to_string()).collect();
+        let lines: Vec<Vec<u8>> = (1..=24).map(|n| n.to_string().into_bytes()).collect();
         // One page is `rows * columns` = 12 input lines, laid out down column 1 and
         // then column 2, each cell padded to `colwd + 1` except the last column.
         let first = paginate(&lines, &options);
         assert_eq!(first.len(), 2);
-        assert_eq!(first[0].body_lines[0], "1         7");
+        assert_eq!(first[0].body_lines[0], b"1         7");
         let second_page = PrOptions {
             start_page: 2,
             ..options.clone()
         };
         let second = paginate(&lines, &second_page);
         assert_eq!(second.len(), 1);
-        assert_eq!(second[0].body_lines[0], "13        19");
+        assert_eq!(second[0].body_lines[0], b"13        19");
         let past_end = PrOptions {
             start_page: 3,
             ..options.clone()
@@ -1448,7 +1428,7 @@ mod tests {
         );
         assert_eq!(
             parse_pr_args(&["-e:xy"]).err(),
-            Some(PrError::InvalidValue('e', String::from("xy")))
+            Some(PrError::InvalidValue('e', "xy".to_string()))
         );
         let contract = parse_pr_args(&["-i3"]).expect("-i3");
         assert_eq!(contract.options.contract, Some((b'\t', 3)));
@@ -1481,10 +1461,10 @@ mod tests {
         // (`pr.c:1555-1561`), so neither the blank padding rows nor the five trailer
         // lines appear — while the header block is untouched.
         let options = parse_pr_args(&["-F", "-l", "20", "-h", "T"]).expect("-F");
-        let pages = paginate(&[String::from("a"), String::from("b")], &options.options);
+        let pages = paginate(&[b"a".to_vec(), b"b".to_vec()], &options.options);
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].header_lines.len(), HEADLEN);
-        assert_eq!(pages[0].body_lines, ["a", "b"]);
+        assert_eq!(pages[0].body_lines, [b"a".to_vec(), b"b".to_vec()]);
         assert!(
             pages[0].trailer_lines.is_empty(),
             "no blank trailer under -F"
@@ -1494,14 +1474,14 @@ mod tests {
         let same = parse_pr_args(&["-f", "-l", "20", "-h", "T"]).expect("-f");
         assert!(same.options.form_feed, "-f falls through to -F");
         assert_eq!(
-            paginate(&[String::from("a"), String::from("b")], &same.options),
+            paginate(&[b"a".to_vec(), b"b".to_vec()], &same.options),
             pages
         );
 
         // Without either flag the trailer block is the five blank lines and the short
         // page is padded up to the body height, as before.
         let plain = parse_pr_args(&["-l", "20", "-h", "T"]).expect("plain");
-        let plain_pages = paginate(&[String::from("a")], &plain.options);
+        let plain_pages = paginate(&[b"a".to_vec()], &plain.options);
         assert_eq!(plain_pages[0].trailer_lines.len(), TAILLEN);
         assert_eq!(plain_pages[0].body_lines.len(), 20 - HEADLEN - TAILLEN);
         assert!(!plain_pages[0].form_feed);
@@ -1512,7 +1492,7 @@ mod tests {
         // The padding rows and the trailer come from the same `prtail` call, so a short
         // page under `-F` stops at its real length in the single-column path *and* in
         // `vertcol`, which also ends each page through `prtail` (`pr.c:604-608`).
-        let lines: Vec<String> = (1..=3).map(|n| n.to_string()).collect();
+        let lines: Vec<Vec<u8>> = (1..=3).map(|n| n.to_string().into_bytes()).collect();
 
         // Two columns over three lines make two rows; the headers keep this leg on the
         // padding branch, which is the whole point of the contrast below.
@@ -1541,8 +1521,12 @@ mod tests {
         // so the byte disappears along with the padding and the trailer — in each of
         // the two column paths, which is why both are asserted separately.
         let bare_single = parse_pr_args(&["-F", "-t", "-l", "20"]).expect("-F -t");
-        let pages = paginate(&[String::from("a")], &bare_single.options);
-        assert_eq!(pages[0].body_lines, ["a"], "nohead never pads either");
+        let pages = paginate(&[b"a".to_vec()], &bare_single.options);
+        assert_eq!(
+            pages[0].body_lines,
+            [b"a".to_vec()],
+            "nohead never pads either"
+        );
         assert!(!pages[0].form_feed, "single-column nohead drops the byte");
 
         let bare = parse_pr_args(&["-F", "-t", "-l", "20", "-2", "-w", "20"]).expect("-F -t -2");
@@ -1571,25 +1555,25 @@ mod tests {
         // non-last columns, last column unpadded.
         assert_eq!(
             vertcol_body_rows(&block(&["1", "2", "3", "4"]), 2, 2, 3, None),
-            vec![String::from("1   3"), String::from("2   4")]
+            vec![b"1   3".to_vec(), b"2   4".to_vec()]
         );
         // Uneven last page: row 1 has col1 empty; col0's inter-column pad
         // stays (C keeps it), only the last column omits padding.
         assert_eq!(
             vertcol_body_rows(&block(&["1", "2", "3"]), 2, 2, 3, None),
-            vec![String::from("1   3"), String::from("2   ")]
+            vec![b"1   3".to_vec(), b"2   ".to_vec()]
         );
         // A row with no data in any column stops emission: block=["1","2"] fills
         // col0's two rows, so both emit (col1 empty) — trailing inter-column pad
         // kept, last column unpadded.
         assert_eq!(
             vertcol_body_rows(&block(&["1", "2"]), 2, 2, 3, None),
-            vec![String::from("1   "), String::from("2   ")]
+            vec![b"1   ".to_vec(), b"2   ".to_vec()]
         );
         // Only row 0 has data → row 1 is empty in every column → emission stops.
         assert_eq!(
             vertcol_body_rows(&block(&["1"]), 2, 2, 3, None),
-            vec![String::from("1   ")]
+            vec![b"1   ".to_vec()]
         );
     }
 
@@ -1598,17 +1582,36 @@ mod tests {
         // -s: a single separator byte, no width padding between columns.
         assert_eq!(
             vertcol_body_rows(&block(&["1", "2", "3", "4"]), 2, 2, 3, Some(b'\t')),
-            vec![String::from("1\t3"), String::from("2\t4")]
+            vec![b"1\t3".to_vec(), b"2\t4".to_vec()]
         );
         // Cells clip to colwd bytes (C's inln truncation).
         assert_eq!(
             vertcol_body_rows(&block(&["abcdef", "x", "y", "z"]), 2, 2, 3, None),
-            vec![String::from("abc y"), String::from("x   z")]
+            vec![b"abc y".to_vec(), b"x   z".to_vec()]
         );
-        // Clip floors to a char boundary, never a panic on multibyte input.
+        // A cell is cut at `colwd` bytes: Latin-1 `e-acute` is one byte, so the
+        // third byte of the cell is that byte and the cut lands right after it.
         assert_eq!(
-            vertcol_body_rows(&block(&["h\u{e9}llo"]), 1, 1, 3, None),
-            vec![String::from("h\u{e9}")]
+            vertcol_body_rows(&[b"h\xe9llo".to_vec()], 1, 1, 3, None),
+            vec![b"h\xe9l".to_vec()]
+        );
+    }
+
+    #[test]
+    fn a_cell_is_cut_at_bytes_even_mid_code_point() {
+        // The cut point is a byte count, so a cell may end inside a code point:
+        // `a b e-acute` is four bytes (`c3 a9` for the accent) and `colwd` 3 hands
+        // back the three bytes including the dangling lead byte. Flooring to a code
+        // point boundary — the shape this leg had before — would hand back two.
+        assert_eq!(
+            vertcol_body_rows(&[b"ab\xc3\xa9".to_vec()], 1, 1, 3, None),
+            vec![b"ab\xc3".to_vec()]
+        );
+        // A byte that is no UTF-8 lead byte at all travels the same way: C's `stp`
+        // counts bytes and never inspects them.
+        assert_eq!(
+            vertcol_body_rows(&[b"a\xff\xfez".to_vec()], 1, 1, 3, None),
+            vec![b"a\xff\xfe".to_vec()]
         );
     }
 
@@ -1626,7 +1629,7 @@ mod tests {
         assert!(pages[0].header_lines.is_empty());
         assert_eq!(
             pages[0].body_lines,
-            vec![String::from("a  c"), String::from("b  d")]
+            vec![b"a  c".to_vec(), b"b  d".to_vec()]
         );
     }
 
@@ -1640,11 +1643,11 @@ mod tests {
         let pages = paginate_lines(&["a", "b"], &options);
         let out = render_page(&pages[0], 3);
         assert_eq!(out.len(), 12);
-        assert_eq!(out[0], ""); // header blank spacer, unindented
-        assert_eq!(out[2], "   f.txt Page 1"); // header text line, indented
-        assert_eq!(out[5], "   a"); // body, indented
-        assert_eq!(out[6], "   b");
-        assert_eq!(out[7], ""); // trailer, unindented
+        assert_eq!(out[0], b""); // header blank spacer, unindented
+        assert_eq!(out[2], b"   f.txt Page 1"); // header text line, indented
+        assert_eq!(out[5], b"   a"); // body, indented
+        assert_eq!(out[6], b"   b");
+        assert_eq!(out[7], b""); // trailer, unindented
         // offset 0 reproduces the plain page order exactly.
         let plain = render_page(&pages[0], 0);
         assert_eq!(plain, pages[0].lines().cloned().collect::<Vec<_>>());
@@ -1657,25 +1660,25 @@ mod tests {
         options.page_width = 5;
         let pages = paginate_lines(&["a", "b"], &options);
         assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].header_lines[2], " Page 1");
+        assert_eq!(pages[0].header_lines[2], b" Page 1");
         // Two lines across a 2-column page leave far more than a full column of
         // slack, so the final page balances (`pr.c:522`): `a` and `b` share one
         // row (`a` padded to the `colwd + 1` stride, `b` the unpadded last
         // column), then the body pads out to the 56-line capacity.
-        assert_eq!(pages[0].body_lines[0], "a  b");
-        assert_eq!(pages[0].body_lines[1], "");
+        assert_eq!(pages[0].body_lines[0], b"a  b");
+        assert_eq!(pages[0].body_lines[1], b"");
         assert_eq!(pages[0].body_lines.len(), 56);
         assert_eq!(pages[0].trailer_lines.len(), TAILLEN);
     }
 
     #[test]
     fn test_number_field_width_and_truncation() {
-        assert_eq!(number_field(1, 3), "  1");
-        assert_eq!(number_field(12, 3), " 12");
+        assert_eq!(number_field(1, 3), b"  1");
+        assert_eq!(number_field(12, 3), b" 12");
         // A number wider than the field keeps its last `width` digits (C addnum
         // writes from the right and stops at the left edge).
-        assert_eq!(number_field(1234, 3), "234");
-        assert_eq!(number_field(7, 1), "7");
+        assert_eq!(number_field(1234, 3), b"234");
+        assert_eq!(number_field(7, 1), b"7");
     }
 
     #[test]
@@ -1685,10 +1688,10 @@ mod tests {
         options.page_len = 12; // body capacity 2
         let pages = paginate_lines(&["a", "b", "c", "d"], &options);
         // 4 lines over body capacity 2 → 2 pages, numbering runs continuously.
-        assert_eq!(pages[0].body_lines[0], "  1\ta");
-        assert_eq!(pages[0].body_lines[1], "  2\tb");
-        assert_eq!(pages[1].body_lines[0], "  3\tc");
-        assert_eq!(pages[1].body_lines[1], "  4\td");
+        assert_eq!(pages[0].body_lines[0], b"  1\ta");
+        assert_eq!(pages[0].body_lines[1], b"  2\tb");
+        assert_eq!(pages[1].body_lines[0], b"  3\tc");
+        assert_eq!(pages[1].body_lines[1], b"  4\td");
     }
 
     #[test]
@@ -1697,17 +1700,17 @@ mod tests {
         // against vertcol_body_rows' column-major down-fill of the same block.
         assert_eq!(
             horzcol_body_rows(&block(&["a", "b", "c", "d"]), 2, 3, None),
-            vec![String::from("a   b"), String::from("c   d")]
+            vec![b"a   b".to_vec(), b"c   d".to_vec()]
         );
         assert_eq!(
             vertcol_body_rows(&block(&["a", "b", "c", "d"]), 2, 2, 3, None),
-            vec![String::from("a   c"), String::from("b   d")]
+            vec![b"a   c".to_vec(), b"b   d".to_vec()]
         );
         // Odd count: last row's single cell is padded (col0 is not last), then
         // EOF stops the row — trailing inter-column pad kept.
         assert_eq!(
             horzcol_body_rows(&block(&["a", "b", "c"]), 2, 3, None),
-            vec![String::from("a   b"), String::from("c   ")]
+            vec![b"a   b".to_vec(), b"c   ".to_vec()]
         );
         assert!(horzcol_body_rows(&[], 2, 3, None).is_empty());
     }
@@ -1722,7 +1725,7 @@ mod tests {
         let pages = paginate_lines(&["a", "b", "c", "d"], &options);
         assert_eq!(
             pages[0].body_lines,
-            vec![String::from("a  b"), String::from("c  d")]
+            vec![b"a  b".to_vec(), b"c  d".to_vec()]
         );
     }
 
@@ -1733,8 +1736,8 @@ mod tests {
         options.page_len = 12; // body_capacity 2 → 1 content line/page, doubled to 2 rows
         let pages = paginate_lines(&["a", "b", "c"], &options);
         assert_eq!(pages.len(), 3);
-        assert_eq!(pages[0].body_lines, vec![String::from("a"), String::new()]);
-        assert_eq!(pages[2].body_lines, vec![String::from("c"), String::new()]);
+        assert_eq!(pages[0].body_lines, vec![b"a".to_vec(), Vec::new()]);
+        assert_eq!(pages[2].body_lines, vec![b"c".to_vec(), Vec::new()]);
     }
 
     #[test]
@@ -1743,8 +1746,8 @@ mod tests {
         options.double_space = true;
         options.page_len = 11; // body_capacity 1 → no room to double (C `dspace = 0`)
         let pages = paginate_lines(&["a", "b"], &options);
-        assert_eq!(pages[0].body_lines, vec![String::from("a")]);
-        assert_eq!(pages[1].body_lines, vec![String::from("b")]);
+        assert_eq!(pages[0].body_lines, vec![b"a".to_vec()]);
+        assert_eq!(pages[1].body_lines, vec![b"b".to_vec()]);
     }
 
     #[test]
@@ -1752,14 +1755,14 @@ mod tests {
         let mut options = PrOptions::default();
         options.page_len = 12; // body_capacity 2
         options.start_page = 3; // skip (3-1)*2 = 4 content lines
-        let lines: Vec<String> = ("123456").chars().map(|c| c.to_string()).collect();
+        let lines: Vec<Vec<u8>> = ("123456")
+            .chars()
+            .map(|c| c.to_string().into_bytes())
+            .collect();
         let pages = paginate(&lines, &options);
         assert_eq!(pages.len(), 1);
-        assert_eq!(pages[0].header_lines[2], " Page 3");
-        assert_eq!(
-            pages[0].body_lines,
-            vec![String::from("5"), String::from("6")]
-        );
+        assert_eq!(pages[0].header_lines[2], b" Page 3");
+        assert_eq!(pages[0].body_lines, vec![b"5".to_vec(), b"6".to_vec()]);
     }
 
     #[test]
@@ -1774,18 +1777,14 @@ mod tests {
     #[test]
     fn test_merge_body_rows_zip_longest_drops_trailing_eof() {
         let streams = vec![
-            vec![String::from("a"), String::from("b"), String::from("c")],
-            vec![String::from("1"), String::from("2")],
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()],
+            vec![b"1".to_vec(), b"2".to_vec()],
         ];
         // Row 0/1: both columns; row 2: only stream 0 has data → trailing EOF
         // column dropped, and colwd 3 leaves "c" alone (last active, no pad).
         assert_eq!(
             merge_body_rows(&streams, 3, None),
-            vec![
-                String::from("a   1"),
-                String::from("b   2"),
-                String::from("c")
-            ]
+            vec![b"a   1".to_vec(), b"b   2".to_vec(), b"c".to_vec()]
         );
         assert!(merge_body_rows(&[], 3, None).is_empty());
     }
@@ -1797,16 +1796,12 @@ mod tests {
         // col1 with just [4]).
         assert_eq!(
             vertcol_body_rows_balanced(&block(&["1", "2", "3", "4"]), 2, 3, None),
-            vec![String::from("1   3"), String::from("2   4")]
+            vec![b"1   3".to_vec(), b"2   4".to_vec()]
         );
         // The naive down-fill of the same block is the staircase, for contrast.
         assert_eq!(
             vertcol_body_rows(&block(&["1", "2", "3", "4"]), 3, 2, 3, None),
-            vec![
-                String::from("1   4"),
-                String::from("2   "),
-                String::from("3   ")
-            ]
+            vec![b"1   4".to_vec(), b"2   ".to_vec(), b"3   ".to_vec()]
         );
     }
 
@@ -1817,7 +1812,7 @@ mod tests {
         // breaks the row — exactly C's `tvc >= cvc` break (pr.c:568).
         assert_eq!(
             vertcol_body_rows_balanced(&block(&["1", "2", "3"]), 2, 3, None),
-            vec![String::from("1   3"), String::from("2   ")]
+            vec![b"1   3".to_vec(), b"2   ".to_vec()]
         );
     }
 
@@ -1827,7 +1822,7 @@ mod tests {
         // three columns; the last column is unpadded.
         assert_eq!(
             vertcol_body_rows_balanced(&block(&["1", "2", "3"]), 3, 3, None),
-            vec![String::from("1   2   3")]
+            vec![b"1   2   3".to_vec()]
         );
     }
 
@@ -1836,12 +1831,12 @@ mod tests {
         // -s: one separator byte, no width padding; last column unpadded.
         assert_eq!(
             vertcol_body_rows_balanced(&block(&["1", "2", "3", "4"]), 2, 3, Some(b'\t')),
-            vec![String::from("1\t3"), String::from("2\t4")]
+            vec![b"1\t3".to_vec(), b"2\t4".to_vec()]
         );
         // Cells clip to colwd bytes before the pad (C's inln truncation).
         assert_eq!(
             vertcol_body_rows_balanced(&block(&["abcdef", "x", "y", "z"]), 2, 3, None),
-            vec![String::from("abc y"), String::from("x   z")]
+            vec![b"abc y".to_vec(), b"x   z".to_vec()]
         );
     }
 
@@ -1865,7 +1860,7 @@ mod tests {
         assert_eq!(pages.len(), 1);
         assert_eq!(
             pages[0].body_lines,
-            vec![String::from("a  c"), String::from("b  d")]
+            vec![b"a  c".to_vec(), b"b  d".to_vec()]
         );
     }
 
@@ -1878,15 +1873,10 @@ mod tests {
         options.page_width = 5;
         options.page_len = 14;
         let pages = paginate_lines(&["a", "b", "c", "d"], &options);
-        assert_eq!(pages[0].header_lines[2], " Page 1");
+        assert_eq!(pages[0].header_lines[2], b" Page 1");
         assert_eq!(
             pages[0].body_lines,
-            vec![
-                String::from("a  c"),
-                String::from("b  d"),
-                String::new(),
-                String::new(),
-            ]
+            vec![b"a  c".to_vec(), b"b  d".to_vec(), Vec::new(), Vec::new(),]
         );
     }
 
@@ -1903,11 +1893,7 @@ mod tests {
         assert_eq!(pages.len(), 1);
         assert_eq!(
             pages[0].body_lines,
-            vec![
-                String::from("a  d"),
-                String::from("b  e"),
-                String::from("c  f")
-            ]
+            vec![b"a  d".to_vec(), b"b  e".to_vec(), b"c  f".to_vec()]
         );
     }
 
@@ -2011,11 +1997,11 @@ mod tests {
         assert_eq!(parse_pr_args(&["-n0"]).err(), Some(PrError::NumberWidth));
         assert_eq!(
             parse_pr_args(&["-sab"]).err(),
-            Some(PrError::InvalidValue('s', String::from("b")))
+            Some(PrError::InvalidValue('s', "b".to_string()))
         );
         assert_eq!(
             parse_pr_args(&["-nxy"]).err(),
-            Some(PrError::InvalidValue('n', String::from("y")))
+            Some(PrError::InvalidValue('n', "y".to_string()))
         );
         assert_eq!(
             parse_pr_args(&["-a"]).err(),

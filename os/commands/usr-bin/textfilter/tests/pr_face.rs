@@ -492,3 +492,31 @@ fn writing_stdin_to_an_already_exited_child_is_not_a_gate_failure() {
     assert_eq!(status.code().unwrap_or(-1), 1, "这一形走的是 usage 那一支");
     face_support::write_stdin(&mut child, b"a\n");
 }
+
+/// 行腿端到端按字节：`fgetln` 交上来的记录从不解码，所以一枚不是 UTF-8 的字节
+/// 照样成行、照样参与制表符展开、照样随自定页眉那支持平布局出栈。期望逐字节取自
+/// 参照件 `tmp/pr-419/pr`（同名软链起，批次四百三十六 A/B 的 12/13 同形即此三形），
+/// 夹具一律写字面字节——把 `é` 的 UTF-8 转义当夹具会二次编码出假绿。
+#[test]
+fn a_nonutf8_line_keeps_its_bytes_through_the_line_legs() {
+    let raw = b"a\xffb\tp\nq\xff\n";
+    // 缺省单列 + `-t`（无页眉页脚）：这一支就是原样搬运。
+    let (out, status, err) = run_bytes(&["-t"], raw);
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(
+        out, raw,
+        "the pass-through leg must not touch a single byte"
+    );
+
+    // `-e` 把输入里的制表符按 8 列展开：`\t` 后面那三个字符之前先补五个空格，
+    // 而 `ff` 这一枚字节不参与任何计数之外的处理。
+    let (expanded, status, err) = run_bytes(&["-t", "-e"], raw);
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(expanded, b"a\xffb     p\nq\xff\n");
+
+    // `-h` 换掉页眉文本，多字节与裸字节混排的两行照旧逐字节出栈。
+    let mixed = b"caf\xc3\xa9 z\n\xff q\n";
+    let (headed, status, err) = run_bytes(&["-t", "-h", "T"], mixed);
+    assert_eq!(status, 0, "stderr was {err:?}");
+    assert_eq!(headed, mixed);
+}
