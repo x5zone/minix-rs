@@ -119,6 +119,171 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十五（甲组第二支：`column` 的条目池、分隔符集、布局宽度一起按字节）
+
+**这一轮在做的事**。批次四百三十三的普查把「先把整份输入解一次 UTF-8、再按换行切」这个形状量成三组，
+并定甲组拆三支施工：`pr` 一支、`column` 一支、`comm` 与 `paste` 并一支。批次四百三十四落了并一支，
+本轮落第二支 `column`。`column` 与第一支的区别在于它不止把行当数据搬：它还**拿行的长度当布局的输入**
+——`maxlength` 决定整个布局要不要塌成「每条一行」，`-t` 的 `lens[col]` 决定每一列补几个空格。
+所以字节口径在这一支同时钉住三处：条目本身、切分用的分隔符集、量长与补齐那条腿。
+
+**C 的那一侧长什么样**（三段贴码，都是按长度搬字节，一次解码都没有）。
+
+收条目：`minix3/usr.bin/column/column.c:272-296`
+
+```c
+	while ((buf = fgetln(fp, &blen)) != NULL) {
+		buf = estrndup(buf, blen);
+		for (p = buf; *p && isspace((unsigned char)*p); ++p);
+		if (!*p) {
+			free(buf);
+			continue;
+		}
+		if (!(p = strchr(p, '\n'))) {
+			warnx("line too long");
+			eval = 1;
+			free(buf);
+			continue;
+		}
+		*p = '\0';
+		len = p - buf;
+		if (maxlength < len)
+			maxlength = len;
+```
+
+`fgetln` 交回的是「指针 + 长度」，长度由内核数出来。跳前导空白只服务于两处判定（这一条是不是整条空白、
+从哪儿往后找换行），入池的仍是行首那个 `buf`，所以前导空白既留在条目里，也被 `len = p - buf` 算进
+`maxlength`。`maxlength` 是两枚指针相减得来的，它天生就是字节数。
+
+切字段与量字段长：`column.c:223-247`
+
+```c
+	for (cnt = 0, lp = list; cnt < entries; ++cnt, ++lp, ++t) {
+		for (coloff = 0, p = *lp;
+		    (cols[coloff] = strtok(p, separator)) != NULL; p = NULL)
+		…
+			t->len[coloff] = strlen(cols[coloff]);
+			if (t->len[coloff] > lens[coloff])
+				lens[coloff] = t->len[coloff];
+```
+
+`strtok` 的第二个参数是一张**字节表**（libc 用 `strspn` 一个字节一个字节地比），`strlen` 数的也是字节。
+
+发出腿：`column.c:249-252`
+
+```c
+	for (coloff = 0; coloff < t->cols - 1; ++coloff)
+		(void)printf("%s%*s", t->list[coloff],
+		    lens[coloff] - t->len[coloff] + 2, " ");
+	(void)printf("%s\n", t->list[coloff]);
+```
+
+**最后一列单独一句 `printf("%s\n", …)`**：它不在补齐的那个环里，所以既不补空格、也没有「裁掉行尾」这一步。
+这一句是本轮第二处缺陷的判据——旧写法给每一列都补齐、再对整行 `trim_end`，于是字段自带的尾随空白
+（回车这一类不在分隔符表里的字符）被一并裁掉。
+
+**改前是什么形状**（现量 `tmp/column-435/ab-prefix.log`：12 形里 7 红。参照件 `tmp/column-314/column_ref`
+经同名软链 `tmp/column-314/column` 起——报文的程序名跟着 `getprogname()`，只有同名才谈得上逐字节直比；
+开工先过 `-Z` 归属验字样，读数是 `column: unknown option -- Z`。夹具一律写字面字节，`raw.txt` 是
+`61 ff 62 0a 7a 0a`）。
+
+| 形 | 参照件 | 本壳改前 |
+|---|---|---|
+| 单档含非 UTF-8，缺省纵向填满 | `61 ff 62 09 7a 0a` | 零字节 |
+| 好档带坏档（两档共用一个条目池） | `78 09 79 09 61 ff 62 09 7a 0a` | `78 09 79 0a`，坏档一条都不交 |
+| `-x` 横向填满 | `61 ff 62 09 7a 0a` | 零字节 |
+| `-c 20`（宽度够，仍走列布局） | `61 ff 62 09 7a 0a` | 零字节 |
+| `-t` 表模式，条目含非 UTF-8 | `61 ff 62 20 20 71 0a 7a 20 20 20 20 77 77 0a` | 零字节 |
+| `-t -s '\|'`（分隔符换成竖线） | `61 ff 62 09 71 0a 7a 09 77 77 0a` | 零字节 |
+| `-t` 末字段带尾随回车 | `61 20 20 20 62 0d 0a 7a 7a 20 20 71 0d 0a` | 两行行尾的 `0d` 都被裁掉 |
+
+「零字节」那一族的成因与批次四百三十四同形：入池前解一次 UTF-8，一枚 `ff` 让整段解码失败得到空串，
+`"".split('\n')` 交回一个空 piece，末尾换行又把它弹掉，于是**整个档一条都不交**。`column` 比 `paste`、
+`comm` 多一层放大：条目池空时壳按 `eval` 直接返回（`column.c:125-126`），连布局都不进，所以打出来的是
+零字节而不是空行。
+
+最后一行（尾随回车）不是解码问题：C 的末列不补齐也不裁行尾，`62 0d` 那个 `0d` 原样留在行尾。旧写法是
+「补齐所有列 → 整行 `trim_end`」，而 `trim_end` 按 Unicode 空白判，`0d` 在表里，于是被吃掉。这一处与字节
+改造无关，是同一条发出腿上的第二个缺陷，一并修。
+
+**改法四处**：
+
+1. `os/commands/usr-bin/textfilter/src/bin/column.rs:fn collect` 不再解码：`bytes.split(|&byte| byte == b'\n')`
+   把字节段直接交给 `scan_entries`；发出腿 `support::emit(&line)` 交字节。
+2. `os/commands/usr-bin/textfilter/src/column.rs` 的条目类型全线 `String` → `Vec<u8>`：`EntryPool::entries`、
+   `scan_entries`、`columnate`、`table_mode`、`c_columnate`、`r_columnate`、`maxlen`，制表符改成
+   `line.push(b'\t')`。宽度那一判因此自动跟着字节走——`maxlen` 与 `field.len()` 量的是同一批字节，
+   C 的 `strlen` 与 `p - buf` 量的也是同一批字节。
+3. 前导空白那一判在 `&[u8]` 上没有现成的 `trim_start_matches`，改成手动游标
+   `while matches!(line.get(blank), Some(&b' ') | Some(&b'\t'))`。跳过的集合维持不变（仍是空格与制表两枚），
+   所以本轮没有动空行判定；但它与 C 的 `isspace` 差三枚，见本轮登记那一段。
+4. `-s` 的分隔符集从「按字符判」改回「按字节判」：`split_fields` 里用 `separator.contains(byte)`。
+   C 交给 `strtok` 的是 `char *`，按字节表匹配；按字符判会放过一枚单独的续字节，而条目按字节进池之后
+   那种字节是真能出现的。
+
+**反过来做会怎样**（三处都可回查源码）。若第 4 步留着字符集：`-s é` 的值是 `c3 a9` 两字节，条目里一枚
+单独的 `a9` 在 C 那里是分隔符（切两半），在本壳什么也不是（整条成一列），于是 `-t` 少切一个字段、那一行
+就短一截。若第 1 步留着解码：坏字节所在的档一条都不交，而 `column` 的多个操数是**共用同一个条目池**
+（`column.c:114-123`），所以坏档消失后布局照样按好档排——输出看起来「成功」，实际少了一个来源的全部行，
+退码还是 0，这种错最难发现。若第 2 步只改条目不改宽度：`maxlength` 与 `lens[col]` 一个按字节、一个按字符，
+补齐的格数与 C 对不上；更要紧的是 C 用 `maxlength >= termwidth` 决定要不要塌成每条一行（`column.c:131`），
+差一位就可能让整档换个布局形。
+
+**门 1201→1205**（库 +3、面 +1）。库侧：`column::tests::a_byte_that_is_not_utf8_is_still_an_entry_and_its_layout_is_bytes`
+（钉条目按字节进池、纵向布局与 `-t` 补齐都按字节量）、
+`column::tests::the_separator_is_a_set_of_bytes_not_a_set_of_characters`（钉 `-s` 那张表是字节表）、
+`column::tests::a_trailing_carriage_return_survives_because_the_last_column_is_printed_raw`（钉末列原样发出，
+行尾回车留下）。面侧：`tests/column_face.rs:an_entry_that_is_not_utf8_keeps_its_bytes_through_every_layout`
+（四形：纵向、横向、好档带坏档、`-t` 补齐）。库内既有的 column 夹具全部改写字面字节——门测的就是字节语义，
+`str` 再 `.encode()` 会把一枚 `\xff` 变成三字节而假绿。
+
+**门读数**：宿主 **1205/0**（68 段）、容器 **1205/0**（68 段，单独跑，不与任何 cargo 并发）、
+三架构 `x86_64`/`aarch64`/`riscv64gc` 退 0、触及件 clippy 告警 **0** 条、`rustfmt` 新增漂移 **0** 件。
+两处过程事实记在这里，因为它们都是门本身的一部分：
+
+- 宿主门第一轮报 6 个 target 全红、每个子进程都是 `Exec format error`。现场取证
+  （`os/target/debug/cut` 等五枚产物 `od` 现量首 16 字节全零）说明这是上一次构建被中断留下的半成品产物，
+  不是代码形状。`cargo clean -p minix-textfilter` 后复跑即 1205/0。**判据**：面门成片红时先看产物形状，
+  别把「靶子坏了」读成「代码坏了」。
+- 表模式的补齐由 `String::push(' ')` 变成 `Vec<u8>::push(b' ')` 之后触发一条新 clippy 告警
+  `same_item_push`（这条 lint 只管 `Vec`，`String` 不吃）。改用本 crate 既有的写法
+  `line.extend(core::iter::repeat_n(b' ', …))`（见 `os/commands/usr-bin/textfilter/src/pr.rs:fn expand_tabs`
+  同款），改完触及件告警归零。**判据**：按告警**位置**判触及件，不拿整包总数当棘轮。
+
+**负控五枚**（`tmp/column-435/negctl.log`，4 咬 + 1 等价；锚点出现次数先逐枚数过，不符就中止不判门）：
+N1 把 `bin/column.rs:fn collect` 退回整档解码 → 咬面门；N2 把 `src/column.rs:fn split_fields` 退回按字符判
+→ 咬分隔符那枚库门；N3 把表模式退回「补齐所有列再裁行尾」→ 同时咬住回车那枚库门与面门（两处都断言行尾
+形状，一枚注入咬两门是应得的）；N4 把发出腿退回解码 → 咬面门（入腿与出腿各打一次，证两侧都在射程里）；
+N5 等价注入（`extend_from_slice(field)` 写成 `extend_from_slice(&field.to_vec())`）→ 全绿，证注入机器本身无偏。
+本轮还踩到注入自己的形状：`--lib` 交回的门名带模块前缀（`column::tests::…`），面文件交回裸名，
+对账只比最后一段，否则同一枚门会被前缀误判成「漏咬」。
+
+**A/B 终读数**：12 形 **12 同 0 异**（改前 5 同 7 异）。有一形改前就是同，值得写明免得下一轮把它当成已修的
+缺陷：`-t` 那形里字段是 `caf c3 a9`（é 的 UTF-8 两字节），参照件按字节量长所以补两位、本壳改前按 `str::len_bytes`
+量的也是字节数，两边本来就一致——这一族的红只在**非 UTF-8 字节**那里，不在「字符数与字节数之差」。
+
+**本轮新登记（只登记，未执行）**：`COLUMN-BLANK-SET-NARROWER-THAN-ISSPACE`。C 的空行判是
+`for (p = buf; *p && isspace((unsigned char)*p); ++p); if (!*p) { free(buf); continue; }`（`column.c:274-278`），
+C locale 的 `isspace` 表里有 `' ' 	 
+   ` 六枚；本壳那一判只跳 `' '` 与 `'\t'`（这个集合自批次四百三十四
+之前就如此，不是本轮字节改造引入）。差别落在「整条都是空白且没有换行符」的末行：C 认它是空行、静默丢弃、
+退 0；本壳认它是残行，打一句 `column: line too long` 并把退码置 1。现量 `tmp/column-435/blankset.log`
+（复跑 `python3 tmp/column-435/blankset.py`）：`0b`、`0b 0b`、`0c 0d`、`0d` 四形参照件都是 rc=0 零输出，
+本壳是 rc=1 加一句警告；`0d 0a` 这一形参照件把回车连同换行一起当空白丢掉（`isspace('\r')` 与 `isspace('\n')`
+都真，游标一路走到串尾），本壳交回一行 `0d 0a`。对照形 `20 09`（空格加制表）两边同形，说明差别确实只在
+`\v \f \r` 三枚。**修法**是把跳过的集合换成 C 的 ctype 判（跳 `	    ' '` 与 `
+`），
+属另一条口径，与「字节 vs 文本」无关，故另册。
+
+**本轮顺带归位的锚点**：本轮引用的 C 行号逐条回数，订正五处——`strtok` 在 `column.c:224-225`
+（旧注 `214-231` 落在声明与 realloc 段）、`input` 循环在 `:272-296`（旧注 `266-299` 越到 `usage` 头上）、
+表模式补齐腿在 `:249-251`（旧注 `252-256` 把末列那句原样发出算了进去）、`maketbl` 的字段环在 `:223-247`、
+`maxlength >= termwidth` 那一判在 `:131`（旧注 `:130` 是 `maketbl();`）。这五处都在本轮改动的注释与首段里，
+与代码同一笔落。存量漂移仍归在册的 `TEXTFILTER-COMMENT-ANCHOR-AUDIT-REST`。
+
+**余量**：甲组只剩 `pr` 一支（`Page`、`render_page`、`merge_body_rows` 三处是 `String`，改起来是一次库面重构）；
+`units`、`tsort` 两支要各自的夹具形状；`from_utf8_lossy` 那 22 处按批次四百三十三的分组各归各的口径。
+
 ## 批次四百三十四（甲组第一支：`paste` 与 `comm` 的行腿、分隔符腿、折叠腿一起改回字节）
 
 **这一轮在做的事**。批次四百三十三的普查把「先把整份输入解一次 UTF-8、再按换行切」这个形状量成三组，
