@@ -169,6 +169,15 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` 各退 0（`tmp/argv-446/arch.log`）；
   clippy 触及件零告警、rustfmt 五件零漂移（`tmp/argv-446/rustfmt.log`）；
   负控五枚四咬 + 一枚等价全绿、还原后三段全绿（`tmp/argv-446/negctl446.log`）。
+- **下一支（`units`）预研读数（不落码，只定施工顺序）**：`units` 是跨壳表里最后一行仍走文本缝的支，
+  但它不是「只改缝」那一形。现量三处（`grep -c "&str\|String" os/commands/usr-bin/textfilter/src/units.rs`
+  = 30）：`os/commands/usr-bin/textfilter/src/units.rs:fn parse_units_args` 收的是 `&'a [&'a str]`，
+  `UnitsArgs.userfile` 是 `Option<&'a str>`（`-f` 的值，C 的 `userfile`，随后进 `fn read_units`），
+  而**操作数本身就是单位名**，直接进 `os/commands/usr-bin/textfilter/src/units.rs:fn reduce_unit`
+  的单位表查询。也就是说这一支的参数缝与决定半的文本键是同一串字节：缝改成字节形之后，
+  要么表键也换成字节（`read_units` 的行切片与整张定义表跟着改），要么在查询边界折一次 lossy
+  （非 UTF-8 的单位名查不到，落「查不到」那一形）。这两条路要在专轮里先裁决再动手，
+  不是本族既有的「字母位/数据位/回显位三条腿」能直接套的形——那条判据本身随本笔入档（见下）。
 - **手法一条入档**：`rustfmt -p <包>` 会连同**未触及**的件一起重排（本笔 `src/bin_support.rs` 里一处
   `if/else` 被折成多行），所以格式化只能逐件点名；混进工作区的别件格式差要 `git checkout --` 单独还原，
   别把它算进本轮的触及件。
