@@ -119,6 +119,51 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百五十二（A2 参数缝半切片 36：`uniq` 的 argv 交回原字节，回显位与旧式折叠同一条腿）
+
+- **这一轮做的是批次四百五十一那张施工表上的第②支**——`uniq` 的参数缝半。它排在这个位置不是因为字母序，
+  而是因为它在本族里独一份：`uniq` 是**唯一一支有两个选项值回显位**的壳（`-f` 与 `-s` 的坏值各由 C 自己
+  印一句带 `%s` 的 `errx`，`minix3/usr.bin/uniq/uniq.c:90-98`），同一支里还叠着 `obsolete()` 那段旧式改写
+  （`-2`→`-f2`、`+3`→`-s3`）。字母位、两个回显位、折叠尾巴四条腿共用同一串字节，所以它按「一对」一次做完，
+  不拆。
+- **改动**（`os/commands/usr-bin/textfilter/src/bin/uniq.rs`）：argv 从 `support::args()`（两条腿都先过
+  `String::from_utf8_lossy`）换成 `support::args_bytes()`，交回 `Vec<Vec<u8>>`；随之 `obsolete_args`、
+  `parse_uniq_args`、`skip_count` 三处收字节形，`UniqArgError::IllegalField` 与 `IllegalChar` 的载荷从
+  `String` 改成 `Vec<u8>`；`-f`/`-s` 那句坏值报文由新的 `fn illegal_value(prog, kind, value) -> Vec<u8>`
+  逐段拼，回显位原样交回 argv 的那串字节；字母位仍走 `GetoptReport::line_bytes`（渲染半在批次四百零八已落，
+  这一轮补的是它的**取法**那半）。程序名与源/汇两条路径腿按既定口径在臂内折一次 lossy——路径口径的字节化
+  在册另议（`ARGV-BYTE-PATH-IN-LIBS`），本轮不动。
+- **门**：文件内 +1 枚 `a_raw_byte_is_kept_by_the_ring_and_by_the_obsolete_fold`（`cargo test -p
+  minix-textfilter --bin uniq` 12→13），钉的是「一枚裸 `ff` 既活着穿过选项环、又活着穿过旧式折叠」；
+  跨壳表 `tests/bin_support_face.rs` 补 `uniq` 一行，表从七行增到八行（`bin_support_face` 仍是 4 枚门，
+  行数不是门数，别混比）。库测试总数不变：新门在二进制自己的测试模块里，不在 `--lib` 那一侧（`--lib` 现量 614）。
+- **现量（L1）**：宿主 `cargo test -p minix-textfilter -p minix-text-games --no-fail-fast` = **78 段 /
+  1318 passed / 0 failed**；容器权威门（`-u` 加两个缓存挂载点那条配方）同读数 **78 / 1318 / 0**；
+  三架构 `--bin uniq` 各退 0；触及件 clippy 严格名过滤为空。日志 `tmp/uniq-452/final-gates.log`。
+- **对照真源的读数**：11 形逐字节比 本壳 × `tmp/uniq-408/uniq_ref` = **SAME=11 / DIFF=0**
+  （`tmp/uniq-452/ab.log`）。这一轮的归一化教训值得记：程序名那一腿本来就跟着 argv[0]，参照件那份二进制
+  叫 `uniq_ref`、本壳叫 `uniq`，两侧必须把名字 token **全部**替换成同一个占位再比。上一版脚本只替换了
+  stderr 里第一次出现的 `uniq:`，usage 行里那个名字没归一，于是三形报成假红——「按第一次出现归一」这种写法
+  在有多处程序名的报文里必然漏，归一化只能按 token 全替换。
+- **负控六枚**（`tmp/uniq-452/negctl452.log`，注入前基线与复原复跑均全绿）：N1 参数缝退回文本缝咬住
+  `no_command_aborts_on_a_nonutf8_option_letter`；N2 字母位退回按 `char` 渲染的文本口咬住两枚
+  （面侧与跨壳表各一）；N3 回显位丢掉原字节载荷咬住两枚（含 `the_two_skip_values_get_their_own_sentences_with_the_bad_value_echoed`）；
+  N4 旧式折叠少吃一位咬住六枚（连库侧 `tests::parse_obsolete_skip_forms` 一起红，证这条腿被两侧都钉着）；
+  N5 跨壳表那一行退回折叠形咬住跨壳表门；N6 等价注入（两行 `push` 换成一次 `extend_from_slice`）全绿。
+- **两处 stock 归属，不是本轮引入**：`cargo clippy -p minix-textfilter --bin uniq --tests` 报的两枚
+  `collapsible_if` 位置在未触及的库件 `commands/usr-bin/textfilter/src/uniq.rs:239`、`:245`（与本轮改的
+  二进制 `src/bin/uniq.rs` 同名不同件，按路径名严格过滤即为空）——登记 `UNIQ-CLIPPY-COLLAPSIBLE-IF-STOCK`，
+  与 `COL-CLIPPY-STOCK-LINT` 同族。另一处：`rustfmt --check` 从 `src/bin/uniq.rs` 顺 `#[path]` 带出
+  `bin_support.rs` 的三处排版漂移（`fn read_line_bounded` 两臂的 `if/else` 折行、`close_outcome_tests`
+  的 `use` 顺序），主树同一条命令同样三处，属既有漂移——登记 `BIN_SUPPORT-FMT-DRIFT-STOCK`；本轮没有顺手
+  格式化它，因为 `cargo fmt -p minix-textfilter` 会把二十四个未触及件一起重排（批次四百四十八已记的坑）。
+- **登记与余量**：参数缝半已落**十支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`、`fold`、`col`、
+  `uniq` = 切片 27—36），跨壳表现量八行；余 `textfilter` **二十九支** + `text-games` 三支壳 + 族终笔。
+  下一支按施工表是 `units` 两片（裁决维持批次四百四十九那条：先定表键换字节、还是在查询边界折一次 lossy）。
+  `HEAD-NON-PERMUTE-OPERAND-TAIL`、`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR` 与既有各条维持登记不执行。
+
+---
+
 ## 批次四百五十一（施工名单轮：把「余三十支」变成一张按可观察面排好顺序的名单）
 
 - **这一轮不写代码，做的是把余量变成可执行的顺序**。「余三十支」只是个整数，接手的会话得自己再数一遍
