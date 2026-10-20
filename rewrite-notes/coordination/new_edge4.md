@@ -601,3 +601,28 @@
   `prog_name`、`empty_optstring_operands` 的 `&str` 形并迁 `text-games` 三支、把
   `tests/argv_seam_face.rs:fn a_raw_nonutf8_argument_behaves_like_its_lossy_equivalent` 的期望升级为
   逐字节等于原字节，该笔闭 A2 行。提交：码笔 + 本笔里程碑笔（文档笔在两者之间）。
+- **里程碑第一百五十五笔（批次四百四十一，A2 板，qoder）**：A2 行「参数缝半（射程②）」第二对落到
+  `paste`（切片 28）——按批次四百四十定的「一支壳 + 它自己的解析入口」粒度推进。这一对除了字母位，
+  多修掉一处**输出内容**的真缺陷：`-d` 的值旧形进本层之前已被 `String::from_utf8_lossy` 折过，
+  一枚裸 `ff` 变成 `ef bf bd`，而 `minix3/usr.bin/paste/paste.c:199-226` 的 `tr()` 是按字节数位的，
+  于是分隔符表从**一位**被建成**三位**——`paste -d$'\xff' a.txt b.txt` 交出 `1\xefa`（`ef` 用在第一行，
+  `bf`、`bd` 顺延到后两行），参照件 `tmp/paste-321/paste_ref` 现量是每行一枚 `ff`。改前读数留在
+  `tmp/argv-441/before-probe.log`，改后与参照件同形（`tmp/argv-441/measure-ref.log`）。
+  改动面：`os/commands/usr-bin/textfilter/src/paste.rs` 的 `parse_paste_args` 取 `&[&[u8]]`、
+  `PasteArgs.operands` 交回 `Vec<&[u8]>`、`tr_delims` 与 `parse_args` 同批换字节形（入口内的步进
+  逻辑一字未动，它本就按 `token[k]` 取字节）；`src/bin/paste.rs` 用 `support::args_bytes()` 与
+  `support::prog_name_bytes()`，裸 `-` 的比较换成 `b"-"`，lossy 只留在 `read_file` 与 `warn_line`
+  那两句边界（`ARGV-BYTE-PATH-IN-LIBS` 在册）。门 库 +2（一枚钉字母位是那枚裸字节、一枚钉 `-d`
+  值的表位数）、面 +2（`paste_face.rs` 两枚经 `OsString::from_vec` 传参——`&str` 夹具传不出裸 `ff`）；
+  跨壳表 `bin_support_face.rs` 的 `paste` 行由 `ef` 翻正为 `ff`，余四支 `tr`/`seq`/`fold`/`units`
+  仍钉 `ef`。A/B 十一形 SAME=10 DIFF=1，唯一残差是**档名**那一腿：`"\xff.txt"` 参照件打得开，本壳在
+  `minix_sys` 的 `open(2)` 口上折了一次，报 `paste: \xef\xbf\xbd.txt: No such file or directory`。
+  宿主与容器门见 18 篇批次四百四十一段；三架构退 0（宿主跑、独立 `--target-dir`，容器镜像未装
+  bare-metal target 这条配方差异沿用上轮记录）。负控四枚：退回折叠腿咬住 3 枚、`-d` 值先折一次咬住
+  2 枚、字母位退回文本渲染咬住 3 枚、等价改写全绿。新判据三条——① 取红名清单要带 `--no-fail-fast`
+  （`cargo test` 在第一个红目标处收摊，同一注入的读数从 1 枚变 3 枚，多腿改动会系统性低估门的覆盖面）；
+  ② 字节形解析入口的寿命写在元素上（`&[&'a [u8]]`），外层借用不绑同一寿命参数，否则 `let parsed =
+  args(&[...])` 那种就地数组夹具全编不过（本轮十处当场报错，`&str` 形不受此约束，因为元素是指向
+  常量字符串的胖指针）；③ 包级 `cargo fmt -p` 会连带重排全包既有漂移件（本轮一度波及 23 支不相干
+  文件，已全部还原并复跑门），触及件的格式门只跑 `rustfmt --check <那几件>`。
+  提交：码笔 + 本笔里程碑笔（文档笔在两者之间）。
