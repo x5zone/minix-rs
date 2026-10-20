@@ -131,7 +131,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 **为什么这一支最脏，先说清形状**。同一枚裸 `ff` 在 `seq` 里会坏三处，而别支只坏一处：
 
 - **分隔符与结尾符**是内容。C 把 `optarg` 原样交给 `unescape`，再 `fputs` 到标准输出，
-  全程不解码；本壳的缝原先交回 `Vec<String>`，`ff` 到这里已经是 `ef bf bd` 三字节，于是
+  全程不解码；文本缝交回的是 `Vec<String>`，`ff` 到这里已经是 `ef bf bd` 三字节，于是
   `seq -s$'\xff' 1 3` 打的是 `1\xef\xbf\xbd2\xef\xbf\xbd3\xef\xbf\xbd`，而参照件打 `1\xff2\xff3\xff`
   （现量 `tmp/argv-443/measure.log`）。这与批次四百四十一 `paste -d` 那处是同一类缺陷：
   折叠的不是报文而是**数据**。
@@ -175,7 +175,7 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 新增 `run_raw` 用 `OsString::from_vec` 起子进程——`&str` 夹具交不出裸 `ff`；
 `seq_face.rs:fn a_raw_nonutf8_operand_is_echoed_as_its_own_bytes` 钉退 2 那句的原字节回显）。
 跨壳表 `bin_support_face.rs:fn no_command_aborts_on_a_nonutf8_option_letter` 里 `seq` 那一行的
-期望由 `ef` **翻正**为 `ff`；同文件里原先钉「三行」的那枚门改名承接
+期望由 `ef` **翻正**为 `ff`；同文件里那枚钉「三行」的门改名承接
 `the_accumulating_ring_names_the_raw_byte_once`，断言改成**一行一个原字节**——
 「三行」是折叠缝的产物而不是 C 的形状，留着它反而会把错误形状钉成真值。
 翻正进度条现状：六行里 `rev`、`paste`、`seq` 三行已是 `ff`，`tr`、`fold`、`units` 三行仍钉 `ef`。
