@@ -119,6 +119,70 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十八（A2 行「参数缝半（射程②）」预研轮：只量体，不落码）
+
+**这一轮干什么**。板 A 行 A2 只剩参数缝半这一族：`bin_support::args()` 把命令行参数交回的是
+`Vec<String>`，而 C 从头到尾把 `argv` 当字节数组，从不校验。渲染半已经全收（`os/commands` 里
+「印 libc 那三句」的每条腿都按字节），剩下的问题是**参数本身的字节要走到哪里去**。本轮按上一轮
+交接的口径做预研：把两条改法的施工面量清、把分轮顺序定下来，不动生产码。
+
+**量体读数**（每条都给可复现命令，工作树基线 `9ccb39efb`，目录 `os/commands`）。
+
+| 量什么 | 命令 | 读数 |
+|---|---|---|
+| 拿 `argv` 的壳侧入口 | `grep -rn "bin_support::args()\|support::args()" usr-bin/textfilter/src/bin games/text-games/src/bin \| wc -l` | 42 处，跨 42 个 `src/bin/*.rs`（textfilter 39 支、text-games 3 支） |
+| 解析层收借用字符串切片的函数 | `grep -rn "&\[&str\]" usr-bin/textfilter/src games/text-games/src \| wc -l` | 29 处 |
+| 壳侧把 `String` 借成 `&str` 的桥 | `grep -rn "as_str()" usr-bin/textfilter/src/bin games/text-games/src/bin \| wc -l` | 11 处 |
+| 操作数被当作路径打开 | `grep -rn "open(&\|open(operand\|File::open\|fs::read" usr-bin/textfilter/src/bin games/text-games/src/bin \| wc -l` | 14 处 |
+| 操作数被逐字回显进报文 | `grep -rln "warn_operands\|GetoptReport\|operand" usr-bin/textfilter/src/bin games/text-games/src/bin \| wc -l` | 39 个壳文件 |
+| 面级夹具里已在喂非 UTF-8 参数 | `grep -rn "\\xff\|nonutf8" usr-bin/textfilter/tests/\*.rs games/text-games/tests/\*.rs \| wc -l` | 42 行 |
+
+一具典型壳的形状（`usr-bin/textfilter/src/bin/col.rs:23-26`）：
+
+```rust
+    let argv: Vec<String> = support::args();
+    let prog = support::prog_name(&argv);
+    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let options = match parse_col_flags(&refs[1..]) { ... };
+```
+
+`Vec<String>` 在这里只被借用成 `&[&str]` 交给解析器；两半的真值差别不在这里，而在这个 `String`
+**已经被 `String::from_utf8_lossy` 折过一次**——一枚 `ff` 到了这里变成三字节 `efbfbd`，于是凡是从
+这里回流到「开档」或「报文」的操作数都不是原字节。批次四百二十一与四百二十二在 A/B 里剩下的那
+一条残差（集外字母位 `\xef` 对参照件的 `\xff`）就是这条链的末端。
+
+**两条改法**。
+
+- 甲路，全量迁移：`args()` 改交 `Vec<Vec<u8>>`，29 个解析入口的切片类型跟着换成 `&[&[u8]]`，
+  42 个壳各改一处桥。收益是**一处改完全链无 `String`**，字节到字节的形状与 C 同构，A2 行能整行
+  销账。代价是面级测试的调用形状全要跟着动（面门现在按 `&[&str]` 给参数，得逐个改成字节或加一层
+  `as_bytes()` 适配），且宿主侧开档腿要把字节重新包成 `OsStr` 才能 `File::open`。
+- 乙路，只把三条真值腿改成字节：`bin_support` 新增字节出口 `args_bytes()`（真机腿直取
+  `minix_rt::crt0::args()` 的原始字节、宿主腿取 `args_os()` 的 `as_bytes()`，与 `args()` 同一条
+  出生链只是不再折叠），**只**让上面表里那三类点用它——操作数当路径的 14 处、操作数进报文的
+  39 个壳文件、以及需要逐字回显的选项值。解析层保留 `&[&str]`（选项字母与数值都是 ASCII，
+  折叠在这里不可观察）。收益是改动集中在「能看见的那三条腿」，测试形状不动；代价是 `Vec<String>`
+  腿继续存在，将来任何新壳把 `args()` 的内容直接回显都会重新踩坑——这要靠一条门钉住。
+
+**结论：走甲路，但分三小轮做**。理由是乙路的失效模式是**静默**的：它没有编译期保证，只有「这次
+改到的腿」正确；而甲路把 `String` 从这条链上彻底拿掉，之后新增的每一支壳都会被类型挡一下。
+分轮如下（一轮一支可独立收尾，每轮都以 A/B 与门为凭）：
+
+1. **小轮一（缝与试点）**：`bin_support::args()` 改交 `Vec<Vec<u8>>` 并加同形状的 `prog_name`
+   适配；`textfilter` 先迁四支（`col`、`cut`、`head`、`tail`——两支有开档腿、两支带集外字母残差），
+   面门的参数数组在该四支里改写字面字节。A/B 复跑 `tmp/random-421/ab.py` 那类集外字母形应转全同。
+2. **小轮二（textfilter 铺完）**：余下 35 支按同一口径逐支迁移，每支带走该支自己的面门与 A/B 形，
+   并把 29 个解析入口的 `&[&str]` 换成 `&[&[u8]]`（这一步与壳侧同步做，不留中间态）。
+3. **小轮三（text-games 与收尾）**：`wtf`/`fortune`/`random` 三支迁移 + 跨壳表门
+   `tests/argv_seam_face.rs` 的期望从「lossy 同形」升级为「逐字节等于原字节」，该门现形即 A2 行
+   的验收凭据；随后板 A2 行整行销账。
+
+**本轮不落的账**（在册未动，与 A2 行无关的仍是板上那些行）：`UNEXPAND-C-COMMENT-ANCHOR-DRIFT`、
+`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`、`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、
+`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`NL-DELIM-LENGTH-RULE`、`TEXTFILTER-COMMENT-ANCHOR-AUDIT-REST`、
+`LEDGER-ANCHOR-OFFBYONE`、`PASTE-COMM-NUL-TRUNCATES-PRINT-LEG`、`PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`
+（批次四百三十六登记）、八支 `*-NON-PERMUTE-OPERAND-TAIL` 族余量、普查乙组
+（`from_utf8_lossy` 22 处）与丙组（`units`、`tsort` 自带夹具的支）。
 ## 批次四百三十七（在册项落地：`column` 的空行集补回 C locale `isspace` 的三枚）
 
 **这一轮在做的事**。批次四百三十五收尾时登记了一项未执行的差异：`column` 判空行的那一跳只认空格与
