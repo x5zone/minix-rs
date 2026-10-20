@@ -22,6 +22,14 @@
 //!    `invalid floating point argument: 3x`（`errx`），溢出/下溢是
 //!    `1e310: Numerical result out of range`（`err` 的三段形，带 `strerror`）。
 //!    C 解析操作数的次序是 `last`→`first`→`incr`，所以 `seq 3 -w` 报的是 `-w`。
+//!
+//! 命令行按**字节**走到这里（[`bin_support::args_bytes`]）：`-s`/`-t` 的值就是打出去的
+//! 内容，`-f` 的值与操作数就是报文里的内容，所以这三处只要经过文本缝就会改到输出与
+//! 回显的字节（现量 `tmp/argv-443/measure.log`：参照件 `seq -s<ff> 1 3` 打
+//! `1\xff2\xff3\xff`，折叠形打的是 `ef bf bd` 三位；同一枚 `-\xff` 在折叠形里是三个字母
+//! 各报一行，在字节形里是一个字母一行）。唯一仍折一次的是 `OutOfRange` 那一行的操作数
+//! 位——那一句要借库侧的 `strerror`，而 `strerror` 的口收 `&str`，账在
+//! `ARGV-BYTE-PATH-IN-LIBS`。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -33,22 +41,22 @@ use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
-use minix_sys::{ERANGE, Errno};
-use minix_textfilter::seq::{SeqError, generate, parse, render_output};
+use minix_sys::{Errno, ERANGE};
+use minix_textfilter::seq::{generate, parse, render_output, SeqError};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let words: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let options = match parse(&words) {
         Ok(options) => options,
-        Err(error) => fail(prog, &error),
+        Err(error) => fail(&prog, &error),
     };
     let values = match generate(&options) {
         Ok(values) => values,
-        Err(error) => fail(prog, &error),
+        Err(error) => fail(&prog, &error),
     };
-    support::emit(render_output(&values, &options).as_bytes());
+    support::emit(&render_output(&values, &options));
     support::terminate(0);
 }
 
@@ -59,7 +67,7 @@ fn fail(prog: &str, error: &SeqError) -> ! {
             for report in reports {
                 // 字母位走 `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个
                 // 字节，而 `seq` 的环是**累加形**（`errflg` 累加、不在第一个坏字母处停，
-                // `seq.c:101-113`），所以 `-é`（`c3 a9`）交回**两行**、每行一个裸字节。
+                // `seq.c:101-113`），所以命令行上几枚字节就交回几行、每行一个裸字节。
                 support::warn(&report.line_bytes(prog));
             }
             support::warn(
@@ -71,18 +79,28 @@ fn fail(prog: &str, error: &SeqError) -> ! {
             support::terminate(1);
         }
         SeqError::InvalidNumber(word) => {
-            support::warn(format!("{prog}: invalid floating point argument: {word}\n").as_bytes());
+            support::warn(&sentence(
+                prog,
+                b"invalid floating point argument: ",
+                word,
+                b"",
+            ));
             support::terminate(2);
         }
         SeqError::OutOfRange(word) => {
-            support::warn_line(prog, word, Errno::from_i32(ERANGE));
+            // `err(2, "%s", num)` 的三段形带 `strerror`，那一行只能借库侧的 `&str` 口
+            let word = String::from_utf8_lossy(word);
+            support::warn_line(prog, &word, Errno::from_i32(ERANGE));
             support::terminate(2);
         }
         SeqError::ZeroIncrement => give_up(prog, "zero increment"),
         SeqError::ZeroDecrement => give_up(prog, "zero decrement"),
         SeqError::NeedsPositiveIncrement => give_up(prog, "needs positive increment"),
         SeqError::NeedsNegativeDecrement => give_up(prog, "needs negative decrement"),
-        SeqError::BadFormat(fmt) => give_up(prog, &format!("invalid format string: `{fmt}'")),
+        SeqError::BadFormat(fmt) => {
+            support::warn(&sentence(prog, b"invalid format string: `", fmt, b"'"));
+            support::terminate(1);
+        }
         SeqError::BadFormatPlain => give_up(prog, "invalid format string"),
         // 与 printf 家同一处裁决：说明符本身合法之后按 `%g`/`%.2f` 渲染浮点还没接上。
         // C 在这一形照常打数，本壳交回一行自认的说明并退 1，登记为 SEQ-FLOAT-RENDER。
@@ -97,6 +115,19 @@ fn fail(prog: &str, error: &SeqError) -> ! {
 fn give_up(prog: &str, message: &str) -> ! {
     support::warn(format!("{prog}: {message}\n").as_bytes());
     support::terminate(1);
+}
+
+/// 「程序名 + 句子 + **原字节** + 后随字符 + 换行」那一族：句子与后随字符都是 ASCII，
+/// 唯一不是的是被 `%s` 交回的那个值，所以它按字节拼而不能经 `format!` 的 `{}`。
+fn sentence(prog: &str, lead: &[u8], word: &[u8], trail: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(prog.as_bytes());
+    out.extend_from_slice(b": ");
+    out.extend_from_slice(lead);
+    out.extend_from_slice(word);
+    out.extend_from_slice(trail);
+    out.push(b'\n');
+    out
 }
 
 #[cfg(all(not(test), target_os = "none"))]

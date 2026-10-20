@@ -30,9 +30,9 @@ pub enum SeqError {
     /// `-h`、操作数个数不对、环内字母落 `default` 都是 `reports` 为空的这一支。
     Usage { reports: Vec<crate::GetoptReport> },
     /// 操作数过不了 `strtod` 的「尾巴必须有字符」判据（`seq.c:394-396`）。
-    InvalidNumber(String),
+    InvalidNumber(Vec<u8>),
     /// 操作数溢出或下溢到 `ERANGE`（`seq.c:391-393`，`err` 的三段形带 `strerror`）。
-    OutOfRange(String),
+    OutOfRange(Vec<u8>),
     /// 第三个操作数给的是零步长，`first < last` 那一支（`seq.c:147-148`）。
     ZeroIncrement,
     /// 零步长的另一支名（`(first < last) ? "in" : "de"`，所以 `2 0 2` 也叫 `decrement`）。
@@ -42,7 +42,7 @@ pub enum SeqError {
     /// `first > last` with a non-negative increment (seq.c:158-159).
     NeedsNegativeDecrement,
     /// `-f` 的串过不了 `valid_format`，句子带原文（`seq.c:162-163`）。
-    BadFormat(String),
+    BadFormat(Vec<u8>),
     /// `unescape` 之后再判一次不过，句子**不带**原文（`seq.c:165-166`）。
     /// 本机没能构造出触发它的串（转义只会把 `\X` 收成单字符，改不出新的 `%`），
     /// 所以这一支只有句子没有门钉。
@@ -64,25 +64,25 @@ pub struct SeqOptions {
     /// 补的字符：`-w` 一次是 `0`，两次起是空格（`seq.c:115-120` 的 `equalize++` 后置 `pad = SPACE`）。
     pub pad: char,
     /// `-s`: separator between numbers (default newline).
-    pub separator: String,
+    pub separator: Vec<u8>,
     /// `-t`: terminator appended after the last number.
-    pub terminator: Option<String>,
+    pub terminator: Option<Vec<u8>>,
 }
 
 /// 一次 `seq` 调用跑完选项环之后手上有的东西（`seq.c:101-125` 的 `switch` 各支置的量）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeqArgs<'a> {
     /// `-f` 的**原文**：C 在环里只存 `optarg`，`valid_format`/`unescape` 排在读操作数之后。
-    pub fmt: Option<&'a str>,
+    pub fmt: Option<&'a [u8]>,
     /// `-s` 的值，环内就过了 `unescape`（`seq.c:110`）。
-    pub separator: String,
+    pub separator: Vec<u8>,
     /// `-t` 的值，环内就过了 `unescape`（`seq.c:113`）。
-    pub terminator: Option<String>,
+    pub terminator: Option<Vec<u8>>,
     /// `-w` 在环里出现的次数。C 写的是 `if (!fmt) if (equalize++) pad = SPACE;`，
     /// 所以第一次只把 `equalize` 置起来（补 `0`），**第二次起**才换成补空格。
     pub equalize: u32,
     /// 环之后的操作数原词（C 的 `argv += optind`）。
-    pub operands: Vec<&'a str>,
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// C 的 `numeric()`（`seq.c` 环前护栏 `!numeric(argv[optind])`）。
@@ -93,8 +93,8 @@ pub struct SeqArgs<'a> {
 /// 而 `1e2` 不是数字——护栏不挡它，但 getopt 自己在首字符不是 `-` 处立刻收环
 /// （`getopt.c:74-78`），所以 `seq 1e2` 照样把 `1e2` 当操作数。
 #[must_use]
-pub fn numeric(word: &str) -> bool {
-    let bytes = word.as_bytes();
+pub fn numeric(word: &[u8]) -> bool {
+    let bytes = word;
     let mut i = usize::from(matches!(bytes.first(), Some(b'-') | Some(b'+')));
     let mut seen_point = false;
     while i < bytes.len() {
@@ -124,8 +124,8 @@ pub fn numeric(word: &str) -> bool {
 /// `\x` 后最多两位十六进；**认不出的转义把反斜杠原样留着**（参照件 `-s '\q' 1 3`
 /// 打的是 `1\q2\q3\q`），串尾单个反斜杠则整个丢掉（`-t '\'` 打得出来但没有 terminator）。
 #[must_use]
-pub fn unescape(text: &str) -> String {
-    let bytes = text.as_bytes();
+pub fn unescape(text: &[u8]) -> Vec<u8> {
+    let bytes = text;
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0usize;
     while i < bytes.len() {
@@ -189,7 +189,7 @@ pub fn unescape(text: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 /// C 的 `valid_format()`：**只有** `A a E e F G g` 算转换，`%%` 跳过且不计数，
@@ -197,8 +197,8 @@ pub fn unescape(text: &str) -> String {
 /// `-f '%d'` 与 `-f '%d\n'` **都是坏的**（`d` 不是浮点转换，落 `default: return 0`），
 /// `-f 'abc'`、`-f '%%'` 倒是合法（零个转换），`-f '%g%g'` 坏在两个转换。
 #[must_use]
-pub fn valid_format(fmt: &str) -> bool {
-    let bytes = fmt.as_bytes();
+pub fn valid_format(fmt: &[u8]) -> bool {
+    let bytes = fmt;
     let mut i = 0usize;
     let mut conversions = 0u32;
     while i < bytes.len() {
@@ -246,11 +246,11 @@ pub fn valid_format(fmt: &str) -> bool {
 ///    不以 `-` 开头的 token 由 libc 自己收环（`getopt.c:74-78` 不推进 `optind`），
 ///    所以 `seq 1e2`（`e` 后无符号，护栏认它不是数字）照旧打出 1..100；
 /// ④ 于是护栏真正挡的是负数操作数：`-1` 是操作数，而 `-5e310` 进环被拆成一串集外字母。
-pub fn parse_seq_args<'a>(args: &'a [&'a str]) -> Result<SeqArgs<'a>, SeqError> {
+pub fn parse_seq_args<'a>(args: &[&'a [u8]]) -> Result<SeqArgs<'a>, SeqError> {
     const OPTSTRING: &[u8] = b"f:hs:t:w";
     let mut parsed = SeqArgs {
         fmt: None,
-        separator: "\n".to_string(),
+        separator: b"\n".to_vec(),
         terminator: None,
         equalize: 0,
         operands: Vec::new(),
@@ -259,7 +259,7 @@ pub fn parse_seq_args<'a>(args: &'a [&'a str]) -> Result<SeqArgs<'a>, SeqError> 
     let mut errflg = false;
     let mut i = 0usize;
     while i < args.len() && !numeric(args[i]) {
-        let token = args[i].as_bytes();
+        let token = args[i];
         // getopt 自己的收环判据：没有首字符 `-`、或光一个 `-`，都算「不是选项」，
         // 且**不推进** `optind`（`getopt.c:74-78`、`:87-92`）；`--` 结束环并吃掉自身（`:81-85`）。
         if token.len() < 2 || token[0] != b'-' {
@@ -347,24 +347,31 @@ pub fn parse_seq_args<'a>(args: &'a [&'a str]) -> Result<SeqArgs<'a>, SeqError> 
 /// `SEQ-SUBNORMAL-ERANGE`；② `inf`/`nan` 在 C 是一路走到底的形状（`seq inf` 因
 /// `first <= last` 永真而刷不完，参照件被 `timeout` 杀掉；`seq nan` 打空并退 0），
 /// 本层的整数引擎把非有限值挡在渲染之前——登记 `SEQ-NONFINITE-OPERAND`。
-pub fn e_atof(word: &str) -> Result<f64, SeqError> {
+pub fn e_atof(word: &[u8]) -> Result<f64, SeqError> {
     // 空串是合法的 0：`strtod` 一个字符都没转时把 `endptr` 停在**起点**，而起点就是
     // 那个 `\0`，于是 `*endp != '\0'` 这一判过得了（参照件 `seq ""` 打 `1\n0\n`，
     // `tmp/seq-320/measure5.log`）。非空而转不出前缀的（`-Z`、`3x`）才落 `errx`。
     if word.is_empty() {
         return Ok(0.0);
     }
-    match crate::floatfmt::parse_float_prefix(word) {
-        Some((value, consumed)) if consumed == word.len() => {
-            if value.is_infinite() && !word.bytes().any(|b| b == b'i' || b == b'I') {
-                return Err(SeqError::OutOfRange(word.to_string()));
+    // 数字文法在 ASCII 上：一枚不属于任何数字的字节本来就落在「尾巴有杂字符」那一支，
+    // 所以只有 `parse_float_prefix` 这一步需要 `&str`，交回的错携带的是**原字节**。
+    let text = String::from_utf8_lossy(word);
+    match crate::floatfmt::parse_float_prefix(&text) {
+        Some((value, consumed)) if consumed == text.len() => {
+            if value.is_infinite() && !word.iter().any(|&b| b == b'i' || b == b'I') {
+                return Err(SeqError::OutOfRange(word.to_vec()));
             }
-            if value == 0.0 && word.bytes().any(|b| b"123456789".contains(&b)) {
-                return Err(SeqError::OutOfRange(word.to_string()));
+            if value == 0.0 && word.iter().any(|&b| b"123456789".contains(&b)) {
+                return Err(SeqError::OutOfRange(word.to_vec()));
             }
-            if value == -0.0 { Ok(0.0) } else { Ok(value) }
+            if value == -0.0 {
+                Ok(0.0)
+            } else {
+                Ok(value)
+            }
         }
-        _ => Err(SeqError::InvalidNumber(word.to_string())),
+        _ => Err(SeqError::InvalidNumber(word.to_vec())),
     }
 }
 
@@ -372,7 +379,7 @@ pub fn e_atof(word: &str) -> Result<f64, SeqError> {
 /// and the flag words. 前门是 [`parse_seq_args`]，这一支只做 C 在环之后那一串：
 /// 操作数按 `last`→`first`→`incr` 的次序解析（所以报错先报最后一个操作数）、
 /// 零步长与反方向两判、`-f` 的两道 `valid_format`。
-pub fn parse(args: &[&str]) -> Result<SeqOptions, SeqError> {
+pub fn parse(args: &[&[u8]]) -> Result<SeqOptions, SeqError> {
     let parsed = parse_seq_args(args)?;
     let operands = &parsed.operands;
     let last = e_atof(operands[operands.len() - 1])?;
@@ -396,7 +403,7 @@ pub fn parse(args: &[&str]) -> Result<SeqOptions, SeqError> {
     };
     if let Some(fmt) = parsed.fmt {
         if !valid_format(fmt) {
-            return Err(SeqError::BadFormat(fmt.to_string()));
+            return Err(SeqError::BadFormat(fmt.to_vec()));
         }
         let unescaped = unescape(fmt);
         if !valid_format(&unescaped) {
@@ -540,13 +547,19 @@ pub fn generate(options: &SeqOptions) -> Result<Vec<String>, SeqError> {
 
 /// Joins the generated numbers with the separator and appends the
 /// terminator, returning the full output text.
-pub fn render_output(values: &[String], options: &SeqOptions) -> String {
-    let mut out = values.join(&options.separator);
+pub fn render_output(values: &[String], options: &SeqOptions) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            out.extend_from_slice(&options.separator);
+        }
+        out.extend_from_slice(value.as_bytes());
+    }
     if !values.is_empty() {
-        out.push_str(&options.separator);
+        out.extend_from_slice(&options.separator);
     }
     if let Some(terminator) = &options.terminator {
-        out.push_str(terminator);
+        out.extend_from_slice(terminator);
     }
     out
 }
@@ -555,10 +568,23 @@ pub fn render_output(values: &[String], options: &SeqOptions) -> String {
 mod tests {
     use super::*;
 
+    /// 文本夹具交给字节前门的那一跳：`str` 字面量的字节形就是命令行上的字节。
+    fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
+        list.iter().map(|word| word.as_bytes()).collect()
+    }
+
+    fn seq_args<'w>(list: &[&'w str]) -> Result<SeqArgs<'w>, SeqError> {
+        parse_seq_args(&argv_of(list))
+    }
+
+    fn opts_of(list: &[&str]) -> Result<SeqOptions, SeqError> {
+        parse(&argv_of(list))
+    }
+
     fn generate_words(args: &[&str]) -> Result<String, SeqError> {
-        let options = parse(args)?;
+        let options = opts_of(args)?;
         let values = generate(&options)?;
-        Ok(render_output(&values, &options))
+        Ok(String::from_utf8_lossy(&render_output(&values, &options)).into_owned())
     }
 
     #[test]
@@ -570,13 +596,13 @@ mod tests {
     /// （`c3 a9`）交回**两枚**报告（U+00C3、U+00A9），与参照件
     /// `tmp/seq-320/seq_ref` 现量的两行 `303`/`251` 同形（`getopt.c:79` 的
     /// `optopt = *place++` 一次进一个字节、`seq.c:101-113` 的 `errflg` 累加不叫环停）。
-    /// 环那一侧本来就是 `token = args[i].as_bytes()` + `char::from(letter)`，所以这一枚
+    /// 环那一侧本来就是 `token = args[i]`（字节切片）+ `char::from(letter)`，所以这一枚
     /// 钉的是**已经是那样**的取法；逐字节面门在 `tests/seq_face.rs`。
     #[test]
     fn the_unknown_letters_are_the_first_bytes_not_the_first_characters() {
         use crate::GetoptReport;
         assert_eq!(
-            parse_seq_args(&["-\u{e9}"]).err(),
+            seq_args(&["-\u{e9}"]).err(),
             Some(SeqError::Usage {
                 reports: vec![
                     GetoptReport::UnknownOption('\u{00c3}'),
@@ -587,7 +613,7 @@ mod tests {
         );
         // 坏字母在前也一样：`-Zé` 三行（`Z`、`c3`、`a9`）。
         assert_eq!(
-            parse_seq_args(&["-Z\u{e9}"]).err(),
+            seq_args(&["-Z\u{e9}"]).err(),
             Some(SeqError::Usage {
                 reports: vec![
                     GetoptReport::UnknownOption('Z'),
@@ -599,14 +625,14 @@ mod tests {
         );
         // ASCII 那一形不许被波及。
         assert_eq!(
-            parse_seq_args(&["-v"]).err(),
+            seq_args(&["-v"]).err(),
             Some(SeqError::Usage {
                 reports: vec![GetoptReport::UnknownOption('v')]
             })
         );
         // 反面：带值字母把其后的字节整个当值收走（`-s` 的值可以是任意串）。
         assert_eq!(
-            parse_seq_args(&["-s\u{e9}", "3"]).err(),
+            seq_args(&["-s\u{e9}", "3"]).err(),
             None,
             "`-sé 3` 里 é 是分隔符的值，不该叫环报错"
         );
@@ -617,21 +643,21 @@ mod tests {
         use crate::GetoptReport;
         // 单个集外字母：libc 一行 + 调用方的一行 usage
         assert_eq!(
-            parse_seq_args(&["-Z"]).err(),
+            seq_args(&["-Z"]).err(),
             Some(SeqError::Usage {
                 reports: vec![GetoptReport::UnknownOption('Z')]
             })
         );
         // 聚簇里合法字母先被吃掉，坏的照报（`seq -wZ` 与 `-Zw` 同一形）
         assert_eq!(
-            parse_seq_args(&["-wZ"]).err(),
+            seq_args(&["-wZ"]).err(),
             Some(SeqError::Usage {
                 reports: vec![GetoptReport::UnknownOption('Z')]
             })
         );
         // errflg 是累加的，环不在第一个坏字母处停：`-+- 3` 的两行都留得住
         assert_eq!(
-            parse_seq_args(&["-+-", "3"]).err(),
+            seq_args(&["-+-", "3"]).err(),
             Some(SeqError::Usage {
                 reports: vec![
                     GetoptReport::UnknownOption('+'),
@@ -647,7 +673,7 @@ mod tests {
         for letter in ['f', 's', 't'] {
             let flag = format!("-{letter}");
             assert_eq!(
-                parse_seq_args(std::slice::from_ref(&flag.as_str())).err(),
+                parse_seq_args(std::slice::from_ref(&flag.as_bytes())).err(),
                 Some(SeqError::Usage {
                     reports: vec![GetoptReport::MissingValue(letter)]
                 }),
@@ -656,13 +682,13 @@ mod tests {
         }
         // 聚簇里 `-w` 先被吃掉，缺值报的是 `f`（`seq -wf` 的现量同一形）
         assert_eq!(
-            parse_seq_args(&["-wf"]).err(),
+            seq_args(&["-wf"]).err(),
             Some(SeqError::Usage {
                 reports: vec![GetoptReport::MissingValue('f')]
             })
         );
         // `w` 自己不带值，所以它永远不会触发这一支
-        assert_eq!(parse_seq_args(&["-w", "3"]).err(), None);
+        assert_eq!(seq_args(&["-w", "3"]).err(), None);
     }
 
     #[test]
@@ -670,15 +696,15 @@ mod tests {
         // `h` 在 optstring 里 ⇒ libc 不印任何东西；C 的 `case 'h'` 没有 break，
         // 直接落进 `default: errflg++`，所以这一支只有 usage 一行、reports 为空。
         assert_eq!(
-            parse_seq_args(&["-h"]).err(),
+            seq_args(&["-h"]).err(),
             Some(SeqError::Usage { reports: vec![] })
         );
         assert_eq!(
-            parse_seq_args(&["-h", "3"]).err(),
+            seq_args(&["-h", "3"]).err(),
             Some(SeqError::Usage { reports: vec![] })
         );
         assert_eq!(
-            parse_seq_args(&["-hw", "3"]).err(),
+            seq_args(&["-hw", "3"]).err(),
             Some(SeqError::Usage { reports: vec![] })
         );
     }
@@ -687,79 +713,99 @@ mod tests {
     fn test_operand_count_face_and_double_dash() {
         // 操作数必须是 1..3 个；`--` 被吃掉、自身不是操作数（`getopt.c:81-85`）
         assert_eq!(
-            parse_seq_args(&[]).err(),
+            seq_args(&[]).err(),
             Some(SeqError::Usage { reports: vec![] })
         );
         assert_eq!(
-            parse_seq_args(&["-w"]).err(),
+            seq_args(&["-w"]).err(),
             Some(SeqError::Usage { reports: vec![] })
         );
         assert_eq!(
-            parse_seq_args(&["1", "2", "3", "4"]).err(),
+            seq_args(&["1", "2", "3", "4"]).err(),
             Some(SeqError::Usage { reports: vec![] })
         );
-        assert_eq!(parse_seq_args(&["--", "3"]).unwrap().operands, vec!["3"]);
+        assert_eq!(seq_args(&["--", "3"]).unwrap().operands, argv_of(&["3"]));
         // 裸 `-` 结束环却不推进，于是它自己是操作数（`getopt.c:87-92`）
-        assert_eq!(parse_seq_args(&["-"]).unwrap().operands, vec!["-"]);
+        assert_eq!(seq_args(&["-"]).unwrap().operands, argv_of(&["-"]));
     }
 
     #[test]
     fn test_numeric_guard_is_not_number_parsing() {
         // 护栏认的是「这个 token 会不会被误当选项」，`e`/`E` 后必须紧跟符号才算数字
-        assert!(numeric("-5"));
-        assert!(numeric("-1e-2"));
+        assert!(numeric("-5".as_bytes()));
+        assert!(numeric("-1e-2".as_bytes()));
         // `e` 后紧跟数字（无符号）⇒ 护栏**不认**它是数字；但参照件 `seq 1e2` 照旧
         // 打出 1..100——不以 `-` 开头的 token 由 libc 自己收环，护栏只在负号形上起作用
-        assert!(!numeric("1e2"));
+        assert!(!numeric("1e2".as_bytes()));
         assert!(
-            !numeric("-5e310"),
+            !numeric("-5e310".as_bytes()),
             "e 后无符号 ⇒ 不是 numeric ⇒ 进环被拆成集外字母"
         );
-        assert!(!numeric("-w"));
+        assert!(!numeric("-w".as_bytes()));
         // 空 token：C 的 `while (*s)` 一步不走，判据是 `*s == '\0'` ⇒ 反而是数字
-        assert!(numeric(""));
+        assert!(numeric("".as_bytes()));
         // `-5` 因此是操作数而不是选项
-        assert_eq!(parse_seq_args(&["-5"]).unwrap().operands, vec!["-5"]);
+        assert_eq!(seq_args(&["-5"]).unwrap().operands, argv_of(&["-5"]));
     }
 
     #[test]
     fn test_unescape_matches_the_c_table() {
-        assert_eq!(unescape("a\\tb"), "a\tb");
-        assert_eq!(unescape("\\101"), "A"); // 八进制最多三位
-        assert_eq!(unescape("\\x41z"), "Az"); // 十六进最多两位
+        assert_eq!(unescape("a\\tb".as_bytes()), "a\tb".as_bytes());
+        assert_eq!(unescape("\\101".as_bytes()), "A".as_bytes()); // 八进制最多三位
+        assert_eq!(unescape("\\x41z".as_bytes()), "Az".as_bytes()); // 十六进最多两位
         assert_eq!(
-            unescape("\\X41"),
-            "\\X41",
+            unescape("\\X41".as_bytes()),
+            "\\X41".as_bytes(),
             "引导字母只有小写 x（C 没有 case 'X'）"
         );
-        assert_eq!(unescape("\\q"), "\\q", "认不出的转义把反斜杠原样留着");
-        assert_eq!(unescape("x\\"), "x", "串尾单个反斜杠整体丢掉");
-        assert_eq!(unescape("\\\\"), "\\");
+        assert_eq!(
+            unescape("\\q".as_bytes()),
+            "\\q".as_bytes(),
+            "认不出的转义把反斜杠原样留着"
+        );
+        assert_eq!(
+            unescape("x\\".as_bytes()),
+            "x".as_bytes(),
+            "串尾单个反斜杠整体丢掉"
+        );
+        assert_eq!(unescape("\\\\".as_bytes()), "\\".as_bytes());
     }
 
     #[test]
     fn test_valid_format_only_counts_float_conversions() {
-        assert!(valid_format("%g"));
-        assert!(valid_format("%10g"));
-        assert!(valid_format("%-.3f"));
+        assert!(valid_format("%g".as_bytes()));
+        assert!(valid_format("%10g".as_bytes()));
+        assert!(valid_format("%-.3f".as_bytes()));
         assert!(
-            valid_format("abc"),
+            valid_format("abc".as_bytes()),
             "零个转换也算合法（参照件 `-f abc` 照样打字面）"
         );
-        assert!(valid_format("%%"));
-        assert!(!valid_format("%d"), "整数说明符在 C 眼里就是非法");
-        assert!(!valid_format("%g%g"), "两个转换超过 `conversions <= 1`");
-        assert!(!valid_format("%q"));
-        assert!(!valid_format("%"));
+        assert!(valid_format("%%".as_bytes()));
+        assert!(
+            !valid_format("%d".as_bytes()),
+            "整数说明符在 C 眼里就是非法"
+        );
+        assert!(
+            !valid_format("%g%g".as_bytes()),
+            "两个转换超过 `conversions <= 1`"
+        );
+        assert!(!valid_format("%q".as_bytes()));
+        assert!(!valid_format("%".as_bytes()));
     }
 
     #[test]
     fn test_zero_stride_and_direction_sentences_split() {
         // 三个操作数是 first、incr、last；零步长那支的名随 `first < last` 变
-        assert_eq!(parse(&["1", "0", "3"]).err(), Some(SeqError::ZeroIncrement));
-        assert_eq!(parse(&["5", "0", "1"]).err(), Some(SeqError::ZeroDecrement));
         assert_eq!(
-            parse(&["2", "0", "2"]).err(),
+            opts_of(&["1", "0", "3"]).err(),
+            Some(SeqError::ZeroIncrement)
+        );
+        assert_eq!(
+            opts_of(&["5", "0", "1"]).err(),
+            Some(SeqError::ZeroDecrement)
+        );
+        assert_eq!(
+            opts_of(&["2", "0", "2"]).err(),
             Some(SeqError::ZeroDecrement),
             "相等走 de 支"
         );
@@ -780,32 +826,32 @@ mod tests {
         // C 的解析次序是 last→first→incr，所以 `seq 3 -w` 报的是 `-w`（环不重排，
         // `-w` 落在操作数里）。退码由壳按 `errx(2, ...)` 一族给。
         assert_eq!(
-            parse(&["3", "-w"]).err(),
-            Some(SeqError::InvalidNumber("-w".to_string()))
+            opts_of(&["3", "-w"]).err(),
+            Some(SeqError::InvalidNumber("-w".as_bytes().to_vec()))
         );
         assert_eq!(
-            parse(&["3x"]).err(),
-            Some(SeqError::InvalidNumber("3x".to_string()))
+            opts_of(&["3x"]).err(),
+            Some(SeqError::InvalidNumber("3x".as_bytes().to_vec()))
         );
         assert_eq!(
-            parse(&["1e310"]).err(),
-            Some(SeqError::OutOfRange("1e310".to_string()))
+            opts_of(&["1e310"]).err(),
+            Some(SeqError::OutOfRange("1e310".as_bytes().to_vec()))
         );
         assert_eq!(
-            parse(&["1e-40000"]).err(),
-            Some(SeqError::OutOfRange("1e-40000".to_string())),
+            opts_of(&["1e-40000"]).err(),
+            Some(SeqError::OutOfRange("1e-40000".as_bytes().to_vec())),
             "下溢到 0 与上溢同一条 err(2, ...) 出口"
         );
         assert_eq!(
-            parse(&["--", "-Z"]).err(),
-            Some(SeqError::InvalidNumber("-Z".to_string()))
+            opts_of(&["--", "-Z"]).err(),
+            Some(SeqError::InvalidNumber("-Z".as_bytes().to_vec()))
         );
         // 空串是合法的 0：`strtod` 转不出任何东西时把 endptr 停在起点，而起点就是
         // 那个 `\0` ⇒ 「尾巴有杂字符」判据过得了
-        assert_eq!(e_atof(""), Ok(0.0));
+        assert_eq!(e_atof("".as_bytes()), Ok(0.0));
         assert_eq!(
-            e_atof("-Z").err(),
-            Some(SeqError::InvalidNumber("-Z".to_string()))
+            e_atof("-Z".as_bytes()).err(),
+            Some(SeqError::InvalidNumber("-Z".as_bytes().to_vec()))
         );
     }
 
@@ -833,41 +879,41 @@ mod tests {
     #[test]
     fn test_format_rejected_before_the_float_gap() {
         assert_eq!(
-            parse(&["-f", "%q", "3"]).err(),
-            Some(SeqError::BadFormat("%q".to_string()))
+            opts_of(&["-f", "%q", "3"]).err(),
+            Some(SeqError::BadFormat("%q".as_bytes().to_vec()))
         );
         assert_eq!(
-            parse(&["-f", "%d", "3"]).err(),
-            Some(SeqError::BadFormat("%d".to_string())),
+            opts_of(&["-f", "%d", "3"]).err(),
+            Some(SeqError::BadFormat("%d".as_bytes().to_vec())),
             "参照件对 `%d' 报的是同一句，不是「浮点未接上」"
         );
         // 说明符合法之后才轮到浮点渲染那处裁决（本引擎只走整数，登记为 SEQ-FORMAT-RENDER）
         assert_eq!(
-            parse(&["-f", "%g", "3"]).err(),
+            opts_of(&["-f", "%g", "3"]).err(),
             Some(SeqError::FloatNotModelled)
         );
         assert_eq!(
-            parse(&["-f", "abc", "3"]).err(),
+            opts_of(&["-f", "abc", "3"]).err(),
             Some(SeqError::FloatNotModelled)
         );
     }
 
     #[test]
     fn test_equalize_has_two_levels() {
-        let one = parse(&["-w", "1", "10"]).expect("一级等宽");
+        let one = opts_of(&["-w", "1", "10"]).expect("一级等宽");
         assert!(one.equalize);
         assert_eq!(one.pad, '0');
-        let two = parse(&["-w", "-w", "1", "10"]).expect("二级等宽");
+        let two = opts_of(&["-w", "-w", "1", "10"]).expect("二级等宽");
         assert_eq!(two.pad, ' ');
         assert_eq!(
-            parse(&["-w", "-w", "-w", "1", "10"])
+            opts_of(&["-w", "-w", "-w", "1", "10"])
                 .expect("三级仍是空格")
                 .pad,
             ' '
         );
         // `-f` 已给定时 `-w` 整个作废（`if (!fmt)` 那一层），但 C 仍会因浮点支先退
         assert_eq!(
-            parse(&["-f", "%g", "-w", "1", "3"]).err(),
+            opts_of(&["-f", "%g", "-w", "1", "3"]).err(),
             Some(SeqError::FloatNotModelled)
         );
     }
@@ -960,6 +1006,50 @@ mod tests {
         assert_eq!(
             generate_words(&["-f", "%g", "3"]),
             Err(SeqError::FloatNotModelled)
+        );
+    }
+    /// `-s` 与 `-t` 的值**就是打出去的内容**：一枚裸 `ff` 是一位分隔符，不是折叠后的
+    /// 三个字节。参照件 `tmp/seq-320/seq_ref` 现量 `seq -s<ff> 1 3` 打 `1\xff2\xff3\xff`、
+    /// `seq -t<ff> 1 3` 打 `1\n2\n3\n\xff`（`seq.c:110` 的 `sep = unescape(optarg)` 配
+    /// `:174-186` 的 `fputs(sep, stdout)`）；文本缝在同一形上打的是 `ef bf bd` 三位
+    /// （现量 `tmp/argv-443/measure.log`）。
+    #[test]
+    fn a_raw_ff_separator_and_terminator_are_one_byte_each() {
+        let parsed = parse_seq_args(&[b"-s\xff".as_slice(), b"1".as_slice(), b"3".as_slice()])
+            .expect("字节形 -s 的值");
+        assert_eq!(parsed.separator, vec![0xff]);
+        let parsed = parse_seq_args(&[b"-t\xff".as_slice(), b"1".as_slice(), b"3".as_slice()])
+            .expect("字节形 -t 的值");
+        assert_eq!(parsed.terminator, Some(vec![0xff]));
+        let options = parse(&[b"-s\xff".as_slice(), b"1".as_slice(), b"3".as_slice()]).unwrap();
+        let values = generate(&options).unwrap();
+        assert_eq!(
+            render_output(&values, &options),
+            b"1\xff2\xff3\xff".as_slice()
+        );
+    }
+
+    /// 集外字母交回的是命令行上的**那一枚字节**：`-\xff` 是一个字母（`getopt.c:79` 的
+    /// `optopt = *place++` 一次进一个字节），报文里是一位裸 `ff`（`:103` 的 `%c`）。
+    /// 累加环在这一形只走一轮——折叠形把同一枚参数变成三个字母各报一行，那是缝的形状
+    /// 不是 C 的形状，因此两形的差别直接钉进断言。
+    #[test]
+    fn parse_seq_names_a_raw_ff_option_letter_by_that_byte() {
+        use crate::GetoptReport;
+        let error = parse_seq_args(&[b"-\xff".as_slice(), b"3".as_slice()]).err();
+        assert_eq!(
+            error,
+            Some(SeqError::Usage {
+                reports: vec![GetoptReport::UnknownOption('\u{00ff}')]
+            }),
+            "一枚原字节只该换一个字母"
+        );
+        let SeqError::Usage { reports } = error.expect("上面的 err 不该为空") else {
+            panic!("集外字母走 Usage 那一支");
+        };
+        assert_eq!(
+            reports[0].line_bytes("seq"),
+            b"seq: unknown option -- \xff\n".as_slice()
         );
     }
 }

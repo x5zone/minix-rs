@@ -13,8 +13,8 @@
 //! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
 //! （`tr_ref: unknown option -- \xff`），本层先 lossy 成 U+FFFD 再按各支自己的取法渲染，
 //! 于是按字节取、按 `char` 渲染的那几支得到 `c3 af`（U+00EF 的 UTF-8 两字节）；本表里
-//! 走 `bin_support::args_bytes` 的 `rev` 与 `paste` 已是单字节 `ff`（与参照件同形），
-//! 累加型的 `seq` 则把替换字符的三个字节当成三个字母连报三行。
+//! 走 `bin_support::args_bytes` 的 `rev`、`paste`、`seq` 已是单字节 `ff`（与参照件同形），
+//! 还没换的那几支仍把 lossy 后的第一个字节 `ef` 当成字母。
 //! 还差的是**两个字节**：lossy 之前的那个原字节在 argv 缝上就没有了
 //! （`bin_support::args` 两条腿都渲染成 `String`），加上 `GETOPT-REPORT-BYTE-LETTER`
 //! 里其余各支壳的渲染还没换——因此下面的断言既钉住「不再 abort、两条腿一致」，
@@ -69,12 +69,11 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         // tr 已于批次四百换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD 的第一字节）；
         // C 那一侧是原字节 `ff`。到批次四百二十为止，本表六支全部已是字节形。
         ("tr", TR, 1, b"tr: unknown option -- \xef\n"),
-        // seq 已于批次四百二十换字节形，与 tr/paste/fold/units 同形：一个裸字节 `ef`。
-        // 它是本族唯一的**累加环**（`errflg` 累加、不在第一个坏字母处停），所以 lossy 后的
-        // `ef bf bd` 三个字节各报一行——这一形里 C 打的是**原字节** `ff` 一行，差距从
-        // 「一行的字母位」变成「行数与字母位都差」，仍属射程②（`bin_support::args` 的
-        // `from_utf8_lossy`）在册，不是渲染半的账。
-        ("seq", SEQ, 1, b"seq: unknown option -- \xef\n"),
+        // seq 已于批次四百四十三走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
+        // 且那一行只有一行——累加环吃到的是一个字节就是一个字母，不再把折叠出来的
+        // `ef bf bd` 三个字节当三个字母连报三行（本表其余四支 tr/fold/units 与本支
+        // 旧形仍属射程②的在册余量）。
+        ("seq", SEQ, 1, b"seq: unknown option -- \xff\n"),
         // paste 已于批次四百四十一走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
         // 与参照件同形（本表余下四支 tr/seq/fold/units 的字母位仍是折叠后的 `ef`）。
         ("paste", PASTE, 1, b"paste: unknown option -- \xff\n"),
@@ -119,19 +118,19 @@ fn a_raw_byte_consumed_as_an_option_value_is_not_an_error() {
     assert!(err.is_empty(), "实际 {err:?}");
 }
 
-/// 累加型选项环把 lossy 后的**三个字节当三个字母**连报三行（`seq.c` 那族是环内累加、
-/// 出环后统一 usage），而参照件 `seq -\xff5` 只有一行 `\xff` 加一行 `5`。
-/// 钉住「三行」是把本层 lossy 这一步的可见后果留在门上，不是把它藏起来。
+/// 累加型选项环（`seq.c:101-113` 的 `errflg` 累加、不在第一个坏字母处停）在**文本缝**上
+/// 会把 lossy 出来的三个字节当三个字母连报三行；`seq` 走 `bin_support::args_bytes` 之后
+/// （批次四百四十三），命令行上那一枚裸 `ff` 就是一个字母，于是报文与参照件同形：
+/// **一行、字母位是原字节**，紧跟一行 usage。这一枚钉的是改完之后该长的样子，
+/// 防止有人把缝改回 `String` 时让「三行」悄悄回来。
 #[test]
-fn the_lossy_render_expands_one_bad_byte_into_three_option_letters() {
+fn the_accumulating_ring_names_the_raw_byte_once() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
+    let usage = b"usage: seq [-w] [-f format] [-s string] [-t string] [first [incr]] last\n";
     let (code, _out, err) = run(SEQ, &[&flag], b"aabbcc\n");
     assert_eq!(code, 1);
     assert_eq!(
-        err.windows(b"seq: unknown option -- ".len())
-            .filter(|w| *w == &b"seq: unknown option -- "[..])
-            .count(),
-        3,
-        "实际 {err:?}"
+        err,
+        [b"seq: unknown option -- \xff\n".as_slice(), usage].concat()
     );
 }

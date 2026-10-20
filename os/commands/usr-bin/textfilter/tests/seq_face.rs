@@ -438,3 +438,67 @@ fn plain_sequences_keep_the_direction_following_default_stride() {
         assert_eq!(out, want, "{args:?}");
     }
 }
+
+/// 与 `run_bytes` 同一条进程缝，但参数是**原始字节**：`&str` 交不出裸 `ff`，
+/// 所以 argv 字节化之后的形状只能这样量。标准输入照夹具口径喂，写不进不算被测缺陷。
+fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+    let mut child = Command::new(SEQ)
+        .args(args.iter().map(|word| OsString::from_vec(word.clone())))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the seq binary should be runnable");
+    {
+        use std::io::Write as _;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(input);
+        }
+    }
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().expect("被信号杀掉就是双生面又分叉了"),
+        output.stderr,
+    )
+}
+
+/// `-s`/`-t` 的值是**输出内容**：一枚裸 `ff` 分隔符打出去就是一个字节。期望逐形取自
+/// 参照件 `tmp/seq-320/seq_ref` 的现量（`tmp/argv-443/ab-after.log`）：`-s<ff>` 是
+/// `1\xff2\xff3\xff`（每个数之后都放分隔符），`-t<ff>` 是 `1\n2\n3\n\xff`（只在末尾补）。
+/// 旧本壳在同一形上打的是 `ef bf bd` 三位——那是 `bin_support::args` 折过一次的症状。
+#[test]
+fn a_raw_nonutf8_separator_byte_is_written_as_one_byte() {
+    let (out, code, err) = run_raw(&[b"-s\xff".to_vec(), b"1".to_vec(), b"3".to_vec()], b"");
+    assert_eq!((code, err), (0, Vec::new()));
+    assert_eq!(out, b"1\xff2\xff3\xff");
+    let (out, code, err) = run_raw(&[b"-t\xff".to_vec(), b"1".to_vec(), b"3".to_vec()], b"");
+    assert_eq!((code, err), (0, Vec::new()));
+    assert_eq!(out, b"1\n2\n3\n\xff");
+    // 值取自下一个 token 时同样按字节
+    let (out, code, err) = run_raw(
+        &[
+            b"-s".to_vec(),
+            b"\xff".to_vec(),
+            b"1".to_vec(),
+            b"3".to_vec(),
+        ],
+        b"",
+    );
+    assert_eq!((code, err), (0, Vec::new()));
+    assert_eq!(out, b"1\xff2\xff3\xff");
+}
+
+/// 过不了 `e_atof()` 的操作数被 `%s` **原字节**回显：参照件对 `seq $'1\xff3'` 打
+/// `seq: invalid floating point argument: 1\xff3` 并退 2。这一形同时钉住两件事——
+/// 数字文法在 ASCII 上（那一枚字节必然落进「尾巴有杂字符」），而报错交回的是命令行
+/// 上的字节而不是 lossy 之后的替换字符。
+#[test]
+fn a_raw_nonutf8_operand_is_echoed_as_its_own_bytes() {
+    let (out, code, err) = run_raw(&[b"1\xff3".to_vec()], b"");
+    assert_eq!(code, 2, "实际 stderr {err:?}");
+    assert_eq!(out, Vec::new());
+    assert_eq!(err, b"seq: invalid floating point argument: 1\xff3\n");
+}
