@@ -32,3 +32,13 @@ RUST_MIN_STACK = "8388608"
 # relocation processor. Target-scoped — no other build uses this target.
 [target.x86_64-unknown-none]
 rustflags = ["-C", "relocation-model=static", "-C", "code-model=large"]
+
+# C12/SD-41 P0 修复（2026-10-20）：x86_64-unknown-uefi 目标（内核+载体+shim）
+# 禁 SSE/SSE2/MMX——该目标默认开 SSE，内核编译代码自由使用 xmm 寄存器，
+# 而陷阱帧仅存 GPR：用户 FP 状态在每次内核 excursion 被无保护踩踏（C12
+# 探针实测 TX 读回 0）。禁 SSE 后内核码整数-only（Linux x86_64 -mno-sse
+# 同款机制；C i386 基线本无 SSE=真值 parity），懒 FPU 的 TS 门控+
+# old_owner 延迟保存链自此闭合：用户↔用户 FP 交替全程保活。
+# 用户载荷（x86_64-unknown-none）本就是 soft-float 目标，不受影响。
+[target.x86_64-unknown-uefi]
+rustflags = ["-C", "target-feature=-sse,-sse2,-mmx"]
