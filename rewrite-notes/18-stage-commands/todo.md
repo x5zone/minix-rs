@@ -119,6 +119,75 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百三十六（甲组最后一支：`pr` 的行腿、分页腿、跨列腿、并排腿一起按字节）
+
+**这一轮在做的事**。批次四百三十三的普查把「先把整份输入解一次 UTF-8、再按换行切」这个形状量成三组，
+并定甲组拆三支施工：`pr` 一支、`column` 一支、`comm` 与 `paste` 并一支。四百三十四落了并一支、
+四百三十五落了 `column`，本轮落最后一支 `pr`。`pr` 是三支里最长的一支，因为它不止把行当数据搬：
+它还按页长把行分桶（分页腿）、按列宽把每格剪断再排成网格（跨列腿）、把两个文件的同一行并到一行
+（并排腿）——三条腿都拿「行」当量，所以只要行本身是文本类型，页、列、并排三处就同时跟着失真。
+
+**C 的那一侧长什么样**。行的读入与截断都发生在 `minix3/usr.bin/pr/pr.c:inln`：预算 `lim` 的含义是
+「这个格还能往缓冲里放几个字节」，循环一次 `getc` 收一个字节存进 `char` 数组，换行是唯一的行终止条件，
+全程没有解码这一步。节选（`inln` 尾部透传那几句）：
+
+```c
+                if (ch == '\n')
+                        break;
+                *ptbuf++ = ch;
+        }
+```
+
+`lim` 每轮先减一、写指针每轮加一字节，于是「剪到列宽」天然按字节计。页眉那一侧同样只看字节：
+`minix3/usr.bin/pr/pr.c:prhead` 把 `buf+offst` 交给 `HDFMT` 打印，而 `buf` 的前段是
+`inln` 之前由 `strftime(buf, HDBUF, timefrmt, timeptr)`（同文件 `:1412`）造好的时间字段。
+
+**改了什么**（`os/commands/usr-bin/textfilter/src/pr.rs`、`src/bin/pr.rs`）。
+
+- `Page` 的 `header_lines`、`body_lines`、`trailer_lines` 三个行池由 `Vec<String>` 改为
+  `Vec<Vec<u8>>`，`Page::lines()` 因此交出 `&Vec<u8>`；`paginate`、`paginate_columns`、
+  `paginate_files` 一路收 `&[Vec<u8>]`，页的产出物不再携带任何「这段一定是合法 UTF-8」的承诺。
+- 壳侧的切行函数 `src/bin/pr.rs:fn split_lines` 不再解码：按 `b'\n'` 切成 `Vec<Vec<u8>>`。
+  这一处是关键——只要切分时解一次码，一枚不是 UTF-8 的字节就能让整条记录变形，后面的页、列、
+  并排全都建在变形之后的行上。
+- 跨列腿 `vertcol_body_rows`、`vertcol_body_rows_balanced`、`horzcol_body_rows` 与并排腿
+  `merge_body_rows` 的格子写入改为 `extend_from_slice` 追加字节、补齐用
+  `core::iter::repeat_n(b' ', …)`，列分隔符本身也是单字节。
+- 剪格函数 `clip_to_width` 由「回退到字符边界」改为 `&s[..n.min(s.len())]`，即照 `inln` 的字节预算
+  硬截。回退那条规则是本壳自造的：它让同一份输入少交几个字节，还会把页宽算歪。
+- 编号腿 `src/bin/pr.rs` 里 `-n` 的前缀拼接原先写作 `format!("{}{}{}", 编号字段, number_char as char, 行)`，
+  一枚制表符经 `as char` 进 `String` 会被重新编码成两字节；现改为字节拼接
+  （`Vec<u8>` + `push(options.number_char)`），`number_char` 本身就是 `u8`。
+
+**门与读数**。库门新增 `a_cell_is_cut_at_bytes_even_mid_code_point`：`ab` 加一个两字节的重音符号
+（`c3 a9`）在列宽 3 时交出 `ab` 加那个悬空的引导字节 `c3`，一枚 `a\xff\xfez` 交出 `a\xff\xfe`——
+断言的是「剪点是字节数」这一条，不是「剪点落在合法边界上」。面门新增
+`tests/pr_face.rs:fn a_nonutf8_line_keeps_its_bytes_through_the_line_legs`：同一枚含 `\xff` 的两行
+输入走 `-t` 原样搬运、走 `-t -e` 做制表展开、走 `-t -h T` 带自定页眉，三形逐字节等于参照件给出的期望。
+宿主与容器各 68 段 1207 通过 / 0 失败（`tmp/pr-436/host-fmt.log`、`tmp/pr-436/container.log`）；
+三架构 `cargo build --bins` 全退 0；`rustfmt` 零漂移；`clippy` 按告警位置对账，触及件在主树与本树
+同为 32 枚 `field assignment outside of initializer` 加 2 枚其它存量，零新增
+（`tmp/pr-436/clip-wt.log`、`tmp/pr-436/clip-main.log`）；负控四枚咬住、一枚等价注入全绿
+（`tmp/pr-436/negctl.log`）。A/B 对同名软链起的参照件从修复前 6 同 7 异走到 12 同 1 异
+（`tmp/pr-436/ab.log`、`tmp/pr-436/ab-postfix.log`）。
+
+**本轮登记（在册未执行）**。唯一残差是缺省页眉少一段时间字段：参照件印
+`Oct 20 12:12 2026 <文件> Page 1`，本壳印 `<文件> Page 1`。C 侧的依据是
+`minix3/usr.bin/pr/pr.c:prhead` 打印的 `buf` 含 `:1412` 由 `strftime` 造好的时间字段，
+缺省格式取自宏 `TIMEFMT`（同文件 `:105`；该宏的定义未见于仓内 `minix3/` 快照，[待验证]）。
+本壳的 `PrOptions::time_prefix` 缺省是空串（`src/pr.rs:fn default`），于是页眉少一整段。
+登记为 `PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`：射程是「缺省页眉的时间字段从哪来、按谁的时区与格式」，
+与本轮的字节口径无关，且它需要 `localtime` 与操作数 `st_mtime`（本壳目前不取文件的修改时间），
+体量非单轮，另册处理。
+
+**余量**。普查甲组三支至此全部落地。在册未执行的仍是四百三十三量出来的乙组与丙组：
+`from_utf8_lossy` 一族 22 处、`units`/`tsort` 各自的夹具、`TEXTFILTER-COMMENT-ANCHOR-AUDIT-REST`、
+`LEDGER-ANCHOR-OFFBYONE`、`PASTE-COMM-NUL-TRUNCATES-PRINT-LEG`、
+`COLUMN-BLANK-SET-NARROWER-THAN-ISSPACE`，以及待裁决的 `CUT-C-LEG-CHARACTER-ORIENTED`、
+`REV-MULTIBYTE-ERROR-LEG`、`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`NL-DELIM-LENGTH-RULE`。
+本壳里 `PrError::InvalidValue` 的负载仍是 `String`：它装的是从命令行参数里摘出来的那一段，
+归参数缝（板 A2 行的射程②），与本轮改的行腿是两条独立的缝。
+
 ## 批次四百三十五（甲组第二支：`column` 的条目池、分隔符集、布局宽度一起按字节）
 
 **这一轮在做的事**。批次四百三十三的普查把「先把整份输入解一次 UTF-8、再按换行切」这个形状量成三组，
@@ -265,13 +334,15 @@ N5 等价注入（`extend_from_slice(field)` 写成 `extend_from_slice(&field.to
 **本轮新登记（只登记，未执行）**：`COLUMN-BLANK-SET-NARROWER-THAN-ISSPACE`。C 的空行判是
 `for (p = buf; *p && isspace((unsigned char)*p); ++p); if (!*p) { free(buf); continue; }`（`column.c:274-278`），
 C locale 的 `isspace` 表里有 `' ' 	 
-   ` 六枚；本壳那一判只跳 `' '` 与 `'\t'`（这个集合自批次四百三十四
+   
+` 六枚；本壳那一判只跳 `' '` 与 `'\t'`（这个集合自批次四百三十四
 之前就如此，不是本轮字节改造引入）。差别落在「整条都是空白且没有换行符」的末行：C 认它是空行、静默丢弃、
 退 0；本壳认它是残行，打一句 `column: line too long` 并把退码置 1。现量 `tmp/column-435/blankset.log`
 （复跑 `python3 tmp/column-435/blankset.py`）：`0b`、`0b 0b`、`0c 0d`、`0d` 四形参照件都是 rc=0 零输出，
 本壳是 rc=1 加一句警告；`0d 0a` 这一形参照件把回车连同换行一起当空白丢掉（`isspace('\r')` 与 `isspace('\n')`
 都真，游标一路走到串尾），本壳交回一行 `0d 0a`。对照形 `20 09`（空格加制表）两边同形，说明差别确实只在
-`\v \f \r` 三枚。**修法**是把跳过的集合换成 C 的 ctype 判（跳 `	    ' '` 与 `
+`\v \f \r` 三枚。**修法**是把跳过的集合换成 C 的 ctype 判（跳 `	   
+ ' '` 与 `
 `），
 属另一条口径，与「字节 vs 文本」无关，故另册。
 
