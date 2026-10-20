@@ -1145,3 +1145,49 @@ C 自己印一句带 `%s` 的 `errx`（`minix3/usr.bin/uniq/uniq.c:90-98`），�
 **提交与账**：`6c950fbe2`（文档笔：18 篇新段 + 板 A2 行两处订正）、本页为里程碑笔。板 A 余量：A2 参数缝半
 二十九支 + `text-games` 三支壳 + 族终笔 + 登记不执行清单（`UNEXPAND-BLANK-LINE-END-FLUSH-NEEDS-TERMINATOR`、
 余五支终结门、`UNIQ-CLIPPY-COLLAPSIBLE-IF-STOCK` 等）。
+### 第一百六十九笔（批次四百五十五 · A2 参数缝半切片 37：`units` 的单位名全链路按字节）
+
+**这一轮按批次四百五十三定的切法做第一片**：单位名所在的每一条腿换成字节形，argv 留给切片 38。库里
+`fn read_units` 收 `&[&[u8]]`，`UnitsTable` 的 `units`/`prefixes` 与 `UnitType` 的 `numerator`/`denominator`
+四处字段、`UnitsError::UnknownUnit` 的载荷都是字节，`fn lookup_unit`/`fn add_unit` 收 `&[u8]`，
+`fn units_error_line`/`fn show_unit`/`fn render_answer`/`fn list_units` 交回字节串；壳侧两条喂字节的腿同步
+——词典 `fn split_file_lines` 按换行切字节（一枚非法字节不再能让整份词典消失），交互那一行不再折
+`String::from_utf8_lossy`（名字里的 `é` 交回 `c3 a9` 两个字节，不再是折出来的 `c3 83 a9` 三字节）。
+共件 `src/floatfmt.rs` 新增 `fn parse_float_prefix_bytes`，`&str` 那一个委托它，所以 `jot`/`diff`/`seq`
+三支的调用形一字未动。**在册项 `UNITS-NONUTF8-DROP` 的两条腿据此核销为闭**。
+
+**一条判据从论证升级成读数**：批次四百四十九否证「在查询边界折一次 lossy」时给的是理由，本轮负控 U3 给出
+现量——词典里 `weird` 加裸 `ff` 与 `weird` 加字面替换字符 `ef bf bd` 是两枚不同的键，按字节查前者命中
+「定义 `2 m`」那一枚，折一次 lossy 则两边同形、命中排在前面的错那一枚。逐字节比是唯一与真源同形的做法。
+
+**门与读数**：库 +2 / 面 +2（面侧另加逐字节夹具 `fn run_bytes`，理由与 `col_face` 那笔同形——文本形分不清
+裸 `ff` 与 `ef bf bd`）。宿主与容器权威门各 **69 段 / 1243 passed / 0 failed** 退 0（容器带
+`-u $(id -u):$(id -g)` 与两个缓存挂载点，未与任何 cargo 并发）；三架构 `--target x86_64-unknown-none`、
+`aarch64-unknown-none`、`riscv64gc-unknown-none-elf` 各退 0；clippy 整包 150 条、按路径全名判触及件
+**零新增**（落 `units.rs:148`/`:197`/`floatfmt.rs:66` 那三条都在本轮改动之前的既有构造上，只是行号位移）；
+`rustfmt --edition 2024` 触及四件零漂移；负控六枚 = 五枚各咬住一枚新门 + 一枚**声明等价**（U6 分母那串
+由扫描保证全是 ASCII，零枚红是正确读数），基线执行门数 1243、注入期 1242、复跑 0 失败
+（`tmp/units-455/negctl-final.log`）。A/B 对 `tmp/units-319/units`（先打 `-Z` 验归属：交回
+`unknown option -- Z`，Minix 的 `getopt.c` 那一句）十八形 **SAME=14 / DIFF=4**，射程内六形裸字节腿全 SAME，
+四形分别归 `UNITS-PARTIAL-UNIT-ON-ERROR`（三形）与 `UNITS-LEADING-DASH-NAME`（一形）。
+
+**门 1 的漂移项本轮复核过，不在本线**：`tools/todo-reconcile-scan.sh` 报「探针命名族（行）读数 31 / 台账基线 18」，
+而本轮 diff 里 `nk4a:`/`nk4c:` 出现 **0** 次（`git diff 1b4175e99..HEAD | grep -cE 'nk4[ac]:'` = 0），
+`rewrite-notes/` 同一读数在基线快照与现状都是 345 行 ⇒ 这条漂移由别的线推进，处置归该线，本笔不改它的基线。
+门 2 断链 **131** 同基线（本轮三件文档命中数前后都是 6，只有行号随新段位移）；门 3 PASS；门 4 增量零 error；
+门 5 干净（`tmp/units-455/` 下 `ab.log`、`negctl-final.log`、`container.log`、`links-before.txt`、
+`links-after.txt` 是本笔取证）。
+
+**新登记一条待独立轮的 P0，并记下它的形状**：`UNITS-DASH-REWRITE-AT-FIRST-CHAR`——C 的短横改写循环
+（`minix3/usr.bin/units/units.c:344-348`）游标从 `scratch + 1` 起，行首那枚短横不动；本壳
+`fn add_into` 的条件含 `i == 0` 这一支，把首字符也改写了，于是 `units -f <档> - m` 的操作数 `-` 被折成空格、
+名字段变空（参照件报 `Unknown unit '-'` 并出 `\t1 -`，本壳不打报文、出 `\t1`）。这正是既有登记
+`UNITS-LEADING-DASH-NAME` 的根因：**登记语的措辞不等于根因**，那一行从参照件读数出发写的是「名字段少前导短横」，
+而真正坏的是改写循环的起点。按「一次只修一条」不进本射程。两处夹具与期望的自错也一并入账：
+把「一个元素就是一行」当成两个字段传入、把约分后的因子按推演写成展开值（`reduceproduct` 在定义含
+`PRIMITIVECHAR` 那一格就 `break`，`units.c:583-585`），都改到读数而不是推演。
+
+**提交与账**：码笔 `1646448c8`、文档笔 `0592b26f2`（18 篇新段 + 07 篇 units 行与篇首库测 614→616 +
+板 A2 行）、本页为里程碑笔。A2 余量：按 argv 口径已迁十支 / 余二十九支（`units` 仍在那二十九支里，
+跨壳表那一行仍钉 `ef`，切片 38 翻正）、`text-games` 三支壳、族终笔；独立轮在册 `UNITS-DASH-REWRITE-AT-FIRST-CHAR`、
+`UNITS-PARTIAL-UNIT-ON-ERROR`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`，`NL-DELIM-LENGTH-RULE` 待裁决。
