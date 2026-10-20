@@ -209,6 +209,27 @@ pub fn empty_optstring_operands<'a>(
     Err(GetoptReport::UnknownOption(char::from(byte)))
 }
 
+/// [`empty_optstring_operands`] 的字节形（A2 参数缝半）：同一张三形判据，只是交回的
+/// 是原字节。字母仍是短横后的**第一个字节**——`char::from(byte)` 收进报告，那正是 C 里
+/// `unsigned char` 提升成 `int` 的形状；[`GetoptReport::line_bytes`] 再把它打回那一个字节。
+pub fn empty_optstring_operands_bytes<'a>(
+    argv: &'a [&'a [u8]],
+) -> Result<alloc::vec::Vec<&'a [u8]>, GetoptReport> {
+    let Some(first) = argv.first() else {
+        return Ok(alloc::vec::Vec::new());
+    };
+    let Some(flag) = first.strip_prefix(b"-") else {
+        return Ok(argv.to_vec());
+    };
+    if flag == &b"-"[..] {
+        return Ok(argv[1..].to_vec());
+    }
+    let Some(&byte) = flag.first() else {
+        return Ok(argv.to_vec());
+    };
+    Err(GetoptReport::UnknownOption(char::from(byte)))
+}
+
 /// C 的 `atoi`：跳过前导 `isspace`、可带符号、取一串十进制数字，**尾巴上有杂字符不管**，
 /// 一位数字都没有就是 0。
 ///
@@ -252,7 +273,7 @@ pub fn atoi(text: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{GetoptReport, empty_optstring_operands};
+    use super::{GetoptReport, empty_optstring_operands, empty_optstring_operands_bytes};
 
     /// 那两行的原文逐字钉在这里（单源），因为壳侧的门只能证明「渲染出来了」，
     /// 证明不了措辞。真值取 `minix3/lib/libc/stdlib/getopt.c:101-104` 与
@@ -332,6 +353,30 @@ mod tests {
             GetoptReport::UnknownOption('\u{fffd}')
                 .line("rev")
                 .into_bytes()
+        );
+    }
+
+    /// 空 optstring 的字节形认得**非法 UTF-8 的单字节**：那一枚 `ff` 就是字母，
+    /// 不走有损折叠那一条路（`args()` 会先把它折成 U+FFFD，字母就成了 `ef`）。
+    #[test]
+    fn empty_optstring_bytes_name_an_invalid_utf8_option_byte() {
+        assert_eq!(
+            empty_optstring_operands_bytes(&[&b"-\xff"[..]]),
+            Err(GetoptReport::UnknownOption('\u{00ff}')),
+            "裸字节 ff 应当在字母位上，而不是折成 U+FFFD"
+        );
+        assert_eq!(
+            GetoptReport::UnknownOption('\u{00ff}').line_bytes("rev"),
+            b"rev: unknown option -- \xff\n".to_vec()
+        );
+        // 同一枚参数经 `args()` 的折叠腿进来时，字母位已经不是那一个字节了——两形的差
+        // 就是 A/B 里那条残差。
+        let folded: alloc::borrow::Cow<'_, str> =
+            alloc::string::String::from_utf8_lossy(&[b'-', 0xff][..]);
+        assert_eq!(
+            empty_optstring_operands(&[folded.as_ref()]),
+            Err(GetoptReport::UnknownOption('\u{00ef}')),
+            "折叠腿交回的是 efbfbd 三字节，取第一个字节就成了 ef——这正是 A/B 里那条字母位差一位的成因"
         );
     }
 

@@ -22,9 +22,11 @@ mod support;
 use minix_textfilter::rev::{parse_rev_args, reversed_lines};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名那一腿的渲染口仍是 `&str`（`GetoptReport::line_bytes`、`warn_line` 都收 `&str`），
+    // 库侧字节口在册未动：`ARGV-BYTE-PATH-IN-LIBS`。字母与操作数这两腿从这里开始是原字节。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let refs: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // C 的选项环只有一条出口：拿到 `'?'` 就 `usage()`（`rev.c:72-74`），而那一行
     // `unknown option -- <字母>` 是 libc 在返回之前自己印的（`getopt.c:101-104`）。
     // 旧写法没有选项环，`-Z` 被当成文件操作数，句子也少了 `strerror` 那一段。
@@ -33,8 +35,8 @@ fn run() -> ! {
     let operands = match parse_rev_args(&refs[1..]) {
         Ok(rest) => rest,
         Err(report) => {
-            support::warn(&report.line_bytes(prog));
-            usage(prog);
+            support::warn(&report.line_bytes(&prog));
+            usage(&prog);
         }
     };
 
@@ -53,18 +55,22 @@ fn run() -> ! {
         let (input, failure) = support::read_stdin_error();
         emit_reversed(&input);
         if let Some(code) = failure {
-            support::warn_line(prog, "stdin", code);
+            support::warn_line(&prog, "stdin", code);
             status = 1;
         }
         support::terminate(status);
     }
     for operand in operands {
-        let input = match support::read_file(operand) {
+        // 开档与报文回显这两条腿的口都收 `&str`（`os/libs/minix-sys/src/lib.rs:fn open`、
+        // `os/libs/minix-types/src/types/errno.rs:fn err_line`），字节形操作数只能在
+        // 这里折一次——差在 `ARGV-BYTE-PATH-IN-LIBS` 里在册。
+        let path = String::from_utf8_lossy(operand).into_owned();
+        let input = match support::read_file(&path) {
             Ok(data) => data,
             Err(code) => {
                 // C 的 `warn("%s", *argv)`（`rev.c:86`）是 err(3) 三段形：程序名、操作数、
                 // `strerror` 句子。
-                support::warn_line(prog, operand, code);
+                support::warn_line(&prog, &path, code);
                 status = 1;
                 continue;
             }

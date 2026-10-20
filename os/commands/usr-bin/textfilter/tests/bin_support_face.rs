@@ -68,7 +68,7 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         // tr 已于批次四百换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD 的第一字节）；
         // C 那一侧是原字节 `ff`。到批次四百二十为止，本表六支全部已是字节形。
         ("tr", TR, 1, b"tr: unknown option -- \xef\n"),
-        // seq 已于批次四百二十换字节形，与 tr/paste/fold/rev/units 同形：一个裸字节 `ef`。
+        // seq 已于批次四百二十换字节形，与 tr/paste/fold/units 同形：一个裸字节 `ef`。
         // 它是本族唯一的**累加环**（`errflg` 累加、不在第一个坏字母处停），所以 lossy 后的
         // `ef bf bd` 三个字节各报一行——这一形里 C 打的是**原字节** `ff` 一行，差距从
         // 「一行的字母位」变成「行数与字母位都差」，仍属射程②（`bin_support::args` 的
@@ -78,7 +78,9 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         ("paste", PASTE, 1, b"paste: unknown option -- \xef\n"),
         // fold 已于批次四百零五换字节形，同 tr/paste。
         ("fold", FOLD, 1, b"fold: unknown option -- \xef\n"),
-        ("rev", REV, 1, b"rev: unknown option -- \xef\n"),
+        // rev 已于批次四百四十走 `bin_support::args_bytes`：字母位是**原字节** `ff`，
+        // 与参照件同形（本表其余五支的字母位仍是折叠后的第一字节 `ef`，属射程②的在册余量）。
+        ("rev", REV, 1, b"rev: unknown option -- \xff\n"),
         // units 已于批次三百九十九换字节形：字母位打一个裸字节 `ef`（lossy 后 U+FFFD
         // 的第一字节），比仍按 char 渲染的 `c3 af` 少一个字节；C 那一侧是原字节 `ff`。
         ("units", UNITS, 3, b"units: unknown option -- \xef\n"),

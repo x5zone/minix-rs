@@ -56,6 +56,35 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
         .collect()
 }
 
+/// 字节形出口（A2 参数缝半）：C 从头到尾把 `argv` 当字节数组，`getopt` 的字母取自
+/// 字节步进（`minix3/lib/libc/stdlib/getopt.c:optopt = *place++`），所以凡是要把选项字母
+/// 或操作数**按原字节**交回去的腿都不能走 [`args`]——那里的
+/// `String::from_utf8_lossy` 会把一枚裸 `ff` 折成三字节 `ef bf bd`。
+#[cfg(all(not(test), target_os = "none"))]
+pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+    minix_rt::crt0::args().map(<[u8]>::to_vec).collect()
+}
+
+/// Hosted twin of [`args_bytes`]：`args_os()` 交回的正是同一串原始字节。
+#[cfg(any(test, not(target_os = "none")))]
+pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    std::env::args_os()
+        .map(|raw| raw.as_bytes().to_vec())
+        .collect()
+}
+
+/// [`prog_name`] 的字节形：`argv[0]` 按原字节交回，且取的是**最后一段斜杠之后**的那串——
+/// 与 [`prog_name`] 交给 `minix_sys::prog_name` 的 basename 规则同形（报文里的程序名不该带
+/// 调用者给的路径前缀）。
+pub fn prog_name_bytes(argv: &[alloc::vec::Vec<u8>]) -> &[u8] {
+    let raw = argv.first().map_or(&[][..], |name| name.as_slice());
+    match raw.iter().rposition(|&byte| byte == b'/') {
+        Some(cut) => &raw[cut + 1..],
+        None => raw,
+    }
+}
+
 /// Terminates the process with an exit status (see the module header).
 /// Hosted twin: real stdio — the pre-freestanding `println!`/`eprintln!`
 /// semantics (hosted runs are host tools and test fixtures; the kernel

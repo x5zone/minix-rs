@@ -39,14 +39,16 @@ fn split_lines(input: &[u8]) -> Vec<String> {
 /// `rev` 的选项环，交回剩下的操作数（C 的 `argv += optind`，`rev.c:77-78`）。
 ///
 /// C 的 optstring 是**空串**（`rev.c:70`），所以这一支就是共件
-/// [`crate::empty_optstring_operands`] 描述的那三形：任何 `-` 开头的 token 都算集外字母
+/// [`crate::empty_optstring_operands_bytes`] 描述的那三形：任何 `-` 开头的 token 都算集外字母
 /// 并由 libc 先印一行、`--` 自身不算操作数、裸 `-` 算操作数。`rev` 拿到操作数后把它们
 /// 当文件逐个 `fopen`（`rev.c:83-106`），这一段是 `rev` 自己的事，归壳。
 ///
 /// 报的字母是短横后的**第一个字节**（`getopt.c:79` 的 `optopt = *place++` 步进在字节上），
 /// 壳侧那一行要用 [`crate::GetoptReport::line_bytes`] 才打得出 C 的那个裸字节。
-pub fn parse_rev_args<'a>(argv: &'a [&'a str]) -> Result<Vec<&'a str>, GetoptReport> {
-    crate::empty_optstring_operands(argv)
+pub fn parse_rev_args<'a>(
+    argv: &'a [&'a [u8]],
+) -> Result<Vec<&'a [u8]>, GetoptReport> {
+    crate::empty_optstring_operands_bytes(argv)
 }
 
 #[cfg(test)]
@@ -80,26 +82,26 @@ mod tests {
     fn the_option_ring_takes_no_letters_and_stops_at_the_first_operand() {
         // 空 optstring ⇒ 任何字母都报，报的是 `-` 后的第一个字符。
         assert_eq!(
-            parse_rev_args(&["-Z"]),
+            parse_rev_args(&["-Z".as_bytes()]),
             Err(GetoptReport::UnknownOption('Z'))
         );
         assert_eq!(
-            parse_rev_args(&["-bZ"]),
+            parse_rev_args(&["-bZ".as_bytes()]),
             Err(GetoptReport::UnknownOption('b')),
             "聚簇只报第一个字符，因为调用者拿到 '?' 就 usage() 退出"
         );
         assert_eq!(
-            parse_rev_args(&["--x"]),
+            parse_rev_args(&["--x".as_bytes()]),
             Err(GetoptReport::UnknownOption('-'))
         );
         // `--` 结束选项环且自身被吃掉；裸 `-` 留着当操作数。
-        assert_eq!(parse_rev_args(&["--", "f"]), Ok(vec!["f"]));
-        assert_eq!(parse_rev_args(&["-"]), Ok(vec!["-"]));
-        assert_eq!(parse_rev_args(&["--"]), Ok(vec![]));
+        assert_eq!(parse_rev_args(&["--".as_bytes(), "f".as_bytes()]), Ok(vec!["f".as_bytes()]));
+        assert_eq!(parse_rev_args(&["-".as_bytes()]), Ok(vec!["-".as_bytes()]));
+        assert_eq!(parse_rev_args(&["--".as_bytes()]), Ok(vec![]));
         // 非选项 token 一到就停：它后面的 `-Z` 不再当选项看。
-        assert_eq!(parse_rev_args(&["f", "-Z"]), Ok(vec!["f", "-Z"]));
-        assert_eq!(parse_rev_args(&["f", "g"]), Ok(vec!["f", "g"]));
-        let nothing: [&str; 0] = [];
+        assert_eq!(parse_rev_args(&["f".as_bytes(), "-Z".as_bytes()]), Ok(vec!["f".as_bytes(), "-Z".as_bytes()]));
+        assert_eq!(parse_rev_args(&["f".as_bytes(), "g".as_bytes()]), Ok(vec!["f".as_bytes(), "g".as_bytes()]));
+        let nothing: [&[u8]; 0] = [];
         assert_eq!(parse_rev_args(&nothing), Ok(vec![]));
     }
 
@@ -109,14 +111,27 @@ mod tests {
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
-            parse_rev_args(&["-\u{e9}"]),
+            parse_rev_args(&["-\u{e9}".as_bytes()]),
             Err(GetoptReport::UnknownOption('\u{00c3}')),
             "两字节的字符不能整个当字母报"
         );
         // 聚簇里非 ASCII 排在第二位时，报错仍落在第一个字节上（调用者拿到 '?' 就退出）。
         assert_eq!(
-            parse_rev_args(&["-x\u{e9}"]),
+            parse_rev_args(&["-x\u{e9}".as_bytes()]),
             Err(GetoptReport::UnknownOption('x'))
         );
+    }
+
+    /// 参数缝交回原字节之后，一枚裸 `ff` 的字母不再被折成 U+FFFD：报告里的字母就是
+    /// C 的 `optopt`，`line_bytes` 把它打回那一个字节。
+    #[test]
+    fn a_raw_ff_option_letter_is_named_by_that_byte_not_the_replacement_char() {
+        assert_eq!(
+            parse_rev_args(&[&b"-\xff"[..]]),
+            Err(GetoptReport::UnknownOption('\u{00ff}')),
+            "字母该是裸字节 ff，不是折叠后的 U+FFFD"
+        );
+        // ASCII 一形不受影响：字母本来就是那一个字节。
+        assert_eq!(parse_rev_args(&[b"-Z".as_slice()]), Err(GetoptReport::UnknownOption('Z')));
     }
 }

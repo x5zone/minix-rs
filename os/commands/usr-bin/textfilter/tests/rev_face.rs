@@ -23,6 +23,28 @@ use std::process::{Command, Stdio};
 const REV: &str = env!("CARGO_BIN_EXE_rev");
 const USAGE: &str = "usage: rev [file ...]\n";
 
+/// 用**原始字节**当 argv 跑一形：`&str` 造不出一枚裸 `ff` 的参数（`"-\xff"` 是
+/// Unicode 转义，编码成 UTF-8 就成了 `ef bf bd`），只有 `OsString::from_vec` 交得出的
+/// 才是内核看到的那串字节。
+fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStringExt as _;
+    let argv: Vec<std::ffi::OsString> = args.iter().map(|a| std::ffi::OsString::from_vec(a.clone())).collect();
+    let mut child = Command::new(REV)
+        .args(&argv)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the rev binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
 fn run(args: &[&str], input: &[u8]) -> (String, i32, String) {
     let mut child = Command::new(REV)
         .args(args)
@@ -109,6 +131,25 @@ fn an_unknown_nonascii_letter_prints_one_raw_byte() {
         err,
         b"rev: unknown option -- x\nusage: rev [file ...]\n".to_vec()
     );
+}
+
+
+/// 一枚**非法 UTF-8 的单字节**当选项字母（`-` 跟着裸 `ff`）：参照件 `tmp/rev-309/rev`
+/// 现量 `rev: unknown option -- ` + 裸字节 `ff`，退 1。C 的 `getopt` 在字节上步进
+/// （`minix3/lib/libc/stdlib/getopt.c:optopt = *place++`），所以字母就是那一个字节，
+/// 不存在「先当文本解码再报」这一说。
+#[test]
+fn a_raw_nonutf8_option_letter_is_reported_as_that_byte() {
+    let want: Vec<u8> = [
+        b"rev: unknown option -- ".as_slice(),
+        b"\xff\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    let (out, status, err) = run_raw(&[b"-\xff".to_vec()], b"abc");
+    assert_eq!(out, Vec::new(), "报文只走 stderr");
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(err, want, "字母该是裸字节 ff，不是折叠后的 efbfbd");
 }
 
 /// `--x` 报的字母是第二个连字符：optstring 里没有 `-`，所以它也是集外字符
