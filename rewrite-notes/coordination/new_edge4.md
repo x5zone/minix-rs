@@ -1191,3 +1191,76 @@ C 自己印一句带 `%s` 的 `errx`（`minix3/usr.bin/uniq/uniq.c:90-98`），�
 板 A2 行）、本页为里程碑笔。A2 余量：按 argv 口径已迁十支 / 余二十九支（`units` 仍在那二十九支里，
 跨壳表那一行仍钉 `ef`，切片 38 翻正）、`text-games` 三支壳、族终笔；独立轮在册 `UNITS-DASH-REWRITE-AT-FIRST-CHAR`、
 `UNITS-PARTIAL-UNIT-ON-ERROR`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`，`NL-DELIM-LENGTH-RULE` 待裁决。
+
+
+### 第一百七十笔（批次四百五十六 · A2 参数缝半切片 38：`units` 的 argv 交回原字节）
+
+**这一轮按批次四百五十三定的切法做第二片**：动参数缝，单位名链路上一片已经按字节。薄壳
+`os/commands/usr-bin/textfilter/src/bin/units.rs:run` 改走 `support::args_bytes()` 与
+`support::prog_name_bytes()`，库里 `UnitsArgs<'a>` 的 `userfile`/`operands` 改成 `&'a [u8]`、
+`fn parse_units_args` 收 `&'a [&'a [u8]]`、`fn convert_operands`/`fn load_units_file` 的签名随之外改。
+真源依据是 C 的 `crt0` 交给进程的就是字节数组，`minix3/usr.bin/units/units.c:855-875` 把 `argv`
+原样交给 `addunit`、`-f` 的值原样交给 `open`，全程没有一步问编码。
+
+**两条仍要 `&str` 的腿登记 `ARGV-BYTE-PATH-IN-LIBS` 并在臂内各折一次 `from_utf8_lossy`**：`-f` 的档名
+要交给 `minix_sys::open` 与 `minix_types::errno::err_line`，程序名要交给 `warn_line` 与
+`fn units_error_line` 的名字段。为什么不就地换字节：那两个口在 `os/libs/`，按
+`coordination/CONCURRENT-WORK-PROTOCOL.md` §2 是二线的领地，本板不许替别人实现他的前置。
+
+**门数按现跑对账**：面侧 `units_face` 22 → **23**，新立
+`an_operand_with_a_raw_byte_is_warned_about_in_raw_bytes`，配 argv 字节形夹具 `fn run_argv`
+（参数经 `OsStr::from_bytes` 交下去——一枚裸 `ff` 写不成 `&str`，这是本族第二处「文本形夹具承载不了
+本轮要比的字节」，判据同批次四百四十）；库内 units 门 **21 → 21**，本轮只把夹具写法从 `"…"` 改成
+`b"…"` 并随之重排多行数组，期望串逐字未动，所以门数不涨（与批次四百五十五「既有门翻正不新增」同处置）；
+`--lib` 段 616 → 616；整包 1243 → **1244**。跨壳表 `tests/bin_support_face.rs` 的 `units` 行
+`ef` → `ff`，本表八行至此全是原字节。
+
+**A/B 的读数本身就是这一轮的验收**：对 `tmp/units-319/units` 跑十一形 **SAME=9 / DIFF=2**
+（`tmp/units-456/ab.log`）。参数缝落地前，「选项字母位吃裸 `ff`」与「操作数含 `weird<ff>`」两形是 DIFF
+（本壳交回 `ef`、参照件交回 `ff`），本轮两形都 SAME；两处残留 DIFF 归既有在册项
+`UNITS-PARTIAL-UNIT-ON-ERROR`，且 `Unknown unit 'weird\xff'` 那一行现在逐字节相同，差的只是
+C 拿半成品照样吐出的那个答案块。
+
+**负控五枚（`tmp/units-456/negctl.py`，读数 `negctl-final.log`）**：W1（argv 退回文本缝）咬住 2 枚
+——新面门与跨壳表那枚跨支期望 `no_command_aborts_on_a_nonutf8_option_letter` 同时红，是共件单源的横向证据；
+W2（have 侧操作数交给链路前折一次 lossy）咬住 1；W3（字母位退回按字符取整簇）红 3 枚、命中新门 1；
+W4、W5 **零红＝等价声明**。本轮立一条判据：**声明等价的负控必须写清这一形为什么不允许存在**——
+W4 成立的条件是门里的程序名全是 ASCII 且名字段本来收 `&str`，W5 是同一个 `0x20` 换了写法；
+不写清的话「零红」读起来像门没牙。基线执行门数 1244、注入期 1241/1242/1243、复跑基线 1244 / 0，
+每枚注入前后按整文件 md5 复核还原。两处注入端自错照旧归因到注入而不是门：W2 第一版把 lossy 折在
+want 侧的 `"m"`（ASCII，折与不折同果）、W3 第一版锚在薄壳而字母位在库件的选项环里。
+
+**一条编译期教训重演**：字节形的 `fn parse_units_args` 把生命周期绑在**元素**上而不是外层数组，
+`parse_units_args(&[b"-f".as_slice(), b"db".as_slice()])` 这种临时数组写法报 E0716；改法是每处先
+`let argv: &[&[u8]] = &[…]` 绑定再交出去——与批次四百四十一那条同一课。
+
+**五道收尾门读数**（`tmp/units-456/gate1.log`、`gate2.log`、`gate345.log`）：门 1 只有一个漂移项，
+「探针命名族（行）读数 31 / 台账基线 18」，本轮两笔提交的 diff 里 `nk4a:`/`nk4c:` 出现 **0**
+（`git diff HEAD~2..HEAD | grep -cE 'nk4[ac]:'` = 0），判定不在本线、不改它的基线；门 2 断链 **131**
+与上一笔同数（把行号剥掉做集合差，只差汇总那一行的空白），本轮新增断链 **0**；门 3 PASS（0 项）；
+门 4 `--diff HEAD~2` 覆盖 3 个文件 / 73 个新增行，**error 级 0**；门 5 暂存区干净。
+全包门宿主与容器各 **69 段 / 1244 passed / 0 failed** 退 0（容器按板 §7.3 三挂载形带
+`-u $(id -u):$(id -g)` 与两个缓存挂载点，跑时未与任何 cargo 并发，`tmp/units-456/container.log`）；
+三架构 `cargo check --target x86_64-unknown-none / aarch64-unknown-none / riscv64gc-unknown-none-elf
+-p minix-textfilter --bins` 各退 0；`rustfmt --edition 2024 --check` 触及四件各退 0 零漂移；
+**clippy 在改动前后各跑一次同一条命令 `cargo clippy --offline -j 1 --all-targets -p minix-textfilter`，
+各 151 条、零新增**——把两份日志的 `warning:` 行去掉数字后排序做集合差，唯一两处文字差是 `colrm` 与
+`sort` 两行的「(1 duplicate)」后缀位置，即同一枚警告在哪个 target 先报的差别，不是新增警告。
+
+**由此立一条判据并订正上一笔的账面**：**clippy/rustfmt 的计数必须与命令同记**。批次四百五十五记
+「整包 150 条」却没留命令，本轮实测同一条命令在该笔的落码点是 151 条，两个数不可比——「同数」若不附命令
+就是一个无法核对的说法。本轮起按「改动前后各跑同一条命令」取证。
+
+**进度与两处账面滞后一并翻正**：参数缝半按 argv 口径**已落十一支 / `textfilter` 余二十八支**
+（`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` = 28），按整个命令面口径
+还有 **97** 支在文本缝上；渲染半此前那些「余 N 处调用点 / N 个源文件」是滞后数，现量
+`grep -rn "\.line(prog\|\.line(&prog" os/commands --include=*.rs | grep -v tests/` = **0 行**，
+即 `GetoptReport::line_bytes` 之外不再有按 `String` 渲染 libc 那一行的消费者（41 处调用点 / 29 个源文件
+全在 `usr-bin/textfilter`，`text-games` 那三支走 `lottery.rs` 自己的字节口）。
+
+**提交三笔**：码笔 `27eff20f3`（四件源码与门）、文档笔 `fce4ecfe6`（18 篇批次四百五十六段、07 篇 units 行、
+板 A2 行）、本页为里程碑笔。A2 余量：`textfilter` 二十八支的参数缝 + `text-games` 三支壳 + 族终笔
+（删 `bin_support` 三个文本口、把 `tests/argv_seam_face.rs` 那枚门升级成逐字节等于原字节）；
+独立轮在册 `UNITS-DASH-REWRITE-AT-FIRST-CHAR`、`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、
+`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、五枚 `*-NON-PERMUTE-OPERAND-TAIL`，
+`REV-MULTIBYTE-ERROR-LEG` 与 `NL-DELIM-LENGTH-RULE` 待裁决。
