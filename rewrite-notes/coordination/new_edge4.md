@@ -1344,3 +1344,86 @@ clippy 同一条命令 `cargo clippy --offline -j 1 -p minix-textfilter --all-ta
 `UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、
 五枚 `*-NON-PERMUTE-OPERAND-TAIL`、板 `A2` 行的分页符散行；`REV-MULTIBYTE-ERROR-LEG`、
 `NL-DELIM-LENGTH-RULE` 待裁决。
+
+---
+
+### 第一百七十二笔（批次四百五十八 · A2 参数缝半切片 40：`cmp` 的操作数与两处报文名字位交回原字节）
+
+**这一笔落的是字母序续支**：库侧 `os/commands/usr-bin/textfilter/src/cmp.rs` 的
+`CmpFlags.operands` 改 `Vec<&'a [u8]>`、`fn parse_cmp_flags` 收 `&'a [&'a [u8]]`，两处报文构造点
+`fn report_first_diff` 与 `fn report_eof` 从「交 `&str` 再 `as_bytes()`」改成交回 `Vec<u8>` 并按字节
+`extend` 档名；壳侧 `src/bin/cmp.rs:run` 走 `bin_support::args_bytes`/`prog_name_bytes`，
+`fn parse_skip` 按字节读 C 的 `strtoq(…, 0)` 那个形。真源依据是 `minix3/usr.bin/cmp/misc.c:81` 的
+`printf("%s %s differ: char %lld, line %lld\n", file1, file2, byte, line)`、`misc.c:64`/`:67`/`:70`
+的三条 `warnx("EOF on %s", …)`、`cmp.c:125`/`:130` 把 `argv[2]`/`argv[3]` 原样交给 `strtoq`——
+C 全程不问编码。**`cmp` 的形状与 `cksum` 不同处在这一条**：档名同时是回显位与开档位，所以一枚
+裸字节在此会同时错两处，而 `cksum` 的回显位与摘要计算是分开的两条腿。
+
+**A/B 十四形 SAME=14 / DIFF=0**（`tmp/cmp-458/ab.log`；参照件 `tmp/cmp-410/cmp` 先按批次四百零七
+那条验法打 `-Z`，交回 `cmp: unknown option -- Z` 加 usage、退 2 ⇒ Minix `getopt.c` 血脉）。
+这是本族**头一支 A/B 全等**，判据要写准以免被读成「这条缝比上条干净」：全等的原因是 `cmp` 没有
+第二条消耗参数的腿，而 `cksum` 那三形 DIFF 归在算法侧与 `-c` 校验腿两条独立轮上。**裸字节档名那一形
+在盘上同时放原字节名与它的 `from_utf8_lossy` 折叠名**（内容相同），为的是把在册的
+`ARGV-BYTE-PATH-IN-LIBS` 从读数里排除出去；这个排除动作写进了 `tmp/cmp-458/ab.py` 的模块注释——
+**判据：A/B 为了量一条腿而屏蔽另一条腿时，屏蔽方式必须留在取证件里**，否则「全等」会被下一个读者
+当成两腿都修完了。
+
+**门账**：`cmp_face` 12 → **14**（differ 行两支档名一枚、`EOF on` 行档名一枚，配
+`fn run_argv` 与 `fn write_raw_named` 两件字节形夹具）；库内 `cmp` 模块门 **10 → 10**（只把夹具
+字面量改成字节形、期望串逐字未动，「既有门翻正就不新增双胞胎」第四次执行）；跨壳表
+`tests/bin_support_face.rs` 补 `cmp` 一行（退 **2**，与 `cksum` 那行的 1 不同，取自 `cmp.c` 的
+`ERR_EXIT`），**本表十行至此全是原字节**；整包 69 段 / 1246 → **1248** passed / 0 failed，`--lib` 616 不变。
+
+**负控四枚的读数形状值得单独记**：W1 只把 `fn report_first_diff` 的第一支档名折一次 lossy → 红
+**1** 枚（differ 那枚）；W2 只折 `fn report_eof` 的档名 → 红 **1** 枚（EOF 那枚）。
+**两条报文腿各只咬自己那一条**，这正是「一形一枚、分开钉」想要的形状——若两处共用一个折叠点，
+一次注入会同时红两枚，那就说不清门钉的是哪条腿。W3（argv 退回文本缝）咬 3 枚（两枚新面门 +
+跨壳表），W4（字母位退回按字符取整簇）咬 3 枚（库门 + 面门 + 跨壳表）。负控只跑射程内三段
+（库内 616 + 跨壳表 4 + 面侧 14），不是整包：注入只动 `cmp` 一支，跑全包只是等。
+
+**本轮最该记的是自己造的一起混写事故**：做 clippy 前后比对时，我把改动四件按**文件名**收进
+`tmp/cmp-458/mine/`，而 `src/cmp.rs` 与 `src/bin/cmp.rs` 同名，后者把前者盖掉；随后那个目录被当成
+还原源回写，库件就被壳件覆盖了。混写之前的宿主整包是绿的，红的是紧接着的容器权威门：
+`error: couldn't read commands/usr-bin/textfilter/src/../bin_support.rs: No such file or directory`，
+指向 `src/cmp.rs:31` 那句 `mod support;`。三条判据入册：**①跨同名文件的备份与还原必须按完整相对路径
+建目录树，不许用文件名拍平；②「临时把树换成别的版本再换回来」的循环一结束，第一件事是重跑一道会
+编译全部 target 的门，不能直接进下一道门；③依赖所在目录的声明（`#[path = "../bin_support.rs"]`）
+是免费的身份探针——同一个声明在库件与壳件里解出不同路径，文件被认错身份时它第一个炸**。
+恢复源是 `tmp/cmp-458/cmp.rs.orig`，恢复后补一次 `rustfmt`，复跑整包 1248/0 与 A/B 十四形仍全等。
+
+**另一处该记的是我手里的数而不是账**：交接摘要带着「上一笔整包 1244」开工，而本轮新增两枚门却读到
+1248，减法差两枚。当场把上一笔那棵树复跑：`git checkout HEAD~1 -- <四件>` 后
+`cargo test -p minix-textfilter` → **1246**，`git checkout HEAD -- <四件>` 还原 → **1248**。
+台账本来就写 1244 → 1246，那个 1244 是**批次四百五十六**的读数，隔了一笔被我当成上一笔。
+**判据：开工前把基线当场复跑，别拿转述来的数字当基线**——减法不平时的排查次序是「被减数 → 减数 → 台账」。
+
+**五道收尾门读数**：① `tools/todo-reconcile-scan.sh` 仍有 **1 项漂移**＝「探针命名族（行）」读数 31 对
+基线 18，测的是 `os/kernel/src`、`os/arch/src` 里 `nk4[ac]:` 那一族日志名；本轮
+`git diff --name-only HEAD~2..HEAD` 七件全在 `os/commands` 与 `rewrite-notes`，与该判据无交集，
+属一线在制，本族不代改台账也不改脚本基线（与第一百七十一笔同一项，未新增）。
+② `python3 tools/notes-link-check.py rewrite-notes/` 全树断链 **131**，与上一笔那份同数；本轮另按
+（文件, 链接目标）对**触碰的四篇**做集合差：基线键 0、现键 0 ⇒ 新增零。
+③ `tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md` 退 0、PASS（0 项）。
+④ `tools/doc-style-lint.sh --diff HEAD~2..HEAD` → 3 个文件 / 114 个新增行、**error级=0**
+（按上一笔那条判据带显式 range 跑，不用默认 `HEAD` 空转）。
+⑤ `tools/check-staged-inflight.sh` 退 0（避让清单 1 条：`rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md`，
+本轮未触碰）。
+
+**门读数补全**：宿主与容器权威门各 69 段 / 1248 / 0 退 0（容器按板 §7.3 那条三挂载配方带
+`-u $(id -u):$(id -g)`，跑时未与其他 cargo 并发，`tmp/cmp-458/container-gate.log`）；三架构
+`cargo check --offline -j 1 --target {x86_64-unknown-none, aarch64-unknown-none,
+riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0；`rustfmt --edition 2024 --check`
+触及四件首跑有 3 件报漂移（23/25/13 行），就地格式化后四件全退 0。clippy 同一条命令
+`cargo clippy --offline -j 1 --all-targets -p minix-textfilter` 改动前后各 **151** 条零新增
+（`tmp/cmp-458/clippy-before.log` 与 `tmp/cmp-458/clippy-final.log`；前后各跑一次时把 HEAD 那四件
+临时放回原位再还原，正是那起混写事故的发生现场——所以这条流程从现在起必须自带「还原后逐件 md5
+成对复核」，只看聚合哈希数会把两个不同文件误判成一致）。触及本轮两件源件的 2 条与 HEAD 同一对：
+`src/cmp.rs:78` 的 `fn format_list_entry` 那句 `write!` 尾换行、`src/bin/cmp.rs` 的「test 模块之后
+还有条目」（HEAD 报在第 261 行、本轮位移到第 298 行）——位移不是新增。
+
+**进度与在册（全部现量）**：参数缝半已落**十三支**，`textfilter` 余 **26** 支、整个命令面余 **95** 支；
+渲染半那条 grep 仍 **0** 行，`line_bytes` 调用点按可复跑命令是 **40 处 / 29 个源文件**（板 A2 行此前那句
+「41 处」拿不到命令，本笔订正）。独立轮在册不碰：`ARGV-BYTE-PATH-IN-LIBS`（`cmp` 两条开档腿与程序名腿
+都挂在它上面）、`CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-DASH-REWRITE-AT-FIRST-CHAR`、
+`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、
+五枚 `*-NON-PERMUTE-OPERAND-TAIL`；`REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE` 待裁决。
