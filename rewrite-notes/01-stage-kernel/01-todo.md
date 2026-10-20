@@ -74,6 +74,7 @@ grep -n "BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END" os/kernel/src/lib.rs
 > 本批每条的设计要点、候选方案与待裁决问题清单见 `01-code-design.md`（自包含简报 T1–T5）；既有条目的完整登记（现状读数、修法、DoD、现算命令）在 `todo.md` §7.1/§7.4，本节只摘与本轮审查相关的**增量**。
 > **2026-10-21 外部首轮裁决已回填简报 v2**：T1 改题（wire 协议冻结为主、信封合一降为次级）、T3 的 UEFI 取参来源改判（当前镜像 `LoadOptions`，非 `Boot####` 枚举）、T4 已裁（独立小批，`fw_end=0` 带形态前提）、T5 已裁（案 1，先于 D-66 实施）、T2 补入口状态契约。实施次序裁定：**T4 → T1(wire) → T5 → T3 → T2**。各条目状态以下方行内标注为准。
 > **2026-10-21 二轮评审已回填简报 v3**（三缺口定向增补）：① T1 解码边界改三层模型（`BootHandoffV1` → `KernelInfoView<'a>` → 内核自有 `KernelInfo`），废弃伪造 `'static` 的 `decode()->KernelInfo`；② 源切片可读性具体机制（UEFI 池上界三层：AllocateMaxAddress 构造 / pre-EBS 断言 / 解码重验）；③ wire 递归闭合（`Wire*` 元素类型、`BootModule.name` 16B 定长字节槽）+ `BootSlice` 改 `addr: u64` 物理地址语义；④ T4 补 DTB 生命周期前提（全仓无 DTB cut/reserve 取证）。T2 双契约拆分（建表返回 ≠ blob 写入后）；T3 的 ARCH/BOARD 已核为用户态 `env_get_param` 契约。状态收紧表见简报 §10。
+> **2026-10-21 三轮评审已回填简报 v4**（原则级修正：v3 把恒等映射机制写进了共享解码规则）：① `BootSlice<T>` 改非泛型 `WireSlice` + `byte_len` 字节口径 + 溢出检查区间公式；② 地址语义逐字段声明（`WirePhysAddr`/`WireVirtAddr`，纠正「全部是物理地址」的过宽表述）；③ 可读性判据改语义接口（`BootReadPhase.readable_intervals`）、机制归腿——依赖方向佐证：`minix-boot` 只依赖 `minix-types`；④ wire 序列化与 UEFI 快照/EBS/回收闭环（T1 冻结条件 +1）；⑤ `reserved_regions` 消费面取证：`dm_coverage` source 4（DM 可达，保留）与 `vm_handoff` kern_ident（恒等重放，随 T2 退场）两语义，T2 按消费语义拆分输入；⑥ cfg 门候选加限制（仅真正同构的语义阶段共享）；⑦ T3 补 UEFI Shell 兼容边界；⑧ T4 DTB 修复走通用所有权语义、禁止特例进 PMM；⑨ T5 三存储阶段联动。**T1 wire 协议达冻结条件。**
 
 ### D-67 boot 信封合一 + 跨镜像布局全钉死（既有，`todo.md` §7.1）
 
@@ -83,7 +84,7 @@ grep -n "BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END" os/kernel/src/lib.rs
 2. **`MemoryRegion.len: usize` 与 `kern_size/bootstrap_len: u64` 宽度不一致**：`kernel_info.rs` 对 `kern_size` 的注释明说 "Uses u64 instead of usize to avoid truncation on 32-bit targets"，而同文件 `os/libs/minix-boot/src/kernel_info.rs:struct MemoryRegion` 的 `len` 是 `usize`——跨镜像 blob 与 `#[repr(C)]` 布局钉死的射程内，`usize` 的宽度随 target 变，同一逻辑字段两种宽度没有理由。随 D-67 的切片 newtype 一并钉死（`u64`）。
 3. **`KernelInfo` getter 家族缺 `param_buf`**：R-07 约定 getter 是推荐 API，14 个字段里 13 个有 getter，唯 `param_buf` 没有（`kernel_info.rs:impl KernelInfo`）。随 D-66/D-67 实施补齐。
 
-**设计载体**：`01-code-design.md` T1 v2/v3（**已改题**：主问题 = 跨镜像 wire 协议冻结——`BootSlice` 显式定宽描述符、`free_upper_idx` 用 `u64::MAX` 哨兵、`MemoryRegion.len`→u64、协议头 magic/version/size、跨目标布局构建门；**信封合一降为次级**——`BootPrepareResult` 保留为进程内类型，跨镜像唯一权威是 `BootHandoffV1`；builder 统一 D-69 联动保留；**v3**：三层解码模型替代 `decode()->KernelInfo`、wire 递归闭合（`Wire*` 元素类型）、`BootSlice.addr: u64` 物理地址语义、布局门禁两层（基准值+版本演进）、UEFI 池上界三层机制）。
+**设计载体**：`01-code-design.md` T1 v2–v4（**已改题且已达冻结条件**：主问题 = 跨镜像 wire 协议——非泛型 `WireSlice{addr,byte_len}` + 溢出检查区间公式、`free_upper_idx` 用 `u64::MAX` 哨兵、`MemoryRegion.len`→u64、协议头 magic/version/size + 先验后解引用、`Wire*` 递归闭合、地址语义逐字段声明（`WirePhysAddr`/`WireVirtAddr`）、可读区间语义接口（`BootReadPhase`，机制归腿）、wire 序列化/快照/EBS/回收闭环、跨目标布局构建门；**信封合一已裁不做**——`BootPrepareResult` 保留为进程内类型；builder 统一 D-69 联动保留）。
 
 ### D-66 `param_buf` 生产侧接入（既有，`todo.md` §7.1）
 
@@ -106,7 +107,7 @@ grep -n "BOOT_IDENTITY_MAP_END as IDENTITY_MAP_END" os/kernel/src/lib.rs
 2. **01 篇两处叙述与台账口径不一致**：L1422「跨镜像跳转协议还没裁决（NK1/OQ-N6，§4.8 交付边界）」与 L2624「跳转协议尚未定案（镜像头注释如此说明）」——「还没裁决」应对齐为「OQ-N6 已裁（每进程独立根原语），x86 腿的实施收口（NK1/C-29）待认领」；`os/kernel-image/src/main.rs` 头注「交付边界（诚实登记）」段的同款表述一并更新。
 3. **x86 切换的存量资产**：`os/kernel-image/x86_64.ld` 布局产出与 `os/kernel-image/check-layout.sh` 的 L0–L9 校验已在位；aarch64 已把 `bootstrap_to_kernel_image`（shim 侧）与 `arch_boot_resume_high_half`（镜像侧）做成 `#[cfg(target_arch = "aarch64")]` 单架构实现——x86 版基本是把这两段的 cfg 泛化 + asm 寄存器换 SysV（`rdi` 递 blob 指针）。
 
-**设计载体**：`01-code-design.md` T2 v2/v3（**已裁方向**：独立镜像方案推进、`rdi` 交接、QEMU 先行短期双轨；**v2 补齐**——x86 入口状态契约成文：`_start` 是机器入口 trampoline（裸汇编）而非被 `call` 的普通函数，须自建内核栈/`cld`/`IF=0`/CR3 断言/长模式断言清单；源数据映射两证明分离（物理内容所有权 ≠ 虚拟可访问性，blob 可访问 ≠ 切片指针可访问）；`reserved_regions` 复核答复：字段保留，退场的只是 x86 内联窗口半——UEFI 腿 T2 后仍传非空表（固件占用区语义），D-69 统一签名据此保留该形参；**v3**——双契约拆分（建表返回契约 ≠ blob 写入后不得分配契约）、入口清单补显式 `cli`/`call` 前 16B 对齐/no-red-zone 构建约束/段状态前提、可读性机制接线到 T1 §1.5（四））。
+**设计载体**：`01-code-design.md` T2 v2–v4（**已裁方向**：独立镜像方案推进、`rdi` 交接、QEMU 先行短期双轨；**v2**——x86 入口状态契约成文（trampoline + 栈/`cld`/`IF=0`/CR3 清单）、源数据映射两证明分离、`reserved_regions` 字段保留仅内联窗口半退场；**v3**——双契约拆分（建表返回 ≠ blob 写入后不得分配）、入口清单补显式 `cli`/`call` 前 16B 对齐/no-red-zone 构建约束/段状态前提；**v4**——共享与架构后端分界限制（仅真正同构的语义阶段共享，机器入口不合并、不为统一抽象硬件操作 trait）、`reserved_regions` 消费面取证定案：`dm_coverage` source 4（DM 可达候选，保留）vs `vm_handoff` kern_ident（恒等重放，随 T2 删除该输入源，kern_ident 只剩 `kernel_identity_mmio_regions` 架构常量源））。
 
 ### D-68（新登记）`bootface_a64` 的 memmap 链未迁 `DtbMemoryMap`——I-22 迁移漏掉的第四链
 
