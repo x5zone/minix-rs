@@ -11,14 +11,14 @@
 //! `tmp/tr-322/tr_ref`、`tmp/seq-320/seq_ref`、`tmp/paste-321/paste_ref`。
 //!
 //! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
-//! （`tr_ref: unknown option -- \xff`），本层先 lossy 成 U+FFFD 再按各支自己的取法渲染，
-//! 于是按字节取、按 `char` 渲染的那几支得到 `c3 af`（U+00EF 的 UTF-8 两字节）；本表里
-//! 走 `bin_support::args_bytes` 的 `rev`、`paste`、`seq` 已是单字节 `ff`（与参照件同形），
-//! 还没换的那几支仍把 lossy 后的第一个字节 `ef` 当成字母。
-//! 还差的是**两个字节**：lossy 之前的那个原字节在 argv 缝上就没有了
-//! （`bin_support::args` 两条腿都渲染成 `String`），加上 `GETOPT-REPORT-BYTE-LETTER`
-//! 里其余各支壳的渲染还没换——因此下面的断言既钉住「不再 abort、两条腿一致」，
-//! 也钉住**当前那一串字节**：等 argv 字节化的那笔落地，这几枚会当场变红，
+//! （`tr_ref: unknown option -- \xff`），而文本缝先把命令行 lossy 成 U+FFFD，各支再按自己的
+//! 取法渲染：按字节取到的是 `ef`（U+FFFD 的第一字节），按 `char` 取再渲染的是 `c3 af` 两字节。
+//! 参数缝半逐支把这一位翻正——本表里 `rev`、`paste`、`seq`、`tr`、`fold`、`col` 六支已走
+//! `bin_support::args_bytes`，字母位交回原字节 `ff`（与参照件同形），只余 `units` 一行仍是
+//! 折叠形 `ef`：那一支的参数缝与单位表键共用同一串字节，得先裁决表键换字节还是在查询边界
+//! 折一次 lossy。字母位之外还有一条**操作数当文件路径**的腿：路径进了 `os/libs` 里的
+//! `&str` 口就非折一次不可（在册 `ARGV-BYTE-PATH-IN-LIBS`）。因此下面的断言既钉住
+//! 「不再 abort、两条腿一致」，也钉住**当前那一串字节**：等这些腿落地，这几枚会当场变红，
 //! 由改的人有意识地翻正，而不是让门静默跟着漂。
 
 use std::ffi::OsStr;
@@ -30,6 +30,7 @@ const SEQ: &str = env!("CARGO_BIN_EXE_seq");
 const PASTE: &str = env!("CARGO_BIN_EXE_paste");
 const FOLD: &str = env!("CARGO_BIN_EXE_fold");
 const REV: &str = env!("CARGO_BIN_EXE_rev");
+const COL: &str = env!("CARGO_BIN_EXE_col");
 const UNITS: &str = env!("CARGO_BIN_EXE_units");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
@@ -61,15 +62,15 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     (code, output.stdout, output.stderr)
 }
 
-/// 六支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
+/// 七支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
 /// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
 /// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 6] = [
+    let cases: [(&str, &str, i32, &[u8]); 7] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
-        // fold（四百四十六）都走 `bin_support::args_bytes`，字母位是原字节 `ff`。
+        // fold（四百四十六）、col（四百四十八）都走 `bin_support::args_bytes`，字母位是原字节 `ff`。
         // seq 那一支还多钉一层：它的环是累加型，一枚裸字节只该报一行
         // （`the_accumulating_ring_names_the_raw_byte_once`）。
         ("tr", TR, 1, b"tr: unknown option -- \xff\n"),
@@ -77,6 +78,7 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         ("paste", PASTE, 1, b"paste: unknown option -- \xff\n"),
         ("fold", FOLD, 1, b"fold: unknown option -- \xff\n"),
         ("rev", REV, 1, b"rev: unknown option -- \xff\n"),
+        ("col", COL, 1, b"col: unknown option -- \xff\n"),
         // units 是本表唯一仍走文本缝的一支（批次三百九十九只换了渲染半：按 `char` 渲染
         // 会是 `c3 af` 两字节，字节形后是 `ef` 一字节），C 那一侧是原字节 `ff`。
         ("units", UNITS, 3, b"units: unknown option -- \xef\n"),
