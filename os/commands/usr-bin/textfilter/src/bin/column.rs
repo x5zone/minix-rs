@@ -11,6 +11,10 @@
 //! comes from `-c` (the C queries the window size, which belongs to the
 //! terminal face).
 //!
+//! 条目池里走的是**字节**：`column.c` 的 `input` 把 `fgetln` 那段原样存进池子（`:270-297`），
+//! 布局宽度按 `strlen` 量（`:243`），所以一枚非 UTF-8 字节既进池也占一格；表模式的最后一列
+//! 走 `printf("%s\n", …)`（`:252`）原样发出，既不补齐也没有裁尾那一步。
+//!
 //! 诊断面有四处，句式各有主人：libc `getopt` 的两行（集外字母、带值选项缺值）由
 //! [`minix_textfilter::GetoptReport`] 单源，后面必接一行 usage；`warn(3)` 的
 //! `Cannot open \`…'` 是「程序名: 标签: strerror 句子」三段形；`warnx(3)` 的
@@ -47,7 +51,7 @@ fn run() -> ! {
 
     // `column.c:114-123`：无操数读标准输入；否则逐个开档、共用同一个条目池，
     // 开不了的档只 `warn(3)` 并把退出码置 1（`eval = 1`），本次运行继续走下一个档。
-    let mut entries: Vec<String> = Vec::new();
+    let mut entries: Vec<Vec<u8>> = Vec::new();
     let mut rval = 0;
     if operands.is_empty() {
         collect(&mut entries, &mut rval, &support::read_stdin(), prog);
@@ -68,21 +72,23 @@ fn run() -> ! {
         support::terminate(rval);
     }
     for line in columnate(&entries, &options) {
-        support::emit(line.as_bytes());
+        support::emit(&line);
         support::emit(b"\n");
     }
     support::terminate(rval);
 }
 
-/// Collects one source's bytes into the entry pool: decode (drop the whole
-/// input on invalid UTF-8, matching the stdin path), split on newlines, then
-/// keep the non-blank trimmed entries (the C `input`/`add` behaviour). A tail
+/// Collects one source's bytes into the entry pool: split on newlines, then
+/// keep the non-blank entries (the C `input`/`add` behaviour). A tail
 /// line without its newline is dropped by the C with one
 /// `warnx("line too long")` per occurrence, and each such line also sets the
 /// exit status (`column.c:277-283`).
-fn collect(entries: &mut Vec<String>, rval: &mut i32, bytes: &[u8], prog: &str) {
-    let text = core::str::from_utf8(bytes).unwrap_or("");
-    let lines: Vec<&str> = text.split('\n').collect();
+///
+/// 行是字节不是文本：C 的 `input` 把 `fgetln` 交回的整段原样存进池子，从不解码。
+/// 旧写法 `from_utf8(bytes).unwrap_or("")` 让一枚坏字节抹掉**整个档**的条目
+/// （现量见 `tmp/column-435/ab.log`：参照件打 `a\xffb\tz`，本壳交回空）。
+fn collect(entries: &mut Vec<Vec<u8>>, rval: &mut i32, bytes: &[u8], prog: &str) {
+    let lines: Vec<&[u8]> = bytes.split(|&byte| byte == b'\n').collect();
     let pool = scan_entries(&lines);
     entries.extend(pool.entries);
     for _ in 0..pool.dropped_tail {

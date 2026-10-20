@@ -21,6 +21,10 @@
 //!    这一行不进条目池，退出码置 1——整条是空白的末行仍按空行处理，一句警告都没有；
 //! ⑨ 条目是**整行**：C 存的是行首的 `buf`，不是跳过前导空白后的那个指针，
 //!    所以前导空白既进池也占布局宽度。
+//!    而且是**字节**（批次四百三十五）：一枚非 UTF-8 字节照样进池、照样按 `strlen` 占布局宽度，
+//!    旧写法在壳侧解一次 UTF-8，一枚坏字节就让**整个档**一条条目都不交；
+//! ⑩ 表模式的最后一列原样发出（`column.c:252` 那句 `printf("%s\n", …)`），既不补齐也没有
+//!    裁尾那一步，所以字段尾随的回车留在行尾。
 //!
 //! ⑧⑨ 都是这扇新门第一次真正跑通布局时抓出来的：旧件的 `c_columnate`/`r_columnate`
 //! 把条目、制表符、换行当三段各自返回，壳侧又逐段补一个换行，于是纵向/横向填满两条
@@ -381,4 +385,44 @@ fn each_source_with_a_long_tail_line_warns_once() {
         "实际 {err:?}"
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// 条目池与布局都是字节：夹具 `raw.txt` = `61 ff 62 0a 7a 0a`，参照件
+/// `tmp/column-314/column`（同名软链起，程序名才对得上）现量三种布局都留住那一枚 `ff`，
+/// 而旧本壳在壳侧解一次 UTF-8 ⇒ 整个档交回空。期望逐字节取自 `tmp/column-435/ab.log`。
+#[test]
+fn an_entry_that_is_not_utf8_keeps_its_bytes_through_every_layout() {
+    let dir = std::env::temp_dir().join(format!("column-435-nonutf8-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("scratch dir");
+    let raw = dir.join("raw.txt");
+    let ok = dir.join("ok.txt");
+    fs::write(&raw, b"a\xffb\nz\n").expect("write raw.txt");
+    fs::write(&ok, b"x\ny\n").expect("write ok.txt");
+    let raw = raw.to_str().expect("utf-8 temp path");
+    let ok = ok.to_str().expect("utf-8 temp path");
+
+    let (out, status, err) = run_bytes(&[raw], b"");
+    assert_eq!((status, err), (0, Vec::new()));
+    assert_eq!(out, b"a\xffb\tz\n", "缺省的纵向填满");
+
+    let (out, _, _) = run_bytes(&["-x", raw], b"");
+    assert_eq!(out, b"a\xffb\tz\n", "横向填满同形");
+
+    let (out, _, _) = run_bytes(&[ok, raw], b"");
+    assert_eq!(
+        out, b"x\ty\ta\xffb\tz\n",
+        "好档与坏档共用一个池，坏档不把自己的行抹掉"
+    );
+
+    // `-t` 那一形要两行条目才看得出补齐：`a\xffb` 是 3 字节，比 `z` 长 2 字节
+    let tb = dir.join("tb.txt");
+    fs::write(&tb, b"a\xffb\tq\nz\tww\n").expect("write tb.txt");
+    let (out, _, _) = run_bytes(&["-t", tb.to_str().expect("utf-8 temp path")], b"");
+    assert_eq!(out, b"a\xffb  q\nz    ww\n", "表模式的补齐宽度按字节量");
+
+    // 表模式的最后一列原样发出：字段尾随的回车留在行尾（参照件同读数）
+    let cr = dir.join("cr.txt");
+    fs::write(&cr, b"a\tb\r\nzz\tq\r\n").expect("write cr.txt");
+    let (out, _, _) = run_bytes(&["-t", cr.to_str().expect("utf-8 temp path")], b"");
+    assert_eq!(out, b"a   b\r\nzz  q\r\n");
 }
