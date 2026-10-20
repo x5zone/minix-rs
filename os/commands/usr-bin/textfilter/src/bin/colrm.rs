@@ -14,30 +14,28 @@
 
 extern crate alloc;
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::colrm::{ColrmOperand, filter_column, parse_columns};
-use minix_textfilter::empty_optstring_operands;
+use minix_textfilter::empty_optstring_operands_bytes;
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let words: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     // `colrm.c:67` 的 optstring 是空串，与 `rev.c:70` 逐字同形：`-Z` 先由 libc 印一行
     // 集外字母（`getopt.c:101-104`），再由 `:68-72` 的 `default: usage()` 印 usage，
     // 而裸 `-` 与 `--` 之后的 token 都落回操作数（操作数是列号，不是文件名）。
-    // 旧写法没有这一环，`-Z` 直接被当列号拒收，少了 libc 那一行；`--` 也被当坏选项。
-    // 那一行走字节形 `line_bytes`：libc 的字母位是一个裸字节（`getopt.c:79` 的
-    // `optopt = *place++` 一次进一个字节，`:103` 用 `%c` 原样写出），参照件现量
-    // `colrm -é` 打 `c3` 一个字节，按 `char` 渲染会多出一个字节。
-    let operands = match empty_optstring_operands(&refs[1..]) {
+    // 集外字母那一行走字节形 `line_bytes`：libc 的字母位是短横后的**一个裸字节**
+    //（`getopt.c:79` 的 `optopt = *place++` 一次进一个字节，`:103` 用 `%c` 原样写出），
+    // 参照件 `tmp/colrm-310/colrm_ref` 现量 `colrm -é` 打 `c3` 一个字节。
+    let operands = match empty_optstring_operands_bytes(&words) {
         Ok(rest) => rest,
         Err(report) => {
-            support::warn(&report.line_bytes(prog));
+            support::warn(&report.line_bytes(&prog));
             usage();
         }
     };
@@ -46,8 +44,9 @@ fn run() -> ! {
         Err(ColrmOperand::TooManyOperands) => usage(),
         Err(ColrmOperand::IllegalColumn(word)) => {
             // C 的 `errx(1, "illegal column -- %s", argv[..])`（`colrm.c:80-86`）：
-            // `errx` 只有程序名与句子两段，不缀 `strerror`。
-            support::warn(format!("{prog}: illegal column -- {word}\n").as_bytes());
+            // `errx` 只有程序名与句子两段，不缀 `strerror`；`%s` 打的是**操作数原文的
+            // 字节**，所以那一串字节不经任何文本折返。
+            support::warn(&illegal_column(&prog, word));
             support::terminate(1);
         }
         Err(ColrmOperand::StartAfterStop) => {
@@ -56,7 +55,7 @@ fn run() -> ! {
             // 还是 0，句子内容由各平台的 strerror 表定（参照件在本机印 `Success`，
             // Minix 的表对 0 另有一句），所以本壳只保证形状。
             support::warn_line(
-                prog,
+                &prog,
                 "illegal start and stop columns",
                 minix_sys::Errno::from_i32(0),
             );
@@ -64,9 +63,7 @@ fn run() -> ! {
         }
     };
 
-    // 读缝走 `bin_support` 的双生面（宿主 `std::io::stdin`、真机 `read(STDIN)`）：
-    // 本文件以前直接拿裸 `minix_sys::read`，**宿主上读不到任何输入**，所以它从来没有
-    // 被进程级测过（同批次三百零六的 `nl`、三百零八的 `fold`、三百零九的 `rev`）。
+    // 读缝走 `bin_support` 的双生面（宿主 `std::io::stdin`、真机 `read(STDIN)`）。
     // C 那边是一边读一边写（`getchar`/`putchar`），输出内容与先收全再过滤同一物。
     //
     // 两根腿都可能出错，C 都交给同一个 `check()`（`colrm.c:123-130`）：它先看 `feof`
@@ -77,18 +74,28 @@ fn run() -> ! {
     let filtered = filter_column(&input, start, stop);
     match support::emit_error(&filtered) {
         Some(code) => {
-            support::warn_line(prog, "stdout", code);
+            support::warn_line(&prog, "stdout", code);
             support::terminate(1);
         }
         None => match read_failure {
             Some(code) => {
-                support::warn_line(prog, "stdin", code);
+                support::warn_line(&prog, "stdin", code);
                 support::terminate(1);
             }
             // 读干净、写干净，就是 C 的 `check(stdin)` 走到 `feof` 那一支：`exit(0)`。
             None => support::terminate(0),
         },
     }
+}
+
+/// `errx(1, "illegal column -- %s", argv[..])` 那一行：程序名、句子、操作数的**原字节**。
+fn illegal_column(prog: &str, word: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(prog.as_bytes());
+    out.extend_from_slice(b": illegal column -- ");
+    out.extend_from_slice(word);
+    out.push(b'\n');
+    out
 }
 
 /// C 的 `usage()`（`colrm.c:132-137`）：一行、退 1。这一行里的命令名是**写死**的

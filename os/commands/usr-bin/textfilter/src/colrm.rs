@@ -53,7 +53,7 @@ pub enum ColrmOperand<'a> {
     StartAfterStop,
     /// `colrm.c:80-86`：`errx(1, "illegal column -- %s", <操作数原文>)`。`errx` 不缀
     /// `strerror`，报的是操作数原文（参照件量过：`colrm: illegal column -- 3x`）。
-    IllegalColumn(&'a str),
+    IllegalColumn(&'a [u8]),
 }
 
 /// C `colrm.c:76-92` 的操作数段：交回 `(start, stop)`，`stop` 为 0 表示「到行末」。
@@ -61,7 +61,7 @@ pub enum ColrmOperand<'a> {
 /// 两支都坏时报的是**后**写的那支：C 的 `case 2:` 先对 `argv[1]` 做 `strtol` 并检查，
 /// 然后 `/* FALLTHROUGH */` 才轮到 `argv[0]`（`:78-87`），所以 `colrm abc def` 印的是
 /// `def`。这一条是本函数最容易写反的地方，参照件逐形量过。
-pub fn parse_columns<'a>(argv: &'a [&'a str]) -> Result<(usize, usize), ColrmOperand<'a>> {
+pub fn parse_columns<'a>(argv: &[&'a [u8]]) -> Result<(usize, usize), ColrmOperand<'a>> {
     match argv.len() {
         0 => Ok((0, 0)),
         1 => match column_value(argv[0]) {
@@ -98,8 +98,8 @@ pub fn parse_columns<'a>(argv: &'a [&'a str]) -> Result<(usize, usize), ColrmOpe
 /// ④ `colrm.c:63` 把结果存进 `u_long`，所以 C 的 `<= 0` 实际只挡得住 0——负数回绕成
 /// 极大值后被接受，并且因为列号远小于它而整行透传（`colrm -- -5` 退 0，参照件量过）。
 /// 本函数把这条回绕如实搬过来，不替 C「修正」。
-fn column_value(word: &str) -> Option<usize> {
-    let bytes = word.as_bytes();
+fn column_value(word: &[u8]) -> Option<usize> {
+    let bytes = word;
     let mut cursor = 0;
     while matches!(
         bytes.get(cursor),
@@ -155,6 +155,29 @@ fn column_value(word: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
+    /// 字节形入口的测试适配器：夹具仍写文本，只在进解析口前折一次。
+    #[test]
+    fn parse_columns_names_a_raw_ff_operand_by_its_own_bytes() {
+        assert_eq!(
+            parse_columns(&[&b"1\xff3"[..]]),
+            Err(ColrmOperand::IllegalColumn(b"1\xff3".as_slice())),
+            "回显带的是原字节，不是替换字符的三字节"
+        );
+    }
+
+    #[test]
+    fn column_value_rejects_a_raw_ff_byte() {
+        assert_eq!(
+            column_value(b"3\xff".as_slice()),
+            None,
+            "数字之后剩字节就是 *p 非零"
+        );
+    }
+
+    fn argv_of<'w>(list: &[&'w str]) -> Vec<&'w [u8]> {
+        list.iter().map(|word| word.as_bytes()).collect()
+    }
+
     #[test]
     fn test_range_removal() {
         // Columns 2-4 (b, c, d) drop; a, e, f survive.
@@ -208,36 +231,52 @@ mod tests {
     /// 溢出饱和后被接受，负数经 `u_long` 回绕后也被接受（C 的怪癖，如实搬）。
     #[test]
     fn column_operands_follow_strtol_rather_than_a_digit_string() {
-        assert_eq!(column_value("3"), Some(3));
-        assert_eq!(column_value("03"), Some(3));
-        assert_eq!(column_value(" 3"), Some(3), "前导空白是 strtol 的一部分");
-        assert_eq!(column_value("\t\n3"), Some(3), "isspace 全集都跳");
-        assert_eq!(column_value("+3"), Some(3), "显式正号 strtol 收");
-        assert_eq!(column_value("100"), Some(100));
+        assert_eq!(column_value(b"3".as_slice()), Some(3));
+        assert_eq!(column_value(b"03".as_slice()), Some(3));
+        assert_eq!(
+            column_value(b" 3".as_slice()),
+            Some(3),
+            "前导空白是 strtol 的一部分"
+        );
+        assert_eq!(
+            column_value(b"\t\n3".as_slice()),
+            Some(3),
+            "isspace 全集都跳"
+        );
+        assert_eq!(
+            column_value(b"+3".as_slice()),
+            Some(3),
+            "显式正号 strtol 收"
+        );
+        assert_eq!(column_value(b"100".as_slice()), Some(100));
         // 溢出饱和：strtol 交回 LONG_MAX 而 errno=ERANGE，C 的两个检查都不拦。
         assert_eq!(
-            column_value("99999999999999999999999"),
+            column_value(b"99999999999999999999999".as_slice()),
             Some(i64::MAX as usize)
         );
         // 负数回绕成 u_long 的极大值——`<= 0` 挡不住它（参照件 `colrm -- -5` 退 0）。
-        assert_eq!(column_value("-5"), Some(-5i64 as usize));
+        assert_eq!(column_value(b"-5".as_slice()), Some(-5i64 as usize));
         assert_eq!(
-            column_value("-99999999999999999999999"),
+            column_value(b"-99999999999999999999999".as_slice()),
             Some(i64::MAX as usize + 1),
             "饱和到 LONG_MIN 后回绕"
         );
         // 拒收的四形：零、什么都没有、尾巴有字符、数字之后跟的不是结尾。
-        assert_eq!(column_value("0"), None);
-        assert_eq!(column_value("+0"), None);
-        assert_eq!(column_value("-0"), None);
-        assert_eq!(column_value(""), None);
-        assert_eq!(column_value("3x"), None);
-        assert_eq!(column_value("0x10"), None);
-        assert_eq!(column_value("1e2"), None);
-        assert_eq!(column_value("3 "), None, "尾随空白不在 strtol 的接受面里");
-        assert_eq!(column_value("abc"), None);
-        assert_eq!(column_value("-"), None);
-        assert_eq!(column_value("-Z"), None);
+        assert_eq!(column_value(b"0".as_slice()), None);
+        assert_eq!(column_value(b"+0".as_slice()), None);
+        assert_eq!(column_value(b"-0".as_slice()), None);
+        assert_eq!(column_value(b"".as_slice()), None);
+        assert_eq!(column_value(b"3x".as_slice()), None);
+        assert_eq!(column_value(b"0x10".as_slice()), None);
+        assert_eq!(column_value(b"1e2".as_slice()), None);
+        assert_eq!(
+            column_value(b"3 ".as_slice()),
+            None,
+            "尾随空白不在 strtol 的接受面里"
+        );
+        assert_eq!(column_value(b"abc".as_slice()), None);
+        assert_eq!(column_value(b"-".as_slice()), None);
+        assert_eq!(column_value(b"-Z".as_slice()), None);
     }
 
     /// 两个操作数都坏时报后写的那支（C 先算 `argv[1]` 再 FALLTHROUGH 到 `argv[0]`），
@@ -245,34 +284,38 @@ mod tests {
     #[test]
     fn the_operand_face_reports_the_stop_column_first_and_the_three_exits_apart() {
         assert_eq!(parse_columns(&[]), Ok((0, 0)));
-        assert_eq!(parse_columns(&["3"]), Ok((3, 0)), "只给起始列时 stop 留 0");
-        assert_eq!(parse_columns(&["2", "4"]), Ok((2, 4)));
         assert_eq!(
-            parse_columns(&["abc", "def"]),
-            Err(ColrmOperand::IllegalColumn("def")),
+            parse_columns(&argv_of(&["3"])),
+            Ok((3, 0)),
+            "只给起始列时 stop 留 0"
+        );
+        assert_eq!(parse_columns(&argv_of(&["2", "4"])), Ok((2, 4)));
+        assert_eq!(
+            parse_columns(&argv_of(&["abc", "def"])),
+            Err(ColrmOperand::IllegalColumn(b"def".as_slice())),
             "C 的 case 2 先算 stop，所以报的是后写的操作数"
         );
         assert_eq!(
-            parse_columns(&["abc", "2"]),
-            Err(ColrmOperand::IllegalColumn("abc")),
+            parse_columns(&argv_of(&["abc", "2"])),
+            Err(ColrmOperand::IllegalColumn(b"abc".as_slice())),
             "stop 合法、start 坏，报 start"
         );
         assert_eq!(
-            parse_columns(&["2", "abc"]),
-            Err(ColrmOperand::IllegalColumn("abc"))
+            parse_columns(&argv_of(&["2", "abc"])),
+            Err(ColrmOperand::IllegalColumn(b"abc".as_slice()))
         );
         assert_eq!(
-            parse_columns(&["0", "-1"]),
-            Err(ColrmOperand::IllegalColumn("0")),
+            parse_columns(&argv_of(&["0", "-1"])),
+            Err(ColrmOperand::IllegalColumn(b"0".as_slice())),
             "stop 回绕成极大值而被接受，start 是 0 才报错"
         );
         assert_eq!(
-            parse_columns(&["4", "2"]),
+            parse_columns(&argv_of(&["4", "2"])),
             Err(ColrmOperand::StartAfterStop)
         );
-        assert_eq!(parse_columns(&["2", "2"]), Ok((2, 2)));
+        assert_eq!(parse_columns(&argv_of(&["2", "2"])), Ok((2, 2)));
         assert_eq!(
-            parse_columns(&["2", "4", "6"]),
+            parse_columns(&argv_of(&["2", "4", "6"])),
             Err(ColrmOperand::TooManyOperands)
         );
     }

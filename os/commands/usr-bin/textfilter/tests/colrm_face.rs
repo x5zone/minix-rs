@@ -22,6 +22,7 @@ mod face_support;
 
 use face_support::write_stdin;
 use std::process::{Command, Stdio};
+use std::os::unix::ffi::OsStringExt;
 
 const COLRM: &str = env!("CARGO_BIN_EXE_colrm");
 const USAGE: &str = "usage: colrm [start [stop]]\n";
@@ -406,4 +407,62 @@ fn both_streams_broken_reports_the_stream_c_reaches_first() {
         "两腿同坏时报文该跟着 C 先观察到的那条流"
     );
     assert_eq!(output.status.code(), Some(1));
+}
+
+/// 参数字节的原始形：`OsString::from_vec` 交得出裸 `ff`，`&str` 腿交不出（批次四百四十五）。
+fn run_raw(args: &[Vec<u8>], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    let mut child = Command::new(COLRM)
+        .args(
+            args.iter()
+                .map(|word| std::ffi::OsString::from_vec(word.clone())),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the colrm binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 操作数回显走原字节：参照件 `tmp/colrm-310/colrm_ref` 现量 `colrm 1<ff>3` 打
+/// `colrm: illegal column -- 1<ff>3`，`<ff>` 是一枚字节而不是三字节替换字符。
+#[test]
+fn a_raw_nonutf8_operand_is_echoed_as_its_own_bytes() {
+    let (out, status, err) = run_raw(&[b"1\xff3".to_vec()], INPUT);
+    assert_eq!(out, b"", "报文只走 stderr");
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(
+        err,
+        [
+            b"colrm: illegal column -- 1".as_slice(),
+            &[0xff],
+            b"3\n".as_slice()
+        ]
+        .concat()
+    );
+}
+
+/// 集外字母那一行的字母位是一枚裸 `ff`：参数缝把 `ff` 折成 `ef bf bd` 之后，
+/// 取「第一个字节」取到的是 `ef`，所以这一枚门同时钉取法与缝。
+#[test]
+fn a_raw_nonutf8_option_letter_is_named_as_one_byte() {
+    let (out, status, err) = run_raw(&[b"-\xff".to_vec(), b"3".to_vec()], INPUT);
+    assert_eq!(out, b"", "报文只走 stderr");
+    assert_eq!(status, 1, "stderr 是 {err:?}");
+    assert_eq!(
+        err,
+        [
+            b"colrm: unknown option -- ".as_slice(),
+            &[0xff],
+            b"\n".as_slice(),
+            USAGE.as_bytes()
+        ]
+        .concat()
+    );
 }
