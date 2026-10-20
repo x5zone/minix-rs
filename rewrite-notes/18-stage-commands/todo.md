@@ -119,6 +119,46 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百四十七（P0 专轮：`fold` 拆行两臂按 C 翻正，`FOLD-SPLIT-BRANCH-SWAPPED` 闭）
+
+- **落点**：`os/commands/usr-bin/textfilter/src/fold.rs`（码笔 `411a6cac6`，领用 `GETOPT-REPORT-BYTE-LETTER`，
+  基线是批次四百四十六合入后的 `rewrite` 头 `614c1260f`）。
+- **真源定形**：`minix3/usr.bin/fold/fold.c:152-176` 的分支条件是 `if (split_words && last_space != -1)`。
+  两件事由此决定：**只有 `-s` 打开才回找缓冲里最后一个空格**；找到之后 `last_space++` 才 `wmemmove`，
+  所以**那个空格被丢掉**，既不印在行尾也不带到续行头。不开 `-s` 时列位一过宽度就整块吐出缓冲，
+  空格留在它填到的那一行末尾。参照件 `tmp/fold-405/fold_ref` 逐形现量同此：`-w 4` 对 `one two three four`
+  交回 `one `/`two `/`thre`/`e fo`/`ur`，同一串加 `-s` 交回 `one`/`two`/`thre`/`e`/`four`。
+- **本层的两处失真**（批次四百四十六的 A/B 量出并登记）：`fn fold_line` 里 `if options.split_words`
+  那一臂整块吐出、`else` 那一臂去找空格，**两臂与 C 相反**；找到空格后按 `buffer[space..]` 带走续行，
+  把本该丢掉的空格留在行首。后果是可观察的：不开 `-s` 的普通文本被按空格拆开，空格位在缓冲首位时
+  还吐出多余的空行。
+- **改法**：空格搜索只在 `split_words` 下做；`Some(space)` 一支吐 `buffer[..space]` 后 `drain(..=space)`
+  （连空格一起丢），续行列位由剩下的字符重算；`None` 一支整块吐出并把列位置零；两支合流后再为当前
+  字符推进一列（对位 C 那行「calculate the column position for the next line」），随后才把字符存进缓冲。
+  模块头注释那句「breaking after the last space unless `-s`」是与参照件相反的失真，同笔按 C 改写。
+- **门**：库 +2、改名一枚——`test_break_after_the_last_space` 改按 `-s` 形（期望 `one two`/`three four`）、
+  新立 `without_split_words_the_break_is_a_hard_one_and_spaces_stay`（期望 `one two th`/`ree four`）与
+  `split_words_drops_the_space_and_carries_the_rest_as_the_next_line`（期望 `abcd`/`efgh`/`ij`/`klmn`/`op`）。
+  三形的期望全部取自参照件现量而不是推演——本轮先按推演写了一枚「中间是空行」的期望，被参照件现量
+  当场否掉（真形是没有那一行空行），这正是「期望必须来自参照件」这条判据的价值。`--lib` 611→613。
+- **A/B 现量**：`python3 tmp/argv-447/ab.py > tmp/argv-447/ab.log` 二十五形（在原十三形上新增十二形拆行：
+  空格在宽内、空格在开头、制表位、退格回拉、回车重置、连续空格、一行变多行、`-b` 逐字节，各分 `-s`
+  与不开）对 `tmp/fold-405/fold_ref` 逐字节 **SAME=24 / DIFF=1**——批次四百四十六那一形「`ij` 之后三行空行
+  再带前导空格」的残差归零，唯一残差是 `fold a<ff>.txt` 的路径腿（`ARGV-BYTE-PATH-IN-LIBS`，在册不动）。
+- **门读数（L1 证据）**：宿主 `cargo test -p minix-textfilter --no-fail-fast` + `cargo test -p minix-text-games
+  --no-fail-fast` 两包各跑 = 78 段 / 1315 通过 / 0 失败（`tmp/argv-447/host.log`）；容器同两包
+  = 读数见下（`tmp/argv-447/container.log`）；三架构 `cargo build -p minix-textfilter --bin fold --target
+  {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}` 各退 0；`rustfmt --edition 2021 --check`
+  触及件零漂移（`tmp/argv-447/rustfmt.log`）、clippy 触及件零告警；负控四枚（三咬 + 一枚等价，
+  `tmp/argv-447/negctl447.log`）：两臂再写反咬住三形、续行少丢一位空格咬住两形、撤掉 `-s` 条件咬住
+  不开 `-s` 那一形、闭包形等价改写全绿，还原后复跑全绿。
+- **登记与余量**：`FOLD-SPLIT-BRANCH-SWAPPED` **闭合**；`FOLD-DIGIT-NOT-FIRST-IN-CLUSTER`、
+  `FOLD-NON-PERMUTE-OPERAND-TAIL`、`ARGV-BYTE-PATH-IN-LIBS` 与 `UNEXPAND-*`/`CUT-*`/`NL-*`/
+  `PASTE-COMM-NUL-*`/`SEQ-FLOAT-RENDER`/`TR-SET-GRAMMAR-SENTENCES`/`COLRM-STRERROR-ZERO-TEXT`/
+  八条 `*-NON-PERMUTE-OPERAND-TAIL`/`PR-HEADER-TIME-FIELD-DEFAULT-EMPTY`/
+  `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`/`UNEXPAND-ZERO-STOP-PANIC` 维持登记不执行；
+  参数缝半余 `textfilter` 三十一支（`units` 的裁决要点见批次四百四十六段那条预研读数）。
+
 ## 批次四百四十六（A2 参数缝半第八对：`fold` 的集外字母位落到原字节，顺带量出拆行腿的一处分支写反）
 
 - **落点**：`os/commands/usr-bin/textfilter/src/fold.rs`、`src/bin/fold.rs`、`tests/fold_face.rs`、
