@@ -80,21 +80,32 @@ pub fn format_list_entry(entry: (u64, u8, u8), out: &mut String) {
 
 /// The first-difference line `misc.c` `diffmsg` sends to standard output:
 /// `"%s %s differ: char %lld, line %lld\n"` (with a trailing newline).
-pub fn report_first_diff(file1: &str, file2: &str, byte: u64, line: u64) -> String {
-    alloc::format!("{file1} {file2} differ: char {byte}, line {line}\n")
+pub fn report_first_diff(file1: &[u8], file2: &[u8], byte: u64, line: u64) -> Vec<u8> {
+    let tail = alloc::format!(" differ: char {byte}, line {line}\n");
+    let mut line = Vec::with_capacity(file1.len() + file2.len() + tail.len() + 1);
+    line.extend_from_slice(file1);
+    line.push(b' ');
+    line.extend_from_slice(file2);
+    line.extend_from_slice(tail.as_bytes());
+    line
 }
 
 /// The early-EOF message `misc.c` `eofmsg` sends to standard error (before the
 /// `cmp: ` program prefix the caller adds): without `-l` just `"EOF on <file>"`;
 /// with `-l` the byte and — when a line count is meaningful — the line too.
-pub fn report_eof(file: &str, byte: u64, line: u64, list_all: bool) -> String {
-    if !list_all {
-        alloc::format!("EOF on {file}")
+pub fn report_eof(file: &[u8], byte: u64, line: u64, list_all: bool) -> Vec<u8> {
+    let tail = if !list_all {
+        String::new()
     } else if line > 0 {
-        alloc::format!("EOF on {file}: char {byte}, line {line}")
+        alloc::format!(": char {byte}, line {line}")
     } else {
-        alloc::format!("EOF on {file}: char {byte}")
-    }
+        alloc::format!(": char {byte}")
+    };
+    let mut out = Vec::with_capacity("EOF on ".len() + file.len() + tail.len());
+    out.extend_from_slice(b"EOF on ");
+    out.extend_from_slice(file);
+    out.extend_from_slice(tail.as_bytes());
+    out
 }
 
 /// `cmp` 选项环的读数：两面旗标加**环之后剩下的全部 token**。
@@ -105,7 +116,7 @@ pub struct CmpFlags<'a> {
     /// `-s`：什么都不打，只把结论放在退出码上。
     pub silent: bool,
     /// 选项环交回的 token 序列：`file1 file2 [skip1 [skip2]]`，个数由调用者判。
-    pub operands: Vec<&'a str>,
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// 选项环的失败形状。`cmp.c:74` 的 optstring 是 `"ls"`——**两个字母都不带值**，
@@ -132,7 +143,7 @@ pub enum CmpArgError {
 /// 操作数个数（`< 2 || > 4`）与 `-l`/`-s` 互斥这一判留在调用者手里：C 的次序是
 /// 「选项环 → 互斥 → 个数 → 开档」，句子各归各的出口，换序会把一行的 `errx`
 /// 支与两行的 usage 支弄混。
-pub fn parse_cmp_flags<'a>(args: &'a [&'a str]) -> Result<CmpFlags<'a>, CmpArgError> {
+pub fn parse_cmp_flags<'a>(args: &'a [&'a [u8]]) -> Result<CmpFlags<'a>, CmpArgError> {
     let mut flags = CmpFlags {
         list_all: false,
         silent: false,
@@ -143,18 +154,18 @@ pub fn parse_cmp_flags<'a>(args: &'a [&'a str]) -> Result<CmpFlags<'a>, CmpArgEr
         let Some(&arg) = args.get(index) else {
             break Vec::new();
         };
-        if arg == "--" {
+        if arg == b"--" {
             // `getopt.c:81-85`：先 `++optind` 才返回 -1，所以 `--` 自身不是操作数。
             break args[index + 1..].to_vec();
         }
-        if arg.len() < 2 || !arg.starts_with('-') {
+        if arg.len() < 2 || !arg.starts_with(b"-") {
             // 包括裸 `-`：`getopt.c:87-92` 在 optstring 没有 `-` 时结束环而**不推进**。
             break args[index..].to_vec();
         }
         // 环走**字节**：C 的 `optopt` 是一枚 `char`（`getopt.c:79` 的 `optopt = *place++` 一次进
         // 一个字节），所以 `-é`（`c3 a9`）报的是 `c3` 而不是整个字符。之前过 `chars()` 时把一
         // 个字符的两字节当成一枚字母交回，报文再经 UTF-8 渲染就成了两个字节。
-        for byte in arg[1..].bytes() {
+        for &byte in &arg[1..] {
             match byte {
                 b'l' => flags.list_all = true,
                 b's' => flags.silent = true,
@@ -175,19 +186,19 @@ mod tests {
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
-            parse_cmp_flags(&["-\u{e9}", "a", "b"]),
+            parse_cmp_flags(&[b"-\xc3\xa9", b"a", b"b"]),
             Err(CmpArgError::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
         // 聚簇同理：`l` 合法先吃掉，报的是其后第一个字节。
         assert_eq!(
-            parse_cmp_flags(&["-l\u{e9}", "a", "b"]),
+            parse_cmp_flags(&[b"-l\xc3\xa9", b"a", b"b"]),
             Err(CmpArgError::UnknownOption('\u{00c3}')),
             "-l\u{e9}"
         );
         // ASCII 那一形不许被这次改动波及。
         assert_eq!(
-            parse_cmp_flags(&["-q", "a", "b"]),
+            parse_cmp_flags(&[b"-q", b"a", b"b"]),
             Err(CmpArgError::UnknownOption('q')),
             "-q"
         );
@@ -213,17 +224,17 @@ mod tests {
     #[test]
     fn test_report_first_diff_matches_netbsd_format() {
         assert_eq!(
-            report_first_diff("a", "b", 5, 2),
-            "a b differ: char 5, line 2\n"
+            report_first_diff(b"a", b"b", 5, 2),
+            b"a b differ: char 5, line 2\n"
         );
     }
 
     #[test]
     fn test_report_eof_branches() {
         // Without -l: just the file. With -l: char, and line when nonzero.
-        assert_eq!(report_eof("b", 3, 0, false), "EOF on b");
-        assert_eq!(report_eof("b", 3, 0, true), "EOF on b: char 3");
-        assert_eq!(report_eof("b", 9, 2, true), "EOF on b: char 9, line 2");
+        assert_eq!(report_eof(b"b", 3, 0, false), b"EOF on b");
+        assert_eq!(report_eof(b"b", 3, 0, true), b"EOF on b: char 3");
+        assert_eq!(report_eof(b"b", 9, 2, true), b"EOF on b: char 9, line 2");
     }
 
     #[test]
@@ -256,22 +267,22 @@ mod tests {
     /// `-lq` 在第二个字母上报集外；`-l -l` 重复给同一面旗标合法。
     #[test]
     fn parse_flags_cluster_letter_by_letter() {
-        let both = parse_cmp_flags(&["-ls", "a", "b"]).unwrap();
+        let both = parse_cmp_flags(&[b"-ls", b"a", b"b"]).unwrap();
         assert!(both.list_all && both.silent);
-        assert_eq!(both.operands, ["a", "b"]);
+        assert_eq!(both.operands, [b"a".as_slice(), b"b".as_slice()]);
         assert_eq!(
-            parse_cmp_flags(&["-sl", "a", "b"]).unwrap(),
-            parse_cmp_flags(&["-ls", "a", "b"]).unwrap()
+            parse_cmp_flags(&[b"-sl", b"a", b"b"]).unwrap(),
+            parse_cmp_flags(&[b"-ls", b"a", b"b"]).unwrap()
         );
         assert_eq!(
-            parse_cmp_flags(&["-lq", "a", "b"]).err(),
+            parse_cmp_flags(&[b"-lq", b"a", b"b"]).err(),
             Some(CmpArgError::UnknownOption('q'))
         );
         assert_eq!(
-            parse_cmp_flags(&["--x"]).err(),
+            parse_cmp_flags(&[b"--x"]).err(),
             Some(CmpArgError::UnknownOption('-'))
         );
-        let twice = parse_cmp_flags(&["-l", "-l", "a", "b"]).unwrap();
+        let twice = parse_cmp_flags(&[b"-l", b"-l", b"a", b"b"]).unwrap();
         assert!(twice.list_all && !twice.silent);
     }
 
@@ -280,18 +291,23 @@ mod tests {
     fn parse_ring_stops_at_the_first_operand() {
         // 参照件：`cmp 档1 -l 档2` 是三个操作数，`-l` 是第二个档名。
         assert_eq!(
-            parse_cmp_flags(&["f1", "-l", "f2"]).unwrap().operands,
-            ["f1", "-l", "f2"]
+            parse_cmp_flags(&[b"f1", b"-l", b"f2"]).unwrap().operands,
+            [b"f1".as_slice(), b"-l".as_slice(), b"f2".as_slice()]
         );
         assert_eq!(
-            parse_cmp_flags(&["-l", "f1", "-l", "f2"]).unwrap().operands,
-            ["f1", "-l", "f2"]
+            parse_cmp_flags(&[b"-l", b"f1", b"-l", b"f2"])
+                .unwrap()
+                .operands,
+            [b"f1".as_slice(), b"-l".as_slice(), b"f2".as_slice()]
         );
-        assert!(!parse_cmp_flags(&["--", "-l", "-s"]).unwrap().list_all);
+        assert!(!parse_cmp_flags(&[b"--", b"-l", b"-s"]).unwrap().list_all);
         assert_eq!(
-            parse_cmp_flags(&["--", "-l", "-s"]).unwrap().operands,
-            ["-l", "-s"]
+            parse_cmp_flags(&[b"--", b"-l", b"-s"]).unwrap().operands,
+            [b"-l".as_slice(), b"-s".as_slice()]
         );
-        assert_eq!(parse_cmp_flags(&["-", "-"]).unwrap().operands, ["-", "-"]);
+        assert_eq!(
+            parse_cmp_flags(&[b"-", b"-"]).unwrap().operands,
+            [b"-".as_slice(), b"-".as_slice()]
+        );
     }
 }

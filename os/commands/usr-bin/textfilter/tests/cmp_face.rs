@@ -27,6 +27,7 @@
 mod face_support;
 
 use face_support::write_stdin;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -109,6 +110,71 @@ fn run_bytes(dir: &Path, args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>)
         output.status.code().unwrap_or(-1),
         output.stderr,
     )
+}
+
+/// argv 形态的字节形夹具：一枚裸 `ff` 写不成 `&str`，所以参数按字节交下去
+/// （`OsStr::from_bytes`），比的是子进程实际收到的那串字节。与 `run` 同一工作目录。
+fn run_argv(dir: &Path, args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut child = Command::new(CMP)
+        .args(args.iter().map(|a| OsStr::from_bytes(a)))
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the cmp binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 在 `dir` 里落一份**名字含裸 `ff`** 的临时档，交回 argv 该带的那串字节。
+///
+/// 落盘用的名字是折叠形：开档那一腿仍要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），
+/// 按原字节名落盘在宿主上根本打不开，报文与回显两条腿都走不到。把档按折叠名落下去，
+/// 两条腿就被隔开了——本门钉的是「开档折过一次，回显不许跟着折」。
+/// `ARGV-BYTE-PATH-IN-LIBS` 落地之后，这里该改成原字节名，断言本身不动。
+fn write_raw_named(dir: &Path, name: &[u8], body: &[u8]) -> Vec<u8> {
+    let folded = String::from_utf8_lossy(name).into_owned();
+    fs::write(dir.join(folded), body).expect("折叠名的临时档该落得下去");
+    name.to_vec()
+}
+
+/// C 的 `diffmsg` 是 `printf("%s %s differ: char %lld, line %lld\n", file1, file2, …)`
+/// （`minix3/usr.bin/cmp/misc.c:78-85`），两个名字位都是 argv 里的那串字节。
+#[test]
+fn a_raw_byte_in_operand_names_is_echoed_as_those_bytes_by_cmp() {
+    let dir = workspace("raw-differ");
+    let first = write_raw_named(&dir, b"one\xff", b"abc\n");
+    let second = write_raw_named(&dir, b"two\xff", b"abd\n");
+    let (out, code, err) = run_argv(&dir, &[&first, &second], b"");
+    assert_eq!(err, b"", "两份都开得动，报文腿不该出声，实读 {err:?}");
+    assert_eq!(code, 1, "有差异退 DIFF_EXIT");
+    let mut want = b"one".to_vec();
+    want.extend_from_slice(b"\xff two");
+    want.extend_from_slice(b"\xff differ: char 3, line 1\n");
+    assert_eq!(out, want, "两处名字位都该是 argv 里那串原字节");
+}
+
+/// C 的 `eofmsg` 是 `warnx("EOF on %s: ...")`（`misc.c:59-73`），句子经 `warn(3)` 前缀
+/// `cmp: `；不带 `-l` 时只有 `EOF on <名>` 一段，那一段的名字位同样是 argv 原字节。
+#[test]
+fn a_raw_byte_in_the_eof_report_name_is_echoed_as_that_byte_by_cmp() {
+    let dir = workspace("raw-eof");
+    // 第一支整个是第二支的前缀：共同段一路相同，走到短的那支末尾才算 EOF。
+    let short = write_raw_named(&dir, b"short\xff", b"abc\n");
+    let long = write_raw_named(&dir, b"longer\xff", b"abc\nd");
+    let (out, code, err) = run_argv(&dir, &[&short, &long], b"");
+    assert_eq!(out, b"", "共同前缀一样，就没有 differ 行");
+    assert_eq!(code, 1, "EOF 也算差异");
+    let mut want = b"cmp: EOF on short".to_vec();
+    want.extend_from_slice(b"\xff\n");
+    assert_eq!(err, want, "报文里的名字位该是 argv 里那一串原字节");
 }
 
 /// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/cmp-410/cmp_ref` 现量 `-é` 与 `-lé`

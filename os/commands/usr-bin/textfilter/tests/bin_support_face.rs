@@ -33,6 +33,7 @@ const COL: &str = env!("CARGO_BIN_EXE_col");
 const UNIQ: &str = env!("CARGO_BIN_EXE_uniq");
 const UNITS: &str = env!("CARGO_BIN_EXE_units");
 const CKSUM: &str = env!("CARGO_BIN_EXE_cksum");
+const CMP: &str = env!("CARGO_BIN_EXE_cmp");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
 const FF: u8 = 0xFF;
@@ -69,7 +70,7 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 9] = [
+    let cases: [(&str, &str, i32, &[u8]); 10] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
         // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
         // 字母位是原字节 `ff`。
@@ -89,6 +90,9 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         // cksum 随批次四百五十七落地：C 的 `usage()` 是 `exit(1)`（`cksum.c:549`），
         // 与 `units` 的 `myexit(3)` 不同，所以这一行的退码仍是 1。
         ("cksum", CKSUM, 1, b"cksum: unknown option -- \xff\n"),
+        // cmp 随批次四百五十八落地：C 的 `usage()` 退 `ERR_EXIT` = **2**（`cmp.c:157`），
+        // 与 cksum 的 `exit(1)` 不同，所以这一行的退码钉的是 2 而不是抄上一行。
+        ("cmp", CMP, 2, b"cmp: unknown option -- \xff\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");

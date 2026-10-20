@@ -25,7 +25,6 @@
 
 extern crate alloc;
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
@@ -40,9 +39,11 @@ const ERR_EXIT: i32 = 2;
 const DIFF_EXIT: i32 = 1;
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名那一腿交给 `warn_line` 与 `GetoptReport::line_bytes` 的 `&str` 口（登记
+    // `ARGV-BYTE-PATH-IN-LIBS`），所以臂内折一次；操作数与报文的名字位不跟着折。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
+    let refs: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // C 的次序是「选项环 → `-l`/`-s` 互斥 → 操作数个数 → 开档」（`cmp.c:74-100`），
     // 三处出口的形制各不相同：集外字母是 libc 一行**加** usage 一行；互斥是一句 `errx`
     // 就完（没有 usage）；个数不对只有 usage 一行。都退 `ERR_EXIT` = 2。
@@ -50,7 +51,7 @@ fn run() -> ! {
         Ok(flags) => flags,
         Err(CmpArgError::UnknownOption(letter)) => {
             // 字母位走 `line_bytes`：取法已在 `src/cmp.rs` 改成按字节，两边同形才成立。
-            support::warn(&GetoptReport::UnknownOption(letter).line_bytes(prog));
+            support::warn(&GetoptReport::UnknownOption(letter).line_bytes(&prog));
             usage();
         }
     };
@@ -76,21 +77,24 @@ fn run() -> ! {
             support::terminate(ERR_EXIT);
         }
     };
-    let name1 = if stdin1 { "stdin" } else { file1 };
-    let name2 = if stdin2 { "stdin" } else { file2 };
+    let name1 = if stdin1 { b"stdin".as_slice() } else { file1 };
+    let name2 = if stdin2 { b"stdin".as_slice() } else { file2 };
     // C opens both operands *before* it parses the skip operands (`cmp.c:95-119`
     // then `:121-134`), so when a file cannot be opened that is what the user
     // hears about, even if a skip value is also malformed.
     let data1 = if stdin1 {
         support::read_stdin()
     } else {
-        match support::read_file(file1) {
+        // 开档那一腿仍要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），所以折一次；
+        // 折出来的串同时喂给 `warn_line`——报文腿与开档腿同一条，两条腿不会分叉。
+        let path = String::from_utf8_lossy(file1);
+        match support::read_file(&path) {
             Ok(data) => data,
             Err(code) => {
                 // C `cmp.c:101-104`：`if (!sflag) warn("%s", file1);` 然后
                 // `exit(ERR_EXIT)`——`-s` 之下**整句不打**，只留退出码 2。
                 if !silent {
-                    support::warn_line(prog, file1, code);
+                    support::warn_line(&prog, &path, code);
                 }
                 support::terminate(ERR_EXIT);
             }
@@ -99,12 +103,13 @@ fn run() -> ! {
     let data2 = if stdin2 {
         support::read_stdin()
     } else {
-        match support::read_file(file2) {
+        let path = String::from_utf8_lossy(file2);
+        match support::read_file(&path) {
             Ok(data) => data,
             Err(code) => {
                 // 同上：第二支的 `warn` 也被 `sflag` 管着（`cmp.c:113-117`）。
                 if !silent {
-                    support::warn_line(prog, file2, code);
+                    support::warn_line(&prog, &path, code);
                 }
                 support::terminate(ERR_EXIT);
             }
@@ -157,7 +162,7 @@ fn run() -> ! {
         }
         if let Some((which, byte, line)) = outcome.eof_on {
             let file = if which == 1 { name1 } else { name2 };
-            support::warn(format!("cmp: {}\n", report_eof(file, byte, line, true)).as_bytes());
+            support::warn(&eof_line(file, byte, line, true));
             DIFF_EXIT
         } else if outcome.equal {
             0
@@ -165,12 +170,12 @@ fn run() -> ! {
             DIFF_EXIT
         }
     } else if let Some((byte, line)) = outcome.first_difference {
-        support::emit(report_first_diff(name1, name2, byte, line).as_bytes());
+        support::emit(&report_first_diff(name1, name2, byte, line));
         DIFF_EXIT
     } else if let Some((which, byte, line)) = outcome.eof_on {
         let _ = (byte, line);
         let file = if which == 1 { name1 } else { name2 };
-        support::warn(format!("cmp: {}\n", report_eof(file, 0, 0, false)).as_bytes());
+        support::warn(&eof_line(file, 0, 0, false));
         DIFF_EXIT
     } else {
         0
@@ -181,9 +186,9 @@ fn run() -> ! {
 /// Which of the two operands read standard input, faithful to C
 /// `cmp.c:95-113`: a `-` names stdin, and both operands naming it is an error
 /// (`Err(())`).
-fn uses_stdin(file1: &str, file2: &str) -> Result<[bool; 2], ()> {
-    let stdin1 = file1 == "-";
-    let stdin2 = file2 == "-";
+fn uses_stdin(file1: &[u8], file2: &[u8]) -> Result<[bool; 2], ()> {
+    let stdin1 = file1 == b"-";
+    let stdin2 = file2 == b"-";
     if stdin1 && stdin2 {
         Err(())
     } else {
@@ -197,9 +202,13 @@ fn uses_stdin(file1: &str, file2: &str) -> Result<[bool; 2], ()> {
 /// that radix is consumed and anything after it is ignored, because C's only two
 /// failure tests are `errno` (overflow) and `ep == argv[n]` (nothing converted).
 /// `Err(())` is exactly those two cases.
-fn parse_skip(word: &str) -> Result<i64, ()> {
-    let text = word.trim_start_matches(|c: char| c.is_ascii_whitespace());
-    let (negative, rest) = match text.as_bytes().first() {
+fn parse_skip(word: &[u8]) -> Result<i64, ()> {
+    let blank = word
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(word.len());
+    let text = &word[blank..];
+    let (negative, rest) = match text.first() {
         Some(b'-') => (true, &text[1..]),
         Some(b'+') => (false, &text[1..]),
         _ => (false, text),
@@ -207,28 +216,47 @@ fn parse_skip(word: &str) -> Result<i64, ()> {
     // Base 0 decides the radix from the prefix. Note the asymmetry C keeps: with
     // `0x`/`0X` a missing hex digit means no conversion at all, while a bare
     // leading `0` is itself a converted digit (so `08` is zero, ep left at `8`).
-    let (radix, digits, zero_counts) =
-        match rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-            Some(hex) => (16, hex, false),
-            None => match rest.strip_prefix('0') {
-                Some(octal) => (8, octal, true),
-                None => (10, rest, false),
-            },
-        };
+    let (radix, digits, zero_counts) = match rest
+        .strip_prefix(b"0x")
+        .or_else(|| rest.strip_prefix(b"0X"))
+    {
+        Some(hex) => (16, hex, false),
+        None => match rest.strip_prefix(b"0") {
+            Some(octal) => (8, octal, true),
+            None => (10, rest, false),
+        },
+    };
     let run = digits
-        .find(|c: char| !c.is_digit(radix))
+        .iter()
+        .position(|b| skip_digit(*b, radix).is_none())
         .unwrap_or(digits.len());
     if run == 0 && !zero_counts {
         return Err(());
     }
     // A zero-length run is only reachable through the bare leading `0`, which is
     // itself the digit C converted: the value is zero and the offset stops there.
-    let value = if run == 0 {
-        0
-    } else {
-        i64::from_str_radix(&digits[..run], radix).map_err(|_| ())?
-    };
+    // 溢出走 `checked_*`，对位 C 的 `errno == ERANGE` 那一判。
+    let value = digits[..run].iter().try_fold(0i64, |acc, b| {
+        let digit = skip_digit(*b, radix).ok_or(())?;
+        acc.checked_mul(radix as i64)
+            .and_then(|shifted| shifted.checked_add(digit as i64))
+            .ok_or(())
+    })?;
     Ok(if negative { -value } else { value })
+}
+
+/// `strtoq` 在 base 0 下认的那一枚数字：十进制只到 `9`，十六进制才收 `a`-`f`
+/// （大小写同价）。按字节判，是为了让非法字节在数字串里扮演 C 的那个停点，
+/// 而不是先把整词折成文本再猜它是不是数字。
+fn skip_digit(byte: u8, radix: u32) -> Option<u32> {
+    if byte.is_ascii_digit() && ((byte - b'0') as u32) < radix {
+        return Some((byte - b'0') as u32);
+    }
+    let letter = byte | 0x20;
+    if (b'a'..=b'f').contains(&letter) && (letter - b'a') as u32 + 10 < radix {
+        return Some((letter - b'a') as u32 + 10);
+    }
+    None
 }
 
 /// The bytes left after applying a skip, or `None` when C would report EOF:
@@ -244,12 +272,21 @@ fn skip_window(data: &[u8], skip: i64) -> Option<&[u8]> {
 /// C `misc.c`'s `eofmsg(file, len + 1, 0)`: silent prints nothing, the plain
 /// form is `EOF on <file>`, and `-l` adds `: char <len + 1>` because the `line`
 /// argument is zero. The exit status is `DIFF_EXIT` in all three cases.
-fn skip_eof(file: &str, len: usize, list_all: bool, silent: bool) -> ! {
+fn skip_eof(file: &[u8], len: usize, list_all: bool, silent: bool) -> ! {
     if !silent {
         let byte = len as u64 + 1;
-        support::warn(format!("cmp: {}\n", report_eof(file, byte, 0, list_all)).as_bytes());
+        support::warn(&eof_line(file, byte, 0, list_all));
     }
     support::terminate(DIFF_EXIT)
+}
+
+/// C 的 `errx`/`warn` 那一前缀：`cmp: ` 加 `eofmsg` 的那一句再加换行。
+/// 名字位是操作数原字节，所以整行按字节拼，不借 `format!` 的 `{}`。
+fn eof_line(file: &[u8], byte: u64, line: u64, list_all: bool) -> Vec<u8> {
+    let mut text = b"cmp: ".to_vec();
+    text.extend_from_slice(&report_eof(file, byte, line, list_all));
+    text.push(b'\n');
+    text
 }
 
 fn usage() -> ! {
@@ -263,54 +300,54 @@ mod tests {
 
     #[test]
     fn a_dash_operand_reads_stdin() {
-        assert_eq!(uses_stdin("-", "f"), Ok([true, false]));
-        assert_eq!(uses_stdin("f", "-"), Ok([false, true]));
-        assert_eq!(uses_stdin("a", "b"), Ok([false, false]));
-        // 两个操数都是 `-`：C `cmp.c:110` 报“只能指定一次标准输入”。
-        assert_eq!(uses_stdin("-", "-"), Err(()));
+        assert_eq!(uses_stdin(b"-", b"f"), Ok([true, false]));
+        assert_eq!(uses_stdin(b"f", b"-"), Ok([false, true]));
+        assert_eq!(uses_stdin(b"a", b"b"), Ok([false, false]));
+        // 两个操作数都是 `-`：C `cmp.c:110` 报“只能指定一次标准输入”。
+        assert_eq!(uses_stdin(b"-", b"-"), Err(()));
     }
 
     #[test]
     fn skip_reads_the_radix_from_its_digits() {
         // C `strtoq(…, 0)`: `0x`/`0X` hexadecimal, a leading `0` octal, otherwise
         // decimal.
-        assert_eq!(parse_skip("10"), Ok(10));
-        assert_eq!(parse_skip("010"), Ok(8));
-        assert_eq!(parse_skip("0x10"), Ok(16));
-        assert_eq!(parse_skip("0X1f"), Ok(31));
-        assert_eq!(parse_skip("0"), Ok(0));
+        assert_eq!(parse_skip(b"10"), Ok(10));
+        assert_eq!(parse_skip(b"010"), Ok(8));
+        assert_eq!(parse_skip(b"0x10"), Ok(16));
+        assert_eq!(parse_skip(b"0X1f"), Ok(31));
+        assert_eq!(parse_skip(b"0"), Ok(0));
         // An octal prefix that stops early still converts the `0` it consumed:
         // C leaves `ep` at the offending character and only errors when `ep`
         // never moved.
-        assert_eq!(parse_skip("08"), Ok(0));
-        assert_eq!(parse_skip("0779"), Ok(63));
+        assert_eq!(parse_skip(b"08"), Ok(0));
+        assert_eq!(parse_skip(b"0779"), Ok(63));
     }
 
     #[test]
     fn skip_accepts_sign_blanks_and_trailing_garbage() {
-        assert_eq!(parse_skip("  12"), Ok(12));
-        assert_eq!(parse_skip("+4"), Ok(4));
-        assert_eq!(parse_skip("-3"), Ok(-3));
-        assert_eq!(parse_skip("-0"), Ok(0));
+        assert_eq!(parse_skip(b"  12"), Ok(12));
+        assert_eq!(parse_skip(b"+4"), Ok(4));
+        assert_eq!(parse_skip(b"-3"), Ok(-3));
+        assert_eq!(parse_skip(b"-0"), Ok(0));
         // C checks only `errno` and `ep == argv[n]`; a tail that is not a digit
         // stops the conversion without failing it (`cmp.c:126`).
-        assert_eq!(parse_skip("12xyz"), Ok(12));
-        assert_eq!(parse_skip("0x1Fz"), Ok(31));
+        assert_eq!(parse_skip(b"12xyz"), Ok(12));
+        assert_eq!(parse_skip(b"0x1Fz"), Ok(31));
     }
 
     #[test]
     fn skip_errors_only_when_nothing_was_converted_or_out_of_range() {
-        assert!(parse_skip("xyz").is_err());
-        assert!(parse_skip("").is_err());
-        assert!(parse_skip("-").is_err());
-        assert!(parse_skip("+").is_err());
+        assert!(parse_skip(b"xyz").is_err());
+        assert!(parse_skip(b"").is_err());
+        assert!(parse_skip(b"-").is_err());
+        assert!(parse_skip(b"+").is_err());
         // `0x` with no hex digits converts nothing at all — C's `ep == argv[n]`.
-        assert!(parse_skip("0x").is_err());
-        assert!(parse_skip("0xg1").is_err());
+        assert!(parse_skip(b"0x").is_err());
+        assert!(parse_skip(b"0xg1").is_err());
         // Out of range is C's `errno` arm: both ends of the `off_t` span and
         // anything beyond it.
-        assert!(parse_skip("99999999999999999999999").is_err());
-        assert!(parse_skip("-99999999999999999999999").is_err());
+        assert!(parse_skip(b"99999999999999999999999").is_err());
+        assert!(parse_skip(b"-99999999999999999999999").is_err());
     }
 
     #[test]
