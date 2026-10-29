@@ -119,6 +119,143 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百六十四（A2 参数缝半切片 46：`jot` 的 argv、词槽、分隔符与操作数尾字节交回原字节；顺带把三条「按字节才成立」的判据钉住）
+
+- **先把形状说清**：`minix3/usr.bin/jot/jot.c:150` 的 optstring 是 `"b:cnp:rs:w:"`——七个字母，
+  `b`/`p`/`s`/`w` 四个带值，`c`/`n`/`r` 三个不带。四个带值的里，`p` 是数字（`strtol`），
+  另外三个**就是输出内容**：`-b` 与 `-w` 落进同一个 `format` 槽（`jot.c:173-176` 的
+  `boring = 1; /* FALLTHROUGH */ case 'w': strlcpy(format, optarg, …)`），由 `putdata`
+  （`:300-311`）打出去；`-s` 存进 `sepstring`（`:169-170`），由 `:310` 的
+  `fputs(sepstring, stdout)` 打在条目之间。再加上操作数那两条腿——`jot.c:196`、`:204` 的
+  `argv[i][strlen(argv[i]) - 1]` 取的是**最后一个字节**当值。所以这一支的 argv 有五个去处：
+  词槽、分隔符、说明符校验、报文回显、操作数值。
+  另一件让它与同族都不同的是：**`jot` 不开档也不读标准输入**（`jot.c` 里没有一条 `fopen`），
+  于是本支没有 `minix_sys::open`/`err_line` 那两条 `&str` 口，壳内 `from_utf8_lossy` 现量
+  **1 处**（`grep -c from_utf8_lossy os/commands/usr-bin/textfilter/src/bin/jot.rs`，就是程序名那一处，
+  因为 `GetoptReport::line_bytes` 收 `&str`），是这一族里折叠点最少的一支。
+- **三条「只有按字节才成立」的判据是本轮的正菜**（都不是渲染问题，而是值本身）：
+  ① 尾字节要经 **signed char** 落地。`jot.c:196`/`:204` 的赋值目标是 `char`，x86 的 `char` 带符号，
+  所以 `\xff` 是 **-1** 而不是 255。三形现量（参照件 `tmp/jot-464/jot`）：`jot 3 <ff> 5` →
+  `-1 2 5`（begin = -1，步长 (5-(-1))/2 = 3）、`jot 3 1 <ff>` → `1 0 -1`、`jot -c 3 1 <ff>` →
+  字节 `01 00 ff`。按无符号读会算成 255，中间那格从 `00` 变成 `80`；而文本缝之下更糟——`\xff`
+  先折成三枚，取到的最后一枚是 `bd` = 189，参照件同形成 `189 97 5`。
+  ② `%c` 交回**一枚**字节：C 走 `putchar`，参照件对 `-p 0 -w '%c' 1 200 1` 现量 `c8`；本层的
+  `render` 走的是 `format!("{}", v as u8 as char)`，`char` 经 UTF-8 编码成 `c3 88` 两枚——
+  字节形之后那一支的 `char` 通道退出，改成 `vec![v as u8]`。
+  ③ `%%` 的展开发生在**整条格式串**上，不区分转换的哪一侧：C 把整个 `format` 交给 `printf`
+  （`:306`、`:308`），libc 自己展开。本层把转换前后的字面段分开存着，此前只在后缀段做了展开，
+  于是 `-p 2 -w '%%x%d' 3 1 5` 打成 `%%x1` 而参照件打 `%x1`。**这一形是 A/B 逮出来的**，
+  而且第一版负控（K6）在三层门里全绿——门里当时没有这一形，补了库门一段与端到端一段之后
+  K6 才咬住 2 枚。判据仍是批次四百六十一那一条：**一整段全绿先怀疑覆盖面有洞**。
+- **另外两处是判据与报文，都由参数缝这一射程带出来**：
+  ④ 空操作数在 C 是 `argv[i][-1]` 的**越界读**（值取决于那块内存前面是什么），本层不复制未定义
+  行为：`fn operand_to_number` 交回 `Option<f64>`，空串那一格由调用方**留缺省**——按宿主参照件的
+  现量定的形（`jot 3 '' 5` → `1 3 5`）。本壳此前在这里是 `s.len() - 1` 的减法下溢，
+  **当场 panic**（`jot 3 '' 5` 实测退 134 + core dumped），所以这一处同时收掉一类崩溃。
+  登记 `JOT-EMPTY-OPERAND-READS-OOB`（记录「不复制 UB、按现量留缺省」这个选择本身）。
+  ⑤ 空 reps 在 C 是合法的 0：`strtoul` 一个数字也没转时把 `ep` 留在起点，于是 `*ep == '\0'`
+  成立，`jot.c:213-217` 那句 Bad reps 不触发；配上 begin/ender 就落 `:272-275` 的
+  `Infinite sequences cannot be bounded`。本层此前按「digits 为空即坏值」判，报的是
+  `Bad reps value:  ` 空壳一句——参照件同形现量 `Infinite sequences cannot be bounded`。
+  这与 `parse_precision` 里那条「只有整串本来就空才算合法零」是同一个道理，本轮把 reps 对齐过去。
+  ⑥ `unknown or invalid format \`%s'`（`jot.c:385`、`:396`）这一句在 C 带的是**整个 format 词**，
+  而本壳那句里根本没有值（`JotError::BadFormat(&'static str)` 只装了固定短语），所以
+  `-w '%\xff'` 的报文本壳少掉整个值位。`JotError` 因此拆成两支：`InvalidFormat(Vec<u8>)`（带词）
+  与 `FormatWantsString`（`:376-377` 那句 C 本来就不带值）。登记 `JOT-INVALID-FORMAT-ECHO-MISSING`，
+  **本轮按 C 落定**——这一支的「值进报文」正是参数缝的射程。
+  ⑦ `isspace` 只认六枚字节（空格、`\t`、`\n`、`\v`、`\f`、`\r`），所以非 ASCII 空白
+  （`c2 a0`）在 C 里不是空白：`jot <c2a0>3` 一个数字也没转，落 Bad reps。按 `str::trim_start`
+  走会把它当空白跳掉而意外接受——这一形钉的是「按字节」而不是「放宽」。
+- **落码层**：库侧 `os/commands/usr-bin/textfilter/src/jot.rs` 里 `fn parse_jot_args` 收
+  `&'a [&'a [u8]]`、`JotArgs.operands` 改 `Vec<&'a [u8]>`、`JotOptions.word`/`sep` 改 `Vec<u8>`
+  （缺省 `b"\n"`）、`Format::Literal` 与 `Conv.prefix`/`suffix` 改字节、`fn render`/`fn finish`/
+  `fn finish_signed` 交回 `Vec<u8>`、`Jot::next` 交回 `Option<Vec<u8>>`、`separator_after` 交回
+  `Option<&[u8]>`，`fn parse_precision`/`fn parse_reps`/`fn parse_step`/`fn get_prec`/
+  `fn operand_to_number` 五个入口收 `&[u8]`（数字腿本来按 `is_ascii_digit` 走，语义未动；
+  `strtol` 那一段复用 `floatfmt::parse_float_prefix_bytes`，它本来就是字节形实现）。
+  新立两个助手：`fn byte_digits_to_usize`（说明符里 `.` 之后那一段）与
+  `fn unfold_double_percent`（`%%` 展开，前后缀两段共用）。壳侧 `src/bin/jot.rs` 走
+  `args_bytes()`/`prog_name_bytes()`，`diagnose`/`quoted`/`error_bytes` 按字节拼句子，
+  三个错误出口（`bad_reps`/`bad_step`/`too_many_arguments`）收 `&[u8]`。
+- **门账（先对测试名集合再对总数）**：库内 `jot` 模块 **23 → 24**（新立
+  `the_word_the_separator_and_the_operand_bytes_all_reach_the_output`，十一段：词槽、分隔符、
+  前缀字面段、`%c` 一枚、`%%` 前缀展开、说明符校验失败的整词回显、尾字节的 signed char、
+  空操作数、空 reps、非 ASCII 空白、缺值字母），`jot_face` **16 → 18**
+  （`a_raw_byte_in_the_word_or_the_separator_is_printed_as_that_byte` 五段、
+  `the_operand_and_the_word_echoed_into_a_sentence_are_the_argv_bytes` 六段），跨壳表十五行 →
+  **十六行**（`jot` 行钉 `jot: unknown option -- \xff` 与退 **1**；这一支的 usage 只有**一行**且跟着
+  `getprogname()`，`jot.c:314-319`），整包 69 段 **1261 → 1264 passed / 0 failed**。
+  夹具侧照批次四百六十三那条：测试模块新立 `fn argv` 与 `fn words`，凡结果要留着断言的形拆成两行
+  （`let w_x = argv(&[…]);` + `let x = parse_jot_args(&w_x);`，本轮拆 6 形），28 处
+  `parse_jot_args`/`parse_precision`/`render`/`operand_to_number` 的文本字面量改字节形，
+  既有门的期望串逐字未动。
+- **负控六枚（`tmp/jot-464/negctl.py`，逐枚读数 `negctl-K1..K6.log`；基线三档全绿：库内 624、
+  跨壳表 4、`jot_face` 18，命令带 `--no-fail-fast`）各咬 3/2/3/1/2/2**：K1（壳侧 argv 退回文本缝）
+  咬面门两枚 + 跨壳表，**库内 624 全绿**——「库门对 argv 缝没有牙」第六次量化；
+  K2（`-s` 的值折一次）咬库门 + 输出面门；K3（`-b`/`-w` 词槽折一次）咬库门 + 输出面门 + 报文面门
+  （那一句的回显带的就是词）；K4（三支值回显折一次）只咬报文那一枚——**K3 与 K4 各红各的，
+  「值进输出」与「值进报文」两条腿在这一支也是分开的**；K5（撤掉 signed char）咬库门 + 报文面门
+  里的高字节段；K6（撤掉前缀 `%%` 展开）第一遍三层全绿 ⇒ 补两段门后咬 2 枚。
+  每枚前后按整文件 md5 与 `tmp/jot-464/post/`（完整相对路径）成对复核，跑完核 `git status` 只剩四件。
+- **三起工具自错，同属「没跑被当成读数」这一族**：① 一轮 `rustfmt` 因 `PATH` 里没有 cargo 的
+  bin 目录，命令根本没执行，而下游 `grep -c '^Diff in'` 交出 0——上一笔刚记过这条，本轮又踩；
+  ② `cargo fmt --offline` 那次是同一个形状（不认 `--offline`，退 2，`grep` 仍报 0）；
+  ③ 注入脚本在 `run_tests` 里抛异常（还是 cargo 不在 PATH）时**没走到还原**，把注入态留在工作树，
+  下一次跑读到的锚点自然是 0 次，看起来像「注入没落地」而实际是「上一枚没还原」——改成
+  `try/finally` 之后重跑才拿到 K3/K6 的真读数。判据：**注入类工具必须无论成败都还原**，
+  而任何门计数都要连同退出码与解释器路径一起看。
+- **A/B 对 `tmp/jot-464/jot` 跑，SAME=49 / DIFF=0，另计 2 形在册分叉**（`tmp/jot-464/ab.log`，
+  矩阵共五十一形）。那两形是 `-w'%%\xff'` 与 `jot 3 - 5`：都落在 `prec` 保持 `-1` 那一族
+  （C 在 `:354` 拼出 `%.-1f`，打成什么由各家 libc 决定，本机不可判定，已在册
+  `JOT-PREC-MINUS-ONE-FORMAT`），所以按类分开计数；**同两形的可对照版本各补了一枚带 `-p` 的形**
+  （`-p 2 -w'%%x%d'`、`-p 0 3 - 5`），这样要钉的性质照旧被钉住，而把不可比的那一族从读数里摘出去。
+  两形不入矩阵的理由写在脚本的文件注释里：`-r` 的随机流（Lcg 顶替 libc `random()`）、
+  `prec == -1` 那一族。**非空跑核验照上一笔那条判据先做**：五十一形里退 0/0 的有 34 形，
+  免得「两侧都报错」的同形空跑混进全等数。⑦那一形也补进了矩阵（`c2 a0 3` 与 `␣3` 两形，
+  两侧同判），而改前的件对 `c2 a0 3` 打的是 `2 3 4`——**这一条从「按源码应如此」升成了现量**：
+  `str::trim_start` 认 Unicode 空白，于是 NBSP 被跳掉、`3` 被当成合法 reps，
+  而 C 的 `isspace` 只认六枚字节、参照件同形报 `Bad reps value`。参照件归属当场验过（`-Z` 交回
+  `jot: unknown option -- Z` 加一行 usage；`tmp/family-diag-ref/` 里那份打的是 glibc 那句带引号的）。
+- **门读数（全部 L1，`2026-10-29`，基线快照 `0955945b2`，基线当场复跑 69 段 / 1261 / 0）**：
+  宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1264 / 0**
+  （`tmp/jot-464/pkg-2.log`~`pkg-4.log` 三次同读数，最后一次是负控还原之后）；容器权威门按 §7.3
+  三挂载配方 → 退 0、**69 段 / 1264 / 0**，与宿主同读数（`tmp/jot-464/container-gate-final.log`；
+  `%%` 修复之前那次跑的是 1264/0，两次的门数相同——本轮加的两段都在既有门内）；三架构
+  `cargo check --offline -j 1 --target {x86_64-unknown-none, aarch64-unknown-none,
+  riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0、错误 0；
+  `rustfmt --edition 2024 --check` 四件终态零漂移（格式化前 `src/jot.rs` 9 处、`jot_face.rs` 4 处，
+  HEAD 同件都报 0 ⇒ 全是本轮自造，无存量牵连）；`cargo clippy --offline -j 1 --all-targets
+  -p minix-textfilter` 主树与本树各 **149** 条、位置各 80，集合差是 `src/jot.rs` 里同样四条
+  （`width` 未读、`dox`/`exhausted` 死字段、`match` 可简化、`next` 与迭代器同名）在 441/630/642/702
+  → 487/704/716/776 的**位移**，本轮零新警；A/B 用的 `os/target/debug/jot` 显式 `cargo build --bins`
+  之后 `file` 过，是合法 ELF。
+- **进度与余量（全部现量）**：参数缝半已落 **十九支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、
+  `jot`）；`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **20**；
+  整个命令面口径 → **89**。渲染半那条 grep 仍 **0** 行；`line_bytes` **40 处 / 29 件**（本支未新增
+  调用点）。余下 20 支里带字母位诊断面的有 **8** 支（`nl`、`pr`、`sort`、`split`、`tail`、`unexpand`、
+  `unifdef`、`vis`），**切片 47 建议 `nl`**：字母序第一支，`nl.c` 的 `-b`/`-f`/`-h`/`-p`/`-v` 五支带值
+  且 `-s`/`-d` 的分隔符与行号格式都进输出，参照件用前先打 `-Z`。**另两笔建议**：插一小轮收
+  `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`（上一笔登记的读缝），以及把 `JOT-EMPTY-OPERAND-READS-OOB`
+  与 `JOT-PREC-MINUS-ONE-FORMAT` 一起拿到真机上量一次（`JOT-PREC-RANDOM-AB-ON-MACHINE` 已在册）。
+  独立轮在册不碰：`ARGV-BYTE-PATH-IN-LIBS`、`CKSUM-CHECK-LEG-TEXTSEAM`、
+  `UNITS-DASH-REWRITE-AT-FIRST-CHAR`、`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、
+  `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、五枚 `*-NON-PERMUTE-OPERAND-TAIL`、
+  `CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`COL-CLIPPY-STOCK-LINT`、
+  `BIN_SUPPORT-FMT-DRIFT-STOCK`、`REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE`、
+  `HEAD-NEGATIVE-COUNT-UNSIGNED-GUARD`、`HEAD-COUNT-LEADING-BLANK-ACCEPTED`、
+  `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`，**本轮新立** `JOT-EMPTY-OPERAND-READS-OOB`
+  （④里那条选择）与 `JOT-WORD-TOOLONG-ON-MACHINE`。后者本轮**先写下了一句没量过的断言**，
+  再去量就被证伪：C 在 `jot.c:351`、`:355`、`:359` 有三句 `-w word too long`，本层没有任何长度上限
+  判据，我据此写成「参照件对超长 `-w` 报那一句而本层照打」；实测 `-p 0 -w <1100 枚 a> 2` 两侧
+  **完全同形**（每行 1101 字节、总 2204 字节，`tmp/jot-464/ab.log` 之外的当场复跑），带说明符的
+  `a×1100 + %d` 也一样照打。也就是说这一形在宿主参照件上**不可观察**——那三句依赖 `BUFSIZ` 的具体
+  取值与 libc `snprintf` 的返回约定，属真机才见分晓的那一族，所以登记号改成立在真机上待量，
+  而不是当作已经量出的差异。判据：**台账里每一句「参照件现量」都必须对应一条跑过的命令与它的输出**；
+  只从 C 源码读出来的结论要写成「按源码应如此、未量」，不能冒充读数。
+
+---
+
 ## 批次四百六十三（A2 参数缝半切片 45：`join` 的 argv、`-t` 的判据、`-e` 的输出与三支值回显交回原字节；顺手量出一处存量的标准输入缝缺口）
 
 - **这一支把「参数缝」从渲染问题抬成判据问题**：`minix3/usr.bin/join/join.c:201` 写的是
