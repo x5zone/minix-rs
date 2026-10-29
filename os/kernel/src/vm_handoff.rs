@@ -388,7 +388,7 @@ pub fn build_vm_handoff(
     // `map_kernel` replays them into every process page table so the
     // link-in execution model's low VA=PA code/data/MMIO accesses
     // survive the first CR3 switch (see version history v6).
-    let (kern_ident, kern_ident_count) = build_identity_windows(kernel_info);
+    let (kern_ident, kern_ident_count) = build_identity_windows();
 
     VmBootHandoff {
         magic: VM_BOOT_HANDOFF_MAGIC,
@@ -454,33 +454,25 @@ pub fn build_vm_handoff(
 /// never enter `reserved_regions` anyway). The floor is the defensive
 /// half of the identity-window / user-VA non-overlap discipline
 /// ([ARCH]: future VM mmap ranges must stay clear of the windows).
-pub(crate) fn build_identity_windows(
-    kernel_info: &KernelInfo,
-) -> ([HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT], usize) {
+/// Build the per-process identity windows that the VM replays into every new
+/// root.
+///
+/// T2 split: the firmware `reserved_regions` input retired with the x86 inline
+/// execution model — the kernel now runs from its standalone high-half image,
+/// so no low-address code/data window needs replaying. What remains is the
+/// architecture's MMIO identity range (local APIC/IO-APIC and, on RISC-V, the
+/// PLIC window), which every root still needs to reach the interrupt
+/// controller at its physical address.
+pub(crate) fn build_identity_windows() -> ([HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT], usize) {
     const USER_IDENTITY_FLOOR: u64 = 0x40_0000;
-    /// Candidate slots: UEFI non-conventional descriptors are a few
-    /// dozen on QEMU/OVMF; overflow is a firmware-shape surprise, not
-    /// something to truncate silently. fix27d: real machine measured
-    /// 128 reserved descriptors after the above-RAM filter (the 4 KiB
-    /// fragmented OVMF map is far busier than the "few dozen" the
-    /// first cut assumed) — 256 keeps the fail-fast meaningful instead
-    /// of firing on the normal shape.
-    /// F6：单一常量双引用——与 globals::RESERVED_REGION_STORE_LEN 同源，
-    /// 编译期消除两处 256 手工对齐的漂移面。
+    /// Candidate slots: the arch MMIO table is tiny; the bound stays as a
+    /// fail-fast guard against a future arch list growing without review.
     const MAX_CANDIDATES: usize = crate::globals::RESERVED_REGION_STORE_LEN;
     /// Sanity cap on 4 KiB identity leaves: 128 Ki pages = 512 MiB.
-    /// Blowing this means the "occupied" snapshot swallowed something
-    /// enormous (fragmented firmware map or an MMIO-window regression) —
-    /// mapping it per-process would exhaust the boot bump pool.
     const MAX_TOTAL_PAGES: u64 = 128 * 1024;
 
     let mut cand = [(0u64, 0u64); MAX_CANDIDATES];
     let mut n = 0usize;
-    // fix27 forensic (2026-09-21): real machine showed res=127 arriving
-    // with cand=2 — every reserved entry rejected. Count WHY to split
-    // "payload zeroed (dangling slice)" from "all below the floor".
-    let mut zeroed = 0usize;
-    let mut below_floor = 0usize;
     let mut max_end = 0u64;
     let mut push = |base: u64, size: u64, n: &mut usize| {
         assert!(*n < MAX_CANDIDATES, "vm_handoff: identity candidate overflow");
@@ -488,7 +480,6 @@ pub(crate) fn build_identity_windows(
             max_end = base + size;
         }
         if size == 0 {
-            zeroed += 1;
             return;
         }
         // align out: floor base, ceil end.
@@ -496,23 +487,18 @@ pub(crate) fn build_identity_windows(
         let e = (base + size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         // clip below the user-image floor.
         if e <= USER_IDENTITY_FLOOR {
-            below_floor += 1;
             return;
         }
         let b = b.max(USER_IDENTITY_FLOOR);
         cand[*n] = (b, e - b);
         *n += 1;
     };
-    for r in kernel_info.reserved_regions() {
-        push(r.base.0, r.len as u64, &mut n);
-    }
     for &(base, size) in minix_arch::kernel_identity_mmio_regions() {
         push(base, size, &mut n);
     }
     // 结束闭包对计数器的可变借用，之后才能再读它们。
     drop(push);
-    let res_rejected = zeroed + below_floor;
-    let _ = res_rejected;
+    let _ = max_end;
 
     // insertion sort by base — n ≤ MAX_CANDIDATES, boot-path sizes only.
     for i in 1..n {
@@ -558,7 +544,6 @@ pub(crate) fn build_identity_windows(
     #[cfg(not(feature = "mock"))]
     {
     }
-    let _ = res_rejected;
 
     (ident, count)
 }
@@ -798,75 +783,39 @@ mod tests {
         assert_eq!(KERNEL_TASKS.len() + BOOT_MODULE_PROC_NRS.len(), NR_BOOT_PROCS);
     }
 
-    // ── fix27: identity-window construction ──
-
-    fn info_with_reserved(reserved: &'static [MemoryRegion]) -> KernelInfo {
-        // build_identity_windows reads only `reserved_regions`; the rest
-        // is inert filler.
-        KernelInfo {
-            memmap: &[],
-            reserved_regions: reserved,
-            kern_virt_base: minix_types::VirBytes(0xFFFF_8000_0000_0000),
-            kern_phys_base: PhysBytes(0x200000),
-            kern_size: 0x200000,
-            free_upper_idx: None,
-            user_sp: minix_types::VirBytes(USER_STACK_TOP as u64),
-            kern_stack_top: minix_types::VirBytes(0xFFFF_8000_0040_0000),
-            syscall_entry: minix_types::VirBytes(0xFFFF_8000_0010_0000),
-            boot_modules: &[],
-            bootstrap_start: PhysBytes(0),
-            bootstrap_len: 0,
-            platform_sources: &[],
-            param_buf: &[],
-        }
-    }
+    // ── identity-window construction ──
 
     #[test]
-    fn test_identity_windows_clip_sort_merge() {
-        static RESERVED: [MemoryRegion; 4] = [
-            // below the 4 MiB user-image floor: dropped entirely.
-            MemoryRegion { base: PhysBytes(0x1000), len: 0x2000 },
-            // deliberately unsorted; overlaps the next entry → merged.
-            MemoryRegion { base: PhysBytes(0x1da0_0000), len: 0x3000 },
-            MemoryRegion { base: PhysBytes(0x1da0_2000), len: 0x2000 },
-            // disjoint, stays its own entry.
-            MemoryRegion { base: PhysBytes(0x1db0_0000), len: 0x1000 },
-        ];
-        let (ident, count) = build_identity_windows(&info_with_reserved(&RESERVED));
-        let got = &ident[..count];
-
-        // The two MMIO pages the arch always adds (x86-64 host tests).
-        let mmio_n = minix_arch::kernel_identity_mmio_regions().len();
-        assert_eq!(count, 2 + mmio_n, "merged reserved entries + arch MMIO");
-
-        // Sorted; below-floor entry gone; the two overlapping entries
-        // merged into [0x1da00000, 0x1da04000).
-        assert_eq!(got[0].base, 0x1da0_0000);
-        assert_eq!(got[0].size, 0x4000);
-        assert_eq!(got[1].base, 0x1db0_0000);
-        assert_eq!(got[1].size, 0x1000);
-        if mmio_n > 0 {
-            assert_eq!(got[2].base, 0x0FEC0_0000);
-            assert_eq!(got[3].base, 0x0FEE0_0000);
+    fn test_identity_windows_are_arch_mmio_only() {
+        // T2: the firmware reserved list no longer feeds per-process identity
+        // windows; only the arch MMIO identity ranges remain.
+        let (ident, count) = build_identity_windows();
+        let mmio = minix_arch::kernel_identity_mmio_regions();
+        assert_eq!(count, mmio.len());
+        for (i, &(base, _)) in mmio.iter().enumerate() {
+            assert_eq!(ident[i].base, base);
         }
-        // Invariant map_kernel relies on: sorted and non-overlapping.
-        for w in got {
+        // Invariant map_kernel relies on: sorted, non-overlapping, page-aligned.
+        for w in &ident[..count] {
             assert_eq!(w.base % PAGE_SIZE, 0);
             assert_eq!(w.size % PAGE_SIZE, 0);
             assert!(w.base >= 0x40_0000);
         }
-        for pair in got.windows(2) {
+        for pair in ident[..count].windows(2) {
             assert!(pair[0].base + pair[0].size <= pair[1].base);
         }
     }
 
     #[test]
-    fn test_identity_windows_empty_reserved_still_has_mmio() {
-        // OpenSBI/host shape: reserved = ∅ → only the arch MMIO pages.
-        let (ident, count) = build_identity_windows(&info_with_reserved(&[]));
-        assert_eq!(count, minix_arch::kernel_identity_mmio_regions().len());
-        for (i, &(base, _)) in minix_arch::kernel_identity_mmio_regions().iter().enumerate() {
-            assert_eq!(ident[i].base, base);
+    fn test_arch_mmio_identity_regions_are_page_aligned_and_sorted() {
+        // The arch table is the remaining input of build_identity_windows;
+        // its own invariants must hold before the window construction runs.
+        let mut previous_end = 0u64;
+        for &(base, size) in minix_arch::kernel_identity_mmio_regions() {
+            assert_eq!(base % PAGE_SIZE, 0, "MMIO identity base not page-aligned");
+            assert_eq!(size % PAGE_SIZE, 0, "MMIO identity size not page-aligned");
+            assert!(base >= previous_end, "MMIO identity regions overlap or are unsorted");
+            previous_end = base + size;
         }
     }
 }

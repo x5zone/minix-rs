@@ -382,6 +382,19 @@ pub fn load_vm_elf<P: Paging, A: PhysAccess>(
 /// root the caller's `paging` handle wraps. The two public entry points
 /// differ only in WHICH root that is (a caller-provided live root vs. a
 /// fresh per-process root), so the mapping logic lives here once.
+///
+/// # Mechanism premise: module bytes are reachable through the active root
+///
+/// The segment copy below converts `module.start` straight to a pointer under
+/// the bootstrap identity window. Callers therefore guarantee that the
+/// module's complete physical range is readable in the currently active root:
+/// the UEFI legs allocate blobs with `AllocateMaxAddress` below
+/// `boot_dm_admissible_end` (`uefi_helpers::alloc_module_pages`), and the
+/// direct legs place them in the boot bump region. This is a boot-stage
+/// mechanism premise, not an architecture-neutral semantic contract; the
+/// identity dependency is stated here instead of being abstracted into a
+/// trait (three architectures behave identically, so a trait would only move
+/// the same `unsafe` assumption to every call site).
 fn load_elf_into<P: Paging, A: PhysAccess>(
     module: &BootModule,
     kernel_info: &KernelInfo,

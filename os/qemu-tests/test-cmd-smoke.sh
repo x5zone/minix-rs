@@ -141,7 +141,7 @@ echo "serial: scheduler hand-off reached — waiting for the T4 command marker"
 M14_MARKERS=(
     "boot-shim: kernel loaded"
     "boot-shim: 12 boot modules loaded"
-    "boot-shim: handing control to kernel arch_boot"
+    "boot-shim: [raw] entering kernel image v1"
 )
 for marker in "${M14_MARKERS[@]}"; do
     if ! grep -qF "$marker" "$SERIAL_LOG" 2>/dev/null; then

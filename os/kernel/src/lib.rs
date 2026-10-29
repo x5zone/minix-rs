@@ -41,12 +41,20 @@ use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 // (same reason as the `PhysAccess` import below).
 #[cfg(not(feature = "mock"))]
 use minix_types::{VM_BOOT_HANDOFF_VA, VmBootHandoff};
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(
+    not(feature = "mock"),
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
 use minix_boot::{
     decode_envelope, decode_memmap, decode_modules, decode_param_buf, decode_platform_sources,
     decode_reserved_regions, patch_runtime_fields_in, BootModule, RuntimeFields, WireBootModule,
     ARENA_CAP, WIRE_MODULE_CAP,
 };
+
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+use minix_arch::arm64::paging::AArch64Paging as BootPaging;
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+use minix_arch::x86_64::paging::X86_64Paging as BootPaging;
 
 use minix_boot::{KernelInfo, MemoryRegion};
 use minix_arch::paging::PageFlags;
@@ -334,21 +342,33 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
 
 /// T1 2c/3b sender-side entry: build the bootstrap root, patch the runtime
 /// fields into the already-serialized arena, then absolute-jump into the
-/// standalone image with `x0 = arena_pa`.
+/// standalone image.
 ///
 /// The arena is a four-page loader-data allocation below the identity bound;
 /// the bootstrap root maps it through the identity window, so the in-place
-/// patch is a plain memory write after paging is live.
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+/// patch is a plain memory write after paging is live. The architecture-specific
+/// part is only the jump register convention: aarch64 passes the arena in
+/// `x0`, x86-64 in `rbx` (the image trampoline moves it to `rdi` after the
+/// `.bss` clear).
+#[cfg(all(
+    not(feature = "mock"),
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
 pub fn enter_kernel_image_v1(
     arena_pa: u64,
     kernel_info: &KernelInfo,
     root_page: PhysBytes,
 ) -> ! {
-    use minix_arch::arm64::paging::AArch64Paging;
-
-    let kern_huge = boot_validate_and_prepare::<AArch64Paging>(kernel_info);
-    build_bootstrap_root_and_enable::<AArch64Paging>(kernel_info, root_page, kern_huge);
+    // Entry-state contract (T2): no maskable interrupt may run while the
+    // bootstrap root is being built and activated. The firmware handed over
+    // with IF=1; `paging.enable` switches CR3 before the image trampoline's
+    // own `cli` would run, so close the window here, on the shim side.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+    }
+    let kern_huge = boot_validate_and_prepare::<BootPaging>(kernel_info);
+    build_bootstrap_root_and_enable::<BootPaging>(kernel_info, root_page, kern_huge);
     let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
         .expect("enter_kernel_image_v1: bump region not registered");
     let bump_next = boot_alloc::boot_alloc_next();
@@ -366,11 +386,12 @@ pub fn enter_kernel_image_v1(
             bump_end,
         },
     );
-    let entry = kernel_info.kern_virt_base().0;
+    let entry = core::hint::black_box(kernel_info.kern_virt_base().0);
     // SAFETY: paging is enabled and `entry` maps the executable kernel-image
     // `_start`; the arena is a valid physical address below the identity end.
-    // `x0` is bound to a fixed register (same style as the old blob jump) so
-    // LLVM cannot overwrite the branch target with an implicit move.
+    // The handoff register is bound to a fixed operand so LLVM cannot
+    // overwrite the branch target with an implicit move.
+    #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
             "isb",
@@ -380,6 +401,36 @@ pub fn enter_kernel_image_v1(
             options(noreturn)
         );
     }
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        __minix_x86_enter_image(entry, arena_pa)
+    }
+}
+
+/// x86-64 machine entry into the standalone image.
+///
+/// The handoff contract carries the arena in `rbx` across the image
+/// trampoline's `.bss` clear. Inline asm cannot use `rbx` (LLVM reserves it),
+/// so the move lives in a small global-asm function: SysV passes `entry` in
+/// `rdi` and `arena_pa` in `rsi`; the stub moves them to `rax`/`rbx`, clears
+/// the interrupt flag and direction flag, and jumps.
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+core::arch::global_asm!(
+    r#"
+    .section .text
+    .globl __minix_x86_enter_image
+__minix_x86_enter_image:
+    mov rbx, rsi
+    mov rax, rdi
+    cli
+    cld
+    jmp rax
+    "#
+);
+
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+unsafe extern "sysv64" {
+    fn __minix_x86_enter_image(entry: u64, arena_pa: u64) -> !;
 }
 
 /// T1 2c/3b receiver-side entry: read the v1 arena through the identity
@@ -389,7 +440,10 @@ pub fn enter_kernel_image_v1(
 /// The bootstrap root is already live (the shim built it); this entry must
 /// never rebuild it — `new_from_page` would zero the active root that maps
 /// this very function.
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+#[cfg(all(
+    not(feature = "mock"),
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
 pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
     // SAFETY: the sender allocated a four-page LOADER_DATA arena below the
     // identity bound and the live bootstrap root maps it; nothing writes it
@@ -475,7 +529,36 @@ pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
     kinfo.validate();
     kinfo.check_boot_postconditions();
     boot_alloc::resume_boot_pt_alloc(scalars.bump_base, scalars.bump_next, scalars.bump_end);
-    arch_boot_resume_high_half(&kinfo, PhysBytes(scalars.root_page))
+    resume_after_v1_decode(&kinfo, scalars.root_page)
+}
+
+/// Finish the v1 handoff on aarch64: the bootstrap root is already live, so
+/// only the additive phases may run.
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
+    arch_boot_resume_high_half(kernel_info, PhysBytes(root_page))
+}
+
+/// Finish the v1 handoff on x86-64: validate/register the allocators, record
+/// the already-live root, land the KernelInfo, add direct-map coverage, then
+/// enter `kmain` at its high virtual address. The root must not be rebuilt.
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
+    use crate::boot::HigherHalf;
+    use crate::x86_64::higher_half::X86_64HigherHalf;
+
+    let _ = boot_validate_and_prepare::<BootPaging>(kernel_info);
+    let root = PhysBytes(root_page);
+    set_current_root_phys(root);
+    store_kernel_info(kernel_info);
+    let kinfo: &'static KernelInfo = crate::kernel_info()
+        .expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
+    register_panic_diagnostic();
+    crate::dm_coverage::establish_boot_dm(kinfo, root);
+    // SAFETY: paging is live via the shim's bootstrap root; kinfo is this
+    // image's `.bss` copy and `kern_stack_top` is the high virtual stack the
+    // inline boot used successfully.
+    unsafe { X86_64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
