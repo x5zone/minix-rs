@@ -35,6 +35,14 @@ static VM_INSTANCE_COUNT: AssumeSyncCell<u32> = AssumeSyncCell::new(0);
 /// silently mapping memory incorrectly.
 static KERNEL_LAYOUT: AssumeSyncCell<Option<KernelLayout>> = AssumeSyncCell::new(None);
 
+/// Physical address of the kernel-information page (handoff v7, D-72).
+///
+/// `init_page_table()` maps it read-only at
+/// `minix_types::KERNINFO_USER_VA` in every new root. Set once during
+/// `VmServer::init()` from `BootParams`; the page itself is owned by the
+/// kernel and never freed here.
+static KERNINFO_PA: AssumeSyncCell<Option<u64>> = AssumeSyncCell::new(None);
+
 /// Initializes global state with total pages.
 /// 
 /// # Safety
@@ -92,6 +100,31 @@ pub(crate) unsafe fn set_kernel_layout(layout: KernelLayout) {
     // page table is created).
     unsafe {
         *KERNEL_LAYOUT.get() = Some(layout);
+    }
+}
+
+/// Sets the kernel-information page physical address (D-72).
+///
+/// # Safety
+/// Must be called before the first `init_page_table()` call (during
+/// `VmServer::init()`, single-threaded).
+pub(crate) unsafe fn set_kerninfo_pa(pa: u64) {
+    // SAFETY: see the # Safety contract; no concurrent reader exists yet.
+    unsafe {
+        *KERNINFO_PA.get() = Some(pa);
+    }
+}
+
+/// Returns the kernel-information page physical address.
+///
+/// # Panics
+/// Panics if `set_kerninfo_pa()` has not run — a missing address would make
+/// every new root lack the kerninfo mapping, so fail fast instead.
+pub(crate) fn kerninfo_pa() -> u64 {
+    // SAFETY: single-threaded VM; the value is set before the first call.
+    unsafe {
+        (*KERNINFO_PA.get())
+            .expect("kerninfo_pa() called before set_kerninfo_pa() — VmServer::init() was not run")
     }
 }
 
@@ -230,6 +263,22 @@ mod tests {
 
         unsafe {
             *KERNEL_LAYOUT.get() = None;
+        }
+    }
+
+    #[test]
+    fn test_kerninfo_pa_set_and_get() {
+        unsafe {
+            *KERNINFO_PA.get() = None;
+        }
+        let result = std::panic::catch_unwind(kerninfo_pa);
+        assert!(result.is_err(), "kerninfo_pa() must panic before set_kerninfo_pa()");
+        unsafe {
+            set_kerninfo_pa(0x4000);
+        }
+        assert_eq!(kerninfo_pa(), 0x4000);
+        unsafe {
+            *KERNINFO_PA.get() = None;
         }
     }
 

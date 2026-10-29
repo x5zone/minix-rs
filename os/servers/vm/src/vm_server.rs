@@ -176,6 +176,9 @@ pub struct VmServer {
     /// Kernel layout from the boot handoff (V11/E3): `None` = pre-E3
     /// handoff/test shape → `init_global_state` keeps the mock constants.
     kernel_layout: Option<minix_types::KernelLayout>,
+    /// Kernel-information page physical address (handoff v7, D-72).
+    /// Every new root maps it read-only at `minix_types::KERNINFO_USER_VA`.
+    kerninfo_pa: minix_types::PhysBytes,
     /// Pages to charge to the global page total during init.
     ///
     /// C: `mem_add_total_pages()` call points (main.c:485-495).
@@ -334,6 +337,7 @@ impl VmServer {
                 .map(|r| r.size / CLICK_SIZE)
                 .sum(),
             kernel_layout,
+            kerninfo_pa: params.kerninfo_pa,
             transport,
         }
     }
@@ -677,6 +681,14 @@ impl VmServer {
         // VM ensures no concurrent reader of `KERNEL_LAYOUT`.
         unsafe {
             crate::global::set_kernel_layout(layout);
+        }
+
+        // D-72: the kernel-information page's physical address. Every new
+        // root maps it read-only at `minix_types::KERNINFO_USER_VA`; the
+        // page itself stays kernel-owned.
+        // SAFETY: same single-threaded, pre-page-table window as above.
+        unsafe {
+            crate::global::set_kerninfo_pa(self.kerninfo_pa.0);
         }
     }
 
@@ -3626,6 +3638,7 @@ mod tests {
             // Fake-but-valid root: these tests never exercise adoption
             // (init_vm_self_pt is skipped in test builds).
             root_paddr: PhysBytes(0x900_000),
+            kerninfo_pa: PhysBytes(0x901_000),
             total_pages: TEST_TOTAL_PAGES,
             free_regions,
             boot_procs,
