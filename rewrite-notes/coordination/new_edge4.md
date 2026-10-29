@@ -2407,3 +2407,27 @@ P6（把 `-i` 也改成带符号形）两枚注入**各红两层**，各自咬�
 - `2026-10-29` zcode-glm / T1 子步 1b–2b（`claim/01TODO-T1B..T1D` → 合并笔 `464ced711` / `624667b6a` / `5bf55c528`）：1b 生产者序列化器 `handoff_v1_write.rs`（信封/保留区/模块定长名槽/平台源/param/内存图双写/运行期补丁，容量与名长 fail-fast，LE 字节序；minix-boot 45/0）；2a `ebs_map.rs` 原始描述符走查分类（版本/步长/8 对齐/整除/checked/PA 限/两趟 RAM 顶；12 条测试）；2b `ebs_pair.rs` 注入式配对循环（重试只认 INVALID_PARAMETER、EBS 总尝试 2、EBS 前可扩容/失败后只复用、旧分类不跨 MapKey、map_key 配对断言；8 条测试）。**门读数**：minix-boot 45/0、boot-shim test-all 51/0（默认 uefi 39/0）、三架构 + aarch64-uefi check 0 error、clippy 无新面、doc-lint 0。**诚实边界**：本段全部为宿主可测层；raw `boot_services` 字段取值、arena/map buffer 分配与 `prepare_boot` 接线（2c）、接收端受控复制（3）、剩余失败面（4）、D-67/D-69（5）未动，生产启动路径零改动。
 
 - `2026-10-29` zcode-glm / T1 子步 3a–5b（`claim/01TODO-T1E..T1G` → 合并笔 `b367e56c5` / `b65bca3fe` / `11ed113ba`）：3a `handoff_v1_read.rs` 接收端解码器（信封校验/哨兵/分区再验证/元素级拷贝，9 条测试）；**4 九面失败测试 ✅**（逐面对应 ebs_map/ebs_pair/read 的测试名已写入 01-todo §2.2）；5a D-69 单一 `build_kernel_info`（boot-shim 库根，9 参含 reserved_regions；删两份漂移副本；opensbi/直核腿改传 `DtbMemoryMap` 的 reserved，riscv 直核腿此前丢失的固件区回到 `KernelInfo`）+ D-67「唯一跨边界数据」旧口径改写；5b `param_buf()` getter。**门读数**：minix-boot 54/0、boot-shim test-all 51/0；三架构 + aarch64-uefi check 各 0 error；两个生产镜像冒烟 PASS（riscv bootface、aarch64 smp-aps）；doc-lint 0。**余下**：2c/3b 联合切根（aarch64 跨镜像腿 arena 分配/序列化/配对循环/`x0=arena` 跳转 + 内核 resume 解码与受控复制进落地区），与 T5 第五块落地区同批接线；T1 共享层与可测层至此完成。
+
+**合回读数（第一百八十笔补记，批次四百六十六）**：本支六笔（码笔 `003be029a`、文档笔 `878a9e10b`、
+里程碑笔 `0b4e4e7a0`、合并笔 `da9ca7547`、二次合并笔 `813211226`、三次合并笔即分支顶 `ea2b5b8ae`）
+合回时并发线**正在连续落盘**：领取时的基线是 `e250214e4`，做完三笔后 `rewrite` 已到 `b367e56c5`
+（01TODO-T1A..T1E/N5/DOC 二十七笔），第一次合并只撞一处——`new_edge4.md` 的尾追（本线要插
+第一百八十笔，那侧要加 zcode-glm 的第六批、第七批、T1 1a、T1 1b–2b 四条子弹），按两侧各留全解
+（编号里程碑在前、并发流水子弹在后）；解完之后主树又前进四笔（T1 5a/5b），因与本批八件
+**零交集**，第二次合并只核一次即净落；再往前一笔（T1 3a–5b 的里程碑回写，只碰 `new_edge4.md`），
+第三次合并由 `ort` 自动并上（`+2` 行、无标记）。判据在这一笔是可重复的：**快进资格必须每次
+当场重验**——`git merge-base --is-ancestor rewrite <分支顶>` 要在**合并之后**再跑一次，
+不能拿两分钟前那次「可快进」的读数当真（本笔就是靠这条重验发现了主树又动了两次）。
+预判冲突的口径也留在这里：只有**按提交区间**列文件才算数
+（`git diff --name-only <上一个已合入点>..rewrite`），按树比（`da9ca7547..rewrite`）会把本线自己
+改过的文件也列进交集，看起来像八件全撞——本笔第一遍就差点被这个假交集带偏。
+逐笔验祖先：六笔 `git merge-base --is-ancestor <笔> rewrite` **全 ✓**，快进后主树 `rewrite` 与
+领取树顶同为 `ea2b5b8ae`（`8 files changed, 706 insertions(+), 161 deletions(-)`）。
+主树当场复跑 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` →
+**69 段 / 1270 / 0**，其中库内 626、`pr_face` 19、`bin_support_face` 4
+（`tmp/pr-466-maintree.log`），与领取树最终态逐数相同。门②那条「不同树不可比」的口径本笔第三次
+核：同一条 `notes-link-check` 在领取树是 764 个 md / 断链 131（与上一笔同数、本轮新增内容零命中），
+在主树（快进后）另测；两树绝对数不可比，可比的是同树跨轮。取证回抄已办：`tmp/pr-466` 整目录
+（32 件、952K）复制进主树 `tmp/`，`ab.log`、`pkg-post.log`、`container-final.log`、`negctl-P5.log`、
+`clippy-post.log` 与领取树逐字节核 md5 相同。主树门④的存量 error 仍全落在别线在制的
+01-stage 两个文件（本线四件 0 条），未动。
