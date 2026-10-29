@@ -48,6 +48,17 @@ pub mod loader;
 #[cfg(feature = "uefi")]
 pub mod uefi_helpers;
 
+// UEFI-leg descriptor walker/classifier for the v1 handoff pairing loop
+// (T1). Host-testable half; the raw GetMemoryMap/ExitBootServices ABI calls
+// stay in `uefi_helpers`.
+#[cfg(feature = "uefi")]
+pub mod ebs_map;
+
+// Scheme-B pairing loop (GetMemoryMap -> classify -> ExitBootServices) with
+// injected firmware calls; host-testable retry/buffer discipline.
+#[cfg(feature = "uefi")]
+pub mod ebs_pair;
+
 #[cfg(feature = "opensbi")]
 pub mod opensbi_helpers;
 
