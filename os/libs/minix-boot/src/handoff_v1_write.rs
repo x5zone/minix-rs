@@ -271,6 +271,28 @@ impl<'a> Serializer<'a> {
         );
     }
 
+    /// Dual-write one classified reserved range (non-conventional map
+    /// entries). Same partition discipline as [`Self::push_memmap`].
+    pub fn push_reserved(&mut self, region: MemoryRegion) -> Result<(), HandoffV1WriteError> {
+        if self.reserved_n >= WIRE_RESERVED_CAP {
+            return Err(HandoffV1WriteError::TooManyReservedRegions);
+        }
+        let off = self.reserved_n * 16;
+        self.write_wire_region(WIRE_RESERVED_OFFSET + off, &region);
+        self.write_semantic_region(SEMANTIC_RESERVED_OFFSET + off, &region);
+        self.reserved_n += 1;
+        Ok(())
+    }
+
+    /// Finalize the reserved descriptor after the classification loop.
+    pub fn finish_reserved(&mut self) {
+        put_u64(
+            self.arena,
+            offsets::RESERVED_BYTE_LEN,
+            (self.reserved_n * 16) as u64,
+        );
+    }
+
     /// The raw arena bytes (tests and diagnostics).
     pub fn as_bytes(&self) -> &[u8] {
         self.arena
