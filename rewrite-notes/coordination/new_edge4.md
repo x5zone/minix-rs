@@ -2433,3 +2433,123 @@ P6（把 `-i` 也改成带符号形）两枚注入**各红两层**，各自咬�
 01-stage 两个文件（本线四件 0 条），未动。
 
 - `2026-10-29` zcode-glm / T5 + TODO-04（`claim/01TODO-T5-zcode-glm` / `01TODO-T4A-zcode-glm` → 合并笔 `6277a1d6a` / `014c929ff`）：T5/D-70 落地区扩到五块——`PLATFORM_SOURCE_STORE`（4 条，补 `BklProtected` 审计条目）与 `PARAM_BUF_STORE`（1024，先清零再复制），`store_kernel_info` 五块全部重指向 `.bss`；落地区测试扩平台源/param（含幂等再存指针稳定），超容量负控 5 枚（kernel mock 845/0/8）；01 篇 §4.5 三块→五块、M8/TODO-03、§5.2 计数 4→6。TODO-04 文本级先行：`os/boot-shim/tests/ebs_boundary_audit.rs` 切 `prepare_boot` 体、去注释、扫 EBS 后语句（零 `uefi::`/`boot::`/allocate/free/drop），带注入负控与注释豁免自检（3/0）；T1 配对循环接线后升级检查范围。**门读数**：三架构生产 check 各 0 error、doc-lint 0。**在册**：T1 的 2c/3b 联合切根（与 T5 已备齐的落地区接线）、T3/T2/D-59/D-72/D-73/TODO-05/I-25。
+
+### 第一百八十一笔（批次四百六十七 · A2 参数缝半切片 49：`sort` 的字段分隔符、记录分隔符、操作数与四处回显交回原字节；同一枚 `ff` 走 `-R` 的两条路径有两种下场）
+
+**这一支先说形状上的两件事**。第一件：`sort` 的 optstring 是 `minix3/usr.bin/sort/sort.c:148` 的
+`"#adFfmrte?h:i?l:n?o:rR:sSt:T:ux"`——二十个字母，带值的六个是 `D`/`k`/`o`/`R`/`t`/`T`，
+其余十四个不带值。第二件更影响做法：**它的选项环整个住在库里**
+（`os/commands/usr-bin/textfilter/src/sort.rs:fn parse_options`），壳只交下 argv、再按交回的
+`ParseError` 拼句子，所以这一轮的库门有牙——与上一支 `pr` 同类、与「环住在壳里」的 `nl` 相反。
+值的六个去处逐条带锚点：`-t` 的首字节写进 `d_mask`（`:219`）决定字段怎么切，因此**进比较**；
+`-R` 的首字节决定记录边界（`files.c:113-124` 的 `getrec`）并被 `putrec` 补在每条记录之后
+（`files.c:194`、`:215`）；`-k` 的串交给 `setfield`/`setcolumn`（`init.c:159-217`），那五句 `errx`
+**都不带** `%s`；`-o` 与操作数是路径；`invalid record delimiter %s` 回显 `optarg` 从游标起的原字节
+（`sort.c:233-238`）；字母位来自 libc（`getopt.c:79` 一次进一个字节、`:103` 的 `%c` 原样写出），
+措辞是 `unknown option`——与上一笔 `pr` 自带 `egetopt.c:148` 的 `illegal option` 在**同一张跨壳表**里
+并存，这是「拿同族规律抹平会把句子写错」最省事的实物对照。
+
+**本轮的正菜是判据的第三种形态：同一个变量的符号性随赋值路径分叉**。`REC_D` 在 C 里是 `int`
+（`sort.c:96` 声明、`:226` 赋值），而它有两条来路：**字符路径** `REC_D = *optarg` 经过带符号的
+`char`，所以 `-R<ff>` 拿到的是 **-1**；**数值路径**（`-R\377`、`-R 255` 之类经 `strtol`，
+`:228-238` 还带 `REC_D < 0 || REC_D >= NBINS` 两道拒收，`NBINS` 是 `sort.h:77` 的 256）拿到的是
+**+255**。两个可观察后果：① `-t` 那一支查 `d_mask[(u_char)*optarg] & REC_D_F`（`:219-220`），
+字符路径把那位写到表外（`d_mask[-1]` 的越界写；本层不复制越界，只取它唯一可观察的后果
+「不算冲突」），数值路径正落在 `d_mask[255]` 上——所以 `-R<ff> -t<ff>` **不**冲突而
+`-R\377 -t<ff>` **是**冲突；② `getrec` 比的是 `int ch = getc()`（0..=255）与 `REC_D`，所以字符路径
+那一枚永不命中，整份输入是一条记录。本层此前把 `record_delim` 存成 `u8`，两路混为一谈，
+于是 `-R<ff> -t<ff>` 报了一句 C 根本不报的 `record/field delimiter clash`——**这一形是 A/B 逮出来的**
+（参照件交回 `x\n\xff` 退 0，本壳退 2 且无输出）。现在字段类型改 `i32` 照 C 建模，写出去那枚仍是
+低字节（`putchar` 的 `int`→`unsigned char`），五形现量两侧全等。前两轮各给过一条：`jot` 是
+「取到的尾字节经 `char` 落地所以为负」，`pr` 是「同一枚字节进比较时符号性随**两侧类型**而分叉」，
+本轮是「随**赋值路径**分叉」——同族判据至此有三种形态，且都是 A/B 而非门先发现的。
+
+**参数缝本身的落点**：`parse_options` 收 `&'a [&'a [u8]]`，`PrArgs`/操作数改 `&'a [u8]`，
+`c_atoi`/`scan_long`/`scan_column`/`parse_key` 一律按字节（`-k` 的 `rest` 从 `&str` 改 `&[u8]`；
+它的分支判据本来只认 ASCII 数字与修饰字母），`-R` 数值形失败那句的回显位真的按 `Vec<u8>` 拼出；
+壳侧走 `args_bytes()`/`prog_name_bytes()`，操作数那一句是 `err(2, "%s", argv[i])`（`sort.c:285`）
+的三段形，本壳自己拼，**名字位与参照件逐字节同形**（以前经 `support::warn_line` →
+`minix_sys::err_line(&str)` 会把裸字节折成 U+FFFD）。壳内 `from_utf8_lossy` 现量 **5 处**
+（程序名、`-o` 两处、记录内容、操作数开档），**每一处都挂名在册项**——`sort` 因此是本族折点最多的一支，
+而这恰好是它的结构决定的：它同时有开档、开写、路径试探三条腿。
+
+**三条边界登记不执行**（都是现量之后判定「不在本轮射程」的）：① 记录内容本身是 `String`
+（`bin/sort.rs:fn split_records` 过 `from_utf8_lossy`），所以「输入里带裸字节」的形两侧不同——
+本壳交回 `a\xef\xbf\xbdb\n\xff`、参照件交回 `a\xffb\n\xff`；登记
+`SORT-RECORD-CONTENT-TEXTSEAM`。这条同时给出了**参数缝改到了哪一步**的证据：argv 那头的字节现在对了，
+内容那头的折叠才单独暴露出来（改之前两处一起错，读数上反而看不出来）。② `-o` 整条输出腿经
+`bin_support` 的 `&str` 路径 API（`probe_path`/`create_sink`/`temp_candidate`），属「路径缝」另一条射程。
+③ `fixit()`（`sort.c:151`）把 `+field` 换成 `-k field`，本树未建模，于是 `+2` 在这里被当档名
+（参照件接受并按第二字段排）；登记 `SORT-PLUS-FIELD-LEGACY-UNMODELLED`。另有 `D`/`T`/`x` 三个字母
+落进「集外字母」那一支，登记 `SORT-D-T-X-LETTERS-UNMODELLED`。
+
+**参照件自身有一条缺陷，必须写在差分口径前面**：`tmp/family-diag-ref/sort_ref` 是 minix3 的 sort
+源码链宿主 glibc（`strings` 里能看到 `record/field delimiter clash` 与那条 `usage: %s … [-R char]`，
+所以判据可用），但它**一走到自己的 `usage()` 就 SIGSEGV**（rc 139；`-Z` 与 `-t, -t;` 两形当场都是）。
+于是凡以 usage 收尾的形只能比「那一行报的是哪枚字节」，不能比退码与全文；字母位的绝对读数改由
+Minix `getopt.c` 探针承载（主树 `tmp/sort-411/probe`，本轮现跑交回 `optopt=0303` 即 `c3`、
+`0377` 即 `ff`，与本壳逐枚相同）。这套两段口径是批次四百一十一立下的，本笔只是继续用它，
+并新记一条：**重建那枚探针要 `sys/featuretest.h` 一整套 Minix 头树，直接 gcc 会失败**，
+所以用现成件、别再试重编。
+
+**负控六枚（`tmp/sort-467/negctl.py` Q1..Q6）各咬 3/3/2/1/1/0**：Q1（壳侧 argv 退回文本缝）咬面门
+两枚 + 跨壳表而**库内全绿**（壳的缝够不到库门，与 `pr` 的 P1 同形）；Q2（`-t` 的取值折一次）咬库门
+两枚 + 面门；Q3（`-R` 的取值折一次）咬库门 + 面门；Q4（回显位折一次）与 Q5（操作数名字位折一次）
+各咬面门一枚——这两条决策本来就住在壳里。**Q6 是有意放进去的「无分辨力探针」**：把 `-k` 的 spec
+折一次，三档门全绿、cargo 退 0。原因是那五句 `errx` 都不带值，而折叠串与裸字节停在同一个位置
+（既不是数字也不是修饰字母），所以折叠前后走同一支、交回同一句。它留在脚本注释与本文里，
+是为了让下一次看到「注入不红」时能立刻分清是**漏测**还是**这条腿本来没有可观察差**——
+「一整段全绿先怀疑覆盖面有洞」这条判据要有这一半才算完整。
+
+**两起当场自错**：① 操作数那枚门第一版把期望写成「两枚开不了的档名各报一句」，实测两侧都是
+**只出第一句**——C 的 `err(2, …)` 自己终止进程，不是「报完再退」；期望按实测改写并在注释里写明理由。
+② 我把 C 的八进制 `"\377"` 直译成 Rust 的 `b"-R\377"`，编译期就报 `unknown byte escape`——
+**Rust 的字节串没有八进制转义**，要的是「一个反斜杠 + 377」这五个字符，得写 `b"-R\\377"`；
+同类直译风险在 `"%b %e %H:%M %Y"` 那种 strftime 格式串上也在。
+
+**五道收尾门逐条读数**（`2026-10-30`，码笔 `7f6ed9413`、文档笔 `d2c47b2dd`）：①
+`bash tools/todo-reconcile-scan.sh` → 13 项里 **1 项 DRIFT**（`探针命名族（行）` 32 vs 基线 18），
+同一条命令在 HEAD 也是 32，且本轮改动四件各 **0** 命中 ⇒ 非本轮引入，归一线在制（连续第四笔同一条件数）；
+② `python3 tools/notes-link-check.py rewrite-notes/` → 764 个 md、**断链 131**（连续三笔同数），
+本轮新增行落在 `todo.md:122..228`、`07-text-filter.md:6`、`:195`、板 `:27`，逐行核对这四处**零命中**；
+③ `bash tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md` → **PASS（0 项）**；
+④ `bash tools/doc-style-lint.sh --diff` → 3 个文件 / 111 个新增行、**error 级 0**；
+⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条（`TODO-3ARCH-PARITY-20261006.md`）未触碰。
+
+**门读数补全**：宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` →
+**69 段 / 1273 / 0**（`tmp/sort-467/pkg-post.log`；负控还原并重编之后的 `pkg-final.log` 同数）；
+容器权威门退 0、**69 段 / 1273 / 0** 与宿主同读数（`container-final.log`）；三架构
+`cargo check --offline -j 1 --target {x86_64-unknown-none, aarch64-unknown-none,
+riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0、错误 0（`arch-*.log`——
+中途一次三架构**同红**是 `cargo` 跑在了仓库根而不是 `os/`，同一条判据第四次兑现：
+「计数异常先问跑没跑对地方」）；`rustfmt --edition 2024 --check` 四件**原地** HEAD 0 / 现件 0
+（`fmt-baseline.py`；中途自造的 2 处已格式化归零）；`cargo clippy --offline -j 1 --all-targets
+-p minix-textfilter` 退 0、共 **149** 条、**改动四件上 0 条**，与主树（HEAD 态）同四件做
+（文件, 消息）集合差为**空**——中途那次 151 条是本轮自造的两条（`&bytes[..]` 冗余切片、
+`parse_key(&spec[0])` 多取一层引用），已改。**A/B 对 `tmp/sort-467/sort` 跑，矩阵四十五形，
+SAME=29（其中退 0 的 17 形先数过）/ 字母位三方核通过 6 形 / 非预期 DIFF=0 / 已知分叉另计 10 形**
+（`tmp/sort-467/ab.log`），五类计数按实数为：`SORT-RECORD-CONTENT-TEXTSEAM` **4** 形、
+`SORT-D-T-X-LETTERS-UNMODELLED` 3 形、`ARGV-BYTE-PATH-IN-LIBS` 1 形（真实存在的裸字节档名
+本壳打不开）、`-o` 路径缝 0 形（那一形实测两侧同形，已归回归项）、参照件自身走 `usage()`
+段错误 1 形、`SORT-PLUS-FIELD-LEGACY-UNMODELLED` 1 形——合计 10。**门账**：库内 `sort` **28 → 29**、`sort_face` **22 → 24**、
+跨壳表十八行 → **十九行**、整包 69 段 **1270 → 1273**。
+
+**进度与在册（全部现量）**：参数缝半已落 **二十二支**；`textfilter` 余 **17** 支
+（`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l`）、命令面 **86** 支；
+渲染半那条 grep 仍 **0** 行；`line_bytes` **40 处 / 29 件**（`sort` 本来就在其中）。余下 17 支里
+带字母位诊断面的有 **5** 支（`split`、`tail`、`unexpand`、`unifdef`、`vis`），**切片 50 建议
+`split`**：字母序第一支，它的 `-a`/自动后缀长度与操作数尾巴都在字节链上，且
+`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE` 已在册、可与本轮同批裁。**在册未办的六条建议**：
+①插一小轮收 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`；②`jot` 那三条拿真机量一次；
+③裁 `NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED` 那族判据；④`PR-EGETOPT-NUMBER-TOKEN-CONTINUATION`
+（六形现量，一个批次量级）；⑤本轮新立的 `SORT-RECORD-CONTENT-TEXTSEAM`（**内容半**，
+比参数缝大一档，但它现在是 `sort` 剩余读数的唯一大头）；⑥`TEXTFILTER-07-TABLE-UNESCAPED-PIPES`。
+独立轮在册不碰：`ARGV-BYTE-PATH-IN-LIBS`、`CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-*` 三枚、
+`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、五枚 `*-NON-PERMUTE-OPERAND-TAIL`、
+`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`COL-CLIPPY-STOCK-LINT`、
+`BIN_SUPPORT-FMT-DRIFT-STOCK`、`REV-MULTIBYTE-ERROR-LEG`、`NL-*` 四枚、`HEAD-*` 两枚、
+`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`、`JOT-*` 两枚、`PR-TIMEFIELD-UNRENDERED`、
+`PR-UNMODELLED-LEGACY`、`PR-EGETOPT-NUMBER-TOKEN-CONTINUATION`，**本笔新立**
+`SORT-RECORD-CONTENT-TEXTSEAM`、`SORT-PLUS-FIELD-LEGACY-UNMODELLED`、
+`SORT-D-T-X-LETTERS-UNMODELLED`；`todo-reconcile-scan` 的 `探针命名族` 漂移归一线。
+**取证回抄照办**：release 前把 `tmp/sort-467` 整目录复制回主树 `tmp/`。
