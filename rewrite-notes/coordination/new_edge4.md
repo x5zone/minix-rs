@@ -2570,3 +2570,20 @@ SAME=29（其中退 0 的 17 形先数过）/ 字母位三方核通过 6 形 / �
 `tmp/`，`ab.log`、`pkg-final.log`、`container-final.log`、`negctl-Q6.log`、
 `clippy-post.log` 与领取树逐字节核过 md5 相同——**其中 `negctl-Q6.log` 是有意全绿的那枚
 无分辨力探针，回抄它正是为了让「注入不红」这条读数有据可查**。
+
+**T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
+`9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
+`GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
+`arch_boot_resume_v1` 把五块载荷解码进 T5 落地区后走原 additive 高半序列。旧
+`bootstrap_to_kernel_image` 与 `handoff.rs` 删除，`BootPrepareResult` 保留给 x86/riscv
+进程内路径。偏离一处：`uefi` 0.33 的 `memory_map_size` 是 crate 私有，map buffer 改用
+raw 空缓冲探测加 `BUFFER_TOO_SMALL` 扩容；`uefi-raw 0.9` 成为 boot-shim 直接依赖，
+`Cargo.lock` 未变。门读数：minix-boot **57/0**、boot-shim test-all **53/0** + 边界审计
+**5/0**（新扩到第二条入口）、kernel mock **845/0/8**、三架构 kernel/kernel-image check
+**0 error**、`test-shim-bootmarks-aarch64` **PASS**、合并后 `run_all` **39/0/0**
+（`tmp/01-cboard-baseline-20261030/run-all-t1.log`）。`test-cmd-smoke-aarch64` 到达
+`/etc/rc` 且串口有 `resuming high-half boot (handoff v1 arena)`；`du`/`ls` 目录读腿
+在基线 `f03aa8ffc` 的干净树同样失败（`tmp/01-cboard-baseline-20261030/a64-smoke-baseline.log`），
+属既有 A 板目录读问题，不计本批回归。基线取证同时确认：kernel mock 845/0/8、boot-shim
+52/0 + 3/0、minix-boot 54/0、minix-arch runtime-window 270/0、run_all 39/0/0
+（`tmp/01-cboard-baseline-20261030/`）。
