@@ -1825,3 +1825,5 @@ riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0。A/B 用的产
 `REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE`，**本轮新立两枚** `HEAD-NEGATIVE-COUNT-UNSIGNED-GUARD`、
 `HEAD-COUNT-LEADING-BLANK-ACCEPTED`；`todo-reconcile-scan` 的 `探针命名族` 漂移归一线。**取证回抄照办**：release 前把 `tmp/head-462` 整目录
 复制回主树 `tmp/`。
+
+- `2026-10-20` zcode-glm / C 板收尾（**C3 首源读数到手——B 板代领完成，C 板可做件终局清零**）：`claim/C3-zcode-glm`（release 先于 merge 险情以提交哈希 `ef23cbbf0` 直接合并化解）→ 合并笔 `f425e8c0f`。交付=UART RX（PLIC IRQ10）回环驱动（`kernel/uart_irq.rs`：register_hook 首挂自动 unmask + `set_irq_priority` 三层 API + `sie.SEIE` + IER.ERBFI + **脉冲式 MCR.LOOP** 使能序）+ 载体阶段（test-timer-irq PASS 门=uptime ∧ 首源 matched>0）。诊断三层定案：①上段「stride 0x2000 修复」实为**误修**（QEMU `sifive_plic.c` CONTEXT_STRIDE=0x1000、规范 CONTEXT1@0x201000、DTB `interrupts-extended <0x0b,0x09>` 证 hart0-S=context1——回滚并留注）②真病根=脉冲式 LOOP 序（LOOP 悬置=同 UART 控制台内环失聪+控制台字节反成 RX 垃圾源）③修后 claim→钩子→match 三环真机全通：`uart-rx first-source ok`+`TEST_RESULT: PASS`，mock 834/0/8、aarch64 check 0 error、全量 **39/0/0 维持**。PLIC 设备驱动两件必修常识入板行：**priority 复位 0=永不投递必写**、**MCR.LOOP 悬置=控制台失聪**。C 板 21 行终态=全闭或外部门控（C2b/C4/C7 族/C11 案结/C1 案结/C3 首源✅本笔解/C8-C21 人裁绑定），门控地图与解除钥匙见 PARALLEL-C。

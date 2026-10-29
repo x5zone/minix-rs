@@ -330,6 +330,12 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     }
     early_console::write_str("  SIE=1 — polling uptime\n");
 
+    // 8. SD-41/C3 首源触发：UART RX（PLIC IRQ 10）回环自证——MCR.LOOP 内环
+    // 免外部输入，SEI 全链（UART 设备→PLIC→claim→钩子链→complete）真机点亮。
+    early_console::write_str("  uart-rx selftest arming...\n");
+    minix_kernel::uart_irq::enable_uart_rx_selftest(b'C');
+    early_console::write_str("  uart-rx selftest armed (loopback 'C')\n");
+
     let start = minix_kernel::clock::get_monotonic(&section);
     let target = start + PASS_TICKS;
     let mut last = start;
@@ -341,10 +347,24 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
             early_console::write_hex(now);
             early_console::write_str("\n");
         }
-        if now >= target {
+        let (fired, matched) = minix_kernel::uart_irq::readings();
+        if matched > 0 && now >= target {
+            early_console::write_str("  uart-rx first-source ok\n");
             early_console::write_str("### TEST_RESULT: PASS test-timer-irq-riscv64 ###\n");
             loop {
                 // SAFETY: privileged halt; PASS already printed.
+                unsafe {
+                    asm!("csrc sstatus, {}", in(reg) 2u64, options(nomem, nostack));
+                }
+            }
+        }
+        if now >= target + 10 {
+            // 首源超窗：uptime 已证但 SEI 设备链未亮——显式 FAIL 标记。
+            early_console::write_str("### uart-rx: no first-source within window (fired=");
+            early_console::write_hex(fired as u64);
+            early_console::write_str(") ###\n");
+            early_console::write_str("### TEST_RESULT: FAIL test-timer-irq-riscv64 ###\n");
+            loop {
                 unsafe {
                     asm!("csrc sstatus, {}", in(reg) 2u64, options(nomem, nostack));
                 }

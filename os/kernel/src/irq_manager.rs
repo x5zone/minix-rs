@@ -345,6 +345,12 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
         self.controller.init();
     }
 
+    /// Set the controller-side priority for an IRQ line（riscv64 PLIC；
+    /// SD-41/C3 首源触发的使能半之一）。无优先级寄存器的控制器为 no-op。
+    pub fn set_irq_priority(&mut self, irq: IrqVector, priority: u32) {
+        self.controller.set_irq_priority(irq, priority);
+    }
+
     /// Register an IRQ handler.
     ///
     /// Allocates the lowest unused bit ID for the new hook,

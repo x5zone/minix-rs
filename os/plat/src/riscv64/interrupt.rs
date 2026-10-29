@@ -68,6 +68,11 @@ pub struct Riscv64InterruptController {
 
 impl Riscv64InterruptController {
     fn threshold_offset(context: usize) -> usize {
+        // PLIC context 寄存器步长=0x1000（规范 CONTEXT 0@0x200000、
+        // CONTEXT 1@0x201000…；QEMU sifive_plic.c CONTEXT_STRIDE=0x1000；
+        // DTB interrupts-extended <0x0b,0x09> 证 hart0-S=context 1）。
+        // 历史：曾误修 0x2000（=context 2=不存在的 hart1-M），claim 指向
+        // 空地址恒 0——UART 首源轮次实测反转定案后回滚。
         PLIC_THRESHOLD + context * 0x1000
     }
 
@@ -149,6 +154,18 @@ impl InterruptRouter for Riscv64InterruptController {
             unsafe {
                 self.plic_write32(PLIC_ENABLE + self.context * 0x80 + word * 4, 0);
             }
+        }
+    }
+
+    /// SD-41/C3 首源触发：写 PLIC priority（0=永不投递；QEMU 复位值 0，
+    /// 不写则线即使 unmask 也永不上升）。
+    fn set_irq_priority(&mut self, irq: IrqVector, priority: u32) {
+        let irq_num = irq.get() as usize;
+        if irq_num == 0 {
+            return;
+        }
+        unsafe {
+            self.plic_write32(PLIC_PRIORITY + irq_num * 4, priority);
         }
     }
 }
