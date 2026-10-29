@@ -2244,3 +2244,21 @@ blob 拷到 `/tmp` 单独跑，rustfmt 解析不到 `#[path]` 带进来的兄弟
 `NL-MISSING-VALUE-LETTER-HARD-CODED` 与 `NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED`；
 `todo-reconcile-scan` 的 `探针命名族` 漂移归一线。**取证回抄照办**：release 前把 `tmp/nl-465` 整目录
 复制回主树 `tmp/`。
+
+**合回读数（第一百七十九笔补记，批次四百六十五）**：本支三笔（码笔 `52cbcb3c5`、文档笔 `05727e9ce`、
+里程碑笔 `ccfc129b2`）合回时 **`rewrite` 自基线 `cf306a62e` 起没有新提交**——`git log --oneline
+cf306a62e..rewrite` 交回空、`git merge-base rewrite HEAD` 就是 `cf306a62e`，于是这次是**纯快进、零冲突**：
+上一笔那一处 `new_edge4.md` 尾追撞车（两侧各留全解）本笔没有复现，`release` 之前也不需要解任何东西。
+判据照旧不许省：**快进之前先量两边是否真的分叉**，`cf306a62e..rewrite` 为空这句就是「没分叉」的读数，
+而不是「我以为没人动」。快进前另核一次避让：主树 `git status --porcelain` 对本支要改的 7 个文件
+（三件 `os/commands/usr-bin/textfilter/` 与四件 `rewrite-notes/`）交回**空**，其它线的在制内容全在
+`prompt/`、`AI-chats/`、`rewrite-notes/01-stage-kernel/` 那一侧 ⇒ 快进不会覆盖他人在制文件。
+逐笔验祖先（`git merge-base --is-ancestor <笔> rewrite`）三笔**全 ✓**，快进后 `git rev-parse rewrite`
+与领取树顶同为 `ccfc129b2`。主树当场复跑 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter`
+→ **69 段 / 1266 / 0**，其中 `nl_face` 16 枚、`bin_support_face` 4 枚（`tmp/nl-465-maintree.log`），
+与领取树的最终态读数逐数相同。门②那条「不同树不可比」的口径本笔再核一次：同一条 `notes-link-check`
+在领取树是 764 个 md / 断链 131，在主树（快进后）是 2010 个 md / 断链 **222**——主树多出的那一千多个
+md 是 `minix3/`、`redesign-notes/` 等未纳入领取树视野的目录，所以两树的绝对数**不可比**，可比的是
+**同树跨轮**：主树上一笔也是 2010 / 222 ⇒ 本笔在主树同样零新增断链。取证回抄已办：`tmp/nl-465`
+整目录（32 件、900K）复制进主树 `tmp/`，关键四件 `ab.log`、`pkg-final.log`、`container-final.log`、
+`kd2-empty-value-oob.log` 与领取树逐字节核过 md5 相同。
