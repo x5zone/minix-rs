@@ -401,11 +401,16 @@ impl<'a> ActiveProc<'a> {
             // D-72: every new root maps the kernel-information page read-only
             // at its fixed user VA. VM owns this mapping and its intermediate
             // page-table pages; the frame itself remains kernel-owned.
-            pt.map(
-                VirBytes(minix_types::KERNINFO_USER_VA),
-                minix_types::PhysBytes(crate::global::kerninfo_pa()),
-                minix_arch::paging::PageFlags::read_only(),
-            )?;
+            // 0 = staged QEMU test kernel without Phase B.5: skip the mapping
+            // (the pre-D-72 test shape).
+            let ki_pa = crate::global::kerninfo_pa();
+            if ki_pa != 0 {
+                pt.map(
+                    VirBytes(minix_types::KERNINFO_USER_VA),
+                    minix_types::PhysBytes(ki_pa),
+                    minix_arch::paging::PageFlags::read_only(),
+                )?;
+            }
 
             self.inner.vm_pt.write(pt);
             self.inner.vm_pt_initialized = true;
