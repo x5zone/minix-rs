@@ -1872,8 +1872,13 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
 //!   consumed pages and remainder are both kernel-reserved) |
 //! | bootstrap-used frames | per-pool-region used suffixes of
 //!   `VmBootAllocator` (walk order: descending from each region's end) |
-//! | reserved module blobs | `KernelInfo.boot_modules()` minus the VM
-//!   module (reclaimed after ELF copy — C 对应物见本篇 2.4.2) |
+//! | reserved module blobs (deduction record) | `KernelInfo.boot_modules()`
+//!   — **every** blob including VM's own (VM's segment frames come from this
+//!   free list before VM starts) |
+//!
+//! Note the two module lists are different on purpose: the deduction record
+//! keeps every blob, while the handoff module list (`VmBootHandoff.modules`)
+//! excludes VM — C: `kinfo.module_list[]`.
 ```
 
 ```rust
@@ -1884,7 +1889,7 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
     }
 ```
 
-表头那句注释给出口径："consumed pages and remainder are both kernel-reserved"——扣的是**整段**，不是已用部分。理由在本节末的反向推演里。表里还有一行与 C 的差异需要说明：C 在 VM 模块的字节被复制进地址空间之后把它回收（就是 2.4.2 表里的"还 VM 镜像"那一行），而**实现**把**所有**启动模块的字节区间都算作内核保留——上面引文里的"minus the VM module（复制后可回收）"是**表头注释的旧口径**，代码处的扣除段已改为全量保留（含 VM 自己）。理由是启动顺序：内核的 boot-exec 在 VM 服务起来之前逐个装载 0..7 号服务器，它们的段帧正是从这份自由清单里取的；若按 C 那样先把 VM 模块的区间还回去，VM 镜像可能在它自己被启动之前就被后续装载覆盖。
+表头那句注释给出口径："consumed pages and remainder are both kernel-reserved"——扣的是**整段**，不是已用部分。理由在本节末的反向推演里。表里还有一行与 C 的差异需要说明：C 在 VM 模块的字节被复制进地址空间之后把它回收（就是 2.4.2 表里的"还 VM 镜像"那一行），而**实现**把**所有**启动模块的字节区间都算作内核保留。表头把两份清单分开陈述：扣除记录含 VM 自己，交接模块清单（`VmBootHandoff.modules`）才按 C 的 `kinfo.module_list[]` 排除 VM。理由是启动顺序：内核的 boot-exec 在 VM 服务起来之前逐个装载 0..7 号服务器，它们的段帧正是从这份自由清单里取的；若按 C 那样先把 VM 模块的区间还回去，VM 镜像可能在它自己被启动之前就被后续装载覆盖。
 
 **改成按"已用部分"扣除会怎样**（用 `boot_alloc_used_bytes()` 而不是 `boot_alloc_region()`）。设 bump 区间是 `[0x1E00000, 0x2200000)`（1024 页 = `0x400000` 字节，与 `prepare_boot(1024)` 的预算同量级），boot 阶段用掉前 100 页（`100 × 0x1000 = 0x64000` 字节），于是游标停在 `0x1E00000 + 0x64000 = 0x1E64000`，而 VM 的账上会剩下 `[0x1E64000, 0x2200000)` 可用。下一次 `map_huge` 分配中间页表页时 `fetch_add(0x1000)` 返回 `0x1E64000` 并把它写零（`write_bytes(pa as *mut u64, 0, 512)`）——而这一页刚被交给 VM 的物理内存管理器。若 VM 已经把它分配给某个进程页表，写零就把那张表的一个条目变成 0；切换 `CR3` 之后，被这条目覆盖的虚拟地址取指即页错误。现场只能看到一个"凭空消失"的映射。
 
