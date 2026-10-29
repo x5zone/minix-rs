@@ -134,6 +134,24 @@ if [ "$reached" -ne 1 ]; then
 fi
 echo "serial: scheduler hand-off reached — waiting for the T4 command marker"
 
+# ── Stage 3b: the shim-to-kernel hand-off markers (M14 x86_64 route). ──
+# Until this check existed, only the scheduler marker was asserted, so a
+# shim that silently skipped loading/printing still passed. The order below
+# is the boot order: kernel staged → 12 modules loaded → control handed over.
+M14_MARKERS=(
+    "boot-shim: kernel loaded"
+    "boot-shim: 12 boot modules loaded"
+    "boot-shim: handing control to kernel arch_boot"
+)
+for marker in "${M14_MARKERS[@]}"; do
+    if ! grep -qF "$marker" "$SERIAL_LOG" 2>/dev/null; then
+        echo "FAIL: M14 shim marker missing from the serial log: '$marker'"
+        tail -12 "$SERIAL_LOG" 2>/dev/null || true
+        exit 1
+    fi
+done
+echo "serial: three shim hand-off markers present (M14)"
+
 # ── Stage 4: the T4 command-output window. ──
 t4=0
 for _ in $(seq 1 "$TIMEOUT_T4"); do
