@@ -249,6 +249,9 @@ park:
     rust_image_main = sym rust_image_main,
 );
 
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+mod bootface_common;
+
 #[cfg(target_arch = "riscv64")]
 mod bootface;
 

@@ -46,10 +46,8 @@ use minix_boot::{
 use minix_types::{PhysBytes, VirBytes};
 
 use boot_shim::opensbi_helpers::{
-    BootFileTable, boot_file_table_magic, bump_alloc_pages, bump_end_bound, bump_pool_base,
-    build_kernel_info,
+    BootFileTable, bump_alloc_pages, bump_end_bound, bump_pool_base, build_kernel_info,
 };
-use boot_shim::loader::MODULE_NAMES;
 
 use crate::early_console;
 
@@ -62,50 +60,18 @@ use crate::early_console;
 // 在物址腿读它，kernel/src/lib.rs:734）。
 const _: () = assert!(NR_BOOT_MODULES == 12);
 
-/// 12 名 × 16B 定长字节池（顺序 = C `table.c:44-64` 权威序 = `MODULE_NAMES`，
-/// 字节池是纯数据（无 baked 指针），base 经调用点 `auipc` 物化，物理视图
-/// 下按字节读安全；`[u8;16]` 而非 `&str` 正是为了不在数据格里存任何指针。
-const NAME_POOL: [[u8; NAME_SLOT]; NR_BOOT_MODULES] = [
-    *b"ds\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"rs\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"pm\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"sched\0\0\0\0\0\0\0\0\0\0\0",
-    *b"vfs\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"memory\0\0\0\0\0\0\0\0\0\0",
-    *b"tty\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"mib\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"vm\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"pfs\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"mfs\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    *b"init\0\0\0\0\0\0\0\0\0\0\0\0",
-];
-
-/// 名字槽宽（= 内核 `BOOT_MODULE_NAME_LEN` 同阶 16B）。
-const NAME_SLOT: usize = 16;
-
-/// 字节池与契约名单的编译期逐字节对账（CodeReview SF6：虚构的「宿主测试」
-/// 不存在——bootface 在宿主面根本不编译，名字序此前零护栏）。对账发生在
-/// 真会坏的构建面（riscv 生产配方）：池槽前缀必须等于 `MODULE_NAMES[i]`
-/// 字节、紧随零终止（与内核 `store_kernel_info` 的 min(15) 截断语义相容：
-/// 最长名 `memory`=6 字节，截断永不发生）。
-const _: () = {
-    let mut i = 0;
-    while i < NR_BOOT_MODULES {
-        let want = MODULE_NAMES[i].as_bytes();
-        let got = &NAME_POOL[i];
-        assert!(want.len() < NAME_SLOT, "module name exceeds NAME_SLOT");
-        let mut j = 0;
-        while j < want.len() {
-            assert!(got[j] == want[j], "NAME_POOL order drifts from MODULE_NAMES");
-            j += 1;
-        }
-        assert!(got[want.len()] == 0, "NAME_POOL slot not NUL-terminated");
-        i += 1;
-    }
+// 名字池/槽宽与纯函数闸（`be_cell`/`in_memmap*`/`table_magic_ok`/
+// `fdt_table_pa`）由两个自引导面共用，住在 `bootface_common`（N-4）。
+use crate::bootface_common::{
+    NAME_POOL, NAME_SLOT, fdt_table_pa, in_memmap, in_memmap_range, table_magic_ok,
 };
 
 // ── 布局契约常量（与 riscv64.ld 同源；check-layout.sh L0/L9/A1 与真机
 //    `Domain0 Next Address` 对账防漂移）──
+//
+// 本组是架构真值（DRAM 基址/镜像物理基址/池基），与 aarch64 半不同源，
+// 因此各留一份、互指而非共享；两份共用的名字池与纯函数闸在
+// `bootface_common`（N-4 处置）。
 
 /// QEMU virt DRAM 基址（DTB/表界闸的下界；与 `riscv64.ld` 头注、
 /// `opensbi_helpers::DRAM_BASE` 同值，L0/A1 已护基址不漂）。
@@ -295,14 +261,6 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
 /// `find_node` 在姊妹链上对固件重建 blob 返回 None（aarch64 直核链
 /// 实证）；riscv 现链门读数证明 find_node 在本链 blob 上可用，换
 /// 全树遍历属零行为变化的兜底统一，防未来 DTB 形态漂移踩同一缺陷。
-fn fdt_table_pa(fdt: &fdt::Fdt<'_>) -> Option<u64> {
-    let chosen = fdt
-        .all_nodes()
-        .find(|n| n.name.split('@').next() == Some("chosen"))?;
-    let prop = chosen.property("opensbi,boot-file-table")?;
-    be_cell(prop.value)
-}
-
 /// DTB 区块界闸（CodeReview SF2）：totalsize 自描述，但必须验证整块
 /// 落在可寻 DRAM 形内——`[DRAM_BASE, 0x1_0000_0000)` 是本平台（QEMU virt
 /// 基址 + 4GiB 下界）的保守物理内存上界，更大 blob 或高位址一律拒收，
@@ -310,40 +268,6 @@ fn fdt_table_pa(fdt: &fdt::Fdt<'_>) -> Option<u64> {
 /// 头部才能解树），所以这里用物理形不用车道值。
 fn dtb_bounded(dtb_pa: u64, total: usize) -> bool {
     dtb_pa >= DRAM_BASE && dtb_pa + total as u64 <= 0x1_0000_0000
-}
-
-/// 大端 cell 取地址值：4 字节 u32、8 字节 u64。
-fn be_cell(bytes: &[u8]) -> Option<u64> {
-    match bytes.len() {
-        4 => Some(u32::from_be_bytes(bytes.try_into().ok()?) as u64),
-        8 => Some(u64::from_be_bytes(bytes.try_into().ok()?)),
-        _ => None,
-    }
-}
-
-/// 地址是否落在 memmap 任一区间内（防炸闸：hartid/垃圾值不当指针用）。
-fn in_memmap(memmap: &[MemoryRegion], pa: u64) -> bool {
-    memmap.iter().any(|r| pa >= r.base.0 && pa < r.base.0 + r.len as u64)
-}
-
-/// 地址区间是否整体落在 memmap 任一区间内（防炸闸：hartid/垃圾值不当
-/// 指针用；区间形而非单点——CodeReview SF3 要求消费前验全宽）。用
-/// `checked_add`：`pa + len` 对任意（含现实不可达的超大）`len` 都不回绕，
-/// 溢出即视为越界拒收（CodeReview 续-89 N1：让全宽闸与输入无关地成立）。
-fn in_memmap_range(memmap: &[MemoryRegion], pa: u64, len: u64) -> bool {
-    let Some(end) = pa.checked_add(len) else {
-        return false;
-    };
-    memmap
-        .iter()
-        .any(|r| pa >= r.base.0 && end <= r.base.0 + r.len as u64)
-}
-
-/// magic 闸：在 `in_memmap` 界内解引用一个 u64 核对表签名。
-fn table_magic_ok(pa: u64) -> bool {
-    // SAFETY: 调用方已保证 `in_memmap(pa)`——地址在 DTB 报告的 DRAM 内，
-    // 可读；只读一个对齐 u64；boot 面单 hart 无并发。
-    unsafe { (pa as *const u64).read_volatile() == boot_file_table_magic() }
 }
 
 // ── BootFileTable 消费（kernel-image 形状：源直拷入物理 bump 页、零堆）──
@@ -378,6 +302,9 @@ static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
 /// enable 前的物址腿）就 `module.name.as_bytes()` 读一次（kernel/src/
 /// lib.rs:734），baked VMA 递进去同样当场炸。字节池槽（纯数据，调用点
 /// `auipc` base）拷进物理名字池后，胖指针现场拼装——两份视图都可达。
+///
+/// aarch64 半 [`place_modules`] 与本函数逐条同形（差异仅 bump 池基），
+/// 两份互指、改对位闸时同步（N-4 判据：结构性合并超出射程）。
 fn place_modules(
     table: &BootFileTable,
     memmap: &[MemoryRegion],
@@ -474,6 +401,10 @@ fn place_modules(
 }
 
 // ── 串口面（无堆：定长字符串 + 手写 hex）──────────────────────
+//
+// `say` / `say_hex` 与 aarch64 半逐字同形，但 console 实现按架构不同
+// （riscv 走本文件顶部的 `early_console`，aarch64 走 `minix_plat::arm64`），
+// 故不下沉到 `bootface_common`；两份互指，改语义时同步。
 
 fn say(msg: &str) {
     early_console::write_str(msg);
