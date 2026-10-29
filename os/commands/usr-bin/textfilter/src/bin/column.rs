@@ -33,9 +33,11 @@ mod support;
 use minix_textfilter::column::{columnate, parse_column_args, scan_entries};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名那一腿交给 `warn_line` 与 `GetoptReport::line_bytes` 的 `&str` 口（登记
+    // `ARGV-BYTE-PATH-IN-LIBS`），所以臂内折一次；操作数与 `-s` 的值不跟着折。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // C 的选项环把 `'?'` 与集外一切交回 `default: usage()`（`column.c:107-109`），
     // 而 libc 在返回 `'?'` 之前自己先印一行（`getopt.c:101-104`、`:132-136`）。
     // 那一行走字节形 `line_bytes`：libc 的字母位是一个裸字节（`getopt.c:79` 的
@@ -44,8 +46,8 @@ fn run() -> ! {
     let (options, operands) = match parse_column_args(&args[1..]) {
         Ok(a) => (a.options, a.operands),
         Err(report) => {
-            support::warn(&report.line_bytes(prog));
-            usage(prog);
+            support::warn(&report.line_bytes(&prog));
+            usage(&prog);
         }
     };
 
@@ -54,13 +56,16 @@ fn run() -> ! {
     let mut entries: Vec<Vec<u8>> = Vec::new();
     let mut rval = 0;
     if operands.is_empty() {
-        collect(&mut entries, &mut rval, &support::read_stdin(), prog);
+        collect(&mut entries, &mut rval, &support::read_stdin(), &prog);
     } else {
         for operand in &operands {
-            match support::read_file(operand) {
-                Ok(bytes) => collect(&mut entries, &mut rval, &bytes, prog),
+            // 开档那一腿仍要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），所以折一次；报文里
+            // 回显的就是这个折叠名——它与真源差在开档腿，不差在回显写法。
+            let path = String::from_utf8_lossy(operand);
+            match support::read_file(&path) {
+                Ok(bytes) => collect(&mut entries, &mut rval, &bytes, &prog),
                 Err(code) => {
-                    support::warn_line(prog, &format!("Cannot open `{operand}'"), code);
+                    support::warn_line(&prog, &format!("Cannot open `{path}'"), code);
                     rval = 1;
                 }
             }

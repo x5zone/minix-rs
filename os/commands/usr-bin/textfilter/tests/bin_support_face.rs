@@ -34,6 +34,7 @@ const UNIQ: &str = env!("CARGO_BIN_EXE_uniq");
 const UNITS: &str = env!("CARGO_BIN_EXE_units");
 const CKSUM: &str = env!("CARGO_BIN_EXE_cksum");
 const CMP: &str = env!("CARGO_BIN_EXE_cmp");
+const COLUMN: &str = env!("CARGO_BIN_EXE_column");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
 const FF: u8 = 0xFF;
@@ -64,13 +65,13 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     (code, output.stdout, output.stderr)
 }
 
-/// 九支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
+/// 十一支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
 /// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
 /// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 10] = [
+    let cases: [(&str, &str, i32, &[u8]); 11] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
         // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
         // 字母位是原字节 `ff`。
@@ -93,6 +94,8 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         // cmp 随批次四百五十八落地：C 的 `usage()` 退 `ERR_EXIT` = **2**（`cmp.c:157`），
         // 与 cksum 的 `exit(1)` 不同，所以这一行的退码钉的是 2 而不是抄上一行。
         ("cmp", CMP, 2, b"cmp: unknown option -- \xff\n"),
+        // column 随批次四百五十九落地：它的 `usage()` 退 1（`column.c:302-307` 的 `exit(1)`）。
+        ("column", COLUMN, 1, b"column: unknown option -- \xff\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");

@@ -62,6 +62,61 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
+/// argv 形态的**字节形**夹具：一枚裸 `ff` 写不成 `&str`，所以参数经 `OsStr::from_bytes`
+/// 交下去，比的是子进程实际收到的那串字节（`String::from_utf8_lossy` 在文本形夹具里会把
+/// `ff` 与 `ef bf bd` 弄成同一串）。
+fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut child = Command::new(COLUMN)
+        .args(args.iter().map(|a| std::ffi::OsStr::from_bytes(a)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the column binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 命令行参数那一半也按字节了（批次四百五十九）：`-s` 的值就是输出的分隔符，所以它是
+/// 本支唯一一条**改到数据面**的腿。参照件 `tmp/column-314/column` 现量两形——
+/// `-s<ff>` 之下 `a<ff>b` 切成两列打出 `a  b`，而输入里的 U+FFFD 三字节
+/// `a<ef bf bd>b` 原样一行。文本缝在这两形上同时错：一枚 `ff` 折成 `ef bf bd` 之后，
+/// 分隔符集成了「三枚字节」，真 `ff` 切不开、那三字节反倒被切开。
+/// 第三形钉字母位：`-\xff` 交回的是那一枚裸字节本身，与 usage 同一串、退 1。
+#[test]
+fn an_option_value_of_column_splits_on_the_raw_byte_it_carries() {
+    let (out, code, err) = run_argv(&[b"-t", b"-s\xff"], b"a\xffb\tz\n");
+    assert_eq!(
+        (out.as_slice(), code, err.as_slice()),
+        (&b"a  b\tz\n"[..], 0, &b""[..]),
+        "分隔符是该字节本身"
+    );
+
+    let (out, code, err) = run_argv(&[b"-t", b"-s\xff"], b"a\xef\xbf\xbdb\n");
+    assert_eq!(
+        (out.as_slice(), code, err.as_slice()),
+        (&b"a\xef\xbf\xbdb\n"[..], 0, &b""[..]),
+        "U+FFFD 的三字节不是分隔符，不该被误切"
+    );
+
+    let (out, code, err) = run_argv(&[b"-\xff"], b"alpha\nbeta\n");
+    assert_eq!(out, Vec::new(), "集外字母不打数据");
+    assert_eq!(code, 1);
+    let want: Vec<u8> = [
+        b"column: unknown option -- ".as_slice(),
+        b"\xff\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    assert_eq!(err, want, "字母位该是 argv 里那一枚原字节");
+}
+
 /// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/column-314/column`
 /// （`column.c` 真源 + Minix 的 `getopt.c`，经软链起，程序名与本壳一致）现量
 /// `column -é` 与 `column -té` 都打 `unknown option -- ` + `c3` + 换行 + usage、退 1

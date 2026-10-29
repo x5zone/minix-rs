@@ -23,7 +23,6 @@
 //! and each row prints its fields padded by `lens[col] - len[col] + 2`
 //! spaces (column.c:249-251).
 
-use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::GetoptReport;
@@ -38,7 +37,7 @@ pub struct ColumnOptions {
     /// `-x`: fill rows before columns.
     pub fill_rows_first: bool,
     /// `-s`: field separator for table mode (default space and tab).
-    pub separator: String,
+    pub separator: Vec<u8>,
 }
 
 impl Default for ColumnOptions {
@@ -47,7 +46,7 @@ impl Default for ColumnOptions {
             termwidth: 80,
             table: false,
             fill_rows_first: false,
-            separator: "\t ".to_string(),
+            separator: b"\t ".to_vec(),
         }
     }
 }
@@ -56,7 +55,7 @@ impl Default for ColumnOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnArgs<'a> {
     pub options: ColumnOptions,
-    pub operands: Vec<&'a str>,
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// 把 `column` 的 argv 尾部按 BSD `getopt("c:s:tx")`（`column.c:93`）拆成 [`ColumnArgs`]。
@@ -78,32 +77,31 @@ pub struct ColumnArgs<'a> {
 /// 每条一行；这里把负宽度并到 0 是为了让 `termwidth` 留一个 `usize`——两者在上面的
 /// 判定下观察等价，而 `numcols` 的除法只在 `maxlength < termwidth` 时才走到，
 /// 那时宽度必然为正。终端宽度本身（`ioctl(TIOCGWINSZ)` 与 `COLUMNS`）属终端面，不在本层。
-pub fn parse_column_args<'a>(args: &'a [&'a str]) -> Result<ColumnArgs<'a>, GetoptReport> {
+pub fn parse_column_args<'a>(args: &'a [&'a [u8]]) -> Result<ColumnArgs<'a>, GetoptReport> {
     let mut options = ColumnOptions::default();
     let mut index = 0usize;
     let operands = loop {
         let Some(&arg) = args.get(index) else {
             break Vec::new();
         };
-        let bytes = arg.as_bytes();
-        if arg == "--" {
+        if arg == b"--" {
             // `getopt.c:81-85`：`++optind` 之后才返回 -1，所以 `--` 自身不是操作数。
             break args[index + 1..].to_vec();
         }
-        if bytes.len() < 2 || bytes[0] != b'-' {
+        if arg.len() < 2 || arg[0] != b'-' {
             // `getopt.c:74-78`：非选项 token 一到就返回 -1，**不推进** `optind`，
             // 于是它自己连同后面的 token 全是操作数。
             break args[index..].to_vec();
         }
         let mut pos = 1usize;
-        while pos < bytes.len() {
-            match bytes[pos] {
+        while pos < arg.len() {
+            match arg[pos] {
                 b't' => options.table = true,
                 b'x' => options.fill_rows_first = true,
                 ch @ (b'c' | b's') => {
                     // 值是「本串去掉 `-` 与字母之后的那一段」，没有剩余就取下一个 token
                     // （`getopt.c:118-141`）；两种取法都把本串吃到尽头。
-                    let value = if pos + 1 < bytes.len() {
+                    let value = if pos + 1 < arg.len() {
                         &arg[pos + 1..]
                     } else {
                         match args.get(index + 1) {
@@ -117,18 +115,18 @@ pub fn parse_column_args<'a>(args: &'a [&'a str]) -> Result<ColumnArgs<'a>, Geto
                         }
                     };
                     if ch == b'c' {
-                        options.termwidth = crate::atoi(value.as_bytes()).max(0) as usize;
+                        options.termwidth = crate::atoi(value).max(0) as usize;
                     } else {
-                        options.separator = value.to_string();
+                        options.separator = value.to_vec();
                     }
-                    pos = bytes.len();
+                    pos = arg.len();
                 }
                 _ => {
                     // 报的是**这一处的第一个字节**：C 的 `optopt` 是 `char`，`%c` 打的就是
                     // 那一个字节。这里按字节取而不是切字符串，是因为聚簇游标 `pos` 是
                     // **字节**下标，非 ASCII 字母时它会落进多字节字符中间——`&arg[pos..]`
                     // 在那一刻不是字符边界，切串当场 panic（同族的 `col` 带着这一枚，已登记）。
-                    return Err(GetoptReport::UnknownOption(char::from(bytes[pos])));
+                    return Err(GetoptReport::UnknownOption(char::from(arg[pos])));
                 }
             }
             pos += 1;
@@ -238,7 +236,7 @@ pub fn columnate(entries: &[Vec<u8>], options: &ColumnOptions) -> Vec<Vec<u8>> {
 /// Table mode (`-t`): split fields, size each column by its longest
 /// member, and emit every row with a two-space gap after each field.
 fn table_mode(entries: &[Vec<u8>], options: &ColumnOptions) -> Vec<Vec<u8>> {
-    let separator = options.separator.as_bytes();
+    let separator = &options.separator;
     let rows: Vec<Vec<&[u8]>> = entries
         .iter()
         .map(|line| split_fields(line, separator))
@@ -445,7 +443,7 @@ mod tests {
     fn the_separator_is_a_set_of_bytes_not_a_set_of_characters() {
         let options = ColumnOptions {
             table: true,
-            separator: "\u{e9}".to_string(),
+            separator: "\u{e9}".as_bytes().to_vec(),
             ..ColumnOptions::default()
         };
         let entries = vec![b"a\xa9b".to_vec()];
@@ -473,7 +471,7 @@ mod tests {
             table: true,
             ..ColumnOptions::default()
         };
-        options.separator = ":".to_string();
+        options.separator = b":".to_vec();
         let entries = vec![b"1:b:22".to_vec()];
         let out = columnate(&entries, &options);
         assert_eq!(out.len(), 1);
@@ -507,67 +505,103 @@ mod tests {
     #[test]
     fn parse_flags_cluster_and_attached_values() {
         // 关键回归：聚簇与附值不被前门当文件操数。
-        let a = parse_column_args(&["-tx", "f"]).unwrap();
+        let argv: &[&[u8]] = &[b"-tx", b"f"];
+        let a = parse_column_args(argv).unwrap();
         assert!(a.options.table && a.options.fill_rows_first);
-        assert_eq!(a.operands, vec!["f"]);
-        let b = parse_column_args(&["-c100", "-s,", "f1", "f2"]).unwrap();
+        assert_eq!(a.operands, vec![&b"f"[..]]);
+        let argv: &[&[u8]] = &[b"-c100", b"-s,", b"f1", b"f2"];
+        let b = parse_column_args(argv).unwrap();
         assert_eq!(b.options.termwidth, 100);
-        assert_eq!(b.options.separator, ",");
-        assert_eq!(b.operands, vec!["f1", "f2"]);
+        assert_eq!(b.options.separator, b",".to_vec());
+        assert_eq!(b.operands, vec![&b"f1"[..], &b"f2"[..]]);
         // 分离值也照常取下一项。
-        let c = parse_column_args(&["-c", "120", "-t", "f"]).unwrap();
+        let argv: &[&[u8]] = &[b"-c", b"120", b"-t", b"f"];
+        let c = parse_column_args(argv).unwrap();
         assert_eq!(c.options.termwidth, 120);
         assert!(c.options.table);
+    }
+
+    /// `-s` 的值就是分隔符集，所以它得**逐字节**交回：C 把 `optarg` 原样交给 `strtok`
+    /// （`column.c:224-225`），那张表是一个字节一个字节比的。文本缝折一次
+    /// `from_utf8_lossy` 会把一枚裸 `ff` 变成 `ef bf bd` 三枚，于是同时错两件事——
+    /// 真的 `ff` 切不开，而输入里那三字节 U+FFFD 反倒被当成分隔符切开。
+    /// 参照件 `tmp/column-314/column` 现量：`-s<ff>` 下 `a<ff>b` 切成两列、
+    /// `a<ef bf bd>b` 原样一行（`tmp/column-459/ab-measure.log`）。
+    #[test]
+    fn the_separator_value_reaches_the_byte_set_one_byte_per_separator() {
+        let argv: &[&[u8]] = &[b"-t", b"-s\xff"];
+        let parsed = parse_column_args(argv).unwrap();
+        assert_eq!(
+            parsed.options.separator,
+            vec![0xff],
+            "分隔符集里就该是那一枚字节"
+        );
+        let entries = vec![b"a\xffb".to_vec()];
+        assert_eq!(
+            columnate(&entries, &parsed.options),
+            vec![b"a  b".to_vec()],
+            "裸字节切得开"
+        );
+        let lookalike = vec![b"a\xef\xbf\xbdb".to_vec()];
+        assert_eq!(
+            columnate(&lookalike, &parsed.options),
+            lookalike,
+            "U+FFFD 那三字节不是分隔符，不该被误切"
+        );
     }
 
     #[test]
     fn parse_operand_discrimination_without_reordering() {
         // 裸 `-` 与非 dash token 都是操数；`--` 后全为操数（`--` 自身不是）。
-        let a = parse_column_args(&["-", "f2"]).unwrap();
-        assert_eq!(a.operands, vec!["-", "f2"]);
-        let b = parse_column_args(&["-t", "--", "-c", "f"]).unwrap();
+        let argv: &[&[u8]] = &[b"-", b"f2"];
+        let a = parse_column_args(argv).unwrap();
+        assert_eq!(a.operands, vec![&b"-"[..], &b"f2"[..]]);
+        let argv: &[&[u8]] = &[b"-t", b"--", b"-c", b"f"];
+        let b = parse_column_args(argv).unwrap();
         assert!(b.options.table);
-        assert_eq!(b.operands, vec!["-c", "f"]); // `--` 后的 `-c` 是文件名字串
+        assert_eq!(b.operands, vec![&b"-c"[..], &b"f"[..]]); // `--` 后的 `-c` 是文件名字串
         // 不重排：第一个非选项 token 一到，选项环当场结束，后面的 token 整个当操数。
-        let c = parse_column_args(&["f", "-t"]).unwrap();
-        assert_eq!(c.operands, vec!["f", "-t"]);
+        let argv: &[&[u8]] = &[b"f", b"-t"];
+        let c = parse_column_args(argv).unwrap();
+        assert_eq!(c.operands, vec![&b"f"[..], &b"-t"[..]]);
         assert!(!c.options.table);
     }
 
     /// `-c` 的值是 C 的 `atoi`：非数字、0、负数都不是错，只是宽度塌到「每条一行」。
     #[test]
     fn parse_width_is_atoi_not_a_strict_number() {
-        for (argv, width) in [
-            (vec!["-c", "0"], 0usize),
-            (vec!["-c", "abc"], 0),
-            (vec!["-c", "-5"], 0),
-            (vec!["-c", "20x"], 20),
-            (vec!["-c", " 30"], 30),
-        ] {
-            assert_eq!(parse_column_args(&argv).unwrap().options.termwidth, width);
+        let cases: [(&[&[u8]], usize); 5] = [
+            (&[&b"-c"[..], &b"0"[..]], 0usize),
+            (&[&b"-c"[..], &b"abc"[..]], 0),
+            (&[&b"-c"[..], &b"-5"[..]], 0),
+            (&[&b"-c"[..], &b"20x"[..]], 20),
+            (&[&b"-c"[..], &b" 30"[..]], 30),
+        ];
+        for (argv, width) in cases {
+            assert_eq!(parse_column_args(argv).unwrap().options.termwidth, width);
         }
     }
 
     #[test]
     fn parse_error_faces_carry_the_libc_letters() {
         assert_eq!(
-            parse_column_args(&["-z", "f"]).err(),
+            parse_column_args(&[b"-z", b"f"]).err(),
             Some(GetoptReport::UnknownOption('z'))
         ); // 集外
         assert_eq!(
-            parse_column_args(&["-tZ"]).err(),
+            parse_column_args(&[b"-tZ"]).err(),
             Some(GetoptReport::UnknownOption('Z'))
         ); // 聚簇里的集外字母
         assert_eq!(
-            parse_column_args(&["--x"]).err(),
+            parse_column_args(&[b"--x"]).err(),
             Some(GetoptReport::UnknownOption('-'))
         ); // `--x` 的字母就是 `-`（getopt.c:95-104）
         assert_eq!(
-            parse_column_args(&["-c"]).err(),
+            parse_column_args(&[b"-c"]).err(),
             Some(GetoptReport::MissingValue('c'))
         ); // 缺值
         assert_eq!(
-            parse_column_args(&["-t", "-s"]).err(),
+            parse_column_args(&[b"-t", b"-s"]).err(),
             Some(GetoptReport::MissingValue('s'))
         );
     }
@@ -578,18 +612,21 @@ mod tests {
     fn a_non_ascii_cluster_letter_reports_a_byte_without_panicking() {
         // `-té`：`t` 是合法旗标，游标进到 `é` 的首字节 0xC3，报的就是那一字节。
         assert_eq!(
-            parse_column_args(&["-té"]).err(),
+            parse_column_args(&[b"-t\xc3\xa9"]).err(),
             Some(GetoptReport::UnknownOption('\u{c3}'))
         );
         // 游标落在续字节上也不 panic。
         assert_eq!(
-            parse_column_args(&["-txé"]).err(),
+            parse_column_args(&[b"-tx\xc3\xa9"]).err(),
             Some(GetoptReport::UnknownOption('\u{c3}'))
         );
         // 带值字母后面的多字节值是合法 optarg（值从字符边界上切起）。
         assert_eq!(
-            parse_column_args(&["-sé", "f"]).unwrap().options.separator,
-            "é"
+            parse_column_args(&[b"-s\xc3\xa9", b"f"])
+                .unwrap()
+                .options
+                .separator,
+            "é".as_bytes().to_vec()
         );
     }
 }
