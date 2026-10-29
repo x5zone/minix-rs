@@ -1954,4 +1954,17 @@ HEAD 那行做同样两处状态列改写后与新行**逐字符对到前缀末�
 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`；`todo-reconcile-scan` 的 `探针命名族` 漂移归一线。**取证回抄照办**：
 release 前把 `tmp/join-463` 整目录复制回主树 `tmp/`。
 
+**合回读数（第一百七十七笔补记，批次四百六十三）**：本支四笔（码笔 `907bfad76`、文档笔 `ff3ce588d`、里程碑笔 `e27d5bbbc`、
+合入笔 `5a3066cc5`）在合回前把 `rewrite` 那十二笔 01TODO-B1 收进来，冲突只有一处——`new_edge4.md` 的同一处尾追，按两侧
+各留全解（本笔的 `###` 段在前、那条流水行在后）。**逐笔验祖先**：四个哈希对 `rewrite` 全部
+`merge-base --is-ancestor` 为真，主树 `rewrite` 从 `e24a7aa1f` 前进到 `5a3066cc5` 是 fast-forward，主树脏文件与入栈八件
+零交集（`git status --porcelain` 的词表与 `git diff --name-only rewrite...claim/*` 取集合差）。主树合回后当场复跑
+`cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → 退 0、**69 段 / 1261 / 0**（`tmp/join-463-main-recheck.log`），
+与领取树合回前后两次同读数；取证目录 `tmp/join-463`（39 项，含 `orig/` 与 `post/` 两份快照）已回抄主树。
+门④按两种范围各跑一次都是 error 0：本支三笔的 `HEAD~4..HEAD~1`（4 个文件 / 221 个新增行）与含合入笔的
+`HEAD~2..HEAD`（3 个文件 / 148 个新增行）——这一回合进来的那十二笔没有触发任何规则，与上一笔撞上他线
+`[SL-11]` 的情形不同，所以「范围含合入笔就会红」不是规律，只是上一次恰好有。**门②的跨树教训再记一遍**：
+同一条 `notes-link-check` 在领取树是 764 个 md / 断链 131，在主树是 2010 个 md / 222——主树多出的那一千多个
+文件是别的线未入库的工作笔记，两个数**不同树不可比**，做集合差要在同一棵树里取基线。
+
 - `2026-10-29` zcode-glm / 01 篇 todo 首批 10 条（`claim/01TODO-B1-zcode-glm` → 合并笔 `5a133a44b`）：D-71（`BootForm::Aarch64UefiCrossImage` 落点改 `os/libs/minix-boot/src/handoff.rs`，形态测试补五落点存在性断言）、I-26（opensbi_helpers 孤儿 doc 与 `hardcoded` 双归零）、N-3（删 `uefi_helpers` 两个零消费者 pub fn）、N-1（`BootAlloc::resume`/`region` 区间自洽断言 + 五枚宿主测试）、N-2（vm_handoff 扣除记录与交接清单两处分述）、TODO-02（`pt_alloc` 写一次改结构性拒绝：debug panic / release 不覆盖，集成测试 2 条 debug 与 release 双形态实跑）、TODO-03（三枚落地区超容量 fail-fast 负控）、I-27+L1424（OQ-N6 已裁口径 + §3.1/§3.3 现状指针 + main.rs 头注）、§5.2.1（opensbi 12 / `15+12+1=28` / paging 15 / boot_alloc 10 / store 系列 4 / minix-boot 32 全量复算）、§4.6（`IDENTITY_MAP_END` 按别名实况改写）。**门读数**：docker `minix-ci:1.94` 四包——minix-boot 32/0、boot-shim `--features test-all` 28/0、minix-arch `--features runtime-window` lib 270/0 + 集成各腿 0 failed、minix-kernel `--features mock` 842/0/8；`doc-style-lint --diff` error 0。**在册**：N-4 待 D-68、N-5 取证项、TODO-01/04/06/07 与 §2 批次未动；01-todo.md / todo.md 状态列已在主树工作区刷新（脏版不代提交）。
