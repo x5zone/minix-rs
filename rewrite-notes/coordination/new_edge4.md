@@ -1801,8 +1801,8 @@ optstring `"123f"` 四个字母都不带值，argv 只剩两处用处。而 `min
 `os/kernel/src`、`os/arch/src` 无交集 ⇒ 非本轮引入，归一线在制，本笔不改脚本基线也不代改台账；② `python3 tools/notes-link-check.py rewrite-notes/`
 → 764 个 md、**断链 131**（与上一笔同数），本轮新增行落在 `todo.md:122..227`、`07-text-filter.md:6/192`、板 `:27`，逐行核对该清单在这三处
 **零命中**（板那一条在 `:35`，非本轮）⇒ 新增断链键 0；③ `bash tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md` → **PASS（0 项）**；
-④ `bash tools/doc-style-lint.sh --diff HEAD~2..HEAD` → 3 个文件 / 108 个新增行、**error 级 0**（本轮一次过，没有再撞 SL-5；写新行时把
-「原先/后来」那一类时间词一律换成机制叙述）；⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条
+④ `bash tools/doc-style-lint.sh --diff HEAD~2..HEAD` → 3 个文件 / 108 个新增行、**error 级 0**（本轮一次过；新行里凡涉及时间顺序的说法一律写成机制叙述，
+这是批次四百六十一那枚补笔留下的口径——本笔随后自己撞了一次，见下面那笔补笔）；⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条
 （`TODO-3ARCH-PARITY-20261006.md`）未触碰。
 
 **门读数补全**：宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1257 / 0**（负控还原后复跑，
