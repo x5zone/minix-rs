@@ -54,6 +54,11 @@ pub mod uefi_helpers;
 #[cfg(feature = "uefi")]
 pub mod ebs_map;
 
+// Scheme-B pairing loop (GetMemoryMap -> classify -> ExitBootServices) with
+// injected firmware calls; host-testable retry/buffer discipline.
+#[cfg(feature = "uefi")]
+pub mod ebs_pair;
+
 #[cfg(feature = "opensbi")]
 pub mod opensbi_helpers;
 
