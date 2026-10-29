@@ -119,6 +119,150 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百六十五（A2 参数缝半切片 47：`nl` 的分页分隔符、行号分隔串与七句值回显交回原字节；顺带量出参照件在 `-d` 空值上读的是内存里排在后面的那个参数）
+
+- **先把形状说清**：`minix3/usr.bin/nl/nl.c:149` 的 optstring 是 `"pb:d:f:h:i:l:n:s:v:w:"`——
+  十一个字母，十个带值，只有 `p` 不带值。领用板上「九字母全带值」那句预估按现量订正。
+  这一支的 argv 字节有六个去处，是本族里最密的一支：
+  ① `-d` 的值 → `delim[0]`/`delim[1]`（`nl.c:158-161`），第三个字节才落
+     `invalid delim argument -- %s`（判据 `:163`、句子 `:165`）。这两枚字节随后**参与匹配**：
+     `:289-304` 那个循环把分隔符依次比对到行的第 0、2、4 个字节上（三段 `footer`/`body`/`header`
+     各一格），整行正好是分隔符时 `:294` 成立、`:299` 的 `goto nextline` 把**那一行吃掉**——
+     分页符行不输出，而 `section` 落进 `footer`（`:295`），它的缺省类型是 `number_none`（`:73`），
+     所以随后那行交回的是「六枚空格 + 制表符 + 正文」。
+  ② `-s` 的值 → `sep`，由 `:340` 的 `printf("%s%s", sep, buffer)` 打在行号与正文之间。它
+     **整个替换掉缺省的那个制表符**，所以每一行输出都带着这几枚字节。
+  ③ `-b`/`-f`/`-h` 的类型串 → `parse_numbering`（函数在 `:357`）只 `switch (argstr[0])`（`:362`），
+     非法时那句带**整个串**、且三段各带自己的段名（`:393`，名字在 `numbering_properties[]` 的 `:73-75`）。
+  ④ `-n` 的格式名 → 三支 `strcmp`（`:195-199`）比的就是字节串，非法那句同样带整串（`:203`）。
+  ⑤ `-i`/`-l`/`-v`/`-w` 四个数 → `strtol`/`strtoul` 之后判 `*ep != '\0'`，**末尾剩任何一枚字节都算错**，
+     四句各带原值（`:182`/`:191`/`:214`/`:223`），`-w` 还多一句把转出来的数打回去（判据 `:225`、
+     句子 `:226-228`）。
+  ⑥ 操作数至多一枚：`-` 走标准输入（`:243-244` 那个 `strcmp` 短路掉了 `freopen`），开不了的句子
+     带反引号里的档名与 `strerror`（`:245`）。字母位那一枚由 libc 定形：`getopt.c:79` 的
+     `optopt = *place++` 一次进一个字节、`:103` 的 `%c` 原样写出。
+  壳内 `from_utf8_lossy` 现量 **2 处**（`grep -c from_utf8_lossy os/commands/usr-bin/textfilter/src/bin/nl.rs`：
+  程序名一处、档名一处），因为 `minix_sys::open` 与 `minix_types::errno::err_line` 这两条 `&str`
+  口在册（`ARGV-BYTE-PATH-IN-LIBS`），与 `jot`（1 处，它连档都不开）同属折叠点最少的那一簇。
+- **本轮最值钱的读数不是门，是参照件自己**：`-d` 给空串时，C 那三条 `if` 读的是 `optarg[1]`
+  与 `optarg[2]`，而空串只有一枚终止符——两处都是**越界读**。取证办法是把「内存里排在后面的那段」
+  直接当夹具用：`nl_ref -d "" f`（档名 `f` 的内容是一行 `\f` 加一行 `q`）交回的输出与
+  `nl_ref -d '\f' f` **逐字节全等**，而与显式默认的 `nl_ref -d '\:' f` 不同形——第二枚分隔符来自
+  **下一个参数的首字母**。换成两字符以上的档名（`body.txt`、`zone.txt`）时 `optarg[2]` 非零 ⇒
+  当场 `invalid delim argument` 退 1；把标准输入当来源、后面没有任何参数时也一样拒，`env -i`
+  照拒。同一条命令行只换档名首字母就翻面，这不是可依赖的语义。本层按那三条 `if` 的**意图**实现：
+  空值两个条件都不成立 ⇒ 不动默认，长度判据只看值本身的字节数。在册 `NL-DELIM-LENGTH-RULE`
+  本轮起覆盖两形：`-d\xff`（`optarg[1]` 越界）与 `-d ""`（`optarg[1]`/`optarg[2]` 双双越界），
+  取证与三形对照在 `tmp/nl-465/kd2-empty-value-oob.log`。**这一形给「参照件即真值」那条优先级
+  提了个醒：参照件的读数不都来自源码的意图，越界读产出的那一形既不可复现也不该照抄。**
+- **A/B 当场逮出两条此前没登记的分叉，都按「登记不执行」入库**：
+  ① `-f`/`-h` **缺值**时本壳报的字母是 `b`——那一支的 `value!('b')` 把字母写死了（三个字母共用
+     一个宏实例），而 libc 报的是各自的字母（`getopt.c:134`）。两侧同退 1、只差那一枚字母，
+     正是「两侧都报错」里最容易滑过去的一形。登记 `NL-MISSING-VALUE-LETTER-HARD-CODED`
+     （一处单词级的修法，与本轮射程不同一条，故不在本轮动）。
+  ② 附值形（`-s x`、`-b a` 这种值紧跟在字母后面的写法）本壳跳掉前导空白，libc **不跳**：
+     `getopt.c:118` 是 `optarg = __UNCONST(place)`，整段剩余直接交回。现量：`nl -s' x'` 本壳打
+     `     1xa`、参照件打 `     1 xa`；`nl -b' a'` 本壳接受、参照件报 `illegal body line
+     numbering type --  a`（首字符是空格）。登记 `NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED`。
+     本轮只把那处 `str::trim_start_matches` 换成等价的字节循环——保持既有行为，不借着字节口径
+     顺手改判据。
+- **落码层只动壳，库侧零改动**：`os/commands/usr-bin/textfilter/src/nl.rs` 早就是字节形
+  （`NlOptions.delim: [u8; 2]`、`sep: Vec<u8>`、`nl_lines(&[&[u8]], …)`），所以这一支的分隔符与
+  分隔串落地全在 `src/bin/nl.rs` 一层：起手换 `args_bytes()`/`prog_name_bytes()`，`files` 存
+  `Vec<Vec<u8>>`，选项环按 `token[0] != b'-'` 判、字母位 `char::from(bytes[pos])`，`-d` 的长度判据
+  直接数值的字节数，`-n` 三支比 `b"ln"`/`b"rn"`/`b"rz"`，`-s` 交回的 `Vec<u8>` 原样进 `opts.sep`。
+  报文侧新立 `fn quoted(prefix: &[u8], value: &[u8], suffix: &[u8]) -> Vec<u8>`（七句共用的
+  「前缀 + argv 原字节」形状），`fn errx` 改收 `&[u8]` 的句子，`strtol10`/`strtoul10` 收 `&[u8]`。
+- **门账（先对测试名集合再对总数）**：库内 `nl` 模块 **14 枚未动**——本轮库侧零改动，门数不变是
+  结构而非漏测；`nl_face` **14 → 16**（新立
+  `a_raw_byte_delimiter_matches_the_line_and_a_raw_byte_separator_is_printed` 五段：两枚裸字节作
+  分隔符且真去匹配那一行、`-s` 的值进输出、控制形两枚合法字节、单枚裸字节按源码判据接受；
+  `the_seven_value_echoes_carry_the_argv_bytes` 七段 + 段名两支 + 「首字节合法即接受」的反面形）；
+  跨壳表十六行 → **十七行**（`nl` 行钉 `nl: unknown option -- \xff` 与退 **1**；它的 usage 是**两行**、
+  第一行行尾 `\n\t`，`nl.c:400-405`）；整包 69 段 **1264 → 1266 passed / 0 failed**。
+  两枚新门的期望值**全部按实测写**：第一版有四处是我推的，实测否证了其中三处——行号那一格是
+  六枚空格而不是八枚、`-s` 的值紧跟行号而没有多余空格、`-b a\xff` 是**接受**的（`parse_numbering`
+  只看首字符）；第四处是我自己把夹具写错了：`nl` 唯一的操作数是**档名**，递一个 `2` 进去会变成
+  「开不了的档名」那一句而先退掉，它不是 `jot` 那类位置参数。
+- **负控五枚（`tmp/nl-465/negctl.py`，逐枚读数 `negctl-L1..L5.log`）各咬 3/1/1/2/2**：
+  L1（壳侧 argv 退回 `args()` 的 lossy 取法）咬 `nl_face` 两枚 + 跨壳表一枚；L2（`-s` 的值折一次）
+  只咬输出那一枚；L3（七句回显折一次）只咬报文那一枚——**「值进输出」与「值进报文」两条腿各红
+  各的，`jot` 那轮量到的形状在这一支复现**；L4（撤掉「第三个字节才报错」那道判据）咬既有门
+  `delim_takes_two_characters_and_refuses_a_third` 加本轮新门；L5（字母位退回按字符取）咬跨壳表加
+  `the_libc_line_of_a_multibyte_flag_is_one_byte_for_nl`。
+  **五枚都出现「库内 624 全绿」，但这一轮它不是覆盖面有洞**：`nl` 的选项环整个住在薄壳里
+  （`src/bin/nl.rs` 的 `run`），库侧只吃已经拆好的 `NlOptions`，那一层根本没有这条腿。所以
+  「一整段全绿先怀疑覆盖面有洞」这条判据要连层次一起问：**先定位这条腿住在哪一层，再决定是补门
+  还是接受结构**。前面六次量到的「库门对 argv 缝没有牙」是同一件事的另一面。
+- **两起工具自错，都是「计数不是读数」这一族的新形态**：① 为了强制重编我跑了一句
+  `touch …/src/bin/cat.rs`，而这个包里**没有** `cat` 这枚 bin——`touch` 遂把它创建成一枚 0 字节的
+  散落文件，整包 `cargo test` 因此编译失败退 101、`grep -c '^test result:'` 交出 **0 段**。判据加一条：
+  拿 `touch` 当重编探针之前先确认目标存在，而任何「段数为 0」都先 `git status` 看有没有本轮自造的
+  散落文件（这次那枚是未跟踪的 `??`，一眼可辨）。② 想量 HEAD 同件的 `rustfmt --check` 漂移时，
+  我把 HEAD 的 blob 拷到 `/tmp` 单独跑，rustfmt 解析不到 `#[path]` 带进来的兄弟模块
+  （`../bin_support.rs`、`./face_support.rs`），交回的是**解析错误而不是 diff**，我拿 `wc -l` 数它，
+  于是读出「HEAD 的 `src/bin/nl.rs` 漂移 7 行」这一条根本不存在的断言。改成原地注入/还原
+  （`tmp/nl-465/fmt-baseline.py`：退出码不属于 0/1 就直接判「没跑成」并抛异常，`finally` 还原后
+  逐件核 md5）之后，HEAD 与现件两侧都是 **0**。判据：**格式门必须在原地量**（模块解析依赖目录
+  布局），并按 rustfmt 的退出码分档——0 无漂移、1 有漂移、其余是没跑成。
+- **顺手把八处错锚点按现量改回来**（其中两处是 HEAD 里就有的，正落在我改的那几行上，明知错还
+  留着就是新的错）：`parse_numbering` 此前写成 `:340-…`，而 `:340` 其实是
+  `printf("%s%s", sep, buffer)` 那行——函数在 `:357`、`switch (argstr[0])` 在 `:362`；七句值回显
+  此前写成六个「范围」，实际句子各在 `:165`/`:182`/`:191`/`:203`/`:214`/`:223`/`:393`；`-n` 的三支
+  `strcmp` 写成 `:193-200`、实际 `:195-199`；`-w` 那句写成 `:224-228`、实际判据 `:225` 句子
+  `:226-228`；操作数那段把 C 写成了 `fopen` 加一个后续都读的 `fp`，实际是
+  `freopen(argv[0], "r", stdin)`（`:243-245`）而整条流水线只有一个读缝 `fgets(..., stdin)`（`:288`），
+  这也正是「档名内容与标准输入走同一条编号腿」的机制出处；附值形的跳空白此前挂到
+  `getopt.c:117-118`，该句是 `:118` 的 `optarg = __UNCONST(place)`。
+- **门读数（全部 L1，`2026-10-29`，基线快照 `cf306a62e`，基线当场复跑 69 段 / 1264 / 0）**：
+  宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1266 / 0**，
+  同一个读数在本轮三个时点各跑一次：负控与差分之后（`tmp/nl-465/pkg-post.log`）、我自己格式化之后
+  （`tmp/nl-465/pkg-post-rustfmt.log`）、锚点订正之后的最终态（`tmp/nl-465/pkg-final.log`）；容器权威
+  门按三挂载配方同样两次，最终态那次退 0、**69 段 / 1266 / 0**，与宿主同读数
+  （`tmp/nl-465/container-post.log`、`tmp/nl-465/container-final.log`）；三架构 `cargo check --offline
+  -j 1 --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}
+  -p minix-textfilter --bins` 各退 0、错误 0（最终态三件 `tmp/nl-465/arch-final-*.log`）；
+  `rustfmt --edition 2024 --check` 三件原地零漂移（我自己写出的那两处漂移已格式化后复核，HEAD 同件
+  也是 0 ⇒ 无存量牵连）；`cargo clippy --offline -j 1 --all-targets -p minix-textfilter` 退 0、共
+  149 条，**改动三件上 0 条**，唯一挂到 `bin "nl"` 的那条源在共享层
+  `src/bin/../bin_support.rs:688`（`unused import: std::io::Read`），本轮没改那一层、未改过的
+  `head` 同样出 ⇒ 存量。A/B 用的 `os/target/debug/nl` 由负控还原之后重编，与 `tmp/nl-465/post/`
+  三件快照逐件核过 md5。
+- **A/B 对 `tmp/nl-465/nl`（软链 `tmp/nl-417/nl_ref`，用前 `-Z` 验过归属：交回
+  `nl: unknown option -- Z` 加那两行 `Usage:`）跑，矩阵四十三形，SAME=36（其中退 0 的 13 形）
+  / 非预期 DIFF=0 / 已知分叉另计 7 形**（`tmp/nl-465/ab.log`）。「先数退 0 的形有几枚」这条判据
+  本轮又用了一次，而且它顺带暴露初版矩阵的一处空洞：那条写着「裸 `-` 是档名」的形其实测的是
+  字母位（`-` 紧跟一枚裸 `ff` 被当成选项簇），与第二形**完全重复**——换成三条真的走操作数那条腿的
+  形：单个 `-` 走标准输入、档名内容与标准输入不同时谁进流水线、开不了的 ASCII 档名那一句。
+  中间那形正是 `NL-OPERAND-CONTENT-DROPPED` 那一坑的守门形：标准输入里放 `not-from-stdin`、
+  档名里放 `a\nb\n`，输出必须是档名的内容，两侧全等。四类已知分叉各计：
+  `ARGV-BYTE-PATH-IN-LIBS` 1 形（档名的名字位）、`NL-DELIM-LENGTH-RULE` 2 形、
+  `NL-MISSING-VALUE-LETTER-HARD-CODED` 2 形、`NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED` 2 形。
+- **进度与余量（全部现量）**：参数缝半已落 **二十支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、
+  `jot`、`nl`）；`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **19**，
+  整个命令面口径 → **88**；渲染半那条 grep 仍 **0** 行；`line_bytes` **40 处 / 29 件**（`nl` 本来就在
+  其中，本支未新增调用点）。余下 19 支里带字母位诊断面的有 **7** 支（`pr`、`sort`、`split`、`tail`、
+  `unexpand`、`unifdef`、`vis`；判据是本壳或它调用的库模块交回 `GetoptReport`），**切片 48 建议
+  `pr`**：字母序第一支，带值字母多且值既进报文也进排版宽度。**另两笔建议照旧**：插一小轮收
+  `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`（批次四百六十三登记的读缝），以及把
+  `JOT-EMPTY-OPERAND-READS-OOB`、`JOT-PREC-MINUS-ONE-FORMAT`、`JOT-WORD-TOOLONG-ON-MACHINE`
+  一起拿到真机上量一次；本轮再加一笔同族候选——`NL-MISSING-VALUE-LETTER-HARD-CODED`
+  与 `NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED` 都是**单词级**的修法，但后者要先裁一件事：
+  照抄 libc 的「不跳空白」还是保留现在这一形，属判据裁决不属缝。独立轮在册不碰：
+  `ARGV-BYTE-PATH-IN-LIBS`、`CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-DASH-REWRITE-AT-FIRST-CHAR`、
+  `UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、
+  五枚 `*-NON-PERMUTE-OPERAND-TAIL`、`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、
+  `CUT-EMPTY-BYTE-LIST-RUNAWAY`、`COL-CLIPPY-STOCK-LINT`、`BIN_SUPPORT-FMT-DRIFT-STOCK`、
+  `REV-MULTIBYTE-ERROR-LEG`、`HEAD-NEGATIVE-COUNT-UNSIGNED-GUARD`、
+  `HEAD-COUNT-LEADING-BLANK-ACCEPTED`、`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`、
+  `NL-DELIM-LENGTH-RULE`（含本轮补的空值那一形）、`NL-NON-PERMUTE-OPERAND-TAIL`、
+  `NL-SIGNED-COUNTERS`、`NL-OPERAND-CONTENT-DROPPED`（已闭合，留作判据出处）、
+  `JOT-EMPTY-OPERAND-READS-OOB`、`JOT-WORD-TOOLONG-ON-MACHINE`，**本轮新立**
+  `NL-MISSING-VALUE-LETTER-HARD-CODED` 与 `NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED`。
+
+---
+
 ## 批次四百六十四（A2 参数缝半切片 46：`jot` 的 argv、词槽、分隔符与操作数尾字节交回原字节；顺带把三条「按字节才成立」的判据钉住）
 
 - **先把形状说清**：`minix3/usr.bin/jot/jot.c:150` 的 optstring 是 `"b:cnp:rs:w:"`——七个字母，
