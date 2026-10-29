@@ -19,7 +19,7 @@
 
 use crate::handoff_v1::{
     ARENA_CAP, BOOT_HANDOFF_V1_MAGIC, BOOT_HANDOFF_V1_VERSION, BootHandoffV1,
-    FREE_UPPER_IDX_NONE, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET,
+    FREE_UPPER_IDX_NONE, SEMANTIC_END, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET,
     WIRE_MEMMAP_CAP, WIRE_MEMMAP_OFFSET, WIRE_MODULE_CAP,
     WIRE_MODULES_OFFSET, WIRE_PARAM_CAP, WIRE_PARAM_OFFSET, WIRE_PLATFORM_CAP,
     WIRE_PLATFORM_OFFSET, WIRE_RESERVED_CAP, WIRE_RESERVED_OFFSET,
@@ -291,6 +291,25 @@ impl<'a> Serializer<'a> {
             offsets::RESERVED_BYTE_LEN,
             (self.reserved_n * 16) as u64,
         );
+    }
+
+    /// Clear both map partitions and their descriptors. The EBS pairing loop
+    /// calls this before re-classifying after a failed `ExitBootServices`:
+    /// only the classification paired with a successful MapKey may survive,
+    /// so stale entries must not linger.
+    pub fn reset_map_partitions(&mut self) {
+        for byte in &mut self.arena
+            [WIRE_MEMMAP_OFFSET..WIRE_RESERVED_OFFSET + WIRE_RESERVED_CAP * 16]
+        {
+            *byte = 0;
+        }
+        for byte in &mut self.arena[SEMANTIC_MEMMAP_OFFSET..SEMANTIC_END] {
+            *byte = 0;
+        }
+        self.wire_memmap_n = 0;
+        self.reserved_n = 0;
+        put_u64(self.arena, offsets::MEMMAP_BYTE_LEN, 0);
+        put_u64(self.arena, offsets::RESERVED_BYTE_LEN, 0);
     }
 
     /// The raw arena bytes (tests and diagnostics).
