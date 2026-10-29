@@ -2616,3 +2616,15 @@ v1 arena + `rbx` 交棒 + 独立 `kernel.elf` 高半入口」；`reserved_region
 boot-shim **53/0** + 边界审计 **5/0**、三架构 kernel/kernel-image check **0 error**、
 aarch64 冒烟门 **PASS**、`test-cmd-smoke.sh` 到达 `/etc/rc`（仅 `du` 既有 A 板红）、
 合并后 `run_all` **39/0/0**（`tmp/01-cboard-baseline-20261030/run-all-t2.log`）。
+
+**D72VM 里程碑（2026-10-30，01 篇 D-72 kerninfo 映射责任移交 VM）**：码笔 `167197e44`、
+合并笔 `c8b9ba08d`，哨兵修复 `72d83477c`/`cf99a24d0`、合并 `c1354d0b5`/`3ce21b9a3`。
+`VmBootHandoff` 升 v7 加 `kerninfo_pa`；`minix-types` 增 `KERNINFO_USER_VA` 单一权威；
+VM `init_page_table` 在建根时把该页只读映射到固定 VA（fork/exec 共用），内核
+`vmctl_set_addr_space` 的每根注入块删除，源码序钉 `set_addr_space_no_boot_alloc_pin.rs`
+2/0。**首轮全量 32/7**：新加的 `expect` 在 27 个未开 `qemu_test` 的 bootstrap 测试内核上
+触发（它们跳过 kmain Phase B.5）；改用「未初始化即 0、VM 跳过映射」的显式哨兵后修红，
+生产正确性由 rt-birth/user-trap 的 CPL3 kerninfo 读取门兜底。门读数：minix-types
+**331/0**、minix-vm **543/0**、kernel mock **845/0/8**、三架构 kernel/kernel-image check
+**0 error**、最终 `run_all` **39/0/0**（`tmp/01-cboard-baseline-20261030/run-all-d72c.log`）。
+跨线登记：`os/servers/vm` 属 A 板，C 板 §6 已追加一行（无在途 A 领）。
