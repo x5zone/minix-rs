@@ -25,12 +25,18 @@ use crate::ebs_map::{classify_map, Classification, MapError};
 use core::ffi::c_void;
 use minix_boot::Serializer;
 
+/// UEFI `EFI_ERROR_BIT` (the high bit of `EFI_STATUS`; same value as
+/// `uefi_raw::Status::ERROR_BIT`).
+pub const EFI_ERROR_BIT: usize = 1 << (usize::BITS - 1);
+
 /// `EFI_SUCCESS`.
 pub const EFI_SUCCESS: usize = 0;
-/// `EFI_INVALID_PARAMETER` — the only status that triggers a retry.
-pub const EFI_INVALID_PARAMETER: usize = 2;
-/// `EFI_BUFFER_TOO_SMALL` — the buffer size out-parameter holds the need.
-pub const EFI_BUFFER_TOO_SMALL: usize = 5;
+/// `EFI_INVALID_PARAMETER` (status = error bit | 2) — the only status that
+/// triggers a retry.
+pub const EFI_INVALID_PARAMETER: usize = EFI_ERROR_BIT | 2;
+/// `EFI_BUFFER_TOO_SMALL` (status = error bit | 5) — the buffer size
+/// out-parameter holds the need.
+pub const EFI_BUFFER_TOO_SMALL: usize = EFI_ERROR_BIT | 5;
 
 /// Total `ExitBootServices` attempts allowed (round-9: fixed at 2).
 pub const EBS_ATTEMPT_LIMIT: u32 = 2;
@@ -271,6 +277,18 @@ mod tests {
                 &mut s,
             )
         }
+    }
+
+    #[test]
+    fn status_constants_use_the_uefi_error_bit_encoding() {
+        // EFI_STATUS is `error_bit | code`; the low-byte-only values (2/5)
+        // would never match real firmware statuses.
+        assert_eq!(EFI_SUCCESS, 0);
+        assert_eq!(EFI_INVALID_PARAMETER & !EFI_ERROR_BIT, 2);
+        assert_eq!(EFI_BUFFER_TOO_SMALL & !EFI_ERROR_BIT, 5);
+        assert_ne!(EFI_INVALID_PARAMETER, 2);
+        assert_ne!(EFI_BUFFER_TOO_SMALL, 5);
+        assert_eq!(EFI_ERROR_BIT, 1 << (usize::BITS - 1));
     }
 
     #[test]
