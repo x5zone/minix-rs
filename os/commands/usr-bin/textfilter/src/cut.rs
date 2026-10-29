@@ -54,9 +54,9 @@ pub enum ListError {
 /// 长大，`:153`）。`-3-5` 那类的 autostart/autostop 是跨项、跨行的全局量
 ///（`:183-184`、`:191-192`、`:213-219`），本树只建模到单项可解析、单区间可选择的
 /// 程度，剩下的记为下一项。
-pub fn parse_list(text: &str) -> Result<Vec<Range>, ListError> {
+pub fn parse_list(text: &[u8]) -> Result<Vec<Range>, ListError> {
     let mut ranges: Vec<Range> = Vec::new();
-    for token in text.split([' ', '\t', ',']) {
+    for token in text.split(|byte| matches!(byte, b' ' | b'\t' | b',')) {
         if token.is_empty() {
             // strtok 的空项折叠：`1,,2` 与 ` 1 ` 都不报错。
             continue;
@@ -76,8 +76,8 @@ pub fn parse_list(text: &str) -> Result<Vec<Range>, ListError> {
 /// `illegal list value`），压平后却会读成零那句；`1-2-` 在 C 是**接受**的（autostop
 /// 那一支把行尾整段照打），压平后会误报残留。leftover 与零两句的先后也不许换：
 /// 残留先判（`:195-196`），零后判（`:197-198`），所以 `0-` 走零那句、`x` 走残留那句。
-fn parse_token(token: &str) -> Result<Range, ListError> {
-    let bytes = token.as_bytes();
+fn parse_token(token: &[u8]) -> Result<Range, ListError> {
+    let bytes = token;
     let mut cursor = 0usize;
     let auto_start = bytes.first() == Some(&b'-');
     if auto_start {
@@ -124,8 +124,8 @@ fn parse_token(token: &str) -> Result<Range, ListError> {
 /// 指针不动（对应 C 的 `if (isdigit(…))` 不成立）。转得出来但超出 `u32` 时本树
 /// 饱和到最大值，而 C 会拿到 `LONG_MAX` 并把 `positions` 重开到那个尺寸（`:199-206`）
 /// 直到分配失败——那一形不建模，饱和与 C 同为「不报句子」。
-fn scan_number(token: &str, from: usize) -> (u32, usize) {
-    let bytes = token.as_bytes();
+fn scan_number(token: &[u8], from: usize) -> (u32, usize) {
+    let bytes = token;
     let mut cursor = from;
     let mut value: u32 = 0;
     while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
@@ -140,11 +140,7 @@ fn scan_number(token: &str, from: usize) -> (u32, usize) {
 /// Select byte ranges from `line` (1 based positions), writing into `out`.
 ///
 /// Returns the used byte count. Overlapping ranges print each byte once.
-pub fn select_bytes(
-    line: &[u8],
-    ranges: &[Range],
-    out: &mut [u8],
-) -> Result<usize, TextError> {
+pub fn select_bytes(line: &[u8], ranges: &[Range], out: &mut [u8]) -> Result<usize, TextError> {
     let bytes = line;
     let mut written = 0;
     let mut next = 1u32;
@@ -234,7 +230,9 @@ pub fn select_fields(
 }
 
 fn in_ranges(ranges: &[Range], field: u32) -> bool {
-    ranges.iter().any(|range| range.low <= field && field <= range.high)
+    ranges
+        .iter()
+        .any(|range| range.low <= field && field <= range.high)
 }
 
 /// Parsed `cut` command line: the byte (`-b`/`-c`) and field (`-f`) list
@@ -242,8 +240,8 @@ fn in_ranges(ranges: &[Range], field: u32) -> bool {
 /// (a bare `-` names standard input).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CutArgs<'a> {
-    pub bytes_list: Option<&'a str>,
-    pub fields_list: Option<&'a str>,
+    pub bytes_list: Option<&'a [u8]>,
+    pub fields_list: Option<&'a [u8]>,
     pub delimiter: u8,
     /// `-d` 是否真被给过。C 把它单独记在 `dflag` 里，而 `cut.c:124` 的那道
     /// post-check 问的是旗标而不是值：给了字节列表又给 `-d` 就是用法错。
@@ -251,7 +249,7 @@ pub struct CutArgs<'a> {
     pub suppress: bool,
     /// `-s` 是否真被给过（`sflag`，同一道 post-check 的另一半）。
     pub suppress_given: bool,
-    pub operands: Vec<&'a str>,
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// `cut` 参数错。每个臂对应 C 的一条真出路（调用者负责渲染），而不是「都是用法错」：
@@ -289,23 +287,23 @@ impl From<ListError> for CutError {
 /// `case 'b'`/`case 'c'`/`case 'f'` 里，`cut.c:90-108`），所以一个非法列表抢在后面的
 /// 集外字母之前报错；而**选哪一类**的冲突到环外才查（`:120-128`），所以
 /// `cut -b 1 -f 2 -x` 报的是 `-x` 而不是冲突。
-pub fn parse_cut_args<'a>(args: &'a [&'a str]) -> Result<CutArgs<'a>, CutError> {
-    let mut bytes_list: Option<&'a str> = None;
-    let mut fields_list: Option<&'a str> = None;
+pub fn parse_cut_args<'a>(args: &'a [&'a [u8]]) -> Result<CutArgs<'a>, CutError> {
+    let mut bytes_list: Option<&'a [u8]> = None;
+    let mut fields_list: Option<&'a [u8]> = None;
     let mut delimiter: u8 = b'\t';
     let mut delimiter_given = false;
     let mut suppress = false;
     let mut suppress_given = false;
-    let mut operands: Vec<&'a str> = Vec::new();
+    let mut operands: Vec<&'a [u8]> = Vec::new();
 
     let mut index = 0usize;
     while index < args.len() {
         let arg = args[index];
-        if arg == "--" {
+        if arg == b"--" {
             operands.extend_from_slice(&args[index + 1..]);
             break;
         }
-        let bytes = arg.as_bytes();
+        let bytes = arg;
         if bytes.len() > 1 && bytes[0] == b'-' {
             let mut pos = 1usize;
             while pos < bytes.len() {
@@ -322,7 +320,7 @@ pub fn parse_cut_args<'a>(args: &'a [&'a str]) -> Result<CutArgs<'a>, CutError> 
                                 // 一句再返回 `'?'`（`getopt.c:132-136`）。
                                 None => {
                                     return Err(CutError::Getopt(GetoptReport::MissingValue(
-                                        letter as char,
+                                        char::from(letter),
                                     )));
                                 }
                             }
@@ -351,7 +349,7 @@ pub fn parse_cut_args<'a>(args: &'a [&'a str]) -> Result<CutArgs<'a>, CutError> 
                         };
                         // C `cut.c:101-102` 只有一句 `dchar = *optarg`：取首字节，
                         // 多了不用也不报错，空串就取到那个 `\0`。
-                        delimiter = value.bytes().next().unwrap_or(0);
+                        delimiter = *value.first().unwrap_or(&0);
                         delimiter_given = true;
                         pos = bytes.len();
                     }
@@ -364,9 +362,9 @@ pub fn parse_cut_args<'a>(args: &'a [&'a str]) -> Result<CutArgs<'a>, CutError> 
                     // (`cut.c:112-113` `case 'n': break`), never a leaked operand.
                     b'n' => pos += 1,
                     _ => {
-                        return Err(CutError::Getopt(GetoptReport::UnknownOption(
-                            bytes[pos] as char,
-                        )));
+                        return Err(CutError::Getopt(GetoptReport::UnknownOption(char::from(
+                            bytes[pos],
+                        ))));
                     }
                 }
             }
@@ -404,7 +402,7 @@ pub fn parse_cut_args<'a>(args: &'a [&'a str]) -> Result<CutArgs<'a>, CutError> 
 mod tests {
     use super::*;
 
-    fn bytes_of(line: &str, list: &str) -> String {
+    fn bytes_of(line: &str, list: &[u8]) -> String {
         let ranges = parse_list(list).unwrap();
         let mut out = [0u8; 64];
         let len = select_bytes(line.as_bytes(), &ranges, &mut out).unwrap();
@@ -453,51 +451,52 @@ mod tests {
     }
 
     /// `None` 交回的是「这一行整行没写」，与空串（写了、但选不出字段）不是同一件事。
-    fn fields_of(line: &str, list: &str, delimiter: u8, suppress: bool) -> Option<String> {
+    fn fields_of(line: &str, list: &[u8], delimiter: u8, suppress: bool) -> Option<String> {
         let ranges = parse_list(list).unwrap();
         let mut out = [0u8; 64];
-        let len = select_fields(line.as_bytes(), &ranges, delimiter, suppress, &mut out).unwrap()?;
+        let len =
+            select_fields(line.as_bytes(), &ranges, delimiter, suppress, &mut out).unwrap()?;
         Some(String::from_utf8_lossy(&out[..len]).into_owned())
     }
 
     #[test]
     fn test_byte_selection() {
-        assert_eq!(bytes_of("hello", "2-4"), "ell");
-        assert_eq!(bytes_of("hello", "1,5"), "ho");
-        assert_eq!(bytes_of("hello", "3-"), "llo");
-        assert_eq!(bytes_of("hello", "-2"), "he");
+        assert_eq!(bytes_of("hello", b"2-4"), "ell");
+        assert_eq!(bytes_of("hello", b"1,5"), "ho");
+        assert_eq!(bytes_of("hello", b"3-"), "llo");
+        assert_eq!(bytes_of("hello", b"-2"), "he");
     }
 
     #[test]
     fn test_overlaps_print_once() {
-        assert_eq!(bytes_of("hello", "1-3,2-4"), "hell");
+        assert_eq!(bytes_of("hello", b"1-3,2-4"), "hell");
     }
 
     #[test]
     fn test_field_selection() {
-        assert_eq!(fields_of("a:b:c", "2", b':', false).as_deref(), Some("b"));
+        assert_eq!(fields_of("a:b:c", b"2", b':', false).as_deref(), Some("b"));
         assert_eq!(
-            fields_of("a:b:c", "1,3", b':', false).as_deref(),
+            fields_of("a:b:c", b"1,3", b':', false).as_deref(),
             Some("a:c")
         );
         assert_eq!(
-            fields_of("a:b:c", "2-", b':', false).as_deref(),
+            fields_of("a:b:c", b"2-", b':', false).as_deref(),
             Some("b:c")
         );
     }
 
     #[test]
     fn test_missing_delimiter_policy() {
-        assert_eq!(fields_of("abc", "1", b':', false).as_deref(), Some("abc"));
+        assert_eq!(fields_of("abc", b"1", b':', false).as_deref(), Some("abc"));
         // `-s` 且这一行没有分隔符：整行跳过，一个字节都不交（`cut.c:248`/`:253-254`）。
-        assert_eq!(fields_of("abc", "1", b':', true), None);
+        assert_eq!(fields_of("abc", b"1", b':', true), None);
     }
 
     /// 参照件读数 `tmp/cut-428/ref-s.log`：`-s` 吞的是「没有分隔符的那一行」，
     /// 「有分隔符而选不出字段」那一行仍交一枚换行——两形在库里必须是两个值。
     #[test]
     fn a_suppressed_line_is_absent_rather_than_empty() {
-        let ranges = parse_list("9").unwrap();
+        let ranges = parse_list(b"9").unwrap();
         let mut out = [0u8; 16];
         assert_eq!(
             select_fields(b"a\tb\tc", &ranges, b'\t', true, &mut out).unwrap(),
@@ -519,12 +518,12 @@ mod tests {
     #[test]
     fn test_bad_lists_rejected() {
         // 只有两类形报错，而且各对应 C 自己那一句：零（`:197-198`）与残留（`:195-196`）。
-        assert_eq!(parse_list("0").err(), Some(ListError::IncludesZero));
-        assert_eq!(parse_list("a").err(), Some(ListError::IllegalValue));
-        assert_eq!(parse_list("1-x").err(), Some(ListError::IllegalValue));
-        assert_eq!(parse_list("1-2-3").err(), Some(ListError::IllegalValue));
+        assert_eq!(parse_list(b"0").err(), Some(ListError::IncludesZero));
+        assert_eq!(parse_list(b"a").err(), Some(ListError::IllegalValue));
+        assert_eq!(parse_list(b"1-x").err(), Some(ListError::IllegalValue));
+        assert_eq!(parse_list(b"1-2-3").err(), Some(ListError::IllegalValue));
         // 孤一个减号：start 与 stop 都是零（C 的 setautostart 不产生数字），走零那句。
-        assert_eq!(parse_list("-").err(), Some(ListError::IncludesZero));
+        assert_eq!(parse_list(b"-").err(), Some(ListError::IncludesZero));
     }
 
     /// 列表语法的四形按 C 的 `get_list` 定形（批次二百八十六）：这四形在旧写法里
@@ -532,20 +531,21 @@ mod tests {
     #[test]
     fn list_grammar_matches_the_strtok_rule() {
         // ① 空列表不是错：`strtok` 直接交 NULL（`cut.c:175`），一个位置也不选。
-        assert_eq!(parse_list("").unwrap().len(), 0);
-        assert_eq!(bytes_of("abc", ""), "");
+        assert_eq!(parse_list(b"").unwrap().len(), 0);
+        assert_eq!(bytes_of("abc", b""), "");
         // ② 空项折叠与空白分隔：`cut.c:175` 的分隔符集是 `,`、空格、制表符。
-        assert_eq!(bytes_of("abcde", "1,,2"), "ab");
-        assert_eq!(bytes_of("abcde", "1 2"), "ab");
-        assert_eq!(bytes_of("abcde", "1\t3"), "ac");
+        assert_eq!(bytes_of("abcde", b"1,,2"), "ab");
+        assert_eq!(bytes_of("abcde", b"1 2"), "ab");
+        assert_eq!(bytes_of("abcde", b"1\t3"), "ac");
         // ③ 倒序区间不查大小关系，只是选不中任何东西（`:209-210` 那个
         // `start++ <= stop` 的循环一次也不跑）。
-        assert_eq!(bytes_of("abcde", "5-2"), "");
+        assert_eq!(bytes_of("abcde", b"5-2"), "");
         // ④ 项数不封顶（C 按 `ALLOC_CHUNK` 长大）：20 项照接。
         let many = (1..=20)
             .map(|n| n.to_string())
             .collect::<Vec<String>>()
-            .join(",");
+            .join(",")
+            .into_bytes();
         assert_eq!(parse_list(&many).unwrap().len(), 20);
     }
 
@@ -556,84 +556,174 @@ mod tests {
     fn the_two_dash_tests_are_not_merged() {
         // `5--`：第一个判据的 `isdigit(p[1])` 不成立（`:187`），于是第二个判据跨过
         // 索引 1 的 `-` 后停在索引 2 的 `-` 上 → 残留那句（`:195-196`）。
-        assert_eq!(parse_list("5--").err(), Some(ListError::IllegalValue));
+        assert_eq!(parse_list(b"5--").err(), Some(ListError::IllegalValue));
         // `1-2-` 却是 C 接受的：跨过尾部那个 `-` 正好走到行尾（`:189-193`），
         // autostop 那一支把 maxval 之后的内容原样打出（`x_cut.c:80-82`），
         // 等价于从 1 打到行尾。
-        assert_eq!(bytes_of("abcde", "1-2-"), "abcde");
+        assert_eq!(bytes_of("abcde", b"1-2-"), "abcde");
         // `0-` 也是接受的形，但走零那句：残留判据在前、零判据在后（`:195-198`）。
-        assert_eq!(parse_list("0-").err(), Some(ListError::IncludesZero));
+        assert_eq!(parse_list(b"0-").err(), Some(ListError::IncludesZero));
     }
 
     #[test]
     fn test_parse_cut_args_faithful_getopt() {
         // Defaults: a field list with attached and next-word values.
-        let a = parse_cut_args(&["-f", "1-3", "file"]).unwrap();
-        assert_eq!(a.fields_list, Some("1-3"));
-        assert_eq!(a.operands, vec!["file"]);
+        let a = parse_cut_args(&[b"-f", b"1-3", b"file"]).unwrap();
+        assert_eq!(a.fields_list, Some(&b"1-3"[..]));
+        assert_eq!(a.operands, vec![&b"file"[..]]);
         assert_eq!(a.delimiter, b'\t');
         // Attached list value (regression vs whole-token leak).
         assert_eq!(
-            parse_cut_args(&["-f1-3", "file"]).unwrap().fields_list,
-            Some("1-3")
+            parse_cut_args(&[b"-f1-3", b"file"]).unwrap().fields_list,
+            Some(&b"1-3"[..])
         );
         // KEY regression: a flag clustered with a value option (`-sf1-3`).
-        let s = parse_cut_args(&["-sf1-3", "file"]).unwrap();
+        let s = parse_cut_args(&[b"-sf1-3", b"file"]).unwrap();
         assert!(s.suppress);
-        assert_eq!(s.fields_list, Some("1-3"));
+        assert_eq!(s.fields_list, Some(&b"1-3"[..]));
         // `-sn` and `-ns` both set suppress (`-n` is the compat no-op).
-        assert!(parse_cut_args(&["-sn", "-f1"]).unwrap().suppress);
-        assert!(parse_cut_args(&["-ns", "-f1"]).unwrap().suppress);
+        assert!(parse_cut_args(&[b"-sn", b"-f1"]).unwrap().suppress);
+        assert!(parse_cut_args(&[b"-ns", b"-f1"]).unwrap().suppress);
         // `-d` attached and separate; `-b`/`-c` set the byte list.
-        assert_eq!(parse_cut_args(&["-d:", "-f1"]).unwrap().delimiter, b':');
-        assert_eq!(parse_cut_args(&["-d", ",", "-f1"]).unwrap().delimiter, b',');
+        assert_eq!(parse_cut_args(&[b"-d:", b"-f1"]).unwrap().delimiter, b':');
         assert_eq!(
-            parse_cut_args(&["-c1-2", "file"]).unwrap().bytes_list,
-            Some("1-2")
+            parse_cut_args(&[b"-d", b",", b"-f1"]).unwrap().delimiter,
+            b','
+        );
+        assert_eq!(
+            parse_cut_args(&[b"-c1-2", b"file"]).unwrap().bytes_list,
+            Some(&b"1-2"[..])
         );
         // `--` ends scanning; bare `-` is an operand.
         assert_eq!(
-            parse_cut_args(&["-f1", "--", "-x"]).unwrap().operands,
-            vec!["-x"]
+            parse_cut_args(&[b"-f1", b"--", b"-x"]).unwrap().operands,
+            vec![&b"-x"[..]]
         );
-        assert_eq!(parse_cut_args(&["-f1", "-"]).unwrap().operands, vec!["-"]);
+        assert_eq!(
+            parse_cut_args(&[b"-f1", b"-"]).unwrap().operands,
+            vec![&b"-"[..]]
+        );
         // 集外字母与缺值带的是 libc 那一行（句子单源在 `GetoptReport`）。
         assert_eq!(
-            parse_cut_args(&["-x", "file"]).err(),
+            parse_cut_args(&[b"-x", b"file"]).err(),
             Some(CutError::Getopt(GetoptReport::UnknownOption('x')))
         );
         assert_eq!(
-            parse_cut_args(&["-f"]).err(),
+            parse_cut_args(&[b"-f"]).err(),
             Some(CutError::Getopt(GetoptReport::MissingValue('f')))
         );
         assert_eq!(
-            parse_cut_args(&["-d"]).err(),
+            parse_cut_args(&[b"-d"]).err(),
             Some(CutError::Getopt(GetoptReport::MissingValue('d')))
         );
         // 两类列表并存是**环外**的 post-check（`cut.c:120-122`），报的是裸 usage：
         // 前面没有 libc 那一行。旧写法把这个当环内的 `Conflict` 抢先报，所以
         // `cut -b 1 -f 2 -x` 会报冲突而不是报 `-x`。
-        assert_eq!(parse_cut_args(&["-b1", "-f1"]).err(), Some(CutError::Usage));
-        assert_eq!(parse_cut_args(&["-f1", "-b1"]).err(), Some(CutError::Usage));
+        assert_eq!(
+            parse_cut_args(&[b"-b1", b"-f1"]).err(),
+            Some(CutError::Usage)
+        );
+        assert_eq!(
+            parse_cut_args(&[b"-f1", b"-b1"]).err(),
+            Some(CutError::Usage)
+        );
         // `-d`/`-s` 只能配 `-f`（`cut.c:124` 的 `dflag || sflag`）：给字节列表
         // 再给它们也是用法错。旧写法两条都静默接受。
-        assert_eq!(parse_cut_args(&["-c1", "-d,"]).err(), Some(CutError::Usage));
-        assert_eq!(parse_cut_args(&["-c1", "-s"]).err(), Some(CutError::Usage));
+        assert_eq!(
+            parse_cut_args(&[b"-c1", b"-d,"]).err(),
+            Some(CutError::Usage)
+        );
+        assert_eq!(
+            parse_cut_args(&[b"-c1", b"-s"]).err(),
+            Some(CutError::Usage)
+        );
         // 一个列表也没有 → `(!cflag && !bflag)` 那一支。
-        assert_eq!(parse_cut_args(&["-s"]).err(), Some(CutError::Usage));
+        assert_eq!(parse_cut_args(&[b"-s"]).err(), Some(CutError::Usage));
         // C 的 `dchar = *optarg` 只取首字节，多了不用也不报错（`cut.c:101-102`）；
         // 旧写法把多字节当成一个专门的错。
-        assert_eq!(parse_cut_args(&["-dab", "-f1"]).unwrap().delimiter, b'a');
-        assert_eq!(parse_cut_args(&["-d", "", "-f1"]).unwrap().delimiter, 0);
+        assert_eq!(parse_cut_args(&[b"-dab", b"-f1"]).unwrap().delimiter, b'a');
+        assert_eq!(parse_cut_args(&[b"-d", b"", b"-f1"]).unwrap().delimiter, 0);
         // 列表合法性在选项环里就地查（C 的 `get_list` 就坐在那个 case 里），所以
         // 非法列表抢在后面的集外字母之前报错。
         assert_eq!(
-            parse_cut_args(&["-f", "0", "-x"]).err(),
+            parse_cut_args(&[b"-f", b"0", b"-x"]).err(),
             Some(CutError::ZeroInList)
         );
         assert_eq!(
-            parse_cut_args(&["-f", "a", "-x"]).err(),
+            parse_cut_args(&[b"-f", b"a", b"-x"]).err(),
             Some(CutError::IllegalList)
+        );
+    }
+
+    /// argv 那串字节进到库里不许被折过（批次四百六十一）：`cut` 的 `-d` 与 `column` 的 `-s`
+    /// 同族——值不是回显位而是拿去切**输出内容**的（C 一句 `dchar = *optarg`，
+    /// `minix3/usr.bin/cut/cut.c:101-102`，取首字节）。文本缝之下 `-d<ff>` 先折成
+    /// `ef bf bd` 三枚，分隔符就成了 `ef`：同一份输入上「该切的切不开、不该切的反倒被切」。
+    /// 参照件 `tmp/cut-406/cut` 现量四形：`-d<ff> -f1` 对 `a<ff>b<TAB>z` 交回 `a`、`-f2` 交回
+    /// `b<TAB>z`；`-d<ff>` 对只含 U+FFFD 三字节的行原样交回；值附形 `-d<ff>` 同第一形。
+    /// 操作数那一腿在本支只走去开档与 `warn` 的 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`），
+    /// 所以这里钉的是**库里能不能表达原字节档名**——旧签名 `&[&str]` 让那一形写不出来。
+    #[test]
+    fn the_delimiter_and_the_operand_reach_the_library_as_raw_bytes() {
+        let argv: &[&[u8]] = &[b"-d", b"\xff", b"-f", b"1", b"a\xffb"];
+        let parsed = parse_cut_args(argv).unwrap();
+        assert_eq!(parsed.delimiter, 0xff, "分隔符是 argv 里那一枚字节本身");
+        assert_eq!(
+            parsed.operands,
+            vec![&b"a\xffb"[..]],
+            "档名就是 argv 里那串字节，一字节都不许多"
+        );
+
+        let ranges = parse_list(b"1").unwrap();
+        let mut out = [0u8; 16];
+        let len = select_fields(b"a\xffb\tz", &ranges, parsed.delimiter, false, &mut out)
+            .unwrap()
+            .unwrap();
+        assert_eq!(&out[..len], b"a", "真 ff 切得开");
+
+        let whole = b"a\xef\xbf\xbdb";
+        let len = select_fields(whole, &ranges, parsed.delimiter, false, &mut out)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            &out[..len],
+            &whole[..],
+            "U+FFFD 的三枚字节不是分隔符，整行照搬"
+        );
+
+        let attached: &[&[u8]] = &[b"-d\xff", b"-f", b"1"];
+        assert_eq!(
+            parse_cut_args(attached).unwrap().delimiter,
+            0xff,
+            "值附在字母后也是同一枚字节"
+        );
+    }
+
+    /// 字母位的**取法**在库里就得按字节（批次四百六十一补）：`getopt.c:79` 的
+    /// `optopt = *place++` 一次进一个字节、`:103` 用 `%c` 原样写出，所以 `-é`
+    /// （`c3 a9`）交回的是 `char::from(0xc3)` 而不是整个字符。这一枚与 `cut_face` 那枚
+    /// 各钉一半——**只改一半也必须红**：取法退回按字符取整簇时只有这里先红，报文渲染退回
+    /// 按 `char` 走时只有面侧红（同 `comm`/`cmp` 那两笔的两半分钉）。
+    /// 参照件 `tmp/cut-406/cut` 现量 `-é` 与 `-sé` 都交回单个 `c3`（`s` 是 `"b:c:d:f:sn"`
+    /// 里唯一不带值的字母之一，聚簇继续吃到 `é` 的第一字节）。
+    #[test]
+    fn the_unknown_letter_is_taken_bytewise_in_the_ring() {
+        assert_eq!(
+            parse_cut_args(&[b"-\xc3\xa9", b"a", b"b"]).err(),
+            Some(CutError::Getopt(GetoptReport::UnknownOption('\u{00c3}'))),
+            "`é` 是 c3 a9 两字节，libc 报第一字节"
+        );
+        // 聚簇里合法字母先被吃掉，报的仍是其后第一枚字节。
+        assert_eq!(
+            parse_cut_args(&[b"-s\xc3\xa9", b"a", b"b"]).err(),
+            Some(CutError::Getopt(GetoptReport::UnknownOption('\u{00c3}'))),
+            "-s 后紧跟多字节字母"
+        );
+        // ASCII 那一半不许被波及。
+        assert_eq!(
+            parse_cut_args(&[b"-Z", b"a", b"b"]).err(),
+            Some(CutError::Getopt(GetoptReport::UnknownOption('Z'))),
+            "-Z"
         );
     }
 }

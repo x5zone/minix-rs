@@ -67,6 +67,70 @@ fn run_bytes(args: &[&str], input: &str) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
+/// argv 形态的**字节形**夹具：一枚裸 `ff` 写不成 `&str`，所以参数经 `OsStr::from_bytes`
+/// 交下去，比的是子进程实际收到的那串字节（文本形夹具里 `from_utf8_lossy` 会把裸 `ff`
+/// 与 `ef bf bd` 弄成同一个串，那正是被测的缝）。
+fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut child = Command::new(CUT)
+        .args(args.iter().map(|a| std::ffi::OsStr::from_bytes(a)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the cut binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 命令行参数那一半也按字节了（批次四百六十一）：`-d` 的值与 `column` 的 `-s` 同族——它不是
+/// 回显位，而是被 `cut.c:101-102` 的一句 `dchar = *optarg` 拿去切**输出内容**的首字节。所以
+/// 文本缝折一次之后分隔符变成 `ef`，同一份输入上「该切的切不开、不该切的反倒被切」。参照件
+/// `tmp/cut-406/cut`（软链名跑的，`getprogname()` 算出 `cut` 与本壳一致）现量：`-d<ff> -f1`
+/// 对 `a<ff>b<TAB>z` 交回 `a`、值附形 `-d<ff>` 同形；`-d<ff>` 对只含 U+FFFD 三字节的行原样交回。
+/// 第三段钉字母位：`-\xff` 交回那一枚裸字节本身，再跟那三行写死的 usage、退 1。
+#[test]
+fn a_raw_byte_delimiter_splits_the_field_and_a_raw_byte_letter_is_named() {
+    let (out, code, err) = run_argv(&[b"-d\xff", b"-f", b"1"], b"a\xffb\tz\n");
+    assert_eq!(
+        (out.as_slice(), code, err.as_slice()),
+        (&b"a\n"[..], 0, &b""[..]),
+        "分隔符该是 argv 里那一枚 ff"
+    );
+
+    let (out, code, err) = run_argv(&[b"-d", b"\xff", b"-f", b"2"], b"a\xffb\tz\n");
+    assert_eq!(
+        (out.as_slice(), code, err.as_slice()),
+        (&b"b\tz\n"[..], 0, &b""[..]),
+        "第二列拿到的是 ff 之后的那一段（制表符仍在列里）"
+    );
+
+    let (out, code, err) = run_argv(&[b"-d", b"\xff", b"-f", b"1"], b"a\xef\xbf\xbdb\n");
+    assert_eq!(
+        (out.as_slice(), code, err.as_slice()),
+        (&b"a\xef\xbf\xbdb\n"[..], 0, &b""[..]),
+        "U+FFFD 的三枚字节不是分隔符，整行照搬"
+    );
+
+    let (out, code, err) = run_argv(&[b"-\xff", b"-f", b"1"], b"a\n");
+    assert_eq!(out, Vec::new(), "集外字母不打数据");
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        [
+            b"cut: unknown option -- \xff\n".as_slice(),
+            USAGE.as_bytes()
+        ]
+        .concat(),
+        "字母位该是 argv 里那一枚原字节"
+    );
+}
+
 /// The letter position of the libc line is **one raw byte**: the reference
 /// `tmp/cut-406/cut_ref` prints `cut: unknown option -- ` + `c3` + newline for both
 /// `-\u{e9}` and `-s\u{e9}` (`s` is one of the two *valueless* letters of C's `"b:c:d:f:sn"` —

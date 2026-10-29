@@ -25,10 +25,12 @@ mod support;
 use minix_textfilter::cut::{CutError, parse_cut_args, parse_list, select_bytes, select_fields};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    // C 的每一句诊断都以 `getprogname()` 开头（err/errx 走 `vwarn`/`vwarnx`）。
-    let prog = support::prog_name(&argv);
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // C 的每一句诊断都以 `getprogname()` 开头（err/errx 走 `vwarn`/`vwarnx`）。程序名那一腿
+    // 交给 `warn_line` 与 `line_bytes` 的 `&str` 名字段（在册 `ARGV-BYTE-PATH-IN-LIBS`），
+    // 所以臂内折一次；列表值、分隔符与操作数都不跟着折。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // argv folding lives in the deciding half (`parse_cut_args`): BSD
     // `getopt("b:c:d:f:sn")` with attached-or-next list/delimiter values and
     // flag clustering. The old inline whole-token matcher mishandled a flag
@@ -36,13 +38,13 @@ fn run() -> ! {
     // list) and `-ns` (dropped the `-s` suppress).
     let parsed = match parse_cut_args(&args[1..]) {
         Ok(parsed) => parsed,
-        Err(e) => arg_error(e, prog),
+        Err(e) => arg_error(e, &prog),
     };
     let bytes_list = parsed.bytes_list;
     let fields_list = parsed.fields_list;
     let delimiter = parsed.delimiter;
     let suppress = parsed.suppress;
-    let operands: Vec<String> = parsed.operands.iter().map(|s| String::from(*s)).collect();
+    let operands = parsed.operands;
 
     let selecting_bytes = bytes_list.is_some();
     // `parse_cut_args` 已经在选项环里把列表解了一遍（C 的 `get_list` 就坐在那个
@@ -55,7 +57,7 @@ fn run() -> ! {
         Ok(parsed) => parsed,
         // 不可达：上面那个解析器已经跑过同一个串。真到了这里也按 C 的句子报，
         // 而不是静默退 1——旧写法就是静默退 1，一句都不说。
-        Err(error) => arg_error(CutError::from(error), prog),
+        Err(error) => arg_error(CutError::from(error), &prog),
     };
 
     let process = |input: &[u8]| {
@@ -94,20 +96,24 @@ fn run() -> ! {
         process(&support::read_stdin());
     }
     for operand in &operands {
-        if operand == "-" {
+        if *operand == b"-" {
             process(&support::read_stdin());
             continue;
         }
+        // 档名以字节进来；开档那一腿与 `warn("%s", *argv)` 的三段句子都要 `&str`（在册
+        // `ARGV-BYTE-PATH-IN-LIBS`），所以在这里折一次——报出来的名字与真源差在那条腿上，
+        // 不差在回显写法。`-` 的判据按字节比（上面那一判），与折叠名无关。
+        let path = String::from_utf8_lossy(operand);
         // `support::read_file` 而不是裸 `minix_sys::open`：后者在本 crate 的命令层
         // 没有宿主双生面，直接跑宿主二进制时任何操作数都打不开（tail 在同一条腿上
         // 过同一个坑，那个缺口当时被登为「逐字对账不适用于 tail」）。接回双生面之后，
         // 这一腿的报错腿才能被 `cut_face.rs` 钉住。
-        let input = match support::read_file(operand) {
+        let input = match support::read_file(&path) {
             Ok(input) => input,
             // C `cut.c:138-142` 的 `warn("%s", *argv)`：程序名、操作数、`strerror`
             // 句子三个成分缺一不可（旧写法把 `warn(3)` 当成 `warnx(3)` 用）。
             Err(code) => {
-                support::warn_line(prog, operand, code);
+                support::warn_line(&prog, &path, code);
                 status = 1;
                 continue;
             }
