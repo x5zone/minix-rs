@@ -2675,10 +2675,10 @@ fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! 
 | M3 | 清单先于建表（§1.2/§2.8，Rust 侧） | 正常注册路径下 Step 0/1 不向清单领页（兜底路径除外：`boot_alloc_region()` 为 `None` 时从清单切 256 页，见 §4.1——它发生在建表之前，不违反"清单先于建表"）；清单的动态取用发生在 `pre_init` 等价的 4KB 路径 | 真机 | 真机链覆盖（`kernel: step1+2 mappings ok` 路标） | — |
 | M4 | **深拷先于一切动用空闲清单者**（§4.5 不变量） | 三个入口在 `store_kernel_info` 之前不发生页分配、不读空闲清单；交接分类点读 `KernelInfo` 切片非零 | 真机＋调用序证据 | 宿主测试 `test_store_kernel_info_lands_firmware_slices`（落地区行为）；**调用序本身无自动断言** | **TODO-01**（见 5.3） |
 | M5 | 页表建立与开分页（§2.6 C / §4.6 Rust） | 开分页后的下一条取指有映射（能打印第一个内核路标） | 真机 | 真机链覆盖 | **TODO-05**（见 5.3） |
-| M6 | 恒等映射覆盖低 4GB 固定上界（§4.6 Step 1） | `IDENTITY_MAP_END` 以下全部有映射、标志为 supervisor-only | 宿主测试 | **已覆盖**：[`paging.rs`](os/arch/src/x86_64/paging.rs) 14 条（`map_huge` 系列） | — |
+| M6 | 恒等映射覆盖低 4GB 固定上界（§4.6 Step 1） | `IDENTITY_MAP_END` 以下全部有映射、标志为 supervisor-only | 宿主测试 | **已覆盖**：[`paging.rs`](os/arch/src/x86_64/paging.rs) 15 条（`map_huge` 系列） | — |
 | M7 | 分配器"写一次"（§3.8） | 二次 `register` 在 debug 构建失败、release 构建拒绝改写 | 宿主测试 | **已覆盖**：[`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条（`register` / `register_free` 各一：debug 下二次注册 panic，release 下被拒且指针不变） | — |
 | M8 | 落地区容量与 fail-fast（§4.5） | 超过容量时快速失败而非截断 | 宿主测试 | **已覆盖**：落地区行为（`test_store_kernel_info_lands_firmware_slices`）+ 三枚超容量负控（`test_store_kernel_info_rejects_{reserved,memmap,boot_module}_overflow`） | — |
-| M9 | bump 分配器（§3.8/§4.2） | 顺序推进、耗尽拒绝、页对齐、reinit 后归位 | 宿主测试 | **已覆盖**：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 5 条 | — |
+| M9 | bump 分配器（§3.8/§4.2） | 顺序推进、耗尽拒绝、页对齐、reinit 后归位、跨镜像区间自洽 | 宿主测试 | **已覆盖**：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条 | — |
 | M10 | 布局契约（§5.2 与 §3.6） | L0–L9 十条主编号（L0–L8 全架构 + L9 仅 riscv64） | 宿主断言 | **已覆盖**：`check-layout.sh`（全量，见 5.2.2） | — |
 | M11 | 模块顺序契约（§4.3） | 12 项按 `MODULE_NAMES` 顺序返回、缺件 panic | 宿主测试＋真机前置检查 | **已覆盖**：`loader.rs` 顺序/缺件测试＋真机链的 `mdir` 前置 | — |
 | M12 | EBS 阶段边界（§4.1） | EBS 之后不再出现固件调用；裸串口路标仍输出 | 真机＋静态检查 | 真机覆盖（两条 `raw_serial` 路标）；**无静态检查** | **TODO-04**（见 5.3） |
@@ -2699,11 +2699,11 @@ fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! 
 ```bash
 $ cd os && cargo test -p boot-shim --features test-all --lib
 ...
-test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 $ cd os && cargo test -p minix-boot -p minix-elf
-running 23 tests
-test result: ok. 23 passed; 0 failed; ...
+running 32 tests
+test result: ok. 32 passed; 0 failed; ...
 running 23 tests
 test result: ok. 23 passed; 0 failed; ...
 ```
@@ -2714,19 +2714,21 @@ test result: ok. 23 passed; 0 failed; ...
 $ for f in os/boot-shim/src/loader.rs os/boot-shim/src/opensbi_helpers.rs \
            os/boot-shim/src/uefi_helpers.rs os/libs/minix-boot/src/kernel_info.rs \
            os/libs/minix-boot/src/platform.rs os/libs/minix-boot/src/boot_form.rs \
-           os/libs/minix-elf/src/lib.rs; do printf '%-50s %s\n' "$f" "$(grep -c '#\[test\]' $f)"; done
+           os/libs/minix-boot/src/memmap_source.rs os/libs/minix-elf/src/lib.rs; do
+  printf '%-50s %s\n' "$f" "$(grep -c '#\[test\]' $f)"; done
 os/boot-shim/src/loader.rs                         15
-os/boot-shim/src/opensbi_helpers.rs                13
+os/boot-shim/src/opensbi_helpers.rs                12
 os/boot-shim/src/uefi_helpers.rs                   1
 os/libs/minix-boot/src/kernel_info.rs              9
 os/libs/minix-boot/src/platform.rs                 8
 os/libs/minix-boot/src/boot_form.rs                6
+os/libs/minix-boot/src/memmap_source.rs            9
 os/libs/minix-elf/src/lib.rs                       23
 ```
 
-15 + 13 + 1 = 29，与 `cargo test -p boot-shim` 的实测一致；`minix-boot` 的 23 = `kernel_info.rs` 的 9 + `platform.rs` 的 8 + `boot_form.rs` 的 6；`minix-elf` 的 23 与实测一致（上面两条 `running 23 tests` 依次是 `minix-boot` 与 `minix-elf`）。
+15 + 12 + 1 = 28，与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi 共 16 条，28 这个读数必须带 `test-all`）；`minix-boot` 的 32 = `kernel_info.rs` 的 9 + `platform.rs` 的 8 + `boot_form.rs` 的 6 + `memmap_source.rs` 的 9；`minix-elf` 的 23 与实测一致（上面两条 `running 32/23 tests` 依次是 `minix-boot` 与 `minix-elf`）。
 
-推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`memmap.rs`](os/kernel/src/memmap.rs) 16 条、[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 5 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 7 条、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 10 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 14 条、[`lib.rs`](os/kernel/src/lib.rs) 的 `test_store_kernel_info_lands_firmware_slices` 1 条。**[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 与 [`handoff.rs`](os/libs/minix-boot/src/handoff.rs) 为零**——后者由编译期断言（`const _: () = assert!(size_of::<BootHandoff>() <= 4096)`）覆盖，前者是 TODO-02。
+推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`memmap.rs`](os/kernel/src/memmap.rs) 16 条、[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 7 条、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 10 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 15 条、[`lib.rs`](os/kernel/src/lib.rs) 的 `store_kernel_info` 系列 4 条（1 枚落地区行为 + 3 枚超容量负控）。**[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 自身为零、[`handoff.rs`](os/libs/minix-boot/src/handoff.rs) 为零**——后者由编译期断言（`const _: () = assert!(size_of::<BootHandoff>() <= 4096)`）覆盖；前者的单例契约由集成测试 [`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条覆盖（单元测试二进制里 paging.rs 的 destroy 测试已占用同一全局单例，无法在其中再测注册）。
 
 列出的测试各自挡的是哪条契约（选列，未逐条穷举）：
 
