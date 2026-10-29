@@ -18,6 +18,7 @@ pub mod kernel_info;
 pub mod boot_form;
 pub mod boot_shim;
 pub mod handoff;
+pub mod handoff_v1;
 pub mod memmap_source;
 pub mod platform;
 
@@ -25,6 +26,7 @@ pub use kernel_info::*;
 pub use boot_form::{BootForm, ALL_BOOT_FORMS};
 pub use boot_shim::*;
 pub use handoff::BootHandoff;
+pub use handoff_v1::*;
 pub use memmap_source::{DtbMemoryMap, MemoryMapSource, MultibootMemoryMap, dtb_covers_conventional};
 pub use platform::{
     PlatformDescKind, PlatformDescSource, PlatformDesc, PlatformSource,
