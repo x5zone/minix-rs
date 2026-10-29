@@ -119,6 +119,111 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百六十二（A2 参数缝半切片 44：`head` 的 argv、计数值的回显与横幅档名交回原字节；顺手量出两条未登记的计数分叉）
+
+- **这一支在本族里独一份，独在「同一段 argv 既进解析又进报文」**：`cut` 的列表值只喂 `get_list`，
+  报错那两句不带 `%s`（`cut.c:196`、`:198`）；`column` 的 `-s` 值进分隔符表但不被回显；`comm` 的
+  optstring 根本没有带值字母。而 `minix3/usr.bin/head/head.c:96-97`、`:102-103` 写的是
+  `errx(1, "illegal byte count -- %s", optarg)`——**值本身被打进句子**。所以同一枚裸 `ff` 在本支
+  同时决定两件事：这台计数能不能转成数、以及报出来的那句长几个字节。另一处独有的是**横幅**：
+  `head.c:130-131` 的 `printf("%s==> %s <==\n", …, *argv)` 由命令自己打印，不像 `cut`/`comm` 的
+  档名回显要挤进 `err_line` 那条 `&str` 口——所以本支的档名可以**逐字节**回显，开档腿折不折都
+  不影响横幅，两条腿第一次能被分开钉住。
+- **落码四层**：库侧 `os/commands/usr-bin/textfilter/src/window.rs` 的 `fn parse_head_args` 改收
+  `&[&[u8]]`，`HeadArgs.operands` 改 `Vec<Vec<u8>>`，`HeadArgError::IllegalCount.value` 从 `String`
+  改 `Vec<u8>`；`obsolete()` 那一段重写改成「前缀两枚字节 `-n` + 原串去掉短横后的全部字节」
+  （`head.c:188-192` 拼的是字符数组，尾巴里的非 UTF-8 字节必须跟着走，它随后被 `strtoimax` 拒掉
+  并被回显）；环里 `arg == b"--"`、`arg[0] != b'-'`、`char::from(bytes[pos])` 三处按字节。
+  数值腿仍交给 `str::parse::<i64>`：先在字节串上走 `core::str::from_utf8(...).ok()` 再解析——
+  **能转成 i64 的文本必是 ASCII，所以「解码失败」与「这不是一个数」是同一件事**，把解码当纯检查用
+  （这条边界论证与批次四百一十一给 `sort` 的那条同型）。壳侧 `src/bin/head.rs` 走
+  `support::args_bytes()`/`prog_name_bytes()`，`illegal … count` 那句与横幅都改成**按字节拼**
+  （`Vec<u8>` 依次接程序名、`": illegal "`、`byte`/`line`、`" count -- "`、原值、换行），
+  只有开档与 `warn("%s", *argv)` 两条 `&str` 口前折一次（在册 `ARGV-BYTE-PATH-IN-LIBS`，
+  壳内现量 `grep -c from_utf8_lossy …/bin/head.rs` → **2**）。
+- **门账（先对名字集合再对总数）**：库内 `window` 模块 **26 → 27**（新立
+  `an_illegal_count_value_and_the_operands_carry_the_argv_bytes`，四段：`-c<ff>` 的值交回那一枚裸
+  字节、`-c 5<ff>` 整串交回、obsolete 形 `-5<ff>` 重写后仍是 `5<ff>`、操数按原字节交回）；
+  `head_face` **11 → 12**（新立
+  `an_illegal_count_value_is_echoed_as_the_argv_bytes_and_so_is_the_banner`，配字节形夹具 `run_argv`
+  与按原字节名落盘的 `write_raw`）；跨壳表门数不变、表体十三行 → **十四行**（`head` 行钉
+  `head: unknown option -- \xff` 与退 **1**；这一支的 usage 只一行且**带程序名**，与
+  `cut`/`comm` 那两行写死命令名的不同）；整包 69 段 **1255 → 1257 passed / 0 failed**。
+  既有门里 `the_unknown_letter_is_the_first_byte_not_the_first_character` 与两枚
+  `test_parse_head_args_*` 的期望串逐字未动，只把夹具文本形改成字节形；测试模块里共用的
+  `fn operands` 助手**没动**（它是 `tail` 的形状），head 专用另立 `fn operands_bytes`——
+  一次正则误伤 `tail` 三处期望，被编译器当场拦下（`TailArgs.operands` 是 `Vec<String>`），
+  按行号逐处还原。
+- **负控四枚**（`tmp/head-462/negctl.py`，逐枚读数 `negctl-F1..F4.log`，汇总 `negctl-all.log`；
+  基线库内 621、跨壳表 4、`head_face` 12 四段全绿，带 `--no-fail-fast`）：F1（壳侧 argv 退回文本缝）
+  咬 **2** 枚（面门 + 跨壳表），**库内 621 全绿**——「库门对 argv 缝没有牙」这条通则第四次量化；
+  F2（横幅退回折一次，拿折叠名而不是原字节）咬 **1** 枚（面门的横幅那一段），这就是「横幅与开档
+  两条腿能被分开钉」的实际兑现；F3（字母位退回按字符取整簇）咬 **4** 枚（库内既有字母门、跨壳表、
+  面侧既有 `the_libc_line_of_a_multibyte_flag_is_one_byte_for_head`、面侧新门）；F4（obsolete 重写
+  那一段折一次 lossy）咬 **2** 枚（库内新门 + 面门）。每枚前后按整文件 md5 与 `tmp/head-462/orig/`
+  （完整相对路径）成对复核，跑完核 `git status --porcelain` 只剩本轮四件。
+- **顺手量出两条从未登记的分叉，并订正本台账一句断言**（记下来优先于本支落地）：A/B 的
+  「已知分叉」类里三形红，追到 C 源是两处根因。**其一，负数计数被 C 接受**：`head.c:73-74` 的
+  `main` 把 `linecnt`/`bytecnt` 声明成 **`uintmax_t`**，于是 `head.c:92-103` 那道
+  `… || count <= 0` 判据对负数**永远不成立**（`strtoimax` 交出 `-1`，塞进无符号量变成天文数字）；
+  随后 `head(fp, linecnt, bytecnt)` 的形参是 `intmax_t`，那个大数又转回 `-1`，于是
+  `-n -1` 走「一直打到 EOF」那一圈、`-c -1` 走 `fread` 的长度算溢出直接返回零字节——现量（参照件
+  `tmp/head-415/head` 对三行档）：`-n -1` 打三行退 0、`-c -1` 什么都不打退 0；本壳两句都报
+  `illegal … count -- -1` 退 1。零仍两侧同拒（`0 <= 0` 成立，`-c 0`/`-n 0` 都报错退 1）——所以
+  **本台账 07 篇 head 行那句「负数都拒」是错的**，按现量订正为「零拒、负数不拒」，登记号
+  `HEAD-NEGATIVE-COUNT-UNSIGNED-GUARD`。**其二，`strtoimax` 跳前置空白**：`-c " 3"` 在参照件是
+  合法的三字节输出 `aaa`，本壳按 `str::parse` 拒（尾巴杂字符那一形两侧同拒，因为 C 还有 `*ep`
+  那道判据， ours 与它等价），登记号 `HEAD-COUNT-LEADING-BLANK-ACCEPTED`。两条都**登记不执行**：
+  本轮射程是参数缝，一次只修一条，且真修要连带裁决「本壳的数值腿到底照 C 的宽松 `strtoimax`
+  还是照 POSIX 的严格式」——那是 `head` 计数面的一整轮，不该塞进渲染/缝轮。这是「参照件现量推翻
+  台账断言」的又一次兑现（前例：批次四百零六那句「`-k 2,1` 在 C 是 `fields out of order`」、
+  批次二百八十七的 `-M` 月名排序）。
+- **参照件归属又踩一次**：`tmp/family-diag-ref/head_ref` 打 `-Z` 交回的是 glibc 那句带引号的
+  `invalid option -- 'Z'`，而且它的 usage 行里程序名是 `?`（`-Z` 时 glibc 把 `program_invocation_name`
+  之外的字段填成 `?`），拿它当基线会把「措辞差 + 程序名差」读成字母差；可用的是批次四百一十五为
+  本支配的 `tmp/head-415/head`（`head_ref` 的软链，Minix `getopt.c` 编进去）。**判据不变：复用任何
+  既有参照件前先打一枚 `-Z`。**
+- **A/B 对 `tmp/head-415/head` 跑，非预期二十四形 SAME=24 / DIFF=0**（`tmp/head-462/ab.log`；另有
+  三形落在上面那两条已知分叉上，脚本按类分开计数，不计回归）。二十四形覆盖字母位五形（`-Z`、
+  裸 `ff`、`-é`、聚簇 `-q\xff`、`-Zé` 停在 `Z`）、缺值一形、**值回显四形**（`-c<ff>`、`-c 5<ff>`、
+  `-n<ff>`、obsolete `-5<ff>`）、计数与错误形五形（`-c 3`、`-n 2`、`-3`、`-c 0`、`-n 0`、`-c 5x`）、
+  操数与横幅五形（两枚操数、`-v` 单操数出横幅、`-q` 压横幅、开不了的操数、裸 `ff` 档名——盘上同放
+  折叠孪生件以排除在册的开档腿）、`--` 终结符、裸 `-` 当档名（`head` 不像 `cut` 特判标准输入）、
+  字节模式无尾换行。程序名 token 两侧全部归一。**本支除那两条新登记项外没有别的已知偏离**。
+- **clippy 本轮是往下走的**：同一条命令 `cargo clippy --offline -j 1 --all-targets -p minix-textfilter`
+  主树 **151** 条 / 本树 **149** 条，位置数 82 → 80。少掉的正是 `window.rs` 里那两条存量
+  `unused import: alloc::string::String` 与 `alloc::vec`（head 的夹具改成字节形之后真的没人用它们了，
+  删掉即可）；触及本轮四件的其余那一条（`window.rs:213` 的 `needless_range_loop`）在主树同一行号
+  也在，属存量。**判据：警数下降也要写清是哪几条、为什么少**，否则「151 → 149」会被下一个读者当成
+  统计噪声或者以为自己有功劳。`rustfmt --edition 2024 --check` 四件零漂移，且本轮**没有存量牵连**：
+  格式化前 `src/window.rs` 与 `tests/head_face.rs` 各报 3 处，HEAD 那两份都报 0 处（批次四百六十一
+  那种「diff 里含三处存量排版归零」的情况这次没有）。
+- **门读数（全 L1，`2026-10-29`，基线快照 `75899b0ff`）**：宿主整包 → **69 段 / 1257 / 0**
+  （`tmp/head-462/pkg-3.log`，是负控还原之后复跑的）；容器权威门按板 §7.3 三挂载配方
+  （`-u $(id -u):$(id -g)` + `ci-cargo`/`ci-target`，跑时未与其他 cargo 并发）→ 退 0、
+  **69 段 / 1257 / 0**（`tmp/head-462/container-gate.log`）；三架构 `cargo check --offline -j 1
+  --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}
+  -p minix-textfilter --bins` 各退 0。开工基线不当转述用：本笔基线 1255 是上一笔在主树合回后当场
+  复跑取到的（`tmp/cut-461/main-tree-recheck.log`，快照即本笔基线 `75899b0ff`）。
+- **进度与余量（全部现量）**：参数缝半**已落十七支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`）；
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **22**；命令面口径
+  → **91**。渲染半那条 grep 仍 **0** 行；`line_bytes` **40 处 / 29 件**（本支未新增调用点，用的是
+  批次二百九十四起就存在的那一处）。余下 22 支里带字母位诊断面的有 10 支（`join`、`jot`、`nl`、
+  `pr`、`sort`、`split`、`tail`、`unexpand`、`unifdef`、`vis`），**切片 45 建议 `join`**：字母序第一支，
+  `-a`/`-e`/`-j`/`-o`/`-t`/`-v`/`-1`/`-2` 八个字母**全带值**（`join.c:133` 的 optstring 是
+  `"\01a:e:j:1:2:o:t:v:"`，开头那枚 `\01` 的待遇要下一轮对着 Minix 的 `getopt.c` 现查，别按同族规律补），
+  其中 `-o` 的格式串
+  **既进解析又进输出**（它决定每一行怎么拼），形状比 `head` 更像 `cut` + `column` 的合体；
+  参照件 `tmp/join-407/join_ref` 现成且是批次四百零七为本族重配的那一份（当时正是为了躲开
+  `family-diag-ref` 里 glibc 血脉那批），用前仍按规矩先打 `-Z`。
+- **顺手订正本台账一处计数**：07 篇 §1 那句「库测试 616 个」按现量改成 **621**（`cargo test --offline
+  -j 1 -p minix-textfilter --lib` → 621 passed / 0 failed）。滞后的 5 枚是批次四百五十六起各轮新立库门的
+  累加：那句是批次四百五十五当场按那轮的现量写的，此后每一轮都在涨而没人回头核 ⇒ **写进篇首摘要的计数与
+  逐轮增长的门是两笔账**，动了其中一笔就要看另一笔是否还在说同一件事。
+
+---
+
 ## 批次四百六十一（A2 参数缝半切片 43：`cut` 的 argv、`-d` 的分隔符与列表值交回原字节；负控的「哪一段全绿」补出一枚库门）
 
 - **这一支是本族第二个「参数值直接进输出内容」的壳**，但它的两条值腿形状相反：`-d` 的值被
