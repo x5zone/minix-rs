@@ -2658,3 +2658,11 @@ SD-24 arm2 不能先于 C1（SD-10 污染案 / PD-16）结案落地；本线已 
 断言；该篇没有 §1.114，落点按实际段落）；14 篇 §3.3 补 PD-21 用户地址防线
 边界（软件层翻译/页表检查承担防线，SMAP/SMEP 位随写下沉批次再谈）。
 `doc-style-lint --diff` error 0。C 板 C7/C18 行改 ✅。C7b 余 I-25 与文档门。
+
+**D59PAGE 里程碑（2026-10-30，D-59 阶段一/五）**：码笔与合并笔见 `git log --grep D59PAGE`。
+`boot_validate_and_prepare` 提取 `choose_kernel_page_size`：先查
+`P::supports_huge_page` 再比布局对齐；「1 GiB 不支持但布局按 1 GiB 对齐」的机器
+改选 2 MiB 回退，不再选一个不支持的尺寸到 `map_huge` 才失败。四条纯函数测试
+覆盖支持/不支持/仅回退/都不可用；kernel mock **849/0/8**（845+4）、x86 QEMU
+`hello-boot` PASS。D-59 余四阶段（`PageSize`/能力 API、事实/规划与策略拆分、
+`map_huge` 防御与 SMP 预检、机械重命名）与覆盖损失门仍开放。
