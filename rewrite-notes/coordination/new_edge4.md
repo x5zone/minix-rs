@@ -2651,3 +2651,10 @@ autoboot` 后不再执行 `boot.scr`（与 D-73 改动无关）；② 手工控�
 SD-24 arm2 不能先于 C1（SD-10 污染案 / PD-16）结案落地；本线已 `git checkout -- .`
 回滚，claim 已释放，C 板 C2b 行改 `⏸ 绑 C1`。取证
 `tmp/01-cboard-baseline-20261030/run-all-c2b.log`。
+
+**C7ARCH 里程碑（2026-10-30，C 板 C7/C18 文档半）**：码笔与合并笔见 `git log --grep C7ARCH`。
+06 篇 §2.7 装载器尾缓存同步段补 `[ARCH: cache-sync]` 标识；04 篇 aarch64 MMIO
+段补 `[ARCH: mmio-device]`（恒等/高半两别名同 Device 属性、2 MiB 分片与对齐
+断言；该篇没有 §1.114，落点按实际段落）；14 篇 §3.3 补 PD-21 用户地址防线
+边界（软件层翻译/页表检查承担防线，SMAP/SMEP 位随写下沉批次再谈）。
+`doc-style-lint --diff` error 0。C 板 C7/C18 行改 ✅。C7b 余 I-25 与文档门。
