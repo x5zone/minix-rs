@@ -119,7 +119,115 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
-## 批次四百五十八（A2 参数缝半切片 40：`cmp` 的两条报文名字位与操作数一起交回原字节，跨壳表十行至此全是原字节）
+## 批次四百五十九（A2 参数缝半切片 41：`column` 的分隔符值——本族头一条改到数据面的参数腿）
+
+- **这一支与前十三支的分别不在缝的长短，而在参数值走到哪里去**：`asa`、`cksum`、`cmp` 那些支里，
+  命令行参数最终只被**回显**或被拿去开档；`column` 的 `-s` 值既不回显也不开档，它被原样赋给
+  `separator`（`minix3/usr.bin/column/column.c:99` 的一句 `separator = optarg;`），再整个交给
+  `strtok` 当分隔符表去切**要输出的内容**（`column.c:225` 的 `(cols[coloff] = strtok(p, separator))`）。
+  于是这条缝一坏，坏的是数据面而不是诊断面：文本缝把一枚裸 `ff` 折成 `ef bf bd` 三枚之后，同时错两件事——
+  真 `ff` 切不开（分隔符表里没有它），而输入里那三字节 U+FFFD 反倒被当成分隔符切开（表里有它们）。
+  参照件现量两形都是这个形状，所以两形都进了门：`-s<ff>` 之下 `a<ff>b<TAB>z` 打成 `a  b<TAB>z`，
+  而 `a<ef bf bd>b` 原样一行。缺省分隔符 `"\t "` 那两枚本来就是 ASCII（`column.c:74`），所以缺省路
+  一个字节都不差，只有 `-s` 给了非 ASCII 值才显形。
+- **落码仍是同一支壳的三层，改动面比 `cmp` 那一片宽一层**：库侧 `os/commands/usr-bin/textfilter/src/column.rs`
+  把 `ColumnArgs.operands` 改成 `Vec<&'a [u8]>`、`options.separator` 从 `String` 改成 `Vec<u8>`
+  （缺省 `b"\t ".to_vec()`），`fn parse_column_args` 收 `&'a [&'a [u8]]`，环里取值那一段
+  （本串去掉 `-` 与字母之后的剩余，否则取下一个 token）交回 `&[u8]`，`-c` 的值仍经 `crate::atoi`
+  收成宽度、`-s` 的值 `to_vec()` 进分隔符表；`fn split_fields` 本来就是按字节集判（C 侧 `strspn`
+  逐字节比），本轮没动它，只把它的入参从 `&str` 改成 `&[u8]`。壳侧 `src/bin/column.rs` 改走
+  `support::args_bytes()` 与 `support::prog_name_bytes()`，libc 那一行走字节形
+  `GetoptReport::line_bytes`，`usage` 与「Cannot open \`%s'」那一句仍交 `&str`。门面
+  `tests/column_face.rs` 新增一枚逐字节门，配一件字节形夹具 `fn run_argv`（参数经
+  `OsStr::from_bytes` 交下去，否则一枚 `ff` 写不进 `&str`）；跨壳表 `tests/bin_support_face.rs`
+  补 `column` 一行，钉 `column: unknown option -- \xff` 加退 **1**（`column.c:107-109` 的
+  `case '?': default: usage();` 走 `exit(1)`，与 `cmp` 那行的 2 不同）。
+- **两条仍要 `&str` 的腿照旧在册、本轮不碰**：程序名那一腿交给 `warn_line` 与 `line_bytes` 的
+  `&str` 名字段，操作数那一腿交给 `support::read_file`（真机臂即 `minix_sys::open`），都在 `os/libs/`
+  的二线领地（`coordination/CONCURRENT-WORK-PROTOCOL.md` §2「不许替别人实现他的前置」）。现量
+  `grep -c from_utf8_lossy os/commands/usr-bin/textfilter/src/bin/column.rs` → **2**（程序名一处、
+  开档腿一处），登记号仍是 `ARGV-BYTE-PATH-IN-LIBS`。**本轮没有新登记任何 C 侧分叉**：A/B 十八形
+  全等，`column` 这一族在字节口径下目前没有已知偏离。
+- **门账按现跑取数**：库内 `column` 模块 **616 → 617**（新立
+  `the_separator_value_reaches_the_byte_set_one_byte_per_separator`，一枚门里钉三件事：分隔符集里
+  就是那一枚字节、真 `ff` 切得开、U+FFFD 那三字节不被误切）；`column_face` **15 → 16**（新立
+  `an_option_value_of_column_splits_on_the_raw_byte_it_carries`）；`bin_support_face` 门数 **4 → 4**
+  不变、表体从十行变成十一行；整包 **1248 → 1250**（`--lib` 617、`column_face` 16、
+  `bin_support_face` 4 三段各自复跑对平）。
+- **一处自己造的 P0，靠负控日志里同一枚门名出现两行才看见**（这是本轮最该记下来的东西）：给库内新门
+  落夹具时用的是脚本化替换，插入的那一段自带一个 `#[test]`，而我手写的门注释块前面又留了一个
+  `#[test]`——同一枚门因此被注册两遍；更糟的是插入位置把既有门
+  `parse_operand_discrimination_without_reordering` 的那一枚 `#[test]` 顶掉了，那个函数从此只是一个
+  永不执行的普通函数。两处一减一增正好相抵：整包 **1250**、`--lib` **617**，减法与「新增两枚门」
+  看着完全对得上，`cargo clippy` 也一声不响（151 条与主树同数、触及四件零命中）——**丢掉属性的那枚门
+  不会产生任何报警**。暴露它的是第一遍负控的原始日志：同一枚门的名字在里面连打两行 `FAILED`。
+  修法是删掉多余的那个 `#[test]`、把被顶掉的那一枚补回去，然后按名字集合复账：
+  `diff <(git show HEAD:<文件> | grep -A2 "#\[test\]" | grep -oE "fn [a-z0-9_]+" | sort) <(grep -A2 "#\[test\]" <文件> | grep -oE "fn [a-z0-9_]+" | sort)`
+  四件各跑一遍，读数分别是「新库门 +1」「新面门 +1」「壳件与跨壳表零增减」——这才是门账的正确对法。
+  三条判据：**（一）门数对账要比测试名集合，不能只比总数**（总数只在一增一减时失灵，而那正是脚本化
+  插入最容易造出的形状）；**（二）重复 `#[test]` 不违反编译规则**（批次四百零九那条的第二次现量，
+  那次是门数虚增一枚、可见；这次虚增被另一枚的丢失抵消、不可见，所以判据要从「对总数」升级为「对名字」）；
+  **（三）负控的原始日志除了当红名单，还是门清单的唯一权威来源**（批次四百一十七「门清单由执行结果列，
+  不由印象列」的另一侧兑现：执行结果还会告诉你哪一枚门出现了两次）。
+- **负控四枚**（`tmp/column-459/negctl.py`，逐枚读数在 `tmp/column-459/negctl-C{1,2,3,4}.log`，
+  汇总 `tmp/column-459/negctl-final.log`）。基线：库内 617、跨壳表 4、`column_face` 16 三段全绿。
+  C1（`-s` 的取值处折一次 `from_utf8_lossy`）咬 **2** 枚（库内新门 + 面门）；C2（argv 退回文本缝，
+  即 `support::args()` 那条）咬 **2** 枚（面门 + 跨壳表 `no_command_aborts_on_a_nonutf8_option_letter`），
+  **库内 617 全绿**——库件的入参本来就是字节，缝在壳上，所以库侧门对 argv 缝没有牙，这条是本族的通则，
+  本轮把它写成了可复跑的数；C3（字母位退回按字符取整簇）咬 **4** 枚（库内既有
+  `a_non_ascii_cluster_letter_reports_a_byte_without_panicking`、跨壳表那一行、面侧既有
+  `the_option_line_of_a_nonascii_letter_carries_one_raw_byte`、面侧新门第三形）；C4（分隔符集退回按字符
+  判——非 ASCII 字节永不参与切分）咬 **3** 枚（库内既有 `the_separator_is_a_set_of_bytes_not_a_set_of_characters`、
+  库内新门、面门）。**C1 与 C4 是两条不同的腿**：前者错在进表的字节，后者错在表的比对口径，两者都能让
+  同一枚新门红，但库内既有门的红法不同（C4 多咬一枚既有门），所以「按字节收值」与「按字节比表」各自
+  都有牙。每枚注入前后按整文件 md5 复核还原，跑完核 `git status --porcelain` 只剩本轮真改动四件。
+  另记一条流程自错：第一遍负控的命令没带 `--no-fail-fast`，cargo 在第一个红靶处就停住，于是 C1 只拿到
+  库段读数、C2 只拿到跨壳表读数——**注入只跑射程内多段时必须带 `--no-fail-fast`，否则那份红名单只是
+  「第一个红靶的名单」**，而它看起来与完整名单一模一样。
+- **A/B 对 `tmp/column-314/column` 跑十八形，SAME=18 / DIFF=0**（`tmp/column-459/ab2.log`；该路径是指向
+  `column_ref` 的软链，为的是让 `getprogname()` 算出的程序名与本壳一致，报文才能逐字节直比）。参照件
+  先按交接那条验法打 `-Z` 验归属：交回 `column: unknown option -- Z` 一行再跟 usage 一行、退 1，
+  那是 Minix `getopt.c` 的措辞而不是宿主 glibc 的 `invalid option -- 'Z'`。十八形覆盖字母位四形
+  （ASCII `Z`、裸 `ff`、多字节 `c3 a9`、聚簇 `-t\xff`）、缺值 `-c`、数据面两形（`-s\xff` 切得开与
+  U+FFFD 不被切）、ASCII 分隔两形（含 `-s,` 值附形）、宽度两形（`-c 40` 与 `-c 0x2a` 的 `atoi` 形）、
+  无旗标读标准输入、`-x` 横向、两枚操作数、开不了的操数、裸 `ff` 档名那一形（盘上同时放原字节名与其
+  折叠孪生件，把开档腿的失败排除掉——排除方式写在取证脚本注释里，同批次四百五十八那条判据）、`--`
+  终结符、裸 `-` 当档名。逐字节比之前把两侧的程序名 token **全部**归一。
+- **A/B 第一遍报了 17 SAME / 1 DIFF，而那枚 DIFF 是假红**——红的那一形正是数据面「`-s\xff` 切不开」，
+  而门是绿的。查下来：`os/target/debug/column` 是负控期间从注入态源码编出来的旧件。负控只跑
+  `--lib --test column_face --test bin_support_face` 这三段，cargo 只为测试重新链接 `deps/` 里那份，
+  `target/debug/<bin>` 那个入口件不保证被刷新；门用的正是 `CARGO_BIN_EXE_column`（指向 `deps/` 那份新件），
+  所以门绿与那个旧件同时成立。`cargo build --offline -j 1 -p minix-textfilter --bins` 之后复跑，
+  SAME=18 / DIFF=0。两条判据：**（一）A/B 之前先显式重建被测 bin，门全绿不等于 `target/debug` 里那个件
+  是新的**（尤其在同棵树刚跑过负控注入之后）；**（二）中断或崩溃过的树，除重编之外还要 `file` 一下那个件**——
+  本轮第二次撞上的就是它：文件报 `data` 而 cargo 报「Finished（新鲜）」，删掉 `target/debug/column`
+  与 `target/debug/deps/column-*` 再 build 才恢复。
+- **门读数（全 L1，`2026-10-21`，快照 `7585c3f81`）**：宿主整包
+  `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1250 passed / 0 failed**
+  （`tmp/column-459/pkg-final4.log`）；容器权威门按板 §7.3 那条配方（带 `-u $(id -u):$(id -g)` 与
+  `ci-cargo`、`ci-target` 两个缓存挂载点，跑时未与其他 cargo 并发）→ 退 0、**69 段 / 1250 / 0**
+  （`tmp/column-459/container-gate.log`），与宿主同读数；三架构
+  `cargo check --offline -j 1 --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} -p minix-textfilter --bins`
+  各退 0（`tmp/column-459/arch-*.log`）；`rustfmt --edition 2024 --check` 触及四件各零漂移（库件里两处
+  是本轮新写的长行，就地格式化后归零，`bin_support.rs` 未受牵连——`#[path]` 那句只在壳件里成立）；
+  `cargo clippy --offline -j 1 --all-targets -p minix-textfilter` 在主树与本轮改动树各跑一次，
+  各 **151** 条 `^warning`、`-->` 各 82 处、**零新增**，且触及本轮四件的命中数两棵树同为 **0**
+  （`tmp/column-459/clippy-main-tree.log` 与 `tmp/column-459/clippy-final.log`）。
+- **进度与余量（全部现量）**：参数缝半**已落十四支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`）；
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **25** 支；
+  按整个命令面口径 `grep -rl "support::args()" os/commands --include=*.rs | grep -v tests/ | grep -v bin_support.rs | wc -l`
+  → **94** 支。渲染半仍归零：`grep -rn "\.line(prog\|\.line(&prog" os/commands --include=*.rs | grep -v tests/`
+  现量 **0** 行；`line_bytes` 调用点 **40 处 / 29 个源文件**（两条命令同数，`column` 这一支本轮没有新增
+  调用点，它用的还是切片 4 那一处）。余下 25 支里带字母位诊断面的有 13 支（现量按各支 `*_face.rs`
+  里 `line_bytes`/`unknown option` 的命中数点出：`comm`、`cut`、`head`、`join`、`jot`、`nl`、`pr`、
+  `sort`、`split`、`tail`、`unexpand`、`unifdef`、`vis`），**切片 42 建议 `comm`**（字母序第一支，
+  它的两半在批次四百零九就一起做过，argv 这一半的形状与 `cmp` 同族：两支档名既是回显位又是开档位，
+  参照件 `tmp/comm-409/comm_ref` 现成、已按 `-Z` 验过是 Minix 血脉）；其余 12 支无字母位面的按
+  批次四百五十一那张名单放最后。
+
+---
+
 
 - **这一轮做的是同一族参数缝半的下一支，射程比 cksum 那一片窄而更硬**：`cmp` 的档名同时是
   回显位——C 把两个操作数原样交给 `printf`（`minix3/usr.bin/cmp/misc.c:81` 的
