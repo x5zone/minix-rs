@@ -2628,3 +2628,16 @@ VM `init_page_table` 在建根时把该页只读映射到固定 VA（fork/exec �
 **331/0**、minix-vm **543/0**、kernel mock **845/0/8**、三架构 kernel/kernel-image check
 **0 error**、最终 `run_all` **39/0/0**（`tmp/01-cboard-baseline-20261030/run-all-d72c.log`）。
 跨线登记：`os/servers/vm` 属 A 板，C 板 §6 已追加一行（无在途 A 领）。
+
+**D73RV 入口契约实测（2026-10-30，未接线，阻断在宿主 U-Boot）**：宿主 U-Boot
+2025.10-0ubuntu0.24.04.4（`/usr/lib/u-boot/qemu-riscv64_smode/uboot.elf`）实测：
+① `test-riscv64-uboot.sh` 的 distro-boot 链在本机基线就停在 `Hit any key to stop
+autoboot` 后不再执行 `boot.scr`（与 D-73 改动无关）；② 手工控制台链
+`fatload virtio 0:1` 成功，但 `bootelf <addr>` / `bootelf -p` / `bootelf -s`
+均立即返回提示符、不执行探针（ELF e_entry=0x84000000、`_start` 符号一致）；
+③ QEMU 对 `-append` 要求 `-kernel`，`dumpdtb -append` 通路不可用。结论：U-Boot
+`bootelf` 的 argc/argv 与 `-d` 参数通道在本机无法用现有宿主件实证，D-73 的入口
+契约闭合门未通过，shim 腿不接线、不落半成品代码；下一步需在 CI 的 T-10 窗口
+（`qemu-tests.yml` 的 riscv64-uboot 作业）用可复现的 U-Boot 件重测，或换
+`go` + 固定内存槽契约并重新裁决。探针源码与日志在 `tmp/uboot-probe/`、
+`tmp/uboot-manual.log`（会话产物）。
