@@ -35,7 +35,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-use minix_arch::paging_ext::HugePages;
+use minix_arch::paging_ext::{HugePages, PageSize};
 use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 // Handoff types are exercised only by the non-mock VM-loading path
 // (same reason as the `PhysAccess` import below).
@@ -602,9 +602,9 @@ fn mock_kmain_ok() -> ! {
 /// Validate KernelInfo constraints, register the boot allocator if needed,
 /// and compute the appropriate huge page size for the kernel mapping.
 ///
-/// Returns `kern_huge` (in bytes, as u64) — the page size to use for both
-/// identity mapping and kernel mapping loops. This avoids duplicating the
-/// alignment/size selection logic between Step 0a validation and Step 2.
+/// Returns `kern_huge` — the `PageSize` to use for both identity mapping and
+/// kernel mapping loops. This avoids duplicating the alignment/size selection
+/// logic between Step 0a validation and Step 2.
 /// Choose the kernel mapping page size: capability first, then layout.
 ///
 /// The old selection looked only at alignment. A machine whose layout happens
@@ -613,13 +613,13 @@ fn mock_kmain_ok() -> ! {
 /// capability check must come first; the fallback size is used only when the
 /// preferred size is unsupported or the layout is not aligned to it.
 fn choose_kernel_page_size(
-    huge: u64,
-    fallback: u64,
+    huge: PageSize,
+    fallback: PageSize,
     huge_supported: bool,
     fallback_supported: bool,
     huge_aligned: bool,
     fallback_aligned: bool,
-) -> Option<u64> {
+) -> Option<PageSize> {
     if huge_supported && huge_aligned {
         Some(huge)
     } else if fallback_supported && fallback_aligned {
@@ -629,7 +629,7 @@ fn choose_kernel_page_size(
     }
 }
 
-fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
+fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> PageSize {
     // NK4-A 逐断言路标（首亮诊断；方法同 arch_boot 入口）。
     macro_rules! vmark {
         ($msg:expr) => {{
@@ -649,7 +649,6 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
     let ks = kernel_info.kern_size();
     let huge = P::HUGE_PAGE_SIZE;
     let fallback = P::FALLBACK_HUGE_PAGE_SIZE;
-
     // kern_size must be positive
     assert!(ks > 0, "arch_boot: kern_size must be > 0");
 
@@ -660,14 +659,17 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
     assert!(kv.is_multiple_of(0x1000), "arch_boot: kern_virt_base must be page-aligned");
 
     // Choose the largest huge-page size that both bases and kern_size are aligned to.
-    let huge_aligned = kv.is_multiple_of(huge) && kp.is_multiple_of(huge) && ks.is_multiple_of(huge);
-    let fallback_aligned =
-        kv.is_multiple_of(fallback) && kp.is_multiple_of(fallback) && ks.is_multiple_of(fallback);
+    let huge_aligned = kv.is_multiple_of(huge.bytes())
+        && kp.is_multiple_of(huge.bytes())
+        && ks.is_multiple_of(huge.bytes());
+    let fallback_aligned = kv.is_multiple_of(fallback.bytes())
+        && kp.is_multiple_of(fallback.bytes())
+        && ks.is_multiple_of(fallback.bytes());
     let kern_huge = choose_kernel_page_size(
         huge,
         fallback,
-        P::supports_huge_page(huge as usize),
-        P::supports_huge_page(fallback as usize),
+        P::supports_huge_page(huge),
+        P::supports_huge_page(fallback),
         huge_aligned,
         fallback_aligned,
     )
@@ -679,7 +681,7 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
     });
 
     // kern_size must be a multiple of kern_huge for the mapping loop
-    assert!(ks.is_multiple_of(kern_huge),
+    assert!(ks.is_multiple_of(kern_huge.bytes()),
         "arch_boot: kern_size must be a multiple of the chosen huge page size");
 
     // kern_stack_top must be 16-byte aligned (ABI requirement)
@@ -783,7 +785,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 fn build_bootstrap_root_and_enable<P: HugePages>(
     kernel_info: &KernelInfo,
     root_page: PhysBytes,
-    kern_huge: u64,
+    kern_huge: PageSize,
 ) {
     let mut paging = P::new_from_page(root_page);
 
@@ -814,7 +816,7 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
     // the ARM ARM, so the two must agree.
     let mut addr: u64 = 0;
     while addr < IDENTITY_MAP_END {
-        let block_end = addr + kern_huge;
+        let block_end = addr + kern_huge.bytes();
         let mut piece_addr = addr;
         #[cfg(target_arch = "aarch64")]
         let piece_size = {
@@ -827,7 +829,7 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
                 assert!(MMIO_PA_BASE % DEV_BLOCK == 0 && MMIO_WINDOW_LEN % DEV_BLOCK == 0);
             let dev_hi = MMIO_PA_BASE + MMIO_WINDOW_LEN;
             if addr < dev_hi && MMIO_PA_BASE < block_end {
-                DEV_BLOCK
+                PageSize::MIB_2
             } else {
                 kern_huge
             }
@@ -853,10 +855,10 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
             let _ = paging.map_huge(
                 VirBytes(piece_addr),
                 PhysBytes(piece_addr),
-                piece_size as usize,
+                piece_size,
                 piece_flags,
             );
-            piece_addr += piece_size;
+            piece_addr += piece_size.bytes();
         }
         addr = block_end;
     }
@@ -879,9 +881,9 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
         while offset < kernel_info.kern_size() {
             paging.map_huge(
                 VirBytes(kern_virt + offset), PhysBytes(kern_phys + offset),
-                kern_huge as usize, kern_flags,
+                kern_huge, kern_flags,
             ).expect("kernel map: map_huge failed — kernel image mismatch");
-            offset += kern_huge;
+            offset += kern_huge.bytes();
         }
     }
 
@@ -923,7 +925,7 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
                 .map_huge(
                     VirBytes(MMIO_VA_BASE + off),
                     PhysBytes(MMIO_PA_BASE + off),
-                    MMIO_BLOCK as usize,
+                    PageSize::MIB_2,
                     mmio_flags,
                 )
                 .expect("kernel map: MMIO high-half window map_huge failed");
@@ -4675,7 +4677,7 @@ mod tests {
         let root_page = PhysBytes(0x1000);
         let mut paging = MockPaging::new_from_page(root_page);
 
-        let huge_size = MockPaging::HUGE_PAGE_SIZE as usize;
+        let huge_size = MockPaging::HUGE_PAGE_SIZE;
 
         // Test Step 1: Identity mapping
         let region = &info.memmap[0];
@@ -4685,7 +4687,7 @@ mod tests {
         while addr < end {
             paging.map_huge(VirBytes(addr), PhysBytes(addr), huge_size, PageFlags::read_write())
                 .unwrap();
-            addr += huge_size as u64;
+            addr += huge_size.bytes();
             identity_pages += 1;
         }
         assert!(identity_pages > 0, "no identity pages mapped");
@@ -4704,7 +4706,7 @@ mod tests {
                 PhysBytes(info.kern_phys_base.0 + offset),
                 huge_size, PageFlags::kernel_read_write(),
             ).unwrap();
-            offset += huge_size as u64;
+            offset += huge_size.bytes();
             kernel_pages += 1;
         }
         assert!(kernel_pages > 0, "no kernel pages mapped");
@@ -4922,7 +4924,7 @@ mod tests {
         for _region in info.memmap { /* empty */ }
 
         // Kernel map should still work
-        let huge_size = MockPaging::HUGE_PAGE_SIZE as usize;
+        let huge_size = MockPaging::HUGE_PAGE_SIZE;
         let mut offset = 0u64;
         while offset < info.kern_size {
             paging.map_huge(
@@ -4930,7 +4932,7 @@ mod tests {
                 PhysBytes(info.kern_phys_base.0 + offset),
                 huge_size, PageFlags::kernel_read_write(),
             ).unwrap();
-            offset += huge_size as u64;
+            offset += huge_size.bytes();
         }
 
         // SAFETY: Test context — page tables were set up by the test above.
@@ -4981,7 +4983,7 @@ mod tests {
     fn test_mock_paging_query_after_map() {
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
         paging.map_huge(VirBytes(0x100000), PhysBytes(0x100000),
-            MockPaging::HUGE_PAGE_SIZE as usize, PageFlags::read_write()).unwrap();
+            MockPaging::HUGE_PAGE_SIZE, PageFlags::read_write()).unwrap();
         assert!(paging.query(VirBytes(0x100000)).is_some(),
             "mapped page should be queryable at 0x100000");
         assert!(paging.query(VirBytes(0x00_0001_0000_0000)).is_none(),
@@ -4993,10 +4995,10 @@ mod tests {
     fn test_identity_map_end_alignment() {
         // R-19 (2026-08-13): const assertions moved into `const {}` block so
         // they're checked at compile time, not at test runtime.
-        const { assert!(MockPaging::HUGE_PAGE_SIZE > 0, "HUGE_PAGE_SIZE must be positive"); }
-        const { assert!(MockPaging::HUGE_PAGE_SIZE.is_power_of_two(), "HUGE_PAGE_SIZE must be a power of two"); }
+        const { assert!(MockPaging::HUGE_PAGE_SIZE.bytes() > 0, "HUGE_PAGE_SIZE must be positive"); }
+        const { assert!(MockPaging::HUGE_PAGE_SIZE.bytes().is_power_of_two(), "HUGE_PAGE_SIZE must be a power of two"); }
         const { assert!(IDENTITY_MAP_END > 0, "IDENTITY_MAP_END must be positive"); }
-        let huge = MockPaging::HUGE_PAGE_SIZE;
+        let huge = MockPaging::HUGE_PAGE_SIZE.bytes();
         // IDENTITY_MAP_END / huge should be an integer (no partial pages at boundary)
         assert!(IDENTITY_MAP_END.is_multiple_of(huge),
             "IDENTITY_MAP_END (0x{:x}) must be a multiple of HUGE_PAGE_SIZE (0x{:x})",
@@ -6080,9 +6082,10 @@ pub fn minix_shutdown(status: u32) -> ! {
 #[cfg(test)]
 mod page_size_choice_tests {
     use super::choose_kernel_page_size;
+    use minix_arch::paging_ext::PageSize;
 
-    const GIB: u64 = 1 << 30;
-    const MIB2: u64 = 1 << 21;
+    const GIB: PageSize = PageSize::GIB_1;
+    const MIB2: PageSize = PageSize::MIB_2;
 
     #[test]
     fn picks_the_huge_page_when_supported_and_aligned() {

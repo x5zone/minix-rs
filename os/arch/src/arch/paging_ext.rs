@@ -74,6 +74,53 @@ pub trait PagingWithId: Paging {
     unsafe fn flush_tlb_addr_asid(&self, vaddr: VirBytes, id: Self::AddressSpaceId);
 }
 
+/// A page size expressed in bytes.
+///
+/// A distinct type instead of a bare `usize`: huge-page sizes travel through
+/// capability queries, planning, and `map_huge`, and a bare integer let a
+/// byte count be confused with a page count or a shift. Construction only
+/// accepts a power of two no smaller than 4 KiB, and every conversion back to
+/// `usize` is fallible; there is no silently truncating `as_usize`.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PageSize(u64);
+
+impl PageSize {
+    pub const KIB_4: Self = Self(4096);
+    pub const MIB_2: Self = Self(1 << 21);
+    pub const GIB_1: Self = Self(1 << 30);
+
+    /// The size in bytes.
+    pub const fn bytes(self) -> u64 {
+        self.0
+    }
+
+    /// Build a page size from a byte count. Only powers of two no smaller
+    /// than 4 KiB are page sizes.
+    pub const fn try_from_bytes(bytes: u64) -> Option<Self> {
+        if bytes >= 4096 && bytes.is_power_of_two() {
+            Some(Self(bytes))
+        } else {
+            None
+        }
+    }
+
+    /// Build a page size from a `usize` byte count.
+    pub const fn try_from_usize(bytes: usize) -> Option<Self> {
+        // `usize` never exceeds `u64` on any supported target.
+        Self::try_from_bytes(bytes as u64)
+    }
+
+    /// Convert back to `usize`, failing on targets where the value does not fit.
+    pub const fn try_as_usize(self) -> Option<usize> {
+        if self.0 <= usize::MAX as u64 {
+            Some(self.0 as usize)
+        } else {
+            None
+        }
+    }
+}
+
 /// Huge page support (optional trait)
 ///
 /// Abstracts the MMU's huge page capabilities. Each architecture provides
@@ -83,17 +130,17 @@ pub trait PagingWithId: Paging {
 /// This trait is separate from `DirectMapArch` because huge page support
 /// is an MMU hardware parameter, not an address space layout decision.
 pub trait HugePages: Paging {
-    /// Supported huge page sizes (in bytes), sorted largest first.
-    const HUGE_PAGE_SIZES: &'static [usize];
+    /// Supported huge page sizes, sorted largest first.
+    const HUGE_PAGE_SIZES: &'static [PageSize];
 
-    /// Preferred huge page size for Direct Map (bytes).
-    const HUGE_PAGE_SIZE: u64;
+    /// Preferred huge page size for Direct Map.
+    const HUGE_PAGE_SIZE: PageSize;
 
     /// Page table level shift for the preferred huge page.
     const HUGE_PAGE_SHIFT: u32;
 
     /// Fallback huge page size when the preferred size is not available.
-    const FALLBACK_HUGE_PAGE_SIZE: u64;
+    const FALLBACK_HUGE_PAGE_SIZE: PageSize;
 
     /// Hardware-specific bit that identifies a PTE as a huge-page entry
     /// (x86_64: PS bit `1 << 7`; ARM64/RISC-V: 0 — no extra bit needed).
@@ -103,27 +150,48 @@ pub trait HugePages: Paging {
         &mut self,
         vaddr: VirBytes,
         paddr: PhysBytes,
-        size: usize,
+        size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError>;
 
-    fn supports_huge_page(size: usize) -> bool {
-        Self::HUGE_PAGE_SIZES.contains(&size)
+    /// Whether this architecture/CPU supports the given huge page size.
+    ///
+    /// No default: the capability is hardware- and translation-mode-specific,
+    /// so every implementation answers for itself (x86-64 additionally probes
+    /// CPUID.80000001H:EDX.GBPAGES).
+    fn supports_huge_page(size: PageSize) -> bool;
+}
+
+#[cfg(test)]
+mod page_size_tests {
+    use super::PageSize;
+
+    #[test]
+    fn named_sizes_have_their_byte_values() {
+        assert_eq!(PageSize::KIB_4.bytes(), 4096);
+        assert_eq!(PageSize::MIB_2.bytes(), 1 << 21);
+        assert_eq!(PageSize::GIB_1.bytes(), 1 << 30);
     }
 
-    /// Whether 1GB huge pages are supported by the current CPU.
-    ///
-    /// x86-64 requires a CPUID check (`CPUID.80000001H:EDX.GBPAGES`);
-    /// ARM64 and RISC-V always support it.
-    ///
-    /// `[latent capability]` — currently no production caller. Retained for
-    /// future runtime consumers (boot-time capability validation, user-space
-    /// huge-page allocation). The boot-time DM path exposes the same
-    /// hardware capability through `DmCoverageArch::supports_1gb_page`; the
-    /// two trait faces stay separate because one is a runtime paging-handle
-    /// service and the other is static bootstrap-root table surgery, but
-    /// each forwards to one architecture probe.
-    fn supports_1gb_page() -> bool {
-        true
+    #[test]
+    fn construction_rejects_non_powers_of_two_and_sub_page_sizes() {
+        assert_eq!(PageSize::try_from_bytes(0), None);
+        assert_eq!(PageSize::try_from_bytes(3000), None);
+        assert_eq!(PageSize::try_from_bytes(4095), None);
+        assert_eq!(PageSize::try_from_bytes(6144), None);
+        assert_eq!(PageSize::try_from_bytes(4096), Some(PageSize::KIB_4));
+        assert_eq!(PageSize::try_from_bytes(8192), Some(PageSize(8192)));
+    }
+
+    #[test]
+    fn usize_round_trip_is_checked_not_truncating() {
+        for size in [PageSize::KIB_4, PageSize::MIB_2, PageSize::GIB_1] {
+            assert_eq!(
+                PageSize::try_from_usize(size.bytes() as usize),
+                Some(size)
+            );
+            assert_eq!(size.try_as_usize(), Some(size.bytes() as usize));
+        }
+        assert_eq!(PageSize::try_from_usize(0), None);
     }
 }

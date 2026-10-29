@@ -34,7 +34,7 @@
 //! pointer (non-leaf).
 
 use crate::paging::{Paging, PageFlags, PageTableError};
-use crate::paging_ext::HugePages;
+use crate::paging_ext::{HugePages, PageSize};
 use crate::direct_map::{DirectMapArch, Riscv64DirectMap};
 use crate::pte_walk_arch::PteWalkArch;
 use minix_types::{PhysBytes, VirBytes};
@@ -1050,10 +1050,10 @@ impl Paging for Riscv64Paging {
 }
 
 impl HugePages for Riscv64Paging {
-    const HUGE_PAGE_SIZES: &'static [usize] = &[1 << 30, 1 << 21];
-    const HUGE_PAGE_SIZE: u64 = 1 << 30;
+    const HUGE_PAGE_SIZES: &'static [PageSize] = &[PageSize::GIB_1, PageSize::MIB_2];
+    const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
     const HUGE_PAGE_SHIFT: u32 = 30;
-    const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21;
+    const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
     /// RISC-V Sv39 does not use a dedicated PTE flag to indicate huge pages;
     /// the page size is determined by which page table level the entry is at.
     /// This constant is 0 to satisfy the `HugePages` trait interface.
@@ -1063,9 +1063,12 @@ impl HugePages for Riscv64Paging {
         &mut self,
         vaddr: VirBytes,
         paddr: PhysBytes,
-        size: usize,
+        size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        let size = size
+            .try_as_usize()
+            .ok_or(PageTableError::InvalidAddress)?;
         let pte_flags = flags_to_pte(flags);
 
         let l2 = unsafe { phys_to_ptr(self.root_paddr) };
@@ -1100,6 +1103,11 @@ impl HugePages for Riscv64Paging {
         let i1 = l1_index(vaddr.0);
         unsafe { write_entry(l1, i1, paddr_to_pte(paddr.0) | pte_flags) };
         Ok(())
+    }
+
+    /// RISC-V Sv39 always supports 2 MiB and 1 GiB megapage/gigapage leaves.
+    fn supports_huge_page(size: PageSize) -> bool {
+        Self::HUGE_PAGE_SIZES.contains(&size)
     }
 }
 

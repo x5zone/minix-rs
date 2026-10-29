@@ -66,9 +66,9 @@ fn boot_simulation_full_flow() {
     println!("── Step 1: Create empty page table root ──");
     let mut paging = MockPaging::new_from_page(root_page);
 
-    let huge_size = MockPaging::HUGE_PAGE_SIZE as usize;
+    let huge_size = MockPaging::HUGE_PAGE_SIZE;
     println!("  PAGE_SIZE={} huge_granularity={} KB",
-        MockPaging::PAGE_SIZE, huge_size / 1024);
+        MockPaging::PAGE_SIZE, huge_size.bytes() / 1024);
 
     println!();
     println!("── Step 2: Identity mapping (C: pg_identity) ──");
@@ -78,7 +78,7 @@ fn boot_simulation_full_flow() {
         let end = addr + region.len as u64;
         while addr < end {
             paging.map_huge(VirBytes(addr), PhysBytes(addr), huge_size, PageFlags::read_write()).unwrap();
-            addr += huge_size as u64;
+            addr += huge_size.bytes();
             identity_pages += 1;
         }
     }
@@ -103,7 +103,7 @@ fn boot_simulation_full_flow() {
             PhysBytes(kernel_info.kern_phys_base.0 + offset),
             huge_size, PageFlags::kernel_read_write(),
         ).unwrap();
-        offset += huge_size as u64;
+        offset += huge_size.bytes();
         kernel_pages += 1;
     }
     println!("  kernel_pages: {}", kernel_pages);
@@ -128,8 +128,8 @@ fn boot_simulation_full_flow() {
     println!("  kernel_pages:    {}", kernel_pages);
     println!("  total_mapped:    {} × {}KB = {} MB",
         identity_pages + kernel_pages,
-        huge_size / 1024,
-        (identity_pages + kernel_pages) * huge_size as u64 / (1024 * 1024));
+        huge_size.bytes() / 1024,
+        (identity_pages + kernel_pages) * huge_size.bytes() / (1024 * 1024));
     println!("  arch:            x86-64 (mock, no real HW)");
     println!();
     println!("  Hello, World! 🎉");

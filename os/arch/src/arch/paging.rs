@@ -686,7 +686,7 @@ pub fn map_kernel<P: Paging>(
 #[cfg(feature = "runtime-window")]
 pub mod mock {
     use super::*;
-    use crate::paging_ext::PagingWithId;
+    use crate::paging_ext::{PageSize, PagingWithId};
     use alloc::collections::BTreeMap;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -841,26 +841,30 @@ pub mod mock {
     }
 
     impl crate::paging_ext::HugePages for MockPaging {
-        const HUGE_PAGE_SIZES: &'static [usize] = &[1 << 30, 1 << 21]; // 1GB, 2MB
-        const HUGE_PAGE_SIZE: u64 = 1 << 30;       // 1GB preferred
+        const HUGE_PAGE_SIZES: &'static [PageSize] =
+            &[PageSize::GIB_1, PageSize::MIB_2];
+        const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
         const HUGE_PAGE_SHIFT: u32 = 30;           // 1GB shift
-        const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21; // 2MB fallback
+        const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
         const PTE_HUGE_IDENTIFIER_BIT: u64 = 0;    // Mock: no hardware identifier bit
 
         fn map_huge(
             &mut self,
             vaddr: VirBytes,
             paddr: PhysBytes,
-            size: usize,
+            size: PageSize,
             flags: PageFlags,
         ) -> Result<(), PageTableError> {
+            let size = size
+                .try_as_usize()
+                .ok_or(PageTableError::InvalidAddress)?;
             // Mock: just map as regular pages within the huge page range
             let pages = size / Self::PAGE_SIZE;
             self.map_range(vaddr, paddr, pages, flags)
         }
 
-        fn supports_1gb_page() -> bool {
-            true // Mock always supports 1GB pages
+        fn supports_huge_page(size: PageSize) -> bool {
+            Self::HUGE_PAGE_SIZES.contains(&size)
         }
     }
 
@@ -1230,11 +1234,14 @@ pub mod mock {
 
         #[test]
         fn test_mock_huge_pages_capability() {
-            // Mock always reports 1GB support
-            assert!(MockPaging::supports_1gb_page());
-            assert!(MockPaging::supports_huge_page(1 << 30));
-            assert!(MockPaging::supports_huge_page(1 << 21));
-            assert!(!MockPaging::supports_huge_page(1 << 12)); // 4KB is not huge
+            // The mock models every size it declares as supported.
+            assert!(MockPaging::supports_huge_page(PageSize::GIB_1));
+            assert!(MockPaging::supports_huge_page(PageSize::MIB_2));
+            assert!(!MockPaging::supports_huge_page(PageSize::KIB_4));
+            assert_eq!(
+                MockPaging::HUGE_PAGE_SIZES,
+                [PageSize::GIB_1, PageSize::MIB_2]
+            );
         }
 
         #[test]
@@ -1242,7 +1249,7 @@ pub mod mock {
             let mut pt = MockPaging::new().unwrap();
             let vaddr = VirBytes(0x200_0000); // 32MB
             let paddr = PhysBytes(0x400_0000);
-            let size = 1 << 21; // 2MB huge page
+            let size = PageSize::MIB_2;
             let flags = PageFlags::read_write();
 
             pt.map_huge(vaddr, paddr, size, flags).unwrap();
