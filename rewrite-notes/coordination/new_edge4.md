@@ -2431,3 +2431,5 @@ P6（把 `-i` 也改成带符号形）两枚注入**各红两层**，各自咬�
 （32 件、952K）复制进主树 `tmp/`，`ab.log`、`pkg-post.log`、`container-final.log`、`negctl-P5.log`、
 `clippy-post.log` 与领取树逐字节核 md5 相同。主树门④的存量 error 仍全落在别线在制的
 01-stage 两个文件（本线四件 0 条），未动。
+
+- `2026-10-29` zcode-glm / T5 + TODO-04（`claim/01TODO-T5-zcode-glm` / `01TODO-T4A-zcode-glm` → 合并笔 `6277a1d6a` / `014c929ff`）：T5/D-70 落地区扩到五块——`PLATFORM_SOURCE_STORE`（4 条，补 `BklProtected` 审计条目）与 `PARAM_BUF_STORE`（1024，先清零再复制），`store_kernel_info` 五块全部重指向 `.bss`；落地区测试扩平台源/param（含幂等再存指针稳定），超容量负控 5 枚（kernel mock 845/0/8）；01 篇 §4.5 三块→五块、M8/TODO-03、§5.2 计数 4→6。TODO-04 文本级先行：`os/boot-shim/tests/ebs_boundary_audit.rs` 切 `prepare_boot` 体、去注释、扫 EBS 后语句（零 `uefi::`/`boot::`/allocate/free/drop），带注入负控与注释豁免自检（3/0）；T1 配对循环接线后升级检查范围。**门读数**：三架构生产 check 各 0 error、doc-lint 0。**在册**：T1 的 2c/3b 联合切根（与 T5 已备齐的落地区接线）、T3/T2/D-59/D-72/D-73/TODO-05/I-25。
