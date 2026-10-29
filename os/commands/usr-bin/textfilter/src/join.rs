@@ -110,9 +110,9 @@ impl JoinOptions {
 /// comma/space/tab separated (the C `strsep(", \t")`), each token must be
 /// `F.N`（1-based）a field of file `F`; the two refusal shapes are kept apart
 /// because C's `fieldarg` prints a different sentence for each (see [`OListError`]).
-pub fn parse_olist(spec: &str) -> Result<Vec<OField>, OListError> {
+pub fn parse_olist(spec: &[u8]) -> Result<Vec<OField>, OListError> {
     let mut fields = Vec::new();
-    for token in spec.split([',', ' ', '\t']) {
+    for token in spec.split(|byte| matches!(byte, b',' | b' ' | b'\t')) {
         if token.is_empty() {
             continue;
         }
@@ -121,9 +121,7 @@ pub fn parse_olist(spec: &str) -> Result<Vec<OField>, OListError> {
         // C `fieldarg` 的两支 `errx` 是不同的句子，所以下面两道守卫不能合：
         // 前缀不是 `1.`/`2.` 或有尾字符走「malformed -o option field」，
         // 形状对但字段号是 0 走「field numbers are 1 based」（`join.c:526-532`）。
-        if !matches!(token.as_bytes().first(), Some(b'1' | b'2'))
-            || token.as_bytes().get(1) != Some(&b'.')
-        {
+        if !matches!(token.first(), Some(b'1' | b'2')) || token.get(1) != Some(&b'.') {
             return Err(OListError::Malformed);
         }
         let num = &token[2..];
@@ -141,7 +139,7 @@ pub fn parse_olist(spec: &str) -> Result<Vec<OField>, OListError> {
         if value < 0 || value > i64::from(u32::MAX) {
             return Err(OListError::Malformed);
         }
-        let which = if token.as_bytes()[0] == b'1' {
+        let which = if token[0] == b'1' {
             Which::One
         } else {
             Which::Two
@@ -171,8 +169,8 @@ pub enum OListError {
 /// 「吃掉数 < 长度」等价于 C 的 `*end != '\0'`。饱和行为不在本支射程（字段号远小于
 /// `LONG_MAX`，C 饱和后仍然 `>= 1`，这里钳住不致溢出）。
 #[must_use]
-fn strtol_decimal(text: &str) -> (i64, usize) {
-    let bytes = text.as_bytes();
+fn strtol_decimal(text: &[u8]) -> (i64, usize) {
+    let bytes = text;
     let mut at = 0usize;
     while matches!(
         bytes.get(at),
@@ -210,7 +208,7 @@ fn strtol_decimal(text: &str) -> (i64, usize) {
 #[derive(Debug, Clone)]
 pub struct JoinArgs<'a> {
     pub opts: JoinOptions,
-    pub files: Vec<&'a str>,
+    pub files: Vec<&'a [u8]>,
 }
 
 /// `join` 参数解析失败。每个变体对应 C `join.c` 的一支，**带该支自己的选项字母与被拒的值**：
@@ -227,12 +225,14 @@ pub enum JoinError<'a> {
     /// `-1`/`-2`/`-j`：`strtol` 值 < 1（C `join.c:141`/`:152`/`:186`）。字段是 C 句子里的那个字母串。
     FieldLessThan1(&'static str),
     /// 同上三支但 `*end` 非零（`:145`/`:156`/`:190`）：C 把 `optarg` 整个跟在 `-- ` 后，
-    /// 而**这一支的句子不写选项字母**（所以下面只带值，不带用不上的字母）。
-    IllegalFieldNumber(&'a str),
+    /// 而**这一支的句子不写选项字母**（所以下面只带值，不带用不上的字母）。值交回的是
+    /// argv 的**原字节**——`optarg` 在 C 就是 `argv` 里那一段，回显位不该被任何解码改写。
+    IllegalFieldNumber(&'a [u8]),
     /// `-a`/`-v` 的文件号不是 1/2（`:171`/`:217`）。
     FileNumberNot12(&'static str),
-    /// `-a`/`-v` 的 `*end` 非零（`:176`/`:222`）；与上一支同形，C 也不写选项字母。
-    IllegalFileNumber(&'a str),
+    /// `-a`/`-v` 的 `*end` 非零（`:176`/`:222`）；与上一支同形，C 也不写选项字母，值同样是
+    /// argv 原字节。
+    IllegalFileNumber(&'a [u8]),
     /// `-t` 的串不是单字节（`:202`）——这一支 C 不写选项字母。
     BadTabChar,
     /// `-o` 的字段形状不对（`fieldarg` 第一支 `errx`）：不接 usage。
@@ -245,32 +245,37 @@ pub enum JoinError<'a> {
     /// `-j` 后面不是 `1`/`2`、或跟着数字却不止一位，都当场
     /// `errx(1, "illegal option -- %s", ap)`（`join.c:592` 的 `jbad`），句子带的是**整个
     /// token**（含前导短线）。参照件读数：`join -j3 f1 f2` → `illegal option -- -j3`。
-    /// 因为它在选项环之前，所以 `-j3` 后面还藏着别的错也轮不到先报。
-    IllegalOptionToken(&'a str),
+    /// 因为它在选项环之前，所以 `-j3` 后面还藏着别的错也轮不到先报。token 交回的是 argv 的
+    /// 原字节——C 把 `ap` 整个递进 `%s`，回显位不该被任何解码改写。
+    IllegalOptionToken(&'a [u8]),
 }
 
 /// legacy `-o arg arg` 里那些「要被重写成 `-o<该项>`」的字段规格，判据逐字对位
 /// `join.c:604-609`：首字符是 `1` 或 `2`、次字符是 `.`、其后至少一位且全是十进制位
 /// （C 用 `len - 2 != strspn(p + 2, "0123456789")` 表达「其余至少一位且全是数字」——
 /// 门槛是 `>= 3` 而不是 `>= 4`：`1.1` 这种一项数字的写法在 C 确实会被改写）。
-fn is_field_spec(word: &str) -> bool {
-    let b = word.as_bytes();
+fn is_field_spec(word: &[u8]) -> bool {
+    let b = word;
     b.len() >= 3
         && matches!(b[0], b'1' | b'2')
         && b[1] == b'.'
         && b[2..].iter().all(u8::is_ascii_digit)
 }
 
-/// 把 `join` 的 argv 尾部按 BSD `getopt("\01a:e:j:1:2:o:t:v:")` 拆成 [`JoinArgs`]。
-/// 除选项字母外的剩余部分（`-t,` 的 `,`）或是附值或是紧跟的下一项，都是选项值——
-/// `join.c:133` 的 `getopt` 对带 `:` 的选项接受两种形。旧前门 `match flag{…}`
+/// 把 `join` 的 argv 尾部按 BSD `getopt("\01a:e:j:1:2:o:t:v:")` 拆成 [`JoinArgs`]，token 与
+/// 值都是 argv 的**原字节**。除选项字母外的剩余部分（`-t,` 的 `,`）或是附值或是紧跟的下一项，
+/// 都是选项值——`join.c:133` 的 `getopt` 对带 `:` 的选项接受两种形。旧前门 `match flag{…}`
 /// 只比整个 `a[1..]`，故 `join -t, f1 f2`、`-a1`、`-o0,1` 这些 C 合法的附值形
 /// 会误落「unknown option」。`--` 结束选项扫描（BSD getopt），裸 `-` 与非连字符
-/// 项都是文件操数。C 的 `obsolete(argv)`（`:132`）对裸 `-a`、`-j[12]` 等 legacy 写法
-/// 重写 argv 为 `\01`/`-1`/`-2`，本层不实现该 legacy 重写（登记为余面）。
-pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinError<'a>> {
+/// 项都是文件操数。C 的 `obsolete(argv)`（`:132`）对裸 `-a`、`-j[12]`、`-o arg arg` 三类
+/// legacy 写法就地重写 argv（批次二百九十五已接），那一遍跑在本环之前、遇 `--` 即停。
+/// optstring 开头那枚 `\01` 不是装饰：`obsolete()` 把裸 `-a` 的第二个字符写成 `\01`
+/// （`join.c:568`），BSD `getopt` 再用 `strchr(ostr, optopt)`（`getopt.c:98`）去认它——
+/// 那枚字节必须**在选项串里**才落得进 `case '\01'`；而它的下一位是 `a`，`oli[1] != ':'`
+/// （`getopt.c:109`）于是被当无值字母处理，正是 legacy 裸 `-a` 不吞值的机制来历。
+pub fn parse_join_args<'a>(args: &'a [&'a [u8]]) -> Result<JoinArgs<'a>, JoinError<'a>> {
     let mut opts = JoinOptions::default();
-    let mut files: Vec<&'a str> = Vec::new();
+    let mut files: Vec<&'a [u8]> = Vec::new();
     let (mut aflag, mut vflag) = (false, false);
     // `obsolete()` 的畸形 `-j` 形在 `getopt` 之前就 `errx`（`join.c:570-595`）：`-j` 后面
     // 既不是 `1`/`-2` 也不是空，或者虽是其二却还拖着别的字符（`-j12`、`-j1x`、`-j3`），
@@ -279,10 +284,10 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
         let mut k = 0;
         while k < args.len() {
             let tok = args[k];
-            if tok == "--" {
+            if tok == b"--" {
                 break;
             }
-            let tb = tok.as_bytes();
+            let tb = tok;
             if tb.len() >= 2 && tb[0] == b'-' && tb[1] == b'j' {
                 let bad = match tb.len() {
                     2 => false,
@@ -318,7 +323,7 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
     // 再查尾字符（`join.c:140-147`/`:151-158`/`:184-191`）。这个顺序有可观察后果：
     // `x` 一个数字也转不出→值为 0→落「less than 1」，而不是「illegal field number」
     // （旧实现按「是不是全数字」分流，把 `x` 归错了支；参照件同读数钉住这一形）。
-    fn field_no<'b>(v: &'b str, opt: &'static str) -> Result<usize, JoinError<'b>> {
+    fn field_no<'b>(v: &'b [u8], opt: &'static str) -> Result<usize, JoinError<'b>> {
         let (value, consumed) = strtol_decimal(v);
         if value < 1 {
             return Err(JoinError::FieldLessThan1(opt));
@@ -332,7 +337,7 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
     // （`:165-179`/`:209-224`），所以 `1x` 落「illegal file number -- 1x」（switch 先认了 1），
     // 而 `x`、`0`、`3` 落「not 1 or 2」（旧实现把 `1x` 归进了后一支）。
     fn file_no<'b>(
-        v: &'b str,
+        v: &'b [u8],
         opt: &'static str,
         unpair1: &mut bool,
         unpair2: &mut bool,
@@ -350,11 +355,11 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
     }
     while i < args.len() {
         let a = args[i];
-        if a == "--" {
+        if a == b"--" {
             files.extend_from_slice(&args[i + 1..]);
             break;
         }
-        let b = a.as_bytes();
+        let b = a;
         if b.len() < 2 || b[0] != b'-' {
             files.push(a);
             i += 1;
@@ -368,7 +373,7 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
         if b.len() == 3 && b[1] == b'j' && matches!(b[2], b'1' | b'2') {
             i += 1;
             if i >= args.len() {
-                return Err(JoinError::Getopt(GetoptReport::MissingValue(b[2] as char)));
+                return Err(JoinError::Getopt(GetoptReport::MissingValue(char::from(b[2]))));
             }
             let v = args[i];
             if b[2] == b'1' {
@@ -395,7 +400,7 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
             b'2' => opts.field2 = field_no(value!('2'), "-2")?,
             b't' => {
                 let v = value!('t');
-                let bytes = v.as_bytes();
+                let bytes = v;
                 if bytes.len() != 1 {
                     return Err(JoinError::BadTabChar);
                 }
@@ -423,7 +428,7 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
                     &mut opts.unmatched2,
                 )?;
             }
-            b'e' => opts.empty = Some(value!('e').as_bytes().to_vec()),
+            b'e' => opts.empty = Some(value!('e').to_vec()),
             b'j' => {
                 let n = field_no(value!('j'), "-j")?;
                 opts.field1 = n;
@@ -436,7 +441,7 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
                 let bare_o = a.len() == 2;
                 // `fieldarg` 的两支都是 `errx`，但句子不同，所以不能拢一个错型上去。
                 let push_list =
-                    |list: &'a str, acc: &mut Vec<OField>| -> Result<(), JoinError<'a>> {
+                    |list: &'a [u8], acc: &mut Vec<OField>| -> Result<(), JoinError<'a>> {
                         match parse_olist(list) {
                             Ok(fields) => {
                                 // C 的 `fieldarg` 是**往 olist 尾部追加**（`join.c:540-542` 的
@@ -460,7 +465,7 @@ pub fn parse_join_args<'a>(args: &'a [&'a str]) -> Result<JoinArgs<'a>, JoinErro
             // 表外字母：C 也先有一行 libc 报文（`getopt.c:101-104`），再落
             // `join.c:226-228` 的 `case '?'`/`default: usage()`。
             _ => {
-                return Err(JoinError::Getopt(GetoptReport::UnknownOption(b[1] as char)));
+                return Err(JoinError::Getopt(GetoptReport::UnknownOption(char::from(b[1]))));
             }
         }
         i += 1;
@@ -912,7 +917,7 @@ mod tests {
     #[test]
     fn test_parse_olist_forms() {
         assert_eq!(
-            parse_olist("1.2,2.1").unwrap(),
+            parse_olist(b"1.2,2.1").unwrap(),
             vec![
                 OField {
                     which: Which::One,
@@ -924,9 +929,9 @@ mod tests {
                 },
             ]
         );
-        assert!(parse_olist("3.1").is_err()); // no file 3
-        assert!(parse_olist("1.0").is_err()); // fields are 1-based
-        assert!(parse_olist("5").is_err()); // no dot, not `0`
+        assert!(parse_olist(b"3.1").is_err()); // no file 3
+        assert!(parse_olist(b"1.0").is_err()); // fields are 1-based
+        assert!(parse_olist(b"5").is_err()); // no dot, not `0`
     }
 
     /// 本树真源不收 `-o 0`（那支「连接字段自己」是 BSD/GNU 的约定）：四形都落
@@ -934,19 +939,19 @@ mod tests {
     /// 旧测把 `0` 当合法项收下，是给自创行为背书，不是对着真源写的。
     #[test]
     fn parse_olist_refuses_the_zero_join_field_entry() {
-        assert_eq!(parse_olist("0"), Err(OListError::Malformed));
-        assert_eq!(parse_olist("0,1.1"), Err(OListError::Malformed));
-        assert_eq!(parse_olist("1.1,0"), Err(OListError::Malformed));
-        assert_eq!(parse_olist("0.1"), Err(OListError::Malformed));
+        assert_eq!(parse_olist(b"0"), Err(OListError::Malformed));
+        assert_eq!(parse_olist(b"0,1.1"), Err(OListError::Malformed));
+        assert_eq!(parse_olist(b"1.1,0"), Err(OListError::Malformed));
+        assert_eq!(parse_olist(b"0.1"), Err(OListError::Malformed));
         // 带空格的列也一样：C 用 `strsep(", \t")` 拆项，`0` 单独成项就被拒。
-        assert_eq!(parse_olist("1.1 0"), Err(OListError::Malformed));
+        assert_eq!(parse_olist(b"1.1 0"), Err(OListError::Malformed));
     }
 
     #[test]
     fn test_olist_selects_numbered_fields() {
         // 本树没有 `0` 这一支，拿 `1.1` 写同一件事（默认连接字段就是文件一的字段 1）。
         let o = JoinOptions {
-            output_fields: parse_olist("1.1,2.2,1.2").unwrap(),
+            output_fields: parse_olist(b"1.1,2.2,1.2").unwrap(),
             ..Default::default()
         };
         assert_eq!(join("1 a b\n2 c d", "1 x\n2 y", &o), "1 x a\n2 y c");
@@ -956,7 +961,7 @@ mod tests {
     fn test_olist_empty_replacement_on_unmatched() {
         // 1.1 取代旧写法里的 `0`（本树不收那个字母）：文件一单独一行时没有文件二的字段。
         let mut o = JoinOptions {
-            output_fields: parse_olist("1.1,1.2,2.2").unwrap(),
+            output_fields: parse_olist(b"1.1,1.2,2.2").unwrap(),
             empty: Some(b"-".to_vec()),
             unmatched1: true,
             ..Default::default()
@@ -999,26 +1004,37 @@ mod tests {
         assert_eq!(join("1 a\n2 b", "1 x\n3 z", &o), "");
     }
 
-    fn parse<'a>(v: &'a [&'a str]) -> JoinArgs<'a> {
+    /// 夹具助手：把文本形的 argv 词表交回字节形。测试里的字面量全是 ASCII，两种形状
+    /// 等价，所以这一层只是把 `parse_join_args` 的入参类型写出来，本身不承载判据。
+    /// 交回 `Vec<&'static [u8]>`（而不是临时量）是必需的：`JoinArgs` 借的是词表里那些
+    /// 字节，临时 `Vec` 撑不过一条语句，`let a = parse(&argv(&[…]))` 之后再用 `a` 就悬空。
+    fn argv(words: &'static [&'static str]) -> Vec<&'static [u8]> {
+        words.iter().map(|word| word.as_bytes()).collect()
+    }
+
+    fn parse<'a>(v: &'a [&'a [u8]]) -> JoinArgs<'a> {
         parse_join_args(v).expect("parse ok")
     }
 
     #[test]
     fn parse_attached_option_values_accepted() {
         // 关键回归：BSD getopt 的附值形不被旧前门接受。
-        let a = parse(&["-t,", "f1", "f2"]);
+        let w_a = argv(&["-t,", "f1", "f2"]);
+        let a = parse(&w_a);
         assert_eq!(a.opts.sep(), b',');
         assert_eq!(a.opts.tabchars, b",".to_vec());
         assert!(
             !a.opts.spans,
             "`-t` 在 C 里同时清掉 `spans`（`join.c:200`）"
         );
-        assert_eq!(a.files, vec!["f1", "f2"]);
-        let b = parse(&["-a1", "-o1.1,1.2", "f1", "f2"]);
+        assert_eq!(a.files, argv(&["f1", "f2"]));
+        let w_b = argv(&["-a1", "-o1.1,1.2", "f1", "f2"]);
+        let b = parse(&w_b);
         assert!(b.opts.unmatched1 && !b.opts.unmatched2);
         assert_eq!(b.opts.output_fields.len(), 2);
         // 分离值仍正确（向后兼容）。
-        let c = parse(&["-t", "|", "-1", "2", "f1", "f2"]);
+        let w_c = argv(&["-t", "|", "-1", "2", "f1", "f2"]);
+        let c = parse(&w_c);
         assert_eq!(c.opts.sep(), b'|');
         assert_eq!(c.opts.field1, 1);
     }
@@ -1026,10 +1042,12 @@ mod tests {
     #[test]
     fn parse_terminator_and_operands() {
         // `--` 后全为操数；裸 `-` 是操数（stdin）。
-        let a = parse(&["-t,", "--", "-a", "f2"]);
-        assert_eq!(a.files, vec!["-a", "f2"]); // `-a` 在 `--` 后是文件名的字串
-        let b = parse(&["-", "f2"]);
-        assert_eq!(b.files, vec!["-", "f2"]);
+        let w_a = argv(&["-t,", "--", "-a", "f2"]);
+        let a = parse(&w_a);
+        assert_eq!(a.files, argv(&["-a", "f2"])); // `-a` 在 `--` 后是文件名的字串
+        let w_b = argv(&["-", "f2"]);
+        let b = parse(&w_b);
+        assert_eq!(b.files, argv(&["-", "f2"]));
     }
 
     /// `join.c:obsolete()` 的三段 legacy 重写（跑在 `getopt` 之前，遇 `--` 即停）。
@@ -1043,39 +1061,41 @@ mod tests {
     #[test]
     fn obsolete_legacy_forms_rewrite_before_getopt() {
         // ①裸 `-a`：两文件都出不配对，且不吞值。
-        let bare = parse_join_args(&["-a", "f1", "f2"]).unwrap();
+        let w_bare = argv(&["-a", "f1", "f2"]);
+        let bare = parse_join_args(&w_bare).unwrap();
         assert!(bare.opts.unmatched1 && bare.opts.unmatched2);
-        assert_eq!(bare.files, vec!["f1", "f2"]);
+        assert_eq!(bare.files, argv(&["f1", "f2"]));
         // ②分开写的值成了操作数 → 三操数 → 裸 usage 那一支。
         assert_eq!(
-            parse_join_args(&["-a", "3", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-a", "3", "f1", "f2"])).err(),
             Some(JoinError::Usage)
         );
         // ③`-j1` 改成 `-1`：值取下一词，字段一是那一词转出来的（这里转不出→<1 那句）。
         assert_eq!(
-            parse_join_args(&["-j1", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-j1", "f1", "f2"])).err(),
             Some(JoinError::FieldLessThan1("-1"))
         );
-        let conv = parse_join_args(&["-j2", "2", "f1", "f2"]).unwrap();
+        let w_conv = argv(&["-j2", "2", "f1", "f2"]);
+        let conv = parse_join_args(&w_conv).unwrap();
         assert_eq!(conv.opts.field2, 1, "`-j2 2` 等价于 `-2 2`");
         assert_eq!(conv.opts.field1, 0, "开始列没被 `-j2` 动过");
         // ④畸形 `-j` 形：整个 token 进句子，且它排在别的错之前。
         assert_eq!(
-            parse_join_args(&["-j3", "f1", "f2"]).err(),
-            Some(JoinError::IllegalOptionToken("-j3"))
+            parse_join_args(&argv(&["-j3", "f1", "f2"])).err(),
+            Some(JoinError::IllegalOptionToken(b"-j3"))
         );
         assert_eq!(
-            parse_join_args(&["-j12", "f1", "f2"]).err(),
-            Some(JoinError::IllegalOptionToken("-j12"))
+            parse_join_args(&argv(&["-j12", "f1", "f2"])).err(),
+            Some(JoinError::IllegalOptionToken(b"-j12"))
         );
         assert_eq!(
-            parse_join_args(&["-j1", "-j3", "f1", "f2"]).err(),
-            Some(JoinError::IllegalOptionToken("-j3")),
+            parse_join_args(&argv(&["-j1", "-j3", "f1", "f2"])).err(),
+            Some(JoinError::IllegalOptionToken(b"-j3")),
             "pre-pass 先扫完整条 argv，所以后面的畸形形赢过前面的改写"
         );
         // `--` 之后不再扫：那串畸形形落进操作数，报的是裸 usage。
         assert_eq!(
-            parse_join_args(&["--", "-j3", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["--", "-j3", "f1", "f2"])).err(),
             Some(JoinError::Usage)
         );
     }
@@ -1086,22 +1106,26 @@ mod tests {
     /// 它自己与后面的项仍是操作数。
     #[test]
     fn legacy_o_lists_accumulate_instead_of_replacing() {
-        let one = parse_join_args(&["-o", "1.1", "f1", "f2"]).unwrap();
+        let w_one = argv(&["-o", "1.1", "f1", "f2"]);
+        let one = parse_join_args(&w_one).unwrap();
         assert_eq!(one.opts.output_fields.len(), 1);
-        let legacy = parse_join_args(&["-o", "1.1", "2.1", "f1", "f2"]).unwrap();
+        let w_legacy = argv(&["-o", "1.1", "2.1", "f1", "f2"]);
+        let legacy = parse_join_args(&w_legacy).unwrap();
         assert_eq!(
             legacy.opts.output_fields.len(),
             2,
             "`-o 1.1 2.1` 是 legacy 的两条列表，`2.1` 不是操作数"
         );
-        assert_eq!(legacy.files, vec!["f1", "f2"]);
+        assert_eq!(legacy.files, argv(&["f1", "f2"]));
         // 附值形 `-o1.1` 不触发改写（`join.c:601-602` 的 `ap[2] != '\0'` 直接 break），
         // 所以 `2.1` 仍是操作数——两个操作数刚好配得上，三操数就会撞裸 usage。
-        let inline = parse_join_args(&["-o1.1", "2.1", "f1"]).unwrap();
+        let w_inline = argv(&["-o1.1", "2.1", "f1"]);
+        let inline = parse_join_args(&w_inline).unwrap();
         assert_eq!(inline.opts.output_fields.len(), 1);
-        assert_eq!(inline.files, vec!["2.1", "f1"]);
+        assert_eq!(inline.files, argv(&["2.1", "f1"]));
         // 两个附值 `-o` 也累加：这是 C 的 `olistcnt++`，不是覆盖。
-        let twice = parse_join_args(&["-o1.1", "-o2.1", "f1", "f2"]).unwrap();
+        let w_twice = argv(&["-o1.1", "-o2.1", "f1", "f2"]);
+        let twice = parse_join_args(&w_twice).unwrap();
         assert_eq!(twice.opts.output_fields.len(), 2);
     }
 
@@ -1109,38 +1133,38 @@ mod tests {
     fn parse_validations_and_mutual_exclusion() {
         // 非两个操数、表外字母、-a&-v 互斥、非法号、非单字节 tab。
         // 非两个操数走裸 usage；表外字母走「libc 那一行 + usage」，两者不同型。
-        assert_eq!(parse_join_args(&["only1"]).err(), Some(JoinError::Usage));
+        assert_eq!(parse_join_args(&argv(&["only1"])).err(), Some(JoinError::Usage));
         assert_eq!(
-            parse_join_args(&["-z", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-z", "f1", "f2"])).err(),
             Some(JoinError::Getopt(GetoptReport::UnknownOption('z')))
         );
         // 带值选项缺值同样带字母（`-t` 到量尽头没有值）。
         assert_eq!(
-            parse_join_args(&["f1", "f2", "-t"]).err(),
+            parse_join_args(&argv(&["f1", "f2", "-t"])).err(),
             Some(JoinError::Getopt(GetoptReport::MissingValue('t')))
         );
         assert_eq!(
-            parse_join_args(&["-a1", "-v2", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-a1", "-v2", "f1", "f2"])).err(),
             Some(JoinError::AAndVMutuallyExclusive)
         );
         assert_eq!(
-            parse_join_args(&["-1", "0", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-1", "0", "f1", "f2"])).err(),
             Some(JoinError::FieldLessThan1("-1"))
         );
         assert_eq!(
-            parse_join_args(&["-1", "2x", "f1", "f2"]).err(),
-            Some(JoinError::IllegalFieldNumber("2x"))
+            parse_join_args(&argv(&["-1", "2x", "f1", "f2"])).err(),
+            Some(JoinError::IllegalFieldNumber(b"2x"))
         );
         assert_eq!(
-            parse_join_args(&["-t", "ab", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-t", "ab", "f1", "f2"])).err(),
             Some(JoinError::BadTabChar)
         );
         assert_eq!(
-            parse_join_args(&["-a3", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-a3", "f1", "f2"])).err(),
             Some(JoinError::FileNumberNot12("-a"))
         );
         assert_eq!(
-            parse_join_args(&["-j", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-j", "f1", "f2"])).err(),
             // C 的 `strtol("f1")` 转不出数字→值 0→**先过 `< 1` 那道守卫**，
             // 所以落「less than 1」而不是「illegal field number」（`join.c:184-189`，
             // 参照件同读数）——旧实现在这里归错了支，它先按「是否全数字」分流。
@@ -1148,49 +1172,137 @@ mod tests {
         );
         // 一个数字也转不出来的值一律先落 `< 1` 支（同上形，三支都适用）。
         assert_eq!(
-            parse_join_args(&["-1", "x", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-1", "x", "f1", "f2"])).err(),
             Some(JoinError::FieldLessThan1("-1"))
         );
         // 而文件号那两支的判序是「先 switch 后查尾字符」：`1x` 的 1 已被 switch 认下，
         // 所以它走 illegal 那句，而不是 not-1-or-2（`:165-179`）。
         assert_eq!(
-            parse_join_args(&["-a1x", "f1", "f2"]).err(),
-            Some(JoinError::IllegalFileNumber("1x")),
+            parse_join_args(&argv(&["-a1x", "f1", "f2"])).err(),
+            Some(JoinError::IllegalFileNumber(b"1x")),
             "附值形才走 file_no：分开的 `-a 1x` 会被 obsolete() 改写成裸 `-a`（见下行测）"
         );
         assert_eq!(
-            parse_join_args(&["-v", "x", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-v", "x", "f1", "f2"])).err(),
             Some(JoinError::FileNumberNot12("-v"))
         );
         // `-o` 的两支 `errx` 是两个错型（两句不同），且都不接 usage。
         assert_eq!(
-            parse_join_args(&["-o", "1.0", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-o", "1.0", "f1", "f2"])).err(),
             Some(JoinError::FieldNumbersAre1Based)
         );
         assert_eq!(
-            parse_join_args(&["-o", "3.1", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-o", "3.1", "f1", "f2"])).err(),
             Some(JoinError::MalformedOutputField)
         );
         // `-o 0` 与它的附值形 `-o0` 同落 malformed 那一句（C 不收「连接字段自己」那一支）。
         assert_eq!(
-            parse_join_args(&["-o", "0", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-o", "0", "f1", "f2"])).err(),
             Some(JoinError::MalformedOutputField)
         );
         assert_eq!(
-            parse_join_args(&["-o0", "f1", "f2"]).err(),
+            parse_join_args(&argv(&["-o0", "f1", "f2"])).err(),
             Some(JoinError::MalformedOutputField)
+        );
+    }
+
+    /// 字母位的**取法**在库里也要钉一枚（这枚门由负控 J4 补出来：把 `char::from(b[1])` 换成
+    /// 「按字符取整簇」之后，跨壳表与本支端到端都红，而**库内 622 枚全绿**——说明这一支的字母
+    /// 腿在库里从来没钉住过，同批次四百六十一给 `cut` 补门是那一条判据的第二次兑现）。
+    /// `join` 的 optstring `"\01a:e:j:1:2:o:t:v:"` 里除 `\01` 外**每个字母都带值**，所以没有
+    /// 「合法字母后接多字节」那一形可钉；反面形是 `-1<é>`：`é` 被当 `-1` 的值收走，答的是
+    /// 「一个数字也转不出→值 0→先过 `< 1` 那道守卫」，与字母位无关（`join.c:140-143`）。
+    #[test]
+    fn the_ring_names_the_first_byte_of_a_multibyte_letter() {
+        let two: &[&[u8]] = &[b"-\xc3\xa9", b"f1", b"f2"];
+        assert_eq!(
+            parse_join_args(two).err(),
+            Some(JoinError::Getopt(GetoptReport::UnknownOption(char::from(
+                0xc3_u8
+            )))),
+            "`-é` 报的字母是短横后的第一字节 `c3`，不是整个码位"
+        );
+        let lone: &[&[u8]] = &[b"-\xff", b"f1", b"f2"];
+        assert_eq!(
+            parse_join_args(lone).err(),
+            Some(JoinError::Getopt(GetoptReport::UnknownOption(char::from(
+                0xff_u8
+            )))),
+            "一枚非法字节本身就是一个字母位，不借任何解码通道"
+        );
+        let stop: &[&[u8]] = &[b"-Z\xc3\xa9", b"f1", b"f2"];
+        assert_eq!(
+            parse_join_args(stop).err(),
+            Some(JoinError::Getopt(GetoptReport::UnknownOption('Z'))),
+            "环停在第一个坏字母上，后面的 `é` 根本不该被读到（`join.c:226-228`）"
+        );
+        let value: &[&[u8]] = &[b"-1\xc3\xa9", b"f1", b"f2"];
+        assert_eq!(
+            parse_join_args(value).err(),
+            Some(JoinError::FieldLessThan1("-1")),
+            "带值字母后面那串是值不是字母：`é` 转不出数字，落 `< 1` 那一句"
         );
     }
 
     #[test]
     fn strtol_decimal_mirrors_the_no_digit_case() {
         // `strtol` 的四形：前导空白与符号算已消费；无数字时值为 0 且不报错。
-        assert_eq!(strtol_decimal("12"), (12, 2));
-        assert_eq!(strtol_decimal(" 12"), (12, 3));
-        assert_eq!(strtol_decimal("+12"), (12, 3));
-        assert_eq!(strtol_decimal("-3"), (-3, 2));
-        assert_eq!(strtol_decimal("x"), (0, 0));
-        assert_eq!(strtol_decimal("1x"), (1, 1));
-        assert_eq!(strtol_decimal(""), (0, 0));
+        assert_eq!(strtol_decimal(b"12"), (12, 2));
+        assert_eq!(strtol_decimal(b" 12"), (12, 3));
+        assert_eq!(strtol_decimal(b"+12"), (12, 3));
+        assert_eq!(strtol_decimal(b"-3"), (-3, 2));
+        assert_eq!(strtol_decimal(b"x"), (0, 0));
+        assert_eq!(strtol_decimal(b"1x"), (1, 1));
+        assert_eq!(strtol_decimal(b""), (0, 0));
+    }
+
+    /// 参数缝在 `join` 上不只管报文：**值本身就是行为**。`join.c:200-204` 把 `-t` 的值拿去
+    /// 当分隔符，且判据是 `strlen(optarg) != 1`——一枚裸 `ff` 若在 argv 到库之前先过了
+    /// `from_utf8_lossy`，它就变成三个字节，于是这一形从**接受**翻成**拒绝**（改前现量
+    /// `join: illegal tab character specification` 退 1，参照件同形退 0 并切出字段）。
+    /// `-e` 的值更直接：`join.c:198` 存成空缺字段的替代串，随后由 `outfield`（`:497-508`）
+    /// 原样打进展出的每一行。剩下三支才是回显：`illegal field number -- %s`（`:145`、
+    /// `:156`、`:190`）、`illegal file number -- %s`（`:176`、`:222`）与 `obsolete()` 那句
+    /// `illegal option -- %s`（`:592`，带的是整个 token 含前导短线）。
+    #[test]
+    fn a_raw_byte_is_the_delimiter_the_replacement_and_the_three_echoes() {
+        // ①`-t` 的附值形：一枚裸 `ff` 是**合法**的单字节分隔符，并在同一句里关掉 `spans`。
+        let attached: &[&[u8]] = &[b"-t\xff", b"f1", b"f2"];
+        let cut = parse_join_args(attached).expect("`-t<ff>` 是一个字节，不该被拒");
+        assert_eq!(cut.opts.tabchars, vec![0xff]);
+        assert!(!cut.opts.spans, "`join.c:200` 取分隔符时把 `spans` 一起清成 0");
+        assert_eq!(cut.opts.sep(), 0xff, "输出分隔符取的是 `*tabchar`，也是那一枚字节");
+        // ②`-e` 的值就是输出内容：整串原字节跟着走，一枚都不折。
+        let repl: &[&[u8]] = &[b"-e\xffx", b"f1", b"f2"];
+        assert_eq!(
+            parse_join_args(repl).expect("`-e` 不查形状").opts.empty,
+            Some(vec![0xff, b'x']),
+            "替代串交回的必须是 argv 原字节"
+        );
+        // ③④⑤三支回显：`optarg` 与整个 token 都是原字节，长度不因解码而变。
+        let field: &[&[u8]] = &[b"-1", b"2\xff", b"f1", b"f2"];
+        assert_eq!(
+            parse_join_args(field).err(),
+            Some(JoinError::IllegalFieldNumber(&[b'2', 0xff][..])),
+            "`2` 之后那枚裸字节转不进数、`*end` 非零，落 illegal 那句且带原字节"
+        );
+        let file: &[&[u8]] = &[b"-a1\xff", b"f1", b"f2"];
+        assert_eq!(
+            parse_join_args(file).err(),
+            Some(JoinError::IllegalFileNumber(&[b'1', 0xff][..])),
+            "文件号那支的判序是先 switch 认下 1、再查尾字符"
+        );
+        let token: &[&[u8]] = &[b"-j3\xff", b"f1", b"f2"];
+        assert_eq!(
+            parse_join_args(token).err(),
+            Some(JoinError::IllegalOptionToken(&[b'-', b'j', b'3', 0xff][..])),
+            "畸形 `-j` 形在选项环之前就把整个 token 交回"
+        );
+        // ⑥操数同样是原字节（开档腿在库里看不见，那一半归壳侧与在册的两条 `&str` 口）。
+        let names: &[&[u8]] = &[b"a\xff-b", b"c"];
+        assert_eq!(
+            parse_join_args(names).expect("两个操数").files,
+            vec![&[b'a', 0xff, b'-', b'b'][..], &b"c"[..]]
+        );
     }
 }

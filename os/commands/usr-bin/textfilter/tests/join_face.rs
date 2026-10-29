@@ -638,3 +638,145 @@ fn the_attached_dash_o_zero_is_refused_too() {
     assert_eq!(status, 1);
     assert_eq!(err, "join: malformed -o option field\n");
 }
+
+/// 字节形 argv 的命令缝：`&str` 递不出裸 `ff`——`OsStr` 从 `str` 过来时那串已经是合法
+/// UTF-8，所以这层夹具是必需的而不是省事。两路输出**逐字节**交回：`from_utf8_lossy` 会把
+/// 一枚 `c3` 渲染成三字节 U+FFFD，文本形分不清「一个字节」与「三个字节」这两种错法。
+fn run_argv(args: &[&[u8]]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let output = Command::new(env!("CARGO_BIN_EXE_join"))
+        .args(args.iter().map(|word| std::ffi::OsStr::from_bytes(word)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the join binary should be runnable");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 按**原字节名**落一档，并把它的折叠孪生件（`from_utf8_lossy` 之后的那个名字）同时放上：
+/// 开档与 `err(1, "%s", name)` 两条口要借 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），孪生件
+/// 让「这档开不开得了」与「名字位回显成什么」这两件事能被分开量。交回的是原字节全路径。
+fn write_raw(dir: &Path, name: &[u8], body: &[u8]) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut full = dir.to_str().expect("ascii dir").as_bytes().to_vec();
+    full.push(b'/');
+    full.extend_from_slice(name);
+    fs::write(std::ffi::OsStr::from_bytes(&full), body).expect("write raw-named file");
+    let folded = String::from_utf8_lossy(name).into_owned();
+    fs::write(dir.join(&folded), body).expect("write the folded twin");
+    full
+}
+
+/// 参数缝在 `join` 上改的是**判据与输出**，不只是报文，这是本族第一支这样的壳：
+/// ①`-t` 的值按 `join.c:202` 的 `strlen(optarg) != 1` 判——文本缝上枚裸 `ff` 先被折成三字节，
+///   于是「单字节分隔符」这一形从**接受**翻成**拒绝**（改前现量 `join: illegal tab character
+///   specification` 退 1；参照件同形退 0 并真拿去切行，三侧读数 `tmp/join-463/before-after-smoke.log`）；
+/// ②`-e` 的值由 `outfield`（`join.c:497-508`）原样打进空缺字段，折过的串会把一枚 `ff` 打成
+///   `ef bf bd`（三侧读数 `tmp/join-463/before-after-smoke-2.log`）。
+/// 反面形 `-t<é>`（`c3 a9`，合法 UTF-8 的两个字节）**三侧同拒**，钉的是「查的是字节数，不是
+/// 能不能解码」——这一形也是「字节缝不等于什么都放宽」的证据。
+#[test]
+fn a_raw_byte_delimiter_is_accepted_and_a_raw_byte_replacement_is_printed() {
+    // ①一枚裸 `ff` 当分隔符：接受、切行、并且输出分隔符也是那一枚字节（`*tabchar`）。
+    let (dir, paths) = scratch("rawdelim", &[("l", b"a\xff1\nb\xff2\n"), ("r", b"a\xffx\n")]);
+    let (out, status, err) = run_argv(&[
+        b"-t\xff",
+        paths[0].as_bytes(),
+        paths[1].as_bytes(),
+    ]);
+    assert_eq!(status, 0, "单字节分隔符不该被拒：stderr 是 {err:?}");
+    assert_eq!(
+        out, b"a\xff1\xffx\n",
+        "两侧按 `ff` 切出字段，展出的分隔符也是 `ff`"
+    );
+    assert_eq!(err, Vec::new(), "成功路一声不出");
+
+    // ②反面形：`é` 是两个字节（合法 UTF-8），C 的判据同样拒——缝换了也不放宽这条。
+    let (_, status, err) = run_argv(&[b"-t\xc3\xa9", paths[0].as_bytes(), paths[1].as_bytes()]);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"join: illegal tab character specification\n".as_slice(),
+            USAGE_FIRST.as_bytes(),
+            USAGE_SECOND.as_bytes(),
+        ]
+        .concat(),
+        "`strlen(optarg) != 1` 查的是字节数"
+    );
+
+    // ③`-e` 的值直接是输出内容：空缺字段打进的是 argv 原字节。
+    let (dir2, paths2) = scratch("rawempty", &[("l", b"a 1\nb 2\n"), ("r", b"a x\n")]);
+    let (out, status, err) = run_argv(&[
+        b"-a1",
+        b"-o",
+        b"1.1,2.2",
+        b"-e\xffx",
+        paths2[0].as_bytes(),
+        paths2[1].as_bytes(),
+    ]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(
+        out,
+        [b"a x\n".as_slice(), b"b \xffx\n".as_slice()].concat(),
+        "`b` 那一行第二个字段来自 `-e`，必须是裸 `ff` 而不是 U+FFFD 的三字节"
+    );
+
+    // ④操数名字位只钉 happy path：开档与 `err` 那两句都在册的 `&str` 口上，所以盘上同放
+    //    折叠孪生件，把「档位能不能打开」从这条读数的失败因里排除掉。
+    let (dir3, paths3) = scratch("rawname", &[("r", b"a x\n")]);
+    let raw = write_raw(&dir3, b"l\xffr", b"a 1\n");
+    let (out, status, err) = run_argv(&[raw.as_slice(), paths3[0].as_bytes()]);
+    assert_eq!((out.as_slice(), status), (b"a 1 x\n".as_slice(), 0), "stderr 是 {err:?}");
+    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_dir_all(dir2);
+    let _ = fs::remove_dir_all(dir3);
+}
+
+/// 三支把值拼进句子的腿，值位都是 argv 的原字节：`illegal field number -- %s`（`join.c:145`、
+/// `:156`、`:190`）、`illegal file number -- %s`（`:176`、`:222`）与 `obsolete()` 那句
+/// `illegal option -- %s`（`:592`，带的是整个 token 含前导短线）。前两支是 `warnx` 紧跟
+/// `usage()`，所以各三行；第三支是 `errx`，**只有一行**——行数差与值差在同一枚门里各钉一段。
+/// 字母位那一枚由 `bin_support_face` 的跨壳表钉，本枚不重复承载。
+#[test]
+fn the_three_value_echoes_carry_the_argv_bytes() {
+    let (out, status, err) = run_argv(&[b"-1", b"2\xff", b"f1", b"f2"]);
+    assert_eq!(out, Vec::new(), "报文只走标准错误");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"join: illegal field number -- 2\xff\n".as_slice(),
+            USAGE_FIRST.as_bytes(),
+            USAGE_SECOND.as_bytes(),
+        ]
+        .concat(),
+        "值位是一枚 `ff`，不是折叠出的三字节"
+    );
+
+    let (_, status, err) = run_argv(&[b"-a1\xff", b"f1", b"f2"]);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"join: illegal file number -- 1\xff\n".as_slice(),
+            USAGE_FIRST.as_bytes(),
+            USAGE_SECOND.as_bytes(),
+        ]
+        .concat(),
+        "文件号那支先由 `switch` 认下 1，再在尾字符上失手"
+    );
+
+    let (_, status, err) = run_argv(&[b"-j3\xff", b"f1", b"f2"]);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"join: illegal option -- -j3\xff\n",
+        "`obsolete()` 的畸形形带整个 token，且 `errx` 不接 usage"
+    );
+}
