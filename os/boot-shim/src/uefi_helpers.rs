@@ -146,6 +146,33 @@ pub fn find_platform_sources() -> &'static [PlatformDescSource] {
     Box::leak(sources.into_inner().into_boxed_slice())
 }
 
+/// Collect this image's `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions` and normalize
+/// it into the project's `key=value\0` protocol.
+///
+/// The raw byte buffer is what the firmware actually passed to this image.
+/// Our contract is ASCII records separated by NUL or whitespace; arbitrary
+/// payloads (UCS-2 command lines, binary blobs) are rejected record by record
+/// by the normalizer instead of guessed. The returned slice lives in a leaked
+/// `LOADER_DATA` allocation, so it survives until the matching builder call.
+///
+/// Must run before `ExitBootServices` (it opens a protocol).
+fn collect_param_buf() -> (&'static [u8], minix_boot::ParamStats) {
+    let landing: &'static mut [u8] =
+        Box::leak(alloc::vec![0u8; minix_boot::PARAM_BUF_CAP].into_boxed_slice());
+    let input: Vec<u8> = boot::open_protocol_exclusive::<
+        uefi::proto::loaded_image::LoadedImage,
+    >(boot::image_handle())
+    .ok()
+    .and_then(|image| image.load_options_as_bytes().map(|bytes| bytes.to_vec()))
+    .unwrap_or_default();
+    let stats = minix_boot::normalize_param_buf(&input, None, landing);
+    let ptr = landing.as_ptr();
+    // SAFETY: `landing` is a leaked `'static` allocation; the slice covers the
+    // normalized prefix only.
+    let out = unsafe { core::slice::from_raw_parts(ptr, stats.bytes) };
+    (out, stats)
+}
+
 /// UEFI implementation of `BootShim`.
 ///
 /// Uses UEFI BootServices to discover memory, allocate pages, load kernel
@@ -195,6 +222,13 @@ impl BootShim for UefiBootShim {
         // the System Table is only valid while boot services are available.
         uefi::println!("boot-shim: locating platform sources…");
         let platform_sources = find_platform_sources();
+        let (param_buf, param_stats) = collect_param_buf();
+        uefi::println!(
+            "boot-shim: param_buf bytes={} rejected={} dropped={}",
+            param_stats.bytes,
+            param_stats.rejected,
+            param_stats.dropped
+        );
 
         // fix27: one snapshot, two lists — conventional (free) plus the
         // non-conventional remainder that hosts everything the kernel
@@ -284,6 +318,7 @@ impl BootShim for UefiBootShim {
             PhysBytes(0),
             0,
             platform_sources,
+            param_buf,
         );
 
         uefi::println!("boot-shim: exiting boot services…");
@@ -706,7 +741,8 @@ fn load_dumpdtb_free(file_loader: &dyn FileLoader) -> Option<&'static [MemoryReg
 /// (`GetMemoryMap` → classify → raw `ExitBootServices`) → bootstrap root →
 /// patch runtime fields → jump with `x0 = arena_pa`.
 #[cfg(target_arch = "aarch64")]
-pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {    uefi::println!("boot-shim: prepare_and_enter enter (handoff v1 arena)");
+pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
+    uefi::println!("boot-shim: prepare_and_enter enter (handoff v1 arena)");
     let root_page = alloc_root_page();
     let (bump_base, bump_end) = alloc_bump_region(bump_pages);
     // The in-shim kernel copy uses this region for the bootstrap root pages;
@@ -725,6 +761,13 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {    uefi::println
     let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
     uefi::println!("boot-shim: 12 boot modules loaded");
     let platform_sources = find_platform_sources();
+    let (param_buf, param_stats) = collect_param_buf();
+    uefi::println!(
+        "boot-shim: param_buf bytes={} rejected={} dropped={}",
+        param_stats.bytes,
+        param_stats.rejected,
+        param_stats.dropped
+    );
 
     let arena_pa = alloc_arena();
     // SAFETY: the arena is a fresh four-page LOADER_DATA allocation below the
@@ -746,6 +789,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {    uefi::println
         PhysBytes(0),
         0,
         platform_sources,
+        param_buf,
     );
     serializer
         .write_envelope(&carrier)
@@ -756,10 +800,8 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {    uefi::println
     serializer
         .write_platform_sources(platform_sources)
         .expect("too many platform sources for the handoff arena");
-    // T3 fills this from LoadOptions; today the empty slice is the C
-    // `param_buf[0] == '\0'` equivalent.
     serializer
-        .write_param_buf(&[])
+        .write_param_buf(param_buf)
         .expect("param_buf over capacity");
 
     let system_table = uefi::table::system_table_raw()
@@ -845,6 +887,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {    uefi::println
         PhysBytes(0),
         0,
         platform_sources,
+        param_buf,
     );
 
     crate::raw_serial("boot-shim: [raw] arena=");
@@ -933,6 +976,7 @@ mod tests {
             PhysBytes(0x100000), // bootstrap_start
             0x100000,            // bootstrap_len
             &[],                 // platform_sources (empty = no source)
+            &[],                 // param_buf (no source in this unit test)
         );
 
         assert_eq!(info.reserved_regions().len(), 1);

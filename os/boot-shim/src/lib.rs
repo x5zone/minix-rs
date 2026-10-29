@@ -39,7 +39,9 @@ pub use minix_elf;
 ///
 /// `reserved_regions` is the surface's non-conventional list (UEFI-classified
 /// firmware memory, DTB-clipped firmware ranges); pass `&[]` when the surface
-/// has none. The derived fields follow the boot layout contract:
+/// has none. `param_buf` is the already-normalized `key=value\0` byte string
+/// ([`minix_boot::normalize_param_buf`]); pass `&[]` when the leg has no
+/// source. The derived fields follow the boot layout contract:
 /// `kern_stack_top = kern_virt_base + kern_size`, `syscall_entry =
 /// kern_virt_base`, `free_upper_idx = None`, and the per-arch user stack top
 /// from `minix_types::USER_STACK_TOP`.
@@ -53,6 +55,7 @@ pub fn build_kernel_info(
     bootstrap_start: minix_types::PhysBytes,
     bootstrap_len: u64,
     platform_sources: &'static [minix_boot::PlatformDescSource],
+    param_buf: &'static [u8],
 ) -> minix_boot::KernelInfo {
     minix_boot::KernelInfo {
         memmap,
@@ -70,10 +73,7 @@ pub fn build_kernel_info(
         bootstrap_start,
         bootstrap_len,
         platform_sources,
-        // P9-1: boot parameters are not parsed into key=value pairs yet; the
-        // empty slice is equivalent to C's `param_buf[0] == '\0'` (the
-        // kernel's GET_MONPARAMS handler copies 0 bytes).
-        param_buf: &[],
+        param_buf,
     }
 }
 
