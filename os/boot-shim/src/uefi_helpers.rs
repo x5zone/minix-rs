@@ -615,4 +615,41 @@ mod tests {
         assert_eq!(info.boot_modules[0].name, "vm");
         assert!(info.platform_sources.is_empty());
     }
+
+    /// Disjoint and exactly-abutting ranges are accepted — the predicate is
+    /// half-open overlap (`end <= base || region_end <= start`), so touching
+    /// edges must not trip it.
+    #[test]
+    fn test_bootstrap_outside_memmap_accepts_disjoint_and_abutting() {
+        static MEMMAP: [MemoryRegion; 2] = [
+            MemoryRegion { base: PhysBytes(0x10_0000), len: 0x10_0000 },
+            MemoryRegion { base: PhysBytes(0x40_0000), len: 0x10_0000 },
+        ];
+        // Before the first region, after the last, and exactly abutting the
+        // seam at 0x20_0000 from the right.
+        assert_bootstrap_outside_memmap(&MEMMAP, 0xf_f000, 0x1000);
+        assert_bootstrap_outside_memmap(&MEMMAP, 0x50_0000, 0x1000);
+        assert_bootstrap_outside_memmap(&MEMMAP, 0x20_0000, 0x1000);
+    }
+
+    /// A bootstrap allocation fully inside a conventional range is the bug
+    /// the check exists for (firmware reported live page-table pages as free).
+    #[test]
+    #[should_panic(expected = "overlaps bootstrap allocation")]
+    fn test_bootstrap_outside_memmap_rejects_contained_range() {
+        static MEMMAP: [MemoryRegion; 1] =
+            [MemoryRegion { base: PhysBytes(0x10_0000), len: 0x10_0000 }];
+        assert_bootstrap_outside_memmap(&MEMMAP, 0x14_0000, 0x1000);
+    }
+
+    /// Partial overlap across a region boundary must also fail: neither
+    /// endpoint is inside the region, but the allocation still covers
+    /// conventional pages.
+    #[test]
+    #[should_panic(expected = "overlaps bootstrap allocation")]
+    fn test_bootstrap_outside_memmap_rejects_partial_overlap() {
+        static MEMMAP: [MemoryRegion; 1] =
+            [MemoryRegion { base: PhysBytes(0x10_0000), len: 0x10_0000 }];
+        assert_bootstrap_outside_memmap(&MEMMAP, 0x1f_f000, 0x2000);
+    }
 }
