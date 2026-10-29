@@ -830,10 +830,36 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
                 };
             }
         }
+        // D-70: the platform-source list and the boot parameter bytes live
+        // in the same firmware pool as the three payloads above, so they get
+        // the same landing treatment.
+        let pstore = &mut *crate::globals::PLATFORM_SOURCE_STORE.get();
+        let psrc = kernel_info.platform_sources;
+        assert!(
+            psrc.len() <= pstore.len(),
+            "store_kernel_info: platform_sources exceeds the .bss landing pad"
+        );
+        if psrc.as_ptr() != pstore.as_ptr() {
+            core::ptr::copy(psrc.as_ptr(), pstore.as_mut_ptr(), psrc.len());
+        }
+        let param = &mut *crate::globals::PARAM_BUF_STORE.get();
+        let csrc = kernel_info.param_buf;
+        assert!(
+            csrc.len() <= param.len(),
+            "store_kernel_info: param_buf exceeds the .bss landing pad"
+        );
+        if csrc.as_ptr() != param.as_ptr() {
+            // Fixed-length semantics: zero the pad, then copy the bytes so a
+            // short buffer has a defined all-zero tail.
+            param.fill(0);
+            param[..csrc.len()].copy_from_slice(csrc);
+        }
         let mut k = *kernel_info;
         k.reserved_regions = core::slice::from_raw_parts(store.as_ptr(), src.len());
         k.memmap = core::slice::from_raw_parts(mstore.as_ptr(), msrc.len());
         k.boot_modules = core::slice::from_raw_parts(bstore.as_ptr(), bsrc.len());
+        k.platform_sources = core::slice::from_raw_parts(pstore.as_ptr(), psrc.len());
+        k.param_buf = core::slice::from_raw_parts(param.as_ptr(), csrc.len());
         *KERNEL_INFO.get() = Some(k);
     }
 }
@@ -4510,6 +4536,11 @@ mod tests {
             minix_boot::BootModule { name: "rs", start: PhysBytes(0x20_0000), len: 0x1000 },
             minix_boot::BootModule { name: "vm", start: PhysBytes(0x21_0000), len: 0x2000 },
         ];
+        static PLATFORM: &[minix_boot::PlatformDescSource] = &[
+            minix_boot::PlatformDescSource::new(minix_boot::DTB, PhysBytes(0x4000_0000)),
+            minix_boot::PlatformDescSource::new(minix_boot::RSDP, PhysBytes(0xE0000)),
+        ];
+        static PARAM: &[u8] = b"ARCH=x86_64\0BOARD=qemu\0";
         let info = KernelInfo {
             memmap: MEMMAP,
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
@@ -4522,8 +4553,8 @@ mod tests {
             boot_modules: MODULES,
             bootstrap_start: PhysBytes(0),
             bootstrap_len: 0,
-            platform_sources: &[],
-            param_buf: &[],
+            platform_sources: PLATFORM,
+            param_buf: PARAM,
             reserved_regions: &[],
         };
         store_kernel_info(&info);
@@ -4545,12 +4576,31 @@ mod tests {
         assert_eq!(stored.boot_modules()[0].name, "rs");
         assert_eq!(stored.boot_modules()[1].start, PhysBytes(0x21_0000));
         assert_eq!(stored.boot_modules()[1].len, 0x2000);
+        // D-70: the platform-source list and the parameter bytes are landed
+        // by the same store.
+        assert_ne!(
+            stored.platform_sources().as_ptr(),
+            PLATFORM.as_ptr(),
+            "platform_sources must be repointed to the .bss landing pad"
+        );
+        assert_eq!(stored.platform_sources().len(), 2);
+        assert_eq!(stored.platform_sources()[0].kind().raw(), minix_boot::DTB.raw());
+        assert_eq!(stored.platform_sources()[0].phys_addr(), PhysBytes(0x4000_0000));
+        assert_ne!(
+            stored.param_buf().as_ptr(),
+            PARAM.as_ptr(),
+            "param_buf must be repointed to the .bss landing pad"
+        );
+        assert_eq!(stored.param_buf(), PARAM);
         // kmain re-stores the global copy itself: idempotent, no double copy.
         store_kernel_info(stored);
         let again = crate::kernel_info().expect("re-store republished");
         assert_eq!(again.memmap().as_ptr(), stored.memmap().as_ptr());
         assert_eq!(again.boot_modules().as_ptr(), stored.boot_modules().as_ptr());
+        assert_eq!(again.platform_sources().as_ptr(), stored.platform_sources().as_ptr());
+        assert_eq!(again.param_buf().as_ptr(), stored.param_buf().as_ptr());
         assert_eq!(again.boot_modules()[1].name, "vm");
+        assert_eq!(again.param_buf(), PARAM);
         // Release the one-shot slot for other boot-global tests.
         // SAFETY: boot-globals lock held; single writer.
         unsafe { *crate::globals::KERNEL_INFO.get() = None };
@@ -4616,6 +4666,36 @@ mod tests {
              minix_boot::NR_BOOT_MODULES + 1];
         let mut info = minimal_store_info();
         info.boot_modules = &OVERFLOW;
+        store_kernel_info(&info);
+    }
+
+    /// M8/D-70 fail-fast: more platform sources than the landing pad aborts
+    /// before any copy.
+    #[test]
+    #[should_panic(expected = "platform_sources exceeds the .bss landing pad")]
+    fn test_store_kernel_info_rejects_platform_overflow() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        static OVERFLOW: [minix_boot::PlatformDescSource;
+            crate::globals::PLATFORM_SOURCE_STORE_LEN + 1] =
+            [minix_boot::PlatformDescSource::new(
+                minix_boot::PlatformDescKind::new(0),
+                PhysBytes(0),
+            ); crate::globals::PLATFORM_SOURCE_STORE_LEN + 1];
+        let mut info = minimal_store_info();
+        info.platform_sources = &OVERFLOW;
+        store_kernel_info(&info);
+    }
+
+    /// M8/D-70 fail-fast: parameter bytes over the C-sized pad abort before
+    /// the zero-and-copy step.
+    #[test]
+    #[should_panic(expected = "param_buf exceeds the .bss landing pad")]
+    fn test_store_kernel_info_rejects_param_overflow() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        static OVERFLOW: [u8; crate::globals::PARAM_BUF_STORE_LEN + 1] =
+            [0u8; crate::globals::PARAM_BUF_STORE_LEN + 1];
+        let mut info = minimal_store_info();
+        info.param_buf = &OVERFLOW;
         store_kernel_info(&info);
     }
 
