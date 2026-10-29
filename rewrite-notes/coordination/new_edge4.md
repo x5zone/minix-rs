@@ -2664,5 +2664,5 @@ SD-24 arm2 不能先于 C1（SD-10 污染案 / PD-16）结案落地；本线已 
 `P::supports_huge_page` 再比布局对齐；「1 GiB 不支持但布局按 1 GiB 对齐」的机器
 改选 2 MiB 回退，不再选一个不支持的尺寸到 `map_huge` 才失败。四条纯函数测试
 覆盖支持/不支持/仅回退/都不可用；kernel mock **849/0/8**（845+4）、x86 QEMU
-`hello-boot` PASS。D-59 余四阶段（`PageSize`/能力 API、事实/规划与策略拆分、
+`hello-boot` PASS、HEAD 干净树全量 `run_all` **39/0/0**（`tmp/01-cboard-baseline-20261030/run-all-final.log`）。D-59 余四阶段（`PageSize`/能力 API、事实/规划与策略拆分、
 `map_huge` 防御与 SMP 预检、机械重命名）与覆盖损失门仍开放。
