@@ -1839,3 +1839,117 @@ riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0。A/B 用的产
 不能替他人认账，也不能因为门红就把自己那笔回退。**
 
 - `2026-10-20` zcode-glm / C 板收尾（**C3 首源读数到手——B 板代领完成，C 板可做件终局清零**）：`claim/C3-zcode-glm`（release 先于 merge 险情以提交哈希 `ef23cbbf0` 直接合并化解）→ 合并笔 `f425e8c0f`。交付=UART RX（PLIC IRQ10）回环驱动（`kernel/uart_irq.rs`：register_hook 首挂自动 unmask + `set_irq_priority` 三层 API + `sie.SEIE` + IER.ERBFI + **脉冲式 MCR.LOOP** 使能序）+ 载体阶段（test-timer-irq PASS 门=uptime ∧ 首源 matched>0）。诊断三层定案：①上段「stride 0x2000 修复」实为**误修**（QEMU `sifive_plic.c` CONTEXT_STRIDE=0x1000、规范 CONTEXT1@0x201000、DTB `interrupts-extended <0x0b,0x09>` 证 hart0-S=context1——回滚并留注）②真病根=脉冲式 LOOP 序（LOOP 悬置=同 UART 控制台内环失聪+控制台字节反成 RX 垃圾源）③修后 claim→钩子→match 三环真机全通：`uart-rx first-source ok`+`TEST_RESULT: PASS`，mock 834/0/8、aarch64 check 0 error、全量 **39/0/0 维持**。PLIC 设备驱动两件必修常识入板行：**priority 复位 0=永不投递必写**、**MCR.LOOP 悬置=控制台失聪**。C 板 21 行终态=全闭或外部门控（C2b/C4/C7 族/C11 案结/C1 案结/C3 首源✅本笔解/C8-C21 人裁绑定），门控地图与解除钥匙见 PARALLEL-C。
+
+### 第一百七十七笔（批次四百六十三 · A2 参数缝半切片 45：`join` 的 argv、`-t` 的判据、`-e` 的输出与三支值回显交回原字节；参数缝第一次改到「接受还是拒绝」那一层）
+
+**这一笔先说形状**：前面十七支都在「同一个判据给不给得出、报出来长几个字节」这一侧打转，`join` 是第一支
+**参数缝改到判据本身**的壳。`minix3/usr.bin/join/join.c:201` 写的是 `if (strlen(tabchar = optarg) != 1)`——
+量的是字节数。文本缝之下 `bin_support::args()` 先过 `from_utf8_lossy`，一枚裸 `ff` 变成 `ef bf bd` 三枚，于是
+`join -t<ff>` 在 C 里是「接受，并拿这枚字节去切每一行」，在本壳里是「拒绝」。三侧读数（
+`tmp/join-463/before-after-smoke.log`，改前那件取自合回前的主树产物）：改前 `join: illegal tab character
+specification` 退 1，改后与参照件 `tmp/join-463/join` 都退 0 且逐字节交回 `a<ff>1<ff>x`。同一枚字节还走第二条腿：
+`join.c:495` 打的是 `printf("%c", *tabchar)`，分隔符集的首字节同时是**展出的每一行拿什么连起来**。`-e` 更直接——
+`:500-501` 的 `printf("%s", empty)` 把替代串打进空缺字段，折过的形态让输出里多出两枚字节
+（`before-after-smoke-2.log`：改前 `ef bf bd x`，改后与参照件同为 `ff x`）。加上三支把 `optarg`/整个 token 拼进句子的
+回显（`:145`/`:156`/`:190`、`:176`/`:222`、`:592`），**判据、输出、报文三条腿在这一支齐了**。落码四层：库侧
+`os/commands/usr-bin/textfilter/src/join.rs` 的 `fn parse_join_args` 收 `&'a [&'a [u8]]`、`JoinArgs.files` 改
+`Vec<&'a [u8]>`、`JoinError` 三支回显值改 `&'a [u8]`，`fn parse_olist`/`fn strtol_decimal`/`fn is_field_spec`
+三个入口收 `&[u8]`（切分集「逗号、空格、制表符」按字节判，数字腿本来按 `is_ascii_digit`，语义一字未动），环里
+`a == b"--"`、首字节判 `b'-'`、`char::from(b[1])` 三处按字节；壳侧 `src/bin/join.rs` 走 `args_bytes()`/
+`prog_name_bytes()`，`diagnose`/`fail`/`warn_then_usage` 三兄弟的短语参数改 `&[u8]`（新立 `fn quoted`），
+开档与 `err(1, "%s", name)` 收进同一个 `read_operand` 闭包折一次（在册 `ARGV-BYTE-PATH-IN-LIBS`，壳内现量 2 处）。
+
+**顺带查清了一处照抄了很久却没问过为什么的字面量**：`join.c:133` 递的 optstring 是 `"\01a:e:j:1:2:o:t:v:"`，
+开头那枚 `\01` 不是装饰。`obsolete()` 在 `:568` 把裸 `-a` 的第二个字符就地写成 `'\01'`，而 BSD `getopt` 用
+`getopt.c:98` 的 `strchr(ostr, optopt)` 去认这个字母——**那枚字节必须在选项串里**才落得进 `join.c:135` 的
+`case '\01'`；它的下一位是 `a`，于是 `getopt.c:109` 的 `oli[1] != ':'` 把这枚合成字母当**无值**字母处理，
+这正是 legacy 裸 `-a` 不吞掉第一个文件名的机制来历。它占串首位也安全：同一份 `getopt.c` 只对 `*ostr == ':'`
+（`:101`、`:130`）与 `strchr(ostr, '-')`（`:90`）看首字符。判据一条：**照抄字面量时，「它为什么在这个位置」是
+也要查清的另一半**——只抄形状不抄理由，等于把一段机制知识留在原地没人接手。
+
+**门账（先对测试名集合再对总数）**：库内 `join` 模块 **26 → 28**（`a_raw_byte_is_the_delimiter_the_replacement_and_the_three_echoes`
+六段钉判据/输出/三支回显/操数；`the_ring_names_the_first_byte_of_a_multibyte_letter` 四段钉字母位取法），`join_face`
+**30 → 32**（`a_raw_byte_delimiter_is_accepted_and_a_raw_byte_replacement_is_printed` 四段、
+`the_three_value_echoes_carry_the_argv_bytes` 三段），跨壳表门数 4 → 4 不变而表体十四行 → **十五行**，整包 69 段
+**1257 → 1261 passed / 0 failed**（基线是本轮开工时在该树当场复跑的 69 段 / 1257 / 0，快照 `a204bc6b6`）。
+既有 28 处 `parse_join_args(&[…])`、11 处 `parse_olist("…")`、7 处 `strtol_decimal("…")` 全改成字节形，期望串逐字未动。
+**夹具这一层学到新的一条**：`JoinArgs` 借的是词表里那些字节，所以 `let a = parse_join_args(&argv(&[…]))` 这种写法
+会被编译器当场拒——临时 `Vec` 撑不过一条语句；凡结果要留着断言的 11 形都拆成 `let w_x = argv(&[…]);` +
+`let x = parse_join_args(&w_x);` 两行，只在一条语句里用完的形才可以内联。测试模块里的 `fn argv` 助手因此必须
+交回 `Vec<&'static [u8]>` 而不是在调用点造临时量。
+
+**负控五枚各咬 3/1/1/3/2**（`tmp/join-463/negctl.py`，逐枚读数 `negctl-J1..J5.log`、汇总 `negctl-all.log`；
+基线三档全绿：库内 622、跨壳表 4、`join_face` 32，命令带 `--no-fail-fast`）。J1（壳侧 argv 退回文本缝）咬面门两枚 +
+跨壳表，**库内 622 全绿** ⇒「库门对 argv 缝没有牙」这条通则第五次量化（`column`、`comm`、`cut`、`head`、本轮）。
+J2（三支回显折一次）只红报文那一枚，J5（`-e` 的值折一次）只红输出那一枚——**「值进报文」与「值进输出」两条腿在
+同一支命令里第一次被分开证伪**，这是前三支做不到的（它们的值只走一条腿）。J3（`-t` 的长度判据退回按字符数）咬的正是
+`-t<é>`（两个字节、合法 UTF-8）那枚**控制形**：三侧同拒，钉住「缝改成字节不等于什么都放宽」。J4（字母位取法退回按
+字符取整簇）第一遍只咬 2 枚（跨壳表 + 面侧既有 `the_unknown_letter_of_a_multibyte_flag_is_written_as_one_byte`）而
+**库内全绿**——`join` 的字母腿在库里从来没钉住过（库里所有夹具的字母都是 ASCII），于是补出
+`the_ring_names_the_first_byte_of_a_multibyte_letter` 并**重跑 J4 变 3 枚**；这是批次四百六十一给 `cut` 补门那条
+判据的第二次兑现：**一整段全绿时先怀疑覆盖面有洞，而不是宣布注入无效**。
+
+**A/B 给了两次教训，一次假全等、一次真差异**：第一遍三十六形报 `SAME=31 / DIFF=0`，看退码列才发现数据面那批形全是
+`1/1`——脚本里 `~N` 占位映射到 `/tmp/join-463-ab/1`，而落档用的键是 `t1`/`s1`，**两套编号不一致**让两侧都撞上
+「档打不开」这条同形出口：全等是真的，覆盖面是空的。判据一条：**差分全等之前先数退 0 的形有几枚**，成功形一枚都没
+成功的全等读数等于没测。占位对齐后立刻逮到 `join - 档` 这一形：参照件打 `a 1 1`，本壳交回空。拿改前的件（主树产物）
+同形复跑也是空 ⇒ **存量、非本轮引入**；根因是 `src/bin/join.rs:read_stdin` 自造一条直取 `minix_sys::read` 的缝，
+而那条缝在宿主没有双生面（同族 `cksum`/`cmp`/`col`/`column`/`comm`/`cut`/`fold`/`head` 八支都走
+`bin_support.rs:read_stdin`）。登记 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE` **登记不执行**：本轮射程是参数缝，
+一次只修一条，而这一修的收口形（stdin 真带内容流过来）属读缝那条腿。顺带一条覆盖账：`join_face` 三十二枚里没有一枚
+让 stdin 带过内容（只有 `two_stdin_operands_are_refused_before_anything_is_read` 碰过那支错误出口），所以它在门账上
+是 P0-test-missing 而不是 P0-code-bug 的副产品。最终读数：**非预期三十形 SAME=30 / DIFF=0**（`tmp/join-463/ab.log`；
+已知分叉另计两形——在册开档腿的名字位折叠、以及上面那条 stdin 缺口），程序名 token 两侧全部归一。参照件归属探针照例
+先打 `-Z`：`tmp/join-407/join_ref` 交回 `join_ref: unknown option -- Z`（Minix 血脉），同批 `tmp/family-diag-ref/join_ref`
+交回 glibc 那句带引号的 `invalid option -- 'Z'`，不能用——第三次兑现同一条判据。
+
+**取数三条自错，全是「读数看着绿、其实没测」那一类**：① `cargo fmt --offline -p … -- --check` 报
+`error: unexpected argument '--offline' found` 并退 2，而下游 `grep -c '^Diff in'` 交回 0——**门计数必须连 EXIT
+一起核**，`grep` 的 0 可以是「根本没跑」；改用逐文件 `rustfmt --edition 2024 --check` 并对 HEAD 同件各测一次，
+四件现量 0、HEAD 也 0（本轮无存量牵连）。② clippy 的位置集合因两次 `sed` 归一化写法不同（`s/-->> *//` 与
+`s/^--+> +//`）得出「80 条全在本树独有」的假差异 ⇒ **位置对账的归一化命令要固定成一条**，否则量到的是脚本不是
+代码；改成同一条后主树 149 / 本树 149、位置 80 vs 80、双向差集为空、本轮四件零命中。③ rustfmt 一次读数给出
+4/1/3、复跑给出 0，复跑时同时核 `md5` 与 `tmp/join-463/post/` 快照一致 ⇒ **同一份文件上的计数复现不了，先取指纹
+再定案**。
+
+**一起自造事故：表格行被换行拆成 42 个物理行**。给板 A2 那一行追加大段时，脚本里那段 python 字符串**带着换行**，
+于是 markdown 的一行表格被写成 42 行，未转义竖线从 7 变成 6（表格少了一个列边界，渲染会塌）。修法是把这些物理行
+按原顺序并回一行并做三重核验：**未转义竖线数回到 7**、转义数 16 → 18（本笔新增的两枚 `\|` 在预期内）、以及把
+HEAD 那行做同样两处状态列改写后与新行**逐字符对到前缀末尾**（67313 字符全等，证明并回来的过程中没有改动别人的
+内容）。判据：**表格行是物理单行，往里追加长段之前先确认写入路径不会带换行；改完必核「未转义竖线 = 列数 + 1」，
+再用前缀对账证明存量段未受牵连**。
+
+**五道收尾门逐条读数**（`2026-10-29`，码笔 `907bfad76`、文档笔 `ff3ce588d`）：① `bash tools/todo-reconcile-scan.sh`
+→ 13 项判据里 **1 项 DRIFT**（`探针命名族（行）` 现量 32 vs 台账基线 18）。本轮四件在该项取数域里**零命中**
+（`grep -rnE "nk4[ac]:" os --include=*.rs` 的 32 处全在 `os/kernel`、`os/arch`、`os/libs`、`os/servers`、`os/fs`），
+31 → 32 那一枚来自合进来的 C3 收官笔（`os/kernel/src/uart_irq.rs` 在本笔基线是 1 处、在上一笔的树上是 0 处，
+当场 `git show` 两边各数过）⇒ 非本轮引入，归一线在制，本笔不改脚本基线也不代改台账；② `python3 tools/notes-link-check.py rewrite-notes/`
+→ 764 个 md、**断链 131**（与上一笔同数），本轮新增行落在 `todo.md:122..`、`07-text-filter.md:6/219`、板 `:27`，
+逐行核对该清单在这三处零命中 ⇒ 新增断链键 0；③ `bash tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md` →
+**PASS（0 项）**；④ `bash tools/doc-style-lint.sh --diff HEAD~2..HEAD` → 3 个文件 / 107 个新增行、**error 级 0**
+（一次过；写板行与 07 篇时把「时间顺序那一类说法」一律写成机制叙述，上一笔那两枚自撞触发词的教训在前）；
+⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条（`TODO-3ARCH-PARITY-20261006.md`）未触碰。
+
+**门读数补全**：宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1261 / 0**
+（补 J4 那枚库门之前一次 1260，两遍都落日志 `tmp/join-463/pkg-1.log`、`pkg-2.log`；负控还原后复跑同读数）；
+容器权威门按 §7.3 三挂载配方（`-u $(id -u):$(id -g)` + `ci-cargo`/`ci-target`，跑时未与其他 cargo 并发）→ 退 0、
+**69 段 / 1261 / 0**，与宿主同读数（`tmp/join-463/container-gate.log`）；三架构 `cargo check --offline -j 1
+--target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} -p minix-textfilter --bins`
+各退 0、错误 0；A/B 用的 `os/target/debug/join` 是显式 `cargo build -p minix-textfilter --bins` 之后 `file` 过的
+合法 ELF（批次四百五十九那条判据第五次照办）。
+
+**进度与在册（全部现量）**：参数缝半已落 **十八支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`、`fold`、
+`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`）；
+`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **21**；命令面口径 → **90**；
+渲染半那条 grep 仍 **0** 行；`line_bytes` **40 处 / 29 件**（本支未新增调用点，用的是批次四百零七起就存在的那一处）。
+余下 21 支里带字母位诊断面的有 **9** 支（`jot`、`nl`、`pr`、`sort`、`split`、`tail`、`unexpand`、`unifdef`、`vis`），
+**切片 46 建议 `jot`**：字母序第一支，`jot.c` 的 `-w`/`-s` 两个值都直接进输出行（形状近 `seq` 那条「值即内容」的腿），
+参照件用前照例先打一枚 `-Z`。**另建议插一小轮收 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`**——改动面是把
+`src/bin/join.rs:read_stdin` 换成 `support::read_stdin()`、补一枚「stdin 带内容的连接」端到端门、再跑一次 A/B
+把那形从已知分叉挪进全等，一条腿、一枚门、一次差分，正好一轮的量。独立轮在册不碰：`ARGV-BYTE-PATH-IN-LIBS`、
+`CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-DASH-REWRITE-AT-FIRST-CHAR`、`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、
+`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、五枚 `*-NON-PERMUTE-OPERAND-TAIL`、`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、
+`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`COL-CLIPPY-STOCK-LINT`、`BIN_SUPPORT-FMT-DRIFT-STOCK`、`REV-MULTIBYTE-ERROR-LEG`、
+`NL-DELIM-LENGTH-RULE`、`HEAD-NEGATIVE-COUNT-UNSIGNED-GUARD`、`HEAD-COUNT-LEADING-BLANK-ACCEPTED`，**本轮新立**
+`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`；`todo-reconcile-scan` 的 `探针命名族` 漂移归一线。**取证回抄照办**：
+release 前把 `tmp/join-463` 整目录复制回主树 `tmp/`。
