@@ -153,10 +153,11 @@ impl BootShim for UefiBootShim {
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
         uefi::println!("boot-shim: root+bump allocated");
-        // D-64② 顺序修正（NK4-A 首亮实证）扩展版：快照必须在**全部**
-        // LOADER_DATA 分配之后——root 页、bump 区之外，还有 kernel 段与
-        // 12 个 boot module 的 allocate_pages（NK4-A 首亮第二层教训：原
-        // 修正只覆盖前两次分配，module 占页在快照里仍被列为
+        // D-64② 顺序修正（NK4-A 首亮实证；D-64 的登记与三件窄项见
+        // rewrite-notes/01-stage-kernel/todo.md 的 D-64 段）：快照必须在
+        // **全部** LOADER_DATA 分配之后——root 页、bump 区之外，还有
+        // kernel 段与 12 个 boot module 的 allocate_pages（NK4-A 首亮第二
+        // 层教训：原修正只覆盖前两次分配，module 占页在快照里仍被列为
         // conventional，内核 VM bootstrap 侧要再拿 13 个 exclusion 去切
         // 这些洞，切出的碎片直接超过 VmBootRegions 容量）。UEFI 从
         // conventional 空闲内存里满足分配、并把所分页在活图中改标
@@ -235,14 +236,13 @@ impl BootShim for UefiBootShim {
                 );
             }
         }
-        // F8 更正（NK4-C 阶段1 真机 d1a 证伪）：kernel 段与 boot 模块段
+        // 真机取证更正（曾按错误假设加过逐段断言）：kernel 段与 boot 模块段
         // **不在**本断言范围——本装载模型是「shim 直写 conventional RAM
         // （不经 UEFI 分配），内核 A2 分类按 boot 占用逐段扣除」
-        // （vm_handoff `deducted` 计数）。曾按「UEFI 改标排除」假设加过
-        // 逐段断言，真机一发即误炸（conventional [0x100000,0x800000) 含
-        // kernel [0x200000,0x400000) 属预期形状）。root/bump 两笔是真正
-        // 的 UEFI LOADER_DATA 分配，D-64② 快照顺序保证其被排除，断言
-        // 保持。
+        // （vm_handoff `deducted` 计数）。真机一发即误炸（conventional
+        // [0x100000,0x800000) 含 kernel [0x200000,0x400000) 属预期形状）。
+        // root/bump 两笔是真正的 UEFI LOADER_DATA 分配，D-64② 快照顺序
+        // 保证其被排除，断言保持。
 
         uefi::println!("boot-shim: building KernelInfo…");
 

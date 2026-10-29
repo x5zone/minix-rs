@@ -274,7 +274,9 @@ pub(crate) static KERNEL_MAY_ALLOC: AtomicBool = AtomicBool::new(false);
 ///
 /// SAFETY: Only written during boot (single-threaded, before BKL needed).
 /// After boot, this is read-only. BKL protects any post-boot access.
-#[allow(dead_code)] // SMP memmap infra (checklist D-17); not yet wired to all call sites
+// The mock form has no consumer: every reader (kmain Phase A.2, the module
+// reclaim path and the qemu_test boot variant) is gated `not(feature = "mock")`.
+#[allow(dead_code)]
 pub(crate) static FREE_MEMMAP: SyncUnsafeCell<[crate::memmap::MemMapEntry; crate::memmap::MAXMEMMAP]> =
     SyncUnsafeCell::new([crate::memmap::MEM_MAP_ENTRY_ZERO; crate::memmap::MAXMEMMAP]);
 
