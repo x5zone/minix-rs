@@ -18,7 +18,6 @@
 //! pagination face.
 
 use crate::GetoptReport;
-use alloc::string::String;
 use alloc::{vec, vec::Vec};
 
 /// Page and header/trailer constants (pr.h:49-61).
@@ -29,8 +28,10 @@ pub const TAILLEN: usize = 5;
 /// One `pr` run over a single-column stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrOptions {
-    /// `-h` header text.
-    pub header: String,
+    /// `-h` header text — the title that rides every page header line. C writes it
+    /// with `printf(HDFMT, buf+offst, fname, pagcnt)` (`pr.c:1511`), i.e. as `%s` of
+    /// the bytes the operand or the `-h` value carried, so the field is a byte string.
+    pub header: Vec<u8>,
     /// `-l` lines per page; must exceed header plus trailer.
     pub page_len: usize,
     /// `-t`: no header, no trailer, no padding.
@@ -74,8 +75,9 @@ pub struct PrOptions {
     /// `-n[ch]`: the byte after the number field (`NMCHAR`, a tab by default).
     pub number_char: u8,
     /// The time field rendered into the header line (the doing half
-    /// supplies the host clock's text; an empty prefix is fine).
-    pub time_prefix: String,
+    /// supplies the host clock's text; an empty prefix is fine). Same `%s` leg of
+    /// `HDFMT` as `header`, so it is bytes too.
+    pub time_prefix: Vec<u8>,
     /// `-e[ch][gap]`, and implied by multi-column or merge output
     /// (`pr.c:1840-1843`): the input byte that stands for a tab and the pitch it
     /// expands to. `None` is C's `ingap == 0`, which leaves the input bytes alone.
@@ -94,7 +96,7 @@ pub struct PrOptions {
 impl Default for PrOptions {
     fn default() -> Self {
         PrOptions {
-            header: String::new(),
+            header: Vec::new(),
             page_len: LINES,
             no_header: false,
             columns: 1,
@@ -106,7 +108,7 @@ impl Default for PrOptions {
             offset: 0,
             number_width: 0,
             number_char: b'\t',
-            time_prefix: String::new(),
+            time_prefix: Vec::new(),
             expand: None,
             contract: None,
             form_feed: false,
@@ -122,10 +124,15 @@ pub fn expand_tabs(data: &[u8], ch: u8, gap: usize) -> Vec<u8> {
     if gap == 0 {
         return data.to_vec();
     }
+    // C compares `int ch = getc(inf)` (so 0..=255 for a byte) against
+    // `int chk = (int)inchar` where `inchar` is a *signed* `char` (`pr.c:87`, `:1038`,
+    // `:1049`). A byte with the high bit set therefore promotes to a negative `chk` and
+    // matches no input byte at all: `-e<ff>` is a no-op in C, not an expansion of 0xFF.
+    let probe = i32::from(ch as i8);
     let mut out = Vec::with_capacity(data.len());
     let mut column = 0usize;
     for &byte in data {
-        if byte == ch {
+        if i32::from(byte) == probe {
             let blanks = gap - (column % gap);
             out.extend(core::iter::repeat_n(b' ', blanks));
             column += blanks;
@@ -163,6 +170,9 @@ pub fn contract_tabs(data: &[u8], ch: u8, gap: usize) -> Vec<u8> {
             input_column += 1;
             continue;
         }
+        // Unlike `expand_tabs`, this comparison is C's `*buf == ochar` (`pr.c:1165`):
+        // both sides are `char`, so a high-bit byte matches the same way here as there
+        // and a plain byte compare is faithful.
         if byte == ch {
             input_column += gap - (input_column % gap);
             continue;
@@ -194,12 +204,13 @@ pub fn contract_tabs(data: &[u8], ch: u8, gap: usize) -> Vec<u8> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrArgs<'a> {
     pub options: PrOptions,
-    /// `-h`: title override (None ⇒ the default date/header line).
-    pub title_override: Option<&'a str>,
+    /// `-h`: title override (None ⇒ the default date/header line). The bytes are
+    /// argv's own — `pr.c:1708` just keeps the pointer and `printf` writes it `%s`.
+    pub title_override: Option<&'a [u8]>,
     /// `-m`: merge operands side by side (one column per file).
     pub merge: bool,
     /// File operands in order; a `-` names standard input.
-    pub operands: Vec<&'a str>,
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// `pr` argument failure. Each arm maps to a distinct C error path (the caller
@@ -229,8 +240,9 @@ pub enum PrError {
     /// (`pr.c:1752-1756`).
     NumberWidth,
     /// leftover text an optional-value letter could not use: C names the letter
-    /// and echoes what is left (`pr.c:1726-1729`, `1757-1760`, `1785-1788`).
-    InvalidValue(char, String),
+    /// and echoes what is left (`pr.c:1726-1729`, `1757-1760`, `1785-1788`). The
+    /// echo is `eoptarg` written with `%s`, i.e. the argv bytes from the cursor on.
+    InvalidValue(char, Vec<u8>),
     /// `-a` given but `columns <= 1` (`pr.c:1823-1828`).
     AcrossNeedsColumns,
     /// `-m` combined with `-a`, which C refuses before looking at any file
@@ -274,14 +286,14 @@ fn default_char(letter: char) -> u8 {
 /// behind the same digit test that got us here, so it cannot be reached and is not
 /// reproduced.
 fn parse_char_gap(
-    rest: &str,
+    rest: &[u8],
     fallback_char: u8,
     fallback_gap: usize,
     letter: char,
 ) -> Result<(u8, usize), PrError> {
     let mut character = fallback_char;
     let mut cursor = 0usize;
-    if let Some(&first) = rest.as_bytes().first()
+    if let Some(&first) = rest.first()
         && !first.is_ascii_digit()
     {
         character = first;
@@ -291,8 +303,8 @@ fn parse_char_gap(
     if tail.is_empty() {
         return Ok((character, fallback_gap));
     }
-    if !tail.as_bytes()[0].is_ascii_digit() {
-        return Err(PrError::InvalidValue(letter, String::from(tail)));
+    if !tail[0].is_ascii_digit() {
+        return Err(PrError::InvalidValue(letter, tail.to_vec()));
     }
     let gap = c_atoi(tail);
     Ok((
@@ -304,8 +316,8 @@ fn parse_char_gap(
 /// C's `atoi` as `setup` uses it for every numeric option: skip leading space, take
 /// one sign, read digits until the first byte that is not one, and ignore the rest.
 /// Saturation stands in for C's undefined overflow.
-fn c_atoi(word: &str) -> i64 {
-    let bytes = word.as_bytes();
+fn c_atoi(word: &[u8]) -> i64 {
+    let bytes = word;
     let mut cursor = 0usize;
     while bytes.get(cursor).is_some_and(|b| b.is_ascii_whitespace()) {
         cursor += 1;
@@ -334,8 +346,8 @@ fn c_atoi(word: &str) -> i64 {
 /// The `pr.c:1733-1739` shape shared by `-l`, `-o` and `-w`: the value must begin
 /// with a digit — `+8` and `" 8"` are refused even though `atoi` would read them —
 /// and the number it starts must reach 1.
-fn c_counted(word: &str, error: PrError) -> Result<usize, PrError> {
-    if !word.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+fn c_counted(word: &[u8], error: PrError) -> Result<usize, PrError> {
+    if !word.first().is_some_and(u8::is_ascii_digit) {
         return Err(error);
     }
     let n = c_atoi(word);
@@ -345,10 +357,10 @@ fn c_counted(word: &str, error: PrError) -> Result<usize, PrError> {
     Ok(n as usize)
 }
 
-pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
+pub fn parse_pr_args<'a>(args: &'a [&'a [u8]]) -> Result<PrArgs<'a>, PrError> {
     let mut options = PrOptions::default();
-    let mut title_override: Option<&'a str> = None;
-    let mut operands: Vec<&'a str> = Vec::new();
+    let mut title_override: Option<&'a [u8]> = None;
+    let mut operands: Vec<&'a [u8]> = Vec::new();
     let (mut merge, mut across) = (false, false);
     let (mut wflag, mut sflag) = (false, false);
     // `eflag`/`iflag` record that the option was given at all, which is what tells
@@ -379,11 +391,12 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
     let mut index = 0usize;
     while index < args.len() {
         let arg = args[index];
-        if arg == "--" {
+        if arg == b"--" {
             operands.extend_from_slice(&args[index + 1..]);
             break;
         }
-        if let Some(rest) = arg.strip_prefix('+') {
+        if arg.first() == Some(&b'+') {
+            let rest = &arg[1..];
             // C checks only `atoi(eoptarg) < 1` here, so a word with no digits is
             // zero and is refused the same way `+0` is.
             if c_atoi(rest) < 1 {
@@ -393,14 +406,14 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
             index += 1;
             continue;
         }
-        let bytes = arg.as_bytes();
+        let bytes = arg;
         if bytes.len() < 2 || bytes[0] != b'-' {
             operands.push(arg);
             index += 1;
             continue;
         }
         // obsolete leading-digit vertical column count `-N` (`pr.c:1665-1668`).
-        if arg[1..].bytes().all(|b| b.is_ascii_digit()) {
+        if arg[1..].iter().all(u8::is_ascii_digit) {
             let n = c_atoi(&arg[1..]);
             if n < 1 {
                 return Err(PrError::ColumnCount);
@@ -443,13 +456,9 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
                     // `-s` takes an optional *glued* character; anything left after
                     // it is C's "invalid value for -s" (`pr.c:1779-1789`).
                     let rest = &arg[pos + 1..];
-                    options.sep = Some(if rest.is_empty() {
-                        b'\t'
-                    } else {
-                        rest.as_bytes()[0]
-                    });
+                    options.sep = Some(if rest.is_empty() { b'\t' } else { rest[0] });
                     if rest.len() > 1 {
-                        return Err(PrError::InvalidValue('s', String::from(&rest[1..])));
+                        return Err(PrError::InvalidValue('s', rest[1..].to_vec()));
                     }
                     sflag = true;
                     break;
@@ -463,7 +472,7 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
                     let rest = &arg[pos + 1..];
                     let (mut width, mut nsep) = (5usize, b'\t');
                     if !rest.is_empty() {
-                        let rb = rest.as_bytes();
+                        let rb = rest;
                         let digits = if rb[0].is_ascii_digit() {
                             rest
                         } else {
@@ -472,8 +481,8 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
                         };
                         if digits.is_empty() {
                             // only a separator: the width stays at NMWD
-                        } else if !digits.as_bytes()[0].is_ascii_digit() {
-                            return Err(PrError::InvalidValue('n', String::from(digits)));
+                        } else if !digits[0].is_ascii_digit() {
+                            return Err(PrError::InvalidValue('n', digits.to_vec()));
                         } else {
                             let n = c_atoi(digits);
                             if n < 1 {
@@ -519,9 +528,9 @@ pub fn parse_pr_args<'a>(args: &'a [&'a str]) -> Result<PrArgs<'a>, PrError> {
                     return Err(PrError::Unmodelled);
                 }
                 _ => {
-                    return Err(PrError::Getopt(GetoptReport::IllegalOption(
-                        bytes[pos] as char,
-                    )));
+                    return Err(PrError::Getopt(GetoptReport::IllegalOption(char::from(
+                        bytes[pos],
+                    ))));
                 }
             }
             pos += 1;
@@ -596,6 +605,23 @@ impl Page {
             .chain(self.body_lines.iter())
             .chain(self.trailer_lines.iter())
     }
+}
+
+/// The header's text line, assembled the way C's `prhead` writes it:
+/// `printf(HDFMT, buf+offst, fname, pagcnt)` with `HDFMT` = `"%s %s Page %d\n\n\n"`
+/// (`pr.h:59`, `pr.c:1511`). Both `%s` fields — the time field and the title — are
+/// byte strings that `printf` copies verbatim, so the line is a concatenation rather
+/// than character formatting. The caller's `time_prefix` carries the space that
+/// separates it from the title, exactly as C's `buf` does.
+fn header_line(options: &PrOptions, page_number: usize) -> Vec<u8> {
+    let digits = alloc::format!("{page_number}").into_bytes();
+    let mut line =
+        Vec::with_capacity(options.time_prefix.len() + options.header.len() + digits.len() + 6);
+    line.extend_from_slice(&options.time_prefix);
+    line.extend_from_slice(&options.header);
+    line.extend_from_slice(b" Page ");
+    line.extend_from_slice(&digits);
+    line
 }
 
 /// Splits the input lines into 66-line style pages.
@@ -699,13 +725,7 @@ pub fn paginate(lines: &[Vec<u8>], options: &PrOptions) -> Vec<Page> {
                 vec![
                     Vec::new(),
                     Vec::new(),
-                    alloc::format!(
-                        "{}{} Page {}",
-                        options.time_prefix,
-                        options.header,
-                        page_number
-                    )
-                    .into_bytes(),
+                    header_line(options, page_number),
                     Vec::new(),
                     Vec::new(),
                 ],
@@ -802,13 +822,7 @@ fn paginate_columns(lines: &[Vec<u8>], options: &PrOptions) -> Vec<Page> {
                 vec![
                     Vec::new(),
                     Vec::new(),
-                    alloc::format!(
-                        "{}{} Page {}",
-                        options.time_prefix,
-                        options.header,
-                        page_number
-                    )
-                    .into_bytes(),
+                    header_line(options, page_number),
                     Vec::new(),
                     Vec::new(),
                 ],
@@ -850,14 +864,16 @@ fn paginate_columns(lines: &[Vec<u8>], options: &PrOptions) -> Vec<Page> {
 /// = "" for standard input). Per-file options inherit `base` (page length,
 /// `-t`, time prefix).
 pub fn paginate_files(
-    files: &[(&str, Vec<Vec<u8>>)],
+    files: &[(&[u8], Vec<Vec<u8>>)],
     base: &PrOptions,
-    title_override: Option<&str>,
+    title_override: Option<&[u8]>,
 ) -> Vec<Page> {
     let mut out: Vec<Page> = Vec::new();
     for (name, lines) in files {
         let mut opts = base.clone();
-        opts.header = String::from(title_override.unwrap_or(*name));
+        // C's `fname` is whatever `nxtfile` handed over — the operand's bytes, or
+        // `FNAME` ("") for standard input (`pr.h:63`) — and `prhead` prints it `%s`.
+        opts.header = title_override.unwrap_or(name).to_vec();
         out.extend(paginate(lines, &opts));
     }
     out
@@ -1145,7 +1161,7 @@ mod tests {
     #[test]
     fn test_header_line_carries_text_and_page_number() {
         let mut options = PrOptions::default();
-        options.header = "my file".to_string();
+        options.header = b"my file".to_vec();
         let pages = paginate_lines(&["one"], &options);
         assert_eq!(pages[0].header_lines[2], b"my file Page 1");
         // The body starts right after the five header lines.
@@ -1155,7 +1171,7 @@ mod tests {
     #[test]
     fn test_time_prefix_rides_the_header_line() {
         let mut options = PrOptions::default();
-        options.time_prefix = "2026-09-17 12:00:00 ".to_string();
+        options.time_prefix = b"2026-09-17 12:00:00 ".to_vec();
         let pages = paginate_lines(&["one"], &options);
         assert_eq!(pages[0].header_lines[2], b"2026-09-17 12:00:00  Page 1");
     }
@@ -1193,8 +1209,8 @@ mod tests {
     fn test_paginate_files_titles_each_file_independently() {
         let base = PrOptions::default();
         let files = [
-            ("a.txt", vec![b"x1".to_vec(), b"x2".to_vec()]),
-            ("b.txt", vec![b"y".to_vec()]),
+            (b"a.txt".as_slice(), vec![b"x1".to_vec(), b"x2".to_vec()]),
+            (b"b.txt".as_slice(), vec![b"y".to_vec()]),
         ];
         let pages = paginate_files(&files, &base, None);
         assert_eq!(pages.len(), 2);
@@ -1210,7 +1226,7 @@ mod tests {
         // second file restarts at Page 1 (pr.c:233 `pagecnt = 1`).
         let base = PrOptions::default();
         let many: Vec<Vec<u8>> = (1..=57).map(|n| n.to_string().into_bytes()).collect();
-        let files = [("f1", many), ("f2", vec![b"z".to_vec()])];
+        let files = [(&b"f1"[..], many), (&b"f2"[..], vec![b"z".to_vec()])];
         let pages = paginate_files(&files, &base, None);
         assert_eq!(pages[0].header_lines[2], b"f1 Page 1");
         assert_eq!(pages[1].header_lines[2], b"f1 Page 2");
@@ -1221,10 +1237,10 @@ mod tests {
     fn test_paginate_files_header_override_applies_to_all() {
         let base = PrOptions::default();
         let files = [
-            ("a.txt", vec![b"x".to_vec()]),
-            ("b.txt", vec![b"y".to_vec()]),
+            (b"a.txt".as_slice(), vec![b"x".to_vec()]),
+            (b"b.txt".as_slice(), vec![b"y".to_vec()]),
         ];
-        let pages = paginate_files(&files, &base, Some("TITLE"));
+        let pages = paginate_files(&files, &base, Some(b"TITLE".as_slice()));
         assert_eq!(pages[0].header_lines[2], b"TITLE Page 1");
         assert_eq!(pages[1].header_lines[2], b"TITLE Page 1");
     }
@@ -1254,8 +1270,8 @@ mod tests {
         assert!(paginate(&[], &two).is_empty());
         // …and a mixed run of files still prints the non-empty one.
         let files = [
-            ("empty.txt", Vec::new()),
-            ("two.txt", vec![b"a".to_vec(), b"b".to_vec()]),
+            (b"empty.txt".as_slice(), Vec::<Vec<u8>>::new()),
+            (b"two.txt".as_slice(), vec![b"a".to_vec(), b"b".to_vec()]),
         ];
         let pages = paginate_files(&files, &options, None);
         assert_eq!(pages.len(), 1);
@@ -1405,32 +1421,123 @@ mod tests {
         assert_eq!(contract_tabs(b"        x", b'\t', 0), b"        x".to_vec());
     }
 
+    /// 库里那一层的字节口径：`pr` 的选项环整个住在 `parse_pr_args`（与上一支 `nl` 相反），
+    /// 所以「值进输出」与「值进报文」这两条腿都必须在这里有牙，不能只靠端到端门。
+    /// 五个段：`-s` 的列分隔字节、`-n` 的行号后缀字节、`-h` 的标题字节、两句
+    /// `invalid value for -X %s` 的回显字节（`pr.c:1726-1729`、`:1757-1760`、`:1785-1788`），
+    /// 以及档名字节进页眉标题那一步（`prhead` 的 `fname`，`pr.h:59`、`pr.c:1511`）。
+    /// 裸字节在这里写成 `&b"\xff"[..]` 而不是字符串字面量——`&str` 字面量装不下一枚
+    /// 非 UTF-8 的字节，这正是要绕开的那条缝。
+    #[test]
+    fn the_option_bytes_and_the_operand_bytes_stay_bytes_through_the_library() {
+        let glued: Vec<&[u8]> = vec![b"-t", b"-2", b"-s\xff", b"-w", b"20"];
+        let sep = parse_pr_args(&glued).expect("-s<ff>");
+        assert_eq!(sep.options.sep, Some(0xff), "列分隔符必须是那一枚字节");
+
+        let glued: Vec<&[u8]> = vec![b"-t", b"-n\xff2"];
+        let num = parse_pr_args(&glued).expect("-n<ff>2");
+        assert_eq!(num.options.number_char, 0xff);
+        assert_eq!(num.options.number_width, 2);
+
+        let glued: Vec<&[u8]> = vec![b"-l20", b"-h\xff\xfe"];
+        let title = parse_pr_args(&glued).expect("-h<ff><fe>");
+        assert_eq!(title.title_override, Some(&[0xffu8, 0xfe][..]));
+
+        // 回显位：C 那一句带的是 `eoptarg` 从游标起的**原字节**。
+        for (token, letter) in [(&b"-ex\xff"[..], 'e'), (&b"-sx\xff"[..], 's')] {
+            let words: Vec<&[u8]> = vec![token];
+            assert_eq!(
+                parse_pr_args(&words).err(),
+                Some(PrError::InvalidValue(letter, vec![0xff])),
+                "{letter} 那一句的回显位该是原字节"
+            );
+        }
+        // 合法两字节序列只取首字节当值，剩下的那一枚进回显（`-s\xc3\xa9` ⇒ 分隔符 c3、回显 a9）。
+        let words: Vec<&[u8]> = vec![&b"-s\xc3\xa9"[..]];
+        assert_eq!(
+            parse_pr_args(&words).err(),
+            Some(PrError::InvalidValue('s', vec![0xa9]))
+        );
+
+        // 档名字节进页眉标题：`fname` 由 `prhead` 用 `%s` 打出去，不经任何字符解码。
+        let base = PrOptions::default();
+        let files: Vec<(&[u8], Vec<Vec<u8>>)> = vec![(&b"raw\xffname"[..], vec![b"a".to_vec()])];
+        let pages = paginate_files(&files, &base, None);
+        assert_eq!(pages[0].header_lines[2], b"raw\xffname Page 1".to_vec());
+    }
+
+    /// 夹具的 argv 取法：字面量仍写成 `&[&str]`，交回的是每枚词各自的**原字节切片**
+    /// （借自字面量，与薄壳 `args_bytes()` 交回的形状同层）。`PrArgs<'a>` 借的是这个
+    /// `Vec`，所以凡是结果要留着断言的调用都得先把它绑成一个变量
+    /// （`let w_x = argv(&[…]);` 再接 `parse_pr_args(&w_x)`），就地消费的形状才可以内联。
+    fn argv<'a>(words: &[&'a str]) -> Vec<&'a [u8]> {
+        words.iter().map(|word| word.as_bytes()).collect()
+    }
+
+    /// `-e` 与 `-i` 的字符位在 C 那里**符号性不同**，这一枚门钉的就是这个不对称：
+    /// `inln` 比的是 `int ch = getc(inf)`（字节的 0..=255）与 `int chk = (int)inchar`，
+    /// 而 `inchar` 是带符号的 `char`（`pr.c:87`、`:1038`、`:1049`），所以高位字节被提升成
+    /// 负数，**永远配不上任何输入字节**；`otln` 比的是 `*buf == ochar`，两边都是 `char`
+    /// （`:1165`），于是同一枚高位字节在输出侧照样命中。参数缝把这两支的值都换成原字节之后，
+    /// 这一对判据才第一次可观察——参照件 `tmp/pr-419/pr_ref` 现量：输入 `x\xffy` 配
+    /// `-e<ff>4` 交回 `78 ff 79`（不展开），配 `-i<ff>4` 的 `a\xff<四空格>b` 交回
+    /// `61 ff ff 62`（收缩成两枚 `ff`）。
+    #[test]
+    fn an_expansion_char_with_the_high_bit_set_matches_nothing_while_the_contraction_one_does() {
+        // -e 侧：字符带高位 ⇒ 没有一枚输入字节配得上，整条展开腿成为空操作。
+        assert_eq!(expand_tabs(b"x\xffy", 0xff, 4), b"x\xffy".to_vec());
+        assert_eq!(expand_tabs(b"\xff\xff", 0xff, 8), b"\xff\xff".to_vec());
+        // 缺省那枚制表符（0x09，不带高位）不受影响——这一形同时是「没放宽」的控制形。
+        assert_eq!(expand_tabs(b"x\ty", b'\t', 4), b"x   y".to_vec());
+        // 高位字节作**输入内容**时它本来就不该被展开：只有字符位带高位才是空操作，
+        // 字符位是制表符而内容里有 `ff` 的那些字节原样通过。
+        assert_eq!(expand_tabs(b"\xff\tz", b'\t', 4), b"\xff   z".to_vec());
+        // -i 侧：同一枚高位字节命中（C 的两边都是 `char`），模拟 + 收缩都照走。
+        assert_eq!(
+            contract_tabs(b"a\xff    b", 0xff, 4),
+            b"a\xff\xffb".to_vec()
+        );
+        // 零间距那一支仍然整段透传（C 的 `if (ogap)` 判据）。
+        assert_eq!(
+            contract_tabs(b"a\xff    b", 0xff, 0),
+            b"a\xff    b".to_vec()
+        );
+    }
+
     #[test]
     fn e_and_i_values_take_the_c_char_then_gap_shape() {
         // `-e[ch][gap]`: a non-digit first byte is the character, a digit run after it
         // is the gap through `atoi`, and a leftover non-digit is the named invalid
         // value (`pr.c:1674-1692`).
-        let plain = parse_pr_args(&["-e"]).expect("-e");
+        let w_plain = argv(&["-e"]);
+        let plain = parse_pr_args(&w_plain).expect("-e");
         assert_eq!(plain.options.expand, Some((b'\t', 8)));
-        let gap_only = parse_pr_args(&["-e4"]).expect("-e4");
+        let w_gap_only = argv(&["-e4"]);
+        let gap_only = parse_pr_args(&w_gap_only).expect("-e4");
         assert_eq!(gap_only.options.expand, Some((b'\t', 4)));
-        let both = parse_pr_args(&["-e:9"]).expect("-e:9");
+        let w_both = argv(&["-e:9"]);
+        let both = parse_pr_args(&w_both).expect("-e:9");
         assert_eq!(both.options.expand, Some((b':', 9)));
         // A literal zero gap means the default pitch, not "off" (`if (ingap == 0)
         // ingap = INGAP`).
-        let zero = parse_pr_args(&["-e0"]).expect("-e0");
+        let w_zero = argv(&["-e0"]);
+        let zero = parse_pr_args(&w_zero).expect("-e0");
         assert_eq!(zero.options.expand, Some((b'\t', 8)));
         // Trailing garbage after the digits is never reached by C's `atoi`, so `-e5x`
         // is simply gap 5.
         assert_eq!(
-            parse_pr_args(&["-e5x"]).expect("-e5x").options.expand,
+            parse_pr_args(&argv(&["-e5x"]))
+                .expect("-e5x")
+                .options
+                .expand,
             Some((b'\t', 5))
         );
         assert_eq!(
-            parse_pr_args(&["-e:xy"]).err(),
-            Some(PrError::InvalidValue('e', "xy".to_string()))
+            parse_pr_args(&argv(&["-e:xy"])).err(),
+            Some(PrError::InvalidValue('e', b"xy".to_vec()))
         );
-        let contract = parse_pr_args(&["-i3"]).expect("-i3");
+        let w_contract = argv(&["-i3"]);
+        let contract = parse_pr_args(&w_contract).expect("-i3");
         assert_eq!(contract.options.contract, Some((b'\t', 3)));
     }
 
@@ -1439,17 +1546,21 @@ mod tests {
         // `pr.c:1840-1848`: multi-column or merged output switches expansion and
         // contraction on with the C's defaults, while plain single-column output
         // switches neither on.
-        let single = parse_pr_args(&["-t"]).expect("single");
+        let w_single = argv(&["-t"]);
+        let single = parse_pr_args(&w_single).expect("single");
         assert_eq!(single.options.expand, None);
         assert_eq!(single.options.contract, None);
-        let columns = parse_pr_args(&["-t", "-2"]).expect("columns");
+        let w_columns = argv(&["-t", "-2"]);
+        let columns = parse_pr_args(&w_columns).expect("columns");
         assert_eq!(columns.options.expand, Some((b'\t', 8)));
         assert_eq!(columns.options.contract, Some((b'\t', 8)));
-        let merged = parse_pr_args(&["-t", "-m"]).expect("merge");
+        let w_merged = argv(&["-t", "-m"]);
+        let merged = parse_pr_args(&w_merged).expect("merge");
         assert_eq!(merged.options.expand, Some((b'\t', 8)));
         // An explicit `-e` is not overwritten by the implied default, and `-i` keeps
         // its own gap while `-e` supplies the other.
-        let explicit = parse_pr_args(&["-2", "-e4"]).expect("explicit");
+        let w_explicit = argv(&["-2", "-e4"]);
+        let explicit = parse_pr_args(&w_explicit).expect("explicit");
         assert_eq!(explicit.options.expand, Some((b'\t', 4)));
         assert_eq!(explicit.options.contract, Some((b'\t', 8)));
     }
@@ -1460,7 +1571,8 @@ mod tests {
         // flag (`pr.c:1693-1700`). `prtail` then writes one form feed and returns
         // (`pr.c:1555-1561`), so neither the blank padding rows nor the five trailer
         // lines appear — while the header block is untouched.
-        let options = parse_pr_args(&["-F", "-l", "20", "-h", "T"]).expect("-F");
+        let w_options = argv(&["-F", "-l", "20", "-h", "T"]);
+        let options = parse_pr_args(&w_options).expect("-F");
         let pages = paginate(&[b"a".to_vec(), b"b".to_vec()], &options.options);
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].header_lines.len(), HEADLEN);
@@ -1471,7 +1583,9 @@ mod tests {
         );
         assert!(pages[0].form_feed);
 
-        let same = parse_pr_args(&["-f", "-l", "20", "-h", "T"]).expect("-f");
+        let w_same = argv(&["-f", "-l", "20", "-h", "T"]);
+
+        let same = parse_pr_args(&w_same).expect("-f");
         assert!(same.options.form_feed, "-f falls through to -F");
         assert_eq!(
             paginate(&[b"a".to_vec(), b"b".to_vec()], &same.options),
@@ -1480,7 +1594,8 @@ mod tests {
 
         // Without either flag the trailer block is the five blank lines and the short
         // page is padded up to the body height, as before.
-        let plain = parse_pr_args(&["-l", "20", "-h", "T"]).expect("plain");
+        let w_plain = argv(&["-l", "20", "-h", "T"]);
+        let plain = parse_pr_args(&w_plain).expect("plain");
         let plain_pages = paginate(&[b"a".to_vec()], &plain.options);
         assert_eq!(plain_pages[0].trailer_lines.len(), TAILLEN);
         assert_eq!(plain_pages[0].body_lines.len(), 20 - HEADLEN - TAILLEN);
@@ -1496,7 +1611,8 @@ mod tests {
 
         // Two columns over three lines make two rows; the headers keep this leg on the
         // padding branch, which is the whole point of the contrast below.
-        let columnar = parse_pr_args(&["-F", "-l", "20", "-2", "-w", "20"]).expect("-F -2");
+        let w_columnar = argv(&["-F", "-l", "20", "-2", "-w", "20"]);
+        let columnar = parse_pr_args(&w_columnar).expect("-F -2");
         let pages = paginate(&lines, &columnar.options);
         assert_eq!(pages.len(), 1);
         assert_eq!(
@@ -1507,7 +1623,9 @@ mod tests {
         assert!(pages[0].trailer_lines.is_empty());
         assert!(pages[0].form_feed);
 
-        let same_shape = parse_pr_args(&["-l", "20", "-2", "-w", "20"]).expect("-2");
+        let w_same_shape = argv(&["-l", "20", "-2", "-w", "20"]);
+
+        let same_shape = parse_pr_args(&w_same_shape).expect("-2");
         let padded = paginate(&lines, &same_shape.options);
         assert_eq!(
             padded[0].body_lines.len(),
@@ -1520,7 +1638,8 @@ mod tests {
         // `-t` makes `prtail` return inside its `nohead` arm, before the form-feed arm,
         // so the byte disappears along with the padding and the trailer — in each of
         // the two column paths, which is why both are asserted separately.
-        let bare_single = parse_pr_args(&["-F", "-t", "-l", "20"]).expect("-F -t");
+        let w_bare_single = argv(&["-F", "-t", "-l", "20"]);
+        let bare_single = parse_pr_args(&w_bare_single).expect("-F -t");
         let pages = paginate(&[b"a".to_vec()], &bare_single.options);
         assert_eq!(
             pages[0].body_lines,
@@ -1529,7 +1648,9 @@ mod tests {
         );
         assert!(!pages[0].form_feed, "single-column nohead drops the byte");
 
-        let bare = parse_pr_args(&["-F", "-t", "-l", "20", "-2", "-w", "20"]).expect("-F -t -2");
+        let w_bare = argv(&["-F", "-t", "-l", "20", "-2", "-w", "20"]);
+
+        let bare = parse_pr_args(&w_bare).expect("-F -t -2");
         let pages = paginate(&lines, &bare.options);
         assert!(!pages[0].form_feed, "column nohead drops the byte");
         assert!(pages[0].header_lines.is_empty() && pages[0].trailer_lines.is_empty());
@@ -1636,7 +1757,7 @@ mod tests {
     #[test]
     fn test_render_page_offsets_body_and_header_text_not_blanks() {
         let mut options = PrOptions::default();
-        options.header = "f.txt".to_string();
+        options.header = b"f.txt".to_vec();
         // page_len 12 → body capacity 2, so ["a","b"] exactly fills the body
         // (no pad lines) and index 7 onward is the trailer.
         options.page_len = 12;
@@ -1900,47 +2021,55 @@ mod tests {
     #[test]
     fn parse_defaults_and_basic_options() {
         // 无参：默认 width 72、columns 1。
-        let d = parse_pr_args(&[]).unwrap();
+        let w_d = argv(&[]);
+        let d = parse_pr_args(&w_d).unwrap();
         assert_eq!(d.options.page_width, 72);
         assert_eq!(d.options.columns, 1);
         assert!(d.operands.is_empty());
         // 现有分离值形式（回归）。
-        let a = parse_pr_args(&["-t", "-h", "T", "-l", "66", "-w", "100", "f1"]).unwrap();
+        let w_a = argv(&["-t", "-h", "T", "-l", "66", "-w", "100", "f1"]);
+        let a = parse_pr_args(&w_a).unwrap();
         assert!(a.options.no_header);
-        assert_eq!(a.title_override, Some("T"));
+        assert_eq!(a.title_override, Some(b"T".as_slice()));
         assert_eq!(a.options.page_len, 66);
         assert_eq!(a.options.page_width, 100);
-        assert_eq!(a.operands, vec!["f1"]);
+        assert_eq!(a.operands, vec![b"f1".as_slice()]);
     }
 
     #[test]
     fn parse_glued_values_and_clusters_accepted() {
         // 关键回归：附值与聚簇（旧前门拒）。`-w100 -l66 -o4`。
-        let a = parse_pr_args(&["-w100", "-l66", "-o4"]).unwrap();
+        let w_a = argv(&["-w100", "-l66", "-o4"]);
+        let a = parse_pr_args(&w_a).unwrap();
         assert_eq!(a.options.page_width, 100);
         assert_eq!(a.options.page_len, 66);
         assert_eq!(a.options.offset, 4);
         // `-hT`：附值标题。
-        let b = parse_pr_args(&["-hTitle", "f1", "f2"]).unwrap();
-        assert_eq!(b.title_override, Some("Title"));
-        assert_eq!(b.operands, vec!["f1", "f2"]);
+        let w_b = argv(&["-hTitle", "f1", "f2"]);
+        let b = parse_pr_args(&w_b).unwrap();
+        assert_eq!(b.title_override, Some(b"Title".as_slice()));
+        assert_eq!(b.operands, vec![b"f1".as_slice(), b"f2".as_slice()]);
         // 聚簇：`-dm`（双行距+合并）、`-tw100`（无页眉后 w 取附值）。
-        let c = parse_pr_args(&["-dm", "f"]).unwrap();
+        let w_c = argv(&["-dm", "f"]);
+        let c = parse_pr_args(&w_c).unwrap();
         assert!(c.options.double_space && c.merge);
-        let e = parse_pr_args(&["-tw100", "f"]).unwrap();
+        let w_e = argv(&["-tw100", "f"]);
+        let e = parse_pr_args(&w_e).unwrap();
         assert!(e.options.no_header);
         assert_eq!(e.options.page_width, 100);
         // `+N` 起始页、`-N` 竖列、`-n5`、`-sX`。
-        let f = parse_pr_args(&["+3", "-n5", "-sX", "f"]).unwrap();
+        let w_f = argv(&["+3", "-n5", "-sX", "f"]);
+        let f = parse_pr_args(&w_f).unwrap();
         assert_eq!(f.options.start_page, 3);
         assert_eq!(f.options.number_width, 5);
         assert_eq!(f.options.sep, Some(b'X'));
-        let g = parse_pr_args(&["-w", "200", "-2"]).unwrap();
+        let w_g = argv(&["-w", "200", "-2"]);
+        let g = parse_pr_args(&w_g).unwrap();
         assert_eq!(g.options.columns, 2);
     }
 
     /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
-    /// `char` 域里是 U+00C3。本支的字母来自 `:522` 的 `bytes[pos] as char`，机制层证据在
+    /// `char` 域里是 U+00C3。本支的字母来自 `parse_pr_args` 里的 `char::from(bytes[pos])`，机制层证据在
     /// `minix3/usr.bin/pr/egetopt.c:110`（`eoptopt = (int)*place++` 一次进一个字节）与
     /// `:148`（`%c` 原样写出），参照件 `tmp/pr-419/pr_ref` 现量 `-é` 与 `-dé` 都打单个
     /// `303`（`d` 在 `"#adFfmrte?h:i?l:n?o:ps?T:w:"` 里不带值，聚簇继续吃到 `é` 的第一字节）。
@@ -1948,25 +2077,25 @@ mod tests {
     #[test]
     fn the_illegal_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
-            parse_pr_args(&["-\u{e9}"]).err(),
+            parse_pr_args(&argv(&["-\u{e9}"])).err(),
             Some(PrError::Getopt(GetoptReport::IllegalOption('\u{00c3}'))),
             "`é` 是 c3 a9 两字节，egetopt 报 c3 而不是整个字符"
         );
         // `d` 合法且不带值 ⇒ 聚簇继续吃到第一字节（参照件同读数）。
         assert_eq!(
-            parse_pr_args(&["-d\u{e9}"]).err(),
+            parse_pr_args(&argv(&["-d\u{e9}"])).err(),
             Some(PrError::Getopt(GetoptReport::IllegalOption('\u{00c3}'))),
             "-d\u{e9}"
         );
         // 环停在第一个坏字母上。
         assert_eq!(
-            parse_pr_args(&["-Z\u{e9}"]).err(),
+            parse_pr_args(&argv(&["-Z\u{e9}"])).err(),
             Some(PrError::Getopt(GetoptReport::IllegalOption('Z'))),
             "-Z\u{e9}"
         );
         // 反面：带值字母把其后的字节整个当值收走（`w` 的值首位不是数字 ⇒ 自己那句）。
         assert_eq!(
-            parse_pr_args(&["-w\u{e9}"]).err(),
+            parse_pr_args(&argv(&["-w\u{e9}"])).err(),
             Some(PrError::WidthValue),
             "-w\u{e9} 走的是 `-w width must be 1 or more ' 那一句"
         );
@@ -1978,41 +2107,59 @@ mod tests {
         // 的组合拒绝。
         // `-e`/`-i` are modelled now, so an unimplemented letter has to come from the
         // rest of C's optstring; `-x` is not in it at all and answers usage.
-        assert_eq!(parse_pr_args(&["-p"]).err(), Some(PrError::Unmodelled));
+        assert_eq!(
+            parse_pr_args(&argv(&["-p"])).err(),
+            Some(PrError::Unmodelled)
+        );
         // 集外字母与缺值各带一个 `egetopt` 报文（注意集外字母那一句的措辞与
         // libc `getopt` 同族其它命令不同形：这里是 `illegal option`）。
         assert_eq!(
-            parse_pr_args(&["-w"]).err(),
+            parse_pr_args(&argv(&["-w"])).err(),
             Some(PrError::Getopt(GetoptReport::MissingValue('w')))
         ); // 缺值 ⇒ egetopt 那一句（egetopt.c:196-205）
         assert_eq!(
-            parse_pr_args(&["-x"]).err(),
+            parse_pr_args(&argv(&["-x"])).err(),
             Some(PrError::Getopt(GetoptReport::IllegalOption('x')))
         ); // 集外字母 ⇒ egetopt.c:144-151
-        assert_eq!(parse_pr_args(&["-w0"]).err(), Some(PrError::WidthValue)); // atoi < 1
-        assert_eq!(parse_pr_args(&["-w", "x"]).err(), Some(PrError::WidthValue)); // 首位非数字
-        assert_eq!(parse_pr_args(&["-o0"]).err(), Some(PrError::OffsetValue));
-        assert_eq!(parse_pr_args(&["+0"]).err(), Some(PrError::PlusPage));
-        assert_eq!(parse_pr_args(&["-0"]).err(), Some(PrError::ColumnCount));
-        assert_eq!(parse_pr_args(&["-n0"]).err(), Some(PrError::NumberWidth));
         assert_eq!(
-            parse_pr_args(&["-sab"]).err(),
-            Some(PrError::InvalidValue('s', "b".to_string()))
+            parse_pr_args(&argv(&["-w0"])).err(),
+            Some(PrError::WidthValue)
+        ); // atoi < 1
+        assert_eq!(
+            parse_pr_args(&argv(&["-w", "x"])).err(),
+            Some(PrError::WidthValue)
+        ); // 首位非数字
+        assert_eq!(
+            parse_pr_args(&argv(&["-o0"])).err(),
+            Some(PrError::OffsetValue)
+        );
+        assert_eq!(parse_pr_args(&argv(&["+0"])).err(), Some(PrError::PlusPage));
+        assert_eq!(
+            parse_pr_args(&argv(&["-0"])).err(),
+            Some(PrError::ColumnCount)
         );
         assert_eq!(
-            parse_pr_args(&["-nxy"]).err(),
-            Some(PrError::InvalidValue('n', "y".to_string()))
+            parse_pr_args(&argv(&["-n0"])).err(),
+            Some(PrError::NumberWidth)
         );
         assert_eq!(
-            parse_pr_args(&["-a"]).err(),
+            parse_pr_args(&argv(&["-sab"])).err(),
+            Some(PrError::InvalidValue('s', b"b".to_vec()))
+        );
+        assert_eq!(
+            parse_pr_args(&argv(&["-nxy"])).err(),
+            Some(PrError::InvalidValue('n', b"y".to_vec()))
+        );
+        assert_eq!(
+            parse_pr_args(&argv(&["-a"])).err(),
             Some(PrError::AcrossNeedsColumns)
         );
         assert_eq!(
-            parse_pr_args(&["-m", "-a", "-2"]).err(),
+            parse_pr_args(&argv(&["-m", "-a", "-2"])).err(),
             Some(PrError::MergeAcross)
         );
         assert_eq!(
-            parse_pr_args(&["-100"]).err(),
+            parse_pr_args(&argv(&["-100"])).err(),
             Some(PrError::ColumnTooSmall(100))
         );
     }
@@ -2022,25 +2169,49 @@ mod tests {
         // `pr.c:1875-1876` only raises `nohead` when the page cannot carry both a
         // five-line header and a five-line trailer, and `-l`'s lower bound is 1 —
         // so `-l5` is a usable page of five body lines, not an error.
-        let args = parse_pr_args(&["-l5"]).expect("-l 5 is legal in C");
+        let w_args = argv(&["-l5"]);
+        let args = parse_pr_args(&w_args).expect("-l 5 is legal in C");
         assert_eq!(args.options.page_len, 5);
         assert!(
             args.options.no_header,
             "too short for a header ⇒ header off"
         );
-        assert!(!parse_pr_args(&["-l11"]).expect("-l11").options.no_header);
+        assert!(
+            !parse_pr_args(&argv(&["-l11"]))
+                .expect("-l11")
+                .options
+                .no_header
+        );
         // The value still has to *start* with a digit, which is why `+8` and a
         // leading space are refused even though `atoi` reads both as 8.
-        assert_eq!(parse_pr_args(&["-l+8"]).err(), Some(PrError::NumberLines));
         assert_eq!(
-            parse_pr_args(&["-l", " 8"]).err(),
+            parse_pr_args(&argv(&["-l+8"])).err(),
             Some(PrError::NumberLines)
         );
-        assert_eq!(parse_pr_args(&["-l0"]).err(), Some(PrError::NumberLines));
+        assert_eq!(
+            parse_pr_args(&argv(&["-l", " 8"])).err(),
+            Some(PrError::NumberLines)
+        );
+        assert_eq!(
+            parse_pr_args(&argv(&["-l0"])).err(),
+            Some(PrError::NumberLines)
+        );
         // Everything else is `atoi`'s leniency: trailing junk ignored, leading
         // zeroes read as the number they spell.
-        assert_eq!(parse_pr_args(&["-l8x"]).expect("-l8x").options.page_len, 8);
-        assert_eq!(parse_pr_args(&["-l08"]).expect("-l08").options.page_len, 8);
+        assert_eq!(
+            parse_pr_args(&argv(&["-l8x"]))
+                .expect("-l8x")
+                .options
+                .page_len,
+            8
+        );
+        assert_eq!(
+            parse_pr_args(&argv(&["-l08"]))
+                .expect("-l08")
+                .options
+                .page_len,
+            8
+        );
     }
 
     #[test]
@@ -2048,18 +2219,23 @@ mod tests {
         // `-n` reads its width with `atoi` and never advances past the digits it
         // consumed, so `-nx5y` sets width 5 without tripping the invalid-value arm;
         // only a non-digit where a number should be does (`pr.c:1744-1762`).
-        let glued = parse_pr_args(&["-nx5y"]).expect("-nx5y");
+        let w_glued = argv(&["-nx5y"]);
+        let glued = parse_pr_args(&w_glued).expect("-nx5y");
         assert_eq!(glued.options.number_char, b'x');
         assert_eq!(glued.options.number_width, 5);
         // A separator alone leaves the width at NMWD (5).
-        let sep = parse_pr_args(&["-n:"]).expect("-n:");
+        let w_sep = argv(&["-n:"]);
+        let sep = parse_pr_args(&w_sep).expect("-n:");
         assert_eq!(sep.options.number_char, b':');
         assert_eq!(sep.options.number_width, 5);
         // `-s` takes one character and no more (`pr.c:1779-1789`).
         assert_eq!(
-            parse_pr_args(&["-s:"]).expect("-s:").options.sep,
+            parse_pr_args(&argv(&["-s:"])).expect("-s:").options.sep,
             Some(b':')
         );
-        assert_eq!(parse_pr_args(&["-s"]).expect("-s").options.sep, Some(b'\t'));
+        assert_eq!(
+            parse_pr_args(&argv(&["-s"])).expect("-s").options.sep,
+            Some(b'\t')
+        );
     }
 }

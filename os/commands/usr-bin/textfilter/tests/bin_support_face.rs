@@ -13,9 +13,9 @@
 //! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
 //! （`tr_ref: unknown option -- \xff`），而文本缝先把命令行 lossy 成 U+FFFD，各支再按自己的
 //! 取法渲染：按字节取到的是 `ef`（U+FFFD 的第一字节），按 `char` 取再渲染的是 `c3 af` 两字节。
-//! 参数缝半逐支把这一位翻正——本表十七行（`rev`、`paste`、`seq`、`tr`、`fold`、`col`、
-//! `uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、`jot`、`nl`，末八行随批次四百五十八、
-//! 四百五十九、四百六十、四百六十一、四百六十二、四百六十三、四百六十四、四百六十五落地）**至此全是原字节** `ff`，与参照件同形；表外那些仍走文本缝的壳交回的仍是 `ef`。
+//! 参数缝半逐支把这一位翻正——本表十八行（`rev`、`paste`、`seq`、`tr`、`fold`、`col`、
+//! `uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、`jot`、`nl`、`pr`，末九行随批次四百五十八、
+//! 四百五十九、四百六十、四百六十一、四百六十二、四百六十三、四百六十四、四百六十五、四百六十六落地）**至此全是原字节** `ff`，与参照件同形；表外那些仍走文本缝的壳交回的仍是 `ef`。
 //! 字母位之外还有一条**操作数当文件路径**的腿：路径进了 `os/libs` 里的 `&str` 口就非折
 //! 一次不可（在册 `ARGV-BYTE-PATH-IN-LIBS`）。因此下面的断言既钉住
 //! 「不再 abort、两条腿一致」，也钉住**当前那一串字节**：等这些腿落地，这几枚会当场变红，
@@ -42,6 +42,7 @@ const HEAD: &str = env!("CARGO_BIN_EXE_head");
 const JOIN: &str = env!("CARGO_BIN_EXE_join");
 const JOT: &str = env!("CARGO_BIN_EXE_jot");
 const NL: &str = env!("CARGO_BIN_EXE_nl");
+const PR: &str = env!("CARGO_BIN_EXE_pr");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
 const FF: u8 = 0xFF;
@@ -72,13 +73,13 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     (code, output.stdout, output.stderr)
 }
 
-/// 十七支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
+/// 十八支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 getopt 报文。
 /// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
 /// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 17] = [
+    let cases: [(&str, &str, i32, &[u8]); 18] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
         // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
         // 字母位是原字节 `ff`。
@@ -125,6 +126,14 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         //（`nl.c:400-405`）；这一支的选项环整个住在薄壳里，所以字母位与七句回显都由
         // `nl_face` 钉，本行只钉「不再 abort + 字母位是原字节」这一层。
         ("nl", NL, 1, b"nl: unknown option -- \xff\n"),
+        // pr 随批次四百六十六落地，而它这一行**与本族其它行不同词**：`pr` 不吃 libc 的
+        // `getopt`，链的是自带的 `minix3/usr.bin/pr/egetopt.c`——`:148` 打的是
+        // `illegal option -- %c`（libc 在 `getopt.c:103` 打 `unknown option`）。
+        // 同一枚裸字节在两个解析器下的句子就是不一样，拿「同族规律」抹平会把措辞写错；
+        // 本行钉的正是这一支自己的那一行（字母位仍是一个字节 `ff`），usage 那三行与
+        // 十枚空格由 `pr_face` 的 `the_four_invalid_value_echoes_and_the_operand_message_carry_the_argv_bytes`
+        // 与 `letters_outside_the_c_optstring_print_the_egetopt_line_then_the_usage` 承载。
+        ("pr", PR, 1, b"pr: illegal option -- \xff\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");

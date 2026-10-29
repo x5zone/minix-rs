@@ -26,7 +26,7 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
@@ -37,43 +37,49 @@ use minix_textfilter::pr::{
 };
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
     // `egetopt` 那一句的前缀不是 `getprogname()` 而是它自己现算的 argv[0] 最后一段
-    // （`egetopt.c:145-147`），两者同一物；而 pr 自己的那些句子把 `pr` 写死在串里，
-    // 所以只有 `Getopt` 那一枝用 prog。
-    let prog = support::prog_name(&argv);
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // （`egetopt.c:145-147`，`nargv` 从不前进，所以 `*nargv` 就是 `argv[0]`），两者同一物；
+    // 而 pr 自己的那些句子把 `pr` 写死在串里，所以只有 `Getopt` 那一枝用 prog。
+    // `GetoptReport::line_bytes` 收 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折这一处。
+    let prog = alloc::string::String::from_utf8_lossy(support::prog_name_bytes(&argv));
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // argv folding lives in the deciding half (`parse_pr_args`): BSD getopt with
     // clustered flag letters, glued-or-next values, and the post-scan page-width
     // /column/-a validations. The result is projected back onto the value types
     // the file/merge/paginate tail below already consumes.
     let parsed = match parse_pr_args(&args[1..]) {
         Ok(p) => p,
-        Err(e) => arg_error(prog, e),
+        Err(e) => arg_error(&prog, e),
     };
     let options = parsed.options;
     let merge = parsed.merge;
-    let title_override: Option<String> = parsed.title_override.map(String::from);
-    let operands: Vec<String> = parsed.operands.iter().map(|s| String::from(*s)).collect();
+    let title_override: Option<Vec<u8>> = parsed.title_override.map(<[u8]>::to_vec);
+    let operands: Vec<&[u8]> = parsed.operands;
 
     // Read each operand into a logical file (name, lines). No operands means
     // standard input alone, titled `""` (pr.h:63 `FNAME`); an unopenable
-    // operand warns and is skipped, turning the exit status nonzero.
-    let mut files: Vec<(&str, Vec<Vec<u8>>)> = Vec::new();
+    // operand warns and is skipped, turning the exit status nonzero. The name
+    // slot keeps argv's own bytes because C's `fname` is the same pointer it
+    // `open`s, and `prhead` prints it with `%s` (`pr.c:1511`).
+    let mut files: Vec<(&[u8], Vec<Vec<u8>>)> = Vec::new();
     let mut had_error = false;
     if operands.is_empty() {
         let input = support::read_stdin();
-        files.push(("", split_lines(&expand_input(&input, &options))));
+        files.push((&[], split_lines(&expand_input(&input, &options))));
     } else {
         for op in &operands {
-            if op == "-" {
+            if *op == b"-" {
                 let input = support::read_stdin();
-                files.push(("", split_lines(&expand_input(&input, &options))));
+                files.push((&[], split_lines(&expand_input(&input, &options))));
             } else {
-                match support::read_file(op) {
+                // 只有开档那一步折一次（`minix_sys::open` 的 `&str` 口，在册）；
+                // 报文位与标题位用的都是原字节。
+                let path = alloc::string::String::from_utf8_lossy(op);
+                match support::read_file(&path) {
                     Ok(bytes) => {
                         let bytes = expand_input(&bytes, &options);
-                        files.push((op.as_str(), split_lines(&bytes)));
+                        files.push((*op, split_lines(&bytes)));
                     }
                     Err(code) => {
                         // C `pr.c:1364-1370`：`++errcnt` 后印
@@ -82,10 +88,13 @@ fn run() -> ! {
                         // 然后 `continue`，退码最终才变 1。旧写法是自创的
                         // `pr: cannot open <名>`，既丢了句子也换了词。`-r`（nodiag）
                         // 能屏蔽这一句，本壳没有那支（已登记）。
-                        support::warn(
-                            format!("pr: Cannot open {op}, {}\n", minix_sys::Strerror(code))
-                                .as_bytes(),
-                        );
+                        let mut line = Vec::new();
+                        line.extend_from_slice(b"pr: Cannot open ");
+                        line.extend_from_slice(op);
+                        line.extend_from_slice(b", ");
+                        line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+                        line.push(b'\n');
+                        support::warn(&line);
                         had_error = true;
                     }
                 }
@@ -112,7 +121,7 @@ fn run() -> ! {
         opts.columns = 1;
         opts.header = title_override
             .clone()
-            .unwrap_or_else(|| String::from(files[0].0));
+            .unwrap_or_else(|| files[0].0.to_vec());
         for page in paginate(&merged, &opts) {
             emit_page(&page, &options);
         }
@@ -198,8 +207,15 @@ fn arg_error(prog: &str, e: PrError) -> ! {
         // C's string really does end in a space before the newline (`pr.c:1800`).
         PrError::WidthValue => fail(b"pr: -w width must be 1 or more \n"),
         PrError::NumberWidth => fail(b"pr: -n width must be 1 or more\n"),
+        // C 那句是 `fprintf(errf, "pr: invalid value for -%c %s\n", 字母, eoptarg)`
+        // （`pr.c:1726-1729`、`1757-1760`、`1785-1788`）：值位是 `eoptarg` 从那一位起的
+        // **原字节**，所以拼句子不能经过任何字符解码。
         PrError::InvalidValue(letter, value) => {
-            support::warn(format!("pr: invalid value for -{letter} {value}\n").as_bytes());
+            let mut line = Vec::new();
+            line.extend_from_slice(format!("pr: invalid value for -{letter} ").as_bytes());
+            line.extend_from_slice(&value);
+            line.push(b'\n');
+            support::warn(&line);
             usage()
         }
         PrError::AcrossNeedsColumns => fail(b"pr: -a flag requires multiple columns\n"),
