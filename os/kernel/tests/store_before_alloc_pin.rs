@@ -5,13 +5,15 @@
 //! machinery only through `arch_boot_impl` (which allocates from the boot bump
 //! pool) or, on the aarch64 cross-image resume path, `establish_boot_dm`
 //! (additive DM leaves on the active root). The mock entry (`arch_boot_test`)
-//! deliberately bypasses the store and is therefore not listed here — its
-//! counterpart assertion lives in `arch_boot_impl` behind `not(feature = "mock")`.
+//! deliberately bypasses the store and is therefore not listed here.
 //!
 //! A source-order pin is the honest instrument for this invariant on the host:
 //! the entries themselves cannot be executed in the host test binary (they
-//! switch page tables / are `-> !`). The runtime half of TODO-01 is the
-//! `assert!` at the top of `arch_boot_impl`.
+//! switch page tables / are `-> !`). A runtime assertion inside
+//! `arch_boot_impl` was tried and reverted: the QEMU bootstrap test kernels
+//! call `arch_boot_impl` directly to exercise individual boot stages, so the
+//! check cannot tell a production entry from a staged test and would fire on
+//! legitimate boots.
 
 const SRC: &str = include_str!("../src/lib.rs");
 

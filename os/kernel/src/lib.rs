@@ -548,16 +548,6 @@ macro_rules! boot_stage {
 }
 
 pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysBytes) -> &KernelInfo {
-    // M4 (TODO-01): every production entry stores KernelInfo into the kernel
-    // .bss before anything can allocate a page-table page or read the free
-    // list; reaching this point without a stored copy means the entry order
-    // regressed. The mock entry (`arch_boot_test`) deliberately bypasses the
-    // store to exercise the mapping machinery in isolation, hence the form gate.
-    #[cfg(not(feature = "mock"))]
-    assert!(
-        crate::kernel_info().is_some(),
-        "arch_boot_impl entered before store_kernel_info (M4 deep-copy ordering)"
-    );
     // Step 0: Validate KernelInfo + register allocator + compute kern_huge.
     boot_stage!("kernel: entering validate\n");
     let kern_huge = boot_validate_and_prepare::<P>(kernel_info);
