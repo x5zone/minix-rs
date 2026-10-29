@@ -23,8 +23,14 @@
 //!   consumed pages and remainder are both kernel-reserved) |
 //! | bootstrap-used frames | per-pool-region used suffixes of
 //!   `VmBootAllocator` (walk order: descending from each region's end) |
-//! | reserved module blobs | `KernelInfo.boot_modules()` minus the VM
-//!   module (reclaimed after ELF copy, C: protect.c:450-451) |
+//! | reserved module blobs (deduction record) | `KernelInfo.boot_modules()`
+//!   — **every** blob including VM's own (VM's segment frames come from this
+//!   free list before VM starts, so reclaiming its blob corrupts VM before
+//!   entry; 续-187) |
+//!
+//! Note the two module lists are different on purpose: the deduction record
+//! keeps every blob, while the handoff module list (`VmBootHandoff.modules`,
+//! built by [`build_vm_handoff`]) excludes VM — C: `kinfo.module_list[]`.
 //!
 //! The free list is then clipped to VM's Direct Map window
 //! (`VM PMM eligible = conventional ∩ DM-representable − LiveBootstrap`).
@@ -155,9 +161,11 @@ impl DeductionCollector {
 
 /// Runs the A2 classification.
 ///
-/// `vm_module_idx` is the boot-module index of VM itself — its blob was
-/// reclaimed after the ELF copy (C: protect.c:450-451 `add_memmap` +
-/// `mod_start = mod_end = 0`), so it stays free and is not deducted.
+/// `vm_module_idx` is the boot-module index of VM itself. Its blob is **not**
+/// withheld from the deduction record: every module — VM's own included — is
+/// kernel-reserved until VM starts (see the module loop in [`classify`]). The
+/// VM-exclusion rule applies only to the handoff module list built by
+/// [`build_vm_handoff`] (C: `kinfo.module_list[]`).
 ///
 /// The UEFI boot path allocates the root page and bump region as
 /// `LOADER_DATA`, which never appears in the conventional memmap — cutting

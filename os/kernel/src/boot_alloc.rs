@@ -60,9 +60,18 @@ impl BootAlloc {
     /// then hands off to the high-half kernel image, which links its *own* copy
     /// of this allocator (separate `.bss`). Without resuming the cursor, the
     /// kernel image would re-hand-out pages the boot-shim's page tables (and the
-    /// handoff blob) already occupy. `next` is the boot-shim's post-build cursor;
-    /// the caller guarantees `base <= next <= end`.
+    /// handoff blob) already occupy. `next` is the boot-shim's post-build cursor.
+    ///
+    /// The three values arrive from the cross-image wire payload, so they are
+    /// validated here rather than trusted: `base < end && base <= next <= end`
+    /// must hold, otherwise `alloc` would hand out pages outside the declared
+    /// region (and `region` would report an inverted range to DM coverage).
+    /// Boot is single-threaded, so the check is a fail-fast `assert!`.
     pub fn resume(&self, base: u64, next: u64, end: u64) {
+        assert!(
+            base < end && base <= next && next <= end,
+            "BootAlloc::resume: inconsistent region base={base:#x} next={next:#x} end={end:#x}"
+        );
         self.base.store(base, Ordering::Relaxed);
         self.next.store(next, Ordering::Relaxed);
         self.end.store(end, Ordering::Relaxed);
@@ -79,7 +88,13 @@ impl BootAlloc {
         if end == 0 {
             return None;
         }
-        Some((self.base.load(Ordering::Relaxed), end))
+        let base = self.base.load(Ordering::Relaxed);
+        let next = self.next.load(Ordering::Relaxed);
+        assert!(
+            base < end && base <= next && next <= end,
+            "BootAlloc::region: inconsistent region base={base:#x} next={next:#x} end={end:#x}"
+        );
+        Some((base, end))
     }
 
     /// Bytes handed out so far (`next − base`).
@@ -254,5 +269,57 @@ mod tests {
             }
             prev = pa.0;
         }
+    }
+
+    /// A legal cross-image resume keeps the handed-over cursor: the region is
+    /// reported intact, the consumed prefix is accounted, and the next
+    /// allocation continues at `next` (never re-hands-out boot-shim pages).
+    #[test]
+    fn test_resume_accepts_consistent_range() {
+        let alloc = BootAlloc::new();
+        alloc.resume(0x7000_0000, 0x7000_3000, 0x7000_8000);
+
+        assert_eq!(alloc.region(), Some((0x7000_0000, 0x7000_8000)));
+        assert_eq!(alloc.used_bytes(), 0x3000);
+        let (pa, _) = alloc.alloc().unwrap();
+        assert_eq!(pa.0, 0x7000_3000, "resume must continue at the handoff cursor");
+    }
+
+    /// Inverted region: `base > end` would make `region()` report an inverted
+    /// range to the DM-coverage candidate registration.
+    #[test]
+    #[should_panic(expected = "BootAlloc::resume")]
+    fn test_resume_rejects_inverted_range() {
+        let alloc = BootAlloc::new();
+        alloc.resume(0x8000_0000, 0x8000_1000, 0x7000_0000);
+    }
+
+    /// Cursor below the base: `alloc` would hand out pages outside the
+    /// declared region all the way up to `end`.
+    #[test]
+    #[should_panic(expected = "BootAlloc::resume")]
+    fn test_resume_rejects_cursor_below_base() {
+        let alloc = BootAlloc::new();
+        alloc.resume(0x8000_0000, 0x7000_f000, 0x8000_1000);
+    }
+
+    /// Cursor past the end: the declared remainder is already exhausted, so
+    /// the wire payload is inconsistent.
+    #[test]
+    #[should_panic(expected = "BootAlloc::resume")]
+    fn test_resume_rejects_cursor_past_end() {
+        let alloc = BootAlloc::new();
+        alloc.resume(0x8000_0000, 0x8000_2000, 0x8000_1000);
+    }
+
+    /// `region()` validates the same predicate: an inconsistent range that
+    /// entered through `init` (which takes the caller's word) still fails
+    /// fast at the DM-coverage read instead of producing an inverted range.
+    #[test]
+    #[should_panic(expected = "BootAlloc::region")]
+    fn test_region_rejects_inverted_init() {
+        let alloc = BootAlloc::new();
+        alloc.init(0x9000_0000, 0x8000_0000);
+        let _ = alloc.region();
     }
 }

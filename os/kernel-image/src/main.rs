@@ -17,8 +17,9 @@
 //! ## 交付边界（诚实登记）
 //!
 //! `_start` 目前立栈后驻留（halt）——boot-shim → 内核镜像的跳转交接
-//! 协议（KernelInfo 怎么递、入口态怎么约定）是 NK1（C-29，OQ-N6 设计
-//! 轮）的裁决范围，这里不代决。当前 UEFI 产线仍是 boot-shim 内联内核、
+//! 协议（KernelInfo 怎么递、入口态怎么约定）已由 OQ-N6 裁决（每进程
+//! 独立根原语，aarch64 的 `BootHandoff` 交接即其实现），本镜像的收口 =
+//! NK1（C-29）实施。当前 UEFI 产线仍是 boot-shim 内联内核、
 //! 进程内调 `arch_boot`（`os/boot-shim/src/main.rs:56`）；本镜像使其
 //! 契约位从"无产出者"变"按布局契约产出"，NK4-A 装机链即可走通。
 //!

@@ -609,7 +609,7 @@ mod tests {
 
     /// Simulate the kernel loading logic: parse PT_LOAD segments,
     /// compute kern_phys_base, kern_virt_base, kern_size, and entry_point.
-    /// This mirrors what `uefi_helpers::load_kernel_elf` does internally.
+    /// This mirrors what `loader::load_kernel_with_loader` does internally.
     #[test]
     fn test_kernel_load_simulation_single_segment() {
         let image = build_test_elf();
