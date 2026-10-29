@@ -119,6 +119,114 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百六十七（A2 参数缝半切片 49：`sort` 的字段分隔符、记录分隔符、操作数与四处回显交回原字节；同一枚 `ff` 走 `-R` 的两条路径有两种下场）
+
+- **先把形状说清**：`minix3/usr.bin/sort/sort.c:148` 的 optstring 是
+  `"#adFfmrte?h:i?l:n?o:rR:sSt:T:ux"`——二十个字母，带值的六个是 `D`/`k`/`o`/`R`/`t`/`T`
+  （`sort.h:95-96` 那两个 `FLD_D`/`REC_D_F` 位就是为 `t` 与 `R` 准备的）。这一支和前几支不同，
+  **它的选项环整个住在库里**（`os/commands/usr-bin/textfilter/src/sort.rs:fn parse_options`），
+  壳只做「把 argv 交下去 + 按交回的 `ParseError` 拼句子」，所以这一轮的库门是有牙的。值有六个去处：
+  ① `-t` 的首字节写进 `d_mask`（`sort.c:219`）决定字段怎么切，因此进**比较**；
+  ② `-R` 的首字节写进 `d_mask[REC_D]`（`:241`）决定记录边界（`files.c:113-124` 的 `getrec`），
+     并由 `putrec` 在每条记录后补同一枚（`files.c:194`、`:215`）；
+  ③ `-k` 的串交给 `setfield`/`setcolumn`（`init.c:159-217`），那五句 `errx` 都**不带** `%s`；
+  ④ `-o` 与操作数是路径，各进自己的开档口与报文；
+  ⑤ 四句回显（`invalid value for -X %s` 那一族的 `sort` 版本是
+     `errx(2, "invalid record delimiter %s", optarg)`，`sort.c:233-238`）；
+  ⑥ 字母位来自 libc（`getopt.c:79` 的 `optopt = *place++`、`:103` 的 `%c`），措辞是
+     `unknown option`——与上一支 `pr` 自带 `egetopt.c:148` 的 `illegal option` 正好成对，
+     同一张跨壳表里第一次并存两种句子的写法。
+- **本轮第二条不是渲染、是判据：同一枚 `ff` 从 `-R` 的两条路径进来有两种下场**。
+  `REC_D` 在 C 里是 `int`，而**字符路径**（`sort.c:226` 的 `REC_D = *optarg`）经过带符号的
+  `char`，所以 `-R<ff>` 得到的是 **-1**；**数值路径**（`-R\377` 之类，`:228-238` 经 `strtol`，
+  并有 `REC_D < 0 || REC_D >= NBINS` 两道拒收，`NBINS` 是 `sort.h:77` 的 256）得到的是 **+255**。
+  差别有两个可观察后果：其一，`-t` 那一支查的是
+  `d_mask[(u_char)*optarg] & REC_D_F`（`:219-220`），字符路径把那位写到了表外（`d_mask[-1]`，
+  越界写，本层不复制越界、只取它唯一可观察的后果「不算冲突」），数值路径写在 `d_mask[255]`
+  上——于是 `-R<ff> -t<ff>` **不**冲突，而 `-R\377 -t<ff>` 冲突。其二，`getrec` 比的是
+  `int ch = getc()`（0..=255）与 `REC_D`，所以字符路径那一枚永不命中，整份输入是一条记录。
+  本层此前把 `record_delim` 存成 `u8`，两条路径混为一谈，因此 `-R<ff> -t<ff>` 报了一句
+  C 不报的 `record/field delimiter clash`——**这一形是 A/B 逮出来的**（参照件交回 `x\n\xff`
+  退 0，本壳退 2）。现在字段类型改成 `i32` 照 C 建模，写出去那枚仍是低字节（`putchar` 的
+  `int`→`unsigned char` 转换）。五形现量两侧全等（`tmp/sort-467/ab.log` 的 ① 那一族：
+  字符路径不冲突 / 数值 255 冲突 / ASCII 冲突 / 两枚不同高位字节不冲突 / 八进制 10 撞默认位）。
+  这是 `jot`（尾字节经 `char`）与 `pr`（`-e` 与 `-i` 两侧符号性不同）之后，同族判据的**第三种形态**：
+  同一个变量的符号性随**赋值路径**而分叉，而不是随比较的两侧类型而分叉。
+- **参数缝本身的落点**：`parse_options` 收 `&'a [&'a [u8]]`、`PrArgs`/操作数改 `&[u8]`、
+  `c_atoi`/`scan_long`/`scan_column`/`parse_key` 一律按字节（`-k` 的停点判据本来就只认 ASCII
+  数字与修饰字母，`rest` 从 `&str` 改 `&[u8]`），`-R` 数值形失败那句的回显位交回
+  `Vec<u8>`（`ParseError::InvalidRecordDelimiter` 早就是这个类型，本轮把它真的按字节拼出去）；
+  壳侧走 `args_bytes()`/`prog_name_bytes()`，操作数那句 `err(2, "%s", argv[i])`
+  （`sort.c:285`）三段自己拼，名字位因此是原字节——以前经 `support::warn_line` →
+  `minix_sys::err_line(&str)` 会折成 U+FFFD。壳内 `from_utf8_lossy` 现量 **5 处**
+  （程序名一处、`-o` 那两、记录内容一处、操作数开档一处），**每一处都挂名在册项**，
+  这一支因此是本族折点最多的一支。
+- **三条边界写清楚，不在本轮射程**：① 记录内容是 `String`（`split_records` 过
+  `from_utf8_lossy`），所以「输入里带裸字节」的形两侧不同——本壳交回
+  `a\xef\xbf\xbdb\n\xff` 而参照件交回 `a\xffb\n\xff`。登记
+  `SORT-RECORD-CONTENT-TEXTSEAM`；差分按 KD2 计数。**这条同时说明参数缝改到了什么程度**：
+  argv 那头的字节现在对了，内容那头的折叠才单独暴露出来。② `-o` 整条输出腿经
+  `bin_support` 的 `&str` 路径 API（`probe_path`/`create_sink`/`temp_candidate`），属
+  「路径缝」另一条射程，差分按 KD4 计数。③ `fixit()`（`sort.c:151`）把 `+field` 换成
+  `-k field` 这一支本树未建模，于是 `+2` 在这里被当档名（参照件接受并按第二字段排）——
+  选项面缺口，登记 `SORT-PLUS-FIELD-LEGACY-UNMODELLED`。
+- **参照件本身有一处必须写在前面的缺陷**：`tmp/family-diag-ref/sort_ref` 是 minix3 的 sort
+  源码链宿主 glibc（`strings` 里能看到 `record/field delimiter clash` 与那条 `usage: %s …
+  [-R char]`，所以判据可用），但它**一走到自己的 `usage()` 就 SIGSEGV**（rc 139；`-Z` 与
+  `-t, -t;` 两形当场都是）。所以凡以 usage 收尾的形只能比「那一行报的是哪枚字节」，不能比
+  退码与全文；字母位的绝对读数改由 Minix `getopt.c` 探针承载（主树 `tmp/sort-411/probe`，
+  本轮现跑交回 `optopt=0303` 即 `c3`、`0377` 即 `ff`，与本壳逐枚相同）。这一条沿用批次四百一十一
+  立下的两段口径，不是本轮新发明。
+- **门账（先对测试名集合再对总数）**：库内 `sort` **28 → 29**（新立
+  `the_value_letters_take_argv_bytes_not_the_lossy_form_of_them` 七段；另把既有门
+  `test_parse_options_splits_the_three_error_paths` 的三处 `record_delim` 读数按 `i32` 重写——
+  它原来的期望正是被推翻的那条 `u8` 模型），`sort_face` **22 → 24**
+  （`the_delimiter_and_record_delimiter_values_are_argv_bytes` 六段、
+  `the_operand_message_names_the_operand_bytes_and_exits_two` 三段），跨壳表十八行 → **十九行**
+  （`sort` 行钉 `sort: unknown option -- \xff` 且退 **2**——这一支的退码不是同族常见的 1），
+  整包 69 段 **1270 → 1273 passed / 0 failed**。夹具侧 36 处 `parse_options` 与 13 处
+  `parse_key` 改字节形（结果要留用者拆两行），新立 `fn argv`。
+- **负控六枚（`tmp/sort-467/negctl.py` Q1..Q6）各咬 3/3/2/1/1/0**：Q1（壳侧 argv 退回文本缝）
+  咬面门两枚 + 跨壳表，**库内 626 全绿**——壳的缝够不到库门，与上一支 `pr` 的 P1 同形；
+  Q2（`-t` 取值折一次）咬库门两枚 + 面门；Q3（`-R` 取值折一次）咬库门 + 面门；
+  Q4（回显位折一次）、Q5（操作数名字位折一次）各咬面门一枚（两条决策都在壳里）；
+  **Q6 是有意放进去的「无分辨力探针」**——把 `-k` 的 spec 折一次，六档门全绿，因为那五句
+  `errx` 都不带值、而折叠串与裸字节停在同一个位置（既不是数字也不是修饰字母）。它存在的意义是
+  把「这枚门覆盖哪条腿」与「这条腿本来就没有可观察差」分开说清楚，不是漏测。
+- **两起当场自错，都记在写法里**：① 操作数那枚门第一版我写成「两枚开不了的档名各报一句」，
+  实测与参照件都是**只出第一句**——C 的 `err(2, …)` 自己就终止进程，不是「报完再退」；
+  期望值按实测改写并在注释里写明为什么只有一句。② `-R\377` 那两形我一开始写成 Rust 的
+  `b"-R\377"`——Rust 的字节串**没有八进制转义**（那是 C 的写法），编译期直接报
+  `unknown byte escape`；要的是「一个反斜杠加 377」这五个字符，得写 `b"-R\\377"`。
+  同一条教训对 C 源里的 `"%b %e %H:%M %Y"` 之类也一样适用。
+- **门读数（全部 L1，`2026-10-30`，基线快照 `f03aa8ffc`，基线当场复跑 69 段 / 1270 / 0）**：
+  宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1273 / 0**
+  （`tmp/sort-467/pkg-post.log`；负控还原并重编之后最终态 `pkg-final.log` 同数）；容器权威门退 0、
+  **69 段 / 1273 / 0** 与宿主同读数（`container-final.log`）；三架构 `cargo check --offline -j 1
+  --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf}
+  -p minix-textfilter --bins` 各退 0、错误 0（`arch-*.log`——中途一次三架构同红是**我跑错了目录**：
+  `cargo` 必须在 `os/` 下，见下）；`rustfmt --edition 2024 --check` 四件**原地** HEAD 0 / 现件 0
+  （`fmt-baseline.py`，中途自造 2 处已格式化归零）；`cargo clippy --offline -j 1 --all-targets
+  -p minix-textfilter` 退 0、共 **149** 条，改动四件上 **0** 条，与主树同四件做（文件, 消息）
+  集合差为空（中途那次 151 条是 `&bytes[..]` 冗余切片与 `parse_key(&spec[0])` 多取一层引用，
+  都是本轮自造，已改）。
+- **进度与余量（全部现量）**：参数缝半已落 **二十二支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、
+  `jot`、`nl`、`pr`、`sort`）；`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/
+  | wc -l` → **17**，整个命令面口径 → **86**；渲染半那条 grep 仍 **0** 行；`line_bytes`
+  **40 处 / 29 件**（`sort` 本来就在其中）。余下 17 支里带字母位诊断面的有 **5** 支
+  （`split`、`tail`、`unexpand`、`unifdef`、`vis`），**切片 50 建议 `split`**。独立轮在册不碰：
+  `ARGV-BYTE-PATH-IN-LIBS`、`CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-*` 三枚、
+  `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、五枚 `*-NON-PERMUTE-OPERAND-TAIL`、
+  `CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`COL-CLIPPY-STOCK-LINT`、
+  `BIN_SUPPORT-FMT-DRIFT-STOCK`、`REV-MULTIBYTE-ERROR-LEG`、`NL-*` 四枚、`HEAD-*` 两枚、
+  `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`、`JOT-*` 两枚、`PR-*` 三枚、
+  `TEXTFILTER-07-TABLE-UNESCAPED-PIPES`，**本轮新立** `SORT-RECORD-CONTENT-TEXTSEAM`、
+  `SORT-PLUS-FIELD-LEGACY-UNMODELLED`、`SORT-D-T-X-LETTERS-UNMODELLED`（`D`/`T`/`x` 三个字母落进
+  「集外字母」那一支，是选项面缺口，差分按 KD3 计数）。
+
+---
+
 ## 批次四百六十六（A2 参数缝半切片 48：`pr` 的列分隔符、行号后缀、页眉标题与四句值回显交回原字节；量出 `-e` 与 `-i` 两条比较腿的符号性并不相同）
 
 - **先把形状说清**：`minix3/usr.bin/pr/pr.c:1655` 的 optstring 是 `"#adFfmrte?h:i?l:n?o:ps?T:w:"`
