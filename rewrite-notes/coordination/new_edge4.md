@@ -2262,3 +2262,139 @@ md 是 `minix3/`、`redesign-notes/` 等未纳入领取树视野的目录，所�
 **同树跨轮**：主树上一笔也是 2010 / 222 ⇒ 本笔在主树同样零新增断链。取证回抄已办：`tmp/nl-465`
 整目录（32 件、900K）复制进主树 `tmp/`，关键四件 `ab.log`、`pkg-final.log`、`container-final.log`、
 `kd2-empty-value-oob.log` 与领取树逐字节核过 md5 相同。
+
+### 第一百八十笔（批次四百六十六 · A2 参数缝半切片 48：`pr` 的列分隔符、行号后缀、页眉标题与四句值回显交回原字节；同一枚字节在 `-e` 与 `-i` 两侧的符号性并不相同）
+
+**这一笔先说形状**：`minix3/usr.bin/pr/pr.c:1655` 的 optstring 是 `"#adFfmrte?h:i?l:n?o:ps?T:w:"`
+——除起始的 `#`，带值字母九个，`h`/`o`/`T`/`w` 必填（`:`）、`e`/`i`/`l`/`n`/`s` 可选（`?`）。
+可选与必填的差别**只有在字节口径下才看得清**：`egetopt.c:206-215` 让可选值只取**附着在本词里**
+的那一段，另起一词不会被取值而是掉进操作数——本轮当场踩过（`-e x` 之后那个词被当成档名，报的是
+`pr: Cannot open x`），已写成测试注释。argv 的原字节有六个去处：① `-s` 的字节由 `vertcol`/
+`horzcol` 打在列间（`pr.c:487`、`:745`），且 `-s` 存在时列间**不补空白**；② `-n` 的字节是
+`nmchar`（`:95`），`addnum` 把它跟在行号后（`:215`）；③ `-h` 的值与**档名本身**由 `prhead` 的
+`printf(HDFMT, buf+offst, fname, pagcnt)`（`pr.h:59`、`pr.c:1511`）打在页眉行，`%s` 不解读内容；
+④ `-e`/`-i` 的字节是**比较物**（下一条）；⑤ 四句 `invalid value for -X %s` 回显 `eoptarg` 从游标
+起的原字节（`:1726-1729`、`:1757-1760`、`:1785-1788`）；⑥ 档名还进 `Cannot open %s` 那一句
+（`:1364-1370`）。字母位那一枚也不来自 libc：`pr` 链的是自带的 `minix3/usr.bin/pr/egetopt.c`，
+`:110` 的 `eoptopt = (int)*place++` 一次进一个字节，而 `:148` 打的句子是
+**`illegal option -- %c`**，与 `getopt.c:103` 的 `unknown option` 不同词——跨壳表因此第一次出现
+一条与本族其它行不同句的读数（`pr: illegal option -- \xff`），拿「同族规律」抹平会把措辞写错。
+
+**本轮的正菜是一条比较判据：同一枚字节，`-e` 与 `-i` 两侧符号性不一样**。`inln` 比的是
+`int ch = getc(inf)`（字节的 0..=255）与 `int chk = (int)inchar`（`pr.c:1038`、`:1049`），而
+`inchar` 声明为**带符号 `char`**（`:87`）——高位字节被提升成负数，于是**永远配不上任何输入字节**：
+`pr -e<ff>4` 对输入 `x<ff>y` 在 C 那里是空操作，参照件现量 `78 ff 79`。`otln` 比的是
+`*buf == ochar`（`:1165`），两边都是 `char`，同一枚高位字节在**输出侧照常命中**：
+`pr -t -i<ff>4` 对 `a<ff><四空格>b` 现量 `61 ff ff 62`。本壳此前两支都按 `u8` 比，等于在 `-e`
+那一侧接受了 C 永不接受的匹配；现在 `expand_tabs` 走 `i32::from(ch as i8)` 的探针，
+`contract_tabs` 保持字节比并在注释里写明两侧为何不同。缺省那枚制表符（`0x09`）不受影响，
+`-e4` 对真制表符仍展开成三枚空格——这一形同时是「缝改成字节既不放宽判据也不动默认」的控制形。
+**`jot` 那轮量到「尾字节经 `char` 落地所以为负」，本支量到「同一个字节进比较时符号性随两侧类型
+而分叉」，是同族判据的第二种形态**；而这条不对称不是推理：P5（抹掉 `-e` 的带符号落地）与
+P6（把 `-i` 也改成带符号形）两枚注入**各红两层**，各自咬住一条腿。
+
+**档名在本支出现了一种本族第一次的形状**：`pr` 的 `Cannot open` 走 `errf` 的
+`fprintf("pr: Cannot open %s, %s\n", …)`（`pr.c:1364-1370`），不是 `err(3)`/`err_line` 那个冒号形
+——所以本壳可以自己按字节拼那一句，名字位与参照件**逐字节同形**（A/B 里它是回归项而不是分叉）。
+只有开档那一步仍折一次（`minix_sys::open` 的 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`），后果是
+「真实存在的裸字节档名本壳打不开」（参照件打得开，因为 `fname` 就是它 `open` 的那个指针），
+这一形按 KD1 分开计数。而档名除了进报文还经 `prhead` 进**页眉标题**，所以操作数的原字节本来是
+输出内容——这一条把「参数缝只影响诊断」的旧直觉彻底否掉。
+
+**页眉行不可逐字节比，本笔因此立了一条新比法**：C 的 `HDFMT` 第一个 `%s` 装的是
+`strftime("%b %e %H:%M %Y")` 的当下时刻（`pr.h:62`），本壳不渲染时间场（`-T` 未接、时钟未接），
+所以带页眉的每一页第一行必然差那一段。差分脚本对这三形改用**后缀全等**：参照件那一行必须以
+本壳那一行结尾（两侧共用 `{标题} Page {N}` 那一段）、行数与退码相同——**标题位的原字节仍被钉住，
+摘出去的只有时间场那一族**，这不是放宽。口径写在 `tmp/pr-466/ab.py` 的文件注释里，并说明它适用
+哪几形。
+
+**A/B 又量出一条在册之外的分叉族，登记不执行**：`egetopt` 的 optstring 含 `#`，所以 `-`/`+` 后
+紧跟数字时走 `egetopt.c:118-140`——它把数字串**就地用 NUL 截断**（`savec = *p; *place = '\0'`，
+`:135-136`）交回 `delim`，下一次调用先恢复那个字节（`:81-83`）再从它继续扫**同一个词的尾巴**；
+而 `:152-168` 那句 `illegal '+' delimiter with option` 只对 `+` 生效（文件头 `:60-61` 明写
+`The - may be combined with other options, but the + cannot`）。本壳把带数字的词当整词处理，
+六形现量两侧不同：`-2t` 参照件接受（两列 + 无页眉，退 0）而本壳报 `illegal option -- 2`；
+`-2x` 与 `-2<ff>` 两侧都拒但**报的字母不同**（本壳报 `2`、参照件报尾巴那一枚）；`+3t`、`+2a`、
+`+3<ff>` 本壳接受而参照件报错。这里面没有一枚字节涉及 UTF-8 折叠——**与参数缝是两条判据**，
+登记 `PR-EGETOPT-NUMBER-TOKEN-CONTINUATION`，按「一次只修一条」本轮不动（它是选项环建模，
+一个批次量级，且六形都已在矩阵里按 KD4 分开计数，不会被读成全等）。
+
+**负控九枚（`tmp/pr-466/negctl.py`，逐枚读数 `negctl-P1..P9.log`）各咬 3/2/2/2/2/2/2/3/1，
+并把上一笔那条判据反过来用了一次**：P1（壳侧 argv 退回文本缝）出现「库内全绿」，而其余八枚
+都红到库门——因为 `pr` 的选项环整个住在 `fn parse_pr_args` 里，与上一支 `nl` 的「环住在壳里、
+五枚全绿是结构」形状**相反**。P2（`-s` 的值折一次）、P3（`-e`/`-i` 回显折一次）、P4（`-s` 回显
+折一次）、P7（标题位折一次）第一遍**只咬面门**：那四条决策住在库里却没有一条库门钉它们的字节位
+——按「一整段全绿先怀疑覆盖面有洞」补出
+`the_option_bytes_and_the_operand_bytes_stay_bytes_through_the_library`（六段）之后复跑，
+四枚各红两层。P8（字母位退回按字符取）咬跨壳表 + `the_libc_line_of_a_multibyte_flag_is_one_byte_for_pr`
++ 库门三处；P9（报文名字位折一次）咬 `the_four_invalid_value_echoes_…` 的最后一形。
+每枚前后按整文件 md5 与 `tmp/pr-466/post/` 成对复核，跑完 `git status` 只剩四件。
+
+**三起当场自错，同属「读数要看清自己在测什么」**：① 第一版把 `od -An -c` 的**列距**当成字节，
+给 `-s` 那形写出 `a\xff<空格>c` 的期望——实测那一行是 `a`、`ff`、`c` 三枚（`-s` 存在时列间不补
+空白），断言改写成 `[b"a\xff", b"c\nb\xff", b"d\n"].concat()`；② 页眉那三行 usage 我在测试里用
+**续行字面量**重写了一遍，正好吃掉后两行各自的十个前导空格，而 `pr_face.rs` 里 `USAGE` 常量的
+注释早就写明这个陷阱——同一个文件里已经警告过的坑还会再踩，判据是**先查有无现成常量与它的警告**
+再动手写；③ 在主树用相对路径重定向 `cargo` 输出，落到一个并不存在的目录而白跑一遍
+（`cd os` 之后 `../tmp/…` 指向主树 `tmp/`，与领取树的 `tmp/pr-466` 不是同一个地方）。
+另把一条**存量**登记入库：07 篇命令契约表里 `pr` 行在「`pgpause |= FIRSTPAGE`」那段代码文字里
+带一枚未转义竖线（该行未转义 5、表头与分隔行 4），同篇 `uniq`/`head`/`tail`/`cmp` 四行同此——
+逐行核过 HEAD 与现件同数（本轮插入未新增），登记 `TEXTFILTER-07-TABLE-UNESCAPED-PIPES`，属另一条射程。
+
+**五道收尾门逐条读数**（`2026-10-29`，码笔 `003be029a`、文档笔 `878a9e10b`）：①
+`bash tools/todo-reconcile-scan.sh` → 13 项判据里 **1 项 DRIFT**（`探针命名族（行）` 现量 32 vs
+台账基线 18），该项取数域是 `grep -rnE "nk4[ac]:" os --include=*.rs`，本轮改动四件各 **0** 命中，
+且同一条命令在 HEAD 也是 32 ⇒ 非本轮引入，归一线在制（与上一笔同一条件数）；
+② `python3 tools/notes-link-check.py rewrite-notes/` → 764 个 md、**断链 131**（与上一笔同数），
+本轮新增行落在 `todo.md:122..230`、`07-text-filter.md:6`、`07-text-filter.md:198`、板 `:27`，
+逐行核对清单在这四处**零命中** ⇒ 新增断链 0；③ `bash tools/todo-staleness-check.sh
+…TODO-LEDGER-OPEN.md` → **PASS（0 项）**；④ `bash tools/doc-style-lint.sh --diff` →
+3 个文件 / 95 个新增行、**error 级 0**（本笔首跑即归零，上一笔那条 SL-11 教训已落到写法里）；
+⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条
+（`TODO-3ARCH-PARITY-20261006.md`）未触碰。
+
+**门读数补全**：宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` →
+**69 段 / 1270 / 0**（`tmp/pr-466/pkg-post.log`、格式化后 `pkg-post-rustfmt.log` 两次同数）；
+容器权威门按三挂载配方 → 退 0、**69 段 / 1270 / 0**，与宿主同读数
+（`tmp/pr-466/container-final.log`）；三架构 `cargo check --offline -j 1 --target
+{x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} -p minix-textfilter
+--bins` 各退 0、错误 0（`arch-*.log`）；`rustfmt --edition 2024 --check` 四件**原地** HEAD 0 /
+现件 0（`tmp/pr-466/fmt-baseline.py`：退出码不属于 0/1 即判「没跑成」并抛异常，`finally` 还原后
+逐件核 md5；中途我自己写出过 9 处与 2 处漂移，格式化后归零）；
+`cargo clippy --offline -j 1 --all-targets -p minix-textfilter` 退 0、共 **149** 条，改动四件上
+**34 条**——同一条命令在主树（HEAD 态）也是 149 条、同四件 34 条，按（文件, 消息）做集合差
+**为空**（全在 `src/pr.rs`、全部存量；壳与两件测试各 0 条）⇒ 本轮零新警。
+**A/B 对 `tmp/pr-466/pr`（软链到 `tmp/pr-419/pr_ref`，取名 `pr` 是为了让 `egetopt` 自己算出的
+名字段与本壳一致；用前照例打 `-Z`：交回 `pr: illegal option -- Z` 加那三行 usage）跑，矩阵四十八形，SAME=35（其中退 0 的 9 形先数过）
+/ 非预期 DIFF=0 / 页眉后缀比通过 3 形 / 已知分叉另计 10 形**（`tmp/pr-466/ab.log`），四类分别是
+`ARGV-BYTE-PATH-IN-LIBS` 1 形、`PR-UNMODELLED-LEGACY`（`-T`/`-p`/`-r`）3 形、
+`PR-EGETOPT-NUMBER-TOKEN-CONTINUATION` 6 形，加上时间场那一族按后缀比的 3 形。
+**门账**：库内 `pr` **48 → 50**、`pr_face` **17 → 19**、跨壳表十七行 → **十八行**、
+整包 69 段 **1266 → 1270**；夹具侧 55 处 `parse_pr_args` 改字节形（绑定形 27 拆两行、内联形 28
+就地包），测试模块新立 `fn argv`，既有门的期望串逐字未动。
+
+**进度与在册（全部现量）**：参数缝半已落 **二十一支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+`colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、
+`jot`、`nl`、`pr`）；`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l`
+→ **18**；命令面口径 → **87**；渲染半那条 grep 仍 **0** 行；`line_bytes` **40 处 / 29 件**
+（`pr` 本来就在其中，本支未新增调用点）；`bin/pr.rs` 内 `from_utf8_lossy` 现量 **2 处**。
+余下 18 支里带字母位诊断面的有 **6** 支（`sort`、`split`、`tail`、`unexpand`、`unifdef`、`vis`；
+判据是本壳或它调用的库模块交回 `GetoptReport`），**切片 49 建议 `sort`**：字母序第一支，
+`-t` 的判据与 `-k` 的字段说明符既进比较又进报文，形状与 `join` 同族而更密；参照件用前照例
+先打一枚 `-Z`。**在册未办的五条建议**：①插一小轮收 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`；
+②把 `JOT-EMPTY-OPERAND-READS-OOB`、`JOT-PREC-MINUS-ONE-FORMAT`、`JOT-WORD-TOOLONG-ON-MACHINE`
+一起拿到真机上量一次；③裁 `NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED` 那族判据；
+④`PR-EGETOPT-NUMBER-TOKEN-CONTINUATION`（六形现量，一个批次量级）；⑤本轮新立的
+`TEXTFILTER-07-TABLE-UNESCAPED-PIPES`（五处未转义竖线，纯文档面）。独立轮在册不碰：
+`ARGV-BYTE-PATH-IN-LIBS`、`CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-DASH-REWRITE-AT-FIRST-CHAR`、
+`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、
+五枚 `*-NON-PERMUTE-OPERAND-TAIL`、`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、
+`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`COL-CLIPPY-STOCK-LINT`、`BIN_SUPPORT-FMT-DRIFT-STOCK`、
+`REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE`、`NL-NON-PERMUTE-OPERAND-TAIL`、
+`NL-SIGNED-COUNTERS`、`HEAD-NEGATIVE-COUNT-UNSIGNED-GUARD`、`HEAD-COUNT-LEADING-BLANK-ACCEPTED`、
+`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`、`JOT-EMPTY-OPERAND-READS-OOB`、
+`JOT-WORD-TOOLONG-ON-MACHINE`、`PR-TIMEFIELD-UNRENDERED`（本笔把这条从「注释里的一句话」
+升成立册号，后缀比法就是为它立的）、`PR-UNMODELLED-LEGACY`，**本笔新立**
+`PR-EGETOPT-NUMBER-TOKEN-CONTINUATION` 与 `TEXTFILTER-07-TABLE-UNESCAPED-PIPES`；
+`todo-reconcile-scan` 的 `探针命名族` 漂移归一线。**取证回抄照办**：release 前把 `tmp/pr-466`
+整目录复制回主树 `tmp/`。
