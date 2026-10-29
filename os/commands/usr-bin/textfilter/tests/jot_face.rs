@@ -390,3 +390,139 @@ fn the_unwritten_precision_family_prints_no_decimal_point_and_no_literal() {
         assert!(!out.is_empty(), "{args:?} 要有输出");
     }
 }
+
+/// 字节形 argv 的命令缝：`&str` 递不出裸 `ff`（`OsStr` 从 `str` 过来时那串已是合法 UTF-8），
+/// 而 `jot` 的三支带值字母（`-b`/`-s`/`-w`）的值**就是输出内容**，所以这一层夹具是必需的。
+/// 两路输出逐字节交回：文本形分不清「一枚字节」与「折叠出的三字节」这两种错法。
+fn run_argv(args: &[&[u8]]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let output = Command::new(JOT)
+        .args(args.iter().map(|word| std::ffi::OsStr::from_bytes(word)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the jot binary should be runnable");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 参数缝在 `jot` 上直接改到**打出去的内容**：`-b`/`-w` 的词由 `putdata`（`jot.c:300-311`）
+/// 原样送 stdout，`-s` 的串由 `:310` 的 `fputs(sepstring, stdout)` 打在条目之间。文本缝之下
+/// 一枚裸 `ff` 先被折成 `ef bf bd`，于是每一行都多两枚字节。反面形是 `%c`：C 走 `putchar`
+/// 交回**一枚**字节（参照件对 `-p 0 -w '%c' 1 200 1` 现量 `c8`），而 `v as u8 as char` 经
+/// UTF-8 会变成 `c3 88` 两枚——这一支的 `char` 通道在字节形下退出。
+#[test]
+fn a_raw_byte_in_the_word_or_the_separator_is_printed_as_that_byte() {
+    // ①`-b` 的词：两行都是 `ff 77 64`。
+    let (out, status, err) = run_argv(&[b"-b\xffwd", b"2"]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(err, Vec::new(), "成功路一声不出");
+    assert_eq!(out, vec![0xff, b'w', b'd', b'\n', 0xff, b'w', b'd', b'\n']);
+
+    // ②`-s` 的串：条目之间夹的是 `ff 78` 两枚，不是五枚。
+    let (out, status, err) = run_argv(&[b"-s\xffx", b"3", b"1", b"5"]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(
+        out,
+        vec![b'1', 0xff, b'x', b'3', 0xff, b'x', b'5', b'\n'],
+        "分隔符必须按 argv 的原字节打出去"
+    );
+
+    // ③`-w` 的词里，百分号之前的字面段照样进输出。
+    let (out, status, err) = run_argv(&[b"-wa\xff%d", b"2"]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, vec![b'a', 0xff, b'1', b'\n', b'a', 0xff, b'2', b'\n']);
+
+    // ④前缀里的 `%%` 展开成一枚（参照件对 `-p 2 -w '%%x%d' 3 1 5` 现量 `%x1|%x3|%x5`）。
+    let (out, status, err) = run(&["-p", "2", "-w%%x%d", "3", "1", "5"]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, "%x1\n%x3\n%x5\n", "两枚百分号进、一枚百分号出");
+
+    // ⑤`%c` 只交回一枚字节：这是「按字节」在输出端的另一个可观察面。
+    let (out, status, err) = run_argv(&[b"-p", b"0", b"-w%c", b"1", b"200", b"1"]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(
+        out,
+        vec![0xc8, b'\n'],
+        "`putchar` 那一枚就是 `c8`，不是 `c3 88`"
+    );
+}
+
+/// 三支把值拼进句子的腿，值位都是 argv 原字节：`unknown or invalid format \`%s'`
+/// （`jot.c:385`、`:396`——**这一支此前在本壳根本没有值**，见本轮台账）、
+/// `Bad reps value:  %s`（`:215`）、`Too many arguments.  What do you mean by %s?`（`:225`）。
+/// 三支都是 `errx`：一行、不接 usage、退 1。另一族是可观察的**判据**差：空 reps 在 C 是合法的
+/// 0（`strtoul` 把 `ep` 留在起点），配上 begin/ender 落 `Infinite sequences cannot be bounded`
+/// （`:272-275`）而不是那句 Bad reps；空 begin 在 C 是 `argv[i][-1]` 的越界读，宿主参照件现量
+/// `jot 3 '' 5` 交回 `1 3 5`（那一格留缺省），而本壳此前是**当场 panic**。
+#[test]
+fn the_operand_and_the_word_echoed_into_a_sentence_are_the_argv_bytes() {
+    // ①说明符校验失败：反引号之间是**整个 format 词**，含那枚裸字节。
+    let (out, status, err) = run_argv(&[b"-w%\xff", b"2"]);
+    assert_eq!(out, Vec::new(), "报文只走标准错误");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"jot: unknown or invalid format `%".as_slice(),
+            &[0xff],
+            b"'\n".as_slice()
+        ]
+        .concat(),
+        "这一句在 C 带值；不带值就少了一整个可观察面"
+    );
+
+    // ②坏 reps：`-- ` 之后是原字节。
+    let (out, status, err) = run_argv(&[b"x\xff", b"2"]);
+    assert_eq!(out, Vec::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"jot: Bad reps value:  x".as_slice(),
+            &[0xff],
+            b"\n".as_slice()
+        ]
+        .concat(),
+        "两个空格是 C 的原句，值位是原字节"
+    );
+
+    // ③第五个操作数：报的是第五个，前四个一个都不解读。
+    let (out, status, err) = run_argv(&[b"1", b"2", b"3", b"4", b"5\xff"]);
+    assert_eq!(out, Vec::new());
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"jot: Too many arguments.  What do you mean by 5".as_slice(),
+            &[0xff],
+            b"?\n".as_slice(),
+        ]
+        .concat()
+    );
+
+    // ④空 reps 是合法的 0：无界序列配上 begin/ender 落那句 bounded，而不是 Bad reps。
+    let (out, status, err) = run_argv(&[b"", b"1", b"2"]);
+    assert_eq!(out, Vec::new(), "无界又不可能界定，一格都不该打");
+    assert_eq!(status, 1);
+    assert_eq!(err, b"jot: Infinite sequences cannot be bounded\n");
+
+    // ⑤高字节操作数经 `char` 落地所以为负：参照件对 `jot 3 <ff> 5` 现量 `-1 2 5`
+    //    （begin = -1，步长 (5-(-1))/2 = 3），按无符号读会打成 `189 97 5` 或 `1 97 189`。
+    let (out, status, err) = run_argv(&[b"3", &[0xff][..], b"5"]);
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, b"-1\n2\n5\n".to_vec(), "最后一枚字节要经 signed char");
+
+    // ⑥空 begin：那一格保持缺省（参照件现量 `1 3 5`），关键是**不再 panic**。
+    let (out, status, err) = run_argv(&[b"3", b"", b"5"]);
+    assert_eq!(status, 0, "退码该是 0：stderr 是 {err:?}");
+    assert_eq!(
+        out,
+        b"1\n3\n5\n".to_vec(),
+        "begin 留缺省 1，步长由 (5-1)/(3-1) 推出来"
+    );
+}

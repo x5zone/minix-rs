@@ -13,9 +13,9 @@
 //! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
 //! （`tr_ref: unknown option -- \xff`），而文本缝先把命令行 lossy 成 U+FFFD，各支再按自己的
 //! 取法渲染：按字节取到的是 `ef`（U+FFFD 的第一字节），按 `char` 取再渲染的是 `c3 af` 两字节。
-//! 参数缝半逐支把这一位翻正——本表十五行（`rev`、`paste`、`seq`、`tr`、`fold`、`col`、
-//! `uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`，末六行随批次四百五十八、
-//! 四百五十九、四百六十、四百六十一、四百六十二、四百六十三落地）**至此全是原字节** `ff`，与参照件同形；表外那些仍走文本缝的壳交回的仍是 `ef`。
+//! 参数缝半逐支把这一位翻正——本表十六行（`rev`、`paste`、`seq`、`tr`、`fold`、`col`、
+//! `uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、`jot`，末七行随批次四百五十八、
+//! 四百五十九、四百六十、四百六十一、四百六十二、四百六十三、四百六十四落地）**至此全是原字节** `ff`，与参照件同形；表外那些仍走文本缝的壳交回的仍是 `ef`。
 //! 字母位之外还有一条**操作数当文件路径**的腿：路径进了 `os/libs` 里的 `&str` 口就非折
 //! 一次不可（在册 `ARGV-BYTE-PATH-IN-LIBS`）。因此下面的断言既钉住
 //! 「不再 abort、两条腿一致」，也钉住**当前那一串字节**：等这些腿落地，这几枚会当场变红，
@@ -40,6 +40,7 @@ const COMM: &str = env!("CARGO_BIN_EXE_comm");
 const CUT: &str = env!("CARGO_BIN_EXE_cut");
 const HEAD: &str = env!("CARGO_BIN_EXE_head");
 const JOIN: &str = env!("CARGO_BIN_EXE_join");
+const JOT: &str = env!("CARGO_BIN_EXE_jot");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
 const FF: u8 = 0xFF;
@@ -70,13 +71,13 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     (code, output.stdout, output.stderr)
 }
 
-/// 十五支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
+/// 十六支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 libc 报文。
 /// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
 /// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 15] = [
+    let cases: [(&str, &str, i32, &[u8]); 16] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
         // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
         // 字母位是原字节 `ff`。
@@ -115,6 +116,10 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         // 而字母位的取法（`src/join.rs` 的 `char::from(b[1])`）与渲染（`line_bytes`）
         // 早在批次四百零七就按字节了——本行翻正的是 argv 那一头。
         ("join", JOIN, 1, b"join: unknown option -- \xff\n"),
+        // jot 随批次四百六十四落地：它的 `usage()` 退 1（`jot.c:314-319`，句尾是 `exit(1)`），
+        // 而这一支的取法（`src/jot.rs` 的 `char::from(bytes[pos])`）与渲染（`line_bytes`）
+        // 早已按字节——本行翻正的是 argv 那一头，也就是把 `support::args()` 换成 `args_bytes()`。
+        ("jot", JOT, 1, b"jot: unknown option -- \xff\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");
