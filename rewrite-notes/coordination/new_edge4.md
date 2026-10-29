@@ -1645,3 +1645,84 @@ riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0；`rustfmt --ed
 `REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE` 待裁决；`todo-reconcile-scan` 的 `探针命名族`
 漂移归一线。**取证回抄照办**：本笔 release 前把 `tmp/comm-460` 整目录复制回主树 `tmp/`（上一笔立的
 那条流程，`tmp/cksum-457` 失踪事故之后第一次执行）。
+
+### 第一百七十五笔（批次四百六十一 · A2 参数缝半切片 43：`cut` 的 argv、`-d` 的分隔符与列表值交回原字节；负控的一段全绿补出一枚库门）
+
+**这一笔先说形状**：`cut` 是本族第二个「参数值直接进输出内容」的壳（第一个是上一笔的 `column`），但它的两条值腿形状相反。`-d` 的值被
+`minix3/usr.bin/cut/cut.c:101-102` 的一句 `dchar = *optarg` 取走**首字节**当分隔符，那枚字节拿去切每一行——`column` 的 `-s` 是一族字节、这里是
+一枚字节，所以切分判据从「集里有没有这枚」变成「等不等这枚」。而 `-b`/`-c`/`-f` 的值只喂 `get_list`，报错用的又是那两句**不把出错那段拼回
+句子**的固定 errx（`cut.c:196` 残留、`:198` 含零），所以列表腿在字节口径上没有任何可回显的东西，它能钉的只有「不许多报也不许少报」。
+落码四层：库侧 `os/commands/usr-bin/textfilter/src/cut.rs` 的 `fn parse_list`、`fn parse_token`、`fn scan_number` 三个入口从 `&str` 改
+`&[u8]`（切分集「空格、制表符、逗号」按字节判，数字腿本来就走 `is_ascii_digit`，语义一字未动），`CutArgs` 的两份列表与 `operands` 改字节形，
+`fn parse_cut_args` 收 `&'a [&'a [u8]]`，环里 `arg == b"--"`、`arg[0] != b'-'`、`char::from(bytes[pos])` 三处按字节，`-d` 的取值改成
+`*value.first().unwrap_or(&0)`；壳侧 `src/bin/cut.rs` 走 `support::args_bytes()`/`prog_name_bytes()`、libc 行走 `GetoptReport::line_bytes`、
+`-` 的判据 `*operand == b"-"` 按字节，开档与 `warn("%s", *argv)` 两条 `&str` 口之前折一次（在册 `ARGV-BYTE-PATH-IN-LIBS`，壳内现量 2 处）。
+
+**本轮最该被后续读走的，是一枚靠「一段全绿」补出来的门**：负控 E3（把字母位的取法退回按字符取整簇）第一遍红的是面侧新门、跨壳表那一行与面侧
+既有的聚簇门，而**库内 620 枚全绿**。这不是注入打偏——同族的 `comm`（批次四百六十 D2）与 `cmp`（四百五十八 W4）在同一枚注入下都先红了库里那枚
+`the_unknown_letter_is_the_first_byte_not_the_first_character`，`cut` 独缺，说明**这一支的字母腿在库里从来没钉住过**：环的取法早在批次四百一十之前就
+是按字节，可库里所有夹具的字母都是 ASCII，没有任何一枚带过 `c3 a9`。处置是补一枚库门 `the_unknown_letter_is_taken_bytewise_in_the_ring`
+（`-é` 与聚簇 `-sé` 都交回 `c3`，ASCII `-Z` 不受波及），补完重跑 E3：红名单从 3 枚变成 **4** 枚，取法与渲染两半这才分开钉住。判据一条：
+**每一枚注入都应当至少红一处「本轮所改的那一层」；一整段全绿时先怀疑覆盖面有洞，而不是宣布注入无效**——这是批次四百一十七「门清单由执行结果列，
+不由印象列」的另一侧兑现：执行结果不只列出门，还列出**缺了哪些门**。
+
+**门账（先对测试名集合再对总数，批次四百五十九那条判据本轮开工即办）**：库内 `cut` 模块 **11 → 13**，`cut_face` **18 → 19**（新立
+`a_raw_byte_delimiter_splits_the_field_and_a_raw_byte_letter_is_named`，配字节形夹具 `fn run_argv`，四段是 `-d<ff> -f1`、`-d <ff> -f2`、
+`-d <ff>` 对只含 U+FFFD 的行、字母位 `-\xff`），跨壳表门数 **4 → 4** 不变而表体十二行 → **十三行**（`cut` 行钉 `cut: unknown option -- \xff`
+与退 **1**），整包 69 段 **1252 → 1255 passed / 0 failed**。名字集合逐件对账：`cut.rs` 差集恰好是两枚新名、`cut_face.rs` 一枚、壳件与跨壳表零增减，
+`#[test]` 属性数与属性后 `fn` 行数成对，没有「同名执行两遍」也没有顶掉邻居属性。既有夹具的期望串逐字未动，只把字面量从文本形改成字节形
+（`parse_list("1,,2")` → `parse_list(b"1,,2")`），「找到既有门就翻正、不新增双胞胎」第五次执行。
+
+**一轮 WSL 崩溃插在同一批的负控之前，恢复按「先核现场再动手」走完**：领取树与锁都在（`claim/GETOPT-REPORT-BYTE-LETTER-qoder` @ `a1b4fe638`），
+`git status --porcelain` 只有本轮四件，`git diff --numstat` 读数是 `16/10`、`145/83`、`9/5`、`64/0` 全是真改动——没有批次四百零五那种「成片只有删除」
+的清零指纹，`tmp/cut-461/` 下的 `patch.py`、`negctl.py` 与 `orig/`（完整相对路径备份）完好，四个可执行件 `file` 出来都是合法 ELF（批次四百五十九那条
+「崩过的树除重编外还要 `file` 一下」在这里第二次用上，本轮没撞上截断产物）。复跑宿主整包得 69 段 / 1254 / 0 才续做负控。**同一处还留了一条自己的
+取数错**：崩前那一次整包是跑在 `cargo test … | tee 日志 | grep … | head` 这条管道里的，`head` 取够行数就关流，SIGPIPE 把 cargo 打断，日志只剩 23 段、
+聚合数被读成 698——**取聚合读数时不要让下游提前关流**：先把输出整份重定向到日志，再对日志算，且跑完必核 `EXIT` 与「段数 = 靶数」这一条对账。
+
+**A/B 对 `tmp/cut-406/cut` 跑二十四形，SAME=24 / DIFF=0**（`tmp/cut-461/ab.log`）。归属验法照旧但要点在**软链名**：`cut_ref` 直接打 `-Z` 交回的是
+`cut_ref: unknown option -- Z`，那是程序名差不是措辞差；经 `cut` 这个软链名起跑才交回 `cut: unknown option -- Z` 加三行制表符对齐的 usage、退 1，
+与 `minix3/lib/libc/stdlib/getopt.c:101-104` 同形。二十四形里分隔符腿占六形（裸 `ff` 切得开、第二列拿到 `ff` 之后那一段、U+FFFD 三枚不被当分隔符、
+`-dé` 取 `c3`、`-dab` 只取 `a`、`-d ''` 取 NUL），列表腿占五形（含裸 `ff` 的 illegal 那句、含零那句、倒序区间不选东西、空项折叠、空列表不是错），
+字母位四形、缺值一形、操数与通道六形（裸 `ff` 档名那一形在盘上同时放原字节名与其折叠孪生件，把在册的开档腿从读数里排除，排除方式写在 `ab.py` 的
+模块注释里），外加 `--` 终结符、裸 `-` 读标准输入、`-b 2-4`、`-f 2 -s -d,`。**本支没有新登记任何 C 侧分叉**。上一笔立的「A/B 前先显式
+`cargo build -p … --bins` 再 `file`」本轮第三次照办。负控四枚（`tmp/cut-461/negctl.py`，逐枚读数 `negctl-E1..E4.log`，汇总 `negctl-final.log`；
+基线库内 620、跨壳表 4、`cut_face` 19 三段全绿，命令带 `--no-fail-fast`）各咬 **2/2/4/1**：E1（`-d` 取值退回按字符取首字符低字节）咬库门 + 面门而
+跨壳表不红；E2（argv 退回文本缝）咬面门 + 跨壳表而**库内全绿**——「库件的入参本来就是字节，缝在壳上，牙只长在面侧与跨壳表」这条通则第三次量化；
+E3 见上；E4（开档那句丢掉操作数名）只咬面侧既有那枚 `an_unopenable_operand_prints_program_operand_and_errno_sentence`，即回显腿的牙长在面侧。
+每枚注入前后按整文件 md5 与备份成对复核，跑完核 `git status --porcelain` 只剩本轮四件。
+
+**排版与归属两笔账，还有一处自己的表格事故**：`rustfmt --edition 2024 --check` 在格式化前对 `src/cut.rs` 报 8 处漂移，而 HEAD 那一份同文件本来就报
+**3** 处（`fn select_bytes` 的签名折行、`fn in_ranges` 的链式调用、第 456 行那处），所以本轮 diff 里含**三处存量排版归零**——账上写明，免得下一个读者
+去追「这几行谁改的」；`cut_face.rs` 那 1 处是本轮新写断言的折行。clippy 用同一条命令 `cargo clippy --offline -j 1 --all-targets -p minix-textfilter`
+在主树（= 本笔基线 `a1b4fe638`）与本树各跑一次：各 **151** 条 `^warning`、位置各 **82** 处；触及本轮四件的各 **1** 条，是同一条
+`iter().copied().collect()` 在 `cut_face.rs` 里从第 197 行**位移**到第 261 行（被本轮插入的夹具顶下去），位移不是新增（批次四百五十八那条判据第二次兑现）。
+自己的事故一条：把「管道」这条取数错写进板 A2 那个表格单元时，命令串里的三枚竖线没转义，行内未转义竖线从 7 涨到 10 —— 表格列数当场被改变；
+按批内既有的 `\|` 规矩补转义后回到 7/13 与 HEAD 同构。**判据：把含管道的命令写进台账表格单元，竖线一律 `\|`，改完必核「竖线总数 − 转义数」与 HEAD 一致**。
+
+**五道收尾门逐条读数**（`2026-10-29`，码笔 `2c68ae118`、文档笔 `e41df2570` + SL-5 补笔）：① `tools/todo-reconcile-scan.sh` → 13 项判据里
+**1 项 DRIFT**（`探针命名族（行）` 现量 31 vs 台账基线 18），本轮七件全在 `os/commands/usr-bin/textfilter/` 与 `rewrite-notes/`，与该项取数域
+`os/kernel/src`、`os/arch/src` 无交集 ⇒ 非本轮引入，归一线在制，本笔不改脚本基线也不代改台账；② `python3 tools/notes-link-check.py rewrite-notes/`
+→ 764 个 md、**断链 131**（与上一笔同数），本轮文档新增行的 markdown 链接数为 **0** ⇒ 新增断链键 0；③ `tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md`
+→ **PASS（0 项）**；④ `tools/doc-style-lint.sh --diff HEAD~3..HEAD` → 3 个文件 / 99 个新增行、**error 级 0**——**这里先红了一次**：首跑报
+`07-text-filter.md:185 [SL-5] 修复史叙事 :: 原先`，那一处是我把负控的时间顺序写进了正文，改写机制叙述后另落一笔补笔，复跑带显式 range 归零
+（默认 `HEAD` 在提交后空转，批次四百五十九那条）；⑤ `tools/check-staged-inflight.sh` → 退 0，避让清单 1 条未触碰。**另记一次解释器用错**：
+`doc-style-lint.sh` 是 bash 脚本内嵌 python，`python3 tools/doc-style-lint.sh …` 会报脚本自己的语法错——那是调用错不是门红。
+
+**门读数补全**：宿主整包 → **69 段 / 1255 / 0**（`tmp/cut-461/pkg-host2.log`）；容器权威门按板 §7.3 三挂载配方（`-u $(id -u):$(id -g)` +
+`ci-cargo`/`ci-target`，跑时未与其他 cargo 并发）→ 退 0、**69 段 / 1255 / 0**，与宿主同读数（`tmp/cut-461/container-gate.log`）；三架构
+`cargo check --offline -j 1 --target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0；
+`rustfmt --edition 2024 --check` 触及四件终态零漂移。开工基线不当转述用：本笔基线 1252 是上一笔在主树合回后当场复跑取到的
+（`tmp/comm-460/main-tree-recheck.log`，快照即本笔基线 `a1b4fe638`）。
+
+**进度与在册（全部现量）**：参数缝半已落 **十六支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、
+`cmp`、`column`、`comm`、`cut`）；`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **23**；命令面口径 → **92**；
+渲染半那条 grep 仍 **0** 行；`line_bytes` **40 处 / 29 件**（本支未新增调用点）。余下 23 支里带字母位诊断面的有 11 支（`head`、`join`、`jot`、`nl`、
+`pr`、`sort`、`split`、`tail`、`unexpand`、`unifdef`、`vis`），**切片 44 建议 `head`**（字母序第一支，`-c`/`-n` 带值且值可前置减号，形状近 `cut`
+的列表腿）。参照件本笔当场验过归属：`tmp/family-diag-ref/` 那四支（`head_ref`、`uniq_ref`、`join_ref`、`sort_ref`）打 `-Z` 全部交回
+`invalid option -- 'Z'` ⇒ 宿主 glibc 的 `getopt`，**不能**当这一族的差分腿（批次四百零七、四百零八那两次现量的第三次兑现）；可用的是
+`tmp/head-415/head`（`head_ref` 的软链名，Minix `getopt.c` 编进去，打 `-Z` 交回 `head: unknown option -- Z`），是批次四百一十五为 `head` 诊断面配的。
+独立轮在册不碰：`ARGV-BYTE-PATH-IN-LIBS`、`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`CKSUM-CHECK-LEG-TEXTSEAM`、
+`UNITS-DASH-REWRITE-AT-FIRST-CHAR`、`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、
+五枚 `*-NON-PERMUTE-OPERAND-TAIL`；`REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE` 待裁决；`todo-reconcile-scan` 的 `探针命名族` 漂移归一线。
+**取证回抄照办**：release 前把 `tmp/cut-461` 整目录复制回主树 `tmp/`。
