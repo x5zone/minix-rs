@@ -29,32 +29,40 @@ use minix_textfilter::window::{
 };
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
     // C 的诊断行与 usage 行都以 `getprogname()` 开头（`head.c:200-202` 把程序名
-    // 当 `%s` 递进去），所以不能写死命令名。
-    let prog = support::prog_name(&argv);
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // 当 `%s` 递进去），所以不能写死命令名。程序名那一腿交给 `warn`/`warn_line` 与
+    // `line_bytes` 的 `&str` 名字段（在册 `ARGV-BYTE-PATH-IN-LIBS`），臂内折一次。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let HeadArgs {
         count,
         bytecnt,
         qflag,
         vflag,
         operands,
-    } = match parse_head_args(&refs[1..]) {
+    } = match parse_head_args(&args[1..]) {
         Ok(parsed) => parsed,
         // libc 的那一行在前，usage 在后（`getopt.c:101-104`、`:132-136`）。字母位走
         // `line_bytes`：`getopt.c:79` 的 `optopt = *place++` 一次进一个字节、`:103` 的
         // `%c` 原样写出，所以 `-é`（`c3 a9`）报的是 `c3`；取法在 `src/window.rs` 的环里
         // 已经是 `bytes[pos] as char`，两边同形才成立。
         Err(HeadArgError::Getopt(report)) => {
-            support::warn(&report.line_bytes(prog));
-            usage(prog)
+            support::warn(&report.line_bytes(&prog));
+            usage(&prog)
         }
         Err(HeadArgError::IllegalCount { byte, value }) => {
             // C `errx(1, "illegal byte count -- %s", optarg)`（`head.c:92-102`）：
-            // 走 `vwarnx`，所以后面不缀 `errno` 句子。
-            let kind = if byte { "byte" } else { "line" };
-            support::warn(format!("{prog}: illegal {kind} count -- {value}\n").as_bytes());
+            // 走 `vwarnx`，所以后面不缀 `errno` 句子；而 `%s` 交回的是 **optarg 的原字节**，
+            // 所以那一段不许过 `&str`——句子按字节拼，`value` 直接接上去。
+            let kind: &[u8] = if byte { b"byte" } else { b"line" };
+            let mut line = prog.as_bytes().to_vec();
+            line.extend_from_slice(b": illegal ");
+            line.extend_from_slice(kind);
+            line.extend_from_slice(b" count -- ");
+            line.extend_from_slice(&value);
+            line.push(b'\n');
+            support::warn(&line);
             support::terminate(1);
         }
     };
@@ -72,20 +80,27 @@ fn run() -> ! {
         support::terminate(0);
     }
     for operand in &operands {
-        let data = match support::read_file(operand) {
+        // 开档与 `warn("%s", *argv)` 两条腿都要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），
+        // 所以这里折一次；**横幅那一腿不跟着折**——它是本壳自己 `printf` 的
+        // （`head.c:130-131`），交回的必须是 argv 原字节。
+        let path = String::from_utf8_lossy(operand);
+        let data = match support::read_file(&path) {
             Ok(data) => data,
             // C `head.c:124-127` 是 `warn("%s", *argv)` + `eval = 1` + `continue`：
             // 程序名、操作数、`strerror` 句子三个成分缺一不可（旧写法把 `warn(3)`
             // 当成 `warnx(3)` 用）。
             Err(code) => {
-                support::warn_line(prog, operand, code);
+                support::warn_line(&prog, &path, code);
                 status = 1;
                 continue;
             }
         };
         if show_banner {
-            let sep = if first { "" } else { "\n" };
-            support::emit(format!("{sep}==> {operand} <==\n").as_bytes());
+            let mut banner: Vec<u8> = if first { Vec::new() } else { vec![b'\n'] };
+            banner.extend_from_slice(b"==> ");
+            banner.extend_from_slice(operand);
+            banner.extend_from_slice(b" <==\n");
+            support::emit(&banner);
         }
         first = false;
         head_stream(&data, count, bytecnt);

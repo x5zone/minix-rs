@@ -233,7 +233,10 @@ pub struct HeadArgs {
     /// `-v`: always print per-file banners.
     pub vflag: bool,
     /// File operands in order (a lone `-` names a file, unlike `cut`).
-    pub operands: Vec<String>,
+    /// 交回的是 argv 里那串**原字节**：横幅那一腿由壳自己拼（`head.c:130-131` 的
+    /// `printf("%s==> %s <==\\n", …, *argv)`），所以它可以逐字节回显；只有开档与
+    /// `warn("%s", *argv)` 那两条 `&str` 口要折一次（在册 `ARGV-BYTE-PATH-IN-LIBS`）。
+    pub operands: Vec<Vec<u8>>,
 }
 
 /// `head` argument-parsing failure.
@@ -249,8 +252,9 @@ pub enum HeadArgError {
     IllegalCount {
         /// `true` for a `-c` (byte) count, `false` for `-n` (line).
         byte: bool,
-        /// The offending value text, echoed into the C error message.
-        value: String,
+        /// The offending value **as the argv bytes**, echoed into C's
+        /// `errx(1, "illegal … count -- %s", optarg)`（`head.c:96-97`、`:102-103`）。
+        value: Vec<u8>,
     },
 }
 
@@ -278,25 +282,28 @@ pub enum HeadArgError {
 ///   (`head.c:105-113`); any other letter inside a leading option token is
 ///   [`HeadArgError::Getopt`] with that letter, because libc prints its own line
 ///   before `usage()` runs.
-pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
+pub fn parse_head_args(args: &[&[u8]]) -> Result<HeadArgs, HeadArgError> {
     // Phase 1 — obsolete(): rewrite the leading `-<digit>…` run, stop at the
     // first non-matching token and copy the remainder verbatim.
-    let mut scanned: Vec<String> = Vec::new();
+    let mut scanned: Vec<Vec<u8>> = Vec::new();
     let mut still_obsolete = true;
     for arg in args {
-        let bytes = arg.as_bytes();
         if still_obsolete
-            && bytes.len() >= 2
-            && bytes[0] == b'-'
-            && bytes[1] != b'-'
-            && bytes[1].is_ascii_digit()
+            && arg.len() >= 2
+            && arg[0] == b'-'
+            && arg[1] != b'-'
+            && arg[1].is_ascii_digit()
         {
-            let mut rewritten = String::from("-n");
-            rewritten.push_str(&arg[1..]);
+            // C 的 `obsolete()` 拼的是字符数组（`head.c:188-192` 的 `-`、`n` 加
+            // `strcpy(ap + 2, *argv + 1)`），搬到这里就是「前缀两枚字节 + 原串去掉
+            // 短横后的全部字节」——尾巴里那枚非 UTF-8 字节必须原样跟着走，它随后会被
+            // `strtoimax` 拒掉并**回显进报文**（`head.c:96-97` 的 `illegal ... -- %s`）。
+            let mut rewritten: Vec<u8> = b"-n".to_vec();
+            rewritten.extend_from_slice(&arg[1..]);
             scanned.push(rewritten);
         } else {
             still_obsolete = false;
-            scanned.push(String::from(*arg));
+            scanned.push((*arg).to_vec());
         }
     }
 
@@ -310,12 +317,12 @@ pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
     };
     let mut index = 0;
     while index < scanned.len() {
-        let token = scanned[index].as_str();
-        if token == "--" {
+        let token: &[u8] = &scanned[index];
+        if token == b"--" {
             result.operands.extend_from_slice(&scanned[index + 1..]);
             break;
         }
-        let bytes = token.as_bytes();
+        let bytes = token;
         if bytes.len() > 1 && bytes[0] == b'-' {
             let mut pos = 1usize;
             while pos < bytes.len() {
@@ -323,18 +330,24 @@ pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
                     b'c' | b'n' => {
                         let byte_opt = bytes[pos] == b'c';
                         let value = if pos + 1 < bytes.len() {
-                            String::from(&token[pos + 1..])
+                            token[pos + 1..].to_vec()
                         } else {
                             index += 1;
                             if index >= scanned.len() {
                                 return Err(HeadArgError::Getopt(
-                                    crate::GetoptReport::MissingValue(bytes[pos] as char),
+                                    crate::GetoptReport::MissingValue(char::from(bytes[pos])),
                                 ));
                             }
                             scanned[index].clone()
                         };
-                        match value.parse::<i64>() {
-                            Ok(parsed) if parsed > 0 => {
+                        // 数值腿仍交给 `str::parse::<i64>`：能转成 i64 的文本必是 ASCII，
+                        // 所以 `from_utf8` 失败与「这不是一个数」是同一件事——把解码当**纯检查**
+                        // 用，非 UTF-8 的值走 C 的那句 `illegal ... count` 并被**原字节回显**。
+                        match core::str::from_utf8(&value)
+                            .ok()
+                            .and_then(|text| text.parse::<i64>().ok())
+                        {
+                            Some(parsed) if parsed > 0 => {
                                 if byte_opt {
                                     result.bytecnt = parsed as usize;
                                 } else {
@@ -362,7 +375,7 @@ pub fn parse_head_args(args: &[&str]) -> Result<HeadArgs, HeadArgError> {
                     }
                     _ => {
                         return Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
-                            bytes[pos] as char,
+                            char::from(bytes[pos]),
                         )));
                     }
                 }
@@ -948,17 +961,27 @@ mod tests {
         assert_eq!(out[0].bytes(), b"y");
     }
 
+    /// 夹具仍写 `"…"` 字面量以便读，这一层把它们统一交回 `&[u8]` —— 被测的
+    /// `parse_head_args` 收的是 argv 的原字节切片。
+    fn argv<'a>(words: &'a [&'a str]) -> Vec<&'a [u8]> {
+        words.iter().map(|w| w.as_bytes()).collect()
+    }
+
+    /// `tail` 的操数期望仍是文本形（`TailArgs.operands: Vec<String>` 未在本轮射程内）。
     fn operands(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| String::from(*w)).collect()
     }
 
+    /// head 的操数期望：`HeadArgs.operands` 是 argv 的原字节，所以这里逐条转字节。
+    fn operands_bytes(words: &[&str]) -> Vec<Vec<u8>> {
+        words.iter().map(|w| w.as_bytes().to_vec()).collect()
+    }
+
     #[test]
     fn test_parse_head_args_faithful_getopt() {
-        use alloc::string::String;
-        use alloc::vec;
         // Defaults: no args → ten lines, no operands.
         assert_eq!(
-            parse_head_args(&[]),
+            parse_head_args(&[] as &[&[u8]]),
             Ok(HeadArgs {
                 count: 10,
                 bytecnt: 0,
@@ -969,10 +992,10 @@ mod tests {
         );
         // `-n` value as the next token or attached.
         assert_eq!(
-            parse_head_args(&["-n", "5", "f"]),
+            parse_head_args(&argv(&["-n", "5", "f"])),
             Ok(HeadArgs {
                 count: 5,
-                operands: operands(&["f"]),
+                operands: operands_bytes(&["f"]),
                 ..HeadArgs {
                     count: 10,
                     bytecnt: 0,
@@ -983,10 +1006,10 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_head_args(&["-n5", "f"]),
+            parse_head_args(&argv(&["-n5", "f"])),
             Ok(HeadArgs {
                 count: 5,
-                operands: operands(&["f"]),
+                operands: operands_bytes(&["f"]),
                 ..HeadArgs {
                     count: 10,
                     bytecnt: 0,
@@ -998,28 +1021,31 @@ mod tests {
         );
         // obsolete(): the leading `-<digit>` run rewrites to `-n<digit>`.
         assert_eq!(
-            parse_head_args(&["-5", "f"]).map(|a| (a.count, a.operands)),
-            Ok((5, operands(&["f"])))
+            parse_head_args(&argv(&["-5", "f"])).map(|a| (a.count, a.operands)),
+            Ok((5, operands_bytes(&["f"])))
         );
         // `-c` byte count (attached or separate).
-        assert_eq!(parse_head_args(&["-c", "10"]).map(|a| a.bytecnt), Ok(10));
+        assert_eq!(
+            parse_head_args(&argv(&["-c", "10"])).map(|a| a.bytecnt),
+            Ok(10)
+        );
         // clustered `-q`/`-v`, last one wins.
         assert_eq!(
-            parse_head_args(&["-qv", "f"]).map(|a| (a.qflag, a.vflag)),
+            parse_head_args(&argv(&["-qv", "f"])).map(|a| (a.qflag, a.vflag)),
             Ok((false, true))
         );
         assert_eq!(
-            parse_head_args(&["-vq"]).map(|a| (a.qflag, a.vflag)),
+            parse_head_args(&argv(&["-vq"])).map(|a| (a.qflag, a.vflag)),
             Ok((true, false))
         );
         // `--` ends options; a lone `-` is a file operand.
         assert_eq!(
-            parse_head_args(&["--", "-5", "f"]).map(|a| a.operands),
-            Ok(operands(&["-5", "f"]))
+            parse_head_args(&argv(&["--", "-5", "f"])).map(|a| a.operands),
+            Ok(operands_bytes(&["-5", "f"]))
         );
         assert_eq!(
-            parse_head_args(&["-"]).map(|a| a.operands),
-            Ok(operands(&["-"]))
+            parse_head_args(&argv(&["-"])).map(|a| a.operands),
+            Ok(operands_bytes(&["-"]))
         );
     }
 
@@ -1066,9 +1092,8 @@ mod tests {
     /// `tmp/head-415/head_ref` 现量 `-é` 报单个 `303`，逐字节门在 `tests/head_face.rs`。
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
-        use alloc::string::String;
         assert_eq!(
-            parse_head_args(&["-\u{e9}"]),
+            parse_head_args(&argv(&["-\u{e9}"])),
             Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
                 '\u{00c3}'
             ))),
@@ -1076,7 +1101,7 @@ mod tests {
         );
         // `q` 是选项串里合法且不带值的字母（`head.c:87` 的 `"c:n:qv"`），聚簇继续吃到第一字节。
         assert_eq!(
-            parse_head_args(&["-q\u{e9}"]),
+            parse_head_args(&argv(&["-q\u{e9}"])),
             Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
                 '\u{00c3}'
             ))),
@@ -1084,7 +1109,7 @@ mod tests {
         );
         // 环停在第一个坏字母上。
         assert_eq!(
-            parse_head_args(&["-Z\u{e9}"]),
+            parse_head_args(&argv(&["-Z\u{e9}"])),
             Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
                 'Z'
             ))),
@@ -1093,21 +1118,64 @@ mod tests {
         // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
         // `head: illegal byte count -- é`，单独一行、不接 usage）。
         assert_eq!(
-            parse_head_args(&["-c\u{e9}"]),
+            parse_head_args(&argv(&["-c\u{e9}"])),
             Err(HeadArgError::IllegalCount {
                 byte: true,
-                value: String::from("é")
+                value: "é".as_bytes().to_vec()
             })
+        );
+    }
+
+    /// `-c`/`-n` 的值在 C 里是**被回显**的（`head.c:96-97`、`:102-103` 的
+    /// `errx(1, "illegal byte count -- %s", optarg)`），所以交回的必须是 argv 原字节；
+    /// 操数同样按字节交回（横幅那一腿由壳自己拼，不经 `&str`）。旧签名 `&[&str]` 让下面
+    /// 前两形在库里根本写不出来——一枚裸 `ff` 在走到环之前就已经不是它自己了。
+    /// 参照件 `tmp/head-415/head` 现量三形：`-c<ff>` → `head: illegal byte count -- <ff>`、
+    /// `-c 5<ff>` → 同句带尾巴那枚、obsolete 形 `-5<ff>` → `illegal line count -- 5<ff>`
+    /// （`obsolete()` 拼的是 `-n` 加原串去掉短横后的**全部**字节，`head.c:188-192`）。
+    #[test]
+    fn an_illegal_count_value_and_the_operands_carry_the_argv_bytes() {
+        let bad: &[&[u8]] = &[b"-c\xff"];
+        assert_eq!(
+            parse_head_args(bad).err(),
+            Some(HeadArgError::IllegalCount {
+                byte: true,
+                value: vec![0xff],
+            }),
+            "`-c<ff>` 的值交回的是那一枚裸字节"
+        );
+        let tail: &[&[u8]] = &[b"-c", b"5\xff"];
+        assert_eq!(
+            parse_head_args(tail).err(),
+            Some(HeadArgError::IllegalCount {
+                byte: true,
+                value: vec![b'5', 0xff],
+            }),
+            "尾巴带裸字节也整串交回（C 的 `%s` 打的是 optarg 全体）"
+        );
+        let obsolete: &[&[u8]] = &[b"-5\xff", b"f"];
+        assert_eq!(
+            parse_head_args(obsolete).err(),
+            Some(HeadArgError::IllegalCount {
+                byte: false,
+                value: vec![b'5', 0xff],
+            }),
+            "obsolete 重写之后，值仍是那一串原字节"
+        );
+        let names: &[&[u8]] = &[b"a\xffb", b"c"];
+        assert_eq!(
+            parse_head_args(names).map(|a| a.operands),
+            Ok(vec![b"a\xffb".to_vec(), b"c".to_vec()]),
+            "操数按原字节交回"
         );
     }
 
     #[test]
     fn test_parse_head_args_errors() {
-        use alloc::string::String;
         // The regression: an unknown option no longer leaks as a file operand.
         // 两支都是「libc 先印一行，再轮到 usage」，所以带的是那个字母。
         assert_eq!(
-            parse_head_args(&["-z", "f"]),
+            parse_head_args(&argv(&["-z", "f"])),
             Err(HeadArgError::Getopt(crate::GetoptReport::UnknownOption(
                 'z'
             )))
@@ -1117,100 +1185,108 @@ mod tests {
         // ——参照件 `head_ref a.txt -5` 现量：`==> a.txt <==` 十行，再 `head: -5: No
         // such file or directory` 退 1，一个字母都不报。
         assert_eq!(
-            parse_head_args(&["f", "-5"]),
+            parse_head_args(&argv(&["f", "-5"])),
             Ok(HeadArgs {
                 count: 10,
                 bytecnt: 0,
                 qflag: false,
                 vflag: false,
-                operands: vec![String::from("f"), String::from("-5")],
+                operands: vec!["f".as_bytes().to_vec(), "-5".as_bytes().to_vec()],
             })
         );
         // 操作数之后的旗标也不再生效：`-q` 在这里是一个叫 `-q` 的档名（参照件同形，
         // 报 `head: -q: No such file or directory`），集外字母同理（不再有那句
         // `unknown option`），带值选项连它的值一起落进操作数。
         assert_eq!(
-            parse_head_args(&["f", "-q"]),
+            parse_head_args(&argv(&["f", "-q"])),
             Ok(HeadArgs {
                 count: 10,
                 bytecnt: 0,
                 qflag: false,
                 vflag: false,
-                operands: vec![String::from("f"), String::from("-q")],
+                operands: vec!["f".as_bytes().to_vec(), "-q".as_bytes().to_vec()],
             })
         );
         assert_eq!(
-            parse_head_args(&["f", "-x"]),
+            parse_head_args(&argv(&["f", "-x"])),
             Ok(HeadArgs {
                 count: 10,
                 bytecnt: 0,
                 qflag: false,
                 vflag: false,
-                operands: vec![String::from("f"), String::from("-x")],
+                operands: vec!["f".as_bytes().to_vec(), "-x".as_bytes().to_vec()],
             })
         );
         assert_eq!(
-            parse_head_args(&["f", "-n", "3"]),
+            parse_head_args(&argv(&["f", "-n", "3"])),
             Ok(HeadArgs {
                 count: 10,
                 bytecnt: 0,
                 qflag: false,
                 vflag: false,
-                operands: vec![String::from("f"), String::from("-n"), String::from("3")],
+                operands: vec![
+                    "f".as_bytes().to_vec(),
+                    "-n".as_bytes().to_vec(),
+                    "3".as_bytes().to_vec()
+                ],
             })
         );
         // 选项在前仍照常生效，只是环一撞上操作数就再也回不来（参照件
         // `head_ref -n 3 a.txt -5`：三行 + `-5` 那一句）。
         assert_eq!(
-            parse_head_args(&["-n", "3", "f", "-5"]),
+            parse_head_args(&argv(&["-n", "3", "f", "-5"])),
             Ok(HeadArgs {
                 count: 3,
                 bytecnt: 0,
                 qflag: false,
                 vflag: false,
-                operands: vec![String::from("f"), String::from("-5")],
+                operands: vec!["f".as_bytes().to_vec(), "-5".as_bytes().to_vec()],
             })
         );
         // 操作数之后的 `--` 不是「选项结束」而是一个档名（C 的环根本没走到它）；
         // 单个 `-` 也在同一处收 -1，于是它自己与后面的都是操作数。
         assert_eq!(
-            parse_head_args(&["f", "--", "-5"]),
+            parse_head_args(&argv(&["f", "--", "-5"])),
             Ok(HeadArgs {
                 count: 10,
                 bytecnt: 0,
                 qflag: false,
                 vflag: false,
-                operands: vec![String::from("f"), String::from("--"), String::from("-5")],
+                operands: vec![
+                    "f".as_bytes().to_vec(),
+                    "--".as_bytes().to_vec(),
+                    "-5".as_bytes().to_vec()
+                ],
             })
         );
         assert_eq!(
-            parse_head_args(&["f", "-"]),
+            parse_head_args(&argv(&["f", "-"])),
             Ok(HeadArgs {
                 count: 10,
                 bytecnt: 0,
                 qflag: false,
                 vflag: false,
-                operands: vec![String::from("f"), String::from("-")],
+                operands: vec!["f".as_bytes().to_vec(), "-".as_bytes().to_vec()],
             })
         );
         // A colon option with no value argument → the libc 缺值那一行。
         assert_eq!(
-            parse_head_args(&["-n"]),
+            parse_head_args(&argv(&["-n"])),
             Err(HeadArgError::Getopt(crate::GetoptReport::MissingValue('n')))
         );
         // Illegal counts (<= 0, trailing garbage) → the byte/line reject arm.
         assert_eq!(
-            parse_head_args(&["-n", "0"]),
+            parse_head_args(&argv(&["-n", "0"])),
             Err(HeadArgError::IllegalCount {
                 byte: false,
-                value: String::from("0")
+                value: "0".as_bytes().to_vec()
             })
         );
         assert_eq!(
-            parse_head_args(&["-c", "x"]),
+            parse_head_args(&argv(&["-c", "x"])),
             Err(HeadArgError::IllegalCount {
                 byte: true,
-                value: String::from("x")
+                value: "x".as_bytes().to_vec()
             })
         );
     }

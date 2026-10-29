@@ -37,6 +37,111 @@ fn run_with(program: &str, args: &[&str], input: &str) -> (String, i32, String) 
     )
 }
 
+/// argv 形态的**字节形**夹具：一枚裸 `ff` 写不成 `&str`，所以参数经 `OsStr::from_bytes`
+/// 交下去，比的是子进程实际收到的那串字节（文本形夹具里 `from_utf8_lossy` 会把裸 `ff`
+/// 与 `ef bf bd` 弄成同一个串，那正是被测的缝）。
+fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut child = Command::new(HEAD)
+        .args(args.iter().map(|w| std::ffi::OsStr::from_bytes(w)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the head binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 按**原字节名**落一份档，交回它的路径字节；同一份内容也以它的 `from_utf8_lossy` 折叠名
+/// 落一份（`fn raw_twin` 的注释里写了为什么两份都要）。
+fn write_raw(dir: &Path, name: &[u8], body: &[u8]) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = dir.join(std::ffi::OsStr::from_bytes(name));
+    fs::write(&path, body).expect("按原字节名落盘");
+    path.as_os_str().as_bytes().to_vec()
+}
+
+/// 命令行参数那一半也按字节了（批次四百六十二）。`head` 在本族里独有一处：**`-c`/`-n` 的
+/// 值被 C 回显**——`head.c:96-97`、`:102-103` 的 `errx(1, "illegal byte count -- %s", optarg)`
+/// 把 optarg 整串打进句子（`cut` 那两句 errx 不带值、`column`/`comm` 的回显位在 `err_line`
+/// 的 `&str` 口上，所以本支是唯一一条「值既进解析又进报文」的腿）。文本缝折一次之后
+/// `ff` 变 `ef bf bd` 三枚，报文就与参照件差两字节。参照件 `tmp/head-415/head` 现量：
+/// `-c<ff>` → `head: illegal byte count -- <ff>`；`-c 5<ff>` → 同句带尾巴那枚；
+/// obsolete 形 `-5<ff>` 重写之后报的是 `5<ff>`（`head.c:188-192` 拼的是 `-n` + 原串去掉短横
+/// 的全部字节，非 UTF-8 那枚跟着走）。第四段钉字母位、第五段钉**横幅**：横幅是本壳自己
+/// `printf` 的（`head.c:130-131`），不经 `&str`，所以档名必须逐字节回显；盘上同时放原字节名
+/// 与其折叠孪生件（内容相同），把在册的开档腿（`ARGV-BYTE-PATH-IN-LIBS`）从读数里排除掉——
+/// 只放原名时本壳必然 `ENOENT` 而参照件读得到，那读数量的是开档腿不是这条缝。
+#[test]
+fn an_illegal_count_value_is_echoed_as_the_argv_bytes_and_so_is_the_banner() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let usage_line = "usage: head [-n lines] [file ...]\n";
+    let cases: [(&[&[u8]], &[u8]); 3] = [
+        (&[&b"-c\xff"[..]], b"head: illegal byte count -- \xff\n"),
+        (
+            &[b"-c".as_slice(), &b"5\xff"[..]],
+            b"head: illegal byte count -- 5\xff\n",
+        ),
+        (&[&b"-n\xff"[..]], b"head: illegal line count -- \xff\n"),
+    ];
+    for (args, want) in cases {
+        let (out, code, err) = run_argv(args, b"alpha\nbeta\n");
+        assert_eq!(
+            (out.as_slice(), code),
+            (&b""[..], 1),
+            "{args:?} 的报错不落标准输出：{err:?}"
+        );
+        assert_eq!(err, want, "{args:?} 的报文该带 argv 原字节");
+    }
+
+    // obsolete 形：`-5<ff>` 先被改写成 `-n5<ff>`，值里那枚裸字节仍跟着走。
+    let dir = scratch("obsolete");
+    let plain = dir.join("f1.txt");
+    fs::write(&plain, b"one\ntwo\n").expect("写 f1");
+    let (out, code, err) = run_argv(&[&b"-5\xff"[..], plain.as_os_str().as_bytes()], b"");
+    assert_eq!((out.as_slice(), code), (&b""[..], 1));
+    assert_eq!(err, b"head: illegal line count -- 5\xff\n".as_slice());
+
+    // 字母位：`-<ff>` 交回那一枚裸字节，libc 行在前、usage 在后。
+    let (out, code, err) = run_argv(&[&b"-\xff"[..]], b"alpha\n");
+    assert_eq!(out, Vec::new(), "集外字母不打数据");
+    assert_eq!(code, 1);
+    assert_eq!(
+        err,
+        [
+            b"head: unknown option -- \xff\n".as_slice(),
+            usage_line.as_bytes(),
+        ]
+        .concat(),
+    );
+
+    // 横幅：`-v` 之下单操数也出横幅，档名按原字节回显；开档走的是折叠孪生件。
+    let raw = write_raw(&dir, b"name\xff", b"one\ntwo\n");
+    fs::write(dir.join("name\u{fffd}"), b"one\ntwo\n").expect("写折叠孪生件");
+    let (out, code, err) = run_argv(&[b"-v".as_slice(), &raw], b"");
+    // 横幅里打的是 argv 那一整串（C 打的是 `*argv`，即调用者给的**路径**而非末段名），
+    // 所以期望按「==> 」+ 路径原字节 + 「 <==\n」+ 内容拼。
+    let want = [b"==> ".as_slice(), raw.as_slice(), b" <==\none\ntwo\n"].concat();
+    assert_eq!(
+        (out.as_slice(), code, err.as_slice()),
+        (want.as_slice(), 0, &b""[..]),
+        "横幅里的档名该是 argv 里那串原字节"
+    );
+}
+
+fn scratch(tag: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!("head-face-{}-{tag}", std::process::id()));
+    fs::create_dir_all(&path).expect("scratch dir");
+    path
+}
+
 fn written(tag: &str, bytes: &[u8]) -> PathBuf {
     let mut path = std::env::temp_dir();
     path.push(format!("head-face-{}-{tag}", std::process::id()));
