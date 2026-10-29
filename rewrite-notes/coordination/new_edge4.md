@@ -2262,3 +2262,5 @@ md 是 `minix3/`、`redesign-notes/` 等未纳入领取树视野的目录，所�
 **同树跨轮**：主树上一笔也是 2010 / 222 ⇒ 本笔在主树同样零新增断链。取证回抄已办：`tmp/nl-465`
 整目录（32 件、900K）复制进主树 `tmp/`，关键四件 `ab.log`、`pkg-final.log`、`container-final.log`、
 `kd2-empty-value-oob.log` 与领取树逐字节核过 md5 相同。
+
+- `2026-10-29` zcode-glm / 01 篇 todo 第六批（文档批，`claim/01TODO-DOC-zcode-glm` → 合并笔 `d30818db9`）：I-17（§2.6 内部拆五节，最大节 176 行；顶层号不动以保 prompt/ 与 02 篇的历史锚点，工单括注的 `alloc_lowest` 段现居 §2.4.1 不随移）、I-18（§4/§6 补章头导语；≥300 行巨节仅 §2.6 且已拆，§2.4 287 行未达阈值记录不改）、I-19（§3–§6 讲解条 ~90 条续扫、修 4 条纯事实条目）、I-23（§3.7 FW_PAYLOAD 落位段与三架构矩阵；`[ARCH]` 同字标记落 doc/design/code，设计侧因主树脏版留在工作区）、I-24 + L1378/L1408（否决表拆两行、TODO 块改状态叙述、I-22 终态句）、I-25 射程样例（FREE_MEMMAP 陈旧锚点改实况、D-64② 补可达路径、F8/d1a 按口径 b 内联）。**门读数**：`doc-style-lint --diff` 各笔 error 0；kernel mock / boot-shim check 无新告警。**在册**：I-25 全仓批（低优）、I-21 延后、L1488/L1532 用户侧；N-5 探针与 T1/T5/T3/T2/D-59/D-72/D-73 未动。
