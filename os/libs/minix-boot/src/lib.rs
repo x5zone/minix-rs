@@ -19,6 +19,7 @@ pub mod boot_form;
 pub mod boot_shim;
 pub mod handoff;
 pub mod handoff_v1;
+pub mod handoff_v1_write;
 pub mod memmap_source;
 pub mod platform;
 
@@ -27,6 +28,7 @@ pub use boot_form::{BootForm, ALL_BOOT_FORMS};
 pub use boot_shim::*;
 pub use handoff::BootHandoff;
 pub use handoff_v1::*;
+pub use handoff_v1_write::*;
 pub use memmap_source::{DtbMemoryMap, MemoryMapSource, MultibootMemoryMap, dtb_covers_conventional};
 pub use platform::{
     PlatformDescKind, PlatformDescSource, PlatformDesc, PlatformSource,

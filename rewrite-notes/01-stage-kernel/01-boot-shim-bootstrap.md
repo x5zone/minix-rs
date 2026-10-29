@@ -2732,7 +2732,7 @@ $ for f in os/boot-shim/src/loader.rs os/boot-shim/src/opensbi_helpers.rs \
            os/boot-shim/src/uefi_helpers.rs os/libs/minix-boot/src/kernel_info.rs \
            os/libs/minix-boot/src/platform.rs os/libs/minix-boot/src/boot_form.rs \
            os/libs/minix-boot/src/memmap_source.rs os/libs/minix-boot/src/handoff_v1.rs \
-           os/libs/minix-elf/src/lib.rs; do
+           os/libs/minix-boot/src/handoff_v1_write.rs os/libs/minix-elf/src/lib.rs; do
   printf '%-50s %s\n' "$f" "$(grep -c '#\[test\]' $f)"; done
 os/boot-shim/src/loader.rs                         15
 os/boot-shim/src/opensbi_helpers.rs                12
@@ -2742,10 +2742,11 @@ os/libs/minix-boot/src/platform.rs                 8
 os/libs/minix-boot/src/boot_form.rs                6
 os/libs/minix-boot/src/memmap_source.rs            9
 os/libs/minix-boot/src/handoff_v1.rs               3
+os/libs/minix-boot/src/handoff_v1_write.rs         10
 os/libs/minix-elf/src/lib.rs                       23
 ```
 
-15 + 12 + 4 = 31，与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi 共 19 条，31 这个读数必须带 `test-all`）；`minix-boot` 的 35 = `kernel_info.rs` 的 9 + `platform.rs` 的 8 + `boot_form.rs` 的 6 + `memmap_source.rs` 的 9 + `handoff_v1.rs` 的 3；`minix-elf` 的 23 与实测一致（上面两条 `running 35/23 tests` 依次是 `minix-boot` 与 `minix-elf`）。
+15 + 12 + 4 = 31，与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi 共 19 条，31 这个读数必须带 `test-all`）；`minix-boot` 的 45 = `kernel_info.rs` 的 9 + `platform.rs` 的 8 + `boot_form.rs` 的 6 + `memmap_source.rs` 的 9 + `handoff_v1.rs` 的 3 + `handoff_v1_write.rs` 的 10；`minix-elf` 的 23 与实测一致（上面两条 `running 45/23 tests` 依次是 `minix-boot` 与 `minix-elf`）。
 
 推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`memmap.rs`](os/kernel/src/memmap.rs) 17 条、[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 7 条、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 10 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 15 条、[`lib.rs`](os/kernel/src/lib.rs) 的 `store_kernel_info` 系列 4 条（1 枚落地区行为 + 3 枚超容量负控）。**[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 自身为零、[`handoff.rs`](os/libs/minix-boot/src/handoff.rs) 为零**——后者由编译期断言（`const _: () = assert!(size_of::<BootHandoff>() <= 4096)`）覆盖；前者的单例契约由集成测试 [`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条覆盖（单元测试二进制里 paging.rs 的 destroy 测试已占用同一全局单例，无法在其中再测注册）。
 
