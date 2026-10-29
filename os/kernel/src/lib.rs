@@ -848,6 +848,35 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
     }
 }
 
+/// FDT blob length from its 8-byte header (`magic` + big-endian `totalsize`).
+///
+/// The boot surfaces hand the DTB's physical address over as a platform
+/// descriptor source; Phase A.2 needs the blob length to cut it out of the
+/// free memmap (a DTB sitting in conventional RAM must not be handed to a
+/// page allocator before platform discovery reads it in Phase A.5). Returns
+/// `None` for a missing/bad magic or an implausible size — the platform
+/// parser fails on the same blob later, so skipping the cut cannot mask a
+/// usable table.
+///
+/// Gated to the architectures whose platform parser supports DTB: the read
+/// uses the same identity-PA assumption as `DeviceTreeDesc::parse`.
+#[cfg(all(
+    not(feature = "mock"),
+    any(target_arch = "aarch64", target_arch = "riscv64")
+))]
+fn dtb_blob_len(dtb_pa: u64) -> Option<usize> {
+    // SAFETY: boot is single-threaded; the PA came from the boot surface's
+    // platform source and the identity window maps it at this point (same
+    // assumption as the platform parser below).
+    let head = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, 8) };
+    let magic = u32::from_be_bytes(head[0..4].try_into().ok()?);
+    if magic != 0xd00d_feed {
+        return None;
+    }
+    let total = u32::from_be_bytes(head[4..8].try_into().ok()?) as usize;
+    (total >= 40).then_some(total)
+}
+
 /// Kernel main — called after the higher-half transition.
 ///
 /// This function runs at the kernel's high virtual address.
@@ -975,6 +1004,29 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
             kernel_info.kern_phys_base().0,
             kernel_info.kern_size(),
         );
+        // Step 4 (D-68 / T4): cut the DTB blob itself. The aarch64
+        // direct-core and the OpenSBI-shim surfaces report `/memory` with
+        // `firmware_reserve_end = 0`, so the DTB's own pages arrive as
+        // conventional; platform discovery parses that blob in Phase A.5, so
+        // no allocator may see those pages first. No-op on legs whose memmap
+        // already excludes the DTB (riscv bootface clips it) and on UEFI
+        // (the DTB lives in reserved firmware memory).
+        #[cfg(all(
+            not(feature = "mock"),
+            any(target_arch = "aarch64", target_arch = "riscv64")
+        ))]
+        for source in kernel_info.platform_sources() {
+            if source.kind() == minix_boot::DTB {
+                if let Some(len) = dtb_blob_len(source.phys_addr().0) {
+                    let _ = memmap::cut_memmap(mmap, source.phys_addr().0, len as u64);
+                }
+            }
+        }
+        #[cfg(all(
+            not(feature = "mock"),
+            any(target_arch = "aarch64", target_arch = "riscv64")
+        ))]
+        boot_stage!("kernel: kmain A.2c dtb cut ok\n");
     }
 
     boot_stage!("kernel: kmain A/A.2 memmap+modules ok\n");

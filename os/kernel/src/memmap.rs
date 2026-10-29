@@ -435,4 +435,21 @@ mod tests {
         let total_after: u64 = mmap.iter().map(|e| e.length).sum();
         assert_eq!(total_before - total_after, 0x2000, "total free memory must decrease by cut size");
     }
+
+    /// T4/D-68 end-to-end accounting: the aarch64 direct-core leg reports
+    /// `/memory` as [0x4000_0000, 512 MiB) (`fw_end = 0`) and its DTB sits at
+    /// the DRAM base. The real QEMU blob is 7699 bytes, so Phase A.2's cut
+    /// must remove exactly the two page-rounded pages and leave the rest as
+    /// one contiguous free span.
+    #[test]
+    fn test_cut_memmap_aarch64_dtb_real_totalsize() {
+        let mut mmap = empty_mmap();
+        mmap[0] = MemMapEntry { base: 0x4000_0000, length: 0x2000_0000 };
+        cut_memmap(&mut mmap, 0x4000_0000, 7699).unwrap();
+
+        let live: Vec<&MemMapEntry> = mmap.iter().filter(|e| e.length != 0).collect();
+        assert_eq!(live.len(), 1, "a tail cut leaves one span");
+        assert_eq!(live[0].base, 0x4000_2000, "DTB blob rounds up to two pages");
+        assert_eq!(live[0].length, 0x2000_0000 - 0x2000);
+    }
 }
