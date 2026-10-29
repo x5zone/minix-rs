@@ -22,7 +22,7 @@
 //! - DTB 由 QEMU `arm_load_dtb` 放在 RAM 基址（`info->dtb_start =
 //!   loader_start`，hw/arm/boot.c ELF 臂源码锚定）＝[`DTB_PA`] 定值。
 //! - `x0` 在直核入口为 0（QEMU 不设参）；boot-shim UEFI 链则以 `x0` 递
-//!   `BootHandoff` 物理指针——`rust_image_main` 以 `x0==0` 分道两形。
+//!   `BootHandoffV1` arena 的物理地址——`rust_image_main` 以 `x0==0` 分道两形。
 //!
 //! # 与 riscv bootface 的镜像关系
 //!

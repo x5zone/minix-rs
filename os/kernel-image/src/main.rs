@@ -18,7 +18,7 @@
 //!
 //! `_start` 目前立栈后驻留（halt）——boot-shim → 内核镜像的跳转交接
 //! 协议（KernelInfo 怎么递、入口态怎么约定）已由 OQ-N6 裁决（每进程
-//! 独立根原语，aarch64 的 `BootHandoff` 交接即其实现），本镜像的收口 =
+//! 独立根原语，aarch64 的 `BootHandoffV1` arena 交接即其实现），本镜像的收口 =
 //! NK1（C-29）实施。当前 UEFI 产线仍是 boot-shim 内联内核、
 //! 进程内调 `arch_boot`（`os/boot-shim/src/main.rs:56`）；本镜像使其
 //! 契约位从"无产出者"变"按布局契约产出"，NK4-A 装机链即可走通。
@@ -277,55 +277,30 @@ fn rust_image_main() -> ! {
 }
 
 /// §1.115 方案 A aarch64 镜像入口：boot-shim 建表 + enable 后绝对跳进本镜像
-/// 高半 `_start`，`x0`＝[`BootHandoff`] blob 物理指针（identity 可达）。_start
-/// 的 `bl` 不改动 `x0`，故它作为首参传入。
+/// 高半 `_start`，`x0`＝T1 handoff arena 的物理地址（identity 可达）。
+/// `_start` 的 `bl` 不改动 `x0`，故它作为首参传入。
 ///
-/// 本镜像链接在高半（`aarch64.ld` 的 `KERN_VIRT_BASE`），故此处调用
-/// `minix_kernel::arch_boot_resume_high_half` 时，其内部的 `sym kmain`、异常
-/// 向量、`.bss` 全局全部解析为真高半地址——执行流全程走永不切换的 TTBR1，
-/// 免疫 `switch_address_space`（这正是 §1.114 内联 PE 低半执行模型的反面）。
+/// 本镜像链接在高半（`aarch64.ld` 的 `KERN_VIRT_BASE`），故 `x0 != 0` 时
+/// 交给 `minix_kernel::arch_boot_resume_v1`：它从 arena 解码五块载荷、
+/// 落进本镜像 `.bss` 的 T5 落地区、验证 `KernelInfo`，再走只增量的
+/// 高半 resume（记录根、建 DM、跳 kmain），**绝不重建根**——根已被
+/// boot-shim 建好且此刻正激活，`new_from_page` 清零会当场摧毁自身取指映射。
 ///
-/// 交接契约：
-/// 1. 先把 boot-shim 留下的 bump 游标 `resume` 到本镜像自己的 `BOOT_ALLOC`
-///    副本，令后续 DM 建页避开 boot-shim 已占的页表页/blob 页。
-/// 2. `arch_boot_resume_high_half` 只做 *additive* 阶段（store KernelInfo →
-///    DM 覆盖 → `jump_to_kmain`），绝不重建 bootstrap 根——根已被 boot-shim
-///    建好且此刻正激活，`new_from_page` 清零会当场摧毁自身取指映射。
+/// `x0 == 0` 是直核 `-kernel`（QEMU 不设参）路径，走 `bootface_a64`
+/// 自引导面；两条链共用本入口与 `.text.boot`。
 #[cfg(target_arch = "aarch64")]
-fn rust_image_main(handoff: *const minix_boot::BootHandoff) -> ! {
+fn rust_image_main(arena_pa: usize) -> ! {
     let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
-    // §续-406 判道：直核 `-kernel`（QEMU 不设参，x0=0）走自引导面；
-    // boot-shim UEFI 链 x0=BootHandoff 物理指针走高半 resume 面。两链
-    // 共用本入口与 .text.boot（选举 asm 对 UEFI 链无害：单 CPU 恒赢）。
-    #[cfg(target_arch = "aarch64")]
-    if handoff.is_null() {
+    if arena_pa == 0 {
         bootface_a64::bootface_a64();
     }
     // 走 §1.114 的 TTBR1 高半 MMIO 别名（本镜像自己的 HIGH_MMIO_LIVE 全局），
     // 证明跨镜像高半控制台可用；resume 路径内部会再次置位（幂等）。
     early_console::use_high_mmio_window();
-    if handoff.is_null() {
-        early_console::write_str("### minix-rs kernel-image: handoff blob NULL — aborting\n");
-        return halt();
-    }
-    // SAFETY: boot-shim wrote a valid BootHandoff to a bump-allocated identity
-    // page and passed its physical address in x0; identity (0..4GB) is live in
-    // the shared bootstrap root's TTBR0 until the first root switch, which has
-    // not happened yet. The blob is Copy/POD.
-    let h = unsafe { &*handoff };
-    // Resume the boot bump allocator from the boot-shim's post-build cursor so
-    // the additive DM phase never reuses a page already in service. This must
-    // precede the resume call so its Step 0 sees the region already registered
-    // and skips the fallback `init` (which would reset the cursor).
-    minix_kernel::boot_alloc::resume_boot_pt_alloc(h.bump_base, h.bump_next, h.bump_end);
     early_console::write_str(
-        "### minix-rs kernel-image: resuming high-half boot (additive §1.115 A)\n",
+        "### minix-rs kernel-image: resuming high-half boot (handoff v1 arena)\n",
     );
-    // Hand the boot KernelInfo (slices point into stable identity-mapped
-    // physical memory) + the already-live bootstrap root back to the kernel
-    // crate, which now runs the remaining phases entirely at high virtual
-    // addresses — without rebuilding (which would clobber) the active root.
-    minix_kernel::arch_boot_resume_high_half(&h.kernel_info, PhysBytes(h.root_page))
+    minix_kernel::arch_boot_resume_v1(arena_pa as u64)
 }
 
 /// NK4-C 续-88 甲案 riscv64 镜像入口：kernel-image 自当引导体（无跨镜像

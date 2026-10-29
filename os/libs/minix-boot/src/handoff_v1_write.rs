@@ -94,6 +94,22 @@ fn put_u64(arena: &mut [u8], off: usize, value: u64) {
     arena[off..off + 8].copy_from_slice(&value.to_le_bytes());
 }
 
+/// Patch the runtime fields into an arena that is already populated.
+///
+/// Unlike [`Serializer::new`], this does not zero the arena and does not
+/// require producer state: the sender-side entry uses it after the bootstrap
+/// root is live, when only the four runtime fields remain to be filled.
+pub fn patch_runtime_fields_in(arena: &mut [u8], fields: RuntimeFields) {
+    assert!(
+        arena.len() >= ARENA_CAP,
+        "handoff arena smaller than ARENA_CAP"
+    );
+    put_u64(arena, offsets::ROOT_PAGE, fields.root_page);
+    put_u64(arena, offsets::BUMP_BASE, fields.bump_base);
+    put_u64(arena, offsets::BUMP_NEXT, fields.bump_next);
+    put_u64(arena, offsets::BUMP_END, fields.bump_end);
+}
+
 /// Arena writer. Construction zeroes the whole protocol region so stale bytes
 /// cannot leak into any partition.
 pub struct Serializer<'a> {
@@ -156,10 +172,7 @@ impl<'a> Serializer<'a> {
     /// Patch the runtime fields in place (after the root switch, before the
     /// jump). Idempotent.
     pub fn patch_runtime_fields(&mut self, fields: RuntimeFields) {
-        put_u64(self.arena, offsets::ROOT_PAGE, fields.root_page);
-        put_u64(self.arena, offsets::BUMP_BASE, fields.bump_base);
-        put_u64(self.arena, offsets::BUMP_NEXT, fields.bump_next);
-        put_u64(self.arena, offsets::BUMP_END, fields.bump_end);
+        patch_runtime_fields_in(self.arena, fields);
     }
 
     /// Serialize the reserved regions into the wire partition and dual-write
@@ -424,6 +437,41 @@ mod tests {
         assert_eq!(get_u64(s.as_bytes(), 104), 0x20_0000);
         assert_eq!(get_u64(s.as_bytes(), 112), 0x21_0000);
         assert_eq!(get_u64(s.as_bytes(), 120), 0x30_0000);
+    }
+
+    /// The free function patches a fully serialized arena without zeroing it:
+    /// every other byte (header, scalars, payload descriptors) must survive.
+    #[test]
+    fn patch_runtime_fields_in_preserves_the_rest_of_the_arena() {
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        s.write_envelope(&base_info()).unwrap();
+        s.write_param_buf(b"ARCH=test\0").unwrap();
+        let mut before = [0u8; ARENA_CAP];
+        before.copy_from_slice(s.as_bytes());
+        drop(s);
+        patch_runtime_fields_in(
+            &mut arena,
+            RuntimeFields {
+                root_page: 0x9000,
+                bump_base: 0x40_0000,
+                bump_next: 0x40_1000,
+                bump_end: 0x50_0000,
+            },
+        );
+        assert_eq!(get_u32(&arena, 0), BOOT_HANDOFF_V1_MAGIC);
+        assert_eq!(get_u64(&arena, 24), 0xFFFF_8000_0000_0000);
+        assert_eq!(get_u64(&arena, 160), 10);
+        for (i, (old, new)) in before.iter().zip(arena.iter()).enumerate() {
+            if (96..128).contains(&i) {
+                continue;
+            }
+            assert_eq!(old, new, "byte {i} outside the runtime fields changed");
+        }
+        assert_eq!(get_u64(&arena, 96), 0x9000);
+        assert_eq!(get_u64(&arena, 104), 0x40_0000);
+        assert_eq!(get_u64(&arena, 112), 0x40_1000);
+        assert_eq!(get_u64(&arena, 120), 0x50_0000);
     }
 
     #[test]

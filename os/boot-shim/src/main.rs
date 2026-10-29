@@ -18,9 +18,13 @@
 
 use core::panic::PanicInfo;
 use uefi::prelude::*;
-use minix_kernel::boot_alloc;
+#[cfg(not(target_arch = "aarch64"))]
 use minix_boot::BootShim;
-use boot_shim::{raw_serial_line, UefiBootShim};
+use boot_shim::raw_serial_line;
+#[cfg(not(target_arch = "aarch64"))]
+use boot_shim::UefiBootShim;
+#[cfg(not(target_arch = "aarch64"))]
+use minix_kernel::boot_alloc;
 
 extern crate alloc;
 
@@ -58,37 +62,32 @@ fn main() -> Status {
     // fix lands (reclaimable page-table pages / moving the kerninfo
     // mapping responsibility to VM per kerninfo.rs doc — WORKLOG 1.55
     // follow-up) this pool only postpones the deterministic panic.
-    let result = UefiBootShim::prepare_boot(1024);
-
-    // --- Below this point, UEFI boot services are gone ---
-
-    // 2. Register boot-stage page table allocator
-    boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
-    minix_arch::pt_alloc::register(boot_alloc::boot_pt_alloc);
-    boot_shim::raw_serial("boot-shim: [raw] pt_alloc registered, entering kernel arch_boot\r\n");
-
-    // 3. Hand control to the kernel's arch-specific boot.
-    //    Establishes page tables, enables paging, enters kmain.
-    //    NEVER RETURNS.
-    //
-    //    NK4-A 首亮诊断：EBS 后、arch_boot 前的最后一块 shim 侧路标。
-    //    arch_boot 若先于内核第一条串口输出就卡死，本行是最后一根
-    //    可见路标。EBS 之后固件控制台（ConOut，Boot Services 协议）按
-    //    规范已失效——这里改走裸串口（x86 COM1 / aarch64 PL011，见
-    //    `boot_shim::raw_serial`），与上一行 pt_alloc 路标同一通道。
-    boot_shim::raw_serial("boot-shim: handing control to kernel arch_boot\r\n");
-    // §1.115 方案 A (aarch64): do NOT enter the inlined `arch_boot`/kmain, which
-    // would run the kernel at the PE's low identity address and die on the first
-    // root switch (§1.114). Instead build the bootstrap tables, enable paging,
-    // and absolutely jump into the standalone high-half `kernel.elf` `_start`
-    // with a handoff blob. x86_64 / riscv64 keep the inlined arch_boot path.
+    // §1.115 方案 A / T1 2c/3b (aarch64): the shim builds the bootstrap root
+    // itself, serializes the v1 handoff arena (address space, five payloads,
+    // pairing loop) and absolutely jumps into the standalone high-half
+    // `kernel.elf` `_start` with `x0 = arena_pa`. x86_64 / riscv64 keep the
+    // inlined `arch_boot` path until T2 / D-73 move them.
     #[cfg(target_arch = "aarch64")]
-    minix_kernel::bootstrap_to_kernel_image(&result.kernel_info, result.root_page);
+    {
+        boot_shim::uefi_helpers::prepare_and_enter_kernel_image(1024)
+    }
     #[cfg(not(target_arch = "aarch64"))]
-    minix_kernel::arch_boot(&result.kernel_info, result.root_page);
+    {
+        let result = UefiBootShim::prepare_boot(1024);
 
-    // This line should never be reached.
-    unreachable!()
+        // --- Below this point, UEFI boot services are gone ---
+
+        // 2. Register boot-stage page table allocator
+        boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
+        minix_arch::pt_alloc::register(boot_alloc::boot_pt_alloc);
+        boot_shim::raw_serial("boot-shim: [raw] pt_alloc registered, entering kernel arch_boot\r\n");
+
+        // 3. Hand control to the kernel's arch-specific boot.
+        //    Establishes page tables, enables paging, enters kmain.
+        //    NEVER RETURNS.
+        boot_shim::raw_serial("boot-shim: handing control to kernel arch_boot\r\n");
+        minix_kernel::arch_boot(&result.kernel_info, result.root_page)
+    }
 }
 
 #[panic_handler]

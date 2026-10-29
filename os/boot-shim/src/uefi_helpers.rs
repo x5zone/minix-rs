@@ -17,15 +17,23 @@ use uefi::mem::memory_map::{MemoryMap, MemoryType};
 use uefi::system;
 use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
 use uefi::Guid;
-use minix_types::{PhysBytes, VirBytes};
+use minix_types::PhysBytes;
 use minix_arch::boot_dm_admissible_end;
 use minix_boot::{
-    BootModule, BootPrepareResult, BootShim, DTB, KernelInfo, MemoryRegion, PlatformDescSource,
-    RSDP,
+    BootPrepareResult, BootShim, DTB, MemoryRegion, PlatformDescSource, RSDP,
 };
 
 use crate::build_kernel_info;
 use crate::loader::{self, FileLoader};
+
+#[cfg(target_arch = "aarch64")]
+use core::ffi::c_void;
+#[cfg(target_arch = "aarch64")]
+use minix_boot::{
+    decode_descriptors, Serializer, ARENA_CAP, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET,
+};
+#[cfg(target_arch = "aarch64")]
+use crate::ebs_pair::{self, PairError, RawOps};
 
 /// UEFI Configuration Table GUID for the Device Tree (FDT).
 ///
@@ -416,6 +424,13 @@ pub fn build_memmap() -> &'static [MemoryRegion] {
 /// Size of one page-table page (UEFI allocates in 4 KiB pages).
 const PAGE_SIZE: u64 = 4096;
 
+/// Physical address ceiling assumed by the aarch64 map classification: the
+/// current implementation writes `TCR_EL1.IPS = 5` (48-bit PA). D-59 replaces
+/// this with `Paging::phys_addr_limit`; until then the constant keeps the
+/// classifier from rejecting high-DRAM descriptors on large machines.
+#[cfg(target_arch = "aarch64")]
+const AARCH64_PA_LIMIT: u64 = 1 << 48;
+
 /// Refuse to boot if a conventional memmap range overlaps the bootstrap
 /// allocation `[base, base + len)`.
 ///
@@ -484,6 +499,364 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
     (base, end)
 }
 
+// ── T1 2c/3b: aarch64 handoff-v1 producer ─────────────────────────────
+//
+// The aarch64 UEFI leg no longer snapshots the map and hands over a
+// `BootHandoff` blob. It allocates one handoff arena on the loader-data
+// pages, serializes the T1 protocol into it, classifies the final map inside
+// the EBS pairing loop, builds the bootstrap root, patches the runtime
+// fields in place and jumps into the standalone image with `x0 = arena_pa`.
+// The whole flow lives behind `target_arch = "aarch64"`; x86/riscv keep the
+// in-process `arch_boot` path until T2/D-73 move them.
+
+/// Allocate the handoff arena: exactly [`ARENA_CAP`] bytes of loader data
+/// below the identity/DM-admissible bound (the receiver reads it through the
+/// bootstrap root's identity window).
+#[cfg(target_arch = "aarch64")]
+fn alloc_arena() -> PhysBytes {    let pages = ARENA_CAP / PAGE_SIZE as usize;
+    let ptr = boot::allocate_pages(
+        AllocateType::MaxAddress(bootstrap_alloc_limit(ARENA_CAP as u64)),
+        MemoryType::LOADER_DATA,
+        pages,
+    )
+    .expect("Failed to allocate the handoff arena below the identity bound");
+    PhysBytes(ptr.as_ptr() as u64)
+}
+
+/// Allocate a pool buffer for `GetMemoryMap`. The buffer is never freed: the
+/// pairing loop may need it until `ExitBootServices` succeeds.
+#[cfg(target_arch = "aarch64")]
+fn alloc_map_buffer(bytes: usize) -> *mut u8 {
+    boot::allocate_pool(MemoryType::LOADER_DATA, bytes)
+        .expect("Failed to allocate the GetMemoryMap buffer")
+        .as_ptr()
+}
+
+/// Ask firmware for the required map-buffer size with a null buffer.
+///
+/// `uefi` 0.33 keeps its own `memory_map_size` private, so the producer uses
+/// the raw ABI directly. The expected answer is `BUFFER_TOO_SMALL`; a success
+/// with size zero (some firmware) falls back to a conservative floor.
+#[cfg(target_arch = "aarch64")]
+fn probe_map_buffer_size(boot_services: *mut c_void) -> usize {
+    // SAFETY: the system table is alive (before `ExitBootServices`) and the
+    // raw BootServices pointer was copied from it.
+    let bs = unsafe { &*(boot_services as *const uefi_raw::table::boot::BootServices) };
+    let mut size = 0usize;
+    let mut key = 0usize;
+    let mut desc_size = 0usize;
+    let mut desc_version = 0u32;
+    // SAFETY: a null map with size 0 is the documented size-probe form; the
+    // firmware only writes the four out-parameters.
+    let status = unsafe {
+        (bs.get_memory_map)(
+            &mut size,
+            core::ptr::null_mut(),
+            &mut key,
+            &mut desc_size,
+            &mut desc_version,
+        )
+    };
+    if status != uefi_raw::Status::BUFFER_TOO_SMALL && status != uefi_raw::Status::SUCCESS {
+        panic!("boot-shim: GetMemoryMap size probe failed: {status:?}");
+    }
+    let floor = 16 * 1024usize;
+    let margin = desc_size.max(64).saturating_mul(8).saturating_add(PAGE_SIZE as usize);
+    size.max(floor).saturating_add(margin)
+}
+
+/// Raw `GetMemoryMap` adapter for the pairing loop.
+///
+/// `ebs_pair` hands its `boot_services` parameter back to this thunk, so the
+/// raw table pointer travels through the existing `*mut c_void` slot and no
+/// global is needed. The firmware field is called with the native `efiapi`
+/// ABI (C on aarch64, Win64 on x86_64).
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" fn raw_get_memory_map(
+    boot_services: *mut c_void,
+    size: *mut usize,
+    map: *mut u8,
+    key: *mut usize,
+    desc_size: *mut usize,
+    desc_version: *mut u32,
+) -> usize {
+    // SAFETY: `boot_services` is the live table pointer the caller passed in;
+    // the map pointer is the caller's writable buffer.
+    let bs = unsafe { &*(boot_services as *const uefi_raw::table::boot::BootServices) };
+    unsafe {
+        (bs.get_memory_map)(
+            size,
+            map.cast::<uefi_raw::table::boot::MemoryDescriptor>(),
+            key,
+            desc_size,
+            desc_version,
+        )
+    }
+    .0
+}
+
+/// Raw `ExitBootServices` adapter for the pairing loop.
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" fn raw_exit_boot_services(
+    boot_services: *mut c_void,
+    image_handle: usize,
+    map_key: usize,
+) -> usize {
+    // SAFETY: same table-pointer contract as `raw_get_memory_map`; the image
+    // handle is the value from `uefi::boot::image_handle()`.
+    let bs = unsafe { &*(boot_services as *const uefi_raw::table::boot::BootServices) };
+    unsafe { (bs.exit_boot_services)(image_handle as uefi_raw::Handle, map_key) }.0
+}
+
+/// Write a decimal number through the post-EBS raw serial channel (no
+/// allocation, no formatting machinery).
+#[cfg(target_arch = "aarch64")]
+fn raw_serial_number(mut value: u64) {
+    if value == 0 {
+        crate::raw_serial("0");
+        return;
+    }
+    let mut digits = [0u8; 20];
+    let mut n = 0;
+    while value > 0 && n < digits.len() {
+        digits[n] = b'0' + (value % 10) as u8;
+        value /= 10;
+        n += 1;
+    }
+    let mut out = [0u8; 20];
+    for i in 0..n {
+        out[i] = digits[n - 1 - i];
+    }
+    if let Ok(text) = core::str::from_utf8(&out[..n]) {
+        crate::raw_serial(text);
+    }
+}
+
+/// Write a hexadecimal number through the post-EBS raw serial channel.
+#[cfg(target_arch = "aarch64")]
+fn raw_serial_hex(value: u64) {
+    crate::raw_serial("0x");
+    if value == 0 {
+        crate::raw_serial("0");
+        return;
+    }
+    let mut buf = [0u8; 16];
+    let mut n = 0;
+    let mut started = false;
+    for shift in (0..16).rev() {
+        let digit = ((value >> (shift * 4)) & 0xf) as u8;
+        if digit != 0 || started || shift == 0 {
+            buf[n] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+            n += 1;
+            started = true;
+        }
+    }
+    if let Ok(text) = core::str::from_utf8(&buf[..n]) {
+        crate::raw_serial(text);
+    }
+}
+
+/// Print the memmap-source line (and enforce the SD-3 D1 gate) after EBS.
+#[cfg(target_arch = "aarch64")]
+fn report_memmap_source(dtb_free: Option<&[MemoryRegion]>, conventional: &[MemoryRegion]) {
+    match dtb_free {
+        Some(dtb) => {
+            if let Err((base, len)) = minix_boot::dtb_covers_conventional(dtb, conventional) {
+                crate::raw_serial(
+                    "boot-shim: conventional range outside DTB /memory: base=",
+                );
+                raw_serial_hex(base);
+                crate::raw_serial(" len=");
+                raw_serial_hex(len as u64);
+                crate::raw_serial("\r\n");
+                panic!("boot-shim: SD-3 D1 gate failed (conventional outside DTB /memory)");
+            }
+            crate::raw_serial(
+                "boot-shim: memmap source: uefi-getmemorymap gated by dtb /memory (conv=",
+            );
+            raw_serial_number(conventional.len() as u64);
+            crate::raw_serial(" dtb_regions=");
+            raw_serial_number(dtb.len() as u64);
+            crate::raw_serial(")\r\n");
+        }
+        None => crate::raw_serial(
+            "boot-shim: memmap source: uefi-getmemorymap (no dumpdtb.dtb on ESP)\r\n",
+        ),
+    }
+}
+
+/// Read and parse the optional ESP `/dumpdtb.dtb` into the DTB `/memory`
+/// free list. Pure read-only gate; the conventional source stays the UEFI
+/// map (C17's v1 semantics).
+#[cfg(target_arch = "aarch64")]
+fn load_dumpdtb_free(file_loader: &dyn FileLoader) -> Option<&'static [MemoryRegion]> {
+    let blob = file_loader.read(loader::DUMPDTB_PATH)?;
+    let fdt = fdt::Fdt::new(&blob)
+        .unwrap_or_else(|e| panic!("boot-shim: dumpdtb.dtb 不可解析: {e:?}"));
+    let (free, _) = <minix_boot::DtbMemoryMap as minix_boot::MemoryMapSource>::collect(
+        &minix_boot::DtbMemoryMap::new(&fdt, 0),
+    );
+    Some(free)
+}
+
+/// aarch64 UEFI production entry for the v1 handoff.
+///
+/// Order (frozen by the T1 design): load kernel/modules → platform sources →
+/// root/bump → arena → map buffer → non-map payloads → pairing loop
+/// (`GetMemoryMap` → classify → raw `ExitBootServices`) → bootstrap root →
+/// patch runtime fields → jump with `x0 = arena_pa`.
+#[cfg(target_arch = "aarch64")]
+pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {    uefi::println!("boot-shim: prepare_and_enter enter (handoff v1 arena)");
+    let root_page = alloc_root_page();
+    let (bump_base, bump_end) = alloc_bump_region(bump_pages);
+    // The in-shim kernel copy uses this region for the bootstrap root pages;
+    // the same triple travels in the envelope so the image resumes it.
+    minix_kernel::boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
+
+    let file_loader = UefiFileLoader;
+    let dumpdtb_free = load_dumpdtb_free(&file_loader);
+    let kern = loader::load_kernel_with_loader(&file_loader).expect(
+        "Failed to load kernel ELF from ESP — check that the ESP contains \
+         /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
+         not mounted the FAT partition, or the build did not embed the \
+         kernel binary into the ESP image",
+    );
+    uefi::println!("boot-shim: kernel loaded (entry staged)");
+    let boot_modules = loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
+    uefi::println!("boot-shim: 12 boot modules loaded");
+    let platform_sources = find_platform_sources();
+
+    let arena_pa = alloc_arena();
+    // SAFETY: the arena is a fresh four-page LOADER_DATA allocation below the
+    // identity bound; boot services own it until EBS and nothing else writes
+    // those pages. The slice lives for the rest of this `!` function.
+    let arena = unsafe {
+        core::slice::from_raw_parts_mut(arena_pa.0 as *mut u8, ARENA_CAP)
+    };
+    let mut serializer = Serializer::new(arena).expect("handoff arena too small");
+    // Scalars-only carrier: the real memmap arrives from the pairing loop, but
+    // the envelope's scalar fields are already final here.
+    let carrier = build_kernel_info(
+        &[],
+        &[],
+        kern.kern_virt_base,
+        kern.kern_phys_base,
+        kern.kern_size,
+        boot_modules,
+        PhysBytes(0),
+        0,
+        platform_sources,
+    );
+    serializer
+        .write_envelope(&carrier)
+        .expect("handoff envelope over capacity");
+    serializer
+        .write_boot_modules(boot_modules)
+        .expect("too many boot modules for the handoff arena");
+    serializer
+        .write_platform_sources(platform_sources)
+        .expect("too many platform sources for the handoff arena");
+    // T3 fills this from LoadOptions; today the empty slice is the C
+    // `param_buf[0] == '\0'` equivalent.
+    serializer
+        .write_param_buf(&[])
+        .expect("param_buf over capacity");
+
+    let system_table = uefi::table::system_table_raw()
+        .expect("boot-shim: raw system table missing before EBS")
+        .as_ptr();
+    // SAFETY: called before `ExitBootServices`; the table pointer is live.
+    let boot_services = unsafe { (*system_table).boot_services };
+    let boot_services_raw = boot_services as *mut c_void;
+    let ops = RawOps {
+        get_memory_map: raw_get_memory_map,
+        exit_boot_services: raw_exit_boot_services,
+    };
+    let image_handle = uefi::boot::image_handle();
+    let mut buffer_bytes = probe_map_buffer_size(boot_services_raw);
+    let classification = loop {
+        let buffer_ptr = alloc_map_buffer(buffer_bytes);
+        // SAFETY: fresh pool allocation of `buffer_bytes` bytes.
+        let buffer = unsafe { core::slice::from_raw_parts_mut(buffer_ptr, buffer_bytes) };
+        // SAFETY: the raw ops dereference the live boot-services table; the
+        // serializer writes only into the arena. On success the call has
+        // performed ExitBootServices and no further boot-service call is made.
+        match unsafe {
+            ebs_pair::pair_and_classify(
+                &ops,
+                boot_services_raw,
+                image_handle.as_ptr() as usize,
+                buffer,
+                AARCH64_PA_LIMIT,
+                &mut serializer,
+            )
+        } {
+            Ok(classification) => break classification,
+            Err(PairError::NeedBiggerBuffer(needed)) => {
+                assert!(
+                    needed > buffer_bytes,
+                    "boot-shim: GetMemoryMap asked for a smaller buffer"
+                );
+                buffer_bytes = needed.saturating_add(PAGE_SIZE as usize);
+            }
+            Err(error) => {
+                panic!("boot-shim: EBS pairing loop failed: {error:?}");
+            }
+        }
+    };
+    crate::raw_serial("boot-shim: [raw] boot services exited (paired)\r\n");
+
+    // Build the real KernelInfo from the semantic partition. The arena stays
+    // mapped as identity memory until the first process root switch, which is
+    // why the receiver deep-copies it before then.
+    let descriptors = decode_descriptors(serializer.as_bytes())
+        .expect("boot-shim: handoff descriptors invalid after classification");
+    let memmap_len = (descriptors.memmap_byte_len / 16) as usize;
+    let reserved_len = (descriptors.reserved_byte_len / 16) as usize;
+    // SAFETY: the semantic partitions live inside the arena, are 8-byte
+    // aligned (compile-time gate) and hold exactly `len` entries written by
+    // the classifier. The slices are not mutated after EBS.
+    let memmap: &'static [MemoryRegion] = unsafe {
+        core::slice::from_raw_parts(
+            (arena_pa.0 + SEMANTIC_MEMMAP_OFFSET as u64) as *const MemoryRegion,
+            memmap_len,
+        )
+    };
+    let reserved: &'static [MemoryRegion] = unsafe {
+        core::slice::from_raw_parts(
+            (arena_pa.0 + SEMANTIC_RESERVED_OFFSET as u64) as *const MemoryRegion,
+            reserved_len,
+        )
+    };
+    // The classification must have marked every bootstrap allocation as
+    // non-conventional; a containment here would hand live pages to the VM PMM.
+    assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
+    assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
+    assert_bootstrap_outside_memmap(memmap, arena_pa.0, ARENA_CAP as u64);
+    report_memmap_source(dumpdtb_free, memmap);
+
+    let kernel_info = build_kernel_info(
+        memmap,
+        reserved,
+        kern.kern_virt_base,
+        kern.kern_phys_base,
+        kern.kern_size,
+        boot_modules,
+        PhysBytes(0),
+        0,
+        platform_sources,
+    );
+
+    crate::raw_serial("boot-shim: [raw] arena=");
+    raw_serial_hex(arena_pa.0);
+    crate::raw_serial(" conv=");
+    raw_serial_number(classification.conventional as u64);
+    crate::raw_serial(" res=");
+    raw_serial_number(classification.reserved as u64);
+    crate::raw_serial("\r\nboot-shim: [raw] entering kernel image v1\r\n");
+    minix_kernel::enter_kernel_image_v1(arena_pa.0, &kernel_info, root_page)
+}
+
 /// Exit UEFI boot services.
 ///
 /// After this call, UEFI boot services (AllocatePages, etc.) are no longer
@@ -532,6 +905,7 @@ mod tests {
 
     use super::*;
     use minix_boot::BootModule;
+    use minix_types::VirBytes;
 
     #[test]
     fn test_build_kernel_info_fields() {

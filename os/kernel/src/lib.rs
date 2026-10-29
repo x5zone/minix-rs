@@ -41,6 +41,13 @@ use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 // (same reason as the `PhysAccess` import below).
 #[cfg(not(feature = "mock"))]
 use minix_types::{VM_BOOT_HANDOFF_VA, VmBootHandoff};
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+use minix_boot::{
+    decode_envelope, decode_memmap, decode_modules, decode_param_buf, decode_platform_sources,
+    decode_reserved_regions, patch_runtime_fields_in, BootModule, RuntimeFields, WireBootModule,
+    ARENA_CAP, WIRE_MODULE_CAP,
+};
+
 use minix_boot::{KernelInfo, MemoryRegion};
 use minix_arch::paging::PageFlags;
 // `PhysAccess` is exercised only by the non-mock VM-loading path
@@ -269,78 +276,6 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     unsafe { AArch64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
 
-/// §1.115 方案 A boot-shim-side bootstrap (aarch64 only): build the bootstrap
-/// page tables, enable paging, then *absolutely jump* into the standalone
-/// high-half `kernel.elf` image's `_start` and hand it a [`BootHandoff`] blob.
-///
-/// This is the load-bearing fix for §1.114: the aarch64 kernel previously ran
-/// inline in the boot-shim PE at a low, switchable identity address, so the
-/// first `switch_address_space` (which swaps TTBR0 + `tlbi alle1is`) destroyed
-/// the kernel's own instruction-fetch mapping. Here the boot-shim does *only*
-/// what must run in the firmware/PE context — collect info already done, build
-/// tables, enable — then transfers execution to `kern_virt_base`, which lives
-/// in the never-switched TTBR1 half. From that instruction the *entire* kernel
-/// boot runs at high virtual addresses and is immune to root switches.
-///
-/// The standalone kernel image performs the remaining boot phases (store the
-/// KernelInfo into its own `.bss`, establish the direct map, enter `kmain`) —
-/// it links its own copy of this crate, so nothing here shares `.bss` with it.
-#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
-pub fn bootstrap_to_kernel_image(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
-    use minix_arch::arm64::paging::AArch64Paging;
-    // Steps 0-3: validate + build identity/kernel-high/MMIO tables + enable.
-    // Same helper the inlined `arch_boot_impl` uses, so both build identical
-    // bootstrap roots. We deliberately stop before Step 4 (DM) and `kmain`.
-    let kern_huge = boot_validate_and_prepare::<AArch64Paging>(kernel_info);
-    build_bootstrap_root_and_enable::<AArch64Paging>(kernel_info, root_page, kern_huge);
-    // Paging is now live: TTBR0/TTBR1 = root_page, with identity (0..4GB) +
-    // kernel high half + MMIO window present in the single bootstrap root.
-    //
-    // Bump-allocate one page for the handoff blob; the cursor advances past it
-    // so the kernel image's resumed allocator never reuses it. Read the final
-    // bump state *after* the allocation.
-    let (blob_phys, _) = boot_alloc::boot_pt_alloc()
-        .expect("bootstrap_to_kernel_image: handoff blob page alloc failed");
-    let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
-        .expect("bootstrap_to_kernel_image: bump region not registered");
-    let bump_next = boot_alloc::boot_alloc_next();
-    let handoff = minix_boot::BootHandoff {
-        kernel_info: *kernel_info,
-        root_page: root_page.0,
-        bump_base,
-        bump_next,
-        bump_end,
-    };
-    // SAFETY: `blob_phys` is a freshly bump-allocated, otherwise-unoccupied 4KiB
-    // page; under the live identity mapping VA==PA and it is writable, and it is
-    // below IDENTITY_MAP_END (the bump region is DM-admissible). `*kernel_info`
-    // holds `&'static` slices into the boot-services pool, which survives EBS
-    // for the boot window, so the pointer fields remain dereferenceable by the
-    // kernel image before the first root switch.
-    unsafe { core::ptr::write(blob_phys.0 as *mut minix_boot::BootHandoff, handoff) };
-    // Absolute jump into the high-half image `_start` (= `kern_virt_base`). The
-    // target VA has bit55 set, so the MMU resolves it through TTBR1 — the same
-    // bootstrap root that already maps `kern_virt_base -> kern_phys_base`, so
-    // the branch itself cannot fault. `x0` carries the blob pointer (AAPCS64
-    // first argument); the image `_start` reads it before touching the stack.
-    let entry = kernel_info.kern_virt_base().0;
-    // SAFETY: paging is enabled and `entry` maps the executable kernel-image
-    // `_start`; `blob_phys` is a valid `BootHandoff`; this never returns. The
-    // blob pointer is bound to a *fixed* `x0` (same style as `jump_to_kmain`)
-    // rather than written to `x0` inside the block: an implicit `mov x0, …`
-    // would be undeclared clobber, and LLVM is free to allocate `{entry}` to
-    // `x0` too, in which case the move would overwrite the branch target.
-    unsafe {
-        core::arch::asm!(
-            "isb",
-            "br {entry}",
-            in("x0") blob_phys.0,
-            entry = in(reg) entry,
-            options(noreturn)
-        );
-    }
-}
-
 /// §1.115 方案 A kernel-image-side high-half boot resume (aarch64 only).
 ///
 /// The boot-shim already built the bootstrap page-table root and enabled
@@ -395,6 +330,152 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
     // and `{kmain}` now links to the high half so execution never returns to a
     // switchable identity window.
     unsafe { AArch64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+}
+
+/// T1 2c/3b sender-side entry: build the bootstrap root, patch the runtime
+/// fields into the already-serialized arena, then absolute-jump into the
+/// standalone image with `x0 = arena_pa`.
+///
+/// The arena is a four-page loader-data allocation below the identity bound;
+/// the bootstrap root maps it through the identity window, so the in-place
+/// patch is a plain memory write after paging is live.
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+pub fn enter_kernel_image_v1(
+    arena_pa: u64,
+    kernel_info: &KernelInfo,
+    root_page: PhysBytes,
+) -> ! {
+    use minix_arch::arm64::paging::AArch64Paging;
+
+    let kern_huge = boot_validate_and_prepare::<AArch64Paging>(kernel_info);
+    build_bootstrap_root_and_enable::<AArch64Paging>(kernel_info, root_page, kern_huge);
+    let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
+        .expect("enter_kernel_image_v1: bump region not registered");
+    let bump_next = boot_alloc::boot_alloc_next();
+    // SAFETY: `arena_pa` is the four-page LOADER_DATA arena the boot-shim
+    // allocated below `boot_dm_admissible_end`; the root just enabled maps
+    // that physical range identity and writable, and this function owns the
+    // patch phase (the shim is the only other party and never writes again).
+    let arena = unsafe { core::slice::from_raw_parts_mut(arena_pa as *mut u8, ARENA_CAP) };
+    patch_runtime_fields_in(
+        arena,
+        RuntimeFields {
+            root_page: root_page.0,
+            bump_base,
+            bump_next,
+            bump_end,
+        },
+    );
+    let entry = kernel_info.kern_virt_base().0;
+    // SAFETY: paging is enabled and `entry` maps the executable kernel-image
+    // `_start`; the arena is a valid physical address below the identity end.
+    // `x0` is bound to a fixed register (same style as the old blob jump) so
+    // LLVM cannot overwrite the branch target with an implicit move.
+    unsafe {
+        core::arch::asm!(
+            "isb",
+            "br {entry}",
+            in("x0") arena_pa,
+            entry = in(reg) entry,
+            options(noreturn)
+        );
+    }
+}
+
+/// T1 2c/3b receiver-side entry: read the v1 arena through the identity
+/// window, land all five payloads into this image's `.bss` stores, rebuild
+/// `KernelInfo`, then resume the additive high-half boot.
+///
+/// The bootstrap root is already live (the shim built it); this entry must
+/// never rebuild it — `new_from_page` would zero the active root that maps
+/// this very function.
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+pub fn arch_boot_resume_v1(arena_pa: u64) -> ! {
+    // SAFETY: the sender allocated a four-page LOADER_DATA arena below the
+    // identity bound and the live bootstrap root maps it; nothing writes it
+    // after the jump.
+    let arena = unsafe { core::slice::from_raw_parts(arena_pa as *const u8, ARENA_CAP) };
+    let scalars = decode_envelope(arena)
+        .unwrap_or_else(|e| panic!("kernel-image: handoff v1 envelope invalid: {e:?}"));
+
+    // Land the memmap and reserved lists directly into the T5 stores; the
+    // decoded values must survive the first process-root switch.
+    let memmap_store = unsafe { &mut *crate::globals::MEMMAP_REGION_STORE.get() };
+    let memmap_len = decode_memmap(arena, &scalars, memmap_store)
+        .unwrap_or_else(|e| panic!("kernel-image: handoff v1 memmap invalid: {e:?}"));
+    let memmap_ptr = memmap_store.as_ptr();
+
+    let reserved_store = unsafe { &mut *crate::globals::RESERVED_REGION_STORE.get() };
+    let reserved_len = decode_reserved_regions(arena, &scalars, reserved_store)
+        .unwrap_or_else(|e| panic!("kernel-image: handoff v1 reserved invalid: {e:?}"));
+    let reserved_ptr = reserved_store.as_ptr();
+
+    let mut wire_modules = [WireBootModule {
+        name: [0; 16],
+        start: 0,
+        len: 0,
+    }; WIRE_MODULE_CAP];
+    let module_len = decode_modules(arena, &scalars, &mut wire_modules)
+        .unwrap_or_else(|e| panic!("kernel-image: handoff v1 modules invalid: {e:?}"));
+    let name_store = unsafe { &mut *crate::globals::BOOT_MODULE_NAME_STORE.get() };
+    let module_store = unsafe { &mut *crate::globals::BOOT_MODULE_STORE.get() };
+    for (i, wire) in wire_modules.iter().enumerate().take(module_len) {
+        let name_len = wire
+            .name
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(wire.name.len());
+        name_store[i].fill(0);
+        name_store[i][..name_len].copy_from_slice(&wire.name[..name_len]);
+        // SAFETY: boot-module names are ASCII by protocol; the byte pool is a
+        // kernel `.bss` static, so the resulting `str` lives for the whole run.
+        let name: &'static str = unsafe {
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+                name_store.as_ptr().add(i) as *const u8,
+                name_len,
+            ))
+        };
+        module_store[i] = BootModule {
+            name,
+            start: PhysBytes(wire.start),
+            len: usize::try_from(wire.len)
+                .unwrap_or_else(|_| panic!("kernel-image: module length out of range")),
+        };
+    }
+    let module_ptr = module_store.as_ptr();
+
+    let platform_store = unsafe { &mut *crate::globals::PLATFORM_SOURCE_STORE.get() };
+    let platform_len = decode_platform_sources(arena, &scalars, platform_store)
+        .unwrap_or_else(|e| panic!("kernel-image: handoff v1 platform invalid: {e:?}"));
+    let platform_ptr = platform_store.as_ptr();
+
+    let param_store = unsafe { &mut *crate::globals::PARAM_BUF_STORE.get() };
+    let param_len = decode_param_buf(arena, &scalars, param_store)
+        .unwrap_or_else(|e| panic!("kernel-image: handoff v1 param invalid: {e:?}"));
+    let param_ptr = param_store.as_ptr();
+
+    let kinfo = KernelInfo {
+        // SAFETY: all five pointers reference the `.bss` stores filled above;
+        // their lengths are the decoder's validated element counts.
+        memmap: unsafe { core::slice::from_raw_parts(memmap_ptr, memmap_len) },
+        reserved_regions: unsafe { core::slice::from_raw_parts(reserved_ptr, reserved_len) },
+        kern_virt_base: VirBytes(scalars.kern_virt_base),
+        kern_phys_base: PhysBytes(scalars.kern_phys_base),
+        kern_size: scalars.kern_size,
+        free_upper_idx: scalars.free_upper_idx,
+        user_sp: VirBytes(scalars.user_sp),
+        kern_stack_top: VirBytes(scalars.kern_stack_top),
+        syscall_entry: VirBytes(scalars.syscall_entry),
+        boot_modules: unsafe { core::slice::from_raw_parts(module_ptr, module_len) },
+        bootstrap_start: PhysBytes(scalars.bootstrap_start),
+        bootstrap_len: scalars.bootstrap_len,
+        platform_sources: unsafe { core::slice::from_raw_parts(platform_ptr, platform_len) },
+        param_buf: unsafe { core::slice::from_raw_parts(param_ptr, param_len) },
+    };
+    kinfo.validate();
+    kinfo.check_boot_postconditions();
+    boot_alloc::resume_boot_pt_alloc(scalars.bump_base, scalars.bump_next, scalars.bump_end);
+    arch_boot_resume_high_half(&kinfo, PhysBytes(scalars.root_page))
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]

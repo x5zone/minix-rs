@@ -6,7 +6,7 @@ license = "MIT"
 
 [features]
 default = ["uefi"]
-uefi = ["dep:uefi"]
+uefi = ["dep:uefi", "dep:uefi-raw"]
 opensbi = []
 # Enable both impls for `cargo test` so loader/opensbi tests are built.
 test-all = ["uefi", "opensbi"]
@@ -43,6 +43,10 @@ minix-elf = { path = "../libs/minix-elf" }
 # In production, the UEFI allocator is set up in main.rs.
 # In tests, we provide std::alloc::System as the global allocator.
 uefi = { version = "0.33", optional = true, features = ["alloc"] }
+# Raw boot-services table for the T1 pairing loop. `uefi` keeps its own
+# `uefi_raw` private, so the raw ABI types (BootServices fields, Status) must
+# come from a direct dependency pinned to the same version.
+uefi-raw = { version = "0.9", optional = true }
 
 [lib]
 test = true

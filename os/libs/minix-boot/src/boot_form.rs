@@ -20,7 +20,7 @@ use crate::kernel_info::KernelInfo;
 pub enum BootForm {
     /// (a) x86_64 UEFI 内联：`arch_boot` 在 boot-shim 进程内直跑，kernel 静态链进 PE。
     X86UefiInline,
-    /// (b) aarch64 UEFI 跨镜像：shim 产出 `BootHandoff`，交棒 `kernel.elf`。
+    /// (b) aarch64 UEFI 跨镜像：shim 产出 `BootHandoffV1` arena，交棒 `kernel.elf`。
     Aarch64UefiCrossImage,
     /// (c) riscv64 OpenSBI 自举：`os/kernel-image/src/bootface.rs`（续-88）。
     RiscvOpensbiSelfBoot,
@@ -47,7 +47,7 @@ impl BootForm {
     pub const fn source_path(self) -> &'static str {
         match self {
             BootForm::X86UefiInline => "os/boot-shim/src/main.rs",
-            BootForm::Aarch64UefiCrossImage => "os/libs/minix-boot/src/handoff.rs",
+            BootForm::Aarch64UefiCrossImage => "os/libs/minix-boot/src/handoff_v1.rs",
             BootForm::RiscvOpensbiSelfBoot => "os/kernel-image/src/bootface.rs",
             BootForm::Aarch64QemuDirectCore => "os/kernel-image/src/bootface_a64.rs",
             BootForm::RiscvEarlyHartMailbox => "os/arch/src/riscv64/ap_early_entry.rs",

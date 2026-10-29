@@ -403,4 +403,92 @@ mod tests {
         };
         assert_eq!(get_u64(128), 16, "descriptor must not accumulate entries");
     }
+
+    /// The production sender writes the envelope and the non-map payloads
+    /// before entering the pairing loop; classification must then fill only
+    /// the map partitions and finish both descriptors. This pins the order the
+    /// aarch64 `prepare_and_enter_kernel_image` relies on.
+    #[test]
+    fn producer_sequence_survives_the_pairing_loop() {
+        use minix_boot::{
+            decode_descriptors, decode_envelope, patch_runtime_fields_in, BootModule, KernelInfo,
+            PlatformDescSource, RuntimeFields, DTB,
+        };
+        use minix_types::{PhysBytes, VirBytes, USER_STACK_TOP};
+
+        static MODULES: [BootModule; 1] = [BootModule {
+            name: "vm",
+            start: PhysBytes(0x20_0000),
+            len: 0x1000,
+        }];
+        static SOURCES: [PlatformDescSource; 1] =
+            [PlatformDescSource::new(DTB, PhysBytes(0x4000_0000))];
+
+        let carrier = KernelInfo {
+            memmap: &[],
+            reserved_regions: &[],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x20_0000),
+            kern_size: 0x20_0000,
+            free_upper_idx: None,
+            user_sp: VirBytes(USER_STACK_TOP as u64),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: &MODULES,
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &SOURCES,
+            param_buf: b"ARCH=test\0",
+        };
+        let mut arena = [0u8; ARENA_CAP];
+        let mut s = Serializer::new(&mut arena).unwrap();
+        s.write_envelope(&carrier).unwrap();
+        s.write_boot_modules(&MODULES).unwrap();
+        s.write_platform_sources(&SOURCES).unwrap();
+        s.write_param_buf(carrier.param_buf).unwrap();
+
+        let mut fw = MockFw::new(
+            &[(CONV, 0x10_0000, 0x200), (LOADER, 0x20_0000, 4)],
+            &[],
+        );
+        let mut map_buf = [0u8; 256];
+        let c = unsafe {
+            pair_and_classify(
+                &ops(),
+                &mut fw as *mut MockFw as *mut c_void,
+                0,
+                &mut map_buf,
+                1 << 48,
+                &mut s,
+            )
+        }
+        .unwrap();
+        assert_eq!(c.conventional, 1);
+        assert_eq!(c.reserved, 1);
+
+        let d = decode_descriptors(s.as_bytes()).unwrap();
+        assert_eq!(d.memmap_byte_len, 16);
+        assert_eq!(d.reserved_byte_len, 16);
+        assert_eq!(d.modules_byte_len, 32);
+        assert_eq!(d.platform_byte_len, 16);
+        assert_eq!(d.param_byte_len, 10);
+        drop(s);
+
+        // The runtime fields are patched after the root build; the full
+        // envelope read then succeeds with the same descriptors.
+        patch_runtime_fields_in(
+            &mut arena,
+            RuntimeFields {
+                root_page: 0x1000,
+                bump_base: 0x20_0000,
+                bump_next: 0x21_0000,
+                bump_end: 0x30_0000,
+            },
+        );
+        let scalars = decode_envelope(&arena).unwrap();
+        assert_eq!(scalars.memmap_byte_len, 16);
+        assert_eq!(scalars.reserved_byte_len, 16);
+        assert_eq!(scalars.param_byte_len, 10);
+        assert_eq!(scalars.kern_virt_base, 0xFFFF_8000_0000_0000);
+    }
 }
