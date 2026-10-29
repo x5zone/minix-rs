@@ -24,6 +24,7 @@ use minix_boot::{
     RSDP,
 };
 
+use crate::build_kernel_info;
 use crate::loader::{self, FileLoader};
 
 /// UEFI Configuration Table GUID for the Device Tree (FDT).
@@ -481,50 +482,6 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
     let base = ptr.as_ptr() as u64;
     let end = base + size;
     (base, end)
-}
-
-/// Build a KernelInfo struct.
-///
-/// `bootstrap_start`/`bootstrap_len` describe the boot-shim's physical
-/// memory region that the kernel should reclaim after boot completes.
-/// C: kinfo.bootstrap_start/len — pre_init.c:114-116
-///
-/// `platform_sources` is the ordered list of firmware-provided platform
-/// descriptor sources (DTB, RSDP, or both). The kernel tries each in order,
-/// using the first that parses successfully. Empty slice = no source found
-/// (kernel falls back to QemuVirtDesc or panics).
-pub fn build_kernel_info(
-    memmap: &'static [MemoryRegion],
-    reserved_regions: &'static [MemoryRegion],
-    kern_virt_base: VirBytes,
-    kern_phys_base: PhysBytes,
-    kern_size: u64,
-    boot_modules: &'static [BootModule],
-    bootstrap_start: PhysBytes,
-    bootstrap_len: u64,
-    platform_sources: &'static [PlatformDescSource],
-) -> KernelInfo {
-    KernelInfo {
-        memmap,
-        reserved_regions,
-        kern_virt_base,
-        kern_phys_base,
-        kern_size,
-        free_upper_idx: None,
-        // Per-arch user stack top; the single authority is
-        // `minix_types::USER_STACK_TOP` (48-bit LP64 top on x86_64/aarch64).
-        user_sp: VirBytes(minix_types::USER_STACK_TOP),
-        kern_stack_top: VirBytes(kern_virt_base.0 as u64 + kern_size as u64),
-        syscall_entry: VirBytes(kern_virt_base.0),
-        boot_modules,
-        bootstrap_start,
-        bootstrap_len,
-        platform_sources,
-        // P9-1: UEFI load options not yet parsed into key=value pairs.
-        // Pass empty slice — kernel's GET_MONPARAMS handler copies 0 bytes
-        // to caller (matching C's behavior when param_buf[0] == '\0').
-        param_buf: &[],
-    }
 }
 
 /// Exit UEFI boot services.

@@ -33,6 +33,50 @@ pub use minix_boot::{BootShim, BootPrepareResult};
 // Both boot-shim and kernel need ELF parsing, so it lives in os/libs/minix-elf.
 pub use minix_elf;
 
+/// Single construction surface for the `KernelInfo` a boot surface hands over
+/// (D-69: the UEFI and OpenSBI helpers previously carried two drifting
+/// 8/9-parameter copies of this function).
+///
+/// `reserved_regions` is the surface's non-conventional list (UEFI-classified
+/// firmware memory, DTB-clipped firmware ranges); pass `&[]` when the surface
+/// has none. The derived fields follow the boot layout contract:
+/// `kern_stack_top = kern_virt_base + kern_size`, `syscall_entry =
+/// kern_virt_base`, `free_upper_idx = None`, and the per-arch user stack top
+/// from `minix_types::USER_STACK_TOP`.
+pub fn build_kernel_info(
+    memmap: &'static [minix_boot::MemoryRegion],
+    reserved_regions: &'static [minix_boot::MemoryRegion],
+    kern_virt_base: minix_types::VirBytes,
+    kern_phys_base: minix_types::PhysBytes,
+    kern_size: u64,
+    boot_modules: &'static [minix_boot::BootModule],
+    bootstrap_start: minix_types::PhysBytes,
+    bootstrap_len: u64,
+    platform_sources: &'static [minix_boot::PlatformDescSource],
+) -> minix_boot::KernelInfo {
+    minix_boot::KernelInfo {
+        memmap,
+        reserved_regions,
+        kern_virt_base,
+        kern_phys_base,
+        kern_size,
+        free_upper_idx: None,
+        // Per-arch user stack top; the single authority is
+        // `minix_types::USER_STACK_TOP`.
+        user_sp: minix_types::VirBytes(minix_types::USER_STACK_TOP),
+        kern_stack_top: minix_types::VirBytes(kern_virt_base.0 + kern_size),
+        syscall_entry: minix_types::VirBytes(kern_virt_base.0),
+        boot_modules,
+        bootstrap_start,
+        bootstrap_len,
+        platform_sources,
+        // P9-1: boot parameters are not parsed into key=value pairs yet; the
+        // empty slice is equivalent to C's `param_buf[0] == '\0'` (the
+        // kernel's GET_MONPARAMS handler copies 0 bytes).
+        param_buf: &[],
+    }
+}
+
 // ── Shared, firmware-agnostic loading logic ──
 //
 // The kernel/module loading pipeline is identical for every firmware

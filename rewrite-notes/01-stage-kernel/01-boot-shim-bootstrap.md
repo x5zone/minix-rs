@@ -1963,7 +1963,7 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
 
 ## 4. 实现详解
 
-本章把第 3 章的设计决策落到代码：4.1–4.3 走一遍入口与两条固件路径的调用链（含共用装载函数），4.4–4.5 看 `KernelInfo` 的两个 builder、校验与三块 `.bss` 落地区，4.6–4.7 是自举根建立/开分页与分配器换手的落地，4.8 是跨镜像交接与直核自引导，4.9 收成 C 函数对照表。各节标题后的 `→` 指回它所实现的设计决策。
+本章把第 3 章的设计决策落到代码：4.1–4.3 走一遍入口与两条固件路径的调用链（含共用装载函数），4.4–4.5 看 `KernelInfo` 的单一 builder、校验与三块 `.bss` 落地区，4.6–4.7 是自举根建立/开分页与分配器换手的落地，4.8 是跨镜像交接与直核自引导，4.9 收成 C 函数对照表。各节标题后的 `→` 指回它所实现的设计决策。
 
 ### 4.1 入口与调用链（→3.1、3.2、3.8）
 
@@ -2260,12 +2260,12 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 
 **若把 `MODULE_NAMES` 里 `tty` 与 `mib` 两项互换会怎样**：装载会全部成功（12 个文件都在），`const _: () = assert!(... == NR_BOOT_MODULES)` 也通过——数量没变。但是位置 7 上的 `BootModule` 记的是 `mib` 的镜像与名字，内核按位置把它绑到 `tty` 的进程号上。启动过程依旧能走到 `kmain`，进程表也能建起来；症状出现在第一次对 `tty` 或 `mib` 发系统调用时——调用被打到错误的进程号，表现为"服务没有响应"或"收到协议外的回复"，与"装载时顺序错了"之间隔着整个启动流程。
 
-### 4.4 `KernelInfo` 的构造：两个 builder 与一个校验（→3.4、3.5）
+### 4.4 `KernelInfo` 的构造：单一 builder 与一个校验（→3.4、3.5）
 
-两个固件路径各有一个 `build_kernel_info`，填的是同一个结构。参数表差异反映两种执行模型：
+两条固件路径与两个直核面共用**一个** `build_kernel_info`（boot-shim 库根导出）。收敛的是构造面，不是引导形态层：每条腿仍各自产出自己的列表，只有 `reserved_regions` 一项按腿取值。
 
 ```rust
-// 代码引用（略去函数文档注释；块内 `P9-1` 是工作项编号，指"UEFI Load Option 尚未解析"这件事），os/boot-shim/src/uefi_helpers.rs:fn build_kernel_info。
+// 代码引用（略去函数文档注释；代码内注释有删节与改述），os/boot-shim/src/lib.rs:fn build_kernel_info。
 pub fn build_kernel_info(
     memmap: &'static [MemoryRegion],
     reserved_regions: &'static [MemoryRegion],
@@ -2285,41 +2285,27 @@ pub fn build_kernel_info(
         kern_size,
         free_upper_idx: None,
         // Per-arch user stack top; the single authority is
-        // `minix_types::USER_STACK_TOP` (48-bit LP64 top on x86_64/aarch64).
+        // `minix_types::USER_STACK_TOP`.
         user_sp: VirBytes(minix_types::USER_STACK_TOP),
-        kern_stack_top: VirBytes(kern_virt_base.0 as u64 + kern_size as u64),
+        kern_stack_top: VirBytes(kern_virt_base.0 + kern_size),
         syscall_entry: VirBytes(kern_virt_base.0),
         boot_modules,
         bootstrap_start,
         bootstrap_len,
         platform_sources,
-        // P9-1: UEFI load options not yet parsed into key=value pairs.
-        // Pass empty slice — kernel's GET_MONPARAMS handler copies 0 bytes
-        // to caller (matching C's behavior when param_buf[0] == '\0').
+        // 启动参数尚未解析成 key=value；空切片等价于 C 的
+        // `param_buf[0] == '\0'`（内核 GET_MONPARAMS 拷贝 0 字节）。
         param_buf: &[],
     }
 }
 ```
 
-```rust
-// 节选（保留与 UEFI 版取值不同的字段及其注释；其余字段逐一对应，省略号处为字段注释），
-// os/boot-shim/src/opensbi_helpers.rs:fn build_kernel_info。
-    KernelInfo {
-        memmap,
-        // No runtime identity windows on this path — the kernel
-        // executes as the standalone higher-half kernel.elf here (the
-        // boot-shim is a separate binary), so no low physical VA range
-        // hosts live kernel code/data. UEFI's link-in execution model
-        // is what populates this list (uefi_helpers::build_memmaps).
-        reserved_regions: &[],
-        ...
-    }
-```
+`reserved_regions` 的取值按腿：UEFI 腿传快照里的非 conventional 列表；OpenSBI 腿传 `DtbMemoryMap` 削出的 reserved（`fw_end = 0` 时为空）；两个直核面同 OpenSBI（aarch64 的 `fw_end = 0` 亦为空）。
 
 | 字段 | 谁填 | 值从哪来 |
 |---|---|---|
 | `memmap` | builder 调用方 | UEFI：`UefiMemoryMap::collect()` 的 conventional 列表；OpenSBI：`DtbMemoryMap::collect(dtb_ptr())`（a1 DTB 的 `/memory`，I-22） |
-| `reserved_regions` | 调用方 | UEFI：快照的非 conventional 列表；OpenSBI：空 |
+| `reserved_regions` | 调用方 | UEFI：快照的非 conventional 列表；OpenSBI/直核：`DtbMemoryMap` 的 reserved（`fw_end = 0` 时为空） |
 | `kern_virt_base` / `kern_phys_base` / `kern_size` | 装载函数 | ELF 各 PT_LOAD 段的 `min(vaddr)` / `min(paddr)` / `max(paddr+memsz) - min(paddr)` |
 | `free_upper_idx` | builder | 固定 `None`（见 §3.9） |
 | `user_sp` | builder | `minix_types::USER_STACK_TOP` 单一权威常量 |
