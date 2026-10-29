@@ -1826,4 +1826,15 @@ riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0。A/B 用的产
 `HEAD-COUNT-LEADING-BLANK-ACCEPTED`；`todo-reconcile-scan` 的 `探针命名族` 漂移归一线。**取证回抄照办**：release 前把 `tmp/head-462` 整目录
 复制回主树 `tmp/`。
 
+**合回读数（第一百七十六笔补记，批次四百六十二 补笔）**：本支五笔（码笔 `280f45170`、文档笔 `c1943dcd5`、里程碑笔 `b77aa3f1b`、SL-5
+补笔 `3990a194b`、合入笔 `419314c98`）在合回前已在领取树上把 `rewrite` 那五笔 C3 收官笔合进来，冲突只有一处——`new_edge4.md` 的同一处尾追，
+按两侧各留全解（本笔的 `###` 段在前、C 板那条流水行在后）。**逐笔验祖先**：五个哈希对 `rewrite` 全部 `merge-base --is-ancestor` 为真，
+主树 `rewrite` 从 `f425e8c0f` 前进到 `419314c98` 是 fast-forward，主树脏文件与入栈八件零交集（`git status --porcelain` 与
+`git diff --name-only rewrite...claim/*` 取集合差）。主树合回后当场复跑 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter`
+→ 退 0、**69 段 / 1257 / 0**（`tmp/head-462-main-recheck.log`），与领取树合回前后两次同读数；取证目录 `tmp/head-462`（25 件）已回抄主树。
+**跨线告知一条**：门④ `doc-style-lint --diff` 的范围若含合入笔，会报出 `PARALLEL-20261018-C-KERN-QEMU.md:26 [SL-11] :: 续-130`——那条在
+`rewrite` 自己的文件里已存在（`git show rewrite:… | sed -n '26p'` 现量命中），属 C 板合回内容而非本支引入；本支四笔的增量范围
+`HEAD~4..HEAD~1` 复跑仍是 4 个文件 / 207 个新增行、**error 级 0**。**判据：合回之后再跑增量门，范围里混进他人笔就要按「谁的行」分开归因，
+不能替他人认账，也不能因为门红就把自己那笔回退。**
+
 - `2026-10-20` zcode-glm / C 板收尾（**C3 首源读数到手——B 板代领完成，C 板可做件终局清零**）：`claim/C3-zcode-glm`（release 先于 merge 险情以提交哈希 `ef23cbbf0` 直接合并化解）→ 合并笔 `f425e8c0f`。交付=UART RX（PLIC IRQ10）回环驱动（`kernel/uart_irq.rs`：register_hook 首挂自动 unmask + `set_irq_priority` 三层 API + `sie.SEIE` + IER.ERBFI + **脉冲式 MCR.LOOP** 使能序）+ 载体阶段（test-timer-irq PASS 门=uptime ∧ 首源 matched>0）。诊断三层定案：①上段「stride 0x2000 修复」实为**误修**（QEMU `sifive_plic.c` CONTEXT_STRIDE=0x1000、规范 CONTEXT1@0x201000、DTB `interrupts-extended <0x0b,0x09>` 证 hart0-S=context1——回滚并留注）②真病根=脉冲式 LOOP 序（LOOP 悬置=同 UART 控制台内环失聪+控制台字节反成 RX 垃圾源）③修后 claim→钩子→match 三环真机全通：`uart-rx first-source ok`+`TEST_RESULT: PASS`，mock 834/0/8、aarch64 check 0 error、全量 **39/0/0 维持**。PLIC 设备驱动两件必修常识入板行：**priority 复位 0=永不投递必写**、**MCR.LOOP 悬置=控制台失聪**。C 板 21 行终态=全闭或外部门控（C2b/C4/C7 族/C11 案结/C1 案结/C3 首源✅本笔解/C8-C21 人裁绑定），门控地图与解除钥匙见 PARALLEL-C。
