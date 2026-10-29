@@ -14,9 +14,12 @@ use crate::kernel_info::KernelInfo;
 /// - `root_page`: physical address of the root page table page
 /// - `bump_base` / `bump_end`: bump region for boot-stage page table allocation
 ///
-/// This struct is produced by any `BootShim` implementation and consumed
-/// by the kernel's `arch_boot_impl`. It is the **only** data crossing
-/// the boot-shim → kernel boundary.
+/// This struct is produced by a `BootShim` implementation and consumed **in
+/// the same address space** (today only the x86_64 inline leg; T2 switches it
+/// to the cross-image form). It is not serialized across binaries: the
+/// cross-image authority is the wire protocol `BootHandoffV1`
+/// ([`crate::handoff_v1`]), whose envelope carries the same semantic fields in
+/// fixed-width wire types.
 pub struct BootPrepareResult {
     pub kernel_info: KernelInfo,
     pub root_page: PhysBytes,

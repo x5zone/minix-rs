@@ -49,8 +49,9 @@ use minix_boot::{
 };
 use minix_types::{PhysBytes, VirBytes};
 
+use boot_shim::build_kernel_info;
 use boot_shim::opensbi_helpers::{
-    BootFileTable, bump_alloc_pages, bump_end_bound, bump_pool_base, build_kernel_info,
+    BootFileTable, bump_alloc_pages, bump_end_bound, bump_pool_base,
 };
 
 use crate::early_console;
@@ -156,7 +157,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
 
     // I-22 丁案 C：memmap 源经 `DtbMemoryMap`（minix-boot），固件常驻区
     // 削界语义不变（fw_end = KERN_PHYS_BASE，续-91 实钉的功能性削除）。
-    let (memmap, _reserved) = DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect();
+    let (memmap, reserved) = DtbMemoryMap::new(&fdt, KERN_PHYS_BASE).collect();
     if memmap.is_empty() {
         say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
         crate::halt();
@@ -237,6 +238,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     //    门槛（validate → 建根 → DM → jump_to_kmain，不再返回本面）。
     let kernel_info: KernelInfo = build_kernel_info(
         memmap,
+        reserved,
         VirBytes(KERN_VIRT_BASE),
         PhysBytes(KERN_PHYS_BASE),
         KERN_SIZE,
