@@ -2095,6 +2095,8 @@ aarch64 的中断控制器多一步地址翻译：
 
 省掉翻译会坏在哪：aarch64 在 boot 期靠 TTBR0 的身份映射（低半）访问设备；第一次 `switch_address_space` 换成进程根并执行 `tlbi alle1is` 之后，低半身份条目被冲刷，此后任何一次走该地址的 MMIO 访问都触发同步异常。这段实测故障记录在 `os/libs/minix-platform/src/arch/aarch64.rs` 的模块注释里（原文："the boot dies on the very first `set_active_root`"）。翻译发生在 `new()` 里，为的是在"切根之前"就把地址换成跨根持久的别名。
 
+设备窗口的映射属性属于架构层而不是平台发现层 `[ARCH: mmio-device]`（SD-42）。aarch64 的 PL011/GIC 窗口在 bootstrap 根里有**两个别名**：低半恒等窗口（`MMIO_PA_BASE`，Step 1 铺）与高半 TTBR1 窗口（`MMIO_VA_BASE`，Step 2b 铺），两者必须带同一组属性——`PageFlags::DEVICE`（MAIR 的 Device 字节），否则同一物理页的两种映射属性不一致，ARM 架构规定其行为不可预测。窗口按 2 MiB 分片映射，与 `map_huge` 的块大小一致；`kernel/src/lib.rs` 的 Step 1 对落在窗口内的地址改用 `DEVICE` 标志，Step 2b 用同一标志铺高半别名（`os/arch/src/arm64/paging.rs` 的 `flags_to_pte`/MAIR 选择），常量对齐由两处编译期断言钉住。x86-64 与 riscv64 的设备窗口走各自的页表属性路径，不需要这组双别名。
+
 描述符覆盖的范围有一条边界：PLIC 的线数与定时器无关。riscv64 的 S 模式定时器是核本地中断、不经平台级控制器，因此它的分发身份是保留伪向量 0：
 
 ```rust

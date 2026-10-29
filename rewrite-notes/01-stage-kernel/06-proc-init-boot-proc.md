@@ -2450,7 +2450,7 @@ riscv64 的两个初值常量带一条命名注释，指向本篇 §3.4 的角�
 
 段起始落在页中间时的偏移由 `seg_start_in_page` 承载，它是"链接器产物"与"页对齐假设"之间的桥：C 的 `pg_map` 对 `vaddr % I386_PAGE_SIZE` 有断言（`i386/pg_utils.c` 的 [`pg_map`](minix3/minix/kernel/arch/i386/pg_utils.c:pg_map)），Rust 的装载器显式接受段起点非页对齐，代价就是要处理共享页。注释把这条差异写明了（"this loader deliberately accepts mid-page segment starts and maps each page exactly once"）。
 
-段与栈之间还有一步：**装载器尾的指令缓存同步**（源码在该处标注 `[ARCH: cache-sync]`）。页循环里对可执行段逐页记账"被写入的内核可寻址帧区间"，循环结束后一次性调用 `CurrentCacheSyncArch::sync_icache_range`（`boot.rs` 的 [`fn load_elf_into`](os/arch/src/arch/boot.rs:fn load_elf_into) 的页循环记账与尾段调用；注释说明只记整帧、过度失效无害）。需要这一步的是 aarch64 与 riscv64——它们的 I-cache 与这些数据写入之间不保证一致，必须显式维护；x86_64 的 trait 实现是空操作。两条宿主测试把它钉成回归读数：`load_vm_elf_syncs_icache_over_exec_segment_frames`（可执行段恰好同步一次）与 `load_vm_elf_skips_icache_sync_for_non_exec_image`（非可执行段不同步）。
+段与栈之间还有一步：**装载器尾的指令缓存同步**（`[ARCH: cache-sync]`，SD-20；源码同标）。页循环里对可执行段逐页记账"被写入的内核可寻址帧区间"，循环结束后一次性调用 `CurrentCacheSyncArch::sync_icache_range`（`boot.rs` 的 [`fn load_elf_into`](os/arch/src/arch/boot.rs:fn load_elf_into) 的页循环记账与尾段调用；注释说明只记整帧、过度失效无害）。需要这一步的是 aarch64 与 riscv64——它们的 I-cache 与这些数据写入之间不保证一致，必须显式维护；x86_64 的 trait 实现是空操作。两条宿主测试把它钉成回归读数：`load_vm_elf_syncs_icache_over_exec_segment_frames`（可执行段恰好同步一次）与 `load_vm_elf_skips_icache_sync_for_non_exec_image`（非可执行段不同步）。
 
 段装完之后是栈与 `ps_strings`：
 
