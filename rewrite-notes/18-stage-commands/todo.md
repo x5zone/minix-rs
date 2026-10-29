@@ -119,6 +119,97 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百六十（A2 参数缝半切片 42：`comm` 的 argv 与两条报文名字位交回原字节，跨壳表十二行至此全是原字节）
+
+- **这一支的可达出口由 optstring 定死**：`minix3/usr.bin/comm/comm.c:80` 的 `"123f"` 四个字母
+  **一个都不带值**，所以 `comm` 没有 `column` 那种「参数值就是数据」的腿，也没有 `cmp` 那种
+  「skip 偏移也是参数」的腿。它只剩两处消耗 argv：① 集外字母那一行的字母位，② 两支档名。
+  而档名在 C 里只被拿去 `file()`（`comm.c:177-187`）与 `err(1, "%s", name)` 的句子（同一支
+  函数），两条都要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`）。于是本支缝的落点不在数据面、也不在
+  回显写法，而在**库里能不能表达原字节的操数**——旧签名 `parse_comm_args(&[&str])` 根本写不出
+  那一形，一枚裸 `ff` 在走到环之前就已经不是它自己了。
+- **落码三层同一支壳**：库侧 `os/commands/usr-bin/textfilter/src/comm.rs` 的 `fn parse_comm_args`
+  改收 `&'a [&'a [u8]]`、交回 `[&'a [u8]; 2]`，环里三处判据换成字节形（`arg == b"--"`、
+  `arg.len() < 2 || arg[0] != b'-'`、`for &byte in &arg[1..]`）；字母位的取法本来就是按字节
+  （批次四百零九那半），本轮没动它的语义。壳侧 `src/bin/comm.rs` 改走 `support::args_bytes()`
+  与 `support::prog_name_bytes()`，libc 那一行仍走 `GetoptReport::line_bytes`；`fn operand_lines`
+  的入参改成 `&[u8]`，`-` 的判据按字节比（`name == b"-"`），开档与 `err` 句子那一臂折一次
+  `from_utf8_lossy`，得到的 `path` 同时喂给两条 `&str` 口。门面 `tests/comm_face.rs` 新增字节形
+  夹具 `fn run_argv`（`OsStr::from_bytes`）与 `fn write_raw`（按原字节名落档并交回路径字节），
+  跨壳表 `tests/bin_support_face.rs` 补 `comm` 一行。
+- **门账按现跑取数**：库内 `comm` 模块 **13 → 14**（新立
+  `an_operand_that_is_not_utf8_is_returned_as_the_argv_bytes`，钉「操数交回的就是 argv 那串字节」）；
+  `comm_face` **11 → 12**（新立 `comm_reports_the_raw_option_byte_before_the_hardcoded_usage_line`）；
+  `bin_support_face` 门数 **4 → 4** 不变、表体十一行 → **十二行**（`comm` 行钉
+  `comm: unknown option -- \xff` 与退 **1**，`comm.c:195-199` 的 `usage()` 走 `exit(1)`）；
+  整包 **1250 → 1252**。既有门里 `the_unknown_letter_is_the_first_byte_not_the_first_character`
+  的期望**逐字未动**（仍断 U+00C3），本轮只把它的夹具从 `"-\u{e9}"` 这种文本形改成 `b"-\xc3\xa9"`
+  字节形——与批次四百五十五、四百五十七、四百五十九那条「找到既有门就翻正、不新增双胞胎」同一处置。
+  名字集合逐件对过：
+  `diff <(git show HEAD:<件> | grep -A2 "#\[test\]" | grep -oE "fn [a-z0-9_]+" | sort) <(grep -A2 "#\[test\]" <件> | grep -oE "fn [a-z0-9_]+" | sort)`
+  四件读数分别是「库件 +1、面件 +1、壳件与跨壳表零增减」——上一笔立的那条判据本轮当开工即办。
+- **负控四枚**（`tmp/comm-460/negctl.py`，逐枚读数 `negctl-D1..D4.log`，汇总 `negctl-final.log`；
+  基线库内 618、跨壳表 4、`comm_face` 12 三段全绿，命令带 `--no-fail-fast`）。D1（壳侧 argv 退回
+  `support::args()`）咬 **2** 枚（面侧新门 + 跨壳表 `no_command_aborts_on_a_nonutf8_option_letter`），
+  **库内 618 全绿**——这是「库件的入参本来就是字节，缝在壳上，所以牙只长在面侧与跨壳表」这条通则的
+  **第二次量化**（第一次是上一笔的 C2）；D2（字母位退回按字符取，只交每字符低字节）咬 **4** 枚
+  （库内既有 `the_unknown_letter_is_the_first_byte_not_the_first_character`、跨壳表那行、面侧既有
+  `the_libc_line_of_a_multibyte_flag_is_one_byte_after_the_cluster`、面侧新门），而本轮新立的**库门
+  不红**——操数与字母位是两条腿，这条分工正是那枚库门存在的理由；D3（`--` 终结符退回按前缀判
+  `arg.starts_with(b"--")`）只咬 **1** 枚（面侧 `an_unknown_letter_prints_the_libc_line_then_the_usage`，
+  因为只有它带 `--x` 那一形）——记下来：**一个判据的牙长在哪些门，等于「哪些门带了会因它改变的那一形」**，
+  D3 说明 `--` 的全等判据在本支只由那一枚门承载，别处没有重复；D4（开档臂不折一次、失败成空名
+  `from_utf8(name).unwrap_or("")`）咬 **1** 枚（面侧新门的第三形）。
+- **一处自己的判据被注入否证**（本笔最该记的东西）：面侧新门的第三形（两枚操作数都带裸 `ff`、
+  盘上同时放原字节名与其折叠孪生件）我初版写下的是「这一形对参数缝没有分辨力，因为折叠是幂等的：
+  argv 先折一次与按字节走到开档臂再折一次，得到的是同一个名字」——推理没错，D1 也确实让这一形
+  两侧都不红。但 D4 把它证伪了一半：**把臂内的 `from_utf8_lossy` 换成 `from_utf8(...).unwrap_or("")`
+  时，这一形当场红**。所以准确的表述是分层的：对 **argv 那条缝**它没有分辨力，对**开档臂的折叠
+  写法**它有牙。判据一条：**「某条断言无分辨力」这种结论必须由注入证，不能由推理证**——推理只能
+  提出候选，能证否的只有把代码改坏一次。门注释已按 D1 与 D4 的读数改写。
+- **A/B 对 `tmp/comm-409/comm` 跑十八形，SAME=18 / DIFF=0**（`tmp/comm-460/ab2.log`；该路径是指向
+  `comm_ref` 的软链，让 `getprogname()` 算出的程序名与本壳一致，报文才能逐字节直比；先按批次
+  四百零七那条验法打 `-Z`，交回 `comm: unknown option -- Z` 再跟那行写死的 usage、退 1 ⇒ Minix
+  `getopt.c` 血脉）。十八形覆盖字母位六形（`-Z`、裸 `ff`、`-é`、聚簇 `-1\xff`、聚簇 `-1é`、
+  `-Zé` 停在 `Z`）、`--x`、操作数个数三形（零、一、三）、裸 `-` 读标准输入、`--` 终结符、
+  全压三列 `-1 -2 -3`、聚簇 `-123f`、数据面两档含裸 `ff` 行、`-f` 折叠形（`c3 89` 对 `c3 a9`
+  与 `Apple` 对 `apple`）、操数是裸 `ff` 档名、开不了的操数。逐字节比之前把两侧的程序名 token
+  **全部**归一。**本支没有新登记任何 C 侧分叉**，全等边界与上一笔同一条：量的是参数缝与由它到达的
+  地方，不含开档腿（那一腿在册，盘上的折叠孪生件就是为排除它而放，排除动作写在 `ab.py` 的模块
+  注释里）。上一笔立的流程本笔**开工即办**：A/B 前先 `cargo build --offline -j 1 -p minix-textfilter
+  --bins` 并 `file os/target/debug/comm` 确认是 ELF 再打第一遍，所以本笔没再撞上旧入口件。
+- **clippy 本轮有过三条新警，修完才进下一道门**：`cargo clippy --offline -j 1 --all-targets
+  -p minix-textfilter` 主树 **151** / 本树 **154**，但**光看总数看不出该修几条**——用位置集合差定位：
+  对两份日志各跑 `grep -oE '\-\-> [^ ]+' | sort` 再 `comm -13`，交出两个本树独有的位置，都在
+  `tests/comm_face.rs`：一处是 `fn write_raw(dir: &PathBuf, …)` 的 `ptr_arg`（改 `&Path`），
+  一处是门注释里那行以 `+` 开头的散文被 markdown 当成列表项、触发 `doc_lazy_continuation`
+  （改写行文，不让续行顶格）。修完复跑：主树与本树各 **151**、位置各 **82**、独有位置零条。
+  两条判据：**①聚合数与位置数可以不一致**（cargo 那句「(bin X test) generated 1 warning
+  (1 duplicate)」的归属会随 target 数漂），所以**归属用位置集合、结论用总数**；**②新警先修完
+  再进容器门**，别让「门绿」把「门净」顶掉。
+- **门读数（全 L1，`2026-10-21`，基线快照 `1f5104e0e`）**：宿主整包
+  `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1252 passed / 0 failed**
+  （`tmp/comm-460/pkg-final3.log`）；容器权威门按板 §7.3 三挂载配方（带 `-u $(id -u):$(id -g)` 与
+  `ci-cargo`/`ci-target` 两个挂载点，跑时未与其他 cargo 并发）→ 退 0、**69 段 / 1252 / 0**，
+  与宿主同读数（`tmp/comm-460/container-gate.log`）；三架构 `cargo check --offline -j 1 --target
+  {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} -p minix-textfilter --bins`
+  各退 0（`tmp/comm-460/arch-*.log`）；`rustfmt --edition 2024 --check` 触及四件零漂移。
+  基线不当转述用：本笔开工基线 1250 是上一笔在主树合回之后**当场复跑**取到的
+  （`tmp/column-459/main-tree-recheck.log`，其快照即本笔基线 `1f5104e0e`）。
+- **进度与余量（全部现量）**：参数缝半**已落十五支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`）；
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **24**；命令面口径
+  （同一条 grep 去掉 `tests/` 与 `bin_support.rs`）→ **93**。渲染半仍 **0** 行；`line_bytes`
+  **40 处 / 29 件**（本支未新增调用点）。壳内 `grep -c from_utf8_lossy os/commands/usr-bin/textfilter/src/bin/comm.rs`
+  → **2**（程序名一处、操作数一处），在册 `ARGV-BYTE-PATH-IN-LIBS`。切片 43 建议 **`cut`**：余下
+  24 支里带字母位诊断面的有 12 支（`cut`、`head`、`join`、`jot`、`nl`、`pr`、`sort`、`split`、
+  `tail`、`unexpand`、`unifdef`、`vis`，按各支 `*_face.rs` 里 `line_bytes`/`unknown option` 命中数
+  点出），`cut` 是字母序第一支；它与 `comm` 的差别在于 `-b`/`-c`/`-d`/`-f` **四个字母都带值**
+  （`minix3/usr.bin/cut/cut.c` 的 optstring `"b:c:d:f:sn"`），参数值会进列表解析、`-d` 还进分隔符，
+  所以本支「无值字母 ⇒ 缝只剩两处」的便利不复存在，落码面更像 `column` 那一笔。
+
+---
+
 ## 批次四百五十九（A2 参数缝半切片 41：`column` 的分隔符值——本族头一条改到数据面的参数腿）
 
 - **这一支与前十三支的分别不在缝的长短，而在参数值走到哪里去**：`asa`、`cksum`、`cmp` 那些支里，
