@@ -58,10 +58,6 @@ use minix_boot::{
 
 use crate::loader::{self, FileLoader};
 
-/// QEMU virt DRAM base address.
-
-/// Default QEMU virt RAM size (128 MB).
-
 /// Bump-allocation region for boot modules in OpenSBI path.
 ///
 /// U-Boot has placed `kernel.elf` and the `BootFileTable` somewhere
@@ -184,7 +180,8 @@ impl<'a> FileLoader for UbootFileLoader<'a> {
 ///
 /// Mirrors `UefiBootShim` step by step; the only differences are how
 /// firmware-specific services are accessed:
-/// - Memory map → hardcoded (no SBI call to enumerate RAM; QEMU virt is fixed).
+/// - Memory map → `DtbMemoryMap::collect(dtb_ptr())` (DTB `/memory`;
+///   missing DTB halts).
 /// - Page allocation → tiny bump allocator (no UEFI `AllocatePages`).
 /// - File access → [`UbootFileLoader`] over a `BootFileTable`.
 /// - Exit firmware services → nothing to do; U-Boot has already handed
@@ -373,7 +370,7 @@ pub fn dtb_ptr() -> Option<u64> {
     Some(ptr)
 }
 
-// ── OpenSBI helpers (no firmware to call; everything is hardcoded) ──
+// ── OpenSBI helpers (no firmware to call; bump pool base is fixed by the boot script) ──
 
 /// Bump pointer used by `alloc_root_page` / `alloc_bump_region` and
 /// `alloc_module_pages`. Starts above the boot-shim image and the

@@ -4504,6 +4504,69 @@ mod tests {
         unsafe { *crate::globals::KERNEL_INFO.get() = None };
     }
 
+    /// Minimal `KernelInfo` for the landing-pad fail-fast tests — only the
+    /// three sliced payloads matter; everything else is inert filler.
+    fn minimal_store_info() -> KernelInfo {
+        KernelInfo {
+            memmap: &[],
+            reserved_regions: &[],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x20_0000),
+            kern_size: 0x20_0000,
+            free_upper_idx: None,
+            user_sp: VirBytes(USER_STACK_TOP as u64),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+        }
+    }
+
+    /// M8 fail-fast: `reserved_regions` over the `.bss` landing pad aborts
+    /// before any copy — it never truncates.
+    #[test]
+    #[should_panic(expected = "reserved_regions exceeds the .bss landing pad")]
+    fn test_store_kernel_info_rejects_reserved_overflow() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        static OVERFLOW: [minix_boot::MemoryRegion; crate::globals::RESERVED_REGION_STORE_LEN + 1] =
+            [minix_boot::MemoryRegion { base: PhysBytes(0), len: 0 };
+             crate::globals::RESERVED_REGION_STORE_LEN + 1];
+        let mut info = minimal_store_info();
+        info.reserved_regions = &OVERFLOW;
+        store_kernel_info(&info);
+    }
+
+    /// M8 fail-fast: `memmap` over `MEMMAP_REGION_STORE_LEN` aborts before
+    /// the copy loop — a truncating store would publish a wrong free list.
+    #[test]
+    #[should_panic(expected = "memmap exceeds the .bss landing pad")]
+    fn test_store_kernel_info_rejects_memmap_overflow() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        static OVERFLOW: [minix_boot::MemoryRegion; crate::memmap::MAXMEMMAP + 1] =
+            [minix_boot::MemoryRegion { base: PhysBytes(0), len: 0 };
+             crate::memmap::MAXMEMMAP + 1];
+        let mut info = minimal_store_info();
+        info.memmap = &OVERFLOW;
+        store_kernel_info(&info);
+    }
+
+    /// M8 fail-fast: more boot modules than `NR_BOOT_MODULES` aborts before
+    /// the name-pool copy.
+    #[test]
+    #[should_panic(expected = "boot_modules exceeds the .bss landing pad")]
+    fn test_store_kernel_info_rejects_boot_module_overflow() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        static OVERFLOW: [minix_boot::BootModule; minix_boot::NR_BOOT_MODULES + 1] =
+            [minix_boot::BootModule { name: "", start: PhysBytes(0), len: 0 };
+             minix_boot::NR_BOOT_MODULES + 1];
+        let mut info = minimal_store_info();
+        info.boot_modules = &OVERFLOW;
+        store_kernel_info(&info);
+    }
+
     /// Verify empty memmap is handled gracefully (identity pass is a no-op).
     #[test]
     fn test_boot_empty_memmap() {

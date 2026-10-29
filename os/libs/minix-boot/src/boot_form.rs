@@ -47,7 +47,7 @@ impl BootForm {
     pub const fn source_path(self) -> &'static str {
         match self {
             BootForm::X86UefiInline => "os/boot-shim/src/main.rs",
-            BootForm::Aarch64UefiCrossImage => "os/boot-shim/src/handoff.rs",
+            BootForm::Aarch64UefiCrossImage => "os/libs/minix-boot/src/handoff.rs",
             BootForm::RiscvOpensbiSelfBoot => "os/kernel-image/src/bootface.rs",
             BootForm::Aarch64QemuDirectCore => "os/kernel-image/src/bootface_a64.rs",
             BootForm::RiscvEarlyHartMailbox => "os/arch/src/riscv64/ap_early_entry.rs",
@@ -83,14 +83,24 @@ mod tests {
         );
     }
 
-    /// 每形态都有非空落点，且落点互不重复（两种形态指向同一文件＝家族定义出错）。
+    /// 每形态都有非空落点，落点互不重复（两种形态指向同一文件＝家族定义出错），
+    /// 且落点在磁盘上真实存在（路径被搬走或改名时当场红）。
     #[test]
     fn test_each_boot_form_has_distinct_source() {
+        // `source_path()` 是仓库根相对路径；本包清单目录在 os/libs/minix-boot，
+        // 因此仓库根是清单目录的上三级。
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         for form in ALL_BOOT_FORMS {
             assert!(
                 !form.source_path().is_empty(),
                 "启动形态 {:?} 缺源码落点",
                 form
+            );
+            assert!(
+                repo_root.join(form.source_path()).exists(),
+                "启动形态 {:?} 的落点不存在：{}",
+                form,
+                form.source_path()
             );
         }
         for (i, a) in ALL_BOOT_FORMS.iter().enumerate() {

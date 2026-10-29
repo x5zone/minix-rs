@@ -20,12 +20,11 @@ use uefi::Guid;
 use minix_types::{PhysBytes, VirBytes};
 use minix_arch::boot_dm_admissible_end;
 use minix_boot::{
-    BootPrepareResult, BootShim, DTB, KernelInfo, MemoryRegion, PlatformDescSource, RSDP,
+    BootModule, BootPrepareResult, BootShim, DTB, KernelInfo, MemoryRegion, PlatformDescSource,
+    RSDP,
 };
 
-use crate::loader::{
-    self, FileLoader, KernelLoadResult,
-};
+use crate::loader::{self, FileLoader};
 
 /// UEFI Configuration Table GUID for the Device Tree (FDT).
 ///
@@ -565,20 +564,6 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
     let ptr =
         boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, num_pages).ok()?;
     Some(ptr.as_ptr() as u64)
-}
-
-// Re-export for backwards compatibility with the prior public surface.
-use minix_boot::BootModule;
-
-/// Convenience wrapper around `loader::load_kernel_with_loader` for callers
-/// that want to invoke the UEFI path directly (e.g. integration tests).
-pub fn load_kernel_elf() -> Result<KernelLoadResult, minix_elf::ElfError> {
-    loader::load_kernel_with_loader(&UefiFileLoader)
-}
-
-/// Convenience wrapper around `loader::load_boot_modules_with_loader`.
-pub fn load_boot_modules() -> &'static [BootModule] {
-    loader::load_boot_modules_with_loader(&UefiFileLoader, alloc_module_pages)
 }
 
 #[cfg(test)]
