@@ -2097,7 +2097,12 @@ HEAD 同件都报 0 ⇒ 全是本轮自造）；`cargo clippy --offline -j 1 --a
 （`tmp/jot-464-main-recheck.log`），与领取树合回前后两次同读数；取证目录 `tmp/jot-464`（37 项，含 `head/`、`post/`
 两份快照与六枚负控日志）已回抄主树。门④本支三笔的 `HEAD~3..HEAD` 复跑是 4 个文件 / 257 个新增行、**error 级 0**。
 门②那条「不同树不可比」的口径本笔再核一次：同一条命令在领取树是 764 个 md / 断链 131，在主树是 2010 个 md / 222，
-差的那一千多个文件是别的线未入库的工作笔记，**做集合差必须在同一棵树里取基线**。
+差的那一千多个文件是别的线未入库的工作笔记，**做集合差必须在同一棵树里取基线**。**码笔信息的一处错字与为什么不走 `--amend`（同一处末尾追加，原正文不改）**：`66864d1f1` 的提交信息把参照件写成
+`tmp/jot-464/join`，正确是 `tmp/jot-464/jot`（差分日志 `tmp/jot-464/ab.log` 与脚本 `ab.py` 里的 `REF` 都是后者，读数不受影响）。
+不做历史改写的理由有两条，都可在当场量到：① 那笔之后已有 5 笔，其中 `80a081de6`、`d92713b59` 是 01TODO-B5 那条线的合并笔与
+里程碑回写，改一个信息就要连带重写**他线**的提交；② 台账已把 `66864d1f1` 当锚点引用 3 次（板 A2 行一处、本文件两处），换哈希
+等于让这 3 处指向不存在的东西——**代价远大于收益**。判据：**已进共享分支且被他线合在下游的提交，错字用追加更正收口，不用改写
+历史**；`--amend` 只在这笔就是树顶、且没有任何地方引用它的哈希时才成立（上一笔那条补正正是这种情形：它是 HEAD 且只改信息）。
 
 - `2026-10-29` zcode-glm / 01 篇 todo 第三批（`claim/01TODO-B3-zcode-glm` → 合并笔 `23b3e3267`）：T4/D-68 闭合——`bootface_a64` 删 `fill_memmap`/`clip_firmware`/`MEMMAP_STORAGE`/`MEMMAP_MAX`，改调 `minix_boot::DtbMemoryMap::new(&fdt, 0).collect()`（第四链并入 I-22 单源；`fw_end=0` 形态前提成文）；内核 Phase A.2 新增 Step 4：遍历 `platform_sources` 的 DTB 源，`dtb_blob_len` 从 8 字节头取真实 totalsize 后 `cut_memmap` 永久扣除（riscv 已削界、UEFI reserved 区均 no-op）。宿主测试用真实 QEMU blob（7699B @ 0x4000_0000，/memory=512MiB）断言切除后自由段 `[0x4000_2000, +512MiB-0x2000)`。**门读数**：`MEMMAP_STORAGE|clip_firmware|fill_memmap` → 0；aarch64 kernel-image（SD-23 RUSTFLAGS）0 error、x86/riscv kernel-image 各 0 error；docker kernel mock 843/0/8（memmap 16→17）；`test-smp-aps-aarch64.sh` 直核全链 PASS（ap-arrived=1，终版代码重跑）；doc-lint 0。**在册**：T1/T5/T3/T2 与 N-4/N-5 未动。
 
