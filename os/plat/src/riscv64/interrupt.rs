@@ -68,16 +68,16 @@ pub struct Riscv64InterruptController {
 
 impl Riscv64InterruptController {
     fn threshold_offset(context: usize) -> usize {
-        // SD-41/C3 修复（UART 首源实测定案）：PLIC context 寄存器步长=
-        // 0x2000（规范+QEMU 实现；ctx0 M=0x200000/0x200004、ctx1 S=
-        // 0x202000/0x202004）。旧值 0x1000 读到保留区 0x201004——claim
-        // 恒 0（假中断静默吞）、真源永不 complete，首个真实 PLIC 设备线
-        // （UART IER 使能）即 SEI 风暴（ecall↔SEI ping-pong，-d int 实锤）。
-        PLIC_THRESHOLD + context * 0x2000
+        // PLIC context 寄存器步长=0x1000（规范 CONTEXT 0@0x200000、
+        // CONTEXT 1@0x201000…；QEMU sifive_plic.c CONTEXT_STRIDE=0x1000；
+        // DTB interrupts-extended <0x0b,0x09> 证 hart0-S=context 1）。
+        // 历史：曾误修 0x2000（=context 2=不存在的 hart1-M），claim 指向
+        // 空地址恒 0——UART 首源轮次实测反转定案后回滚。
+        PLIC_THRESHOLD + context * 0x1000
     }
 
     fn claim_offset(context: usize) -> usize {
-        PLIC_CLAIM + context * 0x2000
+        PLIC_CLAIM + context * 0x1000
     }
 
     /// PLIC MMIO base (read-only accessor).
