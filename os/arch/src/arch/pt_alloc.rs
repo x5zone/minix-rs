@@ -89,13 +89,18 @@ pub fn register(alloc_fn: fn() -> Result<(PhysBytes, VirBytes), PageTableError>)
     // would fight over the singleton. (The kernel guards its own call with
     // `is_registered()` so a test kernel may register first; the VM server
     // registers in its own address space.)
-    debug_assert!(
-        !PT_REGISTERED.load(Ordering::Relaxed),
-        "pt_alloc::register called twice"
-    );
+    //
+    // Write-once is enforced in both profiles: debug builds abort on the
+    // bug, release builds refuse the second write and keep the first
+    // allocator instead of silently overwriting it.
+    let already = PT_REGISTERED.load(Ordering::Acquire);
+    debug_assert!(!already, "pt_alloc::register called twice");
+    if already {
+        return;
+    }
     // SAFETY: write-once contract — callers register during boot
     // (single-threaded) or user-space VM init before any concurrent
-    // access. The debug_assert above catches accidental re-registration.
+    // access; the guard above makes the write itself one-shot.
     unsafe {
         core::ptr::write(PT_ALLOC.0.get(), alloc_fn);
     }
@@ -133,10 +138,13 @@ pub fn alloc_pt_page() -> Result<(PhysBytes, VirBytes), PageTableError> {
 /// page-table pages takes them back here. Same write-once contract as
 /// [`register`] — callers register during init before concurrent access.
 pub fn register_free(free_fn: PtFreeFn) {
-    debug_assert!(
-        !PT_FREE_REGISTERED.load(Ordering::Relaxed),
-        "pt_alloc::register_free called twice"
-    );
+    // Same write-once contract as `register()`: debug aborts, release keeps
+    // the first hook.
+    let already = PT_FREE_REGISTERED.load(Ordering::Acquire);
+    debug_assert!(!already, "pt_alloc::register_free called twice");
+    if already {
+        return;
+    }
     // SAFETY: write-once contract — see `register()`.
     unsafe {
         core::ptr::write(PT_FREE.0.get(), free_fn);
