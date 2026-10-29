@@ -26,13 +26,13 @@ use minix_boot::{
 use crate::build_kernel_info;
 use crate::loader::{self, FileLoader};
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use core::ffi::c_void;
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use minix_boot::{
     decode_descriptors, Serializer, ARENA_CAP, SEMANTIC_MEMMAP_OFFSET, SEMANTIC_RESERVED_OFFSET,
 };
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 use crate::ebs_pair::{self, PairError, RawOps};
 
 /// UEFI Configuration Table GUID for the Device Tree (FDT).
@@ -459,12 +459,14 @@ pub fn build_memmap() -> &'static [MemoryRegion] {
 /// Size of one page-table page (UEFI allocates in 4 KiB pages).
 const PAGE_SIZE: u64 = 4096;
 
-/// Physical address ceiling assumed by the aarch64 map classification: the
-/// current implementation writes `TCR_EL1.IPS = 5` (48-bit PA). D-59 replaces
-/// this with `Paging::phys_addr_limit`; until then the constant keeps the
-/// classifier from rejecting high-DRAM descriptors on large machines.
+/// Physical address ceiling assumed by the map classification. aarch64 writes
+/// `TCR_EL1.IPS = 5` (48-bit PA); x86-64 4-level paging tops out at 52-bit.
+/// D-59 replaces this with `Paging::phys_addr_limit`; until then the constant
+/// keeps the classifier from rejecting high-DRAM descriptors.
 #[cfg(target_arch = "aarch64")]
-const AARCH64_PA_LIMIT: u64 = 1 << 48;
+const PA_LIMIT: u64 = 1 << 48;
+#[cfg(target_arch = "x86_64")]
+const PA_LIMIT: u64 = 1 << 52;
 
 /// Refuse to boot if a conventional memmap range overlaps the bootstrap
 /// allocation `[base, base + len)`.
@@ -547,7 +549,7 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
 /// Allocate the handoff arena: exactly [`ARENA_CAP`] bytes of loader data
 /// below the identity/DM-admissible bound (the receiver reads it through the
 /// bootstrap root's identity window).
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn alloc_arena() -> PhysBytes {    let pages = ARENA_CAP / PAGE_SIZE as usize;
     let ptr = boot::allocate_pages(
         AllocateType::MaxAddress(bootstrap_alloc_limit(ARENA_CAP as u64)),
@@ -560,7 +562,7 @@ fn alloc_arena() -> PhysBytes {    let pages = ARENA_CAP / PAGE_SIZE as usize;
 
 /// Allocate a pool buffer for `GetMemoryMap`. The buffer is never freed: the
 /// pairing loop may need it until `ExitBootServices` succeeds.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn alloc_map_buffer(bytes: usize) -> *mut u8 {
     boot::allocate_pool(MemoryType::LOADER_DATA, bytes)
         .expect("Failed to allocate the GetMemoryMap buffer")
@@ -572,7 +574,7 @@ fn alloc_map_buffer(bytes: usize) -> *mut u8 {
 /// `uefi` 0.33 keeps its own `memory_map_size` private, so the producer uses
 /// the raw ABI directly. The expected answer is `BUFFER_TOO_SMALL`; a success
 /// with size zero (some firmware) falls back to a conservative floor.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn probe_map_buffer_size(boot_services: *mut c_void) -> usize {
     // SAFETY: the system table is alive (before `ExitBootServices`) and the
     // raw BootServices pointer was copied from it.
@@ -606,7 +608,7 @@ fn probe_map_buffer_size(boot_services: *mut c_void) -> usize {
 /// raw table pointer travels through the existing `*mut c_void` slot and no
 /// global is needed. The firmware field is called with the native `efiapi`
 /// ABI (C on aarch64, Win64 on x86_64).
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 unsafe extern "C" fn raw_get_memory_map(
     boot_services: *mut c_void,
     size: *mut usize,
@@ -631,7 +633,7 @@ unsafe extern "C" fn raw_get_memory_map(
 }
 
 /// Raw `ExitBootServices` adapter for the pairing loop.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 unsafe extern "C" fn raw_exit_boot_services(
     boot_services: *mut c_void,
     image_handle: usize,
@@ -645,7 +647,7 @@ unsafe extern "C" fn raw_exit_boot_services(
 
 /// Write a decimal number through the post-EBS raw serial channel (no
 /// allocation, no formatting machinery).
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn raw_serial_number(mut value: u64) {
     if value == 0 {
         crate::raw_serial("0");
@@ -668,7 +670,7 @@ fn raw_serial_number(mut value: u64) {
 }
 
 /// Write a hexadecimal number through the post-EBS raw serial channel.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn raw_serial_hex(value: u64) {
     crate::raw_serial("0x");
     if value == 0 {
@@ -692,7 +694,7 @@ fn raw_serial_hex(value: u64) {
 }
 
 /// Print the memmap-source line (and enforce the SD-3 D1 gate) after EBS.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn report_memmap_source(dtb_free: Option<&[MemoryRegion]>, conventional: &[MemoryRegion]) {
     match dtb_free {
         Some(dtb) => {
@@ -740,7 +742,7 @@ fn load_dumpdtb_free(file_loader: &dyn FileLoader) -> Option<&'static [MemoryReg
 /// root/bump → arena → map buffer → non-map payloads → pairing loop
 /// (`GetMemoryMap` → classify → raw `ExitBootServices`) → bootstrap root →
 /// patch runtime fields → jump with `x0 = arena_pa`.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     uefi::println!("boot-shim: prepare_and_enter enter (handoff v1 arena)");
     let root_page = alloc_root_page();
@@ -750,7 +752,10 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
     minix_kernel::boot_alloc::init_boot_pt_alloc(bump_base, bump_end);
 
     let file_loader = UefiFileLoader;
+    #[cfg(target_arch = "aarch64")]
     let dumpdtb_free = load_dumpdtb_free(&file_loader);
+    #[cfg(target_arch = "x86_64")]
+    let dumpdtb_free: Option<&'static [MemoryRegion]> = None;
     let kern = loader::load_kernel_with_loader(&file_loader).expect(
         "Failed to load kernel ELF from ESP — check that the ESP contains \
          /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
@@ -829,7 +834,7 @@ pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
                 boot_services_raw,
                 image_handle.as_ptr() as usize,
                 buffer,
-                AARCH64_PA_LIMIT,
+                PA_LIMIT,
                 &mut serializer,
             )
         } {
@@ -934,9 +939,20 @@ impl FileLoader for UefiFileLoader {
 
 /// UEFI page allocator used by `load_boot_modules_with_loader`.
 fn alloc_module_pages(num_pages: usize) -> Option<u64> {
-    let ptr =
-        boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, num_pages).ok()?;
-    Some(ptr.as_ptr() as u64)
+    let size = (num_pages as u64).checked_mul(PAGE_SIZE)?;
+    // T2: the kernel reads module blobs through the bootstrap identity window
+    // while loading their ELF segments. Allocate below the same DM-admissible
+    // bound as the root/bump pages, then verify the complete range end (not
+    // just the start) stays under it.
+    let ptr = boot::allocate_pages(
+        AllocateType::MaxAddress(bootstrap_alloc_limit(size)),
+        MemoryType::LOADER_DATA,
+        num_pages,
+    )
+    .ok()?;
+    let base = ptr.as_ptr() as u64;
+    let end = base.checked_add(size)?;
+    (end <= boot_dm_admissible_end()).then_some(base)
 }
 
 #[cfg(test)]

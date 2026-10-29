@@ -18,13 +18,7 @@
 
 use core::panic::PanicInfo;
 use uefi::prelude::*;
-#[cfg(not(target_arch = "aarch64"))]
-use minix_boot::BootShim;
 use boot_shim::raw_serial_line;
-#[cfg(not(target_arch = "aarch64"))]
-use boot_shim::UefiBootShim;
-#[cfg(not(target_arch = "aarch64"))]
-use minix_kernel::boot_alloc;
 
 extern crate alloc;
 
@@ -62,32 +56,13 @@ fn main() -> Status {
     // fix lands (reclaimable page-table pages / moving the kerninfo
     // mapping responsibility to VM per kerninfo.rs doc — WORKLOG 1.55
     // follow-up) this pool only postpones the deterministic panic.
-    // §1.115 方案 A / T1 2c/3b (aarch64): the shim builds the bootstrap root
+    // §1.115 方案 A / T1 2c/3b / T2: the shim builds the bootstrap root
     // itself, serializes the v1 handoff arena (address space, five payloads,
     // pairing loop) and absolutely jumps into the standalone high-half
-    // `kernel.elf` `_start` with `x0 = arena_pa`. x86_64 / riscv64 keep the
-    // inlined `arch_boot` path until T2 / D-73 move them.
-    #[cfg(target_arch = "aarch64")]
-    {
-        boot_shim::uefi_helpers::prepare_and_enter_kernel_image(1024)
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        let result = UefiBootShim::prepare_boot(1024);
-
-        // --- Below this point, UEFI boot services are gone ---
-
-        // 2. Register boot-stage page table allocator
-        boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
-        minix_arch::pt_alloc::register(boot_alloc::boot_pt_alloc);
-        boot_shim::raw_serial("boot-shim: [raw] pt_alloc registered, entering kernel arch_boot\r\n");
-
-        // 3. Hand control to the kernel's arch-specific boot.
-        //    Establishes page tables, enables paging, enters kmain.
-        //    NEVER RETURNS.
-        boot_shim::raw_serial("boot-shim: handing control to kernel arch_boot\r\n");
-        minix_kernel::arch_boot(&result.kernel_info, result.root_page)
-    }
+    // `kernel.elf` `_start`. aarch64 passes the arena in `x0`; x86-64 passes
+    // it in `rbx` (the image trampoline moves it to `rdi`). riscv64 keeps its
+    // direct-boot face until D-73 wires an independent shim leg.
+    boot_shim::uefi_helpers::prepare_and_enter_kernel_image(1024)
 }
 
 #[panic_handler]

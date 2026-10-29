@@ -115,11 +115,18 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .globl _start
     _start:
+        // T2 entry contract: machine entry, not a called function. No return
+        // address is pushed and no caller guarantees the flags/stack state.
+        // `cli` before the first memory write; `cld` because the SysV ABI
+        // (and the Rust code below) assumes DF=0.
+        cli
+        cld
         // SD-7 / P-X86-03（2026-10-06）：防御性 .bss 清零，镜像 riscv64
         // 甲案（UEFI boot-shim 的 loader 已按 memsz-filesz 清零；本循环
         // 是 SD-1 多入口形态下的入口自持——未来直载入口不依赖装载者）。
         // RIP 相对取运行位址：分页开启（高半映射）与恒等映射两种交接
-        // 视图下都落在正确的物理页。rdi 游标/rcx 界限在入口处无活值。
+        // 视图下都落在正确的物理页。rdi 游标/rcx 界限在入口处无活值；
+        // 清零只碰 rdi/rax/rcx，`rbx`（arena 物理地址）全程不动。
         lea rdi, [rip + __bss_start]
         lea rcx, [rip + __bss_end]
     1:  cmp rdi, rcx
@@ -129,7 +136,9 @@ core::arch::global_asm!(
         jmp 1b
     2:
         lea rsp, [rip + kernel_boot_stack_top]
+        and rsp, -16
         xor ebp, ebp
+        mov rdi, rbx
         call {rust_image_main}
     3:  cli
         hlt
@@ -259,21 +268,30 @@ mod bootface;
 mod bootface_a64;
 
 /// Rust 面入口（x86_64 形态；aarch64/riscv64 各有接线版见下）：横幅 +
-/// 触达锚点 + 驻留。
+/// x86-64 镜像入口：boot-shim 建表、开分页后绝对跳进本镜像高半 `_start`，
+/// 交接寄存器 `rbx`＝T1 handoff arena 的物理地址。`_start` 的入口 trampoline
+/// 在清 `.bss` 之后把 `rbx` 转到 SysV 第一参数 `rdi`，因此 Rust 面按普通
+/// 函数接收；`arena_pa == 0` 只表示跳转方没有交棒（x86 没有直核自引导面），
+/// 此时诚实停机而不是解引用空指针。
 ///
-/// 交接协议未接线（见模块文档"交付边界"），到达这里说明镜像已被
-/// 执行——这是 NK1 跳转链路联调时的第一观测点，横幅就是串口证据。
-#[cfg(all(not(target_arch = "aarch64"), not(target_arch = "riscv64")))]
-fn rust_image_main() -> ! {
+/// 交接协议未接线时这里曾是"打印一行后驻留"的观测点；现在它调用
+/// `arch_boot_resume_v1`，与 aarch64 共用同一套 v1 解码与 additive resume。
+#[cfg(target_arch = "x86_64")]
+fn rust_image_main(arena_pa: usize) -> ! {
     // 触达锚点：运行路径上引用一次，保证锚点静态与其指向的内核
     // 启动图在归档成员粒度上也被拉入链接（KEEP 是链接期第二道保险）。
     let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
 
+    if arena_pa == 0 {
+        early_console::write_str(
+            "### minix-rs kernel-image: no handoff arena (x86 has no direct-boot face); halting\n",
+        );
+        return halt();
+    }
     early_console::write_str(
-        "### minix-rs kernel image: entry reached (boot-shim handoff not \
-         wired yet — NK1/OQ-N6); halting\n",
+        "### minix-rs kernel-image: resuming high-half boot (handoff v1 arena, x86_64)\n",
     );
-    halt()
+    minix_kernel::arch_boot_resume_v1(arena_pa as u64)
 }
 
 /// §1.115 方案 A aarch64 镜像入口：boot-shim 建表 + enable 后绝对跳进本镜像
