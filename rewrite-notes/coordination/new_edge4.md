@@ -2109,3 +2109,138 @@ HEAD 同件都报 0 ⇒ 全是本轮自造）；`cargo clippy --offline -j 1 --a
 - `2026-10-29` zcode-glm / 01 篇 todo 第四批（`claim/01TODO-B4-zcode-glm` → 合并笔 `39fd630ea`）：N-4 重复面收敛（D-68 解锁后项）——`NAME_POOL`/`NAME_SLOT`、名字池与 `MODULE_NAMES` 的编译期对账、`be_cell`/`fdt_table_pa`/`in_memmap`/`in_memmap_range`/`table_magic_ok` 下沉新模块 `kernel-image/src/bootface_common.rs`；`say`/`say_hex`、`place_modules`、布局常量组留两份并互指（架构真差异/本地胶水）。**偏离**：工单原写「能下沉 boot-shim 库就下沉」，实际落在 kernel-image 包内共享模块（这批 helper 是零堆/物址视图专用，进 boot-shim 公共面会为单消费者扩边界）。**门读数**：riscv64/aarch64 kernel-image check（SD-23 RUSTFLAGS）各 0 error、无 bootface 告警；`test-smp-aps-aarch64`（ap-arrived=1）与 `test-kernel-image-riscv64-bootface` 双 PASS。**在册**：N-5 独立探针批次；T1/T5/T3/T2/D-59/D-72/D-73 与 §5 文档批未动。
 
 - `2026-10-29` zcode-glm / 01 篇 todo 第五批（`claim/01TODO-B5-zcode-glm` → 合并笔 `80a081de6`）：**回归修复**——B2 的 TODO-01 在 `arch_boot_impl` 入口加过 `cfg(not(mock))` 的 M4 运行期断言；B4 后复跑 run_all 暴露 **25 项红**（hello-boot / test-protection / test-shutdown-aarch64 等），根因是 QEMU 测试内核**直接调用 `arch_boot_impl`** 分阶段验证、不经 `store_kernel_info`，生产形态（非 mock）下断言必触发。修法：撤该断言，M4 自动证据回到四入口源码序钉（`store_before_alloc_pin.rs`），钉注释与 01 篇 §5.1/§5.3 写明「运行期钩无法区分生产入口与分阶段测试内核」的判据。**门读数**：kernel mock 843/0/8、pin 1/0；领取树复跑 run_all → **39/0/0**（`tmp/qemu-runall-b5.log`），主树合并后即此读数。**教训**：新增「每次启动都执行」的运行期断言，必须同时跑三架构真机门——宿主 mock 与单架构冒烟都看不到测试内核的分阶段调用面。
+
+### 第一百七十九笔（批次四百六十五 · A2 参数缝半切片 47：`nl` 的分页分隔符、行号分隔串与七句值回显交回原字节；参照件在 `-d` 空值上读的是内存里排在后面的那个参数）
+
+**这一笔先说形状**：`minix3/usr.bin/nl/nl.c:149` 的 optstring 是 `"pb:d:f:h:i:l:n:s:v:w:"`——**十一个
+字母、十个带值、只有 `p` 不带值**。板上两处预估（「九字母全带值」与「`-b`/`-f`/`-h`/`-p`/`-v` 带值」）
+按现量一并订正。这一支的 argv 字节有六个去处，密度是本族最高的：① `-d` 的两枚字节既是**判据**
+（`nl.c:158-166`：第一枚、第二枚各一个 `if`，第三枚才落 `invalid delim argument`）又是**匹配物**
+（`:289-304` 把它们依次比到行的第 0、2、4 个字节上，对应 `footer`/`body`/`header` 三段；整行正好等于
+分隔符时 `:294` 成立、`:299` 的 `goto nextline` 把那一行**吃掉**——分页符行不输出，而 `section` 落进
+`footer`，它的缺省类型是 `number_none`（`:73`），所以随后那行交回「六枚空格 + 制表符 + 正文」）；
+② `-s` 的值由 `:340` 的 `printf("%s%s", sep, buffer)` 打在**每一行**的行号与正文之间，且整个替换掉
+缺省的那个制表符；③ `-b`/`-f`/`-h` 的类型串只看首字符（`parse_numbering` 在 `:357`，
+`switch (argstr[0])` 在 `:362`），非法那句带整串与各自段名（`:393`，名字在 `:73-75`）；④ `-n` 的
+三个格式名是三支 `strcmp`（`:195-199`），比的就是字节串；⑤ `-i`/`-l`/`-v`/`-w` 四个数走
+`strtol`/`strtoul` 的 `*ep != '\0'`（末尾剩任何一枚字节都算错），四句回显在
+`:182`/`:191`/`:214`/`:223`，`-w` 还多一句把转出来的数打回去（`:225-228`）；⑥ 操作数至多一枚，
+`-` 走标准输入（`:243-244` 那个 `strcmp` 短路掉了 `freopen`）。**本轮库侧零改动**——
+`src/nl.rs` 早就是 `NlOptions.delim: [u8; 2]`、`sep: Vec<u8>`、`nl_lines(&[&[u8]], …)`，六个去处
+全在壳里，所以「库内 `nl` 的 14 枚未动」是结构而不是漏测。壳内 `from_utf8_lossy` 现量 **2 处**
+（程序名与档名），受 `ARGV-BYTE-PATH-IN-LIBS` 那两条 `&str` 口牵制。
+
+**本轮最值钱的读数不是门，是参照件自己**：`-d` 给空串时，C 那三条 `if` 读的是 `optarg[1]` 与
+`optarg[2]`，而空串只有一枚终止符——两处都在终止符之外。取证办法是把「内存里排在后面的那段」直接当
+夹具用：`nl_ref -d "" f`（档名 `f` 的内容是一行 `\f` 加一行 `q`）与 `nl_ref -d '\f' f` **逐字节全等**，
+而与显式默认的 `nl_ref -d '\:' f` 不同形，也就是**第二枚分隔符来自下一个参数的首字母**；换成两字符
+以上的档名（`body.txt`、`zone.txt`）`optarg[2]` 非零 ⇒ 当场 `invalid delim argument` 退 1；后面没有
+任何参数时（读标准输入）照拒，`env -i` 把环境清空也照拒。同一条命令行只换档名首字母就翻面，这不可
+复现也不该照抄，所以本层按那三条 `if` 的**意图**实现：空值两个条件都不成立 ⇒ 不动默认，长度判据只看
+值本身的字节数。`NL-DELIM-LENGTH-RULE` 现覆盖两形（`-d\xff` 与 `-d ""`）。这条同时给「真值优先序：
+Minix3 C 源码行为 > 设计契约 > Rust 实现」划出一道边界——**参照件的读数并非都来自源码的意图**，
+越界读产出的那一形要写成在册待裁而不是照抄；三形对照与命令都在
+`tmp/nl-465/kd2-empty-value-oob.log` 里，判读段落款在册号。
+
+**A/B 又逮出两条此前没登记的分叉，均登记不执行**：① `-f`/`-h` **缺值**时本壳报的字母是 `b`——那三支
+共用一个 `value!('b')` 宏实例、字母写死了，而 libc 报的是各自的字母（`getopt.c:134`）；两侧同退 1、
+只差那一枚字母，正是「两侧都报错」里最容易滑过去的一形，登记 `NL-MISSING-VALUE-LETTER-HARD-CODED`
+（一处单词级的修法）。② 附值形（`-s x`、`-b a` 这种值紧跟字母的写法）本壳跳掉前导空白，libc **不跳**：
+`getopt.c:118` 是 `optarg = __UNCONST(place)`，整段剩余直接交回；现量 `nl -s' x'` 本壳打 `     1xa`、
+参照件打 `     1 xa`，`nl -b' a'` 本壳接受、参照件报 `illegal body line numbering type --  a`。登记
+`NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED`。②要先裁一件事才算可修：照抄 libc 的「不跳空白」还是保留
+现形——那是判据裁决，不属本轮射程，所以本轮只把那处 `str::trim_start_matches` 换成等价的字节循环，
+保持既有行为。**一次只修一条在本笔是可查证的**：这两条都没顺手改，只落登记。
+
+**负控五枚（`tmp/nl-465/negctl.py`，逐枚读数 `negctl-L1..L5.log`）各咬 3/1/1/2/2**：L1（壳侧 argv 退回
+`args()` 的 lossy 取法）咬面门两枚 + 跨壳表；L2（`-s` 的值折一次）只咬输出那枚；L3（七句回显折一次）
+只咬报文那枚——**「值进输出」与「值进报文」两条腿各红各的，`jot` 那轮的形状在此复现**；L4（撤掉
+「第三个字节才报错」）咬既有门 `delim_takes_two_characters_and_refuses_a_third` 加本轮新门；L5（字母位
+退回按字符取）咬跨壳表加 `the_libc_line_of_a_multibyte_flag_is_one_byte_for_nl`。**五枚都出现「库内 624
+全绿」，而这一轮它不是覆盖面有洞**：`nl` 的选项环整个住在薄壳里，库侧只吃拆好的 `NlOptions`，那一层
+根本没有这条腿。所以「一整段全绿先怀疑覆盖面有洞」这条判据本笔补一句：**先问这条腿住在哪一层，
+再决定补门还是接受结构**。前面六次量到的「库门对 argv 缝没有牙」是同一件事的另一面。
+
+**两起工具自错，同属「计数不是读数」这一族的新形态**：① 为了强制重编跑了一句
+`touch …/src/bin/cat.rs`，而这个包里**没有** `cat` 这枚 bin——`touch` 把它创建成一枚 0 字节的散落文件，
+于是整包 `cargo test` 编译失败退 101、`grep -c '^test result:'` 交出 **0 段**。判据：拿 `touch` 当重编
+探针之前先确认目标存在；任何「段数为 0」先 `git status` 看有没有本轮自造的散落文件（这枚是未跟踪的
+`??`，一眼可辨，删掉即恢复 69 段 / 1266 / 0）。② 想量 HEAD 同件的 `rustfmt --check` 漂移时，把 HEAD 的
+blob 拷到 `/tmp` 单独跑，rustfmt 解析不到 `#[path]` 带进来的兄弟模块（`../bin_support.rs`、
+`./face_support.rs`），交回的是**解析报错而不是 diff**，`wc -l` 把它数成了「HEAD 的 `src/bin/nl.rs`
+漂移 7 行」这条根本不存在的断言。改成原地注入/还原（`tmp/nl-465/fmt-baseline.py`：退出码不属于 0/1
+即判「没跑成」直接抛异常，`finally` 还原后逐件核 md5）之后，HEAD 与现件两侧都是 **0**。判据：
+**格式门必须在原地量**（模块解析依赖目录布局），并按 rustfmt 的退出码分档——0 无漂移、1 有漂移、
+其余没跑成。
+
+**八处错锚点按现量订正**，其中两处在 HEAD 里就错着、正落在本轮改的那几行上：`parse_numbering` 此前写成
+`:340-…`，而 `:340` 其实是 `printf("%s%s", sep, buffer)` 那行（函数 `:357`、`switch` `:362`）；操作数那段
+把 C 写成 `fopen` 加一个「后续都读这个 `fp`」，实际是 `freopen(argv[0], "r", stdin)`（`:243-245`）而整条
+流水线只有 `fgets(..., stdin)`（`:288`）一个读缝——这也正是「档名内容与标准输入走同一条编号腿」的机制
+出处；七句值回显此前写成六个范围，实际各在 `:165`/`:182`/`:191`/`:203`/`:214`/`:223`/`:393`；`-n` 的三支
+`strcmp` 写成 `:193-200`、实际 `:195-199`；`-w` 那句写成 `:224-228`、实际判据 `:225` 句子 `:226-228`；
+附值形那处挂到 `getopt.c:117-118`，该句是 `:118`。
+
+**五道收尾门逐条读数**（`2026-10-29`，码笔 `52cbcb3c5`、文档笔 `05727e9ce`）：①
+`bash tools/todo-reconcile-scan.sh` → 13 项判据里 **1 项 DRIFT**（`探针命名族（行）` 现量 32 vs 台账基线
+18），该项取数域是 `grep -rnE "nk4[ac]:" os --include=*.rs`，32 处全在 `os/fs/pfs`、`os/fs/mfs`、
+`os/kernel` 等，本轮改动三件各 **0** 命中，且同一条命令在 HEAD 上也是 32 ⇒ 非本轮引入，归一线在制；
+② `python3 tools/notes-link-check.py rewrite-notes/` → 764 个 md、**断链 131**（与上一笔同数），本轮新增行
+落在 `todo.md:122..265`、`07-text-filter.md:6`、板 `:27`，清单在这三处**零命中**（`todo.md` 那五条在
+`:3585`、`:3641`、`:3644`、`:3645` 等旧行，板那一条在 `:35`）⇒ 新增断链 0；
+③ `bash tools/todo-staleness-check.sh rewrite-notes/coordination/TODO-LEDGER-OPEN.md` → **PASS（0 项）**；
+④ `bash tools/doc-style-lint.sh --diff` → 3 个文件 / 146 个新增行、**error 级 0**——首跑抓到 **1 条真错**
+板那行有一句把「取证」包进全角括号，撞 SL-11「过程标记入正文」那条禁令，改成行文里的逗号写法后复跑归零——
+门是有效的；
+⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条（`TODO-3ARCH-PARITY-20261006.md`）未触碰。
+
+**门读数补全**：宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` →
+**69 段 / 1266 / 0**，同一读数在本轮三个时点各跑一次（负控与差分之后 `tmp/nl-465/pkg-post.log`、我自己
+格式化之后 `pkg-post-rustfmt.log`、锚点订正后的最终态 `pkg-final.log`）；容器权威门按三挂载配方
+（`-u $(id -u):$(id -g)` + `ci-cargo`/`ci-target`，跑时未与其他 cargo 并发）两次，最终态
+`container-final.log` 退 0、**69 段 / 1266 / 0**，与宿主同读数；三架构 `cargo check --offline -j 1
+--target {x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf} -p minix-textfilter
+--bins` 各退 0、错误 0（最终态三件 `arch-final-*.log`）；`rustfmt --edition 2024 --check` 三件原地零漂移
+（中途我自己写出过 33 行与 44 行的漂移，格式化后归零；HEAD 同件原地量也是 0 ⇒ 无存量牵连）；
+`cargo clippy --offline -j 1 --all-targets -p minix-textfilter` 退 0、共 **149** 条，**改动三件上 0 条**，
+唯一挂到 `bin "nl"` 的那条源在共享层 `src/bin/../bin_support.rs:688` 的 `unused import: std::io::Read`，
+本轮没改那一层、未改过的 `head` 同样出 ⇒ 存量；库测数按文档那句的**同一条命令**现量
+`cargo test --offline -j 1 -p minix-textfilter --lib` → 624 / 0；A/B 用的 `os/target/debug/nl` 由负控还原
+之后重编，与 `tmp/nl-465/post/` 三件快照逐件核过 md5。
+**A/B 对 `tmp/nl-465/nl`（软链 `tmp/nl-417/nl_ref`，用前照例打 `-Z`：交回
+`nl: unknown option -- Z` 加那两行 `Usage:`）跑，矩阵四十三形，SAME=36（其中退 0 的 13 形先数过）/
+非预期 DIFF=0 / 已知分叉另计 7 形**（`tmp/nl-465/ab.log`）。「先数退 0 形数」这条判据本笔又用上一次，
+并暴露初版矩阵的一处空洞：那条写着「裸 `-` 是档名」的形其实测的是字母位（`-` 紧跟一枚裸 `ff` 被当成
+选项簇），与第二形**完全重复**——换成三条真的走操作数那条腿的形：单个 `-` 走标准输入、档名内容与标准
+输入不同时谁进流水线、开不了的 ASCII 档名那一句。中间那形正是 `NL-OPERAND-CONTENT-DROPPED` 那一坑的
+守门形（标准输入放 `not-from-stdin`、档名放 `a\nb\n`，输出必须是档名内容，两侧全等）。四类已知分叉
+各计：`ARGV-BYTE-PATH-IN-LIBS` 1 形、`NL-DELIM-LENGTH-RULE` 2 形、
+`NL-MISSING-VALUE-LETTER-HARD-CODED` 2 形、`NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED` 2 形。
+**门账**：`nl_face` **14 → 16**（`a_raw_byte_delimiter_matches_the_line_and_a_raw_byte_separator_is_printed`
+五段、`the_seven_value_echoes_carry_the_argv_bytes` 七段 + 段名两支 + 反面形），跨壳表 **十六行 → 十七行**
+（`nl` 行钉 `nl: unknown option -- \xff` 与退 1；这一支的 usage 是两行、第一行行尾 `\n\t`，`nl.c:400-405`），
+库内 `nl` 的 14 枚未动，整包 69 段 **1264 → 1266**。两枚新门的期望值全部按实测写：第一版四处是推理，
+实测否证三处（那一格是六枚空格不是八枚、`-s` 的值紧跟行号而无多余空格、`-b a<ff>` 是接受的），
+第四处是我把夹具写错——`nl` 唯一的操作数是档名。
+
+**进度与在册（全部现量）**：参数缝半已落 **二十支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、`colrm`、
+`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、`jot`、`nl`）；
+`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **19**；命令面口径 →
+**88**；渲染半那条 grep 仍 **0** 行；`line_bytes` **40 处 / 29 件**（`nl` 本来就在其中，本支未新增调用点）。
+余下 19 支里带字母位诊断面的有 **7** 支（`pr`、`sort`、`split`、`tail`、`unexpand`、`unifdef`、`vis`；
+判据是本壳或它调用的库模块交回 `GetoptReport`——`split`/`tail`/`unexpand`/`vis` 在壳里、
+`pr`/`sort`/`unifdef` 在库模块里），**切片 48 建议 `pr`**：字母序第一支，带值字母多且值既进报文也进排版
+宽度；参照件用前照例先打一枚 `-Z`。**三笔插轮建议**：①收 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`；
+②把 `JOT-EMPTY-OPERAND-READS-OOB`、`JOT-PREC-MINUS-ONE-FORMAT`、`JOT-WORD-TOOLONG-ON-MACHINE` 一起拿到
+真机上量一次；③`NL-MISSING-VALUE-LETTER-HARD-CODED` 与 `NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED` 都是
+单词级修法，但后者要先裁判据。独立轮在册不碰：`ARGV-BYTE-PATH-IN-LIBS`、`CKSUM-CHECK-LEG-TEXTSEAM`、
+`UNITS-DASH-REWRITE-AT-FIRST-CHAR`、`UNITS-PARTIAL-UNIT-ON-ERROR`、`UNITS-PATH-SEARCH`、
+`SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、五枚 `*-NON-PERMUTE-OPERAND-TAIL`、
+`CUT-SUPPRESS-STILL-PRINTS-NEWLINE`、`CUT-EMPTY-BYTE-LIST-RUNAWAY`、`COL-CLIPPY-STOCK-LINT`、
+`BIN_SUPPORT-FMT-DRIFT-STOCK`、`REV-MULTIBYTE-ERROR-LEG`、`NL-DELIM-LENGTH-RULE`（含本笔补的空值那一形）、
+`NL-NON-PERMUTE-OPERAND-TAIL`、`NL-SIGNED-COUNTERS`、`HEAD-NEGATIVE-COUNT-UNSIGNED-GUARD`、
+`HEAD-COUNT-LEADING-BLANK-ACCEPTED`、`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`、
+`JOT-EMPTY-OPERAND-READS-OOB`、`JOT-WORD-TOOLONG-ON-MACHINE`，**本笔新立**
+`NL-MISSING-VALUE-LETTER-HARD-CODED` 与 `NL-ATTACHED-VALUE-LEADING-BLANK-STRIPPED`；
+`todo-reconcile-scan` 的 `探针命名族` 漂移归一线。**取证回抄照办**：release 前把 `tmp/nl-465` 整目录
+复制回主树 `tmp/`。
