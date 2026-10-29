@@ -59,8 +59,8 @@ impl BootAlloc {
     /// The boot-shim builds the bootstrap page tables from this bump region and
     /// then hands off to the high-half kernel image, which links its *own* copy
     /// of this allocator (separate `.bss`). Without resuming the cursor, the
-    /// kernel image would re-hand-out pages the boot-shim's page tables (and the
-    /// handoff blob) already occupy. `next` is the boot-shim's post-build cursor.
+    /// kernel image would re-hand-out pages the boot-shim's page tables already
+    /// occupy. `next` is the boot-shim's post-build cursor.
     ///
     /// The three values arrive from the cross-image wire payload, so they are
     /// validated here rather than trusted: `base < end && base <= next <= end`

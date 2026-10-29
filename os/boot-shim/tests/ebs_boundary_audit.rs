@@ -22,14 +22,13 @@ fn code_part(line: &str) -> &str {
     line.trim()
 }
 
-/// Return the `prepare_boot` body (from its signature to the first closing
-/// brace indented by at most four spaces — the real source indents it by
-/// four, synthetic fixtures may use column zero).
-fn prepare_boot_body(source: &str) -> &str {
-    let sig = "fn prepare_boot(bump_pages: usize) -> BootPrepareResult {";
+/// Return a function body (from its signature to the first closing brace
+/// indented by at most four spaces — the real source indents it by four,
+/// synthetic fixtures may use column zero).
+fn function_body<'a>(source: &'a str, sig: &str) -> &'a str {
     let start = source
         .find(sig)
-        .unwrap_or_else(|| panic!("TODO-04 audit: prepare_boot signature not found"));
+        .unwrap_or_else(|| panic!("TODO-04 audit: signature not found: {sig}"));
     let rest = &source[start..];
     let mut offset = 0usize;
     for line in rest.split_inclusive('\n') {
@@ -40,19 +39,31 @@ fn prepare_boot_body(source: &str) -> &str {
         }
         offset += line.len();
     }
-    panic!("TODO-04 audit: prepare_boot body end not found");
+    panic!("TODO-04 audit: function body end not found: {sig}");
 }
 
-/// Offending calls after the EBS boundary: Boot Services paths plus the
-/// allocation/free/drop entry points the crates expose.
-fn violations_after_ebs(body: &str) -> Vec<String> {
-    let ebs = body
-        .rfind("exit_boot_services();")
-        .unwrap_or_else(|| panic!("TODO-04 audit: EBS call not found in prepare_boot"));
-    let after = &body[ebs + "exit_boot_services();".len()..];
+fn prepare_boot_body(source: &str) -> &str {
+    function_body(
+        source,
+        "fn prepare_boot(bump_pages: usize) -> BootPrepareResult {",
+    )
+}
+
+fn prepare_and_enter_body(source: &str) -> &str {
+    function_body(
+        source,
+        "pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {",
+    )
+}
+
+fn violations_after_marker(body: &str, marker: &str) -> Vec<String> {
+    let at = body
+        .rfind(marker)
+        .unwrap_or_else(|| panic!("TODO-04 audit: marker not found: {marker}"));
+    let after = &body[at + marker.len()..];
     let banned = [
         "uefi::",
-        "boot::",
+        "uefi::boot::",
         "allocate_pool",
         "allocate_pages",
         "free_pool",
@@ -81,6 +92,12 @@ fn violations_after_ebs(body: &str) -> Vec<String> {
     found
 }
 
+/// Offending calls after the EBS boundary: Boot Services paths plus the
+/// allocation/free/drop entry points the crates expose.
+fn violations_after_ebs(body: &str) -> Vec<String> {
+    violations_after_marker(body, "exit_boot_services();")
+}
+
 #[test]
 fn prepare_boot_has_no_calls_after_exit_boot_services() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/uefi_helpers.rs");
@@ -92,6 +109,37 @@ fn prepare_boot_has_no_calls_after_exit_boot_services() {
         found.is_empty(),
         "TODO-04: post-EBS statements must be call-free (three-zero discipline); violations:\n{}",
         found.join("\n")
+    );
+}
+
+#[test]
+fn prepare_and_enter_has_no_calls_after_the_pairing_loop() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/uefi_helpers.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("TODO-04 audit: cannot read {}: {err}", path.display()));
+    let body = prepare_and_enter_body(&source);
+    let found = violations_after_marker(body, "boot services exited (paired)");
+    assert!(
+        found.is_empty(),
+        "TODO-04: post-pairing statements must be call-free (three-zero discipline); violations:\n{}",
+        found.join("\n")
+    );
+}
+
+#[test]
+fn pairing_audit_detects_an_injected_violation() {
+    let synthetic = "\
+pub fn prepare_and_enter_kernel_image(bump_pages: usize) -> ! {
+    foo();
+    raw_serial(\"boot services exited (paired)\");
+    uefi::println!(\"after EBS\");
+}
+";
+    let body = prepare_and_enter_body(synthetic);
+    let found = violations_after_marker(body, "boot services exited (paired)");
+    assert!(
+        found.iter().any(|v| v.contains("uefi::")),
+        "negative control must flag the injected call: {found:?}"
     );
 }
 

@@ -76,6 +76,10 @@ pub enum HandoffV1ReadError {
     OutputTooSmall,
     /// A wire value does not fit the internal type (e.g. `len` > `usize`).
     ValueOutOfRange,
+    /// `root_page` is not a 4 KiB-aligned physical page.
+    BadRootPage,
+    /// The bump triple is not a self-consistent half-open range.
+    BadBumpRange,
 }
 
 /// Verified envelope scalars, copied out of the arena by value.
@@ -109,11 +113,8 @@ fn read_u64(arena: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(arena[off..off + 8].try_into().unwrap())
 }
 
-/// Validate the protocol header and copy the envelope scalars by value.
-///
-/// No payload byte is touched here; a caller that does not get `Ok` must not
-/// interpret the arena any further.
-pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadError> {
+/// Validate the protocol header (magic/version/envelope size/arena length).
+fn check_header(arena: &[u8]) -> Result<(), HandoffV1ReadError> {
     if arena.len() < ARENA_CAP {
         return Err(HandoffV1ReadError::ArenaTooSmall);
     }
@@ -129,6 +130,43 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
     if read_u64(arena, offsets::ARENA_LEN) != ARENA_CAP as u64 {
         return Err(HandoffV1ReadError::BadArenaLen);
     }
+    Ok(())
+}
+
+/// Payload descriptor lengths, read by the sender after the pairing loop has
+/// classified the final map (the sender still needs the semantic partition to
+/// build the in-process `KernelInfo`, and the runtime fields are not patched
+/// until the root is live).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandoffDescriptors {
+    pub memmap_byte_len: u64,
+    pub reserved_byte_len: u64,
+    pub modules_byte_len: u64,
+    pub platform_byte_len: u64,
+    pub param_byte_len: u64,
+}
+
+/// Validate the header and return the five payload descriptors only.
+///
+/// This is the sender-side read: it deliberately does not touch the runtime
+/// fields, which are patched later in the boot sequence.
+pub fn decode_descriptors(arena: &[u8]) -> Result<HandoffDescriptors, HandoffV1ReadError> {
+    check_header(arena)?;
+    Ok(HandoffDescriptors {
+        memmap_byte_len: read_u64(arena, offsets::MEMMAP_BYTE_LEN),
+        reserved_byte_len: read_u64(arena, offsets::RESERVED_BYTE_LEN),
+        modules_byte_len: read_u64(arena, offsets::MODULES_BYTE_LEN),
+        platform_byte_len: read_u64(arena, offsets::PLATFORM_BYTE_LEN),
+        param_byte_len: read_u64(arena, offsets::PARAM_BYTE_LEN),
+    })
+}
+
+/// Validate the protocol header and copy the envelope scalars by value.
+///
+/// No payload byte is touched here; a caller that does not get `Ok` must not
+/// interpret the arena any further.
+pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadError> {
+    check_header(arena)?;
     let raw_free_upper = read_u64(arena, offsets::FREE_UPPER_IDX);
     let free_upper_idx = if raw_free_upper == FREE_UPPER_IDX_NONE {
         None
@@ -140,6 +178,21 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
         }
         Some(idx)
     };
+    // The runtime fields are written by the sender after the root switch, so
+    // the receiver can only trust their shape here. `root_page` must be a real
+    // page; the bump triple must be a self-consistent half-open range (N-1:
+    // an inverted or out-of-range cursor would let `BootAlloc::alloc` hand out
+    // pages outside the declared region).
+    let root_page = read_u64(arena, offsets::ROOT_PAGE);
+    if root_page == 0 || !root_page.is_multiple_of(4096) {
+        return Err(HandoffV1ReadError::BadRootPage);
+    }
+    let bump_base = read_u64(arena, offsets::BUMP_BASE);
+    let bump_next = read_u64(arena, offsets::BUMP_NEXT);
+    let bump_end = read_u64(arena, offsets::BUMP_END);
+    if !(bump_base < bump_end && bump_base <= bump_next && bump_next <= bump_end) {
+        return Err(HandoffV1ReadError::BadBumpRange);
+    }
     Ok(HandoffScalars {
         kern_virt_base: read_u64(arena, offsets::KERN_VIRT_BASE),
         kern_phys_base: read_u64(arena, offsets::KERN_PHYS_BASE),
@@ -150,10 +203,10 @@ pub fn decode_envelope(arena: &[u8]) -> Result<HandoffScalars, HandoffV1ReadErro
         syscall_entry: read_u64(arena, offsets::SYSCALL_ENTRY),
         bootstrap_start: read_u64(arena, offsets::BOOTSTRAP_START),
         bootstrap_len: read_u64(arena, offsets::BOOTSTRAP_LEN),
-        root_page: read_u64(arena, offsets::ROOT_PAGE),
-        bump_base: read_u64(arena, offsets::BUMP_BASE),
-        bump_next: read_u64(arena, offsets::BUMP_NEXT),
-        bump_end: read_u64(arena, offsets::BUMP_END),
+        root_page,
+        bump_base,
+        bump_next,
+        bump_end,
         memmap_byte_len: read_u64(arena, offsets::MEMMAP_BYTE_LEN),
         reserved_byte_len: read_u64(arena, offsets::RESERVED_BYTE_LEN),
         modules_byte_len: read_u64(arena, offsets::MODULES_BYTE_LEN),
@@ -525,6 +578,28 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_reader_ignores_unpatched_runtime_fields() {
+        let mut arena = [0u8; ARENA_CAP];
+        {
+            let mut s = Serializer::new(&mut arena).unwrap();
+            let info = info();
+            s.write_envelope(&info).unwrap();
+            s.push_memmap(MEMMAP[0]).unwrap();
+            s.finish_memmap();
+            s.write_param_buf(PARAM).unwrap();
+        }
+        let d = decode_descriptors(&arena).unwrap();
+        assert_eq!(d.memmap_byte_len, 16);
+        assert_eq!(d.reserved_byte_len, 0);
+        assert_eq!(d.param_byte_len, PARAM.len() as u64);
+        // The full envelope read still rejects the unpatched runtime fields.
+        assert_eq!(
+            decode_envelope(&arena).unwrap_err(),
+            HandoffV1ReadError::BadRootPage
+        );
+    }
+
+    #[test]
     fn free_upper_idx_sentinel_and_range() {
         let mut arena = build_arena();
         put_u64(&mut arena, 48, FREE_UPPER_IDX_NONE);
@@ -534,6 +609,57 @@ mod tests {
         assert_eq!(
             decode_envelope(&arena).unwrap_err(),
             HandoffV1ReadError::BadFreeUpperIdx
+        );
+    }
+
+    #[test]
+    fn rejects_bad_root_and_bump_triple() {
+        let mut arena = build_arena();
+        put_u64(&mut arena, 96, 0x1234);
+        assert_eq!(
+            decode_envelope(&arena).unwrap_err(),
+            HandoffV1ReadError::BadRootPage
+        );
+
+        let mut arena = build_arena();
+        put_u64(&mut arena, 96, 0);
+        assert_eq!(
+            decode_envelope(&arena).unwrap_err(),
+            HandoffV1ReadError::BadRootPage
+        );
+
+        // Inverted range: base above end.
+        let mut arena = build_arena();
+        put_u64(&mut arena, 104, BUMP_END + 0x1000);
+        assert_eq!(
+            decode_envelope(&arena).unwrap_err(),
+            HandoffV1ReadError::BadBumpRange
+        );
+
+        // Cursor before the base.
+        let mut arena = build_arena();
+        put_u64(&mut arena, 112, BUMP_BASE - 0x1000);
+        assert_eq!(
+            decode_envelope(&arena).unwrap_err(),
+            HandoffV1ReadError::BadBumpRange
+        );
+
+        // Cursor past the end.
+        let mut arena = build_arena();
+        put_u64(&mut arena, 112, BUMP_END + 0x1000);
+        assert_eq!(
+            decode_envelope(&arena).unwrap_err(),
+            HandoffV1ReadError::BadBumpRange
+        );
+
+        // The empty region is not a valid bump pool for this protocol.
+        let mut arena = build_arena();
+        put_u64(&mut arena, 104, BUMP_BASE);
+        put_u64(&mut arena, 112, BUMP_BASE);
+        put_u64(&mut arena, 120, BUMP_BASE);
+        assert_eq!(
+            decode_envelope(&arena).unwrap_err(),
+            HandoffV1ReadError::BadBumpRange
         );
     }
 
