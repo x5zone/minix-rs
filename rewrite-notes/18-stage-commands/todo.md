@@ -119,6 +119,111 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百六十三（A2 参数缝半切片 45：`join` 的 argv、`-t` 的判据、`-e` 的输出与三支值回显交回原字节；顺手量出一处存量的标准输入缝缺口）
+
+- **这一支把「参数缝」从渲染问题抬成判据问题**：`minix3/usr.bin/join/join.c:201` 写的是
+  `if (strlen(tabchar = optarg) != 1)`——判的是**字节数**。文本缝之下 `bin_support::args()` 先过
+  `from_utf8_lossy`，一枚裸 `ff` 变成 `ef bf bd` 三枚，于是 `join -t<ff>` 这一形从 C 的「接受并拿它
+  去切每一行」翻成这里的「拒绝」。三侧读数（`tmp/join-463/before-after-smoke.log`）：改前的件
+  打 `join: illegal tab character specification` 退 1，改后的件与参照件 `tmp/join-463/join` 都退 0
+  且逐字节交回 `a<ff>1<ff>x`。同一条腿的另一半在输出侧：`join.c:495` 打的是 `printf("%c", *tabchar)`
+  ——分隔符集的首字节，所以那枚 `ff` 还决定展出的每一行拿什么连起来。前面四支都没到这个量级：
+  `cut` 的 `-d` 折成 `ef` 只是切错位置，`column` 的 `-s` 是切错一族，`comm` 根本没有带值字母，
+  `head` 的值只进报文。**这一支是三条腿齐的**：判据（`-t` 的长度）、输出（`-t` 的 `*tabchar` 与
+  `-e` 的替代串，后者由 `join.c:500-501` 的 `printf("%s", empty)` 打进空缺字段）、报文（`illegal
+  field number -- %s` 在 `:145`/`:156`/`:190`，`illegal file number -- %s` 在 `:176`/`:222`，
+  `obsolete()` 的 `illegal option -- %s` 在 `:592`）。
+- **`optstring` 开头那枚 `\01` 的机制本轮现查清楚了**（此前只照抄字面，没说它为什么在那儿）：
+  `join.c:133` 递的是 `"\01a:e:j:1:2:o:t:v:"`，而 `obsolete()` 在 `:568` 把裸 `-a` 的第二个字符
+  就地写成 `'\01'`；BSD `getopt` 用 `strchr(ostr, optopt)`（`minix3/lib/libc/stdlib/getopt.c:98`）
+  去认这个字母，所以**那枚字节必须在选项串里**才落得进 `join.c:135` 的 `case '\01'`；它的下一位是
+  `a`，于是 `oli[1] != ':'`（`getopt.c:109`）把这枚合成字母当**无值**字母处理——这正是 legacy 裸 `-a`
+  不吞掉第一个文件名的机制来历。放在串首也不是随意的：同一份 `getopt.c` 只对 `*ostr == ':'`
+  （`:101`、`:130`）与 `strchr(ostr, '-')`（`:90`）看首字符，`\01` 占住首位就不会被这两条判据
+  碰到。判据：**照抄字面量时，「它为什么在这个位置」也是要查清的一半**。
+- **落码四层**：库侧 `os/commands/usr-bin/textfilter/src/join.rs` 的 `fn parse_join_args` 收
+  `&'a [&'a [u8]]`、`JoinArgs.files` 改 `Vec<&'a [u8]>`、`JoinError` 的三支回显值改 `&'a [u8]`；
+  `fn parse_olist`、`fn strtol_decimal`、`fn is_field_spec` 三个入口从 `&str` 改 `&[u8]`（切分集
+  「逗号、空格、制表符」按字节判，数字腿本来按 `is_ascii_digit`，语义一字未动）；环里 `a == b"--"`、
+  `b[0] != b'-'`、`char::from(b[1])` 三处按字节，`-t` 的判据 `bytes.len() != 1`、`-e` 的
+  `opts.empty = Some(value.to_vec())` 都直接吃原字节。壳侧 `src/bin/join.rs` 走
+  `support::args_bytes()` 与 `prog_name_bytes()`，`diagnose()`/`fail()`/`warn_then_usage()` 三兄弟
+  的短语参数改 `&[u8]`（新立 `fn quoted(prefix, value)` 把前缀与原字节接成一句），libc 那一行仍走
+  `GetoptReport::line_bytes`；`-` 的判据 `name == b"-"` 按字节，开档与 `err(1, "%s", name)` 收进
+  同一个 `read_operand` 闭包里折一次——**壳内 `from_utf8_lossy` 现量 2 处**（程序名 1 + 操数闭包 1，
+  两个操数共用那一处，比逐档写两次少一处），在册 `ARGV-BYTE-PATH-IN-LIBS`。
+- **门账（先对测试名集合再对总数）**：库内 `join` 模块 **26 → 28**（`a_raw_byte_is_the_delimiter_the_replacement_and_the_three_echoes`
+  六段：`-t<ff>` 被接受且 `sep()` 也是那一枚、`-e<ff>x` 交回
+  `[ff, 'x']`、三支回显各带原字节、操数原字节；`the_ring_names_the_first_byte_of_a_multibyte_letter`
+  四段：`-é` 报 `c3`、`-\xff` 报 `ff`、`-Zé` 停在 `Z`、反面的 `-1é` 里 `é` 是值不是字母），
+  `join_face` **30 → 32**（`a_raw_byte_delimiter_is_accepted_and_a_raw_byte_replacement_is_printed`
+  四段含 `-t<é>` 那枚控制形、`the_three_value_echoes_carry_the_argv_bytes` 三段），跨壳表门数 4 → 4
+  不变而表体十四行 → **十五行**（`join` 行钉 `join: unknown option -- \xff` 与退 **1**；这一支的
+  usage 是**两行**、程序名跟着 `getprogname()`），整包 69 段 **1257 → 1261 passed / 0 failed**。
+  夹具侧：既有 28 处 `parse_join_args(&[…])` 与 11 处 `parse_olist("…")` 全改成字节形，期望串逐字未动。
+  **新立一条判据**：测试模块里的 `fn argv(words: &'static [&'static str]) -> Vec<&'static [u8]>`
+  必须交回**有主**的词表——`JoinArgs` 借的是那些字节，而 `let a = parse_join_args(&argv(&[…]))` 里
+  临时 `Vec` 撑不过一条语句，编译器直接拒；于是凡结果要留着断言的形都拆成 `let w_a = argv(&[…]);`
+  + `let a = parse_join_args(&w_a);` 两行（本轮拆了 11 形）。只在一条语句里用完的形才可以内联。
+- **负控五枚（`tmp/join-463/negctl.py`，逐枚读数 `negctl-J1..J5.log`，汇总 `negctl-all.log`；
+  基线三档全绿：库内 622、跨壳表 4、`join_face` 32，命令带 `--no-fail-fast`）各咬 3/1/1/3/2 枚**：
+  J1（壳侧 argv 退回文本缝）咬面门两枚 + 跨壳表，**库内 622 全绿**——「库门对 argv 缝没有牙」这条
+  通则第五次量化（`column`、`comm` D1、`cut` E2、`head` F1、本轮 J1）；J2（三支值回显折一次）只咬
+  报文那一枚门；J5（`-e` 的值折一次）咬库内新门 + 数据面门；**J2 与 J5 各红一枚，正是「值进报文」与
+  「值进输出」两条腿在同一支命令里第一次被分开证伪**；J3（`-t` 的长度判据退回按字符数）咬数据面那一枚
+  ——红的是 `-t<é>`（两个字节、合法 UTF-8）那一段控制形，证明「缝改成字节」不等于「什么都放宽」；
+  J4（字母位取法退回按字符取整簇）第一遍只咬 2 枚（跨壳表 + 面侧既有 `the_unknown_letter_of_a_multibyte_flag_is_written_as_one_byte`），
+  **库内 622 全绿** ⇒ `join` 的字母腿在库里从来没钉住过（库里所有夹具的字母都是 ASCII），于是补出
+  `the_ring_names_the_first_byte_of_a_multibyte_letter`，补完重跑 J4 变 **3** 枚——这是批次四百六十一
+  给 `cut` 补门那条判据的第二次兑现：**一整段全绿时先怀疑覆盖面有洞，而不是宣布注入无效**。
+- **A/B 先给了一次假全等，再给了一次真差异，两笔都值得记**：
+  ① 第一遍三十六形报 `SAME=31 / DIFF=0`，可数据面那批形的退码全是 `1/1`——根因是脚本里 `~N` 占位
+  映射到 `/tmp/join-463-ab/1`，而落档用的键是 `t1`/`s1`，**两套编号不一致**，于是两侧都撞上
+  「档打不开」这条同形出口，全等是真的、覆盖面是空的。判据：**差分全等之前先数退 0 的形有几枚**，
+  成功形一枚都没成功的全等读数等于没测。② 占位对齐后 `join - 档` 那一形报红：参照件打 `a 1 1`，
+  本壳交回空。拿改前的件（主树 `os/target/debug/join`）同形复跑也是空——**存量，非本轮引入**，
+  根因是 `src/bin/join.rs` 自造了一个 `fn read_stdin()` 直取 `minix_sys::read`，而那条缝在宿主没有
+  双生面（同族 `cksum`/`cmp`/`col`/`column`/`comm`/`cut`/`fold`/`head` 八支早已走
+  `bin_support.rs:read_stdin`）。登记 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`，**登记不执行**：
+  本轮射程是参数缝，一次只修一条，且这一修的收口形（stdin 有内容的连接）属于读缝那条腿。
+  顺带一条覆盖账：`join_face` 三十二枚里从来没有一枚让 stdin 真的带内容流过（只有
+  `two_stdin_operands_are_refused_before_anything_is_read` 碰过那支错误出口），所以这个缺口在门账里
+  是 P0-test-missing 而不是 P0-code-bug 的副产品。最终读数：**非预期 30 形 SAME=30 / DIFF=0**，
+  已知分叉另计 2 形（KD1 = 打不开的裸字节档名，名字位是折叠形 `ef bf bd` 而参照件是 `ff`，属在册的
+  两条 `&str` 口；KD2 = 上面那条 stdin 缝），`tmp/join-463/ab.log`；参照件经软链名
+  `tmp/join-463/join` 起，`-Z` 当场验过归属（打的是 `join: unknown option -- Z` 加两行 usage，不是
+  宿主 glibc 那句带引号的 `invalid option -- 'Z'`；同批的 `tmp/family-diag-ref/join_ref` 正是后者，
+  不能用——这条判据第三次兑现）。
+- **取数三条自错（都是「读数看着绿、其实没测」那一类）**：① `cargo fmt --offline -p … -- --check`
+  报 `error: unexpected argument '--offline' found` 并退 2，而下游 `grep -c '^Diff in'` 交回 0——
+  **门计数必须连 EXIT 一起核**，`grep` 的 0 可以是「根本没跑」；本轮改用逐文件
+  `rustfmt --edition 2024 --check` 并对 HEAD 同件各测一次（四件现量 0、HEAD 也 0，无存量牵连）。
+  ② clippy 的位置集合两次归一化写得不一样（`sed 's/-->> *//'` 与 `sed -E 's/^--+> +//'`），第一次
+  得出「80 条全在本树独有」的假差异——**位置对账的归一化命令要固定成一条**，否则集合差量的是脚本
+  不是代码；改成同一条后主树 149 / 本树 149、位置 80 vs 80、双向差集为空、本轮四件零命中。
+  ③ 第一次 rustfmt 读数在连着两条流水线之间给出 4/1/3 与 0 两种结果，复跑并核 `md5` 与
+  `tmp/join-463/post/` 快照一致后定为 0——**同一份文件上的计数复现不了就先取指纹再定案**。
+- **门读数（全部 L1，`2026-10-29`，基线快照 `a204bc6b6`，基线当场复跑为 69 段 / 1257 / 0）**：
+  宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1261 / 0**
+  （补 J4 那枚库门之前一次是 1260，两次都落日志 `tmp/join-463/pkg-1.log`、`pkg-2.log`）；
+  容器权威门按 §7.3 三挂载配方（`-u $(id -u):$(id -g)` + `ci-cargo`/`ci-target`，跑时未与其他 cargo
+  并发）→ 退 0、**69 段 / 1261 / 0**，与宿主同读数（`tmp/join-463/container-gate.log`）；
+  三架构 `cargo check --offline -j 1 --target {x86_64-unknown-none, aarch64-unknown-none,
+  riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0、错误 0；A/B 用的
+  `os/target/debug/join` 是显式 `cargo build --bins` 之后 `file` 过的合法 ELF。
+- **进度与余量（全部现量）**：参数缝半已落 **十八支**（`rev`、`paste`、`yes`、`tee`、`seq`、`tr`、
+  `colrm`、`fold`、`col`、`uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`）；
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **21**；整个命令面口径
+  → **90**。渲染半那条 grep 仍 **0** 行；`line_bytes` **40 处 / 29 件**（本支未新增调用点，用的是
+  批次四百零七起就存在的那一处）。余下 21 支里带字母位诊断面的有 **9** 支（`jot`、`nl`、`pr`、`sort`、
+  `split`、`tail`、`unexpand`、`unifdef`、`vis`），**切片 46 建议 `jot`**（字母序第一支；
+  `jot.c` 的 `-w`/`-s` 值都直接进输出行，形状近 `seq`，参照件走 `tmp/family-diag-ref/` 之外另配的
+  那一份，用前照例先打一枚 `-Z`）。另建议**插一小轮收 `JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`**：
+  改动面是把 `src/bin/join.rs:read_stdin` 换成 `support::read_stdin()`，再补一枚「stdin 带内容的连接」
+  端到端门——一条腿、一枚门、一次 A/B，正好一轮的量。
+
+---
+
 ## 批次四百六十二（A2 参数缝半切片 44：`head` 的 argv、计数值的回显与横幅档名交回原字节；顺手量出两条未登记的计数分叉）
 
 - **这一支在本族里独一份，独在「同一段 argv 既进解析又进报文」**：`cut` 的列表值只喂 `get_list`，
