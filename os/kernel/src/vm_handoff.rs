@@ -390,15 +390,24 @@ pub fn build_vm_handoff(
     // survive the first CR3 switch (see version history v6).
     let (kern_ident, kern_ident_count) = build_identity_windows();
 
+    // D-72: production reaches here after kmain Phase B.5 initialized the
+    // kernel-information page. Staged QEMU test kernels (`qemu_test`) skip
+    // that phase and report 0 — VM then skips the per-root kerninfo mapping,
+    // preserving the pre-D-72 test shape. Production (no `qemu_test`) fails
+    // fast if the page is missing: the v7 contract requires a real page.
+    #[cfg(feature = "qemu_test")]
+    let kerninfo_pa = crate::kerninfo::kerninfo_page_phys().unwrap_or(0);
+    #[cfg(not(feature = "qemu_test"))]
+    let kerninfo_pa = crate::kerninfo::kerninfo_page_phys()
+        .expect("build_vm_handoff: kerninfo page not initialized before Phase C");
+
     VmBootHandoff {
         magic: VM_BOOT_HANDOFF_MAGIC,
         version: VM_BOOT_HANDOFF_VERSION,
         root_paddr: root_paddr.0,
         // D-72: the kernel owns the page; VM builds the per-root mapping at
         // `KERNINFO_USER_VA` and owns only the intermediate page-table pages.
-        // Phase B.5 initialized this before Phase C reaches here.
-        kerninfo_pa: crate::kerninfo::kerninfo_page_phys()
-            .expect("build_vm_handoff: kerninfo page not initialized before Phase C"),
+        kerninfo_pa,
         vm_allocated_bytes: vm_alloc.used_frames() * PAGE_SIZE,
         kernel_allocated_static: kernel_info.kern_size(),
         kernel_allocated_dynamic: boot_alloc_used_bytes(),

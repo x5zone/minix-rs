@@ -177,8 +177,8 @@ impl<'a> BootParams<'a> {
             self.root_paddr.0
         );
         assert!(
-            self.kerninfo_pa.0 != 0 && self.kerninfo_pa.0 & 0xFFF == 0,
-            "BootParams: kerninfo_pa 0x{:x} must be a non-zero page-aligned physical address",
+            self.kerninfo_pa.0 == 0 || self.kerninfo_pa.0 & 0xFFF == 0,
+            "BootParams: kerninfo_pa 0x{:x} must be 0 (staged test shape) or page-aligned",
             self.kerninfo_pa.0
         );
 
