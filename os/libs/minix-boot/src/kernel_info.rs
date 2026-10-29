@@ -146,11 +146,13 @@ pub struct KernelInfo {
     /// multiboot info structure's `cmdline` field into `key=value` pairs
     /// (e.g. `bootopts=...`, `memory=...`, `ht=...`).
     ///
-    /// The Rust boot-shim currently passes an empty slice (`&[]`) — UEFI
-    /// load options are not yet parsed into the `key=value` format. Kernel
-    /// callers (`do_getinfo` MonParams) treat an empty slice as "no boot
-    /// parameters" and copy zero bytes to the caller (matching C's behavior
-    /// when `param_buf[0] == '\0'`).
+    /// The Rust boot legs fill this slice from their real parameter source
+    /// through [`crate::normalize_param_buf`]: the UEFI leg reads
+    /// `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`, the OpenSBI/direct legs read
+    /// DTB `/chosen/bootargs`. A leg with no source passes `&[]`, which the
+    /// kernel's `do_getinfo` MonParams handler treats as "no boot parameters"
+    /// and copies zero bytes to the caller (matching C's behavior when
+    /// `param_buf[0] == '\0'`).
     ///
     /// # Validation
     ///

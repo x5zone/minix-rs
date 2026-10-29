@@ -205,7 +205,7 @@ impl BootShim for OpenSbiBootShim {
         // 可回收、模块域由内核侧 `cut_memmap` 自切，行为与原单区硬编码
         // 等价、源由硬编码换 DTB 真值）。缺 DTB = 诚实停机（无回退，
         // 单区硬编码正是本条要收口的泄漏面）。
-        let (memmap, reserved) = {
+        let (memmap, reserved, param_buf) = {
             let dtb_pa = dtb_ptr().expect(
                 "boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）",
             );
@@ -217,7 +217,20 @@ impl BootShim for OpenSbiBootShim {
             let bytes = unsafe { core::slice::from_raw_parts(dtb_pa as *const u8, total) };
             let fdt = fdt::Fdt::new(bytes)
                 .expect("boot-shim: DTB parse failed (a1) — halting (I-22)");
-            minix_boot::DtbMemoryMap::new(&fdt, 0).collect()
+            let (memmap, reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect();
+            // T3: the SBI leg's parameter source is the standard firmware
+            // channel — DTB `/chosen/bootargs` (QEMU `-append` fills it).
+            let landing: &'static mut [u8] =
+                alloc::boxed::Box::leak(
+                    alloc::vec![0u8; minix_boot::PARAM_BUF_CAP].into_boxed_slice(),
+                );
+            let input = fdt.chosen().bootargs().unwrap_or("");
+            let stats = minix_boot::normalize_param_buf(input.as_bytes(), None, landing);
+            let ptr = landing.as_ptr();
+            // SAFETY: leaked 'static landing buffer; the slice covers the
+            // normalized prefix only.
+            let param = unsafe { core::slice::from_raw_parts(ptr, stats.bytes) };
+            (memmap, reserved, param)
         };
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
@@ -274,6 +287,7 @@ impl BootShim for OpenSbiBootShim {
             PhysBytes(0),
             0,
             platform_sources,
+            param_buf,
         );
 
         // No ExitBootServices analogue on OpenSBI — U-Boot already handed
@@ -581,6 +595,7 @@ mod tests {
             PhysBytes(0x80000000), // bootstrap_start
             0x200000,              // bootstrap_len
             &[],                   // platform_sources (empty = no source)
+            &[],                   // param_buf (no source in this unit test)
         );
         // 接线断言：builder 发布的必须是单一权威常量本身（宿主测试取非
         // riscv 分支=48 位值；Sv39 取值范围由 minix_types 的编译期
@@ -640,6 +655,7 @@ mod tests {
             PhysBytes(0x8000_0000),
             0x200_000,
             &[],
+            &[],
         );
         // memmap
         assert_eq!(info.memmap.len(), 1);
@@ -683,6 +699,7 @@ mod tests {
             &[],
             PhysBytes(0), // 生产路径值（见 §3.5.1）
             0,           // 生产路径值
+            &[],
             &[],
         );
         assert_eq!(info.bootstrap_start, PhysBytes(0));

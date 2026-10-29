@@ -1494,7 +1494,7 @@ pub struct KernelInfo {
 - `free_upper_idx`：`None` 表示 boot-shim 未计算。它对应 C 的 `freepde_start`，语义与消费见 §3.9。
 - `kern_stack_top`、`syscall_entry`：C 里这两个值通过链接期符号与 `prot_init()` 内部计算得到；这里把它们显式纳入结构体，交接便不再依赖"两边链接脚本碰巧有同名符号"。
 - `platform_sources`：固件描述符来源列表（DTB / RSDP），按 boot-shim 的偏好排序，内核取第一个解析成功的源。解析归 `04-platform-discovery.md`，本篇只讲它怎么被放进结构体。
-- `param_buf`：对应 C 的 `char param_buf[MULTIBOOT_PARAM_BUF_SIZE]`（1024，`MULTIBOOT_PARAM_BUF_SIZE` 定义在 [`include/multiboot.h`](minix3/sys/arch/i386/include/multiboot.h)）。它是 2.3 那张参数表在 Rust 侧的落点，但**当前 boot-shim 传的是空切片**：UEFI 的 Load Option（固件为启动项保存的那段参数二进制）与 SBI 的启动参数都还没有被解析成 `key=value` 形式。消费者（`GET_MONPARAMS`）对空切片的处理是按 C 的固定 1024 字节零填充语义补齐，因此"没有参数"与 C 里 `param_buf[0] == '\0'` 等价。空切片是已登记的待办而非终态（代码注释标记 `P9-1`，台账条目 D-66）：接口形状已冻结，接入时只改生产侧，`KernelInfo` 结构零改动。
+- `param_buf`：对应 C 的 `char param_buf[MULTIBOOT_PARAM_BUF_SIZE]`（1024，`MULTIBOOT_PARAM_BUF_SIZE` 定义在 [`include/multiboot.h`](minix3/sys/arch/i386/include/multiboot.h)）。它是 2.3 那张参数表在 Rust 侧的落点，生产侧由 `minix_boot::normalize_param_buf` 统一规范化：输入按 NUL 或 ASCII 空白分词（UEFI 记录以 NUL 分隔，DTB `bootargs` 以空格分隔），逐条要求可打印 ASCII 的 `key=value`；非 ASCII、无等号、空键与内部键（`ARCH`/`BOARD`）逐条拒绝；`ARCH` 由编译目标生成，`BOARD` 只有真实来源才生成（当前没有可靠来源，显式省略，不伪造）；容量按整条记录截断到 1024。三条生产腿的来源：UEFI 读当前镜像的 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`，OpenSBI 与两个直核面读 DTB `/chosen/bootargs`。消费者 `GET_MONPARAMS` 仍按 C 的 1024 字节定长零填充；没有外部输入时缓冲里只有生成的那条 `ARCH=...`，与 C 的 `mb_set_param` 必写行为同形。
 
 `#[repr(C)]` 在 `KernelInfo` 上的作用需要说清楚边界：字段顺序被钉住，切片内部 `(ptr, len)` 的顺序仍由工具链决定；因此 `KernelInfo` 继续只用于同镜像内联与直核腿（x86_64、riscv64 与两个 bootface），不承担跨镜像契约。跨镜像腿改用独立协议 `BootHandoffV1`：标量全部写成固定宽度，载荷放进一个四页 arena 的固定分区，描述符只记 `byte_len`——地址由 arena 基址加协议偏移推导，`(ptr, len)` 不再上线。
 
@@ -1977,7 +1977,7 @@ UEFI 入口是固件加载 `.efi` 后调用的那个函数。它只做三件事�
 |---|---|---|
 | 谁在跑引导面 | 固件直接调 boot-shim 的 `.efi` 入口（[`fn main`](os/boot-shim/src/main.rs:fn main)） | 内核镜像自带的引导面（[`main.rs`](os/kernel-image/src/main.rs) 的 `rust_image_main` → `bootface`/`bootface_a64`，复用 boot-shim 库的取件车道） |
 | 读内核与模块 | boot-shim 自己读：`SimpleFileSystem` 加 12 项 `MODULE_NAMES`（§4.3） | 生产链（U-Boot）：预载 → `BootFileTable` 查地址读字节（§4.3）；`-kernel` 直核：从 DTB 解内存、从表/DTB 通道取模块（§4.8） |
-| 内存与参数准备 | aarch64：分配四页 arena，先写信封与非内存图载荷，再在 EBS 配对循环里分类最终内存图；x86_64：`GetMemoryMap` 一次快照分流两份列表。两条都进同一个 `build_kernel_info`（§4.2、§4.4） | 生产链与直核共用 `DtbMemoryMap`（DTB 的内存节点，I-22）；UEFI 链的 x86 快照走 `UefiMemoryMap`——两种来源都进同一个 builder，只有 `reserved_regions` 一行取值不同（`param_buf` 两边都是空切片；§4.4） |
+| 内存与参数准备 | aarch64：分配四页 arena，先写信封与非内存图载荷，再在 EBS 配对循环里分类最终内存图；x86_64：`GetMemoryMap` 一次快照分流两份列表。两条都进同一个 `build_kernel_info`（§4.2、§4.4） | 生产链与直核共用 `DtbMemoryMap`（DTB 的内存节点，I-22）；UEFI 链的 x86 快照走 `UefiMemoryMap`——两种来源都进同一个 builder，只有 `reserved_regions` 一行取值不同（`param_buf` 由各腿参数源经同一 normalizer 产出；§4.4） |
 | 退出固件服务 | aarch64：配对循环里用 raw `ExitBootServices`，分类与退出用同一个 MapKey；x86_64：`uefi::boot::exit_boot_services` | 无此步骤（引导器早已把控制权交出去） |
 | 进入内核 | aarch64：建根、补运行期字段、`x0 = arena` 跳独立镜像（`enter_kernel_image_v1` / `arch_boot_resume_v1`）；x86_64：注册页表页分配器后进 `arch_boot`（§4.6、§4.7、§4.8） | 镜像自身完成建表并进 `arch_boot`（§4.6、§4.8） |
 
@@ -2737,6 +2737,7 @@ test result: ok. 23 passed; 0 failed; ...
 $ for f in os/boot-shim/src/loader.rs os/boot-shim/src/opensbi_helpers.rs \
            os/boot-shim/src/uefi_helpers.rs os/libs/minix-boot/src/kernel_info.rs \
            os/libs/minix-boot/src/platform.rs os/libs/minix-boot/src/boot_form.rs \
+           os/libs/minix-boot/src/boot_params.rs \
            os/libs/minix-boot/src/memmap_source.rs os/libs/minix-boot/src/handoff_v1.rs \
            os/libs/minix-boot/src/handoff_v1_write.rs os/libs/minix-boot/src/handoff_v1_read.rs \
            os/libs/minix-elf/src/lib.rs \
@@ -2747,10 +2748,11 @@ os/boot-shim/src/opensbi_helpers.rs                12
 os/boot-shim/src/uefi_helpers.rs                   4
 os/boot-shim/src/ebs_map.rs                        12
 os/boot-shim/src/ebs_pair.rs                       10
-os/boot-shim/tests/ebs_boundary_audit.rs           3
+os/boot-shim/tests/ebs_boundary_audit.rs           5
 os/libs/minix-boot/src/kernel_info.rs              9
 os/libs/minix-boot/src/platform.rs                 8
 os/libs/minix-boot/src/boot_form.rs                6
+os/libs/minix-boot/src/boot_params.rs              8
 os/libs/minix-boot/src/memmap_source.rs            9
 os/libs/minix-boot/src/handoff_v1.rs               3
 os/libs/minix-boot/src/handoff_v1_write.rs         11
@@ -2758,7 +2760,7 @@ os/libs/minix-boot/src/handoff_v1_read.rs          11
 os/libs/minix-elf/src/lib.rs                       23
 ```
 
-15 + 12 + 4 + 12 + 10 = 53（`--lib`），另有集成测试 `tests/ebs_boundary_audit.rs` 5 条；与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi + ebs_map + ebs_pair，53 这个读数必须带 `test-all`）；`minix-boot` 的 57 = `kernel_info.rs` 的 9 + `platform.rs` 的 8 + `boot_form.rs` 的 6 + `memmap_source.rs` 的 9 + `handoff_v1.rs` 的 3 + `handoff_v1_write.rs` 的 11 + `handoff_v1_read.rs` 的 11；`minix-elf` 的 23 与实测一致。
+15 + 12 + 4 + 12 + 10 = 53（`--lib`），另有集成测试 `tests/ebs_boundary_audit.rs` 5 条；与 `cargo test -p boot-shim --features test-all --lib` 的实测一致（默认 uefi-only 形态只编 loader + uefi + ebs_map + ebs_pair，53 这个读数必须带 `test-all`）；`minix-boot` 的 65 = `kernel_info.rs` 的 9 + `platform.rs` 的 8 + `boot_form.rs` 的 6 + `boot_params.rs` 的 8 + `memmap_source.rs` 的 9 + `handoff_v1.rs` 的 3 + `handoff_v1_write.rs` 的 11 + `handoff_v1_read.rs` 的 11；`minix-elf` 的 23 与实测一致。
 
 推导表（5.1）里引用的其余宿主测试层（kernel 侧，`cargo test -p minix-kernel --features mock` 形态）：[`memmap.rs`](os/kernel/src/memmap.rs) 17 条、[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条、[`vm_handoff.rs`](os/kernel/src/vm_handoff.rs) 7 条、[`dm_coverage.rs`](os/kernel/src/dm_coverage.rs) 10 条、[`paging.rs`](os/arch/src/x86_64/paging.rs) 15 条、[`lib.rs`](os/kernel/src/lib.rs) 的 `store_kernel_info` 系列 4 条（1 枚落地区行为 + 3 枚超容量负控）。[`pt_alloc.rs`](os/arch/src/arch/pt_alloc.rs) 自身为零，其单例契约由集成测试 [`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条覆盖（单元测试二进制里 paging.rs 的 destroy 测试已占用同一全局单例，无法在其中再测注册）；v1 协议的布局门禁由 [`handoff_v1.rs`](os/libs/minix-boot/src/handoff_v1.rs) 的编译期断言与 3 条尺寸/偏移测试覆盖。
 
@@ -2777,6 +2779,7 @@ os/libs/minix-elf/src/lib.rs                       23
 | `opensbi_helpers.rs:test_build_kernel_info_bootstrap_zero_means_no_reclaim` | `bootstrap_start/len` 保持 `(0, 0)`，且 `len != kern_phys_base` |
 | `opensbi_helpers.rs:test_build_kernel_info_riscv64_fields_match_input` | 字段逐一映射（含派生字段 `kern_stack_top`/`syscall_entry`） |
 | `uefi_helpers.rs:test_build_kernel_info_fields` | UEFI builder 的字段装配（该文件唯一的单元测试） |
+| `boot_params.rs:generates_arch_and_board_first` 等 8 条 | 参数规范化：生成键、NUL/空白分词、内部键拒绝、非 ASCII/无等号拒绝、重复键首条胜出、整条截断 |
 | `kernel_info.rs:test_validate_rejects_*`（6 条）与 `test_validate_accepts_*`（2 条），另加 `test_getters_return_field_values`（1 条）= 该文件 9 条 | `validate()` 的六条不变量与它们的合法边界；getter 与字段一致 |
 | `boot_form.rs:test_boot_form_count_is_accounted` 等 6 条 | 启动形态家族的记账（新增形态必须登记）与跨形态后置条件电池（对每种形态逐一断言 `check_boot_postconditions`） |
 
@@ -2898,6 +2901,7 @@ pub fn raw_serial(text: &str) {
 | `### minix-rs kernel-image: resuming high-half boot (handoff v1 arena)`（aarch64） | 接收端已进入 Rust 面 | `kernel-image/src/main.rs:rust_image_main` |
 | `kernel-image: step4 DM coverage (additive on active root)` / `DM ok, jumping to kmain` | 接收端 additive 阶段路标 | [`arch_boot_resume_high_half`](os/kernel/src/lib.rs:arch_boot_resume_high_half) |
 | `kernel: step0 validate ok` / `step1+2 mappings ok` / `step4 DM coverage ok` | 建表逐步路标 | [`lib.rs`](os/kernel/src/lib.rs) 的 `boot_stage!` |
+| `boot-shim: param_buf bytes=… rejected=… dropped=…` / `param_buf bytes=… first=…` | 参数源读数（UEFI LoadOptions 或 DTB `/chosen/bootargs`）；`first` 是第一条记录 | `uefi_helpers.rs:collect_param_buf`、两个 bootface 的 `normalize_param_buf` 调用点 |
 
 （`build_memmaps` 内另有两条诊断打印、只在有料时出声：`boot-shim: memmaps conv=… reserved=…` 与 ≥4MiB 描述符的 `reserved-big …` 行；它们是诊断读数，不进主路径里程碑。）
 

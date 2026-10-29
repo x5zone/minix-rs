@@ -223,6 +223,30 @@ pub extern "C" fn bootface_a64() -> ! {
         core::slice::from_raw_parts(core::ptr::addr_of!(PLATFORM_SOURCE), 1)
     };
 
+    // T3: DTB `/chosen/bootargs` is the direct-boot parameter source
+    // (QEMU `-append` fills it).
+    let param_buf: &'static [u8] = {
+        let out = crate::bootface_common::param_landing();
+        let input = crate::bootface_common::fdt_bootargs(&fdt).unwrap_or("");
+        let stats = minix_boot::normalize_param_buf(input.as_bytes(), None, out);
+        say("  param_buf bytes=");
+        say_hex(stats.bytes as u64);
+        if stats.bytes > 0 {
+            let end = out[..stats.bytes]
+                .iter()
+                .position(|&byte| byte == 0)
+                .unwrap_or(stats.bytes);
+            if let Ok(text) = core::str::from_utf8(&out[..end]) {
+                say(" first=");
+                say(text);
+            }
+        }
+        say("\n");
+        let ptr = out.as_ptr();
+        // SAFETY: static landing pad; the slice covers the normalized prefix.
+        unsafe { core::slice::from_raw_parts(ptr, stats.bytes) }
+    };
+
     // 6. KernelInfo + arch_boot 真门槛（validate → 建根 → DM →
     //    jump_to_kmain，不再返回本面）。
     let kernel_info: KernelInfo = build_kernel_info(
@@ -235,6 +259,7 @@ pub extern "C" fn bootface_a64() -> ! {
         PhysBytes(0),
         0,
         platform_sources,
+        param_buf,
     );
     say("  calling arch_boot (validate gate)\n");
     minix_kernel::arch_boot(&kernel_info, root_page)

@@ -102,3 +102,28 @@ pub(crate) fn fdt_table_pa(fdt: &fdt::Fdt<'_>) -> Option<u64> {
     let prop = chosen.property("opensbi,boot-file-table")?;
     be_cell(prop.value)
 }
+
+/// `/chosen`'s `bootargs` string, via `all_nodes` for the same SD-38 reason
+/// (the crate's `chosen()` helper panics when `find_node` misses the node).
+pub(crate) fn fdt_bootargs<'a>(fdt: &fdt::Fdt<'a>) -> Option<&'a str> {
+    let chosen = fdt
+        .all_nodes()
+        .find(|n| n.name.split('@').next() == Some("chosen"))?;
+    let prop = chosen.property("bootargs")?;
+    let value = prop.value.strip_suffix(&[0]).unwrap_or(prop.value);
+    core::str::from_utf8(value).ok()
+}
+
+/// Static landing pad for the normalized `param_buf`.
+///
+/// Both boot faces are allocator-free, so the normalized records are written
+/// into this fixed buffer before `arch_boot`; the kernel's `store_kernel_info`
+/// deep-copies them into its own `.bss` immediately afterwards.
+pub(crate) fn param_landing() -> &'static mut [u8] {
+    static mut PARAM_BUF: [u8; minix_boot::PARAM_BUF_CAP] =
+        [0u8; minix_boot::PARAM_BUF_CAP];
+    // SAFETY: one call per boot, single-hart; the buffer lives for the whole
+    // run and `addr_of_mut!` avoids creating a reference to the `static mut`
+    // itself.
+    unsafe { &mut *core::ptr::addr_of_mut!(PARAM_BUF) }
+}
