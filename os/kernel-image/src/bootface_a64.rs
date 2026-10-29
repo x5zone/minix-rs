@@ -44,7 +44,8 @@ use minix_boot::{
 };
 use minix_types::{PhysBytes, VirBytes};
 
-use boot_shim::opensbi_helpers::{BootFileTable, build_kernel_info};
+use boot_shim::build_kernel_info;
+use boot_shim::opensbi_helpers::BootFileTable;
 
 use minix_plat::arm64::early_console;
 
@@ -157,7 +158,7 @@ pub extern "C" fn bootface_a64() -> ! {
     // 本形态前提：aarch64 直核链的 DRAM 里没有固件常驻区（QEMU 只放 DTB
     // 与镜像），因此不削界；DTB 自身由内核 Phase A.2 按真实 totalsize
     // 永久扣除——两条机制不替岗：本处只产出语义列表，扣除是内核记账。
-    let (memmap, _reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect();
+    let (memmap, reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect();
     if memmap.is_empty() {
         say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
         crate::halt();
@@ -226,6 +227,7 @@ pub extern "C" fn bootface_a64() -> ! {
     //    jump_to_kmain，不再返回本面）。
     let kernel_info: KernelInfo = build_kernel_info(
         memmap,
+        reserved,
         VirBytes(KERN_VIRT_BASE),
         PhysBytes(KERN_PHYS_BASE),
         KERN_SIZE,

@@ -56,6 +56,7 @@ use minix_boot::{
     MemoryRegion, PlatformDescSource,
 };
 
+use crate::build_kernel_info;
 use crate::loader::{self, FileLoader};
 
 /// Bump-allocation region for boot modules in OpenSBI path.
@@ -204,7 +205,7 @@ impl BootShim for OpenSbiBootShim {
         // 可回收、模块域由内核侧 `cut_memmap` 自切，行为与原单区硬编码
         // 等价、源由硬编码换 DTB 真值）。缺 DTB = 诚实停机（无回退，
         // 单区硬编码正是本条要收口的泄漏面）。
-        let (memmap, _reserved) = {
+        let (memmap, reserved) = {
             let dtb_pa = dtb_ptr().expect(
                 "boot-shim: OpenSBI/U-Boot 未递 a1=DTB（I-22：memmap 源=DTB，无回退）",
             );
@@ -246,6 +247,7 @@ impl BootShim for OpenSbiBootShim {
 
         let kernel_info = build_kernel_info(
             memmap,
+            reserved,
             kern.kern_virt_base,
             kern.kern_phys_base,
             kern.kern_size,
@@ -458,43 +460,6 @@ fn alloc_module_pages(num_pages: usize) -> Option<u64> {
 /// descriptor sources. On RISC-V (OpenSBI) this is either `[DTB source]`
 /// or empty. The kernel tries each in order, using the first that parses
 /// successfully.
-pub fn build_kernel_info(
-    memmap: &'static [MemoryRegion],
-    kern_virt_base: VirBytes,
-    kern_phys_base: PhysBytes,
-    kern_size: u64,
-    boot_modules: &'static [minix_boot::BootModule],
-    bootstrap_start: PhysBytes,
-    bootstrap_len: u64,
-    platform_sources: &'static [PlatformDescSource],
-) -> KernelInfo {
-    KernelInfo {
-        memmap,
-        // fix27: no runtime identity windows on this path — the kernel
-        // executes as the standalone higher-half kernel.elf here (the
-        // boot-shim is a separate binary), so no low physical VA range
-        // hosts live kernel code/data. UEFI's link-in execution model
-        // is what populates this list (uefi_helpers::build_memmaps).
-        reserved_regions: &[],
-        kern_virt_base,
-        kern_phys_base,
-        kern_size,
-        free_upper_idx: None,
-        // Per-arch user stack top; the single authority is
-        // `minix_types::USER_STACK_TOP` (Sv39 top on riscv64).
-        user_sp: VirBytes(minix_types::USER_STACK_TOP),
-        kern_stack_top: VirBytes(kern_virt_base.0 as u64 + kern_size as u64),
-        syscall_entry: VirBytes(kern_virt_base.0),
-        boot_modules,
-        bootstrap_start,
-        bootstrap_len,
-        platform_sources,
-        // P9-1: SBI boot hart argument not yet parsed into key=value pairs.
-        // Pass empty slice — kernel's GET_MONPARAMS handler copies 0 bytes
-        // to caller (matching C's behavior when param_buf[0] == '\0').
-        param_buf: &[],
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -608,6 +573,7 @@ mod tests {
     fn test_build_kernel_info_uses_riscv64_user_sp() {
         let info = build_kernel_info(
             &[],
+            &[],
             VirBytes(0xFFFF_FFFF_8000_0000),
             PhysBytes(0x8000_0000),
             0x100_000,
@@ -666,6 +632,7 @@ mod tests {
                 base: PhysBytes(0x8000_0000),
                 len: 0x80_0000,
             }],
+            &[],
             VirBytes(0xFFFF_FFFF_8000_0000),
             PhysBytes(0x8000_0000),
             0x100_000,
@@ -708,6 +675,7 @@ mod tests {
     #[test]
     fn test_build_kernel_info_bootstrap_zero_means_no_reclaim() {
         let info = build_kernel_info(
+            &[],
             &[],
             VirBytes(0xFFFF_FFFF_8000_0000),
             PhysBytes(0x8000_0000),
