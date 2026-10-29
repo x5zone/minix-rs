@@ -1963,7 +1963,7 @@ boot 阶段的实现是一个 bump 分配器（`boot_alloc.rs` 的 [`BootAlloc::
 
 ## 4. 实现详解
 
-本章把第 3 章的设计决策落到代码：4.1–4.3 走一遍入口与两条固件路径的调用链（含共用装载函数），4.4–4.5 看 `KernelInfo` 的单一 builder、校验与三块 `.bss` 落地区，4.6–4.7 是自举根建立/开分页与分配器换手的落地，4.8 是跨镜像交接与直核自引导，4.9 收成 C 函数对照表。各节标题后的 `→` 指回它所实现的设计决策。
+本章把第 3 章的设计决策落到代码：4.1–4.3 走一遍入口与两条固件路径的调用链（含共用装载函数），4.4–4.5 看 `KernelInfo` 的单一 builder、校验与五块 `.bss` 落地区，4.6–4.7 是自举根建立/开分页与分配器换手的落地，4.8 是跨镜像交接与直核自引导，4.9 收成 C 函数对照表。各节标题后的 `→` 指回它所实现的设计决策。
 
 ### 4.1 入口与调用链（→3.1、3.2、3.8）
 
@@ -2354,12 +2354,12 @@ pub fn build_kernel_info(
 
 **去掉 `bootstrap_len == 0` 断言会怎样**：只保留文档里的说明。字段非零时不会 panic，`kmain` 会拿一份含"待归还区间"的账继续走下去——故障链与 §3.5 的"误设后果"表逐行相同，差别只在"字段被误设"在现场没有任何痕迹。断言的价值是把这条信息从"文档里的约定"变成"入口处的停止"。
 
-### 4.5 内核侧第一步：`store_kernel_info` 的三块落地区（→3.4）
+### 4.5 内核侧第一步：`store_kernel_info` 的五块落地区（→3.4）
 
 `arch_boot` 的早期动作是把按值传入的结构深拷进内核自己的 `.bss`（`lib.rs` 的 [`fn store_kernel_info`](os/kernel/src/lib.rs:fn store_kernel_info)），然后只使用这份副本。
 
 ```rust
-// 节选（保留三个落地区各自的核心语句；省略号处为注释与相邻块的接续行），
+// 节选（保留五个落地区各自的核心语句；省略号处为注释与相邻块的接续行），
 // os/kernel/src/lib.rs:fn store_kernel_info。
 pub fn store_kernel_info(kernel_info: &KernelInfo) {
     unsafe {
@@ -2399,29 +2399,52 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
                 bstore[i] = minix_boot::BootModule { name, start: module.start, len: module.len };
             }
         }
+        let pstore = &mut *crate::globals::PLATFORM_SOURCE_STORE.get();
+        let psrc = kernel_info.platform_sources;
+        assert!(
+            psrc.len() <= pstore.len(),
+            "store_kernel_info: platform_sources exceeds the .bss landing pad"
+        );
+        if psrc.as_ptr() != pstore.as_ptr() {
+            core::ptr::copy(psrc.as_ptr(), pstore.as_mut_ptr(), psrc.len());
+        }
+        let param = &mut *crate::globals::PARAM_BUF_STORE.get();
+        let csrc = kernel_info.param_buf;
+        assert!(
+            csrc.len() <= param.len(),
+            "store_kernel_info: param_buf exceeds the .bss landing pad"
+        );
+        if csrc.as_ptr() != param.as_ptr() {
+            param.fill(0);
+            param[..csrc.len()].copy_from_slice(csrc);
+        }
         let mut k = *kernel_info;
         k.reserved_regions = core::slice::from_raw_parts(store.as_ptr(), src.len());
         k.memmap = core::slice::from_raw_parts(mstore.as_ptr(), msrc.len());
         k.boot_modules = core::slice::from_raw_parts(bstore.as_ptr(), bsrc.len());
+        k.platform_sources = core::slice::from_raw_parts(pstore.as_ptr(), psrc.len());
+        k.param_buf = core::slice::from_raw_parts(param.as_ptr(), csrc.len());
         *KERNEL_INFO.get() = Some(k);
     }
 }
 ```
 
-三块落地区的容量与溢出行为（另配一个名字字节池）：
+五块落地区的容量与溢出行为（另配一个名字字节池）：
 
 | 落地区 | 容量常量 | 值 | 溢出行为 |
 |---|---|---|---|
 | `RESERVED_REGION_STORE` | `RESERVED_REGION_STORE_LEN` | 256 | panic |
 | `MEMMAP_REGION_STORE` | `MEMMAP_REGION_STORE_LEN` | `crate::memmap::MAXMEMMAP` | panic |
 | `BOOT_MODULE_STORE` | `minix_boot::NR_BOOT_MODULES` | 12 | panic |
+| `PLATFORM_SOURCE_STORE` | `PLATFORM_SOURCE_STORE_LEN` | 4（真实上限 2 × 有意余量） | panic |
+| `PARAM_BUF_STORE` | `PARAM_BUF_STORE_LEN` | 1024（C 的 `MULTIBOOT_PARAM_BUF_SIZE`） | panic（先清零再复制） |
 | `BOOT_MODULE_NAME_STORE`（名字字节池） | `BOOT_MODULE_NAME_LEN` | 16（每槽，复制时截到 15 字节） | 截断（不 panic） |
 
 名字池是唯一允许截断的：`n = bytes.len().min(BOOT_MODULE_NAME_LEN - 1)`（16 - 1 = 15），保留一个字节给 NUL 语义上的余量。截断后用 `core::str::from_utf8_unchecked` 造 `&'static str`，安全性论证是"模块名是 ASCII 字面量，15 字节的截断不会切开多字节序列"——这条论证的成立依赖 `MODULE_NAMES` 的内容，而不是类型系统。
 
 `if src.as_ptr() != store.as_ptr()` 这个条件不是优化：`kmain` 会在拿到全局副本之后再调一次 `store_kernel_info`（幂等），此时源就是落地区本身，跳过拷贝可以避免 `ptr::copy` 在同址范围内的行为问题（注释里说明这也是用 `ptr::copy` 而非 `copy_nonoverlapping` 的原因）。
 
-三个容量各有来由：`RESERVED_REGION_STORE_LEN = 256` 与 `vm_handoff` 的候选上限共用同一个常量（单一权威，避免两处 256 手工对齐漂移）；`MEMMAP_REGION_STORE_LEN` 的注释记着一次真机故障的探针读数（读数与归因限定见 §3.4 的"不做深拷…会怎样"，实现侧增量见本节末）；`BOOT_MODULE_NAME_LEN = 16` 与 `vm_handoff::copy_name` 的 16 字节 `proc_name` 字段同宽，落地不会比既有长度契约更紧。
+三个容量各有来由：`RESERVED_REGION_STORE_LEN = 256` 与 `vm_handoff` 的候选上限共用同一个常量（单一权威，避免两处 256 手工对齐漂移）；`MEMMAP_REGION_STORE_LEN` 的注释记着一次真机故障的探针读数（读数与归因限定见 §3.4 的"不做深拷…会怎样"，实现侧增量见本节末）；`BOOT_MODULE_NAME_LEN = 16` 与 `vm_handoff::copy_name` 的 16 字节 `proc_name` 字段同宽，落地不会比既有长度契约更紧。另外两个（D-70）：`PLATFORM_SOURCE_STORE_LEN = 4` 是"一个 DTB/ACPI 源加一个回退"的真实上限再乘二；`PARAM_BUF_STORE_LEN = 1024` 直接对齐 C 的定长语义，复制前先清零，短缓冲留下的尾部因此是全零而不是上一轮内容。
 
 **只做一半深拷会怎样**：`reserved_regions` 深拷进去，但 `memmap` 与 `boot_modules` 保持原指针。现象就是 §3.4 那组真机读数的后半段（Step 4 建立 Direct Map 覆盖时读 `memmap` 还正常，到 `vm_handoff::classify` 再读时全部是零长度条目）；零化若更早发生（A2 分类之前），实现侧的增量是：`kmain` 的 A2 分类用 `if region.len > 0` 过滤拷进 `FREE_MEMMAP`，零条目被静默跳过，于是 `FREE_MEMMAP` 变成空记录——第一次物理页分配失败时，现场离"三个切片里有两个没落地"隔着整个 Phase A。
 
@@ -2680,7 +2703,7 @@ fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! 
 | M5 | 页表建立与开分页（§2.6 C / §4.6 Rust） | 开分页后的下一条取指有映射（能打印第一个内核路标） | 真机 | 真机链覆盖 | **TODO-05**（见 5.3） |
 | M6 | 恒等映射覆盖低 4GB 固定上界（§4.6 Step 1） | `IDENTITY_MAP_END` 以下全部有映射、标志为 supervisor-only | 宿主测试 | **已覆盖**：[`paging.rs`](os/arch/src/x86_64/paging.rs) 15 条（`map_huge` 系列） | — |
 | M7 | 分配器"写一次"（§3.8） | 二次 `register` 在 debug 构建失败、release 构建拒绝改写 | 宿主测试 | **已覆盖**：[`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条（`register` / `register_free` 各一：debug 下二次注册 panic，release 下被拒且指针不变） | — |
-| M8 | 落地区容量与 fail-fast（§4.5） | 超过容量时快速失败而非截断 | 宿主测试 | **已覆盖**：落地区行为（`test_store_kernel_info_lands_firmware_slices`）+ 三枚超容量负控（`test_store_kernel_info_rejects_{reserved,memmap,boot_module}_overflow`） | — |
+| M8 | 落地区容量与 fail-fast（§4.5） | 超过容量时快速失败而非截断 | 宿主测试 | **已覆盖**：落地区行为（`test_store_kernel_info_lands_firmware_slices`）+ 五枚超容量负控（`test_store_kernel_info_rejects_{reserved,memmap,boot_module,platform,param}_overflow`） | — |
 | M9 | bump 分配器（§3.8/§4.2） | 顺序推进、耗尽拒绝、页对齐、reinit 后归位、跨镜像区间自洽 | 宿主测试 | **已覆盖**：[`boot_alloc.rs`](os/kernel/src/boot_alloc.rs) 10 条 | — |
 | M10 | 布局契约（§5.2 与 §3.6） | L0–L9 十条主编号（L0–L8 全架构 + L9 仅 riscv64） | 宿主断言 | **已覆盖**：`check-layout.sh`（全量，见 5.2.2） | — |
 | M11 | 模块顺序契约（§4.3） | 12 项按 `MODULE_NAMES` 顺序返回、缺件 panic | 宿主测试＋真机前置检查 | **已覆盖**：`loader.rs` 顺序/缺件测试＋真机链的 `mdir` 前置 | — |
@@ -2814,7 +2837,7 @@ L4 与 L5 分别对应 02 篇的段平移结论与 §3.6 的大页阶梯：L4 �
 |---|---|---|---|---|
 | TODO-01 | M4 深拷序 | 三入口在首个页分配前已完成 `store_kernel_info`（调试钩检查点） | 已覆盖：源码序钉（四入口）；mock 入口 `arch_boot_test` 与 QEMU 测试内核的分阶段调用均绕过 store，故运行期断言不成立（钉注释已写明这次回退的判据） | 已交接完成 |
 | TODO-02 | M7 写一次 | `register` 二次调用在 debug 下失败、release 下被拒 | 已覆盖：[`pt_alloc_write_once.rs`](os/arch/tests/pt_alloc_write_once.rs) 2 条（`register` 与 `register_free`），debug/release 两形态实跑 | 已交接完成 |
-| TODO-03 | M8 落地区溢出 | 超容量输入触发 fail-fast（不截断） | 已覆盖：三枚 `should_panic`（reserved 257 / memmap 129 / boot modules 13），各持 boot-globals 锁 | 已交接完成 |
+| TODO-03 | M8 落地区溢出 | 超容量输入触发 fail-fast（不截断） | 已覆盖：五枚 `should_panic`（reserved 257 / memmap 129 / boot modules 13 / platform 5 / param 1025），各持 boot-globals 锁 | 已交接完成 |
 | TODO-04 | M12 EBS 边界 | EBS 之后的代码路径中不出现 `uefi::` 调用 | 无 CI 静态检查 | 已登记待交接 |
 | TODO-05 | §4.6 大页回退档 | 2MiB 回退档下的真机启动 | 真机矩阵不全 | 已登记待交接 |
 | TODO-06 | M14 x86_64 路标链 | x86_64 上 `kernel loaded` / `12 boot modules loaded` / `handing control` 三条路标出现 | 已覆盖：`test-cmd-smoke.sh` Stage 3b 逐条 `grep -qF`，缺任一条即 FAIL 并回打串口尾 12 行 | 已交接完成（脚本后续 du/stat/find 腿的现状失败与本条无关，见批次记录） |
@@ -2938,7 +2961,7 @@ fn panic(info: &PanicInfo) -> ! {
 | 快照位置错（自举页被报成可用） | `assert_bootstrap_outside_memmap` | `conventional memmap [a,b) overlaps bootstrap allocation [c,d)` | 核对快照调用点在两次分配之后 |
 | 大页阶梯无档可用 | `boot_validate_and_prepare` | `arch_boot: kern_virt_base, kern_phys_base, and kern_size must be aligned to at least FALLBACK_HUGE_PAGE_SIZE` | 跑 `check-layout.sh` 的 L3/L4/L5 |
 | 页表切换后取指故障 | `Paging::enable` 之后第一条指令 | QEMU `-d int` 日志里的异常记录；`CR2`/`EPC` 指向当前指令 | 核对恒等映射范围是否覆盖该地址（§4.6） |
-| `KernelInfo` 切片读回全零 | `vm_handoff::classify` 或后续消费者 | VM 侧"no free memory regions"类 panic | 核对 `store_kernel_info` 是否落了三块（§4.5） |
+| `KernelInfo` 切片读回全零 | `vm_handoff::classify` 或后续消费者 | VM 侧"no free memory regions"类 panic | 核对 `store_kernel_info` 是否落了五块（§4.5） |
 
 **把 `assert_bootstrap_outside_memmap` 降级为 `debug_assert` 会怎样**（release 构建下它就消失了）：它挡的是"活的页表页与 bump 池被当作空闲内存交给 VM"这一类问题，而这类问题的发作要经过"VM 取帧 → 覆盖页表页 → 切换 CR3 → 取指失败"四步。断言在 EBS 之前运行（此时串口还在，消息里同时给出 conventional 区间与自举区间两个坐标），而故障在现场只剩取指错误——把这条断言降级，等于把一个可读的坐标信息换成一次无坐标的崩溃。
 

@@ -149,6 +149,10 @@ mod bkl_protected {
         // bytes themselves land in `BOOT_MODULE_NAME_STORE`). Written once
         // by `store_kernel_info`, read-only afterwards.
         minix_boot::BootModule,
+        // D-70 landing-pad payload for `platform_sources` (POD: kind tag +
+        // physical address). Written once by `store_kernel_info`, read-only
+        // afterwards — same contract as KernelInfo itself.
+        minix_boot::PlatformDescSource,
 
         // BKL-serialized mutation (kernel-internal types):
         crate::proc_table::ProcessTable,
@@ -359,6 +363,32 @@ pub(crate) static BOOT_MODULE_STORE: SyncUnsafeCell<
 pub(crate) static BOOT_MODULE_NAME_STORE: SyncUnsafeCell<
     [[u8; BOOT_MODULE_NAME_LEN]; minix_boot::NR_BOOT_MODULES],
 > = SyncUnsafeCell::new([[0u8; BOOT_MODULE_NAME_LEN]; minix_boot::NR_BOOT_MODULES]);
+
+/// `.bss` landing pad for the [`KERNEL_INFO`] `platform_sources` payload
+/// (D-70): the list also lives in the boot surface's pool and must be copied
+/// before any higher-half consumer reads it.
+///
+/// 4 = the verified real-world upper bound (2: one DTB or ACPI source plus one
+/// fallback × 2 deliberate margin, 01-code-design §5). Overflow fails fast in
+/// `store_kernel_info`, never truncates.
+pub(crate) const PLATFORM_SOURCE_STORE_LEN: usize = 4;
+
+pub(crate) static PLATFORM_SOURCE_STORE: SyncUnsafeCell<
+    [minix_boot::PlatformDescSource; PLATFORM_SOURCE_STORE_LEN],
+> = SyncUnsafeCell::new(
+    [minix_boot::PlatformDescSource::new(
+        minix_boot::PlatformDescKind::new(0),
+        minix_types::PhysBytes(0),
+    ); PLATFORM_SOURCE_STORE_LEN],
+);
+
+/// `.bss` landing pad for the [`KERNEL_INFO`] `param_buf` payload (D-70),
+/// matching C's `param_buf[MULTIBOOT_PARAM_BUF_SIZE]`. The store zeroes the
+/// pad before copying (fixed-length, NUL-terminated semantics).
+pub(crate) const PARAM_BUF_STORE_LEN: usize = 1024;
+
+pub(crate) static PARAM_BUF_STORE: SyncUnsafeCell<[u8; PARAM_BUF_STORE_LEN]> =
+    SyncUnsafeCell::new([0u8; PARAM_BUF_STORE_LEN]);
 
 /// Global process table — C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]`.
 ///
