@@ -2553,3 +2553,20 @@ SAME=29（其中退 0 的 17 形先数过）/ 字母位三方核通过 6 形 / �
 `SORT-RECORD-CONTENT-TEXTSEAM`、`SORT-PLUS-FIELD-LEGACY-UNMODELLED`、
 `SORT-D-T-X-LETTERS-UNMODELLED`；`todo-reconcile-scan` 的 `探针命名族` 漂移归一线。
 **取证回抄照办**：release 前把 `tmp/sort-467` 整目录复制回主树 `tmp/`。
+
+**合回读数（第一百八十一笔补记，批次四百六十七）**：本支三笔（码笔 `7f6ed9413`、文档笔 `d2c47b2dd`、
+里程碑笔 `76c1319d6`）合回时 `rewrite` 自基线 `f03aa8ffc` 起**没有新提交**——
+`git log --oneline f03aa8ffc..rewrite` 交回空、merge-base 就是基线 ⇒ 纯快进、零冲突。
+但这条「没分叉」依旧是**当场量出来的**，而且量了两遍：快进前一遍（`git merge-base
+--is-ancestor rewrite <顶>` 与主树八件的 `git status --porcelain` 各交回空），快进动作本身一遍；
+上一笔就是靠这个二次重验发现主树在两次命令之间被别线推进了两回，本笔没有复现那一幕不等于
+不必再验。逐笔验祖先三笔**全 ✓**，快进后主树 `rewrite` 与领取树顶同为 `76c1319d6`
+（`8 files changed, 618 insertions(+), 125 deletions(-)`）。主树当场复跑
+`cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1273 / 0**，其中
+`sort_face` 24 枚、`bin_support_face` 4 枚（`/home/xzhao/github/minix-rs/tmp/sort-467-maintree.log`），
+与领取树最终态逐数相同。门②那条「不同树不可比」第四次核：同一条 `notes-link-check` 在领取树是
+764 个 md / 断链 131（连续三笔同数），在主树另测；主树门④的 error 全落在别线在制的 01-stage
+文件上，本线四件 0 条，未动。取证回抄已办：`tmp/sort-467` 整目录（28 件、848K）复制进主树
+`tmp/`，`ab.log`、`pkg-final.log`、`container-final.log`、`negctl-Q6.log`、
+`clippy-post.log` 与领取树逐字节核过 md5 相同——**其中 `negctl-Q6.log` 是有意全绿的那枚
+无分辨力探针，回抄它正是为了让「注入不红」这条读数有据可查**。
