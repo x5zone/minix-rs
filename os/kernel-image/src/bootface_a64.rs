@@ -34,7 +34,10 @@
 
 use core::slice;
 
-use minix_boot::{BootModule, KernelInfo, MemoryRegion, NR_BOOT_MODULES, PlatformDescSource, DTB};
+use minix_boot::{
+    BootModule, DTB, KernelInfo, MemoryMapSource as _, MemoryRegion, NR_BOOT_MODULES,
+    PlatformDescSource,
+};
 use minix_types::{PhysBytes, VirBytes};
 
 use boot_shim::opensbi_helpers::{BootFileTable, boot_file_table_magic, build_kernel_info};
@@ -71,9 +74,6 @@ const BUMP_SIZE: u64 = 0x0200_0000;
 /// 页表 bump 区页数（1 MiB，256 页；riscv 半同宽——VMSv9 四级与 Sv39
 /// 的中间表用量同阶，池枯竭走显式 halt 臂）。
 const PT_BUMP_PAGES: usize = 256;
-
-/// memmap 条目上限（riscv 半同值）。
-const MEMMAP_MAX: usize = 8;
 
 /// 名字槽宽（= 内核 `BOOT_MODULE_NAME_LEN` 同阶 16B）。
 const NAME_SLOT: usize = 16;
@@ -137,10 +137,6 @@ fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
 
 // ── .bss 装配格（boot 面独占写、随后只读）──────────────────────
 
-/// memmap 条目存储格。
-static mut MEMMAP_STORAGE: [MemoryRegion; MEMMAP_MAX] =
-    [MemoryRegion { base: PhysBytes(0), len: 0 }; MEMMAP_MAX];
-
 /// 平台描述符源格（DTB 单源）。
 static mut PLATFORM_SOURCE: PlatformDescSource = PlatformDescSource::new(DTB, PhysBytes(0));
 
@@ -182,17 +178,18 @@ pub extern "C" fn bootface_a64() -> ! {
         }
     };
 
-    let n = fill_memmap(&fdt);
-    if n == 0 {
+    // I-22 丁案 / D-68：memmap 源统一到 minix-boot 的 `DtbMemoryMap`
+    // （与 opensbi 腿同一 impl，取件车道的第四链收口）。`fw_end = 0` 是
+    // 本形态前提：aarch64 直核链的 DRAM 里没有固件常驻区（QEMU 只放 DTB
+    // 与镜像），因此不削界；DTB 自身由内核 Phase A.2 按真实 totalsize
+    // 永久扣除——两条机制不替岗：本处只产出语义列表，扣除是内核记账。
+    let (memmap, _reserved) = minix_boot::DtbMemoryMap::new(&fdt, 0).collect();
+    if memmap.is_empty() {
         say("### minix-rs kernel image: no usable /memory reg in DTB — halting\n");
         crate::halt();
     }
-    // SAFETY: `fill_memmap` 刚写了前 n 槽；boot 面单 hart，此后只读。
-    let memmap: &'static [MemoryRegion] = unsafe {
-        core::slice::from_raw_parts(core::ptr::addr_of!(MEMMAP_STORAGE).cast::<MemoryRegion>(), n)
-    };
     say("  memmap regions 0x");
-    say_hex(n as u64);
+    say_hex(memmap.len() as u64);
     say(" first 0x");
     say_hex(memmap[0].base.0);
     say("+0x");
@@ -268,69 +265,6 @@ pub extern "C" fn bootface_a64() -> ! {
 }
 
 // ── DTB 面 ──────────────────────────────────────────────────────
-
-/// 把 `/memory*` 的 `reg` 写进存储格，返回条数（0 = 无可用）。查找走
-/// `all_nodes` 全树遍历：既避开 `Fdt::memory` 缺节点时的 `expect` panic
-/// （甲案要诚实停机），也避开 `find_node` 对直核链重建 blob 漏节点的
-/// 上游缺陷（见本文件 `fdt_table_pa` 注；SD-38 两半统一绕行形）。
-fn fill_memmap(fdt: &fdt::Fdt<'_>) -> usize {
-    let mut n = 0;
-    let mut cursor = Some(fdt.all_nodes());
-    while let Some(nodes) = cursor.take() {
-        for node in nodes {
-            if node.name.split('@').next() != Some("memory") {
-                continue;
-            }
-            let Some(regs) = node.reg() else { continue };
-            for region in regs {
-                let size = match region.size {
-                    Some(s) if s != 0 => s,
-                    _ => continue,
-                };
-                // 削固件区：直核链上 [DRAM_BASE, KERN_PHYS_BASE) 段住着
-                // DTB 与 QEMU 装载残留，不作为 free 上报（内核 VM 位图的
-                // 元数据不落 DTB 页——riscv 半 clip_firmware 同形，续-91
-                // 真机教训）。aarch64 直核链无 OpenSBI 常驻段，削界纯
-                // 几何。
-                let Some((base, len)) = clip_firmware(region.starting_address as u64, size as u64)
-                else {
-                    continue;
-                };
-                if n >= MEMMAP_MAX {
-                    continue;
-                }
-                // SAFETY: n < MEMMAP_MAX = 存储格长度；boot 单 hart。
-                unsafe {
-                    MEMMAP_STORAGE[n] = MemoryRegion { base: PhysBytes(base), len: len as usize };
-                }
-                n += 1;
-            }
-        }
-    }
-    n
-}
-
-/// 从 free memmap 削掉 `[DRAM_BASE, KERN_PHYS_BASE)`（DTB/装载残留段）。
-/// 纯函数＋编译期断言对账（riscv 半同款护栏，常量换 aarch64 形）。
-const fn clip_firmware(base: u64, len: u64) -> Option<(u64, u64)> {
-    if base >= KERN_PHYS_BASE {
-        return Some((base, len));
-    }
-    let drop = KERN_PHYS_BASE - base;
-    if drop >= len {
-        return None;
-    }
-    Some((KERN_PHYS_BASE, len - drop))
-}
-
-// 编译期护栏：单字符变异当场红（riscv 半同款）。
-const _: () = assert!(clip_firmware(0x4000_0000, 0x20_0000).is_none());
-const _: () = assert!(
-    matches!(clip_firmware(0x4000_0000, 0x21_0000), Some((0x4020_0000, 0x1_0000)))
-);
-const _: () = assert!(
-    matches!(clip_firmware(0x4020_0000, 0x1000), Some((0x4020_0000, 0x1000)))
-);
 
 /// 读 `/chosen` 的 `opensbi,boot-file-table`（大端 cell；4/8 字节都认；
 /// 属性名沿用 riscv 门装配工具的同一约定，门脚本 fdtput 同形）。
