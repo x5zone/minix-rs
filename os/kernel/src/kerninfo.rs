@@ -49,9 +49,9 @@ use crate::globals::{SyncUnsafeCell, MINIX_KERNINFO_USER};
 /// identity mapping instead of getting fresh PTEs), below every supported
 /// architecture's user-VA limit (Sv39 caps user VA at 2^38), and far from
 /// the handoff page at 0x1_0000_0000 so the two never share a PD entry.
-/// Consumers never hardcode this value — they receive it from the
-/// `MINIX_KERNINFO` call — so moving it later is a one-line change.
-pub const KERNINFO_USER_VA: u64 = 0x2_0000_0000;
+/// The single authority is [`minix_types::KERNINFO_USER_VA`]; VM maps the
+/// page at that VA in every root.
+pub use minix_types::KERNINFO_USER_VA;
 
 /// Offset of the `kuserinfo` sub-structure inside the page.
 ///

@@ -69,6 +69,13 @@ pub struct BootParams<'a> {
     /// so kernel-built mappings (VM DM window, handoff page, ELF) remain
     /// visible in VM's address space.
     pub root_paddr: PhysBytes,
+    /// Physical address of the kernel-information page (handoff v7).
+    ///
+    /// The kernel owns the page; VM maps it read-only at
+    /// `minix_types::KERNINFO_USER_VA` in every new address-space root and
+    /// frees only the intermediate page-table pages. Consumed by
+    /// `init_page_table`; VM never frees this frame.
+    pub kerninfo_pa: PhysBytes,
     /// Address-space page capacity for the physical memory bitmap.
     ///
     /// Equal to the highest physical page index + 1 that the bitmap must
@@ -135,6 +142,8 @@ impl<'a> BootParams<'a> {
         Self {
             // Fake-but-valid root: these tests never exercise adoption.
             root_paddr: PhysBytes(0x900_000),
+            // Fake-but-valid kerninfo page (page-aligned, non-zero).
+            kerninfo_pa: PhysBytes(0x901_000),
             total_pages,
             free_regions,
             boot_procs: &[],
@@ -166,6 +175,11 @@ impl<'a> BootParams<'a> {
             self.root_paddr.0 != 0 && self.root_paddr.0 & 0xFFF == 0,
             "BootParams: root_paddr 0x{:x} must be a non-zero page-aligned physical address",
             self.root_paddr.0
+        );
+        assert!(
+            self.kerninfo_pa.0 != 0 && self.kerninfo_pa.0 & 0xFFF == 0,
+            "BootParams: kerninfo_pa 0x{:x} must be a non-zero page-aligned physical address",
+            self.kerninfo_pa.0
         );
 
         // C: assert(kernel_boot_info.mmap_size > 0) — main.c:451
@@ -356,6 +370,7 @@ pub fn read_boot_params() -> BootParams<'static> {
 
     let params = BootParams {
         root_paddr: PhysBytes::new(handoff.root_paddr),
+        kerninfo_pa: PhysBytes::new(handoff.kerninfo_pa),
         // Bitmap capacity: highest physical page index across all free
         // regions. On architectures with non-zero RAM base (aarch64 at PA
         // 0x40000000) this exceeds the sum of free pages; the bitmap must
@@ -525,6 +540,7 @@ mod tests {
         ];
         let params = BootParams {
             root_paddr: PhysBytes(0x900_000),
+            kerninfo_pa: PhysBytes(0x901_000),
             total_pages: 0,
             free_regions: &[],
             boot_procs: &[],
@@ -543,6 +559,7 @@ mod tests {
         // C: main.c:492-495 — static rounded up, dynamic added as-is.
         let params = BootParams {
             root_paddr: PhysBytes(0x900_000),
+            kerninfo_pa: PhysBytes(0x901_000),
             total_pages: 0,
             free_regions: &[],
             boot_procs: &[],

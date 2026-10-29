@@ -19,6 +19,16 @@ pub const NR_BOOT_PROCS: usize = 17; // C: param.h — NR_TASKS(5) + LAST_SPECIA
 /// during startup; the kernel writes it once before scheduling VM.
 pub const VM_BOOT_HANDOFF_VA: u64 = 0x1_0000_0000;
 
+/// Fixed virtual address where every process root maps the kernel
+/// information page read-only.
+///
+/// The kernel owns the physical page (`kerninfo::KERNINFO_PAGE`); VM owns
+/// the per-address-space mapping and the intermediate page-table pages.
+/// The placement sits above the boot identity window and below every
+/// architecture's user-VA limit, matching `VM_BOOT_HANDOFF_VA`'s
+/// constraints. One authority for both sides: this constant.
+pub const KERNINFO_USER_VA: u64 = 0x2_0000_0000;
+
 /// `VmBootHandoff::magic` — marks the page as a VM boot handoff.
 pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 
@@ -58,7 +68,13 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 ///   (non-conventional) physical regions snapshotted from the UEFI
 ///   memory map so `map_kernel` replays them identity (VA = PA,
 ///   supervisor-only) into every process page table.
-pub const VM_BOOT_HANDOFF_VERSION: u32 = 6;
+/// - 7: `kerninfo_pa` — the kernel-information page's physical address.
+///   VM maps it read-only at [`KERNINFO_USER_VA`] in every new root;
+///   the kernel no longer injects the mapping in `vmctl_set_addr_space`.
+///   With the x86 independent-image cut, the kernel executes from its
+///   high-half image, so `kern_ident` now carries only the architecture
+///   MMIO identity ranges (the link-in low windows retired).
+pub const VM_BOOT_HANDOFF_VERSION: u32 = 7;
 
 /// Maximum kernel identity-window entries the handoff page carries
 /// (fix27, version 6). The UEFI memory map's non-conventional RAM
@@ -233,6 +249,12 @@ pub struct VmBootHandoff {
     pub version: u32,
     /// Physical address of VM's bootstrap page-table root.
     pub root_paddr: u64,
+    /// Physical address of the kernel-information page (handoff v7).
+    ///
+    /// The kernel owns the page; VM maps it read-only at
+    /// [`KERNINFO_USER_VA`] in every new address-space root (and frees only
+    /// the intermediate page-table pages, never this frame).
+    pub kerninfo_pa: u64,
     /// Bytes the kernel allocated to load VM (ELF segments, stacks, boot
     /// page-table pages). C: `kinfo.vm_allocated_bytes` (param.h) —
     /// consumed by VM's usage queries (region.c:1366-1373).
@@ -372,6 +394,11 @@ impl VmBootHandoff {
             self.root_paddr != 0 && self.root_paddr & 0xFFF == 0,
             "VmBootHandoff: root_paddr 0x{:x} must be a non-zero page-aligned physical address",
             self.root_paddr
+        );
+        assert!(
+            self.kerninfo_pa != 0 && self.kerninfo_pa & 0xFFF == 0,
+            "VmBootHandoff: kerninfo_pa 0x{:x} must be a non-zero page-aligned physical address",
+            self.kerninfo_pa
         );
         assert!(
             self.is_first_time <= 1,
@@ -666,6 +693,7 @@ mod tests {
                 magic: VM_BOOT_HANDOFF_MAGIC,
                 version,
                 root_paddr: 0,
+                kerninfo_pa: 0x3000,
                 vm_allocated_bytes: 0,
                 kernel_allocated_static: 0,
                 kernel_allocated_dynamic: 0,
@@ -733,7 +761,7 @@ mod tests {
         #[test]
         fn test_kernel_layout_v6_reports_identity_windows() {
             let mut h = handoff(VM_BOOT_HANDOFF_VERSION);
-            assert_eq!(VM_BOOT_HANDOFF_VERSION, 6);
+            assert_eq!(VM_BOOT_HANDOFF_VERSION, 7);
             h.kern_ident[0] = HandoffMemRegion { base: 0x1da0_0000, size: 0x40_0000 };
             h.kern_ident[1] = HandoffMemRegion { base: 0x1f00_0000, size: 0x1000 };
             h.kern_ident_count = 2;

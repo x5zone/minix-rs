@@ -394,6 +394,11 @@ pub fn build_vm_handoff(
         magic: VM_BOOT_HANDOFF_MAGIC,
         version: VM_BOOT_HANDOFF_VERSION,
         root_paddr: root_paddr.0,
+        // D-72: the kernel owns the page; VM builds the per-root mapping at
+        // `KERNINFO_USER_VA` and owns only the intermediate page-table pages.
+        // Phase B.5 initialized this before Phase C reaches here.
+        kerninfo_pa: crate::kerninfo::kerninfo_page_phys()
+            .expect("build_vm_handoff: kerninfo page not initialized before Phase C"),
         vm_allocated_bytes: vm_alloc.used_frames() * PAGE_SIZE,
         kernel_allocated_static: kernel_info.kern_size(),
         kernel_allocated_dynamic: boot_alloc_used_bytes(),

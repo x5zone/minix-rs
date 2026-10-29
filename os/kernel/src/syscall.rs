@@ -2813,35 +2813,11 @@ fn vmctl_set_addr_space(
             None
         };
 
-        // ── NK4-C 1.54（B26 fix B）：把 kerninfo 页的用户只读映射复制进
-        // 每个新根。C 把 `.usermapped` 段经 VMCTL_KERN_PHYSMAP 协议映射
-        // 进每个进程地址空间（i386 memory.c arch_phys_map + VM per-space
-        // map）；本重写由内核在本唯一提交点代做（kerninfo.rs 模块 doc
-        // 登记的 mapping-responsibility 转移尚未发生，不新增外部契约）。
-        // 先查后装（重绑同一根幂等；子根 virtual_copy 继承过则跳过）。
-        // 中间表页经 boot_pt_alloc（其区域已从 VM free list 扣减，
-        // §1.53 boot_alloc_used_bytes 记账）。
-        if let Some(ki_pa) = crate::kerninfo::kerninfo_page_phys() {
-            use minix_arch::paging::Paging as _;
-            let mut target_paging = minix_arch::CurrentPaging::from_active_root(
-                minix_types::PhysBytes(ptroot_phys),
-            );
-            let needs_map = match target_paging.query(minix_types::VirBytes(
-                crate::kerninfo::KERNINFO_USER_VA,
-            )) {
-                Some((cur, _flags)) => cur.0 != ki_pa,
-                None => true,
-            };
-            if needs_map {
-                target_paging
-                    .map(
-                        minix_types::VirBytes(crate::kerninfo::KERNINFO_USER_VA),
-                        minix_types::PhysBytes(ki_pa),
-                        minix_arch::paging::PageFlags::read_only(),
-                    )
-                    .expect("vmctl_set_addr_space: failed to map the kerninfo page into the new root");
-            }
-        }
+        // D-72: the kerninfo page mapping is no longer injected here. VM owns
+        // it in `init_page_table` (every new root gets
+        // `KERNINFO_USER_VA -> kerninfo_pa` read-only), so this kernel-side
+        // path no longer draws page-table pages from the boot bump pool at
+        // every address-space bind.
 
         // Step 3: If target is the current ptproc, reload the
         // hardware root register (CR3/TTBR0/satp) so the new
