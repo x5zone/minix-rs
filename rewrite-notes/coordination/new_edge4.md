@@ -2641,3 +2641,13 @@ autoboot` 后不再执行 `boot.scr`（与 D-73 改动无关）；② 手工控�
 （`qemu-tests.yml` 的 riscv64-uboot 作业）用可复现的 U-Boot 件重测，或换
 `go` + 固定内存槽契约并重新裁决。探针源码与日志在 `tmp/uboot-probe/`、
 `tmp/uboot-manual.log`（会话产物）。
+
+**C2BWAKE 试形取证（2026-10-30，未合并，已回滚）**：按 C `proc.c:1641-1650` 在
+`sched_enqueue_with` 补「入队到不同且 idle 的目标核 → 发调度 IPI」、删
+`clamp_cpu_to_bsp`、中断入口清 `cpu_is_idle` 时重启本地定时器。三架构
+`test-smp-aps`（`-smp 2` 与 `-smp 4`，aarch64/riscv 用改参脚本）全 PASS；但
+`run_all` **38/1**：`test-e5-ds` 用户态腿出现 `vector 0x0e err 0x10 rip=0`
+取指故障——旧注释警告的「AP 跑用户进程后 VM 跨 CPU 服务腐蚀」再现。结论：
+SD-24 arm2 不能先于 C1（SD-10 污染案 / PD-16）结案落地；本线已 `git checkout -- .`
+回滚，claim 已释放，C 板 C2b 行改 `⏸ 绑 C1`。取证
+`tmp/01-cboard-baseline-20261030/run-all-c2b.log`。
