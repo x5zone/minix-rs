@@ -29,7 +29,7 @@
 //! predicates over the existing bytes. The option surface itself needs
 //! one growable list (the key specifications), served by `alloc`.
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Blank bytes for field separation: space and tab (the C locale's
@@ -115,7 +115,15 @@ pub struct Options {
     /// `d_mask[REC_D = '\n'] = REC_D_F`（`:139`））。`-R` 改它；它同时也决定
     /// 「`-t` 撞不撞记录分隔符」那一判（C 查的是 `d_mask[c] & REC_D_F`，而
     /// 这个位只跟着 `REC_D` 跑）。
-    pub record_delim: u8,
+    /// C 的 `int REC_D`（`sort.c:96` 那边声明、`:226` 赋值）。类型不能压成 `u8`：
+    /// `-R` 的**字符路径**是 `REC_D = *optarg`，`char` 带符号，所以一枚 `ff` 进去是 **-1**；
+    /// 而**数值路径**（`-R\377`、`-R 255`）走 `strtol`，交回的是 0..=255 的正数。同一个
+    /// `0xff` 因此有两种下场：字符路径配不上任何输入字节、也不与 `-t` 撞掩码槽（C 那里
+    /// 是 `d_mask[-1]` 的越界写，本层不复制越界，只取它唯一可观察的后果「不算冲突」）；
+    /// 数值路径则正好落在 `d_mask[255]` 上，与 `-t` 的那枚裸字节**是冲突**（`sort.c:219-220`
+    /// 比的是 `d_mask[(u_char)*optarg] & REC_D_F`）。写出去那枚仍是低字节（`putchar` 的
+    /// `int`→`unsigned char` 转换），所以 `payload` 那边要 `as u8`。
+    pub record_delim: i32,
     /// Merge already-sorted runs instead of sorting (`-m`, C `sort -m`).
     pub merge: bool,
     /// `-o path`: where the result goes. `None` is C's null `outpath`, which writes
@@ -143,7 +151,7 @@ impl Default for Options {
             check: false,
             delimiter: None,
             // C 的全局初值：`int REC_D = '\n';`（`sort.c:92`）。
-            record_delim: b'\n',
+            record_delim: 10,
             merge: false,
             output: None,
         }
@@ -321,13 +329,13 @@ impl KeySpecError {
 /// `R`、`t`、`T` 六个；但 `D`/`R`/`T`（以及旗标 `S`/`x`）在本树尚未建模，它们现在
 /// 落进「集外字母」那一支——那是**选项面**的缺口（另案登记）。分成两条 libc 报文
 /// （集外字母走 `getopt.c:101-104`，缺值走 `:132-136`）的做法就体现在下面各臂里。
-pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), ParseError> {
+pub fn parse_options<'a>(args: &[&'a [u8]]) -> Result<(Options, Vec<&'a [u8]>), ParseError> {
     let mut options = Options::default();
-    let mut operands: Vec<&str> = Vec::new();
+    let mut operands: Vec<&[u8]> = Vec::new();
     let mut index = 0;
     while index < args.len() {
         let arg = args[index];
-        if !arg.starts_with('-') || arg.len() <= 1 {
+        if arg.first() != Some(&b'-') || arg.len() <= 1 {
             operands.push(arg);
             index += 1;
             continue;
@@ -337,7 +345,7 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
         // `chars()` 时一个字符的两字节被当成一枚字母，报文再经 UTF-8 渲染就成了两个字节。
         // 带值字母的「本 token 剩余部分」因此按字节下标切，语义与原来的 `chars.by_ref()` 一致。
         let tail = &arg[1..];
-        let letters = tail.as_bytes();
+        let letters = tail;
         let mut at = 0usize;
         while at < letters.len() {
             let flag = letters[at];
@@ -373,11 +381,11 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                 // usage path. A later `-o` overwrites the earlier one, as C's
                 // `outpath = optarg` assignment does.
                 b'o' => {
-                    let mut value: String = tail[at..].to_string();
+                    let mut value: &[u8] = &tail[at..];
                     if value.is_empty() {
                         index += 1;
                         match args.get(index) {
-                            Some(word) => value = (*word).to_string(),
+                            Some(word) => value = *word,
                             None => {
                                 return Err(ParseError::Getopt(crate::GetoptReport::MissingValue(
                                     char::from(flag),
@@ -385,15 +393,15 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                             }
                         }
                     }
-                    options.output = Some(value.into_bytes());
+                    options.output = Some(value.to_vec());
                     break;
                 }
                 b'k' | b't' => {
-                    let mut value: String = tail[at..].to_string();
+                    let mut value: &[u8] = &tail[at..];
                     if value.is_empty() {
                         index += 1;
                         match args.get(index) {
-                            Some(word) => value = (*word).to_string(),
+                            Some(word) => value = *word,
                             None => {
                                 return Err(ParseError::Getopt(crate::GetoptReport::MissingValue(
                                     char::from(flag),
@@ -402,7 +410,7 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                         }
                     }
                     if flag == b'k' {
-                        match parse_key(&value, &options) {
+                        match parse_key(value, &options) {
                             // C 这一支不写 usage：`setfield`/`setcolumn` 里是那五句
                             // `errx(2, …)` 之一（`init.c:160-216`），句子逐句不同。
                             Ok(spec) => options.keys.push(spec),
@@ -416,12 +424,12 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                             return Err(ParseError::MultipleFieldDelimiters);
                         }
                         // 空值（`-t ''`）在 C 取到那个 `\0`，不报错。
-                        let byte = value.bytes().next().unwrap_or(0);
+                        let byte = value.first().copied().unwrap_or(0);
                         // `:217-218` 紧接着查 `d_mask[byte] & REC_D_F`。那个位只待在
                         // `REC_D` 身上（默认 `main` 给 `'\n'`，`:139`；`-R x` 之后搬到 `x`），
                         // 所以判据就是「这个字节正好是当前的记录分隔符」——注意它不必
                         // 先给过 `-R`：`-t '\n'` 在默认形状下就报（参照件实测同句）。
-                        if byte == options.record_delim {
+                        if i32::from(byte) == options.record_delim {
                             return Err(ParseError::RecordFieldDelimiterClash);
                         }
                         options.delimiter = Some(byte);
@@ -437,11 +445,11 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                 // `strtol`：带反斜缀按八进制、否则按 base 0，尾字符未吃尽/负数/超出
                 // `NBINS` 都落 `errx(2, "invalid record delimiter %s", optarg)`。
                 b'R' => {
-                    let mut value: String = tail[at..].to_string();
+                    let mut value: &[u8] = &tail[at..];
                     if value.is_empty() {
                         index += 1;
                         match args.get(index) {
-                            Some(word) => value = (*word).to_string(),
+                            Some(word) => value = *word,
                             None => {
                                 return Err(ParseError::Getopt(crate::GetoptReport::MissingValue(
                                     char::from(flag),
@@ -449,21 +457,23 @@ pub fn parse_options<'a>(args: &[&'a str]) -> Result<(Options, Vec<&'a str>), Pa
                             }
                         }
                     }
-                    if options.record_delim != b'\n' {
+                    if options.record_delim != 10 {
                         return Err(ParseError::MultipleRecordDelimiters);
                     }
-                    let bytes = value.into_bytes();
+                    let bytes = value;
                     let first = bytes.first().copied().unwrap_or(0);
-                    options.record_delim = first;
+                    // 字符路径：C 把 `*optarg`（带符号 `char`）赋给 `int REC_D`，高位那枚
+                    // 因此变成负数，后面 `first != '\n'` 与匹配判据都按这个负数走。
+                    options.record_delim = i32::from(first as i8);
                     if first != b'\n' && bytes.len() > 1 {
                         // C 先 `optarg++` 跳过反斜缀再用 `optarg` 报错，所以报的是**剩下的**串。
                         let (digits, radix) = if bytes[0] == b'\\' {
                             (&bytes[1..], 8u32)
                         } else {
-                            (&bytes[..], 0u32)
+                            (bytes, 0u32)
                         };
                         match record_delim_number(digits, radix) {
-                            Some(byte) => options.record_delim = byte,
+                            Some(byte) => options.record_delim = i32::from(byte),
                             None => {
                                 return Err(ParseError::InvalidRecordDelimiter(digits.to_vec()));
                             }
@@ -574,13 +584,13 @@ pub fn temp_candidate(path: &[u8], seed: u64, attempt: usize) -> Vec<u8> {
 /// `M` 不在 `optval` 表里，也不在 `SORT_OPTS`（`sort.c:148`）里，`switch` 同样没有
 /// `case 'M'`——所以 `-M` 与 `-k 1M` 在 C 都不认（参照件实测：前者落 `usage`，后者报
 /// `illegal field descriptor`）；旧写法把月名排序当成本树功能，那是无源建模。
-pub fn parse_key(spec: &str, global: &Options) -> Result<KeySpec, KeySpecError> {
+pub fn parse_key(spec: &[u8], global: &Options) -> Result<KeySpec, KeySpecError> {
     let start = scan_column(spec, false)?;
     // `setfield` 只看开始列停下的地方：串尾就是「键延伸到行尾」，逗号就开始解结束列，
     // 别的字符是 `illegal field descriptor`（`init.c:188-190`）。
     let end_text = if start.rest.is_empty() {
         None
-    } else if let Some(tail) = start.rest.strip_prefix(',') {
+    } else if let Some(tail) = start.rest.strip_prefix(&b","[..]) {
         Some(tail)
     } else {
         return Err(KeySpecError::IllegalFieldDescriptor);
@@ -672,8 +682,9 @@ struct Column<'a> {
     reverse: bool,
     /// 一个修饰字母也没扫到（C 用 `if (!cur_fld->flags)` 判这件事）。
     any: bool,
-    /// 停点之后的残留，就是 C 返回给 `setfield` 的那个 `pos`。
-    rest: &'a str,
+    /// 停点之后的残留，就是 C 返回给 `setfield` 的那个 `pos`（一枚字节一格，与 C 的
+    /// `char *` 同形）。
+    rest: &'a [u8],
 }
 
 impl<'a> Column<'a> {
@@ -692,7 +703,7 @@ impl<'a> Column<'a> {
             by_length: false,
             reverse: false,
             any: false,
-            rest: "",
+            rest: &[],
         }
     }
 
@@ -711,7 +722,7 @@ impl<'a> Column<'a> {
             by_length: self.by_length || other.by_length,
             reverse: self.reverse || other.reverse,
             any: self.any || other.any,
-            rest: "",
+            rest: &[],
         }
     }
 }
@@ -721,8 +732,8 @@ impl<'a> Column<'a> {
 /// `.C` 要不要减一。而 `b` 记成 BI 还是 BT 用的是另一个判据——`optval` 的 `tcolflag`
 /// 是 `cur_fld->tcol.num`（`:173`），所以在结束列填了 0 的那一形（`-k 1,0b`）里，
 /// `b` 仍然算 BI。两个判据不许合为一个。
-fn scan_column<'a>(text: &'a str, filling_end: bool) -> Result<Column<'a>, KeySpecError> {
-    let bytes = text.as_bytes();
+fn scan_column<'a>(text: &'a [u8], filling_end: bool) -> Result<Column<'a>, KeySpecError> {
+    let bytes = text;
     let (num, mut position) = scan_long(text, 0);
     // `init.c:160-161`：开始列非正即错；结束列允许 0（那表示到行尾）。
     if num <= 0 && !(num == 0 && filling_end) {
@@ -758,7 +769,7 @@ fn scan_column<'a>(text: &'a str, filling_end: bool) -> Result<Column<'a>, KeySp
         by_length: false,
         reverse: false,
         any: false,
-        rest: "",
+        rest: &[],
     };
     // `init.c:173` 的 `for (; (tmp = optval(*pos, cur_fld->tcol.num)); pos++)`：`optval`
     // 返回 0 就**停下**，那个字符留给 `setfield` 当 `*pos` 判据，不是「略过继续」。
@@ -791,8 +802,8 @@ fn scan_column<'a>(text: &'a str, filling_end: bool) -> Result<Column<'a>, KeySp
 /// 然后才是十进制位。一个数字也没转出来时值是 0 且指针**退回起点**（这正是 `-k x`、
 /// `-k ''` 落进「字段号必须为正」的原因）。超出 `i64` 时 C 饱和到 `LONG_MAX`/`LONG_MIN`
 /// 且**不看 `errno`**，所以那里不报错；本树同样饱和。
-fn scan_long(text: &str, from: usize) -> (i64, usize) {
-    let bytes = text.as_bytes();
+fn scan_long(text: &[u8], from: usize) -> (i64, usize) {
+    let bytes = text;
     let mut position = from;
     while position < bytes.len() && bytes[position].is_ascii_whitespace() {
         position += 1;
@@ -1152,12 +1163,93 @@ pub fn compare(a: &str, b: &str, options: &Options) -> core::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
+
+    /// 测试夹具的 argv 取法：字面量仍写成 `&[&str]`，交回每枚词的原字节切片（借自字面量，
+    /// 与薄壳 `args_bytes()` 交回的形状同层）。`parse_options` 的形参是 `&[&[u8]]`，两层
+    /// 生命周期同一个，所以结果要留着断言的调用得先绑成变量。
+    fn argv<'a>(words: &[&'a str]) -> Vec<&'a [u8]> {
+        words.iter().map(|word| word.as_bytes()).collect()
+    }
+
     /// 集外字母交回的是短横后的**第一个字节**而不是第一个字符：`-\u{e9}`（`c3 a9`）在
     /// `char` 域里是 U+00C3。绝对读数见 `tests/sort_face.rs` 那枚面门注释里的探针说明
     /// （`tmp/sort-411/probe.c` 编的是 Minix 的 `getopt.c`，交回 `optopt=0303`）。
+    /// 参数缝在 `sort` 上改到的是**取值本身**，不是报文渲染：`-t` 只取首字节
+    /// （`sort.c:219` 的 `d_mask[(u_char)*optarg]`，C 那里从不查长度），`-R` 先取首字节
+    /// 当值、再按剩余决定是数值形还是报错（`:226-238`），而报错那句带的是 `optarg` 的
+    /// **原字节**。文本缝之下裸 `ff` 先被折成 `ef bf bd`，于是这三处一起走偏：分隔符成了
+    /// `ef`、记录分隔符成了 `ef`、回显位是三段折叠串。最坏的一形是**假冲突**——
+    /// `-R\xef -t\xff` 在 C 里是两个不同的字节（接受），折过一次就都变成 `ef`，
+    /// `:217-218` 那句 `record/field delimiter clash` 会被凭空触发。参照件
+    /// `tmp/family-diag-ref/sort_ref` 现量：`-R\xef -t\xff` 交回退 0，`-Rq\xff` 交回
+    /// `sort: invalid record delimiter q\xff`（`tmp/sort-467/ab.log`）。
+    #[test]
+    fn the_value_letters_take_argv_bytes_not_the_lossy_form_of_them() {
+        // 冲突判据走的是 C 的两条不同类型：`-R` 的**字符路径**把 `*optarg`（带符号 `char`）
+        // 交给 `int REC_D`（`sort.c:226`）再写进 `d_mask[REC_D]`（`:241`）——高位那枚因此落在
+        // 表外：既不与 `-t` 撞（`:219-220` 比的是 `d_mask[(u_char)*optarg] & REC_D_F`），
+        // 也永不命中输入字节（`getrec` 比的是 `getc` 交回的 0..=255）。两侧同形，
+        // 五形现量在 `tmp/sort-467/ab.log`。
+        let high_char: Vec<&[u8]> = vec![b"-R\xff", b"-t\xff"];
+        let (options, _) = parse_options(&high_char).expect("-R<ff> -t<ff> 在 C 里不冲突");
+        assert_eq!(options.record_delim, -1, "字符路径把 ff 落成 -1");
+        assert_eq!(
+            options.delimiter,
+            Some(0xff),
+            "字段分隔符取的是那一枚原字节"
+        );
+
+        // 同一枚 255 改走**数值路径**（`-R\377` 经 `strtol`）就是正数 255，落在
+        // `d_mask[255]` 上，于是与 `-t` 的那枚裸字节撞成冲突——一枚 `ff` 的两种下场。
+        let numeric_255: Vec<&[u8]> = vec![b"-R\\377", b"-t\xff"];
+        assert_eq!(
+            parse_options(&numeric_255).err(),
+            Some(ParseError::RecordFieldDelimiterClash),
+            "数值路径的 255 与字符路径的 ff 撞在同一个掩码槽里"
+        );
+
+        // 控制形：ASCII 的同一枚字节仍是冲突（`-R,` 与 `-t,`）。
+        let ascii_clash: Vec<&[u8]> = vec![b"-R,", b"-t,"];
+        assert_eq!(
+            parse_options(&ascii_clash).err(),
+            Some(ParseError::RecordFieldDelimiterClash)
+        );
+
+        // 两枚不同的高位字节（-17 与 255）各自都不命中对方 ⇒ 接受。
+        let both: Vec<&[u8]> = vec![b"-R\xef", b"-t\xff"];
+        let (options, _) = parse_options(&both).expect("-R<ef> -t<ff> 是两个不同字节");
+        assert_eq!(options.record_delim, -17, "ef 经带符号 `char` 落地是 -17");
+        assert_eq!(
+            options.delimiter,
+            Some(0xff),
+            "分隔符必须是那一枚字节，不是折出来的 ef"
+        );
+
+        // 数值形失败那句带的是 `optarg` 从游标起的原字节（反斜缀那支才先 `optarg++`）。
+        let bad: Vec<&[u8]> = vec![b"-Rq\xff"];
+        assert_eq!(
+            parse_options(&bad).err(),
+            Some(ParseError::InvalidRecordDelimiter(b"q\xff".to_vec()))
+        );
+
+        // 操作数也是原字节：档名的**名字位**由壳自己拼进 `err(2, "%s", argv[i])` 那一句。
+        let named: Vec<&[u8]> = vec![b"/tmp/nosuch-\xff"];
+        let (_, operands) = parse_options(&named).expect("操作数应当收下");
+        assert_eq!(operands, vec![&b"/tmp/nosuch-\xff"[..]]);
+
+        // `-k` 的尾巴不参与回显（那五句 `errx` 都没有 `%s`），但分支判据看的是字节：
+        // 认不出的那一枚就停在 `setfield` 的 `*pos` 上（`init.c:188-190`）。
+        let spec: Vec<&[u8]> = vec![b"2\xff"];
+        assert_eq!(
+            parse_key(spec[0], &Options::default()).err(),
+            Some(KeySpecError::IllegalFieldDescriptor)
+        );
+    }
+
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
-        let unknown = |args: &[&str]| match parse_options(args) {
+        let unknown = |words: &[&str]| match parse_options(&argv(words)) {
             Err(ParseError::Getopt(crate::GetoptReport::UnknownOption(letter))) => letter,
             other => panic!("应该是集外字母那一支，实际 {other:?}"),
         };
@@ -1171,16 +1263,17 @@ mod tests {
         // ASCII 那一形不许被这次改动波及。
         assert_eq!(unknown(&["-q"]), 'q', "-q");
         // 带值字母把多字节当值收走，不是字母位。
-        let (options, _) = parse_options(&["-o\u{e9}out"]).unwrap();
+        let w_args = argv(&["-o\u{e9}out"]);
+        let (options, _) = parse_options(&w_args).unwrap();
         assert_eq!(options.output, Some("éout".as_bytes().to_vec()));
     }
 
     use core::cmp::Ordering;
 
     fn opts(extra: &str) -> Options {
-        let mut words: Vec<&str> = Vec::new();
+        let mut words: Vec<&[u8]> = Vec::new();
         for flag in extra.split_whitespace() {
-            words.push(flag);
+            words.push(flag.as_bytes());
         }
         match parse_options(&words) {
             Ok((options, _operands)) => options,
@@ -1242,7 +1335,7 @@ mod tests {
     #[test]
     fn test_key_spec_field_selection_with_delimiter() {
         let global = opts("-t:");
-        let spec = parse_key("2,2", &global).unwrap();
+        let spec = parse_key(b"2,2", &global).unwrap();
         let mut options = opts("-t:");
         options.keys.clear();
         options.keys.push(spec);
@@ -1270,12 +1363,12 @@ mod tests {
     #[test]
     fn dot_zero_is_an_error_only_on_the_start_column() {
         assert_eq!(
-            parse_key("1.0", &opts("")).err(),
+            parse_key(b"1.0", &opts("")).err(),
             Some(KeySpecError::IllegalOffset)
         );
-        assert_eq!(parse_key("1.2", &opts("")).unwrap().start_char, 2);
-        assert!(parse_key("1,2.0", &opts("")).is_ok());
-        assert!(parse_key("1,2.", &opts("")).is_ok());
+        assert_eq!(parse_key(b"1.2", &opts("")).unwrap().start_char, 2);
+        assert!(parse_key(b"1,2.0", &opts("")).is_ok());
+        assert!(parse_key(b"1,2.", &opts("")).is_ok());
     }
 
     /// 五句 `errx` 各自有自己的形与句子，读数拿 `tmp/family-diag-ref/sort_ref` 逐形量过。
@@ -1286,42 +1379,42 @@ mod tests {
         // 也没转出来的形（`strtol` 交回 0 且指针不动）。
         for spec in ["0", "x", "", ",5", "1,-2", "-1"] {
             assert_eq!(
-                parse_key(spec, &opts("")).err(),
+                parse_key(spec.as_bytes(), &opts("")).err(),
                 Some(KeySpecError::FieldNumbersNotPositive),
                 "键形 {spec:?}"
             );
         }
         // `illegal offset`（`:168-170`）：开始列 `.0` 减一后为负。
         assert_eq!(
-            parse_key("1.0", &opts("")).err(),
+            parse_key(b"1.0", &opts("")).err(),
             Some(KeySpecError::IllegalOffset)
         );
         // `cannot indent end of line`（`:162-163`）：列号是 0 还要给 `.C`。
         assert_eq!(
-            parse_key("1,0.5", &opts("")).err(),
+            parse_key(b"1,0.5", &opts("")).err(),
             Some(KeySpecError::CannotIndentEndOfLine)
         );
         // `illegal field descriptor`（`:186-191`）：开始列停在非逗号的字符上。
         for spec in ["1 2", "1n2", "1.2.3", "1M"] {
             assert_eq!(
-                parse_key(spec, &opts("")).err(),
+                parse_key(spec.as_bytes(), &opts("")).err(),
                 Some(KeySpecError::IllegalFieldDescriptor),
                 "键形 {spec:?}"
             );
         }
         // `fields out of order`（`:213-217`）：三个条件全成立才报。
         assert_eq!(
-            parse_key("2.5,1.2", &opts("")).err(),
+            parse_key(b"2.5,1.2", &opts("")).err(),
             Some(KeySpecError::FieldsOutOfOrder)
         );
         // 缺一个就不报：结束列没给 `.C`（缩进为 0，源码注释写着「i.e. okay」），
         // 以及结束列号比开始列大的那种正常接法。
-        assert!(parse_key("2,1", &opts("")).is_ok());
-        assert!(parse_key("1,2.1", &opts("")).is_ok());
+        assert!(parse_key(b"2,1", &opts("")).is_ok());
+        assert!(parse_key(b"1,2.1", &opts("")).is_ok());
         // 也接受 `strtol` 的宽容形：前导空白、正号、多余的前导零。
         for spec in ["+1", " 1", "01"] {
             assert_eq!(
-                parse_key(spec, &opts("")).unwrap().start_field,
+                parse_key(spec.as_bytes(), &opts("")).unwrap().start_field,
                 1,
                 "{spec:?}"
             );
@@ -1356,7 +1449,7 @@ mod tests {
     #[test]
     fn the_length_flag_wins_over_numeric() {
         for spec in ["1ln", "1nl"] {
-            let key = parse_key(spec, &opts("")).unwrap();
+            let key = parse_key(spec.as_bytes(), &opts("")).unwrap();
             assert!(key.by_length && key.numeric, "{spec} 两位都该点亮");
             assert_eq!(
                 compare("cc 3", "aaa 1", &opts(&format!("-k {spec}"))),
@@ -1412,8 +1505,10 @@ mod tests {
         // 全局 `-n` 但局部有 `r`：这一支的 **键**不继承 `n`，只按字典序的键反排——
         // 所以两条命令排出来是同一个序。比的是那一条键规格，不是整个 [`Options`]
         //（全局位本身当然还记在 Options 上，那里没有差异可查）。
-        let with_global = parse_options(&["-n", "-k", "2r"]).unwrap().0;
-        let without_global = parse_options(&["-k", "2r"]).unwrap().0;
+        let w_args = argv(&["-n", "-k", "2r"]);
+        let with_global = parse_options(&w_args).unwrap().0;
+        let w_args = argv(&["-k", "2r"]);
+        let without_global = parse_options(&w_args).unwrap().0;
         assert_eq!(
             with_global.keys, without_global.keys,
             "局部有字母时全局标志不得逐位渗进来"
@@ -1421,7 +1516,7 @@ mod tests {
         assert!(!with_global.keys[0].numeric);
         assert!(with_global.numeric, "全局位本身仍照 C 存在 gflag 里");
         // 而「局部空」那一支确实拿到了全局：同一条 `-k 2` 带不带 `-n` 是两个序。
-        assert!(parse_options(&["-n", "-k", "2"]).unwrap().0.keys[0].numeric);
+        assert!(parse_options(&argv(&["-n", "-k", "2"])).unwrap().0.keys[0].numeric);
     }
 
     #[test]
@@ -1429,14 +1524,14 @@ mod tests {
         // init.c:195-197: a local `r` does not invert a global `-r`; the
         // key parses without reversal.
         let global = opts("-r");
-        let key = parse_key("1r", &global).unwrap();
+        let key = parse_key(b"1r", &global).unwrap();
         assert!(!key.reverse);
     }
 
     #[test]
     fn test_fields_split_on_blank_runs() {
         let global = opts("");
-        let spec = parse_key("2,2", &global).unwrap();
+        let spec = parse_key(b"2,2", &global).unwrap();
         let mut options = opts("");
         options.keys.clear();
         options.keys.push(spec);
@@ -1451,18 +1546,20 @@ mod tests {
     /// 参照件同读数（`-R , -t ,` 报 clash 退 2；`-t , -R ,` 安静通过）。
     #[test]
     fn dash_r_moves_the_record_delimiter_and_dash_t_clashes_with_it() {
-        let (o, _) = parse_options(&["-R", ","]).unwrap();
-        assert_eq!(o.record_delim, b',');
+        let w_args = argv(&["-R", ","]);
+        let (o, _) = parse_options(&w_args).unwrap();
+        assert_eq!(o.record_delim, 44);
         assert_eq!(
-            parse_options(&["-R", ",", "-t", ","]).err(),
+            parse_options(&argv(&["-R", ",", "-t", ","])).err(),
             Some(ParseError::RecordFieldDelimiterClash)
         );
-        let (o, _) = parse_options(&["-t", ",", "-R", ","]).unwrap();
-        assert_eq!(o.record_delim, b',', "反向在 C 里不查，所以只有后一个生效");
+        let w_args = argv(&["-t", ",", "-R", ","]);
+        let (o, _) = parse_options(&w_args).unwrap();
+        assert_eq!(o.record_delim, 44, "反向在 C 里不查，所以只有后一个生效");
         assert_eq!(o.delimiter, Some(b','));
         // 默认记录分隔符就是 '\n'，所以没给 `-R` 时 `-t '\n'` 也撞（参照件同句）。
         assert_eq!(
-            parse_options(&["-t", "\n"]).err(),
+            parse_options(&argv(&["-t", "\n"])).err(),
             Some(ParseError::RecordFieldDelimiterClash)
         );
     }
@@ -1501,15 +1598,18 @@ mod tests {
     /// 数值形只在「值长于一个字节」时才走，且单字节是**字面字节**：`-R 0` 的字符是 `'0'`。
     #[test]
     fn dash_r_single_byte_is_literal_and_newline_short_circuits_the_arm() {
-        let (o, _) = parse_options(&["-R", "0"]).unwrap();
-        assert_eq!(o.record_delim, b'0');
-        let (o, _) = parse_options(&["-R", "\n"]).unwrap();
-        assert_eq!(o.record_delim, b'\n', "C 在 `REC_D == '\\n'` 处直接 break");
+        let w_args = argv(&["-R", "0"]);
+        let (o, _) = parse_options(&w_args).unwrap();
+        assert_eq!(o.record_delim, 48);
+        let w_args = argv(&["-R", "\n"]);
+        let (o, _) = parse_options(&w_args).unwrap();
+        assert_eq!(o.record_delim, 10, "C 在 `REC_D == '\\n'` 处直接 break");
         // 同一支的提前收尾意味着后面的字符整个被忽略。
-        let (o, _) = parse_options(&["-R", "\nxy"]).unwrap();
-        assert_eq!(o.record_delim, b'\n');
+        let w_args = argv(&["-R", "\nxy"]);
+        let (o, _) = parse_options(&w_args).unwrap();
+        assert_eq!(o.record_delim, 10);
         assert_eq!(
-            parse_options(&["-R"]).err(),
+            parse_options(&argv(&["-R"])).err(),
             Some(ParseError::Getopt(crate::GetoptReport::MissingValue('R')))
         );
     }
@@ -1519,18 +1619,19 @@ mod tests {
     #[test]
     fn a_second_dash_r_only_reports_when_the_first_one_stuck() {
         assert_eq!(
-            parse_options(&["-R", ",", "-R", "x"]).err(),
+            parse_options(&argv(&["-R", ",", "-R", "x"])).err(),
             Some(ParseError::MultipleRecordDelimiters)
         );
-        let (o, _) = parse_options(&["-R", "\\12", "-R", ","]).unwrap();
-        assert_eq!(o.record_delim, b',');
+        let w_args = argv(&["-R", "\\12", "-R", ","]);
+        let (o, _) = parse_options(&w_args).unwrap();
+        assert_eq!(o.record_delim, 44);
         assert_eq!(
-            parse_options(&["-R", "300"]).err(),
+            parse_options(&argv(&["-R", "300"])).err(),
             Some(ParseError::InvalidRecordDelimiter(b"300".to_vec()))
         );
         // 反斜缀被跳过，所以报文里的是剩下的那串。
         assert_eq!(
-            parse_options(&["-R", "\\q"]).err(),
+            parse_options(&argv(&["-R", "\\q"])).err(),
             Some(ParseError::InvalidRecordDelimiter(b"q".to_vec()))
         );
     }
@@ -1538,18 +1639,28 @@ mod tests {
     #[test]
     fn a_tie_stays_tied_and_capital_s_breaks_it_by_the_record() {
         let mut options = opts("");
-        options.keys.push(parse_key("1,1.1", &opts("")).unwrap());
+        options.keys.push(parse_key(b"1,1.1", &opts("")).unwrap());
         // 一字节长的键相等就是平局（旧写法在这里回退整行，自创了一个次序）。
         assert_eq!(compare("a123", "a456", &options), Ordering::Equal);
         assert_eq!(compare("a456", "a123", &options), Ordering::Equal);
         options.posix_tiebreak = true;
         assert_eq!(compare("a123", "a456", &options), Ordering::Less);
         // `-u` 在选项环**之后**把这一位归零（`sort.c:256-258`），所以两种书写顺序同效。
-        assert!(!parse_options(&["-S", "-u"]).unwrap().0.posix_tiebreak);
-        assert!(!parse_options(&["-u", "-S"]).unwrap().0.posix_tiebreak);
-        assert!(parse_options(&["-S"]).unwrap().0.posix_tiebreak);
+        assert!(
+            !parse_options(&argv(&["-S", "-u"]))
+                .unwrap()
+                .0
+                .posix_tiebreak
+        );
+        assert!(
+            !parse_options(&argv(&["-u", "-S"]))
+                .unwrap()
+                .0
+                .posix_tiebreak
+        );
+        assert!(parse_options(&argv(&["-S"])).unwrap().0.posix_tiebreak);
         // `-s` 仍是无操作：它写的就是默认那一侧（`sort.c:194-201`）。
-        assert!(!parse_options(&["-s"]).unwrap().0.posix_tiebreak);
+        assert!(!parse_options(&argv(&["-s"])).unwrap().0.posix_tiebreak);
     }
 
     #[test]
@@ -1558,17 +1669,21 @@ mod tests {
         // the earlier, because C's `case 'o'` is a plain `outpath = optarg`
         // assignment (`sort.c:188-190`). Without the option the field stays `None`,
         // which is what distinguishes standard output from `-o ""`.
-        let (options, operands) = parse_options(&["-o", "out.txt", "in.txt"]).unwrap();
+        let w_args = argv(&["-o", "out.txt", "in.txt"]);
+        let (options, operands) = parse_options(&w_args).unwrap();
         assert_eq!(options.output.as_deref(), Some("out.txt".as_bytes()));
-        assert_eq!(operands, vec!["in.txt"]);
-        let (inline, _) = parse_options(&["-oout", "in"]).unwrap();
+        assert_eq!(operands, vec![b"in.txt".as_slice()]);
+        let w_args = argv(&["-oout", "in"]);
+        let (inline, _) = parse_options(&w_args).unwrap();
         assert_eq!(inline.output.as_deref(), Some("out".as_bytes()));
-        let (replaced, _) = parse_options(&["-oa", "-ob"]).unwrap();
+        let w_args = argv(&["-oa", "-ob"]);
+        let (replaced, _) = parse_options(&w_args).unwrap();
         assert_eq!(replaced.output.as_deref(), Some("b".as_bytes()));
-        let (none, _) = parse_options(&["-n"]).unwrap();
+        let w_args = argv(&["-n"]);
+        let (none, _) = parse_options(&w_args).unwrap();
         assert_eq!(none.output, None);
         assert_eq!(
-            parse_options(&["-o"]),
+            parse_options(&argv(&["-o"])),
             Err(ParseError::Getopt(crate::GetoptReport::MissingValue('o')))
         );
     }
@@ -1580,30 +1695,33 @@ mod tests {
         use crate::GetoptReport;
         // 缺值：与集外字母同属 `Getopt`，但句子不同。
         assert_eq!(
-            parse_options(&["-t"]),
+            parse_options(&argv(&["-t"])),
             Err(ParseError::Getopt(GetoptReport::MissingValue('t')))
         );
         // 键形不对：C 是 `errx(2, …)` 五句之一，不接 usage。
         assert_eq!(
-            parse_options(&["-k", "x"]),
+            parse_options(&argv(&["-k", "x"])),
             Err(ParseError::KeySpec(KeySpecError::FieldNumbersNotPositive))
         );
         assert_eq!(
-            parse_options(&["-k", "1 2"]),
+            parse_options(&argv(&["-k", "1 2"])),
             Err(ParseError::KeySpec(KeySpecError::IllegalFieldDescriptor))
         );
         // `-t` 给第二次才是 `usage("multiple field delimiters")`；
         // 而多字节本身**不是**错（C 只取首字节）。
-        let (one, _) = parse_options(&["-t,", "f"]).unwrap();
+        let w_args = argv(&["-t,", "f"]);
+        let (one, _) = parse_options(&w_args).unwrap();
         assert_eq!(one.delimiter, Some(b','));
-        let (two, _) = parse_options(&["-t::", "f"]).unwrap();
+        let w_args = argv(&["-t::", "f"]);
+        let (two, _) = parse_options(&w_args).unwrap();
         assert_eq!(two.delimiter, Some(b':'), "多字节取首字节，不报错");
         assert_eq!(
-            parse_options(&["-t,", "-t;"]).err(),
+            parse_options(&argv(&["-t,", "-t;"])).err(),
             Some(ParseError::MultipleFieldDelimiters)
         );
         // 空值取到那个 `\0`（C 的 `*optarg`）。
-        let (nul, _) = parse_options(&["-t", "", "f"]).unwrap();
+        let w_args = argv(&["-t", "", "f"]);
+        let (nul, _) = parse_options(&w_args).unwrap();
         assert_eq!(nul.delimiter, Some(0));
     }
 
@@ -1672,16 +1790,17 @@ mod tests {
     #[test]
     fn test_parse_options_rejects_unknown() {
         assert_eq!(
-            parse_options(&["-Z"]),
+            parse_options(&argv(&["-Z"])),
             Err(ParseError::Getopt(crate::GetoptReport::UnknownOption('Z')))
         );
     }
 
     #[test]
     fn test_parse_options_accepts_merge() {
-        let (options, operands) = parse_options(&["-m", "a.txt"]).unwrap();
+        let w_args = argv(&["-m", "a.txt"]);
+        let (options, operands) = parse_options(&w_args).unwrap();
         assert!(options.merge);
-        assert_eq!(operands, ["a.txt"]);
+        assert_eq!(operands, [b"a.txt".as_slice()]);
     }
 
     #[test]
@@ -1689,14 +1808,16 @@ mod tests {
         // C accepts `-H` ("now the default") and `-s` (stable = default) with no
         // observable effect; they must parse cleanly (not BadOption) and change
         // no flag — the previous behavior errored them, diverging from C.
-        let (options, operands) = parse_options(&["-H", "-s", "data.txt"]).unwrap();
+        let w_args = argv(&["-H", "-s", "data.txt"]);
+        let (options, operands) = parse_options(&w_args).unwrap();
         assert!(!options.merge);
         assert!(!options.unique);
         assert!(!options.check);
         assert!(!options.numeric);
-        assert_eq!(operands, ["data.txt"]);
+        assert_eq!(operands, [b"data.txt".as_slice()]);
         // Clustered in one argument too (getopt treats each letter separately).
-        let (clustered, _) = parse_options(&["-sH"]).unwrap();
+        let w_args = argv(&["-sH"]);
+        let (clustered, _) = parse_options(&w_args).unwrap();
         assert!(!clustered.numeric);
     }
 

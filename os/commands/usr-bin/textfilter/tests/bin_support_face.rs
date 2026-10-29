@@ -13,9 +13,10 @@
 //! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
 //! （`tr_ref: unknown option -- \xff`），而文本缝先把命令行 lossy 成 U+FFFD，各支再按自己的
 //! 取法渲染：按字节取到的是 `ef`（U+FFFD 的第一字节），按 `char` 取再渲染的是 `c3 af` 两字节。
-//! 参数缝半逐支把这一位翻正——本表十八行（`rev`、`paste`、`seq`、`tr`、`fold`、`col`、
-//! `uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、`jot`、`nl`、`pr`，末九行随批次四百五十八、
-//! 四百五十九、四百六十、四百六十一、四百六十二、四百六十三、四百六十四、四百六十五、四百六十六落地）**至此全是原字节** `ff`，与参照件同形；表外那些仍走文本缝的壳交回的仍是 `ef`。
+//! 参数缝半逐支把这一位翻正——本表十九行（`rev`、`paste`、`seq`、`tr`、`fold`、`col`、
+//! `uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、`jot`、`nl`、`pr`、`sort`，末十行随批次四百五十八、
+//! 四百五十九、四百六十、四百六十一、四百六十二、四百六十三、四百六十四、四百六十五、四百六十六、
+//! 四百六十七落地）**至此全是原字节** `ff`，与参照件同形；表外那些仍走文本缝的壳交回的仍是 `ef`。
 //! 字母位之外还有一条**操作数当文件路径**的腿：路径进了 `os/libs` 里的 `&str` 口就非折
 //! 一次不可（在册 `ARGV-BYTE-PATH-IN-LIBS`）。因此下面的断言既钉住
 //! 「不再 abort、两条腿一致」，也钉住**当前那一串字节**：等这些腿落地，这几枚会当场变红，
@@ -43,6 +44,7 @@ const JOIN: &str = env!("CARGO_BIN_EXE_join");
 const JOT: &str = env!("CARGO_BIN_EXE_jot");
 const NL: &str = env!("CARGO_BIN_EXE_nl");
 const PR: &str = env!("CARGO_BIN_EXE_pr");
+const SORT: &str = env!("CARGO_BIN_EXE_sort");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
 const FF: u8 = 0xFF;
@@ -73,13 +75,13 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     (code, output.stdout, output.stderr)
 }
 
-/// 十八支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 getopt 报文。
+/// 十九支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 getopt 报文。
 /// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
 /// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 18] = [
+    let cases: [(&str, &str, i32, &[u8]); 19] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
         // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
         // 字母位是原字节 `ff`。
@@ -134,6 +136,12 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         // 十枚空格由 `pr_face` 的 `the_four_invalid_value_echoes_and_the_operand_message_carry_the_argv_bytes`
         // 与 `letters_outside_the_c_optstring_print_the_egetopt_line_then_the_usage` 承载。
         ("pr", PR, 1, b"pr: illegal option -- \xff\n"),
+        // sort 随批次四百六十七落地，措辞又回到 libc 那一支：`sort.c:156` 吃的就是
+        // `getopt(argc, argv, SORT_OPTS)`（`getopt.c:101-104` 的 `unknown option`），
+        // 与上一行 `pr` 自带 `egetopt` 的 `illegal option` 互为对照——同一张表里两种措辞
+        // 并存，正是「拿同族规律抹平会把句子写错」的实物证据。它的 usage 是**一行**、
+        // 行内有一段十三空格的间距（`sort.c:399-412`），退 **2** 而不是 1。
+        ("sort", SORT, 2, b"sort: unknown option -- \xff\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");

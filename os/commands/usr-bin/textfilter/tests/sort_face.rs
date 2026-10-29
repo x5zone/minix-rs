@@ -593,3 +593,114 @@ fn a_second_stuck_dash_r_lands_on_the_usage_leg() {
         "usage 块里要带得上 `-R` 那一项：{err:?}"
     );
 }
+
+/// 字节形 argv 的命令缝：`&str` 递不出裸 `ff`。本壳的 `run_streams` 走的是 `&[&str]`，
+/// 所以「一枚裸字节当字母」「一枚裸字节当值」这两形从来没法端到端钉过——本轮补上。
+fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut child = Command::new(SORT)
+        .args(args.iter().map(|word| std::ffi::OsStr::from_bytes(word)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the sort binary should be runnable");
+    face_support::write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// `sort` 的参数缝改到的全是**取值本身**：`-t` 只取首字节（`sort.c:219` 的
+/// `d_mask[(u_char)*optarg]`）、`-R` 先取首字节当记录分隔符（`:226`）再看剩余决定数值形或
+/// 报错（`:228-238`），报错那句带的是 `optarg` 的原字节；而 `-t` 那一支紧接着查
+/// `d_mask[byte] & REC_D_F`（`:217-218`）。文本缝之下裸 `ff` 先折成 `ef bf bd`，四处一起走偏，
+/// 最坏的是**假冲突**：`-R\xef -t\xff` 在 C 里是两个不同字节（参照件退 0），折过一次两边都变成
+/// `ef`，那句 `record/field delimiter clash` 会被凭空触发。逐字节读数与参照件同形见
+/// `tmp/sort-467/ab.log`。
+#[test]
+fn the_delimiter_and_record_delimiter_values_are_argv_bytes() {
+    // ① 同一枚裸字节走 `-R` 的**字符路径**时 C 得到的是 -1（带符号 `char` 交给 `int REC_D`），
+    //    既不与 `-t` 撞掩码槽也永不命中输入字节 ⇒ 接受，收尾补的还是那一枚 `ff`
+    //    （`putchar(-1)` 写 `0xff`）。参照件同形，见 `tmp/sort-467/ab.log`。
+    let (out, status, err) = run_argv(&[b"-R\xff", b"-t\xff"], b"x\n");
+    assert_eq!(status, 0, "字符路径的 ff 不算冲突：stderr 是 {err:?}");
+    assert_eq!(out, b"x\n\xff");
+    // ① 同一枚 255 改走**数值路径**（`-R\377` 经 `strtol` 得正数 255）就落进 `d_mask[255]`，
+    //    与 `-t` 那枚裸字节撞在一起 ⇒ 冲突那一句（一行、不接 usage、退 2）。
+    let (out, status, err) = run_argv(&[b"-R\\377", b"-t\xff"], b"x\n");
+    assert_eq!(out, Vec::new(), "冲突发生在任何输出之前");
+    assert_eq!(status, 2, "stderr 是 {err:?}");
+    assert_eq!(err, b"sort: record/field delimiter clash\n");
+    // ① 控制形：ASCII 的同一枚字节仍是冲突（`-R,` 与 `-t,`）。
+    let (_out, status, err) = run_argv(&[b"-R,", b"-t,"], b"x\n");
+    assert_eq!(status, 2, "stderr 是 {err:?}");
+    assert_eq!(err, b"sort: record/field delimiter clash\n");
+
+    // ② 判别形：两枚不同字节不该冲突——折过一次就会相等，所以这一形钉的是「没放宽也没收紧」。
+    let (out, status, err) = run_argv(&[b"-R\xef", b"-t\xff"], b"x\n");
+    assert_eq!(status, 0, "两枚不同的字节各自成立：stderr 是 {err:?}");
+    assert_eq!(out, b"x\n\xef", "记录按 ef 切，收尾补的也是那一枚 ef");
+
+    // ③ 数值形失败的回显位：`q\xff` 两枚都是 argv 原字节（反斜缀那支才先跳过一位）。
+    let (out, status, err) = run_argv(&[b"-Rq\xff"], b"");
+    assert_eq!(out, Vec::new());
+    assert_eq!(status, 2, "stderr 是 {err:?}");
+    assert_eq!(err, b"sort: invalid record delimiter q\xff\n");
+
+    // ④ 永不命中的记录分隔符：整份输入是**一条**记录，输出仍以那一枚字节收尾
+    //    （`putrec`，`files.c:194`/`:215`）。内容里带裸字节的那一形（`-R<ff>` 配 `a\xffb`）
+    //    本壳交回 `a\xef\xbf\xbdb\n\xff` 而参照件交回 `a\xffb\n\xff`——差在**记录内容是
+    //    `String`**（`split_records` 过 `from_utf8_lossy`），属另一条射程，
+    //    已登记 `SORT-RECORD-CONTENT-TEXTSEAM` 并留在差分里按已知分叉计数。
+    let (out, status, err) = run_argv(&[b"-R\xff", b"-"], b"a\nb\n");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, b"a\nb\n\xff", "不切分，只在末尾补那一枚分隔符");
+
+    // ⑤ 字母位是一枚**无法用 &str 递进来**的裸字节：libc 那一行报的就是它自己，
+    //    后面接 `usage()` 那一行（`sort.c:250-252` + `getopt.c:101-104`），退 2。
+    let (_out, status, err) = run_argv(&[b"-\xff"], b"a\n");
+    assert_eq!(status, 2);
+    assert_eq!(
+        err.split(|&byte| byte == b'\n').next().unwrap(),
+        b"sort: unknown option -- \xff"
+    );
+}
+
+/// 操作数的**名字位**在这里是原字节：C 那一支是 `err(2, "%s", argv[i])`（`sort.c:285`），
+/// 走的是 `err(3)` 的三段形（程序名、操作数、`strerror` 句子）。本壳以前把它交给
+/// `support::warn_line` → `minix_sys::err_line(&str, …)`，裸字节先被折成 U+FFFD，于是
+/// `sort: /tmp/nosuch-…\xef\xbf\xbd: No such file or directory`；本轮自己拼那三件，
+/// 与参照件逐字节同形（`tmp/sort-467/ab.log` 的 `裸字节档名` 那一形）。
+/// 开档那一步仍然要先折（`minix_sys::open` 的 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`），
+/// 所以「真实存在的裸字节档名」本壳打不开——那一形是已知分叉，不在本枚门里钉。
+#[test]
+fn the_operand_message_names_the_operand_bytes_and_exits_two() {
+    let (out, status, err) = run_argv(&[b"/tmp/nosuch-sort-\xff"], b"a\n");
+    assert_eq!(out, Vec::new(), "开不了的档名不出任何输出");
+    assert_eq!(status, 2, "stderr 是 {err:?}");
+    assert_eq!(
+        err, b"sort: /tmp/nosuch-sort-\xff: No such file or directory\n",
+        "三段齐备、名字位是原字节，且不接 usage"
+    );
+    // 控制形：ASCII 档名同一条腿，句子一字未变。
+    let (out, status, err) = run_argv(&[b"/tmp/nosuch-sort-ok.txt"], b"a\n");
+    assert_eq!(out, Vec::new());
+    assert_eq!(status, 2);
+    assert_eq!(
+        err,
+        b"sort: /tmp/nosuch-sort-ok.txt: No such file or directory\n"
+    );
+    // 两枚开不了的档名只出**第一枚那一句**：C 是 `err(2, "%s", argv[i])`，`err` 自己就终止
+    // 进程，不是「逐枚报完再退」。参照件同形现量一致（第二枚的名字根本不出现）。
+    let (out, status, err) = run_argv(&[b"/tmp/nosuch-a\xff", b"/tmp/nosuch-b\xff"], b"a\n");
+    assert_eq!(out, Vec::new());
+    assert_eq!(status, 2);
+    assert_eq!(
+        err, b"sort: /tmp/nosuch-a\xff: No such file or directory\n",
+        "第一枚即终止，第二枚不留名字"
+    );
+}

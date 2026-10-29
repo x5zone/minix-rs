@@ -18,7 +18,7 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
@@ -26,14 +26,16 @@ mod support;
 use minix_textfilter::sort::{ParseError, compare, merge_sorted, parse_options};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
     // C 的每一句诊断都从 `getprogname()` 开头（`sort.c:401-412` 的 usage、
     // `:261-285` 的 errx/err），所以不能写死「sort」。
-    let prog = support::prog_name(&argv);
-    let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    // `err_line` 与 `line_bytes` 两条 `&str` 口要程序名（在册 `ARGV-BYTE-PATH-IN-LIBS`），
+    // 折这一处；操作数与记录分隔符回显那些名字/值位都另有按原字节拼的腿，不经过这里。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let words: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let (options, operands) = match parse_options(&words) {
         Ok((options, operands)) => (options, operands),
-        Err(error) => parse_fail(prog, error),
+        Err(error) => parse_fail(&prog, error),
     };
     // C reads each input operand in file order (`-` / an unrecognised leading
     // dash names standard input) and concatenates their lines; no operand reads
@@ -49,10 +51,10 @@ fn run() -> ! {
         runs.push(split_records(&support::read_stdin(), options.record_delim));
     } else {
         for operand in operands {
-            let input = if operand == "-" {
+            let input = if operand == b"-" {
                 support::read_stdin()
             } else {
-                read_operand(prog, operand)
+                read_operand(&prog, operand)
             };
             runs.push(split_records(&input, options.record_delim));
         }
@@ -60,7 +62,7 @@ fn run() -> ! {
     let mut lines: Vec<String> = runs.iter().flatten().cloned().collect();
 
     if options.check {
-        check(prog, &lines, &options);
+        check(&prog, &lines, &options);
         support::terminate(0);
     }
 
@@ -97,9 +99,10 @@ fn run() -> ! {
         // C 的 `putrec`（`files.c:194`/`:215`）是「写完记录再补一个 `REC_D`」，而不是
         // 「除最后一条外补分隔符」：带 `-R` 时输出**以分隔符收尾**（参照件对
         // `b,a,d,c\n` 做 `-R ,` 给 `a,b,c\n,d,`，末尾那个逗号是真源写的）。
-        payload.push(options.record_delim);
+        // `putchar(REC_D)`：`int` 进、`unsigned char` 出，所以 -1 写出的是 `0xff`。
+        payload.push(options.record_delim as u8);
     }
-    write_output(prog, &options, &payload);
+    write_output(&prog, &options, &payload);
     support::terminate(0);
 }
 
@@ -219,15 +222,20 @@ fn write_output(prog: &str, options: &minix_textfilter::sort::Options, payload: 
 /// 而 EOF 前一个字节也没读到就返回 0（所以 `a,b,` 是两条记录不是三条）。
 /// 记录内容本身不去任何东西：`-R ,` 下 `b,a,d,c\n` 的最后一条就是 `c\n`（带着换行），
 /// 因为换行在这一形里只是普通字节。
-fn split_records(input: &[u8], rec_d: u8) -> Vec<String> {
+fn split_records(input: &[u8], rec_d: i32) -> Vec<String> {
     if input.is_empty() {
         return Vec::new();
     }
+    // C 的 `getrec` 比的是 `int ch = getc(f)`（字节的 0..=255）与 `int REC_D`
+    // （`files.c:113-124`），而 `REC_D` 从 `-R` 的字符路径来时是**带符号 `char` 提升**来的
+    // ——所以 `-R<ff>` 在 C 里得到一个永不命中的负数，整份输入是一条记录。两侧同形才谈得上
+    // 逐字节对账，这里因此不能按 `u8` 相等来切。
+    let cuts = |byte: u8| i32::from(byte) == rec_d;
     let mut pieces: Vec<String> = input
-        .split(|byte| *byte == rec_d)
+        .split(|byte| cuts(*byte))
         .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
         .collect();
-    if input.ends_with(&[rec_d]) {
+    if input.last().is_some_and(|&last| cuts(last)) {
         pieces.pop();
     }
     pieces
@@ -237,13 +245,24 @@ fn split_records(input: &[u8], rec_d: u8) -> Vec<String> {
 /// (the C's `access(argv[i], R_OK)` guard at `sort.c:284` and the `fopen` failure
 /// in `files.c`). The open-and-read itself is the shared `bin_support` twin, so the
 /// hosted door and the target run take the same path through the seam.
-fn read_operand(prog: &str, path: &str) -> Vec<u8> {
-    match support::read_file(path) {
+fn read_operand(prog: &str, path: &[u8]) -> Vec<u8> {
+    // 只有开档那一步折一次（`minix_sys::open` 的 `&str` 口，在册）；报文那一支不折。
+    let shown = String::from_utf8_lossy(path);
+    match support::read_file(&shown) {
         Ok(data) => data,
         // C `sort.c:285` 是 `err(2, "%s", argv[i])`：程序名、操作数、`strerror` 句子
-        // 三件齐备（旧写法把 `err(3)` 当成 `errx(3)` 用，只留了前两件）。
+        // 三件齐备（旧写法把 `err(3)` 当成 `errx(3)` 用，只留了前两件）。三件自己拼，
+        // 名字位因此是 argv 的原字节——`warn_line` 那条经 `err_line(&str)` 会把裸字节
+        // 折成 U+FFFD，与参照件逐字节对不上（`pr` 那轮量过同一形状）。
         Err(code) => {
-            support::warn_line(prog, path, code);
+            let mut line = Vec::new();
+            line.extend_from_slice(prog.as_bytes());
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(path);
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+            line.push(b'\n');
+            support::warn(&line);
             support::terminate(2);
         }
     }
@@ -277,8 +296,14 @@ fn parse_fail(prog: &str, error: ParseError) -> ! {
             support::terminate(2);
         }
         ParseError::InvalidRecordDelimiter(value) => {
-            let shown = String::from_utf8_lossy(&value).into_owned();
-            support::warn(format!("{prog}: invalid record delimiter {shown}\n").as_bytes());
+            // C 是 `errx(2, "invalid record delimiter %s", optarg)`（`sort.c:233-238`）：
+            // 回显位是 argv 的原字节（反斜缀已被 `optarg++` 跳过，所以报的是剩下的那段）。
+            let mut line = Vec::new();
+            line.extend_from_slice(prog.as_bytes());
+            line.extend_from_slice(b": invalid record delimiter ");
+            line.extend_from_slice(&value);
+            line.push(b'\n');
+            support::warn(&line);
             support::terminate(2);
         }
     }
