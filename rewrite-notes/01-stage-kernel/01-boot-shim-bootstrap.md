@@ -1303,17 +1303,18 @@ pub fn exit_boot_services() {
 
 > `LOADER_DATA` 是 UEFI 内存类型标签，意思是"引导程序向固件分配器租下的内存"（loader 是属格——引导程序的所有物，不是"被加载的数据"——这里只给这次取内存图的缓冲区定标签）；返回的 `_mmap` 可以丢弃，因为内核要的内存清单已由上文 `build_memmaps()` 的两份列表交付，这只是规范要求的"EBS 前最后一次取图"，取完即弃。
 
-被"否决"的三种替代路径与理由：
+被审视的替代路径与结论（三否一采）：
 
-| 方案 | 否决理由（可复核） |
+| 方案 | 结论与理由（可复核） |
 |---|---|
-| 保留 Multiboot，做 64 位扩展（Multiboot2） | 两个新架构没有等价协议；`head.S` 那套"引导器填结构体 + 寄存器传参"在 aarch64/riscv64 上要各写一份，等于三份引导协议 |
-| 各架构独立引导（x86 用 Multiboot、ARM 用 PSCI、RISC-V 用 SBI） | 引导准备的代码要按架构分叉，而 2.7 展示的正是"这一步的语义与硬件无关"——分叉会把它重新绑回硬件 |
-| 内核自带 stub（把 UEFI 形态的 boot-shim 链接进内核镜像，内核自己读文件再自举） | 否决理由是**依赖方向**：boot-shim 与内核并成一个二进制，内核就得认识固件类型、把 `uefi` 拉进自己的依赖表，与 §3.3「内核不依赖引导层」的单向边界冲突——屏蔽固件差异正是 boot-shim 的职责。riscv64 没有 Rust 支持的 UEFI 目标，但只挡住 UEFI 这一种实现；opensbi 与 UEFI 是等价的固件形态，同样实现 `trait BootShim`，换它照样构建。**例外**：riscv64/aarch64 的 `kernel-image` 自引导面看起来正是"引导面长在内核镜像里"，它是 §3.7 的直核自引导形态，不在本条否决之列（背景见下方引用段；依赖方向的账见 §3.3 问题二） |
+| 保留 Multiboot，做 64 位扩展（Multiboot2） | 否决：两个新架构没有等价协议；`head.S` 那套"引导器填结构体 + 寄存器传参"在 aarch64/riscv64 上要各写一份，等于三份引导协议 |
+| 各架构独立引导（x86 用 Multiboot、ARM 用 PSCI、RISC-V 用 SBI） | 否决：引导准备的代码要按架构分叉，而 2.7 展示的正是"这一步的语义与硬件无关"——分叉会把它重新绑回硬件 |
+| 内核自带 stub（UEFI 形态：把 boot-shim 链接进内核镜像，内核自己读文件再自举） | 否决，理由是**依赖方向**：boot-shim 与内核并成一个二进制，内核就得认识固件类型、把 `uefi` 拉进自己的依赖表，与 §3.3「内核不依赖引导层」的单向边界冲突——屏蔽固件差异正是 boot-shim 的职责。riscv64 没有 Rust 支持的 UEFI 目标，但只挡住 UEFI 这一种实现；换成 opensbi 形态则改判为采纳（下一行） |
+| 内核自带 stub（opensbi 形态：固件直接跳下一级镜像，引导面长在内核镜像里） | **采纳**：它就是 §3.7 的直核自引导形态（riscv64 真板 `FW_PAYLOAD`、QEMU `-kernel`；aarch64 `-kernel` 测试通道）。它不违反依赖方向——`kernel-image` 反向依赖的是 boot-shim 的**库函数**（取件表、memmap 源），不是引导器产物，`minix-kernel` 与 `kernel-image` 都不依赖 `uefi`（§3.3 问题二）。定位是辅助启动路径，不作三架构主线 |
 
 > **现状标注**：上面两张表描述的是架构终态；x86_64 当前产线仍是 boot-shim 内联内核（引导器与内核同一镜像）。当前产线形态与终态的差距、以及收口项（NK1/C-29）见 §3.4。
 
-> **例外条款的背景**：RISC-V 的固件形态规范（OpenSBI 的 `FW_PAYLOAD` 模式）允许把下一级镜像打包进固件本体，boot 时固件直接跳进 S-mode 目标——真板上这类极简装机（省掉 U-Boot 与文件系统）不需要引导器存在，QEMU 的 `-kernel` 模拟的正是这个时序。所以"引导面长在内核镜像里"是硬件规范支持的真实形态。
+> **例外条款的背景**：RISC-V 的固件形态规范（OpenSBI 的 `FW_PAYLOAD` 模式）允许把下一级镜像打包进固件本体，boot 时固件直接跳进 S-mode 目标——真板上这类极简装机（省掉 U-Boot 与文件系统）不需要引导器存在，QEMU 的 `-kernel` 模拟的正是这个时序。所以"引导面长在内核镜像里"是硬件规范支持的真实形态。§3.1 分工表里的 OpenSBI 列描述的是 U-Boot shim 腿（`OpenSbiBootShim::prepare_boot`）——它目前没有生产调用方，是 D-73 的接线主体；riscv64 当前生产链走直核自引导。
 
 ### 3.2 一个 trait 两种固件：`BootShim`
 
@@ -1377,7 +1378,7 @@ trait 相对"纯 feature gate + 散落条件编译"的收益，只列能给出�
 
 这里故意不列"类型安全"与"封装"——这两条常被记在 trait 头上，实际来自 feature 门控：`uefi_helpers` 与 `opensbi_helpers` 各由 [`lib.rs`](os/boot-shim/src/lib.rs) 的 `#[cfg(feature = ...)]` 门控，开启哪个 feature 就只有哪个固件类型存在，**写错固件名本来就编译不过**，trait 没有为此多提供什么。调用点也没有借 trait 做抽象：[`fn main`](os/boot-shim/src/main.rs:fn main) 按具体类型写——`UefiBootShim::prepare_boot(1024)`。这不是把固件写死在产品里：boot-shim 这个可执行文件只在 UEFI 形态下构建（bin 的 `required-features = ["fw-uefi-image"]` 隐含 `uefi`），固件选择发生在"构建哪个二进制"，不是运行期分派；opensbi 形态的生产路径是 `kernel-image` 自引导面（§3.7），复用 opensbi_helpers 的库函数、不经这份 main.rs。
 
-> **TODO（2026-10-19 登记）**：本节与 §3.1 把 opensbi 腿讲成 `BootShim` trait 的常规第二实现，实况是 `OpenSbiBootShim::prepare_boot` 在仓内没有调用方——boot-shim 可执行体只在 UEFI 形态构建（bin 的 `required-features = ["fw-uefi-image"]`），riscv64 的生产装机面是 `kernel-image` 自引导面（§3.7 第三形态「直核自引导」；NK4C 续-88 甲案裁决，[`bootface.rs`](os/kernel-image/src/bootface.rs)），复用 opensbi_helpers 的**库函数**（`BootFileTable`、`bump_alloc_pages`、`build_kernel_info`）而不经 `prepare_boot`。收敛方向已在台账定谳：I-22 丁案 F 条裁决**不合并引导形态层**（`BootShim` 独立可执行体与 bootface 自举对应不同机器状态），I-24 甲案要求把 §3.1 否决表拆成「UEFI 形态 stub 被否 / opensbi 形态 stub 采纳」两行；本条与 I-24 同批落地（受影响处：§3.1 交接表 OpenSBI 列、§3.1 否决表第三行、本节 bullet 与上句）。
+**opensbi 腿的两种角色要分清**：`OpenSbiBootShim::prepare_boot` 在仓内没有调用方——boot-shim 可执行体只在 UEFI 形态构建（bin 的 `required-features = ["fw-uefi-image"]`），riscv64 的生产装机面是 `kernel-image` 自引导面（§3.7 的直核形态），它复用 opensbi_helpers 的**库函数**（`BootFileTable`、`bump_alloc_pages`、`build_kernel_info`）而不经 `prepare_boot`。作为 `BootShim` 的第二个实现，它保留为独立 shim 腿的接线主体，待 D-73 的入口契约闭合后接线。I-22 丁案 F 条裁决不合并引导形态层——`BootShim` 独立可执行体与 bootface 自举对应不同机器状态，本 trait 只承担前者的固件差异。
 
 ### 3.3 crate 依赖方向：boot-shim 依赖内核，内核不依赖 boot-shim
 
@@ -1407,7 +1408,7 @@ kernel-image ─┬─→ minix-kernel
 - `os/libs/minix-boot/Cargo.toml` 只依赖 `minix-types`。
 - `os/kernel-image/Cargo.toml` 依赖 `minix-kernel`、`minix-boot`、`minix-arch`、`minix-plat`、`minix-types`。Cargo 的 `[target.'cfg(target_arch = "…")'.dependencies]` 语法允许一条依赖只在指定 target 架构下生效，kernel-image 用它给 riscv64 与 aarch64 各加了两条：`boot-shim`（只开 `opensbi` feature，`uefi` 不开）与 `fdt`（解 DTB 用）——只有以这两个架构为 target 构建时它们才生效。
   - 符合本项目设计目标的方式（独立引导器 + 内核本体两个产物）里，"内核不依赖 boot-shim"对 `minix-kernel` 与 `boot-shim` 成立——引导器依赖内核、内核不回头依赖引导器。这一分工描述的是架构终态；x86_64 当前产线仍是内联单镜像，当前产线形态与终态的差距见 §3.4。
-  - `kernel-image` 的情况不同：它是自引导镜像（引导面 `bootface` 长在自己体内，§3.1 例外条款），riscv64/aarch64 目标下按上面那两条 target 表反向依赖 boot-shim 的**库**（取件表、memmap 源等函数）——依赖的是库而不是引导器产物，单向边界不因此破例（道理见问题二）。这张 target 表是 TODO I-22 的落点之一，依赖关系的最终形状以台账裁决为准。
+  - `kernel-image` 的情况不同：它是自引导镜像（引导面 `bootface` 长在自己体内，§3.1 例外条款），riscv64/aarch64 目标下按上面那两条 target 表反向依赖 boot-shim 的**库**（取件表、memmap 源等函数）——依赖的是库而不是引导器产物，单向边界不因此破例（道理见问题二）。这张 target 表就是终态：I-22 把 memmap 源下沉到 `minix-boot` 之后，反向依赖的仍是库、不是引导器产物，依赖方向没有变化。
 
 这条单向边界回答的是"共享类型住哪"，与"哪种固件能编译"是两个独立的问题，别混在一起：
 
