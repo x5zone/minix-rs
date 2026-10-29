@@ -1832,8 +1832,9 @@ riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0。A/B 用的产
 主树 `rewrite` 从 `f425e8c0f` 前进到 `419314c98` 是 fast-forward，主树脏文件与入栈八件零交集（`git status --porcelain` 与
 `git diff --name-only rewrite...claim/*` 取集合差）。主树合回后当场复跑 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter`
 → 退 0、**69 段 / 1257 / 0**（`tmp/head-462-main-recheck.log`），与领取树合回前后两次同读数；取证目录 `tmp/head-462`（25 件）已回抄主树。
-**跨线告知一条**：门④ `doc-style-lint --diff` 的范围若含合入笔，会报出 `PARALLEL-20261018-C-KERN-QEMU.md:26 [SL-11] :: 续-130`——那条在
-`rewrite` 自己的文件里已存在（`git show rewrite:… | sed -n '26p'` 现量命中），属 C 板合回内容而非本支引入；本支四笔的增量范围
+**跨线告知一条**：门④ `doc-style-lint --diff` 的范围若含合入笔，会在 `PARALLEL-20261018-C-KERN-QEMU.md` 第 26 那一行报出
+`[SL-11]`，命中的是 C 板那条流水行自己的尾缀编号——那一行在 `rewrite` 的文件里已存在（`git show rewrite:… | sed -n '26p'` 现量命中），
+属 C 板合回内容而非本支引入；本支四笔的增量范围
 `HEAD~4..HEAD~1` 复跑仍是 4 个文件 / 207 个新增行、**error 级 0**。**判据：合回之后再跑增量门，范围里混进他人笔就要按「谁的行」分开归因，
 不能替他人认账，也不能因为门红就把自己那笔回退。**
 
