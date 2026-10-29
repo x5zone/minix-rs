@@ -186,6 +186,30 @@ impl core::fmt::Display for PageTableError {
 pub trait Paging {
     const PAGE_SIZE: usize;
 
+    /// Exclusive upper bound of physical addresses this implementation can
+    /// safely map.
+    ///
+    /// The value is `min(hardware/platform-reported bound, this
+    /// architecture's PTE encoding bound)`. Callers use it as a semantic
+    /// boundary: an address below it is both hardware-addressable and
+    /// encodable in a PTE. Implementations that cannot establish a trusted
+    /// bound return `Err` and the boot path must fail rather than guess.
+    ///
+    /// The answer describes the target translation configuration this
+    /// implementation will enable, not any firmware-left register state.
+    fn phys_addr_limit() -> Result<u64, PageTableError>;
+
+    /// Whether `[base, base + len)` is a legal virtual-address range under
+    /// this implementation's target translation mode.
+    ///
+    /// This is a pure check of the declared configuration (x86-64 4-level
+    /// PML4, ARM64 48-bit VA/TTBR1, RISC-V Sv39): it does not read active
+    /// control registers. Both endpoints are checked independently, and the
+    /// rule includes the architecture's canonical form — the same value can
+    /// be canonical on one architecture and non-canonical on another, so a
+    /// generic length-only check is not a substitute.
+    fn validate_virtual_range(base: u64, len: u64) -> Result<(), PageTableError>;
+
     fn new() -> Result<Self, PageTableError>
     where
         Self: Sized;
@@ -724,6 +748,27 @@ pub mod mock {
     impl Paging for MockPaging {
         const PAGE_SIZE: usize = 4096;
 
+        /// The mock models the x86-64 host's 4-level 52-bit encoding bound.
+        fn phys_addr_limit() -> Result<u64, PageTableError> {
+            Ok(1u64 << 52)
+        }
+
+        /// The mock models x86-64 4-level canonical form so policy tests see
+        /// the same endpoint rules as the host architecture.
+        fn validate_virtual_range(base: u64, len: u64) -> Result<(), PageTableError> {
+            let end = base
+                .checked_add(len)
+                .ok_or(PageTableError::InvalidAddress)?;
+            let canonical = |va: u64| {
+                let top = va >> 47;
+                top == 0 || top == 0x1_FFFF
+            };
+            if !canonical(base) || (len > 0 && !canonical(end - 1)) {
+                return Err(PageTableError::InvalidAddress);
+            }
+            Ok(())
+        }
+
         fn new_from_page(_root_page: PhysBytes) -> Self {
             Self::new_mock().expect("MockPaging::new_from_page should not fail")
         }
@@ -1242,6 +1287,22 @@ pub mod mock {
                 MockPaging::HUGE_PAGE_SIZES,
                 [PageSize::GIB_1, PageSize::MIB_2]
             );
+        }
+
+        #[test]
+        fn mock_phys_limit_and_canonical_ranges() {
+            let limit = <MockPaging as Paging>::phys_addr_limit().unwrap();
+            assert_eq!(limit, 1u64 << 52);
+            assert!(<MockPaging as Paging>::validate_virtual_range(0x1000, 0x1000).is_ok());
+            assert!(
+                <MockPaging as Paging>::validate_virtual_range(0xFFFF_8000_0000_0000, 0x1000)
+                    .is_ok()
+            );
+            assert!(
+                <MockPaging as Paging>::validate_virtual_range(0x0000_8000_0000_0000, 0x1000)
+                    .is_err()
+            );
+            assert!(<MockPaging as Paging>::validate_virtual_range(u64::MAX, 2).is_err());
         }
 
         #[test]

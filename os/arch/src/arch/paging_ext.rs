@@ -14,8 +14,9 @@
 //!   operations on x86-64 (e.g., `LOCK CMPXCHG16B`), avoiding loss of hardware
 //!   updates during the read-modify-write cycle.
 
-use minix_types::{PhysBytes, VirBytes};
+use crate::arch::boot_arch::BootArch;
 use crate::paging::{PageFlags, PageTableError, Paging};
+use minix_types::{PhysBytes, VirBytes};
 
 /// TLB process identification support (optional trait)
 ///
@@ -162,6 +163,183 @@ pub trait HugePages: Paging {
     fn supports_huge_page(size: PageSize) -> bool;
 }
 
+/// One page-size capability answer: the size plus whether this platform can
+/// use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageSupport {
+    size: PageSize,
+    supported: bool,
+}
+
+impl PageSupport {
+    pub const fn new(size: PageSize, supported: bool) -> Self {
+        Self { size, supported }
+    }
+
+    pub const fn size(&self) -> PageSize {
+        self.size
+    }
+
+    pub const fn supported(&self) -> bool {
+        self.supported
+    }
+}
+
+/// System-level page-size facts for one boot.
+///
+/// This snapshot answers "what does this platform support", never "what this
+/// boot chose". Planning consumes it and produces policies; the snapshot
+/// itself carries no alignment or mapping decision. It is not a permanent
+/// capability cache — runtime callers still query
+/// [`HugePages::supports_huge_page`] directly.
+pub struct BootPageSupport<A: BootArch> {
+    base_page_size: PageSize,
+    phys_addr_limit: u64,
+    preferred: PageSupport,
+    fallback: PageSupport,
+    _arch: core::marker::PhantomData<fn() -> A>,
+}
+
+impl<A: BootArch> Copy for BootPageSupport<A> {}
+
+impl<A: BootArch> Clone for BootPageSupport<A> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<A: BootArch> core::fmt::Debug for BootPageSupport<A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BootPageSupport")
+            .field("base_page_size", &self.base_page_size)
+            .field("phys_addr_limit", &self.phys_addr_limit)
+            .field("preferred", &self.preferred)
+            .field("fallback", &self.fallback)
+            .finish()
+    }
+}
+
+impl<A: BootArch> BootPageSupport<A> {
+    /// Test-only constructor for controlled capability injection.
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn from_parts(
+        base_page_size: PageSize,
+        phys_addr_limit: u64,
+        preferred: PageSupport,
+        fallback: PageSupport,
+    ) -> Self {
+        Self {
+            base_page_size,
+            phys_addr_limit,
+            preferred,
+            fallback,
+            _arch: core::marker::PhantomData,
+        }
+    }
+
+    pub const fn base_page_size(&self) -> PageSize {
+        self.base_page_size
+    }
+
+    pub const fn phys_addr_limit(&self) -> u64 {
+        self.phys_addr_limit
+    }
+
+    pub const fn preferred(&self) -> PageSupport {
+        self.preferred
+    }
+
+    pub const fn fallback(&self) -> PageSupport {
+        self.fallback
+    }
+
+    /// Check the static page-size configuration behind this snapshot.
+    ///
+    /// Planning calls this again even for injected snapshots, so a test
+    /// cannot smuggle an impossible ordering (fallback below the base page,
+    /// preferred below the fallback, a size outside the architecture's
+    /// declared set) into the policy layer.
+    pub fn validate(&self) -> Result<(), PageSupportError> {
+        let base = PageSize::try_from_usize(A::Paging::PAGE_SIZE)
+            .ok_or(PageSupportError::InvalidBasePageSize)?;
+        if self.base_page_size != base {
+            return Err(PageSupportError::InvalidBasePageSize);
+        }
+        if self.phys_addr_limit == 0 {
+            return Err(PageSupportError::InvalidPhysAddrLimit);
+        }
+        if self.fallback.size() != A::Paging::FALLBACK_HUGE_PAGE_SIZE
+            || !A::Paging::HUGE_PAGE_SIZES.contains(&self.fallback.size())
+            || self.fallback.size() <= base
+        {
+            return Err(PageSupportError::InvalidFallback);
+        }
+        if self.preferred.size() != A::Paging::HUGE_PAGE_SIZE
+            || !A::Paging::HUGE_PAGE_SIZES.contains(&self.preferred.size())
+            || self.preferred.size() <= self.fallback.size()
+        {
+            return Err(PageSupportError::InvalidPreferred);
+        }
+        Ok(())
+    }
+}
+
+/// Capability-fact errors. They describe whether the observed boot facts are
+/// self-consistent; they carry no mapping-planning semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageSupportError {
+    /// `Paging::PAGE_SIZE` is not a legal `PageSize`, or disagrees with the
+    /// snapshot.
+    InvalidBasePageSize,
+    /// No trustworthy platform physical-address bound, or the bound is zero.
+    InvalidPhysAddrLimit,
+    /// The fallback size is not the architecture constant, is outside the
+    /// declared size set, or is not larger than the base page.
+    InvalidFallback,
+    /// The preferred size is not the architecture constant, is outside the
+    /// declared size set, or is not larger than the fallback.
+    InvalidPreferred,
+}
+
+impl core::fmt::Display for PageSupportError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidBasePageSize => write!(f, "invalid base page size"),
+            Self::InvalidPhysAddrLimit => write!(f, "invalid physical address limit"),
+            Self::InvalidFallback => write!(f, "invalid fallback huge page size"),
+            Self::InvalidPreferred => write!(f, "invalid preferred huge page size"),
+        }
+    }
+}
+
+/// Collect this boot's capability facts.
+///
+/// Reads the target translation configuration's static sizes, the
+/// platform-level physical-address bound, and the hardware capability answers.
+/// It does not read the kernel image layout, does not check alignment, and
+/// does not choose a page size.
+pub fn detect_boot_page_support<A: BootArch>() -> Result<BootPageSupport<A>, PageSupportError> {
+    let base_page_size = PageSize::try_from_usize(A::Paging::PAGE_SIZE)
+        .ok_or(PageSupportError::InvalidBasePageSize)?;
+    let phys_addr_limit = A::Paging::phys_addr_limit()
+        .map_err(|_| PageSupportError::InvalidPhysAddrLimit)?;
+    let support = BootPageSupport {
+        base_page_size,
+        phys_addr_limit,
+        preferred: PageSupport::new(
+            A::Paging::HUGE_PAGE_SIZE,
+            A::Paging::supports_huge_page(A::Paging::HUGE_PAGE_SIZE),
+        ),
+        fallback: PageSupport::new(
+            A::Paging::FALLBACK_HUGE_PAGE_SIZE,
+            A::Paging::supports_huge_page(A::Paging::FALLBACK_HUGE_PAGE_SIZE),
+        ),
+        _arch: core::marker::PhantomData,
+    };
+    support.validate()?;
+    Ok(support)
+}
+
 #[cfg(test)]
 mod page_size_tests {
     use super::PageSize;
@@ -181,6 +359,71 @@ mod page_size_tests {
         assert_eq!(PageSize::try_from_bytes(6144), None);
         assert_eq!(PageSize::try_from_bytes(4096), Some(PageSize::KIB_4));
         assert_eq!(PageSize::try_from_bytes(8192), Some(PageSize(8192)));
+    }
+
+    #[cfg(feature = "runtime-window")]
+    #[test]
+    fn detect_reports_the_mock_platform_facts() {
+        use super::{detect_boot_page_support, BootPageSupport};
+        use crate::arch::boot_arch::MockBootArch;
+
+        let support: BootPageSupport<MockBootArch> =
+            detect_boot_page_support::<MockBootArch>().unwrap();
+        assert_eq!(support.base_page_size(), PageSize::KIB_4);
+        assert_eq!(support.phys_addr_limit(), 1u64 << 52);
+        assert_eq!(support.preferred().size(), PageSize::GIB_1);
+        assert!(support.preferred().supported());
+        assert_eq!(support.fallback().size(), PageSize::MIB_2);
+        assert!(support.fallback().supported());
+        assert_eq!(support.validate(), Ok(()));
+    }
+
+    #[cfg(feature = "runtime-window")]
+    #[test]
+    fn validate_rejects_impossible_static_configurations() {
+        use super::{BootPageSupport, PageSupport, PageSupportError};
+        use crate::arch::boot_arch::MockBootArch;
+
+        let base = PageSize::KIB_4;
+        let fallback = PageSupport::new(PageSize::MIB_2, true);
+        let preferred = PageSupport::new(PageSize::GIB_1, true);
+
+        let zero_limit =
+            BootPageSupport::<MockBootArch>::from_parts(base, 0, preferred, fallback);
+        assert_eq!(
+            zero_limit.validate(),
+            Err(PageSupportError::InvalidPhysAddrLimit)
+        );
+
+        let wrong_base = BootPageSupport::<MockBootArch>::from_parts(
+            PageSize::MIB_2,
+            1 << 52,
+            preferred,
+            fallback,
+        );
+        assert_eq!(
+            wrong_base.validate(),
+            Err(PageSupportError::InvalidBasePageSize)
+        );
+
+        let swapped = BootPageSupport::<MockBootArch>::from_parts(
+            base,
+            1 << 52,
+            PageSupport::new(PageSize::MIB_2, true),
+            PageSupport::new(PageSize::MIB_2, true),
+        );
+        assert_eq!(swapped.validate(), Err(PageSupportError::InvalidPreferred));
+
+        let tiny_fallback = BootPageSupport::<MockBootArch>::from_parts(
+            base,
+            1 << 52,
+            preferred,
+            PageSupport::new(PageSize::KIB_4, true),
+        );
+        assert_eq!(
+            tiny_fallback.validate(),
+            Err(PageSupportError::InvalidFallback)
+        );
     }
 
     #[test]

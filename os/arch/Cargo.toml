@@ -23,6 +23,8 @@ minix-plat = { path = "../plat", features = ["mock"] }
 [features]
 default = []
 runtime-window = []
+# 跨 crate 测试注入能力事实：`BootPageSupport::from_parts` 只在 test 或本特性下可见。
+test-support = []
 # §续-356 A/B：Sv39 走表三加固（规范性/错粒度巨叶）的开关——默认关=旧语义。
 # 开=对保留/非法形态 fail-closed。爬行归因后定去留。
 walk-hardening = []

@@ -501,8 +501,54 @@ fn walk_alloc(root_paddr: u64, vaddr: u64, channel: PteChannel) -> Result<u64, P
     Ok(l3 + l3_idx * 8)
 }
 
+/// Physical address bits used by the current page-table encoder.
+const ARM64_PTE_PHYS_ADDR_BITS: u32 = 48;
+
+/// Minimum `ID_AA64MMFR0_EL1.PARange` that supports 48-bit output (IPS=5).
+const ARM64_PARANGE_48BIT: u64 = 0b101;
+
+/// 48-bit VA canonical form: VA[63:48] all zero or all one.
+fn arm64_canonical(vaddr: u64) -> bool {
+    let top = vaddr >> 48;
+    top == 0 || top == 0xFFFF
+}
+
+/// Read `ID_AA64MMFR0_EL1.PARange` — a read-only implementation capability,
+/// not configurable firmware state.
+fn arm64_parange() -> u64 {
+    let mmfr0: u64;
+    unsafe {
+        asm!("mrs {}, id_aa64mmfr0_el1", out(reg) mmfr0, options(nomem, nostack));
+    }
+    mmfr0 & 0xF
+}
+
 impl Paging for AArch64Paging {
     const PAGE_SIZE: usize = 4096;
+
+    /// `1 << 48`, guarded by the implementation's `PARange` capability.
+    ///
+    /// `TCR_EL1.IPS=5` (written by `enable()`) is a configuration request,
+    /// not proof that the CPU implements 48-bit output. The read-only
+    /// `PARange` field answers the hardware question; below `0b101` the
+    /// declared bound is not trustworthy and boot must fail.
+    fn phys_addr_limit() -> Result<u64, PageTableError> {
+        if arm64_parange() < ARM64_PARANGE_48BIT {
+            return Err(PageTableError::NotSupported);
+        }
+        Ok(1u64 << ARM64_PTE_PHYS_ADDR_BITS)
+    }
+
+    /// 48-bit VA canonical range check, both endpoints independently.
+    fn validate_virtual_range(base: u64, len: u64) -> Result<(), PageTableError> {
+        let end = base
+            .checked_add(len)
+            .ok_or(PageTableError::InvalidAddress)?;
+        if !arm64_canonical(base) || (len > 0 && !arm64_canonical(end - 1)) {
+            return Err(PageTableError::InvalidAddress);
+        }
+        Ok(())
+    }
 
     /// Uses a pre-allocated physical page for the root L0 (PGD) table.
     ///
@@ -1152,9 +1198,10 @@ impl crate::arch::dm_coverage::DmCoverageArch for AArch64DmCoverage {
         root_paddr: PhysBytes,
         vaddr: VirBytes,
         paddr: PhysBytes,
-        size: usize,
+        size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        let size = size.try_as_usize().ok_or(PageTableError::InvalidAddress)?;
         if size != 1 << 30 && size != 1 << 21 && size != 4096 {
             return Err(PageTableError::InvalidAddress);
         }

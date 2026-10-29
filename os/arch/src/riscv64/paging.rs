@@ -586,8 +586,38 @@ unsafe fn free_child_tables(&self, table_paddr: u64, level: u8) {
 }
 }
 
+/// Physical address bits representable by the Sv39 PTE format.
+const RV64_PTE_PHYS_ADDR_BITS: u32 = 56;
+
+/// Platform-declared effective PA bound for the current supported
+/// configuration. The memory map describes resource candidates, never the
+/// processor's addressable ceiling, so this value is a platform contract.
+const RV64_PLATFORM_PHYS_ADDR_BITS: u32 = 48;
+
+/// Sv39 canonical form: VA[63:39] must replicate VA[38].
+fn sv39_canonical(vaddr: u64) -> bool {
+    let top = vaddr >> 39;
+    top == 0 || top == 0x1FF_FFFF
+}
+
 impl Paging for Riscv64Paging {
     const PAGE_SIZE: usize = 4096;
+
+    /// `min(platform bound, Sv39 encoding bound)` = 1 << 48 here.
+    fn phys_addr_limit() -> Result<u64, PageTableError> {
+        Ok((1u64 << RV64_PLATFORM_PHYS_ADDR_BITS).min(1u64 << RV64_PTE_PHYS_ADDR_BITS))
+    }
+
+    /// Sv39 canonical range check, both endpoints independently.
+    fn validate_virtual_range(base: u64, len: u64) -> Result<(), PageTableError> {
+        let end = base
+            .checked_add(len)
+            .ok_or(PageTableError::InvalidAddress)?;
+        if !sv39_canonical(base) || (len > 0 && !sv39_canonical(end - 1)) {
+            return Err(PageTableError::InvalidAddress);
+        }
+        Ok(())
+    }
 
     /// Uses a pre-allocated physical page for the root L2 table.
     ///
@@ -1129,9 +1159,10 @@ impl crate::arch::dm_coverage::DmCoverageArch for Riscv64DmCoverage {
         root_paddr: PhysBytes,
         vaddr: VirBytes,
         paddr: PhysBytes,
-        size: usize,
+        size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        let size = size.try_as_usize().ok_or(PageTableError::InvalidAddress)?;
         if size != 1 << 30 && size != 1 << 21 && size != 4096 {
             return Err(PageTableError::InvalidAddress);
         }
