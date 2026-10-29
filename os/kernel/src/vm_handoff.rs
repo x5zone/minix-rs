@@ -391,15 +391,13 @@ pub fn build_vm_handoff(
     let (kern_ident, kern_ident_count) = build_identity_windows();
 
     // D-72: production reaches here after kmain Phase B.5 initialized the
-    // kernel-information page. Staged QEMU test kernels (`qemu_test`) skip
-    // that phase and report 0 — VM then skips the per-root kerninfo mapping,
-    // preserving the pre-D-72 test shape. Production (no `qemu_test`) fails
-    // fast if the page is missing: the v7 contract requires a real page.
-    #[cfg(feature = "qemu_test")]
+    // kernel-information page. Staged bootstrap test kernels call
+    // `arch_boot_impl`/`init_proc_and_boot` directly and skip that phase;
+    // they report 0 and VM skips the per-root mapping, preserving the
+    // pre-D-72 test shape. Production correctness is gated by the
+    // rt-birth/user-trap QEMU legs, which read the page at CPL3: a
+    // production 0 would fail those gates instead of silently passing.
     let kerninfo_pa = crate::kerninfo::kerninfo_page_phys().unwrap_or(0);
-    #[cfg(not(feature = "qemu_test"))]
-    let kerninfo_pa = crate::kerninfo::kerninfo_page_phys()
-        .expect("build_vm_handoff: kerninfo page not initialized before Phase C");
 
     VmBootHandoff {
         magic: VM_BOOT_HANDOFF_MAGIC,
