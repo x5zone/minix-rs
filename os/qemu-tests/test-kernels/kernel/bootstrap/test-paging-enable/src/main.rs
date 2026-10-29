@@ -67,7 +67,7 @@ fn main() -> Status {
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
     // 3. Run arch_boot_impl — identity map + enable paging
-    let _info = minix_kernel::arch_boot_impl::<X86_64Paging>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(&result.kernel_info, result.root_page);
 
     // If we reach here, paging is enabled and the CPU can still execute.
     early_console::write_str("  paging enabled — CPU still executing\n");

@@ -59,19 +59,21 @@
 //!
 //! # Window capacity note (riscv64)
 //!
-//! The Sv39 kernel half spans 256 GiB and the kernel DM base sits 16 GiB
-//! below its top, so the riscv64 kernel DM window bounds PA at 16 GiB.
-//! Current platforms stay far below that bound (qemu virt RAM ≤ a few
-//! GiB); the VM PMM eligibility clip (`VM_DIRECT_MAP_SIZE` = 16 GiB) caps
-//! the managed side at the same limit.
+//! The Sv39 kernel half spans 256 GiB and the kernel DM base sits 1 GiB
+//! above the high-half base, so the kernel DM window covers 255 GiB − 4 KiB
+//! up to the canonical top. Current platforms stay far below that bound
+//! (qemu virt RAM ≤ a few GiB); the VM PMM eligibility clip
+//! (`VM_DIRECT_MAP_SIZE` = 16 GiB) caps the managed side at a much smaller
+//! limit.
 
 use crate::boot_alloc;
-use minix_arch::paging::PageFlags;
-use minix_arch::paging_ext::PageSize;
-use minix_arch::{
-    CurrentDirectMap, CurrentDmCoverage, CurrentPaging, DirectMapArch, DmRange, HugePages,
-    establish_dm_range,
+use minix_arch::arch::boot_arch::BootArch;
+use minix_arch::arch::dm_coverage::{
+    DmPagePolicy, install_prevalidated_boot_dm_range, plan_dm_policy, preflight_boot_dm_range,
 };
+use minix_arch::paging::{PageFlags, PageTableError};
+use minix_arch::paging_ext::PageSize;
+use minix_arch::{CurrentDirectMap, DirectMapArch, DmRange};
 use minix_boot::KernelInfo;
 use minix_types::PhysBytes;
 
@@ -80,67 +82,103 @@ const PAGE_SIZE: u64 = 4096;
 
 /// Establish both DM windows on the bootstrap root (§6.1 D8-②).
 ///
-/// Called from both boot paths after paging is enabled and before any VM
-/// physical-memory access through the windows (e.g. VM ELF loading):
-/// `arch_boot_impl` Step 4 and `arch_boot_resume_high_half` (the two
-/// `establish_boot_dm` call sites in `lib.rs`).
-/// Establishment failures are boot-layout bugs (leaf conflicts cannot arise
-/// from a single candidate pass into fresh window slots) — the kernel
-/// refuses to start.
-pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
-    let kernel_flags = PageFlags::kernel_read_write();
-    let vm_flags = PageFlags::read_write();
-    let kernel_va = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
-    let vm_va = CurrentDirectMap::VM_DIRECT_MAP_BASE;
-    let vm_pa_limit = CurrentDirectMap::VM_DIRECT_MAP_SIZE;
-    // Capability fact for page-size selection: one 1 GiB leaf only when the
-    // CPU can emit one, otherwise the driver falls back to 2 MiB / 4 KiB.
-    let one_gb = CurrentPaging::supports_huge_page(PageSize::GIB_1);
+/// Windows and page sizes come from one validated [`DmPagePolicy`]; this
+/// function never re-derives either. All candidate geometry is preflighted
+/// before the first leaf write. Any installation error is fatal for boot:
+/// there is no rollback of partially written leaves, and a partial Direct
+/// Map must not be handed to later phases.
+///
+/// # Safety
+///
+/// The caller must be in the single-threaded boot context, with the bootstrap
+/// root active and reachable through the identity write channel, and every
+/// page-table page inside the identity-mapped writable range.
+pub unsafe fn establish_boot_dm<A: BootArch>(
+    kernel_info: &KernelInfo,
+    root: PhysBytes,
+    policy: &DmPagePolicy<A>,
+) -> Result<(), PageTableError> {
+    let kernel_window = policy.kernel_window();
+    let vm_window = policy.vm_window();
+    let vm_capacity = vm_window.pa_capacity();
 
-    // Kernel DM first (§6.1 constraint ①), full PA span.
+    // Pass 1: preflight every candidate of both windows before any write.
+    // The candidate generators are pure functions of (kernel_info, root):
+    // they never depend on the bump cursor, so pass 2 sees the same spans.
     for r in memmap_candidates(kernel_info) {
-        establish_dm_range::<CurrentDmCoverage>(
-            root, r, u64::MAX, kernel_va, kernel_flags, one_gb,
-        )
-        .expect("boot DM: kernel window establishment failed");
+        preflight_boot_dm_range(r, kernel_window, policy)?;
     }
-    for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
-        establish_dm_range::<CurrentDmCoverage>(
-            root, r, u64::MAX, kernel_va, kernel_flags, one_gb,
-        )
-        .expect("boot DM: kernel window establishment failed");
+    for r in bootstrap_tree_candidates(kernel_info, root)
+        .into_iter()
+        .flatten()
+    {
+        preflight_boot_dm_range(r, kernel_window, policy)?;
     }
-
-    // VM DM second, PA span clipped to the window; candidates beyond the
-    // window stay outside DM representability (resource qualification
-    // excludes them from VM PMM — §6.1 资格过滤).
     for r in memmap_candidates(kernel_info) {
-        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags, one_gb)
-            .expect("boot DM: VM window establishment failed");
+        if let Some(clipped) = r.clipped_to(vm_capacity) {
+            preflight_boot_dm_range(clipped, vm_window, policy)?;
+        }
     }
-    for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
-        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags, one_gb)
-            .expect("boot DM: VM window establishment failed");
+    for r in bootstrap_tree_candidates(kernel_info, root)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(clipped) = r.clipped_to(vm_capacity) {
+            preflight_boot_dm_range(clipped, vm_window, policy)?;
+        }
     }
     for r in boot_module_candidates(kernel_info, root) {
-        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags, one_gb)
-            .expect("boot DM: VM window module coverage failed");
-        establish_dm_range::<CurrentDmCoverage>(
-            root, r, u64::MAX, kernel_va, kernel_flags, one_gb,
-        )
-        .expect("boot DM: kernel window module coverage failed");
+        if let Some(clipped) = r.clipped_to(vm_capacity) {
+            preflight_boot_dm_range(clipped, vm_window, policy)?;
+        }
+        preflight_boot_dm_range(r, kernel_window, policy)?;
     }
-
-    // Source 4 (续-50): reserved/occupied regions enter the KERNEL DM only.
-    // The VM DM deliberately stays on sources 1–3 — VM PMM resource
-    // qualification must keep treating non-conventional memory as
-    // unrepresentable (§6.1 资格过滤); the kernel is the only accessor of
-    // its own image/stack pages through the DM alias.
     for r in reserved_regions_candidates(kernel_info, root) {
-        establish_dm_range::<CurrentDmCoverage>(root, r, u64::MAX, kernel_va, kernel_flags, one_gb)
-            .expect("boot DM: kernel window reserved coverage failed");
+        preflight_boot_dm_range(r, kernel_window, policy)?;
     }
 
+    // Pass 2: install the preflighted sequence. Kernel DM first (constraint
+    // ①), then VM DM, then module coverage in both windows, then reserved
+    // regions into the kernel window only.
+    for r in memmap_candidates(kernel_info) {
+        // SAFETY: pass 1 validated geometry; the caller owns the boot-context
+        // contract.
+        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
+    }
+    for r in bootstrap_tree_candidates(kernel_info, root)
+        .into_iter()
+        .flatten()
+    {
+        // SAFETY: as above.
+        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
+    }
+    for r in memmap_candidates(kernel_info) {
+        if let Some(clipped) = r.clipped_to(vm_capacity) {
+            // SAFETY: as above.
+            unsafe { install_prevalidated_boot_dm_range(root, clipped, vm_window, policy)? };
+        }
+    }
+    for r in bootstrap_tree_candidates(kernel_info, root)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(clipped) = r.clipped_to(vm_capacity) {
+            // SAFETY: as above.
+            unsafe { install_prevalidated_boot_dm_range(root, clipped, vm_window, policy)? };
+        }
+    }
+    for r in boot_module_candidates(kernel_info, root) {
+        if let Some(clipped) = r.clipped_to(vm_capacity) {
+            // SAFETY: as above.
+            unsafe { install_prevalidated_boot_dm_range(root, clipped, vm_window, policy)? };
+        }
+        // SAFETY: as above.
+        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
+    }
+    for r in reserved_regions_candidates(kernel_info, root) {
+        // SAFETY: as above.
+        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
+    }
     // NK4-C 第 27 轮取证探针（task1-close 裁决删除）：打印 VM DM 窗口的
     // 实际覆盖清单（三源候选、窗口裁剪后的有效范围）。第 18 轮层级 dump
     // 实锤故障 PT 页落在低内存 PA（lvl2=0x7d027 / lvl1=0），本探针裁决
@@ -159,20 +197,24 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
         }
         C0::write_str("\n");
         for r in memmap_candidates(kernel_info) {
-            if let Some(c) = r.clipped_to(vm_pa_limit) {
+            if let Some(c) = r.clipped_to(vm_capacity) {
+                let _ = c;
             }
         }
         for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
-            if let Some(c) = r.clipped_to(vm_pa_limit) {
+            if let Some(c) = r.clipped_to(vm_capacity) {
+                let _ = c;
             }
         }
         for r in boot_module_candidates(kernel_info, root) {
-            if let Some(c) = r.clipped_to(vm_pa_limit) {
+            if let Some(c) = r.clipped_to(vm_capacity) {
+                let _ = c;
             }
         }
     }
 
     validate_bootstrap_tree(root);
+    Ok(())
 }
 /// Highest PA the per-process window mapping must reach (handoff v5,
 /// fix26).
@@ -225,7 +267,7 @@ pub fn kernel_dm_pa_end(kernel_info: &KernelInfo, root: PhysBytes) -> u64 {
 /// Coverage is PTE-only and does not alter memmap semantics: the pages
 /// stay invisible to PMM resource qualification (exclusion unchanged).
 /// Module ranges beyond the VM window's PA limit are clipped by
-/// `establish_dm_range` and stay outside VM DM representability — same
+/// `install_boot_dm_range` and stay outside VM DM representability — same
 /// treatment as out-of-window memmap ranges.
 ///
 /// Union semantics: a module range overlapping an earlier candidate
@@ -245,7 +287,18 @@ fn boot_module_candidates<'a>(
     kernel_info
         .boot_modules
         .iter()
-        .map(|m| DmRange::new(m.start.0, m.len as u64))
+        .map(|m| {
+            // The shim allocates whole pages for each module but records the
+            // exact byte length. DM ranges are page-granular by contract, and
+            // coverage must include the padding pages the module occupies.
+            let start = m.start.0;
+            let len = m.len as u64;
+            let len = len
+                .checked_add(PAGE_SIZE - 1)
+                .map(|v| v & !(PAGE_SIZE - 1))
+                .unwrap_or(len);
+            DmRange::new(start, len)
+        })
         .filter(move |r| {
             let overlaps = |o: DmRange| r.base < o.base + o.len && o.base < r.base + r.len;
             !memmap_candidates(kernel_info).any(overlaps)
@@ -272,7 +325,7 @@ fn boot_module_candidates<'a>(
 /// Union semantics: a range partially overlapping an earlier candidate
 /// (memmap ∪ root/bump ∪ surviving modules) is dropped whole — leaf
 /// slots are disjoint, so any overlap would make a later
-/// `establish_dm_range` hit `AlreadyMapped` and refuse boot.
+/// `install_boot_dm_range` hit `AlreadyMapped` and refuse boot.
 ///
 /// Known residual gap (NK4-C 续-51 review, open item not closed by this
 /// change): the shim's own root page, bump region and module loads are
@@ -402,6 +455,16 @@ use crate::IDENTITY_MAP_END;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "mock")]
+    fn mock_dm_policy() -> DmPagePolicy<minix_arch::arch::boot_arch::MockBootArch> {
+        use minix_arch::arch::boot_arch::MockBootArch;
+        use minix_arch::arch::direct_map::DirectMapLayout;
+        use minix_arch::paging_ext::detect_boot_page_support;
+        let support = detect_boot_page_support::<MockBootArch>().unwrap();
+        plan_dm_policy::<MockBootArch>(&support, &DirectMapLayout::from_arch()).unwrap()
+    }
+
     use minix_boot::{KernelInfo, MemoryRegion};
     use minix_types::{USER_STACK_TOP, VirBytes};
 
@@ -676,16 +739,14 @@ mod tests {
         };
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000);
         let root = PhysBytes(0x1000);
+        let policy = mock_dm_policy();
+        let window = policy.kernel_window();
         for r in reserved_regions_candidates(&info, root) {
-            establish_dm_range::<minix_arch::arch::dm_coverage::mock::MockDmCoverage>(
-                root,
-                r,
-                u64::MAX,
-                CurrentDirectMap::KERNEL_DIRECT_MAP_BASE,
-                PageFlags::kernel_read_write(),
-                true,
-            )
-            .expect("mock kernel window reserved coverage");
+            preflight_boot_dm_range(r, window, &policy)
+                .expect("mock kernel window reserved coverage preflight");
+            // SAFETY: host test mock records leaves; no page tables are touched.
+            unsafe { install_prevalidated_boot_dm_range(root, r, window, &policy) }
+                .expect("mock kernel window reserved coverage");
         }
         let leaves = minix_arch::arch::dm_coverage::mock::mock_dm_leaves();
         let base = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
@@ -752,7 +813,10 @@ mod tests {
         boot_alloc::init_boot_pt_alloc(0x200_0000, 0x210_0000);
         let root = PhysBytes(0x1_0000); // inside the memmap → source-2 root drops
 
-        establish_boot_dm(&info, root);
+        let policy = mock_dm_policy();
+        // SAFETY: host test mock records leaves; no page tables are touched.
+        unsafe { establish_boot_dm::<minix_arch::arch::boot_arch::MockBootArch>(&info, root, &policy) }
+            .expect("mock establish_boot_dm");
 
         let leaves = minix_arch::arch::dm_coverage::mock::mock_dm_leaves();
         assert!(
@@ -806,7 +870,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
         };
-        let info_ref = crate::arch_boot_impl::<minix_arch::paging::mock::MockPaging>(&info, PhysBytes(0x1000));
+        let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, PhysBytes(0x1000));
         assert_eq!(info_ref.kern_virt_base.0, info.kern_virt_base.0,
             "returned KernelInfo should match input");
     }
@@ -832,7 +896,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
         };
-        let info_ref = crate::arch_boot_impl::<minix_arch::paging::mock::MockPaging>(&info, PhysBytes(0x1000));
+        let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, PhysBytes(0x1000));
         assert_eq!(info_ref.kern_phys_base.0, 0x4020_0000);
     }
 
@@ -857,7 +921,7 @@ mod tests {
             param_buf: &[],
             reserved_regions: &[],
         };
-        let info_ref = crate::arch_boot_impl::<minix_arch::paging::mock::MockPaging>(&info, PhysBytes(0x1000));
+        let info_ref = crate::arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, PhysBytes(0x1000));
         assert_eq!(info_ref.kern_phys_base.0, 0x8000_0000);
     }
 }

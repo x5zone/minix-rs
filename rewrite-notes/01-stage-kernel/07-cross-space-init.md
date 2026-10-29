@@ -888,60 +888,64 @@ VM 运行期    init_page_table → map_kernel 复刻四段映射（含内核 DM
 第二个是贪心的粒度选择（`os/arch/src/arch/dm_coverage.rs:plan_range_units`，逐字引用）：
 
 ```rust
-pub fn plan_range_units<F: FnMut(u64, usize) -> Result<(), PageTableError>>(
+pub fn plan_range_units<A: BootArch, F: FnMut(u64, PageSize) -> Result<(), PageTableError>>(
     range: DmRange,
-    one_gb: bool,
-    page_size: u64,
+    policy: &DmPagePolicy<A>,
     mut emit: F,
 ) -> Result<(), PageTableError> {
-    debug_assert!(
-        range.base.is_multiple_of(page_size) && range.len.is_multiple_of(page_size),
-        "DM candidate range must be page-aligned"
-    );
-    const TWO_MB: u64 = 1 << 21;
-    const ONE_GB: u64 = 1 << 30;
+    let base = policy.base_page_size().bytes();
+    if range.base % base != 0 || range.len % base != 0 {
+        return Err(PageTableError::InvalidAddress);
+    }
+    let end = range
+        .base
+        .checked_add(range.len)
+        .ok_or(PageTableError::InvalidAddress)?;
+    if range.len == 0 {
+        return Ok(());
+    }
+
+    let preferred = policy.preferred_page_size();
+    let fallback = policy.fallback_page_size();
     let mut cur = range.base;
-    let end = range.base + range.len;
     while cur < end {
         let remaining = end - cur;
-        if one_gb && cur.is_multiple_of(ONE_GB) && remaining >= ONE_GB {
-            emit(cur, ONE_GB as usize)?;
-            cur += ONE_GB;
-        } else if cur.is_multiple_of(TWO_MB) && remaining >= TWO_MB {
-            emit(cur, TWO_MB as usize)?;
-            cur += TWO_MB;
-        } else {
-            emit(cur, page_size as usize)?;
-            cur += page_size;
-        }
+        let unit = preferred
+            .filter(|size| cur.is_multiple_of(size.bytes()) && remaining >= size.bytes())
+            .or_else(|| {
+                (cur.is_multiple_of(fallback.bytes()) && remaining >= fallback.bytes())
+                    .then_some(fallback)
+            })
+            .unwrap_or(policy.base_page_size());
+
+        let unit_bytes = unit.bytes();
+        emit(cur, unit)?;
+        cur = cur
+            .checked_add(unit_bytes)
+            .ok_or(PageTableError::InvalidAddress)?;
     }
     Ok(())
 }
 ```
 
-每个发出的 `(物理地址, 尺寸)` 单元都整体落在候选区间内——大页叶只有在"对齐且剩余量足够"时才发出。"洞不被吞"的执行点就在这个循环里：一个不属于任何候选的洞（例如 x86 legacy 的 `[0xA0000, 0x100000)`），在 1 GiB、2 MiB、4 KiB 任何粒度上都不会成为某个单元的一部分。手排一次：候选 `[0, 0x40_0000)`（2 MiB 对齐、4 MiB 长）在 `one_gb = false` 时发出 `(0x0, 2 MiB)`、`(0x20_0000, 2 MiB)` 两个 2 MiB 叶——零 4 KiB 叶。
+每个发出的 `(物理地址, 尺寸)` 单元都整体落在候选区间内——大页叶只有在"对齐且剩余量足够"时才发出。"洞不被吞"的执行点就在这个循环里：一个不属于任何候选的洞（例如 x86 legacy 的 `[0xA0000, 0x100000)`），在首选尺寸、回退尺寸、基础页任何粒度上都不会成为某个单元的一部分。手排一次：候选 `[0, 0x40_0000)`（2 MiB 对齐、4 MiB 长）在首选尺寸不可用时发出 `(0x0, 2 MiB)`、`(0x20_0000, 2 MiB)` 两个 2 MiB 叶——零 4 KiB 叶。
 
-第三个是按架构装叶的 trait 与驱动（`os/arch/src/arch/dm_coverage.rs:establish_dm_range`，逐字引用）：
+第三个是按架构装叶的 trait 与两层驱动（`os/arch/src/arch/dm_coverage.rs:install_boot_dm_range`，逐字引用）：
 
 ```rust
-pub fn establish_dm_range<P: DmCoverageArch>(
+pub unsafe fn install_boot_dm_range<A: BootArch>(
     root: PhysBytes,
     range: DmRange,
-    window_pa_limit: u64,
-    va_base: u64,
-    flags: PageFlags,
+    window: DmWindow<A>,
+    policy: &DmPagePolicy<A>,
 ) -> Result<(), PageTableError> {
-    let Some(clipped) = range.clipped_to(window_pa_limit) else {
-        return Ok(());
-    };
-    plan_range_units(clipped, P::supports_1gb_page(), 4096, |pa, size| {
-        // SAFETY: boot context per `dm_install_leaf` contract — paging is
-        // enabled on `root`, all table pages satisfy the allocation bound,
-        // and the caller guarantees single-threaded boot.
-        unsafe { P::dm_install_leaf(root, VirBytes(va_base + pa), PhysBytes(pa), size, flags) }
-    })
+    preflight_boot_dm_range(range, window, policy)?;
+    // SAFETY: preflight passed; the caller owns the boot-context contract.
+    unsafe { install_prevalidated_boot_dm_range(root, range, window, policy) }
 }
 ```
+
+`preflight_boot_dm_range` 在写第一张叶子之前检查窗口归属、范围端点与长度、窗口容量、`phys_addr_limit`，以及规划器将发射的每个叶子的 VA/PA 对齐与边界；`install_prevalidated_boot_dm_range` 只重放同一序列并调用 `A::DmInstaller::dm_install_leaf`。`establish_boot_dm` 先对 Kernel DM 与 VM DM 的全部候选做一遍预检，再走安装层——几何错误不会留下任何新叶子。
 
 `DmCoverageArch` 的实现者（x86-64 侧 `os/arch/src/x86_64/paging.rs:X86_64DmCoverage`）要把每个单元写到 bootstrap 根的表树里，且**不得使用正在建立的窗口本身**——所有表访问走恒等写通道（`VA = PA`），这条自举约束写在 trait 的合同注释里。x86-64 实现里最重的一段是 VM 窗口与恒等映射的重叠善后（`os/arch/src/x86_64/paging.rs:X86_64DmCoverage::dm_install_leaf` 的拆分分支，节选；省略号处为对齐检查、PML4 层处理与 1 GiB 整叶替换分支；块内注释含仓库内部评审记录的编号标记，按原文引用）：
 
