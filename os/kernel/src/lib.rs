@@ -605,6 +605,30 @@ fn mock_kmain_ok() -> ! {
 /// Returns `kern_huge` (in bytes, as u64) — the page size to use for both
 /// identity mapping and kernel mapping loops. This avoids duplicating the
 /// alignment/size selection logic between Step 0a validation and Step 2.
+/// Choose the kernel mapping page size: capability first, then layout.
+///
+/// The old selection looked only at alignment. A machine whose layout happens
+/// to be 1 GiB-aligned but whose CPU/translation mode does not support 1 GiB
+/// pages then picked an unsupported size and failed later in `map_huge`. The
+/// capability check must come first; the fallback size is used only when the
+/// preferred size is unsupported or the layout is not aligned to it.
+fn choose_kernel_page_size(
+    huge: u64,
+    fallback: u64,
+    huge_supported: bool,
+    fallback_supported: bool,
+    huge_aligned: bool,
+    fallback_aligned: bool,
+) -> Option<u64> {
+    if huge_supported && huge_aligned {
+        Some(huge)
+    } else if fallback_supported && fallback_aligned {
+        Some(fallback)
+    } else {
+        None
+    }
+}
+
 fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
     // NK4-A 逐断言路标（首亮诊断；方法同 arch_boot 入口）。
     macro_rules! vmark {
@@ -636,13 +660,23 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
     assert!(kv.is_multiple_of(0x1000), "arch_boot: kern_virt_base must be page-aligned");
 
     // Choose the largest huge-page size that both bases and kern_size are aligned to.
-    let kern_huge = if kv.is_multiple_of(huge) && kp.is_multiple_of(huge) && ks.is_multiple_of(huge) {
-        huge
-    } else if kv.is_multiple_of(fallback) && kp.is_multiple_of(fallback) && ks.is_multiple_of(fallback) {
-        fallback
-    } else {
-        panic!("arch_boot: kern_virt_base, kern_phys_base, and kern_size must be aligned to at least FALLBACK_HUGE_PAGE_SIZE");
-    };
+    let huge_aligned = kv.is_multiple_of(huge) && kp.is_multiple_of(huge) && ks.is_multiple_of(huge);
+    let fallback_aligned =
+        kv.is_multiple_of(fallback) && kp.is_multiple_of(fallback) && ks.is_multiple_of(fallback);
+    let kern_huge = choose_kernel_page_size(
+        huge,
+        fallback,
+        P::supports_huge_page(huge as usize),
+        P::supports_huge_page(fallback as usize),
+        huge_aligned,
+        fallback_aligned,
+    )
+    .unwrap_or_else(|| {
+        panic!(
+            "arch_boot: kern_virt_base, kern_phys_base, and kern_size must be aligned to at \
+             least FALLBACK_HUGE_PAGE_SIZE and the page size must be supported by this target"
+        )
+    });
 
     // kern_size must be a multiple of kern_huge for the mapping loop
     assert!(ks.is_multiple_of(kern_huge),
@@ -6041,4 +6075,50 @@ pub fn minix_shutdown(status: u32) -> ! {
     Console::write_hex(status as u64);
     Console::write_str(")\n");
     minix_plat::shutdown_qemu(status)
+}
+
+#[cfg(test)]
+mod page_size_choice_tests {
+    use super::choose_kernel_page_size;
+
+    const GIB: u64 = 1 << 30;
+    const MIB2: u64 = 1 << 21;
+
+    #[test]
+    fn picks_the_huge_page_when_supported_and_aligned() {
+        assert_eq!(
+            choose_kernel_page_size(GIB, MIB2, true, true, true, true),
+            Some(GIB)
+        );
+    }
+
+    #[test]
+    fn falls_back_when_the_huge_page_is_unsupported_despite_alignment() {
+        // The regression this batches fixes: an aligned layout on a CPU that
+        // lacks 1 GiB pages must select the 2 MiB fallback, not the 1 GiB size.
+        assert_eq!(
+            choose_kernel_page_size(GIB, MIB2, false, true, true, true),
+            Some(MIB2)
+        );
+    }
+
+    #[test]
+    fn falls_back_when_only_the_fallback_is_aligned() {
+        assert_eq!(
+            choose_kernel_page_size(GIB, MIB2, true, true, false, true),
+            Some(MIB2)
+        );
+    }
+
+    #[test]
+    fn rejects_when_neither_size_is_usable() {
+        assert_eq!(
+            choose_kernel_page_size(GIB, MIB2, false, false, true, true),
+            None
+        );
+        assert_eq!(
+            choose_kernel_page_size(GIB, MIB2, true, true, false, false),
+            None
+        );
+    }
 }
