@@ -67,8 +67,10 @@
 
 use crate::boot_alloc;
 use minix_arch::paging::PageFlags;
+use minix_arch::paging_ext::PageSize;
 use minix_arch::{
-    CurrentDirectMap, CurrentDmCoverage, DirectMapArch, DmRange, establish_dm_range,
+    CurrentDirectMap, CurrentDmCoverage, CurrentPaging, DirectMapArch, DmRange, HugePages,
+    establish_dm_range,
 };
 use minix_boot::KernelInfo;
 use minix_types::PhysBytes;
@@ -91,17 +93,20 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
     let kernel_va = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
     let vm_va = CurrentDirectMap::VM_DIRECT_MAP_BASE;
     let vm_pa_limit = CurrentDirectMap::VM_DIRECT_MAP_SIZE;
+    // Capability fact for page-size selection: one 1 GiB leaf only when the
+    // CPU can emit one, otherwise the driver falls back to 2 MiB / 4 KiB.
+    let one_gb = CurrentPaging::supports_huge_page(PageSize::GIB_1);
 
     // Kernel DM first (§6.1 constraint ①), full PA span.
     for r in memmap_candidates(kernel_info) {
         establish_dm_range::<CurrentDmCoverage>(
-            root, r, u64::MAX, kernel_va, kernel_flags,
+            root, r, u64::MAX, kernel_va, kernel_flags, one_gb,
         )
         .expect("boot DM: kernel window establishment failed");
     }
     for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
         establish_dm_range::<CurrentDmCoverage>(
-            root, r, u64::MAX, kernel_va, kernel_flags,
+            root, r, u64::MAX, kernel_va, kernel_flags, one_gb,
         )
         .expect("boot DM: kernel window establishment failed");
     }
@@ -110,18 +115,18 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
     // window stay outside DM representability (resource qualification
     // excludes them from VM PMM — §6.1 资格过滤).
     for r in memmap_candidates(kernel_info) {
-        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags)
+        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags, one_gb)
             .expect("boot DM: VM window establishment failed");
     }
     for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
-        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags)
+        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags, one_gb)
             .expect("boot DM: VM window establishment failed");
     }
     for r in boot_module_candidates(kernel_info, root) {
-        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags)
+        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags, one_gb)
             .expect("boot DM: VM window module coverage failed");
         establish_dm_range::<CurrentDmCoverage>(
-            root, r, u64::MAX, kernel_va, kernel_flags,
+            root, r, u64::MAX, kernel_va, kernel_flags, one_gb,
         )
         .expect("boot DM: kernel window module coverage failed");
     }
@@ -132,7 +137,7 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
     // unrepresentable (§6.1 资格过滤); the kernel is the only accessor of
     // its own image/stack pages through the DM alias.
     for r in reserved_regions_candidates(kernel_info, root) {
-        establish_dm_range::<CurrentDmCoverage>(root, r, u64::MAX, kernel_va, kernel_flags)
+        establish_dm_range::<CurrentDmCoverage>(root, r, u64::MAX, kernel_va, kernel_flags, one_gb)
             .expect("boot DM: kernel window reserved coverage failed");
     }
 
@@ -678,6 +683,7 @@ mod tests {
                 u64::MAX,
                 CurrentDirectMap::KERNEL_DIRECT_MAP_BASE,
                 PageFlags::kernel_read_write(),
+                true,
             )
             .expect("mock kernel window reserved coverage");
         }

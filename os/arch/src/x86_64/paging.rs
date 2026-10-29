@@ -14,7 +14,7 @@
 //! (`DirectMapArch::vm_phys_to_virt`).
 
 use crate::paging::{Paging, PageFlags, PageTableError};
-use crate::paging_ext::HugePages;
+use crate::paging_ext::{HugePages, PageSize};
 use crate::direct_map::{DirectMapArch, X86_64DirectMap};
 use crate::pte_walk_arch::PteWalkArch;
 use minix_types::{PhysBytes, VirBytes};
@@ -1025,11 +1025,10 @@ unsafe fn free_child_tables(&self, table_paddr: u64, level: u8) {
 
 /// Single CPUID probe for 1 GiB page support.
 ///
-/// Both the runtime paging-handle face
-/// (`HugePages::supports_1gb_page`) and the boot-time DM-establishment face
-/// (`DmCoverageArch::supports_1gb_page`) forward here, so the hardware
-/// question is answered in one place even though the two traits keep
-/// separate lifecycles.
+/// The only capability entry point is
+/// `HugePages::supports_huge_page(PageSize::GIB_1)`; boot-time DM planning
+/// receives that fact from its caller, so the hardware question is answered
+/// here once and never re-derived by a second trait face.
 fn probe_1gb_page_support() -> bool {
     let mut edx: u32;
     unsafe {
@@ -1048,10 +1047,10 @@ fn probe_1gb_page_support() -> bool {
 }
 
 impl HugePages for X86_64Paging {
-    const HUGE_PAGE_SIZES: &'static [usize] = &[1 << 30, 1 << 21];
-    const HUGE_PAGE_SIZE: u64 = 1 << 30;
+    const HUGE_PAGE_SIZES: &'static [PageSize] = &[PageSize::GIB_1, PageSize::MIB_2];
+    const HUGE_PAGE_SIZE: PageSize = PageSize::GIB_1;
     const HUGE_PAGE_SHIFT: u32 = 30;
-    const FALLBACK_HUGE_PAGE_SIZE: u64 = 1 << 21;
+    const FALLBACK_HUGE_PAGE_SIZE: PageSize = PageSize::MIB_2;
     /// PS bit (bit 7) indicates a huge page at PDPT level (1GB) or PD level (2MB).
     /// The same bit position is used for both sizes; the level determines the
     /// actual page size.
@@ -1061,9 +1060,12 @@ impl HugePages for X86_64Paging {
         &mut self,
         vaddr: VirBytes,
         paddr: PhysBytes,
-        size: usize,
+        size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        let size = size
+            .try_as_usize()
+            .ok_or(PageTableError::InvalidAddress)?;
         let pte_flags = flags_to_pte(flags);
         let shift = if size >= 1 << 30 { PDPT_SHIFT } else { PD_SHIFT };
         // PS bit (bit 7) is the same for both 1GB (PDPT.PS) and 2MB (PD.PS) pages.
@@ -1110,9 +1112,18 @@ impl HugePages for X86_64Paging {
         Ok(())
     }
 
-    /// Whether the CPU supports 1 GB huge pages (CPUID.80000001H:EDX.GBPAGES bit 26).
-    fn supports_1gb_page() -> bool {
-        probe_1gb_page_support()
+    /// Whether the CPU supports the given huge page size.
+    ///
+    /// 1 GiB needs CPUID.80000001H:EDX.GBPAGES (bit 26); 2 MiB is mandatory on
+    /// x86-64. Other sizes are not offered by this implementation.
+    fn supports_huge_page(size: PageSize) -> bool {
+        if size == PageSize::GIB_1 {
+            probe_1gb_page_support()
+        } else if size == PageSize::MIB_2 {
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -1155,11 +1166,6 @@ unsafe fn flush_cr3(root_paddr: u64) { unsafe {
 pub struct X86_64DmCoverage;
 
 impl crate::arch::dm_coverage::DmCoverageArch for X86_64DmCoverage {
-    /// CPUID.80000001H:EDX.GBPAGES — same probe as [`X86_64Paging`].
-    fn supports_1gb_page() -> bool {
-        probe_1gb_page_support()
-    }
-
     unsafe fn dm_install_leaf(
         root_paddr: PhysBytes,
         vaddr: VirBytes,
@@ -1410,18 +1416,23 @@ unsafe fn is_identity_table(pdpt: u64, i3: usize, vaddr: u64) -> bool { unsafe {
 mod tests {
     use super::*;
 
-    /// The runtime and boot-time capability faces must answer the same
-    /// hardware question. This catches a future edit that stops forwarding
-    /// one of them to the shared CPUID probe.
+    /// The unified capability entry point: 1 GiB follows the CPUID probe,
+    /// 2 MiB is mandatory on x86-64, and sizes outside the translated set are
+    /// rejected. Pins that the boot-time DM path receives this same answer
+    /// instead of re-deriving it behind a second trait face.
     #[test]
-    fn test_1gb_capability_faces_agree() {
-        let runtime = <X86_64Paging as HugePages>::supports_1gb_page();
-        let boot =
-            <X86_64DmCoverage as crate::arch::dm_coverage::DmCoverageArch>::supports_1gb_page();
+    fn test_huge_page_capability_unified_entry() {
         assert_eq!(
-            runtime, boot,
-            "HugePages and DmCoverageArch disagree on 1 GiB support"
+            <X86_64Paging as HugePages>::supports_huge_page(PageSize::GIB_1),
+            probe_1gb_page_support(),
+            "1 GiB support must come from CPUID.80000001H:EDX.GBPAGES"
         );
+        assert!(<X86_64Paging as HugePages>::supports_huge_page(
+            PageSize::MIB_2
+        ));
+        assert!(!<X86_64Paging as HugePages>::supports_huge_page(
+            PageSize::KIB_4
+        ));
     }
 
     /// F7 防回归（NK4-C 阶段0）：`leaf_pa + i << SHIFT` 在 Rust 里解析为

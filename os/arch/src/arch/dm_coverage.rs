@@ -145,18 +145,6 @@ pub fn plan_range_units<F: FnMut(u64, usize) -> Result<(), PageTableError>>(
 /// page-table service, so implementors are dedicated ZSTs rather than the
 /// runtime `Paging` types.
 pub trait DmCoverageArch {
-    /// Whether the MMU can emit 1 GiB leaves — input to page-size selection
-    /// ([`plan_range_units`]). x86-64 overrides with the architecture's shared
-    /// CPUID probe; ARM64 and RISC-V always support 1 GiB blocks.
-    ///
-    /// This is the boot-time face of the same capability that
-    /// `HugePages::supports_1gb_page` exposes to runtime paging handles. The
-    /// traits remain separate because DM establishment is static
-    /// bootstrap-root table surgery, not a per-handle page-table service.
-    fn supports_1gb_page() -> bool {
-        true
-    }
-
     /// Install one leaf mapping `vaddr → paddr` with `size ∈ {1 GiB, 2 MiB,
     /// 4 KiB}` (matching the sizes [`plan_range_units`] emits) and `flags`.
     ///
@@ -198,6 +186,12 @@ pub trait DmCoverageArch {
 /// DM, whose VA span covers all of physical memory), selects page sizes by
 /// resource containment, and installs each unit at `va_base + pa`.
 ///
+/// `one_gb` is the architecture's 1 GiB capability fact, supplied by the
+/// caller from the paging capability API
+/// (`HugePages::supports_huge_page(PageSize::GIB_1)`). It is a parameter
+/// rather than a trait constant because DM establishment is static
+/// bootstrap-root surgery and must not depend on a runtime paging handle.
+///
 /// - Kernel DM: `va_base = KERNEL_DIRECT_MAP_BASE`, `flags` supervisor RW.
 /// - VM DM: `va_base = VM_DIRECT_MAP_BASE`, `flags` user RW,
 ///   `window_pa_limit = VM_DIRECT_MAP_SIZE`.
@@ -207,11 +201,12 @@ pub fn establish_dm_range<P: DmCoverageArch>(
     window_pa_limit: u64,
     va_base: u64,
     flags: PageFlags,
+    one_gb: bool,
 ) -> Result<(), PageTableError> {
     let Some(clipped) = range.clipped_to(window_pa_limit) else {
         return Ok(());
     };
-    plan_range_units(clipped, P::supports_1gb_page(), 4096, |pa, size| {
+    plan_range_units(clipped, one_gb, 4096, |pa, size| {
         // SAFETY: boot context per `dm_install_leaf` contract — paging is
         // enabled on `root`, all table pages satisfy the allocation bound,
         // and the caller guarantees single-threaded boot.
@@ -229,8 +224,6 @@ pub fn establish_dm_range<P: DmCoverageArch>(
 #[cfg(feature = "runtime-window")]
 pub mod mock {
     use super::{DmCoverageArch, PageFlags, PageTableError};
-    use crate::arch::paging::mock::MockPaging;
-    use crate::arch::paging_ext::HugePages;
     use minix_types::{PhysBytes, VirBytes};
     use std::collections::BTreeMap;
     use std::sync::{Mutex, OnceLock};
@@ -247,10 +240,6 @@ pub mod mock {
     pub struct MockDmCoverage;
 
     impl DmCoverageArch for MockDmCoverage {
-        fn supports_1gb_page() -> bool {
-            MockPaging::supports_1gb_page()
-        }
-
         unsafe fn dm_install_leaf(
             _root_paddr: PhysBytes,
             vaddr: VirBytes,
@@ -447,6 +436,7 @@ mod tests {
                 u64::MAX,
                 MOCK_VM_BASE,
                 flags,
+                true,
             )
             .unwrap();
             establish_dm_range::<MockDmCoverage>(
@@ -455,6 +445,7 @@ mod tests {
                 u64::MAX,
                 MOCK_VM_BASE,
                 flags,
+                true,
             )
             .unwrap();
 
@@ -494,6 +485,7 @@ mod tests {
                 0x4000_0000,
                 MOCK_VM_BASE,
                 flags,
+                true,
             )
             .unwrap();
             let leaves = mock_dm_leaves();
@@ -524,6 +516,7 @@ mod tests {
                 1 << 30,
                 MOCK_VM_BASE,
                 flags,
+                true,
             )
             .unwrap();
             let leaves = mock_dm_leaves();
@@ -545,6 +538,7 @@ mod tests {
                 u64::MAX,
                 MOCK_VM_BASE,
                 flags,
+                true,
             )
             .unwrap();
             let err = establish_dm_range::<MockDmCoverage>(
@@ -553,6 +547,7 @@ mod tests {
                 u64::MAX,
                 MOCK_VM_BASE,
                 flags,
+                true,
             )
             .unwrap_err();
             assert_eq!(err, PageTableError::AlreadyMapped);
