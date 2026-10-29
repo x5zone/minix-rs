@@ -2587,3 +2587,18 @@ raw 空缓冲探测加 `BUFFER_TOO_SMALL` 扩容；`uefi-raw 0.9` 成为 boot-sh
 属既有 A 板目录读问题，不计本批回归。基线取证同时确认：kernel mock 845/0/8、boot-shim
 52/0 + 3/0、minix-boot 54/0、minix-arch runtime-window 270/0、run_all 39/0/0
 （`tmp/01-cboard-baseline-20261030/`）。
+
+**T3PARAM 里程碑（2026-10-30，01 篇 D-66 param_buf）**：码笔 `b860dd2cc`、合并笔
+`3c6f81513`。`minix-boot` 新增 `boot_params.rs`（`normalize_param_buf`：NUL/空白分词、
+可打印 ASCII、内部键拒绝、重复键首条胜出、整条记录截断）；`build_kernel_info` 增
+`param_buf` 形参；UEFI 腿读 `EFI_LOADED_IMAGE_PROTOCOL.LoadOptions`，OpenSBI/直核腿读
+DTB `/chosen/bootargs`（`all_nodes` 走查，避开 fdt 0.1.5 `find_node` 的 SD-38 缺陷——
+`chosen()` helper 会在 QEMU 重建树上 panic）。`KernelInfo` 与内核零改动。门读数：
+minix-boot **65/0**、boot-shim test-all **53/0** + 边界审计 **5/0**、kernel mock
+**845/0/8**、三架构 kernel/kernel-image check **0 error**、合并后 `run_all` **39/0/0**
+（`tmp/01-cboard-baseline-20261030/run-all-t3.log`）。真机读数：aarch64 直核注入
+`/chosen/bootargs "ARCH=probe BOARD=qemu FOO=bar"` 后串口
+`param_buf bytes=0x15 first=ARCH=aarch64`（ARCH 13 B + `FOO=bar` 8 B；BOARD 无来源
+省略、外部同名键被拒），`test-smp-aps-aarch64` PASS；UEFI aarch64 腿
+`param_buf bytes=13 rejected=0 dropped=0`（AAVMF 启动管理器未传 LoadOptions）。
+riscv 直核面复用同一代码，其现有夹具模块表为空、走不到 builder，端到端读数留 D-73。
