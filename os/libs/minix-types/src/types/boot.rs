@@ -254,8 +254,8 @@ pub struct VmBootHandoff {
     /// The kernel owns the page; VM maps it read-only at
     /// [`KERNINFO_USER_VA`] in every new address-space root (and frees only
     /// the intermediate page-table pages, never this frame). Production is
-    /// always non-zero; the staged QEMU test kernels (`qemu_test`) skip the
-    /// kernel's Phase B.5 and report 0, in which case VM skips the mapping.
+    /// always non-zero; the staged bootstrap test kernels skip the kernel's
+    /// Phase B.5 and report 0, in which case VM skips the mapping.
     pub kerninfo_pa: u64,
     /// Bytes the kernel allocated to load VM (ELF segments, stacks, boot
     /// page-table pages). C: `kinfo.vm_allocated_bytes` (param.h) —
