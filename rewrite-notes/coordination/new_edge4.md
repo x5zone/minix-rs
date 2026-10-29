@@ -2088,6 +2088,17 @@ HEAD 同件都报 0 ⇒ 全是本轮自造）；`cargo clippy --offline -j 1 --a
 `todo-reconcile-scan` 的 `探针命名族` 漂移归一线。**取证回抄照办**：release 前把 `tmp/jot-464` 整目录
 复制回主树 `tmp/`。
 
+**合回读数（第一百七十八笔补记，批次四百六十四）**：本支四笔（码笔 `66864d1f1`、文档笔 `fa22969db`、里程碑笔
+`502b724f1`、合入笔 `449af843a`）在合回前把 `rewrite` 那六笔 01TODO-B3/B4 收进来，冲突只有一处——`new_edge4.md`
+的同一处尾追，按两侧各留全解（本笔的 `###` 段在前、那两条流水行在后）。**逐笔验祖先**：四个哈希对 `rewrite` 全部
+`merge-base --is-ancestor` 为真；主树 `rewrite` 从 `95944784c` 前进到 `449af843a` 是 fast-forward，主树脏文件与入栈
+八件零交集（`git status --porcelain` 的词表与 `git diff --name-only rewrite...claim/*` 取集合差）。主树合回后当场复跑
+`cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → 退 0、**69 段 / 1264 / 0**
+（`tmp/jot-464-main-recheck.log`），与领取树合回前后两次同读数；取证目录 `tmp/jot-464`（37 项，含 `head/`、`post/`
+两份快照与六枚负控日志）已回抄主树。门④本支三笔的 `HEAD~3..HEAD` 复跑是 4 个文件 / 257 个新增行、**error 级 0**。
+门②那条「不同树不可比」的口径本笔再核一次：同一条命令在领取树是 764 个 md / 断链 131，在主树是 2010 个 md / 222，
+差的那一千多个文件是别的线未入库的工作笔记，**做集合差必须在同一棵树里取基线**。
+
 - `2026-10-29` zcode-glm / 01 篇 todo 第三批（`claim/01TODO-B3-zcode-glm` → 合并笔 `23b3e3267`）：T4/D-68 闭合——`bootface_a64` 删 `fill_memmap`/`clip_firmware`/`MEMMAP_STORAGE`/`MEMMAP_MAX`，改调 `minix_boot::DtbMemoryMap::new(&fdt, 0).collect()`（第四链并入 I-22 单源；`fw_end=0` 形态前提成文）；内核 Phase A.2 新增 Step 4：遍历 `platform_sources` 的 DTB 源，`dtb_blob_len` 从 8 字节头取真实 totalsize 后 `cut_memmap` 永久扣除（riscv 已削界、UEFI reserved 区均 no-op）。宿主测试用真实 QEMU blob（7699B @ 0x4000_0000，/memory=512MiB）断言切除后自由段 `[0x4000_2000, +512MiB-0x2000)`。**门读数**：`MEMMAP_STORAGE|clip_firmware|fill_memmap` → 0；aarch64 kernel-image（SD-23 RUSTFLAGS）0 error、x86/riscv kernel-image 各 0 error；docker kernel mock 843/0/8（memmap 16→17）；`test-smp-aps-aarch64.sh` 直核全链 PASS（ap-arrived=1，终版代码重跑）；doc-lint 0。**在册**：T1/T5/T3/T2 与 N-4/N-5 未动。
 
 - `2026-10-29` zcode-glm / 01 篇 todo 第四批（`claim/01TODO-B4-zcode-glm` → 合并笔 `39fd630ea`）：N-4 重复面收敛（D-68 解锁后项）——`NAME_POOL`/`NAME_SLOT`、名字池与 `MODULE_NAMES` 的编译期对账、`be_cell`/`fdt_table_pa`/`in_memmap`/`in_memmap_range`/`table_magic_ok` 下沉新模块 `kernel-image/src/bootface_common.rs`；`say`/`say_hex`、`place_modules`、布局常量组留两份并互指（架构真差异/本地胶水）。**偏离**：工单原写「能下沉 boot-shim 库就下沉」，实际落在 kernel-image 包内共享模块（这批 helper 是零堆/物址视图专用，进 boot-shim 公共面会为单消费者扩边界）。**门读数**：riscv64/aarch64 kernel-image check（SD-23 RUSTFLAGS）各 0 error、无 bootface 告警；`test-smp-aps-aarch64`（ap-arrived=1）与 `test-kernel-image-riscv64-bootface` 双 PASS。**在册**：N-5 独立探针批次；T1/T5/T3/T2/D-59/D-72/D-73 与 §5 文档批未动。
