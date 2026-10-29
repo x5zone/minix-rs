@@ -7,8 +7,8 @@
 //! 这里）：
 //!
 //! 1. **memmap**：OpenSBI 递入 `a1` 的 DTB 物理址解析 `/memory` 节点的
-//!    `reg`——不再抄 `opensbi_helpers::build_memmap` 的单区硬编码（那是把
-//!    QEMU 拓扑写进产物的测试形状，NK4B M4.4 事实三已判「生产不可用」）。
+//!    `reg`——与 opensbi 腿共享同一个 `minix_boot::DtbMemoryMap`（trait
+//!    `MemoryMapSource` 在 `minix-boot`；I-22 三链收口，引导形态层不合并）。
 //! 2. **模块装载源**：`BootFileTable`（magic `MNXBOOT1` 把关）。两个通道：
 //!    U-Boot 腿的 `a2` 寄存器约定，与 DTB `/chosen` 的
 //!    `opensbi,boot-file-table` 属性（后者让 OpenSBI `-kernel` 直载 +
