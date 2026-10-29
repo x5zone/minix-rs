@@ -236,6 +236,8 @@ fn store_kernel_info(info: &KernelInfoView<'_>) -> Result<KernelInfo, StoreError
 
 本树的引导形态共五种（登记于 `os/libs/minix-boot/src/boot_form.rs`）：x86_64 UEFI 内联（内核静态链进 boot-shim PE、进程内调 `arch_boot`）、aarch64 UEFI 跨镜像、riscv64 OpenSBI 自举、aarch64 QEMU 直核、riscv64 早期 hart 邮箱。
 
+直核自引导（`bootface`/`bootface_a64`）在真板上的落位不对称，矩阵与理由见 01 篇 §3.7 的 `[ARCH: FW_PAYLOAD 直核形态（Minix3 无对应）]` 一段：x86 无对应形态（平台规范强制 BIOS/UEFI）、aarch64 以覆盖测试为主、riscv64 测试与真板嵌入式并存；它是辅助启动路径，主线仍是独立 shim + 独立内核镜像。
+
 aarch64 走跨镜像的原因是结构性缺陷取证：内核内联在 PE 低地址执行时，第一次进程根切换（换 TTBR0 + `tlbi alle1is`）会摧毁内核自己的取指映射（真机取证：`elr`/`vbar` 钉死在 `0x43e0_xxxx`）。修复是方案 A：boot-shim 建表开分页后**绝对跳**进独立 `kernel.elf` 的高半入口（高半映射住永不切换的 TTBR1），此后整个内核在高地址执行、对根切换免疫。
 
 跨镜像交换的语义裁决已完成——coordination 台账裁决原文（`rewrite-notes/coordination/TODO-LEDGER-DONE.md` §2）：

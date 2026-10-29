@@ -1,5 +1,9 @@
 //! NK4-C 续-88 甲案（riscv64 装机面）：kernel-image 自当引导体。
 //!
+//! `[ARCH: FW_PAYLOAD 直核形态（Minix3 无对应）]`：本面是 riscv64 的辅助
+//! 启动路径——真板 `FW_PAYLOAD` 极简装机与 QEMU `-kernel` 测试共用它；
+//! 主线仍是独立 boot-shim + 独立内核镜像。三架构落位矩阵见 01 篇 §3.7。
+//!
 //! 裁决源：`rewrite-notes/coordination/NK4C-OPENING-PROMPT.md` 阶段
 //! 3.1——「kernel-image riscv64 接 a1 DTB → 解 memmap + 模块装载源 + .bss
 //! 清零 → 调 arch_boot（过 validate 真门槛）」。本模块是那条裁决的 Rust 面

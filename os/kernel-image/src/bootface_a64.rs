@@ -1,6 +1,10 @@
 //! aarch64 自引导面（§续-406：QEMU `-kernel` ELF 直核引导的 Rust 面，§续-88
 //! 甲案 riscv `bootface.rs` 的 aarch64 镜像）。
 //!
+//! `[ARCH: FW_PAYLOAD 直核形态（Minix3 无对应）]`：本面是 aarch64 的辅助
+//! 启动路径，覆盖测试为主（QEMU `-kernel`）；真板启动一般仍经 UEFI/U-Boot。
+//! 主线是独立 boot-shim + 独立内核镜像，落位矩阵见 01 篇 §3.7。
+//!
 //! # 引导模型（与 riscv 半的差异全部源自固件，不是设计分叉）
 //!
 //! QEMU mach-virt 对非 Linux ELF `-kernel` 走 `do_cpu_reset` 的
