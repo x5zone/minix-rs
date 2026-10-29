@@ -283,3 +283,147 @@ fn an_unterminated_final_line_is_numbered_without_a_newline() {
         ("     1\talpha\n     2\tbeta\n     3\tgamma", 0, "")
     );
 }
+
+/// 字节形 argv 的命令缝：`&str` 递不出裸 `ff`（`OsStr` 从 `str` 过来时那串已是合法 UTF-8）。
+/// 两路输出都逐字节交回——`-d` 与 `-s` 的值直接决定「哪一行算分页符」与「编号与正文之间
+/// 打什么」，文本形分不清一枚字节与三枚折叠字节。
+fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut child = Command::new(NL)
+        .args(args.iter().map(|word| std::ffi::OsStr::from_bytes(word)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the nl binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 参数缝在 `nl` 上同时改到**判据、匹配与输出**三处，形状与 `join` 的 `-t` 同族而更密：
+/// ①`nl.c:158-161` 的 `-d` 取 `optarg[0]`、`optarg[1]` 两个**字节**，第三个字节（`:163`）才落
+///   `invalid delim argument -- %s`（`:165`）。文本缝之下那两枚裸字节各折成三枚
+///   （`ef bf bd` ×2 ⇒ 值长六），从接受翻成拒绝——负控 L1（把壳侧 argv 退回
+///   `args()` 的 lossy 取法）当场让本枚红，读数在 `tmp/nl-465/negctl-L1.log`。
+/// ②匹配那一步也吃字节：输入 `\xff\xa1` 一行配 `-d<ff><a1>` 时整行是分隔符 ⇒ 切段、
+///   不编号，随后那 `q` 行交回的是六枚空格加制表符（两侧逐字节同）。
+/// ③`-s` 的值由 `nl.c:340` 的 `printf("%s%s", sep, buffer)` 原样打在编号与正文之间，
+///   **它整个替换掉缺省的那个制表符**，所以 `1` 后面直接是那一枚 `ff`。
+/// ④控制形 `-s<é>`（`c3 a9`，合法 UTF-8 的两枚字节）两侧都照原样打两枚——缝改成字节既不
+///   放宽判据，也不把合法序列拆成单字节。
+#[test]
+fn a_raw_byte_delimiter_matches_the_line_and_a_raw_byte_separator_is_printed() {
+    // ①②两枚裸字节作分隔符：接受，并且真的拿去匹配那一行。
+    let (out, status, err) = run_argv(&[b"-d\xff\xa1"], b"\xff\xa1\nq\n");
+    assert_eq!(
+        status, 0,
+        "两枚裸字节是合法的分隔符，不该被拒：stderr 是 {err:?}"
+    );
+    assert_eq!(
+        out, b"      \tq\n",
+        "分隔符行切段后不编号：六枚空格 + 制表符 + 正文"
+    );
+    // ③`-s` 的值进输出：编号之后直接是那一枚 `ff`，没有别的字符。
+    let (out, status, err) = run_argv(&[b"-s\xff"], b"a\nb\n");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(
+        out,
+        [
+            b"     1".as_slice(),
+            &[0xff],
+            b"a\n     2".as_slice(),
+            &[0xff],
+            b"b\n".as_slice(),
+        ]
+        .concat(),
+        "分隔串必须是 argv 原字节，不是折叠出的三枚"
+    );
+    // ④控制形：合法的两枚字节照原样出去。
+    let (out, status, err) = run_argv(&[b"-s\xc3\xa9"], b"a\n");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(
+        out,
+        [b"     1".as_slice(), &[0xc3, 0xa9], b"a\n".as_slice()].concat()
+    );
+    // ⑤单枚裸字节：`optarg[1]` 是 `\0` ⇒ 只换 `delim[0]`，第二字符留默认 `:`（源码判据，与
+    //   库内 `test_delim_one_char_option` 同一族）。参照件在这一形报 `invalid delim argument`
+    //   ——那是 `optarg[2]` 的越界读产物而不是判据本身（在册 `NL-DELIM-LENGTH-RULE` 待裁决），
+    //   所以本段钉的是本壳按源码得到的形状，不与参照件对齐。
+    let (out, status, err) = run_argv(&[b"-d\xff"], b"\xff:\nq\n");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, b"      \tq\n", "分隔符是 `ff` 加默认的 `:`");
+}
+
+/// 七句把值拼进报文的腿，值位全是 argv 原字节：`invalid delim argument -- %s`
+/// （`nl.c:165`）、`invalid incr argument -- %s`（`:182`）、`invalid num argument -- %s`
+/// （`:191`）、`illegal format -- %s`（`:203`）、`invalid startnum value -- %s`（`:214`）、
+/// `invalid width value -- %s`（`:223`）、`illegal <段名> line numbering type -- %s`（`:393`）。
+/// 七句都是 `errx`：**只有一行、不接 usage、退 1**，所以行数与值位在同一枚门里各钉一次。
+/// 字母位那一枚由跨壳表 `no_command_aborts_on_a_nonutf8_option_letter` 承载，本枚不重复。
+/// 注意非法类型那三支的首字节判据：C 的 `parse_numbering` 只 `switch (argstr[0])`
+/// （`nl.c:362`），所以 `-b 'a<ff>'` 是**接受**的（本枚取的是首字节就非法的那一形）。
+#[test]
+fn the_seven_value_echoes_carry_the_argv_bytes() {
+    let cases: [(&[&[u8]], &[u8]); 7] = [
+        (
+            &[b"-dabc\xff", b"2"],
+            b"nl: invalid delim argument -- abc\xff\n",
+        ),
+        (
+            &[b"-i", b"5\xff", b"2"],
+            b"nl: invalid incr argument -- 5\xff\n",
+        ),
+        (
+            &[b"-l", b"5\xff", b"2"],
+            b"nl: invalid num argument -- 5\xff\n",
+        ),
+        (&[b"-n", b"l\xff", b"2"], b"nl: illegal format -- l\xff\n"),
+        (
+            &[b"-v", b"5\xff", b"2"],
+            b"nl: invalid startnum value -- 5\xff\n",
+        ),
+        (
+            &[b"-w", b"5\xff", b"2"],
+            b"nl: invalid width value -- 5\xff\n",
+        ),
+        (
+            &[b"-b", b"\xff", b"2"],
+            b"nl: illegal body line numbering type -- \xff\n",
+        ),
+    ];
+    for (argv, want) in cases {
+        let (out, status, err) = run_argv(argv, b"a\n");
+        assert_eq!(out, Vec::new(), "{argv:?} 的报文只走标准错误");
+        assert_eq!(status, 1, "{argv:?} 的 stderr 是 {err:?}");
+        assert_eq!(
+            err, want,
+            "{argv:?} 该是那一行且值位是原字节（少了 usage 那一行）"
+        );
+    }
+    // 同一句在 `-f`/`-h` 上换的只是段名（`numbering_properties[]` 的 name 字段）。
+    for (letter, name) in [("-f", "footer"), ("-h", "header")] {
+        let (_out, _status, err) = run_argv(&[letter.as_bytes(), &[0xff][..], b"2"], b"a\n");
+        assert_eq!(
+            err,
+            [
+                format!("nl: illegal {name} line numbering type -- ").as_bytes(),
+                &[0xff][..],
+                b"\n".as_slice(),
+            ]
+            .concat(),
+            "`{letter}` 那一句带的是自己的段名"
+        );
+    }
+    // 首字节合法而尾巴带裸字节的那一形是**接受**的（C 只看首字符）——反面形钉在这里，
+    // 免得把「非法类型」那句当成对所有坏尾巴的反应。
+    // 这里不带操作数：`nl` 的唯一操作数是**档名**（不是 reps，与 `jot` 那类位置参数不同），
+    // 递一个 `2` 进去会变成「开不了的档名」那句而先退掉。
+    let (out, status, err) = run_argv(&[b"-ba\xff"], b"a\n");
+    assert_eq!(status, 0, "stderr 是 {err:?}");
+    assert_eq!(out, b"     1\ta\n");
+}
