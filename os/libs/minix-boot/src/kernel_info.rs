@@ -363,6 +363,13 @@ impl KernelInfo {
     /// table pointers (DTB, RSDP, or both).
     #[inline]
     pub fn platform_sources(&self) -> &'static [PlatformDescSource] { self.platform_sources }
+
+    /// Boot parameter bytes (`param_buf`): `key=value` pairs, C's
+    /// `param_buf[MULTIBOOT_PARAM_BUF_SIZE]` equivalent. Empty until a boot
+    /// surface supplies real bytes; the kernel's GET_MONPARAMS handler
+    /// zero-pads to the fixed C size.
+    #[inline]
+    pub fn param_buf(&self) -> &'static [u8] { self.param_buf }
 }
 
 #[repr(C)]
@@ -522,5 +529,7 @@ mod tests {
         assert_eq!(info.boot_modules().as_ptr(), info.boot_modules.as_ptr());
         assert_eq!(info.platform_sources().len(), info.platform_sources.len());
         assert_eq!(info.platform_sources().as_ptr(), info.platform_sources.as_ptr());
+        assert_eq!(info.param_buf().len(), info.param_buf.len());
+        assert_eq!(info.param_buf().as_ptr(), info.param_buf.as_ptr());
     }
 }
