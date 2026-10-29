@@ -92,6 +92,8 @@ pub mod dm_coverage;
 pub mod vm_handoff;
 
 pub mod irq_manager;
+#[cfg(target_arch = "riscv64")]
+pub mod uart_irq;
 // Kernel-side trap/syscall dispatch bodies — the policy half of every
 // arch's production trap legs (x86_64: exceptions/IRQs + SYSCALL over the
 // IDT frame; aarch64/riscv64: the E-3ARCHTRAP production legs over their

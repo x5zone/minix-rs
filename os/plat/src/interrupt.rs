@@ -164,6 +164,11 @@ pub trait InterruptRouter: Sized + Send + Sync {
 
     /// Mask all IRQ lines.
     fn mask_all(&mut self);
+
+    /// Set a hardware priority for an IRQ line（riscv64 PLIC：0=永不投递，
+    /// ≥1=超 context threshold 可投递）。无优先级寄存器的控制器（x86
+    /// 8259 平坦、aarch64 GIC 默认）保持 no-op 默认。
+    fn set_irq_priority(&mut self, _irq: IrqVector, _priority: u32) {}
 }
 
 /// Per-CPU interrupt unit — the claim/complete half of the protocol
