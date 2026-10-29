@@ -2602,3 +2602,17 @@ minix-boot **65/0**、boot-shim test-all **53/0** + 边界审计 **5/0**、kerne
 省略、外部同名键被拒），`test-smp-aps-aarch64` PASS；UEFI aarch64 腿
 `param_buf bytes=13 rejected=0 dropped=0`（AAVMF 启动管理器未传 LoadOptions）。
 riscv 直核面复用同一代码，其现有夹具模块表为空、走不到 builder，端到端读数留 D-73。
+
+**T2X86 里程碑（2026-10-30，01 篇 NK1/C-29 x86 独立镜像）**：码笔 `bb32bbb0a`、合并笔
+`9577f6eed`。x86-64 从「内核链进 boot-shim、进程内调 `arch_boot`」切到「shim 建根开分页 +
+v1 arena + `rbx` 交棒 + 独立 `kernel.elf` 高半入口」；`reserved_regions` 的 kern_ident
+输入从 `vm_handoff::build_identity_windows` 删除（只留架构 MMIO 恒等窗口），`dm_coverage`
+源保留；模块 blob 改 `MaxAddress` 上界并验区间末端；`load_elf_into` 的恒等可读前提成文。
+**同批修一处 ABI 真 bug**：`extern "C"` 在 `x86_64-unknown-uefi` 上是 Win64 约定
+（rcx/rdx），与 SysV stub 不符，曾把 `KernelInfo` 指针当入口跳进栈而报 #UD；改
+`extern "sysv64"` 后稳定。新增 `test-shim-bootmarks-x86.sh`（三 shim 行 + 接收端行 +
+`entering scheduler`，连跑三次 PASS），`test-cmd-smoke.sh` 的 M14 行改为
+`[raw] entering kernel image v1`。门读数：kernel mock **845/0/8**、minix-boot **65/0**、
+boot-shim **53/0** + 边界审计 **5/0**、三架构 kernel/kernel-image check **0 error**、
+aarch64 冒烟门 **PASS**、`test-cmd-smoke.sh` 到达 `/etc/rc`（仅 `du` 既有 A 板红）、
+合并后 `run_all` **39/0/0**（`tmp/01-cboard-baseline-20261030/run-all-t2.log`）。
