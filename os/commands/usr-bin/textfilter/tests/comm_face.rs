@@ -28,7 +28,7 @@ mod face_support;
 
 use face_support::write_stdin;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const COMM: &str = env!("CARGO_BIN_EXE_comm");
@@ -52,6 +52,38 @@ fn run_bytes(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
         output.status.code().unwrap_or(-1),
         output.stderr,
     )
+}
+
+/// argv 形态的**字节形**夹具：一枚裸 `ff` 写不成 `&str`，所以参数经 `OsStr::from_bytes`
+/// 交下去，比的是子进程实际收到的那串字节（文本形夹具里 `from_utf8_lossy` 会把裸 `ff`
+/// 与 `ef bf bd` 弄成同一个名字，那正是被测的那条缝）。
+fn run_argv(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut child = Command::new(COMM)
+        .args(args.iter().map(|a| std::ffi::OsStr::from_bytes(a)))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the comm binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    (
+        output.stdout,
+        output.status.code().unwrap_or(-1),
+        output.stderr,
+    )
+}
+
+/// 按**原字节名**落一份档，并交回它的绝对路径字节（`PathBuf` 拼不了裸 `ff` 那一段）。
+/// 折叠名那份由调用处另写，两份内容相同——理由写在用它的那枚门的注释里。
+fn write_raw(dir: &Path, name: &[u8], body: &[u8]) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+    fs::write(dir.join(std::ffi::OsStr::from_bytes(name)), body).expect("按原字节名落盘");
+    let mut full = dir.as_os_str().as_bytes().to_vec();
+    full.push(b'/');
+    full.extend_from_slice(name);
+    full
 }
 
 /// 集外字母那一行的字母位是**一个裸字节**：参照件 `tmp/comm-409/comm_ref` 现量 `-é` 与
@@ -80,6 +112,49 @@ fn the_libc_line_of_a_multibyte_flag_is_one_byte_after_the_cluster() {
         err,
         [b"comm: unknown option -- Z\n".as_slice(), USAGE.as_bytes(),].concat(),
         "环停在第一个坏字母上，`é` 根本不该被读到"
+    );
+}
+
+/// 命令行参数那一半也按字节了（批次四百六十）：一枚裸 `ff` 走到选项环时还是那一枚字节，
+/// 字母位报的也就是它本身。参照件 `tmp/comm-409/comm`（软链名跑的，`getprogname()` 算出
+/// `comm`，与本壳同名）现量 `-\xff` 与聚簇 `-1\xff` 交回的都是 `comm: unknown option -- `
+/// 那一枚 `ff`、一个换行，再跟那行**写死的** usage、退 1（`comm.c:195-199` 的 usage
+/// 没有 `getprogname()`，所以同一支命令里两行的程序名来历不同：第一行跟着 argv[0]，
+/// 第二行是串本身）。
+///
+/// 第三形把**操作数**也带上裸字节。它对 argv 那条缝没有分辨力——折叠是幂等的，argv 先折一次
+/// 与按字节走到开档臂再折一次，得到的是同一个名字（负控 D1 就是靠这一形两侧都不红来确认这点）；
+/// 但它对开档臂的**折叠写法**有牙：把 `from_utf8_lossy` 换成 `from_utf8(...).unwrap_or("")`
+/// 时这一形当场红（负控 D4）。盘上因此**同时放两份**（原字节名与它的 `from_utf8_lossy`
+/// 折叠名，内容相同）：开档腿仍要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），只放原名时本壳必然
+/// `ENOENT` 而参照件读得到，那读数量的是开档腿不是这条缝。
+#[test]
+fn comm_reports_the_raw_option_byte_before_the_hardcoded_usage_line() {
+    let want: Vec<u8> = [
+        b"comm: unknown option -- ".as_slice(),
+        b"\xff\n",
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    for form in [&b"-\xff"[..], &b"-1\xff"[..]] {
+        let (out, status, err) = run_argv(&[form, b"/dev/null", b"/dev/null"], b"");
+        assert_eq!(out, Vec::new(), "{form:?} 的报文只走标准错误");
+        assert_eq!(status, 1, "{form:?} 的 stderr 是 {err:?}");
+        assert_eq!(err, want, "字母位该是 argv 里那一枚原字节 ff");
+    }
+
+    let dir = scratch("rawff");
+    let raw = write_raw(&dir, b"pair\xff", b"apple\nbanana\n");
+    fs::write(dir.join("pair\u{fffd}"), b"apple\nbanana\n").expect("写折叠孪生件");
+    let (out, status, err) = run_argv(&[&raw, &raw], b"");
+    assert_eq!(
+        (status, err.as_slice()),
+        (0, &b""[..]),
+        "两枚同内容的操作数不该走到错误支"
+    );
+    assert_eq!(
+        out, b"\t\tapple\n\t\tbanana\n",
+        "两行都落列三：形状与参照件 `[原字节名, 原字节名]` 的现量一致"
     );
 }
 

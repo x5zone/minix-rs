@@ -131,20 +131,26 @@ pub enum CommArgError {
 /// 这一支的 optstring 里没有带值字母，所以 libc 那句 `option requires an argument`
 /// 到不了（同 `rev`/`colrm` 的空 optstring 只有集外字母一形的道理一样：可达出口
 /// 由 optstring 定，不由「同族规律」定）。
+///
+/// 入参与交回的档名都是**字节**：C 把 `argv` 原样交给 `getopt` 与 `file()`，全程不问
+/// 编码（`comm.c:80` 与 `:177-187`）。签名此前是 `&str`，于是那一串字节在走到环之前
+/// 就已经被 `from_utf8_lossy` 折过——一枚裸 `ff` 变成 `ef bf bd` 三枚，字母位报的是
+/// `ef` 而不是 `ff`，档名也不再是 argv 里那一串。字节进、字节出，折只发生在真正需要
+/// `&str` 的那两条腿（开档与 `err(1, "%s", name)` 的 `strerror` 句子）里。
 pub fn parse_comm_args<'a>(
-    args: &'a [&'a str],
-) -> Result<(CommOptions, [&'a str; 2]), CommArgError> {
+    args: &'a [&'a [u8]],
+) -> Result<(CommOptions, [&'a [u8]; 2]), CommArgError> {
     let mut options = CommOptions::default();
     let mut index = 0;
-    let operands: Vec<&'a str> = loop {
+    let operands: Vec<&'a [u8]> = loop {
         let Some(&arg) = args.get(index) else {
             break Vec::new();
         };
-        if arg == "--" {
+        if arg == b"--" {
             // `getopt.c:81-85`：先 `++optind` 再返回 -1，所以 `--` 自身不是操作数。
             break args[index + 1..].to_vec();
         }
-        if arg.len() < 2 || !arg.starts_with('-') {
+        if arg.len() < 2 || arg[0] != b'-' {
             // `getopt.c:74-78`：非选项 token 一到就返回 -1 且**不推进** `optind`，
             // 于是它连同后面的 token 全是操作数（旧写法把它推进了环继续扫，所以
             // `comm a -1 b` 里的 `-1` 被当旗标吃掉，参照件量的是三个操作数 → usage）。
@@ -153,7 +159,7 @@ pub fn parse_comm_args<'a>(
         // 环走**字节**：C 的 `optopt` 是一个 `char`（`getopt.c:79` 的 `optopt = *place++` 一次
         // 进一个字节），所以 `-é`（`c3 a9`）报的是 `c3` 而不是整个字符。之前这里过 `chars()`，
         // 把一个字符的两个字节当成一枚字母交回，报文经 UTF-8 渲染后比 C 多一个字节。
-        for byte in arg[1..].bytes() {
+        for &byte in &arg[1..] {
             match byte {
                 b'1' => options.suppress1 = true,
                 b'2' => options.suppress2 = true,
@@ -292,27 +298,27 @@ mod tests {
     #[test]
     fn test_parse_two_plain_operands() {
         assert_eq!(
-            parse_comm_args(&["a", "b"]),
-            Ok((CommOptions::default(), ["a", "b"]))
+            parse_comm_args(&[b"a", b"b"]),
+            Ok((CommOptions::default(), [&b"a"[..], &b"b"[..]]))
         );
     }
 
     #[test]
     fn test_parse_separate_and_clustered_flags() {
         assert_eq!(
-            parse_comm_args(&["-1", "-2", "a", "b"]),
+            parse_comm_args(&[b"-1", b"-2", b"a", b"b"]),
             Ok((
                 CommOptions {
                     suppress1: true,
                     suppress2: true,
                     ..CommOptions::default()
                 },
-                ["a", "b"]
+                [&b"a"[..], &b"b"[..]]
             ))
         );
         // getopt clusters valueless letters: `-12f` == `-1 -2 -f`.
         assert_eq!(
-            parse_comm_args(&["-12f", "a", "b"]),
+            parse_comm_args(&[b"-12f", b"a", b"b"]),
             Ok((
                 CommOptions {
                     suppress1: true,
@@ -320,7 +326,7 @@ mod tests {
                     fold: true,
                     ..CommOptions::default()
                 },
-                ["a", "b"]
+                [&b"a"[..], &b"b"[..]]
             ))
         );
     }
@@ -329,13 +335,13 @@ mod tests {
     fn test_parse_dash_and_double_dash_are_operands_or_terminator() {
         // A lone `-` is a file operand (standard input).
         assert_eq!(
-            parse_comm_args(&["-", "b"]),
-            Ok((CommOptions::default(), ["-", "b"]))
+            parse_comm_args(&[b"-", b"b"]),
+            Ok((CommOptions::default(), [b"-", &b"b"[..]]))
         );
         // `--` ends option scanning; the dashes after it are file names.
         assert_eq!(
-            parse_comm_args(&["--", "-1", "-2"]),
-            Ok((CommOptions::default(), ["-1", "-2"]))
+            parse_comm_args(&[b"--", b"-1", b"-2"]),
+            Ok((CommOptions::default(), [&b"-1"[..], &b"-2"[..]]))
         );
     }
 
@@ -344,21 +350,35 @@ mod tests {
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
-            parse_comm_args(&["-\u{e9}", "a", "b"]),
+            parse_comm_args(&[b"-\xc3\xa9", b"a", b"b"]),
             Err(CommArgError::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
         // 聚簇同理：`1` 合法先吃掉，报的是其后第一个字节。
         assert_eq!(
-            parse_comm_args(&["-1\u{e9}", "a", "b"]),
+            parse_comm_args(&[b"-1\xc3\xa9", b"a", b"b"]),
             Err(CommArgError::UnknownOption('\u{00c3}')),
             "-1é"
         );
         // ASCII 不许被这次改动波及。
         assert_eq!(
-            parse_comm_args(&["-Z", "a", "b"]),
+            parse_comm_args(&[b"-Z", b"a", b"b"]),
             Err(CommArgError::UnknownOption('Z')),
             "-Z"
+        );
+    }
+
+    /// 操数交回的是 argv 里那串**原字节**：旧签名是 `&str`，这形在库里根本写不出来——
+    /// 一枚裸 `ff` 在走到环之前就被折成 `ef bf bd`，于是档名不再等于 argv 那串。
+    /// C 把 `argv[1]`/`argv[2]` 原样交给 `file()`（`comm.c:177-187`），全程不解码。
+    #[test]
+    fn an_operand_that_is_not_utf8_is_returned_as_the_argv_bytes() {
+        let argv: &[&[u8]] = &[b"a\xffb", b"c\xd6"];
+        let parsed = parse_comm_args(argv).unwrap();
+        assert_eq!(
+            parsed.1,
+            [b"a\xffb".as_slice(), b"c\xd6".as_slice()],
+            "档名就是 argv 里那串字节，一字节都不许多"
         );
     }
 
@@ -367,22 +387,25 @@ mod tests {
         // The regression: `comm -z file` must reject `-z` (C `getopt` returns
         // `?` → usage), NOT open a file literally named `-z`.
         assert_eq!(
-            parse_comm_args(&["-z", "file"]),
+            parse_comm_args(&[b"-z", b"file"]),
             Err(CommArgError::UnknownOption('z'))
         );
         // Even with a full operand count the bad option still errors first.
         assert_eq!(
-            parse_comm_args(&["-z", "a", "b"]),
+            parse_comm_args(&[b"-z", b"a", b"b"]),
             Err(CommArgError::UnknownOption('z'))
         );
     }
 
     #[test]
     fn test_parse_requires_exactly_two_operands() {
-        assert_eq!(parse_comm_args(&[]), Err(CommArgError::NotTwoOperands));
-        assert_eq!(parse_comm_args(&["a"]), Err(CommArgError::NotTwoOperands));
         assert_eq!(
-            parse_comm_args(&["a", "b", "c"]),
+            parse_comm_args(&[] as &[&[u8]]),
+            Err(CommArgError::NotTwoOperands)
+        );
+        assert_eq!(parse_comm_args(&[b"a"]), Err(CommArgError::NotTwoOperands));
+        assert_eq!(
+            parse_comm_args(&[b"a", b"b", b"c"]),
             Err(CommArgError::NotTwoOperands)
         );
     }
@@ -393,24 +416,24 @@ mod tests {
     #[test]
     fn test_parse_stops_at_the_first_operand_without_reordering() {
         assert_eq!(
-            parse_comm_args(&["a", "-1", "b"]),
+            parse_comm_args(&[b"a", b"-1", b"b"]),
             Err(CommArgError::NotTwoOperands)
         );
         // 两个操作数在前、旗标在后也一样：三个 token 全落进操作数。
         assert_eq!(
-            parse_comm_args(&["-", "b", "-f"]),
+            parse_comm_args(&[b"-", b"b", b"-f"]),
             Err(CommArgError::NotTwoOperands)
         );
         // 环内的聚簇仍逐字母生效，且 `--` 之后全是档名。
         assert_eq!(
-            parse_comm_args(&["-1f", "--", "-2", "-3"]),
+            parse_comm_args(&[b"-1f", b"--", b"-2", b"-3"]),
             Ok((
                 CommOptions {
                     suppress1: true,
                     fold: true,
                     ..CommOptions::default()
                 },
-                ["-2", "-3"]
+                [&b"-2"[..], &b"-3"[..]]
             ))
         );
     }

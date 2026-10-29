@@ -14,6 +14,11 @@
 //! 打不开的档名是 `err(1, "%s", name)` 三段形且**致命**（`comm.c:181-184`）：与
 //! `column`/`rev` 的 warn+继续不同，`comm` 开不了第一个档就直接退 1，第二个档名
 //! 连试都不试。
+//!
+//! 命令行参数按**字节**进来（`support::args_bytes`），所以一枚裸 `ff` 走到选项环时仍是
+//! `ff`，字母位报的也是那一枚字节本身。只剩两条腿仍要 `&str`：开档与 `err(1, "%s", name)`
+//! 的句子（都在 `os/libs/` 的领地里，登记 `ARGV-BYTE-PATH-IN-LIBS`），于是壳内留下两处臂内
+//! 折叠（程序名一处、操作数一处）——与其余各支同一条既定口径。
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -28,23 +33,25 @@ use minix_textfilter::GetoptReport;
 use minix_textfilter::comm::{CommArgError, CommOptions, comm, parse_comm_args};
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名那一腿交给 `warn_line` 与 `line_bytes` 的 `&str` 名字段（在册
+    // `ARGV-BYTE-PATH-IN-LIBS`），所以臂内折一次；两个操作数不跟着折。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv));
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // C 的选项环只有一条报错支：libc 先印一行，`usage()` 再印一行（退 1）。
     // 旧写法少了 libc 那一行，把两类失败都压成一行自撰的 usage。
-    let (options, files): (CommOptions, [&str; 2]) = match parse_comm_args(&refs[1..]) {
+    let (options, files): (CommOptions, [&[u8]; 2]) = match parse_comm_args(&args[1..]) {
         Ok(parsed) => parsed,
         Err(CommArgError::UnknownOption(letter)) => {
             // 字母位走 `line_bytes`：取法已在 `src/comm.rs` 改成按字节，两边同形才成立。
-            support::warn(&GetoptReport::UnknownOption(letter).line_bytes(prog));
+            support::warn(&GetoptReport::UnknownOption(letter).line_bytes(&prog));
             usage();
         }
         Err(CommArgError::NotTwoOperands) => usage(),
     };
 
-    let lines1 = operand_lines(prog, files[0]);
-    let lines2 = operand_lines(prog, files[1]);
+    let lines1 = operand_lines(&prog, files[0]);
+    let lines2 = operand_lines(&prog, files[1]);
     let a: Vec<&[u8]> = lines1.iter().map(Vec::as_slice).collect();
     let b: Vec<&[u8]> = lines2.iter().map(Vec::as_slice).collect();
     let merged = comm(&a, &b, &options);
@@ -81,15 +88,20 @@ fn run() -> ! {
 ///
 /// 末行没有换行符也照样是一条记录（`getnextln` 只在「EOF 且一个字符都没读到」时才
 /// 返回 `NULL`，`comm.c:211-214`）——这一点与 `column` 相反，那边把残行当「长行」丢掉。
-fn operand_lines(prog: &str, name: &str) -> Vec<Vec<u8>> {
-    let input = if name == "-" {
+///
+/// 档名以字节进来；开档那一腿与 `err(1, "%s", name)` 的句子都要 `&str`（在册
+/// `ARGV-BYTE-PATH-IN-LIBS`），所以在这里折一次——报出来的名字与真源差在那条腿上，
+/// 不差在回显写法。`-` 的判据按**字节**比，与折叠名无关。
+fn operand_lines(prog: &str, name: &[u8]) -> Vec<Vec<u8>> {
+    let path = String::from_utf8_lossy(name);
+    let input = if name == b"-" {
         support::read_stdin()
     } else {
-        match support::read_file(name) {
+        match support::read_file(&path) {
             Ok(data) => data,
             Err(code) => {
                 // C 是 `err(1, "%s", name)`：程序名、档名、`strerror` 句子，一行，然后退 1。
-                support::warn_line(prog, name, code);
+                support::warn_line(prog, &path, code);
                 support::terminate(1);
             }
         }
