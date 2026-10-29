@@ -35,7 +35,12 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-use minix_arch::paging_ext::{HugePages, PageSize};
+use crate::boot_policy::{KernelLayout, KernelMapPolicy, plan_boot_pages};
+use minix_arch::arch::boot_arch::BootArch;
+use minix_arch::arch::direct_map::DirectMapLayout;
+use minix_arch::arch::dm_coverage::plan_dm_policy;
+use minix_arch::paging_ext::{BootPageSupport, HugePages, PageSize, detect_boot_page_support};
+use minix_arch::CurrentBootArch;
 use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
 // Handoff types are exercised only by the non-mock VM-loading path
 // (same reason as the `PhysAccess` import below).
@@ -52,12 +57,12 @@ use minix_boot::{
 };
 
 #[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
-use minix_arch::arm64::paging::AArch64Paging as BootPaging;
+use minix_arch::arch::boot_arch::AArch64BootArch as BootArchImpl;
 #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-use minix_arch::x86_64::paging::X86_64Paging as BootPaging;
+use minix_arch::arch::boot_arch::X86_64BootArch as BootArchImpl;
 
 use minix_boot::{KernelInfo, MemoryRegion};
-use minix_arch::paging::PageFlags;
+use minix_arch::paging::{PageFlags, Paging};
 // `PhysAccess` is exercised only by the non-mock VM-loading path
 // (`access.frame_virt`, cfg'd out under `feature = "mock"`); a plain
 // import would be an unused-import error in mock builds.
@@ -103,6 +108,7 @@ pub mod errno;
 pub mod sched;
 pub mod boot_alloc;
 pub mod boot;
+pub mod boot_policy;
 pub mod dm_coverage;
 pub mod vm_handoff;
 
@@ -252,7 +258,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     // 0 / util_stacktrace）此刻全部可用，注册点没有理由晚于第一个
     // 可 panic 的校验。kmain 的同名调用幂等。
     register_panic_diagnostic();
-    arch_boot_impl::<X86_64Paging>(kinfo, root_page);
+    arch_boot_impl::<minix_arch::arch::boot_arch::X86_64BootArch>(kinfo, root_page);
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel: arch_boot_impl done, jumping to kmain\n");
@@ -276,7 +282,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     let kinfo: &'static KernelInfo = crate::kernel_info()
         .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
     register_panic_diagnostic();
-    arch_boot_impl::<AArch64Paging>(kinfo, root_page);
+    arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(kinfo, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity
     // and kernel high mappings. kinfo is the kernel-.bss copy — valid at
     // the high address. kern_stack_top is a valid high virtual address
@@ -302,10 +308,12 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use crate::aarch64::higher_half::AArch64HigherHalf;
     use crate::boot::HigherHalf;
-    use minix_arch::arm64::paging::AArch64Paging;
     // Validate KernelInfo + (idempotently) register the resumed bump allocator
     // and pt_alloc. This helper touches no page table — safe on a live root.
-    let _kern_huge = boot_validate_and_prepare::<AArch64Paging>(kernel_info);
+    let support = boot_validate_and_prepare::<CurrentBootArch>(kernel_info);
+    let layout = DirectMapLayout::<CurrentBootArch>::from_arch();
+    let dm = plan_dm_policy::<CurrentBootArch>(&support, &layout)
+        .unwrap_or_else(|e| panic!("resume: direct-map policy: {e}"));
     // Record the already-active bootstrap root in *this image's* global. The
     // inline boot records it inside `build_bootstrap_root_and_enable`, which we
     // deliberately skip; without this, downstream `init_kerninfo` (and every
@@ -327,7 +335,10 @@ pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel-image: step4 DM coverage (additive on active root)\n");
     }
-    crate::dm_coverage::establish_boot_dm(kinfo, root_page);
+    // SAFETY: the boot-shim's bootstrap root is active, its identity window
+    // covers the table pages, and this is the boot thread.
+    unsafe { crate::dm_coverage::establish_boot_dm::<CurrentBootArch>(kinfo, root_page, &dm) }
+        .unwrap_or_else(|e| panic!("resume: DM coverage: {e}"));
     {
         use crate::kmess::{EarlyConsole as _, KernelConsole as Console};
         Console::write_str("kernel-image: DM ok, jumping to kmain (high half)\n");
@@ -367,8 +378,16 @@ pub fn enter_kernel_image_v1(
     unsafe {
         core::arch::asm!("cli", options(nomem, nostack));
     }
-    let kern_huge = boot_validate_and_prepare::<BootPaging>(kernel_info);
-    build_bootstrap_root_and_enable::<BootPaging>(kernel_info, root_page, kern_huge);
+    let support = boot_validate_and_prepare::<BootArchImpl>(kernel_info);
+    let layout = DirectMapLayout::<BootArchImpl>::from_arch();
+    let kernel_layout = KernelLayout {
+        virtual_base: kernel_info.kern_virt_base().0,
+        physical_base: kernel_info.kern_phys_base().0,
+        size: kernel_info.kern_size(),
+    };
+    let policy = plan_boot_pages::<BootArchImpl>(&support, kernel_layout, &layout)
+        .unwrap_or_else(|e| panic!("enter_kernel_image_v1: page-size policy: {e}"));
+    build_bootstrap_root_and_enable::<BootArchImpl>(root_page, &policy.kernel());
     let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
         .expect("enter_kernel_image_v1: bump region not registered");
     let bump_next = boot_alloc::boot_alloc_next();
@@ -547,14 +566,20 @@ fn resume_after_v1_decode(kernel_info: &KernelInfo, root_page: u64) -> ! {
     use crate::boot::HigherHalf;
     use crate::x86_64::higher_half::X86_64HigherHalf;
 
-    let _ = boot_validate_and_prepare::<BootPaging>(kernel_info);
+    let support = boot_validate_and_prepare::<CurrentBootArch>(kernel_info);
+    let layout = DirectMapLayout::<CurrentBootArch>::from_arch();
+    let dm = plan_dm_policy::<CurrentBootArch>(&support, &layout)
+        .unwrap_or_else(|e| panic!("resume: direct-map policy: {e}"));
     let root = PhysBytes(root_page);
     set_current_root_phys(root);
     store_kernel_info(kernel_info);
     let kinfo: &'static KernelInfo = crate::kernel_info()
         .expect("arch_boot_resume_v1: KERNEL_INFO store failed — one-shot");
     register_panic_diagnostic();
-    crate::dm_coverage::establish_boot_dm(kinfo, root);
+    // SAFETY: the shim's bootstrap root is active, its identity window covers
+    // the table pages, and this is the boot thread.
+    unsafe { crate::dm_coverage::establish_boot_dm::<CurrentBootArch>(kinfo, root, &dm) }
+        .unwrap_or_else(|e| panic!("resume: DM coverage: {e}"));
     // SAFETY: paging is live via the shim's bootstrap root; kinfo is this
     // image's `.bss` copy and `kern_stack_top` is the high virtual stack the
     // inline boot used successfully.
@@ -573,7 +598,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     let kinfo: &'static KernelInfo = crate::kernel_info()
         .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
     register_panic_diagnostic();
-    arch_boot_impl::<Riscv64Paging>(kinfo, root_page);
+    arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(kinfo, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity
     // and kernel high mappings. kinfo is the kernel-.bss copy — valid at
     // the high address. kern_stack_top is a valid high virtual address
@@ -584,7 +609,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
 #[cfg(all(test, feature = "mock"))]
 pub fn arch_boot_test(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::paging::mock::MockPaging;
-    let _info = arch_boot_impl::<MockPaging>(kernel_info, root_page);
+    let _info = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(kernel_info, root_page);
     // In mock context, just verify we reach here without panic — that
     // confirms identity + kernel mapping + paging enable all succeeded.
     mock_kmain_ok()
@@ -599,37 +624,7 @@ fn mock_kmain_ok() -> ! {
     loop { core::hint::spin_loop(); }
 }
 
-/// Validate KernelInfo constraints, register the boot allocator if needed,
-/// and compute the appropriate huge page size for the kernel mapping.
-///
-/// Returns `kern_huge` — the `PageSize` to use for both identity mapping and
-/// kernel mapping loops. This avoids duplicating the alignment/size selection
-/// logic between Step 0a validation and Step 2.
-/// Choose the kernel mapping page size: capability first, then layout.
-///
-/// The old selection looked only at alignment. A machine whose layout happens
-/// to be 1 GiB-aligned but whose CPU/translation mode does not support 1 GiB
-/// pages then picked an unsupported size and failed later in `map_huge`. The
-/// capability check must come first; the fallback size is used only when the
-/// preferred size is unsupported or the layout is not aligned to it.
-fn choose_kernel_page_size(
-    huge: PageSize,
-    fallback: PageSize,
-    huge_supported: bool,
-    fallback_supported: bool,
-    huge_aligned: bool,
-    fallback_aligned: bool,
-) -> Option<PageSize> {
-    if huge_supported && huge_aligned {
-        Some(huge)
-    } else if fallback_supported && fallback_aligned {
-        Some(fallback)
-    } else {
-        None
-    }
-}
-
-fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> PageSize {
+fn boot_validate_and_prepare<A: BootArch>(kernel_info: &KernelInfo) -> BootPageSupport<A> {
     // NK4-A 逐断言路标（首亮诊断；方法同 arch_boot 入口）。
     macro_rules! vmark {
         ($msg:expr) => {{
@@ -647,8 +642,7 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> PageSize
     let kv = kernel_info.kern_virt_base().0;
     let kp = kernel_info.kern_phys_base().0;
     let ks = kernel_info.kern_size();
-    let huge = P::HUGE_PAGE_SIZE;
-    let fallback = P::FALLBACK_HUGE_PAGE_SIZE;
+
     // kern_size must be positive
     assert!(ks > 0, "arch_boot: kern_size must be > 0");
 
@@ -657,32 +651,6 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> PageSize
 
     // kern_virt_base must be page-aligned (at least 4KB)
     assert!(kv.is_multiple_of(0x1000), "arch_boot: kern_virt_base must be page-aligned");
-
-    // Choose the largest huge-page size that both bases and kern_size are aligned to.
-    let huge_aligned = kv.is_multiple_of(huge.bytes())
-        && kp.is_multiple_of(huge.bytes())
-        && ks.is_multiple_of(huge.bytes());
-    let fallback_aligned = kv.is_multiple_of(fallback.bytes())
-        && kp.is_multiple_of(fallback.bytes())
-        && ks.is_multiple_of(fallback.bytes());
-    let kern_huge = choose_kernel_page_size(
-        huge,
-        fallback,
-        P::supports_huge_page(huge),
-        P::supports_huge_page(fallback),
-        huge_aligned,
-        fallback_aligned,
-    )
-    .unwrap_or_else(|| {
-        panic!(
-            "arch_boot: kern_virt_base, kern_phys_base, and kern_size must be aligned to at \
-             least FALLBACK_HUGE_PAGE_SIZE and the page size must be supported by this target"
-        )
-    });
-
-    // kern_size must be a multiple of kern_huge for the mapping loop
-    assert!(ks.is_multiple_of(kern_huge.bytes()),
-        "arch_boot: kern_size must be a multiple of the chosen huge page size");
 
     // kern_stack_top must be 16-byte aligned (ABI requirement)
     assert!(kernel_info.kern_stack_top().0.is_multiple_of(16),
@@ -701,7 +669,7 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> PageSize
     if boot_alloc::boot_alloc_region().is_none() {
         const FALLBACK_BUMP_LEN: u64 = 0x100_000;
         let dm_admissible_end =
-            core::cmp::min(IDENTITY_MAP_END, minix_arch::CurrentDirectMap::VM_DIRECT_MAP_SIZE);
+            core::cmp::min(IDENTITY_MAP_END, <A::DirectMap as minix_arch::DirectMapArch>::VM_DIRECT_MAP_SIZE);
         let region = kernel_info.memmap().iter().find_map(|r| {
             let start = r.base.0;
             let end = core::cmp::min(start.checked_add(r.len as u64)?, dm_admissible_end);
@@ -721,7 +689,18 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> PageSize
     }
     vmark!("kernel: v3 pt_alloc ok\n");
 
-    kern_huge
+    // Capability facts only: no page-size choice happens here. The 4 GiB
+    // identity window is a kernel bootstrap decision, so the check that the
+    // platform can address it lives at this layer, not in the arch probe.
+    let support = detect_boot_page_support::<A>()
+        .unwrap_or_else(|e| panic!("arch_boot: page-size capability facts: {e}"));
+    assert!(
+        support.phys_addr_limit() >= IDENTITY_MAP_END,
+        "arch_boot: platform physical-address bound {:#x} does not cover the 4 GiB identity window",
+        support.phys_addr_limit()
+    );
+    vmark!("kernel: v4 capability facts ok\n");
+    support
 }
 
 /// Generic boot implementation — works for any `HugePages` impl.
@@ -747,27 +726,40 @@ macro_rules! boot_stage {
     }};
 }
 
-pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysBytes) -> &KernelInfo {
-    // Step 0: Validate KernelInfo + register allocator + compute kern_huge.
+pub fn arch_boot_impl<A: BootArch>(kernel_info: &KernelInfo, root_page: PhysBytes) -> &KernelInfo {
+    // Step 0: validate KernelInfo, register the allocator, and collect the
+    // platform's page-size facts (no choice yet).
     boot_stage!("kernel: entering validate\n");
-    let kern_huge = boot_validate_and_prepare::<P>(kernel_info);
+    let support = boot_validate_and_prepare::<A>(kernel_info);
     boot_stage!("kernel: step0 validate ok\n");
+
+    // One policy for both consumers: the kernel image mapping and the Direct
+    // Map. The policy carries the validated layout, so the execution path
+    // cannot re-assemble a different one.
+    let layout = DirectMapLayout::<A>::from_arch();
+    let kernel_layout = KernelLayout {
+        virtual_base: kernel_info.kern_virt_base().0,
+        physical_base: kernel_info.kern_phys_base().0,
+        size: kernel_info.kern_size(),
+    };
+    let policy = plan_boot_pages::<A>(&support, kernel_layout, &layout)
+        .unwrap_or_else(|e| panic!("arch_boot: page-size policy: {e}"));
 
     // Steps 1-3: build the bootstrap root (identity + kernel high half + the
     // aarch64 MMIO window), enable paging, and record the active root. Shared
     // verbatim with the §1.115 方案 A boot-shim→kernel-image handoff so both
     // paths build byte-identical tables.
-    build_bootstrap_root_and_enable::<P>(kernel_info, root_page, kern_huge);
+    build_bootstrap_root_and_enable::<A>(root_page, &policy.kernel());
 
     // Step 4: Establish Direct Map coverage on the bootstrap root.
-    // 07-paging_init_design §6.1 (D8-②): kernel DM first (supervisor RW,
-    // full PA span), then VM DM (user RW, PA span clipped to the window).
-    // Candidates are the two-source union: resource-classified memmap
-    // ranges + explicit bootstrap PhysAccess ranges (self root + boot
-    // bump region). All PTE writes go through the identity write channel.
-    // Must run after `enable()` (writes VA=PA through the live root) and
-    // before any VM physical access through the windows.
-    crate::dm_coverage::establish_boot_dm(kernel_info, root_page);
+    // 07-paging_init_design §6.1 (D8-②): every candidate is preflighted
+    // before the first leaf write; both windows share the same policy.
+    boot_stage!("kernel: step4 DM coverage (preflight + install)\n");
+    // SAFETY: paging is enabled with the bootstrap root active, all table
+    // pages are inside the identity-mapped writable range, and boot is
+    // single-threaded.
+    unsafe { crate::dm_coverage::establish_boot_dm::<A>(kernel_info, root_page, &policy.dm()) }
+        .unwrap_or_else(|e| panic!("arch_boot: DM coverage: {e}"));
     boot_stage!("kernel: step4 DM coverage ok\n");
 
     // Return kernel_info so the caller can decide what to do next.
@@ -782,12 +774,13 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
 ///
 /// On return, paging is enabled with TTBR0/TTBR1 (x86: CR3) both pointing at
 /// `root_page`, and the active root is recorded in the kernel global.
-fn build_bootstrap_root_and_enable<P: HugePages>(
-    kernel_info: &KernelInfo,
+fn build_bootstrap_root_and_enable<A: BootArch>(
     root_page: PhysBytes,
-    kern_huge: PageSize,
+    policy: &KernelMapPolicy<A>,
 ) {
-    let mut paging = P::new_from_page(root_page);
+    let kern_huge = policy.page_size();
+    let layout = policy.layout();
+    let mut paging = A::Paging::new_from_page(root_page);
 
     // Step 1: Identity mapping — VA = PA for the first 4GB of address space.
     // C: pg_identity(&kinfo) — pg_utils.c:162
@@ -873,12 +866,12 @@ fn build_bootstrap_root_and_enable<P: HugePages>(
     // page sizes, corrupting the identity mapping).
     // See 02-higher-half-kernel.md for the full analysis.
     // R-07 (2026-08-12): Use getter methods (preferred API).
-    let kern_virt = kernel_info.kern_virt_base().0;
-    let kern_phys = kernel_info.kern_phys_base().0;
+    let kern_virt = layout.virtual_base;
+    let kern_phys = layout.physical_base;
     if kern_virt != kern_phys {
         let kern_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
         let mut offset = 0u64;
-        while offset < kernel_info.kern_size() {
+        while offset < layout.size {
             paging.map_huge(
                 VirBytes(kern_virt + offset), PhysBytes(kern_phys + offset),
                 kern_huge, kern_flags,
@@ -5162,7 +5155,7 @@ mod tests {
             reserved_regions: &[],
         };
         let root_page = PhysBytes(0x1000);
-        let _ = arch_boot_impl::<MockPaging>(&info, root_page);
+        let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);
     }
 
     /// Verify that arch_boot_impl rejects zero kern_size.
@@ -5187,7 +5180,7 @@ mod tests {
             reserved_regions: &[],
         };
         let root_page = PhysBytes(0x1000);
-        let _ = arch_boot_impl::<MockPaging>(&info, root_page);
+        let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);
     }
 
     /// Verify that arch_boot_impl rejects misaligned kern_stack_top.
@@ -5212,7 +5205,7 @@ mod tests {
             reserved_regions: &[],
         };
         let root_page = PhysBytes(0x1000);
-        let _ = arch_boot_impl::<MockPaging>(&info, root_page);
+        let _ = arch_boot_impl::<minix_arch::arch::boot_arch::MockBootArch>(&info, root_page);
     }
 
     /// Verify the bsp_finish_booting Step 5/7 side effects: cycles accounting
@@ -6077,51 +6070,4 @@ pub fn minix_shutdown(status: u32) -> ! {
     Console::write_hex(status as u64);
     Console::write_str(")\n");
     minix_plat::shutdown_qemu(status)
-}
-
-#[cfg(test)]
-mod page_size_choice_tests {
-    use super::choose_kernel_page_size;
-    use minix_arch::paging_ext::PageSize;
-
-    const GIB: PageSize = PageSize::GIB_1;
-    const MIB2: PageSize = PageSize::MIB_2;
-
-    #[test]
-    fn picks_the_huge_page_when_supported_and_aligned() {
-        assert_eq!(
-            choose_kernel_page_size(GIB, MIB2, true, true, true, true),
-            Some(GIB)
-        );
-    }
-
-    #[test]
-    fn falls_back_when_the_huge_page_is_unsupported_despite_alignment() {
-        // The regression this batches fixes: an aligned layout on a CPU that
-        // lacks 1 GiB pages must select the 2 MiB fallback, not the 1 GiB size.
-        assert_eq!(
-            choose_kernel_page_size(GIB, MIB2, false, true, true, true),
-            Some(MIB2)
-        );
-    }
-
-    #[test]
-    fn falls_back_when_only_the_fallback_is_aligned() {
-        assert_eq!(
-            choose_kernel_page_size(GIB, MIB2, true, true, false, true),
-            Some(MIB2)
-        );
-    }
-
-    #[test]
-    fn rejects_when_neither_size_is_usable() {
-        assert_eq!(
-            choose_kernel_page_size(GIB, MIB2, false, false, true, true),
-            None
-        );
-        assert_eq!(
-            choose_kernel_page_size(GIB, MIB2, true, true, false, false),
-            None
-        );
-    }
 }

@@ -43,6 +43,57 @@ const PDPT_SHIFT: u32 = 30;
 const PD_SHIFT: u32 = 21;
 const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
+/// Physical address bits representable by the 4-level PTE format.
+const X86_PTE_PHYS_ADDR_BITS: u32 = 52;
+
+/// 4-level PML4 canonical address: VA[63:47] replicates VA[46].
+fn x86_64_canonical(vaddr: u64) -> bool {
+    let top = vaddr >> 47;
+    top == 0 || top == 0x1_FFFF
+}
+
+/// Maximum extended CPUID leaf (CPUID.80000000H:EAX), or 0 when the
+/// processor reports no extended leaves.
+fn cpuid_max_extended_leaf() -> u32 {
+    let mut eax: u32;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov eax, 0x80000000",
+            "cpuid",
+            "pop rbx",
+            out("eax") eax,
+            out("ecx") _,
+            out("edx") _,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    eax
+}
+
+/// CPUID.80000008H:EAX[7:0] — physical address bits, or `None` when the
+/// leaf is absent. The maximum-extended-leaf query comes first: reading an
+/// unavailable leaf would return the highest-leaf values instead.
+fn cpuid_phys_addr_bits() -> Option<u32> {
+    if cpuid_max_extended_leaf() < 0x8000_0008 {
+        return None;
+    }
+    let mut eax: u32;
+    unsafe {
+        asm!(
+            "push rbx",
+            "mov eax, 0x80000008",
+            "cpuid",
+            "pop rbx",
+            out("eax") eax,
+            out("ecx") _,
+            out("edx") _,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    Some(eax & 0xFF)
+}
+
 fn pml4_index(vaddr: u64) -> usize {
     ((vaddr >> PML4_SHIFT) & 0x1FF) as usize
 }
@@ -498,6 +549,29 @@ unsafe fn propagate_user_to_intermediates(root_paddr: u64, vaddr: u64, channel: 
 
 impl Paging for X86_64Paging {
     const PAGE_SIZE: usize = 4096;
+
+    /// Physical address width of the 4-level PML4 PTE format.
+    ///
+    /// Kept private: the semantic bound is `phys_addr_limit()`, which takes
+    /// the minimum of this encoding bound and the CPUID-reported bound.
+    fn phys_addr_limit() -> Result<u64, PageTableError> {
+        let bits = cpuid_phys_addr_bits().ok_or(PageTableError::NotSupported)?;
+        if bits == 0 || bits >= 64 {
+            return Err(PageTableError::NotSupported);
+        }
+        Ok((1u64 << bits).min(1u64 << X86_PTE_PHYS_ADDR_BITS))
+    }
+
+    /// 4-level PML4 canonical form: VA[63:47] must replicate VA[46].
+    fn validate_virtual_range(base: u64, len: u64) -> Result<(), PageTableError> {
+        let end = base
+            .checked_add(len)
+            .ok_or(PageTableError::InvalidAddress)?;
+        if !x86_64_canonical(base) || (len > 0 && !x86_64_canonical(end - 1)) {
+            return Err(PageTableError::InvalidAddress);
+        }
+        Ok(())
+    }
 
     /// Uses a pre-allocated physical page for the root PML4 table.
     ///
@@ -1170,9 +1244,10 @@ impl crate::arch::dm_coverage::DmCoverageArch for X86_64DmCoverage {
         root_paddr: PhysBytes,
         vaddr: VirBytes,
         paddr: PhysBytes,
-        size: usize,
+        size: PageSize,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        let size = size.try_as_usize().ok_or(PageTableError::InvalidAddress)?;
         if size != 1 << 30 && size != 1 << 21 && size != 4096 {
             return Err(PageTableError::InvalidAddress);
         }
@@ -1415,6 +1490,26 @@ unsafe fn is_identity_table(pdpt: u64, i3: usize, vaddr: u64) -> bool { unsafe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_and_phys_limit_follow_target_configuration() {
+        assert!(x86_64_canonical(0x1000));
+        assert!(x86_64_canonical(0xFFFF_8000_0000_0000));
+        assert!(!x86_64_canonical(0x0000_8000_0000_0000));
+
+        let limit = <X86_64Paging as Paging>::phys_addr_limit().unwrap();
+        assert!(limit > 0);
+        assert!(limit <= (1u64 << X86_PTE_PHYS_ADDR_BITS));
+
+        assert!(
+            <X86_64Paging as Paging>::validate_virtual_range(0xFFFF_8000_0000_0000, 1 << 30)
+                .is_ok()
+        );
+        assert!(
+            <X86_64Paging as Paging>::validate_virtual_range(0x0000_8000_0000_0000, 0x1000)
+                .is_err()
+        );
+    }
 
     /// The unified capability entry point: 1 GiB follows the CPUID probe,
     /// 2 MiB is mandatory on x86-64, and sizes outside the translated set are

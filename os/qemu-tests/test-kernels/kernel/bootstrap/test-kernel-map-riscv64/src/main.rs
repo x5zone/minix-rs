@@ -134,7 +134,7 @@ pub extern "C" fn rust_main() -> ! {
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
-    let _info = minix_kernel::arch_boot_impl::<Riscv64Paging>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
 
     // Verify mapping: write sentinel and read it back.
     // Use an address well past the OpenSBI firmware (~322KB from 0x8000_0000)

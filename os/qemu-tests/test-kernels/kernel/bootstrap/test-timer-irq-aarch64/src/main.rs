@@ -268,7 +268,7 @@ fn main() -> Status {
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
     let _info =
-        minix_kernel::arch_boot_impl::<AArch64Paging>(&result.kernel_info, result.root_page);
+        minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
     early_console::write_str("  paging enabled\n");
 
     // Phase A.5: platform discovery — this carrier targets QEMU virt

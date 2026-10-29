@@ -18,7 +18,7 @@ minix-boot = { workspace = true }
 bitflags = { workspace = true }
 
 [dev-dependencies]
-minix-arch = { path = "../arch", features = ["runtime-window"] }
+minix-arch = { path = "../arch", features = ["runtime-window", "test-support"] }
 minix-plat = { path = "../plat", features = ["mock"] }
 
 [features]

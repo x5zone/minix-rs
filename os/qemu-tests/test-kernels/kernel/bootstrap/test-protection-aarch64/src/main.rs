@@ -352,7 +352,7 @@ fn main() -> Status {
     // 2. Enable MMU (arch_boot_impl)
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
-    let info = minix_kernel::arch_boot_impl::<AArch64Paging>(&result.kernel_info, result.root_page);
+    let info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::AArch64BootArch>(&result.kernel_info, result.root_page);
 
     early_console::write_str("  MMU enabled\n");
 

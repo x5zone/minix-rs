@@ -126,7 +126,7 @@ pub extern "C" fn rust_main() -> ! {
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     pt_alloc::register(boot_alloc::boot_pt_alloc);
 
-    let _info = minix_kernel::arch_boot_impl::<Riscv64Paging>(&result.kernel_info, result.root_page);
+    let _info = minix_kernel::arch_boot_impl::<minix_arch::arch::boot_arch::Riscv64BootArch>(&result.kernel_info, result.root_page);
 
     early_console::write_str("  Sv39 MMU enabled — CPU still executing\n");
     early_console::write_str("### TEST_RESULT: PASS test-paging-enable-riscv64 ###\n");

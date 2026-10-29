@@ -88,7 +88,10 @@ pub use arch::cache_sync::{
 
 pub use paging_ext::{PagingWithId, HugePages};
 pub use direct_map::DirectMapArch;
-pub use arch::dm_coverage::{DmCoverageArch, DmRange, establish_dm_range};
+pub use arch::dm_coverage::{
+    DmCoverageArch, DmPagePolicy, DmPolicyError, DmRange, DmWindow, install_boot_dm_range,
+    install_prevalidated_boot_dm_range, plan_dm_policy, plan_range_units, preflight_boot_dm_range,
+};
 pub use pte_walk_arch::PteWalkArch;
 #[cfg(feature = "runtime-window")]
 pub use pte_walk_arch::MockPteWalk;
@@ -139,14 +142,9 @@ pub use paging::mock::MockAsid;
 // selecting the real `X86_64Paging` (which touches Direct Map memory and
 // would SIGSEGV outside QEMU). For the real kernel build (no `mock`
 // feature), select by `target_arch`.
-#[cfg(feature = "runtime-window")]
-pub type CurrentPaging = MockPaging;
-#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
-pub type CurrentPaging = crate::x86_64::paging::X86_64Paging;
-#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
-pub type CurrentPaging = crate::arm64::paging::AArch64Paging;
-#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
-pub type CurrentPaging = crate::riscv64::paging::Riscv64Paging;
+pub use arch::boot_arch::{BootArch, CurrentBootArch};
+
+pub type CurrentPaging = <CurrentBootArch as BootArch>::Paging;
 
 #[cfg(feature = "runtime-window")]
 pub use direct_map::MockDirectMap;
@@ -158,14 +156,7 @@ pub use direct_map::AArch64DirectMap;
 #[cfg(target_arch = "riscv64")]
 pub use direct_map::Riscv64DirectMap;
 
-#[cfg(feature = "runtime-window")]
-pub type CurrentDirectMap = MockDirectMap;
-#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
-pub type CurrentDirectMap = X86_64DirectMap;
-#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
-pub type CurrentDirectMap = AArch64DirectMap;
-#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
-pub type CurrentDirectMap = Riscv64DirectMap;
+pub type CurrentDirectMap = <CurrentBootArch as BootArch>::DirectMap;
 
 // ── CurrentDmCoverage type alias ──
 //
@@ -182,14 +173,7 @@ pub use arm64::paging::AArch64DmCoverage;
 #[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub use riscv64::paging::Riscv64DmCoverage;
 
-#[cfg(feature = "runtime-window")]
-pub type CurrentDmCoverage = MockDmCoverage;
-#[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
-pub type CurrentDmCoverage = X86_64DmCoverage;
-#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
-pub type CurrentDmCoverage = AArch64DmCoverage;
-#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
-pub type CurrentDmCoverage = Riscv64DmCoverage;
+pub type CurrentDmCoverage = <CurrentBootArch as BootArch>::DmInstaller;
 
 // ── CurrentPteWalk type aliases ──
 //

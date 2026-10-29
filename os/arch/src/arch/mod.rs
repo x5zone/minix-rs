@@ -6,6 +6,7 @@
 
 pub mod paging;
 pub mod paging_ext;
+pub mod boot_arch;
 pub mod pt_alloc;
 pub mod direct_map;
 pub mod dm_coverage;
