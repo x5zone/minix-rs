@@ -234,7 +234,13 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
   （`grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l`）、
   命令面 **86** 支（`grep -rl "support::args()" os/commands --include=*.rs | wc -l`）；
   `line_bytes` 同口径 **86 处 / 34 件**（`grep -rn "line_bytes" os/commands --include=*.rs | wc -l`
-  与 `grep -rl … | wc -l`；本笔给 `unifdef` 的壳添了一处调用点，上一笔写的 85 是改前的数）。**带字母位诊断面的只剩 `vis` 一支**（`unvis` 与
+  与 `grep -rl … | wc -l`；本笔给 `unifdef` 的壳添了一处调用点，上一笔写的 85 是改前的数）。
+  **族终笔的射程本轮现量过**：三个文本口 `bin_support::args()`（本包十三支壳 + `text-games` 三支
+  `random`/`wtf`/`fortune`）、`bin_support::prog_name()`（全命令面现量 17 个文件，
+  `grep -rl "support::prog_name(" os/commands --include=*.rs | wc -l` → 17，本包只剩 `vis.rs` 一支）、
+  `minix_textfilter::empty_optstring_operands` 的 `&str` 形（`src/lib.rs:194`，现量除它自己
+  那七处门断言外**无消费者**，`colrm` 早已换 `empty_optstring_operands_bytes`），加上线上乘的那枚
+  `argv_seam_face` 门升到逐字节全等。**带字母位诊断面的只剩 `vis` 一支**（`unvis` 与
   `vis` 是同族两支，`unvis` 不走 getopt 报文那一支），切片 54 = `vis` 是本族参数缝半的最后一支。
   独立轮在册不碰：`ARGV-BYTE-PATH-IN-LIBS`（本笔再添一条腿：`-o` 落盘的档名）、
   `UNIFDEF-O-ERRNO-LEG`、`UNIFDEF-D-DEBUG-OUTPUT`、`UNIFDEF-SYMLIST-OUTPUT`（本轮第三次现量，
