@@ -119,6 +119,160 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 
 ---
 
+## 批次四百六十九（A2 参数缝半切片 51：`tail` 的取值回显、遗留形整段回声、横幅与档名交回原字节；横幅那条腿端到端观察不到，只能钉在纯函数上）
+
+- **先把形状说清**：`minix3/usr.bin/tail/tail.c:108` 的 optstring 是 `"Fb:c:fn:r"`——七个字母，
+  带值的只有 `b`/`c`/`n`。`tail` 与本族其它支最大不同的是它在 `getopt` **之前**还有一趟
+  `obsolete()`（`:106` 调用、`:217-296` 实现）：C 直接**改写 argv**——按字节判 token 形状
+  （`ap[0]` 是 `-`/`+`、`ap[1]` 是数字还是字母、`:246` 的 `*t == 'f' || *t == 'r'`、
+  `:251-260` 的 `case 'b'/'c'/'l'` 与数字那一串 case），命中就 `malloc` 一个新串
+  `-` + 尾字母 + 单位字母 + 原 token 首字符 + 数字（`:271-273` 的 `*p++ = *argv[0]` 与
+  `strcpy(p, ap)`），再把原 token 换成它。字节缝在这一支因此多出别处没有的腿：
+  ① 字母位（libc 那句 `unknown option -- %c`，`minix3/lib/libc/stdlib/getopt.c:79` 一次进一枚
+  字节、`:103` 的 `%c` 原样写出，与上一支 `split` 同词）；
+  ② 三句 `xerrx(1, "illegal offset -- %s", optarg)` 的**值位**（`:90`，`-n`/`-c`/`-b` 各一形，
+  附值与分词两种写法都算）；
+  ③ `obsolete()` 自己那句 `xerrx(1, "illegal option -- %s", *argv)`（`:269`）带的是**整段 token**，
+  不是它的尾巴；
+  ④ **改写之后**那枚 token 里的字节——`-1<ff>2` 被 C 拼成 `-n-1<ff>2`，`ARG` 的 `*p` 停在 `ff`
+  上，于是回声带的是 `-1<ff>2`（带符号、带那枚高字节）。**这是本族第一条「回声里的值不是 argv
+  原样、而是程序自己造出来的」腿**；
+  ⑤ 诊断行里的**档名**（`ierr()` 念全局 `fname`，`:169` 与 `forward.c:196`）；
+  ⑥ 多操作数时那行 `==> %s <==` 横幅（`:173-174`）——它走的是**标准输出**，不是诊断腿。
+  usage 只有一行、大写 `Usage:`、带程序名、退 1（`:299-305`）。
+- **判据这一面：折叠改不了 `obsolete()` 的判决**。C 的判据全是单字节 ASCII 比较
+  （`'f'`/`'r'`/`'b'`/`'c'`/`'l'` 与那一串数字 case），而 `from_utf8_lossy` 只会把非法字节换成
+  `ef bf bd` 三枚、绝不产生 ASCII——**UTF-8 的延续字节恒在 `80..=BF`**，这是编码构造给出的
+  性质，不是运气，所以「折叠前后命中同一个 case」对这一支恒成立。现量印证：
+  `tmp/tail-469/measure.log` 的二十二形里 `obsolete-digit-ff-last`（`-20<ff>`）与
+  `obsolete-illegal-whole-token`（`-20<ff>x`）改前改后走的是**同一支**（那句 `illegal option`），
+  只是回声里的字节不同。真正会被改的是**长度**：C 的 `t = *argv + len - 1` 取最后一枚字节，
+  折过一次 token 变长、`t` 落到别处——`-1<ff>2` 那一形两侧仍同判，因为换上去的 `bd` 与原来的
+  `ff` 都不是 ASCII 字母。这条论证要留档，因为换成另一套解码器时它得重走一遍。
+  三侧合计：**改前壳 10/22 与参照件逐字节同形，改后 19/22**。
+- **本轮另有一族与字节缝无关的取值判据分岔，四形现量、两个方向**：C 的 `ARG` 写的是
+  `off = strtoll(optarg, &p, 10) * (units)`（`:88`），`strtoll` 对**装不进 `long long` 的一串全
+  数字**饱和交回 `LLONG_MAX`（而那一句不查 `errno`、也没有上界可查），本层则判它非法。四个读数
+  （`tmp/tail-469/saturation.log`，输入是三行的 `a.txt`）：
+  `-n 99999999999999999999`、`-c <23 位>` 本壳报 `illegal offset` 退 1，参照件**接受**之后在环形
+  缓冲那一步挂掉，打的是 `tail: malloc: Cannot allocate memory`（同退 1、句子完全不同）；
+  `-n +99999999999999999999 a.txt` 参照件退 **0** 且**不输出任何东西**（跳过 `LLONG_MAX` 行直达
+  档尾），本壳退 1 报错——**这是可观察的接受/拒绝分岔**；反方向是
+  `-b 99999999999999999 a.txt`：C 那句 `strtoll(...) * 512` 溢出成一个巨大负偏移，`fseek` 当场
+  失败，参照件退 1 报 `tail: a.txt: Invalid argument`，而本壳 `saturating_mul` 得 `usize::MAX`、
+  退 0 把整档打出来。登记 `TAIL-OFFSET-SATURATION-OUTCOME`，并与上一笔的
+  `SPLIT-OVERFLOW-COUNT-ACCEPTED` 并成同一件事：**「本层是否复制 `strtoll`/`strtoull` 的饱和
+  语义」需要一个口径裁决**，而其中乘法溢出那一半在 C 本来就是未定义行为、不该复制。本轮**不动**
+  这一族（一次只修一条），只把四形按类分开记进 A/B 的计数之外。
+- **落码层**：库侧 `src/window.rs` 的 `parse_tail_args` 收 `&[&[u8]]`、`TailArgs.operands` 改
+  `Vec<Vec<u8>>`、`obsolete_step` 收 `&[u8]` 且 `ObsoleteStep::Rewritten` 交回 `Vec<u8>`（新 token
+  由五段字节拼出，对位 C 的 `malloc` + `strcpy`）、`TailError::IllegalCount`/`IllegalOption` 的
+  值位改 `Vec<u8>`、字母位统一 `char::from(bytes[pos])`；数字收法新立 `fn digits_to_usize`
+  （逐位 `checked_mul(10)` + `checked_add`），它给出的接受集与 `str::parse::<usize>()` **逐条相同**
+  （同一个数字串在两处得到同一个判决）——这是刻意的：本轮只搬字节，不动取值判据，饱和族留给上面那件裁决。壳侧
+  `src/bin/tail.rs` 走 `args_bytes()`/`prog_name_bytes()`，新立两枚纯函数 `fn banner`（拼横幅，
+  名字位按字节）与 `fn warn_bytes`（`prog: label: <strerror>` 三段形自己拼），
+  `FollowTarget.path` 与 `label()` 交回 `&[u8]`；开档、按名字查身份、`freopen` 三条腿仍走
+  `os/libs` 的 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在递给 `open`/`stat` 那一刻。
+- **一处形状上的选择记下来**：`warn_bytes` 是这一支自己拼的**第三份**三段形（`split` 的 `err3`、
+  `sort` 的自拼、`tail` 的 `warn_bytes`），而形状的权威在 `os/libs/minix-types` 的 `err_line`
+  ——它到现在只有 `&str` 口，`minix_sys` 只是转发；改成字节形要连带动两个 crate
+  （现量 `grep -rn "fn err_line" os/libs | wc -l` → 1，
+  `grep -rl "minix_sys::err_line" os/commands | wc -l` → 3）。本轮按「一次只修一条」不动它，
+  登记 `TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE`：等 `err_line` 换成字节形，这三份自拼的
+  都要并回去。
+- **门账（先对测试名集合再对总数）**：库内 `window` 模块 **628 → 629**（新立
+  `the_tail_value_and_operand_legs_hand_back_the_argv_bytes`，六段：附值/分词/`-c` 三句值位、
+  `obsolete()` 的整段 token、**改写之后**的值位、操作数原字节），壳内单测 **17 → 18**（新立
+  `the_banner_names_the_operand_bytes_and_only_the_second_one_gets_a_blank_line`，三段：第一档前
+  不空行、第二档前空一行、ASCII 名不许被顺手改动），`tail_face` **24 → 25**（新立
+  `the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes`，七段，最后一段按当前
+  形状钉住「真档名带裸字节时本壳开不了、参照件开得了」），跨壳表二十行 → **二十一行**
+  （`("tail", TAIL, 1, b"tail: unknown option -- \xff\n")`），整包 69 段
+  **1276 → 1279 passed / 0 failed**。夹具侧 76 处 `parse_tail_args` 的字面量数组包进既有的
+  `fn argv`，22 处期望位改 `b"…".to_vec()`，删掉文本形助手 `fn operands` 改用既有 `operands_bytes`；
+  `tail_face` 新写一枚 `fn run_raw`（用 `OsStr::from_bytes` 交原始 argv，并在临时目录里造一枚
+  档名带裸字节的**真档**）。
+- **负控六枚（`tmp/tail-469/negctl.py`，逐枚读数 `negctl-K1.log`..`negctl-K6.log`、汇总
+  `negctl-summary-merged.txt`）各咬 2/4/2/2/1/1 档**：K1（壳侧 argv 退回文本缝）咬跨壳表 +
+  面门，**库内 629 全绿**——「库门对 argv 缝没有牙」第八次量化；K2（字母位按字符取）是唯一
+  穿透到库里的一枚，咬库内一枚 + 跨壳表 + 面门两枚；K3（`illegal offset` 的值位折一次）与
+  K4（**改写位**折一次）各咬库内 + 面门一枚——K4 是本轮新出现的层间分布：**程序自己造的串
+  也要按字节，注入它同样只在库门露牙**；K5（横幅的名字位折一次）**只咬壳内那枚纯函数门、
+  面门全绿**，因为这条腿端到端不可达：档名带裸字节的真档在本壳开不了，横幅永远不会带着那枚
+  字节打出来。这一枚把「这条腿本来没有可观察差」与「这条腿现在观察不到」分开——后者是
+  那条在册的 `&str` 口挡住了，所以必须留一枚纯函数门。K6（诊断行的档名折一次）只咬面门。
+  每枚前后按整文件 md5 与 `tmp/tail-469/post/`（完整相对路径）成对复核，跑完 `git status`
+  只剩改动的那四件。
+- **A/B 对参照件 `tmp/tail-416/tail`（同名软链 `tail` 起，程序名段自然对齐）跑矩阵五十五形，
+  SAME=55 / DIFF=0**（`tmp/tail-469/ab.log`），比的是退码、标准输出、标准错误三件事；
+  另按类分开计数：饱和族四形（上面那条）、档名带裸字节的真档一形（在册 `&str` 口）。
+  非空跑核验照旧先做：五十五形里两侧同退 0 的有 28 形。矩阵**不含 `-f`/`-F`**：C 的
+  `forward()` 在跟随时不返回（`forward.c:191`），两侧都只能被超时杀掉，比出来的不是判据；
+  跟随的形状由 `tests/tail_face.rs` 那几枚用真临时档自己钉。参照件归属当场验过：`-Z` 交回
+  `tail: unknown option -- Z` 加一行 usage；`tmp/tail-follow-ref/tail_ref` 打的是 glibc 那句
+  带引号的 `invalid option -- 'Z'`，判为不可用（沿用批次四百零七那条规矩）。
+- **六起工具自错与一次「没跑就写进台账」，全记下来**：① **三侧现量第一次跑的是 `rc=127`**——脚本在临时目录里用
+  **相对路径**起件，`cd` 之后那个路径就失效，二十二形全部「command not found」，而「两侧对比」
+  的汇总会把「两边都 127」算成一致。判据：**对照脚本里的可执行文件一律绝对路径**，而且第一次
+  跑完要先看退码分布再看得分。② **A/B 的裸名档那一形差点假绿**：`snapshot()` 内部会先
+  `prepare()` 重建目录，把摆好的 `a\xff.txt` 一起删掉，于是两侧都报「档不存在」、读数为「一致」；
+  把「摆档」与「跑一次」拆成两个动作之后才看到参照件真的开得了它。同一条判据的另一面：
+  **夹具若在被测那一步里重建现场，它就管不了现场**。③ 一处删改式 `Edit` 的替换文本没带上
+  被锚定的函数头两行，**把既有那枚 `unknown_letters_and_bad_counts_are_refused_not_leaked` 吞掉了**，
+  当场 `grep -n 函数名` 才发现并补回；判据：删改式编辑之后必须复验被锚定的符号还在。
+  ④ 把 `\xff` 写进 Rust 的**文本**串字面量（断言消息里的档名），编译期报 `out of range hex
+  escape`——字节转义只在 `b"…"` 里合法；上一笔记的是 C 八进制 `\377` 直译进 Rust 字节串，
+  这是同一族的另一种形态。⑤ 负控 K2/K3/K4 第一版全是 `BUILD-FAIL`：注入串里用了裸 `String`，
+  而 `src/window.rs` 的顶层 `use alloc::string::String` 正是本轮当未用 import 删掉的那一行，
+  改成全限定 `alloc::string::String::…` 才跑起来。判据：**注入串必须自带它要依赖的每一项限定**，
+  不能假设宿主文件里有 import。
+- **门读数（全部 L1，`2026-10-30`，基线快照 `6ea1eae7e`，即上一笔合回后的 `rewrite` 顶）**：
+  宿主整包 `cargo test --offline -j 1 --no-fail-fast -p minix-textfilter` → **69 段 / 1279 / 0**
+  （`tmp/tail-469/pkg-2.log`；负控还原后 `pkg-3.log`、格式化后 `pkg-4.log` 三次同读数，退出码各 0）；
+  容器权威门按 §7.3 三挂载配方 → 退 0、**69 段 / 1279 / 0** 与宿主同读数（`container-gate.log`）；
+  三架构 `cargo check --offline -j 1 --target {x86_64-unknown-none, aarch64-unknown-none,
+  riscv64gc-unknown-none-elf} -p minix-textfilter --bins` 各退 0、错误 0（`arch-*.log`）——
+  **一次通过**：上一笔立的那条「动了壳侧字符串拼装就当场跑三架构」本轮前置执行，`ToString`
+  随 `warn_bytes` 一起 import，没再重演批次四百六十八那一红；`rustfmt --edition 2024 --check`
+  **原地**量：HEAD 那三份各 0 处 `Diff in`（`fmt-head-*.log`），本轮改出的三份格式化前是
+  7 / 1 / 3 处，格式化后四件全 0；`cargo clippy --offline -j 1 --all-targets -p minix-textfilter`
+  退 0，与主树（合并态）同参数对照两树都是 149 行 / 去重 61 条 / 位置 44 处，集合差只有
+  `src/window.rs` 一条既有警告在 213 → 211 的**位移**（本轮删掉了文件头两行未用 import），
+  零新警。
+- **一处「写成读数、其实没跑」的自我更正，代价记在这里**：这一节的草稿里我曾写下
+  「`tail -n +3.5 a.txt` 参照件退 0 而从第三行之后打，本壳报 illegal ⇒ 登记一形分岔」，理由是
+  C 的 `ARG` 只判 `if (*p)`（`tail.c:89-90`），于是推测那一份 `strtoll` 把 `.5` 也吞了进去。
+  **这条推断没有任何命令与输出撑着**，而把它放进 A/B 矩阵现跑之后直接被否证：三侧完全同形
+  （都打 `tail: illegal offset -- +3.5`、退 **1**；`tmp/tail-469/ab.log` 里那一形记作
+  `SAME argv=[-n +3.5 a.txt]`，另跑的一次三侧对照同读数）。所以这里**不分岔**、也不登记；
+  游标停在 `.` 上就是非零，Minix 的那一份走的正是十进制。教训回到批次四百六十四立的那条判据：
+  **台账里每一句「参照件现量」都必须对应一条跑过的命令与它的输出**，只从 C 源码推出来的只能
+  写「按源码应如此、未量」。这一形留在 A/B 矩阵里当反向对照（矩阵因此是五十五形）。
+- **进度与余量（全部现量）**：参数缝半已落 **二十四支**（上一笔的二十三支加 `tail`）；
+  `grep -rl "support::args()" os/commands/usr-bin/textfilter/src/bin/ | wc -l` → **15**
+  （`asa`、`colcrt`、`diff`、`expand`、`fmt`、`hexdump`、`lam`、`look`、`patch`、`tsort`、
+  `unexpand`、`unifdef`、`unvis`、`vis`、`wc`），其中带字母位诊断面的还剩 **3** 支
+  （`unexpand`、`unifdef`、`vis`），**切片 52 建议 `unexpand`**：字母序第一支。命令面口径本轮起
+  固定为现量命令 `grep -rl "support::args()" os/commands --include=*.rs | wc -l` → **88**
+  （含 `games`；按 crate 分布：`bin/fileops` 26、`usr-bin/textfilter` 15、`bin/proctools` 9、
+  `games/stdio-games` 9、`usr-bin/doctools` 6、`usr-bin/compress` 4、`games/text-games` 3、
+  `bin/shell` 3、`usr-bin/regex` 2、`sbin/mountinfo` 2）。台账前几笔写的「86」与更早的
+  「40 处 / 29 件」一样**未附命令、现量复现不出**，此后一律带命令入账。同口径的 `line_bytes`
+  → **83 处 / 34 件**；`args_bytes()` 调用点 → **25** 处；渲染半那条 grep 仍 **0** 行。
+  独立轮在册不碰：`ARGV-BYTE-PATH-IN-LIBS`（本笔再添一条腿的读数：档名带裸字节的真档开不了）、
+  `SPLIT-OPERAND-ORDER-OPEN-BEFORE-USAGE`、`SPLIT-OVERFLOW-COUNT-ACCEPTED`、
+  五枚 `*-NON-PERMUTE-OPERAND-TAIL`、`CKSUM-CHECK-LEG-TEXTSEAM`、`UNITS-*` 三枚、`CUT-*` 两枚、
+  `COL-CLIPPY-STOCK-LINT`、`BIN_SUPPORT-FMT-DRIFT-STOCK`、`REV-MULTIBYTE-ERROR-LEG`、
+  `NL-*` 四枚、`HEAD-*` 两枚、`JOIN-STDIN-LEG-BYPASSES-DUAL-SURFACE`、`JOT-*` 三枚、
+  `PR-*` 三枚、`SORT-*` 三枚、`TEXTFILTER-07-TABLE-UNESCAPED-PIPES`，**本笔新立**
+  `TAIL-OFFSET-SATURATION-OUTCOME`（四形两方向，与 `SPLIT-OVERFLOW-COUNT-ACCEPTED` 是同一件
+  饱和语义裁决）与 `TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE`（三份自拼的三段形等 `err_line`
+  换字节形后并回去）。**在册建议**仍是那七条，但第七条的内容变了：饱和语义现在有两支的读数
+  （`split` 三形 + `tail` 四形），建议先裁口径再动码。
+
+---
+
 ## 批次四百六十八（A2 参数缝半切片 50：`split` 的操作数、输出前缀与四处值回显交回原字节；这一支没有判据分岔，量出的却是「宿主全绿、真机编译红」）
 
 - **先把形状说清**：`minix3/usr.bin/split/split.c:80` 的 optstring 是
