@@ -13,7 +13,7 @@
 //! implementation per mechanism.
 
 use crate::arch::direct_map::DirectMapArch;
-use crate::arch::dm_coverage::DmCoverageArch;
+use crate::arch::boot_dm::BootDmInstaller;
 use crate::paging_ext::HugePages;
 
 /// Architecture identity for boot page-size planning and DM installation.
@@ -23,7 +23,7 @@ pub trait BootArch: Sized {
     /// Direct Map window constants and PA↔VA arithmetic.
     type DirectMap: DirectMapArch;
     /// Bootstrap-root leaf installer (boot-time table surgery).
-    type DmInstaller: DmCoverageArch;
+    type DmInstaller: BootDmInstaller;
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -33,7 +33,7 @@ pub struct X86_64BootArch;
 impl BootArch for X86_64BootArch {
     type Paging = crate::x86_64::paging::X86_64Paging;
     type DirectMap = crate::arch::direct_map::X86_64DirectMap;
-    type DmInstaller = crate::x86_64::paging::X86_64DmCoverage;
+    type DmInstaller = crate::x86_64::paging::X86_64BootDmInstaller;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -43,7 +43,7 @@ pub struct AArch64BootArch;
 impl BootArch for AArch64BootArch {
     type Paging = crate::arm64::paging::AArch64Paging;
     type DirectMap = crate::arch::direct_map::AArch64DirectMap;
-    type DmInstaller = crate::arm64::paging::AArch64DmCoverage;
+    type DmInstaller = crate::arm64::paging::AArch64BootDmInstaller;
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -53,7 +53,7 @@ pub struct Riscv64BootArch;
 impl BootArch for Riscv64BootArch {
     type Paging = crate::riscv64::paging::Riscv64Paging;
     type DirectMap = crate::arch::direct_map::Riscv64DirectMap;
-    type DmInstaller = crate::riscv64::paging::Riscv64DmCoverage;
+    type DmInstaller = crate::riscv64::paging::Riscv64BootDmInstaller;
 }
 
 /// Host-test bundle: mock paging and DM installer with the mock Direct Map
@@ -66,7 +66,7 @@ pub struct MockBootArch;
 impl BootArch for MockBootArch {
     type Paging = crate::arch::paging::mock::MockPaging;
     type DirectMap = crate::arch::direct_map::MockDirectMap;
-    type DmInstaller = crate::arch::dm_coverage::mock::MockDmCoverage;
+    type DmInstaller = crate::arch::boot_dm::mock::MockBootDmInstaller;
 }
 
 /// Boot-architecture instance for the current build target.

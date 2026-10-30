@@ -4,7 +4,7 @@
 //!
 //! - capability facts (`BootPageSupport<A>`, [`minix_arch::paging_ext`])
 //!   answer what the platform supports;
-//! - policies here and in [`minix_arch::arch::dm_coverage`] record what this
+//! - policies here and in [`minix_arch::arch::boot_dm`] record what this
 //!   boot chose, together with the layout that choice was validated against.
 //!
 //! Planning is pure: no hardware query, no page-table access. The execution
@@ -13,7 +13,7 @@
 
 use minix_arch::arch::boot_arch::BootArch;
 use minix_arch::arch::direct_map::DirectMapLayout;
-use minix_arch::arch::dm_coverage::{DmPagePolicy, DmPolicyError, plan_dm_policy};
+use minix_arch::arch::boot_dm::{DmPagePolicy, DmPolicyError, plan_dm_policy};
 use minix_arch::paging_ext::{BootPageSupport, PageSize, PageSupportError};
 use minix_arch::paging::Paging;
 

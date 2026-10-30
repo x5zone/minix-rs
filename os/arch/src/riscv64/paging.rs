@@ -1162,7 +1162,7 @@ impl HugePages for Riscv64Paging {
 
 // ── DM coverage establishment (boot identity write channel) ────────────────
 
-/// ZST implementor of [`DmCoverageArch`] for RISC-V 64 (Sv39).
+/// ZST implementor of [`BootDmInstaller`] for RISC-V 64 (Sv39).
 ///
 /// The VM DM window (0x0000_0010_0000_0000, L2 slot 64) and the kernel DM
 /// window (0xFFFF_FC00_0000_0000, L2 slot 448) both lie outside the identity
@@ -1171,10 +1171,10 @@ impl HugePages for Riscv64Paging {
 /// DM window on the bootstrap root is a boot-layout bug and fails fast.
 /// All table access goes through the identity mapping (`VA = PA`), which
 /// stays untouched by these writes (§6.1 "DM 建立的自举写通道闭环").
-pub struct Riscv64DmCoverage;
+pub struct Riscv64BootDmInstaller;
 
-impl crate::arch::dm_coverage::DmCoverageArch for Riscv64DmCoverage {
-    unsafe fn dm_install_leaf(
+impl crate::arch::boot_dm::BootDmInstaller for Riscv64BootDmInstaller {
+    unsafe fn install_leaf(
         root_paddr: PhysBytes,
         vaddr: VirBytes,
         paddr: PhysBytes,

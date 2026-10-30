@@ -1232,7 +1232,7 @@ unsafe fn flush_cr3(root_paddr: u64) { unsafe {
     asm!("mov cr3, {}", in(reg) root_paddr, options(nostack));
 }}
 
-/// ZST implementor of [`DmCoverageArch`] for x86-64.
+/// ZST implementor of [`BootDmInstaller`] for x86-64.
 ///
 /// All table access goes through the bootstrap root's identity mapping
 /// (`VA = PA`): the DM windows being established must not be load-bearing
@@ -1256,10 +1256,10 @@ unsafe fn flush_cr3(root_paddr: u64) { unsafe {
 /// swallowed). Intermediate entries on the VM window path carry U so the
 /// window's user leaves are user-accessible (U/S is ANDed across levels;
 /// identity leaves keep U = 0 and remain supervisor, E6).
-pub struct X86_64DmCoverage;
+pub struct X86_64BootDmInstaller;
 
-impl crate::arch::dm_coverage::DmCoverageArch for X86_64DmCoverage {
-    unsafe fn dm_install_leaf(
+impl crate::arch::boot_dm::BootDmInstaller for X86_64BootDmInstaller {
+    unsafe fn install_leaf(
         root_paddr: PhysBytes,
         vaddr: VirBytes,
         paddr: PhysBytes,
@@ -1383,7 +1383,7 @@ impl crate::arch::dm_coverage::DmCoverageArch for X86_64DmCoverage {
             let existing = e3 & ADDR_MASK;
             // SAFETY: `is_identity_table` requires its `pdpt` to be
             // identity-mapped and readable in boot context — holds here by
-            // `dm_install_leaf`'s own safety precondition (all table pages
+            // `install_leaf`'s own safety precondition (all table pages
             // are DM-visible and boot is single-threaded).
             if vm_window && unsafe { is_identity_table(existing, i3, vaddr.0) } {
                 // Fallback-granularity identity (2 MiB leaves) built PDPTE[2]

@@ -38,7 +38,7 @@ extern crate std;
 use crate::boot_policy::{KernelLayout, KernelMapPolicy, plan_boot_pages};
 use minix_arch::arch::boot_arch::BootArch;
 use minix_arch::arch::direct_map::DirectMapLayout;
-use minix_arch::arch::dm_coverage::plan_dm_policy;
+use minix_arch::arch::boot_dm::plan_dm_policy;
 use minix_arch::paging_ext::{BootPageSupport, HugePages, PageSize, detect_boot_page_support};
 use minix_arch::CurrentBootArch;
 use minix_types::{PhysBytes, USER_STACK_TOP, VirBytes};
@@ -159,7 +159,7 @@ use globals::FREE_MEMMAP;
 /// Test-only serialization for tests that touch process-global boot state.
 ///
 /// Unit tests of this crate run in one process: `BOOT_ALLOC` (boot bump
-/// region), the `MockDmCoverage` leaf registry, and the `pt_alloc`
+/// region), the `MockBootDmInstaller` leaf registry, and the `pt_alloc`
 /// registration are all process-global. Tests that run the boot flow
 /// (`arch_boot_impl` → Step 4 DM establishment) or mutate the bump region
 /// must hold this lock; the DM leaf registry is cleared on acquisition so
@@ -173,10 +173,10 @@ pub(crate) mod test_sync {
 
     static BOOT_GLOBALS_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Acquire the boot-globals lock and clear the MockDmCoverage registry.
+    /// Acquire the boot-globals lock and clear the MockBootDmInstaller registry.
     pub(crate) fn lock_boot_globals() -> MutexGuard<'static, ()> {
         let guard = BOOT_GLOBALS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        minix_arch::arch::dm_coverage::mock::mock_dm_clear();
+        minix_arch::arch::boot_dm::mock::mock_dm_clear();
         guard
     }
 }

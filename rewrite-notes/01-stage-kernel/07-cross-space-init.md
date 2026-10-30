@@ -1,7 +1,7 @@
 # 07 · 跨空间初始化：Direct Map 取代 32 位临时窗口
 
 > **C 真值源**：`minix3/minix/kernel/main.c`（`arch_post_init`/`memory_init` 的调用位置）、`minix3/minix/kernel/arch/i386/protect.c:arch_post_init`、`minix3/minix/kernel/arch/i386/memory.c:memory_init/createpde/lin_lin_copy/vm_memset/mem_clear_mapcache`、`minix3/minix/kernel/arch/i386/pg_utils.c:pg_info`、`minix3/minix/kernel/system/do_vmctl.c`（`VMCTL_CLEARMAPCACHE` 分支）、`minix3/minix/kernel/arch/i386/arch_do_vmctl.c:setcr3`、`minix3/minix/kernel/arch/i386/klib.S`（含 `ENTRY(__switch_address_space)` 入口）、`minix3/minix/kernel/{cpulocals.h,proc.h}`、`minix3/minix/kernel/arch/{i386/include/vm.h,earm/memory.c}`、`minix3/minix/include/minix/{param.h,com.h}`、`minix3/minix/servers/vm/{pagetable,main,pagefaults}.c`。
-> **Rust 模块**：`os/kernel/src/dm_coverage.rs`（`establish_boot_dm` 与四个候选源函数）、`os/arch/src/arch/direct_map.rs`（`DirectMapArch` trait 与三架构实现）、`os/arch/src/arch/dm_coverage.rs`（`DmRange`/`plan_range_units`/`establish_dm_range`）、`os/kernel/src/lib.rs`（`init_post_and_memory`/`switch_address_space`/`arch_boot_impl`）、`os/kernel/src/{syscall,smp,vm_handoff}.rs`、`os/arch/src/arch/paging.rs`（`map_kernel`/`PageFlags`）、`os/arch/src/x86_64/paging.rs`（`X86_64DmCoverage`）。
+> **Rust 模块**：`os/kernel/src/dm_coverage.rs`（`establish_boot_dm` 与四个候选源函数）、`os/arch/src/arch/direct_map.rs`（`DirectMapArch` trait 与三架构实现）、`os/arch/src/arch/boot_dm.rs`（`DmRange`/`plan_range_units`/`install_boot_dm_range`）、`os/kernel/src/lib.rs`（`init_post_and_memory`/`switch_address_space`/`arch_boot_impl`）、`os/kernel/src/{syscall,smp,vm_handoff}.rs`、`os/arch/src/arch/paging.rs`（`map_kernel`/`PageFlags`）、`os/arch/src/x86_64/paging.rs`（`X86_64BootDmInstaller`）。
 > **前置**：[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md)（boot 期建表，§2.6）、[03-kmain-cstart.md](03-kmain-cstart.md)（Phase A–F 的划分——本篇 Phase D 的位置）、[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md)（进程槽与 boot→running 转换，§3.12）。
 > **目标读者**：熟悉操作系统基本概念（地址空间、页表、TLB、特权级）与 C 语言的开发者；Rust 一侧读到 trait 与 `unsafe` 契约大意即可。
 > **前置知识**：boot 期已建好 bootstrap 页表并开启分页（[01-boot-shim-bootstrap.md](01-boot-shim-bootstrap.md) §2.6 的建表五步）；进程槽与 boot→running 转换的形状（[06-proc-init-boot-proc.md](06-proc-init-boot-proc.md) §3.12）；x86 分页的 U/S 位与大页语义听过即可（位表在 01 篇 §2.6.4）。
@@ -150,7 +150,7 @@ static void setcr3(struct proc *p, u32_t cr3, u32_t *v)
 | earm 的窗口机制（§3.3 的"两份实现文件"对照） | earm：`minix3/minix/kernel/arch/earm/memory.c`（`createpde`/`freepdes`/`memory_init` 的等价物） | 有 C 可对照（同形机制的另一侧） |
 | aarch64 / riscv64 的 `DirectMapArch` 实现（基址、尺寸、顶层槽位；Sv39 的 16 GiB 取向，§4.1） | **无**——C 内核没有这两个架构 | **未覆盖（无 C 源）** |
 | 双视图地址空间与双窗权限模型（VM DM U=1 / 内核 DM U=0+GLOBAL，§3.2） | **无**——64 位新决策，C 无此形态 | **未覆盖（无 C 源）** |
-| 覆盖建立三件套与四个候选源（`DmRange`/`plan_range_units`/`DmCoverageArch`、§4.3–§4.5） | **无**——C 只有"借一个窗口"的按次机制，无"按资源区间建覆盖"的常驻模型 | **未覆盖（无 C 源）** |
+| 覆盖建立三件套与四个候选源（`DmRange`/`plan_range_units`/`BootDmInstaller`、§4.3–§4.5） | **无**——C 只有"借一个窗口"的按次机制，无"按资源区间建覆盖"的常驻模型 | **未覆盖（无 C 源）** |
 
 "未覆盖"的含义：这些分支的正确性依据不是 C 对照，而是设计契约（§3）与真机全链（§5.3 的启动链载体）。本篇对它们的陈述一律写作"无对应物"，不写作"与 C 一致"——这条纪律同时适用于后续修订中的新增段落。
 
@@ -591,7 +591,7 @@ GLOBAL 位是这条决策里的另一半：它让内核窗口的 TLB 项跨 CR3 
 
 ### 3.3 决策三：`DirectMapArch` 只抽象布局差，不抽象机制（→§3.1、§3.2）
 
-C 侧的对应物（§2.6）：临时窗口机制没有任何"每架构一份"的形状——i386 与 earm 各有一份实现文件，但那是两份完整机制，不是"一份机制 + 每架构参数"。64 位侧剩下的架构差异被数到只剩一组常量：窗口基址（两个）与窗口尺寸（一个）、外加随之而来的堆区基址与尺寸。决策三：这组差异收进一个 trait，方法只留"由常量派生"的换算；大页能力（页尺寸、PTE 位、CPUID 探测）归 `HugePages`，覆盖建立（怎么把窗口写进页表）归 `DmCoverageArch`——三件事三个 trait，谁也不越界（`os/arch/src/arch/direct_map.rs:DirectMapArch`，`[ARCH: A-10]`：C 的双宏族变为按架构的 trait 实现）。
+C 侧的对应物（§2.6）：临时窗口机制没有任何"每架构一份"的形状——i386 与 earm 各有一份实现文件，但那是两份完整机制，不是"一份机制 + 每架构参数"。64 位侧剩下的架构差异被数到只剩一组常量：窗口基址（两个）与窗口尺寸（一个）、外加随之而来的堆区基址与尺寸。决策三：这组差异收进一个 trait，方法只留"由常量派生"的换算；大页能力（页尺寸、PTE 位、CPUID 探测）归 `HugePages`，覆盖建立（怎么把窗口写进页表）归 `BootDmInstaller`——三件事三个 trait，谁也不越界（`os/arch/src/arch/direct_map.rs:DirectMapArch`，`[ARCH: A-10]`：C 的双宏族变为按架构的 trait 实现）。
 
 ```rust
 // 签名示意，os/arch/src/arch/direct_map.rs:DirectMapArch（文档注释有删节；
@@ -862,9 +862,9 @@ VM 运行期    init_page_table → map_kernel 复刻四段映射（含内核 DM
 
 **窗口建立这一拍也有同款反推**：把 `establish_boot_dm` 从 Step 4 挪到 Phase C 之后——Phase C 装载 VM ELF 的 `paging.map` 正是窗口的第一个消费者（§3.2 末尾已按现码说明：装页表走的通道依赖窗口已在位）。窗口未建时，`paging.map` 对窗口区虚拟地址的第一次写入命中的是一个尚未建立的翻译：bootstrap 根里那个顶层槽是空的，故障以启动期缺页的形式落在建表循环里；此刻 VM 尚未运行，§2.4 那条"页错误交给 VM 处理"的 `vm_suspend` 协议不存在可调用的对端，引导只能中止。也就是说，窗口建立的位置错后不会产生更隐蔽的静默错误，而是把"Step 4 的次序断言"变成"建表循环里的缺页现场"——两处都拦得住，但后者的故障点在建表逻辑内部、与真正的布局错误混在一起，取证面更大。这正是 Step 4 注释把次序约束写成一行（"before any VM physical access through the windows"）的理由。
 
-### 4.3 覆盖建立的三件套：`DmRange`、`plan_range_units`、`DmCoverageArch`（→§3.1、§3.3）
+### 4.3 覆盖建立的三件套：`DmRange`、`plan_range_units`、`BootDmInstaller`（→§3.1、§3.3）
 
-窗口"覆盖跟随资源区间，而不是覆盖 `[0, max_phys)`"——这句判断（`os/arch/src/arch/dm_coverage.rs` 模块注释的小节标题原文）由三个组件执行。第一个是范围类型及其裁剪（`os/arch/src/arch/dm_coverage.rs:DmRange:clipped_to`，逐字引用）：
+窗口"覆盖跟随资源区间，而不是覆盖 `[0, max_phys)`"——这句判断（`os/arch/src/arch/boot_dm.rs` 模块注释的小节标题原文）由三个组件执行。第一个是范围类型及其裁剪（`os/arch/src/arch/boot_dm.rs:DmRange:clipped_to`，逐字引用）：
 
 ```rust
     /// Clip the range to `[0, pa_limit)`. Returns `None` if nothing remains.
@@ -885,7 +885,7 @@ VM 运行期    init_page_table → map_kernel 复刻四段映射（含内核 DM
 
 一个越过窗口上限的常规内存区会被**部分**覆盖：窗口内的部分拿到映射，窗口外的部分留在可表示范围之外，并因此被 VM 物理内存管理的资格过滤排除——映射覆盖量与资源资格在这里是同一条边界。
 
-第二个是贪心的粒度选择（`os/arch/src/arch/dm_coverage.rs:plan_range_units`，逐字引用）：
+第二个是贪心的粒度选择（`os/arch/src/arch/boot_dm.rs:plan_range_units`，逐字引用）：
 
 ```rust
 pub fn plan_range_units<A: BootArch, F: FnMut(u64, PageSize) -> Result<(), PageTableError>>(
@@ -930,7 +930,7 @@ pub fn plan_range_units<A: BootArch, F: FnMut(u64, PageSize) -> Result<(), PageT
 
 每个发出的 `(物理地址, 尺寸)` 单元都整体落在候选区间内——大页叶只有在"对齐且剩余量足够"时才发出。"洞不被吞"的执行点就在这个循环里：一个不属于任何候选的洞（例如 x86 legacy 的 `[0xA0000, 0x100000)`），在首选尺寸、回退尺寸、基础页任何粒度上都不会成为某个单元的一部分。手排一次：候选 `[0, 0x40_0000)`（2 MiB 对齐、4 MiB 长）在首选尺寸不可用时发出 `(0x0, 2 MiB)`、`(0x20_0000, 2 MiB)` 两个 2 MiB 叶——零 4 KiB 叶。
 
-第三个是按架构装叶的 trait 与两层驱动（`os/arch/src/arch/dm_coverage.rs:install_boot_dm_range`，逐字引用）：
+第三个是按架构装叶的 trait 与两层驱动（`os/arch/src/arch/boot_dm.rs:install_boot_dm_range`，逐字引用）：
 
 ```rust
 pub unsafe fn install_boot_dm_range<A: BootArch>(
@@ -945,9 +945,9 @@ pub unsafe fn install_boot_dm_range<A: BootArch>(
 }
 ```
 
-`preflight_boot_dm_range` 在写第一张叶子之前检查窗口归属、范围端点与长度、窗口容量、`phys_addr_limit`，以及规划器将发射的每个叶子的 VA/PA 对齐与边界；`install_prevalidated_boot_dm_range` 只重放同一序列并调用 `A::DmInstaller::dm_install_leaf`。`establish_boot_dm` 先对 Kernel DM 与 VM DM 的全部候选做一遍预检，再走安装层——几何错误不会留下任何新叶子。
+`preflight_boot_dm_range` 在写第一张叶子之前检查窗口归属、范围端点与长度、窗口容量、`phys_addr_limit`，以及规划器将发射的每个叶子的 VA/PA 对齐与边界；`install_prevalidated_boot_dm_range` 只重放同一序列并调用 `A::DmInstaller::install_leaf`。`establish_boot_dm` 先对 Kernel DM 与 VM DM 的全部候选做一遍预检，再走安装层——几何错误不会留下任何新叶子。
 
-`DmCoverageArch` 的实现者（x86-64 侧 `os/arch/src/x86_64/paging.rs:X86_64DmCoverage`）要把每个单元写到 bootstrap 根的表树里，且**不得使用正在建立的窗口本身**——所有表访问走恒等写通道（`VA = PA`），这条自举约束写在 trait 的合同注释里。x86-64 实现里最重的一段是 VM 窗口与恒等映射的重叠善后（`os/arch/src/x86_64/paging.rs:X86_64DmCoverage::dm_install_leaf` 的拆分分支，节选；省略号处为对齐检查、PML4 层处理与 1 GiB 整叶替换分支；块内注释含仓库内部评审记录的编号标记，按原文引用）：
+`BootDmInstaller` 的实现者（x86-64 侧 `os/arch/src/x86_64/paging.rs:X86_64BootDmInstaller`）要把每个单元写到 bootstrap 根的表树里，且**不得使用正在建立的窗口本身**——所有表访问走恒等写通道（`VA = PA`），这条自举约束写在 trait 的合同注释里。x86-64 实现里最重的一段是 VM 窗口与恒等映射的重叠善后（`os/arch/src/x86_64/paging.rs:X86_64BootDmInstaller::install_leaf` 的拆分分支，节选；省略号处为对齐检查、PML4 层处理与 1 GiB 整叶替换分支；块内注释含仓库内部评审记录的编号标记，按原文引用）：
 
 ```rust
         // Split path (the x86-64 norm — the legacy hole [0xA0000, 0x100000)
@@ -973,71 +973,51 @@ pub unsafe fn install_boot_dm_range<A: BootArch>(
 
 三个读点：**为什么有拆分**——x86-64 的 VM 窗口 `[2 GiB, 3 GiB)` 与恒等映射的 `PDPTE[2]` 是同一个槽，恒等建表在这里写的是一条 1 GiB 大页叶；**为什么换"空表"**——恒等翻译在这个 VA 段被整体退役，新表只保留后续合法 DM 单元写进去的内容，恒等时代的保留区翻译不会借拆分之机回到窗口里；**为什么中间层要带 U 位**——U/S 位跨层级做与运算，恒等建起的中间层是监督态，若不补 USER，VM 窗口叶上的 U=1 走查时仍会被上层抵消（实现里 `branch_flags` 的注释原话："U/S is ANDed across levels"）。
 
-贪心选择只查对齐不查"剩余量足够"会怎样（删掉 `remaining >= TWO_MB` 那半个条件）：候选 `[0x40_0000, 0x50_0000)`（起点 2 MiB 对齐、长度只有 1 MiB）会发出一条 2 MiB 叶，把 `[0x50_0000, 0x60_0000)` 这段候选之外的物理区间一并映射进去，"覆盖跟随资源"的边界被冲开一 MiB。真实的洞形状（x86 PC 的常规 `[0, 0xA0000)` + 洞 `[0xA0000, 0x100000)` + 常规 `[0x100000, …)`，`os/arch/src/arch/dm_coverage.rs` 的测试 `test_legacy_hole_never_swallowed` 用的正是这组数）在正确实现下每条单元都保持精确边界。拆分分支若拷贝恒等叶的映射而不是发空表——保留区翻译整体搬进新表，"洞不被吞"以另一种方式失败。两个方向都收敛到同一条不变量：窗口里只该有候选资源自己。
+贪心选择只查对齐不查"剩余量足够"会怎样（删掉 `remaining >= TWO_MB` 那半个条件）：候选 `[0x40_0000, 0x50_0000)`（起点 2 MiB 对齐、长度只有 1 MiB）会发出一条 2 MiB 叶，把 `[0x50_0000, 0x60_0000)` 这段候选之外的物理区间一并映射进去，"覆盖跟随资源"的边界被冲开一 MiB。真实的洞形状（x86 PC 的常规 `[0, 0xA0000)` + 洞 `[0xA0000, 0x100000)` + 常规 `[0x100000, …)`，`os/arch/src/arch/boot_dm.rs` 的测试 `test_legacy_hole_never_swallowed` 用的正是这组数）在正确实现下每条单元都保持精确边界。拆分分支若拷贝恒等叶的映射而不是发空表——保留区翻译整体搬进新表，"洞不被吞"以另一种方式失败。两个方向都收敛到同一条不变量：窗口里只该有候选资源自己。
 
 ### 4.4 `establish_boot_dm`：安装次序、验证与调用点（→§3.2、§3.4）
 
 四个候选源怎么变成两个窗口，主体在 `os/kernel/src/dm_coverage.rs:establish_boot_dm`（逐字引用到第四源循环为止；省略号处为一段 `#[cfg(not(feature = "mock"))]` 的调试探针残迹——打印 bump 区间与裁剪清单的循环体已被清空但结构保留，块注释里记着它的由来与一次多核早期启动的实测记录名；函数尾部的 `validate_bootstrap_tree(root);` 调用随后单独逐字）：
 
 ```rust
-pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
-    let kernel_flags = PageFlags::kernel_read_write();
-    let vm_flags = PageFlags::read_write();
-    let kernel_va = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
-    let vm_va = CurrentDirectMap::VM_DIRECT_MAP_BASE;
-    let vm_pa_limit = CurrentDirectMap::VM_DIRECT_MAP_SIZE;
+pub unsafe fn establish_boot_dm<A: BootArch>(
+    kernel_info: &KernelInfo,
+    root: PhysBytes,
+    policy: &DmPagePolicy<A>,
+) -> Result<(), PageTableError> {
+    let kernel_window = policy.kernel_window();
+    let vm_window = policy.vm_window();
+    let vm_capacity = vm_window.pa_capacity();
 
-    // Kernel DM first (§6.1 constraint ①), full PA span.
+    // Pass 1: preflight every candidate of both windows before any write.
     for r in memmap_candidates(kernel_info) {
-        establish_dm_range::<CurrentDmCoverage>(
-            root, r, u64::MAX, kernel_va, kernel_flags,
-        )
-        .expect("boot DM: kernel window establishment failed");
-    }
-    for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
-        establish_dm_range::<CurrentDmCoverage>(
-            root, r, u64::MAX, kernel_va, kernel_flags,
-        )
-        .expect("boot DM: kernel window establishment failed");
-    }
-
-    // VM DM second, PA span clipped to the window; candidates beyond the
-    // window stay outside DM representability (resource qualification
-    // excludes them from VM PMM — §6.1 资格过滤).
-    for r in memmap_candidates(kernel_info) {
-        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags)
-            .expect("boot DM: VM window establishment failed");
-    }
-    for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
-        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags)
-            .expect("boot DM: VM window establishment failed");
-    }
-    for r in boot_module_candidates(kernel_info, root) {
-        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags)
-            .expect("boot DM: VM window module coverage failed");
-        establish_dm_range::<CurrentDmCoverage>(
-            root, r, u64::MAX, kernel_va, kernel_flags,
-        )
-        .expect("boot DM: kernel window module coverage failed");
-    }
-
-    // Source 4: reserved/occupied regions enter the KERNEL DM only.
-    // The VM DM deliberately stays on sources 1–3 — VM PMM resource
-    // qualification must keep treating non-conventional memory as
-    // unrepresentable (§6.1 资格过滤); the kernel is the only accessor of
-    // its own image/stack pages through the DM alias.
-    for r in reserved_regions_candidates(kernel_info, root) {
-        establish_dm_range::<CurrentDmCoverage>(root, r, u64::MAX, kernel_va, kernel_flags)
-            .expect("boot DM: kernel window reserved coverage failed");
+        preflight_boot_dm_range(r, kernel_window, policy)?;
     }
     ...
-```
+    for r in reserved_regions_candidates(kernel_info, root) {
+        preflight_boot_dm_range(r, kernel_window, policy)?;
+    }
 
+    // Pass 2: install the preflighted sequence. Kernel DM first.
+    for r in memmap_candidates(kernel_info) {
+        // SAFETY: pass 1 validated geometry; the caller owns the boot-context
+        // contract.
+        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
+    }
+    ...
+    for r in reserved_regions_candidates(kernel_info, root) {
+        // SAFETY: as above.
+        unsafe { install_prevalidated_boot_dm_range(root, r, kernel_window, policy)? };
+    }
+    validate_bootstrap_tree(root);
+    Ok(())
+}
+```
 （块内注释含仓库内部设计文档节号与圈号标记，按原文引用；一处内部记录名在引用时省去。）
 
 安装次序的三个不变量，每个都对应一段代码：
 
-- **内核窗先行，全 PA 跨度**（前两个循环，`window_pa_limit = u64::MAX`）：恒等映射退役后，内核对 PA 的访问要立即有内核通道可走；这条次序约束在 `os/kernel/src/dm_coverage.rs` 模块注释里以"Kernel DM is established first"起头。
+- **内核窗先行，窗口容量作为 PA 上界**（预检/安装两遍的第一组循环，`kernel_window.pa_capacity()`）：恒等映射退役后，内核对 PA 的访问要立即有内核通道可走；这条次序约束在 `os/kernel/src/dm_coverage.rs` 模块注释里以"Kernel DM is established first"起头。
 - **VM 窗按 `VM_DIRECT_MAP_SIZE` 裁剪**（第三、四个循环）：`vm_pa_limit` 传给 §4.3 的 `clipped_to`，窗外部分不映射、也不进 VM 的资源资格。
 - **第四源只进内核窗**（最后的循环）：保留区（内核镜像与栈所在的非常规内存）的 DM 别名只有内核会用；VM 的资格过滤语义保持"只认常规内存"，不受第四源影响。注释里 "the kernel is the only accessor" 说的就是这条边界。
 
@@ -1148,7 +1128,7 @@ fn bootstrap_tree_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> [Opti
 
 函数文档注释里另有一条工程约束（原文引用，`os/kernel/src/dm_coverage.rs:boot_module_candidates` 文档注释；含仓库内部记录名 `fix16` 与日期，按原文）："Heap-free by necessity: this runs inside `arch_boot` before the kernel heap exists — a `collect` here is a 64-byte `handle_alloc_error` boot failure"。四个候选函数全部用迭代器 filter 合成，不收集、不排序、不分配。
 
-**下溢修复**是源 2 的核心教学点。把这个比较去掉会怎样：前裁剪被无条件执行（`start = max(base, root_end)`，不看根是否在 bump 之内）；在"根在 bump 上方"的形状下，`start` 被推到根页之上、越过 `end`，`end - start` 以无符号算术回绕成巨数——候选变成一个"空转零叶"的假区间：`establish_dm_range` 收到它，`plan_range_units` 的 `while cur < end` 一次都不进，bump 区零映射。后果链（每环都可从码上指认）：运行期分配的页表页来自 bump 区 → 这些 PA 在内核窗口里没有别名 → 内核走查器第一次经窗口访问运行期页表页就缺页——一次真机取证记录的缺页地址 `0xffff8080_0dfb4ff8` 正是内核别名格式（`0xFFFF_8080_…`）加上一个 bump 区内的 PA（这条缺陷的根因记录见 E8 条目里的第①处根因：`dm_coverage` 下溢）。修复语义就是现在函数体里的那个分支：**仅当根落在 bump 内才裁剪，且裁剪带 `start < end` 守卫**；不相交时全量保留。`os/kernel/src/dm_coverage.rs` 的测试 `test_union_keeps_full_bump_when_root_above_bump` 用当次真机实测的真实地址（bump `[0x0dfaf000, 0x0dfef000)`、根页 `0x0e789000`）把这条语义钉成回归（§5.2 细读）。
+**下溢修复**是源 2 的核心教学点。把这个比较去掉会怎样：前裁剪被无条件执行（`start = max(base, root_end)`，不看根是否在 bump 之内）；在"根在 bump 上方"的形状下，`start` 被推到根页之上、越过 `end`，`end - start` 以无符号算术回绕成巨数——候选变成一个"空转零叶"的假区间：`install_boot_dm_range` 收到它，`plan_range_units` 的 `while cur < end` 一次都不进，bump 区零映射。后果链（每环都可从码上指认）：运行期分配的页表页来自 bump 区 → 这些 PA 在内核窗口里没有别名 → 内核走查器第一次经窗口访问运行期页表页就缺页——一次真机取证记录的缺页地址 `0xffff8080_0dfb4ff8` 正是内核别名格式（`0xFFFF_8080_…`）加上一个 bump 区内的 PA（这条缺陷的根因记录见 E8 条目里的第①处根因：`dm_coverage` 下溢）。修复语义就是现在函数体里的那个分支：**仅当根落在 bump 内才裁剪，且裁剪带 `start < end` 守卫**；不相交时全量保留。`os/kernel/src/dm_coverage.rs` 的测试 `test_union_keeps_full_bump_when_root_above_bump` 用当次真机实测的真实地址（bump `[0x0dfaf000, 0x0dfef000)`、根页 `0x0e789000`）把这条语义钉成回归（§5.2 细读）。
 
 把这两条反过来各推一遍：
 
@@ -1171,13 +1151,13 @@ fn bootstrap_tree_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> [Opti
 | 同上 | `test_reserved_kernel_dm_installs_gap_leaf` | 保留区叶真的装进内核窗、不双装 |
 | 同上 | `test_establish_boot_dm_reserved_is_kernel_window_only` | 端到端：第四源只在内核窗、覆盖量跟随（§5.2） |
 | 同上 | `test_boot_dm_x86_64_style_params` / `..._aarch64_...` / `..._riscv64_...` | 三组平台形参数走完 `arch_boot_impl` 不 panic |
-| arch（`os/arch/src/arch/dm_coverage.rs` tests 模块） | `test_two_mb_region_uses_two_mb_units`、`test_one_gb_selection`、`test_unaligned_fragments_degrade_to_4k` | 粒度贪心的三档 |
+| arch（`os/arch/src/arch/boot_dm.rs` tests 模块） | `test_two_mb_region_uses_two_mb_units`、`test_one_gb_selection`、`test_unaligned_fragments_degrade_to_4k` | 粒度贪心的三档 |
 | 同上 | `test_window_clipping` | 窗口上限裁剪 |
 | 同上 | `test_bootstrap_tree_fragment_coverage` | 槽对的两个 `Option` 语义 |
 | 同上 | `test_legacy_hole_never_swallowed` | 真实 x86 布局的洞保持精确边界 |
 | 同上 | `test_establish_conflict_propagates` 等 4 条 driver 组 | 驱动层的 VA 偏移、冲突传播、窗口上限 |
 
-两侧分工：arch 侧只看"给一个范围怎么发出叶"，kernel 侧只看"给一份 KernelInfo 该挑哪些范围"。分界线是 `DmCoverageArch` 的实现者——mock 注册表（宿主）或真表走查（真机）。
+两侧分工：arch 侧只看"给一个范围怎么发出叶"，kernel 侧只看"给一份 KernelInfo 该挑哪些范围"。分界线是 `BootDmInstaller` 的实现者——mock 注册表（宿主）或真表走查（真机）。
 
 ### 5.2 三条关键测试钉住的形状
 
@@ -1203,7 +1183,7 @@ fn bootstrap_tree_candidates(kernel_info: &KernelInfo, root: PhysBytes) -> [Opti
 第二条，第四源的窗口归属端到端守卫（`os/kernel/src/dm_coverage.rs:test_establish_boot_dm_reserved_is_kernel_window_only`，节选；省略号处为数据构造与 `establish_boot_dm` 调用；块内注释含仓库内部记录名，按原文引用）：
 
 ```rust
-        let leaves = minix_arch::arch::dm_coverage::mock::mock_dm_leaves();
+        let leaves = minix_arch::arch::boot_dm::mock::mock_dm_leaves();
         assert!(
             leaves.contains_key(&(CurrentDirectMap::KERNEL_DIRECT_MAP_BASE + 0x1f00_0000)),
             "reserved gap range must be installed in the kernel window"
@@ -1235,7 +1215,7 @@ bump 落在常规内存内被丢弃后，最高候选只剩模块 blob：终点 
 
 ### 5.3 测试边界与结构性消失的错误类别
 
-mock 门怎么接：`os/arch/src/arch/direct_map.rs` 之外的 `MockDmCoverage`（`os/arch/src/arch/dm_coverage.rs` 的 mock 模块）把每个叶记进进程全局注册表而不碰真表；kernel 包对 `minix-arch` 的常规依赖是 `default-features = false`（真实现），`mock` feature 才追加 `runtime-window`（`os/kernel/Cargo.toml` 的 feature 接线，注释里写明"生产形态 = `--no-default-features`"）。测试用 `lock_boot_globals` 串行化——boot 分配区与叶注册表都是进程全局，清理由锁的获取方负责。
+mock 门怎么接：`os/arch/src/arch/direct_map.rs` 之外的 `MockBootDmInstaller`（`os/arch/src/arch/boot_dm.rs` 的 mock 模块）把每个叶记进进程全局注册表而不碰真表；kernel 包对 `minix-arch` 的常规依赖是 `default-features = false`（真实现），`mock` feature 才追加 `runtime-window`（`os/kernel/Cargo.toml` 的 feature 接线，注释里写明"生产形态 = `--no-default-features`"）。测试用 `lock_boot_globals` 串行化——boot 分配区与叶注册表都是进程全局，清理由锁的获取方负责。
 
 宿主能证什么、真机才能证什么：候选选择、裁剪、粒度、覆盖量算术、窗口归属在宿主全可证（注册表就是叶集合的真值）；真表走查、恒等写通道、CPUID 的 1 GiB 探测、拆分分支在真机上的 TLB 后果，宿主证不了——那半边由 `os/qemu-tests/` 的启动链测试（如 `test-user-trap.sh`、`test-rt-birth.sh` 一类全链载体）以"能不能活着跑到用户态"覆盖。
 

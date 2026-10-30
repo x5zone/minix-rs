@@ -9,7 +9,7 @@ pub mod paging_ext;
 pub mod boot_arch;
 pub mod pt_alloc;
 pub mod direct_map;
-pub mod dm_coverage;
+pub mod boot_dm;
 pub mod frame;
 pub mod pte_walk_arch;
 pub mod protection;
