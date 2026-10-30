@@ -68,8 +68,9 @@ fn run() -> ! {
                     }
                 }
             } else {
-                // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
-                // 报文里念出去的是原字节。
+                // The open call takes `&str` (registered `ARGV-BYTE-PATH-IN-LIBS`), so
+                // the fold happens only at this point; what the message reads out is the
+                // original bytes.
                 let shown = String::from_utf8_lossy(arg).into_owned();
                 match support::read_file(&shown) {
                     Ok(data) => bytes = data,
@@ -98,9 +99,10 @@ fn run() -> ! {
             match c {
                 b's' => {
                     match flag_value(&argv, &mut i, flags, &mut k) {
-                        // `-s` 的值进 LamSpec.sep（引擎那头是 `String`，内容半在册
-                        // `LAM-SEP-CONTENT-TEXTSEAM`）：折只发生在这一刻，输出里
-                        // 的分隔串因此还是折过的。
+                        // The `-s` value goes into LamSpec.sep (the engine side takes a
+                        // `String`, so invalid UTF-8 content reaches it folded): the fold
+                        // happens only at this point, and the separator in the output is
+                        // therefore the folded one.
                         Some(v) => {
                             pending.sep = String::from_utf8_lossy(v).into_owned();
                         }
@@ -172,7 +174,8 @@ fn run() -> ! {
     support::terminate(0);
 }
 
-/// `-s`/`-t`/`-f`/`-p` 的取值：本 token 剩下的那段，或下一个词——按 argv 的原字节交回。
+/// The value of `-s`/`-t`/`-f`/`-p`: the rest of this token, or the next word — handed
+/// back as the raw argv bytes.
 fn flag_value<'a>(
     argv: &'a [Vec<u8>],
     i: &mut usize,

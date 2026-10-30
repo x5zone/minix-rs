@@ -70,7 +70,8 @@ fn run() -> ! {
             match flag_byte {
                 b'd' => dictionary = true,
                 b'f' => fold = true,
-                // 集外旗标的字母位按原字节（C 的判据在字节上，`look.c` 的旗标环）。
+                // An unknown flag's letter slot uses the raw bytes (C's test is on
+                // bytes, in `look.c`'s flag loop).
                 other => {
                     let mut msg: Vec<u8> = b"look: Bad flag: ".to_vec();
                     msg.push(other);
@@ -90,15 +91,15 @@ fn run() -> ! {
         2 => (a[base + 1], None),
         _ => usage(),
     };
-    // 默认词典是常量路径，开档口仍要 `&str`。
+    // The default dictionary is a constant path; the open call still takes `&str`.
     let path: &[u8] = file.unwrap_or(DEFAULT_DICT.as_bytes());
 
     if !string.is_ascii() {
         warn_exit("prefix string contains non-ASCII characters.");
     }
 
-    // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
-    // 报文里念出去的是原字节。
+    // The open call takes `&str` (registered `ARGV-BYTE-PATH-IN-LIBS`), so the fold
+    // happens only at this point; what the message reads out is the original bytes.
     let shown = String::from_utf8_lossy(path).into_owned();
     let data = match support::read_file(&shown) {
         Ok(d) => d,

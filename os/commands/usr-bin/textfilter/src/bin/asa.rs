@@ -33,8 +33,9 @@ fn run() -> ! {
         support::emit(&asa(&input));
     } else {
         for name in &files {
-            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
-            // 报文里念出去的是原字节。
+            // The open entry wants `&str` (registered under `ARGV-BYTE-PATH-IN-LIBS`),
+            // so the fold happens only at this point; the message still reports the
+            // raw bytes.
             let shown = String::from_utf8_lossy(name).into_owned();
             match support::read_file(&shown) {
                 Ok(data) => support::emit(&asa(&data)),

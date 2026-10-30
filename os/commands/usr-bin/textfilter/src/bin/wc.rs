@@ -33,8 +33,9 @@ use minix_textfilter::count::{CharField, Counter, format_counts};
 /// The count chunk size (the C `wc` reads in `MAXBSIZE` steps).
 const CHUNK: usize = 4096;
 
-/// 操数那句的两段形（本壳既有句式照旧），档名位交回 argv 的**原字节**——折过的
-/// `ef bf bd` 不再出现。
+/// The two-part shape of the operand diagnostic (this shell's existing wording);
+/// the file-name slot hands back argv's **raw bytes**, so the folded `ef bf bd`
+/// never shows up there.
 fn warn_named(name: &[u8]) {
     let mut line: Vec<u8> = b"wc: ".to_vec();
     line.extend_from_slice(name);
@@ -156,8 +157,9 @@ fn run() -> ! {
     }
 
     for operand in &operands {
-        // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
-        // 报文里念出去的是原字节。
+        // The open entry wants `&str` (registered under `ARGV-BYTE-PATH-IN-LIBS`),
+        // so the fold happens only at this point; the message still reports the raw
+        // bytes.
         let shown = String::from_utf8_lossy(operand).into_owned();
         let fd = match open(&shown, 0, 0) {
             Ok(fd) => fd,

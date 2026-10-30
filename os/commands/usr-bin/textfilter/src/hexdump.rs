@@ -310,7 +310,8 @@ pub fn parse_skip(arg: &[u8]) -> Result<u64, HexError> {
         if j == ds {
             return Err(HexError::BadSkip);
         }
-        // `ds..j` 已被上面的十六进制判据验证为 ASCII，`from_utf8` 在这里不会失败。
+        // `ds..j` has already passed the hexadecimal test above and is ASCII, so
+        // `from_utf8` cannot fail here.
         let digits = core::str::from_utf8(&arg[ds..j]).unwrap_or("");
         let v = u64::from_str_radix(digits, 16).map_err(|_| HexError::BadSkip)?;
         (v, j)

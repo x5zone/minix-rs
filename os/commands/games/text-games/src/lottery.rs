@@ -8,72 +8,94 @@
 //! 111). Drawing stays with the execution layer; this module owns the
 //! denominator grammar and the two predicates that read it.
 
-/// C 的 `usage()` 那一整行（`minix3/games/random/random.c:143-147`）。
+/// C's whole `usage()` line (`minix3/games/random/random.c:143-147`).
 ///
-/// 名字写死在串里：`fprintf(stderr, "usage: random [-er] [denominator]\n")` 用的是字面量
-/// `random`，不经过 `getprogname()`，所以改名调用这一行也跟着不动。C 的 `errx`/`err` 那
-/// 两路相反，前缀跟着 `argv[0]` 走——同一支命令里两种来历，薄壳必须分开抄。
+/// The name is hardwired in the string: `fprintf(stderr, "usage: random [-er]
+/// [denominator]\n")` uses the literal `random` and never goes through
+/// `getprogname()`, so renaming the invocation leaves this line unchanged. C's
+/// `errx`/`err` paths are the opposite, with the prefix following `argv[0]` — two
+/// origins inside one command, which the thin shell has to copy separately.
 pub const USAGE: &str = "usage: random [-er] [denominator]\n";
 
-/// C 的 `errx(1, "denominator is not valid.")` 里那句话（`random.c:98-99`）。
+/// The sentence inside C's `errx(1, "denominator is not valid.")`
+/// (`random.c:98-99`).
 ///
-/// 句尾的点是 C 自带的，操作数**不在**这句话里——`errx` 不像 `err` 那样有 `%s` 位，
-/// 所以这一支报不出是哪一个数把分母判死的。
+/// The trailing period comes from C, and the operand is **not** in this sentence —
+/// `errx` has no `%s` slot the way `err` does, so this path cannot report which
+/// number killed the denominator.
 pub const NOT_VALID_SENTENCE: &str = "denominator is not valid.";
 
-/// C 的 `case 0` 定下的分母：一枚操作数都没有时，`denom = 2`（`random.c:90-92`）。
-/// `denom` 在 C 里是 `double`（`random.c:67`），所以这个常数也按 `f64` 定。
+/// The denominator C's `case 0` fixes: with no operand at all, `denom = 2`
+/// (`random.c:90-92`). `denom` is a `double` in C (`random.c:67`), so this constant
+/// is declared as `f64` too.
 pub const NO_OPERAND_DENOMINATOR: f64 = 2.0;
 
-/// 操作数那一步的落点：C 的 `switch (argc)`（`random.c:89-104`，`argc` 已是 `optind`
-/// 之后的剩余个数）有四个出口，本类型逐一对应。
-// 只到 `PartialEq`：`Accepted` 位上装的是 C 的那个 `double`，而浮点没有全等关系
+/// Where the operand step lands: C's `switch (argc)` (`random.c:89-104`, with
+/// `argc` already the count left after `optind`) has four exits, and this type
+/// matches them one by one.
+// `PartialEq` only: the `Accepted` slot holds C's `double`, and floats have no total
+// equality.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OperandLeg {
-    /// `case 0`：没有操作数，分母取 [`NO_OPERAND_DENOMINATOR`]。
+    /// `case 0`: no operand, so the denominator is [`NO_OPERAND_DENOMINATOR`].
     NoOperandDefault,
-    /// `case 1` 认下了这枚操作数：分母就是 `strtod` 报出的那个 `double`。
+    /// `case 1` accepted this operand: the denominator is the `double` that `strtod`
+    /// reported.
     Accepted(f64),
-    /// `case 1` 否掉了这枚操作数（`denom == 0 || *ep != '\0'`，`:98`）：[`NOT_VALID_SENTENCE`]。
+    /// `case 1` rejected this operand (`denom == 0 || *ep != '\0'`, `:98`):
+    /// [`NOT_VALID_SENTENCE`].
     NotValid,
-    /// `case 1` 撞上数值范围（`errno == ERANGE`，`:96`）：`err(1, "%s", *argv)` 的三段形。
+    /// `case 1` hit the numeric range (`errno == ERANGE`, `:96`): the three-part
+    /// `err(1, "%s", *argv)`.
     OutOfRange,
-    /// `default`：两枚以上操作数（`:101-103`），[`USAGE`] 退 1。
+    /// `default`: two or more operands (`:101-103`), [`USAGE`] and exit 1.
     TooMany,
 }
 
-/// C 的 optstring `"er"` 走完环之后剩下的事：两个旗标与操作数起点（`random.c:72-87`）。
+/// What is left after C's optstring `"er"` runs the ring: the two flags and the
+/// operand start (`random.c:72-87`).
 ///
-/// 两个字母都**不带值**，所以 libc 那句 `option requires an argument` 在本支不可达；可达的
-/// 只有一枚集外字母（`random.c:80-83` 把 `?` 与 `default` 都送进 `usage()`）。裸 `-` 既不是
-/// 选项也不是结束标记：optstring 里没有 `-`，libc 回 `-1` 且**不推进游标**
-/// （`minix3/lib/libc/stdlib/getopt.c:86-93`），于是它留在操作数里由 `strtod` 去否掉。
+/// Neither letter **takes a value**, so libc's `option requires an argument` is
+/// unreachable on this path; the only reachable one is an off-letter (`random.c:80-83`
+/// sends both `?` and `default` into `usage()`). A bare `-` is neither an option nor
+/// an end marker: the optstring has no `-`, libc returns `-1` and **does not advance
+/// the cursor** (`minix3/lib/libc/stdlib/getopt.c:86-93`), so it stays among the
+/// operands for `strtod` to reject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ring {
-    /// 环正常结束；`operands_at` 是操作数在 `argv[1..]` 里的起点（C 的 `optind` 折算）。
+    /// The ring ended normally; `operands_at` is where the operands start in
+    /// `argv[1..]` (C's `optind` translated).
     Done {
-        /// `-e`：把抽到的数当退码返回，且在读标准输入之前就返回（`random.c:109-111`）。
+        /// `-e`: return the draw as the exit status, before reading standard input
+        /// (`random.c:109-111`).
         exit_status: bool,
-        /// `-r`：关掉 stdio 的输出缓冲（`random.c:117-118`）。
+        /// `-r`: turn off stdio's output buffering (`random.c:117-118`).
         unbuffered: bool,
-        /// 操作数从这一枚起。
+        /// The operands start at this index.
         operands_at: usize,
     },
-    /// 集外字母：libc 先打一行 `unknown option -- <字母>`，紧接着才是 `usage()` 那一行。
+    /// An off-letter: libc prints `unknown option -- <letter>` first, and the
+    /// `usage()` line follows immediately.
     ///
-    /// 装的是**一个字节**而不是一个字符：`minix3/lib/libc/stdlib/getopt.c:79` 的
-    /// `optopt = *place++` 一次只进一个字节，`:103` 再用 `%c` 把它原样写出。同一枚
-    /// UTF-8 多字节旗子（`-é` 是 `c3 a9`）在 C 里报的是第一个字节 `c3`，按字符装就
-    /// 会经 UTF-8 编码多出第二个字节 `83`（`GETOPT-REPORT-BYTE-LETTER` 的渲染半）。
+    /// The slot holds **one byte**, not one character:
+    /// `minix3/lib/libc/stdlib/getopt.c:79`'s `optopt = *place++` takes one byte at a
+    /// time, and `:103` writes it out as is with `%c`. The same multibyte UTF-8 flag
+    /// (`-é` is `c3 a9`) is reported in C as its first byte `c3`, while holding a
+    /// character would go through UTF-8 encoding and add a second byte, `83`; the
+    /// report must therefore carry the byte, not a re-encoded character.
     Unknown(u8),
 }
 
-/// libc 那一整行：`<程序名>: unknown option -- <一个字节>\n`（`getopt.c:101-104`）。
+/// The whole libc line: `<program name>: unknown option -- <one byte>\n`
+/// (`getopt.c:101-104`).
 ///
-/// 交回字节串而不是 `String` 正是这条缺陷的形状：句子中段是 ASCII，末了那一枚字母位
-/// 却是**未经编码的原字节**，把它塞进 `String` 再 `.as_bytes()` 就等于让 Rust 的
-/// UTF-8 规则去决定它占几个字节。参照件 `tmp/random-421/random`（`random.c` 链 Minix
-/// 自己的 `getopt.c`、经同名软链起）现量 `-é` 打的是 `303` 一个字节后紧跟换行。
+/// Handing back a byte string rather than a `String` is exactly this defect's shape:
+/// the middle of the sentence is ASCII, but the final letter slot is **a raw,
+/// unencoded byte**, and pushing it into a `String` and calling `.as_bytes()` lets
+/// Rust's UTF-8 rules decide how many bytes it occupies. The reference binary
+/// `tmp/random-421/random` (`random.c` linked against Minix's own `getopt.c`,
+/// started through a same-named symlink) measures `-é` as the single byte `303`
+/// followed by a newline.
 #[must_use]
 pub fn unknown_option_line(prog: &str, letter: u8) -> alloc::vec::Vec<u8> {
     let mut line = alloc::format!("{prog}: {UNKNOWN_OPTION}").into_bytes();
@@ -82,13 +104,16 @@ pub fn unknown_option_line(prog: &str, letter: u8) -> alloc::vec::Vec<u8> {
     line
 }
 
-/// C 的 libc 那一行去掉程序名与换行后的中段（`minix3/lib/libc/stdlib/getopt.c:101-104`
-/// 的字面是 `"%s: unknown option -- %c\n"`）。字母前后**没有**引号——参照件是在宿主上编的，
-/// 它那句 `invalid option -- 'Z'` 是 glibc 的字样，不在这条的射程内。
+/// The middle of C's libc line with the program name and the newline removed
+/// (`minix3/lib/libc/stdlib/getopt.c:101-104` spells `"%s: unknown option -- %c\n"`).
+/// There are **no** quotes around the letter — the reference was built on the host,
+/// and its `invalid option -- 'Z'` is glibc's wording, outside this contract.
 pub const UNKNOWN_OPTION: &str = "unknown option -- ";
 
-/// 走完选项环。只认「以 `-` 开头且长度大于一」的 token 为选项；`--` 是结束标记；其余一切
-/// （含裸 `-`）从这一枚起都算操作数。集外字母当场返回，环不再往下走（C 的 `usage()` 即退出）。
+/// Walk the option ring. Only tokens that start with `-` and are longer than one
+/// count as options; `--` is the end marker; everything else (including a bare `-`)
+/// counts as an operand from that token on. An off-letter returns on the spot and the
+/// ring stops (C's `usage()` exits).
 pub fn scan_ring(tokens: &[&[u8]]) -> Ring {
     let mut exit_status = false;
     let mut unbuffered = false;
@@ -120,35 +145,45 @@ pub fn scan_ring(tokens: &[&[u8]]) -> Ring {
     }
 }
 
-/// C 那把标尺：`random()` 的上界（`random.c:111` 与 `:126` 都拿它除）。
+/// C's scale: the upper bound of `random()` (`random.c:111` and `:126` both divide
+/// by it).
 pub const RANDOM_MAX: u64 = 2_147_483_647;
 
-/// C 的 `-e` 那一支：`(denom * random()) / RANDOM_MAX`（`random.c:111`）。
+/// C's `-e` path: `(denom * random()) / RANDOM_MAX` (`random.c:111`).
 ///
-/// 源码注释写的是「between zero and denom minus one」，可表达式在抽取值到顶时取到的正是
-/// `denom`——**上界是闭的**，门按表达式钉，不按注释。返回值是 C 在 `return` 之前完成的那次
-/// `double`→`int`：向零截。非有限值或超出 `i32` 射程的值在 C 里是未定义行为，这里取 `as`
-/// 的饱和语义（参照件所在的 x86-64 给 `0x80000000`），登记为不追平的一格。
+/// The source comment says "between zero and denom minus one", but the expression
+/// reaches exactly `denom` when the draw hits the top — **the upper bound is closed**,
+/// and the face pins the expression rather than the comment. The return value is the
+/// `double`→`int` conversion C performs before `return`: truncation toward zero. A
+/// non-finite value or one beyond `i32` is undefined behavior in C; here the
+/// saturating semantics of `as` apply (the x86-64 reference gives `0x80000000`),
+/// recorded as an accepted divergence.
 pub fn exit_status_value(denominator: f64, draw: u64) -> i32 {
     (denominator * draw as f64 / RANDOM_MAX as f64) as i32
 }
 
-/// 过滤器那一行的判据：C 的 `(int)(denom * random() / RANDOM_MAX) == 0`（`random.c:126`）。
+/// The predicate for one filter line: C's `(int)(denom * random() / RANDOM_MAX) == 0`
+/// (`random.c:126`).
 ///
-/// 商向零截之后为 0，等价于商严格落在 `(-1, 1)`。写成开区间比较而不是先转整数，是因为那次
-/// 转换在 `inf`/`nan` 上是 C 的未定义行为，而区间比较对这两形给出的答案与参照件所在的
-/// x86-64 一致：都不为 0，也就都不掷中。`inf * 0` 是 NaN，同样落在区间外。
+/// Truncating the quotient toward zero gives 0 exactly when the quotient lies strictly
+/// inside `(-1, 1)`. The open-interval comparison is used instead of converting to an
+/// integer first because that conversion is undefined behavior in C for `inf`/`nan`,
+/// while the interval test gives the same answer as the x86-64 reference on both:
+/// neither is 0, so neither selects. `inf * 0` is NaN and also falls outside the
+/// interval.
 pub fn line_selected(denominator: f64, draw: u64) -> bool {
     let scaled = denominator * draw as f64 / RANDOM_MAX as f64;
     scaled > -1.0 && scaled < 1.0
 }
 
-/// 判操作数这一步落在哪一出。
+/// Decide which exit the operand step takes.
 ///
-/// 个数走 C 的 `switch (argc)`；一枚的那一支交给 [`scan_strtod`] 取值，再按 C 的两判据分流：
-/// `errno == ERANGE` 走带操作数的三段形，`denom == 0` 或 `*ep != '\0'` 归 `errx` 那句不含
-/// 操作数的话。**`ERANGE` 判在前**（`random.c:96` 早于 `:98`），所以 `18e308` 报的是号，
-/// 不是「不是有效分母」——尽管那个值本身也确实当不了分母。
+/// The count follows C's `switch (argc)`; the one-operand branch hands the value to
+/// [`scan_strtod`] and then splits by C's two tests: `errno == ERANGE` takes the
+/// three-part form that carries the operand, while `denom == 0` or `*ep != '\0'`
+/// belongs to the `errx` sentence without the operand. **`ERANGE` is tested first**
+/// (`random.c:96` is earlier than `:98`), so `18e308` reports the errno rather than
+/// "not a valid denominator" — even though that value could not serve as one anyway.
 pub fn judge_operands(operands: &[&[u8]]) -> OperandLeg {
     let [only] = operands else {
         return if operands.is_empty() {
@@ -167,31 +202,40 @@ pub fn judge_operands(operands: &[&[u8]]) -> OperandLeg {
     }
 }
 
-/// `strtod` 报回来的三样东西，`random.c:95-99` 正好只用这三样。
+/// The three things `strtod` reports back, which is exactly what `random.c:95-99`
+/// uses.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Strtod {
-    /// `strtod` 的返回值：一个 `double`。
+    /// The value `strtod` returns: a `double`.
     pub value: f64,
-    /// 没被吃掉那一段的起点，即 C 的 `ep` 下标。`rest == word.len()` 就是 `*ep == '\0'`；
-    /// 一个字符都没吃（C 的 `ret0`）时是 0。值判为 0 的形不看这个数——`denom == 0` 先挡住。
+    /// The start of the unconsumed run, i.e. C's `ep` index. `rest == word.len()` is
+    /// `*ep == '\0'`; when not one character was consumed (C's `ret0`) it is 0. Forms
+    /// whose value is judged 0 do not look at this number — `denom == 0` blocks them
+    /// first.
     pub rest: usize,
-    /// C 的 `errno == ERANGE`：溢出（`strtod.c` 的 `ovfl`）与非零数字串下溢成 0
-    /// （`undfl`）两条腿都立它，二者都汇到 `range_err`。
+    /// C's `errno == ERANGE`: both the overflow leg (`strtod.c`'s `ovfl`) and the
+    /// underflow-to-zero leg on a nonzero digit string (`undfl`) set it, and both
+    /// converge on `range_err`.
     pub erange: bool,
 }
 
-/// C 的 `strtod(*argv, &ep)`（`random.c:95`）那条**十进制腿**的复写：前导空白、一个可选
-/// 符号、数字与一个小数点、一个可选的 `e`/`E` 指数，再加上 `#ifdef INFNAN_CHECK` 开着的
-/// `inf`/`nan`（`minix3/lib/libc/gdtoa/gdtoaimp.h:191` 与 `:643-645` 都把它立着）。
+/// A rewrite of the **decimal leg** of C's `strtod(*argv, &ep)` (`random.c:95`):
+/// leading whitespace, one optional sign, digits and one decimal point, an optional
+/// `e`/`E` exponent, plus the `inf`/`nan` forms that `#ifdef INFNAN_CHECK` keeps on
+/// (`minix3/lib/libc/gdtoa/gdtoaimp.h:191` and `:643-645` both enable it).
 ///
-/// 形状取自 `minix3/lib/libc/gdtoa/strtod.c` 的 `_int_strtod_l`：空白与符号在开头的
-/// `switch (*s)`，指数在 `if (c == 'e' || c == 'E')`，`inf`/`nan` 在「一个数字都没见到」
-/// 那块里。`match` 折小写（`minix3/lib/libc/gdtoa/smisc.c:133-135`），所以 `INF`、
-/// `Infinity`、`NaN` 都算数。两形不在射程内、账在 `RANDOM-DENOM-LEGS` 条目上：十六进制
-/// 浮点 `0x1p3`（同一函数里 `#ifndef NO_HEX_FP` 那块，本仓库没定义过这个宏）与
-/// `nan(0x…)` 的载荷。舍入也不逐位对齐：C 走 gdtoa 的大数精化，这里按
-/// `有效数字 × 10^指数` 乘出来，超过 17 位的数字串丢掉尾巴，因此极端位数上可能差一个
-/// 末位单位——只影响「恰好压在阈值那一格」的选中判定。
+/// The shape comes from `_int_strtod_l` in `minix3/lib/libc/gdtoa/strtod.c`:
+/// whitespace and the sign in the leading `switch (*s)`, the exponent in
+/// `if (c == 'e' || c == 'E')`, and `inf`/`nan` in the "no digit seen" block. `match`
+/// folds case (`minix3/lib/libc/gdtoa/smisc.c:133-135`), so `INF`, `Infinity` and
+/// `NaN` all count. Two forms are outside the contract and recorded as open items:
+/// hexadecimal floating point `0x1p3` (the `#ifndef NO_HEX_FP` block in the same
+/// function; this repository never defines that macro) and the payload of
+/// `nan(0x…)`. Rounding is not bit-for-bit either: C goes through gdtoa's bignum
+/// refinement, while this multiplies `significand × 10^exponent` and drops the tail
+/// of a digit string longer than 17 digits, so extreme digit counts can differ by one
+/// unit in the last place — affecting only the selection decision at the exact
+/// threshold.
 pub fn scan_strtod(word: &[u8]) -> Strtod {
     let bytes = word;
     let mut index = 0usize;
@@ -208,7 +252,8 @@ pub fn scan_strtod(word: &[u8]) -> Strtod {
         Some(b'+') => index += 1,
         _ => {}
     }
-    // 符号之后什么都没有了：C 从符号那一格直接 `goto ret0`，值 0、一个字符都没吃
+    // Nothing follows the sign: C goes straight to `ret0` from the sign position, with
+    // value 0 and no character consumed.
     if index == bytes.len() {
         return Strtod {
             value: 0.0,
@@ -217,8 +262,9 @@ pub fn scan_strtod(word: &[u8]) -> Strtod {
         };
     }
 
-    // C 的 `if (*s == '0')` 之后立刻看一眼 `s[1]`：是 `x`/`X` 就整支交给 `gethex`，
-    // 十进制那条腿与 `inf`/`nan` 都不再走（`strtod.c` 的 `#ifndef NO_HEX_FP` 那块 `goto ret`）
+    // Right after C's `if (*s == '0')`, one look at `s[1]`: if it is `x`/`X` the whole
+    // thing goes to `gethex`, and neither the decimal leg nor `inf`/`nan` runs (the
+    // `#ifndef NO_HEX_FP` block in `strtod.c` does `goto ret`).
     if matches!(bytes.get(index), Some(&b'0'))
         && matches!(bytes.get(index + 1), Some(b'x') | Some(b'X'))
     {
@@ -226,9 +272,9 @@ pub fn scan_strtod(word: &[u8]) -> Strtod {
     }
 
     let mut mantissa = 0.0f64;
-    let mut kept = 0u32; // 进 mantissa 的位数
-    let mut dropped = 0i32; // 超出位数上限被丢掉的位数，折进十幂
-    let mut fraction = 0i32; // 小数点后的数字个数
+    let mut kept = 0u32; // digits that entered mantissa
+    let mut dropped = 0i32; // digits dropped past the limit, folded into the power
+    let mut fraction = 0i32; // digits after the decimal point
     let mut any_digit = false;
     let mut nonzero = false;
     let mut past_dot = false;
@@ -260,7 +306,8 @@ pub fn scan_strtod(word: &[u8]) -> Strtod {
 
     if matches!(bytes.get(index), Some(b'e') | Some(b'E')) {
         if !any_digit {
-            // C 的 `if (!nd && !nz && !nz0) goto ret0`：`e5` 这一形整个不吃
+            // C's `if (!nd && !nz && !nz0) goto ret0`: the `e5` form is not consumed at
+            // all.
             return Strtod {
                 value: 0.0,
                 rest: 0,
@@ -291,23 +338,26 @@ pub fn scan_strtod(word: &[u8]) -> Strtod {
                 }
                 index += 1;
             }
-            // C 的防溢出闸：位数超过 8 或数值超过 19999 就按 19999 走（`strtod.c` 里
-            // 那句 `e = 19999; /* safe for 16 bit ints */`）
+            // C's overflow gate: more than 8 digits or a value above 19999 is clamped
+            // to 19999 (the `e = 19999; /* safe for 16 bit ints */` line in
+            // `strtod.c`).
             if counted > 8 || magnitude > 19_999 {
                 magnitude = 19_999;
             }
             exponent = exponent.saturating_add(esign.saturating_mul(magnitude));
         } else {
-            // 指数位上没有数字（`1e`、`1e-`）：C 把游标退回 `e` 那一格，值照报
+            // No digit in the exponent slot (`1e`, `1e-`): C backs the cursor up to the
+            // `e` and still reports the value.
             index = mark;
         }
     }
 
-    // `inf` 与 `nan` 只在「一个数字都没见到」时才检（C 把这段放在 `if (!nd)` 里面，
-    // 由 `switch (c)` 收 `i`/`I`、`n`/`N` 起头）
+    // `inf` and `nan` are checked only when "no digit was seen" (C puts this block
+    // inside `if (!nd)`, with `switch (c)` accepting an `i`/`I` or `n`/`N` start).
     if !any_digit {
-        // C 的 `--s` 再 `match(&s,"inity")`：吃得下就吃完，吃不下退回 `nf` 之后，于是
-        // `inf` 与 `infinity` 两形都算数、`infi` 不算
+        // C's `--s` then `match(&s,"inity")`: consume it all when it fits, otherwise
+        // fall back to just after `nf`, so both `inf` and `infinity` count and `infi`
+        // does not.
         let infinity = match bytes.get(index) {
             Some(b'i') | Some(b'I') => match_fold(bytes, index + 1, b"nf")
                 .map(|after_nf| match_fold(bytes, after_nf, b"inity").unwrap_or(after_nf)),
@@ -329,8 +379,9 @@ pub fn scan_strtod(word: &[u8]) -> Strtod {
             _ => None,
         };
         if let Some(rest) = not_a_number {
-            // 载荷这一格：`#ifndef No_Hex_NaN`（本仓库从没定义过这个宏）→ `nan(` 之后交给
-            // `hexnan`，它留给调用者的只有「游标落在哪」
+            // The payload slot: `#ifndef No_Hex_NaN` (this repository never defines
+            // that macro) sends the text after `nan(` to `hexnan`, whose only gift to
+            // the caller is "where the cursor lands".
             let rest = if matches!(bytes.get(rest), Some(&b'(')) {
                 nan_payload(bytes, rest)
             } else {
@@ -351,8 +402,9 @@ pub fn scan_strtod(word: &[u8]) -> Strtod {
 
     let mut value = mantissa;
     if nonzero {
-        // `10^n` 按平方累乘，与 gdtoa 的 `tens[]`/`bigtens[]` 同形；超出 `f64` 射程时它
-        // 自己就成了 `inf`，于是下面的两条判定接得住溢出与下溢
+        // `10^n` by repeated squaring, the same shape as gdtoa's `tens[]`/`bigtens[]`;
+        // beyond `f64`'s range it becomes `inf` itself, so the two checks below catch
+        // overflow and underflow.
         value = if exponent >= 0 {
             mantissa * pow10(exponent as u32)
         } else {
@@ -366,9 +418,11 @@ pub fn scan_strtod(word: &[u8]) -> Strtod {
     }
 }
 
-/// `match(&s, t)`（`minix3/lib/libc/gdtoa/smisc.c:123-140`）：从 `at` 起比一段字面，
-/// 比中的话**两边都折小写**，返回吃掉之后的下标。C 的先递增量一个字符再比，所以调用者
-/// 传进来的首字母（`switch (c)` 认过的那个）不在比较之列。
+/// `match(&s, t)` (`minix3/lib/libc/gdtoa/smisc.c:123-140`): compare a literal
+/// starting at `at`, folding **both sides** to lowercase when they match, and return
+/// the index after the consumed text. C increments once before comparing, so the first
+/// letter the caller passed in (the one `switch (c)` accepted) is not part of the
+/// comparison.
 fn match_fold(bytes: &[u8], at: usize, lit: &[u8]) -> Option<usize> {
     let tail = bytes.get(at..at + lit.len())?;
     tail.iter()
@@ -377,7 +431,7 @@ fn match_fold(bytes: &[u8], at: usize, lit: &[u8]) -> Option<usize> {
         .then_some(at + lit.len())
 }
 
-/// 十的整数幂（非负指数）。
+/// An integer power of ten (non-negative exponent).
 fn pow10(power: u32) -> f64 {
     let mut base = 10.0f64;
     let mut out = 1.0f64;
@@ -394,8 +448,9 @@ fn pow10(power: u32) -> f64 {
     out
 }
 
-/// 二的整数幂（非负指数），与 [`pow10`] 同形。十六进制浮点的标尺本来就是二幂，
-/// 所以这一支在有效数字不超过 13 位（52 位二进制）时是**精确**的。
+/// An integer power of two (non-negative exponent), the same shape as [`pow10`].
+/// Hexadecimal floating point is scaled by powers of two anyway, so this path is
+/// **exact** while the significand stays within 13 digits (52 binary bits).
 fn pow2(power: u32) -> f64 {
     let mut base = 2.0f64;
     let mut out = 1.0f64;
@@ -412,14 +467,18 @@ fn pow2(power: u32) -> f64 {
     out
 }
 
-/// `hexnan`（`minix3/lib/libc/gdtoa/hexnan.c:56-152`）留给调用者的只有一件事：游标落在哪。
-/// 载荷的位样在 `random` 这一支**看不见**——它只用 `denom == 0` 与那两处算式读这个值，而所有
-/// NaN 给的答案都一样（`denom == 0` 恒假、非有限值一律不掷中）。所以这里复写的是「吃掉多少」，
-/// 不是「往 `bits[]` 里填哪些位」：从 `(` 起吃到**第一个 `)`** 就算吃完；一路没有 `)` 就把游标
-/// 留在 `(` 上。两个出口在源里分别是 `hexnan.c:105-109`（数字串撞上 `)`，`*sp = s + 1`）与
-/// `:112-118`（撞上非十六进制字符后那个 `do { … } while` 向前找 `)`，命中也是 `*sp = s + 1`），
-/// 落空的那条是 `:146-147` 的 `if (!havedig) return STRTOG_NaN` 与循环撞上 `'\0'`，两处都不动
-/// `*sp`。本仓库没定义 `GDTOA_NON_PEDANTIC_NANCHECK`，所以向前找 `)` 那条路是活的。
+/// All `hexnan` (`minix3/lib/libc/gdtoa/hexnan.c:56-152`) leaves its caller is one
+/// thing: where the cursor lands. The payload's bit pattern is **invisible** on this
+/// `random` path — it reads the value only through `denom == 0` and the two
+/// expressions, and every NaN gives the same answer (`denom == 0` is always false and
+/// a non-finite value never selects). So what is rewritten here is "how much is
+/// consumed", not "which bits go into `bits[]`": consume from `(` through the **first
+/// `)`**; a run with no `)` leaves the cursor on the `(`. The two exits in the source
+/// are `hexnan.c:105-109` (the digit string meets `)`, `*sp = s + 1`) and `:112-118`
+/// (after a non-hex character the `do { … } while` looks forward for `)`, and a hit is
+/// also `*sp = s + 1`); the misses are `:146-147`'s `if (!havedig) return STRTOG_NaN`
+/// and the loop meeting `'\0'`, neither of which touches `*sp`. This repository does
+/// not define `GDTOA_NON_PEDANTIC_NANCHECK`, so the forward search for `)` is live.
 fn nan_payload(bytes: &[u8], open: usize) -> usize {
     match bytes[open..].iter().position(|&byte| byte == b')') {
         Some(offset) => open + offset + 1,
@@ -427,9 +486,10 @@ fn nan_payload(bytes: &[u8], open: usize) -> usize {
     }
 }
 
-/// 一维十六进制数字的值，不是十六进制就回 `None`。对应 gdtoa 的 `hexdig[]` 表：
-/// 它把 `'0'`..`'9'` 排成 `0x10`..`0x19`、`'a'`..`'f'` 与 `'A'`..`'F'` 排成 `0x1a`..`0x1f`，
-/// 所以 `gethex.c` 那句 `n > 0x19` 是在说「指数位上只许十进制数字」。
+/// The value of one hexadecimal digit, or `None` when it is not hexadecimal. This
+/// mirrors gdtoa's `hexdig[]` table: it lays `'0'`..`'9'` out as `0x10`..`0x19` and
+/// `'a'`..`'f'` with `'A'`..`'F'` as `0x1a`..`0x1f`, so `gethex.c`'s `n > 0x19` means
+/// "the exponent slot accepts decimal digits only".
 fn hex_value(byte: u8) -> Option<u32> {
     match byte {
         b'0'..=b'9' => Some(u32::from(byte - b'0')),
@@ -439,21 +499,27 @@ fn hex_value(byte: u8) -> Option<u32> {
     }
 }
 
-/// C 的 `gethex` 那条腿（`minix3/lib/libc/gdtoa/gethex.c:54-131`），由 `strtod.c` 里
-/// `#ifndef NO_HEX_FP` 那块在 `*s == '0'` 且 `s[1]` 是 `x`/`X` 时调用。
+/// C's `gethex` leg (`minix3/lib/libc/gdtoa/gethex.c:54-131`), called from the
+/// `#ifndef NO_HEX_FP` block in `strtod.c` when `*s == '0'` and `s[1]` is `x`/`X`.
 ///
-/// 三处与十进制腿不同，都照源抄：
-/// ① 二进制指数**可以没有**——`pcheck:` 那个 `switch (*s)` 只有 `p`/`P` 两个 `case`，
-///    没有 `default` 拒绝分支（`gethex.c:110-112`），于是 `0x10` 就是 16。
-/// ② 这条腿**从不立 `errno`**：溢出与下溢在 `gethex.c` 里回 `STRTOG_Overflow`/`STRTOG_Underflow`，
-///    而 `strtod.c` 的十六进制 `switch` 只分 `NoNumber`/`Zero`，其余一支 `ULtod` 完直接
-///    `goto ret`，从不走十进制那条 `range_err`。所以 `0x1p99999999` 是「认下的无穷大」，
-///    不是 `err(1, "%s", *argv)` 那一形——参照件在宿主上编的是 glibc，它给这一形立 ERANGE，
-///    那句「`Numerical result out of range`」不在这条的射程内。
-/// ③ 指数位上只收十进制数字，收不满就把游标退回 `p` 之前（`gethex.c:122-126` 的 `s = s1`），
-///    与十进制腿的 `1e` 同形：`0x1p` 报 1、`ep` 停在 `p`，于是被 `*ep != '\0'` 否掉。
+/// Three things differ from the decimal leg, all copied from the source:
+/// (1) the binary exponent is **optional** — the `pcheck:` `switch (*s)` has only the
+///     `p`/`P` cases and no rejecting `default` (`gethex.c:110-112`), so `0x10` is 16.
+/// (2) this leg **never sets `errno`**: overflow and underflow return
+///     `STRTOG_Overflow`/`STRTOG_Underflow` in `gethex.c`, while `strtod.c`'s
+///     hexadecimal `switch` distinguishes only `NoNumber`/`Zero`, and the remaining
+///     branch goes to `ULtod` and then straight to `goto ret`, never through the
+///     decimal `range_err`. So `0x1p99999999` is "an accepted infinity", not the
+///     `err(1, "%s", *argv)` form — the host reference links glibc, which raises
+///     ERANGE here, and its `Numerical result out of range` sentence is outside this
+///     contract.
+/// (3) the exponent slot accepts decimal digits only, and an incomplete run backs the
+///     cursor up before the `p` (`gethex.c:122-126`'s `s = s1`), the same shape as the
+///     decimal leg's `1e`: `0x1p` reports 1 with `ep` stopped at `p`, so
+///     `*ep != '\0'` rejects it.
 ///
-/// 有效数字超过 13 位时按截尾处理（折进二幂），与十进制那条腿共用同一个末位单位残差的登记。
+/// A significand longer than 13 digits is truncated (folded into the power of two),
+/// sharing the same last-unit residual note as the decimal leg.
 fn scan_hex(bytes: &[u8], at: usize, negative: bool) -> Strtod {
     let mut index = at + 2;
     while bytes.get(index) == Some(&b'0') {
@@ -491,7 +557,8 @@ fn scan_hex(bytes: &[u8], at: usize, negative: bool) -> Strtod {
         index += 1;
     }
     if !any_hex_digit {
-        // C 的 `if (!havedig) *sp = s0 - 1;` 加 `return STRTOG_Zero`：值 0，游标退回 `x`
+        // C's `if (!havedig) *sp = s0 - 1;` plus `return STRTOG_Zero`: value 0 and
+        // the cursor backed up to `x`.
         return Strtod {
             value: 0.0,
             rest: at + 1,
@@ -528,14 +595,14 @@ fn scan_hex(bytes: &[u8], at: usize, negative: bool) -> Strtod {
             if !big {
                 exponent += esign * magnitude;
             } else if esign < 0 {
-                // `ret_tiny`：值 0，而且照 ② 不立 `errno`
+                // `ret_tiny`: value 0, and per (2) no `errno`.
                 return Strtod {
                     value: 0.0,
                     rest: index,
                     erange: false,
                 };
             } else {
-                // `ret_huge`：值 `±inf`，同样不立 `errno`
+                // `ret_huge`: value `±inf`, also without setting `errno`.
                 return Strtod {
                     value: if negative {
                         f64::NEG_INFINITY
@@ -577,18 +644,19 @@ mod tests {
 
     #[test]
     fn the_decimal_grammar_is_the_one_strtod_reads() {
-        // 值、`ep` 下标、是否 `ERANGE`：三个读数一起钉，形状对着 `strtod.c` 那条十进制腿
+        // Value, `ep` index, and whether `ERANGE` is set: all three readings pinned
+        // together, shaped after the decimal leg in `strtod.c`.
         let cases: [(&str, f64, usize, bool); 14] = [
             ("6", 6.0, 1, false),
-            (" 3", 3.0, 2, false), // 前导空白吃掉
-            ("3 ", 3.0, 1, false), // 尾巴不吃：`*ep != '\0'` 由调用者去判
+            (" 3", 3.0, 2, false), // leading whitespace consumed
+            ("3 ", 3.0, 1, false), // the tail is not consumed: the caller tests `*ep != '\0'`
             ("1e3", 1000.0, 3, false),
             ("1e-3", 0.001, 4, false),
             (".5", 0.5, 2, false),
             ("5.", 5.0, 2, false),
             ("0.001", 0.001, 5, false),
             ("010", 10.0, 3, false),
-            ("1e00", 1.0, 4, false), // 指数位上只有零：C 吃掉它们、把 e 记作 0
+            ("1e00", 1.0, 4, false), // only zeros in the exponent slot: C consumes them and records the exponent as 0
             ("-2", -2.0, 2, false),
             ("4294967296", 4.294967296e9, 10, false),
             ("18e308", f64::INFINITY, 6, true),
@@ -599,9 +667,11 @@ mod tests {
             assert_eq!(read.value, value, "{word:?} 的值");
             assert_eq!((read.rest, read.erange), (rest, erange), "{word:?}");
         }
-        // 位进展望只在 17 位以内：尾巴丢掉、折进十幂，所以 21 位那一串落在 2.1e20
+        // Bit progression only within 17 digits: the tail is dropped and folded into
+        // the decimal power, so the 21-digit string lands on 2.1e20.
         assert_eq!(scan_strtod(b"210000000000000000000").value, 2.1e20);
-        // `inf` 与 `nan` 靠 `INFNAN_CHECK` 那块；`match` 折小写，所以三形都算数
+        // `inf` and `nan` come from the `INFNAN_CHECK` block; `match` folds case, so
+        // all three forms count.
         assert_eq!(scan_strtod(b"inf").value, f64::INFINITY);
         assert_eq!(scan_strtod(b"infinity").rest, 8);
         assert_eq!(scan_strtod(b"INF").rest, 3);
@@ -609,14 +679,16 @@ mod tests {
         assert!(scan_strtod(b"nan").value.is_nan());
         assert!(scan_strtod(b"NaN").value.is_nan());
         assert_eq!(scan_strtod(b"nan").rest, 3);
-        // `infi` 那一形 C 不吃 `inity` 的第一格之外的东西：`ep` 停在第 3 格
+        // For `infi`, C consumes nothing beyond the start of `inity`: `ep` stops at
+        // position 3.
         assert_eq!(scan_strtod(b"infi").rest, 3);
     }
 
     #[test]
     fn a_nan_payload_moves_the_end_pointer_and_nothing_else() {
-        // 值永远是 NaN（本支看不出载荷是哪几个位），差别全在 `ep`：吃到 `)` 就算整串消费掉，
-        // 没有 `)` 就留在 `(` 上、由 `*ep != '\0'` 否掉
+        // The value is always NaN (this path cannot see which bits the payload holds);
+        // the only difference is `ep`: a `)` marks the whole string consumed, and with
+        // no `)` the cursor stays on the `(` for `*ep != '\0'` to reject.
         for (word, expected_rest) in [
             ("nan(0x1f)", 9),
             ("nan()", 5),
@@ -651,8 +723,9 @@ mod tests {
 
     #[test]
     fn the_hex_leg_is_gethex_shaped() {
-        // 三条与十进制腿不同的地方都照 `gethex.c` 钉：二进制指数可省、从不立 `ERANGE`、
-        // 指数位只收十进制数字且收不满就退回 `p` 之前
+        // The three places that differ from the decimal leg are pinned after
+        // `gethex.c`: the binary exponent is optional, `ERANGE` is never set, and the
+        // exponent slot accepts decimal digits only and backs up before `p` when short.
         let cases: [(&str, f64, usize); 11] = [
             ("0x10", 16.0, 4),
             ("0xff", 255.0, 4),
@@ -661,17 +734,18 @@ mod tests {
             ("0x.8p0", 0.5, 6),
             ("0x1.8p1", 3.0, 7),
             ("-0x10", -16.0, 5),
-            ("0x1p", 1.0, 3), // 指数位空着：`s = s1` 退回 `p`
-            ("0x", 0.0, 1),   // 一个数字都没有：`*sp = s0 - 1`，游标停在 `x`
+            ("0x1p", 1.0, 3), // exponent slot empty: `s = s1` backs up to `p`
+            ("0x", 0.0, 1),   // no digit at all: `*sp = s0 - 1`, cursor stops at `x`
             ("0xg", 0.0, 1),
-            ("0x1p-99999999", 0.0, 13), // `ret_tiny` 那一路：值 0 而**不立** errno
+            ("0x1p-99999999", 0.0, 13), // the `ret_tiny` path: value 0 and **no** errno
         ];
         for (word, value, rest) in cases {
             let read = scan_strtod(word.as_bytes());
             assert_eq!(read.value, value, "{word:?} 的值");
             assert_eq!((read.rest, read.erange), (rest, false), "{word:?}");
         }
-        // 溢出这一形与十进制的 `18e308` 分流：十六进制那一支整段绕过 `range_err`
+        // The overflow form splits from the decimal `18e308`: the hexadecimal branch
+        // bypasses `range_err` entirely.
         let huge = scan_strtod(b"0x1p99999999");
         assert_eq!(huge.value, f64::INFINITY);
         assert!(!huge.erange, "十六进制溢出立号就成了另一句报文");
@@ -680,21 +754,22 @@ mod tests {
 
     #[test]
     fn the_selection_predicate_is_the_cast_then_compare_itself() {
-        // C 的一句是「截成整数再与 0 比」（`random.c:126`）：商向零截为 0 等价于商在 (-1,1)
+        // C's line is "truncate to an integer, then compare with 0" (`random.c:126`):
+        // truncating the quotient toward zero gives 0 exactly when it lies in (-1,1).
         assert!(line_selected(1.0, 0));
         assert!(line_selected(1.0, RANDOM_MAX - 1));
-        assert!(!line_selected(1.0, RANDOM_MAX)); // 商正好 1.0：`(int)1.0 == 1` → 不掷中
+        assert!(!line_selected(1.0, RANDOM_MAX)); // quotient exactly 1.0: `(int)1.0 == 1` → no selection
         assert!(line_selected(2.0, 1));
-        assert!(!line_selected(2.0, 1_073_741_824)); // 商刚过 1.0
-        assert!(!line_selected(2.0, RANDOM_MAX)); // 商正好 2.0
-        assert!(line_selected(0.5, RANDOM_MAX)); // 小于一的分母恒掷中，商最大 0.5
-        assert!(line_selected(-1e-3, RANDOM_MAX)); // 负数向零截：(-1, 0] 一律截成 0
-        assert!(!line_selected(-1.0, RANDOM_MAX)); // 商正好 -1.0 → 截成 -1 → 不掷中
+        assert!(!line_selected(2.0, 1_073_741_824)); // quotient just past 1.0
+        assert!(!line_selected(2.0, RANDOM_MAX)); // quotient exactly 2.0
+        assert!(line_selected(0.5, RANDOM_MAX)); // a denominator below one always selects; the quotient tops out at 0.5
+        assert!(line_selected(-1e-3, RANDOM_MAX)); // negative truncates toward zero: (-1, 0] always becomes 0
+        assert!(!line_selected(-1.0, RANDOM_MAX)); // quotient exactly -1.0 → truncates to -1 → no selection
         assert!(line_selected(-1.0, RANDOM_MAX - 1));
         assert!(!line_selected(f64::INFINITY, 7));
         assert!(!line_selected(f64::NEG_INFINITY, 7));
         assert!(!line_selected(f64::NAN, 7));
-        assert!(!line_selected(f64::INFINITY, 0)); // `inf * 0` 是 NaN，同样在区间外
+        assert!(!line_selected(f64::INFINITY, 0)); // `inf * 0` is NaN and also outside the interval
     }
 
     #[test]
@@ -705,20 +780,23 @@ mod tests {
 
     #[test]
     fn the_operand_count_picks_the_leg() {
-        // `switch (argc)` 的四个出口（`random.c:89-104`）：零枚不是「缺参数」而是「分母 2」，
-        // 两枚以上才是 usage，中间那一枚才轮到取值判断
+        // The four exits of `switch (argc)` (`random.c:89-104`): zero operands is not
+        // "missing argument" but "denominator 2", two or more is usage, and only the
+        // middle one reaches the value test.
         assert_eq!(judge_operands(&[]), OperandLeg::NoOperandDefault);
         assert_eq!(judge_operands(&[b"3"]), OperandLeg::Accepted(3.0));
         assert_eq!(judge_operands(&[b"3", b"4"]), OperandLeg::TooMany);
-        // 第三枚是空串也不改变个数：判的是个数，不是内容
+        // A third operand that is an empty string does not change the count: the count
+        // is judged, not the content.
         assert_eq!(judge_operands(&[b"3", b"", b"4"]), OperandLeg::TooMany);
         assert_eq!(NO_OPERAND_DENOMINATOR, 2.0);
     }
 
     #[test]
     fn a_rejected_operand_and_an_overflowed_one_are_two_different_legs() {
-        // `denom == 0 || *ep != '\0'`（`:98`）与 `errno == ERANGE`（`:96`）是两句话：
-        // 前者不含操作数，后者把操作数放在位上。把后者并到前者就丢掉了号
+        // `denom == 0 || *ep != '\0'` (`:98`) and `errno == ERANGE` (`:96`) are two
+        // different sentences: the first has no operand, the second puts the operand in
+        // a slot. Merging the second into the first would lose the errno.
         for word in ["0", "", "abc", "-", "6x", "e5", "1e", "infi"] {
             assert_eq!(
                 judge_operands(&[word.as_bytes()]),
@@ -733,20 +811,23 @@ mod tests {
                 "{word:?}"
             );
         }
-        // 全零的数字串不立 ERANGE（C 的 `nz0` 那条路直接 `goto ret`），落回「不是有效分母」，
-        // 哪怕指数大得离谱
+        // An all-zero digit string sets no ERANGE (C's `nz0` path goes straight to
+        // `goto ret`) and falls back to "not a valid denominator", however absurd the
+        // exponent.
         assert_eq!(judge_operands(&[b"0e99999"]), OperandLeg::NotValid);
         assert_eq!(judge_operands(&[b"1"]), OperandLeg::Accepted(1.0));
-        // `0x10` 走 `gethex`：`pcheck:` 那个 `switch (*s)` 没有 `default` 拒绝分支
-        // （`gethex.c:110-112`），所以不带二进制指数的十六进制照样认，值 16
+        // `0x10` goes through `gethex`: the `pcheck:` `switch (*s)` has no rejecting
+        // `default` (`gethex.c:110-112`), so hexadecimal without a binary exponent is
+        // still accepted, as 16.
         assert_eq!(judge_operands(&[b"0x10"]), OperandLeg::Accepted(16.0));
-        // `2^32` 在 `double` 里是精确的，不该报溢出
+        // `2^32` is exact in a `double`, so it must not report overflow.
         assert_eq!(
             judge_operands(&[b"4294967296"]),
             OperandLeg::Accepted(4.294967296e9)
         );
-        // `nan` 认下（C 的 `denom == 0` 对 NaN 为假），但值不可比：`PartialEq` 上 NaN 不
-        // 等于自己，所以这里只验它落在 `Accepted` 那一支
+        // `nan` is accepted (C's `denom == 0` is false for NaN), but the value cannot
+        // be compared: NaN is not equal to itself under `PartialEq`, so this only checks
+        // that it lands in the `Accepted` branch.
         assert!(matches!(
             judge_operands(&[b"nan"]),
             OperandLeg::Accepted(value) if value.is_nan()
@@ -755,16 +836,19 @@ mod tests {
 
     #[test]
     fn the_two_hardwired_lines_keep_c_spelling() {
-        // usage 那一行以字面量 `random` 开头并自带换行（`:143-147`）；`errx` 那句话带句尾的
-        // 点且不含操作数（`:98-99`）。两处都是逐字节比对，改一个字符就得改这条断言
+        // The usage line starts with the literal `random` and carries its own newline
+        // (`:143-147`); the `errx` sentence has a trailing period and no operand
+        // (`:98-99`). Both are compared byte for byte, so one changed character means
+        // changing this assertion.
         assert_eq!(USAGE, "usage: random [-er] [denominator]\n");
         assert_eq!(NOT_VALID_SENTENCE, "denominator is not valid.");
     }
 
     #[test]
     fn the_option_ring_stops_at_the_first_offender() {
-        // 环只认 `e`/`r`；集外字母当场返回。聚簇里报的是**第一个**集外字母，
-        // `-eZ` 与 `-Ze` 都停在 `Z`（C 的环一遇 `?` 就 usage() 退出，不会继续往下扫）
+        // The ring accepts only `e`/`r`, and an off-letter returns on the spot. A
+        // cluster reports its **first** off-letter, so `-eZ` and `-Ze` both stop at `Z`
+        // (C's ring calls usage() and exits at the first `?`, never scanning further).
         assert_eq!(
             scan_ring(&[]),
             Ring::Done {
@@ -786,7 +870,8 @@ mod tests {
             Ring::Done {
                 exit_status: true,
                 unbuffered: true,
-                // 下标落在 `argv[1..]` 上：两枚选项 token 吃掉之后，`3` 在第 2 格
+                // The index is into `argv[1..]`: after two option tokens are consumed,
+                // `3` is at position 2.
                 operands_at: 2
             }
         );
@@ -795,31 +880,38 @@ mod tests {
         assert_eq!(scan_ring(&[b"-Ze"]), Ring::Unknown(b'Z'));
     }
 
-    /// 集外那一枚交回的是短横后的**第一个字节**，不是第一个字符：`-é` 的字节串是
-    /// `c3 a9`，参照件 `tmp/random-421/random` 现量报的是单个 `303`（=`c3`）后紧跟换行。
-    /// 取法那一侧本来就按字节（`for letter in body.bytes()`），这一枚钉的是它已经是那样，
-    /// 让日后改回按字符取能被单独归因；逐字节面门在 `tests/random_face.rs`。
+    /// The off-letter slot hands back the **first byte** after the dash, not the first
+    /// character: `-é` is `c3 a9` in bytes, and the reference binary
+    /// `tmp/random-421/random` measures a single `303` (=`c3`) followed by a newline.
+    /// The reader is byte-wise already (`for letter in body.bytes()`); this test pins
+    /// that it is, so a future change back to reading characters can be attributed
+    /// alone; the byte-wise face is in `tests/random_face.rs`.
     #[test]
     fn the_off_letter_is_a_byte_and_not_a_character() {
-        // `é` 是两个 UTF-8 字节，环停在第一个上
+        // `é` is two UTF-8 bytes, and the ring stops on the first.
         assert_eq!(scan_ring(&[b"-\xc3\xa9"]), Ring::Unknown(0xc3));
-        // 合法字母在先也一样：`-eé` 报的还是 `c3`（`e` 被吃掉，环继续走到下一字节）
+        // A legal letter first changes nothing: `-eé` still reports `c3` (`e` is
+        // consumed and the ring moves on to the next byte).
         assert_eq!(scan_ring(&[b"-e\xc3\xa9"]), Ring::Unknown(0xc3));
-        // U+0080 那一格是这条渲染规则的判据位：它按 UTF-8 编码要占两个字节，
-        // 而 C 打的是一个裸字节（`-\u{80}` 的字节串是 `c2 80`，报第一个 `c2`）
+        // The U+0080 slot is this rendering rule's decisive position: UTF-8 encoding
+        // needs two bytes for it, while C prints one raw byte (`-\u{80}` is
+        // `c2 80`, and the first `c2` is reported).
         assert_eq!(scan_ring(&[b"-\xc2\x80"]), Ring::Unknown(0xc2));
-        // 反面：`--` 是结束标记，不当集外字母报（`getopt.c:81-85`）
+        // The other way round: `--` is the end marker and is not reported as an
+        // off-letter (`getopt.c:81-85`).
         assert_ne!(scan_ring(&[b"--"]), Ring::Unknown(b'-'));
     }
 
-    /// 句子那一侧只有一种装法：字母位是原字节，不经过任何再编码。
+    /// The sentence side has exactly one packing: the letter slot is the raw byte,
+    /// with no re-encoding.
     #[test]
     fn the_libc_line_writes_the_letter_as_the_byte_it_was_given() {
         assert_eq!(
             unknown_option_line("random", b'Z'),
             b"random: unknown option -- Z\n".to_vec()
         );
-        // 同一枚 U+00C3：按字节写是两个字节里的第一个，按字符写会多一个 `83`
+        // The same U+00C3: written byte-wise it is the first of the two bytes, written
+        // character-wise it would add an `83`.
         assert_eq!(
             unknown_option_line("random", 0xc3),
             b"random: unknown option -- \xc3\n".to_vec()
@@ -832,7 +924,8 @@ mod tests {
 
     #[test]
     fn end_of_options_and_a_bare_dash_are_two_different_things() {
-        // `--` 是结束标记：它自己不算操作数，下一枚起才算。裸 `-` 相反——它**就是**操作数
+        // `--` is the end marker: it does not count as an operand itself, only what
+        // follows does. A bare `-` is the opposite — it **is** an operand.
         assert_eq!(
             scan_ring(&[b"--"]),
             Ring::Done {
@@ -869,18 +962,23 @@ mod tests {
 
     #[test]
     fn the_exit_status_scales_by_the_expression_not_by_the_comment() {
-        // 上界闭着：抽取值到顶时结果就是分母本身
+        // The upper bound is closed: at the top draw the result is the denominator
+        // itself.
         assert_eq!(exit_status_value(1.0, 0), 0);
-        // 折半抽到的是 1 而不是 2：乘法先做再整除，`4 * (RANDOM_MAX/2)` 差一点点才到 2
+        // Half the draws give 1, not 2: the multiplication runs first and the division
+        // follows, so `4 * (RANDOM_MAX/2)` falls just short of 2.
         assert_eq!(exit_status_value(4.0, RANDOM_MAX / 2), 1);
-        // 3/4 处落在 **2** 而不是 3：`RANDOM_MAX * 3` 除不尽 4，整除先截掉一点，乘法再摊不平
+        // Three-quarters lands on **2**, not 3: `RANDOM_MAX * 3` does not divide evenly
+        // by 4, the division truncates a little first, and the multiplication cannot
+        // even it back out.
         assert_eq!(exit_status_value(4.0, RANDOM_MAX * 3 / 4), 2);
         assert_eq!(exit_status_value(4.0, RANDOM_MAX / 4), 0);
         assert_eq!(exit_status_value(4.0, 0), 0);
         assert_eq!(exit_status_value(4.0, RANDOM_MAX), 4);
-        // 向零截对负商一样成立：`-1 * RANDOM_MAX / RANDOM_MAX` 是 -1.0
+        // Truncation toward zero holds for negative quotients too:
+        // `-1 * RANDOM_MAX / RANDOM_MAX` is -1.0.
         assert_eq!(exit_status_value(-1.0, RANDOM_MAX), -1);
-        // 小于一的分母抽不出非零的退码
+        // A denominator below one cannot draw a nonzero exit status.
         assert_eq!(exit_status_value(0.5, RANDOM_MAX), 0);
         assert_eq!(RANDOM_MAX, u64::from(u32::MAX) / 2);
     }

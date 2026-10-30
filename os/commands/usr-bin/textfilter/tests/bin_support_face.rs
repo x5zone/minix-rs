@@ -1,26 +1,36 @@
-//! 参数通道的门：argv 里出现**非法 UTF-8 字节**时，宿主这条腿必须和目标那条腿走同一步。
+//! The argument-channel face: when argv carries **invalid UTF-8 bytes**, the host
+//! leg must take the same step as the target leg.
 //!
-//! 缝在 `os/commands/usr-bin/textfilter/src/bin_support.rs:args`——它是一组 `cfg` 双生面：
-//! 目标侧把 `minix_rt::crt0::args()` 交来的原始字节做 lossy 渲染，宿主侧原先用
-//! `std::env::args()`，而后者遇到非法字节当场 panic（`SIGABRT`）。C 把 argv 当原始字节、
-//! 从不校验（`minix3/lib/libc/stdlib/getopt.c:79` 取的是字节），所以「一碰非法字节就死」
-//! 既不是 C 的形状，也不是目标侧的形状。
+//! The seam is `os/commands/usr-bin/textfilter/src/bin_support.rs:args` — a pair of
+//! `cfg` twins: the target side renders the raw bytes handed over by
+//! `minix_rt::crt0::args()` lossily, while the host side used to call
+//! `std::env::args()`, which panics (`SIGABRT`) on an invalid byte. C treats argv as
+//! raw bytes and never validates it (`minix3/lib/libc/stdlib/getopt.c:79` takes a
+//! byte), so "die on the first invalid byte" is neither C's shape nor the target
+//! side's shape.
 //!
-//! 下面钉的每一条报文都取自现量：`tmp/bin-support-329/measure.log`（改前：六支全 `rc=-6`）
-//! 与 `tmp/bin-support-329/measure_after.log`（改后），参照件那一侧读数是
-//! `tmp/tr-322/tr_ref`、`tmp/seq-320/seq_ref`、`tmp/paste-321/paste_ref`。
+//! Every message pinned below comes from a direct reading:
+//! `tmp/bin-support-329/measure.log` (before the fix: all six binaries `rc=-6`) and
+//! `tmp/bin-support-329/measure_after.log` (after); the reference readings are
+//! `tmp/tr-322/tr_ref`, `tmp/seq-320/seq_ref`, `tmp/paste-321/paste_ref`.
 //!
-//! **与 C 仍差在哪，这几枚门不掩盖**：C 打的是原字节 `ff` 一行
-//! （`tr_ref: unknown option -- \xff`），而文本缝先把命令行 lossy 成 U+FFFD，各支再按自己的
-//! 取法渲染：按字节取到的是 `ef`（U+FFFD 的第一字节），按 `char` 取再渲染的是 `c3 af` 两字节。
-//! 参数缝半逐支把这一位翻正——本表二十三行（`rev`、`paste`、`seq`、`tr`、`fold`、`col`、
-//! `uniq`、`units`、`cksum`、`cmp`、`column`、`comm`、`cut`、`head`、`join`、`jot`、`nl`、`pr`、`sort`、`split`、`tail`、`unexpand`、`unifdef`，末十四行随批次四百五十八、
-//! 四百五十九、四百六十、四百六十一、四百六十二、四百六十三、四百六十四、四百六十五、四百六十六、
-//! 四百六十七、四百六十八、四百六十九、四百七十、四百七十一落地）**至此全是原字节** `ff`，与参照件同形；表外那些仍走文本缝的壳交回的仍是 `ef`。
-//! 字母位之外还有一条**操作数当文件路径**的腿：路径进了 `os/libs` 里的 `&str` 口就非折
-//! 一次不可（在册 `ARGV-BYTE-PATH-IN-LIBS`）。因此下面的断言既钉住
-//! 「不再 abort、两条腿一致」，也钉住**当前那一串字节**：等这些腿落地，这几枚会当场变红，
-//! 由改的人有意识地翻正，而不是让门静默跟着漂。
+//! **Where this still differs from C, these faces do not hide it**: C prints the raw
+//! byte `ff` in one line (`tr_ref: unknown option -- \xff`), while the text seam
+//! first folds the command line into U+FFFD and each shell then renders according to
+//! its own reader: a byte-wise reader gets `ef` (the first byte of U+FFFD), and a
+//! `char`-wise reader that re-renders gets the two bytes `c3 af`. The argument-seam
+//! work turned this slot right shell by shell — this table's rows (`rev`, `paste`,
+//! `seq`, `tr`, `fold`, `col`, `uniq`, `units`, `cksum`, `cmp`, `column`, `comm`,
+//! `cut`, `head`, `join`, `jot`, `nl`, `pr`, `sort`, `split`, `tail`, `unexpand`,
+//! `unifdef`, `vis`) **are all the raw byte** `ff` now, the same shape as the
+//! reference; shells outside the table that still use the text seam still hand back
+//! `ef`.
+//! Besides the letter slot there is a **file-path operand** leg: once a path enters
+//! the `&str` entry in `os/libs`, it must be folded (registered under
+//! `ARGV-BYTE-PATH-IN-LIBS`). So the assertions below pin both "no more abort, the
+//! two legs agree" and **the byte string as it is today**: when those legs land,
+//! these tests will turn red on purpose, to be corrected deliberately by whoever
+//! makes the change rather than letting the face drift silently.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
@@ -61,12 +71,15 @@ const LOOK: &str = env!("CARGO_BIN_EXE_look");
 const LAM: &str = env!("CARGO_BIN_EXE_lam");
 const PATCH: &str = env!("CARGO_BIN_EXE_patch");
 
-/// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
+/// A bare `0xFF`: neither a prefix of any UTF-8 sequence nor possible inside a valid
+/// argv.
 const FF: u8 = 0xFF;
 
-/// 宿主侧起真子进程，argv 允许是原始字节。非法字节进不了 `&str`，所以这里不借道
-/// 任何按 `str` 收参数的公共夹具；标准输入照夹具的约定喂进去，写不进（命令不读 stdin
-/// 时父进程拿到 `BrokenPipe`）不当成被测代码的缺陷。
+/// Starts a real child process on the host side, with argv allowed to be raw bytes.
+/// Invalid bytes cannot enter a `&str`, so this does not borrow any shared fixture
+/// that takes `str` arguments; standard input is fed the way the fixtures do, and a
+/// failed write (the parent gets `BrokenPipe` when the command does not read stdin)
+/// is not counted as a defect in the code under test.
 fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     let mut child = Command::new(exe)
         .args(args.iter().map(|a| OsStr::from_bytes(a)))
@@ -79,7 +92,7 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
         use std::io::Write as _;
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(input);
-            // 句柄在这里关闭，子进程随即看到 EOF
+            // The handle closes here, so the child sees EOF right away.
         }
     }
     let output = child.wait_with_output().expect("等子进程");
@@ -90,109 +103,131 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
     (code, output.stdout, output.stderr)
 }
 
-/// 二十三支薄壳在非法字节上都不该再走信号路径，且第一句仍是那条 getopt 报文。
-/// 字母位那一列就是这条缝的读数计：走 `bin_support::args_bytes` 的壳交回**原字节** `ff`，
-/// 仍走文本缝的壳交回折叠出的 U+FFFD 的第一字节 `ef`。
+/// None of the shells in the table may take the signal path on an invalid byte any
+/// more, and the first line is still the getopt message. The letter column is this
+/// seam's gauge: a shell on `bin_support::args_bytes` hands back the **raw byte**
+/// `ff`, while a shell still on the text seam hands back `ef`, the first byte of the
+/// folded U+FFFD.
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
     let cases: [(&str, &str, i32, &[u8]); 24] = [
-        // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
-        // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
-        // 字母位是原字节 `ff`。
-        // seq 那一支还多钉一层：它的环是累加型，一枚裸字节只该报一行
-        // （`the_accumulating_ring_names_the_raw_byte_once`）。
+        // tr, seq, paste, rev, fold, col and uniq all go through
+        // `bin_support::args_bytes`, so the letter slot is the raw byte `ff`.
+        // The seq row pins one more layer: its ring accumulates, and one raw byte
+        // should produce exactly one line
+        // (`the_accumulating_ring_names_the_raw_byte_once`).
         ("tr", TR, 1, b"tr: unknown option -- \xff\n"),
         ("seq", SEQ, 1, b"seq: unknown option -- \xff\n"),
         ("paste", PASTE, 1, b"paste: unknown option -- \xff\n"),
         ("fold", FOLD, 1, b"fold: unknown option -- \xff\n"),
         ("rev", REV, 1, b"rev: unknown option -- \xff\n"),
         ("col", COL, 1, b"col: unknown option -- \xff\n"),
-        // units 的 `ef` 残留随批次四百五十五的 argv 字节缝翻正：`from_utf8_lossy` 在
-        // 参数缝上把一枚裸 `ff` 折成 U+FFFD，字母位因此看着像 `ef`；换 `args_bytes`
-        // 之后环拿到的就是那一枚 `ff`，与 C 同形。
+        // The `ef` residue in units was turned right by its argv byte seam:
+        // `from_utf8_lossy` folded a bare `ff` into U+FFFD on the argument seam, so
+        // the letter slot looked like `ef`; with `args_bytes` the ring receives that
+        // `ff` itself, the same shape as C.
         ("uniq", UNIQ, 1, b"uniq: unknown option -- \xff\n"),
         ("units", UNITS, 3, b"units: unknown option -- \xff\n"),
-        // cksum 随批次四百五十七落地：C 的 `usage()` 是 `exit(1)`（`cksum.c:549`），
-        // 与 `units` 的 `myexit(3)` 不同，所以这一行的退码仍是 1。
+        // cksum: C's `usage()` is `exit(1)` (`cksum.c:549`), unlike `units`'
+        // `myexit(3)`, so this row's exit status stays 1.
         ("cksum", CKSUM, 1, b"cksum: unknown option -- \xff\n"),
-        // cmp 随批次四百五十八落地：C 的 `usage()` 退 `ERR_EXIT` = **2**（`cmp.c:157`），
-        // 与 cksum 的 `exit(1)` 不同，所以这一行的退码钉的是 2 而不是抄上一行。
+        // cmp: C's `usage()` exits with `ERR_EXIT` = **2** (`cmp.c:157`), unlike
+        // cksum's `exit(1)`, so this row pins 2 rather than copying the row above.
         ("cmp", CMP, 2, b"cmp: unknown option -- \xff\n"),
-        // column 随批次四百五十九落地：它的 `usage()` 退 1（`column.c:302-307` 的 `exit(1)`）。
+        // column: its `usage()` exits 1 (`column.c:302-307`'s `exit(1)`).
         ("column", COLUMN, 1, b"column: unknown option -- \xff\n"),
-        // comm 随批次四百六十落地：`comm.c:195-199` 的 `usage()` 也是退 1，但它那一行的
-        // 程序名**写死在串里**（没有 `getprogname()`），而本行钉的是 libc 那一行的字母位——
-        // 两行的来历不同，见 `comm_face` 的 `comm_reports_the_raw_option_byte_before_the_hardcoded_usage_line`。
+        // comm: `comm.c:195-199`'s `usage()` also exits 1, but its line
+        // **hardwires the program name** in the string (no `getprogname()`), while
+        // this row pins the letter slot of the libc line — the two lines have
+        // different origins, see `comm_face`'s
+        // `comm_reports_the_raw_option_byte_before_the_hardcoded_usage_line`.
         ("comm", COMM, 1, b"comm: unknown option -- \xff\n"),
-        // cut 随批次四百六十一落地：它的 usage 是三行、退 1（`cut.c:290-296`），
-        // 而且那三行里根本没有程序名占位——本行钉的只有 libc 那一行的字母位。
+        // cut: its usage is three lines and exits 1 (`cut.c:290-296`), and those
+        // three lines have no program-name slot at all — this row pins only the
+        // letter slot of the libc line.
         ("cut", CUT, 1, b"cut: unknown option -- \xff\n"),
-        // head 随批次四百六十二落地：它的 usage 只有一行且带程序名（`head.c:199-203` 把
-        // `getprogname()` 当 `%s` 递进去，与 `cut`/`comm` 那两行写死命令名的不同），退 1。
+        // head: its usage is one line and carries the program name
+        // (`head.c:199-203` passes `getprogname()` as `%s`, unlike the hardwired
+        // names in `cut`/`comm`), exit 1.
         ("head", HEAD, 1, b"head: unknown option -- \xff\n"),
-        // join 随批次四百六十三落地：它的 usage 是**两行**、退 1（`join.c:630-637`），
-        // 而字母位的取法（`src/join.rs` 的 `char::from(b[1])`）与渲染（`line_bytes`）
-        // 早在批次四百零七就按字节了——本行翻正的是 argv 那一头。
+        // join: its usage is **two lines** and exits 1 (`join.c:630-637`), while the
+        // letter reader (`src/join.rs`'s `char::from(b[1])`) and the rendering
+        // (`line_bytes`) were already byte-wise — this row turned the argv side right.
         ("join", JOIN, 1, b"join: unknown option -- \xff\n"),
-        // jot 随批次四百六十四落地：它的 `usage()` 退 1（`jot.c:314-319`，句尾是 `exit(1)`），
-        // 而这一支的取法（`src/jot.rs` 的 `char::from(bytes[pos])`）与渲染（`line_bytes`）
-        // 早已按字节——本行翻正的是 argv 那一头，也就是把 `support::args()` 换成 `args_bytes()`。
+        // jot: its `usage()` exits 1 (`jot.c:314-319`, ending in `exit(1)`), while
+        // this shell's reader (`src/jot.rs`'s `char::from(bytes[pos])`) and rendering
+        // (`line_bytes`) were already byte-wise — this row turned the argv side right
+        // by replacing `support::args()` with `args_bytes()`.
         ("jot", JOT, 1, b"jot: unknown option -- \xff\n"),
-        // nl 随批次四百六十五落地：它的 `usage()` 是**两行**（第一行行尾 `\n\t`）、退 1
-        //（`nl.c:400-405`）；这一支的选项环整个住在薄壳里，所以字母位与七句回显都由
-        // `nl_face` 钉，本行只钉「不再 abort + 字母位是原字节」这一层。
+        // nl: its `usage()` is **two lines** (the first ends in `\n\t`) and exits 1
+        // (`nl.c:400-405`); this shell's option ring lives entirely in the thin
+        // shell, so the letter slot and the seven echoes are pinned by `nl_face`,
+        // and this row pins only "no more abort + the letter slot is the raw byte".
         ("nl", NL, 1, b"nl: unknown option -- \xff\n"),
-        // pr 随批次四百六十六落地，而它这一行**与本族其它行不同词**：`pr` 不吃 libc 的
-        // `getopt`，链的是自带的 `minix3/usr.bin/pr/egetopt.c`——`:148` 打的是
-        // `illegal option -- %c`（libc 在 `getopt.c:103` 打 `unknown option`）。
-        // 同一枚裸字节在两个解析器下的句子就是不一样，拿「同族规律」抹平会把措辞写错；
-        // 本行钉的正是这一支自己的那一行（字母位仍是一个字节 `ff`），usage 那三行与
-        // 十枚空格由 `pr_face` 的 `the_four_invalid_value_echoes_and_the_operand_message_carry_the_argv_bytes`
-        // 与 `letters_outside_the_c_optstring_print_the_egetopt_line_then_the_usage` 承载。
+        // pr, whose row is **worded differently from the rest of the family**: `pr`
+        // does not use libc's `getopt` but links its own
+        // `minix3/usr.bin/pr/egetopt.c` — `:148` prints `illegal option -- %c`
+        // (libc prints `unknown option` at `getopt.c:103`). The same raw byte really
+        // does yield different sentences under the two parsers, and flattening that
+        // with a "family rule" would get the wording wrong; this row pins that
+        // shell's own line (the letter slot is still one byte, `ff`), while the three
+        // usage lines and the ten spaces are pinned by `pr_face`'s
+        // `the_four_invalid_value_echoes_and_the_operand_message_carry_the_argv_bytes`
+        // and `letters_outside_the_c_optstring_print_the_egetopt_line_then_the_usage`.
         ("pr", PR, 1, b"pr: illegal option -- \xff\n"),
-        // sort 随批次四百六十七落地，措辞又回到 libc 那一支：`sort.c:156` 吃的就是
-        // `getopt(argc, argv, SORT_OPTS)`（`getopt.c:101-104` 的 `unknown option`），
-        // 与上一行 `pr` 自带 `egetopt` 的 `illegal option` 互为对照——同一张表里两种措辞
-        // 并存，正是「拿同族规律抹平会把句子写错」的实物证据。它的 usage 是**一行**、
-        // 行内有一段十三空格的间距（`sort.c:399-412`），退 **2** 而不是 1。
+        // sort, where the wording returns to the libc branch: `sort.c:156` calls
+        // `getopt(argc, argv, SORT_OPTS)` (`getopt.c:101-104`'s `unknown option`),
+        // the counterpart to `pr`'s own `egetopt` printing `illegal option` on the
+        // row above — two wordings side by side in one table are the concrete proof
+        // that a "family rule" would get sentences wrong. Its usage is **one line**
+        // with a run of thirteen spaces inside (`sort.c:399-412`), and it exits
+        // **2**, not 1.
         ("sort", SORT, 2, b"sort: unknown option -- \xff\n"),
-        // split 随批次四百六十八落地：`split.c:80` 吃的也是 libc 的
-        // `getopt(argc, argv, "0123456789b:l:a:n:")`，所以句子仍是 `unknown option`
-        //（与 `pr` 那行的 `illegal option` 对照）。它的 usage 是**一行**、退 **1**
-        //（`split.c:355-361` 的 `exit(1)`）；字母位之外的三条腿
-        // （四句 `illegal X count.` 的值位、报出去的分片名与输入档名）由 `split_face` 的
-        // `the_diagnostic_and_the_chunk_name_carry_the_argv_bytes` 承载。
+        // split: `split.c:80` also calls libc's
+        // `getopt(argc, argv, "0123456789b:l:a:n:")`, so the sentence is still
+        // `unknown option` (contrast `pr`'s `illegal option`). Its usage is **one
+        // line** and exits **1** (`split.c:355-361`'s `exit(1)`); the three legs
+        // beyond the letter slot (the value slots of the four `illegal X count.`
+        // sentences, the reported chunk name and the input file name) are pinned by
+        // `split_face`'s `the_diagnostic_and_the_chunk_name_carry_the_argv_bytes`.
         ("split", SPLIT, 1, b"split: unknown option -- \xff\n"),
-        // tail 随批次四百六十九落地：`tail.c:108` 的 `getopt(argc, argv, "Fb:c:fn:r")` 是 libc
-        // 那一份，所以句子仍是 `unknown option`。它的 usage 是**一行**且大写 `Usage:`、带程序名
-        // （`tail.c:299-305`），退 1。字母位之外的四条腿（三句 `illegal offset -- %s` 的值位、
-        // `obsolete()` 那句 `illegal option -- %s` 带的整段 token、改写之后的 token、以及诊断行里的
-        // 档名）由 `tail_face` 的
-        // `the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes` 承载。
+        // tail: `tail.c:108`'s `getopt(argc, argv, "Fb:c:fn:r")` is libc's, so the
+        // sentence is still `unknown option`. Its usage is **one line**, capitalized
+        // `Usage:`, with the program name (`tail.c:299-305`), exit 1. The four legs
+        // beyond the letter slot (the value slots of the three
+        // `illegal offset -- %s` sentences, the whole token carried by `obsolete()`'s
+        // `illegal option -- %s`, the rewritten token, and the file name in the
+        // diagnostic line) are pinned by `tail_face`'s
+        // `the_offset_echo_the_token_echo_and_the_file_name_carry_the_argv_bytes`.
         ("tail", TAIL, 1, b"tail: unknown option -- \xff\n"),
-        // unexpand 随批次四百七十落地：`unexpand.c:86` 的 `getopt(argc, argv, "at:")` 吃的
-        // 是 libc 那一份，句子仍是 `unknown option`；它的 usage 一行、大写 `Usage:`、退 1
-        //（`unexpand.c:69-73`）。字母位之外那六形 tabstop 回声与操作数那句 `Cannot open` 的
-        // 档名位由 `unexpand_face` 的
-        // `the_tabstop_echoes_and_the_operand_name_carry_the_argv_bytes` 承载。
+        // unexpand: `unexpand.c:86`'s `getopt(argc, argv, "at:")` is libc's, so the
+        // sentence is still `unknown option`; its usage is one line, capitalized
+        // `Usage:`, exit 1 (`unexpand.c:69-73`). The six tabstop echoes beyond the
+        // letter slot and the file-name slot of the operand's `Cannot open` sentence
+        // are pinned by `unexpand_face`'s
+        // `the_tabstop_echoes_and_the_operand_name_carry_the_argv_bytes`.
         (
             "unexpand",
             UNEXPAND,
             1,
             b"unexpand: unknown option -- \xff\n",
         ),
-        // unifdef 随批次四百七十一落地：`unifdef.c:273` 的
-        // `getopt(argc, argv, "i:D:U:I:o:cdeklst")` 吃的是 libc 那一份，句子仍是 `unknown option`；
-        // 但它自己的 usage **退 2**（`:373-378` 的 `exit(2)`），而且那一行的程序名写死在串里
-        //（没有 `getprogname()`）——本行钉的是 libc 那一行，usage 与两处 `can't open %s`
-        // 的档名位由 `unifdef_face` 的 `the_operand_and_output_names_carry_the_argv_bytes` 承载。
+        // unifdef: `unifdef.c:273`'s
+        // `getopt(argc, argv, "i:D:U:I:o:cdeklst")` is libc's, so the sentence is
+        // still `unknown option`; but its own usage **exits 2** (`:373-378`'s
+        // `exit(2)`) and that line hardwires the program name in the string (no
+        // `getprogname()`) — this row pins the libc line, while usage and the
+        // file-name slots of the two `can't open %s` sentences are pinned by
+        // `unifdef_face`'s `the_operand_and_output_names_carry_the_argv_bytes`.
         ("unifdef", UNIFDEF, 2, b"unifdef: unknown option -- \xff\n"),
-        // vis 随批次四百七十二落地：`vis.c:73` 的 `getopt(argc, argv, "bcde:F:fhlMmNnoSstw")`
-        // 吃的是 libc 那一份，退 1；它的 usage 行带 `getprogname()`（`vis.c:136-139`），所以
-        // 两行的名字同源（在册 `VIS-USAGE-PROGNAME-HARDCODED` 说的是本壳 usage 写死 `vis`）。
-        // 它的 `-e` 值位是本族第一枚判决腿：extra 表是逐字节的集合，折叠换的是编码答案，
-        // 由 `vis_face` 的 `the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes` 承载。
+        // vis: `vis.c:73`'s `getopt(argc, argv, "bcde:F:fhlMmNnoSstw")` is libc's,
+        // exit 1; its usage line carries `getprogname()` (`vis.c:136-139`), so the two
+        // lines share one origin (the registered `VIS-USAGE-PROGNAME-HARDCODED` notes
+        // that this shell's usage hardwires `vis`). Its `-e` value slot is the
+        // family's first verdict leg: the extra list is a byte-wise set, and folding
+        // changes the encoding answer; pinned by `vis_face`'s
+        // `the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes`.
         ("vis", VIS, 1, b"vis: unknown option -- \xff\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
@@ -205,9 +240,11 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
     }
 }
 
-/// 非法字节落在**操作数**里时只是普通数据：参照件 `tr a\xffb c` 退 0 打 `cccccc`，
-/// 本层同形。操作数被当数据收走时，文本缝与字节缝给出的都是同一串字节，所以这一条
-/// 钉的是「不炸」而不是「字母位」——后者归上面那张表。
+/// An invalid byte inside an **operand** is ordinary data: the reference's
+/// `tr a\xffb c` exits 0 and prints `cccccc`, and this layer matches. When the
+/// operand is taken as data, the text seam and the byte seam yield the same byte
+/// string, so this test pins "does not blow up" rather than "the letter slot" — the
+/// latter belongs to the table above.
 #[test]
 fn a_raw_byte_inside_an_operand_is_ordinary_data() {
     let set1 = [b"a".as_slice(), &[FF][..], b"b"].concat();
@@ -217,8 +254,9 @@ fn a_raw_byte_inside_an_operand_is_ordinary_data() {
     assert!(err.is_empty(), "实际 {err:?}");
 }
 
-/// `-d` 把非法字节**当值收走**时根本不是错：参照件 `paste -d\xff` 退 0 且无输出
-/// （零操作数那条旧判据：既不读标准输入也不报错）。
+/// An invalid byte **consumed as a value** by `-d` is no error at all: the
+/// reference's `paste -d\xff` exits 0 with no output (the old zero-operand rule:
+/// neither reads standard input nor reports anything).
 #[test]
 fn a_raw_byte_consumed_as_an_option_value_is_not_an_error() {
     let dflag = [b"-d".as_slice(), &[FF][..]].concat();
@@ -228,11 +266,13 @@ fn a_raw_byte_consumed_as_an_option_value_is_not_an_error() {
     assert!(err.is_empty(), "实际 {err:?}");
 }
 
-/// 累加型选项环（`seq.c:101-113` 的 `errflg` 累加、不在第一个坏字母处停）在**文本缝**上
-/// 会把 lossy 出来的三个字节当三个字母连报三行；`seq` 走 `bin_support::args_bytes` 之后
-/// （批次四百四十三），命令行上那一枚裸 `ff` 就是一个字母，于是报文与参照件同形：
-/// **一行、字母位是原字节**，紧跟一行 usage。这一枚钉的是改完之后该长的样子，
-/// 防止有人把缝改回 `String` 时让「三行」悄悄回来。
+/// An accumulating option ring (`seq.c:101-113` accumulates `errflg` and does not
+/// stop at the first bad letter) would, on the **text seam**, treat the three bytes
+/// produced by lossy folding as three letters and print three lines; with `seq` on
+/// `bin_support::args_bytes` the bare `ff` on the command line is one letter, so the
+/// output matches the reference: **one line, letter slot the raw byte**, followed by
+/// one usage line. This test pins the post-fix shape so that a change back to
+/// `String` cannot quietly bring the three lines back.
 #[test]
 fn the_accumulating_ring_names_the_raw_byte_once() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
@@ -245,17 +285,23 @@ fn the_accumulating_ring_names_the_raw_byte_once() {
     );
 }
 
-/// 族终笔（批次四百七十三）的收口门：`args()` 文本口已删，余下十二支没有字母面的壳
-/// 也全部走 `args_bytes()`——它们的 argv 字节腿只剩**操数名**一处（报文里的那一位与
-/// 开档口递进去的那一串）。本枚门把十支「报文里念得出操数名」的壳各喂一枚带裸 `ff`
-/// 的操数，钉住报文里的名字位是**原字节**（折过的 `ef bf bd` 不再出现）；colcrt 与 fmt
-/// 的开档失手句不带档名位，没有可观察的字节腿，不入列。
+/// The closing face: the text `args()` entry is gone, and the remaining twelve
+/// shells without a letter face also use `args_bytes()` — their argv byte leg is
+/// down to the **operand name** (the slot in the message and the string handed to
+/// the open entry). This face feeds each of the ten shells that can name an operand
+/// an operand containing a bare `ff` and pins the name slot in the message to the
+/// **raw byte** (the folded `ef bf bd` no longer appears); colcrt's and fmt's
+/// open-failure sentences have no name slot, so they have no observable byte leg and
+/// are not listed.
 #[test]
 fn the_plain_shells_operand_echo_carries_the_argv_bytes() {
     let ff: Vec<u8> = [b"nosuch".as_slice(), &[0xff][..], b".txt".as_slice()].concat();
-    // diff 要凑齐两枚操数才走到开档（一枚直接落 usage），且第一侧要**开得成功**
-    // 才轮到第二侧报错——给它一份临时档；look 的单操数形按 C 的 `argc == 2` 特例
-    // 把那一枚当查询词（非 ASCII 先拒），档名腿要两枚才可达。
+    // diff needs two operands before it reaches the open (one operand lands straight
+    // on usage), and the first side must **open successfully** before the second
+    // side's error can be reported — so hand it a scratch file; look's
+    // single-operand form follows C's `argc == 2` special case and takes that
+    // operand as the query word (rejecting non-ASCII first), so the file-name leg
+    // needs two operands to be reachable.
     let mut scratch = std::env::temp_dir();
     scratch.push(format!("argv-bytes-side-{}", std::process::id()));
     std::fs::write(&scratch, b"side a\n").expect("writing the scratch file");

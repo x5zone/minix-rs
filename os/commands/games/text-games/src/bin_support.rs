@@ -30,15 +30,16 @@ pub const STDERR: Fd = 2;
 
 /// Program arguments without `argv[0]` conventions applied — index 0 is
 /// the program name, exactly as C's `argv`.
-/// 字节形出口（A2 参数缝半的族终笔）：C 从头到尾把 `argv` 当字节数组，凡是要把选项字母
-/// 或操作数**按原字节**交回去的腿都不能走有损折叠——`String::from_utf8_lossy` 会把一枚裸
-/// `ff` 折成三字节 `ef bf bd`（批次四百二十二在 `random -\xff` 上现量过的那条残差）。
+/// The byte-form exit of the argument seam: C treats `argv` as a byte array from start
+/// to finish, so every leg that hands an option letter or an operand back as the
+/// original bytes must avoid lossy folding — `String::from_utf8_lossy` folds a bare `ff`
+/// into the three bytes `ef bf bd` (the residual measured on `random -\xff`).
 #[cfg(all(not(test), target_os = "none"))]
 pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
     minix_rt::crt0::args().map(<[u8]>::to_vec).collect()
 }
 
-/// Hosted twin of [`args_bytes`]：`args_os()` 交回的正是同一串原始字节。
+/// Hosted twin of [`args_bytes`]: `args_os()` hands back exactly the same raw bytes.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
     use std::os::unix::ffi::OsStrExt as _;
@@ -47,8 +48,9 @@ pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
         .collect()
 }
 
-/// [`prog_name`] 的字节形：`argv[0]` 按原字节交回，且取的是**最后一段斜杠之后**的那串
-/// （与 [`prog_name`] 交给 `minix_sys::prog_name` 的 basename 规则同形）。
+/// The byte form of [`prog_name`]: `argv[0]` comes back as its raw bytes, cut to the
+/// segment after the last slash (the same basename rule [`prog_name`] hands to
+/// `minix_sys::prog_name`).
 pub fn prog_name_bytes(argv: &[alloc::vec::Vec<u8>]) -> &[u8] {
     let raw = argv.first().map_or(&[][..], |name| name.as_slice());
     match raw.iter().rposition(|&byte| byte == b'/') {
@@ -58,8 +60,10 @@ pub fn prog_name_bytes(argv: &[alloc::vec::Vec<u8>]) -> &[u8] {
 }
 
 /// Every environment string as raw `KEY=VALUE` bytes, in order (C `environ`).
-/// `minix3/games/wtf/wtf:47-53` 读的 `ACRONYMDB` 就是这么一个串，脚本先取整串、
-/// 再按空白断词。真机腿与 [`args`] 同一条出生链，宿主腿 re-join 成同一种形状。
+/// The `ACRONYMDB` read by `minix3/games/wtf/wtf:47-53` is one such string: the script
+/// takes the whole string first and then splits it on whitespace. The target leg comes
+/// from the same birth chain as [`args`], and the hosted leg re-joins into the same
+/// shape.
 #[cfg(all(not(test), target_os = "none"))]
 pub fn envs() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
     minix_rt::crt0::envs().map(|raw| raw.to_vec()).collect()
@@ -160,12 +164,14 @@ pub fn emit_error(bytes: &[u8]) -> Option<minix_sys::Errno> {
     None
 }
 
-/// C 的 `err(3)`/`warn(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退
-/// （退不退由调用者定）。形状与句子都住在 `minix-types` 的 `err_line` 那一份权威里
-/// （与 `textfilter` 的同名件同一来源，C 也只有一个 `verrc.c`）。
+/// C's `err(3)`/`warn(3)` line: `prog: label: <sentence>` plus a newline, without
+/// exiting (whether to exit is the caller's decision). Both the shape and the sentence
+/// live in the one authority, `minix-types`'s `err_line` (the same source as the
+/// same-named piece in `textfilter`; C has only one `verrc.c` too).
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
-    // 先量一次再按那个数渲染：`err_line` 交回的是「本该写多少字节」，超长操作数不会被截断
-    //（C 的 `vwarnc` 直接把调用者的串整个打到 stderr，长度不受一行栈缓冲限制）。
+    // Measure once, then render against that count: `err_line` returns how many bytes
+    // should be written, so an over-long operand is never truncated (C's `vwarnc` prints
+    // the caller's whole string to stderr, unbounded by a one-line stack buffer).
     let mut sizing: [u8; 0] = [];
     let need = minix_sys::err_line(prog, label, code, &mut sizing);
     let mut line = alloc::vec![0u8; need];
@@ -174,12 +180,16 @@ pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
     warn(b"\n");
 }
 
-/// 把标准输入读到尽，并且**把失手的号交回调用者**，不是把失手当成读到尽头。
+/// Reads standard input to the end and hands the failing number back to the caller,
+/// rather than treating a failure as end of input.
 ///
-/// C 的这一路是 `getchar()` 环读到 EOF（`minix3/games/random/random.c:127`），失手由
-/// stdio 记账、收尾用 `err(2, "stdin")` 报。本层只负责拿到号，句子与退码由调用者定。
-/// 宿主腿走 `std::io::stdin`（没有它时退到 `EIO`，与 `textfilter` 那条读缝同一口径），
-/// 真机腿在同一枚描述符上逐块 `read`。有了双生面，薄壳的过滤路径在宿主也可测。
+/// C's path is a `getchar()` loop reading to EOF (`minix3/games/random/random.c:127`);
+/// stdio keeps the failure on its books and the end reports it with `err(2, "stdin")`.
+/// This layer only obtains the number; the sentence and the exit code belong to the
+/// caller. The hosted leg goes through `std::io::stdin` (falling back to `EIO` when it
+/// has no number, the same rule as the `textfilter` read seam), and the target leg reads
+/// chunk by chunk on the same descriptor. With the twins in place, a thin shell's filter
+/// path is testable on the host too.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn read_stdin_error() -> (alloc::vec::Vec<u8>, Option<minix_sys::Errno>) {
     use std::io::Read as _;
@@ -223,8 +233,9 @@ pub enum OperandFailure {
 
 /// Reads an operand file, reporting only a failure to open it; a read that breaks
 /// partway is reported as the end of the file. That is C's shape: `fortune` loads
-/// with `fgets(line, sizeof line, fp->inf) != NULL`（`minix3/games/fortune/fortune/fortune.c:268`、
-/// `:293`）and the file never asks `ferror`, so a broken read looks exactly like an
+/// with `fgets(line, sizeof line, fp->inf) != NULL`
+/// (`minix3/games/fortune/fortune/fortune.c:268`, `:293`), and the file never asks
+/// `ferror`, so a broken read looks exactly like an
 /// ordinary end of input — no extra sentence, and no different exit code. Hosted twin:
 /// real `std::fs` — without it a file-reading game binary cannot be run, and so
 /// cannot be checked, on the host at all (the target face below is the one the
@@ -240,7 +251,7 @@ pub fn slurp_operand(path: &str) -> Result<alloc::vec::Vec<u8>, OperandFailure> 
         ))
     })?;
     let mut image = alloc::vec::Vec::new();
-    // 读到失手就当作读到尽头：C 只看到 `fgets` 回了 NULL
+    // A failed read counts as end of input: C only sees `fgets` return NULL
     if file.read_to_end(&mut image).is_err() {
         return Ok(image);
     }

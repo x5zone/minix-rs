@@ -31,8 +31,9 @@ fn run() -> ! {
     // (`err(1, "%s")` when it cannot be opened), more than one is a usage error.
     let input = match file {
         Some(path) => {
-            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
-            // 报文里念出去的是原字节。
+            // The open call takes `&str` (registered `ARGV-BYTE-PATH-IN-LIBS`), so the
+            // fold happens only at this point; what the message reads out is the original
+            // bytes.
             let shown = String::from_utf8_lossy(path).into_owned();
             match support::read_file(&shown) {
                 Ok(bytes) => bytes,

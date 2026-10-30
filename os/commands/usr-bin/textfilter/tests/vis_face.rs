@@ -3,9 +3,9 @@
 //! `minix3/lib/libc/gen/vis.c`.
 //!
 //! The differential leg used to be missing (a Linux host ships no `vis`, and the
-//! byte-exact expectations below were what the C source says); batch 472 built one
-//! by linking Minix's own `lib/libc/gen/vis.c` (the vis(3) engine) plus Minix's
-//! getopt into a host reference — `tmp/vis-472/vis_ref`, invoked through a
+//! byte-exact expectations below were what the C source says); a later differential
+//! leg built one by linking Minix's own `lib/libc/gen/vis.c` (the vis(3) engine) plus
+//! Minix's getopt into a host reference — `tmp/vis-472/vis_ref`, invoked through a
 //! same-named symlink, `LC_ALL=C` pinned on both sides. The expectations below
 //! have all been re-measured against it; output is still compared as bytes
 //! because `-n` copies the input through, including bytes above 0x7F, which no
@@ -120,8 +120,9 @@ fn operands_are_encoded_into_one_stream_and_a_bad_one_only_warns() {
     let (out, status, err) = run(&[&text(&one), &missing, &text(&two)], b"");
     assert_eq!(out, b"a\n\\^A".to_vec());
     assert_eq!(status, 1, "stderr was {err:?}");
-    // C 是 `warn("%s", *argv)`（`vis.c:157`）的三段形：`vis: 档名: strerror`，
-    // 打完**继续跑下一个操数**并把退码定成 1（`:158`）。本壳此前只打两段。
+    // C's form is the three-part `warn("%s", *argv)` (`vis.c:157`): `vis: name: strerror`,
+    // and after printing it **carries on with the next operand** while pinning the
+    // exit status to 1 (`:158`). This shell used to print only two parts.
     assert_eq!(
         err,
         format!("vis: {missing}: No such file or directory\n"),
@@ -143,8 +144,10 @@ fn operands_are_encoded_into_one_stream_and_a_bad_one_only_warns() {
     }
 }
 
-/// 与 `run` 同一条命令缝，但标准错误也**逐字节**交回：文本形经 `from_utf8_lossy` 之后，
-/// 一个裸 `c3` 是替换字符 U+FFFD、`c3 83` 是 `Ã`，两种错法虽然不同串，却都不如直接比字节。
+/// The same command seam as `run`, but stderr is handed back **byte for byte**:
+/// after `from_utf8_lossy`, a bare `c3` is the replacement character U+FFFD and
+/// `c3 83` is `Ã`; the two mistakes differ as strings, and neither is as telling
+/// as comparing bytes directly.
 fn run_streams(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     let mut child = Command::new(VIS)
         .args(args)
@@ -162,13 +165,19 @@ fn run_streams(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
     )
 }
 
-/// 集外字母那一行的字母位是**一个裸字节**（`-\u{e9}` 交回 `c3`，不是 `c3 a9` 也不是 `c3 83`）。
-/// 本支的差分腿批次四百七十二才配上（把 Minix 自己的 `lib/libc/gen/vis.c` 连同 getopt 链成
-/// 宿主参照件，`tmp/vis-472/vis_ref` 经同名软链起、两侧钉 `LC_ALL=C`），此前的判据来源
-/// 与那次的八枚负控都留在这条注释里作底：机制在 `minix3/lib/libc/stdlib/getopt.c:79`
-/// （`optopt = *place++` 一次进一个字节）与 `:103`（`%c` 原样写出）。
-/// `c` 是 C 选项串里合法且不带值的字母，所以聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`——
-/// `vis.c:135-140` 的 `case '?'`/`default` 打完 usage 就 `return 1`，第二个字母轮不到。
+/// The letter slot of the off-letter line is **one raw byte** (`-\u{e9}` hands back
+/// `c3`, not `c3 a9` and not `c3 83`). The mechanism is in
+/// `minix3/lib/libc/stdlib/getopt.c:79` (`optopt = *place++` takes one byte at a
+/// time) and `:103` (`%c` writes it out as is). The differential leg — Minix's own
+/// `lib/libc/gen/vis.c` plus Minix's getopt linked into a host reference,
+/// `tmp/vis-472/vis_ref`, started through a same-named symlink with `LC_ALL=C`
+/// pinned on both sides — re-measured every expectation below, and its eight
+/// negative controls are recorded in `tmp/vis-472/measure.log` as the basis.
+///
+/// `c` is a valid letter in C's option string and takes no value, so a cluster
+/// keeps consuming and reaches the first byte of `é`; `-Zé` stops at `Z` because
+/// `vis.c:135-140`'s `case '?'`/`default` prints usage and `return 1`s, so the
+/// second letter never gets a turn.
 #[test]
 fn the_libc_line_of_a_multibyte_flag_is_the_first_byte_of_the_flag() {
     const USAGE_LINE: &[u8] =
@@ -190,15 +199,20 @@ fn the_libc_line_of_a_multibyte_flag_is_the_first_byte_of_the_flag() {
     );
 }
 
-/// 那几条按字节交回的腿，也是本族第一枚**判决腿**：`-e` 的值整串进 extra 表，而 extra 表
-/// 决定哪些字节走八进制——C 的取法逐处对上：`extra = optarg`（`vis.c:87`），
-/// `makeextralist`（`lib/libc/gen/vis.c:351-384`）在 `VIS_NOLOCALE` 或多字节解码失败时把
-/// `-e` 串按 `(wchar_t)(u_char)src[i]` **逐字节**上榜，`warn("%s", *argv)`（`:157`）打 argv
-/// 的原词，libc 那句的字母位是 `getopt.c:79` 的一枚字节。折叠把一枚 `ff` 换成三枚
-/// `ef bf bd` 的地方，编码的答案跟着换（折前 `ff` 不在名单上、走 M- 记法，折后名单变成
-/// `ef`/`bf`/`bd` 三枚而 `ff` 依旧不在）——这与 split/tail/unexpand 那「折叠不改判决」
-/// 的三支不同，是 join/pr/sort 那一族。参照件现量 `tmp/vis-472/measure.log`（26 形两侧
-/// 逐字节同形）。
+/// These byte-handed-back legs are the family's first **verdict leg**: `-e`'s value
+/// goes into the extra list as a whole string, and the extra list decides which
+/// bytes take the octal branch — every step matches C: `extra = optarg`
+/// (`vis.c:87`); `makeextralist` (`lib/libc/gen/vis.c:351-384`) puts the `-e`
+/// string on the list **byte by byte** as `(wchar_t)(u_char)src[i]` when
+/// `VIS_NOLOCALE` is set or multibyte decoding fails; `warn("%s", *argv)`
+/// (`:157`) prints argv's original word; and the letter slot of the libc line is
+/// one byte from `getopt.c:79`. Where folding turns one `ff` into three bytes
+/// `ef bf bd`, the encoding answer changes with it (before folding `ff` is off the
+/// list and takes the M- notation; after folding the list becomes `ef`/`bf`/`bd`
+/// and `ff` is still off it). That makes this a member of the join/pr/sort family
+/// rather than of the split/tail/unexpand group, where folding leaves the verdict
+/// alone. The reference reading is `tmp/vis-472/measure.log` (26 forms, identical
+/// byte for byte on both sides).
 #[test]
 fn the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes() {
     use std::ffi::OsStr;
@@ -228,7 +242,8 @@ fn the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes() {
     let source_file = written("hi-ff", source);
     let operand = text(&source_file);
     let operand_bytes: &[u8] = operand.as_bytes();
-    // `-e <ff>`：ff 上榜，输入里的 ff 从 M- 记法换成三位八进制。分词与附值两形同答案。
+    // `-e <ff>`: ff joins the list, so an ff in the input switches from M- notation
+    // to three-digit octal. The detached and attached value forms give the same answer.
     for form in [
         vec![b"-e".to_vec(), b"\xff".to_vec()],
         vec![b"-e\xff".to_vec()],
@@ -247,8 +262,9 @@ fn the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes() {
             "{form:?}：ff 在名单上，走八进制"
         );
     }
-    // 反面：名单换成一枚 ASCII，ff 退回 M- 记法、y 反而进八进制——名单是逐字节的集合，
-    // 不是「多转义一点」的开关。
+    // The other way round: with an ASCII byte on the list, ff falls back to M-
+    // notation and y takes octal — the list is a byte-wise set, not a "escape a
+    // bit more" switch.
     let (out, status, _err) = run_raw(&[b"-e", b"y", operand_bytes], source);
     assert_eq!(status, 0);
     assert_eq!(
@@ -256,22 +272,26 @@ fn the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes() {
         b"x\\M^?\\171\n".to_vec(),
         "y 上榜而 ff 不在，编码跟着名单走"
     );
-    // 字母位：单枚裸字节原样报出，折过的三字节 `ef bf bd` 不再出现。
+    // The letter slot: a single raw byte is reported as itself, and the folded
+    // three-byte `ef bf bd` no longer appears.
     let (_out, status, err) = run_raw(&[b"-\xff"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(
         err,
         [b"vis: unknown option -- ".as_slice(), b"\xff\n", USAGE_LINE].concat()
     );
-    // 操数名：`warn("%s", *argv)` 的三段形，档名位是原字节，strerror 那一段照旧。
+    // The operand name: the three-part `warn("%s", *argv)` form, with the file-name
+    // slot as the raw byte and the strerror segment unchanged.
     let (_out, status, err) = run_raw(&[b"nosuch\xff.txt"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(
         err,
         b"vis: nosuch\xff.txt: No such file or directory\n".to_vec()
     );
-    // `-F` 的值折叠改不了判决：`atoi` 只认 ASCII 数字，折前折后都不是数字、都折成 0，
-    // 都过不了 `< 5`——而那句话不带 `%s`，值位根本不出现在报文里。
+    // Folding `-F`'s value cannot change the verdict: `atoi` accepts only ASCII
+    // digits, and folded or not the value is not a number and converts to 0, so
+    // both fail the `< 5` test — and that sentence carries no `%s`, so the value
+    // never reaches the message.
     let (out, status, err) = run_raw(&[b"-F", b"\xff"], b"a\n");
     assert_eq!(status, 1);
     assert_eq!(err, b"vis: can't fold lines to less than 5 cols\n".to_vec());
@@ -285,10 +305,12 @@ fn letters_outside_the_c_optstring_are_refused_with_usage() {
     // refusals left are the letters C itself sends to `default:`. `-d` belongs in
     // that group: it is C's debug counter, compiled out of this build, so the
     // answer is the usage line rather than a “not modelled” note about our shell.
-    // 集外字母是**两行**：libc 的 `getopt`（`minix3/lib/libc/stdlib/getopt.c:101-104`，
-    // 选项串不以 `:` 开头所以 `opterr` 生效）先印 `vis: unknown option -- <字母>`，
-    // 然后 `case '?'`/`default` 才打那一行 usage（`vis.c:135-140`）。旧断言只看
-    // `contains("Usage: vis [")`，所以少了首行也测不出来——现按逐字等式钉。
+    // An off-letter produces **two lines**: libc's `getopt`
+    // (`minix3/lib/libc/stdlib/getopt.c:101-104`; the option string does not start
+    // with `:`, so `opterr` is in effect) prints `vis: unknown option -- <letter>`
+    // first, and `case '?'`/`default` then prints the usage line (`vis.c:135-140`).
+    // The old assertion only checked `contains("Usage: vis [")`, so a missing first
+    // line went unnoticed; it is now pinned by exact equality.
     const USAGE_LINE: &str = "Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
     for (flag, letter) in [("-z", 'z'), ("-1", '1')] {
         let (out, status, err) = run(&[flag], b"a\n");
@@ -300,11 +322,14 @@ fn letters_outside_the_c_optstring_are_refused_with_usage() {
             "flag {flag} 的两行形与 C 不符"
         );
     }
-    // `-d` 是**不带值**的字母：`vis.c:73` 那张串切出来是 `b c d e: F: f h l M m N n o S s t w`，
-    // 冒号挂在 `e` 与 `F` 上，`d` 后面什么都没有也照样是一个完整字母。参照件四形现量
-    // （`tmp/vis-472/measure.log`：`-d`、`-d x`、`-cd`、`-dZ`）**都只有 usage 一行**——
-    // getopt 认它所以 libc 不报缺值行，`case 'd'` 在非 `DEBUG` 构建里被编译掉于是落到
-    // `default:`。本壳此前把 `d` 当带值字母，`-d` 排在末尾时多打了 libc 那句。
+    // `-d` is a letter that takes **no value**: `vis.c:73`'s string splits into
+    // `b c d e: F: f h l M m N n o S s t w`, with the colons on `e` and `F`, so `d`
+    // with nothing after it is still a complete letter. The reference measured four
+    // forms (`tmp/vis-472/measure.log`: `-d`, `-d x`, `-cd`, `-dZ`) and **all of
+    // them print the usage line alone** — getopt accepts the letter, so libc does
+    // not report a missing value, and `case 'd'` is compiled out of a non-`DEBUG`
+    // build and falls to `default:`. This shell used to treat `d` as a valued
+    // letter and printed libc's extra line when `-d` came last.
     for form in [vec!["-d"], vec!["-d", "x"], vec!["-cd"], vec!["-dZ"]] {
         let (out, status, err) = run(&form, b"a\n");
         assert_eq!(out, Vec::<u8>::new(), "{form:?} printed {out:?}");
@@ -508,7 +533,8 @@ fn fold_width_is_read_the_way_atoi_reads_it() {
         "vis: option requires an argument -- F\nUsage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n",
         "缺值那一支是两行（libc 首行 + usage）；旧断言只看 `contains`，少了首行也测不出"
     );
-    // `-e` 的缺值是同一族的另一支，字母跟着换。
+    // A missing value for `-e` is the other member of the same family; only the
+    // letter changes.
     let (out, status, err) = run(&["-e"], b"a");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 1, "stderr was {err:?}");

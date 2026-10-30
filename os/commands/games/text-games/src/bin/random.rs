@@ -1,17 +1,19 @@
 //! Minix-RS random — the doing half over `minix_text_games::lottery`.
 //!
-//! Ground truth: `minix3/games/random/random.c`. `random` 是一条过滤器：把标准输入
-//! 的每一行独立掷一次，掷中的**整行原样写出去**（`selected` 的判据在 `:126`，
-//! 逐字符 `putchar` 的循环在 `:127-137`）。分母来自操作数：零枚取 2、一枚取
-//! `strtod(*argv, &ep)`、两枚以上 usage（`:89-104`）。播种混入时钟与进程号
-//! （`mix_seed` 的决定半语义，`:106-107`）。
+//! Ground truth: `minix3/games/random/random.c`. `random` is a filter: it rolls once
+//! per line of standard input and writes a selected line out whole (the `selected` test
+//! is at `:126`, the per-character `putchar` loop at `:127-137`). The denominator comes
+//! from the operands: none means 2, one means `strtod(*argv, &ep)`, two or more mean
+//! usage (`:89-104`). Seeding mixes in the clock and the process id (`mix_seed`'s
+//! deciding-half semantics, `:106-107`).
 //!
-//! 操作数那一步、过滤器与选项环都已按 C 成形，分母也换成了 C 的那个 `double`：`strtod`
-//! 的十进制腿（前导空白、符号、小数点、指数、`inf`/`nan`）与 `errno == ERANGE` 的两条腿
-//! （溢出、下溢成 0）都接上了。写标准输出那一腿也照了 C：每行写完查一次失手，失手报
-//! `err(2, "stdout")` 退 2（`random.c:131-133`）。仍敞着的是十六进制浮点 `0x1p3` 与
-//! `nan(0x…)` 载荷两形，账在 `rewrite-notes/18-stage-commands/todo.md` 的
-//! `RANDOM-DENOM-LEGS` 条目里。
+//! The operand step, the filter and the option loop all follow C, and the denominator is
+//! C's `double`: the decimal legs of `strtod` (leading whitespace, sign, decimal point,
+//! exponent, `inf`/`nan`) and the two `errno == ERANGE` legs (overflow, underflow to 0)
+//! are wired. The standard-output leg follows C too: after each line it checks for a
+//! failure and reports `err(2, "stdout")` with exit 2 (`random.c:131-133`). Still open
+//! are the hexadecimal float form `0x1p3` and the `nan(0x...)` payload, recorded in
+//! `rewrite-notes/18-stage-commands/todo.md` under `RANDOM-DENOM-LEGS`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
@@ -31,11 +33,12 @@ use minix_text_games::lottery::{
 
 fn run() -> ! {
     let argv: Vec<Vec<u8>> = support::args_bytes();
-    // 程序名折一次（`line_bytes` 与三段形那两条 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`）。
+    // The program name folds once (the two `&str` mouths of `line_bytes` and the
+    // three-part form, registered `ARGV-BYTE-PATH-IN-LIBS`).
     let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
-    // C 的 `argc -= optind; switch (argc)`（`random.c:86-104`）。本支的选项环还没接上，
-    // 所以操作数就是 `argv[1..]`；判完个数才轮到读输入。
-    // 环先走，操作数才是剩下的那些（C 的 `argc -= optind`）
+    // C's `argc -= optind; switch (argc)` (`random.c:86-104`). The option loop runs
+    // first and the operands are what remains (C's `argc -= optind`); only after the
+    // count is judged does reading the input begin.
     let tokens: Vec<&[u8]> = argv[1..].iter().map(Vec::as_slice).collect();
     let (exit_status, operands) = match scan_ring(&tokens) {
         Ring::Done {
@@ -44,10 +47,12 @@ fn run() -> ! {
             ..
         } => (exit_status, &tokens[operands_at..]),
         Ring::Unknown(letter) => {
-            // libc 那一行在前、`usage()` 那一行在后，两句都缀不缀名字各不相同：
-            // 第一行走 `getprogname()`，第二行的 `random` 写死在串里。字母位走
-            // `unknown_option_line` 的字节出口：`getopt.c:79` 的 `optopt = *place++`
-            // 一次进一个字节，把 `c3` 当字符装进 `String` 就会多带一个 `83`。
+            // The libc line comes first and the `usage()` line after; the two differ in
+            // whether they carry a name: the first uses `getprogname()`, while the
+            // `random` in the second is hard-coded in the string. The letter goes through
+            // `unknown_option_line`'s byte exit: `optopt = *place++` at `getopt.c:79`
+            // takes one byte at a time, and holding `c3` as a character in a `String`
+            // would drag a second byte `83` along.
             support::warn(&unknown_option_line(&prog, letter));
             support::warn(USAGE.as_bytes());
             support::terminate(1);
@@ -58,19 +63,21 @@ fn run() -> ! {
         OperandLeg::NoOperandDefault => NO_OPERAND_DENOMINATOR,
         OperandLeg::Accepted(value) => value,
         OperandLeg::TooMany => {
-            // `usage()` 那一行不带程序名前缀，`random` 是写死在串里的（`random.c:143-147`）
+            // The `usage()` line carries no program-name prefix; `random` is hard-coded
+            // in the string (`random.c:143-147`)
             support::warn(USAGE.as_bytes());
             support::terminate(1);
         }
         OperandLeg::NotValid => {
-            // `errx(1, "denominator is not valid.")`（`:98-99`）：前缀跟着 `argv[0]`，
-            // 但操作数不在句子里——`errx` 没有 `%s` 位
+            // `errx(1, "denominator is not valid.")` (`:98-99`): the prefix follows
+            // `argv[0]`, but the operand is not in the sentence — `errx` has no `%s` slot
             support::warn(format!("{}: {NOT_VALID_SENTENCE}\n", prog).as_bytes());
             support::terminate(1);
         }
         OperandLeg::OutOfRange => {
-            // `err(1, "%s", *argv)`（`:96-97`）：三段形，位上是操作数（**原字节**），
-            // 尾巴是号对应的句子。`err_line` 的标签口收 `&str`，这里自己拼。
+            // `err(1, "%s", *argv)` (`:96-97`): the three-part form, with the operand
+            // (raw bytes) in the slot and the sentence for the number at the end.
+            // `err_line`'s label mouth takes `&str`, so the line is assembled here.
             let mut line: Vec<u8> = prog.as_bytes().to_vec();
             line.extend_from_slice(b": ");
             line.extend_from_slice(operands[0]);
@@ -93,8 +100,9 @@ fn run() -> ! {
     let mut state = mix_seed(micros / 1_000_000, (micros % 1_000_000) as u32, pid);
 
     if exit_status {
-        // C 的 `if (random_exit) return ((denom * random()) / RANDOM_MAX);`（`:109-111`）：
-        // 这一支在**读标准输入之前**就返回，所以不打任何东西，退码就是抽到的那个数
+        // C's `if (random_exit) return ((denom * random()) / RANDOM_MAX);`
+        // (`:109-111`): this branch returns before reading standard input, so it prints
+        // nothing and the exit code is the number drawn
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
@@ -103,26 +111,32 @@ fn run() -> ! {
 
     let (bytes, read_failure) = support::read_stdin_error();
     if let Some(code) = read_failure {
-        // `ferror(stdin)` 那一路是 `err(2, "stdin")`（`random.c:135-136`）：三段形，位上
-        // 是 `stdin` 这个词而不是档名（C 的 `ifd` 初值就是 0，标准输入与命名档走同一条
-        // `read()` 腿），退码是 2。薄壳这里原来打的是一句自创的 `random: read error` 退 1
+        // The `ferror(stdin)` path is `err(2, "stdin")` (`random.c:135-136`): the
+        // three-part form, with the word `stdin` in the slot rather than a file name (C's
+        // `ifd` starts at 0, and standard input and named files share the same `read()`
+        // leg), and the exit code is 2. An earlier version printed an invented
+        // `random: read error` and exited 1.
         support::warn_line(&prog, "stdin", code);
         support::terminate(2);
     }
-    // C 是一趟过流（`random.c:126-137`）：掷中就把这一行整行写出去，下一行另掷一次。
-    // 一行都没掷中不是错误——环走完就 `exit(0)`，参照件那一形是空输出、退 0
+    // C makes one pass over the stream (`random.c:126-137`): a selected line is written
+    // out whole, and the next line gets a new roll. Selecting no line is not an error —
+    // the loop finishes into `exit(0)`, and C outputs nothing and exits 0 for that shape.
     let text = String::from_utf8_lossy(&bytes).into_owned();
     for line in text.lines() {
-        // LCG（Numerical Recipes 常数），取模前先掷高位。C 掷的是 libc 的 `random()`，
-        // 位序列不复现（这条承载差登记在本支的账上），判据 `1/denom` 照 C
+        // LCG with the Numerical Recipes constants, taking the high bits before the
+        // modulo. C rolls libc's `random()`, whose bit sequence is not reproduced (a
+        // declared carrier difference for this branch); the `1/denom` test follows C.
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         let draw = (state >> 33) & 0x7fff_ffff;
         if line_selected(denominator, draw) {
-            // C 在每一行写完之后查一次 `ferror(stdout)`，失手走 `err(2, "stdout")`
-            //（`random.c:131-133`）：三段形的位上是 `stdout` 这个词而不是档名，退码是 2。
-            // 写缝交回号（`support::emit_error`），句子与退码由这一支自己定
+            // C checks `ferror(stdout)` after writing each line and reports
+            // `err(2, "stdout")` on failure (`random.c:131-133`): the three-part form
+            // carries the word `stdout` in the slot rather than a file name, and the exit
+            // code is 2. The write seam hands back the number (`support::emit_error`),
+            // and this branch supplies the sentence and the exit code.
             if let Some(code) = support::emit_error(format!("{line}\n").as_bytes()) {
                 support::warn_line(&prog, "stdout", code);
                 support::terminate(2);

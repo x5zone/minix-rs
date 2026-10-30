@@ -36,16 +36,18 @@ pub const STDOUT: Fd = 1;
 /// Terminates the process with an exit status (see the module header).
 /// Program arguments without `argv[0]` conventions applied — index 0 is
 /// the program name, exactly as C's `argv`.
-/// 字节形出口（A2 参数缝半）：C 从头到尾把 `argv` 当字节数组，`getopt` 的字母取自
-/// 字节步进（`minix3/lib/libc/stdlib/getopt.c:optopt = *place++`），所以凡是要把选项字母
-/// 或操作数**按原字节**交回去的腿都不能走 [`args`]——那里的
-/// `String::from_utf8_lossy` 会把一枚裸 `ff` 折成三字节 `ef bf bd`。
+/// The byte-form exit of the argument seam: C treats `argv` as a byte array from
+/// start to finish, and `getopt` takes its option letters from byte stepping
+/// (`minix3/lib/libc/stdlib/getopt.c:optopt = *place++`), so every leg that hands an
+/// option letter or an operand back as the original bytes must not go through [`args`]
+/// — the `String::from_utf8_lossy` there folds a bare `ff` into the three bytes
+/// `ef bf bd`.
 #[cfg(all(not(test), target_os = "none"))]
 pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
     minix_rt::crt0::args().map(<[u8]>::to_vec).collect()
 }
 
-/// Hosted twin of [`args_bytes`]：`args_os()` 交回的正是同一串原始字节。
+/// Hosted twin of [`args_bytes`]: `args_os()` hands back exactly the same raw bytes.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
     use std::os::unix::ffi::OsStrExt as _;
@@ -54,9 +56,10 @@ pub fn args_bytes() -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
         .collect()
 }
 
-/// [`prog_name`] 的字节形：`argv[0]` 按原字节交回，且取的是**最后一段斜杠之后**的那串——
-/// 与 [`prog_name`] 交给 `minix_sys::prog_name` 的 basename 规则同形（报文里的程序名不该带
-/// 调用者给的路径前缀）。
+/// The byte form of [`prog_name`]: `argv[0]` comes back as its raw bytes, cut to the
+/// segment after the last slash — the same basename rule [`prog_name`] hands to
+/// `minix_sys::prog_name` (a message's program name should not carry the path prefix
+/// the caller supplied).
 pub fn prog_name_bytes(argv: &[alloc::vec::Vec<u8>]) -> &[u8] {
     let raw = argv.first().map_or(&[][..], |name| name.as_slice());
     match raw.iter().rposition(|&byte| byte == b'/') {
@@ -72,9 +75,11 @@ pub fn prog_name_bytes(argv: &[alloc::vec::Vec<u8>]) -> &[u8] {
 #[cfg(any(test, not(target_os = "none")))]
 pub fn warn(bytes: &[u8]) {
     use std::io::Write as _;
-    //[SD19-gate] hosted warn 通道与 C `fputs(msg, stderr)` 无检查同构：`write_all` 可 EPIPE，
-    // 主路径已选 “输出提示” 而非 “报提示失败”，失败不回滚主语义。与 `os/libs/minix-sys/src/lib.rs`
-    // 同族的“不返回语义”处理一致。
+    //[SD19-gate] the hosted warn channel is isomorphic to C's unchecked
+    // `fputs(msg, stderr)`: `write_all` can hit EPIPE, and the main path has chosen
+    // "emit the notice" over "report a failed notice" — a failure does not roll back
+    // the main semantics. This matches the no-return-semantics handling shared by
+    // `os/libs/minix-sys/src/lib.rs`.
     #[allow(clippy::let_underscore_must_use)]
     let _ = std::io::stderr().write_all(bytes);
 }
@@ -278,8 +283,9 @@ pub fn utoa_u64(mut value: u64, out: &mut [u8]) -> usize {
 /// Splits collected input into lines, dropping the trailing newline of
 /// every line and the final empty piece after a terminating newline (the
 /// comparison shape C `uniq` and `cut` work in).
-/// 行腿住在库侧：`minix_textfilter::window::lines_of` 交回的每一行都带着「输入里有没有
-/// 那枚换行」，壳侧只从这一个入口拿，不在五支壳里各表一遍末行判据。
+/// The line leg lives in the library: every line `minix_textfilter::window::lines_of`
+/// hands back also says whether the input had that newline, and the shell side takes it
+/// from this one entry instead of restating the last-line test in each shell.
 pub fn lines_of(input: &[u8]) -> Vec<minix_textfilter::window::Line<'_>> {
     minix_textfilter::window::lines_of(input)
 }
@@ -290,9 +296,11 @@ pub fn lines_of(input: &[u8]) -> Vec<minix_textfilter::window::Line<'_>> {
 /// loop); the target build walks the same open/read/close ladder through
 /// the `minix_sys` transport.
 ///
-/// 错误位带的是**那个号**（不是单位）：C 的这些命令的报错腿是 `err(1, "%s", *argv)`
-/// （如 `join.c:244`、`:249`），印的就是它，擦成单位只剩「出错了」三个字。宿主侧的号
-/// 取 `raw_os_error()`，没有它时退到 `EIO`（与 `stdio-games` 那条读缝双生面同一口径）。
+/// The error slot carries the number (not unit): these commands' C error legs are
+/// `err(1, "%s", *argv)` (e.g. `join.c:244`, `:249`), printing exactly that number;
+/// erasing it to unit leaves only "something failed". The hosted side takes the number
+/// from `raw_os_error()`, falling back to `EIO` when there is none (the same rule as
+/// the read-seam twin in `stdio-games`).
 #[cfg(any(test, not(target_os = "none")))]
 pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, minix_sys::Errno> {
     std::fs::read(path).map_err(|e| {
@@ -319,12 +327,15 @@ pub fn read_file(path: &str) -> Result<alloc::vec::Vec<u8>, minix_sys::Errno> {
     Ok(out)
 }
 
-/// C 的 `time(2)`：秒粒度的墙钟。`cksum` 的 `-t` 那一腿用它算 `Time = %ld seconds` 与
-/// `Speed = %lld bytes/second` 两行（`minix3/usr.bin/cksum/md5.c:93`、`:107-113`）。
-/// 宿主侧走 `std::time`，真机侧走 `minix_sys::gettimeofday` 的秒位——与 `read_file` 那对
-/// cfg 双生面同一口径：判据是同一条「宿主门要能跑、真机门要能取到号」。
-/// 取不到号时交回 0 而不是 `-1`：C 的 `time()` 失败交回 `(time_t)-1` 而 `cksum.c` 从不查它，
-/// 这一腿印的是诊断性数字，不值得为它加一条错腿；`0` 与 `-1` 的差别只在失败时的读数上。
+/// C's `time(2)`: wall-clock seconds. The `cksum -t` leg uses it to compute the
+/// `Time = %ld seconds` and `Speed = %lld bytes/second` lines
+/// (`minix3/usr.bin/cksum/md5.c:93`, `:107-113`). The hosted side goes through
+/// `std::time`, the target side through the seconds field of
+/// `minix_sys::gettimeofday` — the same rule as the `read_file` cfg twins: the host
+/// gate must run and the target gate must obtain a number.
+/// It returns 0 rather than `-1` when no number is available: C's `time()` fails with
+/// `(time_t)-1` and `cksum.c` never checks it; this leg prints a diagnostic number, not
+/// worth an extra error leg, and `0` differs from `-1` only in the reading on failure.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn wall_seconds() -> i64 {
     std::time::SystemTime::now()
@@ -337,14 +348,19 @@ pub fn wall_seconds() -> i64 {
     minix_sys::gettimeofday().map_or(0, |(seconds, _)| seconds)
 }
 
-/// C 的 `warn(3)`/`err(3)` 那一行：`prog: label: <句子>` 加一个换行，写完不退
-/// （`vwarnc.c` 不退，退不退由调用者定）。形状与句子都住在 `minix-types` 的 `err_line`
-/// 那一份权威里（本层经 `minix_sys::err_line` 拿，与不缀程序名的 `perror_line` 并列）。
+/// C's `warn(3)`/`err(3)` line: `prog: label: <sentence>` plus a newline, without
+/// exiting (`vwarnc.c` does not exit; whether to exit is the caller's decision). Both
+/// the shape and the sentence live in the one authority, `minix-types`'s `err_line`
+/// (this layer reaches it through `minix_sys::err_line`, beside the `perror_line` that
+/// adds no program name).
 pub fn warn_line(prog: &str, label: &str, code: minix_sys::Errno) {
-    // C 的 `vwarnc` 直接用 `vfprintf(stderr, fmt, ap)` 打调用者的串，长度不受一行栈缓冲
-    // 限制（`minix3/lib/libc/gen/vwarnc.c:62`；`perror.c:67` 也一样把调用者的串整个打出去，
-    // 只有句子走 `strerror_r` 的定长表）。权威交回的是「本该写多少字节」——缓冲装不下也照数
-    // ——所以这里先量一次、再按那个数渲染，超长操作数不会被截断。
+    // C's `vwarnc` prints the caller's string with `vfprintf(stderr, fmt, ap)`, so the
+    // length is not bounded by a one-line stack buffer
+    // (`minix3/lib/libc/gen/vwarnc.c:62`; `perror.c:67` likewise prints the caller's
+    // whole string, and only the sentence goes through `strerror_r`'s fixed table). The
+    // authority returns how many bytes should be written, counting even what a buffer
+    // cannot hold, so this measures once and then renders against that count; an
+    // over-long operand is never truncated.
     let mut sizing: [u8; 0] = [];
     let need = minix_sys::err_line(prog, label, code, &mut sizing);
     let mut line = alloc::vec![0u8; need];
@@ -372,10 +388,11 @@ pub fn write_file(path: &str, bytes: &[u8]) -> Result<(), ()> {
     done.map(|_| ()).map_err(|_| ())
 }
 
-/// 把宿主 `io::Error` 的号取成 C 的 `errno`。C 的这些命令的开档腿印的就是那个号
-/// （`err(1, "%s", name)`/`warn("%s", name)` 走 `vwarn`，不是 `warnx`），没有号就只剩
-/// 「出错了」三个字。拿不到 `raw_os_error()` 时退到 `EIO`（与 `read_file`、`stdio-games`
-/// 那条读缝同一口径）。
+/// Takes the number out of a hosted `io::Error` as C's `errno`. These commands' C open
+/// legs print exactly that number (`err(1, "%s", name)`/`warn("%s", name)` go through
+/// `vwarn`, not `warnx`); without it only "something failed" is left. When
+/// `raw_os_error()` is unavailable this falls back to `EIO` (the same rule as
+/// `read_file` and the `stdio-games` read seam).
 #[cfg(any(test, not(target_os = "none")))]
 pub fn errno_of(error: &std::io::Error) -> minix_sys::Errno {
     minix_sys::Errno::from_i32(
@@ -403,8 +420,9 @@ pub struct WriteSink {
 /// and `O_TRUNC` is `0x400` (`:100`); the mode `0666` is what `fopen` hands to
 /// `open(2)`, so the process umask still applies.
 ///
-/// 错误腿带的是那个号（不是单位）：`uniq` 的输出腿是 `file(argv[1], "w")` →
-/// `err(1, "%s", name)`（`uniq.c:216-221`），报的正是它。
+/// The error leg carries that number (not unit): `uniq`'s output leg is
+/// `file(argv[1], "w")` -> `err(1, "%s", name)` (`uniq.c:216-221`), and that number is
+/// exactly what it reports.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn create_sink(path: &str) -> Result<WriteSink, minix_sys::Errno> {
     std::fs::File::create(path)
@@ -420,13 +438,17 @@ pub fn create_sink(path: &str) -> Result<WriteSink, minix_sys::Errno> {
 
 #[cfg(any(test, not(target_os = "none")))]
 impl WriteSink {
-    /// 写进去的字节在 drop 时释放句柄，与 C 那边 stdio 在退出时冲刷、不回报一致。
+    /// The handle is released at drop, matching C's stdio, which flushes at exit
+    /// without reporting.
     ///
-    /// 错误腿交回的是**平台那个号**：C 的 `split.c:204`、`:216`、`:225` 三处都是
-    /// `bigwrite()` 对不上数就 `err(1, "write")`，`err` 后缀打的正是 `errno`——
-    /// 「盘写满」与「真的一次 I/O 错」是两句话，压成一个 `EIO` 就只剩「出错了」。
-    /// 往同一枚已打开的输出文件里再写一段：`split -b` 流式化之后，一次读到的字节
-    /// 属于当前分片的哪一截就写哪一截（C 的 `bigwrite(ofd, Cs, bcnt)` 就是这个形状）。
+    /// The error leg hands back the platform's number: C's `split.c:204`, `:216` and
+    /// `:225` all make `bigwrite()` call `err(1, "write")` when the count comes up
+    /// short, and `err` appends exactly `errno` — "disk full" and "a real I/O error"
+    /// are two different sentences, and collapsing them into `EIO` leaves only
+    /// "something failed".
+    /// Writes another piece into the same already-open output file: after `split -b`
+    /// became streaming, whichever part of the current piece a read filled is what gets
+    /// written (C's `bigwrite(ofd, Cs, bcnt)` has this shape).
     pub fn append(&mut self, bytes: &[u8]) -> Result<(), SinkFailure> {
         use std::io::Write as _;
         self.0
@@ -434,17 +456,20 @@ impl WriteSink {
             .map_err(|failure| SinkFailure::Write(errno_of(&failure)))
     }
 
-    /// 写完收尾。宿主这条腿看不见 `close` 的失败（`std::fs::File` 由 drop 关闭且不交回号），
-    /// 与 `finish` 同一条已登记的差异（`SPLIT-CLOSE-ERRLEG`）。
+    /// Finishes the write. The hosted leg cannot see a `close` failure (`std::fs::File`
+    /// is closed by drop and hands back no number), the same declared difference
+    /// `finish` carries: `SPLIT-CLOSE-ERRLEG`.
     pub fn seal(self) -> Result<(), SinkFailure> {
         Ok(())
     }
 
     pub fn finish(mut self, bytes: &[u8]) -> Result<(), SinkFailure> {
         use std::io::Write as _;
-        // 宿主这条腿看不见 `close` 的失败：`std::fs::File` 由 drop 关闭且不交回任何号，
-        // 而 C 是在开下一枚分片之前 `close(ofd)` 并 `err(1, "%s", fname)`
-        // （`minix3/usr.bin/split/split.c:319-322`）。真机那条腿按 `close_outcome` 报。
+        // The hosted leg cannot see a `close` failure: `std::fs::File` is closed by drop
+        // and hands back no number, whereas C does `close(ofd)` before opening the next
+        // piece and calls `err(1, "%s", fname)`
+        // (`minix3/usr.bin/split/split.c:319-322`). The target leg reports through
+        // `close_outcome`.
         self.0
             .write_all(bytes)
             .map_err(|failure| SinkFailure::Write(errno_of(&failure)))
@@ -453,17 +478,21 @@ impl WriteSink {
 
 #[cfg(all(not(test), target_os = "none"))]
 impl WriteSink {
-    /// 一篇写不完就接着写，只有 `write` 交回 0 才算真没进展——这是 C 的
-    /// `bigwrite()`（`minix3/usr.bin/split/split.c:337-351`）的循环形状。错误腿带
-    /// 平台号，因为调用方要的就是 `err(1, "write")` 那一句。描述符在返回前释放；
-    /// `close` 的失败本层不报（`SPLIT-CLOSE-ERRLEG` 已登记）。
-    /// 往同一枚已打开的输出文件里再写一段，形状照 C 的 `bigwrite()`。
+    /// A short write continues, and only a `write` returning 0 counts as no progress —
+    /// the loop shape of C's `bigwrite()`
+    /// (`minix3/usr.bin/split/split.c:337-351`). The error leg carries the platform
+    /// number, because the caller wants exactly the `err(1, "write")` sentence. The
+    /// descriptor is released before returning; a `close` failure is not reported at
+    /// this layer, a declared difference registered as `SPLIT-CLOSE-ERRLEG`.
+    /// Writes another piece into the same already-open output file, following C's
+    /// `bigwrite()`.
     pub fn append(&mut self, bytes: &[u8]) -> Result<(), SinkFailure> {
         write_loop(self.fd, bytes).map_err(SinkFailure::Write)
     }
 
-    /// 写完收尾并交回 `close` 的号：C 在 `newfile()` 里 `close(ofd) != 0` 就
-    /// `err(1, "%s", fname)`（`split.c:319-322`），此时 `fname` 还是刚写完那一枚。
+    /// Finishes the write and hands back `close`'s number: in C's `newfile()`,
+    /// `close(ofd) != 0` triggers `err(1, "%s", fname)` (`split.c:319-322`), and at that
+    /// point `fname` still names the piece just finished.
     pub fn seal(self) -> Result<(), SinkFailure> {
         minix_sys::close(self.fd)
             .map(|_| ())
@@ -479,18 +508,21 @@ impl WriteSink {
     }
 }
 
-/// 一枚输出文件的两种失败：写不进去，与写完关掉时失败。标签不同是 C 定的——
-/// `bigwrite()` 对不上数是 `err(1, "write")`（`minix3/usr.bin/split/split.c:204`、`:216`、
-/// `:225`），`newfile()` 里 `close(ofd) != 0` 是 `err(1, "%s", fname)`（`:319-322`，此时
-/// 后缀还没往前推进，`fname` 还是**上一枚**分片的名字）。
+/// The two failures of one output file: it cannot be written, and it fails when closed
+/// after writing. C sets the different labels — a short `bigwrite()` is
+/// `err(1, "write")` (`minix3/usr.bin/split/split.c:204`, `:216`, `:225`), while
+/// `close(ofd) != 0` in `newfile()` is `err(1, "%s", fname)` (`:319-322`, where the
+/// suffix has not advanced yet and `fname` still names the previous piece).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SinkFailure {
     Write(minix_sys::Errno),
     Close(minix_sys::Errno),
 }
 
-/// 两腿的取舍写成一张明表，是因为它得能被门钉住：宿主看不见 `close` 的失败，真机才两条都有。
-/// 规则是「写失败优先」——C 在 `bigwrite` 失手处当场 `err` 退出，根本走不到下一次 `close`。
+/// The choice between the two legs is spelled out as an explicit table because a gate
+/// has to pin it: the host cannot see a `close` failure, the target has both. The rule
+/// is that a write failure wins — C exits through `err` right where `bigwrite` comes up
+/// short and never reaches the next `close`.
 pub fn close_outcome(
     write: Result<(), SinkFailure>,
     close: Result<(), SinkFailure>,
@@ -502,8 +534,8 @@ pub fn close_outcome(
     }
 }
 
-/// 把 `bytes` 写完为止：`Ok(0)` 意味着描述符再也吃不进字节，此时没有平台号可交回，
-/// 才落到 `EIO`。
+/// Writes `bytes` to the end: `Ok(0)` means the descriptor takes no more bytes, which
+/// leaves no platform number to hand back, so `EIO` is the only answer left.
 fn write_loop(fd: minix_sys::Fd, mut left: &[u8]) -> Result<(), minix_sys::Errno> {
     while !left.is_empty() {
         match minix_sys::write(fd, left) {
@@ -515,21 +547,25 @@ fn write_loop(fd: minix_sys::Fd, mut left: &[u8]) -> Result<(), minix_sys::Errno
     Ok(())
 }
 
-/// 一枚输入操作数的两条失败腿。C 把它们打在两处：`file(argv[0], "r")` 里 `fopen`
-/// 失手是 `err(1, "%s", *argv)`（`minix3/usr.bin/split/split.c:136-138`），读循环里
-/// `read` 失手是 `err(1, "read")`（`:185-190`、`:252-257`）——同一枚操作数、两句不同
-/// 的话。合成一条就把「档不存在」与「开得了但读不动」混成一谈，而后者在宿主上恰好
-/// 可测：一枚目录开得动、读不动（`EISDIR`）。
+/// The two failure legs of one input operand. C prints them in two places: a failed
+/// `fopen` in `file(argv[0], "r")` is `err(1, "%s", *argv)`
+/// (`minix3/usr.bin/split/split.c:136-138`), while a failed `read` in the read loop is
+/// `err(1, "read")` (`:185-190`, `:252-257`) — one operand, two different sentences.
+/// Merging them into one would confuse "the file does not exist" with "it opens but
+/// cannot be read", and the latter is exactly testable on the host: a directory opens
+/// but refuses to be read (`EISDIR`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InputFailure {
     Open(minix_sys::Errno),
     Read(minix_sys::Errno),
 }
 
-/// 读一枚操作数：交回**到的字节**与**让它停下来的那一臂**（若有）。
+/// Reads one operand: hands back the bytes that arrived and the leg that stopped it
+/// (if any).
 ///
-/// 到的字节要一起交回，因为 C 是边读边切边写——`read` 失手时前面的分片已经在盘上了，
-/// 调用方于是先把那些分片切完写完，再补一句 `err(1, "read")` 并退 1。
+/// The bytes that arrived have to come back too, because C reads, splits and writes as
+/// it goes — when `read` fails the earlier pieces are already on disk, so the caller
+/// finishes splitting and writing them, then adds `err(1, "read")` and exits 1.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn read_operand(path: &str) -> (Vec<u8>, Option<InputFailure>) {
     use std::io::Read as _;
@@ -546,16 +582,20 @@ pub fn read_operand(path: &str) -> (Vec<u8>, Option<InputFailure>) {
     }
 }
 
-/// 输入自带的字节数：`-n` 那一支在读之前先问内核要这个数。
+/// The byte count the input carries: the `-n` branch asks the kernel for it before
+/// reading.
 ///
-/// C 的形状是 `fstat(ifd, &sb)` 失手即 `err(1, "stat")`，随后 `sb.st_size` 既判块数上限
-/// 又算块宽（`minix3/usr.bin/split/split.c:293-300`）。管道与字符设备的 `st_size` 是 0，
-/// 所以「切 3 片」在那里当场报错——不是读不到数据，是**问不到长度**。`path` 为 `None`
-/// 或 `"-"` 时问的是标准输入。
+/// C's shape is `fstat(ifd, &sb)`, failing into `err(1, "stat")`, after which
+/// `sb.st_size` both bounds the piece count and fixes the piece width
+/// (`minix3/usr.bin/split/split.c:293-300`). Pipes and character devices report
+/// `st_size` 0, so "split into 3 pieces" fails right there — not because no data can be
+/// read, but because no length can be asked for. A `path` of `None` or `"-"` asks about
+/// standard input.
 ///
-/// 宿主这条腿按路径问（标准输入走 `/dev/stdin`，它与 C 的 `fstat(0)` 同数：命名片给长度、
-/// 管道与空设备给 0），因为 std 不给非 root 的进程一个不带 `unsafe` 的「对描述符取状态」通道。
-/// 真机那条腿就是 `fstat`/`stat` 本身。同一件事，两种承载。
+/// The hosted leg asks by path (standard input through `/dev/stdin`, which reports the
+/// same numbers as C's `fstat(0)`: a length for a named piece, 0 for pipes and the null
+/// device), because std offers a non-root process no way to take descriptor status
+/// without `unsafe`. The target leg is `fstat`/`stat` itself. One thing, two carriers.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn input_size(path: Option<&str>) -> Result<u64, minix_sys::Errno> {
     std::fs::metadata(path.unwrap_or("/dev/stdin"))
@@ -563,12 +603,14 @@ pub fn input_size(path: Option<&str>) -> Result<u64, minix_sys::Errno> {
         .map_err(|failure| errno_of(&failure))
 }
 
-/// 真机那条腿：标准输入用 `fstat(0)`，命名档用 `stat(path)`——都是 C 在那个位置做的事
-/// （`split.c:293` 拿的是已经打开的那个描述符，命名档的描述符就是 `split.c:137` 开的）。
+/// The target leg: `fstat(0)` for standard input, `stat(path)` for a named file — both
+/// what C does at that point (`split.c:293` uses the descriptor already open, and a
+/// named file's descriptor is the one opened at `split.c:137`).
 #[cfg(all(not(test), target_os = "none"))]
 pub fn input_size(path: Option<&str>) -> Result<u64, minix_sys::Errno> {
-    // `Stat` 的对齐填充位是私有的，crate 外只能按本仓既有的零值形状起身
-    // （同 `commands/bin/fileops/src/bin/test.rs:71`）。
+    // `Stat`'s alignment padding is private, so from outside the crate the only way to
+    // start one is the repository's existing all-zero shape (as in
+    // `commands/bin/fileops/src/bin/test.rs:71`).
     let mut status: minix_sys::Stat = unsafe { core::mem::zeroed() };
     let outcome = match path {
         None | Some("-") => minix_sys::fstat(STDIN, &mut status),
@@ -596,14 +638,18 @@ pub fn read_operand(path: &str) -> (Vec<u8>, Option<InputFailure>) {
     (input, outcome.err())
 }
 
-/// 分块读的双生缝：每次最多读 `chunk_len` 字节，读到的原样交给 `take`，读到尽头或读失手就停。
+/// The twin seam for chunked reading: at most `chunk_len` bytes per read, handed to
+/// `take` unchanged, stopping at end of input or on a read failure.
 ///
-/// 这是 `split -b` 那一支要的读法：C 的 `split1` 一圈一圈 `read(ifd, bfr, MAXBSIZE)`，
-/// 跨读留下的只有「当前分片已写多少字节」这一个计数器，不留数据
-/// （`minix3/usr.bin/split/split.c:175-236`）。交回 `Some(InputFailure)` 时，
-/// 已经交出去的那几块**不收回**——C 是边读边写，读失手之前落盘的分片照旧在盘上。
-/// 开档失手与读失手分两臂交回，因为 C 的句式不同：前者 `err(1, "%s", *argv)` 报操作数，
-/// 后者 `err(1, "read")` 报这个词（`:137-138` 与 `:188-190`）。
+/// This is the reading shape the `split -b` branch needs: C's `split1` calls
+/// `read(ifd, bfr, MAXBSIZE)` in a loop, and the only state carried across reads is the
+/// counter of how many bytes of the current piece have been written — no data
+/// (`minix3/usr.bin/split/split.c:175-236`). When it returns `Some(InputFailure)` the
+/// chunks already handed out are not taken back — C reads and writes as it goes, so
+/// pieces that reached disk before the failure stay there.
+/// A failed open and a failed read come back on two separate arms because C's sentences
+/// differ: the former is `err(1, "%s", *argv)` naming the operand, the latter is
+/// `err(1, "read")` naming that word (`:137-138` and `:188-190`).
 #[cfg(any(test, not(target_os = "none")))]
 pub fn stream_input<F>(path: Option<&str>, chunk_len: usize, take: F) -> Option<InputFailure>
 where
@@ -621,13 +667,15 @@ where
         .map(|failure| InputFailure::Read(errno_of(&failure)))
 }
 
-/// `stream_input` 宿主腿的两个读源：标准输入与一枚按名开好的档。它们只差 `Read` 是谁，
-/// 读循环只此一份，这样门能直接喂给 `drive_reads` 而去开真档。
+/// The two read sources of `stream_input`'s hosted leg: standard input and a file opened
+/// by name. They differ only in which `Read` they are, so the read loop exists once and
+/// a gate can feed `drive_reads` without opening a real file.
 ///
-/// 这三件（读源、它的 `Read` 实现、`drive_reads`）都点名 `std`，所以必须与宿主腿同一个
-/// `cfg` 门：本文件是每个 bin 用 `#[path]` 收进去的，裸机形态下 `no_std` 的 bin 一旦看见
-/// 无门的 `std` 就编不过（判例：批次三百五十八抽出这一层时漏了门，三架构 bin 编译门
-/// 自 `2026-10-18` 起红，直到本轮现跑 `cargo build --bins --target x86_64-unknown-none`）。
+/// All three items — the read source, its `Read` implementation and `drive_reads` — name
+/// `std`, so they must carry the same `cfg` gate as the hosted leg: this file is pulled
+/// into every binary through `#[path]`, so in a freestanding build a `no_std` binary
+/// that sees an ungated `std` will not compile (`cargo build --bins --target
+/// x86_64-unknown-none` pins it).
 #[cfg(any(test, not(target_os = "none")))]
 enum HostedInput {
     Stdin(std::io::Stdin),
@@ -644,10 +692,12 @@ impl std::io::Read for HostedInput {
     }
 }
 
-/// 从任意 `Read` 上按 `chunk_len` 一块一块取，交给 `take`；读到尽头就收尾，
-/// 中途失手则**先把已经攒下的那段交出去**再把错误报回去——这条顺序契约正是
-/// C 的 `split1` 边读边写的形状（`minix3/usr.bin/split/split.c:184-204`），
-/// 也是真机上没法造出「读两次成功、第三次失手」的输入时唯一能钉住它的办法。
+/// Takes `chunk_len` bytes at a time from any `Read` and hands them to `take`; end of
+/// input ends the run, and a mid-way failure hands out the part already accumulated
+/// before reporting the error — that ordering contract is exactly C's `split1` reading
+/// and writing as it goes (`minix3/usr.bin/split/split.c:184-204`), and it is the only
+/// way to pin the contract on a target where no input can be built that succeeds twice
+/// and fails on the third read.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn drive_reads<R, F>(reader: &mut R, chunk_len: usize, mut take: F) -> std::io::Result<()>
 where
@@ -682,8 +732,10 @@ where
     Ok(())
 }
 
-/// 真机那条腿走 `minix_sys::read`，其余形状与宿主腿一字同意：交出去的块不收回，
-/// 开档臂与读臂各归各的号。标准输入（含裸 `-`）不 `open` 也不 `close`。
+/// The target leg goes through `minix_sys::read`; everything else matches the hosted
+/// leg: chunks already handed out are not taken back, and the open arm and the read arm
+/// each keep their own number. Standard input (including a bare `-`) is neither opened
+/// nor closed.
 #[cfg(all(not(test), target_os = "none"))]
 pub fn stream_input<F>(path: Option<&str>, chunk_len: usize, mut take: F) -> Option<InputFailure>
 where
@@ -747,7 +799,7 @@ pub struct ReadSource {
 }
 
 /// Opens an input operand read-only (C's `fopen(name, "r")`), without reading it.
-/// 错误腿同 `create_sink`：带的是 `errno`，不是单位。
+/// The error leg matches `create_sink`: it carries `errno`, not unit.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn open_input(path: &str) -> Result<ReadSource, minix_sys::Errno> {
     std::fs::File::open(path)
@@ -757,7 +809,7 @@ pub fn open_input(path: &str) -> Result<ReadSource, minix_sys::Errno> {
 
 #[cfg(all(not(test), target_os = "none"))]
 pub fn open_input(path: &str) -> Result<ReadSource, minix_sys::Errno> {
-    // `O_RDONLY` 是零，就是 `open(path, 0, 0)` 已经传的那组形参。
+    // `O_RDONLY` is zero, which is the argument set `open(path, 0, 0)` already passes.
     minix_sys::open(path, 0, 0).map(|fd| ReadSource { fd })
 }
 
@@ -857,11 +909,13 @@ pub fn probe_path(path: &str) -> Option<(u32, bool)> {
 /// C's `access(outpath, W_OK)` (`sort.c:336-337`), where `W_OK` is `0x02`
 /// (`minix3/sys/sys/unistd.h:168-171`).
 ///
-/// 错误腿带的是**那个号**：C 那一支是 `err(2, "%s", outpath)`，印的就是 `strerror(errno)`。
-/// 真机臂直接拿 `access(2)` 的号；宿主这一臂没有 `access(2)` 的 std 包装，所以用
-/// 「以写方式打开一下」的同义判据（不开 `O_CREAT`/`O_TRUNC`，不动内容也不动元数据，
-/// 失败时 `raw_os_error()` 就是 `EACCES`/`ENOENT` 这些真号）。之前那一版只看
-/// owner-write 位，根本给不出号。
+/// The error leg carries the number: C's branch is `err(2, "%s", outpath)` and prints
+/// exactly `strerror(errno)`. The target arm takes `access(2)`'s number directly; the
+/// hosted arm has no std wrapper for `access(2)`, so it uses the equivalent test of
+/// opening the file for writing (without `O_CREAT`/`O_TRUNC`, touching neither content
+/// nor metadata, so a failure's `raw_os_error()` is a real number such as `EACCES` or
+/// `ENOENT`). Looking only at the owner-write bit, as an earlier version did, cannot
+/// produce a number at all.
 #[cfg(any(test, not(target_os = "none")))]
 pub fn writable(path: &str) -> Result<(), minix_sys::Errno> {
     match std::fs::OpenOptions::new().write(true).open(path) {
@@ -876,8 +930,8 @@ pub fn writable(path: &str) -> Result<(), minix_sys::Errno> {
 }
 
 /// C's `access(outfile, F_OK)` (`sort.c:364-365`): does the name exist at all?
-/// 错腿同样带号，因为那一支是 `err(2, "%s", outfile)`。`F_OK` 是 `0`
-/// （`minix3/sys/sys/unistd.h:168`）。
+/// The error leg carries a number too, because that branch is `err(2, "%s", outfile)`.
+/// `F_OK` is `0` (`minix3/sys/sys/unistd.h:168`).
 #[cfg(any(test, not(target_os = "none")))]
 pub fn exists(path: &str) -> Result<(), minix_sys::Errno> {
     std::fs::metadata(path)
@@ -914,8 +968,8 @@ pub fn create_exclusive(path: &str) -> Result<WriteSink, minix_sys::Errno> {
 /// `lchmod(path, mode)` in C's sense: set the permission bits by path
 /// (`minix3/lib/libc/sys/lchmod.c`; the target has no `lchmod` wrapper, so this
 /// goes through `chmod`, which differs only for a symlink — a name `sort` has just
-/// created for itself). 失败时交回号，因为 C 那支是
-/// `err(2, "cannot chmod %s: output left in %s", outpath, outfile)`（`sort.c:373-374`）。
+/// created for itself). A failure hands back the number, because C's branch is
+/// `err(2, "cannot chmod %s: output left in %s", outpath, outfile)` (`sort.c:373-374`).
 #[cfg(any(test, not(target_os = "none")))]
 pub fn set_mode(path: &str, mode: u32) -> Result<(), minix_sys::Errno> {
     use std::os::unix::fs::PermissionsExt as _;
@@ -929,8 +983,9 @@ pub fn set_mode(path: &str, mode: u32) -> Result<(), minix_sys::Errno> {
 }
 
 /// C's `link(outfile, outpath)`: the second name appears without moving the bytes,
-/// which is why C unlinks the destination first (`sort.c:375-378`). 同样带号：
-/// `err(2, "cannot link %s: output left in %s", outpath, outfile)`（`:379-380`）。
+/// which is why C unlinks the destination first (`sort.c:375-378`). This carries the
+/// number as well: `err(2, "cannot link %s: output left in %s", outpath, outfile)`
+/// (`:379-380`).
 #[cfg(any(test, not(target_os = "none")))]
 pub fn hard_link(from: &str, to: &str) -> Result<(), minix_sys::Errno> {
     std::fs::hard_link(from, to).map_err(|error| errno_of(&error))
@@ -956,9 +1011,11 @@ pub fn remove_path(path: &str) -> Result<(), ()> {
 mod write_leg_tests {
     use super::*;
 
-    /// 这枚门钉的是「号不能被压平」：拿一枚只读句柄包成写腿，宿主的 `write` 当场
-    /// `EBADF`（9 号，Linux 与 Minix 同值——`minix3/sys/include/errno.h` 的
-    /// `EBADF 9`）。若实现把失败折成单位或折成 `EIO`，这里两条断言立刻分家。
+    /// This gate pins that the number must not be flattened: a read-only handle wrapped
+    /// as a write leg makes the hosted `write` fail with `EBADF` (number 9, the same on
+    /// Linux and Minix — `EBADF 9` in `minix3/sys/include/errno.h`). If the
+    /// implementation folded a failure into unit or into `EIO`, the two assertions here
+    /// would immediately disagree.
     #[test]
     fn the_write_leg_keeps_the_platform_number() {
         let dir = std::env::temp_dir().join(format!("bin-support-write-{}", std::process::id()));
@@ -989,8 +1046,9 @@ mod close_outcome_tests {
     use super::SinkFailure::{Close, Write};
     use super::close_outcome;
 
-    /// 写失败赢：C 在 `bigwrite` 失手处当场退出，压根到不了下一次 `close`
-    /// （`minix3/usr.bin/split/split.c:204` 与 `:319-322` 的先后）。
+    /// A write failure wins: C exits right where `bigwrite` comes up short and never
+    /// reaches the next `close` (the order of `minix3/usr.bin/split/split.c:204` and
+    /// `:319-322`).
     #[test]
     fn a_write_failure_outranks_a_close_failure() {
         let write = Err(Write(minix_sys::Errno::from_i32(28)));

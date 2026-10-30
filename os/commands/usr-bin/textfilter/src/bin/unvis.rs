@@ -51,8 +51,9 @@ fn run() -> ! {
         process(&support::read_stdin(), b"<stdin>", &options, &mut out);
     } else {
         for operand in &operands {
-            // 开档口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在这一刻；
-            // 报文里念出去的是原字节。
+            // The open entry wants `&str` (registered under `ARGV-BYTE-PATH-IN-LIBS`),
+            // so the fold happens only at this point; the message still reports the
+            // raw bytes.
             let shown = String::from_utf8_lossy(operand).into_owned();
             match support::read_file(&shown) {
                 Ok(data) => process(&data, operand, &options, &mut out),

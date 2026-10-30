@@ -32,7 +32,7 @@ pub struct TsortArgs<'a> {
     /// `-q`: suppress the "cycle in data" report.
     pub quiet: bool,
     /// The optional file operand (`tsort.c` `switch(argc)`: `0` → stdin, `1` →
-    /// this file, `default` → usage)——按 argv 的原字节交回（A2 参数缝半）。
+    /// this file, `default` → usage), handed back as argv's raw bytes.
     pub file: Option<&'a [u8]>,
 }
 
