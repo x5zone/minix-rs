@@ -3823,3 +3823,18 @@ marker。**新 blocker**：aarch64/riscv 的生产 AP 在 `ap_early_entry` 里
 唤醒后重启 AP 定时器、riscv 远端 `fence.i`）与两架构 AP 进环同批后才能
 撤钳。门读数：kernel mock 850/0/8、minix-arch pin 4/0、aarch64 check
 0 error、`run_all` 39/0/0（`tmp/c2d-runall.log`）。
+
+**C2D-APENTRY 里程碑（aarch64 AP 进调度环）**：码笔 `3c448bb51`、合并
+`1a5e389db`。`ap_early_entry` 加 `AP_TAIL` 注册门：收敛点先快照
+record（logical/hw_id/stack_top），置 AP_ARRIVED，有 tail 则转 kernel
+continuation，否则 wfi 停车。kernel 侧新增 aarch64 `smp_ap_tail`：
+MPIDR→logical 身份表（原 `ap_cpu_id_readback` 恒 0，AP 进环会拿 BSP 的
+per-CPU 状态）、boot_ack、per-CPU stack/VBAR、ptproc、SGI+timer PPI
+使能、本地定时器、`ap_finish_booting`、`scheduler_loop`；`smp_init`
+seed BSP 身份、注册 tail、每核清 AP_ARRIVED、补 `wait_for_aps`，其后
+打印 `nk4c: ap-irq-ready cpu=<logical> sgi=1 timer=1`。
+`test-smp-aps-aarch64.sh` 的 PASS 判据改为 ap-arrived + ap-irq-ready +
+panic=0 + ap-timeout=0。真机全镜像读数：`ap-arrived=1 /
+ap-irq-ready=1 / ap-timeout=0 / panic=0`，走到 rc marker；`run_all`
+39/0/0。riscv AP 仍在 `ap_early_entry` 里 wfi 停车，是 C2D 余项里最大的
+一件；钳制继续兜底。
