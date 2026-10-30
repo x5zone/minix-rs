@@ -3777,3 +3777,19 @@ C1 由 `🔄` 转 `✅（转长期观察）`，C2b 前置解除。串口：
 **39/0/0**（含 `-smp 4` 的 test-smp-aps 与 e5-ds；此前 38/1 的 e5-ds
 取指故障未再现）。C 板 C2b/C5/C13/C15 置 ✅；C19 由绑 C1/C2 改为可执行
 CC-INSTRUMENT 结案批。
+
+**C2C 里程碑（撤钳止损）**：合并 `72208b155`。C2B 段所述「cpu 亲和可
+落到 AP」由本条撤回：撤钳后 SCHED 的 `pick` 会把非系统进程放到非 BSP
+（`os/kernel/src/misc.rs` 的 `processors_count = smp.ncpus()`，
+`ChangeMask::ALL` 下发 cpu），而接收侧未齐——aarch64 的 SGI 0 从未在
+GIC 使能（`os/plat/src/arm64/interrupt.rs` 的 `init_redistributor` 全
+屏蔽，注释所写 IPI bring-up 不存在）；riscv64 `riscv64_swi_arm` 只清
+`sip.SSIP`、丢弃调度 flags；三架构都没有唤醒后清 `cpu_is_idle` + 重启
+AP 本地定时器的臂（`restart_local_timer()` 为 no-op，`stop_local_timer`
+已 mask）；riscv64 远端 `fence.i` 未落（`os/arch/src/riscv64/cache_sync.rs`
+明文前置）。恢复 `clamp_cpu_to_bsp` 作止损，唤醒生产者保留但惰性；11 篇
+§3.3/§3.4/§5.3/§5.4 回写为「生产者已在、接收侧未齐、钳制兜底」。门读数：
+kernel mock **850/0/8**（+1 clamp 单测）、minix-arch **286/0**（含
+riscv64_cache_sync_pin 3/0）、三架构 `minix-kernel` check 0 error。C 板
+C2b/C5/C13 转 ⏸，新增 C2C 行；接收侧四件同批落地并经三架构真机门后才可
+再撤钳。
