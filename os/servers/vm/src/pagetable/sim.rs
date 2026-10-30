@@ -1,4 +1,4 @@
-//! Software-simulated page table for host unit tests (V11/T21, V11-P2-1).
+//! Software-simulated page table for host unit tests.
 //!
 //! Full `Paging` trait implementation backed by a `BTreeMap` — the same
 //! idea as Redox rmm's `EmulateArch` ("testing memory management with
@@ -26,11 +26,14 @@ pub struct SimPaging {
     root: u64,
     /// vaddr → (paddr, flags), keyed by page base.
     entries: BTreeMap<u64, (u64, PageFlags)>,
-    /// TLB 刷除次数——由 `flush_tlb()` / `flush_tlb_addr()` 累加（只记录，
-    /// 不强制任何硬件效果）。`Cell` 是因为 trait 方法收 `&self`（硬件 MMU
-    /// 操作同样不需要 `&mut`）。本字段也无读方：保留是因为它是桩体唯一
-    /// 可观察的硬件动作计数，接入方（V11/T21 以 `SimPaging` 替真页表的
-    /// 用例）一旦断言刷除次数即直接消费它。
+    /// TLB flush count — incremented by `flush_tlb()` and
+    /// `flush_tlb_addr()` (it only records, it forces no hardware
+    /// effect). `Cell` because the trait methods take `&self` (hardware
+    /// MMU operations likewise need no `&mut`). Nothing reads this field
+    /// yet: it stays because it is the stub's only observable counter of
+    /// hardware actions, and a consumer (a test that swaps `SimPaging`
+    /// in for the real page table) will consume it directly once it
+    /// asserts on the flush count.
     pub flush_count: core::cell::Cell<u32>,
 }
 
@@ -56,6 +59,24 @@ impl SimPaging {
 
 impl Paging for SimPaging {
     const PAGE_SIZE: usize = 4096;
+
+    fn phys_addr_limit() -> Result<u64, PageTableError> {
+        Ok(1u64 << 52)
+    }
+
+    fn validate_virtual_range(base: u64, len: u64) -> Result<(), PageTableError> {
+        let end = base
+            .checked_add(len)
+            .ok_or(PageTableError::InvalidAddress)?;
+        let canonical = |va: u64| {
+            let top = va >> 47;
+            top == 0 || top == 0x1_FFFF
+        };
+        if !canonical(base) || (len > 0 && !canonical(end - 1)) {
+            return Err(PageTableError::InvalidAddress);
+        }
+        Ok(())
+    }
 
     fn new() -> Result<Self, PageTableError> {
         Ok(Self::new())
