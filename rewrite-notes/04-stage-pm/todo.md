@@ -1,6 +1,7 @@
 # 04-stage-pm Rust 实现架构级 Review TODO
 
 > **台账状态摘要**（对照代码核实于 `2026-10-08`，快照 `9f752834c`）：未闭合 `open` 3。最关键：核心转储的路径契约、调度服务缺席导致的假端点、调用号双址。
+> **`2026-10-31` 逐项现查（A 板 A16 对账，claim/A16-OPS-qoder）——三条都已被后来的批次消解，本行按 by-audit 闭合**：① **核心转储路径**（D-16）不再是「指针为 0」——`exit.rs` 的 `VfsCall::DumpCore` 改走**按值名字**协议（`identity.name` 进载荷尾 40..56、`name_len` 取首个 NUL 之前，注释写明理由与 `term_sig` 的来源修正：EXITING 之前回读恒 0 而 VFS 拒 `term_sig=0`，用 `sig_status` 实参）；该处仍挂在 E7 的 wire 系统化上，但**没有 stage 内待办**。② **假端点**（D-17）不成立——`init.rs::sched_start` 是真实 `sendrec(Endpoint::SCHED, …)` + ELOCKED(208) 重试，`sched.rs` 的 `SchedCtl`/`sched_start_user` 与 `exit.rs` 的 `SCHEDULING_STOP`（C forkexit.c:425-441 的打印后继续）都已接线；`init.rs` 里两处「DEFERRED: the minix_sched client」旧注释已按实现改写（注释与代码相反正是 SD-19 那一族，本行顺手清掉）。③ **调用号双址**（PROC_EVENT_REPLY）已随 Fix #58 改 re-export；余下的 `PmRequest`/`PmResponse` 死代码本体在 E7 共享面，属跨板。L1 读数：`cargo test -p minix-pm --lib` → **427 / 0**（`tmp/a16-473/pm-lib.log`）。
 > **账面滞后校正**：本表有多行已过期，按代码为准刷新：进程 fork 的状态机已真发虚存 fork 收发并通知虚拟文件系统、文件描述符复制已实现、进程内陷入传输的占位实现已改为委托直通实现。
 > 跨阶段联动项的状态权威在 `../coordination/TODO-LEDGER-OPEN.md`（其 §6 给本阶段索引行）；本文件的条目描述与修法仍是权威，本轮只加本摘要不改条目。状态词按 `../coordination/TODO-LEDGER-INDEX.md` §3 的六值词表折叠。
 

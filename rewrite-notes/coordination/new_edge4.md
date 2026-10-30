@@ -3415,6 +3415,30 @@ exclude」的分域读数。
 `Permission denied`——同目录另一条线正在构建，按并发纪律改用 `CARGO_TARGET_DIR` 独立目标
 目录复跑，读数一致）。处置表与读数随台账笔入 SD-19 行与 A25 行。
 
+### 第一百八十九笔（A 板 A16 · 04 进程管理：三条「open」逐项现查全部消解，本行 by-audit 闭合）
+
+**载荷**：`04-stage-pm/todo.md` 的摘要行写着「未闭合 open 3：核心转储路径契约、调度服务缺席
+导致的假端点、调用号双址」。逐项现查的结果是三条都已被后来的批次消解，本行按 by-audit 闭合：
+
+- **核心转储（D-16）**：不再是「路径名指针为 0」——`os/servers/pm/src/exit.rs` 的
+  `VfsCall::DumpCore` 改走**按值名字**协议（`identity.name` 直接进载荷尾字节 40..56，
+  `name_len` 取首个 NUL 之前），理由与 `term_sig` 的来源修正都写在注释里（EXITING 之前
+  回读恒 0，而 VFS 的 DUMPCORE 臂拒 `term_sig=0`，所以用 `sig_status` 实参）。该处仍挂在
+  E7 的 wire 系统化上，但**没有 stage 内待办**。
+- **假端点（D-17）**：不成立。`init.rs::sched_start` 是真实
+  `sendrec(Endpoint::SCHED, …)` + ELOCKED(208) 重试（与 C `libsys/sched_start.c` 的
+  `_taskcall` 同形），`sched.rs` 的 `SchedCtl`/`sched_start_user` 与 `exit.rs` 的
+  `SCHEDULING_STOP`（C forkexit.c:425-441 的打印后继续）都已接线。**`init.rs` 里两处
+  「DEFERRED: the minix_sched client (16-scheduling.md)」是传输接上之后没跟着改的旧注释**
+  ——注释与代码相反正是 SD-19 那一族，本笔按实现改写。
+- **调用号双址（PROC_EVENT_REPLY）**：已随 Fix #58 改 re-export `minix-types` 常量；余下的
+  `PmRequest`/`PmResponse` 死代码本体在 E7 共享面，属跨板登记。
+
+**读数**：`cargo test -p minix-pm --lib` → **427 / 0**（宿主与容器权威门同读数退 0），
+三架构 `--bins` 各退 0。**本笔只动两处注释与台账**（一行摘要、一行板行、本里程碑）——
+「不是修复」的自我设限在这里成立：三条的修复早已在别的批次落地，本笔的职责是把账面追上代码，
+并把「注释与代码相反」的那两处就地清掉。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端

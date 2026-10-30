@@ -886,8 +886,11 @@ impl<T: IpcTransport> PmServer<T> {
     /// `sched_start` for slots that are `IN_USE` and not `PRIV_PROC` (at boot only
     /// INIT qualifies) — the SCHEDULING_START protocol, SCHED_PROC_NR=4.
     ///
-    /// DEFERRED: the actual SCHED transport is in 16-scheduling.md (the
-    /// minix_sched client).
+    /// 现查（`2026-10-31`，A 板 A16 对账）：SCHED 的传输**已经在这里**——
+    /// [`init.rs::sched_start`] 走 `self.transport.sendrec(Endpoint::SCHED, …)`
+    /// 并带 ELOCKED(208) 重试，与 C `libsys/sched_start.c` 的 `_taskcall` 同形；
+    /// 本注释此前写着「DEFERRED: 实际 SCHED 传输在 16-scheduling.md」，是
+    /// 传输接上之后没跟着改的旧话（D-17 的「假端点」因此早已不成立）。
     fn init_scheduling(&mut self) {
         for slot in 0..NR_PROCS {
             let (in_use, is_priv, endpoint, parent_slot) = {
@@ -918,8 +921,7 @@ impl<T: IpcTransport> PmServer<T> {
 
             // C: schedule.c:49-58 — sched_start(SCHED_PROC_NR, schedulee,
             // parent, USER_Q, USER_QUANTUM, -1, &mp_scheduler).
-            //
-            // DEFERRED: the minix_sched client (16-scheduling.md).
+            // 传输在 [`Self::sched_start`]：真实 sendrec + ELOCKED 重试。
             let new_sched = self.sched_start(endpoint, parent_endpoint);
             match new_sched {
                 Ok(scheduler) => self.table.procs[slot].resources.scheduler = scheduler,
