@@ -21,7 +21,7 @@ use alloc::format;
 /// 一次读进来的字节数，取自 C 的 `MAXBSIZE`（`minix3/tools/compat/compat_defs.h:1151` 写作 `64 * 1024`）。
 const STREAM_CHUNK: usize = 64 * 1024;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
@@ -32,36 +32,37 @@ use minix_textfilter::split::{
 };
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名折一次（`err3` 与 `line_bytes` 两条 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`）；
+    // 操作数、前缀与四句 `illegal X count.` 的值位都另有按原字节拼的腿，不经过这里。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     // argv folding lives in the deciding half (`parse_split_args`): BSD getopt
     // `"0123456789b:l:a:n:"` with attached-or-next values and the obsolete
     // `-<数字>`. 集外字母与缺值各由 libc 先印一行，本壳再接 usage。
     let parsed = match parse_split_args(&args[1..]) {
         Ok(p) => p,
-        Err(e) => arg_error(prog, e),
+        Err(e) => arg_error(&prog, e),
     };
     let lines_per_chunk = parsed.lines_per_chunk;
     let sfxlen = parsed.sfxlen;
     let byte_size = parsed.byte_size;
     let chunk_count = parsed.chunk_count;
-    let operands: Vec<&str> = parsed.operands;
+    let operands: Vec<&[u8]> = parsed.operands;
     // `split.c:143`: the second operand is the output prefix, default "x".
-    let prefix = operands.get(1).copied().unwrap_or("x");
+    let prefix: &[u8] = operands.get(1).copied().unwrap_or(b"x");
 
     // 第三支操作数的判据在 C 那里排在开档之后（`split.c:135-148`）：先 `open(*argv)`，
     // 开不成是 `err(1, "%s", *argv)` 带着档名退出，开成了才轮到 `usage()`。
     // `-` 不走开档（`:136` 为它开特例），所以它那一形直接落进 usage。
     // 探测只在这条错误腿里发生，正常切分仍是后面各腿自己开一次档。
     if operands.len() > 2 {
-        if let Some(name) = operands.first().filter(|name| **name != "-")
-            && let Err(code) = support::open_input(name)
+        if let Some(name) = operands.first().filter(|name| **name != b"-")
+            && let Err(code) = support::open_input(&String::from_utf8_lossy(name))
         {
-            support::warn_line(prog, name, code);
-            support::terminate(1);
+            err3(&prog, name, code, 1);
         }
-        usage(prog);
+        usage(&prog);
     }
 
     // `split.c:135-139`: `-` reads stdin (split, unlike grep/sed, special-cases
@@ -76,7 +77,7 @@ fn run() -> ! {
     // 「内存里有整个输入」这件事会把这条腿的用量重新拉回去。
     if let Some(n) = byte_size {
         let source = operands.first().copied();
-        stream_outcome(prog, source, split_bytes(prog, prefix, source, n, sfxlen));
+        stream_outcome(&prog, source, split_bytes(&prog, prefix, source, n, sfxlen));
     }
 
     // 默认与 `-l` 走 C 的 `split2` 那条**流式**腿：一次读一块，跨读只留「当前分片已数到
@@ -88,22 +89,21 @@ fn run() -> ! {
     if chunk_count.is_none() {
         let source = operands.first().copied();
         stream_outcome(
-            prog,
+            &prog,
             source,
-            split_lines(prog, prefix, source, lines_per_chunk, sfxlen),
+            split_lines(&prog, prefix, source, lines_per_chunk, sfxlen),
         );
     }
 
     let (input, read_failure) = match operands.first() {
         None => support::read_stdin_error(),
-        Some(name) if *name == "-" => support::read_stdin_error(),
-        Some(name) => match support::read_operand(name) {
+        Some(name) if *name == b"-" => support::read_stdin_error(),
+        Some(name) => match support::read_operand(&String::from_utf8_lossy(name)) {
             (data, None) => (data, None),
             (_, Some(support::InputFailure::Open(code))) => {
                 // C 的 `err(1, "%s", *argv)`（`split.c:137-138`）：程序名、操作数原文、
-                // `strerror` 句子三段齐备。
-                support::warn_line(prog, name, code);
-                support::terminate(1);
+                // `strerror` 句子三段齐备——原文那一段是 argv 的字节，不折。
+                err3(&prog, name, code, 1);
             }
             (data, Some(support::InputFailure::Read(code))) => (data, Some(code)),
         },
@@ -114,12 +114,13 @@ fn run() -> ! {
     // `fstat(ifd, &sb)`（`split.c:293-300`），失手是 `err(1, "stat")`，`sb.st_size` 再判
     // `chunks > st_size`。管道上的 `st_size` 是 0，于是那一形只能报错而不能切。
     if let Some(n) = chunk_count {
-        let source = operands.first().copied().filter(|name| *name != "-");
-        let size = match support::input_size(source) {
+        let source = operands.first().copied().filter(|name| *name != b"-");
+        let shown = source.map(|name| String::from_utf8_lossy(name).into_owned());
+        let size = match support::input_size(shown.as_deref()) {
             Ok(size) => size,
             Err(code) => {
-                support::warn_line(prog, "stat", code);
-                support::terminate(1);
+                // C 是 `fstat` 失手 ⇒ `err(1, "stat")`：那一段是这个词本身，不是路径。
+                err3(&prog, b"stat", code, 1);
             }
         };
         if (n as u64) > size {
@@ -134,7 +135,7 @@ fn run() -> ! {
                         None => too_many_files(),
                     };
                     if let Err(failure) = create_write(&path, chunk) {
-                        write_failure(prog, &path, failure);
+                        write_failure(&prog, &path, failure);
                     }
                 }
             }
@@ -147,11 +148,11 @@ fn run() -> ! {
                 support::terminate(1);
             }
         }
-        finish(prog, read_failure);
+        finish(&prog, read_failure);
     }
     // `-n` 那一支在上面自己收尾，行模式与 `-b` 更是当场就退；这一句是给
     // `run() -> !` 的形状兜底——编译器看不出那几条腿已经不会回到这里。
-    finish(prog, read_failure)
+    finish(&prog, read_failure)
 }
 
 /// 收尾：C 的 `read` 失手是当场 `err(1, "read")`，但它边读边写，前面的分片已在盘上；
@@ -166,8 +167,10 @@ fn finish(prog: &str, read_failure: Option<minix_sys::Errno>) -> ! {
 
 /// Output path for chunk `index`: `prefix` + the `width`-letter suffix, or
 /// `None` once the suffix space (`26^width`) is exhausted.
-fn out_path(prefix: &str, index: usize, width: usize) -> Option<String> {
-    suffix(index, width).map(|suffix| format!("{prefix}{suffix}"))
+fn out_path(prefix: &[u8], index: usize, width: usize) -> Option<Vec<u8>> {
+    // 前缀是 argv 的原字节，后缀是 26 进制字母；拼出来的路径按字节留着，
+    // 折只发生在开档那一步（`create_write`），报文那两臂因此能印原字节。
+    suffix(index, width).map(|suffix| [prefix, suffix.as_bytes()].concat())
 }
 
 /// Creates (or truncates) `path` and writes `bytes` into it, mirroring
@@ -179,8 +182,9 @@ fn out_path(prefix: &str, index: usize, width: usize) -> Option<String> {
 /// **宿主上一个分片文件都写不出去**，所以 `split` 的输出腿从来没有被进程级测过
 /// （读缝同病的第五例：批次三百零六的 `nl`、三百零八的 `fold`、三百零九的 `rev`、
 /// 三百一十的 `colrm`）。交回的是 `Errno`，因为 C 那一行是 `err(3)` 三段形。
-fn create_write(path: &str, bytes: &[u8]) -> Result<(), ChunkWrite> {
-    let sink = support::create_sink(path).map_err(ChunkWrite::Open)?;
+fn create_write(path: &[u8], bytes: &[u8]) -> Result<(), ChunkWrite> {
+    let shown = String::from_utf8_lossy(path);
+    let sink = support::create_sink(&shown).map_err(ChunkWrite::Open)?;
     write_into(sink, bytes)
 }
 
@@ -211,22 +215,37 @@ enum ChunkWrite {
 }
 
 /// 两个失败出口各自的 `err(3)` 三段形，印完即退 1（C 的 `err` 本身就是致命支）。
-fn write_failure(prog: &str, path: &str, failure: ChunkWrite) -> ! {
+fn write_failure(prog: &str, path: &[u8], failure: ChunkWrite) -> ! {
     let code = match failure {
         ChunkWrite::Open(code) | ChunkWrite::Write(code) | ChunkWrite::Close(code) => code,
     };
-    support::warn_line(prog, failure_label(&failure, path), code);
-    support::terminate(1);
+    err3(prog, failure_label(&failure, path), code, 1);
 }
 
 /// 两臂各打各的标签：开档失败按 `split.c:332-333` 的 `err(1, "%s", fname)` 报**路径**，
 /// 写失败按 `split.c:204` 等五处的 `err(1, "write")` 报**这个词本身**。拆成纯函数是为了
 /// 让「两臂不互换」这一条有门可钉——渲染那一步要打要退出，宿主侧没法看。
-fn failure_label<'a>(failure: &ChunkWrite, path: &'a str) -> &'a str {
+fn failure_label<'a>(failure: &ChunkWrite, path: &'a [u8]) -> &'a [u8] {
     match failure {
         ChunkWrite::Open(_) | ChunkWrite::Close(_) => path,
-        ChunkWrite::Write(_) => "write",
+        ChunkWrite::Write(_) => b"write".as_slice(),
     }
+}
+
+/// C 的 `err(1, "%s", …)` / `err(1, "write")` 三段形：程序名、`: `、标签、`: `、
+/// `strerror` 句子、换行，然后退。标签是**字节**——分片路径与输入操作数都来自 argv，
+/// 经 `err_line(&str)` 会把裸字节折成 U+FFFD，参照件同形逐字节对不上（`pr`/`sort`
+/// 两轮都量过这一形）。
+fn err3(prog: &str, label: &[u8], code: minix_sys::Errno, status: i32) -> ! {
+    let mut line = Vec::new();
+    line.extend_from_slice(prog.as_bytes());
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(label);
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+    line.push(b'\n');
+    support::warn(&line);
+    support::terminate(status)
 }
 
 /// C 的 `errx(1, "too many files.")`（`split.c:326-330`）：后缀空间（26 的 width 次方）
@@ -240,17 +259,16 @@ fn too_many_files() -> ! {
 /// 开档失手是 `err(1, "%s", *argv)`（`split.c:137-138`）报操作数原文，而标准输入那一形
 /// 不 open，所以永远不会走到这一臂；读失手是 `case -1:` 当场 `err(1, "read")`（`:188-190`），
 /// 此前已经写出去的分片照旧留在盘上——C 也是边读边写。
-fn stream_outcome(prog: &str, source: Option<&str>, failure: Option<support::InputFailure>) -> ! {
+fn stream_outcome(prog: &str, source: Option<&[u8]>, failure: Option<support::InputFailure>) -> ! {
     match failure {
         Some(support::InputFailure::Open(code)) => {
-            if let Some(name) = source.filter(|name| *name != "-") {
-                support::warn_line(prog, name, code);
+            if let Some(name) = source.filter(|name| *name != b"-") {
+                err3(prog, name, code, 1);
             }
             support::terminate(1);
         }
         Some(support::InputFailure::Read(code)) => {
-            support::warn_line(prog, "read", code);
-            support::terminate(1);
+            err3(prog, b"read", code, 1);
         }
         None => support::terminate(0),
     }
@@ -262,10 +280,10 @@ fn stream_outcome(prog: &str, source: Option<&str>, failure: Option<support::Inp
 /// `fname` 还没推进）。两条流式腿共用这一份：这套次序与三种失败臂只能有一处定义。
 struct ChunkWriter<'a> {
     prog: &'a str,
-    prefix: &'a str,
+    prefix: &'a [u8],
     width: usize,
     index: usize,
-    current: Option<(String, support::WriteSink)>,
+    current: Option<(Vec<u8>, support::WriteSink)>,
 }
 
 impl ChunkWriter<'_> {
@@ -278,7 +296,7 @@ impl ChunkWriter<'_> {
                 None => too_many_files(),
             };
             self.index += 1;
-            let sink = match support::create_sink(&path) {
+            let sink = match support::create_sink(&String::from_utf8_lossy(&path)) {
                 Ok(sink) => sink,
                 Err(code) => write_failure(self.prog, &path, ChunkWrite::Open(code)),
             };
@@ -306,8 +324,8 @@ impl ChunkWriter<'_> {
 /// [`ByteCutter`]，交回的片段由 [`ChunkWriter`] 落盘。
 fn split_bytes(
     prog: &str,
-    prefix: &str,
-    source: Option<&str>,
+    prefix: &[u8],
+    source: Option<&[u8]>,
     size: usize,
     width: usize,
 ) -> Option<support::InputFailure> {
@@ -319,7 +337,10 @@ fn split_bytes(
         index: 0,
         current: None,
     };
-    let outcome = support::stream_input(source, STREAM_CHUNK, |piece| {
+    // 开档那条 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`）：折的只是路径，
+    // 分片名（`ChunkWriter` 里那份）与两条报文用的仍是原字节。
+    let shown = source.map(|name| String::from_utf8_lossy(name).into_owned());
+    let outcome = support::stream_input(shown.as_deref(), STREAM_CHUNK, |piece| {
         for part in cutter.take(piece) {
             writer.write(&part);
         }
@@ -333,8 +354,8 @@ fn split_bytes(
 /// 所以横跨读块的那一行是分两次写进**同一枚**还开着的分片（`split.c:276-280`）。
 fn split_lines(
     prog: &str,
-    prefix: &str,
-    source: Option<&str>,
+    prefix: &[u8],
+    source: Option<&[u8]>,
     numlines: usize,
     width: usize,
 ) -> Option<support::InputFailure> {
@@ -346,7 +367,10 @@ fn split_lines(
         index: 0,
         current: None,
     };
-    let outcome = support::stream_input(source, STREAM_CHUNK, |piece| {
+    // 开档那条 `&str` 口（在册 `ARGV-BYTE-PATH-IN-LIBS`）：折的只是路径，
+    // 分片名（`ChunkWriter` 里那份）与两条报文用的仍是原字节。
+    let shown = source.map(|name| String::from_utf8_lossy(name).into_owned());
+    let outcome = support::stream_input(shown.as_deref(), STREAM_CHUNK, |piece| {
         for part in cutter.take(piece) {
             writer.write(&part);
         }
@@ -435,17 +459,26 @@ mod tests {
         // 开档臂报路径、写臂报 `write` 这个词（`split.c:332-333` 与 `:204` 是两句不同的
         // `err`），两臂互换在渲染那一步才看得见，这里钉住选择本身
         assert_eq!(
-            failure_label(&ChunkWrite::Open(minix_sys::Errno::ENOENT), "xaa"),
-            "xaa"
+            failure_label(
+                &ChunkWrite::Open(minix_sys::Errno::ENOENT),
+                b"xaa".as_slice()
+            ),
+            b"xaa".as_slice()
         );
         assert_eq!(
-            failure_label(&ChunkWrite::Write(minix_sys::Errno::from_i32(28)), "xaa"),
-            "write"
+            failure_label(
+                &ChunkWrite::Write(minix_sys::Errno::from_i32(28)),
+                b"xaa".as_slice()
+            ),
+            b"write".as_slice()
         );
         // close 臂报的是**这一枚分片的名字**，与写臂不同（`split.c:319-322`）
         assert_eq!(
-            failure_label(&ChunkWrite::Close(minix_sys::Errno::from_i32(28)), "xaa"),
-            "xaa"
+            failure_label(
+                &ChunkWrite::Close(minix_sys::Errno::from_i32(28)),
+                b"xaa".as_slice()
+            ),
+            b"xaa".as_slice()
         );
     }
 
@@ -476,19 +509,39 @@ mod tests {
 
     #[test]
     fn out_path_prefixes_the_two_letter_suffix() {
-        assert_eq!(out_path("x", 0, 2).as_deref(), Some("xaa"));
-        assert_eq!(out_path("x", 1, 2).as_deref(), Some("xab"));
-        assert_eq!(out_path("part.", 26, 2).as_deref(), Some("part.ba"));
+        assert_eq!(out_path(b"x", 0, 2).as_deref(), Some(b"xaa".as_slice()));
+        assert_eq!(out_path(b"x", 1, 2).as_deref(), Some(b"xab".as_slice()));
+        assert_eq!(
+            out_path(b"part.", 26, 2).as_deref(),
+            Some(b"part.ba".as_slice())
+        );
         // -a 1：单字母后缀。
-        assert_eq!(out_path("x", 0, 1).as_deref(), Some("xa"));
-        assert_eq!(out_path("x", 26, 1), None);
+        assert_eq!(out_path(b"x", 0, 1).as_deref(), Some(b"xa".as_slice()));
+        assert_eq!(out_path(b"x", 26, 1), None);
+    }
+
+    /// 前缀是 argv 的原字节，拼出来的分片名也带着那枚原字节：一枚裸 `ff` 既不折成
+    /// `ef bf bd` 三枚，也不因为「必须是文本」而被挡在拼名之前。开档那条 `&str` 口
+    /// （在册 `ARGV-BYTE-PATH-IN-LIBS`）不在这一腿上，所以这一枚钉的是**拼名**：
+    /// 折一旦发生在这里，报文里出现的档名与参照件打出来的就不是同一串字节。
+    #[test]
+    fn a_raw_byte_in_the_prefix_survives_into_the_chunk_name() {
+        assert_eq!(
+            out_path(b"a\xff", 0, 2),
+            Some([b"a\xff".as_slice(), b"aa".as_slice()].concat()),
+            "分片名里那枚 ff 必须还是 ff，而不是 ef bf bd 三枚"
+        );
+        assert_eq!(
+            out_path(b"a\xff", 1, 2),
+            Some([b"a\xff".as_slice(), b"ab".as_slice()].concat())
+        );
     }
 
     #[test]
     fn out_path_is_none_once_suffixes_exhaust() {
         // aa..zz is 676 names; index 675 is the last, 676 has none.
-        assert!(out_path("x", 675, 2).is_some());
-        assert_eq!(out_path("x", 676, 2), None);
+        assert!(out_path(b"x", 675, 2).is_some());
+        assert_eq!(out_path(b"x", 676, 2), None);
     }
 
     /// 流式化之后新出现的可见行为：**读失手浮出来的那一刻，前面的分片已经在盘上了**
@@ -500,11 +553,7 @@ mod tests {
     fn chunk_files_are_already_on_disk_when_the_read_fails_midstream() {
         let dir = std::env::temp_dir().join(format!("split-midstream-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
-        let prefix = dir
-            .join("x")
-            .to_str()
-            .expect("临时路径可作前缀")
-            .to_string();
+        let prefix = dir.join("x").into_os_string().into_encoded_bytes();
         let mut cutter = LineCutter::new(1);
         let mut writer = ChunkWriter {
             prog: "split",
@@ -583,19 +632,51 @@ fn arg_error(prog: &str, e: SplitError<'_>) -> ! {
             usage(prog)
         }
         SplitError::IllegalLineCount(v) => {
-            support::warn(format!("{prog}: {v}: illegal line count.\n").as_bytes());
+            // C 是 `errx(1, "%s: illegal line co %s", …)` 那族里
+            // 「值在前、句子在后」的形：`{值}: illegal line count.` 且由 Minix 的 `errx` 先缀程序名。
+            // 值位是 argv 的原字节——折过一次，`é` 会变三枚、裸 `ff` 也会。
+            let mut line = Vec::new();
+            line.extend_from_slice(prog.as_bytes());
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(v);
+            line.extend_from_slice(b": illegal line count.\n");
+            support::warn(&line);
             support::terminate(1);
         }
         SplitError::IllegalByteCount(v) => {
-            support::warn(format!("{prog}: {v}: illegal byte count.\n").as_bytes());
+            // C 是 `errx(1, "%s: illegal byte co %s", …)` 那族里
+            // 「值在前、句子在后」的形：`{值}: illegal byte count.` 且由 Minix 的 `errx` 先缀程序名。
+            // 值位是 argv 的原字节——折过一次，`é` 会变三枚、裸 `ff` 也会。
+            let mut line = Vec::new();
+            line.extend_from_slice(prog.as_bytes());
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(v);
+            line.extend_from_slice(b": illegal byte count.\n");
+            support::warn(&line);
             support::terminate(1);
         }
         SplitError::IllegalChunkCount(v) => {
-            support::warn(format!("{prog}: {v}: illegal number of chunks.\n").as_bytes());
+            // C 是 `errx(1, "%s: illegal number of chu %s", …)` 那族里
+            // 「值在前、句子在后」的形：`{值}: illegal number of chunks.` 且由 Minix 的 `errx` 先缀程序名。
+            // 值位是 argv 的原字节——折过一次，`é` 会变三枚、裸 `ff` 也会。
+            let mut line = Vec::new();
+            line.extend_from_slice(prog.as_bytes());
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(v);
+            line.extend_from_slice(b": illegal number of chunks.\n");
+            support::warn(&line);
             support::terminate(1);
         }
         SplitError::IllegalSuffixLength(v) => {
-            support::warn(format!("{prog}: {v}: illegal suffix length.\n").as_bytes());
+            // C 是 `errx(1, "%s: illegal suffix len %s", …)` 那族里
+            // 「值在前、句子在后」的形：`{值}: illegal suffix length.` 且由 Minix 的 `errx` 先缀程序名。
+            // 值位是 argv 的原字节——折过一次，`é` 会变三枚、裸 `ff` 也会。
+            let mut line = Vec::new();
+            line.extend_from_slice(prog.as_bytes());
+            line.extend_from_slice(b": ");
+            line.extend_from_slice(v);
+            line.extend_from_slice(b": illegal suffix length.\n");
+            support::warn(&line);
             support::terminate(1);
         }
     }

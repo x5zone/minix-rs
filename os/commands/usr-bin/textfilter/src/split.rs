@@ -132,7 +132,11 @@ pub struct SplitArgs<'a> {
     pub chunk_count: Option<usize>,
     /// `-a` suffix width (`sfxlen`, split.c:61 default 2).
     pub sfxlen: usize,
-    pub operands: Vec<&'a str>,
+    /// The file operands exactly as `argv` handed them over. The prefix that
+    /// names every output chunk (`*argv++`, `split.c:143`) is a **filename**, so
+    /// the bytes are the whole point: folding them through `str` would rewrite a
+    /// non-UTF-8 prefix before it reaches `open`/`creat`.
+    pub operands: Vec<&'a [u8]>,
 }
 
 /// `split` argument failure, each arm mirroring a distinct C path so the caller
@@ -151,49 +155,54 @@ pub enum SplitError<'a> {
     MissingValue(char),
     /// A `-l`/`-N` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal line count.", …)`; carries the offending value for the message.
-    IllegalLineCount(&'a str),
+    IllegalLineCount(&'a [u8]),
     /// A `-b` value that is not decimal (with optional `k`/`m` unit) or is
     /// zero: C `errx(1, "%s: illegal byte count.", …)` (split.c:99-108).
-    IllegalByteCount(&'a str),
+    IllegalByteCount(&'a [u8]),
     /// A `-n` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal number of chunks.", …)` (split.c:123-127).
-    IllegalChunkCount(&'a str),
+    IllegalChunkCount(&'a [u8]),
     /// A `-a` value that is not all-decimal or is zero: C `errx(1, "%s:
     /// illegal suffix length.", …)` (split.c:117-121).
-    IllegalSuffixLength(&'a str),
+    IllegalSuffixLength(&'a [u8]),
 }
 
 /// An all-decimal, nonzero line count, or `None` (the C `strtoull` + `*ep !=
 /// '\0'` + `== 0` rejection). An over-wide digit run (past `usize`) is also
 /// `None` here — an absurd input C would saturate, treated as illegal rather
 /// than panicking.
-fn line_count(v: &str) -> Option<usize> {
-    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+fn line_count(v: &[u8]) -> Option<usize> {
+    if v.is_empty() || !v.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    match v.parse::<usize>() {
-        Ok(n) if n > 0 => Some(n),
-        _ => None,
+    decimal(v)
+}
+
+/// A decimal digit run folded one byte at a time, nonzero, and `None` once it
+/// no longer fits `usize` — the same answer the old `parse::<usize>()` gave for
+/// an over-wide run (absurd input C saturates; here it is illegal, never a
+/// panic).
+fn decimal(digits: &[u8]) -> Option<usize> {
+    let mut acc = 0usize;
+    for &byte in digits {
+        acc = acc.checked_mul(10)?.checked_add(usize::from(byte - b'0'))?;
     }
+    if acc > 0 { Some(acc) } else { None }
 }
 
 /// A `-b` byte count: decimal with an optional lowercase `k`/`m` unit
 /// (×1024 / ×1048576), nonzero (`split.c:99-108`). `None` for an illegal or
 /// zero count, or a product that overflows `usize` (absurd input).
-fn byte_count(v: &str) -> Option<usize> {
-    let (digits, mul) = match v.as_bytes().last()? {
+fn byte_count(v: &[u8]) -> Option<usize> {
+    let (digits, mul) = match *v.last()? {
         b'k' => (&v[..v.len() - 1], 1024usize),
         b'm' => (&v[..v.len() - 1], 1024 * 1024),
         _ => (v, 1usize),
     };
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    digits
-        .parse::<usize>()
-        .ok()
-        .filter(|n| *n > 0)
-        .and_then(|n| n.checked_mul(mul))
+    decimal(digits).and_then(|n| n.checked_mul(mul))
 }
 
 /// Fold `split`'s argv tail faithfully to BSD `getopt("0123456789b:l:a:n:")`
@@ -207,22 +216,22 @@ fn byte_count(v: &str) -> Option<usize> {
 /// scanning; a bare `-` and any non-option token are operands. `-a` sets the
 /// suffix width, `-b` the byte chunk size, and `-n` the chunk count
 /// (attached or next word); the three split modes are mutually exclusive.
-pub fn parse_split_args<'a>(args: &'a [&'a str]) -> Result<SplitArgs<'a>, SplitError<'a>> {
+pub fn parse_split_args<'a>(args: &'a [&'a [u8]]) -> Result<SplitArgs<'a>, SplitError<'a>> {
     let mut lines_per_chunk = DEFAULT_LINES;
     let mut sfxlen = DEFAULT_SFXLEN;
     let mut byte_size: Option<usize> = None;
     let mut chunk_count: Option<usize> = None;
     let mut set = false;
-    let mut operands: Vec<&'a str> = Vec::new();
+    let mut operands: Vec<&'a [u8]> = Vec::new();
 
     let mut index = 0usize;
     while index < args.len() {
         let arg = args[index];
-        if arg == "--" {
+        if arg == b"--" {
             operands.extend_from_slice(&args[index + 1..]);
             break;
         }
-        let bytes = arg.as_bytes();
+        let bytes = arg;
         if bytes.len() > 1 && bytes[0] == b'-' {
             let tail = &arg[1..];
             // C 的遗留形 `-<数字>`：optstring 里 `0-9` 六个都是**合法字母**，第一个数字回来后
@@ -490,6 +499,14 @@ impl LineCutter {
 mod tests {
     use super::*;
 
+    /// The fixture's argv, exactly as `std::env::args_os()` hands it over: a
+    /// `Vec` of byte slices. Written through `str` literals here because these
+    /// shapes are readable that way; the three forms whose **bytes** are the
+    /// point (`-\u{e9}` and its two siblings) spell the `c3 a9` pair out instead.
+    fn argv<'a>(words: &[&'a str]) -> Vec<&'a [u8]> {
+        words.iter().map(|word| word.as_bytes()).collect()
+    }
+
     #[test]
     fn test_default_chunks_of_thousand() {
         let mut data = Vec::new();
@@ -572,50 +589,66 @@ mod tests {
     #[test]
     fn parse_default_and_separated_value() {
         // 无参：缺省 1000 行。分离值（向后兼容）。
-        let d = parse_split_args(&[]).unwrap();
+        let w_d = argv(&[]);
+        let d = parse_split_args(&w_d).unwrap();
         assert_eq!(d.lines_per_chunk, DEFAULT_LINES);
         assert!(d.operands.is_empty());
-        let a = parse_split_args(&["-l", "100", "f"]).unwrap();
+        let w_a = argv(&["-l", "100", "f"]);
+        let a = parse_split_args(&w_a).unwrap();
         assert_eq!(a.lines_per_chunk, 100);
-        assert_eq!(a.operands, vec!["f"]);
+        assert_eq!(a.operands, vec![b"f".as_slice()]);
     }
 
     #[test]
     fn parse_attached_and_obsolete_accepted() {
         // 关键回归：旧前门拒这两个合法形。
-        let a = parse_split_args(&["-l100", "f"]).unwrap();
+        let w_a = argv(&["-l100", "f"]);
+        let a = parse_split_args(&w_a).unwrap();
         assert_eq!(a.lines_per_chunk, 100);
-        assert_eq!(a.operands, vec!["f"]);
-        let b = parse_split_args(&["-1000", "in", "out"]).unwrap();
+        assert_eq!(a.operands, vec![b"f".as_slice()]);
+        let w_b = argv(&["-1000", "in", "out"]);
+        let b = parse_split_args(&w_b).unwrap();
         assert_eq!(b.lines_per_chunk, 1000);
-        assert_eq!(b.operands, vec!["in", "out"]);
+        assert_eq!(b.operands, vec![b"in".as_slice(), b"out".as_slice()]);
         // 裸 `-` 为操数、`--` 终止扫描。
-        let c = parse_split_args(&["-l", "5", "-", "pfx"]).unwrap();
-        assert_eq!(c.operands, vec!["-", "pfx"]);
-        let e = parse_split_args(&["--", "-l", "-x"]).unwrap();
-        assert_eq!(e.operands, vec!["-l", "-x"]);
+        let w_c = argv(&["-l", "5", "-", "pfx"]);
+        let c = parse_split_args(&w_c).unwrap();
+        assert_eq!(c.operands, vec![b"-".as_slice(), b"pfx".as_slice()]);
+        let w_e = argv(&["--", "-l", "-x"]);
+        let e = parse_split_args(&w_e).unwrap();
+        assert_eq!(e.operands, vec![b"-l".as_slice(), b"-x".as_slice()]);
         // obsolete 在 `-l` 之后再出现被忽略（C 只 `if (numlines == 0)` 才解）。
-        let f = parse_split_args(&["-l", "3", "-5"]).unwrap();
+        let w_f = argv(&["-l", "3", "-5"]);
+        let f = parse_split_args(&w_f).unwrap();
         assert_eq!(f.lines_per_chunk, 3);
     }
 
     #[test]
     fn parse_suffix_length_minus_a() {
         // -a 接值：附值 `-a3` 与分词 `-a 3` 都置 sfxlen=3；默认 2。
-        assert_eq!(parse_split_args(&["-a3", "f"]).unwrap().sfxlen, 3);
-        assert_eq!(parse_split_args(&["-a", "3", "f"]).unwrap().sfxlen, 3);
+        assert_eq!(parse_split_args(&argv(&["-a3", "f"])).unwrap().sfxlen, 3);
+        assert_eq!(
+            parse_split_args(&argv(&["-a", "3", "f"])).unwrap().sfxlen,
+            3
+        );
         // -a 吃值后，`3` 不泄为操作数：`-a3 f` 只剩一个操数 `f`。
-        assert_eq!(parse_split_args(&["-a3", "f"]).unwrap().operands, vec!["f"]);
+        assert_eq!(
+            parse_split_args(&argv(&["-a3", "f"])).unwrap().operands,
+            vec![b"f".as_slice()]
+        );
         // 未给 -a 时 sfxlen 默认 2。
-        assert_eq!(parse_split_args(&["f"]).unwrap().sfxlen, DEFAULT_SFXLEN);
+        assert_eq!(
+            parse_split_args(&argv(&["f"])).unwrap().sfxlen,
+            DEFAULT_SFXLEN
+        );
         // 非法后缀长度（0 / 非全数字）：对位 C "illegal suffix length"。
         assert_eq!(
-            parse_split_args(&["-a0"]).err(),
-            Some(SplitError::IllegalSuffixLength("0"))
+            parse_split_args(&argv(&["-a0"])).err(),
+            Some(SplitError::IllegalSuffixLength(b"0"))
         );
         assert_eq!(
-            parse_split_args(&["-a", "x"]).err(),
-            Some(SplitError::IllegalSuffixLength("x"))
+            parse_split_args(&argv(&["-a", "x"])).err(),
+            Some(SplitError::IllegalSuffixLength(b"x"))
         );
     }
 
@@ -623,36 +656,39 @@ mod tests {
     fn parse_byte_count_minus_b() {
         // -b 接值：附值/分词、k/m 单位。行数保持默认（字节模式不数行）。
         assert_eq!(
-            parse_split_args(&["-b", "100"]).unwrap().byte_size,
+            parse_split_args(&argv(&["-b", "100"])).unwrap().byte_size,
             Some(100)
         );
-        assert_eq!(parse_split_args(&["-b1000"]).unwrap().byte_size, Some(1000));
         assert_eq!(
-            parse_split_args(&["-b", "4k"]).unwrap().byte_size,
+            parse_split_args(&argv(&["-b1000"])).unwrap().byte_size,
+            Some(1000)
+        );
+        assert_eq!(
+            parse_split_args(&argv(&["-b", "4k"])).unwrap().byte_size,
             Some(4096)
         );
         assert_eq!(
-            parse_split_args(&["-b2m"]).unwrap().byte_size,
+            parse_split_args(&argv(&["-b2m"])).unwrap().byte_size,
             Some(2 * 1024 * 1024)
         );
         // 未给 -b 时 byte_size 为 None（行模式）。
-        assert_eq!(parse_split_args(&["f"]).unwrap().byte_size, None);
+        assert_eq!(parse_split_args(&argv(&["f"])).unwrap().byte_size, None);
         // 非法字节数（0 / 非数字）："illegal byte count"。
         assert_eq!(
-            parse_split_args(&["-b0"]).err(),
-            Some(SplitError::IllegalByteCount("0"))
+            parse_split_args(&argv(&["-b0"])).err(),
+            Some(SplitError::IllegalByteCount(b"0"))
         );
         assert_eq!(
-            parse_split_args(&["-b", "x"]).err(),
-            Some(SplitError::IllegalByteCount("x"))
+            parse_split_args(&argv(&["-b", "x"])).err(),
+            Some(SplitError::IllegalByteCount(b"x"))
         );
         // -l 与 -b 并存（任一侧）：C 在收尾 `else if (bytecnt…)` 判 usage。
         assert_eq!(
-            parse_split_args(&["-l", "3", "-b", "10"]).err(),
+            parse_split_args(&argv(&["-l", "3", "-b", "10"])).err(),
             Some(SplitError::Usage)
         );
         assert_eq!(
-            parse_split_args(&["-b", "10", "-l", "3"]).err(),
+            parse_split_args(&argv(&["-b", "10", "-l", "3"])).err(),
             Some(SplitError::Usage)
         );
     }
@@ -691,20 +727,26 @@ mod tests {
 
     #[test]
     fn parse_chunk_count_minus_n() {
-        assert_eq!(parse_split_args(&["-n", "4"]).unwrap().chunk_count, Some(4));
-        assert_eq!(parse_split_args(&["-n4"]).unwrap().chunk_count, Some(4));
-        assert_eq!(parse_split_args(&["f"]).unwrap().chunk_count, None);
         assert_eq!(
-            parse_split_args(&["-n0"]).err(),
-            Some(SplitError::IllegalChunkCount("0"))
+            parse_split_args(&argv(&["-n", "4"])).unwrap().chunk_count,
+            Some(4)
+        );
+        assert_eq!(
+            parse_split_args(&argv(&["-n4"])).unwrap().chunk_count,
+            Some(4)
+        );
+        assert_eq!(parse_split_args(&argv(&["f"])).unwrap().chunk_count, None);
+        assert_eq!(
+            parse_split_args(&argv(&["-n0"])).err(),
+            Some(SplitError::IllegalChunkCount(b"0"))
         );
         // 三模式两两互斥：-n 与 -l / -b 并存均 usage。
         assert_eq!(
-            parse_split_args(&["-l", "3", "-n", "4"]).err(),
+            parse_split_args(&argv(&["-l", "3", "-n", "4"])).err(),
             Some(SplitError::Usage)
         );
         assert_eq!(
-            parse_split_args(&["-b", "10", "-n", "4"]).err(),
+            parse_split_args(&argv(&["-b", "10", "-n", "4"])).err(),
             Some(SplitError::Usage)
         );
     }
@@ -717,25 +759,25 @@ mod tests {
     #[test]
     fn the_unknown_letter_is_the_first_byte_not_the_first_character() {
         assert_eq!(
-            parse_split_args(&["-\u{e9}"]).err(),
+            parse_split_args(&[b"-\xc3\xa9"]).err(),
             Some(SplitError::UnknownOption('\u{00c3}')),
             "`é` 是 c3 a9 两字节，libc 报 c3 而不是整个字符"
         );
         // 环停在第一个坏字母上：`-Zé` 只报 `Z`。
         assert_eq!(
-            parse_split_args(&["-Z\u{e9}"]).err(),
+            parse_split_args(&[b"-Z\xc3\xa9"]).err(),
             Some(SplitError::UnknownOption('Z'))
         );
         // ASCII 那一形不许被这次改动波及。
         assert_eq!(
-            parse_split_args(&["-q"]).err(),
+            parse_split_args(&argv(&["-q"])).err(),
             Some(SplitError::UnknownOption('q'))
         );
         // 反面：带值字母把其后的字节整个当值收走，轮不到字母位（参照件同句
         // `split: é: illegal line count.`，退 1、不接 usage）。
         assert_eq!(
-            parse_split_args(&["-l\u{e9}"]).err(),
-            Some(SplitError::IllegalLineCount("é"))
+            parse_split_args(&[b"-l\xc3\xa9"]).err(),
+            Some(SplitError::IllegalLineCount(b"\xc3\xa9"))
         );
     }
 
@@ -743,87 +785,91 @@ mod tests {
     fn parse_error_paths() {
         // 集外字母交回字母本身，由壳先印 libc 那一行再接 usage（参照件：`-Z` 两行）。
         assert_eq!(
-            parse_split_args(&["-z", "f"]).err(),
+            parse_split_args(&argv(&["-z", "f"])).err(),
             Some(SplitError::UnknownOption('z'))
         );
         // 聚簇与 `--x` 只报第一个字节（参照件：`-Zb` 报 `Z`、`--x` 报 `-`）。
         assert_eq!(
-            parse_split_args(&["-Zb"]).err(),
+            parse_split_args(&argv(&["-Zb"])).err(),
             Some(SplitError::UnknownOption('Z'))
         );
         assert_eq!(
-            parse_split_args(&["--x"]).err(),
+            parse_split_args(&argv(&["--x"])).err(),
             Some(SplitError::UnknownOption('-'))
         );
         // 缺值是 libc 的另一句（`getopt.c:132-136`），不是 usage 自己那一行。
         assert_eq!(
-            parse_split_args(&["-l"]).err(),
+            parse_split_args(&argv(&["-l"])).err(),
             Some(SplitError::MissingValue('l'))
         );
         assert_eq!(
-            parse_split_args(&["-b"]).err(),
+            parse_split_args(&argv(&["-b"])).err(),
             Some(SplitError::MissingValue('b'))
         );
         assert_eq!(
-            parse_split_args(&["-a"]).err(),
+            parse_split_args(&argv(&["-a"])).err(),
             Some(SplitError::MissingValue('a'))
         );
         assert_eq!(
-            parse_split_args(&["-n"]).err(),
+            parse_split_args(&argv(&["-n"])).err(),
             Some(SplitError::MissingValue('n'))
         );
         // 遗留形取的是整段 token 去掉那个 `-`（C 的 `argv[optind] + 1`）：尾巴有杂字符
         // 就整段报成 illegal line count，而不是当成集外字母。
         assert_eq!(
-            parse_split_args(&["-12x"]).err(),
-            Some(SplitError::IllegalLineCount("12x"))
+            parse_split_args(&argv(&["-12x"])).err(),
+            Some(SplitError::IllegalLineCount(b"12x"))
         );
         assert_eq!(
-            parse_split_args(&["-3b5"]).err(),
-            Some(SplitError::IllegalLineCount("3b5"))
+            parse_split_args(&argv(&["-3b5"])).err(),
+            Some(SplitError::IllegalLineCount(b"3b5"))
         );
         // **不重排**：非选项 token 一到，它和后面的整个交回当操作数，
         // 所以 `split in -Z` 里的 `-Z` 是前缀而不是选项（参照件现量）。
         assert_eq!(
-            parse_split_args(&["in", "-Z"]).unwrap().operands,
-            vec!["in", "-Z"]
+            parse_split_args(&argv(&["in", "-Z"])).unwrap().operands,
+            vec![b"in".as_slice(), b"-Z".as_slice()]
         );
         assert_eq!(
-            parse_split_args(&["in", "-l"]).unwrap().operands,
-            vec!["in", "-l"],
+            parse_split_args(&argv(&["in", "-l"])).unwrap().operands,
+            vec![b"in".as_slice(), b"-l".as_slice()],
             "操作数之后的 `-l` 不再被当选项读，而是当输出前缀"
         );
         assert_eq!(
-            parse_split_args(&["in", "-l"]).unwrap().lines_per_chunk,
+            parse_split_args(&argv(&["in", "-l"]))
+                .unwrap()
+                .lines_per_chunk,
             DEFAULT_LINES,
             "没被当选项读就不改列数（C 的 `getopt` 见非选项即返 -1）"
         );
         assert_eq!(
-            parse_split_args(&["in", "-l", "3"]).unwrap().operands,
-            vec!["in", "-l", "3"],
+            parse_split_args(&argv(&["in", "-l", "3"]))
+                .unwrap()
+                .operands,
+            vec![b"in".as_slice(), b"-l".as_slice(), b"3".as_slice()],
             "不重排之后这是**三个**操作数：档名、前缀、多出来的一支。取数这一层不判它，\
              因为 C 的 `usage()`（`split.c:148-149`）排在开档（`:135-139`）之后，\
              而开档的成败只有壳侧知道"
         );
         assert_eq!(
-            parse_split_args(&["a", "b", "c"]).unwrap().operands,
-            vec!["a", "b", "c"],
+            parse_split_args(&argv(&["a", "b", "c"])).unwrap().operands,
+            vec![b"a".as_slice(), b"b".as_slice(), b"c".as_slice()],
             "多于两个操作数在库里只是三个操作数，那一记 usage 由壳侧在开档之后落下"
         );
         assert_eq!(
-            parse_split_args(&["-l0"]).err(),
-            Some(SplitError::IllegalLineCount("0"))
+            parse_split_args(&argv(&["-l0"])).err(),
+            Some(SplitError::IllegalLineCount(b"0"))
         );
         assert_eq!(
-            parse_split_args(&["-lx"]).err(),
-            Some(SplitError::IllegalLineCount("x"))
+            parse_split_args(&argv(&["-lx"])).err(),
+            Some(SplitError::IllegalLineCount(b"x"))
         );
         assert_eq!(
-            parse_split_args(&["-l", "3", "-l", "4"]).err(),
+            parse_split_args(&argv(&["-l", "3", "-l", "4"])).err(),
             Some(SplitError::Usage)
         );
         assert_eq!(
-            parse_split_args(&["-5", "-l", "3"]).err(),
+            parse_split_args(&argv(&["-5", "-l", "3"])).err(),
             Some(SplitError::Usage)
         );
     }
@@ -1182,5 +1228,42 @@ mod tests {
         let mut cutter = LineCutter::new(0);
         assert!(cutter.take(b"a\nb\n").is_empty());
         assert!(whole_files(b"a\nb\n", 0).is_empty());
+    }
+
+    /// 值位与操作数交回的是 argv 的**原字节**，字母位是短横后的第一枚字节。C 那一侧
+    /// 这三条腿都在字节上：`split.c:112` 的 `errx(1, "%s: illegal line count.", optarg)`
+    /// 打的是 `optarg` 本身的每一枚字节，`getopt.c:79` 的 `optopt = *place++` 一次进一枚，
+    /// 而档名 `*argv++`（`:143`）是直接进 `creat` 的。折过一次，值位上的裸 `ff` 就变成
+    /// `ef bf bd` 三枚，前缀那一条则在 `open` 之前就不是那个名字了。
+    #[test]
+    fn the_value_and_the_operand_legs_hand_back_the_argv_bytes() {
+        assert_eq!(
+            parse_split_args(&[b"-l\xff"]).err(),
+            Some(SplitError::IllegalLineCount(b"\xff".as_slice()))
+        );
+        assert_eq!(
+            parse_split_args(&[b"-b\xff"]).err(),
+            Some(SplitError::IllegalByteCount(b"\xff".as_slice()))
+        );
+        assert_eq!(
+            parse_split_args(&[b"-a\xff"]).err(),
+            Some(SplitError::IllegalSuffixLength(b"\xff".as_slice()))
+        );
+        assert_eq!(
+            parse_split_args(&[b"-n\xff"]).err(),
+            Some(SplitError::IllegalChunkCount(b"\xff".as_slice()))
+        );
+        // 字母位：`char::from(0xff)` 就是 U+00FF，与 libc 交回 `optopt` 后 `%c` 打出的
+        // 那一枚字节同值——高字节因此不该在这里被折成替换字符。
+        assert_eq!(
+            parse_split_args(&[b"-\xff"]).err(),
+            Some(SplitError::UnknownOption('\u{00ff}')),
+            "短横后第一枚字节 ff 交回 U+00FF，不是 U+FFFD"
+        );
+        // 操作数腿：前缀原字节跟着档名一起交回。
+        assert_eq!(
+            parse_split_args(&[b"in", b"p\xff"]).unwrap().operands,
+            vec![b"in".as_slice(), b"p\xff".as_slice()]
+        );
     }
 }

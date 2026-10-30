@@ -867,3 +867,126 @@ fn a_cut_exactly_at_the_read_block_makes_two_chunks_not_three() {
         "两枚各装 64 行 = 64 KiB"
     );
 }
+
+/// 与 `run_bytes` 同一个临时目录，但 **argv 交的是原始字节**——非法字节进不了 `&str`，
+/// 所以这一腿不能借道任何按 `str` 收参数的夹具（`OsStr::from_bytes` 只在宿主侧存在）。
+/// 交回退码、逐字节的 stderr，以及目录里生成的档名（按字节、排序）。
+fn run_raw(args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<Vec<u8>>) {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    let dir = scratch();
+    let mut child = Command::new(SPLIT)
+        .args(args.iter().map(|a| OsStr::from_bytes(a)))
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the split binary should be runnable");
+    write_stdin(&mut child, input);
+    let output = child.wait_with_output().expect("the run should finish");
+    let mut names: Vec<Vec<u8>> = fs::read_dir(&dir)
+        .expect("the scratch dir should be readable")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().as_bytes().to_vec())
+        .collect();
+    names.sort();
+    let status = output.status.code().unwrap_or(-1);
+    fs::remove_dir_all(&dir).expect("clean the scratch dir");
+    (status, output.stderr, names)
+}
+
+/// 参数缝的字节判据（本轮落地的就是这一条）：一枚裸 `0xff` 在命令行上进的是**报文**，
+/// 而报文里的字节必须还是那一枚 `ff`。参照件 `tmp/split-311/split` 逐形现量
+/// （`tmp/split-468/measure.log`，改前的件同形交回的是 `ef` 或 `ef bf bd`）：
+/// ① 字母位一行 `split: unknown option -- ` + `ff`，接 usage，退 1（`getopt.c:79` 的
+///    `optopt = *place++` 一次进一枚字节、`:103` 的 `%c` 原样写出）；
+/// ② 四句 `illegal X count.` 的值位是 `optarg` 的原字节（`split.c:112` 那族 `%s`），
+///    单独一行、不接 usage；
+/// ③ 报出来的**分片名**与**输入档名**也是原字节（`:143` 的 `*argv++` 与 `:137-138` 的
+///    `err(1, "%s", *argv)`）。
+/// 最后一形钉的是**当前仍在折**的那条开档腿：档名进的是 `libs` 里的 `&str` 口
+///（在册 `ARGV-BYTE-PATH-IN-LIBS`），所以盘上落的是 `q` + `ef bf bd` + `aa`，而参照件
+/// 落的是 `q` + `ff` + `aa`。钉住这一串字节，等那条腿落地时这枚门当场变红。
+#[test]
+fn the_diagnostic_and_the_chunk_name_carry_the_argv_bytes() {
+    let unknown = [
+        b"split: unknown option -- \xff\n".as_slice(),
+        USAGE.as_bytes(),
+    ]
+    .concat();
+    let (status, err, names) = run_raw(&[b"-\xff"], INPUT);
+    assert_eq!(status, 1);
+    assert_eq!(err, unknown);
+    assert!(names.is_empty(), "报错了就不该写分片文件：{names:?}");
+
+    // 聚簇里那一枚高字节排在前面时，报的仍是它（环停在第一个坏字母上）。
+    let (status, err, _names) = run_raw(&[b"-\xffZ"], INPUT);
+    assert_eq!(status, 1);
+    assert_eq!(err, unknown, "聚簇的字母位取短横后的第一枚字节");
+
+    // 四句各自把值位原字节交回来，句子是本命令自己的、不接 usage。
+    for (flag, sentence) in [
+        (b"-l\xff".as_slice(), b"illegal line count.".as_slice()),
+        (b"-b\xff".as_slice(), b"illegal byte count.".as_slice()),
+        (b"-a\xff".as_slice(), b"illegal suffix length.".as_slice()),
+        (
+            b"-n\xff".as_slice(),
+            b"illegal number of chunks.".as_slice(),
+        ),
+    ] {
+        let (status, err, names) = run_raw(&[flag], INPUT);
+        assert_eq!(status, 1, "{flag:?} 的退码");
+        assert_eq!(
+            err,
+            [b"split: \xff: ".as_slice(), sentence, b"\n".as_slice()].concat(),
+            "{flag:?} 的值位该是原字节 ff，不是 ef bf bd 三枚"
+        );
+        assert!(names.is_empty(), "{flag:?} 报错后不写分片：{names:?}");
+    }
+
+    // 遗留形 `-<数字>`：`ff` 不是数字，于是那一枚字节按字母位报出去（参照件同形）。
+    let (status, err, _names) = run_raw(&[b"-\xff00"], INPUT);
+    assert_eq!(status, 1);
+    assert_eq!(err, unknown, "ff 走的是字母位而不是数字 kludge");
+
+    // 前缀进了分片名：报出来的档名是 `p` + `ff` + `/aa`（开档失手在报文之前就拿到名字）。
+    let (status, err, _names) = run_raw(&[b"-l", b"1", b"-", b"p\xff/"], INPUT);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"split: p\xff/aa: ".as_slice(),
+            b"No such file or directory\n".as_slice()
+        ]
+        .concat(),
+        "报文里的分片名带着那枚原字节"
+    );
+
+    // 打不开的输入：`err(1, "%s", *argv)` 的原文位也是原字节。
+    let (status, err, _names) = run_raw(&[b"no\xff/such"], INPUT);
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [
+            b"split: no\xff/such: ".as_slice(),
+            b"No such file or directory\n".as_slice()
+        ]
+        .concat()
+    );
+
+    // 在册的那一条：开档腿还走 `&str`，所以**盘上**的档名是折过的三枚（参照件落的是
+    // `q` + ff + `aa` 这一串）。输入是 12 行、`-l 1` ⇒ 十二枚分片。
+    let (status, _err, names) = run_raw(&[b"-l", b"1", b"-", b"q\xff"], INPUT);
+    assert_eq!(status, 0);
+    let want: Vec<Vec<u8>> = (0..12usize)
+        .map(|index| {
+            [
+                b"q\xef\xbf\xbd".as_slice(),
+                &[b'a' + (index / 26) as u8, b'a' + (index % 26) as u8][..],
+            ]
+            .concat()
+        })
+        .collect();
+    assert_eq!(names, want, "这一形要等 ARGV-BYTE-PATH-IN-LIBS 落地才翻正");
+}
