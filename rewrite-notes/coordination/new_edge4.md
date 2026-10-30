@@ -3362,6 +3362,20 @@ wtf 的行池内容半按源码应如此、未量（无参照件，不成册项�
 `git status --porcelain` 里本笔涉及的三处（`os/commands/usr-bin/`、`os/commands/games/`、
 `rewrite-notes/`）都没有在制改动。快进之后的主树复跑读数另记一笔合回补记。
 
+**合回读数（第一百八十七笔补记，批次四百七十三）**：快进前复跑上面两条命令，
+`git log --oneline d6140babc..rewrite` 仍交回空、`git merge-base --is-ancestor d6140babc
+rewrite` 退 0 ⇒ `git merge --ff-only claim/GETOPT-REPORT-BYTE-LETTER-qoder` 纯快进成功
+（`29 files changed, 1089 insertions(+), 574 deletions(-)`，主树 `rewrite` 顶到里程碑笔
+`6859b6075`）。逐笔验祖先三笔全 ✓（码笔 `077c9dfc1`、文档笔 `2eacd268d`、里程碑笔
+`6859b6075`）。主树当场复跑两包：textfilter 退出 0、**69 段 / 1285 / 0**，text-games
+退出 0、**9 段 / 79 / 0**（`tmp/family-473-maintree-{tf,tg}.log`），与领取树最终态逐数
+相同。取证目录 `tmp/family-473/`（negctl 三枚三遍、门日志、`post/md5-final.txt`）与
+`tmp/family-473-maintree-{tf,tg}.log` 都已在主树 `tmp/` 下。**A2 本行自此闭合**：
+`GETOPT-REPORT-BYTE-LETTER` 领用链从批次三百九十一起，跨渲染半与参数缝半两个子射程、
+三十七支壳、九个手工配置的参照件（rev/paste/jot/unifdef/colrm/head/split/tail/unexpand/
+unexpand-vis 族等复用与新建合计）、六起「参照件翻正旧账面」的现量，收官于本笔的三个
+文本口删除——`bin_support::args` 的有损折叠自此在这两族不再存在。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
