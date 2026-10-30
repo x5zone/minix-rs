@@ -2913,6 +2913,124 @@ aarch64-unknown-none, riscv64gc-unknown-none-elf} -p minix-textfilter --bins` �
 取证目录 `tmp/tail-469/`（三侧现量、A/B、负控六枚日志与汇总、门日志、`post/` 四件源码快照、
 改前与改后两枚件）本来就在主树 `tmp/` 下，无需回抄。
 
+### 第一百八十四笔（批次四百七十 · A2 参数缝半切片 52：`unexpand` 的六形 tabstop 回声与操作数档名交回原字节；同一件「饱和怎么办」在 C 自己手里有三种答案）
+
+**这一支的形状**：`minix3/usr.bin/unexpand/unexpand.c:86` 的 optstring 是 `"at:"`——七个字母里
+只有 `-a` 与带值的 `-t`。`-a` 与 `-t` 互斥（`:88-95` 的 `if (nstops) usage()` 与 `if (all) usage()`），
+所以 `-at4` 是 usage；`usage()` 一行、大写 `Usage:`、带 `getprogname()`、退 1（`:69-73`）。
+`-t` 的值不整体使用，而是由 `strsep(&optarg, ", \t")`（`:96`）**就地切开**成一支一支，空字段跳过，
+每支交给 `strtoul(tab, &ep, 0)`（`:100`），两句坏值报文是
+`errx(EXIT_FAILURE, "Invalid tabstop \`%s'", tab)`（`:101-103`）与
+`errx(... "Bad tabstop spec \`%s', must be greater than the previous \`%zu'", tab, tabstops[nstops-1])`
+（`:108-112`）——**两处的 `%s` 打的都是切出来的那一支，不是整张值**。选项环之后还有一行
+`fprintf(stderr, "%lu %zu\n", i, tabstops[i])`（`:124-125`）的调试输出，它在外部行为里，本壳照搬。
+操作数走 `freopen(argv[0], "r", stdin)`，失败即
+`err(EXIT_FAILURE, "Cannot open \`%s'", argv[0])`（`:129-130`）三段形。
+
+**三侧现量**（`tmp/unexpand-470/measure.log`，十八形 × 三侧）：改前的件 **9/18** 与参照件
+`tmp/unexpand-312/unexpand_ref` 逐字节同形，改后的件 **17/18**。翻正的八形是字母位（libc 那句
+`unknown option -- %c`）、六形 tabstop 回声（附值 `-t<ff>`、分词 `-t <ff>`、数字尾巴 `-t4<ff>`、
+混合表 `-t8,4<ff>`、空格分隔 `-t8 <ff>`、逗号分隔 `-t,<ff>`）与操作数那句 `Cannot open` 的档名位。
+剩下那一形是**档名本身带裸字节的真档**：参照件退 0 并打出 `\tx`，本壳只能报
+`unexpand: Cannot open \`a\xff.txt': No such file or directory` 退 1——报文里的名字现在对了，
+`freopen` 那一步还不对（`os/libs` 那条 `&str` 口，在册 `ARGV-BYTE-PATH-IN-LIBS`）。
+
+**「折叠改不了判决」这一条在 `unexpand` 上比前两支更硬**。分隔集是 `", \t"` 三枚 ASCII 字节，
+数字判据只认 ASCII 数字与 `0x`/八进制前缀，而 `from_utf8_lossy` 换进去的三枚字节恒在
+`80..=BF`——**这是 UTF-8 的构造区间，不是这批读数的巧合**，所以切点位置与命中判据都不可能被
+折叠改变。与 `split`、`tail` 两笔合起来看，参数缝半里已经有三支持有这条结论，而它们各自的理由
+都指向同一处编码性质；这条理由留在这里，是为了将来换解析器时知道要去重验什么。
+**另有一条「按构造没有可观察差」**：`Bad tabstop spec` 那一臂要等到某一支已经解析成数之后才会
+走到，所以它的 `%s` 位**不可能**带非法字节。这一条写进新立库门的注释，与批次四百六十七那枚
+无分辨力探针同族——让下一次看到「这一枚注入没红」时能立刻分清是覆盖面有洞还是本形无差。
+
+**本轮最值钱的一条是饱和问题的第三种答案，而且是 C 自己给的**：`-t 99999999999999999999999`
+两侧**同判**（都报 `Invalid tabstop \`…'` 退 1，读数 `tmp/unexpand-470/overflow.log`），因为
+`unexpand.c:101` 写的是「`*ep` 非零，或 `errno` 已是 `ERANGE` 且交回 `ULONG_MAX`」——**这一支
+查了 `errno`**。而上一笔的 `split`（`strtoull`，不查 `errno`）与本笔前一笔的 `tail`
+（`strtoll`，不查 `errno`）都是饱和之后继续跑，于是接受一长串本层判非法的数字。同一个问题在
+三份 C 里有三种写法，所以前面登记的那件裁决（`SPLIT-OVERFLOW-COUNT-ACCEPTED` +
+`TAIL-OFFSET-SATURATION-OUTCOME`）**做不成一条全局口径，只能逐命令照各自那一句改**——
+`unexpand` 已经与 C 同，不需要动。
+
+**顺手量清内容半的一处双重编码，登记 `UNEXPAND-LINE-CONTENT-TEXTSEAM`**：`unexpand -a` 对
+标准输入 `   x<ff>y` 的读数，参照件原样穿过，本壳交回 `   x` + `c3 af c2 bf c2 bd` + `y`。
+两步叠加：`src/bin/unexpand.rs:fn emit_tabified` 先 `String::from_utf8_lossy`（`ff` → `ef bf bd`），
+`src/unexpand.rs:fn unexpand_line` 又以 `out.push(byte as char)`（`:175`、`:193`）把每枚字节当码位
+再编一次。这比 `SORT-RECORD-CONTENT-TEXTSEAM`（单纯折一次）更靠里，也说明内容半那一档的修法
+必须同时改掉这两处，只改一处仍然对不上。本轮不动（它比参数缝大一档）。
+
+**落码层**：库侧 `parse_unexpand_args` 收 `&'a [&'a [u8]]`、`UnexpandArgs.operands` 改
+`Vec<&'a [u8]>`、`parse_stops` 收 `&[u8]` 且分隔判据写成
+`matches!(byte, b',' | b' ' | b'\t')`、`base_zero` 按字节走前缀、两枚 `StopRejection` 的值位改
+`&'a [u8]`；壳侧走 `args_bytes()`/`prog_name_bytes()`，两句 tabstop 报文与 `Cannot open` 那句
+按字节拼——后者是本族**第四份**自拼的三段形（`split` 的 `err3`、`sort` 的操作数句、`tail` 的
+`warn_bytes`、`unexpand` 的这一份），`TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE` 的计数随本笔更新。
+
+**门账**：库内 `unexpand` 模块 **+1**（新立
+`the_stop_spec_and_the_operand_carry_the_argv_bytes`，六段，含「回声带切出来的一支而不是整张值」
+与那条按构造说明），`unexpand_face` **14 → 15**（新立
+`the_tabstop_echoes_and_the_operand_name_carry_the_argv_bytes`，九段，末段按当前形状钉住裸名档
+那条 `&str` 口），跨壳表二十一行 → **二十二行**
+（`("unexpand", UNEXPAND, 1, b"unexpand: unknown option -- \xff\n")`），整包 69 段
+**1279 → 1281 passed / 0 failed**；`bin/unexpand` 的 3 枚不变。夹具侧 27 处调用包进新立的
+`fn argv`、26 处值位与期望位改字节面量、`é` 那一形写成字面字节 `c3 a9`。
+
+**负控五枚（`tmp/unexpand-470/negctl.py`，逐枚 `negctl-K1.log`..`negctl-K5.log`、汇总
+`negctl-summary.txt`）按红门数各咬 2/5/2/1/1**：K1（壳侧 argv 退回文本缝）咬跨壳表 + 面门而
+**库内全绿**——「库门对 argv 缝没有牙」第九次量化；K2（字母位按字符取）是唯一穿透到库里的一枚，
+咬库内两枚 + 跨壳表 + 面门两枚；K3 把回声位从「切出来的一支」换成「整张 `-t` 值」——
+**一个看上去完全合理的实现选择，被库门与参照件双双否证**（C 打的是 `strsep` 之后的 `tab`）；
+K4（壳侧值位折一次）与 K5（档名折一次）各只咬面门。
+
+**A/B 对参照件跑矩阵三十九形 SAME=39 / DIFF=0**（`tmp/unexpand-470/ab.log`；件经
+`tmp/unexpand-470/bin-ref/unexpand` 同名软链起，程序名段可直比），非空跑核验先做：
+三十九形里两侧同退 0 的有 16 形；另按类分开计数两族（裸名真档 2 形、内容半双重编码 2 形）。
+归属验过：`-Z` 交回 `unexpand: unknown option -- Z` 加一行大写 `Usage:`。
+
+**五起工具自错，三起属「读数被工具自己的形状骗了」**：① rustfmt 的日志名直接拼了带斜杠的
+文件路径，重定向失败，那批「exit=1、diffs=空」是失败的 `>` 的退出码而不是 rustfmt 的——
+判据：**日志名里不许出现斜杠**（`tr / -`），且退出码要和「这条命令真的跑了吗」一起读。
+② **在负控驱动跑动期间改了同源文件**：为量 HEAD 的 rustfmt 基线做的那次「覆写 + 从快照还原」
+把快照之后新加的一枚库门断言静默还原掉，驱动随后按它自己读到的内容继续跑，K3 那一步的库内
+计数因此是 629 而不是 630。判据：**负控在跑时同源文件不许再动，快照必须重打于最后一次编辑之后**；
+廉价的防线是每写一段断言就 `grep -c` 一次自己的锚点。③ 容器门「67 段 vs 宿主 69 段」是
+`grep -cE "^\s+Running"` 被一行交错输出破坏的假读数（容器里那条 `Running unittests src/bin/col.rs`
+与上一行测试黏在同一行）；按 `test result` 行数与 passed 总和两树都是 69 / 1281。判据：
+**跨树比段数要比 `test result` 行与总和，不比 `Running` 行**。④ 新库门第一版把 `-t8,\xff` 的
+期望写成 `NotIncreasing{spec: b"\xff"}`，当场红——那枚字节根本解析不成数，走的是 `Invalid`，
+又一次「期望值必须先量后写」。⑤ 改前/改后两枚件的 md5 与源码 md5 一度串行混淆，最后靠**行为**
+（同一形一个打 `ef bf bd`、一个打 `ff`）确认配对；判据：md5 只复核同一对象前后一致，
+不用来区分两个对象。另有一处账面不实由本笔更正：码笔 `40b3974bb` 的提交信息把负控写成六个数
+（实为五枚 2/5/2/1/1）、把参照件写成 `tmp/unexpand-311`（实为 `tmp/unexpand-312`）。
+
+**五道收尾门逐条读数**（`2026-10-30`，码笔 `40b3974bb`、文档笔 `7596f0d29`）：①
+`bash tools/todo-reconcile-scan.sh` → 13 项里 2 项 DRIFT（探针两项），与主树同读数、非本线引入；
+② `python3 tools/notes-link-check.py rewrite-notes/` → 764 个 md、**断链 131**（连续四笔同数）；
+③ `bash tools/todo-staleness-check.sh …TODO-LEDGER-OPEN.md` → **PASS（0 项）**；
+④ `bash tools/doc-style-lint.sh --diff` → 3 个文件 / 120 个新增行、**error 级 0**；
+⑤ `bash tools/check-staged-inflight.sh` → 退 0，避让清单 1 条未触碰。
+
+**门读数补全**：宿主整包 → **69 段 / 1281 / 0**（`pkg-1.log`、`pkg-2.log`、`pkg-3.log` 三次同读数、
+退出码各 0）；容器权威门按 §7.3 三挂载配方 → 退 0、**69 段 / 1281 / 0**（`container-gate.log`）；
+三架构各退 0、错误 0（`arch-*.log`，动壳侧字符串拼装后当场跑，一次通过）；
+`rustfmt --edition 2024 --check` 原地量：HEAD 三份各 0 处 `Diff in`，本轮三份格式化前 6 / 0 / 3
+与 1 处，格式化后四件全 0；`cargo clippy` 退 0，两树同为 149 行 / 去重 61 条 / 位置 44 处，
+`src/unexpand.rs` 那两条 saturating-subtraction 存量**两树同位**（177/180），零新警。
+
+**进度与在册（全部现量）**：参数缝半已落 **二十五支**；`textfilter` 余 **14** 支、命令面 **87** 支
+（`grep -rl "support::args()" os/commands --include=*.rs | wc -l`），`line_bytes` 同口径
+**84 处 / 34 件**，`args_bytes()` 调用点 **26** 处，渲染半那条 grep 仍 **0** 行。带字母位诊断面
+只剩 **2** 支（`unifdef`、`vis`），**切片 53 建议 `unifdef`**（`-i`/`-o`/`-I`/`-d` 都带值，
+`-o` 是输出档名、`-I` 是 include 档名，报文与开档两条腿都在字节链上）。本笔新立
+`UNEXPAND-LINE-CONTENT-TEXTSEAM`；在册建议里那条饱和裁决按上面所说**改成逐命令照各自那一句**，
+不再是单一口径。**取证回抄照办**：`tmp/unexpand-470/` 全目录已在主树 `tmp/` 下。
+
+**合回条件（本笔当场量）**：`rewrite` 自基线 `5365ee593` 起除本线四笔之外没有新提交——
+`git log --oneline 5365ee593..rewrite` 交回空、`git merge-base --is-ancestor 5365ee593 rewrite`
+退 0 ⇒ 纯快进、零冲突；主树合并路径的 `git status --porcelain` 交回空。快进之后的主树复跑
+读数另记一笔合回补记。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
