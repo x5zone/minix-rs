@@ -84,7 +84,8 @@ impl ArchInit for AArch64ArchInit {
         // `Gicv3Desc` the controller consumes; without this call the first
         // scheduler IPI reads/writes a null-derived MMIO address (live on
         // the aarch64 full image: faults at 0xF00 in the GICD_SGIR path).
-        use minix_platform::{InterruptControllerDesc, PlatformDesc};
+        // The trait-object methods below resolve through the `dyn` types
+        // returned by the globals; no trait import is needed.
         let controller = minix_platform::platform_desc().interrupt_controller();
         if let Some(gicv3) = controller
             .as_any()

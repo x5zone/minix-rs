@@ -3,10 +3,14 @@
 #
 # 判据：-smp 2 下次级核经 PSCI CPU_ON 交付（内核 smp_init 填记录后
 # 点火），起桩装 BSP 的 TTBR/MAIR/TCR、开 MMU 跳汇聚点置
-# AP_ARRIVED——BSP 侧打印 `nk4c: ap-arrived cpu=<hw>` 为准。
+# AP_ARRIVED——BSP 侧打印 `nk4c: ap-arrived cpu=<hw>` 为准。C2D-APENTRY
+# 起 AP 还要交给 kernel tail 进 scheduler_loop：tail 打开该核重分发器的
+# SGI 0 + 定时器 PPI 并置 `ap_irq_ready`，BSP 在 `wait_for_aps` 后打印
+# `nk4c: ap-irq-ready cpu=<logical> sgi=1 timer=1`。两个标记都在且
+# panic=0 / ap-timeout=0 才算 PASS。
 # （SD-37 乙案 `2026-10-18`：本门判据头旧写「经停车邮箱交付」，与实况
 # 不符——内核从不写 AP_GO 而门常绿，交付通道实测＝PSCI；停车邮箱已删，
-# kernel-image 落选臂改本地 wfi。判据本体 `ap-arrived` 计数不变。）
+# kernel-image 落选臂改本地 wfi。`ap-arrived` 判据保留并加进环读数。）
 #
 # §续-406 起走 QEMU 直核 `-kernel` ELF 引导（§续-88 甲案 aarch64 形）：
 # 非 Linux ELF 走 do_cpu_reset 的 !is_linux 臂——门读数坐实次级核不进
@@ -22,7 +26,7 @@
 #   模块源         0x48000000 起顺序页对齐（12 个 ELF）
 #
 # 前置：qemu-system-aarch64、dtc/fdtput、rust 工具链（aarch64 目标）。
-# Exit codes: 0 = PASS（ap-arrived 到达）, 1 = FAIL, 2 = SKIP。
+# Exit codes: 0 = PASS（ap-arrived + ap-irq-ready，panic=0）, 1 = FAIL, 2 = SKIP。
 
 set -uo pipefail
 
@@ -33,6 +37,7 @@ IMG="$ROOT/target/image/aarch64"
 RUN="${RUN:-smpd1}"
 TIMEOUT_BOOT="${TIMEOUT_BOOT:-300}"
 AP_MARKER="nk4c: ap-arrived"
+AP_IRQ_MARKER="nk4c: ap-irq-ready"
 TABLE_PA=0x47000000
 MODULE_BASE=0x48000000
 
@@ -137,7 +142,10 @@ timeout "$TIMEOUT_BOOT" qemu-system-aarch64 \
 QPID=$!
 trap 'kill $QPID 2>/dev/null || true; wait $QPID 2>/dev/null || true' EXIT
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
-    grep -qaF "$AP_MARKER" "$SERIAL" 2>/dev/null && break
+    if grep -qaF "$AP_MARKER" "$SERIAL" 2>/dev/null \
+        && grep -qaF "$AP_IRQ_MARKER" "$SERIAL" 2>/dev/null; then
+        break
+    fi
     kill -0 "$QPID" 2>/dev/null || break
     sleep 1
 done
@@ -149,13 +157,17 @@ echo "self-boot 横幅              : $(grep -ac 'aarch64 self-boot' "$SERIAL")"
 echo "arch_boot step0 validate ok : $(grep -ac 'step0 validate ok' "$SERIAL")"
 echo "kmain 相位                  : $(grep -ac 'kernel: kmain\|vm_handoff' "$SERIAL")"
 echo "ap-arrived                  : $(grep -acF "$AP_MARKER" "$SERIAL")"
+echo "ap-irq-ready                : $(grep -acF "$AP_IRQ_MARKER" "$SERIAL")"
 echo "ap-timeout                  : $(grep -ac 'ap-timeout' "$SERIAL")"
 echo "panic                       : $(grep -ac 'panicked' "$SERIAL")"
 echo "----- 串口尾 30 行 -----"
 tail -30 "$SERIAL"
-if grep -qaF "$AP_MARKER" "$SERIAL"; then
-    echo "### TEST_RESULT: PASS test-smp-aps-aarch64 (secondary cpu reached convergence) ###"
+if grep -qaF "$AP_MARKER" "$SERIAL" \
+    && grep -qaF "$AP_IRQ_MARKER" "$SERIAL" \
+    && [ "$(grep -ac 'panicked' "$SERIAL")" -eq 0 ] \
+    && [ "$(grep -ac 'ap-timeout' "$SERIAL")" -eq 0 ]; then
+    echo "### TEST_RESULT: PASS test-smp-aps-aarch64 (AP entered scheduler; SGI+timer gates open) ###"
     exit 0
 fi
-echo "### TEST_RESULT: FAIL test-smp-aps-aarch64 (no ap-arrived marker) ###"
+echo "### TEST_RESULT: FAIL test-smp-aps-aarch64 (ap-arrived/ap-irq-ready/panic/ap-timeout check) ###"
 exit 1

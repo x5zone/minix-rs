@@ -327,6 +327,27 @@ pub fn enable_sched_sgi_for_cpu(hw_id: usize) {
     }
 }
 
+/// Enable an AP's per-CPU interrupt sources: the scheduler SGI and the
+/// timer PPI.
+///
+/// Both gates live in that CPU's redistributor `GICR_ISENABLER0`. The BSP
+/// enables its timer PPI through `register_hook(TIMER_IRQ)`'s unmask; an AP
+/// has no equivalent hook registration, so its bring-up opens both bits
+/// here. The controller's `enable_sgi` is the shared set-enable + CPU
+/// interface path (the register is set-enable, so two calls leave both bits
+/// set).
+#[cfg(target_arch = "aarch64")]
+pub fn enable_ap_irq_sources(hw_id: usize) {
+    let acquired = crate::smp::bkl_lock_or_inherit();
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let mgr = crate::irq_manager_with(&section);
+    mgr.enable_sgi(hw_id, minix_arch::arm64::smp::SCHED_SGI_INTID as u8);
+    mgr.enable_sgi(hw_id, minix_plat::TIMER_IRQ.get());
+    if acquired {
+        crate::smp::bkl_unlock();
+    }
+}
+
 /// An IRQ hook slot in the global hook pool.
 struct IrqHookSlot {
     next: Option<usize>,
