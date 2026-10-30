@@ -120,6 +120,83 @@ Rust 标准库的 `thread` 与 `sync` 建立在 pthread 之上，pthread 的阻�
 ---
 
 
+## 批次四百七十三（A2 族终笔：十五支壳迁字节缝、三个文本口删除、`argv_seam_face` 的门升到逐字节；本行自批次三百九十一起的字母位与参数缝两条残差自此无源）
+
+- **这一笔的射程**：支级切片（渲染半十支 + 参数缝半二十七支）已把有字母面的壳全部带走，
+  剩下的是「没有字母面、但 argv 仍走有损折叠」的十二支 textfilter 壳、text-games 三支壳、
+  以及三个文本口本身。删口的前提是消费者清零，所以这一笔先把十五支壳迁到
+  `args_bytes()`，再删口。
+- **十二支 textfilter 壳**（`wc`、`hexdump`、`fmt`、`unvis`、`look`、`lam`、`tsort`、`asa`、
+  `expand`、`diff`、`colcrt`、`patch`）：操数按 argv 原字节走，报文里念得出名字的那一位
+  不再经过有损折叠；开档口仍走 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在递进去
+  的那一刻。随迁的取值判据全部只认 ASCII（`fmt`/`diff`/`patch` 的数字解析、`hexdump -n`、
+  `expand` 的 tabstop 表），折前折后同判——判据照前几笔的结论逐命令核过一遍。四个库入口
+  同时改收字节：`hexdump::parse_skip`（`BadSkip` 的载荷随之去掉，没人读过它）、
+  `expand::{parse_expand_args,parse_stops}`、`tsort::parse_args`、`lam::parse_width`
+  （`InvalidFormat` 的载荷同理）。**报文形状全部照旧**：这些壳的开档失手句各有各的
+  口径（`wc: <名>`、`expand: Cannot open \`<名>'`、`asa: <名>: cannot open`、
+  `look: Can't open <名>`……），它们与 C 三段形的差是**既有维度**，不是本笔的缝，
+  本笔只把名字位换成原字节、不改句子。
+- **三个文本口删除**：`bin_support::args()` 两条腿、`bin_support::prog_name()`、
+  `minix_textfilter::empty_optstring_operands` 的 `&str` 形——那张三形判据的钉子全部迁到
+  `empty_optstring_operands_bytes` 上（含 `-\xc3\xa9` 报 `c3`、聚簇报第一字节、ASCII 三形
+  六段）；`src/colrm.rs` 篇首的指名随之改 `_bytes`。现量：本包与 text-games 的壳
+  `args()` 消费者清零，`args()` 文本口只剩其它族自己的 bin_support 各留一份
+  （`grep -rl "pub fn args()" os/commands --include=bin_support.rs | wc -l` → **13**，
+  不在 A2 射程）；`support::prog_name(` 调用者全命令面余 **14** 文件（同理）。
+- **text-games 三支**（`random`、`wtf`、`fortune`）：`lottery` 的 `scan_ring`/`judge_operands`/
+  `scan_strtod` 改收字节（三者的内部本来就是按字节写的，只动签名与测试字面量）；
+  random 的 OutOfRange 三段形由壳按原字节自拼（本族第五份自拼助手）；wtf 的查询词回声
+  按原字节（脚本 `tr` 的大写化本来就是按字节的，`shown` 改逐字节大写）；fortune 的
+  `Cannot open` 三段形按原字节自拼。`-s` 那族与行池的内容半不动
+  （行池按源码应如此、未量：wtf 没有参照件，见 `src/bin/wtf.rs` 查表口的注释）。
+- **`argv_seam_face` 的门升级**：从「裸字节 == lossy 等价」（批次四百二十二立的契约）
+  升到「裸字节 == C 的答案」（参照件 `tmp/random-421/random` 的读数）。三形逐字节：
+  ① `random -\xff` → `random: unknown option -- \xff` + usage（字母位是那枚字节）；
+  ② `wtf -- -\xff` → `I don't know what \`-\xff' means!`（查询词位原样，**连短横一起**，
+  参照件量出来才知道 token 整个是查询词）；③ `fortune -\xff` → `Cannot open \`-\xff':
+  No such file or directory`（档名位原样）。升级改写了批次四百二十二那枚门的判据与篇首：
+  「两路相等」的日子结束了，有损折叠不再是缝的一部分。wtf 那一形要先递一份可开的临时库
+  （缺省词典不在镜像里，look 那支同款残差）。
+- **新立跨壳门** `the_plain_shells_operand_echo_carries_the_argv_bytes`（`bin_support_face`，
+  十行）：十支「报文里念得出操数名」的壳各喂一枚带裸 `ff` 的操数，钉住名字位是原字节；
+  colcrt 与 fmt 的开档失手句不带档名位，没有可观察的字节腿，不入列（这一条写进注释）。
+  整包 69 段 **1284 → 1285** / 0、text-games 9 段 79 / 0。
+- **负控三枚（`tmp/family-473/negctl.py`）各咬 1**：K1（wc 的壳侧 argv 内联一条有损折叠——
+  `args()` 已删，注入只能复刻那条腿）咬十行门的 wc 行；K2（wtf 查询词回声折一次）与
+  K3（fortune 档名回声折一次）各咬 `argv_seam_face` 一形。random 的 OutOfRange 臂只有
+  ASCII 数字能到（ERANGE 来自 strtod 溢出），折叠无可观察差，**不设注入**（写了原因）。
+  头一遍驱动还有两起自错：K1 的注入串引用了已删除的 `support::args()`（BUILD-FAIL）——
+  负控也是代码，删口之后要跟着改；K3 的锚点在 fortune 里命中两处（`Cannot open` 与
+  `empty database` 两句都有档名位），收窄到带句子的上下文才咬对形。
+- **四起工具自错**：① **no_std 的 `ToString` 第四次**（`unvis` 的 `offset.to_string()`、
+  `random`/`fortune` 的 `Strerror(...).to_string()`，三架构当场补 import）——而且本笔把
+  三架构排在了负控之后，上一笔刚加严的判据自己没执行，两笔连续犯同一类顺序错；
+  ② **`rustfmt` 顺着 `src/lib.rs` 的模块树带出九件纯格式漂移**（join/nl/look/diff/fmt/
+  colcrt/patch/rev/seq 的库件被就地格式化），按批四十零四那条规矩 `git checkout --` 还原、
+  不带走——判据第二次兑现：**对 lib 件跑 rustfmt 等于对全族跑**，收尾必须看
+  `git status` 逐件核对；③ clippy 抓到五处换缝后死掉的 `format`/`ToString` import 与一枚
+  可省略的生命周期（`parse_unvis_args`），就地清掉才与主树同数——**删口之后 import 的
+  死活要靠 clippy 复核**；④ 门期望有两形先写错（wtf 与 fortune 的报文里**连短横一起**
+  出现，参照件读数在前、期望在后），按现量改。
+- **门读数（全部 L1，`2026-10-30`，基线快照 `d6140babc`）**：宿主 textfilter **69 段 /
+  1285 / 0**、text-games **9 段 / 79 / 0**（`pkg-*.log` 多次同读数）；容器权威门两包同读数
+  退 0（`container-tf.log`、`container-tg.log`；第一遍因 `tmp/ci-target` 被删后由 docker
+  以 root 重建而挂载失败，属目录属主问题不是代码问题，删掉重建成用户属主后一次通过）；
+  三架构两包各退 0（`arch2/3-*.log`）；`rustfmt --edition 2024 --check` 触及件各 0 处；
+  clippy 两包退 0、唯一句集合与主树相同（textfilter 149 行、text-games 14 行）。
+- **进度与在册（全部现量）**：**A2 本行至此闭合**——字母位失真（渲染半）与参数缝失真
+  （参数缝半）两条残差自批次三百九十一立账以来全部归零；`args()` 文本口 13 份、
+  `prog_name()` 调用者 14 文件都在**其它族**自己的 bin_support 里，属各族的既有形状
+  （与 C 三段形的差另算，不在本行射程）。`line_bytes` **88 处 / 35 件**；三段形自拼助手
+  **5** 份（sort 内联、tail `warn_bytes`、unifdef `err_can_open`、vis `warn_can_open`、
+  本笔 random 的 OutOfRange 臂）。在册不变者：`ARGV-BYTE-PATH-IN-LIBS`（本笔再添十五处
+  开档口一条腿）、`TEXTFILTER-WARN-BYTES-DUPLICATES-ERR-LINE`、`SPLIT-*` 两枚、
+  `TAIL-OFFSET-SATURATION-OUTCOME`、`UNIFDEF-*` 四枚、`VIS-USAGE-PROGNAME-HARDCODED`、
+  wtf 行池那处内容半（按源码应如此、未量，不成册项）。
+
+---
+
 ## 批次四百七十二（A2 参数缝半切片 54：`vis` 的 `-e` 值、字母位与操数名交回原字节；本族第一枚「折叠改判决」的腿；新配的参照件还翻正了两处旧账面）
 
 - **这一支先配出了本族的第九支参照件，也是 `vis` 的第一支**：批次四百零四写的是「宿主没有
