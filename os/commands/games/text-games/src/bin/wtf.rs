@@ -139,9 +139,9 @@ fn run() -> ! {
         // 字节原样穿过）再拿它输出，实测
         // `ACRONYDB=<库> sh … nasa` → `NASA: National Aeronautics and Space Administration`。
         // 改前本壳原样输出查询词，等于把「打印哪个形态」这件真值漏掉了。
-        // `shown` 按 argv 原字节走；查表那一口收 `&str`（行池本身是折过的内容半，
-        // 在册 `WTF-POOL-CONTENT-TEXTSEAM`），折只发生在递进去的这一刻——ASCII 的
-        // 判据折前折后同判。
+        // `shown` 按 argv 原字节走；查表那一口收 `&str`（行池本身是折过的内容半——
+        // 按源码应如此、未量：本壳没有 wtf 的参照件，行池里的裸字节与查询词的匹配
+        // 差观察不到），折只发生在递进去的这一刻——ASCII 的判据折前折后同判。
         let shown: Vec<u8> = term.iter().map(|b| b.to_ascii_uppercase()).collect();
         let term_text = String::from_utf8_lossy(term).into_owned();
         let expansions = matching_expansions(&lines, &term_text);
