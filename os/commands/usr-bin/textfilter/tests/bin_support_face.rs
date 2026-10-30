@@ -49,6 +49,7 @@ const SPLIT: &str = env!("CARGO_BIN_EXE_split");
 const TAIL: &str = env!("CARGO_BIN_EXE_tail");
 const UNEXPAND: &str = env!("CARGO_BIN_EXE_unexpand");
 const UNIFDEF: &str = env!("CARGO_BIN_EXE_unifdef");
+const VIS: &str = env!("CARGO_BIN_EXE_vis");
 
 /// 一个裸 `0xFF`：既不是任何 UTF-8 序列的前缀，也不可能出现在合法 argv 里。
 const FF: u8 = 0xFF;
@@ -85,7 +86,7 @@ fn run(exe: &str, args: &[&[u8]], input: &[u8]) -> (i32, Vec<u8>, Vec<u8>) {
 #[test]
 fn no_command_aborts_on_a_nonutf8_option_letter() {
     let flag = [b"-".as_slice(), &[FF][..]].concat();
-    let cases: [(&str, &str, i32, &[u8]); 23] = [
+    let cases: [(&str, &str, i32, &[u8]); 24] = [
         // tr（批次四百四十四）、seq（四百四十三）、paste（四百四十一）、rev（四百四十）、
         // fold（四百四十六）、col（四百四十八）、uniq（四百五十二）都走 `bin_support::args_bytes`，
         // 字母位是原字节 `ff`。
@@ -177,6 +178,12 @@ fn no_command_aborts_on_a_nonutf8_option_letter() {
         //（没有 `getprogname()`）——本行钉的是 libc 那一行，usage 与两处 `can't open %s`
         // 的档名位由 `unifdef_face` 的 `the_operand_and_output_names_carry_the_argv_bytes` 承载。
         ("unifdef", UNIFDEF, 2, b"unifdef: unknown option -- \xff\n"),
+        // vis 随批次四百七十二落地：`vis.c:73` 的 `getopt(argc, argv, "bcde:F:fhlMmNnoSstw")`
+        // 吃的是 libc 那一份，退 1；它的 usage 行带 `getprogname()`（`vis.c:136-139`），所以
+        // 两行的名字同源（在册 `VIS-USAGE-PROGNAME-HARDCODED` 说的是本壳 usage 写死 `vis`）。
+        // 它的 `-e` 值位是本族第一枚判决腿：extra 表是逐字节的集合，折叠换的是编码答案，
+        // 由 `vis_face` 的 `the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes` 承载。
+        ("vis", VIS, 1, b"vis: unknown option -- \xff\n"),
     ];
     for (name, exe, want_code, want_first) in cases {
         let (code, _out, err) = run(exe, &[&flag], b"aabbcc\n");

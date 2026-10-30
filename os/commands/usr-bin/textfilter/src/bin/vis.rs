@@ -22,13 +22,25 @@
 //! output stream, and an unopenable operand warns and flags the exit
 //! status (`vis.c:151-164`); a bare `-` is a literal file name (`fopen`), not a
 //! stdin alias. Without operands stdin is the source.
+//!
+//! The command line reaches the ring as bytes (`args_bytes`), and three legs pass
+//! those bytes straight through: the `-e` value seeds the extra list — C stores
+//! `extra = optarg` (`vis.c:87`) and `makeextralist`
+//! (`lib/libc/gen/vis.c:351-384`) lists each byte as `(wchar_t)(u_char)src[i]`, so
+//! a folded value names three different bytes and changes what gets encoded (the
+//! one judgment leg of this family); the libc option line names the first byte of
+//! the flag (`getopt.c:79,103`); an unopenable operand is reported through
+//! `warn("%s", *argv)` (`vis.c:157`) with the name as raw bytes. The program-name
+//! token still folds once on its way into `&str` mouths
+//! (`ARGV-BYTE-PATH-IN-LIBS`), and the usage line's name is C's own
+//! `getprogname()` against this shell's hardcoded `vis` — registered as
+//! `VIS-USAGE-PROGNAME-HARDCODED`.
 
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
 
 extern crate alloc;
 
-use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
@@ -48,13 +60,17 @@ struct Plan<'a> {
     none: bool,
     fold: bool,
     foldwidth: usize,
-    operands: Vec<&'a str>,
+    operands: Vec<&'a [u8]>,
 }
 
 fn run() -> ! {
-    let argv: Vec<String> = support::args();
-    let prog = support::prog_name(&argv);
-    let plan = match parse_vis_args(&argv, prog) {
+    let argv: Vec<Vec<u8>> = support::args_bytes();
+    // 程序名折一次（`line_bytes` 与 usage 行都收 `&str`，在册 `ARGV-BYTE-PATH-IN-LIBS`；
+    // usage 那一行的名字另有册项 `VIS-USAGE-PROGNAME-HARDCODED`）。操数名与 `-e` 的值
+    // 不走这里：前者按原字节拼进三段形的 `warn`，后者整串按原字节进 extra 表。
+    let prog = String::from_utf8_lossy(support::prog_name_bytes(&argv)).into_owned();
+    let refs: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
+    let plan = match parse_vis_args(&refs, &prog) {
         Ok(parsed) => parsed,
         Err(message) => {
             support::warn(&message);
@@ -114,10 +130,16 @@ fn run() -> ! {
         consume(&support::read_stdin());
     } else {
         for &operand in operands {
-            match support::read_file(operand) {
+            // 开档那一口要 `&str`（在册 `ARGV-BYTE-PATH-IN-LIBS`），折只发生在递给它的
+            // 这一刻；报文里念出去的是**原字节**。
+            let shown = String::from_utf8_lossy(operand).into_owned();
+            match support::read_file(&shown) {
                 Ok(data) => consume(&data),
-                Err(_) => {
-                    support::warn(format!("vis: {operand}\n").as_bytes());
+                Err(code) => {
+                    // C 是 `warn("%s", *argv)`（`vis.c:157`）：三段形 `vis: 档名: strerror`，
+                    // 然后**继续跑下一个操数**并把退码定成 1（`:158`）。本壳此前只打两段
+                    // （`vis: 档名`），少的是 `strerror` 那一段。
+                    warn_can_open(&prog, operand, code);
                     rval = 1;
                 }
             }
@@ -125,6 +147,19 @@ fn run() -> ! {
     }
     support::emit(&encoded);
     support::terminate(rval);
+}
+
+/// C `warn("%s", *argv)` 的三段形，档名位交回 argv 的原字节（本族第四份自拼的助手，
+/// 形状的权威仍是 `minix-types::err_line`，那条 `&str` 口在册）。
+fn warn_can_open(prog: &str, name: &[u8], code: minix_sys::Errno) {
+    let mut line = Vec::new();
+    line.extend_from_slice(prog.as_bytes());
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(name);
+    line.extend_from_slice(b": ");
+    line.extend_from_slice(minix_sys::Strerror(code).to_string().as_bytes());
+    line.push(b'\n');
+    support::warn(&line);
 }
 
 #[cfg(all(not(test), target_os = "none"))]
@@ -158,25 +193,32 @@ fn libc_line(report: GetoptReport, prog: &str) -> Vec<u8> {
 /// or the following word (`-e x`), `--` ends option scanning, and a lone `-` is
 /// an operand. Each `-e` overwrites the previous one, as C's `extra = optarg`
 /// assignment does; each `-F` overwrites the width the same way.
-fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, Vec<u8>> {
+///
+/// `argv` arrives as bytes and the `-e` value is handed to the encoder **as those
+/// bytes**: C stores `extra = optarg` (`vis.c:87`) and `makeextralist`
+/// (`lib/libc/gen/vis.c:351-384`) puts each byte of it on the extra list as
+/// `(wchar_t)(u_char)src[i]` whenever `VIS_NOLOCALE` is set or the multibyte decode
+/// fails, so the extra list is a set of *bytes* and a folded value names three
+/// different bytes. That makes this the one leg in the family where the fold changes
+/// what gets encoded, not merely what is printed — see the face test that pins it.
+fn parse_vis_args<'a>(argv: &'a [&'a [u8]], prog: &str) -> Result<Plan<'a>, Vec<u8>> {
     let mut options = VisOptions::default();
     let mut none = false;
     let mut fold = false;
     // `vis.c:58`: `foldwidth` starts at 80 and `-f` leaves it there; only `-F`
     // moves it, and only `-f` switches folding on.
     let mut foldwidth = 80usize;
-    let mut operands: Vec<&str> = Vec::new();
+    let mut operands: Vec<&[u8]> = Vec::new();
     let mut index = 1usize;
     let mut scanning = true;
     while index < argv.len() {
-        let token = argv[index].as_str();
-        let bytes = token.as_bytes();
+        let bytes = argv[index];
         if !scanning || bytes.len() < 2 || bytes[0] != b'-' {
-            operands.push(token);
+            operands.push(bytes);
             index += 1;
             continue;
         }
-        if token == "--" {
+        if bytes == b"--" {
             scanning = false;
             index += 1;
             continue;
@@ -236,9 +278,9 @@ fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, Vec<u8
                     // Value: the rest of this token, or the next word.
                     index += 1;
                     options.extra = if pos + 1 < bytes.len() {
-                        token.as_bytes()[pos + 1..].to_vec()
+                        bytes[pos + 1..].to_vec()
                     } else if index < argv.len() {
-                        argv[index].as_bytes().to_vec()
+                        argv[index].to_vec()
                     } else {
                         // C 的 getopt 在缺值时先自己印一行（`getopt.c:132-136`），
                         // 才把 `?` 交给开项环落到 `default: usage()`——所以这里是**两行**。
@@ -251,9 +293,9 @@ fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, Vec<u8
                     // Value: the rest of this token, or the next word (`vis.c:89-95`).
                     index += 1;
                     let word = if pos + 1 < bytes.len() {
-                        &token.as_bytes()[pos + 1..]
+                        &bytes[pos + 1..]
                     } else if index < argv.len() {
-                        argv[index].as_bytes()
+                        argv[index]
                     } else {
                         return Err(libc_line(GetoptReport::MissingValue('F'), prog));
                     };
@@ -272,16 +314,13 @@ fn parse_vis_args<'a>(argv: &'a [String], prog: &str) -> Result<Plan<'a>, Vec<u8
                     pos = bytes.len();
                     continue;
                 }
-                // `-d` 不在集外：C 的选项串里写的是 `d:`（带值），所以 getopt **不**报
-                // 那一行；但 `case 'd'` 在 `DEBUG` 之外的构建里被编译掉，于是它落到
-                // `default: usage()`（批次二百一十二定下的那一形）。缺值时仍走 libc 那一句。
-                b'd' => {
-                    index += 1;
-                    if pos + 1 >= bytes.len() && index >= argv.len() {
-                        return Err(libc_line(GetoptReport::MissingValue('d'), prog));
-                    }
-                    return Err(USAGE.as_bytes().to_vec());
-                }
+                // `-d` 是**不带值**的字母：`vis.c:73` 那张串里 `:` 挂在 `e` 上而不是 `d` 上
+                // （`"bcde:F:fhlMmNnoSstw"` 切出来是 `b c d e: F: f h l M m N n o S s t w`），
+                // 所以 getopt 认它、也不报缺值行；但 `case 'd'` 只在 `DEBUG` 构建里存在，
+                //  shipped 构建里它落到 `default:` 打一行 usage 退 1（参照件现量 `-d`、
+                // `-d x`、`-cd`、`-dZ` 四形全是**只有 usage 一行**，`tmp/vis-472/measure.log`）。
+                // 本壳此前把它当带值字母，`-d` 排在末尾时多打了 libc 那句缺值行。
+                b'd' => return Err(USAGE.as_bytes().to_vec()),
                 _ => {
                     // 集外字母：libc 的 `getopt` 先印一行（`getopt.c:101-104`，选项串不以
                     // `:` 开头所以 `opterr` 生效），再由 `case '?'`/`default` 接 usage。

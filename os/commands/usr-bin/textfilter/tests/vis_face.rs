@@ -2,10 +2,14 @@
 //! files, checked against `minix3/usr.bin/vis/vis.c` and the vis(3) engine in
 //! `minix3/lib/libc/gen/vis.c`.
 //!
-//! There is no differential leg here: a Linux host has no `vis`, and the
-//! byte-exact expectations below are what the C source says. Output is compared
-//! as bytes because `-n` copies the input through, including bytes above 0x7F,
-//! which no `String` could carry unchanged.
+//! The differential leg used to be missing (a Linux host ships no `vis`, and the
+//! byte-exact expectations below were what the C source says); batch 472 built one
+//! by linking Minix's own `lib/libc/gen/vis.c` (the vis(3) engine) plus Minix's
+//! getopt into a host reference — `tmp/vis-472/vis_ref`, invoked through a
+//! same-named symlink, `LC_ALL=C` pinned on both sides. The expectations below
+//! have all been re-measured against it; output is still compared as bytes
+//! because `-n` copies the input through, including bytes above 0x7F, which no
+//! `String` could carry unchanged.
 
 mod face_support;
 
@@ -116,14 +120,23 @@ fn operands_are_encoded_into_one_stream_and_a_bad_one_only_warns() {
     let (out, status, err) = run(&[&text(&one), &missing, &text(&two)], b"");
     assert_eq!(out, b"a\n\\^A".to_vec());
     assert_eq!(status, 1, "stderr was {err:?}");
-    assert!(err.contains(&missing), "stderr was {err:?}");
+    // C 是 `warn("%s", *argv)`（`vis.c:157`）的三段形：`vis: 档名: strerror`，
+    // 打完**继续跑下一个操数**并把退码定成 1（`:158`）。本壳此前只打两段。
+    assert_eq!(
+        err,
+        format!("vis: {missing}: No such file or directory\n"),
+        "开不了的操数是三段形，含 strerror 那一段"
+    );
 
     // A bare `-` is a literal file name for `vis` (its operands go through
     // `fopen`), not a stdin alias.
     let (out, status, err) = run(&["-"], b"a\n");
     assert_eq!(out, Vec::<u8>::new());
     assert_eq!(status, 1);
-    assert!(err.contains("vis: -"), "stderr was {err:?}");
+    assert_eq!(
+        err, "vis: -: No such file or directory\n",
+        "裸 `-` 也走 fopen，报文同是三段形"
+    );
 
     for path in [&one, &two] {
         let _ = fs::remove_file(path);
@@ -150,10 +163,10 @@ fn run_streams(args: &[&str], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
 }
 
 /// 集外字母那一行的字母位是**一个裸字节**（`-\u{e9}` 交回 `c3`，不是 `c3 a9` 也不是 `c3 83`）。
-/// 本支没有差分腿（宿主没有 `vis(3)`，篇首那句「byte-exact expectations are what the C source
-/// says」是既定口径），判据两处：机制在 `minix3/lib/libc/stdlib/getopt.c:79`（`optopt = *place++`
-/// 一次进一个字节）与 `:103`（`%c` 原样写出），同族九支壳的参照件读数（`tmp/rev-309/rev_ref`、
-/// `tmp/paste-321/paste_ref`、`tmp/jot-317/jot_ref` 等）对 `-é` 全部交回单个 `c3`。
+/// 本支的差分腿批次四百七十二才配上（把 Minix 自己的 `lib/libc/gen/vis.c` 连同 getopt 链成
+/// 宿主参照件，`tmp/vis-472/vis_ref` 经同名软链起、两侧钉 `LC_ALL=C`），此前的判据来源
+/// 与那次的八枚负控都留在这条注释里作底：机制在 `minix3/lib/libc/stdlib/getopt.c:79`
+/// （`optopt = *place++` 一次进一个字节）与 `:103`（`%c` 原样写出）。
 /// `c` 是 C 选项串里合法且不带值的字母，所以聚簇继续吃到 `é` 的第一字节；`-Zé` 停在 `Z`——
 /// `vis.c:135-140` 的 `case '?'`/`default` 打完 usage 就 `return 1`，第二个字母轮不到。
 #[test]
@@ -177,6 +190,95 @@ fn the_libc_line_of_a_multibyte_flag_is_the_first_byte_of_the_flag() {
     );
 }
 
+/// 那几条按字节交回的腿，也是本族第一枚**判决腿**：`-e` 的值整串进 extra 表，而 extra 表
+/// 决定哪些字节走八进制——C 的取法逐处对上：`extra = optarg`（`vis.c:87`），
+/// `makeextralist`（`lib/libc/gen/vis.c:351-384`）在 `VIS_NOLOCALE` 或多字节解码失败时把
+/// `-e` 串按 `(wchar_t)(u_char)src[i]` **逐字节**上榜，`warn("%s", *argv)`（`:157`）打 argv
+/// 的原词，libc 那句的字母位是 `getopt.c:79` 的一枚字节。折叠把一枚 `ff` 换成三枚
+/// `ef bf bd` 的地方，编码的答案跟着换（折前 `ff` 不在名单上、走 M- 记法，折后名单变成
+/// `ef`/`bf`/`bd` 三枚而 `ff` 依旧不在）——这与 split/tail/unexpand 那「折叠不改判决」
+/// 的三支不同，是 join/pr/sort 那一族。参照件现量 `tmp/vis-472/measure.log`（26 形两侧
+/// 逐字节同形）。
+#[test]
+fn the_extra_list_the_letter_and_the_operand_name_carry_the_argv_bytes() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    const USAGE_LINE: &[u8] =
+        b"Usage: vis [-bcfhlMmNnoSstw] [-e extra] [-F foldwidth] [file ...]\n";
+
+    fn run_raw(args: &[&[u8]], input: &[u8]) -> (Vec<u8>, i32, Vec<u8>) {
+        let mut child = Command::new(VIS)
+            .args(args.iter().map(|word| OsStr::from_bytes(word)))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the vis binary should be runnable");
+        face_support::write_stdin(&mut child, input);
+        let output = child.wait_with_output().expect("the run should finish");
+        (
+            output.stdout,
+            output.status.code().unwrap_or(-1),
+            output.stderr,
+        )
+    }
+
+    let source: &[u8] = b"x\xffy\n";
+    let source_file = written("hi-ff", source);
+    let operand = text(&source_file);
+    let operand_bytes: &[u8] = operand.as_bytes();
+    // `-e <ff>`：ff 上榜，输入里的 ff 从 M- 记法换成三位八进制。分词与附值两形同答案。
+    for form in [
+        vec![b"-e".to_vec(), b"\xff".to_vec()],
+        vec![b"-e\xff".to_vec()],
+    ] {
+        let args: Vec<&[u8]> = form
+            .iter()
+            .map(Vec::as_slice)
+            .chain([operand_bytes])
+            .collect();
+        let (out, status, err) = run_raw(&args, source);
+        assert_eq!(err, Vec::<u8>::new(), "{form:?} 的报文只走标准输出");
+        assert_eq!(status, 0, "{form:?} stderr 是 {err:?}");
+        assert_eq!(
+            out,
+            b"x\\377y\n".to_vec(),
+            "{form:?}：ff 在名单上，走八进制"
+        );
+    }
+    // 反面：名单换成一枚 ASCII，ff 退回 M- 记法、y 反而进八进制——名单是逐字节的集合，
+    // 不是「多转义一点」的开关。
+    let (out, status, _err) = run_raw(&[b"-e", b"y", operand_bytes], source);
+    assert_eq!(status, 0);
+    assert_eq!(
+        out,
+        b"x\\M^?\\171\n".to_vec(),
+        "y 上榜而 ff 不在，编码跟着名单走"
+    );
+    // 字母位：单枚裸字节原样报出，折过的三字节 `ef bf bd` 不再出现。
+    let (_out, status, err) = run_raw(&[b"-\xff"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        [b"vis: unknown option -- ".as_slice(), b"\xff\n", USAGE_LINE].concat()
+    );
+    // 操数名：`warn("%s", *argv)` 的三段形，档名位是原字节，strerror 那一段照旧。
+    let (_out, status, err) = run_raw(&[b"nosuch\xff.txt"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(
+        err,
+        b"vis: nosuch\xff.txt: No such file or directory\n".to_vec()
+    );
+    // `-F` 的值折叠改不了判决：`atoi` 只认 ASCII 数字，折前折后都不是数字、都折成 0，
+    // 都过不了 `< 5`——而那句话不带 `%s`，值位根本不出现在报文里。
+    let (out, status, err) = run_raw(&[b"-F", b"\xff"], b"a\n");
+    assert_eq!(status, 1);
+    assert_eq!(err, b"vis: can't fold lines to less than 5 cols\n".to_vec());
+    assert_eq!(out, Vec::<u8>::new());
+    let _ = fs::remove_file(&source_file);
+}
+
 #[test]
 fn letters_outside_the_c_optstring_are_refused_with_usage() {
     // Every letter of C's `"bcde:F:fhlMmNnoSstw"` is now modelled, so the only
@@ -198,20 +300,17 @@ fn letters_outside_the_c_optstring_are_refused_with_usage() {
             "flag {flag} 的两行形与 C 不符"
         );
     }
-    // `-d` 不在集外（C 的选项串里是 `d:`），所以它**没有**首行，只落 usage；
-    // 而它带值：后面什么都没有时才是 libc 的缺值那一句。
-    let (out, status, err) = run(&["-d", "x"], b"a\n");
-    assert_eq!(out, Vec::<u8>::new());
-    assert_eq!(status, 1, "stderr was {err:?}");
-    assert_eq!(err, USAGE_LINE, "`-d` 的 case 被 DEBUG 编译掉，只落 usage");
-    let (out, status, err) = run(&["-d"], b"a\n");
-    assert_eq!(out, Vec::<u8>::new());
-    assert_eq!(status, 1, "stderr was {err:?}");
-    assert_eq!(
-        err,
-        format!("vis: option requires an argument -- d\n{USAGE_LINE}"),
-        "缺值那一支也带 libc 的首行（`getopt.c:132-136`）"
-    );
+    // `-d` 是**不带值**的字母：`vis.c:73` 那张串切出来是 `b c d e: F: f h l M m N n o S s t w`，
+    // 冒号挂在 `e` 与 `F` 上，`d` 后面什么都没有也照样是一个完整字母。参照件四形现量
+    // （`tmp/vis-472/measure.log`：`-d`、`-d x`、`-cd`、`-dZ`）**都只有 usage 一行**——
+    // getopt 认它所以 libc 不报缺值行，`case 'd'` 在非 `DEBUG` 构建里被编译掉于是落到
+    // `default:`。本壳此前把 `d` 当带值字母，`-d` 排在末尾时多打了 libc 那句。
+    for form in [vec!["-d"], vec!["-d", "x"], vec!["-cd"], vec!["-dZ"]] {
+        let (out, status, err) = run(&form, b"a\n");
+        assert_eq!(out, Vec::<u8>::new(), "{form:?} printed {out:?}");
+        assert_eq!(status, 1, "{form:?} stderr was {err:?}");
+        assert_eq!(err, USAGE_LINE, "{form:?} 该只有 usage 一行");
+    }
     // And the one combination C refuses by name: `-h` with `-m`. The check sits
     // after the whole option loop and before any operand is opened
     // (`usr.bin/vis/vis.c:142-144`), so it outranks an unreadable file.
