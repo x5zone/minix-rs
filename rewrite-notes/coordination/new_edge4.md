@@ -3584,3 +3584,12 @@ FS base 字段/MSR 切换，`arch_prctl(ARCH_SET_FS)` 无对应内核调用，�
 基址保持 0，`init_cpu_features`/TLS 访问 fault（串口到 SHIM/PREJUMP 为止）。
 结论：C4 客态运行面要打通需先加内核每进程 FS base 或改用非 TLS 的
 x86_64 libc；半成品已弃树，未合入，`ATF_BOOT_LEG_READY` 仍不放行。
+
+**PD16-N3 里程碑（机械止损线达成）**：按 PD-16 第十轮定稿，先登记固定
+N=3（C 板 C1 行落笔于 `e7c99cb57` 之后），再以 `RS_ATF_SMP=4` 连跑
+3 轮 `test-atf-riscv64.sh`：每轮 **36/36（34 passed + 2 skipped +
+0 failed/broken）**，`csc-verify armed` 在、内容不一致 0，`mset-verify`
+armed 在、零 HIT，ptwb 命中均为既有已知良性形状。覆盖完成度（tf-guard /
+csc 含挂起前缀 / mset / ptwb）+ N=3 零命中同时成立，PD-16 止损线达成，
+C1 由 `🔄` 转 `✅（转长期观察）`，C2b 前置解除。串口：
+`tmp/pd16-n3/round{1,2,3}/serial.log`。
