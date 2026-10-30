@@ -3838,3 +3838,19 @@ panic=0 + ap-timeout=0。真机全镜像读数：`ap-arrived=1 /
 ap-irq-ready=1 / ap-timeout=0 / panic=0`，走到 rc marker；`run_all`
 39/0/0。riscv AP 仍在 `ap_early_entry` 里 wfi 停车，是 C2D 余项里最大的
 一件；钳制继续兜底。
+
+**C2D-RVAPENTRY 里程碑（riscv AP 进调度环 + 零根 walker 守卫）**：码笔
+`28077ea70`、合并 `2e17f365e`。`ap_early_entry` 加 `AP_TAIL` 注册门并
+快照 record；kernel riscv `smp_ap_tail` 做 boot_ack、per-CPU
+stack/sscratch、stvec、ptproc、`sie.SSIE+STIE` 使能、本地定时器、
+`ap_finish_booting`、`scheduler_loop`；`smp_init` 注册 tail、每核清
+AP_ARRIVED、补 `wait_for_aps`，其后打印 `nk4c: ap-irq-ready
+cpu=<logical> sgi=1 timer=1`。身份锚改为内核栈区间（riscv 无 S 模式
+hartid 可读、tp 会被 trap return 恢复、sscratch 载用户 sp），BSP 回退
+`seed_bsp_masks` 记录的槽位。真机暴露出零根 PTE walk 类缺陷：AP 首次
+copy 用 root=0 走表，walker 把 `DM+0x7f8` 当 PTE 读而 fault；三架构
+walker 统一加零根守卫返回 None。读数：riscv 全镜像 `ap-arrived=1 /
+ap-irq-ready=1 / ap-timeout=0 / panic=0`（BSP rc marker 未达，脚本按
+AP 判据 PASS）、`run_all` 39/0/0。SSI 跨核投递仍受固件未委托限制，
+脚本只证门状态与进环；唤醒后定时器重启、riscv flag 应用与远端
+`fence.i` 仍是 C2D 余项。
