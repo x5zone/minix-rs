@@ -3872,3 +3872,12 @@ riscv 远端 `fence.i`、READY 有界 ack；钳制继续兜底。
 `bkl_unlock`。读数：`test-smp-aps-riscv64` PASS（ap-irq-ready=1 /
 panic=0）、`test-smp-ipi-riscv64`（aclint=on）PASS、`run_all` 39/0/0。
 C2D 余 riscv 远端 `fence.i`、READY 有界 ack；钳制继续兜底。
+
+**C2D-RVFENCE 里程碑（riscv 远端 fence.i）**：码笔 `57098d93d`、合并
+`f32fa8f85`。`cache_sync` 在本地 `fence.i` 后调 SBI RFENCE
+`remote_fence_i`（EID `0x52464E43`/FID 0，`hart_mask_base=-1` 覆盖全部
+可用 hart），返回码非零 fail-fast；共享契约与 riscv 模块文档改为已
+实现，`riscv64_cache_sync_pin` 翻转为要求广播形状；11/sched/lib/smp
+注记回写。读数：riscv 全镜像 PASS（ap-irq-ready=1/panic=0；初始 ELF
+装载的实际 RFENCE ecall 返回 0）、`test-smp-ipi-riscv64`（aclint=on）
+PASS、`run_all` 39/0/0。C2D 只剩 READY 有界 ack；钳制继续兜底。
