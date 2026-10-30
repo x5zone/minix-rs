@@ -3376,6 +3376,37 @@ rewrite` 退 0 ⇒ `git merge --ff-only claim/GETOPT-REPORT-BYTE-LETTER-qoder` �
 unexpand-vis 族等复用与新建合计）、六起「参照件翻正旧账面」的现量，收官于本笔的三个
 文本口删除——`bin_support::args` 的有损折叠自此在这两族不再存在。
 
+### 第一百八十八笔（A 板 A25 · `SD-19` 的服务侧面：十一 crate 逐家核门与处置表；sched 是唯一缺门的）
+
+**这一笔的载荷**：`os/servers/` 下十一家服务 crate（devman、ds、input、ipc-server、is、mib、
+pm、rs、sched、vfs、vm）逐家核 `#![warn(clippy::let_underscore_must_use)]` 门并写处置表。
+现量：**十家此前已带**这枚门（与本行上方 SD-19 的 libs 面、B8 的十二家库 crate 同形），
+**sched 是唯一没接的**——本片给它接上，`cargo clippy -p minix-sched --all-targets` 当场报出
+三处 `#[must_use]` 站，逐站按 C 行处置：
+
+- `server.rs` 的 `let _ = self.do_noquantum(&message, kernel)`——C 70-77 的封印支：失败只印一行
+  （C 73-74）、照样不回话；诊断句没有 Rust 归宿，不回话是可观察的那一半，吞返回值与 C 同义；
+- `server.rs` 的 `let _ = ipc.sendnb(sender, &reply)`——C 101-106 把失败的 reply 记一行就丢掉、
+  循环继续；
+- `server.rs` 的 `let _ = self.fanout_local(index, kernel)`——C 362 原文就标 `unchecked`。
+
+每处 `//[SD19-gate] <理由>` 加语句级 `#[allow]`，与 `minix-sys` 的旗舰样本同形。
+
+**处置表**（写进 `TODO-LEDGER-OPEN.md` 的 SD-19 行）：十一行、合计 **440 个 `let _ =` 站点 /
+344 处带 `[SD19-gate]` 标记 / 真触发 0**。未带标记的 96 个站点不是漏网——它们的 RHS 不是
+`#[must_use]`，门在而 clippy 静默，这就是逐站可证的「不适用」。**vm 的整目标读数受限**：
+`cargo clippy -p minix-vm --all-targets` 撞存量 deny 错（`servers/vm/src/phys_mem/bitmap_alloc.rs:548`
+的 `% 1`，本行上方 workspace 扫尾段已与 `minix-textfilter` 的 `approx_constant` 并列登记），
+lib 目标单独跑退 0、真触发 0；本片不碰那两枚存量错。
+
+**读数**：`minix-sched` 宿主 **88/0**、容器权威门 **3 段 / 88 / 0** 退 0、三架构 `--bins` 各退 0；
+十一家 `cargo clippy -p minix-<crate> --all-targets` 除 vm 外各退 0、真触发全 0。
+**射程边界照板上路由注**：libs 侧的同类门归 B 板（B8 已落），本片只动服务侧。
+**本笔的一处工具自错**：第一次三架构用了 `--all-targets`，测试目标在 `-none` 上没有 `std`
+（12 个 `E0463`），按前几笔的配方改成 `--bins` 才是指标；另一处：workspace 级 clippy 不能裸跑
+（kernel 的 form 契约在无特性时编译期报错，AGENTS.md 已写明），改用「逐 crate + 两家存量错
+exclude」的分域读数。
+
 **T1CUT 里程碑（2026-10-30，01 篇 T1 2c/3b 联合切根）**：码笔 `aab77e1c2`、合并笔
 `9be4654da`。aarch64 UEFI 链从「旧快照 + 一页 `BootHandoff` blob」切到「四页 arena +
 `GetMemoryMap`/分类/raw `ExitBootServices` 配对循环 + `x0=arena`」；接收端
